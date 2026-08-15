@@ -145,6 +145,17 @@ int32_t sock_reuseport(SOCKET fd) {
     return ERR_OK;
 #endif
 }
+int32_t sock_v6only(SOCKET fd, int32_t family) {
+    if (AF_INET6 != family) {
+        return ERR_OK;
+    }
+#ifdef IPV6_V6ONLY
+    return _setsockopt_flag(fd, IPPROTO_IPV6, IPV6_V6ONLY);
+#else
+    (void)fd;
+    return ERR_OK;
+#endif
+}
 int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
     if (ERR_OK != _setsockopt_flag(fd, SOL_SOCKET, SO_KEEPALIVE)) {
         return ERR_FAILED;

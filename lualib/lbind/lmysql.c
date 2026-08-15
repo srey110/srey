@@ -493,8 +493,9 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
 /// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数</param>
-/// <returns type="lightuserdata">命令数据指针；语句声明了参数而 bind 为 nil 或参数个数对不上时
-/// 直接抛出（调用方契约违反，运行期无从降级，判定依据见 lpub_rtn_lud 的说明），不返回 nil</returns>
+/// <returns type="lightuserdata">命令数据指针；组包失败直接抛出，不返回 nil（调用方契约违反，运行期无从降级，
+/// 判定依据见 lpub_rtn_lud 的说明）。两种失败 C 层都只给 NULL+size 0，无从区分，故文案并列：
+/// 参数个数对不上（含声明了参数而 bind 为 nil），或组完的载荷超 16MB（这条 C 层另有一条 LOG_WARN）</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
@@ -505,7 +506,7 @@ static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     size_t size;
     void *pack = mysql_pack_stmt_execute(*stmt, mbind, &size);
     if (NULL == pack) {
-        return luaL_error(lua, "stmt_execute: bind count does not match params count.");
+        return luaL_error(lua, "stmt_execute pack failed: bind count mismatch, or payload exceeds 16MB (see log).");
     }
     return lpub_rtn_lud(lua, pack, size);
 }

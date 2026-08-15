@@ -105,9 +105,76 @@ void _evpub_sendto_clear(queue_ctx *bufs) {
     }
     queue_clear(bufs);
 }
+// 队列超上限判定,TCP / UDP 两条文案各占一支——LOG 宏会拼接 fmt,fmt 必须是字面量
+static int32_t _evpub_sendqu_full(queue_ctx *buf_s, SOCKET fd, int32_t istcp) {
+    if (0 != MAX_SENDQ_CNT
+        && queue_size(buf_s) >= MAX_SENDQ_CNT) {
+        if (0 != istcp) {
+            LOG_WARN("TCP send queue overflow on fd %d (>= %d), disconnect.", (int32_t)fd, MAX_SENDQ_CNT);
+        } else {
+            LOG_WARN("UDP send queue overflow on fd %d (>= %d), drop datagram.", (int32_t)fd, MAX_SENDQ_CNT);
+        }
+        return 1;
+    }
+    return 0;
+}
+int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd, int32_t established) {
+    // 连接未完成时写事件表示等待 connect 而非待发数据,入队会被 connect 回调连同写事件一起删掉;
+    // IOCP 侧则是 ConnectEx 未完成就 WSASend,必以 WSAENOTCONN 失败
+    if (0 == established) {
+        LOG_WARN("ev_send before connection established on fd %d, disconnect.", (int32_t)fd);
+        return 0;
+    }
+#if WITH_SSL
+    // 握手期发业务数据会打断握手
+    if (BIT_CHECK(status, STATUS_AUTHSSL)
+        || BIT_CHECK(status, STATUS_SSLEXCHANGE)) {
+        LOG_WARN("ev_send during SSL handshake on fd %d, disconnect.", (int32_t)fd);
+        return 0;
+    }
+#else
+    (void)status;
+#endif
+    // 慢消费者保护:业务无脑写会打爆内存
+    return 0 == _evpub_sendqu_full(buf_s, fd, 1);
+}
+int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd) {
+    return 0 == _evpub_sendqu_full(buf_s, fd, 0);
+}
+void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp) {
+    if (!tda_check(tda, wb_size)) {
+        return;
+    }
+    if (0 != istcp) {
+        LOG_WARN("TCP send buf growing on fd %d: %zu bytes.", (int32_t)fd, wb_size);
+    } else {
+        LOG_WARN("UDP send buf growing on fd %d: %zu bytes.", (int32_t)fd, wb_size);
+    }
+}
 int32_t _evpub_nodelay_nonblock(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
         || ERR_OK != sock_nonblock(fd)) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs_ctx *cbs,
+                                 ud_cxt *ud, int32_t isudp, netaddr_ctx *addr) {
+    if (NULL == cbs
+        || (0 != isudp ? NULL == cbs->rf_cb : NULL == cbs->r_cb)) {
+        if (NULL != cbs) {
+            UD_FREE(cbs->ud_free, ud);
+        }
+        return ERR_FAILED;
+    }
+    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
+    if (0 != ATOMIC_GET(&ctx->stopping)) {
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
+    if (ERR_OK != netaddr_set(addr, ip, port)) {
+        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
+        UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -120,7 +187,8 @@ SOCKET _evpub_listen(netaddr_ctx *addr) {
     }
     if (ERR_OK != sock_reuseaddr(fd, 1)
         || ERR_OK != sock_reuseport(fd)
-        || ERR_OK != sock_nonblock(fd)) {
+        || ERR_OK != sock_nonblock(fd)
+        || ERR_OK != sock_v6only(fd, netaddr_family(addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
@@ -161,7 +229,8 @@ SOCKET _evpub_udp(netaddr_ctx *addr) {
     }
 #endif
     if (ERR_OK != sock_reuseaddr(fd, 0)
-        || ERR_OK != sock_nonblock(fd)) {
+        || ERR_OK != sock_nonblock(fd)
+        || ERR_OK != sock_v6only(fd, netaddr_family(addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
@@ -221,7 +290,7 @@ int32_t _evpub_sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, siz
     if (NULL == arg) {
         return _evpub_sock_read_normal(fd, iov, niov, readed);
     }
-    /* Force niov=1: SSL_read reads one TLS record at a time into a single buffer */
+    // 只取 iov[0]、丢掉 niov：SSL 一次只能读一个 TLS 记录到单个缓冲，理由见 _evpub_sock_read_ssl
     return _evpub_sock_read_ssl((SSL *)arg, iov, readed);
 #else
     (void)arg;

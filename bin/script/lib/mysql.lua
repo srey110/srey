@@ -70,7 +70,12 @@ function ctx:_selectdb(database)
     return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
 end
 
--- conn_pub 的探活钩子：COM_PING，不自动重连
+-- conn_pub 的探活钩子：COM_PING，不自动重连。
+-- 必须正向判 MPACK_OK，不能只判"收到了包"：conn_pub 的 _pingreconn 拿本函数的返回值当唯一
+-- 重连判据，只判非 nil 的话，服务端以 ERR 应答 COM_PING（shutdown 期的 1053、连接被 KILL 之类）
+-- 会被报成健康，于是永不重连，此后每一轮 ping + query 都重复失败。
+-- 连接因前一次多结果集没收干净而错位时同理：读到的可能是上一条命令残留的包，判型能发现，
+-- 只判非 nil 则会把它当自己的 pong 吃掉，错位从此无法自愈
 function ctx:_ping()
     local pack, size = self.mysql:pack_ping()
     local fd, skid = self.mysql:sock_id()
@@ -78,7 +83,7 @@ function ctx:_ping()
     if not mpack then
         return false
     end
-    return true
+    return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
 end
 
 ---收齐一次请求的全部响应包（多语句 / CALL 会产生多个结果集），query 与 stmt:execute 共用

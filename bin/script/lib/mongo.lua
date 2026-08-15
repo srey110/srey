@@ -67,6 +67,24 @@ local function _rsend(mgoctx, pack, size)
     return srey.serial_ret(nil, mgoctx.serial(_rdo, mgoctx, pack, size))
 end
 
+-- 组包期间把连接级 flags 清零、组完再恢复：要等响应的命令不能带 MORETOCOME。
+-- 套 pcall 是因为 Lua 没有 RAII 而 pack_* 会抛((指针,长度) 入口的长度校验)，抛点正在清零与恢复
+-- 之间，不兜住就把 MORETOCOME 永久摘掉、clear_flag() 也查不出来。C 侧没有异常，无此问题
+---@param mgo any 连接级 flags 的持有者（C 层 mongo 句柄）；清零与恢复都作用于它
+---@param obj any 组包方法所在的对象：多数命令就是 mgo 自己，事务收尾是 session
+---@param name string 组包方法名
+---@return lightuserdata|nil pack 命令数据指针；组包被拒时为 nil
+---@return integer? size 数据长度
+local function _pack_noflag(mgo, obj, name, ...)
+    local flags = mgo:clear_flag()
+    local ok, pack, size = pcall(obj[name], obj, ...)
+    mgo:set_flag(flags)
+    if not ok then
+        error(pack, 0)
+    end
+    return pack, size
+end
+
 -- mongo_session_ctx：会话事务上下文，由 mongo_ctx:startsession() 创建。
 local sess_ctx = class("mongo_session_ctx")
 
@@ -91,25 +109,16 @@ function sess_ctx:begin()
     return self.session:begin()
 end
 
----commit / rollback 的共同流程，两者只差组包用哪个 C 接口和日志里的动作名。
----事务状态一路保留到服务端真的回了包为止：组包被拒（options 超 MAX_PACK_SIZE、或连接已不再
----绑定该 session）和网络失败都可能只是这一次不成，状态还在就能重试或改走另一条收尾路径。
----这里若提前 done() 会解绑并 FREE options，之后另一条撞上绑定守卫也只能放弃，
----服务端那个事务就一直持锁到超时
----@param self any mongo_session_ctx 实例
----@param opts string|lightuserdata|nil 附加 BSON 选项
----@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@param pack_fn fun(session:any, opts:string|lightuserdata|nil, optslens:integer?):(lightuserdata|nil, integer?) 组包接口（pack_commit / pack_abort）
----@param what string 动作名，仅用于组包被拒时的日志
----@return boolean ok 服务端确认且未报错 true
-local function _txn_finish(self, opts, optslens, pack_fn, what)
+-- 代次判定、组包、发送整段在锁内，理由同 C 侧 mongo_commit：判定与 _rsend 里那次上锁之间隔着
+-- 一次不定长排队，锁外判就是过期票——排队期间别人可能已 ping 重连换掉连接。
+-- 内层 _rsend 再上一次锁，同协程按 ref 嵌套
+local function _txn_do(self, opts, optslens, packname, what)
     if self.gen ~= self.mgoctx.generation then
         WARN("mongo session invalidated by reconnect, please restart session.")
         return false
     end
-    local flags = self.mgoctx.mongo:clear_flag()
-    local pack, size = pack_fn(self.session, opts, optslens)
-    self.mgoctx.mongo:set_flag(flags)
+    local mgo = self.mgoctx.mongo
+    local pack, size = _pack_noflag(mgo, self.session, packname, opts, optslens)
     if not pack then
         WARN("mongo %s packing rejected, transaction state kept.", what)
         return false
@@ -119,7 +128,22 @@ local function _txn_finish(self, opts, optslens, pack_fn, what)
         return false
     end
     self.session:done()
-    return self.mgoctx.mongo:check_error(mgopack) >= 0
+    return mgo:check_error(mgopack) >= 0
+end
+---commit / rollback 的共同流程，两者只差组包用哪个 C 接口和日志里的动作名。
+---事务状态一路保留到服务端真的回了包为止：组包被拒（options 超 MAX_PACK_SIZE、或连接已不再
+---绑定该 session）和网络失败都可能只是这一次不成，状态还在就能重试或改走另一条收尾路径。
+---这里若提前 done() 会解绑并 FREE options，之后另一条撞上绑定守卫也只能放弃，
+---服务端那个事务就一直持锁到超时。
+---流程主体见 _txn_do，本函数只负责套锁
+---@param self any mongo_session_ctx 实例
+---@param opts string|lightuserdata|nil 附加 BSON 选项
+---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
+---@param packname string session 上的组包方法名（"pack_commit" / "pack_abort"）；由 _pack_noflag 取用
+---@param what string 动作名，仅用于组包被拒时的日志
+---@return boolean ok 服务端确认且未报错 true
+local function _txn_finish(self, opts, optslens, packname, what)
+    return srey.serial_ret(false, self.mgoctx.serial(_txn_do, self, opts, optslens, packname, what))
 end
 
 ---提交事务；网络失败或组包被拒时保留事务状态供重试，仅服务端响应确认时清理（见 _txn_finish）
@@ -127,7 +151,7 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 提交成功 true
 function sess_ctx:commit(opts, optslens)
-    return _txn_finish(self, opts, optslens, self.session.pack_commit, "commit")
+    return _txn_finish(self, opts, optslens, "pack_commit", "commit")
 end
 
 ---回滚事务；状态保留与清理时机同 commit（见 _txn_finish）
@@ -135,32 +159,45 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 回滚成功 true
 function sess_ctx:rollback(opts, optslens)
-    return _txn_finish(self, opts, optslens, self.session.pack_abort, "rollback")
+    return _txn_finish(self, opts, optslens, "pack_abort", "rollback")
 end
 
----刷新会话超时（refreshSessions），延续会话存活时间
----@return boolean ok 刷新成功 true（session 已因重连失效时返回 false）
-function sess_ctx:refresh()
+-- 判定与发送同在锁内，理由同 _txn_do
+local function _refresh_do(self)
     if self.gen ~= self.mgoctx.generation then
         WARN("mongo session invalidated by reconnect, please restart session.")
         return false
     end
-    local flags = self.mgoctx.mongo:clear_flag()
-    local pack, size = self.session:pack_refresh()
-    self.mgoctx.mongo:set_flag(flags)
+    local mgo = self.mgoctx.mongo
+    local pack, size = _pack_noflag(mgo, self.session, "pack_refresh")
     local mgopack = _rsend(self.mgoctx, pack, size)
     if not mgopack then
         return false
     end
-    return self.mgoctx.mongo:check_error(mgopack) >= 0
+    return mgo:check_error(mgopack) >= 0
+end
+---刷新会话超时（refreshSessions），延续会话存活时间
+---@return boolean ok 刷新成功 true（session 已因重连失效时返回 false）
+function sess_ctx:refresh()
+    return srey.serial_ret(false, self.mgoctx.serial(_refresh_do, self))
 end
 
----结束会话（endSessions，fire-and-forget）并释放 C 层会话内存
+-- 判定与发送同在锁内，理由同 _txn_do。
+-- 重连后服务端已自动清理旧 lsid，跳过 endSessions 网络包
+local function _close_do(self)
+    if self.gen ~= self.mgoctx.generation then
+        return
+    end
+    local pack, size = self.session:pack_endsession()
+    _wsend(self.mgoctx, pack, size)
+end
+---结束会话（endSessions，fire-and-forget）并释放 C 层会话内存。
+---session:free() 留在锁外：它不碰连接，且无论有没有发出 endSessions 都要释放
 function sess_ctx:close()
-    -- 重连后服务端已自动清理旧 lsid，跳过 endSessions 网络包；本地 C 资源始终释放
+    -- 锁外先判一次:代次只增不减,读到不等就必然真不等(服务端早清了旧 lsid),没东西可发,
+    -- 不必排队等锁;读到相等可能是过期票,进去后 _close_do 在锁内还会重判一次
     if self.gen == self.mgoctx.generation then
-        local pack, size = self.session:pack_endsession()
-        _wsend(self.mgoctx, pack, size)
+        self.mgoctx.serial(_close_do, self)
     end
     self.session:free()
 end
@@ -226,9 +263,7 @@ function ctx:_connect()
     -- 解绑上一代事务会话，否则 pack_hello 及后续命令会带上旧的 lsid/txnNumber。
     -- Lua 侧走 try_connect 不经 C 的 mongo_connect，那边同一句在 coro_utils.c 的 mongo_connect 里
     self.mongo:clear_session()
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_hello()
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_hello")
     local mgopack = _rsend(self, pack, size)
     if not mgopack then return _fail() end
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
@@ -236,6 +271,8 @@ function ctx:_connect()
         if not self.mongo:set_auth_status(fd, skid) then
             return false --event 已关闭
         end
+        -- 不走 _pack_noflag：清零要盖住"组包+发送+等握手"整段(SCRAM 多次往返)，不是只盖组包。
+        -- 这段也抛不出来——pack_auth_first 收的 authmod 由 ctor 兜成 "SCRAM-SHA-256"
         local aflags = self.mongo:clear_flag()
         local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
         local ok = false
@@ -251,9 +288,7 @@ end
 ---内部 ping（isMaster / ping 命令），不自动重连
 ---@return boolean ok 服务端响应成功 true（仅供 ping() 内部调用，不要直接调用；调用方须已持锁）
 function ctx:_ping()
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_ping()
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_ping")
     local mgopack = _rsend(self, pack, size)
     if not mgopack then
         return false
@@ -471,9 +506,7 @@ function ctx:find(col, filter, flens, opts, optslens)
     if not self.mongo:collection(col) then
         return nil
     end
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_find(filter, flens, opts, optslens)
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_find", filter, flens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -489,9 +522,7 @@ function ctx:aggregate(col, pipeline, pllens, opts, optslens)
     if not self.mongo:collection(col) then
         return nil
     end
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_aggregate(pipeline, pllens, opts, optslens)
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_aggregate", pipeline, pllens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -502,9 +533,7 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
 function ctx:getmore(cursorid, opts, optslens)
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_getmore(cursorid, opts, optslens)
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_getmore", cursorid, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -543,9 +572,7 @@ function ctx:distinct(col, key, query, qlens, opts, optslens)
     if not self.mongo:collection(col) then
         return nil
     end
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_distinct(key, query, qlens, opts, optslens)
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_distinct", key, query, qlens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -565,9 +592,7 @@ function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, o
     if not self.mongo:collection(col) then
         return nil
     end
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_findandmodify(query, qlens, remove, pipeline, update, ulens, opts, optslens)
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_findandmodify", query, qlens, remove, pipeline, update, ulens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -583,9 +608,7 @@ function ctx:count(col, query, qlens, opts, optslens)
     if not self.mongo:collection(col) then
         return false
     end
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_count(query, qlens, opts, optslens)
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_count", query, qlens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     if not mgopack then
         return false
@@ -602,9 +625,7 @@ end
 ---启动服务端逻辑会话（startSession）
 ---@return any|nil session mongo_session_ctx 实例；失败返回 nil
 function ctx:startsession()
-    local flags = self.mongo:clear_flag()
-    local pack, size = self.mongo:pack_startsession()
-    self.mongo:set_flag(flags)
+    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_startsession")
     local mgopack = _rsend(self, pack, size)
     if not mgopack then
         return nil

@@ -73,6 +73,15 @@ int32_t sock_reuseaddr(SOCKET fd, int32_t istcp);
 /// <returns>ERR_OK 成功</returns>
 int32_t sock_reuseport(SOCKET fd);
 /// <summary>
+/// AF_INET6 socket 置为只收 IPv6(IPV6_V6ONLY=1),其他 family 直接返回 ERR_OK。**须在 bind 前调用**。
+/// 不设就随平台默认走:Linux / macOS 收 v4-mapped 的 IPv4,Windows / FreeBSD 只收 IPv6,
+/// 同为 Linux 还随 net.ipv6.bindv6only 翻转。要双栈就 "0.0.0.0" 与 "::" 各绑一次
+/// </summary>
+/// <param name="fd">socket 句柄</param>
+/// <param name="family">socket 地址族,取自 netaddr_family</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t sock_v6only(SOCKET fd, int32_t family);
+/// <summary>
 /// 设置KEEPALIVE
 /// </summary>
 /// <param name="fd">socket 句柄</param>

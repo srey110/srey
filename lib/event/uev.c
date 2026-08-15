@@ -61,6 +61,9 @@ static void _uev_init_cmd(watcher_ctx *watcher) {
     sock_ctx *skctx = &watcher->pipe.skpip;
     skctx->fd = watcher->pipe.pipes[0];
     skctx->events = 0;
+#ifdef COMMIT_NCHANGES
+    skctx->chg_round = 0;
+#endif
     skctx->type = 0;
     skctx->ev_cb = _uev_cmd_loop;
     _evpub_sockel_add(watcher, skctx);
@@ -82,8 +85,15 @@ static void _uev_check_changes(watcher_ctx *watcher) {
     }
 }
 #endif
-void _uev_drop_changes(watcher_ctx *watcher, SOCKET fd) {
+// 戳不等于当轮就直接返回:nchanges 每轮轮首归零,而任何追加都同时打当轮戳,所以本轮没追加过的
+// sock 数组里必无它的项。误命中(回绕/回池残留)只是多扫一遍,"该扫却跳过"构造不出来。
+// 扫完不把戳归零:_usk_on_connect_cb_err 的补排就紧跟在本函数之后
+void _uev_drop_changes(watcher_ctx *watcher, sock_ctx *skctx) {
 #if defined(EV_KQUEUE) || defined(EV_DEVPOLL)
+    if (skctx->chg_round != watcher->chg_round) {
+        return;
+    }
+    SOCKET fd = skctx->fd;
     int32_t n = 0;
     for (int32_t i = 0; i < watcher->nchanges; i++) {
 #if defined(EV_KQUEUE)
@@ -100,23 +110,73 @@ void _uev_drop_changes(watcher_ctx *watcher, SOCKET fd) {
     watcher->nchanges = n;
 #else
     (void)watcher;
-    (void)fd;
+    (void)skctx;
 #endif
 }
-int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, void *arg) {
-#if defined(EV_EPOLL)
-    events_t epev = { 0 };
-    epev.data.ptr = arg;
-    BIT_SET(ev, (*curevents));
+#if defined(EV_EVPORT) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
+// EVENT_* 与 poll 位(POLLIN/POLLOUT)互译，evport / pollset / devpoll 三个后端共用同一张表
+static inline int32_t _uev_ev2poll(int32_t ev) {
+    int32_t rtn = 0;
     if (BIT_CHECK(ev, EVENT_READ)) {
-        BIT_SET(epev.events, EPOLLIN);
+        BIT_SET(rtn, POLLIN);
     }
     if (BIT_CHECK(ev, EVENT_WRITE)) {
-        BIT_SET(epev.events, EPOLLOUT);
+        BIT_SET(rtn, POLLOUT);
+    }
+    return rtn;
+}
+// POLLERR / POLLHUP 一律翻成读写双就绪：真错交给随后的读写调用去撞，这里不区分
+static inline int32_t _uev_poll2ev(int32_t revents) {
+    if (BIT_CHECK(revents, (POLLERR | POLLHUP))) {
+        return EVENT_READ | EVENT_WRITE;
+    }
+    int32_t rtn = 0;
+    if (BIT_CHECK(revents, POLLIN)) {
+        BIT_SET(rtn, EVENT_READ);
+    }
+    if (BIT_CHECK(revents, POLLOUT)) {
+        BIT_SET(rtn, EVENT_WRITE);
+    }
+    return rtn;
+}
+#endif
+#if defined(EV_EPOLL)
+// EVENT_* → epoll 位。ET 位只在这里加,add 与 del 走的 EPOLL_CTL_MOD 都经过它——
+// 分开写漏一处,MOD 就把边缘触发静默降级成水平触发
+static inline uint32_t _uev_ev2epoll(int32_t ev) {
+    uint32_t rtn = 0;
+    if (BIT_CHECK(ev, EVENT_READ)) {
+        BIT_SET(rtn, EPOLLIN);
+    }
+    if (BIT_CHECK(ev, EVENT_WRITE)) {
+        BIT_SET(rtn, EPOLLOUT);
     }
 #if TRIGGER_ET
-    BIT_SET(epev.events, EPOLLET);
+    BIT_SET(rtn, EPOLLET);
 #endif
+    return rtn;
+}
+// EPOLLHUP / EPOLLERR 一律翻成读写双就绪,同 _uev_poll2ev
+static inline int32_t _uev_epoll2ev(uint32_t revents) {
+    if (BIT_CHECK(revents, (EPOLLHUP | EPOLLERR))) {
+        return EVENT_READ | EVENT_WRITE;
+    }
+    int32_t rtn = 0;
+    if (BIT_CHECK(revents, EPOLLIN)) {
+        BIT_SET(rtn, EVENT_READ);
+    }
+    if (BIT_CHECK(revents, EPOLLOUT)) {
+        BIT_SET(rtn, EVENT_WRITE);
+    }
+    return rtn;
+}
+#endif
+int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, sock_ctx *skctx) {
+#if defined(EV_EPOLL)
+    events_t epev = { 0 };
+    epev.data.ptr = skctx;
+    BIT_SET(ev, (*curevents));
+    epev.events = _uev_ev2epoll(ev);
     if (ERR_FAILED == epoll_ctl(watcher->evfd,
                                 0 == (*curevents) ? EPOLL_CTL_ADD : EPOLL_CTL_MOD,
                                 fd,
@@ -130,41 +190,32 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int3
         BIT_SET((*curevents), EVENT_READ);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_READ, EV_ADD, 0, 0, arg);
+        EV_SET(kev, fd, EVFILT_READ, EV_ADD, 0, 0, skctx);
         watcher->nchanges++;
+        skctx->chg_round = watcher->chg_round;
     }
     if (BIT_CHECK(ev, EVENT_WRITE)
         && !BIT_CHECK((*curevents), EVENT_WRITE)) {
         BIT_SET((*curevents), EVENT_WRITE);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_WRITE, EV_ADD, 0, 0, arg);
+        EV_SET(kev, fd, EVFILT_WRITE, EV_ADD, 0, 0, skctx);
         watcher->nchanges++;
+        skctx->chg_round = watcher->chg_round;
     }
 #elif defined(EV_EVPORT)
     BIT_SET(ev, (*curevents));
-    int32_t pollev = 0;
-    if (BIT_CHECK(ev, EVENT_READ)) {
-        BIT_SET(pollev, POLLIN);
-    }
-    if (BIT_CHECK(ev, EVENT_WRITE)) {
-        BIT_SET(pollev, POLLOUT);
-    }
-    if (ERR_FAILED == port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, arg)) {
+    int32_t pollev = _uev_ev2poll(ev);
+    if (ERR_FAILED == port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, skctx)) {
         return ERR_FAILED;
     }
     *curevents = ev;
 #elif defined(EV_POLLSET)
+    (void)skctx;
     BIT_SET(ev, (*curevents));
     struct poll_ctl ctl;
     ctl.fd = fd;
-    ctl.events = 0;
-    if (BIT_CHECK(ev, EVENT_READ)) {
-        BIT_SET(ctl.events, POLLIN);
-    }
-    if (BIT_CHECK(ev, EVENT_WRITE)) {
-        BIT_SET(ctl.events, POLLOUT);
-    }
+    ctl.events = _uev_ev2poll(ev);
     ctl.cmd = (0 == (*curevents) ? PS_ADD : PS_MOD);
     if (0 != pollset_ctl(watcher->evfd, &ctl, 1)) {
         return ERR_FAILED;
@@ -176,34 +227,21 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int3
     changes_t *pfd = &watcher->changes[watcher->nchanges];
     pfd->fd = fd;
     pfd->revents = 0;
-    pfd->events = 0;
-    if (BIT_CHECK((*curevents), EVENT_READ)) {
-        BIT_SET(pfd->events, POLLIN);
-    }
-    if (BIT_CHECK((*curevents), EVENT_WRITE)) {
-        BIT_SET(pfd->events, POLLOUT);
-    }
+    pfd->events = (short)_uev_ev2poll(*curevents);
     watcher->nchanges++;
+    skctx->chg_round = watcher->chg_round;
 #endif
     return ERR_OK;
 }
-void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, void *arg) {
+void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, sock_ctx *skctx) {
 #if defined(EV_EPOLL)
     events_t epev = { 0 };
-    epev.data.ptr = arg;
+    epev.data.ptr = skctx;
     BIT_REMOVE((*curevents), ev);
     if (0 == (*curevents)) {
         (void)epoll_ctl(watcher->evfd, EPOLL_CTL_DEL, fd, &epev);
     } else {
-        if (BIT_CHECK((*curevents), EVENT_READ)) {
-            BIT_SET(epev.events, EPOLLIN);
-        }
-        if (BIT_CHECK((*curevents), EVENT_WRITE)) {
-            BIT_SET(epev.events, EPOLLOUT);
-        }
-#if TRIGGER_ET
-        BIT_SET(epev.events, EPOLLET);
-#endif
+        epev.events = _uev_ev2epoll(*curevents);
         (void)epoll_ctl(watcher->evfd, EPOLL_CTL_MOD, fd, &epev);
     }
 #elif defined(EV_KQUEUE)
@@ -212,32 +250,29 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
         BIT_REMOVE((*curevents), EVENT_READ);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_READ, EV_DELETE, 0, 0, arg);
+        EV_SET(kev, fd, EVFILT_READ, EV_DELETE, 0, 0, skctx);
         watcher->nchanges++;
+        skctx->chg_round = watcher->chg_round;
     }
     if (BIT_CHECK(ev, EVENT_WRITE)
         && BIT_CHECK((*curevents), EVENT_WRITE)) {
         BIT_REMOVE((*curevents), EVENT_WRITE);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, arg);
+        EV_SET(kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, skctx);
         watcher->nchanges++;
+        skctx->chg_round = watcher->chg_round;
     }
 #elif defined(EV_EVPORT)
     BIT_REMOVE((*curevents), ev);
     if (0 == (*curevents)) {
         (void)port_dissociate(watcher->evfd, PORT_SOURCE_FD, fd);
     } else {
-        ev = 0;
-        if (BIT_CHECK((*curevents), EVENT_READ)) {
-            BIT_SET(ev, POLLIN);
-        }
-        if (BIT_CHECK((*curevents), EVENT_WRITE)) {
-            BIT_SET(ev, POLLOUT);
-        }
-        (void)port_associate(watcher->evfd, PORT_SOURCE_FD, fd, ev, arg);
+        ev = _uev_ev2poll(*curevents);
+        (void)port_associate(watcher->evfd, PORT_SOURCE_FD, fd, ev, skctx);
     }
 #elif defined(EV_POLLSET)
+    (void)skctx;
     BIT_REMOVE((*curevents), ev);
     if (0 == (*curevents)) {
         struct poll_ctl ctl;
@@ -252,12 +287,7 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
         ctl.events = 0;
         (void)pollset_ctl(watcher->evfd, &ctl, 1);
         ctl.cmd = PS_ADD;
-        if (BIT_CHECK((*curevents), EVENT_READ)) {
-            BIT_SET(ctl.events, POLLIN);
-        }
-        if (BIT_CHECK((*curevents), EVENT_WRITE)) {
-            BIT_SET(ctl.events, POLLOUT);
-        }
+        ctl.events = _uev_ev2poll(*curevents);
         (void)pollset_ctl(watcher->evfd, &ctl, 1);
     }
 #elif defined(EV_DEVPOLL)
@@ -268,19 +298,15 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
     pfd->events = POLLREMOVE;
     pfd->revents = 0;
     watcher->nchanges++;
+    skctx->chg_round = watcher->chg_round;
     if (0 != (*curevents)) {
         _uev_check_changes(watcher);
         pfd = &watcher->changes[watcher->nchanges];
         pfd->fd = fd;
-        pfd->events = 0;
         pfd->revents = 0;
-        if (BIT_CHECK((*curevents), EVENT_READ)) {
-            BIT_SET(pfd->events, POLLIN);
-        }
-        if (BIT_CHECK((*curevents), EVENT_WRITE)) {
-            BIT_SET(pfd->events, POLLOUT);
-        }
+        pfd->events = (short)_uev_ev2poll(*curevents);
         watcher->nchanges++;
+        skctx->chg_round = watcher->chg_round;
     }
 #endif
 }
@@ -290,16 +316,7 @@ static int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
     *fd = INVALID_SOCK;
     *arg = NULL;
 #if defined(EV_EPOLL)
-    if (BIT_CHECK(ev->events, (EPOLLHUP | EPOLLERR))) {
-        BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    } else {
-        if (BIT_CHECK(ev->events, EPOLLIN)) {
-            BIT_SET(rtn, EVENT_READ);
-        }
-        if (BIT_CHECK(ev->events, EPOLLOUT)) {
-            BIT_SET(rtn, EVENT_WRITE);
-        }
-    }
+    rtn = _uev_epoll2ev(ev->events);
     *arg = ev->data.ptr;
 #elif defined(EV_KQUEUE)
     if (BIT_CHECK(ev->flags, EV_ERROR)) {
@@ -319,40 +336,13 @@ static int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
     }
     *arg = ev->udata;
 #elif defined(EV_EVPORT)
-    if (BIT_CHECK(ev->portev_events, (POLLERR | POLLHUP))) {
-        BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    } else {
-        if (BIT_CHECK(ev->portev_events, POLLIN)) {
-            BIT_SET(rtn, EVENT_READ);
-        }
-        if (BIT_CHECK(ev->portev_events, POLLOUT)) {
-            BIT_SET(rtn, EVENT_WRITE);
-        }
-    }
+    rtn = _uev_poll2ev(ev->portev_events);
     *arg = ev->portev_user;
 #elif defined(EV_POLLSET)
-    if (BIT_CHECK(ev->revents, (POLLERR | POLLHUP))) {
-        BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    } else {
-        if (BIT_CHECK(ev->revents, POLLIN)) {
-            BIT_SET(rtn, EVENT_READ);
-        }
-        if (BIT_CHECK(ev->revents, POLLOUT)) {
-            BIT_SET(rtn, EVENT_WRITE);
-        }
-    }
+    rtn = _uev_poll2ev(ev->revents);
     *fd = ev->fd;
 #elif defined(EV_DEVPOLL)
-    if (BIT_CHECK(ev->revents, (POLLERR | POLLHUP))) {
-        BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    } else {
-        if (BIT_CHECK(ev->revents, POLLIN)) {
-            BIT_SET(rtn, EVENT_READ);
-        }
-        if (BIT_CHECK(ev->revents, POLLOUT)) {
-            BIT_SET(rtn, EVENT_WRITE);
-        }
-    }
+    rtn = _uev_poll2ev(ev->revents);
     *fd = ev->fd;
 #endif
     return rtn;
@@ -381,6 +371,9 @@ static void _uev_loop_event(void *arg) {
     uint64_t now_ms, shrink_start = timer_cur_ms(&watcher->timer);
     //主循环
     while (0 == ATOMIC_GET(&watcher->stop)) {
+#ifdef COMMIT_NCHANGES
+        watcher->chg_round++;
+#endif
         //设置超时时间
 #if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
         timeout = (int32_t)next_to;
@@ -542,7 +535,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     spin_init(&ctx->spin, SPIN_CNT);
     array_init(&ctx->arrlsn, sizeof(struct listener_ctx *), 0);
     _uev_init_callback();
-    MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
+    CALLOC(ctx->watcher, ctx->nthreads, sizeof(watcher_ctx));
     watcher_ctx *watcher;
     pool_cbs skcbs = { _evpub_sk_new, _evpub_sk_free, _evpub_sk_reset, _evpub_sk_clear };
     for (uint32_t i = 0; i < ctx->nthreads; i++) {
@@ -552,7 +545,6 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->ev = ctx;
 #ifdef COMMIT_NCHANGES
         watcher->nsize = EVENT_CHANGES_CNT;
-        watcher->nchanges = 0;
         MALLOC(watcher->changes, sizeof(changes_t) * watcher->nsize);
 #endif
         watcher->nevents = INIT_EVENTS_CNT;

@@ -73,6 +73,9 @@ void *_evpub_sk_new(void *args) {
     tcp->sock.type = SOCK_STREAM;
     tcp->sock.fd = skargs->fd;
     tcp->sock.events = 0;
+#ifdef COMMIT_NCHANGES
+    tcp->sock.chg_round = 0;
+#endif
     tcp->status = STATUS_NONE;
     tcp->skid = createid();
 #if WITH_SSL
@@ -102,6 +105,9 @@ void _evpub_sk_free(void *sk) {
 void _evpub_sk_clear(void *sk) {
     tcp_ctx *tcp = UPCAST((sock_ctx *)sk, tcp_ctx, sock);
     tcp->sock.events = 0;
+#ifdef COMMIT_NCHANGES
+    tcp->sock.chg_round = 0;
+#endif
     tcp->status = STATUS_NONE;
 #if WITH_SSL
     FREE_SSL(tcp->ssl);
@@ -178,7 +184,7 @@ static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     // fd 就没摘出 /dev/poll 直接被 close。
     // 这个顺序对所有摘除点一律成立，另三处（_usk_close_udp / _usk_on_connect_cb_err /
     // _uev_remove_lsn）引用本段；_usk_on_connect_cb_err 只是多一条自己的理由，顺序不变
-    _uev_drop_changes(watcher, tcp->sock.fd);
+    _uev_drop_changes(watcher, &tcp->sock);
 #ifdef MANUAL_REMOVE
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
 #endif
@@ -202,7 +208,7 @@ static inline void _usk_close_udp(watcher_ctx *watcher, udp_ctx *udp) {
         return;
     }
     _usk_call_udp_close_cb(watcher->ev, udp);
-    _uev_drop_changes(watcher, udp->sock.fd);// 顺序理由见 _usk_close_tcp
+    _uev_drop_changes(watcher, &udp->sock);// 顺序理由见 _usk_close_tcp
 #ifdef MANUAL_REMOVE
     _uev_del_event(watcher, udp->sock.fd, &udp->sock.events, udp->sock.events, &udp->sock);
 #endif
@@ -396,7 +402,9 @@ static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     }
     return ERR_FAILED;
 }
-// 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件
+// 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件。
+// STATUS_KEYUPDATE_READ 的置与清都只在本函数：别处清位条件对不上置位处，残留期间
+// _uev_add_bufs_send 会早退，请求-响应型协议下就再等不到读事件、连接卡死。
 static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nsend;
 #if WITH_SSL
@@ -411,15 +419,21 @@ static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     }
     uint32_t cnt = queue_size(&tcp->buf_s);
 #if WITH_SSL
-    // 这里挂读不挂写：ET 下 socket 本就可写、事件位也已置上，挂写不会有新边沿，白等
-    if (NULL != tcp->ssl
-        && 0 != cnt
-        && SSL_want_read(tcp->ssl)) {
-        if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
-            return ERR_FAILED;
+    // 挂读，并且必须摘掉写事件：四套 POSIX 后端只有 epoll 是 ET，kqueue/evport/pollset/devpoll
+    // 留着写事件就每轮重进本函数、SSL_write 再返 WANT_READ，空转烧满 watcher 线程。
+    // 摘掉安全：清位后本函数按 cnt 重新注册
+    if (NULL != tcp->ssl) {
+        if (0 != cnt && SSL_want_read(tcp->ssl)) {
+            if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
+                return ERR_FAILED;
+            }
+            BIT_SET(tcp->status, STATUS_KEYUPDATE_READ);
+            if (BIT_CHECK(tcp->sock.events, EVENT_WRITE)) {
+                _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+            }
+            return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
         }
-        BIT_SET(tcp->status, STATUS_KEYUPDATE_READ);
-        return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
+        BIT_REMOVE(tcp->status, STATUS_KEYUPDATE_READ);
     }
 #endif
     if (0 == cnt) {
@@ -529,11 +543,10 @@ static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         rtn = _usk_tcp_recv(watcher, tcp);
 #if WITH_SSL
         // 刚读到的对端数据已喂进 OpenSSL，回头重试上次没发出去的。KEYUPDATE_WRITE 也挂着时让它先跑，
-        // 免得在挂起的 SSL_read 之前调 SSL_write
+        // 免得在挂起的 SSL_read 之前调 SSL_write。只管重试不清位——清位归 _usk_tcp_send
         if (ERR_OK == rtn
             && BIT_CHECK(tcp->status, STATUS_KEYUPDATE_READ)
             && !BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)) {
-            BIT_REMOVE(tcp->status, STATUS_KEYUPDATE_READ);
             rtn = _usk_tcp_send(watcher, tcp);
             evwrite = 0;
         }
@@ -556,50 +569,27 @@ void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf)
         _evpub_off_buf_release(buf);
         return;
     }
-    // 连接未完成(ev_cb 仍为 _usk_on_connect_cb)时 EVENT_WRITE 表示等待 connect 而非待发数据,
-    // 此时入队 _usk_on_connect_cb 会连同 EVENT_WRITE 一起删掉、只补回 READ,数据就再也发不出去
-    if (_usk_on_rw_cb != skctx->ev_cb) {
-        LOG_WARN("ev_send before connection established on fd %d, disconnect.", (int32_t)skctx->fd);
-        _evpub_off_buf_release(buf);
-        _uev_disconnect(watcher, skctx, 1);
-        return;
-    }
-#if WITH_SSL
-    // SSL 握手期间禁止发送业务数据，否则会中断握手；命中即丢数据并立即关连接
-    if (BIT_CHECK(tcp->status, STATUS_AUTHSSL)
-        || BIT_CHECK(tcp->status, STATUS_SSLEXCHANGE)) {
-        LOG_WARN("ev_send during SSL handshake on fd %d, disconnect.", (int32_t)skctx->fd);
-        _evpub_off_buf_release(buf);
-        _uev_disconnect(watcher, skctx, 1);
-        return;
-    }
-#endif
-    // TCP 慢消费者保护：发送队列超阈值丢数据并 disconnect，避免业务无脑写打爆内存
-    if (0 != MAX_SENDQ_CNT
-        && queue_size(&tcp->buf_s) >= MAX_SENDQ_CNT) {
-        LOG_WARN("TCP send queue overflow on fd %d (>= %d), disconnect.",
-                 (int32_t)skctx->fd, MAX_SENDQ_CNT);
+    // 连接未完成时 ev_cb 仍是 _usk_on_connect_cb
+    if (!_evpub_sendqu_check_tcp(&tcp->buf_s, tcp->status, skctx->fd,
+                                 _usk_on_rw_cb == skctx->ev_cb)) {
         _evpub_off_buf_release(buf);
         _uev_disconnect(watcher, skctx, 1);
         return;
     }
     int32_t was_empty = (0 == queue_size(&tcp->buf_s));
     tcp->wb_size += buf->lens;
-    if (tda_check(&tcp->tda, tcp->wb_size)) {
-        LOG_WARN("TCP send buf growing on fd %d: %zu bytes.",
-                 (int32_t)skctx->fd, tcp->wb_size);
-    }
+    _evpub_sendqu_tda(&tcp->tda, tcp->wb_size, skctx->fd, 1);
     queue_push(&tcp->buf_s, buf);
-    // 队列本来就非空：EVENT_WRITE 必然已经注册（否则数据早发不出去），无需重复处理
+    // 队列本来就非空：要么 EVENT_WRITE 已注册,要么正处 KEYUPDATE_READ(那时写事件被摘掉,
+    // 由 _usk_on_rw_cb 收到数据后重驱动 _usk_tcp_send)。两种都无需在此重复处理
     if (!was_empty) {
         return;
     }
 #if WITH_SSL
-    // KeyUpdate 期间有挂起的 SSL_read 待重试，此时调用 SSL_write 违反 OpenSSL 必须先重试同一操作的约定；
-    // EVENT_WRITE 在设置 STATUS_KEYUPDATE_WRITE 时已注册，数据留在队列里等 _usk_on_rw_cb 完成重试后按正确顺序处理。
-    // STATUS_KEYUPDATE_READ 同理：挂起的是 SSL_write，要等读就绪才能重试，这里再调一次同样违约
-    if (BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)
-        || BIT_CHECK(tcp->status, STATUS_KEYUPDATE_READ)) {
+    // KeyUpdate 挂起 SSL_read 时调 SSL_write 违反 OpenSSL"必须先重试同一操作"的约定；
+    // EVENT_WRITE 在置 KEYUPDATE_WRITE 时已注册,数据留队等 _usk_on_rw_cb 重试完再按序处理。
+    // 不判 KEYUPDATE_READ:它只在 buf_s 非空时置位,上面 !was_empty 已经先返回了
+    if (BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)) {
         return;
     }
 #endif
@@ -617,7 +607,7 @@ static void _usk_on_connect_cb_err(watcher_ctx *watcher, tcp_ctx *tcp) {
     // _usk_on_connect_cb 进来前已排过一次 del_event，那条变更带着 skctx 当 udata，而 sock
     // 紧接着回池，kqueue 下留着会落到复用同一 fd 号的新连接上，靠这次 drop 清掉。
     // 代价是 devpoll 的 POLLREMOVE 也被一并清掉，故下面按平台补排一次
-    _uev_drop_changes(watcher, tcp->sock.fd);
+    _uev_drop_changes(watcher, &tcp->sock);
 #ifdef MANUAL_REMOVE
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
 #endif
@@ -681,21 +671,8 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev
 }
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     int32_t setsess, SOCKET *fd, uint64_t *skid) {
-    if (NULL == cbs || NULL == cbs->r_cb) {
-        if (NULL != cbs) {
-            UD_FREE(cbs->ud_free, ud);
-        }
-        return ERR_FAILED;
-    }
-    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
-    if (0 != ATOMIC_GET(&ctx->stopping)) {
-        UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        UD_FREE(cbs->ud_free, ud);
+    if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 0, &addr)) {
         return ERR_FAILED;
     }
     *fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0);
@@ -884,21 +861,8 @@ static void _usk_close_lsnsock(listener_ctx *lsn, int32_t cnt) {
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
-    if (NULL == cbs || NULL == cbs->r_cb) {
-        if (NULL != cbs) {
-            UD_FREE(cbs->ud_free, ud);
-        }
-        return ERR_FAILED;
-    }
-    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
-    if (0 != ATOMIC_GET(&ctx->stopping)) {
-        UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        UD_FREE(cbs->ud_free, ud);
+    if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 0, &addr)) {
         return ERR_FAILED;
     }
 #ifndef SO_REUSEPORT
@@ -1072,7 +1036,7 @@ void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
     SOCKET fd = curlsn->sock.fd;
     if (INVALID_SOCK != fd) {
         _evpub_sockel_remove(watcher, fd);
-        _uev_drop_changes(watcher, fd);// 顺序理由见 _usk_close_tcp
+        _uev_drop_changes(watcher, &curlsn->sock);// 顺序理由见 _usk_close_tcp
 #ifdef MANUAL_REMOVE
         _uev_del_event(watcher, fd, &curlsn->sock.events, EVENT_READ, &curlsn->sock);
 #endif
@@ -1219,25 +1183,15 @@ static void _usk_on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 }
 void _uev_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf, int32_t tried) {
     udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
-    // 已在 error 关闭流程：拒收新数据，避免绕过 _usk_on_udp_rw 的 STATUS_ERROR 检查直接触达 _usk_on_udp_wcb
-    if (BIT_CHECK(udp->status, STATUS_ERROR)) {
-        FREE(buf->data);
-        return;
-    }
-    // UDP 队列超阈值丢 datagram 不断 fd
-    if (0 != MAX_SENDQ_CNT
-        && queue_size(&udp->buf_s) >= MAX_SENDQ_CNT) {
-        LOG_WARN("UDP send queue overflow on fd %d (>= %d), drop datagram.",
-                 (int32_t)skctx->fd, MAX_SENDQ_CNT);
+    // ERROR 期拒收:否则绕过 _usk_on_udp_rw 的 STATUS_ERROR 检查直接触达 _usk_on_udp_wcb
+    if (BIT_CHECK(udp->status, STATUS_ERROR)
+        || !_evpub_sendqu_check_udp(&udp->buf_s, skctx->fd)) {
         FREE(buf->data);
         return;
     }
     int32_t was_empty = (0 == queue_size(&udp->buf_s));
     udp->wb_size += buf->len;
-    if (tda_check(&udp->tda, udp->wb_size)) {
-        LOG_WARN("UDP send buf growing on fd %d: %zu bytes.",
-                 (int32_t)skctx->fd, udp->wb_size);
-    }
+    _evpub_sendqu_tda(&udp->tda, udp->wb_size, skctx->fd, 0);
     queue_push(&udp->buf_s, buf);
     // 队列本来就非空：EVENT_WRITE 必然已经注册（否则数据早发不出去），无需重复处理
     if (!was_empty) {
@@ -1286,6 +1240,9 @@ static sock_ctx *_usk_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     udp->sock.type = SOCK_DGRAM;
     udp->sock.fd = fd;
     udp->sock.events = 0;
+#ifdef COMMIT_NCHANGES
+    udp->sock.chg_round = 0;
+#endif
     udp->status = STATUS_NONE;
     udp->skid = createid();
     udp->cbs = *cbs;
@@ -1305,21 +1262,8 @@ void _uev_free_udp(sock_ctx *skctx) {
 }
 int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     SOCKET *fd, uint64_t *skid) {
-    if (NULL == cbs || NULL == cbs->rf_cb) {
-        if (NULL != cbs) {
-            UD_FREE(cbs->ud_free, ud);
-        }
-        return ERR_FAILED;
-    }
-    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
-    if (0 != ATOMIC_GET(&ctx->stopping)) {
-        UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        UD_FREE(cbs->ud_free, ud);
+    if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 1, &addr)) {
         return ERR_FAILED;
     }
     *fd = _evpub_udp(&addr);

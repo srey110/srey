@@ -46,6 +46,7 @@
 #include "task_dc_client.h"
 #include "task_sc_client.h"
 #include "task_listen_churn.h"
+#include "task_v6only.h"
 #include "task_listen_unlisten_race.h"
 #include "task_close_graceful.h"
 #include "task_sendbuf_warn.h"
@@ -224,6 +225,7 @@ int main(int argc, char *argv[]) {
         {"dc_client_test", 0},
         {"sc_client_test", 0},
         {"listen_churn", 0},
+        {"v6only_test", 0},
         {"unlisten_race", 0},
         {"close_graceful", 0},
         {"sendbuf_warn", 0},
@@ -339,6 +341,9 @@ int main(int argc, char *argv[]) {
     //Listener 动态生命周期回归：用专用端口 15010 避开其他服务
     task_listen_churn_start(g_loader, "listen_churn", 15010,
         _get_name_val(testlist, "listen_churn"));
+    //IPV6_V6ONLY 强制生效回归：端口 15013
+    task_v6only_start(g_loader, "v6only_test", 15013,
+        _get_name_val(testlist, "v6only_test"));
     //SO_REUSEPORT + 多 watcher 下 ev_unlisten 与 in-flight accept 并发压力：端口 15011
     task_listen_unlisten_race_start(g_loader, "unlisten_race", 15011,
         _get_name_val(testlist, "unlisten_race"));

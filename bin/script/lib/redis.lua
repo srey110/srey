@@ -72,37 +72,47 @@ redis.value = srey_redis.value
 ---@type fun(pk:lightuserdata):lightuserdata|nil
 redis.next = srey_redis.next
 
--- ── 聚合类型辅助判断 ──────────────────────────────────────────────────────
+-- ── 节点读取与聚合类型判断 ────────────────────────────────────────────────
+-- 所有判断都基于 _node 摘出来的 kind，不读容器表里的字段：resp_type / resp_nelem 是 C 层的哨兵，
+-- 而 Redis 字段名是任意二进制串，HGETALL 拿到同名字段就会把哨兵盖掉。故一读到就摘走
+
+---读一个节点：标量原样回带；聚合把 resp_type / resp_nelem 摘出来单独回带，表本身只留载荷。
+---非聚合节点 C 侧恒推标量或 nil（lprot.c 的 default），故 table 即聚合
+---@param pk lightuserdata redis_pack_ctx 节点指针
+---@return any val 载荷；聚合为已摘净哨兵的容器表
+---@return string? kind 聚合类型名；非聚合为 nil
+---@return integer? nelem 元素计数；非聚合为 nil
+local function _node(pk)
+    local val = redis.value(pk)
+    if "table" ~= type(val) then
+        return val, nil, nil
+    end
+    local kind, nelem = val.resp_type, val.resp_nelem
+    val.resp_type = nil
+    val.resp_nelem = nil
+    return val, kind, nelem
+end
 
 ---是否为 map 或 attr（键值对聚合）
----@param val any 节点值
+---@param kind string? _node 回带的聚合类型名
 ---@return boolean ok
-local function _is_map(val)
-    if "table" ~= type(val) then
-        return false
-    end
-    return "map" == val.resp_type or "attr" == val.resp_type
+local function _is_map(kind)
+    return "map" == kind or "attr" == kind
 end
 
 ---是否为 attr（属性前置聚合，RESP3 特有）
----@param val any 节点值
+---@param kind string? _node 回带的聚合类型名
 ---@return boolean ok
-local function _is_attr(val)
-    if "table" ~= type(val) then
-        return false
-    end
-    return "attr" == val.resp_type
+local function _is_attr(kind)
+    return "attr" == kind
 end
 
 ---是否为任意聚合类型（array / set / push / map / attr）
----@param val any 节点值
+---@param kind string? _node 回带的聚合类型名
 ---@return boolean ok
-local function _is_agg(val)
-    if "table" ~= type(val) then
-        return false
-    end
-    return "array" == val.resp_type or "set" == val.resp_type or "push" == val.resp_type or
-           "map" == val.resp_type or "attr" == val.resp_type
+local function _is_agg(kind)
+    return "array" == kind or "set" == kind or "push" == kind or
+           "map" == kind or "attr" == kind
 end
 
 -- ── 解析栈管理 ────────────────────────────────────────────────────────────
@@ -110,14 +120,15 @@ end
 ---@class RedisParseMark
 ---@field status 0|1           0=期望 key，1=期望 val（仅 map/attr 使用）
 ---@field nelem  integer       剩余待处理元素个数（map/attr 已 ×2）
----@field agg    RedisAggValue 所属聚合节点
+---@field agg    RedisAggPayload 所属聚合节点（哨兵已摘，只装载荷）
+---@field ismap  boolean       压栈时按 kind 算好的"是否键值对聚合"，替代读表判定
+---@field isattr boolean       压栈时按 kind 算好的"是否 attr"
 
 ---更新栈顶计数器；计数归零时弹出并归还对象池；attr 完成后立即 break，
 ---因为 attr 之后跟随被修饰的真实数据，需由上层继续处理，不能连续弹出
 ---@param mark RedisParseMark[] 解析栈
 local function _update_mark(mark)
     local mk
-    local attr
     while true do
         mk = mark[#mark]
         if not mk then
@@ -128,10 +139,7 @@ local function _update_mark(mark)
             break
         end
         mark[#mark] = nil          -- 弹出栈顶
-        attr = _is_attr(mk.agg)
-        mk.agg.resp_nelem = nil
-        mk.agg.resp_type  = nil
-        if attr then
+        if mk.isattr then
             break
         end
     end
@@ -139,13 +147,17 @@ end
 
 ---将聚合节点压入解析栈；map/attr 的元素个数需乘以 2（每元素占 key+val 两节点）
 ---@param mark RedisParseMark[] 解析栈
----@param val RedisAggValue 聚合节点
-local function _add_mark(mark, val)
-    local nelem = _is_map(val) and val.resp_nelem * 2 or val.resp_nelem
+---@param val RedisAggPayload 聚合容器表（哨兵已摘）
+---@param kind string 聚合类型名
+---@param nelem integer 元素计数
+local function _add_mark(mark, val, kind, nelem)
+    local ismap = _is_map(kind)
     mark[#mark + 1] = {
         status = 0,    -- 0=期望 key，1=期望 val（仅 map/attr 使用）
-        nelem  = nelem,
+        nelem  = ismap and nelem * 2 or nelem,
         agg    = val,
+        ismap  = ismap,
+        isattr = _is_attr(kind),
     }
 end
 
@@ -155,15 +167,15 @@ end
 ---@param pk lightuserdata redis_pack_ctx 节点指针
 ---@return any value 解包后的值
 local function _single_node(pk)
-    local val = redis.value(pk)
-    if _is_agg(val) then
-        if -1 == val.resp_nelem then
+    local val, kind, nelem = _node(pk)
+    if _is_agg(kind) then
+        if -1 == nelem then
             return nil
-        elseif 0 == val.resp_nelem then
+        elseif 0 == nelem then
             return {}
         else
             WARN("resp message error.")
-           return nil
+            return nil
         end
     end
     return val
@@ -172,27 +184,27 @@ end
 ---处理多节点响应的第一个节点（必须为聚合类型）；attr 类型用 {val} 包装以区分属性与数据节点
 ---@param mark RedisParseMark[] 解析栈
 ---@param pk lightuserdata redis_pack_ctx 首节点指针
----@return RedisAggValue|nil rtn 容器表；首节点非聚合或为 nil 聚合返回 nil
+---@return RedisAggPayload|nil rtn 容器表；首节点非聚合或为 nil 聚合返回 nil
 local function _first_nodes(mark, pk)
-    local val = redis.value(pk)
-    if not _is_agg(val) then
+    local val, kind, nelem = _node(pk)
+    if not _is_agg(kind) then
         WARN("resp message error.")
         return nil
     end
-    if val.resp_nelem > 0  then
-        _add_mark(mark, val)
-        if _is_attr(val) then
+    if nelem > 0  then
+        _add_mark(mark, val, kind, nelem)
+        if _is_attr(kind) then
             return {val}
         else
             return val
         end
-    elseif 0 == val.resp_nelem then
-        if _is_attr(val) then
+    elseif 0 == nelem then
+        if _is_attr(kind) then
             return {{}}
         end
         return {}
     else
-        if _is_attr(val) then
+        if _is_attr(kind) then
             return {}
         end
         return nil
@@ -215,18 +227,18 @@ function redis.unpack(pk)
     if not rtn then
         return nil
     end
-    local val, parent
+    local val, kind, nelem, parent
     pk = redis.next(pk)
     while pk do
         parent = mark[#mark]
-        val = redis.value(pk)
+        val, kind, nelem = _node(pk)
         if not parent then
             -- 无父节点（顶层多值响应，如 pipeline）
-            if _is_agg(val) then
-                if val.resp_nelem > 0 then
+            if _is_agg(kind) then
+                if nelem > 0 then
                     table.insert(rtn, val)
-                    _add_mark(mark, val)
-                elseif 0 == val.resp_nelem then
+                    _add_mark(mark, val, kind, nelem)
+                elseif 0 == nelem then
                     table.insert(rtn, {})
                 else
                     table.insert(rtn, false)
@@ -236,15 +248,15 @@ function redis.unpack(pk)
             end
         else
             -- 有父节点：根据父节点类型（map/attr vs 其他）及当前 key/val 状态填充
-            if _is_agg(val) then
-                if _is_map(parent.agg) and not _is_attr(val) then
+            if _is_agg(kind) then
+                if parent.ismap and not _is_attr(kind) then
                     -- 父为 map/attr，当前为非 attr 聚合节点
                     if 0 == parent.status then
                         -- 作为 key 暂存
                         parent.status = 1
-                        if val.resp_nelem > 0 then
+                        if nelem > 0 then
                             parent.key = val
-                        elseif 0 == val.resp_nelem then
+                        elseif 0 == nelem then
                             parent.key = {}
                         else
                             parent.key = nil
@@ -253,9 +265,9 @@ function redis.unpack(pk)
                         -- 作为 val 写入父 map
                         parent.status = 0
                         if nil ~= parent.key then
-                            if val.resp_nelem > 0 then
+                            if nelem > 0 then
                                 parent.agg[parent.key] = val
-                            elseif 0 == val.resp_nelem then
+                            elseif 0 == nelem then
                                 parent.agg[parent.key] = {}
                             else
                                 parent.agg[parent.key] = false
@@ -264,24 +276,24 @@ function redis.unpack(pk)
                     end
                 else
                     -- 父为 array/set/push 或当前节点为 attr：顺序追加
-                    if val.resp_nelem > 0 then
+                    if nelem > 0 then
                         table.insert(parent.agg, val)
-                    elseif 0 == val.resp_nelem then
+                    elseif 0 == nelem then
                         table.insert(parent.agg, {})
                     else
                         table.insert(parent.agg, false)
                     end
                 end
-                if val.resp_nelem > 0 then
-                    _add_mark(mark, val)
+                if nelem > 0 then
+                    _add_mark(mark, val, kind, nelem)
                 else
-                    if not _is_attr(val) then
+                    if not _is_attr(kind) then
                         _update_mark(mark)
                     end
                 end
             else
                 -- 当前为标量节点
-                if _is_map(parent.agg) then
+                if parent.ismap then
                     -- 父为 map/attr：交替填充 key/val
                     if 0 == parent.status then
                         parent.status = 1

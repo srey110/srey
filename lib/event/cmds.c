@@ -359,10 +359,16 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     switch (arg->op) {
     case UDP_OPT_JOIN:
     case UDP_OPT_LEAVE:
-        if (AF_INET == family) {
+        // 用哪套选项由组地址的 family 定。同族的主判在 _ev_udp_group(调用方线程,能回传 ERR_FAILED),
+        // 这里只是兜底:两处之间 fd 可能被关掉并复用成另一族
+        if (ERR_OK != is_ipv6(arg->group_ip)) {
             struct ip_mreq mreq = { 0 };
             if (1 != inet_pton(AF_INET, arg->group_ip, &mreq.imr_multiaddr)) {
                 LOG_ERROR("inet_pton(IPv4 %s) failed.", arg->group_ip);
+                return 1;
+            }
+            if (AF_INET != family) {
+                LOG_ERROR("group %s is IPv4 but fd %d bound as IPv6.", arg->group_ip, (int32_t)skctx->fd);
                 return 1;
             }
             if ('\0' != arg->iface_str[0]
@@ -374,7 +380,11 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
             }
             int32_t opt = (UDP_OPT_JOIN == arg->op) ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP;
             rtn = setsockopt(skctx->fd, IPPROTO_IP, opt, (const char *)&mreq, sizeof(mreq));
-        } else if (AF_INET6 == family) {
+        } else {
+            if (AF_INET6 != family) {
+                LOG_ERROR("group %s is IPv6 but fd %d bound as IPv4.", arg->group_ip, (int32_t)skctx->fd);
+                return 1;
+            }
             struct ipv6_mreq mreq = { 0 };
             if (1 != inet_pton(AF_INET6, arg->group_ip, &mreq.ipv6mr_multiaddr)) {
                 LOG_ERROR("inet_pton(IPv6 %s) failed.", arg->group_ip);
@@ -435,6 +445,19 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
 static int32_t _ev_udp_group(ev_ctx *ctx, SOCKET fd, uint64_t skid, udp_opt_type op,
                              const char *group_ip, const char *iface_str) {
     if (INVALID_SOCK == fd || NULL == group_ip) {
+        return ERR_FAILED;
+    }
+    // 组地址可解析、且与 socket 同族,两项都是调用方契约,放这儿判才能把失败真的回传;
+    // 事件线程那侧同样的判定只作兜底——两处之间 fd 有可能被关掉并复用成另一族
+    if (ERR_OK != is_ipaddr(group_ip)) {
+        LOG_ERROR("udp group %s is not a valid ip.", group_ip);
+        return ERR_FAILED;
+    }
+    int32_t family = sock_family(fd);
+    int32_t grpv6 = (ERR_OK == is_ipv6(group_ip));
+    if ((0 != grpv6 && AF_INET6 != family)
+        || (0 == grpv6 && AF_INET != family)) {
+        LOG_ERROR("udp group %s family mismatch with fd %d.", group_ip, (int32_t)fd);
         return ERR_FAILED;
     }
     udp_opt_arg *arg;

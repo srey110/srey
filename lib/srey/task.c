@@ -496,7 +496,7 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy) {
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
 }
-// 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=ungrab；经 task_net_emit 注册给 prots 作为消息汇
+// 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=ungrab；经 _task_net_emit 注册给 prots 作为消息汇
 static void *_task_emit_begin(void *loader, name_t handle) {
     return task_grab(loader, handle);
 }
@@ -507,7 +507,7 @@ static void _task_emit_end(void *target) {
     task_ungrab((task_ctx *)target);
 }
 static prot_emit g_task_emit = { _task_emit_begin, _task_emit, _task_emit_end };
-prot_emit *task_net_emit(void) {
+prot_emit *_task_net_emit(void) {
     return &g_task_emit;
 }
 int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,

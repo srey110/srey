@@ -171,8 +171,8 @@ function ctx:_copy_fail(msg)
     if not pgpack then
         return self:_fail(ppub.SEND)
     end
-    -- 必须正向判 ERR：带 LISTEN 时一条抢先到达的 NOTIFICATION 会被当成"服务端已确认中止"，
-    -- 真正的 ErrorResponse + ReadyForQuery 留在流里被下一个请求的等待者接走，连接从此错位一格
+    -- 这里期望的类型就是 ERR：CopyFail 的正常应答即 ErrorResponse，收到 OK 说明服务端不在 COPY IN
+    -- 模式，放过去会让真正的 ErrorResponse + ReadyForQuery 留在流里错位一格。判定口径见 ppub.check_type
     local e = ppub.check_type(pgpack, PGPACK_TYPE.ERR)
     if e then
         return self:_fail(e)

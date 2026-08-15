@@ -22,7 +22,7 @@ typedef enum ev_cmds {
 // 命令上下文
 typedef struct cmd_ctx {
     int32_t cmd;// 命令类型 ev_cmds
-    sk_id sk;// 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 SENDTO/PROPS 用）
+    sk_id sk;// 目标连接 fd+skid（STOP/ADD/LSN/UNLSN/LSN_UNREF 不用 fd,恒为 0 而非 INVALID_SOCK;skid 仅 SENDTO/PROPS 用）
     union {
         struct sock_ctx *skctx;// CMD_ADD / CMD_LSN：待加入事件循环的 socket
         struct listener_ctx *lsn;// CMD_ADDACP / CMD_UNLSN / CMD_LSN_UNREF：监听对象

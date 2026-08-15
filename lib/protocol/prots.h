@@ -37,11 +37,13 @@ void prots_hsfree(pack_type pktype, void *data);
 /// <param name="arg">ud_cxt 指针</param>
 void prots_udfree(void *arg);
 /// <summary>
-/// 检查协议是否允许继续读取数据（如 pgsql 的流量控制）
+/// 询问已解包的封包能否唤醒等待该 session 的协程。
+/// 目前只有 pgsql 的 PGPACK_NOTIFICATION 返非 OK——它是 LISTEN 的异步通知,不属于任何命令的响应,
+/// 框架据此改新建协程走 recv 回调,而不是按队头匹配挤掉真正的等待者
 /// </summary>
 /// <param name="pktype">协议包类型</param>
 /// <param name="data">已解析的包数据</param>
-/// <returns>ERR_OK=可继续，其他值=暂停读取</returns>
+/// <returns>ERR_OK=可唤醒等待者;其他值=不可,由调用方改新建协程处理</returns>
 int32_t prots_may_resume(pack_type pktype, void *data);
 /// <summary>
 /// 统一解包入口，根据 ud->pktype 调用对应协议的解包函数

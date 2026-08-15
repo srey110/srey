@@ -1,4 +1,4 @@
--- srey.udp_join/udp_leave/udp_ttl/udp_loop 多播绑定层测试：
+﻿-- srey.udp_join/udp_leave/udp_ttl/udp_loop 多播绑定层测试：
 -- 验证 4 个 setsockopt 路径不崩 + UDP socket 单播 loopback 收发正常。
 -- 多播实际 loopback 行为跨 OS 差异较大,本测试不验证多播传输,只验证 API 调用路径。
 
@@ -35,6 +35,11 @@ runner.run("udp_multicast", function(t)
     t:eq(true, srey.udp_ttl(fd, skid, 1), "还原 TTL 1 供后续用例")
     t:eq(true, srey.udp_loop(fd, skid, 1), "udp_loop 返回 true")
     t:eq(true, srey.udp_join(fd, skid, GROUP), "udp_join 返回 true")
+    -- 组地址与 socket 不同族属调用方契约违反,在调用方线程就该被拒(_ev_udp_group),
+    -- 不能等到事件线程只落一条日志——那样业务判不出自己根本没加进组
+    t:eq(false, srey.udp_join(fd, skid, "ff02::1"), "IPv6 组加到 0.0.0.0 socket 上返 false")
+    t:eq(false, srey.udp_leave(fd, skid, "ff02::1"), "leave 同样按同族判定拒绝")
+    t:eq(false, srey.udp_join(fd, skid, "not-an-ip"), "非法组地址返 false")
     srey.sleep(200)  -- 等 4 cmd 投递到事件线程执行 setsockopt
 
     -- 单播 loopback 验证 recvfrom 路径

@@ -26,11 +26,9 @@ end
 
 ---校验响应包类型：相符返回 nil，不符返回该写进 err 的文案（调用方 `return self:_fail(e)`）。
 ---两条判定合在一处，七个请求点共用：
----  1) 必须正向判"是不是期望的那个类型"，只判 ERR 不够——syn_send 只取"下一条 RECV"、
----     不区分包类型，服务端随时可能插进 NOTIFICATION 之类独立包；把它当成功会让真正的
----     响应留到下次被错认，该连接的请求-响应从此整体错位一格
----  2) 不符时若是 ERR 包，取服务端原文而非"类型不符"——erro() 对非 ERR 包返 nil，
----     无脑 `or ""` 会留下空 err，调用方拿不到任何线索
+---  1) 正向判"是不是期望的那个类型"，只判 ERR 不够——收到 OK 说明服务端不在预期状态，放过去会一路错下去
+---  2) 不符时若是 ERR 包取服务端原文，erro() 对非 ERR 包返 nil，无脑 `or ""` 会留下空 err
+---不需要防 NOTIFICATION：异步通知走 _pgsql_may_resume 分流给 srey.on_recved，到不了命令等待者
 ---@param pgpack lightuserdata 服务端响应包
 ---@param want PGPACK_TYPE 期望的包类型（PGPACK_TYPE 是 pgsql_stmt.lua 定义的全局，调用期已加载）
 ---@return string? err 相符为 nil；不符为应写入 err 的文案

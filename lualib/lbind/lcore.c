@@ -260,7 +260,7 @@ static int32_t _lcore_response(lua_State *lua) {
 /// </summary>
 /// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
 /// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
-/// <param name="ip" type="string">监听 IP，如 "0.0.0.0"</param>
+/// <param name="ip" type="string">监听 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)，要同时收两种就 "0.0.0.0" 与 "::" 各监听一次</param>
 /// <param name="port" type="integer">监听端口</param>
 /// <param name="netev" type="integer?">事件订阅掩码，默认 NETEV_NONE</param>
 /// <returns type="integer">监听 id，失败返回 -1</returns>
@@ -361,7 +361,7 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
 /// 创建 UDP 套接字并绑定地址
 /// </summary>
 /// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
-/// <param name="ip" type="string">绑定 IP</param>
+/// <param name="ip" type="string">绑定 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)；多播时组地址须与此同族</param>
 /// <param name="port" type="integer">绑定端口</param>
 /// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
 /// <returns type="integer?">skid；仅在 fd 有效时有效</returns>
@@ -495,13 +495,13 @@ static int32_t _lcore_sendto(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// UDP socket 加入多播组(IPv4/IPv6 自动按 socket family 分支)
+/// UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)
 /// </summary>
 /// <param name="fd" type="integer">UDP socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <param name="group_ip" type="string">多播组地址(IPv4 224.0.0.0/4 段 / IPv6 ff00::/8 段)</param>
+/// <param name="group_ip" type="string">多播组地址(IPv4 224.0.0.0/4 段 / IPv6 ff00::/8 段)，必须与 socket 绑定地址同族，不同族返 false</param>
 /// <param name="iface_str" type="string?">网卡 IP(IPv4) / 接口名(IPv6),nil 走系统默认</param>
-/// <returns type="boolean">成功 true</returns>
+/// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_join(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
@@ -515,9 +515,9 @@ static int32_t _lcore_udp_join(lua_State *lua) {
 /// </summary>
 /// <param name="fd" type="integer">UDP socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <param name="group_ip" type="string">多播组地址(IPv4 224.0.0.0/4 段 / IPv6 ff00::/8 段)</param>
+/// <param name="group_ip" type="string">多播组地址(IPv4 224.0.0.0/4 段 / IPv6 ff00::/8 段)，必须与 socket 绑定地址同族，不同族返 false</param>
 /// <param name="iface_str" type="string?">网卡 IP(IPv4) / 接口名(IPv6),nil 走系统默认</param>
-/// <returns type="boolean">成功 true</returns>
+/// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_leave(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
@@ -534,7 +534,7 @@ static int32_t _lcore_udp_leave(lua_State *lua) {
 /// <param name="ttl" type="integer">0-255；0 只到本机，1(默认) 只到本网段，逐跳递减。
 /// 越界即抛错——直接窄化到 uint8_t 的话 256 会静默变成 0，多播从此出不了本机，
 /// 是语义反转而不是"值不对"，排查起来比报错难得多</param>
-/// <returns type="boolean">成功 true</returns>
+/// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_ttl(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
@@ -549,7 +549,7 @@ static int32_t _lcore_udp_ttl(lua_State *lua) {
 /// <param name="fd" type="integer">UDP socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="enable" type="integer">1=回环(默认,发出自收),0=不收</param>
-/// <returns type="boolean">成功 true</returns>
+/// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_loop(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
@@ -652,11 +652,11 @@ static int32_t _lcore_session(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 询问协议层指定封包是否允许恢复（分片重组判断）
+/// 询问协议层指定封包能否唤醒等待者(非 true 时框架改新建协程走 on_recved),契约见 prots_may_resume
 /// </summary>
 /// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
 /// <param name="data" type="lightuserdata">协议层封包指针</param>
-/// <returns type="boolean">允许恢复 true，否则 false</returns>
+/// <returns type="boolean">可唤醒等待者 true；false 表示该包不走命令响应路径</returns>
 static int32_t _lcore_may_resume(lua_State *lua) {
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
     LUACHECK_LUDATA(lua, 2);

@@ -1,4 +1,4 @@
--- srey 核心框架模块（Lua 侧）。
+﻿-- srey 核心框架模块（Lua 侧）。
 -- 负责：协程池管理、会话挂起/恢复、消息分发，以及对外暴露全部网络/任务 API。
 -- 每个 task 脚本通过 require("lib.srey") 获取此模块，所有 I/O 操作均在此封装。
 -- 协程模型：所有网络操作均为"同步写法、异步执行"——调用方协程在 yield 处挂起，
@@ -428,7 +428,7 @@ srey.task_ungrab = task.ungrab
 ---@type fun(taskctx:lightuserdata?):boolean
 srey.isclosing = task.isclosing
 
----查询 task 是否正在关闭
+---查询 task 类型
 ---@type fun(taskctx:lightuserdata?):TASK_TYPE
 srey.get_type = task.get_type
 
@@ -900,7 +900,7 @@ end
 ---开始监听指定地址
 ---@param pktype PACK_TYPE 应用层协议类型
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
----@param ip string 监听 IP
+---@param ip string 监听 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)，要同时收两种就 "0.0.0.0" 与 "::" 各监听一次
 ---@param port integer 监听端口
 ---@param netev NET_EV? 事件订阅掩码
 ---@return integer lsnid 监听 id；失败返回 ERR_FAILED(-1)
@@ -1355,7 +1355,7 @@ end
 
 ---创建 UDP socket 并绑定到 ip:port
 ---@param pktype integer 封包协议类型，参考 PACK_TYPE（原始透传用 PACK_TYPE.NONE）
----@param ip string? 绑定 IP，默认 "0.0.0.0"
+---@param ip string? 绑定 IP，默认 "0.0.0.0"。"::" 只收 IPv6(强制 IPV6_V6ONLY)；多播时组地址须与此同族
 ---@param port integer? 绑定端口，默认 0（由 OS 分配）
 ---@return integer fd socket fd
 ---@return integer skid 连接 skid
@@ -1369,7 +1369,9 @@ function srey.udp(pktype, ip, port)
     return core.udp(pktype, ip, port)
 end
 
----UDP socket 加入多播组(IPv4/IPv6 自动按 socket family 分支)
+---UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)。组地址不合法或与 socket 绑定地址不同族直接返 false。
+---返回 true 只表示参数合法且命令已入队,setsockopt 在事件线程执行、成败不回传(失败只有一条日志),
+---下面 leave / ttl / loop 同此契约
 ---@type fun(fd:integer, skid:integer, group_ip:string, iface_str:string?):boolean
 srey.udp_join = core.udp_join
 

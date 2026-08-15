@@ -11,6 +11,8 @@
 --      若该 local 仅被本函数持有,二次热修 _collect_upvalues 扫不到 cell(转发回退 _G → nil)→ 反复迭代用路径 A
 --   4. patch 中的 local function _helper 是 patch chunk 独立 closure;仅被 patch 内同时重写的 M.xxx 使用,
 --      需要单独热修的 helper 应业务侧提升为 module 表字段(M._helper 而不是 local _helper)
+--      helper 自己引用的状态型 local 会一并嫁接(嫁接会递归进 patch chunk 编译出来的 helper),
+--      所以 helper 与 M.xxx 共用同一个名字时不会裂成两份 cell
 --      判据是"嫁接时 patch 侧该槽是否已持有函数",而 Lua 把 `local function f` 与 `local f = <函数>`
 --      编译成同一形态、运行期无从区分,故 patch 里**不要**给状态型 local 赋函数初值
 --      (写 `local logger = print` 会被当成 helper 跳过嫁接,patch 从此绑到自己那份上,
@@ -30,52 +32,87 @@ local _AMBIGUOUS = "patch touches shadowed upvalue: "
 -- 上一轮 apply 换上去的函数正是从补丁 chunk 编译出来的，反复热修同一模块时它就是"自家的"
 local _PATCH_CHUNK = "=hotfix:"
 
--- 找 patch 里会走嫁接、而原模块侧同名 cell 有歧义的 upvalue;有则返回名字。
--- 判定与 _join_upvalues 的嫁接条件保持一致:只有非函数值才嫁接,函数值是 patch 自己的 helper
-local function _find_ambiguous(patch_fn, upmap)
-    local pi = 1
+-- 遍历 patch 侧一个 closure 的"状态型"upvalue 槽,对每个调 visit(fn, idx, name)。
+-- _find_ambiguous 与 _join_upvalues 共用,取槽口径必须一致:预校验漏看的名字嫁接时照样会碰到。
+-- _ENV 不算(两侧沙箱不同);函数型槽不 visit 但要递归进去,否则 patch 的 helper 与被替换的 M.xxx
+-- 共用 chunk local 时,那个名字会在补丁内部裂成两份 cell(约束 4)。
+-- src 判定只递归 patch chunk 自己编译的函数,免得把别人模块的 local 名混进来;函数型只按 patch
+-- 侧的值判(原模块那边可能是"值恰好为函数"的回调槽,那是状态);seen 防 helper 互引打转
+local function _walk_patch_slots(fn, src, seen, visit)
+    if seen[fn] then
+        return
+    end
+    seen[fn] = true
+    local i = 1
     while true do
-        local pname, pval = debug.getupvalue(patch_fn, pi)
-        if not pname then
+        local name, val = debug.getupvalue(fn, i)
+        if not name then
             break
         end
-        if "_ENV" ~= pname and "function" ~= type(pval) then
-            local entry = upmap[pname]
-            if entry and entry.ambiguous then
-                return pname
+        if "_ENV" ~= name then
+            if "function" == type(val) then
+                if src == debug.getinfo(val, "S").source then
+                    _walk_patch_slots(val, src, seen, visit)
+                end
+            else
+                visit(fn, i, name)
             end
         end
-        pi = pi + 1
+        i = i + 1
     end
-    return nil
 end
 
--- 把 patch_fn 的同名 upvalue 槽嫁接到 mod 内任一持有该 UpVal 的 closure(upmap 提供索引,路径 A)
--- 同 chunk 内 chunk-local 是单一 UpVal 对象,任意持有它的 closure 都能定位,不必限制嫁接到当前 orig_fn —
--- 例如 patch_handle 引用 counter 但原 handle 不引用 counter,counter UpVal 仍存在于原 bump,通过 upmap 命中
-local function _join_upvalues(patch_fn, upmap)
-    local pi = 1
+-- patch 函数(含其 chunk 内的 helper)是否持有 _ENV:持有即读了全局或裸标识符,可能走 path-B。
+-- 这是 apply 时唯一拿得到的信号——裸标识符编译成 _ENV.name,名字不在 upvalue 列表、常量表也取不到,
+-- 所以只能提示风险、拦不住
+local function _uses_env(fn, src, seen)
+    if seen[fn] then
+        return false
+    end
+    seen[fn] = true
+    local i = 1
     while true do
-        local pname, pval = debug.getupvalue(patch_fn, pi)
-        if not pname then break end
-        -- _ENV 不嫁接:patch 与原 module 的 _ENV 是不同沙箱,共享会让 patch 写到原 module 全局
-        if "_ENV" ~= pname then
-            local entry = upmap[pname]
-            if entry then
-                -- 嫁接只对"状态型"local 有意义(counter 之类,共享同一份内存跨热修保留)。
-                -- 只看 patch 这一侧的当前值:patch 的 `local function _helper` 槽此刻必然持有
-                -- 它自己新建的闭包,嫁接回原 cell 等于把新实现整个丢弃、悄悄换回旧的(约束 4);
-                -- 而 patch 的状态型 `local x` 在 chunk 刚跑完时是 nil,照常嫁接。
-                -- 不能连原模块侧一起判:原模块的 local 完全可能是"值恰好为函数"的回调槽
-                -- (local cb; function M.set(f) cb = f end),那是状态不是代码,漏掉嫁接会让
-                -- patch 绑到自己那份 nil 上,且是否漏掉还取决于热修时 cb 有没有被赋过值
-                if "function" ~= type(pval) then
-                    debug.upvaluejoin(patch_fn, pi, entry.fn, entry.idx)
-                end
+        local name, val = debug.getupvalue(fn, i)
+        if not name then
+            return false
+        end
+        if "_ENV" == name then
+            return true
+        end
+        if "function" == type(val)
+            and src == debug.getinfo(val, "S").source
+            and _uses_env(val, src, seen) then
+            return true
+        end
+        i = i + 1
+    end
+end
+
+-- 找 patch 里会走嫁接、而原模块侧同名 cell 有歧义的 upvalue;有则返回名字
+local function _find_ambiguous(patch_fn, upmap, src)
+    local bad = nil
+    _walk_patch_slots(patch_fn, src, {}, function(_, _, name)
+        if nil == bad then
+            local entry = upmap[name]
+            if entry and entry.ambiguous then
+                bad = name
             end
         end
-        pi = pi + 1
-    end
+    end)
+    return bad
+end
+
+-- 把 patch 侧的同名 upvalue 槽嫁接到 mod 内任一持有该 UpVal 的 closure(upmap 提供索引,路径 A)。
+-- 同 chunk 内 chunk-local 是单一 UpVal 对象,任意持有它的 closure 都能定位,不必限制嫁接到当前
+-- orig_fn——例如 patch_handle 引用 counter 但原 handle 不引用 counter,counter UpVal 仍存在于
+-- 原 bump,通过 upmap 命中。嫁接只对"状态型"local 有意义(counter 之类,共享同一份内存跨热修保留)
+local function _join_upvalues(patch_fn, upmap, src)
+    _walk_patch_slots(patch_fn, src, {}, function(fn, idx, name)
+        local entry = upmap[name]
+        if entry then
+            debug.upvaluejoin(fn, idx, entry.fn, entry.idx)
+        end
+    end)
 end
 
 -- 扫一个 closure 的 upvalue 收进 map,再顺着同 chunk 的函数型 upvalue 往下扫。
@@ -156,7 +193,8 @@ end
 ---@param module_name string 已加载的 module 名(package.loaded 中的 key)
 ---@param patch_source string patch Lua 源码;用 `function M.xxx() end` 声明替换函数
 ---@return boolean ok 成功 true / 失败 false
----@return string detail 成功时为替换函数数描述,失败时为错误信息
+---@return string detail 成功时为替换函数数描述,后面可能跟一段 "warn: shadowed upvalue(s) ..."
+---(模块里有同名遮蔽 cell 且补丁读全局时的风险提示,见 _uses_env);失败时为错误信息
 function M.apply(module_name, patch_source)
     local mod = package.loaded[module_name]
     if not mod or "table" ~= type(mod) then
@@ -225,7 +263,9 @@ function M.apply(module_name, patch_source)
             _G[k] = v
         end,
     })
-    local chunk, err = load(patch_source, _PATCH_CHUNK .. module_name, "t", env)
+    -- 同一个串既做 chunkname 又做"这函数是不是补丁自己编译出来的"的判据(见 _walk_patch_slots)
+    local patch_src = _PATCH_CHUNK .. module_name
+    local chunk, err = load(patch_source, patch_src, "t", env)
     if not chunk then
         return false, "load: " .. tostring(err)
     end
@@ -239,7 +279,7 @@ function M.apply(module_name, patch_source)
     -- 先整体验一遍再动手:嫁接与写回是逐个进行的,做到一半才发现遮蔽就得回滚已经换上去的函数
     for name, patch_fn in pairs(patch_M) do
         if "function" == type(patch_fn) and "function" == type(mod[name]) then
-            local bad = _find_ambiguous(patch_fn, upmap)
+            local bad = _find_ambiguous(patch_fn, upmap, patch_src)
             if bad then
                 _rollback_dirty()
                 return false, _AMBIGUOUS .. bad
@@ -247,9 +287,13 @@ function M.apply(module_name, patch_source)
         end
     end
     local replaced = 0
+    local envrisk = false
     for name, patch_fn in pairs(patch_M) do
         if "function" == type(patch_fn) and "function" == type(mod[name]) then
-            _join_upvalues(patch_fn, upmap)
+            _join_upvalues(patch_fn, upmap, patch_src)
+            if _uses_env(patch_fn, patch_src, {}) then
+                envrisk = true
+            end
             mod[name] = patch_fn
             replaced = replaced + 1
         end
@@ -258,7 +302,36 @@ function M.apply(module_name, patch_source)
         _rollback_dirty()
         return false, "no matching function replaced"
     end
-    return true, string.format("%d function(s) replaced", replaced)
+    -- 重指到 mod 上现装着的那批,否则每代 closure 串成链,反复热修一代都回收不掉。
+    -- fresh 里没有的名字保留原 entry(新版不再引用它,UpVal 只剩旧 closure 拿着)。
+    -- ambiguous 只增不减:清掉会让本该报错的 path-B 访问悄悄落到剩下那个 cell 上
+    local fresh = _collect_upvalues(mod, module_name)
+    for k, f in pairs(fresh) do
+        local entry = upmap[k]
+        if entry then
+            entry.fn = f.fn
+            entry.idx = f.idx
+            entry.ambiguous = entry.ambiguous or f.ambiguous
+        else
+            upmap[k] = f
+        end
+    end
+    -- 拦不住的那种风险(函数体内裸读遮蔽名,要到调用时才抛)至少写进 detail,别成哑雷。见 _uses_env
+    local detail = string.format("%d function(s) replaced", replaced)
+    if envrisk then
+        local shadowed = {}
+        for k, entry in pairs(upmap) do
+            if entry.ambiguous then
+                shadowed[#shadowed + 1] = k
+            end
+        end
+        if 0 < #shadowed then
+            table.sort(shadowed)
+            detail = detail .. "; warn: shadowed upvalue(s) " .. table.concat(shadowed, ", ")
+                .. ", patch errors at call time if it bare-reads any of them"
+        end
+    end
+    return true, detail
 end
 
 return M

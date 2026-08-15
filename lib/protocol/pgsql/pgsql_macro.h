@@ -5,7 +5,7 @@
 typedef enum pgpack_type {
     PGPACK_OK = 0x00,           // 命令执行成功
     PGPACK_ERR,                 // ErrorResponse：服务端返回错误
-    PGPACK_NOTIFICATION,        // NotificationResponse：异步通知
+    PGPACK_NOTIFICATION,        // NotificationResponse：异步通知，不走协程唤醒，需要注册 task_recved 处理
     PGPACK_COPY_IN,             // CopyInResponse：服务端请求客户端通过 COPY FROM STDIN 发送数据
     PGPACK_COPY_OUT             // CopyOutResponse + CopyData：COPY TO STDOUT 的完整输出
 }pgpack_type;

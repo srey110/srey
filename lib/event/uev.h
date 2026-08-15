@@ -53,6 +53,9 @@ typedef struct sock_ctx {
     SOCKET fd;          // socket句柄
     int32_t type;       // socket类型（SOCK_STREAM/SOCK_DGRAM/0表示pipe/listen）
     int32_t events;     // 当前注册的事件掩码
+#ifdef COMMIT_NCHANGES
+    uint32_t chg_round; // 最后一次往 changes 追加条目时的轮次，用途见 _uev_drop_changes
+#endif
     event_cb ev_cb;     // 事件触发时的回调函数
 }sock_ctx;
 // 命令管道上下文：一对匿名管道 + 读端的sock_ctx（注册到事件循环）
@@ -77,6 +80,7 @@ typedef struct watcher_ctx {
 #ifdef COMMIT_NCHANGES
     int32_t nsize;              // changes数组容量
     int32_t nchanges;           // 待提交的变更数量
+    uint32_t chg_round;         // 事件循环轮次，每轮 +1；与 sock_ctx.chg_round 配对，见 _uev_drop_changes
     changes_t *changes;         // 变更列表（kqueue/devpoll使用）
 #endif
     events_t *events;           // 就绪事件数组
@@ -91,12 +95,12 @@ typedef struct watcher_ctx {
     char udp_rbuf[MAX_RECVFROM_SIZE]; // UDP 接收共享缓冲：本线程所有 UDP socket 复用
 }watcher_ctx;
 
-// 向事件多路复用器注册或追加监听事件
-int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, void *arg);
-// 从事件多路复用器删除或减少监听事件
-void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, void *arg);
-// close fd 前从待提交 changes 移除该 fd 的项，防 fd 复用后陈旧变更(旧 udata)落到新 fd；非 kqueue 平台空操作
-void _uev_drop_changes(watcher_ctx *watcher, SOCKET fd);
+// 向事件多路复用器注册或追加监听事件；批量提交的平台上真排了条目时给 skctx 打轮次戳
+int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, sock_ctx *skctx);
+// 从事件多路复用器删除或减少监听事件；打戳同 _uev_add_event
+void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, sock_ctx *skctx);
+// close fd 前从待提交 changes 移除该 fd 的项，防 fd 复用后陈旧变更(旧 udata)落到新 fd；非 kqueue/devpoll 平台空操作
+void _uev_drop_changes(watcher_ctx *watcher, sock_ctx *skctx);
 // 在事件循环内完成监听socket的注册
 void _uev_add_lsn_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 // 在事件循环内取消监听，引用计数归零后释放listener_ctx

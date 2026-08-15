@@ -272,7 +272,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ATOMIC_SET(&ctx->nlsn, 0);
     ATOMIC_SET(&ctx->ndead_total, 0);
     _iocp_init_funcs();
-    MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
+    CALLOC(ctx->watcher, ctx->nthreads, sizeof(watcher_ctx));
     watcher_ctx *watcher;
     uint32_t i;
     pool_cbs skcbs = { _evpub_sk_new, _evpub_sk_free, _evpub_sk_reset, _evpub_sk_clear };
@@ -300,7 +300,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     array_init(&ctx->arrlsn, sizeof(struct listener_ctx *), 0);
     HANDLE iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nacpex);
     ASSERTAB(NULL != iocp, ERRORSTR(ERRNO));
-    MALLOC(ctx->acpex, sizeof(acceptex_ctx) * ctx->nacpex);
+    CALLOC(ctx->acpex, ctx->nacpex, sizeof(acceptex_ctx));
     acceptex_ctx *acpex;
     for (i = 0; i < ctx->nacpex; i++) {
         acpex = &ctx->acpex[i];

@@ -7,6 +7,7 @@
 #include "thread/spinlock.h"
 #include "utils/buffer.h"
 #include "utils/netaddr.h"
+#include "utils/tda.h"
 #include "base/structs.h"
 #include "containers/slist.h"
 
@@ -39,7 +40,8 @@ typedef enum sock_status {
     STATUS_AUTHSSL = 0x40,      // SSL握手中
     // 下面两个是数据期 TLS1.3 的读写互卡，后缀表示"在等哪一边就绪"
     STATUS_KEYUPDATE_WRITE = 0x80,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
-    STATUS_KEYUPDATE_READ = 0x100,// 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送(仅 Unix)
+    STATUS_KEYUPDATE_READ = 0x100,// 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
+                                  // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针
     STATUS_GRACEFUL_CLOSE = 0x200 // ev_close(immed=0) 标记，buf_s 发完后 _close_tcp
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写
@@ -72,9 +74,7 @@ typedef struct recvfrom_ctx {
 // 网络事件上下文
 typedef struct ev_ctx {
     uint32_t nthreads;              // 工作线程数
-    atomic_t stopping;              // ev_free 入口即置 1：此后拒绝新建 listener/连接/UDP。
-                                    // 不能用 watcher->stop 判断——那个由 CMD_STOP 到达后 event 线程异步置位，
-                                    // ev_free 刚进来时仍为 0，据它检查会漏
+    atomic_t stopping;              // ev_free 入口即置 1：此后拒绝新建 listener/连接/UDP。不能用 watcher->stop 判断——那个由 CMD_STOP 到达后 event 线程异步置位，ev_free 刚进来时仍为 0，据它检查会漏
 #ifdef EV_IOCP
     uint32_t nacpex;                // AcceptEx线程数
     atomic_t nlsn;                  // 存活listener计数（ev_free关闭阶段排空同步用）
@@ -173,8 +173,19 @@ void _evpub_off_buf_release(off_buf_ctx *buf);
 void _evpub_off_buf_clear(queue_ctx *bufs);
 // 清空 UDP 发送队列(sendto_ctx)并释放各 payload
 void _evpub_sendto_clear(queue_ctx *bufs);
+// TCP 发送队列准入(未建连 / SSL 握手期 / 队列超上限)：通过返 1；拒收返 0 且已落 WARN，调用方丢数据并断连。
+// established 由调用方按平台比 ev_cb 得出；"已在关闭流程"那道门动作不同(只丢不断)，留在调用点
+int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd, int32_t established);
+// UDP 发送队列准入：仅判队列超上限。通过返 1；拒收返 0 且已落 WARN，调用方丢包不断连
+int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd);
+// 入队字节累计的增长告警(tda 翻倍阈值)；istcp 只用于挑 TCP / UDP 两条文案
+void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
 // 设置socket选项：无延迟 + 非阻塞
 int32_t _evpub_nodelay_nonblock(SOCKET fd);
+// ev_connect / ev_listen / ev_udp 的公共前导：校验回调、拒绝 ev_free 期间的调用、解析地址。
+// 任一步失败都已 UD_FREE(ud) 并落日志，调用方直接 return ERR_FAILED，不要再碰 ud
+int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs_ctx *cbs,
+                                 ud_cxt *ud, int32_t isudp, netaddr_ctx *addr);
 // 创建并绑定监听socket
 SOCKET _evpub_listen(netaddr_ctx *addr);
 // 创建并绑定UDP socket

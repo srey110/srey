@@ -172,7 +172,7 @@ const char *_message_str(msg_type type);
 // 根据消息类型调用对应处理函数（内部接口）
 void _message_run(task_ctx *task, message_ctx *msg);
 // 返回 task 层实现的网络事件消息汇（注册给 prots_init，内部接口）
-prot_emit *task_net_emit(void);
+prot_emit *_task_net_emit(void);
 // 将消息推入任务的无锁消息队列（内部接口）
 void _task_message_push(task_ctx *task, message_ctx *msg);
 // 判断消息是否需要清理数据（内部接口）

@@ -22,7 +22,8 @@ void ev_free(ev_ctx *ctx);
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="evssl">evssl_ctx, NULL 不使用,不为NULL默认启用ssl</param>
-/// <param name="ip">监听IP(0.0.0.0 - ::  127.0.0.1 - ::1)</param>
+/// <param name="ip">监听IP。"::" 只收 IPv6(强制 IPV6_V6ONLY,不随平台默认变),要同时收两种就
+///   "0.0.0.0" 与 "::" 各监听一次;本机对应 "127.0.0.1" / "::1"</param>
 /// <param name="port">监听端口</param>
 /// <param name="cbs">回调函数</param>
 /// <param name="ud">用户数据</param>
@@ -59,7 +60,8 @@ int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evs
 /// UDP
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
-/// <param name="ip">IP</param>
+/// <param name="ip">绑定IP。"::" 只收 IPv6(强制 IPV6_V6ONLY),要同时收两种就绑两个 socket。
+///   多播时组地址须与此同族,详见 ev_udp_join</param>
 /// <param name="port">端口</param>
 /// <param name="cbs">回调函数</param>
 /// <param name="ud">用户数据</param>
@@ -119,22 +121,31 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
 int32_t ev_sendto_addr(ev_ctx *ctx, SOCKET fd, uint64_t skid, netaddr_ctx *addr,
     void *data, size_t len, int32_t copy);
 /// <summary>
-/// UDP socket 加入多播组(IPv4/IPv6 自动按 socket family 分支)。
+/// UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)。
 /// 加入后该 socket 会收到发往 group_ip:port 的多播包,通过 cbs.rf_cb 上报。
-/// 接收端先 ev_udp("0.0.0.0", PORT)/ev_udp("::", PORT) 绑定端口,再 ev_udp_join 加组;
+/// 接收端先 ev_udp 绑定端口(IPv4 组绑 "0.0.0.0"、IPv6 组绑 "::"),再 ev_udp_join 加组;
 /// 同一 socket 可加入多个组(各调一次);离开用 ev_udp_leave。
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="fd">已通过 ev_udp 创建的 UDP socket(必须 SOCK_DGRAM)</param>
 /// <param name="skid">连接 skid</param>
-/// <param name="group_ip">多播组地址。IPv4 须在 224.0.0.0/4 段(例 "239.0.0.1"); IPv6 须 ff00::/8 段(例 "ff02::1")</param>
+/// <param name="group_ip">多播组地址,**必须与 socket 绑定地址同族**,不同族或不是合法 IP 直接返 ERR_FAILED
+///   (IPv6 socket 强制 v6only 后收不到 IPv4 流量)。IPv4 须在 224.0.0.0/4 段(例 "239.0.0.1"); IPv6 须 ff00::/8 段(例 "ff02::1")</param>
 /// <param name="iface_str">接收网卡。IPv4 走网卡 IP 字符串(例 "192.168.1.100"); IPv6 走接口名(例 "en0"); NULL 走系统默认</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 只表示参数合法且命令已入队。调用方契约违反同步返 ERR_FAILED:fd 无效、group_ip 为
+///   NULL / 过长 / 不是合法 IP / 与 socket 不同族。setsockopt 本身在事件线程执行,成败不回传——
+///   失败只有一条 LOG_ERROR。下面 leave / ttl / loop 同此契约</returns>
 int32_t ev_udp_join(ev_ctx *ctx, SOCKET fd, uint64_t skid,
                     const char *group_ip, const char *iface_str);
 /// <summary>
-/// UDP socket 离开多播组。配对 ev_udp_join,参数语义相同。
+/// UDP socket 离开多播组。配对 ev_udp_join,未加入过的组也允许调用(setsockopt 报错落日志)。
 /// </summary>
+/// <param name="ctx">ev_ctx</param>
+/// <param name="fd">已通过 ev_udp 创建的 UDP socket(必须 SOCK_DGRAM)</param>
+/// <param name="skid">连接 skid</param>
+/// <param name="group_ip">多播组地址,语义同 ev_udp_join 的同名参数</param>
+/// <param name="iface_str">接收网卡,语义同 ev_udp_join 的同名参数</param>
+/// <returns>ERR_OK 只表示参数合法且命令已入队,契约同 ev_udp_join</returns>
 int32_t ev_udp_leave(ev_ctx *ctx, SOCKET fd, uint64_t skid,
                      const char *group_ip, const char *iface_str);
 /// <summary>
@@ -144,8 +155,8 @@ int32_t ev_udp_leave(ev_ctx *ctx, SOCKET fd, uint64_t skid,
 /// <param name="ctx">ev_ctx</param>
 /// <param name="fd">UDP socket</param>
 /// <param name="skid">连接 skid</param>
-/// <param name="ttl">1-255</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="ttl">0-255;0 只到本机</param>
+/// <returns>ERR_OK 只表示参数合法且命令已入队,契约同 ev_udp_join</returns>
 int32_t ev_udp_ttl(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t ttl);
 /// <summary>
 /// 设置 UDP 多播本机回环(IP_MULTICAST_LOOP / IPV6_MULTICAST_LOOP)。
@@ -155,7 +166,7 @@ int32_t ev_udp_ttl(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t ttl);
 /// <param name="fd">UDP socket</param>
 /// <param name="skid">连接 skid</param>
 /// <param name="enable">1=收回环 0=不收</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 只表示参数合法且命令已入队,契约同 ev_udp_join</returns>
 int32_t ev_udp_loop(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t enable);
 /// <summary>
 /// 关闭链接

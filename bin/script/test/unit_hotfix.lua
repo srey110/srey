@@ -471,5 +471,120 @@ runner.run("hotfix", function(t)
         package.loaded.hotfix_bmod = nil
         package.loaded.hotfix_cmod = nil
     end
+
+    -- ── 子段 22:patch 的 helper 与被替换函数共用同一个 chunk local → 嫁接须递归进 helper ──
+    -- 只走被替换函数自己的槽是不够的:M.bump 那份 counter 嫁接到了原模块 cell,而 helper 那份
+    -- 还指着补丁自己那个 nil,同一个名字在补丁内部裂成两份、此后各写各的。症状是模块状态从此
+    -- 不动(bump 恒返旧值),而 apply 返回 true、全程无报错无告警
+    do
+        local mod = _setup_module()
+        mod.bump()
+        mod.bump()-- counter=2
+        local patch = [[
+            local counter
+            local function _tick()
+                counter = (counter or 0) + 1000
+            end
+            function M.bump()
+                _tick()
+                return counter
+            end
+        ]]
+        local ok = hotfix.apply("hotfix_unit_mod", patch)
+        t:eq(true, ok, "apply ok")
+        -- helper 与 M.bump 同一个 cell 且都嫁接到原模块那份:2 + 1000
+        t:eq(1002, mod.bump(), "helper 的写入落到原 cell(裂成两份则恒为 2)")
+        t:eq(2002, mod.bump(), "继续在同一 cell 上累加")
+    end
+
+    -- ── 子段 23:反复热修不逐代成链 ──────────────────────────────────────
+    -- 每代 patch closure 只要引用过全局就持有本代 env(_ENV 不嫁接),env 的元方法持有替换前
+    -- 扫出来的 upmap,而 upmap 的 entry.fn 正是上一代 closure,它又持上一代 env……于是历史代
+    -- 一代都回收不掉。替换后把 upmap 重指到 mod 上现装着的那批即可断链
+    do
+        package.loaded.hotfix_gen_mod = nil
+        local src = [[
+            local M = {}
+            local n = 0
+            function M.step()
+                n = n + 1
+                return n
+            end
+            return M
+        ]]
+        local mod = assert(load(src, "=hotfix_gen_mod"))()
+        package.loaded.hotfix_gen_mod = mod
+        local wt = setmetatable({}, {__mode = "v"})
+        local rounds = 20
+        local allok = true
+        -- 补丁同时碰全局(tostring → 持有 _ENV)与模块级 local(n → 让 upmap 记下本代 closure);
+        -- 两环缺一就成不了链,也就测不出问题
+        local patch = [[
+            local n
+            function M.step()
+                local _ = tostring(1)
+                n = (n or 0) + 1
+                return n
+            end
+        ]]
+        local i = 1
+        while i <= rounds do
+            if not hotfix.apply("hotfix_gen_mod", patch) then
+                allok = false
+            end
+            wt[i] = mod.step
+            i = i + 1
+        end
+        t:eq(true, allok, rounds .. " 代 apply 全部成功")
+        collectgarbage()
+        collectgarbage()
+        collectgarbage()
+        local alive = 0
+        i = 1
+        while i <= rounds do
+            if wt[i] then
+                alive = alive + 1
+            end
+            i = i + 1
+        end
+        -- 只该剩下当前装在 mod 上那一代;放宽到 3 是留 GC 时机余量,成链时这里等于 rounds
+        t:check(alive <= 3, "历史代已回收,存活 " .. alive .. "/" .. rounds)
+        package.loaded.hotfix_gen_mod = nil
+    end
+
+    -- ── 子段 24:拦不住的那种遮蔽风险要在 apply 的 detail 里点出来 ────────────
+    -- 补丁在**函数体内**裸读遮蔽名,只有那次调用才会抛错;裸标识符编译成 _ENV.name,名字不在
+    -- upvalue 列表里、常量表也取不到,apply 查不出来(子段 15 拦得住的是顶层裸读与路径 A)。
+    -- 所以退一步:模块有遮蔽名 + 补丁确实读全局时,把该验哪几个名字写进 detail
+    do
+        package.loaded.hotfix_warn_mod = nil
+        local src = [[
+            local M = {}
+            do local v = 1; function M.f1() return v end end
+            do local v = 2; function M.f2() return v end end
+            return M
+        ]]
+        local function _fresh()
+            package.loaded.hotfix_warn_mod = assert(load(src, "=hotfix_warn_mod"))()
+        end
+        -- 读全局(tostring → 持有 _ENV)且模块有遮蔽名 → 带提示
+        _fresh()
+        local ok1, msg1 = hotfix.apply("hotfix_warn_mod", "function M.f1() return tostring(3) end")
+        t:eq(true, ok1, "apply ok(读全局)")
+        t:check(msg1 and nil ~= msg1:find("shadowed upvalue", 1, true),
+            "detail 带遮蔽风险提示: " .. tostring(msg1))
+        t:check(msg1 and nil ~= msg1:find("(s) v", 1, true), "提示里列出了遮蔽名 v")
+        -- 补丁一个全局都不读 → 不可能走 path-B,不该加提示
+        _fresh()
+        local ok2, msg2 = hotfix.apply("hotfix_warn_mod", "function M.f1() return 3 end")
+        t:eq(true, ok2, "apply ok(不读全局)")
+        t:eq(nil, msg2:find("shadowed upvalue", 1, true), "补丁不读全局时不加提示")
+        package.loaded.hotfix_warn_mod = nil
+        -- 模块本身没有遮蔽名 → 即使补丁读全局也不该加提示
+        _setup_module()
+        local ok3, msg3 = hotfix.apply("hotfix_unit_mod", "function M.handle() return tostring(1) end")
+        t:eq(true, ok3, "apply ok(无遮蔽名)")
+        t:eq(nil, msg3:find("shadowed upvalue", 1, true), "模块无遮蔽名时不加提示")
+    end
 end)
 end)

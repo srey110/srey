@@ -86,6 +86,27 @@ runner.run("db_redis", function(t)
         t:check(type(empty) == "table", "empty SMEMBERS returns table")
         t:eq(0, #empty, "empty SMEMBERS length 0")
     end
+    do
+        -- 字段名与解析器哨兵同名：RESP3 下 HGETALL 返回 map，而 unpack 一度把 resp_type /
+        -- resp_nelem 和载荷放在同一张表里，用户这两个字段会盖掉哨兵 —— 结构塌成数组、
+        -- 字段被当哨兵删掉，且全程无报错。Redis 的字段名是任意二进制串，这不需要恶意服务端
+        _exec(fd, skid, "DEL", "srey:sentinel")
+        t:eq(2, _exec(fd, skid, "HSET", "srey:sentinel", "resp_type", "x", "a", "1"),
+             "HSET 含 resp_type 字段")
+        local h = _exec(fd, skid, "HGETALL", "srey:sentinel")
+        t:check(type(h) == "table", "HGETALL 返回 table")
+        t:eq("x", h.resp_type, "撞哨兵的字段 resp_type 保留原值（塌成数组时这里是 nil）")
+        t:eq("1", h.a, "同 map 内其余字段仍按 k/v 解出（塌成数组时这里是 nil）")
+        t:eq(nil, h[1], "结构未退化成数组")
+        -- resp_nelem 同理：它不参与 map 判定，症状是字段静默丢失
+        _exec(fd, skid, "DEL", "srey:sentinel")
+        t:eq(2, _exec(fd, skid, "HSET", "srey:sentinel", "resp_nelem", "9", "b", "2"),
+             "HSET 含 resp_nelem 字段")
+        local h2 = _exec(fd, skid, "HGETALL", "srey:sentinel")
+        t:eq("9", h2.resp_nelem, "撞哨兵的字段 resp_nelem 保留原值")
+        t:eq("2", h2.b, "同 map 内其余字段不受影响")
+        _exec(fd, skid, "DEL", "srey:sentinel")
+    end
 
     -- 清理
     _exec(fd, skid, "DEL", "srey:hash", "srey:counter", "srey:list")

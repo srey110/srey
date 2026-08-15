@@ -44,6 +44,7 @@
     <ClCompile Include="task_timeout.c" />
     <ClCompile Include="task_udp_multicast.c" />
     <ClCompile Include="task_udp_server.c" />
+    <ClCompile Include="task_v6only.c" />
     <ClCompile Include="task_ws_server.c" />
     <ClCompile Include="task_kcp.c" />
     <ClCompile Include="test_base.c" />
@@ -104,6 +105,7 @@
     <ClInclude Include="task_timeout.h" />
     <ClInclude Include="task_udp_multicast.h" />
     <ClInclude Include="task_udp_server.h" />
+    <ClInclude Include="task_v6only.h" />
     <ClInclude Include="task_ws_server.h" />
     <ClInclude Include="task_kcp.h" />
     <ClInclude Include="test_base.h" />

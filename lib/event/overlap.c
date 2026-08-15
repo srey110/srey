@@ -192,11 +192,12 @@ void _iocp_disconnect(sock_ctx *skctx, int32_t immed) {
             // graceful 中升级到 immed (如 _olp_on_send_cb 内 send 失败): 清 GRACEFUL_CLOSE 走 ERROR 路径
             BIT_REMOVE(tcp->status, STATUS_GRACEFUL_CLOSE);
         }
-        // graceful 无待发数据 + (无 in-flight WSASend 或 ol_s 仅 KeyUpdate/AUTHSSL 握手探针) → 退化为立即关
-        // (否则 _olp_on_send_cb 不会再触发,无人关闭连接;这类 0 字节探针 socket 满会 pend 不完成,
-        //  尤其握手期 AUTHSSL 探针一旦 pend,读端摘 recv 后零 in-flight IO,连接永久滞留、close_cb 不触发)
+        // 下面三类都退化为立即关,共同理由是"再等 _olp_on_send_cb 等不到,没人来关这条连接":
+        // 队列空;ol_s 上只有 0 字节探针(KeyUpdate/AUTHSSL,socket 满时会 pend 不完成);KEYUPDATE_READ 期(ol_s 不在途)。
+        // usock 无最后一项——它 graceful 收尾无条件重挂写事件
         if (0 == immed
-            && 0 == queue_size(&tcp->buf_s)
+            && (0 == queue_size(&tcp->buf_s)
+                || BIT_CHECK(tcp->status, STATUS_KEYUPDATE_READ))
             && (!BIT_CHECK(tcp->status, STATUS_SENDING)
                 || BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)
                 || BIT_CHECK(tcp->status, STATUS_AUTHSSL))) {
@@ -446,6 +447,18 @@ static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
         _olp_on_recv_cb_err(watcher, oltcp);
         return;
     }
+#if WITH_SSL
+    // 方向 B 的出口，机制见 _olp_tcp_send 上方。KEYUPDATE_WRITE 时 ol_s 归探针、要先等它冲完；
+    // STATUS_ERROR 时业务已在 recv_cb 里关了连接。
+    // 失败必须走 _iocp_disconnect：此处 ol_r 已重投在途，而 _olp_on_recv_cb_err 在 !SENDING 时会立即 pool_push
+    if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_READ)
+        && !BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)
+        && !BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        if (ERR_OK != _olp_wantwrite(oltcp)) {
+            _iocp_disconnect(&oltcp->ol_r, 1);
+        }
+    }
+#endif
 }
 #if WITH_SSL
 // 触发切ssl
@@ -524,6 +537,12 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
     }
 #endif
 }
+// 排空 buf_s；没排完就投 0 字节探针接力。
+// SSL 块是数据期 TLS1.3 的方向 B(SSL_write 说要先读)，与 usock.c 同条件同序：graceful 期直接失败,
+// 否则置 KEYUPDATE_READ 并交还 SENDING,靠 _olp_on_recv_cb 收到数据后接力。
+// 顺序不能颠倒：SSL 块必须在 "0 == cnt" 之前,否则排空重试时走不到清位,残留的 KEYUPDATE_READ
+// 会让 _iocp_add_bufs_trypost 永久拦住后续发送。
+// 挂起态不变式：KEYUPDATE_READ=1 ⟹ ol_s 不在途 ∧ ol_r 在途 ∧ buf_s 非空
 static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nsend;
 #if WITH_SSL
@@ -536,7 +555,21 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     if (ERR_OK != rtn) {
         return ERR_FAILED;
     }
-    if (0 == queue_size(&oltcp->buf_s)) {
+    uint32_t cnt = queue_size(&oltcp->buf_s);
+#if WITH_SSL
+    if (NULL != oltcp->ssl) {
+        if (0 != cnt && SSL_want_read(oltcp->ssl)) {
+            if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
+                return ERR_FAILED;
+            }
+            BIT_SET(oltcp->status, STATUS_KEYUPDATE_READ);
+            BIT_REMOVE(oltcp->status, STATUS_SENDING);
+            return ERR_OK;
+        }
+        BIT_REMOVE(oltcp->status, STATUS_KEYUPDATE_READ);
+    }
+#endif
+    if (0 == cnt) {
         if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
             return ERR_FAILED;
         }
@@ -662,38 +695,24 @@ void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
         _evpub_off_buf_release(buf);
         return;
     }
-    // ConnectEx 未完成就 WSASend 会以 WSAENOTCONN 失败,与 unix 侧保持同一条拒绝规则
-    if (_olp_on_recv_cb != skctx->ev_cb) {
-        LOG_WARN("ev_send before connection established on fd %d, disconnect.", (int32_t)oltcp->ol_s.fd);
-        _evpub_off_buf_release(buf);
-        _iocp_disconnect(&oltcp->ol_r, 1);
-        return;
-    }
-#if WITH_SSL
-    // SSL 握手期间禁止发送业务数据，否则会中断握手；命中即丢数据并立即关连接
-    if (BIT_CHECK(oltcp->status, STATUS_AUTHSSL)
-        || BIT_CHECK(oltcp->status, STATUS_SSLEXCHANGE)) {
-        LOG_WARN("ev_send during SSL handshake on fd %d, disconnect.", (int32_t)oltcp->ol_s.fd);
-        _evpub_off_buf_release(buf);
-        _iocp_disconnect(&oltcp->ol_r, 1);
-        return;
-    }
-#endif
-    // TCP 慢消费者保护：发送队列超阈值丢数据并 disconnect，避免业务无脑写打爆内存
-    if (0 != MAX_SENDQ_CNT
-        && queue_size(&oltcp->buf_s) >= MAX_SENDQ_CNT) {
-        LOG_WARN("TCP send queue overflow on fd %d (>= %d), disconnect.",
-                (int32_t)oltcp->ol_s.fd, MAX_SENDQ_CNT);
+    // 连接未完成时 ev_cb 仍是 _olp_on_connect_cb
+    if (!_evpub_sendqu_check_tcp(&oltcp->buf_s, oltcp->status, oltcp->ol_s.fd,
+                                 _olp_on_recv_cb == skctx->ev_cb)) {
         _evpub_off_buf_release(buf);
         _iocp_disconnect(&oltcp->ol_r, 1);
         return;
     }
     oltcp->wb_size += buf->lens;
-    if (tda_check(&oltcp->tda, oltcp->wb_size)) {
-        LOG_WARN("TCP send buf growing on fd %d: %zu bytes.",
-                (int32_t)oltcp->ol_s.fd, oltcp->wb_size);
-    }
+    _evpub_sendqu_tda(&oltcp->tda, oltcp->wb_size, oltcp->ol_s.fd, 1);
     queue_push(&oltcp->buf_s, buf);
+#if WITH_SSL
+    // 方向 B 挂着未完成的 SSL_write，投探针只是空转；数据留队等 _olp_on_recv_cb 那次重试。
+    // 对应 usock 的 _uev_add_bufs_send，那边还判 KEYUPDATE_WRITE——本平台方向 A 期 SENDING 必为 1，
+    // 下面 _olp_wantwrite 的 !SENDING 已挡住
+    if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_READ)) {
+        return;
+    }
+#endif
     if (ERR_OK != _olp_wantwrite(oltcp)) {
         _iocp_disconnect(&oltcp->ol_r, 1);
     }
@@ -797,21 +816,8 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
 }
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     int32_t setsess, SOCKET *fd, uint64_t *skid) {
-    if (NULL == cbs || NULL == cbs->r_cb) {
-        if (NULL != cbs) {
-            UD_FREE(cbs->ud_free, ud);
-        }
-        return ERR_FAILED;
-    }
-    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
-    if (0 != ATOMIC_GET(&ctx->stopping)) {
-        UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        UD_FREE(cbs->ud_free, ud);
+    if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 0, &addr)) {
         return ERR_FAILED;
     }
     *fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0);
@@ -1075,21 +1081,8 @@ static int32_t _olp_acceptex(ev_ctx *ev, listener_ctx *lsn) {
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
-    if (NULL == cbs || NULL == cbs->r_cb) {
-        if (NULL != cbs) {
-            UD_FREE(cbs->ud_free, ud);
-        }
-        return ERR_FAILED;
-    }
-    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
-    if (0 != ATOMIC_GET(&ctx->stopping)) {
-        UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        UD_FREE(cbs->ud_free, ud);
+    if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 0, &addr)) {
         return ERR_FAILED;
     }
     SOCKET fd = _evpub_listen(&addr);
@@ -1420,24 +1413,14 @@ static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes
 }
 void _iocp_add_bufs_trysendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
-    // 已在 error 关闭流程：拒收新数据。
-    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
-        FREE(buf->data);
-        return;
-    }
-    // UDP 队列超阈值丢 datagram 不断 fd
-    if (0 != MAX_SENDQ_CNT
-        && queue_size(&oludp->buf_s) >= MAX_SENDQ_CNT) {
-        LOG_WARN("UDP send queue overflow on fd %d (>= %d), drop datagram.",
-                 (int32_t)oludp->ol_s.fd, MAX_SENDQ_CNT);
+    // 已在 error 关闭流程：拒收新数据
+    if (BIT_CHECK(oludp->status, STATUS_ERROR)
+        || !_evpub_sendqu_check_udp(&oludp->buf_s, oludp->ol_s.fd)) {
         FREE(buf->data);
         return;
     }
     oludp->wb_size += buf->len;
-    if (tda_check(&oludp->tda, oludp->wb_size)) {
-        LOG_WARN("UDP send buf growing on fd %d: %zu bytes.",
-                 (int32_t)oludp->ol_s.fd, oludp->wb_size);
-    }
+    _evpub_sendqu_tda(&oludp->tda, oludp->wb_size, oludp->ol_s.fd, 0);
     queue_push(&oludp->buf_s, buf);
     if (NULL != oludp->send_tick.cb
         || BIT_CHECK(oludp->status, STATUS_SENDING)) {
@@ -1487,21 +1470,8 @@ void _iocp_free_udp(sock_ctx *skctx) {
 }
 int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     SOCKET *fd, uint64_t *skid) {
-    if (NULL == cbs || NULL == cbs->rf_cb) {
-        if (NULL != cbs) {
-            UD_FREE(cbs->ud_free, ud);
-        }
-        return ERR_FAILED;
-    }
-    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
-    if (0 != ATOMIC_GET(&ctx->stopping)) {
-        UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        UD_FREE(cbs->ud_free, ud);
+    if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 1, &addr)) {
         return ERR_FAILED;
     }
     *fd = _evpub_udp(&addr);

@@ -84,6 +84,17 @@ runner.run("db_mongo", function(t)
     mg:clear_flag()
     t:eq(3, cnt, "mongo count after MORETOCOME insert")
 
+    do
+        -- 组包抛出时连接级 flags 必须恢复：读命令要等响应，所以组包期间 MORETOCOME 被临时清零，
+        -- 而 pack_* 的 (指针,长度) 入口对负数长度是 luaL_argcheck 当场抛，抛点正落在清零与恢复
+        -- 之间。Lua 没有 RAII，不兜一层就把 MORETOCOME 永久摘掉，且 clear_flag() 查不出它已经丢了
+        mg:set_flag(mg.FLAGS.MORETOCOME)
+        local pok = pcall(mg.find, mg, "srey_test", eptr, -1)
+        t:eq(false, pok, "find 传负数长度按契约抛出")
+        t:eq(mg.FLAGS.MORETOCOME, mg:clear_flag(),
+             "组包抛出后 MORETOCOME 仍在（未恢复则为 0）")
+    end
+
     -- 事务：commit 后事务内插入可见，rollback 后不可见。同一 session 连做两个事务，
     -- 覆盖 txnNumber 递增与 startTransaction 只附加于每个事务首个操作
     local sess = mg:startsession()

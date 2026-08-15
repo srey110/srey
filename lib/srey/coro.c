@@ -298,41 +298,38 @@ static mco_coro *_coro_pool_get(task_ctx *task) {
     coro_ctx *coctx = task->arg;
     return (mco_coro *)pool_pop(&coctx->copool, NULL, 0);
 }
-// 从对象池取出协程并推入分发参数，开始执行新的消息处理流程。
-// resume 返回后把 curco 清回 NULL：本函数在顶层调用，外面本就没有协程在跑。
-// 漏这一步的话 curco 会一直指着刚挂起(甚至已随池收缩销毁)的那个协程,
-// coro_fork / coro_fork_wait / coro_serial_enter 三处"不在协程里就拒绝"的守卫
-// 从第一条消息起就永远不成立,真的从非协程上下文调进来时不再是失败返回,
-// 而是对着一个不在跑的协程 mco_yield
-static void _coro_mco_create(task_dispatch_arg *arg) {
-    coro_ctx *coctx = arg->task->arg;
-    mco_coro *co = _coro_pool_get(arg->task);
-    coctx->curco = co;
-    // 推入 8 字节指针而非整个结构体，由 _coro_mco_cb 在 resume 后自行复制
-    mco_result rtn = mco_push(co, &arg, sizeof(arg));
-    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-    rtn = mco_resume(co);
-    coctx->curco = NULL;
-    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-    if (MCO_DEAD == mco_status(co)) {
-        mco_destroy(co); // 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
-    }
-}
-// 切到另一个协程跑,回来再把 curco 指回调用者。
-// curco 是"当前在跑的协程"这一唯一标识:被唤醒者醒来后靠它进 cosess、调 mco_yield;
-// 调用者拿回控制权后同样靠它。漏还原就会把 curco 留在已挂起(甚至已随池收缩销毁)的协程上,
-// 调用者下一次 coro_sleep / coro_send 对着它 mco_yield,撞 MCO_NOT_RUNNING 断言。
-// 四处唤醒点(_coro_mco_resume / _coro_fork_run / coro_serial_leave / coro_serial_free)共用本函数,
-// 别再各写一份 —— 漏一处就是上面那个 abort,而且只在特定唤醒时序下才现形。
-// 第四处 _coro_mco_create 有意不走本函数:它是"起一个新协程",不是"切过去再切回来",
-// 五个调用点(消息分发表各项与 _coro_drain_forks)全在顶层、外面没有协程可存;
-// 但回来同样要还原——顶层的"原值"就是 NULL，它自己清
+// 切到另一个协程跑,回来再把 curco 指回调用者。curco 是"当前在跑的协程"这一唯一标识:
+// 被唤醒者醒来后靠它进 cosess、调 mco_yield,调用者拿回控制权后同样靠它。
+// 漏还原会把 curco 留在已挂起(甚至已随池收缩销毁)的协程上——调用者下一次 coro_sleep / coro_send
+// 对着它 mco_yield 撞 MCO_NOT_RUNNING;顶层漏清则 coro_fork / coro_fork_wait / coro_serial_enter
+// 三处"不在协程里就拒绝"的守卫从第一条消息起永远不成立。
+// 顶层调用的"原值"就是 NULL,同样由本函数还原,不必各写一份
 static mco_result _coro_resume_switch(coro_ctx *coctx, mco_coro *co) {
     mco_coro *self = coctx->curco;
     coctx->curco = co;
     mco_result rtn = mco_resume(co);
     coctx->curco = self;
     return rtn;
+}
+// 唤醒尾部:切过去、断言、回收死协程。五个唤醒点共用,别再各写一份——
+// curco 漏还原是上面那个 abort,MCO_DEAD 漏回收是无声的协程栈泄漏(只在池满时发生)。
+// co 必须是调用方先缓存好的指针:被唤醒者返回后它栈上的对象即失效,不能再从那些对象里取 co
+static inline void _coro_resume_reap(coro_ctx *coctx, mco_coro *co) {
+    mco_result rtn = _coro_resume_switch(coctx, co);
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    if (MCO_DEAD == mco_status(co)) {
+        mco_destroy(co); // 池满导致 _coro_mco_cb 返回,协程已死亡,须在此释放
+    }
+}
+// 从对象池取出协程并推入分发参数，开始执行新的消息处理流程。
+// 五个调用点(消息分发表各项与 _coro_drain_forks)全在顶层,curco 恒为 NULL
+static void _coro_mco_create(task_dispatch_arg *arg) {
+    coro_ctx *coctx = arg->task->arg;
+    mco_coro *co = _coro_pool_get(arg->task);
+    // 推入 8 字节指针而非整个结构体，由 _coro_mco_cb 在 resume 后自行复制
+    mco_result rtn = mco_push(co, &arg, sizeof(arg));
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    _coro_resume_reap(coctx, co);
 }
 // 唤醒已挂起的协程，推入消息指针后 resume，返回后清理消息资源
 static void _coro_mco_resume(mco_coro *coro, task_dispatch_arg *arg) {
@@ -341,12 +338,8 @@ static void _coro_mco_resume(mco_coro *coro, task_dispatch_arg *arg) {
     message_ctx *msgptr = &arg->msg;
     mco_result rtn = mco_push(coro, &msgptr, sizeof(msgptr));
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-    rtn = _coro_resume_switch(coctx, coro);
-    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    _coro_resume_reap(coctx, coro);
     _message_clean(&arg->msg);
-    if (MCO_DEAD == mco_status(coro)) {
-        mco_destroy(coro); // 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
-    }
 }
 // 统一唤醒尾部：找到匹配等待者则唤醒；否则 warn!=0 时先告警(未找到即逻辑异常，与是否新建协程无关)，
 // 再按 miss_create 决定新建协程处理(!=0)还是丢弃(==0，TIMEOUT 专属：正常情况下已被正常路径消费)
@@ -758,14 +751,9 @@ static void _coro_fork_run(task_ctx *task, fork_item *item) {
     fork_wait_ctx *fw = item->fwctx;// 先缓存：fw 在 waiter 协程栈内，mco_destroy(waiter) 后整块释放
     pool_push(&coctx->fork_item_pool, item, 0);
     if (NULL != fw && 0 == --fw->waited) {
-        // waiter 缓存到局部：mco_resume 后 coro_fork_wait 返回，其栈上的 fw 随即失效，
-        // 之后 mco_status/mco_destroy 必须用缓存的 waiter
+        // waiter 缓存到局部：resume 后 coro_fork_wait 返回，其栈上的 fw 随即失效
         mco_coro *waiter = fw->waiter;
-        mco_result rtn = _coro_resume_switch(coctx, waiter);
-        ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        if (MCO_DEAD == mco_status(waiter)) {
-            mco_destroy(waiter);// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
-        }
+        _coro_resume_reap(coctx, waiter);
     }
 }
 // 建 fork_item 追加到 fork_pending（task-local 无界无锁）；fwctx=NULL 即 coro_fork 退化态
@@ -831,17 +819,12 @@ void coro_serial_free(coro_serial_ctx *serial) {
     list_node *ln;
     serial_node *nd;
     mco_coro *wco;
-    mco_result rtn;
     while (NULL != (ln = list_pop_head(&serial->waiters))) {
         nd = UPCAST(ln, serial_node, node);
         nd->aborted = 1;
         wco = nd->co;
-        rtn = _coro_resume_switch(coctx, wco);
-        ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+        _coro_resume_reap(coctx, wco);
         pool_push(&coctx->serial_node_pool, nd, 0);
-        if (MCO_DEAD == mco_status(wco)) {// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
-            mco_destroy(wco);
-        }
     }
     // 排队者能唤醒,持锁者不能——锁抢不走,它还在临界区里跑,后面还要 leave。
     // 所以有持锁者时本函数不释放,只把 closed 留在那儿当交接凭据:
@@ -939,14 +922,10 @@ void coro_serial_leave(coro_serial_ctx *serial) {
     coro_ctx *coctx = (coro_ctx *)serial->task->arg;
     // 本函数返回时控制权回到调用方那个协程,curco 恒为它自己(跨协程被唤醒时由唤醒方设回、
     // 无锁路径没动过、临界区内各种 yield 返回时也已还原),所以还原的目标就是它,不必外传
-    mco_result rtn = _coro_resume_switch(coctx, wco);
-    // 这行之后不许再碰 serial:锁已交给 wco,它在自己的临界区里可以 coro_serial_free
-    // （标记后由它那次 leave 释放）,回到这里时对象可能已经没了。下面只用 coctx / nxt / wco
-    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    // 下面这行之后不许再碰 serial:锁已交给 wco,它在自己的临界区里可以 coro_serial_free
+    // （标记后由它那次 leave 释放）,回到这里时对象可能已经没了。此后只用 coctx / nxt / wco
+    _coro_resume_reap(coctx, wco);
     pool_push(&coctx->serial_node_pool, nxt, 0);
-    if (MCO_DEAD == mco_status(wco)) {// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
-        mco_destroy(wco);
-    }
 }
 int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg) {
     if (ERR_OK != coro_serial_enter(serial)) {
