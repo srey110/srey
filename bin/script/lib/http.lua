@@ -152,7 +152,8 @@ end
 ---构造并发送 HTTP 消息的核心函数。info 支持 string（带 Content-Length）、
 ---table（自动 JSON 编码）、function（chunked 流式分块发送，返回 nil 或空串终止流）三种类型
 ---@param rsp boolean 是否为响应（true=单向，false=同步请求）
----@param nocl boolean 该消息禁止携带 Content-Length（1xx/204/304 响应），仅在无 body 分支生效
+---@param nocl boolean 该消息禁止携带 Content-Length（1xx/204/304 响应）；http.response 已在
+---       入口把这三类的 info 清掉，故本函数只需在无 body 分支跳过 Content-Length: 0
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@param status string 请求行或状态行（已含 \r\n）
@@ -340,6 +341,9 @@ function http.response(fd, skid, code, headers, info, ...)
     -- 实体的真实长度，这里根本没有实体，补 Content-Length: 0 等于谎报资源为空，故一并跳过。
     -- 严格代理会因此丢弃或重置这类响应，所以不能对所有无 body 响应无差别补 CL
     local nocl = code < 200 or 204 == code or 304 == code
+    if nocl then
+        info = nil-- 这三类响应同样禁带报文体：给了也丢，与 C 侧 _router_send_core 同口径
+    end
     _http_msg(true, nocl, fd, skid, status, headers, nil, info, ...)
 end
 

@@ -6,6 +6,7 @@
 #include "path/path_trie.h"
 #include "containers/sarray.h"
 #include "utils/binary.h"
+#include "utils/tda.h"
 #include "utils/utils.h"
 
 // ── subcenter 限制(业务特定上限,可按部署需要调整后重编) ────────────
@@ -48,6 +49,7 @@ typedef struct sc_retained_entry {
 // subcenter task 上下文
 typedef struct sc_ctx {
     uint32_t pub_normal_cap;         // pub_normal 当前容量(元素数)
+    size_t retained_skipped;         // 累计有多少次 retained 发布跳过了共享组
     loader_ctx *loader;              // 所属 loader
     path_trie *topics;               // 订阅关系
     const path_rules *rules;         // topic 规则(由 sc_start 传入,长生命周期持有)
@@ -55,6 +57,7 @@ typedef struct sc_ctx {
     struct hashmap *retained_index;  // topic → sc_retained_entry
     hashset *publish_dedup;          // publish 去重复用容器(name_t set)
     task_ctx **pub_normal;           // publish 复用:普通投递目标缓冲(按需 grow)
+    tda_ctx retained_skip_tda;       // 上者的翻倍告警状态,免得每条消息打一遍
     array_ctx pub_shared;            // publish 复用:共享投递目标(sc_shared_dst)
     array_ctx pub_prune;             // publish 复用:死订阅待清理(name_t)
     array_ctx pub_empty;             // publish 复用:空节点路径(char*)
@@ -74,6 +77,8 @@ typedef struct sc_collect_ctx {
     uint16_t cur_ptlen;           // 上者的长度,同一节点下所有组共用,不必每组重算
     int32_t failed;               // 内存分配失败标志
     int32_t shared_emptied;       // 有共享组在 pick 时被清空 → 触发清理 pass
+    int32_t retained;             // 本次是 publish_retained：共享订阅不收，只扇给普通订阅者
+    int32_t shared_skipped;       // 上者导致真有共享组被跳过，投递后报一次
     sc_ctx *ctx;                  // subcenter 上下文
     array_ctx *shared_dsts;       // 共享组挑选结果(元素 sc_shared_dst,已 grab,投递后 ungrab)
     const char *cur_pattern;      // 当前 visit 到的节点 pattern,供 _sc_sg_pick_iter 取用
@@ -187,35 +192,13 @@ static void _sc_topic_data_free(void *p) {
     FREE(d->pattern);
     FREE(d);
 }
-// 失败响应:统一回 ERR_FAILED
-static void _sc_resp_failed(sc_ctx *ctx, name_t src, uint64_t sess, subtype_t reqtype) {
-    if (INVALID_TNAME == src || 0 == sess) {
-        return;
-    }
-    task_ctx *t = task_grab(ctx->loader, src);
-    if (NULL != t) {
-        task_response(t, reqtype, sess, ERR_FAILED, NULL, 0, 0);
-        task_ungrab(t);
-    }
-}
-// 成功响应
-static void _sc_resp_ok(sc_ctx *ctx, name_t src, uint64_t sess, subtype_t reqtype) {
-    if (INVALID_TNAME == src || 0 == sess) {
-        return;
-    }
-    task_ctx *t = task_grab(ctx->loader, src);
-    if (NULL != t) {
-        task_response(t, reqtype, sess, ERR_OK, NULL, 0, 0);
-        task_ungrab(t);
-    }
-}
 // 从 binary_ctx 读 | u16 len | bytes |;成功返指针 + 长度
 static int32_t _sc_read_lp16(binary_ctx *br, const char **out_data, uint16_t *out_len) {
-    if (br->size - br->offset < 2) {
+    if (!binary_have(br, 2)) {
         return ERR_FAILED;
     }
     uint16_t n = (uint16_t)binary_get_uinteger(br, 2, 0);
-    if (br->size - br->offset < (size_t)n) {
+    if (!binary_have(br, (size_t)n)) {
         return ERR_FAILED;
     }
     *out_len = n;
@@ -291,38 +274,38 @@ int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out) {
     binary_ctx br;
     binary_init(&br, (char *)data, size, 0);
     // kind(u8) + publisher(name_t) + mlen(u16)
-    if (br.size - br.offset < 1 + sizeof(name_t) + 2) {
+    if (!binary_have(&br, 1 + sizeof(name_t) + 2)) {
         return ERR_FAILED;
     }
     out->kind = (int32_t)binary_get_uint8(&br);
     out->publisher = (name_t)binary_get_uinteger(&br, sizeof(name_t), 0);
     out->mlen = (size_t)binary_get_uinteger(&br, 2, 0);
     // meta(mlen) + glen(u16)
-    if (br.size - br.offset < out->mlen + 2) {
+    if (!binary_have(&br, out->mlen + 2)) {
         return ERR_FAILED;
     }
     out->meta = out->mlen > 0 ? binary_get_binary(&br, out->mlen) : NULL;
     out->glen = (size_t)binary_get_uinteger(&br, 2, 0);
     // group(glen) + tlen(u16)
-    if (br.size - br.offset < out->glen + 2) {
+    if (!binary_have(&br, out->glen + 2)) {
         return ERR_FAILED;
     }
     out->group = out->glen > 0 ? binary_get_binary(&br, out->glen) : NULL;
     out->ptlen = (size_t)binary_get_uinteger(&br, 2, 0);
     // pattern(ptlen) + tlen(u16)
-    if (br.size - br.offset < out->ptlen + 2) {
+    if (!binary_have(&br, out->ptlen + 2)) {
         return ERR_FAILED;
     }
     out->pattern = out->ptlen > 0 ? binary_get_binary(&br, out->ptlen) : NULL;
     out->tlen = (size_t)binary_get_uinteger(&br, 2, 0);
     // topic(tlen) + plen(u32)
-    if (br.size - br.offset < out->tlen + 4) {
+    if (!binary_have(&br, out->tlen + 4)) {
         return ERR_FAILED;
     }
     out->topic = out->tlen > 0 ? binary_get_binary(&br, out->tlen) : NULL;
     out->plen = (size_t)binary_get_uinteger(&br, 4, 0);
     // payload(plen)
-    if (br.size - br.offset < out->plen) {
+    if (!binary_have(&br, out->plen)) {
         return ERR_FAILED;
     }
     out->payload = out->plen > 0 ? binary_get_binary(&br, out->plen) : NULL;
@@ -331,25 +314,25 @@ int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out) {
 // 游标式解析 query_retained 响应:| name_t publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
 int32_t sc_parse_retained(binary_ctx *br, sc_retained *out) {
     // publisher(name_t) + mlen(u16)
-    if (br->size - br->offset < sizeof(name_t) + 2) {
+    if (!binary_have(br, sizeof(name_t) + 2)) {
         return ERR_FAILED;
     }
     out->publisher = (name_t)binary_get_uinteger(br, sizeof(name_t), 0);
     out->mlen = (size_t)binary_get_uinteger(br, 2, 0);
     // meta(mlen) + tlen(u16)
-    if (br->size - br->offset < out->mlen + 2) {
+    if (!binary_have(br, out->mlen + 2)) {
         return ERR_FAILED;
     }
     out->meta = out->mlen > 0 ? binary_get_binary(br, out->mlen) : NULL;
     out->tlen = (size_t)binary_get_uinteger(br, 2, 0);
     // topic(tlen) + plen(u32)
-    if (br->size - br->offset < out->tlen + 4) {
+    if (!binary_have(br, out->tlen + 4)) {
         return ERR_FAILED;
     }
     out->topic = out->tlen > 0 ? binary_get_binary(br, out->tlen) : NULL;
     out->plen = (size_t)binary_get_uinteger(br, 4, 0);
     // payload(plen)
-    if (br->size - br->offset < out->plen) {
+    if (!binary_have(br, out->plen)) {
         return ERR_FAILED;
     }
     out->payload = out->plen > 0 ? binary_get_binary(br, out->plen) : NULL;
@@ -358,12 +341,12 @@ int32_t sc_parse_retained(binary_ctx *br, sc_retained *out) {
 // 游标式解析 topics 响应:| u16 tlen | topic | u32 normal | u32 shared |
 int32_t sc_parse_topics(binary_ctx *br, sc_topic *out) {
     // tlen(u16)
-    if (br->size - br->offset < 2) {
+    if (!binary_have(br, 2)) {
         return ERR_FAILED;
     }
     out->tlen = (size_t)binary_get_uinteger(br, 2, 0);
     // topic(tlen) + normal(u32) + shared(u32)
-    if (br->size - br->offset < out->tlen + 4 + 4) {
+    if (!binary_have(br, out->tlen + 4 + 4)) {
         return ERR_FAILED;
     }
     out->topic = out->tlen > 0 ? binary_get_binary(br, out->tlen) : NULL;
@@ -374,12 +357,12 @@ int32_t sc_parse_topics(binary_ctx *br, sc_topic *out) {
 // 游标式解析 retained_topics 响应:| u16 tlen | topic | name_t publisher | u32 size | u16 meta_size |
 int32_t sc_parse_retained_topics(binary_ctx *br, sc_retained_topic *out) {
     // tlen(u16)
-    if (br->size - br->offset < 2) {
+    if (!binary_have(br, 2)) {
         return ERR_FAILED;
     }
     out->tlen = (size_t)binary_get_uinteger(br, 2, 0);
     // topic(tlen) + publisher(name_t) + size(u32) + meta_size(u16)
-    if (br->size - br->offset < out->tlen + sizeof(name_t) + 4 + 2) {
+    if (!binary_have(br, out->tlen + sizeof(name_t) + 4 + 2)) {
         return ERR_FAILED;
     }
     out->topic = out->tlen > 0 ? binary_get_binary(br, out->tlen) : NULL;
@@ -422,13 +405,13 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     subtype_t reqtype = shared ? REQ_SC_SUB_SHARED : REQ_SC_SUB;
     char topic[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, topic, sizeof(topic), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess, reqtype);
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         return;
     }
     char group[SC_GROUP_MAX + 1];
     if (shared) {
         if (ERR_OK != _sc_read_cstr_max(br, group, sizeof(group), SC_GROUP_MAX)) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             return;
         }
     }
@@ -439,7 +422,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         d = _sc_alloc_topic_data(topic);
         if (ERR_OK != path_insert(ctx->topics, topic, d)) {
             _sc_topic_data_free(d);
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             return;
         }
     }
@@ -449,7 +432,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
                                                            sizeof(sc_shared_group), 4, 0, 0,
                                                            _sc_sg_hash, _sc_sg_cmp, _sc_sg_free, NULL);
             if (NULL == d->shared_groups) {
-                _sc_resp_failed(ctx, src, sess, reqtype);
+                _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
                 return;
             }
         }
@@ -466,7 +449,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
             if (hashmap_oom(d->shared_groups)) {
                 FREE(ng.group);
                 array_free(&ng.members);
-                _sc_resp_failed(ctx, src, sess, reqtype);
+                _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
                 return;
             }
             g = (sc_shared_group *)hashmap_get(d->shared_groups, &qg);
@@ -481,7 +464,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
             LOG_WARN("subcenter topic '%s' has %u subscribers", topic, d->normal_subs.size);
         }
     }
-    _sc_resp_ok(ctx, src, sess, reqtype);
+    _svpub_respond(ctx->loader, src, reqtype, sess, ERR_OK);
 }
 // 节点回收检查:若节点完全空(无普通订阅、无共享组),从 trie 移除
 static void _sc_try_remove_empty_topic(sc_ctx *ctx, const char *topic, sc_topic_data *d) {
@@ -502,24 +485,24 @@ static void _sc_handle_unsub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx 
     subtype_t reqtype = shared ? REQ_SC_UNSUB_SHARED : REQ_SC_UNSUB;
     char topic[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, topic, sizeof(topic), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess, reqtype);
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         return;
     }
     char group[SC_GROUP_MAX + 1];
     if (shared) {
         if (ERR_OK != _sc_read_cstr_max(br, group, sizeof(group), SC_GROUP_MAX)) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             return;
         }
     }
     sc_topic_data *d = (sc_topic_data *)path_get(ctx->topics, topic);
     if (NULL == d) {
-        _sc_resp_ok(ctx, src, sess, reqtype);// 幂等
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_OK);// 幂等
         return;
     }
     if (shared) {
         if (NULL == d->shared_groups) {
-            _sc_resp_ok(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_OK);
             return;
         }
         sc_shared_group qg;
@@ -546,7 +529,7 @@ static void _sc_handle_unsub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx 
         (void)_sc_normal_subs_remove(&d->normal_subs, src);
     }
     _sc_try_remove_empty_topic(ctx, topic, d);
-    _sc_resp_ok(ctx, src, sess, reqtype);
+    _svpub_respond(ctx->loader, src, reqtype, sess, ERR_OK);
 }
 // 更新 retained_index 槽位(publish_retained 第一步,独立于普通 deliver 路径)。
 // plen=0 → 删除条目;否则 MALLOC + memcpy + 取 publisher 当前 meta 做快照存进 entry
@@ -639,14 +622,21 @@ static bool _sc_sg_pick_iter(const void *item, void *udata) {
     sc_collect_ctx *cc = (sc_collect_ctx *)udata;
     sc_shared_group *g = (sc_shared_group *)item;
     task_ctx *picked = _sc_shared_pick_live(cc->ctx, g);
-    if (NULL != picked) {
-        // 指定初始化:字段按对齐规则排过序,位置初始化会随重排静默错位
-        sc_shared_dst sd = { .task = picked, .group = g->group,
-                             .pattern = cc->cur_pattern, .ptlen = cc->cur_ptlen };
-        array_push_back(cc->shared_dsts, &sd);
-    } else {
+    if (NULL == picked) {
         cc->shared_emptied = 1;
+        return true;
     }
+    // retained 不投共享组:组是工作队列语义,快照重复派发等于让 worker 多消费一次。
+    // 但挑活这趟仍要走完——死成员剔除是它的副作用,只靠 retained 驱动的 topic 全指望这里
+    if (0 != cc->retained) {
+        cc->shared_skipped = 1;
+        task_ungrab(picked);
+        return true;
+    }
+    // 指定初始化:字段按对齐规则排过序,位置初始化会随重排静默错位
+    sc_shared_dst sd = { .task = picked, .group = g->group,
+                         .pattern = cc->cur_pattern, .ptlen = cc->cur_ptlen };
+    array_push_back(cc->shared_dsts, &sd);
     return true;
 }
 // path_match visit 回调:normal_subs 全收到 publish_dedup hashset 去重,
@@ -664,12 +654,15 @@ static void _sc_collect_visit(void *payload, void *udata) {
             return;
         }
     }
-    // 共享订阅:每组挑首个活成员(死成员当场剔除),允许重复:不同 group 之间不去重
-    if (NULL != d->shared_groups) {
-        cc->cur_pattern = d->pattern;
-        cc->cur_ptlen = (uint16_t)strlen(d->pattern);
-        hashmap_scan(d->shared_groups, _sc_sg_pick_iter, cc);
+    // 共享订阅:每组挑首个活成员(死成员当场剔除),允许重复:不同 group 之间不去重。
+    // retained 收不收由 _sc_sg_pick_iter 判,这里不短路——短路会连死成员剔除一起跳过
+    if (NULL == d->shared_groups
+        || 0 == hashmap_count(d->shared_groups)) {
+        return;
     }
+    cc->cur_pattern = d->pattern;
+    cc->cur_ptlen = (uint16_t)strlen(d->pattern);
+    hashmap_scan(d->shared_groups, _sc_sg_pick_iter, cc);
 }
 // 把 name 经 task_grab 拿到 task_ctx 后塞入 dsts(已满返 FAILED);
 // task_grab 失败的 name 收入 prune(后续懒清理 normal_subs);prune=NULL 表示不收集
@@ -747,7 +740,7 @@ static void _sc_prune_visit(void *payload, void *udata) {
 }
 // publish 投递:fire-and-forget 投递到所有匹配订阅者
 static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
-                                const void *payload, uint32_t plen) {
+                                const void *payload, uint32_t plen, int32_t retained) {
     // 查 publisher 当前 meta
     sc_publisher_meta qm;
     qm.publisher = src;
@@ -763,6 +756,8 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
     cc.shared_dsts = shared_dsts;
     cc.failed = 0;
     cc.shared_emptied = 0;
+    cc.retained = retained;
+    cc.shared_skipped = 0;
     cc.cur_pattern = NULL;
     cc.cur_ptlen = 0;
     path_match(ctx->topics, topic, _sc_collect_visit, &cc);
@@ -774,6 +769,16 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
             task_ungrab(sp[i].task);
         }
         return;
+    }
+    // 跳过的 retained 得让运维看得见；宽 pattern 的共享组会让每条 retained 都命中，
+    // 故走翻倍告警：1/2/4/8… 次各报一遍，不刷屏也不哑掉
+    if (0 != cc.shared_skipped) {
+        ctx->retained_skipped++;
+        if (tda_check(&ctx->retained_skip_tda, ctx->retained_skipped)) {
+            LOG_WARN("subcenter: retained publish on '%s' skipped its shared subscription group(s), "
+                     "%zu time(s) so far (shared subscribers never receive retained, see subcenter.h).",
+                     topic, ctx->retained_skipped);
+        }
     }
     size_t n_normal = hashset_count(ctx->publish_dedup);
     if (0 == n_normal && 0 == shared_dsts->size && 0 == cc.shared_emptied) {
@@ -850,22 +855,22 @@ static void _sc_handle_pub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     subtype_t reqtype = retained ? REQ_SC_PUB_RETAINED : REQ_SC_PUB;
     char topic[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, topic, sizeof(topic), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess, reqtype);
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         return;
     }
     // publish/publish_retained topic 必须精确,拒绝含通配的 topic
     // (否则 retained 槽位可写但永远不会被 deliver,徒留垃圾)
     if (ERR_OK != path_validate(ctx->rules, topic, PATH_KIND_LITERAL)) {
-        _sc_resp_failed(ctx, src, sess, reqtype);
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         return;
     }
-    if (br->size - br->offset < 4) {
-        _sc_resp_failed(ctx, src, sess, reqtype);
+    if (!binary_have(br, 4)) {
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         return;
     }
     uint32_t plen = (uint32_t)binary_get_uinteger(br, 4, 0);
-    if (br->size - br->offset < (size_t)plen) {
-        _sc_resp_failed(ctx, src, sess, reqtype);
+    if (!binary_have(br, (size_t)plen)) {
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         return;
     }
     const void *payload = (plen > 0) ? binary_get_binary(br, plen) : NULL;
@@ -873,18 +878,18 @@ static void _sc_handle_pub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         // 超长 retained 按头文件契约拒绝：返 ERR_FAILED、不 deliver 不存储，避免静默数据丢失
         if (plen > SC_RETAINED_MAX_SIZE) {
             LOG_WARN("subcenter retained too large: topic=%s size=%u", topic, plen);
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             return;
         }
         _sc_update_retained(ctx, src, topic, payload, plen);
         if (0 == plen) {
             // 清空 retained 后不 deliver
-            _sc_resp_ok(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_OK);
             return;
         }
     }
-    _sc_publish_deliver(ctx, src, topic, payload, plen);
-    _sc_resp_ok(ctx, src, sess, reqtype);
+    _sc_publish_deliver(ctx, src, topic, payload, plen, retained);
+    _svpub_respond(ctx->loader, src, reqtype, sess, ERR_OK);
 }
 // handler:SET_META。mlen=0 删除 publisher_meta 条目(等价"清除");
 // 否则 MALLOC + memcpy 覆盖现有 entry,或新建条目入 hashmap
@@ -919,7 +924,7 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
     const char *meta;
     uint16_t mlen;
     if (ERR_OK != _sc_read_lp16_max(br, &meta, &mlen, SC_META_MAX_SIZE)) {
-        _sc_resp_failed(ctx, src, sess, REQ_SC_SET_META);
+        _svpub_respond(ctx->loader, src, REQ_SC_SET_META, sess, ERR_FAILED);
         return;
     }
     sc_publisher_meta q;
@@ -930,7 +935,7 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
         if (NULL != removed) {
             _sc_pm_free(removed);
         }
-        _sc_resp_ok(ctx, src, sess, REQ_SC_SET_META);
+        _svpub_respond(ctx->loader, src, REQ_SC_SET_META, sess, ERR_OK);
         return;
     }
     sc_publisher_meta *e = (sc_publisher_meta *)hashmap_get(ctx->publisher_meta, &q);
@@ -950,11 +955,11 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
         hashmap_set(ctx->publisher_meta, &ne);
         if (hashmap_oom(ctx->publisher_meta)) {
             FREE(ne.meta);
-            _sc_resp_failed(ctx, src, sess, REQ_SC_SET_META);
+            _svpub_respond(ctx->loader, src, REQ_SC_SET_META, sess, ERR_FAILED);
             return;
         }
     }
-    _sc_resp_ok(ctx, src, sess, REQ_SC_SET_META);
+    _svpub_respond(ctx->loader, src, REQ_SC_SET_META, sess, ERR_OK);
 }
 // hashmap_iter 回调(retained_index):对匹配 pattern 的每条 retained 写入 wire buf,
 // 达到 SC_QUERY_RETAINED_BURST_MAX 后 truncated=1 + 返 false 终止 scan
@@ -1003,14 +1008,14 @@ static void _sc_grab_respond(sc_ctx *ctx, name_t src, uint64_t sess, subtype_t r
 static void _sc_handle_query_retained(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     char pattern[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, pattern, sizeof(pattern), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess, REQ_SC_QUERY_RETAINED);
+        _svpub_respond(ctx->loader, src, REQ_SC_QUERY_RETAINED, sess, ERR_FAILED);
         return;
     }
     if (ERR_OK != path_validate(ctx->rules, pattern, PATH_KIND_WILDCARD)) {
-        _sc_resp_failed(ctx, src, sess, REQ_SC_QUERY_RETAINED);
+        _svpub_respond(ctx->loader, src, REQ_SC_QUERY_RETAINED, sess, ERR_FAILED);
         return;
     }
-    if (INVALID_TNAME == src || 0 == sess) {
+    if (INVALID_TNAME == src) {
         return;// 无人接响应,跳过 scan 工作
     }
     binary_ctx bw;
@@ -1039,8 +1044,8 @@ static void _sc_list_visit(const char *path, void *payload, void *udata) {
 }
 // handler:LIST。path_scan 全 trie 把每个 topic 的订阅信息(normal/shared count)写入 wire buf
 static void _sc_handle_list(sc_ctx *ctx, name_t src, uint64_t sess) {
-    if (INVALID_TNAME == src || 0 == sess) {
-        return;
+    if (INVALID_TNAME == src) {
+        return;// 同上,无人接响应就不做 scan
     }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
@@ -1062,8 +1067,8 @@ static bool _sc_retained_list_iter(const void *item, void *udata) {
 }
 // handler:RETAINED_LIST。hashmap_scan 把每条 retained 的元信息写入 wire buf(不含 payload)
 static void _sc_handle_retained_list(sc_ctx *ctx, name_t src, uint64_t sess) {
-    if (INVALID_TNAME == src || 0 == sess) {
-        return;
+    if (INVALID_TNAME == src) {
+        return;// 同上,无人接响应就不做 scan
     }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
@@ -1081,7 +1086,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
     switch (reqtype) {
     case REQ_SC_SUB:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1089,7 +1094,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_SC_SUB_SHARED:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1097,7 +1102,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_SC_UNSUB:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1105,7 +1110,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_SC_UNSUB_SHARED:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1113,7 +1118,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_SC_PUB:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1121,7 +1126,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_SC_PUB_RETAINED:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1132,7 +1137,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_SC_QUERY_RETAINED:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1140,7 +1145,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_SC_SET_META:
         if (NULL == data) {
-            _sc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -1150,7 +1155,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         _sc_handle_retained_list(ctx, src, sess);
         break;
     default:
-        _sc_resp_failed(ctx, src, sess, reqtype);
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         break;
     }
 }
@@ -1189,6 +1194,7 @@ int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules) 
     CALLOC(ctx, 1, sizeof(sc_ctx));
     ctx->loader = loader;
     ctx->rules = rules;
+    tda_init(&ctx->retained_skip_tda, 1);// 首次就报，之后 2/4/8… 次各报一遍
     ctx->topics = path_new(rules, _sc_topic_data_free);
     if (NULL == ctx->topics) {
         FREE(ctx);

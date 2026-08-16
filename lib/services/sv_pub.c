@@ -53,3 +53,14 @@ int32_t _svpub_send(task_ctx *task, name_t name, subtype_t req, uint64_t sess,
     }
     return _svpub_send_dst(dst, task, req, sess, buf, lens);
 }
+void _svpub_respond(loader_ctx *loader, name_t src, subtype_t req, uint64_t sess, int32_t erro) {
+    if (INVALID_TNAME == src) {
+        return;
+    }
+    task_ctx *dst = task_grab(loader, src);
+    if (NULL == dst) {
+        return;
+    }
+    task_response(dst, req, sess, erro, NULL, 0, 0);
+    task_ungrab(dst);
+}

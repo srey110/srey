@@ -242,9 +242,9 @@ static inline int32_t _olp_call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int3
 static inline int32_t _olp_call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.exch_cb) {
 #if WITH_SSL
-        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud, oltcp->ssl);
+        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud, oltcp->ssl);
 #else
-        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud, NULL);
+        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud, NULL);
 #endif
     }
     return ERR_OK;
@@ -252,20 +252,20 @@ static inline int32_t _olp_call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *ol
 // 调用数据接收回调（nread > 0 才触发）
 static inline void _olp_call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
     if (nread > 0) {
-        oltcp->cbs.r_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->buf_r, nread, &oltcp->ud);
+        oltcp->cbs.r_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->buf_r, nread, &oltcp->ud);
     }
 }
 // 调用发送完成回调（nsend > 0 且有s_cb 才触发）
 static inline void _olp_call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nsend) {
     if (NULL != oltcp->cbs.s_cb
         && nsend > 0) {
-        oltcp->cbs.s_cb(ev, oltcp->ol_s.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), nsend, &oltcp->ud);
+        oltcp->cbs.s_cb(ev, oltcp->ol_s.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), nsend, &oltcp->ud);
     }
 }
 // 调用连接关闭回调
 static inline void _olp_call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.c_cb) {
-        oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
+        oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud);
     }
 }
 // 调用UDP关闭回调

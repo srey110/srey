@@ -11,8 +11,6 @@ void _mongo_init(void *hspush);
 void _mongo_pkfree(void *pack);
 // 释放 ud_cxt 中挂载的 mongo_ctx 相关资源（scram/error），并重置 fd
 void _mongo_udfree(ud_cxt *ud);
-// 连接关闭时的清理回调，等同于 _mongo_udfree
-void _mongo_closed(ud_cxt *ud);
 /// <summary>
 /// 从缓冲区解析一个完整的 MongoDB OP_MSG 数据包；AUTH 状态下内部处理 SCRAM 认证流程
 /// </summary>

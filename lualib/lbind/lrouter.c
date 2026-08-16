@@ -26,10 +26,7 @@ static int32_t _lrouter_free(lua_State *lua) {
 /// <returns type="integer">成功时是路由索引（≥0）；失败时是 router_add_index 的失败码
 /// （-1 路径非法或方法未知，-2 已有等价路由把它遮住），调用方据此给出不同提示</returns>
 static int32_t _lrouter_add(lua_State *lua) {
-    router_ctx **pr = luaL_checkudata(lua, 1, MT_ROUTER);
-    if (NULL == *pr) {
-        return luaL_error(lua, "router freed");
-    }
+    LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
     size_t mlen;
     const char *method = luaL_checklstring(lua, 2, &mlen);
     size_t plen;
@@ -41,8 +38,7 @@ static int32_t _lrouter_add(lua_State *lua) {
 }
 // dispatch 只用 path 与 param 两个字段（见 router.lua 的 _make_ctx），这里就只压这两个。
 // 不复用 lpub_push_url_table：那个是 url.parse 的通用序列化器，每次会额外造出 segs 数组
-// 加每段一个 Lua 字符串、一张按 URL_MAX_PARAM 预留 64 个 hash 槽(约 1.5KB)的 param 表、
-// 以及重组一遍 query 串——对每个 HTTP 请求都白付一次
+// 加每段一个 Lua 字符串，还要重组一遍 query 串——对每个 HTTP 请求都白付一次
 static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
     lua_createtable(lua, 0, 2);
     // "/" 与 "//" 的段全是空段，被 router_match_index 剔光后 npath 归零，
@@ -57,13 +53,9 @@ static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
     }
     lua_setfield(lua, -2, "path");
     // 按实际参数个数建表，不按 URL_MAX_PARAM 预留
-    int32_t n = 0;
-    while (n < URL_MAX_PARAM && NULL != url->param[n].key.data) {
-        n++;
-    }
-    lua_createtable(lua, 0, n);
+    lua_createtable(lua, 0, url->nparam);
     url_param *param;
-    for (int32_t i = 0; i < n; i++) {
+    for (int32_t i = 0; i < url->nparam; i++) {
         param = &url->param[i];
         lua_pushlstring(lua, param->key.data, param->key.lens);
         if (buf_empty(&param->val)) {
@@ -87,10 +79,7 @@ static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
 /// <returns type="integer?">路由索引（≥0）；仅命中时返回</returns>
 /// <returns type="table?">路径参数表；仅命中时返回</returns>
 static int32_t _lrouter_match(lua_State *lua) {
-    router_ctx **pr = luaL_checkudata(lua, 1, MT_ROUTER);
-    if (NULL == *pr) {
-        return luaL_error(lua, "router freed");
-    }
+    LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
     size_t mlen;
     const char *method = luaL_checklstring(lua, 2, &mlen);
     size_t ulen;

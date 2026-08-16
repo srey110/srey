@@ -12,6 +12,7 @@ local dns     = require("srey.dns")
 local websock = require("srey.websock")
 local datacenter = require("srey.datacenter")
 local subcenter  = require("srey.subcenter")
+local custz   = require("srey.custz")
 
 srey.startup(function()
 runner.run("utils", function(t)
@@ -133,6 +134,44 @@ runner.run("utils", function(t)
         t:eq(true, rejects(ring.find, ring, ptr, -1), "hashring:find 负长度被拒")
         t:eq(true, rejects(ring.add, ring, 8, ptr, -1), "hashring:add 负长度被拒")
         t:eq(true, rejects(ring.remove, ring, ptr, -1), "hashring:remove 负长度被拒")
+
+        -- 端口入口：统一走 lpub_check_port，越界当场 argerror 而不是静默截断。
+        -- 截断是语义反转不是数值偏差 —— 65536 截成 0，listen 照样返回合法监听 id，
+        -- 内核却分配了随机临时端口，服务"起来了"但在预期端口上不可达
+        t:eq(true, rejects(srey.listen, PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", 65536),
+             "listen 端口 65536 被拒")
+        t:eq(true, rejects(srey.listen, PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", -1),
+             "listen 端口 -1 被拒")
+        t:eq(true, rejects(srey.connect, PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", 65616),
+             "connect 端口 65616 被拒")
+        local _, perr = pcall(srey.listen, PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", 70000)
+        t:check(type(perr) == "string" and nil ~= perr:find("port out of range"),
+                "端口越界报的是 port out of range")
+
+        -- pktype 入口：枚举外的值当场报错，不能一路存进 ud->pktype。
+        -- 那样 prots.c 各处分派全落到 default，收发"跑得起来"却只是原样透传，业务查不出所以然
+        t:eq(true, rejects(srey.listen, 999, SSL_NAME.NONE, "127.0.0.1", 18999),
+             "listen 未知 pktype 被拒")
+        t:eq(true, rejects(srey.connect, 999, SSL_NAME.NONE, "127.0.0.1", 18999),
+             "connect 未知 pktype 被拒")
+        local _, kerr = pcall(srey.listen, 999, SSL_NAME.NONE, "127.0.0.1", 18999)
+        t:check(type(kerr) == "string" and nil ~= kerr:find("unknown pack type"),
+                "未知 pktype 报的是 unknown pack type")
+        -- custz.pack 更严：非 PACK_CUSTZ_* 传进 custz_pack 会撞 ASSERTAB 直接 abort 进程
+        t:eq(true, rejects(custz.pack, PACK_TYPE.HTTP, "x"),
+             "custz.pack 非 custz 子类型被拒")
+        t:eq(true, rejects(custz.pack, 999, "x"),
+             "custz.pack 未知 pktype 被拒")
+        -- sock_pack_type 是第五个 pktype 入口，且它落到的 ud->pktype 是 uint16_t，
+        -- 不校验的话 65538 截成 2 就成了 PACK_HTTP，连接的解包协议被静默换掉
+        t:eq(true, rejects(srey.sock_pack_type, 1, 1, 65538),
+             "sock_pack_type 越界 pktype 被拒")
+        t:eq(true, rejects(srey.sock_pack_type, 1, 1, 999),
+             "sock_pack_type 未知 pktype 被拒")
+
+        local cp, cl = custz.pack(PACK_TYPE.CUSTZ_FIXED, "x")
+        t:check(cp ~= nil and cl > 1, "custz.pack 合法子类型仍可组包")
+        utils.ud_free(cp)
 
         -- 合法长度照常工作，别把正常路径一起挡了
         t:eq("probe", (seri.unpack(ptr, size)), "合法长度不受影响")

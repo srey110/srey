@@ -36,9 +36,6 @@ void _mongo_udfree(ud_cxt *ud) {
     ud->context = NULL;
     PROT_REF_RELEASE(mongo);
 }
-void _mongo_closed(ud_cxt *ud) {
-    _mongo_udfree(ud);
-}
 // 格式化 SCRAM-SHA-1 密码：对 "user:mongo:password" 计算 MD5 后转十六进制小写
 static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)]) {
     char *buf = format_va("%s:mongo:%s", mongo->user, mongo->password);
@@ -145,13 +142,13 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
     switch (mgopack->kind) {
     case 0:
         // body section: 单个 BSON doc, length 在前 4 字节
-        if (breader->size - breader->offset < 5) {
+        if (!binary_have(breader, 5)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("invalid OP_MSG kind=0 section too short.");
             return ERR_FAILED;
         }
         bson_len = (uint32_t)unpack_integer(breader->data + breader->offset, 4, 1, 0);
-        if (bson_len < 5 || (size_t)bson_len > breader->size - breader->offset) {
+        if (bson_len < 5 || !binary_have(breader, (size_t)bson_len)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("invalid OP_MSG kind=0 BSON length %u.", bson_len);
             return ERR_FAILED;
@@ -166,19 +163,19 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
         mgopack->klens = (uint32_t)binary_get_integer(breader, 4, 1);
         // klens 含自身 4 字节 size + docid C-string + 0+ BSON docs;
         // 异常值（< 5 或超出 OP_MSG body 剩余）视为协议错误
-        if (mgopack->klens < 5 ||
-            (size_t)(mgopack->klens - 4) > breader->size - breader->offset) {
+        if (mgopack->klens < 5
+            || !binary_have(breader, (size_t)(mgopack->klens - 4))) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("invalid OP_MSG kind=1 section length %u.", mgopack->klens);
             return ERR_FAILED;
         }
-        // docid 无 NUL 结尾时 binary_get_string 的 strnlen 触发 ASSERTAB abort；与下方 BSON section 过短检查同源，提前拒收防恶意 server 远程崩客户端
-        if (NULL == memchr(breader->data + breader->offset, 0, breader->size - breader->offset)) {
+        // docid 无 NUL 结尾即协议错，提前拒收防恶意 server 远程崩客户端；与下方 BSON section 过短检查同源
+        mgopack->docid = binary_try_get_string(breader);
+        if (NULL == mgopack->docid) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("OP_MSG kind=1 docid not NUL-terminated.");
             return ERR_FAILED;
         }
-        mgopack->docid = binary_get_string(breader);
         if (section_start + mgopack->klens != breader->size) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("OP_MSG multi-Section response not supported (kind=1).");
@@ -187,7 +184,7 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
         // klens=5 + docid="\0" 是协议层合法但 BSON section 为空（dlens=0）；
         // 下游 mongo_parse_*/bson_iter_init 无条件读 4 字节 doclens 触发 ASSERTAB abort,
         // 此处提前拒收避免恶意 server 26 字节构造响应远程让客户端进程崩溃
-        if (breader->size - breader->offset < 5) {
+        if (!binary_have(breader, 5)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("OP_MSG kind=1 BSON section too short.");
             return ERR_FAILED;
@@ -246,7 +243,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
         _mongo_pkfree(mgopack);
         return NULL;
     }
-    mgopack->dlens = (uint32_t)(breader.size - breader.offset);
+    mgopack->dlens = (uint32_t)binary_remain(&breader);
     mgopack->doc = breader.data + breader.offset;
     switch (ud->status) {
     case COMMAND:

@@ -164,6 +164,54 @@ static void test_binary_set_binary_self_alias(CuTest *tc) {
     binary_free(&bov);
 }
 
+/* binary_remain / binary_have / binary_try_get_string：读之前的边界判定原语。
+ * 报文长度由对端决定，binary_get_* 越界只会 ASSERTAB abort，这三个是唯一的预判手段 */
+static void test_binary_bounds(CuTest *tc) {
+    char raw[8] = { 'a', 'b', 'c', 0, 'd', 'e', 'f', 'g' };
+    binary_ctx br;
+    binary_init(&br, raw, sizeof(raw), 0);
+
+    /* remain 随游标递减，读到底为 0 */
+    CuAssertTrue(tc, sizeof(raw) == binary_remain(&br));
+    binary_get_skip(&br, 3);
+    CuAssertTrue(tc, sizeof(raw) - 3 == binary_remain(&br));
+
+    /* have：恰好够 / 差一个 / 零剩余 */
+    CuAssertTrue(tc, 0 != binary_have(&br, 5));
+    CuAssertTrue(tc, 0 == binary_have(&br, 6));
+    CuAssertTrue(tc, 0 != binary_have(&br, 0));
+    binary_get_skip(&br, 5);
+    CuAssertTrue(tc, 0 == binary_remain(&br));
+    CuAssertTrue(tc, 0 != binary_have(&br, 0));
+    CuAssertTrue(tc, 0 == binary_have(&br, 1));
+
+    /* 形参是 uint64_t：超 32 位的长度不得被截断成小值蒙混过关（m32 构建上才有区别） */
+    binary_offset(&br, 0);
+    CuAssert(tc, "a 4GiB+1 length must never be accepted on an 8-byte buffer",
+        0 == binary_have(&br, (uint64_t)0x100000001ULL));
+
+    /* try_get_string：正常取 → 剩余段无 NUL 返 NULL 且不动游标 */
+    binary_offset(&br, 0);
+    char *s = binary_try_get_string(&br);
+    CuAssertPtrNotNull(tc, s);
+    CuAssertStrEquals(tc, "abc", s);
+    CuAssertTrue(tc, 4 == br.offset);
+    size_t before = br.offset;
+    CuAssertTrue(tc, NULL == binary_try_get_string(&br)); /* "defg" 后面没有 NUL */
+    CuAssertTrue(tc, before == br.offset);
+
+    /* 空串是合法结果：只消耗那一个 NUL */
+    char nul[1] = { 0 };
+    binary_ctx bn;
+    binary_init(&bn, nul, sizeof(nul), 0);
+    char *e = binary_try_get_string(&bn);
+    CuAssertPtrNotNull(tc, e);
+    CuAssertTrue(tc, '\0' == e[0] && 1 == bn.offset);
+
+    /* 零剩余同样返 NULL 而不是断言 */
+    CuAssertTrue(tc, NULL == binary_try_get_string(&bn));
+}
+
 /* =======================================================================
  * buffer —— 分散内存读写
  * ======================================================================= */
@@ -2743,6 +2791,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_binary);
     SUITE_ADD_TEST(suite, test_binary_extra);
     SUITE_ADD_TEST(suite, test_binary_set_binary_self_alias);
+    SUITE_ADD_TEST(suite, test_binary_bounds);
     SUITE_ADD_TEST(suite, test_buffer);
     SUITE_ADD_TEST(suite, test_buffer_search_start_overflow);
     SUITE_ADD_TEST(suite, test_router_url_normalize);

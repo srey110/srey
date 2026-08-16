@@ -66,10 +66,9 @@ pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack
     }
     return pgsql_reader_index(reader, index, field);
 }
-// 与 mysql_reader.c 的 _mysql_reader_row 对称：把每个取值函数开头那三段（取行 → 类型 OID
-// 白名单 → NULL 判定）收成一处。原来 8 个函数各抄一遍，其中"row 非 NULL 就直接解引用 field"
-// 这条安全性完全依赖 pgsql_reader_name 提前挡掉 fields == NULL——那个不变式散在 8 处默默依赖，
-// 谁将来改成直接调 pgsql_reader_index 就是未初始化指针解引用；收进来之后只在这一处成立。
+// 8 个取值函数开头那三段（取行 → 类型 OID 白名单 → NULL 判定）收在这一处。
+// 与 mysql_reader.c 的 _mysql_reader_row 同形，唯一差别是那边 NULL 判定排在类型判定之前。
+// "row 非 NULL 就直接解引用 field" 靠 pgsql_reader_name 挡掉 fields == NULL，只在这里成立。
 // 返回 NULL 时 err 已写好（ERR_FAILED=取不到/类型不符，1=字段是 NULL），调用方只管返自己的零值
 static pgpack_row *_pgsql_reader_row(pgsql_reader_ctx *reader, const char *name,
                                      const int32_t *oids, int32_t noid,

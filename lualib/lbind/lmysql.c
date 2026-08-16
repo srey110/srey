@@ -66,7 +66,7 @@ static int32_t _lmysql_bind_string(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 2)) {
         name = (char *)luaL_checkstring(lua, 2);
     }
-    size_t size;
+    size_t size = 0;
     char *data = NULL;
     switch (lua_type(lua, 3)) {
     case LUA_TSTRING:
@@ -655,12 +655,8 @@ static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
 /// <returns type="_mysql_ctx?">mysql 对象；初始化失败返回 nil</returns>
 static int32_t _lmysql_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
-    struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 3)) {
-        LUACHECK_LUDATA(lua, 3);
-        evssl = lua_touserdata(lua, 3);
-    }
+    uint16_t port = lpub_check_port(lua, 2);
+    struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *user = luaL_checkstring(lua, 4);
     const char *password = luaL_checkstring(lua, 5);
     const char *database = luaL_checkstring(lua, 6);

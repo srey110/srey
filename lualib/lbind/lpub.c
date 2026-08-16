@@ -40,6 +40,47 @@ size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max) {
     luaL_argcheck(lua, lens >= 0 && (0 == max || (size_t)lens <= max), idx, LENS_RANGE);
     return (size_t)lens;
 }
+uint16_t lpub_check_port(lua_State *lua, int32_t idx) {
+    lua_Integer port = luaL_checkinteger(lua, idx);
+    luaL_argcheck(lua, port >= 0 && port <= UINT16_MAX, idx, "port out of range");
+    return (uint16_t)port;
+}
+// 不写 default：新增 pack_type 时 -Wswitch 报在这里，逼着表态它能不能从 Lua 传进来。
+// 只管本函数这一件事；协议分派那边的绊线在 prots.c 各 switch 自己身上
+pack_type lpub_check_pktype(lua_State *lua, int32_t idx) {
+    lua_Integer val = luaL_checkinteger(lua, idx);
+    // 先按 lua_Integer 卡范围再收窄：pack_type 是 4 字节，先转再判的话 2^32+2 会截成 2 混成 PACK_HTTP
+    if (val < 0
+        || val > PACK_UDP_KCP) {
+        luaL_argerror(lua, idx, "unknown pack type");
+    }
+    switch ((pack_type)val) {
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_HTTP:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
+    case PACK_MYSQL:
+    case PACK_PGSQL:
+    case PACK_MONGO:
+    case PACK_UDP_KCP:
+        return (pack_type)val;
+    }
+    luaL_argerror(lua, idx, "unknown pack type");
+    return PACK_NONE;// 到不了: luaL_argerror 会 longjmp
+}
+struct evssl_ctx *lpub_check_evssl(lua_State *lua, int32_t idx) {
+    if (LUA_TNIL == lua_type(lua, idx)) {
+        return NULL;
+    }
+    LUACHECK_LUDATA(lua, idx);
+    return lua_touserdata(lua, idx);
+}
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy) {
     int32_t type = lua_type(lua, *idx);
     if (LUA_TSTRING == type) {
@@ -65,7 +106,7 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
         return ud;
     }
     luaL_argerror(lua, *idx, "string or light userdata expected");
-    return NULL;//unreachable: luaL_argerror longjmp
+    return NULL;// 到不了: luaL_argerror 会 longjmp
 }
 // idx 按值的兼容包装,丢弃推进位置
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
@@ -149,13 +190,10 @@ void lpub_push_url_table(lua_State *lua, url_ctx *url) {
         lua_pushlstring(lua, url->anchor.data, url->anchor.lens);
         lua_setfield(lua, -2, "anchor");
     }
-    lua_createtable(lua, 0, URL_MAX_PARAM);
+    lua_createtable(lua, 0, url->nparam);
     url_param *param;
-    for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
+    for (int32_t i = 0; i < url->nparam; i++) {
         param = &url->param[i];
-        if (NULL == param->key.data) {
-            break;
-        }
         lua_pushlstring(lua, param->key.data, param->key.lens);
         if (buf_empty(&param->val)) {
             lua_pushstring(lua, "");

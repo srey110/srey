@@ -28,7 +28,7 @@ static void test_http_response(CuTest *tc) {
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
 
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
 
@@ -78,7 +78,7 @@ static void test_http_pack_req(CuTest *tc) {
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
 
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 0, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
 
@@ -120,7 +120,7 @@ static void _http_smuggle_checkn(CuTest *tc, const char *raw, size_t rlens, int3
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
 
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 0, &status);
     if (expect_error) {
         CuAssertTrue(tc, NULL == pack);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
@@ -139,7 +139,10 @@ static void _http_smuggle_check(CuTest *tc, const char *raw, int32_t expect_erro
     _http_smuggle_checkn(tc, raw, strlen(raw), expect_error);
 }
 
-// RFC 7230 §3.3.2 / §3.3.3 — HTTP Request Smuggling 防御
+// RFC 7230 §3.3.2 / §3.3.3 — HTTP Request Smuggling 防御。
+// 本套件全部按服务端方向(client=0)解析：喂进去的是请求，方向搞反的话
+// _http_nobody_resp 那条 1xx/204/304 规则会被误用到请求上。
+// 伪装成状态行的请求行(如 "HTTP/1.1 204 z")那一路在 test_http_nobody_status 用例 4b
 static void test_http_smuggling(CuTest *tc) {
     // 1. 重复 Content-Length 值不同（CL.CL desync）→ 拒绝
     _http_smuggle_check(tc,
@@ -473,7 +476,7 @@ static void test_http_status_line(CuTest *tc) {
     ud_cxt rud;
     ZERO(&rud, sizeof(ud_cxt));
     int32_t rstatus = PROT_INIT;
-    struct http_pack_ctx *rpack = http_unpack(&rbuf, &rud, &rstatus);
+    struct http_pack_ctx *rpack = http_unpack(&rbuf, &rud, 1, &rstatus);
     CuAssertPtrNotNull(tc, rpack);
     CuAssertTrue(tc, !BIT_CHECK(rstatus, PROT_ERROR));
     buf_ctx *rst = http_status(rpack);
@@ -494,11 +497,11 @@ static void _chunked_size_check(CuTest *tc, const char *sizeline, int32_t expect
     ud_cxt ud;
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);  // 1) header；chunked 分支不设 ud->context，手动释放
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 0, &status);  // 1) header；chunked 分支不设 ud->context，手动释放
     CuAssertPtrNotNull(tc, pack);
     _http_pkfree(pack);
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);                 // 2) chunk-size 行
+    pack = http_unpack(&buf, &ud, 0, &status);                 // 2) chunk-size 行
     if (expect_error) {
         CuAssertTrue(tc, NULL == pack);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
@@ -557,7 +560,7 @@ static void test_http_chunked_size_no_crlf_bound(CuTest *tc) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 0, &status);
     CuAssertPtrNotNull(tc, pack);
     _http_pkfree(pack);
 
@@ -566,7 +569,7 @@ static void test_http_chunked_size_no_crlf_bound(CuTest *tc) {
     // 未超上限：仍然是"等更多数据"，不能误拒
     buffer_append(&buf, filler, sizeof(filler));
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 0, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
@@ -576,7 +579,7 @@ static void test_http_chunked_size_no_crlf_bound(CuTest *tc) {
         buffer_append(&buf, filler, sizeof(filler));
     }
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 0, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
 
@@ -676,21 +679,21 @@ static void test_http_chunked_trailer_limit(CuTest *tc) {
 
     // 第 1 轮：解析 head（chunked 起始 pack）
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     _http_pkfree(pack);
 
     // 第 2 轮：解析 chunked "5\r\nhello\r\n"
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     _http_pkfree(pack);
 
     // 第 3 轮：进入终止块路径，5KB > 4KB 无 \r\n\r\n → PROT_ERROR
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 1, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
 
@@ -710,16 +713,16 @@ static void test_http_chunked_trailer_limit(CuTest *tc) {
 
     ZERO(&ud, sizeof(ud_cxt));
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     _http_pkfree(pack);
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     _http_pkfree(pack);
 
     status = PROT_INIT;
-    pack = http_unpack(&buf, &ud, &status);
+    pack = http_unpack(&buf, &ud, 1, &status);
     CuAssert(tc, "8-byte complete trailer plus 4089 bytes pipelined data (4097>4096 total) must not be rejected",
         NULL != pack && !BIT_CHECK(status, PROT_ERROR));
     CuAssert(tc, "final chunk must set PROT_SLICE_END", BIT_CHECK(status, PROT_SLICE_END));
@@ -727,6 +730,146 @@ static void test_http_chunked_trailer_limit(CuTest *tc) {
         sizeof(rest) == buffer_size(&buf));
     _http_pkfree(pack);
 
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+
+/* 回归：1xx/204/304 响应一律以头部后的空行结束（RFC 7230 §3.3.3 规则 1）。
+   修复前只看 CL/TE，304 带 Content-Length 会进 CONTENT 态，
+   在 keep-alive 上把下一条响应的头部吃成本条的 body */
+static void test_http_nobody_status(CuTest *tc) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    struct http_pack_ctx *pack;
+    buf_ctx *st;
+    void *data;
+    size_t dlen;
+
+    // 1. 304 带 Content-Length：本条无 body，紧跟的 200 必须原样解出
+    buffer_init(&buf);
+    _bput(&buf, "HTTP/1.1 304 Not Modified\r\n");
+    _bput(&buf, "ETag: \"v1\"\r\n");
+    _bput(&buf, "Content-Length: 11\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "HTTP/1.1 200 OK\r\n");
+    _bput(&buf, "Content-Length: 3\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "abc");
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    st = http_status(pack);
+    CuAssertTrue(tc, buf_compare(&st[1], "304", 3));
+    dlen = 0;
+    http_data(pack, &dlen);
+    CuAssert(tc, "304 must not carry a body", 0 == dlen);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    st = http_status(pack);
+    CuAssertTrue(tc, buf_compare(&st[1], "200", 3));
+    dlen = 0;
+    data = http_data(pack, &dlen);
+    CuAssert(tc, "the response pipelined after a 304 must survive intact", 3 == dlen);
+    CuAssertTrue(tc, 0 == memcmp(data, "abc", 3));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    // 2. 204 带 Content-Length：同上
+    buffer_init(&buf);
+    _bput(&buf, "HTTP/1.1 204 No Content\r\n");
+    _bput(&buf, "Content-Length: 5\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "HTTP/1.1 200 OK\r\n");
+    _bput(&buf, "Content-Length: 0\r\n");
+    _bput(&buf, "\r\n");
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    dlen = 0;
+    http_data(pack, &dlen);
+    CuAssert(tc, "204 must not carry a body", 0 == dlen);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    st = http_status(pack);
+    CuAssertTrue(tc, buf_compare(&st[1], "200", 3));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    // 3. 1xx 中间响应：100 Continue 之后的真正响应不能被吞掉
+    buffer_init(&buf);
+    _bput(&buf, "HTTP/1.1 100 Continue\r\n");
+    _bput(&buf, "Content-Length: 9\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "HTTP/1.1 201 Created\r\n");
+    _bput(&buf, "Content-Length: 2\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "hi");
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    dlen = 0;
+    http_data(pack, &dlen);
+    CuAssert(tc, "100 must not carry a body", 0 == dlen);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    st = http_status(pack);
+    CuAssertTrue(tc, buf_compare(&st[1], "201", 3));
+    dlen = 0;
+    data = http_data(pack, &dlen);
+    CuAssertTrue(tc, 2 == dlen && 0 == memcmp(data, "hi", 2));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    // 4b. 服务端方向(client=0)：伪造的响应式请求行不得套用该规则，否则声明的 body
+    //     会留在缓冲里被当成第二个请求解析出来——反代前置时就是一次请求走私
+    buffer_init(&buf);
+    _bput(&buf, "HTTP/1.1 204 z\r\n");
+    // 尾随的这一整条伪装请求恰 32 字节：21 + 9 + 2
+    _bput(&buf, "Content-Length: 32\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "GET /admin HTTP/1.1\r\nHost: a\r\n\r\n");
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 0, &status);
+    CuAssertPtrNotNull(tc, pack);
+    dlen = 0;
+    http_data(pack, &dlen);
+    CuAssert(tc, "on a request stream the declared body must still be consumed", 32 == dlen);
+    CuAssert(tc, "nothing may be left behind for a second parse", 0 == buffer_size(&buf));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    // 4. 反向用例：请求行首段不是 HTTP-version，request-target 恰为 "204" 也不得套用该规则
+    buffer_init(&buf);
+    _bput(&buf, "GET 204 HTTP/1.1\r\n");
+    _bput(&buf, "Content-Length: 3\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "abc");
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    dlen = 0;
+    data = http_data(pack, &dlen);
+    CuAssert(tc, "requests must keep their body regardless of the target text", 3 == dlen);
+    CuAssertTrue(tc, 0 == memcmp(data, "abc", 3));
+    _http_pkfree(pack);
     _http_udfree(&ud);
     buffer_free(&buf);
 }
@@ -743,7 +886,7 @@ static void test_http_moredata(CuTest *tc) {
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
 
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 1, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
@@ -838,7 +981,7 @@ static void test_http_pack_chunked(CuTest *tc) {
     struct http_pack_ctx *pack;
 
     // 1) 头部 → chunked 起始
-    pack = http_unpack(&playback, &ud, &status);
+    pack = http_unpack(&playback, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 1, http_chunked(pack));
@@ -847,7 +990,7 @@ static void test_http_pack_chunked(CuTest *tc) {
 
     // 2) chunk1 "AAA"
     status = PROT_INIT;
-    pack = http_unpack(&playback, &ud, &status);
+    pack = http_unpack(&playback, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertIntEquals(tc, 2, http_chunked(pack));
     size_t dlen = 0;
@@ -859,7 +1002,7 @@ static void test_http_pack_chunked(CuTest *tc) {
 
     // 3) chunk2 "BBBB"
     status = PROT_INIT;
-    pack = http_unpack(&playback, &ud, &status);
+    pack = http_unpack(&playback, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertIntEquals(tc, 2, http_chunked(pack));
     d = http_data(pack, &dlen);
@@ -870,7 +1013,7 @@ static void test_http_pack_chunked(CuTest *tc) {
 
     // 4) 终止块
     status = PROT_INIT;
-    pack = http_unpack(&playback, &ud, &status);
+    pack = http_unpack(&playback, &ud, 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertIntEquals(tc, 2, http_chunked(pack));
     CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_END));
@@ -1746,6 +1889,141 @@ static void test_url_parse_edges(CuTest *tc) {
     }
 }
 
+/* 回归：scheme 只认首个 '/' '?' '#' 之前的 "://"。
+   修复前 memstr 全串搜，"/public?next=x:///admin" 会切出 scheme="/public?next=x" + path="/admin"，
+   与字面 "/admin" 的解析结果逐字节相同 → 请求被派发到另一条路由 */
+static void test_url_scheme_relative(CuTest *tc) {
+    // 1. query 里带 "://" 的相对 URL：不得被当成绝对 URL
+    {
+        char u[] = "/public?next=x:///admin";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 0 == ctx.scheme.lens);
+        CuAssertTrue(tc, 0 == ctx.host.lens);
+        CuAssertTrue(tc, 1 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "public", 6));
+        _url_check_param(tc, &ctx, "next", "x:///admin");
+    }
+    // 2. 回调地址参数：host 不得被 query 里的 URL 顶掉，参数也不能丢
+    {
+        char u[] = "/api/v1?redirect=https://ex.com/cb";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 0 == ctx.scheme.lens);
+        CuAssertTrue(tc, 0 == ctx.host.lens);
+        CuAssertTrue(tc, 2 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "api", 3));
+        CuAssertTrue(tc, buf_compare(&ctx.segs[1], "v1", 2));
+        _url_check_param(tc, &ctx, "redirect", "https://ex.com/cb");
+    }
+    // 3. fragment 里带 "://"：同样不得触发 scheme 切分
+    {
+        char u[] = "/x#y://z";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 0 == ctx.scheme.lens);
+        CuAssertTrue(tc, 1 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "x", 1));
+        CuAssertTrue(tc, buf_compare(&ctx.anchor, "y://z", 5));
+    }
+    // 4. 真绝对 URL 不受影响：query 里再有 "://" 也只认首个 scheme
+    {
+        char u[] = "ws://h/a?u=x://q/b";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, buf_compare(&ctx.scheme, "ws", 2));
+        CuAssertTrue(tc, buf_compare(&ctx.host, "h", 1));
+        CuAssertTrue(tc, 1 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "a", 1));
+        _url_check_param(tc, &ctx, "u", "x://q/b");
+    }
+    // 5. authority-form(host:port)：':' 后不是 "//"，不算 scheme
+    {
+        char u[] = "host:8080/p";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 0 == ctx.scheme.lens);
+        CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
+        CuAssertTrue(tc, buf_compare(&ctx.port, "8080", 4));
+    }
+}
+
+/* 回归：url_parse 入口只清头部（param/segs/buf 三个大数组不再整体清零），
+   同一个 url_ctx 复用时必须靠 nparam / npath 划定有效范围，不能残留上次的参数/路径段 */
+static void test_url_ctx_reuse(CuTest *tc) {
+    url_ctx ctx;
+    char u1[] = "/a/b/c?x=1&y=2&z=3";
+    url_parse(&ctx, u1, strlen(u1), '/', 1);
+    CuAssertIntEquals(tc, 3, ctx.nparam);
+    CuAssertIntEquals(tc, 3, ctx.npath);
+    _url_check_param(tc, &ctx, "x", "1");
+
+    // 同一个 ctx 再解析一条参数更少、路径更短的 url
+    char u2[] = "/q?z=9";
+    url_parse(&ctx, u2, strlen(u2), '/', 1);
+    CuAssertIntEquals(tc, 1, ctx.nparam);
+    CuAssertIntEquals(tc, 1, ctx.npath);
+    _url_check_param(tc, &ctx, "z", "9");
+    CuAssert(tc, "stale param from the previous parse must not be visible",
+        NULL == url_get_param(&ctx, "x"));
+    CuAssert(tc, "stale param from the previous parse must not be visible",
+        NULL == url_get_param(&ctx, "y"));
+    CuAssertTrue(tc, buf_compare(&ctx.segs[0], "q", 1));
+
+    // 完全没有查询串时 nparam 归零，重组也应得空串
+    char u3[] = "/onlypath";
+    url_parse(&ctx, u3, strlen(u3), '/', 1);
+    CuAssertIntEquals(tc, 0, ctx.nparam);
+    CuAssertTrue(tc, NULL == url_get_param(&ctx, "z"));
+    char qbuf[64];
+    CuAssertIntEquals(tc, 0, (int)url_reorg_param(&ctx, qbuf, sizeof(qbuf)));
+    CuAssertTrue(tc, '\0' == qbuf[0]);
+
+    // 无值参数的 val 由 _url_param 显式清空，不能读到上次的 val
+    char u4[] = "/p?a=vvv";
+    url_parse(&ctx, u4, strlen(u4), '/', 1);
+    char u5[] = "/p?a";
+    url_parse(&ctx, u5, strlen(u5), '/', 1);
+    buf_ctx *v = url_get_param(&ctx, "a");
+    CuAssertPtrNotNull(tc, v);
+    CuAssert(tc, "valueless param must not inherit the previous value", 0 == v->lens);
+}
+
+/* 回归：userinfo 以 authority 里最后一个 '@' 为界(RFC 3986 §3.2)。
+   取第一个的话 "user@host@evil.com" 的 host 会被认成 "host@evil.com"，
+   与浏览器/curl 不一致——先按 host 过白名单再把原 URL 交出去就成了校验绕过 */
+static void test_url_userinfo_last_at(CuTest *tc) {
+    {
+        char u[] = "http://user@host@evil.com/p";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, buf_compare(&ctx.user, "user@host", 9));
+        CuAssertTrue(tc, buf_compare(&ctx.host, "evil.com", 8));
+        CuAssertTrue(tc, 1 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "p", 1));
+    }
+    // 单个 '@' 的常规形态不受影响，密码段照旧
+    {
+        char u[] = "http://user:pwd@host:5432/db";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, buf_compare(&ctx.user, "user", 4));
+        CuAssertTrue(tc, buf_compare(&ctx.psw, "pwd", 3));
+        CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
+        CuAssertTrue(tc, buf_compare(&ctx.port, "5432", 4));
+    }
+    // path/query 里的 '@' 不参与 authority 切分
+    {
+        char u[] = "http://host/a@b?k=c@d";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 0 == ctx.user.lens);
+        CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "a@b", 3));
+        _url_check_param(tc, &ctx, "k", "c@d");
+    }
+}
+
 /* url_reorg_param：重组 query 参数字符串（decode=0，保留原始编码） */
 static void test_url_reorg_param(CuTest *tc) {
     url_ctx ctx;
@@ -2001,7 +2279,7 @@ static void test_http_value_trailing_ows(CuTest *tc) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 0, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     size_t vlens = 0;
@@ -2579,6 +2857,13 @@ static void test_custz_head_fixed(CuTest *tc) {
         _custz_decode_fixed(&buf, &h, &s, &status));
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     buffer_free(&buf);
+
+    /* 回归：dlens 超 UINT32_MAX 须返 NULL。不挡的话头里只落低 32 位，
+       对端按截断值收完就把余下载荷当下一个包的头继续解析 —— 静默流错位。
+       32 位平台上 size_t 本就装不下这种值，故只在 64 位构造 */
+    if (sizeof(size_t) > 4) {
+        CuAssertTrue(tc, NULL == _custz_encode_fixed((size_t)UINT32_MAX + 1, &h, &s));
+    }
 }
 
 static void _custz_head_roundtrip_flag(CuTest *tc, size_t dlens, size_t expected_hlens) {
@@ -3682,7 +3967,7 @@ static void test_http_header_at(CuTest *tc) {
     ZERO(&ud, sizeof(ud));
     int32_t status = PROT_INIT;
 
-    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 0, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 3 == http_nheader(pack));
 
@@ -3974,6 +4259,32 @@ static void test_websock_unpack_extended_64(CuTest *tc) {
     CuAssertTrue(tc, NULL == pack2);
     CuAssertTrue(tc, BIT_CHECK(status2, PROT_ERROR));
     buffer_free(&buf2);
+
+    // 子用例 3：长度取 SIZE_MAX-15，回绕后 sizeof(pack)+dlens 会变成一个小值。
+    // 默认配置下 PACK_TOO_LONG 先挡住；MAX_PACK_SIZE 配成 0 时由 MAX_PAYLOAD_LENS 兜底，
+    // 本用例钉住的是"必须拒绝"这个结果，两条守卫少哪条都会挂
+    unsigned char head3[10] = {
+        0x82,
+        0x7f,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf0
+    };
+    buffer_ctx buf3;
+    buffer_init(&buf3);
+    buffer_append(&buf3, head3, sizeof(head3));
+
+    test_ws_ctx ws3;
+    ZERO(&ws3, sizeof(ws3));
+    ws3.secprot = PACK_NONE;
+    ud_cxt ud3;
+    ZERO(&ud3, sizeof(ud3));
+    ud3.status = 1;
+    ud3.context = &ws3;
+    int32_t status3 = PROT_INIT;
+    struct websock_pack_ctx *pack3 = websock_unpack(NULL, INVALID_SOCK, 0,
+        1, &buf3, &ud3, &status3);
+    CuAssertTrue(tc, NULL == pack3);
+    CuAssertTrue(tc, BIT_CHECK(status3, PROT_ERROR));
+    buffer_free(&buf3);
 }
 
 // mail.c 附件路径：mail_attach_add 读取临时文件 → base64 编码到 attach->content
@@ -4061,7 +4372,33 @@ static void test_mail_attach_pack(CuTest *tc) {
 #define _SMTP_LOGIN      1
 #define _SMTP_PLAIN      2
 
+// 握手回传桩。_smtp_connected 与 _smtp_auth_check 在被服务端拒绝时会把原文推给上层，
+// 而纯解析测试没起 loader，prots_init 从没跑过，_hs_push 就是个空指针。
+// 生产路径由 task 接管并释放载荷，这里桩自己收，免得 MEMORY_CHECK 报泄漏
+static int32_t g_smtp_hs_calls;
+static int32_t g_smtp_hs_erro;
+static char g_smtp_hs_msg[128];
+static int32_t _stub_smtp_hspush(SOCKET fd, uint64_t skid, int32_t client,
+                                 ud_cxt *ud, int32_t erro, void *data, size_t lens) {
+    (void)fd;
+    (void)skid;
+    (void)client;
+    (void)ud;
+    g_smtp_hs_calls++;
+    g_smtp_hs_erro = erro;
+    g_smtp_hs_msg[0] = '\0';
+    if (NULL != data && lens < sizeof(g_smtp_hs_msg)) {
+        memcpy(g_smtp_hs_msg, data, lens);
+        g_smtp_hs_msg[lens] = '\0';
+    }
+    FREE(data);
+    return ERR_OK;
+}
 static void _smtp_ud_setup(smtp_ctx *smtp, ud_cxt *ud, int32_t state) {
+    _smtp_init(_stub_smtp_hspush);
+    g_smtp_hs_calls = 0;
+    g_smtp_hs_erro = ERR_OK;
+    g_smtp_hs_msg[0] = '\0';
     ZERO(smtp, sizeof(smtp_ctx));
     safe_fill_str(smtp->user, sizeof(smtp->user), "alice");
     safe_fill_str(smtp->psw, sizeof(smtp->psw), "secret");
@@ -4119,6 +4456,24 @@ static void test_smtp_unpack_state_init(CuTest *tc) {
         smtp_unpack(NULL, INVALID_SOCK, 0, &buf, &ud, &size, &status);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
         CuAssertIntEquals(tc, _SMTP_INIT, ud.status);
+        // 拒绝原文必须带回给等待者，而不是随连接一起丢掉
+        CuAssertIntEquals(tc, 1, g_smtp_hs_calls);
+        CuAssertIntEquals(tc, ERR_FAILED, g_smtp_hs_erro);
+        CuAssertStrEquals(tc, "421 service unavailable", g_smtp_hs_msg);
+        buffer_free(&buf);
+    }
+    // 拒绝行还没收全(无 CRLF)时不该硬凑：判 MOREDATA，也不推半截原文
+    {
+        smtp_ctx smtp;
+        ud_cxt ud;
+        _smtp_ud_setup(&smtp, &ud, _SMTP_INIT);
+        buffer_ctx buf;
+        buffer_init(&buf);
+        _bput(&buf, "421 service");
+        int32_t status = PROT_INIT;
+        size_t size = 0;
+        smtp_unpack(NULL, INVALID_SOCK, 0, &buf, &ud, &size, &status);
+        CuAssertIntEquals(tc, 0, g_smtp_hs_calls);
         buffer_free(&buf);
     }
 }
@@ -4331,6 +4686,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_pack_req);
     SUITE_ADD_TEST(suite, test_http_smuggling);
     SUITE_ADD_TEST(suite, test_http_status_line);
+    SUITE_ADD_TEST(suite, test_http_nobody_status);
     SUITE_ADD_TEST(suite, test_http_chunked_size_smuggle);
     SUITE_ADD_TEST(suite, test_http_chunked_size_no_crlf_bound);
     SUITE_ADD_TEST(suite, test_http_chunked_ext);
@@ -4353,6 +4709,9 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_redis_nesting);
     SUITE_ADD_TEST(suite, test_url_parse);
     SUITE_ADD_TEST(suite, test_url_parse_edges);
+    SUITE_ADD_TEST(suite, test_url_scheme_relative);
+    SUITE_ADD_TEST(suite, test_url_userinfo_last_at);
+    SUITE_ADD_TEST(suite, test_url_ctx_reuse);
     SUITE_ADD_TEST(suite, test_url_reorg_param);
     SUITE_ADD_TEST(suite, test_custz);
     SUITE_ADD_TEST(suite, test_custz_maxpack);

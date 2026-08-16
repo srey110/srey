@@ -265,14 +265,10 @@ static int32_t _lcore_response(lua_State *lua) {
 /// <param name="netev" type="integer?">事件订阅掩码，默认 NETEV_NONE</param>
 /// <returns type="integer">监听 id，失败返回 -1</returns>
 static int32_t _lcore_listen(lua_State *lua) {
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
-    struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 2)) {
-        LUACHECK_LUDATA(lua, 2);
-        evssl = lua_touserdata(lua, 2);
-    }
+    pack_type pktype = lpub_check_pktype(lua, 1);
+    struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    uint16_t port = lpub_check_port(lua, 4);
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t id;
     LPUB_CUR_TASK(lua, task);
@@ -306,24 +302,22 @@ static int32_t _lcore_unlisten(lua_State *lua) {
 /// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
 /// <returns type="integer?">skid（连接唯一序号）；仅在 fd 有效时有效</returns>
 static int32_t _lcore_connect(lua_State *lua) {
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
-    struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 2)) {
-        LUACHECK_LUDATA(lua, 2);
-        evssl = lua_touserdata(lua, 2);
-    }
+    pack_type pktype = lpub_check_pktype(lua, 1);
+    struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    uint16_t port = lpub_check_port(lua, 4);
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
+    // extra 的所有权在 lua_touserdata 那一刻就离开了 Lua，之后到 task_connect 接管为止不能再有
+    // 任何会 longjmp 的调用，否则它既没进框架也没人 ud_free。setsess 与取 task 因此排在前面
+    int32_t setsess = (int32_t)luaL_optinteger(lua, 7, 1);
+    LPUB_CUR_TASK(lua, task);
     void *extra = NULL;
     if (!lua_isnoneornil(lua, 6)) {
         LUACHECK_LUDATA(lua, 6);
         extra = lua_touserdata(lua, 6);
     }
-    int32_t setsess = (int32_t)luaL_optinteger(lua, 7, 1);
     SOCKET fd;
     uint64_t skid;
-    LPUB_CUR_TASK(lua, task);
     if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, setsess, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
@@ -366,9 +360,9 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
 /// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
 /// <returns type="integer?">skid；仅在 fd 有效时有效</returns>
 static int32_t _lcore_udp(lua_State *lua) {
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
+    pack_type pktype = lpub_check_pktype(lua, 1);
     const char *ip = luaL_checkstring(lua, 2);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
+    uint16_t port = lpub_check_port(lua, 3);
     SOCKET fd;
     uint64_t skid;
     LPUB_CUR_TASK(lua, task);
@@ -431,6 +425,8 @@ static int32_t _lcore_send_multi(lua_State *lua) {
         lua_pushboolean(lua, 0);
         return 1;
     }
+    // 校验必须整趟走完再分配：n_fds 来自 luaL_len，会走 __len 元方法，是业务可控的。
+    // 撒谎的 __len 在这里撞上首个 nil 就报错退出，分配那步根本到不了
     lua_Integer i;
     for (i = 0; i < n_fds; i++) {
         lua_rawgeti(lua, 1, i + 1);
@@ -448,10 +444,11 @@ static int32_t _lcore_send_multi(lua_State *lua) {
         }
         lua_pop(lua, 1);
     }
-    SOCKET *fds;
+    // 一块内存切两段，skids 在前：它要 8 字节对齐，SOCKET 的对齐要求不高于它，故 fds 接在后面必然合法。
+    // 只有 skids 是分配返回的那个指针，释放也只能释放它
     uint64_t *skids;
-    MALLOC(fds, sizeof(SOCKET) * (size_t)n_fds);
-    MALLOC(skids, sizeof(uint64_t) * (size_t)n_fds);
+    MALLOC(skids, (sizeof(uint64_t) + sizeof(SOCKET)) * (size_t)n_fds);
+    SOCKET *fds = (SOCKET *)(skids + n_fds);
     for (i = 0; i < n_fds; i++) {
         lua_rawgeti(lua, 1, i + 1);
         fds[i] = (SOCKET)lua_tointeger(lua, -1);
@@ -462,7 +459,6 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     }
     int32_t r = ev_send_multi(&g_loader->netev, fds, skids, (int32_t)n_fds,
                               data, size, copy);
-    FREE(fds);
     FREE(skids);
     lua_pushboolean(lua, ERR_OK == r ? 1 : 0);
     return 1;
@@ -482,7 +478,7 @@ static int32_t _lcore_sendto(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    uint16_t port = lpub_check_port(lua, 4);
     void *data;
     size_t size;
     int32_t copy;
@@ -581,7 +577,8 @@ static int32_t _lcore_close(lua_State *lua) {
 static int32_t _lcore_pack_type(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    subtype_t pktype = (subtype_t)luaL_checkinteger(lua, 3);
+    // ud->pktype 是 uint16_t，比 pack_type 还窄；不校验的话 65538 截成 2 就成了 PACK_HTTP
+    subtype_t pktype = (subtype_t)lpub_check_pktype(lua, 3);
     if (ERR_OK != ev_ud_pktype(&g_loader->netev, fd, skid, pktype)) {
         lua_pushboolean(lua, 0);
     } else {
@@ -658,7 +655,7 @@ static int32_t _lcore_session(lua_State *lua) {
 /// <param name="data" type="lightuserdata">协议层封包指针</param>
 /// <returns type="boolean">可唤醒等待者 true；false 表示该包不走命令响应路径</returns>
 static int32_t _lcore_may_resume(lua_State *lua) {
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
+    pack_type pktype = lpub_check_pktype(lua, 1);
     LUACHECK_LUDATA(lua, 2);
     void *data = lua_touserdata(lua, 2);
     if (ERR_OK == prots_may_resume(pktype, data)) {

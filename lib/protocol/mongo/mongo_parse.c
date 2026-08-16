@@ -1,6 +1,18 @@
 ﻿#include "protocol/mongo/mongo_parse.h"
 #include "serial/bson.h"
 
+// 取 BSON 的 ok 字段(线上是 double)。NaN/Inf/超范围转 int32 各架构结论不同，
+// x86 上会得到非 0 值被判成成功，所以取不到合法数值一律当失败
+static int32_t _mongo_iter_ok(bson_iter *iter) {
+    double val = bson_iter_double(iter, NULL);
+    if (isnan(val)
+        || isinf(val)
+        || val < (double)INT32_MIN
+        || val > (double)INT32_MAX) {
+        return 0;
+    }
+    return (int32_t)val;
+}
 int32_t mongo_parse_auth_response(mgopack_ctx *mgopack, int32_t *convid, int32_t *done, char **payload, size_t *plens) {
     int32_t ok = 0;
     *convid = 0;
@@ -17,7 +29,7 @@ int32_t mongo_parse_auth_response(mgopack_ctx *mgopack, int32_t *convid, int32_t
         } else if (0 == strcmp(iter.key, "done")) {
             *done = bson_iter_bool(&iter, NULL);
         } else if (0 == strcmp(iter.key, "ok")) {
-            ok = (int32_t)bson_iter_double(&iter, NULL);
+            ok = _mongo_iter_ok(&iter);
         } else if (0 == strcmp(iter.key, "payload")) {
             *payload = bson_iter_binary(&iter, NULL, plens, NULL);
         }
@@ -53,7 +65,7 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack) {
     while (bson_iter_next(&iter)) {
         if (0 == strcmp(iter.key, "ok")) {
             count++;
-            ok = (int32_t)bson_iter_double(&iter, NULL);
+            ok = _mongo_iter_ok(&iter);
             if (!ok) {
                 break;
             }
@@ -98,7 +110,7 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
     int32_t hasid = 0;
     while (bson_iter_next(&iter)) {
         if (0 == strcmp(iter.key, "ok")) {
-            ok = (int32_t)bson_iter_double(&iter, NULL);
+            ok = _mongo_iter_ok(&iter);
             if (!ok) {
                 break;
             }

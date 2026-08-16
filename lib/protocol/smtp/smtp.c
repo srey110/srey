@@ -33,9 +33,6 @@ void _smtp_udfree(ud_cxt *ud) {
     ud->context = NULL;
     PROT_REF_RELEASE(smtp);
 }
-void _smtp_closed(ud_cxt *ud) {
-    _smtp_udfree(ud);
-}
 int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw) {
     ZERO(smtp, sizeof(smtp_ctx));
     smtp->port = port;
@@ -146,6 +143,15 @@ int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
     }
     return 0;
 }
+// 把缓冲区开头到 crlf 之间的那行原文当失败原因回给等待者（问候被拒与认证被拒共用）。
+// 载荷所有权交给 _hs_push，成功失败它都会释放，调用方不必也不能再碰；
+// 从哪儿开始找 CRLF、事后要不要 drain，两个调用点各不相同，留在各自那边
+static void _smtp_push_errline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx *buf, int32_t crlf) {
+    char *line;
+    CALLOC(line, 1, (size_t)crlf + 1);
+    ASSERTAB((size_t)crlf == buffer_copyout(buf, 0, line, (size_t)crlf), "copy buffer failed.");
+    _hs_push(fd, skid, 1, ud, ERR_FAILED, line, (size_t)crlf);
+}
 // INIT 阶段：等待服务端 220 欢迎行，收到后发送 EHLO 命令并切换到 EHLO 状态。
 // EHLO 参数直接取 220 行中的服务器主机名（"220[ -]hostname ..."的第二个 token），
 // 以服务器返回值为准，避免本机 gethostname() 返回无效域名被拒绝。
@@ -154,6 +160,14 @@ static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *bu
     int32_t total = _smtp_full_response(buf, "220");
     if (ERR_FAILED == total) {
         BIT_SET(*status, PROT_ERROR);
+        // 服务端可以拿 421/554 之类的问候直接拒连(限流 / 黑名单 / TLS-only)，原因就在缓冲里这一行。
+        // 丢掉的话业务只看到一次无原因的握手失败
+        int32_t rejcrlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+        if (rejcrlf <= 0
+            || PACK_TOO_LONG(rejcrlf)) {
+            return;
+        }
+        _smtp_push_errline(fd, skid, ud, buf, rejcrlf);
         return;
     }
     if (0 == total) {
@@ -408,11 +422,8 @@ static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *
     size_t total = (size_t)crlf + CRLF_SIZE;
     if (0 != strcmp(code, "235")) {
         BIT_SET(*status, PROT_ERROR);
-        char *err;
-        CALLOC(err, 1, (size_t)crlf + 1);
-        ASSERTAB((size_t)crlf == buffer_copyout(buf, 0, err, (size_t)crlf), "copy buffer failed.");
+        _smtp_push_errline(fd, skid, ud, buf, crlf);// 取原文要在 drain 之前
         buffer_drain(buf, total);
-        _hs_push(fd, skid, 1, ud, ERR_FAILED, err, (size_t)crlf);
         return;
     }
     buffer_drain(buf, total);

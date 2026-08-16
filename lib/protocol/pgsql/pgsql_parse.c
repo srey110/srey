@@ -8,17 +8,20 @@ char *_pgpack_error_notice(binary_ctx *breader) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     for (;;) {
-        if (breader->size - breader->offset < 1) {
+        if (!binary_have(breader, 1)) {
             break;
         }
         flag = binary_get_int8(breader); // 字段类型标志（如 'S'=严重性, 'M'=消息等）
         if (0 == flag) {
             break;
         }
-        tmp = binary_get_string(breader);
+        tmp = binary_try_get_string(breader);
+        if (NULL == tmp) {
+            break;// 字段值没收全，前面拼出来的照常交出去
+        }
         binary_set_int8(&bwriter, flag);
         binary_set_binary(&bwriter, ": ", 2);
-        if (breader->size - breader->offset > 1) { // 还有后续字段（1 字节为结束标志）
+        if (binary_remain(breader) > 1) { // 还有后续字段（1 字节为结束标志）
             binary_set_va(&bwriter, "%s\r\n", tmp);
         } else {
             binary_set_string(&bwriter, tmp); // 最后一个字段，不追加换行
@@ -77,14 +80,25 @@ static void _pgpack_copy_out_free(void *arg) {
     pgpack_copy_out_ctx *copyout = arg;
     FREE(copyout->data.data);
 }
-// 解析 NotificationResponse（'A'），返回新分配的 pgpack_ctx（PGPACK_NOTIFICATION 类型）
+// 解析 NotificationResponse（'A'），返回新分配的 pgpack_ctx（PGPACK_NOTIFICATION 类型）；
+// 报文残缺返回 NULL，此时未接管 breader->data，由调用方释放
 static pgpack_ctx *_pgpack_notification_response(binary_ctx *breader) {
+    // 三个字段都读出来再分配：中途失败就不必回滚已经转移出去的所有权
+    if (!binary_have(breader, 4)) {
+        return NULL;
+    }
+    int32_t pid = (int32_t)binary_get_integer(breader, 4, 0);
+    char *channel = binary_try_get_string(breader);
+    char *content = (NULL != channel) ? binary_try_get_string(breader) : NULL;
+    if (NULL == content) {
+        return NULL;
+    }
     pgpack_notification *notification;
     MALLOC(notification, sizeof(pgpack_notification));
     notification->payload = breader->data; // 接管原始消息缓冲区的所有权
-    notification->pid = (int32_t)binary_get_integer(breader, 4, 0);
-    notification->channel = binary_get_string(breader);
-    notification->notification = binary_get_string(breader);
+    notification->pid = pid;
+    notification->channel = channel;
+    notification->notification = content;
     pgpack_ctx *pgpack = _pgpack_init(NULL, PGPACK_NOTIFICATION);
     pgpack->pack = notification;
     pgpack->_free_pgpack = _pgpack_notification_response_free;
@@ -122,11 +136,14 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
         LOG_WARN("multi-statement simple query not supported (received second RowDescription).");
         return ERR_FAILED;
     }
+    if (!binary_have(breader, 2)) {
+        return ERR_FAILED;
+    }
     reader->field_count = (uint16_t)binary_get_uinteger(breader, 2, 0);
     if (0 == reader->field_count) {
         return ERR_OK;
     }
-    size_t remaining = breader->size - breader->offset;
+    size_t remaining = binary_remain(breader);
     if ((size_t)reader->field_count * 19 > remaining) {
         reader->field_count = 0;
         return ERR_FAILED;
@@ -137,7 +154,14 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
     pgpack_field *field;
     for (uint16_t i = 0; i < reader->field_count; i++) {
         field = &reader->fields[i];
-        fname = binary_get_string(breader);
+        // 上面的 19 字节/列只保证了总量，单个列名超长仍会把后面的列挤出报文，逐列再判一次
+        fname = binary_try_get_string(breader);
+        if (NULL == fname
+            || !binary_have(breader, 18)) {// table_oid(4) index(2) type_oid(4) lens(2) modifier(4) format(2)
+            reader->field_count = 0;
+            FREE(reader->fields);
+            return ERR_FAILED;
+        }
         nlens = strlen(fname);
         if (ERR_OK != safe_fill_str(field->name, sizeof(field->name), fname)) {
             // fields 是 MALLOC 出来的，而 safe_fill_str 装不下时一个字节都不写：留着就是
@@ -161,6 +185,10 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
 // 返回 ERR_OK 表示成功（breader->data 已转交 rows[0].payload，由 reader 释放）
 // 返回 ERR_FAILED 表示协议异常（breader->data 已被释放，调用方不可再触碰）
 static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
+    if (!binary_have(breader, 2)) {
+        FREE(breader->data);
+        return ERR_FAILED;
+    }
     uint16_t ncolumn = (uint16_t)binary_get_uinteger(breader, 2, 0);
     if (0 == ncolumn) {
         FREE(breader->data);
@@ -177,9 +205,14 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     rows->payload = breader->data; // 首列持有原始消息缓冲区所有权
     for (uint16_t i = 0; i < ncolumn; i++) {
         row = &rows[i];
+        if (!binary_have(breader, 4)) {// 列长度字段本身也可能被截断
+            FREE(rows);
+            FREE(breader->data);
+            return ERR_FAILED;
+        }
         row->lens = (int32_t)binary_get_integer(breader, 4, 0);
         if (row->lens > 0) {
-            if ((size_t)row->lens > breader->size - breader->offset) {
+            if (!binary_have(breader, (size_t)row->lens)) {
                 FREE(rows);
                 FREE(breader->data);
                 return ERR_FAILED;
@@ -200,8 +233,12 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     array_push_back(&reader->arr_rows, &rows);
     return ERR_OK;
 }
-// 解析 CopyInResponse（'G'），返回新分配的 pgpack_ctx（PGPACK_COPY_IN 类型，立即返回给调用方）
+// 解析 CopyInResponse（'G'），返回新分配的 pgpack_ctx（PGPACK_COPY_IN 类型，立即返回给调用方）；
+// 报文残缺返回 NULL
 static pgpack_ctx *_pgpack_copy_in_response(binary_ctx *breader) {
+    if (!binary_have(breader, 3)) {// format(1) + ncol(2)
+        return NULL;
+    }
     pgpack_copy_in_ctx *copyin;
     MALLOC(copyin, sizeof(pgpack_copy_in_ctx));
     copyin->format = (pgpack_format)binary_get_int8(breader);
@@ -210,8 +247,12 @@ static pgpack_ctx *_pgpack_copy_in_response(binary_ctx *breader) {
     pgpack->pack = copyin;
     return pgpack;
 }
-// 解析 CopyOutResponse（'H'），初始化 pg->pack 中的 PGPACK_COPY_OUT 累积缓冲区
-static void _pgpack_copy_out_response(pgpack_ctx *pgpack, binary_ctx *breader) {
+// 解析 CopyOutResponse（'H'），初始化 pg->pack 中的 PGPACK_COPY_OUT 累积缓冲区；
+// 报文残缺返回 ERR_FAILED，此时不动 pgpack
+static int32_t _pgpack_copy_out_response(pgpack_ctx *pgpack, binary_ctx *breader) {
+    if (!binary_have(breader, 3)) {// format(1) + ncol(2)
+        return ERR_FAILED;
+    }
     // 防御非法序列（如 'H'→'H'）：覆写前先释放可能残留的旧 pack
     if (NULL != pgpack->pack) {
         if (NULL != pgpack->_free_pgpack) {
@@ -226,11 +267,12 @@ static void _pgpack_copy_out_response(pgpack_ctx *pgpack, binary_ctx *breader) {
     binary_init(&copyout->data, NULL, 0, 0);
     pgpack->pack = copyout;
     pgpack->_free_pgpack = _pgpack_copy_out_free;
+    return ERR_OK;
 }
 // 解析 CopyData（'d'），将数据追加到 pg->pack 的 PGPACK_COPY_OUT 累积缓冲区
 static void _pgpack_copy_data(pgpack_ctx *pgpack, binary_ctx *breader) {
     pgpack_copy_out_ctx *copyout = pgpack->pack;
-    size_t datalen = breader->size - breader->offset;
+    size_t datalen = binary_remain(breader);
     if (0 == datalen) {
         return;
     }
@@ -251,6 +293,10 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         break;
     case 'A': // NotificationResponse：LISTEN 产生的异步通知，立即返回给上层
         pack = _pgpack_notification_response(breader);
+        if (NULL == pack) {
+            BIT_SET(*status, PROT_ERROR);
+            FREE(breader->data);
+        }
         break;
     case 'E': // ErrorResponse：命令执行出错
         if (NULL != pg->pack) {
@@ -290,11 +336,16 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         break;
     case 'G': // CopyInResponse：服务端请求客户端发送 COPY FROM STDIN 数据，立即返回给调用方
         pack = _pgpack_copy_in_response(breader);
+        if (NULL == pack) {
+            BIT_SET(*status, PROT_ERROR);
+        }
         FREE(breader->data);
         break;
     case 'H': // CopyOutResponse：服务端即将发送 COPY TO STDOUT 数据，初始化累积缓冲区
         _pgpack_init(pg, PGPACK_COPY_OUT);
-        _pgpack_copy_out_response(pg->pack, breader);
+        if (ERR_OK != _pgpack_copy_out_response(pg->pack, breader)) {
+            BIT_SET(*status, PROT_ERROR);
+        }
         FREE(breader->data);
         break;
     case 'd': // CopyData：服务端发来的 COPY OUT 数据，追加到累积缓冲区
@@ -317,8 +368,10 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         if (NULL == pg->pack) {
             _pgpack_init(pg, PGPACK_OK);
         }
-        char *complete = binary_get_string(breader);
-        if (!EMPTYSTR(complete)
+        char *complete = binary_try_get_string(breader);
+        if (NULL == complete) {
+            BIT_SET(*status, PROT_ERROR);
+        } else if (!EMPTYSTR(complete)
             && ERR_OK != safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete)) {
             LOG_ERROR("pgsql command tag exceeds %zu bytes: %zu, affected_rows unavailable.",
                       sizeof(pg->pack->complete) - 1, strlen(complete));
@@ -327,6 +380,11 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         break;
     }
     case 'Z': // ReadyForQuery：服务端就绪，将累积的结果包返回给调用方
+        if (!binary_have(breader, 1)) {
+            BIT_SET(*status, PROT_ERROR);
+            FREE(breader->data);
+            break;
+        }
         pg->readyforquery = binary_get_int8(breader);
         pack = pg->pack;
         pg->pack = NULL;

@@ -165,52 +165,59 @@ char *binary_at(binary_ctx *ctx, size_t pos) {
     return ctx->data + pos;
 }
 int8_t binary_get_int8(binary_ctx *ctx) {
-    ASSERTAB(sizeof(int8_t) <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(int8_t)), "out of memory.");
     int8_t val = (ctx->data + ctx->offset)[0];
     ctx->offset += sizeof(val);
     return val;
 }
 uint8_t binary_get_uint8(binary_ctx *ctx) {
-    ASSERTAB(sizeof(uint8_t) <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(uint8_t)), "out of memory.");
     uint8_t val = (uint8_t)(ctx->data + ctx->offset)[0];
     ctx->offset += sizeof(val);
     return val;
 }
 int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle) {
     //先减后比，避免攻击者构造极大 lens 让 offset+lens size_t 溢出绕过断言
-    ASSERTAB(lens <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
     int64_t val = unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 1);
     ctx->offset += lens;
     return val;
 }
 uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t islittle) {
-    ASSERTAB(lens <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
     uint64_t val = (uint64_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 0);
     ctx->offset += lens;
     return val;
 }
 float binary_get_float(binary_ctx *ctx, int32_t islittle) {
-    ASSERTAB(sizeof(float) <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(float)), "out of memory.");
     float val = unpack_float(ctx->data + ctx->offset, islittle);
     ctx->offset += sizeof(val);
     return val;
 }
 double binary_get_double(binary_ctx *ctx, int32_t islittle) {
-    ASSERTAB(sizeof(double) <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(double)), "out of memory.");
     double val = unpack_double(ctx->data + ctx->offset, islittle);
     ctx->offset += sizeof(val);
     return val;
 }
 char *binary_get_string(binary_ctx *ctx) {
+    char *val = binary_try_get_string(ctx);
+    ASSERTAB(NULL != val, "out of memory.");
+    return val;
+}
+char *binary_try_get_string(binary_ctx *ctx) {
     char *val = ctx->data + ctx->offset;
-    size_t remain = ctx->size - ctx->offset;
+    size_t remain = binary_remain(ctx);
     size_t slen = strnlen(val, remain);
-    ASSERTAB(slen < remain, "out of memory.");
+    if (slen >= remain) {
+        return NULL;
+    }
     ctx->offset += slen + 1;
     return val;
 }
 char *binary_get_binary(binary_ctx *ctx, size_t lens) {
-    ASSERTAB(lens <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
     if (0 == lens) {
         return NULL;
     }
@@ -219,6 +226,6 @@ char *binary_get_binary(binary_ctx *ctx, size_t lens) {
     return val;
 }
 void binary_get_skip(binary_ctx *ctx, size_t lens) {
-    ASSERTAB(lens <= ctx->size - ctx->offset, "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
     ctx->offset += lens;
 }

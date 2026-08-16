@@ -10,6 +10,9 @@
 #define HEAD_LESN 2 // WebSocket 帧最小头部长度（字节）
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // WebSocket 握手固定密钥后缀（RFC 6455）
 #define SECPROT_SPLIT_FLAG ','
+// 单帧载荷硬上限：MAX_PACK_SIZE 配成 0(不限制)时 PACK_TOO_LONG 恒假，全靠它兜底。
+// 同 redis.c 的 REDIS_MAX_BULK_LEN，兼挡 sizeof(pack)+dlens 在 32 位平台的加法回绕
+#define MAX_PAYLOAD_LENS (64 * 1024 * 1024)
 
 // WebSocket 帧解析状态
 typedef enum parse_status {
@@ -161,7 +164,8 @@ int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val) {
 // 服务端侧握手校验：验证 GET 请求中的 Connection/Upgrade/Sec-WebSocket-Version/Key 字段
 static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
-    if (!buf_icompare(&status[0], "get", sizeof("get") - 1)) {
+    if (NULL == status
+        || !buf_icompare(&status[0], "get", sizeof("get") - 1)) {
         return NULL;
     }
     http_header_ctx *head;
@@ -351,7 +355,8 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
 // 客户端侧握手状态行校验：确认响应状态码为 101
 static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
-    if (!buf_compare(&status[1], "101", strlen("101"))) {
+    if (NULL == status
+        || !buf_compare(&status[1], "101", strlen("101"))) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -631,12 +636,8 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         pllens = ntohll(pllens);
-        if (PACK_TOO_LONG(pllens)) {
-            BIT_SET(*status, PROT_ERROR);
-            return NULL;
-        }
-        // 防止 64-bit 长度在 32-bit 平台截断为 size_t 导致分配不足
-        if (pllens > (uint64_t)SIZE_MAX) {
+        if (PACK_TOO_LONG(pllens)
+            || pllens > MAX_PAYLOAD_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
@@ -733,16 +734,17 @@ websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t c
     }
     return pack;
 }
+// 扩展长度字段宽度：<=125 不带；<=0xffff 用 2 字节；否则 8 字节。
+// 分配大小与写入偏移必须共用这一处——两边各写一遍分档表，改一边漏一边就是按小尺寸分配却按大尺寸写
+static size_t _websock_pllens_size(size_t dlens) {
+    if (dlens <= 125) {
+        return 0;
+    }
+    return (dlens <= 0xffff) ? sizeof(uint16_t) : sizeof(uint64_t);
+}
 // 计算 WebSocket 帧总长度（头部 + 可选扩展长度字段 + 可选掩码 + 数据体）
 static size_t _websock_create_callens(char *key, size_t dlens) {
-    size_t size = HEAD_LESN + dlens;
-    if (dlens >= 126) {
-        if (dlens > 0xffff) {
-            size += sizeof(uint64_t);
-        } else {
-            size += sizeof(uint16_t);
-        }
-    }
+    size_t size = HEAD_LESN + dlens + _websock_pllens_size(dlens);
     if (NULL != key) {
         size += MASK_KEY_LENS;
     }
@@ -750,6 +752,12 @@ static size_t _websock_create_callens(char *key, size_t dlens) {
 }
 // 构造 WebSocket 帧：写入头部（含扩展长度和掩码），有掩码时对数据进行 XOR 加密
 static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *data, size_t dlens, size_t *size) {
+    // 与解包侧同一个上限：组得出对端必然拒收的帧只会换来一次无诊断的断连
+    if (dlens > MAX_PAYLOAD_LENS) {
+        LOG_ERROR("websock payload %zu exceeds %d.", dlens, (int32_t)MAX_PAYLOAD_LENS);
+        *size = 0;
+        return NULL;
+    }
     *size = _websock_create_callens(key, dlens);
     char *frame;
     MALLOC(frame, *size);
@@ -768,14 +776,14 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *da
     } else if (dlens <= 0xffff) {
         BIT_SET(frame[1], 126);
         uint16_t pllens = htons((u_short)dlens);
-        memcpy(frame + offset, &pllens, sizeof(uint16_t));
-        offset += sizeof(pllens);
+        memcpy(frame + offset, &pllens, sizeof(pllens));
     } else {
         BIT_SET(frame[1], 127);
         uint64_t pllens = htonll((uint64_t)dlens);
-        memcpy(frame + offset, &pllens, sizeof(uint64_t));
-        offset += sizeof(uint64_t);
+        memcpy(frame + offset, &pllens, sizeof(pllens));
     }
+    // 推进量取自与分配同一处，分支里只决定写哪种整型
+    offset += _websock_pllens_size(dlens);
     if (NULL != key) {
         memcpy(frame + offset, key, MASK_KEY_LENS);
         offset += MASK_KEY_LENS;

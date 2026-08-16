@@ -301,6 +301,14 @@ runner.run("bson", function(t)
         local arr = bson.decode(aptr, asz)
         t:eq(10, arr["0"], "iter:array decoded [0]")
         t:eq(20, arr["1"], "iter:array decoded [1]")
+
+        -- 类型不符时失败与成功的返回值个数必须一致（各 2 个），否则按元数取值的调用方拿到的
+        -- 不是 nil 而是"没有这个返回值"
+        local b2 = bson.encode({ n = 1 })
+        local it2 = bson.iter.new(b2)
+        t:eq(true, it2:find("n"), "iter find n")
+        t:eq(2, select("#", it2:array()), "iter:array 类型不符时也返 2 个值")
+        t:eq(nil, (it2:array()), "iter:array 类型不符时首值为 nil")
     end
 
     -- 20. iter:bool / iter:date / iter:int64 / iter:isnull

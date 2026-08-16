@@ -9,6 +9,8 @@ typedef enum parse_status {
     INIT = 0,
     COMMAND
 }parse_status;
+// PUBLISH 单块分配的富余量：topic 与载荷各一个结尾 NUL，加载荷头最多 3 字节对齐补白
+#define MQTT_PUB_SLACK 8
 
 void _mqtt_pkfree(void *data) {
     if (NULL == data) {
@@ -24,8 +26,11 @@ void _mqtt_pkfree(void *data) {
         _mqtt_connack_varhead_free(pack->varhead);
         break;
     case MQTT_PUBLISH:
-        _mqtt_publish_varhead_free(pack->varhead);
-        _mqtt_publish_payload_free(pack->payload);
+        // 布局见 _mqtt_publish_blk：单独分配的只有 v5 属性数组。
+        // varhead 为 NULL 表示没走到 _mqtt_publish
+        if (NULL != pack->varhead) {
+            _mqtt_propertie_free(((mqtt_publish_varhead *)pack->varhead)->properties);
+        }
         break;
     case MQTT_PUBACK:
     case MQTT_PUBREC:
@@ -451,20 +456,37 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     }
     return ERR_OK;
 }
+// PUBLISH 那一整块的大小：pack / varhead / topic / 载荷合在一起，偏移由 _mqtt_publish 边解析边定。
+// 容量按上界给——topic 与载荷之和不超过 remaining_lens，MQTT_PUB_SLACK 覆盖两个结尾 NUL 与对齐补白。
+// 分配点与块内越界断言共用这一处，两边各抄一份算式的话，改一边漏一边编译器看不出来
+static size_t _mqtt_publish_blk(size_t remaining_lens) {
+    return sizeof(mqtt_pack_ctx) + sizeof(mqtt_publish_varhead) + sizeof(mqtt_publish_payload)
+         + remaining_lens + MQTT_PUB_SLACK;
+}
 //两个方向都允许  发布消息
 static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
+    // 布局见 _mqtt_publish_blk：这里只按解析顺序定块内偏移，不再各自 malloc。
+    // CALLOC 已清零，块内字段无须再显式置零
+    char *slot = (char *)pack + sizeof(mqtt_pack_ctx);
+    mqtt_publish_varhead *vh = (mqtt_publish_varhead *)slot;
+    pack->varhead = vh;
+    slot += sizeof(mqtt_publish_varhead);
     //可变报头 主题名（Topic Name），报文标识符（Packet Identifier），属性（Properties MQTT_50）
     int32_t num;
-    char *topic = _mqtt_data_string2(buf, &num);//主题名
-    if (NULL == topic) {
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)//主题名长度
+        || num < 0
+        || num > (int32_t)pack->fixhead.remaining_lens) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    if (num != (int32_t)buffer_remove(buf, slot, (size_t)num)) {//主题名就地读进块内
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
+    slot[num] = '\0';
+    vh->topic = slot;
+    slot += num + 1;
     int32_t off = (2 + num);//主题名(2 + 主题名长度)
-    mqtt_publish_varhead *vh;
-    CALLOC(vh, 1, sizeof(mqtt_publish_varhead));
-    pack->varhead = vh;
-    vh->topic = topic;
     //解析固定报头标志
     vh->retain = BIT_GETN(pack->fixhead.flags, 0);
     vh->qos = BIT_GETN(pack->fixhead.flags, 1);
@@ -497,8 +519,14 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *stat
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    mqtt_publish_payload *pl;
-    CALLOC(pl, 1, sizeof(mqtt_publish_payload) + remain + 1);
+    // 载荷头首字段是 int32_t，要 4 字节对齐；topic 长度任意，故按块内偏移补齐。
+    // pack 来自 CALLOC（最大对齐），加 4 的倍数仍是 4 对齐
+    size_t ploff = ROUND_UP((size_t)(slot - (char *)pack), sizeof(int32_t));
+    // 块够不够是跨 mqtt_unpack 与本函数的不变式，钉一道
+    ASSERTAB(ploff + sizeof(mqtt_publish_payload) + (size_t)remain + 1
+             <= _mqtt_publish_blk(pack->fixhead.remaining_lens),
+             "publish block overflow.");
+    mqtt_publish_payload *pl = (mqtt_publish_payload *)((char *)pack + ploff);
     pack->payload = pl;
     if (0 == remain) {
         return ERR_OK;
@@ -565,14 +593,18 @@ static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *statu
 static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
     return _mqtt_pubackrel_common(pack, buf, status, 0);
 }
-//客户端到服务端  客户端订阅请求
-static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
-    if (client
-        || 0x02 != pack->fixhead.flags) {
+// SUBSCRIBE / SUBACK / UNSUBSCRIBE / UNSUBACK 四个报文共用的可变报头：
+// 方向与 flags 校验 → 报文标识符 → 建 varhead → MQTT_50 才读属性 → 算出载荷剩余长度。
+// expclient 非 0 表示这个报文只该由客户端收到（服务端发来的确认），为 0 则只该由服务端收到。
+// *remain 可能 <= 0，由调用方按各自协议判定是否合法（3.1.1 的 UNSUBACK 就是 0）
+static int32_t _mqtt_subunsub_varhead(mqtt_pack_ctx *pack, int32_t client, int32_t expclient,
+                                      int32_t expflags, buffer_ctx *buf, int32_t *status,
+                                      int32_t *remain) {
+    if ((0 != client) != (0 != expclient)
+        || expflags != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头 报文标识符，属性(MQTT_50)
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -590,14 +622,39 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
             return ERR_FAILED;
         }
     }
-    //载荷
-    char *topic;
-    int32_t off;
-    int32_t remain = (int32_t)pack->fixhead.remaining_lens - 2 - num;//剩余长度
+    *remain = (int32_t)pack->fixhead.remaining_lens - 2 - num;
+    return ERR_OK;
+}
+// SUBACK / UNSUBACK 的载荷：长度为 remain 的一串原因码
+static int32_t _mqtt_reasonlist(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status, int32_t remain) {
     if (remain <= 0) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    mqtt_reasonlist_payload *pl;
+    CALLOC(pl, 1, sizeof(mqtt_reasonlist_payload) + remain);
+    pack->payload = pl;
+    pl->rlens = remain;
+    if (remain != (int32_t)buffer_remove(buf, pl->reasons, remain)) {//原因码列表
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+//客户端到服务端  客户端订阅请求
+static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
+    int32_t remain;
+    if (ERR_OK != _mqtt_subunsub_varhead(pack, client, 0, 0x02, buf, status, &remain)) {
+        return ERR_FAILED;
+    }
+    if (remain <= 0) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
+    //载荷
+    char *topic;
+    int32_t num;
+    int32_t off;
     subscribe_option *subop;
     mqtt_subscribe_payload *pl;
     CALLOC(pl, 1, sizeof(mqtt_subscribe_payload));
@@ -643,77 +700,26 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
 }
 //服务端到客户端  订阅请求报文确认
 static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
-    if (!client || 0 != pack->fixhead.flags) {
-        BIT_SET(*status, PROT_ERROR);
+    int32_t remain;
+    if (ERR_OK != _mqtt_subunsub_varhead(pack, client, 1, 0, buf, status, &remain)) {
         return ERR_FAILED;
     }
-    //可变报头 报文标识符，属性(MQTT_50)
-    int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    mqtt_subreqresp_varhead *vh;
-    CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
-    pack->varhead = vh;
-    vh->packid = (uint16_t)num;
-    num = 0;
-    if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//属性
-        if (NULL == vh->properties
-            && BIT_CHECK(*status, PROT_ERROR)) {
-            return ERR_FAILED;
-        }
-    }
-    //载荷
-    num = (int32_t)pack->fixhead.remaining_lens - 2 - num;//计算剩余长度
-    if (num <= 0) {
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    mqtt_reasonlist_payload *pl;
-    CALLOC(pl, 1, sizeof(mqtt_reasonlist_payload) + num);
-    pack->payload = pl;
-    pl->rlens = num;
-    if (num != (int32_t)buffer_remove(buf, pl->reasons, num)) {//原因码列表
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return _mqtt_reasonlist(pack, buf, status, remain);
 }
 //客户端到服务端  客户端取消订阅请求
 static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
-    if (client
-        || 0x02 != pack->fixhead.flags) {
-        BIT_SET(*status, PROT_ERROR);
+    int32_t remain;
+    if (ERR_OK != _mqtt_subunsub_varhead(pack, client, 0, 0x02, buf, status, &remain)) {
         return ERR_FAILED;
     }
-    //可变报头 报文标识符，属性(MQTT_50)
-    int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    mqtt_subreqresp_varhead *vh;
-    CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
-    pack->varhead = vh;
-    vh->packid = (uint16_t)num;
-    num = 0;
-    if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//属性
-        if (NULL == vh->properties
-            && BIT_CHECK(*status, PROT_ERROR)) {
-            return ERR_FAILED;
-        }
-    }
-    //载荷
-    char *topic;
-    int32_t off;
-    int32_t remain = (int32_t)pack->fixhead.remaining_lens - 2 - num;//剩余长度
     if (remain <= 0) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    //载荷
+    char *topic;
+    int32_t num;
+    int32_t off;
     mqtt_unsubscribe_payload *pl;
     CALLOC(pl, 1, sizeof(mqtt_unsubscribe_payload));
     pack->payload = pl;
@@ -735,44 +741,15 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
 }
 //服务端到客户端  取消订阅确认
 static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
-    if (!client
-        || 0 != pack->fixhead.flags) {
-        BIT_SET(*status, PROT_ERROR);
+    int32_t remain;
+    if (ERR_OK != _mqtt_subunsub_varhead(pack, client, 1, 0, buf, status, &remain)) {
         return ERR_FAILED;
     }
-    //可变报头 报文标识符，属性(MQTT_50)
-    int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    mqtt_subreqresp_varhead *vh;
-    CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
-    pack->varhead = vh;
-    vh->packid = (uint16_t)num;
+    // 3.1.1 的 UNSUBACK 只有报文标识符，没有原因码列表（SUBACK 那边 3.1.1 是有返回码的）
     if (pack->version < MQTT_50) {
         return ERR_OK;
     }
-    vh->properties = _mqtt_properties(buf, status, &num);//属性
-    if (NULL == vh->properties
-        && BIT_CHECK(*status, PROT_ERROR)) {
-        return ERR_FAILED;
-    }
-    //载荷
-    num = (int32_t)pack->fixhead.remaining_lens - 2 - num;//计算剩余长度
-    if (num <= 0) {
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    mqtt_reasonlist_payload *pl;
-    CALLOC(pl, 1, sizeof(mqtt_reasonlist_payload) + num);
-    pack->payload = pl;
-    pl->rlens = num;
-    if (num != (int32_t)buffer_remove(buf, pl->reasons, num)) {//原因码列表
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return _mqtt_reasonlist(pack, buf, status, remain);
 }
 //客户端到服务端  心跳请求
 static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, int32_t *status) {
@@ -964,8 +941,10 @@ mqtt_pack_ctx *mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t 
         return NULL;
     }
     uint8_t val = (uint8_t)buffer_at(buf, 0);
+    size_t blk = (MQTT_PUBLISH == (val >> 4) && COMMAND == ud->status)
+               ? _mqtt_publish_blk(remaining_lens) : sizeof(mqtt_pack_ctx);
     mqtt_pack_ctx *pack;
-    CALLOC(pack, 1, sizeof(mqtt_pack_ctx));
+    CALLOC(pack, 1, blk);
     pack->fixhead.remaining_lens = remaining_lens;
     pack->fixhead.prot = (val >> 4);
     pack->fixhead.flags = (val & 0x0F);

@@ -169,52 +169,55 @@ function wbsk.connect(ws, sslname, secprot, netev)
 end
 
 -- ── 控制帧构造 ────────────────────────────────────────────────────────────
+-- 本节与下节的构造函数有两种情况返回 nil, nil，调用方一律须判（下面 _continua /
+-- _send_end_frame 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key；
+-- 载荷超 64MB 单帧上限（与解包侧同一个值，不分方向，server 侧同样会返 nil）
 
 ---构造 ping 控制帧（client=1 加掩码）
----@type fun(client:integer):lightuserdata, integer
+---@type fun(client:integer):lightuserdata?, integer?
 wbsk.ping = websock.pack_ping
 
 ---构造 pong 控制帧（client=1 加掩码）
----@type fun(client:integer):lightuserdata, integer
+---@type fun(client:integer):lightuserdata?, integer?
 wbsk.pong = websock.pack_pong
 
 ---构造 close 控制帧（触发对端关闭握手）
----@type fun(client:integer):lightuserdata, integer
+---@type fun(client:integer):lightuserdata?, integer?
 wbsk.close = websock.pack_close
 
 -- ── 数据帧构造 ────────────────────────────────────────────────────────────
 
 ---构造文本帧；fin=1 完整消息，fin=0 分片首帧
----@type fun(client:integer, fin:integer, data:string|lightuserdata, size:integer?):lightuserdata, integer
+---@type fun(client:integer, fin:integer, data:string|lightuserdata, size:integer?):lightuserdata?, integer?
 wbsk.text_fin = websock.pack_text
 
 ---构造完整（单帧）文本消息（fin=1）
 ---@param client integer 1=客户端，0=服务端
 ---@param data string|lightuserdata 载荷
 ---@param size integer? data 为 lightuserdata 时必填
----@return lightuserdata frame 数据指针
----@return integer fsize 数据长度
+---@return lightuserdata? frame 数据指针
+---@return integer? fsize 数据长度
 function wbsk.text(client, data, size)
     return wbsk.text_fin(client, 1, data, size)
 end
 
 ---构造二进制帧（带 fin 标志）
----@type fun(client:integer, fin:integer, data:string|lightuserdata, size:integer?):lightuserdata, integer
+---@type fun(client:integer, fin:integer, data:string|lightuserdata, size:integer?):lightuserdata?, integer?
 wbsk.binary_fin = websock.pack_binary
 
 ---构造完整（单帧）二进制消息（fin=1）
 ---@param client integer 1=客户端，0=服务端
 ---@param data string|lightuserdata 载荷
 ---@param size integer? data 为 lightuserdata 时必填
----@return lightuserdata frame 数据指针
----@return integer fsize 数据长度
+---@return lightuserdata? frame 数据指针
+---@return integer? fsize 数据长度
 function wbsk.binary(client, data, size)
     return wbsk.binary_fin(client, 1, data, size)
 end
 
 ---构造延续帧（CONTINUATION）；data 须为 string 或 lightuserdata（nil 报错），
 ---lightuserdata 形态必须给 size，空载荷传 "" 即可
----@type fun(client:integer, fin:integer, data:string|lightuserdata, size:integer?):lightuserdata, integer
+---@type fun(client:integer, fin:integer, data:string|lightuserdata, size:integer?):lightuserdata?, integer?
 wbsk.continua = websock.pack_continua
 
 -- ── 流式分片发送 ──────────────────────────────────────────────────────────
@@ -240,13 +243,13 @@ end
 
 ---内部流式发送：将 func(...) 产生的数据按 WebSocket 分片协议逐帧发送；
 ---发送 fin=1 空 continuation 帧标记消息结束
--- 客户端帧要一份掩码 key，取不到熵时 websock_pack_* 返 nil（Linux 上 getrandom 被 seccomp 挡、
--- Windows 上 BCryptGenRandom 失败都会走到）。不判空的话 nil 一路走到 srey.send 里的
+-- websock_pack_* 返 nil 有两种原因（具体哪种 C 侧已打日志，这里不复述）：客户端帧取不到
+-- 掩码 key 的熵，或载荷超 64MB 单帧上限。不判空的话 nil 一路走到 srey.send 里的
 -- lpub_check_buf，撞 "string or light userdata expected" 把整条协程打断
 local function _send_end_frame(fd, skid, client)
     local data, size = wbsk.continua(client, 1, "", 0)
     if nil == data then
-        ERROR("websock pack end frame failed, cannot get entropy for mask key.")
+        ERROR("websock pack end frame failed.")
         return false
     end
     return srey.send(fd, skid, data, size, 0)
@@ -279,7 +282,7 @@ local function _continua(fd, skid, prot, client, func, ...)
     end
     if nil == data then
         -- 首帧都没组出来，一帧未发，对端没有 continuation 状态要清
-        ERROR("websock pack first frame failed, cannot get entropy for mask key.")
+        ERROR("websock pack first frame failed.")
         return false
     end
     if not srey.send(fd, skid, data, size, 0) then
@@ -303,7 +306,7 @@ local function _continua(fd, skid, prot, client, func, ...)
         data, size = wbsk.continua(client, 0, data, size)
         if nil == data then
             -- 已发出部分帧，仍补终止帧让对端退出累积状态，再按失败返回
-            ERROR("websock pack continuation frame failed, cannot get entropy for mask key.")
+            ERROR("websock pack continuation frame failed.")
             _send_end_frame(fd, skid, client)
             return false
         end

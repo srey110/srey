@@ -22,25 +22,36 @@ void _mysql_set_lenenc(binary_ctx *bwriter, size_t integer) {
     binary_set_integer(bwriter, (int64_t)integer, 8, 1);
 }
 // 从缓冲区读取 MySQL lenenc 格式的整数：
-// 首字节 <= 0xfa 直接返回；0xfc 读 2 字节；0xfd 读 3 字节；0xfe 读 8 字节
+// 首字节 <= 0xfa 直接返回；0xfc 读 2 字节；0xfd 读 3 字节；0xfe 读 8 字节。
+// 字节不够先返 ERR_FAILED，不能让 binary_get_* 的断言 abort 整个进程：报文长度由对端决定，
+// 一个截断的包只该判失败。失败时 offset 可能已推进，调用方判到 ERR_FAILED 就必须整段放弃
 uint64_t _mysql_get_lenenc(binary_ctx *breader, int32_t *err) {
-    *err = ERR_OK;
+    *err = ERR_FAILED;
+    size_t remain = binary_remain(breader);
+    if (remain < sizeof(uint8_t)) {
+        return 0;
+    }
     uint8_t flag = binary_get_uint8(breader);
     if (flag <= 0xfa) {
+        *err = ERR_OK;
         return flag;
     }
+    size_t need;
     if (0xfc == flag) {
-        return binary_get_uinteger(breader, 2, 1);
+        need = 2;
+    } else if (0xfd == flag) {
+        need = 3;
+    } else if (0xfe == flag) {
+        need = 8;
+    } else {
+        LOG_ERROR("unknow int<lenenc>, %d.", (int32_t)flag);
+        return 0;
     }
-    if (0xfd == flag) {
-        return binary_get_uinteger(breader, 3, 1);
+    if (remain - sizeof(uint8_t) < need) {
+        return 0;
     }
-    if (0xfe == flag) {
-        return binary_get_uinteger(breader, 8, 1);
-    }
-    LOG_ERROR("unknow int<lenenc>, %d.", (int32_t)flag);
-    *err = ERR_FAILED;
-    return 0;
+    *err = ERR_OK;
+    return binary_get_uinteger(breader, need, 1);
 }
 // 将 bwriter 中偏移 0-2 字节回填为实际 payload 长度（总长度减去 4 字节包头）
 // 超 INT3_MAX(16MB-1) 时 LOG_WARN + 返 ERR_FAILED 由调用方释放 bwriter,本实现不支持 mysql 协议拆 packet

@@ -31,4 +31,8 @@ int32_t _svpub_call_dst(task_ctx *dst, task_ctx *task, subtype_t req, void *buf,
 int32_t _svpub_send_dst(task_ctx *dst, task_ctx *task, subtype_t req, uint64_t sess,
                         void *buf, size_t lens);
 
+// 回一条无载荷的响应给请求方。src 为 INVALID_TNAME 即 fire-and-forget(task_call)，不回执——
+// task_request 的 ASSERTAB 把 src 与 sess 绑成"要么都有要么都没有"，判 src 就够，不必再判 sess
+void _svpub_respond(loader_ctx *loader, name_t src, subtype_t req, uint64_t sess, int32_t erro);
+
 #endif//SV_PUB_H_

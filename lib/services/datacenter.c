@@ -177,24 +177,13 @@ static int _dc_key_to_cstr(const void *src, size_t len, char *dst, size_t dst_ca
     dst[len] = '\0';
     return ERR_OK;
 }
-// 失败响应 helper:统一回 ERR_FAILED 给 src,无数据
-static void _dc_resp_failed(dc_ctx *ctx, name_t src, uint64_t sess, subtype_t reqtype) {
-    if (INVALID_TNAME == src) {
-        return;
-    }
-    task_ctx *src_task = task_grab(ctx->loader, src);
-    if (NULL != src_task) {
-        task_response(src_task, reqtype, sess, ERR_FAILED, NULL, 0, 0);
-        task_ungrab(src_task);
-    }
-}
 // 从 binary_ctx 读 | u16 klen | key bytes |,复制到 NUL 结尾 keybuf。SET/GET/WAIT/DEL 共用
 static int _dc_read_key(binary_ctx *br, char *keybuf, size_t cap) {
-    if (br->size - br->offset < 2) {
+    if (!binary_have(br, 2)) {
         return ERR_FAILED;
     }
     uint16_t klen = (uint16_t)binary_get_uinteger(br, 2, 0); // u16 klen 网络序
-    if (br->size - br->offset < (size_t)klen) {
+    if (!binary_have(br, (size_t)klen)) {
         return ERR_FAILED;
     }
     char *raw = binary_get_binary(br, klen);
@@ -204,16 +193,16 @@ static int _dc_read_key(binary_ctx *br, char *keybuf, size_t cap) {
 static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
+        _svpub_respond(ctx->loader, src, REQ_DC_SET, sess, ERR_FAILED);
         return;
     }
-    if (br->size - br->offset < 4) {
-        _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
+    if (!binary_have(br, 4)) {
+        _svpub_respond(ctx->loader, src, REQ_DC_SET, sess, ERR_FAILED);
         return;
     }
     uint32_t vlen = (uint32_t)binary_get_uinteger(br, 4, 0); // u32 vlen 网络序
-    if (br->size - br->offset < (size_t)vlen) {
-        _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
+    if (!binary_have(br, (size_t)vlen)) {
+        _svpub_respond(ctx->loader, src, REQ_DC_SET, sess, ERR_FAILED);
         return;
     }
     size_t vsize = vlen;
@@ -221,13 +210,7 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     // 1. 写 kv
     _dc_kv_set(ctx, keybuf, val, vsize);
     // 2. 回 setter:OK(fire-and-forget 跳过)
-    if (INVALID_TNAME != src) {
-        task_ctx *src_task = task_grab(ctx->loader, src);
-        if (NULL != src_task) {
-            task_response(src_task, REQ_DC_SET, sess, ERR_OK, NULL, 0, 0);
-            task_ungrab(src_task);
-        }
-    }
+    _svpub_respond(ctx->loader, src, REQ_DC_SET, sess, ERR_OK);
     // 3. 摘下 pending[key] 并唤醒所有 waiter(waiter 全来自 WAIT 挂起,有独立 src/sess,回带 REQ_DC_WAIT)
     list_ctx taken = _dc_pending_take(ctx, keybuf);
     uint64_t now_ms = (list_size(&taken) > 0) ? timer_cur_ms(&ctx->timer) : 0;
@@ -254,7 +237,7 @@ static void _dc_handle_get(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     }
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess, REQ_DC_GET);
+        _svpub_respond(ctx->loader, src, REQ_DC_GET, sess, ERR_FAILED);
         return;
     }
     dc_entry *e = _dc_kv_get(ctx, keybuf);
@@ -331,7 +314,7 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
     }
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess, REQ_DC_WAIT);
+        _svpub_respond(ctx->loader, src, REQ_DC_WAIT, sess, ERR_FAILED);
         return;
     }
     dc_entry *e = _dc_kv_get(ctx, keybuf);
@@ -376,18 +359,12 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
 static void _dc_handle_del(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess, REQ_DC_DEL);
+        _svpub_respond(ctx->loader, src, REQ_DC_DEL, sess, ERR_FAILED);
         return;
     }
     _dc_kv_del(ctx, keybuf); // 不影响 _pending,语义上"撤回真值"
     // 回 ack:OK(fire-and-forget 跳过)
-    if (INVALID_TNAME != src) {
-        task_ctx *src_task = task_grab(ctx->loader, src);
-        if (NULL != src_task) {
-            task_response(src_task, REQ_DC_DEL, sess, ERR_OK, NULL, 0, 0);
-            task_ungrab(src_task);
-        }
-    }
+    _svpub_respond(ctx->loader, src, REQ_DC_DEL, sess, ERR_OK);
 }
 // kv scan 回调:每个 entry 写 | u16 klen | key |
 static bool _dc_iter(const void *item, void *udata) {
@@ -427,7 +404,7 @@ static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
     switch (reqtype) {
     case REQ_DC_SET:
         if (NULL == data) {
-            _dc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -435,7 +412,7 @@ static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_DC_GET:
         if (NULL == data) {
-            _dc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -443,7 +420,7 @@ static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_DC_WAIT:
         if (NULL == data) {
-            _dc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -451,7 +428,7 @@ static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     case REQ_DC_DEL:
         if (NULL == data) {
-            _dc_resp_failed(ctx, src, sess, reqtype);
+            _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
             break;
         }
         binary_init(&br, (char *)data, size, 0);
@@ -461,7 +438,7 @@ static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         _dc_handle_list(ctx, src, sess);
         break;
     default:
-        _dc_resp_failed(ctx, src, sess, reqtype);
+        _svpub_respond(ctx->loader, src, reqtype, sess, ERR_FAILED);
         break;
     }
 }
@@ -636,12 +613,12 @@ int32_t dc_keys(task_ctx *task, name_t dc_name, uint64_t sess) {
 // 游标式解析 dc_keys 响应:每条 | u16 klen | key |
 int32_t dc_parse_keys(binary_ctx *br, dc_key *out) {
     // klen(u16)
-    if (br->size - br->offset < 2) {
+    if (!binary_have(br, 2)) {
         return ERR_FAILED;
     }
     out->klen = (size_t)binary_get_uinteger(br, 2, 0);
     // key(klen)
-    if (br->size - br->offset < out->klen) {
+    if (!binary_have(br, out->klen)) {
         return ERR_FAILED;
     }
     out->key = out->klen > 0 ? binary_get_binary(br, out->klen) : NULL;

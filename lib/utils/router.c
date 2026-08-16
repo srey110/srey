@@ -1,6 +1,7 @@
 ﻿#include "utils/router.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
+#include "containers/hashmap.h"
 #include "srey/loader.h"
 #include "srey/task.h"
 
@@ -37,7 +38,8 @@ struct router_entry {
     int32_t segs_nopt;          // segs 中 OPT 段数, 注册期算好; 恰好占掉 method_mask 后的 4B padding
     router_seg *segs;
     router_cb *mws;             // 已合并的中间件函数指针 (group + 路由级, 已 _router_resolve_mw)
-    router_cb handler;
+    router_cb handler;          // 普通路由; 与 on_chunk 互斥
+    router_stream_cb on_chunk;  // 流式路由; 两者皆空即 router_add_index 注册的纯匹配条目
 };
 // 路由器
 // 三组动态数组共享一份 _router_grow 几何扩容逻辑; 全局中间件 / 路由表 / 具名表互不影响
@@ -48,10 +50,25 @@ struct router_ctx {
     int32_t global_mw_cap;
     int32_t named_n;
     int32_t named_cap;
+    int32_t has_stream;      // 注册过流式路由; 没有就不必为一个 411 先建记录再解 URL 扫全表
     router_entry *routes;
     router_cb *global_mw;
     named_mw *named;
+    struct hashmap *streams; // router_st_ent 表; 首次遇到流式请求才建
 };
+// 一条正在接收的流式请求。req / url 要跨帧活到收齐, 故整体堆分配, 表里只放下面那个小元素
+// —— 表扩容搬的是指针, 交给 on_chunk 的 ctx 地址始终不变。
+// 首包不留副本: req.pack 只在它活着的那段时间(准入链 + 首帧回调)有效, 之后置 NULL
+typedef struct router_stream {
+    router_stream_cb on_chunk;   // 命中路由的流式回调
+    router_req req;              // 跨帧复用的请求上下文, 连接标识也在里面
+    url_ctx url;                 // req.url 恒指向这里
+} router_stream;
+// 流式表的元素: 键 + 本体指针。本体近 5KB, 按值入表的话查一次就得在栈上摆一个同样大的探针
+typedef struct router_st_ent {
+    sk_id sk;              // hashmap key
+    router_stream *st;
+} router_st_ent;
 
 // 对存放 router_entry / router_cb / named_mw 三种结构体 (含指针成员) 的数组
 // 这里直接 REALLOC 几何扩容, 由调用方自己写 [size++] 入位置
@@ -377,9 +394,45 @@ router_ctx *router_new(void) {
     ZERO(r, sizeof(router_ctx));
     return r;
 }
+// 流式表的 hash / compare / elfree。key 是 sk_id，按字段逐个喂而不是整体 memhash：
+// sk_id 里 fd 与 skid 之间有对齐填充，填充字节是未初始化的
+static uint64_t _router_st_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+    (void)seed0;
+    (void)seed1;
+    const router_st_ent *ent = (const router_st_ent *)item;
+    uint64_t key[2];
+    key[0] = (uint64_t)ent->sk.fd;
+    key[1] = ent->sk.skid;
+    return hash((const char *)key, sizeof(key));
+}
+static int _router_st_cmp(const void *a, const void *b, void *ud) {
+    (void)ud;
+    const router_st_ent *x = (const router_st_ent *)a;
+    const router_st_ent *y = (const router_st_ent *)b;
+    if (x->sk.fd != y->sk.fd) {
+        return (x->sk.fd < y->sk.fd) ? -1 : 1;
+    }
+    if (x->sk.skid != y->sk.skid) {
+        return (x->sk.skid < y->sk.skid) ? -1 : 1;
+    }
+    return 0;
+}
+// hashmap elfree; 表里的元素只是键 + 指针, 摘表项不会连带释放本体。
+// 能走到这里的都是流没收齐就没了(连接断 / 被同连接新首帧顶掉 / router_free),
+// 给 on_chunk 最后一次机会清 ctx->user —— 正常收尾走 feed 里的 END 分支, 不经过这里
+static void _router_st_free(void *item) {
+    router_stream *st = ((router_st_ent *)item)->st;
+    st->on_chunk(&st->req, ROUTER_STREAM_ABORT, NULL, 0);
+    FREE(st);
+}
 void router_free(router_ctx *r) {
     if (NULL == r) {
         return;
+    }
+    // 必须排在路由表之前释放: hashmap_free 会逐元素投 ROUTER_STREAM_ABORT,
+    // 那次回调还能读路径参数, 而 params[].key 指向下面就要被释放的 segs[].str
+    if (NULL != r->streams) {
+        hashmap_free(r->streams);
     }
     router_entry *e;
     // 逐 entry 释放其内嵌的字符串和数组
@@ -562,10 +615,12 @@ static int32_t _router_entry_push(router_ctx *r, router_method m,
     e->segs_nopt = segs_nopt;
     return r->routes_n++;//后自增：返回值即新条目的稳定下标
 }
-router_entry *router_add(router_ctx *r, const router_group *g,
-                         router_method method, const char *path,
-                         router_cb h,
-                         const char *const *mws, int32_t mws_n) {
+// router_add / router_add_stream 的共同实现: h 与 sh 恰有一个非空,
+// 决定这条路由是普通派发还是流式接收
+static router_entry *_router_add_common(router_ctx *r, const router_group *g,
+                                        router_method method, const char *path,
+                                        router_cb h, router_stream_cb sh,
+                                        const char *const *mws, int32_t mws_n) {
     // 1) 沿 group 父链拼接 prefix + path → full_buf (栈, 仅用于段解析, 解析完即可丢弃)
     size_t prefix_len = 0;
     char full_buf[ONEK];
@@ -636,6 +691,31 @@ router_entry *router_add(router_ctx *r, const router_group *g,
     e->mws = mws_arr;
     e->mws_n = total_mws;
     e->handler = h;
+    e->on_chunk = sh;
+    return e;
+}
+router_entry *router_add(router_ctx *r, const router_group *g,
+                         router_method method, const char *path,
+                         router_cb h,
+                         const char *const *mws, int32_t mws_n) {
+    if (NULL == h) {
+        LOG_WARN("router: router_add needs a handler.");
+        return NULL;
+    }
+    return _router_add_common(r, g, method, path, h, NULL, mws, mws_n);
+}
+router_entry *router_add_stream(router_ctx *r, const router_group *g,
+                                router_method method, const char *path,
+                                router_stream_cb sh,
+                                const char *const *mws, int32_t mws_n) {
+    if (NULL == sh) {
+        LOG_WARN("router: router_add_stream needs a stream callback.");
+        return NULL;
+    }
+    router_entry *e = _router_add_common(r, g, method, path, NULL, sh, mws, mws_n);
+    if (NULL != e) {
+        r->has_stream = 1;
+    }
     return e;
 }
 // 按 method 生成 router_get / router_post / ... 等便捷包装, 内部一律转发到 router_add
@@ -654,6 +734,16 @@ DEF_ROUTE_FN(head,    ROUTER_M_HEAD)
 DEF_ROUTE_FN(options, ROUTER_M_OPTIONS)
 DEF_ROUTE_FN(any,     ROUTER_M_ANY)
 #undef DEF_ROUTE_FN
+// 流式便捷包装只给 POST / PUT: 带请求体的方法就这两个, 其余方法要流式直接用 router_add_stream
+#define DEF_STREAM_FN(name, mask)  \
+router_entry *router_##name##_stream(router_ctx *r, const router_group *g,  \
+                                     const char *path, router_stream_cb sh, \
+                                     const char *const *mws, int32_t mws_n) { \
+    return router_add_stream(r, g, mask, path, sh, mws, mws_n); \
+}
+DEF_STREAM_FN(post, ROUTER_M_POST)
+DEF_STREAM_FN(put,  ROUTER_M_PUT)
+#undef DEF_STREAM_FN
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                        const char *path, size_t path_len) {
     router_method m = _router_method_str_to_mask(method, method_len);
@@ -745,6 +835,10 @@ void router_next(router_req *ctx) {
 char *router_req_header(router_req *ctx, const char *key, size_t *lens) {
     // 先把 lens 清 0, http_header 未找到时不写 lens, 调用方读到旧值会误判
     *lens = 0;
+    // 流式路由过了首帧就没有 pack 了, 见 router_stream_cb 的说明
+    if (NULL == ctx->pack) {
+        return NULL;
+    }
     return http_header(ctx->pack, key, lens);
 }
 const char *router_req_param(router_req *ctx, const char *key, size_t *lens) {
@@ -772,13 +866,17 @@ const char *router_req_query(router_req *ctx, const char *key, size_t *lens) {
     return (NULL != v->data) ? (const char *)v->data : "";
 }
 void *router_req_body(router_req *ctx, size_t *lens) {
+    if (NULL == ctx->pack) {
+        *lens = 0;
+        return NULL;
+    }
     return http_data(ctx->pack, lens);
 }
 // 组装完整 HTTP 响应并通过 ev_send 推出去; 自动写 Content-Length, content_type 非 NULL 时
 // 自动写 Content-Type, extra 由调用方追加 (不可重复 CL / CT / Transfer-Encoding)
 // bw 内部托管 (binary_init(NULL,...) 模式), ev_send copy=0 转移 bw.data 所有权给框架,
-// 函数返回后无需 binary_free。不接 router_req, 供无 ctx 的错误路径 (router_reject_chunked
-// 等) 共用同一条响应管线; 有 ctx 的入口走 _router_send_resp 包一层置 responded
+// 函数返回后无需 binary_free。不接 router_req, 供无 ctx 的错误路径 (拒 chunked 的 411、
+// 流式首帧的 400 / 500 等) 共用同一条响应管线; 有 ctx 的入口走 _router_send_resp 包一层置 responded
 static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code,
                               const char *content_type,
                               const http_header_ctx *extra, int32_t extra_n,
@@ -837,9 +935,14 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
         k[extra[i].key.lens] = '\0';
         http_pack_head2(&bw, k, (const char *)extra[i].value.data, extra[i].value.lens);
     }
-    // http_pack_content 内部会写 \r\n\r\n + body, 完成完整响应包;
-    // 空 body 由它按 EMPTYPTR(body, body_len) 统一收敛成 Content-Length: 0, 各入口不必自己归一
-    http_pack_content(&bw, (void *)body, body_len);
+    // 1xx/204/304 禁带 Content-Length 与报文体, 只收尾不写 body(给了也丢), 判据同 Lua 侧的 nocl;
+    // 其余走 http_pack_content, 它写 \r\n\r\n + body 完成整包, 空 body 也统一收敛成
+    // Content-Length: 0, 各入口不必自己归一
+    if (http_code_nobody(code)) {
+        http_pack_end(&bw);
+    } else {
+        http_pack_content(&bw, (void *)body, body_len);
+    }
     ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 0);
 }
 // _router_send_core 的 router_req 版: 发完置 responded 避免 dispatch 末尾兜底 500 又发一遍
@@ -876,6 +979,31 @@ void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid) {
     _router_send_simple(task, fd, skid, 411, "chunked request not supported\n");
     ev_close(&task->loader->netev, fd, skid, 0);
 }
+// 流式路由的链尾哨兵: 跑到这里说明每个中间件都调了 router_next。不能拿 chain_i == chain_n 判,
+// 最后一个中间件调不调 next 留下的游标完全一样
+static void _router_admit(router_req *ctx) {
+    ctx->admitted = 1;
+}
+// 拼接执行链: 全局中间件 → 路由级中间件 → 末位 (普通路由是 handler, 流式路由是准入哨兵)。
+// 超出 ROUTER_MAX_CHAIN 视为配置错误, 由调用方回 500
+static int32_t _router_chain_build(router_ctx *r, router_entry *e, router_req *ctx) {
+    if (r->global_mw_n + e->mws_n + 1 > ROUTER_MAX_CHAIN) {
+        LOG_WARN("router: chain exceeds %d (global=%d, route=%d), rejected.",
+                 ROUTER_MAX_CHAIN, r->global_mw_n, e->mws_n);
+        return ERR_FAILED;
+    }
+    int32_t k = 0;
+    for (int32_t i = 0; i < r->global_mw_n; i++) {
+        ctx->chain[k++] = r->global_mw[i];
+    }
+    for (int32_t i = 0; i < e->mws_n; i++) {
+        ctx->chain[k++] = e->mws[i];
+    }
+    ctx->chain[k++] = (NULL != e->handler) ? e->handler : _router_admit;
+    ctx->chain_n = k;
+    ctx->chain_i = 0;
+    return ERR_OK;
+}
 // 派发流程: 解方法 → URL parse → 线性扫表 → 拼 chain → 推进 → 兜底 500
 void router_dispatch(router_ctx *r, task_ctx *task,
                      SOCKET fd, uint64_t skid,
@@ -906,54 +1034,187 @@ void router_dispatch(router_ctx *r, task_ctx *task,
         return;
     }
     router_entry *matched = &r->routes[idx];
-    // router_add_index 注册的条目 handler 恒为 NULL(只配 router_match_index 用), 混进
+    // router_add_index 注册的条目两个回调恒为 NULL(只配 router_match_index 用), 混进
     // dispatch 会直接调空指针; 视为配置错误拒掉。眼下没有哪个 router_ctx 同时用两套 API,
-    // 但 NULL handler 在注册期是合法的(index 路由本就不带), 拦不到那一层, 只能在这里挡
-    if (NULL == matched->handler) {
+    // 但空回调在注册期是合法的(index 路由本就不带), 拦不到那一层, 只能在这里挡
+    if (NULL == matched->handler
+        && NULL == matched->on_chunk) {
         LOG_WARN("router: route %d has no handler (registered by router_add_index), rejected.", idx);
         _router_send_simple(task, fd, skid, 500, "Internal Server Error\n");
         return;
     }
-    // 拼接执行链 chain: 全局中间件 → 路由级中间件 → handler
-    int32_t need = r->global_mw_n + matched->mws_n + 1;
-    if (need > ROUTER_MAX_CHAIN) {
-        // chain 数组容量固定 (ROUTER_MAX_CHAIN), 超额视为配置错误直接 500
-        LOG_WARN("router: chain exceeds %d (global=%d, route=%d), rejected.",
-                 ROUTER_MAX_CHAIN, r->global_mw_n, matched->mws_n);
+    if (ERR_OK != _router_chain_build(r, matched, &ctx)) {
         _router_send_simple(task, fd, skid, 500, "Chain too long\n");
         return;
     }
-    int32_t k = 0;
-    for (int32_t i = 0; i < r->global_mw_n; i++) {
-        ctx.chain[k++] = r->global_mw[i];
-    }
-    for (int32_t i = 0; i < matched->mws_n; i++) {
-        ctx.chain[k++] = matched->mws[i];
-    }
-    ctx.chain[k++] = matched->handler;
-    ctx.chain_n = k;
-    ctx.chain_i = 0;
     // 启动链路, 第一个中间件 / handler 通过 router_next 递归推进
     router_next(&ctx);
+    // 流式路由命中一次到齐的请求: 准入通过才把请求体按 slice == 0 一次交出去
+    if (NULL != matched->on_chunk
+        && ctx.admitted) {
+        size_t dlens = 0;
+        void *data = http_data(pack, &dlens);
+        matched->on_chunk(&ctx, 0, data, dlens);
+    }
     // 中间件主动 return 不调 router_next 是合法截断; 但都没写响应 (handler 漏发 + 中间件
     // 也没截断) 时, 客户端会卡死, 这里兜底 500 让连接尽快关闭
     if (!ctx.responded) {
         _router_send_simple(task, fd, skid, 500, "Internal Server Error\n");
     }
 }
-// _net_recv 回调的标准实现：分片一律拒绝(router 只认一次到齐的完整请求)，其余交 dispatch。
+// 摘掉一条流式记录并释放它。hashmap_delete 只返回元素副本、不会自动调 elfree，得在这里补上
+static void _router_st_drop(router_ctx *r, sk_id *sk) {
+    if (NULL == r->streams) {
+        return;
+    }
+    router_st_ent probe;
+    probe.sk = *sk;
+    probe.st = NULL;
+    router_st_ent *removed = (router_st_ent *)hashmap_delete(r->streams, &probe);
+    if (NULL != removed) {
+        _router_st_free(removed);
+    }
+}
+void router_closed(router_ctx *r, SOCKET fd, uint64_t skid) {
+    if (NULL == r
+        || NULL == r->streams) {
+        return;
+    }
+    sk_id sk;
+    sk.fd = fd;
+    sk.skid = skid;
+    _router_st_drop(r, &sk);
+}
+// 首帧不通过时的统一收尾: 回响应 → 关连接 → 丢记录。请求体还在后面, 连接留着也收不了。
+// code 传 0 表示调用方已经写过响应, 只关连接
+static void _router_st_reject(router_stream *st, task_ctx *task, int32_t code, const char *body) {
+    if (code > 0) {
+        _router_send_simple(task, st->req.sk.fd, st->req.sk.skid, code, body);
+    }
+    ev_close(&task->loader->netev, st->req.sk.fd, st->req.sk.skid, 0);
+    FREE(st);
+}
+// 流式首帧: 匹配路由 → 跑准入链 → 进表 → 回调 PROT_SLICE_START
+static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct http_pack_ctx *pack) {
+    buf_ctx *status = http_status(pack);
+    if (NULL == status || 0 == status[0].lens || 0 == status[1].lens) {
+        return;// 无效 HTTP, 静默丢, 同 router_dispatch
+    }
+    // 同连接已有记录说明上一条流式请求没收尾, 丢旧的重开
+    _router_st_drop(r, sk);
+    router_stream *st;
+    MALLOC(st, sizeof(router_stream));
+    // url 不清零: url_parse 自己会清该清的部分, 那三个大数组白清就是每请求 4KB 死写
+    ZERO(st, offsetof(router_stream, url));
+    st->req.task = task;
+    st->req.sk = *sk;
+    st->req.url = &st->url;
+    st->req.pack = pack;
+    int32_t idx = router_match_index(r, status[0].data, status[0].lens,
+                                     status[1].data, status[1].lens, &st->req);
+    int32_t code = router_match_code(idx);
+    if (200 != code) {
+        char body[64];
+        SNPRINTF(body, sizeof(body), "%s\n", http_code_status(code));
+        _router_st_reject(st, task, code, body);
+        return;
+    }
+    router_entry *matched = &r->routes[idx];
+    // 命中的不是流式路由: 请求体正一块块往这边来, 普通 handler 接不住
+    if (NULL == matched->on_chunk) {
+        FREE(st);
+        router_reject_chunked(task, sk->fd, sk->skid);
+        return;
+    }
+    st->on_chunk = matched->on_chunk;
+    if (ERR_OK != _router_chain_build(r, matched, &st->req)) {
+        _router_st_reject(st, task, 500, "Chain too long\n");
+        return;
+    }
+    // 链尾是准入哨兵而非 handler; 中间件截断即拒绝, 它没写响应就兜底 500
+    router_next(&st->req);
+    if (!st->req.admitted) {
+        _router_st_reject(st, task, st->req.responded ? 0 : 500, "Internal Server Error\n");
+        return;
+    }
+    // 流式表懒建: 多数 router 一辈子见不到一个流式请求, 不必都摊这份内存
+    if (NULL == r->streams) {
+        r->streams = hashmap_new_with_allocator(_malloc, _realloc, _free,
+                                                sizeof(router_st_ent), 8, 0, 0,
+                                                _router_st_hash, _router_st_cmp, _router_st_free, NULL);
+        if (NULL == r->streams) {
+            _router_st_reject(st, task, 500, "Internal Server Error\n");
+            return;
+        }
+    }
+    // 进表要排在回调之前: 表满 OOM 得先有结论, 回调里若关连接也才找得到这条记录
+    router_st_ent ent;
+    ent.sk = *sk;
+    ent.st = st;
+    hashmap_set(r->streams, &ent);
+    if (hashmap_oom(r->streams)) {
+        _router_st_reject(st, task, 500, "Internal Server Error\n");
+        return;
+    }
+    st->on_chunk(&st->req, PROT_SLICE_START, NULL, 0);
+    // 首包随本次回调结束即被协议层回收, 后面几帧头部一律读不到。
+    // 回调里可能把这条流关掉(router_closed), 那时 st 已经释放, 先确认表里还是它才能写
+    const router_st_ent *cur = (const router_st_ent *)hashmap_get(r->streams, &ent);
+    if (NULL != cur
+        && cur->st == st) {
+        st->req.pack = NULL;
+    }
+}
+// 流式中间/结束帧: 原样把 slice 与数据交给 on_chunk
+static void _router_st_feed(router_ctx *r, task_ctx *task, sk_id *sk,
+                            uint8_t slice, struct http_pack_ctx *pack) {
+    if (NULL == r->streams) {
+        return;
+    }
+    router_st_ent probe;
+    probe.sk = *sk;
+    probe.st = NULL;
+    const router_st_ent *found = (const router_st_ent *)hashmap_get(r->streams, &probe);
+    if (NULL == found) {
+        return;// 首帧被拒过, 连接那时就关了, 后续帧静默丢
+    }
+    router_stream *st = found->st;
+    size_t dlens = 0;
+    void *data = http_data(pack, &dlens);
+    if (0 == (PROT_SLICE_END & slice)) {
+        st->on_chunk(&st->req, slice, data, dlens);
+        return;
+    }
+    // 结束帧: 先摘表项再回调, 回调返回后连同 req 一起释放
+    hashmap_delete(r->streams, &probe);
+    st->on_chunk(&st->req, slice, data, dlens);
+    if (!st->req.responded) {
+        _router_send_simple(task, sk->fd, sk->skid, 500, "Internal Server Error\n");
+    }
+    FREE(st);
+}
+// _net_recv 回调的标准实现: 一次到齐的请求直接派发; chunked 命中流式路由则逐帧交给它, 否则回 411。
 // harbor / debug_console 各自的回调只负责从 task 参数里取出自己的 router 再转到这里
 void router_net_recv(router_ctx *r, task_ctx *task, sk_id *sk,
                      subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)size;
-    if (0 != slice) {
-        // 只在首帧回 411 并关连接；后续分片帧此时连接已关，静默丢弃
-        if (PROT_SLICE_START == slice) {
-            router_reject_chunked(task, sk->fd, sk->skid);
-        }
+    if (0 == slice) {
+        router_dispatch(r, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
         return;
     }
-    router_dispatch(r, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
+    if (NULL == r) {
+        return;
+    }
+    if (PROT_SLICE_START & slice) {
+        // 一条流式路由都没注册时结局必然是 411, 不值得为它先建记录再解 URL 扫全表
+        if (0 == r->has_stream) {
+            router_reject_chunked(task, sk->fd, sk->skid);
+            return;
+        }
+        _router_st_begin(r, task, sk, (struct http_pack_ctx *)data);
+        return;
+    }
+    _router_st_feed(r, task, sk, slice, (struct http_pack_ctx *)data);
 }

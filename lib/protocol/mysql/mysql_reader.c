@@ -4,6 +4,11 @@
 #include "protocol/prots_pub.h"
 #include "utils/strptime.h"
 
+// 有符号与无符号整数读取共用同一份类型白名单：签名不同但"哪些列算整数"是同一条规则，
+// 各留一份的话加一种整数类型要改两处，而没有任何东西把它们关联起来
+static const uint8_t _int_types[] = { MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONG, MYSQL_TYPE_INT24,
+                                      MYSQL_TYPE_SHORT, MYSQL_TYPE_YEAR, MYSQL_TYPE_TINY };
+
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {
     if ((MPACK_QUERY != mpack->pack_type && MPACK_STMT_EXECUTE != mpack->pack_type)
         || NULL == mpack->pack) {
@@ -47,8 +52,13 @@ static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *na
     }
     return NULL;
 }
-// 根据字段名获取当前行中对应的 mpack_row，同时输出字段描述指针；NULL 字段或越界时设置 err
-static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name, mpack_field **field, int32_t *err) {
+// 每个取值函数开头那三段（定位当前行 → NULL 判定 → 字段类型白名单）收在这里，
+// types/ntype 是调用方允许的 enum_field_types 列表。
+// 返回 NULL 时 err 已写好（1=该字段是 SQL NULL，ERR_FAILED=取不到或类型不符），调用方只管返自己的零值。
+// NULL 判定排在类型判定之前，与 pgsql_reader 相反——那边先判类型；这里保持原有行为，
+// 列值为 NULL 时不再多报一次类型不符
+static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
+                                    const uint8_t *types, int32_t ntype, int32_t *err) {
     if (reader->index >= (int32_t)array_size(&reader->arr_rows)) {
         SET_PTR(err, ERR_FAILED);
         return NULL;
@@ -64,24 +74,23 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name, 
         SET_PTR(err, 1); // 1 表示该字段值为 NULL
         return NULL;
     }
-    *field = column;
+    int32_t i;
+    for (i = 0; i < ntype; i++) {
+        if (types[i] == column->type) {
+            break;
+        }
+    }
+    if (i == ntype) {
+        SET_PTR(err, ERR_FAILED);
+        LOG_WARN("does not match required data type.");
+        return NULL;
+    }
     return &row[pos];
 }
 int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_field *field;
-    mpack_row *row = _mysql_reader_row(reader, name, &field, err);
+    mpack_row *row = _mysql_reader_row(reader, name, _int_types, (int32_t)ARRAY_SIZE(_int_types), err);
     if (NULL == row) {
-        return 0;
-    }
-    if (MYSQL_TYPE_LONGLONG != field->type
-        && MYSQL_TYPE_LONG != field->type
-        && MYSQL_TYPE_INT24 != field->type
-        && MYSQL_TYPE_SHORT != field->type
-        && MYSQL_TYPE_YEAR != field->type
-        && MYSQL_TYPE_TINY != field->type) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
@@ -117,19 +126,8 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
 }
 uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_field *field;
-    mpack_row *row = _mysql_reader_row(reader, name, &field, err);
+    mpack_row *row = _mysql_reader_row(reader, name, _int_types, (int32_t)ARRAY_SIZE(_int_types), err);
     if (NULL == row) {
-        return 0;
-    }
-    if (MYSQL_TYPE_LONGLONG != field->type
-        && MYSQL_TYPE_LONG != field->type
-        && MYSQL_TYPE_INT24 != field->type
-        && MYSQL_TYPE_SHORT != field->type
-        && MYSQL_TYPE_YEAR != field->type
-        && MYSQL_TYPE_TINY != field->type) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
@@ -164,14 +162,9 @@ static double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
 }
 float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_field *field;
-    mpack_row *row = _mysql_reader_row(reader, name, &field, err);
+    static const uint8_t _types[] = { MYSQL_TYPE_FLOAT };
+    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
     if (NULL == row) {
-        return 0.0f;
-    }
-    if (MYSQL_TYPE_FLOAT != field->type) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
         return 0.0f;
     }
     if (MPACK_QUERY == reader->pack_type) {
@@ -186,14 +179,9 @@ float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *er
 }
 double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_field *field;
-    mpack_row *row = _mysql_reader_row(reader, name, &field, err);
+    static const uint8_t _types[] = { MYSQL_TYPE_DOUBLE };
+    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
     if (NULL == row) {
-        return 0.0;
-    }
-    if (MYSQL_TYPE_DOUBLE != field->type) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
         return 0.0;
     }
     if (MPACK_QUERY == reader->pack_type) {
@@ -208,27 +196,12 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
 }
 char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_field *field;
-    mpack_row *row = _mysql_reader_row(reader, name, &field, err);
+    static const uint8_t _types[] = { MYSQL_TYPE_STRING, MYSQL_TYPE_VARCHAR, MYSQL_TYPE_VAR_STRING, MYSQL_TYPE_ENUM,
+                                      MYSQL_TYPE_SET, MYSQL_TYPE_LONG_BLOB, MYSQL_TYPE_MEDIUM_BLOB, MYSQL_TYPE_BLOB,
+                                      MYSQL_TYPE_TINY_BLOB, MYSQL_TYPE_GEOMETRY, MYSQL_TYPE_BIT, MYSQL_TYPE_DECIMAL,
+                                      MYSQL_TYPE_NEWDECIMAL, MYSQL_TYPE_JSON };
+    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
     if (NULL == row) {
-        return NULL;
-    }
-    if (MYSQL_TYPE_STRING != field->type
-        && MYSQL_TYPE_VARCHAR != field->type
-        && MYSQL_TYPE_VAR_STRING != field->type
-        && MYSQL_TYPE_ENUM != field->type
-        && MYSQL_TYPE_SET != field->type
-        && MYSQL_TYPE_LONG_BLOB != field->type
-        && MYSQL_TYPE_MEDIUM_BLOB != field->type
-        && MYSQL_TYPE_BLOB != field->type
-        && MYSQL_TYPE_TINY_BLOB != field->type
-        && MYSQL_TYPE_GEOMETRY != field->type
-        && MYSQL_TYPE_BIT != field->type
-        && MYSQL_TYPE_DECIMAL != field->type
-        && MYSQL_TYPE_NEWDECIMAL != field->type
-        && MYSQL_TYPE_JSON != field->type) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
         return NULL;
     }
     *lens = row->val.lens;
@@ -236,18 +209,10 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
 }
 int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_field *field;
-    mpack_row *row = _mysql_reader_row(reader, name, &field, err);
+    static const uint8_t _types[] = { MYSQL_TYPE_DATE, MYSQL_TYPE_DATETIME, MYSQL_TYPE_DATETIME2, MYSQL_TYPE_TIMESTAMP,
+                                      MYSQL_TYPE_TIMESTAMP2 };
+    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
     if (NULL == row) {
-        return 0;
-    }
-    if (MYSQL_TYPE_DATE != field->type
-        && MYSQL_TYPE_DATETIME != field->type
-        && MYSQL_TYPE_DATETIME2 != field->type
-        && MYSQL_TYPE_TIMESTAMP != field->type
-        && MYSQL_TYPE_TIMESTAMP2 != field->type) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
@@ -325,15 +290,9 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
 }
 int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_field *field;
-    mpack_row *row = _mysql_reader_row(reader, name, &field, err);
+    static const uint8_t _types[] = { MYSQL_TYPE_TIME, MYSQL_TYPE_TIME2 };
+    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
     if (NULL == row) {
-        return 0;
-    }
-    if (MYSQL_TYPE_TIME != field->type
-        && MYSQL_TYPE_TIME2 != field->type) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
         return 0;
     }
     int32_t is_negative = 0;

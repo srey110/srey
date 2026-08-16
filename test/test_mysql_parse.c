@@ -788,6 +788,96 @@ static void test_mpack_ok_parse(CuTest *tc) {
     binary_free(&bw);
 }
 
+// _mysql_get_lenenc 遇缓冲不足须返 ERR_FAILED，不能落到 binary_get_* 的 ASSERTAB 上把进程 abort。
+// 报文长度由对端决定，一个截断的包只该判失败
+static void test_mysql_lenenc_truncated(CuTest *tc) {
+    int32_t rtn;
+    binary_ctx br;
+    // 1) 空缓冲：连 flag 字节都没有。须传非 NULL 的 buf 走"外部托管"，
+    //    binary_init 对 NULL 是自己 MALLOC 一块可扩容缓冲，那样 size 就不是 0 了
+    char empty[1] = { 0 };
+    binary_init(&br, empty, 0, 0);
+    _mysql_get_lenenc(&br, &rtn);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn);
+
+    // 2) flag 说后面有 2/3/8 字节，实际都差一个
+    unsigned char t2[2] = { 0xfc, 0x01 };
+    binary_init(&br, (char *)t2, sizeof(t2), 0);
+    _mysql_get_lenenc(&br, &rtn);
+    CuAssert(tc, "0xfc with 1 trailing byte must fail, not abort", ERR_FAILED == rtn);
+    unsigned char t3[3] = { 0xfd, 0x01, 0x02 };
+    binary_init(&br, (char *)t3, sizeof(t3), 0);
+    _mysql_get_lenenc(&br, &rtn);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn);
+    unsigned char t8[8] = { 0xfe, 1, 2, 3, 4, 5, 6, 7 };
+    binary_init(&br, (char *)t8, sizeof(t8), 0);
+    _mysql_get_lenenc(&br, &rtn);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn);
+
+    // 3) 未知 flag 仍是失败（原有行为不变）
+    unsigned char bad[2] = { 0xfb, 0x00 };
+    binary_init(&br, (char *)bad, sizeof(bad), 0);
+    _mysql_get_lenenc(&br, &rtn);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn);
+
+    // 4) 合法值照常读出，别把正常路径一起挡了
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    _mysql_set_lenenc(&bw, 0x0a);
+    _mysql_set_lenenc(&bw, 0x1234);
+    _mysql_set_lenenc(&bw, 0x123456);
+    // 超 0xffffff 走 8 字节编码；取值须在 32 位 size_t 内，否则 m32 构建上写入即截断
+    _mysql_set_lenenc(&bw, 0x12345678);
+    binary_init(&br, bw.data, bw.offset, 0);
+    CuAssertTrue(tc, 0x0a == _mysql_get_lenenc(&br, &rtn) && ERR_OK == rtn);
+    CuAssertTrue(tc, 0x1234 == _mysql_get_lenenc(&br, &rtn) && ERR_OK == rtn);
+    CuAssertTrue(tc, 0x123456 == _mysql_get_lenenc(&br, &rtn) && ERR_OK == rtn);
+    CuAssertTrue(tc, 0x12345678 == _mysql_get_lenenc(&br, &rtn) && ERR_OK == rtn);
+    binary_free(&bw);
+}
+
+// 回归：OK 包置了 SERVER_SESSION_STATE_CHANGED 却不带尾部数据。
+// 修复前 _mpack_ok_track 入口的 lenenc 直接读空缓冲 → ASSERTAB abort 整个进程（release 同样）；
+// 现在这段可选信息按"没带"静默放弃，OK 包本身照常解析成功
+static void test_mpack_ok_track_truncated(CuTest *tc) {
+    binary_ctx bw;
+    binary_ctx br;
+    mysql_ctx mysql;
+    mpack_ok ok;
+
+    // 1) 尾部一个字节都没有
+    binary_init(&bw, NULL, 0, 0);
+    _mysql_set_lenenc(&bw, 1);
+    _mysql_set_lenenc(&bw, 0);
+    binary_set_integer(&bw, SERVER_SESSION_STATE_CHANGED, 2, 1);
+    binary_set_integer(&bw, 0, 2, 1);
+    binary_init(&br, bw.data, bw.offset, 0);
+    ZERO(&mysql, sizeof(mysql));
+    ZERO(&ok, sizeof(ok));
+    CuAssertIntEquals(tc, ERR_OK, _mpack_ok(&mysql, &br, &ok));
+    CuAssertIntEquals(tc, 1, (int)ok.affected_rows);
+    CuAssert(tc, "truncated session-track must not corrupt the database name",
+        '\0' == mysql.client.database[0]);
+    binary_free(&bw);
+
+    // 2) info 段长度自洽但紧跟其后的 session_state 长度字节缺失
+    binary_init(&bw, NULL, 0, 0);
+    _mysql_set_lenenc(&bw, 1);
+    _mysql_set_lenenc(&bw, 0);
+    binary_set_integer(&bw, SERVER_SESSION_STATE_CHANGED, 2, 1);
+    binary_set_integer(&bw, 0, 2, 1);
+    _mysql_set_lenenc(&bw, 2);// info 长度
+    binary_set_int8(&bw, 'h');
+    binary_set_int8(&bw, 'i');// info 到此结束，后面没有 session_state 长度字节
+    binary_init(&br, bw.data, bw.offset, 0);
+    ZERO(&mysql, sizeof(mysql));
+    ZERO(&ok, sizeof(ok));
+    CuAssertIntEquals(tc, ERR_OK, _mpack_ok(&mysql, &br, &ok));
+    CuAssert(tc, "truncated session-state length must not abort",
+        '\0' == mysql.client.database[0]);
+    binary_free(&bw);
+}
+
 // _mpack_err 解析 ERR 包：error_code + 跳过 6 字节 SQL state + 剩余字节为 msg
 static void test_mpack_err_parse(CuTest *tc) {
     binary_ctx bw;
@@ -969,6 +1059,81 @@ static void test_mysql_binary_row_temporal_invalid_len(CuTest *tc) {
         int32_t rtn = _mpack_parse_binary_row(r, &br);
         CuAssertIntEquals(tc, ERR_OK, rtn);
         mysql_reader_free(r);//释放 buf（通过 row->payload）
+    }
+}
+
+// 回归：报文里读出的长度拿去 binary_get_* 之前必须与剩余字节比过。
+// 修复前这些截断报文会落到 binary_get_binary/skip 的 ASSERTAB 上 abort 整个进程（release 同样）
+static void test_mysql_truncated_row(CuTest *tc) {
+    // 1) NULL 位图长度来自上一个包声明的 field_count，与本包长度无关：
+    //    声明 16 列需要 3 字节位图，行包只给 2 字节
+    {
+        char names[16][64];
+        uint8_t types[16];
+        for (int32_t i = 0; i < 16; i++) {
+            SNPRINTF(names[i], sizeof(names[i]), "c%d", i);
+            types[i] = MYSQL_TYPE_LONG;
+        }
+        mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 16, names, types);
+        binary_ctx bw;
+        binary_init(&bw, NULL, 0, 0);
+        binary_set_uint8(&bw, 0x00);
+        binary_set_uint8(&bw, 0x00);// 只有 2 字节，位图要 3 字节
+        binary_ctx br;
+        binary_init(&br, bw.data, bw.offset, 0);
+        CuAssert(tc, "short NULL bitmap must fail, not abort",
+            ERR_FAILED == _mpack_parse_binary_row(r, &br));
+        mysql_reader_free(r);
+        binary_free(&bw);
+    }
+    // 2) 二进制协议 lenenc 字符串：长度说 10，实际只剩 3 字节
+    {
+        char names[1][64] = { "v" };
+        uint8_t types[1] = { MYSQL_TYPE_STRING };
+        mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+        binary_ctx bw;
+        binary_init(&bw, NULL, 0, 0);
+        binary_set_uint8(&bw, 0x00);// NULL 位图
+        _mysql_set_lenenc(&bw, 10);// 声明 10 字节
+        binary_set_uint8(&bw, 'a');
+        binary_set_uint8(&bw, 'b');
+        binary_set_uint8(&bw, 'c');// 只给 3 字节
+        binary_ctx br;
+        binary_init(&br, bw.data, bw.offset, 0);
+        CuAssert(tc, "lenenc value longer than the packet must fail, not abort",
+            ERR_FAILED == _mpack_parse_binary_row(r, &br));
+        mysql_reader_free(r);
+        binary_free(&bw);
+    }
+    // 3) 定长类型同样受这道判定保护：LONG 要 4 字节，位图之后一个都不剩
+    {
+        char names[1][64] = { "v" };
+        uint8_t types[1] = { MYSQL_TYPE_LONG };
+        mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+        binary_ctx bw;
+        binary_init(&bw, NULL, 0, 0);
+        binary_set_uint8(&bw, 0x00);// 只有 NULL 位图
+        binary_ctx br;
+        binary_init(&br, bw.data, bw.offset, 0);
+        CuAssert(tc, "fixed-width value with no bytes left must fail, not abort",
+            ERR_FAILED == _mpack_parse_binary_row(r, &br));
+        mysql_reader_free(r);
+        binary_free(&bw);
+    }
+    // 4) 列定义包的 catalog 长度说 10，实际只剩 2 字节
+    {
+        binary_ctx bw;
+        binary_init(&bw, NULL, 0, 0);
+        _mysql_set_lenenc(&bw, 10);
+        binary_set_uint8(&bw, 'd');
+        binary_set_uint8(&bw, 'e');
+        binary_ctx br;
+        binary_init(&br, bw.data, bw.offset, 0);
+        mpack_field field;
+        ZERO(&field, sizeof(field));
+        CuAssert(tc, "truncated column definition must fail, not abort",
+            ERR_FAILED == _mpack_parse_field(&br, &field));
+        binary_free(&bw);
     }
 }
 
@@ -1305,6 +1470,55 @@ static void test_mysql_udfree_reset(CuTest *tc) {
     // 重复调用安全(context 已置空直接返回)
     _mysql_udfree(&ud);
 }
+// 回归:行阶段收到截断的 EOF 包必须判协议错。
+// 修复前 _mpack_check_final 对"包被截断"和"还有更多结果集"返回同一个 ERR_FAILED,
+// 调用方按后者处理:把残缺结果集当成功交出去并置 more=1,调用方随后死等一个永不到来的结果集
+static void test_mpack_row_eof_truncated(CuTest *tc) {
+    static const char names[1][64] = { "id" };
+    static const uint8_t types[1] = { MYSQL_TYPE_LONG };
+    mysql_ctx mysql;
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_QUERY;
+    mysql.parse_status = 2;// RST_ROW:结果集已进入行阶段
+    mpack_ctx *mpack;
+    CALLOC(mpack, 1, sizeof(mpack_ctx));
+    mpack->pack_type = MPACK_QUERY;
+    mpack->pack = _reader_new(MPACK_QUERY, 1, names, types);
+    mpack->_free_mpack = _mpack_reader_free;
+    mysql.mpack = mpack;
+
+    // 头 4 字节(长度 1 + 序号 5) + payload 只有一个 0xFE:EOF 标志在,后面的 4 字节没了
+    unsigned char raw[] = { 0x01, 0x00, 0x00, 0x05, MYSQL_EOF };
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, raw, sizeof(raw));
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 3;// COMMAND
+    ud.context = &mysql;
+    int32_t status = PROT_INIT;
+    void *out = mysql_unpack(NULL, &buf, &ud, &status);
+    CuAssert(tc, "truncated EOF in the row phase must be a protocol error",
+        NULL == out && BIT_CHECK(status, PROT_ERROR));
+    CuAssert(tc, "must not be reported as MOREDATA", !BIT_CHECK(status, PROT_MOREDATA));
+    // _mpack_parser 的错误收尾负责回收半截结果集并复位状态
+    CuAssertTrue(tc, NULL == mysql.mpack);
+    CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
+    CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
+    buffer_free(&buf);
+}
+// 回归:lenenc 长度必须先与剩余字节比过再收窄成 size_t。
+// 反过来的话 32 位构建上 0x1_0000_0001 截成 1 就能骗过判定,再按 1 字节读 —— 整包静默错位
+static void test_mpack_lenenc_no_narrow_first(CuTest *tc) {
+    // 0xfe + 8 字节长度 0x0000000100000001,后面只跟 2 字节实际数据
+    unsigned char raw[] = { 0xfe, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 'a', 'b' };
+    binary_ctx br;
+    binary_init(&br, (char *)raw, sizeof(raw), 0);
+    mpack_field field;
+    ZERO(&field, sizeof(field));
+    CuAssert(tc, "a 4GiB+1 lenenc length must fail regardless of size_t width",
+        ERR_FAILED == _mpack_parse_field(&br, &field));
+}
 void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
     SUITE_ADD_TEST(suite, test_mysql_reader_cursor);
@@ -1321,6 +1535,9 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_time);
     SUITE_ADD_TEST(suite, test_mysql_reader_binary_lens);
     SUITE_ADD_TEST(suite, test_mpack_ok_parse);
+    SUITE_ADD_TEST(suite, test_mysql_lenenc_truncated);
+    SUITE_ADD_TEST(suite, test_mysql_truncated_row);
+    SUITE_ADD_TEST(suite, test_mpack_ok_track_truncated);
     SUITE_ADD_TEST(suite, test_mpack_err_parse);
     SUITE_ADD_TEST(suite, test_mpack_err_empty_msg);
     SUITE_ADD_TEST(suite, test_mysql_payload);
@@ -1333,4 +1550,6 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpack_fields_short_of_count);
     SUITE_ADD_TEST(suite, test_mpack_fields_match_count);
     SUITE_ADD_TEST(suite, test_mysql_udfree_reset);
+    SUITE_ADD_TEST(suite, test_mpack_row_eof_truncated);
+    SUITE_ADD_TEST(suite, test_mpack_lenenc_no_narrow_first);
 }

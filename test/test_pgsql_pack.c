@@ -121,6 +121,53 @@ static void test_pgsql_stmt_close(CuTest *tc) {
     FREE(pack);
 }
 
+/* 回归：name 为 NULL(匿名语句)时 String 字段仍须写一个 NUL。
+   binary_set_string 对 NULL 一个字节都不写，缺了终止符后端读不到 String 边界，
+   Close 只剩 1 字节消息体、Bind 之后所有 Int16/Int32 字段整体错位一字节 */
+static void test_pgsql_null_name(CuTest *tc) {
+    /* Close：'C' + len(4) + 'S' + name'\0' → 消息体 4+1+1=6，总长 7 + Sync 5 */
+    size_t size = 0;
+    char *pack = pgsql_pack_stmt_close(NULL, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, 'C' == pack[0]);
+    CuAssertIntEquals(tc, 6, (int)_rd_be32(pack + 1));
+    CuAssertTrue(tc, 'S' == pack[5]);
+    CuAssert(tc, "NULL name must still emit its terminating NUL", 0 == pack[6]);
+    CuAssertTrue(tc, 'S' == pack[size - 5]);
+
+    /* 与空串等价：两者应逐字节相同。比完再释放——FREE 会把指针置空 */
+    size_t esize = 0;
+    char *epack = pgsql_pack_stmt_close("", &esize);
+    CuAssertPtrNotNull(tc, epack);
+    CuAssertIntEquals(tc, (int)size, (int)esize);
+    CuAssertTrue(tc, 0 == memcmp(pack, epack, size));
+    FREE(epack);
+    FREE(pack);
+
+    /* Bind：'B' + len + portal'\0' + name'\0' + ... 两个 String 各占 1 字节 */
+    size = 0;
+    pack = pgsql_pack_stmt_execute(NULL, NULL, FORMAT_TEXT, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, 'B' == pack[0]);
+    CuAssert(tc, "empty portal name keeps its NUL", 0 == pack[5]);
+    CuAssert(tc, "NULL statement name keeps its NUL", 0 == pack[6]);
+    FREE(pack);
+
+    /* Query / CopyFail 的 String 同理 */
+    size = 0;
+    pack = pgsql_pack_query(NULL, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 5, (int)_rd_be32(pack + 1));
+    CuAssertTrue(tc, 0 == pack[5]);
+    FREE(pack);
+    size = 0;
+    pack = pgsql_pack_copy_fail(NULL, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 5, (int)_rd_be32(pack + 1));
+    CuAssertTrue(tc, 0 == pack[5]);
+    FREE(pack);
+}
+
 /* =======================================================================
  * pgsql_pack_stmt_execute —— 含 Bind/Describe/Execute/Sync
  * ======================================================================= */
@@ -283,6 +330,7 @@ void test_pgsql_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_cancel);
     SUITE_ADD_TEST(suite, test_pgsql_stmt_prepare);
     SUITE_ADD_TEST(suite, test_pgsql_stmt_close);
+    SUITE_ADD_TEST(suite, test_pgsql_null_name);
     SUITE_ADD_TEST(suite, test_pgsql_stmt_execute);
     SUITE_ADD_TEST(suite, test_pgsql_bind_basic);
     SUITE_ADD_TEST(suite, test_pgsql_bind_extra_types);

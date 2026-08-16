@@ -763,6 +763,71 @@ static void test_pgpack_error_notice_empty(CuTest *tc) {
     binary_free(&bw);
 }
 
+// 回归：ErrorResponse 的字段值没有 NUL 结尾时，取串不得撞断言把进程 abort
+static void test_pgpack_error_notice_unterminated(CuTest *tc) {
+    char raw[] = { 'S', 'E', 'R', 'R' }; // 标志 'S' 后跟 3 字节且不带 NUL
+    binary_ctx br;
+    binary_init(&br, raw, sizeof(raw), 0);
+    char *msg = _pgpack_error_notice(&br);
+    CuAssertPtrNotNull(tc, msg);
+    CuAssertIntEquals(tc, 0, (int)msg[0]); // 这一字段整个丢掉，结果是空串
+    FREE(msg);
+}
+
+// 回归：5 字节报文（长度字段声明 4，即消息体为空）不得让 binary_get_* 的断言 abort 整个进程。
+// _pgsql_payload 只拒 lens < 4，lens == 4 合法 → 类型码 1 字节 + 长度 4 字节读完就到头，
+// 下面这些分支的首个读全都落在零剩余上
+static void test_pgpack_parser_empty_body(CuTest *tc) {
+    static const char codes[] = { 'A', 'T', 'D', 'G', 'H', 'C', 'Z' };
+    pgsql_ctx pg;
+    ud_cxt ud;
+    binary_ctx br;
+    char *raw;
+    int32_t status;
+    for (size_t i = 0; i < sizeof(codes); i++) {
+        ZERO(&pg, sizeof(pg));
+        ZERO(&ud, sizeof(ud));
+        MALLOC(raw, 5);
+        raw[0] = codes[i];
+        pack_integer(raw + 1, 4, 4, 0); // 长度字段含自身，4 即消息体为空
+        binary_init(&br, raw, 5, 0);
+        status = PROT_INIT;
+        CuAssertTrue(tc, NULL == _pgpack_parser(&pg, &br, &ud, &status));
+        CuAssert(tc, "an empty message body must be a protocol error, not an abort",
+            BIT_CHECK(status, PROT_ERROR));
+        _pgpack_free(pg.pack);
+    }
+}
+
+// 回归：RowDescription 声明的列数对得上总长，但某个列名超长把后面的列挤出报文时也须判失败
+static void test_pgpack_row_description_overlong_name(CuTest *tc) {
+    // 2 列 → 需 2*19=38 字节；给足 40 字节，但第一列名字就吃掉 30 字节
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    binary_set_integer(&bw, 2, 2, 0);
+    binary_set_string(&bw, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // 29 字符 + NUL
+    for (int32_t i = 0; i < 12; i++) {
+        binary_set_int8(&bw, 0); // 只补 12 字节，第一列的 18 字节定长段都不够
+    }
+    pgsql_ctx pg;
+    ZERO(&pg, sizeof(pg));
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    char *raw;
+    MALLOC(raw, 5 + bw.offset);
+    raw[0] = 'T';
+    pack_integer(raw + 1, 4 + bw.offset, 4, 0);
+    memcpy(raw + 5, bw.data, bw.offset);
+    binary_ctx br;
+    binary_init(&br, raw, 5 + bw.offset, 0);
+    int32_t status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _pgpack_parser(&pg, &br, &ud, &status));
+    CuAssert(tc, "a field name that crowds out later columns must fail",
+        BIT_CHECK(status, PROT_ERROR));
+    _pgpack_free(pg.pack);
+    binary_free(&bw);
+}
+
 // pgsql_affected_rows：从 CommandComplete 标签末尾取行数；>2^31 须用 int64 不回绕成负数
 static void test_pgsql_affected_rows(CuTest *tc) {
     pgpack_ctx pg;
@@ -831,6 +896,9 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_index);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_empty);
+    SUITE_ADD_TEST(suite, test_pgpack_error_notice_unterminated);
+    SUITE_ADD_TEST(suite, test_pgpack_parser_empty_body);
+    SUITE_ADD_TEST(suite, test_pgpack_row_description_overlong_name);
     SUITE_ADD_TEST(suite, test_pgsql_affected_rows);
     SUITE_ADD_TEST(suite, test_pgsql_setter_atomic);
 }

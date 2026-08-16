@@ -137,7 +137,9 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         case 'p': {
-            FMT_TYPE(uintptr_t);
+            // 必须取 void *：调用方按 %p 压进来的就是它，取成 uintptr_t 两次都不合类型
+            // （va_arg 一次，转手喂给 vsnprintf 的 %p 又一次）
+            FMT_TYPE(void *);
             f++;
             break;
         }

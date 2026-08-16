@@ -275,6 +275,93 @@ static void test_mqtt_publish(CuTest *tc) {
     buffer_free(&buf);
 }
 
+// PUBLISH 的 varhead / topic / 载荷现在与 pack 同处一块内存，摆放偏移随 topic 长度、
+// qos（有无报文标识符）、v5 属性段而变。这里逐个走一遍边界，确认指针落点与内容都对。
+// 建议用 ASan 构建跑：偏移算错时普通构建可能悄悄过去
+static void _mq_publish_case(CuTest *tc, mqtt_protversion version, int8_t qos, uint16_t packid,
+                             const char *topic, const char *body, size_t blens) {
+    size_t lens = 0;
+    char *pack = mqtt_pack_publish(version, 0, qos, 0, topic, packid,
+                                   (char *)body, blens, NULL, &lens);
+    CuAssertPtrNotNull(tc, pack);
+    buffer_ctx buf;
+    _mq_to_buf(&buf, pack, lens);
+    mqtt_ctx *mq;
+    CALLOC(mq, 1, sizeof(mqtt_ctx));
+    mq->version = version;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = _MQ_COMMAND;
+    ud.context = mq;
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mqtt_publish_varhead *vh = (mqtt_publish_varhead *)p->varhead;
+    mqtt_publish_payload *pl = (mqtt_publish_payload *)p->payload;
+    CuAssertStrEquals(tc, topic, vh->topic);
+    CuAssertIntEquals(tc, qos, vh->qos);
+    if (1 == qos || 2 == qos) {
+        CuAssertIntEquals(tc, packid, vh->packid);
+    }
+    CuAssertIntEquals(tc, (int)blens, pl->lens);
+    if (blens > 0) {
+        CuAssertTrue(tc, 0 == memcmp(pl->content, body, blens));
+    }
+    // 三段必须首尾相接地落在 pack 那一块里，且互不重叠
+    CuAssertTrue(tc, (char *)vh == (char *)p + sizeof(mqtt_pack_ctx));
+    CuAssertTrue(tc, vh->topic > (char *)vh);
+    CuAssertTrue(tc, (char *)pl >= vh->topic + strlen(topic) + 1);
+    CuAssertTrue(tc, 0 == ((uintptr_t)pl % sizeof(int32_t)));// 载荷头须 4 字节对齐
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+}
+// PUBLISH 单块分配的边界：空 topic / 空载荷 / 各 qos 档 / v5 属性段
+static void test_mqtt_publish_block(CuTest *tc) {
+    const char *body = "payload-bytes";
+    size_t blens = strlen(body);
+    // 1) qos 0/1/2：packid 有无会改变载荷在块内的起点
+    _mq_publish_case(tc, MQTT_311, 0, 0, "a/b", body, blens);
+    _mq_publish_case(tc, MQTT_311, 1, 1, "a/b", body, blens);
+    _mq_publish_case(tc, MQTT_311, 2, 65535, "a/b", body, blens);
+    // 2) 空载荷（remain == 0，走 _mqtt_publish 的提前 return）
+    _mq_publish_case(tc, MQTT_311, 0, 0, "only/topic", "", 0);
+    _mq_publish_case(tc, MQTT_311, 1, 7, "only/topic", "", 0);
+    // 3) 空 topic（长度前缀为 0，topic 只占一个 '\0'）
+    _mq_publish_case(tc, MQTT_311, 0, 0, "", body, blens);
+    _mq_publish_case(tc, MQTT_311, 0, 0, "", "", 0);
+    // 4) topic 长度为奇数/偶数各来一次，覆盖载荷头的对齐补白分支
+    _mq_publish_case(tc, MQTT_311, 0, 0, "x", body, blens);
+    _mq_publish_case(tc, MQTT_311, 0, 0, "xy", body, blens);
+    _mq_publish_case(tc, MQTT_311, 0, 0, "xyz", body, blens);
+    // 5) v5：属性段占 remaining_lens 的一部分，载荷起点随之后移
+    _mq_publish_case(tc, MQTT_50, 0, 0, "v5/topic", body, blens);
+    _mq_publish_case(tc, MQTT_50, 2, 9, "v5/topic", body, blens);
+}
+
+// 回归：topic 长度前缀声称的字节数超过 remaining_lens 时须判协议错，不能照着写进块内
+static void test_mqtt_publish_bad_topiclen(CuTest *tc) {
+    // 固定头 0x30(PUBLISH,qos0) + remaining_lens=4 + topic 长度前缀 0xFFFF + 两字节凑数
+    unsigned char raw[] = { 0x30, 0x04, 0xff, 0xff, 'a', 'b' };
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, raw, sizeof(raw));
+    mqtt_ctx *mq;
+    CALLOC(mq, 1, sizeof(mqtt_ctx));
+    mq->version = MQTT_311;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = _MQ_COMMAND;
+    ud.context = mq;
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    CuAssert(tc, "topic length beyond remaining_lens must be a protocol error",
+        NULL == p && BIT_CHECK(status, PROT_ERROR));
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+}
+
 /* =======================================================================
  * SUBSCRIBE / SUBACK / UNSUBSCRIBE / UNSUBACK
  * ======================================================================= */
@@ -770,8 +857,6 @@ static void test_mqtt_struct_null_free(CuTest *tc) {
     _mqtt_connect_varhead_free(NULL);
     _mqtt_connect_payload_free(NULL);
     _mqtt_connack_varhead_free(NULL);
-    _mqtt_publish_varhead_free(NULL);
-    _mqtt_publish_payload_free(NULL);
     _mqtt_pubackrel_varhead_free(NULL);
     _mqtt_subreqresp_varhead_free(NULL);
     _mqtt_subscribe_payload_free(NULL);
@@ -791,14 +876,7 @@ static void test_mqtt_struct_empty_free(CuTest *tc) {
     mqtt_connect_payload *cpl;
     CALLOC(cpl, 1, sizeof(*cpl));
     _mqtt_connect_payload_free(cpl);
-    // publish varhead：properties + topic 均 NULL
-    mqtt_publish_varhead *pvh;
-    CALLOC(pvh, 1, sizeof(*pvh));
-    _mqtt_publish_varhead_free(pvh);
-    // publish payload：仅 FREE
-    mqtt_publish_payload *ppl;
-    CALLOC(ppl, 1, sizeof(*ppl));
-    _mqtt_publish_payload_free(ppl);
+    // publish 没有独立的 varhead/payload free：两者都摆在 mqtt_pack_ctx 那一整块里
     // subscribe payload：subop 数组为空时也应正常释放
     mqtt_subscribe_payload *spl;
     CALLOC(spl, 1, sizeof(*spl));
@@ -946,6 +1024,8 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_connack);
     SUITE_ADD_TEST(suite, test_mqtt_acks);
     SUITE_ADD_TEST(suite, test_mqtt_publish);
+    SUITE_ADD_TEST(suite, test_mqtt_publish_block);
+    SUITE_ADD_TEST(suite, test_mqtt_publish_bad_topiclen);
     SUITE_ADD_TEST(suite, test_mqtt_subscribe);
     SUITE_ADD_TEST(suite, test_mqtt_malformed_reject);
     SUITE_ADD_TEST(suite, test_mqtt_ping_pong);

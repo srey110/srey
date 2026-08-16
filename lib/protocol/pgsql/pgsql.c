@@ -51,9 +51,6 @@ void _pgsql_udfree(ud_cxt *ud) {
     ud->context = NULL;
     PROT_REF_RELEASE(pg);
 }
-void _pgsql_closed(ud_cxt *ud) {
-    _pgsql_udfree(ud);
-}
 int32_t _pgsql_may_resume(void *data) {
     if (NULL == data) {
         return ERR_OK;
@@ -195,18 +192,17 @@ static const char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     // 先将服务端方法列表收集到栈数组（最多 16 个）
     const char *server_mods[16];
     size_t server_count = 0;
-    size_t remain;
-    size_t slen;
+    const char *mod;
     while (server_count < ARRAY_SIZE(server_mods)) {
-        remain = breader->size - breader->offset;
-        if (remain < 2) {
+        // 列表以一个空串收尾，剩不足 2 字节就没有下一个方法名了
+        if (binary_remain(breader) < 2) {
             break;
         }
-        slen = strnlen(breader->data + breader->offset, remain);
-        if (slen >= remain) {
+        mod = binary_try_get_string(breader);
+        if (NULL == mod) {
             break;
         }
-        server_mods[server_count] = binary_get_string(breader);
+        server_mods[server_count] = mod;
         server_count++;
     }
     // 按优先级遍历本端支持的方法列表，找到服务端也支持的第一个
@@ -242,7 +238,7 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
 // 响应格式："md5" + hex(md5(hex(md5(password+user)) + salt)) + '\0'
 static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     // AuthenticationMD5Password 消息体：Int32(认证码 5) + Byte4(salt)，salt 须恰好 4 字节
-    if (breader->size - breader->offset < 4) {
+    if (!binary_have(breader, 4)) {
         LOG_WARN("%s", "md5 auth: salt length invalid.");
         return ERR_FAILED;
     }
@@ -320,7 +316,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
         return ERR_FAILED;
     }
     if (ERR_OK != scram_parse_first_message(pg->scram,
-        breader->data + breader->offset, breader->size - breader->offset)) {
+        breader->data + breader->offset, binary_remain(breader))) {
         return ERR_FAILED;
     }
     if (ERR_OK != scram_set_pwd(pg->scram, pg->password, strlen(pg->password))) {
@@ -340,6 +336,12 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
 }
 // 根据认证类型码分派具体的认证处理逻辑
 static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
+    // Authentication 消息体至少要有 4 字节认证码
+    if (!binary_have(breader, 4)) {
+        BIT_SET(*status, PROT_ERROR);
+        LOG_WARN("%s", "auth message too short for the auth code.");
+        return;
+    }
     int32_t code = (int32_t)binary_get_integer(breader, 4, 0);
     switch (code) {
     case 0x00: // AuthenticationOk：仅表示服务端认为认证结束，是否真的通过由 'Z' 分支统一判定
@@ -382,7 +384,7 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
             break;
         }
         if (ERR_OK != scram_check_final_message(pg->scram,
-            breader->data + breader->offset, breader->size - breader->offset)) {
+            breader->data + breader->offset, binary_remain(breader))) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
@@ -416,10 +418,21 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     case 'N': // NoticeResponse：服务端通知消息，忽略
         break;
     case 'K': // BackendKeyData：记录后端进程 ID 和取消密钥
+        if (!binary_have(&breader, 8)) {// pid(4) + key(4)
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("%s", "BackendKeyData message too short.");
+            break;
+        }
         pg->pid = (int32_t)binary_get_integer(&breader, 4, 0);
         pg->key = (uint32_t)binary_get_integer(&breader, 4, 0);
         break;
     case 'Z': // ReadyForQuery：服务端就绪，校验 SCRAM 已完成后推送成功通知
+        // 长度判在动 scram 状态之前，畸形消息不该把状态改一半再报错
+        if (!binary_have(&breader, 1)) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("%s", "ReadyForQuery message too short.");
+            break;
+        }
         if (NULL != pg->scram) {
             if (SCRAM_REMOTE_FINAL != pg->scram->status) {
                 LOG_WARN("ReadyForQuery before SCRAM server signature was verified.");

@@ -86,6 +86,31 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <returns>字节数;越界走 luaL_argerror(longjmp,不返回)</returns>
 size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max);
 /// <summary>
+/// 校验端口参数。凡是要传给 listen / connect / udp 的端口都从这里取，别再各写一句
+/// (uint16_t)luaL_checkinteger——越界必须报错，不能静默截断
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">端口在栈中的位置</param>
+/// <returns>端口号；不在 0..65535 内走 luaL_argerror(longjmp,不返回)</returns>
+uint16_t lpub_check_port(lua_State *lua, int32_t idx);
+/// <summary>
+/// 校验封包协议类型。凡是要交给框架/协议层的 pktype 都从这里取，别再各写一句
+/// (pack_type)luaL_checkinteger——枚举外的值必须报错，不能存进 ud->pktype
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">pktype 在栈中的位置</param>
+/// <returns>pack_type；不在枚举内走 luaL_argerror(longjmp,不返回)</returns>
+pack_type lpub_check_pktype(lua_State *lua, int32_t idx);
+/// <summary>
+/// 校验可选的 evssl 参数。凡是 listen / connect 那一族把 SSL 上下文当 light userdata 收的
+/// 入口都从这里取，别再各写一遍 nil 判 + LUACHECK_LUDATA
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">evssl 在栈中的位置</param>
+/// <returns>evssl_ctx 指针；该位置为 nil 返回 NULL；非 nil 又不是 light userdata
+/// 走 luaL_argerror(longjmp,不返回)</returns>
+struct evssl_ctx *lpub_check_evssl(lua_State *lua, int32_t idx);
+/// <summary>
 /// 解析栈位 idx 的 (string|lightuserdata, size [, copy]) 参数,返回 data 指针。
 /// string: 返回字符串首址, size 自动取长度, copy(若非 NULL)=1;
 /// lightuserdata: 返回指针, size 从 idx+1 经 lpub_check_lens 取,

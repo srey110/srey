@@ -43,22 +43,8 @@ void _mqtt_connack_varhead_free(void *data) {
     _mqtt_propertie_free(vh->properties);
     FREE(vh);
 }
-void _mqtt_publish_varhead_free(void *data) {
-    if (NULL == data) {
-        return;
-    }
-    mqtt_publish_varhead *vh = (mqtt_publish_varhead *)data;
-    _mqtt_propertie_free(vh->properties);
-    FREE(vh->topic);
-    FREE(vh);
-}
-void _mqtt_publish_payload_free(void *data) {
-    if (NULL == data) {
-        return;
-    }
-    mqtt_publish_payload *pl = (mqtt_publish_payload *)data;
-    FREE(pl);
-}
+// PUBLISH 的 varhead / topic / 载荷不单独分配（布局见 mqtt.c 的 _mqtt_publish_blk），
+// 也就没有对应的 free：_mqtt_pkfree 只需释放 v5 属性数组
 void _mqtt_pubackrel_varhead_free(void *data) {
     if (NULL == data) {
         return;

@@ -71,9 +71,6 @@ void _mysql_udfree(ud_cxt *ud) {
     ud->context = NULL;
     PROT_REF_RELEASE(mysql);
 }
-void _mysql_closed(ud_cxt *ud) {
-    _mysql_udfree(ud);
-}
 // 将字符集名称转换为 MySQL 协议中的字符集 ID
 static uint8_t _mysql_charset(const char *charset) {
     if (0 == strcmp("big5", charset)) {
@@ -301,6 +298,25 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
     return _mysql_auth_response(ud->context, ev, ud);
 }
+// 认证失败：解析错误包，并把服务端给的原因交给等待者。
+// 只置 PROT_ERROR 的话，调用方要等随后的 ev_close 唤醒，拿到的是一次无区分度的失败（同 pgsql 的 case 'E'）
+static void _mysql_auth_err(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, int32_t *status) {
+    mpack_err err;
+    _mpack_err(mysql, breader, &err);
+    BIT_SET(*status, PROT_ERROR);
+    // 载荷所有权交给 _hs_push；空串仍传 NULL，不给上层一个长度为 0 的非空指针
+    size_t lens = strlen(mysql->error_msg);
+    char *msg = (lens > 0) ? dup_zero(mysql->error_msg, lens) : NULL;
+    _hs_push(mysql->client.sk.fd, mysql->client.sk.skid, 1, ud, ERR_FAILED, msg, lens);
+}
+// 认证成功：通知上层握手完成，切换到命令阶段
+static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
+    if (ERR_OK != _hs_push(mysql->client.sk.fd, mysql->client.sk.skid, 1, ud, ERR_OK, NULL, 0)) {
+        BIT_SET(*status, PROT_ERROR);
+        return;
+    }
+    ud->status = COMMAND;
+}
 // 解析服务器初始握手包（Initial Handshake Packet），提取版本、盐值、能力标志等，并发送认证响应
 static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
@@ -311,17 +327,40 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     binary_ctx breader;
     binary_init(&breader, payload, payload_lens, 0);
-    if (0x0a != binary_get_int8(&breader)) {//protocol version
+    uint8_t protover = binary_get_uint8(&breader);
+    // 服务端可以不发握手包而直接回 ERR：1040 Too many connections、1129 Host is blocked、
+    // 1130 Host is not privileged
+    if (MYSQL_ERR == protover) {
+        _mysql_auth_err(mysql, ud, &breader, status);
+        FREE(payload);
+        return;
+    }
+    if (0x0a != protover) {//protocol version
         BIT_SET(*status, PROT_ERROR);
         FREE(payload);
         LOG_ERROR("mysql protocol version not 0x0a.");
         return;
     }
-    char *val = binary_get_string(&breader);//server version
+    // 握手包长度由对端决定，下面每段读之前都得比一遍剩余字节：binary_get_* 越界只会
+    // ASSERTAB abort 整个进程，一个 2 字节的畸形应答就能远程掐死客户端
+    char *val = binary_try_get_string(&breader);//server version
+    if (NULL == val) {
+        BIT_SET(*status, PROT_ERROR);
+        FREE(payload);
+        LOG_ERROR("mysql handshake truncated at server version.");
+        return;
+    }
     if (ERR_OK != safe_fill_str(mysql->version, sizeof(mysql->version), val)) {
         BIT_SET(*status, PROT_ERROR);
         FREE(payload);
         LOG_ERROR("server version string too long.");
+        return;
+    }
+    // thread_id(4) salt1(8) filler(1) caps1(2) charset(1) status(2) caps2(2)
+    if (!binary_have(&breader, 20)) {
+        BIT_SET(*status, PROT_ERROR);
+        FREE(payload);
+        LOG_ERROR("mysql handshake truncated at capability flags.");
         return;
     }
     binary_get_skip(&breader, 4);//thread id
@@ -339,6 +378,13 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         LOG_ERROR("CLIENT_PROTOCOL_41 or CLIENT_PLUGIN_AUTH is requred.");
         return;
     }
+    // auth_plugin_data_len(1) reserved(10) salt2(13)
+    if (!binary_have(&breader, 24)) {
+        BIT_SET(*status, PROT_ERROR);
+        FREE(payload);
+        LOG_ERROR("mysql handshake truncated at auth plugin data.");
+        return;
+    }
     if ((size_t)binary_get_uint8(&breader) != sizeof(mysql->server.salt) + 1) {//auth_plugin_data_len
         BIT_SET(*status, PROT_ERROR);
         FREE(payload);
@@ -348,7 +394,13 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     binary_get_skip(&breader, 10);//reserved
     val = binary_get_binary(&breader, 13);//auth-plugin-data-part-2
     memcpy(mysql->server.salt + 8, val, 12);
-    val = binary_get_string(&breader);//auth_plugin_name
+    val = binary_try_get_string(&breader);//auth_plugin_name
+    if (NULL == val) {
+        BIT_SET(*status, PROT_ERROR);
+        FREE(payload);
+        LOG_ERROR("mysql handshake truncated at auth plugin name.");
+        return;
+    }
     if (0 != strcmp(val, CACHING_SHA2_PASSWORLD)
         && 0 != strcmp(val, MYSQL_NATIVE_PASSWORLD)) {
         BIT_SET(*status, PROT_ERROR);
@@ -536,26 +588,18 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     }
     return _mysql_send_pack(mysql, ev, &bwriter);
 }
-// 认证成功：通知上层握手完成，切换到命令阶段
-static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
-    if (ERR_OK != _hs_push(mysql->client.sk.fd, mysql->client.sk.skid, 1, ud, ERR_OK, NULL, 0)) {
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
-    ud->status = COMMAND;
-}
-// 认证失败：解析错误包并设置协议错误标志
-static void _mysql_auth_err(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
-    mpack_err err;
-    _mpack_err(mysql, breader, &err);
-    BIT_SET(*status, PROT_ERROR);
-}
 // 处理服务器发来的认证插件切换包（Auth Switch Request）
 static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)) {
         mpack_auth_switch auswitch;
-        auswitch.plugin = binary_get_string(breader);
-        auswitch.provided.lens = breader->size - breader->offset;
+        // 插件名的长度由对端决定，取不到 NUL 就判失败而不是撞 binary_get_string 的断言
+        auswitch.plugin = binary_try_get_string(breader);
+        if (NULL == auswitch.plugin) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_ERROR("mysql auth switch plugin name truncated.");
+            return;
+        }
+        auswitch.provided.lens = binary_remain(breader);
         if (0 == auswitch.provided.lens) {
             BIT_SET(*status, PROT_ERROR);
             return;
@@ -621,7 +665,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         _mysql_auth_ok(mysql, ud, status);
         break;
     case MYSQL_ERR:
-        _mysql_auth_err(mysql, &breader, status);
+        _mysql_auth_err(mysql, ud, &breader, status);
         break;
     case MYSQL_AUTH_SWITCH:
         _mysql_auth_switch(mysql, ev, &breader, status);

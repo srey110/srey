@@ -159,6 +159,24 @@ static int32_t _http_is_version(buf_ctx *seg) {
         && '.' == ver[6]
         && ver[7] >= '0' && ver[7] <= '9';
 }
+int32_t http_code_nobody(int32_t code) {
+    return code < 200 || 204 == code || 304 == code;
+}
+// 收到的这个包是否 RFC 7230 §3.3.3 规则 1 里"一律无报文体"的响应。
+// client 为 0 时收到的是请求，一律返 0：本端解析不出方向——_http_parse_status 只要求首段或末段
+// 是 HTTP-version，"HTTP/1.1 204 z" 这种伪请求行照样能过，在服务端按响应处理就是一次请求走私
+static int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
+    if (0 == client
+        || !_http_is_version(&pack->status[0])
+        || 3 != pack->status[1].lens) {
+        return 0;
+    }
+    uint64_t code;
+    if (ERR_OK != str2u64((const char *)pack->status[1].data, pack->status[1].lens, 999, &code)) {
+        return 0;
+    }
+    return http_code_nobody((int32_t)code);
+}
 // 首行与字段行共用的单趟行扫描：扫到行尾 CRLF 为止，顺带记下行内出现的分隔符位置。
 // 只有 CRLF 才算收行，裸 CR、裸 LF 和 NUL 一律拒（RFC 9110 §5.5 把这三个列为非法且危险的字节）：
 // 放行裸 LF 的话，上游按它切行、本端按 CRLF 切行，两边就切出不同的头部边界——
@@ -348,11 +366,18 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, i
     return pack;
 }
 // 解析 HTTP 头部后根据传输方式决定：直接返回（无数据体/chunked）或进入数据体读取
-static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status) {
     int32_t transfer;
     http_pack_ctx *pack = _http_parsehead(buf, ud, &transfer, status);
     if (NULL == pack) {
         return NULL;
+    }
+    // 1xx/204/304 一律以头部后的空行结束，带了 CL/TE 也不算 body。
+    // 不这么判，keep-alive 上会把下一条响应的头部吃成本条的 body
+    if (_http_nobody_resp(pack, client)) {
+        pack->data.lens = 0;
+        pack->chunked = 0;
+        return pack;
     }
     if (CONTENT == transfer) {
         if (PACK_TOO_LONG(pack->data.lens)) {
@@ -520,11 +545,11 @@ void _http_udfree(ud_cxt *ud) {
     _http_pkfree(ud->context);
     ud->context = NULL;
 }
-http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status) {
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
-        pack = _http_header(buf, ud, status);
+        pack = _http_header(buf, ud, client, status);
         break;
     case CONTENT:
         pack = _http_content(buf, ud, status);
@@ -539,14 +564,16 @@ http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     }
     return pack;
 }
+// chunked 的中间块与结束块只有数据、没有首行和头部（_http_chunkedpack 不设 head.data），
+// 首行/头部四个访问器统一按这个判据返回空，别让调用方各自记得判一遍
 buf_ctx *http_status(http_pack_ctx *pack) {
-    return pack->status;
+    return (NULL != pack->head.data) ? pack->status : NULL;
 }
 uint32_t http_nheader(http_pack_ctx *pack) {
-    return array_size(&pack->header);
+    return (NULL != pack->head.data) ? array_size(&pack->header) : 0;
 }
 http_header_ctx *http_header_at(http_pack_ctx *pack, uint32_t pos) {
-    return array_at(&pack->header, pos);
+    return (NULL != pack->head.data) ? array_at(&pack->header, pos) : NULL;
 }
 char *http_header(http_pack_ctx *pack, const char *header, size_t *lens) {
     if (NULL == pack->head.data) {

@@ -97,19 +97,27 @@ static void _harbor_call(router_req *ctx) {
 static void _harbor_request(router_req *ctx) {
     _harbor_dispatch(ctx, 0);
 }
-// HTTP 接收回调：取出本服务的 router 后转 router_net_recv（分片拒绝与派发都在那里）
+// HTTP 接收回调：取出本服务的 router 后转 router_net_recv（chunked 与派发都在那里）
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
     router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
+// 连接关闭回调：清掉该连接尚未收齐的流式请求。
+// 本服务眼下没有流式路由，接着是为了以后加了不至于漏，理由见 router_closed 的说明
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+    (void)pktype;
+    (void)client;
+    harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
+    router_closed(ctx->router, sk->fd, sk->skid);
+}
 // harbor任务启动回调：建路由器 + 注册 /call 与 /request + 监听
 static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(harbor);
     task_recved(harbor, _net_recv);
+    task_closed(harbor, _net_close);
     ctx->router = router_new();
-    // 参数校验不再单设中间件：那里的 chunked 分支永远走不到（_net_recv 见 slice 非 0 就返回了，
-    // 分片包到不了 dispatch），dst/type 的存在性判定又与 _harbor_dispatch 的 str2u64 重复，
+    // 参数校验不再单设中间件：dst/type 的存在性判定与 _harbor_dispatch 的 str2u64 重复，
     // 结果同一类坏请求分两处决定、给出两种行为（缺参数静默关连接 vs 畸形参数回 404）。
     // 统一收到 _harbor_dispatch 一处：一律 404
     router_post(ctx->router, NULL, "/call", _harbor_call, NULL, 0);
@@ -162,6 +170,12 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
                       "refuse to listen in plaintext.", ssl);
             return ERR_FAILED;
         }
+    } else {
+        // /call、/request 能往任意 handle 的 task 投任意 subtype 并读回响应，而句柄顺序递增可枚举。
+        // 明文这条路只在受信内网成立，配错了必须看得见
+        LOG_WARN("harbor: listening on %s:%u in plaintext with no authentication - "
+                 "any client that can reach this port may inject messages into any task. "
+                 "Configure 'ssl' unless this is a trusted internal network.", ip, port);
     }
     harbor_ctx *ctx;
     CALLOC(ctx, 1, sizeof(harbor_ctx));

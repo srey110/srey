@@ -51,7 +51,7 @@ static int32_t _lkcp_start(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    uint16_t port = lpub_check_port(lua, 4);
     kcp_config cfg;
     kcp_config *pcfg = NULL;
     if (lua_istable(lua, 5)) {

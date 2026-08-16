@@ -48,6 +48,8 @@ void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *sta
 }
 void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size) {
     if (PACK_TOO_LONG(lens)) {
+        // 置 0 的理由同三个 _custz_encode_*，见 custz_head.h
+        *size = 0;
         LOG_ERROR("custz pack body %zu exceeds MAX_PACK_SIZE %d.", lens, (int32_t)MAX_PACK_SIZE);
         return NULL;
     }

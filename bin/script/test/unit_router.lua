@@ -19,7 +19,16 @@ local mock_http = {
 }
 package.loaded["lib.http"] = mock_http
 
+-- srey.close 一并换掉：这里的 fd/skid 是假的，真去关会打到 C 层的事件线程。
+-- 每个 unit 模块是独立 task（各有各的 lua_State），改这里波及不到别的模块
+local closed_log = {}
+srey.close = function(fd, skid)
+    closed_log[#closed_log + 1] = { fd = fd, skid = skid }
+end
+
 local Route = require("advance.router")
+local SLICE_TYPE   = srey.SLICE_TYPE
+local STREAM_ABORT = Route.STREAM_ABORT
 
 -- 构造 mock pack；_status[1] 是 HTTP 方法，_status[2] 是完整 URI（含查询字符串）
 local function make_pack(method, path, body, headers, version)
@@ -33,7 +42,8 @@ end
 -- 分发一次请求并返回捕获到的响应（单次响应场景）
 local function dispatch(router, method, path, body, headers, version)
     last_resp = nil
-    router:dispatch(1, 1, make_pack(method, path, body, headers, version), "127.0.0.1")
+    -- 第 4 个参数是 on_recved 的 client 标志(1=客户端 0=服务端)，不是地址
+    router:dispatch(1, 1, make_pack(method, path, body, headers, version), 0)
     return last_resp
 end
 
@@ -226,12 +236,13 @@ runner.run("unit_router", function(t)
         last_resp = nil
         local pack = make_pack("POST", "/items/5", "hello",
                                { ["content-type"] = "text/plain" })
-        r:dispatch(10, 20, pack, "10.0.0.1")
+        r:dispatch(10, 20, pack, 0)
         t:eq("POST",      got.method, "ctx.method")
         t:eq("/items/5",  got.path,   "ctx.path")
         t:eq("5",         got.id,     "ctx.params.id")
         t:eq("hello",     got.body,   "ctx.body")
-        t:eq("10.0.0.1",  got.client, "ctx.client")
+        -- client 是连接方向标志(1=客户端 0=服务端)，不是地址；取对端 IP 走 utils.remote_addr(fd)
+        t:eq(0,           got.client, "ctx.client")
         t:eq(10,          got.fd,     "ctx.fd")
         t:eq(20,          got.skid,   "ctx.skid")
     end
@@ -481,6 +492,102 @@ runner.run("unit_router", function(t)
         -- 注册原子:后补 define 同名中间件也不复活未注册路径,须显式重注册
         r:define("undefined_mw", function(ctx, next) next() end)
         t:eq(404, (dispatch(r, "GET", "/ghost") or {}).code, "后补 define 不复活未注册路径")
+    end
+
+    -- 4.12b(回归):ctx:text/html 省略 body 时须原样传 nil 给 http.response,
+    -- 物化成 "" 会走它的 string 分支无条件补 Content-Length: 0,
+    -- 绕过专为 1xx/204/304 设的 nocl 守卫(那三类禁带 CL,304 补 CL:0 等于谎报资源为空)
+    do
+        local r = Route.new()
+        r:get("/nc", function(ctx) ctx:text(204) end)
+        r:get("/nm", function(ctx) ctx:html(304) end)
+        r:get("/ok", function(ctx) ctx:text(200, "hi") end)
+        t:eq(204, (dispatch(r, "GET", "/nc") or {}).code, "ctx:text(204) 状态码")
+        t:eq(nil, last_resp.body, "ctx:text(204) body 传 nil 而不是空串")
+        t:eq(304, (dispatch(r, "GET", "/nm") or {}).code, "ctx:html(304) 状态码")
+        t:eq(nil, last_resp.body, "ctx:html(304) body 传 nil 而不是空串")
+        -- 带 body 的正常路径不受影响
+        t:eq("hi", (dispatch(r, "GET", "/ok") or {}).body, "带 body 时照常传字符串")
+    end
+
+    -- 4.13(回归):非函数中间件必须当场抛错,不能静默丢弃
+    -- 修复前 _resolve 把 nil 原样返回,use() 的 mws[#mws+1] = nil 是一次 no-op,
+    -- 一个拼错的变量名就足以让全局鉴权中间件彻底消失,且日志/返回值/启动检查全都不报
+    do
+        local r = Route.new()
+        local ok, err = pcall(function() r:use(nil) end)
+        t:eq(false, ok, "use(nil) → 抛错")
+        t:check(err ~= nil and err:find("middleware") ~= nil, "错误信息点明是中间件问题")
+        t:eq(false, pcall(function() r:use(42) end), "use(非函数) → 抛错")
+        t:eq(0, #r._global_mw, "抛错后全局中间件表未被写入")
+    end
+
+    -- 4.14(回归):变长中间件参数中间夹 nil,须抛错而不是连后续中间件一起丢掉
+    -- #args 遇到中间的 nil 可能只数到它之前,后面的中间件静默消失
+    do
+        local r = Route.new()
+        local mw = function(ctx, next) next() end
+        t:eq(false, pcall(function() r:middleware(mw, nil, mw) end),
+             "Router:middleware(mw, nil, mw) → 抛错")
+        t:eq(false, pcall(function() r:prefix("/g"):middleware(mw, nil, mw) end),
+             "GroupBuilder:middleware(mw, nil, mw) → 抛错")
+    end
+
+    -- 4.15(回归):路由级 mws 表里夹 nil,须抛错而不是把后面的中间件一起丢掉
+    -- ipairs 撞上中间的 nil 就停,_resolve 压根不被调用,一个拼错的变量名足以让鉴权无声消失
+    do
+        local r = Route.new()
+        local mw = function(ctx, next) next() end
+        local h = function(ctx) ctx:text(200, "ok") end
+        t:eq(false, pcall(function() r:get("/h", h, { mw, nil, mw }) end),
+             "get(path, h, {mw, nil, mw}) → 抛错")
+        t:eq(false, pcall(function() r:post("/h2", h, { mw, 42 }) end),
+             "表里混入非可调用值 → 抛错")
+        -- 正常表照旧可用
+        local hit = 0
+        r:get("/ok2", h, { function(ctx, nxt) hit = hit + 1 nxt() end })
+        t:eq(200, (dispatch(r, "GET", "/ok2") or {}).code, "合法 mws 表不受影响")
+        t:eq(1, hit, "合法 mws 表里的中间件被执行")
+    end
+
+    -- 4.16(回归):具名中间件也要过可调用性校验,不能拖到每个请求才炸成 500;
+    -- 带 __call 的表是合法中间件,而设了 __metatable 的对象不得让校验本身崩掉
+    do
+        local r = Route.new()
+        t:eq(false, pcall(function() r:define("bad", {}) end), "define(普通表) → 注册期抛错")
+        t:eq(false, pcall(function() r:define("bad2", 42) end), "define(数字) → 注册期抛错")
+        local callable = setmetatable({}, { __call = function(_, ctx, nxt) nxt() end })
+        r:define("ok", callable)
+        r:use("ok")
+        r:get("/c", function(ctx) ctx:text(200, "c") end)
+        t:eq("c", (dispatch(r, "GET", "/c") or {}).body, "__call 表可作具名中间件")
+        -- 元表被 __metatable 藏起来:查不出真相就放行,不能索引到非表值上崩掉
+        local hidden = setmetatable({}, { __call = function(_, ctx, nxt) nxt() end,
+                                          __metatable = true })
+        t:eq(true, pcall(function() r:use(hidden) end), "__metatable 隐藏元表时不崩且放行")
+    end
+
+    -- 4.17(回归):同一层调两次 next,须重跑自己的下一位而不是接着游标往后跳。
+    -- 共用游标时 pcall(next) 捕获异常后游标已停在出错那层之后,第二次 next 直接落到 handler,
+    -- 出错那层(这里就是鉴权)被静默跳过 —— 结果是未鉴权请求拿到 200
+    do
+        local r = Route.new()
+        local seq = ""
+        r:use(function(ctx, nxt)
+            seq = seq .. "A1,"
+            pcall(nxt)
+            seq = seq .. "A2,"
+            pcall(nxt)
+        end)
+        r:use(function(ctx, nxt)
+            seq = seq .. "B,"
+            error("deny")
+        end)
+        r:get("/dn", function(ctx) seq = seq .. "H," ctx:text(200, "h") end)
+        local resp = dispatch(r, "GET", "/dn")
+        t:eq("A1,B,A2,B,", seq, "二次 next 重跑被拒的那层")
+        t:check(nil == seq:find("H"), "handler 不因二次 next 被跳到")
+        t:eq(500, (resp or {}).code, "中间件全程拒绝 → 兜底 500")
     end
 
     -- ── 5. GroupBuilder（prefix / middleware / group） ──────────────────────
@@ -780,6 +887,177 @@ runner.run("unit_router", function(t)
         local resp = dispatch(r, "GET", "/s/css") or {}
         t:eq(200, resp.code, "通配段吞并暂不检测：/s/css 注册成功但被 /s/* 遮住")
         t:eq("wild", resp.body, "命中的仍是先注册的通配路由")
+    end
+
+    -- ── 9. 流式路由（chunked） ──────────────────────────────────────────────
+
+    -- 喂一帧给 net_recv：首帧带首行与头部，数据帧只带 body，终止块两者都没有
+    local function feed(r, slice, pack, fd, skid)
+        r:net_recv(nil, fd or 1, skid or 1, 0, slice, pack, nil)
+    end
+    -- 走完一条完整的 chunked 请求：首帧 → 若干数据块 → 终止块
+    local function feed_stream(r, path, chunks, headers, fd, skid)
+        feed(r, SLICE_TYPE.START, make_pack("POST", path, nil, headers), fd, skid)
+        for _, c in ipairs(chunks) do
+            feed(r, SLICE_TYPE.SLICE, { _body = c }, fd, skid)
+        end
+        feed(r, SLICE_TYPE.END, {}, fd, skid)
+    end
+    -- 把每次回调的 slice 记进 log；收齐时回显拼起来的 body
+    local function echo_stream(log)
+        return function(ctx, slice, data)
+            log[#log + 1] = slice
+            if SLICE_TYPE.START == slice then
+                ctx.buf = {}
+            elseif STREAM_ABORT == slice then
+                ctx.buf = nil
+            elseif SLICE_TYPE.END == slice then
+                ctx:text(200, table.concat(ctx.buf))
+            elseif 0 == slice then
+                ctx:text(200, data or "")
+            else
+                ctx.buf[#ctx.buf + 1] = data
+            end
+        end
+    end
+
+    -- 9.1 三块按序到齐，回调次数与顺序均正确
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        last_resp = nil
+        feed_stream(r, "/st", { "aaa", "bbbb", "c" })
+        t:eq(200, (last_resp or {}).code, "chunked 收齐 → 200")
+        t:eq("aaabbbbc", (last_resp or {}).body, "分块按序拼齐")
+        t:eq(5, #log, "START + 3 数据块 + END 共 5 次回调")
+        t:eq(SLICE_TYPE.START, log[1], "第一次是 START")
+        t:eq(SLICE_TYPE.SLICE, log[2], "中间是 SLICE")
+        t:eq(SLICE_TYPE.END, log[5], "最后是 END")
+    end
+
+    -- 9.2 零数据块：只有首帧与终止块，回显空 body
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        last_resp = nil
+        feed_stream(r, "/st", {})
+        t:eq(200, (last_resp or {}).code, "零数据块 → 200")
+        t:eq("", (last_resp or {}).body, "零数据块 body 为空")
+        t:eq(2, #log, "只有 START 与 END 两次回调")
+    end
+
+    -- 9.3 chunked 打到普通路由 → 411 并关连接，后续分片静默丢
+    do
+        local r = Route.new()
+        r:post("/plain", function(ctx) ctx:text(200, "ok") end)
+        last_resp = nil
+        closed_log = {}
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/plain"))
+        t:eq(411, (last_resp or {}).code, "chunked 打普通路由 → 411")
+        t:eq(1, #closed_log, "411 后关连接")
+        last_resp = nil
+        feed(r, SLICE_TYPE.SLICE, { _body = "x" })
+        feed(r, SLICE_TYPE.END, {})
+        t:eq(nil, last_resp, "被拒后的后续分片静默丢")
+    end
+
+    -- 9.4 准入中间件截断 → 401 且不建流；带对 token 则放行收齐
+    do
+        local r = Route.new()
+        local log = {}
+        r:define("auth", function(ctx, next)
+            if "secret" ~= ctx.headers["x-token"] then
+                ctx:text(401, "no")
+                return
+            end
+            next()
+        end)
+        r:post_stream("/st", echo_stream(log), { "auth" })
+        last_resp = nil
+        closed_log = {}
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        t:eq(401, (last_resp or {}).code, "准入截断 → 401")
+        t:eq(1, #closed_log, "准入截断后关连接")
+        t:eq(0, #log, "截断时 on_chunk 一次都没调到")
+        last_resp = nil
+        feed_stream(r, "/st", { "ok" }, { ["x-token"] = "secret" })
+        t:eq(200, (last_resp or {}).code, "带对 token 收齐 → 200")
+        t:eq("ok", (last_resp or {}).body, "放行后 body 正确")
+    end
+
+    -- 9.5 一次到齐的请求打到流式路由 → 单次回调，slice 为 0，data 是完整 body
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        last_resp = nil
+        r:net_recv(nil, 1, 1, 0, 0, make_pack("POST", "/st", "whole"), nil)
+        t:eq(200, (last_resp or {}).code, "一次到齐打流式路由 → 200")
+        t:eq("whole", (last_resp or {}).body, "slice==0 时 data 即完整 body")
+        t:eq(1, #log, "只调一次")
+        t:eq(0, log[1], "slice 为 0")
+    end
+
+    -- 9.6 连接中途断开 → 投 STREAM_ABORT；记录随之摘掉，skid 对不上的不投
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        feed(r, SLICE_TYPE.SLICE, { _body = "half" })
+        last_resp = nil
+        r:closed(1, 1)
+        t:eq(3, #log, "START + SLICE + ABORT 共 3 次")
+        t:eq(STREAM_ABORT, log[3], "中途断开 → 投 STREAM_ABORT")
+        t:eq(nil, last_resp, "ABORT 那次不写响应")
+        r:closed(1, 1)
+        t:eq(3, #log, "记录已摘，重复 closed 不再投")
+        -- skid 对不上（fd 被新连接复用）不该动到别人的记录
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        r:closed(1, 999)
+        t:eq(4, #log, "skid 不匹配时不投 ABORT")
+    end
+
+    -- 9.7 同连接又来一个流式首帧 → 旧记录被顶掉并收到 ABORT
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        feed(r, SLICE_TYPE.SLICE, { _body = "a" })
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        t:eq(STREAM_ABORT, log[3], "旧流被顶掉时收到 ABORT")
+        t:eq(SLICE_TYPE.START, log[4], "随后才是新流的 START")
+    end
+
+    -- 9.8 on_chunk 抛异常 → 500 + 关连接 + 仍投 ABORT 给清理机会
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", function(_, slice)
+            log[#log + 1] = slice
+            if SLICE_TYPE.SLICE == slice then
+                error("boom")
+            end
+        end)
+        last_resp = nil
+        closed_log = {}
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        feed(r, SLICE_TYPE.SLICE, { _body = "x" })
+        t:eq(500, (last_resp or {}).code, "on_chunk 抛异常 → 500")
+        t:eq(1, #closed_log, "抛异常后关连接")
+        t:eq(STREAM_ABORT, log[#log], "抛异常后仍投 ABORT")
+    end
+
+    -- 9.9 收齐仍未响应 → 兜底 500（对齐普通路由的 responded 机制）
+    do
+        local r = Route.new()
+        r:post_stream("/st", function() end)
+        last_resp = nil
+        feed_stream(r, "/st", { "x" })
+        t:eq(500, (last_resp or {}).code, "收齐仍未响应 → 兜底 500")
     end
 
 end)

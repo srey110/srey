@@ -634,15 +634,14 @@ static int32_t _lpgsql_erro(lua_State *lua) {
 /// 从 PGPACK_NOTIFICATION 类型的 pgpack_ctx 中提取通知信息
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
-/// <returns type="integer?">发送方 pid；类型不符时返回 nil（仅 1 个返回值）</returns>
+/// <returns type="integer?">发送方 pid；类型不符时返回 nil（连同后续返回值一并为 nil，共 3 个）</returns>
 /// <returns type="string?">channel 名</returns>
 /// <returns type="string?">通知内容</returns>
 static int32_t _lpgsql_notification(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     if (NULL == pgpack || PGPACK_NOTIFICATION != pgpack->type) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 3);
     }
     pgpack_notification *notif = (pgpack_notification *)pgpack->pack;
     lua_pushinteger(lua, notif->pid);
@@ -654,14 +653,13 @@ static int32_t _lpgsql_notification(lua_State *lua) {
 /// 从 PGPACK_COPY_IN 类型的 pgpack_ctx 中提取 format 和列数
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
-/// <returns type="integer?">format（0 文本，1 二进制）；类型不符时返回 nil（仅 1 个返回值）</returns>
+/// <returns type="integer?">format（0 文本，1 二进制）；类型不符时返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">列数</returns>
 static int32_t _lpgsql_copy_in_info(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     if (NULL == pgpack || PGPACK_COPY_IN != pgpack->type) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     pgpack_copy_in_ctx *ci = (pgpack_copy_in_ctx *)pgpack->pack;
     lua_pushinteger(lua, ci->format);
@@ -672,14 +670,14 @@ static int32_t _lpgsql_copy_in_info(lua_State *lua) {
 /// 从 PGPACK_COPY_OUT 类型的 pgpack_ctx 中提取累积数据指针和长度
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
-/// <returns type="lightuserdata?">数据指针；类型不符时返回 nil（仅 1 个返回值）</returns>
+/// <returns type="lightuserdata?">数据指针；类型不符时返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lpgsql_copy_out_data(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
+    // 这道判定守的是下面那次强转，不能因为 lpub_rtn_lud 自己会判 NULL 就省掉
     if (NULL == pgpack || PGPACK_COPY_OUT != pgpack->type) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     pgpack_copy_out_ctx *co = (pgpack_copy_out_ctx *)pgpack->pack;
     return lpub_rtn_lud(lua, co->data.data, co->data.offset);
@@ -837,12 +835,8 @@ static int32_t _lpgsql_pack_copy_fail(lua_State *lua) {
 /// <returns type="_pgsql_ctx?">pgsql 对象；初始化失败返回 nil</returns>
 static int32_t _lpgsql_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
-    struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 3)) {
-        LUACHECK_LUDATA(lua, 3);
-        evssl = lua_touserdata(lua, 3);
-    }
+    uint16_t port = lpub_check_port(lua, 2);
+    struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *user = luaL_checkstring(lua, 4);
     const char *password = luaL_checkstring(lua, 5);
     const char *database = luaL_checkstring(lua, 6);

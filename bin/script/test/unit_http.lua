@@ -15,6 +15,7 @@ local FRAME = "frameprobe"
 local INJ = "a\r\nX-Evil: 1"-- 头值里塞 CRLF：未过滤时会把一条响应劈成两条
 local URL_INJ = "/x HTTP/1.1\r\nX-Evil: 1\r\n\r\nGET /y"-- 请求目标里塞 CRLF：未过滤时线缆上是两条请求
 local PROBE2 = "afterinj"-- 拒绝之后的回显探针，验证连接没被污染
+local N204 = "want204"-- 触发 server 回 204+body，验证 body 与 Content-Length 都被丢弃
 -- 名 + ": " + 值 + CRLF 超 MAX_HEADLENS(4096)：整条头会被丢弃，不截断也不发出
 local BIG = string.rep("b", 4096)
 
@@ -52,6 +53,11 @@ runner.run("http_client", function(t)
             -- 放行的话线缆上会是 TE 叠一条自造 CL 再叠调用方那条 CL，走私形态
             http.response(fd, skid, 200,
                 { ["transfer-ENCODING"] = "chunked", ["Content-Length"] = "999", ["X-Keep"] = "1" }, BODY)
+            return
+        end
+        if N204 == body then
+            -- 204 禁带报文体：故意塞一个 body，验证被 http.response 丢弃
+            http.response(fd, skid, 204, nil, "dropped")
             return
         end
         http.response(fd, skid, 200, nil, (body and #body > 0) and body or "ok")
@@ -140,6 +146,25 @@ runner.run("http_client", function(t)
             t:check(nil ~= string.find(ftxt, "Content-Length: " .. #BODY, 1, true),
                     "发出的是本函数按 body 算的长度,不是调用方那个 999")
             t:check(nil ~= string.find(ftxt, "X-Keep: 1", 1, true), "同批的普通头未受牵连")
+        end
+        -- 同一条裸连接再发一次：204 响应必须既无 Content-Length 也无 body（RFC 7230 §3.3.2）。
+        -- 204 无 body，读到头结束(空行)就是整条响应
+        local nreq = string.format("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\n\r\n%s",
+                                   #N204, N204)
+        local ntxt = ""
+        local nrsp, nrlen = srey.syn_send(raw_fd, raw_skid, nreq, #nreq, 1)
+        while nrsp do
+            ntxt = ntxt .. srey.ud_str(nrsp, nrlen)
+            if string.find(ntxt, "\r\n\r\n", 1, true) then
+                break
+            end
+            nrsp, nrlen = srey.syn_recv(raw_fd, raw_skid)
+        end
+        t:check(nil ~= string.find(ntxt, " 204 ", 1, true), "204 探针收到 204 响应")
+        if string.find(ntxt, "\r\n\r\n", 1, true) then
+            t:check(nil == string.find(string.lower(ntxt), "content%-length"),
+                    "204 响应不带 Content-Length")
+            t:check(nil == string.find(ntxt, "dropped", 1, true), "204 的 body 被丢弃")
         end
         srey.close(raw_fd, raw_skid)
     end

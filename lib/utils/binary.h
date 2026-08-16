@@ -109,6 +109,28 @@ void binary_set_skip(binary_ctx *ctx, size_t lens);
 /// <param name="fmt">格式化</param>
 /// <param name="...">变参</param>
 void binary_set_va(binary_ctx *ctx, const char *fmt, ...);
+// 全部 binary_get_* 越界即 ASSERTAB abort 进程，没有失败回传通道。凡是长度由对端决定的
+// 报文，读之前必须先用下面两个判一遍——判定与读挨着写，漏判在 review 里看得见。
+// binary_get_string 是唯一预判不了的（越界条件是"剩余字节里没有 NUL"，得先扫），
+// 那种场合改用 binary_try_get_string。
+/// <summary>
+/// 还剩多少字节没读
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <returns>剩余字节数</returns>
+static inline size_t binary_remain(binary_ctx *ctx) {
+    return ctx->size - ctx->offset;
+}
+/// <summary>
+/// 还够不够读 lens 字节。lens 收 uint64_t 不收 size_t：报文里的长度字段常是 64 位，
+/// 调用方若先转窄再比，32 位构建上 0x1_0000_0001 会截成 1 蒙混过关
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <param name="lens">打算读的字节数</param>
+/// <returns>够返回非 0</returns>
+static inline int32_t binary_have(binary_ctx *ctx, uint64_t lens) {
+    return lens <= (uint64_t)(ctx->size - ctx->offset);
+}
 /// <summary>
 /// 获取指定位置的指针
 /// </summary>
@@ -159,11 +181,19 @@ float binary_get_float(binary_ctx *ctx, int32_t islittle);
 /// <returns>double</returns>
 double binary_get_double(binary_ctx *ctx, int32_t islittle);
 /// <summary>
-/// 获取字符串值,取到'\0'结束
+/// 获取字符串值,取到'\0'结束。剩余字节里没有 '\0' 即 ASSERTAB abort,
+/// 长度由对端决定的报文改用 binary_try_get_string
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <returns>char *</returns>
 char *binary_get_string(binary_ctx *ctx);
+/// <summary>
+/// 同 binary_get_string,但剩余字节里没有 '\0' 时返回 NULL 而不是断言。
+/// 越界条件是"扫不到 NUL",binary_have 预判不了,所以单给一个接口
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <returns>字符串首址;剩余字节里没有 '\0' 返回 NULL(offset 不动)</returns>
+char *binary_try_get_string(binary_ctx *ctx);
 /// <summary>
 /// 获取指定长度的数据
 /// </summary>

@@ -153,7 +153,7 @@ int32_t _uev_check_skid(sock_ctx *skctx, const uint64_t skid) {
 // 调用连接关闭回调
 static inline void _usk_call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.c_cb) {
-        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
+        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->ud);
     }
 }
 // 调用UDP关闭回调
@@ -280,9 +280,9 @@ static inline int32_t _usk_call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
 static inline int32_t _usk_call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.exch_cb) {
 #if WITH_SSL
-        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud, tcp->ssl);
+        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->ud, tcp->ssl);
 #else
-        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud, NULL);
+        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->ud, NULL);
 #endif
     }
     return ERR_OK;
@@ -290,14 +290,14 @@ static inline int32_t _usk_call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
 // 调用数据接收回调（nread > 0 才触发）
 static inline void _usk_call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
     if (nread > 0) {
-        tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->buf_r, nread, &tcp->ud);
+        tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->buf_r, nread, &tcp->ud);
     }
 }
 // 调用发送完成回调（nsend > 0 且有s_cb 才触发）
 static inline void _usk_call_send_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nsend) {
     if (NULL != tcp->cbs.s_cb
         && nsend > 0) {
-        tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), nsend, &tcp->ud);
+        tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), nsend, &tcp->ud);
     }
 }
 // 调用UDP接收回调；0 字节 datagram 由本函数过滤不向上抛（_usk_on_udp_rcb 仍不视为 EOF，

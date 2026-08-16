@@ -51,6 +51,8 @@ void prots_pkfree(pack_type pktype, void *data) {
     if (NULL == data) {
         return;
     }
+    // 本文件按 pktype 分派的 9 处 switch 一律不写 default：新增 pack_type 时 -Wswitch 会逐处报错，
+    // 逼着回答"这个协议在这一步该干什么"；写了 default 漏改就不报，而退化是静默的
     switch (pktype) {
     case PACK_HTTP:
         _http_pkfree(data);
@@ -73,7 +75,14 @@ void prots_pkfree(pack_type pktype, void *data) {
     case PACK_MONGO:
         _mongo_pkfree(data);
         break;
-    default:
+    // 以下协议的 pack 就是一块 malloc，没有内部分配
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_UDP_KCP:
         FREE(data);
         break;
     }
@@ -93,7 +102,20 @@ void prots_hsfree(pack_type pktype, void *data) {
     case PACK_MONGO:
         _mongo_pkfree(data);
         break;
-    default:
+    // 握手载荷是一块 malloc（websock 的 spctx、mysql/pgsql/smtp 的错误串），其余协议不推载荷
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_HTTP:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
+    case PACK_MYSQL:
+    case PACK_PGSQL:
+    case PACK_UDP_KCP:
         FREE(data);
         break;
     }
@@ -131,7 +153,12 @@ void prots_udfree(void *arg) {
     case PACK_UDP_KCP:
         _kcp_udfree(ud);
         break;
-    default:
+    // 无状态协议不挂 context，这里的 FREE 只是防有人挂了忘清
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
         FREE(ud->context);
         break;
     }
@@ -141,23 +168,35 @@ static void prots_closed(ud_cxt *ud) {
     if (NULL == ud) {
         return;
     }
+    // 直接调各自的 udfree：关连接清理与 ud 释放清理本就是同一件事，中间那层转发壳
+    // 会让人以为它们是两条可分开演化的路径。注意不能改调 prots_udfree——它多管几个 pktype，
+    // 且会对无状态协议 FREE(ud->context)
     switch (ud->pktype) {
     case PACK_SMTP:
-        _smtp_closed(ud);
+        _smtp_udfree(ud);
         break;
     case PACK_MYSQL:
-        _mysql_closed(ud);
+        _mysql_udfree(ud);
         break;
     case PACK_PGSQL:
-        _pgsql_closed(ud);
+        _pgsql_udfree(ud);
         break;
     case PACK_MONGO:
-        _mongo_closed(ud);
+        _mongo_udfree(ud);
         break;
     case PACK_UDP_KCP:
-        _kcp_fd_closed(ud);
+        _kcp_udfree(ud);
         break;
-    default:
+    // 关连接时无需额外动作
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_HTTP:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
         break;
     }
 }
@@ -174,7 +213,20 @@ static int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud,
     switch (ud->pktype) {
     case PACK_PGSQL:
         return _pgsql_on_connected(ev, fd, skid, ud, err);
-    default:
+    // 连上后无需发初始化包
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_HTTP:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
+    case PACK_MYSQL:
+    case PACK_MONGO:
+    case PACK_UDP_KCP:
         break;
     }
     return err;
@@ -189,7 +241,19 @@ static int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t
         return _mysql_ssl_exchanged(ev, ud);
     case PACK_PGSQL:
         return _pgsql_ssl_exchanged(ev, ud, ssl);
-    default:
+    // SSL 握手完成后无需发认证包
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_HTTP:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
+    case PACK_MONGO:
+    case PACK_UDP_KCP:
         break;
     }
     return ERR_OK;
@@ -211,7 +275,20 @@ int32_t prots_may_resume(pack_type pktype, void *data) {
     switch (pktype) {
     case PACK_PGSQL:
         return _pgsql_may_resume(data);
-    default:
+    // 收到包即可唤醒等待者，无附加判定
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_HTTP:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
+    case PACK_MYSQL:
+    case PACK_MONGO:
+    case PACK_UDP_KCP:
         break;
     }
     return ERR_OK;
@@ -226,7 +303,7 @@ void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         unpack = dns_unpack(buf, size, status);
         break;
     case PACK_HTTP:
-        unpack = http_unpack(buf, ud, status);
+        unpack = http_unpack(buf, ud, client, status);
         break;
     case PACK_WEBSOCK:
         unpack = websock_unpack(ev, fd, skid, client, buf, ud, status);
@@ -254,7 +331,9 @@ void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     case PACK_MONGO:
         unpack = mongo_unpack(ev, buf, ud, status);
         break;
-    default:
+    // 透传：PACK_NONE 本就不解包，KCP 的分包在 _kcp_unpack 里按 UDP 路径走
+    case PACK_NONE:
+    case PACK_UDP_KCP:
         unpack = _prots_unpack_default(buf, size, ud);
         break;
     }
@@ -446,11 +525,24 @@ static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, 
     g_emit.end(target);
 }
 void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
-    switch(ud->pktype) {
+    switch (ud->pktype) {
     case PACK_UDP_KCP:
         _kcp_unpack(fd, skid, buf, size, addr, ud);
         break;
-    default:
+    // 非 KCP 的 UDP 一律把整个 datagram 原样上抛
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_HTTP:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
+    case PACK_MYSQL:
+    case PACK_PGSQL:
+    case PACK_MONGO:
         _prots_udp_default(ev, fd, skid, buf, size, addr, ud);
         break;
     }

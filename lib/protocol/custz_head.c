@@ -17,9 +17,16 @@ int32_t _custz_decode_fixed(buffer_ctx *buf, size_t *hlens, size_t *size, int32_
     *size = (size_t)unpack_integer(head, sizeof(head), 0, 0);
     return ERR_OK;
 }
-// 固定 4 字节头编码：分配连续内存，将数据长度写入头部前 4 字节
+// 固定 4 字节头编码：分配连续内存，将数据长度写入头部前 4 字节；
+// 上限 UINT32_MAX，超出返回 NULL（同 _custz_encode_variable 的 268435455 上限）
 char *_custz_encode_fixed(size_t dlens, size_t *hlens, size_t *size) {
     *hlens = CUSTZ_FIXED_LENS;
+    // 上界与加法回绕各挡一次，判据与转 uint64_t 的理由同 _custz_encode_flag
+    if ((uint64_t)dlens > UINT32_MAX
+        || dlens > SIZE_MAX - *hlens) {
+        *size = 0;
+        return NULL;
+    }
     *size = *hlens + dlens;
     char *pack;
     MALLOC(pack, *size);
@@ -86,17 +93,19 @@ char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size) {
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = (uint8_t)dlens;
-    } else if (dlens > 0xfc && dlens <= USHRT_MAX) {
+    } else if (dlens <= USHRT_MAX) {
         // 3 字节头：标志 0xfd + 2 字节长度
         *hlens += sizeof(uint16_t);
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = 0xfd;
         pack_integer(pack + sizeof(uint8_t), dlens, sizeof(uint16_t), 0);
-    } else if (dlens > USHRT_MAX && dlens <= UINT_MAX) {
-        // 5 字节头：标志 0xfe + 4 字节长度
+    } else if ((uint64_t)dlens <= UINT32_MAX) {
+        // 5 字节头：标志 0xfe + 4 字节长度。
+        // 上界先转 uint64_t 再比，size_t 为 32 位的构建上直接比是恒真，-Wtype-limits 会报错
         *hlens += sizeof(uint32_t);
         if (dlens > SIZE_MAX - *hlens) {
+            *size = 0;
             return NULL;
         }
         *size = *hlens + dlens;
@@ -107,6 +116,7 @@ char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size) {
         // 9 字节头：标志 0xff + 8 字节长度
         *hlens += sizeof(uint64_t);
         if (dlens > SIZE_MAX - *hlens) {
+            *size = 0;
             return NULL;
         }
         *size = *hlens + dlens;
@@ -139,6 +149,7 @@ int32_t _custz_decode_variable(buffer_ctx *buf, size_t *hlens, size_t *size, int
 // MQTT 风格变长头编码：调用 varint_encode_mqtt 取 7-bit 内核；上限 268435455，超出返回 NULL
 char *_custz_encode_variable(size_t dlens, size_t *hlens, size_t *size) {
     if (dlens > 268435455) {
+        *size = 0;
         return NULL;
     }
     char *pack;

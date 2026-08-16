@@ -111,10 +111,7 @@ void _mqtt_connect_varhead_free(void *data);
 void _mqtt_connect_payload_free(void *data);
 // 释放 CONNACK 可变报头
 void _mqtt_connack_varhead_free(void *data);
-// 释放 PUBLISH 可变报头
-void _mqtt_publish_varhead_free(void *data);
-// 释放 PUBLISH 载荷
-void _mqtt_publish_payload_free(void *data);
+// PUBLISH 无对应 free：varhead / topic / 载荷随 pack 一起释放（布局见 _mqtt_publish_blk）
 // 释放 PUBACK / PUBREC / PUBREL / PUBCOMP 共用可变报头
 void _mqtt_pubackrel_varhead_free(void *data);
 // 释放 SUBSCRIBE / SUBACK / UNSUBSCRIBE / UNSUBACK 共用可变报头

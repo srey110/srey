@@ -86,21 +86,21 @@ char *websock_pack_handshake(const char *host, const char *uri, const char *secp
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>ping包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
+/// <returns>ping包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
 void *websock_pack_ping(int32_t mask, size_t *size);
 /// <summary>
 /// pong包
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>pong包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
+/// <returns>pong包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
 void *websock_pack_pong(int32_t mask, size_t *size);
 /// <summary>
 /// close包
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>close包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
+/// <returns>close包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
 void *websock_pack_close(int32_t mask, size_t *size);
 /// <summary>
 /// 文本消息包
@@ -110,7 +110,7 @@ void *websock_pack_close(int32_t mask, size_t *size);
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>文本消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
+/// <returns>文本消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
 void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 二进制消息包
@@ -120,7 +120,7 @@ void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, siz
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>二进制消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
+/// <returns>二进制消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
 void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 分片消息包
@@ -130,7 +130,7 @@ void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, s
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>分片消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
+/// <returns>分片消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
 void *websock_pack_continua(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 获取fin值

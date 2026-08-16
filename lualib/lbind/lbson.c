@@ -521,10 +521,6 @@ static int32_t _lbson_mkoid_data(lua_State *lua) {
     lua_pushlstring(lua, ud->data, BSON_OID_LENS);
     return 1;
 }
-static int32_t _lbson_mkoid_gc(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_BSON_OID);
-    return 0;
-}
 // ---- wrapper：DATE ----
 /// <summary>
 /// 创建 Date 包装对象
@@ -543,10 +539,6 @@ static int32_t _lbson_mkdate_ms(lua_State *lua) {
     lbson_date_t *ud = luaL_checkudata(lua, 1, MT_BSON_DATE);
     lua_pushinteger(lua, ud->ms);
     return 1;
-}
-static int32_t _lbson_mkdate_gc(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_BSON_DATE);
-    return 0;
 }
 // ---- wrapper：BINARY ----
 /// <summary>
@@ -581,10 +573,6 @@ static int32_t _lbson_mkbinary_data(lua_State *lua) {
     lua_pushlstring(lua, (const char *)(ud + 1), ud->lens);
     return 1;
 }
-static int32_t _lbson_mkbinary_gc(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_BSON_BINARY);
-    return 0;
-}
 // ---- wrapper：INT64 ----
 /// <summary>
 /// 创建 INT64 包装对象，强制以 BSON INT64 编码
@@ -603,10 +591,6 @@ static int32_t _lbson_mkint64_val(lua_State *lua) {
     lbson_int64_t *ud = luaL_checkudata(lua, 1, MT_BSON_INT64);
     lua_pushinteger(lua, ud->val);
     return 1;
-}
-static int32_t _lbson_mkint64_gc(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_BSON_INT64);
-    return 0;
 }
 // ---- encode 辅助 ----
 // 检查 Lua table 是否为纯序列（key 全为连续整数 1..n，n>0）
@@ -935,25 +919,23 @@ static void _lbson_reg_wrapper_mt(lua_State *lua, const char *name, luaL_Reg *me
 }
 //bson
 LUAMOD_API int luaopen_bson(lua_State *lua) {
+    // 四个包装类型都是 POD（binary 的载荷就分配在同一块 userdata 内），故不挂 __gc：
+    // 挂了只会让这些成批创建的小对象多走一轮 GC
     luaL_Reg oid_mt[] = {
         { "data",  _lbson_mkoid_data },
-        { "__gc",  _lbson_mkoid_gc },
         { NULL, NULL }
     };
     luaL_Reg date_mt[] = {
         { "ms",    _lbson_mkdate_ms },
-        { "__gc",  _lbson_mkdate_gc },
         { NULL, NULL }
     };
     luaL_Reg binary_mt[] = {
         { "subtype", _lbson_mkbinary_subtype },
         { "data",    _lbson_mkbinary_data },
-        { "__gc",    _lbson_mkbinary_gc },
         { NULL, NULL }
     };
     luaL_Reg int64_mt[] = {
         { "val",   _lbson_mkint64_val },
-        { "__gc",  _lbson_mkint64_gc },
         { NULL, NULL }
     };
     _lbson_reg_wrapper_mt(lua, MT_BSON_OID,    oid_mt);
@@ -1177,7 +1159,7 @@ static int32_t _lbson_iter_utf8(lua_State *lua) {
 /// 读取当前字段的嵌套文档数据
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="lightuserdata?">文档数据指针；类型不符返回 nil（仅 1 个返回值）</returns>
+/// <returns type="lightuserdata?">文档数据指针；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">字节数</returns>
 static int32_t _lbson_iter_document(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
@@ -1185,8 +1167,7 @@ static int32_t _lbson_iter_document(lua_State *lua) {
     size_t lens;
     char *data = bson_iter_document(iter, &lens, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     return lpub_rtn_lud(lua, data, lens);
 }
@@ -1194,7 +1175,7 @@ static int32_t _lbson_iter_document(lua_State *lua) {
 /// 读取当前字段的数组数据
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="lightuserdata?">数组数据指针；类型不符返回 nil（仅 1 个返回值）</returns>
+/// <returns type="lightuserdata?">数组数据指针；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">字节数</returns>
 static int32_t _lbson_iter_array(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
@@ -1202,8 +1183,7 @@ static int32_t _lbson_iter_array(lua_State *lua) {
     size_t lens;
     char *data = bson_iter_array(iter, &lens, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     return lpub_rtn_lud(lua, data, lens);
 }
@@ -1211,7 +1191,7 @@ static int32_t _lbson_iter_array(lua_State *lua) {
 /// 读取当前字段的二进制数据
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="integer?">bson_subtype 枚举值；类型不符返回 nil（仅 1 个返回值）</returns>
+/// <returns type="integer?">bson_subtype 枚举值；类型不符返回 nil（连同后续返回值一并为 nil，共 3 个）</returns>
 /// <returns type="lightuserdata?">数据指针</returns>
 /// <returns type="integer?">字节数</returns>
 static int32_t _lbson_iter_binary(lua_State *lua) {
@@ -1221,8 +1201,7 @@ static int32_t _lbson_iter_binary(lua_State *lua) {
     bson_subtype subtype;
     char *data = bson_iter_binary(iter, &subtype, &lens, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 3);
     }
     lua_pushinteger(lua, subtype);
     lua_pushlightuserdata(lua, data);
@@ -1281,7 +1260,7 @@ static int32_t _lbson_iter_date(lua_State *lua) {
 /// 读取当前字段的正则表达式
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="string?">pattern；类型不符返回 nil（仅 1 个返回值）</returns>
+/// <returns type="string?">pattern；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="string?">options（无 options 时为 ""）</returns>
 static int32_t _lbson_iter_regex(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
@@ -1289,8 +1268,7 @@ static int32_t _lbson_iter_regex(lua_State *lua) {
     char *options = NULL;
     const char *pattern = bson_iter_regex(iter, &options, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     lua_pushstring(lua, pattern);
     lua_pushstring(lua, NULL != options ? options : "");
@@ -1332,7 +1310,7 @@ static int32_t _lbson_iter_int32(lua_State *lua) {
 /// 读取当前字段的 BSON Timestamp
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="integer?">秒级时间戳；类型不符返回 nil（仅 1 个返回值）</returns>
+/// <returns type="integer?">秒级时间戳；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">同秒内自增量</returns>
 static int32_t _lbson_iter_timestamp(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
@@ -1340,8 +1318,7 @@ static int32_t _lbson_iter_timestamp(lua_State *lua) {
     uint32_t inc;
     uint32_t ts = bson_iter_timestamp(iter, &inc, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     lua_pushinteger(lua, ts);
     lua_pushinteger(lua, inc);

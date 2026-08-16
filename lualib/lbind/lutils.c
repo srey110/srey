@@ -58,7 +58,7 @@ static int32_t _lutils_ud_str(lua_State *lua) {
     }
     LUACHECK_LUDATA(lua, 1);
     void *data = lua_touserdata(lua, 1);
-    size_t size = (size_t)luaL_checkinteger(lua, 2);
+    size_t size = lpub_check_lens(lua, 2, 0);
     if (NULL == data && size > 0) {
         lua_pushnil(lua);
         return 1;
@@ -126,7 +126,7 @@ static int32_t _lutils_parse_svid(lua_State *lua) {
 /// <param name="lens" type="integer">随机字节数</param>
 /// <returns type="string?">随机字节字符串；失败返回 nil</returns>
 static int32_t _lutils_csprng_rand(lua_State *lua) {
-    size_t n = (size_t)luaL_checkinteger(lua, 1);
+    size_t n = lpub_check_lens(lua, 1, 0);
     if (0 == n) {
         lua_pushlstring(lua, "", 0);
         return 1;
@@ -150,17 +150,14 @@ static int32_t _lutils_remote_addr(lua_State *lua) {
     netaddr_ctx addr;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     if (-1 == fd) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     if (ERR_OK != netaddr_remote(&addr, fd)) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     char ip[IP_LENS];
     if (ERR_OK != netaddr_ip(&addr, ip)) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     uint16_t port = netaddr_port(&addr);
     lua_pushstring(lua, ip);
@@ -306,7 +303,11 @@ static int32_t _ltrend_new(lua_State *lua) {
 /// <returns type="boolean">繁忙 true；不忙 false</returns>
 static int32_t _ltrend_busy(lua_State *lua) {
     load_trend_ctx *trend = luaL_checkudata(lua, 1, MT_LOAD_TREND);
-    size_t cur = (size_t)luaL_checkinteger(lua, 2);
+    // 采样值不是长度，不走 lpub_check_lens（那句报的是 "length out of range"），但同样得挡负数：
+    // 转 size_t 后成天文数字，繁忙判定直接给出垃圾结论
+    lua_Integer sample = luaL_checkinteger(lua, 2);
+    luaL_argcheck(lua, sample >= 0, 2, "sample must not be negative");
+    size_t cur = (size_t)sample;
     uint32_t busy_num = (uint32_t)luaL_checkinteger(lua, 3);
     uint32_t busy_den = (uint32_t)luaL_checkinteger(lua, 4);
     lua_pushboolean(lua, load_trend_busy(trend, cur, busy_num, busy_den));
@@ -376,7 +377,8 @@ static int32_t _lpopen_exitcode(lua_State *lua) {
 /// <returns type="boolean">是否已读到流末尾：true=写端全关、输出已完整；false=读满 max_lens/暂无数据/出错即停，可能不完整</returns>
 static int32_t _lpopen_read(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
-    size_t cap = (size_t)luaL_optinteger(lua, 2, 65536);
+    // 可选参数，lpub_check_lens 没有 opt 形态，故缺省分支单列；给了就按它校验下界
+    size_t cap = lua_isnoneornil(lua, 2) ? 65536 : lpub_check_lens(lua, 2, 0);
     luaL_Buffer lbuf;
     luaL_buffinit(lua, &lbuf);
     char tmp[4096];

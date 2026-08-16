@@ -25,12 +25,8 @@ static char *_lmongo_get_opts(lua_State *lua, int32_t idx, size_t *lens) {
 /// <returns type="_mongo_ctx?">mongo 对象；ip 或 db 超 63 字节导致初始化失败时返回 nil</returns>
 static int32_t _lmongo_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
-    struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 3)) {
-        LUACHECK_LUDATA(lua, 3);
-        evssl = lua_touserdata(lua, 3);
-    }
+    uint16_t port = lpub_check_port(lua, 2);
+    struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *db = luaL_checkstring(lua, 4);
     mongo_ctx **ud = lua_newuserdata(lua, sizeof(mongo_ctx *));
     *ud = NULL;
@@ -185,7 +181,7 @@ static int32_t _lmongo_check_error(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 响应指针</param>
-/// <returns type="string?">16 字节会话 UUID；失败返回 nil（仅 1 个返回值）</returns>
+/// <returns type="string?">16 字节会话 UUID；失败返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">超时分钟数</returns>
 static int32_t _lmongo_parse_startsession(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -194,8 +190,7 @@ static int32_t _lmongo_parse_startsession(lua_State *lua) {
     char uuid[UUID_LENS];
     int32_t timeout;
     if (!mongo_parse_startsession(mgopack, uuid, &timeout)) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     lua_pushlstring(lua, uuid, UUID_LENS);
     lua_pushinteger(lua, timeout);
@@ -917,8 +912,7 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
     // pack + 自行发送不经过它，故在此重复一遍，理由见 coro_utils.c 的 mongo_begin
     if ((*psession)->mongo->session != *psession) {
         LOG_WARN("mongo connection no longer bound to this session, commit rejected.");
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 2, &optlens);
@@ -940,8 +934,7 @@ static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     // 同 pack_commit：Lua 侧不经过 mongo_rollback，那道守卫在此重复
     if ((*psession)->mongo->session != *psession) {
         LOG_WARN("mongo connection no longer bound to this session, rollback rejected.");
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 2, &optlens);

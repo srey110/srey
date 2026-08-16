@@ -62,7 +62,7 @@ static int32_t _lprot_dns_ip(lua_State *lua) {
 /// <param name="domain" type="string">查询域名</param>
 /// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录</param>
 /// <returns type="string?">DNS 查询二进制字符串；构造失败返回 nil</returns>
-/// <returns type="integer">本次查询的事务 ID（构造成功时返回），传给 dns.unpack 回验响应</returns>
+/// <returns type="integer?">本次查询的事务 ID，传给 dns.unpack 回验响应；失败时同为 nil，返回值个数恒为 2</returns>
 static int32_t _lprot_dns_pack(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
     int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
@@ -70,8 +70,7 @@ static int32_t _lprot_dns_pack(lua_State *lua) {
     uint16_t id;
     size_t lens = (size_t)dns_request_pack(buf, domain, ipv6, &id);
     if (0 == lens) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     lua_pushlstring(lua, buf, lens);
     lua_pushinteger(lua, id);
@@ -83,7 +82,7 @@ static int32_t _lprot_dns_pack(lua_State *lua) {
 /// <param name="domain" type="string">查询域名</param>
 /// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录</param>
 /// <returns type="string?">含长度前缀的 DNS 查询二进制字符串；构造失败返回 nil</returns>
-/// <returns type="integer">本次查询的事务 ID（构造成功时返回），传给 dns.unpack 回验响应</returns>
+/// <returns type="integer?">本次查询的事务 ID，传给 dns.unpack 回验响应；失败时同为 nil，返回值个数恒为 2</returns>
 static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
     int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
@@ -91,8 +90,7 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
     uint16_t id;
     size_t lens = dns_request_pack_tcp(buf, domain, ipv6, &id);
     if (0 == lens) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     lua_pushlstring(lua, buf, lens);
     lua_pushinteger(lua, id);
@@ -145,13 +143,18 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
 /// <summary>
 /// 打包自定义协议（custz）数据
 /// </summary>
-/// <param name="pktype" type="integer">协议子类型</param>
+/// <param name="pktype" type="integer">协议子类型，只接受 PACK_CUSTZ_FIXED / FLAG / VAR，其余报错</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="lightuserdata?">打包后的数据指针；载荷达到 MAX_PACK_SIZE 时返回 nil</returns>
 /// <returns type="integer">数据长度；返回 nil 时为 0</returns>
 static int32_t _lprot_custz_pack(lua_State *lua) {
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
+    // 只认三个 custz 子类型：custz_pack 的 default 是 ASSERTAB(0)，传别的进去当场 abort 整个进程
+    pack_type pktype = lpub_check_pktype(lua, 1);
+    luaL_argcheck(lua, PACK_CUSTZ_FIXED == pktype
+                  || PACK_CUSTZ_FLAG == pktype
+                  || PACK_CUSTZ_VAR == pktype,
+                  1, "expected a PACK_CUSTZ_* pack type");
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 2, &size, NULL);
@@ -242,8 +245,8 @@ static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
 /// 构造 WebSocket Ping 控制帧
 /// </summary>
 /// <param name="mask" type="integer">是否启用掩码（客户端发送 1，服务端 0）</param>
-/// <returns type="lightuserdata">数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_ping(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
@@ -254,8 +257,8 @@ static int32_t _lprot_websock_pack_ping(lua_State *lua) {
 /// 构造 WebSocket Pong 控制帧
 /// </summary>
 /// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
-/// <returns type="lightuserdata">数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_pong(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
@@ -266,8 +269,8 @@ static int32_t _lprot_websock_pack_pong(lua_State *lua) {
 /// 构造 WebSocket Close 控制帧
 /// </summary>
 /// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
-/// <returns type="lightuserdata">数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_close(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
@@ -281,8 +284,8 @@ static int32_t _lprot_websock_pack_close(lua_State *lua) {
 /// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata">数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超 64MB 上限同样返 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_text(lua_State *lua) {
     void *data;
     size_t dlens;
@@ -299,8 +302,8 @@ static int32_t _lprot_websock_pack_text(lua_State *lua) {
 /// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata">数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超 64MB 上限同样返 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_binary(lua_State *lua) {
     void *data;
     size_t dlens;
@@ -317,8 +320,8 @@ static int32_t _lprot_websock_pack_binary(lua_State *lua) {
 /// <param name="fin" type="integer">1 表示最后帧（PROT_SLICE_END），0 表示中间帧</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata">数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超 64MB 上限同样返 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_continua(lua_State *lua) {
     void *data;
     size_t dlens;
@@ -397,13 +400,12 @@ static int32_t _lprot_http_chunked(lua_State *lua) {
 static int32_t _lprot_http_status(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     struct http_pack_ctx *pack = (struct http_pack_ctx *)lua_touserdata(lua, 1);
-    int32_t chunck = http_chunked(pack);
-    if (0 != chunck
-        && 1 != chunck) {
+    // 分块中间包没有首行，http_status 直接返 NULL（判据收在 C 侧一处，这里不再各判一遍 chunked）
+    buf_ctx *buf = http_status(pack);
+    if (NULL == buf) {
         lua_pushnil(lua);
         return 1;
     }
-    buf_ctx *buf = http_status(pack);
     lua_createtable(lua, 3, 0);
     for (int32_t i = 0; i < 3; i++) {
         lua_pushlstring(lua, buf[i].data, buf[i].lens);
@@ -421,12 +423,6 @@ static int32_t _lprot_http_head(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     struct http_pack_ctx *pack = (struct http_pack_ctx *)lua_touserdata(lua, 1);
     const char *key = luaL_checkstring(lua, 2);
-    int32_t chunck = http_chunked(pack);
-    if (0 != chunck
-        && 1 != chunck) {
-        lua_pushnil(lua);
-        return 1;
-    }
     size_t vlens;
     char *val = http_header(pack, key, &vlens);
     if (NULL == val) {
@@ -444,9 +440,9 @@ static int32_t _lprot_http_head(lua_State *lua) {
 static int32_t _lprot_http_heads(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     struct http_pack_ctx *pack = (struct http_pack_ctx *)lua_touserdata(lua, 1);
-    int32_t chunck = http_chunked(pack);
-    if (0 != chunck
-        && 1 != chunck) {
+    // 分块中间包没有首行也没有头部。契约是返 nil（不是空表），故仍要单独判一次，
+    // 用 http_status 是否为 NULL 作判据——与 http_nheader / http_header 收在 C 侧的是同一条
+    if (NULL == http_status(pack)) {
         lua_pushnil(lua);
         return 1;
     }
@@ -642,12 +638,8 @@ LUAMOD_API int luaopen_redis(lua_State *lua) {
 /// （同 mysql.new / pgsql.new / mongo.new，不静默截断）</returns>
 static int32_t _lprot_smtp_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
-    struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 3)) {
-        LUACHECK_LUDATA(lua, 3);
-        evssl = lua_touserdata(lua, 3);
-    }
+    uint16_t port = lpub_check_port(lua, 2);
+    struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *user = luaL_checkstring(lua, 4);
     const char *psw = luaL_checkstring(lua, 5);
     smtp_ctx **ud = lua_newuserdata(lua, sizeof(smtp_ctx *));

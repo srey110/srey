@@ -307,16 +307,24 @@ static void _debug_hotfix(router_req *ctx) {
     seri_append_string(&cmd, (const char *)body, blen);
     _debug_forward(ctx, &cmd);
 }
-// HTTP 接收回调：取出本服务的 router 后转 router_net_recv（分片拒绝与派发都在那里）
+// HTTP 接收回调：取出本服务的 router 后转 router_net_recv（chunked 与派发都在那里）
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
                       uint8_t client, uint8_t slice, void *data, size_t size) {
     debug_console_ctx *ctx = coro_get_arg(task);
     router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
+// 连接关闭回调：清掉该连接尚未收齐的流式请求。理由同 harbor 的同名回调
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+    (void)pktype;
+    (void)client;
+    debug_console_ctx *ctx = coro_get_arg(task);
+    router_closed(ctx->router, sk->fd, sk->skid);
+}
 // 启动回调：建路由器 + 注册路由 + 监听 HTTP
 static void _debug_startup(task_ctx *task) {
     debug_console_ctx *ctx = coro_get_arg(task);
     task_recved(task, _net_recv);
+    task_closed(task, _net_close);
     ctx->router = router_new();
     router_get(ctx->router, NULL, "/", _debug_root, NULL, 0);
     router_get(ctx->router, NULL, "/__alive", _debug_alive, NULL, 0);

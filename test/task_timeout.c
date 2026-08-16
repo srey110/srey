@@ -275,7 +275,12 @@ erro:
 // 测试 HTTP GET 请求（验证 200 响应）+ chunked POST 请求三帧往返验证
 // 状态码断言: status[1] 是状态码的字符串形态, 按长度精确比对, 免得 "40" 被 "404" 误当命中
 static int32_t _status_is(struct http_pack_ctx *rpack, const char *code) {
-    return buf_compare(&http_status(rpack)[1], code, strlen(code));
+    // chunked 中间/结束块没有首行，http_status 返 NULL；当作"不是这个状态码"
+    buf_ctx *st = http_status(rpack);
+    if (NULL == st) {
+        return 0;
+    }
+    return buf_compare(&st[1], code, strlen(code));
 }
 static int32_t _timeout_http(task_ctx *task) {
     task_timeout_ctx *ctx = coro_get_arg(task);

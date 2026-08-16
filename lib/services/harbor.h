@@ -8,7 +8,7 @@
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="tname">字符串任务名；NULL 或空串表示不启动 harbor</param>
-/// <param name="ssl">evssl_ctx 名称；配双向证书(mTLS)则跨节点鉴权由 TLS 层保证，NULL 或 "" 为明文无鉴权(仅限受信内网)</param>
+/// <param name="ssl">evssl_ctx 名称；配双向证书(mTLS)则跨节点鉴权由 TLS 层保证，NULL 或 "" 为明文无鉴权(仅限受信内网，启动时打 WARN)</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
 /// <returns>ERR_OK 成功</returns>

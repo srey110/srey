@@ -15,6 +15,7 @@ typedef struct url_ctx {
     int8_t sep;               // 路径拆分标记
     int32_t decode;           // 是否解码
     int32_t npath;            // 拆分后的路径数量
+    int32_t nparam;           // 查询参数个数（param 的有效长度）
     size_t pathlens;          // 重组后路径总长（含各段分隔符）；可据此预分配缓冲（>= pathlens+1）
     size_t paramlens;         // 重组后查询串总长（含 '&' '='）；可据此预分配缓冲（>= paramlens+1）；0 表示无参数
     buf_ctx scheme;           // 协议类型（如 http、https）
@@ -23,8 +24,10 @@ typedef struct url_ctx {
     buf_ctx host;             // 主机地址
     buf_ctx port;             // 端口号
     buf_ctx anchor;           // 片段标识（# 之后的部分）
-    url_param param[URL_MAX_PARAM]; // 查询参数列表（最多 URL_MAX_PARAM 个）
-    buf_ctx segs[URL_MAX_PATH_DEPTH]; // 拆分后的各路径段（decode 时已就地解码）
+    // 以下三个大数组不参与 url_parse 的入口清零（那会是每请求 4KB 的死写），
+    // 只有 [0, nparam) / [0, npath) 与 buf 的前 lens 字节被填过，越界读到的是上次残留
+    url_param param[URL_MAX_PARAM]; // 查询参数列表（有效长度 nparam，最多 URL_MAX_PARAM 个）
+    buf_ctx segs[URL_MAX_PATH_DEPTH]; // 拆分后的各路径段（有效长度 npath；decode 时已就地解码）
     char buf[URL_BUF_LENS];  // url_parse 内部工作缓冲区，持有输入 url 的可写副本
 }url_ctx;
 

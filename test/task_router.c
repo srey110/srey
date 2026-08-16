@@ -4,11 +4,13 @@
 // ── server task ────────────────────────────────────────────────────────────
 // server 是一个普通 (非协程) task: _net_recv 同步调 router_dispatch, handler/中间件
 // 全部在 worker 线程当场跑完, 不涉及 yield。router_ctx 单例放全局, 测试启动期间
-// 不会切换实例; ATOMIC_* 操作 _g_post_count 仅用于跨 task 验证 next 后置已执行,
+// 不会切换实例; 两个 _g_*_count 用 ATOMIC_* 仅为跨 task 验证服务端确实执行到了某处,
 // 单 worker 内本来就不竞争, 只为表达"读写发生在不同 task 上"的语义清晰
 
 // 计数器: post-tag 中间件 next 返回后 +1, 客户端通过 GET /__stats 读回验证
 static atomic_t     _g_post_count = 0;
+// 计数器: 流式路由收到 ROUTER_STREAM_ABORT 时 +1, 客户端通过 GET /__aborts 读回验证
+static atomic_t     _g_abort_count = 0;
 static uint16_t     _g_port       = 0;
 
 // ── handlers ───────────────────────────────────────────────────────────────
@@ -114,6 +116,18 @@ static void _h_post_mw(router_req *ctx) {
 static void _h_stats(router_req *ctx) {
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_post_count);
+    int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
+    router_req_text(ctx, 200, buf, (size_t)k);
+}
+// GET /nobody → 204: RFC 7230 禁止 1xx/204/304 带 Content-Length 与报文体,
+// 这里故意传一个 body, 验证 router 把它连同 CL 一起丢掉
+static void _h_nobody(router_req *ctx) {
+    router_req_text(ctx, 204, "dropped", 7);
+}
+// GET /__aborts → 当前 _g_abort_count 字符串值; 客户端发一半就断开后读出验证 ABORT 已投递
+static void _h_aborts(router_req *ctx) {
+    char buf[32];
+    int32_t cnt = (int32_t)ATOMIC_GET(&_g_abort_count);
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
     router_req_text(ctx, 200, buf, (size_t)k);
 }
@@ -261,19 +275,57 @@ static void _mw_g2(router_req *ctx) {
     router_next(ctx);
 }
 
-// server _net_recv: HTTP 完整包到达 (slice == 0) 时分发; chunked 请求体开始 (PROT_SLICE_START)
-// 时按 debug_console.c/harbor.c 同款做法回 411 并关连接, 其余分片帧忽略 (连接已关不会再收到)
+// 流式路由: 首帧建缓冲, 中间帧追加, 末帧回显。ctx->user 跨帧留在 router 持有的 req 里,
+// 客户端据此核对分块是否按序到齐。slice == 0 是一次到齐的普通请求, 直接回显
+static void _h_st_echo(router_req *ctx, uint8_t slice, void *data, size_t lens) {
+    if (0 == slice) {
+        router_req_text(ctx, 200, (const char *)data, lens);
+        return;
+    }
+    binary_ctx *bw = (binary_ctx *)ctx->user;
+    // 流没收齐就断了: 只清理, 不写响应
+    if (ROUTER_STREAM_ABORT & slice) {
+        if (NULL != bw) {
+            binary_free(bw);
+            FREE(bw);
+            ctx->user = NULL;
+        }
+        ATOMIC_ADD(&_g_abort_count, 1);
+        return;
+    }
+    if (PROT_SLICE_START & slice) {
+        MALLOC(bw, sizeof(binary_ctx));
+        binary_init(bw, NULL, 0, 0);
+        ctx->user = bw;
+        return;
+    }
+    if (NULL == bw) {
+        return;
+    }
+    if (NULL != data
+        && lens > 0) {
+        binary_set_binary(bw, (const char *)data, lens);
+    }
+    if (PROT_SLICE_END & slice) {
+        router_req_text(ctx, 200, (const char *)bw->data, bw->offset);
+        binary_free(bw);
+        FREE(bw);
+        ctx->user = NULL;
+    }
+}
+
+// server _net_recv: 整串转 router_net_recv, 与 harbor.c / debug_console.c 同款接法。
+// 完整请求直接派发, chunked 逐帧交给流式路由
 static void _server_net_recv(task_ctx *task, sk_id *sk,
                              subtype_t pktype, uint8_t client, uint8_t slice,
                              void *data, size_t size) {
-    (void)pktype; (void)client; (void)size;
-    if (0 != slice) {
-        if (PROT_SLICE_START == slice) {
-            router_reject_chunked(task, sk->fd, sk->skid);
-        }
-        return;
-    }
-    router_dispatch((router_ctx *)task->arg, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
+    router_net_recv((router_ctx *)task->arg, task, sk, pktype, client, slice, data, size);
+}
+// 注册了流式路由就必须接这个, 否则连接中途断开时 router 持有的请求上下文不回收
+static void _server_net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+    (void)pktype;
+    (void)client;
+    router_closed((router_ctx *)task->arg, sk->fd, sk->skid);
 }
 // 用户数据释放(argfree, task_free 时调): router_free 一并释放所有 entry/segs/mws/named 字符串
 static void _router_free(void *arg) {
@@ -284,12 +336,18 @@ static void _router_free(void *arg) {
 static void _server_startup(task_ctx *task) {
     router_ctx *r = (router_ctx *)task->arg;
     task_recved(task, _server_net_recv);
+    task_closed(task, _server_net_close);
 
     // 4 个具名中间件先注册, 后续 router_get/post 的 mws 数组按名引用
     router_define(r, "auth",     _mw_auth);
     router_define(r, "post-tag", _mw_post_tag);
     router_define(r, "g1mw",     _mw_g1);
     router_define(r, "g2mw",     _mw_g2);
+
+    // 流式路由: /st 无中间件, /stauth 挂 auth 验证准入被截断时不建流
+    router_post_stream(r, NULL, "/st", _h_st_echo, NULL, 0);
+    const char *st_auth_mws[] = { "auth" };
+    router_post_stream(r, NULL, "/stauth", _h_st_echo, st_auth_mws, 1);
 
     // 9 条平铺路由 (无中间件): 覆盖各种 path 模板和方法位掩码
     router_get(r, NULL, "/",             _h_root,        NULL, 0);
@@ -318,6 +376,8 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/forget",       _h_forget,      NULL, 0);
     router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0);
     router_get(r, NULL, "/__stats",      _h_stats,       NULL, 0);
+    router_get(r, NULL, "/__aborts",     _h_aborts,      NULL, 0);
+    router_get(r, NULL, "/nobody",       _h_nobody,      NULL, 0);
     router_get(r, NULL, "/pmax/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}",          _h_pmax, NULL, 0);
     router_get(r, NULL, "/povf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17}",    _h_pmax, NULL, 0);
     router_get(r, NULL, "/poptovf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17?}", _h_pmax, NULL, 0);
@@ -379,6 +439,11 @@ static int32_t _resp_check(struct http_pack_ctx *resp, const char *method, const
                            int32_t expect_code) {
     // status[1] 是状态码 (字符串形态, 例 "200"); 长度精确匹配避免 "20"/"200" 误判
     buf_ctx *st = http_status(resp);
+    if (NULL == st) {
+        // chunked 中间/结束块没有首行；这里收到的都该是完整响应
+        LOG_WARN("router test: %s %s got a pack without a status line.", method, url);
+        return ERR_FAILED;
+    }
     char codestr[8];
     SNPRINTF(codestr, sizeof(codestr), "%d", expect_code);
     if (!buf_compare(&st[1], codestr, strlen(codestr))) {
@@ -386,7 +451,9 @@ static int32_t _resp_check(struct http_pack_ctx *resp, const char *method, const
                  method, url, expect_code, (int32_t)st[1].lens, (char *)st[1].data);
         return ERR_FAILED;
     }
-    // 响应头里 Content-Length 必须唯一 (router 曾手写一次 + http_pack_content 再写一次)
+    // 响应头里 Content-Length 必须唯一 (router 曾手写一次 + http_pack_content 再写一次);
+    // 1xx/204/304 禁带, 那几个码期望 0 条
+    int32_t want_cl = http_code_nobody(expect_code) ? 0 : 1;
     uint32_t nheader = http_nheader(resp);
     int32_t clcnt = 0;
     uint32_t hi;
@@ -397,8 +464,9 @@ static int32_t _resp_check(struct http_pack_ctx *resp, const char *method, const
             clcnt++;
         }
     }
-    if (1 != clcnt) {
-        LOG_WARN("router test: %s %s expected 1 Content-Length header, got %d.", method, url, clcnt);
+    if (want_cl != clcnt) {
+        LOG_WARN("router test: %s %s expected %d Content-Length header(s), got %d.",
+                 method, url, want_cl, clcnt);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -567,46 +635,6 @@ done:
     return rtn;
 }
 
-// chunked 请求断言: 发一个带 Transfer-Encoding: Chunked 的单块 POST, 验证 _server_net_recv 收到
-// PROT_SLICE_START 后调 router_reject_chunked 回 411 (覆盖 router.c 的 router_reject_chunked)
-static int32_t _do_chunked_req(task_ctx *task, uint16_t port) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
-        LOG_WARN("router test: connect to %d failed for chunked req.", port);
-        return ERR_FAILED;
-    }
-    binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
-    http_pack_req(&bw, "POST", "/");
-    http_pack_head(&bw, "Host", "127.0.0.1");
-    http_pack_chunked(&bw, "x", 1); // bwriter->offset>0 时自动附加 Transfer-Encoding: Chunked header
-    size_t rsize;
-    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
-    int32_t rtn = ERR_FAILED;
-    if (NULL == resp) {
-        LOG_WARN("router test: chunked req coro_send failed.");
-        goto done;
-    }
-    buf_ctx *st = http_status(resp);
-    if (!buf_compare(&st[1], "411", 3)) {
-        LOG_WARN("router test: chunked req expected code 411, got %.*s.",
-                 (int32_t)st[1].lens, (char *)st[1].data);
-        goto done;
-    }
-    size_t dlen;
-    void *body = http_data(resp, &dlen);
-    const char *want = "chunked request not supported\n";
-    if (NULL == body || dlen != strlen(want) || 0 != memcmp(body, want, dlen)) {
-        LOG_WARN("router test: chunked req expected body '%s', got '%.*s'.",
-                 want, (int32_t)dlen, (char *)body);
-        goto done;
-    }
-    rtn = ERR_OK;
-done:
-    ev_close(&task->loader->netev, fd, skid, 1);
-    return rtn;
-}
 
 // 25 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
 // 每次 _do_req 之间插 task_isclosing 早返, SIGINT 时尽快收尾
@@ -704,11 +732,15 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     // [23] OPT 中置多余段: /a/b/c → 路由段消耗完但请求段剩余 → 404
     if (ERR_OK != _do_req(task, port, "GET", "/a/b/c",  NULL, NULL, 404, NULL)) bad |= (1 << 23);
     if (task_isclosing(task)) return ERR_FAILED;
-    // [24] chunked 请求体 → PROT_SLICE_START 分支调 router_reject_chunked 回 411
-    if (ERR_OK != _do_chunked_req(task, port)) bad |= (1 << 24);
+    // [24] 204 禁带 Content-Length 与报文体: handler 传了 body 也该被丢掉。
+    // 0 条 Content-Length 这一项由 _resp_check 按 http_code_nobody 判, 这里只要码对
+    if (ERR_OK != _do_req(task, port, "GET", "/nobody", NULL, NULL, 204, NULL)) {
+        bad |= (1 << 24);
+    }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
+    // 流式路由断言另见 _run_stream
     if (ERR_OK != _do_req(task, port, "GET", "/pmax/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p", NULL, NULL, 200, "p")) {
         bad |= (1 << 25);
     }
@@ -805,6 +837,143 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
+// 分块发送断言: 按 CLAUDE.md 的写法逐段发, 末段带终止块并等响应。
+// chunks 各段拼起来就是期望回显的 body; expect 为期望状态码
+static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *path,
+                           const char *const *chunks, int32_t n,
+                           const char *token, int32_t expect, const char *want_body) {
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for chunked.", port);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "POST", path);
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    if (NULL != token) {
+        http_pack_head(&bw, "X-Token", token);
+    }
+    int32_t rtn = ERR_FAILED;
+    int32_t i;
+    // 首段的 http_pack_chunked 会自动补 Transfer-Encoding 头与空行; 之后每段都要先把
+    // 写游标退回 0, 否则那个头会被重复附加 (copy=1 让 bw 可以接着复用)
+    for (i = 0; i < n; i++) {
+        http_pack_chunked(&bw, (void *)chunks[i], strlen(chunks[i]));
+        ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 1);
+        binary_offset(&bw, 0);
+    }
+    http_pack_chunked(&bw, NULL, 0);// 终止块
+    size_t rsize;
+    // copy=0: bw.data 所有权转给框架, 后面不能再 binary_free (同 _do_req)
+    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    if (NULL == resp) {
+        LOG_WARN("router test: chunked coro_send failed.");
+        goto done;
+    }
+    // 走公共校验: 状态码之外还查 Content-Length 唯一性, 那条断言只在这里有
+    if (ERR_OK != _resp_check(resp, "POST", path, expect)) {
+        goto done;
+    }
+    if (NULL != want_body) {
+        size_t blen = 0;
+        void *body = http_data(resp, &blen);
+        // 空 body 时 body 为 NULL, memcmp(NULL, ..., 0) 是 UB, 先按长度短路
+        if (blen != strlen(want_body)
+            || (blen > 0 && 0 != memcmp(body, want_body, blen))) {
+            LOG_WARN("router test: chunked body mismatch, got %.*s.", (int32_t)blen, (char *)body);
+            goto done;
+        }
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return rtn;
+}
+// 发首帧 + 一块数据就断开, 不发终止块: 服务端只能靠 router_closed 收尾,
+// 流式回调应收到一次 ROUTER_STREAM_ABORT。关连接用优雅关, 保证已排队的字节先冲出去
+static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for chunked abort.", port);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "POST", "/st");
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_chunked(&bw, (void *)"half", 4);
+    ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 1);
+    binary_free(&bw);
+    ev_close(&task->loader->netev, fd, skid, 0);
+    return ERR_OK;
+}
+// 流式路由相关的七条断言
+static int32_t _run_stream(task_ctx *task, uint16_t port) {
+    int32_t bad = 0;
+    // [0] 三块按序到齐, 末帧回显的 body 与拼接结果一致
+    static const char *const ok3[3] = { "aaa", "bbbb", "c" };
+    if (ERR_OK != _do_chunked(task, port, "/st", ok3, 3, NULL, 200, "aaabbbbc")) {
+        bad |= (1 << 0);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [1] 单块也走同一条路
+    static const char *const ok1[1] = { "z" };
+    if (ERR_OK != _do_chunked(task, port, "/st", ok1, 1, NULL, 200, "z")) {
+        bad |= (1 << 1);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [2] 零数据块: 只有首帧与终止块, 回显空 body
+    if (ERR_OK != _do_chunked(task, port, "/st", NULL, 0, NULL, 200, "")) {
+        bad |= (1 << 2);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [3] chunked 打到普通路由 → 411 并关连接 (/only-post 是 router_post 注册的非流式路由)
+    if (ERR_OK != _do_chunked(task, port, "/only-post", ok1, 1, NULL, 411, NULL)) {
+        bad |= (1 << 3);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [4] 准入中间件截断 → 401, 不建流
+    if (ERR_OK != _do_chunked(task, port, "/stauth", ok3, 3, NULL, 401, NULL)) {
+        bad |= (1 << 4);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [5] 带对 token 则准入放行, 照常收齐
+    if (ERR_OK != _do_chunked(task, port, "/stauth", ok3, 3, "secret", 200, "aaabbbbc")) {
+        bad |= (1 << 5);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [6] 发一半就断开 → 流式回调收到 ROUTER_STREAM_ABORT。放最后, 计数才是确定的 1:
+    // 前六条里正常收尾的走 SLICE_END, 411 / 401 那两条压根没建流。
+    // ctx->user 有没有真的释放掉由收尾的 _memcheck 兜底 —— 只看它分不清"没通知"和"没释放"
+    if (ERR_OK != _do_chunked_abort(task, port)) {
+        bad |= (1 << 6);
+    } else {
+        coro_sleep(task, 100);// 等服务端处理完连接关闭事件
+        if (ERR_OK != _do_req(task, port, "GET", "/__aborts", NULL, NULL, 200, "1")) {
+            bad |= (1 << 6);
+        }
+    }
+    if (0 != bad) {
+        LOG_WARN("router test: stream route assertions failed, bad=0x%x.", bad);
+    }
+    return 0 == bad ? ERR_OK : ERR_FAILED;
+}
+
 // timeout 回调 (协程上下文中执行): 跑完一轮断言, 把 1/0 写入 result_slot
 static void _client_timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
@@ -813,6 +982,9 @@ static void _client_timeout(task_ctx *task, uint64_t sess) {
         ctx->err = 1;
     }
     if (ERR_OK != _run_opt_extra(task, ctx->port)) {
+        ctx->err = 1;
+    }
+    if (ERR_OK != _run_stream(task, ctx->port)) {
         ctx->err = 1;
     }
     if (ctx->err) {

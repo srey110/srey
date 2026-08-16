@@ -10,8 +10,6 @@ void _mysql_init(void *hspush);
 void _mysql_pkfree(void *pack);
 // 内部函数：释放用户数据上下文中的 MySQL 资源
 void _mysql_udfree(ud_cxt *ud);
-// 内部函数：连接关闭时清理 MySQL 资源
-void _mysql_closed(ud_cxt *ud);
 // 内部函数：SSL 握手完成后发送认证响应
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
 /// <summary>

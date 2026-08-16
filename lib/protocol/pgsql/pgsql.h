@@ -9,8 +9,6 @@ void _pgsql_init(void *hspush);
 void _pgsql_pkfree(void *pack);
 // 释放 ud_cxt 中绑定的 pgsql 上下文资源
 void _pgsql_udfree(ud_cxt *ud);
-// 连接关闭时的清理回调
-void _pgsql_closed(ud_cxt *ud);
 // 连接建立后处理：配置 evssl 则发送 SSL 协商请求，否则跳过协商直接发送 Startup
 int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err);
 // SSL 握手完成后提取服务端证书摘要（用于 SCRAM-PLUS 通道绑定）并发送 Startup 消息

@@ -23,15 +23,24 @@ void _http_udfree(ud_cxt *ud);
 /// </summary>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护解析状态</param>
+/// <param name="client">1 表示本端是客户端（收到的是响应），0 表示收到的是请求。
+/// 1xx/204/304 的"无报文体"规则只对响应成立，本端解析不出方向，故须由调用方给</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 http_pack_ctx，数据不足或出错返回 NULL</returns>
-struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
+struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status);
 /// <summary>
 /// 获取状态码对应描述
 /// </summary>
 /// <param name="code">状态码</param>
 /// <returns>描述</returns>
 const char *http_code_status(int32_t code);
+/// <summary>
+/// 该状态码的响应是否禁止携带报文体与 Content-Length（RFC 7230 §3.3.2/§3.3.3：1xx / 204 / 304）。
+/// 组包侧据此改写结束包，解析侧据此判定无 body，两边共用同一条判据
+/// </summary>
+/// <param name="code">状态码</param>
+/// <returns>非 0 表示禁止携带</returns>
+int32_t http_code_nobody(int32_t code);
 /// <summary>
 /// http请求包
 /// </summary>
@@ -106,23 +115,24 @@ int32_t _http_check_keyval(http_header_ctx *head,
                            const char *key, size_t klen,
                            const char *val, size_t vlen);
 /// <summary>
-/// 获取第一行数据
+/// 获取第一行数据。chunked 的中间块与结束块只有数据、没有首行，此时返回 NULL——
+/// 首行/头部四个访问器共用这条判据，调用方不必各自再判一遍 http_chunked
 /// </summary>
 /// <param name="pack">http_pack_ctx</param>
-/// <returns>buf_ctx</returns>
+/// <returns>buf_ctx 三元组；chunked 中间/结束块返回 NULL</returns>
 buf_ctx *http_status(struct http_pack_ctx *pack);
 /// <summary>
 /// 获取头数量
 /// </summary>
 /// <param name="pack">http_pack_ctx</param>
-/// <returns>数量</returns>
+/// <returns>数量；chunked 中间/结束块返回 0（判据同 http_status）</returns>
 uint32_t http_nheader(struct http_pack_ctx *pack);
 /// <summary>
 /// 获取头
 /// </summary>
 /// <param name="pack">http_pack_ctx</param>
 /// <param name="pos">第几个</param>
-/// <returns>http_header_ctx</returns>
+/// <returns>http_header_ctx；chunked 中间/结束块返回 NULL（判据同 http_status）</returns>
 http_header_ctx *http_header_at(struct http_pack_ctx *pack, uint32_t pos);
 /// <summary>
 /// 获取头

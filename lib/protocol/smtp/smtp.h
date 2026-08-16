@@ -23,8 +23,6 @@ typedef struct smtp_ctx {
 void _smtp_init(void *hspush);
 // 连接断开时释放 ud_cxt 中的 smtp_ctx 引用并重置 fd
 void _smtp_udfree(ud_cxt *ud);
-// 连接关闭时的清理回调，等同于 _smtp_udfree
-void _smtp_closed(ud_cxt *ud);
 /// <summary>
 /// 简单邮件传输协议smtp初始化。ip / user / psw 超出对应字段容量时返回 ERR_FAILED，
 /// 不做截断——截断后的密码拿去认证只会换回服务端一句 535，调用方看不出是自己传长了。
