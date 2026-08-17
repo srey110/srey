@@ -963,6 +963,26 @@ runner.run("unit_router", function(t)
         t:eq(nil, last_resp, "被拒后的后续分片静默丢")
     end
 
+    -- 9.3b chunked 匹配不上 → 404/405 而非 411：411 只表示"路由在但接不住 chunked"。
+    -- 与 C 侧 _router_chunked_nostream 同形；改前无流式路由时会被短路成一律 411
+    do
+        local r = Route.new()
+        r:post("/plain", function(ctx) ctx:text(200, "ok") end)
+        last_resp = nil
+        closed_log = {}
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/nope"))
+        t:eq(404, (last_resp or {}).code, "chunked 打未注册路径 → 404")
+        t:eq(1, #closed_log, "404 后关连接")
+        -- 路径对上但方法掩码不交也是 404，不是 405
+        last_resp = nil
+        feed(r, SLICE_TYPE.START, make_pack("PUT", "/plain"))
+        t:eq(404, (last_resp or {}).code, "chunked 方法不匹配 → 404")
+        -- 405 只由方法名不认识产生
+        last_resp = nil
+        feed(r, SLICE_TYPE.START, make_pack("FROB", "/plain"))
+        t:eq(405, (last_resp or {}).code, "chunked 未知方法 → 405")
+    end
+
     -- 9.4 准入中间件截断 → 401 且不建流；带对 token 则放行收齐
     do
         local r = Route.new()

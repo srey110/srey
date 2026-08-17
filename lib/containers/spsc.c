@@ -29,15 +29,11 @@ void spsc_free(spsc_ctx *q) {
     FREE(q->cells);
 }
 /*
- * 入队核心逻辑（单生产者）：
- *   producer 独占 enq.v，无并发推进者，无需 CAS。
- *   满/空判定：(enq - deq) ∈ [0, capacity]
- *     - enq == deq        → 空
- *     - enq - deq == cap  → 满
- *   读 deq 取保守快照即可：consumer 只会让 deq 增加（空间变多），
- *   旧 deq 看起来更紧、最坏只是误判为满。uint32_t 减法处理 wrap。
+ * 入队核心（单生产者）：独占 enq.v 无需 CAS。满/空判定 (enq - deq) ∈ [0, capacity]，
+ * 相等为空、差等于 cap 为满，uint32_t 减法自然处理回绕。
+ * 读 deq 取保守快照即可：consumer 只会让 deq 增加，旧值最坏只是误判为满。
+ * 队满立即 ERR_FAILED，拷 elsize 字节
  */
-//非阻塞入队：从 data 拷贝 elsize 字节，队列满时立即返回 ERR_FAILED
 int32_t spsc_trypush(spsc_ctx *q, const void *data) {
     if (NULL == q || NULL == data) {
         return ERR_FAILED;
@@ -78,13 +74,14 @@ int32_t spsc_pop(spsc_ctx *q, void *out) {
     return ERR_OK;
 }
 /*
- * 返回当前队列元素数量的近似值。
- * 并发场景下 enq 与 deq 分两次读取，结果仅供参考。
- * 无符号减法天然处理 uint32_t 绕回情形。
+ * 返回当前队列元素数量的近似值，并发下不精确。
+ * 必须先读 deq 再读 enq：两者都单调递增且恒有 enq >= deq，先读的 deq 必不大于后读的 enq，
+ * 下溢不可能。越界钳到 capacity 而非 0——调用方拿它判"还有没有活要干"，
+ * 高估最多多醒一次，低估就是漏唤醒。与 mpq_size 同一约定。
  */
 uint32_t spsc_size(spsc_ctx *q) {
-    uint32_t enq = ATOMIC_GET(&q->enq.v);
     uint32_t deq = ATOMIC_GET(&q->deq.v);
+    uint32_t enq = ATOMIC_GET(&q->enq.v);
     uint32_t size = enq - deq;
-    return size > q->capacity ? 0 : size;
+    return size > q->capacity ? q->capacity : size;
 }

@@ -171,7 +171,8 @@ typedef void (*router_cb)(router_req *ctx);
 ///                    chunked 正常收尾走 PROT_SLICE_END，两者只会来一个（slice == 0 那条路
 ///                    两者都不来，见上）。只做清理：连接多半已经没了，
 ///                    写响应没意义（router 也不会因为没响应补 500），更不要用 ctx->task
-///                    投消息或挂起（router_free 那条路径上 task 正在拆）
+///                    投消息或挂起（router_free 那条路径上 task 正在拆）。
+///                    投这次回调前该流已从表里摘掉，回调内调 router_closed 是安全的 no-op
 /// 请求头只在 slice == 0 与 PROT_SLICE_START 这两次（及之前的准入中间件）读得到——chunked
 /// 的首包随该次回调结束就被协议层回收，router 不留副本，之后 router_req_header /
 /// router_req_body 一律返 NULL；要留就在首帧拷进 ctx->user。
@@ -391,7 +392,8 @@ router_entry *router_put_stream(router_ctx *r, const router_group *g, const char
 /// 与已注册条目等价时拒绝注册（见返回值）：dispatch 取首条命中，后注册的那条永远够不着
 /// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"
 /// 本函数注册的条目只能配 router_match_index 使用（调用方自己按索引派发）；
-/// 因 handler 为 NULL，同一 router_ctx 若再交给 router_dispatch，命中即回 500 拒绝
+/// 因 handler 为 NULL，同一 router_ctx 若再交给 router_dispatch / router_net_recv，
+/// 命中即回 500 拒绝并打一条 WARN —— 普通请求与 chunked 首帧给同一个码，不会退化成 411
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="method">HTTP 方法字符串</param>
@@ -471,6 +473,8 @@ void router_closed(router_ctx *r, SOCKET fd, uint64_t skid);
 /// <summary>
 /// _net_recv 回调的标准实现 —— slice == 0 的完整请求直接转 router_dispatch;
 /// chunked 请求命中流式路由 (router_add_stream) 则逐帧交给它, 命中普通路由则回 411 并关连接。
+/// chunked 的状态码与一次到齐的同一请求完全一致: 匹配不上就是 404/400/405, 不是 411 ——
+/// 411 只表示"路由在, 但它接不住 chunked"。
 /// 参数与 _net_recv_cb 一一对应, 只在最前面多一个 router_ctx:
 /// 各服务的回调按自己的 ctx 类型取出 router 后整串转发即可
 /// </summary>

@@ -61,7 +61,9 @@ void cipher_free(cipher_ctx *cipher);
 /// <returns>长度</returns>
 size_t cipher_size(cipher_ctx *cipher);
 /// <summary>
-/// 设置填充模式.ECB CBC需要  CFB OFB CTR可选
+/// 设置填充模式.ECB CBC需要  CFB OFB CTR可选。
+/// 注意 ZeroPadding 不对称：加密侧按块补零，解密侧不剥离——尾部真实的 0 与填充的 0 无从区分，
+/// cipher_dofinal 于是返回含补零的完整长度。要能还原原始长度请用 PKCS57 / ANSIX923 / ISO10126
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
 /// <param name="padding">填充模式</param>

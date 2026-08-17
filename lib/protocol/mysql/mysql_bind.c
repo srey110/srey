@@ -123,7 +123,11 @@ void mysql_bind_datetime(mysql_bind_ctx *mbind, const char *name, time_t ts) {
     _mysql_bind_bitmap(mbind, 0);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_DATETIME, name, 0);
     struct tm dt;
-    LOCALTIME(&ts, &dt);
+    // 转换失败(ts 超出可表示范围)时 dt 未必被写过,按协议写零长即"零日期",不能拿它继续组包
+    if (0 != LOCALTIME(&ts, &dt)) {
+        binary_set_int8(&mbind->value, 0);
+        return;
+    }
     // 时间部分全为 0 时只写日期（4 字节），否则写完整日期时间（7 字节）
     if (0 == dt.tm_hour && 0 == dt.tm_min && 0 == dt.tm_sec) {
         binary_set_int8(&mbind->value, 4);

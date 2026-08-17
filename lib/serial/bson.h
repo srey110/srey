@@ -321,7 +321,10 @@ int32_t bson_iter_error(const bson_iter *iter);
 /// <returns>非零表示有值</returns>
 int32_t bson_iter_next(bson_iter *iter);
 /// <summary>
-/// 从当前迭代器位置查找指定键，支持点分多级路径（如 "a.b.c"）
+/// 从当前迭代器位置查找指定键，支持点分多级路径（如 "a.b.c"）。
+/// result 绑定的是**包含被找到元素的那层文档**：不含点时即 iter 所在文档，
+/// 点分路径则是最内层子文档。于是 result 上继续 bson_iter_next 吐出的是该元素的同级字段，
+/// bson_iter_reset 回到的也是那一层的开头——find("a.b.c") 之后 reset 重扫的是 a.b 而不是根文档
 /// </summary>
 /// <param name="iter">起始迭代器</param>
 /// <param name="keys">点分键路径，如 "cursor.id"</param>

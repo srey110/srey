@@ -103,7 +103,7 @@ void secure_zero(void *buf, size_t len);
 #define SET_PTR(ptr, val)\
     do {\
         if (NULL != (ptr)) {\
-            (*ptr) = (val);\
+            (*(ptr)) = (val);\
         }\
     } while(0)
 // 断言宏：条件不满足则打印并终止程序

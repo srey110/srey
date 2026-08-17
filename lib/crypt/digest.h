@@ -23,6 +23,8 @@ typedef enum digest_type {
 }digest_type;
 typedef struct digest_ctx {
     size_t block_lens;      // 当前摘要算法的输出长度（字节）
+    size_t key_block;       // 压缩函数的输入分组长度 B（HMAC 的 ipad/opad 长度，不是输出长度）
+    size_t eng_lens;        // 当前引擎 ctx 的实际字节数；eng_ctx 是联合体，按它拷贝而非整份
     _init_cb _init;         // 初始化回调
     _update_cb _update;     // 数据输入回调
     _final_cb _final;       // 结果输出回调

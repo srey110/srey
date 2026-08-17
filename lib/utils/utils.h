@@ -3,6 +3,7 @@
 
 #include "base/macro.h"
 
+#define HEX_ENSIZE(s) ((s) * 2 + 1) //tohex 输出缓冲长度：每字节两个十六进制字符 + 结尾 '\0'
 typedef void *(*chr_func)(const void *, int32_t, size_t);   //字符查找函数类型（类似 memchr）
 typedef int32_t(*cmp_func)(const void *, const void *, size_t); //内存比较函数类型（类似 memcmp）
 
@@ -182,6 +183,22 @@ static inline uint64_t hash_u64(uint64_t x) {
 /// <returns>void * 字符出现的指针, NULL无</returns>
 void *memichr(const void *ptr, int32_t val, size_t maxlen);
 /// <summary>
+/// 按 ncs 选大小写敏感(0)或不敏感的查找/比较组合。凡按 ncs 分流的搜索入口都用它,
+/// 别各自写 if/else —— 分支写反只表现为搜索结果多一条或少一条, 不会崩, 极难发现
+/// </summary>
+/// <param name="ncs">0 区分大小写, 非 0 不区分</param>
+/// <param name="chr">回填查找函数</param>
+/// <param name="cmp">回填比较函数</param>
+static inline void mem_funcs_pick(int32_t ncs, chr_func *chr, cmp_func *cmp) {
+    if (0 == ncs) {
+        *chr = memchr;
+        *cmp = memcmp;
+    } else {
+        *chr = memichr;
+        *cmp = _memicmp;
+    }
+}
+/// <summary>
 /// 安全填充定长字符串缓冲：src 为 NULL 时 dst 写空串；成功时保证 dst 以 '\0' 结尾。
 /// 装不下（strlen(src) >= dstsz）时 dst 一个字节都不写、保持原样，返回 ERR_FAILED——
 /// 截断后的值拿去用往往是静默出错，调用方从 dst 上看不出发生过什么。
@@ -308,7 +325,6 @@ int32_t randrange(int32_t min, int32_t max);
 /// <param name="len">随机字符数</param>
 /// <returns>char *</returns>
 char *randstr(char *buf, size_t len);
-#define HEX_ENSIZE(s) ((s) * 2 + 1)
 /// <summary>
 /// 转16进制
 /// </summary>

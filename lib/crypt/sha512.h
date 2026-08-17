@@ -4,6 +4,7 @@
 #include "base/macro.h"
 
 #define SHA512_BLOCK_SIZE 64 // SHA-512 摘要输出长度（字节）
+#define SHA512_KEY_BLOCK 128 // SHA-512 压缩分组长度 B（HMAC 的 ipad/opad 长度）
 
 typedef struct sha512_ctx {
     uint64_t state[8];    // 摘要状态（a~h 八个 64 位字）

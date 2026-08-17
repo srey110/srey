@@ -1,26 +1,18 @@
 ﻿#include "crypt/hmac.h"
 #include "utils/utils.h"
 
-/* RFC 2104：ipad/opad 长度等于压缩函数输入块大小 B，不是摘要输出长度。
- * SHA-1/SHA-256 的 B = 64，SHA-512 的 B = 128。
+/* RFC 2104：ipad/opad 长度等于压缩函数输入块大小 B，不是摘要输出长度。B 由 digest_init
+ * 一并写进 digest_ctx.key_block —— 算法属性只留一张表，新增算法漏填会被那里的 default 断言挡住。
  * HMAC_MAX_KEY_LENS 取所有支持算法中最大的 B，用于栈缓冲区声明。 */
 #define HMAC_MAX_KEY_LENS 128
 
-static size_t _hmac_key_block(digest_type dtype) {
-    if (DG_SHA512 == dtype) {
-        return 128;
-    }
-    if (DG_MD2 == dtype) {
-        return 16;
-    }
-    return 64;
-}
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens) {
     digest_init(&hmac->inside, dtype);
     digest_init(&hmac->outside, dtype);
     digest_init(&hmac->inside_init, dtype);
     digest_init(&hmac->outside_init, dtype);
-    size_t key_block = _hmac_key_block(dtype);
+    size_t key_block = hmac->inside.key_block;
+    ASSERTAB(key_block <= HMAC_MAX_KEY_LENS, "key block exceeds stack buffer.");
     char *key_used;
     char key_temp[DG_BLOCK_SIZE], block_ipad[HMAC_MAX_KEY_LENS], block_opad[HMAC_MAX_KEY_LENS];
     if (key_block == klens) {
@@ -68,7 +60,11 @@ size_t hmac_final(hmac_ctx *hmac, char *hash) {
     hmac_reset(hmac);
     return lens;
 }
+// 按当前引擎的实际 ctx 大小拷，不按联合体整份：PBKDF2 每轮要拷两次，多拷的部分随迭代次数放大
 void hmac_reset(hmac_ctx *hmac) {
-    memcpy(&hmac->inside.eng_ctx, &hmac->inside_init.eng_ctx, sizeof(hmac->inside_init.eng_ctx));
-    memcpy(&hmac->outside.eng_ctx, &hmac->outside_init.eng_ctx, sizeof(hmac->outside_init.eng_ctx));
+    ASSERTAB(hmac->inside_init.eng_lens <= sizeof(hmac->inside_init.eng_ctx)
+             && hmac->outside_init.eng_lens <= sizeof(hmac->outside_init.eng_ctx),
+             "hmac not initialized.");
+    memcpy(&hmac->inside.eng_ctx, &hmac->inside_init.eng_ctx, hmac->inside_init.eng_lens);
+    memcpy(&hmac->outside.eng_ctx, &hmac->outside_init.eng_ctx, hmac->outside_init.eng_lens);
 }

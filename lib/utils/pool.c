@@ -17,7 +17,7 @@ static void _pool_safe_nelfree(pool_ctx *pool, uint32_t nfree) {
     void *elems[POOL_NELFREE];
     while (remain > 0 && pool_size(pool) > pool->nkeep) {
         npop = remain > POOL_NELFREE ? POOL_NELFREE : remain;
-        n = fsqu_pop_batch((fsqu_ctx *)pool->cur_qu, elems, npop);
+        n = fsqu_pop_batch(&pool->qu.safe_qu, elems, npop);
         for (i = 0; i < n; i++) {
             _pool_elfree(pool, elems[i]);
         }
@@ -56,7 +56,7 @@ static void _pool_normal_qufree(void *qu) {
 static void _pool_normal_nelfree(pool_ctx *pool, uint32_t nfree) {
     void **elem;
     for (uint32_t i = 0; i < nfree; i++) {
-        elem = queue_pop((queue_ctx *)pool->cur_qu);
+        elem = queue_pop(&pool->qu.normal_qu);
         if (NULL == elem) {
             break;
         }
@@ -80,7 +80,6 @@ void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
         pool->elcbs = *elcbs;
     }
     if (thsafe) {
-        pool->cur_qu = &pool->qu.safe_qu;
         pool->_qu_trypush = _pool_safe_trypush;
         pool->_qu_pop = _pool_safe_pop;
         pool->_qu_free = _pool_safe_qufree;
@@ -89,7 +88,6 @@ void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
         pool->_qu_capacity = _pool_safe_capacity;
         fsqu_init(&pool->qu.safe_qu, sizeof(void *), capacity);
     } else {
-        pool->cur_qu = &pool->qu.normal_qu;
         pool->_qu_trypush = _pool_normal_trypush;
         pool->_qu_pop = _pool_normal_pop;
         pool->_qu_free = _pool_normal_qufree;
@@ -101,8 +99,8 @@ void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
 }
 void pool_free(pool_ctx *pool) {
     void *data = NULL;
-    while (ERR_OK == pool->_qu_pop(pool->cur_qu, &data)) {
+    while (ERR_OK == pool->_qu_pop(&pool->qu, &data)) {
         _pool_elfree(pool, data);
     }
-    pool->_qu_free(pool->cur_qu);
+    pool->_qu_free(&pool->qu);
 }

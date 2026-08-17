@@ -479,7 +479,7 @@ bool hashmap_scan(struct hashmap *map,
         if (bucket->dib) {
             bool go = iter(bucket_item(bucket), udata);
             if (ver != map->version) {
-                fprintf(stderr, "hashmap modified during scan, scan aborted.");
+                fprintf(stderr, "hashmap modified during scan, scan aborted.\n");
                 return false;
             }
             if (!go) {
@@ -504,6 +504,12 @@ bool hashmap_scan(struct hashmap *map,
 // the buckets are rearranged and the iterator must be reset to 0, otherwise
 // unexpected results may be returned after deletion.
 //
+// 32 位构建(mk.sh m32)不检测迭代失效: 下面那套版本游标把版本号塞在 size_t 的高 32 位,
+// 32 位下没有高位可用。遍历中删元素在 64 位上返 false 中止, 在 32 位上则是未定义行为
+// (收缩 resize 后读已释放的桶数组)。
+// in-tree 只读遍历的有 path_trie x2 / coro x2, 另经 hashset_iter 对外重导出;
+// 唯一在遍历中删元素的是 router 的 _router_st_drain, 它每轮把游标重置回 0 才安全
+//
 // This function has not been tested for thread safety.
 //
 // The function returns true if an item was retrieved; false if the end of the
@@ -514,7 +520,7 @@ bool hashmap_iter(struct hashmap *map, size_t *i, void **item) {
     if (*i == 0) {
         *i = (size_t)ver << 32;
     } else if ((uint32_t)(*i >> 32) != ver) {
-        fprintf(stderr, "hashmap modified during iteration, iterator invalidated.");
+        fprintf(stderr, "hashmap modified during iteration, iterator invalidated.\n");
         return false;
     }
     size_t idx = (uint32_t)*i;
@@ -628,8 +634,13 @@ static uint64_t SIP64(const uint8_t *in, const size_t inlen, uint64_t seed0,
 // len >= 2^31 会让 nblocks 变负、tail 落到 buffer 下方约 2GB 处并被 switch 照读。
 // 末尾混长度仍按 x86_128 参考实现只取低 32 位,故所有 len < 2^31 的哈希值逐位不变
 static uint64_t MM86128(const void *key, const size_t len, uint32_t seed) {
-#define	ROTL32(x, r) ((x << r) | (x >> (32 - r)))
-#define FMIX32(h) h^=h>>16; h*=0x85ebca6b; h^=h>>13; h*=0xc2b2ae35; h^=h>>16;
+// r 必须为非零常量:r == 0 会展开出 x >> 32,uint32_t 移满位宽是 UB
+#define	ROTL32(x, r) (((x) << (r)) | ((x) >> (32 - (r))))
+#define FMIX32(h) do { \
+    (h) ^= (h) >> 16; (h) *= 0x85ebca6b; \
+    (h) ^= (h) >> 13; (h) *= 0xc2b2ae35; \
+    (h) ^= (h) >> 16; \
+} while (0)
     const uint8_t * data = (const uint8_t*)key;
     const size_t nblocks = len / 16;
     uint32_t h1 = seed;

@@ -15,6 +15,14 @@ static _locale_t g_numeric_c;
 static locale_t g_numeric_c;
 #endif
 
+#if defined(OS_WIN)
+// 只有 _now_usec 用;这三条在 macOS/Linux 上从不编译, 改了没有本机回归网兜着
+#define U64_LITERAL(n) n##ui64
+#define EPOCH_BIAS U64_LITERAL(116444736000000000) //Windows FILETIME 纪元与 Unix 纪元的差值（100ns 单位）
+#define UNITS_PER_USEC U64_LITERAL(10)//每微秒的 100ns 单位数
+#endif
+// tchar 集合见 RFC 7230 §3.2.6：字母数字加这 15 个符号，其余一概不是
+#define TCHAR_PUNCT "!#$%&'*+-.^_`|~"
 #define _FMT_STACK_SIZE 512
 #define _MC ((1 << CHAR_BIT) - 1) //字节掩码（0xff），用于逐字节提取整数
 static void *_ud;//信号处理回调的用户数据
@@ -421,13 +429,6 @@ int32_t timeoffset(void) {
 #endif
     return ((int32_t)(now - gt) + (loc_tm.tm_isdst ? 3600 : 0)) / 60;
 }
-#if defined(OS_WIN)
-// 提到文件作用域:_now_usec 与 timeofday 都要用,定义在其中之一的函数体内会让另一个
-// 只因排在下方才编得过,而 Windows 分支在 macOS/Linux 上从不编译,挪动顺序即静默打断
-#define U64_LITERAL(n) n##ui64
-#define EPOCH_BIAS U64_LITERAL(116444736000000000) //Windows FILETIME 纪元与 Unix 纪元的差值（100ns 单位）
-#define UNITS_PER_USEC U64_LITERAL(10)//每微秒的 100ns 单位数
-#endif
 // Unix 纪元起的微秒数,全程 64 位。timeofday 反过来由它推导:Windows 的 struct timeval.tv_sec
 // 是 32 位 long(LLP64),2038-01-19 后回绕为负,再转 uint64 会符号扩展成约 1.8e19
 static uint64_t _now_usec(void) {
@@ -456,26 +457,32 @@ void timeofday(struct timeval *tv) {
     tv->tv_sec = (long)(us / 1000000);
     tv->tv_usec = (long)(us % 1000000);
 }
-int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]) {
+// 秒级格式化, 成功时回填写入长度供调用方接着写后缀; 两处失败都把 time 置空串
+static int32_t _sectostr_lens(uint64_t sec, const char *fmt, char time[TIME_LENS], size_t *lens) {
     time_t t = (time_t)sec;
     struct tm loc_tm;
-    LOCALTIME(&t, &loc_tm);
-    if (0 == strftime(time, TIME_LENS - 1, fmt, &loc_tm)) {
+    // 失败时 loc_tm 未必被写过,交给 strftime 就是拿不定的 tm_wday/tm_mon 去索引 libc 的静态名表
+    if (0 != LOCALTIME(&t, &loc_tm)) {
+        time[0] = '\0';
+        return ERR_FAILED;
+    }
+    *lens = strftime(time, TIME_LENS - 1, fmt, &loc_tm);
+    if (0 == *lens) {
         time[0] = '\0';
         return ERR_FAILED;
     }
     return ERR_OK;
 }
+int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]) {
+    size_t lens;
+    return _sectostr_lens(sec, fmt, time, &lens);
+}
 int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
-    time_t t = (time_t)(ms / 1000);
-    struct tm loc_tm;
-    LOCALTIME(&t, &loc_tm);
-    size_t uilen = strftime(time, TIME_LENS - 1, fmt, &loc_tm);
-    if (0 == uilen) {
-        time[0] = '\0';
+    size_t lens;
+    if (ERR_OK != _sectostr_lens(ms / 1000, fmt, time, &lens)) {
         return ERR_FAILED;
     }
-    SNPRINTF(time + uilen, TIME_LENS - uilen, " %03d", (int32_t)(ms % 1000));
+    SNPRINTF(time + lens, TIME_LENS - lens, " %03d", (int32_t)(ms % 1000));
     return ERR_OK;
 }
 uint64_t strtots(const char *time, const char *fmt) {
@@ -591,13 +598,7 @@ void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_
     }
     chr_func chr;
     cmp_func cmp;
-    if (0 == ncs) {
-        chr = memchr;
-        cmp = memcmp;
-    } else {
-        chr = memichr;
-        cmp = _memicmp;
-    }
+    mem_funcs_pick(ncs, &chr, &cmp);
     char *pos;
     char *wt = (char *)what;
     char *cur = (char *)ptr;
@@ -647,8 +648,6 @@ char *trim(char *data, size_t dlens, size_t *lens) {
     }
     return trim_right(cur, n, lens);
 }
-// tchar 集合见 RFC 7230 §3.2.6：字母数字加这 15 个符号，其余一概不是
-#define TCHAR_PUNCT "!#$%&'*+-.^_`|~"
 int32_t is_token(const char *data, size_t lens) {
     unsigned char c;
     size_t i;

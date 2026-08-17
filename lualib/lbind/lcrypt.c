@@ -355,6 +355,11 @@ static int32_t _lcrypt_cipher_new(lua_State *lua) {
     const char *key = luaL_checklstring(lua, 3, &lens);
     int32_t keybits = (int32_t)luaL_checkinteger(lua, 4);
     int32_t encrypt = (int32_t)luaL_checkinteger(lua, 5);
+    luaL_argcheck(lua, engine >= DES && engine <= AES, 1, "invalid cipher engine");
+    luaL_argcheck(lua, model >= ECB && model <= CTR, 2, "invalid cipher model");
+    // keybits 只有 AES 用得上,DES/DES3 忽略该形参;越界会打到 aes_init 的 ASSERTAB 上整进程 abort
+    luaL_argcheck(lua, AES != engine || 128 == keybits || 192 == keybits || 256 == keybits,
+                  4, "invalid aes key bits");
     cipher_ctx *cipher = lua_newuserdata(lua, sizeof(cipher_ctx));
     cipher_init(cipher, engine, model, key, lens, keybits, encrypt);
     ASSOC_MTABLE(lua, MT_CIPHER);

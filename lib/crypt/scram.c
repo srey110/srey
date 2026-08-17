@@ -368,18 +368,12 @@ static char *_scram_client_first_message(scram_ctx *scram) {
     secure_zero(nonce, sizeof(nonce));
     return buf;
 }
-// 剥离 client-first-message 的 GS2 头，返回 client-first-message-bare 的起始偏移，非法返回 0。
-// 头格式 gs2-header = gs2-cbind-flag "," [authzid] ","(RFC 5802 §5)，flag 为 "n" / "y" / "p=<cb-name>"。
-// 长度必须按实际内容定位而不能按本端配置推算：客户端合法地可以发来与本端不同的 flag，
-// 按固定长度硬切会把 bare 切错位置却仍报成功，AuthMessage 随之算错、握手在证明校验处才失败。
-// flag 取舍按变体分流:
-//   非 PLUS 端只接受 "n"(客户端不支持 cb)与 "y"(客户端认为本端不支持);"p=" 请求的 cb 本端算不出来
-//   PLUS 端只接受本端支持的那一种 cb-name。收到 "y" 意味着有人在中间抹掉了本端的 PLUS 通告,
-//   即降级攻击,RFC 5802 §6 要求 fail;收到 "n" 则是选了 -PLUS 机制却不请求 cb,属协议违规
-// 严格比对 cb-name 还顺带堵住一条隐患:_scram_attr_value 是在整条消息上搜 "n=" / "r=" 的,
-// 若放行任意 cb-name,一个内含 "n=" 的 cb-name 就能骗过用户名提取
-// authzid 必须为空:本实现没有 authorization identity 支持,静默忽略等于以与客户端所要求不同的
-// 身份完成认证,比拒绝危险,所以要求第二个逗号紧跟第一个
+// 剥离 client-first-message 的 GS2 头，返回 bare 部分的起始偏移，非法返回 0。
+// 头格式 gs2-cbind-flag "," [authzid] ","(RFC 5802 §5)。必须按实际内容定位而非按本端配置推算，
+// 否则客户端发来不同 flag 时 bare 会被切错位置却仍报成功。
+// 非 PLUS 端收 "n"/"y"，PLUS 端只收本端支持的那个 "p=<cb-name>"。三条拒绝均为安全判定不可放宽：
+// PLUS 端收 "y" 是降级攻击(RFC 5802 §6 要求 fail)；cb-name 须严格比对，含 "n=" 的能骗过
+// _scram_attr_value 的用户名提取；authzid 须为空，静默忽略等于换个身份完成认证
 static size_t _scram_gs2_header_lens(scram_ctx *scram, const char *msg, size_t mlens) {
     const char *c1 = memchr(msg, ',', mlens);
     if (NULL == c1) {
@@ -461,6 +455,17 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
 // 服务端生成第一条消息（格式：r=<client_nonce+server_nonce>,s=<salt_base64>,i=<iter>）
 static char *_scram_server_first_message(scram_ctx *scram) {
     if (SCRAM_REMOTE_FIRST != scram->status) {
+        return NULL;
+    }
+    // 漏调 set_salt / set_iter 时会发出 "s=,i=0" 并让 PBKDF2 退化成无盐单轮。
+    // 与 pwd、PLUS cbind 那两道守卫同形:配置缺失一律硬失败,不静默降级
+    if (NULL == scram->salt
+        || scram->saltlen <= 0) {
+        LOG_WARN("scram salt not set.");
+        return NULL;
+    }
+    if (scram->iter < SCRAM_MIN_ITER) {
+        LOG_WARN("scram iteration count not set.");
         return NULL;
     }
     char nonce[SCRAM_NONCE_LEN];

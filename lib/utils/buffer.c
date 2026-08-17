@@ -277,13 +277,10 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     }
     return index;
 }
-// 清掉 _buffer_expand 经 RECOED_IOV 打在节点上的 used 标记, 起点与"填充"循环一致
-// (跳过零空间首节点之后的 first), 两边清的是同一批节点。
-// 校验失败的早退路径必须调它: 那些节点只在"填充"循环里才会解锁, 直接 return 会让它们
-// 永远停在 used=1 —— buffer_drain / 节点回收都跳过 used 非零的节点, 等于这块内存再不释放。
-// 别指望调用方那句 ASSERTAB(lens == _buffer_commit_expand(...)) 兜底: 它比的是 lens 不是 0,
-// 而 buffer_from_sock 每次 EAGAIN/EOF 传进来的 readed 就是 0, 那时 0 == 0 静默通过,
-// 一次返回 0 会把 pin 原样漏掉且不 abort
+// 清掉 _buffer_expand 经 RECOED_IOV 打在节点上的 used 标记, 起点与"填充"循环一致。
+// 校验失败的早退路径必须调它: 那些节点只在"填充"循环里才解锁, 直接 return 会让它们停在
+// used=1, 而 buffer_drain 与节点回收都跳过 used 非零的节点, 等于这块内存再不释放。
+// 调用方那句 ASSERTAB(lens == _buffer_commit_expand(...)) 兜不住: readed 为 0 时 0 == 0 静默通过
 static void _buffer_unpin(bufnode_ctx **first, const uint32_t cnt) {
     bufnode_ctx **cur = first;
     for (uint32_t i = 0; i < cnt && NULL != *cur; ++i) {
@@ -429,6 +426,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
      * _buffer_align 将已有数据前移（misalign→0），使空闲区连续，再做单次 memcpy，
      * 避免进入 _buffer_expand 的跨节点分散写流程。 */
     if (NULL != tail
+        && 0 != tail->off
         && 0 == tail->used
         && tail->misalign > 0
         && _buffer_should_realign(tail, lens)) {
@@ -445,7 +443,9 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
     size_t i, off = 0;
     uint32_t num = _buffer_expand(ctx, lens, iov, MAX_EXPAND_NIOV);
     for (i = 0; i < num && remain > 0; i++) {
-        if ((IOV_LEN_TYPE)remain >= iov[i].IOV_LEN_FIELD) {
+        // 比较放在 size_t 域内做:Windows 的 IOV_LEN_TYPE 是 32 位 ULONG,
+        // 把 remain 窄化过去会在 lens > 4GiB 时截断成小值,进而按完整 remain 越界 memcpy
+        if (remain >= (size_t)iov[i].IOV_LEN_FIELD) {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, iov[i].IOV_LEN_FIELD);
             off += iov[i].IOV_LEN_FIELD;
             remain -= iov[i].IOV_LEN_FIELD;
@@ -673,13 +673,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     }
     chr_func chr;
     cmp_func cmp;
-    if (0 == ncs) {
-        chr = memchr;
-        cmp = memcmp;
-    } else {
-        chr = memichr;
-        cmp = _memicmp;
-    }
+    mem_funcs_pick(ncs, &chr, &cmp);
     //查找开始位置所在节点
     size_t totaloff = 0;
     bufnode_ctx *node = _buffer_search_start_cached(ctx, start, &totaloff);

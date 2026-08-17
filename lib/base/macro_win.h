@@ -47,7 +47,8 @@
 #define SHUT_RDWR SD_BOTH          // 关闭双向
 #define SOCK_CLOSE closesocket     // 关闭 socket
 #define SET_CLOEXEC(fd) (void)SetHandleInformation((HANDLE)(fd), HANDLE_FLAG_INHERIT, 0) // 标记句柄不被子进程继承
-#define LOCALTIME(ts, dt) localtime_s((dt), (ts)) // 线程安全的本地时间转换
+// 线程安全的本地时间转换；返回 0 成功、非 0 失败。调用方必须判返回值再用 dt
+#define LOCALTIME(ts, dt) localtime_s((dt), (ts))
 #define ERRNO GetLastError()       // 获取上一个 Windows 错误码
 // 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）
 static inline const char *_fmterror(DWORD error) {

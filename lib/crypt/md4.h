@@ -4,6 +4,7 @@
 #include "base/macro.h"
 
 #define MD4_BLOCK_SIZE 16 // MD4 摘要输出长度（字节）
+#define MD4_KEY_BLOCK 64 // MD4 压缩分组长度 B（HMAC 的 ipad/opad 长度）
 
 typedef struct md4_ctx {
     uint32_t state[4];  // 摘要状态（A、B、C、D 四个字）

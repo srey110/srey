@@ -47,6 +47,16 @@ void array_del(array_ctx *arr, int32_t pos);
 /// <param name="pos1">位置 1，[0, size)；负数表示从尾部反向索引</param>
 /// <param name="pos2">位置 2，[0, size)；负数表示从尾部反向索引</param>
 void array_swap(array_ctx *arr, int32_t pos1, int32_t pos2);
+// 负下标归一(-1 即末元素)并校验范围, 返回归一后的下标。
+// inclusive 非 0 时允许等于 size —— 那是 array_add 的插入位, 其余入口一律要求 < size
+static inline uint32_t _array_norm_pos(const array_ctx *arr, int32_t pos, int32_t inclusive) {
+    if (pos < 0) {
+        pos += (int32_t)arr->size;
+    }
+    uint32_t lim = (0 != inclusive) ? arr->size + 1 : arr->size;
+    ASSERTAB(pos >= 0 && (uint32_t)pos < lim, "array pos out of range.");
+    return (uint32_t)pos;
+}
 /// <summary>
 /// 当前元素数量
 /// </summary>
@@ -77,11 +87,8 @@ static inline void array_clear(array_ctx *arr) {
 /// <param name="pos">索引；负数表示从尾部反向索引</param>
 /// <returns>指向元素的指针（可隐式转 T *）</returns>
 static inline void *array_at(array_ctx *arr, int32_t pos) {
-    if (pos < 0) {
-        pos += (int32_t)arr->size;
-    }
-    ASSERTAB(pos >= 0 && (uint32_t)pos < arr->size, "array pos error.");
-    return (char *)arr->ptr + (size_t)pos * arr->elsize;
+    uint32_t p = _array_norm_pos(arr, pos, 0);
+    return (char *)arr->ptr + (size_t)p * arr->elsize;
 }
 /// <summary>
 /// 首元素指针
@@ -130,13 +137,10 @@ static inline void *array_pop_back(array_ctx *arr) {
 /// <param name="arr">array_ctx</param>
 /// <param name="pos">删除位置，[0, size)；负数表示从尾部反向索引</param>
 static inline void array_del_nomove(array_ctx *arr, int32_t pos) {
-    if (pos < 0) {
-        pos += (int32_t)arr->size;
-    }
-    ASSERTAB(pos >= 0 && (uint32_t)pos < arr->size, "pos error.");
+    uint32_t p = _array_norm_pos(arr, pos, 0);
     arr->size--;
-    if ((uint32_t)pos < arr->size) {
-        memcpy((char *)arr->ptr + (size_t)pos * arr->elsize,
+    if (p < arr->size) {
+        memcpy((char *)arr->ptr + (size_t)p * arr->elsize,
                (char *)arr->ptr + (size_t)arr->size * arr->elsize, arr->elsize);
     }
 }

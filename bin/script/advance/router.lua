@@ -263,7 +263,6 @@ function Router.new()
         _mw_reg    = {},    -- 具名中间件注册表：name → fun，由 :define() 写入
         _stack     = {},    -- 分组上下文栈，group() 进入时压栈、退出时弹栈
         _mw_version = 0,    -- 全局中间件版本号，use() 追加时自增，route chain 缓存据此失效重建
-        _has_stream = false, -- 注册过流式路由；没有就不必为一个 411 先建记录再解 URL 扫全表
         -- 正在接收的流式请求：[fd] = {skid, route, ctx}。只按 fd 索引、把 skid 存进记录里比对，
         -- 省掉每帧一个 "fd:skid" 字符串键；fd 被新连接复用时 skid 对不上，当没有记录处理
         _streams   = {},
@@ -382,11 +381,7 @@ end
 
 -- 流式路由注册
 function Router:_add_stream(method, path, on_chunk, extra_mws)
-    local entry = self:_add_common(method, path, nil, on_chunk, extra_mws)
-    if _bad_entry ~= entry then
-        self._has_stream = true
-    end
-    return entry
+    return self:_add_common(method, path, nil, on_chunk, extra_mws)
 end
 
 -- 拼执行链（全局中间件 → 路由级 → 末位）并缓存到 route：末位普通路由是 handler，
@@ -637,10 +632,8 @@ function Router:net_recv(pktype, fd, skid, client, slice, data, size)
         return self:dispatch(fd, skid, data, client)
     end
     if SLICE_TYPE.START == slice then
-        -- 一条流式路由都没注册时结局必然是 411，不值得为它先建记录再解 URL 扫全表
-        if not self._has_stream then
-            return _reject_chunked(fd, skid)
-        end
+        -- 一条流式路由都没注册也照样走 _st_begin：匹配不上得回 404/400/405，
+        -- 与一次到齐的同一请求同码。411 只表示"路由在，但它接不住 chunked"（对齐 C 侧）
         return self:_st_begin(fd, skid, data, client)
     end
     return self:_st_feed(fd, skid, data, slice)

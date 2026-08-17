@@ -4,6 +4,7 @@
 #include "base/macro.h"
 
 #define SHA1_BLOCK_SIZE 20 // SHA-1 摘要输出长度（字节）
+#define SHA1_KEY_BLOCK 64 // SHA-1 压缩分组长度 B（HMAC 的 ipad/opad 长度）
 
 typedef struct {
     uint32_t datalen;   // 当前缓冲区中的字节数

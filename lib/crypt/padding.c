@@ -1,14 +1,21 @@
 ﻿#include "crypt/padding.h"
 #include "utils/utils.h"
 
-void _padding_data(padding_model padding, const void *data, size_t dlens, uint8_t *output, size_t reqlens) {
-    if (dlens >= reqlens) {
-        if (NULL != data && dlens > 0 && dlens == reqlens) {
+int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uint8_t *output, size_t reqlens) {
+    if (dlens > reqlens) {
+        return ERR_FAILED;// 装不下,output 一个字节都没写,调用方不能当它有内容
+    }
+    if (dlens > 0
+        && NULL == data) {
+        return ERR_FAILED;
+    }
+    if (dlens == reqlens) {
+        if (dlens > 0) {
             memcpy(output, data, dlens);
         }
-        return;
+        return ERR_OK;
     }
-    if (NULL != data && dlens > 0) {
+    if (dlens > 0) {
         memcpy(output, data, dlens);
         output += dlens;
     }
@@ -31,6 +38,7 @@ void _padding_data(padding_model padding, const void *data, size_t dlens, uint8_
         output[remain - 1] = (uint8_t)remain;
         break;
     }
+    return ERR_OK;
 }
 uint8_t *_padding_key(const char *key, size_t klens, uint8_t *pdkey, size_t reqlens) {
     if (klens < reqlens) {

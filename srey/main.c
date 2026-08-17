@@ -4,6 +4,38 @@
 #include "lbind/lbytecache.h"
 #endif
 
+#ifdef OS_WIN
+    //#include "vld.h"
+    #pragma comment(lib, "ws2_32.lib")
+    #pragma comment(lib, "winmm.lib")
+    #pragma comment(lib, "lib.lib")
+#if WITH_SSL
+    #ifdef ARCH_X64
+        #pragma comment(lib, "libcrypto_x64.lib")
+        #pragma comment(lib, "libssl_x64.lib")
+    #else
+        #pragma comment(lib, "libcrypto.lib")
+        #pragma comment(lib, "libssl.lib")
+    #endif
+#endif
+#if WITH_LUA
+    #pragma comment(lib, "lualib.lib")
+#endif
+// 下面两个 typedef 用到的 SC_HANDLE / WINADVAPI 出自 winsvc.h, 由 os.h 的 <Windows.h> 带入
+#define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
+#define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
+typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID); // ChangeServiceConfig2A 函数指针类型
+typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型
+
+// 三个都定义在本文件下方; 两张回调表挪到文件头后必须先声明, 否则是引用未声明标识符
+static int32_t _wsv_initbasic(void);
+static int32_t service_init(void);
+static int32_t service_exit(void);
+static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
+static _wsv_cb exitcbs[] = { service_exit, NULL };
+static SERVICE_STATUS_HANDLE psvstatus;
+static SERVICE_STATUS svstatus;
+#endif//OS_WIN
 static int32_t _log_use_file = 1; //是否将日志写文件
 static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准输出
 static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
@@ -240,32 +272,6 @@ static int32_t service_hug(int32_t ready_fd) {
     return rtn;
 }
 #ifdef OS_WIN
-    //#include "vld.h"
-    #pragma comment(lib, "ws2_32.lib")
-    #pragma comment(lib, "winmm.lib")
-    #pragma comment(lib, "lib.lib")
-#if WITH_SSL
-    #ifdef ARCH_X64
-        #pragma comment(lib, "libcrypto_x64.lib")
-        #pragma comment(lib, "libssl_x64.lib")
-    #else
-        #pragma comment(lib, "libcrypto.lib")
-        #pragma comment(lib, "libssl.lib")
-    #endif
-#endif
-#if WITH_LUA
-    #pragma comment(lib, "lualib.lib")
-#endif
-#define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
-#define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
-
-typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID); // ChangeServiceConfig2A 函数指针类型
-typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型
-static int32_t _wsv_initbasic(void);
-static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
-static _wsv_cb exitcbs[] = { service_exit, NULL };
-static SERVICE_STATUS_HANDLE psvstatus;
-static SERVICE_STATUS svstatus;
 
 // 全局异常过滤器：捕获未处理异常，避免系统弹出崩溃对话框
 static long _wsv_exception(struct _EXCEPTION_POINTERS *exp) {

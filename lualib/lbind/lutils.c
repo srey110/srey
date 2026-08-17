@@ -336,7 +336,7 @@ static int32_t _lpopen_new(lua_State *lua) {
     const char *cmd = luaL_checkstring(lua, 1);
     const char *mode = luaL_checkstring(lua, 2);
     popen_ctx *ctx = lua_newuserdata(lua, sizeof(popen_ctx));
-    // 提前绑 metatable,失败时 lua_pop 弹引用后 GC 走 _lpopen_gc → popen_close + popen_free 兜底
+    // 提前绑 metatable,失败时 lua_pop 弹引用后 GC 走 _lpopen_gc → popen_free 兜底
     ASSOC_MTABLE(lua, MT_POPEN);
     if (ERR_OK != popen_startup(ctx, cmd, mode)) {
         lua_pop(lua, 1);
@@ -426,10 +426,9 @@ static int32_t _lpopen_close(lua_State *lua) {
     popen_close(ctx);
     return 0;
 }
-// __gc：先 close 防止 zombie 子进程，再 free 释放管道/句柄
+// __gc：popen_free 内部对没 close 过的 ctx 会自己收尾，这里不必再显式 close
 static int32_t _lpopen_gc(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
-    popen_close(ctx);
     popen_free(ctx);
     return 0;
 }

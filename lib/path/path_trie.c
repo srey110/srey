@@ -305,6 +305,10 @@ int32_t path_insert(path_trie *t, const char *path, void *payload) {
     // payload 含通配模式时按 WILDCARD;不含通配的精确插入也允许,这里按"有什么校什么"用 WILDCARD 兼容
     PATH_PREP_SEGS(t, path, PATH_KIND_WILDCARD, ERR_FAILED);
     path_node *target = _path_walk(t, segs, n, 1);
+    // 同一份 payload 重复注册视为幂等:不能走下面的释放分支,否则释放完又把这个指针存回去
+    if (target->payload == payload) {
+        return ERR_OK;
+    }
     if (NULL != target->payload) {
         if (NULL != t->_free) {
             t->_free(target->payload);

@@ -1,5 +1,8 @@
 ﻿#include "serial/bson.h"
 
+// bson_cat / 迭代器 / bson_check_depth 三处校验严在不同的轴上, 别拿一处的宽松当漏检去补齐。
+// 最易踩: 提前出现 EOD 后还剩没用掉的字节, 迭代器当遍历正常结束静默忽略, 只有 bson_check_depth 拒
+
 #define BSON_APPEND_CSTRING(str) binary_set_string(&bson->doc, str)
 #define BSON_APPEND_KEY(type) \
     binary_set_int8(&bson->doc, (int8_t)type);\
@@ -83,8 +86,16 @@ int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens) {
     if ((size_t)doclens > lens) {
         return ERR_FAILED;
     }
-    if (doclens <= 5) {
-        return ERR_OK;
+    // 声明长度 0~4 结构上不可能(最短的空文档是 4 字节长度 + EOD = 5),不是 no-op 而是畸形
+    if (doclens < 5) {
+        return ERR_FAILED;
+    }
+    // 下面按"最后一字节是 EOD"把它砍掉,那就得先确认它真是 EOD;否则非 BSON 输入会被静默拼进来
+    if (0 != doc[doclens - 1]) {
+        return ERR_FAILED;
+    }
+    if (5 == doclens) {
+        return ERR_OK;// 空文档,没有字段可拼
     }
     if (PACK_TOO_LONG(doclens)) {
         return ERR_FAILED;
@@ -237,16 +248,24 @@ void bson_iter_reset(bson_iter *iter) {
 int32_t bson_iter_error(const bson_iter *iter) {
     return iter->err;
 }
-static int32_t _bson_iter_read_key(bson_iter *iter) {
+// 从当前 offset 起在 doclens 边界内定位一个 NUL 结尾的 C 串;找到返 1 并回填 out/lens
+// (不推进 offset,两个出参都可传 NULL),找不到返 0。key 与 regex 的两个 cstring 共用这一份边界判定
+static int32_t _bson_iter_cstring(bson_iter *iter, const char **out, uint32_t *lens) {
     const char *start = iter->doc->data + iter->doc->offset;
     size_t avail = iter->doclens > iter->doc->offset ? iter->doclens - iter->doc->offset : 0;
     const char *nul = memchr(start, '\0', avail);
     if (NULL == nul) {
+        return 0;
+    }
+    SET_PTR(out, start);
+    SET_PTR(lens, (uint32_t)(nul - start));
+    return 1;
+}
+static int32_t _bson_iter_read_key(bson_iter *iter) {
+    if (0 == _bson_iter_cstring(iter, &iter->key, &iter->keylens)) {
         LOG_WARN("invalid bson key.");
         return 0;
     }
-    iter->key = start;
-    iter->keylens = (uint32_t)(nul - start);
     binary_offset(iter->doc, iter->doc->offset + iter->keylens + 1);
     return 1;
 }
@@ -365,7 +384,11 @@ int32_t bson_iter_next(bson_iter *iter) {
         }
         iter->lens = vlens;
         iter->subtype = (uint8_t)binary_get_int8(iter->doc);//adjust 的 +1 就是这个字节
-        iter->val = binary_get_binary(iter->doc, iter->lens);
+        // 零长 binary 合法,但 binary_get_binary 对 lens==0 返 NULL,会破坏"type 有效 ⟹ val 非 NULL";
+        // 指到当前偏移处,有无数据由 lens 表达
+        iter->val = (0 == iter->lens)
+            ? iter->doc->data + iter->doc->offset
+            : binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_OID://e_name (byte*12)
         if (ERR_OK != _bson_iter_fixed(iter, BSON_OID_LENS)) {
@@ -396,15 +419,13 @@ int32_t bson_iter_next(bson_iter *iter) {
             more = 0;
             break;
         }
-        if (iter->doc->offset >= iter->doclens
-            || NULL == memchr(iter->doc->data + iter->doc->offset, '\0', iter->doclens - iter->doc->offset)) {
+        if (0 == _bson_iter_cstring(iter, NULL, NULL)) {
             more = 0;
             LOG_WARN("invalid bson regex.");
             break;
         }
         iter->val = binary_get_string(iter->doc);
-        if (iter->doc->offset >= iter->doclens
-            || NULL == memchr(iter->doc->data + iter->doc->offset, '\0', iter->doclens - iter->doc->offset)) {
+        if (0 == _bson_iter_cstring(iter, NULL, NULL)) {
             more = 0;
             LOG_WARN("invalid bson regex.");
             break;
@@ -684,6 +705,11 @@ static int32_t _bson_check_depth(char *data, size_t lens, int32_t depth) {
     }
     // 循环退出有两种可能:读到 EOD 正常结束,或某个元素非法被拒。后者只检查了坏元素之前的前缀
     if (0 != bson_iter_error(&iter)) {
+        return ERR_FAILED;
+    }
+    // EOD 提前出现时 err 不置位(读到的确实是合法的 EOD),但声明长度还剩字节没用掉。
+    // 读完 EOD 后 offset 恰好推过它,合法文档必然等于 doclens
+    if (iter.doc->offset != iter.doclens) {
         return ERR_FAILED;
     }
     return ERR_OK;

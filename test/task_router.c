@@ -12,6 +12,8 @@ static atomic_t     _g_post_count = 0;
 // 计数器: 流式路由收到 ROUTER_STREAM_ABORT 时 +1, 客户端通过 GET /__aborts 读回验证
 static atomic_t     _g_abort_count = 0;
 static uint16_t     _g_port       = 0;
+// ABORT 回调里回调 router_closed 用; 不走 ctx->task->arg 是因为 router_free 那条路径上 task 正在拆
+static router_ctx  *_g_router     = NULL;
 
 // ── handlers ───────────────────────────────────────────────────────────────
 // 每个 handler 对应客户端一项断言 (见 _run_all);
@@ -291,6 +293,10 @@ static void _h_st_echo(router_req *ctx, uint8_t slice, void *data, size_t lens) 
             ctx->user = NULL;
         }
         ATOMIC_ADD(&_g_abort_count, 1);
+        // 契约要求这里调 router_closed 是安全的 no-op: 投 ABORT 前该流已从表里摘掉。
+        // 两条 ABORT 路径(连接断 / router_free)都得成立 —— router_free 若退回边遍历边回调,
+        // 这一行就会让同一条流二次 ABORT + 二次 FREE, ASan 构建下当场报 double-free
+        router_closed(_g_router, ctx->sk.fd, ctx->sk.skid);
         return;
     }
     if (PROT_SLICE_START & slice) {
@@ -378,6 +384,9 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/__stats",      _h_stats,       NULL, 0);
     router_get(r, NULL, "/__aborts",     _h_aborts,      NULL, 0);
     router_get(r, NULL, "/nobody",       _h_nobody,      NULL, 0);
+    // 只配 router_match_index 用的条目(两个回调都为 NULL)。混进派发是配置错误,
+    // 普通请求与 chunked 首帧都该给 500, 不能一个 500 一个 411
+    router_add_index(r, "POST", 4, "/index-only", 11);
     router_get(r, NULL, "/pmax/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}",          _h_pmax, NULL, 0);
     router_get(r, NULL, "/povf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17}",    _h_pmax, NULL, 0);
     router_get(r, NULL, "/poptovf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17?}", _h_pmax, NULL, 0);
@@ -413,8 +422,38 @@ static void _server_startup(task_ctx *task) {
 void task_router_server_start(loader_ctx *loader, const char *name, uint16_t port) {
     _g_port = port;
     router_ctx *router = router_new();
+    _g_router = router;
     task_ctx *task = task_new(loader, name, 0, NULL, _router_free, router);
     if (ERR_OK != task_register(task, _server_startup, NULL)) {
+        task_free(task);
+    }
+}
+
+// ── 第二个 server: 专压 _router_chunked_nostream 那条分支 ────────────────────
+// 上面那个 server 注册了流式路由, chunked 首帧一律走 _router_st_begin;
+// 这里一条流式路由都不注册, 才进得去无流式那条路
+static uint16_t _g_idx_port = 0;
+
+// POST /idx-plain → 普通路由, 用来验证同一 router 上非 index 条目收 chunked 仍是 411
+static void _h_idx_plain(router_req *ctx) {
+    router_req_text(ctx, 200, "plain", 5);
+}
+// 故意不注册流式路由, 也因此不需要 task_closed: 没有流就没有跨帧上下文要回收
+static void _idx_startup(task_ctx *task) {
+    router_ctx *r = (router_ctx *)task->arg;
+    task_recved(task, _server_net_recv);
+    router_post(r, NULL, "/idx-plain", _h_idx_plain, NULL, 0);
+    router_add_index(r, "POST", 4, "/idx-only", 9);
+    uint64_t id;
+    if (ERR_OK != task_listen(task, PACK_HTTP, NULL, "0.0.0.0", _g_idx_port, &id, 0)) {
+        LOG_WARN("task_router_index_server task_listen %d error.", _g_idx_port);
+    }
+}
+void task_router_index_server_start(loader_ctx *loader, const char *name, uint16_t port) {
+    _g_idx_port = port;
+    router_ctx *router = router_new();
+    task_ctx *task = task_new(loader, name, 0, NULL, _router_free, router);
+    if (ERR_OK != task_register(task, _idx_startup, NULL)) {
         task_free(task);
     }
 }
@@ -426,6 +465,7 @@ void task_router_server_start(loader_ctx *loader, const char *name, uint16_t por
 typedef struct task_router_client_ctx {
     int32_t *result;   // 指向 main.c testlist[] 中 "router_test" 槽, 通过/失败写 1/0
     uint16_t port;     // server 监听端口, 与 portlist["router_sv"] 同步
+    uint16_t idxport;  // 第二个 server 端口, 与 portlist["router_idx_sv"] 同步
     int32_t  err;
 } task_router_client_ctx;
 
@@ -839,7 +879,7 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
 
 // 分块发送断言: 按 CLAUDE.md 的写法逐段发, 末段带终止块并等响应。
 // chunks 各段拼起来就是期望回显的 body; expect 为期望状态码
-static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *path,
+static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *method, const char *path,
                            const char *const *chunks, int32_t n,
                            const char *token, int32_t expect, const char *want_body) {
     SOCKET fd;
@@ -850,7 +890,7 @@ static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *path,
     }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
-    http_pack_req(&bw, "POST", path);
+    http_pack_req(&bw, method, path);
     http_pack_head(&bw, "Host", "127.0.0.1");
     if (NULL != token) {
         http_pack_head(&bw, "X-Token", token);
@@ -873,7 +913,7 @@ static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *path,
         goto done;
     }
     // 走公共校验: 状态码之外还查 Content-Length 唯一性, 那条断言只在这里有
-    if (ERR_OK != _resp_check(resp, "POST", path, expect)) {
+    if (ERR_OK != _resp_check(resp, method, path, expect)) {
         goto done;
     }
     if (NULL != want_body) {
@@ -910,12 +950,30 @@ static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
     ev_close(&task->loader->netev, fd, skid, 0);
     return ERR_OK;
 }
-// 流式路由相关的七条断言
+// 发首帧 + 一块数据后就不管了, 连接一直留着: 这条流会挂在 r->streams 里活到进程收尾,
+// 由 router_free 排空并投 ABORT。留给 ASan 盯 router_free 那条路径的重入(见 _h_st_echo)
+static int32_t _do_chunked_dangling(task_ctx *task, uint16_t port) {
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for dangling stream.", port);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "POST", "/st");
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_chunked(&bw, (void *)"live", 4);
+    ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 1);
+    binary_free(&bw);
+    return ERR_OK;// 有意不 ev_close
+}
+// 流式路由相关的九条断言
 static int32_t _run_stream(task_ctx *task, uint16_t port) {
     int32_t bad = 0;
     // [0] 三块按序到齐, 末帧回显的 body 与拼接结果一致
     static const char *const ok3[3] = { "aaa", "bbbb", "c" };
-    if (ERR_OK != _do_chunked(task, port, "/st", ok3, 3, NULL, 200, "aaabbbbc")) {
+    if (ERR_OK != _do_chunked(task, port, "POST", "/st", ok3, 3, NULL, 200, "aaabbbbc")) {
         bad |= (1 << 0);
     }
     if (task_isclosing(task)) {
@@ -923,35 +981,35 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
     }
     // [1] 单块也走同一条路
     static const char *const ok1[1] = { "z" };
-    if (ERR_OK != _do_chunked(task, port, "/st", ok1, 1, NULL, 200, "z")) {
+    if (ERR_OK != _do_chunked(task, port, "POST", "/st", ok1, 1, NULL, 200, "z")) {
         bad |= (1 << 1);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
     // [2] 零数据块: 只有首帧与终止块, 回显空 body
-    if (ERR_OK != _do_chunked(task, port, "/st", NULL, 0, NULL, 200, "")) {
+    if (ERR_OK != _do_chunked(task, port, "POST", "/st", NULL, 0, NULL, 200, "")) {
         bad |= (1 << 2);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
     // [3] chunked 打到普通路由 → 411 并关连接 (/only-post 是 router_post 注册的非流式路由)
-    if (ERR_OK != _do_chunked(task, port, "/only-post", ok1, 1, NULL, 411, NULL)) {
+    if (ERR_OK != _do_chunked(task, port, "POST", "/only-post", ok1, 1, NULL, 411, NULL)) {
         bad |= (1 << 3);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
     // [4] 准入中间件截断 → 401, 不建流
-    if (ERR_OK != _do_chunked(task, port, "/stauth", ok3, 3, NULL, 401, NULL)) {
+    if (ERR_OK != _do_chunked(task, port, "POST", "/stauth", ok3, 3, NULL, 401, NULL)) {
         bad |= (1 << 4);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
     // [5] 带对 token 则准入放行, 照常收齐
-    if (ERR_OK != _do_chunked(task, port, "/stauth", ok3, 3, "secret", 200, "aaabbbbc")) {
+    if (ERR_OK != _do_chunked(task, port, "POST", "/stauth", ok3, 3, "secret", 200, "aaabbbbc")) {
         bad |= (1 << 5);
     }
     if (task_isclosing(task)) {
@@ -968,8 +1026,77 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
             bad |= (1 << 6);
         }
     }
+    // [7] router_add_index 条目(两个回调皆 NULL)是配置错误, 普通请求与 chunked 首帧
+    // 必须给同一个码。改前 chunked 那条被当成"普通路由收到 chunked"回 411
+    if (ERR_OK != _do_req(task, port, "POST", "/index-only", NULL, NULL, 500, NULL)) {
+        bad |= (1 << 7);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _do_chunked(task, port, "POST", "/index-only", ok1, 1, NULL, 500, NULL)) {
+        bad |= (1 << 7);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [8] 留一条收不齐也不断开的流到进程收尾, 让 router_free 去排空它。
+    // 排在 [6] 读 /__aborts 之后, 免得把那条计数断言从 1 顶成 2
+    if (ERR_OK != _do_chunked_dangling(task, port)) {
+        bad |= (1 << 8);
+    }
     if (0 != bad) {
         LOG_WARN("router test: stream route assertions failed, bad=0x%x.", bad);
+    }
+    return 0 == bad ? ERR_OK : ERR_FAILED;
+}
+
+// 打第二个 server(无流式路由): 走 _router_chunked_nostream 那条分支。
+// 主 server 注册了流式路由, 这几条在它上面全走 _router_st_begin, 压不到这里
+static int32_t _run_index(task_ctx *task, uint16_t port) {
+    const char *one[] = { "x" };
+    int32_t bad = 0;
+    // [0] chunked 命中 index 条目 → 500; 若这条分支只会回 411, 这里就红
+    if (ERR_OK != _do_chunked(task, port, "POST", "/idx-only", one, 1, NULL, 500, NULL)) {
+        bad |= (1 << 0);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [1] chunked 命中普通路由 → 411: 411 只表示"路由在但接不住 chunked"
+    if (ERR_OK != _do_chunked(task, port, "POST", "/idx-plain", one, 1, NULL, 411, NULL)) {
+        bad |= (1 << 1);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [2] chunked 匹配不上 → 404 而不是 411, 与一次到齐的同一请求同码
+    if (ERR_OK != _do_chunked(task, port, "POST", "/idx-nope", one, 1, NULL, 404, NULL)) {
+        bad |= (1 << 2);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [3] 路径对上了但方法掩码不交 → 404 (不是 405): /idx-plain 只注册了 POST
+    if (ERR_OK != _do_chunked(task, port, "PUT", "/idx-plain", one, 1, NULL, 404, NULL)) {
+        bad |= (1 << 3);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [4] 方法名压根不认识 → 405。405 只由这一种情形产生, 与 [3] 成对锁住两者的区别
+    if (ERR_OK != _do_chunked(task, port, "FROB", "/idx-plain", one, 1, NULL, 405, NULL)) {
+        bad |= (1 << 4);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [5] 一次到齐的请求打同一条 index 条目也是 500, 与 [0] 同码
+    if (ERR_OK != _do_req(task, port, "POST", "/idx-only", NULL, NULL, 500, NULL)) {
+        bad |= (1 << 5);
+    }
+    if (0 != bad) {
+        LOG_WARN("router test: nostream chunked assertions failed, bad=0x%x.", bad);
     }
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
@@ -985,6 +1112,9 @@ static void _client_timeout(task_ctx *task, uint64_t sess) {
         ctx->err = 1;
     }
     if (ERR_OK != _run_stream(task, ctx->port)) {
+        ctx->err = 1;
+    }
+    if (ERR_OK != _run_index(task, ctx->idxport)) {
         ctx->err = 1;
     }
     if (ctx->err) {
@@ -1006,10 +1136,12 @@ static void _client_free(void *p) {
 }
 
 // client task 启动入口: 协程 task, _client_timeout 内的 coro_connect/coro_send 需协程上下文
-void task_router_client_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *result_slot) {
+void task_router_client_start(loader_ctx *loader, const char *name, uint16_t port,
+                              uint16_t idxport, int32_t *result_slot) {
     task_router_client_ctx *ctx;
     CALLOC(ctx, 1, sizeof(task_router_client_ctx));
     ctx->port = port;
+    ctx->idxport = idxport;
     ctx->result = result_slot;
     coro_task_register(loader, name, 0, _client_startup, _client_closing, _client_free, ctx);
 }

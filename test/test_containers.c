@@ -753,7 +753,7 @@ static void test_fsqu_never_overflow_free(CuTest *tc) {
  * f0a94c5 修复：_buffered_chan_recv 拷贝 msg->data/lens 到栈再 unlock，
  * 防止满载循环槽位被 push 覆盖；本用例用紧 buffer + 多 PC 校验消息无丢失/重复/串扰。
  * ======================================================================= */
-#define _CHAN_RACE_CAP       4    // 紧 buffer，强制 producer 等 consumer 取走再 push
+#define _CHAN_RACE_CAP       4// 紧 buffer，强制 producer 等 consumer 取走再 push
 #define _CHAN_RACE_PRODS     4
 #define _CHAN_RACE_CONSS     4
 #define _CHAN_RACE_PER_PROD  500
@@ -783,7 +783,7 @@ static void _chan_race_producer(void *arg) {
         msg.pid = p->pid;
         msg.seq = i;
         memset(msg.padding, 0xAB, sizeof(msg.padding));
-        chan_send(p->chan, &msg, sizeof(msg), 1);   // copy=1，chan 持有 heap 副本
+        chan_send(p->chan, &msg, sizeof(msg), 1);// copy=1，chan 持有 heap 副本
     }
 }
 
@@ -1299,6 +1299,39 @@ static void test_queue(CuTest *tc) {
     CuAssertTrue(tc, queue_empty(&q));
 
     queue_free(&q);
+}
+
+/* queue_free / array_free 必须把长度字段一并复位。只置空 ptr 会留下 ptr==NULL 但
+ * size < maxsize 的不一致态：再 push 时 size != maxsize 不触发 resize，
+ * 直接往 (char*)NULL + off 写。参照 binary_free 的写法 */
+static void test_queue_array_free_resets(CuTest *tc) {
+    queue_ctx q;
+    array_ctx a;
+    uint32_t v;
+    int32_t i;
+
+    queue_init(&q, sizeof(uint32_t), 4);
+    for (i = 0; i < 5; i++) {
+        v = (uint32_t)i;
+        queue_push(&q, &v);
+    }
+    CuAssertTrue(tc, q.size > 0 && q.maxsize > q.size);/* 触发过一次扩容 */
+    queue_free(&q);
+    CuAssertTrue(tc, NULL == q.ptr);
+    CuAssertTrue(tc, 0 == q.size);
+    CuAssertTrue(tc, 0 == q.maxsize);
+    CuAssertTrue(tc, 0 == q.offset);
+
+    array_init(&a, sizeof(uint32_t), 4);
+    for (i = 0; i < 5; i++) {
+        v = (uint32_t)i;
+        array_push_back(&a, &v);
+    }
+    CuAssertTrue(tc, a.size > 0 && a.maxsize > a.size);
+    array_free(&a);
+    CuAssertTrue(tc, NULL == a.ptr);
+    CuAssertTrue(tc, 0 == a.size);
+    CuAssertTrue(tc, 0 == a.maxsize);
 }
 
 /* =======================================================================
@@ -2082,6 +2115,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_slist_remove);
     SUITE_ADD_TEST(suite, test_slist_splice_iter);
     SUITE_ADD_TEST(suite, test_queue);
+    SUITE_ADD_TEST(suite, test_queue_array_free_resets);
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_array_ptr);
 }

@@ -42,6 +42,7 @@ void path_free(path_trie *t);
 size_t path_count(const path_trie *t);
 /// <summary>
 /// 插入 payload。所有权转 trie;同 path 已存在则旧 payload 通过 _free 释放。
+/// 传入的 payload 与该 path 现存的是同一指针时为幂等 no-op,不释放也不重复计数。
 /// 路径走 WILDCARD 校验,允许含通配的订阅模式。
 /// </summary>
 /// <param name="t">trie 指针</param>

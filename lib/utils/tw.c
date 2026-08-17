@@ -122,10 +122,8 @@ static void _tw_run(tw_ctx *ctx) {
     tw_node_ctx *pnode;
     list_foreach_safe(&ctx->tv1[ulidx], ln, tmp) {
         pnode = UPCAST(ln, tw_node_ctx, node);
-        // 先将 ud 拷贝到栈，再释放节点，再调用回调：
-        // 确保回调持有的指针不指向已被池复用的节点内存（防 UAF）。
-        // 回调契约：不得将 &ud 存入生命周期超出本次调用的结构体。
-        // foreach_safe 已预存 next，故 pool_push 复用节点内存不影响遍历。
+        // 顺序不能变：先把 ud 拷到栈，再还节点，再回调，否则回调拿到的是已被池复用的内存。
+        // 回调契约：不得把 &ud 存进生命周期超出本次调用的结构体
         ud = pnode->ud;
         cb = pnode->_cb;
         pool_push(&ctx->node_pool, pnode, 0);

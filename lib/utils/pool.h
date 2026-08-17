@@ -25,8 +25,7 @@ typedef struct pool_cbs {
 typedef struct pool_ctx {
     uint32_t elsize;// 对象大小
     uint32_t nkeep;
-    void *cur_qu;// 当前使用的queue
-    // cur_qu 函数指针
+    // 按 thsafe 分派到 qu 的两个成员之一; qu 是联合体, 两个成员同址故不另存指针
     int32_t (*_qu_trypush)(void *qu, const void *data);
     int32_t (*_qu_pop)(void *qu, void *out);
     void (*_qu_free)(void *qu);
@@ -94,7 +93,7 @@ static inline int32_t pool_push(pool_ctx *pool, void *data, int32_t ops) {
     if (!BIT_CHECK(ops, POOL_OP_NOCLEAR)) {
         _pool_elclear(pool, data);
     }
-    if (ERR_OK == pool->_qu_trypush(pool->cur_qu, &data)) {
+    if (ERR_OK == pool->_qu_trypush(&pool->qu, &data)) {
         return ERR_OK;
     }
     if (!BIT_CHECK(ops, POOL_OP_NOFREE)) {
@@ -111,7 +110,7 @@ static inline int32_t pool_push(pool_ctx *pool, void *data, int32_t ops) {
 /// <returns>对象指针;自定义 _elnew 失败时可能为 NULL</returns>
 static inline void *pool_pop(pool_ctx *pool, void *args, int32_t ops) {
     void *data = NULL;
-    if (ERR_OK == pool->_qu_pop(pool->cur_qu, &data)) {
+    if (ERR_OK == pool->_qu_pop(&pool->qu, &data)) {
         if (!BIT_CHECK(ops, POOL_OP_NORESET)) {
             _pool_elreset(pool, data, args);
         }
@@ -126,7 +125,7 @@ static inline void *pool_pop(pool_ctx *pool, void *args, int32_t ops) {
 /// <param name="pool">pool_ctx</param>
 /// <returns>空闲对象数</returns>
 static inline uint32_t pool_size(pool_ctx *pool) {
-    return pool->_qu_size(pool->cur_qu);
+    return pool->_qu_size(&pool->qu);
 }
 /// <summary>
 /// 底层队列容量
@@ -134,7 +133,7 @@ static inline uint32_t pool_size(pool_ctx *pool) {
 /// <param name="pool">pool_ctx</param>
 /// <returns>容量</returns>
 static inline uint32_t pool_capacity(pool_ctx *pool) {
-    return pool->_qu_capacity(pool->cur_qu);
+    return pool->_qu_capacity(&pool->qu);
 }
 /// <summary>
 /// 计算 pool_shrink 的保留量

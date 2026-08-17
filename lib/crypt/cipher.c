@@ -12,15 +12,19 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
         || CFB == cipher->model
         || OFB == cipher->model
         || CTR == cipher->model);
-    if (AES == engine) {
+    switch (engine) {
+    case AES:
         cipher->block_lens = AES_BLOCK_SIZE;
         cipher->_cipher = (_cipher_cb)aes_crypt;
         aes_init(&cipher->eng_ctx.aes, key, klens, keybits, fwdkey);
-        return;
+        break;
+    case DES:
+    case DES3:
+        cipher->block_lens = DES_BLOCK_SIZE;
+        cipher->_cipher = (_cipher_cb)des_crypt;
+        des_init(&cipher->eng_ctx.des, key, klens, DES3 == engine, fwdkey);
+        break;
     }
-    cipher->block_lens = DES_BLOCK_SIZE;
-    cipher->_cipher = (_cipher_cb)des_crypt;
-    des_init(&cipher->eng_ctx.des, key, klens, DES3 == engine, fwdkey);
 }
 void cipher_free(cipher_ctx *cipher) {
     secure_zero(cipher, sizeof(cipher_ctx));
@@ -74,7 +78,10 @@ static const void *_cipher_process_data(cipher_ctx *cipher, const void *data, si
     }
     //填充
     if (lens < cipher->block_lens) {
-        _padding_data(cipher->padding, data, lens, cipher->pd_data, cipher->block_lens);
+        //此处 lens < block_lens 必然装得下; 判返回值是为了不把未写过的 pd_data 当密文用
+        if (ERR_OK != _padding_data(cipher->padding, data, lens, cipher->pd_data, cipher->block_lens)) {
+            return NULL;
+        }
         *size = cipher->block_lens;
         return (const void *)cipher->pd_data;
     }
@@ -188,7 +195,11 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
         || ANSIX923 == cipher->padding) {
         if (cipher->encrypt) {
             if (0 == lens % cipher->block_lens) {
-                _padding_data(cipher->padding, NULL, 0, cipher->pd_data, cipher->block_lens);
+                //dlens=0 必然装得下; 同上, 判返回值避免把未写过的 pd_data 当整填充块发出去
+                if (ERR_OK != _padding_data(cipher->padding, NULL, 0, cipher->pd_data, cipher->block_lens)) {
+                    secure_zero(output, size);
+                    return ERR_FAILED;
+                }
                 buf = cipher_block(cipher, cipher->pd_data, cipher->block_lens, &enlens);
                 //合法初始化下不会返回 NULL（_cipher_process_data 走 line 101 直返；model 必为枚举内值）；
                 //此处与 line 205 同款防御 NULL，避免未来扩展 model 时静默段错误。
@@ -207,29 +218,28 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
                 return ERR_FAILED;
             }
             uint8_t pad = (uint8_t)output[size - 1];
-            if (pad < 1 || pad > cipher->block_lens) {
-                secure_zero(output, size);
-                return ERR_FAILED;
-            }
             if (ISO10126 == cipher->padding) {
-                //ISO 10126 前 N-1 字节为随机数无法校验，长度字节已由上界检查覆盖
+                //ISO 10126 前 N-1 字节是随机数,除长度字节的范围外无从校验 —— 这一档做不成
+                //常数时间,成败只由 pad 决定
+                if (pad < 1 || pad > cipher->block_lens) {
+                    secure_zero(output, size);
+                    return ERR_FAILED;
+                }
                 size -= pad;
                 secure_zero(output + size, pad);
             } else {
-                //PKCS#7 / ANSI X.923 常数时间校验：
-                //  - 期望值：PKCS#7 全部 == pad；ANSI X.923 前 N-1 字节 == 0、末尾 == pad
-                //  - 循环范围固定为 [1, block_lens)，用 mask 屏蔽非填充区
-                //  - 避免 padding oracle 计时侧信道（循环长度不依赖 pad）
-                //  - bad 用 volatile 修饰，与 utils/ct_memcmp 同款语义，防止编译器把累加优化成提前退出
-                //注：j==0 即长度字节本身，已与 expected 等价（PKCS#7 等于 pad；
-                //ANSI X.923 末尾也等于 pad，两者末尾期望均为 pad），无需在循环中重复校验
-                //本函数无法直接复用 ct_memcmp：padding 校验需对非填充区做 mask 屏蔽，
-                //而 ct_memcmp 是双 buffer 等长比较，不带位置条件
+                //PKCS#7 / ANSI X.923 常数时间校验:循环长度固定 [1, blk),用 mask 屏蔽非填充区;
+                //期望值 PKCS#7 全部 == pad、ANSI X.923 前 N-1 字节 == 0(末尾那个即 j==0,与 pad 等价故不入循环);
+                //bad 用 volatile 防编译器把累加优化成提前退出
                 size_t blk = cipher->block_lens;
                 uint8_t expected = (PKCS57 == cipher->padding) ? pad : (uint8_t)0;
                 volatile uint8_t bad = 0;
                 uint8_t b, mask;
                 uint32_t lt;
+                //范围检查折进 bad 而非提前 return:两条失败路径耗时不同就等于把"长度字节是否合法"漏出去。
+                //pad==0 或 pad>blk 时 oor 为 1;循环只读 output[size-1-j] 且 j<blk<=size,pad 再离谱也不越界
+                uint32_t oor = (((uint32_t)pad - 1u) | ((uint32_t)blk - (uint32_t)pad)) >> 31;
+                bad |= (uint8_t)(0u - oor);
                 for (size_t j = 1; j < blk; j++) {
                     b = (uint8_t)output[size - 1 - j];
                     //lt = 1 当 j<pad（位于填充区），否则 0

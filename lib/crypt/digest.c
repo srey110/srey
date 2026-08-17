@@ -5,36 +5,48 @@ void digest_init(digest_ctx *digest, digest_type dtype) {
     switch (dtype) {
     case DG_MD2:
         digest->block_lens = MD2_BLOCK_SIZE;
+        digest->key_block = MD2_KEY_BLOCK;
+        digest->eng_lens = sizeof(md2_ctx);
         digest->_init = (_init_cb)md2_init;
         digest->_update = (_update_cb)md2_update;
         digest->_final = (_final_cb)md2_final;
         break;
     case DG_MD4:
         digest->block_lens = MD4_BLOCK_SIZE;
+        digest->key_block = MD4_KEY_BLOCK;
+        digest->eng_lens = sizeof(md4_ctx);
         digest->_init = (_init_cb)md4_init;
         digest->_update = (_update_cb)md4_update;
         digest->_final = (_final_cb)md4_final;
         break;
     case DG_MD5:
         digest->block_lens = MD5_BLOCK_SIZE;
+        digest->key_block = MD5_KEY_BLOCK;
+        digest->eng_lens = sizeof(md5_ctx);
         digest->_init = (_init_cb)md5_init;
         digest->_update = (_update_cb)md5_update;
         digest->_final = (_final_cb)md5_final;
         break;
     case DG_SHA1:
         digest->block_lens = SHA1_BLOCK_SIZE;
+        digest->key_block = SHA1_KEY_BLOCK;
+        digest->eng_lens = sizeof(sha1_ctx);
         digest->_init = (_init_cb)sha1_init;
         digest->_update = (_update_cb)sha1_update;
         digest->_final = (_final_cb)sha1_final;
         break;
     case DG_SHA256:
         digest->block_lens = SHA256_BLOCK_SIZE;
+        digest->key_block = SHA256_KEY_BLOCK;
+        digest->eng_lens = sizeof(sha256_ctx);
         digest->_init = (_init_cb)sha256_init;
         digest->_update = (_update_cb)sha256_update;
         digest->_final = (_final_cb)sha256_final;
         break;
     case DG_SHA512:
         digest->block_lens = SHA512_BLOCK_SIZE;
+        digest->key_block = SHA512_KEY_BLOCK;
+        digest->eng_lens = sizeof(sha512_ctx);
         digest->_init = (_init_cb)sha512_init;
         digest->_update = (_update_cb)sha512_update;
         digest->_final = (_final_cb)sha512_final;

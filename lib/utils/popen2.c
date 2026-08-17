@@ -146,6 +146,9 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     }
     pid_t pid = fork();
     if (0 == pid) {
+        //自成进程组(pgid == 本进程 pid),popen_close 才能用 kill(-pgid) 连 sh 派生的孙进程一起杀。
+        //只杀 sh 的话 "a | b" 这种复合命令会把 a/b 留成孤儿。失败不致命,退化成只杀直接子进程
+        (void)!setpgid(0, 0);
         if (w) {
             dup2(sock[0], STDIN_FILENO);
         }
@@ -209,6 +212,7 @@ static int32_t _popen_child_exited(popen_ctx *ctx, int wstatus) {
 }
 #endif
 void popen_close(popen_ctx *ctx) {
+    ctx->closed = 1;
 #ifdef OS_WIN
     if (NULL == ctx->process.hProcess
         || 0 == ctx->process.dwProcessId) {
@@ -248,12 +252,13 @@ void popen_close(popen_ctx *ctx) {
     CloseHandle(snapshot);
 #else
     if (0 != ctx->pid && !ctx->exited) {
-        kill(ctx->pid, SIGKILL);
+        // 杀整个进程组:子进程 setpgid(0,0) 后 pgid == ctx->pid,sh 派生的孙进程都在组里。
+        // 组不存在(setpgid 失败)时 kill(-pid) 返 ESRCH,再退化成只打 sh 自己
+        if (0 != kill(-ctx->pid, SIGKILL)) {
+            kill(ctx->pid, SIGKILL);
+        }
         // SIGKILL 后必须 waitpid 收尸，否则进程残留为 <defunct> 直至父进程退出。
-        // wstatus 得按真值解析：没人调过 popen_waitexit 时，子进程完全可能早已自己正常退完，
-        // 此刻 kill 打在僵尸上无效果，而 waitpid 拿到的是它真实的退出码——
-        // 无条件写 ERR_FAILED 会把 exit(0) 报成 -1。真被 SIGKILL 打死的走 WIFSIGNALED，
-        // 由 _popen_child_exited 照旧记 ERR_FAILED
+        // 退出码按 wstatus 真值解析：子进程可能早已自己正常退完，无条件写 ERR_FAILED 会把 exit(0) 报成 -1
         int wstatus = 0;
         pid_t reaped;
         do {
@@ -268,6 +273,9 @@ void popen_close(popen_ctx *ctx) {
 #endif
 }
 void popen_free(popen_ctx *ctx) {
+    if (0 == ctx->closed) {
+        popen_close(ctx);
+    }
 #ifdef OS_WIN
     if (NULL != ctx->process.hProcess) {
         CloseHandle(ctx->process.hProcess);

@@ -35,6 +35,11 @@ void queue_resize(queue_ctx *qu, uint32_t maxsize);
 /// <param name="qu">queue_ctx</param>
 /// <param name="pos">删除位置，[0, size)</param>
 void queue_del_at(queue_ctx *qu, uint32_t pos);
+// 环形下标回绕。前提是 off < 2 * maxsize —— offset 与 pos 各自都 < maxsize,
+// 队列内部所有下标计算都满足它;不满足时这个减法回绕不到位, 会读到错误槽位
+static inline uint32_t _queue_wrap(const queue_ctx *qu, uint32_t off) {
+    return off >= qu->maxsize ? off - qu->maxsize : off;
+}
 /// <summary>
 /// 当前元素数量
 /// </summary>
@@ -77,10 +82,7 @@ static inline void *queue_at(queue_ctx *qu, uint32_t pos) {
     if (pos >= qu->size) {
         return NULL;
     }
-    uint32_t cur = qu->offset + pos;
-    if (cur >= qu->maxsize) {
-        cur -= qu->maxsize;
-    }
+    uint32_t cur = _queue_wrap(qu, qu->offset + pos);
     return (char *)qu->ptr + (size_t)cur * qu->elsize;
 }
 /// <summary>
@@ -101,10 +103,7 @@ static inline void queue_push(queue_ctx *qu, const void *elem) {
         ASSERTAB(qu->maxsize <= UINT32_MAX / 2, "queue maxsize overflow.");
         queue_resize(qu, qu->maxsize * 2);
     }
-    uint32_t pos = qu->offset + qu->size;
-    if (pos >= qu->maxsize) {
-        pos -= qu->maxsize;
-    }
+    uint32_t pos = _queue_wrap(qu, qu->offset + qu->size);
     memcpy((char *)qu->ptr + (size_t)pos * qu->elsize, elem, qu->elsize);
     qu->size++;
 }
@@ -118,11 +117,8 @@ static inline void *queue_pop(queue_ctx *qu) {
         return NULL;
     }
     void *elem = (char *)qu->ptr + (size_t)qu->offset * qu->elsize;
-    qu->offset++;
+    qu->offset = _queue_wrap(qu, qu->offset + 1);
     qu->size--;
-    if (qu->offset >= qu->maxsize) {
-        qu->offset -= qu->maxsize;
-    }
     return elem;
 }
 

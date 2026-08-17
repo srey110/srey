@@ -42,27 +42,27 @@ static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
     parent->left = lchild;
     parent->right = rchild;
 }
-// 计算第 nelts 个节点的路径编码和深度，用于定位完全二叉树末尾节点（内部使用）
-static inline void _heap_path(uint32_t nelts, uint32_t *path, uint32_t *depth) {
+// 定位第 nelts 个节点(完全二叉树按层编号,1 起)的父节点,返回后 *path 最低位表示该节点
+// 是父的左(0)还是右(1)子。nelts 由调用方按各自时机传:insert 传自增后的新槽位,
+// remove 传自减前的现末尾节点
+static heap_node *_heap_last_parent(heap_ctx *heap, uint32_t nelts, uint32_t *path) {
+    uint32_t d = 0;
     *path = 0;
-    *depth = 0;
-    for (uint32_t n = nelts; n >= 2; ++(*depth), n >>= 1) {
+    for (uint32_t n = nelts; n >= 2; ++d, n >>= 1) {
         *path = (*path << 1) | (n & 1);
     }
-}
-void heap_insert(heap_ctx *heap, heap_node *node) {
-    // 0:左子节点，1:右子节点
-    uint32_t path, d;
-    ++heap->nelts;
-    // 从下往上定位末尾节点的路径
-    _heap_path(heap->nelts, &path, &d);
-    // 按路径找到末尾节点的父节点
     heap_node *parent = heap->root;
     while (d > 1) {
-        parent = (path & 1) ? parent->right : parent->left;
+        parent = (*path & 1) ? parent->right : parent->left;
         --d;
-        path >>= 1;
+        *path >>= 1;
     }
+    return parent;
+}
+void heap_insert(heap_ctx *heap, heap_node *node) {
+    uint32_t path;
+    ++heap->nelts;
+    heap_node *parent = _heap_last_parent(heap, heap->nelts, &path);
     // 插入节点
     node->parent = parent;
     if (NULL == parent) {
@@ -105,18 +105,9 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
     if (0 == heap->nelts) {
         return;
     }
-    // 0:左子节点，1:右子节点
-    uint32_t path, d;
-    // 从下往上定位末尾节点的路径
-    _heap_path(heap->nelts, &path, &d);
+    uint32_t path;
+    heap_node *parent = _heap_last_parent(heap, heap->nelts, &path);
     --heap->nelts;
-    // 按路径找到末尾节点的父节点
-    heap_node *parent = heap->root;
-    while (d > 1) {
-        parent = (path & 1) ? parent->right : parent->left;
-        --d;
-        path >>= 1;
-    }
     // 用末尾节点替换待删除节点
     heap_node *last = NULL;
     if (NULL == parent) {

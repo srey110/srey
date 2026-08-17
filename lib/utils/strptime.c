@@ -4,6 +4,9 @@
 #define ALT_O 0x02
 #define LEGAL_ALT(x) { if (alt_format & ~(x)) return NULL; }
 #define TM_YEAR_BASE 1900
+#ifndef TIME_MAX
+#define TIME_MAX INT64_MAX
+#endif
 #define TM_SUNDAY       0
 #define TM_MONDAY       1
 #define TM_TUESDAY      2
@@ -341,9 +344,6 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
         LEGAL_ALT(ALT_O);
         continue;
 
-#ifndef TIME_MAX
-#define TIME_MAX INT64_MAX
-#endif
     case 's':/* seconds since the epoch */
     {
         sse = 0;
@@ -692,15 +692,17 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     if (HAVE_YDAY(state) && HAVE_YEAR(state)) {
         int isleap;
 
+        // %U/%W 所在周起在上一年时 yday 为负。修正必须排在按月/日推算之前,且不能只在
+        // !HAVE_MON 时做 —— 月份由 %m 给出时,下面算 tm_mday 用的还是这个 yday
+        if (tm->tm_yday < 0) {
+            tm->tm_year--;
+            tm->tm_yday += start_of_month[isleap_sum(tm->tm_year, TM_YEAR_BASE)][12];
+        }
+
         if (!HAVE_MON(state)) {
             /* calculate month of day of year */
             i = 0;
             isleap = isleap_sum(tm->tm_year, TM_YEAR_BASE);
-            if (tm->tm_yday < 0) {
-                tm->tm_year--;
-                isleap = isleap_sum(tm->tm_year, TM_YEAR_BASE);
-                tm->tm_yday += start_of_month[isleap][12];
-            }
             while (i <= 12 && tm->tm_yday >= start_of_month[isleap][i])
                 i++;
             if (i > 12) {

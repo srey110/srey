@@ -68,7 +68,7 @@ static void test_pt_basic(CuTest *tc) {
     CuAssertPtrEquals(tc, NULL, path_get(t, "a/b/c"));
     FREE(v);
     path_free(t);
-    CuAssertTrue(tc, 0 == g_free_cnt);  // remove 不调 _free
+    CuAssertTrue(tc, 0 == g_free_cnt);// remove 不调 _free
 }
 
 // 2. 重复 insert,旧 payload _free 调一次
@@ -80,11 +80,11 @@ static void test_pt_overwrite(CuTest *tc) {
     MALLOC(a, sizeof(int32_t));
     MALLOC(b, sizeof(int32_t));
     path_insert(t, "x/y", a);
-    path_insert(t, "x/y", b);  // 旧 a 被 _free
+    path_insert(t, "x/y", b);// 旧 a 被 _free
     CuAssertTrue(tc, 1 == g_free_cnt);
     CuAssertTrue(tc, 1 == path_count(t));
     CuAssertPtrEquals(tc, b, path_get(t, "x/y"));
-    path_free(t);                 // 释放 b
+    path_free(t);// 释放 b
     CuAssertTrue(tc, 2 == g_free_cnt);
 }
 
@@ -103,7 +103,7 @@ static void test_pt_validate_wildcard(CuTest *tc) {
     CuAssertTrue(tc, ERR_FAILED == path_validate(&MQTT_RULES, "a+b", PATH_KIND_WILDCARD));
     CuAssertTrue(tc, ERR_FAILED == path_validate(&MQTT_RULES, "a#", PATH_KIND_WILDCARD));
     CuAssertTrue(tc, ERR_FAILED == path_validate(&MQTT_RULES, "#a", PATH_KIND_WILDCARD));
-    CuAssertTrue(tc, ERR_FAILED == path_validate(&MQTT_RULES, "a/#/b", PATH_KIND_WILDCARD));  // # 必须末尾
+    CuAssertTrue(tc, ERR_FAILED == path_validate(&MQTT_RULES, "a/#/b", PATH_KIND_WILDCARD));// # 必须末尾
     CuAssertTrue(tc, ERR_OK == path_validate(&MQTT_RULES, "a/+/c", PATH_KIND_WILDCARD));
     CuAssertTrue(tc, ERR_OK == path_validate(&MQTT_RULES, "a/#", PATH_KIND_WILDCARD));
     CuAssertTrue(tc, ERR_OK == path_validate(&MQTT_RULES, "#", PATH_KIND_WILDCARD));
@@ -135,7 +135,7 @@ static void test_pt_match_wildcard(CuTest *tc) {
     path_insert(t, "+/+/+", &v6);
     _match_ctx ctx = {0, NULL};
     path_match(t, "a/b/c", _match_collect, &ctx);
-    CuAssertTrue(tc, 6 == ctx.count);     // 全部命中
+    CuAssertTrue(tc, 6 == ctx.count);// 全部命中
     path_free(t);
 }
 
@@ -147,7 +147,7 @@ static void test_pt_match_hash_empty_tail(CuTest *tc) {
     path_insert(t, "a/+", &v2);
     _match_ctx ctx = {0, NULL};
     path_match(t, "a", _match_collect, &ctx);
-    CuAssertTrue(tc, 1 == ctx.count);     // 仅 a/# 命中(空尾)
+    CuAssertTrue(tc, 1 == ctx.count);// 仅 a/# 命中(空尾)
     CuAssertPtrEquals(tc, &v1, ctx.last);
     path_free(t);
 }
@@ -169,7 +169,7 @@ static void test_pt_literal_no_wildcard_input(CuTest *tc) {
     int32_t v = 1;
     path_insert(t, "a/+/c", &v);
     _match_ctx ctx = {0, NULL};
-    path_match(t, "a/+/c", _match_collect, &ctx);  // publish topic 含 + → 拒绝
+    path_match(t, "a/+/c", _match_collect, &ctx);// publish topic 含 + → 拒绝
     CuAssertTrue(tc, 0 == ctx.count);
     path_free(t);
 }
@@ -204,9 +204,9 @@ static void test_pt_get_or_create(CuTest *tc) {
     void *r1 = path_get_or_create(t, "x/y", a);
     CuAssertPtrEquals(tc, a, r1);
     void *r2 = path_get_or_create(t, "x/y", b);
-    CuAssertPtrEquals(tc, a, r2);   // 返回现有,b 不被使用
+    CuAssertPtrEquals(tc, a, r2);// 返回现有,b 不被使用
     CuAssertTrue(tc, 1 == path_count(t));
-    FREE(b);                         // 业务自行释放未用 init
+    FREE(b);// 业务自行释放未用 init
     // init=NULL 仅查询
     CuAssertPtrEquals(tc, a, path_get_or_create(t, "x/y", NULL));
     CuAssertPtrEquals(tc, NULL, path_get_or_create(t, "x/z", NULL));
@@ -348,7 +348,7 @@ static void test_pt_mqtt_end_to_end(CuTest *tc) {
     // 普通 publish 匹配
     _match_ctx ctx = {0, NULL};
     path_match(t, "sport/tennis/score", _match_collect, &ctx);
-    CuAssertTrue(tc, 3 == ctx.count);   // 命中 v1, v2, v3
+    CuAssertTrue(tc, 3 == ctx.count);// 命中 v1, v2, v3
     // $ 前缀 publish 被拒
     ctx.count = 0;
     path_match(t, "$SYS/broker/uptime", _match_collect, &ctx);
@@ -368,12 +368,12 @@ static void test_pt_matches_pattern(CuTest *tc) {
     CuAssertTrue(tc, ERR_OK == path_matches_pattern(&MQTT_RULES, "a/b/c", "#"));
     CuAssertTrue(tc, ERR_OK == path_matches_pattern(&MQTT_RULES, "a/b", "a/+"));
     // 不匹配
-    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/b"));     // 段数不等
-    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/x/c"));   // 字符不等
-    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/+"));     // 段数不等
+    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/b"));// 段数不等
+    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/x/c"));// 字符不等
+    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/+"));// 段数不等
     // 边界:literal 段数不够
-    CuAssertTrue(tc, ERR_OK == path_matches_pattern(&MQTT_RULES, "a", "a/#"));        // # 匹配空尾
-    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a", "a/+"));    // + 必须有段
+    CuAssertTrue(tc, ERR_OK == path_matches_pattern(&MQTT_RULES, "a", "a/#"));// # 匹配空尾
+    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a", "a/+"));// + 必须有段
     // 校验路径:literal 含通配段 / pattern 的 # 不在末尾 → 均拒绝
     CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/+/b", "a/+/b")); // literal 含 + 非法
     CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/#/c")); // pattern # 非末尾
@@ -429,10 +429,27 @@ static void test_pt_path_max_bytes(CuTest *tc) {
     path_free(t);
 }
 
+// 同一份 payload 重复插入同一路径:幂等 no-op,既不释放也不重复计数。
+// 修复前是先 _free 再把已释放的指针存回节点,path_free 时二次释放
+static void test_pt_insert_same_payload(CuTest *tc) {
+    g_free_cnt = 0;
+    path_trie *t = path_new(&MQTT_RULES, _free_track);
+    int32_t *a;
+    MALLOC(a, sizeof(int32_t));
+    CuAssertTrue(tc, ERR_OK == path_insert(t, "z/y", a));
+    CuAssertTrue(tc, ERR_OK == path_insert(t, "z/y", a));
+    CuAssertTrue(tc, 0 == g_free_cnt);
+    CuAssertTrue(tc, 1 == path_count(t));
+    CuAssertPtrEquals(tc, a, path_get(t, "z/y"));
+    path_free(t);// 只在这里释放一次
+    CuAssertTrue(tc, 1 == g_free_cnt);
+}
+
 // 注册套件
 void test_path_trie(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pt_basic);
     SUITE_ADD_TEST(suite, test_pt_overwrite);
+    SUITE_ADD_TEST(suite, test_pt_insert_same_payload);
     SUITE_ADD_TEST(suite, test_pt_validate_basic);
     SUITE_ADD_TEST(suite, test_pt_validate_wildcard);
     SUITE_ADD_TEST(suite, test_pt_no_wildcard);

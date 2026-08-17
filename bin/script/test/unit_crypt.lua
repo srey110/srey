@@ -193,13 +193,28 @@ runner.run("crypt", function(t)
         t:eq(nil, empty_dec:dofinal(forged), "填充校验失败返 nil")
 
         -- padding 取值必须落在枚举内。越界值会让 C 侧 _padding_data 的 switch 一个分支都不命中，
-        -- 填充区一个字节都不写；而 cipher_ctx 出自 lua_newuserdata 不清零、pd_data 也从没清过，
-        -- 于是整块未初始化堆内存被加密后当密文返回——脚本里写错一个常量就变成堆内容泄漏
+        -- 填充区一个字节都不写，pd_data 里上一块的明文尾巴就被当成填充加密发出去
         local pad = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 1)
         t:eq(false, (pcall(pad.padding, pad, 99)), "越界 padding 报错")
         t:eq(false, (pcall(pad.padding, pad, -1)), "负 padding 报错")
         t:eq(true, (pcall(pad.padding, pad, PADDING_MODEL.NoPadding)), "NoPadding 合法")
         t:eq(true, (pcall(pad.padding, pad, PADDING_MODEL.ANSIX923)), "ANSIX923 合法")
+
+        -- cipher.new 的三个枚举实参必须在绑定层挡住：越界 keybits 会一路走到 aes_init 的
+        -- default ASSERTAB，那是 abort 整个进程而不是抛 Lua 错，脚本里写错一个常量就宕服
+        t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 1234, 1)),
+             "越界 keybits 报错而非 abort")
+        t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 0, 1)),
+             "keybits=0 报错")
+        t:eq(false, (pcall(cipher.new, 99, CIPHER_MODEL.ECB, key, 128, 1)), "越界 engine 报错")
+        t:eq(false, (pcall(cipher.new, 0, CIPHER_MODEL.ECB, key, 128, 1)), "engine=0 报错")
+        t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, 99, key, 128, 1)), "越界 model 报错")
+        t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, 0, key, 128, 1)), "model=0 报错")
+        -- keybits 只有 AES 用得上，DES/DES3 传什么都不该被拦
+        t:eq(true, (pcall(cipher.new, CIPHER_TYPE.DES, CIPHER_MODEL.ECB, key, 64, 1)),
+             "DES 的 keybits=64 仍合法")
+        t:eq(true, (pcall(cipher.new, CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 256, 1)),
+             "AES-256 合法")
     end
     do
         -- AES-128 CBC with IV

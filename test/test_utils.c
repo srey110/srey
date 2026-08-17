@@ -389,6 +389,26 @@ static void test_sfid_clockback_giveup(CuTest *tc) {
     CuAssertTrue(tc, 0 == sfid_id(&ctx));
 }
 
+/* 墙钟退到 customepoch 之前（NTP 步进 / 虚机快照恢复回旧日期）：nowms() - customepoch 无符号
+ * 下溢成约 1.8e19 并被写进 lasttimestamp，此后时钟校正回来也永远追不上，该 ctx 从此只返 0。
+ * sfid_init 挡不住这一档——它只在初始化那一刻校验 customepoch < now */
+static void test_sfid_epoch_underflow(CuTest *tc) {
+    sfid_ctx ctx;
+    CuAssertPtrNotNull(tc, sfid_init(&ctx, 1, 0, 0, 0));
+    CuAssertTrue(tc, 0 != sfid_id(&ctx));
+
+    /* 把纪元直接推到未来，等价于墙钟退到纪元之前 */
+    ctx.clockback_wait = 10;
+    ctx.customepoch = nowms() + 3600llu * 1000;
+    /* 下溢的话 curms 远大于 lasttimestamp，会走 else 分支"成功"返回一个垃圾 ID；
+       钳到 0 后落进回拨分支，等满预算返 0 */
+    CuAssertTrue(tc, 0 == sfid_id(&ctx));
+
+    /* lasttimestamp 没被污染：纪元恢复后立刻又能正常出 ID */
+    ctx.customepoch = 0;
+    CuAssertTrue(tc, 0 != sfid_id(&ctx));
+}
+
 /* =======================================================================
  * hash_ring —— 一致性哈希
  * ======================================================================= */
@@ -870,7 +890,7 @@ static void test_buffer_space(CuTest *tc) {
  * 改为只用 buffer_space 报出的现成余量。读满的那轮说明还有数据，仍按
  * MAX_RECV_SIZE 取，否则大流量下每轮只读几百字节，readv 次数翻倍
  * ======================================================================= */
-#define FAKE_RV_MAX 3   // 场景二是最长的一路: 两轮读满 + 一轮确认
+#define FAKE_RV_MAX 3// 场景二是最长的一路: 两轮读满 + 一轮确认
 static size_t _fake_rv_want[FAKE_RV_MAX];// 第 i 次调用要吐出的字节数
 static size_t _fake_rv_offer[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 总空间
 static int32_t _fake_rv_calls;
@@ -1028,8 +1048,8 @@ static void test_buffer_hint_after_migrate(CuTest *tc) {
     // 5) 跨迁移边界读,确认整体数据完整(原 600 + 追加 800)
     char span[60];
     CuAssertTrue(tc, sizeof(span) == buffer_copyout(&buf, 580, span, sizeof(span)));
-    CuAssertTrue(tc, 0 == memcmp(span, seed + 580, 20));     // [580,600) 原始尾
-    CuAssertTrue(tc, 0 == memcmp(span + 20, big, 40));       // [600,640) 追加头
+    CuAssertTrue(tc, 0 == memcmp(span, seed + 580, 20));// [580,600) 原始尾
+    CuAssertTrue(tc, 0 == memcmp(span + 20, big, 40));// [600,640) 追加头
     buffer_free(&buf);
 }
 
@@ -1043,7 +1063,7 @@ static void test_varint(CuTest *tc) {
     CuAssertIntEquals(tc, 1, varint_encode_mqtt(127, enc));
     CuAssertIntEquals(tc, 2, varint_encode_mqtt(128, enc));
     CuAssertIntEquals(tc, 4, varint_encode_mqtt(0x0FFFFFFF, enc));
-    CuAssertIntEquals(tc, 0, varint_encode_mqtt(0x10000000, enc));  // 超 256MB-1 上界
+    CuAssertIntEquals(tc, 0, varint_encode_mqtt(0x10000000, enc));// 超 256MB-1 上界
 
     // 编解码往返：300 → 2 字节
     buffer_ctx b;
@@ -1069,7 +1089,7 @@ static void test_varint(CuTest *tc) {
     // off > blens(回归点)：blens-off 无符号回绕,修复前越界读 buffer_at,修复后直接 ERR_FAILED
     val = 12345;
     CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 9, buffer_size(&b), &val));
-    CuAssertTrue(tc, 0 == val);  // 失败路径仍清零 *value
+    CuAssertTrue(tc, 0 == val);// 失败路径仍清零 *value
     buffer_free(&b);
 
     // 四段边界逐字节比对 + 往返：只验字节数的话,字节序或延续位标志写错照样通过
@@ -2163,6 +2183,32 @@ static void test_popen_close(CuTest *tc) {
     popen_free(&ctx);
 }
 
+/* popen_free 必须自己兜底收尾：它一执行调用方就永久失去 pid，漏调 popen_close 即永久孤儿。
+ * 子进程自成进程组后终端信号也够不到它，这条与有没有终端无关。
+ * 有了这层兜底，Lua 侧 __gc 才能只留 popen_free 一句 */
+static void test_popen_free_reaps(CuTest *tc) {
+    popen_ctx ctx;
+    char cmd[64];
+#ifdef OS_WIN
+    SNPRINTF(cmd, sizeof(cmd), "cmd /c \"timeout /t 30 /nobreak\"");
+#else
+    SNPRINTF(cmd, sizeof(cmd), "sh -c 'sleep 30'");
+#endif
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, NULL));
+#ifndef OS_WIN
+    CuAssertTrue(tc, 0 != ctx.pid);
+    CuAssertIntEquals(tc, 0, ctx.exited);
+#endif
+    /* 故意跳过 popen_close，直接 free */
+    uint64_t t0 = nowms();
+    popen_free(&ctx);
+    CuAssertTrue(tc, nowms() - t0 < 5000);/* 同步 SIGKILL + waitpid，不该等满 30 秒 */
+#ifndef OS_WIN
+    CuAssertIntEquals(tc, 1, ctx.exited);/* free 内部已收尸，没有留下孤儿 */
+#endif
+    popen_free(&ctx);/* 再 free 一次仍须是 no-op */
+}
+
 /* =======================================================================
  * sfid_init 非法参数返回 NULL（位数越界、机器ID越界、customepoch >= now）
  * ======================================================================= */
@@ -2362,6 +2408,65 @@ static void test_strptime_week_neg_yday(CuTest *tc) {
     CuAssertTrue(tc, 124 == tm.tm_year);
     CuAssertTrue(tc, 0 == tm.tm_mon);
     CuAssertTrue(tc, 10 == tm.tm_mday);
+}
+
+/* =======================================================================
+ * %m 已给出时负 tm_yday 同样要修正：修正块原先嵌在 !HAVE_MON 分支内，月份已知就跳过，
+ * 于是 tm_mday 拿负 yday 直接算出负数（"2024 05 00" 得 -121），mktime 归一成
+ * 一个错得离谱却"成功"的时间戳，调用方拿不到任何失败信号
+ * ======================================================================= */
+static void test_strptime_neg_yday_with_mon(CuTest *tc) {
+    struct tm tm;
+    char *end;
+
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 05 00", "%Y %m %U", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    /* %m 与 %U 本就自相矛盾，修正只保证：年份回滚到上一年、yday/mday 不再是负数
+     * （改前 year=124 yday=-1 mday=-121）。mday 按给定月份 + 回滚后的 yday 推出，
+     * 可以超过月长（此例 245），交给 mktime 归一，不在此断言月内范围 */
+    CuAssertIntEquals(tc, 123, tm.tm_year);
+    CuAssertTrue(tc, tm.tm_yday >= 0);
+    CuAssertTrue(tc, tm.tm_mday >= 1);
+
+    /* %W 同路径 */
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 03 00", "%Y %m %W", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertIntEquals(tc, 123, tm.tm_year);
+    CuAssertTrue(tc, tm.tm_yday >= 0);
+    CuAssertTrue(tc, tm.tm_mday >= 1);
+
+    /* 月份已知 + 正 yday 的常规路径不受影响 */
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 03 10", "%Y %m %U", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, tm.tm_mday >= 1 && tm.tm_mday <= 31);
+    CuAssertTrue(tc, 124 == tm.tm_year);
+}
+
+/* sectostr 忽略 LOCALTIME 失败的话，未初始化的 struct tm 会交给 strftime，
+ * fmt 含 %a/%b 时 libc 拿不定的 tm_wday/tm_mon 去索引静态名字表即越界读。
+ * 取 INT64_MAX：年份远超 tm_year 的 int 量程，localtime 必败（实测失败阈值约 6.7768e16 秒）。
+ * 不能取 UINT64_MAX——转 64 位 time_t 是 -1 即 1969 年，是合法时刻。
+ * 32 位 time_t 会把大值截成任意合法秒数，构造不出失败，故整段跳过。
+ * mstostr 不在此断言：它先 /1000，uint64 入参最大只到 1.84e16 秒，够不到上面那个阈值，
+ * 64 位 time_t 下失败分支从公开 API 不可达（守卫仍留着，32 位截断时是活的） */
+static void test_timestr_out_of_range(CuTest *tc) {
+    char buf[TIME_LENS];
+
+    if (sizeof(time_t) >= 8) {
+        memset(buf, 'x', sizeof(buf));
+        CuAssertIntEquals(tc, ERR_FAILED, sectostr((uint64_t)INT64_MAX, "%Y-%m-%d %a %b", buf));
+        CuAssertTrue(tc, '\0' == buf[0]);
+    }
+
+    /* 正常时刻仍照常工作 */
+    CuAssertIntEquals(tc, ERR_OK, sectostr(nowsec(), "%Y-%m-%d", buf));
+    CuAssertTrue(tc, '\0' != buf[0]);
+    CuAssertIntEquals(tc, ERR_OK, mstostr(nowms(), "%Y-%m-%d %H:%M:%S", buf));
+    CuAssertTrue(tc, '\0' != buf[0]);
 }
 
 /* =======================================================================
@@ -2796,6 +2901,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_search_start_overflow);
     SUITE_ADD_TEST(suite, test_router_url_normalize);
     SUITE_ADD_TEST(suite, test_sfid_clockback_giveup);
+    SUITE_ADD_TEST(suite, test_sfid_epoch_underflow);
     SUITE_ADD_TEST(suite, test_buffer_extra);
     SUITE_ADD_TEST(suite, test_buffer_external_appendv);
     SUITE_ADD_TEST(suite, test_buffer_external_not_writable);
@@ -2820,12 +2926,15 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_utils_misc);
     SUITE_ADD_TEST(suite, test_popen2);
     SUITE_ADD_TEST(suite, test_popen_close);
+    SUITE_ADD_TEST(suite, test_popen_free_reaps);
     SUITE_ADD_TEST(suite, test_log_lv);
     SUITE_ADD_TEST(suite, test_log_slog_filter);
     SUITE_ADD_TEST(suite, test_strptime);
     SUITE_ADD_TEST(suite, test_strptime_invalid);
     SUITE_ADD_TEST(suite, test_strptime_week_rollover);
     SUITE_ADD_TEST(suite, test_strptime_week_neg_yday);
+    SUITE_ADD_TEST(suite, test_strptime_neg_yday_with_mon);
+    SUITE_ADD_TEST(suite, test_timestr_out_of_range);
     SUITE_ADD_TEST(suite, test_tw);
     SUITE_ADD_TEST(suite, test_tw_long_timeout);
     SUITE_ADD_TEST(suite, test_tw_latency);

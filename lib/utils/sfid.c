@@ -56,10 +56,13 @@ static int32_t _sfid_clockback_wait(sfid_ctx *ctx, uint64_t curms, uint64_t *dea
     return ERR_OK;
 }
 uint64_t sfid_id(sfid_ctx *ctx) {
-    uint64_t id, curms;
+    uint64_t id, curms, now;
     uint64_t deadline = 0;
     for (;;) {
-        curms = nowms() - ctx->customepoch;
+        now = nowms();
+        // 墙钟退到 customepoch 之前:无符号减法会下溢成天文数字并永久写进 lasttimestamp,
+        // 钳到 0 即落进下面的回拨分支
+        curms = (now >= ctx->customepoch) ? now - ctx->customepoch : 0;
         if (curms < ctx->lasttimestamp) {
             if (ERR_OK != _sfid_clockback_wait(ctx, curms, &deadline)) {
                 return 0;

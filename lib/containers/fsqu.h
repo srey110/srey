@@ -30,8 +30,9 @@ void fsqu_init(fsqu_ctx *fsqu, size_t elsize, uint32_t capacity);
 void fsqu_free(fsqu_ctx *fsqu);
 /// <summary>
 /// 非阻塞入队（多生产者安全）：队列满时立即返回 ERR_FAILED，不阻塞、不扩容、不落溢出层。
-/// 同一实例上若 fsqu_push 曾落过溢出层且尚未排空，本函数同样返回 ERR_FAILED——
-/// 否则新元素会经快路径插到更早的溢出元素之前，破坏 FIFO
+/// 同一实例上若 fsqu_push 曾落过溢出层且尚未排空，本函数同样返回 ERR_FAILED。
+/// 这道守卫是 best-effort：读 novf 与随后的 mpq_trypush 不是一个原子步，
+/// 跨生产者顺序本就不保证；同生产者的 FIFO 不受影响（自己上一次落溢出层时 novf 已置位）
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="data">指向待入队元素的指针，拷贝 elsize 字节</param>
@@ -70,8 +71,10 @@ static inline void fsqu_push(fsqu_ctx *fsqu, const void *data) {
         return;
     }
     spin_lock(&fsqu->lck);
-    queue_push(&fsqu->qu, data);
+    // 置位排在 queue_push 之前:生产者侧是免锁读 novf,排在后面会留出"元素已进溢出层、
+    // novf 仍为 0"的窗口。收窄不等于消除,故上面的守卫按 best-effort 声明
     ATOMIC_ADD(&fsqu->novf, 1);
+    queue_push(&fsqu->qu, data);
     spin_unlock(&fsqu->lck);
 #else
     spin_lock(&fsqu->lck);
@@ -105,11 +108,11 @@ static inline void fsqu_push_batch(fsqu_ctx *fsqu, const void *data, uint32_t co
     }
     nleft = count - i;
     spin_lock(&fsqu->lck);
+    ATOMIC_ADD(&fsqu->novf, nleft);// 同 fsqu_push:先置位再入队,收窄免锁读到 0 的窗口
     for (; i < count; i++) {
         queue_push(&fsqu->qu, src);
         src += elsize;
     }
-    ATOMIC_ADD(&fsqu->novf, nleft);
     spin_unlock(&fsqu->lck);
 #else
     spin_lock(&fsqu->lck);
@@ -121,15 +124,11 @@ static inline void fsqu_push_batch(fsqu_ctx *fsqu, const void *data, uint32_t co
 #endif
 }
 #if FSQU_MPQ
-// 快路径取完后从溢出层续取补齐（否则调用方按 0 判空会漏掉溢出）：
-// dst 为快路径填完后的写入位置，*n 传入已取个数、返回补齐后的个数。
-// novf 为 0 即判空免锁；元素数取自 mpq.elsize，与 qu.elsize 同源于 fsqu_init 的实参。
-// 四条 pop 路径都经这里，故"在途就别排溢出层"这道守卫收在此处，由调用方把手上那个
-// mpq 返回码(mpqrtn)递进来：mpq 报 1 表示槽位已被抢占尚未发布,躺在里面的是更早入队的元素,
-// 此刻去排溢出层就会把更晚入队的先吐出来——入队侧的粘滞 novf 守着"新元素不插到更早的
-// 溢出元素之前",这是它的对称面。
-// 少取不会漏唤醒：生产者是发布完再唤醒(_task_message_push / _send_cmd 皆然),
-// 且 fsqu_size 走 mpq_size 把在途也算在内,消费者据此会自己重调度
+// 快路径取完后从溢出层续取补齐（否则调用方按 0 判空会漏掉溢出）。
+// dst 为快路径填完后的写入位置，*n 传入已取个数、返回补齐后的个数；novf 为 0 即判空免锁。
+// mpqrtn 是调用方手上那个 mpq 返回码：报 1 表示有更早入队的元素正在途中，此刻不能排溢出层，
+// 否则更晚入队的会先被吐出——它是入队侧粘滞 novf 的对称面。
+// 少取不会漏唤醒：生产者发布完才唤醒，且 fsqu_size 走 mpq_size 把在途也算在内
 static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint32_t *n, int32_t mpqrtn) {
     if (*n >= max
         || 1 == mpqrtn

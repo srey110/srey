@@ -76,8 +76,31 @@ static void test_atomic64(CuTest *tc) {
     CuAssertTrue(tc, 2000000000LL == ATOMIC64_GET(&v));
 }
 
+// SET_PTR 的宏体解引用必须括起来。改前是 (*ptr)，传表达式时 * 先于 + 结合：
+// SET_PTR(base + 1, v) 展开成 (*base + 1) = v，赋值目标整个错位（多数情况直接编译失败）。
+// 本用例传的就是表达式实参，改前编译不过，故它同时是编译期与运行期回归
+static void test_set_ptr_expr_arg(CuTest *tc) {
+    int32_t buf[3] = { 0, 0, 0 };
+    int32_t *base = buf;
+
+    SET_PTR(base + 1, 42);
+    CuAssertIntEquals(tc, 0, buf[0]);
+    CuAssertIntEquals(tc, 42, buf[1]);
+    CuAssertIntEquals(tc, 0, buf[2]);
+
+    // 三元表达式实参同理
+    SET_PTR(1 ? base + 2 : NULL, 7);
+    CuAssertIntEquals(tc, 7, buf[2]);
+
+    // NULL 守卫仍生效
+    int32_t *nil = NULL;
+    SET_PTR(nil, 99);
+    CuAssertTrue(tc, NULL == nil);
+}
+
 void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_memory);
     SUITE_ADD_TEST(suite, test_atomic32);
     SUITE_ADD_TEST(suite, test_atomic64);
+    SUITE_ADD_TEST(suite, test_set_ptr_expr_arg);
 }

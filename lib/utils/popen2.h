@@ -4,6 +4,7 @@
 #include "base/macro.h"
 
 typedef struct popen_ctx {
+    int32_t closed;   //popen_close 是否被调用过；popen_free 据此决定要不要兜底收尾
 #ifdef OS_WIN
     HANDLE pipe[2];              //命名管道句柄对：[0] 服务端（子进程端），[1] 客户端（父进程端）
     PROCESS_INFORMATION process; //子进程信息
@@ -23,12 +24,15 @@ typedef struct popen_ctx {
 /// <returns>ERR_OK 成功</returns>
 int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode);
 /// <summary>
-/// 关闭进程
+/// 关闭进程：杀掉整个子进程组（含 shell 派生的孙进程）并收尸。重复调用安全。
+/// 子进程已自行退出时不做任何事，只置内部标记
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 void popen_close(popen_ctx *ctx);
 /// <summary>
-/// 释放；关闭后句柄置空，重复调用安全，此后 read/write 返回失败
+/// 释放；关闭后句柄置空，重复调用安全，此后 read/write 返回失败。
+/// 没调用过 popen_close 的话本函数替你调一次——free 一执行调用方就永久失去了子进程句柄，
+/// 不收尾就是永久孤儿（子进程自成进程组，终端信号也够不到它）
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 void popen_free(popen_ctx *ctx);

@@ -13,11 +13,14 @@
            ((tmp & 0x00ff00ff00ff00ffULL) << 8); \
     (x) = ((tmp & 0xffff0000ffff0000ULL) >> 16) | \
           ((tmp & 0x0000ffff0000ffffULL) << 16); }
-// 128 位计数器加法
-#define ADDINC128(w,n) { (w)[0] += (uint64_t)(n); \
-    if ((w)[0] < (n)) { \
+// 128 位计数器加法。n 存局部再用:直接展开会求值两次,带副作用的实参会让进位判错
+#define ADDINC128(w,n) do { \
+    uint64_t _addinc = (uint64_t)(n); \
+    (w)[0] += _addinc; \
+    if ((w)[0] < _addinc) { \
         (w)[1]++; \
-    } }
+    } \
+} while (0)
 #define R(b,x) ((x) >> (b))                                                           // 逻辑右移
 #define S64(b,x) (((x) >> (b)) | ((x) << (64 - (b))))                                // 64 位循环右移
 #define Ch(x,y,z) (((x) & (y)) ^ ((~(x)) & (z)))                                     // 选择函数
@@ -89,6 +92,9 @@ static void _sha512_transform(sha512_ctx *sha512, const uint64_t *data) {
     uint64_t a, b, c, d, e, f, g, h, s0, s1;
     uint64_t t1, t2, *w512 = sha512->data.words;
     int32_t j;
+    // 循环外取一次:is_little 是跨 TU 的非 inline 函数,放在 16 轮循环里既每块多 16 次调用,
+    // 又成了压缩循环的优化屏障(编译器无法证明它无副作用而外提)
+    const int32_t little = is_little();
     a = sha512->state[0];
     b = sha512->state[1];
     c = sha512->state[2];
@@ -99,7 +105,7 @@ static void _sha512_transform(sha512_ctx *sha512, const uint64_t *data) {
     h = sha512->state[7];
     j = 0;
     do {
-        if (is_little()) {
+        if (little) {
             // 小端系统：将输入数据转换为主机字节序
             REVERSE64(*data++, w512[j]);
             // 执行 SHA-512 压缩函数更新 a~h

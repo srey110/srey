@@ -4,6 +4,7 @@
 #include "base/macro.h"
 
 #define MD2_BLOCK_SIZE 16 // MD2 摘要输出长度（字节）
+#define MD2_KEY_BLOCK 16 // MD2 压缩分组长度 B（HMAC 的 ipad/opad 长度）
 
 typedef struct md2_ctx {
     uint8_t data[16];       // 当前未满一块的输入缓冲

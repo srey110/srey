@@ -48,10 +48,12 @@ int32_t spsc_trypush(spsc_ctx *q, const void *data);
 /// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
 int32_t spsc_pop(spsc_ctx *q, void *out);
 /// <summary>
-/// 返回当前队列元素数量的近似值，并发下不精确
+/// 返回当前队列元素数量的近似值，并发下不精确。
+/// 偏差方向有保证：只会高估不会低估（上限 capacity），故可安全用于
+/// "队列是否还有元素待处理"这类判断——不会把有元素报成 0 而导致漏唤醒。与 mpq_size 同一约定
 /// </summary>
 /// <param name="q">spsc_ctx</param>
-/// <returns>元素数量</returns>
+/// <returns>元素数量，取值 [0, capacity]</returns>
 uint32_t spsc_size(spsc_ctx *q);
 /// <summary>
 /// 返回队列最大容量

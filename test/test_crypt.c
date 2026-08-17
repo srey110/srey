@@ -839,6 +839,38 @@ static void test_scram_setters(CuTest *tc) {
         CuAssertIntEquals(tc, 0, cli->iter);
         scram_free(cli);
     }
+    // 服务端漏调 set_salt / set_iter：必须硬失败，不能静默发出 "s=,i=0"
+    // 让 PBKDF2 退化成无盐单轮（与 pwd / PLUS cbind 那两道守卫同形）
+    {
+        char cmsg[] = "n,,n=admin,r=Ym9ndXNub25jZQ==";
+        char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+        // 两个都没设
+        scram_ctx *s0 = scram_init("SCRAM-SHA-256", 0);
+        CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(s0, cmsg, sizeof(cmsg) - 1));
+        CuAssertTrue(tc, NULL == scram_first_message(s0));
+        scram_free(s0);
+        // 只设了 iter，缺 salt
+        scram_ctx *s1 = scram_init("SCRAM-SHA-256", 0);
+        CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(s1, cmsg, sizeof(cmsg) - 1));
+        scram_set_iter(s1, 4096);
+        CuAssertTrue(tc, NULL == scram_first_message(s1));
+        scram_free(s1);
+        // 只设了 salt，缺 iter
+        scram_ctx *s2 = scram_init("SCRAM-SHA-256", 0);
+        CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(s2, cmsg, sizeof(cmsg) - 1));
+        scram_set_salt(s2, salt, sizeof(salt));
+        CuAssertTrue(tc, NULL == scram_first_message(s2));
+        scram_free(s2);
+        // 两个都设齐即放行
+        scram_ctx *s3 = scram_init("SCRAM-SHA-256", 0);
+        CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(s3, cmsg, sizeof(cmsg) - 1));
+        scram_set_salt(s3, salt, sizeof(salt));
+        scram_set_iter(s3, 4096);
+        char *ok = scram_first_message(s3);
+        CuAssertPtrNotNull(tc, ok);
+        FREE(ok);
+        scram_free(s3);
+    }
     // scram_set_salt：客户端调用被拒
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
@@ -1673,16 +1705,31 @@ static void test_padding(CuTest *tc) {
     /* ── 输入长度等于要求长度：原样拷贝，不填充 ── */
     uint8_t out2[8];
     ZERO(out2, sizeof(out2));
-    _padding_data(PKCS57, "12345678", 8, out2, 8);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(PKCS57, "12345678", 8, out2, 8));
     CuAssertTrue(tc, 0 == memcmp(out2, "12345678", 8));
 
-    /* ── 输入长度 > 要求长度：函数提前返回，不写入 output ── */
+    /* ── 输入长度 > 要求长度：装不下，返 ERR_FAILED 且一个字节都不写。
+     * 改前返回 void，调用方拿到的是未初始化的 output 且无从判别 ── */
     uint8_t out3[4];
     ZERO(out3, sizeof(out3));
-    _padding_data(PKCS57, "abcdef", 6, out3, 4);
-    /* output 保持初始零状态（dlens > reqlens 时早返回）*/
+    CuAssertIntEquals(tc, ERR_FAILED, _padding_data(PKCS57, "abcdef", 6, out3, 4));
     for (int i = 0; i < 4; i++) {
         CuAssertTrue(tc, 0 == out3[i]);
+    }
+
+    /* ── dlens 非 0 却传 NULL data：改前 output 推不动而 remain 照减，
+     * 填充落到 out[0..] 而不是 out[dlens..]，且仍返 ERR_OK ── */
+    uint8_t out4[8];
+    ZERO(out4, sizeof(out4));
+    CuAssertIntEquals(tc, ERR_FAILED, _padding_data(PKCS57, NULL, 2, out4, 8));
+    for (int i = 0; i < 8; i++) {
+        CuAssertTrue(tc, 0 == out4[i]);
+    }
+    /* 对照：dlens 为 0 时 NULL 合法，整块都是填充 */
+    ZERO(out4, sizeof(out4));
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(PKCS57, NULL, 0, out4, 8));
+    for (int i = 0; i < 8; i++) {
+        CuAssertTrue(tc, 8 == out4[i]);
     }
 
     /* ── _padding_key：klens < reqlens 时填充零并返回 pdkey ── */
@@ -2014,6 +2061,36 @@ static void test_cipher_stream_modes(CuTest *tc) {
 /* =======================================================================
  * hmac_free —— 清零敏感密钥派生状态
  * ======================================================================= */
+/* 算法属性只留 digest_init 一张表：block_lens(输出长度) / key_block(压缩分组 B) / eng_lens(引擎 ctx 字节数)。
+ * 改前 B 由 hmac.c 里第二张按类型特判的表给出，else 一律返 64 且无 default 兜底——
+ * 新增算法漏改那里不报错，HMAC 静默算错。本用例逐算法钉死三个值，漏填即挂 */
+static void test_digest_attr_table(CuTest *tc) {
+    struct {
+        digest_type t;
+        size_t out;
+        size_t b;
+        size_t eng;
+    } want[] = {
+        { DG_MD2,    MD2_BLOCK_SIZE,    16,  sizeof(md2_ctx)    },
+        { DG_MD4,    MD4_BLOCK_SIZE,    64,  sizeof(md4_ctx)    },
+        { DG_MD5,    MD5_BLOCK_SIZE,    64,  sizeof(md5_ctx)    },
+        { DG_SHA1,   SHA1_BLOCK_SIZE,   64,  sizeof(sha1_ctx)   },
+        { DG_SHA256, SHA256_BLOCK_SIZE, 64,  sizeof(sha256_ctx) },
+        { DG_SHA512, SHA512_BLOCK_SIZE, 128, sizeof(sha512_ctx) },
+    };
+    digest_ctx d;
+    size_t i;
+    for (i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
+        digest_init(&d, want[i].t);
+        CuAssertTrue(tc, want[i].out == d.block_lens);
+        CuAssertTrue(tc, want[i].b == d.key_block);
+        CuAssertTrue(tc, want[i].eng == d.eng_lens);
+        /* eng_lens 必须落在联合体内，否则 hmac_reset 的 memcpy 会读写越界 */
+        CuAssertTrue(tc, d.eng_lens <= sizeof(d.eng_ctx));
+        digest_free(&d);
+    }
+}
+
 static void test_hmac_free(CuTest *tc) {
     hmac_ctx hm;
     char k[32];
@@ -2283,6 +2360,7 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_base64_invalid);
     SUITE_ADD_TEST(suite, test_crc);
     SUITE_ADD_TEST(suite, test_digest);
+    SUITE_ADD_TEST(suite, test_digest_attr_table);
     SUITE_ADD_TEST(suite, test_md2);
     SUITE_ADD_TEST(suite, test_md4);
     SUITE_ADD_TEST(suite, test_md4_update_chunked);

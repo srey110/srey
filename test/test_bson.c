@@ -529,6 +529,21 @@ static void test_bson_cat_bounds(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, BSON_DOC(&empty), 4));
     CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
 
+    // 声明长度 0~4:结构上不可能的文档,不能当 no-op 静默吞掉
+    char tiny[8];
+    ZERO(tiny, sizeof(tiny));
+    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, tiny, sizeof(tiny)));// 声明 0
+    tiny[0] = 4;
+    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, tiny, sizeof(tiny)));// 声明 4
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+
+    // 最后一字节不是 EOD:不是 BSON,不能按 doclens-5 把中间那段原样拼进来。
+    // 前 4 字节小端恰为自身长度 8,四道旧检查全过
+    tiny[0] = 8;
+    tiny[7] = 0x41;
+    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, tiny, sizeof(tiny)));
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+
     bson_init(&src, NULL, 0);
     bson_append_int32(&src, "n", 7);
     bson_append_end(&src);
@@ -844,6 +859,14 @@ static void test_bson_check_depth_malformed(CuTest *tc) {
     // 长度字段本身非法：声明 10 但只给 9 字节
     CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(trunc, sizeof(trunc) - 1));
 
+    // EOD 提前出现、声明长度还剩字节：err 不置位（读到的确实是合法 EOD），
+    // 只能靠"读完 EOD 后 offset 必等于 doclens"这条判据拦下
+    char early_eod[] = { 0x06, 0x00, 0x00, 0x00, 0x00, (char)0xFF };
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(early_eod, sizeof(early_eod)));
+    // 同样构造但声明长度正好到 EOD：合法
+    char exact_eod[] = { 0x05, 0x00, 0x00, 0x00, 0x00 };
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(exact_eod, sizeof(exact_eod)));
+
     // 对照：合法文档仍返 ERR_OK
     bson_init(&ok, NULL, 0);
     bson_append_int32(&ok, "a", 1);
@@ -970,8 +993,8 @@ static void test_bson_iter_init_offset_reset(CuTest *tc) {
 
 // 两个原始数据入口传 NULL 时必须直接失败：bson_init 把 data==NULL 重载为"新建可写文档"，
 // 于是会 MALLOC 一块无人持有的缓冲、再按未初始化内容遍历，既泄漏又可能把堆残渣当字段打印。
-// Lua 侧可达：_lbson_iter_binary 对零长 binary 会把 NULL 推成 lightuserdata，
-// 业务再把它交给 bson.tostring2 / bson.decode 就命中此路径。
+// 零长 binary 那条 Lua 路径已在 bson.c:368 堵掉（val 不再为 NULL），这里守的是其余
+// 任何把 NULL 交进来的调用方。
 // 本用例兼作泄漏回归——修复前每轮漏 2 * BINARY_INCREASE(256) 字节，退出时 memcheck 必报非 0
 static void test_bson_null_data_entry(CuTest *tc) {
     int32_t i;
@@ -981,6 +1004,46 @@ static void test_bson_null_data_entry(CuTest *tc) {
         CuAssertPtrEquals(tc, NULL, bson_tostring2(NULL, 32));
         CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(NULL, 32));
     }
+}
+
+// 零长 binary 是合法 BSON（MongoDB 的 SASL 应答里就有）：type 有效时 val 必须非 NULL，
+// 否则按"类型检查通过即可用 val"写的消费方会直接解引用 NULL。
+// 修复前 binary_get_binary(doc, 0) 返 NULL，mongo_parse 把 ok=1 的应答判成认证失败
+static void test_bson_binary_zero_length(CuTest *tc) {
+    bson_ctx bson, rd;
+    bson_iter iter;
+    bson_subtype got = BSON_SUBTYPE_USER;
+    size_t blens = 1;
+    int32_t err = ERR_FAILED;
+    char *bdata;
+
+    bson_init(&bson, NULL, 0);
+    bson_append_binary(&bson, "payload", BSON_SUBTYPE_BINARY, NULL, 0);
+    bson_append_int32(&bson, "next", 7);// 跟一个字段，验证零长没把偏移带偏
+    bson_append_end(&bson);
+
+    bson_init(&rd, BSON_DOC(&bson), BSON_DOC_LENS(&bson));
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_BINARY, iter.type);
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    CuAssertTrue(tc, 0 == iter.lens);
+    // 不变式：type 有效 ⟹ val 非 NULL；有没有数据由 lens 表达
+    CuAssertPtrNotNull(tc, iter.val);
+
+    bdata = bson_iter_binary(&iter, &got, &blens, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertPtrNotNull(tc, bdata);
+    CuAssertTrue(tc, 0 == blens);
+    CuAssertTrue(tc, BSON_SUBTYPE_BINARY == got);
+
+    // 后一个字段照常读到，且整篇没有置 err
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_INT32, iter.type);
+    CuAssertIntEquals(tc, 7, bson_iter_int32(&iter, NULL));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    BSON_FREE(&bson);
 }
 
 // BSN-2：doc->size > doclens 时，内层字段长度检查须以 doclens 为界而非 doc->size
@@ -1132,6 +1195,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_iter_reset_short_buffer);
     SUITE_ADD_TEST(suite, test_bson_iter_init_offset_reset);
     SUITE_ADD_TEST(suite, test_bson_null_data_entry);
+    SUITE_ADD_TEST(suite, test_bson_binary_zero_length);
     SUITE_ADD_TEST(suite, test_bson_iter_error_flag);
     SUITE_ADD_TEST(suite, test_bson_tostring);
     SUITE_ADD_TEST(suite, test_bson_tostring_subtypes);

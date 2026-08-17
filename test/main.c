@@ -250,6 +250,7 @@ int main(int argc, char *argv[]) {
         {"ws_sv", 15003},
         {"harbor", 15004},
         {"router_sv", 15005},
+        {"router_idx_sv", 15006},
         {"kcp_tcp", 15040},
         {"kcp_udp", 15041},
 
@@ -359,11 +360,14 @@ int main(int argc, char *argv[]) {
     //自投递不死锁: 自身 dispatch 内连续 task_call 自己, 条数远超 qumsg 容量
     task_selfpost_start(g_loader, "selfpost_test",
         _get_name_val(testlist, "selfpost_test"));
-    //router: server + client 双 task 联调
+    //router: server + client 双 task 联调; 另起一个无流式路由的 server 压 chunked 无流式那条分支
     task_router_server_start(g_loader, "task_router_server",
         (uint16_t)*_get_name_val(portlist, "router_sv"));
+    task_router_index_server_start(g_loader, "task_router_index_server",
+        (uint16_t)*_get_name_val(portlist, "router_idx_sv"));
     task_router_client_start(g_loader, "router_test",
         (uint16_t)*_get_name_val(portlist, "router_sv"),
+        (uint16_t)*_get_name_val(portlist, "router_idx_sv"),
         _get_name_val(testlist, "router_test"));
     //kcp: server 一个 task,client 侧四组场景(happy path/close 唤醒/同 session 并发 FIFO/kcp_synstart)各一个 task,update 业务层协程驱动
     task_kcp_server_start(g_loader, "kcp_server",
@@ -407,7 +411,10 @@ int main(int argc, char *argv[]) {
             LOG_WARN("popen %s failed.", pycmd);
             continue;
         }
-        popen_waitexit(&pctx, 60000);
+        // 返回值不能丢: 脚本挂满 60 秒与正常跑完 3 秒, 日志里本来长得一模一样
+        if (ERR_OK != popen_waitexit(&pctx, 60000)) {
+            LOG_WARN("popen %s exceeded 60s budget.", pycmd);
+        }
         while ((nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1, NULL)) > 0) {
             outbuf[nread] = '\0';
             printf("%s\n", outbuf);
@@ -419,6 +426,12 @@ int main(int argc, char *argv[]) {
             *pyslot = 1;
         } else {
             LOG_WARN("%s exit code %d.", pyitems[pyi].name, pycode);
+        }
+        // 已经收到退出信号就别再起后面的脚本: 子进程自成进程组后收不到终端 SIGINT,
+        // 挨个等满 60 秒预算会让 Ctrl+C 看起来几分钟没反应
+        if (0 != ATOMIC_GET(&_hug.exitflag)) {
+            LOG_WARN("exit signaled, skip remaining python assists.");
+            break;
         }
     }
     hug_wait(&_hug);

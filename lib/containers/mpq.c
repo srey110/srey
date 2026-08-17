@@ -34,17 +34,11 @@ void mpq_free(mpq_ctx *q) {
     FREE(q->cells);
 }
 /*
- * 入队核心逻辑（Vyukov 多生产者序列号算法）：
- *   每个槽位的 sequence 追踪该槽位当前所处的"代"：
- *     - sequence == pos          → 槽位空闲，可被当前入队者抢占
- *     - sequence == pos + 1      → 槽位已写入，等待出队者消费
- *     - sequence == pos + cap    → 槽位已消费，可进入下一轮入队
- *   signed diff = (int32_t)(sequence - pos)：
- *     diff == 0  → 本轮可入队，尝试 CAS 抢占 enq_pos
- *     diff  < 0  → 槽位尚未被消费（队列已满）
- *     diff  > 0  → enq_pos 已被其他生产者推进，重新加载 pos 重试
+ * 入队核心（Vyukov 多生产者序列号算法）：槽位 sequence 标记它所处的"代"——
+ * == pos 空闲、== pos+1 已写入待消费、== pos+cap 已消费可重用。
+ * 循环用 signed diff = (int32_t)(sequence - pos)：0 可抢占，负数队满，
+ * 正数是别的生产者已推进 enq_pos 需重载重试。队满立即 ERR_FAILED，拷 elsize 字节
  */
-//非阻塞入队：从 data 拷贝 elsize 字节，队列满时立即返回 ERR_FAILED
 int32_t mpq_trypush(mpq_ctx *q, const void *data) {
     if (NULL == q || NULL == data) {
         return ERR_FAILED;
@@ -84,11 +78,8 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data) {
     return ERR_OK;
 }
 /*
- * 出队（多消费者安全）核心逻辑：
- *   signed diff = (int32_t)(sequence - (pos + 1))：
- *     diff == 0  → 槽位已写入数据，可出队，尝试 CAS 抢占 deq_pos
- *     diff  < 0  → 生产者尚未写入（队列为空），返回 ERR_FAILED
- *     diff  > 0  → deq_pos 已被其他消费者推进，重新加载 pos 重试
+ * 出队（多消费者安全）：signed diff = (int32_t)(sequence - (pos + 1))——
+ * 0 表示已写入可出队(CAS 抢 deq_pos)，负数是队空，正数是别的消费者已推进 deq_pos 需重载重试
  */
 int32_t mpq_pop(mpq_ctx *q, void *out) {
     if (NULL == q || NULL == out) {
@@ -129,13 +120,9 @@ int32_t mpq_pop(mpq_ctx *q, void *out) {
     return ERR_OK;
 }
 /*
- * 出队（单消费者）核心逻辑：
- *   消费者独占 deq.v，无并发推进者，无需 CAS；只需校验当前槽位 sequence 是否就绪：
- *   signed diff = (int32_t)(sequence - (pos + 1))：
- *     diff == 0  → 槽位已写入数据，直接出队
- *     diff  < 0  → 生产者尚未写入（队列为空），返回 ERR_FAILED
- *     diff  > 0  → 不应出现（消费者独占 deq.v，pos 不会被推进）
- *   出队完成后单调推进 deq.v，并把 sequence 设为 pos+capacity 通知生产者下一轮可用。
+ * 出队（单消费者）：独占 deq.v 无需 CAS，只校验 sequence 是否就绪——
+ * diff == 0 可出队，负数是队空，正数不会出现(pos 不被他人推进)。
+ * 出队后推进 deq.v 并把 sequence 置为 pos+capacity，通知生产者该槽可重用
  */
 int32_t mpq_pop_sc(mpq_ctx *q, void *out) {
     if (NULL == q || NULL == out) {
@@ -169,14 +156,9 @@ int32_t mpq_pop_sc(mpq_ctx *q, void *out) {
     return ERR_OK;
 }
 /*
- * 返回当前队列元素数量的近似值。
- * 并发场景下 deq_pos 与 enq_pos 分两次读取，结果仅供参考。
- * 无符号减法天然处理 uint32_t 绕回情形。
- * 必须先读 deq 再读 enq：两者都单调递增且恒有 enq >= deq，于是后读的 enq 必不小于
- * 先读的 deq，下溢在数学上不可能。两个出队实现又都保证瞬时 enq-deq <= capacity，
- * 故 size > capacity 只可能是两次读取之间消费者推进了 deq 造成的高估——彼时队列刚刚还很满，
- * 钳到 capacity 而非 0：调用方（日志线程、worker）用本值判断"是否还有活要干"，
- * 高估最多多醒一次，低估则是漏唤醒。
+ * 元素数近似值，并发下不精确。必须先读 deq 再读 enq：两者单调递增且恒有 enq >= deq，
+ * 这个顺序下下溢不可能。越界钳到 capacity 而非 0——调用方靠它判"还有没有活要干"，
+ * 高估最多多醒一次，低估就是漏唤醒
  */
 uint32_t mpq_size(mpq_ctx *q) {
     uint32_t deq = ATOMIC_GET(&q->deq.v);

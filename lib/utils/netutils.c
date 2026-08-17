@@ -3,22 +3,28 @@
 
 #define MSEC    1000  //毫秒与秒的换算系数
 #ifdef OS_WIN
-// 0:未初始化 1:初始化中 >=2:就绪（引用数 = 值 - 1）
+// 0:未初始化 1:初始化中或收尾中 >=2:就绪（引用数 = 值 - 1）。
+// 只保证"启停各一次"与"init 期间并发调用"两种用法,不是通用的并发引用计数
 static atomic_t _init_sock_ref = 0;
 #endif
 
 void sock_init(void) {
 #ifdef OS_WIN
-    if (ATOMIC_CAS(&_init_sock_ref, 0, 1)) {
-        WSADATA wsdata;
-        WORD ver = MAKEWORD(2, 2);
-        ASSERTAB_CODE(WSAStartup(ver, &wsdata));
-        ATOMIC_SET(&_init_sock_ref, 2);
-    } else {
-        while (ATOMIC_GET(&_init_sock_ref) < 2) {
-            CPU_PAUSE();
+    for (;;) {
+        if (ATOMIC_CAS(&_init_sock_ref, 0, 1)) {
+            WSADATA wsdata;
+            WORD ver = MAKEWORD(2, 2);
+            ASSERTAB_CODE(WSAStartup(ver, &wsdata));
+            ATOMIC_SET(&_init_sock_ref, 2);
+            return;
         }
-        ATOMIC_ADD(&_init_sock_ref, 1);
+        if (ATOMIC_GET(&_init_sock_ref) >= 2) {
+            ATOMIC_ADD(&_init_sock_ref, 1);
+            return;
+        }
+        // 值为 1:别人正在 init,或 sock_clean 已减到 1 还没置 0。原先在这里死等 >= 2,
+        // 后者永远等不到;改成回头重试 CAS,对方置 0 后即可接手
+        CPU_PAUSE();
     }
 #endif
 }
