@@ -7,6 +7,12 @@ local srey = require("lib.srey")
 local smtp = require("srey.smtp")
 local pub  = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 
+-- RCPT TO 的合法应答：250 已接受、251 已接受但将转发（RFC 5321 §4.3.2）。
+-- 判 251 为失败会让 DATA 从不发出、整封信报错，而收件人其实已被服务端接受。
+-- 其余命令都是单码（MAIL FROM / 正文 / RSET / NOOP 判 250，DATA 判 354，QUIT 判 221），
+-- 直接走 check_ok / check_code。与 C 侧 coro_utils.c 的四张 SMTP_CODE_* 表同源
+local RCPT_CODES = { "250", "251" }
+
 -- smtp_ctx：SMTP 连接上下文。
 -- 每个实例对应一条到 SMTP 服务器的持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
@@ -52,7 +58,7 @@ function ctx:_connect()
 end
 
 ---发送 RSET 命令重置服务端会话状态（不关闭连接），用于复用连接发送下一封邮件
----@return boolean ok 服务端返回 2xx 时 true
+---@return boolean ok 服务端返回 250 时 true（check_ok 只认这一个码，不是判整个 2xx 段）
 function ctx:reset()
     return srey.serial_ret(false, self.serial(self._reset, self))
 end
@@ -68,7 +74,7 @@ function ctx:_reset()
     return self.smtp:check_ok(pack)
 end
 
--- conn_pub 的探活钩子：NOOP，服务端返回 2xx 即存活
+-- conn_pub 的探活钩子：NOOP，服务端返回 250 即存活（check_ok 只认这一个码）
 function ctx:_ping()
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_ping()
@@ -81,7 +87,7 @@ end
 
 ---内部邮件发送流程（不含 reset）：MAIL FROM → RCPT TO × N → DATA(354) → MIME 正文；任一步失败即返回
 ---@param mail any mail_ctx 邮件对象
----@return boolean ok 整个流程 2xx 通过时 true
+---@return boolean ok 每步应答码都符合预期时 true（MAIL/RCPT/正文判 250，DATA 判 354）
 function ctx:_send(mail)
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_from(mail:from_get())
@@ -98,7 +104,7 @@ function ctx:_send(mail)
             return false
         end
         pack =  srey.syn_send(fd, skid, cmd, csize, 0)
-        if nil == pack or not self.smtp:check_ok(pack) then
+        if nil == pack or not self.smtp:check_codes(pack, RCPT_CODES) then
             return false
         end
     end
@@ -121,9 +127,11 @@ function ctx:_send(mail)
     return true
 end
 
----发送邮件：_send 后无论成败都执行 reset，保证服务端状态干净以便复用连接；reset 失败说明连接已断，立即关闭
+---发送邮件：_send 后无论成败都执行 reset，保证服务端状态干净以便复用连接；
+---reset 失败即就地拆掉连接（代次前进、established 清零），下一封信要么先 ping() 重连要么直接失败
 ---@param mail any mail_ctx 邮件对象
----@return boolean ok 发送成功 true
+---@return boolean ok 邮件投递成功 true。只反映这封邮件的成败，不反映连接状态——
+---投递成功而收尾 reset 失败时连接已被拆掉，本次仍返 true
 function ctx:send(mail)
     return srey.serial_ret(false, self.serial(self._sendmail, self, mail))
 end
@@ -131,11 +139,10 @@ end
 -- 分开各包一次的话，别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉
 function ctx:_sendmail(mail)
     local rtn = self:_send(mail)
+    -- 走 _closereset 而不是自己 sync_close：代次与 established 由 conn_pub 统一维护，
+    -- 漏掉后者会让排队中的 connect 对着这条已关的连接报成功
     if not self:_reset() then
-        local fd, skid = self.smtp:sock_id()
-        if INVALID_SOCK ~= fd then
-            srey.sync_close(fd, skid, 1)
-        end
+        self:_closereset()
     end
     return rtn
 end

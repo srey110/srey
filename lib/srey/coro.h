@@ -42,7 +42,8 @@ void *coro_get_arg(task_ctx *task);
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket 句柄</param>
 /// <param name="skid">链接ID</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 仅表示命令已入队（fd 非 INVALID_SOCK），不代表绑定已生效；
+///   绑定必然先于随后同一 fd 的 sendto 落定，两者投给同一 watcher 的同一条命令队列，FIFO</returns>
 int32_t coro_sync(task_ctx *task, SOCKET fd, uint64_t skid);
 /// <summary>
 /// 休眠
@@ -83,8 +84,8 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
-/// <param name="err">错误码</param>
-/// <param name="size">返回数据长度</param>
+/// <param name="err">错误码；必须非 NULL，函数内裸解引用</param>
+/// <param name="size">返回数据长度；可传 NULL 不写</param>
 /// <returns>握手数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size);
@@ -153,8 +154,8 @@ void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size);
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
-/// <param name="size">数据长度</param>
-/// <param name="end">1 分片结束 0未结束</param>
+/// <param name="size">数据长度；可传 NULL 不写</param>
+/// <param name="end">1 分片结束 0未结束；必须非 NULL，函数内裸解引用</param>
 /// <returns>分片数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end);

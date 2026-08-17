@@ -42,6 +42,30 @@ runner.run("fork", function(t)
         t:eq(42, r[1].val, "fork_wait 1 个任务 val 正确")
     end
 
+    -- ── srey.fork_wait：多返回值不得截断 ──────────────────────────────
+    -- mongo 的命令普遍返 (ok, n) 双值，只留第一个就把行数悄悄丢了
+    do
+        local r = srey.fork_wait({
+            function() return true, 7 end,
+            function() return "x", nil, "z" end,   -- 中间的 nil 洞：# 数不准，靠 n
+        })
+        t:eq(2, r[1].n, "多返回值任务 n=2")
+        t:eq(true, r[1][1], "r[1][1] = true")
+        t:eq(7, r[1][2], "r[1][2] = 7（第二个返回值未被丢掉）")
+        t:eq(r[1].val, r[1][1], "val 是 [1] 的别名")
+        t:eq(3, r[2].n, "含 nil 洞的任务 n=3")
+        t:eq("x", r[2][1], "r[2][1] = x")
+        t:eq(nil, r[2][2], "r[2][2] = nil（洞保留）")
+        t:eq("z", r[2][3], "r[2][3] = z（洞之后的值仍在）")
+    end
+
+    -- 无返回值的任务：n=0，val 为 nil，不应误报成有一个 nil 返回值
+    do
+        local r = srey.fork_wait({ function() end })
+        t:eq(0, r[1].n, "无返回值任务 n=0")
+        t:eq(nil, r[1].val, "无返回值任务 val=nil")
+    end
+
     -- ── srey.fork_wait：N 个并发任务，结果与输入同序 ──────────────────
     do
         local t0 = srey.timer_ms()

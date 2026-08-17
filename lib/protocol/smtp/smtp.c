@@ -56,12 +56,18 @@ int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ct
     }
     return ERR_OK;
 }
-int32_t smtp_check_code(char *pack, const char *code) {
-    if (0 == strncmp(pack, code, strlen(code))) {
-        return ERR_OK;
+int32_t smtp_check_codes(char *pack, const char *const *codes, size_t ncode) {
+    for (size_t i = 0; i < ncode; i++) {
+        if (0 == strncmp(pack, codes[i], strlen(codes[i]))) {
+            return ERR_OK;
+        }
     }
+    // 告警只在这里打：全部码都不中才算失败，逐码打会给"命中第二个码"的正常应答刷假告警
     LOG_WARN("%s", pack);
     return ERR_FAILED;
+}
+int32_t smtp_check_code(char *pack, const char *code) {
+    return smtp_check_codes(pack, &code, 1);
 }
 int32_t smtp_check_ok(char *pack) {
     return smtp_check_code(pack, SMTP_OK);

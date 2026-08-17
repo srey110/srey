@@ -434,7 +434,9 @@ static void _sq_holder(task_ctx *task, void *arg) {
     a->ev[(*a->order)++] = 1;// 1 = 持锁者跑完临界区
     coro_serial_leave(held);
 }
-// 与 mysql_quit / smtp_quit 等同一套：摘指针 → NULL 则退 → 上锁 → 干活 → free → 摘指针 → unlock
+// 与 mysql_quit / smtp_quit 等同一套：摘指针 → 上锁 → 干活 → free → 摘指针 → unlock。
+// 真接口在 NULL 那一档是"不排队直接断连"（无执行器的连接本就不串行），这里的复刻件不做断连动作，
+// 故 NULL 时只记一次 noop——本用例考的是上锁与 free 的交接，不是断连本身
 static void _sq_quit(task_ctx *task, void *arg) {
     sq_arg *a = (sq_arg *)arg;
     coro_sleep(task, a->hold_ms);// 让持锁者先进临界区

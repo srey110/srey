@@ -151,6 +151,33 @@ void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp) {
         LOG_WARN("UDP send buf growing on fd %d: %zu bytes.", (int32_t)fd, wb_size);
     }
 }
+int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t established, int32_t client) {
+    if (NULL != ssl) {
+        LOG_WARN("ssl already in use.");
+        return 0;
+    }
+    if (BIT_CHECK(*status, STATUS_SSLEXCHANGE)) {
+        LOG_WARN("repeat request ssl exchange.");
+        return 0;
+    }
+    if (BIT_CHECK(*status, STATUS_ERROR)
+        || BIT_CHECK(*status, STATUS_GRACEFUL_CLOSE)) {
+        return 0;
+    }
+    // 连接未完成时 EVENT_WRITE(IOCP 为 STATUS_SENDING)表示等待 connect 而非待发数据,
+    // 误入调用方的延迟分支会残留 SSLEXCHANGE 脏位;正确用法是 ev_connect 带 evssl,
+    // 或等连接建立后再 ev_ssl
+    if (0 == established) {
+        LOG_WARN("ssl exchange requested before connection established.");
+        return 0;
+    }
+    if (client) {
+        BIT_SET(*status, STATUS_CLIENT);
+    } else {
+        BIT_REMOVE(*status, STATUS_CLIENT);
+    }
+    return 1;
+}
 int32_t _evpub_nodelay_nonblock(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
         || ERR_OK != sock_nonblock(fd)) {

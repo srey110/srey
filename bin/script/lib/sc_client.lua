@@ -38,7 +38,7 @@ local function _wait_resp(post_ok, sess, op)
     end
     local msg = srey._coro_wait(sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        WARN("sc %s timeout, session %s, local state kept(server side unknown).", op, tostring(sess))
+        WARN("sc %s timeout, session %s, server side unknown.", op, tostring(sess))
         return nil, false
     end
     if ERR_OK ~= msg.erro then
@@ -111,6 +111,11 @@ function sc_client._on_deliver(data, size)
         local handler = groups and groups[d.group]
         if handler then
             srey.xpcall(handler, topic, d.payload, d.publisher, d.meta)
+        else
+            -- 本地无 handler 但服务端还在投:多半是那次 subscribe 超时后回滚了本地登记，
+            -- 而服务端其实订阅成功了。不打这条日志的话消息就静默消失，无从察觉
+            WARN("sc_client: no local handler for shared topic %s (pattern %s, group %s), dropped.",
+                 topic, tostring(d.pattern), tostring(d.group))
         end
         return
     end
@@ -123,6 +128,10 @@ function sc_client._on_deliver(data, size)
         if _topic_match(pattern, lits) then
             matched[#matched + 1] = handler
         end
+    end
+    if 0 == #matched then
+        -- 同上：服务端仍在投而本地一个 pattern 都匹配不上，说明两侧订阅表已经不一致
+        WARN("sc_client: no local handler matches topic %s, dropped.", topic)
     end
     for i = 1, #matched do
         srey.xpcall(matched[i], topic, d.payload, d.publisher, d.meta)
@@ -148,11 +157,13 @@ function sc_client.subscribe(sc_name, topic, handler)
     local sess = srey.id()
     local ok, settled = _wait_resp(subscribe(sc_name, sess, topic), sess, "subscribe")
     if not ok then
-        -- 仅在确定服务端未生效(未投出/明确拒绝)时回滚;超时状态未知则保留本地 handler,
-        -- 否则服务端若已订阅成功,后续 deliver 会因本地无 handler 被静默丢弃。
-        -- 另要求当前值仍是本次 handler(未被并发/重订覆盖),避免抹掉他人写入
-        if settled and handler == _handlers[topic] then
+        -- 失败一律回滚本次 handler,超时也回滚:本地留着它就等于声称订阅已生效。
+        -- 要求当前值仍是本次 handler(未被并发/重订覆盖),避免抹掉他人写入
+        if handler == _handlers[topic] then
             _handlers[topic] = old
+        end
+        if not settled then
+            WARN("sc subscribe timeout, topic %s: local handler dropped, server may have subscribed; resubscribe to be sure.", topic)
         end
         return false
     end
@@ -190,11 +201,16 @@ function sc_client.subscribe_shared(sc_name, topic, group, handler)
     local sess = srey.id()
     local ok, settled = _wait_resp(subscribe_shared(sc_name, sess, topic, group), sess, "subscribe_shared")
     if not ok then
-        if settled and handler == groups[group] then
+        -- 回滚口径同 sc_client.subscribe
+        if handler == groups[group] then
             groups[group] = old
             if nil == next(groups) then
                 _shared_handlers[topic] = nil
             end
+        end
+        if not settled then
+            WARN("sc subscribe_shared timeout, topic %s group %s: local handler dropped, server may have subscribed; resubscribe to be sure.",
+                 topic, group)
         end
         return false
     end
@@ -213,10 +229,15 @@ function sc_client.unsubscribe(sc_name, topic)
     local old = _handlers[topic]
     _handlers[topic] = nil
     local sess = srey.id()
-    local ok = _wait_resp(unsubscribe(sc_name, sess, topic), sess, "unsubscribe")
+    local ok, settled = _wait_resp(unsubscribe(sc_name, sess, topic), sess, "unsubscribe")
     if not ok then
-        if nil == _handlers[topic] then
+        -- 只有确定服务端没退订(未投出/明确拒绝)才把 handler 装回去。超时状态未知时保持已移除:
+        -- 服务端若其实已退订,本地留着的 handler 还会被别的重叠 pattern(如 t1/+)的投递重新调到
+        if settled and nil == _handlers[topic] then
             _handlers[topic] = old
+        end
+        if not settled then
+            WARN("sc unsubscribe timeout, topic %s: local handler dropped, server may still be subscribed.", topic)
         end
         return false
     end
@@ -242,9 +263,10 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
         end
     end
     local sess = srey.id()
-    local ok = _wait_resp(unsubscribe_shared(sc_name, sess, topic, group), sess, "unsubscribe_shared")
+    local ok, settled = _wait_resp(unsubscribe_shared(sc_name, sess, topic, group), sess, "unsubscribe_shared")
     if not ok then
-        if nil ~= old then
+        -- 回滚口径同 sc_client.unsubscribe
+        if settled and nil ~= old then
             local g = _shared_handlers[topic]
             if not g then
                 g = {}
@@ -253,6 +275,10 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
             if nil == g[group] then
                 g[group] = old
             end
+        end
+        if not settled then
+            WARN("sc unsubscribe_shared timeout, topic %s group %s: local handler dropped, server may still be subscribed.",
+                 topic, group)
         end
         return false
     end

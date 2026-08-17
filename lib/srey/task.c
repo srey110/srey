@@ -335,6 +335,8 @@ static msgdata_kind _message_data_kind(msg_type mtype) {
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
         return MSGDATA_RAW;
+    // CLOSE 不能加 data：_coro_handle_closed 对同一条消息按等待者个数各调一次 _message_clean,
+    // 有数据就变成 N 重释放。真要给它带数据，得先让那个循环自己收口清理
     default:
         return MSGDATA_NONE;
     }

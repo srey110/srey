@@ -87,7 +87,9 @@ int32_t mysql_ping(mysql_ctx *mysql);
 /// <param name="cb">结果集回调；NULL 表示只把结果集读完不回调（INSERT/UPDATE 这类）</param>
 /// <param name="udata">透传给 cb</param>
 /// <returns>ERR_OK 全部结果集读完且回调都成功；ERR_FAILED 组包失败、网络失败、
-/// 未持锁(不在协程内或连接正在销毁)、或任一回调返回失败</returns>
+/// 未持锁(不在协程内或连接正在销毁)、任一回调返回失败、或 cb 为 NULL 时服务端回了 ERR 应答。
+/// 服务端的 ERR 应答只在 cb 为 NULL 那一档算失败：给了 cb 就由 cb 说成败，
+/// 它照样能收到 ERR 包并从中取错误信息</returns>
 int32_t mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
                     mysql_result_cb cb, void *udata);
 /// <summary>
@@ -126,7 +128,9 @@ void mysql_stmt_close(mysql_stmt_ctx *stmt);
 /// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
 /// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
 /// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
-/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
+/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
+/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 void mysql_quit(mysql_ctx *mysql);
@@ -144,7 +148,9 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
 /// 关闭链接，并回收该连接的串行化执行器（排队中的投递被唤醒并失败返回）。
 /// 先排在在途命令之后再退出：QUIT 要等服务端 221，插在别人的邮件流中间会把响应对错位，
 /// 随后的断连更会把对方半途的等待打断。**须在协程内调用**。
-/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
+/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
+/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 void smtp_quit(smtp_ctx *smtp);
@@ -155,11 +161,14 @@ void smtp_quit(smtp_ctx *smtp);
 /// <returns>ERR_OK 成功</returns>
 int32_t smtp_ping(smtp_ctx *smtp);
 /// <summary>
-/// 邮件发送。锁覆盖整封邮件（含收尾的 RSET），期间其他协程的投递排队等待
+/// 邮件发送。锁覆盖整封邮件（含收尾的 RSET），期间其他协程的投递排队等待；
+/// RSET 失败即关闭连接——那说明连接已不干净，留着它下一封信只会被回 503
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 /// <param name="mail">mail_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 邮件已投递。只反映这封邮件的成败，不反映连接状态——
+/// 邮件投递成功而收尾的 RSET 失败时连接已被关掉，仍返 ERR_OK，
+/// 下一次发送要么先 smtp_ping 重连，要么就在已关的连接上失败</returns>
 int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 // 以下 pgsql 命令接口全部经连接内的串行化执行器串行发出：pgsql 一条命令要读到 ReadyForQuery
 // 才算完，copy_in 更是两次往返，多协程共用一条连接时命令交错会让整条连接报错。
@@ -186,7 +195,9 @@ int32_t pgsql_cancel(pgsql_ctx *pg);
 /// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
 /// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
 /// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
-/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
+/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
+/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 void pgsql_quit(pgsql_ctx *pg);
@@ -271,8 +282,10 @@ int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
 /// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
 /// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
 /// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
-/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
-/// mongo 没有退出命令，只有断连，故拿不拿得到执行权都照断
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
+/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
+/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
+/// mongo 没有退出命令，断连就是退出
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 void mongo_quit(mongo_ctx *mongo);

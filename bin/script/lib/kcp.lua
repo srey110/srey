@@ -52,14 +52,23 @@ function ctx:start(ip, port, config)
     end
     self.sess = sess
     local msg = srey._coro_wait(sess, srey.MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
+    -- 失败分支 stop 之前先认一次 sess:挂起期间别的协程可能 stop + 重启换上新会话(它那次 stop
+    -- 把 self.sess 清成 0,正好放开上面那道守卫),认不上就说明现在这条是别人的,停它就是误伤。
+    -- 自己那条旧会话此时已无法再定位,只能等 socket 关闭时回收——总好过抹掉别人刚建好的
     if srey.MSG_TYPE.TIMEOUT == msg.mtype then
-        self:stop()
+        if sess == self.sess then
+            self:stop()
+        end
         return false
     end
     if srey.MSG_TYPE.CLOSE == msg.mtype
         or ERR_OK ~= msg.erro then
-        -- 占位条目由 _kcp_start 失败时补发的合成 CLOSE 清(erro != ERR_OK,不触发 on_close 观察者)
-        self.sess = 0
+        -- 走 stop 而不是只清 sess:C 侧 kcp_start 已把 stopped 置 0,留在 0 则 handle/send 绕过守卫
+        -- 投到不存在的会话,被静默丢弃却返成功。占位条目由 _kcp_start 补发的那条合成 CLOSE 清
+        -- (erro != ERR_OK,不触发 on_close 观察者),kcp_stop 解析不到会话不会再补一条
+        if sess == self.sess then
+            self:stop()
+        end
         return false
     end
     return true
@@ -89,23 +98,30 @@ function ctx:send(data, size, copy)
     if not self.sync then
         return self.kcp:send(data, size, copy)
     end
-    if 0 == self.sess then
+    -- 捏住 sess 而不是等待与回写各读一次 self.sess:挂起期间它可能被别的协程换掉，
+    -- 按新值等待就等错了会话，按新值回写更会抹掉别人刚建好的那条。与 C 侧 kcp_synsend 同形
+    local sess = self.sess
+    if 0 == sess then
         srey._ud_free_copy(data, copy)
         return nil
     end
     if not self.kcp:send(data, size, copy) then
         return nil
     end
-    local msg = srey._coro_wait(self.sess, srey.MSG_TYPE.RECVFROM, srey.get_netread_timeout())
+    local msg = srey._coro_wait(sess, srey.MSG_TYPE.RECVFROM, srey.get_netread_timeout())
     if srey.MSG_TYPE.TIMEOUT == msg.mtype then
-        self:stop()
+        if sess == self.sess then
+            self:stop()
+        end
         return nil
     end
     if srey.MSG_TYPE.CLOSE == msg.mtype then
         -- 会话已在 C 层拆除,coro_sess 条目也已由 _net_close_dispatch 清掉(waiters 摘空后 del_empty);
         -- 但 self.sess 仍是旧值,不清则下次 send 会通过守卫、投到已消失的会话被 _kcp_resolve 静默丢弃,
         -- 而 kcp_send 返 ERR_OK 让 Lua 以为发送成功,继而空等满一个 netread 超时
-        self.sess = 0
+        if sess == self.sess then
+            self.sess = 0
+        end
         return nil
     end
     return msg.udata, msg.size

@@ -343,28 +343,9 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
         return;
     }
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-    if (NULL != tcp->ssl) {
-        LOG_WARN("ssl already in use.");
+    if (0 == _evpub_ssl_exchange_check(tcp->ssl, &tcp->status,
+                                       _usk_on_rw_cb == skctx->ev_cb, client)) {
         return;
-    }
-    if (BIT_CHECK(tcp->status, STATUS_SSLEXCHANGE)) {
-        LOG_WARN("repeat request ssl exchange.");
-        return;
-    }
-    if (BIT_CHECK(tcp->status, STATUS_ERROR)
-        || BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
-        return;
-    }
-    // 连接未完成(ev_cb 仍为 _usk_on_connect_cb)时 EVENT_WRITE 表示等待 connect 而非待发数据,
-    // 误入下方延迟分支会残留 SSLEXCHANGE 脏位;拒绝(正确用法:ev_connect 带 evssl,或等连接建立后再 ev_ssl)
-    if (_usk_on_rw_cb != skctx->ev_cb) {
-        LOG_WARN("ssl exchange requested before connection established.");
-        return;
-    }
-    if (client) {
-        BIT_SET(tcp->status, STATUS_CLIENT);
-    } else {
-        BIT_REMOVE(tcp->status, STATUS_CLIENT);
     }
     if (BIT_CHECK(skctx->events, EVENT_WRITE)) {
         tcp->evssl = evssl;
@@ -952,40 +933,40 @@ void _uev_qtn_freelsn(watcher_ctx *watcher, listener_ctx *lsn) {
         _uev_qtn_push(watcher, lsn, QTN_LSN);
     }
 }
+// 释放一个隔离期到点的对象。hard 区分两种收尾:0 为常规 drain,tcp 回池留着复用;
+// 1 为 watcher 退出前的 flush,池本身也要没了,tcp 得真释放。udp / lsn 两种走法相同。
+// 新增 qtn_type 只需在这里加一个 case,别再回到两个循环里各加一次
+static void _uev_qtn_release(watcher_ctx *watcher, qtn_entry *e, int32_t hard) {
+    switch (e->type) {
+    case QTN_TCP:
+        if (0 != hard) {
+            _evpub_sk_free((sock_ctx *)e->obj);
+        } else {
+            pool_push(&watcher->pool, (sock_ctx *)e->obj, 0);
+        }
+        break;
+    case QTN_UDP:
+        _uev_free_udp((sock_ctx *)e->obj);
+        break;
+    case QTN_LSN:
+        _uev_freelsn((listener_ctx *)e->obj);
+        break;
+    }
+}
 void _uev_qtn_drain(watcher_ctx *watcher, uint64_t now_ms) {
     qtn_entry *e;
     while (NULL != (e = (qtn_entry *)queue_peek(&watcher->qtn))) {
         if (now_ms - e->enter_ms < QTN_MS) {
             break;
         }
-        switch (e->type) {
-        case QTN_TCP:
-            pool_push(&watcher->pool, (sock_ctx *)e->obj, 0);
-            break;
-        case QTN_UDP:
-            _uev_free_udp((sock_ctx *)e->obj);
-            break;
-        case QTN_LSN:
-            _uev_freelsn((listener_ctx *)e->obj);
-            break;
-        }
+        _uev_qtn_release(watcher, e, 0);
         queue_pop(&watcher->qtn);
     }
 }
 void _uev_qtn_flush(watcher_ctx *watcher) {
     qtn_entry *e;
     while (NULL != (e = (qtn_entry *)queue_pop(&watcher->qtn))) {
-        switch (e->type) {
-        case QTN_TCP:
-            _evpub_sk_free((sock_ctx *)e->obj);
-            break;
-        case QTN_UDP:
-            _uev_free_udp((sock_ctx *)e->obj);
-            break;
-        case QTN_LSN:
-            _uev_freelsn((listener_ctx *)e->obj);
-            break;
-        }
+        _uev_qtn_release(watcher, e, 1);
     }
     queue_free(&watcher->qtn);
 }

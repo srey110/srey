@@ -22,13 +22,14 @@ typedef struct timeout_entry {
 // 从堆节点指针还原 timeout_entry 指针
 #define _TE_FROM_HNODE(n) UPCAST(n, timeout_entry, hnode)
 // 单个挂起协程的等待信息
+// 到期时间不在这里存：权威副本在 te->timeout（超时堆按它排序与判定），
+// 这边再留一份就是只写不读的死字段
 typedef struct coro_info {
-    list_node node;   // 挂载到 coro_sess.waiters
-    msg_type mtype;   // 期望唤醒的消息类型
+    list_node node;    // 挂载到 coro_sess.waiters
     mco_coro *co;      // 挂起的协程对象
-    uint64_t timeout; // 绝对到期时间（毫秒），0 表示无超时
-    uint64_t since;   // 挂起起始时刻（毫秒），用于 debug dump 计算挂起时长
-    timeout_entry *te;      // 非 NULL 表示已注册到超时堆
+    uint64_t since;    // 挂起起始时刻（毫秒），用于 debug dump 计算挂起时长
+    timeout_entry *te; // 非 NULL 表示已注册到超时堆
+    msg_type mtype;    // 期望唤醒的消息类型
 }coro_info;
 // session 到挂起协程的映射节点
 typedef struct coro_sess {
@@ -124,10 +125,9 @@ static void _coro_cosess_set(task_ctx *task, mco_coro *coro, uint64_t sess, msg_
     uint64_t now = timer_cur_ms(&coctx->timer);
     coro_info *coinfo = (coro_info *)pool_pop(&coctx->coinfo_pool, NULL, 0);
     coinfo->since = now;
-    coinfo->timeout = ms > 0 ? now + ms : 0;
     coinfo->co = coro;
     coinfo->mtype = mtype;
-    coinfo->te = ms > 0 ? _coro_te_insert(coctx, coinfo->timeout, sess) : NULL;
+    coinfo->te = ms > 0 ? _coro_te_insert(coctx, now + ms, sess) : NULL;
     coro_sess key;
     key.sess = sess;
     coro_sess *cofind = (coro_sess *)hashmap_get(coctx->mapco, &key);
@@ -269,7 +269,7 @@ static void _coro_ctx_free(void *arg) {
         list_foreach_safe(&corosess->waiters, wit, wtmp) {
             ci = UPCAST(wit, coro_info, node);
             if (NULL != ci->co) {
-                mco_destroy(ci->co);
+                _coro_free(ci->co);// 走同一个销毁点，失败有日志
             }
             FREE(ci);
         }
@@ -278,7 +278,7 @@ static void _coro_ctx_free(void *arg) {
     fork_wait_ctx *fw;
     list_foreach_safe(&coctx->fork_waited, ln, tmp) {
         fw = UPCAST(ln, fork_wait_ctx, node);
-        mco_destroy(fw->waiter);
+        _coro_free(fw->waiter);
     }
     // fork_pending 正常路径每次 dispatch 末尾已 drain 空，此处兜底清未起的 item（不跑 fkcb）
     fork_item *fi;
@@ -318,7 +318,7 @@ static inline void _coro_resume_reap(coro_ctx *coctx, mco_coro *co) {
     mco_result rtn = _coro_resume_switch(coctx, co);
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     if (MCO_DEAD == mco_status(co)) {
-        mco_destroy(co); // 池满导致 _coro_mco_cb 返回,协程已死亡,须在此释放
+        _coro_free(co);// 池满导致 _coro_mco_cb 返回,协程已死亡,须在此释放
     }
 }
 // 从对象池取出协程并推入分发参数，开始执行新的消息处理流程。
@@ -542,7 +542,10 @@ task_ctx *coro_task_register(loader_ctx *loader, const char *name, uint32_t quec
     return task;
 }
 void *coro_get_arg(task_ctx *task) {
-    if (NULL == task->arg) {
+    // 判型与 coro_dump 同口径:光判 NULL 挡不住"类型不对但非空"——TASK_LUA 的 task->arg 是
+    // ltask_ctx *、带 arg 的 TASK_NORMAL 是业务自己的指针，按 coro_ctx * 解引用就是读错偏移
+    if (TASK_MCO != task_get_type(task)
+        || NULL == task->arg) {
         return NULL;
     }
     return ((coro_ctx *)task->arg)->arg;
@@ -592,18 +595,30 @@ void *coro_request(task_ctx *dst, task_ctx *src,
     SET_PTR(lens, msg->size);
     return msg->data;
 }
-// 等待 SSL 交换完成消息，超时或连接关闭时关闭连接并返回 ERR_FAILED
-static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
-    message_ctx *msg = _coro_wait(task, skid, MSG_TYPE_SSLEXCHANGED, task_get_netread_timeout(task));
+// 等一条指定类型的消息:超时则关连接并告警,连接已关则静默,两种都返 NULL。
+// 四个等待点(ssl exchange / handshake / connect / recv)只差 mtype、超时值与告警里的动作名,
+// tag 仅进日志。返回的指针在本协程下次 _coro_wait 前有效。
+// CLOSE 分支有意不告警:对端关连接是正常事件,而调用方是每命令一轮的循环,一条连接断掉能刷出
+// 几十条。Lua 侧 srey.lua 的 _wait_msg 结构同一套但那边打了告警(它的调用方不是这种循环),
+// 改任一端的结构要同步改另一端
+static message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
+                                   msg_type mtype, uint32_t ms, const char *tag) {
+    message_ctx *msg = _coro_wait(task, skid, mtype, ms);
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
         ev_close(&task->loader->netev, fd, skid, 1);
-        LOG_WARN("task %s, ssl exchange timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
-        return ERR_FAILED;
+        LOG_WARN("task %s, %s timeout, skid %"PRIu64".", _NAME_OR(task->name), tag, skid);
+        return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
-        return ERR_FAILED;
+        return NULL;
     }
-    return ERR_OK;
+    return msg;
+}
+// 等待 SSL 交换完成消息，失败的处理见 _coro_wait_msg
+static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
+    return NULL == _coro_wait_msg(task, fd, skid, MSG_TYPE_SSLEXCHANGED,
+                                  task_get_netread_timeout(task), "ssl exchange")
+           ? ERR_FAILED : ERR_OK;
 }
 int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
                           int32_t client, struct evssl_ctx *evssl) {
@@ -617,14 +632,9 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
         *err = ERR_FAILED;
         return NULL;
     }
-    message_ctx *msg = _coro_wait(task, skid, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
-    if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        *err = ERR_FAILED;
-        ev_close(&task->loader->netev, fd, skid, 1);
-        LOG_WARN("task: %s, handshake timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
-        return NULL;
-    }
-    if (MSG_TYPE_CLOSE == msg->mtype) {
+    message_ctx *msg = _coro_wait_msg(task, fd, skid, MSG_TYPE_HANDSHAKED,
+                                      task_get_netread_timeout(task), "handshake");
+    if (NULL == msg) {
         *err = ERR_FAILED;
         return NULL;
     }
@@ -636,13 +646,9 @@ int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl
     if (INVALID_SOCK == fd) {
         return ERR_FAILED;
     }
-    message_ctx *msg = _coro_wait(task, skid, MSG_TYPE_CONNECT, task_get_connect_timeout(task));
-    if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_close(&task->loader->netev, fd, skid, 1);
-        LOG_WARN("task %s, connect timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
-        return ERR_FAILED;
-    }
-    if (MSG_TYPE_CLOSE == msg->mtype) {
+    message_ctx *msg = _coro_wait_msg(task, fd, skid, MSG_TYPE_CONNECT,
+                                      task_get_connect_timeout(task), "connect");
+    if (NULL == msg) {
         return ERR_FAILED;
     }
     if (ERR_OK != msg->erro) {
@@ -673,19 +679,9 @@ void coro_close(task_ctx *task, SOCKET fd, uint64_t skid, int32_t immed) {
     ev_close(&task->loader->netev, fd, skid, immed);
     _coro_wait(task, skid, MSG_TYPE_CLOSE, task_get_netread_timeout(task));
 }
-// 等待指定连接的下一条接收消息，超时或连接关闭时返回 NULL
-// 返回的指针在下次 _coro_wait 调用前有效
+// 等待指定连接的下一条接收消息，失败的处理与指针有效期见 _coro_wait_msg
 static message_ctx *_coro_wait_recved(task_ctx *task, SOCKET fd, uint64_t skid) {
-    message_ctx *msg = _coro_wait(task, skid, MSG_TYPE_RECV, task_get_netread_timeout(task));
-    if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_close(&task->loader->netev, fd, skid, 1);
-        LOG_WARN("task %s, recve timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
-        return NULL;
-    }
-    if (MSG_TYPE_CLOSE == msg->mtype) {
-        return NULL;
-    }
-    return msg;
+    return _coro_wait_msg(task, fd, skid, MSG_TYPE_RECV, task_get_netread_timeout(task), "netread");
 }
 void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
                 void *data, size_t len, size_t *size, int32_t copy) {

@@ -237,6 +237,11 @@ runner.run("db_bind", function(t)
         t:check(not p:set_userpwd(toolong, "p2"), "set_userpwd 用户名超长返 false")
         t:check(not p:set_userpwd("u2", toolong), "set_userpwd 密码超长返 false")
 
+        -- pack_cancel 要用握手带回的 BackendKeyData（pid + key）。这个 p 从未连接，pid 恒为 0，
+        -- 组出来的 CancelRequest 匹配不到任何后端，发出去只被服务端静默丢弃却让调用方以为取消成功，
+        -- 故绑定层须直接拒掉；pgsql.lua 的 ctx:cancel 靠这个 nil 返 false（C 侧同款守卫在 pgsql_cancel）
+        t:eq(nil, p:pack_cancel(), "pgsql pack_cancel 未握手时返回 nil")
+
         local pack, size = pgsql.pack_query("SELECT 1")
         t:check(pack ~= nil and size > 0, "pgsql pack_query non-empty")
         t:check(srey.ud_str(pack, size):find("SELECT 1", 1, true) ~= nil, "pg query wire 含 SQL")

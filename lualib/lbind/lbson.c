@@ -734,7 +734,10 @@ static int32_t _lbson_encode(lua_State *lua) {
 }
 // ---- decode 辅助 ----
 static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int32_t is_array, int32_t depth);
-// 将迭代器当前字段解码并写入栈顶 table；null / 未知类型跳过
+// 将迭代器当前字段解码并写入栈顶 table。
+// REGEX / TIMESTAMP / DECIMAL128 / MINKEY / MAXKEY 这几种 Lua 侧没有对应表示，本函数跳过并记一条 DEBUG——
+// 它们能用 bson.new():regex()/:timestamp() 之类写进去，也能用 bson.iter 的同名取值器读出来，
+// 只有 decode 这条路表达不了。MongoDB 应答常带 TIMESTAMP(operationTime / $clusterTime.clusterTime)
 static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_array, int32_t idx, int32_t depth) {
     int32_t err;
     if (is_array) {
@@ -863,6 +866,10 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         break;
     }
     default:
+        // 用 DEBUG 不用 WARN:TIMESTAMP 落在这一档,而 MongoDB 应答固定带 operationTime 与
+        // $clusterTime.clusterTime,按 WARN 打就是每解一次应答刷两条,真告警会被淹掉
+        LOG_DEBUG("bson decode: field \"%s\" type 0x%02X has no lua representation, dropped.",
+                  (NULL != iter->key ? iter->key : ""), (uint32_t)iter->type);
         lua_pop(lua, 1);
         return;
     }
@@ -889,7 +896,10 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
     }
 }
 /// <summary>
-/// 将 BSON 数据解码为 Lua table；BSON ARRAY 字段解码为整数 key（1-base）table，DOCUMENT 解码为字符串 key table
+/// 将 BSON 数据解码为 Lua table；BSON ARRAY 字段解码为整数 key（1-base）table，DOCUMENT 解码为字符串 key table。
+/// REGEX / TIMESTAMP / DECIMAL128 / MINKEY / MAXKEY 在 Lua 侧无对应表示，会被**丢弃**并逐个记一条 DEBUG
+/// 日志（不是告警：Mongo 应答几乎都带 TIMESTAMP），结果表里没有那些字段。
+/// 要读它们请改用 bson.iter 的同名取值器（iter:regex() / iter:timestamp() …）
 /// </summary>
 /// <param name="data" type="userdata|string|lightuserdata">bson_ctx userdata、Lua 字符串或 lightuserdata 指针</param>
 /// <param name="lens" type="integer?">data 为 lightuserdata 时必填，字节数，取值 [0, INT32_MAX]，越界报错</param>

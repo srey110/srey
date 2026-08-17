@@ -3848,6 +3848,36 @@ static void test_smtp_check_code(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK,     smtp_check_code(pack, "354"));
 }
 
+/* smtp_check_codes 多码匹配：RCPT TO 的 250/251 都算成功（RFC 5321 §4.3.2） */
+static void test_smtp_check_codes(CuTest *tc) {
+    char pack[64];
+    static const char *const rcpt[] = { "250", "251" };
+    static const char *const one[] = { "250" };
+
+    /* 命中数组首个 */
+    safe_fill_str(pack, sizeof(pack), "250 OK");
+    CuAssertIntEquals(tc, ERR_OK, smtp_check_codes(pack, rcpt, ARRAY_SIZE(rcpt)));
+
+    /* 命中数组末个：251 表示已接受但将转发，单判 250 会误报失败 */
+    safe_fill_str(pack, sizeof(pack), "251 User not local; will forward");
+    CuAssertIntEquals(tc, ERR_OK,     smtp_check_codes(pack, rcpt, ARRAY_SIZE(rcpt)));
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_check_codes(pack, one, ARRAY_SIZE(one)));
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_check_ok(pack));
+
+    /* 全不中 */
+    safe_fill_str(pack, sizeof(pack), "550 No such user");
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_check_codes(pack, rcpt, ARRAY_SIZE(rcpt)));
+
+    /* ncode 为 0：无码可比，恒失败 */
+    safe_fill_str(pack, sizeof(pack), "250 OK");
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_check_codes(pack, rcpt, 0));
+
+    /* smtp_check_code 已收敛为 ncode==1 的 smtp_check_codes，两者结果须一致 */
+    safe_fill_str(pack, sizeof(pack), "221 Bye");
+    CuAssertIntEquals(tc, ERR_OK, smtp_check_code(pack, "221"));
+    CuAssertIntEquals(tc, ERR_OK, smtp_check_codes(pack, (const char *const[]){ "221" }, 1));
+}
+
 /* smtp_unpack COMMAND 状态：从 buffer 中取出一行响应并返回（拷贝 + 释放）
  * 其他状态需 ev_ctx，无法用 NULL ev 安全测试，但 MOREDATA/ERROR 早返路径可测 */
 static void test_smtp_unpack_command(CuTest *tc) {
@@ -4729,6 +4759,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_smtp_pack_cmds);
     SUITE_ADD_TEST(suite, test_smtp_pack_crlf_inject);
     SUITE_ADD_TEST(suite, test_smtp_check_code);
+    SUITE_ADD_TEST(suite, test_smtp_check_codes);
     SUITE_ADD_TEST(suite, test_smtp_unpack_command);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_init);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_ehlo);

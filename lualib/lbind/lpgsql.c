@@ -667,10 +667,12 @@ static int32_t _lpgsql_copy_in_info(lua_State *lua) {
     return 2;
 }
 /// <summary>
-/// 从 PGPACK_COPY_OUT 类型的 pgpack_ctx 中提取累积数据指针和长度
+/// 从 PGPACK_COPY_OUT 类型的 pgpack_ctx 中提取累积数据指针和长度。
+/// 注意与本文件各 pack_* 的返回值形状相同但语义相反：这里返回的是 pgpack 内部的**借用**指针
+/// （由 _pgpack_copy_out_free 释放），随 pgpack 一起失效，调用方既不拥有它、也不能对它调 utils.ud_free
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
-/// <returns type="lightuserdata?">数据指针；类型不符时返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
+/// <returns type="lightuserdata?">数据指针（借用，勿释放）；类型不符时返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lpgsql_copy_out_data(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
@@ -946,10 +948,16 @@ static int32_t _lpgsql_sock_id(lua_State *lua) {
 /// 构造 CancelRequest 消息（使用连接的 pid 和 key）
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
-/// <returns type="string">16 字节 CancelRequest 二进制串</returns>
+/// <returns type="string|nil">16 字节 CancelRequest 二进制串；pid 尚未就绪（没收到 BackendKeyData）时为 nil</returns>
 static int32_t _lpgsql_pack_cancel(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     pgsql_ctx *pg = *ud;
+    // pid 为 0 说明握手还没走到 BackendKeyData,这时组出来的 CancelRequest 匹配不到任何后端,
+    // 发出去只被服务端静默丢弃,调用方却当成取消成功。与 C 侧 pgsql_cancel 的守卫同口径
+    if (0 == pg->pid) {
+        lua_pushnil(lua);
+        return 1;
+    }
     char buf[16];
     pgsql_pack_cancel(buf, pg->pid, pg->key);
     lua_pushlstring(lua, buf, 16);

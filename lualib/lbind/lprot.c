@@ -2,6 +2,9 @@
 
 #define MT_SMTP      "_smtp_ctx"
 #define MT_SMTP_MAIL "_smtp_mail_ctx"
+// smtp check_codes 一次最多收几个码（栈上数组上限）。SMTP 单条命令的合法应答码就那么几个，
+// 给到 8 已远超需要；超了直接报错而不是截断
+#define SMTP_MAX_NCODE 8
 
 /// <summary>
 /// 打包 harbor 跨节点消息
@@ -728,11 +731,39 @@ static int32_t _lprot_smtp_check_code(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 检查 SMTP 响应包是否为 OK（2xx）
+/// 检查 SMTP 响应包的状态码是否命中 codes 里任意一个。用于一条命令有多个合法应答的场合，
+/// 如 RCPT TO 的 250(已接受) 与 251(已接受但将转发)。全不中才落一条告警
 /// </summary>
 /// <param name="self" type="userdata">SMTP 对象</param>
 /// <param name="pack" type="lightuserdata">SMTP 响应包指针</param>
-/// <returns type="boolean">2xx 返回 true，否则 false</returns>
+/// <param name="codes" type="string[]">期望状态码数组，如 { "250", "251" }；空表恒返 false</param>
+/// <returns type="boolean">命中其中之一 true，否则 false</returns>
+static int32_t _lprot_smtp_check_codes(lua_State *lua) {
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
+    LUACHECK_LUDATA(lua, 2);
+    char *pack = (char *)lua_touserdata(lua, 2);
+    luaL_checktype(lua, 3, LUA_TTABLE);
+    lua_Integer ncode = (lua_Integer)lua_rawlen(lua, 3);
+    luaL_argcheck(lua, ncode >= 0 && ncode <= SMTP_MAX_NCODE, 3, "too many codes");
+    const char *codes[SMTP_MAX_NCODE];
+    for (lua_Integer i = 0; i < ncode; i++) {
+        lua_rawgeti(lua, 3, i + 1);
+        // 必须已经是字符串:luaL_checkstring 会把数字就地转成串,而那种串只由栈槽锚定,
+        // pop 之后可能被回收,codes[i] 就成了悬空指针。真字符串由表持有,pop 后仍有效
+        luaL_argcheck(lua, LUA_TSTRING == lua_type(lua, -1), 3, "codes must be strings");
+        codes[i] = lua_tostring(lua, -1);
+        lua_pop(lua, 1);
+    }
+    lua_pushboolean(lua, ERR_OK == smtp_check_codes(pack, codes, (size_t)ncode) ? 1 : 0);
+    return 1;
+}
+/// <summary>
+/// 检查 SMTP 响应包的应答码是否为 250。只认这一个码，不是判整个 2xx 段——
+/// 251/252 这类同样表示"已接受"的应答会被判失败，要认它们得用 check_codes
+/// </summary>
+/// <param name="self" type="userdata">SMTP 对象</param>
+/// <param name="pack" type="lightuserdata">SMTP 响应包指针</param>
+/// <returns type="boolean">应答码为 250 返回 true，否则 false</returns>
 static int32_t _lprot_smtp_check_ok(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LUACHECK_LUDATA(lua, 2);
@@ -832,6 +863,7 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
     luaL_Reg reg_func[] = {
         { "try_connect", _lprot_smtp_try_connect },
         { "check_code",_lprot_smtp_check_code },
+        { "check_codes",_lprot_smtp_check_codes },
         { "check_ok", _lprot_smtp_check_ok },
         { "pack_reset", _lprot_smtp_pack_reset },
         { "pack_from", _lprot_smtp_pack_from },

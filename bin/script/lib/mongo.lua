@@ -52,6 +52,36 @@ local function _wsend(mgoctx, pack, size)
     end
     return ok, mgopack
 end
+-- 写命令的两种统一尾块。mgopack 为 nil 是 MORETOCOME 只发不等，那是成功而非失败。
+-- 两者不可互换：check_error 返的是受影响文档数而不是 ERR_OK，用 _wsend_n 顶替 _wsend_ok
+-- 会把那几个命令的公开返回值从 boolean 变成计数。bulkwrite 的尾块第三种形状，不走这里
+---@return boolean ok
+---@return integer? n 受影响文档数；MORETOCOME 只发不等时不返
+local function _wsend_n(mgoctx, pack, size)
+    local ok, mgopack = _wsend(mgoctx, pack, size)
+    if not ok then
+        return false
+    end
+    if not mgopack then
+        return true
+    end
+    local n = mgoctx.mongo:check_error(mgopack)
+    if n < 0 then
+        return false
+    end
+    return true, n
+end
+---@return boolean ok
+local function _wsend_ok(mgoctx, pack, size)
+    local ok, mgopack = _wsend(mgoctx, pack, size)
+    if not ok then
+        return false
+    end
+    if not mgopack then
+        return true
+    end
+    return mgoctx.mongo:check_error(mgopack) >= 0
+end
 -- 统一"发送 + 同步等待响应"(不受 MORETOCOME 影响)。组包被拒与网络失败都返回 nil,调用方判一次即可;
 -- 错误码校验留给调用方——有的直接把 mgopack 交给上层解析。镜像 C 层 _mongo_call 去掉 check_error 的部分
 local function _rdo(mgoctx, pack, size)
@@ -98,7 +128,7 @@ function sess_ctx:ctor(mgoctx, session_ud)
     self.gen = mgoctx.generation
 end
 
----开始事务：递增 txnNumber，构建 lsid + txnNumber 事务选项 BSON，挂载到 mongo-&gt;session
+---开始事务：递增 txnNumber，构建 lsid + txnNumber 事务选项 BSON，挂载到 mongo->session
 ---一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false
 ---@return boolean ok 成功 true（session 已因重连失效、或该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
@@ -345,18 +375,7 @@ function ctx:insert(col, docs, dlens, opts, optslens)
         return false
     end
     local pack, size = self.mongo:pack_insert(docs, dlens, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
-    if not ok then
-        return false
-    end
-    if not mgopack then
-        return true
-    end
-    local n = self.mongo:check_error(mgopack)
-    if n < 0 then
-        return false
-    end
-    return true, n
+    return _wsend_n(self, pack, size)
 end
 
 ---更新文档
@@ -372,18 +391,7 @@ function ctx:update(col, updates, ulens, opts, optslens)
         return false
     end
     local pack, size = self.mongo:pack_update(updates, ulens, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
-    if not ok then
-        return false
-    end
-    if not mgopack then
-        return true
-    end
-    local n = self.mongo:check_error(mgopack)
-    if n < 0 then
-        return false
-    end
-    return true, n
+    return _wsend_n(self, pack, size)
 end
 
 ---删除文档
@@ -399,18 +407,7 @@ function ctx:delete(col, deletes, dlens, opts, optslens)
         return false
     end
     local pack, size = self.mongo:pack_delete(deletes, dlens, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
-    if not ok then
-        return false
-    end
-    if not mgopack then
-        return true
-    end
-    local n = self.mongo:check_error(mgopack)
-    if n < 0 then
-        return false
-    end
-    return true, n
+    return _wsend_n(self, pack, size)
 end
 
 ---删除当前集合（drop）
@@ -419,14 +416,7 @@ end
 ---@return boolean ok 成功 true
 function ctx:drop(opts, optslens)
     local pack, size = self.mongo:pack_drop(opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
-    if not ok then
-        return false
-    end
-    if not mgopack then
-        return true
-    end
-    return self.mongo:check_error(mgopack) >= 0
+    return _wsend_ok(self, pack, size)
 end
 
 ---批量写操作（bulkWrite，MongoDB 8.0+）
@@ -461,14 +451,7 @@ function ctx:createindexes(col, indexes, ilens, opts, optslens)
         return false
     end
     local pack, size = self.mongo:pack_createindexes(indexes, ilens, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
-    if not ok then
-        return false
-    end
-    if not mgopack then
-        return true
-    end
-    return self.mongo:check_error(mgopack) >= 0
+    return _wsend_ok(self, pack, size)
 end
 
 ---删除索引
@@ -483,14 +466,7 @@ function ctx:dropindexes(col, indexes, ilens, opts, optslens)
         return false
     end
     local pack, size = self.mongo:pack_dropindexes(indexes, ilens, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
-    if not ok then
-        return false
-    end
-    if not mgopack then
-        return true
-    end
-    return self.mongo:check_error(mgopack) >= 0
+    return _wsend_ok(self, pack, size)
 end
 
 -- ---- 读操作（返回 mgopack lightuserdata 或 nil）----
@@ -550,14 +526,7 @@ function ctx:killcursors(col, cursorids, cslens, opts, optslens)
         return false
     end
     local pack, size = self.mongo:pack_killcursors(cursorids, cslens, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
-    if not ok then
-        return false
-    end
-    if not mgopack then
-        return true
-    end
-    return self.mongo:check_error(mgopack) >= 0
+    return _wsend_ok(self, pack, size)
 end
 
 ---去重查询（distinct）

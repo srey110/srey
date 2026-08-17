@@ -28,8 +28,9 @@ void evssl_init(void);
 ///   evssl_seclevel(ssl, 2)               禁用 RSA<2048 / MD5 等弱算法
 ///   evssl_min_proto(ssl, TLS1_2_VERSION) 禁用 TLS 小于 1.2
 /// </summary>
-/// <param name="ca">ca文件, NULL 或 "" 不加载</param>
-/// <param name="cert">cert文件, NULL 或 "" 不加载</param>
+/// <param name="ca">ca文件, NULL 或 "" 不加载。这是验对端用的信任库，不会被当成自己要发出的证书链</param>
+/// <param name="cert">cert文件, NULL 或 "" 不加载。只装这一张叶证书，不支持证书链——
+///   由中间 CA 签发的证书（Let's Encrypt 之类）握手时只发叶证书，对端补不上链会验不过</param>
 /// <param name="key">key文件, NULL 或 "" 不加载</param>
 /// <param name="type">证书类型 SSL_FILETYPE_PEM,SSL_FILETYPE_ASN1</param>
 /// <returns>evssl_ctx</returns>
@@ -135,8 +136,10 @@ int32_t evssl_tryconn(SSL *ssl);
 /// <param name="ssl">SSL</param>
 /// <param name="buf">接收数据的buffer</param>
 /// <param name="len">长度</param>
-/// <param name="readed">读到的字节数</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="readed">读到的字节数；可为 0</param>
+/// <returns>ERR_OK 表示"没出错"，含 WANT_READ / WANT_WRITE 两种要重试的情形，
+///   此时 readed 可为 0。TLS1.3 数据期 SSL_read 也可能要求先写，调用方须在返回后自行
+///   SSL_want_write() 探测并注册写事件，本函数不回传这个诉求</returns>
 int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed);
 /// <summary>
 /// 数据写入
@@ -144,8 +147,10 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed);
 /// <param name="ssl">SSL</param>
 /// <param name="buf">要写入的数据</param>
 /// <param name="len">长度</param>
-/// <param name="sended">写入的字节数</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="sended">写入的字节数；可为 0 或小于 len</param>
+/// <returns>ERR_OK 表示"没出错"，含 WANT_READ / WANT_WRITE 两种要重试的情形。
+///   未设 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER，故重试**必须传同一个 buf 指针与同一 len**；
+///   要写事件时调用方须自行 SSL_want_read() 探测，本函数不回传这个诉求</returns>
 int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 /// <summary>
 /// shutdown
@@ -164,7 +169,8 @@ int32_t evssl_version(SSL *ssl);
 /// </summary>
 /// <param name="ssl">SSL</param>
 /// <param name="updatetype">SSL_KEY_UPDATE_NOT_REQUESTED(单向更新) SSL_KEY_UPDATE_REQUESTED(双向更新)</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 仅表示已排程，KeyUpdate 消息要等下一次 SSL_write / SSL_do_handshake
+///   才真正上线路；空闲连接上调它不会有任何报文发出</returns>
 int32_t evssl_keyupdate(SSL *ssl, int32_t updatetype);
 
 #endif//WITH_SSL

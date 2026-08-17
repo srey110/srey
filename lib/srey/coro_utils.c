@@ -17,6 +17,12 @@
 // 回调收 void* 而非强类型转:通过与原型不匹配的函数指针调用是 UB
 typedef int32_t (*serial_conn_cb)(task_ctx *task, void *ctx);
 typedef void (*serial_quit_cb)(void *ctx);
+// 各 SMTP 命令认哪些应答码，集中一处好一眼看全。多码的只有 RCPT：
+// 250 已接受、251 已接受但将转发（RFC 5321 §4.3.2），判 251 为失败会让 DATA 从不发出、整封信报错
+static const char *const SMTP_CODE_OK[] = { "250" };// MAIL FROM / 正文 / RSET / NOOP
+static const char *const SMTP_CODE_RCPT[] = { "250", "251" };
+static const char *const SMTP_CODE_DATA[] = { "354" };
+static const char *const SMTP_CODE_QUIT[] = { "221" };
 
 static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt, int32_t *nodata) {
     int32_t rtn;
@@ -335,11 +341,15 @@ static int32_t _serial_connect(task_ctx *task, coro_serial_ctx **slot,
     _serial_unlock(held);
     return rtn;
 }
-// 摘指针 → 空则退 → 上锁 → 断开动作 → 拆执行器 → 解锁。上锁是别把别人半途的等待拦腰打断;
-// 拿不到锁也照拆,否则执行器没人回收。摘指针而不是解锁时重读,道理见 _serial_discard 上方
+// 摘指针 → 无执行器就直接断 → 上锁 → 断开动作 → 拆执行器 → 解锁。上锁是别把别人半途的等待拦腰打断;
+// 拿不到锁只拆不断:要么不在协程内(断连要等确认,这儿做不了),要么别人已在销毁同一条连接。
+// 摘指针而不是解锁时重读,道理见 _serial_discard 上方
 static void _serial_quit(coro_serial_ctx **slot, serial_quit_cb doquit, void *ctx) {
     coro_serial_ctx *held = *slot;
     if (NULL == held) {
+        // 无执行器的连接退化为原来的无锁行为,照断不误。注意这一档少了两道门:doquit 里的
+        // coro_close / coro_send 只能在协程内调(非协程会撞 ASSERTAB),且不与别人的往返互斥
+        doquit(ctx);
         return;
     }
     if (ERR_OK != _serial_lock(held)) {
@@ -408,19 +418,23 @@ static mpack_ctx *_mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx
     return coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, query, size, NULL, 0);
 }
 // 逐个结果集回调,直到 more 为 0。四条约定:
-// 1) more 在 cb 之前读——cb 里若调 mysql_reader_init 会把 mpack->pack 摘走,与 Lua 侧
-//    _read_results 的"has_more 须在 reader.new 前读"同口径
-// 2) cb 返回失败只记标志、循环照常把剩余包排空:半途不读完会把包留在连接缓冲里,
-//    下一次查询直接 desync（Lua 侧踩过这个坑,见 mysql.lua 的同名注释）
+// 1) more 在 cb 之前读——cb 里的 mysql_reader_init 会把 mpack->pack 摘走(Lua 侧同口径)
+// 2) cb 返回失败只记标志、剩余包照常排空:残留在连接缓冲里会让下一次查询 desync
 // 3) 续读断连则无从排空,连接已废,直接失败返回
-// 4) cb 为 NULL 表示只排空不回调,给 INSERT/UPDATE 这类不关心结果集的调用省一个空回调
+// 4) cb 为 NULL 只排空不回调(INSERT/UPDATE 用),且代调用方判一次 ERR 应答;有 cb 时不判,
+//    ERR 包照样交给 cb、成败归 cb 说,否则"用 cb 自行处理服务端错误"的用法会被一律判失败
 static int32_t _mysql_read_results(mysql_ctx *mysql, mpack_ctx *mpack, mysql_result_cb cb, void *udata) {
     int32_t failed = 0;
     int32_t more;
     for (;;) {
         more = mysql_more(mpack);
-        if (NULL != cb
-            && ERR_OK != cb(mpack, udata)) {
+        if (NULL == cb) {
+            // ERR 应答不断连(解析侧只置 pack_type 不置 PROT_ERROR),coro_send 照常返回一个
+            // 合法 mpack,不判这一下主键冲突就会被当成功报回去
+            if (MPACK_ERR == mpack->pack_type) {
+                failed = 1;
+            }
+        } else if (ERR_OK != cb(mpack, udata)) {
             failed = 1;
         }
         if (0 == more) {
@@ -581,14 +595,22 @@ static int32_t _smtp_do_connect(task_ctx *task, void *ctx) {
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     return _serial_connect(task, &smtp->serial, _smtp_do_connect, smtp);
 }
-// 发送 SMTP QUIT 命令并等待响应（不关闭 socket）
-static void _smtp_quit(smtp_ctx *smtp) {
-    char *cmd = smtp_pack_quit();
+// 统一 SMTP 的"组包 → 同步发送 → 校验应答码"三步:cmd 为 NULL(组包拒绝,如地址含 CRLF)
+// 或没收到应答都返 ERR_FAILED。codes 传上面那几张表之一。
+// cmd 是 format_va 的堆串,copy=0 把所有权交给 ev_send,成败都不用调用方释放
+static int32_t _smtp_cmd(smtp_ctx *smtp, char *cmd, const char *const *codes, size_t ncode) {
+    if (NULL == cmd) {
+        return ERR_FAILED;
+    }
     char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
-        return;
+        return ERR_FAILED;
     }
-    smtp_check_code(pack, "221");
+    return smtp_check_codes(pack, codes, ncode);
+}
+// 发送 SMTP QUIT 命令并等待响应（不关闭 socket）
+static void _smtp_quit(smtp_ctx *smtp) {
+    _smtp_cmd(smtp, smtp_pack_quit(), SMTP_CODE_QUIT, ARRAY_SIZE(SMTP_CODE_QUIT));
 }
 // 发 QUIT 等 221 再关 socket；连接已关就什么都不发
 static void _smtp_do_quit(void *ctx) {
@@ -604,12 +626,7 @@ void smtp_quit(smtp_ctx *smtp) {
 }
 // 发送 SMTP NOOP 命令检测连接是否存活，失败返回 ERR_FAILED
 static int32_t _smtp_ping(smtp_ctx *smtp) {
-    char *cmd = smtp_pack_ping();
-    char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
-    if (NULL == pack) {
-        return ERR_FAILED;
-    }
-    return smtp_check_ok(pack);
+    return _smtp_cmd(smtp, smtp_pack_ping(), SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK));
 }
 int32_t smtp_ping(smtp_ctx *smtp) {
     coro_serial_ctx *held = smtp->serial;
@@ -626,58 +643,28 @@ int32_t smtp_ping(smtp_ctx *smtp) {
     _serial_unlock(held);
     return rtn;
 }
-// 执行 SMTP 邮件发送流程（MAIL FROM → RCPT TO → DATA → 正文）
+// 执行 SMTP 邮件发送流程（MAIL FROM → RCPT TO → DATA → 正文）。
+// 发件人 / 收件人地址含 CRLF 时 smtp_pack_from / smtp_pack_rcpt 返 NULL，由 _smtp_cmd 拒发
 static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
-    //发件人地址含 CRLF 时 smtp_pack_from 返回 NULL，拒绝发送
-    char *cmd = smtp_pack_from(mail->from.addr);
-    if (NULL == cmd) {
-        return ERR_FAILED;
-    }
-    char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
-    if (NULL == pack
-        || ERR_OK != smtp_check_ok(pack)) {
+    if (ERR_OK != _smtp_cmd(smtp, smtp_pack_from(mail->from.addr), SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK))) {
         return ERR_FAILED;
     }
     uint32_t naddr = array_size(&mail->addrs);
+    mail_addr *addr;
     for (uint32_t i = 0; i < naddr; i++) {
-        //收件人地址含 CRLF 时 smtp_pack_rcpt 返回 NULL，拒绝发送
-        cmd = smtp_pack_rcpt(((mail_addr *)array_at(&mail->addrs, i))->addr);
-        if (NULL == cmd) {
-            return ERR_FAILED;
-        }
-        pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
-        if (NULL == pack
-            || ERR_OK != smtp_check_ok(pack)) {
+        addr = (mail_addr *)array_at(&mail->addrs, i);
+        if (ERR_OK != _smtp_cmd(smtp, smtp_pack_rcpt(addr->addr), SMTP_CODE_RCPT, ARRAY_SIZE(SMTP_CODE_RCPT))) {
             return ERR_FAILED;
         }
     }
-    cmd = smtp_pack_data();
-    pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
-    if (NULL == pack) {
+    if (ERR_OK != _smtp_cmd(smtp, smtp_pack_data(), SMTP_CODE_DATA, ARRAY_SIZE(SMTP_CODE_DATA))) {
         return ERR_FAILED;
     }
-    if (ERR_OK != smtp_check_code(pack, "354")) {
-        return ERR_FAILED;
-    }
-    cmd = mail_pack(mail);
-    if (NULL == cmd) {
-        return ERR_FAILED;
-    }
-    pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
-    if (NULL == pack
-        || ERR_OK != smtp_check_ok(pack)) {
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return _smtp_cmd(smtp, mail_pack(mail), SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK));
 }
 // 发送 SMTP RSET 命令重置会话状态（不关闭连接）
 static int32_t _smtp_reset(smtp_ctx *smtp) {
-    char *cmd = smtp_pack_reset();
-    char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
-    if (NULL == pack) {
-        return ERR_FAILED;
-    }
-    return smtp_check_ok(pack);
+    return _smtp_cmd(smtp, smtp_pack_reset(), SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK));
 }
 int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     coro_serial_ctx *held = smtp->serial;
@@ -687,7 +674,12 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     // 锁覆盖 _smtp_send + _smtp_reset 整段:RSET 清的是本次投递在服务端留下的会话状态,
     // 与发送是同一笔事。分开各包一次的话,别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉
     int32_t rtn = _smtp_send(smtp, mail);
-    _smtp_reset(smtp);
+    // RSET 失败说明连接已经不干净,下一封信的 DATA 会被回 503,而 NOOP 仍答 250 让
+    // smtp_ping 查不出来,只能就地关掉等重连。用 ev_close 不用 coro_close:不复用这条连接
+    // 故不必等确认,而 RSET 失败常常正是对端已断,那条 CLOSE 已被取走,等就是持锁空等满超时
+    if (ERR_OK != _smtp_reset(smtp)) {
+        ev_close(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, 1);
+    }
     _serial_unlock(held);
     return rtn;
 }
@@ -777,7 +769,11 @@ int32_t pgsql_ping(pgsql_ctx *pg) {
         return ERR_FAILED;
     }
     int32_t rtn = ERR_OK;
-    if (NULL == _pgsql_query(pg, ";")) {
+    // 必须正判 PGPACK_OK 而不是只判"收到了包":错位时读到的是上一条命令残留的包,当成自己的 pong
+    // 吃掉后,ping 这个唯一的重连判据就永远报健康。";" 回 EmptyQueryResponse,也归 PGPACK_OK
+    pgpack_ctx *pgpack = _pgsql_query(pg, ";");
+    if (NULL == pgpack
+        || PGPACK_OK != pgpack->type) {
         coro_close(pg->task, pg->sk.fd, pg->sk.skid, 1);
         rtn = pgsql_connect(pg->task, pg);
     }
@@ -1341,23 +1337,32 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
         return ERR_FAILED;
     }
     message_ctx *msg = _coro_wait(task, sess, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
+    // 失败分支动 kcp 之前先认一次 sess,理由同 kcp_synsend:换掉之后那三个字段属于新会话,
+    // 抹了它既发不出也停不掉。prevmaxpack 同理只对自己这次调用有意义
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
         // 占位条目由随后到达的 CLOSE 清:会话已建立则 kcp_stop 发真 CLOSE,未建立则 _kcp_start 已补合成 CLOSE
-        kcp_stop(kcp);
+        if (sess == kcp->sess) {
+            kcp_stop(kcp);
+        }
         LOG_WARN("task %s, kcp start timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);
         return ERR_FAILED;
     }
     if (MSG_TYPE_CLOSE == msg->mtype
         || ERR_OK != msg->erro) {
-        kcp->sess = 0;
-        kcp->stopped = 1;
-        kcp->maxpack = prevmaxpack;
+        if (sess == kcp->sess) {
+            kcp->sess = 0;
+            kcp->stopped = 1;
+            kcp->maxpack = prevmaxpack;
+        }
         return ERR_FAILED;
     }
     return ERR_OK;
 }
 void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, int32_t copy, size_t *size) {
-    if (0 == kcp->sess) {
+    // 捏住 sess 而不是等待与判定时各读一次 kcp->sess:挂起期间它可能被别的协程换掉,
+    // 那时按新值等待就等错了会话,按新值回写更会抹掉别人刚建好的那条
+    uint64_t sess = kcp->sess;
+    if (0 == sess) {
         // sess==0 时 RECVFROM 的分发(_coro_handle_miss_create)内部恒新建协程,永远等不到本次唤醒
         CHECK_COPY_FREE(data, copy);
         return NULL;
@@ -1365,18 +1370,23 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
     if (ERR_OK != kcp_send(kcp, data, lens, copy)) {
         return NULL;
     }
-    message_ctx *msg = _coro_wait(task, kcp->sess, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, sess, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
+    // 两个失败分支都先认一次 sess:CLOSE 是按 sess 广播给该 sess 下全部等待者的(不分 mtype),
+    // 而醒来时 kcp->sess 可能已被同 task 另一协程 stop + 重启换成新会话,那时动 kcp 就是打在新会话上
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        // 不必清 sess:kcp_stop 置 stopped=1 后 kcp_send 首行即快速失败,不会再进 _coro_wait
-        kcp_stop(kcp);
+        if (sess == kcp->sess) {
+            kcp_stop(kcp);// 置 stopped=1 后 kcp_send 首行即快速失败,不必再清 sess
+        }
         LOG_WARN("task %s, kcp send timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
         // 会话已在 event 线程拆除(CLOSE 由 _kcp_notify_closed 发出)而 stopped 仍为 0,故须自行清 sess:
-        // 否则下次 kcp_synsend 通过 0 == kcp->sess 守卫、kcp_send 投到已消失的会话被 _kcp_resolve
-        // 静默丢弃却返 ERR_OK,继而空等满一个 netread 超时。与 Lua 侧 ctx:send 的同款分支对齐
-        kcp->sess = 0;
+        // 否则下次 kcp_synsend 通过 0 == kcp->sess 守卫、kcp_send 投到已消失的会话被静默丢弃却返
+        // ERR_OK,继而空等满一个 netread 超时。与 Lua 侧 ctx:send 的同款分支对齐
+        if (sess == kcp->sess) {
+            kcp->sess = 0;
+        }
         return NULL;
     }
     recvfrom_ctx *rfmsg = msg->data;

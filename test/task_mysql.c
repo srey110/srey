@@ -146,6 +146,11 @@ static int32_t _query_syntax_error(mysql_ctx *mysql) {
                   (void *)msg, code);
         return ERR_FAILED;
     }
+    // cb 为 NULL 时由库代判 ERR 应答：同一条非法 SQL 必须报失败，否则主键冲突这类会被静默当成功
+    if (ERR_OK == mysql_query(mysql, "selct 1", NULL, NULL, NULL)) {
+        LOG_ERROR("mysql syntax_error: NULL cb must fail on ERR pack.");
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 

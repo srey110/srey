@@ -436,7 +436,10 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
     kcp->maxpack = maxpack;
     return ERR_OK;
 }
-static kcp_element *_kcp_resolve(struct sock_ctx *skctx, ud_cxt *ud, uint32_t conv, uint64_t sess) {
+// quiet 只关"找不到会话"那一条告警,给 stop 用:停一个已经不在表里的会话是正常的 no-op
+// (start 被拒后调用方仍要置 stopped,那条命令必然解析不到),对 send / handle 则是真错误
+static kcp_element *_kcp_resolve(struct sock_ctx *skctx, ud_cxt *ud, uint32_t conv,
+    uint64_t sess, int32_t quiet) {
     if (SOCK_DGRAM != _evpub_sock_type(skctx) || PACK_UDP_KCP != ud->pktype) {
         LOG_ERROR("kcp resolve called on non-UDP_KCP fd, conv %u, drop.", conv);
         return NULL;
@@ -447,7 +450,9 @@ static kcp_element *_kcp_resolve(struct sock_ctx *skctx, ud_cxt *ud, uint32_t co
     }
     kcp_element *kel = _kcp_map_get((kcp_ud_ctx *)ud->context, conv);
     if (NULL == kel || kel->sess != sess) {
-        LOG_WARN("can't find conv %u.", conv);
+        if (0 == quiet) {
+            LOG_WARN("can't find conv %u.", conv);
+        }
         return NULL;
     }
     return kel;
@@ -456,7 +461,7 @@ static int32_t _kcp_stop(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     void *data, uint64_t number) {
     (void)watcher;
     ud_cxt *ud = _evpub_get_ud(skctx);
-    kcp_element *kel = _kcp_resolve(skctx, ud, (uint32_t)(uintptr_t)data, number);
+    kcp_element *kel = _kcp_resolve(skctx, ud, (uint32_t)(uintptr_t)data, number, 1);
     if (NULL == kel) {
         return 0;
     }
@@ -479,7 +484,7 @@ static int32_t _kcp_handle(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     (void)watcher;
     ud_cxt *ud = _evpub_get_ud(skctx);
     kcp_handle_arg *arg = data;
-    kcp_element *kel = _kcp_resolve(skctx, ud, arg->conv, arg->sess);
+    kcp_element *kel = _kcp_resolve(skctx, ud, arg->conv, arg->sess, 0);
     if (NULL != kel) {
         kel->handle = (name_t)number;
     }
@@ -512,7 +517,7 @@ static int32_t _kcp_send(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     (void)watcher;
     ud_cxt *ud = _evpub_get_ud(skctx);
     kcp_send_buf *buf = data;
-    kcp_element *kel = _kcp_resolve(skctx, ud, buf->conv, number);
+    kcp_element *kel = _kcp_resolve(skctx, ud, buf->conv, number, 0);
     if (NULL != kel) {
         ikcp_send(kel->ikcp, buf->data, (int32_t)buf->lens);
     }

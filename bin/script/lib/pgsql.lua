@@ -246,9 +246,12 @@ end
 
 -- COPY OUT --
 
----执行 COPY TO STDOUT 查询，一次性返回全部数据
+---执行 COPY TO STDOUT 查询，一次性返回全部数据。
+---与本文件各 pack_* 的返回值形状相同但语义相反：data 是响应包内部的**借用**指针，
+---调用方既不拥有它、也不能对它调 utils.ud_free（会二次释放）；且仅在本协程下次挂起前有效，
+---下次 resume 时框架连同响应包一起释放，需要保留请先 srey.ud_str 拷出来
 ---@param sql string COPY ... TO STDOUT 语句
----@return lightuserdata|false data 数据指针；失败返回 false
+---@return lightuserdata|false data 数据指针（借用，勿释放）；失败返回 false
 ---@return integer? size 成功时为字节数
 function ctx:copy_out(sql)
     return srey.serial_ret(false, self.serial(self._copy_out, self, sql))
@@ -279,7 +282,8 @@ function ctx:_doquit()
     srey.sync_close(fd, skid)
 end
 
----切换数据库：关闭当前连接 → 更新库名 → 重连（重连后旧 prepare 语句失效，代次 +1）
+---切换数据库：关闭当前连接 → 更新库名 → 重连（重连后旧 prepare 语句失效；
+---走的是 quit + connect，两边各让代次 +1，故一次切库代次共 +2）
 ---@param database string 目标数据库名
 ---@return boolean ok 切换并重连成功 true（库名超 63 字节时不断连直接返 false，
 ---原连接与原库名均保持不变）
@@ -301,13 +305,18 @@ function ctx:_selectdb(database)
 end
 
 ---取消当前正在执行的查询：在独立连接上发送 CancelRequest，服务端处理后主动断开、无响应
----@return boolean ok 发送成功 true；未连接返回 false
+---@return boolean ok 发送成功 true；未连接、或握手还没拿到 BackendKeyData（pid 未就绪）返回 false
 function ctx:cancel()
     local fd = self.pg:sock_id()
     if INVALID_SOCK == fd then
         return false
     end
+    -- 不串行化，故可能撞上别的协程正在重连：try_connect 已装好 fd 但握手还挂在 wait_handshaked，
+    -- 此刻 pid 还是 0，组包会被绑定层拒掉。发一个 pid=0 的 CancelRequest 是白发还报成功
     local pack = self.pg:pack_cancel()
+    if not pack then
+        return false
+    end
     if SSL_NAME.NONE ~= self.sslname then
         WARN("pgsql cancel: CancelRequest sent in plaintext (BackendKeyData pid+key exposed); SSL cancel not supported")
     end

@@ -500,26 +500,9 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
         return;
     }
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (NULL != oltcp->ssl) {
-        LOG_WARN("ssl already in use.");
+    if (0 == _evpub_ssl_exchange_check(oltcp->ssl, &oltcp->status,
+                                       _olp_on_recv_cb == skctx->ev_cb, client)) {
         return;
-    }
-    if (BIT_CHECK(oltcp->status, STATUS_SSLEXCHANGE)) {
-        LOG_WARN("repeat request ssl exchange.");
-        return;
-    }
-    if (BIT_CHECK(oltcp->status, STATUS_ERROR)
-        || BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
-        return;
-    }
-    if (_olp_on_recv_cb != skctx->ev_cb) {
-        LOG_WARN("ssl exchange requested before connection established.");
-        return;
-    }
-    if (client) {
-        BIT_SET(oltcp->status, STATUS_CLIENT);
-    } else {
-        BIT_REMOVE(oltcp->status, STATUS_CLIENT);
     }
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         oltcp->evssl = evssl;

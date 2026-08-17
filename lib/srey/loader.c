@@ -44,10 +44,17 @@ static int _loader_name_compare(const void *a, const void *b, void *ud) {
     (void)ud;
     return strcmp(((const name_handle_entry *)a)->name, ((const name_handle_entry *)b)->name);
 }
+// 分布式读锁的 slot 注册:失败不致命(退化成抢 fallback 共享锁),但槽位是手算的,
+// 算漏了只能靠这条日志看出来。两把锁各自的容量表达式见 loader_init
+static void _loader_slot_reg(rwlock_distr_ctx *lck, const char *which) {
+    if (ERR_OK != rwlock_distr_register(lck)) {
+        LOG_WARN("%s rwlock slot exhausted, this thread falls back to the shared lock.", which);
+    }
+}
 // 基础 slot 注册:仅 lckmaptasks;net / acpex / tw 用(不跑 Lua,无需 lckcache slot)
 static void _loader_slot_register_base(void *udata, void *assist) {
     (void)udata;
-    rwlock_distr_register(&((loader_ctx *)assist)->lckmaptasks);
+    _loader_slot_reg(&((loader_ctx *)assist)->lckmaptasks, "maptasks");
 }
 static void _loader_slot_unregister_base(void *udata, void *assist) {
     (void)udata;
@@ -57,7 +64,7 @@ static void _loader_slot_unregister_base(void *udata, void *assist) {
 static void _loader_slot_register_worker(void *udata, void *assist) {
     _loader_slot_register_base(udata, assist);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
-    rwlock_distr_register(&((loader_ctx *)assist)->lckcache);
+    _loader_slot_reg(&((loader_ctx *)assist)->lckcache, "bytecache");
 #endif
 }
 static void _loader_slot_unregister_worker(void *udata, void *assist) {
@@ -65,6 +72,13 @@ static void _loader_slot_unregister_worker(void *udata, void *assist) {
     rwlock_distr_unregister(&((loader_ctx *)assist)->lckcache);
 #endif
     _loader_slot_unregister_base(udata, assist);
+}
+// 从 start 起走 k 步的环形下标：start 与 k 都小于 n，故和 < 2n，减一次即等价于取模，
+// 省掉每轮一次硬件除法。累加必须用 uint32_t——先截成 uint16_t 再减的话，
+// nworker > 32768 时和会绕过 65535，那一下截断后面任何判断都纠正不回来
+static inline uint32_t _loader_ring_next(uint16_t start, uint16_t k, uint16_t n) {
+    uint32_t i = (uint32_t)start + k;
+    return i >= n ? i - n : i;
 }
 // 找出积压任务最多的 worker 索引，用于任务窃取；队列全空时返回 -1
 static int32_t _loader_max_task_index(loader_ctx *loader, uint16_t exclude) {
@@ -74,7 +88,7 @@ static int32_t _loader_max_task_index(loader_ctx *loader, uint16_t exclude) {
     uint16_t start = (uint16_t)((exclude + 1) % loader->nworker);
     uint16_t i;
     for (uint16_t k = 0; k < loader->nworker; k++) {
-        i = (uint16_t)((start + k) % loader->nworker);
+        i = (uint16_t)_loader_ring_next(start, k, loader->nworker);
         if (i == exclude) {
             continue;
         }
@@ -110,10 +124,9 @@ static void _loader_worker_wakeup(loader_ctx *loader, name_t *task) {
         uint16_t idx;
         target = start;
         for (uint16_t i = 0; i < loader->nworker; i++) {
-            // (start + i) % nworker 形成"从 start 起点的环形迭代器"：
-            // 用 start 而非固定从 0 开始，避免多个空闲 worker 时总命中索引最小的，
-            // 也保证全员忙时 fallback 与 RR 公平性一致。
-            idx = (uint16_t)((start + i) % loader->nworker);
+            // 从 start 起点的环形迭代器：不固定从 0 开始，既避免总命中索引最小的空闲 worker，
+            // 也保证全员忙时 fallback 与 RR 公平性一致
+            idx = (uint16_t)_loader_ring_next(start, i, loader->nworker);
             if (ATOMIC_GET(&loader->worker[idx].waiting) > 0) {
                 target = idx;
                 break;
@@ -324,7 +337,11 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     cond_init(&loader->closing_cond);
     pool_init(&loader->msg_pool, sizeof(message_ctx),
               (uint32_t)INIT_EVENTS_CNT * loader->nworker * 2, INIT_EVENTS_CNT, 1, NULL);
-    rwlock_distr_init(&loader->lckmaptasks, (uint32_t)loader->nworker * 4);
+    // 槽位要覆盖全部注册方而不只是 worker：net 线程 nnet 个、时间轮 1 个、Windows 的 AcceptEx
+    // 线程最多 2 个(iocp.c 的 nacpex)，它们都挂 hooks_base 注册这把锁。少算了就有线程 register
+    // 失败、此后每次 task_grab 都退化去抢 fallback 那把共享读写锁，分布式读锁白建
+    uint32_t nreg = (uint32_t)loader->nworker + (0 == nnet ? procscnt() : (uint32_t)nnet) + 3;
+    rwlock_distr_init(&loader->lckmaptasks, nreg);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
     rwlock_distr_init(&loader->lckcache, (uint32_t)loader->nworker + 3);
 #endif
@@ -342,11 +359,9 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
                                                   sizeof(name_handle_entry), ONEK, 0, 0,
                                                   _loader_name_hash, _loader_name_compare, NULL, NULL);
     loader->monitor.thread_monitor = thread_creat(_loader_monitor_loop, loader);
-    // 每轮处理消息数 = lens >> weight（即 lens / 2^weight），等比递减：
-    //   weight=-1: 1条        weight=2: lens/4
-    //   weight=0:  全量       weight=3: lens/8
-    //   weight=1:  lens/2
-    // 32 槽分层：前 4 个保守、后 24 个激进，nworker ≥ 8 时避免后段退化循环。
+    // 每轮处理消息数 = lens >> weight（-1 是特例，固定 1 条），故 weight 越大越保守：
+    //   -1: 1 条    0: 全量    1: lens/2    2: lens/4    3: lens/8
+    // 32 槽按 4/4/8/8/8 分五档（下标 0-3 最保守、4-7 最激进），worker 按 index % 32 取档
     int32_t weights[] = {
         -1, -1, -1, -1, 0, 0, 0, 0,
         1, 1, 1, 1, 1, 1, 1, 1,
@@ -396,7 +411,7 @@ static bool _loader_closing_timeout(const void *item, void *udata) {
     LOG_WARN("task %s close timeout, ref %d.", _NAME_OR(task->name), ATOMIC_GET(&task->ref));
     return true;
 }
-// 广播关闭消息给所有任务，并等待所有任务退出（每 CLOSING_WARN_MS 秒打一次仍在的 task）
+// 广播关闭消息给所有任务，并等待所有任务退出（每 CLOSING_WARN_MS 毫秒打一次仍在的 task）
 static void _loader_task_closing(loader_ctx *loader) {
     message_ctx closing = { 0 };
     closing.mtype = MSG_TYPE_CLOSING;

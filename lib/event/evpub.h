@@ -183,10 +183,16 @@ int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd, int
 int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd);
 // 入队字节累计的增长告警(tda 翻倍阈值)；istcp 只用于挑 TCP / UDP 两条文案
 void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
+// ssl_exchange 的准入门 + CLIENT 位落定，两平台逐字相同的那一段。通过返 1 且 CLIENT 位已按 client 落定；
+// 拒收返 0，该告警的已落 WARN。established 由调用方按平台比 ev_cb 得出，理由见实现内注释。
+// "不是 SOCK_STREAM" 那道门不在此处：它是调用方 UPCAST 成 tcp 结构的前提，进来晚了就已经越界读了。
+// 收 const void * 而非 SSL * 是有意的：这样它不依赖 SSL 类型，无需跟着 #if WITH_SSL 一起切
+int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t established, int32_t client);
 // 设置socket选项：无延迟 + 非阻塞
 int32_t _evpub_nodelay_nonblock(SOCKET fd);
 // ev_connect / ev_listen / ev_udp 的公共前导：校验回调、拒绝 ev_free 期间的调用、解析地址。
-// 任一步失败都已 UD_FREE(ud) 并落日志，调用方直接 return ERR_FAILED，不要再碰 ud
+// 失败时调用方直接 return ERR_FAILED，不要再碰 ud：ud 已被 UD_FREE，唯一例外是 cbs 本身为 NULL
+// （ud_free 就挂在 cbs 里，无从释放）。只有地址解析失败那条会落日志，前两条静默
 int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs_ctx *cbs,
                                  ud_cxt *ud, int32_t isudp, netaddr_ctx *addr);
 // 创建并绑定监听socket

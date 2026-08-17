@@ -37,7 +37,17 @@ void _smtp_udfree(ud_cxt *ud);
 /// <returns>ERR_OK 成功；ERR_FAILED 某个字段超长</returns>
 int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw);
 /// <summary>
-/// 检查返回码是否匹配
+/// 检查返回码是否命中 codes 中任意一个。用于一条命令有多个合法应答的场合，
+/// 如 RCPT TO 的 250(已接受) 与 251(已接受但将转发)，见 RFC 5321 §4.3.2。
+/// 逐个按前缀比较，全不中才落一条 WARN（不会每个码刷一条）
+/// </summary>
+/// <param name="pack">smtp服务器返回的数据包</param>
+/// <param name="codes">状态码数组</param>
+/// <param name="ncode">codes 元素个数；为 0 时恒失败</param>
+/// <returns>ERR_OK 命中其中之一</returns>
+int32_t smtp_check_codes(char *pack, const char *const *codes, size_t ncode);
+/// <summary>
+/// 检查返回码是否匹配（单码，等价于 ncode 为 1 的 smtp_check_codes）
 /// </summary>
 /// <param name="pack">smtp服务器返回的数据包</param>
 /// <param name="code">状态码</param>

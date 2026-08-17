@@ -810,8 +810,12 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
             break;
         }
 #ifdef READV_EINVAL
-        if (readed < nbuf
-            || *nread >= nbuf) {
+        // 这道早退是给 readv 的(AIX 上无数据时它返 EINVAL)，只能用在裸 socket 读:
+        // 未读数据留在内核 socket buffer 里，下一次可读事件会再来。
+        // arg 非 NULL 表示另有一层缓冲(SSL)，那时不能早退，理由见 _evpub_sock_read_ssl
+        if (NULL == arg
+            && (readed < nbuf
+                || *nread >= nbuf)) {
             break;
         }
 #endif

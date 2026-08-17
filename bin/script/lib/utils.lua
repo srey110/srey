@@ -215,7 +215,8 @@ function dump(obj, offset)
     return dumpObj(obj, offset)
 end
 
----递归设置元表的 __index 字段；__index 被占用且不等于新值时沿元表链向上追加，形成链式继承
+---给表挂上 __index。唯一调用方是 class() 的 cls.new，传进来的 t 是刚建的空表，
+---所以 getmetatable(t) 恒为 nil、不存在 __index 被占用的情形
 ---@param t table<any,any> 目标表
 ---@param index table<any,any> 要设置的 __index 表
 local function setmetatableindex(t, index)
@@ -223,18 +224,7 @@ local function setmetatableindex(t, index)
         assert(false, "nil value")
         return
     end
-    local mt = getmetatable(t)
-    if not mt then
-        mt = {}
-    end
-    if not mt.__index then
-        mt.__index = index
-        setmetatable(t, mt)
-    elseif mt.__index ~= index then
-        -- 向已占用的 __index(mt.__index)继续追加，而非对 mt 本身(元表)追加——
-        -- 后者会挂到"元表的元表"上，Lua 解析 t.field 时不会经过这一层，追加内容永久不可达
-        setmetatableindex(mt.__index, index)
-    end
+    setmetatable(t, { __index = index })
 end
 
 ---轻量级 OOP class 实现，支持多继承；调用 cls.new(...) 创建实例并触发 ctor

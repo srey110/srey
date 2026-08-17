@@ -19,6 +19,7 @@ local TERM = "\r\n.\r\n"
 local conns = {}        -- skid -> 连接状态
 local interleave = 0    -- 检测到的交错次数
 local mails = 0         -- 服务端确认收下的邮件数
+local fail_rset = false -- 置 true 让下一条 RSET 被回 500(一次性)，压客户端的拆连接收尾
 
 local function _reply(fd, skid, resp)
     srey.send(fd, skid, resp, #resp, 1)
@@ -63,7 +64,12 @@ local function _cmd(fd, skid, fc, line)
         _reply(fd, skid, "354 End data with <CR><LF>.<CR><LF>\r\n")
     elseif up:find("^RSET") then
         fc.sender = -1
-        _reply(fd, skid, "250 OK\r\n")
+        if fail_rset then
+            fail_rset = false
+            _reply(fd, skid, "500 rset rejected\r\n")
+        else
+            _reply(fd, skid, "250 OK\r\n")
+        end
     elseif up:find("^QUIT") then
         _reply(fd, skid, "221 Bye\r\n")
     else
@@ -159,6 +165,34 @@ runner.run("smtp_fake", function(t)
     local gen = ctx.generation
     t:check(ctx:ping(), "quit 后 ping 自动重连")
     t:check(gen < ctx.generation, "重连让代次前进")
+
+    -- quit 同样要让代次前进：不动的话，quit 前 prepare 出来的 stmt / session 拿旧代次一比仍算有效
+    local stale_gen = ctx.generation
+    ctx:quit()
+    t:check(stale_gen < ctx.generation, "quit 让代次前进")
+    -- 再重连 + 再断开，把代次推到离 stale_gen 更远的位置：这样下面那次 _doconnect 拿到的
+    -- 才是真正的"过期代次"，短路条件的第一项(代次已变)成立，考的就是第二项 established
+    t:check(ctx:ping(), "再重连一次令代次继续前进")
+    ctx:quit()
+    -- 短路条件若只认代次就会对着已关的连接报成功，故这里必须真把连接建起来。
+    -- 直接调内部 _doconnect 是为了造出"过期代次"这个入参，此刻无并发协程，绕开锁安全
+    t:eq(true, ctx:_doconnect(stale_gen), "拿过期代次的 connect 返回成功")
+    t:check(INVALID_SOCK ~= ctx.conn:sock_id(), "且连接是真建起来的，不是短路返回")
+
+    -- RSET 失败：邮件本身已投成功故 send 返 true，但连接要就地拆掉且状态同步落账——
+    -- established 不清的话，之后排队醒来的 connect 会对着这条已关的连接短路报成功
+    local rgen = ctx.generation
+    fail_rset = true
+    local rm = mail.new()
+    rm:from("srey", "c9@t")
+    rm:addrs_add("r9@t", MAIL_ADDR_TYPE.TO)
+    rm:subject("rset_fail")
+    rm:msg("body")
+    rm:reply(0)
+    t:eq(true, ctx:send(rm), "RSET 失败不影响邮件本身的成败")
+    t:eq(false, ctx.established, "RSET 失败后 established 已清")
+    t:check(rgen < ctx.generation, "RSET 失败让代次前进")
+    t:check(ctx:ping(), "RSET 失败后 ping 能重连")
     ctx:quit()
 end)
 end)

@@ -56,7 +56,6 @@ http.datastr = srey_http.datastr
 ---@field heads   table<string,string>?   响应头 key→value 表；分块中间包为 nil
 ---@field data    string?                 报文体内容；空时为 nil
 ---@field cksize  integer?                chunked 模式下累计接收字节数；非 chunked 时不存在
----@field fin     boolean?                chunked 模式下是否已接收完所有分片；非 chunked 时不存在
 
 ---将整个 HTTP 包解包为 Lua 表
 ---@param pack lightuserdata http_pack_ctx 指针
@@ -96,7 +95,6 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
     pack = http.unpack(pack)
     if 1 == pack.chunked then
         pack.cksize = 0
-        pack.fin = false
         local ok, data, hdata, hsize, fin
         local chunks
         if not ckfunc then
@@ -119,7 +117,6 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
                 ckfunc(fin, nil, 0)
             end
             if fin then
-                pack.fin = true
                 break
             end
         end
