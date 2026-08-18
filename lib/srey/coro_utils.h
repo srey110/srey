@@ -87,9 +87,8 @@ int32_t mysql_ping(mysql_ctx *mysql);
 /// <param name="cb">结果集回调；NULL 表示只把结果集读完不回调（INSERT/UPDATE 这类）</param>
 /// <param name="udata">透传给 cb</param>
 /// <returns>ERR_OK 全部结果集读完且回调都成功；ERR_FAILED 组包失败、网络失败、
-/// 未持锁(不在协程内或连接正在销毁)、任一回调返回失败、或 cb 为 NULL 时服务端回了 ERR 应答。
-/// 服务端的 ERR 应答只在 cb 为 NULL 那一档算失败：给了 cb 就由 cb 说成败，
-/// 它照样能收到 ERR 包并从中取错误信息</returns>
+/// 未持锁(不在协程内或连接正在销毁)、任一回调返回失败、或 cb 为 NULL 时服务端回了 ERR 应答
+/// （有 cb 时 ERR 应答不算失败：ERR 包照样交给 cb，成败由 cb 说）</returns>
 int32_t mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
                     mysql_result_cb cb, void *udata);
 /// <summary>
@@ -119,18 +118,17 @@ int32_t mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind,
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt);
 /// <summary>
 /// 关闭预处理语句并释放相关资源。拿不到该连接的串行化执行权时（不在协程内、连接正在销毁，
-/// 或这条连接根本不受本套 API 管——Lua 绑定建的都是）只做本地释放、不发 COM_STMT_CLOSE，
+/// 或这条连接不受本套 API 管——未经 mysql_connect 建链）只做本地释放、不发 COM_STMT_CLOSE，
 /// 服务端那份语句随连接关闭一并回收
 /// </summary>
 /// <param name="stmt">mysql_stmt_ctx，调用后失效</param>
 void mysql_stmt_close(mysql_stmt_ctx *stmt);
 /// <summary>
 /// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
-/// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
-/// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
+/// 先排在在途命令之后再退出，不把别人半途的等待打断。**须在协程内调用**（内部要等断连确认）。
 /// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
-/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
-/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
+/// 没有执行器的连接（未经 *_connect 建链）不排队直接断连——那种连接上的命令本就不串行。
+/// smtp_quit / pgsql_quit / mongo_quit 同此契约
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 void mysql_quit(mysql_ctx *mysql);
@@ -145,12 +143,7 @@ void mysql_quit(mysql_ctx *mysql);
 /// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
 /// <summary>
-/// 关闭链接，并回收该连接的串行化执行器（排队中的投递被唤醒并失败返回）。
-/// 先排在在途命令之后再退出：QUIT 要等服务端 221，插在别人的邮件流中间会把响应对错位，
-/// 随后的断连更会把对方半途的等待打断。**须在协程内调用**。
-/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
-/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
-/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
+/// 发送 QUIT 并关闭链接；排队、协程、无执行器的契约同 mysql_quit
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 void smtp_quit(smtp_ctx *smtp);
@@ -173,7 +166,7 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 // 以下 pgsql 命令接口全部经连接内的串行化执行器串行发出：pgsql 一条命令要读到 ReadyForQuery
 // 才算完，copy_in 更是两次往返，多协程共用一条连接时命令交错会让整条连接报错。
 // 因此每个命令都多一种失败：调用方不在协程内、或该连接正在 pgsql_quit 销毁（失败值同各自的
-// 网络失败，不额外区分）。经 Lua 绑定的 pgsql_try_connect 建立的连接不受管，行为与从前一致。
+// 网络失败，不额外区分）。经 pgsql_try_connect 自行建立的连接不受管，行为与从前一致。
 // 唯一有意不串行化的是 pgsql_cancel——见该函数说明
 /// <summary>
 /// pgsql链接
@@ -183,21 +176,15 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 /// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 /// <summary>
-/// 在独立 TCP 连接上向服务端发送 CancelRequest，中止当前正在执行的查询
-/// 服务端处理后主动关闭该连接，无任何响应；原连接会收到错误回包。
-/// 有意不参与命令串行化：它要中止的就是当前持锁那条查询，排队等锁会等到那条查询自己结束，
-/// 取消也就失去意义；它也不往原连接上写任何字节，不存在交错问题
+/// 在独立 TCP 连接上向服务端发送 CancelRequest，中止当前正在执行的查询。
+/// 服务端处理后主动关闭该连接、无响应；原连接会收到错误回包。
+/// 有意不参与命令串行化（排队等锁就等到查询自己结束了），也不往原连接写任何字节
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针，须已成功连接（pid/key 已初始化）</param>
 /// <returns>ERR_OK 发送成功，ERR_FAILED 连接未建立或网络失败</returns>
 int32_t pgsql_cancel(pgsql_ctx *pg);
 /// <summary>
-/// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
-/// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
-/// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
-/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
-/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
-/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
+/// 发送 Terminate 并关闭链接；排队、协程、无执行器的契约同 mysql_quit
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 void pgsql_quit(pgsql_ctx *pg);
@@ -266,7 +253,7 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
 // 以下 mongo 命令接口全部经连接内的串行化执行器串行发出（含 MORETOCOME 的只发不等——
 // 不等响应也不能乱序，后面那条 find 得看得见前面这批 insert）。因此每个命令都多一种失败：
 // 调用方不在协程内、或该连接正在 mongo_quit 销毁（失败值同各自的网络失败，不额外区分）。
-// 经 Lua 绑定的 mongo_try_connect 建立的连接不受管，行为与从前一致。
+// 经 mongo_try_connect 自行建立的连接不受管，行为与从前一致。
 // 注意串行化只保证**单条命令**原子，不保证**事务**原子：事务上下文挂在连接上
 // （mongo_ctx.session），别人的命令挤在 mongo_begin 与 commit/rollback 之间时，
 // 组包侧照样会给它附上本事务的 lsid/txnNumber。要事务隔离，须由调用方在
@@ -279,13 +266,7 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
 /// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
 /// <summary>
-/// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
-/// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
-/// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
-/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
-/// 没有执行器的连接（未经 *_connect 建链，如经 *_try_connect 自行组装的）不排队直接断连，
-/// 那种连接上的所有命令本来就不串行，断连也一样：与其他协程的往返撞上会串包
-/// mongo 没有退出命令，断连就是退出
+/// 关闭链接（mongo 没有退出命令，断连就是退出）；排队、协程、无执行器的契约同 mysql_quit
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 void mongo_quit(mongo_ctx *mongo);
@@ -494,13 +475,11 @@ int32_t mongo_begin(mongo_session *session);
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
-/// <returns>ERR_OK 成功。组包失败或网络失败时事务状态原样保留，可换参数重试同一事务；
-/// 服务端有响应即释放事务状态（命令本身失败也不再可重试），与 Lua 侧 mongo.lua 一致。
-/// 连接已不再绑定该 session（重连清过绑定，或另一个 session 接管了这条连接）时不发送、
-/// 直接返回 ERR_FAILED：commit/abort 必须发在事务所在的那条连接上，换了连接发也是白发。
-/// 被这条拒绝后 session 的本地事务状态（options / started / txnNumber）原样保留，不漏也不脏，
-/// 但那个事务在服务端已随旧连接消失、无从挽回：调用方应 mongo_freesession 丢弃该 session，
-/// 或等连接空闲后 mongo_begin 开一个新事务（begin 会递增 txnNumber 并重建 options）</returns>
+/// <returns>ERR_OK 成功。组包/网络失败时事务状态原样保留，可重试；服务端有响应即释放事务状态
+/// （命令本身失败也不再可重试）。
+/// 连接已不再绑定该 session（重连清过绑定，或被别的 session 接管）时不发送、直接返回 ERR_FAILED：
+/// 本地事务状态原样保留，但服务端那个事务已随旧连接消失，
+/// 调用方应 mongo_freesession 丢弃该 session，或重新 mongo_begin（会递增 txnNumber）</returns>
 int32_t mongo_commit(mongo_session *session, char *options, size_t optlens);
 /// <summary>
 /// 事务回滚
@@ -527,8 +506,8 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
 /// <summary>
 /// kcp 同步发送并等待响应:发送后挂起当前协程,收到对端响应后返回;须在协程内调用。
 /// sess 取 kcp_start 时传入的值,同一会话上的多次 synsend 按 FIFO 排队唤醒;
-/// 以 kcp_start(sess=0) 异步建立的会话不能用本函数(立即返回 NULL)。
-/// 超时会 kcp_stop 销毁该会话,之后需重新 kcp_start 才能再用;会话被其它途径关闭时也返回 NULL
+/// 以 kcp_start(sess=0) 异步建立的会话不能用本函数。
+/// 超时会 kcp_stop 销毁该会话,之后需重新 kcp_start 才能再用
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="kcp">已 kcp_start 的 kcp_ctx</param>

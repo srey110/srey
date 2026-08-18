@@ -32,25 +32,21 @@ void spsc_init(spsc_ctx *q, size_t elsize, uint32_t capacity);
 /// <param name="q">spsc_ctx</param>
 void spsc_free(spsc_ctx *q);
 /// <summary>
-/// 非阻塞入队：从 data 拷贝 elsize 字节入队，队列满时立即返回 ERR_FAILED。
-/// 约束：仅允许单一生产者线程调用，并发调用 trypush 行为未定义。
+/// 非阻塞入队。仅允许单一生产者线程调用，并发调用 trypush 行为未定义。
 /// </summary>
 /// <param name="q">spsc_ctx</param>
 /// <param name="data">指向待入队元素的指针，不得为 NULL（拷贝 elsize 字节）</param>
 /// <returns>ERR_OK 成功，ERR_FAILED 队列已满</returns>
 int32_t spsc_trypush(spsc_ctx *q, const void *data);
 /// <summary>
-/// 出队，非阻塞：拷贝 elsize 字节到 out。
-/// 约束：仅允许单一消费者线程调用，并发调用 pop 行为未定义。
+/// 出队，非阻塞。仅允许单一消费者线程调用，并发调用 pop 行为未定义。
 /// </summary>
 /// <param name="q">spsc_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
 /// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
 int32_t spsc_pop(spsc_ctx *q, void *out);
 /// <summary>
-/// 返回当前队列元素数量的近似值，并发下不精确。
-/// 偏差方向有保证：只会高估不会低估（上限 capacity），故可安全用于
-/// "队列是否还有元素待处理"这类判断——不会把有元素报成 0 而导致漏唤醒。与 mpq_size 同一约定
+/// 返回当前队列元素数量的近似值
 /// </summary>
 /// <param name="q">spsc_ctx</param>
 /// <returns>元素数量，取值 [0, capacity]</returns>

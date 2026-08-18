@@ -27,7 +27,7 @@
 //   /file/{path?}    {name?} 可选路径参数, 缺失时取不到值但仍匹配
 //                    匹配是精确的(非贪婪前瞻): 只要存在"某些 OPT 取值、其余缺失"的组合能让
 //                    整条路径对齐就算命中, 能取到值的 OPT 优先取值; 单条路由最多 ROUTER_MAX_OPT 个
-//   {name} 内部含 '?' (如 {a?b}) 视为非法参数名, 整段退化为字面量匹配 (与 Lua 端文法一致)
+//   {name} 内部含 '?' (如 {a?b}) 视为非法参数名, 整段退化为字面量匹配
 //   /static/*        末尾通配, 一旦命中后续任意请求段都吃下
 //   多条同 path 不同 method 算独立路由, 方法位掩码 ROUTER_M_GET|ROUTER_M_POST 也支持
 // 线程约定
@@ -157,27 +157,20 @@ typedef struct router_req router_req;
 // 路由 handler / 中间件统一签名;handler 不调 next, 中间件主动调 router_next(ctx) 推进链路, 不调即截断
 typedef void (*router_cb)(router_req *ctx);
 /// <summary>
-/// 流式路由的数据回调 (router_add_stream 注册)。slice 原样透传协议层的分片状态，
-/// 按它分支，不要靠 lens 猜；data 仅本次调用内有效，要留必须自己拷。
-///   0                非 chunked 请求，data 即完整 body (可能为空)，只调这一次。这一次的 ctx
-///                    是 dispatch 的栈对象（同普通 handler），返回即失效，之后不会再有
-///                    PROT_SLICE_END / ROUTER_STREAM_ABORT——要异步就 coro_fork，把 fd/skid
-///                    与用得着的数据拷到堆参数，并置 ctx->responded = 1
-///   PROT_SLICE_START chunked 首帧，data 恒为 NULL
-///   PROT_SLICE       chunked 数据块
-///   PROT_SLICE_END   chunked 终止块，data 恒为 NULL；本次返回后 ctx 即失效
-///   ROUTER_STREAM_ABORT 流没收齐就没了（连接断 / 同连接又来一个流式首帧 / router_free），
-///                    data 恒为 NULL，本次返回后 ctx 即失效。这是 ctx->user 最后的释放机会——
-///                    chunked 正常收尾走 PROT_SLICE_END，两者只会来一个（slice == 0 那条路
-///                    两者都不来，见上）。只做清理：连接多半已经没了，
-///                    写响应没意义（router 也不会因为没响应补 500），更不要用 ctx->task
-///                    投消息或挂起（router_free 那条路径上 task 正在拆）。
-///                    投这次回调前该流已从表里摘掉，回调内调 router_closed 是安全的 no-op
-/// 请求头只在 slice == 0 与 PROT_SLICE_START 这两次（及之前的准入中间件）读得到——chunked
-/// 的首包随该次回调结束就被协议层回收，router 不留副本，之后 router_req_header /
-/// router_req_body 一律返 NULL；要留就在首帧拷进 ctx->user。
-/// 路径参数与 query 则每帧都在（含 ABORT 那次）。
-/// 本回调与中间件一样不能挂起，理由见 router_add_stream
+/// 流式路由的数据回调 (router_add_stream 注册)。slice 透传协议层分片状态，按它分支；
+/// data 仅本次调用内有效；ctx 在"只调这一次 / 最后一次"的那次返回后即失效。
+///   0                   非 chunked，data 即完整 body（可能为空），只调这一次，之后不会再有
+///                       END / ABORT。要异步就 coro_fork 拷走 fd/skid 等，并置 ctx->responded = 1
+///   PROT_SLICE_START    chunked 首帧，data 恒为 NULL
+///   PROT_SLICE          chunked 数据块
+///   PROT_SLICE_END      chunked 终止块，data 恒为 NULL
+///   ROUTER_STREAM_ABORT 流没收齐就没了（连接断 / 同连接新流式首帧 / router_free），
+///                       data 恒为 NULL，与 END 只会来一个。这是 ctx->user 最后的释放机会，
+///                       只做清理：不写响应（无兜底 500），不用 ctx->task 投消息或挂起；
+///                       该流已先摘表，回调内调 router_closed 是安全的 no-op
+/// 请求头只在 slice == 0 与首帧（及之前的准入中间件）读得到，之后 router_req_header / _body
+/// 一律返 NULL，要留就首帧拷进 ctx->user；路径参数与 query 每帧都在（含 ABORT）。
+/// 与中间件一样不能挂起，理由见 router_add_stream
 /// </summary>
 typedef void (*router_stream_cb)(router_req *ctx, uint8_t slice, void *data, size_t lens);
 // 路径参数键值对 (仅用于 router_req::params);
@@ -236,9 +229,8 @@ router_ctx *router_new(void);
 void router_free(router_ctx *r);
 /// <summary>
 /// 注册具名中间件; 后续可在 router_use / 路由 mws / group mw_names 中以
-/// 字符串引用 (字符串严格匹配, 大小写敏感)。同名再次 define 直接覆盖 named 表项;
-/// 但 router_use / router_add 是"注册时快照": 调用瞬间 _resolve_mw 把函数指针
-/// 存进 global_mw / entry->mws, 之后再 define 不会影响已注册的路由 / 全局中间件
+/// 字符串引用 (严格匹配, 大小写敏感)。同名再次 define 直接覆盖 named 表项;
+/// 但 router_use / router_add 注册时即快照函数指针, 之后再 define 不影响已注册的
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="name">中间件名</param>
@@ -349,17 +341,14 @@ router_entry *router_options(router_ctx *r, const router_group *g, const char *p
 router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
 /// <summary>
-/// 注册流式路由：请求体逐块交给 sh，不在 router 内缓存，故请求体多大都不占额外内存。
+/// 注册流式路由：请求体逐块交给 sh，不在 router 内缓存，请求体多大都不占额外内存。
 /// 只有 router_net_recv 这条入口认流式路由；用它就必须同时接上 router_closed。
 /// 与 router_add 的三点不同：
-///   1. 中间件链只做准入 —— 链里不追加 handler，跑到底即放行、中途不调 router_next 即拒绝
-///      (它没写响应就兜底 500 并关连接)。因此中间件在 router_next 之后的后置处理跑在
-///      请求体到达之前，拦不住已放行的流，日志 / 计时类中间件挂上来须知情
-///   2. sh 与准入中间件都不能挂起 (coro_send / coro_sleep 等)。分片是逐帧投递的，
-///      挂起期间下一帧会在新协程上重入：中间件挂起则该帧丢失，sh 挂起则两帧共用一个 ctx。
-///      要异步就 coro_fork，把 fd/skid 与数据拷到堆参数，并置 ctx->responded = 1
-///   3. 响应由 sh 自己写；到 PROT_SLICE_END 仍未响应则兜底 500。流中途断掉时收到的是
-///      ROUTER_STREAM_ABORT，那次只能清理不能响应，也没有兜底
+///   1. 中间件链只做准入——跑到底即放行、中途不调 router_next 即拒绝（没写响应就兜底 500
+///      并关连接）。后置处理跑在请求体到达之前，拦不住已放行的流，日志 / 计时类中间件须知情
+///   2. sh 与准入中间件都不能挂起：分片逐帧投递，挂起期间下一帧会在新协程上重入。
+///      要异步就 coro_fork 拷走 fd/skid 等，并置 ctx->responded = 1
+///   3. 响应由 sh 自己写；到 PROT_SLICE_END 仍未响应则兜底 500，ABORT 那次只能清理、没有兜底
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="g">分组, 可为 NULL</param>
@@ -388,12 +377,10 @@ router_entry *router_post_stream(router_ctx *r, const router_group *g, const cha
 router_entry *router_put_stream(router_ctx *r, const router_group *g, const char *path,
                                 router_stream_cb sh, const char *const *mws, int32_t mws_n);
 /// <summary>
-/// 注册路由并返回索引；不经 group/mw 解析，handler 置 NULL。
-/// 与已注册条目等价时拒绝注册（见返回值）：dispatch 取首条命中，后注册的那条永远够不着
+/// 注册路由；不经 group/mw 解析，handler 置 NULL，只能配 router_match_index 使用
+/// （调用方自己按索引派发），再交给 router_dispatch / router_net_recv 命中即回 500 拒绝。
+/// 与已注册条目等价时拒绝注册（见返回值）：dispatch 取首条命中，后注册的那条永远够不着。
 /// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"
-/// 本函数注册的条目只能配 router_match_index 使用（调用方自己按索引派发）；
-/// 因 handler 为 NULL，同一 router_ctx 若再交给 router_dispatch / router_net_recv，
-/// 命中即回 500 拒绝并打一条 WARN —— 普通请求与 chunked 首帧给同一个码，不会退化成 411
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="method">HTTP 方法字符串</param>
@@ -401,8 +388,7 @@ router_entry *router_put_stream(router_ctx *r, const router_group *g, const char
 /// <param name="path">路由完整路径（调用方已拼好前缀）</param>
 /// <param name="path_len">path 长度</param>
 /// <returns>路由索引（≥0）；-1 路径非法或方法未知；-2 已有一条等价路由把它遮住
-/// （方法掩码有交集 + 段序列在匹配意义上相同，如先注册的 ANY /x 之于 GET /x、
-/// 或 /u/{id} 之于 /u/{uid}——参数名不参与匹配）</returns>
+/// （方法掩码有交集且段序列在匹配意义上相同——参数名不参与匹配，如 /u/{id} 之于 /u/{uid}）</returns>
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                          const char *path, size_t path_len);
 /// <summary>
@@ -414,23 +400,17 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 /// <param name="method_len">method 长度</param>
 /// <param name="url">原始请求 URI（含查询字符串）</param>
 /// <param name="url_len">url 长度</param>
-/// <param name="ctx">调用方提供的 router_req，**必须已整体零初始化**：匹配失败时本函数
-/// 不写 params_n（只有命中才写），ctx 带着脏 params_n 进来就会让 router_req_param
-/// 遍历到未初始化的 params[] 指针。同一个 ctx 也不可跨请求复用。
-/// ctx->url 须在调用前指向一块调用方持有的 url_ctx，**不必**预先清零——本函数内部
-/// url_parse 会先清掉 param 之前的头部字段（segs/param/buf 三个数组按 npath/nparam 划定有效范围，
-/// 不预清零）；反过来说返回 -3（方法未知，压根没解析 URL）时它仍是未初始化的，
-/// 返回 -2（url_parse 失败）时它已被写过但内容不可信。
-/// 返回 ≥0 或 -1 时 ctx->url 是**规范化后**的：空段一律剔除（RFC 允许 /a//b），
-/// segs / npath / pathlens 三者同步收缩，读到的不是原样解析结果——"/a//b" 读出来是 "/a/b"，
-/// "/" 与 "//" 读出来 npath 与 pathlens 均为 0（此时 url_reorg_path 只吐得出空串，
-/// 需要 "/" 得由调用方补）</param>
+/// <param name="ctx">调用方提供的 router_req，**必须已整体零初始化**（匹配失败不写 params_n，
+/// 脏值会让 router_req_param 读到未初始化指针），同一个 ctx 不可跨请求复用。
+/// ctx->url 须指向一块调用方持有的 url_ctx，不必预先清零；仅返回 ≥0 或 -1 时其内容可用，
+/// 且是**规范化后**的：空段一律剔除（"/a//b" 读出来是 "/a/b"），"/" 与 "//" 的 npath 与
+/// pathlens 均为 0（url_reorg_path 只吐得出空串，需要 "/" 由调用方补）</param>
 /// <returns>路由索引（≥0）；-1 无匹配路由；-2 URL 解析失败；-3 方法不在已知列表(对应 405)</returns>
 int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
                            const char *url, size_t url_len, router_req *ctx);
 /// <summary>
-/// router_match_index 的返回值 → HTTP 状态码。C 侧 router_dispatch 与 Lua 绑定共用本映射，
-/// 新增失败哨兵时只需改这一处，两个 HTTP 面不会对同一请求给出不同状态码
+/// router_match_index 的返回值 → HTTP 状态码。所有派发面共用本映射，
+/// 新增失败哨兵时只需改这一处，不同派发面不会对同一请求给出不同状态码
 /// </summary>
 /// <param name="idx">router_match_index 的返回值</param>
 /// <returns>200 命中；405 方法未知；400 URL 解析失败；404 无匹配路由</returns>
@@ -459,12 +439,9 @@ void router_dispatch(router_ctx *r, task_ctx *task,
 void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid);
 /// <summary>
 /// 连接关闭时清理该连接尚未收齐的流式请求 —— 在 _net_close_cb 中调用。
-///
-/// 用 router_net_recv 且注册了流式路由的调用方**必须**接上本函数(task_closed 注册):
-/// 流式请求在收齐前会在 router 内留下一份请求上下文 (约 5KB), 连接中途断开时
-/// 只有这里能回收。漏接就是每条中途断掉的流式连接泄漏这 5KB, 没有任何上限兜底。
-/// 回收前会给该流投一次 ROUTER_STREAM_ABORT, 让 on_chunk 清掉 ctx->user ——
-/// 漏接本函数的话这次通知也没有, 用户挂在 ctx->user 上的东西一并泄漏
+/// 用 router_net_recv 且注册了流式路由就**必须**接上本函数(task_closed 注册):
+/// 未收齐的流在 router 内占约 5KB 上下文, 只有这里能回收, 回收前投一次
+/// ROUTER_STREAM_ABORT 让 on_chunk 清 ctx->user; 漏接则两者都泄漏, 无上限兜底
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="fd">socket fd</param>
@@ -472,11 +449,9 @@ void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid);
 void router_closed(router_ctx *r, SOCKET fd, uint64_t skid);
 /// <summary>
 /// _net_recv 回调的标准实现 —— slice == 0 的完整请求直接转 router_dispatch;
-/// chunked 请求命中流式路由 (router_add_stream) 则逐帧交给它, 命中普通路由则回 411 并关连接。
-/// chunked 的状态码与一次到齐的同一请求完全一致: 匹配不上就是 404/400/405, 不是 411 ——
-/// 411 只表示"路由在, 但它接不住 chunked"。
-/// 参数与 _net_recv_cb 一一对应, 只在最前面多一个 router_ctx:
-/// 各服务的回调按自己的 ctx 类型取出 router 后整串转发即可
+/// chunked 命中流式路由则逐帧交给它, 命中普通路由则回 411 并关连接。匹配不上仍是
+/// 404/400/405 —— 411 只表示"路由在, 但它接不住 chunked"。
+/// 参数与 _net_recv_cb 一一对应, 只在最前面多一个 router_ctx
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="task">task</param>
@@ -516,7 +491,7 @@ const char *router_req_param(router_req *ctx, const char *key, size_t *lens);
 /// <param name="ctx">router_req</param>
 /// <param name="key">参数名</param>
 /// <param name="lens">输出值长度</param>
-/// <returns>值指针; 键不存在返回 NULL, 键存在但值空(?a=)返回非 NULL 零长指针(对齐 Lua query 子表 "")</returns>
+/// <returns>值指针; 键不存在返回 NULL, 键存在但值空(?a=)返回非 NULL 零长指针</returns>
 const char *router_req_query(router_req *ctx, const char *key, size_t *lens);
 /// <summary>
 /// 取请求 body。流式路由不要用它: chunked 时这里恒为空,
@@ -552,13 +527,10 @@ void router_req_json(router_req *ctx, int32_t code, const char *json, size_t len
 void router_req_html(router_req *ctx, int32_t code, const char *body, size_t lens);
 /// <summary>
 /// 自定义响应; extra 为附加头。Content-Type 就经 extra 传(本函数自己不写, 与 router_req_text /
-/// _json / _html 不同 —— 那三个各自写死类型且不收 extra); Content-Length / Transfer-Encoding
-/// 不能传, 本函数按 body_len 自动写 Content-Length, 再叠一条对端会判为请求走私。
-/// 附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN, 无返回值可查): 头名为空或 >= 128 字节、
-/// 头名不是合法 RFC 7230 token(非空、全 tchar, 故 NUL/CR/LF/':'/空格 都被挡)、
-/// 头名为 Content-Length / Transfer-Encoding、头值 data 为 NULL 或含 NUL/CR/LF、
-/// 以及该条会让整个头部块越过 http.c 的 MAX_HEADLENS(按已写入字节累计判, 不是逐条判)。
-/// 截断头名等于改名发上线缆, 故一律不截断; 头值本身不限长, 只受上面那条累计上限约束
+/// _json / _html 写死类型不同); Content-Length / Transfer-Encoding 不能传——按 body_len 自动写
+/// 前者, 再叠一条对端会判为请求走私。附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN):
+/// 头名为空、>= 128 字节或不是 RFC 7230 token, 头值为 NULL 或含 NUL/CR/LF,
+/// 以及该条会让头部块累计越过 http.c 的 MAX_HEADLENS。头名一律不截断——截断等于改名发上线缆
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="code">状态码</param>

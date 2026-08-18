@@ -74,11 +74,9 @@ void *global_userdata(lua_State *lua, const char *name);
 int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsize);
 /// <summary>
 /// 校验跟 lightuserdata 一起传进来的字节数。凡是 (指针, 长度) 形状的入口都从这里取长度,
-/// 别再各写一句 (size_t)luaL_checkinteger。
-/// 下界恒为 0：负数转成 size_t 是个天文数字,而下游的边界判定几乎都是"剩余长度 &lt; 需要长度"
-/// 这种形式,长度一大就全部恒假,于是照着缓冲后面的堆内存一路读下去。
-/// 上界由调用方按自己的线格式给:BSON 传 INT32_MAX(文档长度与 binary 长度前缀就是 int32);
-/// 收发缓冲这类没有协议上界的传 0,表示只校验下界
+/// 别再各写一句 (size_t)luaL_checkinteger。下界恒为 0：负数转成 size_t 是天文数字,
+/// 会击穿下游所有"剩余长度 &lt; 需要长度"式的边界判定。
+/// 上界由调用方按自己的线格式给:BSON 传 INT32_MAX;没有协议上界的传 0,只校验下界
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">长度在栈中的位置</param>
@@ -135,12 +133,10 @@ void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
 /// <returns>data 指针</returns>
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
 /// <summary>
-/// 取 BSON 二进制参数:string 自带长度;lightuserdata 从 idx+1 读长度。取值走 lpub_check_buf,
-/// 而它服务的是收发缓冲、不带上界,所以两条分支的 INT32_MAX 都得在这里补:lightuserdata
-/// 那条先单独验一遍,为的是把越界报在长度那个参数上而不是 data 上;string 那条的长度取自
-/// 字符串自身,而 Lua 字符串能超 INT32_MAX,只卡 lightuserdata 等于给字符串留了后门。
-/// 注意只挡得住"长度本身非法",挡不住"长度合法但比缓冲实际长"——(指针, 长度) 这种入参形状
-/// 天然只能信调用方
+/// 取 BSON 二进制参数:string 自带长度;lightuserdata 从 idx+1 读长度。
+/// 两条分支都卡 INT32_MAX——Lua 字符串也能超,只卡 lightuserdata 等于给字符串留后门;
+/// lightuserdata 那条把越界报在长度参数上而不是 data 上。
+/// 只挡得住"长度本身非法",挡不住"长度合法但比缓冲实际长"——(指针, 长度) 入参天然只能信调用方
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">data 在栈中的位置</param>
@@ -157,17 +153,16 @@ char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens);
 /// <returns>task 句柄；名字查不到时为 INVALID_TNAME</returns>
 name_t lpub_task_handle(lua_State *lua, int32_t idx);
 /// <summary>
-/// 失败路径压 n 个 nil 并返回 n。全仓的规矩是**失败与成功的返回值个数必须一致**：
-/// local a, b = f() 这种写法少返几个能靠 nil 补齐撑住，但把返回值直接塞进另一个调用
-/// （srey.send(fd, skid, websock.pack_text(...))）就整体错位了，而类型标注上写的是 N 个值。
-/// n 都是个位数，不必 lua_checkstack——进 C 函数时 Lua 保证有 LUA_MINSTACK 个空位
+/// 失败路径压 n 个 nil。全仓规矩：**失败与成功的返回值个数必须一致**——
+/// 返回值直接塞进另一个调用（srey.send(fd, skid, websock.pack_text(...))）时少一个就整体错位。
+/// n 是个位数，不必 lua_checkstack（进 C 函数时 Lua 保证有 LUA_MINSTACK 个空位）
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="n">要压的 nil 个数，须与成功路径的返回值个数相同</param>
 /// <returns>压栈的返回值个数，即 n</returns>
 int32_t lpub_rtn_nil(lua_State *lua, int32_t n);
 /// <summary>
-/// 组包类绑定的统一收尾：pack 非空时压 (lightuserdata, 长度)，为空时压 2 个 nil，两条路径都返 2。
+/// 组包类绑定的统一收尾：pack 非空时压 (lightuserdata, 长度)，为空时压 2 个 nil。
 /// 用法固定为 return lpub_rtn_lud(lua, pack, size);
 /// 何时用它、何时改用 luaL_error：数据相关、调用方能降级的失败（载荷超协议上限、
 /// 会话绑定已分叉等）走本函数返 nil，让调用方判一次；调用方契约违反、没有运行期恢复动作的
@@ -176,10 +171,10 @@ int32_t lpub_rtn_nil(lua_State *lua, int32_t n);
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="pack">组包结果；NULL 表示组包被拒</param>
 /// <param name="size">pack 字节数（pack 为 NULL 时不使用）</param>
-/// <returns>压栈的返回值个数：2 或 1</returns>
+/// <returns>压栈的返回值个数，恒为 2</returns>
 int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size);
 /// <summary>
-/// reader 取值类绑定的失败/NULL 收尾：err 为 1(字段是 SQL NULL) 压 true 返 1；其余(读取失败)压 false 返 1。
+/// reader 取值类绑定的失败/NULL 收尾：err 为 1(字段是 SQL NULL) 压 true；其余(读取失败)压 false。
 /// 用法固定为：读到值的分支自己压 true + 值并 return N，其余情况一律 return lpub_rtn_reader(lua, err)。
 /// 这条三态契约(ERR_OK 有值 / 1 为 NULL / 其余失败)由 mysql_reader / pgsql_reader 两侧共同产出，
 /// 收在一处才不至于改契约时漏改某个字段类型

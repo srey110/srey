@@ -77,7 +77,7 @@ void bson_globle_init(void);
 /// <param name="oid">输出缓冲区，长度为 BSON_OID_LENS(12)</param>
 void bson_oid(char oid[BSON_OID_LENS]);
 /// <summary>
-/// 返回一个空 BSON 文档（只含长度头和结束符）
+/// 空 BSON 文档（只含长度头和结束符）
 /// </summary>
 /// <param name="lens">输出文档长度</param>
 /// <returns>空 BSON 文档数据指针（静态存储，勿释放）</returns>
@@ -305,20 +305,20 @@ void bson_iter_init(bson_iter *iter, bson_ctx *bson);
 /// <param name="iter">bson_iter</param>
 void bson_iter_reset(bson_iter *iter);
 /// <summary>
-/// 迭代过程中是否遇到过结构错误。bson_iter_next 返回 0 既可能是读到 EOD 正常结束，
-/// 也可能是元素非法被拒（此时只遍历到了坏元素之前的前缀），需要区分的调用方查此标志
+/// 迭代过程中是否遇到过结构错误：区分 bson_iter_next 的 0 是正常结束还是文档非法
+/// （非法时只遍历到了坏元素之前的前缀）
 /// </summary>
 /// <param name="iter">bson_iter</param>
 /// <returns>非 0 表示文档结构非法</returns>
 int32_t bson_iter_error(const bson_iter *iter);
 /// <summary>
-/// 迭代到下一个字段，返回非零表示有值，0 表示遍历结束。
-/// 返回 0 的三种成因由 bson_iter_error 区分：读到 EOD 正常结束（err 保持 0）、
-/// 某个元素非法被拒、声明长度被耗尽却始终没读到终止 EOD（文档截断，后两者 err 置位）；
-/// 三种情况都会把当前元素毒化成 BSON_EOD，故 0 之后调任何 getter 都失败而非返回陈旧值
+/// 迭代到下一个字段
 /// </summary>
 /// <param name="iter">bson_iter</param>
-/// <returns>非零表示有值</returns>
+/// <returns>非零表示有值；0 表示遍历结束，三种成因由 bson_iter_error 区分——
+/// 读到 EOD 正常结束（err 保持 0）、某个元素非法被拒、声明长度耗尽没读到终止 EOD
+/// （文档截断，后两者 err 置位）；三种情况都把当前元素毒化成 BSON_EOD，
+/// 之后调任何 getter 都失败而非返回陈旧值</returns>
 int32_t bson_iter_next(bson_iter *iter);
 /// <summary>
 /// 从当前迭代器位置查找指定键，支持点分多级路径（如 "a.b.c"）。

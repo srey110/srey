@@ -83,7 +83,7 @@ void seri_append_array_end(binary_ctx *bw);
 /// <param name="size">字节数</param>
 void seri_iter_init(seri_iter *it, const void *buf, size_t size);
 /// <summary>
-/// 解码下一个值；调用方循环调用直到返回 0（流结束）或 -1（格式错）。
+/// 解码下一个值，调用方循环调用直到流结束或格式错。
 /// 遇到 SERI_ITEM_ARRAY_BEGIN 时调用方需消费后续 v.array_n 个数组元素，
 /// 然后循环读 key/value 对直到 SERI_ITEM_NIL(hash 段终止符)。
 /// </summary>

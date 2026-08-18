@@ -46,8 +46,7 @@ void digest_init(digest_ctx *digest, digest_type dtype);
 /// <summary>
 /// 清零整个 digest_ctx，含三个分发回调——调用后上下文即失效，要复用须重新 digest_init。
 /// 处理过口令 / 密钥派生材料的上下文必须调用，防止残留于栈或堆内存；
-/// 只哈希公开数据（节点名、Sec-WebSocket-Key 之类）的可省——secure_zero 是编译器不能优化掉的
-/// 逐字节 volatile 写，整个 digest_ctx 约 240 字节，摊到每请求路径上并不便宜。
+/// 只哈希公开数据（节点名、Sec-WebSocket-Key 之类）的可省：secure_zero 摊到每请求路径上并不便宜。
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 void digest_free(digest_ctx *digest);

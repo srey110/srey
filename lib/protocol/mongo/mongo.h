@@ -68,11 +68,9 @@ int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd);
 int32_t mongo_requestid(mongo_ctx *mongo);
 /// <summary>
 /// 置上消息标志位（目前仅支持 MORETOCOME）。
-/// 置上就一直有效，直到调用方自己 mongo_clear_flag——不是只管下一条命令：
-/// 此后每条写命令都变成只发不等，服务端的失败(重复键、校验不过)因为没有响应可解析
-/// 而一律报成功；读命令(find/count 等)内部会临时清掉再恢复，不受影响。
-/// 标志挂在连接上而不是命令上，多协程共用一条连接时别人的写也会跟着变成 fire-and-forget，
-/// 批量写完请及时清掉
+/// 置上就一直有效直到 mongo_clear_flag——不是只管下一条：此后每条写命令都只发不等，
+/// 服务端的失败(重复键、校验不过)没有响应可解析，一律报成功；读命令内部临时清掉再恢复。
+/// 标志挂在连接上，多协程共用时别人的写也跟着变 fire-and-forget，批量写完及时清掉
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="flag">mongo_flags 标志位</param>
@@ -85,7 +83,7 @@ void mongo_set_flag(mongo_ctx *mongo, mongo_flags flag);
 /// <returns>非零表示已设置</returns>
 int32_t mongo_check_flag(mongo_ctx *mongo, mongo_flags flag);
 /// <summary>
-/// 清除所有消息标志位并返回旧值
+/// 清除所有消息标志位
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <returns>清除前的标志位值</returns>
@@ -97,12 +95,12 @@ int32_t mongo_clear_flag(mongo_ctx *mongo);
 /// <param name="mongo">mongo_ctx</param>
 void mongo_clear_session(mongo_ctx *mongo);
 /// <summary>
-/// 返回 AUTH 状态值，供外部设置 ud_cxt.status 以触发认证流程
+/// AUTH 状态值，供外部设置 ud_cxt.status 以触发认证流程
 /// </summary>
 /// <returns>AUTH 状态枚举值</returns>
 int32_t mongo_status_auth(void);
 /// <summary>
-/// 返回 COMMAND 状态值，供外部在 AUTH 初始化失败时回滚 ud_cxt.status，避免连接卡在 AUTH 态
+/// COMMAND 状态值，供外部在 AUTH 初始化失败时回滚 ud_cxt.status，避免连接卡在 AUTH 态
 /// </summary>
 /// <returns>COMMAND 状态枚举值</returns>
 int32_t mongo_status_command(void);

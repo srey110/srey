@@ -23,7 +23,7 @@
 #define ACCEPT_BACKOFF_MS 500// accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
 #define UDP_RECV_MAX_ERRS 8// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
 // 回调与消息里的 client 形参恒取 0/1。BIT_CHECK 拿到的是 0x10，必须在这里归一化——
-// 上层直到 Lua 的 msg.client 都按 1 写文档，透传原值会让 == 1 的判定永远不成立
+// 上层文档都按 1 写，透传原值会让 == 1 的判定永远不成立
 #define SOCK_IS_CLIENT(status) (BIT_CHECK((status), STATUS_CLIENT) ? 1 : 0)
 
 struct evssl_ctx;

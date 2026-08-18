@@ -31,7 +31,7 @@ int32_t dc_start(loader_ctx *loader, const char *name);
 /// <returns>ERR_OK 成功;ERR_FAILED datacenter 未注册或请求超时</returns>
 int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, size_t size);
 /// <summary>
-/// 读 KV;key 不存在视为失败(返 NULL + erro=ERR_FAILED),存在(含空值)返 ERR_OK。必须在协程中调用。
+/// 读 KV(key 不存在算失败,不算空值)。必须在协程中调用。
 /// </summary>
 /// <param name="task">当前 task</param>
 /// <param name="dc_name">DataCenter task name</param>
@@ -95,7 +95,7 @@ int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, v
 /// <returns>ERR_OK 成功投递;ERR_FAILED datacenter 不可达</returns>
 int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <summary>
-/// 读 KV;不挂起,sess 必须非 0(读需响应通道,sess=0 返 ERR_FAILED);业务在 _response 收 val(key 不存在时 erro=ERR_FAILED)。
+/// 读 KV;不挂起,sess 必须非 0(读需响应通道);业务在 _response 收 val(key 不存在时 erro=ERR_FAILED)。
 /// </summary>
 /// <param name="task">当前 task(response 目标)</param>
 /// <param name="dc_name">DataCenter task name</param>
@@ -107,7 +107,7 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// 读 KV;不命中时 DataCenter 仍挂 pending,响应到达时机由 set 触发(业务自管超时,framework 不提供
 /// 自动唤醒,因非协程版 sess 不在 coro_sess 表中)。挂起的 waiter 超过本 task 的 request_timeout 后即视为
 /// 过期:此后的 set 不再唤醒它,并由 DataCenter 回收;需更久请调高本 task 的 request_timeout。
-/// sess 必须非 0(读需响应通道,sess=0 返 ERR_FAILED);业务在 _response 收 val。
+/// sess 必须非 0(读需响应通道);业务在 _response 收 val。
 /// </summary>
 /// <param name="task">当前 task(response 目标)</param>
 /// <param name="dc_name">DataCenter task name</param>
@@ -116,7 +116,8 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <returns>ERR_OK 成功投递;ERR_FAILED key 非法/sess=0/datacenter 不可达</returns>
 int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <summary>
-/// 列出全部 key,每条格式 | u16 klen(大端) | key |;不挂起,sess 必须非 0(读需响应通道,sess=0 返 ERR_FAILED);业务在 _response 收 buffer,用 dc_parse_keys 逐条解析。
+/// 列出全部 key,每条格式 | u16 klen(大端) | key |;不挂起,sess 必须非 0(读需响应通道);
+/// 业务在 _response 收 buffer,用 dc_parse_keys 逐条解析。
 /// </summary>
 /// <param name="task">当前 task(response 目标)</param>
 /// <param name="dc_name">DataCenter task name</param>

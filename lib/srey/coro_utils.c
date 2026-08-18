@@ -141,7 +141,7 @@ static int32_t _ws_resolve_addr(task_ctx *task, url_ctx *url, const char *host, 
     }
     if (url->port.lens > 0) {
         // url_parse 只按冒号切分不校验字符,strtoul 会把 "80abc" 当 80 接受;
-        // RFC 3986 §3.2.3 的 port 产生式只允许数字,与 Lua 侧 ^%d+$ 对齐
+        // RFC 3986 §3.2.3 的 port 产生式只允许数字
         // port 是切片不带 \0，须按 lens 解析：strtoul 会一路读到缓冲里的下一个非数字
         uint64_t p;
         if (ERR_OK != str2u64((const char *)url->port.data, url->port.lens, UINT16_MAX, &p)
@@ -274,7 +274,7 @@ static int32_t _mysql_do_connect(task_ctx *task, void *ctx) {
     return err;
 }
 // 命令串行化的进出，成对使用：调用方进函数时先 held = xxx->serial 捏住指针，加锁解锁都用它。
-// held 为 NULL 表示这条连接不由 coro_utils 这套 API 管（经 Lua 绑定的 *_try_connect 建立时
+// held 为 NULL 表示这条连接不由 coro_utils 这套 API 管（经 *_try_connect 自行建立时
 // 就是这样），此时退化为原来的无锁行为。
 // 之所以捏指针而不是解锁时重读 xxx->serial：*_quit 与握手失败的 *_connect 都会把字段置空，
 // 重读就会跳过 leave，而 coro_serial_free 撞上持锁者时正指望那次 leave 来释放。
@@ -418,7 +418,7 @@ static mpack_ctx *_mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx
     return coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, query, size, NULL, 0);
 }
 // 逐个结果集回调,直到 more 为 0。四条约定:
-// 1) more 在 cb 之前读——cb 里的 mysql_reader_init 会把 mpack->pack 摘走(Lua 侧同口径)
+// 1) more 在 cb 之前读——cb 里的 mysql_reader_init 会把 mpack->pack 摘走
 // 2) cb 返回失败只记标志、剩余包照常排空:残留在连接缓冲里会让下一次查询 desync
 // 3) 续读断连则无从排空,连接已废,直接失败返回
 // 4) cb 为 NULL 只排空不回调(INSERT/UPDATE 用),且代调用方判一次 ERR 应答;有 cb 时不判,
@@ -549,8 +549,8 @@ void mysql_stmt_close(mysql_stmt_ctx *stmt) {
     // 两种"发不得"的情形都只做本地释放。COM_STMT_CLOSE 虽无响应,插在别人结果集流
     // 中间同样违反半双工;而组包那一步还会把连接的包序号清零,更不能在没有发言权时做。
     // 服务端那份语句会随连接关闭一并回收。
-    // held 为 NULL 是关键的一种:那表示这条连接不由本套 API 串行化(Lua 绑定建的都是),
-    // 而本函数正是 Lua 侧 stmt 的 __gc。__gc 在任意一次分配上同步触发、跑在工作线程,
+    // held 为 NULL 是关键的一种:那表示这条连接不由本套 API 串行化(经 *_try_connect 自行建立),
+    // 且本函数可能被上层 handle 的析构路径在工作线程任意时点同步调到,
     // 握手期间网络线程恰好也在递增 mysql->id —— 走发包路径就是一次跨线程写,
     // 表现为下一个握手包序号错位、报 "Got packets out of order"
     if (NULL == held
@@ -948,7 +948,7 @@ int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, cons
 // 统一"组包判空 + 发送 + 同步等待响应"(不受 MORETOCOME 影响,总是等待),不校验命令级错误:
 // 调用方各有各的用法——count 要 n 值、startsession 要 session、commit/rollback 要凭"服务端
 // 是否有响应"决定清不清事务状态。pack 为 NULL(组包被拒)在此一并吸收,与网络失败同样返回 NULL,
-// 两者的处置在全部调用方那里恰好相同。对应 Lua 侧 mongo.lua 的 _rsend。
+// 两者的处置在全部调用方那里恰好相同。
 // 串行化也落在这里(与 _mongo_send 两处覆盖全部命令站点):各命令函数在 sendwait 之后只做纯解析,
 // 不再有 I/O,所以锁到本函数为止与锁整个命令函数等效。mongo_auth / mongo_ping 另有外层锁,
 // 它们走多次往返或绕开本漏斗,靠 ref 计数嵌套
@@ -1383,7 +1383,7 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
     if (MSG_TYPE_CLOSE == msg->mtype) {
         // 会话已在 event 线程拆除(CLOSE 由 _kcp_notify_closed 发出)而 stopped 仍为 0,故须自行清 sess:
         // 否则下次 kcp_synsend 通过 0 == kcp->sess 守卫、kcp_send 投到已消失的会话被静默丢弃却返
-        // ERR_OK,继而空等满一个 netread 超时。与 Lua 侧 ctx:send 的同款分支对齐
+        // ERR_OK,继而空等满一个 netread 超时
         if (sess == kcp->sess) {
             kcp->sess = 0;
         }

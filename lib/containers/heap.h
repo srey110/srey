@@ -3,7 +3,7 @@
 
 #include "base/macro.h"
 
-// 二叉堆（侵入式 intrusive 风格）
+// 二叉堆
 // 典型用法：
 //   typedef struct { heap_node node; int val; } my_node;
 //   static int _lt(const heap_node *a, const heap_node *b) {

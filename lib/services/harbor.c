@@ -162,8 +162,8 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
 #endif
         // 配了名字却拿不到证书就直接拒绝启动，不能静默退化成明文：跨节点鉴权全指望这张证书，
         // 而 /call、/request 能往任意 handle 的 task 投递消息，运维只会以为链路是加密的。
-        // 名字来自 evssl 注册表，注册入口在 Lua 侧(core.cert_register / p12_register)，
-        // 所以调用方必须排在 ltask_startup 之后(见 srey/startup.c)
+        // 名字来自 evssl 注册表，注册发生在 ltask_startup 期间(core.cert_register / p12_register)，
+        // 所以调用方必须排在它之后(见 srey/startup.c)
         if (NULL == evssl) {
             LOG_ERROR("harbor: evssl '%s' not registered "
                       "(register it from the lua startup script before harbor starts), "

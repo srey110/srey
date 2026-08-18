@@ -102,12 +102,11 @@ void mail_attach_clear(mail_ctx *mail);
 void mail_clear(mail_ctx *mail);
 /// <summary>
 /// 邮件内容数据包（含 DATA 终止符，NUL 结尾，调用方以 strlen 取长度并负责释放）。
-/// 正文一律按 base64 编码写出：RFC 5321 §4.5.3.1.6 限单行 1000 octet，8bit 原样写出时
-/// 一段没有换行的长正文会被服务端拒收；base64 折行后顺带免掉 dot-stuffing。
-/// 多段邮件（有 html 或附件）的 MIME boundary 每封随机生成，取不到熵时返回 NULL
+/// 正文一律按 base64 编码写出：RFC 5321 限单行 1000 octet，base64 折行满足限长、
+/// 顺带免掉 dot-stuffing。多段邮件的 MIME boundary 每封随机生成
 /// </summary>
 /// <param name="mail">mail_ctx</param>
-/// <returns>数据包；生成 boundary 失败返回 NULL</returns>
+/// <returns>数据包；生成 boundary 失败（取不到熵）返回 NULL</returns>
 char *mail_pack(mail_ctx *mail);
 
 #endif//MAIL_H_

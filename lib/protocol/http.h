@@ -84,22 +84,10 @@ void http_pack_end(binary_ctx *bwriter);
 /// <param name="lens">长度</param>
 void http_pack_content(binary_ctx *bwriter, void *data, size_t lens);
 /// <summary>
-/// http内容包，Chunked 分块流式发送。调用方须在写入状态行和其他头部之后按如下循环使用：
-///   第一次调用时 bwriter 已含状态行+头部（offset>0），函数自动追加
-///   Transfer-Encoding: Chunked\r\n\r\n 完成头部，再写入块行和数据；
-///   之后每次调用前须先 send(bwriter) copy=1，再 binary_offset(bwriter, 0) 重置，
-///   使 offset 归零，后续调用只写块行+数据，不再重复写头部；
-///   最后以 lens=0 调用写入终止块 0\r\n\r\n，send 后结束。
-/// 示例：
-///   http_pack_resp(bw, 200);
-///   http_pack_head(bw, "Content-Type", "text/plain");
-///   while (有数据) {
-///       http_pack_chunked(bw, data, lens);
-///       send(fd, skid, bw->data, bw->offset, 1);
-///       binary_offset(bw, 0);
-///   }
-///   http_pack_chunked(bw, NULL, 0);   // 终止块
-///   send(fd, skid, bw->data, bw->offset, 1);
+/// http内容包，Chunked 分块流式发送，配合 binary_offset(bwriter, 0) 循环复用同一 bwriter：
+/// 首次调用时 bwriter 已含状态行+头部（offset > 0），自动补 Transfer-Encoding: Chunked\r\n\r\n
+/// 再写块；此后每轮先 send(copy=1) 再 binary_offset(bwriter, 0)，该次调用就只写块行+数据；
+/// 最后以 lens=0 写终止块 0\r\n\r\n
 /// </summary>
 /// <param name="bwriter">binary_ctx</param>
 /// <param name="data">数据</param>
@@ -115,7 +103,7 @@ int32_t _http_check_keyval(http_header_ctx *head,
                            const char *key, size_t klen,
                            const char *val, size_t vlen);
 /// <summary>
-/// 获取第一行数据。chunked 的中间块与结束块只有数据、没有首行，此时返回 NULL——
+/// 获取第一行数据。chunked 的中间块与结束块只有数据、没有首行——
 /// 首行/头部四个访问器共用这条判据，调用方不必各自再判一遍 http_chunked
 /// </summary>
 /// <param name="pack">http_pack_ctx</param>

@@ -26,8 +26,7 @@
 #define EMPTYSTR(str) ((NULL == (str)) || ('\0' == *(const char *)(str))) // 判断字符串是否为空
 #define EMPTYPTR(ptr, lens) ((NULL == (ptr)) || (0 == (lens)))
 // s 向上取整。掩码 ~(n-1) 只在 n 是 2 的幂时才等价于"取 n 的整数倍",
-// n 取别的值（比如 6）结果不会是 n 的倍数；但任何 n 下结果都 >= s（被清掉的低位至多 n-1），
-// 所以拿它算"够不够装"的场景仍然安全，只是别指望对齐到 n
+// n 取别的值（比如 6）结果不会是 n 的倍数；但任何 n 下结果都 >= s（被清掉的低位至多 n-1）
 #define ROUND_UP(s, n) (((s) + (n) - 1) & (~((n) - 1)))
 
 #define CONCAT2(a, b) a b // 拼接两个字符串字面量
@@ -71,10 +70,9 @@ static inline const char *_filename(const char *file) {
         }\
     } while(0)
 /// <summary>
-/// 安全清零缓冲区。与 ZERO/memset 不同，保证写入不被编译器优化掉，
+/// 安全清零缓冲区。与 ZERO/memset 不同，保证写入不被编译器优化掉（含 LTO），
 /// 适用于密钥、密码、PBKDF2 中间值等使用后须立即抹除的敏感缓冲。
-/// 实现在 lib/utils/utils.c（声明置此以供下方 SECURE_FREE 展开，同 slog 与 LOG_* 的关系）。
-/// 实现使用 volatile 指针 + GCC/Clang 编译器屏障防 dead-store elimination 与 LTO 内联消除。
+/// 实现在 lib/utils/utils.c（声明置此以供下方 SECURE_FREE 展开）。
 /// </summary>
 /// <param name="buf">目标缓冲区（NULL 时直接返回）</param>
 /// <param name="len">字节数（0 时直接返回）</param>

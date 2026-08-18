@@ -3,17 +3,17 @@
 
 #include "base/structs.h"
 
-// mysql pgsql monogo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=Lua 堆持有者数）
-// 建连前 acquire：仅 Lua 持有(ref>0)时 +1，C 借用(ref=0)短路
+// mysql pgsql monogo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=上层 handle 持有者数）
+// 建连前 acquire：仅上层持有(ref>0)时 +1，C 借用(ref=0)短路
 #define PROT_REF_ACQUIRE(ptr) \
     do { \
         if (0 != ATOMIC_GET(&(ptr)->ref)) { \
             ATOMIC_ADD(&(ptr)->ref, 1); \
         } \
     } while (0)
-// release：C 借用(ref=0)短路，Lua 持有者归零时释放；事件层 udfree 与 Lua __gc 共用(__gc 时 ref 必>0，GET 短路恒真)。
-// 释放走 SECURE_FREE 整块擦除，四种 ctx 里的密码/盐值都在这一刻抹掉——而不是在 __gc 里逐字段擦：
-// __gc 的 ev_close 只是往网络线程投一条命令，返回时连接还活着，网络线程可能正读着同一个密码
+// release：C 借用(ref=0)短路，持有者归零时释放；事件层 udfree 与上层 handle 析构共用(析构时 ref 必>0，GET 短路恒真)。
+// 释放走 SECURE_FREE 整块擦除，四种 ctx 里的密码/盐值都在这一刻抹掉——而不是在析构时逐字段擦：
+// 析构侧的 ev_close 只是往网络线程投一条命令，返回时连接还活着，网络线程可能正读着同一个密码
 // 组认证串（如 smtp 的 _smtp_loin_cmd），工作线程当场 secure_zero 就是一对无同步的读写，
 // 现场表现是把清了一半的密码发出去。挪到这里则天然没有竞争：ATOMIC_ADD 返回旧值，看到 1 的
 // 那个线程是最后一个持有者，其余都已放手（网络线程那份在 *_udfree 里释放，释放前已 ud->context=NULL），
@@ -105,18 +105,16 @@ typedef struct prot_emit {
 
 /// <summary>
 /// 解析时间串里的小数秒 ".ffffff" 为微秒：从首个 '.' 起最多取 6 位，遇非数字即停，按补零对齐到 6 位。
-/// 无小数点或小数点后无数字返回 0。mysql / pgsql 的 datetime 文本解析共用
+/// mysql / pgsql 的 datetime 文本解析共用
 /// </summary>
 /// <param name="str">NUL 结尾的时间字符串</param>
-/// <returns>微秒数 [0, 999999]</returns>
+/// <returns>微秒数 [0, 999999]；无小数点或小数点后无数字返回 0</returns>
 uint32_t parse_usec_frac(const char *str);
 /// <summary>
-/// (指针, 长度) 的十进制浮点文本转 double，严格判定：整段必须被消费完、不接受空串、上溢即拒。
-/// 三条都不是 strtod 自带的——空串它一个字符不消耗、end 停在起点，"消费长度相符"那道判定反而恒真；
-/// 上溢它钳到 ±HUGE_VAL 而 end 照样走到串尾，只有 errno 认得出来。
-/// 下溢同样置 ERANGE，但那时返回的是正确的次正规数（1e-320 是 DOUBLE 列的常规输出），必须放行。
-/// mysql / pgsql 两侧的文本协议共用，别再各写一份：上一版就是只有 mysql 侧补了 errno 判定，
-/// 同一个 "1e400" 在两边一个报错一个返 inf
+/// (指针, 长度) 的十进制浮点文本转 double，严格判定：整段必须被消费完、不接受空串、上溢即拒
+/// ——三条都不是 strtod 自带的，上溢只有 errno 认得出来。
+/// 下溢同样置 ERANGE 但返回的是正确的次正规数（DOUBLE 列的常规输出），放行。
+/// mysql / pgsql 两侧的文本协议共用，别再各写一份
 /// </summary>
 /// <param name="data">源字节段(可非 NUL 结尾)</param>
 /// <param name="lens">源字节数；0 视为失败</param>

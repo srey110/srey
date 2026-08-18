@@ -34,10 +34,9 @@ uint64_t threadid(void);
 /// </summary>
 void unlimit(void);
 /// <summary>
-/// 信号处理
-/// 警告：cb 在信号处理上下文中被调用，POSIX 要求其内部只能使用 async-signal-safe 函数。
-/// 调用 LOG_INFO、mutex_lock、malloc 等均属未定义行为，可能导致死锁或堆损坏。
-/// 安全做法：在 cb 中仅设置 volatile sig_atomic_t 标志，由主循环轮询后再处理。
+/// 信号处理。cb 在信号处理上下文中被调用，内部只能用 async-signal-safe 函数
+/// （LOG_INFO / mutex_lock / malloc 都不行）；安全做法是 cb 里只置
+/// volatile sig_atomic_t 标志，主循环轮询后再处理。
 /// </summary>
 /// <param name="cb">处理函数（必须 async-signal-safe）</param>
 /// <param name="data">参数</param>
@@ -122,9 +121,8 @@ int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
 int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 /// <summary>
 /// 字符串转时间戳。
-/// fmt 里的 %z / %Z 只吃掉时区文本，偏移量不生效：本仓库从未定义 TM_GMTOFF，
-/// strptime 解析出的偏移进不了 struct tm，最终一律按本地时间 mktime。
-/// 所以带时区的串解析结果会差“串里的偏移 − 本地偏移”秒，需要按时区换算的调用方得自己取偏移补回去
+/// fmt 里的 %z / %Z 只吃掉时区文本，偏移量不生效，一律按本地时间 mktime：
+/// 带时区的串解析结果会差"串里的偏移 − 本地偏移"秒，要换算的调用方自己补回去
 /// </summary>
 /// <param name="time">时间字符串</param>
 /// <param name="fmt">格式化</param>
@@ -155,14 +153,13 @@ static inline int32_t is_ows(char ch) {
     return ' ' == ch || '\t' == ch;
 }
 /// <summary>
-/// 判断是否为合法 RFC 7230 token（全部字符为 tchar）。头名、WebSocket 子协议名等都按此校验；
-/// 空串不是 token，返 0。
-/// 组头名时只挡 NUL/CRLF 不够：键里混进 ':' 或 ' ' 同样会让对端把一行拆成两个字段，
-/// 攻击者借此就能塞进一个自选的头值，故按整个 tchar 集合校验
+/// 判断是否为合法 RFC 7230 token（全部字符为 tchar）。
+/// 头名、WebSocket 子协议名等都按此校验：只挡 NUL/CRLF 不够，
+/// 键里混进 ':' 或 ' ' 同样会被对端拆成两个字段（走私），故按整个 tchar 集合校验
 /// </summary>
 /// <param name="data">源数据(可非 NUL 结尾)</param>
 /// <param name="lens">源数据长度</param>
-/// <returns>是合法 token 返回 1，否则 0</returns>
+/// <returns>是合法 token 返回 1，否则 0（空串不是 token）</returns>
 int32_t is_token(const char *data, size_t lens);
 /// <summary>
 /// 64 位整数专用哈希（splitmix64
@@ -200,9 +197,7 @@ static inline void mem_funcs_pick(int32_t ncs, chr_func *chr, cmp_func *cmp) {
 }
 /// <summary>
 /// 安全填充定长字符串缓冲：src 为 NULL 时 dst 写空串；成功时保证 dst 以 '\0' 结尾。
-/// 装不下（strlen(src) >= dstsz）时 dst 一个字节都不写、保持原样，返回 ERR_FAILED——
-/// 截断后的值拿去用往往是静默出错，调用方从 dst 上看不出发生过什么。
-/// 报错文案由调用方在判返回值后自己打，只有它知道这是哪个字段
+/// 装不下时不截断——截断的值拿去用是静默出错；报错文案由调用方判返回值后自己打
 /// </summary>
 /// <param name="dst">目标缓冲，dstsz 字节</param>
 /// <param name="dstsz">目标缓冲总字节数（含末尾终止符）</param>
@@ -224,12 +219,11 @@ int32_t safe_fill_str(char *dst, size_t dstsz, const char *src);
 /// <returns>ERR_OK 成功；ERR_FAILED：cap 为 0，或 strict 且装不下</returns>
 int32_t copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict);
 /// <summary>
-/// 复制 src 的 lens 字节为新分配的 NUL 结尾字符串，返回堆缓冲，调用方负责 FREE；
-/// 按定长字节复制，不依赖 src 含 NUL；分配失败时底层 _malloc 终止进程。
+/// 复制 src 的 lens 字节为新分配的 NUL 结尾字符串；按定长字节复制，不依赖 src 含 NUL。
 /// </summary>
 /// <param name="src">源缓冲</param>
 /// <param name="lens">复制字节数</param>
-/// <returns>新分配的 NUL 结尾字符串</returns>
+/// <returns>新分配的 NUL 结尾字符串，调用方负责 FREE；分配失败时底层 _malloc 终止进程</returns>
 char *dup_zero(const void *src, size_t lens);
 /// <summary>
 /// 内存查找
@@ -376,10 +370,10 @@ char *format_va(const char *fmt, ...);
 int32_t is_little(void);
 /// <summary>
 /// 将 n 向上取整到最近的 2 的幂（uint32_t 范围）。
-/// n 已是 2 的幂时原值返回；0 返回 0；大于 0x80000000u 时 ASSERTAB 中止（uint32 无法表示更大的 2 的幂）。
 /// </summary>
 /// <param name="n">输入值</param>
-/// <returns>最接近且不小于 n 的 2 的幂</returns>
+/// <returns>最接近且不小于 n 的 2 的幂；n 已是 2 的幂时原值返回，0 返回 0；
+/// 大于 0x80000000u 时 ASSERTAB 中止（uint32 无法表示更大的 2 的幂）</returns>
 uint32_t pow2_ceil(uint32_t n);
 /// <summary>
 /// 数字转 char*

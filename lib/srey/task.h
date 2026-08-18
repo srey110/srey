@@ -131,10 +131,9 @@ void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
 void task_call(task_ctx *dst, subtype_t reqtype, void *data, size_t size, int32_t copy);
 /// <summary>
 /// 广播请求：把同一份 data 投递给 N 个 task,各 dst 在 _request 回调中可独立 task_response 回 src(共用同一 sess)。
-/// 与 task_multi_call 区别：携带 src + sess,dst 知道响应该回给谁；src 端 _response 回调将被调用 N 次（同 sess,
-/// 用户自行在回调里累计 / 区分,框架不做应答聚合）。src=NULL && sess=0 时退化为 task_multi_call 语义(fire-and-forget)。
-/// 内部用引用计数 shared_data 共享 N 条 message 的 data,各 task _message_clean 时 ref-- 归 0 才 FREE。
-/// dsts[i]=NULL 占位跳过;有效 dst 数为 0 时按 copy 语义清理 data。
+/// 与 task_multi_call 区别：携带 src + sess,dst 知道响应该回给谁；src 端 _response 回调将被调用 N 次
+/// （同 sess,用户自行累计/区分,框架不做应答聚合）。src=NULL && sess=0 时退化为 task_multi_call 语义。
+/// data 由内部引用计数共享,最后一个消费者释放；dsts[i]=NULL 占位跳过,有效 dst 数为 0 时按 copy 语义清理 data。
 /// </summary>
 /// <param name="dsts">目标 task 数组(调用方保证每个 dst 生命周期到投递返回)</param>
 /// <param name="n">数组长度</param>
@@ -149,8 +148,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
                            uint64_t sess, void *data, size_t size, int32_t copy);
 /// <summary>
 /// 单向投递同一份数据给 N 个 task(fire-and-forget pub/sub,publisher 不等响应)。
-/// 内部用引用计数 shared_data 共享: N 个 message 共用 data 指针,各 task _message_clean 时 ref--,
-/// 归 0 才 FREE,比 N 次 task_call 节省 N-1 份内存拷贝。
+/// data 由内部引用计数共享,最后一个消费者释放,比 N 次 task_call 省 N-1 份拷贝。
 /// dsts[i]=NULL 占位跳过;有效 dst 数为 0 时按 copy 语义清理 data。
 /// </summary>
 /// <param name="dsts">目标 task 数组(调用方保证每个 dst 生命周期到投递返回)</param>
@@ -204,12 +202,9 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port,
                  SOCKET *fd, uint64_t *skid);
 /// <summary>
-/// 设置 task 调度优先级。priority 越大,worker 单次消费消息越多。
-/// 公式: n = n_base * (1 + priority/8),cap 到当前队列长度;
-/// n_base 由 worker.weight 推导(历史逻辑不变)。
-/// 每 +8 翻倍,每 +1 ≈ +12.5%,粒度 1/8 n_base。
-/// priority=0 (默认)。可在任意线程随时调整,新值下一轮调度生效。
-/// 注意:priority 是相对加成,绝对消费数仍受 worker.weight 影响;
+/// 设置 task 调度优先级。priority 越大,worker 单次消费消息越多:
+/// n = n_base * (1 + priority/8),cap 到当前队列长度,n_base 由 worker.weight 推导。
+/// 默认 0;可在任意线程随时调整,下一轮调度生效。
 /// work-stealing 偷过去后 priority 跟随 task,但 stealer 的 weight 决定 n_base。
 /// </summary>
 /// <param name="task">task_ctx</param>
@@ -259,9 +254,8 @@ void task_set_netread_timeout(task_ctx *task, uint32_t ms);
 uint32_t task_get_netread_timeout(task_ctx *task);
 /// <summary>
 /// 获取任务自启动以来按消息类型分桶的累计消息条数与 dispatch 占用的线程 CPU 时间。
-/// 用于排查"哪类消息消耗 CPU"；IO 等待 / coro_sleep / 被抢占的时间不计入，
-/// 与现有 monitor 死锁检测形成互补；由 mtype 索引（MSG_TYPE_NONE 槽未使用），
-/// 调用方可据此估算单消息平均 CPU 耗时。
+/// 用于排查"哪类消息消耗 CPU"：IO 等待 / coro_sleep / 被抢占的时间不计入；
+/// 由 mtype 索引（MSG_TYPE_NONE 槽未使用），可据此估算单消息平均 CPU 耗时。
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="nmsg">出参数组（长度须为 MSG_TYPE_ALL），按 mtype 索引累计消息条数（仅编译期开启 ENABLE_DISPATCH_STAT 时累加，否则恒为 0）</param>

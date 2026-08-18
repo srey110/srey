@@ -87,24 +87,23 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
 int32_t pgsql_reader_isnull(pgsql_reader_ctx *reader, const char *name);
 /// <summary>
 /// 按列名读取当前行中文本类型字段的值（支持 TEXT / VARCHAR / BPCHAR / NAME / UNKNOWN）
-/// 返回指向行内部缓冲区的指针，不含 '\0' 结尾，生命周期与 pgsql_reader_ctx 相同
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名字符串</param>
 /// <param name="lens">输出字节长度</param>
 /// <param name="err">输出错误码：ERR_OK 成功，1 为 NULL 值，ERR_FAILED 失败</param>
-/// <returns>UTF-8 字节指针（非 NULL 结尾），出错时返回 NULL</returns>
+/// <returns>UTF-8 字节指针（不含 '\0' 结尾，指向行内部缓冲区，生命周期与 pgsql_reader_ctx 相同）；
+/// 出错时返回 NULL</returns>
 const char *pgsql_reader_text(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err);
 /// <summary>
-/// 按列名读取当前行中 BYTEA 类型字段的值
-/// 二进制格式：返回原始字节指针；文本格式：返回 '\x' 前缀十六进制字符串（调用方自行解码）
-/// 返回指向行内部缓冲区的指针，生命周期与 pgsql_reader_ctx 相同
+/// 按列名读取当前行中 BYTEA 类型字段的值：
+/// 二进制格式给原始字节，文本格式给 '\x' 前缀十六进制字符串（调用方自行解码）
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名字符串</param>
 /// <param name="lens">输出字节长度</param>
 /// <param name="err">输出错误码：ERR_OK 成功，1 为 NULL 值，ERR_FAILED 失败</param>
-/// <returns>字节指针，出错时返回 NULL</returns>
+/// <returns>字节指针（指向行内部缓冲区，生命周期与 pgsql_reader_ctx 相同）；出错时返回 NULL</returns>
 const char *pgsql_reader_bytea(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err);
 /// <summary>
 /// 按列名读取当前行中 TIMESTAMP / TIMESTAMPTZ 类型字段的值

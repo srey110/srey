@@ -55,9 +55,7 @@ stm_ctx *stm_grab(stm_ctx *ctx);
 /// <param name="ctx">stm_ctx</param>
 void stm_ungrab(stm_ctx *ctx);
 /// <summary>
-/// reader 获取当前快照并 inc data.ref.
-/// writer 已释放且 ctx->data=NULL 时返回 NULL.
-/// 配对 stm_ungrab_data 使用.
+/// reader 获取当前快照并 inc data.ref, 配对 stm_ungrab_data 使用.
 /// 调用方比对返回值与上次保存的指针即可判断 "是否更新" (同指针=未更新).
 /// </summary>
 /// <param name="ctx">stm_ctx</param>

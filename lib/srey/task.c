@@ -5,7 +5,7 @@
 
 // 消息 data 的归属方式。"哪些消息类型持有需要释放的堆数据"只在这一个 switch 里定义：
 // _message_should_clean 与 _message_clean 都问它，新增带数据的消息类型只改这一处，
-// 不会出现"清理加了、__gc 判定漏了"这种只在 Lua 那条路上泄漏、编译器与测试都不相关的分歧
+// 不会出现"清理加了、判定漏了"这种只在某一条消费路径上泄漏、编译器与测试都不相关的分歧
 typedef enum msgdata_kind {
     MSGDATA_NONE = 0,   // 不持有堆数据
     MSGDATA_PROT,       // 协议层收包，prots_pkfree

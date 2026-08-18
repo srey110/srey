@@ -527,7 +527,7 @@ static void _coro_message_dispatch(task_dispatch_arg *arg) {
         && NULL != _coro_msg_handlers[arg->msg.mtype]) {
         _coro_msg_handlers[arg->msg.mtype](arg);
     }
-    _coro_drain_forks(arg->task);// 镜像 Lua message_dispatch 末尾的 _drain_fork_queue
+    _coro_drain_forks(arg->task);
 }
 task_ctx *coro_task_register(loader_ctx *loader, const char *name, uint32_t quecap,
                              _task_startup_cb _startup, _task_closing_cb _closing,
@@ -599,8 +599,7 @@ void *coro_request(task_ctx *dst, task_ctx *src,
 // 四个等待点(ssl exchange / handshake / connect / recv)只差 mtype、超时值与告警里的动作名,
 // tag 仅进日志。返回的指针在本协程下次 _coro_wait 前有效。
 // CLOSE 分支有意不告警:对端关连接是正常事件,而调用方是每命令一轮的循环,一条连接断掉能刷出
-// 几十条。Lua 侧 srey.lua 的 _wait_msg 结构同一套但那边打了告警(它的调用方不是这种循环),
-// 改任一端的结构要同步改另一端
+// 几十条
 static message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
                                    msg_type mtype, uint32_t ms, const char *tag) {
     message_ctx *msg = _coro_wait(task, skid, mtype, ms);
@@ -862,8 +861,7 @@ int32_t coro_serial_enter(coro_serial_ctx *serial) {
         // 排在 waiters 里的协程同样是"挂起没退"的,与 _coro_wait / coro_fork_wait 同口径计入,
         // 否则 task 关闭时 _coro_handle_closing 看到 nyield==0 就静默通过,操作者拿不到
         // "还有协程卡在临界区队列上"这条线索。
-        // 不必像 Lua 侧那样再拆一个"可被超时扫描找到"的计数:那边的门禁只有 nyield 一项、
-        // 且要走一遍 coro_sess 全表;这边 _coro_timeout_monitor 还 AND 了 timeout_heap.root,
+        // 不必再拆一个"可被超时扫描找到"的计数:_coro_timeout_monitor 还 AND 了 timeout_heap.root,
         // 本协程不入堆,堆空时短路,堆非空时本就有真到期条目该扫
         ++coctx->nyield;
         mco_result rtn = mco_yield(self);
@@ -909,9 +907,7 @@ void coro_serial_leave(coro_serial_ctx *serial) {
     serial_node *nxt = UPCAST(ln, serial_node, node);
     // 唤醒前先设置 current/ref，nxt 唤醒后读取看到一致状态。
     // 这里就地 mco_resume 是安全的：minicoro 切栈，一串不 yield 的等待者链式唤醒是 N 个协程
-    // 各挂一帧在各自栈上，OS 线程栈不增长。Lua 侧 srey.serial 不能这么写——lua_resume 在同一条
-    // C 栈上嵌帧且 nCcalls 继承，链一长会触顶 LUAI_MAXCCALLS，故那边改成入队、dispatch 末尾
-    // 摊平唤醒，两侧唤醒时机因此不同，不是漏改
+    // 各挂一帧在各自栈上，OS 线程栈不增长
     mco_coro *wco = nxt->co;
     serial->current = wco;
     serial->ref = 1;

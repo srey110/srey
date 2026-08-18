@@ -64,8 +64,8 @@ void rwlock_distr_free(rwlock_distr_ctx *ctx);
 /// <summary>
 /// 当前线程注册一个 slot,以走 cache-line 独占的读锁快路径
 /// 必须在第一次 rwlock_distr_rdlock 之前调用,否则该线程走 fallback rwlock
-/// 同一线程对同一 ctx 重复调用幂等返回 ERR_OK
-/// 同一线程可同时注册到至多 RWLOCK_DISTR_MAX_TLS 个不同 ctx;超出上限返回 ERR_FAILED
+/// 同一线程对同一 ctx 重复调用幂等
+/// 同一线程可同时注册到至多 RWLOCK_DISTR_MAX_TLS 个不同 ctx
 /// </summary>
 /// <param name="ctx">rwlock_distr_ctx</param>
 /// <returns>ERR_OK 注册成功,ERR_FAILED slot 池已满或 TLS 数组已满,走 fallback</returns>

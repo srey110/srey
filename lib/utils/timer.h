@@ -22,9 +22,8 @@ typedef struct timer_ctx {
 void timer_init(timer_ctx *ctx);
 /// <summary>
 /// 当前时刻。单调 wall clock（区别于 timer_thread_cpu_ns 的 CPU 时间）；
-/// 无 CLOCK_MONOTONIC 的平台退回 CLOCK_REALTIME，此时会随 NTP 跳变而非单调，
-/// 时间轮 jiffies 与各处超时判定的时基精度随之下降——但仍是墙钟，不会像
-/// 进程 CPU 时间那样在空闲时几乎停止推进
+/// 无 CLOCK_MONOTONIC 的平台退回 CLOCK_REALTIME，会随 NTP 跳变而非单调，
+/// 时间轮 jiffies 与各处超时判定的时基精度随之下降
 /// </summary>
 /// <param name="ctx">timer_ctx</param>
 /// <returns>纳秒</returns>

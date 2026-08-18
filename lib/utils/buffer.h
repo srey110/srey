@@ -51,13 +51,13 @@ void buffer_free(buffer_ctx *ctx);
 /// <returns>长度</returns>
 size_t buffer_size(buffer_ctx *ctx);
 /// <summary>
-/// 现有节点链上还能直接写入的字节数（不新建节点）。返回值即"传给 buffer_expand 不会
-/// 触发新节点分配"的最大 lens，故 cnt 须与随后 buffer_expand 的 cnt 一致；
-/// 返回 0 表示链上已无空闲空间，任何 expand 都会新建节点。纯查询，不改动任何状态
+/// 现有节点链上还能直接写入的字节数（不新建节点）；cnt 须与随后 buffer_expand 的 cnt 一致。
+/// 纯查询，不改动任何状态
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="cnt">随后 buffer_expand 将使用的 IOV 数组长度</param>
-/// <returns>可直接写入的字节数</returns>
+/// <returns>可直接写入的字节数，即传给 buffer_expand 不会触发新节点分配的最大 lens；
+/// 0 表示链上已无空闲空间，任何 expand 都会新建节点</returns>
 size_t buffer_space(buffer_ctx *ctx, const uint32_t cnt);
 /// <summary>
 /// 将外部缓存data添加到buffer,不做一次拷贝,供零拷贝的读取用。
@@ -147,17 +147,15 @@ uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const 
 void buffer_commit_expand(buffer_ctx *ctx, size_t lens ,IOV_TYPE *iov, const uint32_t cnt);
 /// <summary>
 /// 获取指定长度的数据，供 writev 等分散读零拷贝取用。
-/// 返回非 0 即进入读暂存态：iov 直接指向节点内部数据区，且这些节点被标记为锁定，
-/// 在 buffer_commit_get 之前不得再调用本模块任何读写接口 —— 写入可能触发对齐 memmove
-/// 或节点迁移，使已暂存的 iov 指向被改写或已释放的内存；读写两族接口均以断言拦截，
-/// 两种暂存态(本函数与 buffer_expand)也互斥，不可交叠。
-/// 返回 0 表示无数据可取且未进入暂存态，此时不可调用 buffer_commit_get
+/// 返回非 0 即进入读暂存态：iov 直接指向节点内部数据区，在 buffer_commit_get 之前
+/// 不得再调用本模块任何读写接口（写入可能搬动节点让 iov 悬空，断言拦截），
+/// 且与 buffer_expand 的暂存态互斥
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="atmost">最多取出的字节数</param>
 /// <param name="iov">IOV数组</param>
 /// <param name="cnt">IOV数组长度</param>
-/// <returns>IOV数量，0 表示无数据且未进入暂存态</returns>
+/// <returns>IOV数量，0 表示无数据且未进入暂存态（此时不可调用 buffer_commit_get）</returns>
 uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt);
 /// <summary>
 /// 解除 buffer_get 的读暂存态并删除已消费的数据；只能在 buffer_get 返回非 0 后调用一次

@@ -5,6 +5,7 @@
 
 typedef uint16_t subtype_t; //子类型
 typedef uint64_t name_t; // 任务名类型（64 位整数 ID）
+typedef void(*free_cb)(void *arg); // 通用资源释放回调函数类型
 
 // 连接用户自定义上下文，挂载在每个网络连接上
 typedef struct ud_cxt {
@@ -39,8 +40,6 @@ typedef struct off_buf_ctx {
     void   *data;   // 数据指针
     shared_data *shared; // NULL=独占（默认 FREE(data)）；非 NULL=多播共享（ev_send_multi 投递），buf 释放时 ATOMIC_ADD(&shared->ref,-1) 归 0 才 FREE pack->data + pack 自身
 }off_buf_ctx;
-
-typedef void(*free_cb)(void *arg); // 通用资源释放回调函数类型
 
 // 将 src 的内容复制到 dst；src 为 NULL 时将 dst 清零
 #define COPY_UD(dst, src)\

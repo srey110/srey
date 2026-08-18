@@ -56,21 +56,21 @@ int32_t path_insert(path_trie *t, const char *path, void *payload);
 /// <returns>payload 指针;不存在或路径非法返 NULL</returns>
 void *path_get(path_trie *t, const char *path);
 /// <summary>
-/// 取或创建:不存在时塞入 init 并返回 init;已存在时返回现有 payload,init 不被使用,
-/// 由调用方自行释放 init。init 为 NULL 时仅查询不创建,等同 path_get。
+/// 取或创建。init 为 NULL 时仅查询不创建,等同 path_get。
 /// </summary>
 /// <param name="t">trie 指针</param>
 /// <param name="path">路径字符串</param>
 /// <param name="init">不存在时塞入的初始 payload(允许 NULL,此时纯查询)</param>
-/// <returns>最终 payload 指针;参数非法返 NULL</returns>
+/// <returns>最终 payload 指针:不存在时塞入 init 并返回 init;已存在时返回现有 payload,
+/// init 不被使用、由调用方自行释放。参数非法返 NULL</returns>
 void *path_get_or_create(path_trie *t, const char *path, void *init);
 /// <summary>
-/// 删除并返回原 payload(所有权交回业务,trie 不再持有,_free 不被调用)。
-/// 空中间节点沿父链自动回收。
+/// 删除 payload;空中间节点沿父链自动回收。
 /// </summary>
 /// <param name="t">trie 指针</param>
 /// <param name="path">路径字符串</param>
-/// <returns>原 payload 指针;不存在或路径非法返 NULL</returns>
+/// <returns>原 payload 指针(所有权交回业务,trie 不再持有,_free 不被调用);
+/// 不存在或路径非法返 NULL</returns>
 void *path_remove(path_trie *t, const char *path);
 /// <summary>
 /// 通配匹配:literal_path 必须是精确路径(LITERAL 校验拒绝通配字符)。

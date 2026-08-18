@@ -17,7 +17,7 @@
 //   publish_retained 先更新 retained_index 再走普通 publish 投递路径。
 // 使用范式:
 //   (1) 纯 task 间 pub/sub:subscribe / publish / publish_retained;
-//       想立即查 retained 调 query_retained;Lua wrapper subscribe 内部自动两步。
+//       想立即查 retained 调 query_retained。
 //       publisher 可 set_meta 注册元数据,所有 publish 自动携带 meta 投递给订阅者。
 //   (2) 网络订阅网关:网关作为单一订阅者代理 N 个网络客户端,
 //       网关本地维护 fd ↔ pattern 映射,用 path_trie 做反向匹配;
@@ -192,10 +192,9 @@ void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
 /// <summary>
 /// 注册或更新当前 task 的发布者元数据。
 /// 后续该 task 所有 publish/publish_retained 都自动携带 meta 投递给订阅者。
-/// publisher 宜在 _closing 钩子调 set_meta(NULL, 0) 主动清理；漏了也不会随时间一直攒下去——
-/// 每当有新 publisher 首次登记 meta（这张表唯一的增长点），subcenter 会先把 task_grab 不到的
-/// 旧条目连同 meta 一并摘掉。注意这只保证不单调增长，不保证死条目立刻消失：
-/// 若此后再没有新 publisher 登记，已死的那些会留到 subcenter 关闭。必须在协程中调用。
+/// publisher 宜在 _closing 钩子调 set_meta(NULL, 0) 主动清理；漏了也只是不单调增长——
+/// 新 publisher 首次登记时顺带摘掉已死的旧条目，但没有新登记它们就留到 subcenter 关闭。
+/// 必须在协程中调用。
 /// </summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>

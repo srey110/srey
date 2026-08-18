@@ -48,10 +48,9 @@ void _websock_secextra(ud_cxt *ud, void *val);
 int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype);
 /// <summary>
 /// 设置 WebSocket 承载子协议(如 MQTT over WebSocket)的额外上下文数据(ws->ud->context)。
-/// 注意它是直接覆盖而非追加：子协议层若已自行建过上下文(MQTT over WS 下那里是协议层
-/// malloc 的 mqtt_ctx，由 _mqtt_udfree 回收)，覆盖即把原对象漏掉，之后解析器会把 val
-/// 当成该协议的上下文解引用。只适合"子协议层不自建上下文"的场景，其余情况别用。
-/// 眼下树内无调用方，保留是为将来自定义子协议留口子
+/// 直接覆盖而非追加：子协议层已自建上下文时(MQTT over WS 即是)覆盖即泄漏原对象，
+/// 且解析器会把 val 当该协议的上下文解引用——只适合"子协议层不自建上下文"的场景。
+/// 眼下树内无调用方，为自定义子协议留的口子
 /// </summary>
 /// <param name="ev">ev_ctx</param>
 /// <param name="fd">socket句柄</param>

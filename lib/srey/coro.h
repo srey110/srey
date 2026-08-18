@@ -139,8 +139,7 @@ void coro_close(task_ctx *task, SOCKET fd, uint64_t skid, int32_t immed);
 void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
                 void *data, size_t len, size_t *size, int32_t copy);
 /// <summary>
-/// 同步接收下一个响应包(不发送):用于一次请求产生多个响应的场景,如 MySQL 多结果集续读。
-/// 镜像 Lua 侧的 srey.syn_recv
+/// 同步接收下一个响应包(不发送):用于一次请求产生多个响应的场景,如 MySQL 多结果集续读
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket fd</param>
@@ -190,7 +189,7 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
 void coro_fork(task_ctx *task, fork_serial_cb func, void *arg);
 /// <summary>
 /// 并发执行 n 个 funcs[i](task, args[i])，等全部完成后返回（barrier 模式）。
-/// 调用方必须身处协程内（startup/timeout/on_* 回调内部均满足），否则返回 ERR_FAILED。
+/// 调用方必须身处协程内（startup/timeout/on_* 回调内部均满足）。
 /// C 无闭包：每个 funcs[i] 的返回值/错误码须由业务自己写入 args[i] 内的 out 字段。
 /// 总耗时 ≈ max(t_i)，而非 sum(t_i)。
 /// </summary>
@@ -208,22 +207,19 @@ int32_t coro_fork_wait(task_ctx *task, int32_t n, fork_serial_cb funcs[], void *
 /// <returns>coro_serial_ctx；销毁用 coro_serial_free</returns>
 coro_serial_ctx *coro_serial_new(task_ctx *task);
 /// <summary>
-/// 销毁串行化执行器：排队中的等待者被逐个唤醒并失败返回（锁不交接给它们），此后 enter 一律失败。
-/// 允许在有协程正持锁时调用，包括持锁者在自己临界区内调用；锁抢不走，那位仍会跑完临界区，
-/// 内存改由它最后一次 coro_serial_leave 释放，**故本函数返回时对象未必已经释放**。
-/// 调用方两条义务：
-/// 1) 把自己那个 serial 字段置空要排在本函数之后，且置空前先认一下字段仍是自己捏的那个。
-///    本函数唤醒排队者时会就地跑它们的错误路径：提前置空的话它们读到 NULL，会当成
-///    "这条连接不归本套 API 管"直接放行，命令就插进了正在进行的交换；而那些错误路径可能
-///    先销毁（把字段置空）再重连（新装一个上去），事后无条件置空就把新装的抹掉了。
-///    对象在这期间不会失效——有持锁者时本函数并不释放，见上；
-/// 2) 加锁与解锁必须捏着同一个指针配对，不能解锁时去重读那个已被置空的字段——
-///    重读会让持锁者跳过 leave，推迟的释放就永远等不到了
+/// 销毁串行化执行器：排队中的等待者被逐个唤醒并失败返回（锁不交接），此后 enter 一律失败。
+/// 允许在有协程持锁时调用（含持锁者自己）；锁抢不走，内存改由最后一次 coro_serial_leave 释放，
+/// **故本函数返回时对象未必已经释放**。调用方两条义务：
+/// 1) 把自己的 serial 字段置空要排在本函数之后，且置空前先认字段仍是自己那个——
+///    被唤醒的排队者就地跑错误路径：提前置空会被它们当成"无执行器"直接放行，
+///    而那些路径可能已销毁重连、装上新执行器，无条件置空就把新的抹掉了；
+/// 2) 加锁与解锁必须捏同一个指针配对，解锁时不得重读已被置空的字段——
+///    重读会让持锁者跳过 leave，推迟的释放就永远等不到
 /// </summary>
 /// <param name="serial">coro_serial_ctx</param>
 void coro_serial_free(coro_serial_ctx *serial);
 /// <summary>
-/// 进入临界区。调用方必须身处协程内，否则返回 ERR_FAILED。
+/// 进入临界区。调用方必须身处协程内。
 /// 同协程嵌套安全（ref 计数）；跨协程时按 FIFO 排队挂起，前一个 leave 时唤醒下一个。
 /// 配对由调用方保证：enter 成功后到 leave 之间的任何提前 return 都会把锁永久漏掉，
 /// 所以两者之间不要写早退分支，写不下就改用 coro_serial_call。
@@ -240,10 +236,9 @@ int32_t coro_serial_enter(coro_serial_ctx *serial);
 /// <param name="serial">coro_serial_ctx</param>
 void coro_serial_leave(coro_serial_ctx *serial);
 /// <summary>
-/// coro_serial_enter + func(task, arg) + coro_serial_leave 的回调式写法，语义与分体式完全一致。
-/// 配对由本函数保证，故 func 内可随意早退；代价是每个被包裹的函数都要配一个 arg 结构加 stub，
-/// "临界区就是本函数剩下那段"这种场景用分体式只多两行。
-/// C 无 xpcall：func 内 abort 终止进程；调用方需自行保证 func 不崩。
+/// coro_serial_enter + func(task, arg) + coro_serial_leave 的回调式写法，语义与分体式一致。
+/// 配对由本函数保证，故 func 内可随意早退。
+/// C 无 xpcall：func 内 abort 终止进程，调用方自行保证 func 不崩。
 /// </summary>
 /// <param name="serial">coro_serial_ctx</param>
 /// <param name="func">临界区回调：func(task, arg)；NULL 则只做一次进出，用于探测能否拿到锁</param>

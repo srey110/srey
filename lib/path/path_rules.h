@@ -30,8 +30,7 @@ typedef struct path_rules {
 /// <summary>
 /// 填充通用 pub/sub 规则:sep='/', single_wildcard='+', multi_wildcard='#'。
 /// 内置校验(由 path_trie):'#' 必须末尾、'+'/'#' 独占段、段非空。
-/// 段内不会出现 sep 或 NUL,故不单独查:切分本身按 sep 做,范围又由 strlen 定死。
-/// 无协议特定额外约束。填充后可追加 validate_segment / validate_path 自定义校验。
+/// 无协议特定额外约束;填充后可追加 validate_segment / validate_path 自定义校验。
 /// </summary>
 /// <param name="rule">输出参数:被填充的 path_rules 结构(调用方持有,不可 NULL)</param>
 void path_rules_def(path_rules *rule);

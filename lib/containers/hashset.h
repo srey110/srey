@@ -6,8 +6,7 @@
 typedef struct hashset hashset;
 
 /// <summary>
-/// 创建 hashset。元素 by-value 存储,内部基于项目分配函数(_malloc/_realloc/_free)。
-/// 与 hashmap 区别:只存元素无 value 字段,只提供 add/contains/remove 集合语义。
+/// 创建 hashset。
 /// </summary>
 /// <param name="elsize">元素大小(bytes)</param>
 /// <param name="cap">初始容量;0 用默认</param>
@@ -40,7 +39,7 @@ size_t hashset_count(const hashset *s);
 /// <returns>1 OOM(本次 add 未成功);0 正常</returns>
 int32_t hashset_oom(const hashset *s);
 /// <summary>
-/// 加入元素。已存在时更新(覆写为新值);按 elsize 字节 by-value 拷贝。
+/// 加入元素。已存在时更新(覆写为新值)
 /// </summary>
 /// <param name="s">hashset 指针</param>
 /// <param name="item">元素指针;按 elsize 字节读取</param>
@@ -61,7 +60,7 @@ int32_t hashset_contains(const hashset *s, const void *item);
 ///     元素不存在返 NULL</returns>
 const void *hashset_remove(hashset *s, const void *item);
 /// <summary>
-/// 遍历全部元素。iter 返回 0 终止遍历;遍历期间不可增删,否则未定义行为。
+/// 遍历全部元素;遍历期间不可增删,否则未定义行为。
 /// </summary>
 /// <param name="s">hashset 指针</param>
 /// <param name="iter">每个元素调用一次;返回非 0 继续,返 0 终止</param>

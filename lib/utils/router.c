@@ -130,7 +130,7 @@ static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
         if (0 == name_len) {
             return ERR_FAILED;
         }
-        // 参数名内部含 '?' 视为非法, 落字面量(对齐 Lua [^}?]+ 文法); 否则才是 PARAM/OPT
+        // 参数名内部含 '?' 视为非法, 落字面量; 否则才是 PARAM/OPT
         if (NULL == memchr(name_src, '?', name_len)) {
             // +1 字节存 \0, router_req_param 内可直接 memcmp 不必再带长度
             out->str = dup_zero(name_src, name_len);
@@ -900,7 +900,7 @@ const char *router_req_query(router_req *ctx, const char *key, size_t *lens) {
         return NULL;
     }
     *lens = v->lens;
-    // 值空(?a=)返非 NULL 零长指针, 与 Lua query 子表 "" 对齐, 区别于键不存在的 NULL
+    // 值空(?a=)返非 NULL 零长指针, 区别于键不存在的 NULL
     return (NULL != v->data) ? (const char *)v->data : "";
 }
 void *router_req_body(router_req *ctx, size_t *lens) {
@@ -971,7 +971,7 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
         k[extra[i].key.lens] = '\0';
         http_pack_head2(&bw, k, (const char *)extra[i].value.data, extra[i].value.lens);
     }
-    // 1xx/204/304 禁带 Content-Length 与报文体, 只收尾不写 body(给了也丢), 判据同 Lua 侧的 nocl;
+    // 1xx/204/304 禁带 Content-Length 与报文体, 只收尾不写 body(给了也丢);
     // 其余走 http_pack_content, 它写 \r\n\r\n + body 完成整包, 空 body 也统一收敛成
     // Content-Length: 0, 各入口不必自己归一
     if (http_code_nobody(code)) {
@@ -1049,8 +1049,8 @@ static void _router_code_body(int32_t code, char body[ROUTER_CODE_BODY_LENS]) {
 // 返回 200 表示 *out_idx 有效, 其余为应回给客户端的应答码
 static int32_t _router_match_entry(router_ctx *r, router_req *req,
                                    const buf_ctx *status, int32_t *out_idx) {
-    // 与 Lua 侧走同一个 router_match_index / router_match_code,
-    // 避免 C / Lua 两个 HTTP 面对同一请求给出不同码
+    // 所有派发面走同一个 router_match_index / router_match_code,
+    // 避免对同一请求给出不同码
     int32_t idx = router_match_index(r, status[0].data, status[0].lens,
                                      status[1].data, status[1].lens, req);
     // 无条件回填: 失败时 idx 为负, 调用方漏判 code 会当场拿到非法下标而不是 0 号路由

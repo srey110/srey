@@ -188,7 +188,7 @@ double binary_get_double(binary_ctx *ctx, int32_t islittle);
 /// <returns>char *</returns>
 char *binary_get_string(binary_ctx *ctx);
 /// <summary>
-/// 同 binary_get_string,但剩余字节里没有 '\0' 时返回 NULL 而不是断言。
+/// 同 binary_get_string,但剩余字节里没有 '\0' 时失败而不是断言。
 /// 越界条件是"扫不到 NUL",binary_have 预判不了,所以单给一个接口
 /// </summary>
 /// <param name="ctx">binary_ctx</param>

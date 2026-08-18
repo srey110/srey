@@ -3,7 +3,7 @@
 
 #include "base/macro.h"
 
-// 侵入式双向链表（intrusive，显式 head/tail/size，NULL 结尾，非线程安全）
+// 双向链表
 // 典型用法：
 //   typedef struct { list_node node; int val; } my_node;
 //   list_ctx l; list_init(&l);
@@ -65,13 +65,13 @@ void list_insert_before(list_ctx *lst, list_node *pos, list_node *node);
 /// <param name="node">待插入节点（不属于任何链表）</param>
 void list_insert_after(list_ctx *lst, list_node *pos, list_node *node);
 /// <summary>
-/// 摘除并返回队头
+/// 摘除队头
 /// </summary>
 /// <param name="lst">list_ctx 指针</param>
 /// <returns>队头节点；空表返回 NULL</returns>
 list_node *list_pop_head(list_ctx *lst);
 /// <summary>
-/// 摘除并返回队尾
+/// 摘除队尾
 /// </summary>
 /// <param name="lst">list_ctx 指针</param>
 /// <returns>队尾节点；空表返回 NULL</returns>

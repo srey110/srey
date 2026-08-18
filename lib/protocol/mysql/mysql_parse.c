@@ -840,7 +840,7 @@ static mpack_ctx *_mpack_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, bin
     }
 }
 // 这里没有 MYSQL_QUIT 分支，也不该加：mysql_pack_quit 是唯一的 COM_QUIT 组包入口，而它
-// 刻意不接 mysql_ctx、不写 cur_cmd —— Lua 侧 __gc 在工作线程调它，网络线程同时正拿
+// 刻意不接 mysql_ctx、不写 cur_cmd —— 上层 handle 的析构路径会在工作线程调它，网络线程同时正拿
 // id / cur_cmd 解析来包，写一下就是无同步的跨线程写（test_mysql_pack 有用例钉着这条）。
 // 所以 cur_cmd 永远不会是 MYSQL_QUIT，写了也是死代码。
 // 真实情况也用不上：服务端收到 COM_QUIT 直接断连不回包，走不到解析

@@ -111,15 +111,12 @@ int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
 int32_t scram_set_iter(scram_ctx *scram, int32_t iter);
 /// <summary>
 /// 交给 scram 本端拿到的 channel binding 材料（tls-server-end-point 即服务端证书 SHA-256 哈希），
-/// 由它按机制决定怎么用，调用方不必自己判断走哪条路：
-///   PLUS 变体   —— 存下来用于计算 / 校验 c=。两端都必须调，漏调时 scram_final_message 返回 NULL、
-///                  scram_check_final_message 返回 ERR_FAILED；不这么挡的话两端都按"绑定到零字节"算，
-///                  c= 反而对得上，握手通过而通道绑定其实不存在
-///   非 PLUS 变体 —— 数据本身用不上，但"本端有材料"这件事要记下（转为 SCRAM_CB_CAPABLE）：
-///                  客户端据此把 GS2 头从 "n,," 改成 "y,,"，对端若其实支持 PLUS 就知道自己的通告
-///                  被人剥掉了；服务端据此在收到 "y" 时判定降级并拒绝握手
-/// 注意这挡不住"中间人已持有本端信任的证书"——那种情况 TLS 本身已破；本机制让通道绑定的失效
-/// 变得可检测，而不是让它不可绕过
+/// 由它按机制决定怎么用：
+///   PLUS 变体   —— 存下来用于计算 / 校验 c=。两端都必须调，漏调时 scram_final_message
+///                  返回 NULL、scram_check_final_message 返回 ERR_FAILED
+///   非 PLUS 变体 —— 记下"本端有材料"（SCRAM_CB_CAPABLE）：客户端把 GS2 头 "n,," 改成 "y,,"，
+///                  服务端收到 "y" 而自己其实支持 PLUS 即判定降级、拒绝握手
+/// 挡不住"中间人已持有本端信任的证书"——本机制只让通道绑定的失效可检测，不是不可绕过
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="data">channel binding 原始数据</param>
@@ -133,7 +130,7 @@ int32_t scram_set_cbind(scram_ctx *scram, const char *data, size_t lens);
 /// <returns>用户名字符串</returns>
 const char *scram_get_user(scram_ctx *scram);
 /// <summary>
-/// 生成并返回第一条消息（客户端: [GS2]n=,r=  服务端: r=,s=,i=）
+/// 生成第一条消息（客户端: [GS2]n=,r=  服务端: r=,s=,i=）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <returns>消息字符串（调用方负责释放）</returns>
@@ -147,7 +144,7 @@ char *scram_first_message(scram_ctx *scram);
 /// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens);
 /// <summary>
-/// 生成并返回最终消息（客户端: c=<cbind_b64>,r=,p=  服务端: [e=] v=）
+/// 生成最终消息（客户端: c=<cbind_b64>,r=,p=  服务端: [e=] v=）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <returns>消息字符串；状态不符、未设置密码、PLUS 变体未设置 channel binding 数据均返回 NULL。

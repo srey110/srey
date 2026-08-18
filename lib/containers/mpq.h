@@ -40,15 +40,14 @@ void mpq_init(mpq_ctx *q, size_t elsize, uint32_t capacity);
 /// <param name="q">mpq_ctx</param>
 void mpq_free(mpq_ctx *q);
 /// <summary>
-/// 非阻塞入队：从 data 拷贝 elsize 字节入队，队列满时立即返回 ERR_FAILED
+/// 非阻塞入队
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <param name="data">指向待入队元素的指针，不得为 NULL（拷贝 elsize 字节）</param>
 /// <returns>ERR_OK 成功，ERR_FAILED 队列已满</returns>
 int32_t mpq_trypush(mpq_ctx *q, const void *data);
 /// <summary>
-/// 出队（多消费者安全）：拷贝 elsize 字节到 out。内部 CAS 抢占 deq.v，
-/// 适用于多线程并发出队的场景。
+/// 出队（多消费者）
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
@@ -59,22 +58,14 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data);
 /// 更晚入队的元素不能抢在这个在途元素之前取，否则顺序就反了</returns>
 int32_t mpq_pop(mpq_ctx *q, void *out);
 /// <summary>
-/// 出队（单消费者）：拷贝 elsize 字节到 out。消费者侧独占 deq.v、无 CAS，
-/// 比 mpq_pop 快。约束：仅允许单一消费者线程调用，并发调用 pop_sc 行为未定义；
-/// 同一队列上 pop 与 pop_sc 也不可混用（语义错乱）。
+/// 出队（单消费者）
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>ERR_OK 出队成功；ERR_FAILED 队列确实为空；
-/// 1 队列看似空，但有槽位已被生产者抢占、尚未发布——更早入队的元素还在路上。
-/// 只关心"有没有取到"的调用方按 ERR_OK 判即可，两种非 OK 都当空处理；
-/// 队列之外另有一层数据源的调用方（如 fsqu 的溢出层）必须区分：报 1 时那一层里
-/// 更晚入队的元素不能抢在这个在途元素之前取，否则顺序就反了</returns>
+/// <returns>三态语义同 mpq_pop：ERR_OK 成功；ERR_FAILED 确实为空；1 有在途元素（区分义务见彼处）</returns>
 int32_t mpq_pop_sc(mpq_ctx *q, void *out);
 /// <summary>
-/// 返回当前队列元素数量的近似值，并发下不精确。
-/// 偏差方向有保证：只会高估不会低估（上限 capacity），故可安全用于
-/// "队列是否还有元素待处理"这类判断——不会把有元素报成 0 而导致漏唤醒
+/// 返回当前队列元素数量的近似值
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <returns>元素数量，取值 [0, capacity]</returns>

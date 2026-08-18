@@ -123,12 +123,7 @@ int32_t evssl_tryacpt(SSL *ssl);
 /// 开始客户端握手
 /// </summary>
 /// <param name="ssl">SSL</param>
-/// <returns>
-/// ERR_OK:握手完成
-///     1:需要读就绪（WANT_READ），重新注册读事件后重试
-///     2:需要写就绪（WANT_WRITE），重新注册写事件后重试
-///     ERR_FAILED:失败
-///</returns>
+/// <returns>同 evssl_tryacpt</returns>
 int32_t evssl_tryconn(SSL *ssl);
 /// <summary>
 /// 数据读取

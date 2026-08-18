@@ -22,35 +22,19 @@ typedef struct sfid_ctx {
 /// snowflake id 初始化
 /// </summary>
 /// <param name="ctx">sfid_ctx</param>
-/// <param name="machineid">
-///   机器ID，范围 [0, 2^machinebitlen - 1]。
-///   默认 machinebitlen=10 时最大值为 1023。
-/// </param>
-/// <param name="machinebitlen">
-///   机器ID占用位数，0 使用默认值 10。
-///   合理范围 [1, 20]；machinebitlen + sequencebitlen 不得超过 22。
-///   位数越大可支持的机器节点越多（2^machinebitlen 台），
-///   但同一毫秒内可生成的 ID 数（2^sequencebitlen）相应减少。
-/// </param>
-/// <param name="sequencebitlen">
-///   自增序列占用位数，0 使用默认值 12。
-///   合理范围 [2, 21]；machinebitlen + sequencebitlen 不得超过 22。
-///   位数越大每毫秒可生成的 ID 越多（2^sequencebitlen 个/ms），
-///   建议不低于 7（即 128 个/ms）以保证足够吞吐量。
-/// </param>
-/// <param name="customepoch">
-///   自定义纪元时间戳（毫秒），ID 中的时间戳字段相对于此值计算，
-///   可延长可用年限。0 使用默认值（2024-01-01 00:00:00 UTC）。
-///   必须小于当前时间，否则返回 NULL。
-/// </param>
+/// <param name="machineid">机器ID，范围 [0, 2^machinebitlen - 1]（默认位数下最大 1023）</param>
+/// <param name="machinebitlen">机器ID占用位数，0 用默认 10；合理范围 [1, 20]，
+///   与 sequencebitlen 之和不得超过 22。位数越大节点越多、同毫秒可生成的 ID 越少</param>
+/// <param name="sequencebitlen">自增序列占用位数，0 用默认 12；合理范围 [2, 21]，
+///   与 machinebitlen 之和不得超过 22。每毫秒可生成 2^sequencebitlen 个 ID</param>
+/// <param name="customepoch">自定义纪元时间戳（毫秒），ID 的时间戳字段相对它计算，可延长可用年限；
+///   0 用默认（2024-01-01 00:00:00 UTC）。必须小于当前时间，否则返回 NULL</param>
 /// <returns>成功返回 ctx，参数非法返回 NULL</returns>
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch);
 /// <summary>
-/// 获取ID（非线程安全：每个线程须持有独立的 sfid_ctx，禁止多线程共享同一 ctx）。
-/// 时间戳取自墙钟而非单调钟，NTP 往回跳时本函数会等时钟追上来，再往后就放弃返回 0——
-/// 不然回拨多少就阻塞多少，一次跳表能把调用线程卡住几十分钟。
-/// 等待上限是 ctx->clockback_wait（默认 1000ms）且**按每次调用计**：回拨窗口内连取 N 个 ID
-/// 就是 N 次上限，要快速失败请在 sfid_init 之后把该字段改小
+/// 获取ID（非线程安全：每个线程须持有独立的 sfid_ctx）。
+/// 时间戳取自墙钟，NTP 回拨时等时钟追上来，等待上限 ctx->clockback_wait（默认 1000ms）
+/// 且**按每次调用计**；要快速失败就在 sfid_init 之后把该字段改小
 /// </summary>
 /// <param name="ctx">sfid_ctx</param>
 /// <returns>snowflake id；时钟回拨超过等待上限返回 0</returns>

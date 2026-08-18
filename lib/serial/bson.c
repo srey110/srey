@@ -722,7 +722,7 @@ int32_t bson_check_depth(char *data, size_t lens) {
 }
 // 按已知长度写入串化文本，内嵌 NUL 转义成可见的 "\\0"。
 // BSON 字符串允许内嵌 NUL（写入侧 bson_append_utf8_n 就是长度感知的），而串化结果的两个
-// 消费者都按 NUL 结尾读——mongo_parse 的 LOG_WARN("%s", ...) 与 Lua 的 :tostring()——
+// 消费者都按 NUL 结尾读(如 mongo_parse 的 LOG_WARN("%s", ...))——
 // 原样写进去后半段谁也看不到，等于让运维只拿到半截错误
 static void _bson_dump_text(binary_ctx *str, const char *val, size_t lens) {
     size_t beg = 0;
