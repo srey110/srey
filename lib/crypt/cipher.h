@@ -49,8 +49,7 @@ typedef struct cipher_ctx {
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     const char *key, size_t klens, int32_t keybits, int32_t encrypt);
 /// <summary>
-/// 清零加解密上下文中的敏感数据（密钥调度表、IV、中间缓冲区）。
-/// 连引擎回调一起抹掉，调用后上下文即失效，要复用须重新 cipher_init
+/// 清零整个cipher_ctx
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
 void cipher_free(cipher_ctx *cipher);
@@ -97,9 +96,7 @@ void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *si
 /// <param name="lens">数据长度</param>
 /// <param name="output">加解密后的数据,预估长度:lens + 分组长度</param>
 /// <param name="outlens">输出:加解密后的长度;失败时置 0</param>
-/// <returns>ERR_OK 成功;ERR_FAILED 失败（NoPadding+ECB/CBC 输入非对齐、解密时长度不足一个分组、
-/// 或填充校验不通过），output 已清零。失败不能靠"长度为 0"判断——加密空明文再解密回来
-/// 本就是 0 字节的合法结果,两者必须分开</returns>
+/// <returns>ERR_OK 成功;ERR_FAILED 失败</returns>
 /// <remarks>
 /// CTR/CFB/OFB 模式：函数内部会 cipher_reset 将 cur_iv 重置为初始 iv；
 /// 因此跨多条独立消息复用同一 cipher_ctx 时，调用方必须在每条消息前

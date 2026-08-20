@@ -74,25 +74,20 @@ scram_ctx *scram_init(const char *method, int32_t client);
 /// <param name="scram">scram_ctx</param>
 void scram_free(scram_ctx *scram);
 /// <summary>
-/// 设置用户名（客户端握手前调用；服务端由 scram_parse_first_message 内部调用）
-/// 前 ulens 字节内含 0x00 时整体拒绝并保持原值：下游一律按 strlen 消费，
-/// 内嵌 NUL 会让用户名静默截断成另一个身份，而 RFC 5802 的 saslname 本就禁止 U+0000
+/// 设置用户名（客户端握手前调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="user">用户名</param>
 /// <param name="ulens">用户名长度（字节）</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（user 为空或含 0x00）</returns>
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
 int32_t scram_set_user(scram_ctx *scram, const char *user, size_t ulens);
 /// <summary>
-/// 设置密码（客户端和服务端均需调用；未调用则 scram_final_message 返回 NULL、
-/// scram_check_final_message 返回 ERR_FAILED）。pwd 可为 ""，但前 plens 字节内含 0x00 时
-/// 整体拒绝并保持原值：PBKDF2 按 strlen 取长会把 "a\0b" 与 "a\0c" 派生成同一 ClientProof，
-/// 且 secure_zero 抹不到 NUL 之后的尾部字节
+/// 设置密码（客户端和服务端均需调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="pwd">密码</param>
 /// <param name="plens">密码长度（字节）</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（pwd 为 NULL 或含 0x00）</returns>
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
 int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
 /// <summary>
 /// 设置 salt（仅服务端调用）
@@ -100,14 +95,14 @@ int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
 /// <param name="scram">scram_ctx</param>
 /// <param name="salt">salt 数据</param>
 /// <param name="lens">salt 长度</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（客户端角色调用，或 salt 为空）</returns>
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
 int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
 /// <summary>
 /// 设置迭代轮数（仅服务端调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="iter">迭代轮数，低于 SCRAM_MIN_ITER 自动提升到该下限</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（客户端角色调用）</returns>
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
 int32_t scram_set_iter(scram_ctx *scram, int32_t iter);
 /// <summary>
 /// 交给 scram 本端拿到的 channel binding 材料（tls-server-end-point 即服务端证书 SHA-256 哈希），

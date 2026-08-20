@@ -5,28 +5,6 @@
 #include "path/path_rules.h"
 #include "utils/binary.h"
 
-// subcenter:订阅中心 service,task 间 pub/sub
-// 命名约定:
-//   类型 / 函数统一 sc_ 短前缀(协程版前再加 coro_ 前缀)
-//   常量 SC_ 大写前缀(SC_RETAINED_MAX_SIZE 等)
-// 内部存储分离:
-//   - 订阅关系挂 path_trie 节点 payload(sc_topic_data)
-//   - retained 保留消息挂独立 hashmap<topic, sc_retained_entry>
-//   两者职责分明,互不干扰:SUB/UNSUB 永远不动 retained_index;
-//   publish(非 retained)永远不动 retained_index;
-//   publish_retained 先更新 retained_index 再走普通 publish 投递路径。
-// 使用范式:
-//   (1) 纯 task 间 pub/sub:subscribe / publish / publish_retained;
-//       想立即查 retained 调 query_retained。
-//       publisher 可 set_meta 注册元数据,所有 publish 自动携带 meta 投递给订阅者。
-//   (2) 网络订阅网关:网关作为单一订阅者代理 N 个网络客户端,
-//       网关本地维护 fd ↔ pattern 映射,用 path_trie 做反向匹配;
-//       共享订阅:subcenter 是 task 粒度,客户端粒度共享需网关本地 fd 轮询;
-//       publisher 字段在网关场景永远是网关 task,客户端身份用 set_meta 或协议层 properties 传递。
-// 注意点:
-//   1. 无 retained TTL,孤儿 retained 需业务显式 publish_retained plen=0 清空
-//   2. query_retained O(M) 已用 retained_index 直查(已优化),M = retained 总数
-
 // REQ_SC_DELIVER 投递来源(sc_deliver.kind);普通订阅与共享订阅各自独立投递,接收方据此路由
 typedef enum sc_deliver_kind {
     SC_DELIVER_NORMAL = 0, // 普通订阅投递
@@ -73,10 +51,9 @@ typedef struct sc_retained_topic {
     name_t publisher;     // retained 发布者句柄;INVALID_TNAME 表示已失效
     const char *topic;    // topic;tlen=0 时 NULL
 } sc_retained_topic;
+
 /// <summary>
 /// 注册 subcenter task service。
-/// 在 loader_init 之后、业务 task 启动之前调用一次。
-/// name 由 config.json 的 sc_name 决定,默认 "subcenter";空串表示不启动。
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名;NULL 或空串时本函数立即返回 ERR_OK 不注册 task</param>
@@ -85,10 +62,6 @@ typedef struct sc_retained_topic {
 ///     NULL 时返 ERR_FAILED。规则生命周期需 ≥ subcenter task</param>
 /// <returns>ERR_OK 成功(含跳过);ERR_FAILED 注册失败</returns>
 int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules);
-// 下面所有客户端接口共用一条入参约束：topic / pattern 上限 256 字节、group 上限 64 字节
-// (不含结尾 NUL,取等号仍合法),空串或超限一律返 ERR_FAILED 且不发出请求。
-// 上限不是随便定的——线格式的长度前缀只有 2 字节,放超限值进去会被静默截断成另一个 topic,
-// 服务端还会照着截断后的名字建节点并回成功。各函数不再逐条重复这条
 /// <summary>
 /// 订阅 topic(可含通配)。重复订阅相同 src+topic 幂等返 OK。必须在协程中调用。
 /// </summary>
@@ -203,10 +176,6 @@ void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
 /// <returns>ERR_OK 成功;ERR_FAILED subcenter 不可达</returns>
 int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
                          const void *meta, size_t size);
-// ── 异步版 API ────────────────────────────────────────────────────────────
-// 非协程上下文使用;不挂起。sess 必须非 0(=0 返 ERR_FAILED),业务自管响应配对,
-// 在 task->_response 回调中按 sess 收 OK / 数据。语义与协程版完全一致,差别仅在阻塞与否。
-
 /// <summary>异步订阅。同 coro_sc_subscribe,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
@@ -290,7 +259,6 @@ int32_t sc_retained_topics(task_ctx *task, name_t sc_name, uint64_t sess);
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_set_meta(task_ctx *task, name_t sc_name, uint64_t sess,
                     const void *meta, size_t size);
-// ── deliver 解析 ──────────────────────────────────────────────────────────
 /// <summary>
 /// 解析 REQ_SC_DELIVER 推送 wire(订阅者在 _request 回调中调用)。wire 首字节为 kind
 /// (SC_DELIVER_NORMAL/SC_DELIVER_SHARED),区分普通投递与共享投递,填入 out->kind。
@@ -301,7 +269,6 @@ int32_t sc_set_meta(task_ctx *task, name_t sc_name, uint64_t sess,
 /// <param name="out">出参:解析结果,成功时填充</param>
 /// <returns>ERR_OK 成功;ERR_FAILED wire 不完整(损坏/截断)</returns>
 int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out);
-// ── 列表响应解析 ──────────────────────────────────────────────────────────
 // 游标式逐条解析 query_retained / topics / retained_topics 的多记录响应 buffer。
 // 调用方先 binary_init(&br, data, size, 0),再循环 while(br.offset < br.size) 取下一条;出参指针零拷贝指向源 buffer。
 /// <summary>

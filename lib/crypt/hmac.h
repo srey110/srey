@@ -18,8 +18,7 @@ typedef struct hmac_ctx {
 /// <param name="klens">密码长度</param>
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens);
 /// <summary>
-/// 清零整个 hmac_ctx，含四个内嵌 digest_ctx 的分发回调——调用后上下文即失效，要复用须重新 hmac_init。
-/// hmac 一定持有密钥，所以每次 hmac_init 完成并使用后均应调用，无论分配于栈还是堆。
+/// 清零整个 hmac_ctx
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
 void hmac_free(hmac_ctx *hmac);

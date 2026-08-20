@@ -18,15 +18,6 @@ typedef struct path_rules {
     void *udata;                                    // 透传给两个回调
 }path_rules;
 
-// path_rules 预设填充器
-// 为常见协议/场景提供开箱即用的 path_rules 填充函数。
-// 调用方持有 path_rules 内存,调函数填充字段后传地址给 path_new(&rules, _free)
-// 或服务注册函数。填充后可追加自定义 validate_segment / validate_path 回调扩展。
-// 当前提供:
-//   path_rules_def   通用 pub/sub:'/' 分隔、'+' 单层、'#' 多层
-//                    仅 path_trie 内置基础校验,无协议特定约束。
-//   path_rules_mqtt  MQTT 风格主题:同 def,额外加 '$' 前缀禁订阅校验。
-
 /// <summary>
 /// 填充通用 pub/sub 规则:sep='/', single_wildcard='+', multi_wildcard='#'。
 /// 内置校验(由 path_trie):'#' 必须末尾、'+'/'#' 独占段、段非空。

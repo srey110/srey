@@ -11,14 +11,14 @@ typedef enum padding_model {
     ANSIX923          // ANSI X.923 填充（零字节 + 末尾填充长度）
 }padding_model;
 /// <summary>
-/// 数据填充。任一失败返回都保证 output 一个字节都不写，调用方据此判断缓冲有没有内容
+/// 数据填充
 /// </summary>
 /// <param name="padding">填充模式；NoPadding 只拷贝 data，填充区保持调用方原样不写</param>
 /// <param name="data">需要填充的数据；仅 dlens 为 0 时允许传 NULL</param>
 /// <param name="dlens">数据长度；必须 &lt;= reqlens</param>
 /// <param name="output">输出填充后的数据；仅 ERR_OK 时有效</param>
 /// <param name="reqlens">要求的数据长度</param>
-/// <returns>ERR_OK 成功；ERR_FAILED：dlens 超出 reqlens，或 dlens 非 0 却传了 NULL data</returns>
+/// <returns>ERR_OK 成功</returns>
 int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uint8_t *output, size_t reqlens);
 /// <summary>
 /// 密码填充

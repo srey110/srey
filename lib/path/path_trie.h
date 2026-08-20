@@ -4,10 +4,6 @@
 #include "base/structs.h"
 #include "path/path_rules.h"
 
-// path_trie:协议无关的分层路径前缀树,支持通配匹配。
-// 业务方通过 path_rules 注入分隔符 / 通配字符 / 自定义校验,
-// 预设见 path/path_rules.h(path_rules_def / path_rules_mqtt)。
-
 typedef void (*match_visit_cb)(void *payload, void *udata);
 typedef void (*scan_visit_cb)(const char *path, void *payload, void *udata);
 typedef struct path_trie path_trie;
