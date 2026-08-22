@@ -11,6 +11,28 @@ int32_t is_ipv6(const char *ip) {
 int32_t is_ipaddr(const char* ip) {
     return (ERR_OK == is_ipv4(ip) || ERR_OK == is_ipv6(ip)) ? ERR_OK : ERR_FAILED;
 }
+int32_t is_loopback(const char *ip) {
+    struct in_addr v4;
+    if (1 == inet_pton(AF_INET, ip, &v4)) {
+        return (127 == (ntohl(v4.s_addr) >> 24)) ? ERR_OK : ERR_FAILED;
+    }
+    struct in6_addr v6;
+    if (1 != inet_pton(AF_INET6, ip, &v6)) {
+        return ERR_FAILED;
+    }
+    // 逐字节比而不用 IN6_IS_ADDR_LOOPBACK：那个宏各平台头文件里的形态不一致
+    static const uint8_t loop6[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+    if (0 == memcmp(v6.s6_addr, loop6, sizeof(loop6))) {
+        return ERR_OK;
+    }
+    // ::ffff:127.x.x.x：双栈监听时回环也可能写成 v4-mapped
+    static const uint8_t v4mapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+    if (0 == memcmp(v6.s6_addr, v4mapped, sizeof(v4mapped))
+        && 127 == v6.s6_addr[12]) {
+        return ERR_OK;
+    }
+    return ERR_FAILED;
+}
 void netaddr_empty(netaddr_ctx *ctx) {
     ZERO(ctx, sizeof(netaddr_ctx));
 }

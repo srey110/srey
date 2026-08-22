@@ -73,18 +73,22 @@ function ctx:_fail(err)
     return false
 end
 
----执行简单查询（Query 协议）
+---执行简单查询（Query 协议）。
+---一条 SQL 里用 `;` 分隔多条语句时，服务端按语句逐条应答，返回数组每条语句一个元素。
+---多语句是隐式单事务：任一条出错则整体回滚，本函数返回 false，前面成功的结果一并作废。
+---结果恒按文本格式解析：简单查询协议服务端只以文本应答，要二进制结果走 prepare() / execute()
 ---@param sql string SQL 语句
----@param format PG_FORMAT? 已废弃：简单查询协议服务端恒以文本格式应答，传 BINARY 无效，结果固定按 TEXT 解析
----@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败
-function ctx:query(sql, format)
-    return srey.serial_ret(false, self.serial(self._query, self, sql, format))
+---@return (_pgsql_reader_ctx|integer)[]|false results 每条语句一个元素：有结果集给 reader，
+---无结果集（INSERT/UPDATE 等）给该条的影响行数；失败返回 false，原因走 erro()。
+---空 SQL / 纯注释这类服务端不回 CommandComplete 的语句拿到空表，取元素前先判 #results。
+---所有结果攒齐才返回，峰值内存是各结果集之和，别拿它跑几百条语句拼成的脚本。
+---别把 COPY 和别的语句拼在一条 query 里：COPY 那条不占结果位，下标与语句序号对不上。
+---注意与 pgsql_stmt_ctx:execute 形状不同：那边一次只有一条语句，直接给 reader 不套数组
+function ctx:query(sql)
+    return srey.serial_ret(false, self.serial(self._query, self, sql))
 end
-function ctx:_query(sql, format)
+function ctx:_query(sql)
     self.err = ""-- 复位:erro() 只反映最近一次操作
-    if format and PG_FORMAT.TEXT ~= format then
-        WARN("pgsql simple query protocol always replies in text format; format=%s ignored, use prepare()/execute() for binary results.", tostring(format))
-    end
     local pack, size = pgsql.pack_query(sql)
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
@@ -95,12 +99,13 @@ function ctx:_query(sql, format)
     if e then
         return self:_fail(e)
     end
-    local rd = reader.new(pgpack, PG_FORMAT.TEXT)
-    if rd then
-        return rd
+    self.affected = pgsql.affected_rows(pgpack)-- 连接级"最近一次"，多语句时是最后一条
+    local rs = {}
+    -- affected 为 0 在 Lua 里仍是真值，不会被 or 吞掉
+    for i = 1, pgsql.result_count(pgpack) do
+        rs[i] = reader.at(pgpack, i, PG_FORMAT.TEXT) or pgsql.affected_at(pgpack, i)
     end
-    self.affected = pgsql.affected_rows(pgpack)
-    return true
+    return rs
 end
 
 ---准备预处理语句（Parse + Sync）
@@ -371,7 +376,8 @@ function ctx:erro()
     return self.err
 end
 
----返回最近一次受影响行数
+---返回最近一次受影响行数。SELECT 也会刷新它（值为该 SELECT 返回的行数），
+---要按语句取写操作的行数请读 query 返回数组里的整数元素
 ---**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
 ---命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
 ---@return integer rows affected rows

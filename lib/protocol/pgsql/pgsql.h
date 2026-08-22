@@ -59,10 +59,27 @@ int32_t pgsql_set_db(pgsql_ctx *pg, const char *database);
 /// <returns>数据库名字符串</returns>
 const char *pgsql_get_db(pgsql_ctx *pg);
 /// <summary>
-/// 从命令完成标签中解析受影响的行数
+/// 查询结果数量：按服务端的 CommandComplete 计数，多语句 simple query 每条语句一个结果。
+/// 别把 COPY 和别的语句拼在一条 query 里：COPY 那条不占结果位，下标与语句序号对不上。
+/// 所有语句的结果都攒到 ReadyForQuery 才一起交出，峰值内存是各结果集之和，没有分批取法
+/// </summary>
+/// <param name="pgpack">pgpack_ctx 指针</param>
+/// <returns>结果个数；类型不是 PGPACK_OK、或响应不带 CommandComplete（prepare / stmt_close /
+/// 空 SQL）时为 0——取结果前先判这个数</returns>
+uint32_t pgsql_result_count(pgpack_ctx *pgpack);
+/// <summary>
+/// 从最后一条命令完成标签中解析受影响的行数；多语句 simple query 只反映最后一条，
+/// 逐条读取用 pgsql_affected_at
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针，complete 字段须已填充</param>
 /// <returns>受影响的行数，解析失败时返回 0</returns>
 int64_t pgsql_affected_rows(pgpack_ctx *pgpack);
+/// <summary>
+/// 解析第 idx 个结果的命令完成标签中受影响的行数
+/// </summary>
+/// <param name="pgpack">pgpack_ctx 指针</param>
+/// <param name="idx">结果下标，从 0 开始，总数见 pgsql_result_count</param>
+/// <returns>受影响的行数；类型不符、下标越界或解析失败时返回 0</returns>
+int64_t pgsql_affected_at(pgpack_ctx *pgpack, uint32_t idx);
 
 #endif//PGSQL_H_

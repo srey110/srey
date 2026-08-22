@@ -194,7 +194,15 @@ static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *bu
     if (ERR_FAILED != host_end
         && host_end > host_start
         && (size_t)(host_end - host_start) < HOST_LENS) {
-        ASSERTAB((size_t)(host_end - host_start) == buffer_copyout(buf, host_start, svhost, host_end - host_start), "copy buffer failed.");
+        size_t hlens = (size_t)(host_end - host_start);
+        ASSERTAB(hlens == buffer_copyout(buf, host_start, svhost, hlens), "copy buffer failed.");
+        // 裸 LF / 裸 CR 不是 _smtp_full_response 认的行尾，能混在首行里活到这儿；
+        // 原样拼进 EHLO 就是往自己的命令行里插了第二条命令（smtp_pack_from/rcpt 同样拒这两个字节）
+        if (NULL != memchr(svhost, '\r', hlens)
+            || NULL != memchr(svhost, '\n', hlens)) {
+            LOG_WARN("smtp greeting host contains CR/LF, fall back to localhost.");
+            svhost[0] = '\0';
+        }
     }
     buffer_drain(buf, (size_t)total);
     char *cmd = format_va("EHLO %s%s", '\0' != svhost[0] ? svhost : "localhost", FLAG_CRLF);
@@ -280,12 +288,6 @@ static char *_smtp_loin_cmd(const char *up) {
 }
 // AUTH LOGIN 认证阶段：解析服务端 334 挑战，按 "Username:"/"Password:" 顺序发送 Base64 凭据
 static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    char code[SMTP_CODE_LENS + 1] = { 0 };
-    ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
-    if (0 != strcmp(code, "334")) {
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
     //找首个 CRLF 确定单条响应边界，避免与流水线后续响应混淆
     int32_t crlf = buffer_search(buf, 0, SMTP_CODE_LENS + 1, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == crlf) {
@@ -337,12 +339,6 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
 }
 // AUTH PLAIN 认证阶段：构造 "\0user\0password" 格式并 Base64 编码后发送，切换到 AUTH_CHECK 状态
 static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    char code[SMTP_CODE_LENS + 1] = { 0 };
-    ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
-    if (0 != strcmp(code, "334")) {
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
     //找首个 CRLF 确定单条响应边界，仅消费当前响应
     int32_t crlf = buffer_search(buf, 0, SMTP_CODE_LENS, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == crlf) {
@@ -385,6 +381,17 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         BIT_SET(*status, PROT_MOREDATA);
         return;
     }
+    // 两种机制的挑战行同一形状：码必须是 334，且只能是单行——续行形式（"334-"）下面接不住，
+    // 残留那行会错开后续配对。上面已保证至少 code + CRLF 五字节，第 4 字节必然可读
+    char code[SMTP_CODE_LENS + 1] = { 0 };
+    ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
+    char sep;
+    ASSERTAB(1 == buffer_copyout(buf, SMTP_CODE_LENS, &sep, 1), "copy buffer failed.");
+    if (0 != strcmp(code, "334")
+        || '-' == sep) {
+        BIT_SET(*status, PROT_ERROR);
+        return;
+    }
     switch (smtp->authtype) {
     case LOGIN:
         _smtp_loin(smtp, ev, fd, skid, buf, ud, status);
@@ -399,40 +406,32 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
 }
 // AUTH_CHECK 阶段：等待服务端 235 认证成功响应，成功后切换到 COMMAND 状态并触发握手完成回调
 static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    size_t blens = buffer_size(buf);
-    if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
-        BIT_SET(*status, PROT_MOREDATA);
+    // 认证结果也可能是多行（"235-...\r\n235 ...\r\n" 合法），必须整段消费
+    int32_t total = _smtp_full_response(buf, NULL);
+    if (ERR_FAILED == total) {
+        BIT_SET(*status, PROT_ERROR);
+        // 框不出整段时原文还在缓冲里，照 _smtp_connected 把首行交出去，别让业务只看到一次无原因的失败
+        int32_t rejcrlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+        if (rejcrlf > 0
+            && !PACK_TOO_LONG(rejcrlf)) {
+            _smtp_push_errline(fd, skid, ud, buf, rejcrlf);
+        }
         return;
     }
-    //找首个 CRLF 而非末尾 CRLF，支持流水线场景下首条已完整即可消费
-    if (ERR_FAILED == buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE)) {
-        if (PACK_TOO_LONG(blens)) {
-            BIT_SET(*status, PROT_ERROR);
-            return;
-        }
+    if (0 == total) {
         BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
-    //找首个 CRLF 确定单条响应边界（与失败/成功路径共用，避免吞掉后续流水线响应）
-    int32_t crlf = buffer_search(buf, 0, SMTP_CODE_LENS, 0, FLAG_CRLF, CRLF_SIZE);
-    if (ERR_FAILED == crlf) {
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
-    if (PACK_TOO_LONG(crlf)) {
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
-    size_t total = (size_t)crlf + CRLF_SIZE;
     if (0 != strcmp(code, "235")) {
         BIT_SET(*status, PROT_ERROR);
-        _smtp_push_errline(fd, skid, ud, buf, crlf);// 取原文要在 drain 之前
-        buffer_drain(buf, total);
+        // 整段响应都当失败原因交出去：多行诊断（如 Gmail 把说明链接放在第二行）不能只留首行
+        _smtp_push_errline(fd, skid, ud, buf, total - (int32_t)CRLF_SIZE);// 取原文要在 drain 之前
+        buffer_drain(buf, (size_t)total);
         return;
     }
-    buffer_drain(buf, total);
+    buffer_drain(buf, (size_t)total);
     if (ERR_OK != _hs_push(fd, skid, 1, ud, ERR_OK, NULL, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return;

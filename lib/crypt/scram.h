@@ -79,15 +79,18 @@ void scram_free(scram_ctx *scram);
 /// <param name="scram">scram_ctx</param>
 /// <param name="user">用户名</param>
 /// <param name="ulens">用户名长度（字节）</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
+/// <returns>ERR_OK 已生效；ERR_FAILED 未生效（user 为空，或内部含 0x00）——
+/// 未生效时原值原样保留</returns>
 int32_t scram_set_user(scram_ctx *scram, const char *user, size_t ulens);
 /// <summary>
 /// 设置密码（客户端和服务端均需调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="pwd">密码</param>
-/// <param name="plens">密码长度（字节）</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
+/// <param name="plens">密码长度（字节）；0 表示空密码，是允许的</param>
+/// <returns>ERR_OK 已生效；ERR_FAILED 未生效（pwd 为 NULL，或内部含 0x00）——
+/// 未生效时原值原样保留。从未设过密码则 scram_final_message 返回 NULL、
+/// scram_check_final_message 返回 ERR_FAILED</returns>
 int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
 /// <summary>
 /// 设置 salt（仅服务端调用）
@@ -95,14 +98,14 @@ int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
 /// <param name="scram">scram_ctx</param>
 /// <param name="salt">salt 数据</param>
 /// <param name="lens">salt 长度</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
+/// <returns>ERR_OK 已生效；ERR_FAILED 未生效（客户端角色调用，或 salt 为空）</returns>
 int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
 /// <summary>
 /// 设置迭代轮数（仅服务端调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="iter">迭代轮数，低于 SCRAM_MIN_ITER 自动提升到该下限</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效</returns>
+/// <returns>ERR_OK 已生效；ERR_FAILED 未生效（客户端角色调用）</returns>
 int32_t scram_set_iter(scram_ctx *scram, int32_t iter);
 /// <summary>
 /// 交给 scram 本端拿到的 channel binding 材料（tls-server-end-point 即服务端证书 SHA-256 哈希），

@@ -42,34 +42,136 @@ static void _pg_reader_push_row(pgsql_reader_ctx *r, char *payload,
     array_push_back(&r->arr_rows, &p);
 }
 
-// pgsql_reader_init：仅 PGPACK_OK 且 pack 非 NULL 才返回 reader，并转移所有权
-static void test_pgsql_reader_init(CuTest *tc) {
+// 往 pgpack 的结果数组里追加一个结果（模拟解析侧 CommandComplete 的提交动作）
+static void _pg_result_push(pgpack_ctx *pg, pgsql_reader_ctx *reader, const char *complete) {
+    if (0 == pg->results.elsize) {
+        array_init(&pg->results, sizeof(pgsql_result), 2);
+    }
+    pgsql_result res;
+    ZERO(&res, sizeof(res));
+    res.reader = reader;
+    if (NULL != complete) {
+        safe_fill_str(res.complete, sizeof(res.complete), complete);
+    }
+    array_push_back(&pg->results, &res);
+}
+
+// pgsql_reader_iter：仅 PGPACK_OK 且结果里有带 reader 的语句才返回，并转移所有权
+static void test_pgsql_reader_iter(CuTest *tc) {
     pgpack_ctx pg;
     ZERO(&pg, sizeof(pg));
-    pg.type = PGPACK_ERR;
-    pg.pack = (void *)1;
-    CuAssertTrue(tc, NULL == pgsql_reader_init(&pg, FORMAT_TEXT));
-
-    pg.type = PGPACK_NOTIFICATION;
-    CuAssertTrue(tc, NULL == pgsql_reader_init(&pg, FORMAT_TEXT));
-
-    pg.type = PGPACK_OK;
-    pg.pack = NULL;
-    CuAssertTrue(tc, NULL == pgsql_reader_init(&pg, FORMAT_TEXT));
-
-    // 正常路径：转移所有权
     int32_t oids[1] = { INT4OID };
     char names[1][64] = { "id" };
-    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
+    // 类型不符：即使结果数组里有 reader 也不给
+    _pg_result_push(&pg, _pg_reader_new(1, oids, names), "SELECT 0");
+    pg.type = PGPACK_ERR;
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
+    pg.type = PGPACK_NOTIFICATION;
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
+    CuAssertIntEquals(tc, 0, (int)pgsql_result_count(&pg)); // 类型不符时结果数恒为 0
+    // 正常路径：转移所有权，_free_pgpack 不参与（reader 已在提交时移出 pack）
     pg.type = PGPACK_OK;
-    pg.pack = r;
     pg._free_pgpack = (void (*)(void *))0xdeadbeef; // 毒值:本路径不应触发此 free,误调即崩
-    pgsql_reader_ctx *out = pgsql_reader_init(&pg, FORMAT_TEXT);
-    CuAssertTrue(tc, out == r);
+    CuAssertIntEquals(tc, 1, (int)pgsql_result_count(&pg));
+    pgsql_reader_ctx *out = pgsql_reader_iter(&pg, FORMAT_TEXT);
+    CuAssertTrue(tc, NULL != out);
     CuAssertIntEquals(tc, FORMAT_TEXT, (int)out->format);
-    CuAssertTrue(tc, NULL == pg.pack);
-    CuAssertTrue(tc, NULL == pg._free_pgpack);
+    // 同一下标只能取走一次；取走后结果个数不变（占位仍在，只是 reader 已交出）
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
+    CuAssertIntEquals(tc, 1, (int)pgsql_result_count(&pg));
     pgsql_reader_free(out);
+    pg._free_pgpack = NULL;
+    _pgpack_results_clear(&pg);
+
+    // 空结果数组（如 ping / prepare 那种没有 CommandComplete 的响应）
+    pgpack_ctx empty;
+    ZERO(&empty, sizeof(empty));
+    empty.type = PGPACK_OK;
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&empty, FORMAT_TEXT));
+    CuAssertIntEquals(tc, 0, (int)pgsql_result_count(&empty));
+    CuAssertTrue(tc, 0 == pgsql_affected_at(&empty, 0));
+}
+
+// 多结果集：按下标取 reader / affected，越界与无结果集语句的取值
+static void test_pgsql_result_multi(CuTest *tc) {
+    int32_t oids[1] = { INT4OID };
+    char names[1][64] = { "id" };
+    pgpack_ctx pg;
+    ZERO(&pg, sizeof(pg));
+    pg.type = PGPACK_OK;
+    // 三条语句：SELECT 有结果集、INSERT 无结果集、SELECT 有结果集
+    pgsql_reader_ctx *r0 = _pg_reader_new(1, oids, names);
+    pgsql_reader_ctx *r2 = _pg_reader_new(1, oids, names);
+    _pg_result_push(&pg, r0, "SELECT 1");
+    _pg_result_push(&pg, NULL, "INSERT 0 7");
+    _pg_result_push(&pg, r2, "SELECT 2");
+    safe_fill_str(pg.complete, sizeof(pg.complete), "SELECT 2"); // 整包标签＝最后一条
+    CuAssertIntEquals(tc, 3, (int)pgsql_result_count(&pg));
+    // 逐条 affected：中间那条无结果集，行数照样取得到
+    CuAssertTrue(tc, 1 == pgsql_affected_at(&pg, 0));
+    CuAssertTrue(tc, 7 == pgsql_affected_at(&pg, 1));
+    CuAssertTrue(tc, 2 == pgsql_affected_at(&pg, 2));
+    CuAssertTrue(tc, 2 == pgsql_affected_rows(&pg)); // 单结果 API 仍是最后一条
+    CuAssertTrue(tc, 0 == pgsql_affected_at(&pg, 3)); // 越界
+    // 按下标取 reader：下标 1 无结果集给 NULL，下标 3 越界给 NULL
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 1, FORMAT_TEXT));
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 3, FORMAT_TEXT));
+    // 乱序取走不串扰
+    pgsql_reader_ctx *o2 = pgsql_reader_at(&pg, 2, FORMAT_BINARY);
+    CuAssertTrue(tc, o2 == r2);
+    CuAssertIntEquals(tc, FORMAT_BINARY, (int)o2->format);
+    pgsql_reader_ctx *o0 = pgsql_reader_at(&pg, 0, FORMAT_TEXT);
+    CuAssertTrue(tc, o0 == r0);
+    CuAssertIntEquals(tc, FORMAT_TEXT, (int)o0->format);
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 2, FORMAT_TEXT)); // 已取走
+    pgsql_reader_free(o0);
+    pgsql_reader_free(o2);
+    _pgpack_results_clear(&pg);
+
+    // reader_iter 是迭代器：连调给的是不同的结果，取完返回 NULL
+    pgpack_ctx it;
+    ZERO(&it, sizeof(it));
+    it.type = PGPACK_OK;
+    pgsql_reader_ctx *ia = _pg_reader_new(1, oids, names);
+    pgsql_reader_ctx *ib = _pg_reader_new(1, oids, names);
+    _pg_result_push(&it, ia, "SELECT 1");
+    _pg_result_push(&it, NULL, "INSERT 0 1");// 中间夹一条无结果集的，须被跳过
+    _pg_result_push(&it, ib, "SELECT 2");
+    pgsql_reader_ctx *first = pgsql_reader_iter(&it, FORMAT_TEXT);
+    pgsql_reader_ctx *second = pgsql_reader_iter(&it, FORMAT_TEXT);
+    CuAssertTrue(tc, first == ia);
+    CuAssertTrue(tc, second == ib);
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&it, FORMAT_TEXT));
+    pgsql_reader_free(first);
+    pgsql_reader_free(second);
+    _pgpack_results_clear(&it);
+
+    // 没被取走的结果集由 _pgpack_free 回收：漏掉这段回收，收尾的 memory check 会报未释放。
+    // 堆上分配 pgpack——_pgpack_free 连外壳一起 FREE，栈变量喂不得
+    pgpack_ctx *heap;
+    CALLOC(heap, 1, sizeof(pgpack_ctx));
+    heap->type = PGPACK_OK;
+    pgsql_reader_ctx *keep = _pg_reader_new(1, oids, names);
+    char *payload;
+    MALLOC(payload, 8);
+    pgpack_row cols[1] = { { 1, payload, NULL } };
+    _pg_reader_push_row(keep, payload, cols);// 带行数据，漏回收时泄漏的不止 reader 本身
+    _pg_result_push(heap, keep, "SELECT 1");
+    _pg_result_push(heap, _pg_reader_new(1, oids, names), "SELECT 2");
+    _pgpack_free(heap);
+
+    // 回归：首条语句无结果集（BEGIN; SELECT / SET; SELECT）时，reader_iter 仍须给出后面那条的行，
+    // 不能因为下标 0 是空的就报"无结果集"
+    pgpack_ctx lead;
+    ZERO(&lead, sizeof(lead));
+    lead.type = PGPACK_OK;
+    pgsql_reader_ctx *rsel = _pg_reader_new(1, oids, names);
+    _pg_result_push(&lead, NULL, "BEGIN");
+    _pg_result_push(&lead, rsel, "SELECT 1");
+    pgsql_reader_ctx *lout = pgsql_reader_iter(&lead, FORMAT_TEXT);
+    CuAssertTrue(tc, lout == rsel);
+    pgsql_reader_free(lout);
+    _pgpack_results_clear(&lead);
 }
 
 // pgsql_reader_size/seek/eof/next 游标语义
@@ -878,7 +980,8 @@ static void test_pgsql_setter_atomic(CuTest *tc) {
     CuAssertStrEquals(tc, "db2", pg.database);
 }
 void test_pgsql_parse(CuSuite *suite) {
-    SUITE_ADD_TEST(suite, test_pgsql_reader_init);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_iter);
+    SUITE_ADD_TEST(suite, test_pgsql_result_multi);
     SUITE_ADD_TEST(suite, test_pgsql_reader_cursor);
     SUITE_ADD_TEST(suite, test_pgsql_reader_bool);
     SUITE_ADD_TEST(suite, test_pgsql_reader_integer);

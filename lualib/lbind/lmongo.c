@@ -2,6 +2,10 @@
 
 #define MT_MONGO         "_mongo_ctx"
 #define MT_MONGO_SESSION "_mongo_session_ctx"
+// session 的五个入口共用：自身与宿主一起校验，参数太长不适合每处照抄
+#define LMONGO_SESSION_ARG(lua, var) \
+    LPUB_UD_OWNED((lua), mongo_session, MT_MONGO_SESSION, var, "session freed", \
+                  MT_MONGO, "mongo session: owner mongo already freed")
 
 // 从 Lua 栈 idx 位置提取可选 BSON 选项及其字节数;缺失(nil / 没传)返 NULL 且 *lens 置 0。
 // bson_cat 要求随指针给出缓冲长度,故 lightuserdata 必须在 idx+1 附上字节数。
@@ -642,7 +646,8 @@ static int32_t _lmongo_pack_auth_first(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="convid" type="integer">对话 id（来自第一步响应）</param>
-/// <param name="payload" type="lightuserdata">客户端 final payload 指针</param>
+/// <param name="payload" type="lightuserdata">客户端 final payload 指针（parse_auth_response 给的切片，非 NUL 结尾）</param>
+/// <param name="plens" type="integer">payload 字节数（同样取自 parse_auth_response）</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_pack_auth_final(lua_State *lua) {
@@ -650,8 +655,10 @@ static int32_t _lmongo_pack_auth_final(lua_State *lua) {
     int32_t convid = (int32_t)luaL_checkinteger(lua, 2);
     LUACHECK_LUDATA(lua, 3);
     char *payload = lua_touserdata(lua, 3);
+    // 走 lpub_check_lens 拿上界：越界直接 bson_append_binary 的 ASSERTAB 会打死整个进程
+    size_t plens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t size;
-    void *pack = mongo_pack_scram_client_final(*ud, convid, payload, &size);
+    void *pack = mongo_pack_scram_client_final(*ud, convid, payload, plens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -831,13 +838,19 @@ static int32_t _lmongo_session_new(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
 /// <returns>无</returns>
+// 解除宿主对本 session 的绑定。宿主可能已被 m:__gc() 先释放，那时 session->mongo 是悬垂指针，
+// 连读都不能读，所以先确认宿主还在
+static void _lmongo_session_unbind(lua_State *lua, mongo_session *session) {
+    if (NULL != lpub_owner_ptr(lua, MT_MONGO)
+        && NULL != session->mongo && session->mongo->session == session) {
+        session->mongo->session = NULL;
+    }
+}
 static int32_t _lmongo_session_free(lua_State *lua) {
     mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
     if (NULL != *psession) {
         mongo_session *session = *psession;
-        if (NULL != session->mongo && session->mongo->session == session) {
-            session->mongo->session = NULL;
-        }
+        _lmongo_session_unbind(lua, session);
         FREE(session->options);
         FREE(session);
         *psession = NULL;
@@ -850,7 +863,7 @@ static int32_t _lmongo_session_free(lua_State *lua) {
 /// <param name="self" type="userdata">session 对象</param>
 /// <returns type="boolean">成功 true；该连接上已有别的 session 处于事务中时 false</returns>
 static int32_t _lmongo_session_begin(lua_State *lua) {
-    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
+    LMONGO_SESSION_ARG(lua, psession);
     lua_pushboolean(lua, ERR_OK == mongo_begin(*psession) ? 1 : 0);
     return 1;
 }
@@ -867,9 +880,7 @@ static int32_t _lmongo_session_done(lua_State *lua) {
     }
     FREE(session->options);
     session->options = NULL;
-    if (NULL != session->mongo && session->mongo->session == session) {
-        session->mongo->session = NULL;
-    }
+    _lmongo_session_unbind(lua, session);
     return 0;
 }
 /// <summary>
@@ -879,7 +890,7 @@ static int32_t _lmongo_session_done(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
-    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
+    LMONGO_SESSION_ARG(lua, psession);
     size_t size;
     void *pack = mongo_pack_refreshsession(*psession, &size);
     return lpub_rtn_lud(lua, pack, size);
@@ -891,7 +902,7 @@ static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
-    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
+    LMONGO_SESSION_ARG(lua, psession);
     size_t size;
     void *pack = mongo_pack_endsession(*psession, &size);
     return lpub_rtn_lud(lua, pack, size);
@@ -906,7 +917,7 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// 或连接已不再绑定该 session 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
-    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
+    LMONGO_SESSION_ARG(lua, psession);
     // 组包取的是连接当前绑定的 session（组包侧 TRANSACTION_OPTIONS），与入参分叉时
     // 会把本次提交挂到别人的事务上。C 侧同一道守卫在 mongo_commit 入口，Lua 走
     // pack + 自行发送不经过它，故在此重复一遍，理由见 coro_utils.c 的 mongo_begin
@@ -930,7 +941,7 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// 或连接已不再绑定该 session 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {
-    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
+    LMONGO_SESSION_ARG(lua, psession);
     // 同 pack_commit：Lua 侧不经过 mongo_rollback，那道守卫在此重复
     if ((*psession)->mongo->session != *psession) {
         LOG_WARN("mongo connection no longer bound to this session, rollback rejected.");

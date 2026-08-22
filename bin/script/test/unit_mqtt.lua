@@ -97,6 +97,37 @@ runner.run("mqtt", function(t)
         utils.ud_free(pack)
     end
 
+    -- ── 16 位 wire 字段越界必须报错，不能静默截断 ──────────────────────
+    do
+        -- 65536 截成 0，而 0 是 QoS>0 PUBLISH / SUBSCRIBE / UNSUBSCRIBE 禁用的保留 packid
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 65536, "x"),
+             "pack_publish packid 65536 报错")
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", -1, "x"),
+             "pack_publish packid -1 报错")
+        t:eq(false, pcall(mqtt.pack_puback, mqtt.VERSION.V311, 65536),
+             "pack_puback packid 65536 报错")
+        -- topics 必须是真的 props 缓冲：传别的类型也会报错，那样测到的是类型校验不是 packid
+        local subtopics = mqtt.props()
+        subtopics:subscribe(mqtt.VERSION.V311, "/t", 0, 0, 0, 0)
+        t:eq(false, pcall(mqtt.pack_subscribe, mqtt.VERSION.V311, 65536, subtopics, nil),
+             "pack_subscribe packid 65536 报错")
+        local oksub, packsub = pcall(mqtt.pack_subscribe, mqtt.VERSION.V311, 7, subtopics, nil)
+        t:check(oksub and packsub ~= nil, "pack_subscribe 合法 packid 仍可用")
+        if oksub and packsub then
+            utils.ud_free(packsub)
+        end
+        subtopics:free()
+        -- 65535 是合法上界，不能误伤
+        local okmax, packmax = pcall(mqtt.pack_puback, mqtt.VERSION.V311, 65535)
+        t:check(okmax and packmax ~= nil, "pack_puback packid 65535 合法")
+        if okmax and packmax then
+            utils.ud_free(packmax)
+        end
+        -- keepalive 同为 16 位：65536 截成 0 在 MQTT 里是"关掉保活"
+        t:eq(false, pcall(mqtt.pack_connect, mqtt.VERSION.V311, 1, 65536, "cid"),
+             "pack_connect keepalive 65536 报错")
+    end
+
     -- ── pack_publish / puback / pubrec / pubrel / pubcomp ──────────────
     do
         for _, qos in ipairs({0, 1, 2}) do

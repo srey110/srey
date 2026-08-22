@@ -112,7 +112,7 @@ static int32_t _lprot_dns_unpack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     void *pack = lua_touserdata(lua, 1);
     size_t packlen = lpub_check_lens(lua, 2, 0);
-    uint16_t id = (uint16_t)luaL_checkinteger(lua, 3);
+    uint16_t id = lpub_check_u16(lua, 3, "transaction id out of range");
     size_t n;
     int32_t nodata = 0;
     dns_ip *ips = dns_parse_pack(pack, packlen, &n, id, &nodata);

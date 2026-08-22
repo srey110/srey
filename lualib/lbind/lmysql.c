@@ -3,6 +3,10 @@
 #define MT_MYSQL_BIND   "_mysql_bind_ctx"
 #define MT_MYSQL_READER "_mysql_reader_ctx"
 #define MT_MYSQL_STMT   "_mysql_stmt_ctx"
+// stmt 的四个入口共用：自身与宿主一起校验，参数太长不适合每处照抄
+#define LMYSQL_STMT_ARG(lua, var) \
+    LPUB_UD_OWNED((lua), mysql_stmt_ctx, MT_MYSQL_STMT, var, "stmt freed", \
+                  MT_MYSQL, "mysql stmt: owner mysql already freed")
 #define MT_MYSQL        "_mysql_ctx"
 
 /// <summary>
@@ -483,7 +487,9 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
 static int32_t _lmysql_stmt_free(lua_State *lua) {
     mysql_stmt_ctx **stmt = luaL_checkudata(lua, 1, MT_MYSQL_STMT);
     if (NULL != *stmt) {
-        mysql_stmt_close(*stmt);
+        // mysql_stmt_free 只碰 stmt 自己的 params / fields，不读 stmt->mysql——
+        // 宿主先被 m:__gc() 释放过也无妨。走 mysql_stmt_close 则会读 mysql->serial
+        mysql_stmt_free(*stmt);
         *stmt = NULL;
     }
     return 0;
@@ -498,7 +504,7 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
 /// 参数个数对不上（含声明了参数而 bind 为 nil），或组完的载荷超 16MB（这条 C 层另有一条 LOG_WARN）</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
-    LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
+    LMYSQL_STMT_ARG(lua, stmt);
     mysql_bind_ctx *mbind = NULL;
     if (LUA_TUSERDATA == lua_type(lua, 2)) {
         mbind = luaL_checkudata(lua, 2, MT_MYSQL_BIND);
@@ -517,7 +523,7 @@ static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
-    LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
+    LMYSQL_STMT_ARG(lua, stmt);
     size_t size;
     void *pack = mysql_pack_stmt_reset(*stmt, &size);
     return lpub_rtn_lud(lua, pack, size);
@@ -531,7 +537,7 @@ static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_close(lua_State *lua) {
-    LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
+    LMYSQL_STMT_ARG(lua, stmt);
     size_t size;
     void *pack = mysql_pack_stmt_close(*stmt, &size);
     return lpub_rtn_lud(lua, pack, size);
@@ -543,7 +549,7 @@ static int32_t _lmysql_pack_stmt_close(lua_State *lua) {
 /// <returns type="integer">socket fd</returns>
 /// <returns type="integer">skid</returns>
 static int32_t _lmysql_stmt_sock_id(lua_State *lua) {
-    LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
+    LMYSQL_STMT_ARG(lua, stmt);
     lua_pushinteger(lua, (*stmt)->mysql->client.sk.fd);
     lua_pushinteger(lua, (*stmt)->mysql->client.sk.skid);
     return 2;

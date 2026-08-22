@@ -26,10 +26,11 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="convid">服务端返回的 conversationId</param>
-/// <param name="client_final">客户端最终消息字符串</param>
+/// <param name="client_final">客户端最终消息，按 flens 定界，不要求 NUL 结尾</param>
+/// <param name="flens">client_final 字节数</param>
 /// <param name="size">输出数据包长度</param>
 /// <returns>数据包指针，需调用者释放</returns>
-void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *client_final, size_t *size);
+void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *client_final, size_t flens, size_t *size);
 /// <summary>
 /// 构造 hello 握手命令请求包（用于建立连接后的能力协商）
 /// </summary>

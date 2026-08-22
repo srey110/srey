@@ -465,6 +465,26 @@ static void test_netaddr(CuTest *tc) {
     CuAssertTrue(tc, ERR_OK == is_ipv6("fe80::1"));
     CuAssertTrue(tc, ERR_OK != is_ipv6("127.0.0.1"));
 
+    /* is_loopback：v4 认整个 127.0.0.0/8 */
+    CuAssertTrue(tc, ERR_OK == is_loopback("127.0.0.1"));
+    CuAssertTrue(tc, ERR_OK == is_loopback("127.0.0.2"));
+    CuAssertTrue(tc, ERR_OK == is_loopback("127.255.255.254"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("128.0.0.1"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("126.255.255.255"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("0.0.0.0"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("192.168.1.1"));
+    /* is_loopback：v6 认 ::1 与 v4-mapped 的 127 段 */
+    CuAssertTrue(tc, ERR_OK == is_loopback("::1"));
+    CuAssertTrue(tc, ERR_OK == is_loopback("0:0:0:0:0:0:0:1"));
+    CuAssertTrue(tc, ERR_OK == is_loopback("::ffff:127.0.0.1"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("::ffff:192.168.1.1"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("::"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("fe80::1"));
+    /* is_loopback：主机名与非法串一律不认 */
+    CuAssertTrue(tc, ERR_OK != is_loopback("localhost"));
+    CuAssertTrue(tc, ERR_OK != is_loopback("not_an_ip"));
+    CuAssertTrue(tc, ERR_OK != is_loopback(""));
+
     /* is_ipaddr：IPv4 和 IPv6 均匹配 */
     CuAssertTrue(tc, ERR_OK == is_ipaddr("127.0.0.1"));
     CuAssertTrue(tc, ERR_OK == is_ipaddr("::1"));

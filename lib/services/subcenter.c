@@ -10,12 +10,8 @@
 #include "utils/utils.h"
 
 // ── subcenter 限制(业务特定上限,可按部署需要调整后重编) ────────────
-#define SC_RETAINED_MAX_SIZE        (1 * 1024 * 1024) // 单 topic retained 上限 1MB
-#define SC_META_MAX_SIZE            1024 // publisher meta 上限 1KB
-#define SC_TOPIC_MAX                256 // topic 字符串最大长度
-#define SC_GROUP_MAX                64 // group 名最大长度
+// 上限类的入参约束宏见 subcenter.h——那是公开契约，调用方要照它做前置检查
 #define SC_SUB_WARN_THRESHOLD       1000 // 单 topic 订阅者超过此值 LOG_WARN
-#define SC_QUERY_RETAINED_BURST_MAX 1000 // query_retained 单次上限,超过截断 + WARN
 
 // publisher 元数据条目(挂 sc_ctx.publisher_meta hashmap)
 typedef struct sc_publisher_meta {
@@ -1015,9 +1011,6 @@ static void _sc_handle_query_retained(sc_ctx *ctx, name_t src, uint64_t sess, bi
         _svpub_respond(ctx->loader, src, REQ_SC_QUERY_RETAINED, sess, ERR_FAILED);
         return;
     }
-    if (INVALID_TNAME == src) {
-        return;// 无人接响应,跳过 scan 工作
-    }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     sc_qr_ctx qc;
@@ -1044,9 +1037,6 @@ static void _sc_list_visit(const char *path, void *payload, void *udata) {
 }
 // handler:LIST。path_scan 全 trie 把每个 topic 的订阅信息(normal/shared count)写入 wire buf
 static void _sc_handle_list(sc_ctx *ctx, name_t src, uint64_t sess) {
-    if (INVALID_TNAME == src) {
-        return;// 同上,无人接响应就不做 scan
-    }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     path_scan(ctx->topics, _sc_list_visit, &bw);
@@ -1067,9 +1057,6 @@ static bool _sc_retained_list_iter(const void *item, void *udata) {
 }
 // handler:RETAINED_LIST。hashmap_scan 把每条 retained 的元信息写入 wire buf(不含 payload)
 static void _sc_handle_retained_list(sc_ctx *ctx, name_t src, uint64_t sess) {
-    if (INVALID_TNAME == src) {
-        return;// 同上,无人接响应就不做 scan
-    }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     hashmap_scan(ctx->retained_index, _sc_retained_list_iter, &bw);

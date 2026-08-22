@@ -10,6 +10,8 @@ char *_pgpack_error_notice(binary_ctx *breader);
 void _pgpack_free(pgpack_ctx *pgpack);
 // 释放 pgsql_reader_ctx 内部数据（行数组与字段数组），不释放结构体本身
 void _pgpack_reader_free(void *arg);
+// 释放结果数组里未被调用方取走的结果集，并把数组复位成"未建"
+void _pgpack_results_clear(pgpack_ctx *pgpack);
 // 解析一个完整的服务端消息，更新 pgsql_ctx 状态，在 ReadyForQuery 时返回累积的 pgpack_ctx
 pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status);
 

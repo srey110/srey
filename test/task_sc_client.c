@@ -770,9 +770,8 @@ static int32_t _test_parse_helpers(task_ctx *task) {
 // 子段 22:topic / group 长度上界。线格式的长度前缀只有 2 字节,不挡就被 pack_integer 静默截断——
 // 0x10005 字节的 topic 前缀会写成 5,服务端照着建了个 5 字符的节点还回成功,调用方订到了别的 topic
 static int32_t _test_topic_len_bound(task_ctx *task) {
-    // 与 subcenter.c 的 SC_TOPIC_MAX / SC_GROUP_MAX 对齐(两个宏在 .c 里,测试侧看不到)
-    const size_t topic_max = 256;
-    const size_t group_max = 64;
+    const size_t topic_max = SC_TOPIC_MAX;
+    const size_t group_max = SC_GROUP_MAX;
     char *topic;
     MALLOC(topic, topic_max + 2);
     memset(topic, 'a', topic_max + 1);

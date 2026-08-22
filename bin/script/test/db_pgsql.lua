@@ -35,13 +35,51 @@ runner.run("db_pgsql", function(t)
             "insert 2 rows")
     t:check(pg:affected_rows() >= 0, "affected_rows non-negative")
 
-    -- SELECT + reader
-    local reader = pg:query("select id, name, score from srey_test order by id")
-    if reader then
-        t:eq(2, _count_rows(reader), "select 2 rows")
+    -- SELECT + reader（单语句：数组恰好一个元素）
+    local rs = pg:query("select id, name, score from srey_test order by id")
+    if rs and "userdata" == type(rs[1]) then
+        t:eq(1, #rs, "single statement yields 1 result")
+        t:eq(2, _count_rows(rs[1]), "select 2 rows")
     else
         t:fail("pgsql select reader nil")
     end
+
+    -- 多语句 simple query：每条语句一个结果，有结果集给 reader，无结果集给影响行数
+    local multi = pg:query("select 1 as a; select 2 as b")
+    if multi and 2 == #multi then
+        local okA, va = multi[1]:integer("a")
+        local okB, vb = multi[2]:integer("b")
+        t:check(okA and 1 == va and okB and 2 == vb, "multi-statement: two result sets not crossed")
+    else
+        t:fail("pgsql multi-statement expected 2 results")
+    end
+    -- 混合：INSERT 无结果集给整数行数，SELECT 给 reader
+    local mix = pg:query("insert into srey_test (id, name, score) values (100, 'multi', 1.0);"
+                         .. " select name from srey_test where id = 100")
+    if mix and 2 == #mix then
+        t:eq(1, mix[1], "multi-statement: insert element is affected rows")
+        t:check("userdata" == type(mix[2]), "multi-statement: select element is reader")
+        local okN, ptr, nlen = mix[2]:text("name")
+        t:check(okN and "multi" == srey.ud_str(ptr, nlen), "multi-statement: select value correct")
+    else
+        t:fail("pgsql insert+select expected 2 results")
+    end
+    -- 两条写语句：前一条的影响行数不被后一条覆盖
+    local wr = pg:query("insert into srey_test (id, name, score) values (101, 'multi2', 2.0);"
+                        .. " update srey_test set score = 9.0 where id in (100, 101)")
+    if wr and 2 == #wr then
+        t:check(1 == wr[1] and 2 == wr[2], "multi-statement: per-statement affected rows kept")
+        t:eq(2, pg:affected_rows(), "affected_rows() still reports the last statement")
+    else
+        t:fail("pgsql insert+update expected 2 results")
+    end
+    -- 隐式单事务：第二条主键冲突则整体回滚，query 报失败且首条不生效
+    t:check(not pg:query("insert into srey_test (id, name, score) values (102, 'gone', 0);"
+                         .. " insert into srey_test (id, name, score) values (1, 'dup', 0)"),
+            "multi-statement: duplicate key fails the whole query")
+    local back = pg:query("select name from srey_test where id = 102")
+    t:check(back and "userdata" == type(back[1]) and 0 == back[1]:size(),
+            "multi-statement: first insert rolled back")
 
     -- 预处理 + 执行
     local stmt = pg:prepare("stmt_sel", "select name from srey_test where id = $1", 1, { 23 })
@@ -150,13 +188,13 @@ runner.run("db_pgsql", function(t)
         srey.fork(function()
             local want = 1000 + i
             for _ = 1, ROUNDS do
-                local rd = pg:query(string.format("select %d as v", want))
-                if not rd or "boolean" == type(rd) then
+                local qrs = pg:query(string.format("select %d as v", want))
+                if not qrs or "userdata" ~= type(qrs[1]) then
                     got[i] = "query failed"
                     done = done + 1
                     return
                 end
-                local rok, v = rd:integer("v")
+                local rok, v = qrs[1]:integer("v")
                 if not rok or v ~= want then
                     got[i] = string.format("got %s want %d", tostring(v), want)
                     done = done + 1

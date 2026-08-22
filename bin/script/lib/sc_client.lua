@@ -85,7 +85,7 @@ end
 -- 对所有匹配 topic 的 pattern srey.xpcall 调 handler。同一订阅者订多个匹配 pattern 时 handler 被调多次(业务自行去重)。
 ---@class sc_deliver_msg
 ---@field kind integer 0=普通投递 1=共享投递
----@field publisher integer 发布者句柄;0(INVALID_TNAME)表示已失效
+---@field publisher integer 发布时刻的发布者句柄;读到时对方可能已经退出,句柄本身不带存活标记
 ---@field topic string 匹配到的精确 topic
 ---@field payload string 载荷(空为 "")
 ---@field meta string? 发布者元数据(无则 nil)
@@ -145,7 +145,7 @@ end
 ---重复订阅相同 pattern 会覆盖旧 handler。必须在协程中调用。
 ---@param sc_name TASK_NAME subcenter task name(C 层 sc_start 注册一致)
 ---@param topic string 订阅模式;可含 + / # 通配
----@param handler fun(topic:string, payload:string, publisher:integer, meta:string?) 收消息时调用,topic 是匹配到的精确 topic;publisher 为 0(INVALID_TNAME)时表示 publisher 已失效
+---@param handler fun(topic:string, payload:string, publisher:integer, meta:string?) 收消息时调用,topic 是匹配到的精确 topic;publisher 是发布时刻的句柄,不带存活标记
 ---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.subscribe(sc_name, topic, handler)
     if not topic or "" == topic or not handler then

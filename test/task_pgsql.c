@@ -48,9 +48,9 @@ static int32_t _select_iterate(pgsql_ctx *pg, int32_t expect_rows) {
         LOG_ERROR("pgsql select error.");
         return ERR_FAILED;
     }
-    pgsql_reader_ctx *reader = pgsql_reader_init(p, FORMAT_TEXT);
+    pgsql_reader_ctx *reader = pgsql_reader_iter(p, FORMAT_TEXT);
     if (NULL == reader) {
-        LOG_ERROR("pgsql reader_init error.");
+        LOG_ERROR("pgsql reader_iter error.");
         return ERR_FAILED;
     }
     int32_t cnt = 0;
@@ -92,6 +92,125 @@ static int32_t _query_syntax_error(pgsql_ctx *pg) {
     return ERR_OK;
 }
 
+// 多语句 simple query：一次响应含多个结果，按 CommandComplete 边界拆分
+static int32_t _multi_statement(pgsql_ctx *pg) {
+    int32_t err;
+    int32_t lens;
+    int64_t val;
+    uint32_t i;
+    const char *name;
+    pgsql_reader_ctx *rd;
+    // 1) 双 SELECT：两个结果集，逐个取 reader 验证互不串扰
+    pgpack_ctx *p = pgsql_query(pg, "select 1 as a; select 2 as b");
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql multi: double select error.");
+        return ERR_FAILED;
+    }
+    if (2 != pgsql_result_count(p)) {
+        LOG_ERROR("pgsql multi: expected 2 results, got %u.", pgsql_result_count(p));
+        return ERR_FAILED;
+    }
+    for (i = 0; i < 2; i++) {
+        rd = pgsql_reader_at(p, i, FORMAT_TEXT);
+        if (NULL == rd) {
+            LOG_ERROR("pgsql multi: result %u reader missing.", i);
+            return ERR_FAILED;
+        }
+        val = pgsql_reader_integer(rd, 0 == i ? "a" : "b", &err);
+        pgsql_reader_free(rd);
+        if (ERR_OK != err || (int64_t)(i + 1) != val) {
+            LOG_ERROR("pgsql multi: result %u expected %u, got %"PRId64".", i, i + 1, val);
+            return ERR_FAILED;
+        }
+    }
+    // 同一下标的 reader 只能取走一次。取到即断言失败，但所有权已转过来，得先释放再退
+    rd = pgsql_reader_at(p, 0, FORMAT_TEXT);
+    if (NULL != rd) {
+        LOG_ERROR("pgsql multi: result 0 taken twice.");
+        pgsql_reader_free(rd);
+        return ERR_FAILED;
+    }
+    // 2) INSERT + SELECT 混合：无结果集语句占位 NULL，affected 各归各
+    p = pgsql_query(pg,
+        "insert into srey_test (id, name, score) values (100, 'multi', 1.0);"
+        " select name from srey_test where id = 100");
+    if (NULL == p || PGPACK_OK != p->type || 2 != pgsql_result_count(p)) {
+        LOG_ERROR("pgsql multi: insert+select error.");
+        return ERR_FAILED;
+    }
+    rd = pgsql_reader_at(p, 0, FORMAT_TEXT);
+    if (NULL != rd) {
+        LOG_ERROR("pgsql multi: insert unexpectedly has a result set.");
+        pgsql_reader_free(rd);
+        return ERR_FAILED;
+    }
+    if (1 != pgsql_affected_at(p, 0)) {
+        LOG_ERROR("pgsql multi: insert affected expected 1, got %"PRId64".",
+                  pgsql_affected_at(p, 0));
+        return ERR_FAILED;
+    }
+    rd = pgsql_reader_at(p, 1, FORMAT_TEXT);
+    if (NULL == rd) {
+        LOG_ERROR("pgsql multi: select result reader missing.");
+        return ERR_FAILED;
+    }
+    name = pgsql_reader_text(rd, "name", &lens, &err);
+    if (ERR_OK != err || 5 != lens || 0 != memcmp(name, "multi", 5)) {
+        LOG_ERROR("pgsql multi: expected name='multi'.");
+        pgsql_reader_free(rd);
+        return ERR_FAILED;
+    }
+    pgsql_reader_free(rd);
+    // 3) 两条写语句：前一条的 affected 不再被后一条覆盖丢失
+    p = pgsql_query(pg,
+        "insert into srey_test (id, name, score) values (101, 'multi2', 2.0);"
+        " update srey_test set score = 9.0 where id in (100, 101)");
+    if (NULL == p || PGPACK_OK != p->type || 2 != pgsql_result_count(p)) {
+        LOG_ERROR("pgsql multi: insert+update error.");
+        return ERR_FAILED;
+    }
+    if (1 != pgsql_affected_at(p, 0) || 2 != pgsql_affected_at(p, 1)) {
+        LOG_ERROR("pgsql multi: affected expected 1/2, got %"PRId64"/%"PRId64".",
+                  pgsql_affected_at(p, 0), pgsql_affected_at(p, 1));
+        return ERR_FAILED;
+    }
+    // 单结果 API 保持"最后一条"语义
+    if (2 != pgsql_affected_rows(p)) {
+        LOG_ERROR("pgsql multi: affected_rows expected 2, got %"PRId64".", pgsql_affected_rows(p));
+        return ERR_FAILED;
+    }
+    // 4) 第二条主键冲突（id=1 已存在）：多语句 simple query 是隐式单事务，
+    //    首条已执行的 INSERT 整体回滚，响应为整包 ERR，已提交的结果一并丢弃
+    p = pgsql_query(pg,
+        "insert into srey_test (id, name, score) values (102, 'gone', 0);"
+        " insert into srey_test (id, name, score) values (1, 'dup', 0)");
+    if (NULL == p || PGPACK_ERR != p->type) {
+        LOG_ERROR("pgsql multi: expected PGPACK_ERR on duplicate key.");
+        return ERR_FAILED;
+    }
+    if (0 != pgsql_result_count(p)) {
+        LOG_ERROR("pgsql multi: ERR pack expected 0 results, got %u.", pgsql_result_count(p));
+        return ERR_FAILED;
+    }
+    p = pgsql_query(pg, "select name from srey_test where id = 102");
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql multi: rollback check query error.");
+        return ERR_FAILED;
+    }
+    rd = pgsql_reader_iter(p, FORMAT_TEXT);
+    if (NULL == rd) {
+        LOG_ERROR("pgsql multi: rollback check reader missing.");
+        return ERR_FAILED;
+    }
+    if (0 != pgsql_reader_size(rd)) {
+        LOG_ERROR("pgsql multi: id=102 should have been rolled back.");
+        pgsql_reader_free(rd);
+        return ERR_FAILED;
+    }
+    pgsql_reader_free(rd);
+    return ERR_OK;
+}
+
 // 预处理 + 执行（参数绑定）
 static int32_t _prepare_execute(pgsql_ctx *pg) {
     // INT4OID=23, 用于 id 参数（详见 PostgreSQL pg_type catalog）
@@ -111,7 +230,7 @@ static int32_t _prepare_execute(pgsql_ctx *pg) {
         pgsql_stmt_close(pg, "stmt_select_id");
         return ERR_FAILED;
     }
-    pgsql_reader_ctx *reader = pgsql_reader_init(p, FORMAT_TEXT);
+    pgsql_reader_ctx *reader = pgsql_reader_iter(p, FORMAT_TEXT);
     int32_t found = 0;
     if (NULL != reader) {
         int32_t err;
@@ -187,7 +306,7 @@ static void _conc_worker(task_ctx *task, void *arg) {
             a->done = -1;
             return;
         }
-        rd = pgsql_reader_init(p, FORMAT_TEXT);
+        rd = pgsql_reader_iter(p, FORMAT_TEXT);
         if (NULL == rd) {
             a->done = -1;
             return;
@@ -277,6 +396,10 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _query_syntax_error(&arg->pg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (ERR_OK != _multi_statement(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }

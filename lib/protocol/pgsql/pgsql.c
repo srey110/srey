@@ -549,25 +549,38 @@ int32_t pgsql_set_db(pgsql_ctx *pg, const char *database) {
 const char *pgsql_get_db(pgsql_ctx *pg) {
     return pg->database;
 }
-int64_t pgsql_affected_rows(pgpack_ctx *pgpack) {
-    size_t lens = strlen(pgpack->complete);
+uint32_t pgsql_result_count(pgpack_ctx *pgpack) {
+    return (PGPACK_OK == pgpack->type) ? array_size(&pgpack->results) : 0;
+}
+// 从命令完成标签末尾反向找最后一个空格，取其后的数字字符串
+static int64_t _pgsql_tag_rows(const char *tag) {
+    size_t lens = strlen(tag);
     if (0 == lens) {
         return 0;
     }
-    // 从命令完成标签末尾反向找最后一个空格，取其后的数字字符串
     int32_t space = 1;
-    char *rows;
+    const char *rows;
     for (int32_t i = (int32_t)lens - 1; i >= 0; i--) {
         if (space) {
-            if (' ' != pgpack->complete[i]) {
+            if (' ' != tag[i]) {
                 space = 0;
             }
             continue;
         }
-        if (' ' == pgpack->complete[i]) {
-            rows = pgpack->complete + i + 1;
+        if (' ' == tag[i]) {
+            rows = tag + i + 1;
             return (int64_t)strtoll(rows, NULL, 10);
         }
     }
     return 0;
+}
+int64_t pgsql_affected_rows(pgpack_ctx *pgpack) {
+    return _pgsql_tag_rows(pgpack->complete);
+}
+int64_t pgsql_affected_at(pgpack_ctx *pgpack, uint32_t idx) {
+    if (PGPACK_OK != pgpack->type
+        || idx >= array_size(&pgpack->results)) {
+        return 0;
+    }
+    return _pgsql_tag_rows(((pgsql_result *)array_at(&pgpack->results, idx))->complete);
 }

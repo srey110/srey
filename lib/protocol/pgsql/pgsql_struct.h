@@ -9,12 +9,19 @@
 
 struct coro_serial_ctx;
 
+// 单条语句的执行结果，多语句 simple query 时每条语句一个，按 CommandComplete 边界提交
+typedef struct pgsql_result {
+    struct pgsql_reader_ctx *reader;// 结果集，无结果集语句（INSERT/UPDATE 无 RETURNING）为 NULL
+    char complete[32];              // 该语句的 CommandComplete 命令完成标签
+}pgsql_result;
+
 // pgsql 数据包上下文
 typedef struct pgpack_ctx {
     pgpack_type type;               // 数据包类型（成功/错误/通知）
-    void *pack;                     // 具体数据包内容（行读取器、错误信息或通知）
+    void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息或通知）
     void(*_free_pgpack)(void *);    // 释放 pack 的回调函数
-    char complete[32];              // CommandComplete 命令完成标签，格式示例：INSERT oid rows / UPDATE rows 等
+    array_ctx results;              // 已完成语句的结果数组（元素 pgsql_result）；CALLOC 全零即合法空数组，首条 CommandComplete 提交时才 array_init
+    char complete[32];              // 最后一条 CommandComplete 命令完成标签，格式示例：INSERT oid rows / UPDATE rows 等
 }pgpack_ctx;
 
 // 异步通知消息（NotificationResponse）

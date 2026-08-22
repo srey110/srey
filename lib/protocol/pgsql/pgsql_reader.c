@@ -2,16 +2,35 @@
 #include "protocol/pgsql/pgsql_parse.h"
 #include "utils/strptime.h"
 
-pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, pgpack_format format) {
-    if (NULL == pgpack->pack
-        || PGPACK_OK != pgpack->type) {
+pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format) {
+    // 扫到第一个还没被取走的结果集就交出去：取走会把槽位置空，所以下次调用自然给下一个。
+    // BEGIN / SET 这类没有结果集的语句槽位本就是空的，一并跳过
+    if (PGPACK_OK != pgpack->type) {
         return NULL;
     }
-    pgsql_reader_ctx *reader = pgpack->pack;
+    uint32_t total = array_size(&pgpack->results);
+    pgsql_reader_ctx *reader;
+    for (uint32_t i = 0; i < total; i++) {
+        reader = pgsql_reader_at(pgpack, i, format);
+        if (NULL != reader) {
+            return reader;
+        }
+    }
+    return NULL;
+}
+pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
+    if (PGPACK_OK != pgpack->type
+        || idx >= array_size(&pgpack->results)) {
+        return NULL;
+    }
+    pgsql_result *res = array_at(&pgpack->results, idx);
+    if (NULL == res->reader) {
+        return NULL; // 该语句无结果集（INSERT/UPDATE 无 RETURNING）
+    }
+    pgsql_reader_ctx *reader = res->reader;
     reader->format = format;
-    // 将 pack 的所有权从 pgpack 转移到调用方，避免 _pgpack_free 时二次释放 reader
-    pgpack->pack = NULL;
-    pgpack->_free_pgpack = NULL;
+    // 所有权转移到调用方，避免 _pgpack_free 时二次释放 reader
+    res->reader = NULL;
     return reader;
 }
 void pgsql_reader_free(pgsql_reader_ctx *reader) {

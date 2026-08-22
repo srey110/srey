@@ -179,6 +179,28 @@ runner.run("db_bind", function(t)
         t:check(true, "mongo.session GC roundtrip ok")
     end
 
+    -- ── 宿主被 m:__gc() 提前释放后，session 的每个入口都必须报可捕获的错 ──
+    -- session 里存的是宿主的裸指针，宿主一释放读它就是 use-after-free；
+    -- begin 更是往里写（mongo->session = session），只判自身非空拦不住
+    do
+        local mg = mongo.new("127.0.0.1", 27017, nil, "testdb")
+        local sess = mgsess.new(mg, string.rep("\xcd", 16), 30)
+        t:check(sess ~= nil, "session.new before owner gc")
+        mg:__gc()
+        t:eq(false, pcall(function() sess:begin() end), "owner 释放后 begin 被拒")
+        t:eq(false, pcall(function() sess:pack_refresh() end), "owner 释放后 pack_refresh 被拒")
+        t:eq(false, pcall(function() sess:pack_endsession() end), "owner 释放后 pack_endsession 被拒")
+        t:eq(false, pcall(function() sess:pack_commit() end), "owner 释放后 pack_commit 被拒")
+        t:eq(false, pcall(function() sess:pack_abort() end), "owner 释放后 pack_abort 被拒")
+        -- done / free 不抛错，但内部那步"解宿主的 session 绑定"必须跳过
+        sess:done()
+        sess:free()
+        t:check(true, "owner 释放后 done/free 不触碰悬垂宿主")
+        sess = nil
+        mg = nil
+        collectgarbage()
+    end
+
     -- ── mysql packer 系列（不连接，仅 buffer 构造）────────────────────
     do
         local m = mysql.new("127.0.0.1", 3306, nil, "admin", "x", "testdb", "utf8mb4")

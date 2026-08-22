@@ -91,7 +91,7 @@ static int32_t _lpgsql_bind_int16(lua_State *lua) {
         pgsql_bind_null(bind);
         return 0;
     }
-    pgsql_bind_int16(bind, (int16_t)luaL_checkinteger(lua, 2));
+    pgsql_bind_int16(bind, (int16_t)lpub_check_range(lua, 2, INT16_MIN, INT16_MAX, "int16 out of range"));
     return 0;
 }
 /// <summary>
@@ -106,7 +106,7 @@ static int32_t _lpgsql_bind_int32(lua_State *lua) {
         pgsql_bind_null(bind);
         return 0;
     }
-    pgsql_bind_int32(bind, (int32_t)luaL_checkinteger(lua, 2));
+    pgsql_bind_int32(bind, (int32_t)lpub_check_range(lua, 2, INT32_MIN, INT32_MAX, "int32 out of range"));
     return 0;
 }
 /// <summary>
@@ -256,7 +256,7 @@ static int32_t _lpgsql_bind_date(lua_State *lua) {
         pgsql_bind_null(bind);
         return 0;
     }
-    pgsql_bind_date(bind, (int32_t)luaL_checkinteger(lua, 2));
+    pgsql_bind_date(bind, (int32_t)lpub_check_range(lua, 2, INT32_MIN, INT32_MAX, "date out of range"));
     return 0;
 }
 /// <summary>
@@ -309,17 +309,8 @@ LUAMOD_API int luaopen_pgsql_bind(lua_State *lua) {
     REG_MTABLE(lua, MT_PGSQL_BIND, reg_new, reg_func);
     return 1;
 }
-/// <summary>
-/// 从 pgpack_ctx 数据包中创建结果集读取器
-/// </summary>
-/// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
-/// <param name="format" type="integer">期望格式（0 = 文本，1 = 二进制）</param>
-/// <returns type="_pgsql_reader_ctx?">reader 对象；失败返回 nil</returns>
-static int32_t _lpgsql_reader_new(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    pgpack_ctx *pgpack = lua_touserdata(lua, 1);
-    pgpack_format format = (pgpack_format)luaL_checkinteger(lua, 2);
-    pgsql_reader_ctx *reader = pgsql_reader_init(pgpack, format);
+// reader 为 NULL 推 nil，否则包成带元表的 userdata；reader.iter / reader.at 的共同收尾
+static int32_t _lpgsql_reader_push(lua_State *lua, pgsql_reader_ctx *reader) {
     if (NULL == reader) {
         lua_pushnil(lua);
         return 1;
@@ -328,6 +319,42 @@ static int32_t _lpgsql_reader_new(lua_State *lua) {
     *rd = reader;
     ASSOC_MTABLE(lua, MT_PGSQL_READER);
     return 1;
+}
+/// <summary>
+/// 逐条取出带结果集的语句的读取器：每调一次给下一个，取完返回 nil。
+/// 每个结果只能被取走一次，所以反复调用即可遍历整个响应
+/// </summary>
+/// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
+/// <param name="format" type="integer">期望格式（0 = 文本，1 = 二进制）</param>
+/// <returns type="_pgsql_reader_ctx?">reader 对象；失败返回 nil</returns>
+static int32_t _lpgsql_reader_iter(lua_State *lua) {
+    LUACHECK_LUDATA(lua, 1);
+    pgpack_ctx *pgpack = lua_touserdata(lua, 1);
+    pgpack_format format = (pgpack_format)luaL_checkinteger(lua, 2);
+    if (NULL == pgpack) {
+        return _lpgsql_reader_push(lua, NULL);
+    }
+    return _lpgsql_reader_push(lua, pgsql_reader_iter(pgpack, format));
+}
+/// <summary>
+/// 从 pgpack_ctx 数据包中创建第 idx 个查询结果的读取器；
+/// 多语句 simple query 每条语句一个结果，下标按语句顺序
+/// </summary>
+/// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
+/// <param name="idx" type="integer">结果下标，从 1 开始，总数见 pgsql.result_count</param>
+/// <param name="format" type="integer">期望格式（0 = 文本，1 = 二进制）</param>
+/// <returns type="_pgsql_reader_ctx?">reader 对象；下标越界、该语句无结果集或已取走返回 nil</returns>
+static int32_t _lpgsql_reader_at(lua_State *lua) {
+    LUACHECK_LUDATA(lua, 1);
+    pgpack_ctx *pgpack = lua_touserdata(lua, 1);
+    lua_Integer idx = luaL_checkinteger(lua, 2);
+    pgpack_format format = (pgpack_format)luaL_checkinteger(lua, 3);
+    // 脚本侧一律 1 基（同 mqtt.prop_at），转成 C 的 0 基在这里做
+    if (NULL == pgpack
+        || idx < 1 || idx > (lua_Integer)UINT32_MAX) {
+        return _lpgsql_reader_push(lua, NULL);
+    }
+    return _lpgsql_reader_push(lua, pgsql_reader_at(pgpack, (uint32_t)(idx - 1), format));
 }
 /// <summary>
 /// 释放结果集读取器及其持有的所有行数据（绑定为 __gc）
@@ -559,7 +586,8 @@ static int32_t _lpgsql_reader_isnull(lua_State *lua) {
 //pgsql.reader
 LUAMOD_API int luaopen_pgsql_reader(lua_State *lua) {
     luaL_Reg reg_new[] = {
-        { "new", _lpgsql_reader_new },
+        { "iter",  _lpgsql_reader_iter },
+        { "at",  _lpgsql_reader_at },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
@@ -590,29 +618,62 @@ LUAMOD_API int luaopen_pgsql_reader(lua_State *lua) {
 static int32_t _lpgsql_pack_type(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
-    lua_pushinteger(lua, pgpack->type);
+    lua_pushinteger(lua, NULL != pgpack ? (lua_Integer)pgpack->type : PGPACK_ERR);
     return 1;
 }
 /// <summary>
-/// 从 pgpack_ctx 中解析受影响的行数（依赖 CommandComplete 标签）
+/// 从最后一条命令完成标签中解析受影响的行数（依赖 CommandComplete 标签）；
+/// 多语句 simple query 只反映最后一条，逐条读取用 affected_at
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <returns type="integer">受影响行数</returns>
 static int32_t _lpgsql_affected_rows(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
-    lua_pushinteger(lua, pgsql_affected_rows(pgpack));
+    lua_pushinteger(lua, NULL != pgpack ? pgsql_affected_rows(pgpack) : 0);
     return 1;
 }
 /// <summary>
-/// 返回 pgpack_ctx 中的 CommandComplete 命令完成标签字符串
+/// 查询结果数量：按服务端的 CommandComplete 计数，多语句 simple query 每条语句一个结果。
+/// 别把 COPY 和别的语句拼在一条 query 里：COPY 那条不占结果位，下标与语句序号对不上
+/// </summary>
+/// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
+/// <returns type="integer">结果个数；类型不是 PGPACK_OK、或响应不带 CommandComplete
+/// （prepare / stmt_close / 空 SQL）时为 0——取结果前先判这个数</returns>
+static int32_t _lpgsql_result_count(lua_State *lua) {
+    LUACHECK_LUDATA(lua, 1);
+    pgpack_ctx *pgpack = lua_touserdata(lua, 1);
+    lua_pushinteger(lua, NULL != pgpack ? pgsql_result_count(pgpack) : 0);
+    return 1;
+}
+/// <summary>
+/// 解析第 idx 个结果的命令完成标签中受影响的行数
+/// </summary>
+/// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
+/// <param name="idx" type="integer">结果下标，从 1 开始，总数见 pgsql.result_count</param>
+/// <returns type="integer">受影响行数；下标越界或解析失败返回 0</returns>
+static int32_t _lpgsql_affected_at(lua_State *lua) {
+    LUACHECK_LUDATA(lua, 1);
+    pgpack_ctx *pgpack = lua_touserdata(lua, 1);
+    lua_Integer idx = luaL_checkinteger(lua, 2);
+    // 同 reader.at：脚本侧 1 基
+    if (NULL == pgpack
+        || idx < 1 || idx > (lua_Integer)UINT32_MAX) {
+        lua_pushinteger(lua, 0);
+        return 1;
+    }
+    lua_pushinteger(lua, pgsql_affected_at(pgpack, (uint32_t)(idx - 1)));
+    return 1;
+}
+/// <summary>
+/// 返回 pgpack_ctx 中的 CommandComplete 命令完成标签字符串；多语句时是最后一条的标签
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <returns type="string">CommandComplete 标签（如 "INSERT 0 1"）</returns>
 static int32_t _lpgsql_complete(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
-    lua_pushstring(lua, pgpack->complete);
+    lua_pushstring(lua, NULL != pgpack ? pgpack->complete : "");
     return 1;
 }
 /// <summary>
@@ -980,6 +1041,8 @@ LUAMOD_API int luaopen_pgsql(lua_State *lua) {
         { "new",            _lpgsql_new },
         { "pack_type",      _lpgsql_pack_type },
         { "affected_rows",  _lpgsql_affected_rows },
+        { "result_count",   _lpgsql_result_count },
+        { "affected_at",    _lpgsql_affected_at },
         { "complete",       _lpgsql_complete },
         { "erro",           _lpgsql_erro },
         { "notification",   _lpgsql_notification },

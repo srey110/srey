@@ -1,6 +1,7 @@
 ﻿#include "lbind/lpub.h"
 
 #define MT_MQTT_PROPS "_mqtt_props_ctx"
+#define PACKID_OUT_OF_RANGE "packet id out of range" // 九个 packer 共用的越界文案
 
 // 从 Lua 栈 idx 位置获取可选 binary_ctx（nil/none 返回 NULL）
 static binary_ctx *_lmqtt_get_props(lua_State *lua, int idx) {
@@ -229,7 +230,7 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
 static int32_t _lmqtt_pack_connect(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     int8_t cleanstart = (int8_t)luaL_checkinteger(lua, 2);
-    uint16_t keepalive = (uint16_t)luaL_checkinteger(lua, 3);
+    uint16_t keepalive = lpub_check_u16(lua, 3, "keepalive out of range");
     const char *clientid = luaL_checkstring(lua, 4);
     const char *user = lua_isnoneornil(lua, 5) ? NULL : luaL_checkstring(lua, 5);
     char *password = NULL;
@@ -293,7 +294,7 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
     int8_t qos = (int8_t)luaL_checkinteger(lua, 3);
     int8_t dup = (int8_t)luaL_checkinteger(lua, 4);
     const char *topic = luaL_checkstring(lua, 5);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 6);
+    uint16_t packid = lpub_check_u16(lua, 6, PACKID_OUT_OF_RANGE);
     char *payload = NULL;
     size_t pllens = 0;
     _lmqtt_get_payload(lua, 7, &payload, &pllens);
@@ -319,7 +320,7 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_puback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -337,7 +338,7 @@ static int32_t _lmqtt_pack_puback(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -355,7 +356,7 @@ static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -373,7 +374,7 @@ static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -391,7 +392,7 @@ static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -409,7 +410,7 @@ static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_suback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     size_t rslens;
     const char *reasons = luaL_checklstring(lua, 3, &rslens);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
@@ -429,7 +430,7 @@ static int32_t _lmqtt_pack_suback(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -447,7 +448,7 @@ static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_unsuback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
     size_t rslens;
     const char *reasons = luaL_checklstring(lua, 3, &rslens);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
@@ -593,11 +594,13 @@ static int32_t _lmqtt_connect_will_props(lua_State *lua) {
 static int32_t _lmqtt_prop_at(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     array_ctx *arr = lua_touserdata(lua, 1);
-    int32_t i = (int32_t)luaL_checkinteger(lua, 2) - 1;
-    if (i < 0 || (uint32_t)i >= array_size(arr)) {
+    // 先按 lua_Integer 卡范围再窄化：下标是 4 字节，先转再判的话 2^32+1 会截成 1 落进合法区间，
+    // 靠 nil 收尾的遍历循环就永远退不出去
+    lua_Integer idx = luaL_checkinteger(lua, 2);
+    if (idx < 1 || idx > (lua_Integer)array_size(arr)) {
         return lpub_rtn_nil(lua, 4);
     }
-    mqtt_propertie *p = *(mqtt_propertie **)array_at(arr, i);
+    mqtt_propertie *p = *(mqtt_propertie **)array_at(arr, (int32_t)(idx - 1));
     lua_pushinteger(lua, p->flag);
     lua_pushinteger(lua, p->nval);
     if (p->flens > 0) {

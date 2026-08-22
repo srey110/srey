@@ -38,6 +38,19 @@ static pgpack_ctx *_pgpack_new(pgpack_type type) {
     pgpack->type = type;
     return pgpack;
 }
+void _pgpack_results_clear(pgpack_ctx *pgpack) {
+    pgsql_result *res;
+    for (uint32_t i = 0; i < array_size(&pgpack->results); i++) {
+        res = array_at(&pgpack->results, i);
+        if (NULL != res->reader) {
+            _pgpack_reader_free(res->reader);
+            FREE(res->reader);
+        }
+    }
+    array_free(&pgpack->results);
+    // array_free 只复位 size/maxsize，elsize 原样留着，而下面拿 elsize 当"数组还没建"的判据
+    pgpack->results.elsize = 0;
+}
 // 获取或创建 pgsql_ctx 当前累积的 pgpack_ctx；pg 为 NULL 时直接分配新的（用于通知包）
 static pgpack_ctx *_pgpack_init(pgsql_ctx *pg, pgpack_type type) {
     if (NULL == pg) {
@@ -56,6 +69,9 @@ static pgpack_ctx *_pgpack_init(pgsql_ctx *pg, pgpack_type type) {
         FREE(pg->pack->pack);
         pg->pack->_free_pgpack = NULL;
         pg->pack->type = type;
+        // 已提交的结果一并丢弃：COPY 那条语句不占位，留着前面的结果只会让下标与语句序号错开，
+        // 调用方按下标取就会拿到别的语句的数据。宁可一条都不给
+        _pgpack_results_clear(pg->pack);
         LOG_WARN("different pack type: %d  %d, discard previous.", oldtype, type);
     }
     return pg->pack;
@@ -68,6 +84,7 @@ void _pgpack_free(pgpack_ctx *pgpack) {
         pgpack->_free_pgpack(pgpack->pack); // 释放内部数据（reader 或 notification）
     }
     FREE(pgpack->pack);
+    _pgpack_results_clear(pgpack);
     FREE(pgpack);
 }
 // 释放 pgpack_notification 持有的原始消息缓冲区
@@ -131,9 +148,10 @@ static pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
 // 解析 RowDescription（'T'），填充字段描述数组
 static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) {
     pgsql_reader_ctx *reader = _pgpack_reader_init(pgpack);
-    // 不支持多语句 simple query
+    // 上一条语句的 reader 在 CommandComplete 时已提交进结果数组，这里 fields 仍非空
+    // 只能是两个 RowDescription 之间没有 CommandComplete 的违规消息流
     if (NULL != reader->fields) {
-        LOG_WARN("multi-statement simple query not supported (received second RowDescription).");
+        LOG_WARN("protocol violation: second RowDescription without CommandComplete in between.");
         return ERR_FAILED;
     }
     if (!binary_have(breader, 2)) {
@@ -278,6 +296,39 @@ static void _pgpack_copy_data(pgpack_ctx *pgpack, binary_ctx *breader) {
     }
     binary_set_binary(&copyout->data, breader->data + breader->offset, datalen);
 }
+// 解析 CommandComplete（'C'），记录命令标签，并按语句边界把当前累积的结果提交进结果数组
+static int32_t _pgpack_complete(pgsql_ctx *pg, binary_ctx *breader) {
+    // pg->pack 已存在时（如 COPY OUT 累积中）直接写入 complete，避免类型不符警告
+    if (NULL == pg->pack) {
+        _pgpack_init(pg, PGPACK_OK);
+    }
+    char *complete = binary_try_get_string(breader);
+    if (NULL == complete) {
+        return ERR_FAILED;
+    }
+    // 先清再填：多语句时残留上一条的标签会被错当本条的 affected_rows
+    pg->pack->complete[0] = '\0';
+    if (!EMPTYSTR(complete)
+        && ERR_OK != safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete)) {
+        LOG_ERROR("pgsql command tag exceeds %zu bytes: %zu, affected_rows unavailable.",
+                  sizeof(pg->pack->complete) - 1, strlen(complete));
+    }
+    // 只有普通查询按语句提交结果（reader 或无结果集的 NULL）；COPY 的数据仍由 pack 持有
+    if (PGPACK_OK != pg->pack->type) {
+        return ERR_OK;
+    }
+    if (0 == pg->pack->results.elsize) {// 首次提交才建数组，无结果可提交的包（通知 / 认证期 / COPY OUT）不分配
+        array_init(&pg->pack->results, sizeof(pgsql_result), 2);
+    }
+    pgsql_result res;
+    ZERO(&res, sizeof(res));// 逐字段写满是当前字段表的巧合，加字段就会把栈上残留拷进数组
+    res.reader = pg->pack->pack;
+    memcpy(res.complete, pg->pack->complete, sizeof(res.complete));
+    array_push_back(&pg->pack->results, &res);
+    pg->pack->pack = NULL; // reader 所有权移入结果数组
+    pg->pack->_free_pgpack = NULL;
+    return ERR_OK;
+}
 // 解析一个完整的服务端消息，在收到 ReadyForQuery 时返回已累积的 pgpack_ctx
 pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
     (void)ud;
@@ -363,22 +414,12 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
     case 'c': // CopyDone（服务端发出）：COPY OUT 数据传输完毕，等待后续 CommandComplete + ReadyForQuery
         FREE(breader->data);
         break;
-    case 'C': { // CommandComplete：命令完成，记录命令标签
-        // pg->pack 已存在时（如 COPY OUT 累积中）直接写入 complete，避免类型不符警告
-        if (NULL == pg->pack) {
-            _pgpack_init(pg, PGPACK_OK);
-        }
-        char *complete = binary_try_get_string(breader);
-        if (NULL == complete) {
+    case 'C': // CommandComplete：命令完成，记录命令标签并按语句边界提交一个结果
+        if (ERR_OK != _pgpack_complete(pg, breader)) {
             BIT_SET(*status, PROT_ERROR);
-        } else if (!EMPTYSTR(complete)
-            && ERR_OK != safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete)) {
-            LOG_ERROR("pgsql command tag exceeds %zu bytes: %zu, affected_rows unavailable.",
-                      sizeof(pg->pack->complete) - 1, strlen(complete));
         }
         FREE(breader->data);
         break;
-    }
     case 'Z': // ReadyForQuery：服务端就绪，将累积的结果包返回给调用方
         if (!binary_have(breader, 1)) {
             BIT_SET(*status, PROT_ERROR);

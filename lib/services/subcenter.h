@@ -5,6 +5,16 @@
 #include "path/path_rules.h"
 #include "utils/binary.h"
 
+// topic / pattern / group / meta 四项客户端就地检查，空串或超限返 ERR_FAILED、请求不发出；
+// 长度取等号仍合法，不含结尾 NUL。topic 与 group 的上限卡在线格式的 2 字节长度前缀上，
+// 放超限值进去会被静默截断成另一个 topic。
+// retained 载荷只在服务端拒（客户端照发），BURST_MAX 则是服务端单次 scan 的截断上限
+#define SC_TOPIC_MAX 256// topic / pattern 字符串最大长度
+#define SC_GROUP_MAX 64// 共享组名最大长度
+#define SC_META_MAX_SIZE 1024// publisher meta 上限
+#define SC_RETAINED_MAX_SIZE (1024 * 1024)// 单 topic retained 载荷上限,服务端拒
+#define SC_QUERY_RETAINED_BURST_MAX 1000// query_retained 单次返回条数上限,服务端截断
+
 // REQ_SC_DELIVER 投递来源(sc_deliver.kind);普通订阅与共享订阅各自独立投递,接收方据此路由
 typedef enum sc_deliver_kind {
     SC_DELIVER_NORMAL = 0, // 普通订阅投递
@@ -19,7 +29,7 @@ typedef struct sc_deliver {
     size_t mlen;          // 元数据字节数
     size_t glen;          // 组名字节数;0 表示普通投递无组
     size_t ptlen;         // 订阅模式字节数;0 表示普通投递无模式
-    name_t publisher;     // 发布者 task 句柄;INVALID_TNAME 表示 publisher 已失效
+    name_t publisher;     // 发布时刻的发布者 task 句柄;读到时它可能已经退出,要用就 task_grab,grab 不到即已失效
     const char *topic;    // 匹配到的精确 topic(非 NUL 结尾)
     const char *payload;  // 载荷;plen=0 时 NULL
     const char *meta;     // 发布者元数据;mlen=0 时 NULL
@@ -33,7 +43,7 @@ typedef struct sc_retained {
     size_t mlen;          // 元数据字节数
     size_t tlen;          // topic 字节数
     size_t plen;          // 载荷字节数
-    name_t publisher;     // 原 retained 发布者句柄;INVALID_TNAME 表示已失效
+    name_t publisher;     // 写入 retained 时的发布者句柄;存活性同 sc_deliver.publisher
     const char *meta;     // 发布者元数据;mlen=0 时 NULL
     const char *topic;    // retained topic;tlen=0 时 NULL
     const char *payload;  // retained 载荷;plen=0 时 NULL
@@ -48,12 +58,13 @@ typedef struct sc_retained_topic {
     uint16_t meta_size;   // retained meta 字节数
     uint32_t size;        // retained 载荷字节数
     size_t tlen;          // topic 字节数
-    name_t publisher;     // retained 发布者句柄;INVALID_TNAME 表示已失效
+    name_t publisher;     // 写入 retained 时的发布者句柄;存活性同 sc_deliver.publisher
     const char *topic;    // topic;tlen=0 时 NULL
 } sc_retained_topic;
 
 /// <summary>
 /// 注册 subcenter task service。
+/// 必须在 loader_init 之后、业务 task 启动之前调用一次,否则先启动的 task 订阅不上。
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名;NULL 或空串时本函数立即返回 ERR_OK 不注册 task</param>
@@ -67,7 +78,7 @@ int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules);
 /// </summary>
 /// <param name="task">当前 task(订阅者身份)</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="topic">订阅模式;可含通配符(由 rules 配置)</param>
+/// <param name="topic">订阅模式;可含通配符(由 rules 配置);非空,上限 SC_TOPIC_MAX</param>
 /// <returns>ERR_OK 成功;ERR_FAILED topic 非法 / subcenter 不可达 / 分配失败</returns>
 int32_t coro_sc_subscribe(task_ctx *task, name_t sc_name, const char *topic);
 /// <summary>
@@ -109,6 +120,9 @@ int32_t coro_sc_publish(task_ctx *task, name_t sc_name, const char *topic,
 /// <summary>
 /// 发布保留消息。retained_index 记录原 publisher + meta 快照,新订阅者通过 query_retained 拿到。
 /// plen=0 等价"清空 retained 槽位,不 deliver"。retained 上限 SC_RETAINED_MAX_SIZE。
+/// retained 的存活与 publisher 无关——publisher 退出后它照样留着给后来的订阅者,
+/// 这正是 retained 的用处。清理只有 plen=0 这一条路,publisher 宜在 _closing 里自己清,
+/// 漏了就一直留到 subcenter 关闭。
 /// 普通订阅者同时收到 deliver,共享订阅不收。必须在协程中调用。
 /// </summary>
 /// <param name="task">当前 task</param>

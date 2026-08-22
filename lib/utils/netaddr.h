@@ -27,6 +27,14 @@ int32_t is_ipv6(const char *ip);
 /// <returns>ERR_OK ip地址 </returns>
 int32_t is_ipaddr(const char* ip);
 /// <summary>
+/// 判断 IP 字面量是否指向本机回环。
+/// IPv4 认整个 127.0.0.0/8（不只是 127.0.0.1），IPv6 认 ::1 与 ::ffff:127.x.x.x 这种
+/// v4-mapped 写法。只认 IP 字面量，不认主机名
+/// </summary>
+/// <param name="ip">IP 字符串，非 NULL</param>
+/// <returns>ERR_OK 是回环地址；ERR_FAILED 不是，或根本不是合法 IP</returns>
+int32_t is_loopback(const char *ip);
+/// <summary>
 /// 清空netaddr_ctx
 /// </summary>
 /// <param name="ctx">netaddr_ctx</param>

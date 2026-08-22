@@ -81,8 +81,9 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     if (NULL == client_final) {
         return ERR_FAILED;
     }
-    void *data = mongo_pack_scram_client_final(mongo, convid, client_final, &size);
-    SECURE_FREE(client_final, strlen(client_final) + 1);
+    size_t flens = strlen(client_final);
+    void *data = mongo_pack_scram_client_final(mongo, convid, client_final, flens, &size);
+    SECURE_FREE(client_final, flens + 1);
     return ev_send(ev, mongo->sk.fd, mongo->sk.skid, data, size, 0);
 }
 // 处理 SCRAM 服务端最终消息：验证服务端签名，确认认证完成

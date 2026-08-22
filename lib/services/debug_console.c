@@ -6,6 +6,7 @@
 #include "utils/router.h"
 #include "event/event.h"
 #include "utils/binary.h"
+#include "utils/netaddr.h"
 #include "utils/utils.h"
 #include "utils/log.h"
 
@@ -339,9 +340,9 @@ static void _debug_startup(task_ctx *task) {
     router_post(ctx->router, NULL, "/{task}/hotfix/{module}", _debug_hotfix, NULL, 0);
     if (ERR_OK != task_listen(task, PACK_HTTP, NULL, ctx->ip, ctx->port, &ctx->lsnid, 0)) {
         LOG_ERROR("debug_console task_listen %s:%d error.", ctx->ip, ctx->port);
-    } else {
-        LOG_INFO("debug_console on %s:%d", ctx->ip, ctx->port);
+        return;
     }
+    LOG_INFO("debug_console on %s:%d", ctx->ip, ctx->port);
 }
 // 关闭回调：取消监听
 static void _debug_closing(task_ctx *task) {
@@ -376,6 +377,14 @@ int32_t debug_console_start(loader_ctx *loader, const char *name, const char *ip
     size_t iplens = strlen(ip);
     if (0 == iplens || iplens >= IP_LENS) {
         return ERR_FAILED;
+    }
+    // 端口开出去之前先告警：/inject 与 /hotfix 直接在目标 task 的 lua 虚拟机里跑代码，
+    // 等于一个不要密码的 shell，/__alive 还先把所有 handle 列出来。
+    // 这里没有 ssl 参数可配：加密解决不了"谁都能连"，这个口子只该留在本机
+    if (ERR_OK != is_loopback(ip)) {
+        LOG_WARN("debug_console: about to listen on %s:%u beyond loopback with no authentication - "
+                 "/{task}/inject and /{task}/hotfix run arbitrary lua in any task. "
+                 "Bind 127.0.0.1 unless this port is otherwise protected.", ip, port);
     }
     debug_console_ctx *ctx;
     CALLOC(ctx, 1, sizeof(debug_console_ctx));

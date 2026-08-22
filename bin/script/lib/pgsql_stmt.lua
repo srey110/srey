@@ -54,9 +54,12 @@ function ctx:ctor(owner, name, format)
     self.gen = owner.generation
 end
 
----执行预处理语句（Bind + Describe + Execute + Sync）
+---执行预处理语句（Bind + Describe + Execute + Sync）。
+---与 pgsql_ctx:query 不同，这里不返回数组：扩展协议一次 Execute 只有一条语句、一个结果，
+---没有"第几条"可言
 ---@param bind any? pgsql_bind_ctx 参数绑定上下文
----@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败或语句失效
+---@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK（行数走 affected_rows）；
+---false=失败或语句失效
 function ctx:execute(bind)
     -- 借宿主连接的执行器：语句和普通查询走的是同一条连接，两者之间也不能交错
     return srey.serial_ret(false, self.owner.serial(self._execute, self, bind))
@@ -77,7 +80,7 @@ function ctx:_execute(bind)
     if e then
         return self:_fail(e)
     end
-    local rd = reader.new(pgpack, self.format)
+    local rd = reader.iter(pgpack, self.format)
     if rd then
         return rd
     end

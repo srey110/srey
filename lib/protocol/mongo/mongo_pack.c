@@ -131,11 +131,12 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t
     bson_append_end(&bson);//options
     MONGO_PACK_RETURN(mongo->authdb);
 }
-void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *client_final, size_t *size) {
+void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *client_final, size_t flens, size_t *size) {
     MONGO_PACK_BEGIN(0);
     bson_append_int32(&bson, "saslContinue", 1);
     bson_append_int32(&bson, "conversationId", convid);
-    bson_append_binary(&bson, "payload", BSON_SUBTYPE_BINARY, client_final, strlen(client_final));
+    // 长度由调用方给：服务端那份 payload 是 BSON binary 切片，没有 NUL 结尾，strlen 会读过界
+    bson_append_binary(&bson, "payload", BSON_SUBTYPE_BINARY, client_final, flens);
     MONGO_PACK_RETURN(mongo->authdb);
 }
 void *mongo_pack_hello(mongo_ctx *mongo, char *options, size_t optlens, size_t *size) {

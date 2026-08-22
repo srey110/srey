@@ -147,7 +147,7 @@ static int32_t _lsc_set_meta(lua_State *lua) {
 /// <param name="data" type="lightuserdata">REQ_SC_DELIVER 消息 data 指针</param>
 /// <param name="size" type="integer">data 字节数</param>
 /// <returns type="table?">解析结果表 { kind, publisher, topic, payload, meta?, group, pattern }:
-///     kind 0 普通/1 共享;publisher 0=已失效;topic/payload 空为 "";meta 无则字段缺省;
+///     kind 0 普通/1 共享;publisher 是发布时刻的句柄,不带存活标记;topic/payload 空为 "";meta 无则字段缺省;
 ///     group 共享投递组名,普通投递为 "";pattern 命中的订阅模式,普通投递为 "",
 ///     共享投递用 (pattern, group) 精确定位 handler;wire 截断/损坏返 nil</returns>
 static int32_t _lsc_parse_deliver(lua_State *lua) {

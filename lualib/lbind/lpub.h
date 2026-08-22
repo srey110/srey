@@ -55,6 +55,13 @@
     if (NULL == *(var)) { \
         return luaL_error((lua), (errmsg)); \
     }
+// 子对象（mongo.session / mysql.stmt）取值：自身非空之外，还要确认宿主没被 obj:__gc()
+// 提前释放。子对象存的是宿主裸指针，宿主一释放读它即 use-after-free
+#define LPUB_UD_OWNED(lua, type, mt, var, errmsg, omt, oerrmsg) \
+    LPUB_UD_ARG((lua), type, (mt), var, (errmsg)) \
+    if (NULL == lpub_owner_ptr((lua), (omt))) { \
+        return luaL_error((lua), (oerrmsg)); \
+    }
 
 /// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）
@@ -84,8 +91,27 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <returns>字节数;越界走 luaL_argerror(longjmp,不返回)</returns>
 size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max);
 /// <summary>
-/// 校验端口参数。凡是要传给 listen / connect / udp 的端口都从这里取，别再各写一句
-/// (uint16_t)luaL_checkinteger——越界必须报错，不能静默截断
+/// 校验 16 位 wire 字段。凡是要按 2 字节写进报文或传给框架的值都从这里取，别再各写一句
+/// (uint16_t)luaL_checkinteger——截断出来的是另一个合法值，组包侧无从分辨
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">值在栈中的位置</param>
+/// <param name="what">越界时报给调用方的完整消息，如 "packet id out of range"</param>
+/// <returns>该值；不在 0..65535 内走 luaL_argerror(longjmp,不返回)</returns>
+uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what);
+/// <summary>
+/// 校验有符号窄整数并收窄到 [lo, hi]。同 lpub_check_u16 的理由：截断出来的是另一个合法值，
+/// 写进报文或数据库都无从分辨
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">值在栈中的位置</param>
+/// <param name="lo">允许的下界</param>
+/// <param name="hi">允许的上界</param>
+/// <param name="what">越界时报给调用方的完整消息</param>
+/// <returns>该值；不在 [lo, hi] 内走 luaL_argerror(longjmp,不返回)</returns>
+int64_t lpub_check_range(lua_State *lua, int32_t idx, int64_t lo, int64_t hi, const char *what);
+/// <summary>
+/// 校验端口参数，同 lpub_check_u16
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">端口在栈中的位置</param>
@@ -152,6 +178,14 @@ char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens);
 /// <param name="idx">参数在栈中的位置</param>
 /// <returns>task 句柄；名字查不到时为 INVALID_TNAME</returns>
 name_t lpub_task_handle(lua_State *lua, int32_t idx);
+/// <summary>
+/// 取栈位置 1 的子对象在创建时锚进 uservalue 槽 1 的宿主对象指针。
+/// 槽位由 uservalue 锚着，任何时候读都安全；用途见 LPUB_UD_OWNED
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="omt">宿主的元表名</param>
+/// <returns>宿主 C 对象指针；宿主已被 __gc 释放、槽位为空或类型不符时返回 NULL</returns>
+void *lpub_owner_ptr(lua_State *lua, const char *omt);
 /// <summary>
 /// 失败路径压 n 个 nil。全仓规矩：**失败与成功的返回值个数必须一致**——
 /// 返回值直接塞进另一个调用（srey.send(fd, skid, websock.pack_text(...))）时少一个就整体错位。

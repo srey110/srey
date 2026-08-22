@@ -18,7 +18,8 @@ typedef enum padding_model {
 /// <param name="dlens">数据长度；必须 &lt;= reqlens</param>
 /// <param name="output">输出填充后的数据；仅 ERR_OK 时有效</param>
 /// <param name="reqlens">要求的数据长度</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED：dlens 超出 reqlens，或 dlens 非 0 却传了 NULL data。
+/// 失败返回时 output 一个字节都没写，调用方据此判断缓冲里有没有内容，不能当它有效</returns>
 int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uint8_t *output, size_t reqlens);
 /// <summary>
 /// 密码填充

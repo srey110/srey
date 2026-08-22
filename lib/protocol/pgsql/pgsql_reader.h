@@ -4,12 +4,25 @@
 #include "protocol/pgsql/pgsql_struct.h"
 
 /// <summary>
-/// 从 pgpack_ctx 中提取并初始化查询结果读取器
+/// 逐条取出带结果集的语句的读取器：每调一次给下一个，取完返回 NULL。
+/// 每个结果只能被取走一次，所以反复调用即可遍历整个响应；BEGIN / SET 这类没有结果集的
+/// 语句自动跳过。要按语句序号定位某一条用 pgsql_reader_at
 /// </summary>
-/// <param name="pgpack">pgpack_ctx 指针，类型必须为 PGPACK_OK 且 pack 不为 NULL</param>
+/// <param name="pgpack">pgpack_ctx 指针，类型必须为 PGPACK_OK</param>
 /// <param name="format">期望的数据格式（文本或二进制），用于后续字段解析</param>
-/// <returns>pgsql_reader_ctx 指针，失败返回 NULL</returns>
-pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, pgpack_format format);
+/// <returns>pgsql_reader_ctx 指针（所有权归调用方，用 pgsql_reader_free 释放）；
+/// 类型不符或已无未取走的结果集时返回 NULL</returns>
+pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format);
+/// <summary>
+/// 从 pgpack_ctx 中取出第 idx 个查询结果的读取器；
+/// 多语句 simple query 每条语句一个结果，下标按语句顺序，结果总数见 pgsql_result_count
+/// </summary>
+/// <param name="pgpack">pgpack_ctx 指针，类型必须为 PGPACK_OK</param>
+/// <param name="idx">结果下标，从 0 开始</param>
+/// <param name="format">期望的数据格式（文本或二进制），用于后续字段解析</param>
+/// <returns>pgsql_reader_ctx 指针（所有权归调用方，用 pgsql_reader_free 释放，同一下标只能取走一次）；
+/// 类型不符、下标越界、该语句无结果集（INSERT/UPDATE 无 RETURNING）或已被取走时返回 NULL</returns>
+pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format);
 /// <summary>
 /// 释放查询结果读取器及其持有的所有行数据
 /// </summary>

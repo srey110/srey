@@ -646,7 +646,7 @@ static void test_mongo_pack_scram_final(CuTest *tc) {
     safe_fill_str(mongo.authdb, sizeof(mongo.authdb), "admin");
     char dummy[] = "c=biws,r=fakenonce,p=fakeproof";
     size_t size = 0;
-    void *pack = mongo_pack_scram_client_final(&mongo, 42, dummy, &size);
+    void *pack = mongo_pack_scram_client_final(&mongo, 42, dummy, strlen(dummy), &size);
     char *bson = _assert_msg_head(tc, pack, size);
     int32_t err;
     CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "saslContinue", &err));

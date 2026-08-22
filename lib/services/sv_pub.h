@@ -3,6 +3,10 @@
 
 #include "srey/task.h"
 
+// 下面几个请求函数共用一条 buf 所有权约定：buf 一律由被调函数接管——投递出去时随 copy=0
+// 转给消息系统，grab 不到目标时由被调函数 FREE。调用方组好包就撒手，失败了也别自己再 FREE
+// （那是二次释放）。buf 传 NULL 表示无载荷，直接透传
+
 // 协程版请求，只关心错误码；必须在协程中调用。返回目标给的错误码，目标不可达返 ERR_FAILED
 int32_t _svpub_call(task_ctx *task, name_t name, subtype_t req, void *buf, size_t lens);
 // 协程版请求，要取响应数据；必须在协程中调用。
