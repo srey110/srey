@@ -107,6 +107,20 @@
     #endif
 #endif
 
+// CPU cache line 大小,用于消除并发结构 false sharing
+// 主流 x86_64 / ARM64 = 64;Apple Silicon / IBM POWER = 128;IBM z = 256;老 ARMv6 及以下 = 32
+#if defined(__APPLE__) && defined(__aarch64__)
+    #define CACHELINE_SIZE  128
+#elif defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)
+    #define CACHELINE_SIZE  128
+#elif defined(__s390x__) || defined(__zarch__)
+    #define CACHELINE_SIZE  256
+#elif defined(__arm__) && (__ARM_ARCH < 7)
+    #define CACHELINE_SIZE  32
+#else
+    #define CACHELINE_SIZE  64
+#endif
+
 // accept4 / pipe2 能力：无标准 feature-test 宏，按 OS 推导（新增支持平台在此一处维护）
 #if defined(OS_LINUX) || defined(OS_BSD)
     #define HAVE_ACCEPT4

@@ -147,7 +147,7 @@ uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const 
 void buffer_commit_expand(buffer_ctx *ctx, size_t lens ,IOV_TYPE *iov, const uint32_t cnt);
 /// <summary>
 /// 获取指定长度的数据，供 writev 等分散读零拷贝取用。
-/// 返回非 0 即进入读暂存态：iov 直接指向节点内部数据区，在 buffer_commit_get 之前
+/// 取到数据即进入读暂存态：iov 直接指向节点内部数据区，在 buffer_commit_get 之前
 /// 不得再调用本模块任何读写接口（写入可能搬动节点让 iov 悬空，断言拦截），
 /// 且与 buffer_expand 的暂存态互斥
 /// </summary>

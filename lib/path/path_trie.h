@@ -78,8 +78,8 @@ void *path_remove(path_trie *t, const char *path);
 /// <param name="udata">透传给 cb 的上下文</param>
 void path_match(path_trie *t, const char *literal_path, match_visit_cb cb, void *udata);
 /// <summary>
-/// 全遍历所有 payload 节点。cb 收到完整路径字符串(实时重建,栈缓冲 URL_BUF_LENS)。
-/// insert 侧已限路径字节 < URL_BUF_LENS(与本缓冲对齐),能插入的路径必能完整重建;
+/// 全遍历所有 payload 节点。cb 收到完整路径字符串(实时重建,栈缓冲 PATH_BUF_LENS)。
+/// insert 侧已限路径字节 < PATH_BUF_LENS(与本缓冲对齐),能插入的路径必能完整重建;
 /// 超长跳过 + LOG_WARN 分支仅作兜底,正常不可达。
 /// </summary>
 /// <param name="t">trie 指针</param>

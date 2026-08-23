@@ -322,7 +322,7 @@ static int32_t _lbson_jscode(lua_State *lua) {
 static int32_t _lbson_int32(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
-    int32_t val = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t val = (int32_t)lpub_check_range(lua, 3, INT32_MIN, INT32_MAX, "int32 out of range");
     bson_append_int32(bson, key, val);
     return 0;
 }
@@ -337,8 +337,8 @@ static int32_t _lbson_int32(lua_State *lua) {
 static int32_t _lbson_timestamp(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
-    uint32_t ts = (uint32_t)luaL_checkinteger(lua, 3);
-    uint32_t inc = (uint32_t)luaL_checkinteger(lua, 4);
+    uint32_t ts = (uint32_t)lpub_check_range(lua, 3, 0, UINT32_MAX, "timestamp out of range");
+    uint32_t inc = (uint32_t)lpub_check_range(lua, 4, 0, UINT32_MAX, "increment out of range");
     bson_append_timestamp(bson, key, ts, inc);
     return 0;
 }
@@ -386,8 +386,9 @@ static int32_t _lbson_maxkey(lua_State *lua) {
 /// <param name="self" type="userdata">bson 对象</param>
 /// <param name="doc" type="string|lightuserdata">已完成 BSON 文档</param>
 /// <param name="size" type="integer?">doc 为 lightuserdata 时必填，buffer 字节数，取值 [0, INT32_MAX]，越界报错</param>
-/// <returns>无；doc 不是落在缓冲内的完整文档、或长度达 MAX_PACK_SIZE 时报错
-/// （三种情形内容都整篇丢弃，不静默）</returns>
+/// <returns>无；doc 不是落在缓冲内的完整文档时报错（缓冲不足 5 字节、末字节不是 EOD、
+/// 头声明长度超出缓冲，三种情形内容都整篇丢弃，不静默）。本层不设字节数上限——
+/// 那取决于承载协议，由上层判（如 mongo 侧的 MONGO_MAX_PACK_SIZE）</returns>
 static int32_t _lbson_cat(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     size_t actual_lens;
@@ -397,7 +398,7 @@ static int32_t _lbson_cat(lua_State *lua) {
     }
     if (ERR_OK != bson_cat(bson, doc, actual_lens)) {
         return luaL_error(lua, "bson_cat: document rejected, buffer %I bytes"
-            " (need at least 5 bytes, header length within the buffer and below max pack size)",
+            " (need at least 5 bytes, header length in [5, buffer] and last byte EOD)",
             (lua_Integer)actual_lens);
     }
     return 0;

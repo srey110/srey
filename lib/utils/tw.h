@@ -9,14 +9,14 @@
 #include "utils/pool.h"
 #include "containers/slist.h"
 
-#define TVN_BITS (6)                                                   //高精度轮（tv2~tv5）每级位数
-#define TVR_BITS (8)                                                   //最低精度轮（tv1）位数
-#define TVN_SIZE (1 << TVN_BITS)                                       //高精度轮每级槽数（64）
-#define TVR_SIZE (1 << TVR_BITS)                                       //最低精度轮槽数（256）
-#define TVN_MASK (TVN_SIZE - 1)                                        //高精度轮索引掩码
-#define TVR_MASK (TVR_SIZE - 1)                                        //最低精度轮索引掩码
+#define TVN_BITS (6) //高精度轮（tv2~tv5）每级位数
+#define TVR_BITS (8) //最低精度轮（tv1）位数
+#define TVN_SIZE (1 << TVN_BITS) //高精度轮每级槽数（64）
+#define TVR_SIZE (1 << TVR_BITS) //最低精度轮槽数（256）
+#define TVN_MASK (TVN_SIZE - 1) //高精度轮索引掩码
+#define TVR_MASK (TVR_SIZE - 1) //最低精度轮索引掩码
 #define INDEX(N) ((ctx->jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK) //计算第 N 级高精度轮的当前槽索引
-typedef void(*tw_cb)(ud_cxt *ud);   //超时回调函数类型
+typedef void(*tw_cb)(ud_cxt *ud); //超时回调函数类型
 typedef struct tw_node_ctx {
     list_node node;     //侵入式链表节点（slist，UPCAST 复原）
     tw_cb _cb;          //超时触发的回调函数

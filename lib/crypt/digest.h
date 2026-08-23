@@ -44,7 +44,7 @@ typedef struct digest_ctx {
 /// <param name="dtype">摘要算法</param>
 void digest_init(digest_ctx *digest, digest_type dtype);
 /// <summary>
-/// 清零整个 digest_ctx
+/// 清零整个 digest_ctx，含三个分发回调——调用后上下文即失效，要复用须重新 digest_init
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 void digest_free(digest_ctx *digest);

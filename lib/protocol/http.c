@@ -341,10 +341,13 @@ static size_t _http_headlens(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     ud->prot_offset = 0;
     return hlens;
 }
-// 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组
+// 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组。
+// 只清结构体前缀：那 lens 字节紧接着就被 _http_parsehead 的 buffer_remove 整块写满，
+// 连它一起清等于每请求白 memset 一个头块（上限 MAX_HEADLENS）
 static http_pack_ctx *_http_headpack(size_t lens) {
     char *pack;
-    CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
+    MALLOC(pack, sizeof(http_pack_ctx) + lens);
+    ZERO(pack, sizeof(http_pack_ctx));
     ((http_pack_ctx *)pack)->head.data = pack + sizeof(http_pack_ctx);
     ((http_pack_ctx *)pack)->head.lens = lens;
     array_init(&((http_pack_ctx *)pack)->header, sizeof(http_header_ctx), 0);
@@ -397,10 +400,13 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, 
         return pack;
     }
 }
-// 分配 chunked 数据包结构体，lens>0 时数据紧随其后，chunked 字段固定设为 2
+// 分配 chunked 数据包结构体，lens>0 时数据紧随其后，chunked 字段固定设为 2。
+// 只清结构体前缀，同 _http_headpack：载荷由 buffer_copyout 整块写满，而这里是每帧一次，
+// 连载荷一起清就等于把整条流的字节数白 memset 一遍
 static http_pack_ctx *_http_chunkedpack(size_t lens) {
     char *pack;
-    CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
+    MALLOC(pack, sizeof(http_pack_ctx) + lens);
+    ZERO(pack, sizeof(http_pack_ctx));
     http_pack_ctx *pctx = (http_pack_ctx *)pack;
     if (lens > 0) {
         pctx->data.data = pack + sizeof(http_pack_ctx);

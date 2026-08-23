@@ -3,8 +3,8 @@
 
 #define MAX_COPY_IN_EXPAND       4096 //节点数据量超过此值时不做数据迁移，直接新建节点
 #define MAX_REALIGN_IN_EXPAND    2048 //节点 off 不超过此值时允许通过对齐操作复用空间
-#define FIRST_FORMAT_IN_EXPAND   256  //格式化写入时首次预分配的空间大小
-#define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off)  //节点空闲区起始指针
+#define FIRST_FORMAT_IN_EXPAND   256 //格式化写入时首次预分配的空间大小
+#define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off) //节点空闲区起始指针
 #define NODE_SPACE_LEN(ch) ((ch)->buffer_lens - ((ch)->misalign + (ch)->off)) //节点空闲区长度
 #define RECOED_IOV(ch, lens) \
     iov[index].IOV_PTR_FIELD = NODE_SPACE_PTR(ch);\
@@ -410,31 +410,26 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         || NULL == data) {
         return ERR_OK;
     }
-    /* 快速路径：尾节点已有数据且未被分散读写锁定，剩余空间足够直接写入，
-     * 跳过 expand/commit 流程，减少开销。 */
+    /* 快速路径：尾节点已有数据且未被分散读写锁定时，直接单次 memcpy 写进去，跳过
+     * expand/commit 流程。空间不够但有 misalign 可回收就先 _buffer_align 把数据前移
+     * (misalign→0)；对齐后空闲区必然装得下——_buffer_should_realign 的首条就是它 */
     bufnode_ctx *tail = ctx->tail;
     if (NULL != tail
         && 0 != tail->off
-        && 0 == tail->used
-        && NODE_SPACE_LEN(tail) >= lens) {
-        memcpy(NODE_SPACE_PTR(tail), data, lens);
-        tail->off += lens;
-        ctx->total_lens += lens;
-        return ERR_OK;
-    }
-    /* 对齐恢复路径：快路径因空间不足失败，但 tail 有 misalign 可回收。
-     * _buffer_align 将已有数据前移（misalign→0），使空闲区连续，再做单次 memcpy，
-     * 避免进入 _buffer_expand 的跨节点分散写流程。 */
-    if (NULL != tail
-        && 0 != tail->off
-        && 0 == tail->used
-        && tail->misalign > 0
-        && _buffer_should_realign(tail, lens)) {
-        _buffer_align(tail);
-        memcpy(NODE_SPACE_PTR(tail), data, lens);
-        tail->off += lens;
-        ctx->total_lens += lens;
-        return ERR_OK;
+        && 0 == tail->used) {
+        size_t space = NODE_SPACE_LEN(tail);
+        if (space < lens
+            && tail->misalign > 0
+            && _buffer_should_realign(tail, lens)) {
+            _buffer_align(tail);
+            space = NODE_SPACE_LEN(tail);
+        }
+        if (space >= lens) {
+            memcpy(NODE_SPACE_PTR(tail), data, lens);
+            tail->off += lens;
+            ctx->total_lens += lens;
+            return ERR_OK;
+        }
     }
     /* 慢速路径：走完整的 expand + commit 流程 */
     char *tmp = (char*)data;
@@ -587,10 +582,9 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     for (node = ctx->head; NULL != node && remain >= node->off; node = next) {
         next = node->next;
         remain -= node->off;
-        if (node == *ctx->tail_with_data) {
-            ctx->tail_with_data = &ctx->head;
-        }
-        if (&node->next == ctx->tail_with_data) {
+        // 两条互斥: 前者命中后 tail_with_data 已是 &ctx->head, 后者的比较必假
+        if (node == *ctx->tail_with_data
+            || &node->next == ctx->tail_with_data) {
             ctx->tail_with_data = &ctx->head;
         }
         if (0 == node->used) {
@@ -611,16 +605,15 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         ctx->head = ctx->tail = NULL;
         ctx->tail_with_data = &(ctx)->head;
     }
-    /* 恢复搜索游标：
-     *   saved_hint_off >= lens  → 游标节点未被释放，基偏移减去 lens 即可。
-     *   ctx->head == saved_hint → drain 停在游标节点内部（已成为新 head），
-     *                             将基偏移重置为 0。
-     *   其他情况表示游标节点已被释放，游标保持 NULL/0。 */
+    /* 恢复搜索游标: 节点还在(saved_hint_off >= lens)就把基偏移减掉 lens; drain 停在游标
+     * 节点内部时它已成新 head, 基偏移归 0——但 off 被清空的节点做不了游标(那种节点会让
+     * _buffer_search_start_cached 直接返 NULL), 故要一并判 off。其余情况游标保持 NULL/0。*/
     if (NULL != saved_hint) {
         if (saved_hint_off >= lens) {
             ctx->hint_node = saved_hint;
             ctx->hint_base_off = saved_hint_off - lens;
-        } else if (ctx->head == saved_hint) {
+        } else if (ctx->head == saved_hint
+                   && 0 != saved_hint->off) {
             ctx->hint_node = saved_hint;
             ctx->hint_base_off = 0;
         }

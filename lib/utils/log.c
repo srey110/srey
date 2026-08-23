@@ -6,6 +6,7 @@
 #include "utils/timer.h"
 
 #define LOG_FMT "[%s][%s]%s\n"
+#define LOG_TIME_FMT "%Y-%m-%d %H:%M:%S" // 秒级部分;毫秒由调用方另拼
 #define LOG_INLINE_SIZE 256
 #define LOG_POP_BATCH   128
 #ifdef OS_WIN
@@ -86,19 +87,36 @@ static void _log_color_end(void) {
     fflush(stdout);
 }
 #endif
-// 唯一的成行出口。时间串在这里才组装：mstostr 里的 localtime_r 要过 libc 的时区锁，
+// 唯一的成行出口。时间串由调用方给：mstostr 里的 localtime_r 要过 libc 的时区锁，
 // N 个业务线程一起写日志就在一把与本程序无关的锁上串起来，所以正常路径推迟到日志线程；
 // 业务线程只在 _log_stderr 那两条兜底上碰得到它。
 // pre/post 是上色前后缀，必须与正文同一次 fprintf 打出去，整行才不会被别的 stdout 写方插断
-static void _log_fprint(FILE *f, const log_item *item, const char *msg,
+static void _log_fprint(FILE *f, const log_item *item, const char *time, const char *msg,
                         const char *pre, const char *post) {
-    char time[TIME_LENS];
-    (void)mstostr(item->ms, "%Y-%m-%d %H:%M:%S", time);
     fprintf(f, "%s"LOG_FMT"%s", pre, time, _log_lvstr(item->lv), msg, post);
 }
+// 秒级部分按秒缓存：一批日志基本落在同一秒里，省掉 localtime_r 与 strftime。
+// 缓存是无锁静态，只许 _log_write_item 这条串行路径用(日志线程，以及 thread_join
+// 之后的 log_free)；业务线程的 _log_stderr 自己现算
+static void _log_timestr(uint64_t ms, char time[TIME_LENS]) {
+    static uint64_t cache_sec = 0;
+    static char cache[TIME_LENS] = { 0 };
+    uint64_t sec = ms / 1000;
+    if ('\0' == cache[0]
+        || sec != cache_sec) {
+        if (ERR_OK != sectostr(sec, LOG_TIME_FMT, cache)) {
+            time[0] = '\0';
+            return;// sectostr 失败即把 cache 置空串, 下次重算
+        }
+        cache_sec = sec;
+    }
+    SNPRINTF(time, TIME_LENS, "%s %03d", cache, (int32_t)(ms % 1000));
+}
 static void _log_write_item(const log_item *item) {
+    char time[TIME_LENS];
+    _log_timestr(item->ms, time);
     if (NULL != _handle) {
-        _log_fprint(_handle, item, item->msg, "", "");
+        _log_fprint(_handle, item, time, item->msg, "", "");
         if (item->lv <= LOGLV_WARN) {
             fflush(_handle);
         }
@@ -111,7 +129,7 @@ static void _log_write_item(const log_item *item) {
         pre = _log_color_begin(color);
         post = LOG_COLOR_SUFFIX;
     }
-    _log_fprint(stdout, item, item->msg, pre, post);
+    _log_fprint(stdout, item, time, item->msg, pre, post);
     if (LOG_COLOR_NONE != color) {
         _log_color_end();
     }
@@ -135,6 +153,17 @@ static void _log_write_all(log_item **items) {
         }
     }
 }
+// 日志线程退出行。必须等队列排空后再写, 否则日志里会有业务日志排在"已退出"后面
+static void _log_write_exit(void) {
+    log_item logexit;
+    logexit.lv = LOGLV_INFO;
+    logexit.ms = nowms();
+    SNPRINTF(logexit.inline_buf, sizeof(logexit.inline_buf),
+        CONCAT2(LOG_PREFIX_FMT, "%s"), __FILENAME__(__FILE__), __FUNCTION__, __LINE__,
+        "log thread exited.");
+    logexit.msg = logexit.inline_buf;
+    _log_write_item(&logexit);
+}
 static void _log_loop(void *arg) {
     (void)arg;
     log_item *items[LOG_POP_BATCH];
@@ -147,15 +176,15 @@ static void _log_loop(void *arg) {
         now = timer_cur_ms(&timer);
         if (now - shrink_start >= SHRINK_TIME) {
             shrink_start = now;
-            pool_shrink(&_itempool, shrink_nkeep(pool_size(&_itempool)), SHRINK_BUSY);
+            pool_shrink(&_itempool);
         }
         mutex_lock(&_mtx);
         // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩
         if (0 == fsqu_size(&_que) && ATOMIC_GET(&_running)) {
             ATOMIC_SET(&_sleeping, 1);
-            // 防丢失唤醒：置 _sleeping 后再次检查队列，仍空才等待。
-            // fence 补足 store _sleeping 与其后 fsqu_size 载入间的 StoreLoad 顺序——mpq 后端
-            // fsqu_size 为 acquire 载入，RCpc 下可与 ATOMIC_SET 的 swpal 重排，否则漏唤醒
+            // 防丢失唤醒：置 _sleeping 后再查一次队列，仍空才等。中间那道 fence 不能省:
+            // fsqu_size 是 acquire 读, 在部分 ARM 上会跑到置位之前, 于是这边看不到刚入队的
+            // 元素、生产者又还没看到 _sleeping, 两边同时看漏就是漏唤醒
             ATOMIC_THREAD_FENCE_SEQCST();
             if (0 == fsqu_size(&_que)) {
                 cond_timedwait(&_cond, &_mtx, SHRINK_TIME);
@@ -164,14 +193,6 @@ static void _log_loop(void *arg) {
         }
         mutex_unlock(&_mtx);
     }
-    //打印日志线程退出
-    log_item logexit;
-    logexit.lv = LOGLV_INFO;
-    logexit.ms = nowms();
-    SNPRINTF(logexit.inline_buf, sizeof(logexit.inline_buf),
-        "[%s %s %d] %s", __FILENAME__(__FILE__), __FUNCTION__, __LINE__, "log thread exited.");
-    logexit.msg = logexit.inline_buf;
-    _log_write_item(&logexit);
 }
 void log_init(FILE *file, uint32_t capacity) {
     _handle = file;
@@ -202,6 +223,7 @@ void log_free(void) {
     thread_join(_th);
     log_item *items[LOG_POP_BATCH];
     _log_write_all(items);
+    _log_write_exit();
     fsqu_free(&_que);
     pool_free(&_itempool);
     mutex_free(&_mtx);
@@ -215,7 +237,10 @@ log_level log_getlv(void) {
 }
 // stderr 兜底：格式化失败或队列满时走这里，跑在业务线程上，进不了日志线程那条路径
 static void _log_stderr(const log_item *item, const char *msg) {
-    _log_fprint(stderr, item, msg, "", "");
+    char time[TIME_LENS];
+    // 不碰 _log_timestr 的缓存：这里跑在业务线程上，那份静态只属于日志线程那条串行路径
+    (void)mstostr(item->ms, LOG_TIME_FMT, time);
+    _log_fprint(stderr, item, time, msg, "", "");
     fflush(stderr);
 }
 void slog(int32_t lv, const char *fmt, ...) {
@@ -261,7 +286,7 @@ void slog(int32_t lv, const char *fmt, ...) {
         pool_push(&_itempool, item, 0);
         return;
     }
-    // 生产者侧 SB 握手:push 发布 enq.v 后须 seq_cst 载入 _sleeping，与消费者 fence 对称补足 StoreLoad（RCpc 防丢唤醒）
+    // 与消费者那道 fence 对称: 入队之后必须用足序版本读 _sleeping, 否则两边同时看漏就漏唤醒
     if (ATOMIC_GET_SEQCST(&_sleeping)) {
         mutex_lock(&_mtx);
         cond_signal(&_cond);

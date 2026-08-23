@@ -233,9 +233,10 @@ static void test_mongo_pack_check_flag(CuTest *tc) {
     BSON_FREE(&doc);
 }
 
-// options 达 MAX_PACK_SIZE 时 bson_cat 整篇丢弃，MONGO_PACK_CAT 令整条命令作废：
-// 必须返回 NULL 且把 *size 置 0——旧行为是照常发出缺 options 的命令，服务端返回错误结果集。
-// *size 置 0 尤其关键：调用方(coro_utils / lmongo)的 lens/size 是未初始化栈变量
+// options 被拒时 MONGO_PACK_CAT 令整条命令作废：必须返回 NULL 且把 *size 置 0——
+// 旧行为是照常发出缺 options 的命令，服务端返回错误结果集。
+// *size 置 0 尤其关键：调用方(coro_utils / lmongo)的 lens/size 是未初始化栈变量。
+// 拒收只剩两类：bson_cat 的结构性畸形，以及超单包上限 MONGO_MAX_PACK_SIZE(64MB)
 static void test_mongo_pack_oversize_options(CuTest *tc) {
     mongo_ctx mongo;
     char *opts;
@@ -249,27 +250,41 @@ static void test_mongo_pack_oversize_options(CuTest *tc) {
     opts[1] = (char)0x11;
     opts[2] = (char)0x01;
 
-    size = 12345;
-    pack = mongo_pack_insert(&mongo, NULL, 0, opts, 70000, &size);
-    CuAssertTrue(tc, NULL == pack);
-    CuAssertTrue(tc, 0 == size);
-
-    size = 12345;
-    pack = mongo_pack_find(&mongo, NULL, 0, opts, 70000, &size);
-    CuAssertTrue(tc, NULL == pack);
-    CuAssertTrue(tc, 0 == size);
-
-    size = 12345;
+    // 70000 字节的结构合法 options:改前撞 bson_cat 的 64KB 上限被整篇丢弃、整条命令作废,
+    // 现在照常拼入 —— 上限归 mongo 层的 MONGO_MAX_PACK_SIZE(64MB)。
+    // 所有 mongo_pack_* 共用 MONGO_PACK_CAT, 这里用 drop / find 两条代表
+    size = 0;
     pack = mongo_pack_drop(&mongo, opts, 70000, &size);
+    CuAssertTrue(tc, NULL != pack);
+    CuAssertTrue(tc, size > 70000 - 5);
+    FREE(pack);
+
+    size = 0;
+    pack = mongo_pack_find(&mongo, NULL, 0, opts, 70000, &size);
+    CuAssertTrue(tc, NULL != pack);
+    CuAssertTrue(tc, size > 70000 - 5);
+    FREE(pack);
+
+    // 声明长度超出传入缓冲:bson_cat 的结构性校验照旧拒收,整条命令作废
+    size = 12345;
+    pack = mongo_pack_drop(&mongo, opts, 5, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
+    FREE(opts);
+
+    // 超单包上限:MONGO_PACK_CAT 先按 lens 挡住,不看内容,所以这块不必初始化
+    MALLOC(opts, (size_t)MONGO_MAX_PACK_SIZE + 1);
+    size = 12345;
+    pack = mongo_pack_drop(&mongo, opts, (size_t)MONGO_MAX_PACK_SIZE + 1, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+    FREE(opts);
 
     size = 0;
     pack = mongo_pack_drop(&mongo, NULL, 0, &size);
     CuAssertTrue(tc, NULL != pack);
     CuAssertTrue(tc, size > 0);
     FREE(pack);
-    FREE(opts);
 }
 
 // mongo_pack_update + delete + bulkwrite：仅校验关键字段名

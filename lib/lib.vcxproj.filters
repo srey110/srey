@@ -175,9 +175,6 @@
     <ClInclude Include="utils\tda.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="utils\varint.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="utils\netaddr.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -339,6 +336,9 @@
     </ClInclude>
     <ClInclude Include="protocol\mqtt\mqtt_pack.h">
       <Filter>protocol\mqtt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\varint.h">
+      <Filter>protocol</Filter>
     </ClInclude>
     <ClInclude Include="protocol\prots_pub.h">
       <Filter>protocol</Filter>
@@ -504,9 +504,6 @@
     <ClCompile Include="utils\tda.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="utils\varint.c">
-      <Filter>utils</Filter>
-    </ClCompile>
     <ClCompile Include="utils\netaddr.c">
       <Filter>utils</Filter>
     </ClCompile>
@@ -650,6 +647,9 @@
     </ClCompile>
     <ClCompile Include="protocol\mqtt\mqtt_pack.c">
       <Filter>protocol\mqtt</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\varint.c">
+      <Filter>protocol</Filter>
     </ClCompile>
     <ClCompile Include="protocol\prots.c">
       <Filter>protocol</Filter>

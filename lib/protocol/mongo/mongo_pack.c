@@ -10,11 +10,12 @@
 // 发错库服务端回 code 13 Unauthorized "may only be run against the admin database"
 #define MONGO_TXN_DB "admin"
 #define BSON_HEADROOM 256          // 大消息 cap 估算余量（命令名+集合名+元数据+session options 等）
-// 拼接 options：bson_cat 失败即源文档达 MAX_PACK_SIZE 被整篇丢弃，此时整条命令作废——
+// 拼接 options：源文档超单包上限、或结构不合法(bson_cat 拒收)时整条命令作废——
 // 继续打包会发出缺 options 的命令，服务端照常执行并返回错误结果集。
 // *size 显式置 0：调用方按"返回非 NULL 才读 size"约定，早退路径不能留未初始化值
 #define MONGO_PACK_CAT(doc, lens) do { \
-        if (ERR_OK != bson_cat(&bson, (doc), (lens))) { \
+        if ((lens) > MONGO_MAX_PACK_SIZE \
+            || ERR_OK != bson_cat(&bson, (doc), (lens))) { \
             *size = 0; \
             BSON_FREE(&bson); \
             return NULL; \
@@ -135,7 +136,7 @@ void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *clie
     MONGO_PACK_BEGIN(0);
     bson_append_int32(&bson, "saslContinue", 1);
     bson_append_int32(&bson, "conversationId", convid);
-    // 长度由调用方给：服务端那份 payload 是 BSON binary 切片，没有 NUL 结尾，strlen 会读过界
+    // 长度由调用方给: 本函数不要求 client_final 以 NUL 结尾
     bson_append_binary(&bson, "payload", BSON_SUBTYPE_BINARY, client_final, flens);
     MONGO_PACK_RETURN(mongo->authdb);
 }

@@ -1,15 +1,14 @@
 ﻿#include "path/path_trie.h"
 #include "containers/hashmap.h"
-#include "protocol/urlparse.h"
 #include "utils/utils.h"
 
 // 公开 API 前导:校验 t,WILDCARD/LITERAL 模式切片至局部 segs/n;失败 return fail_value
 // (void 函数传空 fail_value,展开为 return ;)
 #define PATH_PREP_SEGS(t, path, kind, fail_value) \
     if (NULL == (t)) { return fail_value; } \
-    buf_ctx segs[URL_MAX_PATH_DEPTH]; \
+    buf_ctx segs[PATH_MAX_DEPTH]; \
     int32_t n = 0; \
-    if (ERR_OK != _path_validate((t)->rules, (path), (kind), segs, URL_MAX_PATH_DEPTH, &n)) { \
+    if (ERR_OK != _path_validate((t)->rules, (path), (kind), segs, PATH_MAX_DEPTH, &n)) { \
         return fail_value; \
     }
     
@@ -102,7 +101,7 @@ static int32_t _path_validate(const path_rules *r, const char *path, path_kind k
         return ERR_FAILED;
     }
     size_t plen = strlen(path);
-    if (plen >= URL_BUF_LENS) {
+    if (plen >= PATH_BUF_LENS) {
         return ERR_FAILED;
     }
     // 业务自定义整路径校验
@@ -134,9 +133,9 @@ static int32_t _path_validate(const path_rules *r, const char *path, path_kind k
 }
 // 公开:独立校验
 int32_t path_validate(const path_rules *rules, const char *path, path_kind kind) {
-    buf_ctx segs[URL_MAX_PATH_DEPTH];
+    buf_ctx segs[PATH_MAX_DEPTH];
     int32_t n = 0;
-    return _path_validate(rules, path, kind, segs, URL_MAX_PATH_DEPTH, &n);
+    return _path_validate(rules, path, kind, segs, PATH_MAX_DEPTH, &n);
 }
 // 节点 alloc:sv=NULL 表示根
 static path_node *_path_node_alloc(const buf_ctx *sv, path_node *parent) {
@@ -390,12 +389,12 @@ int32_t path_matches_pattern(const path_rules *rules,
     if (NULL == rules || NULL == literal_path || NULL == pattern) {
         return ERR_FAILED;
     }
-    buf_ctx lits[URL_MAX_PATH_DEPTH];
-    buf_ctx pats[URL_MAX_PATH_DEPTH];
+    buf_ctx lits[PATH_MAX_DEPTH];
+    buf_ctx pats[PATH_MAX_DEPTH];
     int32_t ln = 0;
     int32_t pn = 0;
-    if (ERR_OK != _path_validate(rules, literal_path, PATH_KIND_LITERAL, lits, URL_MAX_PATH_DEPTH, &ln)
-        || ERR_OK != _path_validate(rules, pattern, PATH_KIND_WILDCARD, pats, URL_MAX_PATH_DEPTH, &pn)) {
+    if (ERR_OK != _path_validate(rules, literal_path, PATH_KIND_LITERAL, lits, PATH_MAX_DEPTH, &ln)
+        || ERR_OK != _path_validate(rules, pattern, PATH_KIND_WILDCARD, pats, PATH_MAX_DEPTH, &pn)) {
         return ERR_FAILED;
     }
     // 逐段比较
@@ -482,6 +481,6 @@ void path_scan(path_trie *t, scan_visit_cb cb, void *udata) {
     if (NULL == t || NULL == cb) {
         return;
     }
-    char buf[URL_BUF_LENS];
+    char buf[PATH_BUF_LENS];
     _path_scan_recurse(t, &t->root, buf, sizeof(buf), 0, cb, udata);
 }

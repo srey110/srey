@@ -1,7 +1,7 @@
-﻿#include "utils/varint.h"
+﻿#include "protocol/varint.h"
 
 int32_t varint_encode_mqtt(uint32_t value, char buf[4]) {
-    if (value >= 0x10000000) {
+    if (value > MQTT_VARINT_MAX) {
         return 0;
     }
     uint8_t byte;

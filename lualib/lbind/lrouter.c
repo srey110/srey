@@ -3,9 +3,7 @@
 #define MT_ROUTER "_router_ctx"
 
 static int32_t _lrouter_new(lua_State *lua) {
-    router_ctx **pr = lua_newuserdatauv(lua, sizeof(router_ctx *), 0);
-    *pr = router_new();
-    ASSOC_MTABLE(lua, MT_ROUTER);
+    lpub_push_ud(lua, router_new(), MT_ROUTER);
     return 1;
 }
 static int32_t _lrouter_free(lua_State *lua) {

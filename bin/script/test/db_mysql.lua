@@ -89,6 +89,9 @@ runner.run("db_mysql", function(t)
         else
             t:fail("stmt execute reader nil")
         end
+        -- 显式关句柄：不发 COM_STMT_CLOSE 的话服务端那份要留到连接关闭才回收
+        t:check(stmt:close(), "stmt close sends COM_STMT_CLOSE")
+        t:eq(false, stmt:close(), "stmt close 幂等（已关闭返回 false）")
     else
         t:fail("mysql prepare nil")
     end
@@ -119,6 +122,7 @@ runner.run("db_mysql", function(t)
             t:eq(1, _count_rows(rcall[2]), "CALL result set 2 one row")
             t:check(true == rcall[3], "CALL trailing OK packet")
         end
+        t:check(cstmt:close(), "CALL stmt close sends COM_STMT_CLOSE")
     else
         t:fail("prepare call srey_multi nil")
     end

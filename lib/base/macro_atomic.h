@@ -3,23 +3,31 @@
 
 #include "base/os.h"
 
-// 跨平台原子操作。
+// 跨平台原子操作。四套后端：GCC/Clang 用编译器内建（一份覆盖所有 OS，含 Windows 上的
+// MinGW/clang-cl），MSVC 用 Interlocked，Sun Studio 用 libc atomic，xlC 用 AIX 原子服务。
+// 后两家的原语本身不带内存序，靠前后各夹一道 ATOMIC_THREAD_FENCE_SEQCST 凑出来。
+//
+// 该用哪个：
+//   ATOMIC_GET / ATOMIC_SET / ATOMIC_ADD / ATOMIC_CAS  默认用这四个，够强，不会错
+//   ATOMIC_SET_RELEASE   发布：写完一段数据再置标志位，对方 ATOMIC_GET 到标志就能看到数据。
+//                        比 ATOMIC_SET 便宜，但它不挡后面的读上浮，握手场景别用
+//   ATOMIC_*_RELAXED     只有一个线程写、读方也不在乎它与别的读写谁先谁后时用，最省
+//   ATOMIC_GET_SEQCST    握手：双方"我先置标志，再看对方"这类互相试探的场景（log.c、loader.c
+//   ATOMIC_THREAD_FENCE_SEQCST   的丢唤醒防护）。两边都得用足序版本，否则会同时看漏
+// 带 64 的是 64 位版本，语义与 32 位一致
 #if defined(OS_AIX)
     #ifndef __64BIT__
         #error "32-bit AIX (ILP32) is not supported; compile with -maix64 or -q64"
     #endif
-    typedef int32_t atomic_t;  // 32 位原子整数类型（AIX）
-    typedef long atomic64_t;   // 64 位原子整数类型（AIX）
+    typedef int32_t atomic_t; // 32 位原子整数类型（AIX）
+    typedef long atomic64_t; // 64 位原子整数类型（AIX）
 #else
-    typedef uint32_t atomic_t;   // 32 位原子整数类型
+    typedef uint32_t atomic_t; // 32 位原子整数类型
     typedef uint64_t atomic64_t; // 64 位原子整数类型
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
-    //内存栅栏（Memory Barrier）。它用于防止编译器和 CPU 在执行多线程代码时对读写指令进行乱序重排，
-    //并强制所有使用该级别的操作建立一个全局统一的先后顺序
     #define ATOMIC_THREAD_FENCE_SEQCST() __atomic_thread_fence(__ATOMIC_SEQ_CST)
-    //默认用这几个，够强，不会错
     #define ATOMIC_GET(ptr)   __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
     #define ATOMIC_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
@@ -28,19 +36,13 @@
     #define ATOMIC64_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC64_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
     #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
-    //原子地、不被中断地读取 ptr 指向的变量值，
-    //并强制执行顺序一致性 的内存屏障，确保所有线程对该内存操作的顺序达成全局一致
+    // ARMv8.3+ 上普通 acquire 读可能编成 LDAPR, 挡不住握手要的那种顺序, 得是 seq_cst 才编成 LDAR
     #define ATOMIC_GET_SEQCST(ptr)   __atomic_load_n((ptr), __ATOMIC_SEQ_CST)
     #define ATOMIC64_GET_SEQCST(ptr) __atomic_load_n((ptr), __ATOMIC_SEQ_CST)
-    //原子方式将 val 写入 ptr 指向的内存，
-    //确保在此操作之前的所有内存读写（普通变量或原子变量）不会被编译器或 CPU 重排到这个写操作之后
     #define ATOMIC_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
     #define ATOMIC64_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
-    //宽松顺序 __ATOMIC_RELAXED 内存顺序意味着不提供任何线程间的内存屏障或同步排序约束，仅保证单次读写的原子性（防止撕裂），允许编译器和 CPU 对前后指令进行重排
-    //原子操作方式将 val 加到 ptr 指向的内存变量上，并返回旧值。
     #define ATOMIC_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
     #define ATOMIC64_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
-    //原子方式将 val 写入 ptr 指向的内存地址。
     #define ATOMIC_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
     #define ATOMIC64_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
 #elif defined(OS_WIN)
@@ -159,12 +161,6 @@
     #define ATOMIC64_CAS(ptr, oldval, newval) _sun_cas64((atomic64_t *)(ptr), oldval, newval)
     #define ATOMIC_GET_SEQCST(ptr)   _fetchandadd((atomic_t *)(ptr), 0)
     #define ATOMIC64_GET_SEQCST(ptr) _fetchandadd64((atomic64_t *)(ptr), 0)
-    #define ATOMIC_SET_RELEASE(ptr, val) ATOMIC_SET(ptr, val)
-    #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
-    #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
-    #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
-    #define ATOMIC_SET_RELAXED(ptr, val) ATOMIC_SET(ptr, val)
-    #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
 #elif defined(OS_AIX)
     // xlC：AIX 原子服务同样不带内存序，用 __sync()（PowerPC 全屏障）前后夹住凑成 seq_cst。
     // AIX 没有原子交换服务，ATOMIC_SET 只能用 compare_and_swap 循环拼
@@ -233,14 +229,18 @@
     #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
     #define ATOMIC_GET_SEQCST(ptr)   _aix_fetchandadd((atomic_t *)(ptr), 0)
     #define ATOMIC64_GET_SEQCST(ptr) _aix_fetchandadd64((atomic64_t *)(ptr), 0)
+#else
+    #error "atomic ops: unsupported compiler (need GCC/Clang, MSVC, Sun Studio on Solaris, or xlC on AIX)"
+#endif
+// 弱序别名兜底: 没有更弱版本可用的后端(Sun / AIX)一律退化到全屏障版, 语义只会更强不会更弱。
+// 六个别名按后端整组给出, 所以一个 #ifndef 守住全组即可; GCC/Clang 与 MSVC 自己定义齐了不会进来
+#ifndef ATOMIC_SET_RELEASE
     #define ATOMIC_SET_RELEASE(ptr, val) ATOMIC_SET(ptr, val)
     #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
     #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
     #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
     #define ATOMIC_SET_RELAXED(ptr, val) ATOMIC_SET(ptr, val)
     #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
-#else
-    #error "atomic ops: unsupported compiler (need GCC/Clang, MSVC, Sun Studio on Solaris, or xlC on AIX)"
 #endif
 
 #endif//MACRO_ATOMIC_H_

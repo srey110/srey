@@ -1,5 +1,5 @@
 ﻿#include "protocol/mqtt/mqtt_pack.h"
-#include "utils/varint.h"
+#include "protocol/varint.h"
 
 // 长度前缀字符串字段：2 字节大端长度 + 体（lens==0 仅写长度）
 static void _mqtt_pack_lenstr(binary_ctx *bw, const void *buf, size_t lens) {

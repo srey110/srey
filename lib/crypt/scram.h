@@ -74,7 +74,7 @@ scram_ctx *scram_init(const char *method, int32_t client);
 /// <param name="scram">scram_ctx</param>
 void scram_free(scram_ctx *scram);
 /// <summary>
-/// 设置用户名（客户端握手前调用）
+/// 设置用户名（客户端握手前调用；服务端由 scram_parse_first_message 内部调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="user">用户名</param>
@@ -104,7 +104,8 @@ int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
 /// 设置迭代轮数（仅服务端调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <param name="iter">迭代轮数，低于 SCRAM_MIN_ITER 自动提升到该下限</param>
+/// <param name="iter">迭代轮数，低于 SCRAM_MIN_ITER 提升到该下限，高于 SCRAM_MAX_ITER 夹到该上限
+///     （与客户端解析服务端 i= 时的上限同值，故夹过的值对端照样接受）</param>
 /// <returns>ERR_OK 已生效；ERR_FAILED 未生效（客户端角色调用）</returns>
 int32_t scram_set_iter(scram_ctx *scram, int32_t iter);
 /// <summary>

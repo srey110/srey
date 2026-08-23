@@ -3,11 +3,13 @@
 #define MT_MYSQL_BIND   "_mysql_bind_ctx"
 #define MT_MYSQL_READER "_mysql_reader_ctx"
 #define MT_MYSQL_STMT   "_mysql_stmt_ctx"
-// stmt 的四个入口共用：自身与宿主一起校验，参数太长不适合每处照抄
-#define LMYSQL_STMT_ARG(lua, var) \
-    LPUB_UD_OWNED((lua), mysql_stmt_ctx, MT_MYSQL_STMT, var, "stmt freed", \
-                  MT_MYSQL, "mysql stmt: owner mysql already freed")
 #define MT_MYSQL        "_mysql_ctx"
+// stmt 的四个入口共用: 自身非空 + 宿主还活着。后一半的理由见 lpub_owner_ptr
+#define LMYSQL_STMT_ARG(lua, var) \
+    LPUB_UD_ARG((lua), mysql_stmt_ctx, MT_MYSQL_STMT, var, "stmt freed") \
+    if (NULL == lpub_owner_ptr((lua), MT_MYSQL)) { \
+        return luaL_error((lua), "mysql stmt: owner mysql already freed"); \
+    }
 
 /// <summary>
 /// 创建 MySQL 参数绑定上下文（用于预处理语句或查询参数化）
@@ -190,9 +192,9 @@ static int32_t _lmysql_bind_datetime(lua_State *lua) {
 /// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
 /// <param name="is_negative" type="integer">1 表示负值时间段，0 正值</param>
 /// <param name="days" type="integer">天数</param>
-/// <param name="hour" type="integer">小时</param>
-/// <param name="minute" type="integer">分钟</param>
-/// <param name="second" type="integer">秒</param>
+/// <param name="hour" type="integer">小时，须 大于等于 0（符号只由 is_negative 表示）</param>
+/// <param name="minute" type="integer">分钟，须 大于等于 0</param>
+/// <param name="second" type="integer">秒，须 大于等于 0</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_time(lua_State *lua) {
     mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
@@ -200,11 +202,13 @@ static int32_t _lmysql_bind_time(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 2)) {
         name = (char *)luaL_checkstring(lua, 2);
     }
-    int8_t is_negative = (int8_t)luaL_checkinteger(lua, 3);
-    int32_t days = (int32_t)luaL_checkinteger(lua, 4);
-    int8_t hour = (int8_t)luaL_checkinteger(lua, 5);
-    int8_t minute = (int8_t)luaL_checkinteger(lua, 6);
-    int8_t second = (int8_t)luaL_checkinteger(lua, 7);
+    // 五个字段原样进 MYSQL_TYPE_TIME 报文, 截断或传负数出来都是另一个合法时间且无从报错:
+    // 符号由 is_negative 单独带, 时分秒各占一个字节, 传 -1 到服务端就成了 255
+    int8_t is_negative = (int8_t)lpub_check_range(lua, 3, 0, 1, "is_negative must be 0 or 1");
+    int32_t days = (int32_t)lpub_check_range(lua, 4, INT32_MIN, INT32_MAX, "days out of range");
+    int8_t hour = (int8_t)lpub_check_range(lua, 5, 0, INT8_MAX, "hour out of range");
+    int8_t minute = (int8_t)lpub_check_range(lua, 6, 0, INT8_MAX, "minute out of range");
+    int8_t second = (int8_t)lpub_check_range(lua, 7, 0, INT8_MAX, "second out of range");
     mysql_bind_time(mbind, name, is_negative, days, hour, minute, second);
     return 0;
 }
@@ -242,9 +246,7 @@ static int32_t _lmysql_reader_new(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    mysql_reader_ctx **rd = lua_newuserdata(lua, sizeof(mysql_reader_ctx *));
-    *rd = reader;
-    ASSOC_MTABLE(lua, MT_MYSQL_READER);
+    lpub_push_ud(lua, reader, MT_MYSQL_READER);
     return 1;
 }
 /// <summary>
@@ -469,9 +471,7 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    mysql_stmt_ctx **st = lua_newuserdata(lua, sizeof(mysql_stmt_ctx *));
-    *st = stmt;
-    ASSOC_MTABLE(lua, MT_MYSQL_STMT);
+    lpub_push_ud(lua, stmt, MT_MYSQL_STMT);
     lua_pushvalue(lua, 1);
     lua_setiuservalue(lua, -2, 1);
     return 1;
@@ -669,11 +669,9 @@ static int32_t _lmysql_new(lua_State *lua) {
     const char *charset = luaL_checkstring(lua, 7);
     uint32_t maxpk = 0;
     if (LUA_TNUMBER == lua_type(lua, 8)) {
-        maxpk = (uint32_t)luaL_checkinteger(lua, 8);
+        maxpk = (uint32_t)lpub_check_range(lua, 8, 0, UINT32_MAX, "maxpack out of range");
     }
-    mysql_ctx **ud = lua_newuserdata(lua, sizeof(mysql_ctx *));
-    *ud = NULL;
-    ASSOC_MTABLE(lua, MT_MYSQL);
+    mysql_ctx **ud = (mysql_ctx **)lpub_push_ud(lua, NULL, MT_MYSQL);
     mysql_ctx *mysql;
     MALLOC(mysql, sizeof(mysql_ctx));
     if (ERR_OK != mysql_init(mysql, ip, port, evssl, user, password, database, charset, maxpk)) {

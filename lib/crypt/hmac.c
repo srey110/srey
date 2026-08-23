@@ -15,21 +15,17 @@ void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens)
     ASSERTAB(key_block <= HMAC_MAX_KEY_LENS, "key block exceeds stack buffer.");
     char *key_used;
     char key_temp[DG_BLOCK_SIZE], block_ipad[HMAC_MAX_KEY_LENS], block_opad[HMAC_MAX_KEY_LENS];
-    if (key_block == klens) {
-        key_used = (char *)key;
-    } else {
-        if (klens > key_block) {
-            digest_update(&hmac->outside, key, klens);
-            klens = digest_final(&hmac->outside, key_temp);
-            key_used = key_temp;
-        } else {
-            key_used = (char *)key;
-        }
-        int32_t fill = (int32_t)key_block - (int32_t)klens;
-        if (fill > 0) {
-            memset(block_ipad + klens, 0x36, (size_t)fill);
-            memset(block_opad + klens, 0x5c, (size_t)fill);
-        }
+    key_used = (char *)key;
+    if (klens > key_block) {
+        // 超块长的 key 先摘要成 digest 长度再用
+        digest_update(&hmac->outside, key, klens);
+        klens = digest_final(&hmac->outside, key_temp);
+        key_used = key_temp;
+    }
+    if (klens < key_block) {
+        // 不足块长的部分直接就是 pad 值(等价于先补 0 再异或)
+        memset(block_ipad + klens, 0x36, key_block - klens);
+        memset(block_opad + klens, 0x5c, key_block - klens);
     }
     for (size_t i = 0; i < klens; i++) {
         block_ipad[i] = key_used[i] ^ 0x36;

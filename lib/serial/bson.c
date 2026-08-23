@@ -97,9 +97,6 @@ int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens) {
     if (5 == doclens) {
         return ERR_OK;// 空文档,没有字段可拼
     }
-    if (PACK_TOO_LONG(doclens)) {
-        return ERR_FAILED;
-    }
     binary_set_binary(&bson->doc, doc + 4, doclens - 5);//4 + 1(eod)
     return ERR_OK;
 }
@@ -269,7 +266,7 @@ static int32_t _bson_iter_read_key(bson_iter *iter) {
     binary_offset(iter->doc, iter->doc->offset + iter->keylens + 1);
     return 1;
 }
-// 定长类型统一读取:read_key + 边界检查 + binary_get_binary;成功返 1,失败返 0
+// 定长类型统一读取:read_key + 边界检查 + binary_get_binary;成功返 ERR_OK,失败返 ERR_FAILED
 static int32_t _bson_iter_fixed(bson_iter *iter, size_t lens) {
     if (0 == _bson_iter_read_key(iter)) {
         return ERR_FAILED;
@@ -471,20 +468,27 @@ static int32_t _bson_iter_find(bson_iter *iter, const char *key, size_t klens, b
 int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
     int32_t rtn = ERR_FAILED;
     size_t klens = strlen(keys);
-    size_t offset = iter->doc->offset;
+    // result 可与 iter 是同一对象,下面会把 iter->doc 改指到 nested_doc,还原得按原文档来
+    binary_ctx *doc = iter->doc;
+    size_t offset = doc->offset;
     if (NULL == strstr(keys, ".")) {
         rtn = _bson_iter_find(iter, keys, klens, result);
-        if (ERR_OK == rtn) {
-            result->nested_doc = *iter->doc;
-            result->doc = &result->nested_doc;
+        if (ERR_OK != rtn) {
+            binary_offset(doc, offset);
+            return rtn;
         }
-        binary_offset(iter->doc, offset);
-        return rtn;
+        // 先存下"已推进到该元素之后"的视图再还原: doc 可能就是 result 自己的 nested_doc
+        // (链式原地收窄),那时先还原就把这个视图一起倒回去了,next 会把该元素重吐一遍
+        binary_ctx cur = *doc;
+        binary_offset(doc, offset);
+        result->nested_doc = cur;
+        result->doc = &result->nested_doc;
+        return ERR_OK;
     }
     buf_ctx segs[BSON_MAX_DEPTH];
     int32_t n = split2((char *)keys, klens, '.', segs, BSON_MAX_DEPTH);
     if (n < 0) {
-        binary_offset(iter->doc, offset);
+        binary_offset(doc, offset);
         return ERR_FAILED;
     }
     bson_iter cur_iter = *iter;
@@ -510,13 +514,15 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         bson_init(&bson, found.val, found.lens);
         bson_iter_init(&cur_iter, &bson);
     }
+    // 还原排在装 result 之前: doc 可能就是 result 自己的 nested_doc(链式原地收窄),
+    // 后还原就把刚装好的子文档视图按外层偏移改了, 越界即撞 binary_offset 的断言
+    binary_offset(doc, offset);
     if (ERR_OK == rtn) {
         // n >= 2(有点号才走到这里),成功即至少跑过一次非末层分支,bson 必已初始化
         *result = found;
         result->nested_doc = bson.doc;
         result->doc = &result->nested_doc;
     }
-    binary_offset(iter->doc, offset);
     return rtn;
 }
 // 检查迭代器当前字段类型是否与期望类型一致，不一致时设置 err
@@ -683,22 +689,14 @@ static int32_t _bson_check_depth(char *data, size_t lens, int32_t depth) {
     }
     bson_ctx sub;
     bson_iter iter;
-    int32_t err;
-    size_t dlens;
-    char *ddata;
     bson_init(&sub, data, lens);
     bson_iter_init(&iter, &sub);
     while (bson_iter_next(&iter)) {
-        if (BSON_DOCUMENT == iter.type) {
-            ddata = bson_iter_document(&iter, &dlens, &err);
-            if (ERR_OK != err
-                || ERR_OK != _bson_check_depth(ddata, dlens, depth + 1)) {
-                return ERR_FAILED;
-            }
-        } else if (BSON_ARRAY == iter.type) {
-            ddata = bson_iter_array(&iter, &dlens, &err);
-            if (ERR_OK != err
-                || ERR_OK != _bson_check_depth(ddata, dlens, depth + 1)) {
+        // 直接用 iter.val / iter.lens: 类型已在条件里判过, bson_iter_document / _array
+        // 只是"校验 type + 回填 lens + 返回 val", 那道校验必过
+        if (BSON_DOCUMENT == iter.type
+            || BSON_ARRAY == iter.type) {
+            if (ERR_OK != _bson_check_depth(iter.val, iter.lens, depth + 1)) {
                 return ERR_FAILED;
             }
         }

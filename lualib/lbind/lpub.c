@@ -40,15 +40,19 @@ size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max) {
     luaL_argcheck(lua, lens >= 0 && (0 == max || (size_t)lens <= max), idx, LENS_RANGE);
     return (size_t)lens;
 }
-uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what) {
-    lua_Integer val = luaL_checkinteger(lua, idx);
-    luaL_argcheck(lua, val >= 0 && val <= UINT16_MAX, idx, what);
-    return (uint16_t)val;
-}
 int64_t lpub_check_range(lua_State *lua, int32_t idx, int64_t lo, int64_t hi, const char *what) {
     lua_Integer val = luaL_checkinteger(lua, idx);
     luaL_argcheck(lua, val >= lo && val <= hi, idx, what);
     return (int64_t)val;
+}
+int64_t lpub_opt_range(lua_State *lua, int32_t idx, int64_t dft, int64_t lo, int64_t hi, const char *what) {
+    if (lua_isnoneornil(lua, idx)) {
+        return dft;
+    }
+    return lpub_check_range(lua, idx, lo, hi, what);
+}
+uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what) {
+    return (uint16_t)lpub_check_range(lua, idx, 0, UINT16_MAX, what);
 }
 uint16_t lpub_check_port(lua_State *lua, int32_t idx) {
     return lpub_check_u16(lua, idx, "port out of range");
@@ -58,6 +62,20 @@ void *lpub_owner_ptr(lua_State *lua, const char *omt) {
     void **owner = luaL_testudata(lua, -1, omt);
     lua_pop(lua, 1);
     return (NULL != owner) ? *owner : NULL;
+}
+void **lpub_push_ud(lua_State *lua, void *ptr, const char *mt) {
+    void **slot = lua_newuserdata(lua, sizeof(void *));
+    *slot = ptr;
+    ASSOC_MTABLE(lua, mt);
+    return slot;
+}
+int64_t lpub_check_index0(lua_State *lua, int32_t idx, uint64_t count) {
+    lua_Integer i = luaL_checkinteger(lua, idx);
+    if (i < 1
+        || (uint64_t)i > count) {
+        return -1;
+    }
+    return (int64_t)(i - 1);
 }
 // 不写 default：新增 pack_type 时 -Wswitch 报在这里，逼着表态它能不能从 Lua 传进来。
 // 只管本函数这一件事；协议分派那边的绊线在 prots.c 各 switch 自己身上

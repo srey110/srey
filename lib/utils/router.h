@@ -27,7 +27,8 @@
 //   /file/{path?}    {name?} 可选路径参数, 缺失时取不到值但仍匹配
 //                    匹配是精确的(非贪婪前瞻): 只要存在"某些 OPT 取值、其余缺失"的组合能让
 //                    整条路径对齐就算命中, 能取到值的 OPT 优先取值; 单条路由最多 ROUTER_MAX_OPT 个
-//   {name} 内部含 '?' (如 {a?b}) 视为非法参数名, 整段退化为字面量匹配
+//   {name} 名字为空 (如 {} / {?}) 或内部含 '?' (如 {a?b}) 都不算参数, 整段退化为字面量匹配
+//                    (注册照常成功, 只是该段按原文逐字比对)
 //   /static/*        末尾通配, 一旦命中后续任意请求段都吃下
 //   多条同 path 不同 method 算独立路由, 方法位掩码 ROUTER_M_GET|ROUTER_M_POST 也支持
 // 线程约定
@@ -202,8 +203,9 @@ struct router_req {
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
     // URL 解析结果 (内部使用)。存储由调用方提供并在调用 router_match_index 前赋值:
-    // url_ctx 有 4KB 出头, 内嵌进来会让本结构每次零初始化都白清一遍 —— url_parse 自己
-    // 第一件事就是把它整体清零。指针化后两边各清各的, 谁也不重复
+    // url_ctx 有 4KB 出头, 内嵌进来会让本结构每次零初始化都白清一遍。指针化后不必预先
+    // 清零: url_parse 入口只清 param 之前的头部字段, segs / param / buf 三个大数组按
+    // npath / nparam 划定有效范围, 越界部分读到的是上一个请求的残留
     url_ctx *url;
 };
 // 分组对象 (栈分配, 调用方持有);  prefix / mws 仅持引用, 调用方需保证生命周期
@@ -470,12 +472,12 @@ void router_net_recv(router_ctx *r, task_ctx *task, sk_id *sk,
 /// <param name="ctx">router_req</param>
 void router_next(router_req *ctx);
 /// <summary>
-/// 取请求头; 大小写不敏感匹配。流式路由过了首帧恒返 NULL, 见 router_stream_cb
+/// 取请求头; 大小写不敏感匹配。流式路由过了首帧就取不到了, 见 router_stream_cb
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="key">header 名</param>
 /// <param name="lens">输出值长度</param>
-/// <returns>值指针 (pack 内部, 不复制); 未找到返回 NULL</returns>
+/// <returns>值指针 (pack 内部, 不复制); 未找到、或流式路由已过首帧, 返回 NULL</returns>
 char *router_req_header(router_req *ctx, const char *key, size_t *lens);
 /// <summary>
 /// 取路径参数 (来自 {name} / {name?})
@@ -527,9 +529,9 @@ void router_req_json(router_req *ctx, int32_t code, const char *json, size_t len
 void router_req_html(router_req *ctx, int32_t code, const char *body, size_t lens);
 /// <summary>
 /// 自定义响应; extra 为附加头。Content-Type 就经 extra 传(本函数自己不写, 与 router_req_text /
-/// _json / _html 写死类型不同); Content-Length / Transfer-Encoding 不能传——按 body_len 自动写
-/// 前者, 再叠一条对端会判为请求走私。附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN):
-/// 头名为空、>= 128 字节或不是 RFC 7230 token, 头值为 NULL 或含 NUL/CR/LF,
+/// _json / _html 写死类型不同)。附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN):
+/// 头名为 Content-Length / Transfer-Encoding (前者按 body_len 自动写, 再叠一条对端会判为
+/// 请求走私), 头名为空、>= 128 字节或不是 RFC 7230 token, 头值为 NULL 或含 NUL/CR/LF,
 /// 以及该条会让头部块累计越过 http.c 的 MAX_HEADLENS。头名一律不截断——截断等于改名发上线缆
 /// </summary>
 /// <param name="ctx">router_req</param>

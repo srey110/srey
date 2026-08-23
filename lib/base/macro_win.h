@@ -5,20 +5,20 @@
 
 #ifdef OS_WIN
 
-#define DLL_EXNAME "dll"           // 动态库扩展名
-#define PATH_SEPARATOR '\\'        // 路径分隔符
-#define PATH_SEPARATORSTR "\\"     // 路径分隔符字符串
-#define PATH_LENS MAX_PATH         // 路径最大长度
+#define DLL_EXNAME "dll" // 动态库扩展名
+#define PATH_SEPARATOR '\\' // 路径分隔符
+#define PATH_SEPARATORSTR "\\" // 路径分隔符字符串
+#define PATH_LENS MAX_PATH // 路径最大长度
 #define INVALID_SOCK INVALID_SOCKET // 无效 socket 句柄
 
 #define IS_EAGAIN(e) (WSAEWOULDBLOCK == (e) || EAGAIN == (e)) // 判断是否为非阻塞重试错误
-#define GETPID   _getpid           // 获取当前进程 ID
-#define STRICMP  _stricmp          // 不区分大小写字符串比较
-#define STRNCMP  _strnicmp         // 不区分大小写的前 n 字节字符串比较
-#define STRTOK   strtok_s          // 线程安全的字符串分割
-#define SNPRINTF snprintf          // 格式化输出到缓冲区
-#define SWPRINTF swprintf          // 宽字符格式化输出
-#define FSTAT    _stat             // 获取文件状态
+#define GETPID   _getpid // 获取当前进程 ID
+#define STRICMP  _stricmp // 不区分大小写字符串比较
+#define STRNCMP  _strnicmp // 不区分大小写的前 n 字节字符串比较
+#define STRTOK   strtok_s // 线程安全的字符串分割
+#define SNPRINTF snprintf // 格式化输出到缓冲区
+#define SWPRINTF swprintf // 宽字符格式化输出
+#define FSTAT    _stat // 获取文件状态
 // 微秒级睡眠（Windows 使用可等待定时器实现）
 #define USLEEP(us)\
     do {\
@@ -34,22 +34,30 @@
         }\
     }while(0)
 
-#define MSLEEP(ms) Sleep(ms)       // 毫秒级睡眠
+#define MSLEEP(ms) Sleep(ms) // 毫秒级睡眠
 #define THREAD_YIELD() SwitchToThread() // OS 级线程让出，用于自旋超限后的兜底退避
 #define CPU_PAUSE() YieldProcessor() // 自旋等待 CPU 暂停提示
 #define THREAD_LOCAL __declspec(thread) // 线程局部存储
-#define TIMEB  _timeb              // 时间结构体类型
-#define FTIME  _ftime              // 获取当前时间（毫秒精度）
-#define ACCESS _access             // 检查文件访问权限
-#define MKDIR  _mkdir              // 创建目录
-#define SHUT_RD   SD_RECEIVE       // 关闭接收方向
-#define SHUT_WR   SD_SEND          // 关闭发送方向
-#define SHUT_RDWR SD_BOTH          // 关闭双向
-#define SOCK_CLOSE closesocket     // 关闭 socket
+#define TIMEB  _timeb // 时间结构体类型
+#define FTIME  _ftime // 获取当前时间（毫秒精度）
+#define ACCESS _access // 检查文件访问权限
+#define MKDIR  _mkdir // 创建目录
+#define SHUT_RD   SD_RECEIVE // 关闭接收方向
+#define SHUT_WR   SD_SEND // 关闭发送方向
+#define SHUT_RDWR SD_BOTH // 关闭双向
+#define SOCK_CLOSE closesocket // 关闭 socket
 #define SET_CLOEXEC(fd) (void)SetHandleInformation((HANDLE)(fd), HANDLE_FLAG_INHERIT, 0) // 标记句柄不被子进程继承
+// 关闭句柄并置空。漏掉置空就会被第二个收尾路径二次关闭(popen_close / popen_free 即成对)
+#define CLOSE_HANDLE(h)\
+    do {\
+        if (NULL != (h)) {\
+            CloseHandle((h));\
+            (h) = NULL;\
+        }\
+    } while(0)
 // 线程安全的本地时间转换；返回 0 成功、非 0 失败。调用方必须判返回值再用 dt
 #define LOCALTIME(ts, dt) localtime_s((dt), (ts))
-#define ERRNO GetLastError()       // 获取上一个 Windows 错误码
+#define ERRNO GetLastError() // 获取上一个 Windows 错误码
 // 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）
 static inline const char *_fmterror(DWORD error) {
     char *err = NULL;

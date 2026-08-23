@@ -82,7 +82,8 @@ end
 ---无结果集（INSERT/UPDATE 等）给该条的影响行数；失败返回 false，原因走 erro()。
 ---空 SQL / 纯注释这类服务端不回 CommandComplete 的语句拿到空表，取元素前先判 #results。
 ---所有结果攒齐才返回，峰值内存是各结果集之和，别拿它跑几百条语句拼成的脚本。
----别把 COPY 和别的语句拼在一条 query 里：COPY 那条不占结果位，下标与语句序号对不上。
+---别把 COPY TO STDOUT 和别的语句拼在一条 query 里：包类型会被换掉，前面已提交的结果
+---连同行一起丢。COPY FROM STDIN 走独立包，不影响下标。
 ---注意与 pgsql_stmt_ctx:execute 形状不同：那边一次只有一条语句，直接给 reader 不套数组
 function ctx:query(sql)
     return srey.serial_ret(false, self.serial(self._query, self, sql))

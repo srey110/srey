@@ -645,9 +645,7 @@ static int32_t _lprot_smtp_new(lua_State *lua) {
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *user = luaL_checkstring(lua, 4);
     const char *psw = luaL_checkstring(lua, 5);
-    smtp_ctx **ud = lua_newuserdata(lua, sizeof(smtp_ctx *));
-    *ud = NULL;
-    ASSOC_MTABLE(lua, MT_SMTP);
+    smtp_ctx **ud = (smtp_ctx **)lpub_push_ud(lua, NULL, MT_SMTP);
     smtp_ctx *smtp;
     MALLOC(smtp, sizeof(smtp_ctx));
     if (ERR_OK != smtp_init(smtp, ip, port, evssl, user, psw)) {
@@ -885,9 +883,7 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="_smtp_mail_ctx">邮件对象</returns>
 static int32_t _lprot_mail_new(lua_State *lua) {
-    mail_ctx **ud = lua_newuserdata(lua, sizeof(mail_ctx *));
-    *ud = NULL;
-    ASSOC_MTABLE(lua, MT_SMTP_MAIL);
+    mail_ctx **ud = (mail_ctx **)lpub_push_ud(lua, NULL, MT_SMTP_MAIL);
     mail_ctx *mail;
     MALLOC(mail, sizeof(mail_ctx));
     mail_init(mail);

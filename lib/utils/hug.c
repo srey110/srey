@@ -50,10 +50,12 @@ void hug_wakeup(hug_ctx *ctx) {
     mutex_unlock(&ctx->muexit);
     cond_signal(&ctx->condexit);
 #else
-    // POSIX self-pipe: 写入字节驻留 kernel pipe buffer 不会丢失, 无需 mutex
-    ATOMIC_SET(&ctx->exitflag, 1);
-    char x = 1;
-    (void)!write(ctx->exit_pipe[1], &x, 1);
+    // POSIX self-pipe: 写入字节驻留 kernel pipe buffer 不会丢失, 无需 mutex。
+    // 只写第一次: hug_wait 返回后无人再读, 反复写会填满管道并把 handler 里的 write 堵死
+    if (ATOMIC_CAS(&ctx->exitflag, 0, 1)) {
+        char x = 1;
+        (void)!write(ctx->exit_pipe[1], &x, 1);
+    }
 #endif
 }
 void hug_free(hug_ctx *ctx) {

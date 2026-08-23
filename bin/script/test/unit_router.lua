@@ -761,8 +761,16 @@ runner.run("unit_router", function(t)
     do
         local r = Route.new()
         t:check(nil ~= r:get("/a/*/b", function() end), "中置 * 被跳过(返 sentinel)")
-        t:check(nil ~= r:get("/x/{}",  function() end), "空名 {} 被跳过")
-        t:check(nil ~= r:get("/y/{?}", function() end), "空名 {?} 被跳过")
+        -- 空名段 {} / {?} 不是占位符, 按字面量段注册成功(同 C 侧 _router_parse_seg)。
+        -- 用 :name() 有没有写进 _named 区分真 entry 与 sentinel —— 只查 nil ~= r:get(...)
+        -- 的话两者都为真, 分不出注册成功还是被跳过
+        r:get("/x/{}",  function() end):name("lit_brace")
+        r:get("/y/{?}", function() end):name("lit_bq")
+        t:check(nil ~= r._named["lit_brace"], "{} 名字为空 → 字面量段, 注册成功")
+        t:check(nil ~= r._named["lit_bq"],    "{?} 名字为空 → 字面量段, 注册成功")
+        -- 是字面量而不是参数: 拿任意文本去打都不该命中(当成 OPT 的话 /y/zzz 会返 200)
+        t:eq(404, (dispatch(r, "GET", "/x/zzz") or {}).code, "{} 当字面量, /x/zzz 不命中")
+        t:eq(404, (dispatch(r, "GET", "/y/zzz") or {}).code, "{?} 当字面量, /y/zzz 不命中")
         t:check(nil ~= r:get("/" .. string.rep("s/", 65), function() end), "段数超 64 被跳过")
         t:check(nil ~= r:get("/ok/{id}/*", function() end), "末段 * 合法,返 entry")
         -- sentinel 支持链式 :name() 不崩溃，且不污染命名路由表

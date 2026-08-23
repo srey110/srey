@@ -1718,6 +1718,42 @@ static void test_hashmap_clear_alloc(CuTest *tc) {
     hashmap_free(map);
 }
 
+// hashmap_set_allocator 写的是三个 file-scope 全局, 影响此后每一次 hashmap_new。
+// 所以建表和释放都收在窗口内, 且全部断言排在恢复默认之后 —— CuAssert 失败会 longjmp
+// 出去, 把自定义分配器留在全局里会污染后续用例
+static void test_hashmap_set_allocator(CuTest *tc) {
+    hashmap_set_allocator(_hm_count_malloc, _hm_count_realloc, _hm_count_free);
+    _hm_alloc_n = 0;
+    _hm_free_n = 0;
+    struct hashmap *map = hashmap_new(sizeof(_kv), 16, 0, 0, _kv_hash, _kv_cmp, NULL, NULL);
+    int32_t built = (NULL != map);
+    int32_t made = _hm_alloc_n;
+    _kv kv;
+    int32_t i;
+    if (built) {
+        for (i = 0; i < 64; i++) {
+            SNPRINTF(kv.key, sizeof(kv.key), "k_%d", i);
+            kv.val = i;
+            hashmap_set(map, &kv);
+        }
+        hashmap_free(map);
+    }
+    int32_t freed = _hm_free_n;
+    // 三个 NULL 恢复默认: 回退链落回 libc
+    hashmap_set_allocator(NULL, NULL, NULL);
+    _hm_alloc_n = 0;
+    struct hashmap *plain = hashmap_new(sizeof(_kv), 16, 0, 0, _kv_hash, _kv_cmp, NULL, NULL);
+    int32_t after = _hm_alloc_n;
+    if (NULL != plain) {
+        hashmap_free(plain);
+    }
+
+    CuAssertTrue(tc, 0 != built);
+    CuAssertTrue(tc, made > 0);
+    CuAssertTrue(tc, freed > 0);
+    CuAssertIntEquals(tc, 0, after);// 已还原, 自定义 malloc 不再被调到
+}
+
 // hashmap_set_load_factor 设的负载因子必须在扩容后继续生效。
 // 修复前 resize0 从"用默认 60 建出来的临时 map"拷 growat/shrinkat，自定义因子被悄悄换回默认，
 // 而 map->loadfactor 字段仍报旧值——外部无从察觉。用计数分配器定位扩容发生的时机来观测
@@ -2108,6 +2144,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hashmap_upstream_elfree);
     SUITE_ADD_TEST(suite, test_hashmap_clear_alloc);
     SUITE_ADD_TEST(suite, test_hashmap_load_factor_survives_resize);
+    SUITE_ADD_TEST(suite, test_hashmap_set_allocator);
     SUITE_ADD_TEST(suite, test_heap);
     SUITE_ADD_TEST(suite, test_heap_remove_root);
     SUITE_ADD_TEST(suite, test_slist_basic);

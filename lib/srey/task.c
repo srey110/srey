@@ -3,6 +3,8 @@
 #include "containers/hashmap.h"
 #include "utils/utils.h"
 
+typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
+
 // 消息 data 的归属方式。"哪些消息类型持有需要释放的堆数据"只在这一个 switch 里定义：
 // _message_should_clean 与 _message_clean 都问它，新增带数据的消息类型只改这一处，
 // 不会出现"清理加了、判定漏了"这种只在某一条消费路径上泄漏、编译器与测试都不相关的分歧
@@ -160,7 +162,6 @@ static void _task_handle_response(task_ctx *task, message_ctx *msg) {
     }
     _message_clean(msg);
 }
-typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
 // 按消息类型索引的处理函数表（静态分发，无 switch-case 开销）
 static const _msg_handler_t _msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_STARTUP]      = _task_handle_startup,

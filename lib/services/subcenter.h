@@ -5,7 +5,8 @@
 #include "path/path_rules.h"
 #include "utils/binary.h"
 
-// topic / pattern / group / meta 四项客户端就地检查，空串或超限返 ERR_FAILED、请求不发出；
+// topic / pattern / group 三项客户端就地检查，空串或超限返 ERR_FAILED、请求不发出；
+// meta 只查上限，空值是合法的"清除元数据"语义；
 // 长度取等号仍合法，不含结尾 NUL。topic 与 group 的上限卡在线格式的 2 字节长度前缀上，
 // 放超限值进去会被静默截断成另一个 topic。
 // retained 载荷只在服务端拒（客户端照发），BURST_MAX 则是服务端单次 scan 的截断上限

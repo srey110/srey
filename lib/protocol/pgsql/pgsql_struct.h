@@ -18,6 +18,7 @@ typedef struct pgsql_result {
 // pgsql 数据包上下文
 typedef struct pgpack_ctx {
     pgpack_type type;               // 数据包类型（成功/错误/通知）
+    uint32_t iter_cursor;           // pgsql_reader_iter 的扫描起点，只前进不回头（占 type 后的对齐空洞）
     void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息或通知）
     void(*_free_pgpack)(void *);    // 释放 pack 的回调函数
     array_ctx results;              // 已完成语句的结果数组（元素 pgsql_result）；CALLOC 全零即合法空数组，首条 CommandComplete 提交时才 array_init

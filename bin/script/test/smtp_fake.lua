@@ -179,7 +179,7 @@ runner.run("smtp_fake", function(t)
     t:eq(0, interleave, "服务端未检出命令交错")
     t:eq(CONC_N * ROUNDS, mails, "服务端收下的邮件数")
     -- 问候里的裸 LF 不得被原样拼进 EHLO——那等于往自己的命令行里插了第二条命令。
-    -- 上面每封邮件都走过一次完整握手，任一次漏过都会把它置起来
+    -- 16 封信共用一条连接，全程只有这一次 EHLO：这是一次采样，不是 16 次
     t:eq(false, ehlo_injected, "问候里的裸 LF 未被拼进 EHLO 行")
 
     -- quit 之后 ping 走重连：ping 只认"连接是否可用"，不区分连接是被谁关的

@@ -15,8 +15,9 @@ typedef struct queue_ctx {
 /// </summary>
 /// <param name="qu">queue_ctx</param>
 /// <param name="elsize">单元素字节数，须 大于 0</param>
-/// <param name="maxsize">期望初始容量；0 表示延迟分配——此刻不申请内存，首次 queue_push 时
-///   按默认容量分配(供可能永不装入元素的层使用，如 fsqu 的溢出层)</param>
+/// <param name="maxsize">期望初始容量，非 0 时向上取到偶数(同 queue_resize)；0 表示延迟分配
+///   ——此刻不申请内存，首次 queue_push 时按默认容量分配(供可能永不装入元素的层使用，
+///   如 fsqu 的溢出层)</param>
 void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize);
 /// <summary>
 /// 释放队列内部内存，不释放 qu 本身
@@ -73,7 +74,7 @@ static inline void queue_clear(queue_ctx *qu) {
     qu->offset = 0;
 }
 /// <summary>
-/// 按队头偏移访问元素(不弹出);越界返 NULL
+/// 按队头偏移访问元素(不弹出)
 /// </summary>
 /// <param name="qu">queue_ctx</param>
 /// <param name="pos">相对队头的偏移，[0, size)</param>
@@ -106,6 +107,28 @@ static inline void queue_push(queue_ctx *qu, const void *elem) {
     uint32_t pos = _queue_wrap(qu, qu->offset + qu->size);
     memcpy((char *)qu->ptr + (size_t)pos * qu->elsize, elem, qu->elsize);
     qu->size++;
+}
+/// <summary>
+/// 队列是否已满(元素数达当前分配容量)。queue_push 会自动扩容,只有想要"满就拒"的
+/// 调用方才需要先问这个
+/// </summary>
+/// <param name="qu">queue_ctx</param>
+/// <returns>非 0 表示已满</returns>
+static inline int32_t queue_full(queue_ctx *qu) {
+    return qu->size >= qu->maxsize;
+}
+/// <summary>
+/// 队尾追加元素,满则失败且不扩容。有界队列共用这一处判定,不必各写一遍
+/// </summary>
+/// <param name="qu">queue_ctx</param>
+/// <param name="elem">指向待追加元素的指针，拷贝 elsize 字节</param>
+/// <returns>ERR_OK 已入队；ERR_FAILED 队列已满,元素未写入</returns>
+static inline int32_t queue_trypush(queue_ctx *qu, const void *elem) {
+    if (queue_full(qu)) {
+        return ERR_FAILED;
+    }
+    queue_push(qu, elem);
+    return ERR_OK;
 }
 /// <summary>
 /// 弹出队头元素

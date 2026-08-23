@@ -44,7 +44,8 @@ static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
 }
 // 定位第 nelts 个节点(完全二叉树按层编号,1 起)的父节点,返回后 *path 最低位表示该节点
 // 是父的左(0)还是右(1)子。nelts 由调用方按各自时机传:insert 传自增后的新槽位,
-// remove 传自减前的现末尾节点
+// remove 传自减前的现末尾节点。返回 NULL 只出现在 insert 的 nelts == 1(空堆首次插入),
+// heap_insert 正靠它建根,那条判空不能删;remove 那侧 nelts >= 1 即 root 非空
 static heap_node *_heap_last_parent(heap_ctx *heap, uint32_t nelts, uint32_t *path) {
     uint32_t d = 0;
     *path = 0;
@@ -110,9 +111,7 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
     --heap->nelts;
     // 用末尾节点替换待删除节点
     heap_node *last = NULL;
-    if (NULL == parent) {
-        return;
-    } else if (path & 1) {
+    if (path & 1) {
         last = parent->right;
         parent->right = NULL;
     } else {

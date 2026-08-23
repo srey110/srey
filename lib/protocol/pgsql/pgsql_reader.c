@@ -1,17 +1,28 @@
 ﻿#include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql_parse.h"
+#include "protocol/pgsql/pgsql.h"// pgsql_result_count
 #include "utils/strptime.h"
 
-pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format) {
-    // 扫到第一个还没被取走的结果集就交出去：取走会把槽位置空，所以下次调用自然给下一个。
-    // BEGIN / SET 这类没有结果集的语句槽位本就是空的，一并跳过
-    if (PGPACK_OK != pgpack->type) {
-        return NULL;
+// 取走第 idx 个结果的 reader; 下标须已由调用方确认在范围内。所有权转移给调用方,
+// 槽位置 NULL 以免 _pgpack_free 二次释放
+static pgsql_reader_ctx *_pgsql_reader_take(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
+    pgsql_result *res = array_at(&pgpack->results, idx);
+    if (NULL == res->reader) {
+        return NULL; // 该语句无结果集（INSERT/UPDATE 无 RETURNING）
     }
-    uint32_t total = array_size(&pgpack->results);
+    pgsql_reader_ctx *reader = res->reader;
+    reader->format = format;
+    res->reader = NULL;
+    return reader;
+}
+pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format) {
+    // 从上次停下的位置接着扫：槽位一旦取空就再不会变回非空，所以游标只前进不回头，
+    // 遍历整个响应是 O(n) 而不是每次都从 0 重扫。BEGIN / SET 这类无结果集的槽位一并跳过
+    uint32_t total = pgsql_result_count(pgpack);// 类型不符时返 0, 循环不进
     pgsql_reader_ctx *reader;
-    for (uint32_t i = 0; i < total; i++) {
-        reader = pgsql_reader_at(pgpack, i, format);
+    while (pgpack->iter_cursor < total) {
+        reader = _pgsql_reader_take(pgpack, pgpack->iter_cursor, format);
+        pgpack->iter_cursor++;
         if (NULL != reader) {
             return reader;
         }
@@ -19,19 +30,10 @@ pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format) {
     return NULL;
 }
 pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
-    if (PGPACK_OK != pgpack->type
-        || idx >= array_size(&pgpack->results)) {
-        return NULL;
+    if (idx >= pgsql_result_count(pgpack)) {
+        return NULL;// 类型不符时 count 为 0, 任何下标都被这条挡住
     }
-    pgsql_result *res = array_at(&pgpack->results, idx);
-    if (NULL == res->reader) {
-        return NULL; // 该语句无结果集（INSERT/UPDATE 无 RETURNING）
-    }
-    pgsql_reader_ctx *reader = res->reader;
-    reader->format = format;
-    // 所有权转移到调用方，避免 _pgpack_free 时二次释放 reader
-    res->reader = NULL;
-    return reader;
+    return _pgsql_reader_take(pgpack, idx, format);
 }
 void pgsql_reader_free(pgsql_reader_ctx *reader) {
     _pgpack_reader_free(reader); // 释放行数组与字段数组

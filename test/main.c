@@ -436,6 +436,18 @@ int main(int argc, char *argv[]) {
     }
     hug_wait(&_hug);
     loader_free(g_loader);
+
+    /* ── 会用光全局槽位的用例：排在集成阶段之后，别把分条计数提前关掉 ── */
+    CuString *slotout = CuStringNew();
+    CuSuite *slotsuite = CuSuiteNew();
+    test_base_slots(slotsuite);
+    CuSuiteRun(slotsuite);
+    CuSuiteSummary(slotsuite, slotout);
+    CuSuiteDetails(slotsuite, slotout);
+    printf("%s\n", slotout->buffer);
+    unit_failed += slotsuite->failCount;
+    CuStringDelete(slotout);
+    CuSuiteDelete(slotsuite);
     hug_free(&_hug);
     sock_clean();
 #if defined(OS_WIN)

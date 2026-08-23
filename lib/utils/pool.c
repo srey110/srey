@@ -34,12 +34,7 @@ static uint32_t _pool_safe_capacity(void *qu) {
     return fsqu_capacity((fsqu_ctx *)qu);
 }
 static int32_t _pool_normal_trypush(void *qu, const void *data) {
-    queue_ctx *q = (queue_ctx *)qu;
-    if (q->size >= q->maxsize) {
-        return ERR_FAILED;
-    }
-    queue_push(q, data);
-    return ERR_OK;
+    return queue_trypush((queue_ctx *)qu, data);
 }
 static int32_t _pool_normal_pop(void *qu, void *out) {
     queue_ctx *q = (queue_ctx *)qu;

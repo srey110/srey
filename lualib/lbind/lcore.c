@@ -596,7 +596,7 @@ static int32_t _lcore_pack_type(lua_State *lua) {
 static int32_t _lcore_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int8_t status = (int8_t)luaL_checkinteger(lua, 3);
+    int8_t status = (int8_t)lpub_check_range(lua, 3, INT8_MIN, INT8_MAX, "status out of range");
     if (ERR_OK != ev_ud_status(&g_loader->netev, fd, skid, status)) {
         lua_pushboolean(lua, 0);
     } else {
@@ -731,7 +731,8 @@ static int32_t _lcore_mem_stat(lua_State *lua) {
     lua_setfield(lua, -2, "nalloc");
     lua_pushinteger(lua, (lua_Integer)nfree);
     lua_setfield(lua, -2, "nfree");
-    lua_pushinteger(lua, (lua_Integer)(nalloc - nfree));
+    // 两个出参不是一致快照(见 memory.h), nfree 可能读得比 nalloc 大, 裸减就下溢
+    lua_pushinteger(lua, (lua_Integer)((nalloc >= nfree) ? (nalloc - nfree) : 0));
     lua_setfield(lua, -2, "live");
     return 1;
 }

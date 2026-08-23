@@ -5,7 +5,6 @@
 #include "utils/utils.h"
 #include "crypt/scram.h"
 
-#define MONGO_MAX_PACK_SIZE (64 * 1024 * 1024)  // MongoDB 单包上限 64MB
 
 typedef enum parse_status {
     COMMAND = 0,

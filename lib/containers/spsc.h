@@ -46,7 +46,7 @@ int32_t spsc_trypush(spsc_ctx *q, const void *data);
 /// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
 int32_t spsc_pop(spsc_ctx *q, void *out);
 /// <summary>
-/// 返回当前队列元素数量的近似值
+/// 返回当前队列元素数量的近似值：只会高估不会低估(上限 capacity)，不会把有元素报成 0。同 mpq_size
 /// </summary>
 /// <param name="q">spsc_ctx</param>
 /// <returns>元素数量，取值 [0, capacity]</returns>

@@ -830,6 +830,10 @@ static void test_scram_setters(CuTest *tc) {
         CuAssertIntEquals(tc, 4096, srv->iter);
         scram_set_iter(srv, 10000);
         CuAssertIntEquals(tc, 10000, srv->iter);
+        // 高于 SCRAM_MAX_ITER(256 * 4096) 夹到上限,与客户端解析服务端 i= 时的上限同值,
+        // 所以夹过的值对端照样接受
+        scram_set_iter(srv, INT32_MAX);
+        CuAssertIntEquals(tc, 256 * 4096, srv->iter);
         scram_free(srv);
     }
     // scram_set_iter：客户端调用被拒（iter 保持 0）
@@ -1830,6 +1834,34 @@ static void test_padding_extra(CuTest *tc) {
  * cipher_block 直接对单个分组加解密；
  * cipher_reset 将 cur_iv 重置为初始 iv，CTR/CFB/OFB 流模式下复用同一 ctx 必须先 reset
  * ======================================================================= */
+// key / iv 传 NULL + 长度 0: _padding_key 不能拿 NULL 去 memcpy(UBSan 的 nonnull-attribute
+// 会报), 语义上等价于全零 key + 全零 IV, 这里按"与显式全零等价"来断言
+static void test_cipher_null_key_iv(CuTest *tc) {
+    char zero16[16];
+    memset(zero16, 0, sizeof(zero16));
+    const char *blk = "0123456789abcdef";
+    size_t n1, n2;
+    char c1[16];
+
+    cipher_ctx a;
+    cipher_init(&a, AES, CBC, NULL, 0, 128, 1);
+    cipher_iv(&a, NULL, 0);
+    void *p = cipher_block(&a, blk, 16, &n1);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, 16 == n1);
+    memcpy(c1, p, 16);
+    cipher_free(&a);
+
+    cipher_ctx b;
+    cipher_init(&b, AES, CBC, zero16, sizeof(zero16), 128, 1);
+    cipher_iv(&b, zero16, sizeof(zero16));
+    p = cipher_block(&b, blk, 16, &n2);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, 16 == n2);
+    CuAssertTrue(tc, 0 == memcmp(c1, p, 16));
+    cipher_free(&b);
+}
+
 static void test_cipher_block_reset(CuTest *tc) {
     const char *key16 = "0123456789abcdef";
     const char *iv16  = "abcdef0123456789";
@@ -2398,6 +2430,7 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_scram_pwd_required);
     SUITE_ADD_TEST(suite, test_scram_embedded_nul);
     SUITE_ADD_TEST(suite, test_scram_server_nonce_required);
+    SUITE_ADD_TEST(suite, test_cipher_null_key_iv);
     SUITE_ADD_TEST(suite, test_digest_hmac_final_resets);
     SUITE_ADD_TEST(suite, test_cipher_dofinal_empty_vs_fail);
 }

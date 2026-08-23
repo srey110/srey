@@ -86,9 +86,9 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
             return;
         }
         int32_t slot = _tls[i].slot;
-        // reader/writer 为 store-buffer(Dekker)握手,需 StoreLoad 顺序:store active=1(seq_cst)
-        // 后必须以 seq_cst 载入 write_flag——acquire 载入在 ARMv8.3+ RCpc(LDAPR)下不保证该顺序,
-        // 会与 writer 同时进临界区。writer 侧同理:store write_flag=1 后 seq_cst 载入各 slot 的 active
+        // 两边先各自置位, 再查看对方: 置 active=1 之后必须用足序版本读 write_flag。
+        // 用 acquire 版在部分 ARM 上挡不住重排, 两边会同时看漏对方而一起进临界区。
+        // writer 侧对称: 置 write_flag=1 之后同样用足序版本读各 slot 的 active
         for (;;) {
             ATOMIC_SET(&ctx->slots[slot].active, 1);
             if (!ATOMIC_GET_SEQCST(&ctx->write_flag)) {

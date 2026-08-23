@@ -207,13 +207,13 @@ static int32_t _lhash_ring_free(lua_State *lua) {
 /// 向哈希环添加节点（含虚拟节点）
 /// </summary>
 /// <param name="self" type="userdata">哈希环对象</param>
-/// <param name="nreplicas" type="integer">虚拟节点数</param>
+/// <param name="nreplicas" type="integer">虚拟节点数，须在 uint32 范围内（越界直接报错，不返回 false）</param>
 /// <param name="name" type="string|lightuserdata">节点名称；为字符串时长度自动取得</param>
 /// <param name="lens" type="integer?">name 为 lightuserdata 时必填，表示名称字节数</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lhash_ring_add(lua_State *lua) {
     hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
-    uint32_t nreplicas = (uint32_t)luaL_checkinteger(lua, 2);
+    uint32_t nreplicas = (uint32_t)lpub_check_range(lua, 2, 0, UINT32_MAX, "nreplicas out of range");
     size_t lens;
     void *name = lpub_check_buf(lua, 3, &lens, NULL);
     if (ERR_OK == hash_ring_add(ring, name, lens, nreplicas)) {
@@ -308,8 +308,8 @@ static int32_t _ltrend_busy(lua_State *lua) {
     lua_Integer sample = luaL_checkinteger(lua, 2);
     luaL_argcheck(lua, sample >= 0, 2, "sample must not be negative");
     size_t cur = (size_t)sample;
-    uint32_t busy_num = (uint32_t)luaL_checkinteger(lua, 3);
-    uint32_t busy_den = (uint32_t)luaL_checkinteger(lua, 4);
+    uint32_t busy_num = (uint32_t)lpub_check_range(lua, 3, 0, UINT32_MAX, "busy_num out of range");
+    uint32_t busy_den = (uint32_t)lpub_check_range(lua, 4, 0, UINT32_MAX, "busy_den out of range");
     lua_pushboolean(lua, load_trend_busy(trend, cur, busy_num, busy_den));
     return 1;
 }
@@ -353,7 +353,7 @@ static int32_t _lpopen_new(lua_State *lua) {
 /// <returns type="boolean">true 表示已退出，false 表示超时仍在运行</returns>
 static int32_t _lpopen_waitexit(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
-    uint32_t ms = (uint32_t)luaL_checkinteger(lua, 2);
+    uint32_t ms = (uint32_t)lpub_check_range(lua, 2, 0, UINT32_MAX, "ms out of range");
     lua_pushboolean(lua, ERR_OK == popen_waitexit(ctx, ms));
     return 1;
 }

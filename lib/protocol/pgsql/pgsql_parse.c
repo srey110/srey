@@ -1,4 +1,5 @@
 ﻿#include "protocol/pgsql/pgsql_parse.h"
+#include "protocol/pgsql/pgsql_reader.h"
 #include "utils/utils.h"
 
 // 解析 ErrorResponse / NoticeResponse，将各字段拼接为可读字符串返回（调用方负责释放）
@@ -43,13 +44,11 @@ void _pgpack_results_clear(pgpack_ctx *pgpack) {
     for (uint32_t i = 0; i < array_size(&pgpack->results); i++) {
         res = array_at(&pgpack->results, i);
         if (NULL != res->reader) {
-            _pgpack_reader_free(res->reader);
-            FREE(res->reader);
+            pgsql_reader_free(res->reader);
         }
     }
-    array_free(&pgpack->results);
-    // array_free 只复位 size/maxsize，elsize 原样留着，而下面拿 elsize 当"数组还没建"的判据
-    pgpack->results.elsize = 0;
+    array_free(&pgpack->results);// 内部就是 FREE(ptr), 置空后即"数组还没建"
+    pgpack->iter_cursor = 0;
 }
 // 获取或创建 pgsql_ctx 当前累积的 pgpack_ctx；pg 为 NULL 时直接分配新的（用于通知包）
 static pgpack_ctx *_pgpack_init(pgsql_ctx *pg, pgpack_type type) {
@@ -317,13 +316,15 @@ static int32_t _pgpack_complete(pgsql_ctx *pg, binary_ctx *breader) {
     if (PGPACK_OK != pg->pack->type) {
         return ERR_OK;
     }
-    if (0 == pg->pack->results.elsize) {// 首次提交才建数组，无结果可提交的包（通知 / 认证期 / COPY OUT）不分配
+    if (NULL == pg->pack->results.ptr) {// 首次提交才建数组，无结果可提交的包（通知 / 认证期 / COPY OUT）不分配
         array_init(&pg->pack->results, sizeof(pgsql_result), 2);
     }
     pgsql_result res;
-    ZERO(&res, sizeof(res));// 逐字段写满是当前字段表的巧合，加字段就会把栈上残留拷进数组
+    ZERO(&res, sizeof(res));
     res.reader = pg->pack->pack;
-    memcpy(res.complete, pg->pack->complete, sizeof(res.complete));
+    // 按目的数组自校验并只搬到 NUL: memcpy 定长要靠"两个 complete 数组恰好同样大"这个巧合,
+    // 且会把源数组 NUL 之后上一条标签的残字一起拷进来
+    safe_fill_str(res.complete, sizeof(res.complete), pg->pack->complete);
     array_push_back(&pg->pack->results, &res);
     pg->pack->pack = NULL; // reader 所有权移入结果数组
     pg->pack->_free_pgpack = NULL;
@@ -427,6 +428,13 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
             break;
         }
         pg->readyforquery = binary_get_int8(breader);
+        // 攒了行却没等到 CommandComplete: 协议要求每条语句由 C / E / I 收尾, 走不到这里。
+        // 这些行不交出去(同 libpq), 但别让调用方只看到一个空结果集
+        if (NULL != pg->pack
+            && PGPACK_OK == pg->pack->type
+            && NULL != pg->pack->pack) {
+            LOG_WARN("protocol violation: rows without CommandComplete, dropped.");
+        }
         pack = pg->pack;
         pg->pack = NULL;
         FREE(breader->data);

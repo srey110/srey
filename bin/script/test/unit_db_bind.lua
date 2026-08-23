@@ -192,10 +192,13 @@ runner.run("db_bind", function(t)
         t:eq(false, pcall(function() sess:pack_endsession() end), "owner 释放后 pack_endsession 被拒")
         t:eq(false, pcall(function() sess:pack_commit() end), "owner 释放后 pack_commit 被拒")
         t:eq(false, pcall(function() sess:pack_abort() end), "owner 释放后 pack_abort 被拒")
-        -- done / free 不抛错，但内部那步"解宿主的 session 绑定"必须跳过
-        sess:done()
-        sess:free()
-        t:check(true, "owner 释放后 done/free 不触碰悬垂宿主")
+        -- done / free 不抛错，但内部那步"解宿主的 session 绑定"必须跳过。
+        -- 注意：守卫真被删掉时那步是读悬垂指针，release 下全程静默，这里只能守住
+        -- "不抛错 / 幂等 / 之后仍按已释放报错"这几条可观测的，UAF 本身要靠 ASan
+        t:eq(true, pcall(function() sess:done() end), "owner 释放后 done 不抛错")
+        t:eq(true, pcall(function() sess:free() end), "owner 释放后 free 不抛错")
+        t:eq(true, pcall(function() sess:free() end), "owner 释放后 free 幂等")
+        t:eq(false, pcall(function() sess:begin() end), "free 之后 begin 仍被拒")
         sess = nil
         mg = nil
         collectgarbage()

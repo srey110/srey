@@ -6,9 +6,8 @@
  * 超出时回退为单次堆分配。 */
 #define NAME_STACK_LEN  512
 
-/* 单节点虚拟副本数上限。一致性哈希实际用量在几十到几百（本仓库测试用 10 ~ 100），
- * 这里留了三个数量级的余量；设上限是因为 nreplicas 可由 Lua 直接给（hashring:add），
- * 不设的话一个离谱的值会让 items 数组要几十 GB，而 _realloc 分配失败是直接 exit 整个进程 */
+/* 单节点虚拟副本数上限。实际用量在几十到几百，这里留了三个数量级余量。
+ * 设上限是因为 nreplicas 来自上层调用方，离谱的值会让 items 数组要几十 GB */
 #define MAX_REPLICAS    65536
 
 typedef struct hash_ring_list {
@@ -67,7 +66,7 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     char concat_buf[16];
     int32_t concat_len;
     hash_ring_item *item;
-    char  name_stack[NAME_STACK_LEN];
+    char name_stack[NAME_STACK_LEN];
     char *name;
     size_t name_len;
     int32_t heap;
@@ -95,14 +94,16 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     }
     ring->nitems += node->nreplicas;
 }
-// 在节点链表中按名称查找节点，返回 NULL 表示不存在
-static hash_ring_node *_hash_ring_get_node(hash_ring_ctx *ring, void *name, size_t lens) {
+// 在节点链表中按名称查找，返回链表包装（remove 要靠它拿 lnode），不存在返 NULL。
+// add 判重复注册与 remove 定位目标必须用同一个谓词：分叉就是加得进去删不掉，node
+// 连它全部虚拟副本一起永久留在 items 里
+static hash_ring_list *_hash_ring_find(hash_ring_ctx *ring, void *name, size_t lens) {
     hash_ring_list *cur;
     list_foreach(&ring->nodes, ln) {
         cur = UPCAST(ln, hash_ring_list, lnode);
         if (cur->node->lens == lens
             && 0 == memcmp(cur->node->name, name, lens)) {
-            return cur->node;
+            return cur;
         }
     }
     return NULL;
@@ -126,7 +127,7 @@ int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint3
         || (size_t)ring->nitems + nreplicas > SIZE_MAX / sizeof(hash_ring_item *)) {
         return ERR_FAILED;
     }
-    if (NULL != _hash_ring_get_node(ring, name, lens)) {
+    if (NULL != _hash_ring_find(ring, name, lens)) {
         return ERR_FAILED;
     }
     hash_ring_node *node;
@@ -156,33 +157,25 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
         || 0 == lens) {
         return;
     }
-    hash_ring_list *cur;
-    uint32_t write;
-    list_foreach(&ring->nodes, ln) {
-        cur = UPCAST(ln, hash_ring_list, lnode);
-        if (cur->node->lens == lens
-            && 0 == memcmp(cur->node->name, name, lens)) {
-            // 找到目标节点，将其移除（命中即 return，遍历不再续，list_foreach 安全）
-            list_remove(&ring->nodes, ln);
-            FREE(cur->node->name);
-            /* 原先：标记 NULL 后调用 qsort，O(n log n)。
-             * 优化：因 items 已有序，用单次 O(n) 原地压缩即可：
-             * 保留所有不属于被删节点的 item，紧凑排列，顺序不变。 */
-            write = 0;
-            for (uint32_t i = 0; i < ring->nitems; i++) {
-                if (ring->items[i]->node == cur->node) {
-                    FREE(ring->items[i]);
-                } else {
-                    ring->items[write++] = ring->items[i];
-                }
-            }
-            ring->nitems = write;
-            FREE(cur->node);
-            FREE(cur);
-            ring->nnodes--;
-            return;
+    hash_ring_list *cur = _hash_ring_find(ring, name, lens);
+    if (NULL == cur) {
+        return;
+    }
+    list_remove(&ring->nodes, &cur->lnode);
+    FREE(cur->node->name);
+    // items 已有序，用单次 O(n) 原地压缩摘掉该节点的全部副本，顺序不变
+    uint32_t write = 0;
+    for (uint32_t i = 0; i < ring->nitems; i++) {
+        if (ring->items[i]->node == cur->node) {
+            FREE(ring->items[i]);
+        } else {
+            ring->items[write++] = ring->items[i];
         }
     }
+    ring->nitems = write;
+    FREE(cur->node);
+    FREE(cur);
+    ring->nnodes--;
 }
 // 二分查找大于 digest 的第一个节点；超出末尾则环绕返回第一个节点
 static hash_ring_item *_hash_ring_find_next_highest_item(hash_ring_ctx *ring, uint64_t digest) {

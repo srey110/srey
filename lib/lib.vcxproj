@@ -78,6 +78,7 @@
     <ClInclude Include="protocol\mqtt\mqtt_macro.h" />
     <ClInclude Include="protocol\mqtt\mqtt_pack.h" />
     <ClInclude Include="protocol\mqtt\mqtt_struct.h" />
+    <ClInclude Include="protocol\varint.h" />
     <ClInclude Include="protocol\mysql\mysql.h" />
     <ClInclude Include="protocol\mysql\mysql_bind.h" />
     <ClInclude Include="protocol\mysql\mysql_macro.h" />
@@ -130,7 +131,6 @@
     <ClInclude Include="utils\pool.h" />
     <ClInclude Include="utils\stm.h" />
     <ClInclude Include="utils\tda.h" />
-    <ClInclude Include="utils\varint.h" />
     <ClInclude Include="utils\netaddr.h" />
     <ClInclude Include="utils\netutils.h" />
     <ClInclude Include="utils\popen2.h" />
@@ -192,6 +192,7 @@
     <ClCompile Include="protocol\mongo\mongo_parse.c" />
     <ClCompile Include="protocol\mqtt\mqtt.c" />
     <ClCompile Include="protocol\mqtt\mqtt_pack.c" />
+    <ClCompile Include="protocol\varint.c" />
     <ClCompile Include="protocol\mqtt\mqtt_struct.c" />
     <ClCompile Include="protocol\mysql\mysql.c" />
     <ClCompile Include="protocol\mysql\mysql_bind.c" />
@@ -233,7 +234,6 @@
     <ClCompile Include="utils\pool.c" />
     <ClCompile Include="utils\stm.c" />
     <ClCompile Include="utils\tda.c" />
-    <ClCompile Include="utils\varint.c" />
     <ClCompile Include="utils\netaddr.c" />
     <ClCompile Include="utils\netutils.c" />
     <ClCompile Include="utils\popen2.c" />

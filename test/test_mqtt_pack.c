@@ -2,6 +2,7 @@
 #include "lib.h"
 #include "protocol/mqtt/mqtt_pack.h"
 #include "protocol/mqtt/mqtt_struct.h"
+#include "protocol/varint.h"
 #include "crypt/scram.h"
 
 /* MQTT 状态机的 INIT/COMMAND 是 mqtt.c 内部 enum，定义在文件作用域；
@@ -1016,6 +1017,99 @@ static void test_mqtt_connect_empty_clientid(CuTest *tc) {
     CuAssertIntEquals(tc, 14, (int32_t)nlens);
     FREE(npack);
 }
+/* =======================================================================
+ * varint —— MQTT 7-bit 变长编解码 + off>=blens 边界(回归)
+ * ======================================================================= */
+static void test_varint(CuTest *tc) {
+    char enc[4];
+    // 编码：字节数与上界溢出
+    CuAssertIntEquals(tc, 1, varint_encode_mqtt(0, enc));
+    CuAssertIntEquals(tc, 1, varint_encode_mqtt(127, enc));
+    CuAssertIntEquals(tc, 2, varint_encode_mqtt(128, enc));
+    CuAssertIntEquals(tc, 4, varint_encode_mqtt(0x0FFFFFFF, enc));
+    CuAssertIntEquals(tc, 0, varint_encode_mqtt(0x10000000, enc));// 超 256MB-1 上界
+
+    // 编解码往返：300 → 2 字节
+    buffer_ctx b;
+    buffer_init(&b);
+    int32_t n = varint_encode_mqtt(300, enc);
+    CuAssertIntEquals(tc, 2, n);
+    buffer_append(&b, enc, (size_t)n);
+    size_t val = 0;
+    CuAssertIntEquals(tc, 2, varint_decode_mqtt(&b, 0, buffer_size(&b), &val));
+    CuAssertTrue(tc, 300 == val);
+    buffer_free(&b);
+
+    // 4 字节全延续位(0x80)；不能用字符串字面量："\x80\x80" 会被当成单个十六进制转义
+    char allcont[4] = { (char)0x80, (char)0x80, (char)0x80, (char)0x80 };
+    buffer_init(&b);
+    buffer_append(&b, allcont, sizeof(allcont));
+
+    // 4 字节内未结束 → ERR_FAILED
+    val = 1;
+    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 0, buffer_size(&b), &val));
+    // off == blens：可读字节为 0 → ERR_FAILED
+    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 4, buffer_size(&b), &val));
+    // off > blens(回归点)：blens-off 无符号回绕,修复前越界读 buffer_at,修复后直接 ERR_FAILED
+    val = 12345;
+    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 9, buffer_size(&b), &val));
+    CuAssertTrue(tc, 0 == val);// 失败路径仍清零 *value
+    buffer_free(&b);
+
+    // 四段边界逐字节比对 + 往返：只验字节数的话,字节序或延续位标志写错照样通过
+    const struct { uint32_t val; int32_t n; unsigned char enc[4]; } vecs[] = {
+        { 0,         1, { 0x00 } },
+        { 1,         1, { 0x01 } },
+        { 127,       1, { 0x7F } },
+        { 128,       2, { 0x80, 0x01 } },
+        { 16383,     2, { 0xFF, 0x7F } },
+        { 16384,     3, { 0x80, 0x80, 0x01 } },
+        { 2097151,   3, { 0xFF, 0xFF, 0x7F } },
+        { 2097152,   4, { 0x80, 0x80, 0x80, 0x01 } },
+        { 268435455, 4, { 0xFF, 0xFF, 0xFF, 0x7F } }
+    };
+    buffer_ctx vb;
+    size_t vval;
+    int32_t vi, vk, vn;
+    for (vi = 0; vi < (int32_t)ARRAY_SIZE(vecs); vi++) {
+        ZERO(enc, sizeof(enc));
+        vn = varint_encode_mqtt(vecs[vi].val, enc);
+        CuAssertIntEquals(tc, vecs[vi].n, vn);
+        for (vk = 0; vk < vn; vk++) {
+            CuAssertIntEquals(tc, (int)vecs[vi].enc[vk], (int)(unsigned char)enc[vk]);
+        }
+        buffer_init(&vb);
+        buffer_append(&vb, enc, (size_t)vn);
+        CuAssertIntEquals(tc, vn, varint_decode_mqtt(&vb, 0, buffer_size(&vb), &vval));
+        CuAssertTrue(tc, (size_t)vecs[vi].val == vval);
+        buffer_free(&vb);
+    }
+
+    // 单字节延续位置起但可读量耗尽
+    char trunc1[1] = { (char)0x80 };
+    buffer_init(&vb);
+    buffer_append(&vb, trunc1, sizeof(trunc1));
+    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&vb, 0, buffer_size(&vb), &vval));
+    buffer_free(&vb);
+
+    // 从非零 off 起解：前置两字节噪声不影响取值
+    char noise[6] = { (char)0xAA, (char)0xBB, (char)0xFF, (char)0xFF, (char)0xFF, (char)0x7F };
+    buffer_init(&vb);
+    buffer_append(&vb, noise, sizeof(noise));
+    CuAssertIntEquals(tc, 4, varint_decode_mqtt(&vb, 2, buffer_size(&vb), &vval));
+    CuAssertTrue(tc, 268435455 == vval);
+    buffer_free(&vb);
+
+    // blens 小于实际可读量：按 blens 判截断,而非按 buffer 真实长度
+    char two[2] = { (char)0x80, (char)0x01 };
+    buffer_init(&vb);
+    buffer_append(&vb, two, sizeof(two));
+    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&vb, 0, 1, &vval));
+    CuAssertIntEquals(tc, 2, varint_decode_mqtt(&vb, 0, 2, &vval));
+    CuAssertTrue(tc, 128 == vval);
+    buffer_free(&vb);
+}
+
 void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_connect_311);
     SUITE_ADD_TEST(suite, test_mqtt_connect_empty_clientid);
@@ -1038,4 +1132,5 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_struct_null_free);
     SUITE_ADD_TEST(suite, test_mqtt_struct_empty_free);
     SUITE_ADD_TEST(suite, test_mqtt_struct_propertie_free);
+    SUITE_ADD_TEST(suite, test_varint);
 }

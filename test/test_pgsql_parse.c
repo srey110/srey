@@ -44,7 +44,7 @@ static void _pg_reader_push_row(pgsql_reader_ctx *r, char *payload,
 
 // 往 pgpack 的结果数组里追加一个结果（模拟解析侧 CommandComplete 的提交动作）
 static void _pg_result_push(pgpack_ctx *pg, pgsql_reader_ctx *reader, const char *complete) {
-    if (0 == pg->results.elsize) {
+    if (NULL == pg->results.ptr) {// 与 _pgpack_complete 同一判据(array_free 会把 ptr 置空)
         array_init(&pg->results, sizeof(pgsql_result), 2);
     }
     pgsql_result res;
@@ -69,18 +69,18 @@ static void test_pgsql_reader_iter(CuTest *tc) {
     pg.type = PGPACK_NOTIFICATION;
     CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
     CuAssertIntEquals(tc, 0, (int)pgsql_result_count(&pg)); // 类型不符时结果数恒为 0
-    // 正常路径：转移所有权，_free_pgpack 不参与（reader 已在提交时移出 pack）
+    // 正常路径：所有权转给调用方，槽位随之置空。这一点由下面的 reader_at 直接钉住,
+    // 不靠 _free_pgpack 毒值 —— iter / at 全程不读那个字段, 毒值永远触发不了
     pg.type = PGPACK_OK;
-    pg._free_pgpack = (void (*)(void *))0xdeadbeef; // 毒值:本路径不应触发此 free,误调即崩
     CuAssertIntEquals(tc, 1, (int)pgsql_result_count(&pg));
     pgsql_reader_ctx *out = pgsql_reader_iter(&pg, FORMAT_TEXT);
     CuAssertTrue(tc, NULL != out);
     CuAssertIntEquals(tc, FORMAT_TEXT, (int)out->format);
     // 同一下标只能取走一次；取走后结果个数不变（占位仍在，只是 reader 已交出）
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 0, FORMAT_TEXT));
     CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
     CuAssertIntEquals(tc, 1, (int)pgsql_result_count(&pg));
     pgsql_reader_free(out);
-    pg._free_pgpack = NULL;
     _pgpack_results_clear(&pg);
 
     // 空结果数组（如 ping / prepare 那种没有 CommandComplete 的响应）

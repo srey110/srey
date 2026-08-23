@@ -33,10 +33,12 @@ void _free(void* ptr);
 /// </summary>
 void _memcheck(void);
 /// <summary>
-/// 读取累计内存分配/释放次数（MEMORY_CHECK 关闭时返回 0）
+/// 汇总所有分条槽位，读取累计内存分配/释放次数。运行期拿到的是近似值：别的线程还在自增，
+/// 两个出参也不是同一时刻的快照，nfree 可能读得比 nalloc 大——要算存活数得先比大小再相减。
+/// _memcheck 在全线程 join 之后调用，那时精确
 /// </summary>
-/// <param name="nalloc">出参：累计分配次数；可为 NULL 表示不关心</param>
-/// <param name="nfree">出参：累计释放次数；可为 NULL 表示不关心</param>
+/// <param name="nalloc">出参：累计分配次数，MEMORY_CHECK 关闭时写 0；可为 NULL 表示不关心</param>
+/// <param name="nfree">出参：累计释放次数，MEMORY_CHECK 关闭时写 0；可为 NULL 表示不关心</param>
 void mem_stat(uint64_t *nalloc, uint64_t *nfree);
 
 #endif//MEMORY_H_

@@ -110,7 +110,12 @@ int32_t scram_set_iter(scram_ctx *scram, int32_t iter) {
     if (scram->client) {
         return ERR_FAILED;
     }
-    scram->iter = iter < SCRAM_MIN_ITER ? SCRAM_MIN_ITER : iter;
+    if (iter < SCRAM_MIN_ITER) {
+        iter = SCRAM_MIN_ITER;
+    } else if (iter > SCRAM_MAX_ITER) {
+        iter = SCRAM_MAX_ITER;
+    }
+    scram->iter = iter;
     return ERR_OK;
 }
 int32_t scram_set_cbind(scram_ctx *scram, const char *data, size_t lens) {
@@ -222,6 +227,12 @@ static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t
     }
     return val;
 }
+// NUL 结尾串与 (p, lens) 切片的恒定时间相等判定, 相等返 1。长度不等即短路(长度不是秘密)。
+// 四个校验点共用这一处: 哪一份被改回 memcmp、或漏掉长度先判, 都会重新漏出时序侧信道
+static int32_t _scram_ct_eq(const char *nulstr, const void *p, size_t lens) {
+    return strlen(nulstr) == lens
+        && 0 == ct_memcmp(p, nulstr, lens);
+}
 // 计算 SaltedPassword = PBKDF2(password, salt, iter)（使用 HMAC 迭代实现）
 static void _scram_salt_password(scram_ctx *scram, const char *password) {
     char hash[DG_BLOCK_SIZE];
@@ -264,19 +275,15 @@ static void _scram_h(scram_ctx *scram, char client_key[DG_BLOCK_SIZE], char resu
 static void _scram_whole(scram_ctx *scram, char key[DG_BLOCK_SIZE], char result[DG_BLOCK_SIZE]) {
     hmac_ctx hmac;
     hmac_init(&hmac, scram->dtype, key, scram->hslens);
-    if (scram->client) {
-        hmac_update(&hmac, scram->local_first_message, strlen(scram->local_first_message));//n=,r=
-        hmac_update(&hmac, ",", 1);
-        hmac_update(&hmac, scram->remote_first_message, strlen(scram->remote_first_message));//r=,s=,i=
-        hmac_update(&hmac, ",", 1);
-        hmac_update(&hmac, scram->final_message_without_proof, strlen(scram->final_message_without_proof));//c=...,r=
-    } else {
-        hmac_update(&hmac, scram->remote_first_message, strlen(scram->remote_first_message));//n=,r=
-        hmac_update(&hmac, ",", 1);
-        hmac_update(&hmac, scram->local_first_message, strlen(scram->local_first_message));//r=,s=,i=
-        hmac_update(&hmac, ",", 1);
-        hmac_update(&hmac, scram->final_message_without_proof, strlen(scram->final_message_without_proof));//c=...,r=
-    }
+    // AuthMessage = client-first-bare "," server-first "," client-final-without-proof
+    // 两个角色只是 local / remote 谁在前的区别
+    const char *first = scram->client ? scram->local_first_message : scram->remote_first_message;
+    const char *second = scram->client ? scram->remote_first_message : scram->local_first_message;
+    hmac_update(&hmac, first, strlen(first));//n=,r=
+    hmac_update(&hmac, ",", 1);
+    hmac_update(&hmac, second, strlen(second));//r=,s=,i=
+    hmac_update(&hmac, ",", 1);
+    hmac_update(&hmac, scram->final_message_without_proof, strlen(scram->final_message_without_proof));//c=...,r=
     hmac_final(&hmac, result);
     hmac_free(&hmac);
 }
@@ -409,6 +416,11 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     if (SCRAM_INIT != scram->status) {
         return ERR_FAILED;
     }
+    // 嵌入 NUL 会让后面的 strlen / %s 在此截断,两条不同的 client-first 算出同一个 AuthMessage
+    if (NULL != memchr(msg, '\0', mlens)) {
+        LOG_WARN("scram client-first contains embedded NUL, rejected.");
+        return ERR_FAILED;
+    }
     size_t gs2_len = _scram_gs2_header_lens(scram, msg, mlens);
     if (0 == gs2_len
         || mlens <= gs2_len
@@ -420,10 +432,6 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     size_t lens;
     char *user = _scram_attr_value(msg, mlens, "n=", &lens);
     if (NULL == user) {
-        return ERR_FAILED;
-    }
-    if (NULL != memchr(user, '\0', lens)) {
-        LOG_WARN("scram username contains embedded NUL, rejected.");
         return ERR_FAILED;
     }
     if (NULL != memstr(0, user, lens, "=2C", 3)
@@ -488,6 +496,12 @@ static char *_scram_server_first_message(scram_ctx *scram) {
 // 客户端解析服务端第一条消息（提取 nonce、salt 和迭代轮数）
 static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FIRST != scram->status) {
+        return ERR_FAILED;
+    }
+    // 同 client-first: 整条消息按 strlen 喂进 AuthMessage, 嵌入 NUL 会让它在此截断,
+    // 两条不同的 server-first 算出同一个 AuthMessage
+    if (NULL != memchr(msg, '\0', mlens)) {
+        LOG_WARN("scram server-first contains embedded NUL, rejected.");
         return ERR_FAILED;
     }
     size_t lens;
@@ -593,8 +607,7 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
     if (NULL == cbind_b64) {
         return ERR_FAILED;
     }
-    int32_t mismatch = (strlen(cbind_b64) != lens || 0 != ct_memcmp(cbind_val, cbind_b64, lens));
-    if (mismatch) {
+    if (!_scram_ct_eq(cbind_b64, cbind_val, lens)) {
         FREE(cbind_b64);
         return ERR_FAILED;
     }
@@ -604,8 +617,7 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
         return ERR_FAILED;
     }
     char *buf = format_va("%s%s", scram->remote_nonce, scram->local_nonce);
-    if (strlen(buf) != lens
-        || 0 != ct_memcmp(nonce, buf, lens)) {
+    if (!_scram_ct_eq(buf, nonce, lens)) {
         FREE(cbind_b64);
         FREE(buf);
         return ERR_FAILED;
@@ -621,8 +633,7 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
     FREE(buf);
     char proof[B64EN_SIZE(DG_BLOCK_SIZE)];
     _scram_challenge_clientkey(scram, proof);
-    if (strlen(proof) != lens
-        || 0 != ct_memcmp(client_proof, proof, lens)) {
+    if (!_scram_ct_eq(proof, client_proof, lens)) {
         secure_zero(proof, sizeof(proof));
         _scram_free_str(&scram->final_message_without_proof);
         return ERR_FAILED;
@@ -659,8 +670,7 @@ static int32_t _scram_client_check_final_message(scram_ctx *scram, char *msg, si
     }
     char proof[B64EN_SIZE(DG_BLOCK_SIZE)];
     _scram_challenge_serverkey(scram, proof);
-    if (strlen(proof) != lens
-        || 0 != ct_memcmp(server_proof, proof, lens)) {
+    if (!_scram_ct_eq(proof, server_proof, lens)) {
         secure_zero(proof, sizeof(proof));
         return ERR_FAILED;
     }

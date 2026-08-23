@@ -15,7 +15,7 @@ void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize) {
         qu->ptr = NULL;
         return;
     }
-    qu->maxsize = maxsize;
+    qu->maxsize = ROUND_UP(maxsize, 2);
     ASSERTAB((size_t)qu->maxsize <= SIZE_MAX / elsize, "byte size overflow.");
     MALLOC(qu->ptr, (size_t)elsize * qu->maxsize);
 }

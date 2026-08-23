@@ -16,7 +16,8 @@ typedef struct des_ctx {
 /// <param name="key">密码</param>
 /// <param name="klens">密码长度。
 /// 单重 DES 不足 8 字节补零；
-/// 3DES 按 NIST SP 800-67 的三种取法补齐：满 24 字节三段子密钥独立，9 ~ 16 字节 K3 取 K1，不超过 8 字节时三段相同——该取法等价于单重 DES，强度只有 56 位</param>
+/// 3DES 按 NIST SP 800-67 的三种取法补齐：满 24 字节三段子密钥独立，9 ~ 16 字节 K3 取 K1，不超过 8 字节时三段相同——该取法等价于单重 DES，强度只有 56 位。
+/// 超长一律只取前缀（单重 DES 前 8 字节、3DES 前 24 字节），多出来的部分静默丢弃</param>
 /// <param name="des3">1 3des, 0 des</param>
 /// <param name="encrypt">1 加密 0 解密</param>
 void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t encrypt);

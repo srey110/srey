@@ -13,6 +13,8 @@
 #define NODEPOOL_CAP ONEK
 #define COROPOOL_MIN_KEEP 4
 
+typedef void (*_coro_msg_handler_t)(task_dispatch_arg *arg);
+
 // 超时堆节点：嵌入最小堆，存储过期时间和关联 session
 typedef struct timeout_entry {
     heap_node hnode;     // 必须在首位，供 UPCAST 使用
@@ -475,7 +477,7 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
     }
     if (now - coctx->shrink_ms >= SHRINK_TIME) {
         coctx->shrink_ms = now;
-        pool_shrink(&coctx->copool, shrink_nkeep(pool_size(&coctx->copool)), SHRINK_BUSY);
+        pool_shrink(&coctx->copool);
     }
     task_timeout(task, 0, 1 * 1000, _coro_timeout_monitor);
 }
@@ -490,7 +492,6 @@ static void _coro_handle_closing(task_dispatch_arg *arg) {
         LOG_WARN("task %s yield %d.", _NAME_OR(arg->task->name), ((coro_ctx *)arg->task->arg)->nyield);
     }
 }
-typedef void (*_coro_msg_handler_t)(task_dispatch_arg *arg);
 static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_STARTUP]      = _coro_handle_startup,// 新建
     [MSG_TYPE_CLOSING]      = _coro_handle_closing,// 新建

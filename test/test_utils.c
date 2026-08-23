@@ -1074,99 +1074,6 @@ static void test_buffer_hint_after_migrate(CuTest *tc) {
 }
 
 /* =======================================================================
- * varint —— MQTT 7-bit 变长编解码 + off>=blens 边界(回归)
- * ======================================================================= */
-static void test_varint(CuTest *tc) {
-    char enc[4];
-    // 编码：字节数与上界溢出
-    CuAssertIntEquals(tc, 1, varint_encode_mqtt(0, enc));
-    CuAssertIntEquals(tc, 1, varint_encode_mqtt(127, enc));
-    CuAssertIntEquals(tc, 2, varint_encode_mqtt(128, enc));
-    CuAssertIntEquals(tc, 4, varint_encode_mqtt(0x0FFFFFFF, enc));
-    CuAssertIntEquals(tc, 0, varint_encode_mqtt(0x10000000, enc));// 超 256MB-1 上界
-
-    // 编解码往返：300 → 2 字节
-    buffer_ctx b;
-    buffer_init(&b);
-    int32_t n = varint_encode_mqtt(300, enc);
-    CuAssertIntEquals(tc, 2, n);
-    buffer_append(&b, enc, (size_t)n);
-    size_t val = 0;
-    CuAssertIntEquals(tc, 2, varint_decode_mqtt(&b, 0, buffer_size(&b), &val));
-    CuAssertTrue(tc, 300 == val);
-    buffer_free(&b);
-
-    // 4 字节全延续位(0x80)；不能用字符串字面量："\x80\x80" 会被当成单个十六进制转义
-    char allcont[4] = { (char)0x80, (char)0x80, (char)0x80, (char)0x80 };
-    buffer_init(&b);
-    buffer_append(&b, allcont, sizeof(allcont));
-
-    // 4 字节内未结束 → ERR_FAILED
-    val = 1;
-    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 0, buffer_size(&b), &val));
-    // off == blens：可读字节为 0 → ERR_FAILED
-    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 4, buffer_size(&b), &val));
-    // off > blens(回归点)：blens-off 无符号回绕,修复前越界读 buffer_at,修复后直接 ERR_FAILED
-    val = 12345;
-    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 9, buffer_size(&b), &val));
-    CuAssertTrue(tc, 0 == val);// 失败路径仍清零 *value
-    buffer_free(&b);
-
-    // 四段边界逐字节比对 + 往返：只验字节数的话,字节序或延续位标志写错照样通过
-    const struct { uint32_t val; int32_t n; unsigned char enc[4]; } vecs[] = {
-        { 0,         1, { 0x00 } },
-        { 1,         1, { 0x01 } },
-        { 127,       1, { 0x7F } },
-        { 128,       2, { 0x80, 0x01 } },
-        { 16383,     2, { 0xFF, 0x7F } },
-        { 16384,     3, { 0x80, 0x80, 0x01 } },
-        { 2097151,   3, { 0xFF, 0xFF, 0x7F } },
-        { 2097152,   4, { 0x80, 0x80, 0x80, 0x01 } },
-        { 268435455, 4, { 0xFF, 0xFF, 0xFF, 0x7F } }
-    };
-    buffer_ctx vb;
-    size_t vval;
-    int32_t vi, vk, vn;
-    for (vi = 0; vi < (int32_t)ARRAY_SIZE(vecs); vi++) {
-        ZERO(enc, sizeof(enc));
-        vn = varint_encode_mqtt(vecs[vi].val, enc);
-        CuAssertIntEquals(tc, vecs[vi].n, vn);
-        for (vk = 0; vk < vn; vk++) {
-            CuAssertIntEquals(tc, (int)vecs[vi].enc[vk], (int)(unsigned char)enc[vk]);
-        }
-        buffer_init(&vb);
-        buffer_append(&vb, enc, (size_t)vn);
-        CuAssertIntEquals(tc, vn, varint_decode_mqtt(&vb, 0, buffer_size(&vb), &vval));
-        CuAssertTrue(tc, (size_t)vecs[vi].val == vval);
-        buffer_free(&vb);
-    }
-
-    // 单字节延续位置起但可读量耗尽
-    char trunc1[1] = { (char)0x80 };
-    buffer_init(&vb);
-    buffer_append(&vb, trunc1, sizeof(trunc1));
-    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&vb, 0, buffer_size(&vb), &vval));
-    buffer_free(&vb);
-
-    // 从非零 off 起解：前置两字节噪声不影响取值
-    char noise[6] = { (char)0xAA, (char)0xBB, (char)0xFF, (char)0xFF, (char)0xFF, (char)0x7F };
-    buffer_init(&vb);
-    buffer_append(&vb, noise, sizeof(noise));
-    CuAssertIntEquals(tc, 4, varint_decode_mqtt(&vb, 2, buffer_size(&vb), &vval));
-    CuAssertTrue(tc, 268435455 == vval);
-    buffer_free(&vb);
-
-    // blens 小于实际可读量：按 blens 判截断,而非按 buffer 真实长度
-    char two[2] = { (char)0x80, (char)0x01 };
-    buffer_init(&vb);
-    buffer_append(&vb, two, sizeof(two));
-    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&vb, 0, 1, &vval));
-    CuAssertIntEquals(tc, 2, varint_decode_mqtt(&vb, 0, 2, &vval));
-    CuAssertTrue(tc, 128 == vval);
-    buffer_free(&vb);
-}
-
-/* =======================================================================
  * chan —— 缓冲收发、close 语义、并发生产者-消费者
  * ======================================================================= */
 
@@ -1228,6 +1135,58 @@ static void test_chan(CuTest *tc) {
     CuAssertTrue(tc, 500500LL == sum);
 
     chan_free(ch);
+}
+
+/* =======================================================================
+ * hug —— 退出等待原语(POSIX self-pipe / Windows mutex+cond)
+ * ======================================================================= */
+// hug_wait 阻塞在 read 上时由另一条线程唤醒,走真正的 self-pipe 路径
+static void _hug_waker(void *arg) {
+    MSLEEP(50);
+    hug_wakeup((hug_ctx *)arg);
+}
+
+static void test_hug(CuTest *tc) {
+    hug_ctx hug;
+
+    // 1) 先 wakeup 再 wait: 标记已置位, hug_wait 不进 read 直接返回
+    CuAssertTrue(tc, ERR_OK == hug_init(&hug));
+    hug_wakeup(&hug);
+    hug_wait(&hug);
+    hug_free(&hug);
+
+    // 2) 先 wait 再由别的线程 wakeup: 真正阻塞在 read 上被唤醒
+    // (若 waker 抢先跑完, hug_wait 直接返回, 同样通过, 不构成 flake)
+    CuAssertTrue(tc, ERR_OK == hug_init(&hug));
+    pthread_t tid = thread_creat(_hug_waker, &hug);
+    hug_wait(&hug);
+    thread_join(tid);
+    hug_free(&hug);
+}
+
+// 信号可反复投递, 而 hug_wait 返回后再没人读管道。若每次 hug_wakeup 都写一个字节,
+// 写满 pipe 容量(Linux/FreeBSD 65536, macOS 16384)之后 write 会阻塞在信号 handler 里,
+// 收到信号那条线程再也回不来。修复后只有首次真正写管道, 故刷 20 万次也不会卡
+static void test_hug_wakeup_flood(CuTest *tc) {
+    hug_ctx hug;
+    CuAssertTrue(tc, ERR_OK == hug_init(&hug));
+
+    for (int32_t i = 0; i < 200000; i++) {
+        hug_wakeup(&hug);
+    }
+#ifndef OS_WIN
+    // 直接验不变式而不只是"没卡住": 管道里应当恰好剩 1 个字节
+    (void)fcntl(hug.exit_pipe[0], F_SETFL, O_NONBLOCK);
+    char drain[64];
+    ssize_t total = 0;
+    ssize_t n;
+    while ((n = read(hug.exit_pipe[0], drain, sizeof(drain))) > 0) {
+        total += n;
+    }
+    CuAssertTrue(tc, 1 == total);
+#endif
+    hug_wait(&hug);
+    hug_free(&hug);
 }
 
 /* =======================================================================
@@ -2471,8 +2430,9 @@ static void test_strptime_neg_yday_with_mon(CuTest *tc) {
  * 取 INT64_MAX：年份远超 tm_year 的 int 量程，localtime 必败（实测失败阈值约 6.7768e16 秒）。
  * 不能取 UINT64_MAX——转 64 位 time_t 是 -1 即 1969 年，是合法时刻。
  * 32 位 time_t 会把大值截成任意合法秒数，构造不出失败，故整段跳过。
- * mstostr 不在此断言：它先 /1000，uint64 入参最大只到 1.84e16 秒，够不到上面那个阈值，
- * 64 位 time_t 下失败分支从公开 API 不可达（守卫仍留着，32 位截断时是活的） */
+ * mstostr 的 LOCALTIME 分支不在此断言：它先 /1000，uint64 入参最大只到 1.84e16 秒，
+ * 够不到上面那个阈值，64 位 time_t 下不可达（守卫仍留着，32 位截断时是活的）。
+ * 它另有一条失败分支：秒级串占满以后 " 000" 后缀装不下，见本用例末尾 */
 static void test_timestr_out_of_range(CuTest *tc) {
     char buf[TIME_LENS];
 
@@ -2487,6 +2447,16 @@ static void test_timestr_out_of_range(CuTest *tc) {
     CuAssertTrue(tc, '\0' != buf[0]);
     CuAssertIntEquals(tc, ERR_OK, mstostr(nowms(), "%Y-%m-%d %H:%M:%S", buf));
     CuAssertTrue(tc, '\0' != buf[0]);
+
+    /* fmt 长到 124 字节：sectostr 装得下(strftime 上限 TIME_LENS-1)，
+     * mstostr 还要 " 000" 那 5 个字节就装不下 —— 不截断，整体失败 */
+    char longfmt[125];
+    memset(longfmt, 'x', sizeof(longfmt) - 1);
+    longfmt[sizeof(longfmt) - 1] = '\0';
+    CuAssertIntEquals(tc, ERR_OK, sectostr(nowsec(), longfmt, buf));
+    CuAssertIntEquals(tc, 124, (int)strlen(buf));
+    CuAssertIntEquals(tc, ERR_FAILED, mstostr(nowms(), longfmt, buf));
+    CuAssertTrue(tc, '\0' == buf[0]);
 }
 
 /* =======================================================================
@@ -2735,7 +2705,7 @@ static void _pool_shrink_check(CuTest *tc, int32_t thsafe) {
         pool_push(&pool, objs[i], 0);
     }
     CuAssertIntEquals(tc, 8, pool_size(&pool));
-    pool_shrink(&pool, 3, 4, 5); // keep=max(3,nkeep=2)=3,释放 5
+    pool_shrink_to(&pool, 3); // keep=max(3,nkeep=2)=3,释放 5
     CuAssertIntEquals(tc, 5, _pt_free);
     CuAssertIntEquals(tc, 0, _pt_free_bad); // bug 版收到槽位地址,magic 不符则 >0
     CuAssertIntEquals(tc, 3, pool_size(&pool));
@@ -2761,7 +2731,7 @@ static void test_pool_shrink_policy(CuTest *tc) {
     for (i = 0; i < 8; i++) {
         pool_push(&pool, objs[i], 0);
     }
-    pool_shrink(&pool, 0, 4, 5); // 首次 prev=0 不忙;keep=max(0,2)=2
+    pool_shrink_to(&pool, 0); // 首次 prev=0 不忙;keep=max(0,2)=2
     CuAssertIntEquals(tc, 2, pool_size(&pool));
     pool_free(&pool);
     // busy 跳过:采样骤降(8→2,跌幅 >20%)后,下一次收缩被跳过
@@ -2773,9 +2743,9 @@ static void test_pool_shrink_policy(CuTest *tc) {
     for (i = 0; i < 8; i++) {
         pool_push(&pool, objs[i], 0);
     }
-    pool_shrink(&pool, 2, 4, 5); // 首次:不忙,8→2,记录 prev=8
+    pool_shrink_to(&pool, 2); // 首次:不忙,8→2,记录 prev=8
     CuAssertIntEquals(tc, 2, pool_size(&pool));
-    pool_shrink(&pool, 0, 4, 5); // cur=2 < prev(8)*4/5 → 忙 → 跳过
+    pool_shrink_to(&pool, 0); // cur=2 < prev(8)*4/5 → 忙 → 跳过
     CuAssertIntEquals(tc, 2, pool_size(&pool));
     pool_free(&pool);
 }
@@ -2931,7 +2901,6 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_from_sock_space);
     SUITE_ADD_TEST(suite, test_buffer_free_resets);
     SUITE_ADD_TEST(suite, test_buffer_hint_after_migrate);
-    SUITE_ADD_TEST(suite, test_varint);
     SUITE_ADD_TEST(suite, test_sfid);
     SUITE_ADD_TEST(suite, test_sfid_invalid);
     SUITE_ADD_TEST(suite, test_hash_ring);
@@ -2939,6 +2908,8 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_netaddr);
     SUITE_ADD_TEST(suite, test_netaddr_extra);
     SUITE_ADD_TEST(suite, test_chan);
+    SUITE_ADD_TEST(suite, test_hug);
+    SUITE_ADD_TEST(suite, test_hug_wakeup_flood);
     SUITE_ADD_TEST(suite, test_timeofday_consistent);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_timer_extra);

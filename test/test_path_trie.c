@@ -399,15 +399,15 @@ static void test_pt_reject_null_payload(CuTest *tc) {
     CuAssertTrue(tc, 0 == g_free_cnt);
 }
 
-// 21. 路径字节上限:>= URL_BUF_LENS(=1024) 的路径被拒;边界内(<=1023)可 insert 且 path_scan
+// 21. 路径字节上限:>= PATH_BUF_LENS(=1024) 的路径被拒;边界内(<=1023)可 insert 且 path_scan
 //     能完整重建(写入上限与 path_scan 缓冲对齐,契约对称——不会出现能插入却 scan 不到)
 static void test_pt_path_max_bytes(CuTest *tc) {
     path_trie *t = path_new(&PURE_RULES, NULL);
     int32_t v = 1;
     char ok[1024];
     char toolong[1025];
-    memset(ok, 'a', 1023); ok[1023] = '\0';// 1023 字节 = URL_BUF_LENS-1,边界内
-    memset(toolong, 'a', 1024); toolong[1024] = '\0';// 1024 字节 = URL_BUF_LENS,越界
+    memset(ok, 'a', 1023); ok[1023] = '\0';// 1023 字节 = PATH_BUF_LENS-1,边界内
+    memset(toolong, 'a', 1024); toolong[1024] = '\0';// 1024 字节 = PATH_BUF_LENS,越界
 
     // 边界内:校验通过 + 可 insert + get 命中
     CuAssertTrue(tc, ERR_OK == path_validate(&PURE_RULES, ok, PATH_KIND_LITERAL));

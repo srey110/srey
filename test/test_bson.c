@@ -422,6 +422,68 @@ static void test_bson_iter_find_deep_miss(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
+// result 与 iter 是同一对象时,bson_iter_find 会把 iter->doc 改指到 nested_doc,
+// 还原偏移必须按进函数时的原文档来:点分路径下子文档比外层小,拿外层偏移去还原
+// 就撞 binary_offset 的 ASSERTAB
+static void test_bson_iter_find_self_alias(CuTest *tc) {
+    int32_t err;
+    char pad[256];
+    memset(pad, 'p', sizeof(pad) - 1);
+    pad[sizeof(pad) - 1] = '\0';
+
+    bson_ctx bson;
+    bson_init(&bson, NULL, 0);
+    bson_append_utf8(&bson, "pad", pad);
+    bson_append_document_begain(&bson, "a");
+    bson_append_int32(&bson, "b", 42);
+    bson_append_end(&bson);
+    bson_append_int32(&bson, "z", 7);
+    bson_append_int32(&bson, "w", 9);
+    bson_append_end(&bson);
+
+    // 点分路径:先吃掉 pad 把偏移推到子文档长度之上,再自别名查找
+    BSON_ITER_FROM(bson, rd1, iter1);
+    CuAssertTrue(tc, bson_iter_next(&iter1));
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter1, "a.b", &iter1));
+    CuAssertIntEquals(tc, BSON_INT32, iter1.type);
+    CuAssertIntEquals(tc, 42, bson_iter_int32(&iter1, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+
+    // 无点号路径:result 绑在原文档那一层,继续 next 应吐出同级的下一个字段
+    BSON_ITER_FROM(bson, rd2, iter2);
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter2, "a", &iter2));
+    CuAssertIntEquals(tc, BSON_DOCUMENT, iter2.type);
+    CuAssertTrue(tc, bson_iter_next(&iter2));
+    CuAssertIntEquals(tc, BSON_INT32, iter2.type);
+    CuAssertIntEquals(tc, 7, bson_iter_int32(&iter2, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+
+    // 链式原地收窄:第一次 find 后 iter->doc 已指向自己的 nested_doc,
+    // 第二次 find 若照旧还原偏移就会把 z 重吐一遍,这里必须拿到 w
+    BSON_ITER_FROM(bson, rd3, iter3);
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter3, "a", &iter3));
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter3, "z", &iter3));
+    CuAssertIntEquals(tc, BSON_INT32, iter3.type);
+    CuAssertIntEquals(tc, 7, bson_iter_int32(&iter3, &err));
+    CuAssertTrue(tc, bson_iter_next(&iter3));
+    CuAssertIntEquals(tc, BSON_INT32, iter3.type);
+    CuAssertIntEquals(tc, 9, bson_iter_int32(&iter3, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, !bson_iter_next(&iter3));
+
+    // 链式原地收窄 + 点分叠加:先吃掉 pad 让偏移(约 270)超过子文档 a 的长度,
+    // 再点分自别名。修复前这里是先装 nested_doc 后还原,binary_offset 断言直接 abort
+    BSON_ITER_FROM(bson, rd4, iter4);
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter4, "pad", &iter4));
+    CuAssertIntEquals(tc, BSON_UTF8, iter4.type);
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter4, "a.b", &iter4));
+    CuAssertIntEquals(tc, BSON_INT32, iter4.type);
+    CuAssertIntEquals(tc, 42, bson_iter_int32(&iter4, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+
+    BSON_FREE(&bson);
+}
+
 // bson_cat 的源指向目标自身时，binary_set_binary 里的 REALLOC 会把源搬走。
 // Lua 侧 b:cat(b:data()) 就是这条路径。断言"追加进去的字节等于原文档去掉头和 EOD"，
 // 产物本身不是合法 bson，这里只守 UAF 不守结构
@@ -485,9 +547,10 @@ static void test_bson_complete_cat(CuTest *tc) {
 }
 
 // bson_cat 的各条早退与正常路径:NULL / lens==0、缓冲不足 5 字节、头声明长度超出缓冲、
-// 空文档(声明 5)、超 MAX_PACK_SIZE,后三者整篇丢弃返 ERR_FAILED 或 no-op 返 ERR_OK。
-// 空文档与超限必须分属不同分支——写空的 bson_ctx 与 bson_empty() 恰好都是 5 字节,
-// 两者若并进同一条判断,正常入参也会被报成失败
+// 末字节不是 EOD、空文档(声明 5),畸形的整篇丢弃返 ERR_FAILED,空文档 no-op 返 ERR_OK。
+// 空文档与畸形必须分属不同分支——写空的 bson_ctx 与 bson_empty() 恰好都是 5 字节,
+// 两者若并进同一条判断,正常入参也会被报成失败。
+// 字节数上限不在这一层(见末尾那条 70000 的断言),那取决于承载协议
 static void test_bson_cat_bounds(CuTest *tc) {
     size_t before;
     char *big;
@@ -514,8 +577,14 @@ static void test_bson_cat_bounds(CuTest *tc) {
     big[0] = (char)0x70;
     big[1] = (char)0x11;
     big[2] = (char)0x01;
-    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, big, 70000));
-    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+    // 结构合法的大文档照收:字节数上限不归 bson_cat 管(取决于承载协议,如 mongo 的
+    // MONGO_MAX_PACK_SIZE)。换个 ctx 拼,免得把 dst 撑大影响后面的 before 比对
+    bson_ctx bigdst;
+    bson_init(&bigdst, NULL, 0);
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&bigdst, big, 70000));
+    // before 是 bson_init 预留的 4 字节长度头;拼入量是 70000 去掉头和 EOD
+    CuAssertTrue(tc, BSON_DOC_LENS(&bigdst) == before + 70000 - 5);
+    BSON_FREE(&bigdst);
     // 缓冲够大但只报 5 字节:声明长度超出传入长度,拒收。旧实现只信头里的 70000,
     // 会照着它从 big 之后一路读出去
     CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, big, 5));
@@ -1181,6 +1250,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_nested);
     SUITE_ADD_TEST(suite, test_bson_find);
     SUITE_ADD_TEST(suite, test_bson_iter_find_deep_miss);
+    SUITE_ADD_TEST(suite, test_bson_iter_find_self_alias);
     SUITE_ADD_TEST(suite, test_bson_cat_self_alias);
     SUITE_ADD_TEST(suite, test_bson_complete_cat);
     SUITE_ADD_TEST(suite, test_bson_cat_bounds);

@@ -58,14 +58,15 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data);
 /// 更晚入队的元素不能抢在这个在途元素之前取，否则顺序就反了</returns>
 int32_t mpq_pop(mpq_ctx *q, void *out);
 /// <summary>
-/// 出队（单消费者）
+/// 出队（单消费者）：仅允许单一消费者线程调用；同一队列上 pop 与 pop_sc 也不可混用
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
 /// <returns>三态语义同 mpq_pop：ERR_OK 成功；ERR_FAILED 确实为空；1 有在途元素（区分义务见彼处）</returns>
 int32_t mpq_pop_sc(mpq_ctx *q, void *out);
 /// <summary>
-/// 返回当前队列元素数量的近似值
+/// 返回当前队列元素数量的近似值：只会高估不会低估(上限 capacity)，不会把有元素报成 0
+/// ——调用方靠它判"还有没有活要干"，低估就是漏唤醒
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <returns>元素数量，取值 [0, capacity]</returns>

@@ -1,7 +1,7 @@
 ﻿#include "protocol/mqtt/mqtt.h"
 #include "protocol/prots_pub.h"
 #include "utils/utils.h"
-#include "utils/varint.h"
+#include "protocol/varint.h"
 
 //https://mqtt.p2hp.com/mqtt311
 //https://mqtt.p2hp.com/mqtt-5-0

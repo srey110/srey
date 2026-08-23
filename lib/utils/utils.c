@@ -16,10 +16,15 @@ static locale_t g_numeric_c;
 #endif
 
 #if defined(OS_WIN)
-// 只有 _now_usec 用;这三条在 macOS/Linux 上从不编译, 改了没有本机回归网兜着
+// 只有 _now_usec 用;这几条在 macOS/Linux 上从不编译, 改了没有本机回归网兜着
 #define U64_LITERAL(n) n##ui64
 #define EPOCH_BIAS U64_LITERAL(116444736000000000) //Windows FILETIME 纪元与 Unix 纪元的差值（100ns 单位）
 #define UNITS_PER_USEC U64_LITERAL(10)//每微秒的 100ns 单位数
+// FILETIME 与 uint64 共用同一块内存:GetSystemTimeAsFileTime 写前者,算术走后者
+typedef union filetime_u64 {
+    FILETIME ft_ft;
+    uint64_t ft_64;
+}filetime_u64;
 #endif
 // tchar 集合见 RFC 7230 §3.2.6：字母数字加这 15 个符号，其余一概不是
 #define TCHAR_PUNCT "!#$%&'*+-.^_`|~"
@@ -433,10 +438,7 @@ int32_t timeoffset(void) {
 // 是 32 位 long(LLP64),2038-01-19 后回绕为负,再转 uint64 会符号扩展成约 1.8e19
 static uint64_t _now_usec(void) {
 #if defined(OS_WIN)
-    union {
-        FILETIME ft_ft;
-        uint64_t ft_64;
-    } ft;
+    filetime_u64 ft;
     GetSystemTimeAsFileTime(&ft.ft_ft);
     ft.ft_64 -= EPOCH_BIAS;
     return ft.ft_64 / UNITS_PER_USEC;
@@ -482,6 +484,12 @@ int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
     if (ERR_OK != _sectostr_lens(ms / 1000, fmt, time, &lens)) {
         return ERR_FAILED;
     }
+    // 装不下就整体失败,截断的时间串拿去用是静默出错
+    const size_t mslens = sizeof(" 000");
+    if (TIME_LENS - lens < mslens) {
+        time[0] = '\0';
+        return ERR_FAILED;
+    }
     SNPRINTF(time + lens, TIME_LENS - lens, " %03d", (int32_t)(ms % 1000));
     return ERR_OK;
 }
@@ -497,13 +505,8 @@ uint64_t strtots(const char *time, const char *fmt) {
     return (uint64_t)ts;
 }
 void fill_timespec(struct timespec *timeout, uint32_t ms) {
-    if (ms >= 1000) {
-        timeout->tv_sec = ms / 1000;
-        timeout->tv_nsec = (long)(ms - timeout->tv_sec * 1000) * (1000 * 1000);
-    } else {
-        timeout->tv_sec = 0;
-        timeout->tv_nsec = ms * (1000 * 1000);
-    }
+    timeout->tv_sec = ms / 1000;
+    timeout->tv_nsec = (long)(ms % 1000) * (1000 * 1000);
 }
 uint64_t hash(const char *buf, size_t len) {
     uint64_t rtn = 0;
@@ -1088,10 +1091,9 @@ int32_t csprng_rand(void *buf, size_t len) {
     }
     return ERR_OK;
 #else
-    /* 其余 Unix（Solaris、AIX、HP-UX 等）：读取 /dev/urandom。
-     * 缓存 fd 避免每次调用 open+close 双 syscall。+1 偏移：0=未初始化，
-     * N>0 表示实际 fd = N-1，避免 daemon 关 stdin 后 fd=0 与 uninit 状态歧义。
-     * fd 长期持有，进程退出由 OS 清理；O_CLOEXEC 防子进程 exec 继承。 */
+    /* 其余 Unix（Solaris、AIX、HP-UX 等）读 /dev/urandom, 缓存 fd 省掉每次 open+close。
+     * 存的是 fd+1: 0 表示未初始化, 否则真 fd = 值-1 —— daemon 关掉 stdin 后 fd 会是 0,
+     * 不加偏移就分不清"没初始化"和"fd 就是 0"。fd 长期持有, 进程退出交给 OS 清理。*/
     static atomic_t _urand_fd_plus1 = 0;
     int32_t fd;
     atomic_t cur = ATOMIC_GET(&_urand_fd_plus1);

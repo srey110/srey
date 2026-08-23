@@ -1,7 +1,7 @@
 ﻿#include "utils/tw.h"
 
-#define TW_NODE_POOL_MAX    4 * ONEK    // 节点池上限：超出后直接释放，避免无界增长
-#define TW_REQADD_BATCH     128         // reqadd 单次批量出队上限
+#define TW_NODE_POOL_MAX    (4 * ONEK) // 节点池上限：超出后直接释放，避免无界增长
+#define TW_REQADD_BATCH     128 // reqadd 单次批量出队上限
 
 // 释放时间轮槽位数组中所有节点，并调用各节点的 _freecb 释放用户数据
 static void _tw_free_slot(list_ctx *slot, const size_t len) {
@@ -118,7 +118,7 @@ static void _tw_run(tw_ctx *ctx) {
     ++ctx->jiffies;
     //执行
     ud_cxt ud;
-    tw_cb  cb;
+    tw_cb cb;
     tw_node_ctx *pnode;
     list_foreach_safe(&ctx->tv1[ulidx], ln, tmp) {
         pnode = UPCAST(ln, tw_node_ctx, node);
@@ -179,12 +179,11 @@ static void _tw_loop(void *arg) {
         // 空闲时按 SHRINK_TIME 门控回落节点池
         if (curtick - shrink_start >= SHRINK_TIME) {
             shrink_start = curtick;
-            pool_shrink(&ctx->node_pool, shrink_nkeep(pool_size(&ctx->node_pool)), SHRINK_BUSY);
+            pool_shrink(&ctx->node_pool);
         }
-        /*  睡到下一个必须醒来的 jiffy：最近的 tv1 到期，或下一个 cascade 边界。
-         *  上界由 _tw_next_delta 的 bound <= TVR_MASK 结构性保证（最多 256ms），无需钳位。
-         *  wake_at 已过则说明本轮处理耗时超过了下一到期，不睡直接回追赶循环 —— jiffies
-         *  严格递增故不会空转。tw_add / tw_free 会提前 cond_signal 唤醒。 */
+        /* 睡到下一个必须醒的 jiffy: 最近的 tv1 到期或下一个 cascade 边界, 上界由
+         * _tw_next_delta 保证不超过 256ms, 不用钳位。wake_at 已过说明本轮耗时超过了
+         * 下一到期, 不睡直接回追赶循环; tw_add / tw_free 会提前 cond_signal 唤醒。*/
         curtick = timer_cur_ms(&ctx->timer);
         wake_at = ctx->jiffies + _tw_next_delta(ctx);
         if (wake_at <= curtick) {

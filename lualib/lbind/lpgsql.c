@@ -315,9 +315,7 @@ static int32_t _lpgsql_reader_push(lua_State *lua, pgsql_reader_ctx *reader) {
         lua_pushnil(lua);
         return 1;
     }
-    pgsql_reader_ctx **rd = lua_newuserdata(lua, sizeof(pgsql_reader_ctx *));
-    *rd = reader;
-    ASSOC_MTABLE(lua, MT_PGSQL_READER);
+    lpub_push_ud(lua, reader, MT_PGSQL_READER);
     return 1;
 }
 /// <summary>
@@ -347,14 +345,14 @@ static int32_t _lpgsql_reader_iter(lua_State *lua) {
 static int32_t _lpgsql_reader_at(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
-    lua_Integer idx = luaL_checkinteger(lua, 2);
+    // 脚本侧一律 1 基;真正的上界由 pgsql_reader_at 按 result_count 判
+    int64_t at = lpub_check_index0(lua, 2, UINT32_MAX);
     pgpack_format format = (pgpack_format)luaL_checkinteger(lua, 3);
-    // 脚本侧一律 1 基（同 mqtt.prop_at），转成 C 的 0 基在这里做
     if (NULL == pgpack
-        || idx < 1 || idx > (lua_Integer)UINT32_MAX) {
+        || at < 0) {
         return _lpgsql_reader_push(lua, NULL);
     }
-    return _lpgsql_reader_push(lua, pgsql_reader_at(pgpack, (uint32_t)(idx - 1), format));
+    return _lpgsql_reader_push(lua, pgsql_reader_at(pgpack, (uint32_t)at, format));
 }
 /// <summary>
 /// 释放结果集读取器及其持有的所有行数据（绑定为 __gc）
@@ -626,7 +624,7 @@ static int32_t _lpgsql_pack_type(lua_State *lua) {
 /// 多语句 simple query 只反映最后一条，逐条读取用 affected_at
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
-/// <returns type="integer">受影响行数</returns>
+/// <returns type="integer">受影响行数；包类型不是 PGPACK_OK 或解析失败时为 0</returns>
 static int32_t _lpgsql_affected_rows(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
@@ -635,7 +633,8 @@ static int32_t _lpgsql_affected_rows(lua_State *lua) {
 }
 /// <summary>
 /// 查询结果数量：按服务端的 CommandComplete 计数，多语句 simple query 每条语句一个结果。
-/// 别把 COPY 和别的语句拼在一条 query 里：COPY 那条不占结果位，下标与语句序号对不上
+/// 别把 COPY TO STDOUT 和别的语句拼在一条 query 里：它会把包类型整体翻成 PGPACK_COPY_OUT
+/// 并丢弃前面已提交的结果，本函数随之归 0。COPY FROM STDIN 走独立包，不动这里的下标
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <returns type="integer">结果个数；类型不是 PGPACK_OK、或响应不带 CommandComplete
@@ -651,18 +650,17 @@ static int32_t _lpgsql_result_count(lua_State *lua) {
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <param name="idx" type="integer">结果下标，从 1 开始，总数见 pgsql.result_count</param>
-/// <returns type="integer">受影响行数；下标越界或解析失败返回 0</returns>
+/// <returns type="integer">受影响行数；包类型不是 PGPACK_OK、下标越界或解析失败时为 0</returns>
 static int32_t _lpgsql_affected_at(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
-    lua_Integer idx = luaL_checkinteger(lua, 2);
-    // 同 reader.at：脚本侧 1 基
+    int64_t at = lpub_check_index0(lua, 2, UINT32_MAX);// 同 reader.at
     if (NULL == pgpack
-        || idx < 1 || idx > (lua_Integer)UINT32_MAX) {
+        || at < 0) {
         lua_pushinteger(lua, 0);
         return 1;
     }
-    lua_pushinteger(lua, pgsql_affected_at(pgpack, (uint32_t)(idx - 1)));
+    lua_pushinteger(lua, pgsql_affected_at(pgpack, (uint32_t)at));
     return 1;
 }
 /// <summary>
@@ -903,9 +901,7 @@ static int32_t _lpgsql_new(lua_State *lua) {
     const char *user = luaL_checkstring(lua, 4);
     const char *password = luaL_checkstring(lua, 5);
     const char *database = luaL_checkstring(lua, 6);
-    pgsql_ctx **ud = lua_newuserdata(lua, sizeof(pgsql_ctx *));
-    *ud = NULL;
-    ASSOC_MTABLE(lua, MT_PGSQL);
+    pgsql_ctx **ud = (pgsql_ctx **)lpub_push_ud(lua, NULL, MT_PGSQL);
     pgsql_ctx *pg;
     MALLOC(pg, sizeof(pgsql_ctx));
     if (ERR_OK != pgsql_init(pg, ip, port, evssl, user, password, database)) {

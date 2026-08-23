@@ -1,8 +1,8 @@
 ﻿#include "utils/sfid.h"
 #include "utils/utils.h"
 
-#define DefMachineBitLen 10      //机器 ID 默认位数
-#define DefSequenceBitLen 12     //自增序列默认位数
+#define DefMachineBitLen 10 //机器 ID 默认位数
+#define DefSequenceBitLen 12 //自增序列默认位数
 #define DefCustomEpoch 1704067200000llu //默认自定义纪元（2024-01-01 00:00:00 UTC 毫秒时间戳）
 #define SFID_CLOCKBACK_WAIT 1000 //ctx->clockback_wait 的默认值
 

@@ -67,12 +67,9 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data) {
         //CAS 竞争或 pos 过期时短暂让出总线再重试，不 yield（由调用方决策）
         CPU_PAUSE();
     }
-    /* 已独占该槽位，写入数据并发布（sequence = pos+1 通知消费者）。
-     * memcpy 为普通写，但其后的 ATOMIC_SET_RELEASE 保证它不会越到 store 之后，
-     * 与消费者侧 ATOMIC_GET（acquire）构成 synchronizes-with 关系，
-     * 保证本次写对消费者可见，ARM 弱序架构下同样成立。
-     * 此处只需发布语义, 不需要 StoreLoad：调用方(log.c / loader.c)的 SB 握手
-     * 靠的是 enq.v 那个 ATOMIC_CAS 的全屏障, 与本 store 无关, 故不必用 seq_cst 交换。*/
+    /* 独占该槽后写数据并发布（sequence = pos+1 通知消费者）。发布用 release store:
+     * 它不许上面那次 memcpy 下沉, 消费者读到新 sequence 就一定能看到数据。
+     * 只需发布语义——调用方的唤醒握手靠 enq.v 那次 CAS 的全屏障, 与这个 store 无关。*/
     memcpy(cell->data, data, q->elsize);
     ATOMIC_SET_RELEASE(&cell->sequence, pos + 1);
     return ERR_OK;
@@ -110,11 +107,9 @@ int32_t mpq_pop(mpq_ctx *q, void *out) {
         //CAS 竞争或 pos 过期时短暂让出总线再重试，不 yield（由调用方决策）
         CPU_PAUSE();
     }
-    /* 已独占该槽位，读取数据并释放槽位（sequence = pos+capacity 通知生产者下一轮可用）。
-     * ATOMIC_GET(sequence) 是 acquire，保证此后 memcpy 能观察到生产者
-     * 在发布 sequence = pos+1 之前写入的值，无需对 cell->data 本身加原子操作。
-     * 释放槽位用 release store：它同时挡住上面那次 memcpy 读被下沉，
-     * 否则生产者拿到空槽后可能在我们读完之前就把数据覆盖掉。*/
+    /* 独占该槽后读数据再释放槽位（sequence = pos+capacity 放给生产者下一轮）。
+     * 上面那次 ATOMIC_GET(sequence) 是 acquire, memcpy 能看到生产者发布前写入的数据。
+     * 释放用 release store, 否则那次 memcpy 的读会下沉, 数据可能已被覆盖。*/
     memcpy(out, cell->data, q->elsize);
     ATOMIC_SET_RELEASE(&cell->sequence, pos + q->capacity);
     return ERR_OK;
@@ -141,15 +136,9 @@ int32_t mpq_pop_sc(mpq_ctx *q, void *out) {
         }
         return ERR_FAILED;
     }
-    /* 槽位就绪，拷出数据后推进 deq.v，再释放槽位（sequence = pos+capacity 通知生产者下一轮可用）。
-     * ATOMIC_GET(sequence) 是 acquire，保证此后 memcpy 能观察到生产者
-     * 在发布 sequence = pos+1 之前写入的值，无需对 cell->data 本身加原子操作。
-     * 这两步顺序不可颠倒：先释放槽位的话，两步之间生产者可抢占该槽把 enq.v 推到
-     * deq+capacity+1，mpq_size 随即触发 ">capacity 返 0" 的钳位，把满队列报成空。
-     * 生产者从不读 deq.v，先推进无副作用（mpq_pop 同样是先 CAS deq 再释放槽位）。
-     * 两处都用 release store：release 不允许先前的读写下沉，故 memcpy 读、deq.v 写、
-     * 槽位释放三者的先后关系全部保持；本函数的调用方在其后自带 fence(log.c / loader.c
-     * 的 SB 握手)，不依赖这里提供 StoreLoad。*/
+    /* 顺序不可颠倒：先推进 deq.v，再释放槽位（sequence = pos+capacity 放给生产者下一轮）。
+     * ATOMIC_GET(sequence) 是 acquire，memcpy 能看到生产者发布前写入的数据；
+     * 两处 release store 也不许 memcpy 的读下沉到它们之后。*/
     memcpy(out, cell->data, q->elsize);
     ATOMIC_SET_RELEASE(&q->deq.v, pos + 1);
     ATOMIC_SET_RELEASE(&cell->sequence, pos + q->capacity);

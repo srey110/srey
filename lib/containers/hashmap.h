@@ -51,7 +51,8 @@ extern "C" {
     void hashmap_set_grow_by_power(struct hashmap *map, size_t power);
     void hashmap_set_load_factor(struct hashmap *map, double load_factor);
     // DEPRECATED: use `hashmap_new_with_allocator`
-    void hashmap_set_allocator(void *(*malloc)(size_t), void(*free)(void*));
+    void hashmap_set_allocator(void *(*malloc)(size_t), void *(*realloc)(void *, size_t),
+        void(*free)(void*));
 
 #if defined(__cplusplus)
 }

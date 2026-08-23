@@ -60,8 +60,11 @@ int32_t pgsql_set_db(pgsql_ctx *pg, const char *database);
 const char *pgsql_get_db(pgsql_ctx *pg);
 /// <summary>
 /// 查询结果数量：按服务端的 CommandComplete 计数，多语句 simple query 每条语句一个结果。
-/// 别把 COPY 和别的语句拼在一条 query 里：COPY 那条不占结果位，下标与语句序号对不上。
-/// 所有语句的结果都攒到 ReadyForQuery 才一起交出，峰值内存是各结果集之和，没有分批取法
+/// 别把 COPY TO STDOUT 和别的语句拼在一条 query 里：包类型会被整体翻掉，前面已提交的
+/// 结果连同行一起丢。COPY FROM STDIN 走独立包，不动这里的下标。
+/// 所有语句的结果都攒到 ReadyForQuery 才一起交出，峰值内存是各结果集之和，没有分批取法。
+/// 服务端没按协议用 CommandComplete / ErrorResponse / EmptyQueryResponse 收尾的语句
+/// 只打一条 WARN 就跳过，与 libpq 同口径
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针</param>
 /// <returns>结果个数；类型不是 PGPACK_OK、或响应不带 CommandComplete（prepare / stmt_close /
@@ -72,7 +75,8 @@ uint32_t pgsql_result_count(pgpack_ctx *pgpack);
 /// 逐条读取用 pgsql_affected_at
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针，complete 字段须已填充</param>
-/// <returns>受影响的行数，解析失败时返回 0</returns>
+/// <returns>受影响的行数；类型不是 PGPACK_OK 或解析失败时为 0——COPY TO STDOUT 的包
+/// 带着 "COPY N" 标签但类型已翻成 PGPACK_COPY_OUT，也归这一档</returns>
 int64_t pgsql_affected_rows(pgpack_ctx *pgpack);
 /// <summary>
 /// 解析第 idx 个结果的命令完成标签中受影响的行数

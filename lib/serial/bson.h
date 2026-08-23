@@ -15,7 +15,7 @@
 //string	::=	int32 (byte*) unsigned_byte(0) 
 //cstring	:: = (byte*) unsigned_byte(0)
 //binary	::=	int32 subtype (byte*)
-//array ['red', 'blue'] encodes as the document {'0': 'red', '1': 'blue'}.
+//array 编码成 document, 键是下标字符串: ['red','blue'] → {'0':'red','1':'blue'}
 typedef enum bson_type {
     BSON_EOD = 0x00,//结尾
     BSON_DOUBLE = 0x01,//double              signed_byte(1) e_name double
@@ -25,7 +25,7 @@ typedef enum bson_type {
     BSON_BINARY = 0x05,//二进制数据          signed_byte(5) e_name binary
     BSON_OID = 0x07,//ObjectId               signed_byte(7) e_name (byte*12)
     BSON_BOOL = 0x08,//布尔                  signed_byte(8) e_name unsigned_byte(0/1)
-    BSON_DATE = 0x09,//Date                  signed_byte(9) e_name int64  UTC datetime. int64 is UTC milliseconds since the Unix epoch
+    BSON_DATE = 0x09,//Date                  signed_byte(9) e_name int64  int64 是 Unix 纪元起的 UTC 毫秒
     BSON_NULL = 0x0A,//null                  signed_byte(10) e_name
     BSON_REGEX = 0x0B,//正则表达式           signed_byte(11) e_name cstring(regex pattern) cstring(regex options)
     BSON_JSCODE = 0x0D,//JavaScript          signed_byte(13) e_name string
@@ -138,7 +138,8 @@ char *bson_tostring2(char *data, size_t lens);
 /// <param name="doc">源 BSON 文档数据;NULL 时 no-op</param>
 /// <param name="lens">doc 缓冲的实际字节数;0 时 no-op</param>
 /// <returns>ERR_OK 已拼接(含 NULL / 空文档的 no-op);ERR_FAILED 缓冲不足 5 字节、
-/// 头声明长度超出缓冲、或声明长度达 MAX_PACK_SIZE,三种情况内容都整篇未拼入</returns>
+/// 末字节不是 EOD、或头声明长度超出缓冲,三种情况内容都整篇未拼入。
+/// 本函数只做结构性校验,不管字节数上限——那是取决于承载协议的决定,由调用方判</returns>
 int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens);
 /// <summary>
 /// 开始写入一个嵌套文档字段，须配对调用 bson_append_end 结束
@@ -324,7 +325,8 @@ int32_t bson_iter_next(bson_iter *iter);
 /// 从当前迭代器位置查找指定键，支持点分多级路径（如 "a.b.c"）。
 /// result 绑定的是**包含被找到元素的那层文档**：不含点时即 iter 所在文档，
 /// 点分路径则是最内层子文档。于是 result 上继续 bson_iter_next 吐出的是该元素的同级字段，
-/// bson_iter_reset 回到的也是那一层的开头——find("a.b.c") 之后 reset 重扫的是 a.b 而不是根文档
+/// bson_iter_reset 回到的也是那一层的开头——find("a.b.c") 之后 reset 重扫的是 a.b 而不是根文档。
+/// result 可以就是 iter 本身（原地收窄）：未被 result 接管的那层文档偏移按进函数时还原
 /// </summary>
 /// <param name="iter">起始迭代器</param>
 /// <param name="keys">点分键路径，如 "cursor.id"</param>

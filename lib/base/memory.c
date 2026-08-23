@@ -7,8 +7,28 @@
 #define _FREE    free
 
 #if MEMORY_CHECK
-static atomic64_t _nalloc = 0; // 累计分配次数（原子计数）
-static atomic64_t _nfree = 0; // 累计释放次数（原子计数）
+/* 分条计数：两个相邻的全局计数器会让每次 malloc/free 都在同一条 cache line 上跨核来回。
+ * 改成每线程独占一格、各占一条 cache line，槽位用尽(活过的线程数超过 MEM_SLOTS)的
+ * 线程共用末尾那一格 —— 两条路径的计数都精确。*/
+#define MEM_SLOTS 64 // 独占槽位数;只增不回收,用尽即共用末尾那格
+// 对齐属性按编译器分派(同 macro_atomic.h): Windows 上的 MinGW/clang-cl 认 GCC 属性、
+// 不认 declspec(align), 按 OS 挑会被静默丢掉。Sun Studio / xlC 没有对应属性, 那里退化成
+// 相邻槽位共用 cache line —— 只影响并发写入快慢, 计数照样精确
+#if defined(__GNUC__) || defined(__clang__)
+    #define MEM_SLOT_ALIGN __attribute__((aligned(CACHELINE_SIZE)))
+#elif defined(OS_WIN)
+    #define MEM_SLOT_ALIGN __declspec(align(CACHELINE_SIZE))
+#else
+    #define MEM_SLOT_ALIGN
+#endif
+typedef struct mem_slot {
+    atomic64_t nalloc; // 本槽位累计分配次数
+    atomic64_t nfree;  // 本槽位累计释放次数
+    char pad[CACHELINE_SIZE - 2 * sizeof(atomic64_t)];
+}mem_slot;
+MEM_SLOT_ALIGN static mem_slot _slots[MEM_SLOTS + 1];// 末一格给槽位用尽的线程共用
+static atomic64_t _slotseq = 0; // 槽位分配游标
+static THREAD_LOCAL mem_slot *_slot = NULL;
 #endif
 
 #if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
@@ -125,9 +145,36 @@ static void _trk_dump(void) {
 }
 #endif//MEMORY_CHECK && MEMORY_TRACE
 
+#if MEMORY_CHECK
+// 首次调用给本线程钉一格,此后只自增。末尾那格可能被多个线程共用,原子自增照样精确
+static void _mem_count(int32_t is_alloc) {
+    if (NULL == _slot) {
+        int64_t seq = ATOMIC64_ADD(&_slotseq, 1);// 返回旧值
+        _slot = &_slots[(seq < MEM_SLOTS) ? (size_t)seq : MEM_SLOTS];
+    }
+    ATOMIC64_ADD_RELAXED(is_alloc ? &_slot->nalloc : &_slot->nfree, 1);
+}
+#endif//MEMORY_CHECK
+void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
+#if MEMORY_CHECK
+    uint64_t na = 0;
+    uint64_t nf = 0;
+    int32_t i;
+    for (i = 0; i <= MEM_SLOTS; i++) {
+        na += (uint64_t)ATOMIC64_GET(&_slots[i].nalloc);
+        nf += (uint64_t)ATOMIC64_GET(&_slots[i].nfree);
+    }
+    SET_PTR(nalloc, na);
+    SET_PTR(nfree, nf);
+#else
+    SET_PTR(nalloc, 0);
+    SET_PTR(nfree, 0);
+#endif
+}
+
 void *_malloc(size_t size) {
 #if MEMORY_CHECK
-    ATOMIC64_ADD(&_nalloc, 1);
+    _mem_count(1);
 #endif
     void *ptr = _MALLOC(size);
     if (NULL == ptr) {
@@ -141,7 +188,7 @@ void *_malloc(size_t size) {
 }
 void *_calloc(size_t count, size_t size) {
 #if MEMORY_CHECK
-    ATOMIC64_ADD(&_nalloc, 1);
+    _mem_count(1);
 #endif
     void *ptr = _CALLOC(count, size);
     if (NULL == ptr) {
@@ -156,9 +203,9 @@ void *_calloc(size_t count, size_t size) {
 void *_realloc(void* oldptr, size_t size) {
 #if MEMORY_CHECK
     if (NULL == oldptr && 0 != size) {
-        ATOMIC64_ADD(&_nalloc, 1);
+        _mem_count(1);
     } else if (NULL != oldptr && 0 == size) {
-        ATOMIC64_ADD(&_nfree, 1);
+        _mem_count(0);
     }
     // (NULL, 0) no-op + (非NULL, >0) realloc 改大小，均不计数
 #endif
@@ -189,7 +236,7 @@ void _free(void* ptr) {
         return;
     }
 #if MEMORY_CHECK
-    ATOMIC64_ADD(&_nfree, 1);
+    _mem_count(0);
 #endif
 #if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
     _trk_del(ptr);
@@ -198,21 +245,14 @@ void _free(void* ptr) {
 }
 void _memcheck(void) {
 #if MEMORY_CHECK
-    int64_t leak = (int64_t)(_nalloc - _nfree);
+    uint64_t na, nf;
+    mem_stat(&na, &nf);
+    int64_t leak = (int64_t)na - (int64_t)nf;
     PRINT("memory check => not free: %" PRId64 ".", leak);
 #if MEMORY_TRACE && !defined(OS_AIX)
     if (0 != leak) {
         _trk_dump();
     }
 #endif
-#endif
-}
-void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
-#if MEMORY_CHECK
-    SET_PTR(nalloc, (uint64_t)ATOMIC64_GET(&_nalloc));
-    SET_PTR(nfree, (uint64_t)ATOMIC64_GET(&_nfree));
-#else
-    SET_PTR(nalloc, 0);
-    SET_PTR(nfree, 0);
 #endif
 }

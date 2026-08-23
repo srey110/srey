@@ -1,7 +1,7 @@
 ﻿#include "utils/netutils.h"
 #include "utils/netaddr.h"
 
-#define MSEC    1000  //毫秒与秒的换算系数
+#define MSEC    1000 //毫秒与秒的换算系数
 #ifdef OS_WIN
 // 0:未初始化 1:初始化中或收尾中 >=2:就绪（引用数 = 值 - 1）。
 // 只保证"启停各一次"与"init 期间并发调用"两种用法,不是通用的并发引用计数

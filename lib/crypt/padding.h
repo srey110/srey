@@ -28,7 +28,8 @@ int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uin
 /// <param name="klens">密码长度</param>
 /// <param name="pdkey">储存填充的密码</param>
 /// <param name="reqlens">要求的密码长度</param>
-/// <returns>填充后的密码</returns>
+/// <returns>klens 小于 reqlens 时返回 pdkey（前 klens 字节为 key，其余补 0）；
+/// klens 不小于 reqlens 时原样返回 key，只有前 reqlens 字节会被用到，多出来的部分静默丢弃</returns>
 uint8_t *_padding_key(const char *key, size_t klens, uint8_t *pdkey, size_t reqlens);
 
 #endif//PADDING_H_

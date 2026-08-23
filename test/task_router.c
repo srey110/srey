@@ -11,6 +11,9 @@
 static atomic_t     _g_post_count = 0;
 // 计数器: 流式路由收到 ROUTER_STREAM_ABORT 时 +1, 客户端通过 GET /__aborts 读回验证
 static atomic_t     _g_abort_count = 0;
+// 计数器: _server_startup 里每有一条路由注册失败就 +1, 客户端通过 GET /__regfail 读回。
+// 空名段那两条曾让整条路由注册作废, 而"没注册"和"注册成了字面量"在线缆上都是 404, 分不开
+static atomic_t     _g_regfail_count = 0;
 static uint16_t     _g_port       = 0;
 // ABORT 回调里回调 router_closed 用; 不走 ctx->task->arg 是因为 router_free 那条路径上 task 正在拆
 static router_ctx  *_g_router     = NULL;
@@ -133,6 +136,13 @@ static void _h_aborts(router_req *ctx) {
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
     router_req_text(ctx, 200, buf, (size_t)k);
 }
+// GET /__regfail → 当前 _g_regfail_count 字符串值; 客户端读出 "0" 即所有路由都注册成功
+static void _h_regfail(router_req *ctx) {
+    char buf[32];
+    int32_t cnt = (int32_t)ATOMIC_GET(&_g_regfail_count);
+    int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
+    router_req_text(ctx, 200, buf, (size_t)k);
+}
 // GET /a/{x?}/b → OPT 中置: 有值返 "x=<val>", 无值(OPT 未取到段)返 "x=none"
 static void _h_opt_mid(router_req *ctx) {
     size_t n;
@@ -220,6 +230,21 @@ static void _h_framing(router_req *ctx) {
     extra[2].value.lens = 1;
     router_req_respond(ctx, 200, extra, 3, "ok", 2);
 }
+// GET /nullhdr → extra 里塞一条值为 NULL 的头和一条正常头。router.h 的契约是
+// "头值为 NULL 整条丢弃", 而校验曾被 lens > 0 短路掉, {NULL, 0} 会照常发出 "X-Null: "
+static void _h_nullhdr(router_req *ctx) {
+    http_header_ctx extra[2];
+    extra[0].key.data = (void *)"X-Null";
+    extra[0].key.lens = strlen("X-Null");
+    extra[0].value.data = NULL;
+    extra[0].value.lens = 0;
+    // 正常头: 证明前一条被丢不是整批拒掉
+    extra[1].key.data = (void *)"X-Keep";
+    extra[1].key.lens = strlen("X-Keep");
+    extra[1].value.data = (void *)"1";
+    extra[1].value.lens = 1;
+    router_req_respond(ctx, 200, extra, 2, "ok", 2);
+}
 // GET /g1/g2/deep → "deep=11"; 嵌套 group 终点 handler:
 // g1mw 中间件先 ctx->user += 1, g2mw 中间件再 += 10, 累加值 11 由 handler 写出
 // 验证: (a) 嵌套 group 中间件按父→子顺序入链 (b) ctx->user 跨中间件传值
@@ -258,6 +283,11 @@ static void _mw_auth(router_req *ctx) {
         return;
     }
     router_next(ctx);
+}
+// silent: 既不写响应也不调 router_next。挂在流式路由上用来压"准入被拒 + 漏写响应"
+// 那一格 —— 兜底 500 之后连接必须关掉
+static void _mw_silent(router_req *ctx) {
+    (void)ctx;
 }
 // post-tag: 先 router_next 让 handler 跑完, 返回后再 ATOMIC_ADD 计数器
 // 验证 next 后置处理 (Express/Laravel 风格的洋葱模型); 单纯返回值无法证明这点,
@@ -344,8 +374,9 @@ static void _server_startup(task_ctx *task) {
     task_recved(task, _server_net_recv);
     task_closed(task, _server_net_close);
 
-    // 4 个具名中间件先注册, 后续 router_get/post 的 mws 数组按名引用
+    // 5 个具名中间件先注册, 后续 router_get/post 的 mws 数组按名引用
     router_define(r, "auth",     _mw_auth);
+    router_define(r, "silent",   _mw_silent);
     router_define(r, "post-tag", _mw_post_tag);
     router_define(r, "g1mw",     _mw_g1);
     router_define(r, "g2mw",     _mw_g2);
@@ -354,6 +385,8 @@ static void _server_startup(task_ctx *task) {
     router_post_stream(r, NULL, "/st", _h_st_echo, NULL, 0);
     const char *st_auth_mws[] = { "auth" };
     router_post_stream(r, NULL, "/stauth", _h_st_echo, st_auth_mws, 1);
+    const char *st_silent_mws[] = { "silent" };
+    router_post_stream(r, NULL, "/stsilent", _h_st_echo, st_silent_mws, 1);
 
     // 9 条平铺路由 (无中间件): 覆盖各种 path 模板和方法位掩码
     router_get(r, NULL, "/",             _h_root,        NULL, 0);
@@ -366,6 +399,14 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/qexist",       _h_qexist,      NULL, 0);
     // {a?b} 参数名含内部 ?, 按 B2 文法当字面量段(对齐 Lua); 故 /litq/xyz 不命中参数 → 404
     router_get(r, NULL, "/litq/{a?b}",   _h_root,        NULL, 0);
+    // 空名段同样当字面量: {} 与 {?} 都不是参数, 注册须成功(失败计入 _g_regfail_count),
+    // 且 /litbe/xyz 与 /litqe/xyz 都不该命中参数 → 404
+    if (NULL == router_get(r, NULL, "/litbe/{}",  _h_root, NULL, 0)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
+    if (NULL == router_get(r, NULL, "/litqe/{?}", _h_root, NULL, 0)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
     router_get(r, NULL, "/a/{x?}/b",    _h_opt_mid,     NULL, 0);
     // OPT 精确匹配: 可选段排在必填段之前 / 取值与后继字面量同名, 两种形态贪婪前瞻都会误判 404
     router_get(r, NULL, "/optlead/{x?}/{y}",  _h_opt_lead,  NULL, 0);
@@ -376,6 +417,7 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/hdrsum",            _h_hdrsum,    NULL, 0);
     // extra 里的帧长头须被丢弃, 验证不会发出两条 Content-Length
     router_get(r, NULL, "/framing",           _h_framing,   NULL, 0);
+    router_get(r, NULL, "/nullhdr",           _h_nullhdr,   NULL, 0);
     // 9 个可选段 > ROUTER_MAX_OPT(8): 注册应失败, 该路径只能落到 404
     router_get(r, NULL, "/optovf/{a?}/{b?}/{c?}/{d?}/{e?}/{f?}/{g?}/{h?}/{i?}", _h_root, NULL, 0);
     router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0);
@@ -383,6 +425,7 @@ static void _server_startup(task_ctx *task) {
     router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0);
     router_get(r, NULL, "/__stats",      _h_stats,       NULL, 0);
     router_get(r, NULL, "/__aborts",     _h_aborts,      NULL, 0);
+    router_get(r, NULL, "/__regfail",    _h_regfail,     NULL, 0);
     router_get(r, NULL, "/nobody",       _h_nobody,      NULL, 0);
     // 只配 router_match_index 用的条目(两个回调都为 NULL)。混进派发是配置错误,
     // 普通请求与 chunked 首帧都该给 500, 不能一个 500 一个 411
@@ -675,7 +718,24 @@ done:
     return rtn;
 }
 
-
+// /nullhdr 断言: 值为 NULL 的头整条丢弃, 同批的正常头不受牵连
+static int32_t _do_req_nullhdr(task_ctx *task, uint16_t port) {
+    SOCKET fd;
+    uint64_t skid;
+    struct http_pack_ctx *resp = _do_get(task, port, "/nullhdr", &fd, &skid);
+    int32_t rtn = ERR_FAILED;
+    if (NULL == resp) {
+        goto done;
+    }
+    if (ERR_OK != _hdr_check(resp, "/nullhdr", "X-Null", NULL, 0)
+        || ERR_OK != _hdr_check(resp, "/nullhdr", "X-Keep", "1", 1)) {
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return rtn;
+}
 // 25 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
 // 每次 _do_req 之间插 task_isclosing 早返, SIGINT 时尽快收尾
 // bad 用位掩码记录, 单次跑不会复用, 但若失败时 LOG_WARN 输出可看到哪几位出错
@@ -762,6 +822,20 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     // [20] B2: {a?b} 参数名含内部 ? → 当字面量段, /litq/xyz 不命中参数 → 404 (修复前当 PARAM 会返 200)
     if (ERR_OK != _do_req(task, port, "GET", "/litq/xyz", NULL, NULL, 404, NULL)) bad |= (1 << 20);
     if (task_isclosing(task)) return ERR_FAILED;
+    // [29] 空名段 {} / {?}: 注册必须成功(修复前 {?} 让整条路由作废, _g_regfail_count 会是 1),
+    // 且两者都是字面量段, 拿任意文本去打都不命中 → 404
+    if (ERR_OK != _do_req(task, port, "GET", "/__regfail",  NULL, NULL, 200, "0")) {
+        bad |= (1 << 29);
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/litbe/xyz", NULL, NULL, 404, NULL)) {
+        bad |= (1 << 29);
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/litqe/xyz", NULL, NULL, 404, NULL)) {
+        bad |= (1 << 29);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
 
     // [21] OPT 中置+有值: /a/42/b → param x 消耗后 LIT /b 匹配
     if (ERR_OK != _do_req(task, port, "GET", "/a/42/b", NULL, NULL, 200, "x=42")) bad |= (1 << 21);
@@ -871,11 +945,20 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
     if (ERR_OK != _do_req_framing(task, port)) {
         bad |= (1 << 8);
     }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [9] 值为 NULL 的头整条丢弃
+    if (ERR_OK != _do_req_nullhdr(task, port)) {
+        bad |= (1 << 9);
+    }
     if (0 != bad) {
         LOG_WARN("router test: opt/header extra assertions failed, bad=0x%x.", bad);
     }
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
+
+
 
 // 分块发送断言: 按 CLAUDE.md 的写法逐段发, 末段带终止块并等响应。
 // chunks 各段拼起来就是期望回显的 body; expect 为期望状态码
@@ -949,6 +1032,50 @@ static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
     binary_free(&bw);
     ev_close(&task->loader->netev, fd, skid, 0);
     return ERR_OK;
+}
+// 流式路由被完整(非 chunked)请求命中、准入被拒且没写响应: 兜底 500 之后连接照旧可用,
+// 只有 chunked 首帧那面(_router_st_reject)才关。用同一条连接再发一次验它没被关掉
+static int32_t _do_stream_plain_reject(task_ctx *task, uint16_t port) {
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for stream plain reject.", port);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "POST", "/stsilent");
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_end(&bw);
+    size_t rsize;
+    int32_t rtn = ERR_FAILED;
+    // copy=0: bw.data 所有权转给框架, 后面不能再 binary_free (同 _do_req)
+    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    if (NULL == resp) {
+        LOG_WARN("router test: /stsilent got no response.");
+        goto done;
+    }
+    if (ERR_OK != _resp_check(resp, "POST", "/stsilent", 500)) {
+        goto done;
+    }
+    // 一次到齐的请求 body 已全收完, 没有残留帧要丢弃, 所以兜底 500 之后连接照旧可用
+    // (chunked 首帧那面才必须关, 理由见 _router_st_reject)
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "POST", "/stsilent");
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_end(&bw);
+    resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    if (NULL == resp) {
+        LOG_WARN("router test: /stsilent closed after the 500 fallback.");
+        goto done;
+    }
+    if (ERR_OK != _resp_check(resp, "POST", "/stsilent", 500)) {
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return rtn;
 }
 // 发首帧 + 一块数据后就不管了, 连接一直留着: 这条流会挂在 r->streams 里活到进程收尾,
 // 由 router_free 排空并投 ABORT。留给 ASan 盯 router_free 那条路径的重入(见 _h_st_echo)
@@ -1044,6 +1171,13 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
     // 排在 [6] 读 /__aborts 之后, 免得把那条计数断言从 1 顶成 2
     if (ERR_OK != _do_chunked_dangling(task, port)) {
         bad |= (1 << 8);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [9] 完整(非 chunked)请求命中流式路由且准入被拒: 500 之后连接不关
+    if (ERR_OK != _do_stream_plain_reject(task, port)) {
+        bad |= (1 << 9);
     }
     if (0 != bad) {
         LOG_WARN("router test: stream route assertions failed, bad=0x%x.", bad);

@@ -2,6 +2,13 @@
 
 #define MT_MQTT_PROPS "_mqtt_props_ctx"
 #define PACKID_OUT_OF_RANGE "packet id out of range" // 九个 packer 共用的越界文案
+// 下面这些字段直接写进报文, 截断出来的是另一个合法值(qos 258 截成 2 就是一条结构完整的
+// QoS2 PUBLISH), 组包侧无从分辨, 所以在绑定层按线格式的位宽卡死
+#define QOS_OUT_OF_RANGE     "qos out of range (0-2)"
+#define FLAG_OUT_OF_RANGE    "flag must be 0 or 1"
+#define RETAIN_OUT_OF_RANGE  "retain handling out of range (0-2)"
+#define REASON_OUT_OF_RANGE  "reason code out of range (0-255)"
+#define PROPVAL_OUT_OF_RANGE "property value out of range"
 
 // 从 Lua 栈 idx 位置获取可选 binary_ctx（nil/none 返回 NULL）
 static binary_ctx *_lmqtt_get_props(lua_State *lua, int idx) {
@@ -58,7 +65,7 @@ static int32_t _lmqtt_props_free(lua_State *lua) {
 static int32_t _lmqtt_props_fixnum(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
-    uint32_t val = (uint32_t)luaL_checkinteger(lua, 3);
+    uint32_t val = (uint32_t)lpub_check_range(lua, 3, 0, UINT32_MAX, PROPVAL_OUT_OF_RANGE);
     lua_pushboolean(lua, ERR_OK == mqtt_props_fixnum(props, flag, val));
     return 1;
 }
@@ -72,7 +79,7 @@ static int32_t _lmqtt_props_fixnum(lua_State *lua) {
 static int32_t _lmqtt_props_varnum(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
-    uint32_t val = (uint32_t)luaL_checkinteger(lua, 3);
+    uint32_t val = (uint32_t)lpub_check_range(lua, 3, 0, UINT32_MAX, PROPVAL_OUT_OF_RANGE);
     lua_pushboolean(lua, ERR_OK == mqtt_props_varnum(props, flag, val));
     return 1;
 }
@@ -125,10 +132,10 @@ static int32_t _lmqtt_props_subscribe(lua_State *lua) {
     binary_ctx *topics = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 2);
     const char *topic = luaL_checkstring(lua, 3);
-    int8_t qos = (int8_t)luaL_checkinteger(lua, 4);
-    int8_t nl = (int8_t)luaL_optinteger(lua, 5, 0);
-    int8_t rap = (int8_t)luaL_optinteger(lua, 6, 0);
-    int8_t retain = (int8_t)luaL_optinteger(lua, 7, 0);
+    int8_t qos = (int8_t)lpub_check_range(lua, 4, 0, 2, QOS_OUT_OF_RANGE);
+    int8_t nl = (int8_t)lpub_opt_range(lua, 5, 0, 0, 1, FLAG_OUT_OF_RANGE);
+    int8_t rap = (int8_t)lpub_opt_range(lua, 6, 0, 0, 1, FLAG_OUT_OF_RANGE);
+    int8_t retain = (int8_t)lpub_opt_range(lua, 7, 0, 0, 2, RETAIN_OUT_OF_RANGE);
     lua_pushboolean(lua, ERR_OK == mqtt_topics_subscribe(topics, version, topic, qos, nl, rap, retain));
     return 1;
 }
@@ -229,7 +236,7 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_connect(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int8_t cleanstart = (int8_t)luaL_checkinteger(lua, 2);
+    int8_t cleanstart = (int8_t)lpub_check_range(lua, 2, 0, 1, FLAG_OUT_OF_RANGE);
     uint16_t keepalive = lpub_check_u16(lua, 3, "keepalive out of range");
     const char *clientid = luaL_checkstring(lua, 4);
     const char *user = lua_isnoneornil(lua, 5) ? NULL : luaL_checkstring(lua, 5);
@@ -244,8 +251,8 @@ static int32_t _lmqtt_pack_connect(lua_State *lua) {
     if (!lua_isnoneornil(lua, 8)) {
         willpayload = (char *)luaL_checklstring(lua, 8, &wplens);
     }
-    int8_t willqos = (int8_t)luaL_optinteger(lua, 9, 0);
-    int8_t willretain = (int8_t)luaL_optinteger(lua, 10, 0);
+    int8_t willqos = (int8_t)lpub_opt_range(lua, 9, 0, 0, 2, QOS_OUT_OF_RANGE);
+    int8_t willretain = (int8_t)lpub_opt_range(lua, 10, 0, 0, 1, FLAG_OUT_OF_RANGE);
     binary_ctx *connprops = _lmqtt_get_props(lua, 11);
     binary_ctx *willprops = _lmqtt_get_props(lua, 12);
     size_t lens;
@@ -266,8 +273,8 @@ static int32_t _lmqtt_pack_connect(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_connack(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int8_t sesspresent = (int8_t)luaL_checkinteger(lua, 2);
-    uint8_t reason = (uint8_t)luaL_checkinteger(lua, 3);
+    int8_t sesspresent = (int8_t)lpub_check_range(lua, 2, 0, 1, FLAG_OUT_OF_RANGE);
+    uint8_t reason = (uint8_t)lpub_check_range(lua, 3, 0, UINT8_MAX, REASON_OUT_OF_RANGE);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_connack(version, sesspresent, reason, props, &lens);
@@ -290,9 +297,9 @@ static int32_t _lmqtt_pack_connack(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_publish(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int8_t retain = (int8_t)luaL_checkinteger(lua, 2);
-    int8_t qos = (int8_t)luaL_checkinteger(lua, 3);
-    int8_t dup = (int8_t)luaL_checkinteger(lua, 4);
+    int8_t retain = (int8_t)lpub_check_range(lua, 2, 0, 1, FLAG_OUT_OF_RANGE);
+    int8_t qos = (int8_t)lpub_check_range(lua, 3, 0, 2, QOS_OUT_OF_RANGE);
+    int8_t dup = (int8_t)lpub_check_range(lua, 4, 0, 1, FLAG_OUT_OF_RANGE);
     const char *topic = luaL_checkstring(lua, 5);
     uint16_t packid = lpub_check_u16(lua, 6, PACKID_OUT_OF_RANGE);
     char *payload = NULL;
@@ -321,7 +328,7 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
 static int32_t _lmqtt_pack_puback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
-    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)lpub_opt_range(lua, 3, 0, 0, UINT8_MAX, REASON_OUT_OF_RANGE);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_puback(version, packid, reason, props, &lens);
@@ -339,7 +346,7 @@ static int32_t _lmqtt_pack_puback(lua_State *lua) {
 static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
-    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)lpub_opt_range(lua, 3, 0, 0, UINT8_MAX, REASON_OUT_OF_RANGE);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_pubrec(version, packid, reason, props, &lens);
@@ -357,7 +364,7 @@ static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
 static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
-    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)lpub_opt_range(lua, 3, 0, 0, UINT8_MAX, REASON_OUT_OF_RANGE);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_pubrel(version, packid, reason, props, &lens);
@@ -375,7 +382,7 @@ static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
 static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
-    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)lpub_opt_range(lua, 3, 0, 0, UINT8_MAX, REASON_OUT_OF_RANGE);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_pubcomp(version, packid, reason, props, &lens);
@@ -491,7 +498,7 @@ static int32_t _lmqtt_pack_pong(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_disconnect(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint8_t reason = (uint8_t)luaL_optinteger(lua, 2, 0);
+    uint8_t reason = (uint8_t)lpub_opt_range(lua, 2, 0, 0, UINT8_MAX, REASON_OUT_OF_RANGE);
     binary_ctx *props = _lmqtt_get_props(lua, 3);
     size_t lens;
     char *pack = mqtt_pack_disconnect(version, reason, props, &lens);
@@ -507,7 +514,7 @@ static int32_t _lmqtt_pack_disconnect(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_auth(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    uint8_t reason = (uint8_t)luaL_optinteger(lua, 2, 0);
+    uint8_t reason = (uint8_t)lpub_opt_range(lua, 2, 0, 0, UINT8_MAX, REASON_OUT_OF_RANGE);
     binary_ctx *props = _lmqtt_get_props(lua, 3);
     size_t lens;
     char *pack = mqtt_pack_auth(version, reason, props, &lens);
@@ -594,13 +601,11 @@ static int32_t _lmqtt_connect_will_props(lua_State *lua) {
 static int32_t _lmqtt_prop_at(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     array_ctx *arr = lua_touserdata(lua, 1);
-    // 先按 lua_Integer 卡范围再窄化：下标是 4 字节，先转再判的话 2^32+1 会截成 1 落进合法区间，
-    // 靠 nil 收尾的遍历循环就永远退不出去
-    lua_Integer idx = luaL_checkinteger(lua, 2);
-    if (idx < 1 || idx > (lua_Integer)array_size(arr)) {
+    int64_t at = lpub_check_index0(lua, 2, array_size(arr));
+    if (at < 0) {
         return lpub_rtn_nil(lua, 4);
     }
-    mqtt_propertie *p = *(mqtt_propertie **)array_at(arr, (int32_t)(idx - 1));
+    mqtt_propertie *p = *(mqtt_propertie **)array_at(arr, (int32_t)at);
     lua_pushinteger(lua, p->flag);
     lua_pushinteger(lua, p->nval);
     if (p->flens > 0) {

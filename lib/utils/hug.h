@@ -14,7 +14,8 @@ typedef struct hug_ctx {
     cond_ctx condexit;
 #else
     // POSIX: signal handler 可在任意线程执行, 持锁 signal 违反 async-signal-safe;
-    // 改用 self-pipe trick: handler 走 hug_wakeup 写 1 字节, 主线程 read 阻塞等待
+    // 改用 self-pipe trick: handler 走 hug_wakeup 写 1 字节, 主线程 read 阻塞等待。
+    // 管道里全程最多一个字节, 理由见 hug_wakeup
     int32_t exit_pipe[2];
 #endif
 }hug_ctx;
@@ -33,7 +34,8 @@ int32_t hug_init(hug_ctx *ctx);
 /// <param name="ctx">hug_init 成功的 hug_ctx 实例</param>
 void hug_wait(hug_ctx *ctx);
 /// <summary>
-/// 唤醒 hug_wait。可从任意线程调用 (POSIX 实现走 write, 安全于 signal handler 上下文)
+/// 唤醒 hug_wait。可从任意线程调用 (POSIX 实现走 write, 安全于 signal handler 上下文)。
+/// 重复调用幂等: 只有首次真正写管道, 之后仅确认唤醒标记
 /// </summary>
 /// <param name="ctx">hug_init 成功的 hug_ctx 实例</param>
 void hug_wakeup(hug_ctx *ctx);

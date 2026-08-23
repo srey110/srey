@@ -554,32 +554,25 @@ uint32_t pgsql_result_count(pgpack_ctx *pgpack) {
 }
 // 从命令完成标签末尾反向找最后一个空格，取其后的数字字符串
 static int64_t _pgsql_tag_rows(const char *tag) {
-    size_t lens = strlen(tag);
-    if (0 == lens) {
-        return 0;
+    size_t end = strlen(tag);
+    while (end > 0 && ' ' == tag[end - 1]) {
+        end--;// 跳过尾部空格
     }
-    int32_t space = 1;
-    const char *rows;
-    for (int32_t i = (int32_t)lens - 1; i >= 0; i--) {
-        if (space) {
-            if (' ' != tag[i]) {
-                space = 0;
-            }
-            continue;
-        }
-        if (' ' == tag[i]) {
-            rows = tag + i + 1;
-            return (int64_t)strtoll(rows, NULL, 10);
-        }
+    while (end > 0 && ' ' != tag[end - 1]) {
+        end--;// 退到最后一个空格之后
     }
-    return 0;
+    return (0 == end) ? 0 : (int64_t)strtoll(tag + end, NULL, 10);
 }
 int64_t pgsql_affected_rows(pgpack_ctx *pgpack) {
+    // 与 result_count / affected_at 同口径: 类型不符即 0。多语句里某条报错会把 type 翻成
+    // PGPACK_ERR 却留着 complete, 不判就会报出一条已被整体回滚的语句的行数
+    if (PGPACK_OK != pgpack->type) {
+        return 0;
+    }
     return _pgsql_tag_rows(pgpack->complete);
 }
 int64_t pgsql_affected_at(pgpack_ctx *pgpack, uint32_t idx) {
-    if (PGPACK_OK != pgpack->type
-        || idx >= array_size(&pgpack->results)) {
+    if (idx >= pgsql_result_count(pgpack)) {
         return 0;
     }
     return _pgsql_tag_rows(((pgsql_result *)array_at(&pgpack->results, idx))->complete);

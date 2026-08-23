@@ -42,10 +42,11 @@ int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uin
 }
 uint8_t *_padding_key(const char *key, size_t klens, uint8_t *pdkey, size_t reqlens) {
     if (klens < reqlens) {
-        memcpy(pdkey, key, klens);
+        if (klens > 0) {
+            memcpy(pdkey, key, klens);// klens 为 0 时 key 可以是 NULL, memcpy 不收 NULL
+        }
         ZERO(pdkey + klens, reqlens - klens);
         return pdkey;
-    } else {
-        return (uint8_t *)key;
     }
+    return (uint8_t *)key;// 够长即原样透传, 只有前 reqlens 字节会被用到
 }

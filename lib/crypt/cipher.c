@@ -184,8 +184,7 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
         enlens = (i + cipher->block_lens > lens ? lens - i : cipher->block_lens);
         buf = cipher_block(cipher, (const char *)data + i, enlens, &enlens);
         if (NULL == buf) {
-            secure_zero(output, size);
-            return ERR_FAILED;
+            goto fail;
         }
         memcpy(output + size, buf, enlens);
         size += enlens;
@@ -197,15 +196,13 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
             if (0 == lens % cipher->block_lens) {
                 //dlens=0 必然装得下; 同上, 判返回值避免把未写过的 pd_data 当整填充块发出去
                 if (ERR_OK != _padding_data(cipher->padding, NULL, 0, cipher->pd_data, cipher->block_lens)) {
-                    secure_zero(output, size);
-                    return ERR_FAILED;
+                    goto fail;
                 }
                 buf = cipher_block(cipher, cipher->pd_data, cipher->block_lens, &enlens);
                 //合法初始化下不会返回 NULL（_cipher_process_data 走 line 101 直返；model 必为枚举内值）；
                 //此处与 line 205 同款防御 NULL，避免未来扩展 model 时静默段错误。
                 if (NULL == buf) {
-                    secure_zero(output, size);
-                    return ERR_FAILED;
+                    goto fail;
                 }
                 memcpy(output + size, buf, enlens);
                 size += enlens;
@@ -214,16 +211,14 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
             //解密路径：最后一个分组含填充字节，校验后剥离
             //size < block_lens（含 size==0）属解密失败，避免 output[size-1] 下溢越界
             if (size < cipher->block_lens) {
-                secure_zero(output, size);
-                return ERR_FAILED;
+                goto fail;
             }
             uint8_t pad = (uint8_t)output[size - 1];
             if (ISO10126 == cipher->padding) {
                 //ISO 10126 前 N-1 字节是随机数,除长度字节的范围外无从校验 —— 这一档做不成
                 //常数时间,成败只由 pad 决定
                 if (pad < 1 || pad > cipher->block_lens) {
-                    secure_zero(output, size);
-                    return ERR_FAILED;
+                    goto fail;
                 }
                 size -= pad;
                 secure_zero(output + size, pad);
@@ -248,8 +243,7 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
                     bad |= mask & (b ^ expected);
                 }
                 if (0 != bad) {
-                    secure_zero(output, size);
-                    return ERR_FAILED;
+                    goto fail;
                 }
                 size -= pad;
                 secure_zero(output + size, pad);
@@ -258,4 +252,8 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
     }
     *outlens = size;
     return ERR_OK;
+fail:
+    // 所有失败路径共用: 抹掉已写入的部分, 不把半截明文留在调用方缓冲里
+    secure_zero(output, size);
+    return ERR_FAILED;
 }

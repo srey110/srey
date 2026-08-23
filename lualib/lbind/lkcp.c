@@ -13,7 +13,7 @@ static int32_t _lkcp_new(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    uint32_t conv = (uint32_t)luaL_checkinteger(lua, 3);
+    uint32_t conv = (uint32_t)lpub_check_range(lua, 3, 0, UINT32_MAX, "conv out of range");
     kcp_ctx *kcp = lua_newuserdata(lua, sizeof(kcp_ctx));
     kcp_init(kcp, &task->loader->netev, fd, skid, conv);
     ASSOC_MTABLE(lua, MT_KCP);

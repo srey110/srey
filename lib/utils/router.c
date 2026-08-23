@@ -56,7 +56,7 @@ typedef struct named_mw {
 struct router_entry {
     int32_t segs_n;
     int32_t mws_n;
-    router_method method_mask;  // enum 4B
+    router_method method_mask;  // 方法位掩码, enum 占 4B
     int32_t segs_nopt;          // segs 中 OPT 段数, 注册期算好; 恰好占掉 method_mask 后的 4B padding
     router_seg *segs;
     router_cb *mws;             // 已合并的中间件函数指针 (group + 路由级, 已 _router_resolve_mw)
@@ -88,7 +88,7 @@ typedef struct router_stream {
 } router_stream;
 // 流式表的元素: 键 + 本体指针。本体近 5KB, 按值入表的话查一次就得在栈上摆一个同样大的探针
 typedef struct router_st_ent {
-    sk_id sk;              // hashmap key
+    sk_id sk;              // hashmap 的键
     router_stream *st;
 } router_st_ent;
 
@@ -106,15 +106,15 @@ static void _router_grow(void **arr, int32_t *cap, int32_t need, size_t elem_siz
     REALLOC(*arr, *arr, (size_t)newcap * elem_size);
     *cap = newcap;
 }
-// 解析单段, 写入 out; 成功 ERR_OK, 失败 out->str 保持 NULL
-// src 不要求以 \0 结尾, 仅按 len 读取
-static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
+// 解析单段, 写入 out。src 不要求以 \0 结尾, 仅按 len 读取。任何输入都能解析出一段:
+// 认不出占位符形态(名字为空 / 名字里有 '?')就当字面量, 故没有失败返回
+static void _router_parse_seg(const char *src, size_t len, router_seg *out) {
     out->str = NULL;
     out->str_len = 0;
     // 单字符 '*' → 末尾通配
     if (1 == len && '*' == src[0]) {
         out->t = ROUTER_SEG_WILD;
-        return ERR_OK;
+        return;
     }
     // {name} 或 {name?}; 至少 "{x}" 三字符
     if (len >= 3 && '{' == src[0] && '}' == src[len - 1]) {
@@ -126,24 +126,21 @@ static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
             is_opt = 1;
             name_len--;
         }
-        // {} / {?} 等空名拒绝
-        if (0 == name_len) {
-            return ERR_FAILED;
-        }
-        // 参数名内部含 '?' 视为非法, 落字面量; 否则才是 PARAM/OPT
-        if (NULL == memchr(name_src, '?', name_len)) {
+        // 名字为空({?}; {} 长度不够, 压根进不来)或名字内部含 '?'({a?b})都不认作占位符,
+        // 落字面量而不是让整条路由注册失败
+        if (0 != name_len
+            && NULL == memchr(name_src, '?', name_len)) {
             // +1 字节存 \0, router_req_param 内可直接 memcmp 不必再带长度
             out->str = dup_zero(name_src, name_len);
             out->str_len = (uint32_t)name_len;
             out->t = is_opt ? ROUTER_SEG_OPT : ROUTER_SEG_PARAM;
-            return ERR_OK;
+            return;
         }
     }
     // 其他: 字面量段, 整体拷贝
     out->str = dup_zero(src, len);
     out->str_len = (uint32_t)len;
     out->t = ROUTER_SEG_LIT;
-    return ERR_OK;
 }
 // 释放段数组内每个 str(均由 _router_parse_seg MALLOC); 数组本身的所有权归调用方处置
 static void _router_segs_free_str(router_seg *segs, int32_t n) {
@@ -185,11 +182,7 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
             _router_segs_free_str(buf, n);
             return ERR_FAILED;
         }
-        if (ERR_OK != _router_parse_seg(path + start, i - start, &buf[n])) {
-            LOG_WARN("router: invalid path segment.");
-            _router_segs_free_str(buf, n);
-            return ERR_FAILED;
-        }
+        _router_parse_seg(path + start, i - start, &buf[n]);
         n++;
     }
     // 可选段数决定 _router_match_path 可行性表的第二维, 超出即拒绝注册
@@ -549,23 +542,26 @@ void router_use_fn(router_ctx *r, router_cb fn) {
 // group 是纯栈对象, 字段全部按值/指针存; 嵌套靠 parent 指针链向上找祖先节点。
 // 调用方必须保证 prefix / mw_names 在所有 router_* 注册调用期间生命周期有效
 // (一般用字符串字面量 / 静态数组即可)
-void router_group_root(router_ctx *r, router_group *g, const char *prefix,
-                       const char *const *mw_names, int32_t n) {
-    g->parent = NULL;
-    g->router = r;
+// root 与 nest 的公共字段。g 是调用方栈上对象且两个入口都不 ZERO, 靠逐字段写满,
+// 所以往 router_group 加字段必须同时进这里, 否则漏掉的那个字段是未初始化栈值
+static void _router_group_fill(router_group *g, const char *prefix,
+                               const char *const *mw_names, int32_t n) {
     g->prefix = NULL == prefix ? "" : prefix;
     g->prefix_len = (uint32_t)strlen(g->prefix);
     g->mw_names = mw_names;
     g->mw_names_n = n;
 }
+void router_group_root(router_ctx *r, router_group *g, const char *prefix,
+                       const char *const *mw_names, int32_t n) {
+    g->parent = NULL;
+    g->router = r;
+    _router_group_fill(g, prefix, mw_names, n);
+}
 void router_group_nest(const router_group *parent, router_group *g, const char *prefix,
                        const char *const *mw_names, int32_t n) {
     g->parent = parent;
     g->router = parent->router;
-    g->prefix = NULL == prefix ? "" : prefix;
-    g->prefix_len = (uint32_t)strlen(g->prefix);
-    g->mw_names = mw_names;
-    g->mw_names_n = n;
+    _router_group_fill(g, prefix, mw_names, n);
 }
 // 沿父链按 root→leaf 顺序把各级 prefix 拼到 out, *out_len 写已用字节数。
 // 递归先到根再回溯写; 累积长度 > cap 时提前 ERR_FAILED, 避免 memcpy 越界写栈
@@ -959,12 +955,13 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
             LOG_WARN("router: header would push head block past MAX_HEADLENS, dropped.");
             continue;
         }
-        if (extra[i].value.lens > 0
-            && (NULL == extra[i].value.data
-                || NULL != memchr(extra[i].value.data, '\0', extra[i].value.lens)
-                || NULL != memchr(extra[i].value.data, '\r', extra[i].value.lens)
-                || NULL != memchr(extra[i].value.data, '\n', extra[i].value.lens))) {
-            LOG_WARN("router: header value contains NUL or CRLF, dropped.");
+        // 值为 NULL 一律丢: 调用方传 NULL 是"这条别发", 空值头要发就传 {"", 0}
+        if (NULL == extra[i].value.data
+            || (extra[i].value.lens > 0
+                && (NULL != memchr(extra[i].value.data, '\0', extra[i].value.lens)
+                    || NULL != memchr(extra[i].value.data, '\r', extra[i].value.lens)
+                    || NULL != memchr(extra[i].value.data, '\n', extra[i].value.lens)))) {
+            LOG_WARN("router: header value is NULL or contains NUL/CRLF, dropped.");
             continue;
         }
         memcpy(k, extra[i].key.data, extra[i].key.lens);
@@ -1044,6 +1041,38 @@ static int32_t _router_chain_build(router_ctx *r, router_entry *e, router_req *c
 static void _router_code_body(int32_t code, char body[ROUTER_CODE_BODY_LENS]) {
     SNPRINTF(body, ROUTER_CODE_BODY_LENS, "%s\n", http_code_status(code));
 }
+// 按 code 生成正文并回给客户端。chunked 首帧那面不走这里(它要的是 _router_st_reject
+// 的关连接收尾), 自己另有一份同样的栈缓冲
+static void _router_send_code(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code) {
+    char body[ROUTER_CODE_BODY_LENS];
+    _router_code_body(code, body);
+    _router_send_simple(task, fd, skid, code, body);
+}
+// status[0] = 方法, status[1] = 请求 URI; pack 为空或任一段为空都算无效 HTTP。
+// 三个派发入口共用: 返 NULL 即静默丢, 连响应都不发——对面发的不是 HTTP, 回什么都没意义
+static buf_ctx *_router_http_status(struct http_pack_ctx *pack) {
+    if (NULL == pack) {
+        return NULL;
+    }
+    buf_ctx *status = http_status(pack);
+    if (NULL == status
+        || 0 == status[0].lens
+        || 0 == status[1].lens) {
+        return NULL;
+    }
+    return status;
+}
+// 栈上请求上下文的装配。url 由调用方持有: 它得和 ctx 活得一样久, 且有意不清零
+// (url_parse 自己清该清的, 那三个大数组白清就是每请求 4KB 死写)
+static void _router_req_init(router_req *ctx, url_ctx *url, task_ctx *task,
+                             SOCKET fd, uint64_t skid, struct http_pack_ctx *pack) {
+    ZERO(ctx, sizeof(router_req));
+    ctx->url = url;
+    ctx->task = task;
+    ctx->sk.fd = fd;
+    ctx->sk.skid = skid;
+    ctx->pack = pack;
+}
 // 解方法 + URL parse + 扫表 + 错误码映射, 两个派发入口共用这一份。
 // status 由调用方先取好: 流式入口要赶在分配请求上下文之前把无效 HTTP 挡掉。
 // 返回 200 表示 *out_idx 有效, 其余为应回给客户端的应答码
@@ -1071,27 +1100,20 @@ static int32_t _router_entry_misconfigured(const router_entry *e, int32_t idx) {
 void router_dispatch(router_ctx *r, task_ctx *task,
                      SOCKET fd, uint64_t skid,
                      struct http_pack_ctx *pack) {
-    if (NULL == r || NULL == pack) {
+    if (NULL == r) {
         return;
     }
-    // status[0] = 方法, status[1] = 请求 URI; 任一为空视为无效 HTTP, 静默丢
-    buf_ctx *st = http_status(pack);
-    if (NULL == st || 0 == st[0].lens || 0 == st[1].lens) {
+    buf_ctx *status = _router_http_status(pack);
+    if (NULL == status) {
         return;
     }
     url_ctx url;
-    router_req ctx = { 0 };
-    ctx.url = &url;
-    ctx.task = task;
-    ctx.sk.fd = fd;
-    ctx.sk.skid = skid;
-    ctx.pack = pack;
+    router_req ctx;
+    _router_req_init(&ctx, &url, task, fd, skid, pack);
     int32_t idx;
-    int32_t code = _router_match_entry(r, &ctx, st, &idx);
+    int32_t code = _router_match_entry(r, &ctx, status, &idx);
     if (200 != code) {
-        char body[ROUTER_CODE_BODY_LENS];
-        _router_code_body(code, body);
-        _router_send_simple(task, fd, skid, code, body);
+        _router_send_code(task, fd, skid, code);
         return;
     }
     router_entry *matched = &r->routes[idx];
@@ -1113,7 +1135,7 @@ void router_dispatch(router_ctx *r, task_ctx *task,
         matched->on_chunk(&ctx, 0, data, dlens);
     }
     // 中间件主动 return 不调 router_next 是合法截断; 但都没写响应 (handler 漏发 + 中间件
-    // 也没截断) 时, 客户端会卡死, 这里兜底 500 让连接尽快关闭
+    // 也没截断) 时, 客户端会卡死, 这里兜底 500 让它别等
     if (!ctx.responded) {
         _router_send_simple(task, fd, skid, 500, ROUTER_BODY_500);
     }
@@ -1139,20 +1161,16 @@ static void _router_st_reject(router_stream *st, task_ctx *task, int32_t code, c
 }
 // 流式首帧: 匹配路由 → 跑准入链 → 进表 → 回调 PROT_SLICE_START
 static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct http_pack_ctx *pack) {
-    buf_ctx *status = http_status(pack);
-    if (NULL == status || 0 == status[0].lens || 0 == status[1].lens) {
+    buf_ctx *status = _router_http_status(pack);
+    if (NULL == status) {
         return;// 无效 HTTP, 静默丢, 同 router_dispatch
     }
     // 同连接已有记录说明上一条流式请求没收尾, 丢旧的重开
     _router_st_drop(r, sk);
     router_stream *st;
     MALLOC(st, sizeof(router_stream));
-    // url 不清零: url_parse 自己会清该清的部分, 那三个大数组白清就是每请求 4KB 死写
-    ZERO(st, offsetof(router_stream, url));
-    st->req.task = task;
-    st->req.sk = *sk;
-    st->req.url = &st->url;
-    st->req.pack = pack;
+    st->on_chunk = NULL;// 余下两个字段: req 交给 _router_req_init, url 有意不清(理由见那里)
+    _router_req_init(&st->req, &st->url, task, sk->fd, sk->skid, pack);
     int32_t idx;
     int32_t code = _router_match_entry(r, &st->req, status, &idx);
     if (200 != code) {
@@ -1245,16 +1263,13 @@ static void _router_st_feed(router_ctx *r, task_ctx *task, sk_id *sk,
 // 三种都能用栈上 req 算出来, 不必先堆分配 router_stream。给的码与一次到齐的同一请求完全一致
 static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sk_id *sk,
                                      struct http_pack_ctx *pack) {
-    buf_ctx *status = http_status(pack);
-    if (NULL == status || 0 == status[0].lens || 0 == status[1].lens) {
+    buf_ctx *status = _router_http_status(pack);
+    if (NULL == status) {
         return;// 无效 HTTP, 静默丢, 同 router_dispatch
     }
     url_ctx url;
-    router_req ctx = { 0 };
-    ctx.url = &url;
-    ctx.task = task;
-    ctx.sk = *sk;
-    ctx.pack = pack;
+    router_req ctx;
+    _router_req_init(&ctx, &url, task, sk->fd, sk->skid, pack);
     int32_t idx;
     int32_t code = _router_match_entry(r, &ctx, status, &idx);
     if (200 == code
@@ -1265,9 +1280,7 @@ static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sk_id *sk,
     if (200 == code) {
         _router_send_simple(task, sk->fd, sk->skid, 500, ROUTER_BODY_500);
     } else {
-        char body[ROUTER_CODE_BODY_LENS];
-        _router_code_body(code, body);
-        _router_send_simple(task, sk->fd, sk->skid, code, body);
+        _router_send_code(task, sk->fd, sk->skid, code);
     }
     ev_close(&task->loader->netev, sk->fd, sk->skid, 0);
 }

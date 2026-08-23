@@ -249,6 +249,12 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     int32_t total = _smtp_full_response(buf, SMTP_OK);
     if (ERR_FAILED == total) {
         BIT_SET(*status, PROT_ERROR);
+        // 同 _smtp_connected: 服务端 502/550 拒 EHLO 的原因就在缓冲里这一行, 丢了业务无从查
+        int32_t rejcrlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+        if (rejcrlf > 0
+            && !PACK_TOO_LONG(rejcrlf)) {
+            _smtp_push_errline(fd, skid, ud, buf, rejcrlf);
+        }
         return;
     }
     if (0 == total) {
@@ -373,7 +379,8 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         return;
     }
     //找首个 CRLF 而非末尾 CRLF，支持流水线场景下首条已完整即可消费
-    if (ERR_FAILED == buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE)) {
+    int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+    if (ERR_FAILED == crlf) {
         if (PACK_TOO_LONG(blens)) {
             BIT_SET(*status, PROT_ERROR);
             return;
@@ -390,6 +397,11 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     if (0 != strcmp(code, "334")
         || '-' == sep) {
         BIT_SET(*status, PROT_ERROR);
+        // 同 _smtp_connected: AUTH 被 504/538/530/454 明文拒是生产上最常见的一档, 原因在这一行
+        if (crlf > 0
+            && !PACK_TOO_LONG(crlf)) {
+            _smtp_push_errline(fd, skid, ud, buf, crlf);
+        }
         return;
     }
     switch (smtp->authtype) {

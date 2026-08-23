@@ -71,7 +71,8 @@ static inline void _pool_elclear(pool_ctx *pool, void *data) {
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 /// <param name="elsize">对象大小(字节);未设 _elnew 时按此大小 CALLOC 新建对象</param>
-/// <param name="capacity">底层队列容量,0 用默认值</param>
+/// <param name="capacity">底层队列容量,0 用默认值。实际容量会向上取整(thsafe 走 fsqu 取到
+///   2 的幂,否则 queue 取到偶数),pool_capacity 返回的是取整后的值</param>
 /// <param name="nkeep">收缩时保留的最小空闲对象数</param>
 /// <param name="thsafe">非 0 启用线程安全(fsqu 底层);0 用普通 queue(非线程安全)</param>
 /// <param name="elcbs">对象回调(new/free/reset/clear),NULL 走默认 CALLOC/FREE</param>
@@ -143,18 +144,10 @@ static inline uint32_t pool_capacity(pool_ctx *pool) {
 static inline uint32_t shrink_nkeep(size_t n) {
     return (uint32_t)(n - n / 5);
 }
-/// <summary>
-/// 收缩空闲对象至 max(keep, nkeep);load_trend 判 busy 时跳过本次。
-/// push/pop 多线程安全,但 shrink 须由单一线程调用(内部更新 trend 无锁);并发 push/pop 下收缩量为尽力而为
-/// </summary>
-/// <param name="pool">pool_ctx</param>
-/// <param name="keep">期望保留的空闲对象数(实际下限取 max(keep, nkeep))</param>
-/// <param name="busy_num">load_trend busy 判定分子</param>
-/// <param name="busy_den">load_trend busy 判定分母</param>
-static inline void pool_shrink(pool_ctx *pool, uint32_t keep,
-                               uint32_t busy_num, uint32_t busy_den) {
-    uint32_t plsize = pool_size(pool);
-    if (load_trend_busy(&pool->trend, plsize, busy_num, busy_den)) {
+// 收缩本体, pool_shrink_to 与 pool_shrink 共用。plsize 由调用方传进来: keep 与 plsize
+// 必须出自同一次采样, 各读一次 pool_size 会让相减出来的收缩量对不上
+static inline void _pool_shrink_sized(pool_ctx *pool, uint32_t keep, uint32_t plsize) {
+    if (load_trend_busy(&pool->trend, plsize, SHRINK_BUSY)) {
         return;
     }
     if (keep < pool->nkeep) {
@@ -163,6 +156,25 @@ static inline void pool_shrink(pool_ctx *pool, uint32_t keep,
     if (plsize > keep) {
         pool->_qu_nelfree(pool, plsize - keep);
     }
+}
+/// <summary>
+/// 收缩空闲对象至 max(keep, nkeep);load_trend 按 SHRINK_BUSY 判 busy 时跳过本次。
+/// 保留量由池外计数决定时用本函数,否则用 pool_shrink。
+/// push/pop 多线程安全,但 shrink 须由单一线程调用(内部更新 trend 无锁);并发 push/pop 下收缩量为尽力而为
+/// </summary>
+/// <param name="pool">pool_ctx</param>
+/// <param name="keep">期望保留的空闲对象数(实际下限取 max(keep, nkeep))</param>
+static inline void pool_shrink_to(pool_ctx *pool, uint32_t keep) {
+    _pool_shrink_sized(pool, keep, pool_size(pool));
+}
+/// <summary>
+/// 按池自身占用收缩空闲对象(保留量 shrink_nkeep(pool_size))。"收多少、什么算忙"
+/// 两个策略都在池内定,调用方不必逐处重述
+/// </summary>
+/// <param name="pool">pool_ctx</param>
+static inline void pool_shrink(pool_ctx *pool) {
+    uint32_t plsize = pool_size(pool);
+    _pool_shrink_sized(pool, shrink_nkeep(plsize), plsize);
 }
 
 #endif//POOL_H_

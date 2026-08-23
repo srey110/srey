@@ -43,10 +43,8 @@ int32_t spsc_trypush(spsc_ctx *q, const void *data) {
     if (enq - deq >= q->capacity) {
         return ERR_FAILED;
     }
-    /* 写入数据并发布（enq++ 通知消费者）。
-     * memcpy 为普通写，但其后的 ATOMIC_SET 是 full barrier（release），
-     * 与消费者侧 ATOMIC_GET（acquire）构成 synchronizes-with 关系，
-     * 保证本次写对消费者可见，ARM 弱序架构下同样成立。*/
+    /* 写数据并发布（enq++ 通知消费者）。ATOMIC_SET 是足序写, 不许上面那次 memcpy
+     * 下沉, 消费者读到新的 enq.v 就一定能看到数据。与 mpq_trypush 同一套约定。*/
     memcpy(_spsc_cell_at(q, enq), data, q->elsize);
     ATOMIC_SET(&q->enq.v, enq + 1);
     return ERR_OK;

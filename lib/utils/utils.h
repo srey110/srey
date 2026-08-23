@@ -4,7 +4,7 @@
 #include "base/macro.h"
 
 #define HEX_ENSIZE(s) ((s) * 2 + 1) //tohex 输出缓冲长度：每字节两个十六进制字符 + 结尾 '\0'
-typedef void *(*chr_func)(const void *, int32_t, size_t);   //字符查找函数类型（类似 memchr）
+typedef void *(*chr_func)(const void *, int32_t, size_t); //字符查找函数类型（类似 memchr）
 typedef int32_t(*cmp_func)(const void *, const void *, size_t); //内存比较函数类型（类似 memcmp）
 
 /// <summary>
@@ -117,7 +117,8 @@ int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
 /// <param name="ms">毫秒</param>
 /// <param name="fmt">格式化 %Y-%m-%d %H:%M:%S</param>
 /// <param name="time">时间字符串</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 失败（时间换算失败，或 fmt 太长以致
+///     " 000" 毫秒后缀在 TIME_LENS 内装不下——不截断，整体失败）</returns>
 int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 /// <summary>
 /// 字符串转时间戳。

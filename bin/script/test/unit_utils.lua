@@ -60,9 +60,11 @@ runner.run("utils", function(t)
         -- 重复添加：当前实现下重复名称应失败
         t:eq(false, ring:add(64, "node1"), "hashring add dup")
 
-        -- nreplicas 无上限时能让 C 层去要几十 GB，而 _realloc 分配失败是直接 exit 整个进程；
-        -- 负数经 (uint32_t) 转换就是 4294967295，是最容易踩到的写法
-        t:eq(false, ring:add(-1, "toobig"), "hashring add 负 nreplicas 被拒")
+        -- nreplicas 无上限时能让 C 层去要几十 GB，而 _realloc 分配失败是直接 exit 整个进程。
+        -- 负数与超 uint32 由绑定层报错拒掉（先前靠 (uint32_t) 转换恰好落在上限之外才返 false，
+        -- 换个数就能穿过去）；落在 uint32 内的超限值与 0 仍由 C 层返 false
+        t:eq(true, not pcall(ring.add, ring, -1, "toobig"), "hashring add 负 nreplicas 报错")
+        t:eq(true, not pcall(ring.add, ring, 4294967296, "toobig"), "hashring add 超 uint32 报错")
         t:eq(false, ring:add(1073741824, "toobig"), "hashring add 超上限 nreplicas 被拒")
         t:eq(false, ring:add(0, "zero"), "hashring add 零 nreplicas 被拒")
         -- 被拒的添加不得留下残节点：同名再按合法值添加须成功

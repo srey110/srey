@@ -1,7 +1,7 @@
 ﻿#include "protocol/custz_head.h"
 #include "protocol/prots_pub.h"
 #include "utils/utils.h"
-#include "utils/varint.h"
+#include "protocol/varint.h"
 
 #define CUSTZ_FIXED_LENS 4 // 固定头长度（字节数）
 
@@ -146,9 +146,9 @@ int32_t _custz_decode_variable(buffer_ctx *buf, size_t *hlens, size_t *size, int
     }
     return ERR_FAILED;
 }
-// MQTT 风格变长头编码：调用 varint_encode_mqtt 取 7-bit 内核；上限 268435455，超出返回 NULL
+// MQTT 风格变长头编码：调用 varint_encode_mqtt 取 7-bit 内核；超 MQTT_VARINT_MAX 返回 NULL
 char *_custz_encode_variable(size_t dlens, size_t *hlens, size_t *size) {
-    if (dlens > 268435455) {
+    if (dlens > MQTT_VARINT_MAX) {
         *size = 0;
         return NULL;
     }

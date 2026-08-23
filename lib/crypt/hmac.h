@@ -18,7 +18,7 @@ typedef struct hmac_ctx {
 /// <param name="klens">密码长度</param>
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens);
 /// <summary>
-/// 清零整个 hmac_ctx
+/// 清零整个 hmac_ctx，含内嵌 digest_ctx 的分发回调——调用后上下文即失效，要复用须重新 hmac_init
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
 void hmac_free(hmac_ctx *hmac);

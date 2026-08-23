@@ -55,13 +55,6 @@
     if (NULL == *(var)) { \
         return luaL_error((lua), (errmsg)); \
     }
-// 子对象（mongo.session / mysql.stmt）取值：自身非空之外，还要确认宿主没被 obj:__gc()
-// 提前释放。子对象存的是宿主裸指针，宿主一释放读它即 use-after-free
-#define LPUB_UD_OWNED(lua, type, mt, var, errmsg, omt, oerrmsg) \
-    LPUB_UD_ARG((lua), type, (mt), var, (errmsg)) \
-    if (NULL == lpub_owner_ptr((lua), (omt))) { \
-        return luaL_error((lua), (oerrmsg)); \
-    }
 
 /// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）
@@ -180,12 +173,44 @@ char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens);
 name_t lpub_task_handle(lua_State *lua, int32_t idx);
 /// <summary>
 /// 取栈位置 1 的子对象在创建时锚进 uservalue 槽 1 的宿主对象指针。
-/// 槽位由 uservalue 锚着，任何时候读都安全；用途见 LPUB_UD_OWNED
+/// 槽位由 uservalue 锚着，任何时候读都安全。
+/// 子对象（session / stmt）存的是宿主裸指针，宿主被 obj:__gc() 提前释放后读它即
+/// use-after-free，所以子对象的每个入口都得先用本函数确认宿主还活着；
+/// 两处的成套写法见 LMONGO_SESSION_ARG / LMYSQL_STMT_ARG
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="omt">宿主的元表名</param>
 /// <returns>宿主 C 对象指针；宿主已被 __gc 释放、槽位为空或类型不符时返回 NULL</returns>
 void *lpub_owner_ptr(lua_State *lua, const char *omt);
+/// <summary>
+/// 压一个"载荷是单个裸指针"的 userdata 并挂上元表，栈顶即该 userdata（可紧接着
+/// lua_setiuservalue 锚宿主）。LPUB_UD_ARG / lpub_owner_ptr 都按这个布局取值，
+/// 载荷必须始终是一个可被 __gc 置 NULL 的指针
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="ptr">初始值；构造过程中还会失败的对象传 NULL，成功后再写回槽位</param>
+/// <param name="mt">元表名（须为 MT_ 系列宏）</param>
+/// <returns>userdata 内的指针槽位，按调用方自己的类型强转后写入</returns>
+void **lpub_push_ud(lua_State *lua, void *ptr, const char *mt);
+/// <summary>
+/// 脚本侧 1 基下标转 C 的 0 基。范围判定必须排在窄化之前：截断后的值会落进合法区间
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">栈位置</param>
+/// <param name="count">元素总数，合法下标为 [1, count]</param>
+/// <returns>0 基下标；不是整数即 luaL_checkinteger 抛错，越界返回 -1</returns>
+int64_t lpub_check_index0(lua_State *lua, int32_t idx, uint64_t count);
+/// <summary>
+/// 同 lpub_check_range，但参数可缺省（none / nil 取 dft，不做范围校验）
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">栈位置</param>
+/// <param name="dft">缺省值</param>
+/// <param name="lo">下界（含）</param>
+/// <param name="hi">上界（含）</param>
+/// <param name="what">越界时的报错文案</param>
+/// <returns>收窄前的值；越界即 luaL_argerror（不返回）</returns>
+int64_t lpub_opt_range(lua_State *lua, int32_t idx, int64_t dft, int64_t lo, int64_t hi, const char *what);
 /// <summary>
 /// 失败路径压 n 个 nil。全仓规矩：**失败与成功的返回值个数必须一致**——
 /// 返回值直接塞进另一个调用（srey.send(fd, skid, websock.pack_text(...))）时少一个就整体错位。

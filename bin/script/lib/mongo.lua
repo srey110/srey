@@ -161,7 +161,7 @@ local function _txn_do(self, opts, optslens, packname, what)
     return mgo:check_error(mgopack) >= 0
 end
 ---commit / rollback 的共同流程，两者只差组包用哪个 C 接口和日志里的动作名。
----事务状态一路保留到服务端真的回了包为止：组包被拒（options 超 MAX_PACK_SIZE、或连接已不再
+---事务状态一路保留到服务端真的回了包为止：组包被拒（options 畸形或超单包上限、或连接已不再
 ---绑定该 session）和网络失败都可能只是这一次不成，状态还在就能重试或改走另一条收尾路径。
 ---这里若提前 done() 会解绑并 FREE options，之后另一条撞上绑定守卫也只能放弃，
 ---服务端那个事务就一直持锁到超时。

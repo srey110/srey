@@ -20,20 +20,6 @@
 // 单线程可同时注册的 rwlock_distr_ctx 上限;扩大需评估线性扫描开销
 #define RWLOCK_DISTR_MAX_TLS  4
 
-// CPU cache line 大小,用于消除并发结构 false sharing
-// 主流 x86_64 / ARM64 = 64;Apple Silicon / IBM POWER = 128;IBM z = 256;老 ARMv6 及以下 = 32
-#if defined(__APPLE__) && defined(__aarch64__)
-    #define CACHELINE_SIZE  128
-#elif defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)
-    #define CACHELINE_SIZE  128
-#elif defined(__s390x__) || defined(__zarch__)
-    #define CACHELINE_SIZE  256
-#elif defined(__arm__) && (__ARM_ARCH < 7)
-    #define CACHELINE_SIZE  32
-#else
-    #define CACHELINE_SIZE  64
-#endif
-
 // 分布式读锁单 slot,独占一条 cache line 避免 false sharing
 typedef struct rwlock_distr_slot {
     atomic_t active;   // 0=空闲 / 1=本 slot 的 reader 持读锁

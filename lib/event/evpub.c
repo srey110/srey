@@ -76,7 +76,7 @@ void _evpub_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t n
         return;
     }
     *shrink_start = now_ms;
-    pool_shrink(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)), SHRINK_BUSY);
+    pool_shrink_to(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)));
 }
 void _evpub_share_data_free(void *arg) {
     shared_data_free(arg, _free);

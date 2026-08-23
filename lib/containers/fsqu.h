@@ -21,7 +21,8 @@ typedef struct fsqu_ctx {
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="elsize">单元素字节数，须 大于 0</param>
-/// <param name="capacity">期望容量，0 使用默认值（mpq 侧非 2 的幂自动向上取整）</param>
+/// <param name="capacity">期望容量，0 使用默认值。实际容量会向上取整：mpq 侧取到 2 的幂，
+///   queue 侧取到偶数，所以 fsqu_capacity 可能大于这里给的值</param>
 void fsqu_init(fsqu_ctx *fsqu, size_t elsize, uint32_t capacity);
 /// <summary>
 /// 释放队列内部内存，不释放 fsqu 本身
@@ -29,7 +30,9 @@ void fsqu_init(fsqu_ctx *fsqu, size_t elsize, uint32_t capacity);
 /// <param name="fsqu">fsqu_ctx</param>
 void fsqu_free(fsqu_ctx *fsqu);
 /// <summary>
-/// 非阻塞入队（多生产者）：队列满时不阻塞、不扩容、不落溢出层。
+/// 非阻塞入队（多生产者）：队列满时不阻塞、不扩容、不落溢出层。同一实例上 fsqu_push 曾落过
+/// 溢出层且尚未排空时同样失败——快路径空着也拒。这道守卫是 best-effort：读 novf 与随后的
+/// 入队不是一个原子步，跨生产者顺序本就不保证
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="data">指向待入队元素的指针，拷贝 elsize 字节</param>
@@ -43,17 +46,14 @@ static inline int32_t fsqu_trypush(fsqu_ctx *fsqu, const void *data) {
     return mpq_trypush(&fsqu->mpq, data);
 #else
     spin_lock(&fsqu->lck);
-    if (fsqu->qu.size >= fsqu->qu.maxsize) {
-        spin_unlock(&fsqu->lck);
-        return ERR_FAILED;
-    }
-    queue_push(&fsqu->qu, data);
+    int32_t rtn = queue_trypush(&fsqu->qu, data);
     spin_unlock(&fsqu->lck);
-    return ERR_OK;
+    return rtn;
 #endif
 }
 /// <summary>
-/// 入队单个元素（多生产者），永不阻塞、永不失败
+/// 入队单个元素（多生产者），永不阻塞、永不失败：mpq 侧满时降级到无界溢出层，该层只增不减，
+/// 峰值容量保留到 fsqu_free。这是为消除自投递死锁有意接受的取舍，不是疏漏
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="data">指向待入队元素的指针，拷贝 elsize 字节</param>
@@ -147,6 +147,22 @@ static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out, int32_t mpqrtn) {
     _fsqu_ovf_drain(fsqu, (char *)out, 1, &n, mpqrtn);
     return (0 != n) ? ERR_OK : ERR_FAILED;
 }
+// 批量出队的 MPQ 实现，fsqu_pop_batch / fsqu_pop_sc_batch 共用；sc 传字面量，分支被常量折叠。
+// rtn 在每个出口都有确定值：取满 max 退出时是最后一次成功的 ERR_OK（drain 由 *n >= max 早退），
+// max 为 0 时是这里的初值 —— _fsqu_ovf_drain 靠它决定要不要去溢出层续取
+static inline uint32_t _fsqu_pop_batch_mpq(fsqu_ctx *fsqu, void *out, uint32_t max, int32_t sc) {
+    uint32_t n = 0;
+    uint32_t elsize = fsqu->mpq.elsize;
+    char *dst = (char *)out;
+    int32_t rtn = ERR_FAILED;
+    while (n < max
+           && ERR_OK == (rtn = (sc ? mpq_pop_sc(&fsqu->mpq, dst) : mpq_pop(&fsqu->mpq, dst)))) {
+        dst += elsize;
+        n++;
+    }
+    _fsqu_ovf_drain(fsqu, dst, max, &n, rtn);
+    return n;
+}
 #endif
 /// <summary>
 /// 出队单个元素（多消费者）
@@ -181,20 +197,11 @@ static inline int32_t fsqu_pop(fsqu_ctx *fsqu, void *out) {
 /// <param name="max">最多出队个数</param>
 /// <returns>实际出队个数，0 到 max</returns>
 static inline uint32_t fsqu_pop_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
+#if FSQU_MPQ
+    return _fsqu_pop_batch_mpq(fsqu, out, max, 0);
+#else
     uint32_t n = 0;
     char *dst = (char *)out;
-#if FSQU_MPQ
-    uint32_t elsize = fsqu->mpq.elsize;
-    // rtn 在每个出口都有确定值：取满 max 退出时是最后一次成功的 ERR_OK（drain 由 *n >= max 早退），
-    // max 为 0 时是这里的初值
-    int32_t rtn = ERR_FAILED;
-    while (n < max && ERR_OK == (rtn = mpq_pop(&fsqu->mpq, dst))) {
-        dst += elsize;
-        n++;
-    }
-    _fsqu_ovf_drain(fsqu, dst, max, &n, rtn);
-    return n;
-#else
     void *elem;
     spin_lock(&fsqu->lck);
     while (n < max && NULL != (elem = queue_pop(&fsqu->qu))) {
@@ -207,7 +214,7 @@ static inline uint32_t fsqu_pop_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
 #endif
 }
 /// <summary>
-/// 出队单个元素（单消费者）
+/// 出队单个元素（单消费者）：仅允许单一消费者线程调用，且不可与 fsqu_pop 混用(同 mpq_pop_sc)
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
@@ -224,7 +231,7 @@ static inline int32_t fsqu_pop_sc(fsqu_ctx *fsqu, void *out) {
 #endif
 }
 /// <summary>
-/// 批量出队（单消费者）
+/// 批量出队（单消费者）：约束同 fsqu_pop_sc
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="out">出参：接收出队元素的数组，至少 max * elsize 字节</param>
@@ -232,22 +239,13 @@ static inline int32_t fsqu_pop_sc(fsqu_ctx *fsqu, void *out) {
 /// <returns>实际出队个数，0 到 max</returns>
 static inline uint32_t fsqu_pop_sc_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
 #if FSQU_MPQ
-    uint32_t n = 0;
-    uint32_t elsize = fsqu->mpq.elsize;
-    char *dst = (char *)out;
-    int32_t rtn = ERR_FAILED;
-    while (n < max && ERR_OK == (rtn = mpq_pop_sc(&fsqu->mpq, dst))) {
-        dst += elsize;
-        n++;
-    }
-    _fsqu_ovf_drain(fsqu, dst, max, &n, rtn);
-    return n;
+    return _fsqu_pop_batch_mpq(fsqu, out, max, 1);
 #else
     return fsqu_pop_batch(fsqu, out, max);
 #endif
 }
 /// <summary>
-/// 返回当前队列元素数量近似值
+/// 返回当前队列元素数量的近似值(含溢出层)：只会高估不会低估，不会把有元素报成 0
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <returns>元素数量</returns>
@@ -263,7 +261,8 @@ static inline uint32_t fsqu_size(fsqu_ctx *fsqu) {
 #endif
 }
 /// <summary>
-/// 返回队列容量
+/// 返回队列容量；mpq 侧是快路径固定容量(降级到溢出层的阈值，不含无界的溢出层)，
+/// queue 侧是当前已分配容量。调用方据此推导过载告警阈值
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <returns>容量</returns>

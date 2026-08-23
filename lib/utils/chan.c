@@ -64,7 +64,7 @@ int32_t chan_is_closed(chan_ctx *chan) {
 // 缓存模式下发送数据，队列满时阻塞等待，chan 关闭时返回失败
 static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     mutex_lock(&chan->m_mu);
-    while (queue_size(&chan->qudata) == queue_maxsize(&chan->qudata)) {
+    while (queue_full(&chan->qudata)) {
         if (ATOMIC_GET(&chan->closed)) {
             mutex_unlock(&chan->m_mu);
             return ERR_FAILED;
@@ -207,7 +207,7 @@ int32_t chan_can_send(chan_ctx *chan) {
         /* 缓存队列大小需要持锁才能一致读 */
         int32_t send;
         mutex_lock(&chan->m_mu);
-        send = queue_size(&chan->qudata) < queue_maxsize(&chan->qudata);
+        send = !queue_full(&chan->qudata);
         mutex_unlock(&chan->m_mu);
         return send;
     }

@@ -121,10 +121,7 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         popen_free(ctx);
         return ERR_FAILED;
     }
-    if (NULL != ctx->pipe[0]) {
-        CloseHandle(ctx->pipe[0]);
-        ctx->pipe[0] = NULL;
-    }
+    CLOSE_HANDLE(ctx->pipe[0]);
 #else
     SOCKET sock[2];
     if (r || w) {
@@ -201,13 +198,8 @@ static int32_t _popen_child_exited(popen_ctx *ctx, int wstatus) {
         ctx->exitcode = ERR_FAILED;
         return ERR_OK;
     }
-#ifdef WCOREDUMP
-    if (WCOREDUMP(wstatus)) {//core dump
-        ctx->exited = 1;
-        ctx->exitcode = ERR_FAILED;
-        return ERR_OK;
-    }
-#endif
+    // 只剩 stopped / continued 两种状态,而所有 waitpid 都不传 WUNTRACED / WCONTINUED,
+    // 到不了这里;WCOREDUMP 也只在 WIFSIGNALED 为真时才有定义,不能在这一档求值
     return ERR_FAILED;
 }
 #endif
@@ -277,22 +269,10 @@ void popen_free(popen_ctx *ctx) {
         popen_close(ctx);
     }
 #ifdef OS_WIN
-    if (NULL != ctx->process.hProcess) {
-        CloseHandle(ctx->process.hProcess);
-        ctx->process.hProcess = NULL;
-    }
-    if (NULL != ctx->process.hThread) {
-        CloseHandle(ctx->process.hThread);
-        ctx->process.hThread = NULL;
-    }
-    if (NULL != ctx->pipe[0]) {
-        CloseHandle(ctx->pipe[0]);
-        ctx->pipe[0] = NULL;
-    }
-    if (NULL != ctx->pipe[1]) {
-        CloseHandle(ctx->pipe[1]);
-        ctx->pipe[1] = NULL;
-    }
+    CLOSE_HANDLE(ctx->process.hProcess);
+    CLOSE_HANDLE(ctx->process.hThread);
+    CLOSE_HANDLE(ctx->pipe[0]);
+    CLOSE_HANDLE(ctx->pipe[1]);
 #else
     if (INVALID_SOCK != ctx->sock) {
         shutdown(ctx->sock, SHUT_RD);

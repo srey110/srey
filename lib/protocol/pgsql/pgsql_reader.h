@@ -4,8 +4,9 @@
 #include "protocol/pgsql/pgsql_struct.h"
 
 /// <summary>
-/// 逐条取出带结果集的语句的读取器：每调一次给下一个，取完返回 NULL。
-/// 每个结果只能被取走一次，所以反复调用即可遍历整个响应；BEGIN / SET 这类没有结果集的
+/// 逐条取出带结果集的语句的读取器：每调一次给下一个。
+/// 每个结果只能被取走一次，所以反复调用即可遍历整个响应；内部游标只前进不回退，与
+/// pgsql_reader_at 混用也不会重复吐出同一个；BEGIN / SET 这类没有结果集的
 /// 语句自动跳过。要按语句序号定位某一条用 pgsql_reader_at
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针，类型必须为 PGPACK_OK</param>

@@ -15,7 +15,8 @@ typedef struct aes_ctx {
 /// </summary>
 /// <param name="aes">aes_ctx</param>
 /// <param name="key">密码</param>
-/// <param name="klens">密码长度, 不足16 24 32 会填充0</param>
+/// <param name="klens">密码长度, 不足 16 24 32 会填充 0;
+///     超过则只取前 16 24 32 字节（按 keybits 定），多出来的部分静默丢弃</param>
 /// <param name="keybits">128 192 256</param>
 /// <param name="encrypt">1 加密, 0 解密</param>
 void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int32_t encrypt);

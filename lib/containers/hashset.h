@@ -39,7 +39,8 @@ size_t hashset_count(const hashset *s);
 /// <returns>1 OOM(本次 add 未成功);0 正常</returns>
 int32_t hashset_oom(const hashset *s);
 /// <summary>
-/// 加入元素。已存在时更新(覆写为新值)
+/// 加入元素。已存在时更新(覆写为新值)。若设置了 elfree,覆写时不自动调用,
+/// 被顶掉的旧元素由调用方按需处理(元素内部的 strdup / MALLOC 字段否则全部泄漏)。
 /// </summary>
 /// <param name="s">hashset 指针</param>
 /// <param name="item">元素指针;按 elsize 字节读取</param>
