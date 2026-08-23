@@ -268,7 +268,7 @@ static int32_t _lcore_listen(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = lpub_check_port(lua, 4);
+    uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t id;
     LPUB_CUR_TASK(lua, task);
@@ -305,7 +305,7 @@ static int32_t _lcore_connect(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = lpub_check_port(lua, 4);
+    uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     // extra 的所有权在 lua_touserdata 那一刻就离开了 Lua，之后到 task_connect 接管为止不能再有
     // 任何会 longjmp 的调用，否则它既没进框架也没人 ud_free。setsess 与取 task 因此排在前面
@@ -362,7 +362,7 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
 static int32_t _lcore_udp(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
     const char *ip = luaL_checkstring(lua, 2);
-    uint16_t port = lpub_check_port(lua, 3);
+    uint16_t port = lpub_check_u16(lua, 3, PORT_OUT_OF_RANGE);
     SOCKET fd;
     uint64_t skid;
     LPUB_CUR_TASK(lua, task);
@@ -478,7 +478,7 @@ static int32_t _lcore_sendto(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = lpub_check_port(lua, 4);
+    uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
     void *data;
     size_t size;
     int32_t copy;
@@ -554,17 +554,15 @@ static int32_t _lcore_udp_loop(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 主动关闭指定 fd/skid 的网络连接
+/// 主动关闭指定 fd/skid 的网络连接；未发数据的丢弃契约同 ev_close
 /// </summary>
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <param name="immed" type="integer">0=优雅关闭(等 send queue 发完);1=立即关闭(丢弃未发数据);默认 0</param>
 /// <returns>无</returns>
 static int32_t _lcore_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t immed = (int32_t)luaL_optinteger(lua, 3, 0);
-    ev_close(&g_loader->netev, fd, skid, immed);
+    ev_close(&g_loader->netev, fd, skid);
     return 0;
 }
 /// <summary>
@@ -596,7 +594,7 @@ static int32_t _lcore_pack_type(lua_State *lua) {
 static int32_t _lcore_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int8_t status = (int8_t)lpub_check_range(lua, 3, INT8_MIN, INT8_MAX, "status out of range");
+    int8_t status = lpub_check_i8(lua, 3, "status out of range");
     if (ERR_OK != ev_ud_status(&g_loader->netev, fd, skid, status)) {
         lua_pushboolean(lua, 0);
     } else {

@@ -17,7 +17,7 @@ static void _client_worker(task_ctx *task, void *arg) {
     SOCKET fd;
     uint64_t skid;
     if (ERR_OK == coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
     }
 }
 

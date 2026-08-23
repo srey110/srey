@@ -137,7 +137,7 @@ runner.run("utils", function(t)
         t:eq(true, rejects(ring.add, ring, 8, ptr, -1), "hashring:add 负长度被拒")
         t:eq(true, rejects(ring.remove, ring, ptr, -1), "hashring:remove 负长度被拒")
 
-        -- 端口入口：统一走 lpub_check_port，越界当场 argerror 而不是静默截断。
+        -- 端口入口：统一走 lpub_check_u16(PORT_OUT_OF_RANGE)，越界当场 argerror 而不是静默截断。
         -- 截断是语义反转不是数值偏差 —— 65536 截成 0，listen 照样返回合法监听 id，
         -- 内核却分配了随机临时端口，服务"起来了"但在预期端口上不可达
         t:eq(true, rejects(srey.listen, PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", 65536),

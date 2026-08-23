@@ -641,7 +641,7 @@ LUAMOD_API int luaopen_redis(lua_State *lua) {
 /// （同 mysql.new / pgsql.new / mongo.new，不静默截断）</returns>
 static int32_t _lprot_smtp_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = lpub_check_port(lua, 2);
+    uint16_t port = lpub_check_u16(lua, 2, PORT_OUT_OF_RANGE);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *user = luaL_checkstring(lua, 4);
     const char *psw = luaL_checkstring(lua, 5);
@@ -672,7 +672,7 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
         char *cmd = smtp_pack_quit();
         ev_send(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), 0);
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, 0);
+        ev_close(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid);
     }
     *ud = NULL;
     // 密码不在这里擦：ev_close 只是投命令，网络线程可能正读着它组认证串。

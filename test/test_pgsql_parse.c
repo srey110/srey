@@ -945,6 +945,14 @@ static void test_pgsql_affected_rows(CuTest *tc) {
     // 回归：>2^31 行不得截断为负数（曾 (int32_t)strtol 回绕成 -1294967296）
     safe_fill_str(pg.complete, sizeof(pg.complete), "UPDATE 3000000000");
     CuAssertTrue(tc, 3000000000LL == pgsql_affected_rows(&pg));
+    // COPY OUT 的包不进 results 数组，但它的 "COPY N" 标签照读
+    pg.type = PGPACK_COPY_OUT;
+    safe_fill_str(pg.complete, sizeof(pg.complete), "COPY 3");
+    CuAssertTrue(tc, 3 == pgsql_affected_rows(&pg));
+    CuAssertTrue(tc, 0 == pgsql_result_count(&pg));// 结果集数组仍只认 PGPACK_OK
+    // 报错的那条留着上一条的标签，必须报 0 而不是那条已回滚语句的行数
+    pg.type = PGPACK_ERR;
+    CuAssertTrue(tc, 0 == pgsql_affected_rows(&pg));
 }
 
 // pgsql_set_userpwd 的契约是"任一项超长则两个字段都保持原值"。这条不能靠 safe_fill_str

@@ -51,11 +51,26 @@ int64_t lpub_opt_range(lua_State *lua, int32_t idx, int64_t dft, int64_t lo, int
     }
     return lpub_check_range(lua, idx, lo, hi, what);
 }
+uint8_t lpub_check_u8(lua_State *lua, int32_t idx, const char *what) {
+    return (uint8_t)lpub_check_range(lua, idx, 0, UINT8_MAX, what);
+}
 uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what) {
     return (uint16_t)lpub_check_range(lua, idx, 0, UINT16_MAX, what);
 }
-uint16_t lpub_check_port(lua_State *lua, int32_t idx) {
-    return lpub_check_u16(lua, idx, "port out of range");
+uint32_t lpub_check_u32(lua_State *lua, int32_t idx, const char *what) {
+    return (uint32_t)lpub_check_range(lua, idx, 0, UINT32_MAX, what);
+}
+int8_t lpub_check_i8(lua_State *lua, int32_t idx, const char *what) {
+    return (int8_t)lpub_check_range(lua, idx, INT8_MIN, INT8_MAX, what);
+}
+int16_t lpub_check_i16(lua_State *lua, int32_t idx, const char *what) {
+    return (int16_t)lpub_check_range(lua, idx, INT16_MIN, INT16_MAX, what);
+}
+int32_t lpub_check_i32(lua_State *lua, int32_t idx, const char *what) {
+    return (int32_t)lpub_check_range(lua, idx, INT32_MIN, INT32_MAX, what);
+}
+uint8_t lpub_opt_u8(lua_State *lua, int32_t idx, uint8_t dft, const char *what) {
+    return (uint8_t)lpub_opt_range(lua, idx, dft, 0, UINT8_MAX, what);
 }
 void *lpub_owner_ptr(lua_State *lua, const char *omt) {
     lua_getiuservalue(lua, 1, 1);

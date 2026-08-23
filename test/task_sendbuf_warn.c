@@ -58,11 +58,18 @@ static void _startup(task_ctx *task) {
         // 单次 ev_send 即 _uev_add_write_inloop 把整块入队，wb_size += 4MB 必触告警
         ev_send(&task->loader->netev, fd, skid, data, BYTES_PER_ROUND, 0);
     }
-    // graceful 关闭：等 buf_s 全部发完才真正断开，server 端最终累计应等于总发送量
-    ev_close(&task->loader->netev, fd, skid, 0);
-
+    // ev_close 只在关闭前冲一次，写不进内核的会被丢掉；要完整送达就得自己先等收齐再关
     int32_t expect = ROUNDS * BYTES_PER_ROUND;
     int32_t wait_ms = 0;
+    while ((int32_t)ATOMIC_GET(&g_recv_bytes) < expect && wait_ms < 30000) {
+        if (task_isclosing(task)) {
+            return;
+        }
+        coro_sleep(task, 100);
+        wait_ms += 100;
+    }
+    ev_close(&task->loader->netev, fd, skid);
+    wait_ms = 0;
     while (ATOMIC_GET(&g_close_cnt) < 1 && wait_ms < 30000) {
         if (task_isclosing(task)) {
             return;
@@ -71,8 +78,8 @@ static void _startup(task_ctx *task) {
         wait_ms += 100;
     }
 
-    int32_t received = ATOMIC_GET(&g_recv_bytes);
-    int32_t closed = ATOMIC_GET(&g_close_cnt);
+    int32_t received = (int32_t)ATOMIC_GET(&g_recv_bytes);
+    int32_t closed = (int32_t)ATOMIC_GET(&g_close_cnt);
     if (received != expect || closed != 1) {
         LOG_ERROR("sendbuf_warn: expect %d bytes / 1 close, got %d bytes / %d closes.",
                   expect, received, closed);

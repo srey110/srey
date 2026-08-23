@@ -65,7 +65,7 @@ function ctx:start(ip, port, config)
         or ERR_OK ~= msg.erro then
         -- 走 stop 而不是只清 sess:C 侧 kcp_start 已把 stopped 置 0,留在 0 则 handle/send 绕过守卫
         -- 投到不存在的会话,被静默丢弃却返成功。占位条目由 _kcp_start 补发的那条合成 CLOSE 清
-        -- (erro != ERR_OK,不触发 on_close 观察者),kcp_stop 解析不到会话不会再补一条
+        -- (neverconn=1,不触发 on_closed 观察者),kcp_stop 解析不到会话不会再补一条
         if sess == self.sess then
             self:stop()
         end

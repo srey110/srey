@@ -416,10 +416,8 @@ static void _loader_task_closing(loader_ctx *loader) {
     message_ctx closing = { 0 };
     closing.mtype = MSG_TYPE_CLOSING;
     rwlock_distr_rdlock(&loader->lckmaptasks);
-    // 在持锁期间置位 closing，与 task_register 的写锁互斥：
-    // 若 task_register 先拿到写锁完成注册，本次扫描必然覆盖该新 task；
-    // 若本扫描先拿到读锁并置位，task_register 随后在写锁内检测到 closing=1，
-    // 会立即为新 task 追加 CLOSING 消息，无需业务代码感知。
+    // 在持锁期间置位 closing，与 task_register 的写锁互斥：先注册的被本次扫描覆盖，
+    // 后注册的由 task_register 自己看到 closing=1 追加 CLOSING，两侧都不会漏
     ATOMIC_SET(&loader->closing, 1);
     hashmap_scan(loader->maptasks, _loader_closing_push, &closing);
     rwlock_distr_runlock(&loader->lckmaptasks);

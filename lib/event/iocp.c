@@ -31,7 +31,7 @@ static bool _iocp_disconnect_iter(const void *item, void *udata) {
     sock_ctx *sk = *((sock_ctx **)item);
     //防止 ERROR socket 还有在途未被取消的
     CancelIoEx((HANDLE)sk->fd, NULL);
-    _iocp_disconnect(sk, 1);
+    _iocp_disconnect(sk);
     return true;
 }
 void _iocp_disconnect_all(watcher_ctx *watcher) {

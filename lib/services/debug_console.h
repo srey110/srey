@@ -6,8 +6,9 @@
 /// <summary>
 /// 启动 HTTP 调试控制台 task service。浏览器访问 / 打开调试 UI 页面；
 /// curl /{handle}/{cmd} 向目标 task 发 REQ_DEBUG 调试命令；/0/{cmd} 广播到所有 task。
-/// 命令 help/mem/gc/stat/coros/loglv/inject/hotfix 由目标 task 自身的 REQ_DEBUG handler 处理
-/// （C task 走 lib/srey/debug_request.c，Lua task 走 lib.debug_request）。
+/// help / loglv 由本服务就地处理不转发；stat / coros 转给目标 task 自身的 REQ_DEBUG handler
+/// （C task 走 lib/srey/debug_request.c，Lua task 走 lib.debug_request）；
+/// mem / gc / inject / hotfix 要 Lua VM，只转给 TASK_LUA，其余类型由本服务就地回不支持。
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示不启动</param>

@@ -564,9 +564,10 @@ static int64_t _pgsql_tag_rows(const char *tag) {
     return (0 == end) ? 0 : (int64_t)strtoll(tag + end, NULL, 10);
 }
 int64_t pgsql_affected_rows(pgpack_ctx *pgpack) {
-    // 与 result_count / affected_at 同口径: 类型不符即 0。多语句里某条报错会把 type 翻成
-    // PGPACK_ERR 却留着 complete, 不判就会报出一条已被整体回滚的语句的行数
-    if (PGPACK_OK != pgpack->type) {
+    // 只挡 PGPACK_ERR:多语句里某条报错会把 type 翻成 ERR 却留着 complete,不判就会报出一条
+    // 已被整体回滚的语句的行数。COPY 的包带着 "COPY N",服务端给了就没有丢掉的理由;
+    // 其余类型(通知 / 认证期)complete 为空,_pgsql_tag_rows 自然返 0
+    if (PGPACK_ERR == pgpack->type) {
         return 0;
     }
     return _pgsql_tag_rows(pgpack->complete);

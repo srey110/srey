@@ -25,10 +25,10 @@ static void _startup(task_ctx *task) {
         *(arg->ok) = 1;
         return;
     }
-    ev_close(&task->loader->netev, cfd, cskid, 1);
+    ev_close(&task->loader->netev, cfd, cskid);
     // 正题：v6only=1 之下 "::" 没有占住 IPv4 通配地址，这个端口的 IPv4 侧应当无人监听
     if (ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", arg->port, 0, NULL, &cfd, &cskid)) {
-        ev_close(&task->loader->netev, cfd, cskid, 1);
+        ev_close(&task->loader->netev, cfd, cskid);
         ev_unlisten(&task->loader->netev, lsnid);
         LOG_ERROR("v6only: 127.0.0.1 reached a :: listener, IPV6_V6ONLY not in effect.");
         return;

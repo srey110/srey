@@ -10,6 +10,9 @@
 #include "utils/utils.h"
 #include "utils/log.h"
 
+// Lua VM 专属命令打到非 Lua task 时的应答；由发起方（各路由 handler 传的 needlua）判定，
+// C 侧 debug_request 不再维护命令名字表
+#define _DBG_NOTLUA "command not supported in C task."
 // task 列表收集项 + 动态数组（用于 /__alive 与广播）
 typedef struct dbg_task {
     name_t handle;   // task 句柄
@@ -22,6 +25,7 @@ typedef struct dbg_tasklist {
 }dbg_tasklist;
 // 广播单个 task 的 fork 参数；coro_request 响应在协程结束后失效，须复制到 resp 堆
 typedef struct bcast_arg {
+    int32_t needlua;   // 非 0：仅 Lua task 能执行，其余直接回 _DBG_NOTLUA 不发请求
     size_t bsize;      // 命令字节数
     size_t resp_len;   // 输出：响应字节数
     name_t handle;     // 目标 task 句柄
@@ -79,11 +83,21 @@ static void _debug_bcast_one(task_ctx *task, void *arg) {
     if (NULL == dst) {
         return;
     }
+    if (0 != ba->needlua
+        && TASK_LUA != task_get_type(dst)) {
+        task_ungrab(dst);
+        ba->resp_len = strlen(_DBG_NOTLUA);
+        MALLOC(ba->resp, ba->resp_len);
+        memcpy(ba->resp, _DBG_NOTLUA, ba->resp_len);
+        return;
+    }
     int32_t err = ERR_FAILED;
     size_t rlen = 0;
     void *rtn = coro_request(dst, task, REQ_DEBUG, ba->body, ba->bsize, 1, &err, &rlen);
     task_ungrab(dst);
-    if (ERR_OK == err && NULL != rtn && rlen > 0) {
+    // 不判 err:目标回了内容就照实收下,里面装的是真实错因。同 _debug_forward,
+    // 只有 rtn 为 NULL(超时/task 已没)才留给聚合处渲染成 (unavailable)
+    if (NULL != rtn && rlen > 0) {
         MALLOC(ba->resp, rlen);
         memcpy(ba->resp, rtn, rlen);
         ba->resp_len = rlen;
@@ -110,7 +124,7 @@ static void _debug_tasklist_free(dbg_tasklist *tl) {
     FREE(tl->items);
 }
 // 广播命令到所有 task（coro_fork_wait 并发），按 name 升序聚合响应（"name:\n<resp 或 (unavailable)>\n"）
-static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
+static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t needlua) {
     task_ctx *task = ctx->task;
     dbg_tasklist tl = { 0, 0, NULL };
     loader_task_each(task->loader, _debug_tasklist, &tl);
@@ -129,6 +143,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
     int32_t i;
     for (i = 0; i < tl.n; i++) {
         bargs[i].handle = tl.items[i].handle;
+        bargs[i].needlua = needlua;
         bargs[i].body = body;
         bargs[i].bsize = bsize;
         bargs[i].resp = NULL;
@@ -159,7 +174,9 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
     _debug_tasklist_free(&tl);
 }
 // handler 公共转发：取 handle，单发直接 coro_request、handle=0 广播；cmd 由本函数接管，完成后 binary_free
-static void _debug_forward(router_req *ctx, binary_ctx *cmd) {
+// needlua 非 0：该命令要 Lua VM，目标非 Lua task 时就地回 _DBG_NOTLUA，请求不发出去。
+// 判定放在发起方而不是目标的 handler 里：这里才有权威的命令表（路由注册）与目标类型
+static void _debug_forward(router_req *ctx, binary_ctx *cmd, int32_t needlua) {
     size_t n = 0;
     const char *ts = router_req_param(ctx, "task", &n);
     if (NULL == ts) {
@@ -176,7 +193,7 @@ static void _debug_forward(router_req *ctx, binary_ctx *cmd) {
     }
     name_t handle = (name_t)hv;
     if (0 == handle) {//广播
-        _debug_broadcast(ctx, cmd->data, cmd->offset);
+        _debug_broadcast(ctx, cmd->data, cmd->offset, needlua);
         binary_free(cmd);
         return;
     }
@@ -186,14 +203,23 @@ static void _debug_forward(router_req *ctx, binary_ctx *cmd) {
         binary_free(cmd);
         return;
     }
+    if (0 != needlua
+        && TASK_LUA != task_get_type(dst)) {
+        task_ungrab(dst);
+        router_req_text(ctx, 200, _DBG_NOTLUA, strlen(_DBG_NOTLUA));
+        binary_free(cmd);
+        return;
+    }
     int32_t err = ERR_FAILED;
     size_t rlen = 0;
     void *rtn = coro_request(dst, ctx->task, REQ_DEBUG, cmd->data, cmd->offset, 1, &err, &rlen);
     task_ungrab(dst);
-    if (ERR_OK != err || NULL == rtn) {
+    if (NULL == rtn) {
         router_req_text(ctx, 503, "task unavailable or timeout\n", strlen("task unavailable or timeout\n"));
     } else {
-        router_req_text(ctx, 200, rtn, rlen);
+        // 目标回了内容就照实渲染:err!=ERR_OK 时它装的是真实错因(如未注册 request 回调),
+        // 丢掉换成上面那句会把"不支持"说成"挂了或超时"
+        router_req_text(ctx, ERR_OK == err ? 200 : 503, rtn, rlen);
     }
     binary_free(cmd);
 }
@@ -243,25 +269,25 @@ static void _debug_help(router_req *ctx) {
 static void _debug_mem(router_req *ctx) {
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "mem");
-    _debug_forward(ctx, &cmd);
+    _debug_forward(ctx, &cmd, 1);
 }
 // GET /{handle}/gc：令目标 task 强制 Lua GC，返回释放量
 static void _debug_gc(router_req *ctx) {
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "gc");
-    _debug_forward(ctx, &cmd);
+    _debug_forward(ctx, &cmd, 1);
 }
 // GET /{handle}/stat：目标 task 各 mtype 的消息派发统计 (nmsg/cpu_ns/avg + 合计)
 static void _debug_stat(router_req *ctx) {
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "stat");
-    _debug_forward(ctx, &cmd);
+    _debug_forward(ctx, &cmd, 0);
 }
 // GET /{handle}/coros：列出目标 task 挂起的协程 (按栈聚类)
 static void _debug_coros(router_req *ctx) {
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "coros");
-    _debug_forward(ctx, &cmd);
+    _debug_forward(ctx, &cmd, 0);
 }
 // GET /{handle}/loglv/{lv}：lv 须 0-4；日志级别是进程级的一份原子变量，就地设掉即可，
 // URL 里的 {handle} 忽略。曾经恒走广播是为了同步各 task 的 Lua 侧级别缓存，那份缓存已经去掉
@@ -290,7 +316,7 @@ static void _debug_inject(router_req *ctx) {
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "inject");
     seri_append_string(&cmd, (const char *)body, blen);
-    _debug_forward(ctx, &cmd);
+    _debug_forward(ctx, &cmd, 1);
 }
 // POST /{handle}/hotfix/{module}：body 为补丁源码
 static void _debug_hotfix(router_req *ctx) {
@@ -306,7 +332,7 @@ static void _debug_hotfix(router_req *ctx) {
     _debug_pack_cmd(&cmd, "hotfix");
     seri_append_string(&cmd, (NULL == mod) ? "" : mod, (NULL == mod) ? 0 : mn);
     seri_append_string(&cmd, (const char *)body, blen);
-    _debug_forward(ctx, &cmd);
+    _debug_forward(ctx, &cmd, 1);
 }
 // HTTP 接收回调：取出本服务的 router 后转 router_net_recv（chunked 与派发都在那里）
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,

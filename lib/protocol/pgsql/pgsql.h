@@ -75,8 +75,9 @@ uint32_t pgsql_result_count(pgpack_ctx *pgpack);
 /// 逐条读取用 pgsql_affected_at
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针，complete 字段须已填充</param>
-/// <returns>受影响的行数；类型不是 PGPACK_OK 或解析失败时为 0——COPY TO STDOUT 的包
-/// 带着 "COPY N" 标签但类型已翻成 PGPACK_COPY_OUT，也归这一档</returns>
+/// <returns>受影响的行数；PGPACK_ERR（多语句里报错的那条会留着上一条的标签）或解析失败时为 0。
+/// COPY 的包按其 "COPY N" 标签照报——与 result_count / affected_at 不同，那两个只管普通查询的
+/// 结果集数组，COPY 的数据由 pack 自己持有、不入数组</returns>
 int64_t pgsql_affected_rows(pgpack_ctx *pgpack);
 /// <summary>
 /// 解析第 idx 个结果的命令完成标签中受影响的行数

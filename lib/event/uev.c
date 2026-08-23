@@ -15,10 +15,8 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) 
     char ntrigger[CMD_MAX_NREAD];
     // 触发字节仅作唤醒信号，先抽干清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）
     while (read(skctx->fd, ntrigger, sizeof(ntrigger)) > 0) { }
-    // 与字节数解耦,循环抽干至队列空;触发字节仅作唤醒,本轮后入队命令其字节随后必到再唤醒,不丢命令也不空转。
-    // 有意不设每轮上限:fsqu_push 改为永不阻塞后队列已无背压,持续高压会推迟本 watcher 的 socket 读写
-    // (过载由下方 tda_check 的 overload 告警暴露);设上限须在退出时补写自唤醒字节——触发字节已在上面抽干,
-    // 不补则残留命令无人唤醒——反而引入"补写失败即命令永久滞留"的新失败模式,故保持排空语义
+    // 与字节数解耦,循环抽干至队列空;触发字节仅作唤醒,本轮后入队的命令其字节随后必到再唤醒
+    // 有意不设每轮上限:队列已无背压,持续高压只会推迟本 watcher 的 socket 读写(由 tda_check 告警暴露)
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
@@ -175,15 +173,15 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int3
 #if defined(EV_EPOLL)
     events_t epev = { 0 };
     epev.data.ptr = skctx;
-    BIT_SET(ev, (*curevents));
-    epev.events = _uev_ev2epoll(ev);
+    int32_t newevents = ev | (*curevents);
+    epev.events = _uev_ev2epoll(newevents);
     if (ERR_FAILED == epoll_ctl(watcher->evfd,
                                 0 == (*curevents) ? EPOLL_CTL_ADD : EPOLL_CTL_MOD,
                                 fd,
                                 &epev)) {
         return ERR_FAILED;
     }
-    *curevents = ev;
+    *curevents = newevents;
 #elif defined(EV_KQUEUE)
     if (BIT_CHECK(ev, EVENT_READ)
         && !BIT_CHECK((*curevents), EVENT_READ)) {
@@ -204,23 +202,23 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int3
         skctx->chg_round = watcher->chg_round;
     }
 #elif defined(EV_EVPORT)
-    BIT_SET(ev, (*curevents));
-    int32_t pollev = _uev_ev2poll(ev);
+    int32_t newevents = ev | (*curevents);
+    int32_t pollev = _uev_ev2poll(newevents);
     if (ERR_FAILED == port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, skctx)) {
         return ERR_FAILED;
     }
-    *curevents = ev;
+    *curevents = newevents;
 #elif defined(EV_POLLSET)
     (void)skctx;
-    BIT_SET(ev, (*curevents));
+    int32_t newevents = ev | (*curevents);
     struct poll_ctl ctl;
     ctl.fd = fd;
-    ctl.events = _uev_ev2poll(ev);
+    ctl.events = _uev_ev2poll(newevents);
     ctl.cmd = (0 == (*curevents) ? PS_ADD : PS_MOD);
     if (0 != pollset_ctl(watcher->evfd, &ctl, 1)) {
         return ERR_FAILED;
     }
-    *curevents = ev;
+    *curevents = newevents;
 #elif defined(EV_DEVPOLL)
     BIT_SET((*curevents), ev);
     _uev_check_changes(watcher);
@@ -268,8 +266,8 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
     if (0 == (*curevents)) {
         (void)port_dissociate(watcher->evfd, PORT_SOURCE_FD, fd);
     } else {
-        ev = _uev_ev2poll(*curevents);
-        (void)port_associate(watcher->evfd, PORT_SOURCE_FD, fd, ev, skctx);
+        int32_t pollev = _uev_ev2poll(*curevents);
+        (void)port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, skctx);
     }
 #elif defined(EV_POLLSET)
     (void)skctx;
@@ -429,16 +427,12 @@ static void _uev_loop_event(void *arg) {
             }
 #if defined(EV_KQUEUE)
             if (BIT_CHECK(ev, EVENT_ERROR)) {
-                // 注册失败的 fd 已无 knote，此后不会再有事件，关闭须本轮同步做完：_uev_disconnect 只置
-                // STATUS_ERROR 并注册 EVENT_WRITE 等回调来关，而 _uev_add_event 排队 EV_SET 前已乐观置好
-                // events 位，_usk_keep_event 遂直接返回 ERR_OK 什么也不排，等不到的事件即永不关闭(fd 泄漏)。
-                // 故置位后立刻派发读写事件，由 _usk_on_rw_cb / _usk_on_udp_rw 入口的 STATUS_ERROR 分支 close。
-                // pipe / listen(type 为 0)不走 _uev_disconnect：它对非 SOCK_STREAM 一律 UPCAST 成 udp_ctx
-                // 会越界。这两类也补不回 knote(events 位已乐观置好,_usk_keep_event 恒短路),派发一次只为
-                // 排空已入队的命令,之后即永久失联,故按类别把后果写进日志——上游那条只报了 fd 与 errno
+                // 注册失败的 fd 已无 knote,再等事件就永不关闭,故置位后本轮同步派发读写,
+                // 由入口的 STATUS_ERROR 分支就地 close；pipe / listen(type 为 0)不能走
+                // _uev_disconnect(它对非 SOCK_STREAM 一律 UPCAST 成 udp_ctx 会越界),只记日志
                 if (SOCK_STREAM == skctx->type
                     || SOCK_DGRAM == skctx->type) {
-                    _uev_disconnect(watcher, skctx, 1);
+                    _uev_disconnect(watcher, skctx);
                 } else if (skctx == &watcher->pipe.skpip) {
                     LOG_FATAL("watcher %d cmd pipe lost its knote, this thread no longer takes commands.",
                               watcher->index);
@@ -609,8 +603,8 @@ static void _uev_free_watcher(ev_ctx *ctx) {
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
-        // _uev_init_cmd 将 pip_ctx::skpip（嵌入 watcher->pipe）以 type=0 注册进 element；
-        // 必须先 hashmap_free 再 _uev_free_pipe，否则 _uev_free_element 读 sock->type 时访问已释放内存。
+        // _uev_init_cmd 将 pip_ctx::skpip（嵌入 watcher->pipe，不由 element 持有）以 type=0
+        // 注册进 element，_uev_free_element 靠 type==0 跳过它
         hashmap_free(watcher->element);
         pool_free(&watcher->pool);
         _uev_free_pipe(watcher);

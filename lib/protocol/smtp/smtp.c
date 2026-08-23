@@ -152,11 +152,22 @@ int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
 // 把缓冲区开头到 crlf 之间的那行原文当失败原因回给等待者（问候被拒与认证被拒共用）。
 // 载荷所有权交给 _hs_push，成功失败它都会释放，调用方不必也不能再碰；
 // 从哪儿开始找 CRLF、事后要不要 drain，两个调用点各不相同，留在各自那边
+// 长度由调用方定:整段多行响应都要交出去的场合用它(见 _smtp_auth 末尾)。
+// 只交首行的常见场合走 _smtp_push_firstline
 static void _smtp_push_errline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx *buf, int32_t crlf) {
     char *line;
     CALLOC(line, 1, (size_t)crlf + 1);
     ASSERTAB((size_t)crlf == buffer_copyout(buf, 0, line, (size_t)crlf), "copy buffer failed.");
     _hs_push(fd, skid, 1, ud, ERR_FAILED, line, (size_t)crlf);
+}
+// 把缓冲里第一行(到首个 CRLF 为止)作为失败原因交给等待方；没有 CRLF 或该行超长即不交
+static void _smtp_push_firstline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx *buf) {
+    int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+    if (crlf <= 0
+        || PACK_TOO_LONG(crlf)) {
+        return;
+    }
+    _smtp_push_errline(fd, skid, ud, buf, crlf);
 }
 // INIT 阶段：等待服务端 220 欢迎行，收到后发送 EHLO 命令并切换到 EHLO 状态。
 // EHLO 参数直接取 220 行中的服务器主机名（"220[ -]hostname ..."的第二个 token），
@@ -168,12 +179,7 @@ static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
         // 服务端可以拿 421/554 之类的问候直接拒连(限流 / 黑名单 / TLS-only)，原因就在缓冲里这一行。
         // 丢掉的话业务只看到一次无原因的握手失败
-        int32_t rejcrlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
-        if (rejcrlf <= 0
-            || PACK_TOO_LONG(rejcrlf)) {
-            return;
-        }
-        _smtp_push_errline(fd, skid, ud, buf, rejcrlf);
+        _smtp_push_firstline(fd, skid, ud, buf);
         return;
     }
     if (0 == total) {
@@ -250,11 +256,7 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     if (ERR_FAILED == total) {
         BIT_SET(*status, PROT_ERROR);
         // 同 _smtp_connected: 服务端 502/550 拒 EHLO 的原因就在缓冲里这一行, 丢了业务无从查
-        int32_t rejcrlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
-        if (rejcrlf > 0
-            && !PACK_TOO_LONG(rejcrlf)) {
-            _smtp_push_errline(fd, skid, ud, buf, rejcrlf);
-        }
+        _smtp_push_firstline(fd, skid, ud, buf);
         return;
     }
     if (0 == total) {
@@ -398,10 +400,7 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         || '-' == sep) {
         BIT_SET(*status, PROT_ERROR);
         // 同 _smtp_connected: AUTH 被 504/538/530/454 明文拒是生产上最常见的一档, 原因在这一行
-        if (crlf > 0
-            && !PACK_TOO_LONG(crlf)) {
-            _smtp_push_errline(fd, skid, ud, buf, crlf);
-        }
+        _smtp_push_firstline(fd, skid, ud, buf);
         return;
     }
     switch (smtp->authtype) {
@@ -423,11 +422,7 @@ static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *
     if (ERR_FAILED == total) {
         BIT_SET(*status, PROT_ERROR);
         // 框不出整段时原文还在缓冲里，照 _smtp_connected 把首行交出去，别让业务只看到一次无原因的失败
-        int32_t rejcrlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
-        if (rejcrlf > 0
-            && !PACK_TOO_LONG(rejcrlf)) {
-            _smtp_push_errline(fd, skid, ud, buf, rejcrlf);
-        }
+        _smtp_push_firstline(fd, skid, ud, buf);
         return;
     }
     if (0 == total) {

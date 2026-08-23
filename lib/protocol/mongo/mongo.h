@@ -61,6 +61,13 @@ int32_t mongo_collection(mongo_ctx *mongo, const char *collection);
 /// <returns>ERR_OK 成功；任一超 63 字节返 ERR_FAILED 并记 LOG_ERROR，两个字段都不改动</returns>
 int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd);
 /// <summary>
+/// 设置 SCRAM 认证算法名；mongo_init 已默认 SCRAM-SHA-256，连接时由 mongo_connect 取用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="authmod">SCRAM-SHA-1 SCRAM-SHA-256</param>
+/// <returns>ERR_OK 成功；超 63 字节返 ERR_FAILED 并记 LOG_ERROR，不改动任何字段</returns>
+int32_t mongo_authmod(mongo_ctx *mongo, const char *authmod);
+/// <summary>
 /// 获取当前命令requestid
 /// </summary>
 /// <param name="mgpack">mgopack_ctx</param>

@@ -12,7 +12,7 @@ local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
 -- mysql_stmt_ctx：预处理语句执行上下文。
 -- self.stmt      ：C 层 stmt 对象，持有服务端 statement_id；动态调用 sock_id() 感知重连。
 -- self.owner     ：mysql_ctx Lua 包装实例，守卫读其实时 generation，多结果集收包复用其 _read_results。
--- self.mysql     ：C 层 mysql 对象引用（= owner.mysql），用于 last_id / affectd_rows 查询。
+-- self.mysql     ：C 层 mysql 对象引用（= owner.mysql），用于 erro / last_id / affectd_rows 查询。
 -- self.closed    ：close() 已发出 COM_STMT_CLOSE，此后 execute / reset 一律拒绝。
 local ctx = class("mysql_stmt_ctx")
 
@@ -74,7 +74,7 @@ function ctx:_reset()
     end
     local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_reset()
-    local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
+    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
         return false
     end
@@ -101,6 +101,16 @@ function ctx:_close()
     local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_close()
     return srey.send(fd, skid, pack, size, 0)
+end
+
+---返回最近一次错误信息并清除错误状态
+---execute 用 false 元素表示服务端回了 ERR 包，原因只能从这里取
+---**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
+---命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
+---（读取即清除，更要紧挨着命令读——别的协程先读一次就把它清空了）
+---@return string err 错误描述
+function ctx:erro()
+    return self.mysql:erro()
 end
 
 ---返回最近一次 INSERT 操作产生的自增 ID

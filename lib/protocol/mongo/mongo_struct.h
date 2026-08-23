@@ -36,6 +36,7 @@ typedef struct mongo_ctx {
     int32_t reqid;              //当前请求 ID（自增）
     uint32_t flags;             //消息标志位（mongo_flags）
     atomic_t ref;               //上层 handle 引用计数：0=C 借用(事件层不 free 块)，>0=持有者数
+    int32_t established;     // 最近一次建连尝试是否成功；与 skid 一起判短路，见 _serial_connect
     mongo_session *session;     //当前会话（事务时非 NULL）
     struct task_ctx *task;      //所属任务上下文
     struct evssl_ctx *evssl;    //TLS 上下文，NULL 表示不加密

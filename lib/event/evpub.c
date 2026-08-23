@@ -118,10 +118,10 @@ static int32_t _evpub_sendqu_full(queue_ctx *buf_s, SOCKET fd, int32_t istcp) {
     }
     return 0;
 }
-int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd, int32_t established) {
+int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd) {
     // 连接未完成时写事件表示等待 connect 而非待发数据,入队会被 connect 回调连同写事件一起删掉;
     // IOCP 侧则是 ConnectEx 未完成就 WSASend,必以 WSAENOTCONN 失败
-    if (0 == established) {
+    if (!BIT_CHECK(status, STATUS_ESTABLISHED)) {
         LOG_WARN("ev_send before connection established on fd %d, disconnect.", (int32_t)fd);
         return 0;
     }
@@ -132,8 +132,6 @@ int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd, int
         LOG_WARN("ev_send during SSL handshake on fd %d, disconnect.", (int32_t)fd);
         return 0;
     }
-#else
-    (void)status;
 #endif
     // 慢消费者保护:业务无脑写会打爆内存
     return 0 == _evpub_sendqu_full(buf_s, fd, 1);
@@ -151,7 +149,22 @@ void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp) {
         LOG_WARN("UDP send buf growing on fd %d: %zu bytes.", (int32_t)fd, wb_size);
     }
 }
-int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t established, int32_t client) {
+void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t *wb_size, void *ssl) {
+    if (0 == queue_size(buf_s)) {
+        return;
+    }
+    if (!BIT_CHECK(status, STATUS_AUTHSSL)
+        && !BIT_CHECK(status, STATUS_SSLEXCHANGE)
+        && !BIT_CHECK(status, STATUS_KEYUPDATE_WRITE)) {
+        size_t nsend = 0;
+        (void)_evpub_sock_send(fd, buf_s, &nsend, ssl);
+        *wb_size -= nsend;
+    }
+    if (queue_size(buf_s) > 0) {
+        LOG_WARN("close fd %d with %zu bytes undelivered.", (int32_t)fd, *wb_size);
+    }
+}
+int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t client) {
     if (NULL != ssl) {
         LOG_WARN("ssl already in use.");
         return 0;
@@ -160,14 +173,13 @@ int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t esta
         LOG_WARN("repeat request ssl exchange.");
         return 0;
     }
-    if (BIT_CHECK(*status, STATUS_ERROR)
-        || BIT_CHECK(*status, STATUS_GRACEFUL_CLOSE)) {
+    if (BIT_CHECK(*status, STATUS_ERROR)) {
         return 0;
     }
     // 连接未完成时 EVENT_WRITE(IOCP 为 STATUS_SENDING)表示等待 connect 而非待发数据,
     // 误入调用方的延迟分支会残留 SSLEXCHANGE 脏位;正确用法是 ev_connect 带 evssl,
     // 或等连接建立后再 ev_ssl
-    if (0 == established) {
+    if (!BIT_CHECK(*status, STATUS_ESTABLISHED)) {
         LOG_WARN("ssl exchange requested before connection established.");
         return 0;
     }
@@ -178,9 +190,10 @@ int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t esta
     }
     return 1;
 }
-int32_t _evpub_nodelay_nonblock(SOCKET fd) {
+int32_t _evpub_tcp_sockopts(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
-        || ERR_OK != sock_nonblock(fd)) {
+        || ERR_OK != sock_nonblock(fd)
+        || ERR_OK != sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
         return ERR_FAILED;
     }
     return ERR_OK;

@@ -274,6 +274,7 @@ function ctx:_copy_out(sql)
     if e then
         return self:_fail(e)
     end
+    self.affected = pgsql.affected_rows(pgpack)-- COPY OUT 的 "COPY N"
     return pgsql.copy_out_data(pgpack)
 end
 
@@ -307,7 +308,12 @@ function ctx:_selectdb(database)
         return false
     end
     self:quit()
-    return self:connect()
+    -- connect 自己不写 err,失败时这里补上:否则返 false 而 erro() 是空串,
+    -- 调用方既不知道原因,也看不出自己现在处于哪个库
+    if not self:connect() then
+        return self:_fail("pgsql: reconnect failed after switching database")
+    end
+    return true
 end
 
 ---取消当前正在执行的查询：在独立连接上发送 CancelRequest，服务端处理后主动断开、无响应

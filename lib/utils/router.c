@@ -1010,7 +1010,7 @@ static void _router_send_simple(task_ctx *task, SOCKET fd, uint64_t skid, int32_
 // 拒绝 chunked 请求：回 411 后立即关闭连接
 void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid) {
     _router_send_simple(task, fd, skid, 411, "chunked request not supported\n");
-    ev_close(&task->loader->netev, fd, skid, 0);
+    ev_close(&task->loader->netev, fd, skid);
 }
 // 流式路由的链尾哨兵: 跑到这里说明每个中间件都调了 router_next。不能拿 chain_i == chain_n 判,
 // 最后一个中间件调不调 next 留下的游标完全一样
@@ -1156,7 +1156,7 @@ static void _router_st_reject(router_stream *st, task_ctx *task, int32_t code, c
     if (code > 0) {
         _router_send_simple(task, st->req.sk.fd, st->req.sk.skid, code, body);
     }
-    ev_close(&task->loader->netev, st->req.sk.fd, st->req.sk.skid, 0);
+    ev_close(&task->loader->netev, st->req.sk.fd, st->req.sk.skid);
     FREE(st);
 }
 // 流式首帧: 匹配路由 → 跑准入链 → 进表 → 回调 PROT_SLICE_START
@@ -1169,7 +1169,9 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct ht
     _router_st_drop(r, sk);
     router_stream *st;
     MALLOC(st, sizeof(router_stream));
-    st->on_chunk = NULL;// 余下两个字段: req 交给 _router_req_init, url 有意不清(理由见那里)
+    // MALLOC 不清零, 靠逐字段写满: 往 router_stream 加字段必须同时进这里(同 _router_group_fill)。
+    // req 交给 _router_req_init, url 有意不清(理由见那里)
+    st->on_chunk = NULL;
     _router_req_init(&st->req, &st->url, task, sk->fd, sk->skid, pack);
     int32_t idx;
     int32_t code = _router_match_entry(r, &st->req, status, &idx);
@@ -1282,7 +1284,7 @@ static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sk_id *sk,
     } else {
         _router_send_code(task, sk->fd, sk->skid, code);
     }
-    ev_close(&task->loader->netev, sk->fd, sk->skid, 0);
+    ev_close(&task->loader->netev, sk->fd, sk->skid);
 }
 // _net_recv 回调的标准实现: 一次到齐的请求直接派发; chunked 命中流式路由则逐帧交给它,
 // 命中普通路由回 411, 匹配不上按普通请求的码走(404/400/405)。

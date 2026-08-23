@@ -205,7 +205,7 @@ static int32_t _lmysql_bind_time(lua_State *lua) {
     // 五个字段原样进 MYSQL_TYPE_TIME 报文, 截断或传负数出来都是另一个合法时间且无从报错:
     // 符号由 is_negative 单独带, 时分秒各占一个字节, 传 -1 到服务端就成了 255
     int8_t is_negative = (int8_t)lpub_check_range(lua, 3, 0, 1, "is_negative must be 0 or 1");
-    int32_t days = (int32_t)lpub_check_range(lua, 4, INT32_MIN, INT32_MAX, "days out of range");
+    int32_t days = lpub_check_i32(lua, 4, "days out of range");
     int8_t hour = (int8_t)lpub_check_range(lua, 5, 0, INT8_MAX, "hour out of range");
     int8_t minute = (int8_t)lpub_check_range(lua, 6, 0, INT8_MAX, "minute out of range");
     int8_t second = (int8_t)lpub_check_range(lua, 7, 0, INT8_MAX, "second out of range");
@@ -661,7 +661,7 @@ static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
 /// <returns type="_mysql_ctx?">mysql 对象；初始化失败返回 nil</returns>
 static int32_t _lmysql_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = lpub_check_port(lua, 2);
+    uint16_t port = lpub_check_u16(lua, 2, PORT_OUT_OF_RANGE);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *user = luaL_checkstring(lua, 4);
     const char *password = luaL_checkstring(lua, 5);
@@ -669,7 +669,7 @@ static int32_t _lmysql_new(lua_State *lua) {
     const char *charset = luaL_checkstring(lua, 7);
     uint32_t maxpk = 0;
     if (LUA_TNUMBER == lua_type(lua, 8)) {
-        maxpk = (uint32_t)lpub_check_range(lua, 8, 0, UINT32_MAX, "maxpack out of range");
+        maxpk = lpub_check_u32(lua, 8, "maxpack out of range");
     }
     mysql_ctx **ud = (mysql_ctx **)lpub_push_ud(lua, NULL, MT_MYSQL);
     mysql_ctx *mysql;
@@ -722,7 +722,7 @@ static int32_t _lmysql_free(lua_State *lua) {
         void *pack = mysql_pack_quit(&size);
         ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, pack, size, 0);
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, 0);
+        ev_close(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid);
     }
     *ud = NULL;
     // mpack 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；

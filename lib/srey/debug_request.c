@@ -63,8 +63,8 @@ static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {
     binary_free(&bw);
 }
 // C task 的 REQ_DEBUG 处理：seri 位置化解码（首元素 cmd 字符串）。
-// 公共命令 stat/coros/loglv 处理；mem/gc/inject/hotfix 等 Lua VM 专属回 "not supported"；
-// 二者均接管返回 ERR_OK。非公共命令(业务自定义)返回 ERR_FAILED 透传业务 on_requested。
+// 公共命令 stat/coros/loglv 处理并接管返回 ERR_OK；其余(业务自定义)返回 ERR_FAILED 透传
+// 业务 on_requested。Lua VM 专属命令由发起方按目标 task 类型挡掉,不会到这里
 int32_t _debug_request(task_ctx *task, message_ctx *msg) {
     seri_iter it;
     seri_iter_init(&it, msg->data, msg->size);
@@ -105,13 +105,6 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
         char buf[32];
         int32_t n = SNPRINTF(buf, sizeof(buf), "log level => %d", (int32_t)lv.v.i);
         _debug_resp(task, msg->src, msg->sess, buf, (size_t)n);
-        return ERR_OK;
-    }
-    // mem/gc/inject/hotfix 是 Lua VM 专属公共命令,C task 无法执行：回 not supported 并接管,
-    // 避免透传到无 on_requested 的框架 task 显示误导的 "unavailable"
-    if (_debug_cmd_eq_lit(&cmd, "mem") || _debug_cmd_eq_lit(&cmd, "gc")
-        || _debug_cmd_eq_lit(&cmd, "inject") || _debug_cmd_eq_lit(&cmd, "hotfix")) {
-        _debug_resp_lit(task, msg->src, msg->sess, "command not supported in C task.");
         return ERR_OK;
     }
     // 非公共命令(业务自定义)：返回 ERR_FAILED 透传给业务 on_requested 自行处理

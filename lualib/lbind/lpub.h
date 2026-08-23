@@ -10,6 +10,7 @@
 #define PATH_NAME "_propath" // Lua 全局变量名：程序根路径
 #define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
 #define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
+#define PORT_OUT_OF_RANGE "port out of range" // 端口越界文案，各 connect / listen 绑定共用
 
 // 校验栈上指定位置必须是 light userdata（任意 C 指针），否则通过 luaL_argerror 抛 Lua 错误
 #define LUACHECK_LUDATA(lua, idx) \
@@ -84,17 +85,28 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <returns>字节数;越界走 luaL_argerror(longjmp,不返回)</returns>
 size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max);
 /// <summary>
-/// 校验 16 位 wire 字段。凡是要按 2 字节写进报文或传给框架的值都从这里取，别再各写一句
-/// (uint16_t)luaL_checkinteger——截断出来的是另一个合法值，组包侧无从分辨
+/// 按目标 C 类型宽度校验并收窄。凡是要按固定字节数写进报文、或传给框架 / 数据库的值都从这里取，
+/// 别再各写一句 (uintN_t)luaL_checkinteger——截断出来的是另一个合法值，组包侧无从分辨。
+/// 取哪个只看目标字段的类型：u8 / u16 / u32 对应 [0,UINT8_MAX] / [0,UINT16_MAX] / [0,UINT32_MAX]，
+/// i8 / i16 / i32 对应 [INT8_MIN,INT8_MAX] / [INT16_MIN,INT16_MAX] / [INT32_MIN,INT32_MAX]；
+/// opt_u8 是缺省值版，参数为 none/nil 时原样返回 dft 且不校验。
+/// 值域不是类型宽度的场合（flag 只许 0/1、qos 只许 0..2）仍用 lpub_check_range 写明真实上下界
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">值在栈中的位置</param>
+/// <param name="dft">仅 opt_u8：缺省值，参数为 none/nil 时原样返回且不校验</param>
 /// <param name="what">越界时报给调用方的完整消息，如 "packet id out of range"</param>
-/// <returns>该值；不在 0..65535 内走 luaL_argerror(longjmp,不返回)</returns>
+/// <returns>该值；越界走 luaL_argerror(longjmp,不返回)</returns>
+uint8_t lpub_check_u8(lua_State *lua, int32_t idx, const char *what);
 uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what);
+uint32_t lpub_check_u32(lua_State *lua, int32_t idx, const char *what);
+int8_t lpub_check_i8(lua_State *lua, int32_t idx, const char *what);
+int16_t lpub_check_i16(lua_State *lua, int32_t idx, const char *what);
+int32_t lpub_check_i32(lua_State *lua, int32_t idx, const char *what);
+uint8_t lpub_opt_u8(lua_State *lua, int32_t idx, uint8_t dft, const char *what);
 /// <summary>
-/// 校验有符号窄整数并收窄到 [lo, hi]。同 lpub_check_u16 的理由：截断出来的是另一个合法值，
-/// 写进报文或数据库都无从分辨
+/// 校验整数并收窄到 [lo, hi]。理由同上面那组按类型宽度收窄的函数：截断出来的是另一个合法值，
+/// 写进报文或数据库都无从分辨。上下界不是某个 C 类型的边界时用它，是则用那一组
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">值在栈中的位置</param>
@@ -103,13 +115,6 @@ uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what);
 /// <param name="what">越界时报给调用方的完整消息</param>
 /// <returns>该值；不在 [lo, hi] 内走 luaL_argerror(longjmp,不返回)</returns>
 int64_t lpub_check_range(lua_State *lua, int32_t idx, int64_t lo, int64_t hi, const char *what);
-/// <summary>
-/// 校验端口参数，同 lpub_check_u16
-/// </summary>
-/// <param name="lua">Lua 栈</param>
-/// <param name="idx">端口在栈中的位置</param>
-/// <returns>端口号；不在 0..65535 内走 luaL_argerror(longjmp,不返回)</returns>
-uint16_t lpub_check_port(lua_State *lua, int32_t idx);
 /// <summary>
 /// 校验封包协议类型。凡是要交给框架/协议层的 pktype 都从这里取，别再各写一句
 /// (pack_type)luaL_checkinteger——枚举外的值必须报错，不能存进 ud->pktype

@@ -21,9 +21,10 @@
     <ClCompile Include="bench_mpq.c" />
     <ClCompile Include="bench_rwlock.c" />
     <ClCompile Include="task_auto_close.c" />
-    <ClCompile Include="task_close_graceful.c" />
+    <ClCompile Include="task_close_flush.c" />
     <ClCompile Include="task_coro_extra.c" />
     <ClCompile Include="task_dc_client.c" />
+    <ClCompile Include="task_debug.c" />
     <ClCompile Include="task_fork.c" />
     <ClCompile Include="task_http_server.c" />
     <ClCompile Include="task_listen_churn.c" />
@@ -81,9 +82,10 @@
     <ClInclude Include="bench_mpq.h" />
     <ClInclude Include="bench_rwlock.h" />
     <ClInclude Include="task_auto_close.h" />
-    <ClInclude Include="task_close_graceful.h" />
+    <ClInclude Include="task_close_flush.h" />
     <ClInclude Include="task_coro_extra.h" />
     <ClInclude Include="task_dc_client.h" />
+    <ClInclude Include="task_debug.h" />
     <ClInclude Include="task_fork.h" />
     <ClInclude Include="task_http_server.h" />
     <ClInclude Include="task_listen_churn.h" />

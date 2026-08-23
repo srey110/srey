@@ -56,12 +56,13 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
 SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
     const char *key, int32_t netev, uint64_t *skid);
 /// <summary>
-/// myql链接
+/// myql链接。多协程共用一个 ctx 时是幂等的：排队等锁期间已有人把连接建好，本次直接返回成功
+/// 而不再建一条——否则后来那条会覆写 ctx 里的 fd/skid，把前一条孤立到对端超时才回收
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx, mysql_init</param>
-/// <returns>ERR_OK 成功；失败时若命令串行化执行器是本次建链新建的，已就地回收，
-/// 调用方直接返回即可，无须为了释放它补调 mysql_quit</returns>
+/// <returns>ERR_OK 成功（含"连接已由别的协程建好"这一档）；失败时若命令串行化执行器是本次
+/// 建链新建的，已就地回收，调用方直接返回即可，无须为了释放它补调 mysql_quit</returns>
 int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 /// <summary>
 /// 选择数据库
@@ -140,7 +141,7 @@ void mysql_quit(mysql_ctx *mysql);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="smtp">smtp_ctx</param>
-/// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
+/// <returns>ERR_OK 成功；幂等性与失败清理契约同 mysql_connect</returns>
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
 /// <summary>
 /// 发送 QUIT 并关闭链接；排队、协程、无执行器的契约同 mysql_quit
@@ -173,7 +174,7 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pg">pgsql_ctx, pgsql_init</param>
-/// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
+/// <returns>ERR_OK 成功；幂等性与失败清理契约同 mysql_connect</returns>
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 /// <summary>
 /// 在独立 TCP 连接上向服务端发送 CancelRequest，中止当前正在执行的查询。
@@ -259,11 +260,14 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
 // 组包侧照样会给它附上本事务的 lsid/txnNumber。要事务隔离，须由调用方在
 // begin..commit 外面自己套一层 coro_serial（或干脆给事务用独占连接）
 /// <summary>
-/// 链接mongodb
+/// 链接 mongodb：建连 + hello + 认证整段在锁内完成，返回成功即可直接发命令。
+/// 认证仅在 mongo_user_pwd 设过用户名时进行，算法取 mongo_authmod（默认 SCRAM-SHA-256）；
+/// 两个 setter 都须在本函数之前调用，ping 重连也复用它们
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="mongo">mongo_ctx</param>
-/// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
+/// <returns>ERR_OK 成功；hello 或认证失败时本函数已关闭 socket，
+///   幂等性与其余清理契约同 mysql_connect</returns>
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
 /// <summary>
 /// 关闭链接（mongo 没有退出命令，断连就是退出）；排队、协程、无执行器的契约同 mysql_quit
@@ -271,16 +275,9 @@ int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
 /// <param name="mongo">mongo_ctx</param>
 void mongo_quit(mongo_ctx *mongo);
 /// <summary>
-/// 用户验证
-/// </summary>
-/// <param name="mongo">mongo_ctx</param>
-/// <param name="authmod">SCRAM-SHA-1 SCRAM-SHA-256</param>
-/// <param name="user">用户名</param>
-/// <param name="pwd">密码</param>
-/// <returns>ERR_OK 成功</returns>
-int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, const char *pwd);
-/// <summary>
-/// hello 命令 显示该节点在副本集中的角色信息，包括是否为主副本
+/// hello 命令 显示该节点在副本集中的角色信息，包括是否为主副本。
+/// mongo_connect 内部已发过一次不带 options 的 hello，此处仅用于需要额外带 options 的场景，
+/// 且不会在 ping 重连时重放
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="options">可选 其他参数 document (saslSupportedMechs)</param>

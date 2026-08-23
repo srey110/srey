@@ -45,7 +45,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         if (ERR_OK != ev_ssl(&task->loader->netev, sk->fd, sk->skid, client, _evssl)) {
             LOG_WARN("ev_ssl error.");
-            ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
+            ev_close(&task->loader->netev, sk->fd, sk->skid);
         }
         break;
     }
@@ -65,7 +65,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         task_ctx *rpc = task_grab(task->loader, _rpcname);
         if (NULL == rpc) {
             LOG_WARN("grab rpc task error.");
-            ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
+            ev_close(&task->loader->netev, sk->fd, sk->skid);
             break;
         }
         int32_t erro;
@@ -74,7 +74,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         task_ungrab(rpc);
         if (ERR_OK != erro || NULL == echo || rlen != size) {
             LOG_WARN("rpc echo error.");
-            ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
+            ev_close(&task->loader->netev, sk->fd, sk->skid);
             break;
         }
         size_t lens = 0;

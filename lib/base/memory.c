@@ -11,22 +11,12 @@
  * 改成每线程独占一格、各占一条 cache line，槽位用尽(活过的线程数超过 MEM_SLOTS)的
  * 线程共用末尾那一格 —— 两条路径的计数都精确。*/
 #define MEM_SLOTS 64 // 独占槽位数;只增不回收,用尽即共用末尾那格
-// 对齐属性按编译器分派(同 macro_atomic.h): Windows 上的 MinGW/clang-cl 认 GCC 属性、
-// 不认 declspec(align), 按 OS 挑会被静默丢掉。Sun Studio / xlC 没有对应属性, 那里退化成
-// 相邻槽位共用 cache line —— 只影响并发写入快慢, 计数照样精确
-#if defined(__GNUC__) || defined(__clang__)
-    #define MEM_SLOT_ALIGN __attribute__((aligned(CACHELINE_SIZE)))
-#elif defined(OS_WIN)
-    #define MEM_SLOT_ALIGN __declspec(align(CACHELINE_SIZE))
-#else
-    #define MEM_SLOT_ALIGN
-#endif
 typedef struct mem_slot {
     atomic64_t nalloc; // 本槽位累计分配次数
     atomic64_t nfree;  // 本槽位累计释放次数
     char pad[CACHELINE_SIZE - 2 * sizeof(atomic64_t)];
 }mem_slot;
-MEM_SLOT_ALIGN static mem_slot _slots[MEM_SLOTS + 1];// 末一格给槽位用尽的线程共用
+CACHELINE_ALIGN static mem_slot _slots[MEM_SLOTS + 1];// 末一格给槽位用尽的线程共用
 static atomic64_t _slotseq = 0; // 槽位分配游标
 static THREAD_LOCAL mem_slot *_slot = NULL;
 #endif

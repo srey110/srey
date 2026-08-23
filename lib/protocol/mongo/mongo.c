@@ -111,7 +111,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     }
     switch (mongo->scram->status) {
     // 两条分支都是先清 scram 再 _hs_push：push 一落地，worker 线程就能唤醒等在
-    // coro_handshaked 上的协程，它接着调 mongo_auth / mongo_pack_* 又会读写 mongo->scram，
+    // coro_handshaked 上的协程，它接着调 mongo_pack_* 又会读写 mongo->scram，
     // 和本线程随后的 scram_free 撞在一起（同 prots_closed 的"先清理后唤醒"顺序）
     case SCRAM_LOCAL_FIRST:
         rtn = _mongo_server_first_message(ev, mongo, mgopack);
@@ -281,6 +281,8 @@ int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl
     }
     mongo->port = 0 == port ? 27017 : port;
     mongo->evssl = evssl;
+    // 认证算法默认 SCRAM-SHA-256，调用方可用 mongo_authmod 覆盖
+    safe_fill_str(mongo->authmod, sizeof(mongo->authmod), "SCRAM-SHA-256");
     return ERR_OK;
 }
 int32_t mongo_db(mongo_ctx *mongo, const char *db) {
@@ -329,6 +331,14 @@ int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd) {
     // 两个长度都在函数开头验过，这里必然装得下
     safe_fill_str(mongo->user, sizeof(mongo->user), user);
     safe_fill_str(mongo->password, sizeof(mongo->password), pwd);
+    return ERR_OK;
+}
+int32_t mongo_authmod(mongo_ctx *mongo, const char *authmod) {
+    if (ERR_OK != safe_fill_str(mongo->authmod, sizeof(mongo->authmod), authmod)) {
+        LOG_ERROR("mongo auth mechanism name exceeds %zu bytes: %zu.",
+                  sizeof(mongo->authmod) - 1, strlen(authmod));
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 int32_t mongo_requestid(mongo_ctx *mongo) {

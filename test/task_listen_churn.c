@@ -25,7 +25,7 @@ static void _startup(task_ctx *task) {
         }
         r = coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", arg->port, 0, NULL, &cfd, &cskid);
         if (ERR_OK == r) {
-            ev_close(&task->loader->netev, cfd, cskid, 1);
+            ev_close(&task->loader->netev, cfd, cskid);
         }
         // 立即 unlisten；accept 完成事件可能正落在 watcher 队列里，命中 _uev_qtn_freelsn 引用计数路径
         ev_unlisten(&task->loader->netev, lsnid);

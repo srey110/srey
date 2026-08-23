@@ -169,17 +169,14 @@ int32_t ev_udp_ttl(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t ttl);
 /// <returns>ERR_OK 只表示参数合法且命令已入队,契约同 ev_udp_join</returns>
 int32_t ev_udp_loop(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t enable);
 /// <summary>
-/// 关闭链接
+/// 关闭链接。关闭前对 send queue 冲一次：能写进内核的送达，写不进去的未发数据连同连接一起丢弃
+/// 并落 WARN。没有"等发完再关"的模式——要保证大块数据送达，须自行确认对端已收齐再调用
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
-/// <param name="immed">
-///    0=优雅关闭(等 send queue 发完, TCP only; UDP 退化为立即关);
-///    1=立即关闭(丢弃未发数据)
-/// </param>
 /// <returns>ERR_OK 成功</returns>
-int32_t ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed);
+int32_t ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid);
 /// <summary>
 /// 取消监听
 /// </summary>

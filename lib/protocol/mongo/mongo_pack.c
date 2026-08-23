@@ -13,9 +13,16 @@
 // 拼接 options：源文档超单包上限、或结构不合法(bson_cat 拒收)时整条命令作废——
 // 继续打包会发出缺 options 的命令，服务端照常执行并返回错误结果集。
 // *size 显式置 0：调用方按"返回非 NULL 才读 size"约定，早退路径不能留未初始化值
+// 两道拒绝分开报:一条是文档超上限,一条是 BSON 结构不合法(判据见 bson_cat),合成一条会互相误报
 #define MONGO_PACK_CAT(doc, lens) do { \
-        if ((lens) > MONGO_MAX_PACK_SIZE \
-            || ERR_OK != bson_cat(&bson, (doc), (lens))) { \
+        if ((lens) > MONGO_MAX_PACK_SIZE) { \
+            LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_MAX_PACK_SIZE, (size_t)(lens)); \
+            *size = 0; \
+            BSON_FREE(&bson); \
+            return NULL; \
+        } \
+        if (ERR_OK != bson_cat(&bson, (doc), (lens))) { \
+            LOG_ERROR("mongo document rejected: malformed bson, %zu bytes.", (size_t)(lens)); \
             *size = 0; \
             BSON_FREE(&bson); \
             return NULL; \
@@ -24,10 +31,7 @@
 //事务和操作 https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
 // 只带事务上下文(lsid/txnNumber/autocommit)，不带 startTransaction。hello 与 commit/abort 用：
 // 前两条按规范不得携带 startTransaction，hello 则根本不是事务命令。
-// 取的是连接当前绑定的 mongo->session：commit/abort 另有入参 session，两者本可分叉
-// (重连时的 connect 路径清过绑定、或期间另一个 session 接管了这条连接)，取错就是
-// 拿别人的 lsid/txnNumber 去中止别人正在跑的事务；分叉已由 mongo_commit / mongo_rollback
-// 入口挡掉，走到这里两者必然相等
+// 取连接当前绑定的 mongo->session；与 commit/abort 的入参 session 必然相等，分叉已由那两个入口挡掉
 #define TRANSACTION_OPTIONS \
     if (NULL != mongo->session) {\
         MONGO_PACK_CAT(mongo->session->options, mongo->session->optionslens);\
@@ -80,6 +84,14 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
     }
     binary_set_binary(&bwriter, docs, dlens);//正文
     *size = bwriter.offset;
+    // 总长在此判:MONGO_PACK_CAT 只管每一片,拼完仍可能超 64MB;而下面要把 *size 写进 4 字节头,
+    // 超 4GB 会回绕成一个虚假的小长度。拒法同 MONGO_PACK_CAT:落 ERROR 后返 NULL,由 _mongo_send* 吸收
+    if (*size > MONGO_MAX_PACK_SIZE) {
+        LOG_ERROR("mongo message exceeds %d bytes: %zu.", MONGO_MAX_PACK_SIZE, *size);
+        binary_free(&bwriter);
+        *size = 0;
+        return NULL;
+    }
     binary_offset(&bwriter, 0);
     binary_set_integer(&bwriter, *size, 4, 1);
     binary_offset(&bwriter, *size);

@@ -45,7 +45,7 @@ typedef enum sock_status {
     STATUS_KEYUPDATE_WRITE = 0x80,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
     STATUS_KEYUPDATE_READ = 0x100,// 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
                                   // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针
-    STATUS_GRACEFUL_CLOSE = 0x200 // ev_close(immed=0) 标记，buf_s 发完后 _close_tcp
+    STATUS_ESTABLISHED = 0x200    // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写
 typedef enum udp_opt_type {
@@ -177,19 +177,26 @@ void _evpub_off_buf_clear(queue_ctx *bufs);
 // 清空 UDP 发送队列(sendto_ctx)并释放各 payload
 void _evpub_sendto_clear(queue_ctx *bufs);
 // TCP 发送队列准入(未建连 / SSL 握手期 / 队列超上限)：通过返 1；拒收返 0 且已落 WARN，调用方丢数据并断连。
-// established 由调用方按平台比 ev_cb 得出；"已在关闭流程"那道门动作不同(只丢不断)，留在调用点
-int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd, int32_t established);
+// "已在关闭流程"那道门动作不同(只丢不断)，留在调用点
+int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd);
 // UDP 发送队列准入：仅判队列超上限。通过返 1；拒收返 0 且已落 WARN，调用方丢包不断连
 int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd);
 // 入队字节累计的增长告警(tda 翻倍阈值)；istcp 只用于挑 TCP / UDP 两条文案
 void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
+// 关闭前把 send queue 冲一次：能写进内核的(关闭帧、COM_QUIT 这类小控制包)送达，写不进去的
+// 连同连接一起丢并落 WARN。不留"等发完再关"的中间态——那个态没有上限，对端不读就永久占住 fd。
+// SSL 握手/升级未完成、KeyUpdate 挂着 SSL_read(理由见 _uev_add_bufs_send)时发不得，只丢不冲。
+// 冲出去的字节不报 MSG_TYPE_SEND：调用方此刻尚未置 STATUS_ERROR，回调进来即重入。
+// ssl 收 void * 而非 SSL *：同 _evpub_ssl_exchange_check，不跟着 #if WITH_SSL 一起切
+void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t *wb_size, void *ssl);
 // ssl_exchange 的准入门 + CLIENT 位落定，两平台逐字相同的那一段。通过返 1 且 CLIENT 位已按 client 落定；
-// 拒收返 0，该告警的已落 WARN。established 由调用方按平台比 ev_cb 得出，理由见实现内注释。
+// 拒收返 0，该告警的已落 WARN。
 // "不是 SOCK_STREAM" 那道门不在此处：它是调用方 UPCAST 成 tcp 结构的前提，进来晚了就已经越界读了。
 // 收 const void * 而非 SSL * 是有意的：这样它不依赖 SSL 类型，无需跟着 #if WITH_SSL 一起切
-int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t established, int32_t client);
-// 设置socket选项：无延迟 + 非阻塞
-int32_t _evpub_nodelay_nonblock(SOCKET fd);
+int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t client);
+// 新建 TCP 连接需要的整套 socket 选项：无延迟 + 非阻塞 + keepalive。
+// connect 与 accept 两侧共用，加选项就加在这里，别在调用点各自补
+int32_t _evpub_tcp_sockopts(SOCKET fd);
 // ev_connect / ev_listen / ev_udp 的公共前导：校验回调、拒绝 ev_free 期间的调用、解析地址。
 // 失败时调用方直接 return ERR_FAILED，不要再碰 ud：ud 已被 UD_FREE，唯一例外是 cbs 本身为 NULL
 // （ud_free 就挂在 cbs 里，无从释放）。只有地址解析失败那条会落日志，前两条静默

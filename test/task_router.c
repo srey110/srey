@@ -597,7 +597,7 @@ static int32_t _do_req(task_ctx *task, uint16_t port,
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
 
@@ -667,7 +667,7 @@ static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
 
@@ -692,7 +692,7 @@ static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
 
@@ -714,7 +714,7 @@ static int32_t _do_req_framing(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
 
@@ -733,7 +733,7 @@ static int32_t _do_req_nullhdr(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
 // 25 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
@@ -1011,11 +1011,11 @@ static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *method, co
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
 // 发首帧 + 一块数据就断开, 不发终止块: 服务端只能靠 router_closed 收尾,
-// 流式回调应收到一次 ROUTER_STREAM_ABORT。关连接用优雅关, 保证已排队的字节先冲出去
+// 流式回调应收到一次 ROUTER_STREAM_ABORT。ev_close 关闭前冲一次, 这点数据一次就写进内核
 static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
     SOCKET fd;
     uint64_t skid;
@@ -1030,7 +1030,7 @@ static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
     http_pack_chunked(&bw, (void *)"half", 4);
     ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 1);
     binary_free(&bw);
-    ev_close(&task->loader->netev, fd, skid, 0);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 }
 // 流式路由被完整(非 chunked)请求命中、准入被拒且没写响应: 兜底 500 之后连接照旧可用,
@@ -1074,7 +1074,7 @@ static int32_t _do_stream_plain_reject(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
 // 发首帧 + 一块数据后就不管了, 连接一直留着: 这条流会挂在 r->streams 里活到进程收尾,

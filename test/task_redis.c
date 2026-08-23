@@ -124,7 +124,7 @@ static void _startup(task_ctx *task) {
     *(arg->ok) = 1;
     LOG_INFO("redis tested.");
 END:
-    ev_close(&task->loader->netev, arg->fd, arg->skid, 1);
+    ev_close(&task->loader->netev, arg->fd, arg->skid);
 }
 
 void task_redis_start(loader_ctx *loader, const char *name,

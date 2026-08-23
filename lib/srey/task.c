@@ -112,10 +112,9 @@ static void _task_handle_send(task_ctx *task, message_ctx *msg) {
 }
 // 处理连接关闭消息
 static void _task_handle_close(task_ctx *task, message_ctx *msg) {
-    // erro != ERR_OK 是协议层对"连接/会话从未建立"补发的合成 CLOSE(prots_net_connect 的 TCP 失败、
-    // _kcp_start 的 conv 冲突),只用于清等待方占位,不代表真实连接关闭;_net_close_cb 签名里没有 erro,
-    // 业务无从分辨,故与 coro.c 的 _coro_handle_closed、srey.lua 的 _net_close_dispatch 一致在此过滤
-    if (ERR_OK != msg->erro) {
+    // neverconn 的合成 CLOSE(prots_net_connect 的 TCP 失败、_kcp_start 的 conv 冲突)只为唤醒等待方,
+    // 不代表真实连接关闭;_net_close_cb 签名里没有它,业务无从分辨,故在此过滤
+    if (0 != msg->neverconn) {
         return;
     }
     if (NULL != task->_net_close) {
@@ -223,7 +222,7 @@ void task_free(task_ctx *task) {
     message_ctx *msg;
     while (ERR_OK == fsqu_pop_sc(&task->qumsg, &msg)) {
         _message_clean(msg);
-        FREE(msg);
+        pool_push(&task->loader->msg_pool, msg, 0);// 与 _loader_task_run 同一归还点,别把池对象漏给分配器
     }
     fsqu_free(&task->qumsg);
     FREE(task->name);
@@ -336,8 +335,8 @@ static msgdata_kind _message_data_kind(msg_type mtype) {
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
         return MSGDATA_RAW;
-    // CLOSE 不能加 data：_coro_handle_closed 对同一条消息按等待者个数各调一次 _message_clean,
-    // 有数据就变成 N 重释放。真要给它带数据，得先让那个循环自己收口清理
+    // CLOSE 既不能加 data 也不能加 shared:_coro_handle_closed 按等待者个数重复调 _message_clean。
+    // data 由本表挡住;shared 靠"唯一写入点 task_multi_request 把 mtype 写死成 REQUEST"挡住
     default:
         return MSGDATA_NONE;
     }

@@ -148,7 +148,7 @@ end
 ---@param handler fun(topic:string, payload:string, publisher:integer, meta:string?) 收消息时调用,topic 是匹配到的精确 topic;publisher 是发布时刻的句柄,不带存活标记
 ---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.subscribe(sc_name, topic, handler)
-    if not topic or "" == topic or not handler then
+    if str_nullorempty(topic) or not handler then
         WARN("sc subscribe: topic/handler empty.")
         return false
     end
@@ -187,7 +187,7 @@ end
 ---@param handler fun(topic:string, payload:string, publisher:integer, meta:string?)
 ---@return boolean ok 成功 true;参数非法或 subcenter 不可达 false
 function sc_client.subscribe_shared(sc_name, topic, group, handler)
-    if not topic or "" == topic or not group or "" == group or not handler then
+    if str_nullorempty(topic) or str_nullorempty(group) or not handler then
         WARN("sc subscribe_shared: param empty.")
         return false
     end
@@ -222,7 +222,7 @@ end
 ---@param topic string 订阅模式;须与 subscribe 时完全一致
 ---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.unsubscribe(sc_name, topic)
-    if not topic or "" == topic then
+    if str_nullorempty(topic) then
         WARN("sc unsubscribe: topic empty.")
         return false
     end
@@ -250,7 +250,7 @@ end
 ---@param group string
 ---@return boolean ok 成功 true;参数非法或 subcenter 不可达 false
 function sc_client.unsubscribe_shared(sc_name, topic, group)
-    if not topic or "" == topic or not group or "" == group then
+    if str_nullorempty(topic) or str_nullorempty(group) then
         WARN("sc unsubscribe_shared: param empty.")
         return false
     end

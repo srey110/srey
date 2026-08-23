@@ -215,18 +215,6 @@ function dump(obj, offset)
     return dumpObj(obj, offset)
 end
 
----给表挂上 __index。唯一调用方是 class() 的 cls.new，传进来的 t 是刚建的空表，
----所以 getmetatable(t) 恒为 nil、不存在 __index 被占用的情形
----@param t table<any,any> 目标表
----@param index table<any,any> 要设置的 __index 表
-local function setmetatableindex(t, index)
-    if nil == t or nil == index then
-        assert(false, "nil value")
-        return
-    end
-    setmetatable(t, { __index = index })
-end
-
 ---轻量级 OOP class 实现，支持多继承；调用 cls.new(...) 创建实例并触发 ctor
 ---@param classname string 类名（存入 __cname，仅用于调试）
 ---@param ... table<any,any> 零个或多个父类；多继承时按顺序查找 key
@@ -265,10 +253,11 @@ function class(classname, ...)
         cls.ctor = function()
         end
     end
-    -- new：创建类实例，将元表 __index 指向 cls，然后调用 ctor 初始化。
+    -- new：直接把 cls 当实例元表(上面已设 cls.__index = cls)，省掉每个实例一张中间表；
+    -- 查找链不变:实例未命中查 cls，查 cls 又会触发 cls 自己的元表接着找父类
     cls.new = function(...)
         local instance = {}
-        setmetatableindex(instance, cls)
+        setmetatable(instance, cls)
         instance.class = cls
         instance:ctor(...)
         return instance

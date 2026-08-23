@@ -161,16 +161,17 @@ void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd) {
 static int32_t _ev_close(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     void *data, uint64_t number) {
     (void)data;
+    (void)number;
 #ifdef EV_IOCP
     (void)watcher;
-    _iocp_disconnect(skctx, (int32_t)number);
+    _iocp_disconnect(skctx);
 #else
-    _uev_disconnect(watcher, skctx, (int32_t)number);
+    _uev_disconnect(watcher, skctx);
 #endif
     return 0;
 }
-int32_t ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed) {
-    return ev_props(ctx, fd, skid, _ev_close, NULL, NULL, immed);
+int32_t ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid) {
+    return ev_props(ctx, fd, skid, _ev_close, NULL, NULL, 0);
 }
 #if WITH_SSL
 static int32_t _ev_ssl(struct watcher_ctx *watcher, struct sock_ctx *skctx,

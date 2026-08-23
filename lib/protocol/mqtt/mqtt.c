@@ -72,6 +72,20 @@ void _mqtt_udfree(ud_cxt *ud) {
     FREE(mq);
     ud->context = NULL;
 }
+int32_t _mqtt_may_resume(void *data) {
+    if (NULL == data) {
+        return ERR_OK;
+    }
+    mqtt_pack_ctx *pack = data;
+    // 服务端主动推的包不是任何一次请求的响应,交给等待者会让请求-响应从此错开一格:
+    // PUBLISH 是投递订阅,PUBREL 是入站 QoS2 的第二步,DISCONNECT 是服务端单方通知
+    if (MQTT_PUBLISH == pack->fixhead.prot
+        || MQTT_PUBREL == pack->fixhead.prot
+        || MQTT_DISCONNECT == pack->fixhead.prot) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 // 从缓冲区读取固定长度整数（1/2/4字节），存入 num
 static int32_t _mqtt_data_fixnum(buffer_ctx *buf, size_t lens, int32_t *num) {
     char tmp[4];

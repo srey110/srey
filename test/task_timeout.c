@@ -149,10 +149,10 @@ static int32_t _timeout_udp(task_ctx *task) {
         LOG_WARN("udp random echo error.");
         goto erro;
     }
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 erro:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_FAILED;
 }
 // 对当前连接发送 count 轮随机大小的 TEST_ECHO 和 TEST_RPC_ECHO 包，验证回显内容完全一致。
@@ -266,10 +266,10 @@ static int32_t _timeout_tcp(task_ctx *task) {
     if (ERR_OK != _tcp_echo(task, fd, skid, curtype, ECHO_ROUNDS)) {
         goto erro;
     }
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 erro:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_FAILED;
 }
 // 测试 HTTP GET 请求（验证 200 响应）+ chunked POST 请求三帧往返验证
@@ -303,15 +303,15 @@ static int32_t _timeout_http(task_ctx *task) {
     resp = coro_send(task, fd, skid, bwriter.data, bwriter.offset, &rsize, 0);
     if (NULL == resp) {
         LOG_WARN("http GET error.");
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
     if (!_status_is(resp, "200")) {
         LOG_WARN("http GET status error.");
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     // chunked POST 请求（三帧：header+chunk1、chunk2、终止块），验证服务端回复 chunked 响应
     if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &fd, &skid)) {
         LOG_WARN("http chunked connect error.");
@@ -333,11 +333,11 @@ static int32_t _timeout_http(task_ctx *task) {
         resp = coro_slice(task, fd, skid, &rsize, &slend);
         if (NULL == resp) {
             LOG_WARN("http chunked recv error.");
-            ev_close(&task->loader->netev, fd, skid, 1);
+            ev_close(&task->loader->netev, fd, skid);
             return ERR_FAILED;
         }
     } while (0 == slend);
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 }
 // 测试纯 WebSocket 服务端的文本帧和二进制帧回显
@@ -367,10 +367,10 @@ static int32_t _timeout_ws(task_ctx *task) {
     if (NULL == spctx || 0 != spctx->index || 1 != spctx->cnt
         || 4 != spctx->prots[0].lens || 0 != memcmp("mqtt", spctx->prots[0].data, 4)) {
         LOG_WARN("ws mqtt subprotocol negotiate error.");
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     // 非内建单值 chat：B-lite 透传，服务端回显 chat(PACK_NONE)，出参返回协商到的 chat
     fd = wbsock_connect(task, NULL, wsurl, "chat", 0, &skid, &spctx);
     if (INVALID_SOCK == fd) {
@@ -380,23 +380,23 @@ static int32_t _timeout_ws(task_ctx *task) {
     if (NULL == spctx || 0 != spctx->index || 1 != spctx->cnt
         || 4 != spctx->prots[0].lens || 0 != memcmp("chat", spctx->prots[0].data, 4)) {
         LOG_WARN("ws chat subprotocol negotiate error.");
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
     pack = websock_pack_text(1, 1, "chat", 4, &psize);
     resp = coro_send(task, fd, skid, pack, psize, &rsize, 0);
     if (NULL == resp || WS_TEXT != websock_prot(resp)) {
         LOG_WARN("ws chat echo error.");
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
     wdata = websock_data(resp, &wlen);
     if (4 != wlen || 0 != memcmp("chat", wdata, wlen)) {
         LOG_WARN("ws chat echo data error.");
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     fd = wbsock_connect(task, NULL, wsurl, NULL, 0, &skid, NULL);
     if (INVALID_SOCK == fd) {
         LOG_WARN("ws connect error.");
@@ -452,10 +452,10 @@ static int32_t _timeout_ws(task_ctx *task) {
             goto erro;
         }
     } while (0 == slend);
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 erro:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_FAILED;
 }
 // 用调用方给定的原始 URL 组 harbor POST 请求：harbor_pack 只会生成规范查询串，
@@ -602,10 +602,10 @@ static int32_t _timeout_habor(task_ctx *task) {
     if (ERR_OK != _harbor_expect_code(task, fd, skid, qurl, data, (size_t)dlen, "404")) {
         goto erro;
     }
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 erro:
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return ERR_FAILED;
 }
 // harbor mTLS 负面:无 client 证书(_evssl 无证书)连 hbserver 应被 FAIL_IF_NO_PEER_CERT 拒。
@@ -623,7 +623,7 @@ static int32_t _timeout_habor_reject(task_ctx *task) {
     size_t rsize;
     void *pack = harbor_pack(ctx->_rpcname, 1, 2, "x", 1, &rsize);
     struct http_pack_ctx *rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     return (NULL == rpack) ? ERR_OK : ERR_FAILED;// 无证书被拒,不该拿到响应
 #else
     (void)task;

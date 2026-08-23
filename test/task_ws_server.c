@@ -41,7 +41,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         frame = websock_pack_pong(0, &fsize);
         ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
     } else if (WS_CLOSE == prot) {
-        ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
+        ev_close(&task->loader->netev, sk->fd, sk->skid);
     }
 }
 static void _startup(task_ctx *task) {

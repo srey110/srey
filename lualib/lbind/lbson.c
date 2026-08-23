@@ -322,7 +322,7 @@ static int32_t _lbson_jscode(lua_State *lua) {
 static int32_t _lbson_int32(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
-    int32_t val = (int32_t)lpub_check_range(lua, 3, INT32_MIN, INT32_MAX, "int32 out of range");
+    int32_t val = lpub_check_i32(lua, 3, "int32 out of range");
     bson_append_int32(bson, key, val);
     return 0;
 }
@@ -337,8 +337,8 @@ static int32_t _lbson_int32(lua_State *lua) {
 static int32_t _lbson_timestamp(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
-    uint32_t ts = (uint32_t)lpub_check_range(lua, 3, 0, UINT32_MAX, "timestamp out of range");
-    uint32_t inc = (uint32_t)lpub_check_range(lua, 4, 0, UINT32_MAX, "increment out of range");
+    uint32_t ts = lpub_check_u32(lua, 3, "timestamp out of range");
+    uint32_t inc = lpub_check_u32(lua, 4, "increment out of range");
     bson_append_timestamp(bson, key, ts, inc);
     return 0;
 }

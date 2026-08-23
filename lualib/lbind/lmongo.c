@@ -31,7 +31,7 @@ static char *_lmongo_get_opts(lua_State *lua, int32_t idx, size_t *lens) {
 /// <returns type="_mongo_ctx?">mongo 对象；ip 或 db 超 63 字节导致初始化失败时返回 nil</returns>
 static int32_t _lmongo_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = lpub_check_port(lua, 2);
+    uint16_t port = lpub_check_u16(lua, 2, PORT_OUT_OF_RANGE);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *db = luaL_checkstring(lua, 4);
     mongo_ctx **ud = (mongo_ctx **)lpub_push_ud(lua, NULL, MT_MONGO);
@@ -59,7 +59,7 @@ static int32_t _lmongo_free(lua_State *lua) {
     }
     if (NULL != mongo->task && INVALID_SOCK != mongo->sk.fd) {
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, 0);
+        ev_close(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid);
     }
     *ud = NULL;
     // scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；

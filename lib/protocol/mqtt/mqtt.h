@@ -7,6 +7,8 @@
 void _mqtt_pkfree(void *data);
 // 释放 ud_cxt 中挂载的 mqtt_ctx 上下文
 void _mqtt_udfree(ud_cxt *ud);
+// 判断当前数据包是否允许 task 恢复（服务端主动推的包不允许立即恢复）
+int32_t _mqtt_may_resume(void *data);
 /// <summary>
 /// 从缓冲区中解析一个完整的 MQTT 数据包
 /// </summary>

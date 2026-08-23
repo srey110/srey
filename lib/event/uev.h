@@ -126,10 +126,9 @@ void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 void _uev_sk_shutdown(sock_ctx *skctx);
 // 释放UDP socket上下文
 void _uev_free_udp(sock_ctx *skctx);
-// 标记连接为错误状态并触发关闭（TCP shutdown/UDP注册写事件）
-// immed=1 立即关(走 STATUS_ERROR 路径丢弃未发数据)
-// immed=0 优雅关(走 STATUS_GRACEFUL_CLOSE 路径,buf_s 发完后 _close_tcp;UDP 退化为立即关)
-void _uev_disconnect(watcher_ctx *watcher, sock_ctx *skctx, int32_t immed);
+// 标记连接为错误状态并触发关闭（TCP shutdown/UDP注册写事件）；已置 STATUS_ERROR 时直接返回
+// TCP 关闭前先走 _evpub_close_flush_tcp 冲一次 send queue；UDP 无待发队列不冲
+void _uev_disconnect(watcher_ctx *watcher, sock_ctx *skctx);
 // 释放listener_ctx（立即释放，用于主线程兜底 / worker 退出后 cleanup 路径）
 void _uev_freelsn(struct listener_ctx *lsn);
 // 递减 listener_ctx 引用计数，归零后立即释放

@@ -70,7 +70,7 @@ end
 function pub:_pingreconn()
     if not self:_ping() then
         local fd, skid = self.conn:sock_id()
-        srey.sync_close(fd, skid, 1)
+        srey.sync_close(fd, skid)
         return self:connect()
     end
     return true
@@ -95,7 +95,7 @@ end
 function pub:_closereset()
     local fd, skid = self.conn:sock_id()
     if INVALID_SOCK ~= fd then
-        srey.sync_close(fd, skid, 1)
+        srey.sync_close(fd, skid)
     end
     self.generation = self.generation + 1
     self.established = false

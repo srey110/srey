@@ -203,9 +203,7 @@ struct router_req {
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
     // URL 解析结果 (内部使用)。存储由调用方提供并在调用 router_match_index 前赋值:
-    // url_ctx 有 4KB 出头, 内嵌进来会让本结构每次零初始化都白清一遍。指针化后不必预先
-    // 清零: url_parse 入口只清 param 之前的头部字段, segs / param / buf 三个大数组按
-    // npath / nparam 划定有效范围, 越界部分读到的是上一个请求的残留
+    // url_ctx 有 4KB 出头, 内嵌会让本结构每次零初始化都白清一遍; 指针化后不必预先清零(见 url_parse)
     url_ctx *url;
 };
 // 分组对象 (栈分配, 调用方持有);  prefix / mws 仅持引用, 调用方需保证生命周期

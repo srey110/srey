@@ -10,6 +10,7 @@ local M = {}
 local _coro_sess     -- 由 _set_coro_sess 注入的 coro_sess 只读引用（不要写）
 local _response      -- 由 _set_response 注入的响应函数：(dst, reqtype, sess, erro, data) → void
 local _mtype_names   -- 由 _set_mtype_names 注入：mtype 整数 → 名字字符串（MSG_TYPE 反转表）
+local _mtype_max = 0 -- 同上注入：反转表里的最大 mtype，stat 按下标遍历到此为止
 local _fallback      -- 由 _set_fallback 注入：未知 debug 命令时透传给业务 on_requested：(reqtype,sess,src,data,size) → void
 
 -- 遍历 coro_sess，按 coroutine stack traceback 聚类去重；返回可读字符串
@@ -79,9 +80,12 @@ local function _debug_handle(cmd, a1, a2)
         local st = task.stat()
         local lines = { string.format("%-14s %12s %18s %14s",
             "MTYPE", "NMSG", "DISPATCH_CPU_NS", "AVG_NS") }
-        for mt, name in ipairs(_mtype_names) do
+        -- 按下标走到最大 mtype 而不用 ipairs：枚举值一旦出现空洞 ipairs 会在洞前停下，
+        -- 而 C 侧 debug_request.c 是按下标全量遍历，两边输出会静默分叉
+        for mt = 1, _mtype_max do
+            local name = _mtype_names[mt]
             local s = st.by_type[mt]
-            if s then
+            if name and s then
                 lines[#lines + 1] = string.format("%-14s %12d %18d %14.0f",
                     name, s.nmsg, s.dispatch_cpu_ns, s.dispatch_cpu_ns / s.nmsg)
             end
@@ -128,8 +132,12 @@ end
 ---@param msgtype MSG_TYPE MSG_TYPE 枚举表
 function M._set_mtype_names(msgtype)
     _mtype_names = {}
+    _mtype_max = 0
     for name, val in pairs(msgtype) do
         _mtype_names[val] = name
+        if val > _mtype_max then
+            _mtype_max = val
+        end
     end
 end
 

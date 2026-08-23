@@ -91,7 +91,7 @@ static int32_t _lpgsql_bind_int16(lua_State *lua) {
         pgsql_bind_null(bind);
         return 0;
     }
-    pgsql_bind_int16(bind, (int16_t)lpub_check_range(lua, 2, INT16_MIN, INT16_MAX, "int16 out of range"));
+    pgsql_bind_int16(bind, lpub_check_i16(lua, 2, "int16 out of range"));
     return 0;
 }
 /// <summary>
@@ -106,7 +106,7 @@ static int32_t _lpgsql_bind_int32(lua_State *lua) {
         pgsql_bind_null(bind);
         return 0;
     }
-    pgsql_bind_int32(bind, (int32_t)lpub_check_range(lua, 2, INT32_MIN, INT32_MAX, "int32 out of range"));
+    pgsql_bind_int32(bind, lpub_check_i32(lua, 2, "int32 out of range"));
     return 0;
 }
 /// <summary>
@@ -256,7 +256,7 @@ static int32_t _lpgsql_bind_date(lua_State *lua) {
         pgsql_bind_null(bind);
         return 0;
     }
-    pgsql_bind_date(bind, (int32_t)lpub_check_range(lua, 2, INT32_MIN, INT32_MAX, "date out of range"));
+    pgsql_bind_date(bind, lpub_check_i32(lua, 2, "date out of range"));
     return 0;
 }
 /// <summary>
@@ -896,7 +896,7 @@ static int32_t _lpgsql_pack_copy_fail(lua_State *lua) {
 /// <returns type="_pgsql_ctx?">pgsql 对象；初始化失败返回 nil</returns>
 static int32_t _lpgsql_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = lpub_check_port(lua, 2);
+    uint16_t port = lpub_check_u16(lua, 2, PORT_OUT_OF_RANGE);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
     const char *user = luaL_checkstring(lua, 4);
     const char *password = luaL_checkstring(lua, 5);
@@ -929,7 +929,7 @@ static int32_t _lpgsql_free(lua_State *lua) {
         void *pack = pgsql_pack_terminate(&size);
         ev_send(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, pack, size, 0);
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, 0);
+        ev_close(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid);
     }
     *ud = NULL;
     // pack/scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；

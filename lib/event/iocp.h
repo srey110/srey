@@ -78,10 +78,8 @@ void _iocp_add_bufs_trysendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx 
 // shutdown socket读端（触发对端关闭流程）
 void _iocp_sk_shutdown(sock_ctx *skctx);
 // 标记连接为错误状态并取消所有IOCP挂起操作
-// immed=1 立即关(STATUS_ERROR + CancelIoEx 取消 in-flight,丢弃未发数据)
-// immed=0 优雅关(STATUS_GRACEFUL_CLOSE,outstanding WSASend 完成后 _on_send_cb 触发 _close_tcp;
-//                buf_s empty 且无 SENDING 时退化为立即关)
-void _iocp_disconnect(sock_ctx *skctx, int32_t immed);
+// TCP 先走 _evpub_close_flush_tcp 冲一次 send queue，再 CancelIoEx 掉在途探针；其余同 _uev_disconnect
+void _iocp_disconnect(sock_ctx *skctx);
 // 释放UDP socket上下文
 void _iocp_free_udp(sock_ctx *skctx);
 // 释放listener_ctx

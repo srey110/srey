@@ -121,6 +121,18 @@
     #define CACHELINE_SIZE  64
 #endif
 
+// 按 cache line 对齐的属性,与 CACHELINE_SIZE 配对使用(消除 false sharing)。
+// 按编译器分派而不是按 OS(同 macro_atomic.h):Windows 上的 MinGW / clang-cl 认 GCC 属性、
+// 不认 declspec(align),按 OS 挑会被静默丢掉。Sun Studio / xlC 没有对应属性,那里退化成
+// 相邻对象共用 cache line —— 只影响并发写入快慢,不影响正确性
+#if defined(__GNUC__) || defined(__clang__)
+    #define CACHELINE_ALIGN __attribute__((aligned(CACHELINE_SIZE)))
+#elif defined(OS_WIN)
+    #define CACHELINE_ALIGN __declspec(align(CACHELINE_SIZE))
+#else
+    #define CACHELINE_ALIGN
+#endif
+
 // accept4 / pipe2 能力：无标准 feature-test 宏，按 OS 推导（新增支持平台在此一处维护）
 #if defined(OS_LINUX) || defined(OS_BSD)
     #define HAVE_ACCEPT4

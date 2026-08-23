@@ -3,8 +3,8 @@
 
 #include "base/macro.h"
 
-// 这两个值必须与 protocol/urlparse.h 的 URL_MAX_PATH_DEPTH / URL_BUF_LENS 保持一致:
-// 同一个 HTTP 路径先按 URL_* 切段再进这里校验, 只调一边会出现"解析过了校验拒绝"
+// 这两个值必须与 protocol/urlparse.h 的 URL_MAX_PATH_DEPTH / URL_BUF_LENS 保持一致,
+// 由 lib.h 里的 STATIC_ASSERT 钉住(本层不依赖 protocol 层,故只能在汇总处判)
 #define PATH_MAX_DEPTH  64 // 单条路径的段数上限
 #define PATH_BUF_LENS   ONEK // 路径字符串工作缓冲(insert 侧据此限长, path_scan 据此重建)
 

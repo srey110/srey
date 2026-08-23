@@ -98,7 +98,7 @@ static void _cli_worker(task_ctx *task, void *arg) {
     netaddr_ctx la;
     if (ERR_OK != netaddr_local(&la, ufd)) {
         LOG_ERROR("kcp client %d netaddr_local error.", idx);
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     uint16_t uport = netaddr_port(&la);
@@ -107,27 +107,27 @@ static void _cli_worker(task_ctx *task, void *arg) {
     uint64_t tskid;
     if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", _cli_sv_tcp, NETEV_NONE, NULL, &tfd, &tskid)) {
         LOG_ERROR("kcp client %d connect error.", idx);
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     size_t rsize = 0;
     void *resp = coro_send(task, tfd, tskid, &uport, sizeof(uport), &rsize, 1);
     if (NULL == resp || rsize != sizeof(uint32_t)) {
         LOG_ERROR("kcp client %d handshake error.", idx);
-        coro_close(task, tfd, tskid, 1);
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        coro_close(task, tfd, tskid);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     uint32_t conv;
     memcpy(&conv, resp, sizeof(conv));
-    coro_close(task, tfd, tskid, 1);
+    coro_close(task, tfd, tskid);
     // 4. client 侧 kcp 会话(ikcp_update 由 event 线程 tick 自动驱动,业务无需轮询)
     kcp_ctx kcp;
     kcp_init(&kcp, &task->loader->netev, ufd, uskid, conv);
     kcp_config badmtu = { -1, -1, -1, -1, 0, 0, 24 }; // client 0 故意传非法 mtu(<50),验证 maxpack 不会因此归零导致永久发送失败
     if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _cli_sv_udp, 0 == idx ? &badmtu : NULL)) {
         LOG_ERROR("kcp client %d kcp_start error.", idx);
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     // 5. 同步发送并校验 echo
@@ -142,7 +142,7 @@ static void _cli_worker(task_ctx *task, void *arg) {
     }
     // 6. 收尾:停会话并关闭 UDP socket
     kcp_stop(&kcp);
-    ev_close(&task->loader->netev, ufd, uskid, 1);
+    ev_close(&task->loader->netev, ufd, uskid);
 }
 static void _cli_startup(task_ctx *task) {
     ATOMIC_SET(&_cli_success, 0);
@@ -214,14 +214,14 @@ static void _close_startup(task_ctx *task) {
     kcp_init(&kcp, &task->loader->netev, ufd, uskid, KCP_CLOSE_BOGUS_CONV);
     if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _close_sv_udp, NULL)) {
         LOG_ERROR("kcp close test kcp_start error.");
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     kcp_close_ctx ctx = { &kcp, NULL, 0, 0 };
     void (*funcs[2])(task_ctx *task, void *arg) = { _close_waiter, _close_stopper };
     void *args[2] = { &ctx, &ctx };
     int32_t rtn = coro_fork_wait(task, 2, funcs, args);
-    ev_close(&task->loader->netev, ufd, uskid, 1);
+    ev_close(&task->loader->netev, ufd, uskid);
     if (ERR_OK != rtn) {
         LOG_ERROR("kcp close test fork_wait error.");
         return;
@@ -277,7 +277,7 @@ static void _fifo_startup(task_ctx *task) {
     netaddr_ctx la;
     if (ERR_OK != netaddr_local(&la, ufd)) {
         LOG_ERROR("kcp fifo test netaddr_local error.");
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     uint16_t uport = netaddr_port(&la);
@@ -286,26 +286,26 @@ static void _fifo_startup(task_ctx *task) {
     uint64_t tskid;
     if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", _fifo_sv_tcp, NETEV_NONE, NULL, &tfd, &tskid)) {
         LOG_ERROR("kcp fifo test connect error.");
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     size_t rsize = 0;
     void *resp = coro_send(task, tfd, tskid, &uport, sizeof(uport), &rsize, 1);
     if (NULL == resp || rsize != sizeof(uint32_t)) {
         LOG_ERROR("kcp fifo test handshake error.");
-        coro_close(task, tfd, tskid, 1);
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        coro_close(task, tfd, tskid);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     uint32_t conv;
     memcpy(&conv, resp, sizeof(conv));
-    coro_close(task, tfd, tskid, 1);
+    coro_close(task, tfd, tskid);
     // 4. 同一 kcp 会话供 KCP_FIFO_N 个协程并发 synsend
     kcp_ctx kcp;
     kcp_init(&kcp, &task->loader->netev, ufd, uskid, conv);
     if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _fifo_sv_udp, NULL)) {
         LOG_ERROR("kcp fifo test kcp_start error.");
-        ev_close(&task->loader->netev, ufd, uskid, 1);
+        ev_close(&task->loader->netev, ufd, uskid);
         return;
     }
     kcp_fifo_ctx ctxs[KCP_FIFO_N];
@@ -321,7 +321,7 @@ static void _fifo_startup(task_ctx *task) {
     }
     int32_t rtn = coro_fork_wait(task, KCP_FIFO_N, funcs, args);
     kcp_stop(&kcp);
-    ev_close(&task->loader->netev, ufd, uskid, 1);
+    ev_close(&task->loader->netev, ufd, uskid);
     if (ERR_OK != rtn) {
         LOG_ERROR("kcp fifo test fork_wait error.");
         return;
@@ -359,7 +359,7 @@ static uint64_t _syn_dead_skid;
 static void _syn_close_fork(task_ctx *task, void *arg) {
     (void)arg;
     coro_sleep(task, 50);
-    ev_close(_syn_dead_netev, _syn_dead_fd, _syn_dead_skid, 1);
+    ev_close(_syn_dead_netev, _syn_dead_fd, _syn_dead_skid);
 }
 static int32_t *_syn_ok;
 
@@ -424,7 +424,7 @@ static void _syn_startup(task_ctx *task) {
     int32_t r17 = kcp_synstart(task, &kcp8, "127.0.0.1", _syn_sv_udp, NULL);
     kcp_stop(&kcp8);
     kcp_stop(&kcp3);
-    ev_close(&task->loader->netev, ufd, uskid, 1);
+    ev_close(&task->loader->netev, ufd, uskid);
     // 6. CLOSE 唤醒 kcp_synsend:挂起期间 socket 被关,_kcp_udfree 逐会话补 CLOSE;
     // 唤醒后须清 kcp->sess,否则下次 synsend 通过守卫投到已消失的会话,被 _kcp_resolve 静默丢弃后空等满超时。
     // 与 bin/script/lib/kcp.lua 的 ctx:send 同款分支互为镜像

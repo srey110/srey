@@ -44,11 +44,12 @@
 #include "task_kcp.h"
 #include "task_multi_call.h"
 #include "task_dc_client.h"
+#include "task_debug.h"
 #include "task_sc_client.h"
 #include "task_listen_churn.h"
 #include "task_v6only.h"
 #include "task_listen_unlisten_race.h"
-#include "task_close_graceful.h"
+#include "task_close_flush.h"
 #include "task_sendbuf_warn.h"
 #include "task_priority.h"
 #include "task_selfpost.h"
@@ -223,11 +224,12 @@ int main(int argc, char *argv[]) {
         {"udp_multicast_test", 0},
         {"multi_call_test", 0},
         {"dc_client_test", 0},
+        {"debug_test", 0},
         {"sc_client_test", 0},
         {"listen_churn", 0},
         {"v6only_test", 0},
         {"unlisten_race", 0},
-        {"close_graceful", 0},
+        {"close_flush", 0},
         {"sendbuf_warn", 0},
         {"priority_test", 0},
         {"selfpost_test", 0},
@@ -251,6 +253,7 @@ int main(int argc, char *argv[]) {
         {"harbor", 15004},
         {"router_sv", 15005},
         {"router_idx_sv", 15006},
+        {"debug_console", 15017},
         {"kcp_tcp", 15040},
         {"kcp_udp", 15041},
 
@@ -339,6 +342,14 @@ int main(int argc, char *argv[]) {
     task_dc_client_start(g_loader, "dc_client_test", dc_name, _get_name_val(testlist, "dc_client_test"));
     //subcenter pub/sub/retained/shared/meta 集成测试
     task_sc_client_start(g_loader, "sc_client_test", sc_name, _get_name_val(testlist, "sc_client_test"));
+    //debug 控制台 + debug 命令链路集成测试：console 起在 15017
+    if (ERR_OK != debug_console_start(g_loader, "debug_console", "127.0.0.1",
+                                     (uint16_t)*(_get_name_val(portlist, "debug_console")))) {
+        LOG_WARN("debug_console_start error.");
+    }
+    task_debug_start(g_loader, "debug_test",
+        (uint16_t)*(_get_name_val(portlist, "debug_console")),
+        _get_name_val(testlist, "debug_test"));
     //Listener 动态生命周期回归：用专用端口 15010 避开其他服务
     task_listen_churn_start(g_loader, "listen_churn", 15010,
         _get_name_val(testlist, "listen_churn"));
@@ -348,9 +359,9 @@ int main(int argc, char *argv[]) {
     //SO_REUSEPORT + 多 watcher 下 ev_unlisten 与 in-flight accept 并发压力：端口 15011
     task_listen_unlisten_race_start(g_loader, "unlisten_race", 15011,
         _get_name_val(testlist, "unlisten_race"));
-    //ev_close(immed=0) 优雅关闭数据完整性：端口 15015
-    task_close_graceful_start(g_loader, "close_graceful", 15015,
-        _get_name_val(testlist, "close_graceful"));
+    //ev_close 关闭前冲刷一次的契约（小包全达 / 大包截断但关得掉）：端口 15015
+    task_close_flush_start(g_loader, "close_flush", 15015,
+        _get_name_val(testlist, "close_flush"));
     //wb_size 字节告警 + 大数据完整性：端口 15016
     task_sendbuf_warn_start(g_loader, "sendbuf_warn", 15016,
         _get_name_val(testlist, "sendbuf_warn"));

@@ -27,7 +27,7 @@ static int32_t _test_connect_refused(task_ctx *task) {
     int32_t r = coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", 1, 0, NULL, &fd, &skid);
     if (ERR_OK == r) {
         // 不应该连成功；连上了立即关掉再报错
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         LOG_ERROR("coro_connect refused: 127.0.0.1:1 unexpectedly accepted.");
         return ERR_FAILED;
     }
@@ -42,7 +42,7 @@ static int32_t _test_send_after_close(task_ctx *task, uint16_t httpport) {
         LOG_ERROR("coro_send-after-close: pre-connect to http_sv failed.");
         return ERR_FAILED;
     }
-    ev_close(&task->loader->netev, fd, skid, 1);
+    ev_close(&task->loader->netev, fd, skid);
     // 等关连接消息穿过事件循环；时间轮粒度 1ms，50ms 足够
     coro_sleep(task, 50);
     // 构造一个最小 HTTP GET 包发送，预期 coro_send 返回 NULL

@@ -90,7 +90,8 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size);
 /// <summary>
-/// 等待 task_connect 已发起的 CONNECT 完成；超时或失败均关闭 fd；evssl 非 NULL 时紧接着等 SSL 握手完成
+/// 等待 task_connect 已发起的 CONNECT 完成；超时由本函数关闭 fd，其余失败时 fd 已由事件/协议层关闭；
+/// evssl 非 NULL 时紧接着等 SSL 握手完成
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="fd">SOCKET</param>
@@ -118,12 +119,12 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
 /// <summary>
 /// 同步关闭连接：发起关闭后挂起协程等 CLOSE 消息，确保协议层 close 回调执行完毕再返回。
 /// 重连前调用,避免旧连接异步 teardown 与新连接共享 ctx 时清掉新 fd;须在协程内调用,连接已失效时调用方自行跳过。
+/// 未发数据的丢弃契约同 ev_close：等的是"关完了",不是"发完了"。
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
-/// <param name="immed">0 优雅关闭(send queue 空时退化为立即) 1 立即关闭</param>
-void coro_close(task_ctx *task, SOCKET fd, uint64_t skid, int32_t immed);
+void coro_close(task_ctx *task, SOCKET fd, uint64_t skid);
 /// <summary>
 /// TCP发送
 /// </summary>
@@ -145,7 +146,8 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
 /// <param name="fd">socket fd</param>
 /// <param name="skid">连接 skid</param>
 /// <param name="size">输出:数据长度,可为 NULL</param>
-/// <returns>响应数据指针,仅在本协程下次挂起前有效(同 coro_send);超时/断开返回 NULL</returns>
+/// <returns>响应数据指针,仅在本协程下次挂起前有效(同 coro_send);超时/断开返回 NULL。
+///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL——连接已 teardown 时挂上去等不到唤醒</returns>
 void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size);
 /// <summary>
 /// 等待分片消息
@@ -154,7 +156,8 @@ void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="size">数据长度；可传 NULL 不写</param>
-/// <param name="end">1 分片结束 0未结束；必须非 NULL，函数内裸解引用</param>
+/// <param name="end">1 分片结束 0未结束；必须非 NULL，函数内裸解引用；
+///   返回 NULL 时保证已写 0</param>
 /// <returns>分片数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end);
@@ -211,8 +214,7 @@ coro_serial_ctx *coro_serial_new(task_ctx *task);
 /// 允许在有协程持锁时调用（含持锁者自己）；锁抢不走，内存改由最后一次 coro_serial_leave 释放，
 /// **故本函数返回时对象未必已经释放**。调用方两条义务：
 /// 1) 把自己的 serial 字段置空要排在本函数之后，且置空前先认字段仍是自己那个——
-///    被唤醒的排队者就地跑错误路径：提前置空会被它们当成"无执行器"直接放行，
-///    而那些路径可能已销毁重连、装上新执行器，无条件置空就把新的抹掉了；
+///    期间可能已销毁重连、装上新执行器，无条件置空会把新的抹掉；
 /// 2) 加锁与解锁必须捏同一个指针配对，解锁时不得重读已被置空的字段——
 ///    重读会让持锁者跳过 leave，推迟的释放就永远等不到
 /// </summary>

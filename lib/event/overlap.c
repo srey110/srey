@@ -179,43 +179,23 @@ int32_t _iocp_check_skid(sock_ctx *skctx, const uint64_t skid) {
     // UPCAST 强转读偏移到不可预测字段后碰巧匹配 skid 触发未定义行为
     return ERR_FAILED;
 }
-void _iocp_disconnect(sock_ctx *skctx, int32_t immed) {
+void _iocp_disconnect(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
         overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
         if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
             return;
         }
-        if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
-            if (0 == immed) {
-                return;
-            }
-            // graceful 中升级到 immed (如 _olp_on_send_cb 内 send 失败): 清 GRACEFUL_CLOSE 走 ERROR 路径
-            BIT_REMOVE(tcp->status, STATUS_GRACEFUL_CLOSE);
-        }
-        // 下面三类都退化为立即关,共同理由是"再等 _olp_on_send_cb 等不到,没人来关这条连接":
-        // 队列空;ol_s 上只有 0 字节探针(KeyUpdate/AUTHSSL,socket 满时会 pend 不完成);KEYUPDATE_READ 期(ol_s 不在途)。
-        // usock 无最后一项——它 graceful 收尾无条件重挂写事件
-        if (0 == immed
-            && (0 == queue_size(&tcp->buf_s)
-                || BIT_CHECK(tcp->status, STATUS_KEYUPDATE_READ))
-            && (!BIT_CHECK(tcp->status, STATUS_SENDING)
-                || BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)
-                || BIT_CHECK(tcp->status, STATUS_AUTHSSL))) {
-            immed = 1;
-        }
-        if (0 != immed) {
-            BIT_SET(tcp->status, STATUS_ERROR);
-            _iocp_sk_shutdown(skctx);
-            CancelIoEx((HANDLE)skctx->fd, NULL);
-        } else {
-            BIT_SET(tcp->status, STATUS_GRACEFUL_CLOSE);
-            // 仅半关读端,不碰 SSL 对象:留 SSL_write 继续发完 buf_s;buf_s 发完后 _olp_send_close_tcp
-            // 会重入本函数走 immed=1 分支补完整 shutdown(含 SSL_shutdown),此处不需要单独补
-            shutdown(skctx->fd, SHUT_RD);
-            // 不调 CancelIoEx; WSASend 完成后检查队列为再空关闭.
-        }
+        // ev_send 在本平台只是入队并投 0 字节探针,payload 此刻还在 buf_s,不冲就是整包丢
+#if WITH_SSL
+        _evpub_close_flush_tcp(tcp->ol_s.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, tcp->ssl);
+#else
+        _evpub_close_flush_tcp(tcp->ol_s.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, NULL);
+#endif
+        BIT_SET(tcp->status, STATUS_ERROR);
+        _iocp_sk_shutdown(skctx);
+        CancelIoEx((HANDLE)skctx->fd, NULL);
     } else {
-        // UDP datagram graceful 无意义,始终走立即关分支
+        // UDP datagram 无连接,没有待发队列要冲
         overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
         if (BIT_CHECK(udp->status, STATUS_ERROR)) {
             return;
@@ -420,10 +400,6 @@ static void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
 // IOCP TCP接收完成回调：处理SSL握手或普通数据接收
 static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
-        BIT_SET(oltcp->status, STATUS_NORECV);
-        return;
-    }
     if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
         || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         _olp_on_recv_cb_err(watcher, oltcp);
@@ -455,7 +431,7 @@ static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
         && !BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)
         && !BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         if (ERR_OK != _olp_wantwrite(oltcp)) {
-            _iocp_disconnect(&oltcp->ol_r, 1);
+            _iocp_disconnect(&oltcp->ol_r);
         }
     }
 #endif
@@ -500,8 +476,7 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
         return;
     }
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (0 == _evpub_ssl_exchange_check(oltcp->ssl, &oltcp->status,
-                                       _olp_on_recv_cb == skctx->ev_cb, client)) {
+    if (0 == _evpub_ssl_exchange_check(oltcp->ssl, &oltcp->status, client)) {
         return;
     }
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
@@ -510,7 +485,7 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
     } else {
         int32_t sending;
         if (ERR_OK != _olp_ssl_exchange_trigger(watcher, oltcp, evssl, &sending)) {
-            _iocp_disconnect(skctx, 1);
+            _iocp_disconnect(skctx);
             LOG_ERROR("ssl exchange error.");
             return;
         }
@@ -521,8 +496,8 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
 #endif
 }
 // 排空 buf_s；没排完就投 0 字节探针接力。
-// SSL 块是数据期 TLS1.3 的方向 B(SSL_write 说要先读)，与 usock.c 同条件同序：graceful 期直接失败,
-// 否则置 KEYUPDATE_READ 并交还 SENDING,靠 _olp_on_recv_cb 收到数据后接力。
+// SSL 块是数据期 TLS1.3 的方向 B(SSL_write 说要先读)，与 usock.c 同条件同序：置 KEYUPDATE_READ
+// 并交还 SENDING,靠 _olp_on_recv_cb 收到数据后接力。
 // 顺序不能颠倒：SSL 块必须在 "0 == cnt" 之前,否则排空重试时走不到清位,残留的 KEYUPDATE_READ
 // 会让 _iocp_add_bufs_trypost 永久拦住后续发送。
 // 挂起态不变式：KEYUPDATE_READ=1 ⟹ ol_s 不在途 ∧ ol_r 在途 ∧ buf_s 非空
@@ -542,9 +517,6 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
 #if WITH_SSL
     if (NULL != oltcp->ssl) {
         if (0 != cnt && SSL_want_read(oltcp->ssl)) {
-            if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
-                return ERR_FAILED;
-            }
             BIT_SET(oltcp->status, STATUS_KEYUPDATE_READ);
             BIT_REMOVE(oltcp->status, STATUS_SENDING);
             return ERR_OK;
@@ -553,9 +525,6 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     }
 #endif
     if (0 == cnt) {
-        if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
-            return ERR_FAILED;
-        }
 #if WITH_SSL
         // 防止接收侧(_olp_tcp_recv)因 STATUS_SENDING 守卫未触发;
         // 此时 ol_r 仍在途(NORECV=0),投 ol_s 探针接力,等可写后由 flush 冲出
@@ -611,20 +580,12 @@ static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *o
 static void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_REMOVE)
         || BIT_CHECK(oltcp->status, STATUS_NORECV)) {
-#if WITH_SSL
-        // graceful 优雅关闭补发 SSL close_notify(对齐 Unix _usk_close_tcp);ERROR 错误路径不发
-        if (NULL != oltcp->ssl
-            && BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)
-            && !BIT_CHECK(oltcp->status, STATUS_ERROR)) {
-            evssl_shutdown(oltcp->ssl, oltcp->ol_r.fd);
-        }
-#endif
         _olp_call_close_cb(watcher->ev, oltcp);
         _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r, 0);
     } else {
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
-        _iocp_disconnect(&oltcp->ol_r, 1);
+        _iocp_disconnect(&oltcp->ol_r);
     }
 }
 // IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调
@@ -648,18 +609,12 @@ static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
             }
         } else {
             if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// tls1.3 KeyUpdate 写就绪
-                // graceful 已 SHUT_RD 读端,keyupdate_flush 内 SSL_read 必收 EOF → _olp_send_close_tcp 提前断连丢 buf_s;
-                // 跳过读冲刷、清 KEYUPDATE_WRITE,落到下方 _olp_tcp_send 排空 buf_s(SSL_write 先 flush 挂起的 KeyUpdate 写),空则触发关闭
-                if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
-                    BIT_REMOVE(oltcp->status, STATUS_KEYUPDATE_WRITE);
-                } else {
-                    if (ERR_OK != _olp_ssl_keyupdate_flush(watcher, oltcp)) {
-                        _olp_send_close_tcp(watcher, oltcp);
-                        return;
-                    }
-                    if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 没冲完,探针已重投,等下次完成
-                        return;
-                    }
+                if (ERR_OK != _olp_ssl_keyupdate_flush(watcher, oltcp)) {
+                    _olp_send_close_tcp(watcher, oltcp);
+                    return;
+                }
+                if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 没冲完,探针已重投,等下次完成
+                    return;
                 }
             }
         }
@@ -672,17 +627,14 @@ static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
 }
 void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    // 已在 graceful/error 关闭流程：拒收新数据
-    if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)
-        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+    // 已在关闭流程：拒收新数据
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         _evpub_off_buf_release(buf);
         return;
     }
-    // 连接未完成时 ev_cb 仍是 _olp_on_connect_cb
-    if (!_evpub_sendqu_check_tcp(&oltcp->buf_s, oltcp->status, oltcp->ol_s.fd,
-                                 _olp_on_recv_cb == skctx->ev_cb)) {
+    if (!_evpub_sendqu_check_tcp(&oltcp->buf_s, oltcp->status, oltcp->ol_s.fd)) {
         _evpub_off_buf_release(buf);
-        _iocp_disconnect(&oltcp->ol_r, 1);
+        _iocp_disconnect(&oltcp->ol_r);
         return;
     }
     oltcp->wb_size += buf->lens;
@@ -697,7 +649,7 @@ void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
     }
 #endif
     if (ERR_OK != _olp_wantwrite(oltcp)) {
-        _iocp_disconnect(&oltcp->ol_r, 1);
+        _iocp_disconnect(&oltcp->ol_r);
     }
 }
 // 将socket绑定到通配地址（ConnectEx要求socket必须先bind）
@@ -753,6 +705,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
         _olp_on_connect_cb_err(watcher, oltcp);
         return;
     }
+    BIT_SET(oltcp->status, STATUS_ESTABLISHED);
 #if WITH_SSL // 默认启用ssl，初始化
     if (NULL != oltcp->evssl) {
         oltcp->ssl = evssl_setfd(oltcp->evssl, oltcp->ol_r.fd);
@@ -769,7 +722,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
     }
     // 链接成功回调
     if (ERR_OK != _olp_call_conn_cb(watcher->ev, oltcp, ERR_OK)) {
-        _iocp_disconnect(&oltcp->ol_r, 1);
+        _iocp_disconnect(&oltcp->ol_r);
         return;
     }
 #if WITH_SSL
@@ -778,7 +731,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
         case ERR_OK://握手完成
             BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
             if (ERR_OK != _olp_call_ssl_exchanged_cb(watcher->ev, oltcp)) {
-                _iocp_disconnect(&oltcp->ol_r, 1);
+                _iocp_disconnect(&oltcp->ol_r);
                 return;
             }
             break;
@@ -786,12 +739,12 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
             break;
         case 2:// WANT_WRITE
             if (ERR_OK != _olp_wantwrite(oltcp)) {// 注册写
-                _iocp_disconnect(&oltcp->ol_r, 1);
+                _iocp_disconnect(&oltcp->ol_r);
                 return;
             }
             break;
         default:
-            _iocp_disconnect(&oltcp->ol_r, 1);
+            _iocp_disconnect(&oltcp->ol_r);
             return;
         }
     }
@@ -809,7 +762,12 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    _evpub_nodelay_nonblock(*fd);
+    if (ERR_OK != _evpub_tcp_sockopts(*fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        CLOSE_SOCK((*fd));
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
     if (ERR_OK != _olp_trybind(*fd, netaddr_family(&addr))) {
         CLOSE_SOCK((*fd));
         UD_FREE(cbs->ud_free, ud);
@@ -986,8 +944,7 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
                              SO_UPDATE_ACCEPT_CONTEXT,
                              (char *)&lsn->fd,
                              (int32_t)sizeof(lsn->fd))
-        || ERR_OK != _evpub_nodelay_nonblock(fd)
-        || ERR_OK != sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
+        || ERR_OK != _evpub_tcp_sockopts(fd)) {
         CLOSE_SOCK(fd);
         _iocp_try_freelsn(lsn);
         return;
@@ -1007,6 +964,7 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
     skpool_args skargs = { fd, &lsn->cbs, &lsn->ud };
     sock_ctx *skctx = pool_pop(&watcher->pool, &skargs, 0);
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    BIT_SET(oltcp->status, STATUS_ESTABLISHED);// accept 出来的连接已连通
     _evpub_sockel_add(watcher, skctx);
 #if WITH_SSL
     if (NULL != lsn->evssl) {// 默认启用ssl
@@ -1024,7 +982,7 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
         return;
     }
     if (ERR_OK != _olp_call_acp_cb(watcher->ev, oltcp)) {
-        _iocp_disconnect(&oltcp->ol_r, 1);
+        _iocp_disconnect(&oltcp->ol_r);
         return;
     }
 }
@@ -1238,10 +1196,8 @@ static void _olp_on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byt
 //   1           这一条彻底毁了、fd 还能用,丢掉接着发队列里的下一条
 //   2           这一条只是暂时发不出去(资源紧张之类),原样留在队头等下次驱动
 //   ERR_FAILED  fd 本身已废,须关连接
-// 1 与 2 必须分开:混成一种就等于拿资源紧张当丢数据的理由。
-// 报文超长(WSAEMSGSIZE)、目标地址族与 socket 不符、未开广播权限这类只毁一条包,而整条 UDP 端点
-// 是所有对端共用的,不能因为一个包就拆掉。分类与 unix 的 _usk_udp_sendmsg_once 一一对应:
-// 那边 ERR_RW_RETRIABLE 一族对应这里的 2,其余软错误对应 1
+// 1 与 2 必须分开:混成一种就等于拿资源紧张当丢数据的理由。分类与 unix 的
+// _usk_udp_sendmsg_once 一一对应(那边 ERR_RW_RETRIABLE 一族即这里的 2,其余软错误即 1)
 static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;
@@ -1299,7 +1255,7 @@ static uint32_t _olp_on_sendto_retry(void *ud, uint64_t now_ms) {
     BIT_SET(oludp->status, STATUS_SENDING);
     if (ERR_FAILED == _olp_sendto_drain(oludp->watcher, oludp)) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
-        _iocp_disconnect(&oludp->ol_r, 1);
+        _iocp_disconnect(&oludp->ol_r);
         return EVENT_WAIT_TIMEOUT;
     }
     // drain 已摘除:投出去了或队列空了,不必再来
@@ -1384,14 +1340,14 @@ static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes
         int32_t err = (int32_t)WSAGetLastError();
         if (WSAEBADF == err || WSAENOTSOCK == err) {
             BIT_REMOVE(oludp->status, STATUS_SENDING);
-            _iocp_disconnect(&oludp->ol_r, 1);
+            _iocp_disconnect(&oludp->ol_r);
             return;
         }
         LOG_WARN("UDP sendto dropped one datagram on fd %d: %s.", (int32_t)oludp->ol_s.fd, ERRORSTR(err));
     }
     if (ERR_OK != _olp_sendto_drain(watcher, oludp)) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
-        _iocp_disconnect(&oludp->ol_r, 1);
+        _iocp_disconnect(&oludp->ol_r);
     }
 }
 void _iocp_add_bufs_trysendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf) {
@@ -1412,7 +1368,7 @@ void _iocp_add_bufs_trysendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx 
     BIT_SET(oludp->status, STATUS_SENDING);
     if (ERR_OK != _olp_sendto_drain(watcher, oludp)) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
-        _iocp_disconnect(&oludp->ol_r, 1);
+        _iocp_disconnect(&oludp->ol_r);
     }
 }
 // 分配并初始化UDP上下文（不使用对象池，因UDP不常关闭/新建）

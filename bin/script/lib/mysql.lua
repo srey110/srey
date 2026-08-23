@@ -63,7 +63,7 @@ function ctx:_selectdb(database)
         return false
     end
     local fd, skid = self.mysql:sock_id()
-    local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
+    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if nil == mpack then
         return false
     end
@@ -79,7 +79,7 @@ end
 function ctx:_ping()
     local pack, size = self.mysql:pack_ping()
     local fd, skid = self.mysql:sock_id()
-    local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
+    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
         return false
     end
@@ -164,7 +164,7 @@ function ctx:_prepare(sql)
         return false
     end
     local fd, skid = self.mysql:sock_id()
-    local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
+    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
         return false
     end

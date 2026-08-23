@@ -275,12 +275,13 @@ int32_t prots_may_resume(pack_type pktype, void *data) {
     switch (pktype) {
     case PACK_PGSQL:
         return _pgsql_may_resume(data);
+    case PACK_MQTT:
+        return _mqtt_may_resume(data);
     // 收到包即可唤醒等待者，无附加判定
     case PACK_NONE:
     case PACK_DNS:
     case PACK_HTTP:
     case PACK_WEBSOCK:
-    case PACK_MQTT:
     case PACK_SMTP:
     case PACK_CUSTZ_FIXED:
     case PACK_CUSTZ_FLAG:
@@ -364,7 +365,8 @@ int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     return rtn;
 }
 // 构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target
-static void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t client, int32_t erro, ud_cxt *ud) {
+static void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t client,
+                              int32_t erro, int32_t neverconn, ud_cxt *ud) {
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CLOSE;
     msg.subtype = ud->pktype;
@@ -372,6 +374,7 @@ static void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t cl
     msg.sk.skid = skid;
     msg.client = client;
     msg.erro = erro;
+    msg.neverconn = (uint8_t)neverconn;
     msg.sess = skid;// 始终尝试唤醒
     prots_closed(ud);
     g_emit.emit(target, &msg);
@@ -398,9 +401,9 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
     msg.sess = ud->sess;
     g_emit.emit(target, &msg);
     if (emitclose) {
-        // CONNECT 只发生在客户端发起连接场景，client 恒为 1；erro 非 ERR_OK 标记这是因连接失败而补发的
-        // 合成 CLOSE，供消费侧区分是否跳过 on_close 观察者
-        _prots_emit_close(target, fd, skid, 1, err, ud);
+        // CONNECT 只发生在客户端发起连接场景，client 恒为 1；neverconn 标记这是因连接失败补发的
+        // 合成 CLOSE，分发层据此跳过 on_close 观察者
+        _prots_emit_close(target, fd, skid, 1, err, 1, ud);
     }
     g_emit.end(target);
     return err;
@@ -408,7 +411,7 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
 void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
-        ev_close(ev, fd, skid, 1);
+        ev_close(ev, fd, skid);
         return;
     }
     message_ctx msg = { 0 };
@@ -440,13 +443,13 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
             data = next;
         }
         if (BIT_CHECK(status, PROT_ERROR)) {
-            ev_close(ev, fd, skid, 1);
+            ev_close(ev, fd, skid);
             break;
         }
         if (BIT_CHECK(status, PROT_CLOSE)) {
-            // 协议层正常关闭信号(如 WebSocket close frame),业务应答 close frame
-            // 可能仍在 buf_s,immed=0 让其发完再关
-            ev_close(ev, fd, skid, 0);
+            // 协议层正常关闭信号(如 WebSocket close frame):业务应答的那一帧可能还在 buf_s,
+            // ev_close 关闭前会冲一次,小控制帧一次就写进内核了
+            ev_close(ev, fd, skid);
             break;
         }
         esize = buffer_size(buf);
@@ -461,7 +464,7 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
 void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
-        ev_close(ev, fd, skid, 1);
+        ev_close(ev, fd, skid);
         return;
     }
     message_ctx msg = { 0 };
@@ -499,13 +502,13 @@ void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cx
     if (NULL == target) {
         return;
     }
-    _prots_emit_close(target, fd, skid, client, ERR_OK, ud);
+    _prots_emit_close(target, fd, skid, client, ERR_OK, 0, ud);
     g_emit.end(target);
 }
 static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
-        ev_close(ev, fd, skid, 1);
+        ev_close(ev, fd, skid);
         return;
     }
     message_ctx msg = { 0 };

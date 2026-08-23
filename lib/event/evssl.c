@@ -86,6 +86,13 @@ evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t 
     _evssl_options(evssl);
     return evssl;
 }
+// PKCS12 解析产物的成套释放:四个对象必须一次全放,少一个就是每次加载 p12 泄漏一个 OpenSSL 对象
+static void _p12_cleanup(X509 *cert, EVP_PKEY *key, STACK_OF(X509) *ca, PKCS12 *pk12) {
+    X509_free(cert);
+    EVP_PKEY_free(key);
+    sk_X509_pop_free(ca, X509_free);
+    PKCS12_free(pk12);
+}
 evssl_ctx *evssl_p12_new(const char *p12, const char *pwd) {
     evssl_ctx *evssl = _evssl_new();
     if (NULL == evssl) {
@@ -114,26 +121,17 @@ evssl_ctx *evssl_p12_new(const char *p12, const char *pwd) {
     STACK_OF(X509) *ca = NULL;
     if (1 != PKCS12_parse(pk12, pwd, &key, &cert, &ca)) {
         SSLCTX_ERRO();
-        X509_free(cert);
-        EVP_PKEY_free(key);
-        sk_X509_pop_free(ca, X509_free);
-        PKCS12_free(pk12);
+        _p12_cleanup(cert, key, ca, pk12);
         evssl_free(evssl);
         return NULL;
     }
     if (1 != SSL_CTX_use_cert_and_key(evssl->ssl, cert, key, ca, 0)) {
         SSLCTX_ERRO();
-        X509_free(cert);
-        EVP_PKEY_free(key);
-        sk_X509_pop_free(ca, X509_free);
-        PKCS12_free(pk12);
+        _p12_cleanup(cert, key, ca, pk12);
         evssl_free(evssl);
         return NULL;
     }
-    X509_free(cert);
-    EVP_PKEY_free(key);
-    sk_X509_pop_free(ca, X509_free);
-    PKCS12_free(pk12);
+    _p12_cleanup(cert, key, ca, pk12);
     _evssl_options(evssl);
     return evssl;
 }

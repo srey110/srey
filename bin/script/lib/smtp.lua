@@ -1,7 +1,7 @@
 -- SMTP 客户端（smtp_ctx 类）。
 -- 封装 C 层 srey.smtp，实现完整的 SMTP 对话流程：
 --   connect → [AUTH] → MAIL FROM → RCPT TO × N → DATA → 邮件正文 → QUIT
--- 支持 TLS（SMTPS 或 STARTTLS），keepalive 通过 ping/reset 维护长连接。
+-- 支持隐式 TLS（SMTPS，连接即握手；协议层无 STARTTLS 升级），keepalive 通过 ping/reset 维护长连接。
 
 local srey = require("lib.srey")
 local smtp = require("srey.smtp")
@@ -67,7 +67,7 @@ end
 function ctx:_reset()
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_reset()
-    local pack =  srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack = srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack then
         return false
     end
@@ -78,7 +78,7 @@ end
 function ctx:_ping()
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_ping()
-    local pack =  srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack = srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack then
         return false
     end
@@ -94,7 +94,7 @@ function ctx:_send(mail)
     if not cmd then
         return false
     end
-    local pack =  srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack = srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack or not self.smtp:check_ok(pack)  then
         return false
     end
@@ -103,13 +103,13 @@ function ctx:_send(mail)
         if not cmd then
             return false
         end
-        pack =  srey.syn_send(fd, skid, cmd, csize, 0)
+        pack = srey.syn_send(fd, skid, cmd, csize, 0)
         if nil == pack or not self.smtp:check_codes(pack, RCPT_CODES) then
             return false
         end
     end
     cmd, csize = self.smtp:pack_data()
-    pack =  srey.syn_send(fd, skid, cmd, csize, 0)
+    pack = srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack or not self.smtp:check_code(pack, "354") then
         return false
     end
@@ -120,7 +120,7 @@ function ctx:_send(mail)
     if nil == cmd then
         return false
     end
-    pack =  srey.syn_send(fd, skid, cmd, csize, 0)
+    pack = srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack or not self.smtp:check_ok(pack) then
         return false
     end

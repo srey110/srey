@@ -12,13 +12,8 @@
         } \
     } while (0)
 // release：C 借用(ref=0)短路，持有者归零时释放；事件层 udfree 与上层 handle 析构共用(析构时 ref 必>0，GET 短路恒真)。
-// 释放走 SECURE_FREE 整块擦除，四种 ctx 里的密码/盐值都在这一刻抹掉——而不是在析构时逐字段擦：
-// 析构侧的 ev_close 只是往网络线程投一条命令，返回时连接还活着，网络线程可能正读着同一个密码
-// 组认证串（如 smtp 的 _smtp_loin_cmd），工作线程当场 secure_zero 就是一对无同步的读写，
-// 现场表现是把清了一半的密码发出去。挪到这里则天然没有竞争：ATOMIC_ADD 返回旧值，看到 1 的
-// 那个线程是最后一个持有者，其余都已放手（网络线程那份在 *_udfree 里释放，释放前已 ud->context=NULL），
-// 那次原子 RMW 本身就是同步点。代价是明文多驻留一个命令往返。
-// 也不能改在 *_udfree 里擦：ctx 会活过连接，断线重连还要拿它的密码
+// 密码/盐值的擦除必须落在这里(SECURE_FREE 整块)：析构侧逐字段擦不行——那时连接还活着，网络线程
+// 可能正读着同一份密码组认证串；挪进 *_udfree 也不行——ctx 要活过连接，断线重连还要用它的密码
 #define PROT_REF_RELEASE(ptr) \
     do { \
         if (0 != ATOMIC_GET(&(ptr)->ref) && 1 == ATOMIC_ADD(&(ptr)->ref, -1)) { \
@@ -80,6 +75,7 @@ typedef enum prot_status {
 typedef struct message_ctx {
     uint8_t slice;  // 分片类型（slice_type）
     uint8_t client; // 1 表示客户端连接，0 表示服务端连接
+    uint8_t neverconn; // 仅 CLOSE：1=连接/会话从未建立，本消息只为唤醒等待方，分发层据此跳过 on_close 观察者
     subtype_t subtype; // 数据包解包类型（pack_type）或 请求类型（request_type）
     msg_type mtype;  // 消息类型
     int32_t erro;   // 错误码

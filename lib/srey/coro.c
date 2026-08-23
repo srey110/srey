@@ -81,7 +81,8 @@ typedef struct coro_ctx {
     uint64_t shrink_ms;          // 上次协程池收缩的时间戳(ms)，按 SHRINK_TIME 门控
     list_ctx fork_pending;       // 待起协程的 fork_item FIFO（slist，task-local 无界无锁）；每次 dispatch 末尾 drain 到空
     list_ctx fork_waited;        // 挂起的 fork_wait 父协程链表（slist，元素 fork_wait_ctx）；task 关闭时由 _coro_ctx_free 兜底 destroy
-    list_ctx serials;            // 活跃的命令串行化执行器链表（slist，元素 coro_serial_ctx）；只给 coro_dump 用，不参与释放
+    list_ctx serials;            // 活跃的命令串行化执行器链表（slist，元素 coro_serial_ctx）；供 coro_dump 遍历，
+                                 // 正常由 *_quit 释放，task 销毁时 _coro_ctx_free 兜底
     pool_ctx copool;             // 空闲协程对象池（元素 mco_coro *，含负载趋势）
     pool_ctx te_pool;            // 空闲 timeout_entry 对象池，容量 NODEPOOL_CAP，不参与周期性收缩
     pool_ctx coinfo_pool;        // 空闲 coro_info 节点池，容量 NODEPOOL_CAP，不参与周期性收缩
@@ -293,6 +294,13 @@ static void _coro_ctx_free(void *arg) {
         && NULL != coctx->arg) {
         coctx->_arg_free(coctx->arg);
     }
+    // 业务不显式 quit(靠进程退出回收)时在此兜底,须排在 _arg_free 之后:析构里的 *_quit / *_ping
+    // 头一件事就是读 X->serial。不必唤醒排队者:挂起的协程持着 task ref,ref 未归零进不来本函数
+    coro_serial_ctx *serial;
+    list_foreach_safe(&coctx->serials, sln, stmp) {
+        serial = UPCAST(sln, coro_serial_ctx, node);
+        FREE(serial);
+    }
     FREE(coctx);
 }
 // 从协程对象池取出可用协程，池为空时新建并首次 resume 到第一个 yield 点
@@ -406,8 +414,8 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
             _coro_mco_resume(coro, arg);
         }
     }
-    // erro!=ERR_OK 是 prots_net_connect 因连接失败补发的合成 CLOSE（见该函数），不触发 on_close 观察者
-    if (ERR_OK == arg->msg.erro) {
+    // neverconn 的合成 CLOSE 只为唤醒上面那批等待方，不触发 on_close 观察者（见 message_ctx 该字段）
+    if (0 == arg->msg.neverconn) {
         _coro_mco_create(arg);
     }
     /* resume 期间协程可能重新在同一 sess 上注册等待（追加到 cofind->waiters），
@@ -422,8 +430,8 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
     (void)sess;
     coro_ctx *coctx = task->arg;
     uint64_t now = timer_cur_ms(&coctx->timer);
-    /* 只有存在挂起协程且堆非空才需要检查 */
-    if (coctx->nyield > 0 && NULL != coctx->timeout_heap.root) {
+    /* 堆空即无到期条目;堆非空必有挂起协程(插堆与 ++nyield 之间没有 yield 点),不必再判 nyield */
+    if (NULL != coctx->timeout_heap.root) {
         task_dispatch_arg arg = { 0 };
         arg.task = task;
         arg.msg.mtype = MSG_TYPE_TIMEOUT;
@@ -466,8 +474,9 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
             LOG_INFO("task %s message type %d session %"PRIu64" timeout.",
                      _NAME_OR(task->name), coinfo->mtype, te->sess);
             pool_push(&coctx->coinfo_pool, coinfo, 0);
-            /* 摘除后链表为空且 !keep 时删除 mapco 条目，与 _coro_cosess_get 的清理时机保持一致 */
-            if (list_empty(&cosess->waiters) && !cosess->keep) {
+            /* 超时路径无视 keep：keep 是为活连接上的请求-响应循环省掉建删条目的开销，超时本就罕见；
+             * 留着的话，该 skid 的 CLOSE 已被消费过时条目再没有任何路径能删掉 */
+            if (list_empty(&cosess->waiters)) {
                 _coro_cosess_delete(coctx, te->sess);
             }
             arg.msg.sess = te->sess;
@@ -488,8 +497,9 @@ static void _coro_handle_startup(task_dispatch_arg *arg) {
 }
 static void _coro_handle_closing(task_dispatch_arg *arg) {
     _coro_mco_create(arg);
-    if (((coro_ctx *)arg->task->arg)->nyield > 0) {
-        LOG_WARN("task %s yield %d.", _NAME_OR(arg->task->name), ((coro_ctx *)arg->task->arg)->nyield);
+    coro_ctx *coctx = (coro_ctx *)arg->task->arg;
+    if (coctx->nyield > 0) {
+        LOG_WARN("task %s yield %d.", _NAME_OR(arg->task->name), coctx->nyield);
     }
 }
 static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
@@ -603,9 +613,14 @@ void *coro_request(task_ctx *dst, task_ctx *src,
 // 几十条
 static message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
                                    msg_type mtype, uint32_t ms, const char *tag) {
+    // 连接已 teardown 就别挂上去:等不到唤醒,只会挂满超时再对 INVALID_SOCK 调一次 ev_close、
+    // 打一条假的 timeout 日志。四个 coro_* 入口都经本函数,守卫收在这里一处
+    if (INVALID_SOCK == fd) {
+        return NULL;
+    }
     message_ctx *msg = _coro_wait(task, skid, mtype, ms);
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, fd, skid);
         LOG_WARN("task %s, %s timeout, skid %"PRIu64".", _NAME_OR(task->name), tag, skid);
         return NULL;
     }
@@ -628,10 +643,6 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
     return _wait_ssl_exchanged(task, fd, skid);
 }
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size) {
-    if (INVALID_SOCK == fd) {
-        *err = ERR_FAILED;
-        return NULL;
-    }
     message_ctx *msg = _coro_wait_msg(task, fd, skid, MSG_TYPE_HANDSHAKED,
                                       task_get_netread_timeout(task), "handshake");
     if (NULL == msg) {
@@ -643,9 +654,6 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
     return msg->data;
 }
 int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl_ctx *evssl) {
-    if (INVALID_SOCK == fd) {
-        return ERR_FAILED;
-    }
     message_ctx *msg = _coro_wait_msg(task, fd, skid, MSG_TYPE_CONNECT,
                                       task_get_connect_timeout(task), "connect");
     if (NULL == msg) {
@@ -672,11 +680,11 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
     }
     return coro_wait_connect(task, *fd, *skid, evssl);
 }
-void coro_close(task_ctx *task, SOCKET fd, uint64_t skid, int32_t immed) {
+void coro_close(task_ctx *task, SOCKET fd, uint64_t skid) {
     if (INVALID_SOCK == fd) {
         return;
     }
-    ev_close(&task->loader->netev, fd, skid, immed);
+    ev_close(&task->loader->netev, fd, skid);
     _coro_wait(task, skid, MSG_TYPE_CLOSE, task_get_netread_timeout(task));
 }
 // 等待指定连接的下一条接收消息，失败的处理与指针有效期见 _coro_wait_msg
@@ -706,9 +714,7 @@ void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size) {
     return msg->data;
 }
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end) {
-    if (INVALID_SOCK == fd) {
-        return NULL;
-    }
+    *end = 0;// 任何失败路径都不再往下写,统一在此归零,保证"返回 NULL 时 end 为 0"
     message_ctx *msg = _coro_wait_recved(task, fd, skid);
     if (NULL == msg) {
         return NULL;
@@ -846,24 +852,15 @@ int32_t coro_serial_enter(coro_serial_ctx *serial) {
     mco_coro *self = coctx->curco;
     if (NULL != serial->current && serial->current != self) {
         // ── 跨协程路径：锁被其他协程持有，需排队等待 ─────────────────────
-        // 1) pool_pop 取 waiter 节点，list_push_tail 入队保证 FIFO 顺序
-        // 2) mco_yield(self) 挂起当前协程，控制权交回 task 消息循环
-        // 3) 唤醒由前一个持锁协程在 coro_serial_leave 内完成：
-        //    - current=self → ref=1 → coctx->curco=self → mco_resume(self)
-        // 4) 所以本路径不重复 current/ref 赋值，唤醒方已代劳。
-        //    nd 则要等本协程再次 yield 或跑完、mco_resume 返回后，唤醒方才 pool_push 归还——
-        //    整个临界区内它既不在 waiters 也不在池里，只被唤醒方的栈局部变量持有
-        // waiter 节点走 serial_node_pool 复用，避免高频 MALLOC/FREE
+        // 本路径不自行赋 current/ref：唤醒方 coro_serial_leave 已代劳；nd 也由唤醒方在
+        // mco_resume 返回后归还池，临界区内它只被唤醒方的栈局部变量持有
         serial_node *nd = (serial_node *)pool_pop(&coctx->serial_node_pool, NULL, 0);
         nd->co = self;
         nd->aborted = 0;
         nd->since = timer_cur_ms(&coctx->timer);
         list_push_tail(&serial->waiters, &nd->node);
-        // 排在 waiters 里的协程同样是"挂起没退"的,与 _coro_wait / coro_fork_wait 同口径计入,
-        // 否则 task 关闭时 _coro_handle_closing 看到 nyield==0 就静默通过,操作者拿不到
-        // "还有协程卡在临界区队列上"这条线索。
-        // 不必再拆一个"可被超时扫描找到"的计数:_coro_timeout_monitor 还 AND 了 timeout_heap.root,
-        // 本协程不入堆,堆空时短路,堆非空时本就有真到期条目该扫
+        // 排队中的协程也算"挂起没退",与 _coro_wait / coro_fork_wait 同口径计入 nyield,
+        // 否则 task 关闭时看到 nyield==0 就静默通过,拿不到"有协程卡在临界区队列上"这条线索
         ++coctx->nyield;
         mco_result rtn = mco_yield(self);
         --coctx->nyield;
@@ -877,9 +874,8 @@ int32_t coro_serial_enter(coro_serial_ctx *serial) {
         // 唤醒后状态：serial->current==self, serial->ref==1；nd 尚未归还池(见上)
     } else {
         // ── 无锁或同协程嵌套路径 ─────────────────────────────────────
-        // current==NULL：占据锁，current=self, ref 从 0 → 1
-        // current==self：同协程嵌套调用（如 cs 内再 cs），仅 ref++ 不死锁,
-        //                 由 coro_serial_leave 内 ref 计数管理出口
+        // current==NULL：占锁,ref 0→1；current==self：同协程嵌套(如 cs 内再 cs),仅 ref++
+        // 不死锁,出口由 coro_serial_leave 的 ref 计数管理
         if (NULL == serial->current) {
             serial->current = self;
         }
@@ -913,8 +909,7 @@ void coro_serial_leave(coro_serial_ctx *serial) {
     serial->current = wco;
     serial->ref = 1;
     coro_ctx *coctx = (coro_ctx *)serial->task->arg;
-    // 本函数返回时控制权回到调用方那个协程,curco 恒为它自己(跨协程被唤醒时由唤醒方设回、
-    // 无锁路径没动过、临界区内各种 yield 返回时也已还原),所以还原的目标就是它,不必外传
+    // curco 的还原目标恒为调用方自己那个协程,不必外传
     // 下面这行之后不许再碰 serial:锁已交给 wco,它在自己的临界区里可以 coro_serial_free
     // （标记后由它那次 leave 释放）,回到这里时对象可能已经没了。此后只用 coctx / nxt / wco
     _coro_resume_reap(coctx, wco);
@@ -935,9 +930,6 @@ int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg
 }
 // 把一条挂起协程信息追加到 binary；C 协程无栈回溯,仅 sess / mtype / 挂起时长
 static void _coro_dump_one(binary_ctx *bw, uint64_t sess, const coro_info *ci, uint64_t now) {
-    if (NULL == ci->co) {
-        return;
-    }
     binary_set_va(bw, "sess=%" PRIu64 " mtype=%s age=%" PRIu64 "ms\n",
         sess, _message_str(ci->mtype), now - ci->since);
 }

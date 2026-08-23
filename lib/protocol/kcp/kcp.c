@@ -102,9 +102,9 @@ void _kcp_init(prot_emit *emit) {
     g_emit = emit;
 }
 // 向 kel->handle 所属 task 发一条 MSG_TYPE_CLOSE,排干所有挂在 kel->sess 上的等待协程(synsend)。
-// erro 传 ERR_FAILED 时为"会话未建立"的合成 CLOSE:仅用于清掉 keep 占位条目,两侧的 CLOSE
-// dispatch 都按 erro != ERR_OK 跳过 on_close 观察者(同 prots_net_connect 的连接失败补发)
-static void _kcp_notify_closed(ud_cxt *ud, kcp_element *kel, int32_t erro) {
+// neverconn=1 为"会话未建立"的合成 CLOSE:仅用于清掉 keep 占位条目,分发层据此跳过 on_close
+// 观察者(同 prots_net_connect 的连接失败补发)
+static void _kcp_notify_closed(ud_cxt *ud, kcp_element *kel, int32_t erro, int32_t neverconn) {
     void *target = g_emit->begin(ud->loader, kel->handle);
     if (NULL == target) {
         return;
@@ -115,6 +115,7 @@ static void _kcp_notify_closed(ud_cxt *ud, kcp_element *kel, int32_t erro) {
     msg.sk = kel->sk;
     msg.sess = kel->sess;
     msg.erro = erro;
+    msg.neverconn = (uint8_t)neverconn;
     g_emit->emit(target, &msg);
     g_emit->end(target);
 }
@@ -135,7 +136,7 @@ static void _kcp_notify_handshaked(ud_cxt *ud, kcp_element *kel, int32_t erro) {
 }
 static bool _kcp_notify_closed_iter(const void *item, void *udata) {
     kcp_element *kel = *(kcp_element *const *)item;
-    _kcp_notify_closed((ud_cxt *)udata, kel, ERR_OK);
+    _kcp_notify_closed((ud_cxt *)udata, kel, ERR_OK, 0);
     return true;
 }
 void _kcp_udfree(ud_cxt *ud) {
@@ -380,7 +381,7 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
         LOG_ERROR("kcp_start called on non-UDP_KCP fd %d, drop.", (int32_t)kel->sk.fd);
         _kcp_notify_handshaked(ud, kel, ERR_FAILED);
         // 会话未进表故此后无人补 CLOSE:合成一条清掉等待方 keep=1 的占位条目,免其无界累积
-        _kcp_notify_closed(ud, kel, ERR_FAILED);
+        _kcp_notify_closed(ud, kel, ERR_FAILED, 1);
         return 1;
     }
     kel->watcher = watcher;
@@ -405,7 +406,7 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     } else if (NULL != _kcp_map_get(ctx, kel->conv)) {
         LOG_WARN("kcp conv %u repeat, ignore.", kel->conv);
         _kcp_notify_handshaked(ud, kel, ERR_FAILED);
-        _kcp_notify_closed(ud, kel, ERR_FAILED);// 同上:合成 CLOSE 清占位
+        _kcp_notify_closed(ud, kel, ERR_FAILED, 1);// 同上:合成 CLOSE 清占位
         return 1;
     }
     _kcp_map_add(ctx, kel);
@@ -465,7 +466,7 @@ static int32_t _kcp_stop(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     if (NULL == kel) {
         return 0;
     }
-    _kcp_notify_closed(ud, kel, ERR_OK);
+    _kcp_notify_closed(ud, kel, ERR_OK, 0);
     _kcp_map_remove((kcp_ud_ctx *)ud->context, kel);
     _kcp_element_free(kel);
     return 0;

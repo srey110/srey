@@ -287,7 +287,7 @@ function ctx:_connect()
     -- 从此处往后失败需 close fd；用 sync_close 等复位完成再返回，避免旧连接异步 teardown 追上后清掉下一次 connect() 的新 fd
     local function _fail()
         local cfd, cskid = self.mongo:sock_id()-- 现取:对端已断时 sk.fd 已被 teardown 复位为 INVALID,sync_close 内 guard 直接返回不空等
-        srey.sync_close(cfd, cskid, 1)
+        srey.sync_close(cfd, cskid)
         return false
     end
     -- 解绑上一代事务会话，否则 pack_hello 及后续命令会带上旧的 lsid/txnNumber。
@@ -298,8 +298,10 @@ function ctx:_connect()
     if not mgopack then return _fail() end
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
     if self.user then
+        -- ev_ud_status 只在 fd 为 INVALID_SOCK 时失败,而 fd 上面已判过,这支实际不可达;
+        -- 留着是为了它哪天新增失败原因时不漏 fd,所以走 _fail() 而不是裸 return
         if not self.mongo:set_auth_status(fd, skid) then
-            return false --event 已关闭
+            return _fail()
         end
         -- 不走 _pack_noflag：清零要盖住"组包+发送+等握手"整段(SCRAM 多次往返)，不是只盖组包。
         -- 这段也抛不出来——pack_auth_first 收的 authmod 由 ctor 兜成 "SCRAM-SHA-256"
@@ -348,7 +350,7 @@ end
 ---@param flag integer ctx.FLAGS 枚举值
 function ctx:set_flag(flag)
     if ctx.FLAGS.MORETOCOME ~= flag then
-        WARN("mongo set_flag: flag %d not implemented by current mongo_set_flag (only MORETOCOME supported), ignored.", flag)
+        WARN("mongo set_flag: flag %s not implemented by current mongo_set_flag (only MORETOCOME supported), ignored.", tostring(flag))
         return
     end
     self.mongo:set_flag(flag)
