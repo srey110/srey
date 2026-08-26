@@ -343,12 +343,9 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
     pk->prot = prot;
-    pk->len = pos - 1;//pos 起始为1
-    if (pk->len < 0) {
-        BIT_SET(*status, PROT_ERROR);
-        FREE(pk);
-        return ERR_FAILED;
-    }
+    // pos 是 CRLF 的偏移。能进本函数的首字节必是 +-:_#,( 之一(见 redis_unpack 的 switch),
+    // 不可能是 '\r',故 pos >= 1、len 不可能为负
+    pk->len = pos - 1;
     switch (prot) {
     case RESP_STRING:
     case RESP_ERROR:

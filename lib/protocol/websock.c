@@ -46,6 +46,14 @@ typedef struct websock_secprot_pack {
     size_t splens;
     const char *secprot;
 }websock_secprot_pack;
+// 握手头部校验表项。表里每项都必须命中，缺一即握手不合法
+typedef struct ws_hscheck {
+    int32_t sign;      // 非 0：命中的这个 header 由 _websock_hscheck 回带给调用方
+    const char *key;   // 要查的头名
+    size_t klens;
+    const char *val;   // NULL：只查键存在，不比值
+    size_t vlens;
+}ws_hscheck;
 static _handshaked_push _hs_push; // 握手完成后的推送回调
 static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqtt") - 1, "mqtt"} };
 
@@ -161,58 +169,52 @@ static int32_t _websock_set_secextra_cb(struct watcher_ctx *watcher, struct sock
 int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val) {
     return ev_props(ev, fd, skid, _websock_set_secextra_cb, NULL, val, 0);
 }
+// 按表单趟扫描头部：每项命中一次即置位，全齐提前收工。
+// _http_check_keyval 走 buf_icompare，先比长度(O(1))，各键长度均不同，无需首字符 switch
+static http_header_ctx *_websock_hscheck(struct http_pack_ctx *hpack, const ws_hscheck *tbl, uint32_t n) {
+    http_header_ctx *head;
+    http_header_ctx *sign = NULL;
+    // 命中情况按位记在 hit 里:第 j 位对应 tbl[j]。all 是"全部命中"的掩码(低 n 位全 1),
+    // hit == all 即可收工。掩码是 uint32 而 1u << 32 是未定义行为,故表最多 31 项
+    ASSERTAB(n > 0 && n < 32, "handshake check table too large.");
+    uint32_t all = (1u << n) - 1;
+    uint32_t hit = 0;
+    uint32_t cnt = http_nheader(hpack);
+    uint32_t i, j;
+    for (i = 0; i < cnt && hit != all; i++) {
+        head = http_header_at(hpack, i);
+        for (j = 0; j < n; j++) {
+            if (0 != (hit & (1u << j))// 该项已经命中过,不再重复比
+                || ERR_OK != _http_check_keyval(head, tbl[j].key, tbl[j].klens, tbl[j].val, tbl[j].vlens)) {
+                continue;
+            }
+            hit |= (1u << j);// 记下第 j 项已命中
+            if (0 == tbl[j].sign) {
+                continue;
+            }
+            if (NULL != sign) {
+                LOG_WARN("websock handshake table: more than one sign entry, key %s.", tbl[j].key);
+                return NULL;
+            }
+            sign = head;
+        }
+    }
+    return hit == all ? sign : NULL;
+}
 // 服务端侧握手校验：验证 GET 请求中的 Connection/Upgrade/Sec-WebSocket-Version/Key 字段
 static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
+    static const ws_hscheck _svtbl[] = {
+        { 0, "connection", sizeof("connection") - 1, "upgrade", sizeof("upgrade") - 1 },
+        { 0, "upgrade", sizeof("upgrade") - 1, "websocket", sizeof("websocket") - 1 },
+        { 0, "sec-websocket-version", sizeof("sec-websocket-version") - 1, "13", sizeof("13") - 1 },
+        { 1, "sec-websocket-key", sizeof("sec-websocket-key") - 1, NULL, 0 }
+    };
     buf_ctx *status = http_status(hpack);
     if (NULL == status
         || !buf_icompare(&status[0], "get", sizeof("get") - 1)) {
         return NULL;
     }
-    http_header_ctx *head;
-    http_header_ctx *sign = NULL;
-    uint8_t conn = 0, upgrade = 0, version = 0;
-    uint32_t cnt = http_nheader(hpack);
-    for (uint32_t i = 0; i < cnt; i++) {
-        head = http_header_at(hpack, i);
-        /* buf_icompare 先做长度比较（O(1)），各键长度均不同，无需首字符 switch。 */
-        if (0 == conn
-            && ERR_OK == _http_check_keyval(head,
-                                            "connection", sizeof("connection") - 1,
-                                            "upgrade",   sizeof("upgrade") - 1)) {
-            conn = 1;
-        }
-        if (0 == upgrade
-            && ERR_OK == _http_check_keyval(head,
-                                            "upgrade",   sizeof("upgrade") - 1,
-                                            "websocket", sizeof("websocket") - 1)) {
-            upgrade = 1;
-        }
-        if (0 == version
-            && ERR_OK == _http_check_keyval(head,
-                                            "sec-websocket-version", sizeof("sec-websocket-version") - 1,
-                                            "13",                    sizeof("13") - 1)) {
-            version = 1;
-        }
-        if (NULL == sign
-            && ERR_OK == _http_check_keyval(head,
-                                            "sec-websocket-key", sizeof("sec-websocket-key") - 1,
-                                            NULL, 0)) {
-            sign = head;
-        }
-        if (0 != conn
-            && 0 != upgrade
-            && 0 != version
-            && NULL != sign) {
-            break;
-        }
-    }
-    if (0 == conn
-        || 0 == upgrade
-        || 0 == version
-        || NULL == sign) {
-        return NULL;
-    }
-    return sign;
+    return _websock_hscheck(hpack, _svtbl, (uint32_t)ARRAY_SIZE(_svtbl));
 }
 // 计算 WebSocket 握手签名 SHA1 哈希再 base64 编码
 static void _websock_sign(char *key, size_t klens, char bs64sha1[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
@@ -363,45 +365,15 @@ static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
 }
 // 客户端侧握手头部校验：验证 Connection/Upgrade/Sec-WebSocket-Accept 字段
 static http_header_ctx *_websock_client_checkhs(struct http_pack_ctx *hpack) {
+    static const ws_hscheck _cltbl[] = {
+        { 0, "connection", sizeof("connection") - 1, "upgrade", sizeof("upgrade") - 1 },
+        { 0, "upgrade", sizeof("upgrade") - 1, "websocket", sizeof("websocket") - 1 },
+        { 1, "sec-websocket-accept", sizeof("sec-websocket-accept") - 1, NULL, 0 }
+    };
     if (ERR_OK != _websock_handshake_clientckstatus(hpack)) {
         return NULL;
     }
-    http_header_ctx *head;
-    http_header_ctx *sign = NULL;
-    uint8_t conn = 0, upgrade = 0;
-    uint32_t cnt = http_nheader(hpack);
-    for (uint32_t i = 0; i < cnt; i++) {
-        head = http_header_at(hpack, i);
-        if (0 == conn
-            && ERR_OK == _http_check_keyval(head,
-                                            "connection", sizeof("connection") - 1,
-                                            "upgrade",   sizeof("upgrade") - 1)) {
-            conn = 1;
-        }
-        if (0 == upgrade
-            && ERR_OK == _http_check_keyval(head,
-                                            "upgrade",   sizeof("upgrade") - 1,
-                                            "websocket", sizeof("websocket") - 1)) {
-            upgrade = 1;
-        }
-        if (NULL == sign
-            && ERR_OK == _http_check_keyval(head,
-                                            "sec-websocket-accept", sizeof("sec-websocket-accept") - 1,
-                                            NULL, 0)) {
-            sign = head;
-        }
-        if (0 != conn
-            && 0 != upgrade
-            && NULL != sign) {
-            break;
-        }
-    }
-    if (0 == conn
-        || 0 == upgrade
-        || NULL == sign) {
-        return NULL;
-    }
-    return sign;
+    return _websock_hscheck(hpack, _cltbl, (uint32_t)ARRAY_SIZE(_cltbl));
 }
 // 检查是否包含子协议
 static int32_t _websock_have_secprot(buf_ctx *segs, int32_t cnt, const char *secprot, size_t splens) {

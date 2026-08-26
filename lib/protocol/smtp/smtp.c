@@ -266,6 +266,9 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     smtp->authtype = _smtp_get_authtype(buf);
     if (ERR_FAILED == smtp->authtype) {
         BIT_SET(*status, PROT_ERROR);
+        // 交整份 250 应答而不是首行:失败原因是"能力列表里没有可用的 AUTH",
+        // 而首行只是问候行,拿它当原因反而误导。取原文要在 drain 之前
+        _smtp_push_errline(fd, skid, ud, buf, total - (int32_t)CRLF_SIZE);
         return;
     }
     buffer_drain(buf, (size_t)total);
@@ -381,8 +384,7 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         return;
     }
     //找首个 CRLF 而非末尾 CRLF，支持流水线场景下首条已完整即可消费
-    int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
-    if (ERR_FAILED == crlf) {
+    if (ERR_FAILED == buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE)) {
         if (PACK_TOO_LONG(blens)) {
             BIT_SET(*status, PROT_ERROR);
             return;

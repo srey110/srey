@@ -46,6 +46,7 @@ void prots_init(prot_emit *emit) {
     _kcp_init(&g_emit);
 }
 void prots_free(void) {
+    ZERO(&g_emit, sizeof(g_emit));
 }
 void prots_pkfree(pack_type pktype, void *data) {
     if (NULL == data) {
@@ -187,7 +188,8 @@ static void prots_closed(ud_cxt *ud) {
     case PACK_UDP_KCP:
         _kcp_udfree(ud);
         break;
-    // 关连接时无需额外动作
+    // 关连接时无需额外动作。HTTP 有一件——"关闭界定 body"要补末片——但那要在本函数清状态
+    // 之前做，故留在 _prots_emit_close_tail，不在这里
     case PACK_NONE:
     case PACK_DNS:
     case PACK_HTTP:
@@ -272,16 +274,22 @@ static void *_prots_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     return unpack;
 }
 int32_t prots_may_resume(pack_type pktype, void *data) {
+    if (NULL == data) {
+        return ERR_OK;
+    }
     switch (pktype) {
     case PACK_PGSQL:
         return _pgsql_may_resume(data);
     case PACK_MQTT:
         return _mqtt_may_resume(data);
+    // WS 承载子协议时上层拿到的 pktype 恒为 PACK_WEBSOCK，子协议自己的判定要由这里转一层；
+    // 不带子协议时 secprot 为 PACK_NONE，落下面那组默认档
+    case PACK_WEBSOCK:
+        return prots_may_resume((pack_type)websock_secprot(data), websock_secpack(data));
     // 收到包即可唤醒等待者，无附加判定
     case PACK_NONE:
     case PACK_DNS:
     case PACK_HTTP:
-    case PACK_WEBSOCK:
     case PACK_SMTP:
     case PACK_CUSTZ_FIXED:
     case PACK_CUSTZ_FLAG:
@@ -364,9 +372,9 @@ int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     g_emit.end(target);
     return rtn;
 }
-// 构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target
+// 构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target。erro 取 close_type
 static void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t client,
-                              int32_t erro, int32_t neverconn, ud_cxt *ud) {
+                              int32_t erro, ud_cxt *ud) {
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CLOSE;
     msg.subtype = ud->pktype;
@@ -374,7 +382,6 @@ static void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t cl
     msg.sk.skid = skid;
     msg.client = client;
     msg.erro = erro;
-    msg.neverconn = (uint8_t)neverconn;
     msg.sess = skid;// 始终尝试唤醒
     prots_closed(ud);
     g_emit.emit(target, &msg);
@@ -401,12 +408,23 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
     msg.sess = ud->sess;
     g_emit.emit(target, &msg);
     if (emitclose) {
-        // CONNECT 只发生在客户端发起连接场景，client 恒为 1；neverconn 标记这是因连接失败补发的
-        // 合成 CLOSE，分发层据此跳过 on_close 观察者
-        _prots_emit_close(target, fd, skid, 1, err, 1, ud);
+        // CONNECT 只发生在客户端发起连接场景，client 恒为 1；NEVERCONN 标记这是因连接失败补发的
+        // 合成 CLOSE，分发层据此跳过 on_close 观察者。失败原因已在上面那条 CONNECT 的 erro 里
+        _prots_emit_close(target, fd, skid, 1, CLOSE_TYPE_NEVERCONN, ud);
     }
     g_emit.end(target);
     return err;
+}
+// RECV 消息里随连接固定的那几项。两个产出 RECV 的地方共用：逐包解出的 prots_net_recv，
+// 与关闭时补末片的 _prots_emit_close_tail。data / size / slice / sess 由各自填——
+// sess 在 prots_net_recv 那边是每包重读的，不能提到这里来
+static void _prots_recv_msg_init(message_ctx *msg, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+    ZERO(msg, sizeof(*msg));
+    msg->mtype = MSG_TYPE_RECV;
+    msg->subtype = ud->pktype;
+    msg->sk.fd = fd;
+    msg->sk.skid = skid;
+    msg->client = client;
 }
 void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
@@ -414,12 +432,8 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
         ev_close(ev, fd, skid);
         return;
     }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_RECV;
-    msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    msg.client = client;
+    message_ctx msg;
+    _prots_recv_msg_init(&msg, fd, skid, client, ud);
     void *data, *next;
     int32_t status;
     size_t esize;
@@ -496,13 +510,54 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cl
     g_emit.end(target);
     return rtn;
 }
-void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+// 关闭前的协议收尾：HTTP 那种"body 由连接关闭界定"的响应，末片要靠这里补，否则正常收完的
+// 响应也会被业务当成失败。必须排在 _prots_emit_close 之前——CLOSE 带 sess 会唤醒等待方，
+// 先发它的话末片再来就没人收了。
+// 只有对端有序结束才补：这类 body 没有长度可校验，连接被截断时补末片就是把半条 body 报成完整的
+static void _prots_emit_close_tail(void *target, SOCKET fd, uint64_t skid, int32_t client,
+                                   int32_t erro, ud_cxt *ud) {
+    if (CLOSE_TYPE_ORDERLY != erro) {
+        return;
+    }
+    // 写成 switch 而不是 if：本文件按 pktype 分派的地方一律靠 -Wswitch 逼新协议表态，见 prots_pkfree
+    switch (ud->pktype) {
+    case PACK_HTTP:
+        break;
+    // 其余协议没有"末片要等关闭才补"这回事
+    case PACK_NONE:
+    case PACK_DNS:
+    case PACK_WEBSOCK:
+    case PACK_MQTT:
+    case PACK_SMTP:
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+    case PACK_REDIS:
+    case PACK_MYSQL:
+    case PACK_PGSQL:
+    case PACK_MONGO:
+    case PACK_UDP_KCP:
+        return;
+    }
+    struct http_pack_ctx *pack = _http_on_close(ud);
+    if (NULL == pack) {
+        return;
+    }
+    message_ctx msg;
+    _prots_recv_msg_init(&msg, fd, skid, client, ud);
+    msg.sess = ud->sess;
+    msg.slice = PROT_SLICE_END;
+    msg.data = pack;// size 留 0：末片是空载荷
+    g_emit.emit(target, &msg);
+}
+void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, int32_t erro, ud_cxt *ud) {
     (void)ev;
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return;
     }
-    _prots_emit_close(target, fd, skid, client, ERR_OK, 0, ud);
+    _prots_emit_close_tail(target, fd, skid, client, erro, ud);
+    _prots_emit_close(target, fd, skid, client, erro, ud);
     g_emit.end(target);
 }
 static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {

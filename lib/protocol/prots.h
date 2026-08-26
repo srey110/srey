@@ -10,7 +10,9 @@
 /// <param name="emit">消息汇实现（begin/emit/end），prots 内部按值保存</param>
 void prots_init(prot_emit *emit);
 /// <summary>
-/// 释放协议模块全局资源
+/// 释放协议模块全局资源，并清掉 prots_init 注册的消息汇。
+/// 清掉之后再触发任何网络事件回调都会当场崩——那本就是用已拆除 loader 的错，别让它静默跑下去。
+/// 幂等，可重复调用；要恢复只能重新 prots_init
 /// </summary>
 void prots_free(void);
 /// <summary>
@@ -38,11 +40,12 @@ void prots_hsfree(pack_type pktype, void *data);
 void prots_udfree(void *arg);
 /// <summary>
 /// 询问已解包的封包能否唤醒等待该 session 的协程。
-/// 目前只有 pgsql 的 PGPACK_NOTIFICATION 返非 OK——它是 LISTEN 的异步通知,不属于任何命令的响应,
-/// 框架据此改新建协程走 recv 回调,而不是按队头匹配挤掉真正的等待者
+/// 服务端主动推来的包不属于任何命令的响应,返非 OK 让框架改新建协程走 recv 回调,而不是按队头
+/// 匹配挤掉真正的等待者:pgsql 的 PGPACK_NOTIFICATION、mqtt 的 PUBLISH/PUBREL/DISCONNECT。
+/// WS 承载子协议时按其子协议判定
 /// </summary>
 /// <param name="pktype">协议包类型</param>
-/// <param name="data">已解析的包数据</param>
+/// <param name="data">已解析的包数据;NULL 视为无包可拦</param>
 /// <returns>ERR_OK=可唤醒等待者;其他值=不可,由调用方改新建协程处理</returns>
 int32_t prots_may_resume(pack_type pktype, void *data);
 /// <summary>
@@ -73,7 +76,9 @@ void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t
 /// <summary>SSL 握手完成：完成协议 SSL 初始化并推送 MSG_TYPE_SSLEXCHANGED</summary>
 int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl);
 /// <summary>连接关闭：通知协议层并推送 MSG_TYPE_CLOSE</summary>
-void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud);
+/// <param name="erro">close_type，连接是怎么断的。仅 CLOSE_TYPE_ORDERLY 才认为
+/// "body 由连接关闭界定"的那类消息收完了，其余一律不补末片</param>
+void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, int32_t erro, ud_cxt *ud);
 /// <summary>UDP 接收：打包地址+数据并推送 MSG_TYPE_RECVFROM</summary>
 void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 

@@ -112,9 +112,9 @@ static void _task_handle_send(task_ctx *task, message_ctx *msg) {
 }
 // 处理连接关闭消息
 static void _task_handle_close(task_ctx *task, message_ctx *msg) {
-    // neverconn 的合成 CLOSE(prots_net_connect 的 TCP 失败、_kcp_start 的 conv 冲突)只为唤醒等待方,
-    // 不代表真实连接关闭;_net_close_cb 签名里没有它,业务无从分辨,故在此过滤
-    if (0 != msg->neverconn) {
+    // NEVERCONN 的合成 CLOSE(prots_net_connect 的 TCP 失败、_kcp_start 的 conv 冲突)只为唤醒等待方,
+    // 不代表真实连接关闭;_net_close_cb 签名里没有 erro,业务无从分辨,故在此过滤
+    if (CLOSE_TYPE_NEVERCONN == msg->erro) {
         return;
     }
     if (NULL != task->_net_close) {

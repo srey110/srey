@@ -37,6 +37,13 @@ task_ctx *coro_task_register(loader_ctx *loader, const char *name, uint32_t quec
 /// <returns>用户参数</returns>
 void *coro_get_arg(task_ctx *task);
 /// <summary>
+/// 当前是否正跑在本 task 的协程内。coro_send / coro_close / coro_sleep 这些会挂起的接口只能
+/// 在协程内调，非协程调用会撞断言；调用路径不确定时(如析构里收尾)先问一次再决定发不发
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <returns>1 在协程内；0 不在，或该 task 不是协程类型</returns>
+int32_t coro_incoro(task_ctx *task);
+/// <summary>
 /// 将 UDP socket 的 session 与 skid 绑定，使收到的数据包能路由到当前协程
 /// </summary>
 /// <param name="task">task_ctx</param>
@@ -75,7 +82,7 @@ void *coro_request(task_ctx *dst, task_ctx *src,
 /// <param name="skid">链接ID</param>
 /// <param name="client">1 作为客户端 0 作为服务端</param>
 /// <param name="evssl">evssl_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；fd 为 INVALID_SOCK 时不挂起,直接按失败返回(同 coro_recv)</returns>
 int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
                           int32_t client, struct evssl_ctx *evssl);
 /// <summary>
@@ -87,7 +94,8 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
 /// <param name="err">错误码；必须非 NULL，函数内裸解引用</param>
 /// <param name="size">返回数据长度；可传 NULL 不写</param>
 /// <returns>握手数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
+///   下次 resume 时框架自动释放，需要保留请自行拷贝。
+///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL(同 coro_recv)</returns>
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size);
 /// <summary>
 /// 等待 task_connect 已发起的 CONNECT 完成；超时由本函数关闭 fd，其余失败时 fd 已由事件/协议层关闭；
@@ -97,7 +105,7 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
 /// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
 /// <param name="evssl">非 NULL 时额外等待 SSL 握手；须是 connect 时已同步触发握手的 evssl，协议层后续才发起握手的场景不适用</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；fd 为 INVALID_SOCK 时不挂起,直接按失败返回(同 coro_recv)</returns>
 int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl_ctx *evssl);
 /// <summary>
 /// 链接

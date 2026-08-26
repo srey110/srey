@@ -195,7 +195,7 @@ static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZ
 }
 // 将连接属性（application、os 等）写入二进制缓冲区
 static void _mysql_connect_attrs(binary_ctx *battrs) {
-    static connect_attr attrs[] = {
+    static const connect_attr attrs[] = {
         { "application", "srey" },
         { "os", OS_NAME }
     };
@@ -501,9 +501,8 @@ static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, 
         return ERR_FAILED;
     }
     //RSA_size(rsa) - 11 for the PKCS #1  RSA_size(rsa) - 42 for RSA_PKCS1_OAEP_PADDING
-    // enlens 是服务端公钥的 RSA_size，由对端单方面决定。42 是 OAEP 的填充开销，密钥小到
-    // 正好 42 字节时 block_size 为 0，下面的 i += block_size 就在原地打转、每轮还往 bwriter
-    // 多塞 enlens 字节，整条网络线程连同它上面的其他连接一起卡死到 OOM；再小则下溢成天文数字
+    // enlens 由对端单方面决定，42 是 OAEP 填充开销：正好 42 时 block_size 为 0，下面的
+    // i += block_size 原地打转并每轮往 bwriter 多塞 enlens 字节，拖着整条网络线程 OOM
     if (enlens <= 42) {
         EVP_PKEY_CTX_free(evpctx);
         return ERR_FAILED;

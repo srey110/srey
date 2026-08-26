@@ -343,6 +343,9 @@ void evssl_shutdown(SSL *ssl, SOCKET fd) {
     }
     shutdown(fd, SHUT_RD);
 }
+int32_t evssl_recvd_shutdown(SSL *ssl) {
+    return (0 != (SSL_RECEIVED_SHUTDOWN & SSL_get_shutdown(ssl))) ? 1 : 0;
+}
 int32_t evssl_version(SSL *ssl) {
     return SSL_version(ssl);
 }

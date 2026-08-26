@@ -57,6 +57,7 @@ typedef struct sc_ctx {
     array_ctx pub_shared;            // publish 复用:共享投递目标(sc_shared_dst)
     array_ctx pub_prune;             // publish 复用:死订阅待清理(name_t)
     array_ctx pub_empty;             // publish 复用:空节点路径(char*)
+    array_ctx pub_empty_groups;      // publish 复用:节点内待删的空共享组名(char*)
 }sc_ctx;
 // path_match 的 visit:收集订阅者
 // 共享投递目标:挑中的成员 + 其所属组名 + 命中的订阅 pattern。
@@ -79,7 +80,7 @@ typedef struct sc_collect_ctx {
     array_ctx *shared_dsts;       // 共享组挑选结果(元素 sc_shared_dst,已 grab,投递后 ungrab)
     const char *cur_pattern;      // 当前 visit 到的节点 pattern,供 _sc_sg_pick_iter 取用
 }sc_collect_ctx;
-// QUERY_RETAINED 遍历 retained_index 的上下文:pattern 过滤,匹配项拼进 bw,超 BURST_MAX 截断
+// QUERY_RETAINED 遍历 retained_index 的上下文:pattern 过滤,匹配项拼进 bw,超条数/字节上限即截断
 typedef struct sc_qr_ctx {
     int32_t pushed;            // 已写入条数(< SC_QUERY_RETAINED_BURST_MAX)
     int32_t truncated;         // 超上限截断标志
@@ -92,6 +93,7 @@ typedef struct sc_qr_ctx {
 typedef struct sc_prune_ctx {
     array_ctx *prune;        // 死订阅 name 列表
     array_ctx *empty_nodes;  // 删后变空节点的 pattern(char*),待 path_remove
+    array_ctx *empty_groups; // 当前节点内待删的空组名(char*),每节点复用同一块
 }sc_prune_ctx;
 // _sc_prune_visit 内层(shared_groups scan):从单个共享组移除死成员,组变空收集 group 名待删
 typedef struct sc_sg_prune_ctx {
@@ -282,7 +284,7 @@ int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out) {
     }
     out->meta = out->mlen > 0 ? binary_get_binary(&br, out->mlen) : NULL;
     out->glen = (size_t)binary_get_uinteger(&br, 2, 0);
-    // group(glen) + tlen(u16)
+    // group(glen) + ptlen(u16)
     if (!binary_have(&br, out->glen + 2)) {
         return ERR_FAILED;
     }
@@ -396,7 +398,7 @@ static int32_t _sc_normal_subs_remove(array_ctx *subs, name_t src) {
     return 1;
 }
 // handler:SUB(shared=0)/ SUB_SHARED(shared=1)。shared 时多解析 group;
-// 路径含通配由 path_get_or_create 内部 WILDCARD 校验拒绝
+// 订阅模式允许含通配(+ / #),故走 PATH_KIND_WILDCARD 校验的 path_get + path_insert
 static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br, int32_t shared) {
     subtype_t reqtype = shared ? REQ_SC_SUB_SHARED : REQ_SC_SUB;
     char topic[SC_TOPIC_MAX + 1];
@@ -707,23 +709,22 @@ static void _sc_prune_visit(void *payload, void *udata) {
     }
     // 共享组:移除 prune 中的死成员,删空组,shared_groups 空则释放
     if (NULL != d->shared_groups) {
-        array_ctx empty_groups;
-        array_init(&empty_groups, sizeof(char *), 0);
+        array_ctx *empty_groups = pc->empty_groups;
+        array_clear(empty_groups);
         sc_sg_prune_ctx sp;
         sp.prune = pc->prune;
-        sp.empty_groups = &empty_groups;
+        sp.empty_groups = empty_groups;
         hashmap_scan(d->shared_groups, _sc_sg_prune_member_iter, &sp);
-        char **gnames = (char **)empty_groups.ptr;
+        char **gnames = (char **)empty_groups->ptr;
         sc_shared_group qg;
         sc_shared_group *removed;
-        for (i = 0; i < empty_groups.size; i++) {
+        for (i = 0; i < empty_groups->size; i++) {
             qg.group = gnames[i];
             removed = (sc_shared_group *)hashmap_delete(d->shared_groups, &qg);
             if (NULL != removed) {
                 _sc_sg_free(removed);
             }
         }
-        array_free(&empty_groups);
         if (0 == hashmap_count(d->shared_groups)) {
             hashmap_free(d->shared_groups);
             d->shared_groups = NULL;
@@ -807,7 +808,9 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
             task_ungrab(normal_dsts[k]);
         }
     }
-    // 共享投递:每个挑中成员按各自 group 名单独打包单发,接收方据 group 精确路由
+    // 共享投递:每个挑中成员按各自 group 名单独打包单发,接收方据 group 精确路由。
+    // 恒单目标故用 task_call 不用 task_multi_call:后者的价值是 N 目标共享一份 buffer,
+    // N=1 时只剩白付的 shared_data 分配与两次原子操作
     sc_shared_dst *sds = (sc_shared_dst *)shared_dsts->ptr;
     size_t dsize = 0;
     char *dbuf;
@@ -816,23 +819,19 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
                                 sds[i].group, (uint16_t)strlen(sds[i].group),
                                 sds[i].pattern, sds[i].ptlen,
                                 topic, payload, plen, &dsize);
-        task_multi_call(&sds[i].task, 1, REQ_SC_DELIVER, dbuf, dsize, 0);
+        task_call(sds[i].task, REQ_SC_DELIVER, dbuf, dsize, 0);
         task_ungrab(sds[i].task);
     }
-    // 懒清理:死 normal 订阅 + collect 清空的共享组 + 随之变空的节点。死订阅/空组挂在命中的通配
-    // /字面节点上,用 path_match 遍历所有命中节点统一处理;变空节点在返回后 path_remove。
-    // 必须排在共享投递之后:sds[i].group / sds[i].pattern 分别指向 sc_shared_group.group 与
-    // sc_topic_data.pattern,而这里的 _sc_sg_free / _sc_topic_data_free 正是释放它们的地方。
-    // 放在前面的话有一条真实路径能踩中——同一个 task 既是某组唯一活成员又是普通订阅者时,
-    // collect 的 task_grab 成功(记进 sds)、resolve 的第二次 task_grab 却因它正在关闭而失败,
-    // 于是被当死订阅 prune 掉、组空、节点被判空移除,投递循环再去读那两个已释放的指针。
-    // 清理本就是懒的,推迟到投递之后无任何副作用
+    // 懒清理:死 normal 订阅 + 空共享组 + 随之变空的节点(节点在本次 path_match 返回后才 remove)。
+    // 必须排在共享投递之后:sds[i].group / pattern 指向的正是 _sc_sg_free / _sc_topic_data_free
+    // 要释放的那两块,提前清就是让上面的投递循环读已释放的指针
     if (prune_normal->size > 0 || 0 != cc.shared_emptied) {
         array_ctx *empty_nodes = &ctx->pub_empty;
         array_clear(empty_nodes);
         sc_prune_ctx pc;
         pc.prune = prune_normal;
         pc.empty_nodes = empty_nodes;
+        pc.empty_groups = &ctx->pub_empty_groups;
         path_match(ctx->topics, topic, _sc_prune_visit, &pc);
         char **paths = (char **)empty_nodes->ptr;
         void *removed;
@@ -846,7 +845,7 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
 }
 // handler:PUB(retained=0)/ PUB_RETAINED(retained=1)。
 // retained 路径:先 _sc_update_retained 更新槽位;plen=0 时清空后直接返,不 deliver。
-// deliver 路径:_sc_publish_deliver 收集订阅者 + task_multi_call 投递
+// deliver 路径:_sc_publish_deliver 收集订阅者后投递(普通订阅群发 task_multi_call,共享组逐个 task_call)
 static void _sc_handle_pub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br, int32_t retained) {
     subtype_t reqtype = retained ? REQ_SC_PUB_RETAINED : REQ_SC_PUB;
     char topic[SC_TOPIC_MAX + 1];
@@ -958,10 +957,12 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
     _svpub_respond(ctx->loader, src, REQ_SC_SET_META, sess, ERR_OK);
 }
 // hashmap_iter 回调(retained_index):对匹配 pattern 的每条 retained 写入 wire buf,
-// 达到 SC_QUERY_RETAINED_BURST_MAX 后 truncated=1 + 返 false 终止 scan
+// 条数或字节数达上限后 truncated=1 + 返 false 终止 scan。
+// 字节判定放在写入之前,故最多超出一条的体积(单条 retained 上限 SC_RETAINED_MAX_SIZE)
 static bool _sc_qr_iter(const void *item, void *udata) {
     sc_qr_ctx *c = (sc_qr_ctx *)udata;
-    if (c->pushed >= SC_QUERY_RETAINED_BURST_MAX) {
+    if (c->pushed >= SC_QUERY_RETAINED_BURST_MAX
+        || c->bw->offset >= SC_QUERY_RETAINED_BURST_BYTES) {
         c->truncated = 1;
         return false;
     }
@@ -1021,7 +1022,8 @@ static void _sc_handle_query_retained(sc_ctx *ctx, name_t src, uint64_t sess, bi
     qc.truncated = 0;
     hashmap_scan(ctx->retained_index, _sc_qr_iter, &qc);
     if (qc.truncated) {
-        LOG_WARN("query_retained pattern '%s' truncated at %d entries", pattern, qc.pushed);
+        LOG_WARN("query_retained pattern '%s' truncated at %d entries, %zu bytes",
+                 pattern, qc.pushed, bw.offset);
     }
     _sc_grab_respond(ctx, src, sess, REQ_SC_QUERY_RETAINED, &bw);
 }
@@ -1167,6 +1169,7 @@ static void _sc_free(void *arg) {
     array_free(&ctx->pub_shared);
     array_free(&ctx->pub_prune);
     array_free(&ctx->pub_empty);
+    array_free(&ctx->pub_empty_groups);
     FREE(ctx->pub_normal);
     FREE(ctx);
 }
@@ -1203,6 +1206,7 @@ int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules) 
     array_init(&ctx->pub_shared, sizeof(sc_shared_dst), 0);
     array_init(&ctx->pub_prune, sizeof(name_t), 0);
     array_init(&ctx->pub_empty, sizeof(char *), 0);
+    array_init(&ctx->pub_empty_groups, sizeof(char *), 0);
     task_ctx *task = task_new(loader, name, 4 * ONEK, NULL, _sc_free, ctx);
     task_requested(task, _sc_requested);
     if (ERR_OK != task_register(task, NULL, NULL)) {

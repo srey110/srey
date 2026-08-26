@@ -175,7 +175,7 @@ void buffer_commit_get(buffer_ctx *ctx, size_t lens);
 /// <param name="arg">透传给 _readv 的参数。非 NULL 表示这不是裸 socket 读（调用方在 _readv 里
 /// 另有一层缓冲，如 SSL），AIX 上那道 readv 早退会因此不生效——早退只对"未读数据留在内核
 /// socket buffer 里、下一次可读事件还会来"成立</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；其余原样透传 _readv 最后一次的返回码，调用方按自己的约定解读</returns>
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg);
 

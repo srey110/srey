@@ -153,13 +153,14 @@ int32_t _uev_check_skid(sock_ctx *skctx, const uint64_t skid) {
 // 调用连接关闭回调
 static inline void _usk_call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.c_cb) {
-        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->ud);
+        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status),
+                      _evpub_close_type(tcp->status), &tcp->ud);
     }
 }
-// 调用UDP关闭回调
+// 调用UDP关闭回调。UDP 无 FIN 可言，STATUS_PEER_* 永不置位，close_type 恒为 LOCAL
 static inline void _usk_call_udp_close_cb(ev_ctx *ev, udp_ctx *udp) {
     if (NULL != udp->cbs.c_cb) {
-        udp->cbs.c_cb(ev, udp->sock.fd, udp->skid, 0, &udp->ud);
+        udp->cbs.c_cb(ev, udp->sock.fd, udp->skid, 0, _evpub_close_type(udp->status), &udp->ud);
     }
 }
 static inline int32_t _usk_keep_event(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
@@ -170,7 +171,6 @@ static inline int32_t _usk_keep_event(watcher_ctx *watcher, sock_ctx *skctx, int
 #endif
     return _uev_add_event(watcher, skctx->fd, &skctx->events, ev, skctx);
 }
-// 关闭TCP连接：触发关闭回调，从hashmap移除，入隔离队列暂存 QTN_MS 后归 pool
 // 把 socket 从事件循环摘净：drop_changes →（MANUAL_REMOVE 下）del_event → sockel_remove →
 // CLOSE_SOCK → 清 ev_cb。drop 必须排在 del 之前：devpoll 下 del 只是把 POLLREMOVE 排进 changes
 // 等下一轮提交，而 drop 按 fd 无差别过滤，顺序反了会把它一起丢掉、fd 没摘出 /dev/poll 就被 close。
@@ -185,6 +185,7 @@ static inline void _usk_detach(watcher_ctx *watcher, sock_ctx *skctx) {
     CLOSE_SOCK(skctx->fd);
     skctx->ev_cb = NULL;
 }
+// 关闭 TCP 连接：触发关闭回调 → 摘出事件循环 → 释放 ud → 入隔离队列暂存 QTN_MS 后归 pool
 static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     _usk_call_close_cb(watcher->ev, tcp);
     _usk_detach(watcher, &tcp->sock);
@@ -209,11 +210,7 @@ void _uev_disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
         if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
             return;
         }
-#if WITH_SSL
-        _evpub_close_flush_tcp(tcp->sock.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, tcp->ssl);
-#else
-        _evpub_close_flush_tcp(tcp->sock.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, NULL);
-#endif
+        _evpub_close_flush_tcp(tcp->sock.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, TCP_SSL(tcp));
         BIT_SET(tcp->status, STATUS_ERROR);
         _uev_sk_shutdown(skctx);
         _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
@@ -250,11 +247,7 @@ static inline int32_t _usk_call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
 // 调用SSL握手完成回调，返回值非ERR_OK则断开连接
 static inline int32_t _usk_call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.exch_cb) {
-#if WITH_SSL
-        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->ud, tcp->ssl);
-#else
-        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->ud, NULL);
-#endif
+        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, SOCK_IS_CLIENT(tcp->status), &tcp->ud, TCP_SSL(tcp));
     }
     return ERR_OK;
 }
@@ -336,21 +329,20 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
 // 从socket读取数据到接收缓冲区并触发recv回调，MANUAL_ADD时需重新注册读事件
 static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nread;
+    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, TCP_SSL(tcp));
 #if WITH_SSL
-    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, tcp->ssl);
     if (ERR_OK == rtn
         && NULL != tcp->ssl
         && SSL_want_write(tcp->ssl)) {// tls1.3 KeyUpdate探测
         BIT_SET(tcp->status, STATUS_KEYUPDATE_WRITE);
         rtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
     }
-#else
-    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, NULL);
 #endif
     _usk_call_recv_cb(watcher->ev, tcp, nread);
     if (ERR_OK == rtn) {
         return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
     }
+    _evpub_mark_close(&tcp->status, rtn, TCP_SSL(tcp));
     return ERR_FAILED;
 }
 // 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件。
@@ -358,14 +350,11 @@ static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
 // _uev_add_bufs_send 会早退，请求-响应型协议下就再等不到读事件、连接卡死。
 static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nsend;
-#if WITH_SSL
-    int32_t rtn = _evpub_sock_send(tcp->sock.fd, &tcp->buf_s, &nsend, tcp->ssl);
-#else
-    int32_t rtn = _evpub_sock_send(tcp->sock.fd, &tcp->buf_s, &nsend, NULL);
-#endif
+    int32_t rtn = _evpub_sock_send(tcp->sock.fd, &tcp->buf_s, &nsend, TCP_SSL(tcp));
     tcp->wb_size -= nsend;
     _usk_call_send_cb(watcher->ev, tcp, nsend);
     if (ERR_OK != rtn) {
+        _evpub_mark_close(&tcp->status, ERR_FAILED, TCP_SSL(tcp));
         return rtn;
     }
     uint32_t cnt = queue_size(&tcp->buf_s);
@@ -561,6 +550,11 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev
         return;
     }
     BIT_SET(tcp->status, STATUS_ESTABLISHED);
+    if (ERR_OK != _evpub_tcp_keepalive(tcp->sock.fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        _usk_on_connect_cb_err(watcher, tcp);
+        return;
+    }
 #if WITH_SSL
     if (NULL != tcp->evssl) {// 默认启用ssl，初始化
         tcp->ssl = evssl_setfd(tcp->evssl, tcp->sock.fd);
@@ -721,7 +715,7 @@ static int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher。
 // 末尾重挂 READ 失败时这条监听 socket 从此收不到事件，只能弃掉：cbs_ctx 里没有"监听失效"
 // 这类回调，通知不到业务，故把后果写进日志——SO_REUSEPORT 下每个 watcher 一条，掉一条只是
-// 少一份 accept 容量，端口照常可连，不打出来没人会发现。清 ev_cb 的理由同 _usk_close_tcp
+// 少一份 accept 容量，端口照常可连，不打出来没人会发现。清 ev_cb 的理由见 _usk_detach
 static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
@@ -736,7 +730,8 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
             }
             break;
         }
-        if (ERR_OK != _evpub_tcp_sockopts(fd)) {
+        if (ERR_OK != _evpub_tcp_sockopts(fd)
+            || ERR_OK != _evpub_tcp_keepalive(fd)) {
             CLOSE_SOCK(fd);
             continue;
         }

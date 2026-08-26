@@ -15,8 +15,7 @@
 // *size 显式置 0：调用方按"返回非 NULL 才读 size"约定，早退路径不能留未初始化值
 // 两道拒绝分开报:一条是文档超上限,一条是 BSON 结构不合法(判据见 bson_cat),合成一条会互相误报
 #define MONGO_PACK_CAT(doc, lens) do { \
-        if ((lens) > MONGO_MAX_PACK_SIZE) { \
-            LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_MAX_PACK_SIZE, (size_t)(lens)); \
+        if (0 != _mongo_cap_toolong((size_t)(lens))) { \
             *size = 0; \
             BSON_FREE(&bson); \
             return NULL; \
@@ -28,7 +27,61 @@
             return NULL; \
         } \
     } while (0)
+// 组包三段式：MONGO_PACK_BEGIN 开头，中间按需 MONGO_PACK_CAT 拼外部文档，末尾一个 RETURN。
+// 中段与收尾必须配对，配错编译期就报（判据见 MONGO_PACK_RETURN_TXN）：
+//   事务内 CRUD            TRANSACTION_OPTIONS_START → MONGO_PACK_RETURN_TXN
+//   带事务上下文不开事务    TRANSACTION_OPTIONS       → MONGO_PACK_RETURN
+//   不涉事务                无                        → MONGO_PACK_RETURN
+
+// 函数开头：声明并初始化局部 bson_ctx bson（必须置于函数体顶部）。要求函数有名为 size 的出参。
+// cap：BSON 预估容量，0=默认；大消息传 dlens + BSON_HEADROOM 消除 doubling 重分配。宏内只求值一次。
+// 超单包上限在这里就拒：cap 正是那几个大入参的长度，等到 _mongo_pack_msg 判总长时源数据
+// 已经被全量分配并拷贝两遍，内存不够时分配器是 exit 而不是返 NULL
+#define MONGO_PACK_BEGIN(cap) \
+    bson_ctx bson; \
+    size_t _cap = (size_t)(cap); \
+    if (0 != _mongo_cap_toolong(_cap)) { \
+        *size = 0; \
+        return NULL; \
+    } \
+    bson_init(&bson, NULL, _cap)
+// 两个 RETURN 共用的通用收尾：$db + 闭合 + 打包 OP_MSG + 释放 bson，结果留在 _data
+#define _MONGO_PACK_TAIL(db) \
+        bson_append_utf8(&bson, "$db", (db)); \
+        bson_append_end(&bson); \
+        void *_data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size); \
+        BSON_FREE(&bson)
+// 函数收尾。db 形参为 mongo->db / mongo->authdb 等
+#define MONGO_PACK_RETURN(db) do { \
+        _MONGO_PACK_TAIL(db); \
+        return _data; \
+    } while (0)
 //事务和操作 https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
+// 事务内 CRUD 用：事务的第一条命令必须带 startTransaction:true，服务端才真正开启事务；
+// 缺它则该操作以 NoSuchTransaction("active transaction number is -1")失败，整个事务无从开始。
+// 这里只记 _txnstart，started 由下面那个 RETURN 在组包成功之后才落：组包本身会失败(总长
+// 超 MONGO_MAX_PACK_SIZE)，提前消耗标志会在一条健康连接上留下再也开不起来的事务。
+// 残留边界：落位后 coro_send 若网络失败，事务在服务端并未开启而 started 已为 1，该 session
+// 只能重新 begin；这与"连接断开后 session 失效需重建"的既有约定一致
+#define TRANSACTION_OPTIONS_START \
+    int32_t _txnstart = 0; \
+    if (NULL != mongo->session) {\
+        MONGO_PACK_CAT(mongo->session->options, mongo->session->optionslens);\
+        if (0 == mongo->session->started) {\
+            bson_append_bool(&bson, "startTransaction", 1);\
+            _txnstart = 1;\
+        }\
+    }
+// 同 MONGO_PACK_RETURN，另在组包成功后落 started。_txnstart 由上面那个宏声明，
+// 故配错在编译期就报：少了它是未声明标识符，多了它是设了没读
+#define MONGO_PACK_RETURN_TXN(db) do { \
+        _MONGO_PACK_TAIL(db); \
+        if (NULL != _data \
+            && 0 != _txnstart) { \
+            mongo->session->started = 1; \
+        } \
+        return _data; \
+    } while (0)
 // 只带事务上下文(lsid/txnNumber/autocommit)，不带 startTransaction。hello 与 commit/abort 用：
 // 前两条按规范不得携带 startTransaction，hello 则根本不是事务命令。
 // 取连接当前绑定的 mongo->session；与 commit/abort 的入参 session 必然相等，分叉已由那两个入口挡掉
@@ -36,34 +89,15 @@
     if (NULL != mongo->session) {\
         MONGO_PACK_CAT(mongo->session->options, mongo->session->optionslens);\
     }
-// 事务内 CRUD 用：事务的第一条命令必须带 startTransaction:true，服务端才真正开启事务；
-// 缺它则该操作以 NoSuchTransaction("active transaction number is -1")失败，整个事务无从开始。
-// 必须放在本函数所有 MONGO_PACK_CAT 之后——一旦置位 started 就不能再有失败早退，否则包没发出去
-// 而标志已消耗，后续操作都不带 startTransaction。此位置之后只剩 MONGO_PACK_RETURN，它不会失败。
-// 残留边界：置位后 coro_send 若网络失败，事务在服务端并未开启而 started 已为 1，该 session
-// 只能重新 begin；这与"连接断开后 session 失效需重建"的既有约定一致
-#define TRANSACTION_OPTIONS_START \
-    if (NULL != mongo->session) {\
-        MONGO_PACK_CAT(mongo->session->options, mongo->session->optionslens);\
-        if (0 == mongo->session->started) {\
-            bson_append_bool(&bson, "startTransaction", 1);\
-            mongo->session->started = 1;\
-        }\
-    }
-// 函数开头：声明并初始化局部 bson_ctx bson（必须置于函数体顶部）
-// cap：BSON 预估容量，0=默认；大消息传 dlens + BSON_HEADROOM 消除 doubling 重分配
-#define MONGO_PACK_BEGIN(cap) \
-    bson_ctx bson; \
-    bson_init(&bson, NULL, (cap))
-// 函数收尾：写入 $db + 闭合 + 打包 OP_MSG + 释放 bson + return；db 形参为 mongo->db / mongo->authdb 等
-#define MONGO_PACK_RETURN(db) do { \
-        bson_append_utf8(&bson, "$db", (db)); \
-        bson_append_end(&bson); \
-        void *_data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size); \
-        BSON_FREE(&bson); \
-        return _data; \
-    } while (0)
 
+// 组包前的入参长度闸门：cap 为 0（不预估容量）时无可判，直接放行
+static int32_t _mongo_cap_toolong(size_t cap) {
+    if (cap <= MONGO_MAX_PACK_SIZE) {
+        return 0;
+    }
+    LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_MAX_PACK_SIZE, cap);
+    return 1;
+}
 // 构造 OP_MSG 原始数据包：填充消息头、flags、Section 和正文，并回填总长度
 static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, char *docs, size_t dlens, size_t *size) {
     mongo->reqid++;
@@ -180,7 +214,7 @@ void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *option
     bson_append_array(&bson, "documents", docs, dlens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(ulens + BSON_HEADROOM);
@@ -188,7 +222,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
     bson_append_array(&bson, "updates", updates, ulens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(dlens + BSON_HEADROOM);
@@ -196,7 +230,7 @@ void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *opt
     bson_append_array(&bson, "deletes", deletes, dlens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(olens + nlens + BSON_HEADROOM);
@@ -205,7 +239,7 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
     bson_append_array(&bson, "nsInfo", nsinfo, nlens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(flens + BSON_HEADROOM);
@@ -215,7 +249,7 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
     }
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(pllens + BSON_HEADROOM);
@@ -225,7 +259,7 @@ void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char
     bson_append_document(&bson, "cursor", (char *)cursor, *size);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(0);
@@ -233,9 +267,8 @@ void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size
     bson_append_utf8(&bson, "collection", mongo->collection);
     MONGO_PACK_CAT(options, optlens);
     // 用不带 START 的那个：游标是别的命令建出来的，事务真要开也该由那条命令开。
-    // 挂 _START 的话，begin 后第一条就是 getMore 时会给它带上 startTransaction 并把 started 消耗掉，
-    // 这条命令服务端本来就要拒，而真正的首条 CRUD 从此不再带 startTransaction，整段事务连环
-    // NoSuchTransaction，只能重新 begin
+    // 挂 _START 的话，begin 后第一条就是 getMore 时会把 started 消耗在一条服务端必拒的命令上，
+    // 真正的首条 CRUD 从此不带 startTransaction，整段事务连环 NoSuchTransaction
     TRANSACTION_OPTIONS
     MONGO_PACK_RETURN(mongo->db);
 }
@@ -258,7 +291,7 @@ void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t
     }
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int32_t remove, int32_t pipeline, char *update, size_t ulens,
     char *options, size_t optlens, size_t *size) {
@@ -278,7 +311,7 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
     }
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(qlens + BSON_HEADROOM);
@@ -288,7 +321,7 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
     }
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(ilens + BSON_HEADROOM);
@@ -296,7 +329,7 @@ void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, ch
     bson_append_array(&bson, "indexes", indexes, ilens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(ilens + BSON_HEADROOM);
@@ -331,7 +364,9 @@ void *mongo_pack_endsession(mongo_session *session, size_t *size) {
     MONGO_PACK_RETURN(mongo->db);
 }
 char *mongo_transaction_options(mongo_session *session, size_t *lens) {
-    MONGO_PACK_BEGIN(0);
+    // 只吐 doc 不打包消息，故不走 MONGO_PACK_BEGIN：那个宏的容量闸门要写 *size，本函数的出参叫 lens
+    bson_ctx bson;
+    bson_init(&bson, NULL, 0);
     bson_append_document_begain(&bson, "lsid");
     bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
     bson_append_end(&bson);//lsid

@@ -10,7 +10,8 @@ typedef struct smtp_ctx {
     uint16_t port;           //SMTP 服务器端口
     int32_t authtype;        //认证类型（LOGIN 或 PLAIN），握手后自动设置
     atomic_t ref;            //上层 handle 引用计数：0=C 借用(事件层不 free 块)，>0=持有者数
-    int32_t established;     // 最近一次建连尝试是否成功；与 skid 一起判短路，见 _serial_connect
+    int32_t established;     // 当前是否连着（建连失败 / quit / 就地关连接都清零）
+    uint32_t generation;     // 连接身份代次，建连成功 / 断开各前进一次；判短路见 _serial_connect
     struct evssl_ctx *evssl; //TLS 上下文，NULL 表示不加密
     struct task_ctx *task;   //所属任务上下文
     struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
@@ -20,7 +21,7 @@ typedef struct smtp_ctx {
     char ip[IP_LENS];        //SMTP 服务器 IP 地址
 }smtp_ctx;
 
-// 初始化模块：注册握手完成回调并获取本机主机名
+// 初始化模块：注册握手完成回调
 void _smtp_init(void *hspush);
 // 连接断开时释放 ud_cxt 中的 smtp_ctx 引用并重置 fd
 void _smtp_udfree(ud_cxt *ud);

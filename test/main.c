@@ -7,6 +7,7 @@
 #include "test_seri.h"
 #include "test_thread.h"
 #include "test_stm.h"
+#include "test_event.h"
 #include "test_protocol.h"
 #include "test_bson.h"
 #include "test_mqtt_pack.h"
@@ -143,6 +144,7 @@ int main(int argc, char *argv[]) {
     test_seri(suite);        /* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table */
     test_thread(suite);      /* mutex、spinlock、rwlock、cond、thread */
     test_stm(suite);         /* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
+    test_event(suite);       /* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
     test_protocol(suite);    /* HTTP、Redis RESP、URL 解析、custz、DNS、WebSocket */
     test_bson(suite);        /* BSON 构建器、迭代器、find */
     test_mqtt_pack(suite);   /* MQTT 组包/解包往返 */

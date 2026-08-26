@@ -647,6 +647,21 @@ static int32_t _lcore_session(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 把本次要发的请求方法登记到连接上：HTTP 解包侧要靠它才能判定响应有无报文体，契约见 http_set_method。
+/// 与组请求成对调用即可，须在发送之前；哪些方法需要特殊处理由 C 侧判断
+/// </summary>
+/// <param name="fd" type="integer">socket fd</param>
+/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="method" type="string">与请求行同一个 method；按 RFC 7231 §4.1 区分大小写</param>
+/// <returns type="boolean">成功 true（含"该方法无需登记"这一档）；fd 为 INVALID_SOCK 时 false</returns>
+static int32_t _lcore_http_set_method(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    const char *method = luaL_checkstring(lua, 3);
+    lua_pushboolean(lua, ERR_OK == http_set_method(&g_loader->netev, fd, skid, method) ? 1 : 0);
+    return 1;
+}
+/// <summary>
 /// 询问协议层指定封包能否唤醒等待者(非 true 时框架改新建协程走 on_recved),契约见 prots_may_resume
 /// </summary>
 /// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
@@ -929,6 +944,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "status", _lcore_status },
         { "bind_task", _lcore_bind_task },
         { "session", _lcore_session },
+        { "http_set_method", _lcore_http_set_method },
 
         { "may_resume", _lcore_may_resume },
         { "message_may_keep", _lcore_message_may_keep },

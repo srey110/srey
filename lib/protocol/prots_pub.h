@@ -75,10 +75,9 @@ typedef enum prot_status {
 typedef struct message_ctx {
     uint8_t slice;  // 分片类型（slice_type）
     uint8_t client; // 1 表示客户端连接，0 表示服务端连接
-    uint8_t neverconn; // 仅 CLOSE：1=连接/会话从未建立，本消息只为唤醒等待方，分发层据此跳过 on_close 观察者
     subtype_t subtype; // 数据包解包类型（pack_type）或 请求类型（request_type）
     msg_type mtype;  // 消息类型
-    int32_t erro;   // 错误码
+    int32_t erro;   // 错误码；CLOSE 上取 close_type（见 base/err.h）
     size_t size;    // 数据长度
     name_t src;     // 发送方任务名
     uint64_t sess;  // 会话 ID（用于请求/响应匹配）
@@ -117,5 +116,23 @@ uint32_t parse_usec_frac(const char *str);
 /// <param name="val">输出：解析结果；返回 ERR_FAILED 时不写</param>
 /// <returns>ERR_OK 成功；ERR_FAILED 空串/超 128 字节/有残留字符/上溢</returns>
 int32_t parse_double_strict(const void *data, size_t lens, double *val);
+/// <summary>
+/// (指针, 长度) 的十进制整数文本转 int64，按符号拆开走 str2u64。
+/// mysql / pgsql 两侧的文本协议共用，别再各写一份
+/// </summary>
+/// <param name="data">源字节段(可非 NUL 结尾)</param>
+/// <param name="lens">源字节数；0 视为失败</param>
+/// <param name="val">输出：解析结果；返回 ERR_FAILED 时不写</param>
+/// <returns>ERR_OK 成功；空串/只有负号/含非数字字符/超出 int64 量程返回 ERR_FAILED</returns>
+int32_t parse_int64_strict(const void *data, size_t lens, int64_t *val);
+/// <summary>
+/// 解析 "A[:B[:C]]" 形式的冒号分隔十进制三段值，各段按 max[i] 卡上界，缺的段填 0。
+/// mysql 的 TIME 与 pgsql 的时区偏移共用，别再各写一份
+/// </summary>
+/// <param name="str">NUL 结尾的字符串，须从首段的数字起</param>
+/// <param name="max">三段各自的上界(含)</param>
+/// <param name="val">输出：三段值，未出现的段写 0；返回 0 时三段都不写</param>
+/// <returns>成功解析的段数 1~3；首段就不是数字、或任一段超上界返回 0</returns>
+int32_t parse_colon_triple(const char *str, const uint32_t max[3], uint32_t val[3]);
 
 #endif// PROTS_PUB_H_

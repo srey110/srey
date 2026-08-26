@@ -818,14 +818,10 @@ static int32_t _lmongo_session_new(lua_State *lua) {
     }
     mongo_session **psession = (mongo_session **)lpub_push_ud(lua, NULL, MT_MONGO_SESSION);
     mongo_session *session;
-    MALLOC(session, sizeof(mongo_session));
+    CALLOC(session, 1, sizeof(mongo_session));
     memcpy(session->uuid, uuid_str, UUID_LENS);
     session->mongo = mongo;
     session->timeoutmin = timeout;
-    session->txnnumber = 0;
-    session->started = 0;
-    session->options = NULL;
-    session->optionslens = 0;
     session->timeout = nowsec() + (uint64_t)timeout * 60;
     *psession = session;
     lua_pushvalue(lua, 1);
@@ -860,7 +856,7 @@ static int32_t _lmongo_session_free(lua_State *lua) {
 /// 开始事务（递增 txnNumber，构建事务选项 BSON，设置 mongo->session）
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
-/// <returns type="boolean">成功 true；该连接上已有别的 session 处于事务中时 false</returns>
+/// <returns type="boolean">成功 true；该连接上已有别的 session 处于事务中、或本会话已随旧连接失效时 false</returns>
 static int32_t _lmongo_session_begin(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
     lua_pushboolean(lua, ERR_OK == mongo_begin(*psession) ? 1 : 0);

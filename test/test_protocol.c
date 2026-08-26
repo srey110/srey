@@ -14,6 +14,162 @@ static void _bput(buffer_ctx *b, const char *s) {
  * HTTP —— 解包与组包验证
  * ======================================================================= */
 
+/* HEAD 的响应按 RFC 7230 §3.3.3 规则 1 不带 body，却照样带 Content-Length。
+   发起方把 method 传给 http_set_method 登记，它把连接状态置成内部的 INIT_NOBODY；
+   本用例直接摆那个状态值（同 websock 用例里直接摆 START 的做法），改枚举顺序须同步这里 */
+static void test_http_head_nobody(CuTest *tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    int32_t status = PROT_INIT;
+    size_t dlen = 999;
+    void *data;
+    struct http_pack_ctx *pack;
+
+    /* 未登记时的老行为：Content-Length 被当真，挂着等 1234 字节 body */
+    _bput(&buf, "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\n\r\n");
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    /* 登记之后：同一条响应不吃 body，其后紧跟的那条照常解析 */
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    ud.status = 4;/* http 内部 INIT_NOBODY，由 http_set_method 置位 */
+    status = PROT_INIT;
+    _bput(&buf, "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\n\r\n");
+    _bput(&buf, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    data = http_data(pack, &dlen);
+    CuAssertTrue(tc, 0 == dlen);
+    CuAssertTrue(tc, NULL == data);
+    CuAssertTrue(tc, buf_compare(&http_status(pack)[1], "200", 3));
+    _http_pkfree(pack);
+
+    /* 1xx 是中间响应，不能把登记消耗掉：103 之后那条 200 仍须按无 body 解析 */
+    buffer_free(&buf);
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    ud.status = 4;/* http 内部 INIT_NOBODY */
+    status = PROT_INIT;
+    _bput(&buf, "HTTP/1.1 103 Early Hints\r\nLink: </s.css>\r\n\r\n");
+    _bput(&buf, "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\n\r\n");
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, buf_compare(&http_status(pack)[1], "103", 3));
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, buf_compare(&http_status(pack)[1], "200", 3));
+    data = http_data(pack, &dlen);
+    CuAssertTrue(tc, 0 == dlen);/* 登记活到了最终响应 */
+    CuAssertTrue(tc, NULL == data);
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+
+    /* 标记只作用于紧随的那一条：第二条响应的 body 照常读出来 */
+    buffer_free(&buf);
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    ud.status = 4;
+    status = PROT_INIT;
+    _bput(&buf, "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\n\r\n");
+    _bput(&buf, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    data = http_data(pack, &dlen);
+    CuAssertTrue(tc, 2 == dlen);
+    CuAssertTrue(tc, 0 == memcmp(data, "hi", 2));
+    _http_pkfree(pack);
+
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+/* 响应既无 Content-Length 又无 Transfer-Encoding：body 由连接关闭界定(RFC 7230 §3.3.3 规则 7)，
+   按分片投递，末片由 _http_on_close 在关闭时补。顺带钉住原来的响应拆分隐患：
+   body 里含空行时不能再被当成第二条响应的状态行 */
+static void test_http_tillclose(CuTest *tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    int32_t status = PROT_INIT;
+    size_t dlen = 0;
+    void *data;
+    struct http_pack_ctx *pack;
+
+    /* 1) 头部到齐即首片：无 CL/TE，状态行仍可读 */
+    _bput(&buf, "HTTP/1.1 200 OK\r\n");
+    _bput(&buf, "Content-Type: text/plain\r\n");
+    _bput(&buf, "\r\n");
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_START));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, buf_compare(&http_status(pack)[1], "200", 3));
+    _http_pkfree(pack);
+
+    /* 2) 随后的字节全是 body，切片投出；body 内含空行照样是 body，不再被当状态行解析 */
+    status = PROT_INIT;
+    _bput(&buf, "line1\r\n\r\nline2");
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    data = http_data(pack, &dlen);
+    CuAssertTrue(tc, strlen("line1\r\n\r\nline2") == dlen);
+    CuAssertTrue(tc, 0 == memcmp(data, "line1\r\n\r\nline2", dlen));
+    _http_pkfree(pack);
+
+    /* 3) 缓冲空了只报 MOREDATA，不产生空片 */
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, 1, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+
+    /* 4) 关闭即末片：空载荷，且状态复位——再问一次返 NULL */
+    pack = _http_on_close(&ud);
+    CuAssertPtrNotNull(tc, pack);
+    data = http_data(pack, &dlen);
+    CuAssertTrue(tc, 0 == dlen);
+    CuAssertTrue(tc, NULL == data);
+    _http_pkfree(pack);
+    CuAssertTrue(tc, NULL == _http_on_close(&ud));
+
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+/* 规则 7 只对响应成立：请求无 CL/TE 就是无 body，不能进分片模式 */
+static void test_http_tillclose_request_only(CuTest *tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    int32_t status = PROT_INIT;
+
+    _bput(&buf, "GET /x HTTP/1.1\r\nHost: h\r\n\r\n");
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, 0, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_SLICE_START));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    _http_pkfree(pack);
+    /* 服务端侧关闭不该补末片 */
+    CuAssertTrue(tc, NULL == _http_on_close(&ud));
+
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
 /* 解析一个完整的 HTTP 200 响应，验证状态行、头部、消息体 */
 static void test_http_response(CuTest *tc) {
     buffer_ctx buf;
@@ -2969,6 +3125,30 @@ static void test_custz_head_variable(CuTest *tc) {
  * WebSocket —— 帧组包格式验证
  * ======================================================================= */
 
+// 消息汇测试桩，websock 握手用例与 prots_net_close 用例共用。
+// prots_closed 已改为内部静态分发，只能通过 prots_net_close 间接触发，而 g_emit.begin 必须返回
+// 非 NULL 才走得到它；websock 那边则是握手成败都要经 _hs_push，begin 为空函数指针会直接崩
+static int32_t g_stub_emit_calls;
+static message_ctx g_stub_first_msg;
+static message_ctx g_stub_last_msg;
+static void *_stub_emit_begin(void *loader, name_t handle) {
+    (void)loader;
+    (void)handle;
+    return (void *)1;
+}
+static void _stub_emit_emit(void *target, message_ctx *msg) {
+    (void)target;
+    if (0 == g_stub_emit_calls) {
+        g_stub_first_msg = *msg;
+    }
+    g_stub_last_msg = *msg;
+    g_stub_emit_calls++;
+}
+static void _stub_emit_end(void *target) {
+    (void)target;
+}
+static prot_emit g_stub_emit = { _stub_emit_begin, _stub_emit_emit, _stub_emit_end };
+
 static void test_websock_pack_frames(CuTest *tc) {
     size_t size = 0;
     /* PING 无掩码：byte0 = FIN|opcode(0x9) = 0x89，byte1 = 0x00（无 payload）*/
@@ -3108,6 +3288,116 @@ static void test_websock_pack_handshake(CuTest *tc) {
     /* 非法 token(含裸 LF,即 #1 崩溃向量)→ 返回 NULL */
     ws_hs_ctx *bctx = NULL;
     CuAssertTrue(tc, NULL == websock_pack_handshake("example.com", NULL, "a\nb", &bctx));
+}
+
+// 把一段握手报文喂给 websock_unpack，回带 status。client=0 走服务端校验，1 走客户端校验
+static int32_t _ws_hs_feed(const char *msg, int32_t client, void *hsctx) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, (void *)msg, strlen(msg));
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_WEBSOCK;
+    ud.context = hsctx;// 服务端侧为 NULL；客户端侧须是 websock_pack_handshake 产出的 ws_hs_ctx
+    int32_t status = PROT_INIT;
+    (void)websock_unpack(NULL, INVALID_SOCK, 0, client, &buf, &ud, &status);
+    // 成功后 ud.context 换成新 CALLOC 的 websock_ctx，失败则仍是传进来的 hsctx（客户端侧）
+    // 或一直为 NULL（服务端侧）；三种归宿 _websock_udfree 都认，调用方不要另行释放
+    _websock_udfree(&ud);
+    buffer_free(&buf);
+    return status;
+}
+// 服务端握手校验的负向用例。表驱动改造后掩码或表项写错会把"拒绝"变成"接受"，
+// 而正向路径全绿照不出来，故每条只破坏一处、其余保持合法。
+// 这里不设正向对照：合法请求会走到 _websock_handshake_respond，它的 ev_send 在 INVALID_SOCK 上
+// 必然失败，同样落 PROT_ERROR，与拒绝无从区分——正向由集成用例(task_ws_server / unit_websock.lua)覆盖
+static void test_websock_handshake_server_reject(CuTest *tc) {
+    prots_init(&g_stub_emit);// 失败路径也要经 _hs_push，begin 是空函数指针会当场崩
+    static const char *cases[] = {
+        // 方法不是 GET
+        "POST / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // 缺 Connection
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // Connection 值不是 upgrade
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: keep-alive\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // 缺 Upgrade
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // Upgrade 值不是 websocket
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // 缺 Sec-WebSocket-Version
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // Version 不是 13（RFC 6455 之前的草案版本）
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 8\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // 缺 Sec-WebSocket-Key
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n",
+        // Key 解出来不是 16 字节（表项只查键存在，长度由后面的 bs64_decode 卡）
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: c2hvcnQ=\r\n\r\n"
+    };
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        CuAssertTrue(tc, BIT_CHECK(_ws_hs_feed(cases[i], 0, NULL), PROT_ERROR));
+    }
+    prot_emit empty = { 0 };
+    prots_init(&empty);
+}
+// 客户端握手校验：正向 + 负向。正向这边有对照——成功时 _hs_push 推 ERR_OK，
+// 拿桩记下的 erro 就能把"接受"和"拒绝"分开，不像服务端只能看 PROT_ERROR
+static void test_websock_handshake_client_reject(CuTest *tc) {
+    prots_init(&g_stub_emit);
+    // 负向：状态码 / 三个表项各破坏一处，其余保持合法
+    static const char *fmts[] = {
+        // 状态码不是 101
+        "HTTP/1.1 200 OK\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n",
+        // 缺 Connection
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n",
+        // 缺 Upgrade
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n",
+        // 缺 Sec-WebSocket-Accept（%s 用不上，照样按格式串走）
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "X-Ignored: %s\r\n\r\n",
+        // Accept 值与本地签名不符
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Accept: %.0sYWJjZGVmZ2hpamtsbW5vcHFyc3R1dg==\r\n\r\n"
+    };
+    char msg[512];
+    ws_hs_ctx *hsctx;
+    char *req;
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(fmts); i++) {
+        req = websock_pack_handshake("example.com", NULL, NULL, &hsctx);
+        CuAssertPtrNotNull(tc, req);
+        SNPRINTF(msg, sizeof(msg), fmts[i], hsctx->signkey);
+        // hsctx 不在此释放：握手失败时 ud->status 还停在 INIT，_ws_hs_feed 末尾的
+        // _websock_udfree 会按"客户端未完成握手"把它收掉，再 FREE 就是二次释放
+        CuAssertTrue(tc, BIT_CHECK(_ws_hs_feed(msg, 1, hsctx), PROT_ERROR));
+        FREE(req);
+    }
+    // 正向：成功时库自己 FREE(ud->context) 再挂上 websock_ctx，收尾同样归 _websock_udfree
+    req = websock_pack_handshake("example.com", NULL, NULL, &hsctx);
+    CuAssertPtrNotNull(tc, req);
+    SNPRINTF(msg, sizeof(msg),
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n", hsctx->signkey);
+    g_stub_emit_calls = 0;
+    CuAssertTrue(tc, !BIT_CHECK(_ws_hs_feed(msg, 1, hsctx), PROT_ERROR));
+    CuAssertIntEquals(tc, 1, g_stub_emit_calls);
+    CuAssertIntEquals(tc, (int)MSG_TYPE_HANDSHAKED, (int)g_stub_last_msg.mtype);
+    CuAssertIntEquals(tc, ERR_OK, g_stub_last_msg.erro);
+    FREE(req);
+    prot_emit empty = { 0 };
+    prots_init(&empty);
 }
 
 static void test_websock_secprot_match(CuTest *tc) {
@@ -3542,7 +3832,8 @@ static void test_prots_free_null(CuTest *tc) {
     prots_hsfree(PACK_HTTP, NULL);
     // prots_udfree(NULL) 安全
     prots_udfree(NULL);
-    // prots_free 空实现，多次调用无副作用
+    // prots_free 清消息汇，幂等：连调两次不出事。清干净之后再走网络事件回调是要当场崩的
+    // （fail-fast 就是目的），故不在此验证，只验幂等
     prots_free();
     prots_free();
 }
@@ -3595,24 +3886,6 @@ static void test_prots_udfree_default(CuTest *tc) {
     prots_udfree(&ud2);
 }
 
-// prots_net_close 测试桩：prots_closed 已改为内部静态分发，只能通过 prots_net_close 间接触发；
-// g_emit.begin 必须返回非 NULL 才能走到内部 prots_closed，桩函数忽略 loader/handle 直接放行
-static int32_t g_stub_emit_calls;
-static message_ctx g_stub_last_msg;
-static void *_stub_emit_begin(void *loader, name_t handle) {
-    (void)loader;
-    (void)handle;
-    return (void *)1;
-}
-static void _stub_emit_emit(void *target, message_ctx *msg) {
-    (void)target;
-    g_stub_last_msg = *msg;
-    g_stub_emit_calls++;
-}
-static void _stub_emit_end(void *target) {
-    (void)target;
-}
-static prot_emit g_stub_emit = { _stub_emit_begin, _stub_emit_emit, _stub_emit_end };
 // prots_net_close default 分支：PACK_NONE / PACK_HTTP / PACK_WEBSOCK 等无协议专属清理，
 // 仅推一条 MSG_TYPE_CLOSE（SMTP/MYSQL/PGSQL/MONGO 需要真实协议 context，不在此测试范围）
 static void test_prots_net_close_default(CuTest *tc) {
@@ -3624,13 +3897,61 @@ static void test_prots_net_close_default(CuTest *tc) {
         ZERO(&ud, sizeof(ud));
         ud.pktype = (subtype_t)defaults[i];
         g_stub_emit_calls = 0;
-        prots_net_close(NULL, INVALID_SOCK, 100 + (uint64_t)i, 0, &ud);
+        prots_net_close(NULL, INVALID_SOCK, 100 + (uint64_t)i, 0, CLOSE_TYPE_LOCAL, &ud);
         CuAssertIntEquals(tc, 1, g_stub_emit_calls);
         CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
         CuAssertIntEquals(tc, (int)defaults[i], (int)g_stub_last_msg.subtype);
+        CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, g_stub_last_msg.erro);
     }
     prot_emit empty = { 0 };
     prots_init(&empty);// 还原为测试前的零值,不依赖 main.c 里紧接着的 loader_init 顺延覆盖
+}
+
+// 把 ud 送进 TILLCLOSE：响应无 CL/TE，头部到齐即首片
+static void _tillclose_enter(CuTest *tc, buffer_ctx *buf, ud_cxt *ud) {
+    ZERO(ud, sizeof(ud_cxt));
+    ud->pktype = PACK_HTTP;
+    int32_t status = PROT_INIT;
+    _bput(buf, "HTTP/1.1 200 OK\r\n\r\n");
+    struct http_pack_ctx *pack = http_unpack(buf, ud, 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_START));
+    _http_pkfree(pack);
+}
+// close_type 门禁：规则 7 的 body 没有长度可校验，只有对端有序结束才补末片；
+// 截断时补末片就等于把半条 body 报成完整的
+static void test_prots_net_close_tail_gate(CuTest *tc) {
+    prots_init(&g_stub_emit);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    ud_cxt ud;
+
+    // 1) 有序结束：末片 + CLOSE 两条，末片带 SLICE_END
+    _tillclose_enter(tc, &buf, &ud);
+    g_stub_emit_calls = 0;
+    prots_net_close(NULL, INVALID_SOCK, 1, 1, CLOSE_TYPE_ORDERLY, &ud);
+    CuAssertIntEquals(tc, 2, g_stub_emit_calls);
+    CuAssertIntEquals(tc, (int)MSG_TYPE_RECV, (int)g_stub_first_msg.mtype);
+    CuAssertIntEquals(tc, PROT_SLICE_END, (int)g_stub_first_msg.slice);
+    _http_pkfree(g_stub_first_msg.data);// 分发层才会 _message_clean，这里自己收
+    CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
+    CuAssertIntEquals(tc, CLOSE_TYPE_ORDERLY, g_stub_last_msg.erro);
+
+    // 2) 异常中断 / 本地主动：只有 CLOSE，业务在分片循环里拿到失败而不是"收完了"
+    int32_t types[] = { CLOSE_TYPE_ABORT, CLOSE_TYPE_LOCAL };
+    size_t i;
+    for (i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        _tillclose_enter(tc, &buf, &ud);
+        g_stub_emit_calls = 0;
+        prots_net_close(NULL, INVALID_SOCK, 2 + (uint64_t)i, 1, types[i], &ud);
+        CuAssertIntEquals(tc, 1, g_stub_emit_calls);
+        CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
+        CuAssertIntEquals(tc, types[i], g_stub_last_msg.erro);
+    }
+
+    buffer_free(&buf);
+    prot_emit empty = { 0 };
+    prots_init(&empty);
 }
 
 // prots_unpack 默认 PACK_NONE 路径：从 buffer 一次性取出所有数据 → MALLOC 返回
@@ -3664,13 +3985,151 @@ static void test_prots_unpack_default(CuTest *tc) {
     buffer_free(&buf);
 }
 
-// prots_may_resume default 分支：非 PGSQL 协议返回 ERR_OK
+// parse_int64_strict：mysql / pgsql 文本协议共用的整数解析。重点是 strtoll 骗得过
+// "消费长度相符"校验的那两条（空串、溢出钳到 LLONG_MAX）以及 INT64_MIN 的取负边界
+static void test_parse_int64_strict(CuTest *tc) {
+    int64_t v;
+
+    CuAssertIntEquals(tc, ERR_OK, parse_int64_strict("0", 1, &v));
+    CuAssertTrue(tc, 0 == v);
+    CuAssertIntEquals(tc, ERR_OK, parse_int64_strict("9223372036854775807", 19, &v));
+    CuAssertTrue(tc, INT64_MAX == v);
+    // INT64_MIN：绝对值超出 int64_t，取负前须单独挑出
+    CuAssertIntEquals(tc, ERR_OK, parse_int64_strict("-9223372036854775808", 20, &v));
+    CuAssertTrue(tc, INT64_MIN == v);
+    CuAssertIntEquals(tc, ERR_OK, parse_int64_strict("-1", 2, &v));
+    CuAssertTrue(tc, -1 == v);
+    // 只取 lens 之内的字节，不要求 NUL 结尾
+    CuAssertIntEquals(tc, ERR_OK, parse_int64_strict("123abc", 3, &v));
+    CuAssertTrue(tc, 123 == v);
+
+    // 溢出各一格
+    CuAssertIntEquals(tc, ERR_FAILED, parse_int64_strict("9223372036854775808", 19, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, parse_int64_strict("-9223372036854775809", 20, &v));
+    // 空串 / 只有负号 / 含非数字 / 前导正号与空白
+    CuAssertIntEquals(tc, ERR_FAILED, parse_int64_strict("", 0, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, parse_int64_strict("-", 1, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, parse_int64_strict("12a", 3, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, parse_int64_strict("+1", 2, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, parse_int64_strict(" 1", 2, &v));
+}
+// parse_colon_triple：取代 sscanf("%d:%d:%d") 的那个带上界解析器。
+// 重点是位数超 int 的输入必须被拒——那正是 sscanf 版本的未定义行为入口
+static void test_parse_colon_triple(CuTest *tc) {
+    static const uint32_t max[3] = { 838, 59, 59 };
+    uint32_t v[3];
+
+    // 三段齐
+    CuAssertIntEquals(tc, 3, parse_colon_triple("838:59:59", max, v));
+    CuAssertIntEquals(tc, 838, (int)v[0]);
+    CuAssertIntEquals(tc, 59, (int)v[1]);
+    CuAssertIntEquals(tc, 59, (int)v[2]);
+    // 尾部小数秒不影响前三段
+    CuAssertIntEquals(tc, 3, parse_colon_triple("01:02:03.456789", max, v));
+    CuAssertIntEquals(tc, 1, (int)v[0]);
+    CuAssertIntEquals(tc, 3, (int)v[2]);
+    // 缺段：返回实际段数，未出现的段填 0
+    CuAssertIntEquals(tc, 2, parse_colon_triple("05:30", max, v));
+    CuAssertIntEquals(tc, 5, (int)v[0]);
+    CuAssertIntEquals(tc, 30, (int)v[1]);
+    CuAssertIntEquals(tc, 0, (int)v[2]);
+    CuAssertIntEquals(tc, 1, parse_colon_triple("07", max, v));
+    CuAssertIntEquals(tc, 7, (int)v[0]);
+    CuAssertIntEquals(tc, 0, (int)v[1]);
+
+    // 位数装不下 int：sscanf 的 %d 在这里是未定义行为且照样返 3，本函数必须拒
+    CuAssertIntEquals(tc, 0, parse_colon_triple("99999999999:00:00", max, v));
+    // 逐段上界
+    CuAssertIntEquals(tc, 0, parse_colon_triple("839:00:00", max, v));
+    CuAssertIntEquals(tc, 0, parse_colon_triple("01:60:00", max, v));
+    CuAssertIntEquals(tc, 0, parse_colon_triple("01:00:60", max, v));
+    // 首段非数字
+    CuAssertIntEquals(tc, 0, parse_colon_triple("", max, v));
+    CuAssertIntEquals(tc, 0, parse_colon_triple(":01:02", max, v));
+    CuAssertIntEquals(tc, 0, parse_colon_triple("x:01", max, v));
+    // 冒号后无数字：前面已成功的段照数，不算失败
+    CuAssertIntEquals(tc, 1, parse_colon_triple("09:", max, v));
+    CuAssertIntEquals(tc, 9, (int)v[0]);
+}
+// prots_may_resume default 分支：无专属判定的协议返回 ERR_OK。
+// PACK_PGSQL / PACK_MQTT / PACK_WEBSOCK 各有自己的判定，不在此列
 static void test_prots_may_resume_default(CuTest *tc) {
-    pack_type defaults[] = { PACK_NONE, PACK_HTTP, PACK_WEBSOCK, PACK_MQTT,
-                             PACK_REDIS, PACK_MYSQL, PACK_MONGO };
+    pack_type defaults[] = { PACK_NONE, PACK_DNS, PACK_HTTP, PACK_SMTP,
+                             PACK_REDIS, PACK_MYSQL, PACK_MONGO, PACK_UDP_KCP };
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         CuAssertIntEquals(tc, ERR_OK, prots_may_resume(defaults[i], NULL));
     }
+    // data 为 NULL 时无包可拦，带判定的三个协议一律放行
+    CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_PGSQL, NULL));
+    CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_MQTT, NULL));
+    CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_WEBSOCK, NULL));
+}
+
+// WS 承载 MQTT 时 prots_may_resume 必须按内层包判定：broker 主动推的 PUBLISH 不得唤醒
+// 等待者，SUBACK 可以。直连 PACK_MQTT 与 WS 承载两条路径的结论必须一致
+static void test_prots_may_resume_websock_mqtt(CuTest *tc) {
+    mqtt_ctx mctx = { MQTT_311 };
+    ud_cxt subud;
+    ZERO(&subud, sizeof(subud));
+    subud.pktype = PACK_MQTT;
+    subud.status = 1; // mqtt 内部 COMMAND 状态
+    subud.context = &mctx;
+    buffer_ctx subbuf;
+    buffer_init(&subbuf);
+
+    test_ws_ctx ws;
+    ZERO(&ws, sizeof(ws));
+    ws.secprot = PACK_MQTT;
+    ws.buf = &subbuf;
+    ws.ud = &subud;
+
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1; // websock 内部 START 状态
+    ud.context = &ws;
+
+    size_t mlen = 0, flen = 0;
+    void *frame;
+    char *mpack;
+    buffer_ctx buf;
+    int32_t status;
+    struct websock_pack_ctx *pack;
+    uint8_t reasons[1] = { 0 };
+
+    // 用例1：PUBLISH 包在 WS 帧里 → 不可唤醒等待者
+    mpack = mqtt_pack_publish(MQTT_311, 0, 0, 0, "t", 0, "p", 1, NULL, &mlen);
+    CuAssertPtrNotNull(tc, mpack);
+    frame = websock_pack_binary(0, 1, mpack, mlen, &flen);
+    FREE(mpack);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_init(&buf);
+    buffer_append(&buf, frame, flen);
+    FREE(frame);
+    status = PROT_INIT;
+    pack = websock_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, PACK_MQTT, websock_secprot(pack));
+    CuAssertIntEquals(tc, ERR_FAILED, prots_may_resume(PACK_WEBSOCK, pack));
+    _websock_pkfree(pack);
+    buffer_free(&buf);
+
+    // 用例2：同一条连接上的 SUBACK → 可唤醒
+    mpack = mqtt_pack_suback(MQTT_311, 1, reasons, sizeof(reasons), NULL, &mlen);
+    CuAssertPtrNotNull(tc, mpack);
+    frame = websock_pack_binary(0, 1, mpack, mlen, &flen);
+    FREE(mpack);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_init(&buf);
+    buffer_append(&buf, frame, flen);
+    FREE(frame);
+    status = PROT_INIT;
+    pack = websock_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_WEBSOCK, pack));
+    _websock_pkfree(pack);
+    buffer_free(&buf);
+
+    buffer_free(&subbuf);
 }
 
 /* =======================================================================
@@ -4712,6 +5171,9 @@ static void test_mqtt_connect_pwd_no_user(CuTest *tc) {
 /* ======================================================================= */
 
 void test_protocol(CuSuite *suite) {
+    SUITE_ADD_TEST(suite, test_http_head_nobody);
+    SUITE_ADD_TEST(suite, test_http_tillclose);
+    SUITE_ADD_TEST(suite, test_http_tillclose_request_only);
     SUITE_ADD_TEST(suite, test_http_response);
     SUITE_ADD_TEST(suite, test_http_pack_req);
     SUITE_ADD_TEST(suite, test_http_smuggling);
@@ -4781,6 +5243,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_custz_head_variable);
     SUITE_ADD_TEST(suite, test_websock_pack_frames);
     SUITE_ADD_TEST(suite, test_websock_pack_handshake);
+    SUITE_ADD_TEST(suite, test_websock_handshake_server_reject);
+    SUITE_ADD_TEST(suite, test_websock_handshake_client_reject);
     SUITE_ADD_TEST(suite, test_websock_secprot_match);
     SUITE_ADD_TEST(suite, test_websock_unpack_text);
     SUITE_ADD_TEST(suite, test_websock_unpack_masked);
@@ -4805,8 +5269,12 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_prots_hsfree_default);
     SUITE_ADD_TEST(suite, test_prots_udfree_default);
     SUITE_ADD_TEST(suite, test_prots_net_close_default);
+    SUITE_ADD_TEST(suite, test_prots_net_close_tail_gate);
     SUITE_ADD_TEST(suite, test_prots_unpack_default);
+    SUITE_ADD_TEST(suite, test_parse_int64_strict);
+    SUITE_ADD_TEST(suite, test_parse_colon_triple);
     SUITE_ADD_TEST(suite, test_prots_may_resume_default);
+    SUITE_ADD_TEST(suite, test_prots_may_resume_websock_mqtt);
     SUITE_ADD_TEST(suite, test_mail_html_and_clear);
     SUITE_ADD_TEST(suite, test_mail_attach_pack);
 }

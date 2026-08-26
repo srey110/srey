@@ -60,6 +60,7 @@
     <ClCompile Include="test_path_trie.c" />
     <ClCompile Include="test_pgsql_pack.c" />
     <ClCompile Include="test_pgsql_parse.c" />
+    <ClCompile Include="test_event.c" />
     <ClCompile Include="test_protocol.c" />
     <ClCompile Include="test_seri.c" />
     <ClCompile Include="test_stm.c" />
@@ -122,6 +123,7 @@
     <ClInclude Include="test_path_trie.h" />
     <ClInclude Include="test_pgsql_pack.h" />
     <ClInclude Include="test_pgsql_parse.h" />
+    <ClInclude Include="test_event.h" />
     <ClInclude Include="test_protocol.h" />
     <ClInclude Include="test_seri.h" />
     <ClInclude Include="test_stm.h" />

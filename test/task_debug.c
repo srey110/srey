@@ -242,9 +242,11 @@ done:
 }
 static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     char url[64];
-    // Lua VM 专属命令打到 C task：发起方就地挡下，请求根本不发出去
+    // Lua VM 专属命令打到 C task：发起方就地挡下，请求根本不发出去。
+    // 回 503 不回 200:与"目标未注册 request 回调"同属"目标执行不了",状态码必须一致,
+    // 否则 UI 把这一条渲染成绿色成功、脚本客户端(curl -f)也检测不到
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/mem", (uint64_t)arg->noreq);
-    if (ERR_OK != _http_get(task, arg->port, url, 200, _NOTLUA, 1)) {
+    if (ERR_OK != _http_get(task, arg->port, url, 503, _NOTLUA, 1)) {
         return ERR_FAILED;
     }
     // needlua=0 的命令照旧透传到目标
@@ -252,7 +254,8 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     if (ERR_OK != _http_get(task, arg->port, url, 200, "MTYPE", 0)) {
         return ERR_FAILED;
     }
-    // 广播：本二进制里全是 C task，逐个都该是同一句不支持
+    // 广播：本二进制里全是 C task，逐个都该是同一句不支持。
+    // 广播是聚合响应，整体恒 200(单个目标的成败写在正文里)，不跟单目标那条一起改
     if (ERR_OK != _http_get(task, arg->port, "/0/mem", 200, _NOTLUA, 0)) {
         return ERR_FAILED;
     }

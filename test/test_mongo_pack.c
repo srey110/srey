@@ -1057,6 +1057,67 @@ static void test_mongo_pack_getmore_not_start_txn(CuTest *tc) {
 
     FREE(session.options);
 }
+// session 不随连接失效：服务端按 lsid 记账、与连接无关，重连只废掉在途事务。
+// 代次前进后拿旧 session 重新 begin 是正常用法（txnNumber 递增），只有"连接上已有别的
+// session 在事务中"才拒。判定都在网络之前，可纯内存构造
+static void test_mongo_session_survives_reconnect(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    mongo.generation = 3;
+    mongo_session session;
+    ZERO(&session, sizeof(session));
+    session.mongo = &mongo;
+    for (int32_t i = 0; i < UUID_LENS; i++) {
+        session.uuid[i] = (char)(i + 1);
+    }
+
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertIntEquals(tc, 1, session.txnnumber);
+    CuAssertTrue(tc, &session == mongo.session);
+
+    // 重连：代次前进 + 解绑，mongo_connect 内部即这两步
+    mongo.generation = 4;
+    mongo.session = NULL;
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertIntEquals(tc, 2, session.txnnumber);
+    CuAssertTrue(tc, &session == mongo.session);
+
+    // 绑定门仍在：另一个 session 占着事务时拒绝，且一个字段都不动
+    mongo_session other;
+    ZERO(&other, sizeof(other));
+    other.mongo = &mongo;
+    CuAssertIntEquals(tc, ERR_FAILED, mongo_begin(&other));
+    CuAssertIntEquals(tc, 0, other.txnnumber);
+    CuAssertTrue(tc, NULL == other.options);
+    CuAssertTrue(tc, &session == mongo.session);
+
+    FREE(session.options);
+}
+// 文档数组这类大入参的长度闸门：排在 MONGO_PACK_BEGIN 里、任何分配与拷贝之前，
+// 所以指针不会被解引用，用例不必真的准备 64MB 数据
+static void test_mongo_pack_oversize_docs(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    char dummy = 0;
+    size_t size = 12345;
+
+    void *pack = mongo_pack_insert(&mongo, &dummy, (size_t)MONGO_MAX_PACK_SIZE + 1, NULL, 0, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+
+    size = 12345;
+    pack = mongo_pack_update(&mongo, &dummy, (size_t)MONGO_MAX_PACK_SIZE + 1, NULL, 0, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+
+    // 上限之内照常组包（1 字节的空 bson 文档数组）
+    char emptydoc[5] = { 5, 0, 0, 0, 0 };
+    size = 0;
+    pack = mongo_pack_insert(&mongo, emptydoc, sizeof(emptydoc), NULL, 0, &size);
+    CuAssertTrue(tc, NULL != pack);
+    CuAssertTrue(tc, size > 0);
+    FREE(pack);
+}
 void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_ping);
     SUITE_ADD_TEST(suite, test_mongo_pack_hello);
@@ -1064,6 +1125,7 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_insert);
     SUITE_ADD_TEST(suite, test_mongo_pack_check_flag);
     SUITE_ADD_TEST(suite, test_mongo_pack_oversize_options);
+    SUITE_ADD_TEST(suite, test_mongo_pack_oversize_docs);
     SUITE_ADD_TEST(suite, test_mongo_pack_update_delete_bulk);
     SUITE_ADD_TEST(suite, test_mongo_pack_find);
     SUITE_ADD_TEST(suite, test_mongo_pack_misc);
@@ -1081,4 +1143,5 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_udfree_keeps_session);
     SUITE_ADD_TEST(suite, test_mongo_setter_atomic);
     SUITE_ADD_TEST(suite, test_mongo_pack_getmore_not_start_txn);
+    SUITE_ADD_TEST(suite, test_mongo_session_survives_reconnect);
 }

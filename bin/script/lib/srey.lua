@@ -82,6 +82,15 @@ local SLICE_TYPE = {
     END   = 0x04,   -- 最后一片（完整消息）
 }
 srey.SLICE_TYPE = SLICE_TYPE
+-- CLOSE 消息 erro 的取值（对应 C 层 close_type），连接是怎么断的
+---@enum CLOSE_TYPE
+local CLOSE_TYPE = {
+    ORDERLY   = 0,  -- 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
+    LOCAL     = 1,  -- 本地主动：close / task 拆除 / 发队列溢出 / 解析错误
+    ABORT     = 2,  -- 异常中断：RST、读写错误、SSL 协议错、无 close_notify 的 EOF
+    NEVERCONN = 3   -- 连接/会话从未建立，本消息只为唤醒等待方，不触发 on_closed
+}
+srey.CLOSE_TYPE = CLOSE_TYPE
 
 -- 早退路径统一兜底：copy=0 时调用方已转移 data 所有权,需主动 utils.ud_free 释放
 -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
@@ -615,7 +624,7 @@ end
 
 ---删除 sess 的空会话表条目:仅无挂起等待者时删,避免误删他协程正在该 sess 等待的会话。
 ---只由 _net_close_dispatch 在 CLOSE 到达后调用——kcp 等以用户 sess(非 skid)注册的 keep=true 条目,
----无论会话是否建立成功都有 CLOSE 可清(未建立时由 _kcp_start 补发 neverconn=1 的合成 CLOSE),
+---无论会话是否建立成功都有 CLOSE 可清(未建立时由 _kcp_start 补发 NEVERCONN 的合成 CLOSE),
 ---故无需再向业务侧导出手动清理入口
 ---@param sess integer 会话 id
 local function _coro_sess_del_empty(sess)
@@ -1182,6 +1191,8 @@ end
 ---@param copy integer 1=复制；0=零拷贝
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败/超时返回 nil
 ---@return integer? rsize 响应数据长度
+---@return integer? rslice 分片类型（SLICE_TYPE.*，0 为非分片）；为 SLICE_TYPE.START 时本条只是首片，
+---调用方须接着用 syn_slice 循环收到 fin 为止。哪些响应算分片由协议层判定，不要在这里另抄一套规则
 function srey.syn_send(fd, skid, data, size, copy)
     if not srey.send(fd, skid, data, size, copy) then
         return nil
@@ -1190,7 +1201,7 @@ function srey.syn_send(fd, skid, data, size, copy)
     if not msg then
         return nil
     end
-    return msg.data, msg.size
+    return msg.data, msg.size, msg.slice
 end
 ---同步接收下一个响应包（不发送）：用于一次请求产生多个响应的场景（如 MySQL 多结果集续接）
 ---@param fd integer socket fd
@@ -1365,9 +1376,9 @@ local function _net_close_dispatch(msg)
             _coro_resume(waiters[i].coro, msg)
         end
     end
-    -- neverconn 的合成 CLOSE 只为唤醒上面那批等待方，不触发 on_closed 观察者
+    -- NEVERCONN 的合成 CLOSE 只为唤醒上面那批等待方，不触发 on_closed 观察者
     local func = func_cbs[MSG_TYPE.CLOSE]
-    if func and 0 == msg.neverconn then
+    if func and CLOSE_TYPE.NEVERCONN ~= msg.erro then
         _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client)
     end
     _coro_sess_del_empty(sess)
@@ -1533,8 +1544,7 @@ end
 ---@field fd      integer?       socket fd；网络消息(ACCEPT/RECV/SEND/CLOSE/CONNECT/SSLEXCHANGED/HANDSHAKED/RECVFROM)携带
 ---@field skid    integer?       连接 skid；同 fd 一起携带
 ---@field subtype PACK_TYPE?     封包协议类型；上述网络消息及 REQUEST/RESPONSE 携带
----@field erro    integer?       错误码；CLOSE/CONNECT/HANDSHAKED/RESPONSE 携带
----@field neverconn integer?     1=连接/会话从未建立，本消息只为唤醒等待方；CLOSE 携带
+---@field erro    integer?       错误码；CONNECT/HANDSHAKED/RESPONSE 携带。CLOSE 上是 CLOSE_TYPE.*，表示连接是怎么断的
 ---@field client  integer?       1=客户端 0=服务端（非地址）；RECV/SEND/CLOSE/SSLEXCHANGED/HANDSHAKED 携带
 ---@field data    lightuserdata? 数据指针；RECV/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带（仅数据非空）
 ---@field size    integer?       数据字节数；RECV/SEND/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带

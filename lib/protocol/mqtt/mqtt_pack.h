@@ -90,7 +90,10 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// WILLDELAY_INTERVAL(0x18) PAYLOAD_FORMAT(0x01) MSG_EXPIRY(0x02) CONTENT_TYPE(0x03) RESP_TOPIC(0x08) CORRELATION_DATA(0x09) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包；失败返回 NULL（MQTT 3.1.1 零长度 clientid 配 cleanstart=0、或编码失败）</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens。
+/// 以下"组包失败"三条为全部 mqtt_pack_* 共有：属性段编码失败(含 version 低于 MQTT_50 却带了属性)、
+/// 任一字符串/载荷长度超 UINT16_MAX、剩余长度超 varint 上限。
+/// 本函数另有一条：MQTT 3.1.1 下零长度 clientid 配 cleanstart=0</returns>
 char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t keepalive, const char *clientid,
     const char *user, char *password, size_t pwlens,
     const char *willtopic, char *willpayload, size_t wplens, int8_t willqos, int8_t willretain,
@@ -107,7 +110,7 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
 /// SHARED_SUBSCRIPTION(0x2A) SERVER_KEEPALIVE(0x13) RESP_INFO(0x1A) SERVER_REFERENCE(0x1C) AUTH_METHOD(0x15) AUTH_DATA(0x16)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布消息
@@ -133,7 +136,7 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
 /// SUBSCRIPTION_ID(0x0B) CONTENT_TYPE(0x03)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int8_t dup,
     const char *topic, uint16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens);
 /// <summary>
@@ -146,7 +149,7 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
 /// REASON_STR(0x1F) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_puback(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布已接收（QoS 2，第一步）
@@ -158,7 +161,7 @@ char *mqtt_pack_puback(mqtt_protversion version, uint16_t packid, uint8_t reason
 /// REASON_STR(0x1F) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_pubrec(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布释放（QoS 2，第二步）
@@ -170,7 +173,7 @@ char *mqtt_pack_pubrec(mqtt_protversion version, uint16_t packid, uint8_t reason
 /// REASON_STR(0x1F) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_pubrel(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布完成（QoS 2，第三步）
@@ -182,7 +185,7 @@ char *mqtt_pack_pubrel(mqtt_protversion version, uint16_t packid, uint8_t reason
 /// REASON_STR(0x1F) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_pubcomp(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 订阅请求
@@ -194,7 +197,7 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, uint16_t packid, uint8_t reaso
 /// SUBSCRIPTION_ID(0x0B) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 订阅确认
@@ -207,7 +210,7 @@ char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx 
 /// REASON_STR(0x1F) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 取消订阅请求
@@ -219,7 +222,7 @@ char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reaso
 /// SUBSCRIPTION_ID(0x0B) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 取消订阅确认
@@ -232,19 +235,19 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ct
 /// REASON_STR(0x1F) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens);
 /// <summary>
 /// PING
 /// </summary>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_ping(size_t *lens);
 /// <summary>
 /// PONG
 /// </summary>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_pong(size_t *lens);
 /// <summary>
 /// 断开通知
@@ -255,7 +258,7 @@ char *mqtt_pack_pong(size_t *lens);
 /// SESSION_EXPIRY(0x11) REASON_STR(0x1F) USER_PROPERTY(0x26) SERVER_REFERENCE(0x1C)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect</returns>
 char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 认证交换(MQTT5.0)
@@ -271,7 +274,8 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
 /// AUTH_METHOD(0x15) AUTH_DATA(0x16) REASON_STR(0x1F) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL 且不写 *lens，条件同 mqtt_pack_connect。
+/// AUTH 是 MQTT 5.0 专属报文，version 低于 MQTT_50 时直接返 NULL</returns>
 char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props, size_t *lens);
 
 #endif//MQTT_PACK_H_

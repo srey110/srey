@@ -414,8 +414,8 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
             _coro_mco_resume(coro, arg);
         }
     }
-    // neverconn 的合成 CLOSE 只为唤醒上面那批等待方，不触发 on_close 观察者（见 message_ctx 该字段）
-    if (0 == arg->msg.neverconn) {
+    // NEVERCONN 的合成 CLOSE 只为唤醒上面那批等待方，不触发 on_close 观察者（见 close_type）
+    if (CLOSE_TYPE_NEVERCONN != arg->msg.erro) {
         _coro_mco_create(arg);
     }
     /* resume 期间协程可能重新在同一 sess 上注册等待（追加到 cofind->waiters），
@@ -561,6 +561,16 @@ void *coro_get_arg(task_ctx *task) {
     }
     return ((coro_ctx *)task->arg)->arg;
 }
+int32_t coro_incoro(task_ctx *task) {
+    // 判型同 coro_get_arg。收 NULL 是有意的:调用方常在"连接还没建起来"的清理路径上问,
+    // 那时手里的 ctx->task 可能还没填
+    if (NULL == task
+        || TASK_MCO != task_get_type(task)
+        || NULL == task->arg) {
+        return 0;
+    }
+    return NULL != ((coro_ctx *)task->arg)->curco;
+}
 int32_t coro_sync(task_ctx *task, SOCKET fd, uint64_t skid) {
     return ev_ud_sess(&task->loader->netev, fd, skid, skid);
 }
@@ -568,6 +578,7 @@ int32_t coro_sync(task_ctx *task, SOCKET fd, uint64_t skid) {
 // 返回指向分发参数中 msg 的指针，在下次 _coro_wait 或 _coro_mco_resume 返回前有效
 message_ctx *_coro_wait(task_ctx *task, uint64_t sess, msg_type mtype, uint32_t ms) {
     coro_ctx *coctx = task->arg;
+    ASSERTAB(NULL != coctx->curco, "coro api called outside a coroutine.");
     _coro_cosess_set(task, coctx->curco, sess, mtype, ms);
     ++coctx->nyield;
     mco_result rtn = mco_yield(coctx->curco);
@@ -609,8 +620,7 @@ void *coro_request(task_ctx *dst, task_ctx *src,
 // 等一条指定类型的消息:超时则关连接并告警,连接已关则静默,两种都返 NULL。
 // 四个等待点(ssl exchange / handshake / connect / recv)只差 mtype、超时值与告警里的动作名,
 // tag 仅进日志。返回的指针在本协程下次 _coro_wait 前有效。
-// CLOSE 分支有意不告警:对端关连接是正常事件,而调用方是每命令一轮的循环,一条连接断掉能刷出
-// 几十条
+// CLOSE 分支有意不告警:对端关连接是正常事件,而调用方是每命令一轮的循环,一条连接断掉能刷出几十条
 static message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
                                    msg_type mtype, uint32_t ms, const char *tag) {
     // 连接已 teardown 就别挂上去:等不到唤醒,只会挂满超时再对 INVALID_SOCK 调一次 ev_close、

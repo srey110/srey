@@ -153,9 +153,9 @@ void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t 
     if (0 == queue_size(buf_s)) {
         return;
     }
-    if (!BIT_CHECK(status, STATUS_AUTHSSL)
-        && !BIT_CHECK(status, STATUS_SSLEXCHANGE)
-        && !BIT_CHECK(status, STATUS_KEYUPDATE_WRITE)) {
+    // SSLEXCHANGE 期 ssl 恒为 NULL、队列里全是明文,对端也还在读明文,照常冲;
+    // 只有 KEYUPDATE_WRITE 挂着一个待重试的 SSL_read,那时不能再调 SSL_write
+    if (!BIT_CHECK(status, STATUS_KEYUPDATE_WRITE)) {
         size_t nsend = 0;
         (void)_evpub_sock_send(fd, buf_s, &nsend, ssl);
         *wb_size -= nsend;
@@ -163,6 +163,26 @@ void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t 
     if (queue_size(buf_s) > 0) {
         LOG_WARN("close fd %d with %zu bytes undelivered.", (int32_t)fd, *wb_size);
     }
+}
+void _evpub_mark_close(int32_t *status, int32_t rtn, void *ssl) {
+    int32_t fin;
+#if WITH_SSL
+    fin = (NULL != ssl) ? evssl_recvd_shutdown((SSL *)ssl) : (1 == rtn);
+#else
+    (void)ssl;
+    fin = (1 == rtn);
+#endif
+    BIT_SET(*status, fin ? STATUS_PEER_FIN : STATUS_PEER_ABORT);
+}
+int32_t _evpub_close_type(int32_t status) {
+    // FIN 先判：异常路径可能在标过 FIN 之后再叠一次 ABORT，这样置位处就不用互斥
+    if (BIT_CHECK(status, STATUS_PEER_FIN)) {
+        return CLOSE_TYPE_ORDERLY;
+    }
+    if (BIT_CHECK(status, STATUS_PEER_ABORT)) {
+        return CLOSE_TYPE_ABORT;
+    }
+    return CLOSE_TYPE_LOCAL;
 }
 int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t client) {
     if (NULL != ssl) {
@@ -192,11 +212,13 @@ int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t clie
 }
 int32_t _evpub_tcp_sockopts(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
-        || ERR_OK != sock_nonblock(fd)
-        || ERR_OK != sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
+        || ERR_OK != sock_nonblock(fd)) {
         return ERR_FAILED;
     }
     return ERR_OK;
+}
+int32_t _evpub_tcp_keepalive(SOCKET fd) {
+    return sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL);
 }
 int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs_ctx *cbs,
                                  ud_cxt *ud, int32_t isudp, netaddr_ctx *addr) {
@@ -303,7 +325,7 @@ static int32_t _evpub_sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, 
             *readed = bytes;
             return ERR_OK;
         }
-        return ERR_FAILED;
+        return 1;// 完成但 0 字节即对端 FIN；RST 走 WSARecv 失败那支
     }
     if (!IS_EAGAIN(ERRNO)) {
         return ERR_FAILED;
@@ -316,7 +338,7 @@ static int32_t _evpub_sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, 
         return ERR_OK;
     }
     if (0 == rtn) {
-        return ERR_FAILED;
+        return 1;// 对端 FIN；RST / 其他读错误走下面那支
     }
     if (!ERR_RW_RETRIABLE(ERRNO)) {
         return ERR_FAILED;

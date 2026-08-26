@@ -9,12 +9,15 @@
 // meta 只查上限，空值是合法的"清除元数据"语义；
 // 长度取等号仍合法，不含结尾 NUL。topic 与 group 的上限卡在线格式的 2 字节长度前缀上，
 // 放超限值进去会被静默截断成另一个 topic。
-// retained 载荷只在服务端拒（客户端照发），BURST_MAX 则是服务端单次 scan 的截断上限
+// retained 载荷只在服务端拒（客户端照发）
 #define SC_TOPIC_MAX 256// topic / pattern 字符串最大长度
 #define SC_GROUP_MAX 64// 共享组名最大长度
 #define SC_META_MAX_SIZE 1024// publisher meta 上限
 #define SC_RETAINED_MAX_SIZE (1024 * 1024)// 单 topic retained 载荷上限,服务端拒
-#define SC_QUERY_RETAINED_BURST_MAX 1000// query_retained 单次返回条数上限,服务端截断
+// query_retained 单次返回的两道上限,服务端按先到的那个截断:平均载荷小于 8 KiB 时条数先封顶,
+// 大于则字节先封顶(8 MiB / 1000 条 = 8 KiB 即交叉点)。按实际载荷大小决定该调哪个
+#define SC_QUERY_RETAINED_BURST_MAX 1000// 条数上限
+#define SC_QUERY_RETAINED_BURST_BYTES (8 * 1024 * 1024)// 字节上限
 
 // REQ_SC_DELIVER 投递来源(sc_deliver.kind);普通订阅与共享订阅各自独立投递,接收方据此路由
 typedef enum sc_deliver_kind {
@@ -136,7 +139,8 @@ int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *top
                                  void *data, size_t size);
 /// <summary>
 /// 查询匹配 pattern 的所有当前 retained 消息(主动查询,不订阅)。
-/// 单次返回上限 SC_QUERY_RETAINED_BURST_MAX,超过截断 + LOG_WARN。必须在协程中调用。
+/// 单次返回上限 SC_QUERY_RETAINED_BURST_MAX 条且 SC_QUERY_RETAINED_BURST_BYTES 字节,
+/// 任一超出即截断 + LOG_WARN。必须在协程中调用。
 /// </summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>

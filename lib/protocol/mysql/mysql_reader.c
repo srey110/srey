@@ -94,27 +94,15 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        // 文本协议：字段值为字符串。原来的 strtoll 有两个口子骗得过 end-tmp 校验：空串返 0
-        // 且 end 不动(lens 同为 0，判等通过)、溢出钳到 LLONG_MAX 而 end 照样走到串尾，
-        // 两者都被当成功报给调用方。改按符号拆开走 str2u64，判据与 uinteger 一致
-        const char *s = (const char *)row->val.data;
-        size_t n = row->val.lens;
-        int32_t neg = (n > 0 && NULL != s && '-' == s[0]);
-        uint64_t mag;
-        if (0 != neg) {
-            s++;
-            n--;
-        }
-        if (ERR_OK != str2u64(s, n, 0 != neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX, &mag)) {
+        // 文本协议：空串 / 含非数字 / 超量程的判定与 pgsql 侧共用 parse_int64_strict，
+        // 这里只负责写 err 和打日志
+        int64_t val;
+        if (ERR_OK != parse_int64_strict(row->val.data, row->val.lens, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
-        if (0 == neg) {
-            return (int64_t)mag;
-        }
-        // INT64_MIN 的绝对值超出 int64_t，取负前先单独挑出来，免得 -(int64_t)mag 落进未定义行为
-        return (uint64_t)INT64_MAX + 1 == mag ? INT64_MIN : -(int64_t)mag;
+        return val;
     } else {
         // 二进制协议：字段值为原始二进制整数
         if (sizeof(int8_t) == row->val.lens) {
@@ -221,22 +209,18 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        // 零日期 0000-00-00[ 00:00:00] 是非严格 sql_mode 下的合法值，二进制协议用长度前缀 0
-        // 表示它、按 0 返回且 err 为 ERR_OK；文本协议这边 _strptime 的 %m 卡 1..12 会把它判成
-        // 解析失败，同一列同一值两条执行路径结果相反，所以在进解析器前先单独认掉。
-        // 两条路径都把它折成 0（即 1970-01-01），与真实的 1970-01-01 分不开——现有契约
-        // (int64 值 + 三态 err) 留不出第四种状态，要区分得先改接口
+        // 零日期 0000-00-00 是非严格 sql_mode 下的合法值，进 _strptime 之前先认掉：二进制协议
+        // 按 0 + err=ERR_OK 返回，而 %m 卡 1..12 会判成解析失败，同值两条路径会分叉。
+        // 折成 0 后与真实的 1970-01-01 分不开，现有契约留不出第四种状态
         if (row->val.lens >= 10
             && 0 == memcmp(tmp, "0000-00-00", 10)) {
             return 0;
         }
         struct tm dt = { 0 };
         dt.tm_isdst = -1;// 由 mktime 依日期/本地时区自行判定夏令时，否则 DST 期恒按标准时解释偏 1 小时
-        // 用 _strptime 而不是 sscanf("%d-%d-%d %d:%d:%d")，是为了拿到逐字段的量程校验：
-        // 那个 %d 什么都收，月/日/时越界会被 mktime 静默归一成另一个日期当成功报出去。
-        // 日期与时间分两段：DATE 列只有日期，DATETIME/TIMESTAMP 后面还跟时间。
-        // 日期后面还有东西就必须是完整时间，不能当没看见——否则 "2024-05-21 24:00:00"
-        // 这种时间越界的值会被当成合法 DATE 收下、把时间整段丢掉
+        // 用 _strptime 而不是 sscanf("%d-...")：要的是逐字段量程校验，%d 什么都收，越界值会被
+        // mktime 静默归一。日期与时间分两段读(DATE 列只有日期)，但日期后面还有东西就必须是完整
+        // 时间——否则 "2024-05-21 24:00:00" 会被当合法 DATE 收下、时间整段丢掉
         const char *end = _strptime(tmp, "%Y-%m-%d", &dt);
         if (NULL == end) {
             SET_PTR(err, ERR_FAILED);
@@ -291,14 +275,19 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
 int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const uint8_t _types[] = { MYSQL_TYPE_TIME, MYSQL_TYPE_TIME2 };
+    // 出参先清零再取行:取不到(列为 SQL NULL 或类型不符)时也给确定值,同族的 integer/double 一样
+    *time = (struct tm) { 0 };
+    *usec = 0;
     mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
     if (NULL == row) {
         return 0;
     }
     int32_t is_negative = 0;
-    *time = (struct tm) { 0 };
-    *usec = 0;
     if (MPACK_QUERY == reader->pack_type) {
+        // TIME 文本是 [-]HHH:MM:SS[.frac],量程 ±838:59:59,三段必须齐。
+        // 不用 sscanf("%d:%d:%d")的理由同上面 mysql_reader_datetime 改用 _strptime 那条
+        static const uint32_t _hms_max[3] = { 838, 59, 59 };
+        uint32_t hms[3];
         char tmp[48];
         if (ERR_OK != copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
             SET_PTR(err, ERR_FAILED);
@@ -309,16 +298,15 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
             is_negative = 1;
             p++;
         }
-        int32_t h = 0, mi = 0, sec = 0;
-        if (3 != sscanf(p, "%d:%d:%d", &h, &mi, &sec)) {
+        if (3 != parse_colon_triple(p, _hms_max, hms)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
         *usec = parse_usec_frac(p);
-        time->tm_mday = h / 24;
-        time->tm_hour = h % 24;
-        time->tm_min = mi;
-        time->tm_sec = sec;
+        time->tm_mday = (int32_t)(hms[0] / 24);
+        time->tm_hour = (int32_t)(hms[0] % 24);
+        time->tm_min = (int32_t)hms[1];
+        time->tm_sec = (int32_t)hms[2];
     } else {
         // 二进制协议：长度前缀 0=零时间 8=天+时分秒 12=含微秒
         if (0 == row->val.lens) {

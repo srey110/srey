@@ -8,6 +8,9 @@ local http   = require("lib.http")
 local srey_http = require("srey.http")-- C 绑定层,直接断言 is_token / max_headlens
 
 local PORT = 15047
+-- HEAD 用例的裸监听端口。测试模块并发跑,端口必须全仓唯一——15048 是 unit_websock 的,
+-- 别用 PORT+1 这种推导写法,新端口先 grep 再定
+local HEAD_PORT = 15049
 local CK_RSP = "chunked-done"
 local BODY = "hello"
 local PROBE = "hdrprobe"
@@ -15,6 +18,9 @@ local FRAME = "frameprobe"
 local INJ = "a\r\nX-Evil: 1"-- 头值里塞 CRLF：未过滤时会把一条响应劈成两条
 local URL_INJ = "/x HTTP/1.1\r\nX-Evil: 1\r\n\r\nGET /y"-- 请求目标里塞 CRLF：未过滤时线缆上是两条请求
 local PROBE2 = "afterinj"-- 拒绝之后的回显探针，验证连接没被污染
+-- HEAD 用例的响应：带 Content-Length 却不带报文体。PACK_HTTP 那条服务端分支自己算
+-- Content-Length，造不出这个形状，只能裸监听手写字节
+local HEAD_RSP = "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\nX-Head: v\r\n\r\n"
 local N204 = "want204"-- 触发 server 回 204+body，验证 body 与 Content-Length 都被丢弃
 -- 名 + ": " + 值 + CRLF 超 MAX_HEADLENS(4096)：整条头会被丢弃，不截断也不发出
 local BIG = string.rep("b", 4096)
@@ -30,10 +36,14 @@ end
 
 srey.startup(function()
 runner.run("http_client", function(t)
-    local cli_fd, raw_fd
+    local cli_fd, raw_fd, head_fd
     srey.on_recved(function(pktype, fd, skid, client, slice, data, size)
-        if fd == cli_fd or fd == raw_fd then
+        if fd == cli_fd or fd == raw_fd or fd == head_fd then
             return-- 客户端侧响应由 syn_send 的等待者接走;万一漏收落到这里也不回应,免污染断言
+        end
+        if PACK_TYPE.NONE == pktype and 0 == client then
+            srey.send(fd, skid, HEAD_RSP, #HEAD_RSP, 1)-- HEAD 用例的裸监听侧
+            return
         end
         if 0 ~= slice then
             if 0 ~= (slice & 4) then-- PROT_SLICE_END:分片请求收齐才回
@@ -178,6 +188,28 @@ runner.run("http_client", function(t)
     -- 注：请求侧不再受 MAX_HEADLENS 约束这条没法在这里验——srey 的解析器对请求同样按
     -- MAX_HEADLENS 判，测试服务端就是 srey，超限的请求头它自己就拒收了；而"旧代码会丢弃"
     -- 与"srey 会拒收"用的是同一个 4096，不存在能区分两者的尺寸。要验得对着 nginx 之类跑
+
+    -- HEAD：响应带 Content-Length 却无报文体，解包侧靠 core.http_set_method 才认得出。
+    -- 漏登记的话这里会挂在等 1234 字节报文体上直到 netread 超时，拿到 nil
+    local hlid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
+    t:check(ERR_FAILED ~= hlid, "listen " .. HEAD_PORT)
+    if ERR_FAILED ~= hlid then
+        local head_skid
+        head_fd, head_skid = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
+        t:check(head_fd and INVALID_SOCK ~= head_fd, "head connect")
+        if head_fd and INVALID_SOCK ~= head_fd then
+            local hp = http.head_req(head_fd, head_skid, "/")
+            t:check(nil ~= hp, "HEAD 拿到响应(没挂在等报文体上)")
+            if hp then
+                t:eq("v", hp.heads and hp.heads["X-Head"], "HEAD 响应头可读")
+                t:check(nil == hp.data or 0 == #hp.data, "HEAD 响应无报文体")
+            end
+            -- 登记只对紧随那一条生效,第二次得重新登记(http.head_req 已代劳);同一连接连发验证这点
+            t:check(nil ~= http.head_req(head_fd, head_skid, "/again"), "同一连接第二次 HEAD 仍拿到响应")
+            srey.close(head_fd, head_skid)
+        end
+        srey.unlisten(hlid)
+    end
 
     srey.close(cli_fd, cli_skid)
     srey.unlisten(lid)-- 释放端口给后续测试

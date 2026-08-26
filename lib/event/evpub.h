@@ -25,6 +25,14 @@
 // 回调与消息里的 client 形参恒取 0/1。BIT_CHECK 拿到的是 0x10，必须在这里归一化——
 // 上层文档都按 1 写，透传原值会让 == 1 的判定永远不成立
 #define SOCK_IS_CLIENT(status) (BIT_CHECK((status), STATUS_CLIENT) ? 1 : 0)
+// 取 tcp 结构上的 SSL 对象；未编 SSL 时恒 NULL。收 ssl 的那几个函数形参都是 void *，
+// 本就不跟着 #if WITH_SSL 切（见 _evpub_sock_send / _evpub_close_flush_tcp 的说明），
+// 调用点也不该各套一层：unix 与 IOCP 两侧共 8 处，只差这一个实参
+#if WITH_SSL
+#define TCP_SSL(t) ((t)->ssl)
+#else
+#define TCP_SSL(t) NULL
+#endif
 
 struct evssl_ctx;
 struct watcher_ctx;
@@ -45,7 +53,11 @@ typedef enum sock_status {
     STATUS_KEYUPDATE_WRITE = 0x80,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
     STATUS_KEYUPDATE_READ = 0x100,// 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
                                   // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针
-    STATUS_ESTABLISHED = 0x200    // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
+    STATUS_ESTABLISHED = 0x200,   // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
+    // 下面两个记"连接是怎么断的"，只由收发失败路径置位（_evpub_mark_close）；
+    // 两个都没置即本地主动关闭，故 ev_close / task 拆除等路径无需标记
+    STATUS_PEER_FIN = 0x400,      // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
+    STATUS_PEER_ABORT = 0x800     // 收发失败：RST、读写错误、无 close_notify 的 EOF
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写
 typedef enum udp_opt_type {
@@ -104,7 +116,7 @@ typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
 typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                        int32_t client, size_t size, ud_cxt *ud);// 发送完成回调
 typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                        int32_t client, ud_cxt *ud);// 连接关闭回调
+                        int32_t client, int32_t erro, ud_cxt *ud);// 连接关闭回调（erro 为 close_type）
 typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                            char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);// UDP接收回调
 typedef int32_t(*props_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx,
@@ -185,7 +197,7 @@ int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd);
 void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
 // 关闭前把 send queue 冲一次：能写进内核的(关闭帧、COM_QUIT 这类小控制包)送达，写不进去的
 // 连同连接一起丢并落 WARN。不留"等发完再关"的中间态——那个态没有上限，对端不读就永久占住 fd。
-// SSL 握手/升级未完成、KeyUpdate 挂着 SSL_read(理由见 _uev_add_bufs_send)时发不得，只丢不冲。
+// KeyUpdate 挂着 SSL_read(理由见 _uev_add_bufs_send)时发不得，只丢不冲。
 // 冲出去的字节不报 MSG_TYPE_SEND：调用方此刻尚未置 STATUS_ERROR，回调进来即重入。
 // ssl 收 void * 而非 SSL *：同 _evpub_ssl_exchange_check，不跟着 #if WITH_SSL 一起切
 void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t *wb_size, void *ssl);
@@ -194,9 +206,14 @@ void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t 
 // "不是 SOCK_STREAM" 那道门不在此处：它是调用方 UPCAST 成 tcp 结构的前提，进来晚了就已经越界读了。
 // 收 const void * 而非 SSL * 是有意的：这样它不依赖 SSL 类型，无需跟着 #if WITH_SSL 一起切
 int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t client);
-// 新建 TCP 连接需要的整套 socket 选项：无延迟 + 非阻塞 + keepalive。
-// connect 与 accept 两侧共用，加选项就加在这里，别在调用点各自补
+// 建连前就要设好的 socket 选项：无延迟 + 非阻塞（非阻塞是发起异步 connect 的前提）。
+// connect 与 accept 两侧共用，加同类选项就加在这里，别在调用点各自补。
+// keepalive 有意不在这里：Windows 下它是 SIO_KEEPALIVE_VALS 这个 IOCTL，对未 bind 未连接的
+// socket 下它没有意义，改由 _evpub_tcp_keepalive 在 socket 连通后调
 int32_t _evpub_tcp_sockopts(SOCKET fd);
+// 连通后才能设的那一项：keepalive。超时参数只在本函数里定，四个调用点（两平台 × connect/accept）
+// 不得各带一套。失败一律按丢连接处理：没有它，对端静默消失的连接就永远不会被回收
+int32_t _evpub_tcp_keepalive(SOCKET fd);
 // ev_connect / ev_listen / ev_udp 的公共前导：校验回调、拒绝 ev_free 期间的调用、解析地址。
 // 失败时调用方直接 return ERR_FAILED，不要再碰 ud：ud 已被 UD_FREE，唯一例外是 cbs 本身为 NULL
 // （ud_free 就挂在 cbs 里，无从释放）。只有地址解析失败那条会落日志，前两条静默
@@ -206,8 +223,16 @@ int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs
 SOCKET _evpub_listen(netaddr_ctx *addr);
 // 创建并绑定UDP socket
 SOCKET _evpub_udp(netaddr_ctx *addr);
-// 从socket读取数据（支持SSL/普通）
+// 从socket读取数据（支持SSL/普通）；返回 1 表示裸 socket 读到 FIN（对端有序关闭）。
+// 取正数,这样只认 ERR_OK 的调用方仍按失败处理,漏改一处不会静默死循环
 int32_t _evpub_sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
+// 记下这次收发失败是"对端有序结束"还是"异常中断"，供关闭回调回带 close_type。
+// rtn 传本次收发的返回码，发送失败传 ERR_FAILED。
+// SSL 连接不看 rtn 看 close_notify：evssl_read 只返回 ERR_OK / ERR_FAILED，
+// 而 SSL_RECEIVED_SHUTDOWN 是 SSL 对象上的持久位，读失败之后再查也准
+void _evpub_mark_close(int32_t *status, int32_t rtn, void *ssl);
+// 由 STATUS_PEER_* 得出 close_type，两个位都没置即本地主动关闭
+int32_t _evpub_close_type(int32_t status);
 // 向socket发送数据（支持SSL/普通）
 int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg);
 // UDP 发送缓冲入队并尝试立即发送（IOCP/uev 平台无关封装）；

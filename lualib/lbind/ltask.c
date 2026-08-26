@@ -379,7 +379,6 @@ static void _ltask_pack_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) 
         LUA_TB_NUMBER("client", msg->client);
         LUA_TB_NUMBER("sess", msg->sess);
         LUA_TB_NUMBER("erro", msg->erro);
-        LUA_TB_NUMBER("neverconn", msg->neverconn);
         break;
     case MSG_TYPE_CONNECT:
         LUA_TB_NETPUB(msg);

@@ -188,7 +188,9 @@ static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     propt->slens = num;
     return propt;
 }
-//属性解析
+// 属性解析。只按 id 决定读几个字节,两件事未查:同一属性重复出现、属性 id 与当前报文类型
+// 不匹配(按 MQTT-5.0 §2.2.2.2 两者都算 Protocol Error)。数组按 wire 顺序原样交上层,
+// 重复属性会出现多个同 id 元素,上层若只读先遇到的那个,取到的可能不是对端的本意
 static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *total) {
     int32_t plens;
     int32_t occupy = _mqtt_data_varnum(buf, &plens);//属性长度
@@ -878,9 +880,8 @@ static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
 static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t rtn = ERR_FAILED;
     // 版本在这里统一填，不由各 handler 自己抄：mqtt_unpack 是 CALLOC，漏抄一处就静默得
-    // version==0，下游按 3.1.1 处理而不是报错，而这个不变式本来只靠十来个作者各自记得。
-    // connack 不走这里——它正是确立版本的那条；auth 两条路都能到(_mqtt_init 的握手期与这里)，
-    // 所以它自己那份保留，两处赋的是同一个值
+    // version==0、下游按 3.1.1 处理而不报错。connack 不走这里(它正是确立版本的那条)；
+    // auth 两条路都能到，它自己那份保留，两处赋的是同一个值
     pack->version = ((mqtt_ctx *)ud->context)->version;
     switch (pack->fixhead.prot) {
     case MQTT_PUBLISH:

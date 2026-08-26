@@ -186,11 +186,7 @@ void _iocp_disconnect(sock_ctx *skctx) {
             return;
         }
         // ev_send 在本平台只是入队并投 0 字节探针,payload 此刻还在 buf_s,不冲就是整包丢
-#if WITH_SSL
-        _evpub_close_flush_tcp(tcp->ol_s.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, tcp->ssl);
-#else
-        _evpub_close_flush_tcp(tcp->ol_s.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, NULL);
-#endif
+        _evpub_close_flush_tcp(tcp->ol_s.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, TCP_SSL(tcp));
         BIT_SET(tcp->status, STATUS_ERROR);
         _iocp_sk_shutdown(skctx);
         CancelIoEx((HANDLE)skctx->fd, NULL);
@@ -221,11 +217,7 @@ static inline int32_t _olp_call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int3
 // 调用SSL握手完成回调，返回值非ERR_OK则断开连接
 static inline int32_t _olp_call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.exch_cb) {
-#if WITH_SSL
-        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud, oltcp->ssl);
-#else
-        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud, NULL);
-#endif
+        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud, TCP_SSL(oltcp));
     }
     return ERR_OK;
 }
@@ -245,13 +237,14 @@ static inline void _olp_call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t 
 // 调用连接关闭回调
 static inline void _olp_call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.c_cb) {
-        oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud);
+        oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, SOCK_IS_CLIENT(oltcp->status),
+                        _evpub_close_type(oltcp->status), &oltcp->ud);
     }
 }
-// 调用UDP关闭回调
+// 调用UDP关闭回调。UDP 无 FIN 可言，STATUS_PEER_* 永不置位，close_type 恒为 LOCAL
 static inline void _olp_call_udp_close_cb(ev_ctx *ev, overlap_udp_ctx *oludp) {
     if (NULL != oludp->cbs.c_cb) {
-        oludp->cbs.c_cb(ev, oludp->ol_r.fd, oludp->skid, 0, &oludp->ud);
+        oludp->cbs.c_cb(ev, oludp->ol_r.fd, oludp->skid, 0, _evpub_close_type(oludp->status), &oludp->ud);
     }
 }
 // 调用UDP接收回调；0 字节 datagram 由本函数过滤不向上抛（_olp_on_recvfrom_cb 仍不视为 EOF，
@@ -363,28 +356,28 @@ static int32_t _olp_ssl_do_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltc
 // 从socket读取数据到接收缓冲区并触发recv回调，成功后重新提交WSARecv
 static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nread;
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, TCP_SSL(oltcp));
 #if WITH_SSL
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, oltcp->ssl);
     if (ERR_OK == rtn
         && NULL != oltcp->ssl
         && !BIT_CHECK(oltcp->status, STATUS_SENDING) //忙则跟着业务自行完成
         && SSL_want_write(oltcp->ssl)) {// tls1.3 KeyUpdate探测
         BIT_SET(oltcp->status, STATUS_KEYUPDATE_WRITE);
     }
-#else
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, NULL);
 #endif
     _olp_call_recv_cb(watcher->ev, oltcp, nread);
-    if (ERR_OK == rtn) {
-#if WITH_SSL
-        if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 处理 KeyUpdate 触发可写
-            BIT_SET(oltcp->status, STATUS_NORECV);
-            return _olp_wantwrite(oltcp);
-        }
-#endif
-        rtn = _olp_post_recv(oltcp);
+    // 先记再往下走：下面 _olp_wantwrite / _olp_post_recv 会覆写 rtn，那是本地投递失败，不是对端关的
+    if (ERR_OK != rtn) {
+        _evpub_mark_close(&oltcp->status, rtn, TCP_SSL(oltcp));
+        return rtn;
     }
-    return rtn;
+#if WITH_SSL
+    if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 处理 KeyUpdate 触发可写
+        BIT_SET(oltcp->status, STATUS_NORECV);
+        return _olp_wantwrite(oltcp);
+    }
+#endif
+    return _olp_post_recv(oltcp);
 }
 // 关闭TCP连接：若正在发送则标记延迟关闭，否则立即执行关闭回调并回收到对象池
 static void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
@@ -400,8 +393,13 @@ static void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
 // IOCP TCP接收完成回调：处理SSL握手或普通数据接收
 static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
-        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+    // 完成状态非成功即 RST 一类的传输错；优雅 FIN 是"成功 + 0 字节"，落到下面 _olp_tcp_recv 去标
+    int32_t iofail = (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal);
+    if (iofail) {
+        _evpub_mark_close(&oltcp->status, ERR_FAILED, TCP_SSL(oltcp));
+    }
+    if (iofail
+        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {// 只有 STATUS_ERROR：本地已在关，不标
         _olp_on_recv_cb_err(watcher, oltcp);
         return;
     }
@@ -503,14 +501,11 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
 // 挂起态不变式：KEYUPDATE_READ=1 ⟹ ol_s 不在途 ∧ ol_r 在途 ∧ buf_s 非空
 static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nsend;
-#if WITH_SSL
-    int32_t rtn = _evpub_sock_send(oltcp->ol_s.fd, &oltcp->buf_s, &nsend, oltcp->ssl);
-#else
-    int32_t rtn = _evpub_sock_send(oltcp->ol_s.fd, &oltcp->buf_s, &nsend, NULL);
-#endif
+    int32_t rtn = _evpub_sock_send(oltcp->ol_s.fd, &oltcp->buf_s, &nsend, TCP_SSL(oltcp));
     oltcp->wb_size -= nsend;
     _olp_call_send_cb(watcher->ev, oltcp, nsend);
     if (ERR_OK != rtn) {
+        _evpub_mark_close(&oltcp->status, ERR_FAILED, TCP_SSL(oltcp));
         return ERR_FAILED;
     }
     uint32_t cnt = queue_size(&oltcp->buf_s);
@@ -561,6 +556,7 @@ static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *o
     int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, oltcp->ssl);
     _olp_call_recv_cb(watcher->ev, oltcp, nread);
     if (ERR_OK != rtn) {
+        _evpub_mark_close(&oltcp->status, rtn, oltcp->ssl);
         return ERR_FAILED;
     }
     if (SSL_want_write(oltcp->ssl)) {// 没冲完,直接重投探针:SENDING 已持有,不走 wantwrite
@@ -591,7 +587,12 @@ static void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
 // IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调
 static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_s);
-    if (ERROR_SUCCESS != oltcp->ol_s.overlapped.Internal
+    // 同 _olp_on_recv_cb：发送完成状态非成功即传输错，标异常；STATUS_ERROR 那支是本地已在关，不标
+    int32_t iofail = (ERROR_SUCCESS != oltcp->ol_s.overlapped.Internal);
+    if (iofail) {
+        _evpub_mark_close(&oltcp->status, ERR_FAILED, TCP_SSL(oltcp));
+    }
+    if (iofail
         || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         _olp_send_close_tcp(watcher, oltcp);
         return;
@@ -706,6 +707,11 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
         return;
     }
     BIT_SET(oltcp->status, STATUS_ESTABLISHED);
+    if (ERR_OK != _evpub_tcp_keepalive(oltcp->ol_r.fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        _olp_on_connect_cb_err(watcher, oltcp);
+        return;
+    }
 #if WITH_SSL // 默认启用ssl，初始化
     if (NULL != oltcp->evssl) {
         oltcp->ssl = evssl_setfd(oltcp->evssl, oltcp->ol_r.fd);
@@ -944,7 +950,8 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
                              SO_UPDATE_ACCEPT_CONTEXT,
                              (char *)&lsn->fd,
                              (int32_t)sizeof(lsn->fd))
-        || ERR_OK != _evpub_tcp_sockopts(fd)) {
+        || ERR_OK != _evpub_tcp_sockopts(fd)
+        || ERR_OK != _evpub_tcp_keepalive(fd)) {
         CLOSE_SOCK(fd);
         _iocp_try_freelsn(lsn);
         return;

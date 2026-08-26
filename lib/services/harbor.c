@@ -123,8 +123,10 @@ static void _harbor_startup(task_ctx *harbor) {
     router_post(ctx->router, NULL, "/call", _harbor_call, NULL, 0);
     router_post(ctx->router, NULL, "/request", _harbor_request, NULL, 0);
     if (ERR_OK != task_listen(harbor, PACK_HTTP, ctx->ssl, ctx->ip, ctx->port, &ctx->lsnid, 0)) {
-        LOG_ERROR("task_listen %s:%d error", ctx->ip, ctx->port);
+        LOG_ERROR("harbor task_listen %s:%d error.", ctx->ip, ctx->port);
+        return;
     }
+    LOG_INFO("harbor on %s:%d", ctx->ip, ctx->port);
 }
 // 释放 harbor task 关联资源
 static void _harbor_free(void *arg) {

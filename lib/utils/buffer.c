@@ -796,7 +796,8 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
         rtn = _readv(fd, iov, niov, arg, &readed);
         buffer_commit_expand(ctx, readed, iov, niov);
         *nread += readed;
-        if (ERR_FAILED == rtn) {
+        // 判 !ERR_OK 而不是 == ERR_FAILED：_readv 的失败码不止一种，漏掉一种就会接着读下去
+        if (ERR_OK != rtn) {
             break;
         }
         if (0 == readed) {

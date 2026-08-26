@@ -443,7 +443,7 @@ int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char 
 /// <returns>ERR_OK 成功</returns>
 int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens);
 /// <summary>
-/// startsession 命令 启动新会话
+/// startsession 命令 启动新会话。会话按 lsid 记在服务端、与连接无关，连接 quit / 重连后仍可继续用
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <returns>NULL 失败 mongo_session</returns>
@@ -455,7 +455,8 @@ mongo_session *mongo_startsession(mongo_ctx *mongo);
 /// <returns>ERR_OK 成功</returns>
 int32_t mongo_refreshsession(mongo_session *session);
 /// <summary>
-/// endsessions 命令 使会话过期,释放mongo_session
+/// endsessions 命令 使会话过期,释放mongo_session。
+/// endsessions 一律发送：服务端的会话记录不随连接消失，漏发要挂到会话超时才回收
 /// </summary>
 /// <param name="session">mongo_session</param>
 void mongo_freesession(mongo_session *session);
@@ -464,7 +465,8 @@ void mongo_freesession(mongo_session *session);
 /// 同一 session 重复调用视为开新事务（递增 txnNumber）
 /// </summary>
 /// <param name="session">mongo_session</param>
-/// <returns>ERR_OK 成功；该连接上已有别的 session 处于事务中时返回 ERR_FAILED，且不改动任何状态</returns>
+/// <returns>ERR_OK 成功；该连接上已有别的 session 处于事务中时返回 ERR_FAILED，且不改动任何状态。
+/// 重连只废掉在途事务不废会话，重连后拿旧 session 重新 begin 是正常用法</returns>
 int32_t mongo_begin(mongo_session *session);
 /// <summary>
 /// 事务提交

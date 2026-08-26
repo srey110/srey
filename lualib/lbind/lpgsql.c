@@ -624,7 +624,8 @@ static int32_t _lpgsql_pack_type(lua_State *lua) {
 /// 多语句 simple query 只反映最后一条，逐条读取用 affected_at
 /// </summary>
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
-/// <returns type="integer">受影响行数；包类型不是 PGPACK_OK 或解析失败时为 0</returns>
+/// <returns type="integer">受影响行数；包类型为 PGPACK_ERR 或解析失败时为 0。
+/// COPY 的包按其 "COPY N" 标签照报，pgsql.lua 的 _copy_out 正依赖这一档</returns>
 static int32_t _lpgsql_affected_rows(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);

@@ -57,11 +57,8 @@ void mail_subject(mail_ctx *mail, const char *subject) {
 void mail_msg(mail_ctx *mail, const char *msg) {
     FREE(mail->msg);
     size_t lens = strlen(msg);
-    // 规范化 bare CR / bare LF 为 CRLF：RFC 5321 要求行结尾严格 CRLF。
-    // 正文现在一律 base64 写出，走私那条路已经封死（编码后行首只可能是 base64 字符），
-    // 这里保留规范化是为了内容本身正确——MIME text/plain 的行终止符就该是 CRLF，
-    // 解码方拿到的应当是规整的行，而不是发送端当时随手敲的 \n
-    // 容量上限 2*lens+1：每字节最坏情况 (独立 CR 或独立 LF) 扩展为 2 字节
+    // 规范化 bare CR / bare LF 为 CRLF：MIME text/plain 的行终止符就该是 CRLF(RFC 5321)。
+    // 容量上限 2*lens+1：每字节最坏情况(独立 CR 或独立 LF)扩展为 2 字节
     MALLOC(mail->msg, 2 * lens + 1);
     size_t j = 0;
     char c;
@@ -297,18 +294,11 @@ static void _mail_set_b64(binary_ctx *bw, const char *b64) {
         }
     }
 }
-// 纯文本正文按 base64 写出，一次一行边编边写。原先是先整段 bs64_encode 进一块堆缓冲、
-// 再 _mail_set_b64 里 strlen 一遍、再整块拷进 bwriter——1MB 正文要多付一次 1.33MB 分配、
-// 一次 1.33MB 白扫和一次 1.33MB 拷贝。57 字节原文正好编成 76 个 base64 字符，即 RFC 2045 §6.8
-// 的行宽，所以按 57 切块就天然是折行位置，栈上一个小缓冲够用。
-// 原先那两个毛病的说明（为什么不能 8bit 原样写）：
-// 一是 RFC 5321 §4.5.3.1.6 规定单行含 CRLF 不得超过 1000 octet，而调用方给的正文完全可能
-// 一行几千字，Postfix / Exim 会拒收或强行折行破坏内容——同一份代码对 base64 段专门折了行，
-// 对 8bit 文本却没管；二是纯文本单段的分支从不写 Content-Type，按 RFC 2045 缺省即 us-ascii，
-// UTF-8 正文在严格客户端上必然乱码。改 base64 一并解决：内容无损、行长由 _mail_set_b64
-// 折到 76、charset 显式声明。
-// 顺带连 dot-stuffing（RFC 5321 §4.5.2）都不需要了：base64 行首只可能是 base64 字符，
-// 出不了 '.'，<CRLF>.<CRLF> 这个 SMTP smuggling 的入口从根上没了
+// 纯文本正文按 base64 写出，一次一行边编边写：57 字节原文正好编成 76 个 base64 字符（RFC 2045
+// §6.8 的行宽），故按 57 切块天然落在折行位置，栈上一个小缓冲够用。
+// 不能 8bit 原样写有两条硬理由：RFC 5321 §4.5.3.1.6 限单行含 CRLF 不超 1000 octet，长正文会被
+// 拒收或强行折行；纯文本单段分支不写 Content-Type，缺省即 us-ascii，UTF-8 正文必乱码。
+// 顺带 dot-stuffing（RFC 5321 §4.5.2）也不需要了：base64 行首出不了 '.'
 static void _mail_set_text_b64(binary_ctx *bw, const char *msg) {
     size_t lens = strlen(msg);
     char line[B64EN_SIZE(MIME_B64_RAW)];
@@ -335,10 +325,9 @@ static void _mail_set_text_part(binary_ctx *bw, const char *msg) {
 char *mail_pack(mail_ctx *mail) {
     uint32_t nattach = array_size(&mail->attach);
     int32_t multipart = (!EMPTYSTR(mail->html) || nattach > 0) ? 1 : 0;
-    // 用不到的分支不生成：innerboundary 只有 multipart/alternative（即有 html）才用得上，
-    // "有附件无 html"这条最常见的路径原来每封白付一次 csprng_rand——Linux 上那是裸的
-    // syscall(SYS_getrandom)，熵池未就绪时会阻塞。仍显式清零，两处使用都在 if 里，
-    // 编译器未必能关联到那一点
+    // 用不到的分支不生成：innerboundary 只有 multipart/alternative(即有 html)才用得上，
+    // 而 csprng_rand 在 Linux 上是裸 getrandom，熵池未就绪时会阻塞。
+    // 仍显式清零：两处使用都在 if 里，编译器未必能关联到那一点
     char boundary[MIME_BOUND_LENS] = { 0 };
     char innerboundary[MIME_BOUND_LENS] = { 0 };
     if (multipart) {

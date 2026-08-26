@@ -13,18 +13,26 @@ typedef struct http_header_ctx {
     buf_ctx value;
 }http_header_ctx;
 struct http_pack_ctx;
+struct ev_ctx;
 
 // 释放 http_pack_ctx 结构体及其内部资源
 void _http_pkfree(struct http_pack_ctx *pack);
 // 释放与 ud_cxt 关联的 http 上下文资源
 void _http_udfree(ud_cxt *ud);
+// 连接关闭时的协议收尾：正按"关闭界定 body"接收(见 http_unpack 的 client 说明)时返回一个空载荷
+// 末片包，调用方须把它当 PROT_SLICE_END 投给业务并负责释放；其余情形返 NULL
+struct http_pack_ctx *_http_on_close(ud_cxt *ud);
 /// <summary>
 /// HTTP 解包：从缓冲区解析完整 HTTP 报文（头部 + 内容 / chunked）
 /// </summary>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护解析状态</param>
 /// <param name="client">1 表示本端是客户端（收到的是响应），0 表示收到的是请求。
-/// 1xx/204/304 的"无报文体"规则只对响应成立，本端解析不出方向，故须由调用方给</param>
+/// 只对响应成立的两条规则都靠它：1xx/204/304 无报文体；以及既无 Content-Length 又无
+/// Transfer-Encoding 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7)。本端解析不出方向，故须由调用方给。
+/// 规则 7 那档按分片投递：头部包带 PROT_SLICE_START，body 逐段带 PROT_SLICE，
+/// 末片由 _http_on_close 在连接关闭时补 PROT_SLICE_END——业务须按分片循环收，同 chunked。
+/// 规则 1 的 HEAD 那半靠发起方登记：本接口拿不到请求方法，须由 http_set_method 登记</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 http_pack_ctx，数据不足或出错返回 NULL</returns>
 struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status);
@@ -45,9 +53,27 @@ int32_t http_code_nobody(int32_t code);
 /// http请求包
 /// </summary>
 /// <param name="bwriter">binary_ctx</param>
-/// <param name="method">方法 GET POST...</param>
+/// <param name="method">方法 GET POST...；客户端侧须先把同一个 method 传给 http_set_method
+/// 登记到连接上再组包，否则 HEAD 的响应会被当成有报文体</param>
 /// <param name="url">url</param>
 void http_pack_req(binary_ctx *bwriter, const char *method, const char *url);
+/// <summary>
+/// 把本次要发的请求方法登记到连接上：解包侧要靠它才能判定响应有无报文体
+/// （HEAD 的响应按 RFC 7230 §3.3.3 规则 1 不带 body 却照样带 Content-Length，而 http_unpack
+/// 拿不到请求方法）。哪些方法需要特殊处理由本函数判断，调用方只管把 method 原样传进来。
+/// 三条硬约束：紧挨在 http_pack_req 之前调，且必须排在 ev_send 之前；登记了就必须把对应请求
+/// 发出去；登记到收下那条响应之间，同一连接上不得再发别的请求。登记只对紧随的那一条响应生效，
+/// 违反任一条都会让它落到别人的响应上，把那条的 body 当作不存在。
+/// 多协程共享同一连接时，用 coro_serial 把"登记 → 发送 → 收响应"整段圈进临界区（见 coro_serial_new）
+/// </summary>
+/// <param name="ev">ev_ctx</param>
+/// <param name="fd">socket 句柄</param>
+/// <param name="skid">链接ID</param>
+/// <param name="method">与 http_pack_req 同一个 method；按 RFC 7231 §4.1 区分大小写</param>
+/// <returns>ERR_OK 已登记，或该方法无需登记——后者不投命令，因而也不校验 fd。
+///   需要登记的方法在 fd 为 INVALID_SOCK 时返 ERR_FAILED；
+///   命令执行时连接不是 HTTP、或正在读某条响应的 body，则该次登记被忽略并落 WARN</returns>
+int32_t http_set_method(struct ev_ctx *ev, SOCKET fd, uint64_t skid, const char *method);
 /// <summary>
 /// http响应包
 /// </summary>

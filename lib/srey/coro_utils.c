@@ -277,13 +277,16 @@ static int32_t _mysql_do_connect(task_ctx *task, void *ctx) {
     return err;
 }
 // 命令串行化的进出，成对使用：调用方进函数时先 held = xxx->serial 捏住指针，加锁解锁都用它。
-// held 为 NULL 表示这条连接不由 coro_utils 这套 API 管（经 *_try_connect 自行建立时
-// 就是这样），此时退化为原来的无锁行为。
 // 捏指针而不是解锁时重读 xxx->serial：理由见 coro_serial_free 的调用方义务 2。
-// lock 失败（不在协程内 / 连接正在销毁）时调用方一律按失败返回，不得再调 unlock。
+// held 为 NULL 表示这条连接不由 coro_utils 这套 API 管（经 *_try_connect 自行建立），不串行化，
+// 但"必须在协程内"两档都成立，这一档得自己问。
+// 失败（不在协程内 / 连接正在销毁）时调用方一律按失败返回，不得再调 unlock。
 // mysql / pgsql / mongo / smtp 四家同一套语义，故只此一份
-static int32_t _serial_lock(coro_serial_ctx *held) {
-    return NULL == held ? ERR_OK : coro_serial_enter(held);
+static int32_t _serial_lock(task_ctx *task, coro_serial_ctx *held) {
+    if (NULL == held) {
+        return 0 != coro_incoro(task) ? ERR_OK : ERR_FAILED;
+    }
+    return coro_serial_enter(held);
 }
 static void _serial_unlock(coro_serial_ctx *held) {
     if (NULL != held) {
@@ -315,7 +318,7 @@ static coro_serial_ctx *_serial_acquire(task_ctx *task, coro_serial_ctx **slot, 
         *owned = 1;
     }
     coro_serial_ctx *held = *slot;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(task, held)) {
         if (0 != *owned) {
             _serial_discard(slot, held);
         }
@@ -325,25 +328,29 @@ static coro_serial_ctx *_serial_acquire(task_ctx *task, coro_serial_ctx **slot, 
 }
 // 建 serial 与整段握手都在锁内,理由见 _serial_acquire 上方。
 // 只拆本次新建的:不是本次建的说明连接本来就在,拆了连累别人
-// 票在 _serial_acquire(会 yield)之前采样。skid 只由 try_connect 赋值,故"票变了"就是"排队期间
-// 有人真的重连过";重入调用(如 selectdb 持锁再 connect)不 yield,票必然没变,不会误短路。
-// established 省不掉:票变了但那次连接失败时,fd 可能还没被 teardown 复位,只看 fd 会对着死连接报成功
-static int32_t _serial_connect(task_ctx *task, coro_serial_ctx **slot, sk_id *sk,
-                               int32_t *established, serial_conn_cb doconn, void *ctx) {
-    uint64_t ticket = sk->skid;
+// 票在 _serial_acquire(会 yield)之前采样,取 generation 而不是 skid:skid 在 try_connect 发起
+// 连接时就已写好,采到的是在途那条,排队者醒来看不出变化。generation 在建连成功与断开时前进,
+// 故"票变了"就是"排队期间有人动过这条连接";重入调用(如 selectdb 持锁再 connect)不 yield,
+// 票必然没变,不会误短路。established 省不掉:quit 一样让代次前进,只看票会对着已关的连接报成功
+static int32_t _serial_connect(task_ctx *task, coro_serial_ctx **slot, int32_t *established,
+                               uint32_t *generation, serial_conn_cb doconn, void *ctx) {
+    uint32_t ticket = *generation;
     int32_t owned;
     coro_serial_ctx *held = _serial_acquire(task, slot, &owned);
     if (NULL == held) {
         return ERR_FAILED;
     }
     // 排队期间别人已经建好了:再连一次会覆写 sk.fd/skid,把那条连接孤立到对端超时才回收
-    if (ticket != sk->skid
+    if (ticket != *generation
         && 0 != *established) {
         _serial_unlock(held);
         return ERR_OK;
     }
     int32_t rtn = doconn(task, ctx);
     *established = (ERR_OK == rtn) ? 1 : 0;
+    // 代次无条件前进:doconn 里的 *_try_connect 已经无条件覆写过 sk.fd/skid,成败与否这条连接
+    // 的身份都换了。只在成功时前进,排队者会拿着旧票短路到一条已经不存在的连接上
+    (*generation)++;
     if (ERR_OK != rtn
         && 0 != owned) {
         _serial_discard(slot, held);
@@ -353,21 +360,34 @@ static int32_t _serial_connect(task_ctx *task, coro_serial_ctx **slot, sk_id *sk
 }
 // 摘指针 → 无执行器就直接断 → 上锁 → 断开动作 → 拆执行器 → 解锁。上锁是别把别人半途的等待拦腰打断;
 // 拿不到锁只拆不断:要么不在协程内(断连要等确认,这儿做不了),要么别人已在销毁同一条连接。
-// 摘指针而不是解锁时重读,道理见 _serial_discard 上方
-static void _serial_quit(coro_serial_ctx **slot, int32_t *established,
-                         serial_quit_cb doquit, void *ctx) {
-    *established = 0;
+// established / generation 只在锁内改:锁外改的话排在前面的 connect 会把它们覆写回去,
+// quit 返回时留下"还连着"的假值。摘指针而不是解锁时重读,道理见 _serial_discard 上方
+static void _serial_quit(task_ctx *task, coro_serial_ctx **slot, sk_id *sk, int32_t *established,
+                         uint32_t *generation, serial_quit_cb doquit, void *ctx) {
     coro_serial_ctx *held = *slot;
     if (NULL == held) {
-        // 无执行器的连接退化为原来的无锁行为,照断不误。注意这一档少了两道门:doquit 里的
-        // coro_close / coro_send 只能在协程内调(非协程会撞 ASSERTAB),且不与别人的往返互斥
-        doquit(ctx);
+        // task 为 NULL 说明从未连接过(它由 *_try_connect 填),没有 socket 要断
+        if (NULL == task) {
+            return;
+        }
+        *established = 0;
+        (*generation)++;
+        // doquit 里的 coro_close / coro_send 只能在协程内调。非协程退到 ev_close:
+        // 不等确认也不发协议层的 QUIT,但 fd 照样收回,不会漏到整个 task 拆除
+        if (0 != coro_incoro(task)) {
+            doquit(ctx);
+            return;
+        }
+        LOG_WARN("quit outside coroutine context, close fd %d without protocol quit.", (int32_t)sk->fd);
+        ev_close(&task->loader->netev, sk->fd, sk->skid);
         return;
     }
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(task, held)) {
         _serial_discard(slot, held);
         return;
     }
+    *established = 0;
+    (*generation)++;
     doquit(ctx);
     _serial_discard(slot, held);
     _serial_unlock(held);
@@ -378,9 +398,9 @@ static void _serial_quit(coro_serial_ctx **slot, int32_t *established,
 // 而 held 为 NULL(经 *_try_connect 自建)时 X_connect 会顺手装上执行器,把本不受管的连接变成
 // 受管的;那一档本函数全程无锁、重连也不串行,与该类连接"不受管"的既有契约一致
 static int32_t _serial_ping(coro_serial_ctx *held, task_ctx *task, sk_id *sk,
-                           int32_t *established, serial_ping_cb doping,
-                           serial_conn_cb doconn, void *ctx) {
-    if (ERR_OK != _serial_lock(held)) {
+                           int32_t *established, uint32_t *generation,
+                           serial_ping_cb doping, serial_conn_cb doconn, void *ctx) {
+    if (ERR_OK != _serial_lock(task, held)) {
         return ERR_FAILED;
     }
     int32_t rtn = ERR_OK;
@@ -389,12 +409,14 @@ static int32_t _serial_ping(coro_serial_ctx *held, task_ctx *task, sk_id *sk,
         coro_close(task, sk->fd, sk->skid);
         rtn = doconn(task, ctx);
         *established = (ERR_OK == rtn) ? 1 : 0;
+        // 这里换掉的 fd/skid 与 _serial_connect 里那次是同一件事,代次同样无条件前进,理由见那边
+        (*generation)++;
     }
     _serial_unlock(held);
     return rtn;
 }
 int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
-    return _serial_connect(task, &mysql->serial, &mysql->client.sk, &mysql->established,
+    return _serial_connect(task, &mysql->serial, &mysql->established, &mysql->generation,
                             _mysql_do_connect, mysql);
 }
 // 统一"发送+同步等待响应+校验 MPACK_OK"尾块;成功返回 ERR_OK,失败返回 ERR_FAILED
@@ -415,7 +437,7 @@ static int32_t _mysql_selectdb(mysql_ctx *mysql, const char *database) {
 }
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
     coro_serial_ctx *held = mysql->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(mysql->task, held)) {
         return ERR_FAILED;
     }
     int32_t rtn = _mysql_selectdb(mysql, database);
@@ -431,7 +453,8 @@ static int32_t _mysql_ping(void *ctx) {
 }
 int32_t mysql_ping(mysql_ctx *mysql) {
     return _serial_ping(mysql->serial, mysql->task, &mysql->client.sk,
-                        &mysql->established, _mysql_ping, _mysql_do_connect, mysql);
+                        &mysql->established, &mysql->generation,
+                        _mysql_ping, _mysql_do_connect, mysql);
 }
 static mpack_ctx *_mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind) {
     size_t size;
@@ -474,7 +497,7 @@ static int32_t _mysql_read_results(mysql_ctx *mysql, mpack_ctx *mpack, mysql_res
 int32_t mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
                     mysql_result_cb cb, void *udata) {
     coro_serial_ctx *held = mysql->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(mysql->task, held)) {
         return ERR_FAILED;
     }
     int32_t rtn = ERR_FAILED;
@@ -496,7 +519,7 @@ static mysql_stmt_ctx *_mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
 }
 mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
     coro_serial_ctx *held = mysql->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(mysql->task, held)) {
         return NULL;
     }
     mysql_stmt_ctx *rtn = _mysql_stmt_prepare(mysql, sql);
@@ -519,7 +542,7 @@ int32_t mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind,
                            mysql_result_cb cb, void *udata) {
     mysql_ctx *mysql = stmt->mysql;
     coro_serial_ctx *held = mysql->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(mysql->task, held)) {
         return ERR_FAILED;
     }
     if (INVALID_SOCK == mysql->client.sk.fd
@@ -538,7 +561,7 @@ int32_t mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind,
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
     mysql_ctx *mysql = stmt->mysql;
     coro_serial_ctx *held = mysql->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(mysql->task, held)) {
         return ERR_FAILED;
     }
     if (INVALID_SOCK == mysql->client.sk.fd
@@ -594,7 +617,8 @@ static void _mysql_do_quit(void *ctx) {
     coro_close(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid);
 }
 void mysql_quit(mysql_ctx *mysql) {
-    _serial_quit(&mysql->serial, &mysql->established, _mysql_do_quit, mysql);
+    _serial_quit(mysql->task, &mysql->serial, &mysql->client.sk, &mysql->established, &mysql->generation,
+                 _mysql_do_quit, mysql);
 }
 static int32_t _smtp_do_connect(task_ctx *task, void *ctx) {
     smtp_ctx *smtp = (smtp_ctx *)ctx;
@@ -614,7 +638,7 @@ static int32_t _smtp_do_connect(task_ctx *task, void *ctx) {
     return err;
 }
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
-    return _serial_connect(task, &smtp->serial, &smtp->sk, &smtp->established,
+    return _serial_connect(task, &smtp->serial, &smtp->established, &smtp->generation,
                             _smtp_do_connect, smtp);
 }
 // 统一 SMTP 的"组包 → 同步发送 → 校验应答码"三步:cmd 为 NULL(组包拒绝,如地址含 CRLF)
@@ -644,7 +668,8 @@ static void _smtp_do_quit(void *ctx) {
     coro_close(smtp->task, smtp->sk.fd, smtp->sk.skid);
 }
 void smtp_quit(smtp_ctx *smtp) {
-    _serial_quit(&smtp->serial, &smtp->established, _smtp_do_quit, smtp);
+    _serial_quit(smtp->task, &smtp->serial, &smtp->sk, &smtp->established, &smtp->generation,
+                 _smtp_do_quit, smtp);
 }
 // 发送 SMTP NOOP 命令检测连接是否存活，失败返回 ERR_FAILED
 static int32_t _smtp_ping(void *ctx) {
@@ -653,7 +678,8 @@ static int32_t _smtp_ping(void *ctx) {
 }
 int32_t smtp_ping(smtp_ctx *smtp) {
     return _serial_ping(smtp->serial, smtp->task, &smtp->sk,
-                        &smtp->established, _smtp_ping, _smtp_do_connect, smtp);
+                        &smtp->established, &smtp->generation,
+                        _smtp_ping, _smtp_do_connect, smtp);
 }
 // 执行 SMTP 邮件发送流程（MAIL FROM → RCPT TO → DATA → 正文）。
 // 发件人 / 收件人地址含 CRLF 时 smtp_pack_from / smtp_pack_rcpt 返 NULL，由 _smtp_cmd 拒发
@@ -680,7 +706,7 @@ static int32_t _smtp_reset(smtp_ctx *smtp) {
 }
 int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     coro_serial_ctx *held = smtp->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(smtp->task, held)) {
         return ERR_FAILED;
     }
     // 锁覆盖 _smtp_send + _smtp_reset 整段:RSET 清的是本次投递在服务端留下的会话状态,
@@ -691,6 +717,7 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     // 故不必等确认,而 RSET 失败常常正是对端已断,那条 CLOSE 已被取走,等就是持锁空等满超时
     if (ERR_OK != _smtp_reset(smtp)) {
         smtp->established = 0;// 明知已关就别留"还连着"的假值
+        smtp->generation++;// 就地拆连接同样换了身份,理由同 _serial_quit
         ev_close(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid);
     }
     _serial_unlock(held);
@@ -716,7 +743,7 @@ static int32_t _pgsql_do_connect(task_ctx *task, void *ctx) {
     return code;
 }
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
-    return _serial_connect(task, &pg->serial, &pg->sk, &pg->established,
+    return _serial_connect(task, &pg->serial, &pg->established, &pg->generation,
                             _pgsql_do_connect, pg);
 }
 int32_t pgsql_cancel(pgsql_ctx *pg) {
@@ -744,6 +771,8 @@ static void _pgsql_disconnect(pgsql_ctx *pg) {
     size_t lens;
     void *quit = pgsql_pack_terminate(&lens);
     ev_send(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, quit, lens, 0);
+    // 代次不在这里前进:两个调用方都已覆盖——_pgsql_do_quit 经 _serial_quit,
+    // pgsql_selectdb 紧随的 pgsql_connect 无条件前进
     pg->established = 0;// selectdb 那条路径不经 _serial_quit,自己落
     coro_close(pg->task, pg->sk.fd, pg->sk.skid);
 }
@@ -752,13 +781,14 @@ static void _pgsql_do_quit(void *ctx) {
     _pgsql_disconnect((pgsql_ctx *)ctx);
 }
 void pgsql_quit(pgsql_ctx *pg) {
-    _serial_quit(&pg->serial, &pg->established, _pgsql_do_quit, pg);
+    _serial_quit(pg->task, &pg->serial, &pg->sk, &pg->established, &pg->generation,
+                 _pgsql_do_quit, pg);
 }
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
     // 换库整段在锁内(含 set_db)：它改的 pg->database 是连接级状态,搁在锁外的话拿不到锁那次
     // 会留下"库名已换、连接还在旧库上",之后随便哪次 ping 重连就悄悄换了库
     coro_serial_ctx *held = pg->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(pg->task, held)) {
         return ERR_FAILED;
     }
     // 先校验再断连：库名超长时 set_db 保留旧名,若照旧先断就白断一条可用连接,
@@ -787,11 +817,12 @@ static int32_t _pgsql_ping(void *ctx) {
 }
 int32_t pgsql_ping(pgsql_ctx *pg) {
     return _serial_ping(pg->serial, pg->task, &pg->sk,
-                        &pg->established, _pgsql_ping, _pgsql_do_connect, pg);
+                        &pg->established, &pg->generation,
+                        _pgsql_ping, _pgsql_do_connect, pg);
 }
 pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql) {
     coro_serial_ctx *held = pg->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(pg->task, held)) {
         return NULL;
     }
     pgpack_ctx *rtn = _pgsql_query(pg, sql);
@@ -816,7 +847,7 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
         return ERR_FAILED;
     }
     coro_serial_ctx *held = pg->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(pg->task, held)) {
         return ERR_FAILED;
     }
     int32_t rtn = _pgsql_stmt_prepare(pg, name, sql, nparam, oids);
@@ -825,7 +856,7 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
 }
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat) {
     coro_serial_ctx *held = pg->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(pg->task, held)) {
         return NULL;
     }
     size_t lens;
@@ -836,7 +867,7 @@ pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *
 }
 void pgsql_stmt_close(pgsql_ctx *pg, const char *name) {
     coro_serial_ctx *held = pg->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(pg->task, held)) {
         return;// Close 也要等 CloseComplete,拿不到锁就别发,服务端那份随连接关闭一并回收
     }
     size_t lens;
@@ -872,7 +903,7 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
     // 本函数是两次往返:服务端进 COPY IN 模式后,在 CopyDone 之前它只认 CopyData/CopyFail,
     // 中间插进别人一条普通查询就整条连接报错。锁必须覆盖两次往返,不能各自包一次
     coro_serial_ctx *held = pg->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(pg->task, held)) {
         return NULL;
     }
     pgpack_ctx *rtn = _pgsql_copy_in(pg, sql, data, lens);
@@ -881,7 +912,7 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
 }
 pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql) {
     coro_serial_ctx *held = pg->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(pg->task, held)) {
         return NULL;
     }
     // 发送 COPY SQL，解析器在收到所有 CopyData + CopyDone 后于 ReadyForQuery 时返回累积结果
@@ -897,7 +928,8 @@ static void _mongo_do_quit(void *ctx) {
     coro_close(mongo->task, mongo->sk.fd, mongo->sk.skid);
 }
 void mongo_quit(mongo_ctx *mongo) {
-    _serial_quit(&mongo->serial, &mongo->established, _mongo_do_quit, mongo);
+    _serial_quit(mongo->task, &mongo->serial, &mongo->sk, &mongo->established, &mongo->generation,
+                 _mongo_do_quit, mongo);
 }
 // 执行 MongoDB SCRAM 认证流程（发送 client-first 消息并等待握手结果）
 static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
@@ -929,7 +961,7 @@ static mgopack_ctx *_mongo_sendwait(mongo_ctx *mongo, void *pack, size_t lens) {
         return NULL;
     }
     coro_serial_ctx *held = mongo->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(mongo->task, held)) {
         FREE(pack);
         return NULL;
     }
@@ -994,7 +1026,7 @@ static int32_t _mongo_do_connect(task_ctx *task, void *ctx) {
     return ERR_OK;
 }
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
-    return _serial_connect(task, &mongo->serial, &mongo->sk, &mongo->established,
+    return _serial_connect(task, &mongo->serial, &mongo->established, &mongo->generation,
                             _mongo_do_connect, mongo);
 }
 static int32_t _mongo_ping(void *ctx) {
@@ -1007,7 +1039,8 @@ static int32_t _mongo_ping(void *ctx) {
 }
 int32_t mongo_ping(mongo_ctx *mongo) {
     return _serial_ping(mongo->serial, mongo->task, &mongo->sk,
-                        &mongo->established, _mongo_ping, _mongo_do_connect, mongo);
+                        &mongo->established, &mongo->generation,
+                        _mongo_ping, _mongo_do_connect, mongo);
 }
 // MongoDB 统一发送函数：设置了 MORETOCOME 标志时仅发送不等待响应，否则同步等待响应。
 // pack 为 NULL(组包被拒)在此一并吸收,语义同 _mongo_call
@@ -1019,7 +1052,7 @@ static int32_t _mongo_send(mongo_ctx *mongo, void *pack, size_t lens, mgopack_ct
         return ERR_FAILED;
     }
     coro_serial_ctx *held = mongo->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(mongo->task, held)) {
         FREE(pack);
         return ERR_FAILED;
     }
@@ -1180,8 +1213,8 @@ int32_t mongo_refreshsession(mongo_session *session) {
 }
 void mongo_freesession(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
-    // 无条件发:endsession 只按 session->uuid 组包,不带连接当前绑定的事务上下文,
-    // 故与"这条连接此刻绑没绑本 session"无关
+    // 不看绑定:endsession 只按 session->uuid 组包,不带连接当前绑定的事务上下文。
+    // 也不看连接换没换过:服务端的会话记录不随连接消失,漏发这一包就要挂到会话超时才回收
     size_t lens;
     void *endsession = mongo_pack_endsession(session, &lens);
     _mongo_send(mongo, endsession, lens, NULL);
@@ -1192,11 +1225,11 @@ void mongo_freesession(mongo_session *session) {
     FREE(session);
 }
 // 事务绑定规则,begin / commit / rollback 三处共用:
-// 组包一律从 mongo->session 取事务上下文,所以调用方手上的 session 必须就是连接当前绑定的那个,
-// 否则命令会挂到别人的事务上。begin 靠拒绝第二个 session 维持,commit/rollback 在入口挡掉已分叉的
-// 情形直接报失败(分叉来自 mongo_connect 重连解绑,或另一个 session 接管了这条连接)。
+// 组包一律从 mongo->session 取事务上下文,调用方手上的 session 必须就是连接当前绑定的那个。
+// begin 靠拒绝第二个 session 维持,commit/rollback 在入口挡掉已分叉的情形直接报失败。
+// 重连只废掉在途事务不废会话(会话按 lsid 记在服务端、与连接无关),故此处不认代次只认绑定。
 // 早退不释放 session->options 不算漏:重新 begin 与 mongo_freesession 都会释放。
-// commit/rollback 各套一层外锁,判定必须和组包发送同在锁内(上锁会挂起,锁外判定是张过期票);begin 不挂起,不套锁
+// commit/rollback 各套一层外锁,判定必须和组包发送同在锁内;begin 不挂起,不套锁
 int32_t mongo_begin(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
     // 一条连接同时只能有一个活跃事务;放第二个 session 进来会让后续写静默改跟它走
@@ -1240,7 +1273,7 @@ static int32_t _mongo_txn_end(mongo_session *session, char *options, size_t optl
 }
 int32_t mongo_commit(mongo_session *session, char *options, size_t optlens) {
     coro_serial_ctx *held = session->mongo->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(session->mongo->task, held)) {
         return ERR_FAILED;
     }
     int32_t rtn = _mongo_txn_end(session, options, optlens, mongo_pack_committransaction, "commit");
@@ -1249,7 +1282,7 @@ int32_t mongo_commit(mongo_session *session, char *options, size_t optlens) {
 }
 int32_t mongo_rollback(mongo_session *session, char *options, size_t optlens) {
     coro_serial_ctx *held = session->mongo->serial;
-    if (ERR_OK != _serial_lock(held)) {
+    if (ERR_OK != _serial_lock(session->mongo->task, held)) {
         return ERR_FAILED;
     }
     int32_t rtn = _mongo_txn_end(session, options, optlens, mongo_pack_aborttransaction, "rollback");

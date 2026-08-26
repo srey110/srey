@@ -678,6 +678,51 @@ static void test_pgsql_reader_temporal_text_range(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, err);
 }
 
+// 时区偏移改用 parse_colon_triple 之后的收窄。原来 sscanf 的返回值被丢掉：越界段当成功用
+// （"+24" 真按 24 小时算），压根不是数字的留 0 偏移静默当 UTC，位数装不下 int 的还是有符号溢出。
+// 现在这三类都拒掉整个值——PG 自己吐的时区永远合法，能走到这儿的只有坏数据
+static void test_pgsql_reader_timezone_reject(CuTest *tc) {
+    int32_t err;
+
+    // 1) 负偏移方向：'-05' 是比 UTC 晚 5 小时，换算回去要加（正向的 '+08' 在上一条用例）
+    int64_t usec = _pg_text_ts("2000-01-01 00:00:00-05", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 5LL * 3600 * 1000000LL == usec);
+
+    // 2) 缺的段填 0：只给到分钟照样算成功
+    usec = _pg_text_ts("2000-01-01 00:00:00+05:30", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, -(5LL * 3600 + 30 * 60) * 1000000LL == usec);
+
+    // 3) 三段各自越界
+    (void)_pg_text_ts("2000-01-01 00:00:00+24", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_pg_text_ts("2000-01-01 00:00:00+00:60", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_pg_text_ts("2000-01-01 00:00:00+00:00:60", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 4) 符号后不是数字：原来一段都没匹配上，留 0 偏移当 UTC 用
+    (void)_pg_text_ts("2000-01-01 00:00:00+", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_pg_text_ts("2000-01-01 00:00:00+ab", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 5) 位数装不下 int：原来是 %d 的有符号溢出
+    (void)_pg_text_ts("2000-01-01 00:00:00+99999999999", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 6) 无时区照常成功：扫描从日期时间之后起步，别把日期里那两个减号误当偏移
+    usec = _pg_text_ts("2000-01-01 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 0 == usec);
+
+    // 7) 时区后面还跟着 " BC"：偏移段取到就收手，尾巴上的非数字不算错
+    usec = _pg_text_ts("0044-03-15 12:00:00+05 BC", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, usec < 0);
+}
+
 // pgsql_reader_timestamp/date 二进制协议：大端定长（timestamp=8 / date=4），长度不符拒绝
 // 回归：此前仅文本路径有覆盖，二进制路径与长度校验无单测
 static void test_pgsql_reader_temporal_binary(CuTest *tc) {
@@ -1001,6 +1046,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_timestamp_text);
     SUITE_ADD_TEST(suite, test_pgsql_reader_date);
     SUITE_ADD_TEST(suite, test_pgsql_reader_temporal_text_range);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_timezone_reject);
     SUITE_ADD_TEST(suite, test_pgsql_reader_double_text_bounds);
     SUITE_ADD_TEST(suite, test_pgsql_reader_temporal_binary);
     SUITE_ADD_TEST(suite, test_pgsql_reader_uuid);

@@ -124,29 +124,19 @@ local sess_ctx = class("mongo_session_ctx")
 function sess_ctx:ctor(mgoctx, session_ud)
     self.mgoctx = mgoctx
     self.session = session_ud
-    -- 记录创建时的连接代次；mongo ping 失败重连后代次 +1，旧 lsid 已被服务端清理
-    self.gen = mgoctx.generation
 end
 
 ---开始事务：递增 txnNumber，构建 lsid + txnNumber 事务选项 BSON，挂载到 mongo->session
 ---一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false
----@return boolean ok 成功 true（session 已因重连失效、或该连接上已有别的 session 处于事务中时返回 false）
+---@return boolean ok 成功 true（该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
-    if self.gen ~= self.mgoctx.generation then
-        WARN("mongo session invalidated by reconnect, please restart session.")
-        return false
-    end
     return self.session:begin()
 end
 
--- 代次判定、组包、发送整段在锁内，理由同 C 侧 mongo_commit：判定与 _rsend 里那次上锁之间隔着
--- 一次不定长排队，锁外判就是过期票——排队期间别人可能已 ping 重连换掉连接。
+-- 组包与发送整段在锁内，理由同 C 侧 mongo_commit：组包要读连接当前绑定的 session，
+-- 与 _rsend 里那次上锁之间隔着一次不定长排队，锁外组包拿到的是过期状态。
 -- 内层 _rsend 再上一次锁，同协程按 ref 嵌套
 local function _txn_do(self, opts, optslens, packname, what)
-    if self.gen ~= self.mgoctx.generation then
-        WARN("mongo session invalidated by reconnect, please restart session.")
-        return false
-    end
     local mgo = self.mgoctx.mongo
     local pack, size = _pack_noflag(mgo, self.session, packname, opts, optslens)
     if not pack then
@@ -192,12 +182,8 @@ function sess_ctx:rollback(opts, optslens)
     return _txn_finish(self, opts, optslens, "pack_abort", "rollback")
 end
 
--- 判定与发送同在锁内，理由同 _txn_do
+-- 组包与发送同在锁内，理由同 _txn_do
 local function _refresh_do(self)
-    if self.gen ~= self.mgoctx.generation then
-        WARN("mongo session invalidated by reconnect, please restart session.")
-        return false
-    end
     local mgo = self.mgoctx.mongo
     local pack, size = _pack_noflag(mgo, self.session, "pack_refresh")
     local mgopack = _rsend(self.mgoctx, pack, size)
@@ -207,28 +193,21 @@ local function _refresh_do(self)
     return mgo:check_error(mgopack) >= 0
 end
 ---刷新会话超时（refreshSessions），延续会话存活时间
----@return boolean ok 刷新成功 true（session 已因重连失效时返回 false）
+---@return boolean ok 刷新成功 true
 function sess_ctx:refresh()
     return srey.serial_ret(false, self.mgoctx.serial(_refresh_do, self))
 end
 
--- 判定与发送同在锁内，理由同 _txn_do。
--- 重连后服务端已自动清理旧 lsid，跳过 endSessions 网络包
+-- 组包与发送同在锁内，理由同 _txn_do
 local function _close_do(self)
-    if self.gen ~= self.mgoctx.generation then
-        return
-    end
     local pack, size = self.session:pack_endsession()
     _wsend(self.mgoctx, pack, size)
 end
 ---结束会话（endSessions，fire-and-forget）并释放 C 层会话内存。
 ---session:free() 留在锁外：它不碰连接，且无论有没有发出 endSessions 都要释放
 function sess_ctx:close()
-    -- 锁外先判一次:代次只增不减,读到不等就必然真不等(服务端早清了旧 lsid),没东西可发,
-    -- 不必排队等锁;读到相等可能是过期票,进去后 _close_do 在锁内还会重判一次
-    if self.gen == self.mgoctx.generation then
-        self.mgoctx.serial(_close_do, self)
-    end
+    -- 服务端的会话记录不随连接消失,重连过也照发 endSessions,漏发就要挂到会话超时才回收
+    self.mgoctx.serial(_close_do, self)
     self.session:free()
 end
 

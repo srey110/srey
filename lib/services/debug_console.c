@@ -206,7 +206,7 @@ static void _debug_forward(router_req *ctx, binary_ctx *cmd, int32_t needlua) {
     if (0 != needlua
         && TASK_LUA != task_get_type(dst)) {
         task_ungrab(dst);
-        router_req_text(ctx, 200, _DBG_NOTLUA, strlen(_DBG_NOTLUA));
+        router_req_text(ctx, 503, _DBG_NOTLUA, strlen(_DBG_NOTLUA));
         binary_free(cmd);
         return;
     }

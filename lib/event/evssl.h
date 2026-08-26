@@ -154,6 +154,13 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 /// <param name="fd">socket句柄</param>
 void evssl_shutdown(SSL *ssl, SOCKET fd);
 /// <summary>
+/// 是否收到过对端的 close_notify。查的是 SSL 对象上的持久位，读失败之后再问也准，
+/// 不必在出错那一刻抓 SSL_get_error
+/// </summary>
+/// <param name="ssl">SSL</param>
+/// <returns>1 收到过（TLS 层有序结束）；0 未收到（连接被截断或尚未结束）</returns>
+int32_t evssl_recvd_shutdown(SSL *ssl);
+/// <summary>
 /// ssl版本，完成握手后调用
 /// </summary>
 /// <param name="ssl">SSL</param>

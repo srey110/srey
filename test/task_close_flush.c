@@ -5,7 +5,7 @@ typedef struct close_flush_args {
     int32_t *ok;
 }close_flush_args;
 
-// 小包取 4KB:远小于任何平台的默认发送缓冲,一次冲刷必然全部写进内核
+// 小包取 4KB:远小于任何平台的默认发送缓冲,ev_send 那步就全部写进内核
 // 大包取 4MB:必然超出发送缓冲,用来验证"丢尾巴但照样关得掉"
 #define SMALL_BYTES (4 * 1024)
 #define BIG_BYTES   (4 * 1024 * 1024)
@@ -54,7 +54,7 @@ static void _startup(task_ctx *task) {
             LOG_ERROR("close_flush iter %d: coro_connect failed.", i);
             return;
         }
-        // 小包 + 立即 close:一次冲刷写得进内核,server 端应收全
+        // 小包 + 立即 close:ev_send 当场写进内核,server 端应收全
         MALLOC(data, SMALL_BYTES);
         memset(data, 'X', SMALL_BYTES);
         ev_send(&task->loader->netev, fd, skid, data, SMALL_BYTES, 0);

@@ -91,8 +91,8 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="name">字段</param>
-/// <param name="time">struct tm（tm_mday 存天数）</param>
-/// <param name="usec">微秒分量（0~999999）</param>
+/// <param name="time">struct tm（tm_mday 存天数）；必须非 NULL，取不到值时被清零</param>
+/// <param name="usec">微秒分量（0~999999）；必须非 NULL，取不到值时被清零</param>
 /// <param name="err">ERR_OK 成功  ERR_FAILED 失败 1 nil</param>
 /// <returns>1负 0 正</returns>
 int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err);

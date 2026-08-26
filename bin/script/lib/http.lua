@@ -5,6 +5,7 @@
 -- 依赖：lib.srey（网络收发）、srey.http（C 层解包）、cjson（JSON 编码）
 
 local srey = require("lib.srey")
+local core = require("srey.core")
 local srey_http = require("srey.http")
 local json = require("cjson")
 local table = table
@@ -88,12 +89,15 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
         srey.send(fd, skid, smsg, #smsg, 1)
         return
     end
-    local pack, _ = srey.syn_send(fd, skid, smsg, #smsg, 1)
+    local pack, _, slice = srey.syn_send(fd, skid, smsg, #smsg, 1)
     if not pack then
         return
     end
     pack = http.unpack(pack)
-    if 1 == pack.chunked then
+    -- 按协议层给的分片标记决定要不要接着收，不只认 chunked：响应既无 Content-Length 又无
+    -- Transfer-Encoding 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7)，C 侧同样按分片投、
+    -- 末片由关闭事件补。判定留在 C 一处，这里重抄一遍必然分叉(1xx/204/304 也没有 CL/TE)
+    if srey.SLICE_TYPE.START == slice then
         pack.cksize = 0
         local ok, data, hdata, hsize, fin
         local chunks
@@ -298,6 +302,35 @@ function http.get(fd, skid, url, headers, ckfunc)
         return nil
     end
     return _http_msg(false, false, fd, skid, status, headers, ckfunc)
+end
+
+---同步 HEAD 请求：只要响应头，服务端不回报文体。
+---解包侧拿不到请求方法，故发送前须先把 "HEAD" 登记到连接上（本函数已代劳）；漏登记的后果是
+---带 Content-Length 的 HEAD 响应被当成有报文体，keep-alive 上会把下一条响应吃掉。
+---
+---登记挂在连接上而不是这一次请求上：本函数与同一连接上的其他请求并发时，须用 srey.serial
+---把整个调用圈进临界区，否则那个登记会落到别人的响应上，把它的 body 当作不存在
+---@param fd integer socket fd
+---@param skid integer 连接 skid
+---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
+---@param headers table<string,any>? 附加头部
+---@return HttpPack|nil pack 解包后的响应表（无报文体，data 为空）；失败返回 nil。
+---url 非法或登记失败时一个字节都没发出，连接可继续复用
+---
+---名字不叫 head：本模块 40 行已把 srey_http.head（按 key 取单个响应头）导出为 http.head，
+---同名会静默把那个访问器覆盖掉
+function http.head_req(fd, skid, url, headers)
+    local status = _req_status("HEAD", url)
+    if not status then
+        return nil
+    end
+    -- 登记排在组请求之前：那时 method 就在手上，也不会出现"发出去了才想起登记"。
+    -- 同一 fd 的命令走同一条 FIFO 队列，故它必然先于随后的发送生效
+    if not core.http_set_method(fd, skid, "HEAD") then
+        WARN("http head: set method failed, skid %s.", tostring(skid))
+        return nil
+    end
+    return _http_msg(false, false, fd, skid, status, headers, nil)
 end
 
 ---同步 POST 请求；info 为报文体（string/table/function），用法同 _http_msg

@@ -1,5 +1,6 @@
 ﻿#include "protocol/http.h"
 #include "protocol/prots_pub.h"
+#include "event/event.h"
 #include "crypt/urlraw.h"
 #include "containers/sarray.h"
 #include "utils/utils.h"
@@ -9,7 +10,9 @@
 typedef enum parse_status{
     INIT = 0,   // 初始状态，等待头部
     CONTENT,    // 已解析头部，等待 Content-Length 指定的数据体
-    CHUNKED     // 分块传输模式
+    CHUNKED,    // 分块传输模式
+    TILLCLOSE,  // 响应无 CL/TE，body 由连接关闭界定（RFC 7230 §3.3.3 规则 7）
+    INIT_NOBODY // 同 INIT，但紧随的那一条响应按"无报文体"处理（HEAD 用，见 http_set_method）
 }parse_status;
 typedef struct http_pack_ctx {
     int32_t chunked;          // 0=非 chunked，1=chunked 起始包，2=chunked 数据包
@@ -165,6 +168,19 @@ int32_t http_code_nobody(int32_t code) {
 // 收到的这个包是否 RFC 7230 §3.3.3 规则 1 里"一律无报文体"的响应。
 // client 为 0 时收到的是请求，一律返 0：本端解析不出方向——_http_parse_status 只要求首段或末段
 // 是 HTTP-version，"HTTP/1.1 204 z" 这种伪请求行照样能过，在服务端按响应处理就是一次请求走私
+// 是否 1xx 中间响应:首行校验与 _http_nobody_resp 同一套,只是判的区间不同
+static int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
+    if (0 == client
+        || !_http_is_version(&pack->status[0])
+        || 3 != pack->status[1].lens) {
+        return 0;
+    }
+    uint64_t code;
+    if (ERR_OK != str2u64((const char *)pack->status[1].data, pack->status[1].lens, 999, &code)) {
+        return 0;
+    }
+    return code < 200;
+}
 static int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
     if (0 == client
         || !_http_is_version(&pack->status[0])
@@ -368,18 +384,24 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, i
     }
     return pack;
 }
-// 解析 HTTP 头部后根据传输方式决定：直接返回（无数据体/chunked）或进入数据体读取
+// 解析 HTTP 头部后根据传输方式决定：直接返回（无数据体/chunked）或进入数据体读取。
+// nobody 只由 ud->status 决定，故在此就地取——由调用方另传一个形参就是同一事实记两处
 static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status) {
+    int32_t nobody = (INIT_NOBODY == ud->status) ? 1 : 0;
     int32_t transfer;
     http_pack_ctx *pack = _http_parsehead(buf, ud, &transfer, status);
     if (NULL == pack) {
         return NULL;
     }
-    // 1xx/204/304 一律以头部后的空行结束，带了 CL/TE 也不算 body。
+    // 1xx/204/304 与 HEAD 的响应一律以头部后的空行结束，带了 CL/TE 也不算 body。
     // 不这么判，keep-alive 上会把下一条响应的头部吃成本条的 body
-    if (_http_nobody_resp(pack, client)) {
+    if (0 != nobody
+        || _http_nobody_resp(pack, client)) {
         pack->data.lens = 0;
         pack->chunked = 0;
+        // 1xx 是中间响应,最终响应还在后面(RFC 7231 §6.2 要求客户端容忍任意条 1xx),
+        // 此时不能把 HEAD 登记消耗掉,否则真正那条会被当成有 body
+        ud->status = (0 != nobody && 0 != _http_interim_resp(pack, client)) ? INIT_NOBODY : INIT;
         return pack;
     }
     if (CONTENT == transfer) {
@@ -395,6 +417,12 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, 
     } else {
         if (1 == pack->chunked) {
             BIT_SET(*status, PROT_SLICE_START);
+        } else if (0 != client) {
+            // 响应既无 Content-Length 又无 Transfer-Encoding：body 由连接关闭界定
+            // (RFC 7230 §3.3.3 规则 7)。按分片投：本包是首片，body 逐段跟上，末片由
+            // 关闭事件补(见 _http_on_close)。请求侧无此规则，无 CL/TE 即无 body
+            BIT_SET(*status, PROT_SLICE_START);
+            transfer = TILLCLOSE;
         }
         ud->status = transfer;
         return pack;
@@ -442,10 +470,9 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        // RFC 7230 §4.1：chunk = chunk-size [ chunk-ext ] CRLF。只截出 ';' 之前的 chunk-size，
-        // ext 原样跳过——原来拿整行长度去卡 16 字节的栈缓冲，AWS 的 aws-chunked 一条
-        // "400;chunk-signature=<64 位 hex>" 有 80 多字节，零填充写法 "0000000000000005"
-        // 正好 16 字节，两者都是合法传输却被当协议错断连
+        // RFC 7230 §4.1：chunk = chunk-size [ chunk-ext ] CRLF。只截 ';' 之前的 chunk-size，
+        // ext 原样跳过：不能拿整行长度去卡下面那个 16 字节栈缓冲——带签名的 chunk-ext 有 80
+        // 多字节、零填充的 chunk-size 又正好 16 字节，两者都是合法传输
         int32_t semi = buffer_search(buf, 0, 0, (size_t)pos, ";", 1);
         int32_t hexlens = (semi >= 0) ? semi : pos;
         char lensbuf[17] = { 0 };// 64 位十六进制最多 16 位 + NUL
@@ -537,6 +564,19 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     ud->context = NULL;
     return pack;
 }
+// 由连接关闭界定 body(RFC 7230 §3.3.3 规则 7)：缓冲里现有的字节全都是 body，原样切一片投出去。
+// 不在解析器里攒完整 body——那要无界累积并另配一个总长上限，而分片投递业务本来就在用(chunked)
+static http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
+    size_t lens = buffer_size(buf);
+    if (0 == lens) {
+        BIT_SET(*status, PROT_MOREDATA);
+        return NULL;
+    }
+    http_pack_ctx *pack = _http_chunkedpack(lens);
+    ASSERTAB(lens == buffer_remove(buf, pack->data.data, lens), "copy buffer failed.");
+    BIT_SET(*status, PROT_SLICE);
+    return pack;
+}
 void _http_pkfree(http_pack_ctx *pack) {
     if (NULL == pack) {
         return;
@@ -547,6 +587,13 @@ void _http_pkfree(http_pack_ctx *pack) {
     }
     FREE(pack);
 }
+http_pack_ctx *_http_on_close(ud_cxt *ud) {
+    if (TILLCLOSE != ud->status) {
+        return NULL;
+    }
+    ud->status = INIT;
+    return _http_chunkedpack(0);
+}
 void _http_udfree(ud_cxt *ud) {
     _http_pkfree(ud->context);
     ud->context = NULL;
@@ -555,6 +602,7 @@ http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t 
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
+    case INIT_NOBODY:
         pack = _http_header(buf, ud, client, status);
         break;
     case CONTENT:
@@ -562,6 +610,9 @@ http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t 
         break;
     case CHUNKED:
         pack = _http_chunked(buf, ud, status);
+        break;
+    case TILLCLOSE:
+        pack = _http_tillclose(buf, status);
         break;
     default:
         pack = NULL;
@@ -607,6 +658,33 @@ void *http_data(http_pack_ctx *pack, size_t *lens) {
 void http_pack_req(binary_ctx *bwriter, const char *method, const char *url) {
     ASSERTAB(NULL == strpbrk(method, "\r\n") && NULL == strpbrk(url, "\r\n"), "HTTP method/url must not contain CRLF.");
     binary_set_va(bwriter, "%s %s HTTP/1.1"FLAG_CRLF, method, url);
+}
+static int32_t _http_set_nobody_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+    void *data, uint64_t number) {
+    (void)watcher;
+    (void)data;
+    ud_cxt *ud = _evpub_get_ud(skctx);
+    // ud->status 是各协议共用的解析状态字节,写到非 HTTP 连接上就是把别人的状态机踢乱。
+    // 本接口收的是裸 fd(Lua 侧也能传任意 fd),故必须自己认协议,口径同 _prots_emit_close_tail
+    if (PACK_HTTP != ud->pktype) {
+        LOG_WARN("http set nobody on fd %d: not an http connection.", (int32_t)number);
+        return 0;
+    }
+    // 只在"等下一条响应头"这个时刻有意义：正读某条响应的 body 时置位会把状态机踢乱
+    if (INIT != ud->status) {
+        LOG_WARN("http set nobody on fd %d while a message body is in progress.", (int32_t)number);
+        return 0;
+    }
+    ud->status = INIT_NOBODY;
+    return 0;
+}
+int32_t http_set_method(ev_ctx *ev, SOCKET fd, uint64_t skid, const char *method) {
+    // 目前只有 HEAD 需要登记,其余方法是空操作,连命令都不投。
+    // 方法按 RFC 7231 §4.1 区分大小写,故直接 strcmp
+    if (0 != strcmp(method, "HEAD")) {
+        return ERR_OK;
+    }
+    return ev_props(ev, fd, skid, _http_set_nobody_cb, NULL, NULL, (uint64_t)fd);
 }
 const char *http_code_status(int32_t code) {
     switch (code) {

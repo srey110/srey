@@ -291,10 +291,9 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
     uint16_t nadd = ntohs(head.add_count);
     uint32_t total = (uint32_t)nans + nauth + nadd;
     if (0 == total) {
-        // 走到这里 TC 与 rcode 都已查过,三段计数全零就是最常见的 NOERROR/NODATA 形态:
-        // AUTHORITY 里那条 SOA 是 SHOULD 不是 MUST,缓存转发器普遍不带。漏置 nodata 的话
-        // 这个最常见的形状仍会白跑一次 TCP 重查(下面那个 0 == total 是 maxrec 钳零,
-        // 属报文声称有记录却没有字节的畸形,不能当 NODATA)
+        // TC 与 rcode 都已查过,三段计数全零即 NOERROR/NODATA(AUTHORITY 那条 SOA 是 SHOULD
+        // 不是 MUST,转发器普遍不带),不置 nodata 会白跑一次 TCP 重查。
+        // 下面那个 0 == total 是 maxrec 钳零,属"声称有记录却没字节"的畸形,不能当 NODATA
         SET_PTR(nodata, 1);
         return NULL;
     }
@@ -357,10 +356,9 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
     if (NULL != reader) {
         reader = _dns_parse_data(buf, buflen, reader, nadd, dnsips, &index, &jump_budget);
     }
-    // index==0 是报文合法但一条 A/AAAA 都没解出来（最常见是 NOERROR/NODATA：只有 AAAA 或 MX
-    // 记录的名字查 A，应答段空、授权段带一条 SOA）。dnsips 是 MALLOC 出来的、一个字节都没写过，
-    // 连同解析失败一起返 NULL，免得调用方按"非 NULL 即成功"去读 ips[0].ip 读到未初始化内存。
-    // 两者对调用方的意义不同，用 nodata 区分：它是服务端给出的完整答复，换传输方式重查也是同一结果
+    // index==0 是报文合法但一条 A/AAAA 都没解出来。dnsips 是 MALLOC 的、一个字节都没写过，
+    // 连同解析失败一起返 NULL，免得调用方按"非 NULL 即成功"读到未初始化内存。
+    // 两者意义不同，用 nodata 区分：那是服务端的完整答复，换传输方式重查还是同一结果
     if (NULL == reader
         || 0 == index) {
         if (NULL != reader) {

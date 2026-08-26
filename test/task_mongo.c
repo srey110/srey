@@ -190,6 +190,50 @@ static int32_t _txn_flow(mongo_ctx *mongo) {
     return ERR_OK;
 }
 
+// 会话不随连接失效：startsession 拿到 lsid → 断连重连 → 拿旧 session 重新 begin/insert/commit。
+// 服务端按 lsid 记账、与连接无关，重连只废掉在途事务。这条钉住的是"不设代次门"这个决定，
+// 真跑一遍服务端才算数——纯内存那半在 test_mongo_session_survives_reconnect
+static int32_t _txn_reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
+    mongo_session *sess = mongo_startsession(mongo);
+    if (NULL == sess) {
+        LOG_ERROR("mongo startsession(reconnect) error.");
+        return ERR_FAILED;
+    }
+    ev_close(&task->loader->netev, mongo->sk.fd, mongo->sk.skid);
+    if (ERR_OK != mongo_ping(mongo)) {
+        LOG_ERROR("mongo reconnect(txn) error.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
+    if (ERR_OK != mongo_begin(sess)) {
+        LOG_ERROR("mongo begin after reconnect should be accepted.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
+    mongo_collection(mongo, "srey_test");
+    bson_ctx docs;
+    bson_init(&docs, NULL, 0);
+    bson_append_document_begain(&docs, "0");
+    bson_append_int32(&docs, "id", 101);
+    bson_append_utf8(&docs, "name", "txn-reconnect");
+    bson_append_int32(&docs, "score", 1);
+    bson_append_end(&docs);
+    bson_append_end(&docs);
+    int32_t inserted = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL, 0);
+    BSON_FREE(&docs);
+    if (1 != inserted) {
+        LOG_ERROR("mongo insert on session across reconnect error, got %d.", inserted);
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
+    if (ERR_OK != mongo_commit(sess, NULL, 0)) {
+        LOG_ERROR("mongo commit on session across reconnect error.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
+    mongo_freesession(sess);
+    return ERR_OK;
+}
 // 事务 pack 失败须原样保留事务状态。用"头里声明的长度超出传入缓冲"的假 options 触发
 // bson_cat 拒绝 —— 这是它剩下的结构性拒收之一;字节数上限已归 mongo 层(MONGO_MAX_PACK_SIZE
 // 64MB),拿 MAX_PACK_SIZE 那种大小再也造不出失败,反而会真把 commit 发出去。
@@ -405,6 +449,10 @@ static void _startup(task_ctx *task) {
     // 事务路径要求 mongo 以副本集运行：docker-compose 的 MONGO_REPLSET 默认 rs0 即满足。
     // 排在全部计数断言之后，故它多插的一行不影响 _crud_flow / _reconnect_flow / _moretocome_flow
     if (ERR_OK != _txn_flow(&arg->mongo)) {
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        return;
+    }
+    if (ERR_OK != _txn_reconnect_flow(task, &arg->mongo)) {
         ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
         return;
     }

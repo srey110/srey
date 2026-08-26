@@ -151,24 +151,14 @@ int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
-        const char *s = row->val;
-        size_t n = (size_t)row->lens;
-        int32_t neg = (n > 0 && NULL != s && '-' == s[0]);
-        uint64_t mag;
-        if (0 != neg) {
-            s++;
-            n--;
-        }
-        if (ERR_OK != str2u64(s, n, 0 != neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX, &mag)) {
+        // 文本格式：判定与 mysql 侧共用 parse_int64_strict，这里只负责写 err 和打日志
+        int64_t val;
+        if (ERR_OK != parse_int64_strict(row->val, (size_t)row->lens, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
-        if (0 == neg) {
-            return (int64_t)mag;
-        }
-        // INT64_MIN 的绝对值超出 int64_t，取负前先单独挑出来，免得 -(int64_t)mag 落进未定义行为
-        return (uint64_t)INT64_MAX + 1 == mag ? INT64_MIN : -(int64_t)mag;
+        return val;
     }
     // 二进制格式：大端序整数解包
     int32_t expect = (INT2OID == field->type_oid) ? 2 : ((INT4OID == field->type_oid) ? 4 : 8);
@@ -287,13 +277,19 @@ static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) 
          + (int64_t)dt.tm_min * 60000000LL
          + (int64_t)dt.tm_sec * 1000000LL
          + usec;
-    int32_t zh = 0, zm = 0, zs = 0;
+    // 偏移是 ±HH[:MM[:SS]]。上界只为挡住装不下 int 的位数,不代 PG 卡它自己的语义范围;
+    // 不用 sscanf("%d:%d:%d")的理由同上面改用 _strptime 那条
+    static const uint32_t _tz_max[3] = { 23, 59, 59 };
+    uint32_t tz[3];
     int64_t offset;
     // 从日期时间之后起扫，不再按固定下标 11 跳过 "YYYY-MM-DD" 的两个减号——年份不是 4 位就跳错位
     for (const char *p = end; '\0' != *p; p++) {
         if ('+' == *p || '-' == *p) {
-            sscanf(p + 1, "%d:%d:%d", &zh, &zm, &zs);
-            offset = ((int64_t)zh * 3600 + zm * 60 + zs) * 1000000LL;
+            if (0 == parse_colon_triple(p + 1, _tz_max, tz)) {
+                SET_PTR(err, ERR_FAILED);
+                return 0;
+            }
+            offset = ((int64_t)tz[0] * 3600 + (int64_t)tz[1] * 60 + (int64_t)tz[2]) * 1000000LL;
             total -= ('-' == *p) ? -offset : offset;
             break;
         }
