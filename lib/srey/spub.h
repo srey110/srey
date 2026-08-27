@@ -22,26 +22,6 @@ typedef enum task_type {
 }task_type;
 typedef enum request_type {
     REQ_DEBUG             = 0x01, // 调试命令
-    
-    REQ_DC_SET            = 0x10,
-    REQ_DC_GET            = 0x11,
-    REQ_DC_WAIT           = 0x12,
-    REQ_DC_DEL            = 0x13,
-    REQ_DC_LIST           = 0x14,
-    REQ_DC_END,                   // DataCenter 区间尾哨兵，不是命令；新增 REQ_DC_* 须插在它之前
-    
-    REQ_SC_SUB            = 0x20,
-    REQ_SC_SUB_SHARED     = 0x21,
-    REQ_SC_UNSUB          = 0x22,
-    REQ_SC_UNSUB_SHARED   = 0x23,
-    REQ_SC_PUB            = 0x24,
-    REQ_SC_PUB_RETAINED   = 0x25,
-    REQ_SC_LIST           = 0x26,
-    REQ_SC_QUERY_RETAINED = 0x27,
-    REQ_SC_SET_META       = 0x28,
-    REQ_SC_RETAINED_LIST  = 0x29,
-    REQ_SC_DELIVER        = 0x2A, // subcenter → 订阅者推送
-    REQ_SC_END,                   // SubCenter 区间尾哨兵，不是命令；新增 REQ_SC_* 须插在它之前
 }request_type;
 
 typedef struct loader_ctx loader_ctx;
@@ -160,12 +140,9 @@ struct task_dispatch_arg {
     message_ctx msg;   // 消息体（值拷贝）
 };
 
-// 是否框架保留 subtype：debug 命令 / DataCenter / SubCenter，harbor 不转发这些。
-// 判定紧邻枚举并以尾哨兵为界，故在哨兵前追加成员即自动纳入，不必再同步别处的区间常量
+// 是否框架保留 subtype：harbor 不转发这些，业务自定义 reqtype 须避开
 static inline int32_t subtype_reserved(subtype_t type) {
-    return REQ_DEBUG == type
-        || (type >= REQ_DC_SET && type < REQ_DC_END)
-        || (type >= REQ_SC_SUB && type < REQ_SC_END);
+    return REQ_DEBUG == type;
 }
 //返回消息字符串
 const char *_message_str(msg_type type);

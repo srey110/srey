@@ -1,7 +1,6 @@
 ﻿#include "test_base.h"
 #include "test_containers.h"
 #include "test_hashset.h"
-#include "test_path_trie.h"
 #include "test_crypt.h"
 #include "test_utils.h"
 #include "test_seri.h"
@@ -16,6 +15,7 @@
 #include "test_mongo_pack.h"
 #include "test_mysql_parse.h"
 #include "test_pgsql_parse.h"
+#include "test_advance.h"
 #include "bench_lbytecache.h"
 #include "bench_rwlock.h"
 #include "bench_mpq.h"
@@ -44,9 +44,7 @@
 #include "task_udp_multicast.h"
 #include "task_kcp.h"
 #include "task_multi_call.h"
-#include "task_dc_client.h"
 #include "task_debug.h"
-#include "task_sc_client.h"
 #include "task_listen_churn.h"
 #include "task_v6only.h"
 #include "task_listen_unlisten_race.h"
@@ -138,7 +136,6 @@ int main(int argc, char *argv[]) {
     test_base(suite);        /* 内存宏、原子操作 */
     test_containers(suite);  /* mpq、hashmap、heap、queue、sarray */
     test_hashset(suite);     /* hashset(hashmap 包装) */
-    test_path_trie(suite);   /* path_trie 分层路径前缀树 + 通配匹配 */
     test_crypt(suite);       /* base64、crc、digest、hmac、urlraw、xor */
     test_utils(suite);       /* pack/unpack、binary、buffer、sfid、hash_ring、netaddr */
     test_seri(suite);        /* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table */
@@ -153,6 +150,7 @@ int main(int argc, char *argv[]) {
     test_mongo_pack(suite);  /* MongoDB wire 组包 + parse */
     test_mysql_parse(suite); /* MySQL 解包 + reader 全接口 */
     test_pgsql_parse(suite); /* PostgreSQL 解包 + reader 全接口 */
+    test_advance(suite);     /* advance 层：router 路径规范化 */
 
     CuSuiteRun(suite);
     CuSuiteSummary(suite, output);
@@ -225,9 +223,7 @@ int main(int argc, char *argv[]) {
         {"multicast_test", 0},
         {"udp_multicast_test", 0},
         {"multi_call_test", 0},
-        {"dc_client_test", 0},
         {"debug_test", 0},
-        {"sc_client_test", 0},
         {"listen_churn", 0},
         {"v6only_test", 0},
         {"unlisten_race", 0},
@@ -290,18 +286,6 @@ int main(int argc, char *argv[]) {
     if (ERR_OK != rtn) {
         LOG_WARN("harbor start error.");
     }
-    //datacenter 全局 KV + wait/唤醒,业务 task 之前注册;测试用 "datacenter"(与 srey/main.c 默认 dc_name 一致)
-    const char *dc_name = "datacenter";
-    if (ERR_OK != dc_start(g_loader, dc_name)) {
-        LOG_WARN("dc_start error.");
-    }
-    //subcenter 订阅中心,业务 task 之前注册;测试用 "subcenter"(与 srey/main.c 默认 sc_name 一致)
-    const char *sc_name = "subcenter";
-    static path_rules sc_rules;
-    path_rules_def(&sc_rules);
-    if (ERR_OK != sc_start(g_loader, sc_name, &sc_rules)) {
-        LOG_WARN("sc_start error.");
-    }
     //smtp:假服务端 + 并发投递(不依赖外网账号)
     task_smtp_fake_start(g_loader, "smtp_fake", 12525, _get_name_val(testlist, "smtp_fake"));
     task_smtp_start(g_loader, "task_smtp", ssl_clientnull, "smtp.gmail.com", 465,
@@ -340,10 +324,6 @@ int main(int argc, char *argv[]) {
     task_udp_multicast_start(g_loader, "udp_multicast_test", 15014, _get_name_val(testlist, "udp_multicast_test"));
     //task_multi_call 跨 task 广播测试：publisher "multi_call_test" + 5 个 "..._subN" subscriber
     task_multi_call_start(g_loader, "multi_call_test", _get_name_val(testlist, "multi_call_test"));
-    //datacenter set/get/wait/delete/list_keys 集成测试
-    task_dc_client_start(g_loader, "dc_client_test", dc_name, _get_name_val(testlist, "dc_client_test"));
-    //subcenter pub/sub/retained/shared/meta 集成测试
-    task_sc_client_start(g_loader, "sc_client_test", sc_name, _get_name_val(testlist, "sc_client_test"));
     //debug 控制台 + debug 命令链路集成测试：console 起在 15017
     if (ERR_OK != debug_console_start(g_loader, "debug_console", "127.0.0.1",
                                      (uint16_t)*(_get_name_val(portlist, "debug_console")))) {

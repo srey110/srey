@@ -351,9 +351,7 @@ const void *hashmap_set_with_hash(struct hashmap *map, const void *item,
 // memory then NULL is returned and hashmap_oom() returns true.
 // 替换路径不调 elfree,和 hashmap_delete 一个规矩:被顶掉的旧元素拷进 map->spare 后原样返回,
 // 调用方自己释放(返回的副本只在下次 add / grow 之前有效)。元素按值存但内部持有 strdup key、
-// MALLOC val 之类时,忽略返回值就是漏掉一整份。
-// 现有生产调用方都是先查后插、只在查不到时才 set(datacenter 的 kv、subcenter 的 retained_index
-// 等都命中已有条目就原地改字段),所以都没走到替换路径
+// MALLOC val 之类时,忽略返回值就是漏掉一整份
 const void *hashmap_set(struct hashmap *map, const void *item) {
     return hashmap_set_with_hash(map, item, get_hash(map, item));
 }
@@ -471,8 +469,7 @@ bool hashmap_oom(struct hashmap *map) {
 // Returns false if the iteration has been stopped early.
 // 回调里不得增删被扫的这张表:新增会沿途搬动已有条目(robin-hood),删除同样会重排,
 // 于是后面的桶要么被跳过要么被访问两次;扩容更会换掉 map->buckets,循环里的 bucket_at
-// 随即读到已释放的内存。要改就先在回调里收集 key、扫完再统一处理
-// (datacenter 的 _dc_pending_sweep_iter、subcenter 的 _sc_sg_prune_member_iter 都是这么写的)。
+// 随即读到已释放的内存。要改就先在回调里收集 key、扫完再统一处理。
 // 这里按 version 把违规检出来,报法与 hashmap_iter 一致:写 stderr 并中止本次遍历
 bool hashmap_scan(struct hashmap *map, 
     bool (*iter)(const void *item, void *udata), void *udata) {
@@ -510,7 +507,7 @@ bool hashmap_scan(struct hashmap *map,
 // 32 位构建(mk.sh m32)不检测迭代失效: 下面那套版本游标把版本号塞在 size_t 的高 32 位,
 // 32 位下没有高位可用。遍历中删元素在 64 位上返 false 中止, 在 32 位上则是未定义行为
 // (收缩 resize 后读已释放的桶数组)。
-// in-tree 只读遍历的有 path_trie x2 / coro x2, 另经 hashset_iter 对外重导出;
+// in-tree 只读遍历的只有 coro x2, 另经 hashset_iter 对外重导出;
 // 唯一在遍历中删元素的是 router 的 _router_st_drain, 它每轮把游标重置回 0 才安全
 //
 // This function has not been tested for thread safety.

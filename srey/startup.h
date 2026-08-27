@@ -30,13 +30,6 @@ typedef struct config_ctx {
         char ip[IP_LENS];               // 监听 IP
         uint16_t port;                  // 监听端口
     }harbor;
-    struct {                            // 全局 KV（对应 config.json "datacenter"）
-        char name[TASK_NAME_LEN];       // 任务名（"" 表示不启动）
-    }datacenter;
-    struct {                            // 订阅中心（对应 config.json "subcenter"）
-        char name[TASK_NAME_LEN];       // 任务名（"" 表示不启动）
-        char rule[16];                  // 规则："def" 通用 pub/sub，"mqtt" MQTT 风格
-    }subcenter;
 }config_ctx;
 
 /// <summary>

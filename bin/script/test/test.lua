@@ -23,8 +23,6 @@ local TESTS = {
     "test.unit_multicast",
     "test.unit_udp_multicast",
     "test.unit_multi_call",
-    "test.unit_dc_client",
-    "test.unit_sc_client",
     "test.unit_hotfix",
     "test.unit_inject",
     "test.unit_seri",
@@ -69,8 +67,6 @@ local function register()
     task.register("test.multi_call_sub", "multi_call_sub_b", 0, "unit_multi_call", 2)
     task.register("test.multi_call_sub", "multi_call_sub_c", 0, "unit_multi_call", 3)
     task.register("test.unit_multi_call", "unit_multi_call", 0)
-    task.register("test.unit_dc_client", "unit_dc_client", 0)
-    task.register("test.unit_sc_client", "unit_sc_client", 0)
     task.register("test.unit_hotfix", "unit_hotfix", 0)
     task.register("test.unit_inject", "unit_inject", 0)
     task.register("test.unit_seri", "unit_seri", 0)

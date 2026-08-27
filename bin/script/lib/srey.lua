@@ -814,9 +814,7 @@ function srey.multi_call(dsts, reqtype, data, size, copy)
 end
 
 local _debug_request    -- 懒加载缓存
-local _sc_client        -- 懒加载缓存(收到 REQ_SC_DELIVER 时初始化)
--- task 请求分发：REQ_DEBUG 走 lib.debug_request,REQ_SC_DELIVER 走 lib.sc_client._on_deliver,
--- 其余转交用户注册的 on_requested 回调
+-- task 请求分发：REQ_DEBUG 走 lib.debug_request，其余转交用户注册的 on_requested 回调
 ---@param msg Message
 local function _request_dispatch(msg)
     if REQUEST_TYPE.REQ_DEBUG == msg.subtype then
@@ -836,11 +834,6 @@ local function _request_dispatch(msg)
             end)
         end
         _coro_run(_coro_cb, _debug_request._dispatch, msg, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
-    elseif REQUEST_TYPE.REQ_SC_DELIVER == msg.subtype then
-        if not _sc_client then
-            _sc_client = require("lib.sc_client")
-        end
-        _coro_run(_coro_cb, _sc_client._on_deliver, msg, msg.data, msg.size)
     else
         local func = func_cbs[MSG_TYPE.REQUEST]
         if not func then
@@ -1261,7 +1254,7 @@ end
 ---@param fd integer harbor 连接 fd（pktype 必须为 HTTP）
 ---@param skid integer 连接 skid
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
----       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（如经 datacenter 共享或由对端上报）；
+---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（由对端上报）；
 ---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
 ---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的框架保留值会被对端 harbor 拒为 404
 ---@param data string|lightuserdata|nil 消息内容
@@ -1279,7 +1272,7 @@ end
 ---@param fd integer harbor 连接 fd（pktype 必须为 HTTP）
 ---@param skid integer 连接 skid
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
----       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（如经 datacenter 共享或由对端上报）；
+---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（由对端上报）；
 ---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
 ---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的框架保留值会被对端 harbor 拒为 404
 ---@param data string|lightuserdata|nil 消息内容

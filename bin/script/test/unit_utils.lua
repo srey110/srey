@@ -10,8 +10,6 @@ local cjson   = require("cjson")
 local seri    = require("srey.seri")
 local dns     = require("srey.dns")
 local websock = require("srey.websock")
-local datacenter = require("srey.datacenter")
-local subcenter  = require("srey.subcenter")
 local custz   = require("srey.custz")
 
 srey.startup(function()
@@ -119,12 +117,6 @@ runner.run("utils", function(t)
         t:check(type(err) == "string" and nil ~= err:find("out of range"),
                 "通用入口与 BSON 入口共用同一句越界报错")
         t:eq(true, rejects(dns.unpack, ptr, -1, 0), "dns.unpack 负长度被拒")
-        t:eq(true, rejects(datacenter.parse_keys, ptr, -1), "datacenter.parse_keys 负长度被拒")
-        t:eq(true, rejects(subcenter.parse_deliver, ptr, -1), "subcenter.parse_deliver 负长度被拒")
-        t:eq(true, rejects(subcenter.parse_retained, ptr, -1), "subcenter.parse_retained 负长度被拒")
-        t:eq(true, rejects(subcenter.parse_topics, ptr, -1), "subcenter.parse_topics 负长度被拒")
-        t:eq(true, rejects(subcenter.parse_retained_topics, ptr, -1),
-             "subcenter.parse_retained_topics 负长度被拒")
         -- 唯一能写出界的那个：长度回绕后 MALLOC 只要到 13 字节，紧接着的 memcpy 却按
         -- SIZE_MAX 拷，从这个小堆块起一路覆写相邻内存
         t:eq(true, rejects(websock.pack_continua, 1, 0, ptr, -1), "websock.pack_continua 负长度被拒")

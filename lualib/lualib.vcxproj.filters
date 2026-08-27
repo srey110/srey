@@ -135,12 +135,6 @@
     <ClCompile Include="lbind\lkcp.c">
       <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="lbind\ldatacenter.c">
-      <Filter>lbind</Filter>
-    </ClCompile>
-    <ClCompile Include="lbind\lsubcenter.c">
-      <Filter>lbind</Filter>
-    </ClCompile>
     <ClCompile Include="lbind\lcrypt.c">
       <Filter>lbind</Filter>
     </ClCompile>

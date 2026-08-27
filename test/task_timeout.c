@@ -545,7 +545,7 @@ static int32_t _timeout_habor(task_ctx *task) {
         LOG_WARN("harbor resp X-Srey-Erro missing or wrong.");
         goto erro;
     }
-    subtype_t reserved[] = { REQ_DEBUG, REQ_DC_SET, REQ_DC_LIST, REQ_SC_SUB, REQ_SC_DELIVER };
+    subtype_t reserved[] = { REQ_DEBUG };
     for (size_t i = 0; i < ARRAY_SIZE(reserved); i++) {
         pack = harbor_pack(ctx->_rpcname, 0, reserved[i], data, dlen, &rsize);
         rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);

@@ -30,8 +30,6 @@
     <ClInclude Include="base\structs.h" />
     <ClInclude Include="containers\hashmap.h" />
     <ClInclude Include="containers\hashset.h" />
-    <ClInclude Include="path\path_trie.h" />
-    <ClInclude Include="path\path_rules.h" />
     <ClInclude Include="containers\heap.h" />
     <ClInclude Include="containers\mpq.h" />
     <ClInclude Include="containers\spsc.h" />
@@ -101,11 +99,9 @@
     <ClInclude Include="protocol\smtp\smtp.h" />
     <ClInclude Include="protocol\urlparse.h" />
     <ClInclude Include="protocol\websock.h" />
-    <ClInclude Include="services\datacenter.h" />
-    <ClInclude Include="services\debug_console.h" />
-    <ClInclude Include="services\harbor.h" />
-    <ClInclude Include="services\subcenter.h" />
-    <ClInclude Include="services\sv_pub.h" />
+    <ClInclude Include="advance\router.h" />
+    <ClInclude Include="advance\harbor.h" />
+    <ClInclude Include="advance\debug_console.h" />
     <ClInclude Include="srey\coro.h" />
     <ClInclude Include="srey\coro_utils.h" />
     <ClInclude Include="srey\prots_wrap.h" />
@@ -134,7 +130,6 @@
     <ClInclude Include="utils\netaddr.h" />
     <ClInclude Include="utils\netutils.h" />
     <ClInclude Include="utils\popen2.h" />
-    <ClInclude Include="utils\router.h" />
     <ClInclude Include="utils\sfid.h" />
     <ClInclude Include="utils\strptime.h" />
     <ClInclude Include="utils\timer.h" />
@@ -148,8 +143,6 @@
     <ClCompile Include="base\memory.c" />
     <ClCompile Include="containers\hashmap.c" />
     <ClCompile Include="containers\hashset.c" />
-    <ClCompile Include="path\path_trie.c" />
-    <ClCompile Include="path\path_rules.c" />
     <ClCompile Include="containers\heap.c" />
     <ClCompile Include="containers\mpq.c" />
     <ClCompile Include="containers\spsc.c" />
@@ -212,11 +205,9 @@
     <ClCompile Include="protocol\smtp\smtp.c" />
     <ClCompile Include="protocol\urlparse.c" />
     <ClCompile Include="protocol\websock.c" />
-    <ClCompile Include="services\datacenter.c" />
-    <ClCompile Include="services\debug_console.c" />
-    <ClCompile Include="services\harbor.c" />
-    <ClCompile Include="services\subcenter.c" />
-    <ClCompile Include="services\sv_pub.c" />
+    <ClCompile Include="advance\router.c" />
+    <ClCompile Include="advance\harbor.c" />
+    <ClCompile Include="advance\debug_console.c" />
     <ClCompile Include="srey\coro.c" />
     <ClCompile Include="srey\coro_utils.c" />
     <ClCompile Include="srey\prots_wrap.c" />
@@ -237,7 +228,6 @@
     <ClCompile Include="utils\netaddr.c" />
     <ClCompile Include="utils\netutils.c" />
     <ClCompile Include="utils\popen2.c" />
-    <ClCompile Include="utils\router.c" />
     <ClCompile Include="utils\sfid.c" />
     <ClCompile Include="utils\strptime.c" />
     <ClCompile Include="utils\timer.c" />

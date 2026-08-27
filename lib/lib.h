@@ -39,13 +39,10 @@
 #include "utils/netaddr.h"
 #include "utils/netutils.h"
 #include "utils/load_trend.h"
-#include "utils/router.h"
 #include "utils/tda.h"
 #include "utils/hug.h"
 #include "utils/stm.h"
 #include "event/event.h"
-#include "path/path_trie.h"
-#include "path/path_rules.h"
 #include "protocol/urlparse.h"
 #include "protocol/custz.h"
 #include "protocol/dns.h"
@@ -72,15 +69,10 @@
 #include "srey/coro.h"
 #include "srey/coro_utils.h"
 #include "srey/prots_wrap.h"
-#include "services/harbor.h"
-#include "services/datacenter.h"
-#include "services/subcenter.h"
-#include "services/debug_console.h"
+#include "advance/router.h"
+#include "advance/harbor.h"
+#include "advance/debug_console.h"
 
-// path 层不依赖 protocol 层,两个上限各自独立定义,在此钉住相等:同一个 HTTP 路径先按 URL_*
-// 切段再进 PATH_* 校验,只调一边就会"解析过了校验拒绝"
-STATIC_ASSERT(PATH_MAX_DEPTH == URL_MAX_PATH_DEPTH, path_url_depth);
-STATIC_ASSERT(PATH_BUF_LENS == URL_BUF_LENS, path_url_buflens);
 extern loader_ctx *g_loader; // 全局 loader 实例，由框架初始化后对所有模块可见
 
 #endif //LIB_H_

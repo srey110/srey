@@ -58,11 +58,8 @@
     <Filter Include="protocol\smtp">
       <UniqueIdentifier>{f41d9e5d-747c-42d2-a196-ba323c83600d}</UniqueIdentifier>
     </Filter>
-    <Filter Include="services">
+    <Filter Include="advance">
       <UniqueIdentifier>{344f0683-5bdd-4176-8639-737a642e32ad}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="path">
-      <UniqueIdentifier>{a4cda5b9-94d3-4f7f-bd16-21b0c84c3ee9}</UniqueIdentifier>
     </Filter>
     <Filter Include="protocol\kcp">
       <UniqueIdentifier>{3346e3f3-b2e5-4211-a97e-cec7e18d2fed}</UniqueIdentifier>
@@ -121,12 +118,6 @@
     <ClInclude Include="containers\hashset.h">
       <Filter>containers</Filter>
     </ClInclude>
-    <ClInclude Include="path\path_trie.h">
-      <Filter>path</Filter>
-    </ClInclude>
-    <ClInclude Include="path\path_rules.h">
-      <Filter>path</Filter>
-    </ClInclude>
     <ClInclude Include="containers\queue.h">
       <Filter>containers</Filter>
     </ClInclude>
@@ -179,9 +170,6 @@
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\netutils.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="utils\router.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="serial\seri.h">
@@ -400,20 +388,14 @@
     <ClInclude Include="srey\coro.h">
       <Filter>srey</Filter>
     </ClInclude>
-    <ClInclude Include="services\datacenter.h">
-      <Filter>services</Filter>
+    <ClInclude Include="advance\router.h">
+      <Filter>advance</Filter>
     </ClInclude>
-    <ClInclude Include="services\debug_console.h">
-      <Filter>services</Filter>
+    <ClInclude Include="advance\harbor.h">
+      <Filter>advance</Filter>
     </ClInclude>
-    <ClInclude Include="services\harbor.h">
-      <Filter>services</Filter>
-    </ClInclude>
-    <ClInclude Include="services\subcenter.h">
-      <Filter>services</Filter>
-    </ClInclude>
-    <ClInclude Include="services\sv_pub.h">
-      <Filter>services</Filter>
+    <ClInclude Include="advance\debug_console.h">
+      <Filter>advance</Filter>
     </ClInclude>
     <ClInclude Include="utils\chan.h">
       <Filter>utils</Filter>
@@ -480,12 +462,6 @@
     <ClCompile Include="containers\hashset.c">
       <Filter>containers</Filter>
     </ClCompile>
-    <ClCompile Include="path\path_trie.c">
-      <Filter>path</Filter>
-    </ClCompile>
-    <ClCompile Include="path\path_rules.c">
-      <Filter>path</Filter>
-    </ClCompile>
     <ClCompile Include="base\memory.c">
       <Filter>base</Filter>
     </ClCompile>
@@ -508,9 +484,6 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\netutils.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="utils\router.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="serial\seri.c">
@@ -699,20 +672,14 @@
     <ClCompile Include="srey\coro.c">
       <Filter>srey</Filter>
     </ClCompile>
-    <ClCompile Include="services\datacenter.c">
-      <Filter>services</Filter>
+    <ClCompile Include="advance\router.c">
+      <Filter>advance</Filter>
     </ClCompile>
-    <ClCompile Include="services\debug_console.c">
-      <Filter>services</Filter>
+    <ClCompile Include="advance\harbor.c">
+      <Filter>advance</Filter>
     </ClCompile>
-    <ClCompile Include="services\harbor.c">
-      <Filter>services</Filter>
-    </ClCompile>
-    <ClCompile Include="services\subcenter.c">
-      <Filter>services</Filter>
-    </ClCompile>
-    <ClCompile Include="services\sv_pub.c">
-      <Filter>services</Filter>
+    <ClCompile Include="advance\debug_console.c">
+      <Filter>advance</Filter>
     </ClCompile>
     <ClCompile Include="utils\chan.c">
       <Filter>utils</Filter>

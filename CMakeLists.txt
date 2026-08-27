@@ -58,7 +58,6 @@ set(SREY_INCLUDES
     ${CMAKE_SOURCE_DIR}/lib
     ${CMAKE_SOURCE_DIR}/lib/base
     ${CMAKE_SOURCE_DIR}/lib/containers
-    ${CMAKE_SOURCE_DIR}/lib/path
     ${CMAKE_SOURCE_DIR}/lib/crypt
     ${CMAKE_SOURCE_DIR}/lib/event
     ${CMAKE_SOURCE_DIR}/lib/protocol
@@ -69,7 +68,7 @@ set(SREY_INCLUDES
     ${CMAKE_SOURCE_DIR}/lib/protocol/smtp
     ${CMAKE_SOURCE_DIR}/lib/protocol/kcp
     ${CMAKE_SOURCE_DIR}/lib/serial
-    ${CMAKE_SOURCE_DIR}/lib/services
+    ${CMAKE_SOURCE_DIR}/lib/advance
     ${CMAKE_SOURCE_DIR}/lib/srey
     ${CMAKE_SOURCE_DIR}/lib/thread
     ${CMAKE_SOURCE_DIR}/lib/utils
@@ -88,7 +87,6 @@ endif()
 # ── Core library sources ──────────────────────────────────────────────────────
 file(GLOB SRC_BASE        lib/base/*.c)
 file(GLOB SRC_CONTAINERS  lib/containers/*.c)
-file(GLOB SRC_PATH        lib/path/*.c)
 file(GLOB SRC_CRYPT       lib/crypt/*.c)
 file(GLOB SRC_EVENT       lib/event/*.c)
 file(GLOB SRC_PROTOCOL    lib/protocol/*.c)
@@ -99,7 +97,7 @@ file(GLOB SRC_PGSQL       lib/protocol/pgsql/*.c)
 file(GLOB SRC_SMTP        lib/protocol/smtp/*.c)
 file(GLOB SRC_KCP         lib/protocol/kcp/*.c)
 file(GLOB SRC_SERIAL      lib/serial/*.c)
-file(GLOB SRC_SERVICES    lib/services/*.c)
+file(GLOB SRC_ADVANCE     lib/advance/*.c)
 file(GLOB SRC_SREY_LIB    lib/srey/*.c)
 file(GLOB SRC_THREAD      lib/thread/*.c)
 file(GLOB SRC_UTILS       lib/utils/*.c)
@@ -107,7 +105,6 @@ file(GLOB SRC_UTILS       lib/utils/*.c)
 set(LIB_SOURCES
     ${SRC_BASE}
     ${SRC_CONTAINERS}
-    ${SRC_PATH}
     ${SRC_CRYPT}
     ${SRC_EVENT}
     ${SRC_PROTOCOL}
@@ -118,7 +115,7 @@ set(LIB_SOURCES
     ${SRC_SMTP}
     ${SRC_KCP}
     ${SRC_SERIAL}
-    ${SRC_SERVICES}
+    ${SRC_ADVANCE}
     ${SRC_SREY_LIB}
     ${SRC_THREAD}
     ${SRC_UTILS}

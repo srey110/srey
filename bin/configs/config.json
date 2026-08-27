@@ -18,12 +18,5 @@
         "ssl": "",
         "ip": "127.0.0.1",
         "port": 8080
-    },
-    "datacenter": {
-        "name": "datacenter"
-    },
-    "subcenter": {
-        "name": "subcenter",
-        "rule": "def"
     }
 }

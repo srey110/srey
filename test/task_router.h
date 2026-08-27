@@ -3,7 +3,7 @@
 
 #include "task_pub.h"
 
-// 启动 lib/utils/router 路由 server task
+// 启动 lib/advance/router 路由 server task
 // 路由表 / 中间件覆盖: 字面量、{param}、{?}、*、query、嵌套 group、命名中间件、
 // 中间件截断、next 后置统计、漏写响应兜底 500、方法位掩码
 void task_router_server_start(loader_ctx *loader, const char *name, uint16_t port);

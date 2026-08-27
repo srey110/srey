@@ -1618,7 +1618,7 @@ static void test_hashmap_murmur_no_ub(CuTest *tc) {
 
 // xxh3 尾部原本写作 p + 8 <= end / p + 4 <= end：剩余不足 8 字节时先构造出越过对象末尾的指针
 // 再比较，C99 §6.5.6p8 只定义到 one-past-the-end，优化器有权折掉该守卫。
-// 生产触达点是 subcenter 的 4 字节 name_t 与 path_trie 的 1-7 字节路径段。
+// 现无生产调用方，守的是 hashmap.h 重导出的三个 hash helper 本身。
 // 项目构建集里没有 sanitizer 会报这类 UB，只能靠"短长度下确定 + 逐字节敏感"兜住尾部路径
 static void test_hashmap_xxhash3_short(CuTest *tc) {
     uint8_t buf[64];
@@ -1640,7 +1640,7 @@ static void test_hashmap_xxhash3_short(CuTest *tc) {
         CuAssertTrue(tc, h[len] != h[len - 1]);
     }
 
-    /* 4 字节即 subcenter 的 name_t：任一字节变化都必须改变哈希 */
+    /* 4 字节 key：任一字节变化都必须改变哈希 */
     base = hashmap_xxhash3(buf + 1, 4, 0, 0);
     for (i = 0; i < 4; i++) {
         save = buf[1 + i];

@@ -105,7 +105,7 @@ static void _parse_config(config_ctx *cnf) {
     cnf->logqueuelens = (uint32_t)_json_get_number(json, "logqueuelens", cnf->logqueuelens, UINT32_MAX);
     _json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns));
     _json_get_string(json, "script", cnf->script, sizeof(cnf->script));
-    // debug / harbor / datacenter / subcenter 各为嵌套对象
+    // debug / harbor 各为嵌套对象
     cJSON *debug = cJSON_GetObjectItem(json, "debug");
     if (NULL != debug) {
         _json_get_string(debug, "name", cnf->debug.name, sizeof(cnf->debug.name));
@@ -118,15 +118,6 @@ static void _parse_config(config_ctx *cnf) {
         _json_get_string(harbor, "ssl", cnf->harbor.ssl, sizeof(cnf->harbor.ssl));
         _json_get_string(harbor, "ip", cnf->harbor.ip, sizeof(cnf->harbor.ip));
         cnf->harbor.port = (uint16_t)_json_get_number(harbor, "port", cnf->harbor.port, UINT16_MAX);
-    }
-    cJSON *datacenter = cJSON_GetObjectItem(json, "datacenter");
-    if (NULL != datacenter) {
-        _json_get_string(datacenter, "name", cnf->datacenter.name, sizeof(cnf->datacenter.name));
-    }
-    cJSON *subcenter = cJSON_GetObjectItem(json, "subcenter");
-    if (NULL != subcenter) {
-        _json_get_string(subcenter, "name", cnf->subcenter.name, sizeof(cnf->subcenter.name));
-        _json_get_string(subcenter, "rule", cnf->subcenter.rule, sizeof(cnf->subcenter.rule));
     }
     cJSON_Delete(json);
 }
@@ -188,9 +179,6 @@ static void _config_init(config_ctx *config) {
     config->harbor.port = 0;
     config->debug.port = 0; // 端口 0 关闭 debug_console,可由 config.json "debug.port" 覆盖
     SNPRINTF(config->harbor.name, sizeof(config->harbor.name), "%s", "harbor");
-    SNPRINTF(config->datacenter.name, sizeof(config->datacenter.name), "%s", "datacenter"); // 空串关闭 DataCenter,可由 config.json "datacenter.name" 覆盖
-    SNPRINTF(config->subcenter.name, sizeof(config->subcenter.name), "%s", "subcenter"); // 空串关闭 subcenter,可由 config.json "subcenter.name" 覆盖
-    SNPRINTF(config->subcenter.rule, sizeof(config->subcenter.rule), "%s", "def"); // subcenter 默认通用 pub/sub 规则
     SNPRINTF(config->debug.name, sizeof(config->debug.name), "%s", "debug");
     SNPRINTF(config->harbor.ip, sizeof(config->harbor.ip), "%s", "0.0.0.0");
     SNPRINTF(config->debug.ip, sizeof(config->debug.ip), "%s", "127.0.0.1");

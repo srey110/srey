@@ -8,8 +8,6 @@ TASK_NAME = {
     NONE       = 0x00,
     HARBOR     = "harbor",
     DEBUG      = "debug",
-    DATACENTER = "datacenter",  -- 全局 KV + wait/唤醒 task service(C 实现,loader_init 后自动注册)
-    SUBCENTER  = "subcenter",   -- 订阅中心 task service(C 实现,loader_init 后自动注册)
 }
 ---@enum TASK_TYPE
 TASK_TYPE = {
@@ -18,30 +16,11 @@ TASK_TYPE = {
     LUA = 0x02,
 }
 ---框架保留的请求子类型(C 侧 subtype_t 为 uint16)。业务自定义的 reqtype 须避开这些值：
----REQ_DEBUG 与 REQ_SC_DELIVER 被 srey.lua 的 _request_dispatch 拦截（前者仅未知命令才回落到
----on_requested，后者不回落）；REQ_DC_* 与其余 REQ_SC_* 是发往 datacenter / subcenter 服务 task
----的命令字；跨节点（srey.net_call / net_request）时整段被对端 harbor 按 spub.h 的 subtype_reserved 拒为 404。
+---REQ_DEBUG 被 srey.lua 的 _request_dispatch 拦截（仅未知命令才回落到 on_requested）；
+---跨节点（srey.net_call / net_request）时被对端 harbor 按 spub.h 的 subtype_reserved 拒为 404。
 ---@enum REQUEST_TYPE
 REQUEST_TYPE = {
     REQ_DEBUG             = 0x01, -- 调试命令
-
-    REQ_DC_SET            = 0x10, -- DataCenter 子命令(与 C request_type 一致)
-    REQ_DC_GET            = 0x11,
-    REQ_DC_WAIT           = 0x12,
-    REQ_DC_DEL            = 0x13,
-    REQ_DC_LIST           = 0x14,
-
-    REQ_SC_SUB            = 0x20, -- subcenter 子命令(与 C request_type 一致)
-    REQ_SC_SUB_SHARED     = 0x21,
-    REQ_SC_UNSUB          = 0x22,
-    REQ_SC_UNSUB_SHARED   = 0x23,
-    REQ_SC_PUB            = 0x24,
-    REQ_SC_PUB_RETAINED   = 0x25,
-    REQ_SC_LIST           = 0x26,
-    REQ_SC_QUERY_RETAINED = 0x27,
-    REQ_SC_SET_META       = 0x28,
-    REQ_SC_RETAINED_LIST  = 0x29,
-    REQ_SC_DELIVER        = 0x2A, -- subcenter → 订阅者推送
 }
 -- MySQL 响应包类型，与 C 层 mysql_pack_type 枚举一一对应。
 ---@enum MYSQL_PACK_TYPE

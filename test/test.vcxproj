@@ -179,7 +179,6 @@
     <ClCompile Include="task_auto_close.c" />
     <ClCompile Include="task_close_flush.c" />
     <ClCompile Include="task_coro_extra.c" />
-    <ClCompile Include="task_dc_client.c" />
     <ClCompile Include="task_debug.c" />
     <ClCompile Include="task_fork.c" />
     <ClCompile Include="task_http_server.c" />
@@ -197,7 +196,6 @@
     <ClCompile Include="task_mongo.c" />
     <ClCompile Include="task_router.c" />
     <ClCompile Include="task_rpc.c" />
-    <ClCompile Include="task_sc_client.c" />
     <ClCompile Include="task_selfpost.c" />
     <ClCompile Include="task_sendbuf_warn.c" />
     <ClCompile Include="task_serial.c" />
@@ -218,10 +216,10 @@
     <ClCompile Include="test_mqtt_pack.c" />
     <ClCompile Include="test_mysql_pack.c" />
     <ClCompile Include="test_mysql_parse.c" />
-    <ClCompile Include="test_path_trie.c" />
     <ClCompile Include="test_pgsql_pack.c" />
     <ClCompile Include="test_pgsql_parse.c" />
     <ClCompile Include="test_event.c" />
+    <ClCompile Include="test_advance.c" />
     <ClCompile Include="test_protocol.c" />
     <ClCompile Include="test_seri.c" />
     <ClCompile Include="test_stm.c" />
@@ -239,7 +237,6 @@
     <ClInclude Include="task_auto_close.h" />
     <ClInclude Include="task_close_flush.h" />
     <ClInclude Include="task_coro_extra.h" />
-    <ClInclude Include="task_dc_client.h" />
     <ClInclude Include="task_debug.h" />
     <ClInclude Include="task_fork.h" />
     <ClInclude Include="task_http_server.h" />
@@ -258,7 +255,6 @@
     <ClInclude Include="task_mongo.h" />
     <ClInclude Include="task_router.h" />
     <ClInclude Include="task_rpc.h" />
-    <ClInclude Include="task_sc_client.h" />
     <ClInclude Include="task_selfpost.h" />
     <ClInclude Include="task_sendbuf_warn.h" />
     <ClInclude Include="task_serial.h" />
@@ -279,10 +275,10 @@
     <ClInclude Include="test_mqtt_pack.h" />
     <ClInclude Include="test_mysql_pack.h" />
     <ClInclude Include="test_mysql_parse.h" />
-    <ClInclude Include="test_path_trie.h" />
     <ClInclude Include="test_pgsql_pack.h" />
     <ClInclude Include="test_pgsql_parse.h" />
     <ClInclude Include="test_event.h" />
+    <ClInclude Include="test_advance.h" />
     <ClInclude Include="test_protocol.h" />
     <ClInclude Include="test_seri.h" />
     <ClInclude Include="test_stm.h" />

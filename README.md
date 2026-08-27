@@ -21,11 +21,11 @@
 ```
 srey/
 ├── lib/
+│   ├── advance/            上层组件：HTTP 路由器、Harbor 跨服通信、调试控制台
 │   ├── base/               OS 抽象、宏、内存、类型、编译期配置
 │   ├── containers/         数组、队列、堆、哈希表、无锁队列
 │   ├── crypt/              AES、DES、MD5、SHA、HMAC、Base64、CRC…
 │   ├── event/              事件循环抽象 + SSL 封装（evssl）
-│   ├── path/               路径树（path_get/path_insert）
 │   ├── protocol/           协议实现
 │   │   ├── mongo/          MongoDB
 │   │   ├── mqtt/           MQTT 3.1.1 / 5.0
@@ -33,7 +33,6 @@ srey/
 │   │   ├── pgsql/          PostgreSQL
 │   │   └── smtp/           SMTP
 │   ├── serial/             序列化(bson seri)
-│   ├── services/           Harbor 跨服通信、DataCenter、SubCenter、调试控制台
 │   ├── srey/               Task 系统、调度器、协程
 │   ├── thread/             互斥锁、读写锁、自旋锁、条件变量
 │   └── utils/              日志、定时器、时间轮、Buffer、雪花 ID…
@@ -142,7 +141,7 @@ cmake --build build
 
 ### 运行期配置（`bin/configs/config.json`）
 
-关键字段：`nnet` / `nworker`（线程数，0 = CPU 核数）、`loglv`（日志级别）、`stacksize`（协程栈字节数）、`dns`、`script`（Lua 脚本目录）；`harbor` / `datacenter` / `subcenter` 为嵌套对象，例如 `harbor`: `{ name, ssl, ip, port, key }`。
+关键字段：`nnet` / `nworker`（线程数，0 = CPU 核数）、`loglv`（日志级别）、`stacksize`（协程栈字节数）、`dns`、`script`（Lua 脚本目录）；`harbor` / `debug` 为嵌套对象，例如 `harbor`: `{ name, ssl, ip, port, key }`。
 
 ---
 

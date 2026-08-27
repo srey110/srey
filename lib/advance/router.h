@@ -109,7 +109,7 @@
 //   fork 出的协程自己用 binary_init + http_pack_resp + ev_send 写响应。
 //   协程 task (coro_task_register): _net_recv 已在协程栈, router_dispatch 及栈上
 //   的 ctx 跨 yield 保留, handler 可直接 coro_request / coro_fork_wait, 返回前再用
-//   ctx 写响应 (见 lib/services/harbor.c、lib/services/debug_console.c)。
+//   ctx 写响应 (见 lib/advance/harbor.c、lib/advance/debug_console.c)。
 // 错误响应
 //   URL 解析失败      → 400 Bad Request (段数超 URL_MAX_PATH_DEPTH / URI 超长)
 //   未匹配路由        → 404 Not Found

@@ -7,7 +7,6 @@
 #define TASK_PRIORITY_MAX  16
 // 最大超时时间
 #define TASK_TIMEOUT_MAX   (60 * 60 * 1000)
-
 // 网络事件标志位（可按位组合）
 typedef enum task_netev {
     NETEV_NONE   = 0x00, // 无额外事件
@@ -15,6 +14,7 @@ typedef enum task_netev {
     NETEV_AUTHSSL= 0x02, // 触发 SSL 交换完成回调
     NETEV_SEND   = 0x04  // 触发数据发送完成回调
 }task_netev;
+
 /// <summary>
 /// 新建任务；句柄由 createid 自动生成
 /// </summary>

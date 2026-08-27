@@ -138,8 +138,6 @@ static void _task_handle_request(task_ctx *task, message_ctx *msg) {
     if (REQ_DEBUG == msg->subtype) {//公共的debug处理
         rtn = _debug_request(task, msg);
     }
-    //REQ_SC_DELIVER 也走_request，自行处理。
-    //sc_parse_deliver解析参数 path_matches_pattern 判断主题匹配
     if (ERR_OK != rtn) {//未被 debug 处理(非 REQ_DEBUG 或 debug 未接管)→ 透传给具体任务处理
         if (NULL != task->_request) {
             task->_request(task, msg->subtype, msg->sess, msg->src, msg->data, msg->size);
