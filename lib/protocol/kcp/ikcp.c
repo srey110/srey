@@ -10,6 +10,7 @@
 //
 //=====================================================================
 #include "protocol/kcp/ikcp.h"
+#include "base/memory.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -150,7 +151,7 @@ static void (*ikcp_free_hook)(void *) = NULL;
 static void* ikcp_malloc(size_t size) {
 	if (ikcp_malloc_hook) 
 		return ikcp_malloc_hook(size);
-	return malloc(size);
+	return _malloc(size);
 }
 
 // internal free
@@ -158,7 +159,7 @@ static void ikcp_free(void *ptr) {
 	if (ikcp_free_hook) {
 		ikcp_free_hook(ptr);
 	}	else {
-		free(ptr);
+		_free(ptr);
 	}
 }
 

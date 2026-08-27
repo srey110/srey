@@ -1207,9 +1207,8 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct ht
     }
     // 流式表懒建: 多数 router 一辈子见不到一个流式请求, 不必都摊这份内存
     if (NULL == r->streams) {
-        r->streams = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                sizeof(router_st_ent), 8, 0, 0,
-                                                _router_st_hash, _router_st_cmp, NULL, NULL);
+        r->streams = hashmap_new(sizeof(router_st_ent), 8, 0, 0,
+                                 _router_st_hash, _router_st_cmp, NULL, NULL);
         if (NULL == r->streams) {
             _router_st_reject(st, task, 500, ROUTER_BODY_500);
             return;

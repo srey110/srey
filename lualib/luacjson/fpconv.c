@@ -34,6 +34,7 @@
 #include <string.h>
 
 #include "fpconv.h"
+#include "base/memory.h"
 
 /* Lua CJSON assumes the locale is the same for all threads within a
  * process and doesn't change after initialisation.
@@ -124,7 +125,7 @@ double fpconv_strtod(const char *nptr, char **endptr)
     /* Duplicate number into buffer */
     if (buflen >= FPCONV_G_FMT_BUFSIZE) {
         /* Handle unusually large numbers */
-        buf = (char *)malloc(buflen + 1);
+        buf = (char *)_malloc(buflen + 1);
         if (!buf) {
             return strtod(nptr, endptr);
         }
@@ -143,7 +144,7 @@ double fpconv_strtod(const char *nptr, char **endptr)
     value = strtod(buf, &endbuf);
     *endptr = (char *)&nptr[endbuf - buf];
     if (buflen >= FPCONV_G_FMT_BUFSIZE)
-        free(buf);
+        _free(buf);
 
     return value;
 }

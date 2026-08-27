@@ -16,7 +16,6 @@ local TESTS = {
     "test.unit_db_bind",
     "test.unit_framework",
     "test.unit_lib",
-    "test.unit_protoc",
     "test.unit_router",
     "test.unit_fork",
     "test.unit_serial",
@@ -56,7 +55,6 @@ local function register()
     task.register("test.unit_db_bind", "unit_db_bind", 0)
     task.register("test.unit_framework", "unit_framework", 0)
     task.register("test.unit_lib", "unit_lib", 0)
-    task.register("test.unit_protoc", "unit_protoc", 0)
     task.register("test.unit_router", "unit_router", 0)
     task.register("test.unit_fork", "unit_fork", 0)
     task.register("test.unit_serial", "unit_serial", 0)

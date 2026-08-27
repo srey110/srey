@@ -7,12 +7,6 @@
     <Filter Include="cjson">
       <UniqueIdentifier>{f0ddfc78-633e-4ef8-a28e-110df7f945b7}</UniqueIdentifier>
     </Filter>
-    <Filter Include="pb">
-      <UniqueIdentifier>{36299be0-2ac4-4f95-bc8f-1e013c215820}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="lfs">
-      <UniqueIdentifier>{5590ed9c-2845-403f-9150-363adeb3b68f}</UniqueIdentifier>
-    </Filter>
     <Filter Include="lbind">
       <UniqueIdentifier>{67134366-cad4-469c-b4c8-e5a862526e99}</UniqueIdentifier>
     </Filter>
@@ -122,12 +116,6 @@
     </ClCompile>
     <ClCompile Include="luacjson\strbuf.c">
       <Filter>cjson</Filter>
-    </ClCompile>
-    <ClCompile Include="pb\pb.c">
-      <Filter>pb</Filter>
-    </ClCompile>
-    <ClCompile Include="lfs\lfs.c">
-      <Filter>lfs</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lcore.c">
       <Filter>lbind</Filter>
@@ -265,12 +253,6 @@
     </ClInclude>
     <ClInclude Include="luacjson\strbuf.h">
       <Filter>cjson</Filter>
-    </ClInclude>
-    <ClInclude Include="pb\pb.h">
-      <Filter>pb</Filter>
-    </ClInclude>
-    <ClInclude Include="lfs\lfs.h">
-      <Filter>lfs</Filter>
     </ClInclude>
     <ClInclude Include="lbind\lpub.h">
       <Filter>lbind</Filter>

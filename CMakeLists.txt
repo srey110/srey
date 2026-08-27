@@ -77,10 +77,8 @@ if(WITH_LUA)
     list(APPEND SREY_INCLUDES
         ${CMAKE_SOURCE_DIR}/lualib
         ${CMAKE_SOURCE_DIR}/lualib/lbind
-        ${CMAKE_SOURCE_DIR}/lualib/lfs
         ${CMAKE_SOURCE_DIR}/lualib/lua
         ${CMAKE_SOURCE_DIR}/lualib/luacjson
-        ${CMAKE_SOURCE_DIR}/lualib/pb
     )
 endif()
 
@@ -124,15 +122,11 @@ set(LIB_SOURCES
 if(WITH_LUA)
     file(GLOB SRC_LUA       lualib/lua/*.c)
     file(GLOB SRC_LBIND     lualib/lbind/*.c)
-    file(GLOB SRC_LFS       lualib/lfs/*.c)
     file(GLOB SRC_LUACJSON  lualib/luacjson/*.c)
-    file(GLOB SRC_PB        lualib/pb/*.c)
     list(APPEND LIB_SOURCES
         ${SRC_LUA}
         ${SRC_LBIND}
-        ${SRC_LFS}
         ${SRC_LUACJSON}
-        ${SRC_PB}
     )
 endif()
 

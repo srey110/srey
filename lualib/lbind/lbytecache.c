@@ -41,9 +41,8 @@ static void _lbc_entry_free(void *item) {
 }
 void lbc_init(rwlock_distr_ctx *lck) {
     _bc_lock = lck;
-    _bc_map = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                         sizeof(bc_entry), ONEK, 0, 0,
-                                         _lbc_hash, _lbc_compare, _lbc_entry_free, NULL);
+    _bc_map = hashmap_new(sizeof(bc_entry), ONEK, 0, 0,
+                          _lbc_hash, _lbc_compare, _lbc_entry_free, NULL);
 }
 void lbc_free(void) {
     if (NULL != _bc_map) {

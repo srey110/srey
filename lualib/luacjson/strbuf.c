@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "strbuf.h"
+#include "base/memory.h"
 #include <limits.h>
 #include <lua.h>
 #include <lauxlib.h>
@@ -64,7 +65,7 @@ void strbuf_init(lua_State *l, strbuf_t *s, int len)
     s->reallocs = 0;
     s->debug = 0;
 
-    s->buf = (char *)malloc(size);
+    s->buf = (char *)_malloc(size);
     if (!s->buf)
         die(l, "Out of memory");
 
@@ -75,7 +76,7 @@ strbuf_t *strbuf_new(lua_State *l, int len)
 {
     strbuf_t *s;
 
-    s = (strbuf_t*)malloc(sizeof(strbuf_t));
+    s = (strbuf_t*)_malloc(sizeof(strbuf_t));
     if (!s)
         die(l, "Out of memory");
 
@@ -112,11 +113,11 @@ void strbuf_free(strbuf_t *s)
     debug_stats(s);
 
     if (s->buf) {
-        free(s->buf);
+        _free(s->buf);
         s->buf = NULL;
     }
     if (s->dynamic)
-        free(s);
+        _free(s);
 }
 
 char *strbuf_free_to_string(strbuf_t *s, int *len)
@@ -132,7 +133,7 @@ char *strbuf_free_to_string(strbuf_t *s, int *len)
         *len = s->length;
 
     if (s->dynamic)
-        free(s);
+        _free(s);
 
     return buf;
 }
@@ -187,7 +188,7 @@ void strbuf_resize(strbuf_t *s, int len)
     }
 
     s->size = newsize;
-    s->buf = (char *)realloc(s->buf, s->size);
+    s->buf = (char *)_realloc(s->buf, s->size);
     if (!s->buf)
         die(s->lua, "Out of memory");
     s->reallocs++;

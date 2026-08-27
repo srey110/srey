@@ -6,6 +6,12 @@
 #include "utils/binary.h"
 #include "utils/pool.h"
 #include "containers/slist.h"
+#if defined(MCO_USE_VMEM_ALLOCATOR)
+    #error "MCO_USE_VMEM_ALLOCATOR skips the C-allocator block, silently reverting coroutine stacks to mmap/VirtualAlloc"
+#endif
+// 协程栈改走框架分配器以计入 MEMORY_CHECK；minicoro 依赖零初始化的栈，必须用 _calloc
+#define MCO_ALLOC(size) _calloc(1, size)
+#define MCO_DEALLOC(ptr, size) _free(ptr)
 #define MINICORO_IMPL
 #include "srey/minicoro.h"
 
@@ -242,9 +248,8 @@ static coro_ctx *_coro_ctx_init(free_cb _argfree, void *arg) {
     pool_init(&coctx->serial_node_pool, sizeof(serial_node), NODEPOOL_CAP, 0, 0, NULL);
     timer_init(&coctx->timer);
     coctx->shrink_ms = timer_cur_ms(&coctx->timer);
-    coctx->mapco = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                              sizeof(coro_sess), ONEK, 0, 0,
-                                              _coro_cosess_hash, _coro_cosess_compare, NULL, NULL);
+    coctx->mapco = hashmap_new(sizeof(coro_sess), ONEK, 0, 0,
+                               _coro_cosess_hash, _coro_cosess_compare, NULL, NULL);
     heap_init(&coctx->timeout_heap, _coro_timeout_cmp);
     return coctx;
 }

@@ -391,9 +391,8 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
         ctx->in_tick = 0;
         ctx->closing = 0;
         ctx->ud = ud;
-        ctx->mapkcp = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                 sizeof(kcp_element *), ONEK, 0, 0,
-                                                 _kcp_map_hash, _kcp_map_compare, _kcp_map_elfree, NULL);
+        ctx->mapkcp = hashmap_new(sizeof(kcp_element *), ONEK, 0, 0,
+                                  _kcp_map_hash, _kcp_map_compare, _kcp_map_elfree, NULL);
 #if KCP_TICK_HEAP
         heap_init(&ctx->heap_due, _kcp_due_cmp);
 #endif

@@ -352,12 +352,10 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     const thread_hooks hooks_base = {
         _loader_slot_register_base, _loader_slot_unregister_base, loader
     };
-    loader->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                  sizeof(name_t *), ONEK, 0, 0,
-                                                  _loader_task_hash, _loader_task_compare, _loader_task_free, NULL);
-    loader->mapnames = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                  sizeof(name_handle_entry), ONEK, 0, 0,
-                                                  _loader_name_hash, _loader_name_compare, NULL, NULL);
+    loader->maptasks = hashmap_new(sizeof(name_t *), ONEK, 0, 0,
+                                   _loader_task_hash, _loader_task_compare, _loader_task_free, NULL);
+    loader->mapnames = hashmap_new(sizeof(name_handle_entry), ONEK, 0, 0,
+                                   _loader_name_hash, _loader_name_compare, NULL, NULL);
     loader->monitor.thread_monitor = thread_creat(_loader_monitor_loop, loader);
     // 每轮处理消息数 = lens >> weight（-1 是特例，固定 1 条），故 weight 越大越保守：
     //   -1: 1 条    0: 全量    1: lens/2    2: lens/4    3: lens/8

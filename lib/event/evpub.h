@@ -147,9 +147,9 @@ typedef struct ev_tick {
 }ev_tick;
 
 // fd → sock_ctx hashmap 工具集
-// hashmap哈希函数：以fd作为key计算哈希值（hashmap_new_with_allocator 回调）
+// hashmap哈希函数：以fd作为key计算哈希值（hashmap_new 回调）
 uint64_t _evpub_sockel_hash(const void *item, uint64_t seed0, uint64_t seed1);
-// hashmap比较函数：比较两个sock_ctx的fd（hashmap_new_with_allocator 回调）
+// hashmap比较函数：比较两个sock_ctx的fd（hashmap_new 回调）
 int _evpub_sockel_compare(const void *a, const void *b, void *ud);
 // 根据fd从watcher的hashmap查找sock_ctx
 struct sock_ctx *_evpub_sockel_get(struct watcher_ctx *watcher, SOCKET fd);

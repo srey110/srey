@@ -61,12 +61,8 @@ LUALIB_API void (luaL_openselectedlibs) (lua_State *L, int load, int preload);
 #define luaL_openlibs(L)	luaL_openselectedlibs(L, ~0, 0)
 
 //额外库
-#define LUA_LFS "lfs"
-LUAMOD_API int (luaopen_lfs)(lua_State *L);
 #define LUA_CJSONLIBNAME "cjson"
 LUAMOD_API int (luaopen_cjson)(lua_State *L);
-#define LUA_PBPACKNAME "pb"
-LUAMOD_API int (luaopen_pb)(lua_State *L);
 
 #define LUA_SREYTASK "srey.task"
 LUAMOD_API int (luaopen_task)(lua_State *L);

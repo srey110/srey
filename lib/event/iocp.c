@@ -283,9 +283,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);// 1线程 对同一socket操作是线程安全
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
-        watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                      sizeof(sock_ctx *), ONEK, 0, 0,
-                                                      _evpub_sockel_hash, _evpub_sockel_compare, _iocp_sockel_free, NULL);
+        watcher->element = hashmap_new(sizeof(sock_ctx *), ONEK, 0, 0,
+                                       _evpub_sockel_hash, _evpub_sockel_compare, _iocp_sockel_free, NULL);
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);

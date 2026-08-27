@@ -23,9 +23,8 @@ hashset *hashset_new(size_t elsize, size_t cap,
     }
     hashset *s;
     MALLOC(s, sizeof(hashset));
-    s->map = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                        elsize, cap, 0, 0,
-                                        hash, compare, elfree, udata);
+    s->map = hashmap_new(elsize, cap, 0, 0,
+                         hash, compare, elfree, udata);
     if (NULL == s->map) {
         FREE(s);
         return NULL;

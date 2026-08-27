@@ -545,9 +545,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _uev_init_evfd();
         _uev_new_pipe(&watcher->pipe);
-        watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                      sizeof(sock_ctx *), ONEK, 0, 0,
-                                                      _evpub_sockel_hash, _evpub_sockel_compare, _uev_free_element, NULL);
+        watcher->element = hashmap_new(sizeof(sock_ctx *), ONEK, 0, 0,
+                                       _evpub_sockel_hash, _evpub_sockel_compare, _uev_free_element, NULL);
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         queue_init(&watcher->qtn, sizeof(qtn_entry), ONEK);
         list_init(&watcher->ticks);

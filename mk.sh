@@ -51,7 +51,7 @@ SHARED_DIR=$SHARED_DIR" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/pr
 SHARED_DIR=$SHARED_DIR" lib/advance"
 if [ $LUA -eq 1 ]
 then
-    SHARED_DIR=$SHARED_DIR" lualib lualib/lua lualib/lbind lualib/lfs lualib/luacjson lualib/pb"
+    SHARED_DIR=$SHARED_DIR" lualib lualib/lua lualib/lbind lualib/luacjson"
 fi
 # 应用专属目录（仅参与各自二进制链接，不进入 libsrey.a）
 SREY_EXTRA_DIR="srey srey/cjson"

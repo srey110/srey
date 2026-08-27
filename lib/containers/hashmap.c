@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "containers/hashmap.h"
+#include "base/memory.h"
 #ifdef _WIN32
 #pragma warning(disable:4018)
 #pragma warning(disable:4244)
@@ -29,12 +30,12 @@ static void (*__free)(void *) = NULL;
 // hashmap_set_allocator allows for configuring a custom allocator for
 // all hashmap library operations. This function, if needed, should be called
 // only once at startup and a prior to calling hashmap_new().
-// 三个必须一起给: 漏掉 realloc 就是自定义 malloc/free 混着 libc 的 realloc 用
-void hashmap_set_allocator(void *(*malloc)(size_t), void *(*realloc)(void *, size_t),
-    void (*free)(void*)) {
-    __malloc = malloc;
-    __realloc = realloc;
-    __free = free;
+// 三个必须一起给: 漏掉 realloc 就是自定义 malloc/free 混着框架的 _realloc 用
+void hashmap_set_allocator(void *(*mallocfn)(size_t), void *(*reallocfn)(void *, size_t),
+    void (*freefn)(void*)) {
+    __malloc = mallocfn;
+    __realloc = reallocfn;
+    __free = freefn;
 }
 
 struct bucket {
@@ -118,16 +119,17 @@ static uint64_t get_hash(const struct hashmap *map, const void *key) {
 
 // hashmap_new_with_allocator returns a new hash map using a custom allocator.
 // See hashmap_new for more information information
-struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t), 
-    void *(*_realloc)(void*, size_t), void (*_free)(void*),
+// 三个传 NULL 即回退到框架分配器(_malloc/_realloc/_free), 与 hashmap_new 等价
+struct hashmap *hashmap_new_with_allocator(void *(*mallocfn)(size_t),
+    void *(*reallocfn)(void*, size_t), void (*freefn)(void*),
     size_t elsize, size_t cap, uint64_t seed0, uint64_t seed1,
     uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
     int (*compare)(const void *a, const void *b, void *udata),
     void (*elfree)(void *item),
     void *udata) {
-    _malloc = _malloc ? _malloc : __malloc ? __malloc : malloc;
-    _realloc = _realloc ? _realloc : __realloc ? __realloc : realloc;
-    _free = _free ? _free : __free ? __free : free;
+    mallocfn = mallocfn ? mallocfn : __malloc ? __malloc : _malloc;
+    reallocfn = reallocfn ? reallocfn : __realloc ? __realloc : _realloc;
+    freefn = freefn ? freefn : __free ? __free : _free;
     size_t ncap = 16;
     if (cap < ncap) {
         cap = ncap;
@@ -152,7 +154,7 @@ struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
     }
     // hashmap + spare + edata
     size_t size = sizeof(struct hashmap)+bucketsz*2;
-    struct hashmap *map = _malloc(size);
+    struct hashmap *map = mallocfn(size);
     if (!map) {
         return NULL;
     }
@@ -170,18 +172,18 @@ struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
     map->cap = cap;
     map->nbuckets = cap;
     map->mask = map->nbuckets-1;
-    map->buckets = _malloc(map->bucketsz*map->nbuckets);
+    map->buckets = mallocfn(map->bucketsz*map->nbuckets);
     if (!map->buckets) {
-        _free(map);
+        freefn(map);
         return NULL;
     }
     memset(map->buckets, 0, map->bucketsz*map->nbuckets);
     map->growpower = 1;
     map->loadfactor = (uint8_t)(clamp_load_factor(HASHMAP_LOAD_FACTOR, GROW_AT) * 100);
     set_thresholds(map);
-    map->malloc = _malloc;
-    map->realloc = _realloc;
-    map->free = _free;
+    map->malloc = mallocfn;
+    map->realloc = reallocfn;
+    map->free = freefn;
     return map;  
 }
 
