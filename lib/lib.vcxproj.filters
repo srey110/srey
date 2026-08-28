@@ -10,6 +10,9 @@
     <Filter Include="serial">
       <UniqueIdentifier>{8d765283-d30c-4a65-844d-67f081513c37}</UniqueIdentifier>
     </Filter>
+    <Filter Include="serial\yyjson">
+      <UniqueIdentifier>{a41c7f28-6b3d-4e59-9c02-8d5714ba6e37}</UniqueIdentifier>
+    </Filter>
     <Filter Include="thread">
       <UniqueIdentifier>{fdd12c60-2ba2-4b60-b4c8-135cb0f4f80d}</UniqueIdentifier>
     </Filter>
@@ -379,6 +382,12 @@
     <ClInclude Include="serial\bson.h">
       <Filter>serial</Filter>
     </ClInclude>
+    <ClInclude Include="serial\yyjson\yyjson.h">
+      <Filter>serial\yyjson</Filter>
+    </ClInclude>
+    <ClInclude Include="serial\yyjson\yyjson_helper.h">
+      <Filter>serial\yyjson</Filter>
+    </ClInclude>
     <ClInclude Include="srey\coro_utils.h">
       <Filter>srey</Filter>
     </ClInclude>
@@ -662,6 +671,12 @@
     </ClCompile>
     <ClCompile Include="serial\bson.c">
       <Filter>serial</Filter>
+    </ClCompile>
+    <ClCompile Include="serial\yyjson\yyjson.c">
+      <Filter>serial\yyjson</Filter>
+    </ClCompile>
+    <ClCompile Include="serial\yyjson\yyjson_helper.c">
+      <Filter>serial\yyjson</Filter>
     </ClCompile>
     <ClCompile Include="srey\coro_utils.c">
       <Filter>srey</Filter>

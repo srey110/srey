@@ -1,5 +1,4 @@
 ﻿#include "startup.h"
-#include "cjson/cJSON.h"
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
 #include "lbind/lbytecache.h"
 #endif
@@ -53,73 +52,95 @@ static char *_config_read(void) {
     }
     return info;
 }
-// 从 cJSON 对象中读取数值字段，字段不存在、非数字、或不在 [0, max] 范围内时返回 dft
-static double _json_get_number(cJSON *json, const char *name, double dft, double max) {
-    cJSON *val = cJSON_GetObjectItem(json, name);
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        double d = val->valuedouble;
-        if (isnan(d) || isinf(d) || d < 0 || d > max) {
-            PRINT("%s is NaN/Inf/out of range, use default.", name);
-            return dft;
-        }
-        return d;
-    }
-    return dft;
-}
-// 从 cJSON 对象中读取字符串字段，值过长时打印警告
-static void _json_get_string(cJSON *json, const char *name, char *str, size_t lens) {
-    cJSON *val = cJSON_GetObjectItem(json, name);
-    if (NULL != val
-        && cJSON_IsString(val)) {
-        size_t vlen = strlen(val->valuestring);
-        if (vlen < lens) {
-            memcpy(str, val->valuestring, vlen);
-            str[vlen] = '\0';
-        } else {
-            PRINT("%s value too long.", name);
-        }
-    }
-}
 // 解析配置文件，将各字段填充到 config_ctx（解析失败时使用默认值）
 static void _parse_config(config_ctx *cnf) {
     char *config = _config_read();
     if (NULL == config) {
         return;
     }
-    cJSON *json = cJSON_Parse(config);
+    yyjson_read_err erro;
+    yyjson_doc *doc = yyjson_read_opts(config, strlen(config), YYJSON_READ_ALLOW_BOM, NULL, &erro);
     FREE(config);
-    if (NULL == json) {
-        const char *erro = cJSON_GetErrorPtr();
-        if (NULL != erro) {
-            PRINT("%s", erro);
-        }
+    if (NULL == doc) {
+        PRINT("parse config error at byte %zu: %s", erro.pos, erro.msg);
         return;
     }
-    cnf->serviceid = (uint16_t)_json_get_number(json, "serviceid", cnf->serviceid, UINT16_MAX);
-    cnf->nnet = (uint16_t)_json_get_number(json, "nnet", cnf->nnet, UINT16_MAX);
-    cnf->nworker = (uint16_t)_json_get_number(json, "nworker", cnf->nworker, UINT16_MAX);
-    cnf->loglv = (uint8_t)_json_get_number(json, "loglv", cnf->loglv, UINT8_MAX);
-    cnf->stacksize = (uint32_t)_json_get_number(json, "stacksize", cnf->stacksize, UINT32_MAX);
-    cnf->twqueuelens = (uint32_t)_json_get_number(json, "twqueuelens", cnf->twqueuelens, UINT32_MAX);
-    cnf->logqueuelens = (uint32_t)_json_get_number(json, "logqueuelens", cnf->logqueuelens, UINT32_MAX);
-    _json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns));
-    _json_get_string(json, "script", cnf->script, sizeof(cnf->script));
+    yyjson_val *json = yyjson_doc_get_root(doc);
+    double num;
+    if (ERR_OK == json_get_num_range(json, "serviceid", 0, UINT16_MAX, &num)) {
+        cnf->serviceid = (uint16_t)num;
+    } else {
+        PRINT("serviceid invalid, use default.");
+    }
+    if (ERR_OK == json_get_num_range(json, "nnet", 0, UINT16_MAX, &num)) {
+        cnf->nnet = (uint16_t)num;
+    } else {
+        PRINT("nnet invalid, use default.");
+    }
+    if (ERR_OK == json_get_num_range(json, "nworker", 0, UINT16_MAX, &num)) {
+        cnf->nworker = (uint16_t)num;
+    } else {
+        PRINT("nworker invalid, use default.");
+    }
+    if (ERR_OK == json_get_num_range(json, "loglv", 0, UINT8_MAX, &num)) {
+        cnf->loglv = (uint8_t)num;
+    } else {
+        PRINT("loglv invalid, use default.");
+    }
+    if (ERR_OK == json_get_num_range(json, "stacksize", 0, UINT32_MAX, &num)) {
+        cnf->stacksize = (uint32_t)num;
+    } else {
+        PRINT("stacksize invalid, use default.");
+    }
+    if (ERR_OK == json_get_num_range(json, "twqueuelens", 0, UINT32_MAX, &num)) {
+        cnf->twqueuelens = (uint32_t)num;
+    } else {
+        PRINT("twqueuelens invalid, use default.");
+    }
+    if (ERR_OK == json_get_num_range(json, "logqueuelens", 0, UINT32_MAX, &num)) {
+        cnf->logqueuelens = (uint32_t)num;
+    } else {
+        PRINT("logqueuelens invalid, use default.");
+    }
+    if (ERR_OK != json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns))) {
+        PRINT("dns invalid, use default.");
+    }
+    if (ERR_OK != json_get_string(json, "script", cnf->script, sizeof(cnf->script))) {
+        PRINT("script invalid, use default.");
+    }
     // debug / harbor 各为嵌套对象
-    cJSON *debug = cJSON_GetObjectItem(json, "debug");
+    yyjson_val *debug = yyjson_obj_get(json, "debug");
     if (NULL != debug) {
-        _json_get_string(debug, "name", cnf->debug.name, sizeof(cnf->debug.name));
-        _json_get_string(debug, "ip", cnf->debug.ip, sizeof(cnf->debug.ip));
-        cnf->debug.port = (uint16_t)_json_get_number(debug, "port", cnf->debug.port, UINT16_MAX);
+        if (ERR_OK != json_get_string(debug, "name", cnf->debug.name, sizeof(cnf->debug.name))) {
+            PRINT("debug.name invalid, use default.");
+        }
+        if (ERR_OK != json_get_string(debug, "ip", cnf->debug.ip, sizeof(cnf->debug.ip))) {
+            PRINT("debug.ip invalid, use default.");
+        }
+        if (ERR_OK == json_get_num_range(debug, "port", 0, UINT16_MAX, &num)) {
+            cnf->debug.port = (uint16_t)num;
+        } else {
+            PRINT("debug.port invalid, use default.");
+        }
     }
-    cJSON *harbor = cJSON_GetObjectItem(json, "harbor");
+    yyjson_val *harbor = yyjson_obj_get(json, "harbor");
     if (NULL != harbor) {
-        _json_get_string(harbor, "name", cnf->harbor.name, sizeof(cnf->harbor.name));
-        _json_get_string(harbor, "ssl", cnf->harbor.ssl, sizeof(cnf->harbor.ssl));
-        _json_get_string(harbor, "ip", cnf->harbor.ip, sizeof(cnf->harbor.ip));
-        cnf->harbor.port = (uint16_t)_json_get_number(harbor, "port", cnf->harbor.port, UINT16_MAX);
+        if (ERR_OK != json_get_string(harbor, "name", cnf->harbor.name, sizeof(cnf->harbor.name))) {
+            PRINT("harbor.name invalid, use default.");
+        }
+        if (ERR_OK != json_get_string(harbor, "ssl", cnf->harbor.ssl, sizeof(cnf->harbor.ssl))) {
+            PRINT("harbor.ssl invalid, use default.");
+        }
+        if (ERR_OK != json_get_string(harbor, "ip", cnf->harbor.ip, sizeof(cnf->harbor.ip))) {
+            PRINT("harbor.ip invalid, use default.");
+        }
+        if (ERR_OK == json_get_num_range(harbor, "port", 0, UINT16_MAX, &num)) {
+            cnf->harbor.port = (uint16_t)num;
+        } else {
+            PRINT("harbor.port invalid, use default.");
+        }
     }
-    cJSON_Delete(json);
+    yyjson_doc_free(doc);
 }
 // 在进程目录下创建 logs 目录并打开以当前时间命名的日志文件
 static void _open_log(uint32_t capacity) {

@@ -157,12 +157,10 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="cjson\cJSON.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="startup.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="cjson\cJSON.h" />
     <ClInclude Include="startup.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -6,7 +6,7 @@ local runner  = require("test.runner")
 local utils   = require("srey.utils")
 local hashring = require("srey.hashring")
 local trend   = require("srey.trend")
-local cjson   = require("cjson")
+local yyjson  = require("yyjson")
 local seri    = require("srey.seri")
 local dns     = require("srey.dns")
 local websock = require("srey.websock")
@@ -43,10 +43,10 @@ runner.run("utils", function(t)
         t:eq(lv, utils.log_getlv(), "log_setlv round-trip")
     end
     do
-        -- ud_str：nil 与 NULL light userdata(cjson.null) 均优雅返回 nil，不解引用崩溃
+        -- ud_str：nil 与 NULL light userdata(yyjson.null) 均优雅返回 nil，不解引用崩溃
         t:eq(nil, utils.ud_str(nil), "ud_str(nil) returns nil")
-        t:eq(nil, utils.ud_str(cjson.null, 5), "ud_str(NULL lud, size>0) returns nil")
-        t:eq("", utils.ud_str(cjson.null, 0), "ud_str(NULL lud, 0) returns empty")
+        t:eq(nil, utils.ud_str(yyjson.null, 5), "ud_str(NULL lud, size>0) returns nil")
+        t:eq("", utils.ud_str(yyjson.null, 0), "ud_str(NULL lud, 0) returns empty")
     end
 
     -- ── hashring ───────────────────────────────────────────────────────

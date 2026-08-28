@@ -40,7 +40,7 @@ static const luaL_Reg stdlibs[] = {
 };
 
 static const luaL_Reg extlibs[] = {
-  {LUA_CJSONLIBNAME, luaopen_cjson},
+  {LUA_YYJSONLIBNAME, luaopen_yyjson},
   {LUA_SREYTASK, luaopen_task},
   {LUA_SREYCORE, luaopen_core},
   {LUA_SREYHARBOR, luaopen_harbor},

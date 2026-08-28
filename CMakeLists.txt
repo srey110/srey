@@ -78,7 +78,6 @@ if(WITH_LUA)
         ${CMAKE_SOURCE_DIR}/lualib
         ${CMAKE_SOURCE_DIR}/lualib/lbind
         ${CMAKE_SOURCE_DIR}/lualib/lua
-        ${CMAKE_SOURCE_DIR}/lualib/luacjson
     )
 endif()
 
@@ -95,6 +94,7 @@ file(GLOB SRC_PGSQL       lib/protocol/pgsql/*.c)
 file(GLOB SRC_SMTP        lib/protocol/smtp/*.c)
 file(GLOB SRC_KCP         lib/protocol/kcp/*.c)
 file(GLOB SRC_SERIAL      lib/serial/*.c)
+file(GLOB SRC_YYJSON      lib/serial/yyjson/*.c)
 file(GLOB SRC_ADVANCE     lib/advance/*.c)
 file(GLOB SRC_SREY_LIB    lib/srey/*.c)
 file(GLOB SRC_THREAD      lib/thread/*.c)
@@ -113,6 +113,7 @@ set(LIB_SOURCES
     ${SRC_SMTP}
     ${SRC_KCP}
     ${SRC_SERIAL}
+    ${SRC_YYJSON}
     ${SRC_ADVANCE}
     ${SRC_SREY_LIB}
     ${SRC_THREAD}
@@ -122,11 +123,9 @@ set(LIB_SOURCES
 if(WITH_LUA)
     file(GLOB SRC_LUA       lualib/lua/*.c)
     file(GLOB SRC_LBIND     lualib/lbind/*.c)
-    file(GLOB SRC_LUACJSON  lualib/luacjson/*.c)
     list(APPEND LIB_SOURCES
         ${SRC_LUA}
         ${SRC_LBIND}
-        ${SRC_LUACJSON}
     )
 endif()
 
@@ -153,7 +152,7 @@ if(WITH_SSL)
 endif()
 
 # ── Executable: srey ──────────────────────────────────────────────────────────
-file(GLOB SRC_SREY_BIN srey/*.c srey/cjson/*.c)
+file(GLOB SRC_SREY_BIN srey/*.c)
 add_executable(srey_bin ${SRC_SREY_BIN})
 set_target_properties(srey_bin PROPERTIES OUTPUT_NAME srey)
 target_include_directories(srey_bin PRIVATE

@@ -138,6 +138,8 @@
     <ClInclude Include="utils\contenttype.h" />
     <ClInclude Include="serial\bson.h" />
     <ClInclude Include="serial\seri.h" />
+    <ClInclude Include="serial\yyjson\yyjson.h" />
+    <ClInclude Include="serial\yyjson\yyjson_helper.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="base\memory.c" />
@@ -236,6 +238,8 @@
     <ClCompile Include="utils\contenttype.c" />
     <ClCompile Include="serial\bson.c" />
     <ClCompile Include="serial\seri.c" />
+    <ClCompile Include="serial\yyjson\yyjson.c" />
+    <ClCompile Include="serial\yyjson\yyjson_helper.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{1586D773-7F15-46FC-804C-553979C99A7D}</ProjectGuid>

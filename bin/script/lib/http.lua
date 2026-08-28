@@ -2,12 +2,12 @@
 -- 封装 C 层 srey.http 的解包接口，并在其基础上提供：
 --   • GET / POST 同步请求（含 chunked 流式响应回调）
 --   • HTTP 响应构造
--- 依赖：lib.srey（网络收发）、srey.http（C 层解包）、cjson（JSON 编码）
+-- 依赖：lib.srey（网络收发）、srey.http（C 层解包）、yyjson（JSON 编码）
 
 local srey = require("lib.srey")
 local core = require("srey.core")
 local srey_http = require("srey.http")
-local json = require("cjson")
+local json = require("yyjson")
 local table = table
 local string = string
 local HTTP_VERSION = "1.1"   -- 固定使用 HTTP/1.1

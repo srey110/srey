@@ -46,15 +46,15 @@ do
     fi
 done < `pwd`/lib/base/config.h
 # 共享库目录（参与 libsrey.a；srey 与 test 二进制共用）
-SHARED_DIR="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/serial lib/srey lib/thread"
+SHARED_DIR="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/serial lib/serial/yyjson lib/srey lib/thread"
 SHARED_DIR=$SHARED_DIR" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp lib/protocol/kcp"
 SHARED_DIR=$SHARED_DIR" lib/advance"
 if [ $LUA -eq 1 ]
 then
-    SHARED_DIR=$SHARED_DIR" lualib lualib/lua lualib/lbind lualib/luacjson"
+    SHARED_DIR=$SHARED_DIR" lualib lualib/lua lualib/lbind"
 fi
 # 应用专属目录（仅参与各自二进制链接，不进入 libsrey.a）
-SREY_EXTRA_DIR="srey srey/cjson"
+SREY_EXTRA_DIR="srey"
 TEST_EXTRA_DIR="test"
 # 解析 target（第一个参数）
 BUILD_TARGET="srey"

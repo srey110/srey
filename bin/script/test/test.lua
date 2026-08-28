@@ -19,6 +19,7 @@ local TESTS = {
     "test.unit_router",
     "test.unit_fork",
     "test.unit_serial",
+    "test.unit_yyjson",
     "test.unit_multicast",
     "test.unit_udp_multicast",
     "test.unit_multi_call",
@@ -58,6 +59,7 @@ local function register()
     task.register("test.unit_router", "unit_router", 0)
     task.register("test.unit_fork", "unit_fork", 0)
     task.register("test.unit_serial", "unit_serial", 0)
+    task.register("test.unit_yyjson", "unit_yyjson", 0)
     task.register("test.unit_multicast", "unit_multicast", 0)
     task.register("test.unit_udp_multicast", "unit_udp_multicast", 0)
     -- 先注册 3 个 subscriber,确保 unit_multi_call 启动时它们的 on_requested 已挂上

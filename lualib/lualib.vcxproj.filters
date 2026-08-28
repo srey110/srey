@@ -4,9 +4,6 @@
     <Filter Include="lua">
       <UniqueIdentifier>{434cd915-7f4d-4791-bf44-bd60fb640f79}</UniqueIdentifier>
     </Filter>
-    <Filter Include="cjson">
-      <UniqueIdentifier>{f0ddfc78-633e-4ef8-a28e-110df7f945b7}</UniqueIdentifier>
-    </Filter>
     <Filter Include="lbind">
       <UniqueIdentifier>{67134366-cad4-469c-b4c8-e5a862526e99}</UniqueIdentifier>
     </Filter>
@@ -108,15 +105,6 @@
     <ClCompile Include="lua\lzio.c">
       <Filter>lua</Filter>
     </ClCompile>
-    <ClCompile Include="luacjson\fpconv.c">
-      <Filter>cjson</Filter>
-    </ClCompile>
-    <ClCompile Include="luacjson\lua_cjson.c">
-      <Filter>cjson</Filter>
-    </ClCompile>
-    <ClCompile Include="luacjson\strbuf.c">
-      <Filter>cjson</Filter>
-    </ClCompile>
     <ClCompile Include="lbind\lcore.c">
       <Filter>lbind</Filter>
     </ClCompile>
@@ -163,6 +151,9 @@
       <Filter>lbind</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lrouter.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lyyjson.c">
       <Filter>lbind</Filter>
     </ClCompile>
   </ItemGroup>
@@ -247,12 +238,6 @@
     </ClInclude>
     <ClInclude Include="lua\lzio.h">
       <Filter>lua</Filter>
-    </ClInclude>
-    <ClInclude Include="luacjson\fpconv.h">
-      <Filter>cjson</Filter>
-    </ClInclude>
-    <ClInclude Include="luacjson\strbuf.h">
-      <Filter>cjson</Filter>
     </ClInclude>
     <ClInclude Include="lbind\lpub.h">
       <Filter>lbind</Filter>

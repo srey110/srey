@@ -64,6 +64,7 @@
 #include "protocol/mongo/mongo.h"
 #include "serial/bson.h"
 #include "serial/seri.h"
+#include "serial/yyjson/yyjson_helper.h"
 #include "srey/loader.h"
 #include "srey/task.h"
 #include "srey/coro.h"

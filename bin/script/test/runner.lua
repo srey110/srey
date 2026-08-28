@@ -8,7 +8,7 @@
 --   end) end)
 
 local srey = require("lib.srey")
-local json = require("cjson")
+local json = require("yyjson")
 
 ---@class M
 ---@field name string 模块名

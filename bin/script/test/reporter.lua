@@ -2,7 +2,7 @@
 -- 注册参数：task.register("test.reporter", "reporter", 0, N)，N 为期望模块数
 
 local srey = require("lib.srey")
-local json = require("cjson")
+local json = require("yyjson")
 
 local _expected = ...
 _expected = _expected or 1
