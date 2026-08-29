@@ -1,4 +1,4 @@
-﻿/*
+/*
 ** $Id: lstring.c $
 ** String table (keeps all strings handled by Lua)
 ** See Copyright Notice in lua.h

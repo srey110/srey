@@ -1,4 +1,4 @@
-﻿/*
+/*
 ** $Id: loslib.c $
 ** Standard Operating System library
 ** See Copyright Notice in lua.h

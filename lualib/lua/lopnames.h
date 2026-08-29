@@ -1,4 +1,4 @@
-﻿/*
+/*
 ** $Id: lopnames.h $
 ** Opcode names
 ** See Copyright Notice in lua.h

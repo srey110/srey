@@ -1,4 +1,4 @@
-﻿/*
+/*
 ** $Id: lapi.h $
 ** Auxiliary functions from Lua API
 ** See Copyright Notice in lua.h

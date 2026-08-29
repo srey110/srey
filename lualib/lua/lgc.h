@@ -1,4 +1,4 @@
-﻿/*
+/*
 ** $Id: lgc.h $
 ** Garbage Collector
 ** See Copyright Notice in lua.h

@@ -1,4 +1,4 @@
-﻿/*
+/*
 ** $Id: lcorolib.c $
 ** Coroutine Library
 ** See Copyright Notice in lua.h
