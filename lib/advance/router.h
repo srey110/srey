@@ -279,7 +279,10 @@ void router_group_nest(const router_group *parent, router_group *g, const char *
 /// <param name="h">handler, 不可为 NULL</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param>
 /// <param name="mws_n">mws 数量</param>
-/// <returns>路由条目, NULL 表示失败 (handler 为空 / 前缀或路径过长 / 段数超上限 / 可选段超 ROUTER_MAX_OPT / 通配符非末段 / 段格式非法); 返回指针仅即时有效, 下次 router_* 注册可能 realloc 路由表使其失效, 不可长期持有</returns>
+/// <returns>路由条目, NULL 表示失败 (handler 为空 / 前缀或路径过长 / 段数超上限 /
+///   可选段超 ROUTER_MAX_OPT / 必填参数超 ROUTER_MAX_PARAMS / 通配符非末段 /
+///   被已注册的等价路由遮蔽, 判据同 router_add_index 的 -2);
+///   返回指针仅即时有效, 下次 router_* 注册可能 realloc 路由表使其失效, 不可长期持有</returns>
 router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,
@@ -474,32 +477,32 @@ void router_next(router_req *ctx);
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="key">header 名</param>
-/// <param name="lens">输出值长度</param>
-/// <returns>值指针 (pack 内部, 不复制); 未找到、或流式路由已过首帧, 返回 NULL</returns>
+/// <param name="lens">输出值长度; 必须非 NULL, 函数内裸解引用</param>
+/// <returns>值指针 (pack 内部, 不复制); 未找到、或流式路由已过首帧, 返回 NULL(此时 lens 已置 0)</returns>
 char *router_req_header(router_req *ctx, const char *key, size_t *lens);
 /// <summary>
 /// 取路径参数 (来自 {name} / {name?})
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="key">参数名</param>
-/// <param name="lens">输出值长度</param>
-/// <returns>值指针; 未找到返回 NULL</returns>
+/// <param name="lens">输出值长度; 必须非 NULL, 函数内裸解引用</param>
+/// <returns>值指针; 未找到返回 NULL(此时 lens 已置 0)</returns>
 const char *router_req_param(router_req *ctx, const char *key, size_t *lens);
 /// <summary>
 /// 取 URL query 参数 (?a=1&amp;b=2)
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="key">参数名</param>
-/// <param name="lens">输出值长度</param>
-/// <returns>值指针; 键不存在返回 NULL, 键存在但值空(?a=)返回非 NULL 零长指针</returns>
+/// <param name="lens">输出值长度; 必须非 NULL, 函数内裸解引用</param>
+/// <returns>值指针; 键不存在返回 NULL(此时 lens 已置 0), 键存在但值空(?a=)返回非 NULL 零长指针</returns>
 const char *router_req_query(router_req *ctx, const char *key, size_t *lens);
 /// <summary>
 /// 取请求 body。流式路由不要用它: chunked 时这里恒为空,
 /// 请求体一律从 router_stream_cb 的 data 取
 /// </summary>
 /// <param name="ctx">router_req</param>
-/// <param name="lens">输出 body 长度</param>
-/// <returns>body 指针; 无 body 返回 NULL</returns>
+/// <param name="lens">输出 body 长度; 必须非 NULL, 函数内裸解引用</param>
+/// <returns>body 指针; 无 body 返回 NULL(此时 lens 已置 0)</returns>
 void *router_req_body(router_req *ctx, size_t *lens);
 /// <summary>
 /// text/plain 响应

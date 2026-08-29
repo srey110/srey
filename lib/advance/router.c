@@ -98,13 +98,14 @@ static void _router_grow(void **arr, int32_t *cap, int32_t need, size_t elem_siz
     if (need <= *cap) {
         return;
     }
-    // 起始 8, 之后翻倍直到满足 need; REALLOC 在 *arr=NULL 时等价 malloc
-    int32_t newcap = 0 == *cap ? 8 : *cap;
-    while (newcap < need) {
+    // 起始 8, 之后翻倍直到满足 need; REALLOC 在 *arr=NULL 时等价 malloc。
+    // 翻倍走无符号: int32_t 溢出是 UB, 编译器可据此把 newcap < need 推成恒真
+    uint32_t newcap = (0 == *cap) ? 8u : (uint32_t)*cap;
+    while (newcap < (uint32_t)need) {
         newcap *= 2;
     }
     REALLOC(*arr, *arr, (size_t)newcap * elem_size);
-    *cap = newcap;
+    *cap = (int32_t)newcap;
 }
 // 解析单段, 写入 out。src 不要求以 \0 结尾, 仅按 len 读取。任何输入都能解析出一段:
 // 认不出占位符形态(名字为空 / 名字里有 '?')就当字面量, 故没有失败返回

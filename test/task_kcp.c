@@ -132,10 +132,11 @@ static void _cli_worker(task_ctx *task, void *arg) {
     }
     // 5. 同步发送并校验 echo
     char msg[32];
-    int32_t mlen = SNPRINTF(msg, sizeof(msg), "kcp_hello_%d", idx);
+    int32_t rtn = SNPRINTF(msg, sizeof(msg), "kcp_hello_%d", idx);
+    size_t mlen = snprintf_lens(rtn, sizeof(msg));
     size_t esize = 0;
-    void *echo = kcp_synsend(task, &kcp, msg, (size_t)mlen, 1, &esize);
-    if (NULL != echo && esize == (size_t)mlen && 0 == memcmp(echo, msg, (size_t)mlen)) {
+    void *echo = kcp_synsend(task, &kcp, msg, mlen, 1, &esize);
+    if (NULL != echo && esize == mlen && 0 == memcmp(echo, msg, mlen)) {
         ATOMIC_ADD(&_cli_success, 1);
     } else {
         LOG_ERROR("kcp client %d synsend verify failed.", idx);
@@ -259,10 +260,11 @@ typedef struct kcp_fifo_ctx {
 static void _fifo_worker(task_ctx *task, void *arg) {
     kcp_fifo_ctx *ctx = arg;
     char msg[32];
-    int32_t mlen = SNPRINTF(msg, sizeof(msg), "kcp_fifo_%d", ctx->idx);
+    int32_t rtn = SNPRINTF(msg, sizeof(msg), "kcp_fifo_%d", ctx->idx);
+    size_t mlen = snprintf_lens(rtn, sizeof(msg));
     size_t esize = 0;
-    void *echo = kcp_synsend(task, ctx->kcp, msg, (size_t)mlen, 1, &esize);
-    ctx->matched = (NULL != echo && esize == (size_t)mlen && 0 == memcmp(echo, msg, (size_t)mlen));
+    void *echo = kcp_synsend(task, ctx->kcp, msg, mlen, 1, &esize);
+    ctx->matched = (NULL != echo && esize == mlen && 0 == memcmp(echo, msg, mlen));
 }
 static void _fifo_startup(task_ctx *task) {
     coro_sleep(task, 300);// 等 server TCP listen / UDP 落地

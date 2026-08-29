@@ -37,8 +37,9 @@ typedef void(*_request_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
 typedef void(*_response_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                             int32_t error, void *data, size_t size);// 任务响应回调
 typedef void(*_net_accept_cb)(task_ctx *task, sk_id *sk, subtype_t pktype);// 新连接接受回调
+// 数据接收回调。size 仅对部分协议有效，恒为 0 的那几个见 prots_unpack 的 size 契约
 typedef void(*_net_recv_cb)(task_ctx *task, sk_id *sk,
-                            subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size); // 数据接收回调
+                            subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size);
 typedef void(*_net_send_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
 typedef void(*_net_connect_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t erro);// 连接建立回调
 typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// SSL 交换完成回调

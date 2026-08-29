@@ -213,9 +213,10 @@ void _uev_disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
         _evpub_close_flush_tcp(tcp->sock.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, TCP_SSL(tcp));
         BIT_SET(tcp->status, STATUS_ERROR);
         _uev_sk_shutdown(skctx);
-        _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
-        // 注册 EVENT_WRITE：触发 _usk_on_rw_cb 入口的 STATUS_ERROR 分支就地关闭
-        if (ERR_OK != _usk_keep_event(watcher, &tcp->sock, EVENT_WRITE)) {
+        // READ 接住 shutdown 造成的 EOF 边沿, WRITE 触发 _usk_on_rw_cb 入口的 STATUS_ERROR
+        // 分支就地关闭; 两次注册都是拆连接的路, 任一注册不上就直接关, 别把连接吊到 keepalive
+        if (ERR_OK != _usk_keep_event(watcher, &tcp->sock, EVENT_READ)
+            || ERR_OK != _usk_keep_event(watcher, &tcp->sock, EVENT_WRITE)) {
             _usk_close_tcp(watcher, tcp);
         }
     } else {
@@ -329,21 +330,25 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
 // 从socket读取数据到接收缓冲区并触发recv回调，MANUAL_ADD时需重新注册读事件
 static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nread;
+    int32_t evrtn = ERR_OK;
     int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, TCP_SSL(tcp));
 #if WITH_SSL
     if (ERR_OK == rtn
         && NULL != tcp->ssl
         && SSL_want_write(tcp->ssl)) {// tls1.3 KeyUpdate探测
         BIT_SET(tcp->status, STATUS_KEYUPDATE_WRITE);
-        rtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+        evrtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
     }
 #endif
     _usk_call_recv_cb(watcher->ev, tcp, nread);
-    if (ERR_OK == rtn) {
-        return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
+    if (ERR_OK != rtn) {
+        _evpub_mark_close(&tcp->status, rtn, TCP_SSL(tcp));
+        return ERR_FAILED;
     }
-    _evpub_mark_close(&tcp->status, rtn, TCP_SSL(tcp));
-    return ERR_FAILED;
+    if (ERR_OK != evrtn) {
+        return ERR_FAILED;
+    }
+    return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
 }
 // 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件。
 // STATUS_KEYUPDATE_READ 的置与清都只在本函数：别处清位条件对不上置位处，残留期间

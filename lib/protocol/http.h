@@ -153,8 +153,8 @@ http_header_ctx *http_header_at(struct http_pack_ctx *pack, uint32_t pos);
 /// </summary>
 /// <param name="pack">http_pack_ctx</param>
 /// <param name="header">键</param>
-/// <param name="lens">值长度</param>
-/// <returns>值</returns>
+/// <param name="lens">值长度；只在返回非 NULL 时写入</param>
+/// <returns>值；字段不存在或 chunked 中间/结束块返回 NULL（判据同 http_status）</returns>
 char *http_header(struct http_pack_ctx *pack, const char *header, size_t *lens);
 /// <summary>
 /// chunked

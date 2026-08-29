@@ -95,7 +95,7 @@ static int32_t _lmqtt_props_binary(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
     char *data;
-    size_t lens;
+    size_t lens = 0;
     _lmqtt_get_payload(lua, 3, &data, &lens);
     lua_pushboolean(lua, ERR_OK == mqtt_props_binary(props, flag, data, lens));
     return 1;

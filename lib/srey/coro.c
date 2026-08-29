@@ -817,6 +817,12 @@ int32_t coro_fork_wait(task_ctx *task, int32_t n, fork_serial_cb funcs[], void *
     return ERR_OK;
 }
 coro_serial_ctx *coro_serial_new(task_ctx *task) {
+    // 判型同 coro_get_arg:光判 NULL 挡不住"类型不对但非空",按 coro_ctx * 挂进
+    // serials 就是往错误偏移写链表节点
+    if (TASK_MCO != task_get_type(task)
+        || NULL == task->arg) {
+        return NULL;
+    }
     coro_serial_ctx *s;
     CALLOC(s, 1, sizeof(coro_serial_ctx));
     s->task = task;

@@ -669,7 +669,10 @@ static int32_t _lcore_http_set_method(lua_State *lua) {
 /// <returns type="boolean">可唤醒等待者 true；false 表示该包不走命令响应路径</returns>
 static int32_t _lcore_may_resume(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
-    LUACHECK_LUDATA(lua, 2);
+    // 放行 nil:C 侧 prots_may_resume 明确接受 data 为 NULL(视为无包可拦,返 ERR_OK),
+    // 这里强求 lightuserdata 就比它窄一档,msg.data 缺席时会把整条分发抛崩
+    luaL_argexpected(lua, lua_islightuserdata(lua, 2) || lua_isnoneornil(lua, 2),
+                     2, "light userdata or nil");
     void *data = lua_touserdata(lua, 2);
     if (ERR_OK == prots_may_resume(pktype, data)) {
         lua_pushboolean(lua, 1);

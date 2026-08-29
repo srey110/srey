@@ -57,7 +57,10 @@ int32_t prots_may_resume(pack_type pktype, void *data);
 /// <param name="client">1=客户端 0=服务端</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">ud_cxt 指针</param>
-/// <param name="size">输出：数据包长度</param>
+/// <param name="size">输出：数据包长度。只有 DNS / SMTP / CUSTZ / NONE / UDP_KCP 会写；
+///   HTTP / WEBSOCK / MQTT / REDIS / MYSQL / PGSQL / MONGO 的返回值是协议自己的 pack 对象，
+///   长度恒为入口置的 0，要真实长度得走该协议的访问器（http_data / websock_data / ...）。
+///   这个 0 会原样传到 _net_recv_cb 的 size 形参</param>
 /// <param name="status">输出：解包状态标志</param>
 /// <returns>解包后的数据指针，NULL 表示数据不足或出错</returns>
 void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,

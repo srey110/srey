@@ -23,7 +23,7 @@ int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess) {
     smtp->task = task;
     PROT_REF_ACQUIRE(smtp);
     return task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port,
-        0, smtp, setsess, &smtp->sk.fd, &smtp->sk.skid);
+        NETEV_NONE, smtp, setsess, &smtp->sk.fd, &smtp->sk.skid);
 }
 int32_t mqtt_try_connect(task_ctx *task, struct evssl_ctx *evssl,
                          const char *ip, uint16_t port, int32_t netev,

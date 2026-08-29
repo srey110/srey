@@ -315,6 +315,9 @@ static coro_serial_ctx *_serial_acquire(task_ctx *task, coro_serial_ctx **slot, 
     *owned = 0;
     if (NULL == *slot) {
         *slot = coro_serial_new(task);
+        if (NULL == *slot) {
+            return NULL;// 非 MCO task, 装不上执行器; 放行等于把受管连接静默降级成不串行
+        }
         *owned = 1;
     }
     coro_serial_ctx *held = *slot;
@@ -359,9 +362,9 @@ static int32_t _serial_connect(task_ctx *task, coro_serial_ctx **slot, int32_t *
     return rtn;
 }
 // 摘指针 → 无执行器就直接断 → 上锁 → 断开动作 → 拆执行器 → 解锁。上锁是别把别人半途的等待拦腰打断;
-// 拿不到锁只拆不断:要么不在协程内(断连要等确认,这儿做不了),要么别人已在销毁同一条连接。
-// established / generation 只在锁内改:锁外改的话排在前面的 connect 会把它们覆写回去,
-// quit 返回时留下"还连着"的假值。摘指针而不是解锁时重读,道理见 _serial_discard 上方
+// 拿不到锁分两档:别人已在销毁同一条连接就只拆不断(善后归先到方),不在协程内则先关 fd 再拆。
+// established / generation 一律写在 doquit / _serial_discard 之前:这两个会就地 resume
+// 排队者,它们可能当场重连,晚写就会盖掉新连接的状态。摘指针而不是解锁时重读,道理见 _serial_discard 上方
 static void _serial_quit(task_ctx *task, coro_serial_ctx **slot, sk_id *sk, int32_t *established,
                          uint32_t *generation, serial_quit_cb doquit, void *ctx) {
     coro_serial_ctx *held = *slot;
@@ -383,6 +386,15 @@ static void _serial_quit(task_ctx *task, coro_serial_ctx **slot, sk_id *sk, int3
         return;
     }
     if (ERR_OK != _serial_lock(task, held)) {
+        // 析构里调 *_quit 走的就是这里,不补 ev_close 会把 fd 漏到整个 task 拆除。
+        // 整块排在 _serial_discard 之前,理由见函数上方
+        if (NULL != task
+            && 0 == coro_incoro(task)) {
+            *established = 0;
+            (*generation)++;
+            LOG_WARN("quit outside coroutine context, close fd %d without protocol quit.", (int32_t)sk->fd);
+            ev_close(&task->loader->netev, sk->fd, sk->skid);
+        }
         _serial_discard(slot, held);
         return;
     }
@@ -1213,14 +1225,16 @@ int32_t mongo_refreshsession(mongo_session *session) {
 }
 void mongo_freesession(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
+    // 解绑必须排在会挂起的 _mongo_send 之前:挂起窗口里 mongo->session 还指着本 session,
+    // 并发协程的 commit/rollback 就能过 _mongo_txn_end 的绑定判定,醒来后写进已释放的 session
+    if (mongo->session == session) {
+        mongo->session = NULL;
+    }
     // 不看绑定:endsession 只按 session->uuid 组包,不带连接当前绑定的事务上下文。
     // 也不看连接换没换过:服务端的会话记录不随连接消失,漏发这一包就要挂到会话超时才回收
     size_t lens;
     void *endsession = mongo_pack_endsession(session, &lens);
     _mongo_send(mongo, endsession, lens, NULL);
-    if (mongo->session == session) {
-        mongo->session = NULL;
-    }
     FREE(session->options);
     FREE(session);
 }

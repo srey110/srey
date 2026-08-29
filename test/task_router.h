@@ -9,7 +9,7 @@
 void task_router_server_start(loader_ctx *loader, const char *name, uint16_t port);
 
 // 启动第二个 router server task: 只注册一条 router_add_index 条目 + 一条普通路由,
-// 一条流式路由都没有 —— chunked 首帧因此走 _router_chunked_nostream 而非 _router_st_begin
+// 一条流式路由都没有 —— chunked 首帧因此只能落到 _router_chunked_probe 的三种拒绝结局
 void task_router_index_server_start(loader_ctx *loader, const char *name, uint16_t port);
 
 // 启动客户端 task: 顺序发请求, 全部断言通过后将 result_slot 写为 1

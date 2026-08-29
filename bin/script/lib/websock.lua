@@ -171,7 +171,7 @@ end
 -- ── 控制帧构造 ────────────────────────────────────────────────────────────
 -- 本节与下节的构造函数有两种情况返回 nil, nil，调用方一律须判（下面 _continua /
 -- _send_end_frame 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key；
--- 载荷超 64MB 单帧上限（与解包侧同一个值，不分方向，server 侧同样会返 nil）
+-- 载荷超单帧上限 MAX_PACK_SIZE（与解包侧同一个值，不分方向，server 侧同样会返 nil）
 
 ---构造 ping 控制帧（client=1 加掩码）
 ---@type fun(client:integer):lightuserdata?, integer?
@@ -244,7 +244,7 @@ end
 ---内部流式发送：将 func(...) 产生的数据按 WebSocket 分片协议逐帧发送；
 ---发送 fin=1 空 continuation 帧标记消息结束
 -- websock_pack_* 返 nil 有两种原因（具体哪种 C 侧已打日志，这里不复述）：客户端帧取不到
--- 掩码 key 的熵，或载荷超 64MB 单帧上限。不判空的话 nil 一路走到 srey.send 里的
+-- 掩码 key 的熵，或载荷超单帧上限 MAX_PACK_SIZE。不判空的话 nil 一路走到 srey.send 里的
 -- lpub_check_buf，撞 "string or light userdata expected" 把整条协程打断
 local function _send_end_frame(fd, skid, client)
     local data, size = wbsk.continua(client, 1, "", 0)

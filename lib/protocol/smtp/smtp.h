@@ -6,9 +6,14 @@
 
 struct coro_serial_ctx;
 
+typedef enum smtp_authtype {
+    LOGIN = 1, //AUTH LOGIN 认证方式（逐字段 Base64 编码）
+    PLAIN      //AUTH PLAIN 认证方式（整体 Base64 编码）
+}smtp_authtype;
+
 typedef struct smtp_ctx {
     uint16_t port;           //SMTP 服务器端口
-    int32_t authtype;        //认证类型（LOGIN 或 PLAIN），握手后自动设置
+    int32_t authtype;        //认证类型（smtp_authtype），握手后自动设置
     atomic_t ref;            //上层 handle 引用计数：0=C 借用(事件层不 free 块)，>0=持有者数
     int32_t established;     // 当前是否连着（建连失败 / quit / 就地关连接都清零）
     uint32_t generation;     // 连接身份代次，建连成功 / 断开各前进一次；判短路见 _serial_connect
@@ -111,5 +116,8 @@ void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt 
 // 在 buffer 中扫描完整 SMTP 多行响应。code 非 NULL 校验每行 code 一致，NULL 则以首行 code 为准。
 // 返回 >0 = 完整响应总字节数（含末尾 CRLF）；0 = 需等待更多数据；ERR_FAILED = 协议错误
 int32_t _smtp_full_response(buffer_ctx *buf, const char *code);
+// 从 EHLO 响应里解析认证类型，优先 PLAIN 其次 LOGIN。total 是本条 250 响应的字节数，
+// 搜索一律卡在它之内。返回 smtp_authtype，没有可用的 AUTH 通告返回 ERR_FAILED
+int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total);
 
 #endif//SMTP_H_

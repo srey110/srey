@@ -53,10 +53,10 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
 /// 眼下树内无调用方，为自定义子协议留的口子
 /// </summary>
 /// <param name="ev">ev_ctx</param>
-/// <param name="fd">socket句柄</param>
+/// <param name="fd">socket句柄；非 WebSocket 连接、或握手尚未完成时只打日志不设置</param>
 /// <param name="skid">链接ID</param>
-/// <param name="val">业务自定义数据,所有权转移给 ws->ud->context</param>
-/// <returns>ERR_OK 成功投递；stop 非0失败</returns>
+/// <param name="val">业务自定义数据,所有权转移给 ws->ud->context;fd 那档不设置时也不释放</param>
+/// <returns>ERR_OK 成功投递；stop 非0失败。只表示命令投递成功，不代表真的设上了</returns>
 int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val);
 /// <summary>
 /// WebSocket 解包：握手阶段完成 HTTP 升级，数据阶段从缓冲区解析一个完整帧（含分片）
@@ -85,21 +85,21 @@ char *websock_pack_handshake(const char *host, const char *uri, const char *secp
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>ping包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
+/// <returns>ping包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超单帧上限（MAX_PACK_SIZE，配成 0 时退到 64MB 硬上限）同样返 NULL</returns>
 void *websock_pack_ping(int32_t mask, size_t *size);
 /// <summary>
 /// pong包
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>pong包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
+/// <returns>pong包；返回 NULL 的情形同 websock_pack_ping</returns>
 void *websock_pack_pong(int32_t mask, size_t *size);
 /// <summary>
 /// close包
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>close包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
+/// <returns>close包；返回 NULL 的情形同 websock_pack_ping</returns>
 void *websock_pack_close(int32_t mask, size_t *size);
 /// <summary>
 /// 文本消息包
@@ -109,7 +109,7 @@ void *websock_pack_close(int32_t mask, size_t *size);
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>文本消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
+/// <returns>文本消息包；返回 NULL 的情形同 websock_pack_ping</returns>
 void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 二进制消息包
@@ -119,7 +119,7 @@ void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, siz
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>二进制消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
+/// <returns>二进制消息包；返回 NULL 的情形同 websock_pack_ping</returns>
 void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 分片消息包
@@ -129,7 +129,7 @@ void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, s
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>分片消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)；载荷超 64MB 上限同样返 NULL</returns>
+/// <returns>分片消息包；返回 NULL 的情形同 websock_pack_ping</returns>
 void *websock_pack_continua(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 获取fin值
@@ -147,13 +147,13 @@ int32_t websock_prot(struct websock_pack_ctx *pack);
 /// 获取子协议
 /// </summary>
 /// <param name="pack">websock_pack_ctx</param>
-/// <returns>协议号</returns>
+/// <returns>子协议类型;未协商子协议时为 PACK_NONE</returns>
 int32_t websock_secprot(struct websock_pack_ctx *pack);
 /// <summary>
 /// 获取子协议数据包
 /// </summary>
 /// <param name="pack">websock_pack_ctx</param>
-/// <returns>协议包</returns>
+/// <returns>子协议包;控制帧(PING/PONG/CLOSE)与零长数据帧即使 websock_secprot 非 PACK_NONE 也返回 NULL,取用前必判</returns>
 void *websock_secpack(struct websock_pack_ctx *pack);
 /// <summary>
 /// 获取数据

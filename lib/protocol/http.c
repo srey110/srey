@@ -5,7 +5,8 @@
 #include "containers/sarray.h"
 #include "utils/utils.h"
 
-#define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data)) // 头部缓冲区剩余字节数
+// 头部缓冲区从 cur 起的剩余字节数。形参名避开 head：宏体里 (p)->head 的 head 也会被替换
+#define HEAD_REMAIN(p, cur) ((p)->head.lens - (size_t)((cur) - (char *)(p)->head.data))
 
 typedef enum parse_status{
     INIT = 0,   // 初始状态，等待头部
@@ -194,10 +195,8 @@ static int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
     return http_code_nobody((int32_t)code);
 }
 // 首行与字段行共用的单趟行扫描：扫到行尾 CRLF 为止，顺带记下行内出现的分隔符位置。
-// 只有 CRLF 才算收行，裸 CR、裸 LF 和 NUL 一律拒（RFC 9110 §5.5 把这三个列为非法且危险的字节）：
-// 放行裸 LF 的话，上游按它切行、本端按 CRLF 切行，两边就切出不同的头部边界——
-// `X: a\nTransfer-Encoding: chunked` 会被本端读成单个 key 为 X 的头，那条走私的 TE 折进了值里，
-// 而本模块四道 TE/CL 走私守卫都按字段名精确比长匹配，一条都看不见它。
+// 只有 CRLF 才算收行，裸 CR、裸 LF 和 NUL 一律拒（RFC 9110 §5.5）：放行裸 LF 会与上游切出
+// 不同的头部边界，四道 TE/CL 走私守卫按字段名精确匹配，看不见折进值里的那条 TE。
 // mark 为要记录的分隔符（首行传 ' '，字段行传 ':'），按出现顺序最多记 nmark 个写入 marks，
 // 实到个数写回 *nout（行内超过 nmark 个时只记前 nmark 个，多出来的归调用方自行处理）。
 // 返回行尾 CRLF 的起始位置；未收到完整行或撞上非法字节返回 NULL
@@ -238,7 +237,7 @@ static char *_http_parse_status(http_pack_ctx *pack) {
     }
     char *sp[2];
     int32_t nsp;
-    char *pcrlf = _http_scan_line(head, HEAD_REMAIN, ' ', sp, 2, &nsp);
+    char *pcrlf = _http_scan_line(head, HEAD_REMAIN(pack, head), ' ', sp, 2, &nsp);
     if (NULL == pcrlf
         || 2 != nsp) {
         return NULL;
@@ -268,7 +267,7 @@ static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_
     }
     char *pcolon;
     int32_t ncolon;
-    char *pcrlf = _http_scan_line(head, HEAD_REMAIN, ':', &pcolon, 1, &ncolon);
+    char *pcrlf = _http_scan_line(head, HEAD_REMAIN(pack, head), ':', &pcolon, 1, &ncolon);
     if (NULL == pcrlf
         || 1 != ncolon) {
         return ERR_FAILED;
@@ -665,7 +664,7 @@ static int32_t _http_set_nobody_cb(struct watcher_ctx *watcher, struct sock_ctx 
     (void)data;
     ud_cxt *ud = _evpub_get_ud(skctx);
     // ud->status 是各协议共用的解析状态字节,写到非 HTTP 连接上就是把别人的状态机踢乱。
-    // 本接口收的是裸 fd(Lua 侧也能传任意 fd),故必须自己认协议,口径同 _prots_emit_close_tail
+    // 本接口收的是裸 fd(调用方可传任意 fd),故必须自己认协议,口径同 _prots_emit_close_tail
     if (PACK_HTTP != ud->pktype) {
         LOG_WARN("http set nobody on fd %d: not an http connection.", (int32_t)number);
         return 0;

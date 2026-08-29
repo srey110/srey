@@ -7,10 +7,12 @@
 // ERR_error_string(err, NULL) 的 NULL 分支写 OpenSSL 进程级静态缓冲，多 watcher 线程并发失败时数据竞争；
 // 改 ERR_error_string_n 写各自栈缓冲
 #define SSLCTX_ERRO()\
-    unsigned long err = ERR_get_error();\
-    char errbuf[256];\
-    ERR_error_string_n(err, errbuf, sizeof(errbuf));\
-    LOG_WARN("errno: %lu, %s", err, errbuf)
+    do {\
+        unsigned long err = ERR_get_error();\
+        char errbuf[256];\
+        ERR_error_string_n(err, errbuf, sizeof(errbuf));\
+        LOG_WARN("errno: %lu, %s", err, errbuf);\
+    } while (0)
 
 // SSL上下文封装结构
 struct evssl_ctx {
@@ -202,7 +204,8 @@ int32_t evssl_register(const char *name, evssl_ctx *evssl) {
         evssl_free(evssl);
         return ERR_FAILED;
     }
-    if (NULL == _arr_certs) {
+    if (NULL == _arr_certs
+        || NULL == _rwlck_certs) {
         LOG_WARN("%s", "not call evssl_pool_init.");
         evssl_free(evssl);
         return ERR_FAILED;

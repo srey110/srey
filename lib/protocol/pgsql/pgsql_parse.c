@@ -198,9 +198,10 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
     }
     return ERR_OK;
 }
-// 解析 DataRow（'D'），将列值追加到 reader 的行数组中（成功时接管 breader->data 所有权）
-// 返回 ERR_OK 表示成功（breader->data 已转交 rows[0].payload，由 reader 释放）
-// 返回 ERR_FAILED 表示协议异常（breader->data 已被释放，调用方不可再触碰）
+// 解析 DataRow（'D'），将列值追加到 reader 的行数组中。
+// 无论返回什么，breader->data 都已被本函数处置（转交 rows[0].payload 或就地释放），
+// 调用方一律不得再触碰。返回 ERR_FAILED 表示协议异常
+// 注意 0 列的 DataRow 是合法报文：不建行、就地释放，仍返回 ERR_OK
 static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     if (!binary_have(breader, 2)) {
         FREE(breader->data);
@@ -380,7 +381,7 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         }
         FREE(breader->data);
         break;
-    case 'D': // DataRow：数据行，追加到 reader（成功时不释放 breader->data，所有权转移；失败时函数内已释放）
+    case 'D': // DataRow：数据行，追加到 reader；breader->data 一律由 _pgpack_data_row 处置，此处不再释放
         _pgpack_init(pg, PGPACK_OK);
         if (ERR_OK != _pgpack_data_row(pg->pack, breader)) {
             BIT_SET(*status, PROT_ERROR);
@@ -404,7 +405,10 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         //合法序列必为 'H'（CopyOutResponse 初始化 pg->pack=PGPACK_COPY_OUT）后才能收到 'd'。
         //若 pg->pack 为 NULL（无 'H' 前置）或类型不符（前一个查询的 PGPACK_OK 累积中），
         //强转 pgpack_copy_out_ctx* 后 binary_set_binary 会写到错误偏移 → 内存损坏 / 空指针解引用。
-        if (NULL == pg->pack || PGPACK_COPY_OUT != pg->pack->type) {
+        //还有第三态: 'H' 报文残缺时 _pgpack_init 已把 type 改成 COPY_OUT 而累积缓冲没建起来
+        if (NULL == pg->pack
+            || PGPACK_COPY_OUT != pg->pack->type
+            || NULL == pg->pack->pack) {
             BIT_SET(*status, PROT_ERROR);
             FREE(breader->data);
             break;

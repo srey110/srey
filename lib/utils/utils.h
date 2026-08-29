@@ -1,9 +1,15 @@
 ﻿#ifndef UTILS_H_
 #define UTILS_H_
 
-#include "base/macro.h"
+#include "base/structs.h"// buf_ctx:split 的段数组元素
 
 #define HEX_ENSIZE(s) ((s) * 2 + 1) //tohex 输出缓冲长度：每字节两个十六进制字符 + 结尾 '\0'
+// split 的切分标志,按位或。trim 恒在判空之前:" " 这种全空白段原始长度是 1,
+// 先判空就漏过去了(RFC 7230 §7 的 list 语义正是要求先 trim 再忽略空元素)
+#define SPLIT_TRIM      0x01 //每段剔除两端空字节(SP/HTAB)
+#define SPLIT_SKIPEMPTY 0x02 //丢弃空段(与 SPLIT_TRIM 同用时按 trim 后的长度判)
+#define SPLIT_TRUNCATE  0x04 //仅栈模式:段数超 cap 时截断到 cap 正常返回,而不是 ERR_FAILED
+
 typedef void *(*chr_func)(const void *, int32_t, size_t); //字符查找函数类型（类似 memchr）
 typedef int32_t(*cmp_func)(const void *, const void *, size_t); //内存比较函数类型（类似 memcmp）
 
@@ -321,6 +327,21 @@ int32_t randrange(int32_t min, int32_t max);
 /// <returns>char *</returns>
 char *randstr(char *buf, size_t len);
 /// <summary>
+/// 把 SNPRINTF 的返回值收敛成实际写入的字节数(不含结尾 NUL)。截断时它返回的是
+/// "本应写入的长度"而非实际写入,凡把返回值直接当长度用的地方都要过本函数,
+/// 否则会越过缓冲末尾把相邻字节一起读走
+/// </summary>
+/// <param name="rtn">SNPRINTF 的原始返回值</param>
+/// <param name="bufsize">目标缓冲总字节数</param>
+/// <returns>实际写入字节数;rtn 为负或 bufsize 为 0 返回 0,截断时返回 bufsize - 1</returns>
+static inline size_t snprintf_lens(int32_t rtn, size_t bufsize) {
+    if (rtn < 0
+        || 0 == bufsize) {
+        return 0;
+    }
+    return ((size_t)rtn < bufsize) ? (size_t)rtn : bufsize - 1;
+}
+/// <summary>
 /// 转16进制
 /// </summary>
 /// <param name="buf">要转的数据</param>
@@ -330,26 +351,25 @@ char *randstr(char *buf, size_t len);
 /// <returns>char *</returns>
 char *tohex(const void *buf, size_t len, char *out, int32_t lower);
 /// <summary>
-/// 拆分
-/// </summary>
-/// <param name="ptr">要拆分的数据</param>
-/// <param name="plens">数据长度</param>
-/// <param name="sep">拆分标记</param>
-/// <param name="seplens">拆分标记长度</param>
-/// <param name="n">输出:拆分后的段数;任何路径都会写,返回 NULL 时置 0</param>
-/// <returns>buf_ctx *, 需要free;ptr 为 NULL 或 plens 为 0 时返回 NULL</returns>
-struct buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n);
-/// <summary>
-/// 按单字节 sep 就地拆分到调用方栈数组,不堆分配;标准切分保留空段(连续/尾随 sep 产生 len==0 段,段数 = sep 数 + 1)。
-/// 仅记录段 (data,lens),不复制,data 指向 ptr 内部
+/// 按 sep 拆分,仅记录段 (data,lens) 不复制,data 指向 ptr 内部。
+/// cap 决定内存模型:cap 为 0 走堆(函数分配,segs 是纯出参,不读它的旧值),
+/// cap 大于 0 走调用方的栈数组
 /// </summary>
 /// <param name="ptr">待拆分缓冲(只读取,不修改)</param>
 /// <param name="plens">ptr 字节长度</param>
-/// <param name="sep">单字节分隔符</param>
-/// <param name="segs">输出段数组,调用方分配</param>
-/// <param name="cap">segs 容量</param>
-/// <returns>段数量;超过 cap 返回 ERR_FAILED</returns>
-int32_t split2(char *ptr, size_t plens, uint8_t sep, struct buf_ctx *segs, int32_t cap);
+/// <param name="sep">分隔符;NULL 或 seplens 为 0 时整段不切,只出一段</param>
+/// <param name="seplens">分隔符字节数</param>
+/// <param name="segs">cap 为 0 时输出新分配的段数组(调用方 FREE);cap 大于 0 时传入调用方数组,须非 NULL</param>
+/// <param name="cap">0 走堆不设上限;大于 0 即栈数组容量</param>
+/// <param name="flags">SPLIT_* 按位或,0 为标准切分</param>
+/// <returns>段数量;plens 为 0 时出一个空段(仍是"sep 出现次数 + 1")。
+///   ERR_FAILED 表示参数非法(ptr/segs 为空、cap 为负、栈模式 *segs 为空),
+///   或栈模式超 cap 且未开 SPLIT_TRUNCATE——后者 segs 内容未定义。
+///   cap 判定排在过滤之后,被 SPLIT_SKIPEMPTY 丢掉的段不占名额;
+///   堆模式开 SPLIT_SKIPEMPTY 后可能返回 0,但 *segs 已分配,仍须 FREE。
+///   空段记录原指针与 lens 为 0(不是 NULL)</returns>
+int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
+              buf_ctx **segs, int32_t cap, int32_t flags);
 /// <summary>
 /// 变参
 /// </summary>

@@ -2323,6 +2323,46 @@ static void _smtp_resp_check(CuTest *tc, const char *input, size_t inlen,
     buffer_free(&buf);
 }
 
+// 辅助：喂入完整缓冲，先用 _smtp_full_response 框出本条 250 响应，再解析认证类型
+static void _smtp_auth_check(CuTest *tc, const char *input, int32_t expected) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, (void *)input, strlen(input));
+    int32_t total = _smtp_full_response(&buf, "250");
+    CuAssertTrue(tc, total > 0);
+    CuAssertIntEquals(tc, expected, _smtp_get_authtype(&buf, total));
+    buffer_free(&buf);
+}
+// 认证类型解析必须卡在本条 250 响应之内：粘在后面的字节不属于本次通告
+static void test_smtp_authtype(CuTest *tc) {
+    /* 1. 中间行通告 LOGIN */
+    _smtp_auth_check(tc, "250-fake\r\n250-AUTH LOGIN\r\n250 OK\r\n", LOGIN);
+    /* 2. 同一行既有 LOGIN 又有 PLAIN → 优先 PLAIN */
+    _smtp_auth_check(tc, "250-fake\r\n250-AUTH LOGIN PLAIN\r\n250 OK\r\n", PLAIN);
+    /* 3. 末行通告（空格分隔）同样认 */
+    _smtp_auth_check(tc, "250-fake\r\n250 AUTH PLAIN\r\n", PLAIN);
+    /* 4. 本条响应内没有 AUTH → 失败 */
+    _smtp_auth_check(tc, "250-SIZE 1000\r\n250 HELP\r\n", ERR_FAILED);
+    /* 5. 回归：AUTH 只出现在紧跟其后的下一条响应里，不得越界采信 */
+    _smtp_auth_check(tc, "250-SIZE 1000\r\n250 HELP\r\n250-AUTH PLAIN\r\n250 OK\r\n", ERR_FAILED);
+    /* 6. 回归：本条认 LOGIN，后面粘着的 PLAIN 不得把它顶掉 */
+    _smtp_auth_check(tc, "250-AUTH LOGIN\r\n250 OK\r\n250-AUTH PLAIN\r\n250 OK\r\n", LOGIN);
+    /* 7. "250-AUTHENTICATION" 不是 AUTH 通告（靠尾随空格区分） */
+    _smtp_auth_check(tc, "250-AUTHENTICATION REQUIRED\r\n250 OK\r\n", ERR_FAILED);
+    /* 8. 边界：total 为 1 时 last 算成 0，撞上 buffer_search "end 为 0 即搜到末尾"的哨兵，
+          守卫必须挡下，否则粘在后面那条响应里的 AUTH 会被越界采信 */
+    {
+        const char *glued = "2\r\n250-AUTH PLAIN\r\n250 OK\r\n";
+        buffer_ctx b;
+        buffer_init(&b);
+        buffer_append(&b, (void *)glued, strlen(glued));
+        CuAssertIntEquals(tc, ERR_FAILED, _smtp_get_authtype(&b, 1));
+        CuAssertIntEquals(tc, ERR_FAILED, _smtp_get_authtype(&b, 0));
+        CuAssertIntEquals(tc, ERR_FAILED, _smtp_get_authtype(&b, -1));
+        buffer_free(&b);
+    }
+}
+
 static void test_smtp_full_response(CuTest *tc) {
     /* 1. 空 buffer → 等更多 */
     _smtp_resp_check(tc, "", 0, "220", 0);
@@ -3224,6 +3264,81 @@ static void test_websock_pack_frames(CuTest *tc) {
     FREE(p);
 }
 
+/* 组包侧须与解包侧的 PACK_TOO_LONG 同阈值，不得造出对端必拒的帧 */
+static void test_websock_maxpack(CuTest *tc) {
+#if 0 != MAX_PACK_SIZE
+    size_t size;
+    size_t dlens = MAX_PACK_SIZE - 1;
+    // 长度字段按 RFC 6455 §5.2 分档：<=125 不带，<=0xffff 带 2 字节，再大带 8 字节。
+    // 跟着 MAX_PACK_SIZE 算而不写死 16 位那一档，阈值调大时用例不会假失败
+    size_t pllens = (dlens <= 125) ? 0 : ((dlens <= 0xffff) ? sizeof(uint16_t) : sizeof(uint64_t));
+    void *p;
+    char *big;
+    MALLOC(big, MAX_PACK_SIZE);
+    memset(big, 'z', MAX_PACK_SIZE);
+    /* 达到阈值即拒，且 size 清 0（调用方按"返回非 NULL 才读 size"约定） */
+    size = 12345;
+    p = websock_pack_text(0, 1, big, MAX_PACK_SIZE, &size);
+    CuAssertPtrEquals(tc, NULL, p);
+    CuAssertTrue(tc, 0 == (int)size);
+    size = 12345;
+    p = websock_pack_binary(1, 1, big, MAX_PACK_SIZE, &size);
+    CuAssertPtrEquals(tc, NULL, p);
+    CuAssertTrue(tc, 0 == (int)size);
+    size = 12345;
+    p = websock_pack_continua(0, 1, big, MAX_PACK_SIZE, &size);
+    CuAssertPtrEquals(tc, NULL, p);
+    CuAssertTrue(tc, 0 == (int)size);
+    /* 阈值下一格照常组包：守卫不能矫枉过正 */
+    size = 0;
+    p = websock_pack_text(0, 1, big, dlens, &size);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, 2 + pllens + dlens == size);// mask=0，无掩码键
+    FREE(p);
+    FREE(big);
+#else
+    (void)tc;
+#endif
+}
+
+// _websock_secextra 收的是裸 fd：非 WebSocket 连接、以及握手完成前(context 是 ws_hs_ctx *)
+// 都不得按 websock_ctx 布局取偏移再解引用写入。fake 每个槽位都指向 target，
+// 守卫一旦失效，不论 ws->ud 落在哪个偏移都会写脏 target，用例即失败
+static void test_websock_secextra_guard(CuTest *tc) {
+    ud_cxt ud;
+    ud_cxt target;
+    ud_cxt zero;
+    void *fake[16];
+    size_t i;
+    ZERO(&target, sizeof(target));
+    ZERO(&zero, sizeof(zero));
+    for (i = 0; i < ARRAY_SIZE(fake); i++) {
+        fake[i] = &target;
+    }
+    /* 1. 非 WebSocket 连接（status 取非 INIT，把拒绝原因锁定在 pktype 上） */
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_HTTP;
+    ud.status = 1;
+    ud.context = fake;
+    _websock_secextra(&ud, fake);
+    CuAssertTrue(tc, 0 == memcmp(&target, &zero, sizeof(zero)));
+
+    /* 2. WebSocket 但握手未完成：context 实为 ws_hs_ctx * */
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_WEBSOCK;
+    ud.status = 0;// INIT
+    ud.context = fake;
+    _websock_secextra(&ud, fake);
+    CuAssertTrue(tc, 0 == memcmp(&target, &zero, sizeof(zero)));
+
+    /* 3. context 为空同样早退 */
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_WEBSOCK;
+    ud.status = 1;
+    _websock_secextra(&ud, fake);
+    CuAssertTrue(tc, 0 == memcmp(&target, &zero, sizeof(zero)));
+}
+
 static void test_websock_pack_handshake(CuTest *tc) {
     ws_hs_ctx *hsctx = NULL;
     char *req = websock_pack_handshake("example.com", NULL, "mqtt", &hsctx);
@@ -3281,7 +3396,25 @@ static void test_websock_pack_handshake(CuTest *tc) {
     FREE(ereq);
     FREE(ectx);
 
-    /* 子协议个数超过 WS_MAXCNT_SECPROT(8) → 返回 NULL */
+    /* 空元素不占 WS_MAXCNT_SECPROT 名额：这一串按逗号是 9 段，按 RFC 7230 §7 只有 1 个 token */
+    ws_hs_ctx *pctx = NULL;
+    char *preq = websock_pack_handshake("example.com", NULL, "mqtt,,,,,,,,", &pctx);
+    CuAssertPtrNotNull(tc, preq);
+    CuAssertTrue(tc, 1 == pctx->cnt);
+    CuAssertTrue(tc, 4 == pctx->prots[0].lens && 0 == memcmp(pctx->prots[0].data, "mqtt", 4));
+    FREE(preq);
+    FREE(pctx);
+
+    /* 正好 8 个有效 token → 通过 */
+    ws_hs_ctx *fctx = NULL;
+    char *freq = websock_pack_handshake("example.com", NULL, "a, b ,c,d,e,f,g,h", &fctx);
+    CuAssertPtrNotNull(tc, freq);
+    CuAssertTrue(tc, 8 == fctx->cnt);
+    FREE(freq);
+    FREE(fctx);
+
+    /* 客户端侧不截断：自己配了 9 个是配置错误，组包直接失败而不是悄悄砍成 8 个
+       （服务端侧相反，超上限取前 8 个继续协商，见 _websock_secprot_split 的 trunc） */
     ws_hs_ctx *octx = NULL;
     CuAssertTrue(tc, NULL == websock_pack_handshake("example.com", NULL, "a,b,c,d,e,f,g,h,i", &octx));
 
@@ -3601,6 +3734,33 @@ static void test_websock_unpack_server_no_mask(CuTest *tc) {
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = websock_unpack(NULL, INVALID_SOCK, 0,
         0 /*server*/, &buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+}
+
+// 客户端收到带掩码的服务端帧应触发 PROT_ERROR（RFC 6455 §5.1：掩码只许客户端→服务端）
+static void test_websock_unpack_client_masked(CuTest *tc) {
+    size_t size = 0;
+    // 服务端本不该带 mask，这里用 mask=1 故意构造非法帧
+    void *frame = websock_pack_text(1, 1, "hi", 2, &size);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, frame, size);
+    FREE(frame);
+
+    test_ws_ctx ws;
+    ZERO(&ws, sizeof(ws));
+    ws.secprot = PACK_NONE;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1;
+    ud.context = &ws;
+
+    int32_t status = PROT_INIT;
+    struct websock_pack_ctx *pack = websock_unpack(NULL, INVALID_SOCK, 0,
+        1 /*client*/, &buf, &ud, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     buffer_free(&buf);
@@ -4851,15 +5011,15 @@ static void test_mail_attach_pack(CuTest *tc) {
 
 // SMTP 状态机 ud->status 值（与 lib/protocol/smtp/smtp.c parse_status 对应）：
 //   0=INIT, 1=EHLO, 2=AUTH, 3=AUTH_CHECK, 4=COMMAND
-// smtp_ctx.authtype（同 smtp_authtype）：1=LOGIN, 2=PLAIN
 // ev_send 在 fd==INVALID_SOCK 时会释放 data 并返回 ERR_FAILED 设置 PROT_ERROR；
 // 此时 ud->status 已在 ev_send 调用前完成切换，可用于验证状态转移
 #define _SMTP_INIT       0
 #define _SMTP_EHLO       1
 #define _SMTP_AUTH       2
 #define _SMTP_AUTH_CHECK 3
-#define _SMTP_LOGIN      1
-#define _SMTP_PLAIN      2
+// authtype 直接取 smtp.h 的枚举，别再抄一份数值
+#define _SMTP_LOGIN      LOGIN
+#define _SMTP_PLAIN      PLAIN
 
 // 握手回传桩。_smtp_connected 与 _smtp_auth_check 在被服务端拒绝时会把原文推给上层，
 // 而纯解析测试没起 loader，prots_init 从没跑过，_hs_push 就是个空指针。
@@ -5167,6 +5327,27 @@ static void test_mqtt_connect_pwd_no_user(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     FREE(pack);
 }
+// 失败一律 *lens 置 0(与 websock_pack_* 同口径): 绑定层把 lens 按值传给 lpub_rtn_lud,
+// 那里的 NULL 判在函数体内, 实参先求值——被调方不写就是读未定值
+static void test_mqtt_pack_lens_on_fail(CuTest *tc) {
+    size_t size = 12345;
+    // 失败点在函数体深处: 3.1.1 零长 clientid 配 cleanstart=0
+    char *pack = mqtt_pack_connect(MQTT_311, 0, 60, "", NULL, NULL, 0,
+        NULL, NULL, 0, 0, 0, NULL, NULL, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+    // 失败点是入口第一判: AUTH 仅 MQTT 5.0 定义
+    size = 12345;
+    pack = mqtt_pack_auth(MQTT_311, 0, NULL, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+    // 成功路径照常写真实长度, 守卫不能矫枉过正
+    size = 0;
+    pack = mqtt_pack_ping(&size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, size > 0);
+    FREE(pack);
+}
 
 /* ======================================================================= */
 
@@ -5208,6 +5389,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_custz);
     SUITE_ADD_TEST(suite, test_custz_maxpack);
     SUITE_ADD_TEST(suite, test_smtp_full_response);
+    SUITE_ADD_TEST(suite, test_smtp_authtype);
     SUITE_ADD_TEST(suite, test_smtp_body_transparency);
     SUITE_ADD_TEST(suite, test_smtp_plain_mime_headers);
     SUITE_ADD_TEST(suite, test_smtp_plain_line_fold);
@@ -5242,6 +5424,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_custz_head_flag);
     SUITE_ADD_TEST(suite, test_custz_head_variable);
     SUITE_ADD_TEST(suite, test_websock_pack_frames);
+    SUITE_ADD_TEST(suite, test_websock_maxpack);
+    SUITE_ADD_TEST(suite, test_websock_secextra_guard);
     SUITE_ADD_TEST(suite, test_websock_pack_handshake);
     SUITE_ADD_TEST(suite, test_websock_handshake_server_reject);
     SUITE_ADD_TEST(suite, test_websock_handshake_client_reject);
@@ -5251,6 +5435,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_unpack_fragmented);
     SUITE_ADD_TEST(suite, test_websock_unpack_close);
     SUITE_ADD_TEST(suite, test_websock_unpack_server_no_mask);
+    SUITE_ADD_TEST(suite, test_websock_unpack_client_masked);
     SUITE_ADD_TEST(suite, test_websock_unpack_reserved_opcode);
     SUITE_ADD_TEST(suite, test_websock_unpack_rsv_set);
     SUITE_ADD_TEST(suite, test_websock_unpack_control_fragmented);
@@ -5264,6 +5449,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_mqtt_ws_fragment_slice_clear);
     SUITE_ADD_TEST(suite, test_mqtt_auth_version_gate);
     SUITE_ADD_TEST(suite, test_mqtt_connect_pwd_no_user);
+    SUITE_ADD_TEST(suite, test_mqtt_pack_lens_on_fail);
     SUITE_ADD_TEST(suite, test_prots_free_null);
     SUITE_ADD_TEST(suite, test_prots_pkfree_default);
     SUITE_ADD_TEST(suite, test_prots_hsfree_default);

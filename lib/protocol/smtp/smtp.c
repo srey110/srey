@@ -8,10 +8,6 @@
 #define SMTP_OK "250"
 #define SMTP_CODE_LENS 3
 
-typedef enum smtp_authtype {
-    LOGIN = 1, //AUTH LOGIN 认证方式（逐字段 Base64 编码）
-    PLAIN      //AUTH PLAIN 认证方式（整体 Base64 编码）
-}smtp_authtype;
 typedef enum parse_status {
     INIT = 0,  //初始连接，等待服务端 220 响应
     EHLO,      //已发送 EHLO，等待服务端能力列表响应
@@ -217,26 +213,31 @@ static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
     }
 }
-// 从 EHLO 响应中解析服务端支持的认证类型，优先返回 PLAIN，其次 LOGIN
-// RFC 5321 §4.2.1：多行响应中间行用 '-' 分隔，末行/单行用空格分隔；
+// 契约见 smtp.h。RFC 5321 §4.2.1：多行响应中间行用 '-' 分隔，末行/单行用空格分隔；
 // 带尾随空格的字面量避免 "250-AUTHENTICATION" 等其他扩展误匹配
-static int32_t _smtp_get_authtype(buffer_ctx *buf) {
+int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total) {
     const char *authmid = "250-AUTH ";
     const char *authend = "250 AUTH ";
     size_t mlen = strlen(authmid);
     size_t elen = strlen(authend);
-    int32_t start = buffer_search(buf, 1, 0, 0, (char *)authmid, mlen);
+    // 导出符号，自己认参数。挡到 1：total - 1 在 0 处下溢成 SIZE_MAX，在 1 处算出 0，
+    // 而 buffer_search 的 end 为 0 表示"搜到缓冲末尾"，边界会整个失效
+    if (total <= 1) {
+        return ERR_FAILED;
+    }
+    size_t last = (size_t)total - 1;// buffer_search 的 end 是含端下标，不是长度
+    int32_t start = buffer_search(buf, 1, 0, last, (char *)authmid, mlen);
     if (ERR_FAILED != start) {
         start += (int32_t)mlen;
     } else {
-        start = buffer_search(buf, 1, 0, 0, (char *)authend, elen);
+        start = buffer_search(buf, 1, 0, last, (char *)authend, elen);
         if (ERR_FAILED == start) {
             LOG_WARN("can't find auth type.");
             return ERR_FAILED;
         }
         start += (int32_t)elen;
     }
-    int32_t end = buffer_search(buf, 1, start, 0, FLAG_CRLF, CRLF_SIZE);
+    int32_t end = buffer_search(buf, 1, start, last, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == end) {
         LOG_WARN("format error.");
         return ERR_FAILED;
@@ -263,7 +264,7 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         BIT_SET(*status, PROT_MOREDATA);
         return;
     }
-    smtp->authtype = _smtp_get_authtype(buf);
+    smtp->authtype = _smtp_get_authtype(buf, total);
     if (ERR_FAILED == smtp->authtype) {
         BIT_SET(*status, PROT_ERROR);
         // 交整份 250 应答而不是首行:失败原因是"能力列表里没有可用的 AUTH",
@@ -280,6 +281,9 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     case PLAIN:
         cmd = format_va("AUTH PLAIN%s", FLAG_CRLF);
         break;
+    default:// authtype 是 int32_t, -Wswitch 盯不住; 漏一档就是 strlen(NULL)。口径同 _smtp_auth
+        BIT_SET(*status, PROT_ERROR);
+        return;
     }
     ud->status = AUTH;
     if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {

@@ -67,15 +67,6 @@ static void _h_pmax(router_req *ctx) {
 static void _h_static(router_req *ctx) {
     router_req_text(ctx, 200, "static-ok", 9);
 }
-// SNPRINTF 返回的是"本该写入"的长度而非实际写入的。路径段与 query 值的长度由客户端决定，
-// 内容一旦超出栈缓冲，直接拿返回值当 body 长度就会读过缓冲末尾并把相邻栈字节发上线缆，
-// 故凡是把用户输入格式化进定长缓冲的 handler 都用本函数钳一下
-static size_t _resp_len(int32_t k, size_t cap) {
-    if (k < 0) {
-        return 0;
-    }
-    return ((size_t)k < cap) ? (size_t)k : (cap - 1);
-}
 // GET /query?a=X&b=Y → 回 "a=X b=Y"; 覆盖 URL query 解析 (url_parse 已 url_decode)
 static void _h_query(router_req *ctx) {
     size_t alen, blen;
@@ -85,7 +76,7 @@ static void _h_query(router_req *ctx) {
     int32_t k = SNPRINTF(buf, sizeof(buf), "a=%.*s b=%.*s",
                          (int32_t)(NULL == a ? 0 : alen), NULL == a ? "" : a,
                          (int32_t)(NULL == b ? 0 : blen), NULL == b ? "" : b);
-    router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
+    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 // GET /qexist?a=... → 区分 a 键不存在(NULL→"missing")/值空(非NULL+len0→"empty")/有值("value");
 // 验证 router_req_query 对 ?a= 返非 NULL 零长指针, 与 Lua query 子表 "" 对齐
@@ -122,7 +113,7 @@ static void _h_stats(router_req *ctx) {
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_post_count);
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
-    router_req_text(ctx, 200, buf, (size_t)k);
+    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 // GET /nobody → 204: RFC 7230 禁止 1xx/204/304 带 Content-Length 与报文体,
 // 这里故意传一个 body, 验证 router 把它连同 CL 一起丢掉
@@ -134,14 +125,14 @@ static void _h_aborts(router_req *ctx) {
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_abort_count);
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
-    router_req_text(ctx, 200, buf, (size_t)k);
+    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 // GET /__regfail → 当前 _g_regfail_count 字符串值; 客户端读出 "0" 即所有路由都注册成功
 static void _h_regfail(router_req *ctx) {
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_regfail_count);
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
-    router_req_text(ctx, 200, buf, (size_t)k);
+    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 // GET /a/{x?}/b → OPT 中置: 有值返 "x=<val>", 无值(OPT 未取到段)返 "x=none"
 static void _h_opt_mid(router_req *ctx) {
@@ -152,7 +143,7 @@ static void _h_opt_mid(router_req *ctx) {
     } else {
         char buf[64];
         int32_t k = SNPRINTF(buf, sizeof(buf), "x=%.*s", (int32_t)n, x);
-        router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
+        router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
     }
 }
 // GET /optlead/{x?}/{y} → "x=<x|none>,y=<y>"; OPT 排在必填段之前,
@@ -166,7 +157,7 @@ static void _h_opt_lead(router_req *ctx) {
     int32_t k = SNPRINTF(buf, sizeof(buf), "x=%.*s,y=%.*s",
                          NULL == x ? 4 : (int32_t)xn, NULL == x ? "none" : x,
                          NULL == y ? 4 : (int32_t)yn, NULL == y ? "none" : y);
-    router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
+    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 // GET /files/{ver?}/list → "ver=<ver|none>"; 请求段与后继字面量同名时(/files/list/list)
 // 前瞻会把 OPT 跳过, 末段剩余无处消耗而误判 404
@@ -176,7 +167,7 @@ static void _h_opt_ambig(router_req *ctx) {
     char buf[64];
     int32_t k = SNPRINTF(buf, sizeof(buf), "ver=%.*s",
                          NULL == v ? 4 : (int32_t)n, NULL == v ? "none" : v);
-    router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
+    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 // 自定义头值长度, 取 >255 以越过旧实现的 v[256] 栈缓冲
 #define BIGHDR_LEN 300
@@ -252,7 +243,7 @@ static void _h_deep(router_req *ctx) {
     intptr_t accum = (intptr_t)ctx->user;
     char buf[32];
     int32_t k = SNPRINTF(buf, sizeof(buf), "deep=%ld", (long)accum);
-    router_req_text(ctx, 200, buf, (size_t)k);
+    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 
 // 构造 nseg 段 "/s" 重复路径写入 buf,返回 buf;server 注册与 client 请求共用,测段数超限拒绝
@@ -472,9 +463,9 @@ void task_router_server_start(loader_ctx *loader, const char *name, uint16_t por
     }
 }
 
-// ── 第二个 server: 专压 _router_chunked_nostream 那条分支 ────────────────────
-// 上面那个 server 注册了流式路由, chunked 首帧一律走 _router_st_begin;
-// 这里一条流式路由都不注册, 才进得去无流式那条路
+// ── 第二个 server: 专压"一条流式路由都没注册"时的 chunked 首帧 ───────────────
+// 上面那个 server 注册了流式路由, chunked 首帧总能命中一条;
+// 这里一条都不注册, 才压得到 _router_chunked_probe 的三种拒绝结局
 static uint16_t _g_idx_port = 0;
 
 // POST /idx-plain → 普通路由, 用来验证同一 router 上非 index 条目收 chunked 仍是 411
@@ -1185,8 +1176,8 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
-// 打第二个 server(无流式路由): 走 _router_chunked_nostream 那条分支。
-// 主 server 注册了流式路由, 这几条在它上面全走 _router_st_begin, 压不到这里
+// 打第二个 server(无流式路由): 压 _router_chunked_probe 的拒绝结局。
+// 主 server 注册了流式路由, 这几条在它上面会命中并开流, 压不到这里
 static int32_t _run_index(task_ctx *task, uint16_t port) {
     const char *one[] = { "x" };
     int32_t bad = 0;

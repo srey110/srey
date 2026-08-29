@@ -9,7 +9,7 @@
 #define SIGN_KEY_LENS 16 // 握手签名（RFC 6455：16 字节随机 nonce，base64 后 24 字符）
 #define HEAD_LESN 2 // WebSocket 帧最小头部长度（字节）
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // WebSocket 握手固定密钥后缀（RFC 6455）
-#define SECPROT_SPLIT_FLAG ','
+#define SECPROT_SPLIT_FLAG ","
 // 单帧载荷硬上限：MAX_PACK_SIZE 配成 0(不限制)时 PACK_TOO_LONG 恒假，全靠它兜底。
 // 同 redis.c 的 REDIS_MAX_BULK_LEN，兼挡 sizeof(pack)+dlens 在 32 位平台的加法回绕
 #define MAX_PAYLOAD_LENS (64 * 1024 * 1024)
@@ -55,6 +55,9 @@ typedef struct ws_hscheck {
     size_t vlens;
 }ws_hscheck;
 static _handshaked_push _hs_push; // 握手完成后的推送回调
+// 承载子协议表。prots.c 只在 pkfree / udfree / may_resume 三处按 secprot 下钻,
+// closed / connected / ssl_exchanged / emit_close_tail / net_recvfrom 五处一律 break——
+// 往这张表里加带关闭副作用的协议(mysql/pgsql/mongo/smtp 那类)时必须同步补上那五处
 static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqtt") - 1, "mqtt"} };
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -148,7 +151,10 @@ void _websock_udfree(ud_cxt *ud) {
     ud->context = NULL;
 }
 void _websock_secextra(ud_cxt *ud, void *val) {
-    if (NULL == ud->context) {
+    // 收的是裸 fd, 必须自己认协议与握手阶段, 判据同 _websock_udfree。口径同 _http_set_nobody_cb
+    if (PACK_WEBSOCK != ud->pktype
+        || INIT == ud->status
+        || NULL == ud->context) {
         LOG_WARN("set second ud_cxt extra data error.");
         return;
     }
@@ -238,28 +244,26 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
     }
     return ERR_FAILED;
 }
-// 每段去前后 OWS、跳过空段、校验为合法 token(非法整体拒绝),压实后返回有效数量,ERR_FAILED失败
+// 校验每段都是合法 token(非法整体拒绝)。去 OWS 与跳空段已由 split 的 SPLIT_TRIM |
+// SPLIT_SKIPEMPTY 完成,这里拿到的段必然非空
 static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
-    int32_t n = 0;
-    char *data;
-    size_t lens;
     for (int32_t i = 0; i < cnt; i++) {
-        data = trim(segs[i].data, segs[i].lens, &lens);
-        if (NULL == data) {
-            continue;
-        }
-        if (!is_token(data, lens)) {
+        if (!is_token(segs[i].data, segs[i].lens)) {
             return ERR_FAILED;
         }
-        segs[n].data = data;
-        segs[n].lens = lens;
-        n++;
     }
-    return n;
+    return cnt;
 }
-//拆分 解析子协议
-static int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx prots[WS_MAXCNT_SECPROT]) {
-    int32_t n = split2(data, lens, SECPROT_SPLIT_FLAG, prots, WS_MAXCNT_SECPROT);
+// 拆分解析子协议。按 RFC 7230 §7 的 list 语义切:每段先 trim 再忽略空元素,
+// 所以 "mqtt,,," 只算一个。
+// trunc 只有服务端侧给 1:客户端的 offer 数超上限是我们自己配错了,截断会变成
+// "服务端选了第 9 个而我们不认它的回显",不如在组包时就失败
+static int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx prots[WS_MAXCNT_SECPROT],
+                                      int32_t trunc) {
+    buf_ctx *psegs = prots;
+    int32_t n = split(data, lens, SECPROT_SPLIT_FLAG, sizeof(SECPROT_SPLIT_FLAG) - 1,
+                      &psegs, WS_MAXCNT_SECPROT,
+                      SPLIT_TRIM | SPLIT_SKIPEMPTY | (0 != trunc ? SPLIT_TRUNCATE : 0));
     if (ERR_FAILED == n) {
         return ERR_FAILED;
     }
@@ -275,7 +279,10 @@ static int32_t _websock_secprot_check_server(char *secprots, size_t lens, pack_t
     ctx->index = -1;
     ctx->dlens = lens;
     memcpy(ctx->data, secprots, lens);
-    ctx->cnt = _websock_secprot_split(ctx->data, lens, ctx->prots);
+    // 超上限取前 WS_MAXCNT_SECPROT 个继续协商:RFC 6455 §4.1 对 offer 数量无上限,
+    // 且客户端的 offer 本就按优先级排,最想要的在前面。截掉的那些不过 token 校验,
+    // header 的合法性只保证到 cap 为止
+    ctx->cnt = _websock_secprot_split(ctx->data, lens, ctx->prots, 1);
     if (ERR_FAILED == ctx->cnt) {
         FREE(ctx);
         return ERR_FAILED;
@@ -565,18 +572,19 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     }
     ws->pack = NULL;
     ud->status = START;
-    if (PACK_NONE != ws->secprot // 存在子协议
-        && pack->dlens > 0 // 排除空包
-        && (WS_CONTINUE == pack->prot
-            || WS_TEXT == pack->prot
-            || WS_BINARY == pack->prot)) {
-        // 交给子协议前清掉刚设置的 WS 帧级分片位：子协议吐出的是完整消息，与本 WS 帧是否分片无关；
+    if (PACK_NONE != ws->secprot) {
+        // 清掉刚设置的 WS 帧级分片位：子协议吐出的是完整消息，与本 WS 帧是否分片无关。
+        // 控制帧与空帧同样要清——它们照样上抛，带着分片位会让业务把裸 WS 包当成分片消息。
         // 在此清除而非子协议返回后清除，避免误清子协议自己在 status 上产生的标志
         BIT_REMOVE(*status, PROT_SLICE_START | PROT_SLICE | PROT_SLICE_END);
-        return _websock_sec_unpack(ws, pack, client, status);
-    } else {
-        return pack;
+        if (pack->dlens > 0 // 排除空包
+            && (WS_CONTINUE == pack->prot
+                || WS_TEXT == pack->prot
+                || WS_BINARY == pack->prot)) {
+            return _websock_sec_unpack(ws, pack, client, status);
+        }
     }
+    return pack;
 }
 // 根据 payloadlen 字段（7位）解析真实数据长度并分配 websock_pack_ctx
 static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
@@ -644,8 +652,10 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
     uint8_t fin = (head[0] & 0x80) >> 7;
     uint8_t prot = head[0] & 0xf;
     uint8_t mask = (head[1] & 0x80) >> 7;
-    if (!client
-        && 0 == mask) {
+    // RFC 6455 §5.1 两个方向都是硬性要求:客户端发的帧必须带掩码, 服务端发的必须不带。
+    // 服务端方向出现掩码通常意味着链路上有改写协议的中间件
+    if ((!client && 0 == mask)
+        || (client && 0 != mask)) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
@@ -725,8 +735,10 @@ static size_t _websock_create_callens(char *key, size_t dlens) {
 // 构造 WebSocket 帧：写入头部（含扩展长度和掩码），有掩码时对数据进行 XOR 加密
 static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *data, size_t dlens, size_t *size) {
     // 与解包侧同一个上限：组得出对端必然拒收的帧只会换来一次无诊断的断连
-    if (dlens > MAX_PAYLOAD_LENS) {
-        LOG_ERROR("websock payload %zu exceeds %d.", dlens, (int32_t)MAX_PAYLOAD_LENS);
+    if (PACK_TOO_LONG(dlens)
+        || dlens > MAX_PAYLOAD_LENS) {
+        LOG_ERROR("websock payload %zu exceeds MAX_PACK_SIZE %d / %d.", dlens,
+                  (int32_t)MAX_PACK_SIZE, (int32_t)MAX_PAYLOAD_LENS);
         *size = 0;
         return NULL;
     }
@@ -836,7 +848,7 @@ static ws_hs_ctx *_websock_hsctx_init(const char *secprot, size_t splens) {
     ctx->dlens = splens;
     if (splens > 0) {
         memcpy(ctx->data, secprot, splens);
-        ctx->cnt = _websock_secprot_split(ctx->data, splens, ctx->prots);
+        ctx->cnt = _websock_secprot_split(ctx->data, splens, ctx->prots, 0);
         if (ERR_FAILED == ctx->cnt) {
             FREE(ctx);
             return NULL;

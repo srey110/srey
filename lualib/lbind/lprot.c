@@ -287,7 +287,7 @@ static int32_t _lprot_websock_pack_close(lua_State *lua) {
 /// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超 64MB 上限同样返 nil</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超单帧上限（MAX_PACK_SIZE，配成 0 时退到 64MB 硬上限）同样返 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_text(lua_State *lua) {
     void *data;
@@ -305,7 +305,7 @@ static int32_t _lprot_websock_pack_text(lua_State *lua) {
 /// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超 64MB 上限同样返 nil</returns>
+/// <returns type="lightuserdata?">数据指针；返回 nil 的情形同 pack_text</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_binary(lua_State *lua) {
     void *data;
@@ -323,7 +323,7 @@ static int32_t _lprot_websock_pack_binary(lua_State *lua) {
 /// <param name="fin" type="integer">1 表示最后帧（PROT_SLICE_END），0 表示中间帧</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超 64MB 上限同样返 nil</returns>
+/// <returns type="lightuserdata?">数据指针；返回 nil 的情形同 pack_text</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_continua(lua_State *lua) {
     void *data;

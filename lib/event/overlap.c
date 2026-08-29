@@ -1197,14 +1197,12 @@ static void _olp_on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byt
         _olp_on_udp_close_r(watcher, oludp);
     }
 }
-// 提交WSASendTo异步UDP发送请求；addr 拷到 oludp->addr_s 持久化(队列元素异步期间可能被复用)
-// 四种返回:
+// 提交WSASendTo异步UDP发送请求；addr 拷到 oludp->addr_s 持久化(队列元素异步期间可能被复用)。
+// 四种返回,1 与 2 不能混——混了就是拿资源紧张当丢数据的理由,分类同 unix 的 _usk_udp_sendmsg_once:
 //   ERR_OK      已投递,完成包稍后到,调用方停手等它
 //   1           这一条彻底毁了、fd 还能用,丢掉接着发队列里的下一条
 //   2           这一条只是暂时发不出去(资源紧张之类),原样留在队头等下次驱动
 //   ERR_FAILED  fd 本身已废,须关连接
-// 1 与 2 必须分开:混成一种就等于拿资源紧张当丢数据的理由。分类与 unix 的
-// _usk_udp_sendmsg_once 一一对应(那边 ERR_RW_RETRIABLE 一族即这里的 2,其余软错误即 1)
 static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;

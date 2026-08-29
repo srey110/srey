@@ -273,6 +273,18 @@ static void *_prots_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     *size = lens;
     return unpack;
 }
+// WS 承载子协议:只有真带出子协议包的帧才可能是响应。控制帧(PING/PONG/CLOSE)与零长数据帧
+// 的 secpack 为 NULL,放过去会撞上 prots_may_resume 入口的 NULL 短路变成"恒可唤醒",
+// 一个保活 PING 就能唤醒正等响应的协程,请求-响应从此错开一格
+static int32_t _prots_ws_may_resume(void *data) {
+    pack_type secprot = (pack_type)websock_secprot(data);
+    void *secpack = websock_secpack(data);
+    if (PACK_NONE != secprot
+        && NULL == secpack) {
+        return ERR_FAILED;
+    }
+    return prots_may_resume(secprot, secpack);
+}
 int32_t prots_may_resume(pack_type pktype, void *data) {
     if (NULL == data) {
         return ERR_OK;
@@ -285,7 +297,7 @@ int32_t prots_may_resume(pack_type pktype, void *data) {
     // WS 承载子协议时上层拿到的 pktype 恒为 PACK_WEBSOCK，子协议自己的判定要由这里转一层；
     // 不带子协议时 secprot 为 PACK_NONE，落下面那组默认档
     case PACK_WEBSOCK:
-        return prots_may_resume((pack_type)websock_secprot(data), websock_secpack(data));
+        return _prots_ws_may_resume(data);
     // 收到包即可唤醒等待者，无附加判定
     case PACK_NONE:
     case PACK_DNS:

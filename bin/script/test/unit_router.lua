@@ -714,11 +714,14 @@ runner.run("unit_router", function(t)
 
     -- ── 7. 错误处理 ─────────────────────────────────────────────────────────
 
-    -- 7.1 handler 抛出异常 → 500
+    -- 7.1 handler 抛出异常 → 500，正文必须与 C 侧 ROUTER_BODY_500 一字不差：
+    -- 异常原文只进日志，混进响应体就把脚本路径与行号发给了远端
     do
         local r = Route.new()
         r:get("/boom", function(ctx) error("kaboom") end)
-        t:eq(500, (dispatch(r, "GET", "/boom") or {}).code, "handler error → 500")
+        local resp = dispatch(r, "GET", "/boom") or {}
+        t:eq(500, resp.code, "handler error → 500")
+        t:eq("Internal Server Error\n", resp.body, "500 正文不得带异常原文")
     end
 
     -- 7.2 中间件抛出异常 → 500
@@ -825,8 +828,8 @@ runner.run("unit_router", function(t)
 
     -- ── 注册期的两类误用必须当场可见 ────────────────────────────────────────
     do
-        -- handler 漏传：dispatch 时表现为"中间件跑完没人响应"→ 兜底 500，且 run_ok 为真
-        -- 所以连错误文本都没有，线上完全查不出来。注册期直接拒掉
+        -- handler 漏传：dispatch 时表现为"中间件跑完没人响应"→ 兜底 500，
+        -- 没抛异常所以日志里也没线索，线上完全查不出来。注册期直接拒掉
         local r = Route.new()
         local e = r:get("/noh")
         t:check(e ~= nil, "handler 缺失返回占位 entry 而非报错")
@@ -972,7 +975,7 @@ runner.run("unit_router", function(t)
     end
 
     -- 9.3b chunked 匹配不上 → 404/405 而非 411：411 只表示"路由在但接不住 chunked"。
-    -- 与 C 侧 _router_chunked_nostream 同形；改前无流式路由时会被短路成一律 411
+    -- 与 C 侧 _router_chunked_probe 同形；改前无流式路由时会被短路成一律 411
     do
         local r = Route.new()
         r:post("/plain", function(ctx) ctx:text(200, "ok") end)

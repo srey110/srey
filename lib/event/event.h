@@ -25,10 +25,12 @@ void ev_free(ev_ctx *ctx);
 /// <param name="ip">监听IP。"::" 只收 IPv6(强制 IPV6_V6ONLY,不随平台默认变),要同时收两种就
 ///   "0.0.0.0" 与 "::" 各监听一次;本机对应 "127.0.0.1" / "::1"</param>
 /// <param name="port">监听端口</param>
-/// <param name="cbs">回调函数</param>
-/// <param name="ud">用户数据</param>
+/// <param name="cbs">回调函数; 必须非 NULL 且 r_cb 非 NULL(UDP 那面是 rf_cb)</param>
+/// <param name="ud">用户数据; 失败时由本函数经 cbs->ud_free 释放, 调用方不必再管。
+///   cbs 为 NULL 时取不到 ud_free, 这一档 ud 仍归调用方</param>
 /// <param name="id">监听ID</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功; cbs / r_cb 为空、ev_free 已开始、地址解析失败都返 ERR_FAILED,
+///   其中只有地址解析那档会落日志</returns>
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *id);
 /// <summary>
@@ -38,12 +40,12 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 /// <param name="evssl">evssl_ctx, NULL 不使用,不为NULL默认启用ssl</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
-/// <param name="cbs">回调函数</param>
-/// <param name="ud">用户数据</param>
+/// <param name="cbs">回调函数; 前置条件同 ev_listen</param>
+/// <param name="ud">用户数据; 失败时的释放同 ev_listen</param>
 /// <param name="setsess">是否设置sess</param>
 /// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功; 失败情形同 ev_listen</returns>
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     int32_t setsess, SOCKET *fd, uint64_t *skid);
 /// <summary>
@@ -63,11 +65,11 @@ int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evs
 /// <param name="ip">绑定IP。"::" 只收 IPv6(强制 IPV6_V6ONLY),要同时收两种就绑两个 socket。
 ///   多播时组地址须与此同族,详见 ev_udp_join</param>
 /// <param name="port">端口</param>
-/// <param name="cbs">回调函数</param>
-/// <param name="ud">用户数据</param>
+/// <param name="cbs">回调函数; 前置条件同 ev_listen, 但 UDP 认的是 rf_cb</param>
+/// <param name="ud">用户数据; 失败时的释放同 ev_listen</param>
 /// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功; 失败情形同 ev_listen</returns>
 int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, SOCKET *fd, uint64_t *skid);
 /// <summary>
 /// TCP发送数据

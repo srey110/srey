@@ -34,7 +34,8 @@ typedef struct mysql_server_param {
 // MySQL 连接上下文
 typedef struct mysql_ctx {
     int8_t id;              // 当前数据包序列号
-    int8_t parse_status;    // 当前解析状态（结果集解析进度）
+    int8_t parse_status;    // 当前解析状态（结果集解析进度）；不变式：非 0 时 mpack 必须非 NULL——
+                            // 续接解析那条分支裸解引用 mpack->pack，故每条摘走 mpack 的路径都要归 0
     uint8_t cur_cmd;        // 当前正在处理的命令类型
     int16_t error_code;     // 最近一次错误码
     int64_t last_id;        // 最近一次 INSERT 的自增 ID

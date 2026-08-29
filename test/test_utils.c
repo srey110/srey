@@ -1702,58 +1702,127 @@ static void test_str_helpers(CuTest *tc) {
     CuAssertTrue(tc, hexlower == tohex(bin, 4, hexlower, 1));
     CuAssertStrEquals(tc, "00abff10", hexlower);
 
-    /* split：以 "," 拆分 */
-    size_t n = 0;
-    const char *str = "aa,bb,cc";
-    buf_ctx *parts = split(str, strlen(str), ",", 1, &n);
+    /* 堆模式(cap 为 0)：以 "," 拆分，段数即返回值 */
+    char heapin[] = "aa,bb,cc";
+    buf_ctx *parts = NULL;
+    int32_t n = split(heapin, strlen(heapin), ",", 1, &parts, 0, 0);
+    CuAssertIntEquals(tc, 3, n);
     CuAssertPtrNotNull(tc, parts);
-    CuAssertTrue(tc, 3 == n);
     CuAssertTrue(tc, 2 == parts[0].lens && 0 == memcmp(parts[0].data, "aa", 2));
     CuAssertTrue(tc, 2 == parts[1].lens && 0 == memcmp(parts[1].data, "bb", 2));
     CuAssertTrue(tc, 2 == parts[2].lens && 0 == memcmp(parts[2].data, "cc", 2));
     FREE(parts);
 
-    /* split：分隔符在尾部 → 补空段 */
-    const char *str2 = "x,y,";
-    parts = split(str2, strlen(str2), ",", 1, &n);
-    CuAssertPtrNotNull(tc, parts);
-    CuAssertTrue(tc, 3 == n);
-    CuAssertTrue(tc, 0 == parts[2].lens);
+    /* 堆模式：分隔符在尾部 → 补空段（段数 = sep 出现次数 + 1） */
+    char heaptail[] = "x,y,";
+    parts = NULL;
+    n = split(heaptail, strlen(heaptail), ",", 1, &parts, 0, 0);
+    CuAssertIntEquals(tc, 3, n);
+    CuAssertIntEquals(tc, 0, (int32_t)parts[2].lens);
     FREE(parts);
 
-    /* split：sep=NULL → 返回原始整段 */
-    parts = split("hello", 5, NULL, 0, &n);
-    CuAssertPtrNotNull(tc, parts);
-    CuAssertTrue(tc, 1 == n);
+    /* 堆模式：sep 为 NULL → 整段不切 */
+    char heapone[] = "hello";
+    parts = NULL;
+    n = split(heapone, strlen(heapone), NULL, 0, &parts, 0, 0);
+    CuAssertIntEquals(tc, 1, n);
     CuAssertTrue(tc, 5 == parts[0].lens);
     FREE(parts);
 
-    /* split：守卫路径也必须写出参，否则调用方先读 n 拿到的是未初始化栈值 */
-    n = 12345;
-    CuAssertTrue(tc, NULL == split(NULL, 5, ",", 1, &n));
-    CuAssertTrue(tc, 0 == n);
-    n = 12345;
-    CuAssertTrue(tc, NULL == split("aa", 0, ",", 1, &n));
-    CuAssertTrue(tc, 0 == n);
+    /* 多字节分隔符：合并前只有堆那侧支持，现在栈模式一样能用 */
+    char mbin[] = "a::b::c";
+    buf_ctx mbsegs[4];
+    buf_ctx *pmb = mbsegs;
+    n = split(mbin, strlen(mbin), "::", 2, &pmb, 4, 0);
+    CuAssertIntEquals(tc, 3, n);
+    CuAssertTrue(tc, 1 == mbsegs[0].lens && 0 == memcmp(mbsegs[0].data, "a", 1));
+    CuAssertTrue(tc, 1 == mbsegs[2].lens && 0 == memcmp(mbsegs[2].data, "c", 1));
 
-    /* split2：栈数组切分,无堆分配,保留空段,段数 = sep 数 + 1 */
+    /* 参数非法一律 ERR_FAILED，且不碰 segs */
+    parts = NULL;
+    CuAssertIntEquals(tc, ERR_FAILED, split(NULL, 5, ",", 1, &parts, 0, 0));
+    CuAssertPtrEquals(tc, NULL, parts);
+    /* plens 为 0 不是错:出一个空段(url_parse 解 "/" 依赖这条) */
+    parts = NULL;
+    CuAssertIntEquals(tc, 1, split(heapin, 0, ",", 1, &parts, 0, 0));
+    CuAssertIntEquals(tc, 0, (int32_t)parts[0].lens);
+    FREE(parts);
+    parts = NULL;
+    CuAssertIntEquals(tc, ERR_FAILED, split(heapin, 3, ",", 1, NULL, 0, 0));
+    CuAssertIntEquals(tc, ERR_FAILED, split(heapin, 3, ",", 1, &parts, -1, 0));
+    buf_ctx *pnull = NULL;/* 栈模式却没给数组 */
+    CuAssertIntEquals(tc, ERR_FAILED, split(heapin, 3, ",", 1, &pnull, 4, 0));
+
+    /* 栈模式(cap 大于 0)：保留空段，段数 = sep 数 + 1 */
     buf_ctx segs[8];
+    buf_ctx *psegs = segs;
     char sp1[] = "a/b/c";
-    int32_t sn = split2(sp1, strlen(sp1), '/', segs, 8);
+    int32_t sn = split(sp1, strlen(sp1), "/", 1, &psegs, 8, 0);
     CuAssertIntEquals(tc, 3, sn);
     CuAssertTrue(tc, 1 == segs[0].lens && 0 == memcmp(segs[0].data, "a", 1));
     CuAssertTrue(tc, 1 == segs[2].lens && 0 == memcmp(segs[2].data, "c", 1));
 
-    /* split2：尾随/连续 sep 产生 len==0 空段 */
+    /* 栈模式：尾随/连续 sep 产生 len==0 空段，data 记原指针不是 NULL */
     char sp2[] = "a//";
-    sn = split2(sp2, strlen(sp2), '/', segs, 8);
+    sn = split(sp2, strlen(sp2), "/", 1, &psegs, 8, 0);
     CuAssertIntEquals(tc, 3, sn);
     CuAssertIntEquals(tc, 0, (int32_t)segs[1].lens);
     CuAssertIntEquals(tc, 0, (int32_t)segs[2].lens);
+    CuAssertPtrNotNull(tc, segs[1].data);
 
-    /* split2：段数超 cap 返回 ERR_FAILED */
+    /* 栈模式：段数超 cap 返回 ERR_FAILED */
     char sp3[] = "a/b/c/d";
-    CuAssertIntEquals(tc, ERR_FAILED, split2(sp3, strlen(sp3), '/', segs, 2));
+    CuAssertIntEquals(tc, ERR_FAILED, split(sp3, strlen(sp3), "/", 1, &psegs, 2, 0));
+
+    /* SPLIT_TRIM：每段剔两端 OWS，段数不变 */
+    char sp4[] = " a , b ,c";
+    sn = split(sp4, strlen(sp4), ",", 1, &psegs, 8, SPLIT_TRIM);
+    CuAssertIntEquals(tc, 3, sn);
+    CuAssertTrue(tc, 1 == segs[0].lens && 0 == memcmp(segs[0].data, "a", 1));
+    CuAssertTrue(tc, 1 == segs[1].lens && 0 == memcmp(segs[1].data, "b", 1));
+    CuAssertTrue(tc, 1 == segs[2].lens && 0 == memcmp(segs[2].data, "c", 1));
+
+    /* SPLIT_SKIPEMPTY：只丢真正的空段，全空白段长度非 0 仍保留 */
+    char sp5[] = "a,, ,b";
+    sn = split(sp5, strlen(sp5), ",", 1, &psegs, 8, SPLIT_SKIPEMPTY);
+    CuAssertIntEquals(tc, 3, sn);
+    CuAssertIntEquals(tc, 1, (int32_t)segs[1].lens);/* " " 未 trim，不算空 */
+
+    /* TRIM|SKIPEMPTY：trim 必须排在判空之前，全空白段这时才被丢掉 */
+    char sp6[] = "a,, ,b";
+    sn = split(sp6, strlen(sp6), ",", 1, &psegs, 8, SPLIT_TRIM | SPLIT_SKIPEMPTY);
+    CuAssertIntEquals(tc, 2, sn);
+    CuAssertTrue(tc, 1 == segs[0].lens && 0 == memcmp(segs[0].data, "a", 1));
+    CuAssertTrue(tc, 1 == segs[1].lens && 0 == memcmp(segs[1].data, "b", 1));
+
+    /* cap 判定排在过滤之后，被丢掉的空段不占名额 */
+    char sp7[] = "a,,,,,,,,b";
+    sn = split(sp7, strlen(sp7), ",", 1, &psegs, 2, SPLIT_TRIM | SPLIT_SKIPEMPTY);
+    CuAssertIntEquals(tc, 2, sn);
+
+    /* SPLIT_TRUNCATE：超 cap 截断到 cap 正常返回，不再 ERR_FAILED */
+    char sp8[] = "a/b/c/d";
+    sn = split(sp8, strlen(sp8), "/", 1, &psegs, 2, SPLIT_TRUNCATE);
+    CuAssertIntEquals(tc, 2, sn);
+    CuAssertTrue(tc, 1 == segs[0].lens && 0 == memcmp(segs[0].data, "a", 1));
+    CuAssertTrue(tc, 1 == segs[1].lens && 0 == memcmp(segs[1].data, "b", 1));
+
+    /* 堆模式同一套标志：" a , , b " → 两段 */
+    char str3[] = " a , , b ";
+    parts = NULL;
+    n = split(str3, strlen(str3), ",", 1, &parts, 0, SPLIT_TRIM | SPLIT_SKIPEMPTY);
+    CuAssertIntEquals(tc, 2, n);
+    CuAssertTrue(tc, 1 == parts[0].lens && 0 == memcmp(parts[0].data, "a", 1));
+    CuAssertTrue(tc, 1 == parts[1].lens && 0 == memcmp(parts[1].data, "b", 1));
+    FREE(parts);
+
+    /* 堆模式全被丢光：返回 0，但 *segs 已分配，仍须 FREE（契约写明的那一档） */
+    char str4[] = " , , ";
+    parts = NULL;
+    n = split(str4, strlen(str4), ",", 1, &parts, 0, SPLIT_TRIM | SPLIT_SKIPEMPTY);
+    CuAssertIntEquals(tc, 0, n);
+    CuAssertPtrNotNull(tc, parts);
+    FREE(parts);
 }
 
 /* =======================================================================

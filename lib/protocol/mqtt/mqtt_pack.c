@@ -154,10 +154,25 @@ static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, 
     (*off) += occupy;
     return occupy;
 }
+// 所有 mqtt_pack_* 共用的前导：编码剩余长度、开缓冲、写固定报头与剩余长度。
+// 缓冲大小算式 1 + roccupy + total 只此一处，写错就是欠分配。
+// 返回 ERR_FAILED 表示 total 超出剩余长度的 4 字节变长上限，此时 bw 未初始化
+static int32_t _mqtt_pack_begin(binary_ctx *bw, int8_t fixhead, uint32_t total) {
+    char rmain[4];
+    int32_t roccupy = varint_encode_mqtt(total, rmain);
+    if (0 == roccupy) {
+        return ERR_FAILED;
+    }
+    binary_init(bw, NULL, 1 + roccupy + total, 0);
+    binary_set_int8(bw, fixhead);//固定报头
+    binary_set_binary(bw, rmain, roccupy);//剩余长度
+    return ERR_OK;
+}
 char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t keepalive, const char *clientid,
     const char *user, char *password, size_t pwlens,
     const char *willtopic, char *willpayload, size_t wplens, int8_t willqos, int8_t willretain,
     binary_ctx *connprops, binary_ctx *willprops, size_t *lens) {
+    *lens = 0;
     // MQTT 3.1.1 [MQTT-3.1.3-7]：空 clientid 必须 cleanstart=1，否则 broker 按 [MQTT-3.1.3-8] 必拒
     if (MQTT_311 == version && EMPTYSTR(clientid) && !cleanstart) {
         LOG_ERROR("%s", "mqtt 3.1.1 zero-length clientid requires cleanstart=1");
@@ -231,17 +246,10 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
         return NULL;
     }
     total += (uint32_t)payloads;
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, 4, 2, 0);//协议名长度
     binary_set_binary(&bwriter, "MQTT", 4);//协议名
     binary_set_int8(&bwriter, version);//协议版本
@@ -276,6 +284,7 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
     return bwriter.data;
 }
 char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t reason, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (MQTT_CONNACK << 4);//固定报头
     int8_t caflag = 0;//连接确认标志
     if (sesspresent) {
@@ -288,17 +297,10 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
     if (ERR_FAILED == pvoccupy) {
         return NULL;
     }
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_int8(&bwriter, caflag);//连接确认标志
     binary_set_uint8(&bwriter, reason);//连接原因码
     if (version >= MQTT_50) {//属性
@@ -313,6 +315,7 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
 }
 char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int8_t dup,
     const char *topic, uint16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (MQTT_PUBLISH << 4);//固定报头
     //固定报头标志
     BIT_SETN(fixhead, 0, retain);//保留标志
@@ -340,17 +343,10 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
         }
         total += (uint32_t)pllens;
     }
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     _mqtt_pack_lenstr(&bwriter, topic, tlens);//主题名
     if (1 == qos || 2 == qos) {
         binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
@@ -370,6 +366,7 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
 }
 static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, uint16_t packid, uint8_t reason,
                                          binary_ctx *props, size_t *lens, int8_t fixhead) {
+    *lens = 0;
     //计算剩余长度
     uint32_t total;
     char pvlens[4];
@@ -394,17 +391,10 @@ static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, uint16_t pack
             }
         }
     }
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (2 == total) {
         *lens = bwriter.offset;
@@ -437,6 +427,7 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, uint16_t packid, uint8_t reaso
     return _mqtt_pack_pubackrel_common(version, packid, reason, props, lens, (MQTT_PUBCOMP << 4));
 }
 char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (int8_t)(MQTT_SUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
@@ -450,17 +441,10 @@ char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx 
         return NULL;
     }
     total += (uint32_t)topics->offset;
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
         binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
@@ -473,6 +457,7 @@ char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx 
     return bwriter.data;
 }
 char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (int8_t)(MQTT_SUBACK << 4);//固定报头
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)
@@ -485,17 +470,10 @@ char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reaso
         return NULL;
     }
     total += (uint32_t)rslens;
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
         binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
@@ -508,6 +486,7 @@ char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reaso
     return bwriter.data;
 }
 char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (int8_t)(MQTT_UNSUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
@@ -521,17 +500,10 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ct
         return NULL;
     }
     total += (uint32_t)topics->offset;
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
         binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
@@ -544,6 +516,7 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ct
     return bwriter.data;
 }
 char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (int8_t)(MQTT_UNSUBACK << 4);//固定报头
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)
@@ -558,17 +531,10 @@ char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *rea
         }
         total += (uint32_t)rslens;
     }
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
         binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
@@ -581,38 +547,27 @@ char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *rea
     return bwriter.data;
 }
 char *mqtt_pack_ping(size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (int8_t)(MQTT_PINGREQ << 4);//固定报头
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(0, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, 0)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_pong(size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (int8_t)(MQTT_PINGRESP << 4);//固定报头
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(0, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, 0)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     int8_t fixhead = (int8_t)(MQTT_DISCONNECT << 4);//固定报头
     //计算剩余长度
     uint32_t total;
@@ -634,17 +589,10 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
             }
         }
     }
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     if (0 == total) {
         *lens = bwriter.offset;
         return bwriter.data;
@@ -661,6 +609,7 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
     return bwriter.data;
 }
 char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props, size_t *lens) {
+    *lens = 0;
     if (version < MQTT_50) {
         return NULL;
     }
@@ -680,17 +629,10 @@ char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props
             return NULL;
         }
     }
-    //编码剩余长度
-    char rmain[4];
-    int32_t roccupy = varint_encode_mqtt(total, rmain);
-    if (0 == roccupy) {
+    binary_ctx bwriter;
+    if (ERR_OK != _mqtt_pack_begin(&bwriter, fixhead, total)) {
         return NULL;
     }
-    //打包
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
-    binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     if (0 != total) {
         binary_set_uint8(&bwriter, reason);//原因码
         binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度

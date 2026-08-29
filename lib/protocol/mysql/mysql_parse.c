@@ -473,6 +473,7 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
             mpack = mysql->mpack; // 行解析完成，返回完整结果集
             mysql->mpack = NULL;
             mysql->cur_cmd = 0;
+            mysql->parse_status = 0;
             return mpack;
         }
         if (MPACK_QUERY == mysql->mpack->pack_type) {
@@ -716,6 +717,7 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
                     mpack = mysql->mpack;
                     mysql->mpack = NULL;
                     mysql->cur_cmd = 0;
+                    mysql->parse_status = 0;
                     return mpack;
                 }
             } else {
@@ -723,6 +725,7 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
                 mpack = mysql->mpack;
                 mysql->mpack = NULL;
                 mysql->cur_cmd = 0;
+                mysql->parse_status = 0;
                 return mpack;
             }
         }

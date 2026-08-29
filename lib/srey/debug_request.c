@@ -10,15 +10,30 @@
 // 字面量命令比较：同上，免命令名与手数长度分离双写，改名漏改长度即静默失配
 #define _debug_cmd_eq_lit(item, lit) \
     _debug_cmd_eq((item), (lit), sizeof(lit) - 1)
-// stat 输出用的 mtype 名字表，索引对齐 msg_type 枚举
+// stat 输出用的 mtype 名字表。用指定初始化器逐项落位而不是按顺序排:
+// msg_type 里新增一项时这里漏补, 那一格是 NULL, 喂给 %s 就是 UB —— 取值一律走 _message_str
 static const char *_mtype_names[MSG_TYPE_ALL] = {
-    "NONE", "STARTUP", "CLOSING", "TIMEOUT", "ACCEPT", "CONNECT",
-    "SSLEXCHANGED", "HANDSHAKED", "RECV", "SEND", "CLOSE", "RECVFROM",
-    "REQUEST", "RESPONSE", "FORK"
+    [MSG_TYPE_NONE] = "NONE",
+    [MSG_TYPE_STARTUP] = "STARTUP",
+    [MSG_TYPE_CLOSING] = "CLOSING",
+    [MSG_TYPE_TIMEOUT] = "TIMEOUT",
+    [MSG_TYPE_ACCEPT] = "ACCEPT",
+    [MSG_TYPE_CONNECT] = "CONNECT",
+    [MSG_TYPE_SSLEXCHANGED] = "SSLEXCHANGED",
+    [MSG_TYPE_HANDSHAKED] = "HANDSHAKED",
+    [MSG_TYPE_RECV] = "RECV",
+    [MSG_TYPE_SEND] = "SEND",
+    [MSG_TYPE_CLOSE] = "CLOSE",
+    [MSG_TYPE_RECVFROM] = "RECVFROM",
+    [MSG_TYPE_REQUEST] = "REQUEST",
+    [MSG_TYPE_RESPONSE] = "RESPONSE",
+    [MSG_TYPE_FORK] = "FORK"
 };
 
 const char *_message_str(msg_type type) {
-    if (type >= MSG_TYPE_NONE && type < MSG_TYPE_ALL) {
+    if (type >= MSG_TYPE_NONE
+        && type < MSG_TYPE_ALL
+        && NULL != _mtype_names[type]) {
         return _mtype_names[type];
     }
     return "";
@@ -53,7 +68,7 @@ static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {
             continue;
         }
         binary_set_va(&bw, "%-14s %12" PRIu64 " %18" PRIu64 " %14" PRIu64 "\n",
-            _mtype_names[i], nmsg[i], cpu[i], cpu[i] / nmsg[i]);
+            _message_str((msg_type)i), nmsg[i], cpu[i], cpu[i] / nmsg[i]);
         tnmsg += nmsg[i];
         tcpu += cpu[i];
     }
@@ -104,7 +119,7 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
         log_setlv((log_level)lv.v.i);
         char buf[32];
         int32_t n = SNPRINTF(buf, sizeof(buf), "log level => %d", (int32_t)lv.v.i);
-        _debug_resp(task, msg->src, msg->sess, buf, (size_t)n);
+        _debug_resp(task, msg->src, msg->sess, buf, snprintf_lens(n, sizeof(buf)));
         return ERR_OK;
     }
     // 非公共命令(业务自定义)：返回 ERR_FAILED 透传给业务 on_requested 自行处理

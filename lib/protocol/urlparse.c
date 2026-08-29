@@ -244,7 +244,8 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
             pp++;
             plen--;
         }
-        ctx->npath = split2(pp, plen, ctx->sep, ctx->segs, URL_MAX_PATH_DEPTH);
+        buf_ctx *psegs = ctx->segs;
+        ctx->npath = split(pp, plen, (const char *)&ctx->sep, 1, &psegs, URL_MAX_PATH_DEPTH, 0);
         if (ERR_FAILED == ctx->npath) {
             return ERR_FAILED;
         }

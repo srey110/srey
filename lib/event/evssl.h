@@ -33,7 +33,10 @@ void evssl_init(void);
 ///   由中间 CA 签发的证书（Let's Encrypt 之类）握手时只发叶证书，对端补不上链会验不过</param>
 /// <param name="key">key文件, NULL 或 "" 不加载</param>
 /// <param name="type">证书类型 SSL_FILETYPE_PEM,SSL_FILETYPE_ASN1</param>
-/// <returns>evssl_ctx</returns>
+/// <returns>evssl_ctx；证书路径不存在、权限不足、cert 与 key 不匹配等任一步失败返回 NULL。
+/// 调用方必须判空：本文件其余接口（evssl_sslctx / evssl_verify / evssl_seclevel /
+/// evssl_min_proto / evssl_setfd / evssl_free）一律裸解引用 evssl，
+/// 而 ev_listen / ev_connect 把 NULL 当作"不使用 SSL"，会静默退化成明文监听</returns>
 evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type);
 /// <summary>
 /// 加载p12证书。
@@ -42,7 +45,7 @@ evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t 
 /// </summary>
 /// <param name="p12">p12文件, NULL 或 "" 不加载</param>
 /// <param name="pwd">证书密码</param>
-/// <returns>evssl_ctx</returns>
+/// <returns>evssl_ctx；失败返回 NULL，判空要求同 evssl_new</returns>
 evssl_ctx *evssl_p12_new(const char *p12, const char *pwd);
 /// <summary>
 /// 获取SSL_CTX,用于SSL_CTX_set_options SSL_CTX_set_verify等

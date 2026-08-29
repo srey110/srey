@@ -68,7 +68,7 @@ void coro_sleep(task_ctx *task, uint32_t ms);
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝数据</param>
 /// <param name="erro">错误码；必须非 NULL，函数内裸解引用</param>
-/// <param name="lens">返回数据长度；可传 NULL 不写</param>
+/// <param name="lens">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
 /// <returns>响应数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_request(task_ctx *dst, task_ctx *src,
@@ -92,7 +92,7 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="err">错误码；必须非 NULL，函数内裸解引用</param>
-/// <param name="size">返回数据长度；可传 NULL 不写</param>
+/// <param name="size">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
 /// <returns>握手数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝。
 ///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL(同 coro_recv)</returns>
@@ -141,10 +141,11 @@ void coro_close(task_ctx *task, SOCKET fd, uint64_t skid);
 /// <param name="skid">链接ID</param>
 /// <param name="data">数据</param>
 /// <param name="len">数据长度</param>
-/// <param name="size">返回数据长度</param>
+/// <param name="size">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝</param>
 /// <returns>响应数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
+///   下次 resume 时框架自动释放，需要保留请自行拷贝。
+///   发送失败 / 超时 / 连接已关返回 NULL</returns>
 void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
                 void *data, size_t len, size_t *size, int32_t copy);
 /// <summary>
@@ -153,7 +154,7 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket fd</param>
 /// <param name="skid">连接 skid</param>
-/// <param name="size">输出:数据长度,可为 NULL</param>
+/// <param name="size">输出:数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
 /// <returns>响应数据指针,仅在本协程下次挂起前有效(同 coro_send);超时/断开返回 NULL。
 ///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL——连接已 teardown 时挂上去等不到唤醒</returns>
 void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size);
@@ -163,7 +164,7 @@ void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size);
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
-/// <param name="size">数据长度；可传 NULL 不写</param>
+/// <param name="size">数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
 /// <param name="end">1 分片结束 0未结束；必须非 NULL，函数内裸解引用；
 ///   返回 NULL 时保证已写 0</param>
 /// <returns>分片数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
@@ -181,10 +182,11 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 /// <param name="port">端口</param>
 /// <param name="data">数据；copy=0 时所有权转移给框架，调用方不得再 FREE</param>
 /// <param name="len">数据长度</param>
-/// <param name="size">返回数据长度</param>
+/// <param name="size">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝(转移所有权)</param>
 /// <returns>响应数据（已去除 netaddr_ctx 前缀）；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
+///   下次 resume 时框架自动释放，需要保留请自行拷贝。
+///   发送失败 / 超时 / 连接已关返回 NULL</returns>
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy);
@@ -214,8 +216,8 @@ int32_t coro_fork_wait(task_ctx *task, int32_t n, fork_serial_cb funcs[], void *
 /// 创建协程串行化执行器（critical section）。同 task 内多协程对同一资源并发访问时
 /// 串行进入，避免穿插；同一协程嵌套调用安全（ref 计数）。
 /// </summary>
-/// <param name="task">所属 task</param>
-/// <returns>coro_serial_ctx；销毁用 coro_serial_free</returns>
+/// <param name="task">所属 task；须为 TASK_MCO（coro_task_register 建的）</param>
+/// <returns>coro_serial_ctx，销毁用 coro_serial_free；task 不是 MCO 类型返回 NULL</returns>
 coro_serial_ctx *coro_serial_new(task_ctx *task);
 /// <summary>
 /// 销毁串行化执行器：排队中的等待者被逐个唤醒并失败返回（锁不交接），此后 enter 一律失败。

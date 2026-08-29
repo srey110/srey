@@ -259,7 +259,7 @@ static void _debug_cmem(router_req *ctx) {
     int32_t n = SNPRINTF(buf, sizeof(buf),
         "nalloc: %"PRIu64"\nnfree:  %"PRIu64"\ninuse:  %"PRIu64"\n",
         nalloc, nfree, (nalloc >= nfree) ? (nalloc - nfree) : 0);
-    router_req_text(ctx, 200, buf, (size_t)n);
+    router_req_text(ctx, 200, buf, snprintf_lens(n, sizeof(buf)));
 }
 // GET /{handle}/help：静态用法文本
 static void _debug_help(router_req *ctx) {
@@ -303,7 +303,7 @@ static void _debug_loglv(router_req *ctx) {
     log_setlv((log_level)lvv);
     char buf[32];
     int32_t rn = SNPRINTF(buf, sizeof(buf), "log level => %d\n", (int32_t)lvv);
-    router_req_text(ctx, 200, buf, (size_t)rn);
+    router_req_text(ctx, 200, buf, snprintf_lens(rn, sizeof(buf)));
 }
 // POST /{handle}/inject：body 为 Lua 源码
 static void _debug_inject(router_req *ctx) {

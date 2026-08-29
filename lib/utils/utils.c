@@ -836,83 +836,92 @@ char *tohex(const void *buf, size_t len, char *out, int32_t lower) {
     out[j] = '\0';
     return out;
 }
-buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n) {
-    *n = 0;
-    if (NULL == ptr
-        || 0 == plens) {
-        return NULL;
-    }
-    buf_ctx *buf;
-    if (NULL == sep
-        || 0 == seplens) {
-        MALLOC(buf, sizeof(buf_ctx));
-        buf[*n].data = (void *)ptr;
-        buf[*n].lens = plens;
-        (*n)++;
-        return buf;
-    }
-    size_t size, total = 32;
-    MALLOC(buf, sizeof(buf_ctx) * total);
-    char *pos;
-    char *cur = (char *)ptr;
-    do {
-        pos = memstr(0, cur, plens, sep, seplens);
-        if (*n >= total) {
-            total *= 2;
-            REALLOC(buf, buf, sizeof(buf_ctx) * total);
+// 按 flags 预处理一段:SPLIT_TRIM 剔两端 OWS,SPLIT_SKIPEMPTY 丢空段。
+// trim 必须排在判空之前——" " 这种全空白段原始长度是 1 不是 0,先判空就漏过去了。
+// 返回 0 表示本段应跳过;返回非 0 时 *data / *lens 已是处理后的值
+static int32_t _split_filter(char **data, size_t *lens, int32_t flags) {
+    if (BIT_CHECK(flags, SPLIT_TRIM)) {
+        size_t tlens = 0;
+        char *tdata = trim(*data, *lens, &tlens);
+        if (NULL != tdata) {
+            *data = tdata;
         }
-        if (NULL != pos) {
-            size = (size_t)(pos - cur);
-            if (size > 0) {
-                buf[*n].data = (void *)cur;
-                buf[*n].lens = size;
-            } else {
-                buf[*n].data = NULL;
-                buf[*n].lens = 0;
-            }
-            (*n)++;
-            cur += (size + seplens);
-            plens -= (size + seplens);
-            //字符串以分隔符结尾，补一个空段
-            if (0 == plens) {
-                if (*n >= total) {
-                    ++total;
-                    REALLOC(buf, buf, sizeof(buf_ctx) * total);
-                }
-                buf[*n].data = NULL;
-                buf[*n].lens = 0;
-                (*n)++;
-            }
-        } else {
-            buf[*n].data = (void *)cur;
-            buf[*n].lens = plens;
-            (*n)++;
-        }
-    } while (NULL != pos && plens > 0);
-    return buf;
+        *lens = tlens;
+    }
+    return !(BIT_CHECK(flags, SPLIT_SKIPEMPTY) && 0 == *lens);
 }
-int32_t split2(char *ptr, size_t plens, uint8_t sep, struct buf_ctx *segs, int32_t cap) {
-    int32_t n = 0;
-    size_t remain = plens;
-    char *p = ptr;
-    char *q;
-    size_t slen;
-    // 标准切分:保留空段(连续/尾随 sep 产生 len==0 段),段数 = sep 数 + 1
-    for (;;) {
-        if (n >= cap) {
-            LOG_WARN("split2 segments exceed cap.");
+// 写一段到 (*segs)[*n]。堆模式(heap 非 0)容量不够就翻倍并回写 *segs;
+// 栈模式满了看 SPLIT_TRUNCATE:开了返 1 让调用方就此收尾,没开返 ERR_FAILED
+static int32_t _split_store(buf_ctx **segs, int32_t *n, size_t *total, int32_t heap,
+                            int32_t flags, char *data, size_t lens) {
+    if ((size_t)*n >= *total) {
+        if (0 == heap) {
+            if (BIT_CHECK(flags, SPLIT_TRUNCATE)) {
+                return 1;
+            }
+            LOG_WARN("split segments exceed cap.");
             return ERR_FAILED;
         }
-        q = memchr(p, sep, remain);
-        slen = (NULL != q) ? (size_t)(q - p) : remain;
-        segs[n].data = p;
-        segs[n].lens = slen;
-        n++;
-        if (NULL == q) {
+        *total *= 2;// 无符号翻倍;n 是 int32 返回值,实际先撞它的上限,到不了这里回绕
+        REALLOC(*segs, *segs, sizeof(buf_ctx) * (*total));
+    }
+    (*segs)[*n].data = data;
+    (*segs)[*n].lens = lens;
+    (*n)++;
+    return ERR_OK;
+}
+int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
+              buf_ctx **segs, int32_t cap, int32_t flags) {
+    // plens 为 0 不算错:按"段数 = sep 出现次数 + 1"该出一个空段,url_parse 解 "/" 时正靠这个
+    if (NULL == ptr
+        || NULL == segs
+        || cap < 0
+        || (cap > 0 && NULL == *segs)) {
+        return ERR_FAILED;
+    }
+    int32_t heap = (0 == cap);
+    size_t total = heap ? 32 : (size_t)cap;
+    if (0 != heap) {
+        MALLOC(*segs, sizeof(buf_ctx) * total);
+    }
+    int32_t n = 0;
+    int32_t rtn;
+    char *cur = ptr;
+    char *pos;
+    char *data;
+    size_t remain = plens;
+    size_t slen;
+    size_t lens;
+    for (;;) {
+        // sep 为空即整段不切。单字节直接 memchr:memstr 那条要过 mem_funcs_pick 加两次
+        // 间接调用,而 url_parse 每个请求都要切一次路径
+        if (NULL == sep
+            || 0 == seplens) {
+            pos = NULL;
+        } else if (1 == seplens) {
+            pos = memchr(cur, (uint8_t)sep[0], remain);
+        } else {
+            pos = memstr(0, cur, remain, sep, seplens);
+        }
+        slen = (NULL != pos) ? (size_t)(pos - cur) : remain;
+        data = cur;
+        lens = slen;
+        if (0 != _split_filter(&data, &lens, flags)) {
+            rtn = _split_store(segs, &n, &total, heap, flags, data, lens);
+            if (ERR_FAILED == rtn) {
+                return ERR_FAILED;
+            }
+            if (ERR_OK != rtn) {
+                break;// 栈模式截断
+            }
+        }
+        // 尾随分隔符不用特判:remain 归 0 后再走一轮,memchr/memstr 对长度 0 都返 NULL,
+        // 自然补出那个空段(段数 = sep 出现次数 + 1)
+        if (NULL == pos) {
             break;
         }
-        remain -= (slen + 1);
-        p = q + 1;
+        remain -= (slen + seplens);
+        cur = pos + seplens;
     }
     return n;
 }

@@ -4,10 +4,11 @@
 #include "protocol/mysql/mysql.h"
 
 /// <summary>
-/// mysql_reader 初始化
+/// 取出结果集读取器
 /// </summary>
-/// <param name="mpack">mpack_ctx</param>
-/// <returns>mysql_reader_ctx NULL 失败</returns>
+/// <param name="mpack">mpack_ctx；成功后其内部结果集已被摘走，框架的 mpack 回收不再释放它</param>
+/// <returns>mysql_reader_ctx（所有权归调用方，必须用 mysql_reader_free 释放，否则整份结果集泄漏）；
+/// 包类型不是 MPACK_QUERY / MPACK_STMT_EXECUTE，或结果集已被取走时返回 NULL</returns>
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack);
 /// <summary>
 /// mysql_reader 释放

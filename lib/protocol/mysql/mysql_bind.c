@@ -36,11 +36,11 @@ static void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
 }
 // 向类型缓冲区和类型+名称缓冲区中写入字段类型及参数名称
 static void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type, const char *name, int32_t is_unsigned) {
-    if (is_unsigned) {
-        type |= 0x8000; // 无符号标志位（高位置 1）
-    }
-    binary_set_integer(&mbind->type, type, 2, 1);
-    binary_set_integer(&mbind->type_name, type, 2, 1);
+    // 无符号标志位(第 15 位)超出枚举取值范围(全部 <= 255), 必须用整型承载:
+    // 回写进 enum 变量时 -fshort-enums 下兼容类型可为 unsigned char, 该位会被静默截掉
+    int32_t typeflag = is_unsigned ? ((int32_t)type | 0x8000) : (int32_t)type;
+    binary_set_integer(&mbind->type, typeflag, 2, 1);
+    binary_set_integer(&mbind->type_name, typeflag, 2, 1);
     if (NULL == name) {
         _mysql_set_lenenc(&mbind->type_name, 0);
     } else {

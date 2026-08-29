@@ -244,14 +244,9 @@ static int32_t _pgsql_date_to_days(int32_t y, int32_t m, int32_t d) {
     return julian - 2451545;
 }
 // 将文本格式时间戳 "YYYY-MM-DD HH:MM:SS[.ffffff]" 解析为相对 PG 纪元的微秒数。
-// 用 _strptime 而不是 sscanf("%d-%d-%d ...")，是为了拿到逐字段的量程校验：%d 什么都收，
-// "9999999-1-1" 会原样进 _pgsql_date_to_days 算出一个垃圾天数当成功返回。
-// 代价是一处已知的功能收窄：strptime 的 %Y 上界是 9999（strptime.c 的 _conv_num 按上界的
-// 位数决定最多吃几位数字），而 PG 的 timestamp 支持到 294276 AD、date 到 5874897 AD，
-// 5 位及以上的年份从此解析失败——返回类型装得下（实测 5874897-12-31 的天数
-// 2145031948 < INT32_MAX），纯粹是解析器的限制。取舍是"拒掉垃圾值"比"支持公元一万年后的
-// 日期"现实，由 test_pgsql_parse.c 的 test_pgsql_reader_temporal_text_range 钉住。
-// 下面的 _pgsql_days_from_text 同此
+// 用 _strptime 而不是 sscanf 是为了逐字段量程校验：%d 什么都收，垃圾年份会算出垃圾天数还报成功。
+// 已知收窄：年份只支持到 9999，而 PG 支持到 294276 AD，5 位及以上的年份解析失败。
+// 由 test_pgsql_parse.c 的 test_pgsql_reader_temporal_text_range 钉住；_pgsql_days_from_text 同此
 static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) {
     char tmp[48];
     if (ERR_OK != copy_bounded(s, (size_t)slen, tmp, sizeof(tmp), 1)) {

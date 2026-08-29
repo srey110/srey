@@ -1,4 +1,5 @@
 ﻿#include "hash_ring.h"
+#include "utils/utils.h"
 #include "crypt/digest.h"
 
 /* 栈上分配的最大名称长度，避免每个副本都堆分配。
@@ -64,7 +65,8 @@ static uint64_t _hash_ring_hash(void *data, size_t lens) {
 // 为节点生成所有虚拟副本（replica）并添加到 items 数组
 static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     char concat_buf[16];
-    int32_t concat_len;
+    int32_t rtn;
+    size_t concat_len;
     hash_ring_item *item;
     char name_stack[NAME_STACK_LEN];
     char *name;
@@ -72,9 +74,10 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     int32_t heap;
     REALLOC(ring->items, ring->items, sizeof(hash_ring_item *) * ((size_t)ring->nitems + node->nreplicas));
     for (uint32_t i = 0; i < node->nreplicas; i++) {
-        concat_len = SNPRINTF(concat_buf, sizeof(concat_buf), "-%u", i);
-        ASSERTAB(concat_len > 0, "snprintf failed.");
-        name_len = node->lens + (size_t)concat_len;
+        rtn = SNPRINTF(concat_buf, sizeof(concat_buf), "-%u", i);
+        ASSERTAB(rtn > 0, "snprintf failed.");
+        concat_len = snprintf_lens(rtn, sizeof(concat_buf));
+        name_len = node->lens + concat_len;
         if (name_len <= NAME_STACK_LEN) {
             name = name_stack;
             heap = 0;
@@ -83,7 +86,7 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
             heap = 1;
         }
         memcpy(name, node->name, node->lens);
-        memcpy(name + node->lens, concat_buf, (size_t)concat_len);
+        memcpy(name + node->lens, concat_buf, concat_len);
         MALLOC(item, sizeof(hash_ring_item));
         item->node = node;
         item->digest = _hash_ring_hash(name, name_len);

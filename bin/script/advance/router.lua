@@ -151,15 +151,14 @@ local function _reject_chunked(fd, skid)
     srey.close(fd, skid)
 end
 
--- 兜底 500：中间件与 handler 都没写响应时补一发，链内抛过异常就把错误文本带上。
+-- 兜底 500：中间件与 handler 都没写响应时补一发。正文与 C 侧 ROUTER_BODY_500 一字不差；
+-- 异常原文只进日志（srey.xpcall 已打 ERROR + traceback），发给远端等于泄露脚本路径与行号。
 -- dispatch 与三个流式入口共用，改文案 / 头 / 是否 pcall 只此一处
-local function _fallback_500(ctx, run_ok, err)
+local function _fallback_500(ctx)
     if ctx.responded then
         return
     end
-    local errmsg = run_ok and "Internal Server Error\n"
-        or string.format("Internal Server Error. %s\n", tostring(err))
-    pcall(http.response, ctx.fd, ctx.skid, 500, _PLAIN_HEADERS, errmsg)
+    pcall(http.response, ctx.fd, ctx.skid, 500, _PLAIN_HEADERS, "Internal Server Error\n")
 end
 
 ---@class Ctx
@@ -320,7 +319,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
     local prefix, ctx_mws = self:_ctx()
     local full = prefix .. path
     -- handler 漏传（一个笔误就够了）在 dispatch 时表现为：chain 里少一项 → 中间件跑完没人响应
-    -- → 兜底 500，且 run_ok 为真所以连错误文本都没有。C 侧同款情形是打日志拒掉的，这里对齐
+    -- → 兜底 500，日志里也没有线索。C 侧同款情形是打日志拒掉的，这里对齐
     local cb = handler or on_chunk
     if "function" ~= type(cb) then
         WARN("router: %s '%s' handler must be a function, got %s.", method, full, type(cb))
@@ -531,12 +530,12 @@ function Router:dispatch(fd, skid, pack, client)
     local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
     ctx.params = params
     -- 链内任意位置抛出异常均由 srey.xpcall 兜底（自动 ERROR + traceback），避免 handler/中间件崩溃丢失响应
-    local run_ok, err = srey.xpcall(_run_chain, self:_chain_of(route), ctx, 1)
+    local run_ok = srey.xpcall(_run_chain, self:_chain_of(route), ctx, 1)
     -- 流式路由命中一次到齐的请求：准入通过才把请求体按 slice == 0 一次交出去
     if run_ok and route.on_chunk and ctx._admitted then
-        run_ok, err = srey.xpcall(route.on_chunk, ctx, 0, ctx.body)
+        srey.xpcall(route.on_chunk, ctx, 0, ctx.body)
     end
-    _fallback_500(ctx, run_ok, err)
+    _fallback_500(ctx)
 end
 
 -- 摘掉一条流式记录并投 STREAM_ABORT。skid 非 nil 时还要对得上（fd 可能已被新连接复用）。
@@ -554,11 +553,10 @@ end
 -- 调一次流式回调；抛异常就终止这条流：补 500、关连接，再投 ABORT 给最后一次清理机会
 function Router:_st_call(rec, slice, data)
     local ctx = rec.ctx
-    local run_ok, err = srey.xpcall(rec.route.on_chunk, ctx, slice, data)
-    if run_ok then
+    if srey.xpcall(rec.route.on_chunk, ctx, slice, data) then
         return
     end
-    _fallback_500(ctx, false, err)
+    _fallback_500(ctx)
     srey.close(ctx.fd, ctx.skid)
     self:_st_drop(ctx.fd, ctx.skid)
 end
@@ -587,10 +585,10 @@ function Router:_st_begin(fd, skid, pack, client)
     end
     local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
     ctx.params = params
-    local run_ok, err = srey.xpcall(_run_chain, self:_chain_of(route), ctx, 1)
+    local run_ok = srey.xpcall(_run_chain, self:_chain_of(route), ctx, 1)
     -- 链尾是准入哨兵而非 handler；中间件截断即拒绝，它没写响应就兜底 500
     if not run_ok or not ctx._admitted then
-        _fallback_500(ctx, run_ok, err)
+        _fallback_500(ctx)
         srey.close(fd, skid)
         return
     end
@@ -614,8 +612,8 @@ function Router:_st_feed(fd, skid, pack, slice)
     -- 结束帧：先摘记录再回调，这样它抛异常也不会再补一次 ABORT —— END 本身就是收尾信号
     self._streams[fd] = nil
     local ctx = rec.ctx
-    local run_ok, err = srey.xpcall(rec.route.on_chunk, ctx, slice, nil)
-    _fallback_500(ctx, run_ok, err)
+    srey.xpcall(rec.route.on_chunk, ctx, slice, nil)
+    _fallback_500(ctx)
 end
 
 ---on_recved 回调的标准实现：一次到齐的请求直接 dispatch；chunked 命中流式路由则逐帧交给它，

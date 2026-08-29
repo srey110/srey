@@ -297,7 +297,7 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
         SET_PTR(nodata, 1);
         return NULL;
     }
-    /* 按 DNS label 格式安全跳过全部查询问题 */
+    // 按 DNS label 格式安全跳过全部查询问题。边界一律用 end - p 的减法式, 理由见 _dns_parse_data
     uint16_t nq = ntohs(head.q_count);
     char *end = buf + buflen;
     char *p = buf + sizeof(dns_head);
@@ -313,7 +313,7 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
                 break;
             }
             if (0xC0 == (llen & 0xC0)) {
-                if (p + 2 > end) {
+                if ((size_t)(end - p) < 2) {
                     return NULL;
                 }
                 p += 2;
@@ -322,12 +322,12 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
             if (llen >= 64) {
                 return NULL; // RFC 1035 保留标签类型
             }
-            if (p + 1 + llen > end) {
+            if ((size_t)(end - p) < (size_t)1 + llen) {
                 return NULL;
             }
             p += 1 + llen;
         }
-        if (p + (ptrdiff_t)sizeof(dns_question) > end) {
+        if ((size_t)(end - p) < sizeof(dns_question)) {
             return NULL;
         }
         p += sizeof(dns_question);

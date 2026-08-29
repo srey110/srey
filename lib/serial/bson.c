@@ -486,7 +486,8 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         return ERR_OK;
     }
     buf_ctx segs[BSON_MAX_DEPTH];
-    int32_t n = split2((char *)keys, klens, '.', segs, BSON_MAX_DEPTH);
+    buf_ctx *psegs = segs;
+    int32_t n = split((char *)keys, klens, ".", 1, &psegs, BSON_MAX_DEPTH, 0);
     if (n < 0) {
         binary_offset(doc, offset);
         return ERR_FAILED;
