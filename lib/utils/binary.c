@@ -66,14 +66,9 @@ static inline void _binary_expand(binary_ctx *ctx, size_t size) {
 // -O2 -flto 下允许被折成恒假、把 memmove 分支整个删掉。无符号回绕让 buf 在缓冲之前时也自然落到界外
 static inline void _binary_append(binary_ctx *ctx, const char *buf, size_t lens, size_t reserve) {
     uintptr_t aoff = (uintptr_t)buf - (uintptr_t)ctx->data;
-    if (NULL != ctx->data
-        && aoff < ctx->size) {
-        _binary_expand(ctx, lens + reserve);
-        memmove(ctx->data + ctx->offset, ctx->data + aoff, lens);
-    } else {
-        _binary_expand(ctx, lens + reserve);
-        memcpy(ctx->data + ctx->offset, buf, lens);
-    }
+    int32_t inner = (NULL != ctx->data && aoff < ctx->size);
+    _binary_expand(ctx, lens + reserve);
+    memmove(ctx->data + ctx->offset, inner ? ctx->data + aoff : buf, lens);
     ctx->offset += lens;
 }
 void binary_set_int8(binary_ctx *ctx, int8_t val) {

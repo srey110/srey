@@ -46,7 +46,9 @@ int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy);
 /// </summary>
 /// <param name="chan">chan_ctx</param>
 /// <param name="lens">接收到的数据长度</param>
-/// <returns>NULL 无数据或失败</returns>
+/// <returns>NULL 无数据或失败。关闭后两种模式口径不同：buffered 会把队列排空再返 NULL；
+/// 非缓存是 rendezvous，只有关闭时已有接收者在等，发送方已发布的那条才会交付，
+/// 否则发送方放弃(返 ERR_FAILED)，此后 recv 直接返 NULL</returns>
 void *chan_recv(chan_ctx *chan, size_t *lens);
 /// <summary>
 /// 数据数量

@@ -1,5 +1,4 @@
 ﻿#include "crypt/hmac.h"
-#include "utils/utils.h"
 
 /* RFC 2104：ipad/opad 长度等于压缩函数输入块大小 B，不是摘要输出长度。B 由 digest_init
  * 一并写进 digest_ctx.key_block —— 算法属性只留一张表，新增算法漏填会被那里的 default 断言挡住。

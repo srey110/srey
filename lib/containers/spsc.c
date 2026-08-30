@@ -1,5 +1,4 @@
 ﻿#include "containers/spsc.h"
-#include "utils/utils.h"
 
 #define SPSC_DEFAULT_CAP  1024
 

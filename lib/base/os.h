@@ -138,6 +138,10 @@
     #define HAVE_ACCEPT4
     #define HAVE_PIPE2
 #endif
+// backtrace / <execinfo.h> 能力：AIX 没有（新增不支持的平台在此一处维护）
+#ifndef OS_AIX
+    #define HAVE_BACKTRACE
+#endif
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -195,7 +199,7 @@
     #include <sys/ioctl.h>
     #include <sys/poll.h>
     #include <sched.h>
-    #ifndef OS_AIX
+    #ifdef HAVE_BACKTRACE
         #include <execinfo.h>
         #include <sys/syscall.h>
     #endif

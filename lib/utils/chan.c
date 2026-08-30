@@ -126,7 +126,8 @@ static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     }
     cond_wait(&chan->w_cond, &chan->m_mu);
     while (ATOMIC_GET(&chan->w_waiting) > 0) {
-        if (ATOMIC_GET(&chan->closed)) {
+        if (ATOMIC_GET(&chan->closed)
+            && 0 == ATOMIC_GET(&chan->r_waiting)) {
             ATOMIC_ADD(&chan->w_waiting, -1);
             mutex_unlock(&chan->m_mu);
             mutex_unlock(&chan->w_mu);
@@ -138,7 +139,7 @@ static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     mutex_unlock(&chan->w_mu);
     return ERR_OK;
 }
-// 非缓存模式下接收数据，等待发送方放入后返回，chan 关闭时返回 NULL
+// 非缓存模式下接收数据，等待发送方放入后返回；关闭且没有待交接数据时返回 NULL
 static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
     mutex_lock(&chan->r_mu);
     mutex_lock(&chan->m_mu);
@@ -149,7 +150,7 @@ static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
         cond_wait(&chan->r_cond, &chan->m_mu);
         ATOMIC_ADD(&chan->r_waiting, -1);
     }
-    if (ATOMIC_GET(&chan->closed)) {
+    if (0 == ATOMIC_GET(&chan->w_waiting)) {
         mutex_unlock(&chan->m_mu);
         mutex_unlock(&chan->r_mu);
         return NULL;

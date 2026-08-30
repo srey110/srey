@@ -30,7 +30,9 @@ int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uin
         memset(output, (int32_t)remain, remain);
         break;
     case ISO10126:
-        ASSERTAB(ERR_OK == csprng_rand(output, remain - 1), ERRORSTR(ERRNO));
+        if (ERR_OK != csprng_rand(output, remain - 1)) {
+            return ERR_FAILED;
+        }
         output[remain - 1] = (uint8_t)remain;
         break;
     case ANSIX923:

@@ -6,10 +6,12 @@
 typedef struct timer_ctx {
 #if defined(OS_WIN)
     uint64_t freq;                //QueryPerformanceFrequency 计数频率（Hz）
+    uint64_t nsfactor;            //整数倍换算因子，见下方 OS_DARWIN 同名字段
 #elif defined(OS_DARWIN)
     uint32_t numer;               //mach_timebase 分子（nanoseconds = ticks * numer / denom）
     uint32_t denom;               //mach_timebase 分母
     uint64_t(*timefunc)(void);    //实际使用的时间函数（优先 mach_continuous_time）
+    uint64_t nsfactor;            //ticks 到纳秒恰好是整数倍时的因子，0 表示除不尽只能走除法
 #else
 #endif
     uint64_t starttick;           //计时起始时刻（纳秒）

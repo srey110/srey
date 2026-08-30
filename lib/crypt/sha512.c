@@ -1,5 +1,4 @@
 ﻿#include "crypt/sha512.h"
-#include "utils/utils.h"
 
 #define SHA512_BLOCK_LENGTH 128                                                        // SHA-512 输入块长度（字节）
 #define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16)                          // 末尾块长度阈值（留出 128 位存放长度）

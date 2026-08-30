@@ -25,7 +25,6 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
     ctx->sequence = 0;
     ctx->sequencemask = (1u << ctx->sequencebitlen) - 1;
     ctx->timestampshift = ctx->machinebitlen + ctx->sequencebitlen;
-    ctx->machineidshift = ctx->sequencebitlen;
     ctx->clockback_warned = 0;
     ctx->clockback_wait = SFID_CLOCKBACK_WAIT;
     if ((ctx->lasttimestamp >> (63 - ctx->timestampshift)) != 0) {
@@ -86,15 +85,14 @@ uint64_t sfid_id(sfid_ctx *ctx) {
     // 时钟回拨 统一清零标志
     ctx->clockback_warned = 0;
     id = (ctx->lasttimestamp << ctx->timestampshift) |
-        ((uint64_t)ctx->machineid << ctx->machineidshift) |
+        ((uint64_t)ctx->machineid << ctx->sequencebitlen) |
         (ctx->sequence & ctx->sequencemask);
     return id;
 }
 void sfid_decode(sfid_ctx *ctx, uint64_t id, uint64_t *timestamp, int32_t *machineid, int32_t *sequence) {
     uint64_t timestampmask = (1llu << (63 - ctx->timestampshift)) - 1;
     uint64_t machineidmask = (1llu << ctx->machinebitlen) - 1;
-    uint64_t sequencemask = (1llu << ctx->sequencebitlen) - 1;
     *timestamp = ((id >> ctx->timestampshift) & timestampmask) + ctx->customepoch;
-    *machineid = (uint32_t)((id >> ctx->machineidshift) & machineidmask);
-    *sequence = (uint32_t)(id & sequencemask);
+    *machineid = (uint32_t)((id >> ctx->sequencebitlen) & machineidmask);
+    *sequence = (uint32_t)(id & (uint64_t)ctx->sequencemask);
 }

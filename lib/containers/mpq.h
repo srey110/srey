@@ -1,7 +1,7 @@
 ﻿#ifndef MPQ_H_
 #define MPQ_H_
 
-#include "base/macro.h"
+#include "base/structs.h"
 
 //无锁多生产者有界队列 (Multi-Producer Queue, Lock-Free)
 //生产者侧固定多线程 CAS 抢 enq.v；消费者侧由调用方约定：
@@ -12,20 +12,17 @@ typedef struct mpq_cell {
     atomic_t  sequence;
     char      data[];
 } mpq_cell;
-//用 union + char[64] 让 enq/deq 各占 64 字节
-typedef union {
-    atomic_t v;
-    char     _pad[64];
-} mpq_aln_t;
 //无锁多生产者队列上下文
 typedef struct mpq_ctx {
-    uint32_t   capacity; //队列容量，必须为 2 的幂
-    uint32_t   mask;     //capacity - 1，用于快速取模
-    uint32_t   elsize;   //单元素字节数（init 时指定）
-    uint32_t   stride;   //每槽位字节数 = ROUND_UP(sizeof(atomic_t)+elsize, 8)
-    char       *cells;   //槽位数组基址（按 stride 步进寻址，不可用下标索引）
-    mpq_aln_t  enq;      //入队位置计数器,多生产者 CAS 抢(char[64] 仅与 deq 隔离,未强制缓存行对齐)
-    mpq_aln_t  deq;      //出队位置计数器
+    uint32_t      capacity; //队列容量，必须为 2 的幂
+    uint32_t      mask;     //capacity - 1，用于快速取模
+    uint32_t      elsize;   //单元素字节数（init 时指定）
+    uint32_t      stride;   //每槽位字节数 = ROUND_UP(sizeof(atomic_t)+elsize, 8)
+    char          *cells;   //槽位数组基址（按 stride 步进寻址，不可用下标索引）
+    char          _pad0[CACHELINE_SIZE];//把上面这几个只读字段与 enq 隔开：每次 push 的 CAS
+                            //都会让别的核重读 mask/stride/elsize/cells，而 push 和 pop 每次都要用它们
+    atomic_aln_t  enq;      //入队位置计数器，多生产者 CAS 抢（与 deq 各占一条 cache line）
+    atomic_aln_t  deq;      //出队位置计数器
 } mpq_ctx;
 /// <summary>
 /// 初始化队列

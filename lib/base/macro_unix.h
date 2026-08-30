@@ -73,19 +73,11 @@
 // 线程安全的本地时间转换；返回 0 成功、非 0 失败（与 Windows 侧 localtime_s 同约定）。
 // ts 超出可表示范围时 localtime_r 返 NULL 且不保证写 dt，调用方必须判返回值再用 dt
 #define LOCALTIME(ts, dt) (NULL == localtime_r((ts), (dt)) ? -1 : 0)
+#define GMTIME(ts, dt) (NULL == gmtime_r((ts), (dt)) ? -1 : 0)
 #define SOCK_CLOSE  close // 关闭 socket
 #define SET_CLOEXEC(fd) (void)fcntl((fd), F_SETFD, FD_CLOEXEC) // 标记 fd 为 exec 时关闭(防子进程继承)
 #define ERRNO       errno // 获取当前 errno 错误码
 #define ERRORSTR(errcode) strerror(errcode) // 将错误码转换为字符串
-
-/// <summary>
-/// 不区分大小写的内存比较（Unix 平台实现）
-/// </summary>
-/// <param name="ptr1">第一块内存指针</param>
-/// <param name="ptr2">第二块内存指针</param>
-/// <param name="lens">比较字节数</param>
-/// <returns>0 表示相等，正数表示 ptr1 大，负数表示 ptr1 小</returns>
-int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens);
 
 #endif//OS_WIN
 #endif//MACRO_UNIX_H_

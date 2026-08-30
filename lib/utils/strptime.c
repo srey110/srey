@@ -32,6 +32,7 @@
 #define HOURSPERDAY     24
 #define HERE_D_T_FMT    "%a %b %e %H:%M:%S %Y"
 #define HERE_D_FMT      "%y/%m/%d"
+#define POSIX_D_FMT     "%m/%d/%y"
 #define HERE_T_FMT_AMPM "%I:%M:%S %p"
 #define HERE_T_FMT      "%H:%M:%S"
 #define isleap(y) (((y) % 4) == 0 && (((y) % 100) != 0 || ((y) % 400) == 0))
@@ -236,9 +237,9 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'x':/* The date, using the locale's format. */
                 /* fall throug */
 
-    case 'D':/* The date as "%y/%m/%d". */
+    case 'D':/* The date as "%m/%d/%y" (POSIX); %x keeps this build's "%y/%m/%d". */
     {
-        new_fmt = HERE_D_FMT;
+        new_fmt = ('D' == c) ? POSIX_D_FMT : HERE_D_FMT;
         LEGAL_ALT(0);
         state |= S_MON | S_MDAY | S_YEAR;
         year = split_year ? tm->tm_year : 0;
@@ -665,6 +666,9 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
         return NULL;
     }
     }
+    if (NULL == bp) {
+        return NULL;
+    }
 
     if (!HAVE_YDAY(state) && HAVE_YEAR(state)) {
         if (HAVE_MON(state) && HAVE_MDAY(state)) {
@@ -726,7 +730,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
             /* calculate day of week */
             i = 0;
             week_offset = _first_wday_of(tm->tm_year + TM_YEAR_BASE);
-            while (i++ <= tm->tm_yday) {
+            while (++i <= tm->tm_yday) {
                 if (week_offset++ >= 6)
                     week_offset = 0;
             }

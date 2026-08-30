@@ -1,5 +1,4 @@
 ﻿#include "crypt/md5.h"
-#include "utils/utils.h"
 
 #define ROTLEFT(a,b) (((a) << (b)) | ((a) >> (32-(b))))
 #define F(x,y,z) ((x & y) | (~x & z))

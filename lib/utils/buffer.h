@@ -19,7 +19,6 @@
 #define IOV_LEN_FIELD iov_len
 #define IOV_LEN_TYPE size_t
 #endif
-#define MAX_EXPAND_NIOV          4
 
 typedef struct buffer_ctx {
     volatile int32_t freeze_read;  //读冻结标志：非零时禁止并发读操作
@@ -97,6 +96,7 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
 /// <summary>
 /// 删除数据
 /// </summary>
+/// <param name="ctx">buffer_ctx</param>
 /// <param name="lens">长度</param>
 /// <returns>实际删除的长度</returns>
 size_t buffer_drain(buffer_ctx *ctx, size_t lens);
@@ -114,7 +114,8 @@ size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens);
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="ncs">0 区分大小写</param>
 /// <param name="start">起始搜索位置</param>
-/// <param name="end">搜索结束位置, 0 直到数据结束</param>
+/// <param name="end">搜索结束位置，闭区间且要求整个 what 落在 [start, end] 内：
+///   末字节压在 end 上算命中，起点压在 end 上(what 超过 1 字节时)不算。0 表示直到数据结束</param>
 /// <param name="what">要搜索的数据，NULL 直接返回 ERR_FAILED</param>
 /// <param name="wlens">搜索数据长度，0 直接返回 ERR_FAILED（不按空串恒匹配处理）</param>
 /// <returns>ERR_FAILED 失败 否则返回搜索的起始位置</returns>

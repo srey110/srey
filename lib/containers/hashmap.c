@@ -30,7 +30,8 @@ static void (*__free)(void *) = NULL;
 // hashmap_set_allocator allows for configuring a custom allocator for
 // all hashmap library operations. This function, if needed, should be called
 // only once at startup and a prior to calling hashmap_new().
-// 三个必须一起给: 漏掉 realloc 就是自定义 malloc/free 混着框架的 _realloc 用
+// reallocfn 只被存起来往下传，本文件的扩缩容全走 mallocfn + freefn，没有一处真的 realloc。
+// 参数留着是为了不偏离上游签名，传 NULL 也不影响行为
 void hashmap_set_allocator(void *(*mallocfn)(size_t), void *(*reallocfn)(void *, size_t),
     void (*freefn)(void*)) {
     __malloc = mallocfn;

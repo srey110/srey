@@ -1,4 +1,5 @@
 ﻿#include "thread/rwlock_distr.h"
+#include "thread/spinlock.h"
 
 // 同一线程同时持有的 (ctx, slot) 槽位;owner=NULL 表示该槽位空闲
 // 通过线性扫描查找 ctx 对应的 slot,容量上限 RWLOCK_DISTR_MAX_TLS
@@ -17,6 +18,13 @@ static int32_t _rwlock_distr_tls_find(rwlock_distr_ctx *ctx) {
         }
     }
     return -1;
+}
+// 等一个原子标志变 0。读用足序版——writer 置 write_flag 后的首读必须足序,理由见 rdlock。
+// spins 由调用方持有:一次等待拆成多段(如 writer 逐个扫 slot)时全程共用一个计数
+static void _spin_until_zero(atomic_t *flag, uint32_t *spins) {
+    while (ATOMIC_GET_SEQCST(flag)) {
+        spin_backoff(spins);
+    }
 }
 void rwlock_distr_init(rwlock_distr_ctx *ctx, uint32_t slot_count) {
     ASSERTAB(slot_count > 0, "rwlock_distr_init: slot_count must be > 0");
@@ -86,6 +94,7 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
             return;
         }
         int32_t slot = _tls[i].slot;
+        uint32_t spins = 0;
         // 两边先各自置位, 再查看对方: 置 active=1 之后必须用足序版本读 write_flag。
         // 用 acquire 版在部分 ARM 上挡不住重排, 两边会同时看漏对方而一起进临界区。
         // writer 侧对称: 置 write_flag=1 之后同样用足序版本读各 slot 的 active
@@ -96,9 +105,7 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
             }
             // 检测到 writer,让步避免死锁
             ATOMIC_SET(&ctx->slots[slot].active, 0);
-            while (ATOMIC_GET(&ctx->write_flag)) {
-                CPU_PAUSE();
-            }
+            _spin_until_zero(&ctx->write_flag, &spins);
         }
     }
     // 未注册到本 ctx(TLS 满 / slot 满 / 未 register)走 fallback
@@ -126,10 +133,9 @@ void rwlock_distr_wrlock(rwlock_distr_ctx *ctx) {
     // 再置 write_flag:阻塞新 slot reader
     ATOMIC_SET(&ctx->write_flag, 1);
     // 等所有已进入 slot reader 退出
+    uint32_t spins = 0;
     for (uint32_t i = 0; i < ctx->slot_count; i++) {
-        while (ATOMIC_GET_SEQCST(&ctx->slots[i].active)) {
-            CPU_PAUSE();
-        }
+        _spin_until_zero(&ctx->slots[i].active, &spins);
     }
 }
 void rwlock_distr_wrunlock(rwlock_distr_ctx *ctx) {

@@ -5,7 +5,7 @@
 #include "utils/pool.h"
 #include "utils/timer.h"
 
-#define LOG_FMT "[%s][%s]%s\n"
+#define LOG_FMT "[%s %03d][%s]%s\n"
 #define LOG_TIME_FMT "%Y-%m-%d %H:%M:%S" // 秒级部分;毫秒由调用方另拼
 #define LOG_INLINE_SIZE 256
 #define LOG_POP_BATCH   128
@@ -87,36 +87,36 @@ static void _log_color_end(void) {
     fflush(stdout);
 }
 #endif
-// 唯一的成行出口。时间串由调用方给：mstostr 里的 localtime_r 要过 libc 的时区锁，
+// 唯一的成行出口。时间串由调用方给：算它要过 localtime_r 那把 libc 时区锁，
 // N 个业务线程一起写日志就在一把与本程序无关的锁上串起来，所以正常路径推迟到日志线程；
 // 业务线程只在 _log_stderr 那两条兜底上碰得到它。
-// pre/post 是上色前后缀，必须与正文同一次 fprintf 打出去，整行才不会被别的 stdout 写方插断
-static void _log_fprint(FILE *f, const log_item *item, const char *time, const char *msg,
-                        const char *pre, const char *post) {
-    fprintf(f, "%s"LOG_FMT"%s", pre, time, _log_lvstr(item->lv), msg, post);
+// pre/post 是上色前后缀，必须与正文同一次 fprintf 打出去，整行才不会被别的 stdout 写方插断。
+// 秒串与毫秒分两个参数传，由本函数一次成型
+static void _log_fprint(FILE *f, const log_item *item, const char *time, int32_t msec,
+                        const char *msg, const char *pre, const char *post) {
+    fprintf(f, "%s"LOG_FMT"%s", pre, time, msec, _log_lvstr(item->lv), msg, post);
 }
 // 秒级部分按秒缓存：一批日志基本落在同一秒里，省掉 localtime_r 与 strftime。
 // 缓存是无锁静态，只许 _log_write_item 这条串行路径用(日志线程，以及 thread_join
 // 之后的 log_free)；业务线程的 _log_stderr 自己现算
-static void _log_timestr(uint64_t ms, char time[TIME_LENS]) {
+static const char *_log_timestr(uint64_t ms) {
     static uint64_t cache_sec = 0;
     static char cache[TIME_LENS] = { 0 };
     uint64_t sec = ms / 1000;
     if ('\0' == cache[0]
         || sec != cache_sec) {
         if (ERR_OK != sectostr(sec, LOG_TIME_FMT, cache)) {
-            time[0] = '\0';
-            return;// sectostr 失败即把 cache 置空串, 下次重算
+            return "";// sectostr 失败即把 cache 置空串, 下次重算
         }
         cache_sec = sec;
     }
-    SNPRINTF(time, TIME_LENS, "%s %03d", cache, (int32_t)(ms % 1000));
+    return cache;
 }
 static void _log_write_item(const log_item *item) {
-    char time[TIME_LENS];
-    _log_timestr(item->ms, time);
+    const char *time = _log_timestr(item->ms);
+    int32_t msec = (int32_t)(item->ms % 1000);
     if (NULL != _handle) {
-        _log_fprint(_handle, item, time, item->msg, "", "");
+        _log_fprint(_handle, item, time, msec, item->msg, "", "");
         if (item->lv <= LOGLV_WARN) {
             fflush(_handle);
         }
@@ -129,7 +129,7 @@ static void _log_write_item(const log_item *item) {
         pre = _log_color_begin(color);
         post = LOG_COLOR_SUFFIX;
     }
-    _log_fprint(stdout, item, time, item->msg, pre, post);
+    _log_fprint(stdout, item, time, msec, item->msg, pre, post);
     if (LOG_COLOR_NONE != color) {
         _log_color_end();
     }
@@ -142,16 +142,19 @@ static void _log_item_clear(void *data) {
     }
     it->msg = it->inline_buf;
 }
-static void _log_write_all(log_item **items) {
+// 返回本轮写出的条数：0 而 fsqu_size 非 0 即撞上在途元素，调用方据此退避而不是空转
+static uint32_t _log_write_all(log_item **items) {
     log_item *item;
-    uint32_t n, i;
+    uint32_t n, i, total = 0;
     while ((n = fsqu_pop_sc_batch(&_que, items, LOG_POP_BATCH)) > 0) {
         for (i = 0; i < n; i++) {
             item = items[i];
             _log_write_item(item);
             pool_push(&_itempool, item, 0);
         }
+        total += n;
     }
+    return total;
 }
 // 日志线程退出行。必须等队列排空后再写, 否则日志里会有业务日志排在"已退出"后面
 static void _log_write_exit(void) {
@@ -170,8 +173,14 @@ static void _log_loop(void *arg) {
     timer_ctx timer;
     timer_init(&timer);
     uint64_t now, shrink_start = timer_cur_ms(&timer);
+    uint32_t spins = 0;
     while (ATOMIC_GET(&_running)) {
-        _log_write_all(items);
+        if (0 == _log_write_all(items)
+            && fsqu_size(&_que) > 0) {
+            spin_backoff(&spins);
+            continue;
+        }
+        spins = 0;
         // 空闲时按 SHRINK_TIME 门控回落 log_item 池（锁外执行）
         now = timer_cur_ms(&timer);
         if (now - shrink_start >= SHRINK_TIME) {
@@ -239,8 +248,10 @@ log_level log_getlv(void) {
 static void _log_stderr(const log_item *item, const char *msg) {
     char time[TIME_LENS];
     // 不碰 _log_timestr 的缓存：这里跑在业务线程上，那份静态只属于日志线程那条串行路径
-    (void)mstostr(item->ms, LOG_TIME_FMT, time);
-    _log_fprint(stderr, item, time, msg, "", "");
+    if (ERR_OK != sectostr(item->ms / 1000, LOG_TIME_FMT, time)) {
+        time[0] = '\0';
+    }
+    _log_fprint(stderr, item, time, (int32_t)(item->ms % 1000), msg, "", "");
     fflush(stderr);
 }
 void slog(int32_t lv, const char *fmt, ...) {

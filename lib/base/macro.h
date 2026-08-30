@@ -1,8 +1,8 @@
 ﻿#ifndef MACRO_H_
 #define MACRO_H_
 
+#include "base/base.h"
 #include "base/config.h"
-#include "base/err.h"
 #include "base/macro_atomic.h"
 #include "base/macro_unix.h"
 #include "base/macro_win.h"
@@ -12,16 +12,12 @@
 #define TIME_LENS            128 // 时间字符串缓冲区长度
 #define HOST_LENS            256 // 主机名缓冲区长度
 #define IP_LENS              64 // IP 地址字符串缓冲区长度
-#define PORT_LENS            8 // 端口号字符串缓冲区长度
 #define UUID_LENS            16 // UUID 字节长度
 #define INVALID_FD           -1 // 无效文件描述符
-#define FLOAT_PRECISION      1e-6 // 浮点数比较精度
 
 #define FLAG_CRLF           "\r\n" // HTTP/文本协议行结束符
 #define CRLF_SIZE           2 // CRLF 字节数
 
-#define ABS(n) ((n) > 0 ? (n) : -(n)) // 取绝对值
-#define FLOAT_EQZERO(f) (ABS(f) < FLOAT_PRECISION) // 判断浮点数是否等于零
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a))) // 获取静态数组元素个数
 #define EMPTYSTR(str) ((NULL == (str)) || ('\0' == *(const char *)(str))) // 判断字符串是否为空
 #define EMPTYPTR(ptr, lens) ((NULL == (ptr)) || (0 == (lens)))
@@ -31,11 +27,6 @@
 #define LOG_PREFIX_FMT "[%s %s %d] " // 日志/PRINT 行首:文件 函数 行号
 #define CONCAT2(a, b) a b // 拼接两个字符串字面量
 #define CONCAT3(a, b, c) a b c // 拼接三个字符串字面量
-// 从路径中提取文件名，无分隔符时原样返回
-static inline const char *_filename(const char *file) {
-    const char *sep = strrchr(file, PATH_SEPARATOR);
-    return NULL != sep ? sep + 1 : file;
-}
 #define __FILENAME__(file) _filename(file)
 #define PRINT(fmt, ...) printf(CONCAT3(LOG_PREFIX_FMT, fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带位置信息的标准输出
 
@@ -43,11 +34,6 @@ static inline const char *_filename(const char *file) {
     #define offsetof(type, field) ((size_t)(&((type *)0)->field)) // 获取结构体字段偏移量
 #endif
 #define UPCAST(ptr, type, field) ((type *)(((char*)(ptr)) - offsetof(type, field))) // 通过成员指针还原外层结构体指针
-
-//动态变量名
-#define __ANONYMOUS(type, name, line)  type  name##line
-#define _ANONYMOUS(type, line)  __ANONYMOUS(type, _anonymous, line)
-#define ANONYMOUS(type)  _ANONYMOUS(type, __LINE__)
 
 #define BIT_SET(status, flag)    ((status) |= (flag)) // 设置位标志
 #define BIT_CHECK(status, flag)  ((status) & (flag)) // 检查位标志是否已设置
@@ -69,14 +55,6 @@ static inline const char *_filename(const char *file) {
             ptr = NULL; \
         }\
     } while(0)
-/// <summary>
-/// 安全清零缓冲区。与 ZERO/memset 不同，保证写入不被编译器优化掉（含 LTO），
-/// 适用于密钥、密码、PBKDF2 中间值等使用后须立即抹除的敏感缓冲。
-/// 实现在 lib/utils/utils.c（声明置此以供下方 SECURE_FREE 展开）。
-/// </summary>
-/// <param name="buf">目标缓冲区（NULL 时直接返回）</param>
-/// <param name="len">字节数（0 时直接返回）</param>
-void secure_zero(void *buf, size_t len);
 #define SECURE_FREE(ptr, lens)\
     do {\
         secure_zero(ptr, lens);\
@@ -132,12 +110,6 @@ typedef enum log_level {
     LOGLV_INFO,      // 信息
     LOGLV_DEBUG,     // 调试
 }log_level;
-/// <summary>
-/// 底层日志输出函数
-/// </summary>
-/// <param name="lv">日志级别，参见 log_level</param>
-/// <param name="fmt">格式化字符串</param>
-void slog(int32_t lv, const char *fmt, ...);
 #define LOG(lv, fmt, ...) slog(lv, CONCAT2(LOG_PREFIX_FMT, fmt), __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带文件/函数/行号的日志宏
 #define LOG_FATAL(fmt, ...) LOG(LOGLV_FATAL, fmt, ##__VA_ARGS__) // 致命错误日志
 #define LOG_ERROR(fmt, ...) LOG(LOGLV_ERROR, fmt, ##__VA_ARGS__) // 错误日志

@@ -1,6 +1,5 @@
 ﻿#include "crypt/aes.h"
 #include "crypt/padding.h"
-#include "utils/utils.h"
 
 // 轮函数是否完全展开：1 展开(快、代码大)，0 用循环(小、慢)，可由构建侧 -DFULL_UNROLL=0 覆盖
 #ifndef FULL_UNROLL

@@ -1,17 +1,20 @@
 ﻿#include "utils/timer.h"
 
 #define NANOSEC 1000000000
+#define NS_PER_MS 1000000 // 纳秒到毫秒的换算,不是可调精度
 
 void timer_init(timer_ctx *ctx) {
 #if defined(OS_WIN)
     LARGE_INTEGER freq;
     ASSERTAB(QueryPerformanceFrequency(&freq), ERRORSTR(ERRNO));
     ctx->freq = (uint64_t)freq.QuadPart;
+    ctx->nsfactor = (0 == NANOSEC % ctx->freq) ? (NANOSEC / ctx->freq) : 0;
 #elif defined(OS_DARWIN)
     mach_timebase_info_data_t timebase;
     ASSERTAB(KERN_SUCCESS == mach_timebase_info(&timebase), ERRORSTR(ERRNO));
     ctx->numer = timebase.numer;
     ctx->denom = timebase.denom;
+    ctx->nsfactor = (0 == ctx->numer % ctx->denom) ? (ctx->numer / ctx->denom) : 0;
     ctx->timefunc = (uint64_t(*)(void)) dlsym(RTLD_DEFAULT, "mach_continuous_time");
     if (NULL == ctx->timefunc) {
         ctx->timefunc = mach_absolute_time;
@@ -24,6 +27,9 @@ uint64_t timer_cur(timer_ctx *ctx) {
     LARGE_INTEGER now;
     ASSERTAB(QueryPerformanceCounter(&now), ERRORSTR(ERRNO));
     uint64_t ticks = (uint64_t)now.QuadPart;
+    if (0 != ctx->nsfactor) {
+        return ticks * ctx->nsfactor;
+    }
     return (ticks / ctx->freq) * NANOSEC + (ticks % ctx->freq) * NANOSEC / ctx->freq;
 #elif defined(OS_AIX)
     (void)ctx;
@@ -36,6 +42,9 @@ uint64_t timer_cur(timer_ctx *ctx) {
     return gethrtime();
 #elif defined(OS_DARWIN)
     uint64_t ticks = ctx->timefunc();
+    if (0 != ctx->nsfactor) {
+        return ticks * ctx->nsfactor;
+    }
     return (ticks / ctx->denom) * ctx->numer + (ticks % ctx->denom) * ctx->numer / ctx->denom;
 #else
     (void)ctx;
@@ -49,7 +58,7 @@ uint64_t timer_cur(timer_ctx *ctx) {
 #endif
 }
 uint64_t timer_cur_ms(timer_ctx *ctx) {
-    return timer_cur(ctx) / TIMER_ACCURACY;
+    return timer_cur(ctx) / NS_PER_MS;
 }
 uint64_t timer_thread_cpu_ns(void) {
 #if defined(OS_WIN)
@@ -71,5 +80,5 @@ uint64_t timer_elapsed(timer_ctx *ctx) {
     return timer_cur(ctx) - ctx->starttick;
 }
 uint64_t timer_elapsed_ms(timer_ctx *ctx) {
-    return (timer_cur(ctx) - ctx->starttick) / TIMER_ACCURACY;
+    return (timer_cur(ctx) - ctx->starttick) / NS_PER_MS;
 }

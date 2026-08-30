@@ -310,19 +310,6 @@ static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) 
     }
     return _pgsql_date_to_days(y, dt.tm_mon + 1, dt.tm_mday);
 }
-// 将十六进制字符转为整数值，无效字符返回 -1
-static int32_t _pgsql_hex_digit(char c) {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
-}
 int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { TIMESTAMPOID, TIMESTAMPTZOID };
@@ -374,8 +361,8 @@ static int32_t _pgsql_uuid_from_text(const char *s, int32_t lens, char uuid[16])
         if (i + 1 >= 36 || bi >= 16) {
             return ERR_FAILED;
         }
-        hi = _pgsql_hex_digit(s[i]);
-        lo = _pgsql_hex_digit(s[i + 1]);
+        hi = fromhex(s[i]);
+        lo = fromhex(s[i + 1]);
         if (hi < 0 || lo < 0) {
             return ERR_FAILED;
         }

@@ -8,6 +8,7 @@
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local wbsk   = require("lib.websock")
+local utils  = require("srey.utils")
 
 -- 组帧参数的截断回归：mask/fin 曾用裸 (int32_t) 转换，2^32 静默变 0 —— 掩码位被清掉的帧
 -- 违反 RFC 6455 §5.1，对端必须断连；fin 被清掉则把终帧变成非终帧，卡死对端的分片重组
@@ -17,7 +18,10 @@ local function _test_frame_flag_range(t)
     t:eq(false, pcall(wbsk.text_fin, 2, 1, "hi"), "pack_text: mask 2 被拒")
     t:eq(false, pcall(wbsk.ping, -1), "pack_ping: mask 负值被拒")
     t:eq(false, pcall(wbsk.continua, 1, 2, "hi"), "pack_continua: fin 2 被拒")
-    t:eq(true, pcall(wbsk.text_fin, 0, 1, "hi"), "pack_text: 合法 0/1 照常接受")
+    -- 放行的这条会真的组出帧，返回的指针归调用方，丢掉就是泄漏
+    local ok, pk = pcall(wbsk.text_fin, 0, 1, "hi")
+    t:eq(true, ok, "pack_text: 合法 0/1 照常接受")
+    if ok then utils.ud_free(pk) end
 end
 
 local PORT = 15048

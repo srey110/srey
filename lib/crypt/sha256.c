@@ -1,5 +1,4 @@
 ﻿#include "crypt/sha256.h"
-#include "utils/utils.h"
 
 #define ROTLEFT(a,b) (((a) << (b)) | ((a) >> (32-(b))))
 #define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))

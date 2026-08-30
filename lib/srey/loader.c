@@ -155,16 +155,26 @@ void _task_message_push(task_ctx *task, message_ctx *msg) {
     }
 }
 // 从本地队列或其他 worker 队列（工作窃取）取出下一个待处理任务名
-static name_t _loader_task_name_get(loader_ctx *loader, worker_ctx *worker) {
+// inflight 出参：没取到时回传本轮有没有撞上在途元素，调用方据此决定退避还是休眠
+static name_t _loader_task_name_get(loader_ctx *loader, worker_ctx *worker, int32_t *inflight) {
     name_t handle;
-    if (ERR_OK == fsqu_pop(&worker->qutasks, &handle)) {
+    int32_t rtn = fsqu_pop(&worker->qutasks, &handle);
+    if (ERR_OK == rtn) {
+        *inflight = 0;
         return handle;
     }
+    *inflight = (1 == rtn);
     // 本地队列为空：尝试从积压最多的 worker 偷一个任务
     int32_t index = _loader_max_task_index(loader, worker->index);
-    if (-1 != index
-        && ERR_OK == fsqu_pop(&loader->worker[index].qutasks, &handle)) {
-        return handle;
+    if (-1 != index) {
+        rtn = fsqu_pop(&loader->worker[index].qutasks, &handle);
+        if (ERR_OK == rtn) {
+            *inflight = 0;
+            return handle;
+        }
+        if (1 == rtn) {
+            *inflight = 1;
+        }
     }
     return INVALID_TNAME;
 }
@@ -243,10 +253,13 @@ static void _loader_worker_loop(void *arg) {
     worker_version *version = &loader->monitor.version[worker->index];
     task_dispatch_arg runarg;
     message_ctx *msgbatch[TASK_MSG_BATCH];
+    int32_t inflight = 0;
+    uint32_t spins = 0;
     while (0 == ATOMIC_GET(&loader->stop)) {
         // 从队列取一任务
-        handle = _loader_task_name_get(loader, worker);
+        handle = _loader_task_name_get(loader, worker, &inflight);
         if (INVALID_TNAME != handle) {
+            spins = 0;
             runarg.task = task_grab(loader, handle);
             if (NULL == runarg.task) {
                 continue;
@@ -255,6 +268,11 @@ static void _loader_worker_loop(void *arg) {
             task_ungrab(runarg.task);
             continue;
         }
+        if (0 != inflight) {
+            spin_backoff(&spins);
+            continue;
+        }
+        spins = 0;
         mutex_lock(&worker->mutex);
         ATOMIC_ADD(&worker->waiting, 1);
         ATOMIC_THREAD_FENCE_SEQCST();

@@ -74,11 +74,9 @@ void heap_insert(heap_ctx *heap, heap_node *node) {
         parent->left = node;
     }
     // 上浮调整
-    if (heap->_compare) {
-        while (node->parent
-               && heap->_compare(node, node->parent)) {
-            _heap_swap(heap, node->parent, node);
-        }
+    while (node->parent
+           && heap->_compare(node, node->parent)) {
+        _heap_swap(heap, node->parent, node);
     }
 }
 // 用节点 r 替换节点 s 在堆中的位置（内部使用，r 可为 NULL 表示直接删除）
@@ -122,13 +120,11 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
         if (heap->root == node) {
             heap->root = NULL;
         }
+        node->parent = node->left = node->right = NULL;
         return;
     }
     _heap_replace(heap, node, last);
     node->parent = node->left = node->right = NULL;
-    if (!heap->_compare) {
-        return;
-    }
     heap_node *v = last;
     heap_node *est = NULL;
     // 下沉调整

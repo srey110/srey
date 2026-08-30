@@ -87,7 +87,9 @@ void cipher_reset(cipher_ctx *cipher);
 /// <param name="data">要加解密的数据</param>
 /// <param name="lens">数据长度,小于等于分组长度</param>
 /// <param name="size">加解密后的长度</param>
-/// <returns>加解密后的数据</returns>
+/// <returns>指向 cipher_ctx 内部缓冲的结果,不是 malloc 来的,调用方不得释放,有效期到下次
+///   cipher_block / cipher_reset 为止。下列输入返 NULL：lens 超过分组长度、ECB/CBC 下
+///   给了不足一个分组、填充失败。反之——整分组输入且已选填充模式——不会为 NULL</returns>
 void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *size);
 /// <summary>
 /// 加解密一段数据

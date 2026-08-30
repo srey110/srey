@@ -79,5 +79,20 @@ static inline void spin_unlock(spin_ctx *ctx) {
     ASSERTAB_CODE(pthread_spin_unlock(ctx));
 #endif
 };
+/// <summary>
+/// 自旋等待时的退避：先 CPU_PAUSE 空转，累计到 SPIN_YIELD_CNT 次仍等不到就 THREAD_YIELD
+/// 让出 CPU。对端被抢占时继续空转是纯烧核，让出才给得了它跑完的机会
+/// </summary>
+/// <param name="spins">自旋计数，调用方持有并初始化为 0；让出时函数自己归零。一次等待从头到尾
+///   共用一个计数——分段各起一个会把让出前的预算按段数放大；等到了(或不再等了)之后调用方要清零，
+///   不清则下一次等待带着上回用剩的预算开始，可能第一次就让出 CPU</param>
+static inline void spin_backoff(uint32_t *spins) {
+    if (++(*spins) < SPIN_YIELD_CNT) {
+        CPU_PAUSE();
+        return;
+    }
+    *spins = 0;
+    THREAD_YIELD();
+}
 
 #endif//SPINLOCK_H_

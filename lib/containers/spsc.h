@@ -1,23 +1,20 @@
 ﻿#ifndef SPSC_H_
 #define SPSC_H_
 
-#include "base/macro.h"
+#include "base/structs.h"
 
 //无锁单生产者单消费者有界队列 (SPSC Lock-Free Queue)
-//用 union + char[64] 让 enq/deq 各占 64 字节
-typedef union {
-    atomic_t v;
-    char     _pad[64];
-} spsc_aln_t;
 //无锁 SPSC 队列上下文
 typedef struct spsc_ctx {
-    uint32_t    capacity; //队列容量，必须为 2 的幂
-    uint32_t    mask;     //capacity - 1，用于快速取模
-    uint32_t    elsize;   //单元素字节数（init 时指定）
-    uint32_t    stride;   //每槽位字节数 = ROUND_UP(elsize, 8)
-    char        *cells;   //槽位数组基址（按 stride 步进寻址）
-    spsc_aln_t  enq;      //入队位置计数器，producer 独占写、consumer 只读
-    spsc_aln_t  deq;      //出队位置计数器，consumer 独占写、producer 只读
+    uint32_t      capacity; //队列容量，必须为 2 的幂
+    uint32_t      mask;     //capacity - 1，用于快速取模
+    uint32_t      elsize;   //单元素字节数（init 时指定）
+    uint32_t      stride;   //每槽位字节数 = ROUND_UP(elsize, 8)
+    char          *cells;   //槽位数组基址（按 stride 步进寻址）
+    char          _pad0[CACHELINE_SIZE];//把上面这几个只读字段与 enq 隔开：producer 每次写 enq
+                            //都会让 consumer 重读 mask/stride/cells，而它每次 pop 都要用
+    atomic_aln_t  enq;      //入队位置计数器，producer 独占写、consumer 只读
+    atomic_aln_t  deq;      //出队位置计数器，consumer 独占写、producer 只读
 } spsc_ctx;
 /// <summary>
 /// 初始化队列

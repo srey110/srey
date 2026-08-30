@@ -1,6 +1,5 @@
 ﻿#include "crypt/des.h"
 #include "crypt/padding.h"
-#include "utils/utils.h"
 
 #define BITNUM(a,b,c) ((uint32_t)((a[(b)/8] >> (7 - (b%8))) & 0x01) << (c))
 #define BITNUMINTR(a,b,c) ((((a) >> (31 - (b))) & 0x00000001) << (c))

@@ -7,7 +7,6 @@ typedef struct sfid_ctx {
     int32_t machinebitlen;   //机器 ID 占用的位数
     int32_t sequencebitlen;  //自增序列占用的位数
     int32_t timestampshift;  //时间戳左移位数（= machinebitlen + sequencebitlen）
-    int32_t machineidshift;  //机器 ID 左移位数（= sequencebitlen）
     int32_t sequence;        //当前自增序列值
     int32_t machineid;       //机器 ID
     int32_t sequencemask;    //自增序列掩码（用于回绕检测）

@@ -33,7 +33,8 @@ typedef struct heap_ctx {
 /// 初始化堆
 /// </summary>
 /// <param name="heap">heap_ctx 指针</param>
-/// <param name="_compare">比较函数，lhs 应排在 rhs 前返回非零</param>
+/// <param name="_compare">比较函数，lhs 应排在 rhs 前返回非零。必须非 NULL，
+///   插入/删除都会裸调它</param>
 void heap_init(heap_ctx *heap, _heap_compare _compare);
 /// <summary>
 /// 向堆中插入节点

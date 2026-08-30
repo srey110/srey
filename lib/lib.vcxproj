@@ -21,6 +21,7 @@
   <ItemGroup>
     <ClInclude Include="base\config.h" />
     <ClInclude Include="base\err.h" />
+    <ClInclude Include="base\base.h" />
     <ClInclude Include="base\macro.h" />
     <ClInclude Include="base\macro_atomic.h" />
     <ClInclude Include="base\macro_unix.h" />
@@ -142,6 +143,7 @@
     <ClInclude Include="serial\yyjson\yyjson_helper.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="base\base.c" />
     <ClCompile Include="base\memory.c" />
     <ClCompile Include="containers\hashmap.c" />
     <ClCompile Include="containers\hashset.c" />

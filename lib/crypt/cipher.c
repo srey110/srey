@@ -1,9 +1,9 @@
 ﻿#include "crypt/cipher.h"
 #include "crypt/padding.h"
-#include "utils/utils.h"
 
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     const char *key, size_t klens, int32_t keybits, int32_t encrypt) {
+    ASSERTAB(model >= ECB && model <= CTR, "unknow cipher model.");
     ZERO(cipher, sizeof(cipher_ctx));
     cipher->encrypt = encrypt;
     cipher->model = model;
@@ -23,6 +23,9 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
         cipher->block_lens = DES_BLOCK_SIZE;
         cipher->_cipher = (_cipher_cb)des_crypt;
         des_init(&cipher->eng_ctx.des, key, klens, DES3 == engine, fwdkey);
+        break;
+    default:
+        ASSERTAB(0, "unknow cipher engine.");
         break;
     }
 }
@@ -199,11 +202,6 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
                     goto fail;
                 }
                 buf = cipher_block(cipher, cipher->pd_data, cipher->block_lens, &enlens);
-                //合法初始化下不会返回 NULL（_cipher_process_data 走 line 101 直返；model 必为枚举内值）；
-                //此处与 line 205 同款防御 NULL，避免未来扩展 model 时静默段错误。
-                if (NULL == buf) {
-                    goto fail;
-                }
                 memcpy(output + size, buf, enlens);
                 size += enlens;
             }

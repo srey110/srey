@@ -19,7 +19,6 @@
 //是否启用消息分发 CPU 耗时统计
 #define ENABLE_DISPATCH_STAT 0
 
-#define TIMER_ACCURACY      1000000 // 定时器精度（纳秒，1ms）
 #define KEEPALIVE_TIME      30 // TCP keepalive 空闲时间（秒）
 #define KEEPALIVE_INTERVAL  2 // TCP keepalive 探测间隔（秒）
 #define CMD_MAX_NREAD       128 // 命令单次读取最大数量
@@ -31,6 +30,7 @@
 #define MAX_RECVFROM_SIZE   (64 * ONEK)// UDP 单次 recvfrom 最大字节数
 #define MAX_SEND_SIZE       4096 // 单次发送最大字节数
 #define MAX_SEND_NIOV       16 // scatter/gather 发送最大 iov 数量
+#define MAX_EXPAND_NIOV     4 // scatter/gather 接收最大 iov 数量
 #define MAX_PACK_SIZE       65535 // 最大数据包大小，0 表示不限制
 #define MAX_SENDQ_CNT       ONEK // 单 sock 发送队列上限(buf 数)；超限 TCP 丢数据并断连、UDP 丢包；0 表示不限制
 #define INIT_SENDBUF_LEN    32 // 发送缓冲区初始长度
@@ -39,7 +39,10 @@
 #define SHRINK_BUSY      4, 5 // pool_shrink 的 load_trend busy 判定比例 num/den:空闲骤降至上次的 4/5 以下视为忙,跳过本次收缩
 #define QTN_MS              500 // 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
 #define EVENT_CHECK_INTERVAL 5 // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
-#define SPIN_CNT             32 // 自旋次数
+// 两个都是"自旋多少次",但不是一把尺子,别合并:一次 SPIN_CNT 是一次完整的抢锁尝试(要跨核抢
+// cache line),一次 SPIN_YIELD_CNT 只是一条 CPU_PAUSE(几十周期,不碰内存)
+#define SPIN_CNT             32 // spin_init 的自旋次数,仅 Windows 生效(临界区退回内核前先试这么多次);Linux/macOS 传了也不用
+#define SPIN_YIELD_CNT       64 // spin_backoff 等对方释放时自旋这么多次仍等不到就 THREAD_YIELD 让出 CPU
 
 #ifdef EV_EPOLL
     #define TRIGGER_ET          1 // epoll 使用边缘触发模式

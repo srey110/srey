@@ -429,29 +429,28 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     }
     memcpy(scram->gs2_header, msg, gs2_len);
     scram->gs2_header[gs2_len] = '\0';
+    if (NULL != _scram_attr_search(msg + gs2_len, mlens - gs2_len, "m=")) {
+        LOG_WARN("scram client-first declares a mandatory extension, rejected.");
+        return ERR_FAILED;
+    }
     size_t lens;
     char *user = _scram_attr_value(msg, mlens, "n=", &lens);
     if (NULL == user) {
         return ERR_FAILED;
     }
-    if (NULL != memstr(0, user, lens, "=2C", 3)
-        || NULL != memstr(0, user, lens, "=3D", 3)) {
-        char *uname = _scram_username_recover(user, lens);
-        if (NULL == uname) {
-            return ERR_FAILED;
-        }
-        int32_t setrtn = scram_set_user(scram, uname, strlen(uname));
-        FREE(uname);
-        if (ERR_OK != setrtn) {
-            return ERR_FAILED;
-        }
-    } else {
-        if (ERR_OK != scram_set_user(scram, user, lens)) {
-            return ERR_FAILED;
-        }
+    char *uname = _scram_username_recover(user, lens);
+    if (NULL == uname) {
+        return ERR_FAILED;
+    }
+    size_t ulens = strlen(uname);
+    int32_t setrtn = scram_set_user(scram, uname, ulens);
+    SECURE_FREE(uname, ulens + 1);
+    if (ERR_OK != setrtn) {
+        return ERR_FAILED;
     }
     char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
-    if (NULL == nonce) {
+    if (NULL == nonce
+        || 0 == lens) {
         return ERR_FAILED;
     }
     scram->remote_nonce = dup_zero(nonce, lens);

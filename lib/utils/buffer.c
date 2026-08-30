@@ -361,13 +361,11 @@ void buffer_init(buffer_ctx *ctx) {
     ctx->tail_with_data = &ctx->head;
 }
 void buffer_free(buffer_ctx *ctx) {
-    // 暂存期间释放会把调用方仍持有 iov 的节点一并释放, 且 buffer_init 随后抹掉标志、
-    // 事后无迹可寻; 其余入口都对误用大声 abort, 这里不该是唯一静默的那个
+    // 暂存期间释放会连调用方仍持有 iov 的节点一起放掉
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
     _buffer_free_all_node(ctx->head);
-    // 必须复位:否则 head/tail/tail_with_data/hint_node 全指向已释放节点,
-    // 重复调用即 double free,total_lens 也会让释放后的 buffer_size 报出旧字节数
+    // 必须复位, 否则各游标全指向已释放节点
     buffer_init(ctx);
 }
 size_t buffer_size(buffer_ctx *ctx) {
@@ -563,6 +561,7 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
 }
 size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
     oldlen = ctx->total_lens;
@@ -643,7 +642,7 @@ static int32_t _buffer_search_memcmp(bufnode_ctx *node, cmp_func cmp, size_t off
         off = 0;
         node = node->next;
     }
-    return ERR_OK;
+    return (0 == wlen) ? ERR_OK : ERR_FAILED;
 }
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens) {
@@ -738,8 +737,7 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
     if (atmost > ctx->total_lens) {
         atmost = ctx->total_lens;
     }
-    // cnt 为 0 时下面的循环一条都填不出, 必须在置位之前退出：否则返回 0 却已进入暂存态，
-    // 调用方照契约不调 buffer_commit_get, freeze_read 再无人清, 后续读写全部断言失败
+    // 一条 iov 都填不出时必须在置位之前退出, 否则 freeze_read 再无人清
     if (0 == atmost
         || 0 == cnt) {
         return 0;

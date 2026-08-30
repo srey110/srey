@@ -6,6 +6,13 @@
 #define _REALLOC realloc
 #define _FREE    free
 
+// 分配追踪要同时满足三个条件,下面所有相关段落统一判这一个
+#if MEMORY_CHECK && MEMORY_TRACE && defined(HAVE_BACKTRACE)
+    #define MEM_TRACE_ON 1
+#else
+    #define MEM_TRACE_ON 0
+#endif
+
 #if MEMORY_CHECK
 /* 分条计数：两个相邻的全局计数器会让每次 malloc/free 都在同一条 cache line 上跨核来回。
  * 改成每线程独占一格、各占一条 cache line，槽位用尽(活过的线程数超过 MEM_SLOTS)的
@@ -21,7 +28,7 @@ static atomic64_t _slotseq = 0; // 槽位分配游标
 static THREAD_LOCAL mem_slot *_slot = NULL;
 #endif
 
-#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
 #define MEM_TRK_BUCKET 65536 // 活动分配哈希桶数（2 的幂）
 #define MEM_TRK_FRAMES 32 // 单条记录最大栈帧数
 #if defined(OS_WIN)
@@ -133,7 +140,7 @@ static void _trk_dump(void) {
 #endif
     MEM_TRK_UNLOCK();
 }
-#endif//MEMORY_CHECK && MEMORY_TRACE
+#endif//MEM_TRACE_ON
 
 #if MEMORY_CHECK
 // 首次调用给本线程钉一格,此后只自增。末尾那格可能被多个线程共用,原子自增照样精确
@@ -171,7 +178,7 @@ void *_malloc(size_t size) {
         LOG_ERROR("malloc(%zu) failed!", size);
         exit(ERR_FAILED);
     }
-#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
     _trk_add(ptr);
 #endif
     return ptr;
@@ -185,7 +192,7 @@ void *_calloc(size_t count, size_t size) {
         LOG_ERROR("calloc(%zu, %zu) failed!", count, size);
         exit(ERR_FAILED);
     }
-#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
     _trk_add(ptr);
 #endif
     return ptr;
@@ -200,13 +207,13 @@ void *_realloc(void* oldptr, size_t size) {
     // (NULL, 0) no-op + (非NULL, >0) realloc 改大小，均不计数
 #endif
     if (0 == size) {
-#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
         _trk_del(oldptr);
 #endif
         _FREE(oldptr);
         return NULL;
     }
-#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
     if (NULL != oldptr) {
         _trk_del(oldptr);
     }
@@ -216,7 +223,7 @@ void *_realloc(void* oldptr, size_t size) {
         LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
         exit(ERR_FAILED);
     }
-#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
     _trk_add(ptr);
 #endif
     return ptr;
@@ -228,7 +235,7 @@ void _free(void* ptr) {
 #if MEMORY_CHECK
     _mem_count(0);
 #endif
-#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
     _trk_del(ptr);
 #endif
     _FREE(ptr);
@@ -239,7 +246,7 @@ void _memcheck(void) {
     mem_stat(&na, &nf);
     int64_t leak = (int64_t)na - (int64_t)nf;
     PRINT("memory check => not free: %" PRId64 ".", leak);
-#if MEMORY_TRACE && !defined(OS_AIX)
+#if MEM_TRACE_ON
     if (0 != leak) {
         _trk_dump();
     }

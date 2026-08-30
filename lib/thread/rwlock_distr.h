@@ -9,14 +9,11 @@
 // 同线程禁止: 1)持 rdlock 后调 wrlock(扫 active 自死锁);2)递归 wrlock(pthread_rwlock 默认不可重入)
 // 递归 rdlock 仅对已注册线程可用: TLS 记嵌套层数,仅最外层 runlock 清 active,须等量配对;
 // 不配对的 runlock 由 runlock 入口的 ASSERTAB 拦下(否则层数会永久失衡,后续嵌套 rdlock 丢读保护)
-// 禁令 1 对已注册线程由 wrlock 入口的 ASSERTAB 精确拦下(depth 非 0 即命中);未注册线程走
-// fallback 无从记账,POSIX 下可能返 EDEADLK 触发 rwlock.h 的断言,Windows SRW 则静默死锁。
-// 递归 rdlock 在未注册线程上同样无从记账:两次都落到 fallback 的 rwlock_rdlock,
-// Windows SRW 有 writer 排队时即死锁,POSIX 写者优先实现下也可能阻塞或返 EDEADLK
+// 上面两条禁令只在已注册线程上由 ASSERTAB 拦得住;未注册线程走 fallback 无从记账,
+// 违反即挂死或断言,两个平台表现不一
 
 // 同线程支持注册到至多 RWLOCK_DISTR_MAX_TLS 个不同 ctx;超出上限的 ctx
-// 该线程走 fallback rwlock。每次 rdlock/runlock 多一次 N 元素线性扫描,
-// N 通常 ≤ 4,开销几十 ns,远低于 fallback rwlock 的 cache 弹跳成本。
+// 该线程走 fallback rwlock。每次 rdlock/runlock 多一次 N 元素线性扫描。
 // 单线程可同时注册的 rwlock_distr_ctx 上限;扩大需评估线性扫描开销
 #define RWLOCK_DISTR_MAX_TLS  4
 

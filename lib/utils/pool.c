@@ -1,21 +1,23 @@
 ﻿#include "utils/pool.h"
 
-#define POOL_NELFREE 128
 #define POOL_DEFAULT_CAP  1024
+#define POOL_NELFREE      128 // 安全池收缩时单批出队上限
 
-static int32_t _pool_safe_trypush(void *qu, const void *data) {
-    return fsqu_trypush((fsqu_ctx *)qu, data);
-}
-static int32_t _pool_safe_pop(void *qu, void *out) {
-    return fsqu_pop((fsqu_ctx *)qu, out);
-}
-static void _pool_safe_qufree(void *qu) {
-    fsqu_free((fsqu_ctx *)qu);
-}
-static void _pool_safe_nelfree(pool_ctx *pool, uint32_t nfree) {
+void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree) {
+    void **elem;
+    if (!pool->thsafe) {
+        for (uint32_t i = 0; i < nfree; i++) {
+            elem = (void **)queue_pop(&pool->qu.normal_qu);
+            if (NULL == elem) {
+                break;
+            }
+            _pool_elfree(pool, *elem);
+        }
+        return;
+    }
     uint32_t i, n, npop, remain = nfree;
     void *elems[POOL_NELFREE];
-    while (remain > 0 && pool_size(pool) > pool->nkeep) {
+    while (remain > 0 && _pool_qu_size(pool) > pool->nkeep) {
         npop = remain > POOL_NELFREE ? POOL_NELFREE : remain;
         n = fsqu_pop_batch(&pool->qu.safe_qu, elems, npop);
         for (i = 0; i < n; i++) {
@@ -27,75 +29,31 @@ static void _pool_safe_nelfree(pool_ctx *pool, uint32_t nfree) {
         remain -= n;
     }
 }
-static uint32_t _pool_safe_size(void *qu) {
-    return fsqu_size((fsqu_ctx *)qu);
-}
-static uint32_t _pool_safe_capacity(void *qu) {
-    return fsqu_capacity((fsqu_ctx *)qu);
-}
-static int32_t _pool_normal_trypush(void *qu, const void *data) {
-    return queue_trypush((queue_ctx *)qu, data);
-}
-static int32_t _pool_normal_pop(void *qu, void *out) {
-    queue_ctx *q = (queue_ctx *)qu;
-    void **elem = queue_pop(q);
-    if (NULL == elem) {
-        return ERR_FAILED;
-    }
-    *(void **)out = *elem;
-    return ERR_OK;
-}
-static void _pool_normal_qufree(void *qu) {
-    queue_free((queue_ctx *)qu);
-}
-static void _pool_normal_nelfree(pool_ctx *pool, uint32_t nfree) {
-    void **elem;
-    for (uint32_t i = 0; i < nfree; i++) {
-        elem = queue_pop(&pool->qu.normal_qu);
-        if (NULL == elem) {
-            break;
-        }
-        _pool_elfree(pool, *elem);
-    }
-}
-static uint32_t _pool_normal_size(void *qu) {
-    return queue_size((queue_ctx *)qu);
-}
-static uint32_t _pool_normal_capacity(void *qu) {
-    return queue_maxsize((queue_ctx *)qu);
-}
 void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
                uint32_t nkeep, int32_t thsafe, pool_cbs *elcbs) {
     ZERO(pool, sizeof(pool_ctx));
     capacity = (0 == capacity ? POOL_DEFAULT_CAP : capacity);
     pool->elsize = (uint32_t)elsize;
     pool->nkeep = nkeep;
+    pool->thsafe = thsafe;
     load_trend_init(&pool->trend);
     if (NULL != elcbs) {
         pool->elcbs = *elcbs;
     }
     if (thsafe) {
-        pool->_qu_trypush = _pool_safe_trypush;
-        pool->_qu_pop = _pool_safe_pop;
-        pool->_qu_free = _pool_safe_qufree;
-        pool->_qu_nelfree = _pool_safe_nelfree;
-        pool->_qu_size = _pool_safe_size;
-        pool->_qu_capacity = _pool_safe_capacity;
         fsqu_init(&pool->qu.safe_qu, sizeof(void *), capacity);
     } else {
-        pool->_qu_trypush = _pool_normal_trypush;
-        pool->_qu_pop = _pool_normal_pop;
-        pool->_qu_free = _pool_normal_qufree;
-        pool->_qu_nelfree = _pool_normal_nelfree;
-        pool->_qu_size = _pool_normal_size;
-        pool->_qu_capacity = _pool_normal_capacity;
         queue_init(&pool->qu.normal_qu, sizeof(void *), capacity);
     }
 }
 void pool_free(pool_ctx *pool) {
     void *data = NULL;
-    while (ERR_OK == pool->_qu_pop(&pool->qu, &data)) {
+    while (ERR_OK == _pool_qu_pop(pool, &data)) {
         _pool_elfree(pool, data);
     }
-    pool->_qu_free(&pool->qu);
+    if (pool->thsafe) {
+        fsqu_free(&pool->qu.safe_qu);
+    } else {
+        queue_free(&pool->qu.normal_qu);
+    }
 }

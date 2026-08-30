@@ -28,18 +28,7 @@ char *url_encode(const char *data, const size_t lens, char *out, int32_t space2p
 }
 // 将两位十六进制字符串转换为整数（忽略大小写）
 static int32_t _url_htoi(char *s) {
-    int32_t c, value;
-    c = ((unsigned char *)s)[0];
-    if (isupper(c)) {
-        c = tolower(c);
-    }
-    value = (c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10) * 16;
-    c = ((unsigned char *)s)[1];
-    if (isupper(c)) {
-        c = tolower(c);
-    }
-    value += c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10;
-    return (value);
+    return fromhex(s[0]) * 16 + fromhex(s[1]);
 }
 size_t url_decode(char *data, size_t lens, int32_t plus2space) {
     char *dest = data;

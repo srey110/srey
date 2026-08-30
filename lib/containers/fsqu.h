@@ -141,11 +141,11 @@ static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint
     }
     spin_unlock(&fsqu->lck);
 }
-// 从溢出层取一个元素
+// 从溢出层取一个元素；取不到就把 mpq 的三态原样回传(ERR_FAILED 真空 / 1 有在途)
 static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out, int32_t mpqrtn) {
     uint32_t n = 0;
     _fsqu_ovf_drain(fsqu, (char *)out, 1, &n, mpqrtn);
-    return (0 != n) ? ERR_OK : ERR_FAILED;
+    return (0 != n) ? ERR_OK : mpqrtn;
 }
 // 批量出队的 MPQ 实现，fsqu_pop_batch / fsqu_pop_sc_batch 共用；sc 传字面量，分支被常量折叠。
 // rtn 在每个出口都有确定值：取满 max 退出时是最后一次成功的 ERR_OK（drain 由 *n >= max 早退），
@@ -169,7 +169,9 @@ static inline uint32_t _fsqu_pop_batch_mpq(fsqu_ctx *fsqu, void *out, uint32_t m
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
+/// <returns>三态，语义同 mpq_pop：ERR_OK 成功；ERR_FAILED 确实为空；1 有元素已被生产者
+/// 抢占、尚未发布(queue+spin 后端不产生这一态)。只判 ERR_OK 的调用方当空处理即可；
+/// 靠 fsqu_size 决定睡不睡的调用方必须区分 1 与 ERR_FAILED，退避用 spin_backoff</returns>
 static inline int32_t fsqu_pop(fsqu_ctx *fsqu, void *out) {
 #if FSQU_MPQ
     int32_t rtn = mpq_pop(&fsqu->mpq, out);
@@ -218,7 +220,7 @@ static inline uint32_t fsqu_pop_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
 /// </summary>
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
+/// <returns>三态，同 fsqu_pop</returns>
 static inline int32_t fsqu_pop_sc(fsqu_ctx *fsqu, void *out) {
 #if FSQU_MPQ
     int32_t rtn = mpq_pop_sc(&fsqu->mpq, out);

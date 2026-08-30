@@ -57,6 +57,7 @@
     } while(0)
 // 线程安全的本地时间转换；返回 0 成功、非 0 失败。调用方必须判返回值再用 dt
 #define LOCALTIME(ts, dt) localtime_s((dt), (ts))
+#define GMTIME(ts, dt) gmtime_s((dt), (ts))
 #define ERRNO GetLastError() // 获取上一个 Windows 错误码
 // 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）
 static inline const char *_fmterror(DWORD error) {

@@ -16,8 +16,8 @@ typedef struct queue_ctx {
 /// <param name="qu">queue_ctx</param>
 /// <param name="elsize">单元素字节数，须 大于 0</param>
 /// <param name="maxsize">期望初始容量，非 0 时向上取到偶数(同 queue_resize)；0 表示延迟分配
-///   ——此刻不申请内存，首次 queue_push 时按默认容量分配(供可能永不装入元素的层使用，
-///   如 fsqu 的溢出层)</param>
+///   ——此刻不申请内存，首次入队(push 或 trypush 均可)时按默认容量分配。
+///   给"多数实例可能一个元素都装不进来"的场景省掉预付内存</param>
 void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize);
 /// <summary>
 /// 释放队列内部内存，不释放 qu 本身
@@ -113,9 +113,9 @@ static inline void queue_push(queue_ctx *qu, const void *elem) {
 /// 调用方才需要先问这个
 /// </summary>
 /// <param name="qu">queue_ctx</param>
-/// <returns>非 0 表示已满</returns>
+/// <returns>非 0 表示已满。延迟分配态(maxsize 为 0)报未满——那是"还没申请"，不是"装不下"</returns>
 static inline int32_t queue_full(queue_ctx *qu) {
-    return qu->size >= qu->maxsize;
+    return 0 != qu->maxsize && qu->size >= qu->maxsize;
 }
 /// <summary>
 /// 队尾追加元素,满则失败且不扩容。有界队列共用这一处判定,不必各写一遍

@@ -25,13 +25,7 @@ typedef struct pool_cbs {
 typedef struct pool_ctx {
     uint32_t elsize;// 对象大小
     uint32_t nkeep;
-    // 按 thsafe 分派到 qu 的两个成员之一; qu 是联合体, 两个成员同址故不另存指针
-    int32_t (*_qu_trypush)(void *qu, const void *data);
-    int32_t (*_qu_pop)(void *qu, void *out);
-    void (*_qu_free)(void *qu);
-    void (*_qu_nelfree)(struct pool_ctx *pool, uint32_t nfree);
-    uint32_t (*_qu_size)(void *qu);
-    uint32_t (*_qu_capacity)(void *qu);
+    int32_t thsafe;// 非 0 用 qu.safe_qu, 否则 qu.normal_qu; pool_init 时定死，之后只读
     pool_cbs elcbs;
     union {
         queue_ctx normal_qu;// 非线程安全
@@ -66,6 +60,25 @@ static inline void _pool_elclear(pool_ctx *pool, void *data) {
         pool->elcbs._elclear(data);
     }
 }
+// 取一个空闲对象。安全池下 fsqu_pop 的三态在这里压成两态：元素被生产者抢占尚未发布(返回 1)
+// 与真的没有一样当没取到,pool_pop 会改走新建。想区分的调用方得自己去用 fsqu_pop
+static inline int32_t _pool_qu_pop(pool_ctx *pool, void **out) {
+    if (pool->thsafe) {
+        return fsqu_pop(&pool->qu.safe_qu, out);
+    }
+    void **elem = (void **)queue_pop(&pool->qu.normal_qu);
+    if (NULL == elem) {
+        return ERR_FAILED;
+    }
+    *out = *elem;
+    return ERR_OK;
+}
+static inline uint32_t _pool_qu_size(pool_ctx *pool) {
+    return pool->thsafe ? fsqu_size(&pool->qu.safe_qu) : queue_size(&pool->qu.normal_qu);
+}
+// 释放 nfree 个空闲对象。安全池按批出队摊薄原子操作，普通池逐个取。
+// 不做 inline:批量出队的落地数组有 1KB，内联进来会把每个 pool_shrink 调用方的栈帧撑大
+void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree);
 /// <summary>
 /// 初始化对象池
 /// </summary>
@@ -79,7 +92,8 @@ static inline void _pool_elclear(pool_ctx *pool, void *data) {
 void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
                uint32_t nkeep, int32_t thsafe, pool_cbs *elcbs);
 /// <summary>
-/// 释放池内所有空闲对象(经 _elfree)并销毁底层队列;不释放 pool 本身
+/// 释放池内所有空闲对象(经 _elfree)并销毁底层队列;不释放 pool 本身。
+/// 须在没有并发 push/pop 时调用:安全池下有生产者正在写入会让出队提前报空,剩下的对象漏释放
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 void pool_free(pool_ctx *pool);
@@ -94,7 +108,8 @@ static inline int32_t pool_push(pool_ctx *pool, void *data, int32_t ops) {
     if (!BIT_CHECK(ops, POOL_OP_NOCLEAR)) {
         _pool_elclear(pool, data);
     }
-    if (ERR_OK == pool->_qu_trypush(&pool->qu, &data)) {
+    if (ERR_OK == (pool->thsafe ? fsqu_trypush(&pool->qu.safe_qu, &data)
+                                : queue_trypush(&pool->qu.normal_qu, &data))) {
         return ERR_OK;
     }
     if (!BIT_CHECK(ops, POOL_OP_NOFREE)) {
@@ -111,7 +126,7 @@ static inline int32_t pool_push(pool_ctx *pool, void *data, int32_t ops) {
 /// <returns>对象指针;自定义 _elnew 失败时可能为 NULL</returns>
 static inline void *pool_pop(pool_ctx *pool, void *args, int32_t ops) {
     void *data = NULL;
-    if (ERR_OK == pool->_qu_pop(&pool->qu, &data)) {
+    if (ERR_OK == _pool_qu_pop(pool, &data)) {
         if (!BIT_CHECK(ops, POOL_OP_NORESET)) {
             _pool_elreset(pool, data, args);
         }
@@ -126,7 +141,7 @@ static inline void *pool_pop(pool_ctx *pool, void *args, int32_t ops) {
 /// <param name="pool">pool_ctx</param>
 /// <returns>空闲对象数</returns>
 static inline uint32_t pool_size(pool_ctx *pool) {
-    return pool->_qu_size(&pool->qu);
+    return _pool_qu_size(pool);
 }
 /// <summary>
 /// 底层队列容量
@@ -134,7 +149,7 @@ static inline uint32_t pool_size(pool_ctx *pool) {
 /// <param name="pool">pool_ctx</param>
 /// <returns>容量</returns>
 static inline uint32_t pool_capacity(pool_ctx *pool) {
-    return pool->_qu_capacity(&pool->qu);
+    return pool->thsafe ? fsqu_capacity(&pool->qu.safe_qu) : queue_maxsize(&pool->qu.normal_qu);
 }
 /// <summary>
 /// 计算 pool_shrink 的保留量
@@ -154,7 +169,7 @@ static inline void _pool_shrink_sized(pool_ctx *pool, uint32_t keep, uint32_t pl
         keep = pool->nkeep;
     }
     if (plsize > keep) {
-        pool->_qu_nelfree(pool, plsize - keep);
+        _pool_qu_nelfree(pool, plsize - keep);
     }
 }
 /// <summary>

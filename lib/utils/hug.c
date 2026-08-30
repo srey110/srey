@@ -43,8 +43,7 @@ void hug_wait(hug_ctx *ctx) {
 }
 void hug_wakeup(hug_ctx *ctx) {
 #ifdef OS_WIN
-    // waker 必须在 mutex 内 SET, 否则与 waiter mutex_lock->check flag->cond_wait
-    // 之间存在 lost wakeup window (waker 在 waiter 进 wait queue 之前 signal 即丢失)
+    // 置位必须在 mutex 内, 否则会漏唤醒
     mutex_lock(&ctx->muexit);
     ATOMIC_SET(&ctx->exitflag, 1);
     mutex_unlock(&ctx->muexit);

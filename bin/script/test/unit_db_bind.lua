@@ -378,7 +378,10 @@ runner.run("db_bind", function(t)
         -- （文本行 "f" 被二进制分支当成非零字节，FALSE 到 Lua 侧变成 true 而 err 仍是 ERR_OK）
         t:eq(false, pcall(pgsql.pack_stmt_execute, "st1", nil, 2), "pack_stmt_execute: format 2 被拒")
         t:eq(false, pcall(pgsql.pack_stmt_execute, "st1", nil, -1), "pack_stmt_execute: format 负值被拒")
-        t:eq(true, pcall(pgsql.pack_stmt_execute, "st1", nil, 1), "pack_stmt_execute: format 1 照常接受")
+        -- 放行的这条会真的组出包，返回的指针归调用方，丢掉就是泄漏
+        local okfmt, pkfmt = pcall(pgsql.pack_stmt_execute, "st1", nil, 1)
+        t:eq(true, okfmt, "pack_stmt_execute: format 1 照常接受")
+        if okfmt then utils.ud_free(pkfmt) end
 
         -- COPY 流操作
         pack, size = pgsql.pack_copy_data("1,2,3\n")

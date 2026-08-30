@@ -682,6 +682,93 @@ static void test_mpq_pop_empty_vs_inflight(CuTest *tc) {
     mpq_free(&q);
 }
 
+/* 并发：4 生产者 × 1 消费者，验元素守恒，顺带观察 mpq_pop 的在途态（返回 1）。
+   容量压到 64 是刻意的：多个生产者反复抢同一批槽位，抢占窗口才够密。
+   消费者必须与生产者并发跑、靠计数收尾——等 join 完再排空的话，那时已无在途 push，
+   一次都观察不到。在途计数只打印不断言：单核机器上它合法地就是 0 */
+#define _MPQMP_PROD   4
+#define _MPQMP_PER    25000
+#define _MPQMP_TOTAL  (_MPQMP_PROD * _MPQMP_PER)
+#define _MPQMP_CAP    64
+#define _MPQMP_MAXMS  30000    /* 兜底：mpq 真坏了要失败，不能挂死 */
+
+typedef struct mpqmp_arg {
+    uint32_t base;      /* 本生产者的起始值，各段互不重叠 */
+    mpq_ctx *q;
+}mpqmp_arg;
+
+static atomic_t _mpqmp_stop;
+
+static void _mpqmp_producer(void *ud) {
+    mpqmp_arg *a = (mpqmp_arg *)ud;
+    uint32_t v;
+    for (uint32_t i = 0; i < _MPQMP_PER; i++) {
+        v = a->base + i;
+        while (ERR_OK != mpq_trypush(a->q, &v)) {
+            /* 消费者超时会置 stop；不给这条出路的话满队自旋会让 join 永远回不来 */
+            if (0 != ATOMIC_GET(&_mpqmp_stop)) {
+                return;
+            }
+            CPU_PAUSE();
+        }
+    }
+}
+
+static void test_mpq_multiprod_conserve(CuTest *tc) {
+    mpq_ctx q;
+    mpqmp_arg args[_MPQMP_PROD];
+    pthread_t ths[_MPQMP_PROD];
+    uint32_t v, got = 0, dup = 0, inflight = 0, empty = 0, bad = 0, fails = 0;
+    int32_t rtn, i;
+    char *seen;
+
+    mpq_init(&q, sizeof(uint32_t), _MPQMP_CAP);
+    CALLOC(seen, 1, _MPQMP_TOTAL);
+    ATOMIC_SET(&_mpqmp_stop, 0);
+    for (i = 0; i < _MPQMP_PROD; i++) {
+        args[i].base = (uint32_t)i * _MPQMP_PER;
+        args[i].q = &q;
+        ths[i] = thread_creat(_mpqmp_producer, &args[i]);
+    }
+    uint64_t deadline = nowms() + _MPQMP_MAXMS;
+    while (got < _MPQMP_TOTAL) {
+        rtn = mpq_pop(&q, &v);
+        if (ERR_OK == rtn) {
+            /* 越界或重复都记进 dup：got 数满且 dup 为 0 即等价于"每个值恰好出来一次" */
+            if (v >= _MPQMP_TOTAL || 0 != seen[v]) {
+                dup++;
+            } else {
+                seen[v] = 1;
+            }
+            got++;
+            continue;
+        }
+        if (1 == rtn) {
+            inflight++;
+        } else if (ERR_FAILED == rtn) {
+            empty++;
+        } else {
+            bad++;
+        }
+        /* 每约 100 万次空转才看一次表：取不到时是紧循环，逐次 nowms 会拖慢整个用例 */
+        if (0 == (++fails & 0xFFFFF)
+            && nowms() > deadline) {
+            ATOMIC_SET(&_mpqmp_stop, 1);
+            break;
+        }
+    }
+    for (i = 0; i < _MPQMP_PROD; i++) {
+        thread_join(ths[i]);
+    }
+    /* 先收拾再断言：CuTest 断言失败是 longjmp 出去的，放在断言后面就漏了 */
+    FREE(seen);
+    mpq_free(&q);
+    LOG_INFO("[mpq] multiprod: got=%u inflight=%u empty=%u", got, inflight, empty);
+    CuAssertIntEquals(tc, 0, (int32_t)bad);                 /* 返回值只落在三态内 */
+    CuAssertIntEquals(tc, 0, (int32_t)dup);                 /* 不重复、不越界 */
+    CuAssertIntEquals(tc, _MPQMP_TOTAL, (int32_t)got);      /* 不丢失 */
+}
+
 /* 溢出层守卫不得误伤正常路径：mpq 确实空了（enq == deq）时，溢出层必须照常排空。
    守卫写错方向的话这里会一个都取不出来 */
 static void test_fsqu_ovf_drain_after_mpq_empty(CuTest *tc) {
@@ -1012,6 +1099,28 @@ static void test_heap_remove_root(CuTest *tc) {
     }
     CuAssertTrue(tc, 0 == h.nelts);
 
+    /* 删最后一个节点(独根)也要清链接字段：heap_insert 不初始化 left/right,
+       靠 remove 留下的干净状态才敢直接复用节点重新插入 */
+    ZERO(nodes, sizeof(nodes));
+    nodes[0].val = 1;
+    nodes[1].val = 2;
+    heap_insert(&h, &nodes[0].node);
+    heap_insert(&h, &nodes[1].node);
+    heap_remove(&h, &nodes[1].node);
+    heap_remove(&h, &nodes[0].node);
+    CuAssertTrue(tc, 0 == h.nelts);
+    CuAssertTrue(tc, NULL == h.root);
+    CuAssertTrue(tc, NULL == nodes[0].node.parent);
+    CuAssertTrue(tc, NULL == nodes[0].node.left);
+    CuAssertTrue(tc, NULL == nodes[0].node.right);
+    /* 不重新 ZERO 直接复用，堆序仍正确 */
+    heap_insert(&h, &nodes[0].node);
+    heap_insert(&h, &nodes[1].node);
+    CuAssertTrue(tc, 1 == UPCAST(h.root, _hnode, node)->val);
+    heap_remove(&h, h.root);
+    heap_remove(&h, h.root);
+    CuAssertTrue(tc, 0 == h.nelts);
+
     /* 按引用删除若干内部/末/根节点后,余下仍保持堆序（覆盖 remove 触发的 sift 两方向）*/
     ZERO(nodes, sizeof(nodes));
     for (i = 0; i < n; i++) {
@@ -1259,6 +1368,29 @@ static void test_slist_splice_iter(CuTest *tc) {
 /* =======================================================================
  * queue_ctx —— 环形队列（自动扩容）
  * ======================================================================= */
+
+// maxsize 为 0 是"延迟分配"不是"零容量"：queue_full 报未满，
+// 于是 queue_trypush 也能触发首次分配，两种入队方式不再互斥
+static void test_queue_lazy_trypush(CuTest *tc) {
+    queue_ctx q;
+    queue_init(&q, sizeof(int), 0);
+    CuAssertTrue(tc, 0 == queue_maxsize(&q));
+    CuAssertTrue(tc, !queue_full(&q));
+
+    int v = 7;
+    CuAssertIntEquals(tc, ERR_OK, queue_trypush(&q, &v));
+    CuAssertTrue(tc, 1 == queue_size(&q));
+    CuAssertTrue(tc, queue_maxsize(&q) > 0);
+    CuAssertTrue(tc, 7 == *(int *)queue_pop(&q));
+
+    /* 分配之后照常按容量判满 */
+    for (int i = 0; i < (int)queue_maxsize(&q); i++) {
+        CuAssertIntEquals(tc, ERR_OK, queue_trypush(&q, &i));
+    }
+    CuAssertTrue(tc, queue_full(&q));
+    CuAssertIntEquals(tc, ERR_FAILED, queue_trypush(&q, &v));
+    queue_free(&q);
+}
 
 static void test_queue(CuTest *tc) {
     queue_ctx q;
@@ -2131,6 +2263,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_fsqu_trypush_sticky);
     SUITE_ADD_TEST(suite, test_fsqu_never_overflow_free);
     SUITE_ADD_TEST(suite, test_mpq_pop_empty_vs_inflight);
+    SUITE_ADD_TEST(suite, test_mpq_multiprod_conserve);
     SUITE_ADD_TEST(suite, test_fsqu_ovf_drain_after_mpq_empty);
     SUITE_ADD_TEST(suite, test_chan_buffered_race);
     SUITE_ADD_TEST(suite, test_hashmap);
@@ -2152,6 +2285,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_slist_remove);
     SUITE_ADD_TEST(suite, test_slist_splice_iter);
     SUITE_ADD_TEST(suite, test_queue);
+    SUITE_ADD_TEST(suite, test_queue_lazy_trypush);
     SUITE_ADD_TEST(suite, test_queue_array_free_resets);
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_array_ptr);

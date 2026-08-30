@@ -582,6 +582,10 @@ static void test_buffer_extra(CuTest *tc) {
     pos = buffer_search(&buf, 0, 0, 0, NULL, 1);
     CuAssertTrue(tc, ERR_FAILED == pos);
 
+    /* end 是闭区间：起点正好落在 end 上算命中，end 减 1 才排除掉 */
+    CuAssertTrue(tc, 3 == buffer_search(&buf, 0, 0, 3, "|", 1));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 2, "|", 1));
+
     /* drain 请求量超出 buffer 大小时，仅删除实际数据 */
     size_t drained = buffer_drain(&buf, 1000);
     CuAssertTrue(tc, 11 == (int)drained);
@@ -1548,6 +1552,45 @@ static void test_strptime(CuTest *tc) {
     ZERO(&tm, sizeof(tm));
     end = _strptime("not_a_date", "%Y-%m-%d", &tm);
     CuAssertTrue(tc, NULL == end);
+
+    /* 格式不带 %a/%A/%w/%u 时由 y/m/d 推 tm_wday，须与 mktime 一致 */
+    struct tm ref;
+    // 不放 1970-01-01：MSVC 的 mktime 域从 1970-01-01T00:00:00Z 起，UTC+ 时区下本地午夜换算成
+    // 1969-12-31 会返 -1，而 glibc/BSD 接受负 time_t，本机看不出来
+    const char *days[] = { "2024-05-21", "2000-01-01", "1999-12-31", "2026-08-30" };
+    for (size_t d = 0; d < sizeof(days) / sizeof(days[0]); d++) {
+        ZERO(&tm, sizeof(tm));
+        CuAssertPtrNotNull(tc, _strptime(days[d], "%Y-%m-%d", &tm));
+        ZERO(&ref, sizeof(ref));
+        ref.tm_year = tm.tm_year;
+        ref.tm_mon = tm.tm_mon;
+        ref.tm_mday = tm.tm_mday;
+        ref.tm_isdst = -1;
+        CuAssertTrue(tc, (time_t)-1 != mktime(&ref));
+        CuAssertIntEquals(tc, ref.tm_wday, tm.tm_wday);
+    }
+
+    /* %D 是 POSIX 的 "%m/%d/%y"，不是 %x 的 "%y/%m/%d" */
+    ZERO(&tm, sizeof(tm));
+    CuAssertPtrNotNull(tc, _strptime("05/21/24", "%D", &tm));
+    CuAssertIntEquals(tc, 2024 - 1900, tm.tm_year);
+    CuAssertIntEquals(tc, 5 - 1,       tm.tm_mon);
+    CuAssertIntEquals(tc, 21,          tm.tm_mday);
+    /* %x 保持本实现的年在前 */
+    ZERO(&tm, sizeof(tm));
+    CuAssertPtrNotNull(tc, _strptime("24/05/21", "%x", &tm));
+    CuAssertIntEquals(tc, 2024 - 1900, tm.tm_year);
+    CuAssertIntEquals(tc, 5 - 1,       tm.tm_mon);
+    CuAssertIntEquals(tc, 21,          tm.tm_mday);
+
+    /* %b 匹配不上时不得带着未写过的 tm_mon 去跑收尾段(曾越界索引 start_of_month) */
+    ZERO(&tm, sizeof(tm));
+    tm.tm_mon = 100000;
+    CuAssertTrue(tc, NULL == _strptime("2024 05 Xyz", "%Y %d %b", &tm));
+    /* 同理 %a */
+    ZERO(&tm, sizeof(tm));
+    tm.tm_wday = 100000;
+    CuAssertTrue(tc, NULL == _strptime("2024-05-21 Xyz", "%Y-%m-%d %a", &tm));
 }
 
 /* =======================================================================
@@ -1701,6 +1744,23 @@ static void test_str_helpers(CuTest *tc) {
     hexlower[HEX_ENSIZE(4) - 1] = '\0';
     CuAssertTrue(tc, hexlower == tohex(bin, 4, hexlower, 1));
     CuAssertStrEquals(tc, "00abff10", hexlower);
+
+    /* fromhex：大小写都认，非十六进制字符自己判得出来，不必外面先 isxdigit */
+    CuAssertIntEquals(tc, 0, fromhex('0'));
+    CuAssertIntEquals(tc, 9, fromhex('9'));
+    CuAssertIntEquals(tc, 10, fromhex('a'));
+    CuAssertIntEquals(tc, 15, fromhex('f'));
+    CuAssertIntEquals(tc, 10, fromhex('A'));
+    CuAssertIntEquals(tc, 15, fromhex('F'));
+    CuAssertIntEquals(tc, ERR_FAILED, fromhex('g'));
+    CuAssertIntEquals(tc, ERR_FAILED, fromhex('G'));
+    CuAssertIntEquals(tc, ERR_FAILED, fromhex('/'));
+    CuAssertIntEquals(tc, ERR_FAILED, fromhex(':'));
+    CuAssertIntEquals(tc, ERR_FAILED, fromhex('\0'));
+    /* tohex 的输出必须能被 fromhex 逐字符还原回去 */
+    for (size_t i = 0; i < 4; i++) {
+        CuAssertIntEquals(tc, bin[i], fromhex(hex[i * 2]) * 16 + fromhex(hex[i * 2 + 1]));
+    }
 
     /* 堆模式(cap 为 0)：以 "," 拆分，段数即返回值 */
     char heapin[] = "aa,bb,cc";
@@ -1864,6 +1924,9 @@ static void test_misc_helpers(CuTest *tc) {
     CuAssertTrue(tc, h1 != h3);
     /* 空输入不崩溃 */
     hash("", 0);
+    /* 高位字节按无符号累加,否则有/无符号 char ABI 上同一输入算出不同值 */
+    CuAssertTrue(tc, 255 == hash("\xff", 1));
+    CuAssertTrue(tc, 128 == hash("\x80", 1));
 
     /* randrange [10, 20]：100 次均落在范围内 */
     for (int i = 0; i < 100; i++) {

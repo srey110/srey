@@ -251,8 +251,13 @@ runner.run("mqtt", function(t)
         -- 挑一个非 connect 的确认它不是只在 pack_connect 里做了校验
         t:eq(false, pcall(mqttc.pack_disconnect, 0), "pack_disconnect: version 0 被拒")
         t:eq(false, pcall(mqttc.pack_disconnect, 260), "pack_disconnect: version 260 被拒")
-        t:eq(true, pcall(mqttc.pack_disconnect, 4), "pack_disconnect: MQTT_311 照常接受")
-        t:eq(true, pcall(mqttc.pack_disconnect, 5), "pack_disconnect: MQTT_50 照常接受")
+        -- 放行的那两条会真的组出包，返回的指针归调用方，丢掉就是泄漏
+        local ok, pk = pcall(mqttc.pack_disconnect, 4)
+        t:eq(true, ok, "pack_disconnect: MQTT_311 照常接受")
+        if ok then utils.ud_free(pk) end
+        ok, pk = pcall(mqttc.pack_disconnect, 5)
+        t:eq(true, ok, "pack_disconnect: MQTT_50 照常接受")
+        if ok then utils.ud_free(pk) end
     end
 end)
 end)

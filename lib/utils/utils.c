@@ -26,10 +26,27 @@ typedef union filetime_u64 {
     uint64_t ft_64;
 }filetime_u64;
 #endif
-// tchar 集合见 RFC 7230 §3.2.6：字母数字加这 15 个符号，其余一概不是
-#define TCHAR_PUNCT "!#$%&'*+-.^_`|~"
+// tchar 集合见 RFC 7230 §3.2.6：ALPHA / DIGIT / "!#$%&'*+-.^_`|~" 为 1，其余一概为 0。
+// 按 16 列排，行首注释是高 4 位
+static const uint8_t TCHAR_TBL[256] = {
+    /* 0x0 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0x1 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0x2 */ 0,1,0,1,1,1,1,1,0,0,1,1,0,1,1,0,
+    /* 0x3 */ 1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,
+    /* 0x4 */ 0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    /* 0x5 */ 1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,
+    /* 0x6 */ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    /* 0x7 */ 1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,
+    /* 0x8 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0x9 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0xA */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0xB */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0xC */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0xD */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0xE */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /* 0xF */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+};
 #define _FMT_STACK_SIZE 512
-#define _MC ((1 << CHAR_BIT) - 1) //字节掩码（0xff），用于逐字节提取整数
 static void *_ud;//信号处理回调的用户数据
 static void(*_sig_cb)(int32_t, void *);//用户注册的信号处理回调函数
 static uint16_t _serviceid = 1;
@@ -294,28 +311,20 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     if (0 == GetModuleFileName(NULL, path, (DWORD)len - 1)) {
         return ERR_FAILED;
     }
-#elif defined(OS_LINUX)
-    ssize_t rlen = readlink("/proc/self/exe", path, len - 1);
-    if (0 > rlen) {
-        return ERR_FAILED;
-    }
-    path[rlen] = '\0';
-#elif defined(OS_NBSD)
-    ssize_t rlen = readlink("/proc/curproc/exe", path, len - 1);
-    if (0 > rlen) {
-        return ERR_FAILED;
-    }
-    path[rlen] = '\0';
-#elif defined(OS_DFBSD)
-    ssize_t rlen = readlink("/proc/curproc/file", path, len - 1);
-    if (0 > rlen) {
-        return ERR_FAILED;
-    }
-    path[rlen] = '\0';
-#elif defined(OS_SUN)
-    char in[64];
-    SNPRINTF(in, sizeof(in), "/proc/%d/path/a.out", (int32_t)GETPID());
-    ssize_t rlen = readlink(in, path, len - 1);
+#elif defined(OS_LINUX) || defined(OS_NBSD) || defined(OS_DFBSD) || defined(OS_SUN)
+  #if defined(OS_SUN)
+    char link[64];
+    SNPRINTF(link, sizeof(link), "/proc/%d/path/a.out", (int32_t)GETPID());
+  #elif defined(OS_LINUX)
+    const char *link = "/proc/self/exe";
+  #elif defined(OS_NBSD)
+    const char *link = "/proc/curproc/exe";
+  #elif defined(OS_DFBSD)
+    const char *link = "/proc/curproc/file";
+  #else
+    #error "_get_procpath: 新平台加进上面的 #elif 条件时，这里也要补它自己的 symlink 路径"
+  #endif
+    ssize_t rlen = readlink(link, path, len - 1);
     if (0 > rlen) {
         return ERR_FAILED;
     }
@@ -426,18 +435,15 @@ char *readall(const char *file, size_t *lens) {
 }
 int32_t timeoffset(void) {
     time_t now = time(NULL);
-    /* gmtime/localtime 返回静态缓冲区指针，多线程并发调用存在数据竞争。
-     * 改用 gmtime_r / localtime_r（POSIX）或 gmtime_s / localtime_s（Windows）。*/
     struct tm gmt_tm, loc_tm;
-#ifdef OS_WIN
-    gmtime_s(&gmt_tm, &now);
+    if (0 != GMTIME(&now, &gmt_tm)) {
+        return 0;
+    }
     time_t gt = mktime(&gmt_tm);
-    localtime_s(&loc_tm, &gt);
-#else
-    gmtime_r(&now, &gmt_tm);
-    time_t gt = mktime(&gmt_tm);
-    localtime_r(&gt, &loc_tm);
-#endif
+    if ((time_t)-1 == gt
+        || 0 != LOCALTIME(&gt, &loc_tm)) {
+        return 0;
+    }
     return ((int32_t)(now - gt) + (loc_tm.tm_isdst ? 3600 : 0)) / 60;
 }
 // Unix 纪元起的微秒数,全程 64 位。timeofday 反过来由它推导:Windows 的 struct timeval.tv_sec
@@ -510,152 +516,12 @@ uint64_t strtots(const char *time, const char *fmt) {
     }
     return (uint64_t)ts;
 }
-void fill_timespec(struct timespec *timeout, uint32_t ms) {
-    timeout->tv_sec = ms / 1000;
-    timeout->tv_nsec = (long)(ms % 1000) * (1000 * 1000);
-}
 uint64_t hash(const char *buf, size_t len) {
     uint64_t rtn = 0;
     for (; len > 0; --len) {
-        rtn = (rtn * 131) + *buf++;
+        rtn = (rtn * 131) + (unsigned char)*buf++;
     }
     return rtn;
-}
-void *memichr(const void *ptr, int32_t val, size_t maxlen) {
-    char *buf = (char *)ptr;
-    val = tolower((unsigned char)val);
-    while (maxlen--) {
-        if (tolower((unsigned char)*buf) == val) {
-            return (void *)buf;
-        }
-        buf++;
-    }
-    return NULL;
-}
-int32_t safe_fill_str(char *dst, size_t dstsz, const char *src) {
-    if (0 == dstsz) {
-        return ERR_FAILED;
-    }
-    if (NULL == src) {
-        dst[0] = '\0';
-        return ERR_OK;
-    }
-    size_t n = strlen(src);
-    if (n >= dstsz) {
-        return ERR_FAILED;
-    }
-    memcpy(dst, src, n);
-    dst[n] = '\0';
-    return ERR_OK;
-}
-int32_t copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict) {
-    if (0 == cap) {
-        return ERR_FAILED;
-    }
-    size_t cplen = lens;
-    if (lens >= cap) {
-        if (0 != strict) {
-            return ERR_FAILED;
-        }
-        cplen = cap - 1;
-    }
-    if (cplen > 0) {
-        memcpy(dst, data, cplen);
-    }
-    dst[cplen] = '\0';
-    return ERR_OK;
-}
-char *dup_zero(const void *src, size_t lens) {
-    char *dst;
-    MALLOC(dst, lens + 1);
-    if (0 != lens) {
-        memcpy(dst, src, lens);
-    }
-    dst[lens] = '\0';
-    return dst;
-}
-#ifndef OS_WIN
-// 不区分大小写的内存比较（Windows 下由系统提供，非 Windows 手动实现）
-int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
-    size_t i = 0;
-    char *buf1 = (char *)ptr1;
-    char *buf2 = (char *)ptr2;
-    while (i < lens
-           && tolower((unsigned char)*buf1) == tolower((unsigned char)*buf2)) {
-        buf1++;
-        buf2++;
-        i++;
-    }
-    if (i == lens) {
-        return 0;
-    } else {
-        if (tolower((unsigned char)*buf1) > tolower((unsigned char)*buf2)) {
-            return 1;
-        } else {
-            return -1;
-        }
-    }
-}
-#endif
-void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen) {
-    if (NULL == ptr
-        || NULL == what
-        || 0 == plens
-        || 0 == wlen
-        || wlen > plens) {
-        return NULL;
-    }
-    chr_func chr;
-    cmp_func cmp;
-    mem_funcs_pick(ncs, &chr, &cmp);
-    char *pos;
-    char *wt = (char *)what;
-    char *cur = (char *)ptr;
-    do {
-        pos = chr(cur, wt[0], plens - (size_t)(cur - (char*)ptr));
-        if (NULL == pos
-            || plens - (size_t)(pos - (char*)ptr) < wlen) {
-            return NULL;
-        }
-        if (0 == cmp(pos, what, wlen)) {
-            return (void *)pos;
-        }
-        cur = pos + 1;
-    } while (plens - (size_t)(cur - (char*)ptr) >= wlen);
-    return NULL;
-}
-char *trim_left(char *data, size_t dlens, size_t *lens) {
-    size_t off = 0;
-    while (off < dlens && is_ows(data[off])) {
-        off++;
-    }
-    if (off == dlens) {
-        SET_PTR(lens, 0);
-        return NULL;
-    }
-    SET_PTR(lens, dlens - off);
-    return data + off;
-}
-char *trim_right(char *data, size_t dlens, size_t *lens) {
-    size_t n = dlens;
-    while (n > 0 && is_ows(data[n - 1])) {
-        n--;
-    }
-    if (0 == n) {
-        SET_PTR(lens, 0);
-        return NULL;
-    }
-    SET_PTR(lens, n);
-    return data;
-}
-char *trim(char *data, size_t dlens, size_t *lens) {
-    size_t n = 0;
-    char *cur = trim_left(data, dlens, &n);
-    if (NULL == cur) {
-        SET_PTR(lens, 0);
-        return NULL;
-    }
-    return trim_right(cur, n, lens);
 }
 int32_t is_token(const char *data, size_t lens) {
     unsigned char c;
@@ -666,10 +532,7 @@ int32_t is_token(const char *data, size_t lens) {
     }
     for (i = 0; i < lens; i++) {
         c = (unsigned char)data[i];
-        if (!((c >= 'a' && c <= 'z')
-            || (c >= 'A' && c <= 'Z')
-            || (c >= '0' && c <= '9')
-            || NULL != memchr(TCHAR_PUNCT, c, sizeof(TCHAR_PUNCT) - 1))) {
+        if (!TCHAR_TBL[c]) {
             return 0;
         }
     }
@@ -703,79 +566,6 @@ double strtod_c(const char *str, char **endptr) {
 #else
     return strtod_l(str, endptr, g_numeric_c);
 #endif
-}
-int32_t str2u64(const char *str, size_t lens, uint64_t max, uint64_t *out) {
-    uint64_t v = 0;
-    uint64_t d;
-    size_t i;
-    if (0 == lens
-        || NULL == str) {
-        return ERR_FAILED;
-    }
-    for (i = 0; i < lens; i++) {
-        if (str[i] < '0'
-            || str[i] > '9') {
-            return ERR_FAILED;
-        }
-        d = (uint64_t)(str[i] - '0');
-        // 先判后乘, 免得溢出之后再回头查; 顺带把 max 上界一并管了, 不必事后再比。
-        // d > max 要单独挡: max 小于当前位(如 max=4 撞上 '9')时 max - d 会回绕成巨值,
-        // 判定恒不成立, 超界值就被放过去了
-        if (d > max
-            || v > (max - d) / 10) {
-            return ERR_FAILED;
-        }
-        v = v * 10 + d;
-    }
-    *out = v;
-    return ERR_OK;
-}
-char *strupper(char *str) {
-    if (NULL == str) {
-        return NULL;
-    }
-    char* p = str;
-    while (*p != '\0') {
-        if (*p >= 'a'
-            && *p <= 'z') {
-            *p &= ~0x20;
-        }
-        ++p;
-    }
-    return str;
-}
-char *strlower(char *str) {
-    if (NULL == str) {
-        return NULL;
-    }
-    char *p = str;
-    while (*p != '\0') {
-        if (*p >= 'A' && *p <= 'Z') {
-            BIT_SET(*p, 0x20);
-        }
-        ++p;
-    }
-    return str;
-}
-char* strreverse(char* str) {
-    if (NULL == str) {
-        return NULL;
-    }
-    char* b = str;
-    char* e = str;
-    while (*e) {
-        ++e;
-    }
-    --e;
-    char tmp;
-    while (e > b) {
-        tmp = *e;
-        *e = *b;
-        *b = tmp;
-        --e;
-        ++b;
-    }
-    return str;
 }
 // xorshift64* 伪随机数生成器，线程局部状态，首次调用自动用线程ID+时间戳初始化种子
 static uint64_t _xorshift64(void) {
@@ -817,31 +607,6 @@ char *randstr(char *buf, size_t len) {
     buf[i] = '\0';
     return buf;
 }
-static const char hex_char_upper[16] = {
-    '0', '1', '2', '3',
-    '4', '5', '6', '7',
-    '8', '9', 'A', 'B',
-    'C', 'D', 'E', 'F'
-};
-static const char hex_char_lower[16] = {
-    '0', '1', '2', '3',
-    '4', '5', '6', '7',
-    '8', '9', 'a', 'b',
-    'c', 'd', 'e', 'f'
-};
-char *tohex(const void *buf, size_t len, char *out, int32_t lower) {
-    const char *tbl = lower ? hex_char_lower : hex_char_upper;
-    size_t j = 0;
-    unsigned char *p = (unsigned char *)buf;
-    for (size_t i = 0; i < len; ++i) {
-        out[j] = tbl[(p[i] / 16)];
-        ++j;
-        out[j] = tbl[(p[i] % 16)];
-        ++j;
-    }
-    out[j] = '\0';
-    return out;
-}
 // 按 flags 预处理一段:SPLIT_TRIM 剔两端 OWS,SPLIT_SKIPEMPTY 丢空段。
 // trim 必须排在判空之前——" " 这种全空白段原始长度是 1 不是 0,先判空就漏过去了。
 // 返回 0 表示本段应跳过;返回非 0 时 *data / *lens 已是处理后的值
@@ -868,8 +633,12 @@ static int32_t _split_store(buf_ctx **segs, int32_t *n, size_t *total, int32_t h
             LOG_WARN("split segments exceed cap.");
             return ERR_FAILED;
         }
-        *total *= 2;// 无符号翻倍;n 是 int32 返回值,实际先撞它的上限,到不了这里回绕
+        *total *= 2;// 无符号翻倍;段数上限由下面的 INT32_MAX 判定负责,这里不会先回绕
         REALLOC(*segs, *segs, sizeof(buf_ctx) * (*total));
+    }
+    if (INT32_MAX == *n) {
+        LOG_WARN("split segments exceed INT32_MAX.");
+        return ERR_FAILED;
     }
     (*segs)[*n].data = data;
     (*segs)[*n].lens = lens;
@@ -965,115 +734,33 @@ char *format_va(const char *fmt, ...) {
     va_end(args);
     return buf;
 }
-static const union {
-    int32_t dummy;
-    int8_t little;  /* 若为小端机器则为 1 */
-} nativeendian = { 1 };
-int32_t is_little(void) {
-    return nativeendian.little;
-}
-uint32_t pow2_ceil(uint32_t n) {
-    if (0 == n || 0 == (n & (n - 1))) {
-        return n;
-    }
-    ASSERTAB(n <= 0x80000000u, "pow2_ceil overflow.");
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    return n + 1;
-}
-void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle) {
-    ASSERTAB(size > 0, "pack_integer size must be positive.");
-    buf[islittle ? 0 : size - 1] = (int8_t)(val & _MC);
-    for (int32_t i = 1; i < size; i++) {
-        val >>= CHAR_BIT;
-        buf[islittle ? i : size - 1 - i] = (int8_t)(val & _MC);
-    }
-}
-int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t issigned) {
-    if (size <= 0) {
-        return 0;
-    }
-    uint64_t rtn = 0;
-    int32_t limit = (size <= (int32_t)sizeof(uint64_t)) ? size : (int32_t)sizeof(uint64_t);
-    for (int32_t i = limit - 1; i >= 0; i--) {
-        rtn <<= CHAR_BIT;
-        rtn |= (uint64_t)(uint8_t)buf[islittle ? i : size - 1 - i];
-    }
-    if (size < (int32_t)sizeof(uint64_t)) {
-        if (issigned) {
-            uint64_t mask = 1llu << (size * CHAR_BIT - 1);
-            rtn = ((rtn ^ mask) - mask);
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_BSD)
+// 反复取直到填满：一次调用未必给够，EINTR 之类可重试错误继续，其余即失败。
+// Linux 走 getrandom(2) 不用 fd，其余 Unix 从 /dev/urandom 的 fd 读
+static int32_t _rand_drain(void *buf, size_t len, int32_t fd) {
+    size_t got = 0;
+    ssize_t ret;
+    (void)fd;
+    while (got < len) {
+#if defined(OS_LINUX)
+        ret = syscall(SYS_getrandom, (char *)buf + got, len - got, 0);
+#else
+        ret = read(fd, (char *)buf + got, len - got);
+#endif
+        if (ret < 0) {
+            if (ERR_RW_RETRIABLE(ERRNO)) {
+                continue;
+            }
+            return ERR_FAILED;
         }
-    }
-    return (int64_t)rtn;
-}
-// 按指定字节序将 src 的 size 字节复制到 dest，自动处理大小端转换
-static void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
-    ASSERTAB(size > 0, "pack_float/double size must be positive.");
-    if (islittle == is_little()) {
-        memcpy(dest, src, size);
-    } else {
-        dest += size - 1;
-        while (0 != size--) {
-            *(dest--) = *(src++);
+        if (0 == ret) {
+            return ERR_FAILED;
         }
+        got += (size_t)ret;
     }
-}
-void pack_float(char *buf, float val, int32_t islittle) {
-    _copy_with_endian(buf, (const char *)&val, sizeof(val), islittle);
-}
-float unpack_float(const char *buf, int32_t islittle) {
-    float rtn;
-    _copy_with_endian((char *)&rtn, buf, sizeof(rtn), islittle);
-    return rtn;
-}
-void pack_double(char *buf, double val, int32_t islittle) {
-    _copy_with_endian(buf, (const char *)&val, sizeof(val), islittle);
-}
-double unpack_double(const char *buf, int32_t islittle) {
-    double rtn;
-    _copy_with_endian((char *)&rtn, buf, sizeof(rtn), islittle);
-    return rtn;
-}
-#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
-uint64_t ntohll(uint64_t val) {
-    if (!is_little()) {
-        return val;
-    }
-    uint64_t rtn;
-    pack_integer((char *)&rtn, val, (int32_t)sizeof(uint64_t), 0);
-    return rtn;
-}
-uint64_t htonll(uint64_t val) {
-    return ntohll(val);
+    return ERR_OK;
 }
 #endif
-int32_t ct_memcmp(const void *a, const void *b, size_t len) {
-    const unsigned char *pa = (const unsigned char *)a;
-    const unsigned char *pb = (const unsigned char *)b;
-    /* volatile 防止编译器将循环优化为提前退出，确保始终遍历全部字节。*/
-    volatile unsigned char diff = 0;
-    for (size_t i = 0; i < len; i++) {
-        diff |= pa[i] ^ pb[i];
-    }
-    return (int32_t)diff;
-}
-void secure_zero(void *buf, size_t len) {
-    if (EMPTYPTR(buf, len)) {
-        return;
-    }
-    volatile unsigned char *p = (volatile unsigned char *)buf;
-    while (len--) {
-        *p++ = 0;
-    }
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__ __volatile__("" : : "r"(buf) : "memory");
-#endif
-}
 int32_t csprng_rand(void *buf, size_t len) {
 #if defined(OS_WIN)
     /* Windows：BCryptGenRandom 使用系统首选 CSPRNG，不依赖进程安全句柄。*/
@@ -1089,22 +776,7 @@ int32_t csprng_rand(void *buf, size_t len) {
     return ERR_OK;
 #elif defined(OS_LINUX)
     /* Linux：getrandom(2) 系统调用（内核 3.17+），阻塞直至熵池就绪。*/
-    size_t got = 0;
-    ssize_t ret;
-    while (got < len) {
-        ret = syscall(SYS_getrandom, (char *)buf + got, len - got, 0);
-        if (ret < 0) {
-            if (ERR_RW_RETRIABLE(ERRNO)) {
-                continue;
-            }
-            return ERR_FAILED;
-        }
-        if (0 == ret) {
-            return ERR_FAILED;
-        }
-        got += (size_t)ret;
-    }
-    return ERR_OK;
+    return _rand_drain(buf, len, -1);
 #else
     /* 其余 Unix（Solaris、AIX、HP-UX 等）读 /dev/urandom, 缓存 fd 省掉每次 open+close。
      * 存的是 fd+1: 0 表示未初始化, 否则真 fd = 值-1 —— daemon 关掉 stdin 后 fd 会是 0,
@@ -1127,21 +799,6 @@ int32_t csprng_rand(void *buf, size_t len) {
     } else {
         fd = (int32_t)cur - 1;
     }
-    size_t got = 0;
-    ssize_t ret;
-    while (got < len) {
-        ret = read(fd, (char *)buf + got, len - got);
-        if (ret < 0) {
-            if (ERR_RW_RETRIABLE(ERRNO)) {
-                continue;
-            }
-            return ERR_FAILED;
-        }
-        if (0 == ret) {
-            return ERR_FAILED;
-        }
-        got += (size_t)ret;
-    }
-    return ERR_OK;
+    return _rand_drain(buf, len, fd);
 #endif
 }

@@ -687,6 +687,35 @@ static void test_scram_gs2_header(CuTest *tc) {
     }
 }
 
+// client-first 的属性校验：SASLname 的 '=' 转义只认 =2C/=3D，裸 '=' 一律拒（否则
+// "victim=41" 与合法编码 "victim=3D41" 会归一成同一个身份）；r= 不得为空；
+// m= 是 RFC 5802 §5 的强制扩展，本端不实现就必须失败
+static void test_scram_client_first_attrs(CuTest *tc) {
+    const struct { const char *msg; int32_t want; const char *user; } cases[] = {
+        { "n,,n=user,r=abcdefghijklmnop",            ERR_OK,     "user" },
+        { "n,,n=user=3D41,r=abcdefghijklmnop",       ERR_OK,     "user=41" },
+        { "n,,n=user=2C=3Dtest,r=abcdefghijklmnop",  ERR_OK,     "user,=test" },
+        { "n,,n=victim=41,r=abcdefghijklmnop",       ERR_FAILED, NULL },
+        { "n,,n=user=2,r=abcdefghijklmnop",          ERR_FAILED, NULL },
+        { "n,,n=user,r=",                            ERR_FAILED, NULL },
+        { "n,,m=needthis,n=user,r=abcdefghijklmnop", ERR_FAILED, NULL }
+    };
+    char msg[128];
+    scram_ctx *srv;
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        SNPRINTF(msg, sizeof(msg), "%s", cases[i].msg);
+        srv = scram_init("SCRAM-SHA-256", 0);
+        CuAssertPtrNotNull(tc, srv);
+        CuAssertIntEquals(tc, cases[i].want, scram_parse_first_message(srv, msg, strlen(msg)));
+        if (NULL != cases[i].user) {
+            CuAssertStrEquals(tc, cases[i].user, scram_get_user(srv));
+        }
+        scram_free(srv);
+    }
+}
+
 static void test_scram_failures(CuTest *tc) {
     /* 不支持的方法 → NULL */
     CuAssertTrue(tc, NULL == scram_init("SCRAM-MD5", 1));
@@ -1701,7 +1730,8 @@ static void test_padding(CuTest *tc) {
 
     /* ── ISO10126：随机字节 + 末尾填充长度 ── */
     ZERO(out, sizeof(out));
-    _padding_data(ISO10126, "ab", 2, out, 8);
+    // 取随机字节现在走返回值，不再 abort，成功路径必须是 ERR_OK
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(ISO10126, "ab", 2, out, 8));
     CuAssertTrue(tc, 0 == memcmp(out, "ab", 2));
     /* 末尾字节为填充长度 */
     CuAssertTrue(tc, 6 == out[7]);
@@ -1797,7 +1827,7 @@ static void test_padding_extra(CuTest *tc) {
 
     // ── ISO10126：末尾字节为 padlen，前面字节随机（不验证值，仅验证末尾）──
     uint8_t iso[16];
-    _padding_data(ISO10126, "X", 1, iso, 16);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(ISO10126, "X", 1, iso, 16));
     CuAssertIntEquals(tc, 'X', iso[0]);
     CuAssertIntEquals(tc, 15, iso[15]);
 
@@ -2422,6 +2452,7 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_scram_plus);
     SUITE_ADD_TEST(suite, test_scram_plus_requires_cbind);
     SUITE_ADD_TEST(suite, test_scram_gs2_header);
+    SUITE_ADD_TEST(suite, test_scram_client_first_attrs);
     SUITE_ADD_TEST(suite, test_scram_gs2_y_handshake);
     SUITE_ADD_TEST(suite, test_scram_cbind_modes);
     SUITE_ADD_TEST(suite, test_scram_server_reject_downgrade);
