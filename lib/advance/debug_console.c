@@ -358,10 +358,12 @@ static void _debug_startup(task_ctx *task) {
     router_get(ctx->router, NULL, "/__cmem", _debug_cmem, NULL, 0);
     router_get(ctx->router, NULL, "/{task}/help", _debug_help, NULL, 0);
     router_get(ctx->router, NULL, "/{task}/mem", _debug_mem, NULL, 0);
-    router_get(ctx->router, NULL, "/{task}/gc", _debug_gc, NULL, 0);
     router_get(ctx->router, NULL, "/{task}/stat", _debug_stat, NULL, 0);
     router_get(ctx->router, NULL, "/{task}/coros", _debug_coros, NULL, 0);
-    router_get(ctx->router, NULL, "/{task}/loglv/{lv}", _debug_loglv, NULL, 0);
+    // 这两条会改进程状态(投 GC 命令 / 改全局日志级别), 只收 GET 不连带 HEAD:
+    // router_get 注册的是 GET|HEAD, 那会让一次 HEAD 探测也真的执行下去
+    router_add(ctx->router, NULL, ROUTER_M_GET, "/{task}/gc", _debug_gc, NULL, 0);
+    router_add(ctx->router, NULL, ROUTER_M_GET, "/{task}/loglv/{lv}", _debug_loglv, NULL, 0);
     router_post(ctx->router, NULL, "/{task}/inject", _debug_inject, NULL, 0);
     router_post(ctx->router, NULL, "/{task}/hotfix/{module}", _debug_hotfix, NULL, 0);
     if (ERR_OK != task_listen(task, PACK_HTTP, NULL, ctx->ip, ctx->port, &ctx->lsnid, 0)) {

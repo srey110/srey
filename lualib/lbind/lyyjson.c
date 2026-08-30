@@ -220,7 +220,9 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
 /// <summary>
 /// 把 Lua 值编码成 JSON 字符串。整数精确写出（不经 %.14g），浮点按最短往返格式；
 /// 键全为 >= 1 的整数才编成数组，空表编成 {}，过度稀疏的数组直接报错而非静默转对象；
-/// 嵌套超过 1000 层、出现 table/number/string/boolean/nil 之外的类型都报错
+/// 嵌套超过 1000 层、出现 table/number/string/boolean/nil 之外的类型都报错。
+/// 非 UTF-8 字节原样写出不报错：Lua 字符串就是字节串，框架里 srey.ud_str 取出的
+/// 二进制载荷进 JSON 是常态，卡死会让这类请求一个字节都发不出去
 /// </summary>
 /// <param name="val" type="any">要编码的值</param>
 /// <returns type="string">JSON 文本</returns>
@@ -241,7 +243,7 @@ static int32_t _lyyjson_encode(lua_State *lua) {
     }
     yyjson_mut_doc_set_root(ctx.doc, root);
     size_t lens = 0;
-    char *out = yyjson_mut_write(ctx.doc, 0, &lens);
+    char *out = yyjson_mut_write(ctx.doc, YYJSON_WRITE_ALLOW_INVALID_UNICODE, &lens);
     yyjson_mut_doc_free(ctx.doc);
     if (NULL == out) {
         return luaL_error(lua, "json encode failed");
@@ -252,7 +254,9 @@ static int32_t _lyyjson_encode(lua_State *lua) {
 }
 /// <summary>
 /// 解析 JSON 文本。JSON null 解成 yyjson.null（NULL light userdata）；
-/// 超出 lua_Integer 范围的无符号整数退化成浮点；嵌套超过 1000 层报错
+/// 超出 lua_Integer 范围的无符号整数退化成浮点；嵌套超过 1000 层报错。
+/// 字符串里的非 UTF-8 字节原样收下不报错，与 encode 对称——第三方服务回未转码的
+/// Latin-1 JSON 是常见情形，拒收等于把一条本可解析的业务响应整个丢掉
 /// </summary>
 /// <param name="data" type="string|lightuserdata">JSON 文本</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，字节数</param>
@@ -261,7 +265,7 @@ static int32_t _lyyjson_decode(lua_State *lua) {
     size_t lens = 0;
     char *data = lpub_check_buf(lua, 1, &lens, NULL);
     yyjson_read_err rerr;
-    yyjson_doc *doc = yyjson_read_opts(data, lens, 0, NULL, &rerr);
+    yyjson_doc *doc = yyjson_read_opts(data, lens, YYJSON_READ_ALLOW_INVALID_UNICODE, NULL, &rerr);
     if (NULL == doc) {
         return luaL_error(lua, "json decode error at byte %I: %s",
                           (lua_Integer)rerr.pos, rerr.msg);

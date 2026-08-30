@@ -2031,6 +2031,20 @@ static void test_url_parse_edges(CuTest *tc) {
         CuAssertPtrNotNull(tc, url_get_param(&ctx, "c"));
     }
     {
+        // 同名参数取最后一个；router_req_query 直接转调它，两边只此一份实现
+        char u[] = "/p?a=1&b=x&a=2&a=3";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        _url_check_param(tc, &ctx, "a", "3");
+        _url_check_param(tc, &ctx, "b", "x");
+        // 末值为空串也算命中，不该退回去取前面那个有值的
+        char u2[] = "/p?a=1&a=";
+        url_parse(&ctx, u2, strlen(u2), '/', 1);
+        buf_ctx *last = url_get_param(&ctx, "a");
+        CuAssertPtrNotNull(tc, last);
+        CuAssertTrue(tc, 0 == last->lens);
+    }
+    {
         char u[] = "/p?a=1&&b=2";
         url_ctx ctx;
         url_parse(&ctx, u, strlen(u), '/', 1);
@@ -3421,6 +3435,15 @@ static void test_websock_pack_handshake(CuTest *tc) {
     /* 非法 token(含裸 LF,即 #1 崩溃向量)→ 返回 NULL */
     ws_hs_ctx *bctx = NULL;
     CuAssertTrue(tc, NULL == websock_pack_handshake("example.com", NULL, "a\nb", &bctx));
+
+    /* host / uri 含 CRLF：原先直落 http_pack_head / http_pack_req 的 ASSERTAB 打死进程，
+       现在与 secprot 同口径走 NULL 失败通道 */
+    ws_hs_ctx *hctx = NULL;
+    CuAssertTrue(tc, NULL == websock_pack_handshake("evil.com\r\nX-Injected: 1", NULL, NULL, &hctx));
+    ws_hs_ctx *uctx = NULL;
+    CuAssertTrue(tc, NULL == websock_pack_handshake("example.com", "/a\r\nX-Injected: 1", NULL, &uctx));
+    ws_hs_ctx *lfctx = NULL;
+    CuAssertTrue(tc, NULL == websock_pack_handshake("example.com", "/a\nb", NULL, &lfctx));
 }
 
 // 把一段握手报文喂给 websock_unpack，回带 status。client=0 走服务端校验，1 走客户端校验
@@ -5315,6 +5338,80 @@ static void test_mqtt_auth_version_gate(CuTest *tc) {
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     buffer_free(&buf);
 }
+// MQTT-1.5.4-2：UTF-8 字符串含 U+0000 即非法报文。解析后 clientid 只剩 char*、长度不再保留，
+// 放过去 "victim\0evil" 会在 Lua 侧塌缩成 "victim"，与合法客户端的 clientid 撞成同一个
+static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
+    /* 变长头: "MQTT" + 级别4 + 标志0x02(clean) + keepalive 60 */
+    char nulid[] = {
+        (char)0x10, 0x17, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02, 0x00, 0x3C,
+        0x00, 0x0B, 'v', 'i', 'c', 't', 'i', 'm', 0x00, 'e', 'v', 'i', 'l'
+    };
+    mqtt_ctx mctx = { MQTT_311 };
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 0;// INIT：CONNECT 只在这个状态被受理，COMMAND 态一律落 default 返 NULL
+    ud.context = &mctx;
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, nulid, sizeof(nulid));
+    int32_t status = PROT_INIT;
+    CuAssertTrue(tc, NULL == mqtt_unpack(0, &buf, &ud, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+
+    /* 阳性对照：同长度但不含 NUL 的 clientid 照常解出，证明拒收不是因为报文别处畸形 */
+    char okid[] = {
+        (char)0x10, 0x16, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02, 0x00, 0x3C,
+        0x00, 0x0A, 'v', 'i', 'c', 't', 'i', 'm', 'e', 'v', 'i', 'l'
+    };
+    ZERO(&ud, sizeof(ud));
+    ud.status = 0;
+    ud.context = &mctx;
+    buffer_init(&buf);
+    buffer_append(&buf, okid, sizeof(okid));
+    status = PROT_INIT;
+    mqtt_pack_ctx *pack = mqtt_unpack(0, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    _mqtt_pkfree(pack);
+    // CONNECT 解出来了，_mqtt_connect 末尾就会 CALLOC 一个 mqtt_ctx 挂到 ud->context 上，
+    // 真实流程由连接 teardown 的 _mqtt_udfree 回收，这里得自己收
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+
+    /* PUBLISH 主题名不走 _mqtt_data_utf8（就地读进包内块），单独验它也拒内嵌 NUL。
+       QoS 0 无报文标识符，剩余长度 = 2(主题长) + 8(主题) = 0x0A，载荷为空 */
+    char nultopic[] = {
+        (char)0x30, 0x0A, 0x00, 0x08, 'a', '/', 'b', 0x00, 'e', 'v', 'i', 'l'
+    };
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1;// COMMAND：PUBLISH 只在握手完成后受理，INIT 态会落 default
+    ud.context = &mctx;
+    buffer_init(&buf);
+    buffer_append(&buf, nultopic, sizeof(nultopic));
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == mqtt_unpack(0, &buf, &ud, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+
+    /* 阳性对照：同结构、主题名不含 NUL，解出来的 topic 得是完整的 7 字节而非截断值 */
+    char oktopic[] = {
+        (char)0x30, 0x09, 0x00, 0x07, 'a', '/', 'b', 'e', 'v', 'i', 'l'
+    };
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1;
+    ud.context = &mctx;
+    buffer_init(&buf);
+    buffer_append(&buf, oktopic, sizeof(oktopic));
+    status = PROT_INIT;
+    pack = mqtt_unpack(0, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertStrEquals(tc, "a/bevil", ((mqtt_publish_varhead *)pack->varhead)->topic);
+    _mqtt_pkfree(pack);
+    // 这里 ud.context 自始至终是栈上的 mctx（PUBLISH 路径不换它），不能走 _mqtt_udfree
+    buffer_free(&buf);
+}
 // MQTT 3.1.1：CONNECT 有密码无用户名(MQTT-3.1.2-22)打包必拒；同组合在 v5 合法
 static void test_mqtt_connect_pwd_no_user(CuTest *tc) {
     size_t size = 0;
@@ -5448,6 +5545,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_mqtt_multipack);
     SUITE_ADD_TEST(suite, test_websock_mqtt_ws_fragment_slice_clear);
     SUITE_ADD_TEST(suite, test_mqtt_auth_version_gate);
+    SUITE_ADD_TEST(suite, test_mqtt_utf8_embedded_nul);
     SUITE_ADD_TEST(suite, test_mqtt_connect_pwd_no_user);
     SUITE_ADD_TEST(suite, test_mqtt_pack_lens_on_fail);
     SUITE_ADD_TEST(suite, test_prots_free_null);

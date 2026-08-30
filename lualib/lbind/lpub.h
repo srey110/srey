@@ -9,8 +9,11 @@
 #define CUR_TASK_NAME "_curtask" // Lua 全局变量名：当前 task 指针
 #define PATH_NAME "_propath" // Lua 全局变量名：程序根路径
 #define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
+#define INTERRUPTIBLE_NAME "_interruptible" // Lua 全局变量名：本 task 是否已声明可被 trap 中断
 #define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
 #define PORT_OUT_OF_RANGE "port out of range" // 端口越界文案，各 connect / listen 绑定共用
+#define REQTYPE_OUT_OF_RANGE "reqtype out of range" // 请求类型越界文案，core 与 harbor 绑定共用
+#define LENS_RANGE "length out of range" // 长度越界文案，lpub 的取 buf 一族与 mqtt 载荷共用
 
 // 校验栈上指定位置必须是 light userdata（任意 C 指针），否则通过 luaL_argerror 抛 Lua 错误
 #define LUACHECK_LUDATA(lua, idx) \
@@ -22,8 +25,7 @@
 // 注册元表并创建对应的 new 函数库；name 为元表名，regnew 为构造函数列表，regfunc 为成员方法列表。
 // __metatable 置为元表名：普通 getmetatable 只拿到该字符串，故业务无法经它篡改共享元表
 // （如覆写某个方法或 __index，会影响该类型的全部实例）。注意这挡不住 debug.setmetatable 的
-// 类型混淆——debug.getmetatable 无视 __metatable，而挂元表到 userdata 本就只能靠 debug 库；
-// 要防那个只能在 userdata 载荷内加类型标记，与自伤型威胁不成比例，已评估不做
+// 类型混淆——debug.getmetatable 无视 __metatable，而挂元表到 userdata 本就只能靠 debug 库
 #define REG_MTABLE(lua, name, regnew, regfunc)\
     luaL_newmetatable(lua, name);\
     lua_pushvalue(lua, -1);\
@@ -100,6 +102,30 @@ size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max);
 uint8_t lpub_check_u8(lua_State *lua, int32_t idx, const char *what);
 uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what);
 uint32_t lpub_check_u32(lua_State *lua, int32_t idx, const char *what);
+/// <summary>
+/// 取会话 id 参数,为 0 即报错。三个消费方(task_timeout / task_request / task_multi_request)
+/// 都以 ASSERTAB 硬要求非 0;校验放 C 层而非脚本 wrapper 的理由同 _lcore_timeout 的 ms
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">sess 在栈中的位置</param>
+/// <returns>会话 id;为 0 走 luaL_argerror(longjmp,不返回)</returns>
+uint64_t lpub_check_sess(lua_State *lua, int32_t idx);
+/// <summary>
+/// 取 0/1 开关参数。这类参数在 mqtt 与 websock 绑定里有十几处，各写一遍 lpub_check_range
+/// 的 (0, 1, 文案) 时，把界写成 (0, 2) 照样编过、报错文案还照旧说"只许 0 或 1"
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">值在栈中的位置</param>
+/// <returns>0 或 1；其余值走 luaL_argerror(longjmp,不返回)</returns>
+int32_t lpub_check_flag(lua_State *lua, int32_t idx);
+/// <summary>
+/// 同 lpub_check_flag，但参数可缺省（none / nil 取 dft，不做范围校验）
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">值在栈中的位置</param>
+/// <param name="dft">缺省值</param>
+/// <returns>0 或 1；给了但不是这两个值走 luaL_argerror(longjmp,不返回)</returns>
+int32_t lpub_opt_flag(lua_State *lua, int32_t idx, int32_t dft);
 int8_t lpub_check_i8(lua_State *lua, int32_t idx, const char *what);
 int16_t lpub_check_i16(lua_State *lua, int32_t idx, const char *what);
 int32_t lpub_check_i32(lua_State *lua, int32_t idx, const char *what);
@@ -156,6 +182,25 @@ void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
 /// <param name="copy">输出 copy 标志的指针;传 NULL 表示不解析 copy</param>
 /// <returns>data 指针</returns>
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
+/// <summary>
+/// 取可空的数据缓冲参数:nil / 无参返回 NULL;string 自带长度;lightuserdata 从 idx+1 读长度。
+/// 其余类型一律报错——full userdata 是各类句柄对象,取它的载荷首址当字节缓冲会越界读。
+/// 两条分支都卡 INT32_MAX,理由同 lpub_check_bson_bin。缓冲必填的场合用 lpub_check_buf
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">data 在栈中的位置;为 lightuserdata 时 idx+1 必须是长度</param>
+/// <param name="size">输出:字节数,返回 NULL 时置 0。必须非 NULL,函数内裸解引用</param>
+/// <returns>data 指针;入参为 nil 或无参时返回 NULL。类型不符走 luaL_argerror(longjmp,不返回)</returns>
+void *lpub_opt_buf(lua_State *lua, int32_t idx, size_t *size);
+/// <summary>
+/// 压一个布尔返回值。与 lpub_rtn_nil / lpub_rtn_lud 同族,把"成功/失败各压一次 lua_pushboolean"
+/// 的 if/else 收成一行——散着写时两种写法(先判成功 / 先判失败)并存,读的人每处都要重新确认
+/// 哪个分支是成功,写反了编译不报错、返回值直接取反
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="cond">非 0 压 true,0 压 false</param>
+/// <returns>返回值个数,恒为 1</returns>
+int32_t lpub_rtn_bool(lua_State *lua, int32_t cond);
 /// <summary>
 /// 取 BSON 二进制参数:string 自带长度;lightuserdata 从 idx+1 读长度。
 /// 两条分支都卡 INT32_MAX——Lua 字符串也能超,只卡 lightuserdata 等于给字符串留后门;
@@ -247,6 +292,14 @@ int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size);
 /// <param name="err">reader 取值函数写回的错误码</param>
 /// <returns>压栈的返回值个数，恒为 1</returns>
 int32_t lpub_rtn_reader(lua_State *lua, int32_t err);
+/// <summary>
+/// 把 URL 查询参数压成一张 key→value 表放在栈顶,挂到哪个字段上由调用方 setfield 决定。
+/// 值空(?a=)压空串而不是让键缺席——"键不存在"与"值为空"是两回事,调用方靠这个区分。
+/// router 的 ctx.query 与 url.parse 的 param 都从这里取,免得空值表示分叉成两个答案
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="url">已由 url_parse 填充的 url_ctx</param>
+void lpub_push_url_param(lua_State *lua, url_ctx *url);
 /// <summary>
 /// 将 url_ctx 字段打包为 Lua 表并压栈（scheme/user/psw/host/port/path/query/segs/param）
 /// </summary>

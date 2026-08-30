@@ -22,22 +22,19 @@ PG_FORMAT = {
     BINARY = 1,
 }
 
--- pgsql_stmt_ctx：预处理语句执行上下文。
--- self.name      ：服务端语句名称（Parse 时传入）。
--- self.owner     ：pgsql_ctx Lua 包装实例，守卫读其实时 generation。
--- self.pg        ：C 层 pgsql 对象引用（= owner.pg），每次操作时动态读取 fd/skid 以感知重连。
--- self.format    ：结果集期望格式（二进制 / 文本），prepare 时确定。
--- self.affected  ：最近一次执行影响的行数。
--- self.err       ：最近一次错误信息。
+---预处理语句执行上下文
+---@class pgsql_stmt_ctx
+---@field name string 服务端语句名称（Parse 时传入）
+---@field owner any pgsql_ctx Lua 包装实例，守卫读其实时 generation
+---@field pg any C 层 pgsql 对象引用（= owner.pg），每次操作动态读 fd/skid 以感知重连
+---@field format PG_FORMAT 结果集期望格式（二进制 / 文本），prepare 时确定
+---@field affected integer 最近一次执行影响的行数
+---@field err string 最近一次错误信息
 local ctx = class("pgsql_stmt_ctx")
--- 与 pgsql.lua 的同名方法同义：写 err 并返回 false，让"置原因"与"报失败"成为一步。
--- 这边只有 execute 一个带 err 契约的入口，故不设 _busy，入口的复位写在 execute 里
----@param err string 失败原因
----@return boolean always false
-function ctx:_fail(err)
-    self.err = err
-    return false
-end
+-- _fail / _reset 与 pgsql.lua 共用 ppub 的同一份实现（说明见那边）。
+-- 这边只有 execute 一个带 err 契约的入口，故不设 _busy
+ctx._fail = ppub.fail
+ctx._reset = ppub.reset
 
 ---构造函数
 ---@param owner any pgsql_ctx Lua 包装实例（持有实时 generation 与 C pgsql 对象）
@@ -65,7 +62,7 @@ function ctx:execute(bind)
     return srey.serial_ret(false, self.owner.serial(self._execute, self, bind))
 end
 function ctx:_execute(bind)
-    self.err = ""-- 复位:erro() 只反映最近一次操作
+    self:_reset()
     if self.gen ~= self.owner.generation then
         WARN("pgsql stmt invalidated by reconnect, please re-prepare.")
         return self:_fail("pgsql: stmt invalidated by reconnect")

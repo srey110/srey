@@ -7,6 +7,7 @@ local utils  = require("srey.utils")
 local mbind  = require("mysql.bind")
 local pbind  = require("pgsql.bind")
 local mongo  = require("mongo")
+local mgolib = require("lib.mongo")-- Lua 侧 ctx，测 ctor 的入参自查
 local mgsess = require("mongo.session")
 local mysql  = require("mysql")
 local pgsql  = require("pgsql")
@@ -37,6 +38,17 @@ runner.run("db_bind", function(t)
         b = nil
         collectgarbage()
         t:check(true, "mysql.bind GC roundtrip ok")
+    end
+
+    -- ── mysql: erro 带出错误号 ─────────────────────────────────────────
+    -- 文案随服务端版本与 locale 变，区分可重试（1213 死锁 / 1205 锁等待超时）与
+    -- 不可重试（1062 重复键）只能靠错误号；C 层 mysql_erro 本就有它，绑定层原来硬传 NULL
+    do
+        local my = mysql.new("127.0.0.1", 3306, nil, "u", "p", "d", "utf8mb4")
+        t:eq(2, select("#", my:erro()), "mysql erro 返 2 个值（文案 + 错误号）")
+        local emsg, ecode = my:erro()
+        t:eq(0, ecode, "无错误时错误号为 0")
+        t:check(nil ~= emsg, "无错误时文案非 nil")
     end
 
     -- ── pgsql.bind ─────────────────────────────────────────────────────
@@ -123,6 +135,41 @@ runner.run("db_bind", function(t)
         collectgarbage()
     end
 
+    -- ── full userdata 当数据缓冲：只认 nil / string / lightuserdata ────
+    -- 四个入口曾把 LUA_TUSERDATA 与 lightuserdata 并到同一个 case，对句柄对象
+    -- 不查元表就取载荷首址当字节缓冲，配无上界的长度即堆越界读，内容还随报文
+    -- 发往数据库。现统一走 lpub_opt_buf：nil 仍绑 NULL，其余类型一律报错
+    do
+        local handle = mbind.new()  -- 一个真实句柄对象（full userdata）
+        local pb = pbind.new(1)
+        local mb = mbind.new()
+
+        t:eq(false, pcall(pb.text, pb, handle, 4096), "pgsql bind:text 收 full userdata 报错")
+        t:eq(false, pcall(pb.bytea, pb, handle, 4096), "pgsql bind:bytea 收 full userdata 报错")
+        t:eq(false, pcall(pgsql.pack_copy_data, handle, 4096), "pgsql.pack_copy_data 收 full userdata 报错")
+        t:eq(false, pcall(mb.string, mb, "k", handle, 4096), "mysql bind:string 收 full userdata 报错")
+
+        -- 其余非 string/lightuserdata 同样报错；nil 仍是 NULL 绑定
+        t:eq(false, pcall(pb.text, pb, 42), "pgsql bind:text 收 number 报错")
+        t:eq(false, pcall(pb.text, pb, {}), "pgsql bind:text 收 table 报错")
+        t:eq(true, pcall(pb.text, pb, nil), "pgsql bind:text 收 nil 仍绑 NULL")
+        local pnull, snull = pgsql.pack_stmt_execute("st_ud", pb)
+        t:check(pnull ~= nil and snull > 0, "nil 绑 NULL 后组包正常")
+        utils.ud_free(pnull)
+
+        -- lightuserdata 仍照收，长度上界统一收到 INT32_MAX
+        local ptr, plen = pgsql.pack_copy_data("payload")
+        t:check(ptr ~= nil and plen > 0, "pack_copy_data 的 lightuserdata 仍正常")
+        t:eq(false, pcall(pgsql.pack_copy_data, ptr, 2147483648), "长度超 INT32_MAX 被拒")
+        local bt = pbind.new(1)
+        t:eq(false, pcall(bt.text, bt, ptr, 2147483648), "bind:text 长度超 INT32_MAX 被拒")
+        t:eq(true, pcall(bt.text, bt, ptr, plen), "bind:text 合法 lightuserdata+长度照常接受")
+        utils.ud_free(ptr)
+
+        handle = nil
+        collectgarbage()
+    end
+
     -- ── mongo.session ──────────────────────────────────────────────────
     do
         -- 不连接，仅构造 mongo ctx；session.new 需要 16 字节 uuid
@@ -152,6 +199,36 @@ runner.run("db_bind", function(t)
         txt = srey.ud_str(pack, size)
         t:check(txt:find("refreshSessions", 1, true) ~= nil, "refreshSessions in wire")
         utils.ud_free(pack)
+
+        -- set_flag 收得下 clear_flag 的返回值：没有标志时 clear_flag 返 0，
+        -- 而 0 曾被当成非法值 WARN 掉，"存档-还原"惯用法每轮都要吵一条日志
+        local mg2 = mgolib.new("127.0.0.1", 27017, SSL_NAME.NONE, "d")
+        local old = mg2:clear_flag()
+        t:eq(0, old, "没有标志时 clear_flag 返 0")
+        t:eq(true, pcall(mg2.set_flag, mg2, old), "set_flag(0) 是空操作，不报错")
+
+        -- ctor 的 authmod 自查：不挡的话非字符串要到第一次 _connect 的 pack_auth_first
+        -- 才抛，而那一抛正落在 clear_flag 与 set_flag 之间，MORETOCOME 被永久摘掉、fd 也漏
+        t:eq(false, pcall(mgolib.new, "127.0.0.1", 27017, SSL_NAME.NONE, "d", "u", "p", nil, {}),
+            "mongo ctor: authmod 传 table 被拒")
+        t:eq(false, pcall(mgolib.new, "127.0.0.1", 27017, SSL_NAME.NONE, "d", "u", "p", nil, true),
+            "mongo ctor: authmod 传 boolean 被拒")
+        t:eq(true, pcall(mgolib.new, "127.0.0.1", 27017, SSL_NAME.NONE, "d", "u", "p", nil, "SCRAM-SHA-1"),
+            "mongo ctor: authmod 传字符串照常接受")
+        -- 同族的 password 自查（既有行为，一并钉住）
+        t:eq(false, pcall(mgolib.new, "127.0.0.1", 27017, SSL_NAME.NONE, "d", "u"),
+            "mongo ctor: 给了 user 不给 password 被拒")
+
+        -- 超时判定：timeoutmin=30 建出来的会话剩余约 1800 秒（留出跑测试的余量）
+        local left = sess:expires_in()
+        t:check(left > 1790 and left <= 1800, "session expires_in 约 30 分钟，实际 " .. tostring(left))
+        -- 服务端没给出 timeoutmin 时按"未知"处理，恒返 0 促使调用方主动 refresh
+        local nosess = mgsess.new(mg, uuid, 0)
+        t:eq(0, nosess:expires_in(), "timeoutmin=0 时 expires_in 恒为 0")
+        -- 分钟数来自服务端应答，负值曾经过 uint64 提升回绕成一个已过期的时刻
+        t:eq(false, pcall(mgsess.new, mg, uuid, -1), "session.new 负超时分钟数被拒")
+        -- 连接没绑会话时 touch 是空操作，不该报错
+        t:eq(true, pcall(mg.session_touch, mg), "未绑会话时 session_touch 空操作")
 
         -- begin → pack_commit / pack_abort：commit/abort 依赖 begin 构造 options
         t:check(sess:begin(), "session begin (no active txn on conn)")
@@ -296,6 +373,12 @@ runner.run("db_bind", function(t)
         pack, size = pgsql.pack_stmt_execute("st1", b)
         t:check(pack ~= nil and size > 0, "pgsql pack_stmt_execute with bind non-empty")
         utils.ud_free(pack)
+
+        -- 结果列格式只有 0/1：曾用裸转换，非法值让 reader 各取值器走错解码分支
+        -- （文本行 "f" 被二进制分支当成非零字节，FALSE 到 Lua 侧变成 true 而 err 仍是 ERR_OK）
+        t:eq(false, pcall(pgsql.pack_stmt_execute, "st1", nil, 2), "pack_stmt_execute: format 2 被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_execute, "st1", nil, -1), "pack_stmt_execute: format 负值被拒")
+        t:eq(true, pcall(pgsql.pack_stmt_execute, "st1", nil, 1), "pack_stmt_execute: format 1 照常接受")
 
         -- COPY 流操作
         pack, size = pgsql.pack_copy_data("1,2,3\n")

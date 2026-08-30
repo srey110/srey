@@ -116,15 +116,9 @@ local function _join_upvalues(patch_fn, upmap, src)
 end
 
 -- 扫一个 closure 的 upvalue 收进 map,再顺着同 chunk 的函数型 upvalue 往下扫。
--- 必须往下扫:模块里 `local function _helper` 不是 mod 表的值,pairs(mod) 看不见它,
--- 而只被它捕获的模块级 local(local cache 之类)就进不了 map——patch 里读那个名字会
--- 一路回退到 _G 拿到 nil,写则落到 _G,而 apply 照样报"替换成功"。
--- 只跟同 chunk 的:`local cb; function M.set(f) cb = f end` 这种业务回调槽也是函数型 upvalue,
--- 顺着它扫进去就是把别人 closure 的 local 名字混进 map(Lua 把 `local function f` 与
--- `local f = <函数>` 编译成同一形态,运行期只能靠 source 分辨)。
--- src 由调用方一次算好往下传,不能每层拿当前 fn 重算:重算等于每跟一步就把基准挪到刚踩进去的
--- 那个 chunk 上,A 模块 re-export 了 B 的函数就顺势把 B 整棵闭包树扫进 A 的 map,
--- 补丁写同名变量会经 __newindex 落到 B 的 cell 上。
+-- 必须往下扫:`local function _helper` 不是 mod 表的值,只被它捕获的模块级 local 进不了 map。
+-- 只跟同 chunk 的:业务回调槽也是函数型 upvalue,顺着它扫会把别人 closure 的名字混进来。
+-- src 由调用方一次算好往下传,不能每层拿当前 fn 重算——重算会把基准挪到刚踩进去的那个 chunk。
 -- seen 防互相递归的 helper 打转
 local function _scan_upvalues(fn, map, seen, src)
     if seen[fn] then
@@ -151,13 +145,10 @@ local function _scan_upvalues(fn, map, seen, src)
         i = i + 1
     end
 end
--- 判定 src 是不是 module_name 自己那个 chunk。
--- 之所以要认准:mod 表里混得进别人编译的函数(A.helper = require"b".helper 这种 re-export,
--- 以及 utils 的 class() 塞进每个类表的 cls.new),拿它当出发点就会把那个模块整棵闭包树
--- 收进本模块的 map,补丁写同名变量就直接改到别人家的状态上去了。
--- 只比路径尾巴,不要求 "@" 前缀:同一个模块的 source 有两种形态——bytecache 未命中走
--- luaL_loadfilex 得到 "@路径",命中走 luaL_loadbufferx 而 chunkname 传的是裸路径(见
--- lbytecache.c);要求前缀会让所有走缓存的模块认不出自己。load(src,"=名字") 另走全等
+-- 判定 src 是不是 module_name 自己那个 chunk。mod 表里混得进别人编译的函数(re-export、
+-- class() 塞的 cls.new),认不准就会把别的模块整棵闭包树收进本模块的 map。
+-- 只比路径尾巴不要求 "@" 前缀:同一模块的 source 有两种形态(bytecache 命不命中,见
+-- lbytecache.c),要求前缀会让走缓存的模块认不出自己。load(src,"=名字") 另走全等
 local function _is_self_chunk(src, module_name)
     if "=" .. module_name == src
         or _PATCH_CHUNK .. module_name == src then
@@ -296,6 +287,16 @@ function M.apply(module_name, patch_source)
             end
             mod[name] = patch_fn
             replaced = replaced + 1
+        elseif "function" == type(patch_fn) then
+            -- 名字对不上就跳过,只报总数的话"写了 2 个替换了 1 个"看不出漏了哪个,
+            -- 打错名字的那份还跑着旧逻辑。口径同上面 nself 那道闸:宁可吵也别静默。
+            -- 两种成因分开报:一种去查拼写,一种是模块那边本就不是函数,别把人引错方向
+            if nil == mod[name] then
+                WARN("hotfix %s: patch has '%s' but module does not, skipped.", module_name, name)
+            else
+                WARN("hotfix %s: module '%s' is a %s, not a function, skipped.",
+                     module_name, name, type(mod[name]))
+            end
         end
     end
     if 0 == replaced then

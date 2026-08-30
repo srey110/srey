@@ -27,7 +27,9 @@ local function _log(lv, fmt, ...)
     if lv > _getlv() then
         return
     end
-    local info = debug.getinfo(3)
+    -- "Sl" 只算 source/short_src/linedefined/what/currentline;默认 "flnStu" 还要做
+    -- 'n' 的调用名反查(顺调用方字节码找函数名)与 'f'/'u'/'t' 那几项,结果表也大一倍
+    local info = debug.getinfo(3, "Sl")
     if not info then
         return
     end

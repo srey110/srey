@@ -9,6 +9,17 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local wbsk   = require("lib.websock")
 
+-- 组帧参数的截断回归：mask/fin 曾用裸 (int32_t) 转换，2^32 静默变 0 —— 掩码位被清掉的帧
+-- 违反 RFC 6455 §5.1，对端必须断连；fin 被清掉则把终帧变成非终帧，卡死对端的分片重组
+local function _test_frame_flag_range(t)
+    t:eq(false, pcall(wbsk.text_fin, 4294967296, 1, "hi"), "pack_text: mask 2^32 被拒而非截成 0")
+    t:eq(false, pcall(wbsk.text_fin, 1, 256, "hi"), "pack_text: fin 256 被拒而非截成 0")
+    t:eq(false, pcall(wbsk.text_fin, 2, 1, "hi"), "pack_text: mask 2 被拒")
+    t:eq(false, pcall(wbsk.ping, -1), "pack_ping: mask 负值被拒")
+    t:eq(false, pcall(wbsk.continua, 1, 2, "hi"), "pack_continua: fin 2 被拒")
+    t:eq(true, pcall(wbsk.text_fin, 0, 1, "hi"), "pack_text: 合法 0/1 照常接受")
+end
+
 local PORT = 15048
 
 -- 第 1 块正常(先发出首帧,让对端进入 continuation 累积状态),第 2 块返回 number 触发违约
@@ -78,5 +89,6 @@ runner.run("websock_client", function(t)
     end
 
     srey.unlisten(lid)-- 释放端口给后续测试
+    _test_frame_flag_range(t)
 end)
 end)

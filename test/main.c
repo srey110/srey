@@ -138,7 +138,7 @@ int main(int argc, char *argv[]) {
     test_hashset(suite);     /* hashset(hashmap 包装) */
     test_crypt(suite);       /* base64、crc、digest、hmac、urlraw、xor */
     test_utils(suite);       /* pack/unpack、binary、buffer、sfid、hash_ring、netaddr */
-    test_seri(suite);        /* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table */
+    test_seri(suite);        /* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table；yyjson_helper */
     test_thread(suite);      /* mutex、spinlock、rwlock、cond、thread */
     test_stm(suite);         /* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
     test_event(suite);       /* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
@@ -388,6 +388,9 @@ int main(int argc, char *argv[]) {
         {"test_ws.py",    "python_ws"},
         {"test_mqtt.py",  "python_mqtt"},
         {"test_mixed.py", "python_mixed"},
+        // 不含 test_ssl_reneg.py: 它要连 15443 的 SSL 端口, 而 task_http_server 只起明文 15002。
+        // 那条脚本只在 ./bin/srey 那侧跑(server_http.lua 起了 SSL 监听) —— 改 evssl / SSL 数据期
+        // 的代码时按项目惯例跑的是 ./bin/test, 这条覆盖不到, 需要另跑一次 ./bin/srey
     };
     char pycmd[PATH_LENS];
     char outbuf[4096];

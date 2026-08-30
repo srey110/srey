@@ -402,10 +402,8 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         FREE(breader->data);
         break;
     case 'd': // CopyData：服务端发来的 COPY OUT 数据，追加到累积缓冲区
-        //合法序列必为 'H'（CopyOutResponse 初始化 pg->pack=PGPACK_COPY_OUT）后才能收到 'd'。
-        //若 pg->pack 为 NULL（无 'H' 前置）或类型不符（前一个查询的 PGPACK_OK 累积中），
-        //强转 pgpack_copy_out_ctx* 后 binary_set_binary 会写到错误偏移 → 内存损坏 / 空指针解引用。
-        //还有第三态: 'H' 报文残缺时 _pgpack_init 已把 type 改成 COPY_OUT 而累积缓冲没建起来
+        //合法序列必为 'H'(CopyOutResponse) 在前才能收到 'd'; 三种不合法态都要挡:
+        //pg->pack 为空、类型不符、以及 'H' 残缺时 type 已改成 COPY_OUT 而累积缓冲没建起来
         if (NULL == pg->pack
             || PGPACK_COPY_OUT != pg->pack->type
             || NULL == pg->pack->pack) {

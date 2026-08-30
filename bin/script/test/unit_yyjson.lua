@@ -123,5 +123,28 @@ runner.run("yyjson", function(t)
         -- 负 size 被 lpub_check_lens 挡下（转 size_t 会变天文数字）
         t:eq(false, pcall(yyjson.decode, yyjson.null, -1), "负 size 报错")
     end
+
+    -- ── 非法 UTF-8 原样透传 ─────────────────────────────────────
+    -- 旧的 lua_cjson 明确声明"不检测非法 UTF-8，原样放行"，迁到 yyjson 时 flags 传 0
+    -- 把这条行为丢了：encode 抛错让请求一个字节都发不出去，decode 把第三方回的
+    -- 未转码 Latin-1 JSON 当解析失败整个丢掉。Lua 字符串本就是字节串
+    do
+        local blob = "a\xff\xfeb"
+        local ok, js = pcall(yyjson.encode, { k = blob })
+        t:eq(true, ok, "encode 含非 UTF-8 字节的字符串不报错")
+        if ok then
+            local ok2, tb = pcall(yyjson.decode, js)
+            t:eq(true, ok2, "decode 自己写出的那份不报错")
+            if ok2 then
+                t:eq(blob, tb.k, "非法 UTF-8 字节往返后逐字节相同")
+            end
+        end
+        -- 对端直接甩过来的 Latin-1（未转码的 "café"）也要收得下
+        local ok3, tb3 = pcall(yyjson.decode, '{"name":"caf\xe9"}')
+        t:eq(true, ok3, "decode 未转码的 Latin-1 JSON 不报错")
+        if ok3 then
+            t:eq("caf\xe9", tb3.name, "Latin-1 字节原样收下")
+        end
+    end
 end)
 end)

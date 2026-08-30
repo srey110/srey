@@ -361,6 +361,23 @@ int32_t mongo_clear_flag(mongo_ctx *mongo) {
 void mongo_clear_session(mongo_ctx *mongo) {
     mongo->session = NULL;
 }
+void mongo_session_renew(mongo_session *session) {
+    if (session->timeoutmin <= 0) {
+        return;
+    }
+    session->timeout = nowsec() + (uint64_t)session->timeoutmin * 60;
+}
+void mongo_session_touch(mongo_ctx *mongo) {
+    if (NULL != mongo->session) {
+        mongo_session_renew(mongo->session);
+    }
+}
+int64_t mongo_session_expires(mongo_session *session) {
+    if (0 == session->timeout) {
+        return 0;
+    }
+    return (int64_t)session->timeout - (int64_t)nowsec();
+}
 int32_t mongo_status_auth(void) {
     return AUTH;
 }

@@ -12,20 +12,16 @@ typedef struct _task_entry {
     name_t handle;
     char name[64];
 }_task_entry;
-typedef struct _task_list_arg {
-    size_t n;
-    size_t cap;
-    _task_entry *entries;
-}_task_list_arg;
+
 
 /// <summary>
 /// 向当前 task 注册一个一次性超时事件
 /// </summary>
-/// <param name="sess" type="integer">会话 id，超时消息回调时回带</param>
+/// <param name="sess" type="integer">会话 id(非 0)，超时消息回调时回带</param>
 /// <param name="time" type="integer">延迟毫秒数；非正数即刻触发，超 UINT32_MAX(约 49.7 天)钳到该上界</param>
 /// <returns>无</returns>
 static int32_t _lcore_timeout(lua_State *lua) {
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 1);
+    uint64_t sess = lpub_check_sess(lua, 1);
     lua_Integer ms = luaL_checkinteger(lua, 2);
     // 校验放 C 层而非 Lua wrapper：core.timeout 直接注册在 core 表上，绕过 lib.srey 的脚本同受保护。
     // 不可原样 (uint32_t) 截断——2^32 会截成 0 被 tw_add 当场回调，2^32+1000 则变 1 秒
@@ -56,14 +52,14 @@ static void *_lcore_opt_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *
 /// 向目标 task 发送单向调用消息（无响应）
 /// </summary>
 /// <param name="dst" type="string|integer">目标 task 名(字符串)或句柄(整数)</param>
-/// <param name="reqtype" type="integer">业务请求类型</param>
+/// <param name="reqtype" type="integer">业务请求类型，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_call(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
-    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
+    subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
     void *data;
     size_t size;
     int32_t copy;
@@ -154,7 +150,7 @@ static void _multi_done(_multi_args *ma) {
 /// 当前 task 作 src,sess 由调用方传入(非 0)；src 端 srey.on_responsed 会被回调 N 次,业务自行据 sess 识别与累计。
 /// </summary>
 /// <param name="dsts" type="(string|integer)[]">目标 task 名/句柄数组(Lua table)；nil/NONE/不存在的被跳过</param>
-/// <param name="reqtype" type="integer">业务请求类型</param>
+/// <param name="reqtype" type="integer">业务请求类型，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="sess" type="integer">会话 id(非 0),N 个 dst 共用此 sess</param>
 /// <param name="data" type="string|lightuserdata|nil">数据(nil 表示无载荷)；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
@@ -162,8 +158,8 @@ static void _multi_done(_multi_args *ma) {
 /// <returns type="integer">实际成功投递的 dst 数（非 NULL 元素个数,0 表示全部跳过未投递）</returns>
 static int32_t _lcore_multi_request(lua_State *lua) {
     LPUB_CUR_TASK(lua, src);
-    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
+    subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
+    uint64_t sess = lpub_check_sess(lua, 3);
     _multi_args ma;
     if (0 == _multi_prepare(lua, 4, &ma)) {
         lua_pushinteger(lua, 0);
@@ -179,13 +175,13 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// 单向广播：把同一份 data 投递给多个 task（N 个 message 共享同一份 data，引用计数自动释放）
 /// </summary>
 /// <param name="dsts" type="(string|integer)[]">目标 task 名/句柄数组(Lua table)；nil/NONE/不存在的被跳过</param>
-/// <param name="reqtype" type="integer">业务请求类型</param>
+/// <param name="reqtype" type="integer">业务请求类型，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="data" type="string|lightuserdata|nil">数据(nil 表示无载荷)；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
 /// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns>无</returns>
 static int32_t _lcore_multi_call(lua_State *lua) {
-    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
+    subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
     _multi_args ma;
     if (0 == _multi_prepare(lua, 3, &ma)) {
         return 0;
@@ -198,16 +194,16 @@ static int32_t _lcore_multi_call(lua_State *lua) {
 /// 向目标 task 发送请求消息，携带会话 id 以便对方响应
 /// </summary>
 /// <param name="dst" type="string|integer">目标 task 名(字符串)或句柄(整数)</param>
-/// <param name="reqtype" type="integer">业务请求类型</param>
-/// <param name="sess" type="integer">会话 id，响应回带</param>
+/// <param name="reqtype" type="integer">业务请求类型，取值 [0, UINT16_MAX]，越界报错</param>
+/// <param name="sess" type="integer">会话 id(非 0)，响应回带</param>
 /// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_request(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
-    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
+    subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
+    uint64_t sess = lpub_check_sess(lua, 3);
     void *data;
     size_t size;
     int32_t copy;
@@ -228,7 +224,7 @@ static int32_t _lcore_request(lua_State *lua) {
 /// 向请求方 task 回复响应消息，携带错误码及可选数据
 /// </summary>
 /// <param name="dst" type="string|integer">请求方 task 名(字符串)或句柄(整数)</param>
-/// <param name="reqtype" type="integer">请求类型 request_type</param>
+/// <param name="reqtype" type="integer">请求类型 request_type，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="sess" type="integer">原请求会话 id</param>
 /// <param name="erro" type="integer">错误码，0 表示成功</param>
 /// <param name="data" type="string|lightuserdata|nil">响应数据；nil 表示无数据</param>
@@ -237,7 +233,7 @@ static int32_t _lcore_request(lua_State *lua) {
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_response(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
-    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
+    subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     int32_t erro = (int32_t)luaL_checkinteger(lua, 4);
     void *data;
@@ -319,8 +315,11 @@ static int32_t _lcore_connect(lua_State *lua) {
     SOCKET fd;
     uint64_t skid;
     if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, setsess, &fd, &skid)) {
+        // 失败也返 2 个值:lpub.h 写死的全仓规矩是"失败与成功的返回值个数必须一致"——
+        // 返回值直接塞进另一个调用时少一个就整体错位
         lua_pushinteger(lua, INVALID_SOCK);
-        return 1;
+        lua_pushnil(lua);
+        return 2;
     }
     lua_pushinteger(lua, fd);
     lua_pushinteger(lua, skid);
@@ -344,12 +343,7 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
     }
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
     LPUB_CUR_TASK(lua, task);
-    if (ERR_OK == ev_ssl(&task->loader->netev, fd, skid, client, evssl)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_ssl(&task->loader->netev, fd, skid, client, evssl));
 }
 /// <summary>
 /// 创建 UDP 套接字并绑定地址
@@ -367,8 +361,11 @@ static int32_t _lcore_udp(lua_State *lua) {
     uint64_t skid;
     LPUB_CUR_TASK(lua, task);
     if (ERR_OK != task_udp(task, pktype, ip, port, &fd, &skid)) {
+        // 失败也返 2 个值:lpub.h 写死的全仓规矩是"失败与成功的返回值个数必须一致"——
+        // 返回值直接塞进另一个调用时少一个就整体错位
         lua_pushinteger(lua, INVALID_SOCK);
-        return 1;
+        lua_pushnil(lua);
+        return 2;
     }
     lua_pushinteger(lua, fd);
     lua_pushinteger(lua, skid);
@@ -390,12 +387,7 @@ static int32_t _lcore_send(lua_State *lua) {
     size_t size;
     int32_t copy;
     data = lpub_check_buf(lua, 3, &size, &copy);
-    if (ERR_OK == ev_send(&g_loader->netev, fd, skid, data, size, copy)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_send(&g_loader->netev, fd, skid, data, size, copy));
 }
 /// <summary>
 /// 多播 TCP 数据：把同一份 data 零拷贝广播给多个 fd（N 个 buf 共享，引用计数自动释放）
@@ -460,8 +452,7 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     int32_t r = ev_send_multi(&g_loader->netev, fds, skids, (int32_t)n_fds,
                               data, size, copy);
     FREE(skids);
-    lua_pushboolean(lua, ERR_OK == r ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == r);
 }
 /// <summary>
 /// 向指定 ip:port 发送 UDP 数据
@@ -483,12 +474,7 @@ static int32_t _lcore_sendto(lua_State *lua) {
     size_t size;
     int32_t copy;
     data = lpub_check_buf(lua, 5, &size, &copy);
-    if (ERR_OK == ev_sendto(&g_loader->netev, fd, skid, ip, port, data, size, copy)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_sendto(&g_loader->netev, fd, skid, ip, port, data, size, copy));
 }
 /// <summary>
 /// UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)
@@ -503,8 +489,7 @@ static int32_t _lcore_udp_join(lua_State *lua) {
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     const char *group_ip = luaL_checkstring(lua, 3);
     const char *iface_str = (LUA_TSTRING == lua_type(lua, 4)) ? luaL_checkstring(lua, 4) : NULL;
-    lua_pushboolean(lua, ERR_OK == ev_udp_join(&g_loader->netev, fd, skid, group_ip, iface_str) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_join(&g_loader->netev, fd, skid, group_ip, iface_str));
 }
 /// <summary>
 /// UDP socket 离开多播组,参数同 udp_join
@@ -519,8 +504,7 @@ static int32_t _lcore_udp_leave(lua_State *lua) {
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     const char *group_ip = luaL_checkstring(lua, 3);
     const char *iface_str = (LUA_TSTRING == lua_type(lua, 4)) ? luaL_checkstring(lua, 4) : NULL;
-    lua_pushboolean(lua, ERR_OK == ev_udp_leave(&g_loader->netev, fd, skid, group_ip, iface_str) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_leave(&g_loader->netev, fd, skid, group_ip, iface_str));
 }
 /// <summary>
 /// 设置 UDP 多播 TTL(IPv4) / Hop Limit(IPv6)
@@ -536,8 +520,7 @@ static int32_t _lcore_udp_ttl(lua_State *lua) {
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     lua_Integer val = luaL_checkinteger(lua, 3);
     luaL_argcheck(lua, val >= 0 && val <= 255, 3, "ttl out of range [0, 255]");
-    lua_pushboolean(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, fd, skid, (uint8_t)val) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, fd, skid, (uint8_t)val));
 }
 /// <summary>
 /// 设置 UDP 多播本机回环,默认 1(发出去自己也能收到),0=不收
@@ -550,8 +533,7 @@ static int32_t _lcore_udp_loop(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int32_t enable = (int32_t)luaL_checkinteger(lua, 3);
-    lua_pushboolean(lua, ERR_OK == ev_udp_loop(&g_loader->netev, fd, skid, enable) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_loop(&g_loader->netev, fd, skid, enable));
 }
 /// <summary>
 /// 主动关闭指定 fd/skid 的网络连接；未发数据的丢弃契约同 ev_close
@@ -577,12 +559,7 @@ static int32_t _lcore_pack_type(lua_State *lua) {
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     // ud->pktype 是 uint16_t，比 pack_type 还窄；不校验的话 65538 截成 2 就成了 PACK_HTTP
     subtype_t pktype = (subtype_t)lpub_check_pktype(lua, 3);
-    if (ERR_OK != ev_ud_pktype(&g_loader->netev, fd, skid, pktype)) {
-        lua_pushboolean(lua, 0);
-    } else {
-        lua_pushboolean(lua, 1);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_pktype(&g_loader->netev, fd, skid, pktype));
 }
 /// <summary>
 /// 设置指定连接的用户自定义状态值
@@ -595,12 +572,7 @@ static int32_t _lcore_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int8_t status = lpub_check_i8(lua, 3, "status out of range");
-    if (ERR_OK != ev_ud_status(&g_loader->netev, fd, skid, status)) {
-        lua_pushboolean(lua, 0);
-    } else {
-        lua_pushboolean(lua, 1);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&g_loader->netev, fd, skid, status));
 }
 /// <summary>
 /// 将指定连接绑定到目标 task（后续网络消息投递到该 task）
@@ -614,37 +586,43 @@ static int32_t _lcore_bind_task(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     name_t handle = lpub_task_handle(lua, 3);
-    // 与 core.call/request/response 一致用 grab 探存在性:lpub_task_handle 仅对字符串形式查表,
-    // 数字句柄原样返回,业务缓存的旧句柄在目标退出后照样非 INVALID_TNAME,单查该值会放行。
-    // task_grab 首行已挡 INVALID_TNAME,故一次 grab 覆盖两种无效来源。
-    // 但它只保证此刻目标在:目标若在 ev_ud_handle 投递后退出,该连接下一条消息仍会因 task_grab
-    // 返 NULL 被静默关闭,而 ev_ud_handle 只校验 fd 与入队结果,那个窗口无法在此消除
+    // 用 grab 探存在性:lpub_task_handle 对数字句柄原样返回,业务缓存的旧句柄在目标退出后
+    // 照样非 INVALID_TNAME、单查该值会放行;task_grab 首行已挡 INVALID_TNAME,一次覆盖两种
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
         lua_pushboolean(lua, 0);
         return 1;
     }
     task_ungrab(dst);
-    lua_pushboolean(lua, ERR_OK == ev_ud_handle(&g_loader->netev, fd, skid, handle) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_handle(&g_loader->netev, fd, skid, handle));
+}
+// session / session_clear 共用：取 (fd, skid),把会话键设成 use_skid 非 0 时的 skid、否则 0
+static int32_t _lcore_session_set(lua_State *lua, int32_t use_skid) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    uint64_t sess = (0 != use_skid) ? skid : 0;
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_sess(&g_loader->netev, fd, skid, sess));
 }
 /// <summary>
-/// 为指定连接设置会话 id，用于关联请求与响应
+/// 把连接的会话键设为它自己的 skid，后续该 socket 的消息携带此值。与 C 侧 coro_sync 同形，
+/// 会话键不可自定义：CLOSE 恒以 skid 为 sess 发出，挂在别的键上的等待者断连时一个都唤不到
+/// </summary>
+/// <param name="fd" type="integer">socket fd</param>
+/// <param name="skid" type="integer">连接 skid，同时用作会话键</param>
+/// <returns type="boolean">成功 true，stop 非0失败</returns>
+static int32_t _lcore_session(lua_State *lua) {
+    return _lcore_session_set(lua, 1);
+}
+/// <summary>
+/// 清除连接的会话键（置 0），此后该 socket 的消息不再携带会话键，一律走注册的回调而非协程等待。
+/// 0 上挂不了等待者(会话 id 由 createid 生成，恒非 0)，故清除不会漏唤醒已挂起的协程；
+/// 清除前已挂起在该 skid 上的等待者仍由 CLOSE 唤醒——它恒以 skid 为 sess 发出，与本设置无关
 /// </summary>
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <param name="sess" type="integer">会话 id</param>
 /// <returns type="boolean">成功 true，stop 非0失败</returns>
-static int32_t _lcore_session(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
-    if (ERR_OK != ev_ud_sess(&g_loader->netev, fd, skid, sess)) {
-        lua_pushboolean(lua, 0);
-    } else {
-        lua_pushboolean(lua, 1);
-    }
-    return 1;
+static int32_t _lcore_session_clear(lua_State *lua) {
+    return _lcore_session_set(lua, 0);
 }
 /// <summary>
 /// 把本次要发的请求方法登记到连接上：HTTP 解包侧要靠它才能判定响应有无报文体，契约见 http_set_method。
@@ -658,8 +636,7 @@ static int32_t _lcore_http_set_method(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     const char *method = luaL_checkstring(lua, 3);
-    lua_pushboolean(lua, ERR_OK == http_set_method(&g_loader->netev, fd, skid, method) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == http_set_method(&g_loader->netev, fd, skid, method));
 }
 /// <summary>
 /// 询问协议层指定封包能否唤醒等待者(非 true 时框架改新建协程走 on_recved),契约见 prots_may_resume
@@ -674,12 +651,7 @@ static int32_t _lcore_may_resume(lua_State *lua) {
     luaL_argexpected(lua, lua_islightuserdata(lua, 2) || lua_isnoneornil(lua, 2),
                      2, "light userdata or nil");
     void *data = lua_touserdata(lua, 2);
-    if (ERR_OK == prots_may_resume(pktype, data)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == prots_may_resume(pktype, data));
 }
 /// <summary>
 /// 询问该消息类型对应的 sess 是否可能保留（waiters 摘空后不删除会话表条目）
@@ -688,57 +660,51 @@ static int32_t _lcore_may_resume(lua_State *lua) {
 /// <returns type="boolean">true=可能保留（TCP/UDP 等 skid 类长连接场景）；false=不保留</returns>
 static int32_t _lcore_message_may_keep(lua_State *lua) {
     msg_type mtype = (msg_type)luaL_checkinteger(lua, 1);
-    lua_pushboolean(lua, _message_may_keep(mtype) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, _message_may_keep(mtype));
 }
-// task_list 收集回调：仅存入 C 数组，不调 Lua API，避免 OOM longjmp 绕过 rwlock 解锁
+// task_list 收集回调：仅存入 C 数组，不调 Lua API，避免 OOM longjmp 绕过 rwlock 解锁。
+// 容量翻倍交给 array_push_back；名字用 safe_fill_str 填（NULL 写空串，装不下即失败不写）
 static void _lcore_task_list_collect(const char *name, name_t handle, void *arg) {
-    _task_list_arg *c = (_task_list_arg *)arg;
-    if (c->n >= c->cap) {
-        _task_entry *newel;
-        size_t newcap = c->cap * 2;
-        REALLOC(newel, c->entries, newcap * sizeof(_task_entry));
-        c->cap = newcap;
-        c->entries = newel;
+    // 整体清零再填:下面按 sizeof 整块 memcpy 进数组,name 里 NUL 之后的字节与结构体
+    // 对齐填充不清就是复制未初始化内存
+    _task_entry entry = { 0 };
+    entry.handle = handle;
+    if (ERR_OK != safe_fill_str(entry.name, sizeof(entry.name), name)) {
+        // 名字比缓冲长:宁可少这一条也不发个截断的名字出去,调用方拿它去 grab 会查到别的 task
+        LOG_WARN("task_list: task name exceeds %zu bytes, skipped.", sizeof(entry.name) - 1);
+        return;
     }
-    c->entries[c->n].handle = handle;
-    if (NULL != name) {
-        strncpy(c->entries[c->n].name, name, sizeof(c->entries[c->n].name) - 1);
-        c->entries[c->n].name[sizeof(c->entries[c->n].name) - 1] = '\0';
-    } else {
-        c->entries[c->n].name[0] = '\0';
-    }
-    c->n++;
+    array_push_back((array_ctx *)arg, &entry);
 }
 /// <summary>
 /// 枚举当前 loader 已注册的所有 task（C 层列表）
 /// </summary>
-/// <returns type="table">{name,handle} 对象数组（name 字符串、handle 整数；匿名 task 无 name 字段）；无 task 时空表</returns>
+/// <returns type="TaskListItem[]">task 列表；无 task 时为空表</returns>
 static int32_t _lcore_task_list(lua_State *lua) {
-    _task_list_arg c;
-    ZERO(&c, sizeof(c));
-    c.cap = 128;
-    CALLOC(c.entries, c.cap, sizeof(_task_entry));
-    loader_task_each(g_loader, _lcore_task_list_collect, &c);
+    array_ctx arr;
+    array_init(&arr, sizeof(_task_entry), 128);
+    loader_task_each(g_loader, _lcore_task_list_collect, &arr);
     lua_newtable(lua);
-    size_t i = 0;
-    for (; i < c.n; i++) {
+    _task_entry *entry;
+    uint32_t n = array_size(&arr);
+    for (uint32_t i = 0; i < n; i++) {
+        entry = (_task_entry *)array_at(&arr, (int32_t)i);
         lua_newtable(lua);
-        if ('\0' != c.entries[i].name[0]) {
-            lua_pushstring(lua, c.entries[i].name);
+        if ('\0' != entry->name[0]) {
+            lua_pushstring(lua, entry->name);
             lua_setfield(lua, -2, "name");
         }
-        lua_pushinteger(lua, (lua_Integer)c.entries[i].handle);
+        lua_pushinteger(lua, (lua_Integer)entry->handle);
         lua_setfield(lua, -2, "handle");
-        lua_rawseti(lua, -2, i + 1);
+        lua_rawseti(lua, -2, (lua_Integer)i + 1);
     }
-    FREE(c.entries);
+    array_free(&arr);
     return 1;
 }
 /// <summary>
 /// 获取全局内存分配/释放统计（MEMORY_CHECK 关闭时全为 0）
 /// </summary>
-/// <returns type="table">{nalloc=累计分配次数, nfree=累计释放次数, live=当前活跃分配数}</returns>
+/// <returns type="MemStat">分配计数快照</returns>
 static int32_t _lcore_mem_stat(lua_State *lua) {
     uint64_t nalloc = 0, nfree = 0;
     mem_stat(&nalloc, &nfree);
@@ -947,6 +913,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "status", _lcore_status },
         { "bind_task", _lcore_bind_task },
         { "session", _lcore_session },
+        { "session_clear", _lcore_session_clear },
         { "http_set_method", _lcore_http_set_method },
 
         { "may_resume", _lcore_may_resume },

@@ -330,7 +330,8 @@ size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap) {
 buf_ctx *url_get_param(url_ctx *ctx, const char *key) {
     url_param *param = NULL;
     size_t klens = strlen(key);
-    for (int32_t i = 0; i < ctx->nparam; i++) {
+    // 倒着扫: 同名参数取最后一个, 后写的盖掉先写的
+    for (int32_t i = ctx->nparam - 1; i >= 0; i--) {
         param = &ctx->param[i];
         if (buf_compare(&param->key, key, klens)) {
             return &param->val;

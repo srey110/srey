@@ -11,7 +11,7 @@ local SV_PORT  = 15042
 local CLI_PORT = 15043
 local DEAD_PORT = 15044   -- 专供 CLOSE 分支用例的 socket
 local NOBODY_PORT = 15045 -- 无人监听的对端,令 send 必然挂起等超时
-local RACE_PORT = 15046   -- 专供"并发换会话"用例的 socket
+local RACE_PORT = 15050   -- 专供"并发换会话"用例的 socket
 local CONV     = 1
 local MSG      = "kcp_hello_lua"
 

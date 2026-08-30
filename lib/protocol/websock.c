@@ -857,6 +857,12 @@ static ws_hs_ctx *_websock_hsctx_init(const char *secprot, size_t splens) {
     return ctx;
 }
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx) {
+    //拒绝 CRLF 注入：三个入参都原样进请求行与 HTTP 头，组包侧是 ASSERTAB，必须在这挡下
+    if ((NULL != host && NULL != strpbrk(host, FLAG_CRLF))
+        || (NULL != uri && NULL != strpbrk(uri, FLAG_CRLF))
+        || (NULL != secprot && NULL != strpbrk(secprot, FLAG_CRLF))) {
+        return NULL;
+    }
     size_t splens = (NULL == secprot ? 0 : strlen(secprot));
     ws_hs_ctx *ctx = _websock_hsctx_init(secprot, splens);
     if (NULL == ctx) {

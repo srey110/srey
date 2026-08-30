@@ -4,6 +4,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local utils  = require("srey.utils")
 local mqtt   = require("lib.mqtt")
+local mqttc  = require("mqtt")-- 绑定层原始接口，测版本校验用
 
 -- 取 pack 返回数据的首字节高 4 位（MQTT 控制类型）
 local function _ptype(pack, size)
@@ -238,6 +239,20 @@ runner.run("mqtt", function(t)
     do
         local rs = mqtt.reason(mqtt.PROT.CONNACK, 0)
         t:check(type(rs) == "string" and #rs > 0, "mqtt.reason CONNACK 0")
+    end
+
+    -- ── 协议版本的截断回归 ────────────────────────────────────────────
+    -- 曾用裸 (mqtt_protversion) 转换：260 让组包侧按 5.0 写属性长度字段，写线时 int8_t
+    -- 又截成 0x04，发出去是"协议级别 3.1.1、报文体多一个字节"的畸形 CONNECT
+    do
+        t:eq(false, pcall(mqttc.pack_connect, 260, 1, 60, "cid"), "pack_connect: version 260 被拒")
+        t:eq(false, pcall(mqttc.pack_connect, 3, 1, 60, "cid"), "pack_connect: version 3 被拒")
+        -- 挑 pack_disconnect 再验一遍：同一道 _lmqtt_check_version 卡在十个入口上，
+        -- 挑一个非 connect 的确认它不是只在 pack_connect 里做了校验
+        t:eq(false, pcall(mqttc.pack_disconnect, 0), "pack_disconnect: version 0 被拒")
+        t:eq(false, pcall(mqttc.pack_disconnect, 260), "pack_disconnect: version 260 被拒")
+        t:eq(true, pcall(mqttc.pack_disconnect, 4), "pack_disconnect: MQTT_311 照常接受")
+        t:eq(true, pcall(mqttc.pack_disconnect, 5), "pack_disconnect: MQTT_50 照常接受")
     end
 end)
 end)

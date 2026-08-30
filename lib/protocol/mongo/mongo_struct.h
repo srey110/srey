@@ -25,7 +25,7 @@ typedef struct mongo_session {
     int32_t txnnumber;  //事务序号
     int32_t started;    //本次事务的首个操作是否已发出（决定是否附带 startTransaction）
     size_t optionslens; //options 字节数（bson_cat 要求随指针给出缓冲长度；options 为 NULL 时该值无意义）
-    uint64_t timeout;   //会话超时时间戳（秒，nowsec() + timeoutmin * 60）
+    uint64_t timeout;   //会话超时时刻（秒）；0 = 服务端没给出 timeoutmin，超时未知
     struct mongo_ctx *mongo; //所属连接上下文
     char *options;      //事务选项 BSON 数据（含 lsid/txnNumber/autocommit）
     char uuid[UUID_LENS]; //会话 UUID

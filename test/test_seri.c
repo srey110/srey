@@ -1,5 +1,6 @@
 ﻿#include "test_seri.h"
 #include "lib.h"
+#include "serial/yyjson/yyjson_helper.h"
 
 // nil / true / false 三元基础往返
 static void test_seri_basic_nil_bool(CuTest *tc) {
@@ -253,6 +254,35 @@ static void test_seri_invalid_stream(CuTest *tc) {
     CuAssertIntEquals(tc, -1, seri_iter_next(&iter, &item));
 }
 
+// json_get_string：长度按 yyjson 记的真实字节数算,不是 strlen;内嵌 NUL 一律拒收。
+// json_has 用来把"字段没配"与"配错了"分开——可选字段缺席不该跟着报错
+static void test_json_helper_string(CuTest *tc) {
+    const char *src = "{\"ok\":\"abc\",\"nul\":\"sc\\u0000ript\",\"num\":7}";
+    yyjson_doc *doc = yyjson_read(src, strlen(src), 0);
+    CuAssertPtrNotNull(tc, doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+
+    char buf[8];
+    memset(buf, 'x', sizeof(buf));
+    CuAssertIntEquals(tc, ERR_OK, json_get_string(root, "ok", buf, sizeof(buf)));
+    CuAssertStrEquals(tc, "abc", buf);
+
+    // 真实长度 7,strlen 只看到 2:旧实现会当成装得下并悄悄截成 "sc"
+    memset(buf, 'x', sizeof(buf));
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_string(root, "nul", buf, sizeof(buf)));
+    CuAssertTrue(tc, 'x' == buf[0]);// 失败不写 dst
+
+    // 缓冲装不下:值 3 字节 + NUL 要 4,给 3
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_string(root, "ok", buf, 3));
+    // 字段不存在 / 类型不符
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_string(root, "missing", buf, sizeof(buf)));
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_string(root, "num", buf, sizeof(buf)));
+
+    CuAssertTrue(tc, 0 != json_has(root, "ok"));
+    CuAssertTrue(tc, 0 != json_has(root, "num"));
+    CuAssertTrue(tc, 0 == json_has(root, "missing"));
+    yyjson_doc_free(doc);
+}
 void test_seri(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_seri_basic_nil_bool);
     SUITE_ADD_TEST(suite, test_seri_int_buckets);
@@ -263,4 +293,5 @@ void test_seri(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_seri_array_long);
     SUITE_ADD_TEST(suite, test_seri_array_nested);
     SUITE_ADD_TEST(suite, test_seri_invalid_stream);
+    SUITE_ADD_TEST(suite, test_json_helper_string);
 }

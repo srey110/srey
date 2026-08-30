@@ -20,6 +20,9 @@ const yyjson_alc g_yyjson_alc = {
     _yyjson_malloc, _yyjson_realloc, _yyjson_free, NULL
 };
 
+int32_t json_has(yyjson_val *json, const char *name) {
+    return NULL != yyjson_obj_get(json, name);
+}
 int32_t json_get_number(yyjson_val *json, const char *name, double *val) {
     yyjson_val *jval = yyjson_obj_get(json, name);
     if (NULL == jval
@@ -51,5 +54,13 @@ int32_t json_get_string(yyjson_val *json, const char *name, char *str, size_t le
         || !yyjson_is_str(val)) {
         return ERR_FAILED;
     }
-    return safe_fill_str(str, lens, yyjson_get_str(val));
+    const char *sval = yyjson_get_str(val);
+    size_t slens = yyjson_get_len(val);
+    // 目标是定长 C 串缓冲，含内嵌 NUL 的值取用时必在那里断掉,收下就是静默改值
+    if (NULL != memchr(sval, '\0', slens)) {
+        return ERR_FAILED;
+    }
+    // 用 yyjson 记的真实长度而不是 strlen：`"sc\u0000ript"` 是合法 JSON，strlen 只看到 2，
+    // 装不下的值会被误判成装得下
+    return copy_bounded(sval, slens, str, lens, 1);
 }

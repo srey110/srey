@@ -644,6 +644,71 @@ static int32_t _hdr_check(struct http_pack_ctx *resp, const char *url,
     }
     return ERR_OK;
 }
+// HEAD 请求 + 同连接紧跟一个 GET。要点有二:
+//   1. HEAD 响应只发头, 但 Content-Length 要等于同一资源 GET 的报文体长度(RFC 7231 §4.3.2)
+//   2. 多发的字节会被对端当成下一条响应的开头, 所以第二条 GET 能否正常收到才是真正的判据
+// 客户端解包侧拿不到请求方法, 发前须 http_set_method 登记, 否则会挂在等报文体上
+static int32_t _do_head_then_get(task_ctx *task, uint16_t port, const char *url,
+                                 const char *get_body) {
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for HEAD %s.", port, url);
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    // 两次请求各用一个 writer: coro_send 的 copy=0 已把缓冲所有权交给事件层, 复用即 UAF
+    binary_ctx bw;
+    binary_ctx bw2;
+    size_t rsize;
+    size_t dlen;
+    char want[24];
+    void *body;
+    struct http_pack_ctx *resp;
+    if (ERR_OK != http_set_method(&task->loader->netev, fd, skid, "HEAD")) {
+        LOG_WARN("router test: set method HEAD failed for %s.", url);
+        goto done;
+    }
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "HEAD", url);
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_end(&bw);
+    resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    if (NULL == resp
+        || ERR_OK != _resp_check(resp, "HEAD", url, 200)) {
+        goto done;
+    }
+    body = http_data(resp, &dlen);
+    if (NULL != body && 0 != dlen) {
+        LOG_WARN("router test: HEAD %s carried a body of %zu bytes.", url, dlen);
+        goto done;
+    }
+    SNPRINTF(want, sizeof(want), "%zu", strlen(get_body));
+    if (ERR_OK != _hdr_check(resp, url, "Content-Length", want, strlen(want))) {
+        goto done;
+    }
+    // 同一条连接再发一次 GET: 上一条若多发了字节, 这里读到的就是错位的内容
+    binary_init(&bw2, NULL, 0, 0);
+    http_pack_req(&bw2, "GET", url);
+    http_pack_head(&bw2, "Host", "127.0.0.1");
+    http_pack_end(&bw2);
+    resp = coro_send(task, fd, skid, bw2.data, bw2.offset, &rsize, 0);
+    if (NULL == resp
+        || ERR_OK != _resp_check(resp, "GET", url, 200)) {
+        goto done;
+    }
+    body = http_data(resp, &dlen);
+    if (NULL == body
+        || dlen != strlen(get_body)
+        || 0 != memcmp(body, get_body, dlen)) {
+        LOG_WARN("router test: GET after HEAD on %s got a misaligned response.", url);
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid);
+    return rtn;
+}
 static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
                            const char *hk, const char *want, size_t wantlen) {
     SOCKET fd;
@@ -757,6 +822,12 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) return ERR_FAILED;
     // [7]  query 参数解析
     if (ERR_OK != _do_req(task, port, "GET",  "/query?a=1&b=2",   NULL, NULL, 200, "a=1 b=2"))   bad |= (1 << 7);
+    // 重复 key 取最后一个, 规则在 url_get_param
+    if (ERR_OK != _do_req(task, port, "GET",  "/query?a=1&b=2&a=3", NULL, NULL, 200, "a=3 b=2")) bad |= (1 << 7);
+    if (task_isclosing(task)) return ERR_FAILED;
+    // [30] router_get 连带接住 HEAD: 只发头 + Content-Length 等于 GET 那份的长度,
+    //      同连接紧跟的 GET 不能错位(多发的字节会被当成下一条响应的开头)
+    if (ERR_OK != _do_head_then_get(task, port, "/query?a=1&b=2", "a=1 b=2")) bad |= (1 << 30);
     if (task_isclosing(task)) return ERR_FAILED;
     // [8]  auth 中间件截断: 无 X-Token → 401, handler 不应被调到
     if (ERR_OK != _do_req(task, port, "GET",  "/needauth",        NULL,        NULL, 401, "no"))     bad |= (1 << 8);

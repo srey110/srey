@@ -48,7 +48,7 @@ static int32_t _lutils_log(lua_State *lua) {
 /// 将 C userdata 指针按指定长度转换为 Lua 字符串
 /// </summary>
 /// <param name="data" type="lightuserdata">C 指针；为 nil 时函数返回 nil</param>
-/// <param name="size" type="integer">数据字节数</param>
+/// <param name="size" type="integer">数据字节数，取值 [0, INT32_MAX]</param>
 /// <returns type="string?">转换后的字符串；data 为 nil 时返回 nil</returns>
 static int32_t _lutils_ud_str(lua_State *lua) {
     int32_t type = lua_type(lua, 1);
@@ -58,7 +58,7 @@ static int32_t _lutils_ud_str(lua_State *lua) {
     }
     LUACHECK_LUDATA(lua, 1);
     void *data = lua_touserdata(lua, 1);
-    size_t size = lpub_check_lens(lua, 2, 0);
+    size_t size = lpub_check_lens(lua, 2, INT32_MAX);
     if (NULL == data && size > 0) {
         lua_pushnil(lua);
         return 1;
@@ -123,10 +123,10 @@ static int32_t _lutils_parse_svid(lua_State *lua) {
 /// <summary>
 /// 生成 N 字节密码学安全随机数据（Linux getrandom / BSD arc4random / Windows BCryptGenRandom / Solaris /dev/urandom）
 /// </summary>
-/// <param name="lens" type="integer">随机字节数</param>
+/// <param name="lens" type="integer">随机字节数，取值 [0, INT32_MAX]</param>
 /// <returns type="string?">随机字节字符串；失败返回 nil</returns>
 static int32_t _lutils_csprng_rand(lua_State *lua) {
-    size_t n = lpub_check_lens(lua, 1, 0);
+    size_t n = lpub_check_lens(lua, 1, INT32_MAX);
     if (0 == n) {
         lua_pushlstring(lua, "", 0);
         return 1;
@@ -216,12 +216,7 @@ static int32_t _lhash_ring_add(lua_State *lua) {
     uint32_t nreplicas = lpub_check_u32(lua, 2, "nreplicas out of range");
     size_t lens;
     void *name = lpub_check_buf(lua, 3, &lens, NULL);
-    if (ERR_OK == hash_ring_add(ring, name, lens, nreplicas)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == hash_ring_add(ring, name, lens, nreplicas));
 }
 /// <summary>
 /// 从哈希环中移除指定节点（含其全部虚拟节点）
@@ -310,8 +305,7 @@ static int32_t _ltrend_busy(lua_State *lua) {
     size_t cur = (size_t)sample;
     uint32_t busy_num = lpub_check_u32(lua, 3, "busy_num out of range");
     uint32_t busy_den = lpub_check_u32(lua, 4, "busy_den out of range");
-    lua_pushboolean(lua, load_trend_busy(trend, cur, busy_num, busy_den));
-    return 1;
+    return lpub_rtn_bool(lua, load_trend_busy(trend, cur, busy_num, busy_den));
 }
 //srey.trend
 LUAMOD_API int luaopen_trend(lua_State *lua) {
@@ -354,8 +348,7 @@ static int32_t _lpopen_new(lua_State *lua) {
 static int32_t _lpopen_waitexit(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
     uint32_t ms = lpub_check_u32(lua, 2, "ms out of range");
-    lua_pushboolean(lua, ERR_OK == popen_waitexit(ctx, ms));
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == popen_waitexit(ctx, ms));
 }
 /// <summary>
 /// 获取子进程退出码（须在 waitexit 之后调用）
@@ -372,13 +365,13 @@ static int32_t _lpopen_exitcode(lua_State *lua) {
 /// 故本函数不等待、不保证读到 EOF：子进程尚未产出的输出读不到，需完整输出应先 waitexit 再读
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
-/// <param name="max_lens" type="integer?">最大读取字节数，默认 65536</param>
+/// <param name="max_lens" type="integer?">最大读取字节数，取值 [0, INT32_MAX]，默认 65536</param>
 /// <returns type="string">读到的内容（可为空字符串；当前无数据即返回，不阻塞等待）</returns>
 /// <returns type="boolean">是否已读到流末尾：true=写端全关、输出已完整；false=读满 max_lens/暂无数据/出错即停，可能不完整</returns>
 static int32_t _lpopen_read(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
-    // 可选参数，lpub_check_lens 没有 opt 形态，故缺省分支单列；给了就按它校验下界
-    size_t cap = lua_isnoneornil(lua, 2) ? 65536 : lpub_check_lens(lua, 2, 0);
+    // 可选参数，lpub_check_lens 没有 opt 形态，故缺省分支单列；给了就按它校验上下界
+    size_t cap = lua_isnoneornil(lua, 2) ? 65536 : lpub_check_lens(lua, 2, INT32_MAX);
     luaL_Buffer lbuf;
     luaL_buffinit(lua, &lbuf);
     char tmp[4096];

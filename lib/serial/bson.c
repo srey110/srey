@@ -445,7 +445,7 @@ int32_t bson_iter_next(bson_iter *iter) {
         break;
     }
     if (0 == more) {
-        // switch 里唯一合法的 more=0 是 case BSON_EOD;其余都是解析失败。
+        // switch 里唯一合法的 more=0 是 case BSON_EOD;其余都是读不下去(元素坏了或类型不认识)。
         // 必须在毒化之前判断——_bson_iter_poison 会把 type 置成 BSON_EOD
         if (BSON_EOD != iter->type) {
             iter->err = 1;
@@ -472,16 +472,22 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
     binary_ctx *doc = iter->doc;
     size_t offset = doc->offset;
     if (NULL == strstr(keys, ".")) {
-        rtn = _bson_iter_find(iter, keys, klens, result);
+        // 扫描用一份独立游标,全程不碰调用方的 doc: 没找到时 iter 得保持原位,
+        // 而 result 可与 iter 同体, 直接扫会被 *result = *iter 覆盖掉推进后的偏移
+        bson_iter cur_iter = *iter;
+        cur_iter.nested_doc = *doc;
+        cur_iter.doc = &cur_iter.nested_doc;
+        rtn = _bson_iter_find(&cur_iter, keys, klens, result);
         if (ERR_OK != rtn) {
-            binary_offset(doc, offset);
+            // "文档结构非法"是文档级事实要留住:调用方靠 bson_iter_error 分辨"没这个 key"
+            // 和"后面全坏了"。只置不清,别把进函数前就有的标志抹掉
+            if (0 != cur_iter.err) {
+                iter->err = 1;
+            }
             return rtn;
         }
-        // 先存下"已推进到该元素之后"的视图再还原: doc 可能就是 result 自己的 nested_doc
-        // (链式原地收窄),那时先还原就把这个视图一起倒回去了,next 会把该元素重吐一遍
-        binary_ctx cur = *doc;
-        binary_offset(doc, offset);
-        result->nested_doc = cur;
+        // cur_iter 是纯局部,不受上面那次 *result 覆盖影响,推进后的视图只能从它取
+        result->nested_doc = cur_iter.nested_doc;
         result->doc = &result->nested_doc;
         return ERR_OK;
     }
@@ -523,6 +529,8 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         *result = found;
         result->nested_doc = bson.doc;
         result->doc = &result->nested_doc;
+    } else if (0 != cur_iter.err) {
+        iter->err = 1;// 与单键路径同口径,理由见那边
     }
     return rtn;
 }
@@ -753,6 +761,15 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     uint32_t inc;
     uint32_t ts;
     char *options;
+    // 各 case 的取值变量按类型分开命名后一并提到循环外; 同名不同类型的 val 是原来
+    // 每个 case 都得自带一层花括号的唯一原因
+    double dval;
+    int32_t ival;
+    int64_t i64val;
+    const char *cstr;
+    char *bin;
+    char *hexbuf;
+    char oidhex[HEX_ENSIZE(BSON_OID_LENS)];
     while (bson_iter_next(&iter)) {
         binary_set_fill(str, ' ', index * 4);
         binary_set_binary(str, iter.key, iter.keylens);
@@ -762,23 +779,20 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         binary_set_binary(str, ")", 1);
         binary_set_binary(str, ": ", 2);
         switch (iter.type) {
-        case BSON_DOUBLE: {
-            double val = bson_iter_double(&iter, NULL);
-            binary_set_va(str, "%lf", val);
+        case BSON_DOUBLE:
+            dval = bson_iter_double(&iter, NULL);
+            binary_set_va(str, "%lf", dval);
             break;
-        }
-        case BSON_UTF8: {
-            const char *val = bson_iter_utf8(&iter, NULL);
-            _bson_dump_text(str, val, iter.lens);
+        case BSON_UTF8:
+            cstr = bson_iter_utf8(&iter, NULL);
+            _bson_dump_text(str, cstr, iter.lens);
             break;
-        }
-        case BSON_JSCODE: {
-            const char *val = bson_iter_jscode(&iter, NULL);
-            _bson_dump_text(str, val, iter.lens);
+        case BSON_JSCODE:
+            cstr = bson_iter_jscode(&iter, NULL);
+            _bson_dump_text(str, cstr, iter.lens);
             break;
-        }
         case BSON_DOCUMENT:
-        case BSON_ARRAY: {
+        case BSON_ARRAY:
             bson_init(&child, iter.val, iter.lens);
             if (BSON_DOCUMENT == iter.type) {
                 binary_set_binary(str, "{\r\n", 3);
@@ -793,68 +807,57 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
                 binary_set_binary(str, "]", 1);
             }
             break;
-        }
-        case BSON_BINARY: {
-            char *val = bson_iter_binary(&iter, &subtype, &lens, NULL);
+        case BSON_BINARY:
+            bin = bson_iter_binary(&iter, &subtype, &lens, NULL);
             subtstr = bson_subtype_tostring(subtype);
             binary_set_binary(str, "(", 1);
             binary_set_binary(str, subtstr, strlen(subtstr));
             binary_set_binary(str, ") ", 2);
-            char *hex;
-            MALLOC(hex, HEX_ENSIZE(lens));
-            tohex(val, lens, hex, 0);
-            binary_set_binary(str, hex, strlen(hex));
-            FREE(hex);
+            MALLOC(hexbuf, HEX_ENSIZE(lens));
+            tohex(bin, lens, hexbuf, 0);
+            binary_set_binary(str, hexbuf, strlen(hexbuf));
+            FREE(hexbuf);
             break;
-        }
-        case BSON_OID: {
-            char *val = bson_iter_oid(&iter, NULL);
-            char hex[HEX_ENSIZE(BSON_OID_LENS)];
-            tohex(val, BSON_OID_LENS, hex, 0);
-            binary_set_binary(str, hex, strlen(hex));
+        case BSON_OID:
+            bin = bson_iter_oid(&iter, NULL);
+            tohex(bin, BSON_OID_LENS, oidhex, 0);
+            binary_set_binary(str, oidhex, strlen(oidhex));
             break;
-        }
-        case BSON_BOOL: {
-            int32_t val = bson_iter_bool(&iter, NULL);
-            if (val) {
+        case BSON_BOOL:
+            ival = bson_iter_bool(&iter, NULL);
+            if (ival) {
                 binary_set_binary(str, "true", strlen("true"));
             } else {
                 binary_set_binary(str, "false", strlen("false"));
             }
             break;
-        }
-        case BSON_TIMESTAMP: {
+        case BSON_TIMESTAMP:
             inc = 0;
             ts = bson_iter_timestamp(&iter, &inc, NULL);
             binary_set_va(str, "%u %u", inc, ts);
             break;
-        }
-        case BSON_DATE: {
-            int64_t val = bson_iter_date(&iter, NULL);
-            binary_set_va(str, "%"PRId64, val);
+        case BSON_DATE:
+            i64val = bson_iter_date(&iter, NULL);
+            binary_set_va(str, "%"PRId64, i64val);
             break;
-        }
-        case BSON_INT64: {
-            int64_t val = bson_iter_int64(&iter, NULL);
-            binary_set_va(str, "%"PRId64, val);
+        case BSON_INT64:
+            i64val = bson_iter_int64(&iter, NULL);
+            binary_set_va(str, "%"PRId64, i64val);
             break;
-        }
         case BSON_NULL:
         case BSON_MINKEY:
         case BSON_MAXKEY:
             break;
-        case BSON_REGEX: {
-            const char *val = bson_iter_regex(&iter, &options, NULL);
-            binary_set_binary(str, val, strlen(val));
+        case BSON_REGEX:
+            cstr = bson_iter_regex(&iter, &options, NULL);
+            binary_set_binary(str, cstr, strlen(cstr));
             binary_set_fill(str, ' ', 4);
             binary_set_binary(str, options, strlen(options));
             break;
-        }
-        case BSON_INT32: {
-            int32_t val = (int32_t)bson_iter_int32(&iter, NULL);
-            binary_set_va(str, "%d", val);
+        case BSON_INT32:
+            ival = (int32_t)bson_iter_int32(&iter, NULL);
+            binary_set_va(str, "%d", ival);
             break;
-        }
         default:
             break;
         }

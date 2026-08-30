@@ -38,6 +38,7 @@ typedef struct ltask_ctx {
     atomic_t   trap;      // 中断信号：0=正常 1=待 hook 触发；其他线程置位后 hook 抛错
     atomic_t   interruptible; // 是否已声明可被 task.trap 中断：0=否（hook 没挂，零开销）1=是。由 task 自己调 task.interruptible 置位
     int32_t    hook_warned; // 已为"协程上挂着别人的 hook、中断挂不上去"告警过：该判定在每次协程 resume 的路径上，只报一次
+    int32_t    critical;  // 非 0 时 hook 只放行不抛错，trap 留着下个 hook 点再触发。仅属主 worker 读写，无需 atomic
     size_t     mem;       // 当前 Lua 累计内存（字节，单 worker 串行操作，无需 atomic）
     task_ctx  *task;      // 回指 task_ctx，供 allocator/trap 日志取 name
     lua_State *lua;       // 当前 task 独占的 Lua 虚拟机（主 thread）
@@ -83,6 +84,10 @@ static void _ltask_signal_hook(lua_State *lua, lua_Debug *ar) {
     void *ud = NULL;
     lua_getallocf(lua, &ud);
     ltask_ctx *l = (ltask_ctx *)ud;
+    // 临界区内一律不消费 trap：留着它，出了临界区的下一个 hook 点照样触发，中断不会丢
+    if (0 != l->critical) {
+        return;
+    }
     if (!ATOMIC_CAS(&l->trap, 1, 0)) {
         return;
     }
@@ -174,6 +179,17 @@ static int32_t _ltask_searchfile(const char *file, char *path) {
     }
     return ERR_FAILED;
 }
+// 打印栈顶错误对象并弹掉。Lua 允许 error() 抛任意值,非字符串时 lua_tostring 返回 NULL,
+// 直接喂 LOG_ERROR 的 %s 是 UB
+static void _ltask_log_err(lua_State *lua) {
+    const char *err = lua_tostring(lua, -1);
+    if (NULL != err) {
+        LOG_ERROR("%s", err);
+    } else {
+        LOG_ERROR("error object is %s (%p), not a string.", luaL_typename(lua, -1), lua_topointer(lua, -1));
+    }
+    lua_pop(lua, 1);
+}
 // 搜索并执行指定 Lua 脚本文件，执行失败时记录错误日志
 static int32_t _ltask_dofile(lua_State *lua, const char *file) {
     char path[PATH_LENS];
@@ -182,7 +198,7 @@ static int32_t _ltask_dofile(lua_State *lua, const char *file) {
         return ERR_FAILED;
     }
     if (LUA_OK != luaL_dofile(lua, path)) {
-        LOG_ERROR("%s", lua_tostring(lua, -1));
+        _ltask_log_err(lua);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -231,7 +247,7 @@ static int32_t _ltask_dofile_args(lua_State *lua, const char *file,
     rtn = luaL_loadfile(lua, path);
 #endif
     if (LUA_OK != rtn) {
-        LOG_ERROR("%s", lua_tostring(lua, -1));
+        _ltask_log_err(lua);
         return ERR_FAILED;
     }
     int32_t nargs = 0;
@@ -248,7 +264,7 @@ static int32_t _ltask_dofile_args(lua_State *lua, const char *file,
         }
     }
     if (LUA_OK != lua_pcall(lua, nargs, 0, 0)) {
-        LOG_ERROR("%s", lua_tostring(lua, -1));
+        _ltask_log_err(lua);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -285,21 +301,25 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
     if (NULL == lua) {
         return ERR_FAILED;
     }
-    // active_lua 默认指向主 thread；srey.lua _coro_resume 进入协程时切到 coro，退出时切回主 thread
+    // 两者都在跑 chunk 之前落定：脚本顶层就能调 task.interruptible / task.active，它们直接解引用。
+    // active_lua 默认指向主 thread；srey.lua _coro_resume 进入协程时切到 coro，退出时切回主 thread。
+    // 失败路径要把 lua 一并清空——它兼作 _ltask_arg_free 的"已初始化"标志，留着就是二次 lua_close
+    ltask->lua = lua;
     ltask->active_lua = lua;
     if (ERR_OK != _ltask_dofile_args(lua, file, from, arg_start, arg_top)) {
         lua_close(lua);
+        ltask->lua = NULL;
         ltask->active_lua = NULL;
         return ERR_FAILED;
     }
     lua_getglobal(lua, MSG_DISP_FUNC);
     if (LUA_TFUNCTION != lua_type(lua, 1)) {
         lua_close(lua);
+        ltask->lua = NULL;
         ltask->active_lua = NULL;
         LOG_ERROR("not find function %s.", MSG_DISP_FUNC);
         return ERR_FAILED;
     }
-    ltask->lua = lua;
     ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
     return ERR_OK;
 }
@@ -311,7 +331,10 @@ static void _ltask_arg_free(void *arg) {
     }
     FREE(ltask);
 }
-// Lua 回调：清理消息 table 中的 C 内存（作为 __gc 元方法使用）
+// 消息表的 __gc: 从 mtype / subtype / data / shared 四个字段还原 message_ctx 再交给
+// _message_clean 释放。这四个字段业务可写 —— __metatable 只挡"拿元表", 而键已存在时
+// __newindex 也不触发, 挡不住 msg.data = x。改错 mtype 会用错释放器, 改 data 就是一次
+// 任意释放。这条不变式只靠"业务别碰这四个字段"的约定守着
 static int32_t _msg_clean(lua_State *lua) {
     ASSERTAB(LUA_TTABLE == lua_type(lua, 1), "_msg_clean type error.");
     message_ctx tmp = { 0 };
@@ -436,11 +459,13 @@ static void _ltask_pack_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) 
 // task 消息分发回调：从注册表取消息分发函数，打包消息后调用 Lua
 static void _ltask_run(task_dispatch_arg *arg) {
     ltask_ctx *ltask = arg->task->arg;
+    // 兜底：临界区都在一次 dispatch 内成对进出，正常情形这里恒为 0。真漏了也只影响这一条消息,
+    // 不会让 task 从此永远中断不了
+    ltask->critical = 0;
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
     _ltask_pack_msg(ltask->lua, ltask, &arg->msg);
     if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
-        LOG_ERROR("%s", lua_tostring(ltask->lua, -1));
-        lua_pop(ltask->lua, 1);
+        _ltask_log_err(ltask->lua);
     }
 }
 /// <summary>
@@ -545,8 +570,7 @@ static int32_t _ltask_isclosing(lua_State *lua) {
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
-    lua_pushboolean(lua, task_isclosing(task));
-    return 1;
+    return lpub_rtn_bool(lua, task_isclosing(task));
 }
 /// <summary>
 /// 获取 task 类型
@@ -707,6 +731,26 @@ static int32_t _ltask_interruptible(lua_State *lua) {
     _ltask_arm_hook(ltask->lua);
     _ltask_arm_hook(lua);
     ATOMIC_SET_RELEASE(&ltask->interruptible, 1);
+    // 同时置一个 Lua 全局: srey.lua 的 _coro_resume 靠它决定要不要调 task.active,
+    // 没声明过的 task 直接跳过。在 C 里置位, 走哪个入口进来都盖得到
+    lua_pushboolean(lua, 1);
+    lua_setglobal(lua, INTERRUPTIBLE_NAME);
+    return 0;
+}
+/// <summary>
+/// 标记/解除当前 task 的"不可中断区间"。区间内中断 hook 只放行不抛错，trap 留到出区间后触发，
+/// 故整段 Lua 语句不会被 task.trap 拦腰打断——调度器用它保护那些跨多条语句的记账
+/// (fork_wait 的 barrier 递减、coro_running 还原)，中途断掉会让协程永久挂起。
+/// 区间内禁止 yield：让出期间跑的是别人的代码，会跟着一起免疫中断。
+/// 无法覆盖"进入区间之前"那一格：hook 落在前一条语句与 task.critical(1) 之间时照样抛出，
+/// 调用方仍需把区间入口尽量贴紧被保护的第一条语句。
+/// </summary>
+/// <param name="on" type="integer">非 0 进入区间，0 退出</param>
+/// <returns>无</returns>
+static int32_t _ltask_critical(lua_State *lua) {
+    LPUB_CUR_TASK(lua, task);
+    ltask_ctx *ltask = task->arg;
+    ltask->critical = (0 != luaL_checkinteger(lua, 1)) ? 1 : 0;
     return 0;
 }
 /// <summary>
@@ -861,6 +905,7 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { "get_type", _ltask_get_type},
         { "name", _ltask_name },
         { "handle", _ltask_handle },
+        { "critical", _ltask_critical },
         { "timer_ms", _ltask_timer_ms },
         { "stat", _ltask_stat },
         { "mem", _ltask_mem },

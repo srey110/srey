@@ -82,11 +82,12 @@ uint64_t file_mtime(const char *file);
 /// <returns>路径</returns>
 const char *procpath(void);
 /// <summary>
-/// 读取文件全部
+/// 读取文件全部。所有失败路径都会置 errno，调用方可直接 strerror——空文件与读取途中被截断
+/// 这两种情形本身不来自系统调用，函数会自己补上 errno，不会留下上一次系统调用的陈旧值
 /// </summary>
 /// <param name="file">路径</param>
-/// <param name="lens">文件大小</param>
-/// <returns>文件内容</returns>
+/// <param name="lens">文件大小；仅成功时被写入</param>
+/// <returns>文件内容，需调用方 FREE；失败返回 NULL 并置 errno</returns>
 char *readall(const char *file, size_t *lens);
 /// <summary>
 /// timeofday。注意 Windows 的 struct timeval.tv_sec 是 32 位 long,2038-01-19 后回绕,

@@ -208,6 +208,23 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
         _router_segs_free_str(buf, n);
         return ERR_FAILED;
     }
+    // 重名占位符注册期就拒: 匹配期两份都会填进 params, 而取值方按首个还是末个取
+    // 并无统一答案, 同一条路由能给出不同的参数值
+    for (int32_t k = 0; k < n; k++) {
+        if (ROUTER_SEG_PARAM != buf[k].t
+            && ROUTER_SEG_OPT != buf[k].t) {
+            continue;
+        }
+        for (int32_t j = k + 1; j < n; j++) {
+            if ((ROUTER_SEG_PARAM == buf[j].t || ROUTER_SEG_OPT == buf[j].t)
+                && buf[k].str_len == buf[j].str_len
+                && 0 == memcmp(buf[k].str, buf[j].str, buf[k].str_len)) {
+                LOG_ERROR("router: duplicate path parameter '%s', route rejected.", buf[k].str);
+                _router_segs_free_str(buf, n);
+                return ERR_FAILED;
+            }
+        }
+    }
     *out_nopt = nopt;
     if (0 == n) {
         // 根路径 "/" 拆出 0 段; segs_n=0 同样能匹配请求 path="/"
@@ -604,17 +621,19 @@ static int32_t _router_group_collect_mws(const router_group *g, char **out) {
     }
     return k + g->mw_names_n;
 }
-// 新条目会不会被已注册的某条永远遮住：方法掩码有交集 + 段序列在"匹配意义上"完全相同
-// (段数、逐段类型、LIT 文本都相同；参数名不参与匹配，故 /u/{id} 与 /u/{uid} 是同一条)。
-// 被遮住的那条静默不可达、极难查，故在注册期就拒掉。
-// 只判"完全相同"，不判更一般的"谁比谁宽泛"——那在 OPT 与 WILD 组合下是偏序问题，会误杀
+// 新条目会不会被已注册的某条永远遮住：已注册项的方法掩码把新掩码整个包住 + 段序列在
+// "匹配意义上"完全相同(段数、逐段类型、LIT 文本都相同；参数名不参与匹配，故 /u/{id}
+// 与 /u/{uid} 是同一条)。被遮住的那条静默不可达、极难查，故在注册期就拒掉。
+// 掩码只是有交集不算遮蔽：匹配期首条命中即返回，先注册者拿走它覆盖的方法，剩下的仍归新项
+// (head 先于 get 注册就靠这条)。段序列只判"完全相同"，不判更一般的"谁比谁宽泛"——
+// 那在 OPT 与 WILD 组合下是偏序问题，会误杀
 static int32_t _router_shadowed(router_ctx *r, router_method m,
                                 const router_seg *segs, int32_t segs_n) {
     router_entry *e;
     int32_t k;
     for (int32_t i = 0; i < r->routes_n; i++) {
         e = &r->routes[i];
-        if (0 == (e->method_mask & m)
+        if (0 != (m & ~e->method_mask)
             || e->segs_n != segs_n) {
             continue;
         }
@@ -769,7 +788,9 @@ router_entry *router_add_stream(router_ctx *r, const router_group *g,
     return e;
 }
 // 便捷包装的展开点; 两个生成宏定义在文件头
-DEF_ROUTE_FN(get,     ROUTER_M_GET)
+// GET 连带 HEAD: HEAD 语义就是"要 GET 的头不要体", 分开注册会让 HEAD 落 404。
+// 响应侧由 _router_send_core 按 ctx->method 抑制报文体
+DEF_ROUTE_FN(get,     ROUTER_M_GET | ROUTER_M_HEAD)
 DEF_ROUTE_FN(post,    ROUTER_M_POST)
 DEF_ROUTE_FN(put,     ROUTER_M_PUT)
 DEF_ROUTE_FN(delete,  ROUTER_M_DELETE)
@@ -779,15 +800,40 @@ DEF_ROUTE_FN(options, ROUTER_M_OPTIONS)
 DEF_ROUTE_FN(any,     ROUTER_M_ANY)
 DEF_STREAM_FN(post, ROUTER_M_POST)
 DEF_STREAM_FN(put,  ROUTER_M_PUT)
+// 注册用的方法串 → 掩码。支持 '|' 分隔的组合("GET|HEAD"): router_add 本就收掩码,
+// 只有这条字符串入口原来是 1:1。ANY 也在这里映射(_router_method_str_to_mask 不含它);
+// 任一段不认识、或出现空段("GET||HEAD" / 首尾竖线)一律整体失败, 不做部分接受
+static router_method _router_method_list_to_mask(const char *m, size_t n) {
+    router_method mask = 0;
+    router_method one;
+    size_t start = 0;
+    size_t i;
+    for (i = 0; i <= n; i++) {
+        if (i != n
+            && '|' != m[i]) {
+            continue;
+        }
+        if (i == start) {
+            return 0;
+        }
+        one = _router_method_str_to_mask(m + start, i - start);
+        if (0 == one) {
+            if (3 != i - start
+                || 0 != memcmp(m + start, "ANY", 3)) {
+                return 0;
+            }
+            one = ROUTER_M_ANY;
+        }
+        mask |= one;
+        start = i + 1;
+    }
+    return mask;
+}
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                        const char *path, size_t path_len) {
-    router_method m = _router_method_str_to_mask(method, method_len);
+    router_method m = _router_method_list_to_mask(method, method_len);
     if (0 == m) {
-        //_router_method_str_to_mask 不含 ANY，此处特判后映射 ROUTER_M_ANY（全方法通配掩码）
-        if (3 != method_len || 0 != memcmp(method, "ANY", 3)) {
-            return -1;
-        }
-        m = ROUTER_M_ANY;
+        return -1;
     }
     router_seg *segs = NULL;
     int32_t segs_n = 0;
@@ -890,7 +936,7 @@ const char *router_req_param(router_req *ctx, const char *key, size_t *lens) {
     return NULL;
 }
 const char *router_req_query(router_req *ctx, const char *key, size_t *lens) {
-    // url_parse 已完成 url_decode, 这里直接返底层 buf_ctx
+    // url_parse 已完成 url_decode, 这里直接返底层 buf_ctx; 同名参数取末值的规则在 url_get_param
     buf_ctx *v = url_get_param(ctx->url, key);
     if (NULL == v) {
         *lens = 0;
@@ -907,13 +953,14 @@ void *router_req_body(router_req *ctx, size_t *lens) {
     }
     return http_data(ctx->pack, lens);
 }
-// 组装完整 HTTP 响应并通过 ev_send 推出去; 自动写 Content-Length, content_type 非 NULL 时
-// 自动写 Content-Type, extra 由调用方追加 (不可重复 CL / CT / Transfer-Encoding)
-// bw 内部托管 (binary_init(NULL,...) 模式), ev_send copy=0 转移 bw.data 所有权给框架,
-// 函数返回后无需 binary_free。不接 router_req, 供无 ctx 的错误路径 (拒 chunked 的 411、
-// 流式首帧的 400 / 500 等) 共用同一条响应管线; 有 ctx 的入口走 _router_send_resp 包一层置 responded
+// 组装完整 HTTP 响应并 ev_send 推出去; 自动写 Content-Length, content_type 非 NULL 时自动写
+// Content-Type, extra 由调用方追加 (不可重复 CL / CT / Transfer-Encoding)。
+// bw 内部托管, ev_send copy=0 已转移所有权, 返回后无需 binary_free。
+// 不接 router_req, 供无 ctx 的错误路径共用; 有 ctx 的入口走 _router_send_resp 包一层置 responded。
+// head_only 非 0 时只回头不回体, 但 Content-Length 仍写 body 的真实长度 —— RFC 7231 §4.3.2
+// 要求 HEAD 的响应头与同一资源的 GET 一致, 多发的字节会被当成下一条响应而让 keep-alive 错位
 static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code,
-                              const char *content_type,
+                              int32_t head_only, const char *content_type,
                               const http_header_ctx *extra, int32_t extra_n,
                               const char *body, size_t body_len) {
     binary_ctx bw;
@@ -974,6 +1021,13 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
     // Content-Length: 0, 各入口不必自己归一
     if (http_code_nobody(code)) {
         http_pack_end(&bw);
+    } else if (0 != head_only) {
+        char cl[24];
+        // 空判照抄 http_pack_content 的 EMPTYPTR: 同一资源的 GET 走那条会写 0,
+        // 这里算出别的数就是两个方法自报的长度不一致
+        SNPRINTF(cl, sizeof(cl), "%zu", EMPTYPTR(body, body_len) ? (size_t)0 : body_len);
+        http_pack_head(&bw, "Content-Length", cl);
+        http_pack_end(&bw);
     } else {
         http_pack_content(&bw, (void *)body, body_len);
     }
@@ -983,7 +1037,8 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
 static void _router_send_resp(router_req *ctx, int32_t code, const char *content_type,
                               const http_header_ctx *extra, int32_t extra_n,
                               const char *body, size_t body_len) {
-    _router_send_core(ctx->task, ctx->sk.fd, ctx->sk.skid, code, content_type,
+    _router_send_core(ctx->task, ctx->sk.fd, ctx->sk.skid, code,
+                      ROUTER_M_HEAD == ctx->method, content_type,
                       extra, extra_n, body, body_len);
     ctx->responded = 1;
 }
@@ -1004,13 +1059,15 @@ void router_req_respond(router_req *ctx, int32_t code,
 // 兜底响应 (404 / 405 / 500); body 走 strlen 的纯文本简写, 适合 dispatch 未匹配 /
 // 未识别方法 / 中间件链溢出等错误路径。部分调用方 (router_reject_chunked) 无 router_req
 // 可用, 故不接 ctx —— 有 ctx 的调用方需自行在调用后置 ctx->responded = 1 防止兜底 500 重发
-static void _router_send_simple(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code, const char *body) {
-    _router_send_core(task, fd, skid, code, "text/plain; charset=utf-8", NULL, 0,
+static void _router_send_simple(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code,
+                                int32_t head_only, const char *body) {
+    _router_send_core(task, fd, skid, code, head_only, "text/plain; charset=utf-8", NULL, 0,
                       body, (NULL == body) ? 0 : strlen(body));
 }
 // 拒绝 chunked 请求：回 411 后立即关闭连接
 void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid) {
-    _router_send_simple(task, fd, skid, 411, "chunked request not supported\n");
+    // HEAD 请求没有报文体, 不可能是 chunked, 故这里恒非 HEAD
+    _router_send_simple(task, fd, skid, 411, 0, "chunked request not supported\n");
     ev_close(&task->loader->netev, fd, skid);
 }
 // 流式路由的链尾哨兵: 跑到这里说明每个中间件都调了 router_next。不能拿 chain_i == chain_n 判,
@@ -1044,10 +1101,11 @@ static void _router_code_body(int32_t code, char body[ROUTER_CODE_BODY_LENS]) {
 }
 // 按 code 生成正文并回给客户端。chunked 首帧那面不走这里(它要的是 _router_st_reject
 // 的关连接收尾), 自己另有一份同样的栈缓冲
-static void _router_send_code(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code) {
+static void _router_send_code(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code,
+                              int32_t head_only) {
     char body[ROUTER_CODE_BODY_LENS];
     _router_code_body(code, body);
-    _router_send_simple(task, fd, skid, code, body);
+    _router_send_simple(task, fd, skid, code, head_only, body);
 }
 // status[0] = 方法, status[1] = 请求 URI; pack 为空或任一段为空都算无效 HTTP。
 // 三个派发入口共用: 返 NULL 即静默丢, 连响应都不发——对面发的不是 HTTP, 回什么都没意义
@@ -1114,16 +1172,16 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     int32_t idx;
     int32_t code = _router_match_entry(r, &ctx, status, &idx);
     if (200 != code) {
-        _router_send_code(task, fd, skid, code);
+        _router_send_code(task, fd, skid, code, ROUTER_M_HEAD == ctx.method);
         return;
     }
     router_entry *matched = &r->routes[idx];
     if (0 != _router_entry_misconfigured(matched, idx)) {
-        _router_send_simple(task, fd, skid, 500, ROUTER_BODY_500);
+        _router_send_simple(task, fd, skid, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
         return;
     }
     if (ERR_OK != _router_chain_build(r, matched, &ctx)) {
-        _router_send_simple(task, fd, skid, 500, ROUTER_BODY_CHAIN);
+        _router_send_simple(task, fd, skid, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_CHAIN);
         return;
     }
     // 启动链路, 第一个中间件 / handler 通过 router_next 递归推进
@@ -1138,7 +1196,7 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     // 中间件主动 return 不调 router_next 是合法截断; 但都没写响应 (handler 漏发 + 中间件
     // 也没截断) 时, 客户端会卡死, 这里兜底 500 让它别等
     if (!ctx.responded) {
-        _router_send_simple(task, fd, skid, 500, ROUTER_BODY_500);
+        _router_send_simple(task, fd, skid, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
     }
 }
 void router_closed(router_ctx *r, SOCKET fd, uint64_t skid) {
@@ -1155,7 +1213,8 @@ void router_closed(router_ctx *r, SOCKET fd, uint64_t skid) {
 // code 传 0 表示调用方已经写过响应, 只关连接
 static void _router_st_reject(router_stream *st, task_ctx *task, int32_t code, const char *body) {
     if (code > 0) {
-        _router_send_simple(task, st->req.sk.fd, st->req.sk.skid, code, body);
+        _router_send_simple(task, st->req.sk.fd, st->req.sk.skid, code,
+                            ROUTER_M_HEAD == st->req.method, body);
     }
     ev_close(&task->loader->netev, st->req.sk.fd, st->req.sk.skid);
     FREE(st);
@@ -1257,7 +1316,8 @@ static void _router_st_feed(router_ctx *r, task_ctx *task, sk_id *sk,
     hashmap_delete(r->streams, &probe);
     st->on_chunk(&st->req, slice, data, dlens);
     if (!st->req.responded) {
-        _router_send_simple(task, sk->fd, sk->skid, 500, ROUTER_BODY_500);
+        _router_send_simple(task, sk->fd, sk->skid, 500,
+                            ROUTER_M_HEAD == st->req.method, ROUTER_BODY_500);
     }
     FREE(st);
 }
@@ -1280,9 +1340,10 @@ static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sk_id *sk,
         return;
     }
     if (200 == code) {
-        _router_send_simple(task, sk->fd, sk->skid, 500, ROUTER_BODY_500);
+        _router_send_simple(task, sk->fd, sk->skid, 500,
+                            ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
     } else {
-        _router_send_code(task, sk->fd, sk->skid, code);
+        _router_send_code(task, sk->fd, sk->skid, code, ROUTER_M_HEAD == ctx.method);
     }
     ev_close(&task->loader->netev, sk->fd, sk->skid);
 }

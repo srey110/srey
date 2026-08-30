@@ -16,6 +16,13 @@ local mock_http = {
         last_resp = { fd = fd, skid = skid, code = code,
                       headers = headers, body = body }
     end,
+    -- HEAD 出口：真实现只发头不发体，这里同样把 body 记成 nil，
+    -- 但留下 headonly 与算出的长度，好让用例断言"头与 GET 一致、体没发"
+    response_head = function(fd, skid, code, headers, body)
+        last_resp = { fd = fd, skid = skid, code = code, headers = headers,
+                      body = nil, headonly = true,
+                      clen = ("string" == type(body)) and #body or 0 }
+    end,
 }
 package.loaded["lib.http"] = mock_http
 
@@ -24,6 +31,13 @@ package.loaded["lib.http"] = mock_http
 local closed_log = {}
 srey.close = function(fd, skid)
     closed_log[#closed_log + 1] = { fd = fd, skid = skid }
+end
+
+-- watch_closed 同样换掉：它往 task 级观察者表里塞的闭包没有反注册，而用例要建几十个 router。
+-- 顺带拿计数断言"没有流式路由就不订阅"
+local watch_n = 0
+srey.watch_closed = function(_)
+    watch_n = watch_n + 1
 end
 
 local Route = require("advance.router")
@@ -284,7 +298,91 @@ runner.run("unit_router", function(t)
         local resp = dispatch(r, "GET", "/t")
         t:eq(201,       resp and resp.code, "ctx:text code 201")
         t:eq("created", resp and resp.body, "ctx:text body")
-        t:eq(nil,       resp and resp.headers, "ctx:text no Content-Type header")
+        t:check(resp and resp.headers and
+                "text/plain; charset=utf-8" == resp.headers["Content-Type"],
+                "ctx:text 带 Content-Type(不带会被内容嗅探)")
+    end
+
+    -- HEAD / OPTIONS：get() 连带注册 HEAD，独立入口也在
+    do
+        local r = Route.new()
+        r:head("/h", function(ctx) ctx:text(200) end)
+        r:options("/o", function(ctx) ctx:text(204) end)
+        t:eq(200, (dispatch(r, "HEAD", "/h") or {}).code, "Router:head 注册的路由能匹配 HEAD")
+        t:eq(204, (dispatch(r, "OPTIONS", "/o") or {}).code, "Router:options 注册的路由能匹配 OPTIONS")
+        -- get() 注册的是 GET|HEAD 组合掩码，HEAD 落到同一个 handler
+        r:get("/g", function(ctx) ctx:text(200, "hello") end)
+        t:eq(200, (dispatch(r, "GET", "/g") or {}).code, "get() 注册的路由匹配 GET")
+        t:eq(200, (dispatch(r, "HEAD", "/g") or {}).code, "get() 连带接住 HEAD，不再 404")
+        -- get() 之后再注册独立 HEAD 会被遮蔽：GET|HEAD 把 HEAD 整个包住，先注册者胜
+        local dup = r:head("/g", function(ctx) ctx:text(201, "other") end)
+        t:eq(200, (dispatch(r, "HEAD", "/g") or {}).code, "被 get() 遮蔽的 head() 注册被忽略")
+        t:check(nil ~= dup, "被遮蔽的注册返回占位条目而不是 nil")
+        -- 命中路由时不发体，但 Content-Length 记的是 GET 那份的真实长度
+        local hit = dispatch(r, "HEAD", "/g") or {}
+        t:check(hit.headonly and nil == hit.body, "HEAD 命中路由只发头不发体")
+        t:eq(#"hello", hit.clen, "HEAD 的 Content-Length 等于 GET 报文体的长度")
+        -- 反过来（head 先、get 后，即 Router:head 文档要求的顺序）两条都得进表：
+        -- GET|HEAD 只是与 HEAD 有交集、包不住它，按交集判遮蔽会把 GET 那条整条吞掉
+        r:head("/x", function(ctx) ctx:text(201, "head-only") end)
+        r:get("/x", function(ctx) ctx:text(200, "get-body") end)
+        t:eq(201, (dispatch(r, "HEAD", "/x") or {}).code, "head 先注册时 HEAD 走它自己的 handler")
+        t:eq(200, (dispatch(r, "GET", "/x") or {}).code, "head 先注册不影响同路径 get() 的注册")
+        t:eq("get-body", (dispatch(r, "GET", "/x") or {}).body, "GET 拿到的是 get() 的报文体")
+    end
+
+    -- HEAD 的失败路径同样不能带体：多发的字节会被对端当成下一条响应的开头。
+    -- C 侧 _router_send_code / _router_send_simple 都带 head_only，Lua 侧三个出口要对齐
+    do
+        local r = Route.new()
+        r:get("/ok", function(ctx) ctx:text(200, "x") end)
+        -- 未匹配：走 _match_ctx 的 404
+        local miss = dispatch(r, "HEAD", "/nope") or {}
+        t:eq(404, miss.code, "HEAD 未匹配仍回 404")
+        t:check(miss.headonly and nil == miss.body, "HEAD 的 404 不发报文体")
+        -- handler 什么都不写：走 _fallback_500
+        r:get("/silent", function() end)
+        local fb = dispatch(r, "HEAD", "/silent") or {}
+        t:eq(500, fb.code, "handler 漏发响应时 HEAD 也补兜底 500")
+        t:check(fb.headonly and nil == fb.body, "HEAD 的兜底 500 不发报文体")
+        -- 同一条 handler 走 GET 时报文体照常发出，两边只差报文体
+        local g = dispatch(r, "GET", "/nope") or {}
+        t:check(not g.headonly and nil ~= g.body, "GET 的 404 照常带报文体")
+    end
+
+    -- headers / body 惰性物化：dispatch 内读得到，出了 dispatch 就没了（与 C 侧 router_req 同口径）
+    do
+        local r = Route.new()
+        local saved, inside_h, inside_b
+        r:post("/lazy", function(ctx)
+            inside_h = ctx.headers and ctx.headers["X-Probe"]
+            inside_b = ctx.body
+            saved = ctx
+            ctx:text(200, "ok")
+        end)
+        dispatch(r, "POST", "/lazy", "bodybody", { ["X-Probe"] = "v" })
+        t:eq("v", inside_h, "dispatch 内读得到请求头")
+        t:eq("bodybody", inside_b, "dispatch 内读得到请求体")
+        -- 读过即固化在 ctx 上，出了 dispatch 仍在
+        t:eq("v", saved.headers["X-Probe"], "读过的 headers 出了 dispatch 仍有效")
+        t:eq("bodybody", saved.body, "读过的 body 出了 dispatch 仍有效")
+
+        -- 没读过的：出了 dispatch 拿到的是空表 / nil，不是悬空指针
+        local later
+        r:post("/lazy2", function(ctx) later = ctx; ctx:text(200, "ok") end)
+        dispatch(r, "POST", "/lazy2", "xx", { ["X-Probe"] = "v" })
+        t:eq(0, next(later.headers) and 1 or 0, "没读过的 headers 出了 dispatch 是空表")
+        t:eq(nil, later.body, "没读过的 body 出了 dispatch 为 nil")
+    end
+
+    -- 重名占位符：注册期拒收（C 侧 router_req_param 取首个、Lua 侧取末个，同一路由两个答案）
+    do
+        local r = Route.new()
+        r:get("/u/{id}/{id}", function(ctx) ctx:text(200, "dup") end)
+        t:eq(404, (dispatch(r, "GET", "/u/7/9") or {}).code, "重名占位符的路由被拒，请求落 404")
+        -- 不同名的两个占位符照常注册
+        r:get("/v/{a}/{b}", function(ctx) ctx:text(200, ctx.params.a .. ctx.params.b) end)
+        t:eq("79", (dispatch(r, "GET", "/v/7/9") or {}).body, "不同名占位符不受影响")
     end
 
     -- ctx:json
@@ -863,15 +961,23 @@ runner.run("unit_router", function(t)
         local resp = dispatch(r, "GET", "/shadow") or {}
         t:eq(200, resp.code, "ANY 已注册时 GET 同路径被拒")
         t:eq("any", resp.body, "生效的仍是 ANY 那条")
-        -- 反向：先具体方法再 ANY，掩码同样有交集，也该拒
+        -- 反向：先具体方法再 ANY。ANY 有 GET|HEAD 盖不住的方法，够得着，不算被遮蔽，
+        -- 两条并存并按注册顺序命中
         local r2 = Route.new()
         r2:get("/shadow2", function(ctx) ctx:text(200, "get") end)
         r2:any("/shadow2", function(ctx) ctx:text(201, "any") end)
-        t:eq(200, (dispatch(r2, "GET", "/shadow2") or {}).code, "GET 已注册时 ANY 同路径被拒")
-        -- 掩码无交集就不算遮蔽：GET 挡不住 POST，这条照常注册
+        t:eq(200, (dispatch(r2, "GET", "/shadow2") or {}).code, "GET 仍走先注册的 get() 那条")
+        t:eq("any", (dispatch(r2, "PUT", "/shadow2") or {}).body, "其余方法落到后注册的 ANY")
+        -- 此时 ANY 已把 POST 整个包住，再注册 POST 就是永远够不着，注册期拒掉
         r2:post("/shadow2", function(ctx) ctx:text(202, "post") end)
-        t:eq(202, (dispatch(r2, "POST", "/shadow2") or {}).code,
-             "GET 与 POST 掩码无交集，POST 同路径可注册")
+        t:eq(201, (dispatch(r2, "POST", "/shadow2") or {}).code,
+             "被在先的 ANY 全包住的 POST 注册被忽略")
+        -- 掩码互不相干就不算遮蔽：GET 挡不住 POST，这条照常注册
+        local r3 = Route.new()
+        r3:get("/shadow3", function(ctx) ctx:text(200, "get") end)
+        r3:post("/shadow3", function(ctx) ctx:text(202, "post") end)
+        t:eq(202, (dispatch(r3, "POST", "/shadow3") or {}).code,
+             "GET 与 POST 掩码不相干，POST 同路径可注册")
     end
     do
         -- (b) 参数名不同但路由等价：匹配时参数名不参与比对，两条完全一样
@@ -1089,6 +1195,19 @@ runner.run("unit_router", function(t)
         last_resp = nil
         feed_stream(r, "/st", { "x" })
         t:eq(500, (last_resp or {}).code, "收齐仍未响应 → 兜底 500")
+    end
+
+    -- 9.10 CLOSE 订阅推迟到第一条流式路由：srey.watch_closed 没有反注册，
+    -- 每个 router 订一次就是永久占位，没有流式路由的 router 不该付这份
+    do
+        local before = watch_n
+        local r = Route.new()
+        r:get("/plain", function(ctx) ctx:text(200, "ok") end)
+        t:eq(before, watch_n, "纯 REST router 不订阅 CLOSE")
+        r:post_stream("/lazy", function() end)
+        t:eq(before + 1, watch_n, "第一条流式路由触发订阅")
+        r:put_stream("/lazy2", function() end)
+        t:eq(before + 1, watch_n, "第二条流式路由不重复订阅")
     end
 
 end)

@@ -31,6 +31,11 @@
 //                    (注册照常成功, 只是该段按原文逐字比对)
 //   /static/*        末尾通配, 一旦命中后续任意请求段都吃下
 //   多条同 path 不同 method 算独立路由, 方法位掩码 ROUTER_M_GET|ROUTER_M_POST 也支持
+// HEAD
+//   router_get 注册的是 ROUTER_M_GET|ROUTER_M_HEAD —— HEAD 的语义就是"要 GET 的头不要体",
+//   分开注册会让 HEAD 落 404。handler 照常写 body, router_req_text / _json / _html / _respond
+//   在请求方法是 HEAD 时只发头: Content-Length 仍写 body 的真实长度(RFC 7231 §4.3.2 要求
+//   HEAD 的头与 GET 一致), 报文体不写 —— 多发的字节会被对端当成下一条响应的开头
 // 线程约定
 //   注册期 (router_add / router_use / router_define 等) 与派发期 (router_dispatch) 不可并发:
 //   路由表是连续数组, 扩容会 realloc 整块, 派发方手里的 router_entry * 和正在扫的下标都会失效;
@@ -287,7 +292,8 @@ router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,
                          const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_GET, path, h, mws, mws_n)</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_GET | ROUTER_M_HEAD, path, h, mws, mws_n)；
+/// 连带接住 HEAD，响应侧自动抑制报文体，理由见文件头 HEAD 一节</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
@@ -322,7 +328,9 @@ router_entry *router_delete(router_ctx *r, const router_group *g, const char *pa
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_patch(router_ctx *r, const router_group *g, const char *path,
                            router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_HEAD, path, h, mws, mws_n)</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_HEAD, path, h, mws, mws_n)。
+/// 多数情况不需要：router_get 已连带接住 HEAD。只在 HEAD 要跑与 GET 不同的 handler 时用，
+/// 且须注册在同路径的 router_get 之前——反过来会被那条的 GET|HEAD 掩码整个包住而遭遮蔽</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
@@ -383,7 +391,8 @@ router_entry *router_put_stream(router_ctx *r, const router_group *g, const char
 /// 注册路由；不经 group/mw 解析，handler 置 NULL，只能配 router_match_index 使用
 /// （调用方自己按索引派发），再交给 router_dispatch / router_net_recv 命中即回 500 拒绝。
 /// 与已注册条目等价时拒绝注册（见返回值）：dispatch 取首条命中，后注册的那条永远够不着。
-/// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"
+/// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"，
+/// 也支持 '|' 分隔的组合如 "GET|HEAD"；任一段不认识或出现空段一律整体拒绝
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="method">HTTP 方法字符串</param>
@@ -391,7 +400,8 @@ router_entry *router_put_stream(router_ctx *r, const router_group *g, const char
 /// <param name="path">路由完整路径（调用方已拼好前缀）</param>
 /// <param name="path_len">path 长度</param>
 /// <returns>路由索引（≥0）；-1 路径非法或方法未知；-2 已有一条等价路由把它遮住
-/// （方法掩码有交集且段序列在匹配意义上相同——参数名不参与匹配，如 /u/{id} 之于 /u/{uid}）</returns>
+/// （已注册项的方法掩码把它整个包住，且段序列在匹配意义上相同——参数名不参与匹配，
+/// 如 /u/{id} 之于 /u/{uid}）；掩码只有交集不算遮蔽，先注册者拿走它覆盖的方法即可</returns>
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                          const char *path, size_t path_len);
 /// <summary>

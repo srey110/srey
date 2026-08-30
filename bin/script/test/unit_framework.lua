@@ -5,6 +5,11 @@ local runner = require("test.runner")
 local core   = require("srey.core")
 local task   = require("srey.task")
 
+-- bind_task 用例的 UDP 端口。端口必须全仓唯一（测试模块并发跑，UDP 建链只设
+-- SO_REUSEADDR 不设 SO_REUSEPORT，撞了第二个 bind 直接失败且被守卫静默吞掉），
+-- 新端口先 grep 再定，别写裸字面量
+local UDP_PORT = 15046
+
 srey.startup(function()
 runner.run("framework", function(t)
     -- ── srey.core: SSL 证书注册与查询 ─────────────────────────────────
@@ -77,7 +82,7 @@ runner.run("framework", function(t)
     -- 字符串名走 task_find_name 返 INVALID_TNAME 可挡；数字句柄原样下传，
     -- 只查 INVALID_TNAME 的话陈旧句柄会被放行，绑定后该连接下一条消息才被静默关闭
     do
-        local fd, skid = srey.udp(PACK_TYPE.NONE, "0.0.0.0", 15046)
+        local fd, skid = srey.udp(PACK_TYPE.NONE, "0.0.0.0", UDP_PORT)
         t:check(fd and fd ~= INVALID_SOCK, "bind_task 用 udp 创建")
         if fd and fd ~= INVALID_SOCK then
             t:eq(false, srey.sock_bind_task(fd, skid, "no_such_task_name"), "未注册的字符串名返回 false")
@@ -130,6 +135,70 @@ runner.run("framework", function(t)
         -- trap_target 不读 ...，这里只关心参数搬运本身不越界
         local tk = task.register("test.trap_target", "argstress", 0, table.unpack(args))
         t:check(tk ~= nil, "task.register 256 个参数不越界")
+        -- 收尾：不关的话这个 task 连同它自己那个 lua_State 一直活到进程结束
+        local helper = task.grab("argstress")
+        if helper then
+            task.close(helper)
+            task.ungrab(helper)
+        end
+    end
+
+    -- ── 崩溃向量：绑定层不该让脚本把整个进程打死 ──────────────────────
+    do
+        -- 顶层调 interruptible：ltask->lua 曾拖到 chunk 跑完才赋值，
+        -- 期间 lua_gethook(NULL) 直接 SIGSEGV（进程 exit 139，本用例根本跑不到）
+        local itop = task.register("test.interruptible_top", "itop", 0)
+        t:check(itop ~= nil, "顶层 srey.interruptible 不崩且注册成功")
+        local h = task.grab("itop")
+        if h then
+            task.close(h)
+            task.ungrab(h)
+        end
+
+        -- chunk 顶层抛非字符串错误对象：lua_tostring 返 NULL，曾原样喂给 LOG_ERROR 的 %s
+        t:eq(nil, task.register("test.err_object", "errobj", 0), "chunk 抛 table：注册失败而非崩溃")
+
+        -- sess=0：三个消费方都是 ASSERTAB，而 srey.core 可被业务直接 require，绕得过脚本守卫
+        t:eq(false, pcall(core.timeout, 0, 100), "core.timeout sess=0 报错而非 abort")
+        t:eq(false, pcall(core.request, task.handle(), 1, 0, "x"), "core.request sess=0 报错而非 abort")
+        t:eq(false, pcall(core.multi_request, { task.handle() }, 1, 0, "x"),
+            "core.multi_request sess=0 报错而非 abort")
+    end
+
+    -- ── srey.core: reqtype 的截断回归 ─────────────────────────────────
+    -- subtype_t 是 uint16_t，曾用裸转换：65537 截成 1 == REQ_DEBUG，业务载荷被
+    -- 接收方路由给 _debug_request，自己的 on_requested 一次都不触发
+    do
+        t:eq(false, pcall(core.call, 1, 65537, "x"), "core.call: reqtype 65537 被拒")
+        t:eq(false, pcall(core.call, 1, -1, "x"), "core.call: reqtype 负值被拒")
+        t:eq(false, pcall(core.request, 1, 65537, srey.id(), "x"), "core.request: reqtype 越界被拒")
+        t:eq(false, pcall(core.multi_call, { 1 }, 65537, "x"), "core.multi_call: reqtype 越界被拒")
+    end
+
+    -- ── srey.core: 失败与成功的返回值个数必须一致 ────────────────────
+    -- lpub_rtn_nil 写死的全仓规矩：返回值直接塞进另一个调用时少一个就整体错位
+    do
+        t:eq(2, select("#", core.udp(PACK_TYPE.NONE, "300.300.300.300", 0)),
+            "core.udp 失败也返 2 个值")
+        local fd, skid = core.udp(PACK_TYPE.NONE, "127.0.0.1", 0)
+        t:check(fd and INVALID_SOCK ~= fd, "core.udp 绑定成功")
+        if fd and INVALID_SOCK ~= fd then
+            t:eq(2, select("#", core.udp(PACK_TYPE.NONE, "127.0.0.1", 0)), "core.udp 成功返 2 个值")
+            srey.close(fd, skid)
+        end
+        -- 同一条规矩也管 Lua 包装层：srey.connect 成功返 (fd, skid)，失败也得返两个。
+        -- 走 ssl_qury 那条失败路径，它在任何挂起之前就返回，不依赖网络
+        t:eq(2, select("#", srey.connect(PACK_TYPE.NONE, "no-such-ssl-name", "127.0.0.1", 1)),
+            "srey.connect 失败也返 2 个值")
+    end
+
+    -- ── srey.core: sock_session 的会话键写死 skid，与 C 侧 coro_sync 对齐 ────
+    -- CLOSE 恒以 skid 为 sess 发出，挂在别的键上的等待者断连时一个都唤不到（ms>0 白等满
+    -- 超时、ms==0 永久挂起），故不再开放自定义。fd 传 INVALID_SOCK：ev_props 对它直接早退
+    do
+        t:eq(false, core.session(-1, 2), "sock_session: 两参形态可调用，无效 fd 返 false")
+        -- 旧的 sess=0 语义搬到独立接口，不再靠第 3 参表达
+        t:eq(false, core.session_clear(-1, 2), "session_clear: 两参形态可调用，无效 fd 返 false")
     end
 
     -- ── srey.task: trap (跨 task 中断卡死协程) ────────────────────────

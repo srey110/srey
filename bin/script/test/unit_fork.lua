@@ -2,6 +2,7 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
+local task   = require("srey.task")
 
 srey.startup(function()
 runner.run("fork", function(t)
@@ -151,6 +152,42 @@ runner.run("fork", function(t)
         t:eq(30, r[2].val, "fork_bind(add2, 10, 20) 结果")
         t:eq("closure", r[3].val, "纯闭包结果")
         t:eq(true, r[1].ok and r[2].ok and r[3].ok, "三个任务都 ok")
+    end
+
+    -- ── _drain 的异常安全 ─────────────────────────────────────────────
+    -- 两条延迟队列由 message_dispatch 末尾裸调（不在任何 xpcall 里）。act 抛出若冲掉末尾
+    -- 那趟清空，已消费的元素会留在队列里被下一条消息再跑一遍：重复 resume 已唤醒的协程、
+    -- 重复执行同一个 fork 任务。C 侧 _coro_drain_forks 靠 list_pop_head 天然免疫
+    do
+        local qu, seen = { "a", "b", "c" }, {}
+        srey._drain(qu, function(item)
+            seen[#seen + 1] = item
+            if "b" == item then
+                error("drain act boom")-- 故意抛错；日志里会留一条 ERROR，属预期
+            end
+        end)
+        t:eq(3, #seen, "_drain: act 抛错后剩余元素照常消费")
+        t:eq(0, #qu, "_drain: act 抛错后队列仍被清空")
+
+        -- 处理途中往同一队列追加要同轮消费完，并一并清空（fork 里再 fork 就是这条）
+        local qu2, out = { 1 }, {}
+        srey._drain(qu2, function(n)
+            out[#out + 1] = n
+            if n < 3 then
+                qu2[#qu2 + 1] = n + 1
+            end
+        end)
+        t:eq(3, #out, "_drain: 处理中追加的元素同轮消费")
+        t:eq(0, #qu2, "_drain: 追加的元素也被清空")
+    end
+
+    -- ── task.critical：不可中断区间的开关 ─────────────────────────────
+    -- 区间内 hook 只放行不抛错、trap 留到出区间后触发，那段时序在单测里没法确定性构造，
+    -- 这里只钉住接口存在与入参校验；进出成对，跑完 task 仍可被中断
+    do
+        t:eq(true, pcall(task.critical, 1), "task.critical(1) 可调用")
+        t:eq(true, pcall(task.critical, 0), "task.critical(0) 可调用")
+        t:eq(false, pcall(task.critical), "task.critical 缺参报错")
     end
 end)
 end)

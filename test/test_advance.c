@@ -55,6 +55,56 @@ static void test_router_url_normalize(CuTest *tc) {
     router_free(root);
 }
 
+/* 遮蔽判据是"已注册项的方法掩码把新掩码整个包住"，不是"两边有交集"。
+ * 按交集判会让 head() 先于 get() 注册时把 GET 那条整条吞掉——而那正是 router_head
+ * 文档要求的顺序。匹配期首条命中即返回，所以部分重叠的两条并存是有意义的 */
+static void test_router_shadow_mask(CuTest *tc) {
+    router_ctx *r = router_new();
+    url_ctx url;
+    router_req ctx;
+    int32_t iget;
+    int32_t iany;
+
+    CuAssertPtrNotNull(tc, r);
+
+    /* 1. HEAD 先、GET|HEAD 后：两条都进表，各自接住自己的方法 */
+    CuAssertIntEquals(tc, 0, router_add_index(r, "HEAD", 4, "/a", 2));
+    CuAssertIntEquals(tc, 1, router_add_index(r, "GET|HEAD", 8, "/a", 2));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, 0, router_match_index(r, "HEAD", 4, "/a", 2, &ctx));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, 1, router_match_index(r, "GET", 3, "/a", 2, &ctx));
+
+    /* 2. 反过来注册：GET|HEAD 已把 HEAD 全包住，后来的 HEAD 被遮蔽 */
+    CuAssertTrue(tc, router_add_index(r, "GET|HEAD", 8, "/b", 2) >= 0);
+    CuAssertIntEquals(tc, -2, router_add_index(r, "HEAD", 4, "/b", 2));
+
+    /* 3. 完全重复照旧拒掉 */
+    CuAssertTrue(tc, router_add_index(r, "POST", 4, "/c", 2) >= 0);
+    CuAssertIntEquals(tc, -2, router_add_index(r, "POST", 4, "/c", 2));
+
+    /* 4. ANY 在前，任何单方法组合都被它全包 */
+    CuAssertTrue(tc, router_add_index(r, "ANY", 3, "/d", 2) >= 0);
+    CuAssertIntEquals(tc, -2, router_add_index(r, "GET|HEAD", 8, "/d", 2));
+
+    /* 5. ANY 在后：GET|HEAD 包不住它剩下的方法，两条并存并按注册顺序命中 */
+    iget = router_add_index(r, "GET|HEAD", 8, "/e", 2);
+    CuAssertTrue(tc, iget >= 0);
+    iany = router_add_index(r, "ANY", 3, "/e", 2);
+    CuAssertTrue(tc, iany > iget);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, iget, router_match_index(r, "GET", 3, "/e", 2, &ctx));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, iany, router_match_index(r, "POST", 4, "/e", 2, &ctx));
+
+    router_free(r);
+}
+
 void test_advance(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_router_url_normalize);
+    SUITE_ADD_TEST(suite, test_router_shadow_mask);
 }

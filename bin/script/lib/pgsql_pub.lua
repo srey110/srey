@@ -43,4 +43,22 @@ function M.check_type(pgpack, want)
     return M.type_mismatch(pktype)
 end
 
+---写 err 并返回 false 的合并写法，让"置原因"与"报失败"成为一步，不会只做一半。
+---两个类各自 `ctx._fail = ppub.fail` 挂上去，故仍按 self:_fail(err) 调用
+---@param self any 带 err 字段的 ctx（pgsql_ctx 或 pgsql_stmt_ctx）
+---@param err string 失败原因
+---@return boolean always false
+function M.fail(self, err)
+    self.err = err
+    return false
+end
+
+---复位"最近一次操作"的两项状态。必须一起复位：只复位 err 的话，命令失败直接 return 时
+---affected_rows() 报的还是上一条成功命令的行数——一次失败的写被记成影响了 N 行。挂法同 M.fail
+---@param self any 带 err 与 affected 字段的 ctx
+function M.reset(self)
+    self.err = ""
+    self.affected = 0
+end
+
 return M

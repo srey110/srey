@@ -31,7 +31,10 @@ local http = {}
 ---@type fun(pack:lightuserdata):string[]|nil
 http.status = srey_http.status
 
----返回报文的分块传输状态：0=非分块；1=首包；2+ 分块中间/结束块
+---返回报文的 Transfer-Encoding: chunked 状态：0=非分块；1=首包；2+ 分块中间/结束块。
+---只认 Transfer-Encoding：响应既无 Content-Length 又无 TE 时（RFC 7230 §3.3.3 规则 7，
+---body 由连接关闭界定）本值仍是 0，而 body 确实是按分片投的。判"还有没有后续"要看
+---on_recved 的 slice 形参或 syn_send / syn_recv 的第三返回值，别用本值
 ---@type fun(pack:lightuserdata):integer
 http.chunked = srey_http.chunked
 
@@ -53,7 +56,7 @@ http.datastr = srey_http.datastr
 
 ---@class HttpPack
 ---@field status  string[]?               状态行/请求行三元组（同 http.status 返回值）
----@field chunked integer                 0=非分块；1=首包；2+=中间/结束块
+---@field chunked integer                 Transfer-Encoding: chunked 状态，取值与判定注意事项同 http.chunked
 ---@field heads   table<string,string>?   响应头 key→value 表；分块中间包为 nil
 ---@field data    string?                 报文体内容；空时为 nil
 ---@field cksize  integer?                chunked 模式下累计接收字节数；非 chunked 时不存在
@@ -75,6 +78,15 @@ http.code_status = srey_http.code_status
 
 -- ── 内部发送/接收 ─────────────────────────────────────────────────────────
 
+---状态行是不是 1xx 中间响应。RFC 7231 §6.2：最终响应还在后面，客户端必须容忍任意条
+---@param pack lightuserdata http_pack_ctx 指针
+---@return boolean interim
+local function _http_interim(pack)
+    local st = srey_http.status(pack)
+    local code = st and tonumber(st[2])
+    return nil ~= code and code >= 100 and code < 200
+end
+
 ---内部发送函数：rsp=true 单向发送（服务端响应），rsp=false 同步发送并接收回包；
 ---chunked 响应时循环读取分片并通过 ckfunc(fin,data,size) 回调，直到 fin=true
 ---@param rsp boolean 是否为响应（单向）
@@ -90,6 +102,11 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
         return
     end
     local pack, _, slice = srey.syn_send(fd, skid, smsg, #smsg, 1)
+    -- 1xx 是中间响应，C 侧当独立完整消息投出(slice=0)：不跳过就会把它当结果返回，
+    -- 真正的响应留在连接上被下一次请求取走。HEAD 的 INIT_NOBODY 登记 C 侧跨 1xx 保留
+    while pack and _http_interim(pack) do
+        pack, _, slice = srey.syn_recv(fd, skid)
+    end
     if not pack then
         return
     end
@@ -143,11 +160,9 @@ local function _is_auto_head(lk, msgtype, rsp)
     if "content-length" ~= lk and "transfer-encoding" ~= lk then
         return false
     end
-    -- 三个 body 分支都会自己写帧长头，调用方再传就是两条 Content-Length 或 TE 叠 CL。
-    -- 无 body 的响应也要拦：要么下面补 Content-Length: 0 会撞车，要么是 1xx/204/304
-    -- （nocl），按 RFC 7230 §3.3.2 本就禁止携带。
-    -- 唯独"请求 + 无 body"这一种本函数什么都不写，调用方那条是这条请求仅有的帧长头，放行 ——
-    -- 一刀切会让 http.post(..., {["Content-Length"]="0"}) 发出既无 CL 也无 TE 的报文
+    -- 三个 body 分支都自己写帧长头，无 body 的响应下面补 Content-Length: 0，
+    -- 调用方再传一条就是重复或 TE 叠 CL。唯独"请求 + 无 body"本函数什么都不写，
+    -- 调用方那条是这条请求仅有的帧长头，放行
     return "string" == msgtype or "table" == msgtype or "function" == msgtype or rsp
 end
 ---构造并发送 HTTP 消息的核心函数。info 支持 string（带 Content-Length）、
@@ -155,6 +170,11 @@ end
 ---@param rsp boolean 是否为响应（true=单向，false=同步请求）
 ---@param nocl boolean 该消息禁止携带 Content-Length（1xx/204/304 响应）；http.response 已在
 ---       入口把这三类的 info 清掉，故本函数只需在无 body 分支跳过 Content-Length: 0
+---@param headonly boolean 回 HEAD 请求：头与同一资源的 GET 逐字节一致（RFC 7231 §4.3.2），
+---       只是不写报文体。故只在各 body 分支跳过写 body 那一步，帧长头照原样算——Content-Length
+---       写真实长度（写 0 等于谎报资源为空），多发的字节则会被对端当成下一条响应的开头。
+---       body 是生产者函数时长度未知，省掉 Content-Length 但照发 Transfer-Encoding，
+---       且不去跑那个生产者（HEAD 响应到空行即终止，带着 chunked 也不会让对端接着等块）
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@param status string 请求行或状态行（已含 \r\n）
@@ -169,19 +189,14 @@ end
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；rsp=true 或失败时返回 nil
-local function _http_msg(rsp, nocl, fd, skid, status, headers, ckfunc, info, ...)
+local function _http_msg(rsp, nocl, headonly, fd, skid, status, headers, ckfunc, info, ...)
     local msg = {}
     table.insert(msg, status)
     local msgtype = type(info)
     if nil ~= headers then
-        -- MAX_HEADLENS 管的是整个头部块，逐条判不够：三条各 2000 字节的头单看都合法，
-        -- 拼起来 6000 字节，对端照样整包解析失败。故累计已写入的字节数判定，
-        -- 并给后面必写的 "Content-Length: <十进制>" 加两个 CRLF 留出余量；20 是十进制最长位数
-        -- （chunked 分支写的 Transfer-Encoding 行比这条短，同一份余量已覆盖）。
-        -- 只卡响应侧，与 C 侧一致：那边响应走 _router_send_core 的累计上限，请求走
-        -- http_pack_head 完全不限长。请求是发给第三方服务端的（nginx/apache 收 8~16KB），
-        -- 拿 srey 自己解析器的 4KB 去卡，只会把 Cookie 之类平白丢掉、而调用方从返回值看不出来；
-        -- 对端收不收得下由对端定，超限的后果是拿不到响应，比静默少一条头更容易发现
+        -- MAX_HEADLENS 管的是整个头部块，故按累计字节判而非逐条判，并给后面必写的
+        -- "Content-Length: <十进制>" 加两个 CRLF 留余量（20 是十进制最长位数）。
+        -- 只卡响应侧：请求发给第三方服务端，拿本地解析器的 4KB 去卡只会平白丢头
         local used = 0
         if rsp then
             used = #status + CL_RESERVE
@@ -211,17 +226,26 @@ local function _http_msg(rsp, nocl, fd, skid, status, headers, ckfunc, info, ...
     end
     if "string" == msgtype then
         table.insert(msg, string.format("Content-Length: %d\r\n\r\n", #info))
-        table.insert(msg, info)
+        if not headonly then
+            table.insert(msg, info)
+        end
         return _http_send(rsp, fd, skid, msg, ckfunc)
     elseif "table" == msgtype then
         local jmsg = json.encode(info)
         table.insert(msg, string.format("Content-Type: application/json\r\nContent-Length: %d\r\n\r\n", #jmsg))
-        table.insert(msg, jmsg)
+        if not headonly then
+            table.insert(msg, jmsg)
+        end
         return _http_send(rsp, fd, skid, msg, ckfunc)
     elseif "function" == msgtype then
         -- 流式分块发送：每次调用 info(...) 取一块数据，拼成 chunked 格式后发送，
         -- info 返回 nil 或空串时结束流并补发终止块。
         table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
+        if headonly then
+            -- 生产者要跑完才知道长度, HEAD 本就不该真去跑它: 头到此为止, CL 省掉
+            WARN("http: HEAD response body type 'function' has no known length, Content-Length omitted.")
+            return _http_send(rsp, fd, skid, msg, ckfunc)
+        end
         local smsg, rtn
         while true do
             rtn = info(...)
@@ -259,15 +283,22 @@ local function _http_msg(rsp, nocl, fd, skid, status, headers, ckfunc, info, ...
         end
         table.insert(msg, "0\r\n\r\n")
         return _http_send(rsp, fd, skid, msg, ckfunc)
-    elseif rsp and not nocl then
-        -- 响应无 body 必须显式 Content-Length: 0（RFC 7230 §3.3.3 规则 7：响应缺 CL/TE 时
-        -- body 由连接关闭界定，keep-alive 下合规客户端会一直读到关闭才认为响应结束）。
-        -- C 侧 http_pack_content 对空 body 也是统一写 Content-Length: 0
-        table.insert(msg, "Content-Length: 0\r\n\r\n")
-        return _http_send(rsp, fd, skid, msg, ckfunc)
     else
-        -- 请求无 body 不带 CL/TE 即可（同规则 6）；1xx/204/304 响应则是禁止带（见 http.response）
-        table.insert(msg, "\r\n")
+        -- info 给了却不是 string/table/function：三个 body 分支一个都不命中，会被当成"无 body"
+        -- 悄悄发走。数字、布尔、userdata 都落在这里，调用方从返回值上看不出 body 没发出去。
+        -- 告警排在下面分帧之前：两种无 body 形态都要报，按响应/请求分开写会漏掉响应那半边
+        if nil ~= info then
+            WARN("http: unsupported body type '%s', sent without body.", msgtype)
+        end
+        if rsp and not nocl then
+            -- 响应无 body 必须显式 Content-Length: 0（RFC 7230 §3.3.3 规则 7：响应缺 CL/TE 时
+            -- body 由连接关闭界定，keep-alive 下合规客户端会一直读到关闭才认为响应结束）。
+            -- C 侧 http_pack_content 对空 body 也是统一写 Content-Length: 0
+            table.insert(msg, "Content-Length: 0\r\n\r\n")
+        else
+            -- 请求无 body 不带 CL/TE 即可（同规则 6）；1xx/204/304 响应则是禁止带（见 http.response）
+            table.insert(msg, "\r\n")
+        end
         return _http_send(rsp, fd, skid, msg, ckfunc)
     end
 end
@@ -301,7 +332,7 @@ function http.get(fd, skid, url, headers, ckfunc)
     if not status then
         return nil
     end
-    return _http_msg(false, false, fd, skid, status, headers, ckfunc)
+    return _http_msg(false, false, false, fd, skid, status, headers, ckfunc)
 end
 
 ---同步 HEAD 请求：只要响应头，服务端不回报文体。
@@ -330,7 +361,7 @@ function http.head_req(fd, skid, url, headers)
         WARN("http head: set method failed, skid %s.", tostring(skid))
         return nil
     end
-    return _http_msg(false, false, fd, skid, status, headers, nil)
+    return _http_msg(false, false, false, fd, skid, status, headers, nil)
 end
 
 ---同步 POST 请求；info 为报文体（string/table/function），用法同 _http_msg
@@ -352,7 +383,7 @@ function http.post(fd, skid, url, headers, ckfunc, info, ...)
     if not status then
         return nil
     end
-    return _http_msg(false, false, fd, skid, status, headers, ckfunc, info, ...)
+    return _http_msg(false, false, false, fd, skid, status, headers, ckfunc, info, ...)
 end
 
 ---向客户端发送 HTTP 响应（单向，不等待回包）
@@ -365,7 +396,7 @@ end
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
-function http.response(fd, skid, code, headers, info, ...)
+local function _response(headonly, fd, skid, code, headers, info, ...)
     local status = string.format("HTTP/%s %03d %s\r\n", HTTP_VERSION, code, http.code_status(code))
     -- RFC 7230 §3.3.2：1xx 与 204 一律禁止带 Content-Length；304 允许带，但那个值应当反映
     -- 实体的真实长度，这里根本没有实体，补 Content-Length: 0 等于谎报资源为空，故一并跳过。
@@ -374,7 +405,25 @@ function http.response(fd, skid, code, headers, info, ...)
     if nocl then
         info = nil-- 这三类响应同样禁带报文体：给了也丢，与 C 侧 _router_send_core 同口径
     end
-    _http_msg(true, nocl, fd, skid, status, headers, nil, info, ...)
+    _http_msg(true, nocl, headonly, fd, skid, status, headers, nil, info, ...)
+end
+function http.response(fd, skid, code, headers, info, ...)
+    _response(false, fd, skid, code, headers, info, ...)
+end
+
+---回 HEAD 请求：头与同一资源的 GET 完全一致（含按 info 算出的真实 Content-Length），但不发
+---报文体。info 照常传 GET 会返回的那份，本函数只用它算长度不写出去。
+---解包侧拿不到请求方法，故"这是不是 HEAD 请求"只有调用方知道——router 走 ctx.method 分流；
+---自己写 _net_recv 的业务须自行判断，用错会让对端把多发的字节当成下一条响应，keep-alive 错位
+---@param fd integer socket fd
+---@param skid integer 连接 skid
+---@param code integer 状态码
+---@param headers table<string,any>? 附加头部
+---@param info string|table|fun(...):string?|nil 若是 GET 会返回的报文体；function 形态算不出
+---       长度，只发头且省略 Content-Length
+---@param ... any 传给 info 函数的额外参数
+function http.response_head(fd, skid, code, headers, info, ...)
+    _response(true, fd, skid, code, headers, info, ...)
 end
 
 return http

@@ -13,8 +13,7 @@ int32_t task_startup(loader_ctx *loader, config_ctx *config) {
     }
 #endif
     // 必须排在 ltask_startup 之后:harbor.ssl 那个名字要往 evssl 注册表里查,而唯一的注册入口
-    // 是 startup.lua 顶层调的 core.cert_register / p12_register,ltask_startup 跑完才存在。
-    // 排在前面则恒查不到,跨节点鉴权那张证书要么降级成明文、要么让整个进程起不来
+    // 是 startup.lua 顶层调的 core.cert_register / p12_register,ltask_startup 跑完才存在
     rtn = harbor_start(loader, config->harbor.name, config->harbor.ssl,
         config->harbor.ip, config->harbor.port);
     if (ERR_OK != rtn) {

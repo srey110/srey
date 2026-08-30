@@ -110,12 +110,7 @@ static int32_t _lmongo_set_auth_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
     LPUB_CUR_TASK(lua, task);
-    if (ERR_OK != ev_ud_status(&task->loader->netev, fd, skid, (uint8_t)mongo_status_auth())) {
-        lua_pushboolean(lua, 0);
-    } else {
-        lua_pushboolean(lua, 1);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&task->loader->netev, fd, skid, (uint8_t)mongo_status_auth()));
 }
 /// <summary>
 /// 设置当前数据库名
@@ -126,8 +121,7 @@ static int32_t _lmongo_set_auth_status(lua_State *lua) {
 static int32_t _lmongo_db(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *db = luaL_checkstring(lua, 2);
-    lua_pushboolean(lua, ERR_OK == mongo_db(*ud, db));
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == mongo_db(*ud, db));
 }
 /// <summary>
 /// 设置认证数据库名
@@ -138,8 +132,7 @@ static int32_t _lmongo_db(lua_State *lua) {
 static int32_t _lmongo_authdb(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *db = luaL_checkstring(lua, 2);
-    lua_pushboolean(lua, ERR_OK == mongo_authdb(*ud, db));
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == mongo_authdb(*ud, db));
 }
 /// <summary>
 /// 设置当前集合名
@@ -150,8 +143,7 @@ static int32_t _lmongo_authdb(lua_State *lua) {
 static int32_t _lmongo_collection(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *col = luaL_checkstring(lua, 2);
-    lua_pushboolean(lua, ERR_OK == mongo_collection(*ud, col));
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == mongo_collection(*ud, col));
 }
 /// <summary>
 /// 设置认证用户名和密码
@@ -164,8 +156,7 @@ static int32_t _lmongo_user_pwd(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *user = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
-    lua_pushboolean(lua, ERR_OK == mongo_user_pwd(*ud, user, pwd));
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == mongo_user_pwd(*ud, user, pwd));
 }
 /// <summary>
 /// 检查响应包错误并提取影响文档数
@@ -221,8 +212,7 @@ static int32_t _lmongo_set_flag(lua_State *lua) {
 static int32_t _lmongo_check_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     mongo_flags flag = (mongo_flags)luaL_checkinteger(lua, 2);
-    lua_pushboolean(lua, mongo_check_flag(*ud, flag));
-    return 1;
+    return lpub_rtn_bool(lua, mongo_check_flag(*ud, flag));
 }
 /// <summary>
 /// 读回已组好的数据包里写着的消息标志位。
@@ -237,8 +227,7 @@ static int32_t _lmongo_pack_check_flag(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     void *pack = lua_touserdata(lua, 1);
     mongo_flags flag = (mongo_flags)luaL_checkinteger(lua, 2);
-    lua_pushboolean(lua, mongo_pack_check_flag(pack, flag));
-    return 1;
+    return lpub_rtn_bool(lua, mongo_pack_check_flag(pack, flag));
 }
 /// <summary>
 /// 清除所有消息标志位
@@ -258,6 +247,18 @@ static int32_t _lmongo_clear_flag(lua_State *lua) {
 static int32_t _lmongo_clear_session(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     mongo_clear_session(*ud);
+    return 0;
+}
+/// <summary>
+/// 续期连接当前绑定会话的超时时刻；未绑定会话时无操作。
+/// 由发送路径在收到应答后调用——服务端处理过带 lsid 的命令就已延长会话寿命。
+/// 会话不在事务里（连接没绑它）时续期只能靠 session:renew()
+/// </summary>
+/// <param name="self" type="userdata">mongo 对象</param>
+/// <returns>无</returns>
+static int32_t _lmongo_session_touch(lua_State *lua) {
+    LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
+    mongo_session_touch(*ud);
     return 0;
 }
 /// <summary>
@@ -772,6 +773,7 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
         { "check_flag",           _lmongo_check_flag },
         { "clear_flag",           _lmongo_clear_flag },
         { "clear_session",        _lmongo_clear_session },
+        { "session_touch",        _lmongo_session_touch },
         { "requestid",            _lmongo_requestid },
         { "pack_hello",           _lmongo_pack_hello },
         { "pack_ping",            _lmongo_pack_ping },
@@ -811,7 +813,7 @@ static int32_t _lmongo_session_new(lua_State *lua) {
     mongo_ctx *mongo = *ud;
     size_t uuid_lens;
     const char *uuid_str = luaL_checklstring(lua, 2, &uuid_lens);
-    int32_t timeout = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t timeout = (int32_t)lpub_check_range(lua, 3, 0, INT32_MAX, "session timeout minutes out of range");
     if (UUID_LENS != uuid_lens) {
         lua_pushnil(lua);
         return 1;
@@ -822,10 +824,32 @@ static int32_t _lmongo_session_new(lua_State *lua) {
     memcpy(session->uuid, uuid_str, UUID_LENS);
     session->mongo = mongo;
     session->timeoutmin = timeout;
-    session->timeout = nowsec() + (uint64_t)timeout * 60;
+    mongo_session_renew(session);
     *psession = session;
     lua_pushvalue(lua, 1);
     lua_setiuservalue(lua, -2, 1);
+    return 1;
+}
+/// <summary>
+/// 把本会话的超时时刻续到"此刻 + logicalSessionTimeoutMinutes"。
+/// 与 mongo 上的 session_touch 分工：那个续的是连接当前绑定的会话，事务外恒为空；
+/// refreshSessions 允许在事务外发，续期只能落到会话自己身上
+/// </summary>
+/// <param name="self" type="userdata">session 对象</param>
+/// <returns>无</returns>
+static int32_t _lmongo_session_renew(lua_State *lua) {
+    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, ud, "session freed");
+    mongo_session_renew(*ud);
+    return 0;
+}
+/// <summary>
+/// 会话距超时还剩多少秒；调用方据此决定何时发 refreshSessions（session:refresh()）
+/// </summary>
+/// <param name="self" type="userdata">session 对象</param>
+/// <returns type="integer">剩余秒数；已过期为 0 或负数；服务端未给出超时分钟数时恒为 0</returns>
+static int32_t _lmongo_session_expires(lua_State *lua) {
+    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, ud, "session freed");
+    lua_pushinteger(lua, (lua_Integer)mongo_session_expires(*ud));
     return 1;
 }
 /// <summary>
@@ -859,8 +883,7 @@ static int32_t _lmongo_session_free(lua_State *lua) {
 /// <returns type="boolean">成功 true；该连接上已有别的 session 处于事务中、或本会话已随旧连接失效时 false</returns>
 static int32_t _lmongo_session_begin(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
-    lua_pushboolean(lua, ERR_OK == mongo_begin(*psession) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == mongo_begin(*psession));
 }
 /// <summary>
 /// 事务操作完成后清理（释放 options 并解除 mongo->session 绑定）
@@ -956,6 +979,8 @@ LUAMOD_API int luaopen_mongo_session(lua_State *lua) {
     };
     luaL_Reg reg_func[] = {
         { "begin",            _lmongo_session_begin },
+        { "renew",            _lmongo_session_renew },
+        { "expires_in",       _lmongo_session_expires },
         { "done",             _lmongo_session_done },
         { "pack_refresh",     _lmongo_session_pack_refresh },
         { "pack_endsession",  _lmongo_session_pack_endsession },

@@ -3,6 +3,7 @@
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local bson   = require("lib.bson")
+local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
 srey.startup(function()
 runner.run("bson", function(t)
@@ -15,6 +16,73 @@ runner.run("bson", function(t)
     t:eq(true,  tb.flag, "decode bool")
     t:check(tb.dbl > 3.13 and tb.dbl < 3.15, "decode double")
     t:check(tb.i64 ~= nil and tb.i64:val() == 3000000000, "decode i64 wrapper")
+
+    -- 1b. 结构非法的文档：报错而不是静默交出前缀
+    do
+        local full = bson.encode({ a = 1, b = "xyz", c = true })
+        local ptr, sz = full:data()
+        local raw = srey.ud_str(ptr, sz)
+        -- 头 4 字节仍声明 sz，缓冲却少 3 字节：遍历会在耗尽前撞不到 EOD
+        local cut = raw:sub(1, sz - 3)
+        local ok, err = pcall(bson.decode, cut)
+        t:eq(false, ok, "截断文档 decode 报错而不是返回半截表")
+        t:check(type(err) == "string" and nil ~= err:find("malformed", 1, true),
+                "报错文案点明文档非法")
+        -- iter 侧同一份缓冲：next() 走完后 error() 认得出，用来区分"读完"和"文档坏了"。
+        -- bson.new(ptr, lens) 是只读模式，头里仍声明 sz 而实际只给 sz-3
+        local it = bson.iter.new(bson.new(ptr, sz - 3))
+        while it:next() do end
+        t:eq(true, it:error(), "iter:error() 对截断文档返回 true")
+        -- 阳性对照：完整文档遍历完 error() 为 false
+        local it2 = bson.iter.new(bson.new(ptr, sz))
+        while it2:next() do end
+        t:eq(false, it2:error(), "iter:error() 对完整文档返回 false")
+        -- 结构完好、只是撞上本实现不认识的类型字节（0x0E symbol，废弃类型不在 bson_type 里）：
+        -- BSON 元素不自带长度，认不出类型就算不出边界，后面一律读不到，故与文档非法同样报错。
+        -- 前 7 字节是合法的 int32 a=1，证明卡住的确实是后面那个 symbol 元素
+        local sym = string.char(0x15, 0, 0, 0,
+                                0x10, 0x61, 0, 1, 0, 0, 0,
+                                0x0E, 0x73, 0, 2, 0, 0, 0, 0x78, 0,
+                                0)
+        local ok2, err2 = pcall(bson.decode, sym)
+        t:eq(false, ok2, "含未支持类型的文档 decode 报错而不是丢掉后半截")
+        t:check(type(err2) == "string" and nil ~= err2:find("unsupported", 1, true),
+                "报错文案点出可能是未支持的类型")
+    end
+
+    -- 1c. 编码侧的四道拒收：混合表、内嵌 NUL 的 key、非法子文档、NULL 指针
+    do
+        -- "洞的个数 == 额外命名 key 的个数" 时旧实现把混合表误判成纯序列，
+        -- 按下标写出，name 被静默丢掉
+        local mixed = {}
+        for i = 1, 10 do mixed[i] = i end
+        mixed[4] = nil
+        mixed.name = "srey"
+        local mb = bson.encode(mixed)
+        local mt = bson.decode(mb)
+        t:eq("srey", mt.name, "混合表按 document 编码，命名 key 不丢")
+        t:eq(1, mt["1"], "混合表的整数 key 编成字符串 key")
+
+        -- key 含内嵌 NUL：e_name 是 cstring，装不下就得拒，不能截断成同一个名字
+        t:eq(false, pcall(bson.encode, { ["a\0b"] = 1 }), "encode: key 含 NUL 被拒")
+        local kb = bson.new()
+        t:eq(false, pcall(kb.utf8, kb, "a\0b", "v"), "b:utf8: key 含 NUL 被拒")
+
+        -- append_doc / append_arr 的子文档必须完整，否则写出只有 type+key 的坏元素
+        local sub = bson.encode({ x = 1 })
+        local sptr, ssz = sub:data()
+        local sraw = srey.ud_str(sptr, ssz)
+        local ab = bson.new()
+        t:eq(true, pcall(ab.append_doc, ab, "d", sraw), "append_doc: 完整子文档照常接受")
+        t:eq(false, pcall(ab.append_doc, ab, "d", ""), "append_doc: 空缓冲被拒")
+        t:eq(false, pcall(ab.append_doc, ab, "d", sraw:sub(1, ssz - 1)), "append_doc: 截断子文档被拒")
+        t:eq(false, pcall(ab.append_arr, ab, "a", "abc"), "append_arr: 不足 5 字节被拒")
+
+        -- NULL lightuserdata：bson.new 会造出永远闭合不了的对象，oid 会写出无 OID 体的元素
+        t:eq(false, pcall(bson.new, yyjson.null, 1024), "bson.new: NULL 指针被拒")
+        local ob = bson.new()
+        t:eq(false, pcall(ob.oid, ob, "k", yyjson.null), "b:oid: NULL 指针被拒")
+    end
 
     -- 2. INT32 / INT64 边界
     b = bson.encode({ max32=2147483647, min32=-2147483648, over=bson.mkint64(2147483648) })
@@ -618,6 +686,17 @@ runner.run("bson", function(t)
         t:eq(false, pcall(function() return b:data() end), "free 后 :data 仍被拒")
         b:free()  -- 重复 free 幂等
         t:check(true, "bson 重复 free 幂等")
+    end
+
+    -- ── binary 子类型的截断回归 ───────────────────────────────────────
+    -- 子类型直接写进一个字节，260 静默截成 4 就是 BSON_SUBTYPE_UUID，业务照 UUID 解释任意二进制
+    do
+        local b = bson.new()
+        t:eq(false, pcall(b.binary, b, "k", 260, "ab"), "b:binary: subtype 260 被拒")
+        t:eq(false, pcall(b.binary, b, "k", -1, "ab"), "b:binary: subtype -1 被拒")
+        t:eq(true, pcall(b.binary, b, "k", 4, "ab"), "b:binary: 合法子类型照常接受")
+        t:eq(false, pcall(bson.mkbinary, 260, "ab"), "bson.mkbinary: subtype 260 被拒")
+        t:eq(true, pcall(bson.mkbinary, 128, "ab"), "bson.mkbinary: 自定义区间 0x80 放行")
     end
 end)
 end)

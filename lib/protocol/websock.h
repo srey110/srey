@@ -78,7 +78,8 @@ struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, in
 /// <param name="uri">HTTP request-target（path?query）；NULL 或空字符串时使用 "/"</param>
 /// <param name="secprot">Sec-WebSocket-Protocol；NULL 或空表示不带子协议</param>
 /// <param name="hsctx">out 握手上下文(含签名与子协议)，作为 task_connect extra 参数传入交协议层管理</param>
-/// <returns>握手包；secprot 校验失败、或取不到 CSPRNG 熵生成 nonce 时返回 NULL(此时 *hsctx 不写入)</returns>
+/// <returns>握手包；host / uri / secprot 任一含 CRLF、secprot 校验失败、或取不到 CSPRNG 熵生成 nonce 时
+/// 返回 NULL(此时 *hsctx 不写入)</returns>
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx);
 /// <summary>
 /// ping包

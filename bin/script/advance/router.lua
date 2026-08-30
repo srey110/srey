@@ -49,8 +49,11 @@
 --   ctx.path    -- "/user/42"
 --   ctx.params  -- 路由参数 {id="42"}
 --   ctx.query   -- 查询参数 {page="1"}
---   ctx.body    -- 请求体（可能为 nil）
---   ctx.headers -- 请求头 table
+--   ctx.body    -- 请求体（可能为 nil）；惰性取，见下
+--   ctx.headers -- 请求头 table；惰性取，见下
+-- ctx 的生命周期只在本次 dispatch 内（与 C 侧 router_req 同口径）：body / headers 首次访问
+-- 时才从底层 pack 物化，而 pack 出了 dispatch 就没了。要带进 srey.fork / timer 延迟用，
+-- 得在 handler 里先读一次（读过即固化在 ctx 上），或者自己把需要的值拷走
 -- ctx 响应方法:
 --   ctx:text(code, body)
 --   ctx:json(code, tbl)
@@ -119,7 +122,7 @@ end
 ---@param ... string|fun(ctx:Ctx, next:fun()) 中间件名称或函数
 ---@return GroupBuilder
 function GroupBuilder:middleware(...)
-    local mws  = {}
+    local mws = {}
     local args = { ... }
     for _, mw in ipairs(self._mws) do
         mws[#mws + 1] = mw
@@ -145,7 +148,19 @@ end
 
 local _PLAIN_HEADERS = { ["Content-Type"] = "text/plain; charset=utf-8" }
 
--- 拒绝 chunked：回 411 后关连接。对齐 C 侧 router_reject_chunked
+-- 本模块所有响应的唯一出口。HEAD 走 http.response_head：头与同一资源的 GET 一致（含真实
+-- Content-Length）但不发报文体，多发的字节会被对端当成下一条响应的开头。
+-- 匹配失败的 4xx、兜底 500 一样要过这里 —— 那两条路径同样可能是 HEAD 请求打进来的
+local function _send(method, fd, skid, code, headers, body)
+    if "HEAD" == method then
+        http.response_head(fd, skid, code, headers, body)
+    else
+        http.response(fd, skid, code, headers, body)
+    end
+end
+
+-- 拒绝 chunked：回 411 后关连接。对齐 C 侧 router_reject_chunked。
+-- 不分流 HEAD：HEAD 请求没有报文体，不可能是 chunked
 local function _reject_chunked(fd, skid)
     http.response(fd, skid, 411, _PLAIN_HEADERS, "chunked request not supported\n")
     srey.close(fd, skid)
@@ -158,7 +173,7 @@ local function _fallback_500(ctx)
     if ctx.responded then
         return
     end
-    pcall(http.response, ctx.fd, ctx.skid, 500, _PLAIN_HEADERS, "Internal Server Error\n")
+    pcall(_send, ctx.method, ctx.fd, ctx.skid, 500, _PLAIN_HEADERS, "Internal Server Error\n")
 end
 
 ---@class Ctx
@@ -171,8 +186,10 @@ end
 ---@field path    string             请求路径，如 "/user/42"
 ---@field params  table<string,string>  路由路径参数，dispatch 匹配后填充
 ---@field query   table<string,string>  URL 查询参数
----@field body    string?            请求体，无则为 nil
----@field headers table<string,string>  请求头
+---@field body    string?            请求体，无则为 nil。惰性物化：首次访问才从 pack 取，
+---                                  出了 dispatch 再读一律为 nil（详见模块头）
+---@field headers table<string,string>  请求头。惰性物化同 body，但出了 dispatch 再读拿到的是
+---                                  空表而不是 nil，分不清"请求没带这个头"和"读晚了"
 ---@field responded boolean            已响应标志;ctx:* 方法自动置位,dispatch 据此补兜底 500;延迟/手动响应须手动置 true 且勿直接调 http.response(否则与兜底叠成双响应)
 ---@field _admitted boolean?           流式路由准入标志，router 内部填写
 ---@field text    fun(self:Ctx, code:integer, body:string?)        纯文本响应
@@ -189,28 +206,58 @@ local function _body_str(body)
     return tostring(body)
 end
 
+-- 四个 ctx 响应方法的共同尾巴：发出去并置位 responded。HEAD 分流见 _send
+local function _ctx_send(ctx, code, headers, body)
+    _send(ctx.method, ctx.fd, ctx.skid, code, headers, body)
+    ctx.responded = true
+end
 -- ctx 响应方法：共享一份挂在 CtxMeta.__index，避免每请求重建 4 个闭包
 local CtxMethods = {}
 function CtxMethods:text(code, body)
-    http.response(self.fd, self.skid, code, nil, _body_str(body))
-    self.responded = true
+    -- 带 Content-Type：不带的话浏览器与代理会按内容嗅探，回显用户输入的纯文本能被当成
+    -- text/html 执行。C 侧 router_req_text 写的就是 text/plain，本模块的 4xx/5xx 也走
+    -- _PLAIN_HEADERS，只有这里漏了
+    _ctx_send(self, code, _PLAIN_HEADERS, _body_str(body))
 end
 function CtxMethods:json(code, tbl)
-    http.response(self.fd, self.skid, code, nil, tbl)
-    self.responded = true
+    _ctx_send(self, code, nil, tbl)
 end
 function CtxMethods:html(code, body)
-    http.response(self.fd, self.skid, code,
-        { ["Content-Type"] = "text/html; charset=utf-8" }, _body_str(body))
-    self.responded = true
+    _ctx_send(self, code, { ["Content-Type"] = "text/html; charset=utf-8" }, _body_str(body))
 end
 function CtxMethods:respond(code, headers, body)
-    http.response(self.fd, self.skid, code, headers, body)
-    self.responded = true
+    _ctx_send(self, code, headers, body)
 end
--- ctx 元表：仅提供共享响应方法；body/headers 为急切物化的 raw 字段（见 _make_ctx），命中 rawget 不走 __index
-local CtxMeta = { __index = CtxMethods }
--- 构造请求上下文；body/headers 急切物化为独立 Lua 值（pack 释放后仍有效，允许 handler 经 srey.fork/timer 延迟访问 ctx），params 由 dispatch 匹配后填充
+-- headers / body 惰性物化：绝大多数 handler 只 ctx:text 响应，从不读它们，而急切物化每请求
+-- 要造一张头表加 20~30 次短字符串分配。首次访问时才建，建好 rawset 进 ctx，之后走 rawget。
+-- 取值全靠 _pack，而 pack 是 dispatch 作用域的（与 C 侧 router_req 同口径），故 dispatch
+-- 末尾会把 _pack 置 nil：延迟到 fork/timer 里再读，拿到的是 nil 而不是悬空指针
+local _ctx_lazy = {
+    headers = function(ctx)
+        return ctx._pack and http.heads(ctx._pack) or {}
+    end,
+    body = function(ctx)
+        return ctx._pack and http.datastr(ctx._pack) or nil
+    end,
+}
+local CtxMeta = {
+    __index = function(ctx, key)
+        local m = CtxMethods[key]
+        if nil ~= m then
+            return m
+        end
+        local build = _ctx_lazy[key]
+        if nil == build then
+            return nil
+        end
+        local v = build(ctx)
+        if nil ~= v then
+            rawset(ctx, key, v)-- 物化一次即固定下来，之后不再依赖 _pack
+        end
+        return v
+    end,
+}
+-- 构造请求上下文。headers / body 惰性取（见 _ctx_lazy），params 由 dispatch 匹配后填充
 local function _make_ctx(fd, skid, pack, client, method, parsed, version)
     return setmetatable({
         fd      = fd,
@@ -220,8 +267,7 @@ local function _make_ctx(fd, skid, pack, client, method, parsed, version)
         version = version,
         path    = parsed.path,
         query   = parsed.param or {},
-        body    = http.datastr(pack),
-        headers = http.heads(pack) or {},
+        _pack   = pack,
         responded = false,
     }, CtxMeta)
 end
@@ -252,7 +298,7 @@ Router.__index = Router
 ---创建独立路由器实例
 ---@return Router
 function Router.new()
-    return setmetatable({
+    local r = setmetatable({
         _c_router  = _srey_router_new(), -- C 路由器（持有路径段数组，匹配在 C 侧完成）
         -- [C索引] = {handler, mws, raw}。C 侧索引只增不回收也没有删除接口，add 成功即在此写入，
         -- 中间无失败点，所以 match 命中的 idx 必然取得到 entry
@@ -265,7 +311,31 @@ function Router.new()
         -- 正在接收的流式请求：[fd] = {skid, route, ctx}。只按 fd 索引、把 skid 存进记录里比对，
         -- 省掉每帧一个 "fd:skid" 字符串键；fd 被新连接复用时 skid 对不上，当没有记录处理
         _streams   = {},
+        _st_watched = false,-- 是否已订阅 CLOSE，见 _watch_closed_once
     }, Router)
+    return r
+end
+
+-- 自订阅连接关闭：流式请求上下文只有 _st_drop 能回收，而 srey.on_closed 是单槽、库抢不到，
+-- 漏接就是每条没收齐的 chunked 请求常驻约 5KB 直到进程退出。业务仍可照常用 on_closed。
+-- watch_closed 没有反注册，故推迟到第一条流式路由才订：没有流式路由的 router 不占位
+function Router:_watch_closed_once()
+    if self._st_watched then
+        return
+    end
+    self._st_watched = true
+    local r = self
+    srey.watch_closed(function(_, fd, skid)
+        if nil == r._streams[fd] then
+            return
+        end
+        -- 观察者由 _net_close_dispatch 在主线程直接调，不在协程里，而 _st_drop 要回调用户的
+        -- on_chunk(ABORT)——它在其余三条路径上都是可挂起的，这里 fork 出协程保持一致。
+        -- 推迟到本条消息末尾才跑：fd 被新连接复用时 _st_drop 按 skid 比对，认不出就不动
+        srey.fork(function()
+            r:_st_drop(fd, skid)
+        end)
+    end)
 end
 
 ---注册具名中间件，后续可通过名称字符串在 use / middleware / 路由 mws 中引用
@@ -289,7 +359,7 @@ end
 -- 合并当前 group 栈的前缀与中间件
 function Router:_ctx()
     local prefix = ""
-    local mws    = {}
+    local mws = {}
     for _, frame in ipairs(self._stack) do
         prefix = prefix .. frame.prefix
         for _, mw in ipairs(frame.mws) do
@@ -325,7 +395,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
         WARN("router: %s '%s' handler must be a function, got %s.", method, full, type(cb))
         return _bad_entry
     end
-    local mws  = {}
+    local mws = {}
     for _, mw in ipairs(ctx_mws) do
         mws[#mws + 1] = mw
     end
@@ -342,9 +412,9 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
             mws[#mws + 1] = self:_resolve(extra_mws[i])
         end
     end
-    -- 去重由 C 侧 router_add_index 做：它按 (方法掩码有交集, 匹配意义上的段序列) 比对，
-    -- 能覆盖这里用字符串 key 看不出来的两类——先注册的 ANY /x 遮住后注册的 GET /x、
-    -- /u/{id} 与 /u/{uid} 参数名不同但路由等价。dispatch 取首条命中，被遮的那条永远够不着
+    -- 去重由 C 侧 router_add_index 做：它按 (已注册项的掩码把新掩码整个包住, 匹配意义上的
+    -- 段序列) 比对，能覆盖这里用字符串 key 看不出来的两类——先注册的 ANY /x 遮住后注册的
+    -- GET /x、/u/{id} 与 /u/{uid} 参数名不同但路由等价。dispatch 取首条命中，被遮的永远够不着
     local ok, code = self._c_router:add(method, full)
     if not ok then
         if -2 == code then
@@ -356,7 +426,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
     end
     local idx = code
     local router = self
-    local entry  = {
+    local entry = {
         raw      = full,     -- 原始完整路径字符串（含前缀），调试用
         handler  = handler,  -- 普通路由处理函数 fun(ctx)；流式路由为 nil
         on_chunk = on_chunk, -- 流式路由数据回调 fun(ctx, slice, data)；普通路由为 nil
@@ -380,6 +450,7 @@ end
 
 -- 流式路由注册
 function Router:_add_stream(method, path, on_chunk, extra_mws)
+    self:_watch_closed_once()
     return self:_add_common(method, path, nil, on_chunk, extra_mws)
 end
 
@@ -409,13 +480,34 @@ function Router:use(mw)
     self._mw_version = self._mw_version + 1
 end
 
----注册 GET 路由
+---注册 GET 路由；同时接住 HEAD——HEAD 的语义就是"要 GET 的头不要体"，分开注册会让 HEAD 落 404。
+---handler 照常写 body，响应侧按请求方法自动抑制报文体（见 _ctx_send）
 ---@param path string 路由路径，支持 {param}、{param?}、* 语法
 ---@param handler fun(ctx:Ctx) 路由处理函数
 ---@param mws (string|fun(ctx:Ctx, next:fun()))[]? 路由级中间件列表（名称字符串或函数）
 ---@return RouteEntry entry 路由条目，可链式调用 :name("key") 命名
 function Router:get(path, handler, mws)
-    return self:_add("GET", path, handler, mws)
+    return self:_add("GET|HEAD", path, handler, mws)
+end
+
+---注册独立的 HEAD 路由。多数情况不需要：get() 已经覆盖 HEAD。只在 HEAD 要跑与 GET 不同的
+---handler 时用，且须注册在同路径的 get() 之前——反过来会被那条的 GET|HEAD 掩码整个包住
+---而遭遮蔽忽略（先注册者胜）
+---@param path string 路由路径，支持 {param}、{param?}、* 语法
+---@param handler fun(ctx:Ctx) 路由处理函数
+---@param mws (string|fun(ctx:Ctx, next:fun()))[]? 路由级中间件列表（名称字符串或函数）
+---@return RouteEntry entry 路由条目，可链式调用 :name("key") 命名
+function Router:head(path, handler, mws)
+    return self:_add("HEAD", path, handler, mws)
+end
+
+---注册 OPTIONS 路由
+---@param path string 路由路径，支持 {param}、{param?}、* 语法
+---@param handler fun(ctx:Ctx) 路由处理函数
+---@param mws (string|fun(ctx:Ctx, next:fun()))[]? 路由级中间件列表（名称字符串或函数）
+---@return RouteEntry entry 路由条目，可链式调用 :name("key") 命名
+function Router:options(path, handler, mws)
+    return self:_add("OPTIONS", path, handler, mws)
 end
 
 ---注册 POST 路由
@@ -463,12 +555,12 @@ function Router:any(path, handler, mws)
     return self:_add("ANY", path, handler, mws)
 end
 
----注册流式 POST 路由：请求体逐块交给 on_chunk，router 不缓存；只有 net_recv 认它，用它就必须
----把 closed 接到 on_closed。与普通路由的不同：中间件链只做准入，它 next 之后的后置处理在请求体
----到达前就跑完，拦不住已放行的流；响应由 on_chunk 自己写，到 SLICE_TYPE.END 未响应兜底 500；
----chunked 时 ctx.body 为 nil、请求体只从 data 取，slice == 0 那次 data 即 ctx.body。
----on_chunk 与准入中间件都不能挂起——分片逐帧投递，挂起期间下一帧会在新协程上带同一个 ctx 重入，
----中间件挂起丢帧、on_chunk 挂起则两帧交错；要异步就 srey.fork 并置 ctx.responded = true
+---注册流式 POST 路由：请求体逐块交给 on_chunk，router 不缓存；只有 net_recv 认它。连接中途断开
+---的清理已由本函数自订阅 CLOSE 接管，不必再把 closed 接到 on_closed。
+---与普通路由的不同：中间件链只做准入，它 next 之后的后置处理在请求体到达前就跑完，拦不住已放行
+---的流；响应由 on_chunk 自己写，到 SLICE_TYPE.END 未响应兜底 500；chunked 时 ctx.body 为 nil、
+---请求体只从 data 取，slice == 0 那次 data 即 ctx.body。
+---on_chunk 与准入中间件都不能挂起（分片逐帧投递，挂起会丢帧或让两帧交错）；要异步就 srey.fork 并置 ctx.responded = true
 ---@param path string 路由路径，支持 {param}、{param?}、* 语法
 ---@param on_chunk fun(ctx:Ctx, slice:integer, data:string?) 数据回调，slice 见 SLICE_TYPE 与 STREAM_ABORT
 ---@param mws (string|fun(ctx:Ctx, next:fun()))[]? 路由级中间件列表（名称字符串或函数）
@@ -506,6 +598,36 @@ function Router:middleware(...)
     return _gb_new(self, "", mws)
 end
 
+---两条派发入口（一次到齐 / chunked 首帧）共用的前半段：取状态行 → C 侧匹配 → 建 ctx。
+---方法识别、url_parse、空段过滤、路由扫描全在 C 侧完成，状态码由 C 一处决定（200/400/404/405）。
+---匹配不上就按那个码回响应；要不要顺带关连接由调用方给 close_on_fail 决定
+---@param fd integer socket fd
+---@param skid integer 连接 skid
+---@param pack lightuserdata http_pack_ctx 指针
+---@param client integer? 连接方向标志，1=客户端 0=服务端；不是地址，取对端 IP 用 utils.remote_addr(fd)
+---@param close_on_fail boolean 匹配失败回完响应后是否顺带关连接
+---@return Ctx? ctx 请求上下文；非 HTTP 包或未匹配返回 nil（响应已发）
+---@return RouteEntry? route 命中的路由条目
+function Router:_match_ctx(fd, skid, pack, client, close_on_fail)
+    -- status 为 nil 表示非 HTTP 包（如连接/断开事件），直接忽略
+    local status = http.status(pack)
+    if not status then
+        return nil
+    end
+    local method = status[1]
+    local ok, code, parsed, idx, params = self._c_router:match(method, status[2] or "")
+    if not ok then
+        _send(method, fd, skid, code, _PLAIN_HEADERS, http.code_status(code) .. "\n")
+        if close_on_fail then
+            srey.close(fd, skid)
+        end
+        return nil
+    end
+    local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
+    ctx.params = params
+    return ctx, self._routes[idx]
+end
+
 ---分发 HTTP 请求：解析方法和路径，匹配路由后执行中间件链；URL 解析失败响应 400,无匹配响应 404。
 ---只认一次到齐的请求（on_recved 的 slice == 0）；chunked 请求须走 net_recv，
 ---直接喂给本函数会把首包当成一个 body 为空的完整请求
@@ -514,21 +636,10 @@ end
 ---@param pack lightuserdata http_pack_ctx 指针
 ---@param client integer? 连接方向标志，1=客户端 0=服务端；不是地址，取对端 IP 用 utils.remote_addr(fd)
 function Router:dispatch(fd, skid, pack, client)
-    -- status 为 nil 表示非 HTTP 包（如连接/断开事件），直接忽略
-    local status = http.status(pack)
-    if not status then
+    local ctx, route = self:_match_ctx(fd, skid, pack, client, false)
+    if not ctx then
         return
     end
-    local method = status[1]
-    -- 方法识别、url_parse、空段过滤、路由扫描全在 C 侧完成，状态码由 C 一处决定（200/400/404/405）
-    local ok, code, parsed, idx, params = self._c_router:match(method, status[2] or "")
-    if not ok then
-        http.response(fd, skid, code, _PLAIN_HEADERS, http.code_status(code) .. "\n")
-        return
-    end
-    local route = self._routes[idx]
-    local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
-    ctx.params = params
     -- 链内任意位置抛出异常均由 srey.xpcall 兜底（自动 ERROR + traceback），避免 handler/中间件崩溃丢失响应
     local run_ok = srey.xpcall(_run_chain, self:_chain_of(route), ctx, 1)
     -- 流式路由命中一次到齐的请求：准入通过才把请求体按 slice == 0 一次交出去
@@ -536,6 +647,9 @@ function Router:dispatch(fd, skid, pack, client)
         srey.xpcall(route.on_chunk, ctx, 0, ctx.body)
     end
     _fallback_500(ctx)
+    -- pack 的生命周期到本次 dispatch 为止（同 C 侧 router_req）。摘掉引用后，handler 若把 ctx
+    -- 带进 fork/timer 再读 headers/body，拿到的是 nil；留着的话就是对已释放内存解引用
+    ctx._pack = nil
 end
 
 -- 摘掉一条流式记录并投 STREAM_ABORT。skid 非 nil 时还要对得上（fd 可能已被新连接复用）。
@@ -564,27 +678,19 @@ end
 -- 流式首帧：匹配路由 → 跑准入链 → 建记录 → 回调 SLICE_TYPE.START。
 -- 任一步不通过都回响应并关连接：请求体还在后面，连接留着也收不了
 function Router:_st_begin(fd, skid, pack, client)
-    local status = http.status(pack)
-    if not status then
-        return
-    end
-    -- 同连接已有记录说明上一条流式请求没收尾，丢旧的重开
+    -- 同连接已有记录说明上一条流式请求没收尾，丢旧的重开。排在匹配之前：新的首帧一到，
+    -- 旧记录就作废了，哪怕这一帧本身不合法也不该把它留着
     self:_st_drop(fd)
-    local method = status[1]
-    local ok, code, parsed, idx, params = self._c_router:match(method, status[2] or "")
-    if not ok then
-        http.response(fd, skid, code, _PLAIN_HEADERS, http.code_status(code) .. "\n")
-        srey.close(fd, skid)
+    -- 匹配失败要关连接：请求体还在后面，连接留着也收不了
+    local ctx, route = self:_match_ctx(fd, skid, pack, client, true)
+    if not ctx then
         return
     end
-    local route = self._routes[idx]
     -- 命中的不是流式路由：请求体正一块块往这边来，普通 handler 接不住，回 411 让客户端改用定长
     if not route.on_chunk then
         _reject_chunked(fd, skid)
         return
     end
-    local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
-    ctx.params = params
     local run_ok = srey.xpcall(_run_chain, self:_chain_of(route), ctx, 1)
     -- 链尾是准入哨兵而非 handler；中间件截断即拒绝，它没写响应就兜底 500
     if not run_ok or not ctx._admitted then
@@ -592,6 +698,12 @@ function Router:_st_begin(fd, skid, pack, client)
         srey.close(fd, skid)
         return
     end
+    -- 这条 ctx 要跨帧活到 END/ABORT，而 pack 只在首帧有效：把 headers/body 就地固化下来，
+    -- 之后摘掉 _pack。不固化的话后续帧读 headers 会拿到 nil —— 流式是低频路径，
+    -- 这次急切物化的开销无所谓，换的是"跨帧还读得到请求头"这条既有行为不变
+    local _ = ctx.headers
+    _ = ctx.body
+    ctx._pack = nil
     -- 建记录要排在回调之前：回调里若关连接，也才找得到这条记录
     local rec = { skid = skid, route = route, ctx = ctx }
     self._streams[fd] = rec
@@ -637,8 +749,8 @@ function Router:net_recv(pktype, fd, skid, client, slice, data, size)
     return self:_st_feed(fd, skid, data, slice)
 end
 
----连接关闭时清掉该连接尚未收齐的流式请求 —— 在 on_closed 回调中调用。
----注册了流式路由就必须接上：ctx 与用户挂在它上面的东西只有这里能回收，
+---连接关闭时清掉该连接尚未收齐的流式请求。注册第一条流式路由时已经经 srey.watch_closed
+---自订阅，正常不必再调；留作自己接管 CLOSE 分发（不走 srey 的分发器）时的手动入口。
 ---回收前会投一次 STREAM_ABORT
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid

@@ -395,13 +395,18 @@ char *readall(const char *file, size_t *lens) {
         return NULL;
     }
     if (0 != fseek(fp, 0, SEEK_END)) {
+        /* fclose 失败会盖掉 fseek 留下的 errno，先存后还 */
+        int32_t err = errno;
         fclose(fp);
+        errno = err;
         return NULL;
     }
     long sz = ftell(fp);
-    /* ftell 对管道/特殊文件返回 -1，文件大小 0 也视为无效 */
+    /* ftell 对管道/特殊文件返回 -1，文件大小 0 也视为无效。这条不来自失败的系统调用，
+       errno 里躺着的是上一次调用的陈旧值，得自己补一个 */
     if (sz <= 0) {
         fclose(fp);
+        errno = EINVAL;
         return NULL;
     }
     rewind(fp);
@@ -410,8 +415,9 @@ char *readall(const char *file, size_t *lens) {
     size_t got = fread(buf, 1, (size_t)sz, fp);
     fclose(fp);
     if (got != (size_t)sz) {
-        /* 短读：文件在读取过程中被截断或发生 I/O 错误 */
+        /* 短读：文件在读取过程中被截断或发生 I/O 错误；fread 不保证置 errno，同上自己补 */
         FREE(buf);
+        errno = EIO;
         return NULL;
     }
     buf[sz] = '\0';

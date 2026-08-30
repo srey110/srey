@@ -31,7 +31,7 @@ function printd(fmt, ...)
     if not PRINT_DEBUG then
         return
     end
-    local info = debug.getinfo(2)
+    local info = debug.getinfo(2, "Sl")-- 只用 short_src 与 currentline，理由同 log.lua 的 _log
     local file = string.match(info.short_src, string.format("^.+%s(.+)$", pathsep)) or info.short_src
     local tag = string.format("[%s][%s %d] ", os.date("%H:%M:%S", os.time()), file, info.currentline)
     print(string.format(tag..fmt, ...))
@@ -170,7 +170,7 @@ function dump(obj, offset)
     -- 返回 true, count 或 false。
     local isArray = function(arr)
         local count = 0
-        local max   = 0
+        local max = 0
         for k, _ in pairs(arr) do
             if type(k) ~= "number" or k < 1 or k ~= math.floor(k) then
                 return false

@@ -136,12 +136,15 @@ srey.startup(function()
             end
         end
     end)
-    if ERR_FAILED == srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", _PORT, NET_EV.ACCEPT) then
-        ERROR("fake smtp: listen %d failed.", _PORT)
+runner.run("smtp_fake", function(t)
+    -- listen 守卫必须在 run 体内：在外面 return 会跳过整个 runner.run，本模块永远不向
+    -- reporter 上报，而 reporter 要凑齐 #TESTS 个模块才打印汇总——一个没到，整轮的
+    -- 汇总一行都不出，其余模块全过也看不见
+    local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", _PORT, NET_EV.ACCEPT)
+    if ERR_FAILED == lid then
+        t:fail("fake smtp: listen " .. _PORT .. " failed")
         return
     end
-
-runner.run("smtp_fake", function(t)
     local ctx = smtp.new("127.0.0.1", _PORT, SSL_NAME.NONE, "user", "psw")
     if not ctx:connect() then
         t:fail("fake smtp connect")
@@ -221,5 +224,9 @@ runner.run("smtp_fake", function(t)
     -- 放在最后是因为服务端逐连接轮换，要等上面这些重连都发生过才凑齐两种
     t:check(ehlo_hosts["normal.smtp.local"], "正常问候下 EHLO 用服务端给的主机名")
     t:check(ehlo_hosts["localhost"], "裸 LF 问候下 EHLO 退回 localhost")
+
+    -- 收尾:把端口还回去。不还的话进程要等 SIGINT 才收，紧接着再起一次 srey 就撞
+    -- EADDRINUSE，上面那道 listen 守卫直接判失败
+    srey.unlisten(lid)
 end)
 end)

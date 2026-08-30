@@ -39,11 +39,37 @@ static int32_t _log_use_file = 1; //是否将日志写文件
 static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准输出
 static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
 
+// 读一个配置字段：取到就写进去，取不到且字段确实存在才告警（可选字段缺席是正常的）。
+// 键名在整条语句里只出现一次——原来每段都要写两遍（一遍取值一遍拼日志），
+// 复制上一段只改了其中一个的话，就变成读错键而日志报对键名，排查时被带向反方向
+#define CFG_NUM(obj, prefix, keystr, max, field, type) do { \
+        double _v; \
+        if (ERR_OK == json_get_num_range((obj), (keystr), 0, (max), &_v)) { \
+            (field) = (type)_v; \
+        } else if (json_has((obj), (keystr))) { \
+            PRINT("%s%s invalid, use default.", (prefix), (keystr)); \
+        } \
+    } while (0)
+#define CFG_STR(obj, prefix, keystr, field) do { \
+        if (ERR_OK != json_get_string((obj), (keystr), (field), sizeof(field)) \
+            && json_has((obj), (keystr))) { \
+            PRINT("%s%s invalid, use default.", (prefix), (keystr)); \
+        } \
+    } while (0)
+// 拼路径后判有没有截断。SNPRINTF 截断时返回的是"本应写入的长度"而不是实际写入，
+// 不判就会拿到一条指向别处的路径 —— 建目录建到别处、删文件删到别处
+static int32_t _path_ok(int32_t rtn, size_t cap) {
+    return rtn >= 0 && (size_t)rtn < cap;
+}
 // 读取进程目录下 configs/config.json 的内容，返回堆分配字符串（调用方负责释放）
 static char *_config_read(void) {
     char config[PATH_LENS];
-    SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
+    int32_t plen = SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
         procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
+    if (!_path_ok(plen, sizeof(config))) {
+        PRINT("config path too long under %s.", procpath());
+        return NULL;
+    }
     size_t lens;
     char *info = readall(config, &lens);
     if (NULL == info) {
@@ -66,79 +92,28 @@ static void _parse_config(config_ctx *cnf) {
         return;
     }
     yyjson_val *json = yyjson_doc_get_root(doc);
-    double num;
-    if (ERR_OK == json_get_num_range(json, "serviceid", 0, UINT16_MAX, &num)) {
-        cnf->serviceid = (uint16_t)num;
-    } else {
-        PRINT("serviceid invalid, use default.");
-    }
-    if (ERR_OK == json_get_num_range(json, "nnet", 0, UINT16_MAX, &num)) {
-        cnf->nnet = (uint16_t)num;
-    } else {
-        PRINT("nnet invalid, use default.");
-    }
-    if (ERR_OK == json_get_num_range(json, "nworker", 0, UINT16_MAX, &num)) {
-        cnf->nworker = (uint16_t)num;
-    } else {
-        PRINT("nworker invalid, use default.");
-    }
-    if (ERR_OK == json_get_num_range(json, "loglv", 0, UINT8_MAX, &num)) {
-        cnf->loglv = (uint8_t)num;
-    } else {
-        PRINT("loglv invalid, use default.");
-    }
-    if (ERR_OK == json_get_num_range(json, "stacksize", 0, UINT32_MAX, &num)) {
-        cnf->stacksize = (uint32_t)num;
-    } else {
-        PRINT("stacksize invalid, use default.");
-    }
-    if (ERR_OK == json_get_num_range(json, "twqueuelens", 0, UINT32_MAX, &num)) {
-        cnf->twqueuelens = (uint32_t)num;
-    } else {
-        PRINT("twqueuelens invalid, use default.");
-    }
-    if (ERR_OK == json_get_num_range(json, "logqueuelens", 0, UINT32_MAX, &num)) {
-        cnf->logqueuelens = (uint32_t)num;
-    } else {
-        PRINT("logqueuelens invalid, use default.");
-    }
-    if (ERR_OK != json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns))) {
-        PRINT("dns invalid, use default.");
-    }
-    if (ERR_OK != json_get_string(json, "script", cnf->script, sizeof(cnf->script))) {
-        PRINT("script invalid, use default.");
-    }
+    CFG_NUM(json, "", "serviceid", UINT16_MAX, cnf->serviceid, uint16_t);
+    CFG_NUM(json, "", "nnet", UINT16_MAX, cnf->nnet, uint16_t);
+    CFG_NUM(json, "", "nworker", UINT16_MAX, cnf->nworker, uint16_t);
+    CFG_NUM(json, "", "loglv", UINT8_MAX, cnf->loglv, uint8_t);
+    CFG_NUM(json, "", "stacksize", UINT32_MAX, cnf->stacksize, uint32_t);
+    CFG_NUM(json, "", "twqueuelens", UINT32_MAX, cnf->twqueuelens, uint32_t);
+    CFG_NUM(json, "", "logqueuelens", UINT32_MAX, cnf->logqueuelens, uint32_t);
+    CFG_STR(json, "", "dns", cnf->dns);
+    CFG_STR(json, "", "script", cnf->script);
     // debug / harbor 各为嵌套对象
     yyjson_val *debug = yyjson_obj_get(json, "debug");
     if (NULL != debug) {
-        if (ERR_OK != json_get_string(debug, "name", cnf->debug.name, sizeof(cnf->debug.name))) {
-            PRINT("debug.name invalid, use default.");
-        }
-        if (ERR_OK != json_get_string(debug, "ip", cnf->debug.ip, sizeof(cnf->debug.ip))) {
-            PRINT("debug.ip invalid, use default.");
-        }
-        if (ERR_OK == json_get_num_range(debug, "port", 0, UINT16_MAX, &num)) {
-            cnf->debug.port = (uint16_t)num;
-        } else {
-            PRINT("debug.port invalid, use default.");
-        }
+        CFG_STR(debug, "debug.", "name", cnf->debug.name);
+        CFG_STR(debug, "debug.", "ip", cnf->debug.ip);
+        CFG_NUM(debug, "debug.", "port", UINT16_MAX, cnf->debug.port, uint16_t);
     }
     yyjson_val *harbor = yyjson_obj_get(json, "harbor");
     if (NULL != harbor) {
-        if (ERR_OK != json_get_string(harbor, "name", cnf->harbor.name, sizeof(cnf->harbor.name))) {
-            PRINT("harbor.name invalid, use default.");
-        }
-        if (ERR_OK != json_get_string(harbor, "ssl", cnf->harbor.ssl, sizeof(cnf->harbor.ssl))) {
-            PRINT("harbor.ssl invalid, use default.");
-        }
-        if (ERR_OK != json_get_string(harbor, "ip", cnf->harbor.ip, sizeof(cnf->harbor.ip))) {
-            PRINT("harbor.ip invalid, use default.");
-        }
-        if (ERR_OK == json_get_num_range(harbor, "port", 0, UINT16_MAX, &num)) {
-            cnf->harbor.port = (uint16_t)num;
-        } else {
-            PRINT("harbor.port invalid, use default.");
-        }
+        CFG_STR(harbor, "harbor.", "name", cnf->harbor.name);
+        CFG_STR(harbor, "harbor.", "ssl", cnf->harbor.ssl);
+        CFG_STR(harbor, "harbor.", "ip", cnf->harbor.ip);
+        CFG_NUM(harbor, "harbor.", "port", UINT16_MAX, cnf->harbor.port, uint16_t);
     }
     yyjson_doc_free(doc);
 }
@@ -149,7 +124,14 @@ static void _open_log(uint32_t capacity) {
         return;
     }
     char logfile[PATH_LENS];
-    SNPRINTF(logfile, sizeof(logfile), "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
+    int32_t plen = SNPRINTF(logfile, sizeof(logfile), "%s%s%s%s",
+        procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
+    if (!_path_ok(plen, sizeof(logfile))) {
+        // 装不下就退化成终端输出：截断后的路径指向别的目录，建出来的 logs 与写进去的文件都不在预期位置
+        fprintf(stderr, "log dir path too long, log to terminal.\n");
+        log_init(NULL, capacity);
+        return;
+    }
     if (ERR_OK != ACCESS(logfile, 0)) {
         if (ERR_OK != MKDIR(logfile)) {
             log_init(NULL, capacity);
@@ -162,7 +144,12 @@ static void _open_log(uint32_t capacity) {
         // sectostr 失败 fallback：用 pid + 当前毫秒，避免多次启动共享 .log 文件名
         SNPRINTF(time, sizeof(time), "%d_%"PRIu64, (int32_t)GETPID(), nowms());
     }
-    SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens, "%s%s", time, ".log");
+    plen = SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens, "%s%s", time, ".log");
+    if (!_path_ok(plen, sizeof(logfile) - lens)) {
+        fprintf(stderr, "log file path too long, log to terminal.\n");
+        log_init(NULL, capacity);
+        return;
+    }
     logstream = fopen(logfile, "a");
     if (NULL == logstream) {
         // fopen 失败时退化为终端输出；写 stderr 以便部署排查
@@ -250,20 +237,36 @@ static void _on_sigcb(int32_t sig, void *arg) {
 // 注册信号处理、启动服务并阻塞等待退出信号
 // ready_fd：daemon 化父子同步 pipe 写端，-1 表示无需通知（Windows / -d 前台模式）；
 // service_init 成功时写 'R' 通知父进程；失败时仅 close 让父进程 read 返 0 (EOF) 即知失败
-static int32_t service_hug(int32_t ready_fd) {
+// devnull >= 0 时把标准 IO 接到它上面，但只在 service_init 成功之后——配置诊断全走 PRINT
+// 且排在 _open_log 之前，提前接过去的话配置错的 daemon 既不打终端也不进日志文件地静默起来
+static int32_t service_hug(int32_t ready_fd, int32_t devnull) {
     if (ERR_OK != hug_init(&_hug)) {
 #ifndef OS_WIN
         if (ready_fd >= 0) {
             close(ready_fd);
         }
+        if (devnull >= 0) {
+            close(devnull);
+        }
 #else
     (void)ready_fd;//Windows 永远传 -1, 不需要 daemon 父子同步
+    (void)devnull;
 #endif
         return ERR_FAILED;
     }
     sighandle(_on_sigcb, &_hug);
     int32_t rtn = service_init();
 #ifndef OS_WIN
+    if (devnull >= 0) {
+        if (ERR_OK == rtn) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        if (devnull > STDERR_FILENO) {
+            close(devnull);
+        }
+    }
     if (ready_fd >= 0) {
         if (ERR_OK == rtn) {
             char r = 'R';
@@ -271,6 +274,8 @@ static int32_t service_hug(int32_t ready_fd) {
         }
         close(ready_fd);
     }
+#else
+    (void)devnull;
 #endif
     if (ERR_OK == rtn) {
         hug_wait(&_hug);
@@ -403,10 +408,26 @@ static BOOL wsv_install(LPCTSTR name) {
     if (!scm) {
         return FALSE;
     }
-    char tmp[PATH_LENS];
+    // ImagePath = "<自身路径>" "-r" "<服务名>"：propath 最长 MAX_PATH-1，服务名 Windows 上限
+    // 256，加固定的引号与 "-r" 共 10 字节；+512 把这两截连同 NUL 一起兜住，合法入参不会截断
+    char tmp[PATH_LENS + 512];
     char propath[PATH_LENS] = { 0 };
-    GetModuleFileName(NULL, propath, sizeof(propath));
-    SNPRINTF(tmp, sizeof(tmp), "\"%s\" \"-r\" \"%s\"", propath, name);
+    // 两个返回值都必须查：GetModuleFileName 装不下时返回缓冲大小(XP 还不补 NUL)，
+    // snprintf 截断时返回"本应写入的长度"。任一漏查都会把残缺 ImagePath 交给 CreateService，
+    // 而它并不校验，注册照样成功、这里照打"install successfully"，SCM 之后永远起不来该服务
+    DWORD plen = GetModuleFileName(NULL, propath, (DWORD)sizeof(propath));
+    if (0 == plen
+        || plen >= sizeof(propath)) {
+        PRINT("get module file name failed or path too long.");
+        CloseServiceHandle(scm);
+        return FALSE;
+    }
+    int32_t tlen = SNPRINTF(tmp, sizeof(tmp), "\"%s\" \"-r\" \"%s\"", propath, name);
+    if (!_path_ok(tlen, sizeof(tmp))) {
+        PRINT("service image path too long, install aborted.");
+        CloseServiceHandle(scm);
+        return FALSE;
+    }
     SC_HANDLE service = CreateService(scm,
         name,
         name,
@@ -476,7 +497,7 @@ int main(int argc, char *argv[]) {
 #ifdef OS_WIN
     if (1 == argc) {
         _log_use_file = 0;
-        return service_hug(-1);
+        return service_hug(-1, -1);
     }
     if (3 != argc) {
         _useage();
@@ -520,28 +541,28 @@ int main(int argc, char *argv[]) {
 #else
     if (argc > 1 && 0 == strcmp("-d", argv[1])) {
         _log_use_file = 0;
-        return service_hug(-1);
+        return service_hug(-1, -1);
     }
     if (argc > 1 && 0 != strcmp("-b", argv[1])) {
         PRINT("UseAge:\"./srey\" or \"./srey -d\" or \"./srey -b\".");
         return ERR_FAILED;
     }
     int32_t is_daemon = (argc > 1 && 0 == strcmp("-b", argv[1]));
-    // daemon 模式下用 pipe 同步：子进程 service_init 成功写 'R'，失败 close 让父端读 EOF。
-    // 防止父进程在子进程 daemon 化（setsid/chdir/open）或 service_init 失败时报假成功
+    // 无参与 -b 都要 fork，两条都用 pipe 同步：子进程 service_init 成功写 'R'，失败 close
+    // 让父端读 EOF。少了它父进程只能恒返 ERR_OK，配置错、端口占用一律报成功，
+    // `./srey && echo ok` 在服务根本没起来时照样打 ok
     int32_t sync_pipe[2] = { -1, -1 };
-    if (is_daemon) {
-        if (-1 == pipe(sync_pipe)) {
-            PRINT("pipe error: %s", ERRORSTR(errno));
-            return ERR_FAILED;
-        }
+    if (-1 == pipe(sync_pipe)) {
+        PRINT("pipe error: %s", ERRORSTR(errno));
+        return ERR_FAILED;
     }
     pid_t pid = fork();
     if (0 == pid) {
         // 子进程：关 pipe 读端，daemon 化途中任一失败先 close 写端再 exit，让父端 read EOF
+        close(sync_pipe[0]);
+        int32_t devnull = -1;
         if (is_daemon) {
-            close(sync_pipe[0]);
-            //daemon 化：脱离控制终端，重定向标准 IO 到 /dev/null
+            //daemon 化：脱离控制终端，标准 IO 稍后由 service_hug 接到 /dev/null
             if ((pid_t)-1 == setsid()) {
                 PRINT("setsid error: %s", ERRORSTR(errno));
                 close(sync_pipe[1]);
@@ -553,59 +574,57 @@ int main(int argc, char *argv[]) {
                 close(sync_pipe[1]);
                 return ERR_FAILED;
             }
-            //关闭并重定向 stdin/stdout/stderr 到 /dev/null
-            int32_t devnull = open("/dev/null", O_RDWR);
+            devnull = open("/dev/null", O_RDWR);
             if (-1 == devnull) {
                 PRINT("open /dev/null error: %s", ERRORSTR(errno));
                 close(sync_pipe[1]);
                 return ERR_FAILED;
             }
-            dup2(devnull, STDIN_FILENO);
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > STDERR_FILENO) {
-                close(devnull);
-            }
         }
         char sh[PATH_LENS];
-        SNPRINTF(sh, sizeof(sh), "%s%s%s", procpath(), PATH_SEPARATORSTR, "stop.sh");
-        _stop_sh(sh);
-        int32_t rtn = service_hug(is_daemon ? sync_pipe[1] : -1);
-        remove(sh);//服务退出，移除stop.sh
+        // 截断后 sh 指向别的路径：_stop_sh 会往那儿写，退出时 remove 又会删那儿。
+        // 装不下就整个跳过——不给这个便利脚本，也好过写错地方再删错地方
+        int32_t has_sh = _path_ok(SNPRINTF(sh, sizeof(sh), "%s%s%s",
+                                           procpath(), PATH_SEPARATORSTR, "stop.sh"), sizeof(sh));
+        if (has_sh) {
+            _stop_sh(sh);
+        } else {
+            PRINT("stop.sh path too long, skipped.");
+        }
+        int32_t rtn = service_hug(sync_pipe[1], devnull);
+        if (has_sh) {
+            remove(sh);//服务退出，移除stop.sh
+        }
         return rtn;
     } else if (pid > 0) {
-        if (is_daemon) {
-            close(sync_pipe[1]);
-            char r = 0;
-            ssize_t n;
-            //EINTR 重试；read 返 1 + 'R' = daemon + service_init 成功；返 0 (EOF) = 子进程失败
+        close(sync_pipe[1]);
+        char r = 0;
+        ssize_t n;
+        //EINTR 重试；read 返 1 + 'R' = service_init 成功；返 0 (EOF) = 子进程失败
+        do {
+            n = read(sync_pipe[0], &r, 1);
+        } while (-1 == n && EINTR == errno);
+        close(sync_pipe[0]);
+        if (1 != n || 'R' != r) {
+            int wstatus;
+            pid_t r2;
             do {
-                n = read(sync_pipe[0], &r, 1);
-            } while (-1 == n && EINTR == errno);
-            close(sync_pipe[0]);
-            if (1 != n || 'R' != r) {
-                int wstatus;
-                pid_t r2;
-                do {
-                    r2 = waitpid(pid, &wstatus, 0);
-                } while (-1 == r2 && EINTR == errno);
-                if (pid == r2) {
-                    if (WIFEXITED(wstatus)) {
-                        PRINT("daemon child exited with code %d", WEXITSTATUS(wstatus));
-                    } else if (WIFSIGNALED(wstatus)) {
-                        PRINT("daemon child killed by signal %d", WTERMSIG(wstatus));
-                    }
+                r2 = waitpid(pid, &wstatus, 0);
+            } while (-1 == r2 && EINTR == errno);
+            if (pid == r2) {
+                if (WIFEXITED(wstatus)) {
+                    PRINT("child exited with code %d", WEXITSTATUS(wstatus));
+                } else if (WIFSIGNALED(wstatus)) {
+                    PRINT("child killed by signal %d", WTERMSIG(wstatus));
                 }
-                return ERR_FAILED;
             }
+            return ERR_FAILED;
         }
         return ERR_OK;
     } else {
         PRINT("fork process error!");
-        if (is_daemon) {
-            close(sync_pipe[0]);
-            close(sync_pipe[1]);
-        }
+        close(sync_pipe[0]);
+        close(sync_pipe[1]);
         return ERR_FAILED;
     }
 #endif

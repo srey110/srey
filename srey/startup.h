@@ -6,7 +6,7 @@
 #include "lbind/ltask.h"
 #endif
 
-#define TASK_NAME_LEN 64           // 系统服务任务名最大长度（config_ctx 内字符串缓冲）
+#define TASK_NAME_LEN 64// 系统服务任务名最大长度（config_ctx 内字符串缓冲）
 
 // 服务配置结构体，由 config.json 解析填充
 typedef struct config_ctx {

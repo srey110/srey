@@ -21,7 +21,33 @@ local PROBE2 = "afterinj"-- 拒绝之后的回显探针，验证连接没被污�
 -- HEAD 用例的响应：带 Content-Length 却不带报文体。PACK_HTTP 那条服务端分支自己算
 -- Content-Length，造不出这个形状，只能裸监听手写字节
 local HEAD_RSP = "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\nX-Head: v\r\n\r\n"
+-- 1xx 用例：与 HEAD 共用同一个裸监听，按请求目标分流。一次写出 103 + 200 两条，
+-- 客户端不跳过 1xx 的话会把 103 当结果返回，200 留在连接上
+local INTERIM_URI = "/interim"
+local INTERIM_RSP = "HTTP/1.1 103 Early Hints\r\nLink: </s.css>; rel=preload\r\n\r\n"
+    .. "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
 local N204 = "want204"-- 触发 server 回 204+body，验证 body 与 Content-Length 都被丢弃
+local BADBODY = "wantbadbody"-- 触发 server 回一个类型不受支持的 body（数字），验证告警确实打出来
+
+-- WARN 打桩，用来断言"响应带了不支持的 body 类型时确实告警"。
+-- 每个 unit 模块是独立 task（各有各的 lua_State），改全局波及不到别的模块。
+-- 代价是本模块日志里的文件/行号会偏一层——_log 用 debug.getinfo(3) 取调用位置，这里多垫了一帧
+local warn_log = {}
+local _warn_raw = WARN
+WARN = function(fmt, ...)
+    local ok, s = pcall(string.format, fmt, ...)
+    warn_log[#warn_log + 1] = ok and s or tostring(fmt)
+    _warn_raw(fmt, ...)
+end
+-- warn_log 里有没有含 sub 的一条
+local function _warned(sub)
+    for i = 1, #warn_log do
+        if nil ~= string.find(warn_log[i], sub, 1, true) then
+            return true
+        end
+    end
+    return false
+end
 -- 名 + ": " + 值 + CRLF 超 MAX_HEADLENS(4096)：整条头会被丢弃，不截断也不发出
 local BIG = string.rep("b", 4096)
 
@@ -36,18 +62,34 @@ end
 
 srey.startup(function()
 runner.run("http_client", function(t)
-    local cli_fd, raw_fd, head_fd
+    local cli_fd, raw_fd, head_fd, itm_fd
     srey.on_recved(function(pktype, fd, skid, client, slice, data, size)
-        if fd == cli_fd or fd == raw_fd or fd == head_fd then
+        if fd == cli_fd or fd == raw_fd or fd == head_fd or fd == itm_fd then
             return-- 客户端侧响应由 syn_send 的等待者接走;万一漏收落到这里也不回应,免污染断言
         end
         if PACK_TYPE.NONE == pktype and 0 == client then
-            srey.send(fd, skid, HEAD_RSP, #HEAD_RSP, 1)-- HEAD 用例的裸监听侧
+            -- 裸监听侧，两个用例共用：按请求目标分流
+            if nil ~= string.find(srey.ud_str(data, size), INTERIM_URI, 1, true) then
+                srey.send(fd, skid, INTERIM_RSP, #INTERIM_RSP, 1)
+            else
+                srey.send(fd, skid, HEAD_RSP, #HEAD_RSP, 1)
+            end
             return
         end
         if 0 ~= slice then
             if 0 ~= (slice & 4) then-- PROT_SLICE_END:分片请求收齐才回
                 http.response(fd, skid, 200, nil, CK_RSP)
+            end
+            return
+        end
+        local st = http.status(data)
+        if st and "HEAD" == st[1] then
+            if "/chunked" == st[2] then
+                -- body 是生产者函数：长度未知省掉 CL，但 GET 会发的 TE 得照发
+                http.response_head(fd, skid, 200, nil, function() return nil end)
+            else
+                -- info 传 nil：验 HEAD 分支照样补 Content-Length: 0
+                http.response_head(fd, skid, 200, { ["X-Head-Probe"] = "v" }, nil)
             end
             return
         end
@@ -68,6 +110,11 @@ runner.run("http_client", function(t)
         if N204 == body then
             -- 204 禁带报文体：故意塞一个 body，验证被 http.response 丢弃
             http.response(fd, skid, 204, nil, "dropped")
+            return
+        end
+        if BADBODY == body then
+            -- body 是数字：三个 body 分支都不命中，按无 body 发走并告警
+            http.response(fd, skid, 200, nil, 42)
             return
         end
         http.response(fd, skid, 200, nil, (body and #body > 0) and body or "ok")
@@ -176,6 +223,62 @@ runner.run("http_client", function(t)
                     "204 响应不带 Content-Length")
             t:check(nil == string.find(ntxt, "dropped", 1, true), "204 的 body 被丢弃")
         end
+        -- 同一条裸连接再来一次：响应的 body 类型不受支持（数字）。线缆上要和"无 body 的响应"
+        -- 一模一样（Content-Length: 0，无体），但必须打出告警——否则调用方从返回值上看不出
+        -- body 没发出去。以前那句 WARN 排在 else 分支里，被 `rsp and not nocl` 那支挡住，
+        -- 响应侧永远不触发
+        for i = #warn_log, 1, -1 do
+            warn_log[i] = nil-- 先清空，断言只认这一趟打出来的
+        end
+        local breq = string.format("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\n\r\n%s",
+                                   #BADBODY, BADBODY)
+        local btxt = ""
+        local brsp, brlen = srey.syn_send(raw_fd, raw_skid, breq, #breq, 1)
+        while brsp do
+            btxt = btxt .. srey.ud_str(brsp, brlen)
+            if string.find(btxt, "\r\n\r\n", 1, true) then
+                break
+            end
+            brsp, brlen = srey.syn_recv(raw_fd, raw_skid)
+        end
+        t:check(nil ~= string.find(btxt, " 200 ", 1, true), "不支持的 body 类型仍回 200")
+        t:check(nil ~= string.find(btxt, "Content-Length: 0", 1, true),
+                "不支持的 body 类型按无 body 发出(Content-Length: 0)")
+        t:check(nil == string.find(btxt, "42", 1, true), "那个数字没被当成 body 发出去")
+        t:check(_warned("unsupported body type"), "不支持的 body 类型打出了告警")
+        -- 同一条裸连接再来一次：HEAD + info 为 nil。头必须与同一资源的 GET 一致，
+        -- GET 那条走"响应无 body"分支会写 Content-Length: 0，HEAD 不能因为不发体就把它省掉
+        local hreq = "HEAD / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        local htxt = ""
+        local hrsp, hrlen = srey.syn_send(raw_fd, raw_skid, hreq, #hreq, 1)
+        while hrsp do
+            htxt = htxt .. srey.ud_str(hrsp, hrlen)
+            if string.find(htxt, "\r\n\r\n", 1, true) then
+                break
+            end
+            hrsp, hrlen = srey.syn_recv(raw_fd, raw_skid)
+        end
+        t:check(nil ~= string.find(htxt, " 200 ", 1, true), "HEAD 探针收到 200 响应")
+        t:check(nil ~= string.find(htxt, "Content-Length: 0", 1, true),
+                "HEAD 无 body 时照写 Content-Length: 0(与同资源的 GET 一致)")
+        t:check(nil ~= string.find(htxt, "X-Head-Probe: v", 1, true), "HEAD 响应的普通头照常发出")
+        -- 再来一次：body 是生产者函数。长度未知省掉 CL 是有意的，但 GET 那条会发
+        -- Transfer-Encoding，HEAD 省掉它两个方法的头就对不上了
+        local creq = "HEAD /chunked HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        local ctxt = ""
+        local crsp, crlen = srey.syn_send(raw_fd, raw_skid, creq, #creq, 1)
+        while crsp do
+            ctxt = ctxt .. srey.ud_str(crsp, crlen)
+            if string.find(ctxt, "\r\n\r\n", 1, true) then
+                break
+            end
+            crsp, crlen = srey.syn_recv(raw_fd, raw_skid)
+        end
+        t:check(nil ~= string.find(ctxt, " 200 ", 1, true), "HEAD 生产者函数体收到 200 响应")
+        t:check(nil ~= string.find(ctxt, "Transfer-Encoding: chunked", 1, true),
+                "HEAD 的生产者函数体照发 Transfer-Encoding(与同资源的 GET 一致)")
+        t:check(nil == string.find(ctxt, "Content-Length", 1, true),
+                "长度未知时不写 Content-Length")
         srey.close(raw_fd, raw_skid)
     end
 
@@ -207,6 +310,22 @@ runner.run("http_client", function(t)
             -- 登记只对紧随那一条生效,第二次得重新登记(http.head_req 已代劳);同一连接连发验证这点
             t:check(nil ~= http.head_req(head_fd, head_skid, "/again"), "同一连接第二次 HEAD 仍拿到响应")
             srey.close(head_fd, head_skid)
+        end
+
+        -- 1xx 中间响应：服务端先回 103 再回 200（RFC 7231 §6.2，Cloudflare/Fastly 默认开
+        -- 103 Early Hints）。C 侧把 1xx 当独立完整消息投出，客户端不跳过就会返回 103、
+        -- 把 200 留在连接上，此后同一 keep-alive 连接每次请求都错一格
+        local itm_skid
+        itm_fd, itm_skid = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
+        t:check(itm_fd and INVALID_SOCK ~= itm_fd, "interim connect")
+        if itm_fd and INVALID_SOCK ~= itm_fd then
+            local ip = http.get(itm_fd, itm_skid, INTERIM_URI)
+            t:check(nil ~= ip, "1xx 之后拿到最终响应")
+            if ip then
+                t:eq("200", ip.status and ip.status[2], "跳过 103，返回的是 200 而不是中间响应")
+                t:eq("hello", ip.data, "最终响应的 body 完整")
+            end
+            srey.close(itm_fd, itm_skid)
         end
         srey.unlisten(hlid)
     end

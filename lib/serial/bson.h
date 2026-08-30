@@ -56,7 +56,7 @@ typedef struct bson_ctx {
 typedef struct bson_iter {
     bson_type type;
     bson_subtype subtype;
-    int32_t err;//解析失败标志。bson_iter_next 返回 0 有"读到 EOD 正常结束"和"元素非法被拒"两种含义,靠它区分
+    int32_t err;//读不下去的标志。bson_iter_next 返回 0 有"读到 EOD 正常结束"和"中途卡住"两种含义,靠它区分;成因见 bson_iter_error
     uint32_t keylens;//key 字节数(不含 NUL)。由 _bson_iter_read_key 顺手记下,省掉消费方重复 strlen
     size_t doclens;//文档长度
     size_t lens;//val长度
@@ -306,19 +306,22 @@ void bson_iter_init(bson_iter *iter, bson_ctx *bson);
 /// <param name="iter">bson_iter</param>
 void bson_iter_reset(bson_iter *iter);
 /// <summary>
-/// 迭代过程中是否遇到过结构错误：区分 bson_iter_next 的 0 是正常结束还是文档非法
-/// （非法时只遍历到了坏元素之前的前缀）
+/// 迭代过程中是否遇到过读不下去的元素：区分 bson_iter_next 的 0 是正常结束还是中途卡住
+/// （卡住时只遍历到了那个元素之前的前缀）。成因有两类，见 &lt;returns&gt;
 /// </summary>
 /// <param name="iter">bson_iter</param>
-/// <returns>非 0 表示文档结构非法</returns>
+/// <returns>非 0 表示遍历中途停下，两类成因都会置位：文档结构非法（元素本身坏了 / 声明长度
+/// 耗尽没读到 EOD），或类型字节本实现不认识（0x06 undefined、0x0C dbpointer、0x0E symbol、
+/// 0x0F code_w_s 这几个废弃类型不在 bson_type 里）。BSON 元素不自带长度，认不出类型就算不出
+/// 边界，故两类的后果相同——后面的元素一律读不到。后者另有一条 unsupported bson type 的告警</returns>
 int32_t bson_iter_error(const bson_iter *iter);
 /// <summary>
 /// 迭代到下一个字段
 /// </summary>
 /// <param name="iter">bson_iter</param>
-/// <returns>非零表示有值；0 表示遍历结束，三种成因由 bson_iter_error 区分——
-/// 读到 EOD 正常结束（err 保持 0）、某个元素非法被拒、声明长度耗尽没读到终止 EOD
-/// （文档截断，后两者 err 置位）；三种情况都把当前元素毒化成 BSON_EOD，
+/// <returns>非零表示有值；0 表示遍历结束，成因由 bson_iter_error 区分——读到 EOD 正常结束
+/// （err 保持 0），或元素非法被拒 / 声明长度耗尽没读到终止 EOD / 类型字节不认识（这三种
+/// err 置位，详见 bson_iter_error）；所有情况都把当前元素毒化成 BSON_EOD，
 /// 之后调任何 getter 都失败而非返回陈旧值</returns>
 int32_t bson_iter_next(bson_iter *iter);
 /// <summary>
@@ -331,7 +334,9 @@ int32_t bson_iter_next(bson_iter *iter);
 /// <param name="iter">起始迭代器</param>
 /// <param name="keys">点分键路径，如 "cursor.id"</param>
 /// <param name="result">找到时输出结果迭代器</param>
-/// <returns>ERR_OK 找到，ERR_FAILED 未找到</returns>
+/// <returns>ERR_OK 找到，ERR_FAILED 未找到。未找到时 iter 保持原位——当前元素与文档偏移
+/// 都不变，可以接着 bson_iter_next；但扫描途中撞上结构错误会置上 iter 的错误标志，
+/// 调用方靠 bson_iter_error 分辨"没这个 key"与"文档后面全坏了"</returns>
 int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result);
 /// <summary>
 /// 从迭代器当前字段读取 double 值

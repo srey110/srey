@@ -33,6 +33,10 @@ local function _wdo(mgoctx, pack, size)
         return srey.send(fd, skid, pack, size, 0), nil
     end
     local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    if mgopack then
+        -- 写命令同样带 lsid，续期口径与 _rdo 一致；MORETOCOME 那支没有应答，不续
+        mgo:session_touch()
+    end
     return nil ~= mgopack, mgopack
 end
 -- 统一"发送 + 按 MORETOCOME 决定是否等待响应"。pack 为 nil(C 层组包被拒)在此一并吸收:
@@ -87,6 +91,11 @@ end
 local function _rdo(mgoctx, pack, size)
     local fd, skid = mgoctx.mongo:sock_id()-- 锁内读,理由同 _wdo
     local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    if mgopack then
+        -- 应答回来了就说明服务端处理过这条命令；事务中每条命令都带着 lsid,
+        -- 服务端那边的会话寿命已被延长,本地跟着记一次 expires_in 才准
+        mgoctx.mongo:session_touch()
+    end
     return mgopack
 end
 ---@param mgoctx any 所属 mongo_ctx（提供 serial 执行器与 C 层 mongo 句柄）
@@ -190,8 +199,21 @@ local function _refresh_do(self)
     if not mgopack then
         return false
     end
-    return mgo:check_error(mgopack) >= 0
+    if mgo:check_error(mgopack) < 0 then
+        return false
+    end
+    -- 只能自己续：_rdo 那趟 session_touch 续的是连接当前绑定的会话，
+    -- 而 refresh 允许在事务外调，那时连接并没绑这个 session（同 C 侧 mongo_refreshsession）
+    self.session:renew()
+    return true
 end
+---会话距超时还剩多少秒。服务端超过 logicalSessionTimeoutMinutes 未见该会话就会回收它，
+---据此决定何时调 refresh()。事务中的每条命令都会自动续期，长事务通常不必手动刷
+---@return integer secs 剩余秒数；已过期为 0 或负数
+function sess_ctx:expires_in()
+    return self.session:expires_in()
+end
+
 ---刷新会话超时（refreshSessions），延续会话存活时间
 ---@return boolean ok 刷新成功 true
 function sess_ctx:refresh()
@@ -231,6 +253,13 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
         error(string.format("mongo.new failed: %s:%d db=%s", ip, port, tostring(db)), 2)
     end
     self.user = user
+    -- 同 password 那道自查：authmod 不在这里挡的话，非字符串要到第一次 _connect 的
+    -- pack_auth_first 才抛，而那一抛正落在 clear_flag 与 set_flag 之间——MORETOCOME 被
+    -- 永久摘掉、fd 也没人 close，还把 conn_pub 的 established 留成陈旧的 true
+    if nil ~= authmod
+        and "string" ~= type(authmod) then
+        error("mongo ctor: authmod must be a string", 2)
+    end
     self.authmod = authmod or "SCRAM-SHA-256"
     if user then
         -- 先自查再下发：user_pwd 的第 3 参在 C 层是 luaL_checkstring，password 为 nil 会先抛
@@ -245,10 +274,8 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
             error(string.format("mongo authdb failed: %s too long", tostring(authdb or db)), 2)
         end
     end
-    -- 串行化执行器由 conn_pub 建，锁点在 _wsend / _rsend 两个漏斗上。
-    -- 它只保证单条命令原子，不保证事务原子——事务上下文挂在连接上，别人的命令挤在
-    -- begin 与 commit 之间时组包侧照样给它附上本事务的 lsid/txnNumber，与 C 侧同一结论：
-    -- 要事务隔离请给事务用独占连接
+    -- 串行化执行器由 conn_pub 建，锁点在 _wsend / _rsend 两个漏斗上。它只保证单条命令
+    -- 原子，不保证事务原子——要事务隔离请给事务用独占连接（与 C 侧同一结论）
     pub.init(self, self.mongo)
 end
 

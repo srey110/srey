@@ -978,6 +978,10 @@ static mgopack_ctx *_mongo_sendwait(mongo_ctx *mongo, void *pack, size_t lens) {
         return NULL;
     }
     mgopack_ctx *rtn = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
+    if (NULL != rtn) {
+        // 应答回来了就说明服务端处理过这条带 lsid 的命令,会话寿命已被延长
+        mongo_session_touch(mongo);
+    }
     _serial_unlock(held);
     return rtn;
 }
@@ -1076,6 +1080,9 @@ static int32_t _mongo_send(mongo_ctx *mongo, void *pack, size_t lens, mgopack_ct
         if (NULL != rtnpack) {
             SET_PTR(mgopack, rtnpack);
             rtn = ERR_OK;
+            // 写命令同样带 lsid,续期口径与 _mongo_sendwait 一致。
+            // MORETOCOME 那支没有应答,不续
+            mongo_session_touch(mongo);
         }
     }
     _serial_unlock(held);
@@ -1208,7 +1215,7 @@ mongo_session *mongo_startsession(mongo_ctx *mongo) {
     }
     session->mongo = mongo;
     session->txnnumber = 0;
-    session->timeout = nowsec() + (uint64_t)session->timeoutmin * 60;
+    mongo_session_renew(session);
     return session;
 }
 int32_t mongo_refreshsession(mongo_session *session) {
@@ -1220,7 +1227,8 @@ int32_t mongo_refreshsession(mongo_session *session) {
     if (NULL == _mongo_call(mongo, refreshsession, lens)) {
         return ERR_FAILED;
     }
-    session->timeout = nowsec() + (uint64_t)session->timeoutmin * 60;
+    // 不经 mongo_session_touch：refresh 允许在事务外调，那时连接并没绑这个 session
+    mongo_session_renew(session);
     return ERR_OK;
 }
 void mongo_freesession(mongo_session *session) {
@@ -1282,7 +1290,6 @@ static int32_t _mongo_txn_end(mongo_session *session, char *options, size_t optl
     if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
         return ERR_FAILED;
     }
-    session->timeout = nowsec() + (uint64_t)session->timeoutmin * 60;
     return ERR_OK;
 }
 int32_t mongo_commit(mongo_session *session, char *options, size_t optlens) {

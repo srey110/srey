@@ -1,7 +1,7 @@
 ﻿#include "lbind/lpub.h"
 
-// 所有 (指针, 长度) 入口共用同一句越界报错
-#define LENS_RANGE "length out of range"
+// 0/1 开关越界文案，只由 lpub_check_flag / lpub_opt_flag 用
+#define FLAG_OUT_OF_RANGE "flag must be 0 or 1"
 
 // 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
 void *global_userdata(lua_State *lua, const char *name) {
@@ -59,6 +59,17 @@ uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what) {
 }
 uint32_t lpub_check_u32(lua_State *lua, int32_t idx, const char *what) {
     return (uint32_t)lpub_check_range(lua, idx, 0, UINT32_MAX, what);
+}
+uint64_t lpub_check_sess(lua_State *lua, int32_t idx) {
+    lua_Integer sess = luaL_checkinteger(lua, idx);
+    luaL_argcheck(lua, 0 != sess, idx, "session must be non-zero");
+    return (uint64_t)sess;
+}
+int32_t lpub_check_flag(lua_State *lua, int32_t idx) {
+    return (int32_t)lpub_check_range(lua, idx, 0, 1, FLAG_OUT_OF_RANGE);
+}
+int32_t lpub_opt_flag(lua_State *lua, int32_t idx, int32_t dft) {
+    return (int32_t)lpub_opt_range(lua, idx, dft, 0, 1, FLAG_OUT_OF_RANGE);
 }
 int8_t lpub_check_i8(lua_State *lua, int32_t idx, const char *what) {
     return (int8_t)lpub_check_range(lua, idx, INT8_MIN, INT8_MAX, what);
@@ -140,7 +151,7 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
     }
     if (LUA_TLIGHTUSERDATA == type) {
         void *ud = lua_touserdata(lua, *idx);
-        *size = lpub_check_lens(lua, *idx + 1, 0);
+        *size = lpub_check_lens(lua, *idx + 1, INT32_MAX);
         *idx += 2;// 先吃掉 data + size,*idx 转到 copy 位
         if (NULL != copy) {
             if (lua_isinteger(lua, *idx)) {
@@ -159,12 +170,27 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
     return lpub_check_buf_idx(lua, &idx, size, copy);
 }
-char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens) {
-    // lightuserdata 那条先自己把长度验一遍,为的是把越界报在长度那个参数上而不是 data 上;
-    // lpub_check_buf 不带上界,验过之后它那道判定必然通过
-    if (LUA_TLIGHTUSERDATA == lua_type(lua, idx)) {
-        lpub_check_lens(lua, idx + 1, INT32_MAX);
+void *lpub_opt_buf(lua_State *lua, int32_t idx, size_t *size) {
+    void *data;
+    switch (lua_type(lua, idx)) {
+    case LUA_TNIL:
+    case LUA_TNONE:
+        *size = 0;
+        return NULL;
+    case LUA_TSTRING:
+        data = (void *)luaL_checklstring(lua, idx, size);
+        luaL_argcheck(lua, *size <= INT32_MAX, idx, LENS_RANGE);
+        return data;
+    case LUA_TLIGHTUSERDATA:
+        *size = lpub_check_lens(lua, idx + 1, INT32_MAX);
+        return lua_touserdata(lua, idx);
+    default:
+        break;
     }
+    luaL_argerror(lua, idx, "nil, string or light userdata expected");
+    return NULL;// 到不了: luaL_argerror 会 longjmp
+}
+char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens) {
     char *data = lpub_check_buf(lua, idx, lens, NULL);
     // string 分支的长度取自字符串自身,不经 lpub_check_lens,而 Lua 字符串是能超 INT32_MAX 的,
     // 只卡 lightuserdata 等于给字符串留了后门;越界的就是参数本身,故报在 idx 上
@@ -175,6 +201,10 @@ name_t lpub_task_handle(lua_State *lua, int32_t idx) {
     return (LUA_TSTRING == lua_type(lua, idx))
         ? task_find_name(g_loader, lua_tostring(lua, idx))
         : (name_t)luaL_checkinteger(lua, idx);
+}
+int32_t lpub_rtn_bool(lua_State *lua, int32_t cond) {
+    lua_pushboolean(lua, 0 != cond ? 1 : 0);
+    return 1;
 }
 int32_t lpub_rtn_nil(lua_State *lua, int32_t n) {
     for (int32_t i = 0; i < n; i++) {
@@ -197,6 +227,20 @@ int32_t lpub_rtn_reader(lua_State *lua, int32_t err) {
     }
     lua_pushboolean(lua, 0);
     return 1;
+}
+void lpub_push_url_param(lua_State *lua, url_ctx *url) {
+    lua_createtable(lua, 0, url->nparam);// 按实际参数个数建表,不按 URL_MAX_PARAM 预留
+    url_param *param;
+    for (int32_t i = 0; i < url->nparam; i++) {
+        param = &url->param[i];
+        lua_pushlstring(lua, param->key.data, param->key.lens);
+        if (buf_empty(&param->val)) {
+            lua_pushstring(lua, "");
+        } else {
+            lua_pushlstring(lua, param->val.data, param->val.lens);
+        }
+        lua_settable(lua, -3);
+    }
 }
 void lpub_push_url_table(lua_State *lua, url_ctx *url) {
     lua_createtable(lua, 0, 9);
@@ -237,18 +281,7 @@ void lpub_push_url_table(lua_State *lua, url_ctx *url) {
         lua_pushlstring(lua, url->anchor.data, url->anchor.lens);
         lua_setfield(lua, -2, "anchor");
     }
-    lua_createtable(lua, 0, url->nparam);
-    url_param *param;
-    for (int32_t i = 0; i < url->nparam; i++) {
-        param = &url->param[i];
-        lua_pushlstring(lua, param->key.data, param->key.lens);
-        if (buf_empty(&param->val)) {
-            lua_pushstring(lua, "");
-        } else {
-            lua_pushlstring(lua, param->val.data, param->val.lens);
-        }
-        lua_settable(lua, -3);
-    }
+    lpub_push_url_param(lua, url);
     lua_setfield(lua, -2, "param");
     if (url->paramlens > 0) {
         luaL_Buffer qbuf;

@@ -10,6 +10,15 @@
     if (NULL == lpub_owner_ptr((lua), MT_MYSQL)) { \
         return luaL_error((lua), "mysql stmt: owner mysql already freed"); \
     }
+// 七个 bind 入口共用的开场白: 取 bind 对象 + 取可选具名参数(栈位 2 非字符串即按位置绑定)。
+// 具名参数的取法散在七处的话, 将来要换取法(如改用 luaL_optlstring 拿长度)得挨个找齐,
+// 改漏一个不会有编译期信号 —— 那个 bind 会静默退化成按位置绑定, 参数错位写进 MySQL
+#define LMYSQL_BIND_ARG(lua, bindvar, namevar) \
+    mysql_bind_ctx *bindvar = luaL_checkudata((lua), 1, MT_MYSQL_BIND); \
+    char *namevar = NULL; \
+    if (LUA_TSTRING == lua_type((lua), 2)) { \
+        namevar = (char *)luaL_checkstring((lua), 2); \
+    }
 
 /// <summary>
 /// 创建 MySQL 参数绑定上下文（用于预处理语句或查询参数化）
@@ -50,11 +59,7 @@ static int32_t _lmysql_bind_clear(lua_State *lua) {
 /// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_nil(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
-    char *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (char *)luaL_checkstring(lua, 2);
-    }
+    LMYSQL_BIND_ARG(lua, mbind, name);
     mysql_bind_nil(mbind, name);
     return 0;
 }
@@ -63,29 +68,13 @@ static int32_t _lmysql_bind_nil(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
-/// <param name="data" type="string|userdata|lightuserdata|nil">字符串值；nil 视为 NULL</param>
-/// <param name="size" type="integer?">data 为 userdata/lightuserdata 时必填，表示数据字节数</param>
+/// <param name="data" type="string|lightuserdata|nil">字符串值；nil 绑定 NULL，其余类型报错，取值规则见 lpub_opt_buf</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数，取值 [0, INT32_MAX]</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_string(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
-    char *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (char *)luaL_checkstring(lua, 2);
-    }
-    size_t size = 0;
-    char *data = NULL;
-    switch (lua_type(lua, 3)) {
-    case LUA_TSTRING:
-        data = (char *)luaL_checklstring(lua, 3, &size);
-        break;
-    case LUA_TUSERDATA:
-    case LUA_TLIGHTUSERDATA:
-        data = lua_touserdata(lua, 3);
-        size = lpub_check_lens(lua, 4, 0);
-        break;
-    default:
-        break;
-    }
+    LMYSQL_BIND_ARG(lua, mbind, name);
+    size_t size;
+    char *data = lpub_opt_buf(lua, 3, &size);
     if (NULL == data) {
         mysql_bind_nil(mbind, name);
     } else {
@@ -101,11 +90,7 @@ static int32_t _lmysql_bind_string(lua_State *lua) {
 /// <param name="val" type="integer|boolean|nil">整数值；非 number/boolean 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_integer(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
-    char *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (char *)luaL_checkstring(lua, 2);
-    }
+    LMYSQL_BIND_ARG(lua, mbind, name);
     int32_t type = lua_type(lua, 3);
     int64_t val;
     if (LUA_TBOOLEAN == type) {
@@ -127,11 +112,7 @@ static int32_t _lmysql_bind_integer(lua_State *lua) {
 /// <param name="val" type="number|nil">单精度浮点值；非 number 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_float(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
-    char *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (char *)luaL_checkstring(lua, 2);
-    }
+    LMYSQL_BIND_ARG(lua, mbind, name);
     int32_t type = lua_type(lua, 3);
     if (LUA_TNUMBER != type) {
         mysql_bind_nil(mbind, name);
@@ -149,11 +130,7 @@ static int32_t _lmysql_bind_float(lua_State *lua) {
 /// <param name="val" type="number|nil">双精度浮点值；非 number 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_double(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
-    char *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (char *)luaL_checkstring(lua, 2);
-    }
+    LMYSQL_BIND_ARG(lua, mbind, name);
     int32_t type = lua_type(lua, 3);
     if (LUA_TNUMBER != type) {
         mysql_bind_nil(mbind, name);
@@ -171,11 +148,7 @@ static int32_t _lmysql_bind_double(lua_State *lua) {
 /// <param name="ts" type="integer|nil">Unix 时间戳（秒）；非 number 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_datetime(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
-    char *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (char *)luaL_checkstring(lua, 2);
-    }
+    LMYSQL_BIND_ARG(lua, mbind, name);
     int32_t type = lua_type(lua, 3);
     if (LUA_TNUMBER != type) {
         mysql_bind_nil(mbind, name);
@@ -197,11 +170,7 @@ static int32_t _lmysql_bind_datetime(lua_State *lua) {
 /// <param name="second" type="integer">秒，须 大于等于 0</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_time(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
-    char *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (char *)luaL_checkstring(lua, 2);
-    }
+    LMYSQL_BIND_ARG(lua, mbind, name);
     // 五个字段原样进 MYSQL_TYPE_TIME 报文, 截断或传负数出来都是另一个合法时间且无从报错:
     // 符号由 is_negative 单独带, 时分秒各占一个字节, 传 -1 到服务端就成了 255
     int8_t is_negative = (int8_t)lpub_check_range(lua, 3, 0, 1, "is_negative must be 0 or 1");
@@ -276,11 +245,11 @@ static int32_t _lmysql_reader_size(lua_State *lua) {
 /// 定位到指定行位置
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
-/// <param name="pos" type="integer">目标行下标</param>
+/// <param name="pos" type="integer">目标行下标，取值 [0, INT32_MAX]，越界报错</param>
 /// <returns>无</returns>
 static int32_t _lmysql_reader_seek(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_reader_ctx, MT_MYSQL_READER, reader, "reader freed");
-    size_t pos = (size_t)luaL_checkinteger(lua, 2);
+    size_t pos = lpub_check_lens(lua, 2, INT32_MAX);
     mysql_reader_seek(*reader, pos);
     return 0;
 }
@@ -291,8 +260,7 @@ static int32_t _lmysql_reader_seek(lua_State *lua) {
 /// <returns type="boolean">已到末尾 true，否则 false</returns>
 static int32_t _lmysql_reader_eof(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_reader_ctx, MT_MYSQL_READER, reader, "reader freed");
-    lua_pushboolean(lua, mysql_reader_eof(*reader));
-    return 1;
+    return lpub_rtn_bool(lua, mysql_reader_eof(*reader));
 }
 /// <summary>
 /// 移动到下一行
@@ -702,8 +670,7 @@ static int32_t _lmysql_pack_type(lua_State *lua) {
 static int32_t _lmysql_has_more(lua_State *lua) {
     luaL_checktype(lua, 1, LUA_TLIGHTUSERDATA);
     mpack_ctx *mpack = lua_touserdata(lua, 1);
-    lua_pushboolean(lua, mysql_more(mpack));
-    return 1;
+    return lpub_rtn_bool(lua, mysql_more(mpack));
 }
 /// <summary>
 /// 发送 QUIT 命令并清理连接上下文绑定（绑定为 __gc，由 Lua GC 自动调用）
@@ -739,12 +706,7 @@ static int32_t _lmysql_try_connect(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     LPUB_CUR_TASK(lua, task);
     int32_t rtn = mysql_try_connect(task, *ud, 1);
-    if (ERR_OK == rtn) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == rtn);
 }
 /// <summary>
 /// 返回 MySQL 服务端版本字符串
@@ -760,13 +722,17 @@ static int32_t _lmysql_version(lua_State *lua) {
 /// 返回最近一次错误信息并清除错误状态
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
-/// <returns type="string">错误信息</returns>
+/// <returns type="string">错误信息（服务端文案，随版本与 locale 变）</returns>
+/// <returns type="integer">MySQL 错误号；无错误时为 0。要区分可重试（1213 死锁 / 1205 锁等待
+/// 超时）与不可重试（1062 重复键）只能靠它，文案不可依赖</returns>
 static int32_t _lmysql_erro(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     mysql_ctx *mysql = *ud;
-    lua_pushstring(lua, mysql_erro(mysql, NULL));
+    int32_t code = 0;
+    lua_pushstring(lua, mysql_erro(mysql, &code));
+    lua_pushinteger(lua, code);
     mysql_erro_clear(mysql);
-    return 1;
+    return 2;
 }
 /// <summary>
 /// 返回当前 MySQL 连接的 fd 和 skid

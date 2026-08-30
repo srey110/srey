@@ -8,11 +8,15 @@ local popen  = require("srey.popen")
 
 local _PY_TIMEOUT_MS = 60 * 1000
 
--- python 测试脚本名（test_<name>.py），位于 _propath/py_assist/ 下
+-- python 测试脚本名（test_<name>.py），位于 _propath/py_assist/ 下。
+-- 与 test/main.c 的 pyitems 不是同一份：ssl_reneg 要 15443 的 SSL 端口，只有本侧的
+-- server_http.lua 起了它，C 侧 task_http_server.c 没有 SSL 监听，故那边跑不了。
+-- 反过来 mixed 两侧都跑得起来，两边都列上
 local _SCRIPTS = {
     "http",
     "ws",
     "mqtt",
+    "mixed",
     "ssl_reneg",
 }
 
@@ -47,6 +51,9 @@ srey.startup(function()
             io.write("\n")
             io.stdout:flush()
             t:check(0 == code, name .. ": python exit code " .. tostring(code))
+            -- 成功分支也要 close：ctx 只是个 local，回收全靠 __gc，而这个循环几乎不分配、
+            -- GC 未必在下一轮前触发，四条 socketpair fd 会一直攥到 e2e 阶段结束
+            ctx:close()
             ::continue::
         end
     end)

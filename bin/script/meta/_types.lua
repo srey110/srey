@@ -2,12 +2,47 @@
 -- 本文件不由 tools/gen_meta.py 生成，修改不会被覆盖。
 
 ---@class WebSocketFrame
----@field fin     boolean              帧是否完整（fin bit = 1）
+---@field fin     integer              帧是否完整（fin bit = 1）；推的是整数不是布尔
 ---@field prot    integer              WebSocket opcode（text/binary/ping/pong/close/continuation）
----@field secprot string?              Sec-WebSocket-Protocol；仅握手帧存在
----@field secpack lightuserdata?       Sec-WebSocket-Accept 验证数据指针；仅握手帧存在
+---@field secprot integer?             协商出的子协议，取值同 PACK_TYPE（如 PACK_TYPE.MQTT）；
+---                                    未协商子协议时该字段不存在
+---@field secpack lightuserdata?       子协议包指针（如 WS 承载的 MQTT 包）；控制帧（PING/PONG/
+---                                    CLOSE）与零长数据帧即使 secprot 非空也没有它，取用前必判
 ---@field data    lightuserdata?       帧载荷数据指针；空帧为 nil
 ---@field size    integer              载荷字节数；空帧为 0
+
+---@class MqttConnectInfo
+---@field version     integer  协议级别（4 = 3.1.1，5 = 5.0）
+---@field cleanstart  integer  clean session / clean start 标志
+---@field keepalive   integer  保活秒数
+---@field willflag    integer  是否携带遗嘱
+---@field willqos     integer  遗嘱 QoS
+---@field willretain  integer  遗嘱 retain 标志
+---@field clientid    string   客户标识符
+---@field user        string?  用户名；未携带时不存在
+---@field password    string?  密码；未携带时不存在
+---@field willtopic   string?  遗嘱主题；willflag 为 0 时不存在
+---@field willpayload string?  遗嘱内容；同上
+
+---@class MqttSubscribeItem
+---@field topic  string   主题过滤器
+---@field qos    integer  订阅 QoS
+---@field nl     integer  No Local 标志（MQTT 5.0）
+---@field rap    integer  Retain As Published 标志（MQTT 5.0）
+---@field retain integer  Retain Handling（MQTT 5.0）
+
+---@class RouterMatchedURL
+---@field path  string                 规范化后的请求路径
+---@field param table<string,string>   查询串键值表
+
+---@class MemStat
+---@field nalloc integer 累计分配次数
+---@field nfree  integer 累计释放次数
+---@field live   integer 当前活跃分配数
+
+---@class TaskListItem
+---@field name   string?  task 名；匿名 task 无此字段
+---@field handle integer  task 句柄
 
 ---@class ParsedURL
 ---@field scheme string               协议（如 "http"、"https"）

@@ -44,7 +44,7 @@ static lua_Integer _lkcp_optint(lua_State *lua, int32_t tidx, const char *key, l
 ///   每次 start 须传新值:stop 后重启若复用旧 sess,上一会话在途的 CLOSE 会击穿本次等待</param>
 /// <param name="ip" type="string">对端 IP</param>
 /// <param name="port" type="integer">对端端口</param>
-/// <param name="config" type="table?">KCP 可调参数(nodelay/interval/resend/nc/sndwnd/rcvwnd/mtu),缺省用库默认</param>
+/// <param name="config" type="kcp_config?">KCP 可调参数,缺省用库默认;字段见 lib/kcp.lua 的 kcp_config</param>
 /// <returns type="boolean">成功 true,失败 false</returns>
 static int32_t _lkcp_start(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
@@ -64,8 +64,7 @@ static int32_t _lkcp_start(lua_State *lua) {
         cfg.mtu = (int32_t)_lkcp_optint(lua, 5, "mtu", 0);
         pcfg = &cfg;
     }
-    lua_pushboolean(lua, ERR_OK == kcp_start(kcp, task->handle, sess, ip, port, pcfg) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == kcp_start(kcp, task->handle, sess, ip, port, pcfg));
 }
 /// <summary>
 /// 变更会话数据推送目标 task
@@ -76,8 +75,7 @@ static int32_t _lkcp_start(lua_State *lua) {
 static int32_t _lkcp_handle(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
     name_t handle = (name_t)luaL_checkinteger(lua, 2);
-    lua_pushboolean(lua, ERR_OK == kcp_handle(kcp, handle) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == kcp_handle(kcp, handle));
 }
 /// <summary>
 /// 发送数据:交 KCP 可靠传输,实际发包由 event 线程 tick 周期驱动
@@ -92,8 +90,7 @@ static int32_t _lkcp_send(lua_State *lua) {
     size_t size;
     int32_t copy;
     void *data = lpub_check_buf(lua, 2, &size, &copy);
-    lua_pushboolean(lua, ERR_OK == kcp_send(kcp, data, size, copy) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == kcp_send(kcp, data, size, copy));
 }
 LUAMOD_API int luaopen_kcp(lua_State *lua) {
     luaL_Reg reg_new[] = {

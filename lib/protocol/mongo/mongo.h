@@ -96,6 +96,26 @@ int32_t mongo_check_flag(mongo_ctx *mongo, mongo_flags flag);
 /// <returns>清除前的标志位值</returns>
 int32_t mongo_clear_flag(mongo_ctx *mongo);
 /// <summary>
+/// 把会话的超时时刻续到"此刻 + logicalSessionTimeoutMinutes"。服务端每处理一条带 lsid 的
+/// 命令就会延长会话寿命，本地跟着记一次，否则 mongo_session_expires 报的剩余时间会偏小。
+/// 服务端没给出超时分钟数（timeoutmin <= 0）时不动，由 mongo_session_expires 按未知处理
+/// </summary>
+/// <param name="session">会话；必须非 NULL，函数内裸解引用</param>
+void mongo_session_renew(mongo_session *session);
+/// <summary>
+/// 同 mongo_session_renew，但作用于连接当前绑定的会话；未绑定会话时无操作。
+/// 供发送路径在收到应答后统一调用，不必各自判空
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+void mongo_session_touch(mongo_ctx *mongo);
+/// <summary>
+/// 会话距超时还剩多少秒，供调用方决定何时发 refreshSessions。
+/// 只在服务端确实应答过之后才续期，发送失败不计，故读数不会偏乐观
+/// </summary>
+/// <param name="session">会话；必须非 NULL，函数内裸解引用</param>
+/// <returns>剩余秒数；已过期返回 0 或负数；服务端未给出超时分钟数时恒返回 0（按需刷新处理）</returns>
+int64_t mongo_session_expires(mongo_session *session);
+/// <summary>
 /// 强制清空当前挂载的事务会话指针（不释放 session 对象本身）；重连后调用，避免跨代残留的
 /// lsid/txnNumber 被 TRANSACTION_OPTIONS 宏自动附加到后续普通命令
 /// </summary>

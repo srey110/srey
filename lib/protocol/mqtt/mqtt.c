@@ -155,6 +155,18 @@ static char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
     rtn[(*num)] = '\0';
     return rtn;
 }
+// 读 UTF-8 字符串字段。MQTT-1.5.4-2：含 U+0000 即为非法报文，必须拒收——这些字段解析后
+// 只剩 char*、长度不再保留，放过去就会在第一个 NUL 处截断，"victim\0evil" 与 "victim"
+// 塌缩成同一个 clientid / topic。遗嘱载荷与密码是二进制字段，允许含 NUL，不走这里
+static char *_mqtt_data_utf8(buffer_ctx *buf, int32_t *num) {
+    char *rtn = _mqtt_data_string2(buf, num);
+    if (NULL != rtn
+        && NULL != memchr(rtn, '\0', (size_t)(*num))) {
+        FREE(rtn);
+        return NULL;
+    }
+    return rtn;
+}
 // 从缓冲区读取键值对字符串（用户属性），fval 存储 key，sval 存储 value
 static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     //key
@@ -382,7 +394,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     mqtt_connect_payload *pl;
     CALLOC(pl, 1, sizeof(mqtt_connect_payload));
     pack->payload = pl;
-    pl->clientid = _mqtt_data_string2(buf, &num);//客户标识符
+    pl->clientid = _mqtt_data_utf8(buf, &num);//客户标识符
     if (NULL == pl->clientid) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -395,7 +407,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
                 return ERR_FAILED;
             }
         }
-        pl->willtopic = _mqtt_data_string2(buf, &num);//遗嘱主题
+        pl->willtopic = _mqtt_data_utf8(buf, &num);//遗嘱主题
         if (NULL == pl->willtopic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
@@ -408,7 +420,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         pl->wplens = num;
     }
     if (vh->userflag) {
-        pl->user = _mqtt_data_string2(buf, &num);
+        pl->user = _mqtt_data_utf8(buf, &num);
         if (NULL == pl->user) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
@@ -496,6 +508,12 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *stat
         return ERR_FAILED;
     }
     if (num != (int32_t)buffer_remove(buf, slot, (size_t)num)) {//主题名就地读进块内
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
+    // 主题名也是 UTF-8 字段, 内嵌 NUL 同样得拒, 理由见 _mqtt_data_utf8;
+    // 它不走那个读取器(就地读进块内), 得在这自己判
+    if (NULL != memchr(slot, '\0', (size_t)num)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -677,7 +695,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     pack->payload = pl;
     array_init(&pl->subop, sizeof(subscribe_option *), 0);
     for (off = 0; off < remain;) {
-        topic = _mqtt_data_string2(buf, &num);//主题
+        topic = _mqtt_data_utf8(buf, &num);//主题
         if (NULL == topic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
@@ -741,7 +759,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     pack->payload = pl;
     array_init(&pl->topics, sizeof(char *), 0);
     for (off = 0; off < remain;) {
-        topic = _mqtt_data_string2(buf, &num);//主题
+        topic = _mqtt_data_utf8(buf, &num);//主题
         if (NULL == topic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;

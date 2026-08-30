@@ -60,11 +60,11 @@ size_t url_reorg_path(url_ctx *ctx, char *path, size_t cap);
 /// <returns>写入 param 的字节数（不含结尾 '\0'）；无参数时返回 0</returns>
 size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap);
 /// <summary>
-/// 获取参数
+/// 获取参数。同名参数（?a=1&amp;a=2）取最后一个
 /// </summary>
 /// <param name="ctx">url_ctx</param>
 /// <param name="key">名称</param>
-/// <returns>buf_ctx值</returns>
+/// <returns>buf_ctx 值，键不存在返回 NULL；值为空（?a= / ?a）时返回的 buf_ctx 的 lens 为 0</returns>
 buf_ctx *url_get_param(url_ctx *ctx, const char *key);
 
 #endif//URL_PARSE_H_

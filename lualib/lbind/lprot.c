@@ -11,33 +11,17 @@
 /// </summary>
 /// <param name="task" type="integer">目标 task name</param>
 /// <param name="call" type="integer">调用类型：非0=call（单向），0=request（双向）</param>
-/// <param name="reqtype" type="integer">业务请求类型</param>
+/// <param name="reqtype" type="integer">业务请求类型，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="data" type="string|lightuserdata|nil">消息内容；nil 表示无数据</param>
-/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数，取值 [0, INT32_MAX]</param>
 /// <returns type="lightuserdata">打包后的数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_harbor_pack(lua_State *lua) {
     name_t task = (name_t)luaL_checkinteger(lua, 1);
     int32_t call = (int32_t)luaL_checkinteger(lua, 2);// 非0=call，0=request
-    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 3);
-    void *data;
+    subtype_t reqtype = lpub_check_u16(lua, 3, REQTYPE_OUT_OF_RANGE);
     size_t size;
-    switch (lua_type(lua, 4)) {
-    case LUA_TNIL:
-    case LUA_TNONE:
-        data = NULL;
-        size = 0;
-        break;
-    case LUA_TSTRING:
-        data = (void *)luaL_checklstring(lua, 4, &size);
-        break;
-    case LUA_TLIGHTUSERDATA:
-        data = lua_touserdata(lua, 4);
-        size = lpub_check_lens(lua, 5, 0);
-        break;
-    default:
-        return luaL_argerror(lua, 4, "nil, string or light userdata expected");
-    }
+    void *data = lpub_opt_buf(lua, 4, &size);
     data = harbor_pack(task, call, reqtype, data, size, &size);
     return lpub_rtn_lud(lua, data, size);
 }
@@ -103,7 +87,7 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
 /// 解析 DNS 响应包，提取 IP 地址列表
 /// </summary>
 /// <param name="pack" type="lightuserdata">DNS 响应数据指针（裸报文，不含 TCP 长度前缀）</param>
-/// <param name="packlen" type="integer">响应包字节数</param>
+/// <param name="packlen" type="integer">响应包字节数，取值 [0, INT32_MAX]</param>
 /// <param name="id" type="integer">期望的事务 ID（dns.pack/dns.pack_tcp 返回）；响应事务 ID 不匹配即视为错配/伪造返回 nil</param>
 /// <returns type="string[]?">IP 字符串数组；事务 ID 不匹配、解析失败、RCODE 非 0 或响应被截断(TC 位置位)时均返回 nil</returns>
 /// <returns type="boolean">第二返回值 nodata：true 表示响应本身完整有效、只是没有任何 A/AAAA 记录
@@ -111,7 +95,7 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
 static int32_t _lprot_dns_unpack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     void *pack = lua_touserdata(lua, 1);
-    size_t packlen = lpub_check_lens(lua, 2, 0);
+    size_t packlen = lpub_check_lens(lua, 2, INT32_MAX);
     uint16_t id = lpub_check_u16(lua, 3, "transaction id out of range");
     size_t n;
     int32_t nodata = 0;
@@ -217,7 +201,8 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
 /// <param name="host" type="string?">Host 头字段；nil 表示省略</param>
 /// <param name="uri" type="string?">HTTP request-target（path?query）；nil 或空字符串时使用 "/"</param>
 /// <param name="secprot" type="string?">Sec-WebSocket-Protocol 字段；nil 表示省略</param>
-/// <returns type="lightuserdata?">握手包数据指针；secprot 超长时返回 nil。业务通过 srey.send copy=0 接管或 utils.ud_free 释放</returns>
+/// <returns type="lightuserdata?">握手包数据指针；secprot 超长、或 host/uri/secprot 任一含 CR/LF（会拆出额外的 HTTP 头）时返回 nil。
+/// 业务通过 srey.send copy=0 接管或 utils.ud_free 释放</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="lightuserdata?">握手上下文 hsctx，须作为 srey.connect 的 extra 传入；所有权转交协议层(握手成功或 connect 失败时释放)，业务不得 ud_free。
 /// 失败时三个返回值都是 nil，个数恒为 3</returns>
@@ -247,11 +232,11 @@ static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
 /// <summary>
 /// 构造 WebSocket Ping 控制帧
 /// </summary>
-/// <param name="mask" type="integer">是否启用掩码（客户端发送 1，服务端 0）</param>
+/// <param name="mask" type="integer">是否启用掩码（客户端发送 1，服务端 0）；只收 0/1，其余报错</param>
 /// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_ping(lua_State *lua) {
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    int32_t mask = (int32_t)lpub_check_flag(lua, 1);
     size_t lens;
     void *pack = websock_pack_ping(mask, &lens);
     return lpub_rtn_lud(lua, pack, lens);
@@ -259,11 +244,11 @@ static int32_t _lprot_websock_pack_ping(lua_State *lua) {
 /// <summary>
 /// 构造 WebSocket Pong 控制帧
 /// </summary>
-/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
+/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）；只收 0/1，其余报错</param>
 /// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_pong(lua_State *lua) {
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    int32_t mask = (int32_t)lpub_check_flag(lua, 1);
     size_t lens;
     void *pack = websock_pack_pong(mask, &lens);
     return lpub_rtn_lud(lua, pack, lens);
@@ -271,11 +256,11 @@ static int32_t _lprot_websock_pack_pong(lua_State *lua) {
 /// <summary>
 /// 构造 WebSocket Close 控制帧
 /// </summary>
-/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
+/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）；只收 0/1，其余报错</param>
 /// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_close(lua_State *lua) {
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    int32_t mask = (int32_t)lpub_check_flag(lua, 1);
     size_t lens;
     void *pack = websock_pack_close(mask, &lens);
     return lpub_rtn_lud(lua, pack, lens);
@@ -283,8 +268,8 @@ static int32_t _lprot_websock_pack_close(lua_State *lua) {
 /// <summary>
 /// 构造 WebSocket 文本帧（首帧）
 /// </summary>
-/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
-/// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧</param>
+/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）；只收 0/1，其余报错</param>
+/// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧；只收 0/1，其余报错</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超单帧上限（MAX_PACK_SIZE，配成 0 时退到 64MB 硬上限）同样返 nil</returns>
@@ -292,8 +277,8 @@ static int32_t _lprot_websock_pack_close(lua_State *lua) {
 static int32_t _lprot_websock_pack_text(lua_State *lua) {
     void *data;
     size_t dlens;
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t mask = (int32_t)lpub_check_flag(lua, 1);
+    int32_t fin = (int32_t)lpub_check_flag(lua, 2);
     data = lpub_check_buf(lua, 3, &dlens, NULL);
     void *pack = websock_pack_text(mask, fin, data, dlens, &dlens);
     return lpub_rtn_lud(lua, pack, dlens);
@@ -301,8 +286,8 @@ static int32_t _lprot_websock_pack_text(lua_State *lua) {
 /// <summary>
 /// 构造 WebSocket 二进制帧（首帧）
 /// </summary>
-/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
-/// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧</param>
+/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）；只收 0/1，其余报错</param>
+/// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧；只收 0/1，其余报错</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="lightuserdata?">数据指针；返回 nil 的情形同 pack_text</returns>
@@ -310,8 +295,8 @@ static int32_t _lprot_websock_pack_text(lua_State *lua) {
 static int32_t _lprot_websock_pack_binary(lua_State *lua) {
     void *data;
     size_t dlens;
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t mask = (int32_t)lpub_check_flag(lua, 1);
+    int32_t fin = (int32_t)lpub_check_flag(lua, 2);
     data = lpub_check_buf(lua, 3, &dlens, NULL);
     void *pack = websock_pack_binary(mask, fin, data, dlens, &dlens);
     return lpub_rtn_lud(lua, pack, dlens);
@@ -319,8 +304,8 @@ static int32_t _lprot_websock_pack_binary(lua_State *lua) {
 /// <summary>
 /// 构造 WebSocket Continuation 帧（分片消息的中间或最后帧）
 /// </summary>
-/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
-/// <param name="fin" type="integer">1 表示最后帧（PROT_SLICE_END），0 表示中间帧</param>
+/// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）；只收 0/1，其余报错</param>
+/// <param name="fin" type="integer">1 表示最后帧（PROT_SLICE_END），0 表示中间帧；只收 0/1，其余报错</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="lightuserdata?">数据指针；返回 nil 的情形同 pack_text</returns>
@@ -328,8 +313,8 @@ static int32_t _lprot_websock_pack_binary(lua_State *lua) {
 static int32_t _lprot_websock_pack_continua(lua_State *lua) {
     void *data;
     size_t dlens;
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t mask = (int32_t)lpub_check_flag(lua, 1);
+    int32_t fin = (int32_t)lpub_check_flag(lua, 2);
     data = lpub_check_buf(lua, 3, &dlens, NULL);
     void *pack = websock_pack_continua(mask, fin, data, dlens, &dlens);
     return lpub_rtn_lud(lua, pack, dlens);
@@ -385,7 +370,9 @@ static int32_t _lprot_http_code_status(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回 HTTP 包的分块传输状态
+/// 返回 HTTP 包的 Transfer-Encoding: chunked 状态。只认 Transfer-Encoding——响应既无
+/// Content-Length 又无 TE 时(RFC 7230 §3.3.3 规则 7，body 由连接关闭界定)本值仍是 0，
+/// 而 body 确实按分片投；判"还有没有后续"要看消息自带的 slice 标记，不能用本值
 /// </summary>
 /// <param name="pack" type="lightuserdata">http_pack_ctx 指针</param>
 /// <returns type="integer">0=非分块；1=首包（含 header）；2+ 分块中间/结束块</returns>
@@ -510,8 +497,7 @@ static int32_t _lprot_http_is_token(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 1)) {
         s = lua_tolstring(lua, 1, &lens);
     }
-    lua_pushboolean(lua, NULL != s && 0 != is_token(s, lens) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, NULL != s && 0 != is_token(s, lens));
 }
 //srey.http
 LUAMOD_API int luaopen_http(lua_State *lua) {
@@ -702,12 +688,7 @@ static int32_t _lprot_smtp_try_connect(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LPUB_CUR_TASK(lua, task);
     int32_t rtn = smtp_try_connect(task, *ud, 1);
-    if (ERR_OK == rtn) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == rtn);
 }
 /// <summary>
 /// 检查 SMTP 响应包的状态码是否匹配指定 code
@@ -721,12 +702,7 @@ static int32_t _lprot_smtp_check_code(lua_State *lua) {
     LUACHECK_LUDATA(lua, 2);
     char *pack = (char *)lua_touserdata(lua, 2);
     const char *code = luaL_checkstring(lua, 3);
-    if (ERR_OK == smtp_check_code(pack, code)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == smtp_check_code(pack, code));
 }
 /// <summary>
 /// 检查 SMTP 响应包的状态码是否命中 codes 里任意一个。用于一条命令有多个合法应答的场合，
@@ -752,8 +728,7 @@ static int32_t _lprot_smtp_check_codes(lua_State *lua) {
         codes[i] = lua_tostring(lua, -1);
         lua_pop(lua, 1);
     }
-    lua_pushboolean(lua, ERR_OK == smtp_check_codes(pack, codes, (size_t)ncode) ? 1 : 0);
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == smtp_check_codes(pack, codes, (size_t)ncode));
 }
 /// <summary>
 /// 检查 SMTP 响应包的应答码是否为 250。只认这一个码，不是判整个 2xx 段——
@@ -766,12 +741,7 @@ static int32_t _lprot_smtp_check_ok(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LUACHECK_LUDATA(lua, 2);
     char *pack = (char *)lua_touserdata(lua, 2);
-    if (ERR_OK == smtp_check_ok(pack)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    return lpub_rtn_bool(lua, ERR_OK == smtp_check_ok(pack));
 }
 /// <summary>
 /// 构造 SMTP RSET 重置命令

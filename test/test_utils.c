@@ -2138,6 +2138,16 @@ static void test_utils_filesystem(CuTest *tc) {
     got = 0;
     CuAssertTrue(tc, NULL == readall(bogus, &got));
 
+    // 空文件：readall 返 NULL,且自己补上 errno——这条不来自失败的系统调用,
+    // 不补的话调用方的 strerror(errno) 打的是上一次调用的陈旧值
+    fp = fopen(tmpfile, "wb");
+    CuAssertPtrNotNull(tc, fp);
+    fclose(fp);
+    errno = 0;
+    got = 0;
+    CuAssertTrue(tc, NULL == readall(tmpfile, &got));
+    CuAssertTrue(tc, 0 != errno);
+
     // 清理
     remove(tmpfile);
 }

@@ -186,10 +186,19 @@ static void test_bson_iter_malformed_poison(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, err);
 }
 
-// bson_iter_error 区分 bson_iter_next 返回 0 的两种含义:读到 EOD 正常结束 vs 元素非法被拒。
-// 毒化后两者的 type 都是 BSON_EOD,单看 type 分不出来
+// bson_iter_error 区分 bson_iter_next 返回 0 的两种含义:读到 EOD 正常结束 vs 中途读不下去。
+// 毒化后两者的 type 都是 BSON_EOD,单看 type 分不出来。
+// "读不下去"含两类成因:文档结构非法,以及类型字节本实现不认识——BSON 元素不自带长度,
+// 认不出类型就算不出边界,后面一律读不到,故共用一个标志位
 static void test_bson_iter_error_flag(CuTest *tc) {
     char trunc[] = { 0x0A, 0x00, 0x00, 0x00, 0x01, 'd', 0x00, 0x01, 0x02, 0x00 };
+    // 结构完好的文档:int32 a=1,后跟一个废弃的 symbol(0x0E) 字段 s="x"
+    char sym[] = {
+        0x15, 0x00, 0x00, 0x00,
+        0x10, 'a', 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x0E, 's', 0x00, 0x02, 0x00, 0x00, 0x00, 'x', 0x00,
+        0x00
+    };
     bson_ctx bson, rd;
     bson_iter iter;
 
@@ -223,6 +232,17 @@ static void test_bson_iter_error_flag(CuTest *tc) {
     // 长度字段本身非法(声明 10 但只给 9 字节)
     bson_init(&rd, trunc, sizeof(trunc) - 1);
     bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+
+    // 结构完好、只是撞上不认识的类型字节:它之前的元素照常读到,到它这里 next 返 0 且
+    // err 置位——与畸形文档共用同一个标志位,所以 bson.decode 对两者一样报错
+    bson_init(&rd, sym, sizeof(sym));
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_INT32, iter.type);
+    CuAssertTrue(tc, 0 == bson_iter_error(&iter));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_EOD, iter.type);
     CuAssertTrue(tc, 0 != bson_iter_error(&iter));
 }
 
@@ -425,6 +445,36 @@ static void test_bson_iter_find_deep_miss(CuTest *tc) {
 // result 与 iter 是同一对象时,bson_iter_find 会把 iter->doc 改指到 nested_doc,
 // 还原偏移必须按进函数时的原文档来:点分路径下子文档比外层小,拿外层偏移去还原
 // 就撞 binary_offset 的 ASSERTAB
+// 单键 find 没找到不能毁掉 iter 的当前元素：_bson_iter_find 会把传进去的 iter 一路推到
+// EOD 并毒化，旧实现直接把 iter 交进去，只还原偏移不还原 type/key/val。点分路径用副本，
+// 两条路径行为相反
+static void test_bson_iter_find_miss_keeps_iter(CuTest *tc) {
+    int32_t err;
+    bson_ctx bson;
+    bson_init(&bson, NULL, 0);
+    bson_append_int32(&bson, "a", 11);
+    bson_append_int32(&bson, "b", 22);
+    bson_append_end(&bson);
+
+    bson_iter result;
+    BSON_ITER_FROM(bson, rd, iter);
+    CuAssertTrue(tc, 0 != bson_iter_next(&iter));// 停在 "a"
+    CuAssertIntEquals(tc, BSON_INT32, iter.type);
+
+    ZERO(&result, sizeof(result));
+    CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter, "zz", &result));
+    // 当前元素原封不动：type / key / 取值都还是 "a"
+    CuAssertIntEquals(tc, BSON_INT32, iter.type);
+    CuAssertIntEquals(tc, 1, (int32_t)iter.keylens);
+    CuAssertTrue(tc, 'a' == iter.key[0]);
+    CuAssertIntEquals(tc, 11, bson_iter_int32(&iter, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    // 偏移也还原了，接着 next 拿到的是 "b" 而不是重吐 "a"
+    CuAssertTrue(tc, 0 != bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 22, bson_iter_int32(&iter, &err));
+
+    BSON_FREE(&bson);
+}
 static void test_bson_iter_find_self_alias(CuTest *tc) {
     int32_t err;
     char pad[256];
@@ -1250,6 +1300,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_nested);
     SUITE_ADD_TEST(suite, test_bson_find);
     SUITE_ADD_TEST(suite, test_bson_iter_find_deep_miss);
+    SUITE_ADD_TEST(suite, test_bson_iter_find_miss_keeps_iter);
     SUITE_ADD_TEST(suite, test_bson_iter_find_self_alias);
     SUITE_ADD_TEST(suite, test_bson_cat_self_alias);
     SUITE_ADD_TEST(suite, test_bson_complete_cat);
