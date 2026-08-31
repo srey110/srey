@@ -93,12 +93,14 @@ static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) 
 int32_t lbc_loadfile(lua_State *lua, const char *path) {
     bc_entry key;
     key.path = (char *)path;
-    rwlock_distr_rdlock(_bc_lock);
-    const bc_entry *e = (const bc_entry *)hashmap_get(_bc_map, &key);
-    int32_t hit = (NULL != e);
     uint64_t mt = 0;
 #if LBC_CHECK_MTIME
     mt = file_mtime(path);
+#endif
+    rwlock_distr_rdlock(_bc_lock);
+    const bc_entry *e = (const bc_entry *)hashmap_get(_bc_map, &key);
+    int32_t hit = (NULL != e);
+#if LBC_CHECK_MTIME
     if (0 != hit && e->mtime != mt) {
         hit = 0;
     }

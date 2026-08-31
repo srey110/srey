@@ -9,14 +9,20 @@
 #define CUR_TASK_NAME "_curtask" // Lua 全局变量名：当前 task 指针
 #define PATH_NAME "_propath" // Lua 全局变量名：程序根路径
 #define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
-#define INTERRUPTIBLE_NAME "_interruptible" // Lua 全局变量名：本 task 是否已声明可被 trap 中断
 #define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
 #define PORT_OUT_OF_RANGE "port out of range" // 端口越界文案，各 connect / listen 绑定共用
 #define REQTYPE_OUT_OF_RANGE "reqtype out of range" // 请求类型越界文案，core 与 harbor 绑定共用
 #define LENS_RANGE "length out of range" // 长度越界文案，lpub 的取 buf 一族与 mqtt 载荷共用
+#define LUDATA_NONNULL "non-null light userdata expected" // 空指针文案，下面的宏与取 buf 一族共用
 
-// 校验栈上指定位置必须是 light userdata（任意 C 指针），否则通过 luaL_argerror 抛 Lua 错误
+// 校验栈上指定位置是 light userdata 且指针非 NULL，否则通过 luaL_argerror 抛 Lua 错误。
+// 非空这一半不能省：lua_islightuserdata 对 NULL 指针也返真，而 yyjson.null 和每个解出来的
+// JSON null 都是 NULL 指针，远端数据就能把它送到任何一个吃 lightuserdata 的接口上
 #define LUACHECK_LUDATA(lua, idx) \
+    luaL_argcheck(lua, lua_islightuserdata(lua, idx) && NULL != lua_touserdata(lua, idx), \
+        idx, LUDATA_NONNULL)
+// 同上但放行 NULL 指针，给那些把 NULL 当"没有这个东西"、自己判完返 nil 的入口用
+#define LUACHECK_LUDATA_OPT(lua, idx) \
     luaL_argcheck(lua, lua_islightuserdata(lua, idx), idx, "light userdata expected")
 // 将已存在的元表关联到栈顶 userdata 对象上
 #define ASSOC_MTABLE(lua, name) \
@@ -155,14 +161,15 @@ pack_type lpub_check_pktype(lua_State *lua, int32_t idx);
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">evssl 在栈中的位置</param>
-/// <returns>evssl_ctx 指针；该位置为 nil 返回 NULL；非 nil 又不是 light userdata
-/// 走 luaL_argerror(longjmp,不返回)</returns>
+/// <returns>evssl_ctx 指针；该位置为 nil 或整个缺省时返回 NULL（都表示"不用 SSL"）；
+/// 传了别的又不是非空 light userdata 走 luaL_argerror(longjmp,不返回)</returns>
 struct evssl_ctx *lpub_check_evssl(lua_State *lua, int32_t idx);
 /// <summary>
 /// 解析栈位 idx 的 (string|lightuserdata, size [, copy]) 参数,返回 data 指针。
 /// string: 返回字符串首址, size 自动取长度, copy(若非 NULL)=1;
 /// lightuserdata: 返回指针, size 从 idx+1 经 lpub_check_lens 取,
 ///   copy(若非 NULL)从 idx+2 读 integer(缺失/非 integer 默认 1);
+///   指针为 NULL 且 size 非 0 时报错——下游一律按 size 字节读写它;size 为 0 放行,等价空缓冲;
 /// 其他类型: luaL_argerror(longjmp,不返回)。
 /// </summary>
 /// <param name="lua">Lua 栈</param>
@@ -183,7 +190,8 @@ void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
 /// <returns>data 指针</returns>
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
 /// <summary>
-/// 取可空的数据缓冲参数:nil / 无参返回 NULL;string 自带长度;lightuserdata 从 idx+1 读长度。
+/// 取可空的数据缓冲参数:nil / 无参返回 NULL;string 自带长度;lightuserdata 从 idx+1 读长度,
+/// 指针为 NULL 且长度非 0 时报错(口径同 lpub_check_buf)。
 /// 其余类型一律报错——full userdata 是各类句柄对象,取它的载荷首址当字节缓冲会越界读。
 /// 两条分支都卡 INT32_MAX,理由同 lpub_check_bson_bin。缓冲必填的场合用 lpub_check_buf
 /// </summary>

@@ -5,9 +5,8 @@
 -- 不再使用时调用 close 通知服务端释放句柄——GC 只做本地释放，不会替你发 COM_STMT_CLOSE。
 
 local srey   = require("lib.srey")
-local mysql  = require("mysql")
 local stmt   = require("mysql.stmt")
-local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
+local mpub   = require("lib.mysql_pub")-- 与 mysql.lua 共用的请求收尾，见该模块头部
 
 -- mysql_stmt_ctx：预处理语句执行上下文。
 -- self.stmt      ：C 层 stmt 对象，持有服务端 statement_id；动态调用 sock_id() 感知重连。
@@ -47,9 +46,8 @@ function ctx:_execute(mbind)
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
         return nil
     end
-    local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_execute(mbind)
-    local mpack = srey.syn_send(fd, skid, pack, size, 0)
+    local mpack, fd, skid = mpub.request(self.stmt, pack, size)
     if not mpack then
         return nil
     end
@@ -70,13 +68,8 @@ function ctx:_reset()
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
         return false
     end
-    local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_reset()
-    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
-    if not mpack then
-        return false
-    end
-    return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
+    return mpub.request_ok(self.stmt, pack, size)
 end
 
 ---发送 COM_STMT_CLOSE，通知服务端释放该语句句柄。

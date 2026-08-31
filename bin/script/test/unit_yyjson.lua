@@ -6,7 +6,7 @@ local runner = require("test.runner")
 local yyjson = require("yyjson")
 
 srey.startup(function()
-runner.run("yyjson", function(t)
+runner.run(function(t)
     -- ── 标量往返 ────────────────────────────────────────────────
     do
         t:eq('"hi"', yyjson.encode("hi"), "encode string")
@@ -113,11 +113,13 @@ runner.run("yyjson", function(t)
     -- ── decode 收 lightuserdata ─────────────────────────────────
     do
         -- yyjson.null 是 NULL light userdata：走的是 lightuserdata 分支（不是
-        -- "string expected" 参数类型错），yyjson 自己判 NULL 输入并报解析错
+        -- "string expected" 参数类型错），由 lpub_check_buf 在长度非 0 时拒收
         local ok, err = pcall(yyjson.decode, yyjson.null, 4)
-        t:eq(false, ok, "NULL lightuserdata 解析失败")
-        t:check(type(err) == "string" and err:find("decode") ~= nil,
-                "报的是解析错而非参数类型错")
+        t:eq(false, ok, "NULL lightuserdata 被拒")
+        t:check(type(err) == "string" and err:find("non%-null") ~= nil,
+                "报的是空指针参数错")
+        -- (NULL, 0) 等价空缓冲，放行到 yyjson 自己报解析错
+        t:eq(false, pcall(yyjson.decode, yyjson.null, 0), "NULL lud + 0 长度是空输入")
         -- lightuserdata 必须带 size，缺了走 lpub_check_lens 报错
         t:eq(false, pcall(yyjson.decode, yyjson.null), "lightuserdata 缺 size 报错")
         -- 负 size 被 lpub_check_lens 挡下（转 size_t 会变天文数字）

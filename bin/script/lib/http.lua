@@ -183,7 +183,7 @@ end
 ---       不得传入，传了整条丢弃并告警——留着会造出两条 Content-Length 或 TE 叠 CL，
 ---       严格实现与 smuggling 防御代理会拒收。info 非 table 时 Content-Type 正是经此传入
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
----@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
+---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
@@ -370,7 +370,7 @@ end
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,any>? 附加头部
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
----@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
+---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
@@ -391,7 +391,7 @@ end
 ---@param skid integer 连接 skid
 ---@param code integer 状态码（如 200、404）
 ---@param headers table<string,any>? 附加头部
----@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
+---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
@@ -419,7 +419,7 @@ end
 ---@param skid integer 连接 skid
 ---@param code integer 状态码
 ---@param headers table<string,any>? 附加头部
----@param info string|table|fun(...):string?|nil 若是 GET 会返回的报文体；function 形态算不出
+---@param info string|table<any,any>|fun(...):string?|nil 若是 GET 会返回的报文体；function 形态算不出
 ---       长度，只发头且省略 Content-Length
 ---@param ... any 传给 info 函数的额外参数
 function http.response_head(fd, skid, code, headers, info, ...)

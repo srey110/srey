@@ -125,6 +125,27 @@ function randstr(cnt)
     return table.concat(rtn)
 end
 
+-- dump 的字符串转义表：这五个有惯用写法，其余控制符补 \ddd。
+-- 必须把 "[%c\\\"]" 能匹配到的字节全部填满：表里查不到时 gsub 原样保留，
+-- NUL / ESC 就直接落进引号里，输出既 load 不回来也能往日志注入终端转义序列。
+-- 填满之后 gsub 收表参数即可全程走 C，不必每个字节回一次 Lua。
+-- %c 就是 iscntrl，项目从不调 setlocale，故取值集恒为 0-31 与 127(DEL)
+local _DUMP_ESCAPES = {
+    ["\t"] = "\\t",
+    ["\r"] = "\\r",
+    ["\n"] = "\\n",
+    ["\""] = "\\\"",
+    ["\\"] = "\\\\",
+}
+for i = 0, 127 do
+    if i < 32 or 127 == i then
+        local c = string.char(i)
+        if not _DUMP_ESCAPES[c] then
+            _DUMP_ESCAPES[c] = string.format("\\%03d", i)
+        end
+    end
+end
+
 ---将任意 Lua 值格式化为可读字符串（类似 Python repr）；表递归展开，数组与普通表分别格式化
 ---@param obj any 任意 Lua 值
 ---@param offset integer? 初始缩进层级，默认 0
@@ -137,13 +158,7 @@ function dump(obj, offset)
         return string.rep("    ", level)
     end
     local function quoteStr(str)
-        str = string.gsub(str, "[%c\\\"]", {
-            ["\t"] = "\\t",
-            ["\r"] = "\\r",
-            ["\n"] = "\\n",
-            ["\""] = "\\\"",
-            ["\\"] = "\\\\",
-        })
+        str = string.gsub(str, "[%c\\\"]", _DUMP_ESCAPES)
         return '"' .. str .. '"'
     end
     local function wrapKey(val)
@@ -221,11 +236,12 @@ end
 ---@return table<any,any> cls 类表（含 new / ctor / super / __cname / __supers）
 function class(classname, ...)
     local cls = { __cname = classname }
-    local supers = { ... }
-    for _, super in ipairs(supers) do
-        local superType = type(super)
+    -- 按 select("#") 而不是 ipairs：变参里夹一个 nil 时 ipairs 会停在它上面，
+    -- 后面的父类被静默丢掉，下面那句 assert 也永远看不到 nil
+    for i = 1, select("#", ...) do
+        local super = select(i, ...)
         assert("table" == type(super), string.format("class() - create class \"%s\" with invalid super class type \"%s\"",
-                classname, superType))
+                classname, type(super)))
         cls.__supers = cls.__supers or {}
         cls.__supers[#cls.__supers + 1] = super
         if not cls.super then

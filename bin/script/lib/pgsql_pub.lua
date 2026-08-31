@@ -10,6 +10,7 @@
 -- ping / cancel 不在此列：它们从不写 err，erro() 报告的始终是最后一次带契约操作的结果——
 -- 若给它们加复位而不写内容，只会把上一次有用的错误抹成空串，更难排查。
 
+local srey = require("lib.srey")
 local pgsql = require("pgsql")-- C 绑定，只用 pack_type / erro
 
 local M = {}
@@ -51,6 +52,26 @@ end
 function M.fail(self, err)
     self.err = err
     return false
+end
+
+---组好包之后的固定四步：取 fd/skid → syn_send → 发送失败写 SEND → 按 want 校验响应类型。
+---七个请求点共用；ping / stmt:close 不走这里——它们从不写 err，理由见文件头的 err 契约
+---@param self any 带 pg 与 err 字段的 ctx（pgsql_ctx 或 pgsql_stmt_ctx）
+---@param pack lightuserdata 已组好的请求包，所有权随 syn_send 转移
+---@param size integer 包字节数
+---@param want PGPACK_TYPE 期望的响应包类型
+---@return lightuserdata|false pgpack 响应包；失败时 err 已写好并返回 false
+function M.request(self, pack, size, want)
+    local fd, skid = self.pg:sock_id()
+    local pgpack = srey.syn_send(fd, skid, pack, size, 0)
+    if not pgpack then
+        return M.fail(self, M.SEND)
+    end
+    local e = M.check_type(pgpack, want)
+    if e then
+        return M.fail(self, e)
+    end
+    return pgpack
 end
 
 ---复位"最近一次操作"的两项状态。必须一起复位：只复位 err 的话，命令失败直接 return 时

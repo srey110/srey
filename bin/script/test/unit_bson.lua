@@ -6,7 +6,7 @@ local bson   = require("lib.bson")
 local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
 srey.startup(function()
-runner.run("bson", function(t)
+runner.run(function(t)
     -- 1. 基本类型 round-trip
     local b = bson.encode({ i32=100, i64=3000000000, dbl=3.14, str="hello", flag=true })
     t:check(b ~= nil, "encode basic")
@@ -82,6 +82,13 @@ runner.run("bson", function(t)
         t:eq(false, pcall(bson.new, yyjson.null, 1024), "bson.new: NULL 指针被拒")
         local ob = bson.new()
         t:eq(false, pcall(ob.oid, ob, "k", yyjson.null), "b:oid: NULL 指针被拒")
+        -- binary/cat/mkbinary 走 lpub_check_buf：长度非 0 时拒收空指针（否则 binary 会写出
+        -- 声明了 N 字节却一字节没有的元素，整篇文档从这里错位），长度 0 视作空缓冲放行
+        t:eq(false, pcall(ob.binary, ob, "k", 0, yyjson.null, 16), "b:binary: NULL 指针被拒")
+        t:eq(false, pcall(ob.cat, ob, yyjson.null, 16), "b:cat: NULL 指针被拒")
+        t:eq(false, pcall(bson.mkbinary, 0, yyjson.null, 16), "mkbinary: NULL 指针被拒")
+        local okempty = pcall(bson.mkbinary, 0, yyjson.null, 0)
+        t:eq(true, okempty, "mkbinary: NULL 指针 + 0 长度放行")
     end
 
     -- 2. INT32 / INT64 边界

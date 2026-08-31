@@ -15,7 +15,7 @@ local function _count_rows(reader)
 end
 
 srey.startup(function()
-runner.run("db_mysql", function(t)
+runner.run(function(t)
     local mctx = mysql.new("127.0.0.1", 3306, SSL_NAME.NONE,
                            "admin", "12345678", "test", "utf8mb4", 0)
     if not mctx:connect() then

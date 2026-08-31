@@ -2,10 +2,9 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
-local task   = require("srey.task")
 
 srey.startup(function()
-runner.run("fork", function(t)
+runner.run(function(t)
     -- ── srey.fork：fire-and-forget，主协程不等 ─────────────────────────
     do
         local hit = 0
@@ -181,13 +180,5 @@ runner.run("fork", function(t)
         t:eq(0, #qu2, "_drain: 追加的元素也被清空")
     end
 
-    -- ── task.critical：不可中断区间的开关 ─────────────────────────────
-    -- 区间内 hook 只放行不抛错、trap 留到出区间后触发，那段时序在单测里没法确定性构造，
-    -- 这里只钉住接口存在与入参校验；进出成对，跑完 task 仍可被中断
-    do
-        t:eq(true, pcall(task.critical, 1), "task.critical(1) 可调用")
-        t:eq(true, pcall(task.critical, 0), "task.critical(0) 可调用")
-        t:eq(false, pcall(task.critical), "task.critical 缺参报错")
-    end
 end)
 end)

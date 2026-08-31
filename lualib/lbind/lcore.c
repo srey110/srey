@@ -330,13 +330,13 @@ static int32_t _lcore_connect(lua_State *lua) {
 /// </summary>
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <param name="client" type="integer">1 表示客户端握手，0 表示服务端</param>
+/// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错</param>
 /// <param name="evssl" type="lightuserdata">SSL 上下文；为 nil 或非 userdata 时直接失败</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_ssl_exchange(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t client = lpub_check_flag(lua, 3);
     if (!lua_islightuserdata(lua, 4)) {
         lua_pushboolean(lua, 0);
         return 1;
@@ -527,12 +527,12 @@ static int32_t _lcore_udp_ttl(lua_State *lua) {
 /// </summary>
 /// <param name="fd" type="integer">UDP socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <param name="enable" type="integer">1=回环(默认,发出自收),0=不收</param>
+/// <param name="enable" type="integer">1=回环(默认,发出自收),0=不收；其余值报错</param>
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_loop(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t enable = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t enable = lpub_check_flag(lua, 3);
     return lpub_rtn_bool(lua, ERR_OK == ev_udp_loop(&g_loader->netev, fd, skid, enable));
 }
 /// <summary>
@@ -718,6 +718,26 @@ static int32_t _lcore_mem_stat(lua_State *lua) {
     lua_setfield(lua, -2, "live");
     return 1;
 }
+#if WITH_SSL
+// name 非空时把 cert 目录下的完整路径写进 out；为空则 out 保持调用方给的空串(表示不加载)
+static void _cert_path(const char *propath, const char *name, char *out, size_t outlen) {
+    if (0 != strlen(name)) {
+        SNPRINTF(out, outlen, "%s%s%s%s%s",
+            propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, name);
+    }
+}
+// 注册结果压栈:成功压 ssl 指针,ssl 没建出来或注册失败一律压 nil。
+// 注册失败不必在这里释放 ssl —— evssl_register 每条失败路径都已 evssl_free
+static int32_t _push_registered_ssl(lua_State *lua, const char *name, evssl_ctx *ssl) {
+    if (NULL != ssl
+        && ERR_OK == evssl_register(name, ssl)) {
+        lua_pushlightuserdata(lua, ssl);
+    } else {
+        lua_pushnil(lua);
+    }
+    return 1;
+}
+#endif
 /// <summary>
 /// 加载 PEM/DER 格式的 CA、证书和私钥，按 name 注册 SSL 上下文
 /// </summary>
@@ -748,32 +768,14 @@ static int32_t _lcore_cert_register(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    if (0 != strlen(ca)) {
-        SNPRINTF(capath, sizeof(capath), "%s%s%s%s%s",
-            propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, ca);
-    }
-    if (0 != strlen(cert)) {
-        SNPRINTF(certpath, sizeof(certpath), "%s%s%s%s%s",
-            propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, cert);
-    }
-    if (0 != strlen(key)) {
-        SNPRINTF(keypath, sizeof(keypath), "%s%s%s%s%s",
-            propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, key);
-    }
-    evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype);
-    if (NULL != ssl) {
-        if (ERR_OK != evssl_register(name, ssl)) {
-            lua_pushnil(lua);
-        } else {
-            lua_pushlightuserdata(lua, ssl);
-        }
-    } else {
-        lua_pushnil(lua);
-    }
+    _cert_path(propath, ca, capath, sizeof(capath));
+    _cert_path(propath, cert, certpath, sizeof(certpath));
+    _cert_path(propath, key, keypath, sizeof(keypath));
+    return _push_registered_ssl(lua, name, evssl_new(capath, certpath, keypath, keytype));
 #else
     lua_pushnil(lua);
-#endif
     return 1;
+#endif
 }
 /// <summary>
 /// 加载 PKCS12 格式证书文件，按 name 注册 SSL 上下文
@@ -788,29 +790,17 @@ static int32_t _lcore_p12_register(lua_State *lua) {
     const char *p12 = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
     char p12path[PATH_LENS] = { 0 };
-    if (0 != strlen(p12)) {
-        char propath[PATH_LENS] = { 0 };
-        if (ERR_OK != global_string(lua, PATH_NAME, propath, sizeof(propath))) {
-            lua_pushnil(lua);
-            return 1;
-        }
-        SNPRINTF(p12path, sizeof(p12path), "%s%s%s%s%s",
-            propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, p12);
-    }
-    evssl_ctx *ssl = evssl_p12_new(p12path, pwd);
-    if (NULL != ssl) {
-        if (ERR_OK != evssl_register(name, ssl)) {
-            lua_pushnil(lua);
-        } else {
-            lua_pushlightuserdata(lua, ssl);
-        }
-    } else {
+    char propath[PATH_LENS] = { 0 };
+    if (ERR_OK != global_string(lua, PATH_NAME, propath, sizeof(propath))) {
         lua_pushnil(lua);
+        return 1;
     }
+    _cert_path(propath, p12, p12path, sizeof(p12path));
+    return _push_registered_ssl(lua, name, evssl_p12_new(p12path, pwd));
 #else
     lua_pushnil(lua);
-#endif
     return 1;
+#endif
 }
 /// <summary>
 /// 按 name 查询已注册的 SSL 上下文

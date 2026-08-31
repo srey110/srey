@@ -305,7 +305,7 @@ static int32_t _lpgsql_reader_push(lua_State *lua, pgsql_reader_ctx *reader) {
 /// <param name="format" type="integer">期望格式（0 = 文本，1 = 二进制）；其余值报错</param>
 /// <returns type="_pgsql_reader_ctx?">reader 对象；失败返回 nil</returns>
 static int32_t _lpgsql_reader_iter(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     pgpack_format format = (pgpack_format)lpub_check_range(lua, 2, FORMAT_TEXT, FORMAT_BINARY, FORMAT_OUT_OF_RANGE);
     if (NULL == pgpack) {
@@ -322,7 +322,7 @@ static int32_t _lpgsql_reader_iter(lua_State *lua) {
 /// <param name="format" type="integer">期望格式（0 = 文本，1 = 二进制）；其余值报错</param>
 /// <returns type="_pgsql_reader_ctx?">reader 对象；下标越界、该语句无结果集或已取走返回 nil</returns>
 static int32_t _lpgsql_reader_at(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     // 脚本侧一律 1 基;真正的上界由 pgsql_reader_at 按 result_count 判
     int64_t at = lpub_check_index0(lua, 2, UINT32_MAX);
@@ -449,7 +449,8 @@ static int32_t _lpgsql_reader_double(lua_State *lua) {
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="lightuserdata?">数据指针；字段为 NULL 时不返回</returns>
+/// <returns type="lightuserdata?">数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
+/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；字段为 NULL 时不返回</returns>
 /// <returns type="integer?">字节数；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_text(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_reader_ctx, MT_PGSQL_READER, reader, "reader freed");
@@ -471,7 +472,8 @@ static int32_t _lpgsql_reader_text(lua_State *lua) {
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="lightuserdata?">数据指针；字段为 NULL 时不返回</returns>
+/// <returns type="lightuserdata?">数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
+/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；字段为 NULL 时不返回</returns>
 /// <returns type="integer?">字节数；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_bytea(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_reader_ctx, MT_PGSQL_READER, reader, "reader freed");
@@ -591,7 +593,7 @@ LUAMOD_API int luaopen_pgsql_reader(lua_State *lua) {
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <returns type="integer">数据包类型枚举值</returns>
 static int32_t _lpgsql_pack_type(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     lua_pushinteger(lua, NULL != pgpack ? (lua_Integer)pgpack->type : PGPACK_ERR);
     return 1;
@@ -604,7 +606,7 @@ static int32_t _lpgsql_pack_type(lua_State *lua) {
 /// <returns type="integer">受影响行数；包类型为 PGPACK_ERR 或解析失败时为 0。
 /// COPY 的包按其 "COPY N" 标签照报，pgsql.lua 的 _copy_out 正依赖这一档</returns>
 static int32_t _lpgsql_affected_rows(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     lua_pushinteger(lua, NULL != pgpack ? pgsql_affected_rows(pgpack) : 0);
     return 1;
@@ -618,7 +620,7 @@ static int32_t _lpgsql_affected_rows(lua_State *lua) {
 /// <returns type="integer">结果个数；类型不是 PGPACK_OK、或响应不带 CommandComplete
 /// （prepare / stmt_close / 空 SQL）时为 0——取结果前先判这个数</returns>
 static int32_t _lpgsql_result_count(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     lua_pushinteger(lua, NULL != pgpack ? pgsql_result_count(pgpack) : 0);
     return 1;
@@ -630,7 +632,7 @@ static int32_t _lpgsql_result_count(lua_State *lua) {
 /// <param name="idx" type="integer">结果下标，从 1 开始，总数见 pgsql.result_count</param>
 /// <returns type="integer">受影响行数；包类型不是 PGPACK_OK、下标越界或解析失败时为 0</returns>
 static int32_t _lpgsql_affected_at(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     int64_t at = lpub_check_index0(lua, 2, UINT32_MAX);// 同 reader.at
     if (NULL == pgpack
@@ -647,7 +649,7 @@ static int32_t _lpgsql_affected_at(lua_State *lua) {
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <returns type="string">CommandComplete 标签（如 "INSERT 0 1"）</returns>
 static int32_t _lpgsql_complete(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     lua_pushstring(lua, NULL != pgpack ? pgpack->complete : "");
     return 1;
@@ -658,7 +660,7 @@ static int32_t _lpgsql_complete(lua_State *lua) {
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <returns type="string?">错误描述；类型不符时返回 nil</returns>
 static int32_t _lpgsql_erro(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     if (NULL == pgpack || PGPACK_ERR != pgpack->type) {
         lua_pushnil(lua);
@@ -675,7 +677,7 @@ static int32_t _lpgsql_erro(lua_State *lua) {
 /// <returns type="string?">channel 名</returns>
 /// <returns type="string?">通知内容</returns>
 static int32_t _lpgsql_notification(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     if (NULL == pgpack || PGPACK_NOTIFICATION != pgpack->type) {
         return lpub_rtn_nil(lua, 3);
@@ -693,7 +695,7 @@ static int32_t _lpgsql_notification(lua_State *lua) {
 /// <returns type="integer?">format（0 文本，1 二进制）；类型不符时返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">列数</returns>
 static int32_t _lpgsql_copy_in_info(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     if (NULL == pgpack || PGPACK_COPY_IN != pgpack->type) {
         return lpub_rtn_nil(lua, 2);
@@ -712,7 +714,7 @@ static int32_t _lpgsql_copy_in_info(lua_State *lua) {
 /// <returns type="lightuserdata?">数据指针（借用，勿释放）；类型不符时返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lpgsql_copy_out_data(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     // 这道判定守的是下面那次强转，不能因为 lpub_rtn_lud 自己会判 NULL 就省掉
     if (NULL == pgpack || PGPACK_COPY_OUT != pgpack->type) {

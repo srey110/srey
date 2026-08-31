@@ -133,7 +133,7 @@ pack_type lpub_check_pktype(lua_State *lua, int32_t idx) {
     return PACK_NONE;// 到不了: luaL_argerror 会 longjmp
 }
 struct evssl_ctx *lpub_check_evssl(lua_State *lua, int32_t idx) {
-    if (LUA_TNIL == lua_type(lua, idx)) {
+    if (lua_isnoneornil(lua, idx)) {
         return NULL;
     }
     LUACHECK_LUDATA(lua, idx);
@@ -152,6 +152,7 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
     if (LUA_TLIGHTUSERDATA == type) {
         void *ud = lua_touserdata(lua, *idx);
         *size = lpub_check_lens(lua, *idx + 1, INT32_MAX);
+        luaL_argcheck(lua, NULL != ud || 0 == *size, *idx, LUDATA_NONNULL);
         *idx += 2;// 先吃掉 data + size,*idx 转到 copy 位
         if (NULL != copy) {
             if (lua_isinteger(lua, *idx)) {
@@ -183,7 +184,9 @@ void *lpub_opt_buf(lua_State *lua, int32_t idx, size_t *size) {
         return data;
     case LUA_TLIGHTUSERDATA:
         *size = lpub_check_lens(lua, idx + 1, INT32_MAX);
-        return lua_touserdata(lua, idx);
+        data = lua_touserdata(lua, idx);
+        luaL_argcheck(lua, NULL != data || 0 == *size, idx, LUDATA_NONNULL);
+        return data;
     default:
         break;
     }

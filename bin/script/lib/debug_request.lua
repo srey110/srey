@@ -1,25 +1,31 @@
 -- task 调试请求处理：解析 REQ_DEBUG seri 序列化命令并在当前 task 的 Lua 虚拟机内执行。
 -- 支持命令：mem / gc / stat / coros / loglv / inject / hotfix。
--- 使用契约：首次 _dispatch 之前必须调用 _set_coro_sess、_set_response、_set_mtype_names 注入依赖。
+-- 使用契约：首次 _dispatch 之前必须把全部 _set_* 注入器调一遍——_set_coro_sess、_set_response、
+-- _set_mtype_names、_set_suspend_registries、_set_fallback，缺一个就会在 dump 时撞 nil 索引。
 
 local seri   = require("srey.seri")
 local inject = require("lib.inject")
 local task   = require("srey.task")
 local M = {}
 
-local _coro_sess     -- 由 _set_coro_sess 注入的 coro_sess 只读引用（不要写）
-local _response      -- 由 _set_response 注入的响应函数：(dst, reqtype, sess, erro, data) → void
-local _mtype_names   -- 由 _set_mtype_names 注入：mtype 整数 → 名字字符串（MSG_TYPE 反转表）
+local _coro_sess -- 由 _set_coro_sess 注入的 coro_sess 只读引用（不要写）
+local _response -- 由 _set_response 注入的响应函数：(dst, reqtype, sess, erro, data) → void
+local _mtype_names -- 由 _set_mtype_names 注入：mtype 整数 → 名字字符串（MSG_TYPE 反转表）
 local _mtype_max = 0 -- 同上注入：反转表里的最大 mtype，stat 按下标遍历到此为止
-local _fallback      -- 由 _set_fallback 注入：未知 debug 命令时透传给业务 on_requested：(reqtype,sess,src,data,size) → void
+local _fallback -- 由 _set_fallback 注入：未知 debug 命令时透传给业务 on_requested：(reqtype,sess,src,data,size) → void
+local _fork_barriers -- 由 _set_suspend_registries 注入：fork_wait 屏障集合（只读）
+local _serial_execs -- 同上：serial 执行器状态集合（只读）
+local _nyield -- 同上：取 nyield 的函数，用于与 _closing_dispatch 报的数对账
 
 -- 遍历 coro_sess，按 coroutine stack traceback 聚类去重；返回可读字符串
 -- 每个聚类记录最长挂起时长 maxage（毫秒），并按 maxage 降序输出，便于定位卡死协程
 local function _dump_coros()
     local now = task.timer_ms()
     local total = 0
-    local clusters = {}    -- traceback → { count, samples = {sess,...}, mtype, maxage }
+    local nsess = 0 -- coro_sess 的条目数，与 total(挂起协程数)不是一回事，理由见汇总行
+    local clusters = {} -- traceback → { count, samples = {sess,...}, mtype, maxage }
     for sess, corosess in pairs(_coro_sess) do
+        nsess = nsess + 1
         for _, info in ipairs(corosess.waiters) do
             if info.coro then    -- 跳过 func 模式（无挂起协程）
                 total = total + 1
@@ -40,26 +46,58 @@ local function _dump_coros()
             end
         end
     end
-    if 0 == total then
-        return "(no suspended coros)"
+    -- fork_wait 与 serial 的等待者走裸 yield，不在 coro_sess 里，只能靠登记表枚举；
+    -- 它们同样计进 nyield，漏掉就会出现"关闭时报还有 N 个协程、coros 却说一个都没有"
+    local nfork, nserial = 0, 0
+    local extra = {}
+    for b in pairs(_fork_barriers) do
+        nfork = nfork + 1
+        extra[#extra + 1] = string.format("fork_wait pending=%d age=%dms", b.pending, now - b.since)
     end
-    -- 转数组并按最长挂起时长降序（卡死协程排最前）
-    local list = {}
-    for trace, c in pairs(clusters) do
-        list[#list + 1] = { trace = trace, count = c.count, samples = c.samples, mtype = c.mtype, maxage = c.maxage }
-    end
-    table.sort(list, function(a, b) return a.maxage > b.maxage end)
-    -- 格式化输出
-    local lines = { string.format("=== %d suspended coros in %d stacks ===", total, #list) }
-    for _, c in ipairs(list) do
-        lines[#lines + 1] = ""
-        local samples = table.concat(c.samples, ",")
-        if c.count > #c.samples then
-            samples = samples .. ",..."
+    for st in pairs(_serial_execs) do
+        for _, w in ipairs(st.waiters) do
+            nserial = nserial + 1
+            extra[#extra + 1] = string.format("serial=%s held=%d age=%dms",
+                tostring(st), st.current and 1 or 0, now - w.since)
         end
-        lines[#lines + 1] = string.format("[%dx] mtype=%d maxage=%dms sess=%s", c.count, c.mtype, c.maxage, samples)
-        lines[#lines + 1] = c.trace
     end
+    local lines = {}
+    if total > 0 then
+        -- 转数组并按最长挂起时长降序（卡死协程排最前）
+        local list = {}
+        for trace, c in pairs(clusters) do
+            list[#list + 1] = { trace = trace, count = c.count, samples = c.samples, mtype = c.mtype, maxage = c.maxage }
+        end
+        table.sort(list, function(a, b) return a.maxage > b.maxage end)
+        lines[#lines + 1] = string.format("=== %d suspended coros in %d stacks ===", total, #list)
+        for _, c in ipairs(list) do
+            lines[#lines + 1] = ""
+            local samples = table.concat(c.samples, ",")
+            if c.count > #c.samples then
+                samples = samples .. ",..."
+            end
+            lines[#lines + 1] = string.format("[%dx] mtype=%d maxage=%dms sess=%s", c.count, c.mtype, c.maxage, samples)
+            lines[#lines + 1] = c.trace
+        end
+    end
+    if #extra > 0 then
+        if #lines > 0 then
+            lines[#lines + 1] = ""
+        end
+        for _, e in ipairs(extra) do
+            lines[#lines + 1] = e
+        end
+    end
+    if 0 == #lines then
+        lines[#lines + 1] = "(no suspended coros)"
+    end
+    -- 汇总行无条件打印，不能跟着"一个都没有"一起早退：三张表都空而 nyield 非零，
+    -- 正是最需要这行来对账的时候。C 侧 coro_dump 也是无条件 emit 的
+    lines[#lines + 1] = ""
+    -- sessions 是 coro_sess 的条目数：keep 的条目摘空 waiters 后仍留着复用，
+    -- 所以 sessions 只增不减、suspended 长期为 0，就是 keep 条目泄漏。口径同 C 侧 coro_dump
+    lines[#lines + 1] = string.format("%d suspended, %d sessions, %d fork_wait, %d serial, %d yield total.",
+        total, nsess, nfork, nserial, _nyield())
     return table.concat(lines, "\n")
 end
 
@@ -139,6 +177,18 @@ function M._set_mtype_names(msgtype)
             _mtype_max = val
         end
     end
+end
+
+---注入 fork_wait 屏障与 serial 执行器的活跃登记表，以及取 nyield 的函数；仅初始化阶段调用一次。
+---这两类等待者走裸 yield、不进 coro_sess，不注入的话 coros 只能看见 _coro_wait 那一类，
+---而 task 关闭时 _closing_dispatch 报的 nyield 恰恰把它们算在内，两个数对不上
+---@param barriers table<ForkBarrier,boolean> fork_wait 屏障集合（srey.lua 的 fork_barriers，只读）
+---@param execs table<SerialState,boolean> serial 执行器状态集合（srey.lua 的 serial_execs，弱键，只读）
+---@param nyieldfn fun():integer 取当前挂起协程总数
+function M._set_suspend_registries(barriers, execs, nyieldfn)
+    _fork_barriers = barriers
+    _serial_execs = execs
+    _nyield = nyieldfn
 end
 
 ---注入未知命令透传函数；收到非内置 debug 命令时调用，交业务 on_requested 处理；仅初始化阶段调用一次

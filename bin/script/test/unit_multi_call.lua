@@ -20,7 +20,7 @@ local N = #SUBS
 local MSG = "MULTI_LUA_HELLO"
 
 srey.startup(function()
-runner.run("multi_call", function(t)
+runner.run(function(t)
     -- ── 集成: 广播给 N 个 sub,等他们 ack 回来 ────────────────────────
     local ack_count = 0
     srey.on_requested(function(reqtype, _, _, data, size)

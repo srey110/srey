@@ -16,7 +16,7 @@ local CONV     = 1
 local MSG      = "kcp_hello_lua"
 
 srey.startup(function()
-runner.run("kcp", function(t)
+runner.run(function(t)
     -- server / client 两个 UDP socket(不同端口,各自独立 conv 空间)
     local sv_fd, sv_skid = srey.udp(PACK_TYPE.UDP_KCP, "0.0.0.0", SV_PORT)
     t:check(sv_fd and sv_fd ~= INVALID_SOCK, "server udp 创建")

@@ -7,7 +7,7 @@ local utils  = require("srey.utils")
 local runner = require("test.runner")
 
 srey.startup(function()
-runner.run("stm", function(t)
+runner.run(function(t)
     -- ── 1) 基础: new + copy + newcopy + read 首次拿到 true + 数据
     do
         local w = stm.new("hello")

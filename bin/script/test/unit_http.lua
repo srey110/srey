@@ -61,13 +61,16 @@ local function _bad_producer(state)
 end
 
 srey.startup(function()
-runner.run("http_client", function(t)
+runner.run(function(t)
     local cli_fd, raw_fd, head_fd, itm_fd
     srey.on_recved(function(pktype, fd, skid, client, slice, data, size)
-        if fd == cli_fd or fd == raw_fd or fd == head_fd or fd == itm_fd then
-            return-- 客户端侧响应由 syn_send 的等待者接走;万一漏收落到这里也不回应,免污染断言
+        -- 只处理 accept 来的连接;客户端侧响应由 syn_send 的等待者接走。
+        -- 不能按 fd 值排除客户端 socket:客户端 fd 关掉后号会被后续 accept 复用,
+        -- 闭包里的旧值就把服务端自己的 socket 当成客户端放过去,于是永不回应、对端等满超时
+        if 0 ~= client then
+            return
         end
-        if PACK_TYPE.NONE == pktype and 0 == client then
+        if PACK_TYPE.NONE == pktype then
             -- 裸监听侧，两个用例共用：按请求目标分流
             if nil ~= string.find(srey.ud_str(data, size), INTERIM_URI, 1, true) then
                 srey.send(fd, skid, INTERIM_RSP, #INTERIM_RSP, 1)

@@ -7,7 +7,7 @@ local bson   = require("lib.bson")
 local mgmod  = require("mongo")
 
 srey.startup(function()
-runner.run("db_mongo", function(t)
+runner.run(function(t)
     local mg = mongo.new("127.0.0.1", 27017, SSL_NAME.NONE,
                          "test", "admin", "12345678", "admin", "SCRAM-SHA-256")
     if not mg:connect() then

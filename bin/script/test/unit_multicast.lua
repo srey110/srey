@@ -10,7 +10,7 @@ local N = 4
 local MSG = "BROADCAST_LUA"
 
 srey.startup(function()
-runner.run("multicast", function(t)
+runner.run(function(t)
     -- ── 边界: 空数组返回 false ────────────────────────────────────
     do
         local ok = srey.send_multi({}, {}, "")

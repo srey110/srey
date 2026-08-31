@@ -5,7 +5,7 @@ local inject = require("lib.inject")
 local runner = require("test.runner")
 
 srey.startup(function()
-runner.run("inject", function(t)
+runner.run(function(t)
     -- ── 子段 1:print 捕获 → output 行 ──────────────────────────────
     do
         local ok, out = inject("print('hello')")

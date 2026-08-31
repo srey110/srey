@@ -1,8 +1,10 @@
 -- 简易测试运行器：每个测试 task 创建一个 ctx，调用 check/eq 累计 npass/nfail，
 -- 结束后向 reporter task 上报；失败用 WARN 高亮，成功打印 "<module> tested."
+-- 模块名取自 srey.task_name()，脚本不自己声明：名字只写在 test.lua 的 TESTS 里一处，
+-- 那张表同时用于注册 task 和喂给 reporter 的期望列表，三者对不上在结构上就不可能。
 -- 使用方式：
 --   local runner = require("test.runner")
---   srey.startup(function() runner.run("bson", function(t)
+--   srey.startup(function() runner.run(function(t)
 --       t:check(...)
 --       t:eq(...)
 --   end) end)
@@ -11,7 +13,7 @@ local srey = require("lib.srey")
 local json = require("yyjson")
 
 ---@class M
----@field name string 模块名
+---@field name string 模块名（即 task 名）
 ---@field npass integer 通过数
 ---@field nfail integer 失败数
 local M = {}
@@ -72,11 +74,12 @@ function M:done()
     srey.call("reporter", 0, payload)
 end
 
----运行测试体；body(t) 抛异常时记一次失败并继续上报
----@param name string 模块名
----@param body fun(t:table) 测试体，参数为 ctx
-function M.run(name, body)
-    local t = M.new(name)
+---运行测试体；body(t) 抛异常时记一次失败并继续上报。
+---模块名取当前 task 名，不由调用方给——两处各写一份就会漂移，而漂移只表现为
+---reporter 的一条 [MISS] 加一条来路不明的 [OK]，没有任何报错点名
+---@param body fun(t:M) 测试体，参数为 ctx
+function M.run(body)
+    local t = M.new(srey.task_name())
     local ok, err = xpcall(body, debug.traceback, t)
     if not ok then
         t.nfail = t.nfail + 1

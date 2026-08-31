@@ -6,7 +6,7 @@ local runner = require("test.runner")
 local utils  = require("srey.utils")
 
 srey.startup(function()
-runner.run("lua_layer", function(t)
+runner.run(function(t)
     -- ── host_type ──────────────────────────────────────────────────────
     t:eq("ipv4",     host_type("127.0.0.1"),     "host_type ipv4")
     t:eq("ipv4",     host_type("192.168.1.1"),   "host_type ipv4 lan")
@@ -88,6 +88,15 @@ runner.run("lua_layer", function(t)
         t:eq("B.bar", b:bar(), "subclass method bar")
         t:eq(A, b.super, "super points to A")
     end
+    do
+        -- 变参里夹 nil：ipairs 会停在它上面，后面的父类被静默丢掉，
+        -- 而那句 assert 也永远看不到 nil，产出一个"什么都继承不到"的类
+        local A = class("A")
+        function A:foo() return "A.foo" end
+        t:eq(false, pcall(class, "X", nil, A), "父类列表夹 nil 报错而非静默丢弃")
+        local Y = class("Y", A)
+        t:eq("A.foo", Y.new():foo(), "正常单继承不受影响")
+    end
 
     -- ── dump ──────────────────────────────────────────────────────────
     do
@@ -104,6 +113,17 @@ runner.run("lua_layer", function(t)
         t1.self = t1
         s = dump(t1)
         t:check(s:find("<circular>", 1, true) ~= nil, "dump circular safe")
+        -- %c 匹配全部控制符而转义表只有五个：查不到时 gsub 原样保留，
+        -- NUL / ESC 就直接落进引号里，输出既 load 不回来也能往日志注入终端转义序列
+        s = dump({ k = "a\0b\27c" })
+        t:check(nil == s:find("\0", 1, true), "dump 不把 NUL 原样吐出")
+        t:check(nil == s:find("\27", 1, true), "dump 不把 ESC 原样吐出")
+        t:check(s:find("\\000", 1, true) ~= nil, "NUL 转成 \\ddd")
+        t:check(s:find("\\027", 1, true) ~= nil, "ESC 转成 \\ddd")
+        -- 五个惯用转义仍走原来的写法
+        s = dump({ k = "a\tb\nc\"d\\e" })
+        t:check(s:find("\\t", 1, true) ~= nil and s:find("\\n", 1, true) ~= nil,
+                "惯用转义不变")
     end
 
     -- ── lib/log.lua: 级别读取与 log_setlv 同步 ──────────────────────

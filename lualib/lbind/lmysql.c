@@ -208,7 +208,7 @@ LUAMOD_API int luaopen_mysql_bind(lua_State *lua) {
 /// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
 /// <returns type="_mysql_reader_ctx?">reader 对象；失败返回 nil</returns>
 static int32_t _lmysql_reader_new(lua_State *lua) {
-    luaL_checktype(lua, 1, LUA_TLIGHTUSERDATA);
+    LUACHECK_LUDATA(lua, 1);
     mpack_ctx *mpack = lua_touserdata(lua, 1);
     mysql_reader_ctx *reader = mysql_reader_init(mpack);
     if (NULL == reader) {
@@ -335,7 +335,8 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="lightuserdata?">字段数据指针；字段为 NULL 时不返回此值</returns>
+/// <returns type="lightuserdata?">字段数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
+/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；字段为 NULL 时不返回此值</returns>
 /// <returns type="integer?">字段字节数；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_string(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_reader_ctx, MT_MYSQL_READER, reader, "reader freed");
@@ -432,7 +433,7 @@ LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
 /// <returns type="_mysql_stmt_ctx?">stmt 对象；失败返回 nil</returns>
 static int32_t _lmysql_stmt_new(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
-    luaL_checktype(lua, 2, LUA_TLIGHTUSERDATA);
+    LUACHECK_LUDATA(lua, 2);
     mpack_ctx *mpack = lua_touserdata(lua, 2);
     mysql_stmt_ctx *stmt = mysql_stmt_init(mpack);
     if (NULL == stmt) {
@@ -545,7 +546,7 @@ LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="db" type="string">数据库名</param>
 /// <returns type="lightuserdata?">命令数据指针；库名超 63 字节时返回 nil</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_selectdb(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *db = luaL_checkstring(lua, 2);
@@ -577,7 +578,7 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
 /// <param name="sql" type="string">SQL 语句</param>
 /// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数</param>
 /// <returns type="lightuserdata?">命令数据指针；载荷超 16MB 时返回 nil</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_query(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *sql = luaL_checkstring(lua, 2);
@@ -607,7 +608,7 @@ static int32_t _lmysql_pack_quit(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="sql" type="string">SQL 语句模板（含 ? 占位符）</param>
 /// <returns type="lightuserdata?">命令数据指针；载荷超 16MB 时返回 nil</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *sql = luaL_checkstring(lua, 2);
@@ -657,7 +658,7 @@ static int32_t _lmysql_new(lua_State *lua) {
 /// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
 /// <returns type="integer">封包类型枚举值</returns>
 static int32_t _lmysql_pack_type(lua_State *lua) {
-    luaL_checktype(lua, 1, LUA_TLIGHTUSERDATA);
+    LUACHECK_LUDATA(lua, 1);
     mpack_ctx *mpack = lua_touserdata(lua, 1);
     lua_pushinteger(lua, mpack->pack_type);
     return 1;
@@ -668,7 +669,7 @@ static int32_t _lmysql_pack_type(lua_State *lua) {
 /// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
 /// <returns type="boolean">true=其后还有结果集需继续接收；false=已是最后一个</returns>
 static int32_t _lmysql_has_more(lua_State *lua) {
-    luaL_checktype(lua, 1, LUA_TLIGHTUSERDATA);
+    LUACHECK_LUDATA(lua, 1);
     mpack_ctx *mpack = lua_touserdata(lua, 1);
     return lpub_rtn_bool(lua, mysql_more(mpack));
 }

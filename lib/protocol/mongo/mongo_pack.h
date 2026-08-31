@@ -60,7 +60,7 @@ void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t optlens, size_t *s
 /// 构造 insert 命令请求包（插入文档）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="docs">BSON 数组格式的待插入文档列表</param>
+/// <param name="docs">BSON 数组格式的待插入文档列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="dlens">docs 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -71,7 +71,7 @@ void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *option
 /// 构造 update 命令请求包（更新文档）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="updates">BSON 数组格式的更新操作列表</param>
+/// <param name="updates">BSON 数组格式的更新操作列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="ulens">updates 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -82,7 +82,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
 /// 构造 delete 命令请求包（删除文档）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="deletes">BSON 数组格式的删除操作列表</param>
+/// <param name="deletes">BSON 数组格式的删除操作列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="dlens">deletes 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -93,9 +93,9 @@ void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *opt
 /// 构造 bulkWrite 命令请求包（批量写操作，MongoDB 8.0+）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="ops">BSON 数组格式的操作列表</param>
+/// <param name="ops">BSON 数组格式的操作列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="olens">ops 数据长度</param>
-/// <param name="nsinfo">BSON 数组格式的命名空间信息列表</param>
+/// <param name="nsinfo">BSON 数组格式的命名空间信息列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="nlens">nsinfo 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -106,7 +106,7 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
 /// 构造 find 命令请求包（查询文档）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="filter">BSON 文档格式的过滤条件，NULL 表示无过滤</param>
+/// <param name="filter">BSON 文档格式的过滤条件，NULL 或长度 0 表示无过滤（零字节不是一篇 BSON，写下去只会得到有键无体的元素）</param>
 /// <param name="flens">filter 数据长度</param>
 /// <param name="options">附加 BSON 选项（如 sort/projection/limit），NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -117,7 +117,7 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
 /// 构造 aggregate 命令请求包（聚合查询）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="pipeline">BSON 数组格式的聚合管道阶段列表</param>
+/// <param name="pipeline">BSON 数组格式的聚合管道阶段列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="pllens">pipeline 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -138,7 +138,7 @@ void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size
 /// 构造 killCursors 命令请求包（关闭游标）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="cursorids">BSON 数组格式的游标 ID 列表</param>
+/// <param name="cursorids">BSON 数组格式的游标 ID 列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="cslens">cursorids 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -150,7 +150,7 @@ void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, c
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="key">去重字段名</param>
-/// <param name="query">BSON 文档格式的过滤条件，NULL 表示无过滤</param>
+/// <param name="query">BSON 文档格式的过滤条件，NULL 或长度 0 表示无过滤，口径同 mongo_pack_find 的 filter</param>
 /// <param name="qlens">query 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -161,11 +161,11 @@ void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t
 /// 构造 findAndModify 命令请求包（原子查找并修改/删除）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="query">BSON 文档格式的查询条件，NULL 表示无</param>
+/// <param name="query">BSON 文档格式的查询条件，NULL 或长度 0 表示无，口径同 mongo_pack_find 的 filter</param>
 /// <param name="qlens">query 数据长度</param>
 /// <param name="remove">非零表示删除匹配文档（与 update 互斥）</param>
 /// <param name="pipeline">非零表示 update 为聚合管道数组格式</param>
-/// <param name="update">BSON 格式的更新操作或聚合管道（remove 为 0 时有效）</param>
+/// <param name="update">BSON 格式的更新操作或聚合管道（remove 为 0 时必填）；NULL 或长度 0 时整个 update 项不落笔，服务端会因缺 remove/update 明确报错</param>
 /// <param name="ulens">update 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -177,7 +177,7 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
 /// 构造 count 命令请求包（统计文档数量）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="query">BSON 文档格式的过滤条件，NULL 表示全部</param>
+/// <param name="query">BSON 文档格式的过滤条件，NULL 或长度 0 表示全部，口径同 mongo_pack_find 的 filter</param>
 /// <param name="qlens">query 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -188,7 +188,7 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
 /// 构造 createIndexes 命令请求包（创建索引）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="indexes">BSON 数组格式的索引定义列表</param>
+/// <param name="indexes">BSON 数组格式的索引定义列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="ilens">indexes 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -199,7 +199,7 @@ void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, ch
 /// 构造 dropIndexes 命令请求包（删除索引）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="indexes">BSON 数组格式的索引名列表</param>
+/// <param name="indexes">BSON 数组格式的索引名列表；必填，NULL 或长度 0 时整条命令作废（见 MONGO_PACK_ARR）</param>
 /// <param name="ilens">indexes 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>

@@ -16,6 +16,21 @@
 local srey = require("lib.srey")
 local pub = class("conn_pub")
 
+---按名取 SSL 上下文；四家 ctor 开头逐字相同的一步，取不到即 ctor 失败直接抛。
+---level 3 而不是 2：本函数被子类 ctor 调，多垫了一层，3 才能落回原先写在 ctor 里的
+---error(msg, 2) 落到的同一帧。注意那一帧是 utils.lua 的 cls.new（class() 生成的 new 会
+---调 instance:ctor(...)，自成一帧），不是业务调用点——要指到业务得用 4，四家 ctor 里其余的
+---error(..., 2) 也都落在 cls.new 上，改就得一起改
+---@param sslname string SSL 名；SSL_NAME.NONE 表示明文
+---@return any ssl SSL 上下文，明文时为 nil
+function pub.ssl(sslname)
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        error(string.format("ssl_qury not find ssl name %s", sslname), 3)
+    end
+    return ssl
+end
+
 ---初始化连接生命周期所需的共用字段；须在 C 层句柄建好之后调用
 ---@param self any 子类实例
 ---@param handle any C 层连接句柄，本模块只用它取 sock_id

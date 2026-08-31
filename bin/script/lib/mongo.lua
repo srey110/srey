@@ -243,10 +243,7 @@ end
 ---@param authdb string? 认证数据库；nil 时使用 db
 ---@param authmod string? SCRAM 算法，默认 "SCRAM-SHA-256"
 function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
-    local ok, ssl = srey.ssl_qury(sslname)
-    if not ok then
-        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
-    end
+    local ssl = pub.ssl(sslname)
     self.sslname = sslname
     self.mongo = mongo.new(ip, port, ssl, db)
     if not self.mongo then

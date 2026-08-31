@@ -15,7 +15,7 @@ local function _exec(fd, skid, ...)
 end
 
 srey.startup(function()
-runner.run("db_redis", function(t)
+runner.run(function(t)
     local fd, skid = redis.connect("127.0.0.1", 6379, SSL_NAME.NONE, nil, 0)
     if INVALID_SOCK == fd then
         t:fail("redis connect")

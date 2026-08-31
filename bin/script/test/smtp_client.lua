@@ -18,7 +18,7 @@ local _sslname, _smtp_sv, _smtp_port,
       _mail_from, _mail_addr1, _mail_addr2, _mail_attach = ...
 
 srey.startup(function()
-runner.run("smtp_client", function(t)
+runner.run(function(t)
     -- 域名需先 DNS 解析为 IP，IP 直连
     local ip = _smtp_sv
     if "hostname" == host_type(_smtp_sv) then

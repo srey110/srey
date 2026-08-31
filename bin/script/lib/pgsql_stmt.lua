@@ -67,15 +67,10 @@ function ctx:_execute(bind)
         WARN("pgsql stmt invalidated by reconnect, please re-prepare.")
         return self:_fail("pgsql: stmt invalidated by reconnect")
     end
-    local fd, skid = self.pg:sock_id()
     local pack, size = pgsql.pack_stmt_execute(self.name, bind, self.format)
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local pgpack = ppub.request(self, pack, size, PGPACK_TYPE.OK)
     if not pgpack then
-        return self:_fail(ppub.SEND)
-    end
-    local e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
-    if e then
-        return self:_fail(e)
+        return false
     end
     local rd = reader.iter(pgpack, self.format)
     if rd then

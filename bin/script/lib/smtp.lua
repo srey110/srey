@@ -25,10 +25,7 @@ local ctx = class("smtp_ctx", pub)
 ---@param user string AUTH 用户名（空时跳过认证）
 ---@param password string AUTH 密码
 function ctx:ctor(ip, port, sslname, user, password)
-    local ok, ssl = srey.ssl_qury(sslname)
-    if not ok then
-        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
-    end
+    local ssl = pub.ssl(sslname)
     self.smtp = smtp.new(ip, port, ssl, user, password)
     -- ip / user / password 任一超出 C 侧字段容量时 smtp.new 返回 nil（不静默截断——
     -- 截断后的密码拿去认证只换回服务端一句 535，调用方看不出是自己传长了）
@@ -62,11 +59,13 @@ end
 function ctx:reset()
     return srey.serial_ret(false, self.serial(self._reset, self))
 end
--- RSET 清的是服务端会话状态，插进别人半途的信封里会把它的收件人清掉，
--- 之后那封信的 DATA 会被回 503 而不是 354，静默发不出去
-function ctx:_reset()
+-- "一条命令、一个往返、应答判 250" 的固定形状，_reset 与 _ping 共用。
+-- RCPT 是文件头说的那个例外（多收件人各判一次），不走这里
+---@param packer fun(smtp:userdata):lightuserdata,integer 组包方法，如 smtp.pack_reset
+---@return boolean ok 应答为 250 时 true
+function ctx:_cmd_ok(packer)
     local fd, skid = self.smtp:sock_id()
-    local cmd, csize = self.smtp:pack_reset()
+    local cmd, csize = packer(self.smtp)
     local pack = srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack then
         return false
@@ -74,15 +73,15 @@ function ctx:_reset()
     return self.smtp:check_ok(pack)
 end
 
+-- RSET 清的是服务端会话状态，插进别人半途的信封里会把它的收件人清掉，
+-- 之后那封信的 DATA 会被回 503 而不是 354，静默发不出去
+function ctx:_reset()
+    return self:_cmd_ok(self.smtp.pack_reset)
+end
+
 -- conn_pub 的探活钩子：NOOP，服务端返回 250 即存活（check_ok 只认这一个码）
 function ctx:_ping()
-    local fd, skid = self.smtp:sock_id()
-    local cmd, csize = self.smtp:pack_ping()
-    local pack = srey.syn_send(fd, skid, cmd, csize, 0)
-    if nil == pack then
-        return false
-    end
-    return self.smtp:check_ok(pack)
+    return self:_cmd_ok(self.smtp.pack_ping)
 end
 
 ---内部邮件发送流程（不含 reset）：MAIL FROM → RCPT TO × N → DATA(354) → MIME 正文；任一步失败即返回

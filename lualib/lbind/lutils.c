@@ -56,7 +56,7 @@ static int32_t _lutils_ud_str(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     void *data = lua_touserdata(lua, 1);
     size_t size = lpub_check_lens(lua, 2, INT32_MAX);
     if (NULL == data && size > 0) {
@@ -84,7 +84,8 @@ static int32_t _lutils_ud_free(lua_State *lua) {
 /// 将二进制数据编码为十六进制字符串
 /// </summary>
 /// <param name="data" type="string|lightuserdata">待编码数据；为字符串时长度自动取得</param>
-/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数；
+/// data 为字符串时不得传它——lower 紧跟在 data 之后，多传一个会占掉 lower 的位置，传了报错</param>
 /// <param name="lower" type="boolean?">true 输出小写；缺省或 false 输出大写</param>
 /// <returns type="string">十六进制字符串</returns>
 static int32_t _lutils_hex(lua_State *lua) {
@@ -94,6 +95,9 @@ static int32_t _lutils_hex(lua_State *lua) {
     // data 为字符串时只占 1 个栈位,为 lightuserdata 时占 2 个(data+size);
     // lower 是可变位置的下一个参数,须用 _idx 版本取推进后的准确栈位,不能固定写死
     data = lpub_check_buf_idx(lua, &idx, &size, NULL);
+    // 卡死类型:字符串多传一个 size 就把它顶到 lower 位上,而 Lua 里任何数字都为真,
+    // 结果是"缺省该大写"的调用悄悄输出小写
+    luaL_argcheck(lua, lua_isnoneornil(lua, idx) || lua_isboolean(lua, idx), idx, "boolean expected");
     int32_t lower = lua_toboolean(lua, idx);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, HEX_ENSIZE(size));

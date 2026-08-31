@@ -8,9 +8,10 @@ local crc    = require("srey.crc")
 local digest = require("srey.digest")
 local hmac   = require("srey.hmac")
 local cipher = require("srey.cipher")
+local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
 srey.startup(function()
-runner.run("crypt", function(t)
+runner.run(function(t)
     -- ── url ────────────────────────────────────────────────────────────
     do
         local raw = "hello world?a=1&b=中文"
@@ -96,12 +97,12 @@ runner.run("crypt", function(t)
         t:eq(16, d:size(), "MD5 size")
         d:update("")
         local out = d:final()
-        t:eq("d41d8cd98f00b204e9800998ecf8427e", srey.hex(out, #out, true), "MD5 empty")
+        t:eq("d41d8cd98f00b204e9800998ecf8427e", srey.hex(out, true), "MD5 empty")
 
         d:reset()
         d:update("abc")
         out = d:final()
-        t:eq("900150983cd24fb0d6963f7d28e17f72", srey.hex(out, #out, true), "MD5 abc")
+        t:eq("900150983cd24fb0d6963f7d28e17f72", srey.hex(out, true), "MD5 abc")
     end
     do
         -- SHA256("abc") = ba7816bf...f20015ad
@@ -110,7 +111,7 @@ runner.run("crypt", function(t)
         d:update("abc")
         local out = d:final()
         t:eq("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-             srey.hex(out, #out, true), "SHA256 abc")
+             srey.hex(out, true), "SHA256 abc")
     end
     do
         -- 分段 update 与一次性 update 结果一致
@@ -121,7 +122,7 @@ runner.run("crypt", function(t)
         d2:update("hello ")
         d2:update("world")
         local h2 = d2:final()
-        t:eq(srey.hex(h1, #h1, true), srey.hex(h2, #h2, true), "SHA1 分段 update 一致")
+        t:eq(srey.hex(h1, true), srey.hex(h2, true), "SHA1 分段 update 一致")
     end
 
     -- ── hmac ───────────────────────────────────────────────────────────
@@ -133,26 +134,26 @@ runner.run("crypt", function(t)
         h:update("Hi There")
         local out = h:final()
         t:eq("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
-             srey.hex(out, #out, true), "HMAC-SHA256 RFC 4231 #1")
+             srey.hex(out, true), "HMAC-SHA256 RFC 4231 #1")
 
         -- reset 后再计算
         h:reset()
         h:update("Hi There")
         local out2 = h:final()
-        t:eq(srey.hex(out, #out, true), srey.hex(out2, #out2, true), "HMAC reset round-trip")
+        t:eq(srey.hex(out, true), srey.hex(out2, true), "HMAC reset round-trip")
 
         -- final 之后上下文自动复位且密钥仍在：不 reset 直接算下一条消息也对。
         -- 修复前这里对任何密钥都返回同一个常量，`for m in msgs do h:update(m); h:final() end`
         -- 这种写法会给每条消息发出相同的 tag
         h:update("Hi There")
         local out3 = h:final()
-        t:eq(srey.hex(out, #out, true), srey.hex(out3, #out3, true), "HMAC final 后无需 reset")
+        t:eq(srey.hex(out, true), srey.hex(out3, true), "HMAC final 后无需 reset")
         local h2 = hmac.new(DIGEST_TYPE.SHA256, string.rep("\x0c", 20))
         h2:update("Hi There")
         h2:final()
         h2:update("Hi There")
         local other = h2:final()
-        t:check(srey.hex(out3, #out3, true) ~= srey.hex(other, #other, true), "不同密钥的第二轮 final 不相同")
+        t:check(srey.hex(out3, true) ~= srey.hex(other, true), "不同密钥的第二轮 final 不相同")
     end
     do
         -- digest:final 同样自动复位，第二条消息不必先 reset
@@ -162,7 +163,18 @@ runner.run("crypt", function(t)
         d:update("abc")
         local again = d:final()
         t:eq("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-             srey.hex(again, #again, true), "digest final 后无需 reset")
+             srey.hex(again, true), "digest final 后无需 reset")
+    end
+    do
+        -- (指针, 长度) 入口在长度非 0 时拒收空指针：md5_update / hmac_update 只对 lens==0
+        -- 早退，放进去就是从 NULL memcpy
+        local d = digest.new(DIGEST_TYPE.MD5)
+        t:eq(false, pcall(d.update, d, yyjson.null, 100), "digest:update NULL 指针被拒")
+        local h = hmac.new(DIGEST_TYPE.SHA256, string.rep("\x0b", 20))
+        t:eq(false, pcall(h.update, h, yyjson.null, 100), "hmac:update NULL 指针被拒")
+        -- 长度 0 等价空缓冲，仍然放行
+        local okempty = pcall(d.update, d, yyjson.null, 0)
+        t:eq(true, okempty, "digest:update NULL 指针 + 0 长度放行")
     end
 
     -- ── cipher ─────────────────────────────────────────────────────────
@@ -210,6 +222,16 @@ runner.run("crypt", function(t)
         t:eq(false, (pcall(cipher.new, 0, CIPHER_MODEL.ECB, key, 128, 1)), "engine=0 报错")
         t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, 99, key, 128, 1)), "越界 model 报错")
         t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, 0, key, 128, 1)), "model=0 报错")
+        -- 先窄化再判范围的话，2^32+AES 会截成 AES 顺利通过校验，
+        -- 用一个调用方从没指定过的算法加密
+        t:eq(false, (pcall(cipher.new, 4294967296 + CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 1)),
+             "超 int32 的 engine 报错而非截断成 AES")
+        t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, 4294967296 + CIPHER_MODEL.ECB, key, 128, 1)),
+             "超 int32 的 model 报错而非截断成 ECB")
+        t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 4294967296 + 128, 1)),
+             "超 int32 的 keybits 报错而非截断成 128")
+        t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 2)),
+             "encrypt 非 0/1 报错")
         -- keybits 只有 AES 用得上，DES/DES3 传什么都不该被拦
         t:eq(true, (pcall(cipher.new, CIPHER_TYPE.DES, CIPHER_MODEL.ECB, key, 64, 1)),
              "DES 的 keybits=64 仍合法")

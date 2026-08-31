@@ -60,6 +60,7 @@ typedef struct fork_wait_ctx {
     list_node node;             // coctx->fork_waited 侵入式链表节点（slist，UPCAST 复原外层）
     int32_t waited;             // 未完成的 fork 子协程数；_coro_fork_run 跑完递减 1，归零唤醒 waiter
     mco_coro *waiter;           // 等待归零的父协程；waited=0 时 mco_resume 唤醒
+    uint64_t since;             // 挂起时刻(ms)，coro_dump 据此报"等了多久"，字段与用法同 serial_node
 } fork_wait_ctx;
 // serial waiter 链表节点：cs 挂起协程的 FIFO 元素，进队时 pool_pop、出队由前一个协程的 coro_serial_leave pool_push
 typedef struct serial_node {
@@ -381,13 +382,10 @@ static inline void _coro_dispatch(task_dispatch_arg *arg, int32_t miss_create, i
 static void _coro_handle_timeout(task_dispatch_arg *arg) {
     _coro_dispatch(arg, 0, 1);
 }
-// CONNECT / SSLEXCHANGED / HANDSHAKED / RECVFROM 共用：找不到等待者静默新建协程，不告警。
+// CONNECT / SSLEXCHANGED / HANDSHAKED / RECVFROM / RESPONSE 共用：找不到等待者静默新建协程，不告警。
 // 语义差异只在分发表那几行的注释里，函数体没有可写的区别，故不再各留一个同体空壳
 static void _coro_handle_miss_create(task_dispatch_arg *arg) {
     _coro_dispatch(arg, 1, 0);
-}
-static void _coro_handle_response(task_dispatch_arg *arg) {
-    _coro_dispatch(arg, 1, 1);
 }
 // 处理数据接收消息：sess==0 或协议不允许 resume 则新建协程，否则唤醒等待的协程
 static void _coro_handle_recved(task_dispatch_arg *arg) {
@@ -520,7 +518,8 @@ static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_CLOSE]        = _coro_handle_closed,// sess直接赋值skid,尝试唤醒所有
     [MSG_TYPE_RECVFROM]     = _coro_handle_miss_create,// sess 0新建；未找到静默新建，不告警(UDP 不保证顺序与送达，迟到/孤儿包是常态)
     [MSG_TYPE_REQUEST]      = _coro_mco_create,// 新建
-    [MSG_TYPE_RESPONSE]     = _coro_handle_response,// 未找到告警后新建，否则唤醒
+    [MSG_TYPE_RESPONSE]     = _coro_handle_miss_create,// 未找到静默新建，不告警(task_multi_request 广播的 N 个响应本就没有等待者；
+                                                       // 真孤儿由请求方的 coro_request 超时告警报出)
 };
 // 消费 fork_pending 全部待起 fork（嵌套 fork 追加到尾，持续消费到空）；起协程走 _coro_fork_run
 static void _coro_drain_forks(task_ctx *task) {
@@ -804,6 +803,7 @@ int32_t coro_fork_wait(task_ctx *task, int32_t n, fork_serial_cb funcs[], void *
     fork_wait_ctx fw;
     fw.waited = n;
     fw.waiter = coctx->curco;
+    fw.since = timer_cur_ms(&coctx->timer);
     for (int32_t i = 0; i < n; i++) {
         _coro_fork_enqueue(coctx, funcs[i], args[i], &fw);
     }
@@ -981,7 +981,7 @@ char *coro_dump(task_ctx *task, size_t *size) {
     fork_wait_ctx *fw;
     list_foreach(&coctx->fork_waited, fit) {
         fw = UPCAST(fit, fork_wait_ctx, node);
-        binary_set_va(&bw, "fork_wait pending=%d\n", fw->waited);
+        binary_set_va(&bw, "fork_wait pending=%d age=%" PRIu64 "ms\n", fw->waited, now - fw->since);
         nfork++;
     }
     int32_t nserial = 0;
@@ -996,8 +996,10 @@ char *coro_dump(task_ctx *task, size_t *size) {
             nserial++;
         }
     }
-    binary_set_va(&bw, "%d suspended, %d fork_wait, %d serial, %d yield total.",
-                  total, nfork, nserial, coctx->nyield);
+    // sessions 是 mapco 的条目数，与 suspended（挂起协程数）不是一回事：keep 的条目摘空 waiters
+    // 后仍留着复用。sessions 只增不减、suspended 长期为 0，就是 keep 条目泄漏
+    binary_set_va(&bw, "%d suspended, %d sessions, %d fork_wait, %d serial, %d yield total.",
+                  total, (int32_t)hashmap_count(coctx->mapco), nfork, nserial, coctx->nyield);
     SET_PTR(size, bw.offset);
     return bw.data;
 }

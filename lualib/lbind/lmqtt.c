@@ -24,7 +24,9 @@ static binary_ctx *_lmqtt_get_props(lua_State *lua, int idx) {
     }
     return luaL_checkudata(lua, idx, MT_MQTT_PROPS);
 }
-// 从 Lua 栈 idx 读取 payload：string 自动取长度；lightuserdata 则取 idx+1 为长度，上界同 lpub_opt_buf。
+// 从 Lua 栈 idx 读取 payload：string 自动取长度；lightuserdata 则取 idx+1 为长度，长度上界与空指针
+// 两道判定都与 lpub_check_buf 同口径——报文的剩余长度按 *lens 算，放空指针进去会发出一条声明了
+// N 字节载荷却只写了 0 字节的包，对端接着吃下一条报文的头 N 字节。
 // 其余类型(含 nil)一律当"无载荷"静默放过而不报错，故不能换成 lpub_opt_buf——那个是报错的。
 // 不返回"下一个参数 index"：各 packer 的 props 一律用声明中的固定槽位，
 // 随 payload 类型浮动会让按签名传参的调用方静默丢掉 props
@@ -41,6 +43,7 @@ static void _lmqtt_get_payload(lua_State *lua, int idx, char **data, size_t *len
     if (LUA_TLIGHTUSERDATA == t) {
         *data = lua_touserdata(lua, idx);
         *lens = lpub_check_lens(lua, idx + 1, INT32_MAX);
+        luaL_argcheck(lua, NULL != *data || 0 == *lens, idx, LUDATA_NONNULL);
     }
 }
 // ---- mqtt.props (binary_ctx 构建器：属性 / 主题列表) ----
@@ -194,7 +197,7 @@ static int32_t _lmqtt_props_reset(lua_State *lua) {
 /// <param name="port" type="integer">对端端口</param>
 /// <param name="netev" type="integer?">事件订阅掩码，默认 0</param>
 /// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
-/// <returns type="integer?">skid；仅在 fd 有效时返回</returns>
+/// <returns type="integer?">skid；失败时为 nil，返回值个数恒为 2</returns>
 static int32_t _lmqtt_try_connect(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
     const char *sslname = luaL_optstring(lua, 2, NULL);
@@ -207,8 +210,10 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
         evssl = evssl_qury(sslname);
 #endif
         if (NULL == evssl) {
+            // 失败也返 2 个值,理由见 lpub.h 的 lpub_rtn_nil
             lua_pushinteger(lua, INVALID_SOCK);
-            return 1;
+            lua_pushnil(lua);
+            return 2;
         }
     }
     LPUB_CUR_TASK(lua, task);
@@ -216,7 +221,8 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
     uint64_t skid;
     if (ERR_OK != mqtt_try_connect(task, evssl, ip, port, netev, version, 1, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
-        return 1;
+        lua_pushnil(lua);
+        return 2;
     }
     lua_pushinteger(lua, fd);
     lua_pushinteger(lua, (lua_Integer)skid);
@@ -601,7 +607,7 @@ static int32_t _lmqtt_connect_will_props(lua_State *lua) {
 /// <param name="arr" type="lightuserdata">属性数组指针</param>
 /// <param name="i" type="integer">1 起始下标</param>
 /// <returns type="integer?">属性 flag；越界时返回 nil（连同后续返回值一并为 nil，共 4 个）</returns>
-/// <returns type="integer">数字属性的整数值（其他类型为 0）</returns>
+/// <returns type="integer?">数字属性的整数值（其他类型为 0）；越界时为 nil</returns>
 /// <returns type="string?">字符串/二进制属性的值或 USER_PROPERTY 的 key；数字属性为 nil</returns>
 /// <returns type="string?">USER_PROPERTY 的 value；其他属性为 nil</returns>
 static int32_t _lmqtt_prop_at(lua_State *lua) {
@@ -700,11 +706,11 @@ static int32_t _lmqtt_connect_info(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 解析 CONNACK 可变报头；非 CONNACK 报文两个返回值一并为 nil
+/// 解析 CONNACK 可变报头
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">Session Present 标志</returns>
-/// <returns type="integer">Reason Code / Return Code</returns>
+/// <returns type="integer?">Session Present 标志；非 CONNACK 报文时两个返回值都是 nil，个数恒为 2</returns>
+/// <returns type="integer?">Reason Code / Return Code</returns>
 static int32_t _lmqtt_connack(lua_State *lua) {
     mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_CONNACK);
     if (NULL == pack) {
@@ -716,16 +722,16 @@ static int32_t _lmqtt_connack(lua_State *lua) {
     return 2;
 }
 /// <summary>
-/// 解析 PUBLISH 可变报头和载荷；非 PUBLISH 报文七个返回值一并为 nil
+/// 解析 PUBLISH 可变报头和载荷
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">dup 标志</returns>
-/// <returns type="integer">qos 等级</returns>
-/// <returns type="integer">retain 标志</returns>
-/// <returns type="integer">报文 id</returns>
-/// <returns type="string">主题</returns>
+/// <returns type="integer?">dup 标志；非 PUBLISH 报文时 7 个返回值全是 nil，个数恒为 7</returns>
+/// <returns type="integer?">qos 等级</returns>
+/// <returns type="integer?">retain 标志</returns>
+/// <returns type="integer?">报文 id</returns>
+/// <returns type="string?">主题</returns>
 /// <returns type="string?">载荷内容；空时返回 nil</returns>
-/// <returns type="integer">载荷字节数；空时为 0</returns>
+/// <returns type="integer?">载荷字节数；空时为 0</returns>
 static int32_t _lmqtt_publish(lua_State *lua) {
     mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_PUBLISH);
     if (NULL == pack) {
@@ -759,47 +765,47 @@ static int32_t _lmqtt_pubackrel(lua_State *lua, mqtt_prot type) {
     return 2;
 }
 /// <summary>
-/// 解析 PUBACK 可变报头；非 PUBACK 报文两个返回值一并为 nil
+/// 解析 PUBACK 可变报头
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
-/// <returns type="integer">Reason Code</returns>
+/// <returns type="integer?">报文 id；非 PUBACK 报文时两个返回值都是 nil，个数恒为 2</returns>
+/// <returns type="integer?">Reason Code</returns>
 static int32_t _lmqtt_puback(lua_State *lua) {
     return _lmqtt_pubackrel(lua, MQTT_PUBACK);
 }
 /// <summary>
-/// 解析 PUBREC 可变报头；非 PUBREC 报文两个返回值一并为 nil
+/// 解析 PUBREC 可变报头
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
-/// <returns type="integer">Reason Code</returns>
+/// <returns type="integer?">报文 id；非 PUBREC 报文时两个返回值都是 nil，个数恒为 2</returns>
+/// <returns type="integer?">Reason Code</returns>
 static int32_t _lmqtt_pubrec(lua_State *lua) {
     return _lmqtt_pubackrel(lua, MQTT_PUBREC);
 }
 /// <summary>
-/// 解析 PUBREL 可变报头；非 PUBREL 报文两个返回值一并为 nil
+/// 解析 PUBREL 可变报头
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
-/// <returns type="integer">Reason Code</returns>
+/// <returns type="integer?">报文 id；非 PUBREL 报文时两个返回值都是 nil，个数恒为 2</returns>
+/// <returns type="integer?">Reason Code</returns>
 static int32_t _lmqtt_pubrel(lua_State *lua) {
     return _lmqtt_pubackrel(lua, MQTT_PUBREL);
 }
 /// <summary>
-/// 解析 PUBCOMP 可变报头；非 PUBCOMP 报文两个返回值一并为 nil
+/// 解析 PUBCOMP 可变报头
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
-/// <returns type="integer">Reason Code</returns>
+/// <returns type="integer?">报文 id；非 PUBCOMP 报文时两个返回值都是 nil，个数恒为 2</returns>
+/// <returns type="integer?">Reason Code</returns>
 static int32_t _lmqtt_pubcomp(lua_State *lua) {
     return _lmqtt_pubackrel(lua, MQTT_PUBCOMP);
 }
 /// <summary>
-/// 解析 SUBSCRIBE 可变报头与载荷（服务端用以回 SUBACK 并建立订阅）；非 SUBSCRIBE 报文两个返回值一并为 nil
+/// 解析 SUBSCRIBE 可变报头与载荷（服务端用以回 SUBACK 并建立订阅）
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
-/// <returns type="MqttSubscribeItem[]">订阅项数组；无订阅时为空表</returns>
+/// <returns type="integer?">报文 id；非 SUBSCRIBE 报文时两个返回值都是 nil，个数恒为 2</returns>
+/// <returns type="MqttSubscribeItem[]?">订阅项数组；无订阅时为空表</returns>
 static int32_t _lmqtt_subscribe(lua_State *lua) {
     mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_SUBSCRIBE);
     if (NULL == pack) {
@@ -828,11 +834,11 @@ static int32_t _lmqtt_subscribe(lua_State *lua) {
     return 2;
 }
 /// <summary>
-/// 解析 UNSUBSCRIBE 可变报头与载荷（服务端用以回 UNSUBACK 并取消订阅）；非 UNSUBSCRIBE 报文两个返回值一并为 nil
+/// 解析 UNSUBSCRIBE 可变报头与载荷（服务端用以回 UNSUBACK 并取消订阅）
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
-/// <returns type="string[]">主题过滤器数组；无主题时为空表</returns>
+/// <returns type="integer?">报文 id；非 UNSUBSCRIBE 报文时两个返回值都是 nil，个数恒为 2</returns>
+/// <returns type="string[]?">主题过滤器数组；无主题时为空表</returns>
 static int32_t _lmqtt_unsubscribe(lua_State *lua) {
     mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_UNSUBSCRIBE);
     if (NULL == pack) {
@@ -869,19 +875,19 @@ static int32_t _lmqtt_reasonlist(lua_State *lua, mqtt_prot type) {
     return 2;
 }
 /// <summary>
-/// 解析 SUBACK 可变报头和载荷；非 SUBACK 报文两个返回值一并为 nil
+/// 解析 SUBACK 可变报头和载荷
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
+/// <returns type="integer?">报文 id；非 SUBACK 报文时两个返回值都是 nil，个数恒为 2</returns>
 /// <returns type="string?">原因码字节序列；空时返回 nil</returns>
 static int32_t _lmqtt_suback(lua_State *lua) {
     return _lmqtt_reasonlist(lua, MQTT_SUBACK);
 }
 /// <summary>
-/// 解析 UNSUBACK 可变报头和载荷（MQTT 5.0 才有 reasons）；非 UNSUBACK 报文两个返回值一并为 nil
+/// 解析 UNSUBACK 可变报头和载荷（MQTT 5.0 才有 reasons）
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">报文 id</returns>
+/// <returns type="integer?">报文 id；非 UNSUBACK 报文时两个返回值都是 nil，个数恒为 2</returns>
 /// <returns type="string?">原因码字节序列；MQTT 3.1.1 或空时返回 nil</returns>
 static int32_t _lmqtt_unsuback(lua_State *lua) {
     return _lmqtt_reasonlist(lua, MQTT_UNSUBACK);

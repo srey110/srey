@@ -27,6 +27,18 @@
             return NULL; \
         } \
     } while (0)
+// 必填的数组字段。空缓冲拒整条命令，早退四步与 MONGO_PACK_CAT 一致：
+// bson_append_array 收到零长度只写 type + key、不写数组体，整篇 BSON 从这个元素起就解不开，
+// 而这种包发出去服务端多半照收不误，错位要到后面某个字段才暴露
+#define MONGO_PACK_ARR(name, doc, lens) do { \
+        if (EMPTYPTR((doc), (lens))) { \
+            LOG_ERROR("mongo %s rejected: empty document.", (name)); \
+            *size = 0; \
+            BSON_FREE(&bson); \
+            return NULL; \
+        } \
+        bson_append_array(&bson, (name), (doc), (lens)); \
+    } while (0)
 // 组包三段式：MONGO_PACK_BEGIN 开头，中间按需 MONGO_PACK_CAT 拼外部文档，末尾一个 RETURN。
 // 中段与收尾必须配对，配错编译期就报（判据见 MONGO_PACK_RETURN_TXN）：
 //   事务内 CRUD            TRANSACTION_OPTIONS_START → MONGO_PACK_RETURN_TXN
@@ -211,7 +223,7 @@ void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t optlens, size_t *s
 void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(dlens + BSON_HEADROOM);
     bson_append_utf8(&bson, "insert", mongo->collection);
-    bson_append_array(&bson, "documents", docs, dlens);
+    MONGO_PACK_ARR("documents", docs, dlens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN_TXN(mongo->db);
@@ -219,7 +231,7 @@ void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *option
 void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(ulens + BSON_HEADROOM);
     bson_append_utf8(&bson, "update", mongo->collection);
-    bson_append_array(&bson, "updates", updates, ulens);
+    MONGO_PACK_ARR("updates", updates, ulens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN_TXN(mongo->db);
@@ -227,7 +239,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(dlens + BSON_HEADROOM);
     bson_append_utf8(&bson, "delete", mongo->collection);
-    bson_append_array(&bson, "deletes", deletes, dlens);
+    MONGO_PACK_ARR("deletes", deletes, dlens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN_TXN(mongo->db);
@@ -235,8 +247,8 @@ void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *opt
 void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(olens + nlens + BSON_HEADROOM);
     bson_append_int32(&bson, "bulkWrite", 1);
-    bson_append_array(&bson, "ops", ops, olens);
-    bson_append_array(&bson, "nsInfo", nsinfo, nlens);
+    MONGO_PACK_ARR("ops", ops, olens);
+    MONGO_PACK_ARR("nsInfo", nsinfo, nlens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN_TXN(mongo->db);
@@ -244,7 +256,7 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
 void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(flens + BSON_HEADROOM);
     bson_append_utf8(&bson, "find", mongo->collection);
-    if (NULL != filter) {
+    if (!EMPTYPTR(filter, flens)) {
         bson_append_document(&bson, "filter", filter, flens);
     }
     MONGO_PACK_CAT(options, optlens);
@@ -254,7 +266,7 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
 void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(pllens + BSON_HEADROOM);
     bson_append_utf8(&bson, "aggregate", mongo->collection);
-    bson_append_array(&bson, "pipeline", pipeline, pllens);
+    MONGO_PACK_ARR("pipeline", pipeline, pllens);
     const char *cursor = bson_empty(size);
     bson_append_document(&bson, "cursor", (char *)cursor, *size);
     MONGO_PACK_CAT(options, optlens);
@@ -275,7 +287,7 @@ void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size
 void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(cslens + BSON_HEADROOM);
     bson_append_utf8(&bson, "killCursors", mongo->collection);//不能将killCursors 命令指定为ACID 事务中的第一个操作.killCursors 命令，服务器会立即停止指定的游标。它不会等待ACID 事务提交
-    bson_append_array(&bson, "cursors", cursorids, cslens);
+    MONGO_PACK_ARR("cursors", cursorids, cslens);
     MONGO_PACK_CAT(options, optlens);
     // 同 getMore：上一行注释说的"不能作为事务第一个操作"，靠的就是这里不挂 _START——
     // 否则它自己会去当那个第一操作，还顺手把 started 吃掉
@@ -286,7 +298,7 @@ void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t
     MONGO_PACK_BEGIN(qlens + BSON_HEADROOM);
     bson_append_utf8(&bson, "distinct", mongo->collection);
     bson_append_utf8(&bson, "key", key);
-    if (NULL != query) {
+    if (!EMPTYPTR(query, qlens)) {
         bson_append_document(&bson, "query", query, qlens);
     }
     MONGO_PACK_CAT(options, optlens);
@@ -297,12 +309,12 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
     char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(qlens + ulens + BSON_HEADROOM);
     bson_append_utf8(&bson, "findAndModify", mongo->collection);
-    if (NULL != query) {
+    if (!EMPTYPTR(query, qlens)) {
         bson_append_document(&bson, "query", query, qlens);
     }
     if (remove) {
         bson_append_bool(&bson, "remove", 1);//默认值为 false
-    } else {
+    } else if (!EMPTYPTR(update, ulens)) {
         if (pipeline) {
             bson_append_array(&bson, "update", update, ulens);
         } else {
@@ -316,7 +328,7 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
 void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(qlens + BSON_HEADROOM);
     bson_append_utf8(&bson, "count", mongo->collection);
-    if (NULL != query) {
+    if (!EMPTYPTR(query, qlens)) {
         bson_append_document(&bson, "query", query, qlens);
     }
     MONGO_PACK_CAT(options, optlens);
@@ -326,7 +338,7 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
 void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(ilens + BSON_HEADROOM);
     bson_append_utf8(&bson, "createIndexes", mongo->collection);
-    bson_append_array(&bson, "indexes", indexes, ilens);
+    MONGO_PACK_ARR("indexes", indexes, ilens);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN_TXN(mongo->db);
@@ -334,7 +346,7 @@ void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, ch
 void *mongo_pack_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN(ilens + BSON_HEADROOM);
     bson_append_utf8(&bson, "dropIndexes", mongo->collection);
-    bson_append_array(&bson, "index", indexes, ilens);
+    MONGO_PACK_ARR("index", indexes, ilens);
     MONGO_PACK_CAT(options, optlens);
     MONGO_PACK_RETURN(mongo->db);
 }

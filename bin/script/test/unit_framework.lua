@@ -11,7 +11,7 @@ local task   = require("srey.task")
 local UDP_PORT = 15046
 
 srey.startup(function()
-runner.run("framework", function(t)
+runner.run(function(t)
     -- ── srey.core: SSL 证书注册与查询 ─────────────────────────────────
     -- 使用一组独立 name（unit_pem/unit_p12）避免污染其他 task 用的 SSL_NAME.SERVER/CLIENT
     local NAME_PEM = "unit_pem"
@@ -106,8 +106,11 @@ runner.run("framework", function(t)
     do
         -- 当前 task 未关闭
         t:eq(false, task.isclosing(), "current task not closing")
-        -- 当前 task name = unit_framework
-        t:eq("unit_framework", task.name(), "current task name")
+        -- 注册名取自 test.lua 的 TESTS 第 2 列（本模块是 framework）；这里改了那边也要改，
+        -- 但漂移会让本条断言直接失败，不像 reporter 那样只是静默少一行
+        t:eq("framework", task.name(), "current task name")
+        -- runner 的模块名就取自 task.name()，两者必须同源
+        t:eq(task.name(), t.name, "runner 的模块名取自 task.name()")
     end
 
     -- ── srey.task: grab/ungrab 引用计数 ───────────────────────────────
@@ -132,8 +135,8 @@ runner.run("framework", function(t)
         for i = 1, 256 do
             args[i] = i
         end
-        -- trap_target 不读 ...，这里只关心参数搬运本身不越界
-        local tk = task.register("test.trap_target", "argstress", 0, table.unpack(args))
+        -- toplevel_bind 不读 ...，这里只关心参数搬运本身不越界
+        local tk = task.register("test.toplevel_bind", "argstress", 0, table.unpack(args))
         t:check(tk ~= nil, "task.register 256 个参数不越界")
         -- 收尾：不关的话这个 task 连同它自己那个 lua_State 一直活到进程结束
         local helper = task.grab("argstress")
@@ -145,10 +148,10 @@ runner.run("framework", function(t)
 
     -- ── 崩溃向量：绑定层不该让脚本把整个进程打死 ──────────────────────
     do
-        -- 顶层调 interruptible：ltask->lua 曾拖到 chunk 跑完才赋值，
-        -- 期间 lua_gethook(NULL) 直接 SIGSEGV（进程 exit 139，本用例根本跑不到）
-        local itop = task.register("test.interruptible_top", "itop", 0)
-        t:check(itop ~= nil, "顶层 srey.interruptible 不崩且注册成功")
+        -- 顶层调 C 绑定：绑定层依赖的东西（ltask->lua、_curtask 全局）曾拖到 chunk
+        -- 跑完才赋值，期间顶层这一句就是空指针解引用（进程 exit 139，本用例根本跑不到）
+        local itop = task.register("test.toplevel_bind", "itop", 0)
+        t:check(itop ~= nil, "顶层调 C 绑定不崩且注册成功")
         local h = task.grab("itop")
         if h then
             task.close(h)
@@ -201,52 +204,21 @@ runner.run("framework", function(t)
         t:eq(false, core.session_clear(-1, 2), "session_clear: 两参形态可调用，无效 fd 返 false")
     end
 
-    -- ── srey.task: trap (跨 task 中断卡死协程) ────────────────────────
-    -- 起一个 helper task 接收 "spin" 进入死循环，验证 task.trap 能从外部把它打断；
-    -- 中断后 task 应能恢复处理新请求（"ping" → "pong"）。
-    -- helper 在自己 startup 里调了 srey.interruptible()，没调的 task 一律拒绝中断。
+    -- ── srey.task: set_priority 超界 clamp 而不是被截断 ───────────────
+    -- 裸 (int32_t) 会把 2^32 截成 0，clamp 看到的已经是合法的最低优先级，
+    -- 于是"超界 clamp 到最大"的契约悄悄反过来。拿它跟一个普通超界值比，
+    -- 两者必须 clamp 到同一个上限，且不能是 0
     do
-        -- 选用一个不在 TASK_NAME 表中的字符串名，与其他单测错开
-        local TRAP_TARGET = "trap_target"
-        task.register("test.trap_target", TRAP_TARGET, 0)
-        srey.sleep(20)  -- 等 helper startup 完成
-
-        -- 让 helper 进入 spin 死循环
-        srey.call(TRAP_TARGET, 0, "spin")
-        srey.sleep(50)  -- 等 spin 协程在 helper worker 上跑起来
-
-        -- 跨 task 触发 trap
-        t:eq(true, task.trap(TRAP_TARGET), "task.trap 有效目标返回 true")
-        srey.sleep(100)  -- 等 hook 触发, 协程退出, helper 恢复消息循环
-
-        -- 验证 helper 已恢复 —— ping 应能拿到 pong
-        local rdata, rsize = srey.request(TRAP_TARGET, 0, "ping")
-        t:check(rdata ~= nil, "trap 后 helper 恢复处理消息（收到 ping 响应）")
-        if rdata then
-            t:eq("pong", srey.ud_str(rdata, rsize), "ping 响应内容正确")
-        end
-
-        -- 无效 name 返回 false
-        t:eq(false, task.trap("__no_such_task__"), "task.trap 无效 name 返回 false")
-
-        -- reporter 是 Lua task 但没调过 srey.interruptible()：hook 没挂，标志置了也永远
-        -- 触发不了，所以直接返回 false 让调用方知道，而不是回 true 后干等
-        t:eq(false, task.trap("reporter"), "task.trap 未声明可中断的 task 返回 false")
-
-        -- Lua 每个 thread 只能挂一个 hook。debug.sethook 占着的时候，interruptible 必须报错：
-        -- 静默让路的话标志照样置位，task.trap 会返回成功却永远不触发，调用方只能干等
-        debug.sethook(function() end, "c")
-        local armed, err = pcall(function() srey.interruptible() end)
-        debug.sethook()
-        t:eq(false, armed, "已有 debug hook 时 srey.interruptible 报错")
-        t:check(type(err) == "string" and nil ~= err:find("debug hook"), "错误信息点明 hook 被占用")
-
-        -- 收尾：关闭 helper
-        local helper = task.grab(TRAP_TARGET)
-        if helper then
-            task.close(helper)
-            task.ungrab(helper)
-        end
+        local saved = task.get_priority()
+        task.set_priority(1000000)
+        local capped = task.get_priority()
+        t:check(capped > 0, "普通超界值 clamp 到非 0 上限")
+        task.set_priority(4294967296)
+        t:eq(capped, task.get_priority(), "超 int32 的值 clamp 到同一上限而非截成 0")
+        task.set_priority(-4294967296)
+        t:eq(0, task.get_priority(), "超下界 clamp 到 0")
+        task.set_priority(saved)
+        t:eq(saved, task.get_priority(), "优先级已还原")
     end
 
     -- ── srey.task: mem / memlimit (per-task lua_State 内存监控) ──

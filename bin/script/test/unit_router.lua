@@ -62,7 +62,7 @@ local function dispatch(router, method, path, body, headers, version)
 end
 
 srey.startup(function()
-runner.run("unit_router", function(t)
+runner.run(function(t)
 
     -- ── 1. 基础路由匹配 ─────────────────────────────────────────────────────
 

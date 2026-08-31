@@ -15,7 +15,7 @@ local function _count_rows(reader)
 end
 
 srey.startup(function()
-runner.run("db_pgsql", function(t)
+runner.run(function(t)
     local pg = pgsql.new("127.0.0.1", 5432, SSL_NAME.NONE,
                          "admin", "12345678", "test")
     if not pg:connect() then

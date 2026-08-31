@@ -312,7 +312,8 @@ int main(int argc, char *argv[]) {
          evssl_null, evssl_hbcli, 0, 0, _get_name_val(testlist, "timeout_test3"));
     //协程 API 边界/失败路径补充
     task_coro_extra_start(g_loader, "coro_extra",
-        (uint16_t)*(_get_name_val(portlist, "http_sv")), rpcname,
+        (uint16_t)*(_get_name_val(portlist, "http_sv")),
+        (uint16_t)*(_get_name_val(portlist, "udp_echo")), rpcname,
         _get_name_val(testlist, "coro_extra"));
     //coro_fork / coro_fork_wait 单元测试
     task_fork_start(g_loader, "fork_test", _get_name_val(testlist, "fork_test"));

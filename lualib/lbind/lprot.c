@@ -47,12 +47,12 @@ static int32_t _lprot_dns_ip(lua_State *lua) {
 /// 构造 UDP DNS 查询请求包（不含 2 字节长度前缀）
 /// </summary>
 /// <param name="domain" type="string">查询域名</param>
-/// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录</param>
+/// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录；其余值报错</param>
 /// <returns type="string?">DNS 查询二进制字符串；构造失败返回 nil</returns>
 /// <returns type="integer?">本次查询的事务 ID，传给 dns.unpack 回验响应；失败时同为 nil，返回值个数恒为 2</returns>
 static int32_t _lprot_dns_pack(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
-    int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t ipv6 = lpub_check_flag(lua, 2);
     char buf[ONEK];
     uint16_t id;
     size_t lens = (size_t)dns_request_pack(buf, domain, ipv6, &id);
@@ -67,12 +67,12 @@ static int32_t _lprot_dns_pack(lua_State *lua) {
 /// 构造 TCP DNS 查询请求包（含 2 字节大端长度前缀，RFC 1035 §4.2.2 / RFC 7766）
 /// </summary>
 /// <param name="domain" type="string">查询域名</param>
-/// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录</param>
+/// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录；其余值报错</param>
 /// <returns type="string?">含长度前缀的 DNS 查询二进制字符串；构造失败返回 nil</returns>
 /// <returns type="integer?">本次查询的事务 ID，传给 dns.unpack 回验响应；失败时同为 nil，返回值个数恒为 2</returns>
 static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
-    int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t ipv6 = lpub_check_flag(lua, 2);
     char buf[ONEK];
     uint16_t id;
     size_t lens = dns_request_pack_tcp(buf, domain, ipv6, &id);
@@ -204,7 +204,8 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
 /// <returns type="lightuserdata?">握手包数据指针；secprot 超长、或 host/uri/secprot 任一含 CR/LF（会拆出额外的 HTTP 头）时返回 nil。
 /// 业务通过 srey.send copy=0 接管或 utils.ud_free 释放</returns>
 /// <returns type="integer?">数据长度</returns>
-/// <returns type="lightuserdata?">握手上下文 hsctx，须作为 srey.connect 的 extra 传入；所有权转交协议层(握手成功或 connect 失败时释放)，业务不得 ud_free。
+/// <returns type="lightuserdata?">握手上下文 hsctx。传给 srey.connect 当 extra 的那一刻所有权才转交框架，此后业务不得 ud_free；
+/// 没走到 srey.connect（打完包就不连了、中途出错）时它仍归业务，必须自己 ud_free。
 /// 失败时三个返回值都是 nil，个数恒为 3</returns>
 static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
     char *host = NULL;
@@ -532,7 +533,7 @@ static void _lprot_redis_agg(lua_State *lua, const char *type, int64_t nelem) {
 /// <param name="pk" type="lightuserdata">redis_pack_ctx 节点指针；nil 时返回 nil</param>
 /// <returns type="string|integer|number|boolean|nil|RedisAggValue">标量直接返回；聚合类型（array/set/map/push/attr）返回 RedisAggValue</returns>
 static int32_t _lprot_redis_value(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     redis_pack_ctx *pk = lua_touserdata(lua, 1);
     if (NULL == pk) {
         lua_pushnil(lua);
@@ -594,7 +595,7 @@ static int32_t _lprot_redis_value(lua_State *lua) {
 /// <param name="pk" type="lightuserdata">redis_pack_ctx 节点指针</param>
 /// <returns type="lightuserdata?">下一个节点指针；无后续节点返回 nil</returns>
 static int32_t _lprot_redis_next(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
+    LUACHECK_LUDATA_OPT(lua, 1);
     redis_pack_ctx *pk = lua_touserdata(lua, 1);
     if (NULL == pk
         || NULL == pk->next) {
@@ -882,12 +883,9 @@ static int32_t _lprot_mail_free(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lprot_mail_reply(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    int32_t reply;
-    if (LUA_TNIL == lua_type(lua, 2)) {
-        reply = 0;
-    } else {
-        reply = (int32_t)luaL_checkinteger(lua, 2);
-    }
+    // 判 isnoneornil 而不是只判 LUA_TNIL:文档写的是"nil 视为 0",而 mail:reply() 不带参数时
+    // 类型是 LUA_TNONE,只判 TNIL 会落到 luaL_checkinteger 上报"number expected, got no value"
+    int32_t reply = lua_isnoneornil(lua, 2) ? 0 : (0 != luaL_checkinteger(lua, 2));
     mail_reply(*ud, reply);
     return 0;
 }

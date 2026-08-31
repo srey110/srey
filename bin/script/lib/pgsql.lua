@@ -23,10 +23,7 @@ local ctx = class("pgsql_ctx", pub)
 ---@param password string 密码
 ---@param database string 数据库名
 function ctx:ctor(ip, port, sslname, user, password, database)
-    local ok, ssl = srey.ssl_qury(sslname)
-    if not ok then
-        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
-    end
+    local ssl = pub.ssl(sslname)
     self.pg = pgsql.new(ip, port, ssl, user, password, database)
     if not self.pg then
         error(string.format("pgsql.new failed: %s:%d db=%s", ip, port, tostring(database)), 2)
@@ -87,14 +84,9 @@ end
 function ctx:_query(sql)
     self:_reset()
     local pack, size = pgsql.pack_query(sql)
-    local fd, skid = self.pg:sock_id()
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local pgpack = ppub.request(self, pack, size, PGPACK_TYPE.OK)
     if not pgpack then
-        return self:_fail(ppub.SEND)
-    end
-    local e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
-    if e then
-        return self:_fail(e)
+        return false
     end
     self.affected = pgsql.affected_rows(pgpack)-- 连接级"最近一次"，多语句时是最后一条
     local rs = {}
@@ -118,14 +110,8 @@ end
 function ctx:_prepare(name, sql, nparam, oids, format)
     self:_reset()
     local pack, size = pgsql.pack_stmt_prepare(name, sql, nparam or 0, oids)
-    local fd, skid = self.pg:sock_id()
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
-    if not pgpack then
-        return self:_fail(ppub.SEND)
-    end
-    local e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
-    if e then
-        return self:_fail(e)
+    if not ppub.request(self, pack, size, PGPACK_TYPE.OK) then
+        return false
     end
     return stmt.new(self, name, format)
 end
@@ -165,16 +151,11 @@ end
 -- 模式的唯一手段，在这里抛就等于谁也拉不出来了
 function ctx:_copy_fail(msg)
     local pack, size = pgsql.pack_copy_fail(_safe_str(msg))
-    local fd, skid = self.pg:sock_id()
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
-    if not pgpack then
-        return self:_fail(ppub.SEND)
-    end
     -- 这里期望的类型就是 ERR：CopyFail 的正常应答即 ErrorResponse，收到 OK 说明服务端不在 COPY IN
     -- 模式，放过去会让真正的 ErrorResponse + ReadyForQuery 留在流里错位一格。判定口径见 ppub.check_type
-    local e = ppub.check_type(pgpack, PGPACK_TYPE.ERR)
-    if e then
-        return self:_fail(e)
+    local pgpack = ppub.request(self, pack, size, PGPACK_TYPE.ERR)
+    if not pgpack then
+        return false
     end
     return true, pgsql.erro(pgpack)
 end
@@ -205,15 +186,12 @@ function ctx:_copy_in(sql, producer)
         return self:_fail("copy_in: producer must be a function")
     end
     local pack, size = pgsql.pack_query(sql)
-    local fd, skid = self.pg:sock_id()
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local pgpack = ppub.request(self, pack, size, PGPACK_TYPE.COPY_IN)
     if not pgpack then
-        return self:_fail(ppub.SEND)
+        return false
     end
-    local e = ppub.check_type(pgpack, PGPACK_TYPE.COPY_IN)
-    if e then
-        return self:_fail(e)
-    end
+    -- fd/skid 下面串流还要用，单独取一次；ppub.request 内部那次只服务它自己
+    local fd, skid = self.pg:sock_id()
     -- 服务端期望的格式与列数透给 producer：折叠成一个方法之后，调用方再没有别的途径拿到它
     local cfmt, cncol = pgsql.copy_in_info(pgpack)
     -- 自此服务端已进 COPY IN 模式，任何一条失败路径都必须先把它拉出来再返回。
@@ -228,13 +206,9 @@ function ctx:_copy_in(sql, producer)
         return self:_copy_fail(reason)-- producer 主动中止
     end
     pack, size = pgsql.pack_copy_done()
-    pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    pgpack = ppub.request(self, pack, size, PGPACK_TYPE.OK)
     if not pgpack then
-        return self:_fail(ppub.SEND)
-    end
-    e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
-    if e then
-        return self:_fail(e)
+        return false
     end
     self.affected = pgsql.affected_rows(pgpack)
     return true
@@ -256,14 +230,9 @@ end
 function ctx:_copy_out(sql)
     self:_reset()
     local pack, size = pgsql.pack_query(sql)
-    local fd, skid = self.pg:sock_id()
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local pgpack = ppub.request(self, pack, size, PGPACK_TYPE.COPY_OUT)
     if not pgpack then
-        return self:_fail(ppub.SEND)
-    end
-    local e = ppub.check_type(pgpack, PGPACK_TYPE.COPY_OUT)
-    if e then
-        return self:_fail(e)
+        return false
     end
     self.affected = pgsql.affected_rows(pgpack)-- COPY OUT 的 "COPY N"
     return pgsql.copy_out_data(pgpack)

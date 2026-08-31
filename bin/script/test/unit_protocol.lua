@@ -10,14 +10,23 @@ local redis   = require("lib.redis")
 local harbor  = require("srey.harbor")
 local smtp    = require("srey.smtp")
 local mail    = require("srey.smtp.mail")
+local yyjson  = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 local base64  = require("srey.base64")
 
 srey.startup(function()
-runner.run("protocol", function(t)
+runner.run(function(t)
     -- ── http.code_status ───────────────────────────────────────────────
     t:eq("OK",                    http.code_status(200), "http 200")
     t:eq("Not Found",             http.code_status(404), "http 404")
     t:eq("Internal Server Error", http.code_status(500), "http 500")
+
+    -- ── 封包访问器拒收空指针 ───────────────────────────────────────────
+    do
+        -- 这一族拿到 pack 就直接解引用，空指针由 LUACHECK_LUDATA 在参数处拦下
+        t:eq(false, pcall(websock.unpack, yyjson.null), "websock.unpack NULL 指针被拒")
+        t:eq(false, pcall(http.chunked, yyjson.null), "http.chunked NULL 指针被拒")
+        t:eq(false, pcall(http.status, yyjson.null), "http.status NULL 指针被拒")
+    end
 
     -- ── redis.pack ─────────────────────────────────────────────────────
     -- RESP 协议格式：*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nhello\r\n
@@ -137,6 +146,16 @@ runner.run("protocol", function(t)
 
     -- ── mail pack（MIME 输出） ─────────────────────────────────────────
     do
+        -- reply 的入参形态单独拿个对象验，免得改动下面 pack 断言所依赖的状态。
+        -- 标注是 integer?、文档写"nil 视为 0"，那不带参数（LUA_TNONE）也得照收：
+        -- 只判 LUA_TNIL 的话会落到 luaL_checkinteger 上报 "number expected, got no value"
+        local rm = mail.new()
+        t:eq(true, pcall(rm.reply, rm), "mail:reply() 不带参数等同 0")
+        t:eq(true, pcall(rm.reply, rm, nil), "mail:reply(nil) 等同 0")
+        t:eq(true, pcall(rm.reply, rm, 1), "mail:reply(1) 请求回执")
+        -- 契约是"非 0 即真"而不是只收 0/1，别顺手收紧成 lpub_opt_flag
+        t:eq(true, pcall(rm.reply, rm, 2), "mail:reply 非 0 值一律当请求回执")
+
         local m = mail.new()
         m:from("Srey", "srey@example.com")
         m:addrs_add("alice@example.com", 1)  -- TO

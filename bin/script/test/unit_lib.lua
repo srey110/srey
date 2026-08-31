@@ -7,7 +7,7 @@ local mqtt   = require("lib.mqtt")
 require("lib.dns")
 
 srey.startup(function()
-runner.run("lib", function(t)
+runner.run(function(t)
     -- ── lib/dns.lua: nslookup (UDP 优先 + TCP 回退) ───────────────────
     do
         -- UDP 路径：默认 nslookup(domain, ipv6=false)，第三个参数 udp=true 优先 UDP

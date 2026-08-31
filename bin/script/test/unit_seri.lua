@@ -6,7 +6,7 @@ local seri   = require("srey.seri")
 local utils  = require("srey.utils")
 
 srey.startup(function()
-runner.run("seri", function(t)
+runner.run(function(t)
     -- 1. 基本类型 round-trip
     local buf, size = seri.pack(nil, true, false, 42, -7, 3.14, "hello")
     t:check(buf ~= nil, "pack returns buffer")

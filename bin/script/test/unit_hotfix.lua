@@ -53,7 +53,7 @@ local function _setup_localfn_module()
 end
 
 srey.startup(function()
-runner.run("hotfix", function(t)
+runner.run(function(t)
     -- ── 子段 1:函数替换 + 行为变更 ─────────────────────────────────
     do
         local mod = _setup_module()

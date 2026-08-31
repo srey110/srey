@@ -10,11 +10,14 @@ local mongo  = require("mongo")
 local mgolib = require("lib.mongo")-- Lua 侧 ctx，测 ctor 的入参自查
 local mgsess = require("mongo.session")
 local mysql  = require("mysql")
+local mreader = require("mysql.reader")-- reader.new / stmt.new 的第一个 lightuserdata 参数要测空指针
+local mstmt  = require("mysql.stmt")
 local pgsql  = require("pgsql")
 local bson   = require("lib.bson")
+local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
 srey.startup(function()
-runner.run("db_bind", function(t)
+runner.run(function(t)
     -- ── mysql.bind ─────────────────────────────────────────────────────
     do
         local b = mbind.new()
@@ -288,6 +291,13 @@ runner.run("db_bind", function(t)
         t:eq("_mysql_ctx", getmetatable(m), "REG_MTABLE 置 __metatable:普通 getmetatable 只得类型名")
         t:check(debug.getmetatable(m) ~= nil, "debug.getmetatable 仍可取真元表(__metatable 不挡它)")
 
+        -- 这四个入口原来用 luaL_checktype(LUA_TLIGHTUSERDATA)，只判类型不判空——空指针照过，
+        -- 而 pack_type / reader_new 的下游是裸解引用（mysql_reader_init 不像 mysql_stmt_init 那样判空）
+        t:eq(false, pcall(mysql.pack_type, yyjson.null), "mysql.pack_type NULL 指针被拒")
+        t:eq(false, pcall(mysql.has_more, yyjson.null), "mysql.has_more NULL 指针被拒")
+        t:eq(false, pcall(mreader.new, yyjson.null), "mysql.reader.new NULL 指针被拒")
+        t:eq(false, pcall(mstmt.new, m, yyjson.null), "mysql.stmt.new NULL 指针被拒")
+
         local pack, size = m:pack_ping()
         t:check(pack ~= nil and size > 0, "mysql pack_ping non-empty")
         utils.ud_free(pack)
@@ -501,6 +511,29 @@ runner.run("db_bind", function(t)
         t:check(pack ~= nil and size > 0, "mongo pack_findandmodify (update) non-empty")
         utils.ud_free(pack)
 
+        -- remove=0 时 update 必填：漏传的话 mongo_pack_findandmodify 会写出一个声明了
+        -- ulens 字节却一字节没有的 update 元素，整条命令从这里错位发上线且无报错
+        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, nil, 0),
+             "findandmodify: remove=0 缺 update 报错")
+        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, yyjson.null, 16),
+             "findandmodify: remove=0 传 NULL 指针报错")
+        -- 空缓冲与 NULL 同罪：非空指针 + 长度 0 一样会写出有键无体的 update 元素。
+        -- 只判指针非空的守卫在这里会放行，必须连长度一起判
+        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, "", 0),
+             "findandmodify: remove=0 传空字符串报错")
+        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, u_ptr, 0),
+             "findandmodify: remove=0 传零长度报错")
+
+        -- 可选文档收到空缓冲时应当"当没给"，而不是写下键再跳过文档体：
+        -- 后者产出的元素声明了子文档却零字节，服务端会把下一个元素的头 4 字节当成它的长度
+        local nofilter, nf_sz = mg:pack_find()
+        local emptyfilter, ef_sz = mg:pack_find("", 0)
+        t:eq(nf_sz, ef_sz, "pack_find 空 filter 与不传 filter 组出同样长度")
+        t:check(nil == srey.ud_str(emptyfilter, ef_sz):find("filter", 1, true),
+                "pack_find 空 filter 不写 filter 键")
+        utils.ud_free(nofilter)
+        utils.ud_free(emptyfilter)
+
         -- count 无 query
         pack, size = mg:pack_count()
         t:check(pack ~= nil and size > 0, "mongo pack_count (no query) non-empty")
@@ -537,6 +570,20 @@ runner.run("db_bind", function(t)
         t:check(pack ~= nil and size > 0, "mongo pack_bulkwrite non-empty")
         t:check(srey.ud_str(pack, size):find("bulkWrite", 1, true) ~= nil, "bulkwrite wire 含 bulkWrite")
         utils.ud_free(pack)
+
+        -- 必填的数组参数长度为 0 时整条命令作废（MONGO_PACK_ARR）。放行的话
+        -- bson_append_array 只写 type+key 不写数组体，整篇 BSON 从这个元素起就解不开，
+        -- 而这种包发出去服务端多半照收，错位要到后面某个字段才暴露。
+        -- 断言的是"返 nil"而非"报错"：与 opts 畸形时的既有行为同口径
+        t:eq(nil, mg:pack_insert(docs_ptr, 0), "pack_insert 空 documents 返 nil")
+        t:eq(nil, mg:pack_update(upd_ptr, 0), "pack_update 空 updates 返 nil")
+        t:eq(nil, mg:pack_delete(del_ptr, 0), "pack_delete 空 deletes 返 nil")
+        t:eq(nil, mg:pack_aggregate(pl_ptr, 0), "pack_aggregate 空 pipeline 返 nil")
+        t:eq(nil, mg:pack_killcursors(c_ptr, 0), "pack_killcursors 空 cursors 返 nil")
+        t:eq(nil, mg:pack_createindexes(i_ptr, 0), "pack_createindexes 空 indexes 返 nil")
+        t:eq(nil, mg:pack_dropindexes(d_ptr, 0), "pack_dropindexes 空 index 返 nil")
+        t:eq(nil, mg:pack_bulkwrite(op_ptr, 0, n_ptr, n_sz), "pack_bulkwrite 空 ops 返 nil")
+        t:eq(nil, mg:pack_bulkwrite(op_ptr, op_sz, n_ptr, 0), "pack_bulkwrite 空 nsInfo 返 nil")
 
         mg = nil
         collectgarbage()

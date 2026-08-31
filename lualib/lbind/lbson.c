@@ -266,9 +266,6 @@ static int32_t _lbson_oid(lua_State *lua) {
     } else {
         LUACHECK_LUDATA(lua, 3);
         oid = lua_touserdata(lua, 3);
-        // NULL 会被 binary_set_binary 的空指针守卫吃掉,产出只有 type+key、没有 12 字节
-        // OID 体的元素,整篇文档在这里断掉。长度挡不住:裸指针没带长度,由调用方保证
-        luaL_argcheck(lua, NULL != oid, 3, "OID pointer must not be NULL");
     }
     bson_append_oid(bson, key, oid);
     return 0;
@@ -450,7 +447,8 @@ static int32_t _lbson_complete(lua_State *lua) {
 /// 返回内部 BSON 数据
 /// </summary>
 /// <param name="self" type="userdata">bson 对象</param>
-/// <returns type="lightuserdata">数据指针</returns>
+/// <returns type="lightuserdata">数据指针（bson 内部缓冲的**借用**指针，随 bson 对象释放而失效，
+/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）</returns>
 /// <returns type="integer">字节数</returns>
 static int32_t _lbson_data(lua_State *lua) {
     bson_ctx *bson = _lbson_check_complete(lua);

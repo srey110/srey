@@ -94,8 +94,8 @@ static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int3
 /// 也可直接作为 srey.request/call/response 的 data 参数并传 copy=0 转移所有权。
 /// </summary>
 /// <param name="..." type="any">任意多个待序列化的值</param>
-/// <returns type="lightuserdata">序列化后的 buffer 指针</returns>
-/// <returns type="integer">buffer 字节数</returns>
+/// <returns type="lightuserdata">序列化后的 buffer 指针；一个值都没传时也是一块有效缓冲，仍需释放</returns>
+/// <returns type="integer">buffer 字节数；一个值都没传时为 0</returns>
 static int32_t _lseri_pack(lua_State *lua) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);

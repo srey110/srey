@@ -36,7 +36,7 @@ local function _bad_producer(state)
 end
 
 srey.startup(function()
-runner.run("websock_client", function(t)
+runner.run(function(t)
     srey.on_recved(function()
         -- server 侧收到什么都不回:本用例只关心客户端 API 的返回值,不需要响应
     end)
@@ -88,8 +88,9 @@ runner.run("websock_client", function(t)
              "pack_handshake 失败时返回值个数为 3")
         local hp, hs, hc = websock.pack_handshake("h", "/", badprot)
         t:check(hp == nil and hs == nil and hc == nil, "pack_handshake 失败时三个返回值均为 nil")
-        -- 成功路径不在这里验：hsctx 的所有权只能由 srey.connect 接走，不连的话没有合法的
-        -- 释放途径，测下来就是一处必然泄漏。上面 wbsk.connect 的用例已覆盖成功路径
+        -- 成功路径不在这里验：上面 wbsk.connect 的用例走的就是它，unit_protocol.lua 的
+        -- websock pack 系列还单测了"不连接、直接 ud_free(hsctx)"这条——所有权只在传给
+        -- srey.connect 那一刻才转交框架，没走到 connect 时它归调用方，释放途径是有的
     end
 
     srey.unlisten(lid)-- 释放端口给后续测试

@@ -13,7 +13,7 @@ local websock = require("srey.websock")
 local custz   = require("srey.custz")
 
 srey.startup(function()
-runner.run("utils", function(t)
+runner.run(function(t)
     -- ── srey.utils ─────────────────────────────────────────────────────
     do
         -- id() 单调递增
@@ -26,6 +26,11 @@ runner.run("utils", function(t)
         -- hex 编码字符串（tohex 输出大写）
         t:eq("616263", utils.hex("abc", true), "hex abc")
         t:eq("FF00",   utils.hex("\xff\x00"),    "hex binary (大写)")
+        t:eq("ff00",   utils.hex("\xff\x00", true),  "hex binary 小写")
+        t:eq("FF00",   utils.hex("\xff\x00", false), "显式 false 仍大写")
+        -- 字符串形态下 lower 紧跟 data，多传一个 size 就把它顶掉；而 Lua 里任何数字都为真，
+        -- 于是"缺省该大写"的调用会悄悄输出小写。卡死类型让它报错而不是给错结果
+        t:eq(false, pcall(utils.hex, "\xff\x00", 2, false), "字符串多传 size 报错")
     end
     do
         -- csprng_rand 返回指定长度且非空

@@ -1,10 +1,13 @@
--- srey.serial 协程串行化执行器单元测试：基础进入、嵌套、FIFO 串行、抛错锁释放、cs 内 yield
+-- srey.serial 协程串行化执行器单元测试：基础进入、嵌套、FIFO 串行、抛错锁释放、cs 内 yield，
+-- 以及 coros 调试命令能否看见 serial / fork_wait 这两类不进 coro_sess 的等待者
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
+local seri   = require("srey.seri")
+local task   = require("srey.task")-- 起一个安静的 helper task，测"三张登记表全空"那条路径
 
 srey.startup(function()
-runner.run("serial", function(t)
+runner.run(function(t)
     -- ── 基础：单协程进入，返回 (ok, ret) ─────────────────────────────
     do
         local cs = srey.serial()
@@ -162,6 +165,63 @@ runner.run("serial", function(t)
         end
         srey.sleep(120)
         t:eq(N, done, "200 个连续同步完成的等待者全部执行（唤醒链已摊平）")
+    end
+
+    -- ── coros 要能看见 serial 队列与 fork_wait 屏障上的等待者 ────────
+    -- 这两类走裸 coroutine_yield()，不进 coro_sess。漏登记的话就会出现
+    -- "关闭时 _closing_dispatch 报还有 N 个协程没退，coros 却回 (no suspended coros)"
+    do
+        local cs = srey.serial()
+        local release = false
+        local function _hold()
+            while not release do
+                srey.sleep(5)
+            end
+        end
+        srey.fork(function() cs(_hold) end) -- 占住执行器不放
+        srey.sleep(20)
+        srey.fork(function() cs(function() end) end) -- 排进 serial waiters
+        srey.fork(function() srey.fork_wait({ _hold }) end) -- 停在 fork_wait 屏障上
+        srey.sleep(40)
+
+        local ptr, sz = seri.pack("coros")
+        local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
+        t:check(rdata ~= nil, "coros 调试命令有响应")
+        local text = rdata and srey.ud_str(rdata, rsize) or ""
+        t:check(text:find("serial=", 1, true) ~= nil, "coros 列出 serial 等待者")
+        t:check(text:find("fork_wait pending=", 1, true) ~= nil, "coros 列出 fork_wait 屏障")
+        t:check(text:find("age=", 1, true) ~= nil, "fork_wait / serial 行带挂起时长，与 C 侧 coro_dump 同格式")
+        t:check(text:find("1 fork_wait", 1, true) ~= nil, "汇总行统计 fork_wait")
+        t:check(text:find("1 serial", 1, true) ~= nil, "汇总行统计 serial")
+        -- sessions 是 coro_sess 条目数，与 suspended 分开报：keep 的条目摘空 waiters 后仍留着，
+        -- 两个数长期背离就是 keep 条目泄漏。C 侧 coro_dump 同格式
+        t:check(text:find("sessions,", 1, true) ~= nil, "汇总行报 coro_sess 条目数")
+
+        release = true
+        srey.sleep(60)
+    end
+
+    -- ── 一个都没挂起时，汇总行仍须打印 ────────────────────────────────
+    -- 自请求测不到这条：请求方自己就挂在 coro_sess 里，total 恒 >= 1。得向另一个
+    -- 安静的 task 要 coros——它三张登记表全空，正是原来那句提前 return 吞掉汇总行的路径。
+    -- 而三表全空却 nyield 非零，恰恰是最需要这行来对账的时刻
+    do
+        local quiet = task.register("test.toplevel_bind", "coros_quiet", 0)
+        t:check(quiet ~= nil, "起一个不挂协程的 helper task")
+        srey.sleep(30)
+
+        local ptr, sz = seri.pack("coros")
+        local rdata, rsize = srey.request("coros_quiet", REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
+        t:check(rdata ~= nil, "安静 task 的 coros 有响应")
+        local text = rdata and srey.ud_str(rdata, rsize) or ""
+        t:check(text:find("(no suspended coros)", 1, true) ~= nil, "空表时仍报 (no suspended coros)")
+        t:check(text:find("yield total.", 1, true) ~= nil, "空表时汇总行照样打印")
+
+        local h = task.grab("coros_quiet")
+        if h then
+            task.close(h)
+            task.ungrab(h)
+        end
     end
 end)
 end)

@@ -8,6 +8,7 @@ local stmt  = require("lib.mysql_stmt")
 local mysql = require("mysql")
 local reader = require("mysql.reader")
 local pub   = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
+local mpub  = require("lib.mysql_pub")-- 与 mysql_stmt.lua 共用的请求收尾，见该模块头部
 local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
 
 -- mysql_ctx：MySQL 连接上下文，每实例对应一条持久连接。
@@ -24,10 +25,7 @@ local ctx = class("mysql_ctx", pub)
 ---@param charset string 字符集（如 "utf8mb4"）
 ---@param maxpk integer? 单包最大字节数，0 使用默认
 function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
-    local ok, ssl = srey.ssl_qury(sslname)
-    if not ok then
-        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
-    end
+    local ssl = pub.ssl(sslname)
     self.mysql = mysql.new(ip, port, ssl, user, password, database, charset, maxpk)
     if not self.mysql then
         error(string.format("mysql.new failed: %s:%d db=%s", ip, port, tostring(database)), 2)
@@ -62,28 +60,13 @@ function ctx:_selectdb(database)
     if nil == pack then
         return false
     end
-    local fd, skid = self.mysql:sock_id()
-    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
-    if nil == mpack then
-        return false
-    end
-    return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
+    return mpub.request_ok(self.mysql, pack, size)
 end
 
--- conn_pub 的探活钩子：COM_PING，不自动重连。
--- 必须正向判 MPACK_OK，不能只判"收到了包"：conn_pub 的 _pingreconn 拿本函数的返回值当唯一
--- 重连判据，只判非 nil 的话，服务端以 ERR 应答 COM_PING（shutdown 期的 1053、连接被 KILL 之类）
--- 会被报成健康，于是永不重连，此后每一轮 ping + query 都重复失败。
--- 连接因前一次多结果集没收干净而错位时同理：读到的可能是上一条命令残留的包，判型能发现，
--- 只判非 nil 则会把它当自己的 pong 吃掉，错位从此无法自愈
+-- conn_pub 的探活钩子：COM_PING，不自动重连。为什么必须正向判型见 mysql_pub.request_ok
 function ctx:_ping()
     local pack, size = self.mysql:pack_ping()
-    local fd, skid = self.mysql:sock_id()
-    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
-    if not mpack then
-        return false
-    end
-    return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
+    return mpub.request_ok(self.mysql, pack, size)
 end
 
 ---收齐一次请求的全部响应包（多语句 / CALL 会产生多个结果集），query 与 stmt:execute 共用
@@ -141,8 +124,7 @@ function ctx:_query(sql, mbind)
         WARN("mysql query payload exceeds 16MB.")
         return nil
     end
-    local fd, skid = self.mysql:sock_id()
-    local mpack = srey.syn_send(fd, skid, pack, size, 0)
+    local mpack, fd, skid = mpub.request(self.mysql, pack, size)
     if not mpack then
         return nil
     end
@@ -163,8 +145,7 @@ function ctx:_prepare(sql)
         WARN("mysql stmt_prepare payload exceeds 16MB.")
         return false
     end
-    local fd, skid = self.mysql:sock_id()
-    local mpack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mpack = mpub.request(self.mysql, pack, size)
     if not mpack then
         return false
     end

@@ -350,18 +350,16 @@ LUAMOD_API int luaopen_hmac(lua_State *lua) {
 /// <returns type="_cipher_ctx">cipher 对象</returns>
 static int32_t _lcrypt_cipher_new(lua_State *lua) {
     size_t lens;
-    int32_t engine = (int32_t)luaL_checkinteger(lua, 1);
-    int32_t model = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t engine = (int32_t)lpub_check_range(lua, 1, DES, AES, "invalid cipher engine");
+    int32_t model = (int32_t)lpub_check_range(lua, 2, ECB, CTR, "invalid cipher model");
     const char *key = luaL_checklstring(lua, 3, &lens);
-    int32_t keybits = (int32_t)luaL_checkinteger(lua, 4);
-    int32_t encrypt = (int32_t)luaL_checkinteger(lua, 5);
-    luaL_argcheck(lua, engine >= DES && engine <= AES, 1, "invalid cipher engine");
-    luaL_argcheck(lua, model >= ECB && model <= CTR, 2, "invalid cipher model");
+    lua_Integer keybits = luaL_checkinteger(lua, 4);
+    int32_t encrypt = lpub_check_flag(lua, 5);
     // keybits 只有 AES 用得上,DES/DES3 忽略该形参;越界会打到 aes_init 的 ASSERTAB 上整进程 abort
     luaL_argcheck(lua, AES != engine || 128 == keybits || 192 == keybits || 256 == keybits,
                   4, "invalid aes key bits");
     cipher_ctx *cipher = lua_newuserdata(lua, sizeof(cipher_ctx));
-    cipher_init(cipher, engine, model, key, lens, keybits, encrypt);
+    cipher_init(cipher, engine, model, key, lens, (int32_t)keybits, encrypt);
     ASSOC_MTABLE(lua, MT_CIPHER);
     return 1;
 }

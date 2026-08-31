@@ -26,7 +26,7 @@ local _PY_DIR = _propath .. _pathsep .. "py_assist" .. _pathsep
 srey.startup(function()
     -- 给 server task 一点时间完成 srey.listen（startup 是 coroutine 化的，需要让出）
     srey.sleep(1000)
-    runner.run("e2e", function(t)
+    runner.run(function(t)
         for _, name in ipairs(_SCRIPTS) do
             local cmd = "python3 " .. _PY_DIR .. "test_" .. name .. ".py 2>&1"
             -- 仿 C 层 main.c LOG_INFO("running %s", pycmd) + 后续 PRINT outbuf 的格式：

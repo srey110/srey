@@ -147,6 +147,7 @@ end
 -- ── 内部辅助 ──────────────────────────────────────────────────────────────
 
 local _PLAIN_HEADERS = { ["Content-Type"] = "text/plain; charset=utf-8" }
+local _HTML_HEADERS  = { ["Content-Type"] = "text/html; charset=utf-8" }
 
 -- 本模块所有响应的唯一出口。HEAD 走 http.response_head：头与同一资源的 GET 一致（含真实
 -- Content-Length）但不发报文体，多发的字节会被对端当成下一条响应的开头。
@@ -193,9 +194,9 @@ end
 ---@field responded boolean            已响应标志;ctx:* 方法自动置位,dispatch 据此补兜底 500;延迟/手动响应须手动置 true 且勿直接调 http.response(否则与兜底叠成双响应)
 ---@field _admitted boolean?           流式路由准入标志，router 内部填写
 ---@field text    fun(self:Ctx, code:integer, body:string?)        纯文本响应
----@field json    fun(self:Ctx, code:integer, tbl:table)           JSON 响应，自动附加 Content-Type
+---@field json    fun(self:Ctx, code:integer, tbl:table<any,any>)  JSON 响应，自动附加 Content-Type
 ---@field html    fun(self:Ctx, code:integer, body:string?)        HTML 响应，自动附加 Content-Type
----@field respond fun(self:Ctx, code:integer, headers:table?, body:string?)  自定义响应
+---@field respond fun(self:Ctx, code:integer, headers:table<string,any>?, body:string?)  自定义响应
 
 -- body 为 nil 时保持 nil，非 nil 统一转 string——数字等类型直接往下传会被
 -- http.response 的类型分派当"无 body"丢掉
@@ -223,7 +224,7 @@ function CtxMethods:json(code, tbl)
     _ctx_send(self, code, nil, tbl)
 end
 function CtxMethods:html(code, body)
-    _ctx_send(self, code, { ["Content-Type"] = "text/html; charset=utf-8" }, _body_str(body))
+    _ctx_send(self, code, _HTML_HEADERS, _body_str(body))
 end
 function CtxMethods:respond(code, headers, body)
     _ctx_send(self, code, headers, body)

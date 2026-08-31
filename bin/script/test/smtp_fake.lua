@@ -136,7 +136,7 @@ srey.startup(function()
             end
         end
     end)
-runner.run("smtp_fake", function(t)
+runner.run(function(t)
     -- listen 守卫必须在 run 体内：在外面 return 会跳过整个 runner.run，本模块永远不向
     -- reporter 上报，而 reporter 要凑齐 #TESTS 个模块才打印汇总——一个没到，整轮的
     -- 汇总一行都不出，其余模块全过也看不见

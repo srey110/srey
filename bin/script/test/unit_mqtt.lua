@@ -5,6 +5,7 @@ local runner = require("test.runner")
 local utils  = require("srey.utils")
 local mqtt   = require("lib.mqtt")
 local mqttc  = require("mqtt")-- 绑定层原始接口，测版本校验用
+local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
 -- 取 pack 返回数据的首字节高 4 位（MQTT 控制类型）
 local function _ptype(pack, size)
@@ -14,7 +15,7 @@ local function _ptype(pack, size)
 end
 
 srey.startup(function()
-runner.run("mqtt", function(t)
+runner.run(function(t)
     -- ── props 共享元表受保护 ───────────────────────────────────────────
     -- 元表是全类型共享的，getmetatable 若能拿到真表，业务一行 __gc = nil
     -- 就能让此后每个 props 都不再释放内部 binary_ctx
@@ -107,6 +108,15 @@ runner.run("mqtt", function(t)
              "pack_publish packid -1 报错")
         t:eq(false, pcall(mqtt.pack_puback, mqtt.VERSION.V311, 65536),
              "pack_puback packid 65536 报错")
+        -- payload 走 _lmqtt_get_payload 自己那套 (指针, 长度) 读法，不经 lpub_check_buf，
+        -- 空指针判定要单独加：剩余长度按 8 算却只写 0 字节，对端会吃掉下一条报文的头 8 字节
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 1, yyjson.null, 8),
+             "pack_publish payload 空指针被拒")
+        local okempty, epack = pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 1, yyjson.null, 0)
+        t:eq(true, okempty, "pack_publish 空指针 + 0 长度放行")
+        if okempty and epack then
+            utils.ud_free(epack)
+        end
         -- topics 必须是真的 props 缓冲：传别的类型也会报错，那样测到的是类型校验不是 packid
         local subtopics = mqtt.props()
         subtopics:subscribe(mqtt.VERSION.V311, "/t", 0, 0, 0, 0)
