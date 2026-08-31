@@ -476,7 +476,7 @@ static int32_t _test_serial_quit_order(task_ctx *task) {
     }
     // slot 已被销毁方回收，此处不能再 free
     if (2 != order || 1 != ev[0] || 2 != ev[1]) {
-        LOG_ERROR("serial quit order: ev=%d,%d (order=%d), want 1,2 —— 销毁抢在持锁者前面了.",
+        LOG_ERROR("serial quit order: ev=%d,%d (order=%d), want 1,2 —— Destroy raced ahead of the lock holder.",
                   ev[0], ev[1], order);
         return ERR_FAILED;
     }

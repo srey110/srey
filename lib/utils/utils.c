@@ -25,6 +25,15 @@ typedef union filetime_u64 {
     FILETIME ft_ft;
     uint64_t ft_64;
 }filetime_u64;
+// _MiniDump 传给 _dump_thread 的参数。da_err 必须由 dump 线程自己填:GetLastError 是
+// 线程局部的,回到崩溃线程再读拿到的是别的值
+typedef struct dump_arg {
+    BOOL da_ok;
+    DWORD da_err;
+    DWORD da_tid;//崩溃线程 id, 决定 dump 打开后停在哪个线程
+    HANDLE da_file;
+    struct _EXCEPTION_POINTERS *da_excep;
+}dump_arg;
 #endif
 // tchar 集合见 RFC 7230 §3.2.6：ALPHA / DIGIT / "!#$%&'*+-.^_`|~" 为 1，其余一概为 0。
 // 按 16 列排，行首注释是高 4 位
@@ -84,6 +93,36 @@ static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *priv
     DWORD dsize = sizeof(TOKEN_PRIVILEGES);
     return AdjustTokenPrivileges(handle, FALSE, &tpriv, dsize, privold, &dsize);
 }
+// 崩溃现场不能走异步日志:LOG_ERROR 只把消息入队, _MiniDump 末尾的 TerminateProcess 一到,
+// I/O 线程就再没机会刷盘, 失败原因连同队列一起蒸发。这里同步写, 且送一份进调试器
+static void _dump_err(const char *what, DWORD code) {
+    char buf[256];
+    SNPRINTF(buf, sizeof(buf), "minidump: %s failed, err %lu.\n", what, code);
+    OutputDebugStringA(buf);
+    fputs(buf, stderr);
+    fflush(stderr);
+}
+// dump 必须换个线程写。Windows x64 下 minicoro 走 MCO_USE_ASM, 崩溃线程可能正跑在 56KB
+// 协程栈上(TIB 里的栈边界还指着真线程栈), 也可能本来就是栈溢出崩的;两种情况 MiniDumpWriteDump
+// 都没有足够栈可用, 只会返回 FALSE 留下个 0 字节文件。新线程拿的是正常的 TIB 注册栈
+static DWORD WINAPI _dump_thread(LPVOID arg) {
+    dump_arg *da = (dump_arg *)arg;
+    MINIDUMP_EXCEPTION_INFORMATION exinfo;
+    exinfo.ThreadId = da->da_tid;
+    exinfo.ExceptionPointers = da->da_excep;
+    exinfo.ClientPointers = FALSE;
+    da->da_ok = MiniDumpWriteDump(GetCurrentProcess(),
+                                  GetCurrentProcessId(),
+                                  da->da_file,
+                                  (MINIDUMP_TYPE)(MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory),
+                                  &exinfo,
+                                  NULL,
+                                  NULL);
+    if (!da->da_ok) {
+        da->da_err = ERRNO;
+    }
+    return 0;
+}
 // Windows 结构化异常处理函数，捕获崩溃时生成 MiniDump 文件
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acdmp[PATH_LENS];
@@ -91,7 +130,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
         procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        _dump_err("OpenThreadToken", ERRNO);
         return EXCEPTION_CONTINUE_SEARCH;
     }
     HANDLE pdmpfile = CreateFile(acdmp,
@@ -102,28 +141,30 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
                                  FILE_ATTRIBUTE_NORMAL,
                                  NULL);
     if (INVALID_HANDLE_VALUE == pdmpfile) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        _dump_err("CreateFile", ERRNO);
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
     LONG lrtn = EXCEPTION_CONTINUE_SEARCH;
     TOKEN_PRIVILEGES tprivold;
-    MINIDUMP_EXCEPTION_INFORMATION exinfo;
-    exinfo.ThreadId = GetCurrentThreadId();
-    exinfo.ExceptionPointers = excep;
-    exinfo.ClientPointers = FALSE;
+    dump_arg da;
+    da.da_ok = FALSE;
+    da.da_err = ERROR_SUCCESS;
+    da.da_tid = GetCurrentThreadId();
+    da.da_file = pdmpfile;
+    da.da_excep = excep;
     BOOL bprienabled = _EnablePrivilege(SE_DEBUG_NAME, ptoken, &tprivold);
-    BOOL bok = MiniDumpWriteDump(GetCurrentProcess(),
-                                 GetCurrentProcessId(),
-                                 pdmpfile,
-                                 MiniDumpNormal,
-                                 &exinfo,
-                                 NULL,
-                                 NULL);
-    if (bok) {
-        lrtn = EXCEPTION_EXECUTE_HANDLER;
+    HANDLE hdump = CreateThread(NULL, 0, _dump_thread, &da, 0, NULL);
+    if (NULL == hdump) {
+        _dump_err("CreateThread", ERRNO);
     } else {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        WaitForSingleObject(hdump, INFINITE);
+        CloseHandle(hdump);
+        if (da.da_ok) {
+            lrtn = EXCEPTION_EXECUTE_HANDLER;
+        } else {
+            _dump_err("MiniDumpWriteDump", da.da_err);
+        }
     }
     if (bprienabled) {
         (void)AdjustTokenPrivileges(ptoken, FALSE, &tprivold, 0, NULL, NULL);

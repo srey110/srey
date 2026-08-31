@@ -1,7 +1,8 @@
 ﻿#include "lbind/lpub.h"
 
-// 编解码深度上限、稀疏数组的判定阈值
-#define LYYJSON_MAX_DEPTH    1000
+// 编解码深度上限(容器层数: encode 数 table, decode 数 array/object)、稀疏数组的判定阈值。
+// 深度上限与 BSON_MAX_DEPTH / REDIS_MAX_DEPTH 取同一个数, 全项目一个口径。
+#define LYYJSON_MAX_DEPTH    18
 #define LYYJSON_SPARSE_RATIO 2
 #define LYYJSON_SPARSE_SAFE  10
 
@@ -107,7 +108,7 @@ static yyjson_mut_val *_lyyjson_pack_obj(lyyjson_ctx *ctx, int32_t depth) {
     return obj;
 }
 static yyjson_mut_val *_lyyjson_pack_tbl(lyyjson_ctx *ctx, int32_t depth) {
-    if (depth > LYYJSON_MAX_DEPTH) {
+    if (depth >= LYYJSON_MAX_DEPTH) {
         ctx->erro = "table nested too deep";
         return NULL;
     }
@@ -160,7 +161,7 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
     size_t idx, max;
     yyjson_val *key;
     yyjson_val *sub;
-    if (depth > LYYJSON_MAX_DEPTH) {
+    if (depth >= LYYJSON_MAX_DEPTH) {
         ctx->erro = "json nested too deep";
         return ERR_FAILED;
     }
@@ -220,7 +221,7 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
 /// <summary>
 /// 把 Lua 值编码成 JSON 字符串。整数精确写出（不经 %.14g），浮点按最短往返格式；
 /// 键全为 >= 1 的整数才编成数组，空表编成 {}，过度稀疏的数组直接报错而非静默转对象；
-/// 嵌套超过 1000 层、出现 table/number/string/boolean/nil 之外的类型都报错。
+/// 嵌套超过 LYYJSON_MAX_DEPTH 层、出现 table/number/string/boolean/nil 之外的类型都报错。
 /// 非 UTF-8 字节原样写出不报错：Lua 字符串就是字节串，框架里 srey.ud_str 取出的
 /// 二进制载荷进 JSON 是常态，卡死会让这类请求一个字节都发不出去
 /// </summary>
@@ -254,7 +255,7 @@ static int32_t _lyyjson_encode(lua_State *lua) {
 }
 /// <summary>
 /// 解析 JSON 文本。JSON null 解成 yyjson.null（NULL light userdata）；
-/// 超出 lua_Integer 范围的无符号整数退化成浮点；嵌套超过 1000 层报错。
+/// 超出 lua_Integer 范围的无符号整数退化成浮点；嵌套超过 LYYJSON_MAX_DEPTH 层报错。
 /// 字符串里的非 UTF-8 字节原样收下不报错，与 encode 对称——第三方服务回未转码的
 /// Latin-1 JSON 是常见情形，拒收等于把一条本可解析的业务响应整个丢掉
 /// </summary>
