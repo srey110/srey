@@ -222,7 +222,7 @@ The following can be defined to change the library behavior:
 - `MCO_DEALLOC`               - Default deallocation function. Default is `free`.
 - `MCO_USE_VMEM_ALLOCATOR`    - Use virtual memory backed allocator, improving memory footprint per coroutine.
 - `MCO_NO_DEFAULT_ALLOCATOR`  - Disable the default allocator using `MCO_ALLOC` and `MCO_DEALLOC`.
-- `MCO_ZERO_MEMORY`           - Zero memory of stack when poping storage, intended for garbage collected environments.
+- `MCO_ZERO_MEMORY`           - Zero the discarded storage bytes when popping, intended for garbage collected environments (the stack itself is not zeroed).
 - `MCO_DEBUG`                 - Enable debug mode, logging any runtime error to stdout. Defined automatically unless `NDEBUG` or `MCO_NO_DEBUG` is defined.
 - `MCO_NO_DEBUG`              - Disable debug mode.
 - `MCO_NO_MULTITHREAD`        - Disable multithread usage. Multithread is supported when `thread_local` is supported.
@@ -328,7 +328,9 @@ MCO_API mco_result mco_create(mco_coro** out_co, mco_desc* desc);               
 MCO_API mco_result mco_destroy(mco_coro* co);                                   /* Uninitialize and deallocate the coroutine, may fail if it's not dead or suspended. */
 MCO_API mco_result mco_resume(mco_coro* co);                                    /* Starts or continues the execution of the coroutine. */
 MCO_API mco_result mco_yield(mco_coro* co);                                     /* Suspends the execution of a coroutine. */
-MCO_API mco_state mco_status(mco_coro* co);                                     /* Returns the status of the coroutine. */
+static inline mco_state mco_status(mco_coro* co) {                              /* Returns the status of the coroutine. */
+  return NULL != co ? co->state : MCO_DEAD;
+}
 MCO_API void* mco_get_user_data(mco_coro* co);                                  /* Get coroutine user data supplied on coroutine creation. */
 
 /* Storage interface functions, used to pass values between yield and resume. */
@@ -340,10 +342,51 @@ MCO_API size_t mco_get_storage_size(mco_coro* co);                      /* Get t
 
 /* Misc functions. */
 MCO_API mco_coro* mco_running(void);                        /* Returns the running coroutine for the current thread. */
+MCO_API void mco_thread_cleanup(void);                      /* Release per-thread resources taken by the fibers backend; call at thread exit. No-op on other backends. */
 MCO_API const char* mco_result_description(mco_result res); /* Get the description of a result. */
 
 #ifdef __cplusplus
 }
+#endif
+
+/* 本地补丁:后端选择与栈底守卫提到公开段。栈底守卫是否存在、FP 控制寄存器是否保存都随后端变,
+   只包头文件不带 MINICORO_IMPL 的调用方(test_minicoro.c)得能看见,否则只能照抄一份平台表 */
+/* Detect implementation based on OS, arch and compiler. */
+#if !defined(MCO_USE_UCONTEXT) && !defined(MCO_USE_FIBERS) && !defined(MCO_USE_ASM) && !defined(MCO_USE_ASYNCIFY)
+  #if defined(_WIN32)
+    #if (defined(__GNUC__) && defined(__x86_64__)) || (defined(_MSC_VER) && defined(_M_X64))
+      #define MCO_USE_ASM
+    #else
+      #define MCO_USE_FIBERS
+    #endif
+  #elif defined(__CYGWIN__) /* MSYS */
+    #define MCO_USE_UCONTEXT
+  #elif defined(__EMSCRIPTEN__)
+    #define MCO_USE_FIBERS
+  #elif defined(__wasm__)
+    #define MCO_USE_ASYNCIFY
+  #else
+    #if __GNUC__ >= 3 /* Assembly extension supported. */
+      #if defined(__x86_64__) || \
+          defined(__i386) || defined(__i386__) || \
+          defined(__ARM_EABI__) || defined(__aarch64__) || \
+          defined(__riscv)
+        #define MCO_USE_ASM
+      #else
+        #define MCO_USE_UCONTEXT
+      #endif
+    #else
+      #define MCO_USE_UCONTEXT
+    #endif
+  #endif
+#endif
+
+/* 栈底守卫字大小(字节)。必须是 16 的倍数,否则破坏栈的 16 字节对齐。
+   守卫下方紧邻 storage 和 back_ctx,越过守卫的稀疏写会直接砸上下文,故带宽不能只留一个字 */
+#define MCO_STACK_GUARD_SIZE 64
+/* 栈与协程结构同在一块分配里的后端才设守卫;fibers / asyncify 的栈由 OS 给,自带保护页 */
+#if defined(MCO_USE_ASM) || defined(MCO_USE_UCONTEXT)
+  #define MCO_HAS_STACK_GUARD
 #endif
 
 #endif /* MINICORO_H */
@@ -374,35 +417,8 @@ extern "C" {
 /* Number used only to assist checking for stack overflows. */
 #define MCO_MAGIC_NUMBER 0x7E3CB1A9
 
-/* Detect implementation based on OS, arch and compiler. */
-#if !defined(MCO_USE_UCONTEXT) && !defined(MCO_USE_FIBERS) && !defined(MCO_USE_ASM) && !defined(MCO_USE_ASYNCIFY)
-  #if defined(_WIN32)
-    #if (defined(__GNUC__) && defined(__x86_64__)) || (defined(_MSC_VER) && defined(_M_X64))
-      #define MCO_USE_ASM
-    #else
-      #define MCO_USE_FIBERS
-    #endif
-  #elif defined(__CYGWIN__) /* MSYS */
-    #define MCO_USE_UCONTEXT
-  #elif defined(__EMSCRIPTEN__)
-    #define MCO_USE_FIBERS
-  #elif defined(__wasm__)
-    #define MCO_USE_ASYNCIFY
-  #else
-    #if __GNUC__ >= 3 /* Assembly extension supported. */
-      #if defined(__x86_64__) || \
-          defined(__i386) || defined(__i386__) || \
-          defined(__ARM_EABI__) || defined(__aarch64__) || \
-          defined(__riscv)
-        #define MCO_USE_ASM
-      #else
-        #define MCO_USE_UCONTEXT
-      #endif
-    #else
-      #define MCO_USE_UCONTEXT
-    #endif
-  #endif
-#endif
+/* 守卫字数。字节数与后端选择都在公开段,见 MCO_STACK_GUARD_SIZE */
+#define MCO_STACK_GUARD_WORDS (MCO_STACK_GUARD_SIZE / sizeof(size_t))
 
 #define _MCO_UNUSED(x) (void)(x)
 
@@ -529,18 +545,15 @@ extern "C" {
   #endif /* MCO_USE_VMEM_ALLOCATOR */
 #endif /* MCO_NO_DEFAULT_ALLOCATOR */
 
-#if defined(__has_feature)
-  #if __has_feature(address_sanitizer)
-    #define _MCO_USE_ASAN
-  #endif
-  #if __has_feature(thread_sanitizer)
-    #define _MCO_USE_TSAN
-  #endif
+/* 本地补丁:sanitizer 判据统一取 base/os.h,不自带一份同义探测。ASan 那份一旦与协程栈大小的
+   判据分叉,结果正好是"56KB 栈配全量插桩"。本文件不自带 include,故要求先包到 os.h */
+#if !defined(ENABLED_ASAN) || !defined(ENABLED_TSAN)
+  #error "minicoro needs ENABLED_ASAN / ENABLED_TSAN from base/os.h, include it before MINICORO_IMPL"
 #endif
-#if defined(__SANITIZE_ADDRESS__)
+#if ENABLED_ASAN
   #define _MCO_USE_ASAN
 #endif
-#if defined(__SANITIZE_THREAD__)
+#if ENABLED_TSAN
   #define _MCO_USE_TSAN
 #endif
 #ifdef _MCO_USE_ASAN
@@ -563,6 +576,24 @@ static MCO_FORCE_INLINE size_t _mco_align_forward(size_t addr, size_t align) {
 
 /* Variable holding the current running coroutine per thread. */
 static MCO_THREAD_LOCAL mco_coro* mco_current_co = NULL;
+#ifdef _MCO_USE_ASAN
+/* 线程栈边界。ASan 只在 finish 时吐出来,首次拿到就存住,退回线程栈时原样交回去。
+   不能拿 finish 当场的 bottom_old 当去向:那是"最近一次切进来的栈",嵌套唤醒下并非要回去的那个 */
+static MCO_THREAD_LOCAL const void* _mco_asan_thread_bottom = NULL;
+static MCO_THREAD_LOCAL size_t _mco_asan_thread_size = 0;
+/* from_thread 为真时 bottom/size 就是线程栈。协程首次被 finish 时必定报线程栈,故只认第一次 */
+static MCO_FORCE_INLINE void _mco_asan_keep_thread(int from_thread, const void* bottom, size_t size) {
+  if(from_thread && !_mco_asan_thread_bottom) {
+    _mco_asan_thread_bottom = bottom;
+    _mco_asan_thread_size = size;
+  }
+}
+#endif
+/* 只有 Windows 的 fibers 后端有 ConvertThreadToFiber;emscripten 也选 fibers,但那边没有 */
+#if defined(MCO_USE_FIBERS) && defined(_WIN32)
+/* 本线程的 fiber 是不是 _mco_jumpin 转出来的:只有我们转的才轮到我们转回去 */
+static MCO_THREAD_LOCAL int _mco_thread_fiber = 0;
+#endif
 
 static MCO_FORCE_INLINE void _mco_prepare_jumpin(mco_coro* co) {
   /* Set the old coroutine to normal state and update it. */
@@ -580,6 +611,7 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpin(mco_coro* co) {
     size_t size_old = 0;
     __sanitizer_finish_switch_fiber(prev_co->asan_prev_stack, (const void**)&bottom_old, &size_old);
     prev_co->asan_prev_stack = NULL;
+    _mco_asan_keep_thread(NULL == prev_co->prev_co, bottom_old, size_old);
   }
   __sanitizer_start_switch_fiber(&co->asan_prev_stack, co->stack_base, co->stack_size);
 #endif
@@ -604,8 +636,13 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpout(mco_coro* co) {
   size_t size_old = 0;
   __sanitizer_finish_switch_fiber(co->asan_prev_stack, (const void**)&bottom_old, &size_old);
   co->asan_prev_stack = NULL;
+  _mco_asan_keep_thread(NULL == prev_co, bottom_old, size_old);
   if(prev_co) {
-    __sanitizer_start_switch_fiber(&prev_co->asan_prev_stack, bottom_old, size_old);
+    __sanitizer_start_switch_fiber(&prev_co->asan_prev_stack, prev_co->stack_base, prev_co->stack_size);
+  } else {
+    /* 切回真线程栈也要通知 ASan,否则它的栈边界一直停在协程栈上。
+       线程没有 mco_coro 可寄存,借刚清空的 co->asan_prev_stack 暂存,由 mco_resume 收尾 */
+    __sanitizer_start_switch_fiber(&co->asan_prev_stack, _mco_asan_thread_bottom, _mco_asan_thread_size);
   }
 #endif
 #ifdef _MCO_USE_TSAN
@@ -615,7 +652,7 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpout(mco_coro* co) {
 #endif
 }
 
-static void _mco_jumpin(mco_coro* co);
+static mco_result _mco_jumpin(mco_coro* co);
 static void _mco_jumpout(mco_coro* co);
 
 static MCO_NO_INLINE void _mco_main(mco_coro* co) {
@@ -669,6 +706,13 @@ typedef struct _mco_ctxbuf {
   void* dealloc_stack;
   void* stack_limit;
   void* stack_base;
+  /* MXCSR 与 x87 控制字按 ABI 归被调用方保存。偏移 0x110 / 0x114 被 _mco_switch_code 的
+     机器码按字面量引用,改这里的字段布局必须同步重新生成那段 blob */
+  unsigned int mxcsr;
+  unsigned short x87cw;
+  unsigned short pad;
+  unsigned int guard_bytes; /* TIB 的 GuaranteedStackBytes(ULONG),偏移 0x118 */
+  unsigned int pad2;
 } _mco_ctxbuf;
 
 #if defined(__GNUC__)
@@ -686,67 +730,83 @@ _MCO_ASM_BLOB static unsigned char _mco_wrap_main_code[] = {
 };
 
 _MCO_ASM_BLOB static unsigned char _mco_switch_code[] = {
-  0x48, 0x8d, 0x05, 0x3e, 0x01, 0x00, 0x00,              /* lea    0x13e(%rip),%rax    */
-  0x48, 0x89, 0x01,                                      /* mov    %rax,(%rcx)         */
-  0x48, 0x89, 0x61, 0x08,                                /* mov    %rsp,0x8(%rcx)      */
-  0x48, 0x89, 0x69, 0x10,                                /* mov    %rbp,0x10(%rcx)     */
-  0x48, 0x89, 0x59, 0x18,                                /* mov    %rbx,0x18(%rcx)     */
-  0x4c, 0x89, 0x61, 0x20,                                /* mov    %r12,0x20(%rcx)     */
-  0x4c, 0x89, 0x69, 0x28,                                /* mov    %r13,0x28(%rcx)     */
-  0x4c, 0x89, 0x71, 0x30,                                /* mov    %r14,0x30(%rcx)     */
-  0x4c, 0x89, 0x79, 0x38,                                /* mov    %r15,0x38(%rcx)     */
-  0x48, 0x89, 0x79, 0x40,                                /* mov    %rdi,0x40(%rcx)     */
-  0x48, 0x89, 0x71, 0x48,                                /* mov    %rsi,0x48(%rcx)     */
-  0x0f, 0x11, 0x71, 0x50,                                /* movups %xmm6,0x50(%rcx)    */
-  0x0f, 0x11, 0x79, 0x60,                                /* movups %xmm7,0x60(%rcx)    */
-  0x44, 0x0f, 0x11, 0x41, 0x70,                          /* movups %xmm8,0x70(%rcx)    */
-  0x44, 0x0f, 0x11, 0x89, 0x80, 0x00, 0x00, 0x00,        /* movups %xmm9,0x80(%rcx)    */
-  0x44, 0x0f, 0x11, 0x91, 0x90, 0x00, 0x00, 0x00,        /* movups %xmm10,0x90(%rcx)   */
-  0x44, 0x0f, 0x11, 0x99, 0xa0, 0x00, 0x00, 0x00,        /* movups %xmm11,0xa0(%rcx)   */
-  0x44, 0x0f, 0x11, 0xa1, 0xb0, 0x00, 0x00, 0x00,        /* movups %xmm12,0xb0(%rcx)   */
-  0x44, 0x0f, 0x11, 0xa9, 0xc0, 0x00, 0x00, 0x00,        /* movups %xmm13,0xc0(%rcx)   */
-  0x44, 0x0f, 0x11, 0xb1, 0xd0, 0x00, 0x00, 0x00,        /* movups %xmm14,0xd0(%rcx)   */
-  0x44, 0x0f, 0x11, 0xb9, 0xe0, 0x00, 0x00, 0x00,        /* movups %xmm15,0xe0(%rcx)   */
-  0x65, 0x4c, 0x8b, 0x14, 0x25, 0x30, 0x00, 0x00, 0x00,  /* mov    %gs:0x30,%r10       */
-  0x49, 0x8b, 0x42, 0x20,                                /* mov    0x20(%r10),%rax     */
-  0x48, 0x89, 0x81, 0xf0, 0x00, 0x00, 0x00,              /* mov    %rax,0xf0(%rcx)     */
-  0x49, 0x8b, 0x82, 0x78, 0x14, 0x00, 0x00,              /* mov    0x1478(%r10),%rax   */
-  0x48, 0x89, 0x81, 0xf8, 0x00, 0x00, 0x00,              /* mov    %rax,0xf8(%rcx)     */
-  0x49, 0x8b, 0x42, 0x10,                                /* mov    0x10(%r10),%rax     */
-  0x48, 0x89, 0x81, 0x00, 0x01, 0x00, 0x00,              /* mov    %rax,0x100(%rcx)    */
-  0x49, 0x8b, 0x42, 0x08,                                /* mov    0x8(%r10),%rax      */
-  0x48, 0x89, 0x81, 0x08, 0x01, 0x00, 0x00,              /* mov    %rax,0x108(%rcx)    */
-  0x48, 0x8b, 0x82, 0x08, 0x01, 0x00, 0x00,              /* mov    0x108(%rdx),%rax    */
-  0x49, 0x89, 0x42, 0x08,                                /* mov    %rax,0x8(%r10)      */
-  0x48, 0x8b, 0x82, 0x00, 0x01, 0x00, 0x00,              /* mov    0x100(%rdx),%rax    */
-  0x49, 0x89, 0x42, 0x10,                                /* mov    %rax,0x10(%r10)     */
-  0x48, 0x8b, 0x82, 0xf8, 0x00, 0x00, 0x00,              /* mov    0xf8(%rdx),%rax     */
-  0x49, 0x89, 0x82, 0x78, 0x14, 0x00, 0x00,              /* mov    %rax,0x1478(%r10)   */
-  0x48, 0x8b, 0x82, 0xf0, 0x00, 0x00, 0x00,              /* mov    0xf0(%rdx),%rax     */
-  0x49, 0x89, 0x42, 0x20,                                /* mov    %rax,0x20(%r10)     */
-  0x44, 0x0f, 0x10, 0xba, 0xe0, 0x00, 0x00, 0x00,        /* movups 0xe0(%rdx),%xmm15   */
-  0x44, 0x0f, 0x10, 0xb2, 0xd0, 0x00, 0x00, 0x00,        /* movups 0xd0(%rdx),%xmm14   */
-  0x44, 0x0f, 0x10, 0xaa, 0xc0, 0x00, 0x00, 0x00,        /* movups 0xc0(%rdx),%xmm13   */
-  0x44, 0x0f, 0x10, 0xa2, 0xb0, 0x00, 0x00, 0x00,        /* movups 0xb0(%rdx),%xmm12   */
-  0x44, 0x0f, 0x10, 0x9a, 0xa0, 0x00, 0x00, 0x00,        /* movups 0xa0(%rdx),%xmm11   */
-  0x44, 0x0f, 0x10, 0x92, 0x90, 0x00, 0x00, 0x00,        /* movups 0x90(%rdx),%xmm10   */
-  0x44, 0x0f, 0x10, 0x8a, 0x80, 0x00, 0x00, 0x00,        /* movups 0x80(%rdx),%xmm9    */
-  0x44, 0x0f, 0x10, 0x42, 0x70,                          /* movups 0x70(%rdx),%xmm8    */
-  0x0f, 0x10, 0x7a, 0x60,                                /* movups 0x60(%rdx),%xmm7    */
-  0x0f, 0x10, 0x72, 0x50,                                /* movups 0x50(%rdx),%xmm6    */
-  0x48, 0x8b, 0x72, 0x48,                                /* mov    0x48(%rdx),%rsi     */
-  0x48, 0x8b, 0x7a, 0x40,                                /* mov    0x40(%rdx),%rdi     */
-  0x4c, 0x8b, 0x7a, 0x38,                                /* mov    0x38(%rdx),%r15     */
-  0x4c, 0x8b, 0x72, 0x30,                                /* mov    0x30(%rdx),%r14     */
-  0x4c, 0x8b, 0x6a, 0x28,                                /* mov    0x28(%rdx),%r13     */
-  0x4c, 0x8b, 0x62, 0x20,                                /* mov    0x20(%rdx),%r12     */
-  0x48, 0x8b, 0x5a, 0x18,                                /* mov    0x18(%rdx),%rbx     */
-  0x48, 0x8b, 0x6a, 0x10,                                /* mov    0x10(%rdx),%rbp     */
-  0x48, 0x8b, 0x62, 0x08,                                /* mov    0x8(%rdx),%rsp      */
-  0xff, 0x22,                                            /* jmpq   *(%rdx)             */
-  0xc3,                                                  /* retq                       */
-  0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,        /* nop                        */
-  0x90, 0x90,                                            /* nop                        */
+  0x48, 0x8d, 0x05, 0x72, 0x01, 0x00, 0x00,              /* lea 0x172(%rip),%rax     */
+  0x48, 0x89, 0x01,                                      /* mov %rax,(%rcx)          */
+  0x48, 0x89, 0x61, 0x08,                                /* mov %rsp,0x8(%rcx)       */
+  0x48, 0x89, 0x69, 0x10,                                /* mov %rbp,0x10(%rcx)      */
+  0x48, 0x89, 0x59, 0x18,                                /* mov %rbx,0x18(%rcx)      */
+  0x4c, 0x89, 0x61, 0x20,                                /* mov %r12,0x20(%rcx)      */
+  0x4c, 0x89, 0x69, 0x28,                                /* mov %r13,0x28(%rcx)      */
+  0x4c, 0x89, 0x71, 0x30,                                /* mov %r14,0x30(%rcx)      */
+  0x4c, 0x89, 0x79, 0x38,                                /* mov %r15,0x38(%rcx)      */
+  0x48, 0x89, 0x79, 0x40,                                /* mov %rdi,0x40(%rcx)      */
+  0x48, 0x89, 0x71, 0x48,                                /* mov %rsi,0x48(%rcx)      */
+  0x0f, 0x11, 0x71, 0x50,                                /* movups %xmm6,0x50(%rcx)  */
+  0x0f, 0x11, 0x79, 0x60,                                /* movups %xmm7,0x60(%rcx)  */
+  0x44, 0x0f, 0x11, 0x41, 0x70,                          /* movups %xmm8,0x70(%rcx)  */
+  0x44, 0x0f, 0x11, 0x89, 0x80, 0x00, 0x00, 0x00,        /* movups %xmm9,0x80(%rcx)  */
+  0x44, 0x0f, 0x11, 0x91, 0x90, 0x00, 0x00, 0x00,        /* movups %xmm10,0x90(%rcx) */
+  0x44, 0x0f, 0x11, 0x99, 0xa0, 0x00, 0x00, 0x00,        /* movups %xmm11,0xa0(%rcx) */
+  0x44, 0x0f, 0x11, 0xa1, 0xb0, 0x00, 0x00, 0x00,        /* movups %xmm12,0xb0(%rcx) */
+  0x44, 0x0f, 0x11, 0xa9, 0xc0, 0x00, 0x00, 0x00,        /* movups %xmm13,0xc0(%rcx) */
+  0x44, 0x0f, 0x11, 0xb1, 0xd0, 0x00, 0x00, 0x00,        /* movups %xmm14,0xd0(%rcx) */
+  0x44, 0x0f, 0x11, 0xb9, 0xe0, 0x00, 0x00, 0x00,        /* movups %xmm15,0xe0(%rcx) */
+  0x65, 0x4c, 0x8b, 0x14, 0x25, 0x30, 0x00, 0x00, 0x00,  /* mov %gs:0x30,%r10        */
+  0x49, 0x8b, 0x42, 0x20,                                /* mov 0x20(%r10),%rax      */
+  0x48, 0x89, 0x81, 0xf0, 0x00, 0x00, 0x00,              /* mov %rax,0xf0(%rcx)      */
+  0x49, 0x8b, 0x82, 0x78, 0x14, 0x00, 0x00,              /* mov 0x1478(%r10),%rax    */
+  0x48, 0x89, 0x81, 0xf8, 0x00, 0x00, 0x00,              /* mov %rax,0xf8(%rcx)      */
+  0x49, 0x8b, 0x42, 0x10,                                /* mov 0x10(%r10),%rax      */
+  0x48, 0x89, 0x81, 0x00, 0x01, 0x00, 0x00,              /* mov %rax,0x100(%rcx)     */
+  0x49, 0x8b, 0x42, 0x08,                                /* mov 0x8(%r10),%rax       */
+  0x48, 0x89, 0x81, 0x08, 0x01, 0x00, 0x00,              /* mov %rax,0x108(%rcx)     */
+  0x41, 0x8b, 0x82, 0x48, 0x17, 0x00, 0x00,              /* mov 0x1748(%r10),%eax    */
+  0x89, 0x81, 0x18, 0x01, 0x00, 0x00,                    /* mov %eax,0x118(%rcx)     */
+  0x0f, 0xae, 0x99, 0x10, 0x01, 0x00, 0x00,              /* stmxcsr 0x110(%rcx)      */
+  0xd9, 0xb9, 0x14, 0x01, 0x00, 0x00,                    /* fnstcw 0x114(%rcx)       */
+  0x48, 0x8b, 0x82, 0x08, 0x01, 0x00, 0x00,              /* mov 0x108(%rdx),%rax     */
+  0x49, 0x89, 0x42, 0x08,                                /* mov %rax,0x8(%r10)       */
+  0x48, 0x8b, 0x82, 0x00, 0x01, 0x00, 0x00,              /* mov 0x100(%rdx),%rax     */
+  0x49, 0x89, 0x42, 0x10,                                /* mov %rax,0x10(%r10)      */
+  0x48, 0x8b, 0x82, 0xf8, 0x00, 0x00, 0x00,              /* mov 0xf8(%rdx),%rax      */
+  0x49, 0x89, 0x82, 0x78, 0x14, 0x00, 0x00,              /* mov %rax,0x1478(%r10)    */
+  0x48, 0x8b, 0x82, 0xf0, 0x00, 0x00, 0x00,              /* mov 0xf0(%rdx),%rax      */
+  0x49, 0x89, 0x42, 0x20,                                /* mov %rax,0x20(%r10)      */
+  0x8b, 0x82, 0x18, 0x01, 0x00, 0x00,                    /* mov 0x118(%rdx),%eax     */
+  0x41, 0x89, 0x82, 0x48, 0x17, 0x00, 0x00,              /* mov %eax,0x1748(%r10)    */
+  0x44, 0x0f, 0x10, 0xba, 0xe0, 0x00, 0x00, 0x00,        /* movups 0xe0(%rdx),%xmm15 */
+  0x44, 0x0f, 0x10, 0xb2, 0xd0, 0x00, 0x00, 0x00,        /* movups 0xd0(%rdx),%xmm14 */
+  0x44, 0x0f, 0x10, 0xaa, 0xc0, 0x00, 0x00, 0x00,        /* movups 0xc0(%rdx),%xmm13 */
+  0x44, 0x0f, 0x10, 0xa2, 0xb0, 0x00, 0x00, 0x00,        /* movups 0xb0(%rdx),%xmm12 */
+  0x44, 0x0f, 0x10, 0x9a, 0xa0, 0x00, 0x00, 0x00,        /* movups 0xa0(%rdx),%xmm11 */
+  0x44, 0x0f, 0x10, 0x92, 0x90, 0x00, 0x00, 0x00,        /* movups 0x90(%rdx),%xmm10 */
+  0x44, 0x0f, 0x10, 0x8a, 0x80, 0x00, 0x00, 0x00,        /* movups 0x80(%rdx),%xmm9  */
+  0x44, 0x0f, 0x10, 0x42, 0x70,                          /* movups 0x70(%rdx),%xmm8  */
+  0x0f, 0x10, 0x7a, 0x60,                                /* movups 0x60(%rdx),%xmm7  */
+  0x0f, 0x10, 0x72, 0x50,                                /* movups 0x50(%rdx),%xmm6  */
+  0x48, 0x8b, 0x72, 0x48,                                /* mov 0x48(%rdx),%rsi      */
+  0x48, 0x8b, 0x7a, 0x40,                                /* mov 0x40(%rdx),%rdi      */
+  0x4c, 0x8b, 0x7a, 0x38,                                /* mov 0x38(%rdx),%r15      */
+  0x4c, 0x8b, 0x72, 0x30,                                /* mov 0x30(%rdx),%r14      */
+  0x4c, 0x8b, 0x6a, 0x28,                                /* mov 0x28(%rdx),%r13      */
+  0x4c, 0x8b, 0x62, 0x20,                                /* mov 0x20(%rdx),%r12      */
+  0x48, 0x8b, 0x5a, 0x18,                                /* mov 0x18(%rdx),%rbx      */
+  0x48, 0x8b, 0x6a, 0x10,                                /* mov 0x10(%rdx),%rbp      */
+  0x0f, 0xae, 0x92, 0x10, 0x01, 0x00, 0x00,              /* ldmxcsr 0x110(%rdx)      */
+  0xd9, 0xaa, 0x14, 0x01, 0x00, 0x00,                    /* fldcw 0x114(%rdx)        */
+  0x48, 0x8b, 0x62, 0x08,                                /* mov 0x8(%rdx),%rsp       */
+  0xff, 0x22,                                            /* jmpq *(%rdx)             */
+  0xc3,                                                  /* retq                     */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
+  0x90,                                                  /* nop                      */
 };
 
 void (*_mco_wrap_main)(void) = (void(*)(void))(void*)_mco_wrap_main_code;
@@ -764,6 +824,10 @@ static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base,
   ctx->stack_base = stack_top;
   ctx->stack_limit = stack_base;
   ctx->dealloc_stack = stack_base;
+  /* 必须显式写默认值,不能靠 memset:MXCSR 为 0 表示解除全部浮点异常屏蔽,
+     协程第一次浮点运算就 SIGFPE。0x1f80 / 0x037f 是 ABI 默认态 */
+  ctx->mxcsr = 0x1f80;
+  ctx->x87cw = 0x037f;
   return MCO_SUCCESS;
 }
 
@@ -771,6 +835,11 @@ static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base,
 
 typedef struct _mco_ctxbuf {
   void *rip, *rsp, *rbp, *rbx, *r12, *r13, *r14, *r15;
+  /* MXCSR 与 x87 控制字按 SysV ABI 归被调用方保存:协程里改了舍入模式 / FTZ 不能漏给别人。
+     偏移 64 / 68 被下面的汇编按字面量引用,加字段前先改那两处 */
+  unsigned int mxcsr;
+  unsigned short x87cw;
+  unsigned short pad;
 } _mco_ctxbuf;
 
 void _mco_wrap_main(void);
@@ -805,8 +874,10 @@ __asm__(
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
 #endif
-  "  leaq 0x3d(%rip), %rax\n"
+  "  leaq 1f(%rip), %rax\n"
   "  movq %rax, (%rdi)\n"
+  "  stmxcsr 64(%rdi)\n"
+  "  fnstcw 68(%rdi)\n"
   "  movq %rsp, 8(%rdi)\n"
   "  movq %rbp, 16(%rdi)\n"
   "  movq %rbx, 24(%rdi)\n"
@@ -820,8 +891,11 @@ __asm__(
   "  movq 32(%rsi), %r12\n"
   "  movq 24(%rsi), %rbx\n"
   "  movq 16(%rsi), %rbp\n"
+  "  ldmxcsr 64(%rsi)\n"
+  "  fldcw 68(%rsi)\n"
   "  movq 8(%rsi), %rsp\n"
   "  jmpq *(%rsi)\n"
+  "1:\n"
   "  ret\n"
 #ifndef __MACH__
   ".size _mco_switch, .-_mco_switch\n"
@@ -836,6 +910,10 @@ static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base,
   ctx->rsp = (void*)(stack_high_ptr);
   ctx->r12 = (void*)(_mco_main);
   ctx->r13 = (void*)(co);
+  /* 必须显式写默认值,不能靠 _mco_create_context 那次 memset:MXCSR 为 0 表示解除全部
+     浮点异常屏蔽,协程第一次浮点运算就 SIGFPE。0x1f80 / 0x037f 是 ABI 默认态 */
+  ctx->mxcsr = 0x1f80;
+  ctx->x87cw = 0x037f;
   return MCO_SUCCESS;
 }
 
@@ -1174,6 +1252,10 @@ typedef struct _mco_ctxbuf {
   void *sp;
   void *lr;
   void *d[8]; /* d8-d15 */
+  /* FPCR 按 AAPCS 归被调用方保存:协程里改了舍入模式/FTZ 不能漏回其它协程和线程。
+     新协程这一槽由 _mco_create_context 的 memset 置 0,即 ABI 默认态 */
+  void *fpcr;
+  void *pad; /* 填充,让本结构体沿用上面各槽 16 字节一对的排布 */
 } _mco_ctxbuf;
 
 void _mco_wrap_main(void);
@@ -1204,6 +1286,8 @@ __asm__(
   "  stp d14, d15, [x0, #(10*16)]\n"
   "  stp x29, x30, [x0, #(5*16)]\n"
   "  stp x10, x11, [x0, #(6*16)]\n"
+  "  mrs x10, fpcr\n"
+  "  str x10, [x0, #(11*16)]\n"
   "  ldp x19, x20, [x1, #(0*16)]\n"
   "  ldp x21, x22, [x1, #(1*16)]\n"
   "  ldp d8, d9, [x1, #(7*16)]\n"
@@ -1214,6 +1298,8 @@ __asm__(
   "  ldp x27, x28, [x1, #(4*16)]\n"
   "  ldp d14, d15, [x1, #(10*16)]\n"
   "  ldp x29, x30, [x1, #(5*16)]\n"
+  "  ldr x10, [x1, #(11*16)]\n"
+  "  msr fpcr, x10\n"
   "  ldp x10, x11, [x1, #(6*16)]\n"
   "  mov sp, x10\n"
   "  br x11\n"
@@ -1313,10 +1399,11 @@ typedef struct _mco_context {
   _mco_ctxbuf back_ctx;
 } _mco_context;
 
-static void _mco_jumpin(mco_coro* co) {
+static mco_result _mco_jumpin(mco_coro* co) {
   _mco_context* context = (_mco_context*)co->context;
   _mco_prepare_jumpin(co);
   _mco_switch(&context->back_ctx, &context->ctx); /* Do the context switch. */
+  return MCO_SUCCESS;
 }
 
 static void _mco_jumpout(mco_coro* co) {
@@ -1330,10 +1417,15 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   size_t co_addr = (size_t)co;
   size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
   size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
-  size_t stack_addr = _mco_align_forward(storage_addr + desc->storage_size, 16);
+  /* 栈底正下方的守卫字,越过栈底的写先碰它。mco_coro 末尾的 magic_number 离栈底太远,拦不住浅溢出 */
+  size_t guard_addr = _mco_align_forward(storage_addr + desc->storage_size, 16);
+  size_t stack_addr = guard_addr + MCO_STACK_GUARD_SIZE;
   /* Initialize context. */
   _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
+  for(size_t gi = 0; gi < MCO_STACK_GUARD_WORDS; ++gi) {
+    ((size_t*)guard_addr)[gi] = MCO_MAGIC_NUMBER;
+  }
   /* Initialize storage. */
   unsigned char* storage = (unsigned char*)storage_addr;
   /* Initialize stack. */
@@ -1368,13 +1460,16 @@ static void _mco_destroy_context(mco_coro* co) {
 }
 
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
-  desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
-                    _mco_align_forward(sizeof(_mco_context), 16) +
-                    _mco_align_forward(desc->storage_size, 16) +
-                    stack_size + 16;
+  size_t fixed = _mco_align_forward(sizeof(mco_coro), 16) +
+                 _mco_align_forward(sizeof(_mco_context), 16) +
+                 _mco_align_forward(desc->storage_size, 16) +
+                 MCO_STACK_GUARD_SIZE + /* 栈底守卫字，与 _mco_create_context 的 guard_addr 对应 */
+                 16;
+  /* 回绕会得到一个很小的 coro_size 配上巨大的 stack_size,即"只分配几百字节、栈却按 4GB 用"。
+     置 0 交给 _mco_validate_desc 的 coro_size < sizeof(mco_coro) 挡下 */
+  desc->coro_size = (stack_size > (size_t)-1 - fixed) ? 0 : (fixed + stack_size);
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
 }
-
 #endif /* defined(MCO_USE_UCONTEXT) || defined(MCO_USE_ASM) */
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -1388,16 +1483,22 @@ typedef struct _mco_context {
   void* back_fib;
 } _mco_context;
 
-static void _mco_jumpin(mco_coro* co) {
+static mco_result _mco_jumpin(mco_coro* co) {
   void *cur_fib = GetCurrentFiber();
   if(!cur_fib || cur_fib == (void*)0x1e00) { /* See http://blogs.msdn.com/oldnewthing/archive/2004/12/31/344799.aspx */
     cur_fib = ConvertThreadToFiber(NULL);
+    /* MCO_ASSERT 在 NDEBUG 下是空的,只靠它会把 NULL 存进 back_fib,之后 SwitchToFiber(NULL) 访问违例 */
+    if(!cur_fib) {
+      MCO_LOG("failed to convert thread to fiber");
+      return MCO_MAKE_CONTEXT_ERROR;
+    }
+    _mco_thread_fiber = 1; /* 这个 fiber 是我们转的,由 mco_thread_cleanup 转回去 */
   }
-  MCO_ASSERT(cur_fib != NULL);
   _mco_context* context = (_mco_context*)co->context;
   context->back_fib = cur_fib;
   _mco_prepare_jumpin(co);
   SwitchToFiber(context->fib);
+  return MCO_SUCCESS;
 }
 
 static void CALLBACK _mco_wrap_main(void* co) {
@@ -1488,7 +1589,7 @@ static void _mco_wrap_main(void* co) {
   _mco_main((mco_coro*)co);
 }
 
-static void _mco_jumpin(mco_coro* co) {
+static mco_result _mco_jumpin(mco_coro* co) {
   _mco_context* context = (_mco_context*)co->context;
   emscripten_fiber_t* back_fib = running_fib;
   if(!back_fib) {
@@ -1499,6 +1600,7 @@ static void _mco_jumpin(mco_coro* co) {
   context->back_fib = back_fib;
   _mco_prepare_jumpin(co);
   emscripten_fiber_swap(back_fib, &context->fib); /* Do the context switch. */
+  return MCO_SUCCESS;
 }
 
 static void _mco_jumpout(mco_coro* co) {
@@ -1581,7 +1683,7 @@ __attribute__((import_module("asyncify"), import_name("stop_unwind")))  void _as
 __attribute__((import_module("asyncify"), import_name("start_rewind"))) void _asyncify_start_rewind(void*);
 __attribute__((import_module("asyncify"), import_name("stop_rewind")))  void _asyncify_stop_rewind();
 
-MCO_NO_INLINE void _mco_jumpin(mco_coro* co) {
+MCO_NO_INLINE mco_result _mco_jumpin(mco_coro* co) {
   _mco_context* context = (_mco_context*)co->context;
   _mco_prepare_jumpin(co);
   if(context->rewind_id > 0) { /* Begin rewinding until last yield point. */
@@ -1589,6 +1691,7 @@ MCO_NO_INLINE void _mco_jumpin(mco_coro* co) {
   }
   _mco_main(co); /* Run the coroutine function. */
   _asyncify_stop_unwind(); /* Stop saving coroutine stack. */
+  return MCO_SUCCESS;
 }
 
 static MCO_NO_INLINE void _mco_finish_jumpout(mco_coro* co, volatile int rewind_id) {
@@ -1680,6 +1783,22 @@ mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size) {
   return desc;
 }
 
+/* 栈底守卫字是否完好。没有守卫的后端恒返回完好 */
+static MCO_FORCE_INLINE int _mco_stack_guard_ok(mco_coro* co) {
+#ifdef MCO_HAS_STACK_GUARD
+  const size_t* g = (const size_t*)((unsigned char*)co->stack_base - MCO_STACK_GUARD_SIZE);
+  for(size_t gi = 0; gi < MCO_STACK_GUARD_WORDS; ++gi) {
+    if(g[gi] != MCO_MAGIC_NUMBER) {
+      return 0;
+    }
+  }
+  return 1;
+#else
+  _MCO_UNUSED(co);
+  return 1;
+#endif
+}
+
 static mco_result _mco_validate_desc(mco_desc* desc) {
   if(!desc) {
     MCO_LOG("coroutine description is NULL");
@@ -1760,6 +1879,13 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     MCO_LOG("coroutine allocator description is not set");
     return MCO_INVALID_ARGUMENTS;
   }
+  /* 校验必须排在分配之前：coro_size 溢出时会被置 0，
+     拿 0 去 alloc 得到的小块随即被 mco_init 按 sizeof(mco_coro) 清零，堆越界 */
+  mco_result res = _mco_validate_desc(desc);
+  if(res != MCO_SUCCESS) {
+    *out_co = NULL;
+    return res;
+  }
   /* Allocate the coroutine. */
   mco_coro* co = (mco_coro*)desc->alloc_cb(desc->coro_size, desc->allocator_data);
   if(!co) {
@@ -1768,7 +1894,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     return MCO_OUT_OF_MEMORY;
   }
   /* Initialize the coroutine. */
-  mco_result res = mco_init(co, desc);
+  res = mco_init(co, desc);
   if(res != MCO_SUCCESS) {
     desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
     *out_co = NULL;
@@ -1784,14 +1910,16 @@ mco_result mco_destroy(mco_coro* co) {
     return MCO_INVALID_COROUTINE;
   }
   /* Uninitialize the coroutine first. */
-  mco_result res = mco_uninit(co);
-  if(res != MCO_SUCCESS)
-    return res;
-  /* Free the coroutine. */
+  /* 校验必须排在 mco_uninit 之前:uninit 是不可逆的(置 MCO_DEAD、拆 TSAN fiber、销毁上下文),
+     先拆后发现没有 dealloc_cb 的话,这个协程既跑不了也永远回收不掉 */
   if(!co->dealloc_cb) {
     MCO_LOG("attempt destroy a coroutine that has no free callback");
     return MCO_INVALID_POINTER;
   }
+  mco_result res = mco_uninit(co);
+  if(res != MCO_SUCCESS)
+    return res;
+  /* Free the coroutine. */
   co->dealloc_cb(co, co->coro_size, co->allocator_data);
   return MCO_SUCCESS;
 }
@@ -1806,7 +1934,24 @@ mco_result mco_resume(mco_coro* co) {
     return MCO_NOT_SUSPENDED;
   }
   co->state = MCO_RUNNING; /* The coroutine is now running. */
-  _mco_jumpin(co);
+  mco_result jres = _mco_jumpin(co);
+  if(jres != MCO_SUCCESS) {
+    co->state = MCO_SUSPENDED; /* 没进去,状态要退回来 */
+    return jres;
+  }
+#ifdef _MCO_USE_ASAN
+  /* 与 _mco_prepare_jumpout 的 else 支配对,收掉那次 start。
+     必须放这里:_mco_jumpin 每个后端各有一份,共用点只有 mco_resume */
+  if(!mco_running()) {
+    __sanitizer_finish_switch_fiber(co->asan_prev_stack, NULL, NULL);
+    co->asan_prev_stack = NULL;
+  }
+#endif
+  /* 补查栈底守卫:mco_yield 里那次覆盖不到 _mco_main 正常返回那条路 */
+  if(!_mco_stack_guard_ok(co)) {
+    MCO_LOG("coroutine stack overflow, try increasing the stack size");
+    return MCO_STACK_OVERFLOW;
+  }
   return MCO_SUCCESS;
 }
 
@@ -1823,7 +1968,9 @@ mco_result mco_yield(mco_coro* co) {
   size_t stack_addr = (size_t)&dummy;
   size_t stack_min = (size_t)co->stack_base;
   size_t stack_max = stack_min + co->stack_size;
-  if(co->magic_number != MCO_MAGIC_NUMBER || stack_addr < stack_min || stack_addr > stack_max) { /* Stack overflow. */
+  /* 本地补丁:顺序不能换。只有 _mco_stack_guard_ok 会解引用 stack_base 指向的内存,放最后,
+     让前面三个纯比数值的判定先把陈旧 co 短路掉,免得野指针读把干净的 abort 变成 SIGSEGV */
+  if(co->magic_number != MCO_MAGIC_NUMBER || stack_addr < stack_min || stack_addr > stack_max || !_mco_stack_guard_ok(co)) { /* Stack overflow. */
     MCO_LOG("coroutine stack overflow, try increasing the stack size");
     return MCO_STACK_OVERFLOW;
   }
@@ -1835,13 +1982,6 @@ mco_result mco_yield(mco_coro* co) {
   co->state = MCO_SUSPENDED; /* The coroutine is now suspended. */
   _mco_jumpout(co);
   return MCO_SUCCESS;
-}
-
-mco_state mco_status(mco_coro* co) {
-  if(co != NULL) {
-    return co->state;
-  }
-  return MCO_DEAD;
 }
 
 void* mco_get_user_data(mco_coro* co) {
@@ -1856,8 +1996,7 @@ mco_result mco_push(mco_coro* co, const void* src, size_t len) {
     MCO_LOG("attempt to use an invalid coroutine");
     return MCO_INVALID_COROUTINE;
   } else if(len > 0) {
-    size_t bytes_stored = co->bytes_stored + len;
-    if(bytes_stored > co->storage_size) {
+    if(len > co->storage_size - co->bytes_stored) {
       MCO_LOG("attempt to push too many bytes into coroutine storage");
       return MCO_NOT_ENOUGH_SPACE;
     }
@@ -1866,7 +2005,7 @@ mco_result mco_push(mco_coro* co, const void* src, size_t len) {
       return MCO_INVALID_POINTER;
     }
     memcpy(&co->storage[co->bytes_stored], src, len);
-    co->bytes_stored = bytes_stored;
+    co->bytes_stored += len;
   }
   return MCO_SUCCESS;
 }
@@ -1943,6 +2082,18 @@ mco_coro* mco_running(void) {
   return func();
 }
 #endif
+
+/* fibers 后端会把线程转成 fiber 才能切协程,转了就得转回去,否则线程退出时那个 fiber 对象泄漏。
+   只转回我们自己转的那一个:线程本来就是 fiber(调用方自己转的)时不能动它。
+   反复创建销毁线程的调用方应在线程退出前调一次;线程活到进程结束的场景不调也无妨 */
+void mco_thread_cleanup(void) {
+#if defined(MCO_USE_FIBERS) && defined(_WIN32)
+  if(_mco_thread_fiber) {
+    _mco_thread_fiber = 0;
+    ConvertFiberToThread();
+  }
+#endif
+}
 
 const char* mco_result_description(mco_result res) {
   switch(res) {

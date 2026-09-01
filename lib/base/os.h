@@ -138,9 +138,37 @@
     #define HAVE_ACCEPT4
     #define HAVE_PIPE2
 #endif
+
 // backtrace / <execinfo.h> 能力：AIX 没有（新增不支持的平台在此一处维护）
 #ifndef OS_AIX
     #define HAVE_BACKTRACE
+#endif
+
+// 是否启用了 AddressSanitizer：gcc 看 __SANITIZE_ADDRESS__，clang 看 __has_feature
+#if defined(__SANITIZE_ADDRESS__)
+    #define ENABLED_ASAN       1
+#elif defined(__has_feature)
+    #if __has_feature(address_sanitizer)
+        #define ENABLED_ASAN   1
+    #else
+        #define ENABLED_ASAN   0
+    #endif
+#else
+    #define ENABLED_ASAN       0
+#endif
+// 是否启用了 ThreadSanitizer。比 ASan 多一路 BUILD_TSAN：__SANITIZE_THREAD__ 要 GCC 7 才有，
+// 更老的 GCC 与部分商用编译器两个谓词都没有，探测不到就会带着 -fsanitize=thread 却不通知
+// minicoro 切换协程栈，报一片假 race。故 mk.sh 的 tsan 分支额外传 -DBUILD_TSAN=1 兜底
+#if defined(BUILD_TSAN) || defined(__SANITIZE_THREAD__)
+    #define ENABLED_TSAN       1
+#elif defined(__has_feature)
+    #if __has_feature(thread_sanitizer)
+        #define ENABLED_TSAN   1
+    #else
+        #define ENABLED_TSAN   0
+    #endif
+#else
+    #define ENABLED_TSAN       0
 #endif
 
 #include <stdlib.h>

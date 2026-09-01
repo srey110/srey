@@ -274,11 +274,24 @@ uint32_t pow2_ceil(uint32_t n);
 void fill_timespec(struct timespec *timeout, uint32_t ms);
 /// <summary>
 /// 输出一条日志，低于当前日志级别时直接忽略。实现在 utils/log.c，声明放这一层
-/// 是为了让 macro.h 的 LOG 宏不必反向依赖 utils/log.h
+/// 是为了让 macro.h 的 LOG 宏不必反向依赖 utils/log.h。
+/// 由此带来一条链接约束：macro.h 的 LOG_* 与 ASSERTAB 展开后都指向 utils/log.c，凡用到它们的
+/// target 都必须链上 lib/utils，只链 base + containers 会在某处无关的断言上报未定义符号
 /// </summary>
 /// <param name="lv">日志级别，参见 log_level</param>
 /// <param name="fmt">格式化字符串</param>
 /// <param name="...">变参</param>
 void slog(int32_t lv, const char *fmt, ...);
+/// <summary>
+/// ASSERTAB 专用：排空日志队列后把 abort 原因写进日志文件；无日志文件时不重复写原因行
+/// （ASSERTAB 已打到 stderr），只把缓冲刷出去。声明放这一层的理由同 slog。
+/// 尽力而为——不保证落盘，但每一步都有上限，不会把崩溃卡成挂起。可并发调用、可重复调用，
+/// 各种情形下分别做什么见实现里的分支注释
+/// </summary>
+/// <param name="file">断言所在文件，由 ASSERTAB 传 __FILENAME__(__FILE__)</param>
+/// <param name="func">断言所在函数</param>
+/// <param name="line">断言所在行</param>
+/// <param name="msg">断言的错误描述，非空</param>
+void log_abort(const char *file, const char *func, int32_t line, const char *msg);
 
 #endif//BASE_H_

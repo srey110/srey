@@ -1320,7 +1320,7 @@ static void _client_timeout(task_ctx *task, uint64_t sess) {
     }
 }
 
-// 启动后延后 100ms 再发请求, 等 server task_listen 落地; 同步参考 task_timeout.c 取值
+// 启动后延后 100ms 再发请求, 等 server 那个 task 的 _startup 也被派发; 取值参考 task_timeout.c
 static void _client_startup(task_ctx *task) {
     task_timeout(task, 0, 100, _client_timeout);
 }

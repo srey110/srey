@@ -87,10 +87,12 @@
     do {\
         if (!(exp)) {\
             const char *_abstr = (errstr);\
-            if (!EMPTYSTR(_abstr)) {\
-                fprintf(stderr, "[ABORT][%s %s %d] %s\n", __FILENAME__(__FILE__), __FUNCTION__, __LINE__, _abstr);\
-                fflush(stderr);\
+            if (EMPTYSTR(_abstr)) {\
+                _abstr = "assertion failed";\
             }\
+            fprintf(stderr, "[ABORT][%s %s %d] %s\n", __FILENAME__(__FILE__), __FUNCTION__, __LINE__, _abstr);\
+            fflush(stderr);\
+            log_abort(__FILENAME__(__FILE__), __FUNCTION__, __LINE__, _abstr);\
             abort();\
         }\
     } while(0)

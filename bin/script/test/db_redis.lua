@@ -27,6 +27,9 @@ runner.run(function(t)
     t:eq("hello", _exec(fd, skid, "GET", "srey:test"),           "GET")
     t:eq(1,       _exec(fd, skid, "DEL", "srey:test"),           "DEL")
 
+    -- 前置清理：下面两处按"新建"断言返回值，上一轮的残留会让它们失败
+    _exec(fd, skid, "DEL", "srey:hash", "srey:counter")
+
     -- HSET / HGET hash
     t:eq(1,    _exec(fd, skid, "HSET", "srey:hash", "f1", "v1"), "HSET")
     t:eq("v1", _exec(fd, skid, "HGET", "srey:hash", "f1"),       "HGET")

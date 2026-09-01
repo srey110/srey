@@ -226,7 +226,8 @@ static int32_t _test_mutex(task_ctx *task) {
 // ── 测试 7：cs 出口 curco 还原 ───────────────────────────────────────────
 // 触发条件：A 持锁 sleep 期间 B 排队入 cs；A 完成 release 唤醒 B,B 在 cs 内 yield
 // 后 release 返回,A 的 coro_serial_call 返回；A 继续调 coro_sleep —— 修复前
-// curco stale=B 触发 mco_yield(MCO_NOT_RUNNING) abort,修复后 curco 已还原为 A
+// curco stale=B 触发 mco_yield 报 MCO_STACK_OVERFLOW abort(minicoro 先判栈范围后判状态,
+// &dummy 落在 A 栈上、不在 B 的范围内),修复后 curco 已还原为 A
 typedef struct curco_arg {
     coro_serial_ctx *s;
     int32_t *a_done;

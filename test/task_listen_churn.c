@@ -7,6 +7,10 @@ typedef struct task_listen_churn_args {
 
 // 30 轮 listen → connect → close → unlisten 循环，捕获 in-flight accept 与 unlisten 的并发时序
 #define CHURN_ITERS 30
+// 每轮 unlisten 之后留给端口释放的时间。ev_unlisten 只发起拆除：IOCP 下 CancelIoEx 之后还要等
+// 在途 AcceptEx 的完成包回来、ref 归零才 closesocket，慢速虚拟机上远超几十毫秒，
+// 短了下一轮 listen 就撞 EADDRINUSE
+#define CHURN_SETTLE_MS 500
 
 static void _startup(task_ctx *task) {
     task_listen_churn_args *arg = (task_listen_churn_args *)coro_get_arg(task);
@@ -29,8 +33,7 @@ static void _startup(task_ctx *task) {
         }
         // 立即 unlisten；accept 完成事件可能正落在 watcher 队列里，命中 _uev_qtn_freelsn 引用计数路径
         ev_unlisten(&task->loader->netev, lsnid);
-        // 短 sleep 让 watcher 处理 cmd 队列；不能太长否则用例拖时
-        coro_sleep(task, 10);
+        coro_sleep(task, CHURN_SETTLE_MS);
     }
     *(arg->ok) = 1;
     LOG_INFO("listen_churn tested (%d iters).", CHURN_ITERS);

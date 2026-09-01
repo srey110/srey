@@ -1,5 +1,5 @@
 -- yyjson 绑定层单元测试：encode/decode 往返 + 数组/对象判定 + null + 错误路径
--- 行为基线：空表编成 {}、稀疏数组报错、深度上限 1000、整数精确写出
+-- 行为基线：空表编成 {}、稀疏数组报错、深度上限 LYYJSON_MAX_DEPTH、整数精确写出
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -80,7 +80,7 @@ runner.run(function(t)
         -- max=10 未超过 safe 阈值 10，仍当数组
         t:eq(true, pcall(yyjson.encode, { [1] = 1, [10] = 1 }), "max 等于 safe 阈值不算稀疏")
     end
-    -- ── 深度上限 1000 ───────────────────────────────────────────
+    -- ── 深度上限 LYYJSON_MAX_DEPTH ──────────────────────────────
     do
         local function nest(n)
             local root = {}
@@ -91,8 +91,9 @@ runner.run(function(t)
             end
             return root
         end
-        t:eq(true, pcall(yyjson.encode, nest(100)), "100 层嵌套正常")
-        t:eq(false, pcall(yyjson.encode, nest(1200)), "超过 1000 层报错")
+        -- 贴边取值，把 LYYJSON_MAX_DEPTH(18) 夹在两条断言之间：改成 12 或 25 都会被抓到
+        t:eq(true, pcall(yyjson.encode, nest(16)), "上限内正常")
+        t:eq(false, pcall(yyjson.encode, nest(19)), "超过 LYYJSON_MAX_DEPTH 层报错")
         t:eq(false, pcall(yyjson.decode, string.rep("[", 1200) .. string.rep("]", 1200)),
              "解码超深嵌套报错")
     end

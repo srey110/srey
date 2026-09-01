@@ -220,7 +220,7 @@ static void _startup(task_ctx *task) {
     mqtt_client_args *arg = coro_get_arg(task);
     int32_t rtn;
     if (0 != arg->delay) {
-        coro_sleep(task, arg->delay);// 等进程内 broker 的 task_listen 落地
+        coro_sleep(task, arg->delay);// 等进程内 broker 的 _startup 被派发, 见头文件
     }
     // 域名需先 DNS 解析，IP 直连
     if (ERR_OK != is_ipaddr(arg->host)) {

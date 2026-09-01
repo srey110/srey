@@ -10,6 +10,9 @@ typedef struct task_unlisten_race_args {
 // 触发 lib/event 跨 watcher 的 lsn 引用计数 + qtn 隔离队列延后释放路径
 #define RACE_ITERS    30
 #define RACE_CLIENTS  8
+// 每轮 unlisten 之后留给端口释放的时间，理由同 task_listen_churn.c 的 CHURN_SETTLE_MS。
+// 注意与下面那个 2ms 不是一回事：那个是故意只等一部分 connect 落进 accept，制造 in-flight 窗口
+#define RACE_SETTLE_MS 500
 
 // fork 出的客户端工作协程：连一次后立即关闭，连接失败静默忽略（unlisten 已发生）
 static void _client_worker(task_ctx *task, void *arg) {
@@ -48,8 +51,8 @@ static void _startup(task_ctx *task) {
         if (task_isclosing(task)) {
             return;
         }
-        // 留 20ms 给飞行中 accept / cleanup / client 协程收尾，避免下一轮 listen 撞同端口
-        coro_sleep(task, 20);
+        // 给飞行中 accept / cleanup / client 协程收尾，避免下一轮 listen 撞同端口
+        coro_sleep(task, RACE_SETTLE_MS);
     }
     *(arg->ok) = 1;
     LOG_INFO("listen_unlisten_race tested (%d iters x %d clients).", RACE_ITERS, RACE_CLIENTS);

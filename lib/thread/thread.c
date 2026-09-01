@@ -1,5 +1,14 @@
 ﻿#include "thread/thread.h"
 
+// 线程栈大小,0 = 用平台默认值,两个平台的创建分支都读这一个常量。
+// ASan 插桩把每帧撑大数倍,而 macOS 线程栈默认只有 512KB(Linux 8MB),深递归的调用方必爆;
+// 取 8MB 对齐 Linux 默认值,栈是惰性提交的虚拟内存,定大不占常驻内存
+#if ENABLED_ASAN
+    #define THREAD_STACK_SIZE (8 * 1024 * 1024)
+#else
+    #define THREAD_STACK_SIZE 0
+#endif
+
 // 线程启动参数封装，传递用户回调和数据给线程入口函数
 typedef struct th_ctx {
     void *udata; // 用户自定义参数
@@ -41,8 +50,14 @@ pthread_t thread_creat_hooks(th_cb _cb, hook_cb _init, hook_cb _exit,
     th->hooks.assist = assist;
     pthread_t pthread;
 #if defined(OS_WIN)
-    pthread = (HANDLE)_beginthreadex(NULL, 0, _thread_cb, (void*)th, 0, NULL);
+    pthread = (HANDLE)_beginthreadex(NULL, THREAD_STACK_SIZE, _thread_cb, (void*)th, 0, NULL);
     ASSERTAB(NULL != pthread, strerror(errno));
+#elif 0 != THREAD_STACK_SIZE
+    pthread_attr_t attr;
+    ASSERTAB_CODE(pthread_attr_init(&attr));
+    ASSERTAB_CODE(pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE));
+    ASSERTAB_CODE(pthread_create(&pthread, &attr, _thread_cb, (void*)th));
+    ASSERTAB_CODE(pthread_attr_destroy(&attr));
 #else
     ASSERTAB_CODE(pthread_create(&pthread, NULL, _thread_cb, (void*)th));
 #endif

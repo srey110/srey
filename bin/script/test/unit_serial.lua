@@ -191,6 +191,8 @@ runner.run(function(t)
         t:check(text:find("serial=", 1, true) ~= nil, "coros 列出 serial 等待者")
         t:check(text:find("fork_wait pending=", 1, true) ~= nil, "coros 列出 fork_wait 屏障")
         t:check(text:find("age=", 1, true) ~= nil, "fork_wait / serial 行带挂起时长，与 C 侧 coro_dump 同格式")
+        t:check(text:find("hold=", 1, true) ~= nil, "serial 行带持锁时长")
+        t:check(text:find("co=", 1, true) ~= nil, "serial 行带持锁协程，可与挂起段对上号")
         t:check(text:find("1 fork_wait", 1, true) ~= nil, "汇总行统计 fork_wait")
         t:check(text:find("1 serial", 1, true) ~= nil, "汇总行统计 serial")
         -- sessions 是 coro_sess 条目数，与 suspended 分开报：keep 的条目摘空 waiters 后仍留着，

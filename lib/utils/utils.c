@@ -102,9 +102,9 @@ static void _dump_err(const char *what, DWORD code) {
     fputs(buf, stderr);
     fflush(stderr);
 }
-// dump 必须换个线程写。Windows x64 下 minicoro 走 MCO_USE_ASM, 崩溃线程可能正跑在 56KB
-// 协程栈上(TIB 里的栈边界还指着真线程栈), 也可能本来就是栈溢出崩的;两种情况 MiniDumpWriteDump
-// 都没有足够栈可用, 只会返回 FALSE 留下个 0 字节文件。新线程拿的是正常的 TIB 注册栈
+// dump 必须换个线程写。Windows x64 下 minicoro 走 MCO_USE_ASM, 切进协程时会把 TIB 里的栈边界
+// 换成那 56KB 协程栈, 崩溃线程可能正跑在上面, 也可能本来就是栈溢出崩的;两种情况
+// MiniDumpWriteDump 都没有足够栈可用, 只会返回 FALSE 留下个 0 字节文件。新线程拿的是完整线程栈
 static DWORD WINAPI _dump_thread(LPVOID arg) {
     dump_arg *da = (dump_arg *)arg;
     MINIDUMP_EXCEPTION_INFORMATION exinfo;

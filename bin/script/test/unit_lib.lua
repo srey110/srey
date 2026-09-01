@@ -1,5 +1,6 @@
 -- lib 层网络封装测试：lib/dns.lua (nslookup) + lib/mqtt.lua (connect)
--- 依赖：DNS 8.8.8.8 可达；test.server_mqtt 已监听 1883
+-- 依赖：DNS 8.8.8.8 可达；test.server_mqtt 已监听 1883——各模块的 startup 由 worker 择时派发、
+-- 顺序不定，故开头显式 sleep 等它起来，同 e2e_runner
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -7,6 +8,7 @@ local mqtt   = require("lib.mqtt")
 require("lib.dns")
 
 srey.startup(function()
+srey.sleep(500)
 runner.run(function(t)
     -- ── lib/dns.lua: nslookup (UDP 优先 + TCP 回退) ───────────────────
     do

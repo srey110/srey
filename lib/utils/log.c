@@ -9,6 +9,9 @@
 #define LOG_TIME_FMT "%Y-%m-%d %H:%M:%S" // 秒级部分;毫秒由调用方另拼
 #define LOG_INLINE_SIZE 256
 #define LOG_POP_BATCH   128
+#define LOG_FLUSH_WAIT  200 // log_abort 的等待上限(毫秒)
+#define LOG_FLUSH_STEP  10 // log_abort 每次让出的毫秒数
+#define LOG_ABORT_SLACK 3 // log_abort 输家比赢家多等的步数,覆盖赢家排空之后写那一行的时间
 #ifdef OS_WIN
 #define LOG_COLOR_SUFFIX ""
 #else
@@ -21,6 +24,12 @@ typedef enum log_color {
     LOG_COLOR_RED,
     LOG_COLOR_YELLOW
 }log_color;
+// log_abort 的三态选举，并发断言时的分工见 base.h 上的声明
+typedef enum log_abort_state {
+    LOG_ABORT_IDLE = 0,
+    LOG_ABORT_WRITING,
+    LOG_ABORT_DONE
+}log_abort_state;
 typedef struct {
     int32_t lv;
     uint64_t ms;// 入队时刻；格式化推迟到日志线程，不占业务线程
@@ -32,7 +41,11 @@ static FILE *_handle = NULL;
 static atomic_t _log_lv = LOGLV_DEBUG;
 static atomic_t _running = 0; /* atomic 保证跨平台内存可见 */
 static atomic_t _sleeping = 0;
+static atomic_t _aborting = LOG_ABORT_IDLE; /* 取值见 log_abort_state */
+static atomic_t _drained = 0; /* 完成一轮排空自增,log_abort 据此判断落盘 */
 static pthread_t _th;
+// 本线程是不是日志线程本身。断言若发生在它身上，log_abort 据此跳过排空
+static THREAD_LOCAL int32_t _in_logth = 0;
 static fsqu_ctx _que;
 static pool_ctx _itempool;
 static mutex_ctx _mtx;
@@ -89,16 +102,31 @@ static void _log_color_end(void) {
 #endif
 // 唯一的成行出口。时间串由调用方给：算它要过 localtime_r 那把 libc 时区锁，
 // N 个业务线程一起写日志就在一把与本程序无关的锁上串起来，所以正常路径推迟到日志线程；
-// 业务线程只在 _log_stderr 那两条兜底上碰得到它。
+// 业务线程只在 _log_sync 那几条兜底上碰得到它。
 // pre/post 是上色前后缀，必须与正文同一次 fprintf 打出去，整行才不会被别的 stdout 写方插断。
 // 秒串与毫秒分两个参数传，由本函数一次成型
 static void _log_fprint(FILE *f, const log_item *item, const char *time, int32_t msec,
                         const char *msg, const char *pre, const char *post) {
     fprintf(f, "%s"LOG_FMT"%s", pre, time, msec, _log_lvstr(item->lv), msg, post);
 }
+// 兜底输出流。必须与 _log_write_item 同口径：无日志文件时走 stdout 而非 stderr，
+// 否则兜底行与正文分家，-b 模式下 stderr 已 dup2 到 /dev/null，那几行会直接消失
+static FILE *_log_out(void) {
+    return NULL != _handle ? _handle : stdout;
+}
+// 业务线程上的同步写：不入队、不加锁，也不碰 _log_timestr 的缓存（那份静态只属于日志线程）。
+// 用在格式化失败、队列满、以及 log_abort 三条进不了日志线程的路径上
+static void _log_sync(FILE *f, const log_item *item, const char *msg) {
+    char time[TIME_LENS];
+    if (ERR_OK != sectostr(item->ms / 1000, LOG_TIME_FMT, time)) {
+        time[0] = '\0';
+    }
+    _log_fprint(f, item, time, (int32_t)(item->ms % 1000), msg, "", "");
+    fflush(f);
+}
 // 秒级部分按秒缓存：一批日志基本落在同一秒里，省掉 localtime_r 与 strftime。
 // 缓存是无锁静态，只许 _log_write_item 这条串行路径用(日志线程，以及 thread_join
-// 之后的 log_free)；业务线程的 _log_stderr 自己现算
+// 之后的 log_free)；业务线程的 _log_sync 自己现算
 static const char *_log_timestr(uint64_t ms) {
     static uint64_t cache_sec = 0;
     static char cache[TIME_LENS] = { 0 };
@@ -169,17 +197,20 @@ static void _log_write_exit(void) {
 }
 static void _log_loop(void *arg) {
     (void)arg;
+    _in_logth = 1;
     log_item *items[LOG_POP_BATCH];
     timer_ctx timer;
     timer_init(&timer);
     uint64_t now, shrink_start = timer_cur_ms(&timer);
-    uint32_t spins = 0;
+    uint32_t spins = 0, nwrote;
     while (ATOMIC_GET(&_running)) {
-        if (0 == _log_write_all(items)
+        nwrote = _log_write_all(items);
+        if (0 == nwrote
             && fsqu_size(&_que) > 0) {
             spin_backoff(&spins);
             continue;
         }
+        ATOMIC_ADD(&_drained, 1);
         spins = 0;
         // 空闲时按 SHRINK_TIME 门控回落 log_item 池（锁外执行）
         now = timer_cur_ms(&timer);
@@ -201,6 +232,28 @@ static void _log_loop(void *arg) {
             ATOMIC_SET(&_sleeping, 0);
         }
         mutex_unlock(&_mtx);
+    }
+}
+// 日志线程是否正睡着、需要唤醒。必须是足序读，与上面置 _sleeping 前那道 fence 对称：
+// 换成普通读，弱序平台上两边会同时看漏（消费者没看到新元素、生产者没看到 _sleeping）。
+// 加锁策略由调用方定：slog 用 mutex_lock，log_abort 在崩溃路径上用 trylock，宁可不唤醒也不卡住
+static inline int32_t _log_need_wake(void) {
+    return ATOMIC_GET_SEQCST(&_sleeping);
+}
+// 唤醒日志线程并等它把队列排空，上限 LOG_FLUSH_WAIT。
+// 只有在业务线程上调用才有意义：断言若发生在日志线程自己身上，唯一能推进队列的就是它，
+// 等下去必然空转满整个上限，故调用方须先判 _in_logth
+static void _log_drain_wait(void) {
+    atomic_t gen = ATOMIC_GET(&_drained);
+    if (_log_need_wake()
+        && ERR_OK == mutex_trylock(&_mtx)) {
+        cond_signal(&_cond);
+        mutex_unlock(&_mtx);
+    }
+    int32_t nstep = LOG_FLUSH_WAIT / LOG_FLUSH_STEP;
+    while ((fsqu_size(&_que) > 0 || gen == ATOMIC_GET(&_drained))
+        && nstep-- > 0) {
+        MSLEEP(LOG_FLUSH_STEP);
     }
 }
 void log_init(FILE *file, uint32_t capacity) {
@@ -238,21 +291,44 @@ void log_free(void) {
     mutex_free(&_mtx);
     cond_free(&_cond);
 }
+void log_abort(const char *file, const char *func, int32_t line, const char *msg) {
+    // 日志线程未起或已停，队列和锁都不能碰，只能靠 ASSERTAB 那行裸 fprintf
+    if (0 == ATOMIC_GET(&_running)) {
+        return;
+    }
+    // 抢不到写权的等赢家置 DONE 再走：调用方下一句就是 abort()，直接放行等于把还在
+    // 排空的赢家连同整队日志一起带走。多等几步盖住赢家写那一行的时间，赢家卡住也不会挂死
+    if (!ATOMIC_CAS(&_aborting, LOG_ABORT_IDLE, LOG_ABORT_WRITING)) {
+        int32_t nstep = LOG_FLUSH_WAIT / LOG_FLUSH_STEP + LOG_ABORT_SLACK;
+        while (LOG_ABORT_DONE != ATOMIC_GET(&_aborting)
+            && nstep-- > 0) {
+            MSLEEP(LOG_FLUSH_STEP);
+        }
+        return;
+    }
+    // 断言发生在日志线程自己身上时没人能推进队列，等也是白等
+    if (0 == _in_logth) {
+        _log_drain_wait();
+    }
+    // 控制台模式不重复写原因行（ASSERTAB 三行前已打到 stderr），只把刚排空进 stdout 的刷出去
+    if (NULL != _handle) {
+        log_item item;
+        item.lv = LOGLV_FATAL;
+        item.ms = nowms();
+        SNPRINTF(item.inline_buf, sizeof(item.inline_buf),
+            CONCAT2(LOG_PREFIX_FMT, "[ABORT] %s"), file, func, line, msg);
+        item.msg = item.inline_buf;
+        _log_sync(_handle, &item, item.msg);
+    } else {
+        fflush(stdout);
+    }
+    ATOMIC_SET(&_aborting, LOG_ABORT_DONE);
+}
 void log_setlv(log_level lv) {
     ATOMIC_SET(&_log_lv, (int32_t)lv);
 }
 log_level log_getlv(void) {
     return (log_level)ATOMIC_GET(&_log_lv);
-}
-// stderr 兜底：格式化失败或队列满时走这里，跑在业务线程上，进不了日志线程那条路径
-static void _log_stderr(const log_item *item, const char *msg) {
-    char time[TIME_LENS];
-    // 不碰 _log_timestr 的缓存：这里跑在业务线程上，那份静态只属于日志线程那条串行路径
-    if (ERR_OK != sectostr(item->ms / 1000, LOG_TIME_FMT, time)) {
-        time[0] = '\0';
-    }
-    _log_fprint(stderr, item, time, (int32_t)(item->ms % 1000), msg, "", "");
-    fflush(stderr);
 }
 void slog(int32_t lv, const char *fmt, ...) {
     if (lv > (int32_t)ATOMIC_GET(&_log_lv)
@@ -271,7 +347,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     va_end(args);
     if (rtn < 0) {
         va_end(args2);
-        _log_stderr(item, fmt);
+        _log_sync(_log_out(), item, fmt);
         pool_push(&_itempool, item, 0);
         return;
     }
@@ -284,21 +360,20 @@ void slog(int32_t lv, const char *fmt, ...) {
         rtn = vsnprintf(heap_msg, (size_t)rtn + 1, fmt, args2);
         va_end(args2);
         if (rtn < 0) {
-            _log_stderr(item, fmt);
+            _log_sync(_log_out(), item, fmt);
             FREE(heap_msg);
             pool_push(&_itempool, item, 0);
             return;
         }
         item->msg = heap_msg;
     }
-    //队列满时不阻塞业务线程，直接丢弃并写 stderr 兜底
+    //队列满时不阻塞业务线程，直接丢弃并同步写出兜底
     if (ERR_OK != fsqu_trypush(&_que, &item)) {
-        _log_stderr(item, item->msg);
+        _log_sync(_log_out(), item, item->msg);
         pool_push(&_itempool, item, 0);
         return;
     }
-    // 与消费者那道 fence 对称: 入队之后必须用足序版本读 _sleeping, 否则两边同时看漏就漏唤醒
-    if (ATOMIC_GET_SEQCST(&_sleeping)) {
+    if (_log_need_wake()) {
         mutex_lock(&_mtx);
         cond_signal(&_cond);
         mutex_unlock(&_mtx);

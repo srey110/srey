@@ -7,6 +7,7 @@
 #include "test_thread.h"
 #include "test_stm.h"
 #include "test_event.h"
+#include "test_minicoro.h"
 #include "test_protocol.h"
 #include "test_bson.h"
 #include "test_mqtt_pack.h"
@@ -142,6 +143,7 @@ int main(int argc, char *argv[]) {
     test_thread(suite);      /* mutex、spinlock、rwlock、cond、thread */
     test_stm(suite);         /* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
     test_event(suite);       /* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
+    test_minicoro(suite);    /* minicoro 本地补丁：栈底守卫字拦截越过栈底的写 */
     test_protocol(suite);    /* HTTP、Redis RESP、URL 解析、custz、DNS、WebSocket */
     test_bson(suite);        /* BSON 构建器、迭代器、find */
     test_mqtt_pack(suite);   /* MQTT 组包/解包往返 */
@@ -275,12 +277,12 @@ int main(int argc, char *argv[]) {
         0, 0, _get_name_val(testlist, "mqtt_test1"));
     task_mqtt_client_start(g_loader, "mqtt_test2", MQTT_50, "127.0.0.1", 1884,
         0, 0, _get_name_val(testlist, "mqtt_test2"));
-    // mqtt_test3/4 连的是上面这个进程内 broker，故各自在协程里先等 200ms 再连（见头文件说明）；
-    // 1884 的 test1/test2 连的是外部 EMQX，不受 task_listen 落地时机影响，故不等
+    // mqtt_test3/4 连的是上面这个进程内 broker，故各自在协程里先等一会再连（见头文件说明）；
+    // 1884 的 test1/test2 连的是外部 EMQX，不受本进程 task 启动顺序影响，故不等
     task_mqtt_client_start(g_loader, "mqtt_test3", MQTT_311, "127.0.0.1", 1883,
-        200, 0, _get_name_val(testlist, "mqtt_test3"));
+        500, 0, _get_name_val(testlist, "mqtt_test3"));
     task_mqtt_client_start(g_loader, "mqtt_test4", MQTT_50, "127.0.0.1", 1883,
-        200, 0, _get_name_val(testlist, "mqtt_test4"));
+        500, 0, _get_name_val(testlist, "mqtt_test4"));
     //habor
     int32_t rtn = harbor_start(g_loader, "harbor", ssl_harbor, "0.0.0.0", (uint16_t)*(_get_name_val(portlist, "harbor")));
     if (ERR_OK != rtn) {
@@ -382,7 +384,7 @@ int main(int argc, char *argv[]) {
         (uint16_t)*_get_name_val(portlist, "kcp_udp"),
         _get_name_val(testlist, "kcp_test4"));
 
-    //等 server task_listen 落地后再以子进程跑 Python 协议模糊
+    //等各 server task 的 _startup 都派发完再以子进程跑 Python 协议模糊
     MSLEEP(1000);
     static const struct { const char *script; const char *name; } pyitems[] = {
         {"test_http.py",  "python_http"},

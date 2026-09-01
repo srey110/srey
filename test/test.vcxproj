@@ -219,6 +219,7 @@
     <ClCompile Include="test_pgsql_pack.c" />
     <ClCompile Include="test_pgsql_parse.c" />
     <ClCompile Include="test_event.c" />
+    <ClCompile Include="test_minicoro.c" />
     <ClCompile Include="test_advance.c" />
     <ClCompile Include="test_protocol.c" />
     <ClCompile Include="test_seri.c" />
@@ -278,6 +279,7 @@
     <ClInclude Include="test_pgsql_pack.h" />
     <ClInclude Include="test_pgsql_parse.h" />
     <ClInclude Include="test_event.h" />
+    <ClInclude Include="test_minicoro.h" />
     <ClInclude Include="test_advance.h" />
     <ClInclude Include="test_protocol.h" />
     <ClInclude Include="test_seri.h" />

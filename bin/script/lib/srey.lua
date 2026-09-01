@@ -71,6 +71,7 @@ local serial_wakes    = {}-- srey.serial 待唤醒的队头等待者，同样在
 ---@class SerialState
 ---@field current thread?        当前持锁协程；nil 表示无锁
 ---@field ref     integer        嵌套深度（同协程多次进入累加）
+---@field since   integer?       current 转为非 nil 的时刻（毫秒，timer_ms 单位）；coros 据此报"持锁多久"
 ---@field waiters SerialWaiter[] 等待协程 FIFO 队列
 
 -- fork_wait 屏障与 serial 执行器的活跃登记，仅供 debug_request 的 coros 遍历：这两类等待者
@@ -358,6 +359,7 @@ function srey.serial()
                 -- 先设 current/ref 完成交接，nxt 醒来时拿到一致状态；此刻起其他协程进来一律排队
                 st.current = nxt.coro
                 st.ref = 1
+                st.since = srey.timer_ms()
                 -- 只入队不就地 resume：Lua 的 resume 嵌在同一条 C 栈上，链式唤醒会撞
                 -- LUAI_MAXCCALLS 而整个 serial 死锁。改由 message_dispatch 末尾摊平，
                 -- 嵌套深度恒为 1；C 侧 minicoro 切栈没有这个上限，就地 resume 是对的
@@ -391,6 +393,7 @@ function srey.serial()
         else
             if not st.current then
                 st.current = self
+                st.since = srey.timer_ms()
             end
             st.ref = st.ref + 1
         end

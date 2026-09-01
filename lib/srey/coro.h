@@ -14,8 +14,18 @@ typedef struct coro_serial_ctx coro_serial_ctx;
 /// <summary>
 /// 初始化协程描述符，设置协程栈大小
 /// </summary>
-/// <param name="stack_size">协程栈大小（字节），0 使用默认值</param>
+/// <param name="stack_size">协程栈大小（字节）。0 取下界；非 0 但越界时打一行 WARN 并夹到对应
+/// 边界，故须在日志开起来之后调。上下界见 coro.c 的 COROSTACK_MIN / COROSTACK_MAX，
+/// ASan 构建下两者一起抬高</param>
 void coro_desc_init(size_t stack_size);
+/// <summary>
+/// 释放协程后端在本线程上占用的资源，须在跑过协程的线程退出前调用。
+/// 只有 Windows 上除 x64 外（32 位与 ARM64）走的 fibers 后端有东西可放（把线程转回非 fiber
+/// 态），其余后端是空操作——但 Win32 是 vcxproj 里配着的平台，不是假想配置。
+/// 本项目只有 worker 线程会 resume 协程（net / acpex / 时间轮线程都不会），故只接进 worker
+/// 的退出钩子；日后新增会跑协程的线程类别，记得一并接上。
+/// </summary>
+void coro_thread_cleanup(void);
 /// <summary>
 /// 注册协程任务
 /// </summary>
@@ -260,8 +270,11 @@ int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg
 /// <summary>
 /// 转储当前 task 挂起协程为文本 buffer(调试用)。C 协程无栈回溯,能给的只有等待原因与时长。
 /// 三类挂起分别列出:等消息的(sess/mtype/时长)、等 fork_wait 的(未完成子协程数)、
-/// 等 serial 交接的(执行器地址/是否有人持锁/排队时长)。末行的四个计数满足
-/// suspended + fork_wait + serial == yield total,与 task 关闭时打印的 "yield N" 对得上号。
+/// 等 serial 交接的(执行器地址/持锁协程/持锁多久/排队人数与最久那个排了多久)——空闲 serial
+/// 不出行,每个 DB 连接一个,全打出来全是噪声;排队时长只在真有人排队时才给。
+/// 挂起段与 serial 段都带 co=,靠它把"谁占着锁"和"那个协程卡在哪"对上号。
+/// 末行的四个计数满足 suspended + fork_wait + serial == yield total,与 task 关闭时打印的
+/// "yield N" 对得上号——serial 那项按 waiter 计,它们走裸 yield 不进 coro_sess。
 /// 返回 binary 内部 MALLOC 的 buffer,所有权转给调用方,用完 FREE。
 /// </summary>
 /// <param name="task">task_ctx</param>

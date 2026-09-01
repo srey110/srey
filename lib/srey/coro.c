@@ -9,13 +9,33 @@
 #if defined(MCO_USE_VMEM_ALLOCATOR)
     #error "MCO_USE_VMEM_ALLOCATOR skips the C-allocator block, silently reverting coroutine stacks to mmap/VirtualAlloc"
 #endif
-// 协程栈改走框架分配器以计入 MEMORY_CHECK；minicoro 依赖零初始化的栈，必须用 _calloc
-#define MCO_ALLOC(size) _calloc(1, size)
+// 协程栈改走框架分配器以计入 MEMORY_CHECK，不必清零。
+// Win32 走 MCO_USE_FIBERS，栈由 CreateFiberEx 给，同样不计入——有意保留，上面那道 #error 只挡 VMEM
+#define MCO_ALLOC(size) _malloc(size)
 #define MCO_DEALLOC(ptr, size) _free(ptr)
+// 全项目只推/弹一个 8 字节指针，上游默认 1024 会让每个协程白占 1016 字节（谁都不清零它）
+#define MCO_DEFAULT_STORAGE_SIZE 16
+// minicoro 只认 NDEBUG 判调试期，而 mk.sh 从不定义它，得手动关掉它自带的 assert/puts。
+// 断言映射到恒开的 ASSERTAB：切换路径上的双 resume / 陈旧 curco 探针不能没有。
+// MCO_LOG 维持静默：它每处都紧跟一个 return，调用方的 ASSERTAB 拿 mco_result_description
+// 打的是同一句话，而栈溢出那两处已经没有栈够它跑
+#define MCO_NO_DEBUG
+#define MCO_ASSERT(c) ASSERTAB(c, #c)
 #define MINICORO_IMPL
 #include "srey/minicoro.h"
 
 #define COROPOOL_CAP 128
+// 协程栈上下界。ASan 插桩把每帧撑大数倍，56KB 必爆栈，故两头一起抬；非 ASan 的下界取 minicoro
+// 默认值（它只把不足 32KB 的静默抬到 32KB，比默认还小，调小反更易爆栈）。
+// 上界按每 task 最多 COROPOOL_CAP 个协程折算，再大单个 task 的常驻栈就上百 MB。
+// 两者必须留出差距：相等会让 stacksize 配置项在该构建上彻底失效，怎么配都是同一个值
+#if ENABLED_ASAN
+    #define COROSTACK_MIN (1024 * 1024)
+    #define COROSTACK_MAX (16 * 1024 * 1024)
+#else
+    #define COROSTACK_MIN MCO_DEFAULT_STACK_SIZE
+    #define COROSTACK_MAX (1024 * 1024)
+#endif
 #define NODEPOOL_CAP ONEK
 #define COROPOOL_MIN_KEEP 4
 
@@ -55,7 +75,7 @@ typedef struct fork_item {
 } fork_item;
 // fork_wait 屏障：栈分配于 coro_fork_wait 内，子协程跑完 stub 递减 pending；
 // 归零时唤醒 waiter（栈生命周期到 coro_fork_wait return 才结束，覆盖 yield 期间）；
-// yield 期间挂入 coctx->fork_waited 链表，task 关闭时由 _coro_ctx_free 兜底 destroy
+// yield 期间挂入 coctx->fork_waited 链表，醒来后由 coro_fork_wait 自己摘除
 typedef struct fork_wait_ctx {
     list_node node;             // coctx->fork_waited 侵入式链表节点（slist，UPCAST 复原外层）
     int32_t waited;             // 未完成的 fork 子协程数；_coro_fork_run 跑完递减 1，归零唤醒 waiter
@@ -74,6 +94,8 @@ struct coro_serial_ctx {
                            // 摘挂点严格对齐三处生死：coro_serial_new 挂、两处 FREE(serial) 前摘
     int32_t ref;           // 嵌套深度（同协程多次进入累加）
     int32_t closed;        // 1 = 已关闭，此后任何 enter 一律失败，不再有人能拿到锁
+    uint64_t since;        // current 转为非 NULL 的时刻(ms)，coro_dump 据此报"持锁多久"；
+                           // current 为 NULL 时是上一任的残值，不可读
     task_ctx *task;        // 所属 task；resume 时同步 coctx->curco 需要
     mco_coro *current;     // 当前持锁协程；NULL 表示无锁
     list_ctx waiters;      // 挂起 waiter 的 FIFO（元素 serial_node，UPCAST 复原）
@@ -87,7 +109,7 @@ typedef struct coro_ctx {
     free_cb _arg_free;           // 用户数据释放回调
     uint64_t shrink_ms;          // 上次协程池收缩的时间戳(ms)，按 SHRINK_TIME 门控
     list_ctx fork_pending;       // 待起协程的 fork_item FIFO（slist，task-local 无界无锁）；每次 dispatch 末尾 drain 到空
-    list_ctx fork_waited;        // 挂起的 fork_wait 父协程链表（slist，元素 fork_wait_ctx）；task 关闭时由 _coro_ctx_free 兜底 destroy
+    list_ctx fork_waited;        // 挂起的 fork_wait 父协程链表（slist，元素 fork_wait_ctx）；节点是父协程栈上的对象，醒来即摘
     list_ctx serials;            // 活跃的命令串行化执行器链表（slist，元素 coro_serial_ctx）；供 coro_dump 遍历，
                                  // 正常由 *_quit 释放，task 销毁时 _coro_ctx_free 兜底
     pool_ctx copool;             // 空闲协程对象池（元素 mco_coro *，含负载趋势）
@@ -216,7 +238,19 @@ static void _coro_mco_cb(mco_coro *coro) {
     }
 }
 void coro_desc_init(size_t stack_size) {
+    if (0 == stack_size) {
+        stack_size = COROSTACK_MIN;
+    } else if (stack_size < COROSTACK_MIN) {
+        LOG_WARN("stacksize %zu too small, use min %d.", stack_size, COROSTACK_MIN);
+        stack_size = COROSTACK_MIN;
+    } else if (stack_size > COROSTACK_MAX) {
+        LOG_WARN("stacksize %zu too large, use max %d.", stack_size, COROSTACK_MAX);
+        stack_size = COROSTACK_MAX;
+    }
     _coro_desc = mco_desc_init(_coro_mco_cb, stack_size);
+}
+void coro_thread_cleanup(void) {
+    mco_thread_cleanup();
 }
 // 对象池 _elnew：新建协程并首次 resume 到第一个 yield 点
 static void *_coro_new(void *args) {
@@ -254,7 +288,10 @@ static coro_ctx *_coro_ctx_init(free_cb _argfree, void *arg) {
     heap_init(&coctx->timeout_heap, _coro_timeout_cmp);
     return coctx;
 }
-// 释放协程任务运行时上下文（包括对象池、超时堆、哈希表）
+// 释放协程任务运行时上下文（对象池、超时堆、哈希表）。
+// mapco 的 waiters 与 fork_waited 到这里恒为空:里面挂的是挂起协程,它们持着 task ref,ref 未归零
+// 进不来本函数。mapco 本身可能还留着 keep 空条目,无持有物,交给 hashmap_free 收。
+// serials 不同——coro_serial_ctx 不持 ref,下面那圈兜底 FREE 是承重的,别照上一句删掉
 static void _coro_ctx_free(void *arg) {
     coro_ctx *coctx = (coro_ctx *)arg;
     pool_free(&coctx->copool);
@@ -269,26 +306,7 @@ static void _coro_ctx_free(void *arg) {
         heap_dequeue(&coctx->timeout_heap);
         FREE(te);
     }
-    size_t iter = 0;
-    coro_sess *corosess;
-    // 注意：上面已释放整个 timeout_heap，此处 coinfo->te 均为悬空指针，禁止解引用；
-    // 仅销毁 coinfo->co 协程对象及 coinfo 节点本身即可（直接 FREE，同 te 一样不必归还对象池）
-    coro_info *ci;
-    while (hashmap_iter(coctx->mapco, &iter, (void **)&corosess)) {
-        list_foreach_safe(&corosess->waiters, wit, wtmp) {
-            ci = UPCAST(wit, coro_info, node);
-            if (NULL != ci->co) {
-                _coro_free(ci->co);// 走同一个销毁点，失败有日志
-            }
-            FREE(ci);
-        }
-    }
     hashmap_free(coctx->mapco);
-    fork_wait_ctx *fw;
-    list_foreach_safe(&coctx->fork_waited, ln, tmp) {
-        fw = UPCAST(ln, fork_wait_ctx, node);
-        _coro_free(fw->waiter);
-    }
     // fork_pending 正常路径每次 dispatch 末尾已 drain 空，此处兜底清未起的 item（不跑 fkcb）
     fork_item *fi;
     list_foreach_safe(&coctx->fork_pending, fln, ftmp) {
@@ -317,8 +335,8 @@ static mco_coro *_coro_pool_get(task_ctx *task) {
 // 切到另一个协程跑,回来再把 curco 指回调用者。curco 是"当前在跑的协程"这一唯一标识:
 // 被唤醒者醒来后靠它进 cosess、调 mco_yield,调用者拿回控制权后同样靠它。
 // 漏还原会把 curco 留在已挂起(甚至已随池收缩销毁)的协程上——调用者下一次 coro_sleep / coro_send
-// 对着它 mco_yield 撞 MCO_NOT_RUNNING;顶层漏清则 coro_fork / coro_fork_wait / coro_serial_enter
-// 三处"不在协程里就拒绝"的守卫从第一条消息起永远不成立。
+// 对着它 mco_yield 撞 MCO_STACK_OVERFLOW abort(minicoro 先判栈范围后判状态,别照字面调 stacksize);
+// 顶层漏清则 coro_fork / coro_fork_wait / coro_serial_enter 三处"不在协程里就拒绝"的守卫从第一条消息起永不成立。
 // 顶层调用的"原值"就是 NULL,同样由本函数还原,不必各写一份
 static mco_result _coro_resume_switch(coro_ctx *coctx, mco_coro *co) {
     mco_coro *self = coctx->curco;
@@ -899,6 +917,7 @@ int32_t coro_serial_enter(coro_serial_ctx *serial) {
         // 不死锁,出口由 coro_serial_leave 的 ref 计数管理
         if (NULL == serial->current) {
             serial->current = self;
+            serial->since = timer_cur_ms(&coctx->timer);
         }
         serial->ref++;
     }
@@ -926,10 +945,11 @@ void coro_serial_leave(coro_serial_ctx *serial) {
     // 唤醒前先设置 current/ref，nxt 唤醒后读取看到一致状态。
     // 这里就地 mco_resume 是安全的：minicoro 切栈，一串不 yield 的等待者链式唤醒是 N 个协程
     // 各挂一帧在各自栈上，OS 线程栈不增长
+    coro_ctx *coctx = (coro_ctx *)serial->task->arg;
     mco_coro *wco = nxt->co;
     serial->current = wco;
     serial->ref = 1;
-    coro_ctx *coctx = (coro_ctx *)serial->task->arg;
+    serial->since = timer_cur_ms(&coctx->timer);
     // curco 的还原目标恒为调用方自己那个协程,不必外传
     // 下面这行之后不许再碰 serial:锁已交给 wco,它在自己的临界区里可以 coro_serial_free
     // （标记后由它那次 leave 释放）,回到这里时对象可能已经没了。此后只用 coctx / nxt / wco
@@ -951,8 +971,8 @@ int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg
 }
 // 把一条挂起协程信息追加到 binary；C 协程无栈回溯,仅 sess / mtype / 挂起时长
 static void _coro_dump_one(binary_ctx *bw, uint64_t sess, const coro_info *ci, uint64_t now) {
-    binary_set_va(bw, "sess=%" PRIu64 " mtype=%s age=%" PRIu64 "ms\n",
-        sess, _message_str(ci->mtype), now - ci->since);
+    binary_set_va(bw, "sess=%" PRIu64 " co=%p mtype=%s age=%" PRIu64 "ms\n",
+        sess, (void *)ci->co, _message_str(ci->mtype), now - ci->since);
 }
 char *coro_dump(task_ctx *task, size_t *size) {
     if (TASK_MCO != task_get_type(task)
@@ -985,16 +1005,30 @@ char *coro_dump(task_ctx *task, size_t *size) {
         nfork++;
     }
     int32_t nserial = 0;
+    int32_t nwait;
+    uint64_t oldest, hold;
     coro_serial_ctx *sl;
     serial_node *nd;
     list_foreach(&coctx->serials, sit) {
         sl = UPCAST(sit, coro_serial_ctx, node);
+        nwait = 0;
+        oldest = now;
         list_foreach(&sl->waiters, wit) {
             nd = UPCAST(wit, serial_node, node);
-            binary_set_va(&bw, "serial=%p held=%d age=%" PRIu64 "ms\n",
-                (void *)sl, NULL != sl->current, now - nd->since);
-            nserial++;
+            if (nd->since < oldest) {
+                oldest = nd->since;
+            }
+            nwait++;
         }
+        hold = NULL == sl->current ? 0 : now - sl->since;
+        if (nwait > 0) {
+            binary_set_va(&bw, "serial=%p co=%p held=%d hold=%" PRIu64 "ms waiters=%d age=%" PRIu64 "ms\n",
+                (void *)sl, (void *)sl->current, NULL != sl->current, hold, nwait, now - oldest);
+        } else if (NULL != sl->current) {
+            binary_set_va(&bw, "serial=%p co=%p held=1 hold=%" PRIu64 "ms waiters=0\n",
+                (void *)sl, (void *)sl->current, hold);
+        }
+        nserial += nwait;
     }
     // sessions 是 mapco 的条目数，与 suspended（挂起协程数）不是一回事：keep 的条目摘空 waiters
     // 后仍留着复用。sessions 只增不减、suspended 长期为 0，就是 keep 条目泄漏

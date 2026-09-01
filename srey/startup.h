@@ -14,7 +14,7 @@ typedef struct config_ctx {
     uint16_t serviceid;        // 服务器唯一id
     uint16_t nnet;             // 网络线程数，0 表示使用 CPU 核心数
     uint16_t nworker;          // 工作线程数，0 表示使用 CPU 核心数
-    uint32_t stacksize;        // 协程栈大小（字节），0 使用默认值
+    uint32_t stacksize;        // 协程栈大小（字节），0 取下界；越界夹到边界，界值见 coro.h
     uint32_t twqueuelens;      // 时间轮队列大小 0 使用默认值 4096
     uint32_t logqueuelens;     // 日志队列大小 0 使用默认值 4096
     char dns[IP_LENS];         // DNS 服务器地址

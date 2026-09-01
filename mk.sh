@@ -155,7 +155,7 @@ then
 fi
 if [ $WITH_TSAN -eq 1 ]
 then
-    CFLAGS=$CFLAGS" -fsanitize=thread -fno-omit-frame-pointer -D_MCO_USE_TSAN"
+    CFLAGS=$CFLAGS" -fsanitize=thread -fno-omit-frame-pointer -DBUILD_TSAN=1"
 fi
 if [ -n "$ARCH_OPT" ]
 then

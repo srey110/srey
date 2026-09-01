@@ -214,10 +214,11 @@ static int32_t service_init(void) {
         PRINT("serviceid error.");
         return ERR_FAILED;
     }
-    coro_desc_init(config.stacksize);
     dns_set_ip(config.dns);
     log_setlv((log_level)config.loglv);
     _open_log(config.logqueuelens);
+    // 须排在 _open_log 之后:stacksize 越界时它会打一行 WARN,更早打的话 daemon 模式下进不了日志
+    coro_desc_init(config.stacksize);
     unlimit();
     g_loader = loader_init(config.nnet, config.nworker, config.twqueuelens);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE

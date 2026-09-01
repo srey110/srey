@@ -18,7 +18,9 @@ local _serial_execs -- 同上：serial 执行器状态集合（只读）
 local _nyield -- 同上：取 nyield 的函数，用于与 _closing_dispatch 报的数对账
 
 -- 遍历 coro_sess，按 coroutine stack traceback 聚类去重；返回可读字符串
--- 每个聚类记录最长挂起时长 maxage（毫秒），并按 maxage 降序输出，便于定位卡死协程
+-- 每个聚类记录最长挂起时长 maxage（毫秒），并按 maxage 降序输出，便于定位卡死协程。
+-- serial 行给执行器地址 / 持锁协程 / 持锁多久 / 排队人数与最久那个排了多久：空闲 serial 不出行，
+-- 排队时长只在真有人排队时才给。格式与计数口径同 C 侧 coro_dump
 local function _dump_coros()
     local now = task.timer_ms()
     local total = 0
@@ -55,11 +57,22 @@ local function _dump_coros()
         extra[#extra + 1] = string.format("fork_wait pending=%d age=%dms", b.pending, now - b.since)
     end
     for st in pairs(_serial_execs) do
+        local nwait, oldest = 0, now
         for _, w in ipairs(st.waiters) do
-            nserial = nserial + 1
-            extra[#extra + 1] = string.format("serial=%s held=%d age=%dms",
-                tostring(st), st.current and 1 or 0, now - w.since)
+            if w.since < oldest then
+                oldest = w.since
+            end
+            nwait = nwait + 1
         end
+        local hold = st.current and (now - st.since) or 0
+        if nwait > 0 then
+            extra[#extra + 1] = string.format("serial=%s co=%s held=%d hold=%dms waiters=%d age=%dms",
+                tostring(st), tostring(st.current), st.current and 1 or 0, hold, nwait, now - oldest)
+        elseif st.current then
+            extra[#extra + 1] = string.format("serial=%s co=%s held=1 hold=%dms waiters=0",
+                tostring(st), tostring(st.current), hold)
+        end
+        nserial = nserial + nwait
     end
     local lines = {}
     if total > 0 then

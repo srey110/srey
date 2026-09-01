@@ -1,6 +1,7 @@
 ﻿#include "srey/loader.h"
 #include "containers/hashmap.h"
 #include "srey/task.h"
+#include "srey/coro.h"
 #include "utils/utils.h"
 #include "utils/timer.h"
 
@@ -71,6 +72,7 @@ static void _loader_slot_unregister_worker(void *udata, void *assist) {
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
     rwlock_distr_unregister(&((loader_ctx *)assist)->lckcache);
 #endif
+    coro_thread_cleanup();
     _loader_slot_unregister_base(udata, assist);
 }
 // 从 start 起走 k 步的环形下标：start 与 k 都小于 n，故和 < 2n，减一次即等价于取模，
