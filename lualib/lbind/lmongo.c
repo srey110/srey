@@ -282,7 +282,7 @@ static int32_t _lmongo_requestid(lua_State *lua) {
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_hello(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -310,7 +310,7 @@ static int32_t _lmongo_pack_ping(lua_State *lua) {
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_drop(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -328,7 +328,7 @@ static int32_t _lmongo_pack_drop(lua_State *lua) {
 /// <param name="dlens" type="integer">docs 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_insert(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -349,7 +349,7 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
 /// <param name="ulens" type="integer">updates 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_update(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -370,7 +370,7 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
 /// <param name="dlens" type="integer">deletes 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_delete(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -393,7 +393,7 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
 /// <param name="nlens" type="integer">nsinfo 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -417,7 +417,7 @@ static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
 /// <param name="flens" type="integer?">filter 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_find(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -437,7 +437,7 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
 /// <param name="pllens" type="integer">pipeline 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -457,7 +457,7 @@ static int32_t _lmongo_pack_aggregate(lua_State *lua) {
 /// <param name="cursorid" type="integer">游标 ID</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_getmore(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -476,7 +476,7 @@ static int32_t _lmongo_pack_getmore(lua_State *lua) {
 /// <param name="cslens" type="integer">cursorids 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_killcursors(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -498,7 +498,7 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_distinct(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -523,7 +523,7 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
 /// <param name="ulens" type="integer?">update 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -548,7 +548,7 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_count(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -568,7 +568,7 @@ static int32_t _lmongo_pack_count(lua_State *lua) {
 /// <param name="ilens" type="integer">indexes 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_createindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -589,7 +589,7 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
 /// <param name="ilens" type="integer">indexes 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -636,7 +636,7 @@ static int32_t _lmongo_pack_auth_first(lua_State *lua) {
 /// <param name="payload" type="lightuserdata">客户端 final payload 指针，由 crypt.scram 算出
 ///     （c=,r=,p=）；不是 parse_auth_response 给的那份服务端 payload，本函数不要求 NUL 结尾</param>
 /// <param name="plens" type="integer">payload 字节数</param>
-/// <returns type="lightuserdata?">命令数据指针；payload 撑得总长超单包上限(MONGO_MAX_PACK_SIZE)时返回 nil，与数据长度一并为 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；payload 撑得总长超单包上限(MONGO_MAX_PACK_LENS)时返回 nil，与数据长度一并为 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_auth_final(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -917,7 +917,7 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃、
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃、
 /// 或连接已不再绑定该 session 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
@@ -941,7 +941,7 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_SIZE)被丢弃、
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃、
 /// 或连接已不再绑定该 session 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {

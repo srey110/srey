@@ -10,9 +10,8 @@
 #define HEAD_LESN 2 // WebSocket 帧最小头部长度（字节）
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // WebSocket 握手固定密钥后缀（RFC 6455）
 #define SECPROT_SPLIT_FLAG ","
-// 单帧载荷硬上限：MAX_PACK_SIZE 配成 0(不限制)时 PACK_TOO_LONG 恒假，全靠它兜底。
-// 同 redis.c 的 REDIS_MAX_BULK_LEN，兼挡 sizeof(pack)+dlens 在 32 位平台的加法回绕
-#define MAX_PAYLOAD_LENS (64 * 1024 * 1024)
+// 帧头最宽的一种：2 固定 + 8 扩展长度 + 4 掩码键。组包侧只用它挡长度回绕
+#define FRAME_HEAD_MAX (HEAD_LESN + sizeof(uint64_t) + MASK_KEY_LENS)
 
 // WebSocket 帧解析状态
 typedef enum parse_status {
@@ -55,9 +54,9 @@ typedef struct ws_hscheck {
     size_t vlens;
 }ws_hscheck;
 static _handshaked_push _hs_push; // 握手完成后的推送回调
-// 承载子协议表。prots.c 只在 pkfree / udfree / may_resume 三处按 secprot 下钻,
-// closed / connected / ssl_exchanged / emit_close_tail / net_recvfrom 五处一律 break——
-// 往这张表里加带关闭副作用的协议(mysql/pgsql/mongo/smtp 那类)时必须同步补上那五处
+// 承载子协议表。prots.c 只在 pkfree / udfree / may_resume 三个钩子里按 secprot 下钻,
+// _vtbl_websock 的 closed / connected / ssl_exchanged / close_tail / recvfrom 五个仍是 NULL,
+// 留 NULL 编译器不报——往这张表里加带关闭副作用的协议(mysql/pgsql/mongo/smtp 那类)时必须同步补上
 static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqtt") - 1, "mqtt"} };
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -150,30 +149,41 @@ void _websock_udfree(ud_cxt *ud) {
     FREE(ws);
     ud->context = NULL;
 }
-void _websock_secextra(ud_cxt *ud, void *val) {
+static int32_t _websock_secextra(struct watcher_ctx *watcher, struct sock_ctx *skctx, void *val) {
+    ud_cxt *ud = _evpub_get_ud(skctx);
+    const char *why = NULL;
+    websock_ctx *ws = NULL;
     // 收的是裸 fd, 必须自己认协议与握手阶段, 判据同 _websock_udfree。口径同 _http_set_nobody_cb
-    if (PACK_WEBSOCK != ud->pktype
-        || INIT == ud->status
-        || NULL == ud->context) {
-        LOG_WARN("set second ud_cxt extra data error.");
-        return;
+    if (PACK_WEBSOCK != ud->pktype) {
+        why = "not a websock connection";
+    } else if (INIT == ud->status) {
+        why = "handshake not finished";
+    } else if (NULL == ud->context) {
+        why = "no websock context";
+    } else {
+        ws = (websock_ctx *)ud->context;
+        if (NULL == ws->ud) {
+            why = "subprotocol has no builtin parser";
+        } else if (NULL != ws->ud->context) {
+            why = "already set";
+        }
     }
-    websock_ctx *ws = (websock_ctx *)ud->context;
-    if (NULL == ws->ud) {
-        LOG_WARN("set second ud_cxt extra data error.");
-        return;
+    if (NULL != why) {
+        LOG_ERROR("set second ud_cxt extra data (%s), closing the connection.", why);
+        _evpub_disconnect(watcher, skctx);
+        return ERR_FAILED;
     }
     ws->ud->context = val;
+    return ERR_OK;
 }
+// 返回值按 _on_cmd_props 的约定：非 0 表示没接管 data，由它走 fcb 回收
 static int32_t _websock_set_secextra_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     void *data, uint64_t number) {
-    (void)watcher;
     (void)number;
-    _websock_secextra(_evpub_get_ud(skctx), data);
-    return 0;
+    return ERR_OK == _websock_secextra(watcher, skctx, data) ? 0 : 1;
 }
-int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val) {
-    return ev_props(ev, fd, skid, _websock_set_secextra_cb, NULL, val, 0);
+int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val, free_cb fcb) {
+    return ev_props(ev, fd, skid, _websock_set_secextra_cb, fcb, val, 0);
 }
 // 按表单趟扫描头部：每项命中一次即置位，全齐提前收工。
 // _http_check_keyval 走 buf_icompare，先比长度(O(1))，各键长度均不同，无需首字符 switch
@@ -507,7 +517,7 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
     websock_pack_ctx *head = NULL, *tail = NULL, *node;
     struct mqtt_pack_ctx *mpack;
     // ws->buf 一次性吐空,一帧内含多个完整 MQTT 包时串成链表,避免余包积压到无新数据触发才被拾起
-    while (NULL != (mpack = mqtt_unpack(client, ws->buf, ws->ud, status))) {
+    while (NULL != (mpack = mqtt_unpack(NULL, INVALID_SOCK, 0, client, ws->buf, ws->ud, NULL, status))) {
         CALLOC(node, 1, sizeof(websock_pack_ctx));
         node->fin = 1;
         node->prot = WS_BINARY;
@@ -602,7 +612,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         pllens = ntohs(pllens);
-        if (PACK_TOO_LONG(pllens)) {
+        if ((uint64_t)pllens > WS_MAX_PAYLOAD_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
@@ -616,8 +626,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         pllens = ntohll(pllens);
-        if (PACK_TOO_LONG(pllens)
-            || pllens > MAX_PAYLOAD_LENS) {
+        if (pllens > WS_MAX_PAYLOAD_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
@@ -698,8 +707,9 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
     ud->status = DATA;
     return _websock_parse_data(buf, client, ud, status);
 }
-websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
-    buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+void *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)size;
     websock_pack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:
@@ -734,11 +744,10 @@ static size_t _websock_create_callens(char *key, size_t dlens) {
 }
 // 构造 WebSocket 帧：写入头部（含扩展长度和掩码），有掩码时对数据进行 XOR 加密
 static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *data, size_t dlens, size_t *size) {
-    // 与解包侧同一个上限：组得出对端必然拒收的帧只会换来一次无诊断的断连
-    if (PACK_TOO_LONG(dlens)
-        || dlens > MAX_PAYLOAD_LENS) {
-        LOG_ERROR("websock payload %zu exceeds MAX_PACK_SIZE %d / %d.", dlens,
-                  (int32_t)MAX_PACK_SIZE, (int32_t)MAX_PAYLOAD_LENS);
+    // 只挡 _websock_create_callens 的加法回绕:回绕后按小尺寸分配却按大尺寸写。
+    // 不拿 WS_MAX_PAYLOAD_LENS 卡——那是本地接收策略,对端多是浏览器之类,收几 MB 的帧没问题
+    if (dlens > SIZE_MAX - FRAME_HEAD_MAX) {
+        LOG_ERROR("websock payload %zu overflows the frame length.", dlens);
         *size = 0;
         return NULL;
     }

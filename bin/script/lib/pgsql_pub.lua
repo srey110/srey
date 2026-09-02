@@ -11,7 +11,7 @@
 -- 若给它们加复位而不写内容，只会把上一次有用的错误抹成空串，更难排查。
 
 local srey = require("lib.srey")
-local pgsql = require("pgsql")-- C 绑定，只用 pack_type / erro
+local pgsql = require("srey.pgsql")-- C 绑定，只用 pack_type / erro
 
 local M = {}
 

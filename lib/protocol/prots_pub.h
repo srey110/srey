@@ -3,6 +3,17 @@
 
 #include "base/structs.h"
 
+#define HTTP_MAX_HEADLENS (ONEK * 4) // HTTP 头部块 / trailer 块 / chunk 长度行的总长；组包侧也用它，超了对端整包解析失败
+#define HTTP_MAX_CONTENT_LENS 65535 // HTTP Content-Length 声明的 body 总长，整包一次缓冲
+#define HTTP_MAX_CHUNK_LENS 65535 // HTTP 单个 chunk 的声明长度，每块一次分配；不限 body 总长
+#define WS_MAX_PAYLOAD_LENS 65535 // WebSocket 单帧载荷
+#define MQTT_MAX_PACK_LENS 65535 // MQTT 单条报文，含固定头
+#define CUSTZ_MAX_PACK_LENS 65535 // 自定义协议数据体
+#define SMTP_MAX_PACK_LENS 65535 // SMTP 单条响应(可多行)总字节，也管未见 CRLF 前的累积与 AUTH 挑战体
+#define REDIS_MAX_LINE_LENS 65535 // Redis 长度行尚未收全时允许累积的字节数
+#define REDIS_MAX_BULK_LENS (512 * 1024 * 1024) // Redis Bulk String，对齐 proto-max-bulk-len 默认值
+#define MONGO_MAX_PACK_LENS (64 * 1024 * 1024) // MongoDB 单包，协议规范值
+
 // mysql pgsql monogo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=上层 handle 持有者数）
 // 建连前 acquire：仅上层持有(ref>0)时 +1，C 借用(ref=0)短路
 #define PROT_REF_ACQUIRE(ptr) \
@@ -97,6 +108,7 @@ typedef struct prot_emit {
     prots_emit_cb emit;
     prots_emit_end_cb end;
 }prot_emit;
+struct ev_ctx;
 
 /// <summary>
 /// 解析时间串里的小数秒 ".ffffff" 为微秒：从首个 '.' 起最多取 6 位，遇非数字即停，按补零对齐到 6 位。
@@ -109,6 +121,8 @@ uint32_t parse_usec_frac(const char *str);
 /// (指针, 长度) 的十进制浮点文本转 double，严格判定：整段必须被消费完、不接受空串、上溢即拒
 /// ——三条都不是 strtod 自带的，上溢只有 errno 认得出来。
 /// 下溢同样置 ERANGE 但返回的是正确的次正规数（DOUBLE 列的常规输出），放行。
+/// strtod 直接认出的 "Infinity"/"-Infinity"/"NaN" 字面量是 PostgreSQL float 列的正常输出，
+/// 不置 ERANGE 因而放行，由业务自行处置（test_pgsql_reader_double_bounds 锁了这条契约）。
 /// mysql / pgsql 两侧的文本协议共用，别再各写一份
 /// </summary>
 /// <param name="data">源字节段(可非 NUL 结尾)</param>

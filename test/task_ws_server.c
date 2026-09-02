@@ -5,6 +5,7 @@ static int32_t _prt = 0;
 
 // 收到 WebSocket 帧：
 //   分片帧 - 收齐完整消息（PROT_SLICE_END）后回复三帧分片消息（text_fin0 + continua_fin0 + continua_fin1）
+//   MQTT 子协议帧 - 收到 CONNECT 回 CONNACK
 //   非分片帧 - 回显 text/binary，ping 回 pong，close 关闭连接
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
@@ -25,6 +26,23 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
             frame = websock_pack_continua(0, 1, "c", 1, &fsize);
             ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+        }
+        return;
+    }
+    // MQTT over WS：子协议帧的载荷经 websock_secpack 取 MQTT 包，收到 CONNECT 回 CONNACK。
+    // secprot 每帧都带，控制帧与零长帧的 secpack 为 NULL（见 websock.h），按 secpack 分流
+    // 才不会把 ping / close 一起吞掉
+    mqtt_pack_ctx *mpack = (mqtt_pack_ctx *)websock_secpack(pack);
+    if (PACK_MQTT == websock_secprot(pack)
+        && NULL != mpack) {
+        if (MQTT_CONNECT == mpack->fixhead.prot) {
+            size_t alens;
+            char *ack = mqtt_pack_connack((mqtt_protversion)mpack->version, 0, 0, NULL, &alens);
+            if (NULL != ack) {
+                frame = websock_pack_binary(0, 1, ack, alens, &fsize);
+                ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+                FREE(ack);
+            }
         }
         return;
     }

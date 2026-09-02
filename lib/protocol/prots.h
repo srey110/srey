@@ -22,7 +22,8 @@ void prots_free(void);
 /// <param name="data">待释放的包指针</param>
 void prots_pkfree(pack_type pktype, void *data);
 /// <summary>
-/// 释放udp解包数据包内存，根据协议类型调用对应的释放函数
+/// 释放udp解包数据包内存，根据协议类型调用对应的释放函数。
+/// 当前所有 UDP 协议的包都是裸 MALLOC，函数体等价于一个 FREE，pktype 形参留给将来按协议分化
 /// </summary>
 /// <param name="pktype">协议包类型</param>
 /// <param name="data">待释放的包指针</param>

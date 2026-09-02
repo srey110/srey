@@ -23,7 +23,8 @@ int32_t _pgsql_may_resume(void *data);
 /// <param name="ud">连接上下文，内部维护解析状态</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>命令阶段返回 pgpack_ctx，认证阶段内部消费返回 NULL；数据不足或出错返回 NULL</returns>
-void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
+void *pgsql_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 初始化 pgsql 连接参数
 /// </summary>

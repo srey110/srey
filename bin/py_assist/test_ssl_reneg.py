@@ -351,7 +351,7 @@ def case_tls13_key_update():
         _assert200(_http_get(c)[0])
         c.key_update()
         _assert200(_http_get(c)[0])
-        big = b"y" * (16 * 1024)                    # < MAX_PACK_SIZE(65535)，避免 PACK_TOO_LONG
+        big = b"y" * (16 * 1024)
         h, b = _http_post(c, big)
         _assert200(h)
         if b != big:
@@ -378,7 +378,7 @@ def case_large_multirecord_echo():
     c = TLSClient(HOST, PORT, TLS1_3_VERSION)
     try:
         c.connect()
-        big = os.urandom(60000)                     # < MAX_PACK_SIZE(65535)，约 4 条 TLS 记录
+        big = os.urandom(60000)                     # < HTTP_MAX_CONTENT_LENS(65535)，约 4 条 TLS 记录
         _echo_check(c, big)
         return True
     finally:
@@ -436,7 +436,7 @@ def case_key_update_then_large_echo():
         if "TLSv1.3" != c.version():
             raise SkipError("未协商到 TLS1.3（实际 %s）" % c.version())
         c.key_update()
-        _echo_check(c, os.urandom(60000))           # < MAX_PACK_SIZE(65535)
+        _echo_check(c, os.urandom(60000))           # < HTTP_MAX_CONTENT_LENS(65535)
         return True
     finally:
         c.close()

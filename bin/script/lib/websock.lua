@@ -150,7 +150,8 @@ end
 ---解析 ws:// 或 wss:// URL，建立 WebSocket 连接并完成握手
 ---@param ws string WebSocket URL，如 "ws://host:port/path"
 ---@param sslname SSL_NAME wss 时必须为有效 SSL 上下文名；ws 时传 SSL_NAME.NONE
----@param secprot string? 子协议名（Sec-WebSocket-Protocol），可逗号分隔多个
+---@param secprot string? 子协议名（Sec-WebSocket-Protocol），可逗号分隔多个。
+--- 协商到 "mqtt" 时本函数只完成 WS 握手，上下文还须经 mqtt.ws_bind 注入，约束见该函数文档
 ---@param netev NET_EV? 事件订阅掩码
 ---@return integer fd socket fd；任一步失败返回 INVALID_SOCK
 ---@return integer? skid 连接 skid；仅在 fd 有效时返回
@@ -169,9 +170,8 @@ function wbsk.connect(ws, sslname, secprot, netev)
 end
 
 -- ── 控制帧构造 ────────────────────────────────────────────────────────────
--- 本节与下节的构造函数有两种情况返回 nil, nil，调用方一律须判（下面 _continua /
--- _send_end_frame 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key；
--- 载荷超单帧上限 MAX_PACK_SIZE（与解包侧同一个值，不分方向，server 侧同样会返 nil）
+-- 本节与下节的构造函数都可能返回 nil, nil，调用方一律须判（下面 _continua /
+-- _send_end_frame 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key
 
 ---构造 ping 控制帧（client=1 加掩码）
 ---@type fun(client:integer):lightuserdata?, integer?
@@ -243,9 +243,9 @@ end
 
 ---内部流式发送：将 func(...) 产生的数据按 WebSocket 分片协议逐帧发送；
 ---发送 fin=1 空 continuation 帧标记消息结束
--- websock_pack_* 返 nil 有两种原因（具体哪种 C 侧已打日志，这里不复述）：客户端帧取不到
--- 掩码 key 的熵，或载荷超单帧上限 MAX_PACK_SIZE。不判空的话 nil 一路走到 srey.send 里的
--- lpub_check_buf，撞 "string or light userdata expected" 把整条协程打断
+-- websock_pack_* 返 nil 有两种原因（C 侧已打日志，这里不复述）：客户端帧取不到掩码 key 的熵；
+-- 载荷长度大到使帧长回绕。不判空的话 nil 一路走到 srey.send 里的 lpub_check_buf，撞
+-- "string or light userdata expected" 把整条协程打断
 local function _send_end_frame(fd, skid, client)
     local data, size = wbsk.continua(client, 1, "", 0)
     if nil == data then

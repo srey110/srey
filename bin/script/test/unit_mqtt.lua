@@ -4,7 +4,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local utils  = require("srey.utils")
 local mqtt   = require("lib.mqtt")
-local mqttc  = require("mqtt")-- 绑定层原始接口，测版本校验用
+local mqttc  = require("srey.mqtt")-- 绑定层原始接口，测版本校验用
 local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
 -- 取 pack 返回数据的首字节高 4 位（MQTT 控制类型）

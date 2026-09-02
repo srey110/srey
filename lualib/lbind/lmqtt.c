@@ -228,6 +228,25 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
     lua_pushinteger(lua, (lua_Integer)skid);
     return 2;
 }
+/// <summary>
+/// 给一条已完成 WebSocket 握手、且协商到 "mqtt" 子协议的连接绑定 MQTT 上下文。
+/// 客户端方向没有别的建立点：服务端方向由协议层解 CONNECT 时自建，而客户端收到的第一条是
+/// CONNACK，那里只认已存在的上下文，缺了就判协议错并断连。
+/// 须在发出 MQTT CONNECT 之前调用——它与随后的 srey.send 同走一条命令队列，先投的先生效
+/// </summary>
+/// <param name="fd" type="integer">socket fd，来自 websock 的连接接口</param>
+/// <param name="skid" type="integer">链接 ID</param>
+/// <param name="version" type="integer">协议版本 mqtt_protversion，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
+/// <returns type="boolean">true 命令已投递，fd 非法返回 false；true 也只表示投递成功、不代表
+/// 真的绑上了——非 WebSocket 连接、握手未完成、子协议无内建解析器、已绑过一次，这几种都
+/// 判误用：协议层拒收并就地断连。被拒时上下文已由绑定层回收，业务侧不必也不能再管</returns>
+static int32_t _lmqtt_ws_bind(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    mqtt_protversion version = _lmqtt_check_version(lua, 3);
+    LPUB_CUR_TASK(lua, task);
+    return lpub_rtn_bool(lua, ERR_OK == mqtt_ws_bind(task, fd, skid, version));
+}
 // ---- 组包函数（模块级，第 1 参均为 version: mqtt_protversion） ----
 /// <summary>
 /// 构造 MQTT CONNECT 包
@@ -944,6 +963,7 @@ LUAMOD_API int luaopen_mqtt(lua_State *lua) {
     // 模块表：所有函数均为模块级
     luaL_Reg reg_mod[] = {
         { "try_connect", _lmqtt_try_connect },
+        { "ws_bind", _lmqtt_ws_bind },
         { "props", _lmqtt_props_new },
         { "pack_props", _lmqtt_props_of },
         { "connect_will_props", _lmqtt_connect_will_props },

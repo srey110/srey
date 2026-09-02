@@ -3,8 +3,8 @@
 --          local b = bson.new()          -- 构建器
 --          local iter = bson.iter.new(b) -- 迭代器
 
-local cbson      = require("bson")
-local cbson_iter = require("bson.iter")
+local cbson      = require("srey.bson")
+local cbson_iter = require("srey.bson.iter")
 
 cbson.iter = cbson_iter
 

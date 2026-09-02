@@ -628,7 +628,7 @@ static void test_bson_cat_bounds(CuTest *tc) {
     big[1] = (char)0x11;
     big[2] = (char)0x01;
     // 结构合法的大文档照收:字节数上限不归 bson_cat 管(取决于承载协议,如 mongo 的
-    // MONGO_MAX_PACK_SIZE)。换个 ctx 拼,免得把 dst 撑大影响后面的 before 比对
+    // MONGO_MAX_PACK_LENS)。换个 ctx 拼,免得把 dst 撑大影响后面的 before 比对
     bson_ctx bigdst;
     bson_init(&bigdst, NULL, 0);
     CuAssertIntEquals(tc, ERR_OK, bson_cat(&bigdst, big, 70000));

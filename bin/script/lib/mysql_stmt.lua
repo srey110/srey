@@ -5,7 +5,7 @@
 -- 不再使用时调用 close 通知服务端释放句柄——GC 只做本地释放，不会替你发 COM_STMT_CLOSE。
 
 local srey   = require("lib.srey")
-local stmt   = require("mysql.stmt")
+local stmt   = require("srey.mysql.stmt")
 local mpub   = require("lib.mysql_pub")-- 与 mysql.lua 共用的请求收尾，见该模块头部
 
 -- mysql_stmt_ctx：预处理语句执行上下文。

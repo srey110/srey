@@ -1,11 +1,13 @@
 ﻿#include "protocol/custz.h"
 #include "protocol/custz_head.h"
 
-void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *status) {
+void *custz_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)ev; (void)fd; (void)skid; (void)client;
     size_t hlens;
     int32_t rtn = ERR_FAILED;
-    // 根据包类型调用对应的头部解码函数
-    switch (pktype) {
+    // 根据包类型调用对应的头部解码函数；子类型取自 ud，与另外九个 *_unpack 同签名
+    switch ((pack_type)ud->pktype) {
     case PACK_CUSTZ_FIXED:
         rtn = _custz_decode_fixed(buf, &hlens, size, status);
         break;
@@ -23,7 +25,7 @@ void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *sta
         return NULL;
     }
     // 数据体长度超限，协议错误
-    if (PACK_TOO_LONG(*size) || *size > SIZE_MAX - hlens) {
+    if (*size > CUSTZ_MAX_PACK_LENS) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
@@ -47,12 +49,6 @@ void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *sta
     return msg;
 }
 void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size) {
-    if (PACK_TOO_LONG(lens)) {
-        // 置 0 的理由同三个 _custz_encode_*，见 custz_head.h
-        *size = 0;
-        LOG_ERROR("custz pack body %zu exceeds MAX_PACK_SIZE %d.", lens, (int32_t)MAX_PACK_SIZE);
-        return NULL;
-    }
     size_t hlens;
     char *pack = NULL;
     // 根据包类型调用对应的头部编码函数，分配头部+数据体的连续内存

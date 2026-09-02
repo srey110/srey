@@ -6,6 +6,20 @@
 #include "event/uev.h"
 #endif
 
+// ev_ud_* 四个 setter 只差字段名与 cast: 展开成"props 回调 + 对外入口"一对。
+// 值走 number 而非 data,故不需要 fcb
+#define DEF_UD_SETTER(field, type)  \
+static int32_t _cmd_ud_##field(struct watcher_ctx *watcher, struct sock_ctx *skctx, \
+    void *data, uint64_t number) { \
+    (void)watcher; \
+    (void)data; \
+    _evpub_get_ud(skctx)->field = (type)number; \
+    return 0; \
+} \
+int32_t ev_ud_##field(ev_ctx *ctx, SOCKET fd, uint64_t skid, type field) { \
+    return ev_props(ctx, fd, skid, _cmd_ud_##field, NULL, NULL, field); \
+}
+
 int32_t _evpub_checkid(struct sock_ctx *skctx, const uint64_t skid) {
 #ifdef EV_IOCP
     return _iocp_check_skid(skctx, skid);
@@ -162,12 +176,7 @@ static int32_t _ev_close(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     void *data, uint64_t number) {
     (void)data;
     (void)number;
-#ifdef EV_IOCP
-    (void)watcher;
-    _iocp_disconnect(skctx);
-#else
-    _uev_disconnect(watcher, skctx);
-#endif
+    _evpub_disconnect(watcher, skctx);
     return 0;
 }
 int32_t ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid) {
@@ -501,46 +510,10 @@ int32_t ev_udp_loop(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t enable) {
     arg->loop = enable ? 1 : 0;
     return ev_props(ctx, fd, skid, _udp_opt_cb, _free, arg, 0);
 }
-static int32_t _cmd_ud_pktype(struct watcher_ctx *watcher, struct sock_ctx *skctx,
-    void *data, uint64_t number) {
-    (void)watcher;
-    (void)data;
-    _evpub_get_ud(skctx)->pktype = (subtype_t)number;
-    return 0;
-}
-int32_t ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype) {
-    return ev_props(ctx, fd, skid, _cmd_ud_pktype, NULL, NULL, pktype);
-}
-static int32_t _cmd_ud_status(struct watcher_ctx *watcher, struct sock_ctx *skctx,
-    void *data, uint64_t number) {
-    (void)watcher;
-    (void)data;
-    _evpub_get_ud(skctx)->status = (uint8_t)number;
-    return 0;
-}
-int32_t ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status) {
-    return ev_props(ctx, fd, skid, _cmd_ud_status, NULL, NULL, status);
-}
-static int32_t _cmd_ud_sess(struct watcher_ctx *watcher, struct sock_ctx *skctx,
-    void *data, uint64_t number) {
-    (void)watcher;
-    (void)data;
-    _evpub_get_ud(skctx)->sess = number;
-    return 0;
-}
-int32_t ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess) {
-    return ev_props(ctx, fd, skid, _cmd_ud_sess, NULL, NULL, sess);
-}
-static int32_t _cmd_ud_handle(struct watcher_ctx *watcher, struct sock_ctx *skctx,
-    void *data, uint64_t number) {
-    (void)watcher;
-    (void)data;
-    _evpub_get_ud(skctx)->handle = (name_t)number;
-    return 0;
-}
-int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle) {
-    return ev_props(ctx, fd, skid, _cmd_ud_handle, NULL, NULL, handle);
-}
+DEF_UD_SETTER(pktype, subtype_t)
+DEF_UD_SETTER(status, uint8_t)
+DEF_UD_SETTER(sess, uint64_t)
+DEF_UD_SETTER(handle, name_t)
 static int32_t _cmd_ud_context(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     void *data, uint64_t number) {
     (void)watcher;
@@ -548,8 +521,8 @@ static int32_t _cmd_ud_context(struct watcher_ctx *watcher, struct sock_ctx *skc
     _evpub_get_ud(skctx)->context = data;
     return 0;
 }
-int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
-    return ev_props(ctx, fd, skid, _cmd_ud_context, NULL, extra, 0);
+int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra, free_cb fcb) {
+    return ev_props(ctx, fd, skid, _cmd_ud_context, fcb, extra, 0);
 }
 void _cmd_drain_free(cmd_ctx *cmd) {
     sock_ctx *skctx;

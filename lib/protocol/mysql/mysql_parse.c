@@ -118,7 +118,8 @@ static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
         binary_offset(breader, next);
     }
 }
-int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
+// 解析 OK 响应包，更新 mysql->last_id 和 mysql->affected_rows
+static int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
     int32_t _rtn;
     uint64_t size = _mysql_get_lenenc(breader, &_rtn);
     if (ERR_OK != _rtn) {
@@ -134,7 +135,7 @@ int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
         return ERR_FAILED;
     }
     ok->status_flags = (int16_t)binary_get_integer(breader, 2, 1);
-    ok->warnings = (int16_t)binary_get_integer(breader, 2, 1);
+    binary_get_skip(breader, 2);// warnings：本库不用，只推进读位置
     if (BIT_CHECK(ok->status_flags, SERVER_SESSION_STATE_CHANGED)) {
         _mpack_ok_track(mysql, breader);
     }
@@ -149,49 +150,43 @@ static int32_t _mpack_eof(binary_ctx *breader, mpack_eof *eof) {
     if (!binary_have(breader, 4)) {
         return ERR_FAILED;
     }
-    eof->warnings = (int16_t)binary_get_integer(breader, 2, 1);
+    binary_get_skip(breader, 2);// warnings：本库不用，只推进读位置
     eof->status_flags = (int16_t)binary_get_integer(breader, 2, 1);
     return ERR_OK;
 }
 // ERR 包体：error_code(2) + '#' + sql_state(5) + 错误串。各段读之前都要比剩余字节——
 // 报文长度由对端决定，截断的包只该当"没带"而不是撞上 binary_get_* 的断言把进程 abort
-void _mpack_err(mysql_ctx *mysql, binary_ctx *breader, mpack_err *err) {
-    err->error_code = 0;
-    err->error_msg.data = NULL;
-    err->error_msg.lens = 0;
+void _mpack_err(mysql_ctx *mysql, binary_ctx *breader) {
     if (!binary_have(breader, 2)) {
         mysql->error_code = 0;
         mysql->error_msg[0] = '\0';
         return;
     }
-    err->error_code = (int16_t)binary_get_integer(breader, 2, 1);
+    mysql->error_code = (int16_t)binary_get_integer(breader, 2, 1);
     // sql_state 段只在 CLIENT_PROTOCOL_41 协商之后才有，握手前的 ERR(1040/1129/1130)不带它，
     // 故按 '#' 标记判定而不是无条件跳 6 字节——跳错了就从错误正文里啃掉六个字符
     if (binary_have(breader, 6)
         && '#' == *binary_at(breader, breader->offset)) {
         binary_get_skip(breader, 6);//sql_state_marker sql_state
     }
-    err->error_msg.lens = binary_remain(breader);
-    mysql->error_code = err->error_code;
-    if (err->error_msg.lens > 0) {
-        err->error_msg.data = binary_get_binary(breader, err->error_msg.lens);
-        copy_bounded(err->error_msg.data, err->error_msg.lens,
+    size_t mlens = binary_remain(breader);
+    if (mlens > 0) {
+        copy_bounded(binary_get_binary(breader, mlens), mlens,
                      mysql->error_msg, sizeof(mysql->error_msg), 0);
     } else {
         mysql->error_msg[0] = '\0';
     }
 }
-// 分配并初始化一个新的 mpack_ctx，关联当前序列号和 payload 指针
-static mpack_ctx *_mpack_new(mysql_ctx *mysql, char *payload) {
+// 分配并初始化一个新的 mpack_ctx，挂上 payload 指针
+static mpack_ctx *_mpack_new(char *payload) {
     mpack_ctx *mpack;
     CALLOC(mpack, 1, sizeof(mpack_ctx));
-    mpack->sequence_id = mysql->id;
     mpack->payload = payload;
     return mpack;
 }
 // 解析简单命令响应（COM_INIT_DB / COM_PING / COM_STMT_RESET）：首字节区分 OK / ERR
 static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
-    mpack_ctx *mpack = _mpack_new(mysql, breader->data);
+    mpack_ctx *mpack = _mpack_new(breader->data);
     if (MYSQL_OK == binary_get_uint8(breader)) {
         mpack->pack_type = MPACK_OK;
         MALLOC(mpack->pack, sizeof(mpack_ok));
@@ -202,8 +197,7 @@ static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, 
         }
     } else {
         mpack->pack_type = MPACK_ERR;
-        MALLOC(mpack->pack, sizeof(mpack_err));
-        _mpack_err(mysql, breader, mpack->pack);
+        _mpack_err(mysql, breader);
     }
     mysql->cur_cmd = 0;
     return mpack;
@@ -230,7 +224,7 @@ void _mpack_reader_free(void *pack) {
 // 初始化结果集读取器并挂载到 mysql->mpack，准备接收列字段描述
 static int32_t _mpack_reader_new(mysql_ctx *mysql, binary_ctx *breader, mpack_type pktype) {
     int32_t _rtn;
-    mysql->mpack = _mpack_new(mysql, NULL);
+    mysql->mpack = _mpack_new(NULL);
     mysql_reader_ctx *reader;
     CALLOC(reader, 1, sizeof(mysql_reader_ctx));
     reader->pack_type = pktype;
@@ -307,7 +301,7 @@ static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *bread
     return ERR_OK;
 }
 // 解析二进制协议（COM_STMT_EXECUTE）结果集中的一行数据，字段值按类型固定或 lenenc 长度读取
-int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
+static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
     int32_t off;
     int32_t _rtn;
     uint64_t vlens;
@@ -424,10 +418,9 @@ static mpack_ctx *_mpack_reader_err(mysql_ctx *mysql, binary_ctx *breader) {
     _mysql_pkfree(mysql->mpack);
     mysql->mpack = NULL;
     binary_get_skip(breader, 1);
-    mpack_ctx *mpack = _mpack_new(mysql, breader->data);
+    mpack_ctx *mpack = _mpack_new(breader->data);
     mpack->pack_type = MPACK_ERR;
-    MALLOC(mpack->pack, sizeof(mpack_err));
-    _mpack_err(mysql, breader, mpack->pack);
+    _mpack_err(mysql, breader);
     mysql->parse_status = 0;
     mysql->cur_cmd = 0;
     return mpack;
@@ -514,8 +507,10 @@ static int32_t _mpack_parse_lenenc_field(binary_ctx *breader, buf_ctx *buf) {
     buf->data = binary_get_binary(breader, buf->lens);
     return ERR_OK;
 }
-// 解析单个列字段描述包（Column Definition），填充 mpack_field 结构体
-int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
+// 解析单个列字段描述包（Column Definition），填充 mpack_field 结构体。
+// 返 ERR_OK 时 breader->data 的所有权转给 field->payload（5 个名字的 buf_ctx 指向其中），
+// 调用方不得再 FREE，须由 mpack_field 的持有者释放；返 ERR_FAILED 时不转移，仍由调用方 FREE
+static int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
     int32_t _rtn;
     uint64_t lens = _mysql_get_lenenc(breader, &_rtn);
     if (ERR_OK != _rtn
@@ -627,7 +622,7 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
         uint8_t first = (uint8_t)(binary_at(breader, 0)[0]);
         if (MYSQL_OK == first) {
             binary_get_skip(breader, 1);
-            mpack = _mpack_new(mysql, breader->data);
+            mpack = _mpack_new(breader->data);
             mpack->pack_type = MPACK_OK;
             MALLOC(mpack->pack, sizeof(mpack_ok));
             mpack_ok *ok = mpack->pack;
@@ -645,10 +640,9 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
             }
         } else if (MYSQL_ERR == first) {
             binary_get_skip(breader, 1);
-            mpack = _mpack_new(mysql, breader->data);
+            mpack = _mpack_new(breader->data);
             mpack->pack_type = MPACK_ERR;
-            MALLOC(mpack->pack, sizeof(mpack_err));
-            _mpack_err(mysql, breader, mpack->pack);
+            _mpack_err(mysql, breader);
             mysql->cur_cmd = 0;
         } else if (MPACK_QUERY == restype && MYSQL_LOCAL_INFILE == first) {
             // 不支持 LOCAL INFILE，直接报错
@@ -784,7 +778,7 @@ static int32_t _mpack_stmt_new(mysql_ctx *mysql, binary_ctx *breader) {
     if (!binary_have(breader, 8)) {// stmt_id(4) + field_count(2) + params_count(2)
         return ERR_FAILED;
     }
-    mysql->mpack = _mpack_new(mysql, NULL);
+    mysql->mpack = _mpack_new(NULL);
     mysql->mpack->pack_type = MPACK_STMT_PREPARE;
     mysql_stmt_ctx *stmt;
     CALLOC(stmt, 1, sizeof(mysql_stmt_ctx));
@@ -811,10 +805,9 @@ static mpack_ctx *_mpack_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, bin
     if (0 == mysql->parse_status) {
         if (MYSQL_ERR == (uint8_t)(binary_at(breader, 0)[0])) {
             binary_get_skip(breader, 1);
-            mpack_ctx * mpack = _mpack_new(mysql, breader->data);
+            mpack_ctx * mpack = _mpack_new(breader->data);
             mpack->pack_type = MPACK_ERR;
-            MALLOC(mpack->pack, sizeof(mpack_err));
-            _mpack_err(mysql, breader, mpack->pack);
+            _mpack_err(mysql, breader);
             mysql->cur_cmd = 0;
             return mpack;
         }

@@ -295,14 +295,14 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     }
     return ERR_OK;
 }
-int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
+int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
+    (void)ssl;// mysql 不做通道绑定，形参只为与 pgsql 同签名、共用 prots 的挂钩
     return _mysql_auth_response(ud->context, ev, ud);
 }
 // 认证失败：解析错误包，并把服务端给的原因交给等待者。
 // 只置 PROT_ERROR 的话，调用方要等随后的 ev_close 唤醒，拿到的是一次无区分度的失败（同 pgsql 的 case 'E'）
 static void _mysql_auth_err(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, int32_t *status) {
-    mpack_err err;
-    _mpack_err(mysql, breader, &err);
+    _mpack_err(mysql, breader);
     BIT_SET(*status, PROT_ERROR);
     // 载荷所有权交给 _hs_push；空串仍传 NULL，不给上层一个长度为 0 的非空指针
     size_t lens = strlen(mysql->error_msg);
@@ -691,7 +691,9 @@ static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *s
     binary_init(&breader, payload, payload_lens, 0);
     return _mpack_parser(mysql, buf, &breader, status);
 }
-void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+void *mysql_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)fd; (void)skid; (void)client; (void)size;
     if (NULL == ud->context) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;

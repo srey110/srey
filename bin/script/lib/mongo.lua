@@ -5,8 +5,8 @@
 -- srey.close 关闭；C 层 mongo 模块只做命令组包/解包。
 
 local srey = require("lib.srey")
-local mongo = require("mongo")
-local mongo_session = require("mongo.session")
+local mongo = require("srey.mongo")
+local mongo_session = require("srey.mongo.session")
 local pub = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 -- mongo_ctx：MongoDB 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。

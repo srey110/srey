@@ -211,7 +211,8 @@ int32_t evssl_register(const char *name, evssl_ctx *evssl) {
         return ERR_FAILED;
     }
     certs_ctx cert;
-    SNPRINTF(cert.name, sizeof(cert.name), "%s", name);
+    // 上面的 strlen(name) >= EVSSL_NAME_LEN 已挡过，装得下
+    safe_fill_str(cert.name, sizeof(cert.name), name);
     cert.ssl = evssl;
     int32_t rtn;
     rwlock_wrlock(_rwlck_certs);

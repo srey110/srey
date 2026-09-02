@@ -4,24 +4,21 @@
 #include "utils/buffer.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
+#include "protocol/prots_pub.h"
 
-// HTTP 头部块最大允许长度（4 KB）。解析侧据此拒收超长头部，打包侧也需要它：
-// 发出去的响应若超过本值，对端（含 srey 自己的 http 解析器）会整包解析失败
-#define MAX_HEADLENS (ONEK * 4)
 typedef struct http_header_ctx {
     buf_ctx key;
     buf_ctx value;
 }http_header_ctx;
 struct http_pack_ctx;
-struct ev_ctx;
 
 // 释放 http_pack_ctx 结构体及其内部资源
-void _http_pkfree(struct http_pack_ctx *pack);
+void _http_pkfree(void *data);
 // 释放与 ud_cxt 关联的 http 上下文资源
 void _http_udfree(ud_cxt *ud);
 // 连接关闭时的协议收尾：正按"关闭界定 body"接收(见 http_unpack 的 client 说明)时返回一个空载荷
 // 末片包，调用方须把它当 PROT_SLICE_END 投给业务并负责释放；其余情形返 NULL
-struct http_pack_ctx *_http_on_close(ud_cxt *ud);
+void *_http_on_close(ud_cxt *ud);
 /// <summary>
 /// HTTP 解包：从缓冲区解析完整 HTTP 报文（头部 + 内容 / chunked）
 /// </summary>
@@ -35,7 +32,8 @@ struct http_pack_ctx *_http_on_close(ud_cxt *ud);
 /// 规则 1 的 HEAD 那半靠发起方登记：本接口拿不到请求方法，须由 http_set_method 登记</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 http_pack_ctx，数据不足或出错返回 NULL</returns>
-struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status);
+void *http_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 获取状态码对应描述
 /// </summary>

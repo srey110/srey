@@ -31,7 +31,6 @@
 #define MAX_SEND_SIZE       4096 // 单次发送最大字节数
 #define MAX_SEND_NIOV       16 // scatter/gather 发送最大 iov 数量
 #define MAX_EXPAND_NIOV     4 // scatter/gather 接收最大 iov 数量
-#define MAX_PACK_SIZE       65535 // 最大数据包大小，0 表示不限制
 #define MAX_SENDQ_CNT       ONEK // 单 sock 发送队列上限(buf 数)；超限 TCP 丢数据并断连、UDP 丢包；0 表示不限制
 #define INIT_SENDBUF_LEN    32 // 发送缓冲区初始长度
 #define WB_WARN_INIT_SIZE   (1024 * 1024) // 单 sock 发送缓冲字节告警首阈值；触发后翻倍（1MB→2MB→4MB...），队列清空后复位；0 表示禁用
@@ -54,7 +53,5 @@
 #else
     #define FSQU_MPQ 1 //mpq
 #endif
-
-#define PACK_TOO_LONG(size) (0 != MAX_PACK_SIZE && (uint64_t)(size) >= MAX_PACK_SIZE) // 判断数据包是否超过最大限制
 
 #endif//CONFIG_H_

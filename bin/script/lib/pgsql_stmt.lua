@@ -4,8 +4,8 @@
 -- 执行完毕后调用 close 通知服务端释放语句资源。
 
 local srey   = require("lib.srey")
-local pgsql  = require("pgsql")
-local reader = require("pgsql.reader")
+local pgsql  = require("srey.pgsql")
+local reader = require("srey.pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 与 pgsql.lua 共用的失败原因，见该模块头部
 
 ---@enum PGPACK_TYPE

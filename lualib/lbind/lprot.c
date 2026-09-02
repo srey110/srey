@@ -133,7 +133,7 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
 /// <param name="pktype" type="integer">协议子类型，只接受 PACK_CUSTZ_FIXED / FLAG / VAR，其余报错</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata?">打包后的数据指针；载荷达到 MAX_PACK_SIZE 时返回 nil</returns>
+/// <returns type="lightuserdata?">打包后的数据指针；载荷超出所选头部能表达的范围时返回 nil</returns>
 /// <returns type="integer">数据长度；返回 nil 时为 0</returns>
 static int32_t _lprot_custz_pack(lua_State *lua) {
     // 只认三个 custz 子类型：custz_pack 的 default 是 ASSERTAB(0)，传别的进去当场 abort 整个进程
@@ -273,7 +273,7 @@ static int32_t _lprot_websock_pack_close(lua_State *lua) {
 /// <param name="fin" type="integer">1 表示完整消息，0 表示后续有 continuation 帧；只收 0/1，其余报错</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil；载荷超单帧上限（MAX_PACK_SIZE，配成 0 时退到 64MB 硬上限）同样返 nil</returns>
+/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_text(lua_State *lua) {
     void *data;
@@ -515,7 +515,7 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
     };
     luaL_newlib(lua, reg);
     // 头部块上限：Lua 侧组包要按它累计判定，硬编码一份迟早与 http.h 分叉
-    lua_pushinteger(lua, (lua_Integer)MAX_HEADLENS);
+    lua_pushinteger(lua, (lua_Integer)HTTP_MAX_HEADLENS);
     lua_setfield(lua, -2, "max_headlens");
     return 1;
 }

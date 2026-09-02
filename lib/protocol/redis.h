@@ -2,6 +2,7 @@
 #define REDIS_H_
 
 #include "utils/buffer.h"
+#include "protocol/prots_pub.h"
 
 // RESP2/RESP3 类型标识字节定义
 #define RESP_STRING  '+' // 简单字符串   RESP2  +OK\r\n
@@ -22,6 +23,7 @@
 #define RESP_MAP     '%' // 映射         RESP3  %<number-of-entries>\r\n<key-1><value-1>...<key-n><value-n>
 #define RESP_ATTR    '|' // 属性类型     RESP3  格式同 Map，但首字节为 |，客户端不应将其视为响应的一部分，
                          //              而是作为用于增强响应的辅助数据
+
 // Redis RESP 协议数据包上下文，链表节点（复合类型如数组由 next 串联）
 typedef struct redis_pack_ctx {
     int32_t prot;               // RESP 类型标识字节（见 RESP_* 宏）
@@ -35,7 +37,7 @@ typedef struct redis_pack_ctx {
 }redis_pack_ctx;
 
 // 释放 redis_pack_ctx 链表（含所有 next 节点）
-void _redis_pkfree(redis_pack_ctx *pack);
+void _redis_pkfree(void *data);
 // 释放与 ud_cxt 关联的 Redis 解包上下文
 void _redis_udfree(ud_cxt *ud);
 /// <summary>
@@ -57,6 +59,7 @@ char *redis_pack(size_t *size, const char *fmt, ...);
 /// <param name="ud">ud_cxt 指针，内部维护解包中间状态</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 redis_pack_ctx 链表头，数据不足或出错返回 NULL</returns>
-redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
+void *redis_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
 #endif//REDIS_H_

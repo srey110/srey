@@ -1,5 +1,4 @@
 ﻿#include "protocol/http.h"
-#include "protocol/prots_pub.h"
 #include "event/event.h"
 #include "crypt/urlraw.h"
 #include "containers/sarray.h"
@@ -329,36 +328,42 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         return NULL;
     }
 }
-// 在缓冲区中搜索 \r\n\r\n，返回头部总长度（含结束 CRLF），未找到则设置状态标志
-// 半包到达时缓存上次扫描位置到 ud->prot_offset，下次从该位置 - 3 续扫，
-// 避免对未变化的前缀重复线性扫描；解析完成（成功/错误）后由调用方将 prot_offset 归零
-static size_t _http_headlens(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+// 头块与 trailer 块都搜 CRLFCRLF，且都靠 ud->prot_offset 续扫：半包到达时记下已扫过的字节数，
+// 下次从它减 3 起搜——少 3 才能让跨两次读取的 CRLFCRLF 仍然命中。命中或出错都把它归零
+static int32_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
     size_t start = ud->prot_offset > (flens - 1) ? ud->prot_offset - (flens - 1) : 0;
     int32_t pos = buffer_search(buf, 0, start, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
     if (ERR_FAILED == pos) {
         size_t bsize = buffer_size(buf);
-        if (bsize > MAX_HEADLENS) {
+        if (bsize > HTTP_MAX_HEADLENS) {
             BIT_SET(*status, PROT_ERROR);
             ud->prot_offset = 0;
         } else {
             BIT_SET(*status, PROT_MOREDATA);
             ud->prot_offset = bsize;
         }
-        return 0;
-    }
-    size_t hlens = pos + flens;
-    if (hlens > MAX_HEADLENS) {
-        BIT_SET(*status, PROT_ERROR);
-        ud->prot_offset = 0;
-        return 0;
+        return ERR_FAILED;
     }
     ud->prot_offset = 0;
+    return pos;
+}
+// 头部块总长（含结尾 CRLFCRLF）；返回 0 表示没解出来，等更多数据还是超 HTTP_MAX_HEADLENS 看 status
+static size_t _http_headlens(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+    int32_t pos = _http_search_crlf2(buf, ud, status);
+    if (ERR_FAILED == pos) {
+        return 0;
+    }
+    size_t hlens = (size_t)pos + CRLF_SIZE * 2;
+    if (hlens > HTTP_MAX_HEADLENS) {
+        BIT_SET(*status, PROT_ERROR);
+        return 0;
+    }
     return hlens;
 }
 // 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组。
 // 只清结构体前缀：那 lens 字节紧接着就被 _http_parsehead 的 buffer_remove 整块写满，
-// 连它一起清等于每请求白 memset 一个头块（上限 MAX_HEADLENS）
+// 连它一起清等于每请求白 memset 一个头块（上限 HTTP_MAX_HEADLENS）
 static http_pack_ctx *_http_headpack(size_t lens) {
     char *pack;
     MALLOC(pack, sizeof(http_pack_ctx) + lens);
@@ -404,7 +409,7 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, 
         return pack;
     }
     if (CONTENT == transfer) {
-        if (PACK_TOO_LONG(pack->data.lens)) {
+        if (pack->data.lens > HTTP_MAX_CONTENT_LENS) {
             BIT_SET(*status, PROT_ERROR);
             _http_pkfree(pack);
             return NULL;
@@ -442,7 +447,9 @@ static http_pack_ctx *_http_chunkedpack(size_t lens) {
     pctx->chunked = 2;
     return pctx;
 }
-// 解析 chunked 编码的数据块：先读取长度行，再读取对应数据，长度为 0 表示结束
+// 解析 chunked 编码的数据块：先读取长度行，再读取对应数据，长度为 0 表示结束。
+// trailer 块的搜索与 _http_headlens 共用 _http_search_crlf2（CHUNKED 期间不再调用后者，
+// 两者不争用 prot_offset）；长度行只有 1~16 个 hex 字符，重扫可忽略，不续扫
 static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t drain;
     http_pack_ctx *pack = ud->context;
@@ -451,8 +458,8 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         if (pos < 0) {
             // 长度行还没收全时，缓冲里的字节全都属于这一行。没有上限的话，对端只要一直发
             // 不带 CRLF 的数据就能让接收缓冲无限涨，一条连接即可耗尽内存；头块与 trailer
-            // 块都是按 MAX_HEADLENS 这么挡的
-            if (buffer_size(buf) > MAX_HEADLENS) {
+            // 块都是按 HTTP_MAX_HEADLENS 这么挡的
+            if (buffer_size(buf) > HTTP_MAX_HEADLENS) {
                 BIT_SET(*status, PROT_ERROR);
             } else {
                 BIT_SET(*status, PROT_MOREDATA);
@@ -463,9 +470,9 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        // 整行长度按 MAX_HEADLENS 卡（同头块与 trailer 块）。行内的 chunk-ext 多长都不影响
+        // 整行长度按 HTTP_MAX_HEADLENS 卡（同头块与 trailer 块）。行内的 chunk-ext 多长都不影响
         // chunk-size 的解析，故只在这里卡总长，不拿它去限制下面那个栈缓冲
-        if (pos > (int32_t)MAX_HEADLENS) {
+        if (pos > (int32_t)HTTP_MAX_HEADLENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
@@ -498,14 +505,15 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         errno = 0;
         size_t dlens = (size_t)strtoul(lensbuf, &_endptr, 16);
         // 截出来的这段必须整段都是 hex：_endptr 要停在 NUL 上（ext 已在上面切掉，不再放行 ';'）。
-        // ERANGE 也要判：MAX_PACK_SIZE 配成 0(不限制)时 PACK_TOO_LONG 恒假，回绕值就进去了
+        // ERANGE 也判：溢出时 strtoul 返 ULONG_MAX，下面那道上限同样挡得住，这里只是把
+        // "数值溢出"与"超上限"分成两种拒因
         if (_endptr == lensbuf
             || '\0' != *_endptr
             || ERANGE == errno) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        if (PACK_TOO_LONG(dlens)) {
+        if (dlens > HTTP_MAX_CHUNK_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
@@ -538,20 +546,14 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         if ('\r' == buffer_at(buf, 0) && '\n' == buffer_at(buf, 1)) {
             drain = CRLF_SIZE;
         } else {
-            // RFC 7230 §4.1.2 trailer headers 受 MAX_HEADLENS=4KB 上限保护，
+            // RFC 7230 §4.1.2 trailer headers 受 HTTP_MAX_HEADLENS=4KB 上限保护，
             // 防恶意 server 无限发 trailer 数据触发 buf 持续累积
-            size_t flens = CRLF_SIZE * 2;
-            int32_t tend = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF, FLAG_CRLF), flens);
-            if (tend < 0) {
-                if (buffer_size(buf) > MAX_HEADLENS) {
-                    BIT_SET(*status, PROT_ERROR);
-                } else {
-                    BIT_SET(*status, PROT_MOREDATA);
-                }
+            int32_t tend = _http_search_crlf2(buf, ud, status);
+            if (ERR_FAILED == tend) {
                 return NULL;
             }
-            drain = (size_t)tend + flens;
-            if (drain > MAX_HEADLENS) {
+            drain = (size_t)tend + CRLF_SIZE * 2;
+            if (drain > HTTP_MAX_HEADLENS) {
                 BIT_SET(*status, PROT_ERROR);
                 return NULL;
             }
@@ -576,7 +578,8 @@ static http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
     BIT_SET(*status, PROT_SLICE);
     return pack;
 }
-void _http_pkfree(http_pack_ctx *pack) {
+void _http_pkfree(void *data) {
+    http_pack_ctx *pack = (http_pack_ctx *)data;
     if (NULL == pack) {
         return;
     }
@@ -586,7 +589,7 @@ void _http_pkfree(http_pack_ctx *pack) {
     }
     FREE(pack);
 }
-http_pack_ctx *_http_on_close(ud_cxt *ud) {
+void *_http_on_close(ud_cxt *ud) {
     if (TILLCLOSE != ud->status) {
         return NULL;
     }
@@ -597,7 +600,9 @@ void _http_udfree(ud_cxt *ud) {
     _http_pkfree(ud->context);
     ud->context = NULL;
 }
-http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status) {
+void *http_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)ev; (void)fd; (void)skid; (void)size;
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:

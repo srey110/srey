@@ -121,7 +121,7 @@ def case_ping_pong_e2e():
         s.close()
 
 
-# e2e：60KB binary 一帧回显（验证 server 大缓冲 ev_send，MAX_PACK_SIZE 64KB 内）
+# e2e：60KB binary 一帧回显（验证 server 大缓冲 ev_send，WS_MAX_PAYLOAD_LENS 64KB 内）
 def case_large_binary_e2e():
     s = connect_ws()
     try:

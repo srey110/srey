@@ -155,8 +155,9 @@ void _kcp_udfree(ud_cxt *ud) {
     FREE(ctx);
     ud->context = NULL;
 }
-void _kcp_unpack(SOCKET fd, uint64_t skid,
+void _kcp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
                  char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+    (void)ev;
     if (size < KCP_MIN_OVERHEAD
         || NULL == ud->context) {
         return;

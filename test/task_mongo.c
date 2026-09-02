@@ -235,8 +235,8 @@ static int32_t _txn_reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
     return ERR_OK;
 }
 // 事务 pack 失败须原样保留事务状态。用"头里声明的长度超出传入缓冲"的假 options 触发
-// bson_cat 拒绝 —— 这是它剩下的结构性拒收之一;字节数上限已归 mongo 层(MONGO_MAX_PACK_SIZE
-// 64MB),拿 MAX_PACK_SIZE 那种大小再也造不出失败,反而会真把 commit 发出去。
+// bson_cat 拒绝 —— 这是它剩下的结构性拒收之一;字节数上限已归 mongo 层(MONGO_MAX_PACK_LENS
+// 64MB),拿 64KB 那种大小再也造不出失败,反而会真把 commit 发出去。
 // 本流程不需要 replica set:mongo_begin 纯本地,pack 在 MONGO_PACK_CAT 处失败也不碰网络,
 // 判据取 mongo->session 是否仍指向本 session——若守卫仍放在状态拆除之后,它已被置空、
 // session->options 已 free,服务端事务会悬到 lsid 超时且无从重试。
@@ -255,7 +255,7 @@ static int32_t _txn_pack_fail_flow(mongo_ctx *mongo) {
     char toolong[64];
     ZERO(toolong, sizeof(toolong));
     // 声明 64KB 但只给 64 字节:bson_cat 的 doclens > lens 那道当场拒
-    pack_integer(toolong, (uint64_t)MAX_PACK_SIZE, 4, 1);
+    pack_integer(toolong, 65535, 4, 1);
     int32_t commited = mongo_commit(sess, toolong, sizeof(toolong));
     if (ERR_OK == commited) {
         LOG_ERROR("mongo commit(malformed options) should fail.");

@@ -19,17 +19,9 @@ void _mpack_reader_free(void *pack);
 // payload 达到 16MB 续传边界(0xffffff，本实现不支持拼接)时设置 PROT_ERROR
 char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, int32_t *status);
 
-// 内部函数：解析 OK 响应包，更新 mysql->last_id 和 mysql->affected_rows
-int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok);
 // 内部函数：解析 ERROR 响应包，更新 mysql->error_code 和 mysql->error_msg
-void _mpack_err(mysql_ctx *mysql, binary_ctx *breader, mpack_err *err);
+void _mpack_err(mysql_ctx *mysql, binary_ctx *breader);
 // 内部函数：根据 mysql->cur_cmd 分发并解析响应包，返回完整解析的 mpack_ctx
 mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status);
-// 内部函数：解析二进制协议一行数据（NULL 位图 + 各字段），填充 reader->arr_rows
-int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader);
-// 内部函数：解析单个列字段描述包（Column Definition），填充 mpack_field 结构体。
-// 返 ERR_OK 时 breader->data 的所有权转给 field->payload（5 个名字的 buf_ctx 指向其中），调用方
-// 不得再 FREE，须由 mpack_field 的持有者释放；返 ERR_FAILED 时不转移，仍由调用方 FREE
-int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field);
 
 #endif//MYSQL_PARSE_H_

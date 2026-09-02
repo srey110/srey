@@ -1,4 +1,5 @@
 ﻿#include "srey/prots_wrap.h"
+#include "protocol/websock.h"
 
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess) {
     mysql->task = task;
@@ -28,8 +29,16 @@ int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess) {
 int32_t mqtt_try_connect(task_ctx *task, struct evssl_ctx *evssl,
                          const char *ip, uint16_t port, int32_t netev,
                          mqtt_protversion version, int32_t setsess, SOCKET *fd, uint64_t *skid) {
-    mqtt_ctx *mq;
-    MALLOC(mq, sizeof(mqtt_ctx));
-    mq->version = version;
+    mqtt_ctx *mq = mqtt_ctx_new(version);
+    if (NULL == mq) {
+        return ERR_FAILED;
+    }
     return task_connect(task, PACK_MQTT, evssl, ip, port, netev, mq, setsess, fd, skid);
+}
+int32_t mqtt_ws_bind(task_ctx *task, SOCKET fd, uint64_t skid, mqtt_protversion version) {
+    mqtt_ctx *mq = mqtt_ctx_new(version);
+    if (NULL == mq) {
+        return ERR_FAILED;
+    }
+    return websock_set_secextra(&task->loader->netev, fd, skid, mq, mqtt_ctx_free);
 }

@@ -3,6 +3,7 @@
 
 #include "base/structs.h"
 #include "utils/buffer.h"
+#include "protocol/prots_pub.h"
 
 typedef struct dns_ip {
     char ip[IP_LENS];
@@ -32,7 +33,8 @@ size_t dns_request_pack_tcp(char *buf, const char *domain, int32_t ipv6, uint16_
 /// <param name="size">输出：DNS 报文长度（不含 2 字节前缀）</param>
 /// <param name="status">输出：PROT_MOREDATA / PROT_ERROR</param>
 /// <returns>DNS 报文指针，调用方 FREE；NULL 表示数据不足或出错</returns>
-void *dns_unpack(buffer_ctx *buf, size_t *size, int32_t *status);
+void *dns_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 解析dns返回数据
 /// </summary>

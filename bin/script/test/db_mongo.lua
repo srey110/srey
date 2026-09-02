@@ -4,7 +4,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local mongo  = require("lib.mongo")
 local bson   = require("lib.bson")
-local mgmod  = require("mongo")
+local mgmod  = require("srey.mongo")
 
 srey.startup(function()
 runner.run(function(t)

@@ -36,6 +36,7 @@ const IUINT32 IKCP_ASK_TELL = 2;		// need to send IKCP_CMD_WINS
 const IUINT32 IKCP_WND_SND = 32;
 const IUINT32 IKCP_WND_RCV = 128;       // must >= max fragment size
 const IUINT32 IKCP_MTU_DEF = 1400;
+const IUINT32 IKCP_MTU_MAX = 65535;	// cap mtu: (mtu+OVERHEAD)*3 in ikcp_setmtu is unsigned and would wrap
 const IUINT32 IKCP_ACK_FAST	= 3;
 const IUINT32 IKCP_INTERVAL	= 100;
 const IUINT32 IKCP_OVERHEAD = 24;
@@ -1320,7 +1321,7 @@ IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
 int ikcp_setmtu(ikcpcb *kcp, int mtu)
 {
 	char *buffer;
-	if (mtu < 50 || mtu < (int)IKCP_OVERHEAD) 
+	if (mtu < 50 || mtu < (int)IKCP_OVERHEAD || mtu > (int)IKCP_MTU_MAX) 
 		return -1;
 	buffer = (char*)ikcp_malloc((mtu + IKCP_OVERHEAD) * 3);
 	if (buffer == NULL) 

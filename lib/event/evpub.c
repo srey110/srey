@@ -164,6 +164,14 @@ void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t 
         LOG_WARN("close fd %d with %zu bytes undelivered.", (int32_t)fd, *wb_size);
     }
 }
+void _evpub_disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
+#ifdef EV_IOCP
+    (void)watcher;
+    _iocp_disconnect(skctx);
+#else
+    _uev_disconnect(watcher, skctx);
+#endif
+}
 void _evpub_mark_close(int32_t *status, int32_t rtn, void *ssl) {
     int32_t fin;
 #if WITH_SSL

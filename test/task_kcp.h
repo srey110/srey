@@ -9,6 +9,7 @@
 //   2) client(x3,同一 client task 内 coro_fork): task_udp(0) 由 OS 分配端口 + netaddr_local 取回
 //      -> TCP 握手拿 conv -> client 侧 kcp_start -> kcp_synsend 发送并校验 echo(收发由 event tick 驱动)。
 //      client 0 额外传非法 mtu=24 覆盖回归:验证 maxpack 不会归零导致该会话永久发送失败。
+//      client 1 额外传 mtu=1431655742 覆盖回归:验证超大 mtu 被 ikcp_setmtu 拒收,不回绕成过小 buffer。
 //      3 个 client 全部 synsend 收到正确 echo -> *ok = 1。
 //   3) close: 用 server 从未注册的 conv 指向真实 UDP 端口(永远不会 echo),coro_fork_wait 并发跑
 //      synsend 等待者 + 200ms 后 kcp_stop 者;验证 synsend 被 MSG_TYPE_CLOSE 及时唤醒(非等满超时)。

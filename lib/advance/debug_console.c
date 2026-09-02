@@ -19,8 +19,8 @@ typedef struct dbg_task {
     char *name;      // task 名（dup_zero；匿名 task 为 NULL）；不定长，避免长同前缀名被截断后合体
 }dbg_task;
 typedef struct dbg_tasklist {
-    int32_t n;       // 当前元素数
-    int32_t cap;     // 已分配容量
+    uint32_t n;      // 当前元素数
+    uint32_t cap;    // 已分配容量
     dbg_task *items; // 元素数组（REALLOC 倍增，调用方走 _debug_tasklist_free）
 }dbg_tasklist;
 // 广播单个 task 的 fork 参数；coro_request 响应在协程结束后失效，须复制到 resp 堆
@@ -107,7 +107,7 @@ static void _debug_bcast_one(task_ctx *task, void *arg) {
 static void _debug_tasklist(const char *name, name_t handle, void *arg) {
     dbg_tasklist *tl = arg;
     if (tl->n >= tl->cap) {
-        int32_t ncap = (0 == tl->cap) ? 16 : tl->cap * 2;
+        uint32_t ncap = (0 == tl->cap) ? 16u : tl->cap * 2u;
         REALLOC(tl->items, tl->items, sizeof(dbg_task) * (size_t)ncap);
         tl->cap = ncap;
     }
@@ -117,7 +117,7 @@ static void _debug_tasklist(const char *name, name_t handle, void *arg) {
 }
 // 释放收集列表：逐元素释放 dup_zero 的 name 后释放数组本身
 static void _debug_tasklist_free(dbg_tasklist *tl) {
-    int32_t i;
+    uint32_t i;
     for (i = 0; i < tl->n; i++) {
         FREE(tl->items[i].name);
     }
@@ -140,7 +140,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
     MALLOC(funcs, sizeof(void *) * (size_t)tl.n);
     void **args;
     MALLOC(args, sizeof(void *) * (size_t)tl.n);
-    int32_t i;
+    uint32_t i;
     for (i = 0; i < tl.n; i++) {
         bargs[i].handle = tl.items[i].handle;
         bargs[i].needlua = needlua;
@@ -151,7 +151,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
         funcs[i] = _debug_bcast_one;
         args[i] = &bargs[i];
     }
-    coro_fork_wait(task, tl.n, funcs, args);
+    coro_fork_wait(task, (int32_t)tl.n, funcs, args);
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     const char *nm;
@@ -241,7 +241,7 @@ static void _debug_alive(router_req *ctx) {
     }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
-    int32_t i;
+    uint32_t i;
     for (i = 0; i < tl.n; i++) {
         binary_set_va(&bw, "%"PRIu64"\t%s\n",
             tl.items[i].handle, (NULL == tl.items[i].name) ? "" : tl.items[i].name);

@@ -69,6 +69,7 @@ void bson_append_end(bson_ctx *bson) {
     binary_set_int8(&bson->doc, BSON_EOD);
     size_t endoff = bson->doc.offset;
     size_t startoff = bson->offsets[bson->depth - 1];
+    ASSERTAB(endoff - startoff <= INT32_MAX, "BSON document length exceeds 2GB limit");
     binary_offset(&bson->doc, startoff);
     binary_set_integer(&bson->doc, endoff - startoff, 4, 1);
     binary_offset(&bson->doc, endoff);

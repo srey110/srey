@@ -3,6 +3,7 @@
 #include "utils/utils.h"
 #include "utils/binary.h"
 #include "crypt/scram.h"
+#include "protocol/prots_pub.h"
 
 // OP_MSG 头里 flagBits 的字节偏移：size / reqid / respto / opcode 各占 4 字节，见 _mongo_pack_msg
 #define MSG_FLAGS_OFF 16
@@ -69,12 +70,9 @@
         return _data; \
     } while (0)
 //事务和操作 https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
-// 事务内 CRUD 用：事务的第一条命令必须带 startTransaction:true，服务端才真正开启事务；
-// 缺它则该操作以 NoSuchTransaction("active transaction number is -1")失败，整个事务无从开始。
-// 这里只记 _txnstart，started 由下面那个 RETURN 在组包成功之后才落：组包本身会失败(总长
-// 超 MONGO_MAX_PACK_SIZE)，提前消耗标志会在一条健康连接上留下再也开不起来的事务。
-// 残留边界：落位后 coro_send 若网络失败，事务在服务端并未开启而 started 已为 1，该 session
-// 只能重新 begin；这与"连接断开后 session 失效需重建"的既有约定一致
+// 事务内 CRUD 用：事务的第一条命令必须带 startTransaction:true，服务端才真正开启事务。
+// 这里只记 _txnstart，started 要等下面那个 RETURN 确认组包成功之后才落——顺序不能颠倒，
+// 组包失败时提前消耗掉标志，这条连接上的事务就再也开不起来
 #define TRANSACTION_OPTIONS_START \
     int32_t _txnstart = 0; \
     if (NULL != mongo->session) {\
@@ -104,10 +102,10 @@
 
 // 组包前的入参长度闸门：cap 为 0（不预估容量）时无可判，直接放行
 static int32_t _mongo_cap_toolong(size_t cap) {
-    if (cap <= MONGO_MAX_PACK_SIZE) {
+    if (cap <= MONGO_MAX_PACK_LENS) {
         return 0;
     }
-    LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_MAX_PACK_SIZE, cap);
+    LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_MAX_PACK_LENS, cap);
     return 1;
 }
 // 构造 OP_MSG 原始数据包：填充消息头、flags、Section 和正文，并回填总长度
@@ -132,8 +130,8 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
     *size = bwriter.offset;
     // 总长在此判:MONGO_PACK_CAT 只管每一片,拼完仍可能超 64MB;而下面要把 *size 写进 4 字节头,
     // 超 4GB 会回绕成一个虚假的小长度。拒法同 MONGO_PACK_CAT:落 ERROR 后返 NULL,由 _mongo_send* 吸收
-    if (*size > MONGO_MAX_PACK_SIZE) {
-        LOG_ERROR("mongo message exceeds %d bytes: %zu.", MONGO_MAX_PACK_SIZE, *size);
+    if (*size > MONGO_MAX_PACK_LENS) {
+        LOG_ERROR("mongo message exceeds %d bytes: %zu.", MONGO_MAX_PACK_LENS, *size);
         binary_free(&bwriter);
         *size = 0;
         return NULL;

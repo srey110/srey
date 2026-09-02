@@ -3,7 +3,7 @@
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local mysql  = require("lib.mysql")
-local mbind  = require("mysql.bind")
+local mbind  = require("srey.mysql.bind")
 
 local function _count_rows(reader)
     local cnt = 0

@@ -1,9 +1,9 @@
 ﻿#include "protocol/mongo/mongo.h"
-#include "protocol/prots_pub.h"
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
 #include "crypt/scram.h"
+#include "protocol/prots_pub.h"
 
 
 typedef enum parse_status {
@@ -197,7 +197,9 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
     }
     return ERR_OK;
 }
-void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+void *mongo_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)fd; (void)skid; (void)client; (void)size;
     size_t blens = buffer_size(buf);
     if (blens < 4) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -206,7 +208,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     uint32_t total;
     ASSERTAB(sizeof(total) == buffer_copyout(buf, 0, &total, sizeof(total)), "copy buffer failed.");
     total = (uint32_t)unpack_integer((const char *)&total, sizeof(total), 1, 0);
-    if (total < 26 || total > MONGO_MAX_PACK_SIZE) {
+    if (total < 26 || total > MONGO_MAX_PACK_LENS) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }

@@ -55,6 +55,19 @@ static void _pg_result_push(pgpack_ctx *pg, pgsql_reader_ctx *reader, const char
     }
     array_push_back(&pg->results, &res);
 }
+// 与 _pg_result_push 成对的清理。库里那份 _pgpack_results_clear 是 static,
+// 这里照它的逻辑自建一份,不为测试把它提成公共函数
+static void _pg_results_clear(pgpack_ctx *pgpack) {
+    pgsql_result *res;
+    for (uint32_t i = 0; i < array_size(&pgpack->results); i++) {
+        res = array_at(&pgpack->results, i);
+        if (NULL != res->reader) {
+            pgsql_reader_free(res->reader);
+        }
+    }
+    array_free(&pgpack->results);
+    pgpack->iter_cursor = 0;
+}
 
 // pgsql_reader_iter：仅 PGPACK_OK 且结果里有带 reader 的语句才返回，并转移所有权
 static void test_pgsql_reader_iter(CuTest *tc) {
@@ -81,7 +94,7 @@ static void test_pgsql_reader_iter(CuTest *tc) {
     CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
     CuAssertIntEquals(tc, 1, (int)pgsql_result_count(&pg));
     pgsql_reader_free(out);
-    _pgpack_results_clear(&pg);
+    _pg_results_clear(&pg);
 
     // 空结果数组（如 ping / prepare 那种没有 CommandComplete 的响应）
     pgpack_ctx empty;
@@ -126,7 +139,7 @@ static void test_pgsql_result_multi(CuTest *tc) {
     CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 2, FORMAT_TEXT)); // 已取走
     pgsql_reader_free(o0);
     pgsql_reader_free(o2);
-    _pgpack_results_clear(&pg);
+    _pg_results_clear(&pg);
 
     // reader_iter 是迭代器：连调给的是不同的结果，取完返回 NULL
     pgpack_ctx it;
@@ -144,7 +157,7 @@ static void test_pgsql_result_multi(CuTest *tc) {
     CuAssertTrue(tc, NULL == pgsql_reader_iter(&it, FORMAT_TEXT));
     pgsql_reader_free(first);
     pgsql_reader_free(second);
-    _pgpack_results_clear(&it);
+    _pg_results_clear(&it);
 
     // 没被取走的结果集由 _pgpack_free 回收：漏掉这段回收，收尾的 memory check 会报未释放。
     // 堆上分配 pgpack——_pgpack_free 连外壳一起 FREE，栈变量喂不得
@@ -171,7 +184,7 @@ static void test_pgsql_result_multi(CuTest *tc) {
     pgsql_reader_ctx *lout = pgsql_reader_iter(&lead, FORMAT_TEXT);
     CuAssertTrue(tc, lout == rsel);
     pgsql_reader_free(lout);
-    _pgpack_results_clear(&lead);
+    _pg_results_clear(&lead);
 }
 
 // pgsql_reader_size/seek/eof/next 游标语义

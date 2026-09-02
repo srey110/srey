@@ -48,7 +48,7 @@ int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess);
 /// <param name="ip">服务器 IP</param>
 /// <param name="port">服务器端口</param>
 /// <param name="netev">网络事件标志</param>
-/// <param name="version">MQTT 协议版本</param>
+/// <param name="version">MQTT 协议版本，须是 MQTT_311 或 MQTT_50，否则连接不发起</param>
 /// <param name="setsess">是否设置sess</param>
 /// <param name="fd">输出：socket 句柄</param>
 /// <param name="skid">输出：socket ID</param>
@@ -56,5 +56,21 @@ int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess);
 int32_t mqtt_try_connect(task_ctx *task, struct evssl_ctx *evssl,
                          const char *ip, uint16_t port, int32_t netev,
                          mqtt_protversion version, int32_t setsess, SOCKET *fd, uint64_t *skid);
+/// <summary>
+/// 给一条已完成 WebSocket 握手、且协商到 "mqtt" 子协议的连接绑定 MQTT 上下文。
+/// 客户端方向没有别的建立点：服务端方向由协议层解 CONNECT 时自建，而客户端收到的第一条是
+/// CONNACK，那里只认已存在的上下文，缺了就判协议错并断连。
+/// 须在发出 MQTT CONNECT 之前调用——它与随后的发送同走一条命令队列、同 fd 落同一个 watcher，
+/// FIFO 保证先投的先生效
+/// </summary>
+/// <param name="task">所属 task_ctx</param>
+/// <param name="fd">socket 句柄，来自 wbsock_connect</param>
+/// <param name="skid">链接 ID</param>
+/// <param name="version">MQTT 协议版本，须是 MQTT_311 或 MQTT_50</param>
+/// <returns>ERR_OK 命令已投递，只表示投递成功、不代表真的绑上了：非 WebSocket 连接、握手
+/// 未完成、子协议无内建解析器、已绑过一次——这几种都判误用，协议层拒收并就地断连。
+/// version 非法或 fd 非法返回 ERR_FAILED。
+/// 无论哪种失败，上下文都已在内部回收，调用方不持有任何东西</returns>
+int32_t mqtt_ws_bind(task_ctx *task, SOCKET fd, uint64_t skid, mqtt_protversion version);
 
 #endif//PROTS_WRAP_H_

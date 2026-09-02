@@ -370,6 +370,59 @@ static int32_t _timeout_ws(task_ctx *task) {
         ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
+    // 客户端方向的 mqtt_ctx 只能由这里注入，须在发 CONNECT 之前，规则见 prots_wrap.h
+    if (ERR_OK != mqtt_ws_bind(task, fd, skid, MQTT_311)) {
+        LOG_WARN("ws mqtt bind error.");
+        ev_close(&task->loader->netev, fd, skid);
+        return ERR_FAILED;
+    }
+    // MQTT over WS 数据面：发 CONNECT 等服务端回 CONNACK
+    size_t clens;
+    char *conn = mqtt_pack_connect(MQTT_311, 1, 60, "wsmqtt", NULL, NULL, 0,
+        NULL, NULL, 0, 0, 0, NULL, NULL, &clens);
+    if (NULL == conn) {
+        LOG_WARN("ws mqtt pack connect error.");
+        ev_close(&task->loader->netev, fd, skid);
+        return ERR_FAILED;
+    }
+    pack = websock_pack_binary(1, 1, conn, clens, &psize);
+    FREE(conn);
+    resp = coro_send(task, fd, skid, pack, psize, &rsize, 0);
+    if (NULL == resp
+        || PACK_MQTT != websock_secprot(resp)) {
+        LOG_WARN("ws mqtt connack recv error.");
+        ev_close(&task->loader->netev, fd, skid);
+        return ERR_FAILED;
+    }
+    mqtt_pack_ctx *mpack = (mqtt_pack_ctx *)websock_secpack(resp);
+    if (NULL == mpack
+        || MQTT_CONNACK != mpack->fixhead.prot) {
+        LOG_WARN("ws mqtt connack prot error.");
+        ev_close(&task->loader->netev, fd, skid);
+        return ERR_FAILED;
+    }
+    // 重复注入：_websock_secextra 判误用并就地断连，随后的收发必然失败。放在正常流程验完之后，
+    // 且只验一次——_timeout 每秒自我重挂，每轮都绑两次会把那条告警刷几十条
+    static int32_t rebind_once = 0;
+    if (0 == rebind_once) {
+        rebind_once = 1;
+        if (ERR_OK != mqtt_ws_bind(task, fd, skid, MQTT_311)) {
+            LOG_WARN("ws mqtt rebind error.");
+            ev_close(&task->loader->netev, fd, skid);
+            return ERR_FAILED;
+        }
+        pack = websock_pack_ping(1, &psize);
+        if (NULL == pack) {
+            LOG_WARN("ws mqtt rebind pack ping error.");
+            ev_close(&task->loader->netev, fd, skid);
+            return ERR_FAILED;
+        }
+        if (NULL != coro_send(task, fd, skid, pack, psize, &rsize, 0)) {
+            LOG_WARN("ws mqtt rebind did not close the connection.");
+            ev_close(&task->loader->netev, fd, skid);
+            return ERR_FAILED;
+        }
+    }
     ev_close(&task->loader->netev, fd, skid);
     // 非内建单值 chat：B-lite 透传，服务端回显 chat(PACK_NONE)，出参返回协商到的 chat
     fd = wbsock_connect(task, NULL, wsurl, "chat", 0, &skid, &spctx);

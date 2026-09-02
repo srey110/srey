@@ -104,7 +104,7 @@ int64_t lpub_check_index0(lua_State *lua, int32_t idx, uint64_t count) {
     return (int64_t)(i - 1);
 }
 // 不写 default：新增 pack_type 时 -Wswitch 报在这里，逼着表态它能不能从 Lua 传进来。
-// 只管本函数这一件事；协议分派那边的绊线在 prots.c 各 switch 自己身上
+// 只管本函数这一件事；协议分派那边的绊线在 prots.c 的 _prots_vtbl 身上
 pack_type lpub_check_pktype(lua_State *lua, int32_t idx) {
     lua_Integer val = luaL_checkinteger(lua, idx);
     // 先按 lua_Integer 卡范围再收窄：pack_type 是 4 字节，先转再判的话 2^32+2 会截成 2 混成 PACK_HTTP

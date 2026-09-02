@@ -83,7 +83,7 @@
 //       // 5) 分组 (栈对象, 嵌套靠 parent 链)
 //       const char *api_mws[] = { "auth" };
 //       router_group api;
-//       router_group_root(g_router, &api, "/api", api_mws, 1);
+//       router_group_root(&api, "/api", api_mws, 1);
 //       router_get(g_router, &api, "/users", h_list, NULL, 0);   // → /api/users
 //       router_group admin;
 //       router_group_nest(&api, &admin, "/admin", NULL, 0);
@@ -217,7 +217,6 @@ typedef struct router_group {
     int32_t mw_names_n;
     uint32_t prefix_len;
     const struct router_group *parent;
-    router_ctx *router;
     const char *prefix;
     const char *const *mw_names; // 中间件名数组, 由 _resolve 在 dispatch 前查表
 } router_group;
@@ -254,14 +253,14 @@ void router_use(router_ctx *r, const char *name);
 /// <param name="fn">中间件函数</param>
 void router_use_fn(router_ctx *r, router_cb fn);
 /// <summary>
-/// 初始化根分组; 后续 router_* 注册时传该 group 即可继承 prefix 和 mws
+/// 初始化根分组; 后续 router_* 注册时传该 group 即可继承 prefix 和 mws。
+/// group 不记 router: 注册时 router_ctx 由 router_add / router_get 等自己的形参给出
 /// </summary>
-/// <param name="r">router_ctx</param>
 /// <param name="g">待初始化的 router_group (调用方栈分配)</param>
 /// <param name="prefix">路径前缀, 例 "/api"; 调用方持有生命周期</param>
 /// <param name="mw_names">中间件名数组; NULL 表示无中间件</param>
 /// <param name="n">mw_names 数量</param>
-void router_group_root(router_ctx *r, router_group *g, const char *prefix,
+void router_group_root(router_group *g, const char *prefix,
                        const char *const *mw_names, int32_t n);
 /// <summary>
 /// 在父分组基础上嵌套初始化; 子分组继承父 prefix 和 mws, 自身追加
@@ -543,7 +542,7 @@ void router_req_html(router_req *ctx, int32_t code, const char *body, size_t len
 /// _json / _html 写死类型不同)。附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN):
 /// 头名为 Content-Length / Transfer-Encoding (前者按 body_len 自动写, 再叠一条对端会判为
 /// 请求走私), 头名为空、>= 128 字节或不是 RFC 7230 token, 头值为 NULL 或含 NUL/CR/LF,
-/// 以及该条会让头部块累计越过 http.c 的 MAX_HEADLENS。头名一律不截断——截断等于改名发上线缆
+/// 以及该条会让头部块累计越过 HTTP_MAX_HEADLENS。头名一律不截断——截断等于改名发上线缆
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="code">状态码</param>

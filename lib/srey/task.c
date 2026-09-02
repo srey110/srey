@@ -11,7 +11,7 @@ typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
 typedef enum msgdata_kind {
     MSGDATA_NONE = 0,   // 不持有堆数据
     MSGDATA_PROT,       // 协议层收包，prots_pkfree
-    MSGDATA_UDP,        // UDP 收包，prots_udp_pkfree
+    MSGDATA_UDP,        // UDP 收包，prots_udp_pkfree；当前与 MSGDATA_RAW 等效，独立成档留给将来按协议分化
     MSGDATA_HS,         // 握手数据，prots_hsfree
     MSGDATA_RAW         // 裸 MALLOC，FREE
 }msgdata_kind;

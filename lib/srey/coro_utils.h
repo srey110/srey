@@ -12,10 +12,8 @@
 // 结果集回调：一次 query / stmt_execute 可能产生多个结果集(多语句、CALL),库内部逐个回调。
 // mpack 只在本次回调内有效——下一个结果集的续读会让它失效,要留数据请就地取走
 // (mysql_reader_init 会把解析结果的所有权转移给调用方,拿走后不受此限)。
-// 返回 ERR_FAILED 不会中断循环:剩余包仍会被读完,否则残留在连接缓冲里会让下次查询 desync;
-// 该返回值只决定 mysql_query / mysql_stmt_execute 最终报成功还是失败。
-// 回调跑在连接的串行化临界区内,但允许在其中调 mysql_quit 销毁本连接:
-// 连接对象的回收会推迟到本次命令走完,剩余结果集则因为连接已关而读不到,按失败返回
+// 返回 ERR_FAILED 不中断循环,剩余包仍会读完;它只决定 mysql_query / mysql_stmt_execute
+// 最终报成功还是失败。回调跑在连接的串行化临界区内,允许在其中调 mysql_quit 销毁本连接
 typedef int32_t (*mysql_result_cb)(mpack_ctx *mpack, void *udata);
 
 /// <summary>
@@ -35,7 +33,8 @@ struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int3
 /// <param name="task">task_ctx</param>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="ws">ws://host:port</param>
-/// <param name="secprot">Sec-WebSocket-Protocol</param>
+/// <param name="secprot">Sec-WebSocket-Protocol。协商到 "mqtt" 时本函数只完成 WS 握手，
+/// 客户端方向的 mqtt_ctx 须由调用方在返回后经 mqtt_ws_bind 注入，约束见 prots_wrap.h</param>
 /// <param name="netev">task_netev</param>
 /// <param name="skid">链接ID</param>
 /// <param name="spctx">out 协商到的子协议(ws_secprots_ctx)，可为 NULL 忽略；NULL 表示未协商(降级纯 WS)。由消息系统持有，仅本协程下次挂起前有效，勿持有勿释放</param>

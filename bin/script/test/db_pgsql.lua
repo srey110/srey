@@ -3,7 +3,7 @@
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local pgsql  = require("lib.pgsql")
-local pbind  = require("pgsql.bind")
+local pbind  = require("srey.pgsql.bind")
 
 local function _count_rows(reader)
     local cnt = 0

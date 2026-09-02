@@ -38,7 +38,7 @@ static void test_mqtt_connect_311(CuTest *tc) {
     /* CONNECT 在 INIT 状态：unpack 内部会 CALLOC 一个 mqtt_ctx 写入 ud->context */
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0 /*server*/, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0 /*server*/, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_CONNECT, p->fixhead.prot);
@@ -76,7 +76,7 @@ static void test_mqtt_connect_will_null_payload(CuTest *tc) {
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_INIT;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     /* 解包侧的全局兜底是"消费掉的字节数须正好等于剩余长度"，错位会在那里被判协议错 */
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
@@ -112,7 +112,7 @@ static void test_mqtt_connect_50_full(CuTest *tc) {
     ud.status = _MQ_INIT;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_CONNECT, p->fixhead.prot);
@@ -150,9 +150,7 @@ static void test_mqtt_connack(CuTest *tc) {
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
 
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_311;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_311);
 
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -160,7 +158,7 @@ static void test_mqtt_connack(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(1 /*client*/, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1 /*client*/, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_CONNACK, p->fixhead.prot);
@@ -183,9 +181,7 @@ static void _mqtt_pack_ack_test(CuTest *tc, mqtt_protversion ver, mqtt_prot expe
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
 
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = ver;
+    mqtt_ctx *mq = mqtt_ctx_new(ver);
 
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -193,7 +189,7 @@ static void _mqtt_pack_ack_test(CuTest *tc, mqtt_protversion ver, mqtt_prot expe
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(1, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, (int)expected, (int)p->fixhead.prot);
     mqtt_pubackrel_varhead *vh = (mqtt_pubackrel_varhead *)p->varhead;
@@ -229,9 +225,7 @@ static void test_mqtt_publish(CuTest *tc) {
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
 
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_311;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_311);
 
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -239,7 +233,7 @@ static void test_mqtt_publish(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_PUBLISH, p->fixhead.prot);
@@ -264,7 +258,7 @@ static void test_mqtt_publish(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(0, &buf, &ud, &status);
+    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     vh = (mqtt_publish_varhead *)p->varhead;
     CuAssertIntEquals(tc, 1, vh->qos);
@@ -287,15 +281,13 @@ static void _mq_publish_case(CuTest *tc, mqtt_protversion version, int8_t qos, u
     CuAssertPtrNotNull(tc, pack);
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = version;
+    mqtt_ctx *mq = mqtt_ctx_new(version);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_COMMAND;
     ud.context = mq;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     mqtt_publish_varhead *vh = (mqtt_publish_varhead *)p->varhead;
@@ -348,15 +340,13 @@ static void test_mqtt_publish_bad_topiclen(CuTest *tc) {
     buffer_ctx buf;
     buffer_init(&buf);
     buffer_append(&buf, raw, sizeof(raw));
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_311;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_311);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_COMMAND;
     ud.context = mq;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssert(tc, "topic length beyond remaining_lens must be a protocol error",
         NULL == p && BIT_CHECK(status, PROT_ERROR));
     _mqtt_udfree(&ud);
@@ -380,16 +370,14 @@ static void test_mqtt_subscribe(CuTest *tc) {
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
 
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_311;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_311);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_COMMAND;
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_SUBSCRIBE, p->fixhead.prot);
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)p->varhead;
@@ -414,7 +402,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(1, &buf, &ud, &status);
+    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_SUBACK, p->fixhead.prot);
     mqtt_reasonlist_payload *spl = (mqtt_reasonlist_payload *)p->payload;
@@ -436,7 +424,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(0, &buf, &ud, &status);
+    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_UNSUBSCRIBE, p->fixhead.prot);
     mqtt_unsubscribe_payload *upl = (mqtt_unsubscribe_payload *)p->payload;
@@ -451,7 +439,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(1, &buf, &ud, &status);
+    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_UNSUBACK, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -473,16 +461,14 @@ static void test_mqtt_ping_pong(CuTest *tc) {
 
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_311;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_311);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_COMMAND;
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_PINGREQ, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -496,7 +482,7 @@ static void test_mqtt_ping_pong(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(1, &buf, &ud, &status);
+    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_PINGRESP, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -518,16 +504,14 @@ static void test_mqtt_disconnect(CuTest *tc) {
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
 
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_311;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_311);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_COMMAND;
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_DISCONNECT, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -539,14 +523,13 @@ static void test_mqtt_disconnect(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     _mq_to_buf(&buf, pack, lens);
 
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_50;
+    mq = mqtt_ctx_new(MQTT_50);
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_COMMAND;
     ud.context = mq;
     status = PROT_INIT;
 
-    p = mqtt_unpack(0, &buf, &ud, &status);
+    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_DISCONNECT, p->fixhead.prot);
     mqtt_reason_varhead *vh = (mqtt_reason_varhead *)p->varhead;
@@ -568,16 +551,14 @@ static void test_mqtt_auth(CuTest *tc) {
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
 
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_50;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_50);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_INIT;
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_AUTH, p->fixhead.prot);
     mqtt_reason_varhead *vh = (mqtt_reason_varhead *)p->varhead;
@@ -597,16 +578,14 @@ static void test_mqtt_auth_compact_no_props(CuTest *tc) {
     buffer_init(&buf);
     buffer_append(&buf, wire, sizeof(wire));
 
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = MQTT_50;
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_50);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_INIT;
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_AUTH, p->fixhead.prot);
@@ -722,7 +701,7 @@ static mqtt_pack_ctx *_mqtt_unpack_auth_sasl(CuTest *tc, buffer_ctx *buf,
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(client_role, buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, client_role, buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_AUTH, p->fixhead.prot);
@@ -928,13 +907,12 @@ static void _mq_assert_reject(CuTest *tc, int32_t init_status, int32_t ver,
     ZERO(&ud, sizeof(ud));
     ud.status = init_status;
     if (_MQ_COMMAND == init_status) {
-        CALLOC(mq, 1, sizeof(mqtt_ctx));
-        mq->version = ver;
+        mq = mqtt_ctx_new((mqtt_protversion)ver);
         ud.context = mq;
     }
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0 /*server*/, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0 /*server*/, &buf, &ud, NULL, &status);
     CuAssertPtrEquals(tc, NULL, p);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
 
@@ -990,7 +968,7 @@ static void test_mqtt_connect_empty_clientid(CuTest *tc) {
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_INIT;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(0 /*server*/, &buf, &ud, &status);
+    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0 /*server*/, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     /* 解包完整消费整个包，无残留（修复前残留 1 个 NUL）*/

@@ -6,8 +6,8 @@
 
 local srey   = require("lib.srey")
 local stmt   = require("lib.pgsql_stmt")
-local pgsql  = require("pgsql")
-local reader = require("pgsql.reader")
+local pgsql  = require("srey.pgsql")
+local reader = require("srey.pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 失败原因与 err 契约，见该模块头部
 local pub    = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 

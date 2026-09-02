@@ -201,6 +201,9 @@ void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
 // 冲出去的字节不报 MSG_TYPE_SEND：调用方此刻尚未置 STATUS_ERROR，回调进来即重入。
 // ssl 收 void * 而非 SSL *：同 _evpub_ssl_exchange_check，不跟着 #if WITH_SSL 一起切
 void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t *wb_size, void *ssl);
+// 就地拆连接，两平台各走自己的断连实现。给协议层的命令回调用：命令通道只报成功/失败，
+// 没有 unpack 路径上 PROT_ERROR 那条断链通道，撞上必须断连的误用时只能由它来关
+void _evpub_disconnect(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // ssl_exchange 的准入门 + CLIENT 位落定，两平台逐字相同的那一段。通过返 1 且 CLIENT 位已按 client 落定；
 // 拒收返 0，该告警的已落 WARN。
 // "不是 SOCK_STREAM" 那道门不在此处：它是调用方 UPCAST 成 tcp 结构的前提，进来晚了就已经越界读了。

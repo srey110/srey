@@ -569,16 +569,14 @@ static void _router_group_fill(router_group *g, const char *prefix,
     g->mw_names = mw_names;
     g->mw_names_n = n;
 }
-void router_group_root(router_ctx *r, router_group *g, const char *prefix,
+void router_group_root(router_group *g, const char *prefix,
                        const char *const *mw_names, int32_t n) {
     g->parent = NULL;
-    g->router = r;
     _router_group_fill(g, prefix, mw_names, n);
 }
 void router_group_nest(const router_group *parent, router_group *g, const char *prefix,
                        const char *const *mw_names, int32_t n) {
     g->parent = parent;
-    g->router = parent->router;
     _router_group_fill(g, prefix, mw_names, n);
 }
 // 沿父链按 root→leaf 顺序把各级 prefix 拼到 out, *out_len 写已用字节数。
@@ -995,12 +993,12 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
             LOG_WARN("router: framing header must not come from extra, dropped.");
             continue;
         }
-        // MAX_HEADLENS 管的是整个头部块, 故按已写入的 bw.offset 累计判而非逐条判。
+        // HTTP_MAX_HEADLENS 管的是整个头部块, 故按已写入的 bw.offset 累计判而非逐条判。
         // 超长值先单独挡一道: 直接相加会在 lens 接近 SIZE_MAX 时回绕成小值放行
-        if (extra[i].value.lens > MAX_HEADLENS
+        if (extra[i].value.lens > HTTP_MAX_HEADLENS
             || bw.offset + tail + extra[i].key.lens + extra[i].value.lens
-               + sizeof(": \r\n") - 1 > MAX_HEADLENS) {
-            LOG_WARN("router: header would push head block past MAX_HEADLENS, dropped.");
+               + sizeof(": \r\n") - 1 > HTTP_MAX_HEADLENS) {
+            LOG_WARN("router: header would push head block past HTTP_MAX_HEADLENS, dropped.");
             continue;
         }
         // 值为 NULL 一律丢: 调用方传 NULL 是"这条别发", 空值头要发就传 {"", 0}
@@ -1012,8 +1010,8 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
             LOG_WARN("router: header value is NULL or contains NUL/CRLF, dropped.");
             continue;
         }
-        memcpy(k, extra[i].key.data, extra[i].key.lens);
-        k[extra[i].key.lens] = '\0';
+        // 上面已挡过 key.lens >= sizeof(k)，装得下
+        (void)copy_bounded(extra[i].key.data, extra[i].key.lens, k, sizeof(k), 1);
         http_pack_head2(&bw, k, (const char *)extra[i].value.data, extra[i].value.lens);
     }
     // 1xx/204/304 禁带 Content-Length 与报文体, 只收尾不写 body(给了也丢);

@@ -1,5 +1,4 @@
 ﻿#include "protocol/redis.h"
-#include "protocol/prots_pub.h"
 #include "utils/binary.h"
 #include "containers/sarray.h"
 
@@ -19,9 +18,6 @@
 //一次大结果集之后容量会按连接常驻，超过此值即缩回本值。缩到地板而非重新 array_init，
 //后者会退到 ARRAY_INIT_SIZE(32)，让反复取大结果集的连接每次都从 32 一路翻倍长回去
 #define REDIS_ARR_KEEP      8192
-// Bulk String 最大长度，对齐 Redis 自身 proto-max-bulk-len 默认值(512MB)；
-// 防 blens 参与 size_t 加法/CALLOC 计算时在 32 位平台截断回绕
-#define REDIS_MAX_BULK_LEN  (512 * 1024 * 1024)
 #define FMT_INTEGER_FLAG  "diouxX" // 整型格式字符集
 // 提取 [p, f] 范围的格式说明符，格式化并追加到 fbuf
 #define FMT_TYPE(type)\
@@ -43,7 +39,8 @@ typedef struct reader_ctx {
     redis_frame stack[REDIS_MAX_DEPTH];
 }reader_ctx;
 
-void _redis_pkfree(redis_pack_ctx *pack) {
+void _redis_pkfree(void *data) {
+    redis_pack_ctx *pack = (redis_pack_ctx *)data;
     if (NULL == pack) {
         return;
     }
@@ -304,7 +301,7 @@ static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk, int64_t o
 static int32_t _redis_find_crlf(buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
-        if (PACK_TOO_LONG(buffer_size(buf))) {
+        if (buffer_size(buf) > REDIS_MAX_LINE_LENS) {
             BIT_SET(*status, PROT_ERROR);
         } else {
             BIT_SET(*status, PROT_MOREDATA);
@@ -322,6 +319,13 @@ static int32_t _redis_parse_len(buffer_ctx *buf, int32_t pos, int32_t *status, i
     }
     buffer_copyout(buf, 1, num, lens);
     num[lens] = '\0';
+    // 长度是纯十进制(允许 null 的 "-1"):首字符必须是数字或 '-',否则 strtoll 会跳过前导空白、
+    // 吞 '+',与严格按 1*DIGIT 解析的对端切出不同的包边界。RESP_INTEGER 的 ':' 本就允许 '+'(见 redis.h),不套此判
+    unsigned char c0 = (unsigned char)num[0];
+    if (!((c0 >= '0' && c0 <= '9') || '-' == c0)) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     char *end;
     errno = 0;
     int64_t val = (int64_t)strtoll(num, &end, 10);
@@ -447,7 +451,7 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         _redis_add_node(rd, pk, 0);
         return ERR_OK;
     }
-    if (blens > REDIS_MAX_BULK_LEN) {
+    if (blens > REDIS_MAX_BULK_LENS) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -523,7 +527,9 @@ static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf, 
     _redis_add_node(rd, pk, open);
     return ERR_OK;
 }
-redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+void *redis_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)ev; (void)fd; (void)skid; (void)client; (void)size;
     int32_t rtn, prot;
     uint32_t cnt;
     redis_pack_ctx *pk;

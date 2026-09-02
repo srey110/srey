@@ -3,8 +3,6 @@
 
 #include "base/macro.h"
 
-#define MONGO_MAX_PACK_SIZE (64 * 1024 * 1024) // MongoDB 单包上限 64MB
-
 typedef enum mongo_flags {
     CHECKSUM = 0x01,          //末尾附带 CRC-32C 校验和;本客户端不支持(mongo_unpack 见 CHECKSUM 即拒绝),server 启用 wire checksum 时不可用
     MORETOCOME = 0x02,        //发送方还有后续消息，接收方不必回复当前消息

@@ -478,7 +478,7 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
              * 若两次 push 的 timeout 不同，先到期的 te 对应的 coinfo
              * 不一定是队首，需按 coinfo->te 精确定位。 */
             coinfo = NULL;
-            list_foreach(&cosess->waiters, it) {
+            list_foreach(&cosess->waiters, it) {//不用 list_foreach_safe 因为删除并退出
                 probe = UPCAST(it, coro_info, node);
                 if (probe->te == te) {
                     coinfo = probe;
@@ -991,10 +991,8 @@ char *coro_dump(task_ctx *task, size_t *size) {
     while (hashmap_iter(coctx->mapco, &iter, (void **)&corosess)) {
         list_foreach(&corosess->waiters, it) {
             ci = UPCAST(it, coro_info, node);
-            if (NULL != ci->co) {
-                _coro_dump_one(&bw, corosess->sess, ci, now);
-                total++;
-            }
+            _coro_dump_one(&bw, corosess->sess, ci, now);
+            total++;
         }
     }
     int32_t nfork = 0;

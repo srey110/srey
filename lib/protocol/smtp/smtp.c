@@ -1,9 +1,9 @@
 ﻿#include "protocol/smtp/smtp.h"
-#include "protocol/prots_pub.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
 #include "event/event.h"
 #include "crypt/base64.h"
+#include "protocol/prots_pub.h"
 
 #define SMTP_OK "250"
 #define SMTP_CODE_LENS 3
@@ -98,9 +98,9 @@ char *smtp_pack_data(void) {
 // 多行格式：每行 "<code><sep>[text]\r\n"，sep='-' 表示后续仍有行，sep=' ' 或裸行 "<code>\r\n" 表示结束行
 // code 非 NULL 时校验每行 code 一致；code 为 NULL 时以首行 code 为准（COMMAND 命令响应 code 不固定）
 // 返回值：>0 表示完整响应总字节数（含末尾 CRLF）；0 表示需要等待更多数据；ERR_FAILED 表示协议错误
-int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
+static int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
     size_t blens = buffer_size(buf);
-    if (PACK_TOO_LONG(blens)) {
+    if (blens > SMTP_MAX_PACK_LENS) {
         return ERR_FAILED;
     }
     int32_t pos = 0;
@@ -160,7 +160,7 @@ static void _smtp_push_errline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx 
 static void _smtp_push_firstline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx *buf) {
     int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (crlf <= 0
-        || PACK_TOO_LONG(crlf)) {
+        || crlf > SMTP_MAX_PACK_LENS) {
         return;
     }
     _smtp_push_errline(fd, skid, ud, buf, crlf);
@@ -213,14 +213,16 @@ static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
     }
 }
-// 契约见 smtp.h。RFC 5321 §4.2.1：多行响应中间行用 '-' 分隔，末行/单行用空格分隔；
+// 从 EHLO 响应里解析认证类型，优先 PLAIN 其次 LOGIN。total 是本条 250 响应的字节数，
+// 搜索一律卡在它之内。返回 smtp_authtype，没有可用的 AUTH 通告返回 ERR_FAILED。
+// RFC 5321 §4.2.1：多行响应中间行用 '-' 分隔，末行/单行用空格分隔；
 // 带尾随空格的字面量避免 "250-AUTHENTICATION" 等其他扩展误匹配
-int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total) {
+static int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total) {
     const char *authmid = "250-AUTH ";
     const char *authend = "250 AUTH ";
     size_t mlen = strlen(authmid);
     size_t elen = strlen(authend);
-    // 导出符号，自己认参数。挡到 1：total - 1 在 0 处下溢成 SIZE_MAX，在 1 处算出 0，
+    // 挡到 1：total - 1 在 0 处下溢成 SIZE_MAX，在 1 处算出 0，
     // 而 buffer_search 的 end 为 0 表示"搜到缓冲末尾"，边界会整个失效
     if (total <= 1) {
         return ERR_FAILED;
@@ -311,7 +313,7 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     }
     size_t lens = (size_t)crlf - SMTP_CODE_LENS - 1;
     // 空挑战（"334 \r\n"）或挑战体超长均非法，丢弃响应并报错
-    if (0 == lens || PACK_TOO_LONG(lens)) {
+    if (0 == lens || lens > SMTP_MAX_PACK_LENS) {
         buffer_drain(buf, (size_t)crlf + CRLF_SIZE);
         BIT_SET(*status, PROT_ERROR);
         return;
@@ -389,7 +391,7 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     }
     //找首个 CRLF 而非末尾 CRLF，支持流水线场景下首条已完整即可消费
     if (ERR_FAILED == buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE)) {
-        if (PACK_TOO_LONG(blens)) {
+        if (blens > SMTP_MAX_PACK_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return;
         }
@@ -470,7 +472,9 @@ static char *_smtp_command(buffer_ctx *buf, size_t *size, int32_t *status) {
     buffer_drain(buf, (size_t)total);
     return pack;
 }
-void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)client;
     smtp_ctx *smtp = (smtp_ctx *)ud->context;
     void *pack = NULL;
     switch (ud->status) {

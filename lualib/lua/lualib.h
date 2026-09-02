@@ -1,4 +1,4 @@
-/*
+﻿/*
 ** $Id: lualib.h $
 ** Lua standard libraries
 ** See Copyright Notice in lua.h
@@ -64,77 +64,77 @@ LUALIB_API void (luaL_openselectedlibs) (lua_State *L, int load, int preload);
 #define LUA_YYJSONLIBNAME "yyjson"
 LUAMOD_API int (luaopen_yyjson)(lua_State *L);
 
-#define LUA_SREYTASK "srey.task"
+#define LUA_SREY_TASK "srey.task"
 LUAMOD_API int (luaopen_task)(lua_State *L);
-#define LUA_SREYCORE "srey.core"
+#define LUA_SREY_CORE "srey.core"
 LUAMOD_API int (luaopen_core)(lua_State *L);
-#define LUA_SREYHARBOR "srey.harbor"
+#define LUA_SREY_HARBOR "srey.harbor"
 LUAMOD_API int (luaopen_harbor)(lua_State *L);
-#define LUA_SREYDNS "srey.dns"
+#define LUA_SREY_DNS "srey.dns"
 LUAMOD_API int (luaopen_dns)(lua_State *L);
-#define LUA_SREYCUSTZ "srey.custz"
+#define LUA_SREY_CUSTZ "srey.custz"
 LUAMOD_API int (luaopen_custz)(lua_State *L);
-#define LUA_SREYWEBSOCK "srey.websock"
+#define LUA_SREY_WEBSOCK "srey.websock"
 LUAMOD_API int (luaopen_websock)(lua_State *L);
-#define LUA_SREYHTTP "srey.http"
+#define LUA_SREY_HTTP "srey.http"
 LUAMOD_API int (luaopen_http)(lua_State *L);
-#define LUA_SREYREDIS "srey.redis"
+#define LUA_SREY_REDIS "srey.redis"
 LUAMOD_API int (luaopen_redis)(lua_State *L);
-#define LUA_SMTP "srey.smtp"
+#define LUA_SREY_SMTP "srey.smtp"
 LUAMOD_API int (luaopen_smtp)(lua_State *L);
-#define LUA_SMTP_MAIL "srey.smtp.mail"
+#define LUA_SREY_SMTP_MAIL "srey.smtp.mail"
 LUAMOD_API int (luaopen_mail)(lua_State *L);
-#define LUA_SREYUTILS "srey.utils"
+#define LUA_SREY_UTILS "srey.utils"
 LUAMOD_API int (luaopen_utils)(lua_State *L);
-#define LUA_SREYHASHRING "srey.hashring"
+#define LUA_SREY_HASHRING "srey.hashring"
 LUAMOD_API int (luaopen_hashring)(lua_State *L);
-#define LUA_SREYTREND "srey.trend"
+#define LUA_SREY_TREND "srey.trend"
 LUAMOD_API int (luaopen_trend)(lua_State *L);
-#define LUA_SREYPOPEN "srey.popen"
+#define LUA_SREY_POPEN "srey.popen"
 LUAMOD_API int (luaopen_popen)(lua_State *L);
-#define LUA_SREYSTM "srey.stm"
+#define LUA_SREY_STM "srey.stm"
 LUAMOD_API int (luaopen_stm)(lua_State *L);
-#define LUA_SREYURL "srey.url"
+#define LUA_SREY_URL "srey.url"
 LUAMOD_API int (luaopen_url)(lua_State *L);
-#define LUA_SREYBASE64 "srey.base64"
+#define LUA_SREY_BASE64 "srey.base64"
 LUAMOD_API int (luaopen_base64)(lua_State *L);
-#define LUA_SREYCRC "srey.crc"
+#define LUA_SREY_CRC "srey.crc"
 LUAMOD_API int (luaopen_crc)(lua_State *L);
-#define LUA_SREYDIGEST "srey.digest"
+#define LUA_SREY_DIGEST "srey.digest"
 LUAMOD_API int (luaopen_digest)(lua_State *L);
-#define LUA_SREYHMAC "srey.hmac"
+#define LUA_SREY_HMAC "srey.hmac"
 LUAMOD_API int (luaopen_hmac)(lua_State *L);
-#define LUA_SREYCIPHER "srey.cipher"
+#define LUA_SREY_CIPHER "srey.cipher"
 LUAMOD_API int (luaopen_cipher)(lua_State *L);
-#define LUA_SREYSERI "srey.seri"
+#define LUA_SREY_SERI "srey.seri"
 LUAMOD_API int (luaopen_seri)(lua_State *L);
-#define LUA_MYSQLBIND "mysql.bind"
+#define LUA_SREY_MYSQL_BIND "srey.mysql.bind"
 LUAMOD_API int (luaopen_mysql_bind)(lua_State *L);
-#define LUA_MYSQLREADER "mysql.reader"
+#define LUA_SREY_MYSQL_READER "srey.mysql.reader"
 LUAMOD_API int (luaopen_mysql_reader)(lua_State *L);
-#define LUA_MYSQLSTMT "mysql.stmt"
+#define LUA_SREY_MYSQL_STMT "srey.mysql.stmt"
 LUAMOD_API int (luaopen_mysql_stmt)(lua_State *L);
-#define LUA_MYSQL "mysql"
+#define LUA_SREY_MYSQL "srey.mysql"
 LUAMOD_API int (luaopen_mysql)(lua_State *L);
-#define LUA_PGSQLBIND "pgsql.bind"
+#define LUA_SREY_PGSQL_BIND "srey.pgsql.bind"
 LUAMOD_API int (luaopen_pgsql_bind)(lua_State *L);
-#define LUA_PGSQLREADER "pgsql.reader"
+#define LUA_SREY_PGSQL_READER "srey.pgsql.reader"
 LUAMOD_API int (luaopen_pgsql_reader)(lua_State *L);
-#define LUA_PGSQL "pgsql"
+#define LUA_SREY_PGSQL "srey.pgsql"
 LUAMOD_API int (luaopen_pgsql)(lua_State *L);
-#define LUA_MQTT "mqtt"
+#define LUA_SREY_MQTT "srey.mqtt"
 LUAMOD_API int (luaopen_mqtt)(lua_State *L);
-#define LUA_BSON "bson"
+#define LUA_SREY_BSON "srey.bson"
 LUAMOD_API int (luaopen_bson)(lua_State *L);
-#define LUA_BSONITER "bson.iter"
+#define LUA_SREY_BSON_ITER "srey.bson.iter"
 LUAMOD_API int (luaopen_bson_iter)(lua_State *L);
-#define LUA_MONGO "mongo"
+#define LUA_SREY_MONGO "srey.mongo"
 LUAMOD_API int (luaopen_mongo)(lua_State *L);
-#define LUA_MONGOSESSION "mongo.session"
+#define LUA_SREY_MONGO_SESSION "srey.mongo.session"
 LUAMOD_API int (luaopen_mongo_session)(lua_State *L);
-#define LUA_KCP "kcp"
+#define LUA_SREY_KCP "srey.kcp"
 LUAMOD_API int (luaopen_kcp)(lua_State *L);
-#define LUA_SREYROUTER "srey.router"
+#define LUA_SREY_ROUTER "srey.router"
 LUAMOD_API int (luaopen_router)(lua_State *L);
 
 #endif

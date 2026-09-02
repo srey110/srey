@@ -148,7 +148,7 @@ runner.run(function(t)
                 "端口越界报的是 port out of range")
 
         -- pktype 入口：枚举外的值当场报错，不能一路存进 ud->pktype。
-        -- 那样 prots.c 各处分派全落到 default，收发"跑得起来"却只是原样透传，业务查不出所以然
+        -- 那样 prots.c 的 _prots_vtbl 会落到 _vtbl_none，收发"跑得起来"却只是原样透传，业务查不出所以然
         t:eq(true, rejects(srey.listen, 999, SSL_NAME.NONE, "127.0.0.1", 18999),
              "listen 未知 pktype 被拒")
         t:eq(true, rejects(srey.connect, 999, SSL_NAME.NONE, "127.0.0.1", 18999),

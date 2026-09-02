@@ -2,7 +2,7 @@
 -- 使用方：local mqtt = require("lib.mqtt")
 
 local srey = require("lib.srey")
-local cmqtt = require("mqtt")
+local cmqtt = require("srey.mqtt")
 
 cmqtt.VERSION = {
     V311 = 0x04,

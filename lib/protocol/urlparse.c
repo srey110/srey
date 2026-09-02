@@ -198,8 +198,8 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
             LOG_WARN("url too long.");
             return ERR_FAILED;
         }
-        memcpy(ctx->buf, url, lens);
-        ctx->buf[lens] = '\0';// 上面的 lens >= sizeof(buf) 已挡过；整体清零撤掉后这一字节得自己补
+        // 上面的 lens >= sizeof(buf) 已挡过，strict 那档失败不会发生
+        (void)copy_bounded(url, lens, ctx->buf, sizeof(ctx->buf), 1);
         urlbuf = ctx->buf;
     } else {
         urlbuf = (char *)url;

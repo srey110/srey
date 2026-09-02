@@ -7,7 +7,7 @@
 -- 判型留给调用方；只有出现最多的那一种（判 MPACK_OK）另给一个薄壳。
 
 local srey = require("lib.srey")
-local mysql = require("mysql")-- C 绑定，只用 pack_type
+local mysql = require("srey.mysql")-- C 绑定，只用 pack_type
 
 local M = {}
 

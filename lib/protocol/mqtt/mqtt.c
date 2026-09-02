@@ -1,7 +1,7 @@
 ﻿#include "protocol/mqtt/mqtt.h"
-#include "protocol/prots_pub.h"
 #include "utils/utils.h"
 #include "protocol/varint.h"
+#include "protocol/prots_pub.h"
 
 //https://mqtt.p2hp.com/mqtt311
 //https://mqtt.p2hp.com/mqtt-5-0
@@ -64,12 +64,22 @@ void _mqtt_pkfree(void *data) {
     }
     FREE(pack);
 }
-void _mqtt_udfree(ud_cxt *ud) {
-    if (NULL == ud->context) {
-        return;
+mqtt_ctx *mqtt_ctx_new(mqtt_protversion version) {
+    if (MQTT_311 != version
+        && MQTT_50 != version) {
+        LOG_WARN("mqtt unsupported protocol version %d.", (int32_t)version);
+        return NULL;
     }
-    mqtt_ctx *mq = (mqtt_ctx *)ud->context;
-    FREE(mq);
+    mqtt_ctx *mq;
+    MALLOC(mq, sizeof(mqtt_ctx));
+    mq->version = (int8_t)version;
+    return mq;
+}
+void mqtt_ctx_free(void *ctx) {
+    FREE(ctx);
+}
+void _mqtt_udfree(ud_cxt *ud) {
+    mqtt_ctx_free(ud->context);
     ud->context = NULL;
 }
 int32_t _mqtt_may_resume(void *data) {
@@ -124,10 +134,20 @@ static int32_t _mqtt_data_varnum(buffer_ctx *buf, int32_t *num) {
     *num = (int32_t)val;
     return occupy;
 }
+// 读 2 字节长度前缀，并卡住"声明长度不得超过缓冲剩余字节"。
+// 读完就按这个长度分配的字段都走它，必须先卡再分配；有更紧判定的(协议名定长 4、PUBLISH 主题名
+// 不超 remaining_lens)自己判
+static int32_t _mqtt_data_lens(buffer_ctx *buf, int32_t *num) {
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, num)
+        || (size_t)(*num) > buffer_size(buf)) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 // 从缓冲区读取 UTF-8 字符串，构建 mqtt_propertie（fval 存储字符串）
 static mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {
+    if (ERR_OK != _mqtt_data_lens(buf, &num)) {
         return NULL;
     }
     (*off) += 2;
@@ -143,7 +163,7 @@ static mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
 }
 // 从缓冲区读取 UTF-8 字符串，返回堆分配的 C 字符串（需调用者释放）
 static char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, num)) {
+    if (ERR_OK != _mqtt_data_lens(buf, num)) {
         return NULL;
     }
     char *rtn;
@@ -171,7 +191,7 @@ static char *_mqtt_data_utf8(buffer_ctx *buf, int32_t *num) {
 static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     //key
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {
+    if (ERR_OK != _mqtt_data_lens(buf, &num)) {
         return NULL;
     }
     (*off) += 2;
@@ -184,7 +204,7 @@ static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     (*off) += num;
     propt->flens = num;
     //value
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {
+    if (ERR_OK != _mqtt_data_lens(buf, &num)) {
         FREE(propt);
         return NULL;
     }
@@ -200,13 +220,15 @@ static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     propt->slens = num;
     return propt;
 }
-// 属性解析。只按 id 决定读几个字节,两件事未查:同一属性重复出现、属性 id 与当前报文类型
-// 不匹配(按 MQTT-5.0 §2.2.2.2 两者都算 Protocol Error)。数组按 wire 顺序原样交上层,
+// 属性解析。maxlens 传本报文的 fixhead.remaining_lens——属性段是报文的一部分,界要按本报文取,
+// 不能按整个接收缓冲。只按 id 决定读几个字节,两件事未查:同一属性重复出现、属性 id 与当前
+// 报文类型不匹配(按 MQTT-5.0 §2.2.2.2 两者都算 Protocol Error)。数组按 wire 顺序原样交上层,
 // 重复属性会出现多个同 id 元素,上层若只读先遇到的那个,取到的可能不是对端的本意
-static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *total) {
+static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *total, size_t maxlens) {
     int32_t plens;
     int32_t occupy = _mqtt_data_varnum(buf, &plens);//属性长度
     if (ERR_FAILED == occupy
+        || (size_t)plens > maxlens
         || (size_t)plens > buffer_size(buf)) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
@@ -338,6 +360,11 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    if (NULL != ud->context) {
+        LOG_WARN("mqtt connect on a connection that already has a context, mqtt_ws_bind is for the client direction only.");
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     //可变报头 协议名（Protocol Name），协议级别（Protocol Level），连接标志（Connect Flags），保持连接（Keep Alive）,
     //属性（Properties MQTT_50）
     mqtt_connect_varhead *vh;
@@ -383,7 +410,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     }
     vh->keepalive = (uint16_t)num;
     if (vh->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        vh->properties = _mqtt_properties(buf, status, NULL, pack->fixhead.remaining_lens);//属性
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -401,7 +428,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     }
     if (vh->willflag) {
         if (vh->version >= MQTT_50) {
-            pl->properties = _mqtt_properties(buf, status, NULL);//属性
+            pl->properties = _mqtt_properties(buf, status, NULL, pack->fixhead.remaining_lens);//属性
             if (NULL == pl->properties
                 && BIT_CHECK(*status, PROT_ERROR)) {
                 return ERR_FAILED;
@@ -434,9 +461,11 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         }
         pl->pslens = num;
     }
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = vh->version;
+    mqtt_ctx *mq = mqtt_ctx_new((mqtt_protversion)vh->version);
+    if (NULL == mq) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     ud->context = mq;
     ud->status = COMMAND;
     return ERR_OK;
@@ -449,6 +478,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         return ERR_FAILED;
     }
     if (NULL == ud->context) {
+        LOG_WARN("mqtt connack without context, mqtt over ws client must inject one by mqtt_ws_bind.");
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -473,7 +503,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     vh->reason = (uint8_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        vh->properties = _mqtt_properties(buf, status, NULL, pack->fixhead.remaining_lens);//属性
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -540,7 +570,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *stat
         vh->packid = (uint16_t)num;
     }
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//属性
+        vh->properties = _mqtt_properties(buf, status, &num, pack->fixhead.remaining_lens);//属性
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -603,29 +633,13 @@ static int32_t _mqtt_pubackrel_common(mqtt_pack_ctx *pack, buffer_ctx *buf,
         vh->reason = (uint8_t)num;
     }
     if (pack->fixhead.remaining_lens >= 4) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        vh->properties = _mqtt_properties(buf, status, NULL, pack->fixhead.remaining_lens);//属性
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
         }
     }
     return ERR_OK;
-}
-//两个方向都允许  QoS 1消息发布收到确认
-static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, status, 0);
-}
-//两个方向都允许  发布收到（保证交付第一步）
-static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, status, 0);
-}
-//两个方向都允许  发布释放（保证交付第二步），3，2，1，0位是保留位且必须分别设置为0，0，1，0
-static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, status, 0x02);
-}
-//两个方向都允许  QoS 2消息发布完成（保证交互第三步）
-static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, status, 0);
 }
 // SUBSCRIBE / SUBACK / UNSUBSCRIBE / UNSUBACK 四个报文共用的可变报头：
 // 方向与 flags 校验 → 报文标识符 → 建 varhead → MQTT_50 才读属性 → 算出载荷剩余长度。
@@ -650,7 +664,7 @@ static int32_t _mqtt_subunsub_varhead(mqtt_pack_ctx *pack, int32_t client, int32
     vh->packid = (uint16_t)num;
     num = 0;
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//属性
+        vh->properties = _mqtt_properties(buf, status, &num, pack->fixhead.remaining_lens);//属性
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -825,7 +839,7 @@ static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *s
     }
     vh->reason = (uint8_t)num;
     if (pack->fixhead.remaining_lens > 1) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        vh->properties = _mqtt_properties(buf, status, NULL, pack->fixhead.remaining_lens);//属性
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -867,7 +881,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
     pack->varhead = vh;
     vh->reason = (uint8_t)num;
     if (pack->fixhead.remaining_lens > 1) {
-        vh->properties = _mqtt_properties(buf, status, NULL);
+        vh->properties = _mqtt_properties(buf, status, NULL, pack->fixhead.remaining_lens);
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -905,17 +919,15 @@ static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     case MQTT_PUBLISH:
         rtn = _mqtt_publish(pack, buf, status);
         break;
+    //两个方向都允许：PUBACK(QoS1 确认)、PUBREC(QoS2 第一步)、PUBCOMP(QoS2 第三步)期望 flags 为 0
     case MQTT_PUBACK:
-        rtn = _mqtt_puback(pack, buf, status);
-        break;
     case MQTT_PUBREC:
-        rtn = _mqtt_pubrec(pack, buf, status);
-        break;
-    case MQTT_PUBREL:
-        rtn = _mqtt_pubrel(pack, buf, status);
-        break;
     case MQTT_PUBCOMP:
-        rtn = _mqtt_pubcomp(pack, buf, status);
+        rtn = _mqtt_pubackrel_common(pack, buf, status, 0);
+        break;
+    //PUBREL(QoS2 第二步)的 3，2，1，0 位是保留位且必须分别为 0，0，1，0
+    case MQTT_PUBREL:
+        rtn = _mqtt_pubackrel_common(pack, buf, status, 0x02);
         break;
     case MQTT_SUBSCRIBE:
         rtn = _mqtt_subscribe(pack, client, buf, status);
@@ -947,7 +959,9 @@ static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     }
     return rtn;
 }
-mqtt_pack_ctx *mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+void *mqtt_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)ev; (void)fd; (void)skid; (void)size;
     size_t blens = buffer_size(buf);
     if (blens < 2) {//固定头至少2字节
         BIT_SET(*status, PROT_MOREDATA);
@@ -965,7 +979,7 @@ mqtt_pack_ctx *mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t 
     }
     size_t fhlens = 1 + roccupy;
     size_t total = fhlens + remaining_lens;
-    if (PACK_TOO_LONG(total)) {
+    if (total > MQTT_MAX_PACK_LENS) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }

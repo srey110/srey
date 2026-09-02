@@ -5,8 +5,8 @@
 
 local srey  = require("lib.srey")
 local stmt  = require("lib.mysql_stmt")
-local mysql = require("mysql")
-local reader = require("mysql.reader")
+local mysql = require("srey.mysql")
+local reader = require("srey.mysql.reader")
 local pub   = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 local mpub  = require("lib.mysql_pub")-- 与 mysql_stmt.lua 共用的请求收尾，见该模块头部
 local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE

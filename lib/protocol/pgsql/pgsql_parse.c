@@ -39,7 +39,7 @@ static pgpack_ctx *_pgpack_new(pgpack_type type) {
     pgpack->type = type;
     return pgpack;
 }
-void _pgpack_results_clear(pgpack_ctx *pgpack) {
+static void _pgpack_results_clear(pgpack_ctx *pgpack) {
     pgsql_result *res;
     for (uint32_t i = 0; i < array_size(&pgpack->results); i++) {
         res = array_at(&pgpack->results, i);
@@ -338,10 +338,12 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
     int8_t code = binary_get_int8(breader); // 读取消息类型码
     binary_get_skip(breader, 4); // 跳过消息体长度字段
     switch (code) { // N / S / A 随时都有可能收到（异步消息）
-    case 'N': // NoticeResponse：服务端通知消息，忽略
-        FREE(breader->data);
-        break;
-    case 'S': // ParameterStatus：运行时参数状态报告，忽略
+    // 以下五类一律忽略，只放掉这一包
+    case 'N': // NoticeResponse：服务端通知消息
+    case 'S': // ParameterStatus：运行时参数状态报告
+    case 'n': // NoData：Describe 结果为空（无行描述）
+    case 't': // ParameterDescription：Describe 返回的参数类型描述
+    case 'c': // CopyDone（服务端发出）：COPY OUT 数据传输完毕，等后续 CommandComplete + ReadyForQuery
         FREE(breader->data);
         break;
     case 'A': // NotificationResponse：LISTEN 产生的异步通知，立即返回给上层
@@ -361,17 +363,11 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         pg->pack->pack = _pgpack_error_notice(breader); // 保存错误描述字符串
         FREE(breader->data);
         break;
-    case 'n': // NoData：Describe 结果为空（无行描述），忽略
-        FREE(breader->data);
-        break;
     case 'I': // EmptyQueryResponse：Query 收到空 SQL，标记为 OK
     case '1': // ParseComplete：Parse 命令完成
     case '2': // BindComplete：Bind 命令完成
     case '3': // CloseComplete：Close 命令完成
         _pgpack_init(pg, PGPACK_OK);
-        FREE(breader->data);
-        break;
-    case 't': // ParameterDescription：Describe 返回的参数类型描述，当前忽略
         FREE(breader->data);
         break;
     case 'T': // RowDescription：行描述，初始化 reader 并填充字段信息
@@ -412,9 +408,6 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
             break;
         }
         _pgpack_copy_data(pg->pack, breader);
-        FREE(breader->data);
-        break;
-    case 'c': // CopyDone（服务端发出）：COPY OUT 数据传输完毕，等待后续 CommandComplete + ReadyForQuery
         FREE(breader->data);
         break;
     case 'C': // CommandComplete：命令完成，记录命令标签并按语句边界提交一个结果

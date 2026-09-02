@@ -468,7 +468,9 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
     binary_init(&breader, payload, total, 0);
     return _pgpack_parser(pg, &breader, ud, status);
 }
-void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+void *pgsql_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    (void)fd; (void)skid; (void)client; (void)size;
     if (NULL == ud->context) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;

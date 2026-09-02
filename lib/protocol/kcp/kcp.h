@@ -19,7 +19,7 @@ typedef struct kcp_ctx {
 }kcp_ctx;
 // KCP 可调参数,传给 kcp_start(NULL=全用库默认)。
 // nodelay/interval/resend/nc 透传 ikcp_nodelay:填 <0 表示该项不改(interval 填 0 会被库钳到 10ms);
-// sndwnd/rcvwnd/mtu 填 >0 才生效,否则保持库默认(rcvwnd 库内下限 128,mtu 须 >=50)
+// sndwnd/rcvwnd/mtu 填 >0 才生效,否则保持库默认(rcvwnd 库内下限 128,mtu 须 50~65535)
 typedef struct kcp_config {
     int32_t nodelay;   // 0 普通 / 1 nodelay(降 rx_minrto 100→30);<0 不改
     int32_t interval;  // 内部 flush 间隔 ms,库钳到 [10,5000];<0 不改
@@ -27,15 +27,15 @@ typedef struct kcp_config {
     int32_t nc;        // 0 开流控 / 1 关流控(nocwnd);<0 不改
     int32_t sndwnd;    // 发送窗口(默认 32);<=0 不改
     int32_t rcvwnd;    // 接收窗口(默认 128);<=0 不改
-    int32_t mtu;       // MTU(默认 1400,须 >=50);<=0 不改
+    int32_t mtu;       // MTU(默认 1400,须 50~65535);<=0 不改
 }kcp_config;
 
 // 初始化 kcp 模块,注册消息汇(由 prots_init 调用)
 void _kcp_init(prot_emit *emit);
 // 释放 UDP socket 上的 kcp 上下文及其所有会话(由 prots_udfree 调用)
 void _kcp_udfree(ud_cxt *ud);
-// UDP 数据解包:ikcp_input 喂入后 ikcp_recv 取完整消息上抛(由 prots_net_recvfrom 调用)
-void _kcp_unpack(SOCKET fd, uint64_t skid,
+// UDP 数据解包:ikcp_input 喂入后 ikcp_recv 取完整消息上抛(由 prots_net_recvfrom 调用)。
+void _kcp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
                  char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 /// <summary>
 /// 初始化 kcp 句柄:绑定底层 UDP socket 与会话号,不建立会话(需再调 kcp_start)

@@ -125,7 +125,10 @@ static void _cli_worker(task_ctx *task, void *arg) {
     kcp_ctx kcp;
     kcp_init(&kcp, &task->loader->netev, ufd, uskid, conv);
     kcp_config badmtu = { -1, -1, -1, -1, 0, 0, 24 }; // client 0 故意传非法 mtu(<50),验证 maxpack 不会因此归零导致永久发送失败
-    if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _cli_sv_udp, 0 == idx ? &badmtu : NULL)) {
+    // client 1 传的 1431655742 会让 ikcp 内部的 (mtu+24)*3 在 32 位无符号下回绕成 2:
+    // 修复前 buffer 只有 2 字节而 mss 仍是天文数字,首次 flush 即堆越界写
+    kcp_config hugemtu = { -1, -1, -1, -1, 0, 0, 1431655742 };
+    if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _cli_sv_udp, 0 == idx ? &badmtu : (1 == idx ? &hugemtu : NULL))) {
         LOG_ERROR("kcp client %d kcp_start error.", idx);
         ev_close(&task->loader->netev, ufd, uskid);
         return;

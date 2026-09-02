@@ -68,33 +68,24 @@ typedef struct mysql_bind_ctx {
 
 // MySQL 数据包上下文（解析后的响应包）
 typedef struct mpack_ctx {
-    int8_t sequence_id;     // 数据包序列号
     int8_t more;            // 1=其后还有结果集（SERVER_MORE_RESULTS_EXISTS，多语句 / CALL 多结果集）
     mpack_type pack_type;   // 数据包类型
     char *payload;          // 原始 payload 数据（由此结构体持有内存所有权）
-    void *pack;             // 实际解析结果（mpack_ok / mpack_err / mysql_reader_ctx 等）
+    void *pack;             // 实际解析结果（mpack_ok / mysql_reader_ctx 等）；ERR 包不带，错误码与错误串直接落在 mysql_ctx 上
     void(*_free_mpack)(void *); // pack 字段的释放回调，NULL 表示直接 FREE
 }mpack_ctx;
 
 // OK 响应包数据
 typedef struct mpack_ok {
     int16_t status_flags;   // 服务器状态标志
-    int16_t warnings;       // 警告数量
     int64_t affected_rows;  // 影响的行数
     int64_t last_insert_id; // 最后插入的自增 ID
 }mpack_ok;
 
 // EOF 响应包数据
 typedef struct mpack_eof {
-    int16_t warnings;       // 警告数量
     int16_t status_flags;   // 服务器状态标志
 }mpack_eof;
-
-// 错误响应包数据
-typedef struct mpack_err {
-    int16_t error_code;     // 错误码
-    buf_ctx error_msg;      // 错误信息
-}mpack_err;
 
 // 列字段描述信息（Column Definition）
 typedef struct mpack_field {

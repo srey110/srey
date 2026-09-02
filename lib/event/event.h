@@ -243,8 +243,12 @@ int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle);
 /// <param name="ctx">ev_ctx</param>
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
-/// <param name="extra">extra</param>
-/// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
-int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
+/// <param name="extra">extra，设置成功后所有权转移给 ud_cxt->context。不释放原值——只可用于
+/// context 为空的连接，已挂上下文的连接上调用会让原值失去最后一个持有者</param>
+/// <param name="fcb">extra 的释放回调，可为 NULL(不释放)。凡没能真的设上一律用它回收 extra：
+/// fd 非法、命令到达时连接已不在、事件循环拆除时命令还没执行</param>
+/// <returns>ERR_OK 命令已入队;fd 为 INVALID_SOCK 时返回 ERR_FAILED 并已用 fcb 回收 extra，
+/// 调用方不可再释放。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
+int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra, free_cb fcb);
 
 #endif//EVENT_H_

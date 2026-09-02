@@ -4,15 +4,15 @@
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local utils  = require("srey.utils")
-local mbind  = require("mysql.bind")
-local pbind  = require("pgsql.bind")
-local mongo  = require("mongo")
+local mbind  = require("srey.mysql.bind")
+local pbind  = require("srey.pgsql.bind")
+local mongo  = require("srey.mongo")
 local mgolib = require("lib.mongo")-- Lua 侧 ctx，测 ctor 的入参自查
-local mgsess = require("mongo.session")
-local mysql  = require("mysql")
-local mreader = require("mysql.reader")-- reader.new / stmt.new 的第一个 lightuserdata 参数要测空指针
-local mstmt  = require("mysql.stmt")
-local pgsql  = require("pgsql")
+local mgsess = require("srey.mongo.session")
+local mysql  = require("srey.mysql")
+local mreader = require("srey.mysql.reader")-- reader.new / stmt.new 的第一个 lightuserdata 参数要测空指针
+local mstmt  = require("srey.mysql.stmt")
+local pgsql  = require("srey.pgsql")
 local bson   = require("lib.bson")
 local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 

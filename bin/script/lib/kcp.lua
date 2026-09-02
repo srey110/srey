@@ -5,7 +5,7 @@
 --        第 4 参数是 sync(boolean),传 true 则 start/send 同步等响应;缺省只走异步。
 --        注意 Lua 中 0 为真值,旧写法 kcp.new(fd, skid, conv, 0) 会被当成 sync=true
 local srey = require("lib.srey")
-local ckcp = require("kcp")
+local ckcp = require("srey.kcp")
 
 local ctx = class("kcp_ctx")
 

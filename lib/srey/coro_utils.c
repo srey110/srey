@@ -108,8 +108,8 @@ static int32_t _ws_parse_url(url_ctx *url, const char *ws, struct evssl_ctx *evs
         || url->host.lens >= hostlens - 7) {// 预留 ":65535" + '\0'，供 _ws_reorg 就地追加端口
         return ERR_FAILED;
     }
-    memcpy(host, url->host.data, url->host.lens);
-    host[url->host.lens] = '\0';
+    // 上面已挡过 host.lens >= hostlens - 7，装得下
+    (void)copy_bounded(url->host.data, url->host.lens, host, hostlens, 1);
     return ERR_OK;
 }
 // host 解析为连接用 ip(缓冲须为 IP_LENS 字节)，端口取 url 显式值或按 scheme 默认(RFC 6455 §3：ws 80 / wss 443)
@@ -121,10 +121,9 @@ static int32_t _ws_resolve_addr(task_ctx *task, url_ctx *url, const char *host, 
     if ('[' == host[0]
         && hlens > 1
         && ']' == host[hlens - 1]) {
-        if (hlens - 2 >= IP_LENS) {
+        if (ERR_OK != copy_bounded(host + 1, hlens - 2, ip, IP_LENS, 1)) {
             return ERR_FAILED;
         }
-        memcpy(ip, host + 1, hlens - 2);
     } else if (ERR_OK != is_ipaddr(host)) {
         size_t nips;
         dns_ip *ips = dns_lookup(task, host, 0, 0, &nips);
@@ -135,10 +134,12 @@ static int32_t _ws_resolve_addr(task_ctx *task, url_ctx *url, const char *host, 
             FREE(ips);
             return ERR_FAILED;
         }
-        memcpy(ip, ips[0].ip, strlen(ips[0].ip));
+        // dns_ip.ip 也是 char[IP_LENS]，装得下
+        (void)copy_bounded(ips[0].ip, strlen(ips[0].ip), ip, IP_LENS, 1);
         FREE(ips);
     } else {
-        memcpy(ip, host, hlens);
+        // is_ipaddr 已过，是 IP 字面量，装得下
+        (void)copy_bounded(host, hlens, ip, IP_LENS, 1);
     }
     if (url->port.lens > 0) {
         // url_parse 只按冒号切分不校验字符,strtoul 会把 "80abc" 当 80 接受;
@@ -1324,7 +1325,8 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
     // 失败分支动 kcp 之前先认一次 sess,理由同 kcp_synsend:换掉之后那三个字段属于新会话,
     // 抹了它既发不出也停不掉。prevmaxpack 同理只对自己这次调用有意义
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        // 占位条目由随后到达的 CLOSE 清:会话已建立则 kcp_stop 发真 CLOSE,未建立则 _kcp_start 已补合成 CLOSE
+        // 只为停掉会话本身,不然它留在 event 线程的会话表里；mapco 条目不用管,
+        // 超时路径的 _coro_timeout_monitor 摘掉等待者后已经删过了
         if (sess == kcp->sess) {
             kcp_stop(kcp);
         }

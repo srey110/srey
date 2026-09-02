@@ -110,14 +110,7 @@ char *smtp_pack_data(void);
 /// <param name="size">COMMAND 状态下输出数据包长度</param>
 /// <param name="status">解析结果标志位（PROT_MOREDATA / PROT_ERROR）</param>
 /// <returns>COMMAND 状态下返回响应数据包（需调用者释放），其余状态返回 NULL</returns>
-void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
-
-// 内部 helper（仅供单元测试使用，业务代码请勿直接调用）：
-// 在 buffer 中扫描完整 SMTP 多行响应。code 非 NULL 校验每行 code 一致，NULL 则以首行 code 为准。
-// 返回 >0 = 完整响应总字节数（含末尾 CRLF）；0 = 需等待更多数据；ERR_FAILED = 协议错误
-int32_t _smtp_full_response(buffer_ctx *buf, const char *code);
-// 从 EHLO 响应里解析认证类型，优先 PLAIN 其次 LOGIN。total 是本条 250 响应的字节数，
-// 搜索一律卡在它之内。返回 smtp_authtype，没有可用的 AUTH 通告返回 ERR_FAILED
-int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total);
+void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
 #endif//SMTP_H_

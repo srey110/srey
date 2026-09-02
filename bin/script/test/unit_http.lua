@@ -48,7 +48,7 @@ local function _warned(sub)
     end
     return false
 end
--- 名 + ": " + 值 + CRLF 超 MAX_HEADLENS(4096)：整条头会被丢弃，不截断也不发出
+-- 名 + ": " + 值 + CRLF 超 HTTP_MAX_HEADLENS(4096)：整条头会被丢弃，不截断也不发出
 local BIG = string.rep("b", 4096)
 
 -- 第 1 块正常发出(让对端收到一条语法完整的 chunked 请求),第 2 块返回非 string 触发违约
@@ -98,7 +98,7 @@ runner.run(function(t)
         end
         local body = http.datastr(data)
         if PROBE == body then
-            -- 四种头一次过：合法 token / 值含 CRLF / 名非 token / 超 MAX_HEADLENS；且不带 body
+            -- 四种头一次过：合法 token / 值含 CRLF / 名非 token / 超 HTTP_MAX_HEADLENS；且不带 body
             http.response(fd, skid, 200, { ["X-Ok"] = "v", ["X-Inj"] = INJ, ["Bad Key"] = "x", ["X-Big"] = BIG })
             return
         end
@@ -180,7 +180,7 @@ runner.run(function(t)
         if string.find(txt, "\r\n\r\n", 1, true) then
             t:check(nil == string.find(txt, "X-Evil", 1, true), "值含 CRLF 的头被丢弃,报文未被劈成两条")
             t:check(nil == string.find(txt, "Bad Key", 1, true), "名非 RFC7230 token 的头被丢弃")
-            t:check(nil == string.find(txt, "X-Big", 1, true), "超 MAX_HEADLENS 的头整条丢弃(未截断发出)")
+            t:check(nil == string.find(txt, "X-Big", 1, true), "超 HTTP_MAX_HEADLENS 的头整条丢弃(未截断发出)")
             t:check(nil ~= string.find(txt, "X-Ok: v", 1, true), "合法头正常发出(未误伤)")
             t:check(nil ~= string.find(txt, "Content-Length: 0", 1, true), "无 body 的响应带 Content-Length: 0")
         end
@@ -290,9 +290,9 @@ runner.run(function(t)
     t:check(not srey_http.is_token("Bad Key"), "is_token 拒含空格的头名")
     t:check(not srey_http.is_token(""), "is_token 拒空串")
     t:check(not srey_http.is_token(1), "is_token 拒非字符串(数字当不了头名)")
-    t:eq(4096, srey_http.max_headlens, "max_headlens 取自 http.h 的 MAX_HEADLENS")
-    -- 注：请求侧不再受 MAX_HEADLENS 约束这条没法在这里验——srey 的解析器对请求同样按
-    -- MAX_HEADLENS 判，测试服务端就是 srey，超限的请求头它自己就拒收了；而"旧代码会丢弃"
+    t:eq(4096, srey_http.max_headlens, "max_headlens 取自 prots_pub.h 的 HTTP_MAX_HEADLENS")
+    -- 注：请求侧不再受 HTTP_MAX_HEADLENS 约束这条没法在这里验——srey 的解析器对请求同样按
+    -- HTTP_MAX_HEADLENS 判，测试服务端就是 srey，超限的请求头它自己就拒收了；而"旧代码会丢弃"
     -- 与"srey 会拒收"用的是同一个 4096，不存在能区分两者的尺寸。要验得对着 nginx 之类跑
 
     -- HEAD：响应带 Content-Length 却无报文体，解包侧靠 core.http_set_method 才认得出。

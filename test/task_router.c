@@ -183,7 +183,7 @@ static void _h_bighdr(router_req *ctx) {
     router_req_respond(ctx, 200, extra, 1, "ok", 2);
 }
 #define HDRSUM_LEN 1800
-// GET /hdrsum → 三条各 HDRSUM_LEN 字节的头; 逐条都远在 MAX_HEADLENS(4KB) 之内,
+// GET /hdrsum → 三条各 HDRSUM_LEN 字节的头; 逐条都远在 HTTP_MAX_HEADLENS(4KB) 之内,
 // 累计却超。逐条判定时三条全发, 整个头部块 ~5.4KB, 对端解析器直接 PROT_ERROR、
 // 客户端连响应都收不到; 累计判定应放行前两条、丢掉第三条
 static void _h_hdrsum(router_req *ctx) {
@@ -404,7 +404,7 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/files/{ver?}/list", _h_opt_ambig, NULL, 0);
     // 自定义头值超 256 字节, 验证不被截断
     router_get(r, NULL, "/bighdr",            _h_bighdr,    NULL, 0);
-    // 三条头单看合法、累计超 MAX_HEADLENS, 验证按整块判定
+    // 三条头单看合法、累计超 HTTP_MAX_HEADLENS, 验证按整块判定
     router_get(r, NULL, "/hdrsum",            _h_hdrsum,    NULL, 0);
     // extra 里的帧长头须被丢弃, 验证不会发出两条 Content-Length
     router_get(r, NULL, "/framing",           _h_framing,   NULL, 0);
@@ -436,7 +436,7 @@ static void _server_startup(task_ctx *task) {
     // 按父→子顺序合并进 entry->mws, dispatch 时一并入 chain
     const char *g1_names[] = { "g1mw" };
     router_group g1;
-    router_group_root(r, &g1, "/g1", g1_names, 1);
+    router_group_root(&g1, "/g1", g1_names, 1);
     const char *g2_names[] = { "g2mw" };
     router_group g2;
     router_group_nest(&g1, &g2, "/g2", g2_names, 1);
@@ -727,7 +727,7 @@ done:
     return rtn;
 }
 
-// /hdrsum 断言: 三条头逐条都在 MAX_HEADLENS 内、累计超, 应放行前两条丢掉第三条。
+// /hdrsum 断言: 三条头逐条都在 HTTP_MAX_HEADLENS 内、累计超, 应放行前两条丢掉第三条。
 // 逐条判定的旧实现三条全发, 头部块 ~5.4KB 越上限, 对端解析器判 PROT_ERROR ——
 // 那种情况下这里连响应都收不到, coro_send 返回 NULL
 static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
@@ -996,7 +996,7 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [7] 三条头累计超 MAX_HEADLENS: 前两条上线缆, 第三条丢弃
+    // [7] 三条头累计超 HTTP_MAX_HEADLENS: 前两条上线缆, 第三条丢弃
     if (ERR_OK != _do_req_hdrsum(task, port)) {
         bad |= (1 << 7);
     }

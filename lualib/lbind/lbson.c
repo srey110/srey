@@ -417,7 +417,7 @@ static int32_t _lbson_maxkey(lua_State *lua) {
 /// <param name="size" type="integer?">doc 为 lightuserdata 时必填，buffer 字节数，取值 [0, INT32_MAX]，越界报错</param>
 /// <returns>无；doc 不是落在缓冲内的完整文档时报错（缓冲不足 5 字节、末字节不是 EOD、
 /// 头声明长度超出缓冲，三种情形内容都整篇丢弃，不静默）。本层不设字节数上限——
-/// 那取决于承载协议，由上层判（如 mongo 侧的 MONGO_MAX_PACK_SIZE）</returns>
+/// 那取决于承载协议，由上层判（如 mongo 侧的 MONGO_MAX_PACK_LENS）</returns>
 static int32_t _lbson_cat(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     size_t actual_lens;
