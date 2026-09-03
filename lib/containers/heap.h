@@ -10,7 +10,7 @@
 //       return UPCAST(a, my_node, node)->val < UPCAST(b, my_node, node)->val;
 //   }
 //   heap_ctx h; heap_init(&h, _lt);
-//   my_node n; n.val = 42; ZERO(&n.node, sizeof(heap_node));
+//   my_node n; n.val = 42;
 //   heap_insert(&h, &n.node);
 //   heap_remove(&h, &n.node);    // 按引用 O(log n) 删除
 // 堆节点，嵌入用户结构体使用（侵入式）
@@ -40,7 +40,7 @@ void heap_init(heap_ctx *heap, _heap_compare _compare);
 /// 向堆中插入节点
 /// </summary>
 /// <param name="heap">heap_ctx 指针</param>
-/// <param name="node">要插入的节点</param>
+/// <param name="node">要插入的节点，三个链接字段由本函数填写，无需预先清零</param>
 void heap_insert(heap_ctx *heap, heap_node *node);
 /// <summary>
 /// 从堆中移除指定节点

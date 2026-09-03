@@ -28,6 +28,16 @@ void array_free(array_ctx *arr);
 /// <param name="maxsize">新容量，必须 大于等于 当前 size；0 使用默认值 ARRAY_INIT_SIZE</param>
 void array_resize(array_ctx *arr, uint32_t maxsize);
 /// <summary>
+/// 满则扩容到原 2 倍。倍增策略只写在这一处，array_add / array_push_back 都走它
+/// </summary>
+/// <param name="arr">array_ctx</param>
+static inline void array_grow_if_full(array_ctx *arr) {
+    if (arr->size == arr->maxsize) {
+        ASSERTAB(arr->maxsize <= UINT32_MAX / 2, "array maxsize overflow.");
+        array_resize(arr, arr->maxsize * 2);
+    }
+}
+/// <summary>
 /// 在指定位置插入元素（pos 之后的元素整体后移）
 /// </summary>
 /// <param name="arr">array_ctx</param>
@@ -112,10 +122,7 @@ static inline void *array_back(array_ctx *arr) {
 /// <param name="arr">array_ctx</param>
 /// <param name="elem">指向待追加元素的指针，拷贝 elsize 字节</param>
 static inline void array_push_back(array_ctx *arr, const void *elem) {
-    if (arr->size == arr->maxsize) {
-        ASSERTAB(arr->maxsize <= UINT32_MAX / 2, "array maxsize overflow.");
-        array_resize(arr, arr->maxsize * 2);
-    }
+    array_grow_if_full(arr);
     memcpy((char *)arr->ptr + (size_t)arr->size * arr->elsize, elem, arr->elsize);
     arr->size++;
 }

@@ -571,6 +571,6 @@ const char *contenttype(const char *extension) {
         { ".zip", "application/x-zip-compressed" },
     };
     contenttype_ctx *found = bsearch(extension, typegreg,
-        sizeof(typegreg) / sizeof(typegreg[0]), sizeof(typegreg[0]), _contenttype_cmp);
+        ARRAY_SIZE(typegreg), sizeof(typegreg[0]), _contenttype_cmp);
     return found ? found->type : "application/X-other-1";
 }

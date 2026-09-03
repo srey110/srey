@@ -115,6 +115,9 @@
     <ClInclude Include="srey\spub.h">
       <Filter>srey</Filter>
     </ClInclude>
+    <ClInclude Include="containers\cont_pub.h">
+      <Filter>containers</Filter>
+    </ClInclude>
     <ClInclude Include="containers\hashmap.h">
       <Filter>containers</Filter>
     </ClInclude>

@@ -74,7 +74,7 @@ scram_ctx *scram_init(const char *method, int32_t client);
 /// <param name="scram">scram_ctx</param>
 void scram_free(scram_ctx *scram);
 /// <summary>
-/// 设置用户名（客户端握手前调用；服务端由 scram_parse_first_message 内部调用）
+/// 设置用户名（客户端握手前调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="user">用户名</param>

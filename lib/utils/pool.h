@@ -6,7 +6,8 @@
 #include "containers/fsqu.h"
 
 typedef enum pool_ops {
-    POOL_OP_NOCLEAR = 0x01,// 不执行 _pool_elclear
+    POOL_OP_NOCLEAR = 0x01,// 不执行 _pool_elclear。对象带着 _elclear 该释放的东西进池,
+                           // 而 pool_free 只走 _elfree,那部分归调用方自己收
     POOL_OP_NOFREE = 0x02,// 不执行 _pool_elfree
     POOL_OP_NORESET= 0x04// 不执行 _pool_elreset
 }pool_ops;
@@ -92,7 +93,8 @@ void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree);
 void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
                uint32_t nkeep, int32_t thsafe, pool_cbs *elcbs);
 /// <summary>
-/// 释放池内所有空闲对象(经 _elfree)并销毁底层队列;不释放 pool 本身。
+/// 释放池内所有空闲对象(只经 _elfree,不补 _elclear——正常入池的对象在 push 时已 clear 过)
+/// 并销毁底层队列;不释放 pool 本身。
 /// 须在没有并发 push/pop 时调用:安全池下有生产者正在写入会让出队提前报空,剩下的对象漏释放
 /// </summary>
 /// <param name="pool">pool_ctx</param>
@@ -190,6 +192,19 @@ static inline void pool_shrink_to(pool_ctx *pool, uint32_t keep) {
 static inline void pool_shrink(pool_ctx *pool) {
     uint32_t plsize = pool_size(pool);
     _pool_shrink_sized(pool, shrink_nkeep(plsize), plsize);
+}
+/// <summary>
+/// 收缩节流:与 pool_shrink / pool_shrink_to 配合用,"多久收一次"这条策略只写在这里
+/// </summary>
+/// <param name="last_ms">出入参:上次收缩的时间戳(毫秒),到点时由本函数推到 now_ms</param>
+/// <param name="now_ms">当前时间戳(毫秒)</param>
+/// <returns>距 *last_ms 不足 SHRINK_TIME 返 0,到点返非 0</returns>
+static inline int32_t pool_shrink_due(uint64_t *last_ms, uint64_t now_ms) {
+    if (now_ms - *last_ms < SHRINK_TIME) {
+        return 0;
+    }
+    *last_ms = now_ms;
+    return 1;
 }
 
 #endif//POOL_H_

@@ -177,8 +177,7 @@ static void _tw_loop(void *arg) {
             _tw_run(ctx);
         }
         // 空闲时按 SHRINK_TIME 门控回落节点池
-        if (curtick - shrink_start >= SHRINK_TIME) {
-            shrink_start = curtick;
+        if (pool_shrink_due(&shrink_start, curtick)) {
             pool_shrink(&ctx->node_pool);
         }
         /* 睡到下一个必须醒的 jiffy: 最近的 tv1 到期或下一个 cascade 边界, 上界由

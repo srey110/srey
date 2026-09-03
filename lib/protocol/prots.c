@@ -15,10 +15,10 @@
 // 各协议在 prots 层的挂钩。字段留 NULL 表示走该 hook 的默认动作。
 typedef struct prot_vtbl {
     void (*pkfree)(void *data);// 释放 unpack 解出的包；NULL 表示包就是一块 malloc，走 FREE
-    void (*udp_pkfree)(void *data);// 释放 UDP 收包；NULL 走 FREE。留给将来按协议分化
+    void (*udp_pkfree)(void *data);// 释放 UDP 收包；NULL 走 FREE。当前无协议实现是有意的，预留按协议分化，勿当死代码删
     void (*hsfree)(void *data);// 释放推给上层的握手载荷；NULL 走 FREE
     void (*udfree)(ud_cxt *ud);// 释放 ud 上挂的协议上下文；NULL 走 FREE(ud->context)
-    int32_t (*accepted)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);// accept 期准入判断，返非 ERR_OK 即拒收该连接；NULL 一律放行
+    int32_t (*accepted)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);// accept 期准入判断，返非 ERR_OK 即拒收该连接；NULL 一律放行。当前无协议实现是有意的，预留准入钩子，勿当死代码删
     int32_t (*connected)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err);// 连上后发协议初始化包；NULL 原样返回入参 err
     int32_t (*ssl_exchanged)(ev_ctx *ev, ud_cxt *ud, void *ssl);// SSL 建好后发认证包；NULL 返 ERR_OK
     void (*closed)(ud_cxt *ud);// 连接关闭时清理协议状态；NULL 无动作

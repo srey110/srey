@@ -1,6 +1,10 @@
 ﻿#include "startup.h"
 
 int32_t task_startup(loader_ctx *loader, config_ctx *config) {
+#if WITH_LUA && ENABLE_LUA_BYTECACHE
+    // 须排在 ltask_startup 之前:它经 lbc_install_searcher / lbc_loadfile 直接读缓存,没有判空
+    lbc_init(loader_lckcache(loader));
+#endif
     // debug_console 调试控制台:debug.port 0 / debug.name 空串时 debug_console_start 跳过
     int32_t rtn = debug_console_start(loader, config->debug.name, config->debug.ip, config->debug.port);
     if (ERR_OK != rtn) {
@@ -20,4 +24,9 @@ int32_t task_startup(loader_ctx *loader, config_ctx *config) {
         return rtn;
     }
     return rtn;
+}
+void task_cleanup(void) {
+#if WITH_LUA && ENABLE_LUA_BYTECACHE
+    lbc_free();
+#endif
 }

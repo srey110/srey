@@ -7,10 +7,12 @@
 #define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off) //节点空闲区起始指针
 #define NODE_SPACE_LEN(ch) ((ch)->buffer_lens - ((ch)->misalign + (ch)->off)) //节点空闲区长度
 #define RECOED_IOV(ch, lens) \
-    iov[index].IOV_PTR_FIELD = NODE_SPACE_PTR(ch);\
-    iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)lens;\
-    ch->used = 1;\
-    index++
+    do { \
+        iov[index].IOV_PTR_FIELD = NODE_SPACE_PTR(ch);\
+        iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)(lens);\
+        (ch)->used = 1;\
+        index++;\
+    } while (0)
 //|              |   misalign   |    off    |           | 
 //|--------------|--------------|-----------|-----------|
 //|node          |buffer                                |
@@ -484,15 +486,17 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
             break;
         }
         node->used = 0;
-        node = _buffer_expand_single(ctx, rtn + 1);
+        node = _buffer_expand_single(ctx, (size_t)rtn + 1);
         node->used = 1;
     }
     va_end(va);
     return ERR_OK;
 }
 // 带游标缓存的版本：若 start >= hint_base_off，直接从上次节点继续，
-// 避免从 head 线性遍历；命中后更新游标供下次使用
-static bufnode_ctx *_buffer_search_start_cached(buffer_ctx *ctx, size_t start, size_t *totaloff) {
+// 避免从 head 线性遍历；命中后更新游标供下次使用。
+// totaloff 出参是"累计到该节点末尾"的字节数，inoff 是 start 落在该节点内的偏移
+static bufnode_ctx *_buffer_search_start_cached(buffer_ctx *ctx, size_t start,
+    size_t *totaloff, size_t *inoff) {
     bufnode_ctx *node;
     if (NULL != ctx->hint_node && start >= ctx->hint_base_off) {
         node = ctx->hint_node;
@@ -506,6 +510,7 @@ static bufnode_ctx *_buffer_search_start_cached(buffer_ctx *ctx, size_t start, s
         if (*totaloff > start) {
             ctx->hint_node = node;
             ctx->hint_base_off = *totaloff - node->off;
+            *inoff = start - ctx->hint_base_off;
             return node;
         }
         node = node->next;
@@ -527,12 +532,12 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
     if (0 == start) {
         node = ctx->head;
     } else {
+        size_t totaloff = 0;
         size_t off = 0;
-        node = _buffer_search_start_cached(ctx, start, &off);
+        node = _buffer_search_start_cached(ctx, start, &totaloff, &off);
         if (NULL == node) {
             return 0;
         }
-        off = node->off - (off - start);
         if (off > 0) {
             remain = node->off - off;
             if (lens > remain) {
@@ -668,11 +673,11 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     mem_funcs_pick(ncs, &chr, &cmp);
     //查找开始位置所在节点
     size_t totaloff = 0;
-    bufnode_ctx *node = _buffer_search_start_cached(ctx, start, &totaloff);
+    size_t uioff = 0;
+    bufnode_ctx *node = _buffer_search_start_cached(ctx, start, &totaloff, &uioff);
     ASSERTAB(NULL != node && 0 != node->off, "can't search start node.");
     char *pschar, *pstart;
     size_t hit;
-    size_t uioff = node->off - (totaloff - start);
     while (NULL != node && 0 != node->off) {
         if (totaloff - node->off + uioff + wlens > end) {
             break;
@@ -714,10 +719,10 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
 char buffer_at(buffer_ctx *ctx, size_t pos) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ASSERTAB(pos < ctx->total_lens, "index error.");
+    size_t totaloff = 0;
     size_t off = 0;
-    bufnode_ctx *node = _buffer_search_start_cached(ctx, pos, &off);
+    bufnode_ctx *node = _buffer_search_start_cached(ctx, pos, &totaloff, &off);
     ASSERTAB(NULL != node, "index error.");
-    off = node->off - (off - pos);
     return (node->buffer + node->misalign + off)[0];
 }
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt) {

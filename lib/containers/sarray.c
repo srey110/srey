@@ -7,7 +7,7 @@ void array_init(array_ctx *arr, uint32_t elsize, uint32_t maxsize) {
     ASSERTAB(maxsize < UINT32_MAX, "maxsize overflow.");
     arr->elsize = elsize;
     arr->size = 0;
-    arr->maxsize = (0 == maxsize) ? ARRAY_INIT_SIZE : ROUND_UP(maxsize, 2);
+    arr->maxsize = (0 == maxsize) ? ARRAY_INIT_SIZE : (uint32_t)ROUND_UP(maxsize, 2);
     ASSERTAB((size_t)arr->maxsize <= SIZE_MAX / elsize, "byte size overflow.");
     MALLOC(arr->ptr, (size_t)elsize * arr->maxsize);
 }
@@ -19,7 +19,7 @@ void array_free(array_ctx *arr) {
 }
 void array_resize(array_ctx *arr, uint32_t maxsize) {
     ASSERTAB(maxsize < UINT32_MAX, "maxsize overflow.");
-    maxsize = (0 == maxsize) ? ARRAY_INIT_SIZE : ROUND_UP(maxsize, 2);
+    maxsize = (0 == maxsize) ? ARRAY_INIT_SIZE : (uint32_t)ROUND_UP(maxsize, 2);
     ASSERTAB(maxsize >= arr->size, "max size must big than element count.");
     ASSERTAB((size_t)maxsize <= SIZE_MAX / arr->elsize, "byte size overflow.");
     REALLOC(arr->ptr, arr->ptr, (size_t)arr->elsize * maxsize);
@@ -27,10 +27,7 @@ void array_resize(array_ctx *arr, uint32_t maxsize) {
 }
 void array_add(array_ctx *arr, const void *elem, int32_t pos) {
     uint32_t p = _array_norm_pos(arr, pos, 1);// 插入位允许等于 size
-    if (arr->size == arr->maxsize) {
-        ASSERTAB(arr->maxsize <= UINT32_MAX / 2, "array maxsize overflow.");
-        array_resize(arr, arr->maxsize * 2);
-    }
+    array_grow_if_full(arr);
     if (p < arr->size) {
         memmove((char *)arr->ptr + ((size_t)p + 1) * arr->elsize,
                 (char *)arr->ptr + (size_t)p * arr->elsize,

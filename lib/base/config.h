@@ -29,6 +29,7 @@
 #define MAX_RECV_SIZE       4096 // 最大接收缓冲区大小（字节）
 #define MAX_RECVFROM_SIZE   (64 * ONEK)// UDP 单次 recvfrom 最大字节数
 #define MAX_SEND_SIZE       4096 // 单次发送最大字节数
+#define MAX_SSL_SEND_SIZE   4096 // 单次 SSL_write 最大字节数；须小到 socket 一次吃得下整条 TLS 记录，调大的后果见 _evpub_sock_send_ssl
 #define MAX_SEND_NIOV       16 // scatter/gather 发送最大 iov 数量
 #define MAX_EXPAND_NIOV     4 // scatter/gather 接收最大 iov 数量
 #define MAX_SENDQ_CNT       ONEK // 单 sock 发送队列上限(buf 数)；超限 TCP 丢数据并断连、UDP 丢包；0 表示不限制

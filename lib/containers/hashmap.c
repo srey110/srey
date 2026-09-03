@@ -143,11 +143,14 @@ struct hashmap *hashmap_new_with_allocator(void *(*mallocfn)(size_t),
         }
         cap = ncap;
     }
-    if (elsize > SIZE_MAX - sizeof(struct bucket) - (sizeof(uintptr_t) - 1)) {
+    // 槽间距按 uint64_t 补齐:struct bucket 是两个 uint64_t 位域,32 位平台上 uintptr_t 只有
+    // 4 字节,按它补齐会让奇数下标的槽错位,ARM/MIPS 上 64 位读写直接 SIGBUS
+    const size_t balign = sizeof(uint64_t);
+    if (elsize > SIZE_MAX - sizeof(struct bucket) - (balign - 1)) {
         return NULL;
     }
     size_t bucketsz = sizeof(struct bucket) + elsize;
-    while (bucketsz & (sizeof(uintptr_t)-1)) {
+    while (bucketsz & (balign - 1)) {
         bucketsz++;
     }
     if (bucketsz > SIZE_MAX / cap) {

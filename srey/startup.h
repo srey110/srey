@@ -4,6 +4,9 @@
 #include "lib.h"
 #if WITH_LUA
 #include "lbind/ltask.h"
+#if ENABLE_LUA_BYTECACHE
+#include "lbind/lbytecache.h"
+#endif
 #endif
 
 #define TASK_NAME_LEN 64// 系统服务任务名最大长度（config_ctx 内字符串缓冲）
@@ -39,5 +42,9 @@ typedef struct config_ctx {
 /// <param name="config">服务配置</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t task_startup(loader_ctx *loader, config_ctx *config);
+/// <summary>
+/// 回收 task_startup 建起的进程级资源。须排在 loader_free 之后:任务还在跑的时候不能拆
+/// </summary>
+void task_cleanup(void);
 
 #endif//STARTUP_H_

@@ -8,7 +8,7 @@ typedef uint64_t name_t; // 任务名类型（64 位整数 ID）
 typedef void(*free_cb)(void *arg); // 通用资源释放回调函数类型
 
 // 撑到一条 cache line 大的原子整数：让紧挨着的两个计数器至少差开一条线的距离，免 false sharing。
-// 只管距离、不管起始地址对齐——所以前面还贴着别的字段时，得另补一条 _pad0 垫片(见 mpq_ctx)。
+// 只管距离、不管起始地址对齐——所以前面还贴着别的字段时，得另补一条 _pad0 垫片(见 ringq_ctx)。
 // 垫片按 CACHELINE_SIZE 取，写死 64 在 Apple Silicon(128)/s390x(256) 上根本隔不开
 typedef union {
     atomic_t v;

@@ -1,7 +1,4 @@
 ﻿#include "startup.h"
-#if WITH_LUA && ENABLE_LUA_BYTECACHE
-#include "lbind/lbytecache.h"
-#endif
 
 #ifdef OS_WIN
     //#include "vld.h"
@@ -150,7 +147,7 @@ static void _open_log(uint32_t capacity) {
         log_init(NULL, capacity);
         return;
     }
-    logstream = fopen(logfile, "a");
+    logstream = fopen_cloexec(logfile, "a");
     if (NULL == logstream) {
         // fopen 失败时退化为终端输出；写 stderr 以便部署排查
         fprintf(stderr, "open log file %s failed: %s\n", logfile, strerror(errno));
@@ -160,38 +157,6 @@ static void _open_log(uint32_t capacity) {
 #endif
     }
     log_init(logstream, capacity);
-}
-// 释放所有资源并退出服务（loader、日志、socket）
-static int32_t service_exit(void) {
-    loader_free(g_loader);
-#if WITH_LUA && ENABLE_LUA_BYTECACHE
-    lbc_free();
-#endif
-    log_free();
-    if (NULL != logstream) {
-        fclose(logstream);
-        logstream = NULL;
-    }
-    sock_clean();
-#if defined(OS_WIN)
-    timeEndPeriod(1);
-#endif
-    _memcheck();
-    return ERR_OK;
-}
-// 初始化配置为内置默认值
-static void _config_init(config_ctx *config) {
-    ZERO(config, sizeof(config_ctx));
-    config->serviceid = 1;
-    config->loglv = LOGLV_DEBUG;
-    config->harbor.port = 0;
-    config->debug.port = 0; // 端口 0 关闭 debug_console,可由 config.json "debug.port" 覆盖
-    SNPRINTF(config->harbor.name, sizeof(config->harbor.name), "%s", "harbor");
-    SNPRINTF(config->debug.name, sizeof(config->debug.name), "%s", "debug");
-    SNPRINTF(config->harbor.ip, sizeof(config->harbor.ip), "%s", "0.0.0.0");
-    SNPRINTF(config->debug.ip, sizeof(config->debug.ip), "%s", "127.0.0.1");
-    SNPRINTF(config->dns, sizeof(config->dns), "%s", "8.8.8.8");
-    SNPRINTF(config->script, sizeof(config->script), "%s", "script");
 }
 // 初始化全局基础设施（socket、随机数种子、BSON 库）
 static void _init_globle(void) {
@@ -204,7 +169,43 @@ static void _init_globle(void) {
     srand((uint32_t)(time(NULL) ^ nowms() ^ GETPID()));
     bson_globle_init();
 }
-// 完整初始化服务：加载配置、初始化协程、日志、loader、启动业务任务
+// 与 _init_globle 成对
+static void _free_globle(void) {
+    locale_free();
+    sock_clean();
+#if defined(OS_WIN)
+    timeEndPeriod(1);
+#endif
+}
+// 释放所有资源并退出服务（loader、日志、socket）
+static int32_t service_exit(void) {
+    loader_free(g_loader);
+    task_cleanup();
+    log_free();
+    if (NULL != logstream) {
+        fclose(logstream);
+        logstream = NULL;
+    }
+    _free_globle();
+    _memcheck();
+    return ERR_OK;
+}
+// 初始化配置为内置默认值
+static void _config_init(config_ctx *config) {
+    ZERO(config, sizeof(config_ctx));
+    config->serviceid = 1;
+    config->loglv = LOGLV_DEBUG;
+    config->harbor.port = 0;
+    config->debug.port = 0; // 端口 0 关闭 debug_console,可由 config.json "debug.port" 覆盖
+    safe_fill_str(config->harbor.name, sizeof(config->harbor.name), "harbor");
+    safe_fill_str(config->debug.name, sizeof(config->debug.name), "debug");
+    safe_fill_str(config->harbor.ip, sizeof(config->harbor.ip), "0.0.0.0");
+    safe_fill_str(config->debug.ip, sizeof(config->debug.ip), "127.0.0.1");
+    safe_fill_str(config->dns, sizeof(config->dns), "8.8.8.8");
+    safe_fill_str(config->script, sizeof(config->script), "script");
+}
+// 完整初始化服务：加载配置、初始化协程、日志、loader、启动业务任务。
+// test/main.c 的 main 另有一套等价的全局初始化，加减项要两处同步
 static int32_t service_init(void) {
     _init_globle();
     config_ctx config;
@@ -212,6 +213,8 @@ static int32_t service_init(void) {
     _parse_config(&config);
     if (ERR_OK != serviceid(config.serviceid)) {
         PRINT("serviceid error.");
+        // 这条早退在 _open_log 之前,不能借 service_exit:它无条件 log_free,会去锁没初始化的 mutex
+        _free_globle();
         return ERR_FAILED;
     }
     dns_set_ip(config.dns);
@@ -221,9 +224,6 @@ static int32_t service_init(void) {
     coro_desc_init(config.stacksize);
     unlimit();
     g_loader = loader_init(config.nnet, config.nworker, config.twqueuelens);
-#if WITH_LUA && ENABLE_LUA_BYTECACHE
-    lbc_init(loader_lckcache(g_loader));
-#endif
     if (ERR_OK != task_startup(g_loader, &config)) {
         service_exit();
         return ERR_FAILED;
@@ -283,7 +283,6 @@ static int32_t service_hug(int32_t ready_fd, int32_t devnull) {
         service_exit();
     }
     hug_free(&_hug);
-    locale_free();
     return rtn;
 }
 #ifdef OS_WIN
@@ -483,7 +482,7 @@ static void _useage(void) {
 static void _stop_sh(const char *sh) {
     char cmd[128];
     SNPRINTF(cmd, sizeof(cmd), "kill -%d %d\n", SIGUSR1, (int32_t)GETPID());
-    FILE *file = fopen(sh, "w");
+    FILE *file = fopen_cloexec(sh, "w");
     if (NULL == file) {
         return;
     }

@@ -66,6 +66,7 @@ void heap_insert(heap_ctx *heap, heap_node *node) {
     heap_node *parent = _heap_last_parent(heap, heap->nelts, &path);
     // 插入节点
     node->parent = parent;
+    node->left = node->right = NULL;
     if (NULL == parent) {
         heap->root = node;
     } else if (path & 1) {

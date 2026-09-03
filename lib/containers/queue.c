@@ -15,7 +15,7 @@ void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize) {
         qu->ptr = NULL;
         return;
     }
-    qu->maxsize = ROUND_UP(maxsize, 2);
+    qu->maxsize = (uint32_t)ROUND_UP(maxsize, 2);
     ASSERTAB((size_t)qu->maxsize <= SIZE_MAX / elsize, "byte size overflow.");
     MALLOC(qu->ptr, (size_t)elsize * qu->maxsize);
 }
@@ -29,7 +29,7 @@ void queue_free(queue_ctx *qu) {
 }
 void queue_resize(queue_ctx *qu, uint32_t maxsize) {
     ASSERTAB(maxsize < UINT32_MAX, "maxsize overflow.");
-    maxsize = (0 == maxsize) ? QUEUE_INIT_SIZE : ROUND_UP(maxsize, 2);
+    maxsize = (0 == maxsize) ? QUEUE_INIT_SIZE : (uint32_t)ROUND_UP(maxsize, 2);
     ASSERTAB(maxsize >= qu->size, "max size must big than element count.");
     ASSERTAB((size_t)maxsize <= SIZE_MAX / qu->elsize, "byte size overflow.");
     void *pnew;

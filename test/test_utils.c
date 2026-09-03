@@ -1303,8 +1303,11 @@ static void test_utils_misc(CuTest *tc) {
     CuAssertIntEquals(tc, 0x42, parse_svid(createid()));
     CuAssertIntEquals(tc, ERR_OK, serviceid(saved));
     CuAssertIntEquals(tc, saved, parse_svid(createid()));
-    /* serviceid 拒绝 >= 0x8000 */
-    CuAssertIntEquals(tc, ERR_FAILED, serviceid(0x8000));
+    /* 上界恰好是 SERVICEID_MAX，再大一个即拒 */
+    CuAssertIntEquals(tc, ERR_OK, serviceid(SERVICEID_MAX));
+    CuAssertIntEquals(tc, SERVICEID_MAX, parse_svid(createid()));
+    CuAssertIntEquals(tc, ERR_OK, serviceid(saved));
+    CuAssertIntEquals(tc, ERR_FAILED, serviceid(SERVICEID_MAX + 1));
     CuAssertIntEquals(tc, ERR_FAILED, serviceid(0xFFFF));
     CuAssertIntEquals(tc, saved, parse_svid(createid()));  /* svid 未被改写 */
 
@@ -2177,9 +2180,19 @@ static void test_utils_filesystem(CuTest *tc) {
 
     const char *content = "hello-readall-1234567890";
     size_t clen = strlen(content);
-    FILE *fp = fopen(tmpfile, "wb");
+    FILE *fp = fopen_cloexec(tmpfile, "wb");
     CuAssertPtrNotNull(tc, fp);
     CuAssertTrue(tc, clen == fwrite(content, 1, clen, fp));
+    // 底层描述符必须带"子进程不可继承"标记，否则 popen 起的 /bin/sh 能拿到它
+#ifdef OS_WIN
+    DWORD hflag = 0;
+    CuAssertTrue(tc, 0 != GetHandleInformation((HANDLE)_get_osfhandle(_fileno(fp)), &hflag));
+    CuAssertTrue(tc, 0 == (hflag & HANDLE_FLAG_INHERIT));
+#else
+    int32_t fdflag = fcntl(fileno(fp), F_GETFD);
+    CuAssertTrue(tc, -1 != fdflag);
+    CuAssertTrue(tc, 0 != (fdflag & FD_CLOEXEC));
+#endif
     fclose(fp);
 
     CuAssertIntEquals(tc, ERR_OK, isfile(tmpfile));
@@ -2969,6 +2982,28 @@ static void test_str2u64(CuTest *tc) {
     CuAssertTrue(tc, 0x5a5a5a5a == v);
 }
 
+/* sfid_init 失败时一个字节都不写 ctx：校验全走局部量，
+ * 调用方忽略返回值也拿不到半初始化的 ctx（timestampshift 是垃圾位移量） */
+static void test_sfid_init_keeps_ctx(CuTest *tc) {
+    sfid_ctx ctx, probe;
+    memset(&ctx, 0x5A, sizeof(ctx));
+    memcpy(&probe, &ctx, sizeof(ctx));
+    /* 位数总和越界 */
+    CuAssertTrue(tc, NULL == sfid_init(&ctx, 0, 12, 12, 0));
+    CuAssertTrue(tc, 0 == memcmp(&ctx, &probe, sizeof(ctx)));
+    /* 机器ID 越界 */
+    CuAssertTrue(tc, NULL == sfid_init(&ctx, 99999, 10, 12, 0));
+    CuAssertTrue(tc, 0 == memcmp(&ctx, &probe, sizeof(ctx)));
+    /* customepoch 落在未来 */
+    CuAssertTrue(tc, NULL == sfid_init(&ctx, 1, 0, 0, nowms() + 3600llu * 1000));
+    CuAssertTrue(tc, 0 == memcmp(&ctx, &probe, sizeof(ctx)));
+    /* 成功那次才写,且残留的 0x5A 被清干净 */
+    CuAssertPtrNotNull(tc, sfid_init(&ctx, 1, 0, 0, 0));
+    CuAssertIntEquals(tc, 0, ctx.sequence);
+    CuAssertIntEquals(tc, 0, ctx.clockback_warned);
+    CuAssertIntEquals(tc, 22, ctx.timestampshift);
+}
+
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_binary);
@@ -3034,4 +3069,5 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_tda_overflow);
     SUITE_ADD_TEST(suite, test_strtod_c);
     SUITE_ADD_TEST(suite, test_str2u64);
+    SUITE_ADD_TEST(suite, test_sfid_init_keeps_ctx);
 }

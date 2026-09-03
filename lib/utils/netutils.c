@@ -292,9 +292,9 @@ int32_t sock_pair(SOCKET acSock[2], int32_t nonblock) {
         CLOSE_SOCK(fdlsn);
         return ERR_FAILED;
     }
-    struct sockaddr_in listen_addr;
-    socklen_t addrlen = (socklen_t)sizeof(listen_addr);
-    SOCKET fdacp = sock_accept_cloexec(fdlsn, (struct sockaddr *) &listen_addr, &addrlen);
+    netaddr_ctx listen_addr;
+    socklen_t addrlen = (socklen_t)sizeof(netaddr_ctx);
+    SOCKET fdacp = sock_accept_cloexec(fdlsn, netaddr_addr(&listen_addr), &addrlen);
     if (INVALID_SOCK == fdacp) {
         CLOSE_SOCK(fdlsn);
         CLOSE_SOCK(fdcn);
@@ -306,10 +306,7 @@ int32_t sock_pair(SOCKET acSock[2], int32_t nonblock) {
         CLOSE_SOCK(fdcn);
         return ERR_FAILED;
     }
-    struct sockaddr_in *connect_addr = (struct sockaddr_in*)netaddr_addr(&addr);
-    if (listen_addr.sin_family != connect_addr->sin_family
-        || listen_addr.sin_addr.s_addr != connect_addr->sin_addr.s_addr
-        || listen_addr.sin_port != connect_addr->sin_port) {
+    if (ERR_OK != netaddr_compare(&listen_addr, &addr)) {
         CLOSE_SOCK(fdacp);
         CLOSE_SOCK(fdcn);
         return ERR_FAILED;

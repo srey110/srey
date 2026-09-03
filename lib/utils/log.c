@@ -214,8 +214,7 @@ static void _log_loop(void *arg) {
         spins = 0;
         // 空闲时按 SHRINK_TIME 门控回落 log_item 池（锁外执行）
         now = timer_cur_ms(&timer);
-        if (now - shrink_start >= SHRINK_TIME) {
-            shrink_start = now;
+        if (pool_shrink_due(&shrink_start, now)) {
             pool_shrink(&_itempool);
         }
         mutex_lock(&_mtx);

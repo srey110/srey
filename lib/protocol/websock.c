@@ -612,11 +612,11 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         pllens = ntohs(pllens);
-        if ((uint64_t)pllens > WS_MAX_PAYLOAD_LENS) {
+        dlens = pllens;
+        if (dlens > WS_MAX_PAYLOAD_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        dlens = pllens;
     } else if (127 == payloadlen) {
         uint64_t pllens;
         atlest += sizeof(pllens);

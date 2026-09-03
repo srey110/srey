@@ -1,6 +1,13 @@
 ﻿#include "crypt/cipher.h"
 #include "crypt/padding.h"
 
+// 挂表用的薄封装,同 digest.c 的 DG_THUNK:直接转 _cipher_cb 是不兼容函数指针转换
+static char *_cipher_aes(void *ctx, const void *data) {
+    return aes_crypt((aes_ctx *)ctx, data);
+}
+static char *_cipher_des(void *ctx, const void *data) {
+    return des_crypt((des_ctx *)ctx, data);
+}
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     const char *key, size_t klens, int32_t keybits, int32_t encrypt) {
     ASSERTAB(model >= ECB && model <= CTR, "unknow cipher model.");
@@ -15,13 +22,13 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     switch (engine) {
     case AES:
         cipher->block_lens = AES_BLOCK_SIZE;
-        cipher->_cipher = (_cipher_cb)aes_crypt;
+        cipher->_cipher = _cipher_aes;
         aes_init(&cipher->eng_ctx.aes, key, klens, keybits, fwdkey);
         break;
     case DES:
     case DES3:
         cipher->block_lens = DES_BLOCK_SIZE;
-        cipher->_cipher = (_cipher_cb)des_crypt;
+        cipher->_cipher = _cipher_des;
         des_init(&cipher->eng_ctx.des, key, klens, DES3 == engine, fwdkey);
         break;
     default:
@@ -36,6 +43,7 @@ size_t cipher_size(cipher_ctx *cipher) {
     return cipher->block_lens;
 }
 void cipher_padding(cipher_ctx *cipher, padding_model padding) {
+    ASSERTAB((uint32_t)padding <= (uint32_t)ANSIX923, "unknow padding model.");
     cipher->padding = padding;
 }
 void cipher_iv(cipher_ctx *cipher, const char *iv, size_t ilens) {
@@ -218,8 +226,6 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
                 if (pad < 1 || pad > cipher->block_lens) {
                     goto fail;
                 }
-                size -= pad;
-                secure_zero(output + size, pad);
             } else {
                 //PKCS#7 / ANSI X.923 常数时间校验:循环长度固定 [1, blk),用 mask 屏蔽非填充区;
                 //期望值 PKCS#7 全部 == pad、ANSI X.923 前 N-1 字节 == 0(末尾那个即 j==0,与 pad 等价故不入循环);
@@ -243,9 +249,9 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
                 if (0 != bad) {
                     goto fail;
                 }
-                size -= pad;
-                secure_zero(output + size, pad);
             }
+            size -= pad;
+            secure_zero(output + size, pad);
         }
     }
     *outlens = size;

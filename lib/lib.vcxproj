@@ -29,6 +29,7 @@
     <ClInclude Include="base\memory.h" />
     <ClInclude Include="base\os.h" />
     <ClInclude Include="base\structs.h" />
+    <ClInclude Include="containers\cont_pub.h" />
     <ClInclude Include="containers\hashmap.h" />
     <ClInclude Include="containers\hashset.h" />
     <ClInclude Include="containers\heap.h" />

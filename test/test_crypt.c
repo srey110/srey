@@ -720,6 +720,27 @@ static void test_scram_failures(CuTest *tc) {
     /* 不支持的方法 → NULL */
     CuAssertTrue(tc, NULL == scram_init("SCRAM-MD5", 1));
     CuAssertTrue(tc, NULL == scram_init("", 0));
+    /* 机制名按表查、-PLUS 后缀单独剥：这几个都不许被当成合法名收下 */
+    CuAssertTrue(tc, NULL == scram_init("-PLUS", 1));
+    CuAssertTrue(tc, NULL == scram_init("SCRAM-SHA-1-PLUSX", 1));
+    CuAssertTrue(tc, NULL == scram_init("SCRAM-SHA-1X", 1));
+    CuAssertTrue(tc, NULL == scram_init("SCRAM-SHA-", 1));
+    CuAssertTrue(tc, NULL == scram_init("SCRAM-SHA-1-PLUS-PLUS", 1));
+    /* 三种机制的两个变体都认，且 -PLUS 必须落到 SCRAM_CB_PLUS */
+    static const char *const ok[] = { "SCRAM-SHA-1", "SCRAM-SHA-256", "SCRAM-SHA-512" };
+    char plus[64];
+    scram_ctx *sc;
+    for (size_t i = 0; i < ARRAY_SIZE(ok); i++) {
+        sc = scram_init(ok[i], 1);
+        CuAssertPtrNotNull(tc, sc);
+        CuAssertIntEquals(tc, SCRAM_CB_NONE, sc->cbind);
+        scram_free(sc);
+        SNPRINTF(plus, sizeof(plus), "%s-PLUS", ok[i]);
+        sc = scram_init(plus, 1);
+        CuAssertPtrNotNull(tc, sc);
+        CuAssertIntEquals(tc, SCRAM_CB_PLUS, sc->cbind);
+        scram_free(sc);
+    }
 
     /* 密码不匹配 → 服务端拒绝客户端证明 */
     CuAssertTrue(tc, ERR_OK != _scram_handshake(
@@ -947,7 +968,7 @@ static void test_scram_setters(CuTest *tc) {
         CuAssertIntEquals(tc, 4, plus->cbind_len);
         scram_free(plus);
     }
-    // scram_set_user：服务端可直接调用（parse_first_message 内部复用同一实现）
+    // scram_set_user：服务端也可直接调用
     {
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
         CuAssertIntEquals(tc, ERR_OK, scram_set_user(srv, "alice", 5));
@@ -2144,11 +2165,11 @@ static void test_digest_attr_table(CuTest *tc) {
     size_t i;
     for (i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
         digest_init(&d, want[i].t);
-        CuAssertTrue(tc, want[i].out == d.block_lens);
-        CuAssertTrue(tc, want[i].b == d.key_block);
-        CuAssertTrue(tc, want[i].eng == d.eng_lens);
+        CuAssertTrue(tc, want[i].out == d.attr.block_lens);
+        CuAssertTrue(tc, want[i].b == d.attr.key_block);
+        CuAssertTrue(tc, want[i].eng == d.attr.eng_lens);
         /* eng_lens 必须落在联合体内，否则 hmac_reset 的 memcpy 会读写越界 */
-        CuAssertTrue(tc, d.eng_lens <= sizeof(d.eng_ctx));
+        CuAssertTrue(tc, d.attr.eng_lens <= sizeof(d.eng_ctx));
         digest_free(&d);
     }
 }
@@ -2417,6 +2438,65 @@ static void test_urlraw_invalid(CuTest *tc) {
 
 /* ======================================================================= */
 
+/* 空用户名：RFC 5802 允许 n= 为空（libpq 恒发这一形态，用户名走启动包）。
+ * 客户端不设 user 时发的就是它，服务端必须能解析并走完整套握手 */
+static void test_scram_empty_user(CuTest *tc) {
+    static const char salt[16] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
+    };
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, cli);
+    CuAssertPtrNotNull(tc, srv);
+    scram_set_pwd(cli, "pass", 4);
+    scram_set_pwd(srv, "pass", 4);
+    scram_set_salt(srv, (char *)salt, sizeof(salt));
+    scram_set_iter(srv, 4096);
+
+    char *cf = scram_first_message(cli);
+    CuAssertPtrNotNull(tc, cf);
+    CuAssertPtrNotNull(tc, strstr(cf, "n,,n=,r="));/* 空用户名的线上形态 */
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(srv, cf, strlen(cf)));
+    CuAssertStrEquals(tc, "", scram_get_user(srv));
+    FREE(cf);
+
+    char *sf = scram_first_message(srv);
+    CuAssertPtrNotNull(tc, sf);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(cli, sf, strlen(sf)));
+    FREE(sf);
+
+    char *clf = scram_final_message(cli);
+    CuAssertPtrNotNull(tc, clf);
+    CuAssertIntEquals(tc, ERR_OK, scram_check_final_message(srv, clf, strlen(clf)));
+    _scram_free_msg(&clf);
+
+    char *svf = scram_final_message(srv);
+    CuAssertPtrNotNull(tc, svf);
+    CuAssertIntEquals(tc, ERR_OK, scram_check_final_message(cli, svf, strlen(svf)));
+    _scram_free_msg(&svf);
+
+    /* 对外 setter 仍拦空:那是误用守卫,与协议侧的合法空值是两回事 */
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_user(cli, "", 0));
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_user(cli, NULL, 0));
+    scram_free(cli);
+    scram_free(srv);
+}
+
+/* 3DES 短密钥补齐：klens 为 0 时 key 允许是 NULL（单 DES 分支一直如此）。
+ * ASan/UBSan 下才看得出来——memcpy 不收 NULL，哪怕长度是 0 */
+static void test_des3_null_key(CuTest *tc) {
+    cipher_ctx c;
+    char in[8] = { 0 };
+    char out[16];
+    size_t olens = 0;
+    cipher_init(&c, DES3, ECB, NULL, 0, 0, 1);
+    cipher_padding(&c, NoPadding);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&c, in, sizeof(in), out, &olens));
+    CuAssertTrue(tc, sizeof(in) == olens);
+    cipher_free(&c);
+}
+
 void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_base64);
     SUITE_ADD_TEST(suite, test_base64_invalid);
@@ -2464,4 +2544,6 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_cipher_null_key_iv);
     SUITE_ADD_TEST(suite, test_digest_hmac_final_resets);
     SUITE_ADD_TEST(suite, test_cipher_dofinal_empty_vs_fail);
+    SUITE_ADD_TEST(suite, test_scram_empty_user);
+    SUITE_ADD_TEST(suite, test_des3_null_key);
 }

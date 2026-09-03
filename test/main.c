@@ -91,13 +91,14 @@ int main(int argc, char *argv[]) {
         return ERR_FAILED;
     }
     sighandle(_on_sigcb, &_hug);
-    /* 基础初始化 */
+    /* 基础初始化。与 srey/main.c 的 service_init 是同一套全局初始化，加减项要两处同步 */
 #if defined(OS_WIN)
     timeBeginPeriod(1);
 #endif
     sock_init();
     unlimit();
     srand((uint32_t)time(NULL));
+    serviceid(1);/* 取 srey 的内置默认值，让 createid 的高 16 位与生产一致 */
     log_init(NULL, 0);
     bson_globle_init();
     locale_init();

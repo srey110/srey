@@ -1,7 +1,7 @@
 ﻿#ifndef MPQ_H_
 #define MPQ_H_
 
-#include "base/structs.h"
+#include "containers/cont_pub.h"
 
 //无锁多生产者有界队列 (Multi-Producer Queue, Lock-Free)
 //生产者侧固定多线程 CAS 抢 enq.v；消费者侧由调用方约定：
@@ -14,22 +14,14 @@ typedef struct mpq_cell {
 } mpq_cell;
 //无锁多生产者队列上下文
 typedef struct mpq_ctx {
-    uint32_t      capacity; //队列容量，必须为 2 的幂
-    uint32_t      mask;     //capacity - 1，用于快速取模
-    uint32_t      elsize;   //单元素字节数（init 时指定）
-    uint32_t      stride;   //每槽位字节数 = ROUND_UP(sizeof(atomic_t)+elsize, 8)
-    char          *cells;   //槽位数组基址（按 stride 步进寻址，不可用下标索引）
-    char          _pad0[CACHELINE_SIZE];//把上面这几个只读字段与 enq 隔开：每次 push 的 CAS
-                            //都会让别的核重读 mask/stride/elsize/cells，而 push 和 pop 每次都要用它们
-    atomic_aln_t  enq;      //入队位置计数器，多生产者 CAS 抢（与 deq 各占一条 cache line）
-    atomic_aln_t  deq;      //出队位置计数器
+    ringq_ctx rq; //公共队列头，字段说明见 cont_pub.h；stride 含每槽的序列号
 } mpq_ctx;
 /// <summary>
 /// 初始化队列
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <param name="elsize">单元素字节数（按值存储，须 大于 0）</param>
-/// <param name="capacity">期望容量，0 则使用默认值，非 2 的幂自动向上取整</param>
+/// <param name="capacity">期望容量，0 则使用默认值，非 2 的幂自动向上取整，下限为 2</param>
 void mpq_init(mpq_ctx *q, size_t elsize, uint32_t capacity);
 /// <summary>
 /// 释放队列内部内存，不释放 q 本身
@@ -69,10 +61,20 @@ int32_t mpq_pop_sc(mpq_ctx *q, void *out);
 /// <returns>元素数量，取值 [0, capacity]</returns>
 uint32_t mpq_size(mpq_ctx *q);
 /// <summary>
+/// 返回单元素字节数
+/// </summary>
+/// <param name="q">mpq_ctx</param>
+/// <returns>init 时指定的 elsize</returns>
+static inline uint32_t mpq_elsize(const mpq_ctx *q) {
+    return q->rq.elsize;
+}
+/// <summary>
 /// 返回队列最大容量
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <returns>最大容量</returns>
-static inline uint32_t mpq_capacity(const mpq_ctx *q) { return q->capacity; }
+static inline uint32_t mpq_capacity(const mpq_ctx *q) {
+    return q->rq.capacity;
+}
 
 #endif//MPQ_H_

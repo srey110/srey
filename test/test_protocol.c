@@ -4169,7 +4169,8 @@ static void test_prots_unpack_default(CuTest *tc) {
 // parse_int64_strict：mysql / pgsql 文本协议共用的整数解析。重点是 strtoll 骗得过
 // "消费长度相符"校验的那两条（空串、溢出钳到 LLONG_MAX）以及 INT64_MIN 的取负边界
 static void test_parse_int64_strict(CuTest *tc) {
-    int64_t v;
+    // 哨兵初值:取一个没有任何断言期望的值,这样 0 == v 仍能证明函数真写了出参
+    int64_t v = -424242;
 
     CuAssertIntEquals(tc, ERR_OK, parse_int64_strict("0", 1, &v));
     CuAssertTrue(tc, 0 == v);

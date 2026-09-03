@@ -126,7 +126,7 @@ static DWORD WINAPI _dump_thread(LPVOID arg) {
 // Windows 结构化异常处理函数，捕获崩溃时生成 MiniDump 文件
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acdmp[PATH_LENS];
-    SNPRINTF(acdmp, sizeof(acdmp), "%s%s%lld_%d.dmp",
+    SNPRINTF(acdmp, sizeof(acdmp), "%s%s%"PRIu64"_%d.dmp",
         procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
@@ -233,7 +233,7 @@ void sighandle(void(*cb)(int32_t, void *), void *data) {
 #endif
 }
 int32_t serviceid(uint16_t id) {
-    if (id >= 0x8000) {
+    if (id > SERVICEID_MAX) {
         return ERR_FAILED;
     }
     _serviceid = id;
@@ -439,8 +439,20 @@ const char *procpath(void) {
     }
     return _path;
 }
+FILE *fopen_cloexec(const char *file, const char *mode) {
+    FILE *fp = fopen(file, mode);
+    if (NULL == fp) {
+        return NULL;
+    }
+#ifdef OS_WIN
+    SET_CLOEXEC(_get_osfhandle(_fileno(fp)));
+#else
+    SET_CLOEXEC(fileno(fp));
+#endif
+    return fp;
+}
 char *readall(const char *file, size_t *lens) {
-    FILE *fp = fopen(file, "rb");
+    FILE *fp = fopen_cloexec(file, "rb");
     if (NULL == fp) {
         return NULL;
     }
@@ -474,18 +486,21 @@ char *readall(const char *file, size_t *lens) {
     *lens = (size_t)sz;
     return buf;
 }
+// 两份 tm 取自同一个 now 直接作差。不走 mktime:那条路要另外补夏令时,而补多少、按哪个时刻判,
+// 两样都取不准(有半小时制的时区)
 int32_t timeoffset(void) {
     time_t now = time(NULL);
     struct tm gmt_tm, loc_tm;
-    if (0 != GMTIME(&now, &gmt_tm)) {
+    if (0 != GMTIME(&now, &gmt_tm)
+        || 0 != LOCALTIME(&now, &loc_tm)) {
         return 0;
     }
-    time_t gt = mktime(&gmt_tm);
-    if ((time_t)-1 == gt
-        || 0 != LOCALTIME(&gt, &loc_tm)) {
-        return 0;
+    int32_t days = loc_tm.tm_yday - gmt_tm.tm_yday;
+    if (loc_tm.tm_year != gmt_tm.tm_year) {
+        days = loc_tm.tm_year > gmt_tm.tm_year ? 1 : -1;
     }
-    return ((int32_t)(now - gt) + (loc_tm.tm_isdst ? 3600 : 0)) / 60;
+    return (days * 24 + loc_tm.tm_hour - gmt_tm.tm_hour) * 60
+        + loc_tm.tm_min - gmt_tm.tm_min;
 }
 // Unix 纪元起的微秒数,全程 64 位。timeofday 反过来由它推导:Windows 的 struct timeval.tv_sec
 // 是 32 位 long(LLP64),2038-01-19 后回绕为负,再转 uint64 会符号扩展成约 1.8e19

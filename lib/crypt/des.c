@@ -193,7 +193,9 @@ static void _des3_padding_key(const char *key, size_t klens, uint8_t pdkey[24]) 
         memcpy(pdkey, key, klens);
         ZERO(pdkey + klens, 16 - klens);
     } else {
-        memcpy(pdkey, key, klens);
+        if (klens > 0) {
+            memcpy(pdkey, key, klens);
+        }
         ZERO(pdkey + klens, 8 - klens);
         memcpy(pdkey + 8, pdkey, 8);
     }

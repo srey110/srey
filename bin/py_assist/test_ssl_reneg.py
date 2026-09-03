@@ -9,7 +9,7 @@
 #   client 发起的重协商），故不测重协商；TLS 1.3 KeyUpdate 是独立 post-handshake 机制，不受影响。
 #
 # 除 KeyUpdate 外，另含 SSL 数据通路 e2e 用例（TLS1.2/1.3 回显、大包跨多记录、单连接多请求复用、并发会话），
-# 覆盖 srey SSL 收发路径；socket BIO 与内存 BIO 两种实现按 WITH_SSL_BIO 编译期切换，本测试对两者均适用。
+# 覆盖 srey SSL 收发路径。
 #
 # 运行前提：srey 需起 SSL HTTP server（server_http.lua 已加 15443 SSL 监听，证书在 startup.lua 注册）。
 # 手动运行：./bin/srey 启动后 python3 bin/py_assist/test_ssl_reneg.py

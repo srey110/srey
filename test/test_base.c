@@ -146,9 +146,23 @@ void test_base_slots(CuSuite *suite) {
     (void)suite;
 #endif
 }
+// ROUND_UP 的掩码按 size_t 算。改前掩码取 n 自己的类型：n 是比 size_t 窄的无符号量时
+// ~(n-1) 零扩展，s 的高位被一起清掉，取整结果反而小于 s —— 拿这个长度去分配就是一块不够大的内存
+static void test_round_up_narrow_modulus(CuTest *tc) {
+    uint32_t align = 8;
+    CuAssertTrue(tc, 16 == ROUND_UP((size_t)9, align));
+    CuAssertTrue(tc, 16 == ROUND_UP((size_t)9, 8));/* 有符号字面量的老用法不变 */
+#if SIZE_MAX > 0xFFFFFFFFu
+    /* s 超过 32 位：改前结果被截到低 32 位，返回 8 */
+    size_t big = ((size_t)1 << 33) + 1;
+    CuAssertTrue(tc, (((size_t)1 << 33) + 8) == ROUND_UP(big, align));
+#endif
+}
+
 void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_memory);
     SUITE_ADD_TEST(suite, test_atomic32);
     SUITE_ADD_TEST(suite, test_atomic64);
     SUITE_ADD_TEST(suite, test_set_ptr_expr_arg);
+    SUITE_ADD_TEST(suite, test_round_up_narrow_modulus);
 }

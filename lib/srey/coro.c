@@ -131,7 +131,6 @@ static int _coro_timeout_cmp(const heap_node *lhs, const heap_node *rhs) {
 // 创建 timeout_entry 并插入超时堆，返回堆节点指针（用于后续删除）
 static timeout_entry *_coro_te_insert(coro_ctx *coctx, uint64_t timeout, uint64_t sess) {
     timeout_entry *te = (timeout_entry *)pool_pop(&coctx->te_pool, NULL, 0);
-    te->hnode.parent = te->hnode.left = te->hnode.right = NULL;
     te->timeout = timeout;
     te->sess = sess;
     heap_insert(&coctx->timeout_heap, &te->hnode);
@@ -505,8 +504,7 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
             _coro_mco_resume(coro, &arg);
         }
     }
-    if (now - coctx->shrink_ms >= SHRINK_TIME) {
-        coctx->shrink_ms = now;
+    if (pool_shrink_due(&coctx->shrink_ms, now)) {
         pool_shrink(&coctx->copool);
     }
     task_timeout(task, 0, 1 * 1000, _coro_timeout_monitor);

@@ -3,6 +3,8 @@
 
 #include "base/structs.h"
 
+// 以下 10 个上限是可调的:某个判定在当前取值下恒假(如 16 位长度比 65535)不等于死代码,
+// 上限调小它立刻生效,勿删
 #define HTTP_MAX_HEADLENS (ONEK * 4) // HTTP 头部块 / trailer 块 / chunk 长度行的总长；组包侧也用它，超了对端整包解析失败
 #define HTTP_MAX_CONTENT_LENS 65535 // HTTP Content-Length 声明的 body 总长，整包一次缓冲
 #define HTTP_MAX_CHUNK_LENS 65535 // HTTP 单个 chunk 的声明长度，每块一次分配；不限 body 总长

@@ -22,7 +22,7 @@ typedef struct fsqu_ctx {
 /// <param name="fsqu">fsqu_ctx</param>
 /// <param name="elsize">单元素字节数，须 大于 0</param>
 /// <param name="capacity">期望容量，0 使用默认值。实际容量会向上取整：mpq 侧取到 2 的幂，
-///   queue 侧取到偶数，所以 fsqu_capacity 可能大于这里给的值</param>
+///   queue 侧取到偶数，下限都是 2，所以 fsqu_capacity 可能大于这里给的值</param>
 void fsqu_init(fsqu_ctx *fsqu, size_t elsize, uint32_t capacity);
 /// <summary>
 /// 释放队列内部内存，不释放 fsqu 本身
@@ -86,7 +86,7 @@ static inline void fsqu_push_batch(fsqu_ctx *fsqu, const void *data, uint32_t co
     uint32_t i = 0;
     const char *src = (const char *)data;
 #if FSQU_MPQ
-    uint32_t elsize = fsqu->mpq.elsize;
+    uint32_t elsize = mpq_elsize(&fsqu->mpq);
     uint32_t nleft;
     // 粘滞降级：溢出层非空时整批直落溢出，不与更早的溢出元素交错
     if (0 == ATOMIC_GET(&fsqu->novf)) {
@@ -124,7 +124,7 @@ static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint
         || 0 == ATOMIC_GET(&fsqu->novf)) {
         return;
     }
-    uint32_t elsize = fsqu->mpq.elsize;
+    uint32_t elsize = mpq_elsize(&fsqu->mpq);
     int32_t k = 0;
     void *elem;
     spin_lock(&fsqu->lck);
@@ -152,7 +152,7 @@ static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out, int32_t mpqrtn) {
 // max 为 0 时是这里的初值 —— _fsqu_ovf_drain 靠它决定要不要去溢出层续取
 static inline uint32_t _fsqu_pop_batch_mpq(fsqu_ctx *fsqu, void *out, uint32_t max, int32_t sc) {
     uint32_t n = 0;
-    uint32_t elsize = fsqu->mpq.elsize;
+    uint32_t elsize = mpq_elsize(&fsqu->mpq);
     char *dst = (char *)out;
     int32_t rtn = ERR_FAILED;
     while (n < max

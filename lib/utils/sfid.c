@@ -6,30 +6,33 @@
 #define DefCustomEpoch 1704067200000llu //默认自定义纪元（2024-01-01 00:00:00 UTC 毫秒时间戳）
 #define SFID_CLOCKBACK_WAIT 1000 //ctx->clockback_wait 的默认值
 
+// 全部校验走局部量,过了才写 ctx:半初始化的 ctx 拿去 sfid_id 会按垃圾位数移位
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch) {
-    ctx->machineid = machineid;
-    ctx->machinebitlen = 0 == machinebitlen ? DefMachineBitLen : machinebitlen;
-    ctx->sequencebitlen = 0 == sequencebitlen ? DefSequenceBitLen : sequencebitlen;
-    ctx->customepoch = 0 == customepoch ? DefCustomEpoch : customepoch;
+    int32_t mbits = 0 == machinebitlen ? DefMachineBitLen : machinebitlen;
+    int32_t sbits = 0 == sequencebitlen ? DefSequenceBitLen : sequencebitlen;
+    uint64_t epoch = 0 == customepoch ? DefCustomEpoch : customepoch;
     uint64_t curms = nowms();
-    // 先做范围校验，再计算派生值，避免位移溢出
-    if (ctx->machinebitlen < 1
-        || ctx->sequencebitlen < 1
-        || ctx->machinebitlen + ctx->sequencebitlen > 22
-        || ctx->machineid < 0
-        || ctx->machineid > (int32_t)((1u << ctx->machinebitlen) - 1)
-        || ctx->customepoch >= curms) {
+    if (mbits < 1
+        || sbits < 1
+        || mbits + sbits > 22
+        || machineid < 0
+        || machineid > (int32_t)((1u << mbits) - 1)
+        || epoch >= curms) {
         return NULL;
     }
-    ctx->lasttimestamp = curms - ctx->customepoch;
-    ctx->sequence = 0;
-    ctx->sequencemask = (1u << ctx->sequencebitlen) - 1;
-    ctx->timestampshift = ctx->machinebitlen + ctx->sequencebitlen;
-    ctx->clockback_warned = 0;
+    uint64_t last = curms - epoch;
+    if ((last >> (63 - (mbits + sbits))) != 0) {
+        return NULL;
+    }
+    ZERO(ctx, sizeof(sfid_ctx));
+    ctx->machinebitlen = mbits;
+    ctx->sequencebitlen = sbits;
+    ctx->timestampshift = mbits + sbits;
+    ctx->machineid = machineid;
+    ctx->sequencemask = (1u << sbits) - 1;
     ctx->clockback_wait = SFID_CLOCKBACK_WAIT;
-    if ((ctx->lasttimestamp >> (63 - ctx->timestampshift)) != 0) {
-        return NULL;
-    }
+    ctx->customepoch = epoch;
+    ctx->lasttimestamp = last;
     return ctx;
 }
 /* sfid_id 无锁设计：每个线程持有独立的 sfid_ctx，禁止多线程共享同一 ctx。

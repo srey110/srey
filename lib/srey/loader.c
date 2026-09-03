@@ -333,8 +333,7 @@ static void _loader_monitor_loop(void *arg) {
         _loader_monitor_check(loader);
         // 空闲时按 SHRINK_TIME 门控回落消息池
         now = timer_cur_ms(&timer);
-        if (now - shrink_start >= SHRINK_TIME) {
-            shrink_start = now;
+        if (pool_shrink_due(&shrink_start, now)) {
             pool_shrink(&loader->msg_pool);
         }
     }

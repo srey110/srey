@@ -12,7 +12,7 @@ static void test_mpq_basic(CuTest *tc) {
     uintptr_t v, out;
     mpq_init(&q, sizeof(uintptr_t), 0);    /* 0 → 默认容量 1024 */
 
-    CuAssertTrue(tc, 1024 == q.capacity);
+    CuAssertTrue(tc, 1024 == mpq_capacity(&q));
     CuAssertTrue(tc, 0 == mpq_size(&q));
     CuAssertTrue(tc, ERR_FAILED == mpq_pop(&q, &out));  /* 空队列出队返回 ERR_FAILED */
 
@@ -59,7 +59,7 @@ static void test_mpq_boundary(CuTest *tc) {
 
     /* 容量 4，填满后 push 返回 ERR_FAILED */
     mpq_init(&q, sizeof(uintptr_t), 4);
-    CuAssertTrue(tc, 4 == q.capacity);
+    CuAssertTrue(tc, 4 == mpq_capacity(&q));
     for (uintptr_t i = 1; i <= 4; i++) {
         v = i;
         CuAssertTrue(tc, ERR_OK == mpq_trypush(&q, &v));
@@ -84,7 +84,7 @@ static void test_mpq_boundary(CuTest *tc) {
 
     /* 容量 5（非 2 的幂）→ 自动对齐为 8 */
     mpq_init(&q, sizeof(uintptr_t), 5);
-    CuAssertTrue(tc, 8 == q.capacity);
+    CuAssertTrue(tc, 8 == mpq_capacity(&q));
     for (uintptr_t i = 1; i <= 8; i++) {
         v = i;
         CuAssertTrue(tc, ERR_OK == mpq_trypush(&q, &v));
@@ -292,7 +292,7 @@ static void test_spsc_basic(CuTest *tc) {
     uintptr_t v, out;
     spsc_init(&q, sizeof(uintptr_t), 0);    /* 0 → 默认容量 1024 */
 
-    CuAssertTrue(tc, 1024 == q.capacity);
+    CuAssertTrue(tc, 1024 == spsc_capacity(&q));
     CuAssertTrue(tc, 0 == spsc_size(&q));
     CuAssertTrue(tc, ERR_FAILED == spsc_pop(&q, &out));
 
@@ -316,7 +316,7 @@ static void test_spsc_boundary(CuTest *tc) {
     uintptr_t v, out;
 
     spsc_init(&q, sizeof(uintptr_t), 4);
-    CuAssertTrue(tc, 4 == q.capacity);
+    CuAssertTrue(tc, 4 == spsc_capacity(&q));
     for (uintptr_t i = 1; i <= 4; i++) {
         v = i;
         CuAssertTrue(tc, ERR_OK == spsc_trypush(&q, &v));
@@ -339,7 +339,7 @@ static void test_spsc_boundary(CuTest *tc) {
 
     /* 容量 5（非 2 的幂）→ 自动对齐为 8 */
     spsc_init(&q, sizeof(uintptr_t), 5);
-    CuAssertTrue(tc, 8 == q.capacity);
+    CuAssertTrue(tc, 8 == spsc_capacity(&q));
     for (uintptr_t i = 1; i <= 8; i++) {
         v = i;
         CuAssertTrue(tc, ERR_OK == spsc_trypush(&q, &v));
@@ -1039,9 +1039,6 @@ static void test_heap(CuTest *tc) {
     /* 无序插入 5 个节点 */
     int vals[] = { 30, 10, 50, 20, 40 };
     _hnode nodes[5];
-    /* heap_insert 不清零子指针，栈变量必须手动清零，否则 sift-up 时
-     * _heap_swap 会把垃圾 child->left/right 当合法指针解引用 */
-    ZERO(nodes, sizeof(nodes));
     for (int i = 0; i < 5; i++) {
         nodes[i].val = vals[i];
         heap_insert(&h, &nodes[i].node);
@@ -1060,9 +1057,6 @@ static void test_heap(CuTest *tc) {
     CuAssertTrue(tc, 0 == h.nelts);
 
     /* 插入后随机删除中间节点 */
-    /* heap_dequeue 最后一次摘除单元素时走提前返回路径，未清零节点指针；
-     * 重复使用同一批节点前需再次清零，避免残留指针引发 sift 崩溃 */
-    ZERO(nodes, sizeof(nodes));
     for (int i = 0; i < 5; i++) {
         nodes[i].val = vals[i];
         heap_insert(&h, &nodes[i].node);
@@ -1084,7 +1078,6 @@ static void test_heap_remove_root(CuTest *tc) {
     int prev, top, i;
 
     /* 反复显式删除 root → 应按升序取出（覆盖 remove 删根 + 末节点替换 sift-down 深路径）*/
-    ZERO(nodes, sizeof(nodes));
     for (i = 0; i < n; i++) {
         nodes[i].val = vals[i];
         heap_insert(&h, &nodes[i].node);
@@ -1099,9 +1092,7 @@ static void test_heap_remove_root(CuTest *tc) {
     }
     CuAssertTrue(tc, 0 == h.nelts);
 
-    /* 删最后一个节点(独根)也要清链接字段：heap_insert 不初始化 left/right,
-       靠 remove 留下的干净状态才敢直接复用节点重新插入 */
-    ZERO(nodes, sizeof(nodes));
+    /* 删到空之后直接复用同一批节点重新插入 */
     nodes[0].val = 1;
     nodes[1].val = 2;
     heap_insert(&h, &nodes[0].node);
@@ -1122,7 +1113,6 @@ static void test_heap_remove_root(CuTest *tc) {
     CuAssertTrue(tc, 0 == h.nelts);
 
     /* 按引用删除若干内部/末/根节点后,余下仍保持堆序（覆盖 remove 触发的 sift 两方向）*/
-    ZERO(nodes, sizeof(nodes));
     for (i = 0; i < n; i++) {
         nodes[i].val = vals[i];
         heap_insert(&h, &nodes[i].node);
@@ -2070,13 +2060,13 @@ static size_t _up_live(struct hashmap *map) {
 }
 // 失败注入下建表须重试到成功
 static struct hashmap *_up_new(size_t elsize,
-                               uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
+                               uint64_t (*hashfn)(const void *item, uint64_t seed0, uint64_t seed1),
                                int (*cmp)(const void *a, const void *b, void *udata),
                                void (*elfree)(void *item)) {
     struct hashmap *map = NULL;
     while (NULL == map) {
         map = hashmap_new_with_allocator(_up_malloc, _up_realloc, _up_free,
-                                         elsize, 0, 1, 2, hash, cmp, elfree, NULL);
+                                         elsize, 0, 1, 2, hashfn, cmp, elfree, NULL);
     }
     return map;
 }
@@ -2241,6 +2231,62 @@ static void test_hashmap_upstream_vectors(CuTest *tc) {
     CuAssertTrue(tc, 2584346877953614258ULL == hashmap_xxhash3("hello", 5, 1, 2));
 }
 
+/* heap_insert 自己写全三个链接字段：拿一批填了垃圾的栈节点直接插，不预清零 */
+static void test_heap_insert_no_prezero(CuTest *tc) {
+    heap_ctx h;
+    heap_init(&h, _heap_lt);
+    int vals[] = { 30, 10, 50, 20, 40 };
+    _hnode nodes[5];
+    memset(nodes, 0xA5, sizeof(nodes));
+    int i;
+    for (i = 0; i < 5; i++) {
+        nodes[i].val = vals[i];
+        heap_insert(&h, &nodes[i].node);
+    }
+    CuAssertTrue(tc, 5 == h.nelts);
+    CuAssertTrue(tc, 10 == UPCAST(h.root, _hnode, node)->val);
+    /* 逐个删根应取到升序，顺带把每个节点的 left/right 都走一遍 */
+    int prev = -1;
+    int top;
+    for (i = 0; i < 5; i++) {
+        top = UPCAST(h.root, _hnode, node)->val;
+        CuAssertTrue(tc, top > prev);
+        prev = top;
+        heap_remove(&h, h.root);
+    }
+    CuAssertTrue(tc, 0 == h.nelts);
+}
+
+/* capacity 为 1 按文档向上取整到 2，不再 abort（曾只在 mpq 后端的平台上崩） */
+static void test_queue_capacity_one(CuTest *tc) {
+    mpq_ctx mq;
+    spsc_ctx sq;
+    fsqu_ctx fq;
+    uintptr_t v = 7, out = 0;
+    mpq_init(&mq, sizeof(uintptr_t), 1);
+    CuAssertTrue(tc, mpq_capacity(&mq) >= 2);
+    CuAssertIntEquals(tc, ERR_OK, mpq_trypush(&mq, &v));
+    CuAssertIntEquals(tc, ERR_OK, mpq_pop(&mq, &out));
+    CuAssertTrue(tc, 7 == out);
+    mpq_free(&mq);
+
+    out = 0;
+    spsc_init(&sq, sizeof(uintptr_t), 1);
+    CuAssertTrue(tc, spsc_capacity(&sq) >= 2);
+    CuAssertIntEquals(tc, ERR_OK, spsc_trypush(&sq, &v));
+    CuAssertIntEquals(tc, ERR_OK, spsc_pop(&sq, &out));
+    CuAssertTrue(tc, 7 == out);
+    spsc_free(&sq);
+
+    out = 0;
+    fsqu_init(&fq, sizeof(uintptr_t), 1);
+    CuAssertTrue(tc, fsqu_capacity(&fq) >= 2);
+    fsqu_push(&fq, &v);
+    CuAssertIntEquals(tc, ERR_OK, fsqu_pop(&fq, &out));
+    CuAssertTrue(tc, 7 == out);
+    fsqu_free(&fq);
+}
+
 void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpq_basic);
     SUITE_ADD_TEST(suite, test_mpq_basic_sc);
@@ -2280,6 +2326,8 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hashmap_set_allocator);
     SUITE_ADD_TEST(suite, test_heap);
     SUITE_ADD_TEST(suite, test_heap_remove_root);
+    SUITE_ADD_TEST(suite, test_heap_insert_no_prezero);
+    SUITE_ADD_TEST(suite, test_queue_capacity_one);
     SUITE_ADD_TEST(suite, test_slist_basic);
     SUITE_ADD_TEST(suite, test_slist_insert);
     SUITE_ADD_TEST(suite, test_slist_remove);

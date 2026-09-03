@@ -72,10 +72,9 @@ int32_t _evpub_sock_type(sock_ctx *skctx) {
 // 定期收缩对象池（调用方按 EVENT_CHECK_INTERVAL 节流触发，避免频繁 syscall）。
 // hashmap_count 作收缩基数：IOCP 下 cmd sock 不入 hashmap（精确），Unix 下含 1 个 cmd 管道 sock（偏差可忽略）。
 void _evpub_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms) {
-    if (now_ms - *shrink_start < SHRINK_TIME) {
+    if (!pool_shrink_due(shrink_start, now_ms)) {
         return;
     }
-    *shrink_start = now_ms;
     pool_shrink_to(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)));
 }
 void _evpub_share_data_free(void *arg) {
@@ -470,29 +469,35 @@ static int32_t _evpub_sock_send_normal(SOCKET fd, queue_ctx *buf_s, size_t *nsen
     return rtn;
 }
 #if WITH_SSL
-// 通过SSL逐条发送队列中的数据（SSL_write每次只能发一条记录）
+// 通过 SSL 发送队列中的数据，单次 SSL_write 最多 MAX_SSL_SEND_SIZE，循环抽到发不动为止。
+// 两条都不能去掉：上限要小到 socket 一次吃得下整条记录，否则半条记录跨轮悬在缓冲里，
+// 期间 OpenSSL 发不出 TLS1.3 KeyUpdate 响应，下个 KeyUpdate 到达即报错断连；
+// 抽干循环少了，epoll 是边缘触发，socket 还可写却不再有新边沿，发送就此停住
 static int32_t _evpub_sock_send_ssl(SSL *ssl, queue_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
-    size_t sended;
+    size_t sended, lens;
     off_buf_ctx *buf;
     for (;;) {
         buf = queue_peek(buf_s);
         if (NULL == buf) {
             break;
         }
-        rtn = evssl_send(ssl, (char *)buf->data + buf->offset, buf->lens - buf->offset, &sended);
-        if (ERR_OK == rtn) {
-            (*nsend) += sended;
-            buf->offset += sended;
-            if (buf->offset == buf->lens) {
-                queue_pop(buf_s);
-                _evpub_off_buf_release(buf);
-                continue;
-            } else {
-                break;
-            }
-        } else {
+        lens = buf->lens - buf->offset;
+        if (lens > MAX_SSL_SEND_SIZE) {
+            lens = MAX_SSL_SEND_SIZE;
+        }
+        rtn = evssl_send(ssl, (char *)buf->data + buf->offset, lens, &sended);
+        if (ERR_OK != rtn) {
             break;
+        }
+        (*nsend) += sended;
+        buf->offset += sended;
+        if (0 == sended) {
+            break;
+        }
+        if (buf->offset == buf->lens) {
+            queue_pop(buf_s);
+            _evpub_off_buf_release(buf);
         }
     }
     return rtn;

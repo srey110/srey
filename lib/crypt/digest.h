@@ -21,13 +21,18 @@ typedef enum digest_type {
     DG_SHA256,
     DG_SHA512
 }digest_type;
-typedef struct digest_ctx {
+// 单个摘要算法的属性。digest.c 的算法表与 digest_ctx 共用这一份字段列表,
+// 加一项只改这里,不会出现"表填了、ctx 忘拷"这种静默走样
+typedef struct dg_attr {
     size_t block_lens;      // 当前摘要算法的输出长度（字节）
     size_t key_block;       // 压缩函数的输入分组长度 B（HMAC 的 ipad/opad 长度，不是输出长度）
     size_t eng_lens;        // 当前引擎 ctx 的实际字节数；eng_ctx 是联合体，按它拷贝而非整份
     _init_cb _init;         // 初始化回调
     _update_cb _update;     // 数据输入回调
     _final_cb _final;       // 结果输出回调
+}dg_attr;
+typedef struct digest_ctx {
+    dg_attr attr;           // 算法属性，digest_init 从表里整份拷入
     union {
         md2_ctx md2;
         md4_ctx md4;

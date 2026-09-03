@@ -7,11 +7,22 @@
 // 取 256 倍下限即约 100 万轮，最坏约 1 秒 worker 线程 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
 // 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过
 #define SCRAM_MAX_ITER  (256 * SCRAM_MIN_ITER)
+#define SCRAM_PLUS_SUFFIX "-PLUS" // 通道绑定变体的机制名后缀
 /* GS2 头三态（RFC 5802 §5.1）：本端不支持绑定发 "n"；支持但对端未通告 -PLUS 发 "y"，
  * 让真支持 PLUS 的对端能发现通告被剥；PLUS 变体发 "p=" 加绑定类型。*/
 #define SCRAM_GS2_STD     "n,,"
 #define SCRAM_GS2_CAPABLE "y,,"
 #define SCRAM_GS2_PLUS    "p=tls-server-end-point,,"
+// 机制基名 → 摘要算法。-PLUS 变体不单列,由 scram_init 剥掉后缀后共用同一行
+typedef struct scram_method {
+    const char *name;
+    digest_type dtype;
+}scram_method;
+static const scram_method _scram_methods[] = {
+    { "SCRAM-SHA-1",   DG_SHA1   },
+    { "SCRAM-SHA-256", DG_SHA256 },
+    { "SCRAM-SHA-512", DG_SHA512 }
+};
 /* 姿态 → 客户端要发的 GS2 头。用指定初始化器绑定下标，枚举怎么改都不会与表错位 */
 static const char *const _scram_gs2[] = {
     [SCRAM_CB_NONE]    = SCRAM_GS2_STD,
@@ -20,27 +31,29 @@ static const char *const _scram_gs2[] = {
 };
 
 scram_ctx *scram_init(const char *method, int32_t client) {
-    digest_type type;
     scram_cbind_mode cbind = SCRAM_CB_NONE;
-    if (0 == strcmp(method, "SCRAM-SHA-1")) {
-        type = DG_SHA1;
-    } else if (0 == strcmp(method, "SCRAM-SHA-1-PLUS")) {
-        type = DG_SHA1;
+    size_t blens = strlen(method);
+    const size_t plens = sizeof(SCRAM_PLUS_SUFFIX) - 1;
+    // -PLUS 后缀先剥掉再查表:两个变体共用一行,漏写 cbind 这种事无从发生
+    if (blens > plens
+        && 0 == strcmp(method + blens - plens, SCRAM_PLUS_SUFFIX)) {
         cbind = SCRAM_CB_PLUS;
-    } else if (0 == strcmp(method, "SCRAM-SHA-256")) {
-        type = DG_SHA256;
-    } else if (0 == strcmp(method, "SCRAM-SHA-256-PLUS")) {
-        type = DG_SHA256;
-        cbind = SCRAM_CB_PLUS;
-    } else if (0 == strcmp(method, "SCRAM-SHA-512")) {
-        type = DG_SHA512;
-    } else if (0 == strcmp(method, "SCRAM-SHA-512-PLUS")) {
-        type = DG_SHA512;
-        cbind = SCRAM_CB_PLUS;
-    } else {
+        blens -= plens;
+    }
+    const scram_method *hit = NULL;
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(_scram_methods); i++) {
+        if (0 == strncmp(method, _scram_methods[i].name, blens)
+            && '\0' == _scram_methods[i].name[blens]) {
+            hit = &_scram_methods[i];
+            break;
+        }
+    }
+    if (NULL == hit) {
         LOG_WARN("unsupported verification methods.");
         return NULL;
     }
+    digest_type type = hit->dtype;
     scram_ctx *scram;
     CALLOC(scram, 1, sizeof(scram_ctx));
     scram->client = client;
@@ -69,6 +82,12 @@ void scram_free(scram_ctx *scram) {
     _scram_free_str(&scram->pwd);
     SECURE_FREE(scram, sizeof(scram_ctx));
 }
+// 存用户名,不判空。空用户名是 RFC 5802 的合法值(libpq 恒发 n=,用户名走启动包),
+// 判空只是 scram_set_user 对外拦误用,不能拿到解析路径上用
+static void _scram_store_user(scram_ctx *scram, const char *user, size_t ulens) {
+    _scram_free_str(&scram->user);
+    scram->user = dup_zero(user, ulens);
+}
 int32_t scram_set_user(scram_ctx *scram, const char *user, size_t ulens) {
     if (EMPTYPTR(user, ulens)) {
         return ERR_FAILED;
@@ -77,8 +96,7 @@ int32_t scram_set_user(scram_ctx *scram, const char *user, size_t ulens) {
         LOG_WARN("scram user contains embedded NUL, rejected.");
         return ERR_FAILED;
     }
-    _scram_free_str(&scram->user);
-    scram->user = dup_zero(user, ulens);
+    _scram_store_user(scram, user, ulens);
     return ERR_OK;
 }
 int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens) {
@@ -443,11 +461,8 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
         return ERR_FAILED;
     }
     size_t ulens = strlen(uname);
-    int32_t setrtn = scram_set_user(scram, uname, ulens);
+    _scram_store_user(scram, uname, ulens);
     SECURE_FREE(uname, ulens + 1);
-    if (ERR_OK != setrtn) {
-        return ERR_FAILED;
-    }
     char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
     if (NULL == nonce
         || 0 == lens) {

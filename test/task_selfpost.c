@@ -3,7 +3,6 @@
 // 故意设小的 qumsg 容量, 使自投递立刻越过快路径进入溢出层。
 // 取 2 而非更大值有第二个理由: task_new 按 fsqu_capacity / QUEUE_OVERLOAD_RATIO 推导过载告警阈值,
 // 2/3 == 0 而 tda_check 把 0 视为禁用, 于是不会每次跑测试都打一条与真实背压无法区分的 overload 警告。
-// 不可再小: mpq_init 有 ASSERTAB(capacity >= 2)
 #define SELFPOST_QUECAP  2
 // 自投递条数, 须远大于 SELFPOST_QUECAP
 #define SELFPOST_CNT     64
