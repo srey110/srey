@@ -98,8 +98,12 @@ runner.run(function(t)
         end
         local body = http.datastr(data)
         if PROBE == body then
-            -- 四种头一次过：合法 token / 值含 CRLF / 名非 token / 超 HTTP_MAX_HEADLENS；且不带 body
-            http.response(fd, skid, 200, { ["X-Ok"] = "v", ["X-Inj"] = INJ, ["Bad Key"] = "x", ["X-Big"] = BIG })
+            -- 六种头一次过：合法 token / 值含 CRLF / 名非 token / 超 HTTP_MAX_HEADLENS /
+            -- 整数值浮点 / __tostring 会抛的值；且不带 body。
+            -- 最后那个若照旧走 tostring，异常会越过整条校验链把这次响应整个吞掉
+            http.response(fd, skid, 200, { ["X-Ok"] = "v", ["X-Inj"] = INJ, ["Bad Key"] = "x", ["X-Big"] = BIG,
+                                           ["X-Num"] = 3600000 / 1000,
+                                           ["X-Raiser"] = setmetatable({}, { __tostring = function() error("boom") end }) })
             return
         end
         if FRAME == body then
@@ -182,6 +186,8 @@ runner.run(function(t)
             t:check(nil == string.find(txt, "Bad Key", 1, true), "名非 RFC7230 token 的头被丢弃")
             t:check(nil == string.find(txt, "X-Big", 1, true), "超 HTTP_MAX_HEADLENS 的头整条丢弃(未截断发出)")
             t:check(nil ~= string.find(txt, "X-Ok: v", 1, true), "合法头正常发出(未误伤)")
+            t:check(nil ~= string.find(txt, "X-Num: 3600\r\n", 1, true), "整数值浮点头写成 3600 而不是 3600.0")
+            t:check(nil == string.find(txt, "X-Raiser", 1, true), "__tostring 会抛的头值被丢弃")
             t:check(nil ~= string.find(txt, "Content-Length: 0", 1, true), "无 body 的响应带 Content-Length: 0")
         end
         -- 同一条裸连接再发一次：带 body 且调用方自带帧长头，验证不会造出走私形态。

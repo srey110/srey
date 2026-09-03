@@ -209,6 +209,28 @@ runner.run(function(t)
         local old = mg2:clear_flag()
         t:eq(0, old, "没有标志时 clear_flag 返 0")
         t:eq(true, pcall(mg2.set_flag, mg2, old), "set_flag(0) 是空操作，不报错")
+        -- 范围判定在 C 绑定里，得直接打它：Lua 侧的 ctx:set_flag 自己先按 MORETOCOME 过滤，
+        -- 越界值到不了 C；而 ctx 上根本没有 check_flag，走包装层只会 pcall 一个 nil 而"通过"。
+        -- 先收窄再判的话 2^32+2 会截成 MORETOCOME,把整条连接的写命令变成只发不等
+        local raw = mg2.mongo
+        t:eq(false, pcall(raw.set_flag, raw, 0x100000002), "set_flag 2^32+2 被拒")
+        t:eq(false, pcall(raw.check_flag, raw, 0x100000002), "check_flag 2^32+2 被拒")
+        -- 正向对照：合法值必须过得去，否则上面两条可能是因为别的原因才失败
+        t:eq(true, pcall(raw.set_flag, raw, mg2.FLAGS.MORETOCOME), "MORETOCOME 正常接受")
+        t:eq(true, raw:check_flag(mg2.FLAGS.MORETOCOME), "置上后 check_flag 为真")
+        -- 掩码里的洞：EXHAUSTALLOWED 是 1<<16,三位的并等于 0x10003,纯范围判定会放行中间
+        -- 六万多个取值。它们原样进 OP_MSG 的 flagBits,而低 16 位是 required bits,
+        -- 服务端见到不认识的直接断连——比 Lua 侧报错难查得多
+        t:eq(false, pcall(raw.set_flag, raw, 0x04), "掩码空洞位 0x04 被拒")
+        t:eq(false, pcall(raw.set_flag, raw, 0xffff), "掩码空洞位 0xffff 被拒")
+        t:eq(false, pcall(raw.check_flag, raw, 0x04), "check_flag 空洞位被拒")
+        t:eq(true, pcall(raw.set_flag, raw, mg2.FLAGS.MORETOCOME | mg2.FLAGS.EXHAUSTALLOWED),
+            "两位的并正常接受")
+        raw:clear_flag()
+        -- collection 只认真字符串:luaL_checkstring 连数字也收,而 ctx:getmore(col, cursorid)
+        -- 漏传首参时正好把 cursorid 递进来,静默向一个名叫 "7" 的集合发 getMore
+        t:eq(false, pcall(raw.collection, raw, 7), "collection 拒收数字")
+        t:eq(true, pcall(raw.collection, raw, "c"), "collection 收字符串")
 
         -- ctor 的 authmod 自查：不挡的话非字符串要到第一次 _connect 的 pack_auth_first
         -- 才抛，而那一抛正落在 clear_flag 与 set_flag 之间，MORETOCOME 被永久摘掉、fd 也漏
@@ -308,6 +330,12 @@ runner.run(function(t)
 
         pack, size = m:pack_selectdb("newdb")
         t:check(pack ~= nil and size > 0, "mysql pack_selectdb non-empty")
+        -- 库名超 63 字节:组包被拒,两个返回值都得是 nil。此前长度那位返 0,
+        -- 而文档写的是"一并为 nil",按文档写 if nil == size 的调用方判不出失败
+        local bad, badsz = m:pack_selectdb(string.rep("d", 64))
+        t:eq(2, select('#', m:pack_selectdb(string.rep("d", 64))), "失败仍返 2 个值")
+        t:eq(nil, bad, "库名超限时 pack 为 nil")
+        t:eq(nil, badsz, "库名超限时长度一并为 nil")
         t:check(srey.ud_str(pack, size):find("newdb", 1, true) ~= nil, "selectdb wire 含库名")
         utils.ud_free(pack)
 

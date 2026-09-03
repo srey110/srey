@@ -386,7 +386,20 @@ char *mongo_transaction_options(mongo_session *session, size_t *lens) {
     *lens = bson.doc.offset;
     return bson.doc.data;
 }
+// 事务收尾两个 packer 共用：组包从 mongo->session 取事务上下文(TRANSACTION_OPTIONS)，
+// 入参 session 必须就是连接当前绑定的那个，分叉了会把这次收尾挂到别人的事务上
+static int32_t _mongo_txn_bound(mongo_session *session, const char *op) {
+    if (session->mongo->session == session) {
+        return 1;
+    }
+    LOG_WARN("mongo connection no longer bound to this session, %s rejected.", op);
+    return 0;
+}
 void *mongo_pack_committransaction(mongo_session *session, char *options, size_t optlens, size_t *size) {
+    if (!_mongo_txn_bound(session, "commitTransaction")) {
+        *size = 0;
+        return NULL;
+    }
     mongo_ctx *mongo = session->mongo;
     MONGO_PACK_BEGIN(0);
     bson_append_int32(&bson, "commitTransaction", 1);
@@ -395,6 +408,10 @@ void *mongo_pack_committransaction(mongo_session *session, char *options, size_t
     MONGO_PACK_RETURN(MONGO_TXN_DB);
 }
 void *mongo_pack_aborttransaction(mongo_session *session, char *options, size_t optlens, size_t *size) {
+    if (!_mongo_txn_bound(session, "abortTransaction")) {
+        *size = 0;
+        return NULL;
+    }
     mongo_ctx *mongo = session->mongo;
     MONGO_PACK_BEGIN(0);
     bson_append_int32(&bson, "abortTransaction", 1);

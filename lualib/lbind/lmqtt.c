@@ -8,6 +8,7 @@
 #define RETAIN_OUT_OF_RANGE  "retain handling out of range (0-2)"
 #define REASON_OUT_OF_RANGE  "reason code out of range (0-255)"
 #define PROPVAL_OUT_OF_RANGE "property value out of range"
+#define PROPFLAG_OUT_OF_RANGE "property flag out of range (0x01-0x2A)"
 #define MQTTVER_UNKNOWN      "unknown mqtt protocol version"
 
 // 取协议版本：只认 3.1.1 与 5.0。不卡的话组包侧按未截断值分支(260 走 MQTT5 写属性长度字段)、
@@ -72,12 +73,12 @@ static int32_t _lmqtt_props_free(lua_State *lua) {
 /// 追加固定长度数字属性（按 flag 对应的 1/2/4 字节宽度）
 /// </summary>
 /// <param name="self" type="userdata">props 对象</param>
-/// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
+/// <param name="flag" type="integer">属性标识 mqtt_prop_flag，取值 [0x01, 0x2A]，越界报错</param>
 /// <param name="val" type="integer">属性数值</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非固定长度数字属性）</returns>
 static int32_t _lmqtt_props_fixnum(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
-    mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
+    mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     uint32_t val = lpub_check_u32(lua, 3, PROPVAL_OUT_OF_RANGE);
     return lpub_rtn_bool(lua, ERR_OK == mqtt_props_fixnum(props, flag, val));
 }
@@ -85,12 +86,12 @@ static int32_t _lmqtt_props_fixnum(lua_State *lua) {
 /// 追加可变长度数字属性（Variable Byte Integer）
 /// </summary>
 /// <param name="self" type="userdata">props 对象</param>
-/// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
+/// <param name="flag" type="integer">属性标识 mqtt_prop_flag，取值 [0x01, 0x2A]，越界报错</param>
 /// <param name="val" type="integer">属性数值</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非可变长度数字属性）</returns>
 static int32_t _lmqtt_props_varnum(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
-    mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
+    mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     uint32_t val = lpub_check_u32(lua, 3, PROPVAL_OUT_OF_RANGE);
     return lpub_rtn_bool(lua, ERR_OK == mqtt_props_varnum(props, flag, val));
 }
@@ -98,13 +99,13 @@ static int32_t _lmqtt_props_varnum(lua_State *lua) {
 /// 追加二进制数据属性
 /// </summary>
 /// <param name="self" type="userdata">props 对象</param>
-/// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
+/// <param name="flag" type="integer">属性标识 mqtt_prop_flag，取值 [0x01, 0x2A]，越界报错</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非二进制属性）或数据超长</returns>
 static int32_t _lmqtt_props_binary(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
-    mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
+    mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     char *data;
     size_t lens = 0;
     _lmqtt_get_payload(lua, 3, &data, &lens);
@@ -114,13 +115,13 @@ static int32_t _lmqtt_props_binary(lua_State *lua) {
 /// 追加 UTF-8 字符串对属性（用户属性 USER_PROPERTY）
 /// </summary>
 /// <param name="self" type="userdata">props 对象</param>
-/// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
+/// <param name="flag" type="integer">属性标识 mqtt_prop_flag，取值 [0x01, 0x2A]，越界报错</param>
 /// <param name="key" type="string">键</param>
 /// <param name="val" type="string">值</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非键值对属性）或数据超长</returns>
 static int32_t _lmqtt_props_kv(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
-    mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
+    mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     size_t klens, vlens;
     const char *key = luaL_checklstring(lua, 3, &klens);
     const char *val = luaL_checklstring(lua, 4, &vlens);
@@ -321,8 +322,8 @@ static int32_t _lmqtt_pack_connack(lua_State *lua) {
 /// <param name="topic" type="string">主题</param>
 /// <param name="packid" type="integer">报文 id（QoS 大于 0 时使用）</param>
 /// <param name="payload" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
-/// <param name="paysize" type="integer?">payload 为 lightuserdata 时必填；payload 为字符串时本槽不被读取，
-///   但仍会校验它不是 props ——props 必须放在第 9 个参数，误放此处会被静默丢弃</param>
+/// <param name="paysize" type="integer?">payload 为 lightuserdata 时必填；其余情形本槽不被读取，
+///   但仍会校验它是数字——props 必须放在第 9 个参数，误放此处会被静默丢弃</param>
 /// <param name="props" type="userdata?">属性 props 对象（MQTT 5.0）</param>
 /// <returns type="lightuserdata?">数据指针；失败返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
@@ -336,8 +337,9 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
     char *payload = NULL;
     size_t pllens = 0;
     _lmqtt_get_payload(lua, 7, &payload, &pllens);
-    if (LUA_TSTRING == lua_type(lua, 7)
-        && !lua_isnoneornil(lua, 8)
+    // 只在载荷是字符串时判的话，零长载荷（第 7 参传 nil）这条路会漏过去，props 被静默丢弃。
+    // 载荷是 lightuserdata 时第 8 参已被 _lmqtt_get_payload 当长度取过，必是数字，不会误伤
+    if (!lua_isnoneornil(lua, 8)
         && LUA_TNUMBER != lua_type(lua, 8)) {
         return luaL_error(lua, "pack_publish: props must be arg 9, arg 8 is paysize");
     }
@@ -552,8 +554,13 @@ static int32_t _lmqtt_pack_auth(lua_State *lua) {
     return lpub_rtn_lud(lua, pack, lens);
 }
 // ---- 模块级属性读取 ----
-// 从 pack->varhead 中取 properties 指针（按 prot 分派）；无属性时返回 NULL
+// 从 pack->varhead 中取 properties 指针（按 prot 分派）；无属性时返回 NULL。
+// varhead 为 NULL 是合法状态（PUBLISH 没走到 _mqtt_publish 就是这样，见 _mqtt_pkfree），
+// 判据同兄弟 _lmqtt_pack_of
 static array_ctx *_lmqtt_varhead_props(mqtt_pack_ctx *pack) {
+    if (NULL == pack->varhead) {
+        return NULL;
+    }
     switch (pack->fixhead.prot) {
     case MQTT_CONNECT: return ((mqtt_connect_varhead *)pack->varhead)->properties;
     case MQTT_CONNACK: return ((mqtt_connack_varhead *)pack->varhead)->properties;
@@ -573,8 +580,7 @@ static array_ctx *_lmqtt_varhead_props(mqtt_pack_ctx *pack) {
 }
 // 按 fixhead.prot 判别式取报文；报文类型不符或可变头未解析返回 NULL(调用方回 nil)
 static mqtt_pack_ctx *_lmqtt_pack_of(lua_State *lua, mqtt_prot prot) {
-    LUACHECK_LUDATA(lua, 1);
-    mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
     if (prot != pack->fixhead.prot
         || NULL == pack->varhead) {
         return NULL;
@@ -588,8 +594,7 @@ static mqtt_pack_ctx *_lmqtt_pack_of(lua_State *lua, mqtt_prot prot) {
 /// <returns type="lightuserdata?">属性数组指针；无属性或不支持的报文类型返回 nil</returns>
 /// <returns type="integer">属性条数；空时为 0</returns>
 static int32_t _lmqtt_props_of(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
     array_ctx *arr = _lmqtt_varhead_props(pack);
     if (NULL == arr || 0 == array_size(arr)) {
         lua_pushnil(lua);
@@ -605,8 +610,7 @@ static int32_t _lmqtt_props_of(lua_State *lua) {
 /// <returns type="lightuserdata?">属性数组指针；非 CONNECT 报文或无遗嘱属性返回 nil</returns>
 /// <returns type="integer">属性条数；空时为 0</returns>
 static int32_t _lmqtt_connect_will_props(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
     if (MQTT_CONNECT != pack->fixhead.prot) {
         lua_pushnil(lua);
         lua_pushinteger(lua, 0);
@@ -630,8 +634,7 @@ static int32_t _lmqtt_connect_will_props(lua_State *lua) {
 /// <returns type="string?">字符串/二进制属性的值或 USER_PROPERTY 的 key；数字属性为 nil</returns>
 /// <returns type="string?">USER_PROPERTY 的 value；其他属性为 nil</returns>
 static int32_t _lmqtt_prop_at(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    array_ctx *arr = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, array_ctx, 1, arr);
     int64_t at = lpub_check_index0(lua, 2, array_size(arr));
     if (at < 0) {
         return lpub_rtn_nil(lua, 4);
@@ -658,8 +661,7 @@ static int32_t _lmqtt_prop_at(lua_State *lua) {
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
 /// <returns type="integer">mqtt_prot 枚举值</returns>
 static int32_t _lmqtt_prot(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
     lua_pushinteger(lua, pack->fixhead.prot);
     return 1;
 }
@@ -669,8 +671,7 @@ static int32_t _lmqtt_prot(lua_State *lua) {
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
 /// <returns type="integer">mqtt_protversion 枚举值</returns>
 static int32_t _lmqtt_pack_version(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
     lua_pushinteger(lua, pack->version);
     return 1;
 }
@@ -681,17 +682,14 @@ static int32_t _lmqtt_pack_version(lua_State *lua) {
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
 /// <returns type="MqttConnectInfo?">CONNECT 报文各字段；非 CONNECT 报文返回 nil</returns>
 static int32_t _lmqtt_connect_info(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
     if (MQTT_CONNECT != pack->fixhead.prot) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     mqtt_connect_varhead *vh = (mqtt_connect_varhead *)pack->varhead;
     mqtt_connect_payload *pl = (mqtt_connect_payload *)pack->payload;
     if (NULL == vh || NULL == pl) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_createtable(lua, 0, 11);
     lua_pushinteger(lua, vh->version); lua_setfield(lua, -2, "version");

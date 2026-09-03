@@ -58,7 +58,9 @@ local function _parse_url(ws, sslname)
     -- RFC 3986 §3.1:scheme 大小写无关。url_parse 原样切出不归一化,C 侧 coro_utils 是 buf_icompare 比的,
     -- 故此处先转小写——下游 _resolve_addr / _reorg 拿的是同一个表,默认端口那两处比较随之对齐
     url.scheme = url.scheme and url.scheme:lower()
-    if ("ws" ~= url.scheme and "wss" ~= url.scheme) or not url.host then
+    -- host 判空串不能只判 nil：url_parse 对 "ws://:8080/x" 切出的是空串，空串是真值，
+    -- 放过去 _resolve_addr 会按 hostname 给空名字跑一趟 DNS，白等一个连接超时才失败
+    if ("ws" ~= url.scheme and "wss" ~= url.scheme) or str_nullorempty(url.host) then
         return nil
     end
     if "wss" == url.scheme and SSL_NAME.NONE == sslname then
@@ -286,7 +288,7 @@ local function _continua(fd, skid, prot, client, func, ...)
         return false
     end
     if not srey.send(fd, skid, data, size, 0) then
-        return false   -- 首帧失败 socket 已坏，不发终止帧
+        return false -- 首帧失败 socket 已坏，不发终止帧
     end
     while true do
         data, size = func(...)

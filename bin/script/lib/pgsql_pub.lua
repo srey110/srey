@@ -31,7 +31,7 @@ end
 ---  2) 不符时若是 ERR 包取服务端原文，erro() 对非 ERR 包返 nil，无脑 `or ""` 会留下空 err
 ---不需要防 NOTIFICATION：异步通知走 _pgsql_may_resume 分流给 srey.on_recved，到不了命令等待者
 ---@param pgpack lightuserdata 服务端响应包
----@param want PGPACK_TYPE 期望的包类型（PGPACK_TYPE 是 pgsql_stmt.lua 定义的全局，调用期已加载）
+---@param want PGPACK_TYPE 期望的包类型
 ---@return string? err 相符为 nil；不符为应写入 err 的文案
 function M.check_type(pgpack, want)
     local pktype = pgsql.pack_type(pgpack)
@@ -52,6 +52,20 @@ end
 function M.fail(self, err)
     self.err = err
     return false
+end
+
+---只关心"这一趟成没成"的单次往返：取 fd/skid → syn_send → 判响应类型。
+---与 M.request 的区别是全程不碰 err——ping / stmt:close 属于文件头 err 契约的例外，
+---写了只会把上一次有用的错误抹掉。形状同 mysql_pub.request_ok
+---@param self any 带 pg 字段的 ctx（pgsql_ctx 或 pgsql_stmt_ctx）
+---@param pack lightuserdata 已组好的请求包，所有权随 syn_send 转移
+---@param size integer 包字节数
+---@param want PGPACK_TYPE 期望的响应包类型
+---@return boolean ok 收到包且类型相符
+function M.request_ok(self, pack, size, want)
+    local fd, skid = self.pg:sock_id()
+    local pgpack = srey.syn_send(fd, skid, pack, size, 0)
+    return nil ~= pgpack and want == pgsql.pack_type(pgpack)
 end
 
 ---组好包之后的固定四步：取 fd/skid → syn_send → 发送失败写 SEND → 按 want 校验响应类型。

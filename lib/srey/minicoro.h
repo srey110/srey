@@ -1647,12 +1647,14 @@ static void _mco_destroy_context(mco_coro* co) {
 }
 
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
-  desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
-                    _mco_align_forward(sizeof(_mco_context), 16) +
-                    _mco_align_forward(desc->storage_size, 16) +
-                    _mco_align_forward(stack_size, 16) +
-                    _mco_align_forward(MCO_ASYNCFY_STACK_SIZE, 16) +
-                    16;
+  size_t fixed = _mco_align_forward(sizeof(mco_coro), 16) +
+                 _mco_align_forward(sizeof(_mco_context), 16) +
+                 _mco_align_forward(desc->storage_size, 16) +
+                 _mco_align_forward(MCO_ASYNCFY_STACK_SIZE, 16) +
+                 16;
+  /* 回绕守卫,判据同 ASM/ucontext 那份 _mco_init_desc_sizes。对齐本身也会绕,故先判它 */
+  size_t aligned = _mco_align_forward(stack_size, 16);
+  desc->coro_size = (stack_size > (size_t)-1 - 15 || aligned > (size_t)-1 - fixed) ? 0 : (fixed + aligned);
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
 }
 
@@ -1748,11 +1750,13 @@ static void _mco_destroy_context(mco_coro* co) {
 }
 
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
-  desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
-                    _mco_align_forward(sizeof(_mco_context), 16) +
-                    _mco_align_forward(desc->storage_size, 16) +
-                    _mco_align_forward(stack_size, 16) +
-                    16;
+  size_t fixed = _mco_align_forward(sizeof(mco_coro), 16) +
+                 _mco_align_forward(sizeof(_mco_context), 16) +
+                 _mco_align_forward(desc->storage_size, 16) +
+                 16;
+  /* 回绕守卫,判据同 ASM/ucontext 那份 _mco_init_desc_sizes */
+  size_t aligned = _mco_align_forward(stack_size, 16);
+  desc->coro_size = (stack_size > (size_t)-1 - 15 || aligned > (size_t)-1 - fixed) ? 0 : (fixed + aligned);
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
 }
 
@@ -1824,11 +1828,12 @@ mco_result mco_init(mco_coro* co, mco_desc* desc) {
     MCO_LOG("attempt to initialize an invalid coroutine");
     return MCO_INVALID_COROUTINE;
   }
-  memset(co, 0, sizeof(mco_coro));
-  /* Validate coroutine description. */
+  /* 校验必须排在清零之前，理由同 mco_create：调用方按 desc->coro_size 自行分配，
+     溢出被置 0 时拿到的小块会被下面这次 sizeof(mco_coro) 清零撑破 */
   mco_result res = _mco_validate_desc(desc);
   if(res != MCO_SUCCESS)
     return res;
+  memset(co, 0, sizeof(mco_coro));
   /* Create the coroutine. */
   res = _mco_create_context(co, desc);
   if(res != MCO_SUCCESS)
@@ -1879,8 +1884,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     MCO_LOG("coroutine allocator description is not set");
     return MCO_INVALID_ARGUMENTS;
   }
-  /* 校验必须排在分配之前：coro_size 溢出时会被置 0，
-     拿 0 去 alloc 得到的小块随即被 mco_init 按 sizeof(mco_coro) 清零，堆越界 */
+  /* 校验必须排在分配之前：溢出后被置 0 的 coro_size 拿去 alloc，得到的小块会被 mco_init 越界清零 */
   mco_result res = _mco_validate_desc(desc);
   if(res != MCO_SUCCESS) {
     *out_co = NULL;
@@ -1917,8 +1921,9 @@ mco_result mco_destroy(mco_coro* co) {
     return MCO_INVALID_POINTER;
   }
   mco_result res = mco_uninit(co);
-  if(res != MCO_SUCCESS)
+  if(res != MCO_SUCCESS) {
     return res;
+  }
   /* Free the coroutine. */
   co->dealloc_cb(co, co->coro_size, co->allocator_data);
   return MCO_SUCCESS;

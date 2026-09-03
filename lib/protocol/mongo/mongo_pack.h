@@ -241,7 +241,7 @@ char *mongo_transaction_options(mongo_session *session, size_t *lens);
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；session 已不是连接当前绑定的那个时返回 NULL 并置 *size 为 0</returns>
 void *mongo_pack_committransaction(mongo_session *session, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 abortTransaction 命令请求包（回滚事务）
@@ -250,7 +250,7 @@ void *mongo_pack_committransaction(mongo_session *session, char *options, size_t
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>失败情形同 mongo_pack_committransaction</returns>
 void *mongo_pack_aborttransaction(mongo_session *session, char *options, size_t optlens, size_t *size);
 
 #endif//MONGO_PACK_H_

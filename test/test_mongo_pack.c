@@ -590,7 +590,9 @@ static void test_mongo_pack_session(CuTest *tc) {
     CuAssertIntEquals(tc, 1, found_end);
     FREE(pack);
 
-    // commit/abort transaction
+    // commit/abort transaction：两个 packer 会比对入参 session 与连接当前绑定的那个，
+    // 先建立绑定；不绑定的情形在下面单独验
+    mongo.session = &session;
     pack = mongo_pack_committransaction(&session, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     int32_t err;
@@ -603,6 +605,23 @@ static void test_mongo_pack_session(CuTest *tc) {
     CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "abortTransaction", &err));
     CuAssertIntEquals(tc, 0, err);
     FREE(pack);
+
+    // 绑定分叉即拒绝组包：连接指向别的 session（或没绑定）时两个 packer 都返 NULL 并把
+    // *size 置 0。不拒的话这次收尾会挂到别人的事务上
+    mongo_session other;
+    ZERO(&other, sizeof(other));
+    other.mongo = &mongo;
+    mongo.session = &other;
+    size = 123;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_committransaction(&session, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    size = 123;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_aborttransaction(&session, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    mongo.session = NULL;
+    size = 123;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_committransaction(&session, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
 }
 
 // mongo_pack_scram_client_first：user/password/authdb 三者缺一不可

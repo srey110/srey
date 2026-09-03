@@ -453,8 +453,7 @@ static int32_t _ltask_register(lua_State *lua) {
     task->type = TASK_LUA;
     if (ERR_OK != _ltask_init(task, ltask, file, lua, 4, arg_top)) {
         task_free(task);
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     if (ERR_OK == task_register(task, NULL, NULL)) {
         lua_pushlightuserdata(lua, task);
@@ -498,8 +497,7 @@ static int32_t _ltask_grab(lua_State *lua) {
 /// <param name="task" type="lightuserdata">task 指针</param>
 /// <returns>无</returns>
 static int32_t _ltask_incref(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    task_ctx *task = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, task_ctx, 1, task);
     task_incref(task);
     return 0;
 }
@@ -509,8 +507,7 @@ static int32_t _ltask_incref(lua_State *lua) {
 /// <param name="task" type="lightuserdata">task 指针</param>
 /// <returns>无</returns>
 static int32_t _ltask_ungrab(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    task_ctx *task = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, task_ctx, 1, task);
     task_ungrab(task);
     return 0;
 }

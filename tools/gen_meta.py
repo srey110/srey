@@ -89,7 +89,7 @@ def parse_xml_block(block: str) -> dict:
         inner = re.sub(r"\s*\n\s*", " ", tag.group(2)).strip()
         type_m = re.search(r'type\s*=\s*"([^"]*)"', attrs)
         typ = xml_unescape(type_m.group(1)) if type_m else None
-        if typ is None and inner in ("无", ""):
+        if typ is None and (inner == "" or inner.startswith("无")):
             continue
         doc["returns"].append({"type": typ, "desc": inner})
 
@@ -127,6 +127,23 @@ def extract_mt_defines(text: str) -> dict:
     for m in re.finditer(r'#define\s+(MT_[A-Za-z0-9_]+)\s+"([^"]+)"', text):
         out[m.group(1)] = m.group(2)
     return out
+
+
+def extract_fields(body: str) -> list:
+    """提取模块表上的非函数导出。luaL_Reg 只登记函数，lua_setfield 挂上去的
+    常量与哨兵（yyjson.null、http.max_headlens、stm.copy）扫不到，靠源码里紧邻的
+    /// <field name=".." type="..">说明</field> 声明补上"""
+    fields = []
+    text = strip_slashes(body)
+    for m in re.finditer(
+        r'<field\s+name\s*=\s*"([^"]+)"\s+type\s*=\s*"([^"]+)"\s*>(.*?)</field>',
+        text, re.DOTALL):
+        fields.append({
+            "name": xml_unescape(m.group(1)),
+            "type": xml_unescape(m.group(2)),
+            "desc": xml_unescape(re.sub(r"\s*\n\s*", " ", m.group(3)).strip()),
+        })
+    return fields
 
 
 def extract_reg_tables(text: str) -> dict:
@@ -320,7 +337,7 @@ def render_method(name: str, target: str, doc: dict | None) -> str:
 
 
 def gen_module(modname: str, classified: dict, func_map: dict, src: Path,
-               require_map: dict) -> str:
+               require_map: dict, fields: list) -> str:
     # luaopen_X 的 X 可能与 require 名不同；优先用 require_map 里的真名
     require_name = require_map.get(modname, modname)
     out = [f"---@meta {require_name}",
@@ -344,6 +361,12 @@ def gen_module(modname: str, classified: dict, func_map: dict, src: Path,
 
     out.append("local M = {}")
     out.append("")
+    for f in sorted(fields, key=lambda e: e["name"]):
+        if f["desc"]:
+            out.append("---" + f["desc"])
+        out.append(f"---@type {f['type']}")
+        out.append(f"M.{f['name']} = nil")
+        out.append("")
     for ent in sorted(classified["module"], key=lambda e: e["name"]):
         doc = func_map.get(ent["func"])
         out.append(render_func(ent["name"], "M", doc, is_method=False))
@@ -375,7 +398,9 @@ def main() -> int:
         bodies = extract_luaopen_bodies(text)
         for mb in bodies:
             classified = classify_module(mb["body"], reg_tables, mt_map)
-            content = gen_module(mb["name"], classified, func_map, path, require_map)
+            fields = extract_fields(mb["body"])
+            content = gen_module(mb["name"], classified, func_map, path,
+                                 require_map, fields)
             # 文件名沿用 luaopen_X 的 X（与 require 名解耦，避免 . 出现在路径里）
             out_path = OUT_DIR / f"{mb['name']}.lua"
             out_path.write_text(content, encoding="utf-8")

@@ -1,12 +1,31 @@
 -- Lua 层单元测试：lib/utils.lua（split/host_type/table_size/randstr/class/dump 等）
 --                  + lib/log.lua（级别短路现读 C 层 / log_setlv round-trip）
+--                  + srey.MSG_TYPE 与 C 侧 msg_type 枚举对齐
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local utils  = require("srey.utils")
+local core   = require("srey.core")
 
 srey.startup(function()
 runner.run(function(t)
+    -- ── MSG_TYPE 与 C 侧 msg_type 对齐 ─────────────────────────────────
+    -- 这张表是按 C 枚举手抄的字面量。C 侧往中间插一个成员，后面的取值整体后移，
+    -- 而 Lua 这边毫无察觉：_dispatchers[msg.mtype] 静默错投（未知值被 if dispatcher then
+    -- 吞掉）、message_may_keep 答的是别的类型、_msg_clean 挑错释放方式。
+    -- C 的名字表是权威（debug_request.c 的 _mtype_names），逐项对名字钉住
+    do
+        local n = 0
+        for name, v in pairs(srey.MSG_TYPE) do
+            t:eq(name, core.message_str(v), "MSG_TYPE." .. name .. " 对上 C 侧同名")
+            n = n + 1
+        end
+        t:eq(14, n, "MSG_TYPE 成员数")
+        -- 紧邻最大值的那个必须越界。C 侧往末尾追加新 mtype 时这条会红，
+        -- 提醒把新成员补进 Lua 表（追加不移动既有取值，逐项对名字那圈查不出来）
+        t:eq(false, pcall(core.message_str, 15), "C 侧未追加新 mtype")
+    end
+
     -- ── host_type ──────────────────────────────────────────────────────
     t:eq("ipv4",     host_type("127.0.0.1"),     "host_type ipv4")
     t:eq("ipv4",     host_type("192.168.1.1"),   "host_type ipv4 lan")

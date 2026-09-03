@@ -60,8 +60,7 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
                    : 1;
     url_ctx url;
     if (ERR_OK != url_parse(&url, (const char *)data, size, '/', decode)) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lpub_push_url_table(lua, &url);
     return 1;
@@ -424,8 +423,7 @@ static int32_t _lcrypt_cipher_block(lua_State *lua) {
     data = cipher_block(cipher, data, size, &size);
     //cipher_block 在长度不匹配 / 模式约束不满足时返回 NULL，需守卫避免 lua_pushlstring(NULL, n) 的 UB
     if (NULL == data) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushlstring(lua, (const char *)data, size);
     return 1;

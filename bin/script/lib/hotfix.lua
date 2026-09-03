@@ -32,6 +32,36 @@ local _AMBIGUOUS = "patch touches shadowed upvalue: "
 -- 上一轮 apply 换上去的函数正是从补丁 chunk 编译出来的，反复热修同一模块时它就是"自家的"
 local _PATCH_CHUNK = "=hotfix:"
 
+-- 三个遍历器共用的骨架：顺一个 closure 的 upvalue 往下走，函数型且同 chunk 的递归进去。
+-- visit(fn, idx, name, val) 每个槽都调（含 _ENV 与函数型），返真即整趟停下并把真值带回。
+-- "递归哪些"这条判据留在骨架里，三个调用方各自只写"这个槽算不算数"——它们对 _ENV、
+-- 对函数型槽、对提前退出的取舍各不相同，唯独递归口径必须一致
+local function _walk_upvalues(fn, src, seen, visit)
+    if seen[fn] then
+        return nil
+    end
+    seen[fn] = true
+    local i = 1
+    while true do
+        local name, val = debug.getupvalue(fn, i)
+        if not name then
+            return nil
+        end
+        local stop = visit(fn, i, name, val)
+        if stop then
+            return stop
+        end
+        if "_ENV" ~= name and "function" == type(val)
+            and src == debug.getinfo(val, "S").source then
+            stop = _walk_upvalues(val, src, seen, visit)
+            if stop then
+                return stop
+            end
+        end
+        i = i + 1
+    end
+end
+
 -- 遍历 patch 侧一个 closure 的"状态型"upvalue 槽,对每个调 visit(fn, idx, name)。
 -- _find_ambiguous 与 _join_upvalues 共用,取槽口径必须一致:预校验漏看的名字嫁接时照样会碰到。
 -- _ENV 不算(两侧沙箱不同);函数型槽不 visit 但要递归进去,否则 patch 的 helper 与被替换的 M.xxx
@@ -39,53 +69,20 @@ local _PATCH_CHUNK = "=hotfix:"
 -- src 判定只递归 patch chunk 自己编译的函数,免得把别人模块的 local 名混进来;函数型只按 patch
 -- 侧的值判(原模块那边可能是"值恰好为函数"的回调槽,那是状态);seen 防 helper 互引打转
 local function _walk_patch_slots(fn, src, seen, visit)
-    if seen[fn] then
-        return
-    end
-    seen[fn] = true
-    local i = 1
-    while true do
-        local name, val = debug.getupvalue(fn, i)
-        if not name then
-            break
+    _walk_upvalues(fn, src, seen, function(f, i, name, val)
+        if "_ENV" ~= name and "function" ~= type(val) then
+            visit(f, i, name)
         end
-        if "_ENV" ~= name then
-            if "function" == type(val) then
-                if src == debug.getinfo(val, "S").source then
-                    _walk_patch_slots(val, src, seen, visit)
-                end
-            else
-                visit(fn, i, name)
-            end
-        end
-        i = i + 1
-    end
+    end)
 end
 
 -- patch 函数(含其 chunk 内的 helper)是否持有 _ENV:持有即读了全局或裸标识符,可能走 path-B。
 -- 这是 apply 时唯一拿得到的信号——裸标识符编译成 _ENV.name,名字不在 upvalue 列表、常量表也取不到,
 -- 所以只能提示风险、拦不住
 local function _uses_env(fn, src, seen)
-    if seen[fn] then
-        return false
-    end
-    seen[fn] = true
-    local i = 1
-    while true do
-        local name, val = debug.getupvalue(fn, i)
-        if not name then
-            return false
-        end
-        if "_ENV" == name then
-            return true
-        end
-        if "function" == type(val)
-            and src == debug.getinfo(val, "S").source
-            and _uses_env(val, src, seen) then
-            return true
-        end
-        i = i + 1
-    end
+    return true == _walk_upvalues(fn, src, seen, function(_, _, name)
+        return "_ENV" == name or nil
+    end)
 end
 
 -- 找 patch 里会走嫁接、而原模块侧同名 cell 有歧义的 upvalue;有则返回名字
@@ -121,29 +118,18 @@ end
 -- src 由调用方一次算好往下传,不能每层拿当前 fn 重算——重算会把基准挪到刚踩进去的那个 chunk。
 -- seen 防互相递归的 helper 打转
 local function _scan_upvalues(fn, map, seen, src)
-    if seen[fn] then
-        return
-    end
-    seen[fn] = true
-    local i = 1
-    while true do
-        local name, val = debug.getupvalue(fn, i)
-        if not name then break end
-        if "_ENV" ~= name then
-            local id = debug.upvalueid(fn, i)
-            local entry = map[name]
-            if nil == entry then
-                map[name] = {fn = fn, idx = i, id = id}
-            elseif entry.id ~= id then
-                entry.ambiguous = true
-            end
-            if "function" == type(val)
-                and src == debug.getinfo(val, "S").source then
-                _scan_upvalues(val, map, seen, src)
-            end
+    _walk_upvalues(fn, src, seen, function(f, i, name, _)
+        if "_ENV" == name then
+            return nil
         end
-        i = i + 1
-    end
+        local id = debug.upvalueid(f, i)
+        local entry = map[name]
+        if nil == entry then
+            map[name] = {fn = f, idx = i, id = id}
+        elseif entry.id ~= id then
+            entry.ambiguous = true
+        end
+    end)
 end
 -- 判定 src 是不是 module_name 自己那个 chunk。mod 表里混得进别人编译的函数(re-export、
 -- class() 塞的 cls.new),认不准就会把别的模块整棵闭包树收进本模块的 map。

@@ -387,6 +387,11 @@ static int32_t _timeout_ws(task_ctx *task) {
     }
     pack = websock_pack_binary(1, 1, conn, clens, &psize);
     FREE(conn);
+    if (NULL == pack) {
+        LOG_WARN("ws mqtt pack binary error.");
+        ev_close(&task->loader->netev, fd, skid);
+        return ERR_FAILED;
+    }
     resp = coro_send(task, fd, skid, pack, psize, &rsize, 0);
     if (NULL == resp
         || PACK_MQTT != websock_secprot(resp)) {

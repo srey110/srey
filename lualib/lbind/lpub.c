@@ -143,6 +143,7 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
     int32_t type = lua_type(lua, *idx);
     if (LUA_TSTRING == type) {
         const char *s = luaL_checklstring(lua, *idx, size);
+        luaL_argcheck(lua, *size <= INT32_MAX, *idx, LENS_RANGE);
         if (NULL != copy) {
             *copy = 1;
         }
@@ -155,11 +156,11 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
         luaL_argcheck(lua, NULL != ud || 0 == *size, *idx, LUDATA_NONNULL);
         *idx += 2;// 先吃掉 data + size,*idx 转到 copy 位
         if (NULL != copy) {
-            if (lua_isinteger(lua, *idx)) {
-                *copy = (int32_t)luaL_checkinteger(lua, *idx);
-                *idx += 1;// copy 命中再 +1
-            } else {
+            if (lua_isnoneornil(lua, *idx)) {
                 *copy = 1;
+            } else {
+                *copy = lpub_check_flag(lua, *idx);
+                *idx += 1;// copy 命中再 +1
             }
         }
         return ud;
@@ -192,13 +193,6 @@ void *lpub_opt_buf(lua_State *lua, int32_t idx, size_t *size) {
     }
     luaL_argerror(lua, idx, "nil, string or light userdata expected");
     return NULL;// 到不了: luaL_argerror 会 longjmp
-}
-char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens) {
-    char *data = lpub_check_buf(lua, idx, lens, NULL);
-    // string 分支的长度取自字符串自身,不经 lpub_check_lens,而 Lua 字符串是能超 INT32_MAX 的,
-    // 只卡 lightuserdata 等于给字符串留了后门;越界的就是参数本身,故报在 idx 上
-    luaL_argcheck(lua, *lens <= INT32_MAX, idx, LENS_RANGE);
-    return data;
 }
 name_t lpub_task_handle(lua_State *lua, int32_t idx) {
     return (LUA_TSTRING == lua_type(lua, idx))
@@ -242,7 +236,7 @@ void lpub_push_url_param(lua_State *lua, url_ctx *url) {
         } else {
             lua_pushlstring(lua, param->val.data, param->val.lens);
         }
-        lua_settable(lua, -3);
+        lua_rawset(lua, -3);
     }
 }
 void lpub_push_url_table(lua_State *lua, url_ctx *url) {

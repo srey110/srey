@@ -167,5 +167,14 @@ int32_t http_chunked(struct http_pack_ctx *pack);
 /// <param name="lens">数据包长度</param>
 /// <returns>数据包</returns>
 void *http_data(struct http_pack_ctx *pack, size_t *lens);
+/// <summary>
+/// 判一段头值能否进线格式：CR / LF 会把一条报文劈成两条，NUL 会让按 C 字符串取值的下游截断。
+/// 收业务数据的组包方(router 等)拿它筛完再送进 http_pack_head2。头名的规则是 is_token。
+/// 比 http_pack_head2 的断言严：那道只挡结构性的 CR / LF，本函数还挡 NUL
+/// </summary>
+/// <param name="val">头值；lens 非 0 时不得为 NULL</param>
+/// <param name="lens">头值字节数；0 表示空值头，恒合法</param>
+/// <returns>可以进线格式非 0；否则 0</returns>
+int32_t http_head_val_ok(const char *val, size_t lens);
 
 #endif//HTTP_H_

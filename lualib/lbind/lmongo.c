@@ -2,6 +2,9 @@
 
 #define MT_MONGO         "_mongo_ctx"
 #define MT_MONGO_SESSION "_mongo_session_ctx"
+// mongo_flags 三个位的并，作 lpub_check_range 的上界
+#define MONGO_FLAGS_ALL (CHECKSUM | MORETOCOME | EXHAUSTALLOWED)
+#define MONGOFLAG_OUT_OF_RANGE "mongo flag out of range"
 // session 的五个入口共用: 自身非空 + 宿主还活着。后一半的理由见 lpub_owner_ptr
 #define LMONGO_SESSION_ARG(lua, var) \
     LPUB_UD_ARG((lua), mongo_session, MT_MONGO_SESSION, var, "session freed") \
@@ -20,7 +23,7 @@ static char *_lmongo_get_opts(lua_State *lua, int32_t idx, size_t *lens) {
     if (lua_isnoneornil(lua, idx)) {
         return NULL;
     }
-    char *doc = lpub_check_bson_bin(lua, idx, lens);
+    char *doc = lpub_check_buf(lua, idx, lens, NULL);
     return EMPTYPTR(doc, *lens) ? NULL : doc;
 }
 // ---- mongo ----
@@ -42,8 +45,7 @@ static int32_t _lmongo_new(lua_State *lua) {
     MALLOC(mongo, sizeof(mongo_ctx));
     if (ERR_OK != mongo_init(mongo, ip, port, evssl, db)) {
         FREE(mongo);
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     ATOMIC_SET(&mongo->ref, 1);// Lua 持有者份额
     *ud = mongo;
@@ -143,10 +145,12 @@ static int32_t _lmongo_authdb(lua_State *lua) {
 /// 设置当前集合名
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名</param>
+/// <param name="col" type="string">集合名；非字符串报错</param>
 /// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_collection(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
+    // 只认真字符串:luaL_checkstring 连数字也收,ctx:getmore 漏传 col 时 cursorid 会静默当集合名
+    luaL_argcheck(lua, LUA_TSTRING == lua_type(lua, 2), 2, "collection must be a string");
     const char *col = luaL_checkstring(lua, 2);
     return lpub_rtn_bool(lua, ERR_OK == mongo_collection(*ud, col));
 }
@@ -171,8 +175,7 @@ static int32_t _lmongo_user_pwd(lua_State *lua) {
 /// <returns type="integer">影响文档数 n；服务端报错返回 -1</returns>
 static int32_t _lmongo_check_error(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 2, mgopack);
     lua_pushinteger(lua, mongo_parse_check_error(mgopack));
     return 1;
 }
@@ -185,8 +188,7 @@ static int32_t _lmongo_check_error(lua_State *lua) {
 /// <returns type="integer?">超时分钟数</returns>
 static int32_t _lmongo_parse_startsession(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 2, mgopack);
     char uuid[UUID_LENS];
     int32_t timeout;
     if (!mongo_parse_startsession(mgopack, uuid, &timeout)) {
@@ -196,15 +198,21 @@ static int32_t _lmongo_parse_startsession(lua_State *lua) {
     lua_pushinteger(lua, timeout);
     return 2;
 }
+// 取标志位参数：先按 lua_Integer 判范围再窄化，再拒掉掩码里没有的位
+static mongo_flags _lmongo_arg_flag(lua_State *lua, int32_t idx) {
+    mongo_flags flag = (mongo_flags)lpub_check_range(lua, idx, 0, MONGO_FLAGS_ALL, MONGOFLAG_OUT_OF_RANGE);
+    luaL_argcheck(lua, 0 == (flag & ~MONGO_FLAGS_ALL), idx, MONGOFLAG_OUT_OF_RANGE);
+    return flag;
+}
 /// <summary>
 /// 置上消息标志位；置上就一直有效直到 clear_flag，语义与后果见 C 层 mongo_set_flag
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="flag" type="integer">mongo_flags 枚举值</param>
+/// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错</param>
 /// <returns>无</returns>
 static int32_t _lmongo_set_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    mongo_flags flag = (mongo_flags)luaL_checkinteger(lua, 2);
+    mongo_flags flag = _lmongo_arg_flag(lua, 2);
     mongo_set_flag(*ud, flag);
     return 0;
 }
@@ -212,11 +220,11 @@ static int32_t _lmongo_set_flag(lua_State *lua) {
 /// 检查消息标志位是否已设置
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="flag" type="integer">mongo_flags 枚举值</param>
+/// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错</param>
 /// <returns type="boolean">已设置 true，否则 false</returns>
 static int32_t _lmongo_check_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    mongo_flags flag = (mongo_flags)luaL_checkinteger(lua, 2);
+    mongo_flags flag = _lmongo_arg_flag(lua, 2);
     return lpub_rtn_bool(lua, mongo_check_flag(*ud, flag));
 }
 /// <summary>
@@ -226,12 +234,11 @@ static int32_t _lmongo_check_flag(lua_State *lua) {
 /// 就成了两回事。详细后果见 C 层 mongo_pack_check_flag
 /// </summary>
 /// <param name="pack" type="lightuserdata">pack_* 组出的数据包</param>
-/// <param name="flag" type="integer">mongo_flags 枚举值</param>
+/// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错</param>
 /// <returns type="boolean">该包写着此标志位 true，否则 false</returns>
 static int32_t _lmongo_pack_check_flag(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    void *pack = lua_touserdata(lua, 1);
-    mongo_flags flag = (mongo_flags)luaL_checkinteger(lua, 2);
+    LPUB_LUD_ARG(lua, void, 1, pack);
+    mongo_flags flag = _lmongo_arg_flag(lua, 2);
     return lpub_rtn_bool(lua, mongo_pack_check_flag(pack, flag));
 }
 /// <summary>
@@ -332,8 +339,7 @@ static int32_t _lmongo_pack_drop(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_insert(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *docs = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, docs);
     size_t dlens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -353,8 +359,7 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_update(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *updates = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, updates);
     size_t ulens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -374,8 +379,7 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_delete(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *deletes = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, deletes);
     size_t dlens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -397,11 +401,9 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *ops = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, ops);
     size_t olens = lpub_check_lens(lua, 3, INT32_MAX);
-    LUACHECK_LUDATA(lua, 4);
-    char *nsinfo = lua_touserdata(lua, 4);
+    LPUB_LUD_ARG(lua, char, 4, nsinfo);
     size_t nlens = lpub_check_lens(lua, 5, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 6, &optlens);
@@ -441,8 +443,7 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *pipeline = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, pipeline);
     size_t pllens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -480,8 +481,7 @@ static int32_t _lmongo_pack_getmore(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_killcursors(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *cursorids = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, cursorids);
     size_t cslens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -572,8 +572,7 @@ static int32_t _lmongo_pack_count(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_createindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *indexes = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, indexes);
     size_t ilens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -593,8 +592,7 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    LUACHECK_LUDATA(lua, 2);
-    char *indexes = lua_touserdata(lua, 2);
+    LPUB_LUD_ARG(lua, char, 2, indexes);
     size_t ilens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -641,8 +639,7 @@ static int32_t _lmongo_pack_auth_first(lua_State *lua) {
 static int32_t _lmongo_pack_auth_final(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     int32_t convid = (int32_t)luaL_checkinteger(lua, 2);
-    LUACHECK_LUDATA(lua, 3);
-    char *payload = lua_touserdata(lua, 3);
+    LPUB_LUD_ARG(lua, char, 3, payload);
     // 走 lpub_check_lens 拿上界：越界直接 bson_append_binary 的 ASSERTAB 会打死整个进程
     size_t plens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t size;
@@ -655,8 +652,7 @@ static int32_t _lmongo_pack_auth_final(lua_State *lua) {
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 指针</param>
 /// <returns type="integer">Section 类型（0 = 正文，1 = 文档序列）</returns>
 static int32_t _lmongo_pack_type(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 1, mgopack);
     lua_pushinteger(lua, mgopack->kind);
     return 1;
 }
@@ -667,8 +663,7 @@ static int32_t _lmongo_pack_type(lua_State *lua) {
 /// <returns type="lightuserdata">BSON 文档指针（指向消息缓冲内部，随该消息释放而失效）</returns>
 /// <returns type="integer">文档字节数；本段无正文时为 0</returns>
 static int32_t _lmongo_doc(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 1, mgopack);
     return lpub_rtn_lud(lua, mgopack->doc, mgopack->dlens);
 }
 /// <summary>
@@ -677,8 +672,7 @@ static int32_t _lmongo_doc(lua_State *lua) {
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 指针</param>
 /// <returns type="integer">请求 ID</returns>
 static int32_t _lmongo_reqid(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 1, mgopack);
     lua_pushinteger(lua, mgopack->reqid);
     return 1;
 }
@@ -688,8 +682,7 @@ static int32_t _lmongo_reqid(lua_State *lua) {
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 指针</param>
 /// <returns type="integer">flags 字段</returns>
 static int32_t _lmongo_flags(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 1, mgopack);
     lua_pushinteger(lua, (lua_Integer)mgopack->flags);
     return 1;
 }
@@ -699,8 +692,7 @@ static int32_t _lmongo_flags(lua_State *lua) {
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 指针</param>
 /// <returns type="integer">游标 ID；0 表示无游标</returns>
 static int32_t _lmongo_cursorid(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 1, mgopack);
     lua_pushinteger(lua, mongo_cursorid(mgopack));
     return 1;
 }
@@ -708,14 +700,13 @@ static int32_t _lmongo_cursorid(lua_State *lua) {
 /// 解析 SCRAM 认证响应
 /// </summary>
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 响应指针</param>
-/// <returns type="boolean">成功 true（其余 4 个值有效），失败 false（仅此值有效）</returns>
+/// <returns type="boolean">成功 true（其余 4 个值有效），失败 false（其余 4 个为 nil）</returns>
 /// <returns type="integer">对话 id（convid）；成功时有效</returns>
 /// <returns type="boolean">是否已完成最终认证；成功时有效</returns>
 /// <returns type="lightuserdata">payload 指针；成功时有效；指针指向 mgopack 内部缓冲区，需在当前协程周期内消费</returns>
 /// <returns type="integer">payload 字节数；成功时有效</returns>
 static int32_t _lmongo_parse_auth_response(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    mgopack_ctx *mgopack = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, mgopack_ctx, 1, mgopack);
     int32_t convid = 0;
     int32_t done = 0;
     char *payload = NULL;
@@ -723,7 +714,7 @@ static int32_t _lmongo_parse_auth_response(lua_State *lua) {
     int32_t ok = mongo_parse_auth_response(mgopack, &convid, &done, &payload, &plens);
     if (!ok) {
         lua_pushboolean(lua, 0);
-        return 1;
+        return 1 + lpub_rtn_nil(lua, 4);
     }
     lua_pushboolean(lua, 1);
     lua_pushinteger(lua, convid);
@@ -801,8 +792,7 @@ static int32_t _lmongo_session_new(lua_State *lua) {
     const char *uuid_str = luaL_checklstring(lua, 2, &uuid_lens);
     int32_t timeout = (int32_t)lpub_check_range(lua, 3, 0, INT32_MAX, "session timeout minutes out of range");
     if (UUID_LENS != uuid_lens) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     mongo_session **psession = (mongo_session **)lpub_push_ud(lua, NULL, MT_MONGO_SESSION);
     mongo_session *session;
@@ -922,13 +912,6 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
-    // 组包取的是连接当前绑定的 session（组包侧 TRANSACTION_OPTIONS），与入参分叉时
-    // 会把本次提交挂到别人的事务上。C 侧同一道守卫在 mongo_commit 入口，Lua 走
-    // pack + 自行发送不经过它，故在此重复一遍，理由见 coro_utils.c 的 mongo_begin
-    if ((*psession)->mongo->session != *psession) {
-        LOG_WARN("mongo connection no longer bound to this session, commit rejected.");
-        return lpub_rtn_nil(lua, 2);
-    }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 2, &optlens);
     size_t size;
@@ -946,11 +929,6 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
-    // 同 pack_commit：Lua 侧不经过 mongo_rollback，那道守卫在此重复
-    if ((*psession)->mongo->session != *psession) {
-        LOG_WARN("mongo connection no longer bound to this session, rollback rejected.");
-        return lpub_rtn_nil(lua, 2);
-    }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 2, &optlens);
     size_t size;

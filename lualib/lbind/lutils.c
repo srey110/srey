@@ -3,14 +3,15 @@
 #define MT_HASH_RING "_hash_ring_ctx"
 #define MT_LOAD_TREND "_load_trend_ctx"
 #define MT_POPEN      "_popen_ctx"
+#define LOGLV_OUT_OF_RANGE "log level out of range (0-4)"
 
 /// <summary>
 /// 设置全局日志输出等级
 /// </summary>
-/// <param name="lv" type="integer">日志等级，参考 log_level</param>
+/// <param name="lv" type="integer">日志等级，取值 [0, 4]（LOGLV_FATAL..LOGLV_DEBUG），越界报错</param>
 /// <returns>无</returns>
 static int32_t _lutils_log_setlv(lua_State *lua) {
-    log_level lv = (log_level)luaL_checkinteger(lua, 1);
+    log_level lv = (log_level)lpub_check_range(lua, 1, LOGLV_FATAL, LOGLV_DEBUG, LOGLV_OUT_OF_RANGE);
     log_setlv(lv);
     return 0;
 }
@@ -26,13 +27,13 @@ static int32_t _lutils_log_getlv(lua_State *lua) {
 /// <summary>
 /// 输出一条日志，自动附带调用文件名、行号、task 名称（若存在）
 /// </summary>
-/// <param name="lv" type="integer">日志等级，参考 log_level</param>
+/// <param name="lv" type="integer">日志等级，取值 [0, 4]（LOGLV_FATAL..LOGLV_DEBUG），越界报错</param>
 /// <param name="file" type="string">调用方文件名</param>
 /// <param name="line" type="integer">调用方行号</param>
 /// <param name="log" type="string">日志正文</param>
 /// <returns>无</returns>
 static int32_t _lutils_log(lua_State *lua) {
-    log_level lv = (log_level)luaL_checkinteger(lua, 1);
+    log_level lv = (log_level)lpub_check_range(lua, 1, LOGLV_FATAL, LOGLV_DEBUG, LOGLV_OUT_OF_RANGE);
     const char *file = luaL_checkstring(lua, 2);
     int32_t line = (int32_t)luaL_checkinteger(lua, 3);
     const char *log = luaL_checkstring(lua, 4);
@@ -53,15 +54,13 @@ static int32_t _lutils_log(lua_State *lua) {
 static int32_t _lutils_ud_str(lua_State *lua) {
     int32_t type = lua_type(lua, 1);
     if (LUA_TNIL == type || LUA_TNONE == type) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     LUACHECK_LUDATA_OPT(lua, 1);
     void *data = lua_touserdata(lua, 1);
     size_t size = lpub_check_lens(lua, 2, INT32_MAX);
     if (NULL == data && size > 0) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushlstring(lua, data, size);
     return 1;
@@ -138,8 +137,7 @@ static int32_t _lutils_csprng_rand(lua_State *lua) {
     luaL_Buffer lbuf;
     char *buf = luaL_buffinitsize(lua, &lbuf, n);
     if (ERR_OK != csprng_rand(buf, n)) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     luaL_pushresultsize(&lbuf, n);
     return 1;
@@ -293,12 +291,13 @@ static int32_t _ltrend_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 采样当前值并基于趋势判断负载是否繁忙；典型阈值 (4, 5) 表示采样值跌幅超过 20% 视为繁忙
+/// 采样当前值并基于趋势判断负载是否繁忙。阈值缺省取 config.h 的 SHRINK_BUSY，
+/// 与 C 侧各池的收缩判据同源——调用方不必也不该再抄一份字面量
 /// </summary>
 /// <param name="self" type="userdata">负载趋势对象</param>
 /// <param name="cur" type="integer">当前采样值</param>
-/// <param name="busy_num" type="integer">繁忙阈值分子</param>
-/// <param name="busy_den" type="integer">繁忙阈值分母</param>
+/// <param name="busy_num" type="integer?">繁忙阈值分子；缺省与 busy_den 一并取 SHRINK_BUSY</param>
+/// <param name="busy_den" type="integer?">繁忙阈值分母</param>
 /// <returns type="boolean">繁忙 true；不忙 false</returns>
 static int32_t _ltrend_busy(lua_State *lua) {
     load_trend_ctx *trend = luaL_checkudata(lua, 1, MT_LOAD_TREND);
@@ -307,6 +306,9 @@ static int32_t _ltrend_busy(lua_State *lua) {
     lua_Integer sample = luaL_checkinteger(lua, 2);
     luaL_argcheck(lua, sample >= 0, 2, "sample must not be negative");
     size_t cur = (size_t)sample;
+    if (lua_isnoneornil(lua, 3)) {
+        return lpub_rtn_bool(lua, load_trend_busy(trend, cur, SHRINK_BUSY));
+    }
     uint32_t busy_num = lpub_check_u32(lua, 3, "busy_num out of range");
     uint32_t busy_den = lpub_check_u32(lua, 4, "busy_den out of range");
     return lpub_rtn_bool(lua, load_trend_busy(trend, cur, busy_num, busy_den));
@@ -338,8 +340,7 @@ static int32_t _lpopen_new(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_POPEN);
     if (ERR_OK != popen_startup(ctx, cmd, mode)) {
         lua_pop(lua, 1);
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     return 1;
 }

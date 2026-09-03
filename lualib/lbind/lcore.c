@@ -1,5 +1,7 @@
 ﻿#include "lbind/lpub.h"
 
+#define MTYPE_OUT_OF_RANGE "message type out of range"
+
 // multi_request / multi_call 投递一次所需的全部东西。两个 int32 挨着放在 8 字节字段之前,不留 padding
 typedef struct {
     int32_t    count; // grab 成功数;0 表示无处可投
@@ -55,7 +57,7 @@ static void *_lcore_opt_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *
 /// <param name="reqtype" type="integer">业务请求类型，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_call(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
@@ -67,13 +69,11 @@ static int32_t _lcore_call(lua_State *lua) {
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
-        lua_pushboolean(lua, 0);
-        return 1;
+        return lpub_rtn_bool(lua, 0);
     }
     task_call(dst, reqtype, data, size, copy);
     task_ungrab(dst);
-    lua_pushboolean(lua, 1);
-    return 1;
+    return lpub_rtn_bool(lua, 1);
 }
 // 校验 dsts table 类型 + 逐元素类型(string/integer 名或 nil)。成功返回长度(>=0);
 // dsts 非 table 或含非法元素返回 -1。内部的 luaL_len 会走 __len 元方法、也会对非整数结果自行抛错,
@@ -154,7 +154,7 @@ static void _multi_done(_multi_args *ma) {
 /// <param name="sess" type="integer">会话 id(非 0),N 个 dst 共用此 sess</param>
 /// <param name="data" type="string|lightuserdata|nil">数据(nil 表示无载荷)；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
-/// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
+/// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns type="integer">实际成功投递的 dst 数（非 NULL 元素个数,0 表示全部跳过未投递）</returns>
 static int32_t _lcore_multi_request(lua_State *lua) {
     LPUB_CUR_TASK(lua, src);
@@ -178,7 +178,7 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// <param name="reqtype" type="integer">业务请求类型，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="data" type="string|lightuserdata|nil">数据(nil 表示无载荷)；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
-/// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
+/// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns>无</returns>
 static int32_t _lcore_multi_call(lua_State *lua) {
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
@@ -198,7 +198,7 @@ static int32_t _lcore_multi_call(lua_State *lua) {
 /// <param name="sess" type="integer">会话 id(非 0)，响应回带</param>
 /// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_request(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
@@ -212,13 +212,11 @@ static int32_t _lcore_request(lua_State *lua) {
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
-        lua_pushboolean(lua, 0);
-        return 1;
+        return lpub_rtn_bool(lua, 0);
     }
     task_request(dst, src, reqtype, sess, data, size, copy);
     task_ungrab(dst);
-    lua_pushboolean(lua, 1);
-    return 1;
+    return lpub_rtn_bool(lua, 1);
 }
 /// <summary>
 /// 向请求方 task 回复响应消息，携带错误码及可选数据
@@ -229,7 +227,7 @@ static int32_t _lcore_request(lua_State *lua) {
 /// <param name="erro" type="integer">错误码，0 表示成功</param>
 /// <param name="data" type="string|lightuserdata|nil">响应数据；nil 表示无数据</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_response(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
@@ -243,13 +241,11 @@ static int32_t _lcore_response(lua_State *lua) {
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
-        lua_pushboolean(lua, 0);
-        return 1;
+        return lpub_rtn_bool(lua, 0);
     }
     task_response(dst, reqtype, sess, erro, data, size, copy);
     task_ungrab(dst);
-    lua_pushboolean(lua, 1);
-    return 1;
+    return lpub_rtn_bool(lua, 1);
 }
 /// <summary>
 /// 在当前 task 上监听 TCP/UDP 端口
@@ -338,8 +334,7 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int32_t client = lpub_check_flag(lua, 3);
     if (!lua_islightuserdata(lua, 4)) {
-        lua_pushboolean(lua, 0);
-        return 1;
+        return lpub_rtn_bool(lua, 0);
     }
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
     LPUB_CUR_TASK(lua, task);
@@ -378,7 +373,7 @@ static int32_t _lcore_udp(lua_State *lua) {
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_send(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -396,7 +391,7 @@ static int32_t _lcore_send(lua_State *lua) {
 /// <param name="skids" type="integer[]">连接 skid 数组,与 fds 等长一一配对</param>
 /// <param name="data" type="string|lightuserdata">数据；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
-/// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
+/// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns type="boolean">至少 1 个 fd 投递成功 true,全部无效 false</returns>
 static int32_t _lcore_send_multi(lua_State *lua) {
     luaL_checktype(lua, 1, LUA_TTABLE);
@@ -414,8 +409,7 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     }
     if (n_fds <= 0) {
         CHECK_COPY_FREE(data, copy);
-        lua_pushboolean(lua, 0);
-        return 1;
+        return lpub_rtn_bool(lua, 0);
     }
     // 校验必须整趟走完再分配：n_fds 来自 luaL_len，会走 __len 元方法，是业务可控的。
     // 撒谎的 __len 在这里撞上首个 nil 就报错退出，分配那步根本到不了
@@ -463,7 +457,7 @@ static int32_t _lcore_send_multi(lua_State *lua) {
 /// <param name="port" type="integer">目标端口</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_sendto(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -590,8 +584,7 @@ static int32_t _lcore_bind_task(lua_State *lua) {
     // 照样非 INVALID_TNAME、单查该值会放行;task_grab 首行已挡 INVALID_TNAME,一次覆盖两种
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
-        lua_pushboolean(lua, 0);
-        return 1;
+        return lpub_rtn_bool(lua, 0);
     }
     task_ungrab(dst);
     return lpub_rtn_bool(lua, ERR_OK == ev_ud_handle(&g_loader->netev, fd, skid, handle));
@@ -656,11 +649,22 @@ static int32_t _lcore_may_resume(lua_State *lua) {
 /// <summary>
 /// 询问该消息类型对应的 sess 是否可能保留（waiters 摘空后不删除会话表条目）
 /// </summary>
-/// <param name="mtype" type="integer">消息类型，参考 MSG_TYPE</param>
+/// <param name="mtype" type="integer">消息类型，参考 MSG_TYPE；越界报错</param>
 /// <returns type="boolean">true=可能保留（TCP/UDP 等 skid 类长连接场景）；false=不保留</returns>
 static int32_t _lcore_message_may_keep(lua_State *lua) {
-    msg_type mtype = (msg_type)luaL_checkinteger(lua, 1);
+    msg_type mtype = (msg_type)lpub_check_range(lua, 1, MSG_TYPE_NONE, MSG_TYPE_ALL - 1, MTYPE_OUT_OF_RANGE);
     return lpub_rtn_bool(lua, _message_may_keep(mtype));
+}
+/// <summary>
+/// 取消息类型的名字。给 Lua 侧的 MSG_TYPE 表做钉子用：那张表是按 C 枚举手抄的字面量，
+/// 靠这个逐项对名字，C 侧插入新成员导致取值整体后移时测试会红，而不是 _dispatchers 静默错投
+/// </summary>
+/// <param name="mtype" type="integer">消息类型，参考 MSG_TYPE；越界报错</param>
+/// <returns type="string">类型名（"RECV" / "CLOSE" …）；名字表漏填该成员时为空串</returns>
+static int32_t _lcore_message_str(lua_State *lua) {
+    msg_type mtype = (msg_type)lpub_check_range(lua, 1, MSG_TYPE_NONE, MSG_TYPE_ALL - 1, MTYPE_OUT_OF_RANGE);
+    lua_pushstring(lua, _message_str(mtype));
+    return 1;
 }
 // task_list 收集回调：仅存入 C 数组，不调 Lua API，避免 OOM longjmp 绕过 rwlock 解锁。
 // 容量翻倍交给 array_push_back；名字用 safe_fill_str 填（NULL 写空串，装不下即失败不写）
@@ -765,16 +769,14 @@ static int32_t _lcore_cert_register(lua_State *lua) {
     char keypath[PATH_LENS] = { 0 };
     char propath[PATH_LENS] = { 0 };
     if (ERR_OK != global_string(lua, PATH_NAME, propath, sizeof(propath))) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     _cert_path(propath, ca, capath, sizeof(capath));
     _cert_path(propath, cert, certpath, sizeof(certpath));
     _cert_path(propath, key, keypath, sizeof(keypath));
     return _push_registered_ssl(lua, name, evssl_new(capath, certpath, keypath, keytype));
 #else
-    lua_pushnil(lua);
-    return 1;
+    return lpub_rtn_nil(lua, 1);
 #endif
 }
 /// <summary>
@@ -792,14 +794,12 @@ static int32_t _lcore_p12_register(lua_State *lua) {
     char p12path[PATH_LENS] = { 0 };
     char propath[PATH_LENS] = { 0 };
     if (ERR_OK != global_string(lua, PATH_NAME, propath, sizeof(propath))) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     _cert_path(propath, p12, p12path, sizeof(p12path));
     return _push_registered_ssl(lua, name, evssl_p12_new(p12path, pwd));
 #else
-    lua_pushnil(lua);
-    return 1;
+    return lpub_rtn_nil(lua, 1);
 #endif
 }
 /// <summary>
@@ -828,8 +828,7 @@ static int32_t _lcore_ssl_qury(lua_State *lua) {
 /// <param name="level" type="integer">安全级别 0-5</param>
 static int32_t _lcore_ssl_seclevel(lua_State *lua) {
 #if WITH_SSL
-    LUACHECK_LUDATA(lua, 1);
-    struct evssl_ctx *ssl = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
     int32_t level = (int32_t)luaL_checkinteger(lua, 2);
     evssl_seclevel(ssl, level);
 #else
@@ -850,8 +849,7 @@ static int32_t _lcore_ssl_seclevel(lua_State *lua) {
 /// </param>
 static int32_t _lcore_ssl_min_proto(lua_State *lua) {
 #if WITH_SSL
-    LUACHECK_LUDATA(lua, 1);
-    struct evssl_ctx *ssl = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
     int32_t version = (int32_t)luaL_checkinteger(lua, 2);
     evssl_min_proto(ssl, version);
 #else
@@ -866,8 +864,7 @@ static int32_t _lcore_ssl_min_proto(lua_State *lua) {
 /// <param name="mod" type="integer">SSL_VERIFY_* 掩码：0 不验证 / SSL_VERIFY_PEER 验对端 / 叠加 SSL_VERIFY_FAIL_IF_NO_PEER_CERT 强制对端出证书(mTLS)</param>
 static int32_t _lcore_ssl_verify(lua_State *lua) {
 #if WITH_SSL
-    LUACHECK_LUDATA(lua, 1);
-    struct evssl_ctx *ssl = lua_touserdata(lua, 1);
+    LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
     int32_t mod = (int32_t)luaL_checkinteger(lua, 2);
     evssl_verify(ssl, mod, NULL);
 #else
@@ -908,6 +905,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
 
         { "may_resume", _lcore_may_resume },
         { "message_may_keep", _lcore_message_may_keep },
+        { "message_str", _lcore_message_str },
 
         { "task_list", _lcore_task_list },
         { "mem_stat", _lcore_mem_stat },

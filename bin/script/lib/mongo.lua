@@ -285,7 +285,7 @@ function ctx:_connect()
         return false
     end
     if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
-        return false   -- wait_connect 内已 close
+        return false -- wait_connect 内已 close
     end
     -- 从此处往后失败需 close fd；用 sync_close 等复位完成再返回，避免旧连接异步 teardown 追上后清掉下一次 connect() 的新 fd
     local function _fail()
@@ -307,7 +307,7 @@ function ctx:_connect()
             return _fail()
         end
         -- 不走 _pack_noflag：清零要盖住"组包+发送+等握手"整段(SCRAM 多次往返)，不是只盖组包。
-        -- 这段也抛不出来——pack_auth_first 收的 authmod 由 ctor 兜成 "SCRAM-SHA-256"
+        -- 不套 pcall：这段只在调度器自身出错时抛，那时连接已废，保 MORETOCOME 无意义
         local aflags = self.mongo:clear_flag()
         local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
         local ok = false
@@ -415,23 +415,29 @@ function ctx:delete(col, deletes, dlens, opts, optslens)
     return _wsend_n(self, pack, size)
 end
 
----删除当前集合（drop）
+---删除集合（drop）
+---@param col string 集合名；组包时写进包体
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
-function ctx:drop(opts, optslens)
+function ctx:drop(col, opts, optslens)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local pack, size = self.mongo:pack_drop(opts, optslens)
     return _wsend_ok(self, pack, size)
 end
 
----批量写操作（bulkWrite，MongoDB 8.0+）
+---批量写操作（bulkWrite，MongoDB 8.0+）。全库唯一不收 col 的集合类命令：
+---bulkWrite 是集群级命令，目标集合逐条写在 nsinfo 里，不走连接级集合名
 ---@param ops lightuserdata BSON 数组格式操作列表指针
 ---@param opsz integer ops 字节数
 ---@param nsinfo lightuserdata BSON 数组格式命名空间信息指针
 ---@param nsz integer nsinfo 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@return lightuserdata|true|nil mgopack 普通模式返回响应包指针供解析；MORETOCOME fire-and-forget 成功返回 true；发送失败返回 nil
+---@return lightuserdata|true|nil mgopack 普通模式返回响应包指针，仅在本协程下次 yield 前有效，
+---需保留请自行拷贝；MORETOCOME fire-and-forget 成功返回 true；发送失败返回 nil
 function ctx:bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
     local pack, size = self.mongo:pack_bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
     local ok, mgopack = _wsend(self, pack, size)
@@ -482,7 +488,8 @@ end
 ---@param flens integer? filter 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项（limit/skip/sort 等）
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
+---需保留请自行拷贝；失败返回 nil
 function ctx:find(col, filter, flens, opts, optslens)
     if not self.mongo:collection(col) then
         return nil
@@ -498,7 +505,8 @@ end
 ---@param pllens integer pipeline 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
+---需保留请自行拷贝；失败返回 nil
 function ctx:aggregate(col, pipeline, pllens, opts, optslens)
     if not self.mongo:collection(col) then
         return nil
@@ -509,11 +517,16 @@ function ctx:aggregate(col, pipeline, pllens, opts, optslens)
 end
 
 ---获取游标后续批次（getMore）
+---@param col string 集合名；必须与开游标那条命令用的一致，组包时写进包体
 ---@param cursorid integer 上次 find / aggregate 返回的游标 ID
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
-function ctx:getmore(cursorid, opts, optslens)
+---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
+---需保留请自行拷贝；失败返回 nil
+function ctx:getmore(col, cursorid, opts, optslens)
+    if not self.mongo:collection(col) then
+        return nil
+    end
     local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_getmore", cursorid, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
@@ -541,7 +554,8 @@ end
 ---@param qlens integer? query 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
+---需保留请自行拷贝；失败返回 nil
 function ctx:distinct(col, key, query, qlens, opts, optslens)
     if not self.mongo:collection(col) then
         return nil
@@ -561,7 +575,8 @@ end
 ---@param ulens integer? update 字节数
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
+---需保留请自行拷贝；失败返回 nil
 function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts, optslens)
     if not self.mongo:collection(col) then
         return nil

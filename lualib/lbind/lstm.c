@@ -37,7 +37,7 @@ static lua_stm_data *_lstm_checkreader(lua_State *lua) {
     return box;
 }
 /// <summary>
-/// stm.copy(writer): writer grab 一次 ctx, 返回 ctx 指针的 lightuserdata, 用于跨 task 传递
+/// writer grab 一次 ctx, 交出 ctx 指针的 lightuserdata, 用于跨 task 传递
 /// </summary>
 /// <param name="w" type="userdata">writer 对象 (stm.new 返回)</param>
 /// <returns type="lightuserdata">stm_ctx 指针; 业务通过任务消息发给 reader task, 对端用 stm.newcopy 包装</returns>
@@ -48,12 +48,12 @@ static int32_t _lstm_copy(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// stm.new(data, sz?, copy?): 创建 writer
+/// 创建 writer
 /// </summary>
 /// <param name="data" type="string|lightuserdata">初始数据; 字符串自动取长; lightuserdata 时 sz 必填</param>
 /// <param name="sz" type="integer?">数据字节数 (data 为 lightuserdata 时必填)</param>
 /// <param name="copy" type="integer?">data 为 lightuserdata 时: 1=内部拷贝 (默认), 0=转移所有权</param>
-/// <returns type="userdata">writer 对象; w(data,sz?) 更新, stm.copy(w) 拿 handle, w 出作用域自动 release</returns>
+/// <returns type="userdata">writer 对象; 调用它自身即更新数据, 出作用域自动 release</returns>
 static int32_t _lstm_newwriter(lua_State *lua) {
     size_t sz;
     int32_t copy;
@@ -85,10 +85,10 @@ static int32_t _lstm_update(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// stm.newcopy(handle): 用 stm.copy 返回的 ctx lightuserdata 包装为 reader
+/// 把 stm.copy 交出的 ctx lightuserdata 包装为 reader
 /// </summary>
 /// <param name="handle" type="lightuserdata">stm_ctx 指针 (跨 task 传递; 调用方已 stm_grab)</param>
-/// <returns type="userdata">reader 对象; r(func, ud?) 读快照, r 出作用域自动 release</returns>
+/// <returns type="userdata">reader 对象; 调用它自身即读快照, 出作用域自动 release</returns>
 static int32_t _lstm_newreader(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     lua_stm_data *box = lua_newuserdatauv(lua, sizeof(lua_stm_data), 0);
@@ -119,8 +119,7 @@ static int32_t _lstm_read(lua_State *lua) {
     if (snap == box->lastcopy) {
         // 与上次相同, 未更新
         stm_ungrab_data(snap);
-        lua_pushboolean(lua, 0);
-        return 1;
+        return lpub_rtn_bool(lua, 0);
     }
     if (NULL != snap) {
         lua_pushvalue(lua, 1);// pcall 期间借 registry 保活 reader，防回调内清引用+GC 致 box 悬空 UAF
@@ -149,8 +148,7 @@ static int32_t _lstm_read(lua_State *lua) {
     // writer 已释放, ctx->data=NULL
     stm_ungrab_data(box->lastcopy);
     box->lastcopy = NULL;
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_bool(lua, 0);
 }
 // srey.stm
 LUAMOD_API int luaopen_stm(lua_State *lua) {
@@ -168,6 +166,8 @@ LUAMOD_API int luaopen_stm(lua_State *lua) {
     lua_pushcclosure(lua, _lstm_update, 1); lua_setfield(lua, -2, "__call");
     lua_pushstring(lua, "stm writer"); lua_setfield(lua, -2, "__metatable");
     lua_pushvalue(lua, -1);
+    /// <field name="copy" type="fun(w:userdata):lightuserdata">writer grab 一次 ctx，交出
+    /// ctx 指针供跨 task 传递；对端用 stm.newcopy 包装成 reader</field>
     lua_pushcclosure(lua, _lstm_copy, 1);
     lua_setfield(lua, -3, "copy");
     luaL_setfuncs(lua, reg_writer, 1);

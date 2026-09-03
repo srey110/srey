@@ -1003,10 +1003,7 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
         }
         // 值为 NULL 一律丢: 调用方传 NULL 是"这条别发", 空值头要发就传 {"", 0}
         if (NULL == extra[i].value.data
-            || (extra[i].value.lens > 0
-                && (NULL != memchr(extra[i].value.data, '\0', extra[i].value.lens)
-                    || NULL != memchr(extra[i].value.data, '\r', extra[i].value.lens)
-                    || NULL != memchr(extra[i].value.data, '\n', extra[i].value.lens)))) {
+            || !http_head_val_ok((const char *)extra[i].value.data, extra[i].value.lens)) {
             LOG_WARN("router: header value is NULL or contains NUL/CRLF, dropped.");
             continue;
         }

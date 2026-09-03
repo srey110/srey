@@ -169,7 +169,7 @@ static int32_t _websock_secextra(struct watcher_ctx *watcher, struct sock_ctx *s
         }
     }
     if (NULL != why) {
-        LOG_ERROR("set second ud_cxt extra data (%s), closing the connection.", why);
+        LOG_ERROR("websock set secextra rejected (%s), closing the connection.", why);
         _evpub_disconnect(watcher, skctx);
         return ERR_FAILED;
     }

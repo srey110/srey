@@ -22,7 +22,9 @@ local function _collect(u, dup, func, seen)
         if not name then
             break
         end
-        if "_ENV" ~= name then
+        -- C 闭包的 upvalue 没有名字，debug.getupvalue 给的是空串（不是 nil，所以循环不会停）。
+        -- 收进去就是 _U[""] 与 _U["@[C]"]，还会被第二个 C 闭包按重名逻辑塞进 _UDUP
+        if "_ENV" ~= name and "" ~= name then
             local t = type(val)
             if "table" == t then
                 local qname = name .. "@" .. src

@@ -1,4 +1,4 @@
-﻿-- srey 核心框架模块（Lua 侧）。
+-- srey 核心框架模块（Lua 侧）。
 -- 负责：协程池管理、会话挂起/恢复、消息分发，以及对外暴露全部网络/任务 API。
 -- 每个 task 脚本通过 require("lib.srey") 获取此模块，所有 I/O 操作均在此封装。
 -- 协程模型：所有网络操作均为"同步写法、异步执行"——调用方协程在 yield 处挂起，
@@ -32,18 +32,18 @@ local may_resume       = core.may_resume
 -- srey.xpcall 是 Lua 函数、能被热修,绝不能提
 local task_incref      = task.incref
 local task_ungrab      = task.ungrab
-local cur_task  = _curtask   -- 当前 task 的 C 层指针，由 loader 注入
+local cur_task  = _curtask -- 当前 task 的 C 层指针，由 loader 注入
 local TASK_NAME = TASK_NAME
 local SSL_NAME  = SSL_NAME
 local REQUEST_TYPE = REQUEST_TYPE
-local CORO_POOL_MAX      = 128   -- 协程池上限；超出后空闲协程自然退出由 GC 回收
-local CORO_POOL_MIN_KEEP = 4     -- 协程池收缩底线
+local CORO_POOL_MAX      = 128 -- 协程池上限；超出后空闲协程自然退出由 GC 回收
+local CORO_POOL_MIN_KEEP = 4 -- 协程池收缩底线
 local CORO_SHRINK_TICKS  = 10 -- 收缩门控：_coro_timeout 每 1s 触发，累计 10 次(≈SHRINK_TIME 10s)收缩一次，与 C 侧统一
-local coro_running   = nil   -- 当前正在执行的协程（用于 _set_coro_sess 记录 coro）
-local coro_sess      = {}    -- 会话表：sess/skid → corosess，保存挂起协程的等待信息
-local func_cbs       = {}    -- 消息类型 → 用户注册回调函数
+local coro_running   = nil -- 当前正在执行的协程（用于 _set_coro_sess 记录 coro）
+local coro_sess      = {} -- 会话表：sess/skid → corosess，保存挂起协程的等待信息
+local func_cbs       = {} -- 消息类型 → 用户注册回调函数
 local srey  = {}
-local nyield = 0             -- 当前挂起等待的协程总数（closing 时用于告警）
+local nyield = 0 -- 当前挂起等待的协程总数（closing 时用于告警）
 -- 上面那些里"登记进了 coro_sess、因而可能被超时扫描找到"的那部分。两个计数不能合并：
 -- nyield 还含 fork_wait 与 serial 排队的协程，它们裸 yield、不进 coro_sess，
 -- 拿 nyield 当扫描门槛的话，一个协程在 serial 队列里趴多久，就白扫多少秒整张 coro_sess。
@@ -164,7 +164,7 @@ local function _coro_new(func)
         function(...)
             func(...)           -- 执行首次传入的任务
             while true do
-                func = nil      -- 释放上一个任务的引用
+                func = nil -- 释放上一个任务的引用
                 if #coro_pool >= CORO_POOL_MAX then
                     break       -- 池满，协程退出，交 GC 回收
                 end
@@ -211,7 +211,7 @@ local function _coro_pool_shrink()
     end
     coro_shrink_tick = 0
     local cur = #coro_pool
-    if coro_pool_trend:busy(cur, 4, 5) then
+    if coro_pool_trend:busy(cur) then
         return
     end
     if cur <= CORO_POOL_MIN_KEEP then
@@ -353,6 +353,9 @@ function srey.serial()
     serial_execs[st] = true
     local function _release()
         st.ref = st.ref - 1
+        -- 负数说明有人没持锁就 leave。放着不管 ref 再也回不到 0，这个 serial 既不交接
+        -- 也不释放，排队者全部永久挂起；C 镜像 coro_serial_leave 同处置
+        assert(st.ref >= 0, "serial leave without a matching enter")
         if 0 == st.ref then
             local nxt = tremove(st.waiters, 1)
             if nxt then
@@ -849,7 +852,7 @@ local function _no_request_func(subtype, sess, src)
     srey.response(src, subtype, sess, ERR_FAILED, "not register request function.")
 end
 
-local _debug_request    -- 懒加载缓存
+local _debug_request -- 懒加载缓存
 -- task 请求分发：REQ_DEBUG 走 lib.debug_request，其余转交用户注册的 on_requested 回调
 ---@param msg Message
 local function _request_dispatch(msg)
@@ -1104,7 +1107,7 @@ function srey.ssl_exchange(fd, skid, client, sslname)
         WARN("ssl_qury not find ssl name %s.", sslname)
         return false
     end
-    if not ssl then  -- SSL_NAME.NONE:无 SSL 可交换
+    if not ssl then -- SSL_NAME.NONE:无 SSL 可交换
         return false
     end
     return core.ssl_exchange(fd, skid, client, ssl)
@@ -1584,7 +1587,12 @@ local function _timeout_scan()
         for i = 1, cnt do
             cur_sess = _timeout_buf[i]
             _timeout_buf[i] = nil
-            srey.xpcall(_timeout_wake, cur_sess, now)
+            -- nearest 是按"这批都会被摘掉"算的。摘不掉就得把游标退回 0 重扫，
+            -- 否则那些 deadline 比 next_timeout 还早的等待者从此永远扫不到：
+            -- 它们的协程不会醒、nwait 回不到 0、task 退不掉
+            if not srey.xpcall(_timeout_wake, cur_sess, now) then
+                next_timeout = 0
+            end
         end
     end
 end

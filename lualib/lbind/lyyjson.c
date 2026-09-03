@@ -291,6 +291,8 @@ LUAMOD_API int luaopen_yyjson(lua_State *lua) {
         { NULL, NULL }
     };
     luaL_newlib(lua, reg);
+    /// <field name="null" type="lightuserdata">JSON null 的哨兵，本身就是空指针。decode 解出来的
+    /// 每个 JSON null 都是它，别拿去喂吃 lightuserdata 的接口</field>
     lua_pushlightuserdata(lua, NULL);
     lua_setfield(lua, -2, "null");
     return 1;

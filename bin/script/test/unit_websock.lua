@@ -110,24 +110,28 @@ runner.run(function(t)
         t:check(fdm and INVALID_SOCK ~= fdm, "连上 server_ws 的 mqtt 子协议")
         if fdm and INVALID_SOCK ~= fdm then
             t:check(spm ~= nil, "mqtt 子协议协商成功")
-            t:eq(true, cmqtt.ws_bind(fdm, skidm, V311), "mqtt.ws_bind 投递成功")
-            local conn, clens = cmqtt.pack_connect(V311, 1, 60, "luawsmqtt")
-            t:check(conn ~= nil, "mqtt.pack_connect 组包成功")
-            if conn then
-                -- client=1:客户端帧必须带掩码。帧内已复制 conn,组完即可释放它;
-                -- 帧本身 copy=0 转交框架,不再 ud_free
-                local frame, fsize = wbsk.binary_fin(1, 1, conn, clens)
-                utils.ud_free(conn)
-                t:check(frame ~= nil, "binary_fin 组帧成功")
-                if frame then
-                    local rdata = srey.syn_send(fdm, skidm, frame, fsize, 0)
-                    t:check(rdata ~= nil, "收到 server_ws 的响应")
-                    if rdata then
-                        local pack = wbsk.unpack(rdata)
-                        t:eq(PACK_TYPE.MQTT, pack and pack.secprot, "响应帧 secprot 为 MQTT")
-                        t:check(pack and pack.secpack ~= nil, "响应帧带 secpack")
-                        if pack and pack.secpack then
-                            t:eq(CONNACK, cmqtt.prot(pack.secpack), "服务端回的是 CONNACK")
+            -- ws_bind 必须由协商结果门控:没协商到 mqtt 时 ws->ud 为 NULL,注入会被判掉
+            -- 并就地断连,症状变成后续 syn_send 莫名失败而不是"没协商上"
+            if spm then
+                t:eq(true, cmqtt.ws_bind(fdm, skidm, V311), "mqtt.ws_bind 投递成功")
+                local conn, clens = cmqtt.pack_connect(V311, 1, 60, "luawsmqtt")
+                t:check(conn ~= nil, "mqtt.pack_connect 组包成功")
+                if conn then
+                    -- client=1:客户端帧必须带掩码。帧内已复制 conn,组完即可释放它;
+                    -- 帧本身 copy=0 转交框架,不再 ud_free
+                    local frame, fsize = wbsk.binary_fin(1, 1, conn, clens)
+                    utils.ud_free(conn)
+                    t:check(frame ~= nil, "binary_fin 组帧成功")
+                    if frame then
+                        local rdata = srey.syn_send(fdm, skidm, frame, fsize, 0)
+                        t:check(rdata ~= nil, "收到 server_ws 的响应")
+                        if rdata then
+                            local pack = wbsk.unpack(rdata)
+                            t:eq(PACK_TYPE.MQTT, pack and pack.secprot, "响应帧 secprot 为 MQTT")
+                            t:check(pack and pack.secpack ~= nil, "响应帧带 secpack")
+                            if pack and pack.secpack then
+                                t:eq(CONNACK, cmqtt.prot(pack.secpack), "服务端回的是 CONNACK")
+                            end
                         end
                     end
                 end

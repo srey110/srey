@@ -83,7 +83,7 @@ static int32_t _lkcp_handle(lua_State *lua) {
 /// <param name="self" type="userdata">kcp 会话句柄</param>
 /// <param name="data" type="string|lightuserdata">数据;字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
-/// <param name="copy" type="integer?">是否复制数据,默认 1(复制)</param>
+/// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1(复制)</param>
 /// <returns type="boolean">成功 true,失败 false</returns>
 static int32_t _lkcp_send(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);

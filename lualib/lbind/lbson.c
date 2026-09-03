@@ -110,13 +110,17 @@ static int32_t _lbson_free(lua_State *lua) {
     BSON_FREE(bson);
     return 0;
 }
-// 取字段名。BSON 的 e_name 是 cstring 装不下内嵌 NUL：放过去会被 binary_set_string 按
-// strlen 截断,"a\0b" 与 "a\0c" 塌缩成同一个字段名,解回来只剩最后写进去的那个
+// 取 cstring 字段(e_name、regex 的 pattern 与 options)。BSON 的 cstring 装不下内嵌 NUL：
+// 放过去会被按 strlen 截断,"a\0b" 与 "a\0c" 塌缩成同一个值,解回来只剩最后写进去的那个
+static const char *_lbson_check_cstr(lua_State *lua, int32_t idx, const char *what) {
+    size_t lens;
+    const char *s = luaL_checklstring(lua, idx, &lens);
+    luaL_argcheck(lua, NULL == memchr(s, '\0', lens), idx, what);
+    return s;
+}
+// 取字段名，判据同 _lbson_check_cstr
 static const char *_lbson_check_key(lua_State *lua, int32_t idx) {
-    size_t klens;
-    const char *key = luaL_checklstring(lua, idx, &klens);
-    luaL_argcheck(lua, NULL == memchr(key, '\0', klens), idx, "bson key must not contain NUL");
-    return key;
+    return _lbson_check_cstr(lua, idx, "bson key must not contain NUL");
 }
 // 判一段缓冲是不是一篇完整 BSON 文档。判据同 bson_cat,只是这里要求头声明长度与缓冲严格相等
 // ——append_document 把整段原样写进去,尾部多出来的字节会被解码方当成下一个元素。
@@ -206,7 +210,7 @@ static int32_t _lbson_append_doc(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = _lbson_check_key(lua, 2);
     size_t lens;
-    char *doc = lpub_check_bson_bin(lua, 3, &lens);
+    char *doc = lpub_check_buf(lua, 3, &lens, NULL);
     _lbson_check_doc(lua, 3, doc, lens);
     bson_append_document(bson, key, doc, lens);
     return 0;
@@ -223,7 +227,7 @@ static int32_t _lbson_append_arr(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = _lbson_check_key(lua, 2);
     size_t lens;
-    char *doc = lpub_check_bson_bin(lua, 3, &lens);
+    char *doc = lpub_check_buf(lua, 3, &lens, NULL);
     _lbson_check_doc(lua, 3, doc, lens);
     bson_append_array(bson, key, doc, lens);
     return 0;
@@ -242,7 +246,7 @@ static int32_t _lbson_binary(lua_State *lua) {
     const char *key = _lbson_check_key(lua, 2);
     bson_subtype subtype = (bson_subtype)lpub_check_u8(lua, 3, SUBTYPE_OUT_OF_RANGE);
     size_t lens;
-    char *data = lpub_check_bson_bin(lua, 4, &lens);
+    char *data = lpub_check_buf(lua, 4, &lens, NULL);
     bson_append_binary(bson, key, subtype, data, lens);
     return 0;
 }
@@ -251,22 +255,16 @@ static int32_t _lbson_binary(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">bson 对象</param>
 /// <param name="key" type="string">字段名；不得含内嵌 NUL（BSON 的 e_name 是 cstring）</param>
-/// <param name="oid" type="string|lightuserdata">12 字节 ObjectId；字符串按 12 字节校验，lightuserdata 只挡 NULL，长度由调用方保证</param>
+/// <param name="oid" type="string|lightuserdata">12 字节 ObjectId</param>
+/// <param name="size" type="integer?">oid 为 lightuserdata 时必填，缓冲字节数</param>
 /// <returns>无</returns>
 static int32_t _lbson_oid(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = _lbson_check_key(lua, 2);
-    char *oid;
-    if (LUA_TSTRING == lua_type(lua, 3)) {
-        size_t lens;
-        oid = (char *)luaL_checklstring(lua, 3, &lens);
-        // bson_append_oid 固定按 BSON_OID_LENS 字节读，短串触发 OOB 读
-        // 与同文件 _lbson_mkoid 校验保持一致
-        luaL_argcheck(lua, lens == BSON_OID_LENS, 3, "OID must be 12 bytes");
-    } else {
-        LUACHECK_LUDATA(lua, 3);
-        oid = lua_touserdata(lua, 3);
-    }
+    size_t lens;
+    char *oid = lpub_check_buf(lua, 3, &lens, NULL);
+    // bson_append_oid 固定按 BSON_OID_LENS 字节读，短缓冲触发 OOB 读
+    luaL_argcheck(lua, BSON_OID_LENS == lens, 3, "OID must be 12 bytes");
     bson_append_oid(bson, key, oid);
     return 0;
 }
@@ -321,8 +319,8 @@ static int32_t _lbson_null(lua_State *lua) {
 static int32_t _lbson_regex(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = _lbson_check_key(lua, 2);
-    const char *pattern = luaL_checkstring(lua, 3);
-    const char *options = luaL_checkstring(lua, 4);
+    const char *pattern = _lbson_check_cstr(lua, 3, "bson regex pattern must not contain NUL");
+    const char *options = _lbson_check_cstr(lua, 4, "bson regex options must not contain NUL");
     bson_append_regex(bson, key, pattern, options);
     return 0;
 }
@@ -421,7 +419,7 @@ static int32_t _lbson_maxkey(lua_State *lua) {
 static int32_t _lbson_cat(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
     size_t actual_lens;
-    char *doc = lpub_check_bson_bin(lua, 2, &actual_lens);
+    char *doc = lpub_check_buf(lua, 2, &actual_lens, NULL);
     if (0 == actual_lens) {
         return luaL_error(lua, "bson_cat: empty document (need at least 5 bytes)");
     }
@@ -463,8 +461,7 @@ static int32_t _lbson_tostring(lua_State *lua) {
     bson_ctx *bson = _lbson_check_complete(lua);
     char *str = bson_tostring(bson);
     if (NULL == str) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushstring(lua, str);
     FREE(str);
@@ -500,11 +497,10 @@ static int32_t _lbson_empty(lua_State *lua) {
 /// <returns type="string?">可读字符串；转换失败返回 nil</returns>
 static int32_t _lbson_tostring2(lua_State *lua) {
     size_t lens;
-    char *data = lpub_check_bson_bin(lua, 1, &lens);
+    char *data = lpub_check_buf(lua, 1, &lens, NULL);
     char *str = bson_tostring2(data, lens);
     if (NULL == str) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushstring(lua, str);
     FREE(str);
@@ -581,7 +577,7 @@ static int32_t _lbson_mkdate_ms(lua_State *lua) {
 static int32_t _lbson_mkbinary(lua_State *lua) {
     bson_subtype subtype = (bson_subtype)lpub_check_u8(lua, 1, SUBTYPE_OUT_OF_RANGE);
     size_t lens;
-    char *data = lpub_check_bson_bin(lua, 2, &lens);
+    char *data = lpub_check_buf(lua, 2, &lens, NULL);
     lbson_binary_t *ud = lua_newuserdata(lua, sizeof(lbson_binary_t) + lens);
     ud->subtype = subtype;
     ud->lens = lens;
@@ -793,7 +789,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         // BSON 数组 key 是 "0","1"...，转为 Lua 1-base 整数索引
         lua_pushinteger(lua, (lua_Integer)idx + 1);
     } else {
-        lua_pushstring(lua, iter->key);
+        lua_pushlstring(lua, iter->key, iter->keylens);
     }
     switch (iter->type) {
     case BSON_DOUBLE: {
@@ -931,8 +927,8 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
         return;
     }
     if (depth > BSON_MAX_DEPTH) {
-        LOG_WARN("bson decode depth exceeded max %d.", BSON_MAX_DEPTH);
-        return;
+        luaL_error(lua, "bson decode failed: nesting deeper than %d", BSON_MAX_DEPTH);
+        return;// 到不了: luaL_error 会 longjmp。写出来是因为它没声明成 noreturn,落下去正好是继续递归
     }
     bson_ctx sub;
     bson_iter iter;
@@ -956,8 +952,8 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
 /// 日志（不是告警：Mongo 应答几乎都带 TIMESTAMP），结果表里没有那些字段。
 /// 要读它们请改用 bson.iter 的同名取值器（iter:regex() / iter:timestamp() …）。
 /// 遍历中途卡住时报错而不是交出半截结果——那样调用方分不清"文档就这么几个字段"和"后面全丢了"。
-/// 两类成因都会报错：文档结构非法，或撞上本实现不认识的类型字节（几个废弃类型，理由与清单
-/// 见 bson_iter_error）；后者另有一条 unsupported bson type 告警，据此分辨。
+/// 三类成因都会报错：文档结构非法、撞上本实现不认识的类型字节（几个废弃类型，理由与清单
+/// 见 bson_iter_error）、嵌套超过 BSON_MAX_DEPTH；第二类另有一条 unsupported bson type 告警，据此分辨。
 /// 要边遍历边自己判用 bson.iter 的 error()
 /// </summary>
 /// <param name="data" type="userdata|string|lightuserdata">bson_ctx userdata、Lua 字符串或 lightuserdata 指针</param>
@@ -971,7 +967,7 @@ static int32_t _lbson_decode(lua_State *lua) {
         data = BSON_DOC(bson);
         lens = _lbson_lens(bson);
     } else {
-        data = lpub_check_bson_bin(lua, 1, &lens);
+        data = lpub_check_buf(lua, 1, &lens, NULL);
     }
     _lbson_decode_document(lua, data, lens, 0, 0);
     return 1;
@@ -1188,7 +1184,7 @@ static int32_t _lbson_iter_type(lua_State *lua) {
 /// <returns type="string">字段名</returns>
 static int32_t _lbson_iter_key(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
-    lua_pushstring(lua, iter->key);
+    lua_pushlstring(lua, iter->key, iter->keylens);
     return 1;
 }
 /// <summary>
@@ -1201,8 +1197,7 @@ static int32_t _lbson_iter_double(lua_State *lua) {
     int32_t err;
     double val = bson_iter_double(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushnumber(lua, val);
     return 1;
@@ -1217,8 +1212,7 @@ static int32_t _lbson_iter_utf8(lua_State *lua) {
     int32_t err;
     const char *val = bson_iter_utf8(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushlstring(lua, val, iter->lens);
     return 1;
@@ -1286,8 +1280,7 @@ static int32_t _lbson_iter_oid(lua_State *lua) {
     int32_t err;
     char *oid = bson_iter_oid(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushlstring(lua, oid, BSON_OID_LENS);
     return 1;
@@ -1302,8 +1295,7 @@ static int32_t _lbson_iter_bool(lua_State *lua) {
     int32_t err;
     int32_t val = bson_iter_bool(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     return lpub_rtn_bool(lua, val);
 }
@@ -1317,8 +1309,7 @@ static int32_t _lbson_iter_date(lua_State *lua) {
     int32_t err;
     int64_t val = bson_iter_date(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushinteger(lua, val);
     return 1;
@@ -1351,8 +1342,7 @@ static int32_t _lbson_iter_jscode(lua_State *lua) {
     int32_t err;
     const char *code = bson_iter_jscode(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushlstring(lua, code, iter->lens);
     return 1;
@@ -1367,8 +1357,7 @@ static int32_t _lbson_iter_int32(lua_State *lua) {
     int32_t err;
     int32_t val = bson_iter_int32(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushinteger(lua, val);
     return 1;
@@ -1401,8 +1390,7 @@ static int32_t _lbson_iter_int64(lua_State *lua) {
     int32_t err;
     int64_t val = bson_iter_int64(iter, &err);
     if (ERR_OK != err) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushinteger(lua, val);
     return 1;

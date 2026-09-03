@@ -2,6 +2,10 @@
 
 #define MT_ROUTER "_router_ctx"
 
+/// <summary>
+/// 创建一个路由表
+/// </summary>
+/// <returns type="_router_ctx">router 对象</returns>
 static int32_t _lrouter_new(lua_State *lua) {
     lpub_push_ud(lua, router_new(), MT_ROUTER);
     return 1;
@@ -15,7 +19,7 @@ static int32_t _lrouter_free(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 注册路由条目并返回索引（≥0）；注册失败返回 false 加 C 侧的失败码
+/// 注册一条路由
 /// </summary>
 /// <param name="self" type="userdata">router_ctx 对象</param>
 /// <param name="method" type="string">HTTP 方法，如 "GET"/"POST"/"ANY"</param>

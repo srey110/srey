@@ -15,8 +15,7 @@ runner.run(function(t)
         return
     end
     t:check(mg:ping(), "mongo ping")
-    mg:collection("srey_test")
-    mg:drop()
+    mg:drop("srey_test")
 
     -- insert 3 docs（sequence table → ARRAY）
     local docs = bson.encode({

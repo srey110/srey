@@ -46,6 +46,10 @@ runner.run(function(t)
         t:check(type(lv) == "number", "log_getlv returns number")
         utils.log_setlv(lv)  -- 写回原值确保不破坏其他模块
         t:eq(lv, utils.log_getlv(), "log_setlv round-trip")
+        -- 越界等级必须报错。log_setlv(-1) 会让 slog 的 lv > _log_lv 判定短路掉全进程日志
+        t:eq(false, pcall(function() utils.log_setlv(-1) end), "log_setlv(-1) 报错")
+        t:eq(false, pcall(function() utils.log_setlv(5) end), "log_setlv(5) 报错")
+        t:eq(lv, utils.log_getlv(), "越界调用后等级不变")
     end
     do
         -- ud_str：nil 与 NULL light userdata(yyjson.null) 均优雅返回 nil，不解引用崩溃

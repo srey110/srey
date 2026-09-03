@@ -31,6 +31,21 @@ MYSQL_PACK_TYPE =  {
     MPACK_STMT_PREPARE = 0x03,  -- 预处理语句准备响应
     MPACK_STMT_EXECUTE = 0x04   -- 预处理语句执行响应
 }
+-- PostgreSQL 响应包类型，与 C 层 pgpack_type 枚举一一对应。
+---@enum PGPACK_TYPE
+PGPACK_TYPE = {
+    OK           = 0x00, -- 命令执行成功
+    ERR          = 0x01, -- 服务端返回错误
+    NOTIFICATION = 0x02, -- 异步通知（LISTEN/NOTIFY）
+    COPY_IN      = 0x03, -- COPY FROM STDIN 就绪
+    COPY_OUT     = 0x04, -- COPY TO STDOUT 数据流
+}
+-- PostgreSQL 参数与结果集的传输格式，与 C 层取值一致。
+---@enum PG_FORMAT
+PG_FORMAT = {
+    TEXT   = 0, -- 文本
+    BINARY = 1, -- 二进制
+}
 -- SSL 上下文名称；与 C 层 ssl_name 枚举对应。
 -- NONE 表示不启用 TLS，SERVER/CLIENT 分别对应服务端和客户端证书上下文。
 ---@enum SSL_NAME
@@ -117,6 +132,6 @@ DIGEST_TYPE = {
     SHA512 = 0x06
 }
 
-ERR_OK     = 0    -- 操作成功
-ERR_FAILED = -1   -- 操作失败
+ERR_OK     = 0 -- 操作成功
+ERR_FAILED = -1 -- 操作失败
 INVALID_SOCK = -1 -- 无效 socket fd

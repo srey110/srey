@@ -4,6 +4,7 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
+local yyjson = require("yyjson")-- yyjson.null 是 NULL lightuserdata，配 size 0 可以走到 copy 校验而不碰缓冲
 
 local PORT = 15013
 local N = 4
@@ -40,6 +41,16 @@ runner.run(function(t)
         t:eq(false, pcall(function() srey.send_multi({1.5}, {1}, "") end),  "fds 非整数浮点抛 error")
         t:eq(false, pcall(function() srey.send_multi({1}, {2.5}, "") end),  "skids 非整数浮点抛 error")
         t:eq(false, pcall(function() srey.send_multi({"1"}, {1}, "") end),  "fds 数字字符串抛 error")
+    end
+
+    -- ── 边界: copy 标志只收 0/1，且不能先收窄后判定 ────────────────
+    -- 早先用 lua_isinteger 当"有没有传"的判据再裸 (int32_t) 收窄:2^32 截成 0 会让框架
+    -- 接管一个借用指针,而浮点被当成"没传"强制成 1,调用方以为交了所有权于是漏释放
+    do
+        t:eq(false, pcall(function() srey.send(0, 0, yyjson.null, 0, 2) end), "copy=2 被拒")
+        t:eq(false, pcall(function() srey.send(0, 0, yyjson.null, 0, -1) end), "copy=-1 被拒")
+        t:eq(false, pcall(function() srey.send(0, 0, yyjson.null, 0, 0x100000000) end), "copy=2^32 被拒")
+        t:eq(false, pcall(function() srey.send(0, 0, yyjson.null, 0, 0.5) end), "copy 非整数浮点被拒")
     end
 
     -- ── 集成: 自启 server + N 个 client + 广播验证 ────────────────

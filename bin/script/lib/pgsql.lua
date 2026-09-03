@@ -54,12 +54,7 @@ end
 -- conn_pub 的探活钩子：发 "SELECT 1" 简单查询，不自动重连
 function ctx:_ping()
     local pack, size = pgsql.pack_query("SELECT 1")
-    local fd, skid = self.pg:sock_id()
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
-    if not pgpack then
-        return false
-    end
-    return PGPACK_TYPE.OK == pgsql.pack_type(pgpack)
+    return ppub.request_ok(self, pack, size, PGPACK_TYPE.OK)
 end
 
 -- _fail / _reset 两个类逐字相同，实现落在 ppub 一处（说明见那边）

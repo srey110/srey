@@ -8,20 +8,6 @@ local pgsql  = require("srey.pgsql")
 local reader = require("srey.pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 与 pgsql.lua 共用的失败原因，见该模块头部
 
----@enum PGPACK_TYPE
-PGPACK_TYPE = {
-    OK           = 0x00,
-    ERR          = 0x01,
-    NOTIFICATION = 0x02,
-    COPY_IN      = 0x03,
-    COPY_OUT     = 0x04,
-}
----@enum PG_FORMAT
-PG_FORMAT = {
-    TEXT   = 0,
-    BINARY = 1,
-}
-
 ---预处理语句执行上下文
 ---@class pgsql_stmt_ctx
 ---@field name string 服务端语句名称（Parse 时传入）
@@ -29,6 +15,7 @@ PG_FORMAT = {
 ---@field pg any C 层 pgsql 对象引用（= owner.pg），每次操作动态读 fd/skid 以感知重连
 ---@field format PG_FORMAT 结果集期望格式（二进制 / 文本），prepare 时确定
 ---@field affected integer 最近一次执行影响的行数
+---@field closed boolean close() 已发出 Close，此后 execute 一律拒绝（口径同 mysql_stmt）
 ---@field err string 最近一次错误信息
 local ctx = class("pgsql_stmt_ctx")
 -- _fail / _reset 与 pgsql.lua 共用 ppub 的同一份实现（说明见那边）。
@@ -63,6 +50,12 @@ function ctx:execute(bind)
 end
 function ctx:_execute(bind)
     self:_reset()
+    -- 关过的语句服务端已经不认了。不挡的话 Bind 照发，回来的是 26000 prepared statement
+    -- does not exist，调用方从 erro() 上分不清"关过了"和"服务端出了别的问题"
+    if self.closed then
+        WARN("pgsql stmt already closed, please re-prepare.")
+        return self:_fail("pgsql: stmt already closed")
+    end
     if self.gen ~= self.owner.generation then
         WARN("pgsql stmt invalidated by reconnect, please re-prepare.")
         return self:_fail("pgsql: stmt invalidated by reconnect")
@@ -86,17 +79,16 @@ function ctx:close()
     return srey.serial_ret(false, self.owner.serial(self._close, self))
 end
 function ctx:_close()
+    if self.closed then
+        return false
+    end
+    self.closed = true
     if self.gen ~= self.owner.generation then
         -- 重连后服务端已自动清理旧语句，无需再发 Close
         return true
     end
-    local fd, skid = self.pg:sock_id()
     local pack, size = pgsql.pack_stmt_close(self.name)
-    local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
-    if not pgpack then
-        return false
-    end
-    return PGPACK_TYPE.OK == pgsql.pack_type(pgpack)
+    return ppub.request_ok(self, pack, size, PGPACK_TYPE.OK)
 end
 
 ---返回最近一次错误信息

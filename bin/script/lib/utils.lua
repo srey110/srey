@@ -8,8 +8,8 @@ local table = table
 local debug = debug
 local string = string
 local utils = require("srey.utils")
-local pathsep = _pathsep   -- 由 C 层注入的路径分隔符（Linux："/"，Windows："\"）
-local PRINT_DEBUG = true   -- 控制 printd 是否输出；可在运行时置 false 关闭调试打印
+local pathsep = _pathsep -- 由 C 层注入的路径分隔符（Linux："/"，Windows："\"）
+local PRINT_DEBUG = true -- 控制 printd 是否输出；可在运行时置 false 关闭调试打印
 
 ---判断 host 字符串的地址类型
 ---@param host string 主机地址（IPv4 / IPv6 / 域名）
@@ -32,6 +32,9 @@ function printd(fmt, ...)
         return
     end
     local info = debug.getinfo(2, "Sl")-- 只用 short_src 与 currentline，理由同 log.lua 的 _log
+    if not info then
+        return
+    end
     local file = string.match(info.short_src, string.format("^.+%s(.+)$", pathsep)) or info.short_src
     local tag = string.format("[%s][%s %d] ", os.date("%H:%M:%S", os.time()), file, info.currentline)
     print(string.format(tag..fmt, ...))
@@ -64,6 +67,14 @@ end
 ---@return boolean is_empty nil 或 "" 时返回 true
 function str_nullorempty(str)
     return not str or '' == str
+end
+
+---整数值的浮点按整数转字符串。Lua 5.3+ 的 / 恒出浮点，而收整数的协议字段
+---（HTTP 头值、Redis 的 SETEX / ZADD / EXPIREAT）不认 "3600.0"；真正的小数原样保留
+---@param n number 待转换的数字
+---@return string s 文本形式
+function num_str(n)
+    return tostring(math.tointeger(n) or n)
 end
 
 ---统计表中键值对的数量（含非连续整数键；# 运算符仅对序列有效，此函数适用于任意表）

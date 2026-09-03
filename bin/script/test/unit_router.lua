@@ -11,6 +11,21 @@ local mock_http = {
     status      = function(pack) return pack._status end,
     datastr     = function(pack) return pack._body end,
     heads       = function(pack) return pack._headers or {} end,
+    -- 真实现是 C 的 http_header 走 buf_icompare;这里用小写归一等价复现,
+    -- ctx:header 的大小写无关契约靠它兜住
+    head        = function(pack, key)
+        local hs = pack._headers
+        if not hs then
+            return nil
+        end
+        local want = key:lower()
+        for k, v in pairs(hs) do
+            if k:lower() == want then
+                return v
+            end
+        end
+        return nil
+    end,
     code_status = require("srey.http").code_status,
     response    = function(fd, skid, code, headers, body)
         last_resp = { fd = fd, skid = skid, code = code,
@@ -373,6 +388,43 @@ runner.run(function(t)
         dispatch(r, "POST", "/lazy2", "xx", { ["X-Probe"] = "v" })
         t:eq(0, next(later.headers) and 1 or 0, "没读过的 headers 出了 dispatch 是空表")
         t:eq(nil, later.body, "没读过的 body 出了 dispatch 为 nil")
+    end
+
+    -- ctx:header 大小写无关，走 C 的 buf_icompare（与 router_req_header 同一条路径）；
+    -- 而 ctx.headers 是线格式原样大小写的裸表，大小写不一致就取不到。两者分工得钉住：
+    -- 混在一起用会让 router.lua 模块头那段 auth 中间件对大小写规范的客户端一律 401
+    do
+        local r = Route.new()
+        local exact, lower, upper, mixed, miss, tbl_exact, tbl_lower
+        r:get("/hdr", function(ctx)
+            exact = ctx:header("X-Api-Key")
+            lower = ctx:header("x-api-key")
+            upper = ctx:header("X-API-KEY")
+            mixed = ctx:header("x-ApI-kEy")
+            miss  = ctx:header("x-nope")
+            tbl_exact = ctx.headers["X-Api-Key"]
+            tbl_lower = ctx.headers["x-api-key"]
+            ctx:text(200, "ok")
+        end)
+        dispatch(r, "GET", "/hdr", nil, { ["X-Api-Key"] = "secret" })
+        t:eq("secret", exact, "ctx:header 原样大小写取得到")
+        t:eq("secret", lower, "ctx:header 全小写取得到")
+        t:eq("secret", upper, "ctx:header 全大写取得到")
+        t:eq("secret", mixed, "ctx:header 混合大小写取得到")
+        t:eq(nil, miss, "ctx:header 不存在的头返回 nil")
+        t:eq("secret", tbl_exact, "ctx.headers 按线格式大小写取得到")
+        t:eq(nil, tbl_lower, "ctx.headers 大小写不一致取不到")
+    end
+    -- 出了 dispatch _pack 已摘，ctx:header 恒返 nil（同 C 侧 router_req_header 的 pack 判空）
+    do
+        local r = Route.new()
+        local saved
+        r:get("/hdrlate", function(ctx)
+            saved = ctx
+            ctx:text(200, "ok")
+        end)
+        dispatch(r, "GET", "/hdrlate", nil, { ["X-Api-Key"] = "secret" })
+        t:eq(nil, saved:header("X-Api-Key"), "出了 dispatch 的 ctx:header 返 nil")
     end
 
     -- 重名占位符：注册期拒收（C 侧 router_req_param 取首个、Lua 侧取末个，同一路由两个答案）
@@ -1105,7 +1157,7 @@ runner.run(function(t)
         local r = Route.new()
         local log = {}
         r:define("auth", function(ctx, next)
-            if "secret" ~= ctx.headers["x-token"] then
+            if "secret" ~= ctx:header("x-token") then
                 ctx:text(401, "no")
                 return
             end

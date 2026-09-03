@@ -7,6 +7,7 @@
 local srey       = require("lib.srey")
 local srey_redis = require("srey.redis")
 local table   = table
+local math    = math
 local redis   = {}
 
 ---连接 Redis 服务器并可选地执行 AUTH 认证
@@ -36,7 +37,14 @@ function redis.connect(ip, port, sslname, psw, netev)
     return fd, skid
 end
 
----将命令及参数序列化为 RESP 协议字符串（inline array）；所有参数先 tostring 转换
+-- 单个参数转上线的字节。浮点走 num_str，其余原样 tostring
+local function _arg_str(v)
+    if "float" == math.type(v) then
+        return num_str(v)
+    end
+    return tostring(v)
+end
+---将命令及参数序列化为 RESP 协议字符串（inline array）；所有参数先转成字符串，见 _arg_str
 ---@param ... any 命令名及参数，如 redis.pack("SET", "key", "value")
 ---@return string req RESP 编码后的请求字符串
 function redis.pack(...)
@@ -48,7 +56,7 @@ function redis.pack(...)
     local idx = 4
     for i = 1, n do
         if nil ~= args[i] then
-            local value = tostring(args[i])
+            local value = _arg_str(args[i])
             req[idx] = '$'
             req[idx + 1] = #value
             req[idx + 2] = '\r\n'
@@ -72,6 +80,9 @@ redis.value = srey_redis.value
 ---@type fun(pk:lightuserdata):lightuserdata|nil
 redis.next = srey_redis.next
 
+-- unpack 的解析循环每个 RESP 节点都要调这两个，提成 local 免得逐节点重查模块表
+local rvalue, rnext = redis.value, redis.next
+
 -- ── 节点读取与聚合类型判断 ────────────────────────────────────────────────
 -- 所有判断都基于 _node 摘出来的 kind，不读容器表里的字段：resp_type / resp_nelem 是 C 层的哨兵，
 -- 而 Redis 字段名是任意二进制串，HGETALL 拿到同名字段就会把哨兵盖掉。故一读到就摘走
@@ -83,7 +94,7 @@ redis.next = srey_redis.next
 ---@return string? kind 聚合类型名；非聚合为 nil
 ---@return integer? nelem 元素计数；非聚合为 nil
 local function _node(pk)
-    local val = redis.value(pk)
+    local val = rvalue(pk)
     if "table" ~= type(val) then
         return val, nil, nil
     end
@@ -93,6 +104,10 @@ local function _node(pk)
     return val, kind, nelem
 end
 
+-- 能不能当表键。nil 与 NaN 都不行（t[NaN] 抛错），而 RESP3 的 ,nan 解出来就是 NaN
+local function _key_ok(key)
+    return nil ~= key and key == key
+end
 ---是否为 map 或 attr（键值对聚合）
 ---@param kind string? _node 回带的聚合类型名
 ---@return boolean ok
@@ -218,7 +233,7 @@ end
 ---@return any value 解包后的 Lua 值
 function redis.unpack(pk)
     -- 单一节点：无嵌套，直接返回
-    if not redis.next(pk) then
+    if not rnext(pk) then
         return _single_node(pk)
     end
     -- 多节点：第一个节点必须是 aggregate data
@@ -228,7 +243,7 @@ function redis.unpack(pk)
         return nil
     end
     local val, kind, nelem, parent
-    pk = redis.next(pk)
+    pk = rnext(pk)
     while pk do
         parent = mark[#mark]
         val, kind, nelem = _node(pk)
@@ -264,7 +279,7 @@ function redis.unpack(pk)
                     else
                         -- 作为 val 写入父 map
                         parent.status = 0
-                        if nil ~= parent.key then
+                        if _key_ok(parent.key) then
                             if nelem > 0 then
                                 parent.agg[parent.key] = val
                             elseif 0 == nelem then
@@ -300,7 +315,7 @@ function redis.unpack(pk)
                         parent.key = val
                     else
                         parent.status = 0
-                        if nil ~= parent.key then
+                        if _key_ok(parent.key) then
                             parent.agg[parent.key] = val ~= nil and val or false
                         end
                     end
@@ -311,7 +326,7 @@ function redis.unpack(pk)
                 _update_mark(mark)
             end
         end
-        pk = redis.next(pk)
+        pk = rnext(pk)
     end
     return rtn
 end

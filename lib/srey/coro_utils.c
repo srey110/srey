@@ -1247,12 +1247,12 @@ void mongo_freesession(mongo_session *session) {
     FREE(session->options);
     FREE(session);
 }
-// 事务绑定规则,begin / commit / rollback 三处共用:
-// 组包一律从 mongo->session 取事务上下文,调用方手上的 session 必须就是连接当前绑定的那个。
-// begin 靠拒绝第二个 session 维持,commit/rollback 在入口挡掉已分叉的情形直接报失败。
+// 事务绑定规则:组包一律从 mongo->session 取事务上下文,调用方手上的 session 必须就是连接
+// 当前绑定的那个。begin 靠拒绝第二个 session 维持;commit/rollback 的判定在两个 packer 里
+// (_mongo_txn_bound),分叉时组包返 NULL,发送侧照常按失败走。
 // 重连只废掉在途事务不废会话(会话按 lsid 记在服务端、与连接无关),故此处不认代次只认绑定。
 // 早退不释放 session->options 不算漏:重新 begin 与 mongo_freesession 都会释放。
-// commit/rollback 各套一层外锁,判定必须和组包发送同在锁内;begin 不挂起,不套锁
+// commit/rollback 各套一层外锁,组包发送同在锁内;begin 不挂起,不套锁
 int32_t mongo_begin(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
     // 一条连接同时只能有一个活跃事务;放第二个 session 进来会让后续写静默改跟它走
@@ -1268,16 +1268,11 @@ int32_t mongo_begin(mongo_session *session) {
     mongo->session = session;
     return ERR_OK;
 }
-// 事务收尾:commit 与 rollback 只差组包函数与告警文案。清绑定(mongo->session = NULL)必须排在
+// 事务收尾:commit 与 rollback 只差组包函数。清绑定(mongo->session = NULL)必须排在
 // check_error 之前——服务端已经收下了,本地就不能再认为事务在跑,否则同一 session 还能再收尾一次
 static int32_t _mongo_txn_end(mongo_session *session, char *options, size_t optlens,
-                              void *(*pack)(mongo_session *, char *, size_t, size_t *),
-                              const char *op) {
+                              void *(*pack)(mongo_session *, char *, size_t, size_t *)) {
     mongo_ctx *mongo = session->mongo;
-    if (mongo->session != session) {
-        LOG_WARN("mongo connection no longer bound to this session, %s rejected.", op);
-        return ERR_FAILED;
-    }
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
     void *txnpack = pack(session, options, optlens, &lens);
@@ -1298,7 +1293,7 @@ int32_t mongo_commit(mongo_session *session, char *options, size_t optlens) {
     if (ERR_OK != _serial_lock(session->mongo->task, held)) {
         return ERR_FAILED;
     }
-    int32_t rtn = _mongo_txn_end(session, options, optlens, mongo_pack_committransaction, "commit");
+    int32_t rtn = _mongo_txn_end(session, options, optlens, mongo_pack_committransaction);
     _serial_unlock(held);
     return rtn;
 }
@@ -1307,7 +1302,7 @@ int32_t mongo_rollback(mongo_session *session, char *options, size_t optlens) {
     if (ERR_OK != _serial_lock(session->mongo->task, held)) {
         return ERR_FAILED;
     }
-    int32_t rtn = _mongo_txn_end(session, options, optlens, mongo_pack_aborttransaction, "rollback");
+    int32_t rtn = _mongo_txn_end(session, options, optlens, mongo_pack_aborttransaction);
     _serial_unlock(held);
     return rtn;
 }

@@ -146,12 +146,12 @@ static int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
 }
 // 解析 EOF 响应包，读取警告数和状态标志
 // warnings(2) + status_flags(2)，读之前先比剩余字节；截断的包判失败而不是撞断言
-static int32_t _mpack_eof(binary_ctx *breader, mpack_eof *eof) {
+static int32_t _mpack_eof(binary_ctx *breader, int16_t *status_flags) {
     if (!binary_have(breader, 4)) {
         return ERR_FAILED;
     }
     binary_get_skip(breader, 2);// warnings：本库不用，只推进读位置
-    eof->status_flags = (int16_t)binary_get_integer(breader, 2, 1);
+    *status_flags = (int16_t)binary_get_integer(breader, 2, 1);
     return ERR_OK;
 }
 // ERR 包体：error_code(2) + '#' + sql_state(5) + 错误串。各段读之前都要比剩余字节——
@@ -258,11 +258,11 @@ static int32_t _mpack_more_data(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *b
 // 检查 EOF 包中的状态标志。进来时调用方已保证至少剩 1 字节（判过 offset < size 且 peek 过）
 static eof_final _mpack_check_final(binary_ctx *breader, int32_t *status) {
     binary_get_skip(breader, 1);
-    mpack_eof eof;
-    if (ERR_OK != _mpack_eof(breader, &eof)) {
+    int16_t status_flags;
+    if (ERR_OK != _mpack_eof(breader, &status_flags)) {
         return EOF_FINAL_BROKEN;
     }
-    if (BIT_CHECK(eof.status_flags, SERVER_MORE_RESULTS_EXISTS)) {
+    if (BIT_CHECK(status_flags, SERVER_MORE_RESULTS_EXISTS)) {
         BIT_SET(*status, PROT_MOREDATA);
         return EOF_FINAL_MORE;
     }

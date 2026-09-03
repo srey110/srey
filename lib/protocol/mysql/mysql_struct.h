@@ -82,11 +82,6 @@ typedef struct mpack_ok {
     int64_t last_insert_id; // 最后插入的自增 ID
 }mpack_ok;
 
-// EOF 响应包数据
-typedef struct mpack_eof {
-    int16_t status_flags;   // 服务器状态标志
-}mpack_eof;
-
 // 列字段描述信息（Column Definition）
 typedef struct mpack_field {
     uint8_t decimals;       // 最大显示小数位数

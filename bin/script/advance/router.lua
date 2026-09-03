@@ -4,7 +4,7 @@
 --   local Route = require("advance.router")
 --   -- 具名中间件注册（可选）
 --   Route:define("auth", function(ctx, next)
---       if ctx.headers["x-api-key"] ~= "secret" then ctx:text(401, "Unauthorized\n") return end
+--       if ctx:header("x-api-key") ~= "secret" then ctx:text(401, "Unauthorized\n") return end
 --       next()
 --   end)
 --   -- 全局中间件
@@ -50,7 +50,8 @@
 --   ctx.params  -- 路由参数 {id="42"}
 --   ctx.query   -- 查询参数 {page="1"}
 --   ctx.body    -- 请求体（可能为 nil）；惰性取，见下
---   ctx.headers -- 请求头 table；惰性取，见下
+--   ctx.headers -- 请求头 table（键为线格式原样大小写）；惰性取，见下
+--   ctx:header(name) -- 按名字取单个头，大小写无关；不物化头表
 -- ctx 的生命周期只在本次 dispatch 内（与 C 侧 router_req 同口径）：body / headers 首次访问
 -- 时才从底层 pack 物化，而 pack 出了 dispatch 就没了。要带进 srey.fork / timer 延迟用，
 -- 得在 handler 里先读一次（读过即固化在 ctx 上），或者自己把需要的值拷走
@@ -88,6 +89,7 @@ local select   = select
 local pairs    = pairs
 local getmetatable = getmetatable
 local rawget   = rawget
+local setmetatable = setmetatable
 
 -- 中间件得能被 chain[i](ctx, nxt) 调起来：函数，或带 __call 的表/userdata。
 -- 元表被 __metatable 藏起来时查不出真相，放行交给调用点——把真能调的东西拒掉更糟
@@ -175,6 +177,9 @@ local function _fallback_500(ctx)
         return
     end
     pcall(_send, ctx.method, ctx.fd, ctx.skid, 500, _PLAIN_HEADERS, "Internal Server Error\n")
+    -- 发完置位，口径同 C 侧 router_req_respond：不置的话流式路由的 STREAM_ABORT 回调
+    -- 看到的仍是"没人应答过"，按契约再写一次就成了双响应
+    ctx.responded = true
 end
 
 ---@class Ctx
@@ -189,14 +194,17 @@ end
 ---@field query   table<string,string>  URL 查询参数
 ---@field body    string?            请求体，无则为 nil。惰性物化：首次访问才从 pack 取，
 ---                                  出了 dispatch 再读一律为 nil（详见模块头）
----@field headers table<string,string>  请求头。惰性物化同 body，但出了 dispatch 再读拿到的是
----                                  空表而不是 nil，分不清"请求没带这个头"和"读晚了"
+---@field headers table<string,string>  请求头，键为线格式原样大小写，取值须大小写一致；
+---                                  按名字取单个头用 ctx:header。惰性物化同 body，但出了
+---                                  dispatch 再读拿到的是空表而不是 nil，分不清"请求没带
+---                                  这个头"和"读晚了"
 ---@field responded boolean            已响应标志;ctx:* 方法自动置位,dispatch 据此补兜底 500;延迟/手动响应须手动置 true 且勿直接调 http.response(否则与兜底叠成双响应)
 ---@field _admitted boolean?           流式路由准入标志，router 内部填写
 ---@field text    fun(self:Ctx, code:integer, body:string?)        纯文本响应
 ---@field json    fun(self:Ctx, code:integer, tbl:table<any,any>)  JSON 响应，自动附加 Content-Type
 ---@field html    fun(self:Ctx, code:integer, body:string?)        HTML 响应，自动附加 Content-Type
 ---@field respond fun(self:Ctx, code:integer, headers:table<string,any>?, body:string?)  自定义响应
+---@field header  fun(self:Ctx, name:string):string?  按名字取单个请求头，大小写无关
 
 -- body 为 nil 时保持 nil，非 nil 统一转 string——数字等类型直接往下传会被
 -- http.response 的类型分派当"无 body"丢掉
@@ -228,6 +236,11 @@ function CtxMethods:html(code, body)
 end
 function CtxMethods:respond(code, headers, body)
     _ctx_send(self, code, headers, body)
+end
+-- 按名字取单个请求头，大小写无关：比较走 C 的 buf_icompare，不物化头表也不分配。
+-- 口径同 C 侧 router_req_header——流式过了首帧 _pack 已摘，那之后恒返 nil，改读 ctx.headers
+function CtxMethods:header(name)
+    return self._pack and http.head(self._pack, name)
 end
 -- headers / body 惰性物化：绝大多数 handler 只 ctx:text 响应，从不读它们，而急切物化每请求
 -- 要造一张头表加 20~30 次短字符串分配。首次访问时才建，建好 rawset 进 ctx，之后走 rawget。
@@ -624,9 +637,20 @@ function Router:_match_ctx(fd, skid, pack, client, close_on_fail)
         end
         return nil
     end
+    local route = self._routes[idx]
+    -- 匹配到索引却在 _routes 里没有条目：注册中途失败留下的空洞。C 侧对同类配置错误答 500
+    -- (_router_entry_misconfigured)，这里同处置——不挡的话 _chain_of 会在调用方的 xpcall
+    -- 之外抛出去，客户端一个字节都收不到，只能等自己超时
+    if not route then
+        _send(method, fd, skid, 500, _PLAIN_HEADERS, http.code_status(500) .. "\n")
+        if close_on_fail then
+            srey.close(fd, skid)
+        end
+        return nil
+    end
     local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
     ctx.params = params
-    return ctx, self._routes[idx]
+    return ctx, route
 end
 
 ---分发 HTTP 请求：解析方法和路径，匹配路由后执行中间件链；URL 解析失败响应 400,无匹配响应 404。
@@ -653,11 +677,21 @@ function Router:dispatch(fd, skid, pack, client)
     ctx._pack = nil
 end
 
--- 摘掉一条流式记录并投 STREAM_ABORT。skid 非 nil 时还要对得上（fd 可能已被新连接复用）。
--- 正常收尾走 _st_feed 的 END 分支，不经过这里，两者只会来一个
-function Router:_st_drop(fd, skid)
-    local rec = self._streams[fd]
+-- 取一条流式记录。流表按 fd 做键（C 侧 _router_st_hash 按整个 sk_id），身份的另一半 skid
+-- 在这里比：fd 会被新连接复用，认错了就把新连接的块喂进上一条连接的 ctx。
+-- skid 传 nil 表示不比，只有 _st_begin 这么用——新首帧一到旧记录就作废，与 skid 无关
+local function _st_get(streams, fd, skid)
+    local rec = streams[fd]
     if not rec or (skid and rec.skid ~= skid) then
+        return nil
+    end
+    return rec
+end
+-- 摘掉一条流式记录并投 STREAM_ABORT。正常收尾走 _st_feed 的 END 分支，
+-- 不经过这里，两者只会来一个
+function Router:_st_drop(fd, skid)
+    local rec = _st_get(self._streams, fd, skid)
+    if not rec then
         return
     end
     self._streams[fd] = nil
@@ -713,9 +747,9 @@ end
 
 -- 流式中间/结束帧：原样把 slice 与数据交给 on_chunk
 function Router:_st_feed(fd, skid, pack, slice)
-    local rec = self._streams[fd]
     -- 首帧被拒过（连接那时就关了）或 fd 已被新连接复用，后续帧静默丢
-    if not rec or rec.skid ~= skid then
+    local rec = _st_get(self._streams, fd, skid)
+    if not rec then
         return
     end
     if SLICE_TYPE.END ~= slice then
@@ -762,6 +796,6 @@ end
 -- ── 默认实例（Laravel Route facade 风格）────────────────────────────────
 
 local Route    = Router.new()
-Route.new      = Router.new   -- 暴露构造函数，支持 require("advance.router").new()
+Route.new      = Router.new -- 暴露构造函数，支持 require("advance.router").new()
 Router.STREAM_ABORT = STREAM_ABORT -- 流式回调的中止 slice，见 post_stream
 return Route

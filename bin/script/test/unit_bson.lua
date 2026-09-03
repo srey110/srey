@@ -356,6 +356,10 @@ runner.run(function(t)
         t:eq(false, ok3, "空 oid 字符串被 argcheck 拒绝")
         local ok4 = pcall(function() b:oid("k", string.rep("x", 12)) end)
         t:eq(true, ok4, "12 字节 oid 字符串接受")
+        -- lightuserdata 分支早先只挡 NULL，短缓冲会被固定读满 12 字节，越界字节直接进文档
+        local eptr, esz = bson.empty()
+        t:eq(false, pcall(function() b:oid("k", eptr) end), "lightuserdata oid 不带长度被拒")
+        t:eq(false, pcall(function() b:oid("k", eptr, esz) end), "5 字节 lightuserdata oid 被拒")
     end
 
     -- 19. iter:document / iter:array
@@ -406,6 +410,37 @@ runner.run(function(t)
         iter = bson.iter.new(b)
         t:eq(true, iter:find("z"), "iter find z")
         t:eq(true, iter:isnull(), "iter:isnull true on BSON_NULL")
+    end
+
+    -- 19a. 解码深度超 BSON_MAX_DEPTH(18) 要报错而不是交出空表：
+    -- 空表让调用方分不清"这个子文档本来就是空的"和"从这层起全丢了"，
+    -- 与同函数畸形文档路径同处置。encode 侧撞 ASSERTAB 造不出这种输入，只能手拼 wire
+    do
+        -- 一篇 BSON = int32 总长 + 元素 + 0x00；一层嵌套的元素是 0x03 + "a\0" + 子文档
+        local function nest(n)
+            local doc = string.pack("<i4", 5) .. "\0"-- 空文档 {}
+            local body
+            for _ = 1, n do
+                body = "\3a\0" .. doc
+                doc = string.pack("<i4", 4 + #body + 1) .. body .. "\0"
+            end
+            return doc
+        end
+        local shallow = nest(3)
+        local ok, tb = pcall(bson.decode, shallow, #shallow)
+        t:eq(true, ok, "手拼的 3 层文档解得开(证明 wire 拼法没错)")
+        t:check(ok and "table" == type(tb.a) and "table" == type(tb.a.a), "3 层嵌套结构正确")
+        local deep = nest(25)
+        t:eq(false, pcall(bson.decode, deep, #deep), "25 层嵌套被拒而不是静默返空表")
+    end
+
+    -- 20a. regex 的 pattern / options 是 BSON cstring，内嵌 NUL 只能拒不能截
+    -- （同 key，截断会让两个不同模式塌缩成一个且无报错）
+    do
+        local b = bson.new()
+        t:eq(false, pcall(function() b:regex("k", "^a\0b", "i") end), "regex pattern 含 NUL 被拒")
+        t:eq(false, pcall(function() b:regex("k", "^ab", "i\0m") end), "regex options 含 NUL 被拒")
+        t:eq(true, pcall(function() b:regex("k", "^ab", "im") end), "正常 regex 接受")
     end
 
     -- 21. iter:regex / iter:jscode / iter:timestamp

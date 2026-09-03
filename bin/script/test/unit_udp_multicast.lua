@@ -1,4 +1,4 @@
-﻿-- srey.udp_join/udp_leave/udp_ttl/udp_loop 多播绑定层测试：
+-- srey.udp_join/udp_leave/udp_ttl/udp_loop 多播绑定层测试：
 -- 验证 4 个 setsockopt 路径不崩 + UDP socket 单播 loopback 收发正常。
 -- 多播实际 loopback 行为跨 OS 差异较大,本测试不验证多播传输,只验证 API 调用路径。
 

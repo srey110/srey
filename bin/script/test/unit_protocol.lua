@@ -37,6 +37,14 @@ runner.run(function(t)
         t:eq("*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n", req2, "redis.pack GET")
         local req3 = redis.pack("DEL", "k1", "k2", "k3")
         t:check(req3:sub(1, 4) == "*4\r\n", "redis.pack DEL header")
+        -- 整数值的浮点要按整数上线：3600000/1000 在 Lua 里是 float，写成 "3600.0"
+        -- 会被 Redis 判 not an integer；大数还会退化成 "1e+17"
+        t:eq("*4\r\n$5\r\nSETEX\r\n$1\r\nk\r\n$4\r\n3600\r\n$1\r\nv\r\n",
+             redis.pack("SETEX", "k", 3600000 / 1000, "v"), "整数值浮点按整数编码")
+        t:check(nil ~= redis.pack("ZADD", "k", 1e17, "m"):find("100000000000000000", 1, true),
+                "大整数值浮点不退化成科学计数法")
+        -- 真正的小数原样保留
+        t:check(nil ~= redis.pack("SET", "k", 3.25):find("3.25", 1, true), "小数原样编码")
     end
 
     -- ── harbor.pack ────────────────────────────────────────────────────
@@ -158,6 +166,10 @@ runner.run(function(t)
 
         local m = mail.new()
         m:from("Srey", "srey@example.com")
+        -- 收件人类型裸 cast 会让越界值原样存进去:_mail_pack_addr 只认 TO/CC,
+        -- 类型是 9 的地址照发 RCPT TO 却不出现在 To: / Cc: 里,可见收件人静默变密送
+        t:eq(false, pcall(function() m:addrs_add("x@example.com", 9) end), "越界收件人类型被拒")
+        t:eq(false, pcall(function() m:addrs_add("x@example.com", 0) end), "类型 0 被拒")
         m:addrs_add("alice@example.com", 1)  -- TO
         m:subject("unit test")
         m:msg("plain text body")

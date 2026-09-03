@@ -29,7 +29,7 @@ local function _dump_coros()
     for sess, corosess in pairs(_coro_sess) do
         nsess = nsess + 1
         for _, info in ipairs(corosess.waiters) do
-            if info.coro then    -- 跳过 func 模式（无挂起协程）
+            if info.coro then -- 跳过 func 模式（无挂起协程）
                 total = total + 1
                 local age = info.since and (now - info.since) or 0
                 local trace = debug.traceback(info.coro, nil, 0)
@@ -162,7 +162,7 @@ local function _debug_handle(cmd, a1, a2)
         local ok, msg = hotfix.apply(a1, a2)
         return (ok and "[OK] " or "[ERR] ") .. tostring(msg)
     else
-        return nil  -- 未知命令：返回 nil 作标志，由 _dispatch 透传给业务 on_requested
+        return nil -- 未知命令：返回 nil 作标志，由 _dispatch 透传给业务 on_requested
     end
 end
 

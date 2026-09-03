@@ -61,8 +61,8 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
 /// fd 非法、命令到达时连接已不在、协议层拒收、事件循环拆除时命令还没执行</param>
 /// <returns>ERR_OK 命令已投递，只表示投递成功、不代表真的设上了；fd 为 INVALID_SOCK 时
 /// 返回 ERR_FAILED 并已用 fcb 回收 val，调用方不可再释放。
-/// 非 WebSocket 连接、握手尚未完成、子协议没有内建解析器、已注入过一次——这几种一律判误用：
-/// 不设置且就地断开该连接，已注入过的那个旧值留给拆连接时回收</returns>
+/// 非 WebSocket 连接、握手尚未完成、子协议没有内建解析器、已注入过一次——这几种一律不设置
+/// 且就地断开该连接，已注入过的那个旧值留给拆连接时回收</returns>
 int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val, free_cb fcb);
 /// <summary>
 /// WebSocket 解包：握手阶段完成 HTTP 升级，数据阶段从缓冲区解析一个完整帧（含分片）

@@ -743,13 +743,25 @@ void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
     // 只是 head2 的 \0 结尾入口: 头的线格式与校验规则单点落在 head2, 免得两处各改一半
     http_pack_head2(bwriter, key, val, strlen(val));
 }
+// 头值有没有 CR / LF。逐字符挡而非只挡 "\r\n" 连对：孤立 LF 也被相当多的解析器当行终止符，
+// 放过它等于给按长度传值的这一路留下头注入口子。空值(lens 为 0)恒合法
+static int32_t _http_head_val_nocrlf(const char *val, size_t lens) {
+    if (0 == lens) {
+        return 1;
+    }
+    return NULL != val
+        && NULL == memchr(val, '\r', lens)
+        && NULL == memchr(val, '\n', lens);
+}
+int32_t http_head_val_ok(const char *val, size_t lens) {
+    if (0 == lens) {
+        return 1;
+    }
+    return 0 != _http_head_val_nocrlf(val, lens)
+        && NULL == memchr(val, '\0', lens);
+}
 void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens) {
-    // 逐字符挡 CR / LF 而非只挡 "\r\n" 连对：孤立 LF 也被相当多的解析器当行终止符，
-    // 放过它等于给按长度传值的这一路留下头注入口子
-    ASSERTAB(NULL == strpbrk(key, FLAG_CRLF)
-        && (0 == lens
-            || (NULL != val
-                && NULL == memchr(val, '\r', lens) && NULL == memchr(val, '\n', lens))),
+    ASSERTAB(NULL == strpbrk(key, FLAG_CRLF) && 0 != _http_head_val_nocrlf(val, lens),
         "HTTP header key/val must not contain CRLF.");
     binary_set_va(bwriter, "%s: ", key);
     binary_set_binary(bwriter, val, lens);
