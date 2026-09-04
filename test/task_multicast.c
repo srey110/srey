@@ -14,7 +14,6 @@ static SOCKET _server_fds[N_CLIENTS];
 static uint64_t _server_skids[N_CLIENTS];
 static atomic_t _accepted_count;
 static atomic_t _received_count;
-static atomic_t _broadcast_sent;
 
 // accept 端回调：累积 server-side fd 到数组,等满 N 个由主协程统一广播。
 // 注意 ATOMIC_ADD 是 fetch_and_add 返回旧值,首次返回 0 即为本次写入的 idx
@@ -49,13 +48,13 @@ static void _client_worker(task_ctx *task, void *arg) {
     // 不主动 recv,纯等 server 广播触发 _net_recv 回调累计 received_count;
     // 给足 3s 兜底,主协程 polling 收齐就提前结束
     coro_sleep(task, 3000);
+    ev_close(&task->loader->netev, fd, skid);
 }
 
 static void _startup(task_ctx *task) {
     task_multicast_args *arg = (task_multicast_args *)coro_get_arg(task);
     ATOMIC_SET(&_accepted_count, 0);
     ATOMIC_SET(&_received_count, 0);
-    ATOMIC_SET(&_broadcast_sent, 0);
 
     task_accepted(task, _net_accept);
     task_recved(task, _net_recv);
@@ -82,7 +81,6 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("multicast: ev_send_multi failed.");
         return;
     }
-    ATOMIC_SET(&_broadcast_sent, 1);
     // 等所有 client 收到：每 50ms 检查一次,最多等 2s
     int32_t recvcnt = 0;
     int32_t poll;

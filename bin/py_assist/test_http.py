@@ -14,7 +14,11 @@ TIMEOUT = 5.0
 def connect():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(TIMEOUT)
-    s.connect((HOST, PORT))
+    try:
+        s.connect((HOST, PORT))
+    except OSError:
+        s.close()   # connect 抛出时 socket 已建好，不关就泄到进程退出
+        raise
     return s
 
 
@@ -36,10 +40,9 @@ def recv_response(sock):
     for line in head.split(b"\r\n"):
         low = line.lower()
         if low.startswith(b"content-length:"):
-            try:
-                cl = int(line.split(b":", 1)[1].strip())
-            except ValueError:
-                pass
+            # 解析不出来就是服务端发了个坏 Content-Length，不能吞成"没这个头"：
+            # 吞掉的话 cl 保持 -1，下面既不按长度读也不按 chunked 读，body 直接算收完了
+            cl = int(line.split(b":", 1)[1].strip())
         elif low.startswith(b"transfer-encoding:") and b"chunked" in low:
             chunked = True
     if chunked:
@@ -51,7 +54,11 @@ def recv_response(sock):
             body += chunk
             if len(body) > 1024 * 1024:
                 raise RuntimeError("chunked body over 1MB")
-    elif cl >= 0:
+    elif cl < 0:
+        # 既无 Content-Length 又非 chunked：本测试里的服务端一律带其一，
+        # 静默放行会把"帧头丢了"报成通过
+        raise RuntimeError("response has neither Content-Length nor chunked framing")
+    else:
         while len(body) < cl:
             chunk = sock.recv(min(4096, cl - len(body)))
             if not chunk:

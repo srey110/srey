@@ -77,7 +77,7 @@ end
 ---max_prepared_stmt_count（默认 16382），此后 prepare 一律失败。
 ---服务端不回响应，故只发不等；关闭后本 stmt 不可再 execute / reset。
 ---重连后服务端已随旧连接清掉该语句，此时不再发包（发出去就是拿旧 id 打新连接）
----@return boolean ok 已发出 true（语句已关闭或重连后已失效返回 false）
+---@return boolean ok 已发出、或重连后无需再发都返回 true；本 stmt 已关闭过返回 false
 function ctx:close()
     return srey.serial_ret(false, self.owner.serial(self._close, self))
 end
@@ -87,7 +87,8 @@ function ctx:_close()
     end
     self.closed = true
     if self.gen ~= self.owner.generation then
-        return false
+        -- 重连后服务端已自动清理旧语句，无需再发 COM_STMT_CLOSE（口径同 pgsql_stmt）
+        return true
     end
     local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_close()

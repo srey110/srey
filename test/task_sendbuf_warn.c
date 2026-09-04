@@ -6,7 +6,9 @@ typedef struct sendbuf_warn_args {
 }sendbuf_warn_args;
 
 // 每轮 4MB，2 轮共 8MB；单次 ev_send 即让 wb_size 远超 WB_WARN_INIT_SIZE(1MB)，
-// 必然触发 LOG_WARN("TCP send buf growing")；之后随 _evpub_sock_send 消费递减至 0
+// 必然触发 LOG_WARN("TCP send buf growing")；之后随 _evpub_sock_send 消费递减至 0。
+// 告警本身没有可读的计数器，断言不到；本用例钉的是触发它的那条路径——
+// 8MB 全部按序送达且只关一次连接，缓冲增长期间既没丢字节也没提前断连
 #define BYTES_PER_ROUND (4 * 1024 * 1024)
 #define ROUNDS          2
 

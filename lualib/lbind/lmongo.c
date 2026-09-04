@@ -2,8 +2,6 @@
 
 #define MT_MONGO         "_mongo_ctx"
 #define MT_MONGO_SESSION "_mongo_session_ctx"
-// mongo_flags 三个位的并，作 lpub_check_range 的上界
-#define MONGO_FLAGS_ALL (CHECKSUM | MORETOCOME | EXHAUSTALLOWED)
 #define MONGOFLAG_OUT_OF_RANGE "mongo flag out of range"
 // session 的五个入口共用: 自身非空 + 宿主还活着。后一半的理由见 lpub_owner_ptr
 #define LMONGO_SESSION_ARG(lua, var) \
@@ -199,8 +197,8 @@ static int32_t _lmongo_parse_startsession(lua_State *lua) {
     return 2;
 }
 // 取标志位参数：先按 lua_Integer 判范围再窄化，再拒掉掩码里没有的位
-static mongo_flags _lmongo_arg_flag(lua_State *lua, int32_t idx) {
-    mongo_flags flag = (mongo_flags)lpub_check_range(lua, idx, 0, MONGO_FLAGS_ALL, MONGOFLAG_OUT_OF_RANGE);
+static int32_t _lmongo_arg_flag(lua_State *lua, int32_t idx) {
+    int32_t flag = (int32_t)lpub_check_range(lua, idx, 0, MONGO_FLAGS_ALL, MONGOFLAG_OUT_OF_RANGE);
     luaL_argcheck(lua, 0 == (flag & ~MONGO_FLAGS_ALL), idx, MONGOFLAG_OUT_OF_RANGE);
     return flag;
 }
@@ -214,7 +212,7 @@ static mongo_flags _lmongo_arg_flag(lua_State *lua, int32_t idx) {
 /// <returns>无</returns>
 static int32_t _lmongo_set_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    mongo_flags flag = _lmongo_arg_flag(lua, 2);
+    int32_t flag = _lmongo_arg_flag(lua, 2);
     mongo_set_flag(*ud, flag);
     return 0;
 }
@@ -222,12 +220,12 @@ static int32_t _lmongo_set_flag(lua_State *lua) {
 /// 检查消息标志位是否已设置
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错</param>
+/// <param name="flag" type="integer">单个 mongo_flags 枚举值；含枚举外的位报错</param>
 /// <returns type="boolean">已设置 true，否则 false</returns>
 static int32_t _lmongo_check_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    mongo_flags flag = _lmongo_arg_flag(lua, 2);
-    return lpub_rtn_bool(lua, mongo_check_flag(*ud, flag));
+    int32_t flag = _lmongo_arg_flag(lua, 2);
+    return lpub_rtn_bool(lua, mongo_check_flag(*ud, (mongo_flags)flag));
 }
 /// <summary>
 /// 读回已组好的数据包里写着的消息标志位。
@@ -236,12 +234,12 @@ static int32_t _lmongo_check_flag(lua_State *lua) {
 /// 就成了两回事。详细后果见 C 层 mongo_pack_check_flag
 /// </summary>
 /// <param name="pack" type="lightuserdata">pack_* 组出的数据包</param>
-/// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错</param>
+/// <param name="flag" type="integer">单个 mongo_flags 枚举值；含枚举外的位报错</param>
 /// <returns type="boolean">该包写着此标志位 true，否则 false</returns>
 static int32_t _lmongo_pack_check_flag(lua_State *lua) {
     LPUB_LUD_ARG(lua, void, 1, pack);
-    mongo_flags flag = _lmongo_arg_flag(lua, 2);
-    return lpub_rtn_bool(lua, mongo_pack_check_flag(pack, flag));
+    int32_t flag = _lmongo_arg_flag(lua, 2);
+    return lpub_rtn_bool(lua, mongo_pack_check_flag(pack, (mongo_flags)flag));
 }
 /// <summary>
 /// 清除所有消息标志位

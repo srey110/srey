@@ -20,6 +20,14 @@ WS_ACCEPT = b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 def connect_ws():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(TIMEOUT)
+    try:
+        return _ws_handshake(s)
+    except Exception:
+        s.close()   # 握手任一步抛出都得把 socket 关掉，不然泄到进程退出
+        raise
+
+
+def _ws_handshake(s):
     s.connect((HOST, PORT))
     req = (
         b"GET /ws HTTP/1.1\r\n"
@@ -61,21 +69,38 @@ def make_frame(opcode, payload, fin=1, mask_key=None):
 
 def recv_frame(sock):
     try:
-        head = b""
-        while len(head) < 2:
-            c = sock.recv(2 - len(head))
-            if not c:
-                return None
-            head += c
+        # 定长字段一律收满再解：TCP 可以在任意位置切开，短读一次就把长度解错，
+        # 后面按错长度去读 payload，结果是"偶发的假红"
+        def _recvn(n):
+            buf = b""
+            while len(buf) < n:
+                c = sock.recv(n - len(buf))
+                if not c:
+                    return None
+                buf += c
+            return buf
+        head = _recvn(2)
+        if head is None:
+            return None
         b0, b1 = head[0], head[1]
         opcode = b0 & 0x0F
         masked = (b1 >> 7) & 1
         plen = b1 & 0x7F
         if plen == 126:
-            plen = struct.unpack("!H", sock.recv(2))[0]
+            ext = _recvn(2)
+            if ext is None:
+                return None
+            plen = struct.unpack("!H", ext)[0]
         elif plen == 127:
-            plen = struct.unpack("!Q", sock.recv(8))[0]
-        mask_key = sock.recv(4) if masked else b""
+            ext = _recvn(8)
+            if ext is None:
+                return None
+            plen = struct.unpack("!Q", ext)[0]
+        mask_key = b""
+        if masked:
+            mask_key = _recvn(4)
+            if mask_key is None:
+                return None
         payload = b""
         while len(payload) < plen:
             c = sock.recv(plen - len(payload))
@@ -134,7 +159,8 @@ def case_large_binary_e2e():
         payload = b"X" * 60000
         s.sendall(make_frame(0x2, payload))
         r = recv_frame(s)
-        return r is not None and r[0] == 0x2 and len(r[1]) == 60000
+        # 内容也比：只比长度的话，服务端把大缓冲搬错一段、掩码解错都测不出来
+        return r is not None and r[0] == 0x2 and r[1] == payload
     finally:
         s.close()
 
@@ -155,8 +181,31 @@ def case_50_parallel_echo():
     return all(r is True for r in results)
 
 
+# e2e：客户端发分片消息（TEXT fin=0 + CONTINUE fin=0 + CONTINUE fin=1），
+# 服务端 server_ws.lua 的 slice 分支收齐后回三帧分片 "a"/"b"/"c"。
+# 这条分支此前没有任何驱动方，整段删掉也没人发现
+def case_fragmented_echo_e2e():
+    s = connect_ws()
+    try:
+        s.sendall(make_frame(0x1, b"frag-", fin=0))    # TEXT，未完
+        s.sendall(make_frame(0x0, b"mid-", fin=0))     # CONTINUE，未完
+        s.sendall(make_frame(0x0, b"end", fin=1))      # CONTINUE，收尾
+        # 服务端回三帧：opcode 依次 TEXT / CONTINUE / CONTINUE，载荷 a / b / c
+        got = []
+        for _ in range(3):
+            r = recv_frame(s)
+            if r is None:
+                return False
+            got.append(r)
+        return ([g[0] for g in got] == [0x1, 0x0, 0x0]
+                and b"".join(g[1] for g in got) == b"abc")
+    finally:
+        s.close()
+
+
 CASES = [
     ("text echo e2e", case_text_echo_e2e),
+    ("fragmented echo e2e", case_fragmented_echo_e2e),
     ("binary echo e2e", case_binary_echo_e2e),
     ("PING -> PONG e2e", case_ping_pong_e2e),
     ("60KB binary e2e", case_large_binary_e2e),

@@ -33,7 +33,8 @@ runner.run(function(t)
     -- 普通 INSERT
     t:check(pg:query("insert into srey_test (id, name, score) values (1, 'alice', 90.5), (2, 'bob', 75.0)"),
             "insert 2 rows")
-    t:check(pg:affected_rows() >= 0, "affected_rows non-negative")
+    -- 刚插了 2 行，affected_rows 就该是 2；>= 0 那种写法恒真，返 0 也照样过
+    t:eq(2, pg:affected_rows(), "affected_rows 与本次 INSERT 的行数一致")
 
     -- SELECT + reader（单语句：数组恰好一个元素）
     local rs = pg:query("select id, name, score from srey_test order by id")
@@ -206,7 +207,7 @@ runner.run(function(t)
         end)
     end
     -- 有界等待，理由同 db_mysql.lua：无界 while 会把 fork 协程抛错变成整份汇总挂住
-    for _ = 1, 1500 do            -- 1500 x 20ms = 30s 上限
+    for _ = 1, 1500 do -- 1500 x 20ms = 30s 上限
         if done >= N then break end
         srey.sleep(20)
     end

@@ -49,7 +49,7 @@ runner.run(function(t)
         if INVALID_SOCK == fd then
             t:fail("mqtt.connect v5.0 to 127.0.0.1:1883")
         else
-            t:check(true, "mqtt.connect v5.0 ok")
+            t:check(fd > 0 and skid ~= nil, "mqtt.connect v5.0 returns fd+skid")
             srey.close(fd, skid)
         end
     end

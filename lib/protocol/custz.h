@@ -21,8 +21,8 @@ void *custz_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
 /// <param name="pktype">包类型，取值见 pack_type（PACK_CUSTZ_FIXED / PACK_CUSTZ_FLAG / PACK_CUSTZ_VAR）</param>
 /// <param name="data">待打包的数据</param>
 /// <param name="lens">数据长度</param>
-/// <param name="size">输出：组包后总长度（头部 + 数据）；返回 NULL 时不写入</param>
-/// <returns>组好的包（调用方负责释放）；lens 超出所选头部能表达的范围、或头长加 lens 回绕时返回 NULL(*size 置 0)</returns>
+/// <param name="size">输出：组包后总长度（头部 + 数据）；返回 NULL 时置 0</param>
+/// <returns>组好的包（调用方负责释放）；lens 超出所选头部能表达的范围、或头长加 lens 回绕时返回 NULL</returns>
 void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size);
 
 #endif//CUSTOMIZE_H_

@@ -152,9 +152,16 @@ static void _indep_worker(task_ctx *task, void *arg) {
 static int32_t _test_indep(task_ctx *task) {
     coro_serial_ctx *s1 = coro_serial_new(task);
     coro_serial_ctx *s2 = coro_serial_new(task);
-    int32_t f1 = 0, f2 = 0;
-    indep_arg a1 = { .s = s1, .flag = &f1, .set_val = 1, .sleep_ms = 30 }; // s1 持锁 30ms
-    indep_arg a2 = { .s = s2, .flag = &f2, .set_val = 2, .sleep_ms = 0  }; // s2 立即完成
+    // 本用例故意在 10ms 处就判断，此时 a1 的 worker 还在 sleep(30)。失败路径一 return，
+    // 栈上的 a1/f1 就没了，而 worker 醒来还要写 *a->flag —— 连同两个标志一起放 static
+    static int32_t f1;
+    static int32_t f2;
+    static indep_arg a1;
+    static indep_arg a2;
+    f1 = 0;
+    f2 = 0;
+    a1.s = s1; a1.flag = &f1; a1.set_val = 1; a1.sleep_ms = 30;// s1 持锁 30ms
+    a2.s = s2; a2.flag = &f2; a2.set_val = 2; a2.sleep_ms = 0;// s2 立即完成
     coro_fork(task, _indep_worker, &a1);
     coro_fork(task, _indep_worker, &a2);
     coro_sleep(task, 10);// 短等：s2 应该已完成，s1 仍在 sleep

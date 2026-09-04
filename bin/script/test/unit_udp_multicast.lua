@@ -40,7 +40,7 @@ runner.run(function(t)
     t:eq(false, srey.udp_join(fd, skid, "ff02::1"), "IPv6 组加到 0.0.0.0 socket 上返 false")
     t:eq(false, srey.udp_leave(fd, skid, "ff02::1"), "leave 同样按同族判定拒绝")
     t:eq(false, srey.udp_join(fd, skid, "not-an-ip"), "非法组地址返 false")
-    srey.sleep(200)  -- 等 4 cmd 投递到事件线程执行 setsockopt
+    srey.sleep(200) -- 等 4 cmd 投递到事件线程执行 setsockopt
 
     -- 单播 loopback 验证 recvfrom 路径
     t:eq(true, srey.sendto(fd, skid, "127.0.0.1", PORT, UNI_MSG, #UNI_MSG, 1), "sendto unicast 自己")

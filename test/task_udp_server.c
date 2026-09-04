@@ -1,6 +1,6 @@
 ﻿#include "task_udp_server.h"
 
-static int32_t _prt = 0;
+static pack_type _pktype = PACK_NONE;
 static uint16_t _port = 0;
 
 // 收到 UDP 数据报后原样回发给发送方
@@ -13,13 +13,13 @@ static void _startup(task_ctx *task) {
     task_recvedfrom(task, _net_recvfrom);
     SOCKET fd;
     uint64_t id;
-    if (ERR_OK != task_udp(task, (pack_type)_prt, "0.0.0.0", _port, &fd, &id)) {
+    if (ERR_OK != task_udp(task, _pktype, "0.0.0.0", _port, &fd, &id)) {
         LOG_WARN("start udp server error.");
     }
 }
-void task_udp_server_start(loader_ctx *loader, const char *name, uint16_t port, int32_t pt) {
+void task_udp_server_start(loader_ctx *loader, const char *name, uint16_t port, pack_type pktype) {
     _port = port;
-    _prt = pt;
+    _pktype = pktype;
     task_ctx *task = task_new(loader, name, 0, NULL, NULL, NULL);
     if (ERR_OK != task_register(task, _startup, NULL)) {
         task_free(task);

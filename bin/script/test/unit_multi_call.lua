@@ -25,7 +25,7 @@ runner.run(function(t)
     local ack_count = 0
     local ack_seen = {}
     srey.on_requested(function(reqtype, _, _, data, size)
-        if 101 == reqtype and data and size > 0 then  -- ACK_REQ
+        if 101 == reqtype and data and size > 0 then -- ACK_REQ
             -- sub 把自己的编号编进了载荷（multi_call_sub.lua 回的是 "<idx>:<payload>"）。
             -- 只计数的话，"3 个 sub 各 ack 一次"与"同一个 sub ack 三次"在断言上完全等价，
             -- 投递循环把同一个 dst 投三次也照样通过
@@ -37,7 +37,7 @@ runner.run(function(t)
         end
     end)
     -- 广播：copy=1 默认,内部 MALLOC + memcpy 共享 pack
-    srey.multi_call(SUBS, 100, MSG)  -- BROADCAST_REQ
+    srey.multi_call(SUBS, 100, MSG) -- BROADCAST_REQ
     for _ = 1, 40 do
         srey.sleep(50)
         if ack_count >= N then break end
@@ -136,7 +136,7 @@ runner.run(function(t)
             resp_count = resp_count + 1
         end
     end)
-    local valid = srey.multi_request(SUBS, 102, rpc_sess, MSG)  -- RPC_REQ
+    local valid = srey.multi_request(SUBS, 102, rpc_sess, MSG) -- RPC_REQ
     t:eq(N, valid, "multi_request 返回 valid = N")
     for _ = 1, 40 do
         srey.sleep(50)
@@ -162,18 +162,18 @@ runner.run(function(t)
     -- 全部 grab-in-C:reqtype/data 校验在 grab 前,longjmp 时未 grab → 错误透传(下面断言)+ 无引用泄漏(退出无死锁,ASan 验证)
     do
         local ok = pcall(function()
-            srey.multi_request(SUBS, {}, srey.id(), "x")  -- reqtype 非整数 → C 侧 longjmp
+            srey.multi_request(SUBS, {}, srey.id(), "x") -- reqtype 非整数 → C 侧 longjmp
         end)
         t:eq(false, ok, "multi_request: core longjmp 错误仍透传")
 
         ok = pcall(function()
-            srey.multi_call(SUBS, {}, "x")  -- reqtype 非整数 → C 侧 longjmp
+            srey.multi_call(SUBS, {}, "x") -- reqtype 非整数 → C 侧 longjmp
         end)
         t:eq(false, ok, "multi_call: core longjmp 错误仍透传")
 
         -- 单目标 request/call/response(grab-in-C):非法 reqtype 在 task_grab 前 longjmp,错误透传且未 grab 无泄漏
         ok = pcall(function()
-            srey.request(SUBS[1], {}, "x")  -- 非法 reqtype → core.request longjmp
+            srey.request(SUBS[1], {}, "x") -- 非法 reqtype → core.request longjmp
         end)
         t:eq(false, ok, "request: core longjmp 错误仍透传")
         ok = pcall(function()

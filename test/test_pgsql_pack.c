@@ -3,6 +3,10 @@
 #include "protocol/pgsql/pgsql_pack.h"
 #include "protocol/pgsql/pgsql_bind.h"
 
+/* 大端读 16 位整数（参数/格式码计数字段） */
+static uint16_t _rd_be16(const char *p) {
+    return (uint16_t)(((uint32_t)(uint8_t)p[0] << 8) | (uint32_t)(uint8_t)p[1]);
+}
 /* 大端读 32 位整数（pgsql 消息长度字段统一大端格式） */
 static uint32_t _rd_be32(const char *p) {
     return ((uint32_t)(uint8_t)p[0] << 24)
@@ -98,13 +102,28 @@ static void test_pgsql_cancel(CuTest *tc) {
 static void test_pgsql_stmt_prepare(CuTest *tc) {
     uint32_t oids[2] = { INT4OID, TEXTOID };
     size_t size = 0;
-    char *pack = pgsql_pack_stmt_prepare("stmt1", "SELECT $1 + 1", 2, oids, &size);
+    const char *sql = "SELECT $1 + 1";
+    char *pack = pgsql_pack_stmt_prepare("stmt1", sql, 2, oids, &size);
     CuAssertPtrNotNull(tc, pack);
-    /* 至少包含 P 消息和末尾 S 消息 */
+    /* Parse：'P' Int32(len) String(name) String(sql) Int16(nparam) Int32(oid)... */
     CuAssertTrue(tc, 'P' == pack[0]);
+    /* 参数类型块也要验：只判首尾字节的话，oids 漏写或写成小端都发现不了 */
+    size_t off = 5 + strlen("stmt1") + 1 + strlen(sql) + 1;
+    CuAssertIntEquals(tc, 2, _rd_be16(pack + off));
+    CuAssertIntEquals(tc, INT4OID, (int32_t)_rd_be32(pack + off + 2));
+    CuAssertIntEquals(tc, TEXTOID, (int32_t)_rd_be32(pack + off + 6));
     /* 末尾应是 'S' + 长度 4（Sync）*/
     CuAssertTrue(tc, 'S' == pack[size - 5]);
     CuAssertTrue(tc, 4 == (int)_rd_be32(pack + size - 4));
+    FREE(pack);
+
+    /* nparam <= 0 走 else：仍要写出一个为 0 的 Int16，否则服务端按下一段解会整体错位 */
+    size = 0;
+    pack = pgsql_pack_stmt_prepare("stmt0", sql, 0, NULL, &size);
+    CuAssertPtrNotNull(tc, pack);
+    off = 5 + strlen("stmt0") + 1 + strlen(sql) + 1;
+    CuAssertIntEquals(tc, 0, _rd_be16(pack + off));
+    CuAssertIntEquals(tc, (int32_t)off + 2 + 5, (int32_t)size);/* P 段 + Sync(5) */
     FREE(pack);
 }
 
@@ -309,11 +328,28 @@ static void test_pgsql_bind_free_reuse(CuTest *tc) {
     CuAssertPtrEquals(tc, NULL, bind.format.data);
     CuAssertPtrEquals(tc, NULL, bind.values.data);
 
-    /* 组包侧同样按 nparam 早退，不会发出半截 Bind 消息 */
+    /* 组包侧同样按 nparam 早退，不会发出半截 Bind 消息。
+       Bind 布局：'B' Int32(len) String(portal="") String(stmt) Int16(格式码数)
+       Int16(参数值数) Int16(结果格式码数=1) Int16(结果格式码)。
+       只判 pack[0]=='B' 的话，两个零计数漏写、Describe/Execute/Sync 整段不发都看不出来 */
     size_t size = 0;
     char *pack = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &size);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 'B' == pack[0]);
+    /* Bind 自报长度含自身、不含类型字节，且必须落在总包内 */
+    uint32_t blen = _rd_be32(pack + 1);
+    CuAssertTrue(tc, blen + 1 <= size);
+    CuAssertIntEquals(tc, '\0', pack[5]);/* portal 为空串 */
+    CuAssertTrue(tc, 0 == memcmp(pack + 6, "stmt1", 6));/* 含结尾 NUL */
+    /* nparam=0 时两个计数都得写出来 */
+    CuAssertIntEquals(tc, 0, _rd_be16(pack + 12));
+    CuAssertIntEquals(tc, 0, _rd_be16(pack + 14));
+    CuAssertIntEquals(tc, 1, _rd_be16(pack + 16));/* 结果列格式码数固定 1 */
+    CuAssertIntEquals(tc, FORMAT_BINARY, _rd_be16(pack + 18));
+    /* Bind 之后依次是 Describe / Execute / Sync，最后一条 Sync 是 'S' + Int32(4) */
+    CuAssertIntEquals(tc, 'D', pack[blen + 1]);
+    CuAssertIntEquals(tc, 'S', pack[size - 5]);
+    CuAssertIntEquals(tc, 4, (int32_t)_rd_be32(pack + size - 4));
     FREE(pack);
 
     pgsql_bind_clear(&bind);

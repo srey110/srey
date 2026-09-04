@@ -414,7 +414,6 @@ static void test_bson_iter_find_deep_miss(CuTest *tc) {
     bson_append_end(&bson);
 
     bson_iter result;
-    ZERO(&result, sizeof(result));
 
     // 末层缺失。每个子用例前都重新 ZERO：失败路径压根不写 result，不重置的话后面两条
     // 分不清"没被写"和"被上一条清空过"，等于白跑
@@ -718,11 +717,16 @@ static void test_bson_extra_types(CuTest *tc) {
     CuAssertStrEquals(tc, "function() {}", bson_iter_jscode(&iter, &err));
     CuAssertIntEquals(tc, ERR_OK, err);
 
-    // jscode_n（二进制安全）
+    // jscode_n（二进制安全）：写进去的是 8 字节 "var x=1;\0"，含内嵌 NUL。
+    // 只判 type/key 的话，_n 变体退化成按 strlen 截断也照样过 —— 而那正是 _n 存在的理由
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_JSCODE, iter.type);
     CuAssertStrEquals(tc, "jsn", iter.key);
-    /* 前 8 字节为 "var x=1;\0" 截止 NUL；bson_iter_jscode 返回 cstring 视为到 NUL 截止 */
+    CuAssertIntEquals(tc, 8, (int32_t)iter.lens);
+    CuAssertTrue(tc, 0 == memcmp(iter.val, "var x=1;", 8));
+    /* bson_iter_jscode 返回 cstring，到第一个 NUL 截止 —— 与上面的原始 8 字节各测一遍 */
+    CuAssertStrEquals(tc, "var x=1;", bson_iter_jscode(&iter, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
 
     // timestamp
     CuAssertTrue(tc, bson_iter_next(&iter));
@@ -743,10 +747,13 @@ static void test_bson_extra_types(CuTest *tc) {
     CuAssertIntEquals(tc, BSON_MAXKEY, iter.type);
     CuAssertStrEquals(tc, "mx", iter.key);
 
-    // utf8_n：iter.lens 应为 8（7 字节 + 末尾 \0）
+    // utf8_n：写进去的是 7 字节 "abc\0def"。长度前缀含末尾 NUL 写的是 8，
+    // 而 bson_iter_next 取的是 vlens-1，故 iter.lens 是 7
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_UTF8, iter.type);
     CuAssertStrEquals(tc, "raw", iter.key);
+    CuAssertIntEquals(tc, 7, (int32_t)iter.lens);
+    CuAssertTrue(tc, 0 == memcmp(iter.val, "abc\0def", 7));
 
     CuAssertTrue(tc, !bson_iter_next(&iter));
     BSON_FREE(&bson);
@@ -879,9 +886,9 @@ static void test_bson_misc(CuTest *tc) {
     size_t elen;
     const char *empty = bson_empty(&elen);
     CuAssertPtrNotNull(tc, empty);
-    CuAssertTrue(tc, 5 == elen);                   /* 4 字节长度 + 1 EOD */
-    CuAssertIntEquals(tc, 5, (uint8_t)empty[0]);   /* len = 5 */
-    CuAssertIntEquals(tc, 0, (uint8_t)empty[4]);   /* EOD */
+    CuAssertTrue(tc, 5 == elen);/* 4 字节长度 + 1 EOD */
+    CuAssertIntEquals(tc, 5, (uint8_t)empty[0]);/* len = 5 */
+    CuAssertIntEquals(tc, 0, (uint8_t)empty[4]);/* EOD */
 
     /* bson_oid：连续生成应递增；非全零 */
     char a[BSON_OID_LENS], b[BSON_OID_LENS];
@@ -1234,23 +1241,16 @@ static void test_bson_tostring_subtypes(CuTest *tc) {
 
     char *s = bson_tostring(&bson);
     CuAssertPtrNotNull(tc, s);
-    // 字段名一定都出现
-    CuAssertTrue(tc, NULL != strstr(s, "re"));
-    CuAssertTrue(tc, NULL != strstr(s, "code"));
-    CuAssertTrue(tc, NULL != strstr(s, "bin"));
-    CuAssertTrue(tc, NULL != strstr(s, "oid"));
-    CuAssertTrue(tc, NULL != strstr(s, "ts"));
-    CuAssertTrue(tc, NULL != strstr(s, "date"));
-    CuAssertTrue(tc, NULL != strstr(s, "min"));
-    CuAssertTrue(tc, NULL != strstr(s, "max"));
-    // 类型名（bson_type_tostring 输出）：regex/javascript/binData/objectId/timestamp/date/minKey/maxKey
-    CuAssertTrue(tc, NULL != strstr(s, "regex"));
-    CuAssertTrue(tc, NULL != strstr(s, "javascript"));
-    CuAssertTrue(tc, NULL != strstr(s, "binData"));
-    CuAssertTrue(tc, NULL != strstr(s, "objectId"));
-    CuAssertTrue(tc, NULL != strstr(s, "timestamp"));
-    CuAssertTrue(tc, NULL != strstr(s, "minKey"));
-    CuAssertTrue(tc, NULL != strstr(s, "maxKey"));
+    // 每行是 "<key>(<类型名>): <值>"，按 key(type 整体比：
+    // 只查裸 key 的话 "re" 会被类型名 "regex" 顺手满足，"ts"/"min"/"max"/"bin" 同理
+    CuAssertTrue(tc, NULL != strstr(s, "re(regex)"));
+    CuAssertTrue(tc, NULL != strstr(s, "code(javascript)"));
+    CuAssertTrue(tc, NULL != strstr(s, "bin(binData)"));
+    CuAssertTrue(tc, NULL != strstr(s, "oid(objectId)"));
+    CuAssertTrue(tc, NULL != strstr(s, "ts(timestamp)"));
+    CuAssertTrue(tc, NULL != strstr(s, "min(minKey)"));
+    CuAssertTrue(tc, NULL != strstr(s, "max(maxKey)"));
+    CuAssertTrue(tc, NULL != strstr(s, "date("));
     // jscode 内容
     CuAssertTrue(tc, NULL != strstr(s, "function()"));
     // regex pattern 与 options 应出现
@@ -1272,10 +1272,10 @@ static void test_bson_tostring_subtypes(CuTest *tc) {
 static void test_bson_wire_layout(CuTest *tc) {
     /* { "a": 1 } */
     static const uint8_t want_i32[] = {
-        0x0C, 0x00, 0x00, 0x00,       /* 总长 12 */
-        BSON_INT32, 0x61, 0x00,       /* 类型 + 键 "a" */
-        0x01, 0x00, 0x00, 0x00,       /* 值 1，小端 */
-        0x00                          /* 文档结尾 */
+        0x0C, 0x00, 0x00, 0x00,/* 总长 12 */
+        BSON_INT32, 0x61, 0x00,/* 类型 + 键 "a" */
+        0x01, 0x00, 0x00, 0x00,/* 值 1，小端 */
+        0x00/* 文档结尾 */
     };
     bson_ctx b;
     bson_init(&b, NULL, 0);
@@ -1287,10 +1287,10 @@ static void test_bson_wire_layout(CuTest *tc) {
 
     /* { "b": "hi" } */
     static const uint8_t want_str[] = {
-        0x0F, 0x00, 0x00, 0x00,       /* 总长 15 */
-        BSON_UTF8, 0x62, 0x00,        /* 类型 + 键 "b" */
-        0x03, 0x00, 0x00, 0x00,       /* 串长 3 = strlen + 结尾 0 */
-        0x68, 0x69, 0x00,             /* "hi" + 结尾 0 */
+        0x0F, 0x00, 0x00, 0x00,/* 总长 15 */
+        BSON_UTF8, 0x62, 0x00,/* 类型 + 键 "b" */
+        0x03, 0x00, 0x00, 0x00,/* 串长 3 = strlen + 结尾 0 */
+        0x68, 0x69, 0x00,/* "hi" + 结尾 0 */
         0x00
     };
     bson_init(&b, NULL, 0);

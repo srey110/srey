@@ -15,7 +15,12 @@ runner.run(function(t)
         return
     end
     t:check(mg:ping(), "mongo ping")
+    -- drop 的返回值不判：集合本就可能不存在（首次跑），服务端回 "ns not found"。
+    -- 改用 count 确认起点确实是空的——这才是后面所有条数断言的前提
     mg:drop("srey_test")
+    local empty = bson.encode({})
+    local eptr, esz = empty:data()
+    t:eq(0, mg:count("srey_test", eptr, esz), "drop 之后集合为空(后续条数断言的起点)")
 
     -- insert 3 docs（sequence table → ARRAY）
     local docs = bson.encode({
@@ -29,8 +34,6 @@ runner.run(function(t)
     t:eq(3, n, "mongo insert n=3")
 
     -- count
-    local empty = bson.encode({})
-    local eptr, esz = empty:data()
     local cnt = mg:count("srey_test", eptr, esz)
     t:eq(3, cnt, "mongo count 3")
 
@@ -39,13 +42,14 @@ runner.run(function(t)
     if mgopack then
         local fptr, fsz = mgmod.doc(mgopack)
         local resp = bson.decode(fptr, fsz)
-        t:check(resp.cursor and resp.cursor.firstBatch, "find returns firstBatch")
-        t:eq(3, #resp.cursor.firstBatch, "find returns 3 docs")
+        local fb = resp and resp.cursor and resp.cursor.firstBatch
+        t:check(fb ~= nil, "find returns firstBatch")
+        t:eq(3, fb and #fb or -1, "find returns 3 docs")
         -- 字段值也要比：原来只取 #firstBatch，于是写路径丢掉 name/score 字段
         -- （或 $set 打到不存在的字段名上）只要条数还对就全看不出来。
         -- find 不保证顺序，按 id 建索引再逐条核
         local byid = {}
-        for _, d in ipairs(resp.cursor.firstBatch) do
+        for _, d in ipairs(fb or {}) do
             byid[d.id] = d
         end
         t:check(byid[1] and "alice" == byid[1].name and 90 == byid[1].score, "doc id=1 字段完好")
@@ -204,7 +208,7 @@ runner.run(function(t)
         end)
     end
     -- 有界等待，理由同 db_mysql.lua：无界 while 会把 fork 协程抛错变成整份汇总挂住
-    for _ = 1, 1500 do            -- 1500 x 20ms = 30s 上限
+    for _ = 1, 1500 do -- 1500 x 20ms = 30s 上限
         if done >= N then break end
         srey.sleep(20)
     end

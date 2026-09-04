@@ -16,6 +16,27 @@ local pgsql  = require("srey.pgsql")
 local bson   = require("lib.bson")
 local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
+-- 组包 + 查 wire 的四行模板：组出来非空、长度正数、载荷里含指定字段名，最后释放。
+-- pack 是所有权转移的 lightuserdata，漏 ud_free 会在退出时报 not free
+-- 组包调用放最后一个实参：Lua 只有末位的多值调用才会全部展开，
+-- 放中间会被截成一个返回值，size 就收到了下一个实参
+---@param t M 测试上下文
+---@param needle string wire 上必须出现的字段名
+---@param msg string 断言描述
+---@param pack lightuserdata? 组包结果
+---@param size integer? 字节数
+local function _pack_has(t, needle, msg, pack, size)
+    -- 断言不通过也得放：pack 非空而 size 不对时早退不放就是一条泄漏
+    if pack ~= nil and (size == nil or size <= 0) then
+        utils.ud_free(pack)
+    end
+    if not t:check(pack ~= nil and size ~= nil and size > 0, msg) then
+        return
+    end
+    t:check(srey.ud_str(pack, size):find(needle, 1, true) ~= nil, msg .. " 含 " .. needle)
+    utils.ud_free(pack)
+end
+
 srey.startup(function()
 runner.run(function(t)
     -- ── mysql.bind ─────────────────────────────────────────────────────
@@ -26,7 +47,7 @@ runner.run(function(t)
         b:clear()
         -- 命名参数（query attribute 用）
         b:integer("k_int8", 127)
-        b:integer("k_int64", 9007199254740991)  -- 2^53-1（lua_Integer 安全范围上限）
+        b:integer("k_int64", 9007199254740991) -- 2^53-1（lua_Integer 安全范围上限）
         b:float("k_float", 1.5)
         b:double("k_double", 3.14159265358979)
         b:string("k_str", "srey-mysql-bind")
@@ -35,7 +56,7 @@ runner.run(function(t)
         b:null("k_null")
         -- 重复 clear + 再填，验证可复用
         b:clear()
-        b:integer(nil, 42)  -- 匿名参数（stmt 占位符 ?）
+        b:integer(nil, 42) -- 匿名参数（stmt 占位符 ?）
         b:string(nil, "stmt-bind")
         -- 入参门：整数走 luaL_checkinteger，带小数的数字没有整数表示，必须抛错而不是静默取整。
         -- 注意 mysql 这边其余类型是**宽松**的：非数字非布尔一律当 NULL 绑（见 _lmysql_bind_integer），
@@ -79,18 +100,22 @@ runner.run(function(t)
 
         -- 非 number 类型自动转 NULL（bool 接受 boolean/number）
         local b2 = pbind.new(5)
-        b2:bool(nil)     -- 转 NULL
-        b2:int32(nil)    -- 转 NULL
-        b2:double(nil)   -- 转 NULL
-        b2:text(nil)     -- 转 NULL
-        b2:null()        -- 显式 NULL
+        b2:bool(nil) -- 转 NULL
+        b2:int32(nil) -- 转 NULL
+        b2:double(nil) -- 转 NULL
+        b2:text(nil) -- 转 NULL
+        b2:null() -- 显式 NULL
         b2 = nil
 
         -- nparam 越界报错而不是截断：Bind/Parse 报文里的参数个数是 Int16。
         -- 65536 截成 0 会得到一个"绑什么都无视"的 bind，-1 截成 65535 反过来按最大参数数
         -- 建头部，两种情况调用方从返回值上都看不出来
         t:eq(false, pcall(pbind.new, -1),    "pgsql.bind.new 负 nparam 被拒")
-        t:eq(false, pcall(pbind.new, 65536), "pgsql.bind.new 超 INT16_MAX 被拒")
+        -- 真实上界是 INT16_MAX(32767)，贴边各钉一条；只用 65536 的话把判据放宽到
+        -- UINT16_MAX 也照样通过
+        t:eq(true,  pcall(pbind.new, 32767), "pgsql.bind.new(INT16_MAX) 合法")
+        t:eq(false, pcall(pbind.new, 32768), "pgsql.bind.new 超 INT16_MAX 被拒")
+        t:eq(false, pcall(pbind.new, 65536), "pgsql.bind.new 超 UINT16 也被拒")
         t:eq(true,  pcall(pbind.new, 0),     "pgsql.bind.new(0) 合法")
         t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", -1),
              "pack_stmt_prepare 负 nparam 被拒")
@@ -102,12 +127,26 @@ runner.run(function(t)
         b3:timestamp(os.time())
         b3:date(20260522)
         -- uuid 吃的是 16 个**原始字节**，不是 32 个十六进制字符：长度不对时
-        -- _lpgsql_bind_uuid 静默改绑 NULL（既有契约，不是 bug）。原来这行传的是 32 字符，
-        -- 实际一直在绑 NULL，注释还写着"32 字符"——两种长度各钉一条，把契约摆明
-        b3:uuid("0123456789abcdef")
+        -- _lpgsql_bind_uuid 静默改绑 NULL（既有契约，不是 bug）。
+        -- 两种长度各组一次包、按 wire 里有没有那 16 字节区分——只调不断言的话，
+        -- 把长度判定整个删掉也全绿
+        local UU = "0123456789abcdef"
+        local b3u = pbind.new(1)
+        b3u:uuid(UU)
+        local pu, su = pgsql.pack_stmt_execute("st_uu", b3u)
+        local wu = srey.ud_str(pu, su)
+        t:check(wu:find(UU, 1, true) ~= nil, "uuid 收 16 原始字节：值进了 Bind 报文")
+        utils.ud_free(pu)
+
         local b4 = pbind.new(1)
-        b4:uuid("0123456789abcdef0123456789abcdef")
+        b4:uuid(UU .. UU)-- 32 字符，长度不符 → 静默绑 NULL
+        local pn, sn = pgsql.pack_stmt_execute("st_uu", b4)
+        local wn = srey.ud_str(pn, sn)
+        t:check(wn:find(UU, 1, true) == nil, "uuid 收 32 字符：长度不符，改绑 NULL 而非原样塞入")
+        t:check(#wn < #wu, "绑 NULL 的 Bind 报文比绑 16 字节的短")
+        utils.ud_free(pn)
         b4 = nil
+        b3u = nil
         -- 入参门：int16/int32/int64 走 lpub_check_i*，越界必须抛错（文案含 "out of range"）
         local b5 = pbind.new(2)
         t:eq(false, pcall(function() b5:int16(70000) end), "int16 拒收越界值")
@@ -126,7 +165,7 @@ runner.run(function(t)
         local b = mbind.new()
         b:string("k", "v")
         b:__gc()
-        b:__gc()  -- 重复析构幂等
+        b:__gc() -- 重复析构幂等
         -- 析构后再绑定：等同刚 new 出来的空上下文，不炸也不留旧数据
         b:integer("k2", 1)
         b:string("k3", "after-free")
@@ -160,7 +199,7 @@ runner.run(function(t)
     -- 不查元表就取载荷首址当字节缓冲，配无上界的长度即堆越界读，内容还随报文
     -- 发往数据库。现统一走 lpub_opt_buf：nil 仍绑 NULL，其余类型一律报错
     do
-        local handle = mbind.new()  -- 一个真实句柄对象（full userdata）
+        local handle = mbind.new() -- 一个真实句柄对象（full userdata）
         local pb = pbind.new(1)
         local mb = mbind.new()
 
@@ -206,26 +245,29 @@ runner.run(function(t)
         t:check(sess ~= nil, "session.new 16 字节 uuid")
 
         -- pack_endsession：无需 begin，直接打包 endSessions 命令
-        local pack, size = sess:pack_endsession()
-        t:check(pack ~= nil and size > 0, "session pack_endsession")
-        -- wire 上含 endSessions 字段名（mongo OP_MSG body 一般为 BSON 字符串）
-        local txt = srey.ud_str(pack, size)
-        t:check(txt:find("endSessions", 1, true) ~= nil, "endSessions in wire")
-        utils.ud_free(pack)
+        _pack_has(t, "endSessions", "session pack_endsession", sess:pack_endsession())
 
         -- pack_refresh
-        pack, size = sess:pack_refresh()
-        t:check(pack ~= nil and size > 0, "session pack_refresh")
-        txt = srey.ud_str(pack, size)
-        t:check(txt:find("refreshSessions", 1, true) ~= nil, "refreshSessions in wire")
-        utils.ud_free(pack)
+        _pack_has(t, "refreshSessions", "session pack_refresh", sess:pack_refresh())
 
         -- set_flag 收得下 clear_flag 的返回值：没有标志时 clear_flag 返 0，
         -- 而 0 曾被当成非法值 WARN 掉，"存档-还原"惯用法每轮都要吵一条日志
         local mg2 = mgolib.new("127.0.0.1", 27017, SSL_NAME.NONE, "d")
         local old = mg2:clear_flag()
         t:eq(0, old, "没有标志时 clear_flag 返 0")
-        t:eq(true, pcall(mg2.set_flag, mg2, old), "set_flag(0) 是空操作，不报错")
+        -- 打的是 Lua 包装层：它一度按 "== MORETOCOME" 过滤，还原惯用法传 0 会被 WARN 掉、
+        -- 根本到不了 C。这里要证明 0 一路传到底，故回读 clear_flag 确认状态没被改坏
+        t:eq(true, pcall(mg2.set_flag, mg2, old), "包装层 set_flag(0) 放行")
+        t:eq(0, mg2:clear_flag(), "set_flag(0) 之后仍是 0")
+        mg2:set_flag(mg2.FLAGS.MORETOCOME)
+        t:eq(mg2.FLAGS.MORETOCOME, mg2:clear_flag(), "包装层 set_flag(MORETOCOME) 落到 C 层")
+        -- 组合值：C 层形参是 mongo_flags 枚举、按单个枚举值判定，包装层必须先归一，
+        -- 原样传 0x10002 会被整个丢掉（回读为 0）
+        mg2:set_flag(mg2.FLAGS.MORETOCOME | mg2.FLAGS.EXHAUSTALLOWED)
+        t:eq(mg2.FLAGS.MORETOCOME, mg2:clear_flag(), "组合值里的 MORETOCOME 仍然生效")
+        -- 只给未实现的位：什么都不该置上
+        mg2:set_flag(mg2.FLAGS.CHECKSUM)
+        t:eq(0, mg2:clear_flag(), "只给 CHECKSUM 时不置任何位")
         -- 范围判定在 C 绑定里，得直接打它：Lua 侧的 ctx:set_flag 自己先按 MORETOCOME 过滤，
         -- 越界值到不了 C；而 ctx 上根本没有 check_flag，走包装层只会 pcall 一个 nil 而"通过"。
         -- 先收窄再判的话 2^32+2 会截成 MORETOCOME,把整条连接的写命令变成只发不等
@@ -274,19 +316,11 @@ runner.run(function(t)
 
         -- begin → pack_commit / pack_abort：commit/abort 依赖 begin 构造 options
         t:check(sess:begin(), "session begin (no active txn on conn)")
-        pack, size = sess:pack_commit()
-        t:check(pack ~= nil and size > 0, "session pack_commit (after begin)")
-        txt = srey.ud_str(pack, size)
-        t:check(txt:find("commitTransaction", 1, true) ~= nil, "commitTransaction in wire")
-        utils.ud_free(pack)
+        _pack_has(t, "commitTransaction", "session pack_commit (after begin)", sess:pack_commit())
         sess:done()
 
         t:check(sess:begin(), "session begin again (after done)")
-        pack, size = sess:pack_abort()
-        t:check(pack ~= nil and size > 0, "session pack_abort (after begin)")
-        txt = srey.ud_str(pack, size)
-        t:check(txt:find("abortTransaction", 1, true) ~= nil, "abortTransaction in wire")
-        utils.ud_free(pack)
+        _pack_has(t, "abortTransaction", "session pack_abort (after begin)", sess:pack_abort())
         sess:done()
 
         -- free + 重复 free 幂等

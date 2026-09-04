@@ -4,9 +4,9 @@
 #include "lib.h"
 
 // 启动 MongoDB 连通性测试任务，覆盖：
-// connect + SCRAM-SHA-256 auth → hello → ping → drop(srey_test 集合) → insert(3 文档) →
-// find → count → update → startsession + begin + commit → 关闭
-// 全部成功后将 *ok 置 1；任何步骤失败立即 LOG_ERROR 并返回（不置位）。
+// connect+auth → hello/ping → CRUD → E11000 → 断连重连 → MORETOCOME →
+// 事务(组包失败复原 / 第二个 session / 绑定分叉即拒 / begin+commit / 重连后旧 session 可用)
+// *ok 三态含义见 task_pub.h 的 name_val_ctx::val；连上那一刻即置 -1。
 void task_mongo_start(loader_ctx *loader, const char *name,
                       const char *host, uint16_t port,
                       const char *user, const char *password,

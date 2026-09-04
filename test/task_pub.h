@@ -8,7 +8,9 @@ typedef struct name_val_ctx {
     const char *name;   // 键名，NULL 表示数组终止哨兵
     // 端口号，或测试结果三态：0 没连上（依赖外部服务的用例允许如此）/ 1 通过 /
     // -1 连上了但断言失败。两态时"服务没起"与"服务起着但结果不对"观测值相同，
-    // main.c 的 optional 白名单会把后者一起吞成 network error
+    // main.c 的 optional 白名单会把后者一起吞成 network error。
+    // 0 同时代表 docker 没起与密码/权限错：建连、握手、认证在 *_connect 里是一次调用，
+    // 测试这层分不开。各 task_*_start 的 *ok 出参一律按本字段解释，不再逐个重述
     int32_t val;
 }name_val_ctx;
 
@@ -17,7 +19,7 @@ typedef enum tcp_test_prot {
     TEST_ECHO = 0x01,       // 回显：服务端原样返回收到的数据
     TEST_SSL_CHANGE,        // SSL 升级：服务端先回显再切换为 SSL 模式
     TEST_PKTYPE_CHANGE,     // 协议切换：数据体第 2 字节指定新 pack_type
-    TEST_RPC_ECHO          
+    TEST_RPC_ECHO
 }tcp_test_prot;
 
 // 在 name_val_ctx 数组中按名称查找对应值的指针，找不到返回 NULL
@@ -30,7 +32,6 @@ static inline int32_t *_get_name_val(name_val_ctx *list, const char *name) {
             return &list[i].val;
         }
     }
-    return NULL;
 }
 
 #endif//TASK_PUB_H_

@@ -10,9 +10,8 @@
 #define SLEEP_SLACK_MS 80
 
 typedef struct task_timeout_ctx {
-    int32_t _prt;
-    int32_t _err;
-    int32_t _failed;// 失败粘滞位：本回调每秒自重挂一轮，不粘住则某轮的失败被下一轮的成功覆盖
+    int32_t _failed;// 失败粘滞位：本回调每秒自重挂一轮，不粘住则某轮的失败被下一轮的成功覆盖；
+                    // 也不能等到轮末再并——中途 task_isclosing 提前 return 会把本轮的失败丢掉
     int32_t _autoclose;
     int32_t _rebind_done;// WS 重复注入只验一次；每 task 一份，timeout_test1/2/3 是三个并发 task
     name_t _rpcname;
@@ -51,20 +50,23 @@ static int32_t _timeout_sleep(task_ctx *task) {
     }
     return ERR_OK;
 }
-static int32_t _timeout_auto_close(task_ctx *task) {
+// 无返回值：本函数没有可判失败的分支（找不到就新建，找到就关掉），
+// 真正的验收是 main.c 收尾时读 get_close_count()
+static void _timeout_auto_close(task_ctx *task) {
     task_timeout_ctx *ctx = coro_get_arg(task);
     //多线程请求，会一堆告警，任务重复注册。
     if (!ctx->_autoclose) {
-        return ERR_OK;
+        return;
     }
     task_ctx *autoclose = task_grab(task->loader, task_find_name(task->loader, TASK_NAME_AUTOCLOSE));
     if (NULL == autoclose) {
         task_auto_close_start(task->loader, TASK_NAME_AUTOCLOSE, 0);
     } else {
-        task_ungrab(autoclose);
+        // 先 close 再 ungrab：反过来时若 auto_close 正在自己 teardown，
+        // ungrab 可能把引用降到 0 当场 task_free，close 就打在已释放的 task 上
         task_close(autoclose);
+        task_ungrab(autoclose);
     }
-    return ERR_OK;
 }
 static int32_t _timeout_rpc(task_ctx *task) {
     task_timeout_ctx *ctx = coro_get_arg(task);
@@ -85,7 +87,7 @@ static int32_t _timeout_rpc(task_ctx *task) {
     size_t lens;
     // copy=0：转移 bwriter.data 所有权给框架
     int32_t *sum = coro_request(dest, task, 100, bwriter.data, bwriter.offset, 0, &erro, &lens);
-    if (ERR_OK != erro || NULL == sum) {
+    if (ERR_OK != erro || NULL == sum || sizeof(int32_t) != lens) {
         LOG_WARN("coro_request type1 error.");
         goto done;
     }
@@ -728,69 +730,62 @@ static int32_t _timeout_habor_reject(task_ctx *task) {
 static void _timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
     task_timeout_ctx *ctx = coro_get_arg(task);
-    ctx->_err = 0;
     if (ERR_OK != _timeout_sleep(task)) {
-        ctx->_err = 1;
+        ctx->_failed = 1;
         LOG_WARN("sleep test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
-    if (ERR_OK != _timeout_auto_close(task)) {
-        ctx->_err = 1;
-        LOG_WARN("auto close test error.");
-    }
+    _timeout_auto_close(task);
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_rpc(task)) {
-        ctx->_err = 1;
+        ctx->_failed = 1;
         LOG_WARN("rpc call test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_udp(task)) {
-        ctx->_err = 1;
+        ctx->_failed = 1;
         LOG_WARN("udp test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_tcp(task)) {
-        ctx->_err = 1;
+        ctx->_failed = 1;
         LOG_WARN("tcp test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_http(task)) {
-        ctx->_err = 1;
+        ctx->_failed = 1;
         LOG_WARN("http test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_ws(task)) {
-        ctx->_err = 1;
+        ctx->_failed = 1;
         LOG_WARN("ws test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_habor(task)) {
-        ctx->_err = 1;
+        ctx->_failed = 1;
         LOG_WARN("habor test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_habor_reject(task)) {
-        ctx->_err = 1;
-        LOG_WARN("habor reject test error.");
-    }
-    if (ctx->_err) {
         ctx->_failed = 1;
+        LOG_WARN("habor reject test error.");
     }
     *ctx->_ok = ctx->_failed ? 0 : 1;
     task_timeout(task, 0, 1000, _timeout);
@@ -798,20 +793,16 @@ static void _timeout(task_ctx *task, uint64_t sess) {
 static void _startup(task_ctx *task) {
     task_timeout(task, 0, 100, _timeout);
 }
-static void _closing(task_ctx *task) {
-    (void)task;
-}
 void task_timeout_start(loader_ctx *loader, const char *name,
     const char *rpcname, name_val_ctx *ports, void *evssl, void *hbssl,
-    int32_t autoclose, int32_t pt, int32_t *ok) {
+    int32_t autoclose, int32_t *ok) {
     task_timeout_ctx *ctx;
     CALLOC(ctx, 1, sizeof(task_timeout_ctx));
     ctx->_rpcname = task_find_name(loader, rpcname);
-    ctx->_prt = pt;
     ctx->_autoclose = autoclose;
     ctx->_ports = ports;
     ctx->_evssl = evssl;
     ctx->_hbssl = hbssl;
     ctx->_ok = ok;
-    coro_task_register(loader, name, 0, _startup, _closing, _free, ctx);
+    coro_task_register(loader, name, 0, _startup, NULL, _free, ctx);
 }

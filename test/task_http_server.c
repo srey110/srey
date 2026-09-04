@@ -1,7 +1,6 @@
 ﻿#include "task_http_server.h"
 
 static uint16_t _port = 0;
-static int32_t _prt = 0;
 
 // 收到数据包：
 //   分片（chunked）请求 - 收齐完整请求（PROT_SLICE_END）后回复三帧 chunked 响应
@@ -49,9 +48,8 @@ static void _startup(task_ctx *task) {
         LOG_WARN("task_listen %d error.", _port);
     }
 }
-void task_http_server_start(loader_ctx *loader, const char *name, uint16_t port, int32_t pt) {
+void task_http_server_start(loader_ctx *loader, const char *name, uint16_t port) {
     _port = port;
-    _prt = pt;
     task_ctx *task = task_new(loader, name, 0, NULL, NULL, NULL);
     if (ERR_OK != task_register(task, _startup, NULL)) {
         task_free(task);

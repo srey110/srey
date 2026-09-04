@@ -469,10 +469,8 @@ static int32_t _evpub_sock_send_normal(SOCKET fd, queue_ctx *buf_s, size_t *nsen
     return rtn;
 }
 #if WITH_SSL
-// 通过 SSL 发送队列中的数据，单次 SSL_write 最多 MAX_SSL_SEND_SIZE，循环抽到发不动为止。
-// 两条都不能去掉：上限要小到 socket 一次吃得下整条记录，否则半条记录跨轮悬在缓冲里，
-// 期间 OpenSSL 发不出 TLS1.3 KeyUpdate 响应，下个 KeyUpdate 到达即报错断连；
-// 抽干循环少了，epoll 是边缘触发，socket 还可写却不再有新边沿，发送就此停住
+// 通过 SSL 发送队列中的数据。单次上限与抽干循环两条都不能去掉：超过 MAX_SSL_SEND_SIZE
+// 会让 TLS1.3 KeyUpdate 断连，不抽干则边缘触发下发送就此停住
 static int32_t _evpub_sock_send_ssl(SSL *ssl, queue_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t sended, lens;

@@ -164,6 +164,42 @@ static void test_hs_elfree(CuTest *tc) {
     hashset_free(s);
     CuAssertTrue(tc, 10 == g_bag_free_cnt);
 }
+// hashset_clear 是除 hashset_free 外唯一会自动调 elfree 的路径:两处 clear 用例都建在
+// elfree=NULL 的 int 集合上,把 hashmap_clear 里的 free_elements 删掉一样全绿
+static void test_hs_clear_elfree(CuTest *tc) {
+    g_bag_free_cnt = 0;
+    hashset *s = hashset_new(sizeof(_bag), 0, _bag_hash, _bag_cmp, _bag_free, NULL);
+    _bag b;
+    int32_t i;
+    size_t len = 16;
+    for (i = 0; i < 10; i++) {
+        b.key = i;
+        MALLOC(b.name, len);
+        snprintf(b.name, len, "name_%d", i);
+        hashset_add(s, &b);
+    }
+    hashset_clear(s, 0);
+    CuAssertTrue(tc, 0 == hashset_count(s));
+    CuAssertIntEquals(tc, 10, g_bag_free_cnt);
+    // clear 之后容器仍可用,再塞一轮由 free 收尾
+    for (i = 0; i < 3; i++) {
+        b.key = 100 + i;
+        MALLOC(b.name, len);
+        snprintf(b.name, len, "again_%d", i);
+        hashset_add(s, &b);
+    }
+    hashset_free(s);
+    CuAssertIntEquals(tc, 13, g_bag_free_cnt);
+}
+// hashset_free(NULL) 的 NULL 安全承诺:漏判会段错误终止整个 ./bin/test
+static void test_hs_free_null(CuTest *tc) {
+    uint64_t a0, f0, a1, f1;
+    mem_stat(&a0, &f0);
+    hashset_free(NULL);
+    mem_stat(&a1, &f1);
+    // 既不能崩，也不能凭空调一次 free
+    CuAssertTrue(tc, a0 == a1 && f0 == f1);
+}
 // add 覆写已存在 key 时返回旧值指针,旧值不会被自动 elfree,需调用方按需处理其内部分配
 static void test_hs_replace_elfree(CuTest *tc) {
     g_bag_free_cnt = 0;
@@ -273,4 +309,6 @@ void test_hashset(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hs_stress);
     SUITE_ADD_TEST(suite, test_hs_invalid);
     SUITE_ADD_TEST(suite, test_hs_clear_refill);
+    SUITE_ADD_TEST(suite, test_hs_clear_elfree);
+    SUITE_ADD_TEST(suite, test_hs_free_null);
 }

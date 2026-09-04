@@ -26,30 +26,37 @@ function M.new(name)
     return setmetatable({ name = name, npass = 0, nfail = 0 }, M)
 end
 
----条件断言：cond 为真累加 npass，否则累加 nfail 并 WARN
+---条件断言：cond 为真累加 npass，否则累加 nfail 并 WARN。
+---返回断言是否成立，供调用方守住后续会解引用同一个值的断言
+---（`if t:check(type(x) == "table", ...) then t:eq(1, x[1], ...) end`）：
+---不守的话 x 为 nil 时下一行 index a nil value，整模块崩在 runner.run 的 xpcall 里
 ---@param cond boolean
 ---@param msg string
+---@return boolean ok
 function M:check(cond, msg)
     if cond then
         self.npass = self.npass + 1
-    else
-        self.nfail = self.nfail + 1
-        WARN("[%s] FAIL: %s", self.name, tostring(msg))
+        return true
     end
+    self.nfail = self.nfail + 1
+    WARN("[%s] FAIL: %s", self.name, tostring(msg))
+    return false
 end
 
 ---等值断言
 ---@param expected any 期望值
 ---@param actual any 实际值
 ---@param msg string 断言描述
+---@return boolean ok 同 check，供守住后续断言
 function M:eq(expected, actual, msg)
     if expected == actual then
         self.npass = self.npass + 1
-    else
-        self.nfail = self.nfail + 1
-        WARN("[%s] FAIL %s: expected=%s, got=%s",
-             self.name, tostring(msg), tostring(expected), tostring(actual))
+        return true
     end
+    self.nfail = self.nfail + 1
+    WARN("[%s] FAIL %s: expected=%s, got=%s",
+         self.name, tostring(msg), tostring(expected), tostring(actual))
+    return false
 end
 
 ---直接记一次失败
@@ -59,8 +66,14 @@ function M:fail(msg)
     WARN("[%s] FAIL: %s", self.name, tostring(msg))
 end
 
----测试结束：打印结果，向 reporter 上报
+---测试结束：打印结果，向 reporter 上报。
+---一条断言都没跑过的模块记一次失败：npass=0,nfail=0 与真通过在汇总里完全同形，
+---测试体在第一条断言之前就 return 掉时没有任何提示
 function M:done()
+    if 0 == self.npass and 0 == self.nfail then
+        self.nfail = 1
+        WARN("[%s] no assertion executed", self.name)
+    end
     if self.nfail == 0 then
         printd("%s tested. (%d ok)", self.name, self.npass)
     else
@@ -82,8 +95,7 @@ function M.run(body)
     local t = M.new(srey.task_name())
     local ok, err = xpcall(body, debug.traceback, t)
     if not ok then
-        t.nfail = t.nfail + 1
-        WARN("[%s] test crashed: %s", t.name, tostring(err))
+        t:fail("test crashed: " .. tostring(err))
     end
     t:done()
 end

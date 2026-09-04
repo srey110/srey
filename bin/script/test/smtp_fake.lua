@@ -16,13 +16,13 @@ local CONC_N = 4
 local ROUNDS = 4
 local TERM = "\r\n.\r\n"
 
-local conns = {}        -- skid -> 连接状态
-local interleave = 0    -- 检测到的交错次数
-local mails = 0         -- 服务端确认收下的邮件数
+local conns = {} -- skid -> 连接状态
+local interleave = 0 -- 检测到的交错次数
+local mails = 0 -- 服务端确认收下的邮件数
 local fail_rset = false -- 置 true 让下一条 RSET 被回 500(一次性)，压客户端的拆连接收尾
 local ehlo_injected = false -- 客户端把问候里的裸 LF 原样拼进 EHLO 行就置 true
-local hostile = false   -- 逐连接轮换：一次发正常应答，一次发合法但刁钻的形态，两边都得走通
-local ehlo_hosts = {}   -- 收到过的 EHLO 参数,用来确认正常问候下主机名是照着服务端给的填
+local hostile = false -- 逐连接轮换：一次发正常应答，一次发合法但刁钻的形态，两边都得走通
+local ehlo_hosts = {} -- 收到过的 EHLO 参数,用来确认正常问候下主机名是照着服务端给的填
 
 local function _reply(fd, skid, resp)
     srey.send(fd, skid, resp, #resp, 1)
@@ -173,9 +173,13 @@ runner.run(function(t)
             done = done + 1
         end)
     end
-    while done < CONC_N do
+    -- 有界等待：srey.fork 的错被 _coro_cb 的 xpcall 吞掉不传播，
+    -- 协程体任一处抛错就再也不会 done+1，无界 while 会把整个模块挂到 reporter 超时
+    for _ = 1, 1500 do-- 1500 x 20ms = 30s 上限
+        if done >= CONC_N then break end
         srey.sleep(20)
     end
+    t:eq(CONC_N, done, "并发协程全部完成 (" .. done .. "/" .. CONC_N .. ")")
     for i = 1, CONC_N do
         t:check(true == got[i], "并发协程 " .. i .. ": " .. tostring(got[i]))
     end

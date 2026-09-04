@@ -143,14 +143,42 @@ static void test_mysql_bind_temporal(CuTest *tc) {
     mysql_bind_ctx mb;
     mysql_bind_init(&mb);
 
-    /* datetime + time 各种分支 */
-    mysql_bind_datetime(&mb, "dt", 1716000000); /* 2024-05-18 UTC */
-    mysql_bind_time(&mb, "t1", 0, 1, 12, 30, 45);  /* +1d 12:30:45 */
-    mysql_bind_time(&mb, "t2", 1, 2, 4, 5, 6);     /* -2d 04:05:06 */
-    mysql_bind_time(&mb, "t0", 0, 0, 0, 0, 0);     /* 0 → 1 字节包体 */
+    /* TIME 的三种编码各测一次，逐字节比 value 段：
+       只判 count 与 offset > 0 的话，正负号写错位、days 写成 2 字节都发现不了。
+       datetime 的绝对值随本机时区变，不逐字节比，另测它的长度前缀 */
+    mysql_bind_time(&mb, "t1", 0, 1, 12, 30, 45);/* +1d 12:30:45 → 8 字节包体 */
+    CuAssertIntEquals(tc, 9, (int32_t)mb.value.offset);
+    const uint8_t *v = (const uint8_t *)mb.value.data;
+    CuAssertIntEquals(tc, 8, v[0]);/* 长度前缀 */
+    CuAssertIntEquals(tc, 0, v[1]);/* is_negative */
+    CuAssertIntEquals(tc, 1, v[2]);/* days 小端 4 字节 */
+    CuAssertIntEquals(tc, 0, v[3] | v[4] | v[5]);
+    CuAssertIntEquals(tc, 12, v[6]);
+    CuAssertIntEquals(tc, 30, v[7]);
+    CuAssertIntEquals(tc, 45, v[8]);
+
+    size_t off = mb.value.offset;
+    mysql_bind_time(&mb, "t2", 1, 2, 4, 5, 6);/* -2d 04:05:06 */
+    v = (const uint8_t *)mb.value.data + off;
+    CuAssertIntEquals(tc, 8, v[0]);
+    CuAssertIntEquals(tc, 1, v[1]);/* is_negative 置位 */
+    CuAssertIntEquals(tc, 2, v[2]);
+    CuAssertIntEquals(tc, 4, v[6]);
+    CuAssertIntEquals(tc, 5, v[7]);
+    CuAssertIntEquals(tc, 6, v[8]);
+
+    off = mb.value.offset;
+    mysql_bind_time(&mb, "t0", 0, 0, 0, 0, 0);/* 全零 → 只写一个长度 0 */
+    CuAssertIntEquals(tc, (int32_t)off + 1, (int32_t)mb.value.offset);
+    CuAssertIntEquals(tc, 0, ((const uint8_t *)mb.value.data)[off]);
+
+    off = mb.value.offset;
+    mysql_bind_datetime(&mb, "dt", 1716000000);/* 2024-05-18 UTC；本机时区决定是 4 还是 7 字节 */
+    v = (const uint8_t *)mb.value.data + off;
+    CuAssertTrue(tc, 4 == v[0] || 7 == v[0]);
+    CuAssertIntEquals(tc, (int32_t)off + 1 + v[0], (int32_t)mb.value.offset);
 
     CuAssertIntEquals(tc, 4, mb.count);
-    CuAssertTrue(tc, mb.value.offset > 0);
     CuAssertTrue(tc, mb.type.offset > 0);
 
     mysql_bind_free(&mb);
@@ -335,13 +363,13 @@ static void test_mysql_pack_stmt_execute(CuTest *tc) {
     void *pack = mysql_pack_stmt_execute(&stmt0, NULL, &size);
     CuAssertPtrNotNull(tc, pack);
     char *p = (char *)pack;
-    CuAssertTrue(tc, 0x17 == (uint8_t)p[4]);                            /* COM_STMT_EXECUTE */
-    CuAssertTrue(tc, 0x78 == (uint8_t)p[5]);                            /* stmt_id 小端：低字节 */
+    CuAssertTrue(tc, 0x17 == (uint8_t)p[4]);/* COM_STMT_EXECUTE */
+    CuAssertTrue(tc, 0x78 == (uint8_t)p[5]);/* stmt_id 小端：低字节 */
     CuAssertTrue(tc, 0x56 == (uint8_t)p[6]);
     CuAssertTrue(tc, 0x34 == (uint8_t)p[7]);
     CuAssertTrue(tc, 0x12 == (uint8_t)p[8]);
-    CuAssertTrue(tc, 0x00 == (uint8_t)p[9]);                            /* flags */
-    CuAssertTrue(tc, 0x01 == (uint8_t)p[10]);                           /* iteration_count 小端 */
+    CuAssertTrue(tc, 0x00 == (uint8_t)p[9]);/* flags */
+    CuAssertTrue(tc, 0x01 == (uint8_t)p[10]);/* iteration_count 小端 */
     CuAssertTrue(tc, 0x00 == (uint8_t)p[11]);
     /* payload 长度 = 1 cmd + 4 stmt_id + 1 flags + 4 iter = 10 */
     uint32_t payload_len = (uint32_t)((uint8_t)p[0] | ((uint8_t)p[1] << 8) | ((uint8_t)p[2] << 16));
@@ -361,13 +389,13 @@ static void test_mysql_pack_stmt_execute(CuTest *tc) {
     /* mbind->count 与 params_count 不一致 → 拒绝 */
     mysql_bind_ctx mb;
     mysql_bind_init(&mb);
-    mysql_bind_integer(&mb, "a", 1);   /* count=1 */
-    pack = mysql_pack_stmt_execute(&stmt2, &mb, &size);  /* 期望 2 */
+    mysql_bind_integer(&mb, "a", 1);/* count=1 */
+    pack = mysql_pack_stmt_execute(&stmt2, &mb, &size);/* 期望 2 */
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
 
     /* mbind->count 匹配 → 成功 */
-    mysql_bind_integer(&mb, "b", 2);   /* count=2 */
+    mysql_bind_integer(&mb, "b", 2);/* count=2 */
     pack = mysql_pack_stmt_execute(&stmt2, &mb, &size);
     CuAssertPtrNotNull(tc, pack);
     p = (char *)pack;
@@ -396,12 +424,12 @@ static void test_mysql_pack_stmt_reset(CuTest *tc) {
     char *p = (char *)pack;
     /* 9 字节：3 长度 + 1 sequence + 1 cmd + 4 stmt_id */
     CuAssertTrue(tc, 9 == size);
-    CuAssertTrue(tc, 5 == (uint8_t)p[0]);                       /* payload_len = 5 */
+    CuAssertTrue(tc, 5 == (uint8_t)p[0]);/* payload_len = 5 */
     CuAssertTrue(tc, 0 == (uint8_t)p[1]);
     CuAssertTrue(tc, 0 == (uint8_t)p[2]);
-    CuAssertTrue(tc, 0 == (uint8_t)p[3]);                       /* sequence */
-    CuAssertTrue(tc, 0x1a == (uint8_t)p[4]);                    /* COM_STMT_RESET */
-    CuAssertTrue(tc, 0x0d == (uint8_t)p[5]);                    /* stmt_id 小端 */
+    CuAssertTrue(tc, 0 == (uint8_t)p[3]);/* sequence */
+    CuAssertTrue(tc, 0x1a == (uint8_t)p[4]);/* COM_STMT_RESET */
+    CuAssertTrue(tc, 0x0d == (uint8_t)p[5]);/* stmt_id 小端 */
     CuAssertTrue(tc, 0x0c == (uint8_t)p[6]);
     CuAssertTrue(tc, 0x0b == (uint8_t)p[7]);
     CuAssertTrue(tc, 0x0a == (uint8_t)p[8]);
@@ -410,7 +438,7 @@ static void test_mysql_pack_stmt_reset(CuTest *tc) {
 
 /* =======================================================================
  * mysql_pack_stmt_close —— COM_STMT_CLOSE = 0x19
- * 调用后 stmt 被 FREE，调用方不可再访问 stmt
+ * 只组包，stmt 仍然有效，由调用方另行 mysql_stmt_free（契约见 mysql_pack.h）
  * ======================================================================= */
 static void test_mysql_pack_stmt_close(CuTest *tc) {
     mysql_ctx mysql;
@@ -430,8 +458,8 @@ static void test_mysql_pack_stmt_close(CuTest *tc) {
     CuAssertTrue(tc, &mysql == stmt->mysql);
     char *p = (char *)pack;
     CuAssertTrue(tc, 9 == size);
-    CuAssertTrue(tc, 0x19 == (uint8_t)p[4]);                    /* COM_STMT_CLOSE */
-    CuAssertTrue(tc, 0x44 == (uint8_t)p[5]);                    /* stmt_id 小端 */
+    CuAssertTrue(tc, 0x19 == (uint8_t)p[4]);/* COM_STMT_CLOSE */
+    CuAssertTrue(tc, 0x44 == (uint8_t)p[5]);/* stmt_id 小端 */
     CuAssertTrue(tc, 0x55 == (uint8_t)p[6]);
     CuAssertTrue(tc, 0x66 == (uint8_t)p[7]);
     CuAssertTrue(tc, 0x77 == (uint8_t)p[8]);

@@ -168,7 +168,9 @@ LUAMOD_API int luaopen_custz(lua_State *lua) {
 /// 解包 WebSocket 帧
 /// </summary>
 /// <param name="pack" type="lightuserdata">websock_pack_ctx 指针</param>
-/// <returns type="WebSocketFrame">含 fin / prot / secprot / secpack / data / size 字段的表；secprot/secpack/data 仅在存在时填充</returns>
+/// <returns type="WebSocketFrame">含 fin / prot / secprot / secpack / data / size 字段的表；
+///   secprot / secpack 仅在存在时填充，data 恒有：它是包尾柔性数组的地址，
+///   零长帧下仍是有效指针（size 为 0），可直接连同 size 转手给取 buf 的接口</returns>
 static int32_t _lprot_websock_unpack(lua_State *lua) {
     LPUB_LUD_ARG(lua, struct websock_pack_ctx, 1, pack);
     lua_createtable(lua, 0, 6);
@@ -188,10 +190,11 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
     }
     size_t lens;
     void *data = websock_data(pack, &lens);
-    if (lens > 0) {
-        lua_pushlightuserdata(lua, data);
-        lua_setfield(lua, -2, "data");
-    }
+    // 零长帧也照推：websock_data 返的是包尾柔性数组的地址，恒非 NULL，
+    // 不设字段的话上层拿到 nil，转手喂给 lpub_check_buf 一族就是
+    // "string or light userdata expected" 抛错
+    lua_pushlightuserdata(lua, data);
+    lua_setfield(lua, -2, "data");
     lua_pushinteger(lua, lens);
     lua_setfield(lua, -2, "size");
     return 1;
@@ -519,9 +522,8 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
-    // 头部块上限：Lua 侧组包要按它累计判定，硬编码一份迟早与 http.h 分叉
-    /// <field name="max_headlens" type="integer">HTTP 头部块字节上限，取自 prots_pub.h 的
-    /// HTTP_MAX_HEADLENS</field>
+    /// <field name="max_headlens" type="integer">HTTP 接收侧的头部块字节上限，取自 prots_pub.h
+    /// 的 HTTP_MAX_HEADLENS；组包侧不按它判，要卡长度的调用方自己拿它比</field>
     lua_pushinteger(lua, (lua_Integer)HTTP_MAX_HEADLENS);
     lua_setfield(lua, -2, "max_headlens");
     return 1;

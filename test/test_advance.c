@@ -50,7 +50,17 @@ static void test_router_url_normalize(CuTest *tc) {
     ZERO(&ctx, sizeof(ctx));
     ctx.url = &url;
     CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a/%2e%2e/b", 11, &ctx) < 0);
-    /* 编码过的点段解出来仍是 ".."，同样不折叠；顺带盯住 decode 真在做事 */
+    /* 上面几条 decode 开关都不影响结果（编码与未编码同样不命中），单独钉一条：
+       参数值里的 %2D 必须被解成 '-'，decode 整个关掉这条就变红 */
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_add_index(r, "GET", 3, "/dec/{p}", 8) >= 0);
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/dec/x%2Dy", 10, &ctx) >= 0);
+    CuAssertIntEquals(tc, 1, ctx.params_n);
+    CuAssertIntEquals(tc, 3, (int32_t)ctx.params[0].val_len);
+    CuAssertTrue(tc, 0 == memcmp(ctx.params[0].val, "x-y", 3));
+
+    /* "." 也是普通文本段 */
     ZERO(&ctx, sizeof(ctx));
     ctx.url = &url;
     CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a/./b", 6, &ctx) < 0);

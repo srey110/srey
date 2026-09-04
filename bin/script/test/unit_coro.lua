@@ -150,7 +150,7 @@ runner.run(function(t)
     -- RECV 属于 message_may_keep 为真的那六个 mtype（连接类，sess 即 skid，高频复用）。
     -- 摘空 waiters 后条目应当留着；直到 CLOSE 把 keep 清 false，它才真正可删。
     do
-        local s0 = _sessions()   -- 连之前先取基线
+        local s0 = _sessions() -- 连之前先取基线
         local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT, NET_EV.ACCEPT)
         local fd, skid = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
         t:check(fd and INVALID_SOCK ~= fd, "connect 回自己的监听口")

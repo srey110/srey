@@ -85,7 +85,6 @@ runner.run(function(t)
     -- 按位置取值。失败时少返几个的话，多赋值会静默补 nil（还能撑住），但直接把返回值
     -- 塞进另一个调用（srey.send(fd, skid, websock.pack_handshake(...))）就整体错位了
     do
-        local websock = require("srey.websock")
         local idx, prots = websock.secprots(nil)
         t:eq(nil, idx,   "secprots(nil) 第一个返回值为 nil")
         t:eq(nil, prots, "secprots(nil) 第二个返回值也是 nil，个数仍为 2")

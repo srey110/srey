@@ -350,11 +350,16 @@ end
 ---服务端的失败（重复键、校验不过）因为没有响应可解析而一律报成功；读命令内部会临时清掉再恢复。
 ---标志挂在连接上而不是命令上，多协程共用一条连接时别人的写也会跟着变成 fire-and-forget，
 ---批量写完请及时清掉
----@param flag integer ctx.FLAGS 枚举值
+---@param flag integer ctx.FLAGS 枚举值的按位或；0 表示清空（读命令的"存档-还原"惯用法
+--- `local old = ctx:clear_flag() ... ctx:set_flag(old)` 里 old 可能就是 0）
 function ctx:set_flag(flag)
-    if ctx.FLAGS.MORETOCOME ~= flag then
-        WARN("mongo set_flag: flag %s not implemented by current mongo_set_flag (only MORETOCOME supported), ignored.", tostring(flag))
+    local known = ctx.FLAGS.CHECKSUM | ctx.FLAGS.MORETOCOME | ctx.FLAGS.EXHAUSTALLOWED
+    if 0 ~= (flag & ~known) then
+        WARN("mongo set_flag: flag %s has bits outside mongo_flags, ignored.", tostring(flag))
         return
+    end
+    if 0 ~= (flag & ~ctx.FLAGS.MORETOCOME) then
+        WARN("mongo set_flag: only MORETOCOME is implemented by mongo_set_flag, other bits are dropped.")
     end
     self.mongo:set_flag(flag)
 end

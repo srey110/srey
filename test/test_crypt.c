@@ -1,6 +1,13 @@
 ﻿#include "test_crypt.h"
 #include "lib.h"
 
+// SCRAM 用例共用的盐：全文件十来处用同一组值，散着写会让"改一处忘一处"看起来像算法坏了
+static const char _SALT16[16] = {
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
+};
+static const char _SALT8[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
 /* =======================================================================
  * base64 编解码
  * ======================================================================= */
@@ -21,7 +28,7 @@ static void test_base64(CuTest *tc) {
     int n = (int)(sizeof(cases) / sizeof(cases[0]));
 
     for (int i = 0; i < n; i++) {
-        const char *plain  = cases[i][0];
+        const char *plain = cases[i][0];
         const char *expect = cases[i][1];
         size_t plen = strlen(plain);
 
@@ -39,7 +46,9 @@ static void test_base64(CuTest *tc) {
 
     /* 二进制数据往返验证（含 \0 字节）*/
     char bin[16];
-    for (int i = 0; i < 16; i++) bin[i] = (char)i;
+    for (int i = 0; i < 16; i++) {
+        bin[i] = (char)i;
+    }
     elen = bs64_encode(bin, 16, enc);
     dlen = bs64_decode(enc, elen, dec);
     CuAssertTrue(tc, 16 == dlen);
@@ -57,9 +66,9 @@ static void test_crc(CuTest *tc) {
     uint16_t c16 = crc16(data, len);
     CuAssertTrue(tc, 0xBB3D == c16);
 
-    /* 空数据不崩溃 */
-    crc16("", 0);
-    crc32("", 0);
+    /* 空数据：init 值原样出来，只调不断言的话返回垃圾也看不出来 */
+    CuAssertTrue(tc, 0x0000 == crc16("", 0));
+    CuAssertTrue(tc, 0x00000000 == crc32("", 0));
 
     /* CRC-32 标准值（IEEE 802.3）*/
     uint32_t c32 = crc32(data, len);
@@ -76,12 +85,9 @@ static void test_crc(CuTest *tc) {
 /* =======================================================================
  * digest（MD5 / SHA1 / SHA256 / SHA512）
  * ======================================================================= */
-
-/* 将 hash 字节转换为十六进制字符串 */
-
 static void test_digest(CuTest *tc) {
     char hash[DG_BLOCK_SIZE];
-    char hex[DG_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(DG_BLOCK_SIZE)];
     digest_ctx dg;
     size_t hlen;
 
@@ -157,7 +163,7 @@ static void test_digest(CuTest *tc) {
  * ======================================================================= */
 static void test_hmac(CuTest *tc) {
     char hash[DG_BLOCK_SIZE];
-    char hex[DG_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(DG_BLOCK_SIZE)];
     hmac_ctx hm;
     size_t hlen;
 
@@ -313,11 +319,7 @@ static void _scram_free_msg(char **pmsg) {
 static int _scram_handshake(const char *method,
     const char *pwd_cli, const char *pwd_srv,
     const char *cbind_cli, const char *cbind_srv, size_t cbind_len) {
-    static const char salt[16] = {
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
-    };
-    scram_ctx *cli = scram_init(method, 1);
+        scram_ctx *cli = scram_init(method, 1);
     scram_ctx *srv = scram_init(method, 0);
     char *cf = NULL, *sf = NULL, *clf = NULL, *svf = NULL;
     int rtn = ERR_FAILED;
@@ -334,20 +336,20 @@ static int _scram_handshake(const char *method,
     if (cbind_srv && cbind_len > 0) {
         scram_set_cbind(srv, cbind_srv, cbind_len);
     }
-    scram_set_salt(srv, (char *)salt, sizeof(salt));
+    scram_set_salt(srv, (char *)_SALT16, sizeof(_SALT16));
     scram_set_iter(srv, 4096);
 
     cf = scram_first_message(cli);
     if (!cf || ERR_OK != scram_parse_first_message(srv, cf, strlen(cf))) {
         goto out;
     }
-    FREE(cf); cf = NULL;
+    FREE(cf);// FREE 宏自带置 NULL
 
     sf = scram_first_message(srv);
     if (!sf || ERR_OK != scram_parse_first_message(cli, sf, strlen(sf))) {
         goto out;
     }
-    FREE(sf); sf = NULL;
+    FREE(sf);// FREE 宏自带置 NULL
 
     clf = scram_final_message(cli);
     if (!clf || ERR_OK != scram_check_final_message(srv, clf, strlen(clf))) {
@@ -390,16 +392,12 @@ static void test_scram_handshake(CuTest *tc) {
         "SCRAM-SHA-256", "", "", NULL, NULL, 0));
     /* 握手后服务端能正确获取用户名 */
     {
-        static const char salt[16] = {
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
-        };
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
         scram_set_user(cli, "alice", 5);
         scram_set_pwd(cli, "pass", 4);
         scram_set_pwd(srv, "pass", 4);
-        scram_set_salt(srv, (char *)salt, sizeof(salt));
+        scram_set_salt(srv, (char *)_SALT16, sizeof(_SALT16));
         scram_set_iter(srv, 4096);
         char *cf = scram_first_message(cli);
         scram_parse_first_message(srv, cf, strlen(cf));
@@ -540,7 +538,6 @@ static void test_scram_plus_requires_cbind(CuTest *tc) {
 
     /* 客户端缺数据时在自己的 final 就返 NULL，不用等服务端算出失配 */
     {
-        char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
         scram_ctx *cli = scram_init("SCRAM-SHA-256-PLUS", 1);
         scram_ctx *srv = scram_init("SCRAM-SHA-256-PLUS", 0);
         CuAssertPtrNotNull(tc, cli);
@@ -548,7 +545,7 @@ static void test_scram_plus_requires_cbind(CuTest *tc) {
         scram_set_user(cli, "user", 4);
         scram_set_pwd(cli, "pass", 4);
         scram_set_pwd(srv, "pass", 4);
-        scram_set_salt(srv, salt, sizeof(salt));
+        scram_set_salt(srv, (char *)_SALT8, sizeof(_SALT8));
         scram_set_iter(srv, 4096);
         scram_set_cbind(srv, cbind, sizeof(cbind));
 
@@ -596,7 +593,6 @@ static int32_t _scram_parse_iter(CuTest *tc, const char *iter, int32_t *outiter)
  * 而与客户端的 base64("y,,") 失配，本用例即失败
  * ----------------------------------------------------------------------- */
 static void test_scram_gs2_y_handshake(CuTest *tc) {
-    char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
     scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
     scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
     CuAssertPtrNotNull(tc, cli);
@@ -604,7 +600,7 @@ static void test_scram_gs2_y_handshake(CuTest *tc) {
     scram_set_user(cli, "user", 4);
     scram_set_pwd(cli, "pencil", 6);
     scram_set_pwd(srv, "pencil", 6);
-    scram_set_salt(srv, salt, sizeof(salt));
+    scram_set_salt(srv, (char *)_SALT8, sizeof(_SALT8));
     scram_set_iter(srv, 4096);
     // 非 PLUS 客户端拿到绑定材料 → 转 CAPABLE，GS2 头发 "y,,"
     char cb[32] = { 0x5a };
@@ -812,23 +808,22 @@ static void test_scram_failures(CuTest *tc) {
 
     /* 服务端签名被篡改 → 客户端拒绝 */
     {
-        static const char salt[16] = {
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
-        };
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
         scram_set_user(cli, "user", 4);
         scram_set_pwd(cli, "pass", 4);
         scram_set_pwd(srv, "pass", 4);
-        scram_set_salt(srv, (char *)salt, sizeof(salt));
+        scram_set_salt(srv, (char *)_SALT16, sizeof(_SALT16));
         scram_set_iter(srv, 4096);
 
         char *cf = scram_first_message(cli);
+        CuAssertPtrNotNull(tc, cf);
         scram_parse_first_message(srv, cf, strlen(cf)); FREE(cf);
         char *sf = scram_first_message(srv);
+        CuAssertPtrNotNull(tc, sf);
         scram_parse_first_message(cli, sf, strlen(sf)); FREE(sf);
         char *clf = scram_final_message(cli);
+        CuAssertPtrNotNull(tc, clf);
         scram_check_final_message(srv, clf, strlen(clf)); _scram_free_msg(&clf);
 
         char *svf = scram_final_message(srv);
@@ -872,16 +867,12 @@ static void test_scram_failures(CuTest *tc) {
 
     /* 用户名含 ',' 和 '='：消息中正确转义，服务端正确还原 */
     {
-        static const char salt[16] = {
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
-        };
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
         scram_set_user(cli, "user,=test", 10);
         scram_set_pwd(cli, "pass", 4);
         scram_set_pwd(srv, "pass", 4);
-        scram_set_salt(srv, (char *)salt, sizeof(salt));
+        scram_set_salt(srv, (char *)_SALT16, sizeof(_SALT16));
         scram_set_iter(srv, 4096);
 
         char *first = scram_first_message(cli);
@@ -950,7 +941,6 @@ static void test_scram_setters(CuTest *tc) {
     // 让 PBKDF2 退化成无盐单轮（与 pwd / PLUS cbind 那两道守卫同形）
     {
         char cmsg[] = "n,,n=admin,r=Ym9ndXNub25jZQ==";
-        char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
         // 两个都没设
         scram_ctx *s0 = scram_init("SCRAM-SHA-256", 0);
         CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(s0, cmsg, sizeof(cmsg) - 1));
@@ -965,13 +955,13 @@ static void test_scram_setters(CuTest *tc) {
         // 只设了 salt，缺 iter
         scram_ctx *s2 = scram_init("SCRAM-SHA-256", 0);
         CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(s2, cmsg, sizeof(cmsg) - 1));
-        scram_set_salt(s2, salt, sizeof(salt));
+        scram_set_salt(s2, (char *)_SALT8, sizeof(_SALT8));
         CuAssertTrue(tc, NULL == scram_first_message(s2));
         scram_free(s2);
         // 两个都设齐即放行
         scram_ctx *s3 = scram_init("SCRAM-SHA-256", 0);
         CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(s3, cmsg, sizeof(cmsg) - 1));
-        scram_set_salt(s3, salt, sizeof(salt));
+        scram_set_salt(s3, (char *)_SALT8, sizeof(_SALT8));
         scram_set_iter(s3, 4096);
         char *ok = scram_first_message(s3);
         CuAssertPtrNotNull(tc, ok);
@@ -981,8 +971,7 @@ static void test_scram_setters(CuTest *tc) {
     // scram_set_salt：客户端调用被拒
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
-        char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-        CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(cli, salt, sizeof(salt)));
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(cli, (char *)_SALT8, sizeof(_SALT8)));
         CuAssertTrue(tc, NULL == cli->salt);
         CuAssertIntEquals(tc, 0, cli->saltlen);
         scram_free(cli);
@@ -992,11 +981,11 @@ static void test_scram_setters(CuTest *tc) {
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
         CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(srv, NULL, 8));
         CuAssertTrue(tc, NULL == srv->salt);
-        char salt[4] = { 9, 9, 9, 9 };
-        CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(srv, salt, 0));
+        char salt4[4] = { 9, 9, 9, 9 };
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(srv, salt4, 0));
         CuAssertTrue(tc, NULL == srv->salt);
-        // 正常路径
-        CuAssertIntEquals(tc, ERR_OK, scram_set_salt(srv, salt, sizeof(salt)));
+        // 正常路径：本段专验长度原样落库，故用一个与 _SALT8 长度不同的盐
+        CuAssertIntEquals(tc, ERR_OK, scram_set_salt(srv, salt4, sizeof(salt4)));
         CuAssertPtrNotNull(tc, srv->salt);
         CuAssertIntEquals(tc, 4, srv->saltlen);
         // 再次设置覆盖之前
@@ -1047,7 +1036,6 @@ static void test_scram_setters(CuTest *tc) {
  * 两处原先都落到 _scram_salt_password 的 strlen(NULL) 上
  * ----------------------------------------------------------------------- */
 static void test_scram_pwd_required(CuTest *tc) {
-    char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
 
     scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
     scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
@@ -1055,7 +1043,7 @@ static void test_scram_pwd_required(CuTest *tc) {
     CuAssertPtrNotNull(tc, srv);
     scram_set_user(cli, "user", 4);
     scram_set_pwd(cli, "pass", 4);
-    scram_set_salt(srv, salt, sizeof(salt));
+    scram_set_salt(srv, (char *)_SALT8, sizeof(_SALT8));
     scram_set_iter(srv, 4096);
     char *clf = scram_first_message(cli);
     CuAssertPtrNotNull(tc, clf);
@@ -1078,7 +1066,7 @@ static void test_scram_pwd_required(CuTest *tc) {
     CuAssertPtrNotNull(tc, srv2);
     scram_set_user(cli2, "user", 4);
     scram_set_pwd(srv2, "pass", 4);
-    scram_set_salt(srv2, salt, sizeof(salt));
+    scram_set_salt(srv2, (char *)_SALT8, sizeof(_SALT8));
     scram_set_iter(srv2, 4096);
     char *clf2 = scram_first_message(cli2);
     CuAssertPtrNotNull(tc, clf2);
@@ -1137,10 +1125,10 @@ static void test_scram_embedded_nul(CuTest *tc) {
  * cipher —— AES / DES 加解密往返验证
  * ======================================================================= */
 static void test_cipher(CuTest *tc) {
-    const char *key16  = "0123456789abcdef"; /* AES-128 密钥（16 字节）*/
-    const char *iv16   = "abcdef0123456789"; /* CBC/CFB/OFB/CTR IV */
-    const char *plain  = "Hello, Cipher!!!"; /* 整块明文（16 字节）*/
-    const char *plain2 = "short";            /* 非整块明文（5 字节）*/
+    const char *key16 = "0123456789abcdef"; /* AES-128 密钥（16 字节）*/
+    const char *iv16 = "abcdef0123456789"; /* CBC/CFB/OFB/CTR IV */
+    const char *plain = "Hello, Cipher!!!"; /* 整块明文（16 字节）*/
+    const char *plain2 = "short";/* 非整块明文（5 字节）*/
     char enc_buf[64], dec_buf[64];
     size_t enc_len, dec_len;
     cipher_ctx enc, dec;
@@ -1219,7 +1207,7 @@ static void test_cipher_padding_zeroed(CuTest *tc) {
 
     size_t enc_len;
     CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, enc_buf, &enc_len));
-    CuAssertTrue(tc, 32 == (int)enc_len);                 /* 16 数据 + 16 填充块 */
+    CuAssertTrue(tc, 32 == (int)enc_len);/* 16 数据 + 16 填充块 */
 
     memset(dec_buf, 0x5a, sizeof(dec_buf));
     size_t dec_len;
@@ -1267,7 +1255,7 @@ static void test_cipher_decrypt_bad_padding(CuTest *tc) {
  * ======================================================================= */
 static void test_hmac_variants(CuTest *tc) {
     char hash[DG_BLOCK_SIZE];
-    char hex[DG_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(DG_BLOCK_SIZE)];
     hmac_ctx hm;
     size_t hlen;
 
@@ -1314,7 +1302,7 @@ static void test_hmac_variants(CuTest *tc) {
 static void test_md2(CuTest *tc) {
     md2_ctx ctx;
     char hash[MD2_BLOCK_SIZE];
-    char hex[MD2_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(MD2_BLOCK_SIZE)];
 
     /* RFC 1319 Appendix A.5 测试向量 */
     /* MD2("") = 8350e5a3e24c153df2275c9f80692773 */
@@ -1380,7 +1368,7 @@ static void test_md2(CuTest *tc) {
 static void test_md4(CuTest *tc) {
     md4_ctx ctx;
     char hash[MD4_BLOCK_SIZE];
-    char hex[MD4_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(MD4_BLOCK_SIZE)];
 
     /* MD4("") = 31d6cfe0d16ae931b73c59d7e0c089c0 */
     md4_init(&ctx);
@@ -1493,7 +1481,7 @@ static void test_md4_update_chunked(CuTest *tc) {
 static void test_md5_nist(CuTest *tc) {
     md5_ctx ctx;
     char hash[MD5_BLOCK_SIZE];
-    char hex[MD5_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(MD5_BLOCK_SIZE)];
     struct { const char *in; const char *expect; } cases[] = {
         { "",                                                                "d41d8cd98f00b204e9800998ecf8427e" },
         { "a",                                                               "0cc175b9c0f1b6a831c399e269772661" },
@@ -1521,7 +1509,7 @@ static void test_md5_nist(CuTest *tc) {
     md5_final(&ctx, hash);
     tohex(hash, MD5_BLOCK_SIZE, hex, 1);
     char hash2[MD5_BLOCK_SIZE];
-    char hex2[MD5_BLOCK_SIZE * 2 + 1];
+    char hex2[HEX_ENSIZE(MD5_BLOCK_SIZE)];
     // 分段 update 与整体 update 结果一致
     md5_init(&ctx);
     md5_update(&ctx, buf, 400);
@@ -1535,7 +1523,7 @@ static void test_md5_nist(CuTest *tc) {
 static void test_sha1_nist(CuTest *tc) {
     sha1_ctx ctx;
     char hash[SHA1_BLOCK_SIZE];
-    char hex[SHA1_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(SHA1_BLOCK_SIZE)];
     struct { const char *in; const char *expect; } cases[] = {
         { "",     "da39a3ee5e6b4b0d3255bfef95601890afd80709" },
         { "abc",  "a9993e364706816aba3e25717850c26c9cd0d89d" },
@@ -1566,7 +1554,7 @@ static void test_sha1_nist(CuTest *tc) {
 static void test_sha256_nist(CuTest *tc) {
     sha256_ctx ctx;
     char hash[SHA256_BLOCK_SIZE];
-    char hex[SHA256_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(SHA256_BLOCK_SIZE)];
     struct { const char *in; const char *expect; } cases[] = {
         { "",     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
         { "abc",  "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
@@ -1587,7 +1575,7 @@ static void test_sha256_nist(CuTest *tc) {
     sha256_init(&ctx);
     sha256_update(&ctx, msg, mlen);
     sha256_final(&ctx, hash);
-    char hex_whole[SHA256_BLOCK_SIZE * 2 + 1];
+    char hex_whole[HEX_ENSIZE(SHA256_BLOCK_SIZE)];
     tohex(hash, SHA256_BLOCK_SIZE, hex_whole, 1);
     sha256_ctx ctx2;
     sha256_init(&ctx2);
@@ -1595,7 +1583,7 @@ static void test_sha256_nist(CuTest *tc) {
         sha256_update(&ctx2, msg + i, 1);
     }
     sha256_final(&ctx2, hash);
-    char hex_byte[SHA256_BLOCK_SIZE * 2 + 1];
+    char hex_byte[HEX_ENSIZE(SHA256_BLOCK_SIZE)];
     tohex(hash, SHA256_BLOCK_SIZE, hex_byte, 1);
     CuAssertStrEquals(tc, hex_whole, hex_byte);
     // 已知值：SHA256("The quick brown fox jumps over the lazy dog")
@@ -1606,7 +1594,7 @@ static void test_sha256_nist(CuTest *tc) {
 static void test_sha512_nist(CuTest *tc) {
     sha512_ctx ctx;
     char hash[SHA512_BLOCK_SIZE];
-    char hex[SHA512_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(SHA512_BLOCK_SIZE)];
     sha512_init(&ctx);
     sha512_update(&ctx, "", 0);
     sha512_final(&ctx, hash);
@@ -1665,21 +1653,17 @@ static void _hex_to_bytes(const char *hex, uint8_t *out, size_t outlen) {
     }
 }
 
-/* NIST SP 800-38A 附录 F 的 AES-128 分组模式已知答案。同文件的 test_aes_direct 走的是
- * aes_crypt 直调（见下方 test_aes_direct），只钉了单块 ECB（F.1.1/F.1.3/F.1.5）；
- * 四个链式/流式模式此前全是
- * round-trip + 相对断言，而 _cipher_ofb_model / _cipher_ctr_model 加解密共用同一段代码，
- * 往返恒成立。这里用官方向量逐块钉密文，并且每个模式都跑**两块**——
- * 只跑第一块的话 CBC 的链接与 CTR 的计数器进位都不会被执行到
- * （_cipher_inc_iv 改成小端进位时，正是第二块起才对不上）。
- * key / plaintext 与 test_aes_direct 那三条同源，都是 SP 800-38A 的那一组 */
+/* cipher 层各模式的 NIST SP 800-38A 已知答案。走 cipher_block（下方 test_aes_direct
+ * 走的是 aes_crypt 直调，两条路都要钉）。每个模式跑**两块**：只跑第一块的话
+ * CBC 的链接与 CTR 的计数器进位都执行不到（_cipher_inc_iv 改成小端进位时正是第二块起才不对）。
+ * key / plaintext 与 test_aes_direct 同源 */
 static void _cipher_kat(CuTest *tc, cipher_model model, const char *ivhex,
     const char *c1hex, const char *c2hex) {
     const char *keyhex = "2b7e151628aed2a6abf7158809cf4f3c";
     const char *p1hex = "6bc1bee22e409f96e93d7e117393172a";
     const char *p2hex = "ae2d8a571e03ac9c9eb76fac45af8e51";
     uint8_t key[16], iv[16], p1[16], p2[16];
-    char hex[AES_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(AES_BLOCK_SIZE)];
     cipher_ctx enc, dec;
     void *out;
     size_t olen;
@@ -1689,7 +1673,9 @@ static void _cipher_kat(CuTest *tc, cipher_model model, const char *ivhex,
     _hex_to_bytes(p2hex, p2, 16);
 
     cipher_init(&enc, AES, model, (const char *)key, 16, 128, 1);
-    cipher_iv(&enc, (const char *)iv, 16);
+    if (ECB != model) {
+        cipher_iv(&enc, (const char *)iv, 16);
+    }
     out = cipher_block(&enc, p1, 16, &olen);
     CuAssertPtrNotNull(tc, out);
     CuAssertTrue(tc, 16 == olen);
@@ -1705,7 +1691,9 @@ static void _cipher_kat(CuTest *tc, cipher_model model, const char *ivhex,
     _hex_to_bytes(c1hex, c1, 16);
     _hex_to_bytes(c2hex, c2, 16);
     cipher_init(&dec, AES, model, (const char *)key, 16, 128, 0);
-    cipher_iv(&dec, (const char *)iv, 16);
+    if (ECB != model) {
+        cipher_iv(&dec, (const char *)iv, 16);
+    }
     out = cipher_block(&dec, c1, 16, &olen);
     CuAssertPtrNotNull(tc, out);
     CuAssertTrue(tc, 0 == memcmp(out, p1, 16));
@@ -1714,6 +1702,10 @@ static void _cipher_kat(CuTest *tc, cipher_model model, const char *ivhex,
     CuAssertTrue(tc, 0 == memcmp(out, p2, 16));
 }
 static void test_cipher_nist_modes(CuTest *tc) {
+    /* F.1.1 ECB-AES128.Encrypt（ECB 无 IV，helper 跳过 cipher_iv）。
+       cipher 层的 ECB 原来只有 round-trip，把加解密都换成恒等映射也全绿 */
+    _cipher_kat(tc, ECB, "00000000000000000000000000000000",
+        "3ad77bb40d7a3660a89ecaf32466ef97", "f5d3d58503b9699de785895a96fdbaaf");
     /* F.2.1 CBC-AES128.Encrypt */
     _cipher_kat(tc, CBC, "000102030405060708090a0b0c0d0e0f",
         "7649abac8119b246cee98e9b12e9197d", "5086cb9b507219ee95db113a917678b2");
@@ -1731,7 +1723,7 @@ static void test_cipher_nist_modes(CuTest *tc) {
 // aes_init / aes_crypt 直调，NIST FIPS-197 Appendix A/B 标准向量 + 128/192/256 keybits
 static void test_aes_direct(CuTest *tc) {
     aes_ctx aes;
-    char hex[AES_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(AES_BLOCK_SIZE)];
 
     // ── AES-128 ECB（NIST SP 800-38A F.1.1）──
     {
@@ -1806,7 +1798,7 @@ static void test_des_direct(CuTest *tc) {
         _hex_to_bytes("4E6F772069732074", pt, 8); // "Now is t"
         des_init(&des, (char *)key, 8, 0, 1);
         char *ct = des_crypt(&des, pt);
-        char hex[DES_BLOCK_SIZE * 2 + 1];
+        char hex[HEX_ENSIZE(DES_BLOCK_SIZE)];
         tohex(ct, DES_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, "3fa40e8a984d4815", hex);
         // 解密回明文
@@ -1851,7 +1843,7 @@ static void test_des_direct(CuTest *tc) {
         _hex_to_bytes("0123456789ABCDEF", key, 8);
         _hex_to_bytes("4E6F772069732074", pt, 8);
         des_init(&des, (char *)key, 8, 1, 1);
-        char hex[DES_BLOCK_SIZE * 2 + 1];
+        char hex[HEX_ENSIZE(DES_BLOCK_SIZE)];
         tohex(des_crypt(&des, pt), DES_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, "3fa40e8a984d4815", hex);
     }
@@ -1892,14 +1884,14 @@ static void test_padding(CuTest *tc) {
 
     /* ── ZeroPadding：填充字节为 0 ── */
     ZERO(out, sizeof(out));
-    _padding_data(ZeroPadding, "abc", 3, out, 8);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(ZeroPadding, "abc", 3, out, 8));
     CuAssertTrue(tc, 0 == memcmp(out, "abc", 3));
     CuAssertTrue(tc, 0 == out[3] && 0 == out[4] && 0 == out[5]
                     && 0 == out[6] && 0 == out[7]);
 
     /* ── PKCS57：填充字节值等于填充长度 ── */
     ZERO(out, sizeof(out));
-    _padding_data(PKCS57, "abc", 3, out, 8);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(PKCS57, "abc", 3, out, 8));
     CuAssertTrue(tc, 0 == memcmp(out, "abc", 3));
     /* 剩余 5 字节均为 5 */
     for (int i = 3; i < 8; i++) {
@@ -1908,7 +1900,7 @@ static void test_padding(CuTest *tc) {
 
     /* ── ANSIX923：前置零 + 末尾填充长度 ── */
     ZERO(out, sizeof(out));
-    _padding_data(ANSIX923, "ab", 2, out, 8);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(ANSIX923, "ab", 2, out, 8));
     CuAssertTrue(tc, 0 == memcmp(out, "ab", 2));
     /* 中间 5 字节零 */
     for (int i = 2; i < 7; i++) {
@@ -1978,7 +1970,7 @@ static void test_padding_extra(CuTest *tc) {
     // ── PKCS57 在 16-byte block 边界（AES）──
     uint8_t out16[16];
     ZERO(out16, sizeof(out16));
-    _padding_data(PKCS57, "hello", 5, out16, 16);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(PKCS57, "hello", 5, out16, 16));
     CuAssertTrue(tc, 0 == memcmp(out16, "hello", 5));
     // 剩 11 字节都应该是 11 (0x0B)
     for (int i = 5; i < 16; i++) {
@@ -1988,7 +1980,7 @@ static void test_padding_extra(CuTest *tc) {
     // ── PKCS57 dlens=0：整 block 都填充 reqlens 字节 ──
     uint8_t pblock[16];
     ZERO(pblock, sizeof(pblock));
-    _padding_data(PKCS57, NULL, 0, pblock, 16);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(PKCS57, NULL, 0, pblock, 16));
     for (int i = 0; i < 16; i++) {
         CuAssertIntEquals(tc, 16, pblock[i]);
     }
@@ -1996,7 +1988,7 @@ static void test_padding_extra(CuTest *tc) {
     // ── ZeroPadding 在 32-byte block ──
     uint8_t out32[32];
     memset(out32, 0xff, sizeof(out32));
-    _padding_data(ZeroPadding, "abcd", 4, out32, 32);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(ZeroPadding, "abcd", 4, out32, 32));
     CuAssertTrue(tc, 0 == memcmp(out32, "abcd", 4));
     for (int i = 4; i < 32; i++) {
         CuAssertIntEquals(tc, 0, out32[i]);
@@ -2005,7 +1997,7 @@ static void test_padding_extra(CuTest *tc) {
     // ── ANSIX923 在 16-byte block 边界 ──
     uint8_t ansi[16];
     memset(ansi, 0xff, sizeof(ansi));
-    _padding_data(ANSIX923, "ABC", 3, ansi, 16);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(ANSIX923, "ABC", 3, ansi, 16));
     CuAssertTrue(tc, 0 == memcmp(ansi, "ABC", 3));
     // 中间 12 字节为 0
     for (int i = 3; i < 15; i++) {
@@ -2023,7 +2015,7 @@ static void test_padding_extra(CuTest *tc) {
     // ── NoPadding：默认分支不写 padding 字节（保持原状）──
     uint8_t nopad[16];
     memset(nopad, 0xab, sizeof(nopad));
-    _padding_data(NoPadding, "xy", 2, nopad, 16);
+    CuAssertIntEquals(tc, ERR_OK, _padding_data(NoPadding, "xy", 2, nopad, 16));
     // data 部分已拷贝
     CuAssertTrue(tc, 0 == memcmp(nopad, "xy", 2));
     // padding 区域应保留初始值 0xab（NoPadding 不修改）
@@ -2043,9 +2035,15 @@ static void test_padding_extra(CuTest *tc) {
     CuAssertTrue(tc, 0 == memcmp(k24, raw, rlen));
     CuAssertTrue(tc, 0 == memcmp(k32, raw, rlen));
     // 尾部零填充
-    for (int i = (int)rlen; i < 16; i++) CuAssertIntEquals(tc, 0, k16[i]);
-    for (int i = (int)rlen; i < 24; i++) CuAssertIntEquals(tc, 0, k24[i]);
-    for (int i = (int)rlen; i < 32; i++) CuAssertIntEquals(tc, 0, k32[i]);
+    for (int i = (int)rlen; i < 16; i++) {
+        CuAssertIntEquals(tc, 0, k16[i]);
+    }
+    for (int i = (int)rlen; i < 24; i++) {
+        CuAssertIntEquals(tc, 0, k24[i]);
+    }
+    for (int i = (int)rlen; i < 32; i++) {
+        CuAssertIntEquals(tc, 0, k32[i]);
+    }
 }
 
 /* =======================================================================
@@ -2083,7 +2081,7 @@ static void test_cipher_null_key_iv(CuTest *tc) {
 
 static void test_cipher_block_reset(CuTest *tc) {
     const char *key16 = "0123456789abcdef";
-    const char *iv16  = "abcdef0123456789";
+    const char *iv16 = "abcdef0123456789";
     cipher_ctx enc;
 
     /* AES-128 CTR：cipher_block 直接处理 16 字节分组 */
@@ -2272,7 +2270,7 @@ static void test_cipher_init_iv_zeroed(CuTest *tc) {
  * ======================================================================= */
 static void test_cipher_stream_modes(CuTest *tc) {
     const char *key16 = "0123456789abcdef";
-    const char *iv16  = "abcdef0123456789";
+    const char *iv16 = "abcdef0123456789";
     const cipher_model modes[] = { CFB, OFB, CTR };
     const size_t sizes[] = { 17, 32, 33 };
     char plain[64], enc_buf[96], dec_buf[96];
@@ -2342,7 +2340,7 @@ static void test_digest_attr_table(CuTest *tc) {
     };
     digest_ctx d;
     char hash[DG_BLOCK_SIZE];
-    char hex[DG_BLOCK_SIZE * 2 + 1];
+    char hex[HEX_ENSIZE(DG_BLOCK_SIZE)];
     size_t hlen;
     size_t i;
     for (i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
@@ -2448,24 +2446,24 @@ static void test_base64_invalid(CuTest *tc) {
     CuAssertTrue(tc, 0 == bs64_decode("A", 1, out));
 
     /* 含非法字符（< '+' 或 > 'z'） */
-    CuAssertTrue(tc, 0 == bs64_decode("A!BC", 4, out));   /* '!' < '+' */
-    CuAssertTrue(tc, 0 == bs64_decode("AB{C", 4, out));   /* '{' > 'z' */
-    CuAssertTrue(tc, 0 == bs64_decode("AB C", 4, out));   /* ' ' < '+' */
+    CuAssertTrue(tc, 0 == bs64_decode("A!BC", 4, out));/* '!' < '+' */
+    CuAssertTrue(tc, 0 == bs64_decode("AB{C", 4, out));/* '{' > 'z' */
+    CuAssertTrue(tc, 0 == bs64_decode("AB C", 4, out));/* ' ' < '+' */
 
     /* '+' 至 'z' 区间内的非 base64 字符（查表 -1） */
-    CuAssertTrue(tc, 0 == bs64_decode("A,BC", 4, out));   /* ',' 在表中为 -1 */
-    CuAssertTrue(tc, 0 == bs64_decode("AB.C", 4, out));   /* '.' 在表中为 -1 */
+    CuAssertTrue(tc, 0 == bs64_decode("A,BC", 4, out));/* ',' 在表中为 -1 */
+    CuAssertTrue(tc, 0 == bs64_decode("AB.C", 4, out));/* '.' 在表中为 -1 */
 
     /* '=' 后接非 '='/CR/LF 字符：伪造截断防御 */
     CuAssertTrue(tc, 0 == bs64_decode("AB=A", 4, out));
     CuAssertTrue(tc, 0 == bs64_decode("A=BC", 4, out));
 
     /* 无填充 base64（RFC 4648 §3.2）：单字符残组（%4==1）非法 → 0，其余正常解码 */
-    CuAssertTrue(tc, 0 == bs64_decode("TWFuT", 5, out));       /* 有效字符 % 4 == 1，非法 */
+    CuAssertTrue(tc, 0 == bs64_decode("TWFuT", 5, out));/* 有效字符 % 4 == 1，非法 */
 
-    size_t nlen = bs64_decode("TWFuTW", 6, out);              /* % 4 == 2，原 ASan 越界点 */
+    size_t nlen = bs64_decode("TWFuTW", 6, out);/* % 4 == 2，原 ASan 越界点 */
     CuAssertTrue(tc, 4 == nlen && 0 == memcmp(out, "ManM", 4));
-    nlen = bs64_decode("TWFuTWF", 7, out);                    /* % 4 == 3，原 ASan 越界点 */
+    nlen = bs64_decode("TWFuTWF", 7, out);/* % 4 == 3，原 ASan 越界点 */
     CuAssertTrue(tc, 5 == nlen && 0 == memcmp(out, "ManMa", 5));
 
     /* 无填充短输入：2 字符→1 字节，3 字符→2 字节 */
@@ -2488,13 +2486,13 @@ static void test_base64_invalid(CuTest *tc) {
        调用方常拿 CALLOC 的缓冲直接 strcmp（smtp 的 AUTH LOGIN 挑战就是），
        留着前缀就等于让 "dXNlcm5hbWU6!!!" 冒充完整的 "username:" */
     memset(out, 0x5a, sizeof(out));
-    CuAssertTrue(tc, 0 == bs64_decode("dXNlcm5hbWU6!!!", 15, out));  /* 非法字符 */
+    CuAssertTrue(tc, 0 == bs64_decode("dXNlcm5hbWU6!!!", 15, out));/* 非法字符 */
     CuAssertTrue(tc, '\0' == out[0]);
     memset(out, 0x5a, sizeof(out));
     CuAssertTrue(tc, 0 == bs64_decode("cGFzc3dvcmQ6=X==", 16, out)); /* '=' 后有正文 */
     CuAssertTrue(tc, '\0' == out[0]);
     memset(out, 0x5a, sizeof(out));
-    CuAssertTrue(tc, 0 == bs64_decode("TWFuTWFuT", 9, out));         /* 尾组只剩 1 个字符 */
+    CuAssertTrue(tc, 0 == bs64_decode("TWFuTWFuT", 9, out));/* 尾组只剩 1 个字符 */
     CuAssertTrue(tc, '\0' == out[0]);
 }
 
@@ -2673,17 +2671,13 @@ static void test_urlraw_invalid(CuTest *tc) {
 /* 空用户名：RFC 5802 允许 n= 为空（libpq 恒发这一形态，用户名走启动包）。
  * 客户端不设 user 时发的就是它，服务端必须能解析并走完整套握手 */
 static void test_scram_empty_user(CuTest *tc) {
-    static const char salt[16] = {
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
-    };
-    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+        scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
     scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
     CuAssertPtrNotNull(tc, cli);
     CuAssertPtrNotNull(tc, srv);
     scram_set_pwd(cli, "pass", 4);
     scram_set_pwd(srv, "pass", 4);
-    scram_set_salt(srv, (char *)salt, sizeof(salt));
+    scram_set_salt(srv, (char *)_SALT16, sizeof(_SALT16));
     scram_set_iter(srv, 4096);
 
     char *cf = scram_first_message(cli);

@@ -14,18 +14,24 @@ typedef struct task_unlisten_race_args {
 // 注意与下面那个 2ms 不是一回事：那个是故意只等一部分 connect 落进 accept，制造 in-flight 窗口
 #define RACE_SETTLE_MS 500
 
+// 累计连上的次数：unlisten 抢在前面时连不上是正常的，但一次都没连上就说明
+// listen 整个没起来，而那种情况原来照样算通过（口径同 task_listen_churn）
+static atomic_t _race_nconn;
+
 // fork 出的客户端工作协程：连一次后立即关闭，连接失败静默忽略（unlisten 已发生）
 static void _client_worker(task_ctx *task, void *arg) {
     uint16_t port = (uint16_t)(uintptr_t)arg;
     SOCKET fd;
     uint64_t skid;
     if (ERR_OK == coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        ATOMIC_ADD(&_race_nconn, 1);
         ev_close(&task->loader->netev, fd, skid);
     }
 }
 
 static void _startup(task_ctx *task) {
     task_unlisten_race_args *arg = (task_unlisten_race_args *)coro_get_arg(task);
+    ATOMIC_SET(&_race_nconn, 0);
     uint64_t lsnid;
     int32_t i, c;
     for (i = 0; i < RACE_ITERS; i++) {
@@ -54,8 +60,15 @@ static void _startup(task_ctx *task) {
         // 给飞行中 accept / cleanup / client 协程收尾，避免下一轮 listen 撞同端口
         coro_sleep(task, RACE_SETTLE_MS);
     }
+    int32_t nconn = (int32_t)ATOMIC_GET(&_race_nconn);
+    if (0 == nconn) {
+        LOG_ERROR("listen_unlisten_race: no client ever connected in %d iters x %d clients.",
+                  RACE_ITERS, RACE_CLIENTS);
+        return;
+    }
     *(arg->ok) = 1;
-    LOG_INFO("listen_unlisten_race tested (%d iters x %d clients).", RACE_ITERS, RACE_CLIENTS);
+    LOG_INFO("listen_unlisten_race tested (%d iters x %d clients, %d connected).",
+             RACE_ITERS, RACE_CLIENTS, nconn);
 }
 
 void task_listen_unlisten_race_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

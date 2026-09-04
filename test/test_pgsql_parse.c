@@ -49,6 +49,20 @@ static void _pg_reader_push_row(pgsql_reader_ctx *r, char *payload,
     array_push_back(&r->arr_rows, &p);
 }
 
+// 造一个"单列单行、值为给定字节串"的 reader。payload 由 reader 释放
+static pgsql_reader_ctx *_pg_reader_one(const int32_t *oids, char (*names)[64],
+    pgpack_format fmt, const char *val, int32_t lens) {
+    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
+    r->format = fmt;
+    char *p;
+    MALLOC(p, (size_t)lens + 1);
+    memcpy(p, val, (size_t)lens);
+    p[lens] = '\0';
+    pgpack_row cols[1] = { { lens, p, NULL } };
+    _pg_reader_push_row(r, p, cols);
+    return r;
+}
+
 // 往 pgpack 的结果数组里追加一个结果（模拟解析侧 CommandComplete 的提交动作）
 static void _pg_result_push(pgpack_ctx *pg, pgsql_reader_ctx *reader, const char *complete) {
     if (NULL == pg->results.ptr) {// 与 _pgpack_complete 同一判据(array_free 会把 ptr 置空)
@@ -272,14 +286,7 @@ static void test_pgsql_reader_bool(CuTest *tc) {
 static void test_pgsql_reader_integer(CuTest *tc) {
     int32_t oids[1] = { INT4OID };
     char names[1][64] = { "n" };
-    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
-    r->format = FORMAT_TEXT;
-
-    char *p;
-    MALLOC(p, 16);
-    memcpy(p, "12345", 5);
-    pgpack_row cols[1] = { { 5, p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    pgsql_reader_ctx *r = _pg_reader_one(oids, names, FORMAT_TEXT, "12345", 5);
 
     int32_t err;
     CuAssertTrue(tc, 12345 == pgsql_reader_integer(r, "n", &err));
@@ -370,26 +377,14 @@ static void test_pgsql_reader_double_bounds(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r);
 
-    pgsql_reader_ctx *r2 = _pg_reader_new(1, oids, names);
-    r2->format = FORMAT_TEXT;
-    char *p2;
-    MALLOC(p2, 8);
-    memcpy(p2, "Infinity", 8);
-    pgpack_row cols2[1] = { { 8, p2, NULL } };
-    _pg_reader_push_row(r2, p2, cols2);
+    pgsql_reader_ctx *r2 = _pg_reader_one(oids, names, FORMAT_TEXT, "Infinity", 8);
     double d = pgsql_reader_double(r2, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);// PostgreSQL float8 文本格式就发这个，拒了是回归
     CuAssertTrue(tc, d > 0 && d * 2 == d);// 无穷大
     pgsql_reader_free(r2);
 
     // NaN 单独一行：塞在 Infinity 那块 buffer 的尾部不算测到，列长度只声明了 8 字节
-    pgsql_reader_ctx *r3 = _pg_reader_new(1, oids, names);
-    r3->format = FORMAT_TEXT;
-    char *p3;
-    MALLOC(p3, 3);
-    memcpy(p3, "NaN", 3);
-    pgpack_row cols3[1] = { { 3, p3, NULL } };
-    _pg_reader_push_row(r3, p3, cols3);
+    pgsql_reader_ctx *r3 = _pg_reader_one(oids, names, FORMAT_TEXT, "NaN", 3);
     double dn = pgsql_reader_double(r3, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, dn != dn);// NaN 是唯一不等于自己的值
@@ -401,13 +396,7 @@ static void test_pgsql_reader_double(CuTest *tc) {
     int32_t oids[1] = { FLOAT8OID };
     char names[1][64] = { "d" };
     // 文本
-    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
-    r->format = FORMAT_TEXT;
-    char *p;
-    MALLOC(p, 16);
-    memcpy(p, "3.14159", 7);
-    pgpack_row cols[1] = { { 7, p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    pgsql_reader_ctx *r = _pg_reader_one(oids, names, FORMAT_TEXT, "3.14159", 7);
     int32_t err;
     double d = pgsql_reader_double(r, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -822,7 +811,9 @@ static void test_pgsql_reader_uuid(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, pgsql_reader_uuid(r, "u", uuid, &err));
     CuAssertIntEquals(tc, ERR_OK, err);
     char expect[16];
-    for (int i = 0; i < 16; i++) expect[i] = (char)(i + 1);
+    for (int i = 0; i < 16; i++) {
+        expect[i] = (char)(i + 1);
+    }
     CuAssertTrue(tc, 0 == memcmp(uuid, expect, 16));
     pgsql_reader_free(r);
 
@@ -840,13 +831,7 @@ static void test_pgsql_reader_uuid(CuTest *tc) {
     pgsql_reader_free(r2);
 
     // 文本长度不对 → ERR_FAILED
-    pgsql_reader_ctx *r3 = _pg_reader_new(1, oids, names);
-    r3->format = FORMAT_TEXT;
-    char *p3;
-    MALLOC(p3, 8);
-    memcpy(p3, "badbad", 6);
-    pgpack_row cols3[1] = { { 6, p3, NULL } };
-    _pg_reader_push_row(r3, p3, cols3);
+    pgsql_reader_ctx *r3 = _pg_reader_one(oids, names, FORMAT_TEXT, "badbad", 6);
     CuAssertIntEquals(tc, ERR_FAILED, pgsql_reader_uuid(r3, "u", uuid2, &err));
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r3);

@@ -3,6 +3,18 @@
 #include "lib.h"
 #include "protocol/custz_head.h"
 
+// SMTP 状态机 ud->status 值（与 lib/protocol/smtp/smtp.c parse_status 对应）：
+//   0=INIT, 1=EHLO, 2=AUTH, 3=AUTH_CHECK, 4=COMMAND
+// ev_send 在 fd==INVALID_SOCK 时会释放 data 并返回 ERR_FAILED 设置 PROT_ERROR；
+// 此时 ud->status 已在 ev_send 调用前完成切换，可用于验证状态转移
+#define _SMTP_INIT       0
+#define _SMTP_EHLO       1
+#define _SMTP_AUTH       2
+#define _SMTP_AUTH_CHECK 3
+// authtype 直接取 smtp.h 的枚举，别再抄一份数值
+#define _SMTP_LOGIN      LOGIN
+#define _SMTP_PLAIN      PLAIN
+
 /* =======================================================================
  * 公共辅助 —— 将字符串字面量追加到 buffer_ctx
  * ======================================================================= */
@@ -23,6 +35,16 @@ static void *_t_redis_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
 static void *_t_websock_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
     return websock_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+}
+
+// websock 解包用的最小上下文：ws 清零 + 无子协议，ud 摆到握手已完成的 START 状态并挂上 ws。
+// 全文件 20 多处用例都要这七行，改布局时只改这里
+static void _ws_ctx_init(websock_ctx *ws, ud_cxt *ud) {
+    ZERO(ws, sizeof(websock_ctx));
+    ws->secprot = PACK_NONE;
+    ZERO(ud, sizeof(ud_cxt));
+    ud->status = 1;// websock 内部 START
+    ud->context = ws;
 }
 static void *_t_smtp_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
@@ -86,6 +108,7 @@ static void test_http_head_nobody(CuTest *tc) {
     CuAssertTrue(tc, NULL == data);
     CuAssertTrue(tc, buf_compare(&http_status(pack)[1], "200", 3));
     _http_pkfree(pack);
+    _http_udfree(&ud);
 
     /* 1xx 是中间响应，不能把登记消耗掉：103 之后那条 200 仍须按无 body 解析 */
     buffer_free(&buf);
@@ -692,12 +715,16 @@ static void _chunked_size_check(CuTest *tc, const char *sizeline, int32_t expect
     CuAssertPtrNotNull(tc, pack);
     _http_pkfree(pack);
     status = PROT_INIT;
+    size_t left = buffer_size(&buf);
     pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 2) chunk-size 行
     if (expect_error) {
         CuAssertTrue(tc, NULL == pack);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     } else {
         CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        // status 刚被清成 PROT_INIT(=0)，只判"没有 PROT_ERROR 位"的话什么都不做也能过。
+        // 认下这行的唯一凭据是它真被吃掉了
+        CuAssertTrue(tc, buffer_size(&buf) < left);
     }
     _http_udfree(&ud);
     buffer_free(&buf);
@@ -2843,17 +2870,9 @@ static void test_http_value_trailing_ows(CuTest *tc) {
 
 // base64 正文须按 RFC 2045 §6.8 折行：不折行时 DATA 单行会远超
 // RFC 5321 §4.5.3.1.6 的 1000 octet 上限，严格 MTA 直接以行长错误退信
-static void test_smtp_b64_fold(CuTest *tc) {
-    char html[4096];
-    memset(html, 'h', sizeof(html));
-    mail_ctx mail;
-    mail_init(&mail);
-    mail_from(&mail, NULL, "alice@example.com");
-    mail_addrs_add(&mail, "bob@example.com", TO);
-    mail_subject(&mail, "test");
-    mail_html(&mail, html, sizeof(html));
-    char *out = mail_pack(&mail);
-    CuAssertPtrNotNull(tc, out);
+// 整封信里最长的一行有多少个八位组（不含分隔的 CRLF）。
+// RFC 5321 §4.5.3.1.6 限 1000 含 CRLF，故正文任何一行都不得超过 998
+static size_t _max_line_lens(const char *out) {
     size_t maxline = 0;
     size_t cur = 0;
     const char *p = out;
@@ -2869,9 +2888,20 @@ static void test_smtp_b64_fold(CuTest *tc) {
         cur++;
         p++;
     }
-    if (cur > maxline) {
-        maxline = cur;
-    }
+    return cur > maxline ? cur : maxline;
+}
+static void test_smtp_b64_fold(CuTest *tc) {
+    char html[4096];
+    memset(html, 'h', sizeof(html));
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "test");
+    mail_html(&mail, html, sizeof(html));
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    size_t maxline = _max_line_lens(out);
     CuAssert(tc, "no DATA line may exceed 998 octets (RFC 5321 counts CRLF, 1000 total)", maxline <= 998);
     FREE(out);
     mail_free(&mail);
@@ -2972,24 +3002,7 @@ static void test_smtp_plain_line_fold(CuTest *tc) {
     mail_msg(&mail, msg);
     char *out = mail_pack(&mail);
     CuAssertPtrNotNull(tc, out);
-    size_t maxline = 0;
-    size_t cur = 0;
-    const char *p = out;
-    while ('\0' != *p) {
-        if ('\r' == p[0] && '\n' == p[1]) {
-            if (cur > maxline) {
-                maxline = cur;
-            }
-            cur = 0;
-            p += 2;
-            continue;
-        }
-        cur++;
-        p++;
-    }
-    if (cur > maxline) {
-        maxline = cur;
-    }
+    size_t maxline = _max_line_lens(out);
     CuAssert(tc, "plain-text body must be folded too, not just base64 attachments", maxline <= 998);
     FREE(out);
     mail_free(&mail);
@@ -3222,11 +3235,11 @@ static void test_dns_parse_pack(CuTest *tc) {
     /* 恶意放大：仅 12 字节头 + 计数字段全 0xFFFF（total=196605），无 RR 体。
        修复后按报文剩余字节(0)限上界 → total=0 → 返回 NULL，不再 MALLOC ~12.6MB */
     uint8_t evil[] = {
-        0x00, 0x00, 0x81, 0x80,   /* id / flags(response, rcode=0) */
-        0x00, 0x00,               /* qd_count=0（无 question）*/
-        0xFF, 0xFF,               /* an_count=65535 */
-        0xFF, 0xFF,               /* ns_count=65535 */
-        0xFF, 0xFF                /* ar_count=65535 */
+        0x00, 0x00, 0x81, 0x80,/* id / flags(response, rcode=0) */
+        0x00, 0x00,/* qd_count=0（无 question）*/
+        0xFF, 0xFF,/* an_count=65535 */
+        0xFF, 0xFF,/* ns_count=65535 */
+        0xFF, 0xFF/* ar_count=65535 */
     };
     size_t ecnt = 0;
     dns_ip *eips = dns_parse_pack((char *)evil, sizeof(evil), &ecnt, 0x0000, NULL);
@@ -3514,12 +3527,16 @@ static void test_dns_set_get_ip(CuTest *tc) {
  * custz_head —— 三种长度头编解码往返
  * ======================================================================= */
 
-static void _custz_head_roundtrip_fixed(CuTest *tc, size_t dlens) {
+// custz 三种头格式的组包-解包往返：编出来的头长与总长要对得上，
+// 解回来的头长与载荷长也要与写进去的一致。encode/decode 成对传入，三种格式共用本体
+typedef char *(*_custz_enc_cb)(size_t dlens, size_t *hlens, size_t *size);
+typedef int32_t (*_custz_dec_cb)(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t *status);
+static void _custz_head_roundtrip(CuTest *tc, _custz_enc_cb enc, _custz_dec_cb dec,
+    size_t dlens, size_t expected_hlens) {
     size_t hlens = 0, size = 0;
-    char *pack = _custz_encode_fixed(dlens, &hlens, &size);
+    char *pack = enc(dlens, &hlens, &size);
     CuAssertPtrNotNull(tc, pack);
-    /* 固定头始终 4 字节 */
-    CuAssertTrue(tc, 4 == (int)hlens);
+    CuAssertTrue(tc, expected_hlens == hlens);
     CuAssertTrue(tc, hlens + dlens == size);
 
     buffer_ctx buf;
@@ -3529,13 +3546,15 @@ static void _custz_head_roundtrip_fixed(CuTest *tc, size_t dlens) {
 
     size_t out_hlens = 0, out_size = 0;
     int32_t status = PROT_INIT;
-    CuAssertIntEquals(tc, ERR_OK,
-        _custz_decode_fixed(&buf, &out_hlens, &out_size, &status));
+    CuAssertIntEquals(tc, ERR_OK, dec(&buf, &out_hlens, &out_size, &status));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
-    CuAssertTrue(tc, 4 == (int)out_hlens);
+    CuAssertTrue(tc, expected_hlens == out_hlens);
     CuAssertTrue(tc, dlens == out_size);
 
     buffer_free(&buf);
+}
+static void _custz_head_roundtrip_fixed(CuTest *tc, size_t dlens) {
+    _custz_head_roundtrip(tc, _custz_encode_fixed, _custz_decode_fixed, dlens, 4);// 固定头始终 4 字节
 }
 
 static void test_custz_head_fixed(CuTest *tc) {
@@ -3565,26 +3584,7 @@ static void test_custz_head_fixed(CuTest *tc) {
 }
 
 static void _custz_head_roundtrip_flag(CuTest *tc, size_t dlens, size_t expected_hlens) {
-    size_t hlens = 0, size = 0;
-    char *pack = _custz_encode_flag(dlens, &hlens, &size);
-    CuAssertPtrNotNull(tc, pack);
-    CuAssertTrue(tc, expected_hlens == hlens);
-    CuAssertTrue(tc, hlens + dlens == size);
-
-    buffer_ctx buf;
-    buffer_init(&buf);
-    buffer_append(&buf, pack, size);
-    FREE(pack);
-
-    size_t out_hlens = 0, out_size = 0;
-    int32_t status = PROT_INIT;
-    CuAssertIntEquals(tc, ERR_OK,
-        _custz_decode_flag(&buf, &out_hlens, &out_size, &status));
-    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
-    CuAssertTrue(tc, expected_hlens == out_hlens);
-    CuAssertTrue(tc, dlens == out_size);
-
-    buffer_free(&buf);
+    _custz_head_roundtrip(tc, _custz_encode_flag, _custz_decode_flag, dlens, expected_hlens);
 }
 
 static void test_custz_head_flag(CuTest *tc) {
@@ -3615,26 +3615,7 @@ static void test_custz_head_flag(CuTest *tc) {
 }
 
 static void _custz_head_roundtrip_variable(CuTest *tc, size_t dlens, size_t expected_hlens) {
-    size_t hlens = 0, size = 0;
-    char *pack = _custz_encode_variable(dlens, &hlens, &size);
-    CuAssertPtrNotNull(tc, pack);
-    CuAssertTrue(tc, expected_hlens == hlens);
-    CuAssertTrue(tc, hlens + dlens == size);
-
-    buffer_ctx buf;
-    buffer_init(&buf);
-    buffer_append(&buf, pack, size);
-    FREE(pack);
-
-    size_t out_hlens = 0, out_size = 0;
-    int32_t status = PROT_INIT;
-    CuAssertIntEquals(tc, ERR_OK,
-        _custz_decode_variable(&buf, &out_hlens, &out_size, &status));
-    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
-    CuAssertTrue(tc, expected_hlens == out_hlens);
-    CuAssertTrue(tc, dlens == out_size);
-
-    buffer_free(&buf);
+    _custz_head_roundtrip(tc, _custz_encode_variable, _custz_decode_variable, dlens, expected_hlens);
 }
 
 static void test_custz_head_variable(CuTest *tc) {
@@ -3725,7 +3706,6 @@ static void test_custz_head_wire(CuTest *tc) {
 /* =======================================================================
  * WebSocket —— 帧组包格式验证
  * ======================================================================= */
-
 
 static void test_websock_pack_frames(CuTest *tc) {
     size_t size = 0;
@@ -4060,15 +4040,9 @@ static void test_websock_unpack_text(CuTest *tc) {
     buffer_append(&buf, frame, size);
     FREE(frame);
 
-    /* 构造一个最小可用的 websock_ctx 实例 */
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1; /* websock 内部 START 状态 */
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
 
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1 /*client=true*/, &buf, &ud, NULL, &status);
@@ -4102,13 +4076,8 @@ static void test_websock_unpack_masked(CuTest *tc) {
     FREE(frame);
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1; /* START */
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
 
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(0 /*server*/, &buf, &ud, NULL, &status);
@@ -4133,13 +4102,8 @@ static void test_websock_unpack_fragmented(CuTest *tc) {
     void *f3 = websock_pack_continua(0, 1, "CCC", 3, &s3);
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
 
     /* 第一帧：起始 → PROT_SLICE_START */
     buffer_ctx buf;
@@ -4187,11 +4151,7 @@ static void test_websock_unpack_orphan_continue(CuTest *tc) {
     for (i = 0; i < ARRAY_SIZE(frames); i++) {
         buffer_init(&buf);
         buffer_append(&buf, frames[i], sizeof(frames[i]));
-        ZERO(&ws, sizeof(ws));
-        ws.secprot = PACK_NONE;
-        ZERO(&ud, sizeof(ud));
-        ud.status = 1;
-        ud.context = &ws;
+        _ws_ctx_init(&ws, &ud);
         status = PROT_INIT;
         pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
         CuAssertTrue(tc, NULL == pack);
@@ -4215,11 +4175,7 @@ static void test_websock_unpack_interleaved_data(CuTest *tc) {
     buffer_init(&buf);
     buffer_append(&buf, f1, s1);
     FREE(f1);
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     status = PROT_INIT;
     pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, pack);
@@ -4239,12 +4195,8 @@ static void test_websock_unpack_interleaved_data(CuTest *tc) {
     uint8_t bin[2] = { 0x82, 0x00 };
     buffer_init(&buf);
     buffer_append(&buf, bin, sizeof(bin));
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ws.slice = 1;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
+    ws.slice = 1;// 摆进分片接收态
     status = PROT_INIT;
     pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertTrue(tc, NULL == pack);
@@ -4256,12 +4208,8 @@ static void test_websock_unpack_interleaved_data(CuTest *tc) {
     uint8_t ping[2] = { 0x89, 0x00 };
     buffer_init(&buf);
     buffer_append(&buf, ping, sizeof(ping));
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ws.slice = 1;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
+    ws.slice = 1;// 摆进分片接收态
     status = PROT_INIT;
     pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, pack);
@@ -4284,13 +4232,8 @@ static void test_websock_unpack_close(CuTest *tc) {
     FREE(frame);
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
 
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
@@ -4314,12 +4257,8 @@ static void test_websock_unpack_server_no_mask(CuTest *tc) {
     FREE(frame);
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
 
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(0 /*server*/, &buf, &ud, NULL, &status);
@@ -4340,12 +4279,8 @@ static void test_websock_unpack_client_masked(CuTest *tc) {
     FREE(frame);
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
 
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1 /*client*/, &buf, &ud, NULL, &status);
@@ -4364,11 +4299,7 @@ static void test_websock_unpack_reserved_opcode(CuTest *tc) {
     uint8_t reserved3[2] = { 0x83, 0x00 };
     buffer_init(&buf);
     buffer_append(&buf, reserved3, sizeof(reserved3));
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertTrue(tc, NULL == pack);
@@ -4379,11 +4310,7 @@ static void test_websock_unpack_reserved_opcode(CuTest *tc) {
     uint8_t reservedB[2] = { 0x8B, 0x00 };
     buffer_init(&buf);
     buffer_append(&buf, reservedB, sizeof(reservedB));
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     status = PROT_INIT;
     pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertTrue(tc, NULL == pack);
@@ -4400,11 +4327,7 @@ static void test_websock_unpack_rsv_set(CuTest *tc) {
     uint8_t rsv1[2] = { 0xC1, 0x00 };
     buffer_init(&buf);
     buffer_append(&buf, rsv1, sizeof(rsv1));
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertTrue(tc, NULL == pack);
@@ -4421,11 +4344,7 @@ static void test_websock_unpack_control_fragmented(CuTest *tc) {
     uint8_t bad[2] = { 0x09, 0x00 };
     buffer_init(&buf);
     buffer_append(&buf, bad, sizeof(bad));
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertTrue(tc, NULL == pack);
@@ -4442,11 +4361,7 @@ static void test_websock_unpack_control_too_big(CuTest *tc) {
     uint8_t bad[4] = { 0x89, 0x7E, 0x00, 0x80 }; // 128 字节
     buffer_init(&buf);
     buffer_append(&buf, bad, sizeof(bad));
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertTrue(tc, NULL == pack);
@@ -4454,10 +4369,9 @@ static void test_websock_unpack_control_too_big(CuTest *tc) {
     buffer_free(&buf);
 }
 
-// 扩展长度 16-bit：65535 字节 payload，确保大数据 round-trip 正确
+// 扩展长度 16-bit：1024 字节 payload（126 起就用 16-bit 扩展长度），验证组包 round-trip
 static void test_websock_unpack_extended_16(CuTest *tc) {
     size_t s = 0;
-    // 256 字节 payload 触发 16-bit 扩展长度（126 字节起就用 16-bit）
     char payload[1024];
     for (size_t i = 0; i < sizeof(payload); i++) {
         payload[i] = (char)(i & 0xff);
@@ -4475,12 +4389,8 @@ static void test_websock_unpack_extended_16(CuTest *tc) {
     FREE(frame);
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, pack);
@@ -4539,12 +4449,8 @@ static void test_websock_unpack_mask_xor(CuTest *tc) {
     FREE(frame);
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     int32_t status = PROT_INIT;
     // 服务端解码：xor 后应恢复原文
     struct websock_pack_ctx *pack = _t_websock_unpack(0, &buf, &ud, NULL, &status);
@@ -4588,35 +4494,43 @@ static void test_prots_free_null(CuTest *tc) {
 
 // prots_pkfree default 分支：未识别 pktype 直接 FREE，ASan 验证无 leak
 static void test_prots_pkfree_default(CuTest *tc) {
-    (void)tc;
-    // PACK_NONE / PACK_DNS / PACK_SMTP / PACK_CUSTZ_* 走 default → FREE(data)
+    // PACK_NONE / PACK_DNS / PACK_SMTP / PACK_CUSTZ_* 走 default → FREE(data)。
+    // 用分配计数当观测点：本用例是单线程的，进出相抵才说明 default 真的释放了
     pack_type defaults[] = { PACK_NONE, PACK_DNS, PACK_SMTP,
                              PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
+    uint64_t a0, f0, a1, f1;
+    mem_stat(&a0, &f0);
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         void *p;
         MALLOC(p, 64);
         memset(p, 0xaa, 64);
         prots_pkfree(defaults[i], p);
     }
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 == f1 - f0);
 }
 
 // prots_hsfree default 分支：除 PACK_MONGO 外都走 default → FREE(data)
 static void test_prots_hsfree_default(CuTest *tc) {
-    (void)tc;
     pack_type defaults[] = { PACK_NONE, PACK_HTTP, PACK_WEBSOCK, PACK_MQTT,
                              PACK_REDIS, PACK_MYSQL, PACK_PGSQL };
+    uint64_t a0, f0, a1, f1;
+    mem_stat(&a0, &f0);
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         void *p;
         MALLOC(p, 32);
         prots_hsfree(defaults[i], p);
     }
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 == f1 - f0);
 }
 
 // prots_udfree default 分支：PACK_NONE / PACK_DNS / PACK_CUSTZ_* → FREE(ud->context)
 static void test_prots_udfree_default(CuTest *tc) {
-    (void)tc;
     pack_type defaults[] = { PACK_NONE, PACK_DNS,
                              PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
+    uint64_t a0, f0, a1, f1;
+    mem_stat(&a0, &f0);
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         ud_cxt ud;
         ZERO(&ud, sizeof(ud));
@@ -4632,6 +4546,8 @@ static void test_prots_udfree_default(CuTest *tc) {
     ud2.pktype = PACK_NONE;
     ud2.context = NULL;
     prots_udfree(&ud2);
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 == f1 - f0);
 }
 
 // prots_net_close default 分支：PACK_NONE / PACK_HTTP / PACK_WEBSOCK 等无协议专属清理，
@@ -4904,8 +4820,14 @@ static void test_mail_html_and_clear(CuTest *tc) {
     CuAssertPtrNotNull(tc, pkt);
     /* 含 HTML Content-Type 标记 */
     CuAssertTrue(tc, NULL != strstr(pkt, "text/html"));
-    /* base64 编码的密送地址应出现在头部 */
     CuAssertTrue(tc, NULL != strstr(pkt, "Subject: subject"));
+    /* BCC 只走信封 RCPT TO，绝不进头部（mail.c:_mail_pack_addr）——
+       密送名单泄给全体收件人就是这条断言在拦 */
+    CuAssertTrue(tc, NULL == strstr(pkt, "bcc@example.com"));
+    CuAssertTrue(tc, NULL == strstr(pkt, "Bcc:"));
+    /* To / Cc 照常入头部，用来证明上面两条不是因为整个地址段都没写出来才过的 */
+    CuAssertTrue(tc, NULL != strstr(pkt, "rcpt@example.com"));
+    CuAssertTrue(tc, NULL != strstr(pkt, "cc@example.com"));
     FREE(pkt);
 
     /* mail_addrs_clear 后地址数归零 */
@@ -4956,14 +4878,15 @@ static void test_smtp_init_bounds(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, smtp_init(&smtp, "127.0.0.1", 25, NULL, toolong, "psw"));
     CuAssertIntEquals(tc, ERR_FAILED, smtp_init(&smtp, toolong, 25, NULL, "user", "psw"));
 
-    // 边界：正好填满（容量 - 1）仍然合法
-    char just[64];
+    // 边界：正好填满（容量 - 1）仍然合法。长度从 smtp_ctx 的字段现算，
+    // 写死 64/65 的话字段扩容后这两条就悄悄测错了位置
+    char just[sizeof(smtp.psw)];
     memset(just, 'y', sizeof(just) - 1);
     just[sizeof(just) - 1] = '\0';
     CuAssertIntEquals(tc, ERR_OK, smtp_init(&smtp, "127.0.0.1", 25, NULL, "user", just));
     CuAssertTrue(tc, 0 == strcmp(smtp.psw, just));
     // 再多一个字节就越界
-    char over[65];
+    char over[sizeof(smtp.psw) + 1];
     memset(over, 'y', sizeof(over) - 1);
     over[sizeof(over) - 1] = '\0';
     CuAssertIntEquals(tc, ERR_FAILED, smtp_init(&smtp, "127.0.0.1", 25, NULL, "user", over));
@@ -5041,10 +4964,10 @@ static void test_smtp_check_code(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, smtp_check_code(pack, "250"));
     CuAssertIntEquals(tc, ERR_FAILED, smtp_check_ok(pack));
 
-    /* 仅前缀匹配（450 不应匹配 "45" 但应匹配 "450"） */
+    /* 前缀比较：给几位就比几位，"45" 会命中 450（注释原来写反了，说 45 不该匹配） */
     safe_fill_str(pack, sizeof(pack), "450 Mailbox unavailable");
     CuAssertIntEquals(tc, ERR_OK,     smtp_check_code(pack, "450"));
-    CuAssertIntEquals(tc, ERR_OK,     smtp_check_code(pack, "45"));   /* memcmp 前缀比较，2 字节前缀确实匹配 */
+    CuAssertIntEquals(tc, ERR_OK,     smtp_check_code(pack, "45"));
     CuAssertIntEquals(tc, ERR_FAILED, smtp_check_code(pack, "451"));
 
     /* 任意自定义 code */
@@ -5097,7 +5020,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     ud.status = 4; /* COMMAND（parse_status 枚举：INIT/EHLO/AUTH/AUTH_CHECK/COMMAND = 0..4） */
     buffer_append(&buf, "250 OK Hello\r\n", 14);
     size = 0; status = PROT_INIT;
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 12 == size);
     CuAssertStrEquals(tc, "250 OK Hello", pack);
@@ -5110,7 +5033,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     ud.status = 4;
     buffer_append(&buf, "25", 2);
     size = 0; status = PROT_INIT;
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     buffer_free(&buf);
@@ -5121,7 +5044,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     ud.status = 4;
     buffer_append(&buf, "250 OK", 6);
     size = 0; status = PROT_INIT;
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     buffer_free(&buf);
@@ -5132,7 +5055,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     ud.status = 4;
     buffer_append(&buf, "250-First\r\n250 End\r\n", 20);
     size = 0; status = PROT_INIT;
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 18 == size);
     CuAssertStrEquals(tc, "250-First\r\n250 End", pack);
@@ -5146,11 +5069,11 @@ static void test_smtp_unpack_command(CuTest *tc) {
     ud.status = 4;
     buffer_append(&buf, "250-A\r\n250 B\r\n221 Bye\r\n", 23);
     size = 0; status = PROT_INIT;
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertStrEquals(tc, "250-A\r\n250 B", pack);
     FREE(pack);
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertStrEquals(tc, "221 Bye", pack);
     FREE(pack);
@@ -5163,7 +5086,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     ud.status = 4;
     buffer_append(&buf, "250\r\n", 5);
     size = 0; status = PROT_INIT;
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 3 == size);
     CuAssertStrEquals(tc, "250", pack);
@@ -5177,7 +5100,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     ud.status = 4;
     buffer_append(&buf, "354-go\r\n354 ahead\r\n", 19);
     size = 0; status = PROT_INIT;
-    pack = smtp_unpack(NULL, 0, 0, 0, &buf, &ud, &size, &status);
+    pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertStrEquals(tc, "354-go\r\n354 ahead", pack);
     FREE(pack);
@@ -5240,10 +5163,10 @@ static void test_http_header_at(CuTest *tc) {
 static void test_websock_unpack_mask_all_zero(CuTest *tc) {
     /* 手工构造 BINARY fin=1 mask=1 len=4 key=0000 payload=de ad be ef */
     unsigned char frame[10] = {
-        0x82,                   /* FIN=1, opcode=0x2 (binary) */
-        0x84,                   /* MASK=1, len=4 */
+        0x82,/* FIN=1, opcode=0x2 (binary) */
+        0x84,/* MASK=1, len=4 */
         0x00, 0x00, 0x00, 0x00, /* mask key 全 0 */
-        0xde, 0xad, 0xbe, 0xef  /* payload（xor 全 0 等于原文） */
+        0xde, 0xad, 0xbe, 0xef/* payload（xor 全 0 等于原文） */
     };
 
     buffer_ctx buf;
@@ -5251,13 +5174,8 @@ static void test_websock_unpack_mask_all_zero(CuTest *tc) {
     buffer_append(&buf, frame, sizeof(frame));
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
-
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1; /* START */
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
 
     int32_t status = PROT_INIT;
     struct websock_pack_ctx *pack = _t_websock_unpack(0 /* server */, &buf, &ud, NULL, &status);
@@ -5425,9 +5343,11 @@ static void test_websock_mqtt_ws_fragment_slice_clear(CuTest *tc) {
 }
 
 // 手工构造 payloadlen=127 + 8 字节大端长度的 64-bit 扩展长度帧
-// 覆盖 _websock_parse_payloadlen 中 payloadlen==127 分支（lib/protocol/websock.c:518-543）
+// 覆盖 _websock_parse_payloadlen 中 payloadlen==127 分支
 //   1) 合法 100 字节 payload 通过 ntohll 正确解析
-//   2) 长度恰等于 WS_MAX_PAYLOAD_LENS 触发单帧上限防御
+//   2) 长度 65536（WS_MAX_PAYLOAD_LENS + 1）被拒
+//   3) 长度 SIZE_MAX-15 被拒（上限那道在回绕之前就挡住了）
+//   4) 长度恰等于 WS_MAX_PAYLOAD_LENS 必须放行 —— 上限是 > 判定，等于不算超
 static void test_websock_unpack_extended_64(CuTest *tc) {
     // 子用例 1：payloadlen=127 + 长度=100 + 100 字节 payload，期望正确解码
     unsigned char head[10] = {
@@ -5446,12 +5366,8 @@ static void test_websock_unpack_extended_64(CuTest *tc) {
     buffer_append(&buf, payload, sizeof(payload));
 
     websock_ctx ws;
-    ZERO(&ws, sizeof(ws));
-    ws.secprot = PACK_NONE;
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.status = 1;
-    ud.context = &ws;
+    _ws_ctx_init(&ws, &ud);
     int32_t status = PROT_INIT;
     // client=1：客户端接收服务端帧，服务端帧允许 mask=0
     struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
@@ -5476,12 +5392,8 @@ static void test_websock_unpack_extended_64(CuTest *tc) {
     buffer_append(&buf2, head2, sizeof(head2));
 
     websock_ctx ws2;
-    ZERO(&ws2, sizeof(ws2));
-    ws2.secprot = PACK_NONE;
     ud_cxt ud2;
-    ZERO(&ud2, sizeof(ud2));
-    ud2.status = 1;
-    ud2.context = &ws2;
+    _ws_ctx_init(&ws2, &ud2);
     int32_t status2 = PROT_INIT;
     struct websock_pack_ctx *pack2 = _t_websock_unpack(1, &buf2, &ud2, NULL, &status2);
     CuAssertTrue(tc, NULL == pack2);
@@ -5500,17 +5412,43 @@ static void test_websock_unpack_extended_64(CuTest *tc) {
     buffer_append(&buf3, head3, sizeof(head3));
 
     websock_ctx ws3;
-    ZERO(&ws3, sizeof(ws3));
-    ws3.secprot = PACK_NONE;
     ud_cxt ud3;
-    ZERO(&ud3, sizeof(ud3));
-    ud3.status = 1;
-    ud3.context = &ws3;
+    _ws_ctx_init(&ws3, &ud3);
     int32_t status3 = PROT_INIT;
     struct websock_pack_ctx *pack3 = _t_websock_unpack(1, &buf3, &ud3, NULL, &status3);
     CuAssertTrue(tc, NULL == pack3);
     CuAssertTrue(tc, BIT_CHECK(status3, PROT_ERROR));
     buffer_free(&buf3);
+
+    // 子用例 4：长度恰等于 WS_MAX_PAYLOAD_LENS 必须放行。守卫是 > 不是 >=，
+    // 少了这条，把它改成 >= 之后上面三条照样全过
+    unsigned char head4[10] = {
+        0x82,
+        0x7f,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff // 大端 64-bit = 65535
+    };
+    buffer_ctx buf4;
+    buffer_init(&buf4);
+    buffer_append(&buf4, head4, sizeof(head4));
+    char *big;
+    MALLOC(big, WS_MAX_PAYLOAD_LENS);
+    memset(big, 0x5a, WS_MAX_PAYLOAD_LENS);
+    buffer_append(&buf4, big, WS_MAX_PAYLOAD_LENS);
+
+    websock_ctx ws4;
+    ud_cxt ud4;
+    _ws_ctx_init(&ws4, &ud4);
+    int32_t status4 = PROT_INIT;
+    struct websock_pack_ctx *pack4 = _t_websock_unpack(1, &buf4, &ud4, NULL, &status4);
+    CuAssertPtrNotNull(tc, pack4);
+    CuAssertTrue(tc, !BIT_CHECK(status4, PROT_ERROR));
+    size_t dlen4 = 0;
+    char *data4 = websock_data(pack4, &dlen4);
+    CuAssertIntEquals(tc, WS_MAX_PAYLOAD_LENS, (int)dlen4);
+    CuAssertTrue(tc, 0 == memcmp(data4, big, WS_MAX_PAYLOAD_LENS));
+    _websock_pkfree(pack4);
+    FREE(big);
+    buffer_free(&buf4);
 }
 
 // mail.c 附件路径：mail_attach_add 读取临时文件 → base64 编码到 attach->content
@@ -5585,18 +5523,6 @@ static void test_mail_attach_pack(CuTest *tc) {
     mail_free(&mail);
     remove(tmpfile);
 }
-
-// SMTP 状态机 ud->status 值（与 lib/protocol/smtp/smtp.c parse_status 对应）：
-//   0=INIT, 1=EHLO, 2=AUTH, 3=AUTH_CHECK, 4=COMMAND
-// ev_send 在 fd==INVALID_SOCK 时会释放 data 并返回 ERR_FAILED 设置 PROT_ERROR；
-// 此时 ud->status 已在 ev_send 调用前完成切换，可用于验证状态转移
-#define _SMTP_INIT       0
-#define _SMTP_EHLO       1
-#define _SMTP_AUTH       2
-#define _SMTP_AUTH_CHECK 3
-// authtype 直接取 smtp.h 的枚举，别再抄一份数值
-#define _SMTP_LOGIN      LOGIN
-#define _SMTP_PLAIN      PLAIN
 
 // 握手回传桩，_smtp_ud_setup 每个用例都装一次。_smtp_connected 与 _smtp_auth_check 在被
 // 服务端拒绝时会把原文推给上层，而纯解析测试没起 loader，不装桩这条路没人收载荷。

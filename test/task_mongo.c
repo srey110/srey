@@ -78,12 +78,28 @@ static int32_t _crud_flow(mongo_ctx *mongo) {
     bson_ctx empty;
     _build_empty_doc(&empty);
     mgopack_ctx *p = mongo_find(mongo, BSON_DOC(&empty), BSON_DOC_LENS(&empty), NULL, 0);
+    BSON_FREE(&empty);
     if (NULL == p) {
         LOG_ERROR("mongo find error.");
-        BSON_FREE(&empty);
         return ERR_FAILED;
     }
-    BSON_FREE(&empty);
+    // 只判非空的话，写路径把 name/score 整个丢掉都发现不了。
+    // 响应形如 { cursor: { firstBatch: [...] }, ok: 1 }，钉住 cursor 在且是子文档
+    bson_ctx rsp;
+    bson_init(&rsp, p->doc, p->dlens);
+    bson_iter it;
+    bson_iter_init(&it, &rsp);
+    int32_t has_cursor = 0;
+    while (bson_iter_next(&it)) {
+        if (0 == strcmp(it.key, "cursor")) {
+            has_cursor = (BSON_DOCUMENT == it.type);
+            break;
+        }
+    }
+    if (!has_cursor) {
+        LOG_ERROR("mongo find: response has no cursor document.");
+        return ERR_FAILED;
+    }
 
     // count
     bson_ctx empty2;
@@ -148,6 +164,12 @@ static int32_t _duplicate_key_error(mongo_ctx *mongo) {
         LOG_ERROR("mongo dup_key: expected ERR_FAILED, got %d.", rtn);
         return ERR_FAILED;
     }
+    // 断连也会返 ERR_FAILED：再发一条命令确认连接还活着，否则这条断言分不出
+    // "服务端按 E11000 拒了" 与 "连接掉了"
+    if (ERR_OK != mongo_ping(mongo)) {
+        LOG_ERROR("mongo dup_key: connection died instead of being rejected.");
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 
@@ -199,9 +221,15 @@ static int32_t _txn_reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
         LOG_ERROR("mongo startsession(reconnect) error.");
         return ERR_FAILED;
     }
+    uint64_t oldskid = mongo->sk.skid;
     ev_close(&task->loader->netev, mongo->sk.fd, mongo->sk.skid);
     if (ERR_OK != mongo_ping(mongo)) {
         LOG_ERROR("mongo reconnect(txn) error.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
+    if (oldskid == mongo->sk.skid) {
+        LOG_ERROR("mongo reconnect(txn): skid unchanged, no reconnect happened.");
         mongo_freesession(sess);
         return ERR_FAILED;
     }
@@ -353,9 +381,16 @@ static int32_t _txn_unbound_flow(mongo_ctx *mongo) {
 
 // ping 自动重连（含 re-auth）：强制关闭连接后 mongo_ping 应重连并恢复可用，count 验证
 static int32_t _reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
+    uint64_t oldskid = mongo->sk.skid;
     ev_close(&task->loader->netev, mongo->sk.fd, mongo->sk.skid);
     if (ERR_OK != mongo_ping(mongo)) {
         LOG_ERROR("mongo ping reconnect error.");
+        return ERR_FAILED;
+    }
+    // skid 必须换过：ping 若是"发现连接还在就直接返回成功"，下面的 count 照样过，
+    // 而"真的重连了"这条本用例要盯的性质就没人验
+    if (oldskid == mongo->sk.skid) {
+        LOG_ERROR("mongo ping reconnect: skid unchanged, no reconnect happened.");
         return ERR_FAILED;
     }
     mongo_collection(mongo, "srey_test");
@@ -404,7 +439,10 @@ static int32_t _moretocome_flow(mongo_ctx *mongo) {
 
 static void _startup(task_ctx *task) {
     task_mongo_args *arg = (task_mongo_args *)coro_get_arg(task);
-    mongo_init(&arg->mongo, arg->host, arg->port, NULL, arg->db);
+    if (ERR_OK != mongo_init(&arg->mongo, arg->host, arg->port, NULL, arg->db)) {
+        LOG_ERROR("mongo_init error.");
+        return;
+    }
     // 凭据必须在 connect 之前设好：hello 与认证都由 mongo_connect 内部完成
     mongo_user_pwd(&arg->mongo, arg->user, arg->password);
     mongo_authdb(&arg->mongo, arg->authdb);

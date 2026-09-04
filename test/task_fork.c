@@ -17,7 +17,11 @@ static void _single_worker(task_ctx *task, void *arg) {
 }
 
 static int32_t _test_single(task_ctx *task) {
-    single_arg a = { .hit = 0, .expect_val = 42 };
+    // 下面的失败路径可能在 worker 还没跑完时就 return，栈上的 a 随之失效。
+    // 放 static 免掉"每条失败路径都得先把 fork 出去的协程等干净"的时序推理
+    static single_arg a;
+    a.hit = 0;
+    a.expect_val = 42;
     coro_fork(task, _single_worker, &a);
     // fork 不立即执行，需 yield 让出当前协程
     coro_sleep(task, 30);
@@ -64,7 +68,9 @@ static void _yield_worker(task_ctx *task, void *arg) {
 }
 
 static int32_t _test_yield(task_ctx *task) {
-    yield_arg a = { .before = 0, .after = 0 };
+    static yield_arg a;// 理由同 _test_single
+    a.before = 0;
+    a.after = 0;
     coro_fork(task, _yield_worker, &a);
     coro_sleep(task, 100);
     if (1 != a.before || 2 != a.after) {
@@ -217,10 +223,15 @@ static void _concurrent_driver(task_ctx *task, void *arg) {
 }
 
 static int32_t _test_concurrent_fork_wait(task_ctx *task) {
-    int32_t a_ok = 0;
-    int32_t b_ok = 0;
-    concurrent_arg ca = { .sleep_ms = 20, .done = 0, .ok = &a_ok };
-    concurrent_arg cb = { .sleep_ms = 60, .done = 0, .ok = &b_ok };
+    // ca/cb 与它们指向的两个标志一起放 static，理由同 _test_single
+    static int32_t a_ok;
+    static int32_t b_ok;
+    static concurrent_arg ca;
+    static concurrent_arg cb;
+    a_ok = 0;
+    b_ok = 0;
+    ca.sleep_ms = 20; ca.done = 0; ca.ok = &a_ok;
+    cb.sleep_ms = 60; cb.done = 0; cb.ok = &b_ok;
     // A 先 fork（先入链表，处于链表尾），B 后 fork（链表头）；A 先完成 → 非 LIFO 移除
     coro_fork(task, _concurrent_driver, &ca);
     coro_fork(task, _concurrent_driver, &cb);
@@ -272,8 +283,10 @@ static int32_t _test_fork_pool_reuse(task_ctx *task) {
 // ── 测试 10：coro_fork 高频 fire-and-forget（fork_pending 大批一次 drain）──
 static int32_t _test_fork_ff_pool(task_ctx *task) {
     enum { FF_COUNT = 64 };
-    int32_t cnt = 0;
-    fpool_arg pa = { .cnt = &cnt };
+    static int32_t cnt;// 理由同 _test_single
+    static fpool_arg pa;
+    cnt = 0;
+    pa.cnt = &cnt;
     int32_t i;
     for (i = 0; i < FF_COUNT; i++) {
         coro_fork(task, _fpool_worker, &pa);

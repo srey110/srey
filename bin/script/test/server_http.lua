@@ -18,7 +18,7 @@ local function _gen_chunked(state)
     state.n = state.n + 1
     if 1 == state.n then return "a" end
     if 2 == state.n then return "b" end
-    return nil    -- 触发 0\r\n\r\n 终止块
+    return nil -- 触发 0\r\n\r\n 终止块
 end
 
 srey.startup(function()

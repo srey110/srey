@@ -59,7 +59,7 @@ size_t hmac_final(hmac_ctx *hmac, char *hash) {
 void hmac_reset(hmac_ctx *hmac) {
     ASSERTAB(hmac->inside_init.attr->eng_lens <= sizeof(hmac->inside_init.eng_ctx)
              && hmac->outside_init.attr->eng_lens <= sizeof(hmac->outside_init.eng_ctx),
-             "hmac not initialized.");
+             "engine ctx larger than hmac buffer.");
     memcpy(&hmac->inside.eng_ctx, &hmac->inside_init.eng_ctx, hmac->inside_init.attr->eng_lens);
     memcpy(&hmac->outside.eng_ctx, &hmac->outside_init.eng_ctx, hmac->outside_init.attr->eng_lens);
 }

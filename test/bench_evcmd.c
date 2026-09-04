@@ -40,6 +40,8 @@ static void _eca_producer(void *ud) {
             if (w > 0) {
                 p += w;
                 left -= (size_t)w;
+            } else if (EINTR != errno) {
+                break;// 管道坏了就别空转,本轮数据作废
             }
         }
     }
@@ -119,7 +121,11 @@ static void _ecb_producer(void *ud) {
         queue_push(&a->sh->qu, &c);
         spin_unlock(&a->sh->lock);
         if (ATOMIC_CAS(&a->sh->pending, 0, 1)) {
-            while (write(a->sh->fd_w, &b, 1) <= 0) {}
+            while (write(a->sh->fd_w, &b, 1) <= 0) {
+                if (EINTR != errno) {
+                    break;// 同上
+                }
+            }
         }
     }
 }
@@ -213,7 +219,11 @@ static void _ecc_producer(void *ud) {
         // coalesce=0 时短路跳过 CAS,每条都写触发字节
         if (0 == a->sh->coalesce
             || ATOMIC_CAS(&a->sh->pending, 0, 1)) {
-            while (write(a->sh->fd_w, &b, 1) <= 0) {}
+            while (write(a->sh->fd_w, &b, 1) <= 0) {
+                if (EINTR != errno) {
+                    break;// 同上
+                }
+            }
         }
     }
 }

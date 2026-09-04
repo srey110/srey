@@ -8,8 +8,7 @@
 #define _MPQ_PROD_CNT    4
 #define _MPQ_CONS_CNT    4
 #define _MPQ_ITEMS_EACH  50000
-#define _MPQ_MC_TOTAL    (_MPQ_PROD_CNT * _MPQ_ITEMS_EACH)
-#define _MPQ_SC_TOTAL    (_MPQ_PROD_CNT * _MPQ_ITEMS_EACH)
+#define _MPQ_TOTAL       (_MPQ_PROD_CNT * _MPQ_ITEMS_EACH)
 
 /* mpq_size 并发采样 */
 #define _MPQ_SZ_CAP    4u
@@ -43,11 +42,11 @@
 static void test_mpq_basic(CuTest *tc) {
     mpq_ctx q;
     uintptr_t v, out;
-    mpq_init(&q, sizeof(uintptr_t), 0);    /* 0 → 默认容量 1024 */
+    mpq_init(&q, sizeof(uintptr_t), 0);/* 0 → 默认容量 1024 */
 
     CuAssertTrue(tc, 1024 == mpq_capacity(&q));
     CuAssertTrue(tc, 0 == mpq_size(&q));
-    CuAssertTrue(tc, ERR_FAILED == mpq_pop(&q, &out));  /* 空队列出队返回 ERR_FAILED */
+    CuAssertTrue(tc, ERR_FAILED == mpq_pop(&q, &out));/* 空队列出队返回 ERR_FAILED */
 
     /* 入队 10 个整数值 */
     for (uintptr_t i = 1; i <= 10; i++) {
@@ -71,7 +70,7 @@ static void test_mpq_basic_sc(CuTest *tc) {
     uintptr_t v, out;
     mpq_init(&q, sizeof(uintptr_t), 0);
 
-    CuAssertTrue(tc, ERR_FAILED == mpq_pop_sc(&q, &out));   /* 空队列出队返回 ERR_FAILED */
+    CuAssertTrue(tc, ERR_FAILED == mpq_pop_sc(&q, &out));/* 空队列出队返回 ERR_FAILED */
 
     for (uintptr_t i = 1; i <= 10; i++) {
         v = i;
@@ -148,27 +147,29 @@ static void _mpq_producer(void *arg) {
     }
 }
 
-static atomic_t   _mpq_consumed;
+static atomic_t _mpq_consumed;
 static atomic64_t _mpq_sum;
 
-/* 多消费者：走 mpq_pop（CAS 路径） */
-static void _mpq_consumer_mc(void *arg) {
-    mpq_ctx *q = (mpq_ctx *)arg;
+/* mpq 消费者：use_sc=0 走 mpq_pop（多消费者 CAS 路径），=1 走 mpq_pop_sc（单消费者无 CAS）。
+   两条路径除这一句取元素外逐字相同，合成一个函数免得改超时/退出条件时漏改一边 */
+static void _mpq_consume_loop(mpq_ctx *q, int32_t use_sc) {
     uintptr_t p;
+    uint32_t prev;
     uint32_t fails = 0;
     uint64_t deadline = nowms() + _MPQ_MAXMS;
     for (;;) {
-        if (ERR_OK == mpq_pop(q, &p)) {
-            uint32_t prev = ATOMIC_ADD(&_mpq_consumed, 1);
+        if (ERR_OK == (use_sc ? mpq_pop_sc(q, &p) : mpq_pop(q, &p))) {
+            prev = ATOMIC_ADD(&_mpq_consumed, 1);
             ATOMIC64_ADD(&_mpq_sum, p);
-            if (prev + 1 >= (uint32_t)_MPQ_MC_TOTAL) {
+            if (prev + 1 >= (uint32_t)_MPQ_TOTAL) {
                 break;
             }
         } else {
-            if (ATOMIC_GET(&_mpq_consumed) >= (uint32_t)_MPQ_MC_TOTAL) {
+            if (ATOMIC_GET(&_mpq_consumed) >= (uint32_t)_MPQ_TOTAL) {
                 break;
             }
-            // 每约 100 万次空转才看一次表：取不到时是紧循环,逐次 nowms 会拖慢整个用例
+            // 每约 100 万次空转才看一次表：取不到时是紧循环,逐次 nowms 会拖慢整个用例。
+            // 到点置 stop 让生产者也能退出
             if (0 == (++fails & 0xFFFFF)
                 && nowms() > deadline) {
                 ATOMIC_SET(&_mpq_stop, 1);
@@ -178,33 +179,11 @@ static void _mpq_consumer_mc(void *arg) {
         }
     }
 }
-
-/* 单消费者：走 mpq_pop_sc（无 CAS 路径） */
+static void _mpq_consumer_mc(void *arg) {
+    _mpq_consume_loop((mpq_ctx *)arg, 0);
+}
 static void _mpq_consumer_sc(void *arg) {
-    mpq_ctx *q = (mpq_ctx *)arg;
-    uintptr_t p;
-    uint32_t fails = 0;
-    uint64_t deadline = nowms() + _MPQ_MAXMS;
-    for (;;) {
-        if (ERR_OK == mpq_pop_sc(q, &p)) {
-            uint32_t prev = ATOMIC_ADD(&_mpq_consumed, 1);
-            ATOMIC64_ADD(&_mpq_sum, p);
-            if (prev + 1 >= (uint32_t)_MPQ_SC_TOTAL) {
-                break;
-            }
-        } else {
-            if (ATOMIC_GET(&_mpq_consumed) >= (uint32_t)_MPQ_SC_TOTAL) {
-                break;
-            }
-            // 同 _mpq_consumer_mc：定期看表,到点置 stop 让生产者也能退出
-            if (0 == (++fails & 0xFFFFF)
-                && nowms() > deadline) {
-                ATOMIC_SET(&_mpq_stop, 1);
-                break;
-            }
-            CPU_PAUSE();
-        }
-    }
+    _mpq_consume_loop((mpq_ctx *)arg, 1);
 }
 
 /* 并发：4 生产者 × 4 消费者（mpq_pop），验证无丢失、无重复 */
@@ -215,11 +194,11 @@ static void test_mpq_concurrent_mc(CuTest *tc) {
     _mpq_consumed = 0;
     _mpq_sum      = 0;
     ATOMIC_SET(&_mpq_stop, 0);
-    int64_t expected = (int64_t)_MPQ_MC_TOTAL * (_MPQ_MC_TOTAL + 1) / 2;
+    int64_t expected = (int64_t)_MPQ_TOTAL * (_MPQ_TOTAL + 1) / 2;
 
-    pthread_t      producers[_MPQ_PROD_CNT];
-    pthread_t      consumers[_MPQ_CONS_CNT];
-    _mpq_prod_arg  pargs[_MPQ_PROD_CNT];
+    pthread_t producers[_MPQ_PROD_CNT];
+    pthread_t consumers[_MPQ_CONS_CNT];
+    _mpq_prod_arg pargs[_MPQ_PROD_CNT];
     int i;
 
     /* 先启动消费者，避免生产者长时间自旋 */
@@ -231,10 +210,14 @@ static void test_mpq_concurrent_mc(CuTest *tc) {
         pargs[i].id = i;
         producers[i] = thread_creat(_mpq_producer, &pargs[i]);
     }
-    for (i = 0; i < _MPQ_PROD_CNT; i++) thread_join(producers[i]);
-    for (i = 0; i < _MPQ_CONS_CNT; i++) thread_join(consumers[i]);
+    for (i = 0; i < _MPQ_PROD_CNT; i++) {
+        thread_join(producers[i]);
+    }
+    for (i = 0; i < _MPQ_CONS_CNT; i++) {
+        thread_join(consumers[i]);
+    }
 
-    CuAssertTrue(tc, (uint32_t)_MPQ_MC_TOTAL == ATOMIC_GET(&_mpq_consumed));
+    CuAssertTrue(tc, (uint32_t)_MPQ_TOTAL == ATOMIC_GET(&_mpq_consumed));
     CuAssertTrue(tc, expected == (int64_t)ATOMIC64_GET(&_mpq_sum));
     mpq_free(&q);
 }
@@ -247,11 +230,11 @@ static void test_mpq_concurrent_sc(CuTest *tc) {
     _mpq_consumed = 0;
     _mpq_sum      = 0;
     ATOMIC_SET(&_mpq_stop, 0);
-    int64_t expected = (int64_t)_MPQ_SC_TOTAL * (_MPQ_SC_TOTAL + 1) / 2;
+    int64_t expected = (int64_t)_MPQ_TOTAL * (_MPQ_TOTAL + 1) / 2;
 
-    pthread_t      producers[_MPQ_PROD_CNT];
-    pthread_t      consumer;
-    _mpq_prod_arg  pargs[_MPQ_PROD_CNT];
+    pthread_t producers[_MPQ_PROD_CNT];
+    pthread_t consumer;
+    _mpq_prod_arg pargs[_MPQ_PROD_CNT];
     int i;
 
     consumer = thread_creat(_mpq_consumer_sc, &q);
@@ -260,10 +243,12 @@ static void test_mpq_concurrent_sc(CuTest *tc) {
         pargs[i].id = i;
         producers[i] = thread_creat(_mpq_producer, &pargs[i]);
     }
-    for (i = 0; i < _MPQ_PROD_CNT; i++) thread_join(producers[i]);
+    for (i = 0; i < _MPQ_PROD_CNT; i++) {
+        thread_join(producers[i]);
+    }
     thread_join(consumer);
 
-    CuAssertTrue(tc, (uint32_t)_MPQ_SC_TOTAL == ATOMIC_GET(&_mpq_consumed));
+    CuAssertTrue(tc, (uint32_t)_MPQ_TOTAL == ATOMIC_GET(&_mpq_consumed));
     CuAssertTrue(tc, expected == (int64_t)ATOMIC64_GET(&_mpq_sum));
     mpq_free(&q);
 }
@@ -338,7 +323,7 @@ static void test_mpq_size_never_underreports(CuTest *tc) {
 static void test_spsc_basic(CuTest *tc) {
     spsc_ctx q;
     uintptr_t v, out;
-    spsc_init(&q, sizeof(uintptr_t), 0);    /* 0 → 默认容量 1024 */
+    spsc_init(&q, sizeof(uintptr_t), 0);/* 0 → 默认容量 1024 */
 
     CuAssertTrue(tc, 1024 == spsc_capacity(&q));
     CuAssertTrue(tc, 0 == spsc_size(&q));
@@ -416,7 +401,7 @@ static void _spsc_producer(void *arg) {
     ATOMIC_SET(&_spsc_done_prod, 1);
 }
 
-static atomic_t _spsc_fail;     /* 顺序违例计数 */
+static atomic_t _spsc_fail;/* 顺序违例计数 */
 static atomic_t _spsc_consumed;
 
 static void _spsc_consumer(void *arg) {
@@ -467,7 +452,7 @@ static void test_spsc_concurrent(CuTest *tc) {
     thread_join(cons);
 
     CuAssertTrue(tc, (uint32_t)_SPSC_ITEMS == ATOMIC_GET(&_spsc_consumed));
-    CuAssertTrue(tc, 0 == ATOMIC_GET(&_spsc_fail));   /* FIFO 顺序严格成立 */
+    CuAssertTrue(tc, 0 == ATOMIC_GET(&_spsc_fail));/* FIFO 顺序严格成立 */
     spsc_free(&q);
 }
 
@@ -485,7 +470,7 @@ static void test_fsqu_basic(CuTest *tc) {
 
     CuAssertTrue(tc, 0 == fsqu_size(&q));
     CuAssertTrue(tc, 8 == fsqu_capacity(&q));
-    CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));   /* 空队列出队 */
+    CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));/* 空队列出队 */
 
     /* push 8 个，size 随之递增 */
     for (v = 1; v <= 8; v++) {
@@ -499,7 +484,7 @@ static void test_fsqu_basic(CuTest *tc) {
         CuAssertTrue(tc, (uint32_t)(8 - v) == fsqu_size(&q));
     }
     CuAssertTrue(tc, 0 == fsqu_size(&q));
-    CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));   /* 取空后再 pop */
+    CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));/* 取空后再 pop */
     fsqu_free(&q);
 }
 
@@ -514,7 +499,7 @@ static void test_fsqu_trypush_full(CuTest *tc) {
     }
     CuAssertTrue(tc, 8 == fsqu_size(&q));
     v = 9;
-    CuAssertTrue(tc, ERR_FAILED == fsqu_trypush(&q, &v));   /* 已满拒绝 */
+    CuAssertTrue(tc, ERR_FAILED == fsqu_trypush(&q, &v));/* 已满拒绝 */
 
     /* 消费 1 个后腾出空位，可再入队 1 个；继续满则再拒绝 */
     CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 1 == out);
@@ -568,7 +553,7 @@ static void test_fsqu_pop_sc(CuTest *tc) {
     uint32_t n;
     fsqu_init(&q, sizeof(int32_t), 8);
 
-    CuAssertTrue(tc, ERR_FAILED == fsqu_pop_sc(&q, &out));   /* 空队列单消费者出队 */
+    CuAssertTrue(tc, ERR_FAILED == fsqu_pop_sc(&q, &out));/* 空队列单消费者出队 */
 
     for (v = 1; v <= 6; v++) {
         fsqu_push(&q, &v);
@@ -595,7 +580,7 @@ static void test_fsqu_pop_sc(CuTest *tc) {
 static void test_fsqu_default_cap(CuTest *tc) {
     fsqu_ctx q;
     int32_t v, out;
-    fsqu_init(&q, sizeof(int32_t), 0);   /* 0 → 默认容量 */
+    fsqu_init(&q, sizeof(int32_t), 0);/* 0 → 默认容量 */
 
     CuAssertTrue(tc, fsqu_capacity(&q) > 0);
     CuAssertTrue(tc, 0 == fsqu_size(&q));
@@ -618,15 +603,15 @@ static void test_fsqu_overflow_fifo(CuTest *tc) {
     int32_t v, out;
     fsqu_init(&q, sizeof(int32_t), 8);
 
-    for (v = 1; v <= 10; v++) {   /* 1..8 进快路径，9..10 落溢出层 */
+    for (v = 1; v <= 10; v++) {/* 1..8 进快路径，9..10 落溢出层 */
         fsqu_push(&q, &v);
     }
     CuAssertTrue(tc, 10 == fsqu_size(&q));
 
-    for (v = 1; v <= 3; v++) {    /* 消费 3 个，快路径腾出空位 */
+    for (v = 1; v <= 3; v++) {/* 消费 3 个，快路径腾出空位 */
         CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
     }
-    v = 11;                       /* 溢出层仍非空：11 必须继续落溢出层，不得插队到 9 之前 */
+    v = 11;/* 溢出层仍非空：11 必须继续落溢出层，不得插队到 9 之前 */
     fsqu_push(&q, &v);
     CuAssertTrue(tc, 8 == fsqu_size(&q));
 
@@ -658,7 +643,7 @@ static void test_fsqu_overflow_pop_batch(CuTest *tc) {
         fsqu_push(&q, &v);
     }
     CuAssertTrue(tc, 12 == fsqu_size(&q));
-    n = fsqu_pop_batch(&q, out, 12);   /* 前 8 来自快路径，后 4 从溢出层续取 */
+    n = fsqu_pop_batch(&q, out, 12);/* 前 8 来自快路径，后 4 从溢出层续取 */
     CuAssertTrue(tc, 12 == n);
     for (i = 0; i < 12; i++) {
         CuAssertTrue(tc, out[i] == (int32_t)(i + 1));
@@ -703,16 +688,16 @@ static void test_fsqu_trypush_sticky(CuTest *tc) {
     int32_t v, out;
     fsqu_init(&q, sizeof(int32_t), 8);
 
-    for (v = 1; v <= 10; v++) {   /* 1..8 进快路径，9..10 落溢出层 */
+    for (v = 1; v <= 10; v++) {/* 1..8 进快路径，9..10 落溢出层 */
         fsqu_push(&q, &v);
     }
-    for (v = 1; v <= 8; v++) {    /* 排空快路径，令 mpq 环空出来而溢出层仍存 9、10 */
+    for (v = 1; v <= 8; v++) {/* 排空快路径，令 mpq 环空出来而溢出层仍存 9、10 */
         CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
     }
     CuAssertTrue(tc, 2 == fsqu_size(&q));
 #if FSQU_MPQ
     v = 999;
-    CuAssertTrue(tc, ERR_FAILED == fsqu_trypush(&q, &v));   /* 溢出层非空 → 拒绝 */
+    CuAssertTrue(tc, ERR_FAILED == fsqu_trypush(&q, &v));/* 溢出层非空 → 拒绝 */
     CuAssertTrue(tc, 2 == fsqu_size(&q));
 #endif
     CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 9 == out);
@@ -729,12 +714,12 @@ static void test_mpq_pop_empty_vs_inflight(CuTest *tc) {
     uintptr_t v, out;
     mpq_init(&q, sizeof(uintptr_t), 8);
 
-    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop(&q, &out));     /* 真空：enq == deq */
+    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop(&q, &out));/* 真空：enq == deq */
     CuAssertIntEquals(tc, ERR_FAILED, mpq_pop_sc(&q, &out));
     v = 1;
     CuAssertTrue(tc, ERR_OK == mpq_trypush(&q, &v));
     CuAssertTrue(tc, ERR_OK == mpq_pop(&q, &out) && 1 == out);
-    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop(&q, &out));     /* 取完复归真空 */
+    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop(&q, &out));/* 取完复归真空 */
     v = 2;
     CuAssertTrue(tc, ERR_OK == mpq_trypush(&q, &v));
     CuAssertTrue(tc, ERR_OK == mpq_pop_sc(&q, &out) && 2 == out);
@@ -818,9 +803,9 @@ static void test_mpq_multiprod_conserve(CuTest *tc) {
     FREE(seen);
     mpq_free(&q);
     LOG_INFO("[mpq] multiprod: got=%u inflight=%u empty=%u", got, inflight, empty);
-    CuAssertIntEquals(tc, 0, (int32_t)bad);                 /* 返回值只落在三态内 */
-    CuAssertIntEquals(tc, 0, (int32_t)dup);                 /* 不重复、不越界 */
-    CuAssertIntEquals(tc, _MPQMP_TOTAL, (int32_t)got);      /* 不丢失 */
+    CuAssertIntEquals(tc, 0, (int32_t)bad);/* 返回值只落在三态内 */
+    CuAssertIntEquals(tc, 0, (int32_t)dup);/* 不重复、不越界 */
+    CuAssertIntEquals(tc, _MPQMP_TOTAL, (int32_t)got);/* 不丢失 */
 }
 
 /* 溢出层守卫不得误伤正常路径：mpq 确实空了（enq == deq）时，溢出层必须照常排空。
@@ -832,10 +817,10 @@ static void test_fsqu_ovf_drain_after_mpq_empty(CuTest *tc) {
     int32_t batch[4];
     fsqu_init(&q, sizeof(int32_t), 4);
 
-    for (v = 1; v <= 6; v++) {    /* 1..4 快路径，5、6 溢出层 */
+    for (v = 1; v <= 6; v++) {/* 1..4 快路径，5、6 溢出层 */
         fsqu_push(&q, &v);
     }
-    for (v = 1; v <= 4; v++) {    /* 排空快路径，mpq 回到 enq == deq */
+    for (v = 1; v <= 4; v++) {/* 排空快路径，mpq 回到 enq == deq */
         CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
     }
     CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 5 == out);
@@ -866,27 +851,34 @@ static void test_fsqu_trypush_no_overflow(CuTest *tc) {
     for (v = 1; v <= 8; v++) {
         CuAssertTrue(tc, ERR_OK == fsqu_trypush(&q, &v));
     }
-    for (i = 0; i < 4; i++) {   /* 满后连续 trypush 全失败且 size 不增 */
+    for (i = 0; i < 4; i++) {/* 满后连续 trypush 全失败且 size 不增 */
         v = 100;
         CuAssertTrue(tc, ERR_FAILED == fsqu_trypush(&q, &v));
         CuAssertTrue(tc, 8 == fsqu_size(&q));
     }
-    for (v = 1; v <= 8; v++) {  /* 队列内仍只有最初 8 个 */
+    for (v = 1; v <= 8; v++) {/* 队列内仍只有最初 8 个 */
         CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
     }
     CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));
     fsqu_free(&q);
 }
 
-/* 从未溢出的队列 free：溢出层延迟分配，ptr 恒为 NULL，依赖 FREE 宏的空指针守卫 */
+/* 从未溢出的队列 free：溢出层延迟分配，ptr 恒为 NULL，依赖 FREE 宏的空指针守卫。
+   声明的意图（"没分配过就不该释放"）要有观测点，否则 free 里多调一次 FREE 也看不出来 */
 static void test_fsqu_never_overflow_free(CuTest *tc) {
     fsqu_ctx q;
     int32_t v = 1, out;
+    uint64_t a0, f0, a1, f1;
     fsqu_init(&q, sizeof(int32_t), 8);
     fsqu_push(&q, &v);
     CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 1 == out);
     CuAssertTrue(tc, 0 == fsqu_size(&q));
+    mem_stat(&a0, &f0);
     fsqu_free(&q);
+    mem_stat(&a1, &f1);
+    /* 只该释放环形数组这一块：溢出层从未分配过，多释放一次就是拿 NULL 之外的野指针去 free */
+    CuAssertTrue(tc, 0 == a1 - a0);
+    CuAssertTrue(tc, 1 == f1 - f0);
 }
 
 /* =======================================================================
@@ -1029,9 +1021,7 @@ static void test_hashmap(CuTest *tc) {
     CuAssertTrue(tc, 0 == hashmap_count(map));
 
     /* 插入 100 条记录 */
-    char key[32];
     for (int i = 0; i < 100; i++) {
-        SNPRINTF(key, sizeof(key), "key_%d", i);
         _kv kv;
         SNPRINTF(kv.key, sizeof(kv.key), "key_%d", i);
         kv.val = i * 10;
@@ -1268,12 +1258,12 @@ static void test_slist_insert(CuTest *tc) {
     for (i = 0; i < 5; i++) {
         n[i].val = i;
     }
-    list_push_tail(&l, &n[2].node);                  /* [2] */
-    list_insert_before(&l, &n[2].node, &n[1].node);  /* [1,2] */
-    list_insert_before(&l, &n[1].node, &n[0].node);  /* [0,1,2] n0 成新头 */
+    list_push_tail(&l, &n[2].node);/* [2] */
+    list_insert_before(&l, &n[2].node, &n[1].node);/* [1,2] */
+    list_insert_before(&l, &n[1].node, &n[0].node);/* [0,1,2] n0 成新头 */
     CuAssertTrue(tc, &n[0].node == l.head);
-    list_insert_after(&l, &n[2].node, &n[3].node);   /* [0,1,2,3] */
-    list_insert_after(&l, &n[3].node, &n[4].node);   /* [0,1,2,3,4] n4 成新尾 */
+    list_insert_after(&l, &n[2].node, &n[3].node);/* [0,1,2,3] */
+    list_insert_after(&l, &n[3].node, &n[4].node);/* [0,1,2,3,4] n4 成新尾 */
     CuAssertTrue(tc, &n[4].node == l.tail);
     for (i = 0; i < 5; i++) {
         exp[i] = i;
@@ -1424,8 +1414,10 @@ static void test_queue_lazy_trypush(CuTest *tc) {
     CuAssertTrue(tc, queue_maxsize(&q) > 0);
     CuAssertTrue(tc, 7 == *(int *)queue_pop(&q));
 
-    /* 分配之后照常按容量判满 */
-    for (int i = 0; i < (int)queue_maxsize(&q); i++) {
+    /* 分配之后照常按容量判满。容量先取出来：写在循环条件里的话每轮都重算一次，
+       而 trypush 撑不满时 maxsize 会翻倍，循环条件跟着变，这圈就永远走不完 */
+    const int cap = (int)queue_maxsize(&q);
+    for (int i = 0; i < cap; i++) {
         CuAssertIntEquals(tc, ERR_OK, queue_trypush(&q, &i));
     }
     CuAssertTrue(tc, queue_full(&q));
@@ -1554,7 +1546,7 @@ static void test_array(CuTest *tc) {
 
     /* del_nomove：用末尾元素填充被删位置 */
     array_del_nomove(&a, 0);
-    CuAssertTrue(tc, 7 == *(int *)array_front(&a));   /* 末尾元素移到首位 */
+    CuAssertTrue(tc, 7 == *(int *)array_front(&a));/* 末尾元素移到首位 */
     CuAssertTrue(tc, 6 == (int)array_size(&a));
 
     /* clear 不释放内存 */
@@ -2217,7 +2209,7 @@ static void test_hashmap_upstream_churn(CuTest *tc) {
     ZERO(marks, sizeof(int32_t) * UP_N);
     iter = 0;
     while (hashmap_iter(map, &iter, &item)) {
-        CuAssertTrue(tc, _up_mark(item, &marks));
+        _up_mark(item, &marks);// 恒返 true，套 CuAssert 只是个空断言；真判据是下面那圈 marks
     }
     for (i = 0; i < UP_N; i++) {
         CuAssertIntEquals(tc, 1, marks[i]);
@@ -2244,50 +2236,43 @@ static void test_hashmap_upstream_churn(CuTest *tc) {
     CuAssertTrue(tc, 0 == _up_allocs);
 }
 
+// 往 map 里塞 UP_N 个 "s<i>" 字符串。_up_malloc 与 hashmap_set 都会按注入的
+// _up_fail_on 概率假失败，故两处都得重试到成功为止
+static void _up_fill_strings(CuTest *tc, struct hashmap *map) {
+    char *str;
+    int32_t i;
+    for (i = 0; i < UP_N; i++) {
+        str = NULL;
+        while (NULL == str) {
+            str = (char *)_up_malloc(16);
+        }
+        SNPRINTF(str, 16, "s%d", i);
+        for (;;) {
+            (void)hashmap_set(map, &str);
+            if (!hashmap_oom(map)) {
+                break;
+            }
+        }
+    }
+    CuAssertTrue(tc, UP_N == (int32_t)hashmap_count(map));
+}
+
 // 上游 all() 的字符串段：elfree 必须在 clear 与 free 时对每个元素各调一次。
 // 结束时分配计数归零即证明元素、桶数组、map 自身三者都还回了分配器
 static void test_hashmap_upstream_elfree(CuTest *tc) {
     struct hashmap *map;
-    char *str;
-    int32_t i;
 
     test_rng_init(&_up_rng, 1234567890123ULL);
     _up_allocs = 0;
     _up_fail_on = 1;
     map = _up_new(sizeof(char *), _up_hash_str, _up_cmp_str, _up_free_str);
 
-    for (i = 0; i < UP_N; i++) {
-        str = NULL;
-        while (NULL == str) {
-            str = (char *)_up_malloc(16);
-        }
-        SNPRINTF(str, 16, "s%d", i);
-        for (;;) {
-            (void)hashmap_set(map, &str);
-            if (!hashmap_oom(map)) {
-                break;
-            }
-        }
-    }
-    CuAssertTrue(tc, UP_N == (int32_t)hashmap_count(map));
+    _up_fill_strings(tc, map);
 
     hashmap_clear(map, false);
     CuAssertTrue(tc, 0 == (int32_t)hashmap_count(map));
 
-    for (i = 0; i < UP_N; i++) {
-        str = NULL;
-        while (NULL == str) {
-            str = (char *)_up_malloc(16);
-        }
-        SNPRINTF(str, 16, "s%d", i);
-        for (;;) {
-            (void)hashmap_set(map, &str);
-            if (!hashmap_oom(map)) {
-                break;
-            }
-        }
-    }
-    CuAssertTrue(tc, UP_N == (int32_t)hashmap_count(map));
+    _up_fill_strings(tc, map);
 
     hashmap_free(map);
     _up_fail_on = 0;

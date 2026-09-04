@@ -44,7 +44,7 @@ runner.run(function(t)
         -- log_getlv / log_setlv 一致
         local lv = utils.log_getlv()
         t:check(type(lv) == "number", "log_getlv returns number")
-        utils.log_setlv(lv)  -- 写回原值确保不破坏其他模块
+        utils.log_setlv(lv) -- 写回原值确保不破坏其他模块
         t:eq(lv, utils.log_getlv(), "log_setlv round-trip")
         -- 越界等级必须报错。log_setlv(-1) 会让 slog 的 lv > _log_lv 判定短路掉全进程日志
         t:eq(false, pcall(function() utils.log_setlv(-1) end), "log_setlv(-1) 报错")

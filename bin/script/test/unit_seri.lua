@@ -86,7 +86,7 @@ runner.run(function(t)
 
     -- 7. 长字符串（>=32 字节走 long string 路径）
     do
-        local long = string.rep("ABCD", 20)  -- 80 字节
+        local long = string.rep("ABCD", 20) -- 80 字节
         buf, size = seri.pack(long)
         local long2 = seri.unpack(buf, size)
         t:eq(long, long2, "long string round-trip")
@@ -96,7 +96,6 @@ runner.run(function(t)
     -- 8. 长数组（>=31 走 long array cookie 转义）
     do
         local longarr = {}
-        local i
         for i = 1, 50 do
             longarr[i] = i * 2
         end
@@ -138,7 +137,6 @@ runner.run(function(t)
     -- 12. 大量顶层值 round-trip（顶层 unpack 逐项 checkstack，超 LUA_MINSTACK 不溢出）
     do
         local args = {}
-        local i
         for i = 1, 300 do
             args[i] = i
         end

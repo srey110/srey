@@ -142,7 +142,9 @@ runner.run(function(t)
         ]]
         local ok, msg = hotfix.apply("hotfix_unit_mod", patch)
         t:eq(true, ok, "apply multi ok")
-        t:check(msg and nil ~= msg:find("2"), "替换 2 个函数 msg 含 '2'")
+        -- 文案以 "%d function(s) replaced" 打头（后面可能跟 shadowed upvalue 警告），
+        -- 钉前缀而不是 find("2")：后者对 12/20/22 一律命中
+        t:eq("2 function(s) replaced", msg and msg:sub(1, 22), "替换数写进文案开头")
         t:eq("vN", mod.handle(), "handle 替换")
         t:eq(35, mod.use_helper(5), "use_helper 经 mod._helper 走新版 5 * 7 = 35")
     end
@@ -150,8 +152,8 @@ runner.run(function(t)
     -- ── 子段 9:路径 B - patch 裸读 counter,经 patch_env metatable 转发到原 UpVal ───
     do
         local mod = _setup_module()
-        mod.bump()                -- counter=1
-        mod.bump()                -- counter=2
+        mod.bump() -- counter=1
+        mod.bump() -- counter=2
         local patch = [[
             function M.bump()
                 counter = counter + 1     -- 裸读 counter,走 patch_env metatable → mod 的 counter UpVal
@@ -208,7 +210,7 @@ runner.run(function(t)
     -- ── 子段 12:路径 B 写 counter 后 chunk 抛错 → apply false 且 counter 已回滚(F-HF-1) ───
     do
         local mod = _setup_module()
-        t:eq(1, mod.bump(), "bump 初始 1")   -- counter=1
+        t:eq(1, mod.bump(), "bump 初始 1") -- counter=1
         -- patch 裸写 counter(path-B 立即改原 UpVal)后抛错
         local patch = [[
             counter = 999
@@ -243,7 +245,7 @@ runner.run(function(t)
     -- ── 子段 13:patch 仅裸写 counter 无函数替换 → "no matching" 失败同样回滚(F-HF-1) ───
     do
         local mod = _setup_module()
-        t:eq(1, mod.bump(), "bump 初始 1")   -- counter=1
+        t:eq(1, mod.bump(), "bump 初始 1") -- counter=1
         local ok, err = hotfix.apply("hotfix_unit_mod", "counter = 777")
         t:eq(false, ok, "纯状态写 patch 无函数替换返回 false")
         t:check(err and nil ~= err:find("no matching"), "err 含 'no matching'")
@@ -308,7 +310,7 @@ runner.run(function(t)
     -- counter,二次 path-B 时 _collect_upvalues 扫不到 cell → env 转发回退 _G → nil → 运行报错。
     do
         local mod = _setup_module()
-        mod.bump()   -- counter=1
+        mod.bump() -- counter=1
         t:eq(true, hotfix.apply("hotfix_unit_mod", [[
             function M.bump() counter = counter + 1; return counter + 100 end
         ]]), "首次 path-B apply ok")
@@ -332,7 +334,7 @@ runner.run(function(t)
         ]]
         package.loaded.hotfix_shared_uv = assert(load(src, "=hotfix_shared_uv"))()
         local m = package.loaded.hotfix_shared_uv
-        m.bump()   -- counter=1
+        m.bump() -- counter=1
         t:eq(true, hotfix.apply("hotfix_shared_uv", [[
             function M.bump() counter = counter + 1; return counter + 10 end
         ]]), "首次 path-B apply ok")
@@ -527,25 +529,21 @@ runner.run(function(t)
                 return n
             end
         ]]
-        local i = 1
-        while i <= rounds do
+        for i = 1, rounds do
             if not hotfix.apply("hotfix_gen_mod", patch) then
                 allok = false
             end
             wt[i] = mod.step
-            i = i + 1
         end
         t:eq(true, allok, rounds .. " 代 apply 全部成功")
         collectgarbage()
         collectgarbage()
         collectgarbage()
         local alive = 0
-        i = 1
-        while i <= rounds do
+        for i = 1, rounds do
             if wt[i] then
                 alive = alive + 1
             end
-            i = i + 1
         end
         -- 只该剩下当前装在 mod 上那一代;放宽到 3 是留 GC 时机余量,成链时这里等于 rounds
         t:check(alive <= 3, "历史代已回收,存活 " .. alive .. "/" .. rounds)

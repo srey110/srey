@@ -233,10 +233,11 @@ void *mongo_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         _mongo_pkfree(mgopack);
         return NULL;
     }
-    mgopack->flags = (uint32_t)binary_get_integer(&breader, 4, 1);
-    if (0 != (mgopack->flags & ~(uint32_t)MORETOCOME)) {
+    mgopack->flags = (int32_t)binary_get_integer(&breader, 4, 1);
+    if (0 != (mgopack->flags & ~MORETOCOME)) {
         BIT_SET(*status, PROT_ERROR);
-        LOG_WARN("unsupported flags 0x%x (wire checksum not supported by this client).", mgopack->flags);
+        LOG_WARN("unsupported flags 0x%x (wire checksum not supported by this client).",
+                 (uint32_t)mgopack->flags);
         _mongo_pkfree(mgopack);
         return NULL;
     }
@@ -346,11 +347,13 @@ int32_t mongo_authmod(mongo_ctx *mongo, const char *authmod) {
 int32_t mongo_requestid(mongo_ctx *mongo) {
     return mongo->reqid;
 }
-void mongo_set_flag(mongo_ctx *mongo, mongo_flags flag) {
-    if (MORETOCOME != flag) {
+void mongo_set_flag(mongo_ctx *mongo, int32_t flag) {
+    if (0 != (flag & ~MONGO_FLAGS_ALL)) {
         return;
     }
-    BIT_SET(mongo->flags, flag);
+    // 只实现了 MORETOCOME：CHECKSUM / EXHAUSTALLOWED 收下即丢弃，
+    // 组合值里的 MORETOCOME 仍然生效
+    BIT_SET(mongo->flags, flag & MORETOCOME);
 }
 int32_t mongo_check_flag(mongo_ctx *mongo, mongo_flags flag) {
     return BIT_CHECK(mongo->flags, flag);

@@ -1,8 +1,8 @@
 ﻿#include "test_thread.h"
 #include "lib.h"
 
-#define _NTHREADS   8       /* 并发线程数 */
-#define _NITER      10000   /* 每线程迭代次数 */
+#define _NTHREADS   8/* 并发线程数 */
+#define _NITER      10000/* 每线程迭代次数 */
 // 兜底：锁真坏了要失败，不能挂死在等标志的自旋里
 #define _DISTR_MAXMS 30000
 /* cond 生产者-消费者的消息条数 */
@@ -96,25 +96,40 @@ static void test_spinlock(CuTest *tc) {
 typedef struct {
     rwlock_ctx rw;
     int        value;       /* 受写锁保护的共享值 */
-    atomic_t   readers;     /* 并发读者峰值 */
-    atomic_t   max_readers;
+    atomic_t   readers;     /* 当前并发读者数 */
+    atomic_t   max_readers; /* 并发读者峰值 */
+    atomic_t   writer_in;   /* 写者正在临界区内 */
+    atomic_t   violation;   /* 读者撞见写者 / 写者撞见读者的次数 */
 } _rw_shared;
 
 static void _rw_reader(void *arg) {
     _rw_shared *s = (_rw_shared *)arg;
-    for (int i = 0; i < 200; i++) {
+    atomic_t r, cur_max;
+    uint64_t deadline;
+    int i;
+    for (i = 0; i < 200; i++) {
         rwlock_rdlock(&s->rw);
-        /* 记录并发读者数量 */
-        atomic_t r = ATOMIC_ADD(&s->readers, 1) + 1;
-        /* 更新最大并发数 */
-        atomic_t cur_max;
+        /* 持读锁期间不得有写者在里面。没有这条的话，把 rdlock/unlock 换成空函数也全过 */
+        if (0 != ATOMIC_GET(&s->writer_in)) {
+            ATOMIC_ADD(&s->violation, 1);
+        }
+        r = ATOMIC_ADD(&s->readers, 1) + 1;
+        /* 第一轮在临界区里等一个同伴：读锁允许并发时必然等到，
+           退化成排他锁时全都等到超时，max_readers 停在 1 —— 下面那条断言据此判 */
+        if (0 == i) {
+            deadline = nowms() + 200;
+            while (ATOMIC_GET(&s->readers) < 2 && nowms() < deadline) {
+                MSLEEP(1);
+            }
+        }
+        r = ATOMIC_GET(&s->readers);
         do {
             cur_max = ATOMIC_GET(&s->max_readers);
             if (r <= cur_max) {
                 break;
             }
         } while (!ATOMIC_CAS(&s->max_readers, cur_max, r));
-        (void)s->value;           /* 读取值（测试无竞争）*/
+        (void)s->value;/* 读取值（测试无竞争）*/
         ATOMIC_ADD(&s->readers, -1);
         rwlock_unlock(&s->rw);
     }
@@ -122,9 +137,16 @@ static void _rw_reader(void *arg) {
 
 static void _rw_writer(void *arg) {
     _rw_shared *s = (_rw_shared *)arg;
-    for (int i = 0; i < 50; i++) {
+    int i;
+    for (i = 0; i < 50; i++) {
         rwlock_wrlock(&s->rw);
+        ATOMIC_SET(&s->writer_in, 1);
+        /* 写锁是排他的：此刻不该有读者在里面 */
+        if (0 != ATOMIC_GET(&s->readers)) {
+            ATOMIC_ADD(&s->violation, 1);
+        }
         s->value++;
+        ATOMIC_SET(&s->writer_in, 0);
         rwlock_unlock(&s->rw);
     }
 }
@@ -132,9 +154,11 @@ static void _rw_writer(void *arg) {
 static void test_rwlock(CuTest *tc) {
     _rw_shared s;
     rwlock_init(&s.rw);
-    s.value      = 0;
-    s.readers    = 0;
+    s.value = 0;
+    s.readers = 0;
     s.max_readers = 0;
+    s.writer_in = 0;
+    s.violation = 0;
 
     pthread_t rths[_NTHREADS];
     pthread_t wths[2];
@@ -144,11 +168,19 @@ static void test_rwlock(CuTest *tc) {
     for (int i = 0; i < 2; i++) {
         wths[i] = thread_creat(_rw_writer, &s);
     }
-    for (int i = 0; i < _NTHREADS; i++) thread_join(rths[i]);
-    for (int i = 0; i < 2; i++)         thread_join(wths[i]);
+    for (int i = 0; i < _NTHREADS; i++) {
+        thread_join(rths[i]);
+    }
+    for (int i = 0; i < 2; i++) {
+        thread_join(wths[i]);
+    }
 
     /* 写者累计执行 2×50 次自增 */
     CuAssertIntEquals(tc, 2 * 50, s.value);
+    /* 读写互斥一次都没破 */
+    CuAssertIntEquals(tc, 0, ATOMIC_GET(&s.violation));
+    /* 读者真的并发过：只允许一个读者进临界区的实现在这里挂掉 */
+    CuAssertTrue(tc, ATOMIC_GET(&s.max_readers) > 1);
 
     /* trylock：读锁未被持有时可成功 */
     CuAssertTrue(tc, ERR_OK == rwlock_tryrdlock(&s.rw));
@@ -347,21 +379,30 @@ static void test_rwlock_distr_recursive_rdlock(CuTest *tc) {
 
     rwlock_distr_rdlock(&ctx);
     th = thread_creat(_distr_writer, &ctx);
-    // 到点还没置 write_flag，说明 writer 卡在更前面，join 也回不来，直接报失败
+    // writer 还活着、还阻塞在栈上这个 ctx 的 wrlock 上，此段内一律不断言：
+    // CuTest 失败走 longjmp，会跳过下面的 join 与 free，把线程留在已销毁的栈帧上。
+    // 观测值先攒进局部量，join 之后再判
     uint64_t deadline = nowms() + _DISTR_MAXMS;
+    int32_t timeout = 0;
     while (0 == ATOMIC_GET(&ctx.write_flag)) {
-        CuAssertTrue(tc, nowms() < deadline);
+        if (nowms() > deadline) {
+            timeout = 1;
+            break;
+        }
         MSLEEP(1);
     }
-    CuAssertIntEquals(tc, 0, ATOMIC_GET(&_distr_writer_in));
-
+    int32_t in_wait = (int32_t)ATOMIC_GET(&_distr_writer_in);
     rwlock_distr_rdlock(&ctx);
-    CuAssertIntEquals(tc, 0, ATOMIC_GET(&_distr_writer_in));
+    int32_t in_recur = (int32_t)ATOMIC_GET(&_distr_writer_in);
     rwlock_distr_runlock(&ctx);
-    CuAssertIntEquals(tc, 0, ATOMIC_GET(&_distr_writer_in));
+    int32_t in_inner_out = (int32_t)ATOMIC_GET(&_distr_writer_in);
 
     rwlock_distr_runlock(&ctx);
     thread_join(th);
+    CuAssertIntEquals(tc, 0, timeout);// 0=writer 按时置上 write_flag
+    CuAssertIntEquals(tc, 0, in_wait);
+    CuAssertIntEquals(tc, 0, in_recur);// 重入 rdlock 期间 writer 不得挤进来
+    CuAssertIntEquals(tc, 0, in_inner_out);// 内层 runlock 后仍持外层读锁
     CuAssertIntEquals(tc, 1, ATOMIC_GET(&_distr_writer_in));
 
     rwlock_distr_rdlock(&ctx);
@@ -418,6 +459,7 @@ static void _distr_pool_worker_a(void *arg) {
         if (nowms() > deadline) {
             break;
         }
+        CPU_PAUSE();// 紧自旋抢总线，同核上会把对方饿到超时
     }
     rwlock_distr_unregister(s->ctx);
 }
@@ -430,6 +472,7 @@ static void _distr_pool_worker_b(void *arg) {
         if (nowms() > deadline) {
             break;
         }
+        CPU_PAUSE();// 同上
     }
     s->b_reg_result = rwlock_distr_register(s->ctx);
     // 即使注册失败,rdlock 也应能走 fallback 不卡死
@@ -455,13 +498,17 @@ static void test_rwlock_distr_pool_exhausted(CuTest *tc) {
     rwlock_distr_free(&ctx);
 }
 
-// 未注册线程 rdlock 走 fallback,功能正确
+// 未注册线程 rdlock 走 fallback,功能正确。
+// 每进出一次临界区就 +1，主线程据此确认 fallback 路径真的放行了每一轮
+static atomic_t _distr_fallback_rounds;
+
 static void _distr_fallback_worker(void *arg) {
     rwlock_distr_ctx *ctx = (rwlock_distr_ctx *)arg;
     // 故意不调 register
     int i;
     for (i = 0; i < 200; i++) {
         rwlock_distr_rdlock(ctx);
+        ATOMIC_ADD(&_distr_fallback_rounds, 1);
         rwlock_distr_runlock(ctx);
     }
 }
@@ -469,6 +516,7 @@ static void _distr_fallback_worker(void *arg) {
 static void test_rwlock_distr_fallback(CuTest *tc) {
     rwlock_distr_ctx ctx;
     rwlock_distr_init(&ctx, 4);
+    ATOMIC_SET(&_distr_fallback_rounds, 0);
     pthread_t ths[4];
     int i;
     for (i = 0; i < 4; i++) {
@@ -481,7 +529,8 @@ static void test_rwlock_distr_fallback(CuTest *tc) {
     rwlock_distr_rdlock(&ctx);
     rwlock_distr_runlock(&ctx);
     rwlock_distr_free(&ctx);
-    CuAssertTrue(tc, 1); // 跑通即通过
+    // fallback 卡住任何一轮都会在 join 前挂死；这条断言拦的是"提前退出/少跑几轮"
+    CuAssertIntEquals(tc, 4 * 200, ATOMIC_GET(&_distr_fallback_rounds));
 }
 
 // 读写互斥:多 reader + writer 并发,验证 writer 持锁时无 reader,反之亦然
@@ -562,8 +611,12 @@ static void test_rwlock_distr_mutex_check(CuTest *tc) {
     for (i = 0; i < 2; i++) {
         wths[i] = thread_creat(_distr_mu_writer, &s);
     }
-    for (i = 0; i < _NTHREADS; i++) thread_join(rths[i]);
-    for (i = 0; i < 2; i++)         thread_join(wths[i]);
+    for (i = 0; i < _NTHREADS; i++) {
+        thread_join(rths[i]);
+    }
+    for (i = 0; i < 2; i++) {
+        thread_join(wths[i]);
+    }
     // 读写互斥必须严格,违反计数为 0
     CuAssertIntEquals(tc, 0, (int)ATOMIC_GET(&s.violation));
     // 应观察到并发 reader > 1

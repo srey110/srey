@@ -135,9 +135,9 @@ runner.run(function(t)
         local r = stm.newcopy(stm.copy(w))
         local outer
         r(function(lud, sz)
-            w("v2")              -- update:旧快照 ref 减到仅外层 read 持有
-            r(function() end)    -- 重入读同一 reader
-            outer = utils.ud_str(lud, sz)   -- 重入返回后外层 lud 须仍有效
+            w("v2") -- update:旧快照 ref 减到仅外层 read 持有
+            r(function() end) -- 重入读同一 reader
+            outer = utils.ud_str(lud, sz) -- 重入返回后外层 lud 须仍有效
         end)
         t:eq("v1", outer, "reentry: 重入读后外层 lud 仍指向有效 v1 快照")
     end

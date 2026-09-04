@@ -291,7 +291,7 @@ static void _one_waiter(task_ctx *task, void *arg) {
 // 队头 mtype 不匹配即视为无等待者，不越过队头去找：队头等 RECV，来的是同 sess 的 RESPONSE，
 // 那条响应应落到"没人等"的兜底路径，队头继续等到自己超时
 static int32_t _test_head_mtype_gate(task_ctx *task) {
-    waiter_arg a;
+    static waiter_arg a;// 存储期理由同 _test_close_reregister
     a.sess = createid();
     a.mtype = MSG_TYPE_RECV;
     a.ms = 300;
@@ -375,7 +375,7 @@ static int32_t _test_timeout_ignores_keep(task_ctx *task, uint16_t httpport) {
         ev_close(&task->loader->netev, fd, skid);
         return ERR_FAILED;
     }
-    waiter_arg a;
+    static waiter_arg a;// 存储期理由同 _test_close_reregister
     a.sess = skid;
     a.mtype = MSG_TYPE_RECV;
     a.ms = 200;

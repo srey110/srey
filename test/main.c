@@ -88,20 +88,21 @@ int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
     if (ERR_OK != hug_init(&_hug)) {
-        return ERR_FAILED;
+        PRINT("hug_init failed.");
+        return 1;// 与文件末尾归一后的退出码同口径；ERR_FAILED 是 -1，低 8 位得 255
     }
     sighandle(_on_sigcb, &_hug);
     /* 基础初始化。与 srey/main.c 的 service_init 是同一套全局初始化，加减项要两处同步 */
 #if defined(OS_WIN)
     timeBeginPeriod(1);
 #endif
+    locale_init();
     sock_init();
     unlimit();
-    srand((uint32_t)time(NULL));
+    srand((uint32_t)(time(NULL) ^ nowms() ^ GETPID()));
     serviceid(1);/* 取 srey 的内置默认值，让 createid 的高 16 位与生产一致 */
     log_init(NULL, 0);
     bson_globle_init();
-    locale_init();
     coro_desc_init(0);
     dns_set_ip("8.8.8.8");
     const char *local = procpath();
@@ -118,7 +119,7 @@ int main(int argc, char *argv[]) {
     rwlock_distr_free(&lcklbc);
 #endif
     LOG_INFO("--------------------------------------------------");
-    //rwlock_distr_ctx rwlock_ctx 
+    //rwlock_distr_ctx rwlock_ctx
     bench_rwlock();
     LOG_INFO("--------------------------------------------------");
     //mpq 与 queue + spinlock
@@ -133,27 +134,27 @@ int main(int argc, char *argv[]) {
 #endif
     /* ── 层 1：纯内存单元测试套件 ── */
     CuString *output = CuStringNew();
-    CuSuite  *suite  = CuSuiteNew();
+    CuSuite *suite = CuSuiteNew();
 
-    test_base(suite);        /* 内存宏、原子操作 */
-    test_containers(suite);  /* mpq、hashmap、heap、queue、sarray */
-    test_hashset(suite);     /* hashset(hashmap 包装) */
-    test_crypt(suite);       /* base64、crc、digest、hmac、urlraw、xor */
-    test_utils(suite);       /* pack/unpack、binary、buffer、sfid、hash_ring、netaddr */
-    test_seri(suite);        /* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table；yyjson_helper */
-    test_thread(suite);      /* mutex、spinlock、rwlock、cond、thread */
-    test_stm(suite);         /* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
-    test_event(suite);       /* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
-    test_minicoro(suite);    /* minicoro 本地补丁：栈底守卫字拦截越过栈底的写 */
-    test_protocol(suite);    /* HTTP、Redis RESP、URL 解析、custz、DNS、WebSocket */
-    test_bson(suite);        /* BSON 构建器、迭代器、find */
-    test_mqtt_pack(suite);   /* MQTT 组包/解包往返 */
-    test_pgsql_pack(suite);  /* PostgreSQL 组包 + bind */
-    test_mysql_pack(suite);  /* MySQL 组包 + bind + lenenc */
-    test_mongo_pack(suite);  /* MongoDB wire 组包 + parse */
+    test_base(suite);/* 内存宏、原子操作 */
+    test_containers(suite);/* mpq、hashmap、heap、queue、sarray */
+    test_hashset(suite);/* hashset(hashmap 包装) */
+    test_crypt(suite);/* base64、crc、digest、hmac、urlraw、xor */
+    test_utils(suite);/* pack/unpack、binary、buffer、sfid、hash_ring、netaddr */
+    test_seri(suite);/* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table；yyjson_helper */
+    test_thread(suite);/* mutex、spinlock、rwlock、cond、thread */
+    test_stm(suite);/* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
+    test_event(suite);/* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
+    test_minicoro(suite);/* minicoro 本地补丁：栈底守卫字拦截越过栈底的写 */
+    test_protocol(suite);/* HTTP、Redis RESP、URL 解析、custz、DNS、WebSocket */
+    test_bson(suite);/* BSON 构建器、迭代器、find */
+    test_mqtt_pack(suite);/* MQTT 组包/解包往返 */
+    test_pgsql_pack(suite);/* PostgreSQL 组包 + bind */
+    test_mysql_pack(suite);/* MySQL 组包 + bind + lenenc */
+    test_mongo_pack(suite);/* MongoDB wire 组包 + parse */
     test_mysql_parse(suite); /* MySQL 解包 + reader 全接口 */
     test_pgsql_parse(suite); /* PostgreSQL 解包 + reader 全接口 */
-    test_advance(suite);     /* advance 层：router 路径规范化 */
+    test_advance(suite);/* advance 层：router 路径规范化 */
 
     CuSuiteRun(suite);
     CuSuiteSummary(suite, output);
@@ -183,10 +184,19 @@ int main(int argc, char *argv[]) {
     SNPRINTF(svcrt, sizeof(svcrt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.crt");
     SNPRINTF(svkey, sizeof(svkey), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.key");
     SNPRINTF(p12, sizeof(p12), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
+    // 证书不入 git（.gitignore 忽略 *.crt/*.key），没跑过 bin/keys/create.sh 时这些全是 NULL。
+    // 每步都印一行：register 里只 LOG_WARN，静默下去后面一串 SSL 用例会以"连不上"收场，
+    // 看不出根因其实是证书没生成
     evssl_server = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM);
+    if (NULL == evssl_server) {
+        PRINT("evssl_new(server) failed, run bin/keys/create.sh first.");
+    }
     ssl_server = "server";
     evssl_register(ssl_server, evssl_server);
     void *evssl_p12 = evssl_p12_new(p12, "srey");
+    if (NULL == evssl_p12) {
+        PRINT("evssl_p12_new failed, run bin/keys/create.sh first.");
+    }
     evssl_register("p12", evssl_p12);
     evssl_null = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
     ssl_clientnull = "clientnull";
@@ -195,13 +205,19 @@ int main(int argc, char *argv[]) {
     char clkey[PATH_LENS];
     SNPRINTF(clcrt, sizeof(clcrt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.crt");
     SNPRINTF(clkey, sizeof(clkey), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.key");
-    // harbor mTLS:server 端 PEER|FAIL 强制对端出证书,client 端带 client 证书验 server
+    // harbor mTLS:server 端 PEER|FAIL 强制对端出证书,client 端带 client 证书验 server。
+    // evssl_verify 裸解引用,而 bin/keys 下的证书不入 git(.gitignore 忽略 *.crt/*.key),
+    // 没跑过 create.sh 的新克隆拿到的就是 NULL
     void *evssl_hbsrv = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM);
-    evssl_verify(evssl_hbsrv, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+    if (NULL != evssl_hbsrv) {
+        evssl_verify(evssl_hbsrv, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+    }
     ssl_harbor = "hbserver";
     evssl_register(ssl_harbor, evssl_hbsrv);
     evssl_hbcli = evssl_new(ca, clcrt, clkey, SSL_FILETYPE_PEM);
-    evssl_verify(evssl_hbcli, SSL_VERIFY_PEER, NULL);
+    if (NULL != evssl_hbcli) {
+        evssl_verify(evssl_hbcli, SSL_VERIFY_PEER, NULL);
+    }
     evssl_register("hbclient", evssl_hbcli);
 #endif
 
@@ -266,11 +282,11 @@ int main(int argc, char *argv[]) {
     //tcp server
     task_tcp_erver_start(g_loader, "task_tcp_erver", *(_get_name_val(portlist, "tcp_sv")), evssl_server, rpcname, 0);
     //udp server
-    task_udp_server_start(g_loader, "task_udp_server", *(_get_name_val(portlist, "udp_echo")), 0);
+    task_udp_server_start(g_loader, "task_udp_server", *(_get_name_val(portlist, "udp_echo")), PACK_NONE);
     //http server
-    task_http_server_start(g_loader, "task_http_server", (uint16_t)*(_get_name_val(portlist, "http_sv")), 0);
+    task_http_server_start(g_loader, "task_http_server", (uint16_t)*(_get_name_val(portlist, "http_sv")));
     //websocket server
-    task_ws_server_start(g_loader, "task_ws_server", (uint16_t)*(_get_name_val(portlist, "ws_sv")), 0);
+    task_ws_server_start(g_loader, "task_ws_server", (uint16_t)*(_get_name_val(portlist, "ws_sv")));
     //mqtt 测试
     task_mqtt_server_start(g_loader, "task_mqtt_server", 1883, 0);
     // mqtt_test1/2：连接 docker EMQX（端口 1884）
@@ -308,11 +324,11 @@ int main(int argc, char *argv[]) {
     task_dbrefcnt_start(g_loader, "db_refcount", _get_name_val(testlist, "db_refcount"));
     //模拟多路请求
     task_timeout_start(g_loader, "timeout_test1", rpcname, portlist,
-         evssl_null, evssl_hbcli, 1, 0, _get_name_val(testlist, "timeout_test1"));
+         evssl_null, evssl_hbcli, 1, _get_name_val(testlist, "timeout_test1"));
     task_timeout_start(g_loader, "timeout_test2", rpcname, portlist,
-         evssl_null, evssl_hbcli, 0, 0, _get_name_val(testlist, "timeout_test2"));
+         evssl_null, evssl_hbcli, 0, _get_name_val(testlist, "timeout_test2"));
     task_timeout_start(g_loader, "timeout_test3", rpcname, portlist,
-         evssl_null, evssl_hbcli, 0, 0, _get_name_val(testlist, "timeout_test3"));
+         evssl_null, evssl_hbcli, 0, _get_name_val(testlist, "timeout_test3"));
     //协程 API 边界/失败路径补充
     task_coro_extra_start(g_loader, "coro_extra",
         (uint16_t)*(_get_name_val(portlist, "http_sv")),
@@ -400,11 +416,14 @@ int main(int argc, char *argv[]) {
     char outbuf[4096];
     int32_t nread;
     int32_t pycode;
+    int32_t pyeof;
     int32_t *pyslot;
+    uint64_t pydl;
     popen_ctx pctx;
     size_t pyi;
     for (pyi = 0; pyi < sizeof(pyitems) / sizeof(pyitems[0]); pyi++) {
-        SNPRINTF(pycmd, sizeof(pycmd), "python3 %s%spy_assist%s%s",
+        // 路径加引号：exe 目录带空格时不加会被 shell 拆成两个参数
+        SNPRINTF(pycmd, sizeof(pycmd), "python3 \"%s%spy_assist%s%s\"",
             local, PATH_SEPARATORSTR, PATH_SEPARATORSTR, pyitems[pyi].script);
         PRINT("running %s", pycmd);
         if (ERR_OK != popen_startup(&pctx, pycmd, "r")) {
@@ -415,9 +434,21 @@ int main(int argc, char *argv[]) {
         if (ERR_OK != popen_waitexit(&pctx, 60000)) {
             LOG_WARN("popen %s exceeded 60s budget.", pycmd);
         }
-        while ((nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1, NULL)) > 0) {
-            outbuf[nread] = '\0';
-            printf("%s\n", outbuf);
+        // 必须看 eof 出参：返回 0 是"此刻没数据"，不是流末尾，按 EOF 处理会把输出截一半。
+        // 上面的 60s 预算耗尽时子进程可能还活着，故这里另设排空上限
+        pyeof = 0;
+        pydl = nowms() + 5000;
+        while (0 == pyeof && nowms() < pydl) {
+            nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1, &pyeof);
+            if (ERR_FAILED == nread) {
+                break;
+            }
+            if (nread > 0) {
+                outbuf[nread] = '\0';
+                printf("%s\n", outbuf);
+            } else if (0 == pyeof) {
+                MSLEEP(1);
+            }
         }
         pycode = popen_exitcode(&pctx);
         popen_free(&pctx);

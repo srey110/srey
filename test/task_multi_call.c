@@ -92,8 +92,14 @@ static void _pub_startup(task_ctx *task) {
         goto ungrab;
     }
     // ── 第 2 段：task_multi_request,共用 RPC_SESS,subscriber 各自 task_response 回 src ──
-    task_multi_request(dsts, N_SUBS + 1, task, REQ_TYPE_RPC, RPC_SESS,
-                       MSG_BROADCAST, MSG_LEN, 1);
+    // 返回值是"实际投出去的 dst 数"，也是唯一能证明 NULL 占位被跳过的观测点：
+    // 只看收包数的话，轮询到 N_SUBS 就 break 了，多投的那一份根本看不见
+    int32_t nsent = task_multi_request(dsts, N_SUBS + 1, task, REQ_TYPE_RPC, RPC_SESS,
+                                       MSG_BROADCAST, MSG_LEN, 1);
+    if (N_SUBS != nsent) {
+        LOG_ERROR("multi_request: sent %d, expect %d (NULL 占位应被跳过).", nsent, N_SUBS);
+        goto ungrab;
+    }
     int32_t resp = 0;
     int32_t rpc_recv = 0;
     for (poll = 0; poll < 40; poll++) {

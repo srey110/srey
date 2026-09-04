@@ -1,5 +1,7 @@
 ﻿#include "task_pgsql.h"
 
+#define _CONC_N 4
+
 typedef struct task_pgsql_args {
     uint16_t port;
     int32_t *ok;
@@ -311,11 +313,13 @@ static void _conc_worker(task_ctx *task, void *arg) {
             a->done = -1;
             return;
         }
+        err = ERR_FAILED;
         if (!pgsql_reader_eof(rd)) {
             a->got = (int32_t)pgsql_reader_integer(rd, "v", &err);
         }
         pgsql_reader_free(rd);
-        if (a->got != a->want) {
+        // err 不看的话读失败时 got 是垃圾值，正好等于 want 就静默过去了
+        if (ERR_OK != err || a->got != a->want) {
             a->done = -1;
             return;
         }
@@ -323,7 +327,6 @@ static void _conc_worker(task_ctx *task, void *arg) {
     a->done = 1;
 }
 
-#define _CONC_N 4
 static int32_t _concurrent_query(pgsql_ctx *pg) {
     _conc_arg args[_CONC_N];
     fork_serial_cb funcs[_CONC_N];

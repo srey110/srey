@@ -65,6 +65,9 @@ static void _startup(task_ctx *task) {
     LOG_INFO("db refcount paired.");
 }
 void task_dbrefcnt_start(loader_ctx *loader, const char *name, int32_t *ok) {
+    if (NULL == ok) {
+        return;
+    }
     dbrefcnt_args *arg;
     CALLOC(arg, 1, sizeof(dbrefcnt_args));
     arg->ok = ok;

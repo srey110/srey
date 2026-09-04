@@ -22,7 +22,7 @@ local MQTT_CONNECT = 0x01 -- 同上，避免为一个常量 require lib.mqtt
 srey.startup(function()
     srey.on_recved(function(pktype, fd, skid, client, slice, data, size)
         if 0 ~= slice then
-            if 0 ~= (slice & 4) then  -- PROT_SLICE_END
+            if 0 ~= (slice & 4) then -- PROT_SLICE_END
                 local frame, fsize = websock.pack_text(0, 0, "a")
                 srey.send(fd, skid, frame, fsize, 0)
                 frame, fsize = websock.pack_continua(0, 0, "b")

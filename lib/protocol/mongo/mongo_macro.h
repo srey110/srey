@@ -8,6 +8,9 @@ typedef enum mongo_flags {
     MORETOCOME = 0x02,        //发送方还有后续消息，接收方不必回复当前消息
     EXHAUSTALLOWED = 1 << 16, //客户端支持 moreToCome 的多消息响应
 }mongo_flags;
+// 三个位的并，即合法位的全集。mongo_set_flag 拿它挡掉全集之外的位，
+// 几个位或起来传也收（还原惯用法 set_flag(clear_flag()) 传的就是旧值整字）
+#define MONGO_FLAGS_ALL (CHECKSUM | MORETOCOME | EXHAUSTALLOWED)
 typedef enum mongo_prot {
     OP_COMPRESSED = 2012, //压缩消息
     OP_MSG = 2013         //标准消息（MongoDB Wire Protocol OP_MSG）

@@ -9,25 +9,31 @@
  * ----------------------------------------------------------------------- */
 static void test_memory(CuTest *tc) {
     /* MALLOC 分配，FREE 释放 */
+    /* 分配器失败即 exit（memory.c），返回值不可能是 NULL，判空是恒真断言 */
     int *pi;
     MALLOC(pi, sizeof(int));
-    CuAssertPtrNotNull(tc, pi);
     *pi = 42;
     CuAssertIntEquals(tc, 42, *pi);
     FREE(pi);
 
     /* CALLOC 分配并清零 */
     int *buf;
+    int i;
     CALLOC(buf, 8, sizeof(int));
-    CuAssertPtrNotNull(tc, buf);
-    for (int i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {
         CuAssertIntEquals(tc, 0, buf[i]);
     }
 
-    /* REALLOC 扩容，原数据保留 */
+    /* REALLOC 扩容，原数据保留。先写进可区分的值再读回来——
+       源数据全是 CALLOC 的 0 时，"保留了"和"重新清零了"分不开 */
+    for (i = 0; i < 8; i++) {
+        buf[i] = i * 7 + 1;
+    }
     int *nbuf;
     REALLOC(nbuf, buf, 16 * sizeof(int));
-    CuAssertPtrNotNull(tc, nbuf);
+    for (i = 0; i < 8; i++) {
+        CuAssertIntEquals(tc, i * 7 + 1, nbuf[i]);
+    }
     FREE(nbuf);
 }
 

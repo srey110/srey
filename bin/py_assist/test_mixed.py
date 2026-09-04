@@ -35,7 +35,7 @@ def http_worker_once():
         while len(body) < cl:
             c = s.recv(cl - len(body))
             if not c:
-                break
+                return False   # body 没收全就断了，不能当成通过
             body += c
         return b" 200 " in head and b"ok" in body
     finally:
@@ -73,9 +73,13 @@ def ws_worker_once():
         payload = bytes(p ^ mask[i % 4] for i, p in enumerate(b"hi"))
         frame = struct.pack("!BB", 0x81, 0x82) + mask + payload
         s.sendall(frame)
-        head = s.recv(2)
-        if len(head) < 2:
-            return False
+        # 定长头收满再解，理由同 test_ws.py：短读一次长度就解错
+        head = b""
+        while len(head) < 2:
+            c = s.recv(2 - len(head))
+            if not c:
+                return False
+            head += c
         plen = head[1] & 0x7F
         masked = (head[1] >> 7) & 1
         body = b""
@@ -127,8 +131,13 @@ def mqtt_worker_once(idx):
         while len(body) < n:
             c = s.recv(n - len(body))
             if not c:
-                break
+                return False
             body += c
+        # 变长头也要看，口径同 test_mqtt.py：connect flags 是 0x02（CleanSession=1），
+        # 按 MQTT 3.1.1 §3.2.2.2 服务端必须回 Session Present = 0、reason = 0。
+        # 只判类型半字节的话，拒绝原因码写成非 0 或整段不写都发现不了
+        if len(body) < 2 or 0 != body[0] or 0 != body[1]:
+            return False
         return True
     finally:
         s.close()

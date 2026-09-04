@@ -68,13 +68,17 @@ runner.run(function(t)
             local function d() return only end
             return function() return a(), b(), c(), d() end
         ]], "=inject_dup_mod"))()
-        ok, out = inject([[
+        -- 包一层 pcall：inject 自身若抛出，裸写的还原语会被跳过，
+        -- 本 task 的消息分发就永久停在这棵假闭包树上
+        local pok, pok2, pout = pcall(inject, [[
             print(_U["waiters@inject_dup_mod"][1],
                   _U["waiters@inject_dup_mod#2"][1],
                   _U["waiters@inject_dup_mod#3"][1],
                   tostring(_U.waiters), _U["only@inject_dup_mod"][1], _U.only[1])
         ]])
         message_dispatch = saved_dispatch
+        t:eq(true, pok, "inject 查同名限定名未抛出")
+        ok, out = pok2, pout
         t:eq(true, ok, "inject 查同名限定名 ok")
         t:eq("1\t2\t3\tnil\t9\t9", out and out[1],
              "同名表逐个可达(#2/#3)、短名已撤、唯一名两种键都在")

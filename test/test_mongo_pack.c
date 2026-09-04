@@ -4,6 +4,9 @@
 #include "protocol/mongo/mongo_parse.h"
 #include "serial/bson.h"
 
+#define _MSG_OFF_KIND   20
+#define _MSG_HEAD_LENS  21
+
 // OP_MSG wire 格式偏移：size(4) reqid(4) respto(4) prot(4) flags(4) kind(1) bson...
 #define _MSG_OFF_SIZE   0
 #define _MSG_OFF_REQID  4
@@ -17,8 +20,6 @@ static void *_t_mongo_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
     return mongo_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
 }
-#define _MSG_OFF_KIND   20
-#define _MSG_HEAD_LENS  21
 
 // 从 wire 包指定偏移读取小端 int32
 static int32_t _read_le32(const char *p, size_t off) {
@@ -76,6 +77,13 @@ static int32_t _bson_find_type(char *doc, size_t lens, const char *key) {
         }
     }
     return -1;
+}
+
+// 把 bson_ctx 已写好的文档挂成一个只读 mgopack_ctx，供 mongo_cursorid / parse_check_error 等吃
+static void _mgopack_of(mgopack_ctx *mg, bson_ctx *b) {
+    ZERO(mg, sizeof(mgopack_ctx));
+    mg->doc = b->doc.data;
+    mg->dlens = (uint32_t)b->doc.offset;
 }
 
 // 在 BSON 顶层查找 int32/int64/double 字段，转 double 返回；err 输出 1 = 未找到
@@ -144,19 +152,7 @@ static void test_mongo_pack_hello(CuTest *tc) {
     CuAssertStrEquals(tc, "testdb", _bson_find_utf8(bson, blens, "$db"));
 
     // 验证 comment 子文档存在且为 BSON_DOCUMENT 类型
-    bson_ctx b;
-    bson_init(&b, bson, blens);
-    bson_iter it;
-    bson_iter_init(&it, &b);
-    int32_t comment_found = 0;
-    while (bson_iter_next(&it)) {
-        if (0 == strcmp(it.key, "comment")) {
-            CuAssertIntEquals(tc, BSON_DOCUMENT, (int)it.type);
-            comment_found = 1;
-            break;
-        }
-    }
-    CuAssertIntEquals(tc, 1, comment_found);
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, blens, "comment"));
     FREE(pack);
 }
 
@@ -194,19 +190,7 @@ static void test_mongo_pack_insert(CuTest *tc) {
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, blens, "insert"));
 
     // documents 字段应为 BSON_ARRAY
-    bson_ctx b;
-    bson_init(&b, bson, blens);
-    bson_iter it;
-    bson_iter_init(&it, &b);
-    int32_t found = 0;
-    while (bson_iter_next(&it)) {
-        if (0 == strcmp(it.key, "documents")) {
-            CuAssertIntEquals(tc, BSON_ARRAY, (int)it.type);
-            found = 1;
-            break;
-        }
-    }
-    CuAssertIntEquals(tc, 1, found);
+    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, blens, "documents"));
     FREE(pack);
     BSON_FREE(&doc);
 }
@@ -227,15 +211,30 @@ static void test_mongo_pack_check_flag(CuTest *tc) {
     bson_append_end(&doc);
     bson_append_end(&doc);
 
-    // mongo_set_flag 只认 MORETOCOME，别的 flag 一律无视。这道白名单原来零覆盖
-    // （三处调用全传 MORETOCOME），删掉早退就会把 CHECKSUM 原样 BIT_SET 进 mongo->flags、
-    // 再由 _mongo_pack_msg 写进 OP_MSG 的 flagBits —— 那是 required bit，
-    // 而本客户端不附 CRC-32C 尾，服务端直接断连（同 commit 3df2ed8 记的形态）。
-    // lmongo.c:203 的掩码校验只挡 Lua 入口，C 侧调用方绕开它
+    // mongo_set_flag 按掩码收 flag：MONGO_FLAGS_ALL 之外的位整个调用作废，
+    // 之内的位只有 MORETOCOME 真会置上。这两道判定原来零覆盖（三处调用全传 MORETOCOME），
+    // 删掉就会把 CHECKSUM 原样 BIT_SET 进 mongo->flags、再由 _mongo_pack_msg 写进
+    // OP_MSG 的 flagBits —— 那是 required bit，而本客户端不附 CRC-32C 尾，
+    // 服务端直接断连（同 commit 3df2ed8 记的形态）。lmongo.c 的掩码校验只挡 Lua 入口
     mongo_set_flag(&mongo, CHECKSUM);
     CuAssertTrue(tc, 0 == mongo_check_flag(&mongo, CHECKSUM));
     mongo_set_flag(&mongo, EXHAUSTALLOWED);
     CuAssertTrue(tc, 0 == mongo_check_flag(&mongo, EXHAUSTALLOWED));
+    // 组合值：掩码内，MORETOCOME 生效而同行的 EXHAUSTALLOWED 被丢弃。
+    // 按单个枚举值全等判定的话这一条会被整个丢掉
+    mongo_set_flag(&mongo, MORETOCOME | EXHAUSTALLOWED);
+    CuAssertTrue(tc, 0 != mongo_check_flag(&mongo, MORETOCOME));
+    CuAssertIntEquals(tc, MORETOCOME, mongo_clear_flag(&mongo));
+    // 掩码外的位：整个调用作废，同一次传进来的 MORETOCOME 也不置上
+    mongo_set_flag(&mongo, MORETOCOME | 0x04);
+    CuAssertIntEquals(tc, 0, mongo_clear_flag(&mongo));
+    // 已置上的位不被作废的调用抹掉
+    mongo_set_flag(&mongo, MORETOCOME);
+    mongo_set_flag(&mongo, 0x04);
+    CuAssertIntEquals(tc, MORETOCOME, mongo_clear_flag(&mongo));
+    // 0 合法：还原惯用法 set_flag(clear_flag()) 传的可能就是 0
+    mongo_set_flag(&mongo, 0);
+    CuAssertIntEquals(tc, 0, mongo_clear_flag(&mongo));
 
     // 置位 → 组包：包里写着 MORETOCOME
     mongo_set_flag(&mongo, MORETOCOME);
@@ -305,13 +304,13 @@ static void test_mongo_pack_oversize_options(CuTest *tc) {
     CuAssertTrue(tc, 0 == size);
     FREE(opts);
 
-    // 超单包上限:MONGO_PACK_CAT 先按 lens 挡住,不看内容,所以这块不必初始化
-    MALLOC(opts, (size_t)MONGO_MAX_PACK_LENS + 1);
+    // 超单包上限:MONGO_PACK_CAT 先按 lens 挡住、不解引用指针，
+    // 拿一个栈字节即可，不必真分配 64MB（同 test_mongo_pack_oversize_docs）
+    char oversize = 0;
     size = 12345;
-    pack = mongo_pack_drop(&mongo, opts, (size_t)MONGO_MAX_PACK_LENS + 1, &size);
+    pack = mongo_pack_drop(&mongo, &oversize, (size_t)MONGO_MAX_PACK_LENS + 1, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
-    FREE(opts);
 
     size = 0;
     pack = mongo_pack_drop(&mongo, NULL, 0, &size);
@@ -378,19 +377,7 @@ static void test_mongo_pack_find(CuTest *tc) {
     pack = mongo_pack_find(&mongo, f.doc.data, f.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     size_t blens = size - _MSG_HEAD_LENS;
-    bson_ctx b;
-    bson_init(&b, bson, blens);
-    bson_iter it;
-    bson_iter_init(&it, &b);
-    int32_t filter_found = 0;
-    while (bson_iter_next(&it)) {
-        if (0 == strcmp(it.key, "filter")) {
-            CuAssertIntEquals(tc, BSON_DOCUMENT, (int)it.type);
-            filter_found = 1;
-            break;
-        }
-    }
-    CuAssertIntEquals(tc, 1, filter_found);
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, blens, "filter"));
     FREE(pack);
     BSON_FREE(&f);
 }
@@ -518,17 +505,7 @@ static void test_mongo_pack_findandmodify(CuTest *tc) {
     pack = mongo_pack_findandmodify(&mongo, body.doc.data, body.doc.offset,
                                     0, 1 /*pipeline*/, body.doc.data, body.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
-    bson_init(&b, bson, size - _MSG_HEAD_LENS);
-    bson_iter_init(&it, &b);
-    int32_t update_arr = 0;
-    while (bson_iter_next(&it)) {
-        if (0 == strcmp(it.key, "update")) {
-            CuAssertIntEquals(tc, BSON_ARRAY, (int)it.type);
-            update_arr = 1;
-            break;
-        }
-    }
-    CuAssertIntEquals(tc, 1, update_arr);
+    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "update"));
     FREE(pack);
 
     // query=NULL 分支
@@ -628,50 +605,41 @@ static void test_mongo_pack_session(CuTest *tc) {
     // refreshsession：含 refreshSessions array
     void *pack = mongo_pack_refreshsession(&session, &size);
     char *bson = _assert_msg_head(tc, pack, size);
-    bson_init(&b, bson, size - _MSG_HEAD_LENS);
-    bson_iter_init(&it, &b);
-    int32_t found_refresh = 0;
-    while (bson_iter_next(&it)) {
-        if (0 == strcmp(it.key, "refreshSessions")) {
-            CuAssertIntEquals(tc, BSON_ARRAY, (int)it.type);
-            found_refresh = 1;
-            break;
-        }
-    }
-    CuAssertIntEquals(tc, 1, found_refresh);
+    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "refreshSessions"));
     FREE(pack);
 
     // endsession
     pack = mongo_pack_endsession(&session, &size);
     bson = _assert_msg_head(tc, pack, size);
-    bson_init(&b, bson, size - _MSG_HEAD_LENS);
-    bson_iter_init(&it, &b);
-    int32_t found_end = 0;
-    while (bson_iter_next(&it)) {
-        if (0 == strcmp(it.key, "endSessions")) {
-            CuAssertIntEquals(tc, BSON_ARRAY, (int)it.type);
-            found_end = 1;
-            break;
-        }
-    }
-    CuAssertIntEquals(tc, 1, found_end);
+    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "endSessions"));
     FREE(pack);
 
     // commit/abort transaction：两个 packer 会比对入参 session 与连接当前绑定的那个，
-    // 先建立绑定；不绑定的情形在下面单独验
+    // 先建立绑定；不绑定的情形在下面单独验。
+    // options 必须先回填：它恒为 NULL 时 lsid/txnNumber 整段不会写进包，
+    // 而"事务收尾带得上会话上下文"正是这两条要钉的性质
+    session.options = mongo_transaction_options(&session, &session.optionslens);
+    CuAssertPtrNotNull(tc, session.options);
     mongo.session = &session;
     pack = mongo_pack_committransaction(&session, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     int32_t err;
     CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "commitTransaction", &err));
     CuAssertIntEquals(tc, 0, err);
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, size - _MSG_HEAD_LENS, "lsid"));
+    CuAssertTrue(tc, NULL != memstr(0, bson, size - _MSG_HEAD_LENS, "txnNumber", strlen("txnNumber")));
+    /* 事务收尾一律发往 admin 库 */
+    CuAssertStrEquals(tc, "admin", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "$db"));
     FREE(pack);
 
     pack = mongo_pack_aborttransaction(&session, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "abortTransaction", &err));
     CuAssertIntEquals(tc, 0, err);
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, size - _MSG_HEAD_LENS, "lsid"));
+    CuAssertStrEquals(tc, "admin", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "$db"));
     FREE(pack);
+    FREE(session.options);
 
     // 绑定分叉即拒绝组包：连接指向别的 session（或没绑定）时两个 packer 都返 NULL 并把
     // *size 置 0。不拒的话这次收尾会挂到别人的事务上
@@ -771,9 +739,7 @@ static void test_mongo_parse_auth_response(CuTest *tc) {
     bson_append_end(&b);
 
     mgopack_ctx mg;
-    ZERO(&mg, sizeof(mg));
-    mg.doc = b.doc.data;
-    mg.dlens = (uint32_t)b.doc.offset;
+    _mgopack_of(&mg, &b);
 
     int32_t convid = 0, done = 0;
     char *p = NULL;
@@ -792,9 +758,7 @@ static void test_mongo_parse_auth_response(CuTest *tc) {
     bson_append_double(&b2, "ok", 0.0);
     bson_append_end(&b2);
     mgopack_ctx mg2;
-    ZERO(&mg2, sizeof(mg2));
-    mg2.doc = b2.doc.data;
-    mg2.dlens = (uint32_t)b2.doc.offset;
+    _mgopack_of(&mg2, &b2);
     convid = 999; done = 999;
     p = (char *)1; plen = 999;
     ok = mongo_parse_auth_response(&mg2, &convid, &done, &p, &plen);
@@ -813,9 +777,7 @@ static void test_mongo_parse_auth_response(CuTest *tc) {
     bson_append_int32(&b3, "conversationId", 1);
     bson_append_end(&b3);
     mgopack_ctx mg3;
-    ZERO(&mg3, sizeof(mg3));
-    mg3.doc = b3.doc.data;
-    mg3.dlens = (uint32_t)b3.doc.offset;
+    _mgopack_of(&mg3, &b3);
     ok = mongo_parse_auth_response(&mg3, &convid, &done, &p, &plen);
     CuAssertIntEquals(tc, 0, ok);
     BSON_FREE(&b3);
@@ -834,9 +796,7 @@ static void test_mongo_parse_cursorid(CuTest *tc) {
     bson_append_end(&b);
 
     mgopack_ctx mg;
-    ZERO(&mg, sizeof(mg));
-    mg.doc = b.doc.data;
-    mg.dlens = (uint32_t)b.doc.offset;
+    _mgopack_of(&mg, &b);
     CuAssertTrue(tc, 0x123456789abcLL == mongo_cursorid(&mg));
     BSON_FREE(&b);
 
@@ -846,9 +806,7 @@ static void test_mongo_parse_cursorid(CuTest *tc) {
     bson_append_int32(&b2, "ok", 1);
     bson_append_end(&b2);
     mgopack_ctx mg2;
-    ZERO(&mg2, sizeof(mg2));
-    mg2.doc = b2.doc.data;
-    mg2.dlens = (uint32_t)b2.doc.offset;
+    _mgopack_of(&mg2, &b2);
     CuAssertTrue(tc, 0 == mongo_cursorid(&mg2));
     BSON_FREE(&b2);
 }
@@ -863,9 +821,7 @@ static void test_mongo_parse_check_error(CuTest *tc) {
         bson_append_int32(&b, "n", 3);
         bson_append_end(&b);
         mgopack_ctx mg;
-        ZERO(&mg, sizeof(mg));
-        mg.doc = b.doc.data;
-        mg.dlens = (uint32_t)b.doc.offset;
+        _mgopack_of(&mg, &b);
         CuAssertIntEquals(tc, 3, mongo_parse_check_error(&mg));
         BSON_FREE(&b);
     }
@@ -877,9 +833,7 @@ static void test_mongo_parse_check_error(CuTest *tc) {
         bson_append_utf8(&b, "errmsg", "auth failed");
         bson_append_end(&b);
         mgopack_ctx mg;
-        ZERO(&mg, sizeof(mg));
-        mg.doc = b.doc.data;
-        mg.dlens = (uint32_t)b.doc.offset;
+        _mgopack_of(&mg, &b);
         CuAssertIntEquals(tc, ERR_FAILED, mongo_parse_check_error(&mg));
         BSON_FREE(&b);
     }
@@ -892,9 +846,7 @@ static void test_mongo_parse_check_error(CuTest *tc) {
         bson_append_utf8(&b, "errmsg", "soft error");
         bson_append_end(&b);
         mgopack_ctx mg;
-        ZERO(&mg, sizeof(mg));
-        mg.doc = b.doc.data;
-        mg.dlens = (uint32_t)b.doc.offset;
+        _mgopack_of(&mg, &b);
         CuAssertIntEquals(tc, ERR_FAILED, mongo_parse_check_error(&mg));
         BSON_FREE(&b);
     }
@@ -906,9 +858,7 @@ static void test_mongo_parse_check_error(CuTest *tc) {
         bson_append_int32(&b, "nErrors", 2);
         bson_append_end(&b);
         mgopack_ctx mg;
-        ZERO(&mg, sizeof(mg));
-        mg.doc = b.doc.data;
-        mg.dlens = (uint32_t)b.doc.offset;
+        _mgopack_of(&mg, &b);
         CuAssertIntEquals(tc, ERR_FAILED, mongo_parse_check_error(&mg));
         BSON_FREE(&b);
     }
@@ -931,9 +881,7 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     bson_append_end(&b);
 
     mgopack_ctx mg;
-    ZERO(&mg, sizeof(mg));
-    mg.doc = b.doc.data;
-    mg.dlens = (uint32_t)b.doc.offset;
+    _mgopack_of(&mg, &b);
     char out_uuid[UUID_LENS];
     int32_t timeout = 0;
     int32_t ok = mongo_parse_startsession(&mg, out_uuid, &timeout);
@@ -948,9 +896,7 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     bson_append_double(&b2, "ok", 0.0);
     bson_append_end(&b2);
     mgopack_ctx mg2;
-    ZERO(&mg2, sizeof(mg2));
-    mg2.doc = b2.doc.data;
-    mg2.dlens = (uint32_t)b2.doc.offset;
+    _mgopack_of(&mg2, &b2);
     ok = mongo_parse_startsession(&mg2, out_uuid, &timeout);
     CuAssertIntEquals(tc, 0, ok);
     BSON_FREE(&b2);
@@ -964,9 +910,7 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     bson_append_double(&b3, "ok", 1.0);
     bson_append_end(&b3);
     mgopack_ctx mg3;
-    ZERO(&mg3, sizeof(mg3));
-    mg3.doc = b3.doc.data;
-    mg3.dlens = (uint32_t)b3.doc.offset;
+    _mgopack_of(&mg3, &b3);
     int32_t timeout3 = 999;// 非零哨兵:证明函数主动写 0 而非沿用旧值
     ok = mongo_parse_startsession(&mg3, out_uuid, &timeout3);
     CuAssertIntEquals(tc, 1, ok);
@@ -980,9 +924,7 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     bson_append_double(&b4, "ok", 1.0);
     bson_append_end(&b4);
     mgopack_ctx mg4;
-    ZERO(&mg4, sizeof(mg4));
-    mg4.doc = b4.doc.data;
-    mg4.dlens = (uint32_t)b4.doc.offset;
+    _mgopack_of(&mg4, &b4);
     ok = mongo_parse_startsession(&mg4, out_uuid, &timeout);
     CuAssert(tc, "missing id must fail, not return OK leaving uid unwritten (caller would use all-zero UUID as session id)",
         0 == ok);

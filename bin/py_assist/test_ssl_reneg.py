@@ -44,10 +44,8 @@ SSL_CTRL_SET_MIN_PROTO_VERSION = 123
 SSL_CTRL_SET_MAX_PROTO_VERSION = 124
 SSL_VERIFY_NONE = 0
 SSL_KEY_UPDATE_REQUESTED = 1
-SSL_ERROR_SSL = 1
 SSL_ERROR_WANT_READ = 2
 SSL_ERROR_WANT_WRITE = 3
-SSL_ERROR_SYSCALL = 5
 SSL_ERROR_ZERO_RETURN = 6
 
 
@@ -288,7 +286,7 @@ def _read_response(c):
         if len(buf) > 8 * 1024 * 1024:
             raise TLSError("响应头过大")
     head, _, body = buf.partition(b"\r\n\r\n")
-    cl, chunked = 0, False
+    cl, chunked = -1, False
     for line in head.split(b"\r\n"):
         low = line.lower()
         if low.startswith(b"content-length:"):
@@ -296,8 +294,11 @@ def _read_response(c):
         elif low.startswith(b"transfer-encoding:") and b"chunked" in low:
             chunked = True
     if chunked:
+        # 当前用到的路径都带 Content-Length，这支留着给后续 chunked 路径用
         while not body.endswith(b"0\r\n\r\n"):
             body += c.read(4096)
+    elif cl < 0:
+        raise TLSError("response has neither Content-Length nor chunked framing")
     else:
         while len(body) < cl:
             body += c.read(min(65536, cl - len(body)))
@@ -349,7 +350,7 @@ def case_tls13_key_update():
     try:
         c.connect()
         if "TLSv1.3" != c.version():
-            raise SkipError("未协商到 TLS1.3（实际 %s）" % c.version())
+            raise TLSError("未协商到 TLS1.3（实际 %s）" % c.version())
         _assert200(_http_get(c)[0])
         c.key_update()
         _assert200(_http_get(c)[0])
@@ -420,7 +421,7 @@ def case_key_update_repeated():
     try:
         c.connect()
         if "TLSv1.3" != c.version():
-            raise SkipError("未协商到 TLS1.3（实际 %s）" % c.version())
+            raise TLSError("未协商到 TLS1.3（实际 %s）" % c.version())
         for i in range(8):
             c.key_update()
             _echo_check(c, ("ku-%d-" % i).encode() + os.urandom(300))
@@ -436,7 +437,7 @@ def case_key_update_then_large_echo():
     try:
         c.connect()
         if "TLSv1.3" != c.version():
-            raise SkipError("未协商到 TLS1.3（实际 %s）" % c.version())
+            raise TLSError("未协商到 TLS1.3（实际 %s）" % c.version())
         c.key_update()
         _echo_check(c, os.urandom(60000))           # < HTTP_MAX_CONTENT_LENS(65535)
         return True
@@ -451,7 +452,7 @@ def case_key_update_close():
     try:
         c.connect()
         if "TLSv1.3" != c.version():
-            raise SkipError("未协商到 TLS1.3（实际 %s）" % c.version())
+            raise TLSError("未协商到 TLS1.3（实际 %s）" % c.version())
         c.key_update()
         c.write(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")  # 触发 server SSL_read 处理 KeyUpdate
     finally:
@@ -499,7 +500,7 @@ def case_key_update_during_server_send():
     try:
         c.connect()
         if "TLSv1.3" != c.version():
-            raise SkipError("未协商到 TLS1.3（实际 %s）" % c.version())
+            raise TLSError("未协商到 TLS1.3（实际 %s）" % c.version())
         c.write(b"GET /down HTTP/1.1\r\nHost: srey\r\nConnection: keep-alive\r\n\r\n")
         head, body = _read_resp_with_keyupdate(c)
         _assert200(head)
@@ -537,7 +538,12 @@ def main():
     fails = skips = 0
     for name, fn in CASES:
         try:
-            fn()
+            # 返回值要看：10 个 case 都是成功返 True、其余脚本也一律判返回值，
+            # 这里丢掉的话某个 case 改成"发现问题就 return False"时会被静默当成通过
+            if fn() is False:
+                print("[ssl_reneg] %s: FAIL returned False" % name, flush=True)
+                fails += 1
+                continue
         except SkipError as e:
             print("[ssl_reneg] %s: SKIP %s" % (name, e), flush=True)
             skips += 1
@@ -552,7 +558,9 @@ def main():
           % (total - fails - skips, fails, skips, total), flush=True)
     if fails > 0:
         return 1
-    if skips == total:  # 全部 skip（多半 server 未起）视为无法运行
+    if skips > 0:
+        # 部分 skip 也不能返回 0：两个 runner 都只认 0，返 0 等于把
+        # "KeyUpdate 一条没跑" 报成绿灯，正是本文件 TLSClient.connect 处写明要避免的
         return 2
     return 0
 

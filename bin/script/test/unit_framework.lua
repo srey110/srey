@@ -30,10 +30,15 @@ runner.run(function(t)
         local dup = core.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
         t:eq(nil, dup, "重复 register 同 name 拒绝")
 
-        -- ssl ctx 操作（不会崩溃即通过；这些函数无返回值）
+        -- ssl ctx 操作本身无返回值，只能钉"调完之后 ctx 还能用"：
+        -- 三个 setter 里任何一个把 ctx 搞坏，紧接着的 ssl_free 或再注册就会露馅
         core.ssl_seclevel(ssl, 1)
         core.ssl_min_proto(ssl, TLS_VERSION.TLS1_2)
         core.ssl_verify(ssl, 0)
+        t:eq(ssl, core.ssl_qury(NAME_PEM), "三个 setter 调完后 ctx 仍在注册表里")
+        -- 非法入参必须被绑定层拒（收窄前会被 lua_tointeger 静默转 0）
+        t:eq(false, pcall(core.ssl_seclevel, ssl, "x"), "ssl_seclevel 拒非数字")
+        t:eq(false, pcall(core.ssl_min_proto, ssl, {}), "ssl_min_proto 拒非数字")
     end
     do
         -- p12_register
@@ -49,7 +54,7 @@ runner.run(function(t)
     do
         local a = task.timer_ms()
         t:check(type(a) == "number" and a > 0, "timer_ms returns positive number")
-        srey.sleep(20)  -- 让出协程让时间真的走过
+        srey.sleep(20) -- 让出协程让时间真的走过
         local b = task.timer_ms()
         -- 用差值而非 b >= a：后者对"时钟冻住、恒返同一个值"同样成立。上界留宽，只挡"根本不走"
         t:check(b - a >= 15 and b - a < 5000, "timer_ms 随真实时间前进 (" .. (b - a) .. "ms)")
@@ -120,8 +125,8 @@ runner.run(function(t)
         local rep = task.grab("reporter")
         t:check(rep ~= nil, "task.grab existing task")
         task.incref(rep)
-        task.ungrab(rep)  -- 平衡 incref
-        task.ungrab(rep)  -- 平衡 grab
+        task.ungrab(rep) -- 平衡 incref
+        task.ungrab(rep) -- 平衡 grab
 
         -- 不存在的 task name 返回 nil
         t:eq(nil, task.grab("__no_such_task__"), "task.grab missing returns nil")
@@ -240,7 +245,7 @@ runner.run(function(t)
         -- memlimit(0) 禁用告警：大分配应成功
         task.memlimit(0)
         local ok_big = pcall(function()
-            local _ = string.rep("y", 64 * 1024)  -- 64KB
+            local _ = string.rep("y", 64 * 1024) -- 64KB
         end)
         t:eq(true, ok_big, "memlimit=0 时大分配应成功")
 
@@ -251,7 +256,7 @@ runner.run(function(t)
         local ok_over = pcall(function()
             local _ = string.rep("z", 32 * 1024)
         end)
-        task.memlimit(0)  -- 解除告警阈值
+        task.memlimit(0) -- 解除告警阈值
         t:eq(true, ok_over, "memlimit=current mem 超阈值时分配应成功(软告警不拒绝)")
     end
 end)

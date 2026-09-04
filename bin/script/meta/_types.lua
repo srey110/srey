@@ -8,7 +8,8 @@
 ---                                    未协商子协议时该字段不存在
 ---@field secpack lightuserdata?       子协议包指针（如 WS 承载的 MQTT 包）；控制帧（PING/PONG/
 ---                                    CLOSE）与零长数据帧即使 secprot 非空也没有它，取用前必判
----@field data    lightuserdata?       帧载荷数据指针；空帧为 nil
+---@field data    lightuserdata        帧载荷数据指针，恒非 nil（指向包尾柔性数组）；
+---                                    零长帧下 size 为 0，仍可连同 size 转手给 pack_text/pack_binary 一族
 ---@field size    integer              载荷字节数；空帧为 0
 
 ---@class MqttConnectInfo

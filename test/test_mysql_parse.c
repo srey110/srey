@@ -95,6 +95,20 @@ static void _reader_push_row(mysql_reader_ctx *reader, char *payload,
     array_push_back(&reader->arr_rows, &row);
 }
 
+// 造一个"单列单行、值为给定文本"的 reader。payload 由 reader 释放（_mpack_reader_free）
+static mysql_reader_ctx *_reader_one_text(mpack_type mptype, const char (*names)[64],
+    const uint8_t *types, const char *val) {
+    mysql_reader_ctx *r = _reader_new(mptype, 1, names, types);
+    size_t lens = strlen(val);
+    char *p;
+    MALLOC(p, lens + 1);
+    memcpy(p, val, lens);
+    p[lens] = '\0';
+    buf_ctx c[1] = { { .data = p, .lens = lens } };
+    _reader_push_row(r, p, c, NULL);
+    return r;
+}
+
 // mysql_reader_init: MPACK_OK/ERR/STMT_PREPARE 返回 NULL；MPACK_QUERY/STMT_EXECUTE 成功转移所有权
 static void test_mysql_reader_init(CuTest *tc) {
     // pack_type 不匹配 → NULL
@@ -586,13 +600,7 @@ static void test_mysql_reader_time(CuTest *tc) {
     uint8_t types[1] = { MYSQL_TYPE_TIME };
     // 文本路径正值
     {
-        mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, types);
-        char *p;
-        MALLOC(p, 16);
-        const char *s = "12:34:56";
-        memcpy(p, s, strlen(s));
-        buf_ctx c[1] = { { .data = p, .lens = strlen(s) } };
-        _reader_push_row(r, p, c, NULL);
+        mysql_reader_ctx *r = _reader_one_text(MPACK_QUERY, names, types, "12:34:56");
         struct tm t;
         uint32_t usec = 0;
         ZERO(&t, sizeof(t));
@@ -608,13 +616,7 @@ static void test_mysql_reader_time(CuTest *tc) {
     }
     // 文本路径含微秒
     {
-        mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, types);
-        char *p;
-        MALLOC(p, 24);
-        const char *s = "12:34:56.123456";
-        memcpy(p, s, strlen(s));
-        buf_ctx c[1] = { { .data = p, .lens = strlen(s) } };
-        _reader_push_row(r, p, c, NULL);
+        mysql_reader_ctx *r = _reader_one_text(MPACK_QUERY, names, types, "12:34:56.123456");
         struct tm t;
         uint32_t usec = 0;
         ZERO(&t, sizeof(t));
@@ -628,13 +630,7 @@ static void test_mysql_reader_time(CuTest *tc) {
     }
     // 文本路径负值
     {
-        mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, types);
-        char *p;
-        MALLOC(p, 16);
-        const char *s = "-1:30:45";
-        memcpy(p, s, strlen(s));
-        buf_ctx c[1] = { { .data = p, .lens = strlen(s) } };
-        _reader_push_row(r, p, c, NULL);
+        mysql_reader_ctx *r = _reader_one_text(MPACK_QUERY, names, types, "-1:30:45");
         struct tm t;
         uint32_t usec = 0;
         ZERO(&t, sizeof(t));
@@ -813,12 +809,23 @@ static mpack_ctx *_ok_feed(mysql_ctx *mysql, int16_t status_flags, binary_ctx *b
     _mysql_set_lenenc(bw, 17);
     binary_set_integer(bw, status_flags, 2, 1);
     binary_set_integer(bw, 3, 2, 1);
+    // 尾部两字节：OK 包解析完必须把剩余整段跳掉（binary_get_skip(binary_remain)），
+    // 留在缓冲里的话下一个包会从这里开始错位解。调用方按 mpack->payload 之后的
+    // 读位置核对——本 helper 只负责写进去
     binary_set_int8(bw, 0xab);
     binary_set_int8(bw, 0xcd);
     ZERO(mysql, sizeof(mysql_ctx));
     mysql->cur_cmd = MYSQL_QUERY;// parse_status 留 0：这是响应首包
     return (mpack_ctx *)_mysql_feed(mysql, bw->data, bw->offset, status);
 }
+// 两个 server status 位的真值直接钉死：全文件只用宏符号，宏值被改成别的位
+// （比如 MORE_RESULTS 从 8 写成 2）这边编出来什么、那边就解成什么，测试照样全绿。
+// 值取自 MySQL 协议手册 SERVER_STATUS_flags_enum
+static void test_mysql_status_flag_values(CuTest *tc) {
+    CuAssertIntEquals(tc, 8, SERVER_MORE_RESULTS_EXISTS);
+    CuAssertIntEquals(tc, 16384, SERVER_SESSION_STATE_CHANGED);
+}
+
 // _mpack_ok 解析 OK 包：两个计数落到 mysql_ctx，status_flags 的唯一后果是 more 与 cur_cmd。
 // 直接读回 status_flags 证明不了什么——它得真的影响到这两处才算解对了
 static void test_mpack_ok_parse(CuTest *tc) {
@@ -980,6 +987,42 @@ static void test_mpack_err_empty_msg(CuTest *tc) {
     binary_free(&bw);
 }
 
+// _mpack_err 无 sql_state 标记：握手前的 ERR(1040/1129/1130) 不带 '#'+sql_state，
+// 无条件跳 6 字节会从正文里啃掉六个字符
+static void test_mpack_err_no_sqlstate(CuTest *tc) {
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    binary_set_integer(&bw, 1040, 2, 1);
+    const char *msg = "Too many connections";
+    binary_set_binary(&bw, msg, strlen(msg));
+
+    binary_ctx br;
+    binary_init(&br, bw.data, bw.offset, 0);
+    mysql_ctx mysql;
+    ZERO(&mysql, sizeof(mysql));
+    _mpack_err(&mysql, &br);
+    CuAssertIntEquals(tc, 1040, mysql.error_code);
+    CuAssertStrEquals(tc, msg, mysql.error_msg);
+    binary_free(&bw);
+}
+
+// _mpack_err 报文不足 2 字节：连 error_code 都读不出来，须归零而不是读越界
+static void test_mpack_err_truncated(CuTest *tc) {
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    binary_set_int8(&bw, 0x12);// 只有 1 字节
+
+    binary_ctx br;
+    binary_init(&br, bw.data, bw.offset, 0);
+    mysql_ctx mysql;
+    ZERO(&mysql, sizeof(mysql));
+    mysql.error_code = 0x7fff;// 打脏，确认被清成 0
+    _mpack_err(&mysql, &br);
+    CuAssertIntEquals(tc, 0, mysql.error_code);
+    CuAssertStrEquals(tc, "", mysql.error_msg);
+    binary_free(&bw);
+}
+
 // _mysql_payload：从 buffer 取 lenpref + payload；不足时 PROT_MOREDATA
 static void test_mysql_payload(CuTest *tc) {
     // 完整包：3 字节长度 + 1 字节 sequence_id + payload
@@ -1018,6 +1061,19 @@ static void test_mysql_payload(CuTest *tc) {
     p = _mysql_payload(&mysql, &buf, &plen, &status);
     CuAssertTrue(tc, NULL == p);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    buffer_free(&buf);
+
+    // 长度 0xffffff（续传包）那条 PROT_ERROR 分支这里覆盖不到：_mysql_head 先要求缓冲里
+    // 真有 16MB payload 才轮得到它判，只喂包头会先在半包判定上返回 PROT_MOREDATA
+
+    // 零长包：合法报文里不存在，放行会让上层拿到空 payload 去解首字节
+    buffer_init(&buf);
+    head[0] = 0; head[1] = 0; head[2] = 0; head[3] = 0;
+    buffer_append(&buf, head, 4);
+    status = PROT_INIT;
+    p = _mysql_payload(&mysql, &buf, &plen, &status);
+    CuAssertTrue(tc, NULL == p);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     buffer_free(&buf);
 }
 
@@ -1215,8 +1271,7 @@ static void test_mpack_prepare_response(CuTest *tc) {
     CuAssertTrue(tc, 0x11223344 == stmt->stmt_id);
     CuAssertIntEquals(tc, 0, (int)stmt->field_count);
     CuAssertIntEquals(tc, 0, (int)stmt->params_count);
-    _mpack_stm_free(stmt);
-    FREE(stmt);
+    mysql_stmt_free(stmt);// 就是 _mpack_stm_free + FREE 那两句（mysql_pack.c:178-181）
     _mysql_pkfree(out);
 
     // 三个字段只给 7 字节（差 1）：不分配任何东西，报协议错
@@ -1801,6 +1856,9 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpack_ok_track_truncated);
     SUITE_ADD_TEST(suite, test_mpack_err_parse);
     SUITE_ADD_TEST(suite, test_mpack_err_empty_msg);
+    SUITE_ADD_TEST(suite, test_mysql_status_flag_values);
+    SUITE_ADD_TEST(suite, test_mpack_err_no_sqlstate);
+    SUITE_ADD_TEST(suite, test_mpack_err_truncated);
     SUITE_ADD_TEST(suite, test_mysql_payload);
     SUITE_ADD_TEST(suite, test_mysql_stmt_init);
     SUITE_ADD_TEST(suite, test_mysql_binary_row_temporal_invalid_len);

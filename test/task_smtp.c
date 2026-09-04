@@ -1,5 +1,12 @@
 ﻿#include "task_smtp.h"
 
+// 假 SMTP 服务端的容量与并发规模（说明见下面的同名段）
+#define FAKE_MAXCONN  8
+#define FAKE_BUF_LENS 4096
+#define FAKE_CONC_N   4
+#define FAKE_ROUNDS   4
+#define FAKE_TERM     "\r\n.\r\n"
+
 typedef struct task_smtp_ctx {
     uint16_t smtp_port;
     int32_t prt;
@@ -143,12 +150,6 @@ void task_smtp_start(loader_ctx *loader, const char *name, const char *sslname,
 // 交错检测靠事务状态机：MAIL FROM 开事务并记下发件人编号，RCPT 的编号必须与之相同，
 // DATA 收到 "\r\n.\r\n" 收尾，RSET 关事务。两个协程的邮件挤到一起时必然撞上其中一条。
 // 服务端回调与投递协程同属一个 task，单线程依次执行，故下面这些计数用普通变量即可
-#define FAKE_MAXCONN  8
-#define FAKE_BUF_LENS 4096
-#define FAKE_CONC_N   4
-#define FAKE_ROUNDS   4
-#define FAKE_TERM     "\r\n.\r\n"
-
 typedef struct fake_conn {
     uint64_t skid;      // 0 = 空槽
     int32_t authstep;   // 0 未认证 1 已发 Username 挑战 2 已发 Password 挑战 3 已认证

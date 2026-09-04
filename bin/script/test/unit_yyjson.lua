@@ -23,7 +23,7 @@ runner.run(function(t)
     end
     -- ── 整数精确：不退化成浮点 ─────────────────────────────────
     do
-        local big = 9007199254740993   -- 2^53 + 1，双精度表示不了
+        local big = 9007199254740993 -- 2^53 + 1，双精度表示不了
         t:eq("9007199254740993", yyjson.encode(big), "大整数精确编码，不退化成 9.007199254741e+15")
         t:eq(big, yyjson.decode("9007199254740993"), "大整数精确解码")
         t:eq(math.maxinteger, yyjson.decode(tostring(math.maxinteger)), "maxinteger 往返")
@@ -91,8 +91,12 @@ runner.run(function(t)
             end
             return root
         end
-        -- 贴边取值，把 LYYJSON_MAX_DEPTH(18) 夹在两条断言之间：改成 12 或 25 都会被抓到
+        -- 贴边取值：_lyyjson_pack_tbl 在 depth >= LYYJSON_MAX_DEPTH(18) 时拒，
+        -- 而 nest(n) 的最内层正好落在 depth n，故 17 放行、18 被拒。
+        -- 上限挪到任何一个中间值都会被这两条抓到
         t:eq(true, pcall(yyjson.encode, nest(16)), "上限内正常")
+        t:eq(true, pcall(yyjson.encode, nest(17)), "最深一层恰好 depth 17，放行")
+        t:eq(false, pcall(yyjson.encode, nest(18)), "depth 到 18 即达上限，被拒")
         t:eq(false, pcall(yyjson.encode, nest(19)), "超过 LYYJSON_MAX_DEPTH 层报错")
         t:eq(false, pcall(yyjson.decode, string.rep("[", 1200) .. string.rep("]", 1200)),
              "解码超深嵌套报错")

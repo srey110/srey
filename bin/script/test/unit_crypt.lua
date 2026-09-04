@@ -37,8 +37,12 @@ runner.run(function(t)
         t:eq("2", u.param.b, "url param b")
     end
     do
-        -- URL parse 失败：超 1KB / 超 64 段路径返回 nil
-        t:eq(nil, url.parse(string.rep("a", 1024)),       "url.parse 超 1KB 返回 nil")
+        -- URL_BUF_LENS 是内部工作缓冲的 sizeof(1024)，守卫是 >=：写入还要留 NUL，
+        -- 所以 1024 就已经放不下（不是"超过 1KB"）。放行侧也钉一条，
+        -- 只测被拒的话上限改成 512 也照样过
+        t:check(nil ~= url.parse("/" .. string.rep("a", 1022)), "1023 字节仍可解析")
+        t:eq(nil, url.parse(string.rep("a", 1024)),       "1024 字节即超缓冲(含 NUL)，返回 nil")
+        t:check(nil ~= url.parse("/" .. string.rep("a/", 63)), "64 段仍可解析")
         t:eq(nil, url.parse("/" .. string.rep("a/", 70)), "url.parse 超 64 段返回 nil")
     end
     do
@@ -83,11 +87,11 @@ runner.run(function(t)
     do
         -- CRC32 标准 vector："123456789" → 0xCBF43926
         t:eq(0xCBF43926, crc.crc32("123456789"), "CRC32 标准 vector")
-        -- 同一输入两次 crc 一致
-        local a = crc.crc16("srey-crypt-test")
-        local b = crc.crc16("srey-crypt-test")
-        t:eq(a, b, "CRC16 idempotent")
-        t:check(a >= 0 and a <= 0xFFFF, "CRC16 range")
+        -- CRC-16/ARC 标准 vector（poly 0xA001 反射、init 0、无 xorout）：
+        -- 原来是"同函数同入参比相等"+"uint16 范围检查"，两条都恒真，crc16 返 0 也全过
+        t:eq(0xBB3D, crc.crc16("123456789"), "CRC16/ARC 标准 vector")
+        t:eq(0x0000, crc.crc16(""), "CRC16 空输入")
+        t:eq(0xE8C1, crc.crc16("a"), "CRC16 单字节")
     end
 
     -- ── digest ─────────────────────────────────────────────────────────
@@ -267,10 +271,15 @@ runner.run(function(t)
         -- 第二块是必须的：CBC 的链接、CTR 的计数器进位都只在第二块上才体现出来
         local function _kat(model, ivhex, c1hex, c2hex, name)
             local c = cipher.new(CIPHER_TYPE.AES, model, katkey, 128, 1)
-            c:iv(_unhex(ivhex))
+            if ivhex then-- ECB 无 IV
+                c:iv(_unhex(ivhex))
+            end
             t:eq(c1hex, srey.hex(c:block(p1), true), name .. " 第 1 块")
             t:eq(c2hex, srey.hex(c:block(p2), true), name .. " 第 2 块")
         end
+        -- F.1.1 ECB：上面那段 round-trip 里把 CIPHER_MODEL 认错成别的模式也照样对得回来
+        _kat(CIPHER_MODEL.ECB, nil,
+             "3ad77bb40d7a3660a89ecaf32466ef97", "f5d3d58503b9699de785895a96fdbaaf", "ECB")
         _kat(CIPHER_MODEL.CBC, "000102030405060708090a0b0c0d0e0f",
              "7649abac8119b246cee98e9b12e9197d", "5086cb9b507219ee95db113a917678b2", "CBC")
         _kat(CIPHER_MODEL.CFB, "000102030405060708090a0b0c0d0e0f",
@@ -306,6 +315,16 @@ runner.run(function(t)
         local dec = cipher.new(CIPHER_TYPE.DES, CIPHER_MODEL.ECB, key, 64, 0)
         dec:padding(PADDING_MODEL.PKCS57)
         t:eq(plain, dec:dofinal(ct), "DES ECB round-trip")
+
+        -- FIPS PUB 81 标准向量（与 test_crypt.c 的 test_des_direct 同源）：
+        -- round-trip 对任何可逆变换都成立，绑定层把 DES 认成别的算法也发现不了
+        local function _unhex8(h)
+            return (h:gsub("%x%x", function(b) return string.char(tonumber(b, 16)) end))
+        end
+        local dk = _unhex8("0123456789ABCDEF")
+        local dp = _unhex8("4E6F772069732074")-- "Now is t"
+        local dc = cipher.new(CIPHER_TYPE.DES, CIPHER_MODEL.ECB, dk, 64, 1)
+        t:eq("3fa40e8a984d4815", srey.hex(dc:block(dp), true), "DES ECB FIPS-81 向量")
     end
 end)
 end)

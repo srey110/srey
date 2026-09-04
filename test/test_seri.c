@@ -228,10 +228,17 @@ static void test_seri_array_nested(CuTest *tc) {
     seri_iter_next(&iter, &item);
     CuAssertIntEquals(tc, SERI_ITEM_STRING, item.type);
     CuAssertIntEquals(tc, 2, (int32_t)item.v.s.len);
-    seri_iter_next(&iter, &item);
+    // 返回码必须判：到流尾时返回 0 且不写 *out，item 留着上一轮的值。
+    // 不判的话外层 array_end 丢了也照样读到上一条留下的 NIL
+    CuAssertIntEquals(tc, 1, seri_iter_next(&iter, &item));
     CuAssertIntEquals(tc, SERI_ITEM_NIL, item.type);// 内层 end
-    seri_iter_next(&iter, &item);
+    item.type = SERI_ITEM_INT;// 打脏，逼外层 end 自己写回来
+    CuAssertIntEquals(tc, 1, seri_iter_next(&iter, &item));
     CuAssertIntEquals(tc, SERI_ITEM_NIL, item.type);// 外层 end
+    // 两个 end 之后流已尽：返回 0，且不再写 item
+    item.type = SERI_ITEM_INT;
+    CuAssertIntEquals(tc, 0, seri_iter_next(&iter, &item));
+    CuAssertIntEquals(tc, SERI_ITEM_INT, item.type);
 
     binary_free(&bw);
 }

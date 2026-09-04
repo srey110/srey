@@ -13,9 +13,9 @@ srey.startup(function()
             return
         end
         local payload = srey.ud_str(data, size)
-        if 100 == reqtype then       -- BROADCAST_REQ：multi_call 路径
+        if 100 == reqtype then -- BROADCAST_REQ：multi_call 路径
             srey.call(_parent, 101, tostring(_idx) .. ":" .. payload)
-        elseif 102 == reqtype then   -- RPC_REQ：multi_request 路径,task_response 回 src
+        elseif 102 == reqtype then -- RPC_REQ：multi_request 路径,task_response 回 src
             if src ~= TASK_NAME.NONE and sess ~= 0 then
                 srey.response(src, reqtype, sess, 0, "ack" .. tostring(_idx))
             end

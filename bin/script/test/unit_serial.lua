@@ -39,7 +39,7 @@ runner.run(function(t)
         srey.fork(function()
             cs(function()
                 order[#order + 1] = "A_enter"
-                srey.sleep(20)    -- A 持锁 yield，B/C 必须等
+                srey.sleep(20) -- A 持锁 yield，B/C 必须等
                 order[#order + 1] = "A_leave"
             end)
         end)
@@ -49,7 +49,7 @@ runner.run(function(t)
         srey.fork(function()
             cs(function() order[#order + 1] = "C" end)
         end)
-        srey.sleep(60)            -- 等三个协程都完成
+        srey.sleep(60) -- 等三个协程都完成
         t:eq(4, #order, "三协程串行完成 (A_enter/A_leave/B/C)")
         t:eq("A_enter", order[1], "A 先进入")
         t:eq("A_leave", order[2], "A 必须完全退出后 B 才进入（串行）")
@@ -91,7 +91,7 @@ runner.run(function(t)
             cs1(function() srey.sleep(15); hit = hit + 1 end)
         end)
         srey.fork(function()
-            cs2(function() hit = hit + 10 end)   -- 不同 cs，无需等 cs1
+            cs2(function() hit = hit + 10 end) -- 不同 cs，无需等 cs1
         end)
         srey.sleep(5)
         t:eq(10, hit, "cs2 不被 cs1 阻塞（独立锁）")
@@ -103,7 +103,7 @@ runner.run(function(t)
     -- 用 srey.sleep 模拟 yield 操作（无需依赖网络）
     do
         local cs = srey.serial()
-        local in_cs = 0          -- 同时在 cs 内的协程数
+        local in_cs = 0 -- 同时在 cs 内的协程数
         local peak  = 0
         srey.fork(function()
             cs(function()
@@ -132,12 +132,12 @@ runner.run(function(t)
         local a_done = false
         local b_done = false
         srey.fork(function()
-            cs(function() srey.sleep(20) end)    -- A 持锁 yield
-            srey.sleep(5)                        -- cs 出口后再 yield —— B05 触发点
+            cs(function() srey.sleep(20) end) -- A 持锁 yield
+            srey.sleep(5) -- cs 出口后再 yield —— B05 触发点
             a_done = true
         end)
         srey.fork(function()
-            cs(function() srey.sleep(20) end)    -- B 排队 → A.release 唤醒 → B cs 内 yield
+            cs(function() srey.sleep(20) end) -- B 排队 → A.release 唤醒 → B cs 内 yield
             b_done = true
         end)
         srey.sleep(80)
@@ -173,8 +173,11 @@ runner.run(function(t)
     do
         local cs = srey.serial()
         local release = false
+        -- 加个圈数上界：release 是本用例直线路径上置的，正常必然退出；
+        -- 但真出意外时无界 while 会把整个模块挂到 reporter 超时，看不出是这里
         local function _hold()
-            while not release do
+            for _ = 1, 2000 do-- 2000 x 5ms = 10s 上限
+                if release then return end
                 srey.sleep(5)
             end
         end

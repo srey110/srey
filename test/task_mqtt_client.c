@@ -6,8 +6,6 @@ typedef struct mqtt_client_args {
     uint32_t delay;   // 连接前先 coro_sleep 的毫秒数, 0 表示不等
     int32_t prt;
     int32_t *ok;
-    SOCKET fd;
-    uint64_t skid;
     char host[64];
     char clientid[24];// <task名>-<随机6字节>。同一 broker 上必须互异:MQTT 规定重名会让服务端踢掉旧会话,
                       // 而 test1/test2 共用同一个 broker;随机尾巴则避开上一轮遗留的同名会话。
@@ -225,6 +223,8 @@ static void _startup(task_ctx *task) {
 
     mqtt_client_args *arg = coro_get_arg(task);
     int32_t rtn;
+    SOCKET fd;
+    uint64_t skid;
     if (0 != arg->delay) {
         coro_sleep(task, arg->delay);// 等进程内 broker 的 _startup 被派发, 见头文件
     }
@@ -236,10 +236,10 @@ static void _startup(task_ctx *task) {
             LOG_ERROR("dns_lookup error.");
             return;
         }
-        rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, 1, &arg->fd, &arg->skid);
+        rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, 1, &fd, &skid);
         FREE(ips);
     } else {
-        rtn = mqtt_try_connect(task, NULL, arg->host, arg->port, 0, arg->version, 1, &arg->fd, &arg->skid);
+        rtn = mqtt_try_connect(task, NULL, arg->host, arg->port, 0, arg->version, 1, &fd, &skid);
     }
     if (ERR_OK != rtn) {
         LOG_WARN("task_connect %s error.", arg->host);

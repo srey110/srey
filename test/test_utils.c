@@ -4,6 +4,13 @@
 #include "utils/pool.h"
 #include <locale.h>
 
+#define FAKE_RV_MAX 3// 场景二是最长的一路: 两轮读满 + 一轮确认
+// 8u 而非 8：下面多处与 size_t / uint64_t 比较，无符号常量免掉 -Wsign-compare
+#define TW_LAT_N 8u
+// 带标记的测试对象:_elfree 收到真实对象时 magic 必为 POOL_T_MAGIC;
+// 若收到队列槽位地址(历史 bug),magic 不符,_pt_free_bad 增长
+#define POOL_T_MAGIC 0x5ada5adau
+
 /* =======================================================================
  * pack / unpack —— 整数、浮点数的字节序读写
  * ======================================================================= */
@@ -62,19 +69,28 @@ static void test_binary(CuTest *tc) {
     binary_init(&bw, NULL, 0, 64); /* 动态分配，初始不设缓冲 */
 
     /* 写入各种类型 */
-    int8_t  i8  = -120;      binary_set_int8(&bw, i8);
-    uint8_t u8  = 200;       binary_set_uint8(&bw, u8);
-    int16_t i16 = -30000;    binary_set_integer(&bw, i16, 2, 1);
-    uint16_t u16 = 60000;    binary_set_uinteger(&bw, u16, 2, 1);
-    int32_t i32 = -1000000;  binary_set_integer(&bw, i32, 4, 1);
-    uint32_t u32 = 3000000;  binary_set_uinteger(&bw, u32, 4, 0); /* 大端 */
-    int64_t i64 = -9876543210LL; binary_set_integer(&bw, i64, 8, 1);
-    float   fv  = -3.14159f; binary_set_float(&bw, fv, 1);
-    double  dv  = 2.718281828; binary_set_double(&bw, dv, 1);
-    binary_set_fill(&bw, 0xAB, 4);   /* 填充 4 字节 0xAB */
-    binary_set_skip(&bw, 2);         /* 跳过 2 字节（写入 0）*/
-    const char *str = "hello";       binary_set_string(&bw, str);   /* 含 \0 */
-    const char *bin = "world";       binary_set_binary(&bw, bin, 5);   /* 不含 \0 */
+    int8_t i8 = -120;
+    binary_set_int8(&bw, i8);
+    uint8_t u8 = 200;
+    binary_set_uint8(&bw, u8);
+    int16_t i16 = -30000;
+    binary_set_integer(&bw, i16, 2, 1);
+    uint16_t u16 = 60000;
+    binary_set_uinteger(&bw, u16, 2, 1);
+    int32_t i32 = -1000000;
+    binary_set_integer(&bw, i32, 4, 1);
+    uint32_t u32 = 3000000;
+    binary_set_uinteger(&bw, u32, 4, 0); /* 大端 */
+    int64_t i64 = -9876543210LL;
+    binary_set_integer(&bw, i64, 8, 1);
+    float   fv = -3.14159f; binary_set_float(&bw, fv, 1);
+    double  dv = 2.718281828; binary_set_double(&bw, dv, 1);
+    binary_set_fill(&bw, 0xAB, 4);/* 填充 4 字节 0xAB */
+    binary_set_skip(&bw, 2);/* 只推进 offset，不写内容（binary.c: expand 后 offset += lens）*/
+    const char *str = "hello";
+    binary_set_string(&bw, str);/* 含 \0 */
+    const char *bin = "world";
+    binary_set_binary(&bw, bin, 5);/* 不含 \0 */
 
     /* 读取并逐一验证 */
     binary_ctx br;
@@ -93,8 +109,12 @@ static void test_binary(CuTest *tc) {
     double dv2 = binary_get_double(&br, 1);
     CuAssertTrue(tc, (dv2 - dv) < 0.000001 && (dv - dv2) < 0.000001);
 
-    /* 跳过填充和保留字节 */
-    binary_get_skip(&br, 4 + 2);
+    /* 填充字节要读回来比对：只 skip 过去的话，binary_set_fill 写错值甚至什么都不写都发现不了 */
+    const uint8_t *fill = (const uint8_t *)binary_get_binary(&br, 4);
+    CuAssertPtrNotNull(tc, fill);
+    CuAssertTrue(tc, 0xAB == fill[0] && 0xAB == fill[1] && 0xAB == fill[2] && 0xAB == fill[3]);
+    /* set_skip 那 2 字节内容未定义，只跳过 */
+    binary_get_skip(&br, 2);
 
     /* 字符串 */
     const char *rs = binary_get_string(&br);
@@ -598,15 +618,15 @@ static void test_binary_extra(CuTest *tc) {
 
     /* ── binary_offset (回填模式)：先占位，写内容后回到占位处回填 ── */
     binary_init(&bw, NULL, 0, 64);
-    binary_set_skip(&bw, 4);                          /* 预留 4 字节长度字段 */
+    binary_set_skip(&bw, 4);/* 预留 4 字节长度字段 */
     size_t body_start = bw.offset;
-    binary_set_binary(&bw, "body", 4);                /* 写入消息体（4 字节，无 \0）*/
-    size_t body_end   = bw.offset;
-    size_t body_len   = body_end - body_start;        /* 4 */
+    binary_set_binary(&bw, "body", 4);/* 写入消息体（4 字节，无 \0）*/
+    size_t body_end = bw.offset;
+    size_t body_len = body_end - body_start;/* 4 */
 
-    binary_offset(&bw, 0);                            /* 绝对定位到起始 */
+    binary_offset(&bw, 0);/* 绝对定位到起始 */
     binary_set_integer(&bw, (int64_t)body_len, 4, 0); /* 回填大端序长度 */
-    binary_offset(&bw, body_end);                     /* 恢复到末尾 */
+    binary_offset(&bw, body_end);/* 恢复到末尾 */
 
     /* 验证：从头读取长度字段和消息体 */
     binary_ctx br;
@@ -649,9 +669,13 @@ static void test_buffer_extra(CuTest *tc) {
     pos = buffer_search(&buf, 0, 0, 0, NULL, 1);
     CuAssertTrue(tc, ERR_FAILED == pos);
 
-    /* end 是闭区间：起点正好落在 end 上算命中，end 减 1 才排除掉 */
+    /* end 是闭区间，且要求整个 what 落在 [start, end] 内。
+       单字节 needle 起点即末字节，看不出这条规则，另用 2 字节的钉一遍：
+       "aaa|bbb|ccc" 里 "bb" 占 4-5，end=5 命中、end=4 不命中（起点在界内但末字节越界） */
     CuAssertTrue(tc, 3 == buffer_search(&buf, 0, 0, 3, "|", 1));
     CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 2, "|", 1));
+    CuAssertTrue(tc, 4 == buffer_search(&buf, 0, 0, 5, "bb", 2));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 4, "bb", 2));
 
     /* drain 请求量超出 buffer 大小时，仅删除实际数据 */
     size_t drained = buffer_drain(&buf, 1000);
@@ -927,7 +951,6 @@ static void test_buffer_space(CuTest *tc) {
  * 改为只用 buffer_space 报出的现成余量。读满的那轮说明还有数据，仍按
  * MAX_RECV_SIZE 取，否则大流量下每轮只读几百字节，readv 次数翻倍
  * ======================================================================= */
-#define FAKE_RV_MAX 3// 场景二是最长的一路: 两轮读满 + 一轮确认
 static size_t _fake_rv_want[FAKE_RV_MAX];// 第 i 次调用要吐出的字节数
 static size_t _fake_rv_offer[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 总空间
 static int32_t _fake_rv_calls;
@@ -1137,13 +1160,21 @@ static void test_buffer_hint_after_migrate(CuTest *tc) {
  * chan —— 缓冲收发、close 语义、并发生产者-消费者
  * ======================================================================= */
 
-typedef struct { chan_ctx *ch; int items; } _chan_arg;
+typedef struct { chan_ctx *ch; int items; int nfail; } _chan_arg;
 
+// 任一次 chan_send 失败就记账并关掉通道：不关的话消费者会永远阻塞在 chan_recv 上，
+// 回归表现成整个 ./bin/test 挂死而不是一条 FAIL
 static void _chan_sender(void *arg) {
     _chan_arg *a = (_chan_arg *)arg;
-    for (int i = 1; i <= a->items; i++) {
-        uintptr_t v = (uintptr_t)i;
-        chan_send(a->ch, (void *)v, 0, 0);
+    uintptr_t v;
+    int i;
+    for (i = 1; i <= a->items; i++) {
+        v = (uintptr_t)i;
+        if (ERR_OK != chan_send(a->ch, (void *)v, 0, 0)) {
+            a->nfail++;
+            chan_close(a->ch);
+            return;
+        }
     }
 }
 
@@ -1182,15 +1213,24 @@ static void test_chan(CuTest *tc) {
 
     /* ── 并发：生产者线程发 1000 项，主线程收，验证总和 ── */
     ch = chan_init(64);
-    _chan_arg arg = { ch, 1000 };
+    _chan_arg arg = { ch, 1000, 0 };
     pthread_t tid = thread_creat(_chan_sender, &arg);
 
     int64_t sum = 0;
-    for (int i = 0; i < 1000; i++) {
-        void *p = chan_recv(ch, &lens);
+    int nrecv = 0;
+    int i;
+    void *p;
+    for (i = 0; i < 1000; i++) {
+        p = chan_recv(ch, &lens);
+        if (NULL == p) {
+            break;/* 生产者出错时会 close，这里才有出口 */
+        }
+        nrecv++;
         sum += (int64_t)(uintptr_t)p;
     }
     thread_join(tid);
+    CuAssertIntEquals(tc, 0, arg.nfail);
+    CuAssertIntEquals(tc, 1000, nrecv);
     /* 1+2+...+1000 = 500500 */
     CuAssertTrue(tc, 500500LL == sum);
 
@@ -1412,28 +1452,40 @@ static void test_utils_misc(CuTest *tc) {
     /* 低 48 位全 1 不应污染高 16 位 */
     CuAssertIntEquals(tc, 0,      parse_svid((uint64_t)0x0000FFFFFFFFFFFFULL));
 
-    /* parse_svid + serviceid 往返：用 parse_svid 自身作为 getter 保存当前值,
-     * 改 svid → 验证下次 createid 的高 16 位 → 还原,避免污染后续测试 */
+    /* parse_svid + serviceid 往返：svid 是进程级全局，中途断言失败会 longjmp 跳过还原，
+     * 把后面每一个用例的 createid 都污染掉。观测值先攒进局部量，还原之后再一起判 */
     uint16_t saved = parse_svid(createid());
-    CuAssertIntEquals(tc, ERR_OK, serviceid(0x42));
-    CuAssertIntEquals(tc, 0x42, parse_svid(createid()));
-    CuAssertIntEquals(tc, ERR_OK, serviceid(saved));
-    CuAssertIntEquals(tc, saved, parse_svid(createid()));
+    int32_t r_set42 = serviceid(0x42);
+    uint16_t got42 = parse_svid(createid());
+    int32_t r_back1 = serviceid(saved);
+    uint16_t got_back1 = parse_svid(createid());
+    int32_t r_setmax = serviceid(SERVICEID_MAX);
+    uint16_t gotmax = parse_svid(createid());
+    int32_t r_back2 = serviceid(saved);
+    int32_t r_over = serviceid(SERVICEID_MAX + 1);
+    int32_t r_ffff = serviceid(0xFFFF);
+    uint16_t got_final = parse_svid(createid());
+
+    CuAssertIntEquals(tc, ERR_OK, r_set42);
+    CuAssertIntEquals(tc, 0x42, got42);
+    CuAssertIntEquals(tc, ERR_OK, r_back1);
+    CuAssertIntEquals(tc, saved, got_back1);
     /* 上界恰好是 SERVICEID_MAX，再大一个即拒 */
-    CuAssertIntEquals(tc, ERR_OK, serviceid(SERVICEID_MAX));
-    CuAssertIntEquals(tc, SERVICEID_MAX, parse_svid(createid()));
-    CuAssertIntEquals(tc, ERR_OK, serviceid(saved));
-    CuAssertIntEquals(tc, ERR_FAILED, serviceid(SERVICEID_MAX + 1));
-    CuAssertIntEquals(tc, ERR_FAILED, serviceid(0xFFFF));
-    CuAssertIntEquals(tc, saved, parse_svid(createid()));  /* svid 未被改写 */
+    CuAssertIntEquals(tc, ERR_OK, r_setmax);
+    CuAssertIntEquals(tc, SERVICEID_MAX, gotmax);
+    CuAssertIntEquals(tc, ERR_OK, r_back2);
+    CuAssertIntEquals(tc, ERR_FAILED, r_over);
+    CuAssertIntEquals(tc, ERR_FAILED, r_ffff);
+    CuAssertIntEquals(tc, saved, got_final);/* 被拒的两次没改写 svid */
 
     /* procscnt：至少 1 个逻辑核心 */
     CuAssertTrue(tc, procscnt() >= 1);
 
-    /* nowms / nowsec：非零且量级一致（ms >= sec × 1000）*/
-    uint64_t ms  = nowms();
+    /* nowms / nowsec：非零且量级一致（ms >= sec × 1000）。
+       sec 必须先取：反过来的话两次取钟之间跨过秒边界，sec 就比 ms 新一档，断言假失败 */
     uint64_t sec = nowsec();
-    CuAssertTrue(tc, ms  > 0);
+    uint64_t ms = nowms();
+    CuAssertTrue(tc, ms > 0);
     CuAssertTrue(tc, sec > 0);
     CuAssertTrue(tc, ms >= sec * 1000);
 
@@ -1876,16 +1928,16 @@ static void test_str_helpers(CuTest *tc) {
     strreverse(s4);
     CuAssertStrEquals(tc, "", s4);
 
-    /* tohex：二进制转 16 进制（大写）*/
+    /* tohex：二进制转 16 进制（大写）。缓冲先填非零，结束符由 tohex 自己写——
+       测试预写 '\0' 的话，"tohex 不写结束符"这个回归就测不出来 */
     const uint8_t bin[] = { 0x00, 0xab, 0xff, 0x10 };
     char hex[HEX_ENSIZE(4)];
-    /* HEX_ENSIZE = len*2+1，需手动补 '\0' */
-    hex[HEX_ENSIZE(4) - 1] = '\0';
+    memset(hex, 'Z', sizeof(hex));
     CuAssertTrue(tc, hex == tohex(bin, 4, hex, 0));
     CuAssertStrEquals(tc, "00ABFF10", hex);
     /* tohex：二进制转 16 进制（小写）*/
     char hexlower[HEX_ENSIZE(4)];
-    hexlower[HEX_ENSIZE(4) - 1] = '\0';
+    memset(hexlower, 'Z', sizeof(hexlower));
     CuAssertTrue(tc, hexlower == tohex(bin, 4, hexlower, 1));
     CuAssertStrEquals(tc, "00abff10", hexlower);
 
@@ -2404,7 +2456,7 @@ static void test_popen_close(CuTest *tc) {
     /* close 后再次 close 应为 no-op（idempotent，不应 crash 不应阻塞） */
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, NULL));
     popen_close(&ctx);
-    popen_close(&ctx);  /* 重复调用：pid 仍非 0 但 exited=1，分支 if 不进入 kill */
+    popen_close(&ctx);/* 重复调用：pid 仍非 0 但 exited=1，分支 if 不进入 kill */
     popen_free(&ctx);
 }
 
@@ -2742,8 +2794,6 @@ static void test_tw_long_timeout(CuTest *tc) {
  * 的回归目前无人拦得住 —— 要补的话得让 _tw_next_delta 可单独测（单线程喂一个只有
  * 远档的轮子，断言算出的 sleep_ms 远大于 1），而不是再引一个跨线程计数器
  * ======================================================================= */
-// 8u 而非 8：下面多处与 size_t / uint64_t 比较，无符号常量免掉 -Wsign-compare
-#define TW_LAT_N 8u
 // 255/256 是 tv1 与 tv2 的分界（idx < TVR_SIZE 才留 tv1），两侧各取一档
 static const uint32_t _tw_lat_ms[TW_LAT_N] = { 1, 5, 50, 200, 255, 256, 300, 600 };
 static atomic64_t _tw_lat_fire[TW_LAT_N];// 各档实际触发时刻(绝对毫秒)，0 表示未触发
@@ -2819,9 +2869,6 @@ static void test_tw_wakeup_after_idle(CuTest *tc) {
 /* =======================================================================
  * pool —— 对象池:取/还/复用、满处理、收缩、释放(thsafe=0 queue / thsafe=1 fsqu)
  * ======================================================================= */
-// 带标记的测试对象:_elfree 收到真实对象时 magic 必为 POOL_T_MAGIC;
-// 若收到队列槽位地址(历史 bug),magic 不符,_pt_free_bad 增长
-#define POOL_T_MAGIC 0x5ada5adau
 typedef struct pool_t_obj {
     uint32_t magic;      // _elnew 置 POOL_T_MAGIC
     uint32_t reset_cnt;  // 本对象被 _elreset 次数

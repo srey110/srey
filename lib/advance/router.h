@@ -541,8 +541,9 @@ void router_req_html(router_req *ctx, int32_t code, const char *body, size_t len
 /// 自定义响应; extra 为附加头。Content-Type 就经 extra 传(本函数自己不写, 与 router_req_text /
 /// _json / _html 写死类型不同)。附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN):
 /// 头名为 Content-Length / Transfer-Encoding (前者按 body_len 自动写, 再叠一条对端会判为
-/// 请求走私), 头名为空、>= 128 字节或不是 RFC 7230 token, 头值为 NULL 或含 NUL/CR/LF,
-/// 以及该条会让头部块累计越过 HTTP_MAX_HEADLENS。头名一律不截断——截断等于改名发上线缆
+/// 请求走私), 头名为空、>= 128 字节或不是 RFC 7230 token, 头值为 NULL 或含 NUL/CR/LF。
+/// 头部块总长不卡——上限只作用于接收侧, 对端能收多长与本地无关。
+/// 头名一律不截断——截断等于改名发上线缆
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="code">状态码</param>

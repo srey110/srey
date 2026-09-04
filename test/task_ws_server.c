@@ -1,7 +1,6 @@
 ﻿#include "task_ws_server.h"
 
 static uint16_t _port = 0;
-static int32_t _prt = 0;
 
 // 收到 WebSocket 帧：
 //   分片帧 - 收齐完整消息（PROT_SLICE_END）后回复三帧分片消息（text_fin0 + continua_fin0 + continua_fin1）
@@ -69,9 +68,8 @@ static void _startup(task_ctx *task) {
         LOG_WARN("task_listen %d error.", _port);
     }
 }
-void task_ws_server_start(loader_ctx *loader, const char *name, uint16_t port, int32_t pt) {
+void task_ws_server_start(loader_ctx *loader, const char *name, uint16_t port) {
     _port = port;
-    _prt = pt;
     task_ctx *task = task_new(loader, name, 0, NULL, NULL, NULL);
     if (ERR_OK != task_register(task, _startup, NULL)) {
         task_free(task);

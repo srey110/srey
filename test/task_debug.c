@@ -1,9 +1,9 @@
 ﻿#include "task_debug.h"
 
 // 与被测各层的固定文案同串，任一侧改文案本测试立即失败（正是要盯住的东西）
-static const char *_NOTLUA  = "command not supported in C task.";// debug_console.c 的 _DBG_NOTLUA
-static const char *_NOREQ   = "not register request callback function.";// task.c 的 _task_handle_request
-static const char *_HASREQ  = "hasreq: rejected.";// 本文件靶子 task 自己的错误文案
+static const char *_NOTLUA = "command not supported in C task.";// debug_console.c 的 _DBG_NOTLUA
+static const char *_NOREQ = "not register request callback function.";// task.c 的 _task_handle_request
+static const char *_HASREQ = "hasreq: rejected.";// 本文件靶子 task 自己的错误文案
 
 typedef struct task_debug_args {
     uint16_t port;    // debug_console 监听端口
@@ -234,7 +234,7 @@ static int32_t _http_get(task_ctx *task, uint16_t port, const char *url,
     http_pack_req(&bw, "GET", url);
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
-    size_t rsize;
+    size_t rsize = 0;// coro_send 的必填出参；HTTP 走的是 pack 语义，长度信息看 http_data
     // copy=0：缓冲所有权交给 ev_send，不再 binary_free
     struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
     int32_t rtn = ERR_FAILED;

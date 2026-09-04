@@ -67,6 +67,14 @@ def recv_packet(sock):
 def connect_mqtt(clientid):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(TIMEOUT)
+    try:
+        return _mqtt_handshake(s, clientid)
+    except Exception:
+        s.close()   # connect / sendall / recv 抛出时也要关，口径与下面两处显式 close 一致
+        raise
+
+
+def _mqtt_handshake(s, clientid):
     s.connect((HOST, PORT))
     var_head = struct.pack("!H", 4) + b"MQTT" + bytes([4, 0x02]) + struct.pack("!H", 60)
     payload = struct.pack("!H", len(clientid)) + clientid

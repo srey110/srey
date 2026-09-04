@@ -7,6 +7,9 @@ local runner = require("test.runner")
 -- ── mock lib.http（必须在 require advance.router 之前） ────────────────────
 local last_resp
 
+-- 响应发出次数：兜底 500 只该发一次，"no double response" 这类文案要有计数器才立得住
+local nresp = 0
+
 local mock_http = {
     status      = function(pack) return pack._status end,
     datastr     = function(pack) return pack._body end,
@@ -28,6 +31,7 @@ local mock_http = {
     end,
     code_status = require("srey.http").code_status,
     response    = function(fd, skid, code, headers, body)
+        nresp = nresp + 1
         last_resp = { fd = fd, skid = skid, code = code,
                       headers = headers, body = body }
     end,
@@ -172,7 +176,9 @@ runner.run(function(t)
     do
         local r = Route.new()
         r:any("/ping", function(ctx) ctx:text(200, "pong") end)
-        for _, m in ipairs({"GET", "POST", "PUT", "DELETE", "PATCH"}) do
+        -- ROUTER_M_ANY 是 7 位掩码，7 个方法都得跑到；漏掉 HEAD/OPTIONS 的话
+        -- 掩码少置一位也发现不了
+        for _, m in ipairs({"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}) do
             t:eq(200, (dispatch(r, m, "/ping") or {}).code, "ANY matches " .. m)
         end
     end
@@ -262,7 +268,6 @@ runner.run(function(t)
             got.skid    = ctx.skid
             ctx:text(200, "ok")
         end)
-        last_resp = nil
         local pack = make_pack("POST", "/items/5", "hello",
                                { ["content-type"] = "text/plain" })
         r:dispatch(10, 20, pack, 0)
@@ -497,9 +502,8 @@ runner.run(function(t)
         r:use(function(ctx, next) order[#order + 1] = "g2"; next() end)
         r:get("/x", function(ctx) order[#order + 1] = "h"; ctx:text(200, "ok") end)
         dispatch(r, "GET", "/x")
-        t:eq("g1", order[1], "multi-global order: g1 first")
-        t:eq("g2", order[2], "multi-global order: g2 second")
-        t:eq("h",  order[3], "multi-global order: handler last")
+        -- 连步数一起钉：只比前几项的话，链被多跑一遍(order 变成 6 项)也发现不了
+        t:eq("g1,g2,h", table.concat(order, ","), "multi-global 顺序与步数")
     end
 
     -- 4.3 路由级中间件
@@ -510,8 +514,7 @@ runner.run(function(t)
             order[#order + 1] = "h"; ctx:text(200, "ok")
         end, { function(ctx, next) order[#order + 1] = "rm"; next() end })
         dispatch(r, "GET", "/x")
-        t:eq("rm", order[1], "route mw before handler")
-        t:eq("h",  order[2], "handler after route mw")
+        t:eq("rm,h", table.concat(order, ","), "route mw 在 handler 之前，且各跑一次")
     end
 
     -- 4.4 全局 + 路由级顺序：g1 → g2 → r1 → r2 → handler
@@ -723,11 +726,14 @@ runner.run(function(t)
     do
         local r = Route.new()
         local seq = ""
+        local nxt_ok = {}
         r:use(function(ctx, nxt)
             seq = seq .. "A1,"
-            pcall(nxt)
+            -- pcall 结果要断言：下游 error 若被 next 自己吞掉，seq 与兜底 500 都不变，
+            -- 只有这两个返回值能证明异常确实穿了上来
+            nxt_ok[1] = pcall(nxt)
             seq = seq .. "A2,"
-            pcall(nxt)
+            nxt_ok[2] = pcall(nxt)
         end)
         r:use(function(ctx, nxt)
             seq = seq .. "B,"
@@ -736,6 +742,8 @@ runner.run(function(t)
         r:get("/dn", function(ctx) seq = seq .. "H," ctx:text(200, "h") end)
         local resp = dispatch(r, "GET", "/dn")
         t:eq("A1,B,A2,B,", seq, "二次 next 重跑被拒的那层")
+        t:eq(false, nxt_ok[1], "下游 error 由 next 原样抛给上游(第一次)")
+        t:eq(false, nxt_ok[2], "下游 error 由 next 原样抛给上游(第二次)")
         t:check(nil == seq:find("H"), "handler 不因二次 next 被跳到")
         t:eq(500, (resp or {}).code, "中间件全程拒绝 → 兜底 500")
     end
@@ -888,7 +896,9 @@ runner.run(function(t)
         r:use(function(ctx, next) error("global crash") end)
         r:get("/x", function(ctx) ctx:text(200, "ok") end,
               { function(ctx, next) error("route crash") end })
-        t:eq(500, (dispatch(r, "GET", "/x") or {}).code, "first mw error → 500 (no double response)")
+        nresp = 0
+        t:eq(500, (dispatch(r, "GET", "/x") or {}).code, "first mw error → 500")
+        t:eq(1, nresp, "两层中间件都抛，兜底 500 只发一次")
     end
 
     -- 7.4 handler 已成功响应后再抛错 → 不补第二个 500（responded 机制，对齐 C 端 router_dispatch 兜底逻辑）
@@ -901,11 +911,11 @@ runner.run(function(t)
         end
         local r = Route.new()
         r:get("/late", function(ctx)
-            ctx:text(200, "done")      -- 先成功响应
-            error("after response")    -- 再抛错
+            ctx:text(200, "done") -- 先成功响应
+            error("after response") -- 再抛错
         end)
         local resp = dispatch(r, "GET", "/late")
-        mock_http.response = orig_resp  -- 还原 mock
+        mock_http.response = orig_resp -- 还原 mock
         t:eq(1,   resp_count,           "已响应后抛错:只发 1 次响应,不补 500")
         t:eq(200, resp and resp.code,   "保留 handler 的 200,不被 500 覆盖")
     end
@@ -924,8 +934,12 @@ runner.run(function(t)
         -- 是字面量而不是参数: 拿任意文本去打都不该命中(当成 OPT 的话 /y/zzz 会返 200)
         t:eq(404, (dispatch(r, "GET", "/x/zzz") or {}).code, "{} 当字面量, /x/zzz 不命中")
         t:eq(404, (dispatch(r, "GET", "/y/zzz") or {}).code, "{?} 当字面量, /y/zzz 不命中")
-        t:check(nil ~= r:get("/" .. string.rep("s/", 65), function() end), "段数超 64 被跳过")
-        t:check(nil ~= r:get("/ok/{id}/*", function() end), "末段 * 合法,返 entry")
+        -- 判据同上：_bad_entry 与真 entry 都非 nil，只查 nil ~= 分不出被跳过还是注册成功。
+        -- 用 :name() 有没有落进 _named 来分
+        r:get("/" .. string.rep("s/", 65), function() end):name("seg65")
+        t:eq(nil, r._named["seg65"], "段数超 64 被跳过(返 sentinel,名字不入表)")
+        r:get("/ok/{id}/*", function() end):name("tail_star")
+        t:check(nil ~= r._named["tail_star"], "末段 * 合法,返真 entry(名字入表)")
         -- sentinel 支持链式 :name() 不崩溃，且不污染命名路由表
         r:get("/a/*/b", function() end):name("bad_route")
         t:eq(nil, r._named["bad_route"], "非法路由 :name() 不写入命名表")

@@ -3,6 +3,11 @@
 #include "base/macro.h"
 #include "thread/thread.h"
 
+// 多线程并发读 + 单 writer 持续 update; 验证无 race / 无泄漏 / 数据完整
+#define _STM_CONC_READERS 4
+#define _STM_CONC_ITERS   500
+#define _STM_CONC_UPDATES 200
+
 // 用 MALLOC 复制一段字符串数据, 出参 sz 含末尾 '\0'
 static void *_stm_make(const char *s, size_t *out_sz) {
     size_t n = strlen(s) + 1;
@@ -117,14 +122,11 @@ static void test_stm_grab_chain(CuTest *tc) {
     for (i = 0; i < 5; i++) {
         stm_ungrab(ctx);
     }
+    // 五进五出之后引用计数必须回到初始的 1，否则 stm_free 要么提前放要么放不掉
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&ctx->ref));
     stm_free(ctx);
-    CuAssertTrue(tc, 1);
 }
 
-// 多线程并发读 + 单 writer 持续 update; 验证无 race / 无泄漏 / 数据完整
-#define _STM_CONC_READERS 4
-#define _STM_CONC_ITERS   500
-#define _STM_CONC_UPDATES 200
 typedef struct {
     stm_ctx *ctx;
     atomic_t reads;
@@ -184,7 +186,9 @@ static void test_stm_concurrent_read(CuTest *tc) {
         thread_join(ths[i]);
     }
     CuAssertIntEquals(tc, 0, (int)ATOMIC_GET(&s.mismatches));
-    CuAssertTrue(tc, ATOMIC_GET(&s.reads) > 0);
+    /* 每个 reader 跑满 _STM_CONC_ITERS 轮，读次数是确定的；只判 >0 的话
+       reader 提前退出、或 grab 失败被静默跳过都发现不了 */
+    CuAssertIntEquals(tc, _STM_CONC_READERS * _STM_CONC_ITERS, (int)ATOMIC_GET(&s.reads));
     stm_free(s.ctx);
 }
 

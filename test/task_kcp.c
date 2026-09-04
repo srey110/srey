@@ -1,5 +1,8 @@
 ﻿#include "task_kcp.h"
 
+#define KCP_CLOSE_BOGUS_CONV 0xFFFFFFFF // server 从未注册的 conv,_kcp_unpack 查不到会静默丢包,永远不会 echo
+#define KCP_FIFO_N 3 // 并发 synsend 协程数
+
 #define KCP_N_CLIENTS 3 // client 数量
 #define KCP_SV_MAXSESS 8 // server 侧会话表容量
 
@@ -180,8 +183,6 @@ void task_kcp_client_start(loader_ctx *loader, const char *name, uint16_t sv_tcp
 }
 
 // ================= close 唤醒等待协程 =================
-#define KCP_CLOSE_BOGUS_CONV 0xFFFFFFFF // server 从未注册的 conv,_kcp_unpack 查不到会静默丢包,永远不会 echo
-
 static uint16_t _close_sv_udp;
 static int32_t *_close_ok;
 
@@ -250,8 +251,6 @@ void task_kcp_close_start(loader_ctx *loader, const char *name, uint16_t sv_udp_
 }
 
 // ================= 同一 session 并发 synsend 的 FIFO 正确性 =================
-#define KCP_FIFO_N 3 // 并发 synsend 协程数
-
 static uint16_t _fifo_sv_tcp;
 static uint16_t _fifo_sv_udp;
 static int32_t *_fifo_ok;
@@ -457,6 +456,9 @@ static void _syn_startup(task_ctx *task) {
             elapse6 = nowms() - b6;
             r6 = (NULL == r6p) ? ERR_OK : ERR_FAILED;
             r7 = (0 == kcp4.sess) ? ERR_OK : ERR_FAILED;
+        } else {
+            // 成功路径的 close 在 _syn_close_fork 里，安装失败就没人关它了
+            ev_close(&task->loader->netev, dfd, dskid);
         }
     }
     if (ERR_OK == r1 && ERR_OK != r2 && ERR_OK == r3 && elapse3 < 1000 && NULL == r4 && ERR_OK == r5

@@ -49,12 +49,22 @@ runner.run(function(t)
 
     -- ── harbor.pack ────────────────────────────────────────────────────
     do
+        -- 组出来的是一条 HTTP POST：call=0 走 /request，call=1 走 /call，
+        -- dst / type 进查询串，payload 进 body。两次只判"非空"的话，
+        -- call 标志接反、dst 没写进 url 都发现不了
         local data, size = harbor.pack(0x10, 0, 0, "hello", 5)
         t:check(data ~= nil and size > 0, "harbor.pack returns data")
+        local w = srey.ud_str(data, size)
+        t:check(nil ~= w:find("POST /request?dst=16&type=0 ", 1, true), "call=0 走 /request，dst/type 入查询串")
+        t:check(nil ~= w:find("Content-Length: 5", 1, true), "Content-Length 按 payload 长度写")
+        t:check(w:sub(-5) == "hello", "payload 落在报文末尾")
         utils.ud_free(data)
         -- 无 payload
         data, size = harbor.pack(0x10, 1, 0)
         t:check(data ~= nil and size > 0, "harbor.pack no payload")
+        w = srey.ud_str(data, size)
+        t:check(nil ~= w:find("POST /call?dst=16&type=0 ", 1, true), "call=1 走 /call")
+        t:check(nil ~= w:find("Content-Length: 0", 1, true), "无 payload 时 Content-Length 为 0")
         utils.ud_free(data)
     end
 
@@ -134,8 +144,11 @@ runner.run(function(t)
         t:eq(nil, smtp.new("127.0.0.1", 25, nil, "user", toolong), "smtp.new 密码超长返 nil")
         t:eq(nil, smtp.new("127.0.0.1", 25, nil, toolong, "psw"),  "smtp.new 用户名超长返 nil")
         t:eq(nil, smtp.new(toolong, 25, nil, "user", "psw"),       "smtp.new ip 超长返 nil")
+        -- 贴边各一条：只测 63 合法 + 96 被拒的话，上限放宽到 95 也抓不到
         t:check(smtp.new("127.0.0.1", 25, nil, "user", string.rep("y", 63)) ~= nil,
                 "smtp.new 正好 63 字节仍合法")
+        t:eq(nil, smtp.new("127.0.0.1", 25, nil, "user", string.rep("y", 64)),
+             "smtp.new 64 字节即超限(缓冲 64 含结尾 NUL)")
         -- 正常地址
         local pack, size = s:pack_from("alice@example.com")
         t:check(pack ~= nil and size > 0, "smtp pack_from")
@@ -190,7 +203,7 @@ runner.run(function(t)
         -- 类型是 9 的地址照发 RCPT TO 却不出现在 To: / Cc: 里,可见收件人静默变密送
         t:eq(false, pcall(function() m:addrs_add("x@example.com", 9) end), "越界收件人类型被拒")
         t:eq(false, pcall(function() m:addrs_add("x@example.com", 0) end), "类型 0 被拒")
-        m:addrs_add("alice@example.com", 1)  -- TO
+        m:addrs_add("alice@example.com", 1) -- TO
         m:subject("unit test")
         m:msg("plain text body")
         m:html("<h1>hi</h1>")

@@ -1,5 +1,7 @@
 ﻿#include "task_mysql.h"
 
+#define _CONC_N 4
+
 typedef struct task_mysql_args {
     uint16_t port;
     int32_t *ok;
@@ -100,6 +102,10 @@ static int32_t _select_iterate(mysql_ctx *mysql, int32_t expect_rows) {
     if (ERR_OK != mysql_query(mysql, "select * from test_bind order by t_int8", NULL,
                               _cb_take_reader, &reader)) {
         LOG_ERROR("mysql select error.");
+        // 多结果集里前一段已交出 reader、后一段才断连时，reader 非空且所有权已在这边
+        if (NULL != reader) {
+            mysql_reader_free(reader);
+        }
         return ERR_FAILED;
     }
     int32_t cnt = 0;
@@ -178,6 +184,9 @@ static int32_t _prepare_execute(mysql_ctx *mysql) {
     mysql_bind_free(&bind);
     if (ERR_OK != exrtn) {
         LOG_ERROR("mysql stmt_execute error.");
+        if (NULL != reader) {
+            mysql_reader_free(reader);
+        }
         mysql_stmt_close(stmt);
         return ERR_FAILED;
     }
@@ -271,12 +280,13 @@ static int32_t _cb_conc(mpack_ctx *mpack, void *udata) {
     if (NULL == rd) {
         return ERR_FAILED;
     }
-    int32_t err;
+    int32_t err = ERR_FAILED;
     if (!mysql_reader_eof(rd)) {
         a->got = (int32_t)mysql_reader_integer(rd, "v", &err);
     }
     mysql_reader_free(rd);
-    return ERR_OK;
+    // err 不看的话读失败时 got 是垃圾值，正好等于 want 就静默过去了
+    return ERR_OK == err ? ERR_OK : ERR_FAILED;
 }
 static void _conc_worker(task_ctx *task, void *arg) {
     (void)task;
@@ -294,7 +304,6 @@ static void _conc_worker(task_ctx *task, void *arg) {
     }
     a->done = 1;
 }
-#define _CONC_N 4
 static int32_t _concurrent_query(mysql_ctx *mysql) {
     _conc_arg args[_CONC_N];
     fork_serial_cb funcs[_CONC_N];

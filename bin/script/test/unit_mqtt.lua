@@ -4,7 +4,6 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local utils  = require("srey.utils")
 local mqtt   = require("lib.mqtt")
-local mqttc  = require("srey.mqtt")-- 绑定层原始接口，测版本校验用
 local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
 -- 取 pack 返回数据的首字节高 4 位（MQTT 控制类型）
@@ -36,9 +35,16 @@ runner.run(function(t)
         t:eq(false, pcall(function() p:fixnum(0x100000001, 1) end), "属性标识 2^32+1 被拒")
         t:eq(false, pcall(function() p:varnum(0x2B, 1) end), "属性标识超 0x2A 被拒")
         t:eq(false, pcall(function() p:fixnum(0, 1) end), "属性标识 0 被拒")
+        -- 只量 AUTH_DATA 这一段的增量：binary 属性 = 标识(1) + 长度前缀(2) + 3 字节载荷 = 6。
+        -- 只判 size > 0 的话，漏写载荷或漏写长度前缀都发现不了
+        local _, before = p:data()
         p:binary(mqtt.PROP.AUTH_DATA, "\x01\x02\x03")
         local data, size = p:data()
-        t:check(data ~= nil and size > 0, "props data after writes")
+        t:check(data ~= nil, "props data after writes")
+        t:eq(6, size - before, "AUTH_DATA 段 = 1 标识 + 2 长度 + 3 载荷")
+        local wire = srey.ud_str(data, size)
+        t:eq(mqtt.PROP.AUTH_DATA, string.byte(wire, before + 1), "该段首字节是属性标识")
+        t:eq("\x01\x02\x03", wire:sub(before + 4, before + 6), "载荷原样写入")
         -- reset 后清空
         p:reset()
         data, size = p:data()
@@ -251,25 +257,27 @@ runner.run(function(t)
 
     -- ── mqtt.reason 转字符串 ───────────────────────────────────────────
     do
-        local rs = mqtt.reason(mqtt.PROT.CONNACK, 0)
-        t:check(type(rs) == "string" and #rs > 0, "mqtt.reason CONNACK 0")
+        -- 钉具体文案：只判"非空字符串"的话，返回码表整个查错行也照样过
+        t:eq("Success", mqtt.reason(mqtt.PROT.CONNACK, 0), "CONNACK 0 → Success")
+        t:eq("Unspecified error", mqtt.reason(mqtt.PROT.CONNACK, 0x80),
+             "CONNACK 0x80 → Unspecified error")
     end
 
     -- ── 协议版本的截断回归 ────────────────────────────────────────────
     -- 曾用裸 (mqtt_protversion) 转换：260 让组包侧按 5.0 写属性长度字段，写线时 int8_t
     -- 又截成 0x04，发出去是"协议级别 3.1.1、报文体多一个字节"的畸形 CONNECT
     do
-        t:eq(false, pcall(mqttc.pack_connect, 260, 1, 60, "cid"), "pack_connect: version 260 被拒")
-        t:eq(false, pcall(mqttc.pack_connect, 3, 1, 60, "cid"), "pack_connect: version 3 被拒")
+        t:eq(false, pcall(mqtt.pack_connect, 260, 1, 60, "cid"), "pack_connect: version 260 被拒")
+        t:eq(false, pcall(mqtt.pack_connect, 3, 1, 60, "cid"), "pack_connect: version 3 被拒")
         -- 挑 pack_disconnect 再验一遍：同一道 _lmqtt_check_version 卡在十个入口上，
         -- 挑一个非 connect 的确认它不是只在 pack_connect 里做了校验
-        t:eq(false, pcall(mqttc.pack_disconnect, 0), "pack_disconnect: version 0 被拒")
-        t:eq(false, pcall(mqttc.pack_disconnect, 260), "pack_disconnect: version 260 被拒")
+        t:eq(false, pcall(mqtt.pack_disconnect, 0), "pack_disconnect: version 0 被拒")
+        t:eq(false, pcall(mqtt.pack_disconnect, 260), "pack_disconnect: version 260 被拒")
         -- 放行的那两条会真的组出包，返回的指针归调用方，丢掉就是泄漏
-        local ok, pk = pcall(mqttc.pack_disconnect, 4)
+        local ok, pk = pcall(mqtt.pack_disconnect, 4)
         t:eq(true, ok, "pack_disconnect: MQTT_311 照常接受")
         if ok then utils.ud_free(pk) end
-        ok, pk = pcall(mqttc.pack_disconnect, 5)
+        ok, pk = pcall(mqtt.pack_disconnect, 5)
         t:eq(true, ok, "pack_disconnect: MQTT_50 照常接受")
         if ok then utils.ud_free(pk) end
     end

@@ -47,7 +47,7 @@ runner.run(function(t)
     do
         local r = srey.fork_wait({
             function() return true, 7 end,
-            function() return "x", nil, "z" end,   -- 中间的 nil 洞：# 数不准，靠 n
+            function() return "x", nil, "z" end, -- 中间的 nil 洞：# 数不准，靠 n
         })
         t:eq(2, r[1].n, "多返回值任务 n=2")
         t:eq(true, r[1][1], "r[1][1] = true")
@@ -107,13 +107,13 @@ runner.run(function(t)
             srey.fork(function() depth_hit = depth_hit + 10 end)
             srey.fork(function() depth_hit = depth_hit + 100 end)
         end)
-        srey.sleep(20)   -- 让外层 + 两个内层 fork 都跑完
+        srey.sleep(20) -- 让外层 + 两个内层 fork 都跑完
         t:eq(111, depth_hit, "嵌套 fork 全部完成（1+10+100）")
     end
 
-    -- ── fork_wait 内部的 srey.call 真正并发 ────────────────────────────
-    -- 复用 reporter task 作为下游：srey.call 会阻塞协程等响应
-    -- 这里只验证 fork_wait 在 srey.call yield 期间能并发推进
+    -- ── fork_wait 的子任务在 yield 期间并发推进 ────────────────────────
+    -- 用 srey.sleep 制造 yield（不是 srey.call —— 那个是 fire-and-forget，不等响应）：
+    -- 两个各睡 30ms 的任务若被串行执行，下面的耗时上界就会被撑破
     do
         local t0 = srey.timer_ms()
         local r = srey.fork_wait({
@@ -147,7 +147,7 @@ runner.run(function(t)
         local r = srey.fork_wait({
             srey.fork_bind(echo, "hello"),
             srey.fork_bind(add2, 10, 20),
-            function() return "closure" end,   -- fork_bind 与闭包混用
+            function() return "closure" end, -- fork_bind 与闭包混用
         })
         t:eq(3, #r, "fork_wait + fork_bind 混用任务数")
         t:eq("hello", r[1].val, "fork_bind(echo, 'hello') 结果")

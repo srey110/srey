@@ -971,9 +971,6 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
     // 非法头一律整条丢弃而不截断、更不 abort: 截断头名等于把它改成另一个名字发上线缆, 比不发更糟;
     // 而 http_pack_head2 对 CR/LF 是断言退进程, 让业务数据能打死服务端不可接受, 故在此先筛掉
     char k[128];
-    // 尾部 http_pack_content 还要写 "Content-Length: %zu" 加两个 CRLF, 判定时先扣掉这段。
-    // 20 是 %zu 的最长十进制位数(UINT64_MAX 有 20 位), 32 位平台上只会多留不会少留
-    const size_t tail = sizeof("Content-Length: ") - 1 + 20 + CRLF_SIZE * 2;
     for (int32_t i = 0; i < extra_n; i++) {
         if (NULL == extra[i].key.data
             || 0 == extra[i].key.lens
@@ -991,14 +988,6 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
         if (buf_icompare((buf_ctx *)&extra[i].key, "Content-Length", sizeof("Content-Length") - 1)
             || buf_icompare((buf_ctx *)&extra[i].key, "Transfer-Encoding", sizeof("Transfer-Encoding") - 1)) {
             LOG_WARN("router: framing header must not come from extra, dropped.");
-            continue;
-        }
-        // HTTP_MAX_HEADLENS 管的是整个头部块, 故按已写入的 bw.offset 累计判而非逐条判。
-        // 超长值先单独挡一道: 直接相加会在 lens 接近 SIZE_MAX 时回绕成小值放行
-        if (extra[i].value.lens > HTTP_MAX_HEADLENS
-            || bw.offset + tail + extra[i].key.lens + extra[i].value.lens
-               + sizeof(": \r\n") - 1 > HTTP_MAX_HEADLENS) {
-            LOG_WARN("router: header would push head block past HTTP_MAX_HEADLENS, dropped.");
             continue;
         }
         // 值为 NULL 一律丢: 调用方传 NULL 是"这条别发", 空值头要发就传 {"", 0}

@@ -48,6 +48,7 @@ runner.run(function(t)
         .. "mysql_query_attribute_string('t_time'),"
         .. "mysql_query_attribute_string('t_nil'))"
     local insert_ok = true
+    local dts = {}-- 每行写进 t_datetime 的秒级时间戳，回读时按行比对
     for i = 1, 3 do
         bind:clear()
         bind:integer("t_int8", i)
@@ -57,7 +58,8 @@ runner.run(function(t)
         bind:double("t_float", 1.5 + i)
         bind:double("t_double", 3.14 + i)
         bind:string("t_string", "srey-mysql-test")
-        bind:datetime("t_datetime", os.time())
+        dts[i] = os.time()
+        bind:datetime("t_datetime", dts[i])
         bind:time("t_time", 0, 0, 1, 30, 0)
         bind:null("t_nil")
         local rins = mctx:query(sql, bind)
@@ -94,6 +96,26 @@ runner.run(function(t)
                     "row " .. n .. " t_double (" .. tostring(vd) .. ")")
             t:eq("srey-mysql-test", oks and srey.ud_str(sptr, slen) or nil,
                  "row " .. n .. " t_string")
+            -- 剩下四列也得读回来：注释点名要拦的 datetime / time 走的正是它们
+            local okf, vf = reader:float("t_float")
+            t:check(okf and vf and math.abs(vf - (1.5 + n)) < 1e-4,
+                    "row " .. n .. " t_float (" .. tostring(vf) .. ")")
+            -- DATETIME 是秒精度，回来的是微秒时间戳
+            local okdt, vdt = reader:datetime("t_datetime")
+            t:eq(dts[n] * 1000000, okdt and vdt or nil, "row " .. n .. " t_datetime")
+            -- 写进去的是 (is_negative=0, days=0, hour=1, minute=30, second=0)，
+            -- 时分秒顺序弄反的话这里会读成 0:1:30 或 30:1:0
+            local okt, tneg, tday, thour, tmin, tsec = reader:time("t_time")
+            t:check(okt, "row " .. n .. " t_time 读得出来")
+            t:eq(0, tneg and 1 or 0, "row " .. n .. " t_time 非负")
+            t:eq(0, tday, "row " .. n .. " t_time days")
+            t:eq(1, thour, "row " .. n .. " t_time hour")
+            t:eq(30, tmin, "row " .. n .. " t_time minute")
+            t:eq(0, tsec, "row " .. n .. " t_time second")
+            -- NULL 列：读取成功但不返回值
+            local okn, vn = reader:integer("t_nil")
+            t:check(okn, "row " .. n .. " t_nil 读取成功")
+            t:eq(nil, vn, "row " .. n .. " t_nil 是 NULL，不带值")
             reader:next()
         end
         t:eq(3, n, "select all rows")
@@ -183,7 +205,7 @@ runner.run(function(t)
     -- 有界等待。fork 出去的协程抛错时 done 永远到不了 N（srey.fork 的错误由 _coro_cb 的
     -- xpcall 吞掉、只打 ERROR 日志、不向外传播），无界 while 会让本 task 的 runner.run
     -- 永远走不到 t:done()，整份汇总要么不出现要么靠超时兜底报 MISS，真原因只在日志另一处
-    for _ = 1, 1500 do            -- 1500 x 20ms = 30s 上限
+    for _ = 1, 1500 do -- 1500 x 20ms = 30s 上限
         if done >= N then break end
         srey.sleep(20)
     end

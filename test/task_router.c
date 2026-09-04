@@ -1,6 +1,17 @@
 ﻿#include "task_router.h"
 #include "advance/router.h"
 
+// 自定义头值长度, 取 >255 以越过旧实现的 v[256] 栈缓冲
+#define BIGHDR_LEN 300
+#define HDRSUM_LEN 1800
+// /hdrsum 裸读响应用的累积缓冲: 三条头 + 状态行 + 帧长头 + 报文体
+#define HDRSUM_ACC (HDRSUM_LEN * 3 + ONEK)
+
+// 注册必须成功的路由都走它：结果不对即计一次，客户端读 /__regfail 得 "0" 才算全对。
+// REG 收返回 entry 指针的一族，REGI 收返回 int32_t 下标的 router_add_index
+#define REG(call)  do { if (NULL == (call)) { ATOMIC_ADD(&_g_regfail_count, 1); } } while (0)
+#define REGI(call) do { if (0 > (call)) { ATOMIC_ADD(&_g_regfail_count, 1); } } while (0)
+
 // ── server task ────────────────────────────────────────────────────────────
 // server 是一个普通 (非协程) task: _net_recv 同步调 router_dispatch, handler/中间件
 // 全部在 worker 线程当场跑完, 不涉及 yield。router_ctx 单例放全局, 测试启动期间
@@ -8,15 +19,16 @@
 // 单 worker 内本来就不竞争, 只为表达"读写发生在不同 task 上"的语义清晰
 
 // 计数器: post-tag 中间件 next 返回后 +1, 客户端通过 GET /__stats 读回验证
-static atomic_t     _g_post_count = 0;
+static atomic_t _g_post_count = 0;
 // 计数器: 流式路由收到 ROUTER_STREAM_ABORT 时 +1, 客户端通过 GET /__aborts 读回验证
-static atomic_t     _g_abort_count = 0;
-// 计数器: _server_startup 里每有一条路由注册失败就 +1, 客户端通过 GET /__regfail 读回。
+static atomic_t _g_abort_count = 0;
+// 计数器: 注册结果与预期不符就 +1(该成功的返回 NULL, 或该被拒的 /povf 居然成功),
+// 客户端通过 GET /__regfail 读回 "0"。
 // 空名段那两条曾让整条路由注册作废, 而"没注册"和"注册成了字面量"在线缆上都是 404, 分不开
-static atomic_t     _g_regfail_count = 0;
-static uint16_t     _g_port       = 0;
+static atomic_t _g_regfail_count = 0;
+static uint16_t _g_port = 0;
 // ABORT 回调里回调 router_closed 用; 不走 ctx->task->arg 是因为 router_free 那条路径上 task 正在拆
-static router_ctx  *_g_router     = NULL;
+static router_ctx *_g_router = NULL;
 
 // ── handlers ───────────────────────────────────────────────────────────────
 // 每个 handler 对应客户端一项断言 (见 _run_all);
@@ -127,7 +139,7 @@ static void _h_aborts(router_req *ctx) {
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
     router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
-// GET /__regfail → 当前 _g_regfail_count 字符串值; 客户端读出 "0" 即所有路由都注册成功
+// GET /__regfail → 当前 _g_regfail_count 字符串值; 客户端读出 "0" 即所有注册结果都与预期一致
 static void _h_regfail(router_req *ctx) {
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_regfail_count);
@@ -169,8 +181,6 @@ static void _h_opt_ambig(router_req *ctx) {
                          NULL == v ? 4 : (int32_t)n, NULL == v ? "none" : v);
     router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
-// 自定义头值长度, 取 >255 以越过旧实现的 v[256] 栈缓冲
-#define BIGHDR_LEN 300
 // GET /bighdr → 回一条 BIGHDR_LEN 字节的 X-Big 头; 覆盖头值改走 http_pack_head2 后不再截断
 static void _h_bighdr(router_req *ctx) {
     char val[BIGHDR_LEN];
@@ -182,10 +192,8 @@ static void _h_bighdr(router_req *ctx) {
     extra[0].value.lens = sizeof(val);
     router_req_respond(ctx, 200, extra, 1, "ok", 2);
 }
-#define HDRSUM_LEN 1800
-// GET /hdrsum → 三条各 HDRSUM_LEN 字节的头; 逐条都远在 HTTP_MAX_HEADLENS(4KB) 之内,
-// 累计却超。逐条判定时三条全发, 整个头部块 ~5.4KB, 对端解析器直接 PROT_ERROR、
-// 客户端连响应都收不到; 累计判定应放行前两条、丢掉第三条
+// GET /hdrsum → 三条各 HDRSUM_LEN 字节的头, 累计 ~5.4KB 越过 HTTP_MAX_HEADLENS。
+// 组包侧不卡长度, 三条都该原样发出
 static void _h_hdrsum(router_req *ctx) {
     char val[HDRSUM_LEN];
     memset(val, 'b', sizeof(val));
@@ -388,63 +396,65 @@ static void _server_startup(task_ctx *task) {
     router_use(r, "gmark");
 
     // 流式路由: /st 无中间件, /stauth 挂 auth 验证准入被截断时不建流
-    router_post_stream(r, NULL, "/st", _h_st_echo, NULL, 0);
+    REG(router_post_stream(r, NULL, "/st", _h_st_echo, NULL, 0));
     const char *st_auth_mws[] = { "auth" };
-    router_post_stream(r, NULL, "/stauth", _h_st_echo, st_auth_mws, 1);
+    REG(router_post_stream(r, NULL, "/stauth", _h_st_echo, st_auth_mws, 1));
     const char *st_silent_mws[] = { "silent" };
-    router_post_stream(r, NULL, "/stsilent", _h_st_echo, st_silent_mws, 1);
+    REG(router_post_stream(r, NULL, "/stsilent", _h_st_echo, st_silent_mws, 1));
 
     // 9 条平铺路由 (无中间件): 覆盖各种 path 模板和方法位掩码
-    router_get(r, NULL, "/",             _h_root,        NULL, 0);
-    router_get(r, NULL, "/user/{id}",    _h_user,        NULL, 0);
-    router_get(r, NULL, "/file/{path?}", _h_file,        NULL, 0);
-    router_get(r, NULL, "/static/*",     _h_static,      NULL, 0);
+    REG(router_get(r, NULL, "/",             _h_root,        NULL, 0));
+    REG(router_get(r, NULL, "/user/{id}",    _h_user,        NULL, 0));
+    REG(router_get(r, NULL, "/file/{path?}", _h_file,        NULL, 0));
+    REG(router_get(r, NULL, "/static/*",     _h_static,      NULL, 0));
     // 参数段 + 末尾通配: 命中后通配前的 {id} 必须仍对 handler 可见
-    router_get(r, NULL, "/asset/{id}/*", _h_user,        NULL, 0);
-    router_get(r, NULL, "/query",        _h_query,       NULL, 0);
-    router_get(r, NULL, "/qexist",       _h_qexist,      NULL, 0);
+    REG(router_get(r, NULL, "/asset/{id}/*", _h_user,        NULL, 0));
+    REG(router_get(r, NULL, "/query",        _h_query,       NULL, 0));
+    REG(router_get(r, NULL, "/qexist",       _h_qexist,      NULL, 0));
     // {a?b} 参数名含内部 ?, 按 B2 文法当字面量段(对齐 Lua); 故 /litq/xyz 不命中参数 → 404
-    router_get(r, NULL, "/litq/{a?b}",   _h_root,        NULL, 0);
+    REG(router_get(r, NULL, "/litq/{a?b}",   _h_root,        NULL, 0));
     // 空名段同样当字面量: {} 与 {?} 都不是参数, 注册须成功(失败计入 _g_regfail_count),
     // 且 /litbe/xyz 与 /litqe/xyz 都不该命中参数 → 404
-    if (NULL == router_get(r, NULL, "/litbe/{}",  _h_root, NULL, 0)) {
-        ATOMIC_ADD(&_g_regfail_count, 1);
-    }
-    if (NULL == router_get(r, NULL, "/litqe/{?}", _h_root, NULL, 0)) {
-        ATOMIC_ADD(&_g_regfail_count, 1);
-    }
-    router_get(r, NULL, "/a/{x?}/b",    _h_opt_mid,     NULL, 0);
+    REG(router_get(r, NULL, "/litbe/{}",  _h_root, NULL, 0));
+    REG(router_get(r, NULL, "/litqe/{?}", _h_root, NULL, 0));
+    REG(router_get(r, NULL, "/a/{x?}/b",    _h_opt_mid,     NULL, 0));
     // OPT 精确匹配: 可选段排在必填段之前 / 取值与后继字面量同名, 两种形态贪婪前瞻都会误判 404
-    router_get(r, NULL, "/optlead/{x?}/{y}",  _h_opt_lead,  NULL, 0);
-    router_get(r, NULL, "/files/{ver?}/list", _h_opt_ambig, NULL, 0);
+    REG(router_get(r, NULL, "/optlead/{x?}/{y}",  _h_opt_lead,  NULL, 0));
+    REG(router_get(r, NULL, "/files/{ver?}/list", _h_opt_ambig, NULL, 0));
     // 自定义头值超 256 字节, 验证不被截断
-    router_get(r, NULL, "/bighdr",            _h_bighdr,    NULL, 0);
-    // 三条头单看合法、累计超 HTTP_MAX_HEADLENS, 验证按整块判定
-    router_get(r, NULL, "/hdrsum",            _h_hdrsum,    NULL, 0);
+    REG(router_get(r, NULL, "/bighdr",            _h_bighdr,    NULL, 0));
+    // 三条头累计超 HTTP_MAX_HEADLENS, 验证组包侧不卡长度
+    REG(router_get(r, NULL, "/hdrsum",            _h_hdrsum,    NULL, 0));
     // extra 里的帧长头须被丢弃, 验证不会发出两条 Content-Length
-    router_get(r, NULL, "/framing",           _h_framing,   NULL, 0);
-    router_get(r, NULL, "/nullhdr",           _h_nullhdr,   NULL, 0);
+    REG(router_get(r, NULL, "/framing",           _h_framing,   NULL, 0));
+    REG(router_get(r, NULL, "/nullhdr",           _h_nullhdr,   NULL, 0));
     // 9 个可选段 > ROUTER_MAX_OPT(8): 注册应失败, 该路径只能落到 404
-    router_get(r, NULL, "/optovf/{a?}/{b?}/{c?}/{d?}/{e?}/{f?}/{g?}/{h?}/{i?}", _h_root, NULL, 0);
-    router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0);
-    router_get(r, NULL, "/forget",       _h_forget,      NULL, 0);
-    router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0);
-    router_get(r, NULL, "/__stats",      _h_stats,       NULL, 0);
-    router_get(r, NULL, "/__aborts",     _h_aborts,      NULL, 0);
-    router_get(r, NULL, "/__regfail",    _h_regfail,     NULL, 0);
-    router_get(r, NULL, "/nobody",       _h_nobody,      NULL, 0);
+    // 9 个可选段超过上限 8，注册期就该被拒；没被拒才是回归（同 /povf）
+    if (NULL != router_get(r, NULL, "/optovf/{a?}/{b?}/{c?}/{d?}/{e?}/{f?}/{g?}/{h?}/{i?}", _h_root, NULL, 0)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
+    REG(router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0));
+    REG(router_get(r, NULL, "/forget",       _h_forget,      NULL, 0));
+    REG(router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0));
+    REG(router_get(r, NULL, "/__stats",      _h_stats,       NULL, 0));
+    REG(router_get(r, NULL, "/__aborts",     _h_aborts,      NULL, 0));
+    REG(router_get(r, NULL, "/__regfail",    _h_regfail,     NULL, 0));
+    REG(router_get(r, NULL, "/nobody",       _h_nobody,      NULL, 0));
     // 只配 router_match_index 用的条目(两个回调都为 NULL)。混进派发是配置错误,
     // 普通请求与 chunked 首帧都该给 500, 不能一个 500 一个 411
-    router_add_index(r, "POST", 4, "/index-only", 11);
-    router_get(r, NULL, "/pmax/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}",          _h_pmax, NULL, 0);
-    router_get(r, NULL, "/povf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17}",    _h_pmax, NULL, 0);
-    router_get(r, NULL, "/poptovf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17?}", _h_pmax, NULL, 0);
+    REGI(router_add_index(r, "POST", 4, "/index-only", 11));
+    REG(router_get(r, NULL, "/pmax/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}",          _h_pmax, NULL, 0));
+    // 17 个必填段超过 ROUTER_MAX_PARAMS，注册期就该被拒；没被拒才是回归
+    if (NULL != router_get(r, NULL, "/povf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17}", _h_pmax, NULL, 0)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
+    REG(router_get(r, NULL, "/poptovf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17?}", _h_pmax, NULL, 0));
 
     // 路由级中间件: auth 截断验证 + post-tag 后置验证
     const char *auth_mws[] = { "auth" };
-    router_get(r, NULL, "/needauth", _h_needauth, auth_mws, 1);
+    REG(router_get(r, NULL, "/needauth", _h_needauth, auth_mws, 1));
     const char *tag_mws[] = { "post-tag" };
-    router_get(r, NULL, "/post-mw", _h_post_mw, tag_mws, 1);
+    REG(router_get(r, NULL, "/post-mw", _h_post_mw, tag_mws, 1));
 
     // 嵌套 group: /g1 + g1mw → /g2 + g2mw → /deep
     // 注册时 router_add 沿父链拼接 prefix 得到 "/g1/g2/deep", 同时把 g1mw + g2mw
@@ -455,11 +465,11 @@ static void _server_startup(task_ctx *task) {
     const char *g2_names[] = { "g2mw" };
     router_group g2;
     router_group_nest(&g1, &g2, "/g2", g2_names, 1);
-    router_get(r, &g2, "/deep", _h_deep, NULL, 0);
+    REG(router_get(r, &g2, "/deep", _h_deep, NULL, 0));
 
     // URL_MAX_PATH_DEPTH(64) 段精确路由:测 >64 段请求被拒(400)不误命中(64 须与 urlparse.h URL_MAX_PATH_DEPTH 同步)
     char seg64_path[160];
-    router_get(r, NULL, _segpath(seg64_path, sizeof(seg64_path), 64), _h_seg64, NULL, 0);
+    REG(router_get(r, NULL, _segpath(seg64_path, sizeof(seg64_path), 64), _h_seg64, NULL, 0));
 
     uint64_t id;
     if (ERR_OK != task_listen(task, PACK_HTTP, NULL, "0.0.0.0", _g_port, &id, 0)) {
@@ -491,8 +501,8 @@ static void _h_idx_plain(router_req *ctx) {
 static void _idx_startup(task_ctx *task) {
     router_ctx *r = (router_ctx *)task->arg;
     task_recved(task, _server_net_recv);
-    router_post(r, NULL, "/idx-plain", _h_idx_plain, NULL, 0);
-    router_add_index(r, "POST", 4, "/idx-only", 9);
+    REG(router_post(r, NULL, "/idx-plain", _h_idx_plain, NULL, 0));
+    REGI(router_add_index(r, "POST", 4, "/idx-only", 9));
     uint64_t id;
     if (ERR_OK != task_listen(task, PACK_HTTP, NULL, "0.0.0.0", _g_idx_port, &id, 0)) {
         LOG_WARN("task_router_index_server task_listen %d error.", _g_idx_port);
@@ -742,27 +752,64 @@ done:
     return rtn;
 }
 
-// /hdrsum 断言: 三条头逐条都在 HTTP_MAX_HEADLENS 内、累计超, 应放行前两条丢掉第三条。
-// 逐条判定的旧实现三条全发, 头部块 ~5.4KB 越上限, 对端解析器判 PROT_ERROR ——
-// 那种情况下这里连响应都收不到, coro_send 返回 NULL
+// /hdrsum 断言: 三条头累计越过 HTTP_MAX_HEADLENS, 组包侧不卡, 三条都该上线缆。
+// 必须裸读: 这个头部块 srey 自己的解析器按接收侧上限就拒了, 走 PACK_HTTP 拿不到响应
 static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
     SOCKET fd;
     uint64_t skid;
-    struct http_pack_ctx *resp = _do_get(task, port, "/hdrsum", &fd, &skid);
     int32_t rtn = ERR_FAILED;
-    char want[HDRSUM_LEN];
-    if (NULL == resp) {
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for /hdrsum.", port);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "GET", "/hdrsum");
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_end(&bw);
+    // 缓冲放堆上: 头部块 ~5.4KB, 协程栈装不下
+    char *acc;
+    MALLOC(acc, HDRSUM_ACC);
+    acc[0] = '\0';
+    size_t used = 0;
+    size_t rsize = 0;
+    int32_t poll;
+    // PACK_NONE 不分帧, 一次收到的未必是整条响应头, 累积到空行为止
+    void *seg = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    for (poll = 0; poll < 64 && NULL != seg; poll++) {
+        if (rsize > HDRSUM_ACC - 1 - used) {
+            break;
+        }
+        memcpy(acc + used, seg, rsize);
+        used += rsize;
+        acc[used] = '\0';
+        if (NULL != strstr(acc, "\r\n\r\n")) {
+            rtn = ERR_OK;
+            break;
+        }
+        seg = coro_recv(task, fd, skid, &rsize);
+    }
+    if (ERR_OK != rtn) {
+        LOG_WARN("router test: /hdrsum got no complete response head, %zu bytes.", used);
         goto done;
     }
-    // 与 _h_hdrsum 填的内容一致, 按内容精确比 —— 只比长度的话值被写坏也发现不了
-    memset(want, 'b', sizeof(want));
-    if (ERR_OK != _hdr_check(resp, "/hdrsum", "X-P1", want, sizeof(want))
-        || ERR_OK != _hdr_check(resp, "/hdrsum", "X-P2", want, sizeof(want))
-        || ERR_OK != _hdr_check(resp, "/hdrsum", "X-P3", NULL, 0)) {
+    rtn = ERR_FAILED;
+    // 三条头名都在: 少哪条都说明组包侧还在按长度丢
+    if (NULL == strstr(acc, "X-P1: ")
+        || NULL == strstr(acc, "X-P2: ")
+        || NULL == strstr(acc, "X-P3: ")) {
+        LOG_WARN("router test: /hdrsum missing header, got %zu bytes.", used);
+        goto done;
+    }
+    // 确认真越过了上限, 否则这条用例根本没考到"不卡"
+    if (used <= HTTP_MAX_HEADLENS) {
+        LOG_WARN("router test: /hdrsum only %zu bytes, not over the limit.", used);
         goto done;
     }
     rtn = ERR_OK;
 done:
+    // copy=0: bw.data 所有权已转给框架 (同 _do_req), 这里只还 acc
+    FREE(acc);
     ev_close(&task->loader->netev, fd, skid);
     return rtn;
 }
@@ -1066,6 +1113,9 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (ERR_OK != _do_req(task, port, "GET", "/poptovf/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p", NULL, NULL, 200, "p")) {
         bad |= (1 << 28);
     }
+    if (0 != bad) {
+        LOG_WARN("router test: main assertions failed, bad=0x%x.", bad);
+    }
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
@@ -1124,7 +1174,7 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [7] 三条头累计超 HTTP_MAX_HEADLENS: 前两条上线缆, 第三条丢弃
+    // [7] 三条头累计超 HTTP_MAX_HEADLENS: 组包侧不卡, 三条都上线缆
     if (ERR_OK != _do_req_hdrsum(task, port)) {
         bad |= (1 << 7);
     }
@@ -1147,8 +1197,6 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
     }
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
-
-
 
 // 分块发送断言: 按 CLAUDE.md 的写法逐段发, 末段带终止块并等响应。
 // chunks 各段拼起来就是期望回显的 body; expect 为期望状态码
@@ -1223,6 +1271,42 @@ static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
     ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 }
+// 完整(非 chunked)请求命中流式路由且准入放行: 走 _h_st_echo 的 slice == 0 分支,
+// body 一次到齐并原样回显。/st 没有准入中间件, 是唯一能走到这条分支的路由
+static int32_t _do_stream_plain_echo(task_ctx *task, uint16_t port) {
+    const char *body = "plain-oneshot";
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for stream plain echo.", port);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "POST", "/st");
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_content(&bw, (void *)body, strlen(body));
+    size_t rsize;
+    int32_t rtn = ERR_FAILED;
+    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    if (NULL == resp) {
+        LOG_WARN("router test: /st plain got no response.");
+        goto done;
+    }
+    if (ERR_OK != _resp_check(resp, "POST", "/st", 200)) {
+        goto done;
+    }
+    size_t dlen = 0;
+    void *data = http_data(resp, &dlen);
+    if (dlen != strlen(body) || 0 != memcmp(data, body, dlen)) {
+        LOG_WARN("router test: /st plain echo mismatch, got %.*s.", (int32_t)dlen, (char *)data);
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid);
+    return rtn;
+}
 // 流式路由被完整(非 chunked)请求命中、准入被拒且没写响应: 兜底 500 之后连接照旧可用,
 // 只有 chunked 首帧那面(_router_st_reject)才关。用同一条连接再发一次验它没被关掉
 static int32_t _do_stream_plain_reject(task_ctx *task, uint16_t port) {
@@ -1288,6 +1372,8 @@ static int32_t _do_chunked_dangling(task_ctx *task, uint16_t port) {
 // 流式路由相关的九条断言
 static int32_t _run_stream(task_ctx *task, uint16_t port) {
     int32_t bad = 0;
+    // 与 _run_all 的 _g_post_count 同理：全局静态量，多次跑要先清零隔离
+    ATOMIC_SET(&_g_abort_count, 0);
     // [0] 三块按序到齐, 末帧回显的 body 与拼接结果一致
     static const char *const ok3[3] = { "aaa", "bbbb", "c" };
     if (ERR_OK != _do_chunked(task, port, "POST", "/st", ok3, 3, NULL, 200, "aaabbbbc")) {
@@ -1368,6 +1454,13 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
     // [9] 完整(非 chunked)请求命中流式路由且准入被拒: 500 之后连接不关
     if (ERR_OK != _do_stream_plain_reject(task, port)) {
         bad |= (1 << 9);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [10] 同上但准入放行: 走 _h_st_echo 的 slice == 0 分支, 一次到齐并回显
+    if (ERR_OK != _do_stream_plain_echo(task, port)) {
+        bad |= (1 << 10);
     }
     if (0 != bad) {
         LOG_WARN("router test: stream route assertions failed, bad=0x%x.", bad);
@@ -1452,9 +1545,6 @@ static void _client_timeout(task_ctx *task, uint64_t sess) {
 static void _client_startup(task_ctx *task) {
     task_timeout(task, 0, 100, _client_timeout);
 }
-static void _client_closing(task_ctx *task) {
-    (void)task;
-}
 static void _client_free(void *p) {
     FREE(p);
 }
@@ -1467,5 +1557,5 @@ void task_router_client_start(loader_ctx *loader, const char *name, uint16_t por
     ctx->port = port;
     ctx->idxport = idxport;
     ctx->result = result_slot;
-    coro_task_register(loader, name, 0, _client_startup, _client_closing, _client_free, ctx);
+    coro_task_register(loader, name, 0, _client_startup, NULL, _client_free, ctx);
 }

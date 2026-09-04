@@ -5,8 +5,11 @@
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local yyjson = require("yyjson")-- yyjson.null 是 NULL lightuserdata，配 size 0 可以走到 copy 校验而不碰缓冲
+local core   = require("srey.core")-- 绕开 srey.lua 的 wrapper，直打 C 层早退分支
 
-local PORT = 15013
+-- 端口全仓唯一：15013 是 C 套件 v6only_test 的，那条用例断言"IPv4 侧无人监听"，
+-- 两个二进制同跑时会被这里的 0.0.0.0 监听打成假失败
+local PORT = 15018
 local N = 4
 local MSG = "BROADCAST_LUA"
 
@@ -24,6 +27,17 @@ runner.run(function(t)
             srey.send_multi({1, 2, 3}, {1, 2}, "")
         end)
         t:eq(false, ok, "长度不匹配抛 error")
+    end
+
+    -- ── 边界: 直接打 C 层的两条早退分支（copy=0，验它把所有权接过去后真的释放了）──
+    -- 上面两条走的是 srey.lua 的 wrapper，C 侧同名分支（405-412 的 CHECK_COPY_FREE）
+    -- 一次都没执行过；漏 free 的话进程退出时 not free 不为 0
+    do
+        local seri = require("srey.seri")
+        local buf, sz = seri.pack("multicast-c-branch")
+        t:eq(false, pcall(core.send_multi, {1, 2}, {1}, buf, sz, 0), "C 层长度不匹配抛错")
+        buf, sz = seri.pack("multicast-c-branch")
+        t:eq(false, core.send_multi({}, {}, buf, sz, 0), "C 层空数组返 false")
     end
 
     -- ── 边界: 含非数字元素应抛错(元素校验在填充前完成,不被 lua_tointeger 静默转 0 掩盖) ──
@@ -95,8 +109,9 @@ runner.run(function(t)
                 cli_fds[#cli_fds + 1] = fd
                 cli_skids[#cli_skids + 1] = skid
             end
-            -- 不主动 recv,等 server 广播触发 _net_recv 回调
-            srey.sleep(3000)
+            -- 不主动 recv,等 server 广播触发 _net_recv 回调。
+            -- 主协程收齐就往下走了，这里睡多久都不影响结果，给个够用的兜底即可
+            srey.sleep(1000)
         end)
     end
 

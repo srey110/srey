@@ -26,8 +26,10 @@ runner.run(function(t)
         local cut = raw:sub(1, sz - 3)
         local ok, err = pcall(bson.decode, cut)
         t:eq(false, ok, "截断文档 decode 报错而不是返回半截表")
-        t:check(type(err) == "string" and nil ~= err:find("malformed", 1, true),
-                "报错文案点明文档非法")
+        -- 两类失败共用 lbson.c:946 的同一条文案，Lua 侧分不出来（分辨靠那条
+        -- "unsupported bson type" 的 LOG_WARN）。这里只钉"抛的是解码失败"这件事
+        t:check(type(err) == "string" and nil ~= err:find("bson decode failed", 1, true),
+                "截断文档抛的是 bson decode failed")
         -- iter 侧同一份缓冲：next() 走完后 error() 认得出，用来区分"读完"和"文档坏了"。
         -- bson.new(ptr, lens) 是只读模式，头里仍声明 sz 而实际只给 sz-3
         local it = bson.iter.new(bson.new(ptr, sz - 3))
@@ -46,8 +48,8 @@ runner.run(function(t)
                                 0)
         local ok2, err2 = pcall(bson.decode, sym)
         t:eq(false, ok2, "含未支持类型的文档 decode 报错而不是丢掉后半截")
-        t:check(type(err2) == "string" and nil ~= err2:find("unsupported", 1, true),
-                "报错文案点出可能是未支持的类型")
+        t:check(type(err2) == "string" and nil ~= err2:find("bson decode failed", 1, true),
+                "未支持类型抛的也是 bson decode failed(同一条文案，见上)")
     end
 
     -- 1c. 编码侧的四道拒收：混合表、内嵌 NUL 的 key、非法子文档、NULL 指针
@@ -99,12 +101,13 @@ runner.run(function(t)
     t:eq("number",    type(tb.max32), "INT32 decoded as number")
     t:check(tb.over ~= nil and tb.over:val() == 2147483648, "mkint64 forced INT64")
 
-    -- 3. nil 字段不写入
+    -- 3. 构造式里写 b=nil 等于没这个键（Lua 表存不下 nil），所以"不写入"这条
+    -- 由语言保证、编码器无从做错；这里只钉相邻两个键没被它带偏
     b = bson.encode({ a=1, b=nil, c=2 })
     tb = bson.decode(b)
-    t:eq(1, tb.a, "null skip a")
-    t:eq(nil, tb.b, "null skip b absent")
-    t:eq(2, tb.c, "null skip c")
+    t:eq(1, tb.a, "a 正常")
+    t:eq(2, tb.c, "c 正常")
+    t:eq(nil, tb.b, "b 这个键根本没进过表")
 
     -- 4. mkoid round-trip
     local raw = bson.oid()
@@ -254,8 +257,13 @@ runner.run(function(t)
         t:eq(true, tb.ok, "builder bool true round-trip")
         t:eq(nil, tb.nul, "builder null decoded as nil")
         t:check(tb.dt ~= nil and tb.dt:ms() == 1700000000123, "builder date round-trip")
+        -- minkey / maxkey 标题里点名了却一条断言都没有。它们解到 Lua 侧没有值可读，
+        -- 从 tostring 的 "<key>(<类型名>)" 行认（同 C 侧 test_bson_tostring_subtypes）
         local s = b:tostring()
         t:check(type(s) == "string" and #s > 0, "builder :tostring non-empty")
+        t:check(nil ~= s:find("mn(minKey)", 1, true), "builder minkey 写进了文档")
+        t:check(nil ~= s:find("mx(maxKey)", 1, true), "builder maxkey 写进了文档")
+        t:check(nil ~= s:find("nul(null)", 1, true), "builder null 是真写了 null 而不是漏写")
     end
 
     -- 14. doc_begin / arr_begin / end 嵌套
@@ -444,6 +452,12 @@ runner.run(function(t)
         local ok, tb = pcall(bson.decode, shallow, #shallow)
         t:eq(true, ok, "手拼的 3 层文档解得开(证明 wire 拼法没错)")
         t:check(ok and "table" == type(tb.a) and "table" == type(tb.a.a), "3 层嵌套结构正确")
+        -- 上限本身是 18（与 JSON 同口径）：贴边各钉一条，改成 12 或 25 都会被抓到。
+        -- 只测 3/25 的话上限挪到任何一个中间值都发现不了
+        local at = nest(18)
+        t:eq(true, pcall(bson.decode, at, #at), "恰好 18 层放行")
+        local over = nest(19)
+        t:eq(false, pcall(bson.decode, over, #over), "19 层被拒")
         local deep = nest(25)
         t:eq(false, pcall(bson.decode, deep, #deep), "25 层嵌套被拒而不是静默返空表")
     end
@@ -650,7 +664,7 @@ runner.run(function(t)
     do
         local src = bson.encode({ a = 1 })
         local ptr, sz = src:data()
-        local big = 2147483648  -- INT32_MAX + 1
+        local big = 2147483648 -- INT32_MAX + 1
 
         t:eq(false, pcall(function() return bson.new(ptr, -1) end),  "bson.new 负长度被拒")
         t:eq(false, pcall(function() return bson.new(ptr, big) end), "bson.new 超 INT32_MAX 被拒")
@@ -740,7 +754,7 @@ runner.run(function(t)
 
         -- 写入既然全被挡住，:data() 也就不会交出那份半成品
         t:eq(false, pcall(function() return b:data() end), "free 后 :data 仍被拒")
-        b:free()  -- 重复 free 幂等
+        b:free() -- 重复 free 幂等
         t:check(true, "bson 重复 free 幂等")
     end
 
