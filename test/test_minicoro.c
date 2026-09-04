@@ -3,9 +3,12 @@
 #include "srey/minicoro.h"
 #include <fenv.h>
 
-// fenv 的读写不能被编译器当普通计算折叠掉；clang / MSVC 认这条 pragma，GCC 不认会忽略它
-#if defined(__clang__) || defined(_MSC_VER)
+// fenv 的读写不能被编译器当普通计算折叠掉。三家写法不同：clang 认标准的 STDC 形式，
+// MSVC 只认自己那条 fenv_access（给它 STDC 形式会报 C4068 未知杂注），GCC 两条都不认
+#if defined(__clang__)
     #pragma STDC FENV_ACCESS ON
+#elif defined(_MSC_VER)
+    #pragma fenv_access (on)
 #endif
 // 保存 FP 控制寄存器的只有 64 位的 ASM 后端（aarch64 / SysV x86_64 / Win64），32 位的 ASM
 // 变体与 fibers / asyncify 都没加。后端由 minicoro.h 公开段给出，不必自己判平台

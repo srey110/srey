@@ -97,7 +97,7 @@ static void _pub_startup(task_ctx *task) {
     int32_t nsent = task_multi_request(dsts, N_SUBS + 1, task, REQ_TYPE_RPC, RPC_SESS,
                                        MSG_BROADCAST, MSG_LEN, 1);
     if (N_SUBS != nsent) {
-        LOG_ERROR("multi_request: sent %d, expect %d (NULL 占位应被跳过).", nsent, N_SUBS);
+        LOG_ERROR("multi_request: sent %d, expect %d (NULL placeholder should be skipped).", nsent, N_SUBS);
         goto ungrab;
     }
     int32_t resp = 0;

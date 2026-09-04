@@ -363,7 +363,8 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
   #elif defined(OS_DFBSD)
     const char *link = "/proc/curproc/file";
   #else
-    #error "_get_procpath: 新平台加进上面的 #elif 条件时，这里也要补它自己的 symlink 路径"
+    // 新平台加进上面的 #elif 条件时，这里也要补它自己的 symlink 路径
+    #error "_get_procpath: add the symlink path for this platform"
   #endif
     ssize_t rlen = readlink(link, path, len - 1);
     if (0 > rlen) {
