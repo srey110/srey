@@ -3,9 +3,9 @@
 #define N_SUBS 5
 #define MSG_BROADCAST "MULTI_HELLO"
 #define MSG_LEN 11
-#define REQ_TYPE_CALL 200  // task_multi_call 路径
-#define REQ_TYPE_RPC  201  // task_multi_request 路径,需要 task_response 回 src
-#define RPC_SESS 1u        // multi_request 共用的 sess(snowflake ID 永远 > 1,无碰撞风险)
+#define REQ_TYPE_CALL 200// task_multi_call 路径
+#define REQ_TYPE_RPC  201// task_multi_request 路径,需要 task_response 回 src
+#define RPC_SESS 1u// multi_request 共用的 sess(snowflake ID 永远 > 1,无碰撞风险)
 #define ACK_STR "ack"
 #define ACK_LEN 3
 
@@ -15,9 +15,9 @@ typedef struct task_multi_call_args {
 }task_multi_call_args;
 
 // 测试共享计数：所有 subscriber 收到广播后累计
-static atomic_t _received_call;     // multi_call 路径
-static atomic_t _received_rpc;      // multi_request 路径
-static atomic_t _responded_count;   // publisher 收到的响应数
+static atomic_t _received_call;// multi_call 路径
+static atomic_t _received_rpc;// multi_request 路径
+static atomic_t _responded_count;// publisher 收到的响应数
 
 // subscriber 的 request 回调：REQ_TYPE_CALL 仅计数；REQ_TYPE_RPC 计数后 task_response 回 src
 static void _sub_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t src,

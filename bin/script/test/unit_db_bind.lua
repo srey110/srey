@@ -37,6 +37,12 @@ runner.run(function(t)
         b:clear()
         b:integer(nil, 42)  -- 匿名参数（stmt 占位符 ?）
         b:string(nil, "stmt-bind")
+        -- 入参门：整数走 luaL_checkinteger，带小数的数字没有整数表示，必须抛错而不是静默取整。
+        -- 注意 mysql 这边其余类型是**宽松**的：非数字非布尔一律当 NULL 绑（见 _lmysql_bind_integer），
+        -- 所以"拒收非法类型"这条在 mysql 侧不成立，别照 pgsql 那边的写法加。
+        -- bind 缓冲的字节 Lua 侧看不到（方法表只有 setter + clear + __gc，没有取缓冲的接口），
+        -- 线格式由 C 侧 test_mysql_bind_wire 守
+        t:eq(false, pcall(function() b:integer("frac", 1.5) end), "integer 拒收带小数的数字")
         -- GC 析构走 __gc → _lmysql_bind_free
         b = nil
         collectgarbage()
@@ -95,7 +101,18 @@ runner.run(function(t)
         local b3 = pbind.new(3)
         b3:timestamp(os.time())
         b3:date(20260522)
-        b3:uuid("0123456789abcdef0123456789abcdef")   -- 32 字符
+        -- uuid 吃的是 16 个**原始字节**，不是 32 个十六进制字符：长度不对时
+        -- _lpgsql_bind_uuid 静默改绑 NULL（既有契约，不是 bug）。原来这行传的是 32 字符，
+        -- 实际一直在绑 NULL，注释还写着"32 字符"——两种长度各钉一条，把契约摆明
+        b3:uuid("0123456789abcdef")
+        local b4 = pbind.new(1)
+        b4:uuid("0123456789abcdef0123456789abcdef")
+        b4 = nil
+        -- 入参门：int16/int32/int64 走 lpub_check_i*，越界必须抛错（文案含 "out of range"）
+        local b5 = pbind.new(2)
+        t:eq(false, pcall(function() b5:int16(70000) end), "int16 拒收越界值")
+        t:eq(false, pcall(function() b5:int32(2 ^ 40) end), "int32 拒收越界值")
+        b5 = nil
         b3 = nil
         collectgarbage()
         t:check(true, "pgsql.bind GC roundtrip ok")
@@ -445,6 +462,13 @@ runner.run(function(t)
         local mg = mongo.new("127.0.0.1", 27017, nil, "testdb")
         t:check(mg ~= nil, "mongo.new (无连接) for packer")
         mg:collection("coll1")
+
+        -- clear_flag 的返回值原样回灌是 lib/mongo.lua 读命令的还原手法，0 必须收得下：
+        -- 这里卡死它，免得日后把 set_flag 收紧成"只认 MORETOCOME"再把认证路径打断
+        t:eq(true, pcall(function() mg:set_flag(0) end), "set_flag(0) 合法（还原空标志）")
+        t:eq(true, pcall(function() mg:set_flag(mgolib.FLAGS.MORETOCOME) end), "set_flag(MORETOCOME)")
+        t:eq(mgolib.FLAGS.MORETOCOME, mg:clear_flag(), "clear_flag 回收前一步置上的位")
+        t:eq(true, pcall(function() mg:set_flag(mg:clear_flag()) end), "回灌 clear_flag 的返回值")
 
         local pack, size = mg:pack_hello()
         t:check(pack ~= nil and size > 0, "mongo pack_hello non-empty")

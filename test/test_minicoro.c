@@ -112,6 +112,42 @@ static void test_mco_fpu_isolated(CuTest *tc) {
 }
 #endif
 
+// 覆盖 minicoro 的本地补丁"先校验后分配"：coro_size 撑爆加法时 mco_desc_init 置 0，
+// mco_create 必须在 alloc 之前就拒掉；校验挪回分配之后（上游写法）时那个 0 字节的块
+// 会被 mco_init 按 sizeof(mco_coro) 清零 → 堆越界。用自带的计数分配器断言它没被调过。
+// 只在 coro_size 含 stack_size 的后端有意义：Windows fibers 的 coro_size 是定长的
+// （栈由 CreateFiberEx 自己管），撑不爆，也就没有这个守卫
+#if defined(MCO_USE_ASM) || defined(MCO_USE_UCONTEXT)
+static int32_t g_mco_allocs;
+static void _mco_noop_entry(mco_coro *co) {
+    (void)co;
+}
+static void *_mco_count_alloc(size_t size, void *ud) {
+    (void)ud;
+    g_mco_allocs++;
+    return malloc(size);
+}
+static void _mco_count_dealloc(void *ptr, size_t size, void *ud) {
+    (void)size;
+    (void)ud;
+    free(ptr);
+}
+static void test_mco_desc_overflow_rejected(CuTest *tc) {
+    // 入参必须已经 16 对齐：mco_desc_init 会先 _mco_align_forward(stack_size, 16)，
+    // 传 (size_t)-1 的话 (addr+15) 先回绕成 14、再 &~15 得 0，coro_size 反而算出合法值，
+    // 拒收改由 stack_size < MCO_MIN_STACK_SIZE 那道完成，走不到这里要测的守卫
+    mco_desc desc = mco_desc_init(_mco_noop_entry, (size_t)-16);
+    mco_coro *co = (mco_coro *)(uintptr_t)0x1;// 非 NULL 哨兵：失败时 mco_create 必须写回 NULL
+    g_mco_allocs = 0;
+    desc.alloc_cb = _mco_count_alloc;
+    desc.dealloc_cb = _mco_count_dealloc;
+    CuAssertTrue(tc, 0 == desc.coro_size);
+    CuAssertIntEquals(tc, MCO_INVALID_ARGUMENTS, mco_create(&co, &desc));
+    CuAssertTrue(tc, NULL == co);
+    CuAssertIntEquals(tc, 0, g_mco_allocs);
+}
+#endif
+
 void test_minicoro(CuSuite *suite) {
 #ifdef MCO_HAS_STACK_GUARD
     SUITE_ADD_TEST(suite, test_mco_stack_guard);
@@ -119,5 +155,8 @@ void test_minicoro(CuSuite *suite) {
 #endif
 #ifdef TEST_MCO_FPU
     SUITE_ADD_TEST(suite, test_mco_fpu_isolated);
+#endif
+#if defined(MCO_USE_ASM) || defined(MCO_USE_UCONTEXT)
+    SUITE_ADD_TEST(suite, test_mco_desc_overflow_rejected);
 #endif
 }

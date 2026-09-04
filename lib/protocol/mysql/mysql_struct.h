@@ -25,7 +25,7 @@ typedef struct mysql_client_param {
 
 // 服务器握手参数（从握手包中解析）
 typedef struct mysql_server_param {
-    uint16_t status_flags;  // 服务器状态标志
+    //uint16_t status_flags;// 服务器状态标志：无人消费，解析处同步注释掉了
     uint32_t caps;          // 服务器能力标志位
     char salt[20];          // 认证随机盐值
     char plugin[32];        // 认证插件名称
@@ -71,16 +71,9 @@ typedef struct mpack_ctx {
     int8_t more;            // 1=其后还有结果集（SERVER_MORE_RESULTS_EXISTS，多语句 / CALL 多结果集）
     mpack_type pack_type;   // 数据包类型
     char *payload;          // 原始 payload 数据（由此结构体持有内存所有权）
-    void *pack;             // 实际解析结果（mpack_ok / mysql_reader_ctx 等）；ERR 包不带，错误码与错误串直接落在 mysql_ctx 上
+    void *pack;             // 实际解析结果（mysql_reader_ctx / mysql_stmt_ctx）；OK 与 ERR 包不带，计数与错误串直接落在 mysql_ctx 上
     void(*_free_mpack)(void *); // pack 字段的释放回调，NULL 表示直接 FREE
 }mpack_ctx;
-
-// OK 响应包数据
-typedef struct mpack_ok {
-    int16_t status_flags;   // 服务器状态标志
-    int64_t affected_rows;  // 影响的行数
-    int64_t last_insert_id; // 最后插入的自增 ID
-}mpack_ok;
 
 // 列字段描述信息（Column Definition）
 typedef struct mpack_field {

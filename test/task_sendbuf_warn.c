@@ -10,8 +10,8 @@ typedef struct sendbuf_warn_args {
 #define BYTES_PER_ROUND (4 * 1024 * 1024)
 #define ROUNDS          2
 
-static atomic_t g_recv_bytes;   // server 端累计收到字节
-static atomic_t g_close_cnt;    // server 端 close 回调触发次数
+static atomic_t g_recv_bytes;// server 端累计收到字节
+static atomic_t g_close_cnt;// server 端 close 回调触发次数
 
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {
@@ -86,7 +86,7 @@ static void _startup(task_ctx *task) {
         return;
     }
     *(arg->ok) = 1;
-    LOG_INFO("sendbuf_warn tested (%d rounds x %d KB = %d KB delivered, wb_size warn triggered).",
+    LOG_INFO("sendbuf_warn tested (%d rounds x %d KB = %d KB delivered).",
              ROUNDS, BYTES_PER_ROUND / 1024, expect / 1024);
 }
 void task_sendbuf_warn_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

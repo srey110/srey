@@ -83,7 +83,7 @@ function M.run(body)
     local ok, err = xpcall(body, debug.traceback, t)
     if not ok then
         t.nfail = t.nfail + 1
-        WARN("[%s] test crashed: %s", name, tostring(err))
+        WARN("[%s] test crashed: %s", t.name, tostring(err))
     end
     t:done()
 end

@@ -41,6 +41,16 @@ runner.run(function(t)
         local resp = bson.decode(fptr, fsz)
         t:check(resp.cursor and resp.cursor.firstBatch, "find returns firstBatch")
         t:eq(3, #resp.cursor.firstBatch, "find returns 3 docs")
+        -- 字段值也要比：原来只取 #firstBatch，于是写路径丢掉 name/score 字段
+        -- （或 $set 打到不存在的字段名上）只要条数还对就全看不出来。
+        -- find 不保证顺序，按 id 建索引再逐条核
+        local byid = {}
+        for _, d in ipairs(resp.cursor.firstBatch) do
+            byid[d.id] = d
+        end
+        t:check(byid[1] and "alice" == byid[1].name and 90 == byid[1].score, "doc id=1 字段完好")
+        t:check(byid[2] and "bob" == byid[2].name and 75 == byid[2].score, "doc id=2 字段完好")
+        t:check(byid[3] and "charlie" == byid[3].name and 60 == byid[3].score, "doc id=3 字段完好")
     else
         t:fail("mongo find")
     end
@@ -53,6 +63,19 @@ runner.run(function(t)
     local uok, un = mg:update("srey_test", uptr, usz)
     t:check(uok, "mongo update ok")
     t:eq(1, un, "mongo update n=1")
+    -- 回读确认改动真落到了那个字段上：只看 n=1 的话，$set 打到不存在的字段名上
+    -- 服务端仍按 q 上的 id 算出 n=1，用例照样通过
+    local q1 = bson.encode({ id = 1 })
+    local q1ptr, q1sz = q1:data()
+    local vpack = mg:find("srey_test", q1ptr, q1sz)
+    if vpack then
+        local vptr, vsz = mgmod.doc(vpack)
+        local vr = bson.decode(vptr, vsz)
+        local vb = vr and vr.cursor and vr.cursor.firstBatch
+        t:check(vb and 1 == #vb and 100 == vb[1].score, "update 后回读 score=100")
+    else
+        t:fail("mongo find after update")
+    end
 
     -- delete id=3
     local deletes = bson.encode({
@@ -133,23 +156,45 @@ runner.run(function(t)
         sess:close()
     end
 
-    -- 并发：多协程在同一条连接上并发命令。锁点在 _wsend/_rsend 两个漏斗上，
-    -- 交错时响应会对错协程，count 拿回来的就不是自己那条
+    -- 并发：多协程在同一条连接上并发命令，锁点在 _wsend/_rsend 两个漏斗上。
+    -- 每个协程查自己那条文档、断言回来的 id 就是自己要的那个——响应对错协程时
+    -- 拿到的 id 不是自己的。发相同请求的话每个协程的正确答案是同一个，断言分不出对错，
+    -- 口径同 db_mysql / db_pgsql 的 select 1000+i as v。
+    -- id 自备：1..3 那批被前面的 delete / update 动过，id=3 已经没了
     local N, ROUNDS = 4, 6
+    local seed = {}
+    for i = 1, N do
+        seed[i] = { id = 1000 + i, name = "conc" }
+    end
+    local sdoc = bson.encode(seed)
+    local sptr, ssz = sdoc:data()
+    local sok, sn = mg:insert("srey_test", sptr, ssz)
+    t:check(sok, "并发段种子文档插入 ok")
+    t:eq(N, sn, "并发段种子文档 n=" .. N)
+
     local got, done = {}, 0
     for i = 1, N do
         srey.fork(function()
             for _ = 1, ROUNDS do
-                local ok = mg:ping()
-                if not ok then
+                if not mg:ping() then
                     got[i] = "ping failed"
                     done = done + 1
                     return
                 end
-                local ceptr, cesz = bson.empty()
-                local n = mg:count("srey_test", ceptr, cesz)
-                if not n or "number" ~= type(n) then
-                    got[i] = "count failed: " .. tostring(n)
+                local q = bson.encode({ id = 1000 + i })
+                local qptr, qsz = q:data()
+                local mp = mg:find("srey_test", qptr, qsz)
+                if not mp then
+                    got[i] = "find failed"
+                    done = done + 1
+                    return
+                end
+                local fp, fl = mgmod.doc(mp)
+                local r = bson.decode(fp, fl)
+                local batch = r and r.cursor and r.cursor.firstBatch
+                if not batch or 1 ~= #batch or (1000 + i) ~= batch[1].id then
+                    got[i] = string.format("got id %s want %d",
+                        tostring(batch and batch[1] and batch[1].id), 1000 + i)
                     done = done + 1
                     return
                 end
@@ -158,9 +203,12 @@ runner.run(function(t)
             done = done + 1
         end)
     end
-    while done < N do
+    -- 有界等待，理由同 db_mysql.lua：无界 while 会把 fork 协程抛错变成整份汇总挂住
+    for _ = 1, 1500 do            -- 1500 x 20ms = 30s 上限
+        if done >= N then break end
         srey.sleep(20)
     end
+    t:eq(N, done, "并发协程全部完成 (" .. done .. "/" .. N .. ")")
     for i = 1, N do
         t:check(true == got[i], "mongo 并发协程 " .. i .. ": " .. tostring(got[i]))
     end

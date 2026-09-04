@@ -369,7 +369,8 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     binary_get_skip(&breader, 1);//filler
     mysql->server.caps = (uint32_t)binary_get_uinteger(&breader, 2, 1);//capability_flags_1
     binary_get_skip(&breader, 1);
-    mysql->server.status_flags = (uint16_t)binary_get_uinteger(&breader, 2, 1);
+    binary_get_skip(&breader, 2);//status_flags 无人消费，只推进读位置；要用换回下面这行
+    //mysql->server.status_flags = (uint16_t)binary_get_uinteger(&breader, 2, 1);
     mysql->server.caps |= ((uint32_t)binary_get_uinteger(&breader, 2, 1) << 16);//capability_flags_2
     if (!BIT_CHECK(mysql->server.caps, CLIENT_PROTOCOL_41)
         || !BIT_CHECK(mysql->server.caps, CLIENT_PLUGIN_AUTH)) {

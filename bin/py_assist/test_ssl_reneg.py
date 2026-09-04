@@ -196,8 +196,10 @@ class TLSClient:
         try:
             self.sock = socket.create_connection((self.host, self.port), TIMEOUT)
         except OSError as e:
-            raise SkipError("连接 %s:%d 失败（srey SSL server 未起？）: %s"
-                            % (self.host, self.port, e))
+            # 不能降级成 skip：两个 runner 都不消费退出码 2（本脚本不在 test/main.c 的名单里，
+            # e2e_runner 只认 0），所以 skip 唯一的净效果是把"listener 在第一条用例之后消失"
+            # 这类真回归变成绿灯 —— 而那正是 task_listen_churn / unlisten_race 盯的形态
+            raise TLSError("连接 %s:%d 失败: %s" % (self.host, self.port, e))
         self.sock.setblocking(False)
         self.ssl = f.SSL_new(self.ctx)
         if not self.ssl:
@@ -489,7 +491,10 @@ def case_key_update_during_server_send():
     # 发侧接力主测：GET /down 让服务端回大 body（in-flight send，SENDING 置位），
     # 读 body 期间穿插 KeyUpdate，命中 IOCP overlap.c 数据发送中的 KeyUpdate 发侧接力。
     # 仅 IOCP/Windows 真测该修复；usock 无此守卫，此处验「KeyUpdate 撞下行不破坏」。
-    EXPECT = 760000                                  # 与 server_http.lua _DOWN_BODY 一致
+    # 这个长度不是随便取的：必须远大于平台 socket 发送缓冲（macOS sendspace 131072），
+    # 否则服务端一次就写完、造不出 in-flight 窗口，本用例对发送分块类回归就失去鉴别力。
+    # 改 _DOWN_BODY 而不同步这里，会被下面的长度断言当场逮住
+    EXPECT = 760000  # 与 server_http.lua _DOWN_BODY 一致
     c = TLSClient(HOST, PORT, TLS1_3_VERSION)
     try:
         c.connect()

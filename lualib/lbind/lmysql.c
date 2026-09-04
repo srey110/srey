@@ -10,9 +10,12 @@
     if (NULL == lpub_owner_ptr((lua), MT_MYSQL)) { \
         return luaL_error((lua), "mysql stmt: owner mysql already freed"); \
     }
-// 六个按列名取值的 reader 入口共用的开场白，规则见 LPUB_READER_GET
+// 六个按列名取值的 reader 入口共用的开场白：取 reader + 取列名 + 备好 err。
+// 失败尾巴走 lpub_rtn_reader，前奏散在各处等于把同一套三态契约的一半拆开
 #define LMYSQL_READER_GET(lua, rvar, nvar, evar) \
-    LPUB_READER_GET((lua), mysql_reader_ctx, MT_MYSQL_READER, rvar, nvar, evar)
+    LPUB_UD_ARG((lua), mysql_reader_ctx, MT_MYSQL_READER, rvar, "reader freed") \
+    const char *nvar = luaL_checkstring((lua), 2); \
+    int32_t evar
 // 七个 bind 入口共用的开场白: 取 bind 对象 + 取可选具名参数(栈位 2 非字符串即按位置绑定)。
 // 具名参数的取法散在七处的话, 将来要换取法(如改用 luaL_optlstring 拿长度)得挨个找齐,
 // 改漏一个不会有编译期信号 —— 那个 bind 会静默退化成按位置绑定, 参数错位写进 MySQL
@@ -176,7 +179,7 @@ static int32_t _lmysql_bind_time(lua_State *lua) {
     LMYSQL_BIND_ARG(lua, mbind, name);
     // 五个字段原样进 MYSQL_TYPE_TIME 报文, 截断或传负数出来都是另一个合法时间且无从报错:
     // 符号由 is_negative 单独带, 时分秒各占一个字节, 传 -1 到服务端就成了 255
-    int8_t is_negative = (int8_t)lpub_check_range(lua, 3, 0, 1, "is_negative must be 0 or 1");
+    int8_t is_negative = (int8_t)lpub_check_flag(lua, 3);
     int32_t days = lpub_check_i32(lua, 4, "days out of range");
     int8_t hour = (int8_t)lpub_check_range(lua, 5, 0, INT8_MAX, "hour out of range");
     int8_t minute = (int8_t)lpub_check_range(lua, 6, 0, INT8_MAX, "minute out of range");

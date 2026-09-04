@@ -43,8 +43,8 @@ static void _build_updates_array(bson_ctx *arr) {
     bson_append_end(arr);
     bson_append_end(arr);
 
-    bson_append_end(arr);   // close "0"
-    bson_append_end(arr);   // close array
+    bson_append_end(arr);// close "0"
+    bson_append_end(arr);// close array
 }
 
 // 构造空 filter 文档：{}
@@ -413,6 +413,8 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("mongo connect error.");
         return;
     }
+    // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
+    *(arg->ok) = -1;
     if (ERR_OK != mongo_ping(&arg->mongo)) {
         LOG_ERROR("mongo ping error.");
         ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);

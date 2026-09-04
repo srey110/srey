@@ -414,12 +414,6 @@ static void _startup(task_ctx *task) {
     if (task_isclosing(task)) {
         return;
     }
-    if (ERR_OK != _test_dns_lookup(task)) {
-        return;
-    }
-    if (task_isclosing(task)) {
-        return;
-    }
     if (ERR_OK != _test_request_timeout(task, arg->rpcname)) {
         return;
     }
@@ -457,6 +451,16 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_timeout_ignores_keep(task, arg->httpport)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    // DNS 这条必须排在最后：它是本文件唯一需要真出网（UDP:53 打 8.8.8.8）的用例，
+    // 而 _startup 是失败即 return 的串行链。原来它排第 4 个，断网/防火墙拦 DNS 时
+    // 后面 7 个用例——全仓唯一覆盖 coro_sess 那五条不变式的地方——一个都不跑，
+    // 现象与"不变式真被改坏"完全一样（都只有一行 coro_extra: x）
+    if (ERR_OK != _test_dns_lookup(task)) {
         return;
     }
     *(arg->ok) = 1;

@@ -68,11 +68,35 @@ runner.run(function(t)
     end
     t:check(insert_ok, "bulk insert 3 rows")
 
-    -- 普通 SELECT
+    -- 普通 SELECT：逐字段读回来比对，而不是只数行数。原来只有 _count_rows(reader) == 3，
+    -- 于是 bind 的十种类型映射（double 恒写 0、string 截成空串、datetime 写错 epoch、
+    -- time 的时分秒顺序弄反）只要行数还是 3 就全看不出来
     local rsel = mctx:query("select * from test_bind order by t_int8")
     local reader = rsel and rsel[1]
     if reader then
-        t:eq(3, _count_rows(reader), "select all rows")
+        local n = 0
+        while not reader:eof() do
+            n = n + 1
+            local ok8, v8 = reader:integer("t_int8")
+            local ok16, v16 = reader:integer("t_int16")
+            local ok32, v32 = reader:integer("t_int32")
+            local ok64, v64 = reader:integer("t_int64")
+            local okd, vd = reader:double("t_double")
+            local oks, sptr, slen = reader:string("t_string")
+            t:check(ok8 and ok16 and ok32 and ok64 and okd and oks,
+                    "row " .. n .. " 各列都读得出来")
+            t:eq(n, v8, "row " .. n .. " t_int8")
+            t:eq(100 + n, v16, "row " .. n .. " t_int16")
+            t:eq(1000 + n, v32, "row " .. n .. " t_int32")
+            t:eq(100000 + n, v64, "row " .. n .. " t_int64")
+            -- 经 query attribute 的文本通道往返，double 留一点容差
+            t:check(okd and vd and math.abs(vd - (3.14 + n)) < 1e-9,
+                    "row " .. n .. " t_double (" .. tostring(vd) .. ")")
+            t:eq("srey-mysql-test", oks and srey.ud_str(sptr, slen) or nil,
+                 "row " .. n .. " t_string")
+            reader:next()
+        end
+        t:eq(3, n, "select all rows")
     else
         t:fail("select reader nil")
     end
@@ -156,9 +180,14 @@ runner.run(function(t)
             done = done + 1
         end)
     end
-    while done < N do
+    -- 有界等待。fork 出去的协程抛错时 done 永远到不了 N（srey.fork 的错误由 _coro_cb 的
+    -- xpcall 吞掉、只打 ERROR 日志、不向外传播），无界 while 会让本 task 的 runner.run
+    -- 永远走不到 t:done()，整份汇总要么不出现要么靠超时兜底报 MISS，真原因只在日志另一处
+    for _ = 1, 1500 do            -- 1500 x 20ms = 30s 上限
+        if done >= N then break end
         srey.sleep(20)
     end
+    t:eq(N, done, "并发协程全部完成 (" .. done .. "/" .. N .. ")")
     for i = 1, N do
         t:check(true == got[i], "mysql 并发协程 " .. i .. ": " .. tostring(got[i]))
     end

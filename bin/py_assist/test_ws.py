@@ -11,6 +11,10 @@ HOST = "127.0.0.1"
 PORT = 15003
 TIMEOUT = 5.0
 WS_KEY = b"dGhlIHNhbXBsZSBub25jZQ=="
+# RFC 6455 §1.3 的样例 key 与它对应的固定 accept 值。srey 的 C 客户端与 Lua 客户端
+# 都拿服务端同一个 _websock_sign 算期望值、整条链自洽，这里是全仓唯一的独立参照：
+# SIGNKEY 打错一字或摘要算法换掉，只有这条断言会红
+WS_ACCEPT = b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 
 
 def connect_ws():
@@ -35,6 +39,8 @@ def connect_ws():
         buf += chunk
     if b" 101 " not in buf.split(b"\r\n", 1)[0]:
         raise RuntimeError(f"handshake status not 101: {buf[:80]!r}")
+    if WS_ACCEPT not in buf:
+        raise RuntimeError(f"Sec-WebSocket-Accept wrong or missing: {buf[:200]!r}")
     return s
 
 

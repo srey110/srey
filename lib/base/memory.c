@@ -240,7 +240,7 @@ void _free(void* ptr) {
 #endif
     _FREE(ptr);
 }
-void _memcheck(void) {
+int64_t _memcheck(void) {
 #if MEMORY_CHECK
     uint64_t na, nf;
     mem_stat(&na, &nf);
@@ -251,5 +251,8 @@ void _memcheck(void) {
         _trk_dump();
     }
 #endif
+    return leak;
+#else
+    return 0;
 #endif
 }

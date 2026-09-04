@@ -4,11 +4,17 @@
 #define TASK_NAME_AUTOCLOSE "task_auto_close"
 //每种协议多轮回显的次数
 #define ECHO_ROUNDS 3
+// coro_sleep 唤醒的上界余量。到期时刻由时间轮按 1ms jiffy 保证，这里放宽的是
+// "时间轮唤醒 → 入 task 队列 → worker 取出 → 协程 resume"这段调度尾巴：它与 sleep
+// 时长无关，故取固定值。三档 sleep 合起来仍能卡住成比例的偏差
+#define SLEEP_SLACK_MS 80
 
 typedef struct task_timeout_ctx {
     int32_t _prt;
     int32_t _err;
+    int32_t _failed;// 失败粘滞位：本回调每秒自重挂一轮，不粘住则某轮的失败被下一轮的成功覆盖
     int32_t _autoclose;
+    int32_t _rebind_done;// WS 重复注入只验一次；每 task 一份，timeout_test1/2/3 是三个并发 task
     name_t _rpcname;
     int32_t *_ok;
     name_val_ctx *_ports;
@@ -17,33 +23,30 @@ typedef struct task_timeout_ctx {
 }task_timeout_ctx;
 
 // 测试 coro_sleep 在指定时长下的唤醒精度，diff 超出容忍范围返回 ERR_FAILED
-static int32_t _check_sleep(task_ctx *task, uint32_t ms, int32_t lo, int32_t hi) {
+static int32_t _check_sleep(task_ctx *task, uint32_t ms, int32_t lo) {
     uint64_t bgts = nowms();
     coro_sleep(task, ms);
     int32_t diff = (int32_t)(nowms() - bgts);
-    if (diff > hi || diff < lo) {
+    if (diff > (int32_t)ms + SLEEP_SLACK_MS || diff < lo) {
         LOG_WARN("coro_sleep %ums wake up late or early. diff: %d", ms, diff);
         return ERR_FAILED;
     }
     return ERR_OK;
 }
 static int32_t _timeout_sleep(task_ctx *task) {
-    // 50ms：容忍 [46, 62]
-    if (ERR_OK != _check_sleep(task, 50, 46, 62)) {
+    if (ERR_OK != _check_sleep(task, 50, 46)) {
         return ERR_FAILED;
     }
     if (task_isclosing(task)) {
         return ERR_OK;
     }
-    // 100ms：容忍 [95, 125]
-    if (ERR_OK != _check_sleep(task, 100, 95, 125)) {
+    if (ERR_OK != _check_sleep(task, 100, 95)) {
         return ERR_FAILED;
     }
     if (task_isclosing(task)) {
         return ERR_OK;
     }
-    // 200ms：容忍 [195, 220]
-    if (ERR_OK != _check_sleep(task, 200, 195, 220)) {
+    if (ERR_OK != _check_sleep(task, 200, 195)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -291,6 +294,7 @@ static int32_t _timeout_http(task_ctx *task) {
     struct http_pack_ctx *resp;
     size_t rsize;
     int32_t slend;
+    int32_t nslice;
     // 普通 HTTP GET 请求，验证服务端返回 200
     if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &fd, &skid)) {
         LOG_WARN("http connect error.");
@@ -329,6 +333,7 @@ static int32_t _timeout_http(task_ctx *task) {
     http_pack_chunked(&bwriter, NULL, 0);
     ev_send(&task->loader->netev, fd, skid, bwriter.data, bwriter.offset, 0);
     slend = 0;
+    nslice = 0;
     do {
         resp = coro_slice(task, fd, skid, &rsize, &slend);
         if (NULL == resp) {
@@ -336,7 +341,21 @@ static int32_t _timeout_http(task_ctx *task) {
             ev_close(&task->loader->netev, fd, skid);
             return ERR_FAILED;
         }
+        // 首片带响应头，状态码必须查：原来这条循环只判非 NULL，服务端把 200 改 500 也照过
+        if (0 == nslice && !_status_is(resp, "200")) {
+            LOG_WARN("http chunked status error.");
+            ev_close(&task->loader->netev, fd, skid);
+            return ERR_FAILED;
+        }
+        nslice++;
     } while (0 == slend);
+    // 必须真的分了片。coro_slice 对非分片消息(slice==0)也置 end=1，只判 end 的话
+    // 服务端改回普通 Content-Length 响应，这条循环一轮就退出、照样"通过"
+    if (nslice < 2) {
+        LOG_WARN("http chunked slice count %d, expect >= 2.", nslice);
+        ev_close(&task->loader->netev, fd, skid);
+        return ERR_FAILED;
+    }
     ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 }
@@ -355,6 +374,7 @@ static int32_t _timeout_ws(task_ctx *task) {
     char buf[256];
     int32_t dlen;
     int32_t slend;
+    int32_t nslice;
     ws_secprots_ctx *spctx;
     char wsurl[64];
     SNPRINTF(wsurl, sizeof(wsurl), "ws://127.0.0.1:%d", (int)wsport);
@@ -408,9 +428,8 @@ static int32_t _timeout_ws(task_ctx *task) {
     }
     // 重复注入：_websock_secextra 判误用并就地断连，随后的收发必然失败。放在正常流程验完之后，
     // 且只验一次——_timeout 每秒自我重挂，每轮都绑两次会把那条告警刷几十条
-    static int32_t rebind_once = 0;
-    if (0 == rebind_once) {
-        rebind_once = 1;
+    if (0 == ctx->_rebind_done) {
+        ctx->_rebind_done = 1;
         if (ERR_OK != mqtt_ws_bind(task, fd, skid, MQTT_311)) {
             LOG_WARN("ws mqtt rebind error.");
             ev_close(&task->loader->netev, fd, skid);
@@ -503,13 +522,31 @@ static int32_t _timeout_ws(task_ctx *task) {
     pack = websock_pack_continua(1, 1, "c", 1, &psize);
     ev_send(&task->loader->netev, fd, skid, pack, psize, 0);
     slend = 0;
+    nslice = 0;
     do {
         resp = coro_slice(task, fd, skid, &rsize, &slend);
         if (NULL == resp) {
             LOG_WARN("ws fragmented recv error.");
             goto erro;
         }
+        // 服务端回的是 "a"/"b"/"c" 三帧，逐帧比对载荷。原来只判非 NULL，于是删掉中间帧、
+        // 让首帧就标末片、或把载荷换成别的字符，全都照过
+        wdata = websock_data(resp, &wlen);
+        if (nslice > 2 || NULL == wdata || 1 != wlen || (char)('a' + nslice) != wdata[0]) {
+            LOG_WARN("ws fragment %d payload error.", nslice);
+            goto erro;
+        }
+        // 前两帧必须"还没完"，第三帧才是末片
+        if ((2 == nslice) != (0 != slend)) {
+            LOG_WARN("ws fragment %d slend %d unexpected.", nslice, slend);
+            goto erro;
+        }
+        nslice++;
     } while (0 == slend);
+    if (3 != nslice) {
+        LOG_WARN("ws fragment count %d, expect 3.", nslice);
+        goto erro;
+    }
     ev_close(&task->loader->netev, fd, skid);
     return ERR_OK;
 erro:
@@ -753,10 +790,9 @@ static void _timeout(task_ctx *task, uint64_t sess) {
         LOG_WARN("habor reject test error.");
     }
     if (ctx->_err) {
-        *ctx->_ok = 0;
-    } else {
-        *ctx->_ok = 1;
+        ctx->_failed = 1;
     }
+    *ctx->_ok = ctx->_failed ? 0 : 1;
     task_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {

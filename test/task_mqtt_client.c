@@ -22,6 +22,8 @@ static void _net_connect(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t er
         LOG_ERROR("mqtt connect %s:%u error, clientid %s.", arg->host, arg->port, arg->clientid);
         return;
     }
+    // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
+    *(arg->ok) = -1;
     binary_ctx connprop;
     binary_init(&connprop, NULL, 0, 0);
     mqtt_props_fixnum(&connprop, SESSION_EXPIRY, 120);
@@ -95,7 +97,11 @@ static void _net_recv(task_ctx *task, sk_id *sk,
         break;
     }
     case MQTT_PUBACK: {
-        // QoS1 确认：reason 0x00 或 0x10（No matching subscribers）均视为成功，
+        // QoS1 确认：reason 0x00 或 0x10（No matching subscribers）均视为成功。
+        // 这个范围宽是因为同一份客户端代码要连两种 broker：mqtt_test3/4 连进程内的
+        // task_mqtt_server（固定回 0x00），mqtt_test1/2 连 1884 的 EMQX，
+        // 而无订阅者时 EMQX 合规地回 0x10 —— 收紧成 0x00 会打断后两个用例。
+        // 落到范围外的 reason 不会推进状态机，用例照样以超时失败
         // 收到 PUBACK 后继续发送 QoS2 PUBLISH
         mqtt_pubackrel_varhead *vh = pack->varhead;
         if (arg->prt) {

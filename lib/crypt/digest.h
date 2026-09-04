@@ -32,7 +32,7 @@ typedef struct dg_attr {
     _final_cb _final;       // 结果输出回调
 }dg_attr;
 typedef struct digest_ctx {
-    dg_attr attr;           // 算法属性，digest_init 从表里整份拷入
+    const dg_attr *attr;    // 算法属性，指向 digest.c 里那张 static const 表的一行
     union {
         md2_ctx md2;
         md4_ctx md4;
@@ -49,7 +49,7 @@ typedef struct digest_ctx {
 /// <param name="dtype">摘要算法</param>
 void digest_init(digest_ctx *digest, digest_type dtype);
 /// <summary>
-/// 清零整个 digest_ctx，含三个分发回调——调用后上下文即失效，要复用须重新 digest_init
+/// 清零整个 digest_ctx，含指向算法表的那一格——调用后上下文即失效，要复用须重新 digest_init
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 void digest_free(digest_ctx *digest);

@@ -6,7 +6,10 @@
 // 名称-整型值映射项，用于在测试任务间传递端口号、测试结果等配置
 typedef struct name_val_ctx {
     const char *name;   // 键名，NULL 表示数组终止哨兵
-    int32_t val;        // 对应的整型值（端口号 / 测试结果标志等）
+    // 端口号，或测试结果三态：0 没连上（依赖外部服务的用例允许如此）/ 1 通过 /
+    // -1 连上了但断言失败。两态时"服务没起"与"服务起着但结果不对"观测值相同，
+    // main.c 的 optional 白名单会把后者一起吞成 network error
+    int32_t val;
 }name_val_ctx;
 
 // TCP 自定义协议测试指令

@@ -295,7 +295,7 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
         return ERR_FAILED;
     }
     http_header_ctx field;
-    // head 缓冲由 _http_headlens 保证以首个 \r\n\r\n 结尾，空行即头部结束
+    // head 缓冲由 _http_search_crlf2 保证以首个 \r\n\r\n 结尾，空行即头部结束
     while (0 != memcmp(head, FLAG_CRLF, CRLF_SIZE)) {
         if (ERR_OK != _http_parse_field(pack, &head, &field)) {
             return ERR_FAILED;
@@ -329,8 +329,9 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     }
 }
 // 头块与 trailer 块都搜 CRLFCRLF，且都靠 ud->prot_offset 续扫：半包到达时记下已扫过的字节数，
-// 下次从它减 3 起搜——少 3 才能让跨两次读取的 CRLFCRLF 仍然命中。命中或出错都把它归零
-static int32_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+// 下次从它减 3 起搜——少 3 才能让跨两次读取的 CRLFCRLF 仍然命中。命中或出错都把它归零。
+// 返回块总长(含结尾 CRLFCRLF)；0 表示没解出来，等更多数据还是超 HTTP_MAX_HEADLENS 看 status
+static size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
     size_t start = ud->prot_offset > (flens - 1) ? ud->prot_offset - (flens - 1) : 0;
     int32_t pos = buffer_search(buf, 0, start, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
@@ -343,23 +344,15 @@ static int32_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) 
             BIT_SET(*status, PROT_MOREDATA);
             ud->prot_offset = bsize;
         }
-        return ERR_FAILED;
-    }
-    ud->prot_offset = 0;
-    return pos;
-}
-// 头部块总长（含结尾 CRLFCRLF）；返回 0 表示没解出来，等更多数据还是超 HTTP_MAX_HEADLENS 看 status
-static size_t _http_headlens(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    int32_t pos = _http_search_crlf2(buf, ud, status);
-    if (ERR_FAILED == pos) {
         return 0;
     }
-    size_t hlens = (size_t)pos + CRLF_SIZE * 2;
-    if (hlens > HTTP_MAX_HEADLENS) {
+    ud->prot_offset = 0;
+    size_t blens = (size_t)pos + flens;
+    if (blens > HTTP_MAX_HEADLENS) {
         BIT_SET(*status, PROT_ERROR);
         return 0;
     }
-    return hlens;
+    return blens;
 }
 // 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组。
 // 只清结构体前缀：那 lens 字节紧接着就被 _http_parsehead 的 buffer_remove 整块写满，
@@ -374,7 +367,7 @@ static http_pack_ctx *_http_headpack(size_t lens) {
     return (http_pack_ctx *)pack;
 }
 http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, int32_t *status) {
-    size_t hlens = _http_headlens(buf, ud, status);
+    size_t hlens = _http_search_crlf2(buf, ud, status);
     if (0 == hlens) {
         return NULL;
     }
@@ -448,7 +441,7 @@ static http_pack_ctx *_http_chunkedpack(size_t lens) {
     return pctx;
 }
 // 解析 chunked 编码的数据块：先读取长度行，再读取对应数据，长度为 0 表示结束。
-// trailer 块的搜索与 _http_headlens 共用 _http_search_crlf2（CHUNKED 期间不再调用后者，
+// trailer 块与头块共用 _http_search_crlf2（CHUNKED 期间头块已解完，
 // 两者不争用 prot_offset）；长度行只有 1~16 个 hex 字符，重扫可忽略，不续扫
 static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t drain;
@@ -548,13 +541,8 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         } else {
             // RFC 7230 §4.1.2 trailer headers 受 HTTP_MAX_HEADLENS=4KB 上限保护，
             // 防恶意 server 无限发 trailer 数据触发 buf 持续累积
-            int32_t tend = _http_search_crlf2(buf, ud, status);
-            if (ERR_FAILED == tend) {
-                return NULL;
-            }
-            drain = (size_t)tend + CRLF_SIZE * 2;
-            if (drain > HTTP_MAX_HEADLENS) {
-                BIT_SET(*status, PROT_ERROR);
+            drain = _http_search_crlf2(buf, ud, status);
+            if (0 == drain) {
                 return NULL;
             }
         }

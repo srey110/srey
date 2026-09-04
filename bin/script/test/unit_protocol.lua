@@ -76,31 +76,51 @@ runner.run(function(t)
         t:check(nil == websock.secprots(nil), "websock.secprots(nil) 返回 nil")
     end
     do
+        -- 只判长度分不开这几个包：ping / pong / close 三种帧的差别全在首字节的 opcode 上，
+        -- 长度一模一样。绑定层把 ping 接到 pong 上，"size >= 2" 一个都发现不了。
+        -- 首字节 = FIN(0x80) | opcode，opcode 取自 lib/protocol/websock.h 的 ws_prot
+        local function _head(pack, size, n)
+            return { srey.ud_str(pack, size):byte(1, n) }
+        end
         local pack, size = websock.pack_ping(0)
         t:check(pack ~= nil and size >= 2, "websock.pack_ping")
+        t:eq(0x89, pack and _head(pack, size, 1)[1], "ping 首字节 FIN|WS_PING")
         utils.ud_free(pack)
         pack, size = websock.pack_pong(0)
         t:check(pack ~= nil and size >= 2, "websock.pack_pong")
+        t:eq(0x8A, pack and _head(pack, size, 1)[1], "pong 首字节 FIN|WS_PONG")
         utils.ud_free(pack)
         pack, size = websock.pack_close(0)
         t:check(pack ~= nil and size >= 2, "websock.pack_close")
+        t:eq(0x88, pack and _head(pack, size, 1)[1], "close 首字节 FIN|WS_CLOSE")
         utils.ud_free(pack)
-    end
-    do
-        -- text/binary 服务端帧（mask=0），fin=1：payload "hi" → 2+2 字节
-        local pack, size = websock.pack_text(0, 1, "hi")
+
+        -- text/binary 服务端帧（mask=0），fin=1：payload "hi" → 2+2 字节。
+        -- text 与 binary 同样只差 opcode，长度还各不相同，于是长度对了更容易让人以为测过了
+        pack, size = websock.pack_text(0, 1, "hi")
         t:check(pack ~= nil and size == 4, "websock.pack_text small frame")
+        local h = pack and _head(pack, size, 2)
+        t:eq(0x81, h and h[1], "text 首字节 FIN|WS_TEXT")
+        t:eq(0x02, h and h[2], "text 次字节：无掩码 + 长度 2")
         utils.ud_free(pack)
         pack, size = websock.pack_binary(0, 1, "\x01\x02\x03")
         t:check(pack ~= nil and size == 5, "websock.pack_binary small frame")
+        h = pack and _head(pack, size, 2)
+        t:eq(0x82, h and h[1], "binary 首字节 FIN|WS_BINARY")
+        t:eq(0x03, h and h[2], "binary 次字节：无掩码 + 长度 3")
         utils.ud_free(pack)
-        -- 客户端帧带 4 字节 mask，长度加 4
+        -- 客户端帧带 4 字节 mask，长度加 4；掩码位在次字节的最高位
         pack, size = websock.pack_text(1, 1, "hi")
         t:check(pack ~= nil and size == 8, "websock.pack_text client mask")
+        h = pack and _head(pack, size, 2)
+        t:eq(0x81, h and h[1], "客户端 text 首字节不变")
+        t:eq(0x82, h and h[2], "客户端帧次字节置掩码位(0x80) + 长度 2")
         utils.ud_free(pack)
-        -- continua fin=1 + nil payload（终止帧）
+        -- continua fin=1 + 空 payload（终止帧）：opcode 必须是 WS_CONTINUE(0)，
+        -- 写成 WS_TEXT 的话对端会把它当一条新消息的开头
         pack, size = websock.pack_continua(0, 1, "")
         t:check(pack ~= nil and size >= 2, "websock.pack_continua end")
+        t:eq(0x80, pack and _head(pack, size, 1)[1], "continua 首字节 FIN|WS_CONTINUE")
         utils.ud_free(pack)
     end
 

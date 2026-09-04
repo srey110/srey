@@ -236,9 +236,11 @@ static void _h_nullhdr(router_req *ctx) {
     extra[1].value.lens = 1;
     router_req_respond(ctx, 200, extra, 2, "ok", 2);
 }
-// GET /g1/g2/deep → "deep=11"; 嵌套 group 终点 handler:
-// g1mw 中间件先 ctx->user += 1, g2mw 中间件再 += 10, 累加值 11 由 handler 写出
-// 验证: (a) 嵌套 group 中间件按父→子顺序入链 (b) ctx->user 跨中间件传值
+// GET /g1/g2/deep → "deep=7912"; 全局 + 嵌套 group 中间件的终点 handler。
+// 四个中间件各把自己的数字左移进 ctx->user (accum = accum * 10 + n), 于是最终那串数字
+// 就是执行顺序本身: g0(7) → gmark(9) → g1mw(1) → g2mw(2)。
+// 验证: (a) 全局中间件先于路由级 (b) 全局按注册顺序 (c) 嵌套 group 按父→子
+// (d) ctx->user 跨中间件传值。用加法的话 1+10 与 10+1 都是 11, 顺序反了看不出来
 static void _h_deep(router_req *ctx) {
     intptr_t accum = (intptr_t)ctx->user;
     char buf[32];
@@ -287,15 +289,23 @@ static void _mw_post_tag(router_req *ctx) {
     router_next(ctx);
     ATOMIC_ADD(&_g_post_count, 1);
 }
-// g1mw / g2mw: 给 ctx->user 加不同数值后 router_next, _h_deep 读累加值
-// 不同步长 (+1 / +10) 用来区分两个中间件都执行 vs 只执行其中一个
-static void _mw_g1(router_req *ctx) {
-    ctx->user = (void *)(intptr_t)(((intptr_t)ctx->user) + 1);
+// g0 / gmark / g1mw / g2mw: 各把自己的数字左移进 ctx->user, 拼出的数字串即执行顺序,
+// 由 _h_deep 写出。g0 走 router_use_fn (函数指针直传), gmark 走 router_use (具名查表)
+static void _mw_accum(router_req *ctx, intptr_t n) {
+    ctx->user = (void *)(intptr_t)(((intptr_t)ctx->user) * 10 + n);
     router_next(ctx);
 }
+static void _mw_g0(router_req *ctx) {
+    _mw_accum(ctx, 7);
+}
+static void _mw_gmark(router_req *ctx) {
+    _mw_accum(ctx, 9);
+}
+static void _mw_g1(router_req *ctx) {
+    _mw_accum(ctx, 1);
+}
 static void _mw_g2(router_req *ctx) {
-    ctx->user = (void *)(intptr_t)(((intptr_t)ctx->user) + 10);
-    router_next(ctx);
+    _mw_accum(ctx, 2);
 }
 
 // 流式路由: 首帧建缓冲, 中间帧追加, 末帧回显。ctx->user 跨帧留在 router 持有的 req 里,
@@ -371,6 +381,11 @@ static void _server_startup(task_ctx *task) {
     router_define(r, "post-tag", _mw_post_tag);
     router_define(r, "g1mw",     _mw_g1);
     router_define(r, "g2mw",     _mw_g2);
+    router_define(r, "gmark",    _mw_gmark);
+    // 全局中间件: 两种注册入口各一个, 顺序即 _h_deep 读出的数字顺序。
+    // 只往 ctx->user 里累数字, 不改响应也不截断, 故其余各格用例不受影响
+    router_use_fn(r, _mw_g0);
+    router_use(r, "gmark");
 
     // 流式路由: /st 无中间件, /stauth 挂 auth 验证准入被截断时不建流
     router_post_stream(r, NULL, "/st", _h_st_echo, NULL, 0);
@@ -800,90 +815,191 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     // 计数器是全局静态变量, 进程多次跑 test 会累加, 先清零隔离
     ATOMIC_SET(&_g_post_count, 0);
     // [0]  字面量 + 默认 200
-    if (ERR_OK != _do_req(task, port, "GET",  "/",                NULL, NULL, 200, "root"))      bad |= (1 << 0);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/",                NULL, NULL, 200, "root")) {
+        bad |= (1 << 0);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [1]  路由不存在 → 404 (dispatch 兜底, 不进任何 handler)
-    if (ERR_OK != _do_req(task, port, "GET",  "/nonexist",        NULL, NULL, 404, NULL))        bad |= (1 << 1);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/nonexist",        NULL, NULL, 404, NULL)) {
+        bad |= (1 << 1);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [2]  PARAM 段提取
-    if (ERR_OK != _do_req(task, port, "GET",  "/user/42",         NULL, NULL, 200, "42"))        bad |= (1 << 2);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/user/42",         NULL, NULL, 200, "42")) {
+        bad |= (1 << 2);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [3]  OPT 段缺失 → handler 看到 NULL 走 "none" 分支
-    if (ERR_OK != _do_req(task, port, "GET",  "/file",            NULL, NULL, 200, "none"))      bad |= (1 << 3);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/file",            NULL, NULL, 200, "none")) {
+        bad |= (1 << 3);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [4]  OPT 段存在 → 原样回写
-    if (ERR_OK != _do_req(task, port, "GET",  "/file/abc",        NULL, NULL, 200, "abc"))       bad |= (1 << 4);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/file/abc",        NULL, NULL, 200, "abc")) {
+        bad |= (1 << 4);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [5]  WILD 单段
-    if (ERR_OK != _do_req(task, port, "GET",  "/static/x",        NULL, NULL, 200, "static-ok")) bad |= (1 << 5);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/static/x",        NULL, NULL, 200, "static-ok")) {
+        bad |= (1 << 5);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [6]  WILD 多段都匹配, 不要求 handler 区分剩余 path
-    if (ERR_OK != _do_req(task, port, "GET",  "/static/x/y/z",    NULL, NULL, 200, "static-ok")) bad |= (1 << 6);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/static/x/y/z",    NULL, NULL, 200, "static-ok")) {
+        bad |= (1 << 6);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [7]  query 参数解析
-    if (ERR_OK != _do_req(task, port, "GET",  "/query?a=1&b=2",   NULL, NULL, 200, "a=1 b=2"))   bad |= (1 << 7);
+    if (ERR_OK != _do_req(task, port, "GET",  "/query?a=1&b=2",   NULL, NULL, 200, "a=1 b=2")) {
+        bad |= (1 << 7);
+    }
     // 重复 key 取最后一个, 规则在 url_get_param
-    if (ERR_OK != _do_req(task, port, "GET",  "/query?a=1&b=2&a=3", NULL, NULL, 200, "a=3 b=2")) bad |= (1 << 7);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/query?a=1&b=2&a=3", NULL, NULL, 200, "a=3 b=2")) {
+        bad |= (1 << 7);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [30] router_get 连带接住 HEAD: 只发头 + Content-Length 等于 GET 那份的长度,
     //      同连接紧跟的 GET 不能错位(多发的字节会被当成下一条响应的开头)
-    if (ERR_OK != _do_head_then_get(task, port, "/query?a=1&b=2", "a=1 b=2")) bad |= (1 << 30);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_head_then_get(task, port, "/query?a=1&b=2", "a=1 b=2")) {
+        bad |= (1 << 30);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [8]  auth 中间件截断: 无 X-Token → 401, handler 不应被调到
-    if (ERR_OK != _do_req(task, port, "GET",  "/needauth",        NULL,        NULL, 401, "no"))     bad |= (1 << 8);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/needauth",        NULL,        NULL, 401, "no")) {
+        bad |= (1 << 8);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [9]  auth 中间件放行: token 正确 → 进 handler 返 "authed"
-    if (ERR_OK != _do_req(task, port, "GET",  "/needauth",        "X-Token",   "secret", 200, "authed")) bad |= (1 << 9);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/needauth",        "X-Token",   "secret", 200, "authed")) {
+        bad |= (1 << 9);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [10] POST + router_req_json 响应辅助
-    if (ERR_OK != _do_req(task, port, "POST", "/admin/stats",     NULL, NULL, 200, "{\"ok\":true}")) bad |= (1 << 10);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "POST", "/admin/stats",     NULL, NULL, 200, "{\"ok\":true}")) {
+        bad |= (1 << 10);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [11] handler 漏写响应 → dispatch 末尾兜底 500 "Internal Server Error\n"
-    if (ERR_OK != _do_req(task, port, "GET",  "/forget",          NULL, NULL, 500, NULL))            bad |= (1 << 11);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/forget",          NULL, NULL, 500, NULL)) {
+        bad |= (1 << 11);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [12] POST 方法位掩码命中
-    if (ERR_OK != _do_req(task, port, "POST", "/only-post",       NULL, NULL, 200, "post-ok"))       bad |= (1 << 12);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "POST", "/only-post",       NULL, NULL, 200, "post-ok")) {
+        bad |= (1 << 12);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [13] 同 path 不同方法 → 404 (验证 method_mask 不会误命中)
-    if (ERR_OK != _do_req(task, port, "GET",  "/only-post",       NULL, NULL, 404, NULL))            bad |= (1 << 13);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/only-post",       NULL, NULL, 404, NULL)) {
+        bad |= (1 << 13);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
 
     // [14] post-tag 中间件 next 后置: 打 3 次 /post-mw 后 /__stats 应 = 3
     // 三个请求共用 bit14, 任一失败都把这一位染坏; 最后再发 /__stats 校验计数
-    if (ERR_OK != _do_req(task, port, "GET",  "/post-mw", NULL, NULL, 200, "tagged")) bad |= (1 << 14);
-    if (ERR_OK != _do_req(task, port, "GET",  "/post-mw", NULL, NULL, 200, "tagged")) bad |= (1 << 14);
-    if (ERR_OK != _do_req(task, port, "GET",  "/post-mw", NULL, NULL, 200, "tagged")) bad |= (1 << 14);
-    if (task_isclosing(task)) return ERR_FAILED;
-    if (ERR_OK != _do_req(task, port, "GET",  "/__stats", NULL, NULL, 200, "3"))      bad |= (1 << 14);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET",  "/post-mw", NULL, NULL, 200, "tagged")) {
+        bad |= (1 << 14);
+    }
+    if (ERR_OK != _do_req(task, port, "GET",  "/post-mw", NULL, NULL, 200, "tagged")) {
+        bad |= (1 << 14);
+    }
+    if (ERR_OK != _do_req(task, port, "GET",  "/post-mw", NULL, NULL, 200, "tagged")) {
+        bad |= (1 << 14);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _do_req(task, port, "GET",  "/__stats", NULL, NULL, 200, "3")) {
+        bad |= (1 << 14);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
 
-    // [15] 嵌套 group 中间件继承: g1mw (+1) → g2mw (+10) → handler 写 "deep=11"
-    // 若 g1mw 未生效会得 "deep=10", g2mw 未生效会得 "deep=1", 顺序反则结果不变
-    // 但参考代码逻辑此处必须为 11; 数值不等于 11 都说明中间件链有问题
-    if (ERR_OK != _do_req(task, port, "GET",  "/g1/g2/deep", NULL, NULL, 200, "deep=11")) bad |= (1 << 15);
-    if (task_isclosing(task)) return ERR_FAILED;
+    // [15] 全局 + 嵌套 group 中间件的入链顺序: g0(7) → gmark(9) → g1mw(1) → g2mw(2)
+    // 少一个或换一次序, 数字串立刻不同 (如全局失效 → "deep=12", 全局顺序反 → "deep=9712")
+    if (ERR_OK != _do_req(task, port, "GET",  "/g1/g2/deep", NULL, NULL, 200, "deep=7912")) {
+        bad |= (1 << 15);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
 
     // [16] 正好 URL_MAX_PATH_DEPTH(64) 段精确请求命中 64 段路由
     char p64[160];
     char p65[170];
     _segpath(p64, sizeof(p64), 64);
     _segpath(p65, sizeof(p65), 65);
-    if (ERR_OK != _do_req(task, port, "GET", p64, NULL, NULL, 200, "s64")) bad |= (1 << 16);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", p64, NULL, NULL, 200, "s64")) {
+        bad |= (1 << 16);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [17] 65 段请求:url_parse 段数超限直接失败,不误命中 64 段路由(→ 400)
-    if (ERR_OK != _do_req(task, port, "GET", p65, NULL, NULL, 400, NULL)) bad |= (1 << 17);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", p65, NULL, NULL, 400, NULL)) {
+        bad |= (1 << 17);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [18] 参数段 + 末尾通配: /asset/{id}/* 命中后 {id} 仍可取 (通配不吞掉 params_n)
-    if (ERR_OK != _do_req(task, port, "GET", "/asset/42/x", NULL, NULL, 200, "42")) bad |= (1 << 18);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", "/asset/42/x", NULL, NULL, 200, "42")) {
+        bad |= (1 << 18);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [19] router_req_query 区分键不存在/值空/有值: ?a= 返非 NULL 零长(empty), 缺 a 返 NULL(missing)
-    if (ERR_OK != _do_req(task, port, "GET", "/qexist?a=1", NULL, NULL, 200, "value"))   bad |= (1 << 19);
-    if (ERR_OK != _do_req(task, port, "GET", "/qexist?a=",  NULL, NULL, 200, "empty"))   bad |= (1 << 19);
-    if (ERR_OK != _do_req(task, port, "GET", "/qexist",     NULL, NULL, 200, "missing")) bad |= (1 << 19);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", "/qexist?a=1", NULL, NULL, 200, "value")) {
+        bad |= (1 << 19);
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/qexist?a=",  NULL, NULL, 200, "empty")) {
+        bad |= (1 << 19);
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/qexist",     NULL, NULL, 200, "missing")) {
+        bad |= (1 << 19);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [20] B2: {a?b} 参数名含内部 ? → 当字面量段, /litq/xyz 不命中参数 → 404 (修复前当 PARAM 会返 200)
-    if (ERR_OK != _do_req(task, port, "GET", "/litq/xyz", NULL, NULL, 404, NULL)) bad |= (1 << 20);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", "/litq/xyz", NULL, NULL, 404, NULL)) {
+        bad |= (1 << 20);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [29] 空名段 {} / {?}: 注册必须成功(修复前 {?} 让整条路由作废, _g_regfail_count 会是 1),
     // 且两者都是字面量段, 拿任意文本去打都不命中 → 404
     if (ERR_OK != _do_req(task, port, "GET", "/__regfail",  NULL, NULL, 200, "0")) {
@@ -900,14 +1016,26 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     }
 
     // [21] OPT 中置+有值: /a/42/b → param x 消耗后 LIT /b 匹配
-    if (ERR_OK != _do_req(task, port, "GET", "/a/42/b", NULL, NULL, 200, "x=42")) bad |= (1 << 21);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", "/a/42/b", NULL, NULL, 200, "x=42")) {
+        bad |= (1 << 21);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [22] OPT 中置+无值: /a/b → 唯一可行解是 OPT 不取值, 由 LIT /b 吞掉当前段
-    if (ERR_OK != _do_req(task, port, "GET", "/a/b",    NULL, NULL, 200, "x=none")) bad |= (1 << 22);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", "/a/b",    NULL, NULL, 200, "x=none")) {
+        bad |= (1 << 22);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [23] OPT 中置多余段: /a/b/c → 路由段消耗完但请求段剩余 → 404
-    if (ERR_OK != _do_req(task, port, "GET", "/a/b/c",  NULL, NULL, 404, NULL)) bad |= (1 << 23);
-    if (task_isclosing(task)) return ERR_FAILED;
+    if (ERR_OK != _do_req(task, port, "GET", "/a/b/c",  NULL, NULL, 404, NULL)) {
+        bad |= (1 << 23);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
     // [24] 204 禁带 Content-Length 与报文体: handler 传了 body 也该被丢掉。
     // 0 条 Content-Length 这一项由 _resp_check 按 http_code_nobody 判, 这里只要码对
     if (ERR_OK != _do_req(task, port, "GET", "/nobody", NULL, NULL, 204, NULL)) {

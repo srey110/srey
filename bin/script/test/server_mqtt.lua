@@ -31,7 +31,8 @@ local function _handle(_, fd, skid, _, _, data, _)
             props:kv(mqtt.PROP.USER_PROPERTY, "key1", "val1")
             props:kv(mqtt.PROP.USER_PROPERTY, "key2", "val2")
         end
-        local pk, sz = mqtt.pack_connack(ver, 1, 0, props)
+        -- sesspresent 恒 0：不持久化会话 + 客户端一律 CleanSession=1，MQTT 3.1.1 §3.2.2.2 要求回 0
+        local pk, sz = mqtt.pack_connack(ver, 0, 0, props)
         if props then props:free() end
         _send(fd, skid, pk, sz)
     elseif mqtt.PROT.PUBLISH == prot then

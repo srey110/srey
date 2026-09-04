@@ -10,6 +10,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local wbsk   = require("lib.websock")
 local utils  = require("srey.utils")
+local websock = require("srey.websock")
 
 -- 组帧参数的截断回归：mask/fin 曾用裸 (int32_t) 转换，2^32 静默变 0 —— 掩码位被清掉的帧
 -- 违反 RFC 6455 §5.1，对端必须断连；fin 被清掉则把终帧变成非终帧，卡死对端的分片重组
@@ -57,8 +58,13 @@ runner.run(function(t)
         srey.close(fd, skid)
     end
 
+    -- 协商结果要落到名字上，不能只判 spctx 非 nil：回显成另一个子协议，
+    -- 应用层照着它选编解码就全错。secprots 返回 (匹配下标 0 起, 全部名字 1 起)，
+    -- 两者一起断言顺带钉住那个 0→1 的下标换算
     local fdy, skidy, spy = wbsk.connect("ws://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE, "mqtt")
-    t:check(spy ~= nil, "服务端支持的子协议(mqtt)须协商成功并回显")
+    local yidx, yprots = websock.secprots(spy)
+    t:eq("mqtt", yidx and yprots and yidx >= 0 and yprots[yidx + 1] or nil,
+         "服务端支持的子协议(mqtt)须协商成功并原样回显")
     if fdy and INVALID_SOCK ~= fdy then
         srey.close(fdy, skidy)
     end
@@ -67,7 +73,9 @@ runner.run(function(t)
     -- 由应用层自己实现该子协议（C 侧 task_timeout.c 的 chat 用例是同一条路径）
     local fdn, skidn, spn = wbsk.connect("ws://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE, "chat")
     t:check(fdn and INVALID_SOCK ~= fdn, "非内建子协议可握手")
-    t:check(spn ~= nil, "非内建子协议(chat)按透传回显")
+    local nidx, nprots = websock.secprots(spn)
+    t:eq("chat", nidx and nprots and nidx >= 0 and nprots[nidx + 1] or nil,
+         "非内建子协议(chat)按透传原样回显")
     if fdn and INVALID_SOCK ~= fdn then
         srey.close(fdn, skidn)
     end
@@ -109,7 +117,9 @@ runner.run(function(t)
         local fdm, skidm, spm = wbsk.connect("ws://127.0.0.1:15003/", SSL_NAME.NONE, "mqtt")
         t:check(fdm and INVALID_SOCK ~= fdm, "连上 server_ws 的 mqtt 子协议")
         if fdm and INVALID_SOCK ~= fdm then
-            t:check(spm ~= nil, "mqtt 子协议协商成功")
+            local midx, mprots = websock.secprots(spm)
+            t:eq("mqtt", midx and mprots and midx >= 0 and mprots[midx + 1] or nil,
+                 "mqtt 子协议协商成功")
             -- ws_bind 必须由协商结果门控:没协商到 mqtt 时 ws->ud 为 NULL,注入会被判掉
             -- 并就地断连,症状变成后续 syn_send 莫名失败而不是"没协商上"
             if spm then

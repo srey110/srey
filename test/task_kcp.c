@@ -230,7 +230,10 @@ static void _close_startup(task_ctx *task) {
         LOG_ERROR("kcp close test fork_wait error.");
         return;
     }
-    if (NULL == ctx.echo && ctx.elapse < 2000) {
+    // 下界和上界都要：只卡上界的话，synsend 压根没等就返回 NULL 也算过，
+    // 而那证明不了"是 CLOSE 把它唤醒的"。stopper 先 sleep 200ms 才 kcp_stop，
+    // 所以真被唤醒的 waiter 必然等过 200ms 上下（留些余量取 150）
+    if (NULL == ctx.echo && ctx.elapse >= 150 && ctx.elapse < 2000) {
         *_close_ok = 1;
         LOG_INFO("kcp close tested: waiter woken by close, elapse %"PRIu64"ms.", ctx.elapse);
     } else {

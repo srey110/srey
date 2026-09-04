@@ -2,8 +2,6 @@
 
 static uint16_t _port = 0;
 static int32_t _prt = 1;
-// QoS1/2 PUBLISH 轮次计数，循环覆盖三种 PUBACK reason code 分支
-static int32_t _publish = 0;
 
 // 收到 MQTT 数据包，按协议类型分发处理
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
@@ -31,10 +29,12 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             mqtt_props_binary(&props, CLIENT_ID, pl->clientid, (int32_t)strlen(pl->clientid));
             mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
             mqtt_props_kv(&props, USER_PROPERTY, "key2", 4, "val2", 4);
-            pk = mqtt_pack_connack(pack->version, 1, 0, &props, &plens);
+            // sesspresent 恒 0：这个假 broker 不持久化会话，来的客户端也一律 CleanSession=1，
+            // 按 MQTT 3.1.1 §3.2.2.2 服务端此时必须回 0
+            pk = mqtt_pack_connack(pack->version, 0, 0, &props, &plens);
             binary_free(&props);
         } else {
-            pk = mqtt_pack_connack(pack->version, 1, 0, NULL, &plens);
+            pk = mqtt_pack_connack(pack->version, 0, 0, NULL, &plens);
         }
         if (NULL != pk) {
             if (_prt) {
@@ -68,30 +68,23 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         if (0 == vh->qos) {
             break;
         }
-        _publish++;
+        // 响应只依赖本包的 qos，不带任何跨连接状态：原来用一个进程级 static 计数器
+        // 轮流发三种 reason，而 mqtt_test3 与 mqtt_test4 是并发的两个 gate、共用那个计数器，
+        // 于是同一客户端这次拿 0x00、下次可能拿 0x10 —— 客户端只能写
+        // `0x00 == reason || 0x10 == reason` 才不 flaky。三种编码形态已由
+        // test_mqtt_pack.c 的 test_mqtt_acks 在纯内存里确定性覆盖（含非零 reason），
+        // 这里只保留"带属性/不带属性"两形态，让运行时链路的断言能精确到 reason == 0
         binary_ctx props;
         binary_init(&props, NULL, 0, 0);
         mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
         if (1 == vh->qos) {
-            if (1 == _publish) {
-                pk = mqtt_pack_puback(pack->version, vh->packid, 0, &props, &lens);
-            }
-            if (2 == _publish) {
-                pk = mqtt_pack_puback(pack->version, vh->packid, 0x10, NULL, &lens);
-            }
-            if (3 == _publish) {
-                pk = mqtt_pack_puback(pack->version, vh->packid, 0, NULL, &lens);
-            }
+            pk = mqtt_pack_puback(pack->version, vh->packid, 0, &props, &lens);
             if (_prt) {
                 LOG_INFO("S->PUBACK");
             }
         }
         if (2 == vh->qos) {
-            if (1 == _publish) {
-                pk = mqtt_pack_pubrec(pack->version, vh->packid, 0, &props, &lens);
-            } else {
-                pk = mqtt_pack_pubrec(pack->version, vh->packid, 0, NULL, &lens);
-            }
+            pk = mqtt_pack_pubrec(pack->version, vh->packid, 0, NULL, &lens);
             if (_prt) {
                 LOG_INFO("S->PUBREC");
             }
@@ -99,9 +92,6 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         binary_free(&props);
         if (NULL != pk) {
             ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
-        }
-        if (3 == _publish) {
-            _publish = 0;
         }
         break;
     }

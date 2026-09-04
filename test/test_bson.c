@@ -1263,6 +1263,44 @@ static void test_bson_tostring_subtypes(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
+/* BSON 是对外互通的格式（MongoDB 服务端照 spec 解），而本文件其余用例全是 encode→decode
+   的自洽往返：把 int32 写成大端、把类型字节换个数、把总长算错一位，编解码两边一起变，
+   往返照样对得上。这里钉住两份逐字节的最小文档。
+   spec: document ::= int32(总长，含自身与结尾 0) e_list "\x00"；
+         int32 元素 ::= 0x10 cstring(键) int32(小端)；
+         字符串元素 ::= 0x02 cstring(键) int32(串长含结尾 0) bytes 0x00 */
+static void test_bson_wire_layout(CuTest *tc) {
+    /* { "a": 1 } */
+    static const uint8_t want_i32[] = {
+        0x0C, 0x00, 0x00, 0x00,       /* 总长 12 */
+        BSON_INT32, 0x61, 0x00,       /* 类型 + 键 "a" */
+        0x01, 0x00, 0x00, 0x00,       /* 值 1，小端 */
+        0x00                          /* 文档结尾 */
+    };
+    bson_ctx b;
+    bson_init(&b, NULL, 0);
+    bson_append_int32(&b, "a", 1);
+    bson_append_end(&b);
+    CuAssertIntEquals(tc, (int)sizeof(want_i32), (int)BSON_DOC_LENS(&b));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&b), want_i32, sizeof(want_i32)));
+    BSON_FREE(&b);
+
+    /* { "b": "hi" } */
+    static const uint8_t want_str[] = {
+        0x0F, 0x00, 0x00, 0x00,       /* 总长 15 */
+        BSON_UTF8, 0x62, 0x00,        /* 类型 + 键 "b" */
+        0x03, 0x00, 0x00, 0x00,       /* 串长 3 = strlen + 结尾 0 */
+        0x68, 0x69, 0x00,             /* "hi" + 结尾 0 */
+        0x00
+    };
+    bson_init(&b, NULL, 0);
+    bson_append_utf8(&b, "b", "hi");
+    bson_append_end(&b);
+    CuAssertIntEquals(tc, (int)sizeof(want_str), (int)BSON_DOC_LENS(&b));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&b), want_str, sizeof(want_str)));
+    BSON_FREE(&b);
+}
+
 // 点分路径 find 后 result.doc 须指向自身 nested_doc（非栈变量），
 // find 后调 bson_iter_next 能继续迭代子文档剩余字段
 static void test_bson_find_dotted_iter_continue(CuTest *tc) {
@@ -1322,4 +1360,5 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_tostring_subtypes);
     SUITE_ADD_TEST(suite, test_bson_misc);
     SUITE_ADD_TEST(suite, test_bson_find_dotted_iter_continue);
+    SUITE_ADD_TEST(suite, test_bson_wire_layout);
 }

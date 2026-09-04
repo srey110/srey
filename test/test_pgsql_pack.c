@@ -320,10 +320,89 @@ static void test_pgsql_bind_free_reuse(CuTest *tc) {
     pgsql_bind_free(&bind);
 }
 
+/* bind 两个缓冲的线格式逐字节验证。以前只断言过 format.offset == 18 与 values.offset > 2，
+ * 于是 NULL 的 -1 长度、nparam 头与格式码的大端序、格式码本身全都没人钉；而唯一另外的
+ * 调用方 task_pgsql 在 main.c 的 optional 白名单里，断言失败会被吞成 "- (network error)"。
+ * 最要紧的是 NULL 那条：PostgreSQL 里长度 -1 才是 NULL、0 是零长值，写成 0 会让
+ * SQL NULL 静默变成空字符串写进库 */
+static void test_pgsql_bind_wire(CuTest *tc) {
+    pgsql_bind_ctx b;
+    const uint8_t *f;
+    const uint8_t *v;
+
+    /* nparam 头是大端 int16：写成小端时这两个字节会对调 */
+    pgsql_bind_init(&b, 0x0102);
+    CuAssertTrue(tc, 2 == b.format.offset);
+    CuAssertTrue(tc, 2 == b.values.offset);
+    f = (const uint8_t *)b.format.data;
+    v = (const uint8_t *)b.values.data;
+    CuAssertIntEquals(tc, 0x01, f[0]);
+    CuAssertIntEquals(tc, 0x02, f[1]);
+    CuAssertIntEquals(tc, 0x01, v[0]);
+    CuAssertIntEquals(tc, 0x02, v[1]);
+    pgsql_bind_free(&b);
+
+    /* NULL：格式码写 FORMAT_TEXT，长度字段写 -1 即 0xFFFFFFFF，不跟值字节 */
+    pgsql_bind_init(&b, 4);
+    pgsql_bind_null(&b);
+    CuAssertTrue(tc, 4 == b.format.offset);
+    CuAssertTrue(tc, 6 == b.values.offset);
+    f = (const uint8_t *)b.format.data;
+    v = (const uint8_t *)b.values.data;
+    CuAssertIntEquals(tc, 0x00, f[2]);
+    CuAssertIntEquals(tc, (uint8_t)FORMAT_TEXT, f[3]);
+    CuAssertIntEquals(tc, 0xFF, v[2]);
+    CuAssertIntEquals(tc, 0xFF, v[3]);
+    CuAssertIntEquals(tc, 0xFF, v[4]);
+    CuAssertIntEquals(tc, 0xFF, v[5]);
+
+    /* int32：格式码 FORMAT_BINARY，长度 4（大端 int32），值本体也是大端 */
+    pgsql_bind_clear(&b);
+    pgsql_bind_int32(&b, 0x12345678);
+    CuAssertTrue(tc, 4 == b.format.offset);
+    CuAssertTrue(tc, 10 == b.values.offset);
+    f = (const uint8_t *)b.format.data;
+    v = (const uint8_t *)b.values.data;
+    CuAssertIntEquals(tc, 0x00, f[2]);
+    CuAssertIntEquals(tc, (uint8_t)FORMAT_BINARY, f[3]);
+    CuAssertIntEquals(tc, 0x00, v[2]);
+    CuAssertIntEquals(tc, 0x00, v[3]);
+    CuAssertIntEquals(tc, 0x00, v[4]);
+    CuAssertIntEquals(tc, 0x04, v[5]);
+    CuAssertIntEquals(tc, 0x12, v[6]);
+    CuAssertIntEquals(tc, 0x34, v[7]);
+    CuAssertIntEquals(tc, 0x56, v[8]);
+    CuAssertIntEquals(tc, 0x78, v[9]);
+
+    /* 文本与二进制两条路的格式码必须不同：都写成同一个值时下面两条有一条会红 */
+    pgsql_bind_clear(&b);
+    pgsql_bind_text(&b, "xy", 2);
+    pgsql_bind_bytea(&b, "zw", 2);
+    f = (const uint8_t *)b.format.data;
+    CuAssertIntEquals(tc, (uint8_t)FORMAT_TEXT, f[3]);
+    CuAssertIntEquals(tc, (uint8_t)FORMAT_BINARY, f[5]);
+    /* 零长值只写长度不写体 */
+    pgsql_bind_clear(&b);
+    pgsql_bind_text(&b, "", 0);
+    CuAssertTrue(tc, 6 == b.values.offset);
+    v = (const uint8_t *)b.values.data;
+    CuAssertIntEquals(tc, 0x00, v[2]);
+    CuAssertIntEquals(tc, 0x00, v[5]);
+
+    /* clear 只回退到 nparam 头之后，头部两字节必须留着 */
+    pgsql_bind_clear(&b);
+    CuAssertTrue(tc, 2 == b.format.offset);
+    CuAssertTrue(tc, 2 == b.values.offset);
+    CuAssertIntEquals(tc, 0x00, ((const uint8_t *)b.values.data)[0]);
+    CuAssertIntEquals(tc, 0x04, ((const uint8_t *)b.values.data)[1]);
+    pgsql_bind_free(&b);
+}
+
 /* =======================================================================
  * 测试套件注册
  * ======================================================================= */
 void test_pgsql_pack(CuSuite *suite) {
+    SUITE_ADD_TEST(suite, test_pgsql_bind_wire);
     SUITE_ADD_TEST(suite, test_pgsql_query);
     SUITE_ADD_TEST(suite, test_pgsql_terminate);
     SUITE_ADD_TEST(suite, test_pgsql_copy);

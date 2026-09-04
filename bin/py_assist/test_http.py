@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SREY HTTP server e2e + lib/event 并发/listener churn 测试（端口 15002）
 # CuTest 已覆盖协议层 unpack；本脚本聚焦真实 socket、并发连接、listener 生命周期
+import select
 import socket
 import sys
 import threading
@@ -25,10 +26,10 @@ def recv_response(sock):
     while b"\r\n\r\n" not in buf:
         chunk = sock.recv(4096)
         if not chunk:
-            return buf
+            raise RuntimeError(f"EOF in headers: {buf[:200]!r}")
         buf += chunk
         if len(buf) > 1024 * 1024:
-            return buf
+            raise RuntimeError("header block over 1MB")
     head, body = buf.split(b"\r\n\r\n", 1)
     cl = -1
     chunked = False
@@ -46,17 +47,37 @@ def recv_response(sock):
         while not body.endswith(b"0\r\n\r\n"):
             chunk = sock.recv(4096)
             if not chunk:
-                break
+                raise RuntimeError(f"EOF in chunked body after {len(body)} bytes")
             body += chunk
             if len(body) > 1024 * 1024:
-                break
+                raise RuntimeError("chunked body over 1MB")
     elif cl >= 0:
         while len(body) < cl:
             chunk = sock.recv(min(4096, cl - len(body)))
             if not chunk:
-                break
+                raise RuntimeError(f"EOF in body: got {len(body)}/{cl}")
             body += chunk
     return head + b"\r\n\r\n" + body
+
+
+# 解 chunked body。长度前缀写错（十进制/错值）、块尾漏 CRLF、终止块不发，都会在这里抛错；
+# 只查状态码的话这三种回归全看不见
+def dechunk(body):
+    out = b""
+    while True:
+        nl = body.find(b"\r\n")
+        if nl < 0:
+            raise RuntimeError(f"chunk size line without CRLF: {body[:40]!r}")
+        n = int(body[:nl].split(b";")[0], 16)
+        body = body[nl + 2:]
+        if 0 == n:
+            return out
+        if len(body) < n + 2:
+            raise RuntimeError(f"chunk shorter than declared {n}")
+        if b"\r\n" != body[n:n + 2]:
+            raise RuntimeError(f"chunk {n} not terminated by CRLF")
+        out += body[:n]
+        body = body[n + 2:]
 
 
 def do_get():
@@ -87,7 +108,11 @@ def case_post_50kb_echo():
         )
         s.sendall(req)
         resp = recv_response(s)
-        return b" 200 " in resp and resp.count(b"A") >= 50000
+        if b" 200 " not in resp:
+            return False
+        # 逐字节比对而非 count('A')>=50000：那种写法抓不到"回显两遍并把 CL 一起改大"，
+        # 而分块发送的 offset 记账错误正是这个形态
+        return body == resp.split(b"\r\n\r\n", 1)[1]
     finally:
         s.close()
 
@@ -104,7 +129,14 @@ def case_chunked_e2e():
         )
         s.sendall(head + b"5\r\nhello\r\n0\r\n\r\n")
         resp = recv_response(s)
-        return b" 200 " in resp
+        if b" 200 " not in resp:
+            return False
+        rhead, rbody = resp.split(b"\r\n\r\n", 1)
+        if b"chunked" not in rhead.lower():
+            raise RuntimeError(f"response not chunked: {rhead[:200]!r}")
+        # 两侧服务端都回三帧 "a"/"b"/终止块（test/task_http_server.c 与 server_http.lua），
+        # 故解出来必须正好是 "ab"：中间帧被吞、块长写错、终止块缺失都会在此变红
+        return b"ab" == dechunk(rbody)
     finally:
         s.close()
 
@@ -146,6 +178,12 @@ def case_half_open_5():
             s.connect((HOST, PORT))
             holds.append(s)
         time.sleep(2.0)
+        # 这 5 条空闲连接必须还活着。以前这里只做一次新连接 GET，服务端 accept 后就把
+        # 不发数据的连接踢掉（或 KEEPALIVE_TIME 调到 1s）照样通过，用例退化成"多花 2 秒的 GET"
+        for i, h in enumerate(holds):
+            rd, _, _ = select.select([h], [], [], 0)
+            if rd and b"" == h.recv(1):
+                raise RuntimeError(f"idle conn {i} closed by server")
         # sanity：新连接 GET 仍能正常工作
         if not do_get():
             return False

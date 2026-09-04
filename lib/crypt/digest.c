@@ -29,25 +29,25 @@ static const dg_attr _dg_tbl[] = {
 void digest_init(digest_ctx *digest, digest_type dtype) {
     ASSERTAB((size_t)dtype < ARRAY_SIZE(_dg_tbl)
         && NULL != _dg_tbl[dtype]._init, "unknow digest type.");
-    digest->attr = _dg_tbl[dtype];
+    digest->attr = &_dg_tbl[dtype];
     digest_reset(digest);
 }
 void digest_free(digest_ctx *digest) {
     secure_zero(digest, sizeof(digest_ctx));
 }
 size_t digest_size(digest_ctx *digest) {
-    return digest->attr.block_lens;
+    return digest->attr->block_lens;
 }
 void digest_update(digest_ctx *digest, const void *data, size_t lens) {
-    digest->attr._update(&digest->eng_ctx, data, lens);
+    digest->attr->_update(&digest->eng_ctx, data, lens);
 }
 // 各引擎的 _final 末尾都会 secure_zero 掉自己的 ctx（擦除中间状态），不重建 IV 的话
 // 第二次 final 就是"拿全零 IV 算空消息"，返回一个与输入无关的常量。故这里出完摘要即复位
 size_t digest_final(digest_ctx *digest, char *hash) {
-    digest->attr._final(&digest->eng_ctx, hash);
+    digest->attr->_final(&digest->eng_ctx, hash);
     digest_reset(digest);
-    return digest->attr.block_lens;
+    return digest->attr->block_lens;
 }
 void digest_reset(digest_ctx *digest) {
-    digest->attr._init(&digest->eng_ctx);
+    digest->attr->_init(&digest->eng_ctx);
 }

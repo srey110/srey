@@ -53,7 +53,9 @@ end
 
 srey.startup(function()
     srey.on_requested(function(_, _, _, data, size)
+        -- 三条丢弃分支都要留痕：静默丢的话，症状会退化成"全模块 MISS、汇总等超时、日志零线索"
         if not data or 0 == size then
+            WARN("[reporter] empty payload, dropped.")
             return
         end
         local txt = srey.ud_str(data, size)

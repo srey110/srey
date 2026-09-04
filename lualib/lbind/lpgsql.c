@@ -18,9 +18,11 @@
         pgsql_bind_null(var); \
         return 0; \
     }
-// 八个按列名取值的 reader 入口共用的开场白，规则见 LPUB_READER_GET
+// 八个按列名取值的 reader 入口共用的开场白，规则同 LMYSQL_READER_GET
 #define LPGSQL_READER_GET(lua, rvar, nvar, evar) \
-    LPUB_READER_GET((lua), pgsql_reader_ctx, MT_PGSQL_READER, rvar, nvar, evar)
+    LPUB_UD_ARG((lua), pgsql_reader_ctx, MT_PGSQL_READER, rvar, "reader freed") \
+    const char *nvar = luaL_checkstring((lua), 2); \
+    int32_t evar
 
 // 参数个数（bind.new 与 pack_stmt_prepare 共用）：越界直接报错，不截断。
 // 65536 截成 0 会得到一个"绑什么都无视"的 bind，-1 截成 65535 反过来按最大参数数建头部，

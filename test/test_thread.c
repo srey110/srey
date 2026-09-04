@@ -3,6 +3,10 @@
 
 #define _NTHREADS   8       /* 并发线程数 */
 #define _NITER      10000   /* 每线程迭代次数 */
+// 兜底：锁真坏了要失败，不能挂死在等标志的自旋里
+#define _DISTR_MAXMS 30000
+/* cond 生产者-消费者的消息条数 */
+#define _COND_ITEMS  1000
 
 /* =======================================================================
  * mutex —— 互斥锁保护计数器
@@ -106,7 +110,9 @@ static void _rw_reader(void *arg) {
         atomic_t cur_max;
         do {
             cur_max = ATOMIC_GET(&s->max_readers);
-            if (r <= cur_max) break;
+            if (r <= cur_max) {
+                break;
+            }
         } while (!ATOMIC_CAS(&s->max_readers, cur_max, r));
         (void)s->value;           /* 读取值（测试无竞争）*/
         ATOMIC_ADD(&s->readers, -1);
@@ -157,8 +163,6 @@ static void test_rwlock(CuTest *tc) {
  * cond —— 条件变量：生产者-消费者
  * ======================================================================= */
 
-#define _COND_ITEMS  1000
-
 typedef struct {
     mutex_ctx mu;
     cond_ctx  cond;
@@ -184,21 +188,30 @@ static void _cond_producer(void *arg) {
 }
 
 static int _sum_consumed;
+static int _cond_waitfail;/* cond_timedwait 非 ERR_OK 的次数，健康跑恒为 0 */
 
 static void _cond_consumer(void *arg) {
+    // 单次等待上限：健康跑一定在微秒级被唤醒，超时即判 signal/broadcast 失效
+    const uint32_t waitms = 5000;
     _cond_shared *s = (_cond_shared *)arg;
     for (;;) {
         mutex_lock(&s->mu);
         while (s->head == s->tail && !s->done) {
-            cond_wait(&s->cond, &s->mu);
+            // 用 timedwait 而非 wait：signal/broadcast 失效时要能退出并报失败，不能挂死 join
+            if (ERR_OK != cond_timedwait(&s->cond, &s->mu, waitms)) {
+                _cond_waitfail++;
+                break;
+            }
         }
         while (s->head < s->tail) {
             _sum_consumed += s->queue[s->head % _COND_ITEMS];
             s->head++;
         }
-        int finished = s->done && (s->head == s->tail);
+        int finished = 0 != _cond_waitfail || (s->done && (s->head == s->tail));
         mutex_unlock(&s->mu);
-        if (finished) break;
+        if (finished) {
+            break;
+        }
     }
 }
 
@@ -208,6 +221,7 @@ static void test_cond(CuTest *tc) {
     cond_init(&s.cond);
     s.head = s.tail = s.done = 0;
     _sum_consumed = 0;
+    _cond_waitfail = 0;
 
     /* 期望总和：1+2+...+_COND_ITEMS */
     int expected = _COND_ITEMS * (_COND_ITEMS + 1) / 2;
@@ -218,6 +232,8 @@ static void test_cond(CuTest *tc) {
     thread_join(consumer);
 
     CuAssertIntEquals(tc, expected, _sum_consumed);
+    /* 每次等待都必须被 signal/broadcast 唤醒，一次超时都不许有 */
+    CuAssertIntEquals(tc, 0, _cond_waitfail);
 
     /* timedwait 超时验证 */
     mutex_lock(&s.mu);
@@ -331,7 +347,10 @@ static void test_rwlock_distr_recursive_rdlock(CuTest *tc) {
 
     rwlock_distr_rdlock(&ctx);
     th = thread_creat(_distr_writer, &ctx);
+    // 到点还没置 write_flag，说明 writer 卡在更前面，join 也回不来，直接报失败
+    uint64_t deadline = nowms() + _DISTR_MAXMS;
     while (0 == ATOMIC_GET(&ctx.write_flag)) {
+        CuAssertTrue(tc, nowms() < deadline);
         MSLEEP(1);
     }
     CuAssertIntEquals(tc, 0, ATOMIC_GET(&_distr_writer_in));
@@ -393,16 +412,24 @@ static void _distr_pool_worker_a(void *arg) {
     _distr_pool_shared *s = (_distr_pool_shared *)arg;
     rwlock_distr_register(s->ctx);
     ATOMIC_SET(&s->a_done, 1);
+    // B 卡住也要能走人，否则 join 挂死；到点后 b_reg_result 停在 999，末尾断言报失败
+    uint64_t deadline = nowms() + _DISTR_MAXMS;
     while (!ATOMIC_GET(&s->b_done)) {
-        /* spin wait B */
+        if (nowms() > deadline) {
+            break;
+        }
     }
     rwlock_distr_unregister(s->ctx);
 }
 
 static void _distr_pool_worker_b(void *arg) {
     _distr_pool_shared *s = (_distr_pool_shared *)arg;
+    // 等 A 占走 slot；A 卡住也要能走人，此时 register 会成功，末尾断言报失败
+    uint64_t deadline = nowms() + _DISTR_MAXMS;
     while (!ATOMIC_GET(&s->a_done)) {
-        /* spin wait A 占走 slot */
+        if (nowms() > deadline) {
+            break;
+        }
     }
     s->b_reg_result = rwlock_distr_register(s->ctx);
     // 即使注册失败,rdlock 也应能走 fallback 不卡死
@@ -483,7 +510,9 @@ static void _distr_mu_reader(void *arg) {
         atomic_t cur;
         do {
             cur = ATOMIC_GET(&s->max_readers);
-            if (r <= cur) break;
+            if (r <= cur) {
+                break;
+            }
         } while (!ATOMIC_CAS(&s->max_readers, cur, r));
         // 持读锁期间让出, 使其他 reader 也进临界区, 确定性形成 reader_count>=2
         for (spin = 0; spin < 64 && ATOMIC_GET(&s->reader_count) < 2; spin++) {

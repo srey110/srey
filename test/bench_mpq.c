@@ -9,6 +9,8 @@
 #define BQ_TOTAL 4000000
 // 线程数组上限(最大生产者数)
 #define BQ_MAXPROD 8
+// 单场景耗时上限:队列丢元素时消费者要能退出,不能把整个 bench 挂死
+#define BQ_MAXMS 120000
 
 typedef struct bq_arg {
     int32_t type;       // 0=queue+spinlock, 1=mpq
@@ -17,6 +19,8 @@ typedef struct bq_arg {
     spin_ctx *lock;     // queue 用的自旋锁(mpq 为 NULL)
 }bq_arg;
 
+static atomic_t _bq_stop;
+
 // 生产者:push n 个 int32_t;mpq 无锁,queue 走 spinlock
 static void _bq_producer(void *ud) {
     bq_arg *a = (bq_arg *)ud;
@@ -24,6 +28,10 @@ static void _bq_producer(void *ud) {
         if (1 == a->type) {
             // mpq 只提供非阻塞入队(生产路径的满队降级由 fsqu 承接),此处自旋重试测满载吞吐
             while (ERR_OK != mpq_trypush((mpq_ctx *)a->q, &i)) {
+                // 消费者超时会置 stop;不给这条出路的话满队自旋会让 join 永远回不来
+                if (0 != ATOMIC_GET(&_bq_stop)) {
+                    return;
+                }
                 CPU_PAUSE();
             }
         } else {
@@ -39,6 +47,8 @@ static void _bq_consumer(void *ud) {
     int32_t got = 0;
     int32_t val;
     void *p;
+    uint32_t spins = 0;
+    uint64_t deadline = nowms() + BQ_MAXMS;
     while (got < a->n) {
         if (1 == a->type) {
             if (ERR_OK == mpq_pop_sc((mpq_ctx *)a->q, &val)) {
@@ -52,6 +62,13 @@ static void _bq_consumer(void *ud) {
                 got++;
             }
         }
+        // 每约 100 万圈才看一次表:空转时是紧循环,逐圈 nowms 会影响吞吐读数
+        if (0 == (++spins & 0xFFFFF)
+            && nowms() > deadline) {
+            ATOMIC_SET(&_bq_stop, 1);
+            LOG_WARN("[bench_mpq] consumer timeout: type=%d got=%d/%d", a->type, got, a->n);
+            break;
+        }
     }
 }
 // 纯 push:nprod 个生产者各 push per,join,返回耗时
@@ -61,6 +78,7 @@ static uint64_t _bq_push(int32_t type, void *q, spin_ctx *lock, int32_t nprod, i
     for (int32_t i = 0; i < nprod; i++) {
         args[i].type = type; args[i].n = per; args[i].q = q; args[i].lock = lock;
     }
+    ATOMIC_SET(&_bq_stop, 0);
     uint64_t t0 = nowms();
     for (int32_t i = 0; i < nprod; i++) {
         ths[i] = thread_creat(_bq_producer, &args[i]);
@@ -80,6 +98,7 @@ static uint64_t _bq_mpsc(int32_t type, void *q, spin_ctx *lock, int32_t nprod, i
     for (int32_t i = 0; i < nprod; i++) {
         pargs[i].type = type; pargs[i].n = per; pargs[i].q = q; pargs[i].lock = lock;
     }
+    ATOMIC_SET(&_bq_stop, 0);
     uint64_t t0 = nowms();
     cth = thread_creat(_bq_consumer, &carg);
     for (int32_t i = 0; i < nprod; i++) {

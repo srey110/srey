@@ -35,6 +35,16 @@ typedef struct ws_secprots_ctx {
     buf_ctx prots[WS_MAXCNT_SECPROT];//全部子协议集合
     char data[];//数据载体
 }ws_secprots_ctx;
+//连接上下文，每条连接一个，挂在 ud_cxt.context 上。
+//放头文件是因为测试要在栈上造一个直接喂给 websock_unpack：
+//两边各写一份等价布局的话，这里加字段那边不报错，解包会写出对象边界
+typedef struct websock_ctx {
+    int8_t slice;//是否处于分片接收状态(1=是)
+    pack_type secprot;//子协议类型
+    buffer_ctx *buf;//子协议数据缓冲区
+    ud_cxt *ud;//子协议的 ud_cxt(用于子协议解包)
+    struct websock_pack_ctx *pack;//当前正在解析的帧(DATA 状态下有效)
+}websock_ctx;
 
 void _websock_pkfree(void *data);
 void *_websock_pack_next(void *pack);

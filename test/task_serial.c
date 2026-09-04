@@ -86,10 +86,10 @@ typedef struct fifo_arg {
 
 static void _fifo_cs(task_ctx *task, void *arg) {
     fifo_arg *a = (fifo_arg *)arg;
-    a->order[(*a->cnt)++] = a->label;       // 进入标签
+    a->order[(*a->cnt)++] = a->label;// 进入标签
     if (0 != a->hold_ms) {
-        coro_sleep(task, a->hold_ms);       // 持锁 yield
-        a->order[(*a->cnt)++] = a->label;   // 离开标签
+        coro_sleep(task, a->hold_ms);// 持锁 yield
+        a->order[(*a->cnt)++] = a->label;// 离开标签
     }
 }
 
@@ -157,7 +157,7 @@ static int32_t _test_indep(task_ctx *task) {
     indep_arg a2 = { .s = s2, .flag = &f2, .set_val = 2, .sleep_ms = 0  }; // s2 立即完成
     coro_fork(task, _indep_worker, &a1);
     coro_fork(task, _indep_worker, &a2);
-    coro_sleep(task, 10);                   // 短等：s2 应该已完成，s1 仍在 sleep
+    coro_sleep(task, 10);// 短等：s2 应该已完成，s1 仍在 sleep
     if (2 != f2) {
         LOG_ERROR("serial indep: s2 should finish quickly, f2=%d.", f2);
         coro_serial_free(s1); coro_serial_free(s2);
@@ -168,7 +168,7 @@ static int32_t _test_indep(task_ctx *task) {
         coro_serial_free(s1); coro_serial_free(s2);
         return ERR_FAILED;
     }
-    coro_sleep(task, 50);                   // 等 s1 完成
+    coro_sleep(task, 50);// 等 s1 完成
     if (1 != f1) {
         LOG_ERROR("serial indep: s1 should finish, f1=%d.", f1);
         coro_serial_free(s1); coro_serial_free(s2);
@@ -192,7 +192,7 @@ static void _mutex_cs(task_ctx *task, void *arg) {
     if (*a->in_cs > *a->peak) {
         *a->peak = *a->in_cs;
     }
-    coro_sleep(task, 20);                   // yield 期间另一个协程会试图进 cs
+    coro_sleep(task, 20);// yield 期间另一个协程会试图进 cs
     (*a->in_cs)--;
 }
 
@@ -236,14 +236,14 @@ typedef struct curco_arg {
 
 static void _curco_cs(task_ctx *task, void *arg) {
     (void)arg;
-    coro_sleep(task, 20);                       // cs 内持锁 yield
+    coro_sleep(task, 20);// cs 内持锁 yield
 }
 
 // A: cs 出口后必须再调一次 coro_sleep,这是 B05 触发点
 static void _curco_worker_a(task_ctx *task, void *arg) {
     curco_arg *a = (curco_arg *)arg;
     coro_serial_call(a->s, _curco_cs, NULL);
-    coro_sleep(task, 5);                        // 修复前 curco stale=B → ABORT
+    coro_sleep(task, 5);// 修复前 curco stale=B → ABORT
     *a->a_done = 1;
 }
 

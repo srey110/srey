@@ -45,13 +45,36 @@ static void test_stm_update(CuTest *tc) {
     stm_free(ctx);
 }
 
+// copy=1: 内部自己 MALLOC 一份, 调用方仍持有原缓冲。这是生产主路径——lpub_check_buf 对
+// Lua 字符串一律强制 copy=1, 而其余用例全走 copy=0。两支对调时 snap->data == src 当场变红
+static void test_stm_copy(CuTest *tc) {
+    char src[] = "copied";
+    char up[] = "copied2";
+    stm_ctx *ctx = stm_new(src, sizeof(src), 1);
+    stm_data *snap = stm_grab_data(ctx);
+    CuAssertPtrNotNull(tc, snap);
+    CuAssertTrue(tc, snap->data != src);// 另分配, 不是接管栈上那块
+    CuAssertIntEquals(tc, (int)sizeof(src), (int)snap->sz);
+    CuAssertTrue(tc, 0 == memcmp(snap->data, src, sizeof(src)));
+    src[0] = 'X';// 改原缓冲不该影响已拍的快照
+    CuAssertTrue(tc, 'c' == ((char *)snap->data)[0]);
+    stm_ungrab_data(snap);
+    stm_update(ctx, up, sizeof(up), 1);
+    snap = stm_grab_data(ctx);
+    CuAssertPtrNotNull(tc, snap);
+    CuAssertTrue(tc, snap->data != up);
+    CuAssertTrue(tc, 0 == memcmp(snap->data, up, sizeof(up)));
+    stm_ungrab_data(snap);
+    stm_free(ctx);
+}
+
 // writer 先释放, reader 后释放: ctx 在最后 reader 离开时 free
 // stm_free 后 stm_grab_data 必须返回 NULL
 static void test_stm_writer_first(CuTest *tc) {
     size_t sz;
     void *data = _stm_make("payload", &sz);
     stm_ctx *ctx = stm_new(data, sz, 0);
-    stm_grab(ctx);  // 模拟另一线程 reader 持引
+    stm_grab(ctx);// 模拟另一线程 reader 持引
     stm_data *snap = stm_grab_data(ctx);
     stm_free(ctx);
     // writer 退出后 ctx 仍存在 (reader 持引); 旧快照仍可读
@@ -60,7 +83,7 @@ static void test_stm_writer_first(CuTest *tc) {
     stm_data *afternull = stm_grab_data(ctx);
     CuAssertPtrEquals(tc, NULL, afternull);
     stm_ungrab_data(snap);
-    stm_ungrab(ctx);  // 最后一个引用, 真正 free
+    stm_ungrab(ctx);// 最后一个引用, 真正 free
 }
 
 // reader 先全部释放, writer 后释放: writer release 时 free
@@ -68,7 +91,7 @@ static void test_stm_reader_first(CuTest *tc) {
     size_t sz;
     void *data = _stm_make("payload", &sz);
     stm_ctx *ctx = stm_new(data, sz, 0);
-    stm_grab(ctx);  // reader 持引
+    stm_grab(ctx);// reader 持引
     stm_data *snap = stm_grab_data(ctx);
     stm_ungrab_data(snap);
     stm_ungrab(ctx);
@@ -79,7 +102,7 @@ static void test_stm_reader_first(CuTest *tc) {
     stm_data *snap2 = stm_grab_data(ctx);
     CuAssertTrue(tc, 0 == memcmp(snap2->data, "v2", sz2));
     stm_ungrab_data(snap2);
-    stm_free(ctx);  // 最后一个引用, free
+    stm_free(ctx);// 最后一个引用, free
 }
 
 // grab 链: grab N 次后 release N+1 次 (含 writer); ASan/内存检查通过即正确
@@ -111,12 +134,23 @@ typedef struct {
 static void _stm_conc_reader(void *arg) {
     _stm_conc_shared *s = (_stm_conc_shared *)arg;
     stm_grab(s->ctx);
+    const char *p;
+    int32_t bad;
+    size_t k;
     int i;
     for (i = 0; i < _STM_CONC_ITERS; i++) {
         stm_data *snap = stm_grab_data(s->ctx);
         if (NULL != snap) {
-            // 任一版本均以 'v' 开头, 校验数据完整
-            if (snap->sz < 1 || ((char *)snap->data)[0] != 'v') {
+            // 全量校验而非只看首字节: 所有版本都叫 "v<N>", 只看 [0] 的话读到已释放的旧快照
+            // (例如去掉 stm_grab_data 的 rdlock) 通常仍读到 'v', release 下看不出来
+            p = (const char *)snap->data;
+            bad = (snap->sz < 2 || 'v' != p[0] || '\0' != p[snap->sz - 1]);
+            for (k = 1; 0 == bad && k + 1 < snap->sz; k++) {
+                if (p[k] < '0' || p[k] > '9') {
+                    bad = 1;
+                }
+            }
+            if (0 != bad) {
                 ATOMIC_ADD(&s->mismatches, 1);
             }
             ATOMIC_ADD(&s->reads, 1);
@@ -159,6 +193,7 @@ static void test_stm_concurrent_read(CuTest *tc) {
 void test_stm(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_stm_basic);
     SUITE_ADD_TEST(suite, test_stm_update);
+    SUITE_ADD_TEST(suite, test_stm_copy);
     SUITE_ADD_TEST(suite, test_stm_writer_first);
     SUITE_ADD_TEST(suite, test_stm_reader_first);
     SUITE_ADD_TEST(suite, test_stm_grab_chain);

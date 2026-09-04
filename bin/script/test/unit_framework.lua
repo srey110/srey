@@ -49,9 +49,10 @@ runner.run(function(t)
     do
         local a = task.timer_ms()
         t:check(type(a) == "number" and a > 0, "timer_ms returns positive number")
-        srey.sleep(2)  -- 让出协程让时间走过
+        srey.sleep(20)  -- 让出协程让时间真的走过
         local b = task.timer_ms()
-        t:check(b >= a, "timer_ms monotonic non-decreasing")
+        -- 用差值而非 b >= a：后者对"时钟冻住、恒返同一个值"同样成立。上界留宽，只挡"根本不走"
+        t:check(b - a >= 15 and b - a < 5000, "timer_ms 随真实时间前进 (" .. (b - a) .. "ms)")
     end
 
     -- ── srey.task: set/get *_timeout round-trip ───────────────────────
@@ -186,7 +187,14 @@ runner.run(function(t)
         local fd, skid = core.udp(PACK_TYPE.NONE, "127.0.0.1", 0)
         t:check(fd and INVALID_SOCK ~= fd, "core.udp 绑定成功")
         if fd and INVALID_SOCK ~= fd then
-            t:eq(2, select("#", core.udp(PACK_TYPE.NONE, "127.0.0.1", 0)), "core.udp 成功返 2 个值")
+            -- 用 table.pack 而非 select("#", ...)：后者把 fd/skid 吞掉，那个 socket
+            -- 建出来就没有任何路径能 close 它（下面那句 close 关的是上面第一个）
+            local ret = table.pack(core.udp(PACK_TYPE.NONE, "127.0.0.1", 0))
+            t:eq(2, ret.n, "core.udp 成功返 2 个值")
+            t:check(ret[1] and INVALID_SOCK ~= ret[1] and ret[2], "两个返回值都有效")
+            if ret[1] and INVALID_SOCK ~= ret[1] then
+                srey.close(ret[1], ret[2])
+            end
             srey.close(fd, skid)
         end
         -- 同一条规矩也管 Lua 包装层：srey.connect 成功返 (fd, skid)，失败也得返两个。

@@ -10,6 +10,13 @@
 #define _MQ_INIT     0
 #define _MQ_COMMAND  1
 
+// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
+static void *_t_mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
+    size_t *size, int32_t *status) {
+    return mqtt_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+}
+
 /* 公共辅助：把组包的 char* 写入 buffer，并返回 buffer */
 static void _mq_to_buf(buffer_ctx *buf, char *pack, size_t lens) {
     buffer_init(buf);
@@ -38,7 +45,7 @@ static void test_mqtt_connect_311(CuTest *tc) {
     /* CONNECT 在 INIT 状态：unpack 内部会 CALLOC 一个 mqtt_ctx 写入 ud->context */
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0 /*server*/, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0 /*server*/, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_CONNECT, p->fixhead.prot);
@@ -76,7 +83,7 @@ static void test_mqtt_connect_will_null_payload(CuTest *tc) {
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_INIT;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     /* 解包侧的全局兜底是"消费掉的字节数须正好等于剩余长度"，错位会在那里被判协议错 */
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
@@ -112,7 +119,7 @@ static void test_mqtt_connect_50_full(CuTest *tc) {
     ud.status = _MQ_INIT;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_CONNECT, p->fixhead.prot);
@@ -142,15 +149,16 @@ static void test_mqtt_connect_50_full(CuTest *tc) {
 /* =======================================================================
  * CONNACK / PUBACK / PUBREC / PUBREL / PUBCOMP / DISCONNECT / AUTH
  * ======================================================================= */
-static void test_mqtt_connack(CuTest *tc) {
+static void _mqtt_connack_case(CuTest *tc, mqtt_protversion ver, int8_t sesspresent,
+    uint8_t reason, binary_ctx *props) {
     size_t lens = 0;
-    char *pack = mqtt_pack_connack(MQTT_311, 1, 0, NULL, &lens);
+    char *pack = mqtt_pack_connack(ver, sesspresent, reason, props, &lens);
     CuAssertPtrNotNull(tc, pack);
 
     buffer_ctx buf;
     _mq_to_buf(&buf, pack, lens);
 
-    mqtt_ctx *mq = mqtt_ctx_new(MQTT_311);
+    mqtt_ctx *mq = mqtt_ctx_new(ver);
 
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -158,24 +166,42 @@ static void test_mqtt_connack(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1 /*client*/, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(1 /*client*/, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_CONNACK, p->fixhead.prot);
 
     mqtt_connack_varhead *vh = (mqtt_connack_varhead *)p->varhead;
-    CuAssertIntEquals(tc, 1, vh->sesspresent);
-    CuAssertIntEquals(tc, 0, vh->reason);
+    CuAssertIntEquals(tc, sesspresent, vh->sesspresent);
+    CuAssertIntEquals(tc, reason, vh->reason);
+    if (NULL != props && props->offset > 0) {
+        CuAssertPtrNotNull(tc, vh->properties);
+    }
 
     _mqtt_pkfree(p);
     _mqtt_udfree(&ud);
     buffer_free(&buf);
 }
+static void test_mqtt_connack(CuTest *tc) {
+    _mqtt_connack_case(tc, MQTT_311, 1, 0, NULL);
+    _mqtt_connack_case(tc, MQTT_311, 0, 0, NULL);
+    // 5.0 的非零原因码走另一条编码路径。服务端拒绝连接的原因（0x85 客户端标识无效 /
+    // 0x86 用户名密码错 / 0x87 未授权）以前一条都没测过——删掉解码端读 reason 那一步，
+    // 客户端会把所有拒绝都读成 Success
+    _mqtt_connack_case(tc, MQTT_50, 0, 0x85, NULL);
+    _mqtt_connack_case(tc, MQTT_50, 1, 0x87, NULL);
+    // 5.0 带属性段：走属性长度 varint + 属性体，也是零覆盖
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_fixnum(&props, SESSION_EXPIRY, 3600);
+    _mqtt_connack_case(tc, MQTT_50, 0, 0, &props);
+    binary_free(&props);
+}
 
 static void _mqtt_pack_ack_test(CuTest *tc, mqtt_protversion ver, mqtt_prot expected,
-    char *(*packer)(mqtt_protversion, uint16_t, uint8_t, binary_ctx *, size_t *)) {
+    uint8_t reason, char *(*packer)(mqtt_protversion, uint16_t, uint8_t, binary_ctx *, size_t *)) {
     size_t lens = 0;
-    char *pack = packer(ver, 12345, 0x00, NULL, &lens);
+    char *pack = packer(ver, 12345, reason, NULL, &lens);
     CuAssertPtrNotNull(tc, pack);
 
     buffer_ctx buf;
@@ -189,11 +215,15 @@ static void _mqtt_pack_ack_test(CuTest *tc, mqtt_protversion ver, mqtt_prot expe
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, (int)expected, (int)p->fixhead.prot);
     mqtt_pubackrel_varhead *vh = (mqtt_pubackrel_varhead *)p->varhead;
     CuAssertIntEquals(tc, 12345, vh->packid);
+    // reason 必须回读。原来入参硬编码 0x00 且从不断言，而 5.0 在 reason=0 且无属性时
+    // 走的是 §3.4.2.2.1 的 2 字节简化形式——与 3.1.1 逐字节相同，8 个子用例只产生
+    // 4 种编码，version 形参等于没测，解码端 remaining_lens >= 3 那支也零覆盖
+    CuAssertIntEquals(tc, (int)reason, (int)vh->reason);
 
     _mqtt_pkfree(p);
     _mqtt_udfree(&ud);
@@ -201,14 +231,20 @@ static void _mqtt_pack_ack_test(CuTest *tc, mqtt_protversion ver, mqtt_prot expe
 }
 
 static void test_mqtt_acks(CuTest *tc) {
-    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBACK,  mqtt_pack_puback);
-    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBREC,  mqtt_pack_pubrec);
-    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBREL,  mqtt_pack_pubrel);
-    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBCOMP, mqtt_pack_pubcomp);
-    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBACK,  mqtt_pack_puback);
-    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBREC,  mqtt_pack_pubrec);
-    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBREL,  mqtt_pack_pubrel);
-    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBCOMP, mqtt_pack_pubcomp);
+    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBACK,  0x00, mqtt_pack_puback);
+    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBREC,  0x00, mqtt_pack_pubrec);
+    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBREL,  0x00, mqtt_pack_pubrel);
+    _mqtt_pack_ack_test(tc, MQTT_311, MQTT_PUBCOMP, 0x00, mqtt_pack_pubcomp);
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBACK,  0x00, mqtt_pack_puback);
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBREC,  0x00, mqtt_pack_pubrec);
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBREL,  0x00, mqtt_pack_pubrel);
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBCOMP, 0x00, mqtt_pack_pubcomp);
+    // 非零原因码只有 5.0 有（3.1.1 的 ACK 就是两字节 packid，塞不进 reason），
+    // 这四条把编码端 total = 2 + 1 与解码端 remaining_lens >= 3 两支带起来
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBACK,  0x10, mqtt_pack_puback);
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBREC,  0x80, mqtt_pack_pubrec);
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBREL,  0x92, mqtt_pack_pubrel);
+    _mqtt_pack_ack_test(tc, MQTT_50,  MQTT_PUBCOMP, 0x92, mqtt_pack_pubcomp);
 }
 
 /* =======================================================================
@@ -233,7 +269,7 @@ static void test_mqtt_publish(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_PUBLISH, p->fixhead.prot);
@@ -258,7 +294,7 @@ static void test_mqtt_publish(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     vh = (mqtt_publish_varhead *)p->varhead;
     CuAssertIntEquals(tc, 1, vh->qos);
@@ -287,7 +323,7 @@ static void _mq_publish_case(CuTest *tc, mqtt_protversion version, int8_t qos, u
     ud.status = _MQ_COMMAND;
     ud.context = mq;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     mqtt_publish_varhead *vh = (mqtt_publish_varhead *)p->varhead;
@@ -346,7 +382,7 @@ static void test_mqtt_publish_bad_topiclen(CuTest *tc) {
     ud.status = _MQ_COMMAND;
     ud.context = mq;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssert(tc, "topic length beyond remaining_lens must be a protocol error",
         NULL == p && BIT_CHECK(status, PROT_ERROR));
     _mqtt_udfree(&ud);
@@ -377,7 +413,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_SUBSCRIBE, p->fixhead.prot);
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)p->varhead;
@@ -402,7 +438,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
+    p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_SUBACK, p->fixhead.prot);
     mqtt_reasonlist_payload *spl = (mqtt_reasonlist_payload *)p->payload;
@@ -424,7 +460,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_UNSUBSCRIBE, p->fixhead.prot);
     mqtt_unsubscribe_payload *upl = (mqtt_unsubscribe_payload *)p->payload;
@@ -439,7 +475,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
+    p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_UNSUBACK, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -468,7 +504,7 @@ static void test_mqtt_ping_pong(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_PINGREQ, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -482,7 +518,7 @@ static void test_mqtt_ping_pong(CuTest *tc) {
 
     status = PROT_INIT;
     ud.status = _MQ_COMMAND;
-    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 1, &buf, &ud, NULL, &status);
+    p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_PINGRESP, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -511,7 +547,7 @@ static void test_mqtt_disconnect(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_DISCONNECT, p->fixhead.prot);
     _mqtt_pkfree(p);
@@ -529,7 +565,7 @@ static void test_mqtt_disconnect(CuTest *tc) {
     ud.context = mq;
     status = PROT_INIT;
 
-    p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_DISCONNECT, p->fixhead.prot);
     mqtt_reason_varhead *vh = (mqtt_reason_varhead *)p->varhead;
@@ -558,7 +594,7 @@ static void test_mqtt_auth(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_AUTH, p->fixhead.prot);
     mqtt_reason_varhead *vh = (mqtt_reason_varhead *)p->varhead;
@@ -566,6 +602,43 @@ static void test_mqtt_auth(CuTest *tc) {
     _mqtt_pkfree(p);
     _mqtt_udfree(&ud);
     buffer_free(&buf);
+}
+
+/* _mqtt_properties 的三条拒收路径。AUTH 是最小的带属性段载体（reason + 属性长度 + 属性体），
+ * 而紧随其后那条紧凑形式用例连属性长度字段都没有，所以这三支此前全零覆盖：
+ *   ① plens 撒谎（声明得比缓冲区还长）—— 删掉那句边界判定，异常 server 用一个撒谎的
+ *      属性长度就能让逐项解析越过报文边界读进下一帧的字节
+ *   ② 未知 property id —— 改成 continue 而不是置 PROT_ERROR，会在
+ *      `for (off = 0; off < plens;)` 上造成死循环（off 不前进）
+ *   ③ 逐项解完 off != plens（最后一项越过了声明的属性长度）
+ * 三条都只断言"被拒"，不断言走的是哪一支：maxlens 收紧时 ③ 可能先在 ② 那支被拦下 */
+static void _mqtt_props_reject(CuTest *tc, char *wire, size_t rlen) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, wire, rlen);
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_50);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = _MQ_INIT;
+    ud.context = mq;
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrEquals(tc, NULL, p);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+}
+static void test_mqtt_props_reject(CuTest *tc) {
+    /* ① 属性长度声明 0x64，实际只跟了 1 字节 */
+    static char lie[] = { (char)0xF0, 0x03, 0x18, 0x64, 0x00 };
+    _mqtt_props_reject(tc, lie, sizeof(lie));
+    /* ② 属性长度 1，id 0x7F 不在 property id 表里（表内最大 0x2A SHARED_SUBSCRIPTION） */
+    static char unknown[] = { (char)0xF0, 0x03, 0x18, 0x01, 0x7F };
+    _mqtt_props_reject(tc, unknown, sizeof(unknown));
+    /* ③ 属性长度声明 3，而一个 SESSION_EXPIRY(0x11) 要吃 1+4=5 字节，越过声明长度 */
+    static char overrun[] = { (char)0xF0, 0x07, 0x18, 0x03,
+                                    0x11, 0x00, 0x00, 0x0E, 0x10 };
+    _mqtt_props_reject(tc, overrun, sizeof(overrun));
 }
 
 /* MQTT 5.0 §3.15.2.2.1：第三方 broker/client 可用紧凑形式 [0xF0, 0x01, reason]
@@ -585,7 +658,7 @@ static void test_mqtt_auth_compact_no_props(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_AUTH, p->fixhead.prot);
@@ -616,6 +689,70 @@ static void test_mqtt_props(CuTest *tc) {
     /* 至少写入了几个字节 */
     CuAssertTrue(tc, props.offset > 0);
 
+    /* 编出来的字节要喂回 mqtt_unpack 读一遍。原来只有上面那几条返回码 + offset > 0，
+       编码器把值写成 0、把 4 字节写成 2 字节、kv 漏写 value，全都照样 ERR_OK；
+       解码侧的 1/2/4 字节数值分支、SUBSCRIPTION_ID 的变长分支、USER_PROPERTY 的 kv 分支
+       在确定性 CuTest 里也就一次没执行过。AUTH 是最小的带属性段载体 */
+    CuAssertTrue(tc, props.offset < 128);// 下面按 1 字节 varint 拼属性长度
+    char *wire;
+    size_t wlens = 4 + props.offset;
+    MALLOC(wire, wlens);
+    wire[0] = (char)0xF0;
+    wire[1] = (char)(2 + props.offset);// remaining：reason(1) + 属性长度 varint(1) + 属性体
+    wire[2] = 0x18;// reason
+    wire[3] = (char)props.offset;// 属性长度
+    memcpy(wire + 4, props.data, props.offset);
+
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, wire, wlens);
+    FREE(wire);
+    mqtt_ctx *mq = mqtt_ctx_new(MQTT_50);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = _MQ_INIT;
+    ud.context = mq;
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mqtt_reason_varhead *vh = (mqtt_reason_varhead *)p->varhead;
+    CuAssertPtrNotNull(tc, vh->properties);
+    CuAssertIntEquals(tc, 4, (int)array_size(vh->properties));
+
+    mqtt_propertie *pr;
+    int32_t seen = 0;
+    for (uint32_t i = 0; i < array_size(vh->properties); i++) {
+        pr = *(mqtt_propertie **)array_at(vh->properties, (int32_t)i);
+        CuAssertPtrNotNull(tc, pr);
+        switch (pr->flag) {
+        case SESSION_EXPIRY:
+            CuAssertTrue(tc, 3600 == pr->nval);
+            seen |= 1;
+            break;
+        case SUBSCRIPTION_ID:
+            CuAssertTrue(tc, 128 == pr->nval);// 128 恰好跨到 2 字节 varint
+            seen |= 2;
+            break;
+        case AUTH_DATA:
+            CuAssertTrue(tc, 4 == pr->flens && 0 == memcmp("DATA", pr->fval, 4));
+            seen |= 4;
+            break;
+        case USER_PROPERTY:
+            CuAssertTrue(tc, 1 == pr->flens && 'k' == pr->fval[0]);
+            CuAssertTrue(tc, 1 == pr->slens && NULL != pr->sval && 'v' == pr->sval[0]);
+            seen |= 8;
+            break;
+        default:
+            CuFail(tc, "unexpected property flag");
+            break;
+        }
+    }
+    CuAssertIntEquals(tc, 15, seen);
+
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
     binary_free(&props);
 }
 
@@ -701,7 +838,7 @@ static mqtt_pack_ctx *_mqtt_unpack_auth_sasl(CuTest *tc, buffer_ctx *buf,
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, client_role, buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(client_role, buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_AUTH, p->fixhead.prot);
@@ -912,7 +1049,7 @@ static void _mq_assert_reject(CuTest *tc, int32_t init_status, int32_t ver,
     }
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0 /*server*/, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0 /*server*/, &buf, &ud, NULL, &status);
     CuAssertPtrEquals(tc, NULL, p);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
 
@@ -968,7 +1105,7 @@ static void test_mqtt_connect_empty_clientid(CuTest *tc) {
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_INIT;
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = mqtt_unpack(NULL, INVALID_SOCK, 0, 0 /*server*/, &buf, &ud, NULL, &status);
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0 /*server*/, &buf, &ud, NULL, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     /* 解包完整消费整个包，无残留（修复前残留 1 个 NUL）*/
@@ -1103,6 +1240,7 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_ping_pong);
     SUITE_ADD_TEST(suite, test_mqtt_disconnect);
     SUITE_ADD_TEST(suite, test_mqtt_auth);
+    SUITE_ADD_TEST(suite, test_mqtt_props_reject);
     SUITE_ADD_TEST(suite, test_mqtt_auth_compact_no_props);
     SUITE_ADD_TEST(suite, test_mqtt_auth_scram_sha256);
     SUITE_ADD_TEST(suite, test_mqtt_props);

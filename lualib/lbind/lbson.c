@@ -1181,9 +1181,13 @@ static int32_t _lbson_iter_type(lua_State *lua) {
 /// 返回当前字段的键名
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="string">字段名</returns>
+/// <returns type="string?">字段名；无当前元素（尚未 next / 遍历结束 / 解析失败）返回 nil。
+/// 空串是合法的 BSON 键名，不能拿它当"没有"用</returns>
 static int32_t _lbson_iter_key(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
+    if (NULL == iter->key) {
+        return lpub_rtn_nil(lua, 1);
+    }
     lua_pushlstring(lua, iter->key, iter->keylens);
     return 1;
 }

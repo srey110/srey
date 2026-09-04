@@ -191,6 +191,20 @@ runner.run(function(t)
         t:eq(42,   seen_vals.k2, "iter int32 value")
     end
     do
+        -- 无当前元素时 key() 必须是 nil 而不是空串：空串本身是合法的 BSON 键名，
+        -- 回空串的话 `if it:key() then` 在迭代结束后仍然成立。
+        -- init / reset / 遍历完 / 解析失败四条路径都会把 iter 置成无当前元素
+        local bk = bson.encode({ a = 1 })
+        local itk = bson.iter.new(bk)
+        t:eq(nil, itk:key(), "尚未 next 时 key() 为 nil")
+        t:eq(true, itk:next(), "推进到第一个字段")
+        t:eq("a", itk:key(), "有当前元素时 key() 回键名")
+        t:eq(false, itk:next(), "遍历结束")
+        t:eq(nil, itk:key(), "遍历结束后 key() 回 nil")
+        itk:reset()
+        t:eq(nil, itk:key(), "reset 后未 next，key() 仍为 nil")
+    end
+    do
         -- reset 后可重新遍历同一 iter
         local b2 = bson.encode({ x = 1, y = 2, z = 3 })
         local iter = bson.iter.new(b2)

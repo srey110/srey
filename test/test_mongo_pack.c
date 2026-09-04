@@ -10,6 +10,13 @@
 #define _MSG_OFF_RESPTO 8
 #define _MSG_OFF_PROT   12
 #define _MSG_OFF_FLAGS  16
+
+// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
+static void *_t_mongo_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
+    size_t *size, int32_t *status) {
+    return mongo_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+}
 #define _MSG_OFF_KIND   20
 #define _MSG_HEAD_LENS  21
 
@@ -53,6 +60,22 @@ static const char *_bson_find_utf8(char *doc, size_t lens, const char *key) {
         }
     }
     return NULL;
+}
+
+// 在 BSON 顶层查找字段并返回它的 BSON 类型码；未找到返回 -1。
+// 用来钉"这个必需字段在、且类型没变"——只查 utf8 命令名的话，
+// 删掉 aggregate 的 cursor 子文档、或把 pipeline 从数组写成文档，都看不出来
+static int32_t _bson_find_type(char *doc, size_t lens, const char *key) {
+    bson_ctx bson;
+    bson_init(&bson, doc, lens);
+    bson_iter it;
+    bson_iter_init(&it, &bson);
+    while (bson_iter_next(&it)) {
+        if (0 == strcmp(it.key, key)) {
+            return (int32_t)it.type;
+        }
+    }
+    return -1;
 }
 
 // 在 BSON 顶层查找 int32/int64/double 字段，转 double 返回；err 输出 1 = 未找到
@@ -203,6 +226,16 @@ static void test_mongo_pack_check_flag(CuTest *tc) {
     bson_append_utf8(&doc, "name", "tom");
     bson_append_end(&doc);
     bson_append_end(&doc);
+
+    // mongo_set_flag 只认 MORETOCOME，别的 flag 一律无视。这道白名单原来零覆盖
+    // （三处调用全传 MORETOCOME），删掉早退就会把 CHECKSUM 原样 BIT_SET 进 mongo->flags、
+    // 再由 _mongo_pack_msg 写进 OP_MSG 的 flagBits —— 那是 required bit，
+    // 而本客户端不附 CRC-32C 尾，服务端直接断连（同 commit 3df2ed8 记的形态）。
+    // lmongo.c:203 的掩码校验只挡 Lua 入口，C 侧调用方绕开它
+    mongo_set_flag(&mongo, CHECKSUM);
+    CuAssertTrue(tc, 0 == mongo_check_flag(&mongo, CHECKSUM));
+    mongo_set_flag(&mongo, EXHAUSTALLOWED);
+    CuAssertTrue(tc, 0 == mongo_check_flag(&mongo, EXHAUSTALLOWED));
 
     // 置位 → 组包：包里写着 MORETOCOME
     mongo_set_flag(&mongo, MORETOCOME);
@@ -365,6 +398,7 @@ static void test_mongo_pack_find(CuTest *tc) {
 // mongo_pack_aggregate + getmore + killcursors + distinct + count
 static void test_mongo_pack_misc(CuTest *tc) {
     mongo_ctx mongo;
+    int32_t err;
     _mongo_test_init(&mongo);
 
     bson_ctx arr;
@@ -379,18 +413,29 @@ static void test_mongo_pack_misc(CuTest *tc) {
     void *pack = mongo_pack_aggregate(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "aggregate"));
+    // pipeline 与 cursor 都是必需字段：只查命令名的话，删掉 cursor 那两行也照过，
+    // 而 mongod 对缺 cursor 的 aggregate 直接回 "The 'cursor' option is required"
+    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "pipeline"));
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, size - _MSG_HEAD_LENS, "cursor"));
     FREE(pack);
 
-    // getmore：含 getMore (int64) + collection
+    // getmore：含 getMore (int64) + collection。cursorid 必须原样落进 getMore 字段——
+    // 这个值超出 int32 范围，所以"写 0"、"降成 int32 截断"、"键名拼错"三种改法
+    // 都会被下面两条断言抓到。mongo_getmore 在 C 侧无业务调用方，组包层是唯一闸门
     pack = mongo_pack_getmore(&mongo, 0x12345678abcdLL, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "collection"));
+    err = 1;
+    CuAssertDblEquals(tc, 20015998348237.0,
+        _bson_find_number(bson, size - _MSG_HEAD_LENS, "getMore", &err), 0);
+    CuAssertIntEquals(tc, 0, err);
     FREE(pack);
 
-    // killcursors：utf8 "killCursors":"<collection>"
+    // killcursors：utf8 "killCursors":"<collection>" + cursors 数组
     pack = mongo_pack_killcursors(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "killCursors"));
+    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "cursors"));
     FREE(pack);
 
     // distinct：query=NULL 分支
@@ -398,13 +443,35 @@ static void test_mongo_pack_misc(CuTest *tc) {
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "distinct"));
     CuAssertStrEquals(tc, "name",     _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "key"));
+    CuAssertIntEquals(tc, -1, _bson_find_type(bson, size - _MSG_HEAD_LENS, "query"));// 不该有 query 字段
+    FREE(pack);
+
+    // distinct / count 的 query 非空分支：EMPTYPTR 判反的话过滤条件整个丢掉，
+    // 服务端拿全集去重 —— 两条命令都返回结果、都不报错，只是答案错
+    bson_ctx q;
+    bson_init(&q, NULL, 0);
+    bson_append_int32(&q, "age", 18);
+    bson_append_end(&q);
+
+    pack = mongo_pack_distinct(&mongo, "name", q.doc.data, q.doc.offset, NULL, 0, &size);
+    bson = _assert_msg_head(tc, pack, size);
+    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "distinct"));
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, size - _MSG_HEAD_LENS, "query"));
     FREE(pack);
 
     // count：query=NULL
     pack = mongo_pack_count(&mongo, NULL, 0, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "count"));
+    CuAssertIntEquals(tc, -1, _bson_find_type(bson, size - _MSG_HEAD_LENS, "query"));
     FREE(pack);
+
+    pack = mongo_pack_count(&mongo, q.doc.data, q.doc.offset, NULL, 0, &size);
+    bson = _assert_msg_head(tc, pack, size);
+    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "count"));
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(bson, size - _MSG_HEAD_LENS, "query"));
+    FREE(pack);
+    BSON_FREE(&q);
 
     BSON_FREE(&arr);
 }
@@ -922,20 +989,130 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     BSON_FREE(&b4);
 }
 
+// 合法 kind=0 的 OP_MSG 必须能走通 mongo_unpack。原来全文件唯一那次 mongo_unpack 是
+// 拒收用例，四个 mongo_parse_* 都手工填 mgopack_ctx{doc,dlens} 绕过它，于是
+// "wire 字节 → doc/dlens"这段换算零测试：算成"跳过 BSON 长度前缀"之类的偏移错误，
+// 三个套件照样全过。这里用 mongo_parse_check_error 的返回值反证换算对了——
+// doc/dlens 偏一个字节，BSON 就解不出 n=3。
+// 后半段验分片重入：mongo 跑在流式 TCP 上，大响应被拆成多次 read 是常态，
+// 而 blens < total 那支的 PROT_MOREDATA 也是零覆盖（改成 PROT_ERROR 就是分片即断连）
+static void test_mongo_unpack_kind0_ok(CuTest *tc) {
+    bson_ctx b;
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "n", 3);
+    bson_append_end(&b);
+
+    size_t blens = b.doc.offset;
+    size_t total = 16 + 4 + 1 + blens;
+    char *pkt;
+    MALLOC(pkt, total);
+    char *p = pkt;
+    pack_integer(p, (uint64_t)total, 4, 1); p += 4;
+    pack_integer(p, 0,      4, 1); p += 4;
+    pack_integer(p, 0,      4, 1); p += 4;
+    pack_integer(p, OP_MSG, 4, 1); p += 4;
+    pack_integer(p, 0,      4, 1); p += 4;// flags
+    *p++ = 0;// kind=0：单个 body section
+    memcpy(p, b.doc.data, blens);
+    BSON_FREE(&b);
+
+    /* 先喂不全：必须报 MOREDATA 而不是 ERROR，且不吐包 */
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, pkt, total - 1);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    int32_t status = 0;
+    void *mgopack = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrEquals(tc, NULL, mgopack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+
+    /* 补齐最后一个字节后必须解出来，且 doc/dlens 换算正确 */
+    buffer_append(&buf, pkt + total - 1, 1);
+    status = 0;
+    mgopack = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, mgopack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 3, mongo_parse_check_error((mgopack_ctx *)mgopack));
+    _mongo_pkfree(mgopack);
+
+    FREE(pkt);
+    buffer_free(&buf);
+}
+
+// mongo_unpack 的 flags 白名单：`0 != (flags & ~MORETOCOME)` → PROT_ERROR。原来唯一那次
+// unpack 把 flags 写成 0，既没验 CHECKSUM/EXHAUSTALLOWED 被拒、也没验 MORETOCOME 被放行。
+// 删掉那个 if 之后，server 启用 wire checksum 时尾部 4 字节 CRC-32C 会被算进 dlens
+// 当成 BSON 的一部分——轻则把成功响应判成失败，重则整条连接从此错位
+static void test_mongo_unpack_flags_whitelist(CuTest *tc) {
+    static const struct { uint32_t flags; int32_t accept; } cases[] = {
+        { 0,              1 },
+        { MORETOCOME,     1 },
+        { CHECKSUM,       0 },
+        { EXHAUSTALLOWED, 0 },
+    };
+    bson_ctx b;
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    void *mgopack;
+    char *pkt;
+    char *p;
+    size_t blens;
+    size_t total;
+    size_t i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        bson_init(&b, NULL, 0);
+        bson_append_double(&b, "ok", 1.0);
+        bson_append_int32(&b, "n", 3);
+        bson_append_end(&b);
+        blens = b.doc.offset;
+        total = 16 + 4 + 1 + blens;
+        MALLOC(pkt, total);
+        p = pkt;
+        pack_integer(p, (uint64_t)total, 4, 1); p += 4;
+        pack_integer(p, 0,      4, 1); p += 4;
+        pack_integer(p, 0,      4, 1); p += 4;
+        pack_integer(p, OP_MSG, 4, 1); p += 4;
+        pack_integer(p, cases[i].flags, 4, 1); p += 4;
+        *p++ = 0;
+        memcpy(p, b.doc.data, blens);
+        BSON_FREE(&b);
+
+        buffer_init(&buf);
+        buffer_append(&buf, pkt, total);
+        ZERO(&ud, sizeof(ud));
+        status = 0;
+        mgopack = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
+        if (cases[i].accept) {
+            CuAssertPtrNotNull(tc, mgopack);
+            CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+            _mongo_pkfree(mgopack);
+        } else {
+            CuAssertPtrEquals(tc, NULL, mgopack);
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        }
+        FREE(pkt);
+        buffer_free(&buf);
+    }
+}
+
 // mongo_unpack 拒收 kind=1 + klens=5 + docid='\0' 的语义空 section 响应:
 // 协议层合法但 dlens=0,下游 mongo_parse_*/bson_iter_init 触发 ASSERTAB abort,
 // 修复后 mongo_unpack 直接 PROT_ERROR 拒收避免恶意 server 26 字节构造响应远程 DoS
 static void test_mongo_unpack_kind1_empty_section(CuTest *tc) {
     char pkt[26];
     char *p = pkt;
-    pack_integer(p, 26,     4, 1); p += 4;  // total size
-    pack_integer(p, 0,      4, 1); p += 4;  // reqid
-    pack_integer(p, 0,      4, 1); p += 4;  // respto
-    pack_integer(p, OP_MSG, 4, 1); p += 4;  // prot
-    pack_integer(p, 0,      4, 1); p += 4;  // flags
-    *p++ = 1;                                // kind=1
-    pack_integer(p, 5,      4, 1); p += 4;  // klens=5 (最小合法)
-    *p++ = '\0';                             // docid="\0"
+    pack_integer(p, 26,     4, 1); p += 4;// total size
+    pack_integer(p, 0,      4, 1); p += 4;// reqid
+    pack_integer(p, 0,      4, 1); p += 4;// respto
+    pack_integer(p, OP_MSG, 4, 1); p += 4;// prot
+    pack_integer(p, 0,      4, 1); p += 4;// flags
+    *p++ = 1;// kind=1
+    pack_integer(p, 5,      4, 1); p += 4;// klens=5 (最小合法)
+    *p++ = '\0';// docid="\0"
     CuAssertIntEquals(tc, 26, (int)(p - pkt));
 
     buffer_ctx buf;
@@ -946,7 +1123,7 @@ static void test_mongo_unpack_kind1_empty_section(CuTest *tc) {
     ZERO(&ud, sizeof(ud));
 
     int32_t status = 0;
-    void *mgopack = mongo_unpack(NULL, INVALID_SOCK, 0, 0, &buf, &ud, NULL, &status);
+    void *mgopack = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
     CuAssertPtrEquals(tc, NULL, mgopack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
 
@@ -1158,6 +1335,8 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_parse_cursorid);
     SUITE_ADD_TEST(suite, test_mongo_parse_check_error);
     SUITE_ADD_TEST(suite, test_mongo_parse_startsession);
+    SUITE_ADD_TEST(suite, test_mongo_unpack_kind0_ok);
+    SUITE_ADD_TEST(suite, test_mongo_unpack_flags_whitelist);
     SUITE_ADD_TEST(suite, test_mongo_unpack_kind1_empty_section);
     SUITE_ADD_TEST(suite, test_mongo_udfree_keeps_session);
     SUITE_ADD_TEST(suite, test_mongo_setter_atomic);

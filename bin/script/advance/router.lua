@@ -417,11 +417,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
         -- 不能用 ipairs：撞上中间的 nil 就停，后面的中间件一起丢掉且 _resolve 压根不被调用。
         -- 表表示不了"中间有个 nil"，所以拿 pairs 的计数与 # 比一次，对不上就当场报错
         local n = #extra_mws
-        local cnt = 0
-        for _ in pairs(extra_mws) do
-            cnt = cnt + 1
-        end
-        assert(cnt == n, "middleware list must not contain nil")
+        assert(table_size(extra_mws) == n, "middleware list must not contain nil")
         for i = 1, n do
             mws[#mws + 1] = self:_resolve(extra_mws[i])
         end

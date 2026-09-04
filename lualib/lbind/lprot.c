@@ -8,7 +8,6 @@
 // Redis 聚合表一次预分配的槽位上限。不是协议上限,只是"预分配到此为止":元素个数由对端声明,
 // 超出的部分照常按需增长
 #define REDIS_PREALLOC_MAX 4096
-#define ADDRTYPE_OUT_OF_RANGE "mail address type out of range (TO/CC/BCC)"
 
 /// <summary>
 /// 打包 harbor 跨节点消息
@@ -958,7 +957,7 @@ static int32_t _lprot_mail_from(lua_State *lua) {
 static int32_t _lprot_mail_addrs_add(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     const char *email = luaL_checkstring(lua, 2);
-    mail_addr_type type = (mail_addr_type)lpub_check_range(lua, 3, TO, BCC, ADDRTYPE_OUT_OF_RANGE);
+    mail_addr_type type = (mail_addr_type)lpub_check_range(lua, 3, TO, BCC, "mail address type out of range (TO/CC/BCC)");
     mail_addrs_add(*ud, email, type);
     return 0;
 }

@@ -233,6 +233,14 @@ static void _fake_cmd(task_ctx *task, sk_id *sk, fake_smtp_ctx *ctx, fake_conn *
     }
     if (0 == STRNCMP(line, "MAIL FROM:", 10)) {
         tag = _fake_tag(line, 'c');
+        // 解不出编号也要算一次失败：_fake_tag 的失败值 -1 与"无事务"哨兵 -1 是同一个数，
+        // 不在这里拦住的话 sender 会被写成 -1，此后 MAIL FROM 的 -1 != sender 永远为假、
+        // RCPT 的 tag != sender 变成 -1 != -1，两条交错检测同时失效；
+        // 而 mails 只数信体终止符、与地址解析无关，判据 0 == interleave && 16 == mails 就变成空真
+        if (-1 == tag) {
+            ctx->interleave++;
+            LOG_ERROR("fake smtp: MAIL FROM tag unparsable: %s", line);
+        }
         if (-1 != fc->sender) {// 上一笔还没收尾就又来一个发件人：交错
             ctx->interleave++;
             LOG_ERROR("fake smtp: MAIL FROM c%d while c%d still open.", tag, fc->sender);
@@ -243,6 +251,10 @@ static void _fake_cmd(task_ctx *task, sk_id *sk, fake_smtp_ctx *ctx, fake_conn *
     }
     if (0 == STRNCMP(line, "RCPT TO:", 8)) {
         tag = _fake_tag(line, 'r');
+        if (-1 == tag) {// 理由同上
+            ctx->interleave++;
+            LOG_ERROR("fake smtp: RCPT tag unparsable: %s", line);
+        }
         if (tag != fc->sender) {// 收件人编号与本事务发件人对不上：交错
             ctx->interleave++;
             LOG_ERROR("fake smtp: RCPT r%d under sender c%d.", tag, fc->sender);

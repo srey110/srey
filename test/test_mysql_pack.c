@@ -76,13 +76,31 @@ static void test_mysql_set_payload_lens(CuTest *tc) {
     /* 写 7 字节 payload */
     binary_set_binary(&bw, "PAYLOAD", 7);
 
-    _mysql_set_payload_lens(&bw);
+    CuAssertIntEquals(tc, ERR_OK, _mysql_set_payload_lens(&bw));
 
     /* 头 3 字节小端长度 = 7 */
     CuAssertTrue(tc, 7 == (uint8_t)bw.data[0]);
     CuAssertTrue(tc, 0 == (uint8_t)bw.data[1]);
     CuAssertTrue(tc, 0 == (uint8_t)bw.data[2]);
+    /* 回填不得改动 offset：改了的话后续 _mysql_pack_finish 取到的包长就是错的 */
+    CuAssertIntEquals(tc, 4 + 7, (int)bw.offset);
 
+    binary_free(&bw);
+
+    /* payload 恰好 16MB 必须拒绝：3 字节长度字段装不下，硬写下去是个截断的长度，
+       服务端照它切包，整条连接从此错位。返回值原来没人接，这条守卫删掉也没人知道 */
+    binary_init(&bw, NULL, 0, 0);
+    binary_set_skip(&bw, MYSQL_HEAD_LENS + INT3_MAX);
+    CuAssertIntEquals(tc, ERR_FAILED, _mysql_set_payload_lens(&bw));
+    binary_free(&bw);
+
+    /* 差一个字节则放行，且长度字段三个字节全满 */
+    binary_init(&bw, NULL, 0, 0);
+    binary_set_skip(&bw, MYSQL_HEAD_LENS + INT3_MAX - 1);
+    CuAssertIntEquals(tc, ERR_OK, _mysql_set_payload_lens(&bw));
+    CuAssertIntEquals(tc, 0xFE, (uint8_t)bw.data[0]);/* 0xFFFFFE 小端：低位在前 */
+    CuAssertIntEquals(tc, 0xFF, (uint8_t)bw.data[1]);
+    CuAssertIntEquals(tc, 0xFF, (uint8_t)bw.data[2]);
     binary_free(&bw);
 }
 
@@ -166,6 +184,60 @@ static void test_mysql_pack_query_no_bind(CuTest *tc) {
     CuAssertTrue(tc, 0x03 == (uint8_t)p[4]);
 
     FREE(pack);
+}
+
+/* CLIENT_QUERY_ATTRIBUTES 置位后 COM_QUERY 在 SQL 之前多插一段：
+   parameter_count + parameter_set_count(恒 1)，有参数时再跟位图 / bind_flag / 类型名 / 值。
+   caps 为 0 时整段不写，而上一条用例的 mysql_ctx 是全零 —— 于是这条分支此前零覆盖，
+   漏写 parameter_set_count 那句服务端会当场错位，本地组包却看不出来 */
+static void test_mysql_pack_query_attrs(CuTest *tc) {
+    mysql_ctx mysql;
+    const char *sql = "SELECT 1";
+    size_t sqllen = strlen(sql);
+    size_t size = 0;
+    const uint8_t *p;
+
+    /* 无参数：只多出 parameter_count=0 与 parameter_set_count=1 两个 lenenc */
+    ZERO(&mysql, sizeof(mysql));
+    BIT_SET(mysql.client.caps, CLIENT_QUERY_ATTRIBUTES);
+    void *pack = mysql_pack_query(&mysql, sql, NULL, &size);
+    CuAssertPtrNotNull(tc, pack);
+    p = (const uint8_t *)pack;
+    CuAssertIntEquals(tc, 0x03, p[4]);/* COM_QUERY */
+    CuAssertIntEquals(tc, 0x00, p[5]);/* parameter_count */
+    CuAssertIntEquals(tc, 0x01, p[6]);/* parameter_set_count 恒 1 */
+    CuAssertIntEquals(tc, (int)(4 + 3 + sqllen), (int)size);
+    CuAssertTrue(tc, 0 == memcmp(p + 7, sql, sqllen));
+    FREE(pack);
+
+    /* 传了 mbind 但一个参数都没绑：count 仍是 0，后面那四段一律不写 */
+    mysql_bind_ctx mb;
+    mysql_bind_init(&mb);
+    ZERO(&mysql, sizeof(mysql));
+    BIT_SET(mysql.client.caps, CLIENT_QUERY_ATTRIBUTES);
+    pack = mysql_pack_query(&mysql, sql, &mb, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(4 + 3 + sqllen), (int)size);
+    FREE(pack);
+
+    /* 一个整数参数：count=1、set_count=1、1 字节位图(全 0)、bind_flag=1，
+       然后是 type_name 段与 value 段，SQL 永远在最末尾 */
+    mysql_bind_integer(&mb, "a", 7);
+    CuAssertIntEquals(tc, 1, mb.count);
+    ZERO(&mysql, sizeof(mysql));
+    BIT_SET(mysql.client.caps, CLIENT_QUERY_ATTRIBUTES);
+    pack = mysql_pack_query(&mysql, sql, &mb, &size);
+    CuAssertPtrNotNull(tc, pack);
+    p = (const uint8_t *)pack;
+    CuAssertIntEquals(tc, 0x01, p[5]);/* parameter_count */
+    CuAssertIntEquals(tc, 0x01, p[6]);/* parameter_set_count */
+    CuAssertIntEquals(tc, 0x00, p[7]);/* 位图：唯一那个参数非 NULL */
+    CuAssertIntEquals(tc, 0x01, p[8]);/* new_params_bind_flag */
+    CuAssertIntEquals(tc, (int)(4 + 1 + 1 + 1 + 1 + 1
+                                + mb.type_name.offset + mb.value.offset + sqllen), (int)size);
+    CuAssertTrue(tc, 0 == memcmp(p + size - sqllen, sql, sqllen));
+    FREE(pack);
+    mysql_bind_free(&mb);
 }
 
 /* =======================================================================
@@ -403,15 +475,121 @@ static void test_mysql_bind_free_reuse(CuTest *tc) {
     mysql_bind_free(&mb);
 }
 
+/* bind 四个缓冲的线格式逐字节验证。以前只断言过 count 与 offset > 0，于是 NULL 位图位序、
+ * 无符号标志位、整数自动选宽、time 双布局全都没人钉；而唯一另外的调用方 task_mysql
+ * 在 main.c 的 optional 白名单里，断言失败会被吞成 "- (network error)"。
+ * 类型码用枚举符号而不写数字：这里要钉的是布局与字节序，不是枚举取值 */
+static void test_mysql_bind_wire(CuTest *tc) {
+    mysql_bind_ctx mb;
+    const uint8_t *p;
+    mysql_bind_init(&mb);
+
+    /* NULL 位图：每 8 个参数共用一字节，第 i 个占 bit (i % 8)。
+       位序写反成 (1 << (7 - index)) 时这两个字节会变成 0x51 / 0x80 */
+    mysql_bind_integer(&mb, "a0", 1);
+    mysql_bind_nil(&mb, "a1");
+    mysql_bind_integer(&mb, "a2", 2);
+    mysql_bind_nil(&mb, "a3");
+    mysql_bind_integer(&mb, "a4", 3);
+    mysql_bind_integer(&mb, "a5", 4);
+    mysql_bind_integer(&mb, "a6", 5);
+    mysql_bind_nil(&mb, "a7");
+    mysql_bind_nil(&mb, "a8");
+    CuAssertIntEquals(tc, 9, mb.count);
+    CuAssertTrue(tc, 2 == mb.bitmap.offset);
+    p = (const uint8_t *)mb.bitmap.data;
+    CuAssertIntEquals(tc, 0x8A, p[0]);/* bit1|bit3|bit7 */
+    CuAssertIntEquals(tc, 0x01, p[1]);/* 第 9 个参数落第二字节的 bit0 */
+
+    /* 无符号标志在第 15 位。去掉 | 0x8000 之后服务端会把大 uint64 按有符号解释 */
+    mysql_bind_clear(&mb);
+    mysql_bind_uinteger(&mb, "u", 0xFFFFFFFFFFFFFFFFULL);
+    CuAssertTrue(tc, 2 == mb.type.offset);
+    p = (const uint8_t *)mb.type.data;
+    CuAssertIntEquals(tc, (uint8_t)MYSQL_TYPE_LONGLONG, p[0]);/* 小端低字节 = 类型码 */
+    CuAssertIntEquals(tc, 0x80, p[1]);
+    /* 有符号那支同一个类型码，但高字节必须是 0 */
+    mysql_bind_clear(&mb);
+    mysql_bind_integer(&mb, "i", -4294967296LL);
+    p = (const uint8_t *)mb.type.data;
+    CuAssertIntEquals(tc, (uint8_t)MYSQL_TYPE_LONGLONG, p[0]);
+    CuAssertIntEquals(tc, 0x00, p[1]);
+
+    /* 整数按值域自动选最小类型，value 缓冲宽度随之变化 */
+    mysql_bind_clear(&mb);
+    mysql_bind_integer(&mb, NULL, 127);
+    CuAssertIntEquals(tc, (uint8_t)MYSQL_TYPE_TINY, ((const uint8_t *)mb.type.data)[0]);
+    CuAssertTrue(tc, 1 == mb.value.offset);
+    mysql_bind_clear(&mb);
+    mysql_bind_integer(&mb, NULL, 128);
+    CuAssertIntEquals(tc, (uint8_t)MYSQL_TYPE_SHORT, ((const uint8_t *)mb.type.data)[0]);
+    CuAssertTrue(tc, 2 == mb.value.offset);
+    mysql_bind_clear(&mb);
+    mysql_bind_integer(&mb, NULL, 0x12345678);
+    CuAssertIntEquals(tc, (uint8_t)MYSQL_TYPE_LONG, ((const uint8_t *)mb.type.data)[0]);
+    CuAssertTrue(tc, 4 == mb.value.offset);
+    p = (const uint8_t *)mb.value.data;
+    CuAssertIntEquals(tc, 0x78, p[0]);/* 值也是小端 */
+    CuAssertIntEquals(tc, 0x56, p[1]);
+    CuAssertIntEquals(tc, 0x34, p[2]);
+    CuAssertIntEquals(tc, 0x12, p[3]);
+
+    /* time 双布局：全零只写一个长度字节 0，否则 1 + 8 */
+    mysql_bind_clear(&mb);
+    mysql_bind_time(&mb, NULL, 0, 0, 0, 0, 0);
+    CuAssertTrue(tc, 1 == mb.value.offset);
+    CuAssertIntEquals(tc, 0, ((const uint8_t *)mb.value.data)[0]);
+    mysql_bind_clear(&mb);
+    mysql_bind_time(&mb, NULL, 1, 2, 3, 4, 5);
+    CuAssertTrue(tc, 9 == mb.value.offset);
+    p = (const uint8_t *)mb.value.data;
+    CuAssertIntEquals(tc, 8, p[0]);
+    CuAssertIntEquals(tc, 1, p[1]);/* is_negative */
+    CuAssertIntEquals(tc, 2, p[2]);/* days 小端 4 字节 */
+    CuAssertIntEquals(tc, 0, p[3]);
+    CuAssertIntEquals(tc, 0, p[4]);
+    CuAssertIntEquals(tc, 0, p[5]);
+    CuAssertIntEquals(tc, 3, p[6]);
+    CuAssertIntEquals(tc, 4, p[7]);
+    CuAssertIntEquals(tc, 5, p[8]);
+
+    /* datetime 走 4 字节还是 7 字节取决于本地时区是否恰好午夜，故只钉"长度字节与体长自洽" */
+    mysql_bind_clear(&mb);
+    mysql_bind_datetime(&mb, NULL, 1716000000);
+    p = (const uint8_t *)mb.value.data;
+    CuAssertTrue(tc, 4 == p[0] || 7 == p[0]);
+    CuAssertTrue(tc, (size_t)p[0] + 1 == mb.value.offset);
+
+    /* type_name 缓冲 = 同样 2 字节类型 + lenenc(名字长) + 名字本体 */
+    mysql_bind_clear(&mb);
+    mysql_bind_integer(&mb, "ab", 1);
+    CuAssertTrue(tc, 5 == mb.type_name.offset);
+    p = (const uint8_t *)mb.type_name.data;
+    CuAssertIntEquals(tc, (uint8_t)MYSQL_TYPE_TINY, p[0]);
+    CuAssertIntEquals(tc, 0x00, p[1]);
+    CuAssertIntEquals(tc, 2, p[2]);/* lenenc 短档直接写长度 */
+    CuAssertIntEquals(tc, 'a', p[3]);
+    CuAssertIntEquals(tc, 'b', p[4]);
+    /* 匿名参数写零长名字 */
+    mysql_bind_clear(&mb);
+    mysql_bind_integer(&mb, NULL, 1);
+    CuAssertTrue(tc, 3 == mb.type_name.offset);
+    CuAssertIntEquals(tc, 0, ((const uint8_t *)mb.type_name.data)[2]);
+
+    mysql_bind_free(&mb);
+}
+
 /* ======================================================================= */
 
 void test_mysql_pack(CuSuite *suite) {
+    SUITE_ADD_TEST(suite, test_mysql_bind_wire);
     SUITE_ADD_TEST(suite, test_mysql_lenenc);
     SUITE_ADD_TEST(suite, test_mysql_set_payload_lens);
     SUITE_ADD_TEST(suite, test_mysql_bind_basic);
     SUITE_ADD_TEST(suite, test_mysql_bind_temporal);
     SUITE_ADD_TEST(suite, test_mysql_bind_free_reuse);
     SUITE_ADD_TEST(suite, test_mysql_pack_query_no_bind);
+    SUITE_ADD_TEST(suite, test_mysql_pack_query_attrs);
     SUITE_ADD_TEST(suite, test_mysql_pack_simple_cmds);
     SUITE_ADD_TEST(suite, test_mysql_pack_stmt_prepare);
     SUITE_ADD_TEST(suite, test_mysql_pack_stmt_execute);

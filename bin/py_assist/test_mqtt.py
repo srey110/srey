@@ -76,6 +76,12 @@ def connect_mqtt(clientid):
     if pk is None or (pk[0] & 0xF0) != CONNACK:
         s.close()
         raise RuntimeError(f"CONNACK missing: {pk!r}")
+    # 变长头也要看：只判类型半字节的话，服务端把拒绝原因码写成 0 或整段不写都发现不了。
+    # 上面 var_head 的 connect flags 是 0x02（CleanSession=1），按 MQTT 3.1.1 §3.2.2.2
+    # 服务端必须回 Session Present = 0
+    if len(pk[1]) < 2 or 0 != pk[1][0] or 0 != pk[1][1]:
+        s.close()
+        raise RuntimeError(f"CONNACK varhead bad (want sesspresent=0 reason=0): {pk[1][:4]!r}")
     return s
 
 
@@ -95,7 +101,13 @@ def case_publish_qos1_e2e():
         body = struct.pack("!H", len(topic)) + topic + struct.pack("!H", 1) + payload
         s.sendall(bytes([PUBLISH | 0x02]) + encode_rlen(len(body)) + body)
         pk = recv_packet(s)
-        return pk is not None and (pk[0] & 0xF0) == PUBACK
+        if pk is None or (pk[0] & 0xF0) != PUBACK:
+            return False
+        # packid 必须回带我们发的那个：只判类型的话，服务端把 ack 路由错到别的连接、
+        # 或 packid 字节序写反都看不出来
+        if len(pk[1]) < 2 or 1 != struct.unpack("!H", pk[1][:2])[0]:
+            raise RuntimeError(f"PUBACK packid mismatch: {pk[1][:4]!r}")
+        return True
     finally:
         s.close()
 
@@ -110,12 +122,13 @@ def case_subscribe_e2e():
         pk = recv_packet(s)
         if pk is None or (pk[0] & 0xF0) != SUBACK:
             return False
-        s.settimeout(1.0)
-        try:
-            pk2 = recv_packet(s)
-            return pk2 is not None and (pk2[0] & 0xF0) == PUBLISH
-        except socket.timeout:
-            return True
+        if len(pk[1]) < 2 or 100 != struct.unpack("!H", pk[1][:2])[0]:
+            raise RuntimeError(f"SUBACK packid mismatch: {pk[1][:4]!r}")
+        # 两侧服务端都在处理 SUBSCRIBE 的同一个回调里紧跟 SUBACK 无条件推 PUBLISH，
+        # 所以收不到就是回归。以前这里是 except socket.timeout: return True，
+        # 把服务端主动推送整段删掉也照样通过
+        pk2 = recv_packet(s)
+        return pk2 is not None and (pk2[0] & 0xF0) == PUBLISH
     finally:
         s.close()
 
@@ -142,7 +155,11 @@ def case_30_parallel_connect_publish():
                 body = struct.pack("!H", len(topic)) + topic + struct.pack("!H", idx + 1) + b"x"
                 s.sendall(bytes([PUBLISH | 0x02]) + encode_rlen(len(body)) + body)
                 pk = recv_packet(s)
-                results[idx] = pk is not None and (pk[0] & 0xF0) == PUBACK
+                # 每条连接发的 packid 各不相同（idx+1），所以要比回来的是不是自己那个：
+                # 只判"收到了某个 PUBACK"的话，服务端把 ack 投到别的连接上不会被发现
+                results[idx] = (pk is not None and (pk[0] & 0xF0) == PUBACK
+                                and len(pk[1]) >= 2
+                                and idx + 1 == struct.unpack("!H", pk[1][:2])[0])
             finally:
                 s.close()
         except Exception:

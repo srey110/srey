@@ -190,7 +190,9 @@ runner.run(function(t)
         local text = rdata and srey.ud_str(rdata, rsize) or ""
         t:check(text:find("serial=", 1, true) ~= nil, "coros 列出 serial 等待者")
         t:check(text:find("fork_wait pending=", 1, true) ~= nil, "coros 列出 fork_wait 屏障")
-        t:check(text:find("age=", 1, true) ~= nil, "fork_wait / serial 行带挂起时长，与 C 侧 coro_dump 同格式")
+        -- 探针要带前导空格：协程聚类行的 maxage= 里也含 age=，裸 "age=" 会被它抢先满足，
+        -- 那时把 fork_wait 与 serial 两行的 age 字段全删掉这条也照过
+        t:check(text:find(" age=", 1, true) ~= nil, "fork_wait / serial 行带挂起时长，与 C 侧 coro_dump 同格式")
         t:check(text:find("hold=", 1, true) ~= nil, "serial 行带持锁时长")
         t:check(text:find("co=", 1, true) ~= nil, "serial 行带持锁协程，可与挂起段对上号")
         t:check(text:find("1 fork_wait", 1, true) ~= nil, "汇总行统计 fork_wait")

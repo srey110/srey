@@ -77,6 +77,10 @@ runner.run(function(t)
         local got
         r(function(lud, sz) got = utils.ud_str(lud, sz) end)
         t:eq("survive", got, "writer 在: 首次读 survive")
+        -- 丢 writer 之前先 update 一次：不这么做的话 lastcopy 与当前快照相同，
+        -- lstm.c 的判定顺序（先比 lastcopy、后判 NULL）会让"writer 真被 finalize"与
+        -- "根本没 finalize"两条路都返 false，本用例与用例 3 同解、分不出真假
+        w("survive2")
         -- 主动让 writer 出作用域 + 强制 GC 触发 __gc → stm_free
         w = nil
         collectgarbage("collect")

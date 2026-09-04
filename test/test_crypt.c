@@ -78,14 +78,6 @@ static void test_crc(CuTest *tc) {
  * ======================================================================= */
 
 /* 将 hash 字节转换为十六进制字符串 */
-static void _to_hex(const char *hash, size_t hlen, char *out) {
-    static const char *hex = "0123456789abcdef";
-    for (size_t i = 0; i < hlen; i++) {
-        out[i * 2]     = hex[((unsigned char)hash[i]) >> 4];
-        out[i * 2 + 1] = hex[((unsigned char)hash[i]) & 0x0f];
-    }
-    out[hlen * 2] = '\0';
-}
 
 static void test_digest(CuTest *tc) {
     char hash[DG_BLOCK_SIZE];
@@ -97,52 +89,55 @@ static void test_digest(CuTest *tc) {
     digest_init(&dg, DG_MD5);
     digest_update(&dg, "", 0);
     hlen = digest_final(&dg, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertStrEquals(tc, "d41d8cd98f00b204e9800998ecf8427e", hex);
 
     /* MD5("abc") */
     digest_init(&dg, DG_MD5);
     digest_update(&dg, "abc", 3);
     hlen = digest_final(&dg, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertStrEquals(tc, "900150983cd24fb0d6963f7d28e17f72", hex);
 
     /* SHA1("abc") */
     digest_init(&dg, DG_SHA1);
     digest_update(&dg, "abc", 3);
     hlen = digest_final(&dg, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertStrEquals(tc, "a9993e364706816aba3e25717850c26c9cd0d89d", hex);
 
     /* SHA256("") */
     digest_init(&dg, DG_SHA256);
     digest_update(&dg, "", 0);
     hlen = digest_final(&dg, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertStrEquals(tc, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", hex);
 
     /* SHA256("abc") */
     digest_init(&dg, DG_SHA256);
     digest_update(&dg, "abc", 3);
     hlen = digest_final(&dg, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertStrEquals(tc, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", hex);
 
     /* SHA512("abc") */
+    const char *sha512abc =
+        "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+        "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
     digest_init(&dg, DG_SHA512);
     digest_update(&dg, "abc", 3);
     hlen = digest_final(&dg, hash);
-    _to_hex(hash, hlen, hex);
-    CuAssertStrEquals(tc,
-        "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
-        "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
-        hex);
+    tohex(hash, hlen, hex, 1);
+    CuAssertStrEquals(tc, sha512abc, hex);
 
-    /* reset 后可复用 */
+    /* reset 后可复用：不能只比长度——两个 hlen 都取自同一个 attr.block_lens，
+       中间无人动 attr，那条断言等价于 64 == 64，reset 完全不生效也照样通过 */
     digest_reset(&dg);
     digest_update(&dg, "abc", 3);
     size_t hlen2 = digest_final(&dg, hash);
     CuAssertTrue(tc, hlen == hlen2);
+    tohex(hash, hlen2, hex, 1);
+    CuAssertStrEquals(tc, sha512abc, hex);
 
     /* 分段 update 与整体 update 结果相同 */
     char h1[DG_BLOCK_SIZE], h2[DG_BLOCK_SIZE];
@@ -170,7 +165,7 @@ static void test_hmac(CuTest *tc) {
     hmac_init(&hm, DG_SHA256, "key", 3);
     hmac_update(&hm, "The quick brown fox jumps over the lazy dog", 43);
     hlen = hmac_final(&hm, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertStrEquals(tc,
         "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
         hex);
@@ -219,6 +214,40 @@ static void test_urlraw(CuTest *tc) {
     CuAssertTrue(tc, '\0' == enc[0]);
 }
 
+/* 逐字符钉住转义集。实现的保留集是 A-Za-z0-9 加 '-' '.' '_'，比 RFC 3986 的 unreserved
+ * 少一个 '~'（urlraw.c:14-18 的四段判定）；转义写 %XX 且十六进制大写。
+ * 上面那个用例只断言"无空格 / 无 !"与字母数字原样 + 往返，删掉 urlraw.c:15 的
+ * (c < 'A' && c > '9') 那一档（: ; < = > ? @ 不再转义）照样全过，
+ * 而 url.encode 是公开 Lua API，编出来的 query 值会被参数注入 */
+static void test_url_encode_charset(CuTest *tc) {
+    char in[2];
+    char out[8];
+    char expect[8];
+    int32_t c;
+    in[1] = '\0';
+    for (c = 0x20; c <= 0x7E; c++) {
+        in[0] = (char)c;
+        url_encode(in, 1, out, 0);
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            || '-' == c || '.' == c || '_' == c) {
+            expect[0] = (char)c;
+            expect[1] = '\0';
+        } else {
+            SNPRINTF(expect, sizeof(expect), "%%%02X", (uint32_t)c);
+        }
+        CuAssertStrEquals(tc, expect, out);
+    }
+    /* space2plus 只改空格这一个字符的去向 */
+    in[0] = ' ';
+    url_encode(in, 1, out, 1);
+    CuAssertStrEquals(tc, "+", out);
+    url_encode(in, 1, out, 0);
+    CuAssertStrEquals(tc, "%20", out);
+    in[0] = '!';
+    url_encode(in, 1, out, 1);
+    CuAssertStrEquals(tc, "%21", out);
+}
+
 /* =======================================================================
  * XOR 编解码
  * ======================================================================= */
@@ -234,6 +263,16 @@ static void test_xor(CuTest *tc) {
     xor_encode(key, 1, data, lens);
     /* 编码后数据与原文不同 */
     CuAssertTrue(tc, 0 != memcmp(origin, data, lens));
+    /* 固定输出。xor 是项目自研的链式变换（p[0] 用 key[1..3]，其后每字节
+       p[j] = (p[j-1] + p[j]) ^ key[0]，且 p[j-1] 已是变换后的值），没有外部规范可对，
+       所以这里钉的是当前行为的金值：只有往返断言的话，两侧一致地改链接方式
+       （比如改用未变换的 p[j-1]、或换个 key 下标）恒成立、完全看不出来 */
+    static const char golden[] =
+        "\x52\xa5\x03\x7d\xfe\x38\x4a\xb3\x30\xb0\x0e\x60\x93\xa1\xe7\x5d"
+        "\xd4\x55\x67\xc2\x27\x55\xa4\xd6\x58\xaf\x30\xb6\xc4\x38\xb5\x35"
+        "\x47\xad\x0e\x92\xa0\x11\x68\xca\x20\x97\x1b\x5b";
+    CuAssertTrue(tc, sizeof(golden) - 1 == lens);
+    CuAssertTrue(tc, 0 == memcmp(golden, data, lens));
 
     xor_decode(key, 1, data, lens);
     /* 解码后还原 */
@@ -282,30 +321,44 @@ static int _scram_handshake(const char *method,
     scram_ctx *srv = scram_init(method, 0);
     char *cf = NULL, *sf = NULL, *clf = NULL, *svf = NULL;
     int rtn = ERR_FAILED;
-    if (!cli || !srv) goto out;
+    if (!cli || !srv) {
+        goto out;
+    }
 
     scram_set_user(cli, "user", 4);
     scram_set_pwd(cli, pwd_cli, strlen(pwd_cli));
     scram_set_pwd(srv, pwd_srv, strlen(pwd_srv));
-    if (cbind_cli && cbind_len > 0) scram_set_cbind(cli, cbind_cli, cbind_len);
-    if (cbind_srv && cbind_len > 0) scram_set_cbind(srv, cbind_srv, cbind_len);
+    if (cbind_cli && cbind_len > 0) {
+        scram_set_cbind(cli, cbind_cli, cbind_len);
+    }
+    if (cbind_srv && cbind_len > 0) {
+        scram_set_cbind(srv, cbind_srv, cbind_len);
+    }
     scram_set_salt(srv, (char *)salt, sizeof(salt));
     scram_set_iter(srv, 4096);
 
     cf = scram_first_message(cli);
-    if (!cf || ERR_OK != scram_parse_first_message(srv, cf, strlen(cf))) goto out;
+    if (!cf || ERR_OK != scram_parse_first_message(srv, cf, strlen(cf))) {
+        goto out;
+    }
     FREE(cf); cf = NULL;
 
     sf = scram_first_message(srv);
-    if (!sf || ERR_OK != scram_parse_first_message(cli, sf, strlen(sf))) goto out;
+    if (!sf || ERR_OK != scram_parse_first_message(cli, sf, strlen(sf))) {
+        goto out;
+    }
     FREE(sf); sf = NULL;
 
     clf = scram_final_message(cli);
-    if (!clf || ERR_OK != scram_check_final_message(srv, clf, strlen(clf))) goto out;
+    if (!clf || ERR_OK != scram_check_final_message(srv, clf, strlen(clf))) {
+        goto out;
+    }
     _scram_free_msg(&clf);
 
     svf = scram_final_message(srv);
-    if (!svf || ERR_OK != scram_check_final_message(cli, svf, strlen(svf))) goto out;
+    if (!svf || ERR_OK != scram_check_final_message(cli, svf, strlen(svf))) {
+        goto out;
+    }
     _scram_free_msg(&svf);
 
     /* 握手完成后的期望状态：
@@ -1226,7 +1279,7 @@ static void test_hmac_variants(CuTest *tc) {
     hmac_init(&hm, DG_SHA1, key20, sizeof(key20));
     hmac_update(&hm, "Hi There", 8);
     hlen = hmac_final(&hm, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertTrue(tc, 20 == (int)hlen);
     CuAssertStrEquals(tc, "b617318655057264e28bc0b6fb378c8ef146be00", hex);
 
@@ -1240,7 +1293,7 @@ static void test_hmac_variants(CuTest *tc) {
     hmac_init(&hm, DG_SHA512, key20, sizeof(key20));
     hmac_update(&hm, "Hi There", 8);
     hlen = hmac_final(&hm, hash);
-    _to_hex(hash, hlen, hex);
+    tohex(hash, hlen, hex, 1);
     CuAssertTrue(tc, 64 == (int)hlen);
     CuAssertStrEquals(tc,
         "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde"
@@ -1268,29 +1321,45 @@ static void test_md2(CuTest *tc) {
     md2_init(&ctx);
     md2_update(&ctx, "", 0);
     md2_final(&ctx, hash);
-    _to_hex(hash, MD2_BLOCK_SIZE, hex);
+    tohex(hash, MD2_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "8350e5a3e24c153df2275c9f80692773", hex);
 
     /* MD2("a") = 32ec01ec4a6dac72c0ab96fb34c0b5d1 */
     md2_init(&ctx);
     md2_update(&ctx, "a", 1);
     md2_final(&ctx, hash);
-    _to_hex(hash, MD2_BLOCK_SIZE, hex);
+    tohex(hash, MD2_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "32ec01ec4a6dac72c0ab96fb34c0b5d1", hex);
 
     /* MD2("abc") = da853b0d3f88d99b30283a69e6ded6bb */
     md2_init(&ctx);
     md2_update(&ctx, "abc", 3);
     md2_final(&ctx, hash);
-    _to_hex(hash, MD2_BLOCK_SIZE, hex);
+    tohex(hash, MD2_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "da853b0d3f88d99b30283a69e6ded6bb", hex);
 
     /* MD2("message digest") = ab4f496bfb2a530b219ff33031fe06b0 */
     md2_init(&ctx);
     md2_update(&ctx, "message digest", 14);
     md2_final(&ctx, hash);
-    _to_hex(hash, MD2_BLOCK_SIZE, hex);
+    tohex(hash, MD2_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "ab4f496bfb2a530b219ff33031fe06b0", hex);
+
+    /* A.5 余下三条，长度 26 / 62 / 80 —— 上面四条最长 14 字节，全在 MD2 的 16 字节分组之内，
+       md2.c 的跨块补齐与 bulk 循环一次都没执行过 */
+    struct { const char *in; const char *expect; } big[] = {
+        { "abcdefghijklmnopqrstuvwxyz",                                     "4e8ddff3650292ab5a4108c3aa47940b" },
+        { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", "da33def2a42df13975352846c30338cd" },
+        { "12345678901234567890123456789012345678901234567890"
+          "123456789012345678901234567890",                                 "d5976f79d83d3a0dc9806c3c66f3efd8" },
+    };
+    for (size_t i = 0; i < sizeof(big) / sizeof(big[0]); i++) {
+        md2_init(&ctx);
+        md2_update(&ctx, big[i].in, strlen(big[i].in));
+        md2_final(&ctx, hash);
+        tohex(hash, MD2_BLOCK_SIZE, hex, 1);
+        CuAssertStrEquals(tc, big[i].expect, hex);
+    }
 
     /* 分段 update 与整体 update 结果相同 */
     char h1[MD2_BLOCK_SIZE], h2[MD2_BLOCK_SIZE];
@@ -1317,36 +1386,51 @@ static void test_md4(CuTest *tc) {
     md4_init(&ctx);
     md4_update(&ctx, "", 0);
     md4_final(&ctx, hash);
-    _to_hex(hash, MD4_BLOCK_SIZE, hex);
+    tohex(hash, MD4_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "31d6cfe0d16ae931b73c59d7e0c089c0", hex);
 
     /* MD4("a") = bde52cb31de33e46245e05fbdbd6fb24 */
     md4_init(&ctx);
     md4_update(&ctx, "a", 1);
     md4_final(&ctx, hash);
-    _to_hex(hash, MD4_BLOCK_SIZE, hex);
+    tohex(hash, MD4_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "bde52cb31de33e46245e05fbdbd6fb24", hex);
 
     /* MD4("abc") = a448017aaf21d8525fc10ae87aa6729d */
     md4_init(&ctx);
     md4_update(&ctx, "abc", 3);
     md4_final(&ctx, hash);
-    _to_hex(hash, MD4_BLOCK_SIZE, hex);
+    tohex(hash, MD4_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "a448017aaf21d8525fc10ae87aa6729d", hex);
 
     /* MD4("message digest") = d9130a8164549fe818874806e1c7014b */
     md4_init(&ctx);
     md4_update(&ctx, "message digest", 14);
     md4_final(&ctx, hash);
-    _to_hex(hash, MD4_BLOCK_SIZE, hex);
+    tohex(hash, MD4_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "d9130a8164549fe818874806e1c7014b", hex);
 
     /* MD4("abcdefghijklmnopqrstuvwxyz") = d79e1c308aa5bbcdeea8ed63df412da9 */
     md4_init(&ctx);
     md4_update(&ctx, "abcdefghijklmnopqrstuvwxyz", 26);
     md4_final(&ctx, hash);
-    _to_hex(hash, MD4_BLOCK_SIZE, hex);
+    tohex(hash, MD4_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "d79e1c308aa5bbcdeea8ed63df412da9", hex);
+
+    /* A.5 余下两条，62 / 80 字节。上面五条最长 26 字节，全在 64 字节分组之内，
+       位计数器与 bulk 循环算错都看不出来；80 字节那条是唯一跨分组的官方向量 */
+    struct { const char *in; const char *expect; } big[] = {
+        { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", "043f8582f241db351ce627e153e7f0e4" },
+        { "12345678901234567890123456789012345678901234567890"
+          "123456789012345678901234567890",                                 "e33b4ddc9c38f2199c3e7b164fcc0536" },
+    };
+    for (size_t i = 0; i < sizeof(big) / sizeof(big[0]); i++) {
+        md4_init(&ctx);
+        md4_update(&ctx, big[i].in, strlen(big[i].in));
+        md4_final(&ctx, hash);
+        tohex(hash, MD4_BLOCK_SIZE, hex, 1);
+        CuAssertStrEquals(tc, big[i].expect, hex);
+    }
 
     /* 分段 update 与整体 update 结果相同 */
     char h1[MD4_BLOCK_SIZE], h2[MD4_BLOCK_SIZE];
@@ -1417,12 +1501,16 @@ static void test_md5_nist(CuTest *tc) {
         { "message digest",                                                  "f96b697d7cb7938d525a2f31aaf161d0" },
         { "abcdefghijklmnopqrstuvwxyz",                                      "c3fcd3d76192e4007dfb496cca67e13b" },
         { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",  "d174ab98d277d9f5a5611c2c9f419d9f" },
+        /* A.5 最后一条，80 字节 —— 唯一一条跨过 64 字节分组的官方向量。
+           上面五条都 < 64，位计数器算错（bitlen += 512 写成 += 256）它们全看不出来 */
+        { "12345678901234567890123456789012345678901234567890"
+          "123456789012345678901234567890",                                  "57edf4a22be3c955ac49da2e2107b67a" },
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         md5_init(&ctx);
         md5_update(&ctx, cases[i].in, strlen(cases[i].in));
         md5_final(&ctx, hash);
-        _to_hex(hash, MD5_BLOCK_SIZE, hex);
+        tohex(hash, MD5_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, cases[i].expect, hex);
     }
     // 跨 block（>64 字节）正确性：800 个 'a' 触发多 block + final padding
@@ -1431,7 +1519,7 @@ static void test_md5_nist(CuTest *tc) {
     md5_init(&ctx);
     md5_update(&ctx, buf, sizeof(buf));
     md5_final(&ctx, hash);
-    _to_hex(hash, MD5_BLOCK_SIZE, hex);
+    tohex(hash, MD5_BLOCK_SIZE, hex, 1);
     char hash2[MD5_BLOCK_SIZE];
     char hex2[MD5_BLOCK_SIZE * 2 + 1];
     // 分段 update 与整体 update 结果一致
@@ -1439,7 +1527,7 @@ static void test_md5_nist(CuTest *tc) {
     md5_update(&ctx, buf, 400);
     md5_update(&ctx, buf + 400, 400);
     md5_final(&ctx, hash2);
-    _to_hex(hash2, MD5_BLOCK_SIZE, hex2);
+    tohex(hash2, MD5_BLOCK_SIZE, hex2, 1);
     CuAssertStrEquals(tc, hex, hex2);
 }
 
@@ -1459,7 +1547,7 @@ static void test_sha1_nist(CuTest *tc) {
         sha1_init(&ctx);
         sha1_update(&ctx, cases[i].in, strlen(cases[i].in));
         sha1_final(&ctx, hash);
-        _to_hex(hash, SHA1_BLOCK_SIZE, hex);
+        tohex(hash, SHA1_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, cases[i].expect, hex);
     }
     // 1 百万个 'a'：FIPS 180-1 长输入向量 34aa973cd4c4daa4f61eeb2bdbad27316534016f
@@ -1470,7 +1558,7 @@ static void test_sha1_nist(CuTest *tc) {
         sha1_update(&ctx, chunk, sizeof(chunk));
     }
     sha1_final(&ctx, hash);
-    _to_hex(hash, SHA1_BLOCK_SIZE, hex);
+    tohex(hash, SHA1_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc, "34aa973cd4c4daa4f61eeb2bdbad27316534016f", hex);
 }
 
@@ -1490,7 +1578,7 @@ static void test_sha256_nist(CuTest *tc) {
         sha256_init(&ctx);
         sha256_update(&ctx, cases[i].in, strlen(cases[i].in));
         sha256_final(&ctx, hash);
-        _to_hex(hash, SHA256_BLOCK_SIZE, hex);
+        tohex(hash, SHA256_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, cases[i].expect, hex);
     }
     // 分段 update（单字节流） vs 整体 update 等价
@@ -1500,7 +1588,7 @@ static void test_sha256_nist(CuTest *tc) {
     sha256_update(&ctx, msg, mlen);
     sha256_final(&ctx, hash);
     char hex_whole[SHA256_BLOCK_SIZE * 2 + 1];
-    _to_hex(hash, SHA256_BLOCK_SIZE, hex_whole);
+    tohex(hash, SHA256_BLOCK_SIZE, hex_whole, 1);
     sha256_ctx ctx2;
     sha256_init(&ctx2);
     for (size_t i = 0; i < mlen; i++) {
@@ -1508,7 +1596,7 @@ static void test_sha256_nist(CuTest *tc) {
     }
     sha256_final(&ctx2, hash);
     char hex_byte[SHA256_BLOCK_SIZE * 2 + 1];
-    _to_hex(hash, SHA256_BLOCK_SIZE, hex_byte);
+    tohex(hash, SHA256_BLOCK_SIZE, hex_byte, 1);
     CuAssertStrEquals(tc, hex_whole, hex_byte);
     // 已知值：SHA256("The quick brown fox jumps over the lazy dog")
     CuAssertStrEquals(tc, "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592", hex_whole);
@@ -1522,7 +1610,7 @@ static void test_sha512_nist(CuTest *tc) {
     sha512_init(&ctx);
     sha512_update(&ctx, "", 0);
     sha512_final(&ctx, hash);
-    _to_hex(hash, SHA512_BLOCK_SIZE, hex);
+    tohex(hash, SHA512_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc,
         "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce"
         "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
@@ -1530,7 +1618,7 @@ static void test_sha512_nist(CuTest *tc) {
     sha512_init(&ctx);
     sha512_update(&ctx, "abc", 3);
     sha512_final(&ctx, hash);
-    _to_hex(hash, SHA512_BLOCK_SIZE, hex);
+    tohex(hash, SHA512_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc,
         "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
         "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
@@ -1542,22 +1630,102 @@ static void test_sha512_nist(CuTest *tc) {
     sha512_init(&ctx);
     sha512_update(&ctx, two_block, strlen(two_block));
     sha512_final(&ctx, hash);
-    _to_hex(hash, SHA512_BLOCK_SIZE, hex);
+    tohex(hash, SHA512_BLOCK_SIZE, hex, 1);
     CuAssertStrEquals(tc,
         "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018"
         "501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909",
         hex);
+    // 1 百万个 'a'：FIPS 180-2 长输入向量。分 1000 段各 1000 字节喂，而 1000 不是 128 的
+    // 整数倍，所以每段都跨内部缓冲边界——上面三条都是一次喂完（长度全 < 128），
+    // sha512.c 的 `p += freespace` 那条跨块续接路径一次都没执行过，改成 `p += lens` 也照过
+    sha512_init(&ctx);
+    char chunk[1000];
+    memset(chunk, 'a', sizeof(chunk));
+    for (int i = 0; i < 1000; i++) {
+        sha512_update(&ctx, chunk, sizeof(chunk));
+    }
+    sha512_final(&ctx, hash);
+    tohex(hash, SHA512_BLOCK_SIZE, hex, 1);
+    CuAssertStrEquals(tc,
+        "e718483d0ce769644e2e42c7bc15b4638e1f98b13b2044285632a803afa973eb"
+        "de0ff244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8cc09b",
+        hex);
 }
 
 // 将 hex 字符串转为字节数组，长度必须是偶数
+// 逐字节解一条十六进制测试向量。写错的向量当场 abort，别静默解出另一组字节
 static void _hex_to_bytes(const char *hex, uint8_t *out, size_t outlen) {
-    for (size_t i = 0; i < outlen; i++) {
-        char c1 = hex[i * 2];
-        char c2 = hex[i * 2 + 1];
-        uint8_t v1 = (c1 >= 'a') ? (uint8_t)(c1 - 'a' + 10) : ((c1 >= 'A') ? (uint8_t)(c1 - 'A' + 10) : (uint8_t)(c1 - '0'));
-        uint8_t v2 = (c2 >= 'a') ? (uint8_t)(c2 - 'a' + 10) : ((c2 >= 'A') ? (uint8_t)(c2 - 'A' + 10) : (uint8_t)(c2 - '0'));
+    int32_t v1, v2;
+    size_t i;
+    for (i = 0; i < outlen; i++) {
+        v1 = fromhex(hex[i * 2]);
+        v2 = fromhex(hex[i * 2 + 1]);
+        ASSERTAB(ERR_FAILED != v1 && ERR_FAILED != v2, "invalid hex vector");
         out[i] = (uint8_t)((v1 << 4) | v2);
     }
+}
+
+/* NIST SP 800-38A 附录 F 的 AES-128 分组模式已知答案。同文件的 test_aes_direct 走的是
+ * aes_crypt 直调（见下方 test_aes_direct），只钉了单块 ECB（F.1.1/F.1.3/F.1.5）；
+ * 四个链式/流式模式此前全是
+ * round-trip + 相对断言，而 _cipher_ofb_model / _cipher_ctr_model 加解密共用同一段代码，
+ * 往返恒成立。这里用官方向量逐块钉密文，并且每个模式都跑**两块**——
+ * 只跑第一块的话 CBC 的链接与 CTR 的计数器进位都不会被执行到
+ * （_cipher_inc_iv 改成小端进位时，正是第二块起才对不上）。
+ * key / plaintext 与 test_aes_direct 那三条同源，都是 SP 800-38A 的那一组 */
+static void _cipher_kat(CuTest *tc, cipher_model model, const char *ivhex,
+    const char *c1hex, const char *c2hex) {
+    const char *keyhex = "2b7e151628aed2a6abf7158809cf4f3c";
+    const char *p1hex = "6bc1bee22e409f96e93d7e117393172a";
+    const char *p2hex = "ae2d8a571e03ac9c9eb76fac45af8e51";
+    uint8_t key[16], iv[16], p1[16], p2[16];
+    char hex[AES_BLOCK_SIZE * 2 + 1];
+    cipher_ctx enc, dec;
+    void *out;
+    size_t olen;
+    _hex_to_bytes(keyhex, key, 16);
+    _hex_to_bytes(ivhex, iv, 16);
+    _hex_to_bytes(p1hex, p1, 16);
+    _hex_to_bytes(p2hex, p2, 16);
+
+    cipher_init(&enc, AES, model, (const char *)key, 16, 128, 1);
+    cipher_iv(&enc, (const char *)iv, 16);
+    out = cipher_block(&enc, p1, 16, &olen);
+    CuAssertPtrNotNull(tc, out);
+    CuAssertTrue(tc, 16 == olen);
+    tohex(out, 16, hex, 1);
+    CuAssertStrEquals(tc, c1hex, hex);
+    out = cipher_block(&enc, p2, 16, &olen);
+    CuAssertPtrNotNull(tc, out);
+    tohex(out, 16, hex, 1);
+    CuAssertStrEquals(tc, c2hex, hex);
+
+    /* 反向：同样两块密文必须还原出原明文（CTR/OFB 的解密与加密同路，这一步只作对照） */
+    uint8_t c1[16], c2[16];
+    _hex_to_bytes(c1hex, c1, 16);
+    _hex_to_bytes(c2hex, c2, 16);
+    cipher_init(&dec, AES, model, (const char *)key, 16, 128, 0);
+    cipher_iv(&dec, (const char *)iv, 16);
+    out = cipher_block(&dec, c1, 16, &olen);
+    CuAssertPtrNotNull(tc, out);
+    CuAssertTrue(tc, 0 == memcmp(out, p1, 16));
+    out = cipher_block(&dec, c2, 16, &olen);
+    CuAssertPtrNotNull(tc, out);
+    CuAssertTrue(tc, 0 == memcmp(out, p2, 16));
+}
+static void test_cipher_nist_modes(CuTest *tc) {
+    /* F.2.1 CBC-AES128.Encrypt */
+    _cipher_kat(tc, CBC, "000102030405060708090a0b0c0d0e0f",
+        "7649abac8119b246cee98e9b12e9197d", "5086cb9b507219ee95db113a917678b2");
+    /* F.3.13 CFB128-AES128.Encrypt */
+    _cipher_kat(tc, CFB, "000102030405060708090a0b0c0d0e0f",
+        "3b3fd92eb72dad20333449f8e83cfb4a", "c8a64537a0b3a93fcde3cdad9f1ce58b");
+    /* F.4.1 OFB-AES128.Encrypt（首块与 CFB 相同，都是 E(IV) xor P1；第二块才分道） */
+    _cipher_kat(tc, OFB, "000102030405060708090a0b0c0d0e0f",
+        "3b3fd92eb72dad20333449f8e83cfb4a", "7789508d16918f03f53c52dac54ed825");
+    /* F.5.1 CTR-AES128.Encrypt，初始计数器 f0f1..ff：第二块要靠末字节 ff 进位到 fe */
+    _cipher_kat(tc, CTR, "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+        "874d6191b620e3261bef6864990db6ce", "9806f66b7970fdff8617187bb9fffdff");
 }
 
 // aes_init / aes_crypt 直调，NIST FIPS-197 Appendix A/B 标准向量 + 128/192/256 keybits
@@ -1572,7 +1740,7 @@ static void test_aes_direct(CuTest *tc) {
         _hex_to_bytes("6bc1bee22e409f96e93d7e117393172a", pt, 16);
         aes_init(&aes, (char *)key, 16, 128, 1);
         char *ct = aes_crypt(&aes, pt);
-        _to_hex(ct, AES_BLOCK_SIZE, hex);
+        tohex(ct, AES_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, "3ad77bb40d7a3660a89ecaf32466ef97", hex);
         // 解密回明文
         aes_init(&aes, (char *)key, 16, 128, 0);
@@ -1587,7 +1755,7 @@ static void test_aes_direct(CuTest *tc) {
         _hex_to_bytes("6bc1bee22e409f96e93d7e117393172a", pt, 16);
         aes_init(&aes, (char *)key, 24, 192, 1);
         char *ct = aes_crypt(&aes, pt);
-        _to_hex(ct, AES_BLOCK_SIZE, hex);
+        tohex(ct, AES_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, "bd334f1d6e45f25ff712a214571fa5cc", hex);
         aes_init(&aes, (char *)key, 24, 192, 0);
         char *pt2 = aes_crypt(&aes, ct);
@@ -1601,7 +1769,7 @@ static void test_aes_direct(CuTest *tc) {
         _hex_to_bytes("6bc1bee22e409f96e93d7e117393172a", pt, 16);
         aes_init(&aes, (char *)key, 32, 256, 1);
         char *ct = aes_crypt(&aes, pt);
-        _to_hex(ct, AES_BLOCK_SIZE, hex);
+        tohex(ct, AES_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, "f3eed1bdb5d2a03c064b5a7e3db181f8", hex);
         aes_init(&aes, (char *)key, 32, 256, 0);
         char *pt2 = aes_crypt(&aes, ct);
@@ -1639,7 +1807,7 @@ static void test_des_direct(CuTest *tc) {
         des_init(&des, (char *)key, 8, 0, 1);
         char *ct = des_crypt(&des, pt);
         char hex[DES_BLOCK_SIZE * 2 + 1];
-        _to_hex(ct, DES_BLOCK_SIZE, hex);
+        tohex(ct, DES_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, "3fa40e8a984d4815", hex);
         // 解密回明文
         des_init(&des, (char *)key, 8, 0, 0);
@@ -1684,7 +1852,7 @@ static void test_des_direct(CuTest *tc) {
         _hex_to_bytes("4E6F772069732074", pt, 8);
         des_init(&des, (char *)key, 8, 1, 1);
         char hex[DES_BLOCK_SIZE * 2 + 1];
-        _to_hex(des_crypt(&des, pt), DES_BLOCK_SIZE, hex);
+        tohex(des_crypt(&des, pt), DES_BLOCK_SIZE, hex, 1);
         CuAssertStrEquals(tc, "3fa40e8a984d4815", hex);
     }
 
@@ -2148,28 +2316,48 @@ static void test_cipher_stream_modes(CuTest *tc) {
  * 改前 B 由 hmac.c 里第二张按类型特判的表给出，else 一律返 64 且无 default 兜底——
  * 新增算法漏改那里不报错，HMAC 静默算错。本用例逐算法钉死三个值，漏填即挂 */
 static void test_digest_attr_table(CuTest *tc) {
+    /* abc 一列是各算法的官方向量（RFC 1319/1320/1321 A.5、FIPS 180-1/180-2）。
+       只比三个尺寸常量的话，把某一行的三个回调换成别的算法（尺寸相同的 MD4↔MD5、
+       SHA256↔SHA1 都可能）完全看不出来，而 digest.new(DIGEST_TYPE.MD2) 从 Lua 可达 */
     struct {
         digest_type t;
         size_t out;
         size_t b;
         size_t eng;
+        const char *abc;
     } want[] = {
-        { DG_MD2,    MD2_BLOCK_SIZE,    16,  sizeof(md2_ctx)    },
-        { DG_MD4,    MD4_BLOCK_SIZE,    64,  sizeof(md4_ctx)    },
-        { DG_MD5,    MD5_BLOCK_SIZE,    64,  sizeof(md5_ctx)    },
-        { DG_SHA1,   SHA1_BLOCK_SIZE,   64,  sizeof(sha1_ctx)   },
-        { DG_SHA256, SHA256_BLOCK_SIZE, 64,  sizeof(sha256_ctx) },
-        { DG_SHA512, SHA512_BLOCK_SIZE, 128, sizeof(sha512_ctx) },
+        { DG_MD2,    MD2_BLOCK_SIZE,    16,  sizeof(md2_ctx),
+          "da853b0d3f88d99b30283a69e6ded6bb" },
+        { DG_MD4,    MD4_BLOCK_SIZE,    64,  sizeof(md4_ctx),
+          "a448017aaf21d8525fc10ae87aa6729d" },
+        { DG_MD5,    MD5_BLOCK_SIZE,    64,  sizeof(md5_ctx),
+          "900150983cd24fb0d6963f7d28e17f72" },
+        { DG_SHA1,   SHA1_BLOCK_SIZE,   64,  sizeof(sha1_ctx),
+          "a9993e364706816aba3e25717850c26c9cd0d89d" },
+        { DG_SHA256, SHA256_BLOCK_SIZE, 64,  sizeof(sha256_ctx),
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
+        { DG_SHA512, SHA512_BLOCK_SIZE, 128, sizeof(sha512_ctx),
+          "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+          "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f" },
     };
     digest_ctx d;
+    char hash[DG_BLOCK_SIZE];
+    char hex[DG_BLOCK_SIZE * 2 + 1];
+    size_t hlen;
     size_t i;
     for (i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
         digest_init(&d, want[i].t);
-        CuAssertTrue(tc, want[i].out == d.attr.block_lens);
-        CuAssertTrue(tc, want[i].b == d.attr.key_block);
-        CuAssertTrue(tc, want[i].eng == d.attr.eng_lens);
+        CuAssertTrue(tc, want[i].out == d.attr->block_lens);
+        CuAssertTrue(tc, want[i].b == d.attr->key_block);
+        CuAssertTrue(tc, want[i].eng == d.attr->eng_lens);
         /* eng_lens 必须落在联合体内，否则 hmac_reset 的 memcpy 会读写越界 */
-        CuAssertTrue(tc, d.attr.eng_lens <= sizeof(d.eng_ctx));
+        CuAssertTrue(tc, d.attr->eng_lens <= sizeof(d.eng_ctx));
+        /* 回调真挂对了才算这一行是对的 */
+        digest_update(&d, "abc", 3);
+        hlen = digest_final(&d, hash);
+        CuAssertTrue(tc, want[i].out == hlen);
+        tohex(hash, hlen, hex, 1);
+        CuAssertStrEquals(tc, want[i].abc, hex);
         digest_free(&d);
     }
 }
@@ -2203,6 +2391,50 @@ static void test_hmac_free(CuTest *tc) {
     size_t hlen = hmac_final(&hm, hash);
     CuAssertTrue(tc, 32 == hlen);
     hmac_free(&hm);
+}
+
+/* digest_free / cipher_free 的整段清零，写法同 test_hmac_free（ctx 在栈上所以读得到）。
+ * 注意这只能覆盖"调用方自己的 ctx"这一层；CLAUDE.md 要求清零的那一串**函数局部栈缓冲**
+ * （hmac 的 key_temp/block_ipad/block_opad、scram 的 proof/clientkey/storedkey 等）
+ * 返回后栈帧已失效，读它就是 UB，没有可靠的单元测试手段 */
+static void test_digest_cipher_free_zeroed(CuTest *tc) {
+    digest_ctx d;
+    cipher_ctx c;
+    const uint8_t *raw;
+    int32_t nonzero;
+    size_t i;
+
+    digest_init(&d, DG_SHA256);
+    digest_update(&d, "abc", 3);
+    raw = (const uint8_t *)&d;
+    nonzero = 0;
+    for (i = 0; i < sizeof(digest_ctx); i++) {
+        if (0 != raw[i]) {
+            nonzero = 1;
+            break;
+        }
+    }
+    CuAssertTrue(tc, 0 != nonzero);
+    digest_free(&d);
+    for (i = 0; i < sizeof(digest_ctx); i++) {
+        CuAssertTrue(tc, 0 == raw[i]);
+    }
+
+    cipher_init(&c, AES, CBC, "0123456789abcdef", 16, 128, 1);
+    cipher_iv(&c, "abcdef0123456789", 16);
+    raw = (const uint8_t *)&c;
+    nonzero = 0;
+    for (i = 0; i < sizeof(cipher_ctx); i++) {
+        if (0 != raw[i]) {
+            nonzero = 1;
+            break;
+        }
+    }
+    CuAssertTrue(tc, 0 != nonzero);
+    cipher_free(&c);
+    for (i = 0; i < sizeof(cipher_ctx); i++) {
+        CuAssertTrue(tc, 0 == raw[i]);
+    }
 }
 
 /* =======================================================================
@@ -2509,10 +2741,13 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hmac);
     SUITE_ADD_TEST(suite, test_hmac_variants);
     SUITE_ADD_TEST(suite, test_hmac_free);
+    SUITE_ADD_TEST(suite, test_digest_cipher_free_zeroed);
     SUITE_ADD_TEST(suite, test_urlraw);
+    SUITE_ADD_TEST(suite, test_url_encode_charset);
     SUITE_ADD_TEST(suite, test_urlraw_invalid);
     SUITE_ADD_TEST(suite, test_xor);
     SUITE_ADD_TEST(suite, test_cipher);
+    SUITE_ADD_TEST(suite, test_cipher_nist_modes);
     SUITE_ADD_TEST(suite, test_cipher_padding_zeroed);
     SUITE_ADD_TEST(suite, test_cipher_decrypt_bad_padding);
     SUITE_ADD_TEST(suite, test_cipher_block_reset);

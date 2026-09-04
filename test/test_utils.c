@@ -41,9 +41,11 @@ static void test_pack_unpack(CuTest *tc) {
     double d2 = unpack_double(buf, 1);
     CuAssertTrue(tc, (d2 - d) < 0.000001 && (d - d2) < 0.000001);
 
-    /* 网络字节序宏（64 位）*/
+    /* 网络字节序宏（64 位）：往返自洽对恒等函数也成立，钉字节序得比对大端布局字面量 */
     uint64_t v64 = 0x0102030405060708ULL;
     uint64_t net = htonll(v64);
+    const uint8_t bigend[8] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
+    CuAssertTrue(tc, 0 == memcmp(&net, bigend, sizeof(bigend)));
     CuAssertTrue(tc, v64 == ntohll(net));
 
     /* size<=0 边界：0 字节解包恒为 0，避免 1<<(size*8-1) 移位 UB */
@@ -303,20 +305,51 @@ static void test_sfid(CuTest *tc) {
     sfid_ctx *p = sfid_init(&ctx, 1, 0, 0, 0); /* 机器ID=1，其余默认 */
     CuAssertPtrNotNull(tc, p);
 
-    /* 连续生成的 ID 单调递增 */
+    /* 连续生成的 ID 单调递增，且每个都 decode 回来核对三个字段 */
+    uint64_t ts = 0, pts, cur;
+    int32_t mid, seq, pseq;
+    uint64_t before = nowms();
     uint64_t prev = sfid_id(&ctx);
+    sfid_decode(&ctx, prev, &pts, &mid, &pseq);
+    CuAssertIntEquals(tc, 1, mid);
     for (int i = 0; i < 100; i++) {
-        uint64_t cur = sfid_id(&ctx);
+        cur = sfid_id(&ctx);
+        CuAssertTrue(tc, cur > prev);
+        sfid_decode(&ctx, cur, &ts, &mid, &seq);
+        CuAssertIntEquals(tc, 1, mid);
+        CuAssertTrue(tc, seq >= 0 && seq <= ctx.sequencemask);
+        /* 同毫秒内序号加一；跨毫秒则时间戳前进、序号归零 */
+        if (ts == pts) {
+            CuAssertIntEquals(tc, pseq + 1, seq);
+        } else {
+            CuAssertTrue(tc, ts > pts && 0 == seq);
+        }
+        prev = cur;
+        pts = ts;
+        pseq = seq;
+    }
+
+    /* decode 出的时间戳是含 customepoch 的墙钟毫秒，必须夹在生成前后取的 nowms 之间。
+       原来的 ts > 0 恒真：customepoch 默认非 0，加上它之后与 ID 内容无关。
+       两端各留 2s 余量，只挡量纲与纪元错位，不挡调度抖动 */
+    uint64_t after = nowms();
+    CuAssertTrue(tc, ts + 2000 >= before && ts <= after + 2000);
+}
+
+/* 同毫秒序号耗尽：sequencemask 只有 1 位，第 3 次调用即撞上回绕保护，自旋等下一毫秒。
+ * 回绕保护若被删掉，sequence 会越过掩码，(sequence & sequencemask) 折回去与前面的 ID 撞号 */
+static void test_sfid_seq_exhaust(CuTest *tc) {
+    sfid_ctx ctx;
+    uint64_t cur;
+    uint64_t prev = 0;
+    CuAssertPtrNotNull(tc, sfid_init(&ctx, 1, 21, 1, 0));
+    CuAssertIntEquals(tc, 1, ctx.sequencemask);
+    for (int i = 0; i < 32; i++) {
+        cur = sfid_id(&ctx);
+        CuAssertTrue(tc, 0 != cur);
         CuAssertTrue(tc, cur > prev);
         prev = cur;
     }
-
-    /* decode 还原机器ID */
-    uint64_t ts;
-    int32_t  mid, seq;
-    sfid_decode(&ctx, prev, &ts, &mid, &seq);
-    CuAssertTrue(tc, 1 == mid);
-    CuAssertTrue(tc, ts > 0);
 }
 
 /* sfid_id 取的是墙钟，时钟往回跳时它等时钟追上来。等待必须有上限：不设上限的话回拨多少
@@ -392,6 +425,40 @@ static void test_hash_ring(CuTest *tc) {
     CuAssertTrue(tc, 4 == ring.nnodes);
     hash_ring_node *n4 = hash_ring_find(&ring, (void *)key, strlen(key));
     CuAssertPtrNotNull(tc, n4);
+
+    hash_ring_free(&ring);
+
+    /* 环定位：2 节点各 150 副本，200 个固定 key 两个节点都得命中过。
+       md5 分布可重现，但不钉"哪个 key 落哪个节点"；二分退化成恒取 items[0]
+       时全部 key 会挤到同一个节点上 */
+    char skey[16];
+    int32_t nhit_a = 0, nhit_b = 0;
+    hash_ring_node *hit;
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&ring, (void *)"ringA", 5, 150));
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&ring, (void *)"ringB", 5, 150));
+    for (int i = 0; i < 200; i++) {
+        SNPRINTF(skey, sizeof(skey), "spread-%d", i);
+        hit = hash_ring_find(&ring, skey, strlen(skey));
+        CuAssertPtrNotNull(tc, hit);
+        CuAssertTrue(tc, 5 == hit->lens);
+        if (0 == memcmp(hit->name, "ringA", 5)) {
+            nhit_a++;
+        } else {
+            CuAssertTrue(tc, 0 == memcmp(hit->name, "ringB", 5));
+            nhit_b++;
+        }
+    }
+    CuAssertTrue(tc, nhit_a > 0);
+    CuAssertTrue(tc, nhit_b > 0);
+
+    /* 摘掉一个节点后，同一批 key 只能落到剩下那个 */
+    hash_ring_remove(&ring, (void *)"ringA", 5);
+    for (int i = 0; i < 200; i++) {
+        SNPRINTF(skey, sizeof(skey), "spread-%d", i);
+        hit = hash_ring_find(&ring, skey, strlen(skey));
+        CuAssertPtrNotNull(tc, hit);
+        CuAssertTrue(tc, 5 == hit->lens && 0 == memcmp(hit->name, "ringB", 5));
+    }
 
     hash_ring_free(&ring);
 }
@@ -864,6 +931,7 @@ static void test_buffer_space(CuTest *tc) {
 static size_t _fake_rv_want[FAKE_RV_MAX];// 第 i 次调用要吐出的字节数
 static size_t _fake_rv_offer[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 总空间
 static int32_t _fake_rv_calls;
+static int32_t _fake_rv_fail_at;// 第几次调用返 ERR_FAILED(1 起算),0 为一路成功
 // 假 readv：无需真 socket 即可驱动 buffer_from_sock 的 ET 读循环
 static int32_t _fake_readv(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed) {
     (void)fd;
@@ -880,6 +948,10 @@ static int32_t _fake_readv(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, s
         remain = _fake_rv_want[_fake_rv_calls];
     }
     _fake_rv_calls++;
+    if (_fake_rv_calls == _fake_rv_fail_at) {
+        *readed = 0;// 失败也得写出参: 调用方拿它去 commit_expand
+        return ERR_FAILED;
+    }
     if (remain > offer) {
         remain = offer;
     }
@@ -899,6 +971,7 @@ static void _fake_rv_reset(void) {
     memset(_fake_rv_want, 0, sizeof(_fake_rv_want));
     memset(_fake_rv_offer, 0, sizeof(_fake_rv_offer));
     _fake_rv_calls = 0;
+    _fake_rv_fail_at = 0;
 }
 static void test_buffer_from_sock_space(CuTest *tc) {
 #ifdef READV_EINVAL
@@ -939,6 +1012,43 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
     CuAssertTrue(tc, _fake_rv_offer[1] >= MAX_RECV_SIZE);
     CuAssertTrue(tc, _fake_rv_offer[2] >= MAX_RECV_SIZE);
+    buffer_free(&buf);
+#endif
+}
+
+/* =======================================================================
+ * _readv 失败分支：失败码必须原样返回给调用方 —— usock.c 的 _usk_tcp_recv 靠它
+ * 走 _evpub_mark_close，吞掉的话出错的 socket 永远关不掉。
+ * 失败前已读到的字节也不许丢，仍要能 drain 出来
+ * ======================================================================= */
+static void test_buffer_from_sock_readv_fail(CuTest *tc) {
+    buffer_ctx buf;
+    size_t nread;
+
+    // 首轮就失败：失败码上传，一个字节也没读到
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_fail_at = 1;
+    CuAssertIntEquals(tc, ERR_FAILED, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, 1, _fake_rv_calls);
+    CuAssertTrue(tc, 0 == nread);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    buffer_free(&buf);
+
+#ifndef READV_EINVAL
+    // 短读一轮后确认轮失败：失败码照样上传，前一轮的 1500 字节完好可读。
+    // READV_EINVAL 平台短读即 break，根本走不到确认轮，故只跳过这一段
+    char readback[8];
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = 1500;
+    _fake_rv_fail_at = 2;
+    CuAssertIntEquals(tc, ERR_FAILED, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, 2, _fake_rv_calls);
+    CuAssertTrue(tc, 1500 == nread);
+    CuAssertTrue(tc, 1500 == buffer_size(&buf));
+    CuAssertTrue(tc, sizeof(readback) == buffer_copyout(&buf, 0, readback, sizeof(readback)));
+    CuAssertTrue(tc, 0 == memcmp("RRRRRRRR", readback, sizeof(readback)));
     buffer_free(&buf);
 #endif
 }
@@ -1183,12 +1293,16 @@ static void test_timer(CuTest *tc) {
     uint64_t e_ms = timer_elapsed_ms(&t);
     CuAssertTrue(tc, e_ms < 1000);
 
-    /* timer_elapsed 纳秒值与 elapsed_ms 毫秒值量级一致 */
+    /* timer_elapsed 纳秒值与 elapsed_ms 毫秒值量级一致。必须先睡够一段可测的时长：
+       start 后立即读 e_ms 恒为 0，量级断言退化成 e_ns >= 0 的恒真式 */
     timer_start(&t);
-    uint64_t e_ns = timer_elapsed(&t);
+    MSLEEP(20);
     e_ms = timer_elapsed_ms(&t);
-    /* 纳秒值不小于毫秒值 × 1000（允许少量误差，取一半） */
-    CuAssertTrue(tc, e_ns >= e_ms * 500000ULL);
+    uint64_t e_ns = timer_elapsed(&t);
+    CuAssertTrue(tc, e_ms >= 15);/* 下界给 5ms 余量，覆盖各平台 MSLEEP 粒度 */
+    CuAssertTrue(tc, e_ms < 5000);/* 上界留宽，只挡换算因子量纲错位 */
+    /* e_ns 后读，故必然不小于 e_ms 换算出的纳秒值，不需要余量 */
+    CuAssertTrue(tc, e_ns >= (uint64_t)e_ms * 1000000ULL);
 }
 
 // load_trend：首次采样、上升不忙、下跌超阈值判定忙、紧贴阈值边界
@@ -1248,7 +1362,9 @@ static void test_timer_extra(CuTest *tc) {
     // ms1 在 ns1 / 1e6 附近（容差 ±100ms × 1e6 ns）
     uint64_t derived_ms = ns1 / 1000000ULL;
     int64_t diff = (int64_t)ms1 - (int64_t)derived_ms;
-    if (diff < 0) diff = -diff;
+    if (diff < 0) {
+        diff = -diff;
+    }
     CuAssertTrue(tc, diff < 100);
 
     // 单调递增：连续两次 timer_cur，第二次 >= 第一次
@@ -1336,6 +1452,11 @@ static void test_utils_misc(CuTest *tc) {
     ct = contenttype(".html");
     CuAssertPtrNotNull(tc, ct);
     CuAssertTrue(tc, NULL != strstr(ct, "html"));
+
+    /* 查表用的是 STRICMP，扩展名大小写不敏感：三种写法必须给出同一个 content-type。
+       唯一生产调用方传的是附件后缀，不做大小写规范化 */
+    CuAssertStrEquals(tc, ct, contenttype(".HTML"));
+    CuAssertStrEquals(tc, ct, contenttype(".Html"));
 
     /* 未知扩展名返回默认值（非 NULL）*/
     ct = contenttype(".unknownxyz");
@@ -1502,20 +1623,40 @@ static void test_log_lv(CuTest *tc) {
     log_setlv(prev);
 }
 
-// slog 等级过滤路径：lv > _log_lv 时早返不入队，避免污染输出
+// slog 等级过滤路径：lv > _log_lv 时早返，既不入队也不分配
 // 注：mpq 入队/丢弃路径已由 test_mpq_concurrent_mc 覆盖，slog 入队路径无需重复测试
 static void test_log_slog_filter(CuTest *tc) {
-    (void)tc;
+    const int32_t nfilter = 100;
     log_level prev = log_getlv();
+    char big[300];// 超过 LOG_INLINE_SIZE(256)，漏过过滤的话每条都要单独 MALLOC 一次
+    int32_t i;
+#if MEMORY_CHECK
+    uint64_t alloc0, alloc1;
+#endif
+    memset(big, 'x', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
     // 设到 FATAL（最高级，值 0）：所有 lv > 0 的 slog 都被过滤
     log_setlv(LOGLV_FATAL);
-    for (int i = 0; i < 100; i++) {
-        slog(LOGLV_ERROR, "filtered error %d", i);
-        slog(LOGLV_WARN,  "filtered warn %d",  i);
-        slog(LOGLV_INFO,  "filtered info %d",  i);
-        slog(LOGLV_DEBUG, "filtered debug %d", i);
+    CuAssertIntEquals(tc, LOGLV_FATAL, log_getlv());
+#if MEMORY_CHECK
+    mem_stat(&alloc0, NULL);
+#endif
+    for (i = 0; i < nfilter; i++) {
+        slog(LOGLV_ERROR, "filtered error %d %s", i, big);
+        slog(LOGLV_WARN, "filtered warn %d %s", i, big);
+        slog(LOGLV_INFO, "filtered info %d %s", i, big);
+        slog(LOGLV_DEBUG, "filtered debug %d %s", i, big);
     }
+#if MEMORY_CHECK
+    // 上界取总条数(4 * nfilter)的一半：过滤正常时增量近 0（日志线程另有零星分配），
+    // 漏过过滤则是每条一次 MALLOC，两者差一个数量级
+    mem_stat(&alloc1, NULL);
+    CuAssertTrue(tc, alloc1 - alloc0 < (uint64_t)nfilter * 2);
+#endif
+    // 过滤路径不许碰日志级别；还原后必须精确回到原值
+    CuAssertIntEquals(tc, LOGLV_FATAL, log_getlv());
     log_setlv(prev);
+    CuAssertIntEquals(tc, prev, log_getlv());
 }
 
 /* =======================================================================
@@ -2039,7 +2180,9 @@ static void test_sock_pair(CuTest *tc) {
         int r = (int)recv(fds[1], rbuf + got, (int)(sizeof(rbuf) - 1 - got), 0);
         if (r > 0) {
             got += r;
-            if (got >= (int)strlen(msg)) break;
+            if (got >= (int)strlen(msg)) {
+                break;
+            }
         } else {
             MSLEEP(10);
             waited += 10;
@@ -2060,7 +2203,9 @@ static void test_sock_pair(CuTest *tc) {
         int r = (int)recv(fds[0], rbuf + got, (int)(sizeof(rbuf) - 1 - got), 0);
         if (r > 0) {
             got += r;
-            if (got >= (int)strlen(back)) break;
+            if (got >= (int)strlen(back)) {
+                break;
+            }
         } else {
             MSLEEP(10);
             waited += 10;
@@ -3021,9 +3166,11 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_get_commit);
     SUITE_ADD_TEST(suite, test_buffer_space);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_space);
+    SUITE_ADD_TEST(suite, test_buffer_from_sock_readv_fail);
     SUITE_ADD_TEST(suite, test_buffer_free_resets);
     SUITE_ADD_TEST(suite, test_buffer_hint_after_migrate);
     SUITE_ADD_TEST(suite, test_sfid);
+    SUITE_ADD_TEST(suite, test_sfid_seq_exhaust);
     SUITE_ADD_TEST(suite, test_sfid_invalid);
     SUITE_ADD_TEST(suite, test_hash_ring);
     SUITE_ADD_TEST(suite, test_hash_ring_edge);

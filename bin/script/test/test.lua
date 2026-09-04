@@ -30,6 +30,7 @@ local TESTS = {
     { "test.unit_multi_call",     "multi_call" },
     { "test.unit_hotfix",         "hotfix" },
     { "test.unit_inject",         "inject" },
+    { "test.unit_debug",          "debug_req" },
     { "test.unit_seri",           "seri" },
     { "test.unit_stm",            "stm" },
     { "test.unit_kcp",            "kcp" },

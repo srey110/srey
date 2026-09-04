@@ -122,7 +122,10 @@ runner.run(function(t)
         })
         local elapsed = srey.timer_ms() - t0
         t:eq(2, #r, "fork_wait + sleep 两个任务都返回")
-        t:check(elapsed < 50, "两个 sleep(30) 并发 < 50ms（实际 " .. elapsed .. "ms）")
+        -- 上界证明是并发（串行要 60ms），下界证明 sleep 真的睡了：
+        -- 只卡上界的话 srey.sleep 变成空操作也算过，而那时"并发"根本没被验证
+        t:check(elapsed >= 25 and elapsed < 50,
+                "两个 sleep(30) 并发，25ms <= " .. elapsed .. "ms < 50ms")
     end
 
     -- ── srey.fork_bind：参数预绑定，返回无参 lambda ───────────────────

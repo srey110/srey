@@ -29,12 +29,12 @@ static void test_seri_basic_nil_bool(CuTest *tc) {
 static void test_seri_int_buckets(CuTest *tc) {
     int64_t vals[] = {
         0,
-        1, 0xFF,              // BYTE 边界
-        0x100, 0xFFFF,        // WORD 边界
-        0x10000, 0xFFFFFFFF,  // DWORD(u32) 边界
-        -1, INT32_MIN,        // DWORD(i32) 负数
-        ((int64_t)INT32_MAX) + 1,            // QWORD 正越界
-        INT64_MIN, INT64_MAX  // QWORD 端点
+        1, 0xFF,// BYTE 边界
+        0x100, 0xFFFF,// WORD 边界
+        0x10000, 0xFFFFFFFF,// DWORD(u32) 边界
+        -1, INT32_MIN,// DWORD(i32) 负数
+        ((int64_t)INT32_MAX) + 1,// QWORD 正越界
+        INT64_MIN, INT64_MAX// QWORD 端点
     };
     size_t n = sizeof(vals) / sizeof(vals[0]);
     binary_ctx bw;
@@ -205,11 +205,11 @@ static void test_seri_array_nested(CuTest *tc) {
     binary_init(&bw, NULL, 0, 0);
     seri_append_array_start(&bw, 2);
     seri_append_int(&bw, 42);
-    seri_append_array_start(&bw, 2);  // 嵌套
+    seri_append_array_start(&bw, 2);// 嵌套
     seri_append_real(&bw, 3.14);
     seri_append_string(&bw, "hi", 2);
-    seri_append_array_end(&bw);       // 内层 end
-    seri_append_array_end(&bw);       // 外层 end
+    seri_append_array_end(&bw);// 内层 end
+    seri_append_array_end(&bw);// 外层 end
 
     seri_iter iter;
     seri_item item;
@@ -229,9 +229,9 @@ static void test_seri_array_nested(CuTest *tc) {
     CuAssertIntEquals(tc, SERI_ITEM_STRING, item.type);
     CuAssertIntEquals(tc, 2, (int32_t)item.v.s.len);
     seri_iter_next(&iter, &item);
-    CuAssertIntEquals(tc, SERI_ITEM_NIL, item.type);  // 内层 end
+    CuAssertIntEquals(tc, SERI_ITEM_NIL, item.type);// 内层 end
     seri_iter_next(&iter, &item);
-    CuAssertIntEquals(tc, SERI_ITEM_NIL, item.type);  // 外层 end
+    CuAssertIntEquals(tc, SERI_ITEM_NIL, item.type);// 外层 end
 
     binary_free(&bw);
 }
@@ -244,7 +244,7 @@ static void test_seri_invalid_stream(CuTest *tc) {
 
     seri_iter iter;
     seri_item item;
-    seri_iter_init(&iter, bw.data, bw.offset - 3);  // 截掉末尾 3 字节
+    seri_iter_init(&iter, bw.data, bw.offset - 3);// 截掉末尾 3 字节
     CuAssertIntEquals(tc, -1, seri_iter_next(&iter, &item));
     binary_free(&bw);
 
@@ -283,6 +283,45 @@ static void test_json_helper_string(CuTest *tc) {
     CuAssertTrue(tc, 0 == json_has(root, "missing"));
     yyjson_doc_free(doc);
 }
+// json_get_number 过滤 NaN/Inf、json_get_num_range 卡上下界：配置里的数字最终都要 cast 成
+// uint16_t/uint8_t 这类窄整型，而 C99 §6.3.1.4 规定 NaN/Inf 与超范围值转整型均为 UB。
+// 两个函数是 srey/main.c 的 CFG_NUM 的唯一依赖，失败时一律不得动 *val
+static void test_json_helper_number(CuTest *tc) {
+    const char *src = "{\"i\":7,\"f\":2.5,\"big\":70000,\"neg\":-1,\"s\":\"x\"}";
+    yyjson_doc *doc = yyjson_read(src, strlen(src), 0);
+    CuAssertPtrNotNull(tc, doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    double val = -12345;
+    CuAssertIntEquals(tc, ERR_OK, json_get_number(root, "i", &val));
+    CuAssertDblEquals(tc, 7, val, 0);
+    CuAssertIntEquals(tc, ERR_OK, json_get_number(root, "f", &val));
+    CuAssertDblEquals(tc, 2.5, val, 0);
+    // 字段缺席与类型不符都算失败，且不许动 *val
+    val = -12345;
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_number(root, "missing", &val));
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_number(root, "s", &val));
+    CuAssertDblEquals(tc, -12345, val, 0);
+    // 恰在界上合法（上下界都是闭区间），界外拒收
+    CuAssertIntEquals(tc, ERR_OK, json_get_num_range(root, "i", 7, 7, &val));
+    CuAssertDblEquals(tc, 7, val, 0);
+    val = -12345;
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_num_range(root, "big", 0, UINT16_MAX, &val));
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_num_range(root, "neg", 0, UINT16_MAX, &val));
+    CuAssertDblEquals(tc, -12345, val, 0);
+    yyjson_doc_free(doc);
+    // NaN / Inf 得开 ALLOW_INF_AND_NAN 才解得出来。srey 读配置时不开这个 flag，所以这里验的
+    // 是 json_get_number 自己那道 isnan/isinf，而不是 yyjson 的默认拒收
+    const char *bad = "{\"nan\":NaN,\"inf\":Infinity,\"ninf\":-Infinity}";
+    yyjson_doc *bdoc = yyjson_read(bad, strlen(bad), YYJSON_READ_ALLOW_INF_AND_NAN);
+    CuAssertPtrNotNull(tc, bdoc);
+    yyjson_val *broot = yyjson_doc_get_root(bdoc);
+    val = -12345;
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_number(broot, "nan", &val));
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_number(broot, "inf", &val));
+    CuAssertIntEquals(tc, ERR_FAILED, json_get_number(broot, "ninf", &val));
+    CuAssertDblEquals(tc, -12345, val, 0);
+    yyjson_doc_free(bdoc);
+}
 void test_seri(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_seri_basic_nil_bool);
     SUITE_ADD_TEST(suite, test_seri_int_buckets);
@@ -294,4 +333,5 @@ void test_seri(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_seri_array_nested);
     SUITE_ADD_TEST(suite, test_seri_invalid_stream);
     SUITE_ADD_TEST(suite, test_json_helper_string);
+    SUITE_ADD_TEST(suite, test_json_helper_number);
 }

@@ -63,7 +63,7 @@ static uint64_t _br_run(int32_t type, void *lock, int32_t nthreads, volatile int
     for (int32_t i = 0; i < nthreads; i++) {
         sink += args[i].sink;
     }
-    if (sink < 0) {   // 恒不成立(shared>0),仅为防止上面整段循环被优化掉
+    if (sink < 0) {// 恒不成立(shared>0),仅为防止上面整段循环被优化掉
         PRINT("%lld", (long long)sink);
     }
     return cost;

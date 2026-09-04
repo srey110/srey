@@ -118,30 +118,31 @@ static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
         binary_offset(breader, next);
     }
 }
-// 解析 OK 响应包，更新 mysql->last_id 和 mysql->affected_rows
-static int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
+// 解析 OK 响应包，更新 mysql->last_id 和 mysql->affected_rows。
+// status_flags 回带给调用方，只关心多结果集的那条路要它，其余传 NULL。
+// 两个计数落到 ctx 之前先攒在局部量里：中途截断时不留下半套值
+static int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, int16_t *status_flags) {
     int32_t _rtn;
-    uint64_t size = _mysql_get_lenenc(breader, &_rtn);
+    uint64_t affected = _mysql_get_lenenc(breader, &_rtn);
     if (ERR_OK != _rtn) {
         return ERR_FAILED;
     }
-    ok->affected_rows = (int64_t)size;
-    size = _mysql_get_lenenc(breader, &_rtn);
+    uint64_t lastid = _mysql_get_lenenc(breader, &_rtn);
     if (ERR_OK != _rtn) {
         return ERR_FAILED;
     }
-    ok->last_insert_id = (int64_t)size;
     if (!binary_have(breader, 4)) {// status_flags(2) + warnings(2)
         return ERR_FAILED;
     }
-    ok->status_flags = (int16_t)binary_get_integer(breader, 2, 1);
+    int16_t flags = (int16_t)binary_get_integer(breader, 2, 1);
     binary_get_skip(breader, 2);// warnings：本库不用，只推进读位置
-    if (BIT_CHECK(ok->status_flags, SERVER_SESSION_STATE_CHANGED)) {
+    if (BIT_CHECK(flags, SERVER_SESSION_STATE_CHANGED)) {
         _mpack_ok_track(mysql, breader);
     }
     binary_get_skip(breader, binary_remain(breader));
-    mysql->last_id = ok->last_insert_id;
-    mysql->affected_rows = ok->affected_rows;
+    mysql->last_id = (int64_t)lastid;
+    mysql->affected_rows = (int64_t)affected;
+    SET_PTR(status_flags, flags);
     return ERR_OK;
 }
 // 解析 EOF 响应包，读取警告数和状态标志
@@ -189,8 +190,8 @@ static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, 
     mpack_ctx *mpack = _mpack_new(breader->data);
     if (MYSQL_OK == binary_get_uint8(breader)) {
         mpack->pack_type = MPACK_OK;
-        MALLOC(mpack->pack, sizeof(mpack_ok));
-        if (ERR_OK != _mpack_ok(mysql, breader, mpack->pack)) {
+        // COM_INIT_DB / COM_PING / COM_STMT_RESET 不会有后续结果集，status_flags 无人问
+        if (ERR_OK != _mpack_ok(mysql, breader, NULL)) {
             BIT_SET(*status, PROT_ERROR);
             _mysql_pkfree(mpack);
             return NULL;
@@ -624,16 +625,15 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
             binary_get_skip(breader, 1);
             mpack = _mpack_new(breader->data);
             mpack->pack_type = MPACK_OK;
-            MALLOC(mpack->pack, sizeof(mpack_ok));
-            mpack_ok *ok = mpack->pack;
-            if (ERR_OK != _mpack_ok(mysql, breader, ok)) {
+            int16_t status_flags;
+            if (ERR_OK != _mpack_ok(mysql, breader, &status_flags)) {
                 BIT_SET(*status, PROT_ERROR);
                 _mysql_pkfree(mpack);
                 return NULL;
             }
             // 与行阶段 EOF 续接同规则(见 _mpack_check_final)：OK 包若声明还有更多结果集(多语句/CALL
             // 多结果集)，保留 cur_cmd 供下一个包续接解析；否则下一响应会落入 default 分支误判协议错误断连
-            if (BIT_CHECK(ok->status_flags, SERVER_MORE_RESULTS_EXISTS)) {
+            if (BIT_CHECK(status_flags, SERVER_MORE_RESULTS_EXISTS)) {
                 mpack->more = 1;
             } else {
                 mysql->cur_cmd = 0;

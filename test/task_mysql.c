@@ -334,6 +334,8 @@ static void _startup(task_ctx *task) {
         return;
     }
     LOG_INFO("mysql connected, version=%s", mysql_version(&arg->mysql));
+    // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
+    *(arg->ok) = -1;
     if (ERR_OK != mysql_selectdb(&arg->mysql, arg->database)) {
         int32_t code = 0;
         LOG_ERROR("mysql selectdb error: %s (code=%d)", mysql_erro(&arg->mysql, &code), code);
@@ -353,8 +355,12 @@ static void _startup(task_ctx *task) {
         mysql_quit(&arg->mysql);
         return;
     }
-    if (3 != mysql_affected_rows(&arg->mysql)) {
-        // 最后一次 INSERT 的 affected_rows 应为 1（每次插一行）；这里只断言能取到非负值
+    // _insert_rows 是 3 条独立的单行 INSERT，故最后一条的 affected_rows 必须是 1
+    if (1 != mysql_affected_rows(&arg->mysql)) {
+        LOG_ERROR("mysql affected_rows: expect 1, got %" PRId64,
+                  mysql_affected_rows(&arg->mysql));
+        mysql_quit(&arg->mysql);
+        return;
     }
     if (ERR_OK != _select_iterate(&arg->mysql, 3)) {
         mysql_quit(&arg->mysql);

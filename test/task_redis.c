@@ -69,6 +69,8 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("redis connect error.");
         return;
     }
+    // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
+    *(arg->ok) = -1;
     size_t size;
     char *pack;
     // SET srey:test hello → +OK

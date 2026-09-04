@@ -51,6 +51,11 @@ runner.run(function(t)
         t:eq(false, pcall(function() srey.send(0, 0, yyjson.null, 0, -1) end), "copy=-1 被拒")
         t:eq(false, pcall(function() srey.send(0, 0, yyjson.null, 0, 0x100000000) end), "copy=2^32 被拒")
         t:eq(false, pcall(function() srey.send(0, 0, yyjson.null, 0, 0.5) end), "copy 非整数浮点被拒")
+        -- 正向对照：合法的 0/1 必须过得去。少了这条，上面四条只要在更早的参数检查里被拒
+        -- （比如 lpub_check_buf 以后收紧空 lightuserdata），就全退化成恒真断言。
+        -- 返 false 是因为 fd 0 非法，ev_send 的 EMPTYPTR 早退，与 copy 校验无关
+        t:eq(false, srey.send(0, 0, yyjson.null, 0, 1), "copy=1 放行，走到 ev_send")
+        t:eq(false, srey.send(0, 0, yyjson.null, 0, 0), "copy=0 放行，走到 ev_send")
     end
 
     -- ── 集成: 自启 server + N 个 client + 广播验证 ────────────────

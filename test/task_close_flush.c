@@ -11,8 +11,8 @@ typedef struct close_flush_args {
 #define BIG_BYTES   (4 * 1024 * 1024)
 #define ROUNDS      4
 
-static atomic_t g_recv_bytes;   // server 端累计收到字节(整 task 内共享)
-static atomic_t g_close_cnt;    // server 端 _net_close 触发次数
+static atomic_t g_recv_bytes;// server 端累计收到字节(整 task 内共享)
+static atomic_t g_close_cnt;// server 端 _net_close 触发次数
 
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {

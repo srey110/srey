@@ -2,6 +2,39 @@
 #include "test_rand.h"
 #include "lib.h"
 
+#define _MPQ_MAXMS 30000 /* 兜底：mpq 真坏了要失败，不能挂死 */
+
+/* mpq 并发用例共用的 producer / consumer 框架 */
+#define _MPQ_PROD_CNT    4
+#define _MPQ_CONS_CNT    4
+#define _MPQ_ITEMS_EACH  50000
+#define _MPQ_MC_TOTAL    (_MPQ_PROD_CNT * _MPQ_ITEMS_EACH)
+#define _MPQ_SC_TOTAL    (_MPQ_PROD_CNT * _MPQ_ITEMS_EACH)
+
+/* mpq_size 并发采样 */
+#define _MPQ_SZ_CAP    4u
+#define _MPQ_SZ_ROUNDS 100000
+
+/* spsc 并发：1 生产者 × 1 消费者 */
+#define _SPSC_ITEMS    200000
+
+/* mpq 多生产多消费；容量压到 64 让抢占窗口够密 */
+#define _MPQMP_PROD   4
+#define _MPQMP_PER    25000
+#define _MPQMP_TOTAL  (_MPQMP_PROD * _MPQMP_PER)
+#define _MPQMP_CAP    64
+
+/* chan 多生产多消费 */
+#define _CHAN_RACE_CAP       4// 紧 buffer，强制 producer 等 consumer 取走再 push
+#define _CHAN_RACE_PRODS     4
+#define _CHAN_RACE_CONSS     4
+#define _CHAN_RACE_PER_PROD  500
+#define _CHAN_RACE_TOTAL     (_CHAN_RACE_PRODS * _CHAN_RACE_PER_PROD)
+
+/* hashmap 上游不变式对拍 */
+#define UP_N         256
+#define UP_FAIL_ODDS 3
+
 /* =======================================================================
  * mpq —— 无锁多生产者有界队列（消费者侧两种 API：mpq_pop 多消费者 / mpq_pop_sc 单消费者）
  * ======================================================================= */
@@ -94,14 +127,9 @@ static void test_mpq_boundary(CuTest *tc) {
     mpq_free(&q);
 }
 
-/* 并发用例共用的 producer / consumer 框架 */
-#define _MPQ_PROD_CNT    4
-#define _MPQ_CONS_CNT    4
-#define _MPQ_ITEMS_EACH  50000
-#define _MPQ_MC_TOTAL    (_MPQ_PROD_CNT * _MPQ_ITEMS_EACH)
-#define _MPQ_SC_TOTAL    (_MPQ_PROD_CNT * _MPQ_ITEMS_EACH)
-
 typedef struct { mpq_ctx *q; int id; } _mpq_prod_arg;
+
+static atomic_t _mpq_stop;
 
 static void _mpq_producer(void *arg) {
     _mpq_prod_arg *a = (_mpq_prod_arg *)arg;
@@ -111,6 +139,10 @@ static void _mpq_producer(void *arg) {
     for (v = start; v < end; v++) {
         // mpq 只提供非阻塞入队,满则自旋重试(测试线程非消费者,不会自死锁)
         while (ERR_OK != mpq_trypush(a->q, &v)) {
+            // 消费者超时会置 stop；不给这条出路的话满队自旋会让 join 永远回不来
+            if (0 != ATOMIC_GET(&_mpq_stop)) {
+                return;
+            }
             CPU_PAUSE();
         }
     }
@@ -123,6 +155,8 @@ static atomic64_t _mpq_sum;
 static void _mpq_consumer_mc(void *arg) {
     mpq_ctx *q = (mpq_ctx *)arg;
     uintptr_t p;
+    uint32_t fails = 0;
+    uint64_t deadline = nowms() + _MPQ_MAXMS;
     for (;;) {
         if (ERR_OK == mpq_pop(q, &p)) {
             uint32_t prev = ATOMIC_ADD(&_mpq_consumed, 1);
@@ -134,6 +168,12 @@ static void _mpq_consumer_mc(void *arg) {
             if (ATOMIC_GET(&_mpq_consumed) >= (uint32_t)_MPQ_MC_TOTAL) {
                 break;
             }
+            // 每约 100 万次空转才看一次表：取不到时是紧循环,逐次 nowms 会拖慢整个用例
+            if (0 == (++fails & 0xFFFFF)
+                && nowms() > deadline) {
+                ATOMIC_SET(&_mpq_stop, 1);
+                break;
+            }
             CPU_PAUSE();
         }
     }
@@ -143,6 +183,8 @@ static void _mpq_consumer_mc(void *arg) {
 static void _mpq_consumer_sc(void *arg) {
     mpq_ctx *q = (mpq_ctx *)arg;
     uintptr_t p;
+    uint32_t fails = 0;
+    uint64_t deadline = nowms() + _MPQ_MAXMS;
     for (;;) {
         if (ERR_OK == mpq_pop_sc(q, &p)) {
             uint32_t prev = ATOMIC_ADD(&_mpq_consumed, 1);
@@ -152,6 +194,12 @@ static void _mpq_consumer_sc(void *arg) {
             }
         } else {
             if (ATOMIC_GET(&_mpq_consumed) >= (uint32_t)_MPQ_SC_TOTAL) {
+                break;
+            }
+            // 同 _mpq_consumer_mc：定期看表,到点置 stop 让生产者也能退出
+            if (0 == (++fails & 0xFFFFF)
+                && nowms() > deadline) {
+                ATOMIC_SET(&_mpq_stop, 1);
                 break;
             }
             CPU_PAUSE();
@@ -166,6 +214,7 @@ static void test_mpq_concurrent_mc(CuTest *tc) {
 
     _mpq_consumed = 0;
     _mpq_sum      = 0;
+    ATOMIC_SET(&_mpq_stop, 0);
     int64_t expected = (int64_t)_MPQ_MC_TOTAL * (_MPQ_MC_TOTAL + 1) / 2;
 
     pthread_t      producers[_MPQ_PROD_CNT];
@@ -197,6 +246,7 @@ static void test_mpq_concurrent_sc(CuTest *tc) {
 
     _mpq_consumed = 0;
     _mpq_sum      = 0;
+    ATOMIC_SET(&_mpq_stop, 0);
     int64_t expected = (int64_t)_MPQ_SC_TOTAL * (_MPQ_SC_TOTAL + 1) / 2;
 
     pthread_t      producers[_MPQ_PROD_CNT];
@@ -227,8 +277,6 @@ static void test_mpq_concurrent_sc(CuTest *tc) {
  * 改为先读 deq 后读 enq 之后 enq(新) - deq(旧) >= 真实值，本断言恒成立不会偶发。
  * 注：作为旧 bug 的检测器强度依赖 watch 线程恰在两次载入之间被抢占，
  * 但作为新契约的守卫是确定性的 */
-#define _MPQ_SZ_CAP    4u
-#define _MPQ_SZ_ROUNDS 100000
 static atomic_t _mpq_sz_zero;// 采样到 0 的次数，应恒为 0
 static atomic_t _mpq_sz_stop;
 static void _mpq_size_churn(void *arg) {
@@ -349,10 +397,8 @@ static void test_spsc_boundary(CuTest *tc) {
     spsc_free(&q);
 }
 
-/* 并发：1 生产者 × 1 消费者，验证无丢失、无重复 + FIFO 严格顺序 */
-#define _SPSC_ITEMS    200000
-
 static atomic_t _spsc_done_prod;
+static atomic_t _spsc_stop;
 
 static void _spsc_producer(void *arg) {
     spsc_ctx *q = (spsc_ctx *)arg;
@@ -360,6 +406,10 @@ static void _spsc_producer(void *arg) {
     for (v = 1; v <= _SPSC_ITEMS; v++) {
         // spsc 只提供非阻塞入队,满则自旋重试(测试线程非消费者,不会自死锁)
         while (ERR_OK != spsc_trypush(q, &v)) {
+            // 消费者超时会置 stop；不给这条出路的话满队自旋会让 join 永远回不来
+            if (0 != ATOMIC_GET(&_spsc_stop)) {
+                return;
+            }
             CPU_PAUSE();
         }
     }
@@ -373,6 +423,9 @@ static void _spsc_consumer(void *arg) {
     spsc_ctx *q = (spsc_ctx *)arg;
     uintptr_t p;
     uintptr_t expected = 1;
+    uint32_t fails = 0;
+    const uint64_t maxms = 30000;/* 兜底：spsc 真坏了要失败，不能挂死 */
+    uint64_t deadline = nowms() + maxms;
     for (;;) {
         if (ERR_OK == spsc_pop(q, &p)) {
             if (p != expected) {
@@ -388,6 +441,12 @@ static void _spsc_consumer(void *arg) {
                 && ATOMIC_GET(&_spsc_consumed) >= (uint32_t)_SPSC_ITEMS) {
                 break;
             }
+            // 每约 100 万次空转才看一次表：取不到时是紧循环,逐次 nowms 会拖慢整个用例
+            if (0 == (++fails & 0xFFFFF)
+                && nowms() > deadline) {
+                ATOMIC_SET(&_spsc_stop, 1);
+                break;
+            }
             CPU_PAUSE();
         }
     }
@@ -400,6 +459,7 @@ static void test_spsc_concurrent(CuTest *tc) {
     ATOMIC_SET(&_spsc_done_prod, 0);
     ATOMIC_SET(&_spsc_fail, 0);
     ATOMIC_SET(&_spsc_consumed, 0);
+    ATOMIC_SET(&_spsc_stop, 0);
 
     pthread_t cons = thread_creat(_spsc_consumer, &q);
     pthread_t prod = thread_creat(_spsc_producer, &q);
@@ -686,12 +746,6 @@ static void test_mpq_pop_empty_vs_inflight(CuTest *tc) {
    容量压到 64 是刻意的：多个生产者反复抢同一批槽位，抢占窗口才够密。
    消费者必须与生产者并发跑、靠计数收尾——等 join 完再排空的话，那时已无在途 push，
    一次都观察不到。在途计数只打印不断言：单核机器上它合法地就是 0 */
-#define _MPQMP_PROD   4
-#define _MPQMP_PER    25000
-#define _MPQMP_TOTAL  (_MPQMP_PROD * _MPQMP_PER)
-#define _MPQMP_CAP    64
-#define _MPQMP_MAXMS  30000    /* 兜底：mpq 真坏了要失败，不能挂死 */
-
 typedef struct mpqmp_arg {
     uint32_t base;      /* 本生产者的起始值，各段互不重叠 */
     mpq_ctx *q;
@@ -730,7 +784,7 @@ static void test_mpq_multiprod_conserve(CuTest *tc) {
         args[i].q = &q;
         ths[i] = thread_creat(_mpqmp_producer, &args[i]);
     }
-    uint64_t deadline = nowms() + _MPQMP_MAXMS;
+    uint64_t deadline = nowms() + _MPQ_MAXMS;
     while (got < _MPQMP_TOTAL) {
         rtn = mpq_pop(&q, &v);
         if (ERR_OK == rtn) {
@@ -840,12 +894,6 @@ static void test_fsqu_never_overflow_free(CuTest *tc) {
  * f0a94c5 修复：_buffered_chan_recv 拷贝 msg->data/lens 到栈再 unlock，
  * 防止满载循环槽位被 push 覆盖；本用例用紧 buffer + 多 PC 校验消息无丢失/重复/串扰。
  * ======================================================================= */
-#define _CHAN_RACE_CAP       4// 紧 buffer，强制 producer 等 consumer 取走再 push
-#define _CHAN_RACE_PRODS     4
-#define _CHAN_RACE_CONSS     4
-#define _CHAN_RACE_PER_PROD  500
-#define _CHAN_RACE_TOTAL     (_CHAN_RACE_PRODS * _CHAN_RACE_PER_PROD)
-
 typedef struct _chan_race_msg {
     int32_t pid;
     int32_t seq;
@@ -931,8 +979,11 @@ static void test_chan_buffered_race(CuTest *tc) {
     for (i = 0; i < _CHAN_RACE_PRODS; i++) {
         thread_join(prods[i]);
     }
-    // 等 consumer 把全部消息取走
-    while ((int32_t)ATOMIC_GET(&_chan_race_consumed) < _CHAN_RACE_TOTAL) {
+    // 等 consumer 把全部消息取走；到点就往下走，让末尾的数量断言报失败而不是挂死
+    const uint64_t maxms = 30000;// 兜底：chan 丢消息要失败，不能挂死
+    uint64_t deadline = nowms() + maxms;
+    while ((int32_t)ATOMIC_GET(&_chan_race_consumed) < _CHAN_RACE_TOTAL
+        && nowms() < deadline) {
         CPU_PAUSE();
     }
     chan_close(chan);
@@ -1641,15 +1692,21 @@ static void test_hashmap_scan_iter(CuTest *tc) {
     }
     CuAssertTrue(tc, 5 == iter_count);
 
+    _kv mid;
+    SNPRINTF(mid.key, sizeof(mid.key), "mid");
+    mid.val = 42;
+#if SIZE_MAX == UINT64_MAX
     /* 迭代途中新增：robin-hood 插入会把已有条目往后挪，被挪到游标之前的那个会被整个跳过，
        所以 hashmap_iter 必须能报出"被改过"。不涨 version 时它会一声不吭地漏元素 */
     i = 0;
     CuAssertTrue(tc, hashmap_iter(map, &i, &item));
-    _kv mid;
-    SNPRINTF(mid.key, sizeof(mid.key), "mid");
-    mid.val = 42;
     hashmap_set(map, &mid);
     CuAssertTrue(tc, !hashmap_iter(map, &i, &item));
+#else
+    /* 32 位构建把版本号塞不进 size_t 高位，hashmap_iter 索性不做失效检测（hashmap.c 头注释
+       已注明这个平台差异），持游标插入在那里是 UB，故这里只插入、不带活游标 */
+    hashmap_set(map, &mid);
+#endif
     /* 游标归零后重新遍历一切正常，且新元素已在其中 */
     i = 0;
     iter_count = 0;
@@ -1753,10 +1810,24 @@ static void test_hashmap_xxhash3_short(CuTest *tc) {
     for (i = 0; i < 64; i++) {
         buf[i] = (uint8_t)(0x80 + i);
     }
+    /* 逐长度的已知答案（下标 = len，[0] 占位）。取自本实现当前的输出，不是上游向量，
+       作用是把尾部三个分支锁死：动 while 的 >= 8、if 的 >= 4 或末尾逐字节循环，
+       任何一处都会在这里变红，而只靠"确定性 + 逐字节敏感"是拦不住的 */
+    const uint64_t kat[8] = {
+        0,
+        426183149402588165ULL,
+        15124012812181608884ULL,
+        491128409200383220ULL,
+        4406848112238761044ULL,
+        14420311835818172357ULL,
+        3434528048280517170ULL,
+        6901879446029465569ULL
+    };
     /* buf+1 非对齐起始，覆盖 1..7 字节这一整段尾部路径 */
     for (len = 1; len <= 7; len++) {
         h[len] = hashmap_xxhash3(buf + 1, len, 0, 0);
         CuAssertTrue(tc, h[len] == hashmap_xxhash3(buf + 1, len, 0, 0));
+        CuAssertTrue(tc, kat[len] == h[len]);
     }
     for (len = 2; len <= 7; len++) {
         CuAssertTrue(tc, h[len] != h[len - 1]);
@@ -1771,10 +1842,13 @@ static void test_hashmap_xxhash3_short(CuTest *tc) {
         buf[1 + i] = save;
     }
 
-    /* 8 / 12 跨过 while 与 if 的分界 */
+    /* 8 / 12 跨过 while 与 if 的分界，同样钉住已知答案：len 1..7 进不了 8 字节那条 while，
+       把 >= 8 改成 > 8 只有 len=8 这条拦得住（改后仍确定、仍与 12 不等，相对断言看不出来） */
     CuAssertTrue(tc, hashmap_xxhash3(buf + 1, 8, 0, 0) == hashmap_xxhash3(buf + 1, 8, 0, 0));
     CuAssertTrue(tc, hashmap_xxhash3(buf + 1, 12, 0, 0) == hashmap_xxhash3(buf + 1, 12, 0, 0));
     CuAssertTrue(tc, hashmap_xxhash3(buf + 1, 8, 0, 0) != hashmap_xxhash3(buf + 1, 12, 0, 0));
+    CuAssertTrue(tc, 10742783929171364473ULL == hashmap_xxhash3(buf + 1, 8, 0, 0));
+    CuAssertTrue(tc, 2297926390909001158ULL == hashmap_xxhash3(buf + 1, 12, 0, 0));
 }
 
 // hashmap_clear 的 update_cap 语义（hashset_clear 透传同一参数），与名字直觉相反：
@@ -1985,9 +2059,6 @@ static void test_hashmap_clear_update_cap(CuTest *tc) {
  *   map->cap       → 已由 test_hashmap_clear_alloc 用计数分配器覆盖，不在此重复
  * 种子固定、PRNG 自带：上游以 time(NULL) 播种全局 rand()，会让失败不可复现并干扰其他用例
  * ======================================================================= */
-#define UP_N         256
-#define UP_FAIL_ODDS 3
-
 static test_rng _up_rng;
 static int32_t _up_fail_on;
 static uintptr_t _up_allocs;
@@ -2229,6 +2300,8 @@ static void test_hashmap_upstream_vectors(CuTest *tc) {
     CuAssertTrue(tc, 2957200328589801622ULL == hashmap_sip("hello", 5, 1, 2));
     CuAssertTrue(tc, 1682575153221130884ULL == hashmap_murmur("hello", 5, 1, 2));
     CuAssertTrue(tc, 2584346877953614258ULL == hashmap_xxhash3("hello", 5, 1, 2));
+    /* 名字叫 xxhash3，算法其实是 XXH64：空输入 + seed 0 的官方向量 0xEF46DB3751D8E999 */
+    CuAssertTrue(tc, 0xEF46DB3751D8E999ULL == hashmap_xxhash3("", 0, 0, 0));
 }
 
 /* heap_insert 自己写全三个链接字段：拿一批填了垃圾的栈节点直接插，不预清零 */

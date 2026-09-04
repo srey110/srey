@@ -124,7 +124,13 @@ static void test_evpub_read_fin(CuTest *tc) {
     CuAssertIntEquals(tc, 1, rtn);
     CuAssertTrue(tc, 0 == nread);
 
+    /* 3) 读错误既不是 EAGAIN 也不是 FIN：必须报 ERR_FAILED。CLOSE_SOCK 把句柄置成
+          INVALID_SOCK，读它得到的 errno 不在 ERR_RW_RETRIABLE 里。
+          这一档与 (2) 的分野决定 close_type 判 ABNORMAL 还是 ORDERLY——并进 FIN 那支的话，
+          连接被重置时 close-delimited body 会被判成完整 */
     CLOSE_SOCK(sk[0]);
+    nread = 1;
+    CuAssertIntEquals(tc, ERR_FAILED, _evpub_sock_read(sk[0], &iov, 1, NULL, &nread));
 }
 // close_type 三档判定 + FIN 优先
 static void test_evpub_close_type(CuTest *tc) {

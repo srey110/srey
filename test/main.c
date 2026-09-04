@@ -76,7 +76,7 @@
     #endif
 #endif
 
-static hug_ctx _hug;           // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
+static hug_ctx _hug;// 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
 
 // 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程
 static void _on_sigcb(int32_t sig, void *arg) {
@@ -454,37 +454,45 @@ int main(int argc, char *argv[]) {
     timeEndPeriod(1);
 #endif
     log_free();
-    _memcheck();
+    int64_t leak = _memcheck();
     locale_free();
     PRINT("%s", "-----------test result-----------");
-    uint32_t nclose = get_close_count();
-    // auto_close 任务至少被触发一次才说明 _timeout_auto_close 路径有效
-    if (0 == nclose) {
+    // 泄漏与多释放都算失败。这一路以前只打印不计数，于是所有"漏没漏由收尾内存检查兜底"
+    // 的用例都等于没有断言
+    if (0 != leak) {
         unit_failed++;
-        PRINT("auto close count: (0)");
-    } else {
-        PRINT("auto close count: (%u)", nclose);
+    }
+    uint32_t nclose = get_close_count();
+    // 退出时的 CLOSING 广播自己就会记一笔，故 >= 2 才说明 task_close 真跑过
+    PRINT("auto close count: (%u)", nclose);
+    if (nclose < 2) {
+        unit_failed++;
     }
     int32_t optional;
     for (int32_t i = 0; ; i++) {
         if (NULL == testlist[i].name) {
             break;
         }
-        // mqtt_test1/2 + mysql/pgsql/redis/mongo 依赖本机 docker，未启动允许失败
+        // mqtt_test1/2 + mysql/pgsql/redis/mongo 依赖本机 docker，未启动允许失败。
+        // 只放行 val == 0（压根没连上），val == -1 是连上之后断言失败，一律计失败——
+        // 两者以前都是 0，于是这六条在 docker 起着的标准环境下永久不 gate 任何东西
         optional = (0 == strcmp(testlist[i].name, "mqtt_test1")
                     || 0 == strcmp(testlist[i].name, "mqtt_test2")
                     || 0 == strcmp(testlist[i].name, "mysql_test")
                     || 0 == strcmp(testlist[i].name, "pgsql_test")
                     || 0 == strcmp(testlist[i].name, "redis_test")
                     || 0 == strcmp(testlist[i].name, "mongo_test"));
-        if (testlist[i].val) {
+        if (1 == testlist[i].val) {
             PRINT("%s: ok", testlist[i].name);
-        } else if (optional) {
+        } else if (0 == testlist[i].val && optional) {
             PRINT("%s: - (network error)", testlist[i].name);
         } else {
             unit_failed++;
-            PRINT("%s: x", testlist[i].name);
+            PRINT("%s: x%s", testlist[i].name,
+                  (-1 == testlist[i].val) ? " (connected, assertion failed)" : "");
         }
     }
-    return unit_failed;
+    // 归一成 0/1：退出码只取低 8 位，而失败数上限约 515，恰为 256 的倍数时会得 0；
+    // 具体条数看上面的逐条输出
+    return unit_failed ? 1 : 0;
 }

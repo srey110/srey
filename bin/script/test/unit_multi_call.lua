@@ -23,8 +23,16 @@ srey.startup(function()
 runner.run(function(t)
     -- ── 集成: 广播给 N 个 sub,等他们 ack 回来 ────────────────────────
     local ack_count = 0
+    local ack_seen = {}
     srey.on_requested(function(reqtype, _, _, data, size)
         if 101 == reqtype and data and size > 0 then  -- ACK_REQ
+            -- sub 把自己的编号编进了载荷（multi_call_sub.lua 回的是 "<idx>:<payload>"）。
+            -- 只计数的话，"3 个 sub 各 ack 一次"与"同一个 sub ack 三次"在断言上完全等价，
+            -- 投递循环把同一个 dst 投三次也照样通过
+            local idx = srey.ud_str(data, size):match("^(%d+):")
+            if idx then
+                ack_seen[tonumber(idx)] = true
+            end
             ack_count = ack_count + 1
         end
     end)
@@ -35,6 +43,9 @@ runner.run(function(t)
         if ack_count >= N then break end
     end
     t:eq(N, ack_count, "全部 N 个 sub ack 回来 (" .. ack_count .. "/" .. N .. ")")
+    for i = 1, N do
+        t:check(ack_seen[i], "sub" .. i .. " 自己的 ack 到齐（不是同一个 sub 重复 ack）")
+    end
 
     -- ── 边界: dsts 全为 TASK_NAME.NONE 不崩溃 ────────────────────────
     do
@@ -93,13 +104,17 @@ runner.run(function(t)
     -- 此后每条带载荷的消息都不再释放 C 侧 payload
     do
         local sess = srey.id()
-        if core.request(SUBS[1], 102, sess, MSG) then
-            local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 3000)
-            t:eq(srey.MSG_TYPE.RESPONSE, msg.mtype, "拿到 RESPONSE 消息表")
-            t:eq("msg", getmetatable(msg), "消息元表被 __metatable 挡住")
-            t:eq(false, pcall(function() setmetatable(msg, {}) end), "消息表不可被换元表")
-            t:check(msg.data ~= nil and msg.size > 0, "RESPONSE 载荷字段齐全")
-        end
+        -- 返回值必须断言：挂在裸 if 上的话，core.request 返 false 时下面 4 条一条都不跑，
+        -- 模块仍报全绿
+        t:check(core.request(SUBS[1], 102, sess, MSG), "core.request 投递成功")
+        local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 3000)
+        t:eq(srey.MSG_TYPE.RESPONSE, msg.mtype, "拿到 RESPONSE 消息表")
+        t:eq("msg", getmetatable(msg), "消息元表被 __metatable 挡住")
+        t:eq(false, pcall(function() setmetatable(msg, {}) end), "消息表不可被换元表")
+        t:check(msg.data ~= nil and msg.size > 0, "RESPONSE 载荷字段齐全")
+        -- sub 把自己的编号编进了应答（multi_call_sub.lua 回的是 "ack"..idx），
+        -- 只判"有载荷"的话，服务端把响应投到别的协程上不会被发现
+        t:eq("ack1", srey.ud_str(msg.data, msg.size), "RESPONSE 来自 SUBS[1] 而非别的 sub")
     end
 
     -- ── 边界: dsts 混 valid + NONE 占位,仅 valid 收到 ────────────────

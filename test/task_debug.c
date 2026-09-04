@@ -72,11 +72,30 @@ static int32_t _test_builtin(task_ctx *task, name_t noreq) {
     binary_init(&bw, NULL, 0, 0);
     seri_append_string(&bw, "stat", strlen("stat"));
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
+    // MTYPE / TOTAL 两个串都出自格式串常量，跟 task_stat 取回的数值无关：把 nmsg[] 全写 0，
+    // 逐 mtype 那个 for 一行不出，body 只剩表头 + "TOTAL 0 0 0"，两个串照样命中。
+    // 明细行数才是能证伪的东西 —— 数换行不依赖列宽：表头一个，每条明细一个，TOTAL 不带
+    // rtn 与 len 是 coro_request 分别写的两个出参，同文件的 _has_text / _snip 也都各自判 NULL
+    int32_t nline = 0;
+    size_t k;
+    for (k = 0; NULL != rtn && k < len; k++) {
+        if ('\n' == ((const char *)rtn)[k]) {
+            nline++;
+        }
+    }
+    // 计数是编译期开关，关闭时 task_stat 按契约恒返回全 0，故两档的期望正好相反：
+    // 开着而一行明细都没有 = 计数坏了；关着却冒出明细 = 关闭档漏了计数
+#if ENABLE_DISPATCH_STAT
+    int32_t nline_ok = (nline >= 2);
+#else
+    int32_t nline_ok = (1 == nline);
+#endif
     if (ERR_OK != err
         || !_has_text(rtn, len, "MTYPE")
-        || !_has_text(rtn, len, "TOTAL")) {
+        || !_has_text(rtn, len, "TOTAL")
+        || !nline_ok) {
         _snip(rtn, len, snip, sizeof(snip));
-        LOG_ERROR("debug test: stat err %d body '%s'.", err, snip);
+        LOG_ERROR("debug test: stat err %d nline %d body '%s'.", err, nline, snip);
         binary_free(&bw);
         return ERR_FAILED;
     }
@@ -85,8 +104,13 @@ static int32_t _test_builtin(task_ctx *task, name_t noreq) {
     binary_init(&bw, NULL, 0, 0);
     seri_append_string(&bw, "coros", strlen("coros"));
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
-    if (ERR_OK != err || NULL == rtn || 0 == len) {
-        LOG_ERROR("debug test: coros err %d len %zu.", err, len);
+    // 只判非空的话，coro_dump 拼错文案、甚至把汇总行整段丢掉都看不出来，
+    // 这里钉住汇总行里的固定串
+    if (ERR_OK != err || NULL == rtn || 0 == len
+        || !_has_text(rtn, len, "suspended")
+        || !_has_text(rtn, len, "yield total")) {
+        _snip(rtn, len, snip, sizeof(snip));
+        LOG_ERROR("debug test: coros err %d body '%s'.", err, snip);
         binary_free(&bw);
         return ERR_FAILED;
     }
@@ -257,6 +281,46 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     // 广播：本二进制里全是 C task，逐个都该是同一句不支持。
     // 广播是聚合响应，整体恒 200(单个目标的成败写在正文里)，不跟单目标那条一起改
     if (ERR_OK != _http_get(task, arg->port, "/0/mem", 200, _NOTLUA, 0)) {
+        return ERR_FAILED;
+    }
+    // GET /：UI 页面。procpath() 是可执行文件所在目录，故 bin/html/debug_console.html 必然读到，
+    // 读不到会回 503，这里不接受
+    if (ERR_OK != _http_get(task, arg->port, "/", 200, "<title>Srey Debug Console</title>", 0)) {
+        return ERR_FAILED;
+    }
+    // GET /__alive：钉住 handle 与 name 同行配对，只查一个 name 的话把两列错位也看不出来
+    char want[64];
+    SNPRINTF(want, sizeof(want), "%"PRIu64"\tdebug_noreq", (uint64_t)arg->noreq);
+    if (ERR_OK != _http_get(task, arg->port, "/__alive", 200, want, 0)) {
+        return ERR_FAILED;
+    }
+    // GET /__cmem：三行统计
+    if (ERR_OK != _http_get(task, arg->port, "/__cmem", 200, "inuse:", 0)) {
+        return ERR_FAILED;
+    }
+    // GET /{h}/help：查最后一行，帮助文本被截断时能发现
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/help", (uint64_t)arg->noreq);
+    if (ERR_OK != _http_get(task, arg->port, url, 200, "POST /{handle}/hotfix/{module}", 0)) {
+        return ERR_FAILED;
+    }
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/coros", (uint64_t)arg->noreq);
+    if (ERR_OK != _http_get(task, arg->port, url, 200, "yield total", 0)) {
+        return ERR_FAILED;
+    }
+    // GET /{h}/loglv/{lv}：设回当前级别，不污染其余用例的日志输出
+    log_level lv0 = log_getlv();
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/loglv/%d", (uint64_t)arg->noreq, (int32_t)lv0);
+    SNPRINTF(want, sizeof(want), "log level => %d\n", (int32_t)lv0);
+    if (ERR_OK != _http_get(task, arg->port, url, 200, want, 1)) {
+        return ERR_FAILED;
+    }
+    // 越界的 lv 走 str2u64 的上界检查，回 400 用法说明
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/loglv/%d", (uint64_t)arg->noreq, (int32_t)LOGLV_DEBUG + 1);
+    if (ERR_OK != _http_get(task, arg->port, url, 400, "usage: /{handle}/loglv/<0-4>\n", 1)) {
+        return ERR_FAILED;
+    }
+    if (lv0 != log_getlv()) {
+        LOG_ERROR("debug test: console loglv leaked level change.");
         return ERR_FAILED;
     }
     return ERR_OK;

@@ -362,6 +362,8 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("pgsql connect error.");
         return;
     }
+    // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
+    *(arg->ok) = -1;
     if (ERR_OK != pgsql_ping(&arg->pg)) {
         LOG_ERROR("pgsql ping error.");
         pgsql_quit(&arg->pg);

@@ -208,7 +208,9 @@ static mongo_flags _lmongo_arg_flag(lua_State *lua, int32_t idx) {
 /// 置上消息标志位；置上就一直有效直到 clear_flag，语义与后果见 C 层 mongo_set_flag
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错</param>
+/// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错。
+/// 0 合法：读命令先 clear_flag 存下旧值，完事把它原样传回来还原，那个值可能就是 0。
+/// C 层只实现了 MORETOCOME，其余位收下即丢弃</param>
 /// <returns>无</returns>
 static int32_t _lmongo_set_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");

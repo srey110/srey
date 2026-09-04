@@ -44,6 +44,8 @@ def http_worker_once():
 
 # ---- WS worker ----
 WS_KEY = b"dGhlIHNhbXBsZSBub25jZQ=="
+# RFC 6455 §1.3 样例 key 对应的固定 accept 值，理由同 test_ws.py
+WS_ACCEPT = b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 
 
 def ws_worker_once():
@@ -63,6 +65,8 @@ def ws_worker_once():
                 return False
             buf += c
         if b" 101 " not in buf.split(b"\r\n", 1)[0]:
+            return False
+        if WS_ACCEPT not in buf:
             return False
         # 发一个 mask 过的 text 帧 "hi" → 期望 echo
         mask = os.urandom(4)

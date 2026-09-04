@@ -70,13 +70,6 @@
     if (NULL == *(var)) { \
         return luaL_error((lua), (errmsg)); \
     }
-// 按列名取值的 reader 入口共用的开场白：取 reader + 取列名 + 备好 err。
-// 失败尾巴走 lpub_rtn_reader，前奏散在各处等于把同一套三态契约的一半拆开
-#define LPUB_READER_GET(lua, type, mt, rvar, nvar, evar) \
-    LPUB_UD_ARG((lua), type, (mt), rvar, "reader freed") \
-    const char *nvar = luaL_checkstring((lua), 2); \
-    int32_t evar
-
 /// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）
 /// </summary>

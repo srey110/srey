@@ -36,6 +36,25 @@ static void test_router_url_normalize(CuTest *tc) {
     CuAssertIntEquals(tc, 2, url.npath);
     CuAssertTrue(tc, 4 == url.pathlens);
 
+    /* %2f 解出来的斜杠留在段内、不产生新段：url_parse 是先按裸 '/' 拆段、再逐段 decode。
+       谁把 decode 提到拆段之前，/a%2fb 就会变成两段并命中 /a/b，这条随即变红 */
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a%2fb", 6, &ctx) < 0);
+
+    /* "." 与 ".." 是普通文本段，不做父目录归一（Laravel/Symfony 也是这个语义）。
+       谁给 _router_find 加了折叠，/a/../b 就会命中 /a/b，这两条随即变红 */
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a/../b", 7, &ctx) < 0);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a/%2e%2e/b", 11, &ctx) < 0);
+    /* 编码过的点段解出来仍是 ".."，同样不折叠；顺带盯住 decode 真在做事 */
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a/./b", 6, &ctx) < 0);
+
     router_free(r);
 
     /* "/" 的段全是空段，压完 npath 与 pathlens 都归零 */

@@ -21,6 +21,8 @@ static void test_hs_basic(CuTest *tc) {
     int32_t v = 42;
     CuAssertTrue(tc, 0 == hashset_contains(s, &v));
     CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &v));
+    // add 返 NULL 有"新增"与"OOM"两义,靠 oom 区分:成功新增时必须是 0
+    CuAssertIntEquals(tc, 0, hashset_oom(s));
     CuAssertTrue(tc, 1 == hashset_contains(s, &v));
     CuAssertTrue(tc, 1 == hashset_count(s));
 
@@ -47,7 +49,7 @@ static void test_hs_remove_missing(CuTest *tc) {
     CuAssertTrue(tc, NULL == hashset_remove(s, &v));
     int32_t w = 1;
     hashset_add(s, &w);
-    CuAssertTrue(tc, NULL == hashset_remove(s, &v));    // 1 个元素,删除不存在
+    CuAssertTrue(tc, NULL == hashset_remove(s, &v));// 1 个元素,删除不存在
     CuAssertTrue(tc, 1 == hashset_count(s));
     hashset_free(s);
 }
@@ -78,7 +80,7 @@ static int32_t _scan_count_then_stop(const void *item, void *udata) {
     (void)item;
     int32_t *cnt = (int32_t *)udata;
     (*cnt)++;
-    return *cnt < 3 ? 1 : 0;   // 第 3 个时返 false 停止
+    return *cnt < 3 ? 1 : 0;// 第 3 个时返 false 停止
 }
 static int32_t _scan_count_all(const void *item, void *udata) {
     (void)item;
@@ -93,14 +95,14 @@ static void test_hs_scan(CuTest *tc) {
     for (v = 1; v <= 10; v++) {
         hashset_add(s, &v);
     }
-    // 全量 scan
+    // 全量 scan:走完返 1
     int32_t total = 0;
-    hashset_scan(s, _scan_count_all, &total);
+    CuAssertIntEquals(tc, 1, hashset_scan(s, _scan_count_all, &total));
     CuAssertTrue(tc, 10 == total);
 
-    // 早停 scan
+    // 早停 scan:被 iter 提前终止返 0
     int32_t cnt = 0;
-    hashset_scan(s, _scan_count_then_stop, &cnt);
+    CuAssertIntEquals(tc, 0, hashset_scan(s, _scan_count_then_stop, &cnt));
     CuAssertTrue(tc, 3 == cnt);
 
     hashset_free(s);
@@ -185,6 +187,36 @@ static void test_hs_replace_elfree(CuTest *tc) {
     hashset_free(s);
     CuAssertTrue(tc, 1 == g_bag_free_cnt);
 }
+// remove 返回被删元素副本,同样不自动 elfree(hashset_remove 直通 hashmap_delete):
+// 元素内部的 strdup / MALLOC 字段全靠调用方拿返回值自己释放
+static void test_hs_remove_elfree(CuTest *tc) {
+    g_bag_free_cnt = 0;
+    hashset *s = hashset_new(sizeof(_bag), 0, _bag_hash, _bag_cmp, _bag_free, NULL);
+    _bag b;
+    b.key = 3;
+    MALLOC(b.name, 16);
+    snprintf(b.name, 16, "gone");
+    CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &b));
+
+    _bag key;
+    key.key = 3;
+    key.name = NULL;// 只按 key 定位,name 不参与 hash/compare
+    _bag *removed = (_bag *)hashset_remove(s, &key);
+    CuAssertPtrNotNull(tc, removed);
+    CuAssertTrue(tc, 3 == removed->key);
+    CuAssertTrue(tc, 0 == strcmp("gone", removed->name));
+    CuAssertTrue(tc, 0 == hashset_count(s));
+    // 契约要害:remove 一次都不许调 elfree,否则调用方紧接着的手动释放就是 double free
+    CuAssertIntEquals(tc, 0, g_bag_free_cnt);
+
+    // 改由调用方释放:计数恰好 +1
+    _bag_free(removed);
+    CuAssertIntEquals(tc, 1, g_bag_free_cnt);
+
+    // 表已空,free 不再触发 elfree
+    hashset_free(s);
+    CuAssertIntEquals(tc, 1, g_bag_free_cnt);
+}
 // 大规模 10k 元素 add/contains/remove(ASan 验证内存安全)
 static void test_hs_stress(CuTest *tc) {
     hashset *s = hashset_new(sizeof(int32_t), 0, _int_hash, _int_cmp, NULL, NULL);
@@ -217,7 +249,7 @@ static void test_hs_clear_refill(CuTest *tc) {
     for (i = 0; i < 50; i++) {
         hashset_add(s, &i);
     }
-    hashset_clear(s, 0);   // 重新分配桶数组缩回建表 cap
+    hashset_clear(s, 0);// 重新分配桶数组缩回建表 cap
     CuAssertTrue(tc, 0 == hashset_count(s));
     // 再次填满,验证可用
     for (i = 0; i < 50; i++) {
@@ -237,6 +269,7 @@ void test_hashset(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hs_iter);
     SUITE_ADD_TEST(suite, test_hs_elfree);
     SUITE_ADD_TEST(suite, test_hs_replace_elfree);
+    SUITE_ADD_TEST(suite, test_hs_remove_elfree);
     SUITE_ADD_TEST(suite, test_hs_stress);
     SUITE_ADD_TEST(suite, test_hs_invalid);
     SUITE_ADD_TEST(suite, test_hs_clear_refill);

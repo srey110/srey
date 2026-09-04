@@ -32,14 +32,6 @@ typedef struct websock_pack_ctx {
     char key[MASK_KEY_LENS]; // 掩码密钥（mask=1 时有效）
     char data[];         // 数据体（柔性数组）
 }websock_pack_ctx;
-// WebSocket 连接上下文（每个连接持有一个）
-typedef struct websock_ctx {
-    int8_t slice;          // 是否处于分片接收状态（1=是）
-    pack_type secprot;     // 子协议类型
-    buffer_ctx *buf;       // 子协议数据缓冲区
-    ud_cxt *ud;            // 子协议的 ud_cxt（用于子协议解包）
-    websock_pack_ctx *pack; // 当前正在解析的帧（DATA 状态下有效）
-}websock_ctx;
 typedef struct websock_secprot_pack {
     pack_type pktype;
     size_t splens;
@@ -152,7 +144,7 @@ void _websock_udfree(ud_cxt *ud) {
 static int32_t _websock_secextra(struct watcher_ctx *watcher, struct sock_ctx *skctx, void *val) {
     ud_cxt *ud = _evpub_get_ud(skctx);
     const char *why = NULL;
-    websock_ctx *ws = NULL;
+    websock_ctx *ws = (websock_ctx *)ud->context;
     // 收的是裸 fd, 必须自己认协议与握手阶段, 判据同 _websock_udfree。口径同 _http_set_nobody_cb
     if (PACK_WEBSOCK != ud->pktype) {
         why = "not a websock connection";
@@ -160,13 +152,10 @@ static int32_t _websock_secextra(struct watcher_ctx *watcher, struct sock_ctx *s
         why = "handshake not finished";
     } else if (NULL == ud->context) {
         why = "no websock context";
-    } else {
-        ws = (websock_ctx *)ud->context;
-        if (NULL == ws->ud) {
-            why = "subprotocol has no builtin parser";
-        } else if (NULL != ws->ud->context) {
-            why = "already set";
-        }
+    } else if (NULL == ws->ud) {
+        why = "subprotocol has no builtin parser";
+    } else if (NULL != ws->ud->context) {
+        why = "already set";
     }
     if (NULL != why) {
         LOG_ERROR("websock set secextra rejected (%s), closing the connection.", why);
@@ -516,8 +505,9 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
     buffer_external(ws->buf, pack->data, pack->dlens, _websock_mqtt_buffree);
     websock_pack_ctx *head = NULL, *tail = NULL, *node;
     struct mqtt_pack_ctx *mpack;
+    size_t seclens = 0;// 同族 unpack 一律裸写 *size、没人判 NULL；mqtt_unpack 眼下不碰
     // ws->buf 一次性吐空,一帧内含多个完整 MQTT 包时串成链表,避免余包积压到无新数据触发才被拾起
-    while (NULL != (mpack = mqtt_unpack(NULL, INVALID_SOCK, 0, client, ws->buf, ws->ud, NULL, status))) {
+    while (NULL != (mpack = mqtt_unpack(NULL, INVALID_SOCK, 0, client, ws->buf, ws->ud, &seclens, status))) {
         CALLOC(node, 1, sizeof(websock_pack_ctx));
         node->fin = 1;
         node->prot = WS_BINARY;

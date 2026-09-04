@@ -205,9 +205,12 @@ runner.run(function(t)
             done = done + 1
         end)
     end
-    while done < N do
+    -- 有界等待，理由同 db_mysql.lua：无界 while 会把 fork 协程抛错变成整份汇总挂住
+    for _ = 1, 1500 do            -- 1500 x 20ms = 30s 上限
+        if done >= N then break end
         srey.sleep(20)
     end
+    t:eq(N, done, "并发协程全部完成 (" .. done .. "/" .. N .. ")")
     for i = 1, N do
         t:check(true == got[i], "pgsql 并发协程 " .. i .. ": " .. tostring(got[i]))
     end

@@ -10,6 +10,13 @@
 #pragma warning(disable:4312)
 #endif
 
+// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
+static void *_t_pgsql_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
+    size_t *size, int32_t *status) {
+    return pgsql_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+}
+
 // 构造一个 pgsql_reader_ctx：fields 数量 + 类型 + 名称
 static pgsql_reader_ctx *_pg_reader_new(uint16_t field_count, const int32_t *type_oids,
                                         const char (*names)[64]) {
@@ -237,9 +244,9 @@ static void test_pgsql_reader_bool(CuTest *tc) {
     memcpy(p, "true", 4);
     memcpy(p + 4, "no", 2);
     pgpack_row cols[3] = {
-        { 4, p, NULL },        // a: "true"
-        { 2, p + 4, NULL },    // b: "no"（不在真值列表，返回 0 但 err=ERR_OK）
-        { -1, NULL, NULL }     // c: NULL (int4)
+        { 4, p, NULL },// a: "true"
+        { 2, p + 4, NULL },// b: "no"（不在真值列表，返回 0 但 err=ERR_OK）
+        { -1, NULL, NULL }// c: NULL (int4)
     };
     _pg_reader_push_row(r, p, cols);
 
@@ -934,6 +941,81 @@ static void test_pgpack_error_notice_unterminated(CuTest *tc) {
     FREE(msg);
 }
 
+// 拼一条服务端消息喂给 _pgpack_parser：code + 4 字节大端长度(含自身) + body。
+// 解析器接管 raw 的所有权（17 个分支都会 FREE 或转交），调用方不再释放
+static void *_pg_feed(pgsql_ctx *pg, ud_cxt *ud, char code,
+    const char *body, size_t blens, int32_t *status) {
+    char *raw;
+    binary_ctx br;
+    MALLOC(raw, 5 + blens);
+    raw[0] = code;
+    pack_integer(raw + 1, (uint64_t)(4 + blens), 4, 0);
+    if (blens > 0) {
+        memcpy(raw + 5, body, blens);
+    }
+    binary_init(&br, raw, 5 + blens, 0);
+    *status = PROT_INIT;
+    return _pgpack_parser(pg, &br, ud, status);
+}
+/* 一条完整的 T → D → C → Z 消息流走通 _pgpack_parser。原来全仓只有两处调它、都断言 NULL
+ * （拒收），而 24 个 reader 取值用例全靠手搭 struct 绕过解析器，多结果集那条更是靠测试
+ * 自己复刻的 _pgpack_complete —— 于是"wire 字节 → reader"整条链零测试。
+ * 这一条同时钉住四个可破坏点：
+ *   1) 把 `pg->pack->pack = NULL`（所有权移入结果数组）删掉 → _pgpack_free 会先释放 reader、
+ *      再由 _pgpack_results_clear 对同一指针 pgsql_reader_free → double free
+ *   2) 把 array_push_back(&results) 删掉 → result_count 变 0，多结果集整段丢失
+ *   3) field->type_oid(4B) 与 field->lens(2B) 读取顺序对调 → 类型 OID 白名单判错、取值失败
+ *   4) `-1 == row->lens` 与 `0 == row->lens` 两支对调 → NULL 与空串互换 */
+static void test_pgpack_parser_full_flow(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    int32_t status;
+    int32_t err;
+    void *pack;
+    char body[64];
+    char *p;
+    ZERO(&pg, sizeof(pg));
+    ZERO(&ud, sizeof(ud));
+
+    /* T：1 列，列名 "n"，INT4OID，format=FORMAT_TEXT */
+    p = body;
+    pack_integer(p, 1, 2, 0); p += 2;// field_count
+    *p++ = 'n'; *p++ = '\0';// 列名 cstring
+    pack_integer(p, 0, 4, 0); p += 4;// table_oid
+    pack_integer(p, 1, 2, 0); p += 2;// index
+    pack_integer(p, INT4OID, 4, 0); p += 4;// type_oid
+    pack_integer(p, 4, 2, 0); p += 2;// lens
+    pack_integer(p, (uint64_t)-1, 4, 0); p += 4;// type_modifier
+    pack_integer(p, FORMAT_TEXT, 2, 0); p += 2;// format
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, &ud, 'T', body, (size_t)(p - body), &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+
+    /* D：1 列，文本 "12345" */
+    p = body;
+    pack_integer(p, 1, 2, 0); p += 2;// ncolumn
+    pack_integer(p, 5, 4, 0); p += 4;// 列长度
+    memcpy(p, "12345", 5); p += 5;
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, &ud, 'D', body, (size_t)(p - body), &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+
+    /* C：CommandComplete 触发 _pgpack_complete，把 reader 提交进结果数组 */
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, &ud, 'C', "SELECT 1", 9, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+
+    /* Z：ReadyForQuery 才把攒好的 pgpack 交出来 */
+    pack = _pg_feed(&pg, &ud, 'Z', "I", 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+
+    CuAssertIntEquals(tc, 1, (int)pgsql_result_count((pgpack_ctx *)pack));
+    pgsql_reader_ctx *reader = pgsql_reader_iter((pgpack_ctx *)pack, FORMAT_TEXT);
+    CuAssertPtrNotNull(tc, reader);
+    CuAssertTrue(tc, 12345 == pgsql_reader_integer(reader, "n", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    pgsql_reader_free(reader);
+    _pgpack_free((pgpack_ctx *)pack);
+}
+
 // 回归：5 字节报文（长度字段声明 4，即消息体为空）不得让 binary_get_* 的断言 abort 整个进程。
 // _pgsql_payload 只拒 lens < 4，lens == 4 合法 → 类型码 1 字节 + 长度 4 字节读完就到头，
 // 下面这些分支的首个读全都落在零剩余上
@@ -957,6 +1039,88 @@ static void test_pgpack_parser_empty_body(CuTest *tc) {
             BIT_CHECK(status, PROT_ERROR));
         _pgpack_free(pg.pack);
     }
+}
+
+// 往 buf 追加一条完整 pgsql 消息：类型码 1 字节 + 4 字节大端长度(含自身) + 正文
+static void _pg_push_msg(buffer_ctx *buf, char code, const char *body, size_t blens) {
+    char head[5];
+    head[0] = code;
+    pack_integer(head + 1, (uint64_t)(4 + blens), 4, 0);
+    buffer_append(buf, head, sizeof(head));
+    if (blens > 0) {
+        buffer_append(buf, (void *)body, blens);
+    }
+}
+// _pgsql_payload 的分帧：库内 static，走 pgsql_unpack 的 COMMAND 分支间接测。
+// 上面那批用例都是把单条消息直接交给 _pgpack_parser，跳过了从缓冲区切消息这一层，
+// 于是"消费多少字节"没有任何测试 —— 少切一字节就整条流错位，且错在下一条消息上
+static void test_pgsql_payload_framing(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    int32_t status;
+    ZERO(&pg, sizeof(pg));
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND，枚举定义在 pgsql.c 内不可见
+    ud.context = &pg;
+
+    // 1) 空缓冲 → MOREDATA
+    buffer_init(&buf);
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA) && !BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+
+    // 2) 只有 4 字节，消息头要 5 → MOREDATA 且一个字节都不消费
+    char part[4] = { 'C', 0x00, 0x00, 0x00 };
+    buffer_init(&buf);
+    buffer_append(&buf, part, sizeof(part));
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA) && !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 4, (int)buffer_size(&buf));
+    buffer_free(&buf);
+
+    // 3) 长度字段声明 3（协议规定含自身、合法值 >= 4）→ PROT_ERROR
+    char bad[5] = { 'C', 0x00, 0x00, 0x00, 0x03 };
+    buffer_init(&buf);
+    buffer_append(&buf, bad, sizeof(bad));
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+
+    // 4) 头齐但正文短一截 → MOREDATA 且缓冲原封不动（等下一次收齐再切）
+    buffer_init(&buf);
+    _pg_push_msg(&buf, 'C', "SELECT 1", 9);
+    char *whole;
+    size_t wlens = buffer_size(&buf);
+    MALLOC(whole, wlens);
+    CuAssertIntEquals(tc, (int)wlens, (int)buffer_copyout(&buf, 0, whole, wlens));
+    buffer_free(&buf);
+    buffer_init(&buf);
+    buffer_append(&buf, whole, wlens - 1);
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA) && !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, (int)(wlens - 1), (int)buffer_size(&buf));
+    buffer_free(&buf);
+
+    // 5) 两条消息挤在一个缓冲里：一次调用只该吃掉第一条，剩的字节数必须正好是第二条
+    buffer_init(&buf);
+    _pg_push_msg(&buf, 'C', "SELECT 1", 9);
+    _pg_push_msg(&buf, 'C', "SELECT 22", 10);
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 15, (int)buffer_size(&buf));// 5 + 10
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    buffer_free(&buf);
+    FREE(whole);
+    _pgpack_free(pg.pack);
 }
 
 // 回归：RowDescription 声明的列数对得上总长，但某个列名超长把后面的列挤出报文时也须判失败
@@ -1067,7 +1231,9 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgpack_error_notice);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_empty);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_unterminated);
+    SUITE_ADD_TEST(suite, test_pgpack_parser_full_flow);
     SUITE_ADD_TEST(suite, test_pgpack_parser_empty_body);
+    SUITE_ADD_TEST(suite, test_pgsql_payload_framing);
     SUITE_ADD_TEST(suite, test_pgpack_row_description_overlong_name);
     SUITE_ADD_TEST(suite, test_pgsql_affected_rows);
     SUITE_ADD_TEST(suite, test_pgsql_setter_atomic);

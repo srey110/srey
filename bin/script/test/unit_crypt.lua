@@ -254,6 +254,35 @@ runner.run(function(t)
         t:eq(plain, dec:dofinal(ct), "AES-128 CBC round-trip")
     end
     do
+        -- 上面几段全是 round-trip，而任何可逆变换都满足 round-trip：绑定层把 CIPHER_MODEL
+        -- 认错成 ECB、或者 iv 压根没传下去，加解密两边一样错，照样对得回来。
+        -- 这组向量与 test_crypt.c 的 test_cipher_nist_modes 同源（cipher:block 就是 C 侧
+        -- cipher_block），绑定少传或传错一个参数，两层结果当场分叉
+        local function _unhex(h)
+            return (h:gsub("%x%x", function(b) return string.char(tonumber(b, 16)) end))
+        end
+        local katkey = _unhex("2b7e151628aed2a6abf7158809cf4f3c")
+        local p1 = _unhex("6bc1bee22e409f96e93d7e117393172a")
+        local p2 = _unhex("ae2d8a571e03ac9c9eb76fac45af8e51")
+        -- 第二块是必须的：CBC 的链接、CTR 的计数器进位都只在第二块上才体现出来
+        local function _kat(model, ivhex, c1hex, c2hex, name)
+            local c = cipher.new(CIPHER_TYPE.AES, model, katkey, 128, 1)
+            c:iv(_unhex(ivhex))
+            t:eq(c1hex, srey.hex(c:block(p1), true), name .. " 第 1 块")
+            t:eq(c2hex, srey.hex(c:block(p2), true), name .. " 第 2 块")
+        end
+        _kat(CIPHER_MODEL.CBC, "000102030405060708090a0b0c0d0e0f",
+             "7649abac8119b246cee98e9b12e9197d", "5086cb9b507219ee95db113a917678b2", "CBC")
+        _kat(CIPHER_MODEL.CFB, "000102030405060708090a0b0c0d0e0f",
+             "3b3fd92eb72dad20333449f8e83cfb4a", "c8a64537a0b3a93fcde3cdad9f1ce58b", "CFB")
+        -- OFB 首块与 CFB 相同（都是 E(IV) xor P1），第二块才分道
+        _kat(CIPHER_MODEL.OFB, "000102030405060708090a0b0c0d0e0f",
+             "3b3fd92eb72dad20333449f8e83cfb4a", "7789508d16918f03f53c52dac54ed825", "OFB")
+        -- 初始计数器末字节 ff：第二块要靠它进位
+        _kat(CIPHER_MODEL.CTR, "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+             "874d6191b620e3261bef6864990db6ce", "9806f66b7970fdff8617187bb9fffdff", "CTR")
+    end
+    do
         -- AES-128 CTR 流模式：密文长度 == 明文长度
         local key = "0123456789abcdef"
         local iv  = "fedcba9876543210"
