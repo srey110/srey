@@ -304,7 +304,7 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         CHECK_COPY_FREE(data, copy);
-        LOG_WARN("%s", ERRORSTR(ERRNO));
+        LOG_WARN("ev_sendto %s:%d, not a valid ip.", ip, port);
         return ERR_FAILED;
     }
     return ev_sendto_addr(ctx, fd, skid, &addr, data, len, copy);

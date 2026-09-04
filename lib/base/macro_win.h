@@ -75,6 +75,10 @@ static inline const char *_fmterror(DWORD error) {
     size_t ilens = strlen(err);
     ilens = ilens >= sizeof(errstr) ? sizeof(errstr) - 1 : ilens;
     memcpy(errstr, err, ilens);
+    // FormatMessageA 的文本自带结尾 CRLF，留着每条错误日志后面都多一个空行
+    while (ilens > 0 && ('\r' == errstr[ilens - 1] || '\n' == errstr[ilens - 1])) {
+        ilens--;
+    }
     errstr[ilens] = '\0';
     LocalFree(err);
     return errstr;

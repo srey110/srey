@@ -242,7 +242,7 @@ int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs
         return ERR_FAILED;
     }
     if (ERR_OK != netaddr_set(addr, ip, port)) {
-        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
+        LOG_ERROR("netaddr_set %s:%d, not a valid ip.", ip, port);
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
