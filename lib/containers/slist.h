@@ -28,91 +28,6 @@ typedef struct list_iter {
     list_node *next; // 下次 list_iter_next 返回的节点
 }list_iter;
 
-/// <summary>
-/// 初始化链表为空
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-void list_init(list_ctx *lst);
-/// <summary>
-/// 清空链表（重置为空，不释放节点，语义同 list_init，用于已在使用的链表）
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-void list_clear(list_ctx *lst);
-/// <summary>
-/// 头插：node 成为新队头
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <param name="node">待插入节点（不属于任何链表）</param>
-void list_push_head(list_ctx *lst, list_node *node);
-/// <summary>
-/// 尾插：node 成为新队尾（FIFO 入队）
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <param name="node">待插入节点（不属于任何链表）</param>
-void list_push_tail(list_ctx *lst, list_node *node);
-/// <summary>
-/// 在 pos 之前插入 node；pos 为队头时 node 成为新队头
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <param name="pos">表中有效节点（非空表）</param>
-/// <param name="node">待插入节点（不属于任何链表）</param>
-void list_insert_before(list_ctx *lst, list_node *pos, list_node *node);
-/// <summary>
-/// 在 pos 之后插入 node；pos 为队尾时 node 成为新队尾
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <param name="pos">表中有效节点（非空表）</param>
-/// <param name="node">待插入节点（不属于任何链表）</param>
-void list_insert_after(list_ctx *lst, list_node *pos, list_node *node);
-/// <summary>
-/// 摘除队头
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <returns>队头节点；空表返回 NULL</returns>
-list_node *list_pop_head(list_ctx *lst);
-/// <summary>
-/// 摘除队尾
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <returns>队尾节点；空表返回 NULL</returns>
-list_node *list_pop_tail(list_ctx *lst);
-/// <summary>
-/// 摘除任意节点 O(1)；解链后置 node->next/prev = NULL。node 须在 lst 中（不校验）
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <param name="node">待摘除节点</param>
-void list_remove(list_ctx *lst, list_node *node);
-/// <summary>
-/// 将 src 整条链接到 dst 队尾，src 清空为空表 O(1)；dst 与 src 须为不同链表
-/// </summary>
-/// <param name="dst">目标链表</param>
-/// <param name="src">源链表（调用后为空）</param>
-void list_splice_tail(list_ctx *dst, list_ctx *src);
-/// <summary>
-/// 链表是否为空
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <returns>空返回非 0，否则 0</returns>
-int32_t list_empty(const list_ctx *lst);
-/// <summary>
-/// 当前节点数
-/// </summary>
-/// <param name="lst">list_ctx 指针</param>
-/// <returns>节点数</returns>
-uint32_t list_size(const list_ctx *lst);
-/// <summary>
-/// 初始化遍历游标，首个 list_iter_next 返回队头
-/// </summary>
-/// <param name="it">list_iter 指针</param>
-/// <param name="lst">list_ctx 指针</param>
-void list_iter_init(list_iter *it, const list_ctx *lst);
-/// <summary>
-/// 返回当前节点并预推进游标；返回后可对该节点调 list_remove（安全）
-/// </summary>
-/// <param name="it">list_iter 指针</param>
-/// <returns>当前节点；遍历结束返回 NULL</returns>
-list_node *list_iter_next(list_iter *it);
-
 // 简单遍历：it 依次取每个 list_node*，body 内不可删 it（要删用 list_foreach_safe）
 #define list_foreach(lst, it) \
     for (list_node *it = (lst)->head; NULL != it; it = it->next)
@@ -120,5 +35,192 @@ list_node *list_iter_next(list_iter *it);
 #define list_foreach_safe(lst, it, tmp) \
     for (list_node *it = (lst)->head, *tmp = (NULL != it) ? it->next : NULL; \
          NULL != it; it = tmp, tmp = (NULL != it) ? it->next : NULL)
+
+/// <summary>
+/// 初始化链表为空
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+static inline void list_init(list_ctx *lst) {
+    lst->head = NULL;
+    lst->tail = NULL;
+    lst->size = 0;
+}
+/// <summary>
+/// 清空链表（重置为空，不释放节点，语义同 list_init，用于已在使用的链表）
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+static inline void list_clear(list_ctx *lst) {
+    list_init(lst);
+}
+/// <summary>
+/// 头插：node 成为新队头
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <param name="node">待插入节点（不属于任何链表）</param>
+static inline void list_push_head(list_ctx *lst, list_node *node) {
+    node->prev = NULL;
+    node->next = lst->head;
+    if (NULL != lst->head) {
+        lst->head->prev = node;
+    } else {
+        lst->tail = node;
+    }
+    lst->head = node;
+    lst->size++;
+}
+/// <summary>
+/// 尾插：node 成为新队尾（FIFO 入队）
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <param name="node">待插入节点（不属于任何链表）</param>
+static inline void list_push_tail(list_ctx *lst, list_node *node) {
+    node->next = NULL;
+    node->prev = lst->tail;
+    if (NULL != lst->tail) {
+        lst->tail->next = node;
+    } else {
+        lst->head = node;
+    }
+    lst->tail = node;
+    lst->size++;
+}
+/// <summary>
+/// 在 pos 之前插入 node；pos 为队头时 node 成为新队头
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <param name="pos">表中有效节点（非空表）</param>
+/// <param name="node">待插入节点（不属于任何链表）</param>
+static inline void list_insert_before(list_ctx *lst, list_node *pos, list_node *node) {
+    node->next = pos;
+    node->prev = pos->prev;
+    if (NULL != pos->prev) {
+        pos->prev->next = node;
+    } else {
+        lst->head = node;
+    }
+    pos->prev = node;
+    lst->size++;
+}
+/// <summary>
+/// 在 pos 之后插入 node；pos 为队尾时 node 成为新队尾
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <param name="pos">表中有效节点（非空表）</param>
+/// <param name="node">待插入节点（不属于任何链表）</param>
+static inline void list_insert_after(list_ctx *lst, list_node *pos, list_node *node) {
+    node->prev = pos;
+    node->next = pos->next;
+    if (NULL != pos->next) {
+        pos->next->prev = node;
+    } else {
+        lst->tail = node;
+    }
+    pos->next = node;
+    lst->size++;
+}
+/// <summary>
+/// 摘除任意节点 O(1)；解链后置 node->next/prev = NULL。node 须在 lst 中（不校验）
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <param name="node">待摘除节点</param>
+static inline void list_remove(list_ctx *lst, list_node *node) {
+    if (NULL != node->prev) {
+        node->prev->next = node->next;
+    } else {
+        lst->head = node->next;
+    }
+    if (NULL != node->next) {
+        node->next->prev = node->prev;
+    } else {
+        lst->tail = node->prev;
+    }
+    node->next = NULL;
+    node->prev = NULL;
+    lst->size--;
+}
+/// <summary>
+/// 摘除队头
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <returns>队头节点；空表返回 NULL</returns>
+static inline list_node *list_pop_head(list_ctx *lst) {
+    list_node *node = lst->head;
+    if (NULL == node) {
+        return NULL;
+    }
+    list_remove(lst, node);
+    return node;
+}
+/// <summary>
+/// 摘除队尾
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <returns>队尾节点；空表返回 NULL</returns>
+static inline list_node *list_pop_tail(list_ctx *lst) {
+    list_node *node = lst->tail;
+    if (NULL == node) {
+        return NULL;
+    }
+    list_remove(lst, node);
+    return node;
+}
+/// <summary>
+/// 将 src 整条链接到 dst 队尾，src 清空为空表 O(1)；dst 与 src 须为不同链表
+/// </summary>
+/// <param name="dst">目标链表</param>
+/// <param name="src">源链表（调用后为空）</param>
+static inline void list_splice_tail(list_ctx *dst, list_ctx *src) {
+    if (NULL == src->head) {
+        return;
+    }
+    if (NULL != dst->tail) {
+        dst->tail->next = src->head;
+        src->head->prev = dst->tail;
+    } else {
+        dst->head = src->head;
+    }
+    dst->tail = src->tail;
+    dst->size += src->size;
+    src->head = NULL;
+    src->tail = NULL;
+    src->size = 0;
+}
+/// <summary>
+/// 链表是否为空
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <returns>空返回非 0，否则 0</returns>
+static inline int32_t list_empty(const list_ctx *lst) {
+    return NULL == lst->head;
+}
+/// <summary>
+/// 当前节点数
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+/// <returns>节点数</returns>
+static inline uint32_t list_size(const list_ctx *lst) {
+    return lst->size;
+}
+/// <summary>
+/// 初始化遍历游标，首个 list_iter_next 返回队头
+/// </summary>
+/// <param name="it">list_iter 指针</param>
+/// <param name="lst">list_ctx 指针</param>
+static inline void list_iter_init(list_iter *it, const list_ctx *lst) {
+    it->next = lst->head;
+}
+/// <summary>
+/// 返回当前节点并预推进游标；返回后可对该节点调 list_remove（安全）
+/// </summary>
+/// <param name="it">list_iter 指针</param>
+/// <returns>当前节点；遍历结束返回 NULL</returns>
+static inline list_node *list_iter_next(list_iter *it) {
+    list_node *node = it->next;
+    if (NULL == node) {
+        return NULL;
+    }
+    it->next = node->next;
+    return node;
+}
 
 #endif//SLIST_H_

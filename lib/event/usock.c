@@ -328,7 +328,7 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
 #endif
 }
 // 从socket读取数据到接收缓冲区并触发recv回调，MANUAL_ADD时需重新注册读事件
-static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
+static inline int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nread;
     int32_t evrtn = ERR_OK;
     int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, TCP_SSL(tcp));
@@ -353,7 +353,7 @@ static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
 // 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件。
 // STATUS_KEYUPDATE_READ 的置与清都只在本函数：别处清位条件对不上置位处，残留期间
 // _uev_add_bufs_send 会早退，请求-响应型协议下就再等不到读事件、连接卡死。
-static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
+static inline int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nsend;
     int32_t rtn = _evpub_sock_send(tcp->sock.fd, &tcp->buf_s, &nsend, TCP_SSL(tcp));
     tcp->wb_size -= nsend;
@@ -700,7 +700,7 @@ static int32_t _usk_accept_retriable(int32_t err) {
 }
 // accept 返回 INVALID_SOCK 的分类：可重试错误返回 ERR_OK 继续，其余返回 ERR_FAILED 退出循环；
 // EMFILE/ENFILE 额外暂停监听 READ 并挂退避 tick，到点重挂重试（不误拒 backlog，避免 ET 停滞/LT 忙轮询）
-static int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
+static inline int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
     int32_t err = ERRNO;
     if (0 != _usk_accept_retriable(err)) {
         return ERR_OK;
@@ -990,7 +990,7 @@ void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
     _uev_qtn_freelsn(watcher, lsn);
 }
 // 初始化msghdr结构体（用于recvmsg/sendmsg的地址和iov绑定）
-static void _usk_init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, uint32_t niov) {
+static inline void _usk_init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, uint32_t niov) {
     ZERO(msg, sizeof(struct msghdr));
     msg->msg_name = netaddr_addr(addr);
     msg->msg_namelen = netaddr_size(addr);
@@ -1051,7 +1051,7 @@ static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
 }
 // 对单个 UDP payload 尝试一次 sendmsg；返回 ERR_OK 该包已处理完(发送成功，或遇到无害的单包错误已丢弃)；
 // 返回 1 为 EAGAIN/EINTR，可重试，调用方需保留该包；返回 ERR_FAILED 为 EBADF/ENOTSOCK，fd 本身已失效
-static int32_t _usk_udp_sendmsg_once(SOCKET fd, const void *data, size_t len, netaddr_ctx *addr) {
+static inline int32_t _usk_udp_sendmsg_once(SOCKET fd, const void *data, size_t len, netaddr_ctx *addr) {
     IOV_TYPE iov;
     struct msghdr msg;
     iov.IOV_PTR_FIELD = (char *)data;

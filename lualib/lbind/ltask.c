@@ -314,7 +314,7 @@ static int32_t _msg_clean(lua_State *lua) {
     return 0;
 }
 // 将 C 层 message_ctx 打包为 Lua table，按 mtype 类型填充对应字段
-static void _ltask_pack_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
+static inline void _ltask_pack_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
     lua_createtable(lua, 0, 11);
     if (ERR_OK == _message_should_clean(msg)) {
         // 需要手动释放内存的消息挂 __gc 元方法；元表整数引用缓存在 ltask_ctx，首次创建后

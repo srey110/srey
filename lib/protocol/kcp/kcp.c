@@ -77,21 +77,21 @@ static int _kcp_due_cmp(const heap_node *lhs, const heap_node *rhs) {
     return (IINT32)(_KEL_FROM_HNODE(lhs)->next_update - _KEL_FROM_HNODE(rhs)->next_update) < 0;
 }
 #endif
-static kcp_element *_kcp_map_get(kcp_ud_ctx *ctx, uint32_t conv) {
+static inline kcp_element *_kcp_map_get(kcp_ud_ctx *ctx, uint32_t conv) {
     kcp_element key;
     key.conv = conv;
     kcp_element *pkey = &key;
     void **tmp = (void **)hashmap_get(ctx->mapkcp, &pkey);
     return NULL == tmp ? NULL : *tmp;
 }
-static void _kcp_map_add(kcp_ud_ctx *ctx, kcp_element *kel) {
+static inline void _kcp_map_add(kcp_ud_ctx *ctx, kcp_element *kel) {
     ASSERTAB(NULL == hashmap_set(ctx->mapkcp, &kel), "kcp conv repeat.");
     ASSERTAB(!hashmap_oom(ctx->mapkcp), "hashmap oom.");
 #if KCP_TICK_HEAP
     heap_insert(&ctx->heap_due, &kel->hnode);
 #endif
 }
-static void _kcp_map_remove(kcp_ud_ctx *ctx, kcp_element *kel) {
+static inline void _kcp_map_remove(kcp_ud_ctx *ctx, kcp_element *kel) {
     kcp_element *pkey = kel;
     hashmap_delete(ctx->mapkcp, &pkey);
 #if KCP_TICK_HEAP

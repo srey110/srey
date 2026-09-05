@@ -62,6 +62,3 @@ int32_t spsc_pop(spsc_ctx *q, void *out) {
     ATOMIC_SET(&q->rq.deq.v, deq + 1);
     return ERR_OK;
 }
-uint32_t spsc_size(spsc_ctx *q) {
-    return _ringq_size(&q->rq);
-}

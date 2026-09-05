@@ -135,6 +135,3 @@ int32_t mpq_pop_sc(mpq_ctx *q, void *out) {
     ATOMIC_SET_RELEASE(&cell->sequence, pos + q->rq.capacity);
     return ERR_OK;
 }
-uint32_t mpq_size(mpq_ctx *q) {
-    return _ringq_size(&q->rq);
-}

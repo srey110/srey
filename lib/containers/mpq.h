@@ -59,7 +59,9 @@ int32_t mpq_pop_sc(mpq_ctx *q, void *out);
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <returns>元素数量，取值 [0, capacity]</returns>
-uint32_t mpq_size(mpq_ctx *q);
+static inline uint32_t mpq_size(mpq_ctx *q) {
+    return _ringq_size(&q->rq);
+}
 /// <summary>
 /// 返回单元素字节数
 /// </summary>

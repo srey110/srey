@@ -242,9 +242,6 @@ int32_t serviceid(uint16_t id) {
 uint64_t createid(void) {
     return ((uint64_t)_serviceid << 48) | ((uint64_t)ATOMIC64_ADD(&_ids, 1) & 0xFFFFFFFFFFFFULL);
 }
-uint16_t parse_svid(uint64_t id) {
-    return (uint16_t)(id >> 48);
-}
 uint64_t threadid(void) {
 #if defined(OS_WIN)
     return (uint64_t)GetCurrentThreadId();
@@ -572,13 +569,6 @@ uint64_t strtots(const char *time, const char *fmt) {
         return 0;
     }
     return (uint64_t)ts;
-}
-uint64_t hash(const char *buf, size_t len) {
-    uint64_t rtn = 0;
-    for (; len > 0; --len) {
-        rtn = (rtn * 131) + (unsigned char)*buf++;
-    }
-    return rtn;
 }
 int32_t is_token(const char *data, size_t lens) {
     unsigned char c;

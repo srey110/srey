@@ -63,7 +63,7 @@ scram_ctx *scram_init(const char *method, int32_t client) {
 }
 // 抹除并释放 NUL 结尾的敏感字符串。清零长度取 strlen+1,与 dup_zero / format_va 实际分配的
 // lens+1 对齐,连终止符一起覆盖;顺带置空调用方字段,避免留下悬空指针
-static void _scram_free_str(char **pstr) {
+static inline void _scram_free_str(char **pstr) {
     if (NULL != *pstr) {
         SECURE_FREE(*pstr, strlen(*pstr) + 1);
     }
@@ -84,7 +84,7 @@ void scram_free(scram_ctx *scram) {
 }
 // 存用户名,不判空。空用户名是 RFC 5802 的合法值(libpq 恒发 n=,用户名走启动包),
 // 判空只是 scram_set_user 对外拦误用,不能拿到解析路径上用
-static void _scram_store_user(scram_ctx *scram, const char *user, size_t ulens) {
+static inline void _scram_store_user(scram_ctx *scram, const char *user, size_t ulens) {
     _scram_free_str(&scram->user);
     scram->user = dup_zero(user, ulens);
 }
@@ -230,7 +230,7 @@ static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
     return NULL;
 }
 // 提取 SCRAM 消息中指定属性的值，通过 lens 返回值长度
-static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t *lens) {
+static inline char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t *lens) {
     char *pos = _scram_attr_search(msg, mlens, attr);
     if (NULL == pos) {
         return NULL;
@@ -247,7 +247,7 @@ static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t
 }
 // NUL 结尾串与 (p, lens) 切片的恒定时间相等判定, 相等返 1。长度不等即短路(长度不是秘密)。
 // 四个校验点共用这一处: 哪一份被改回 memcmp、或漏掉长度先判, 都会重新漏出时序侧信道
-static int32_t _scram_ct_eq(const char *nulstr, const void *p, size_t lens) {
+static inline int32_t _scram_ct_eq(const char *nulstr, const void *p, size_t lens) {
     return strlen(nulstr) == lens
         && 0 == ct_memcmp(p, nulstr, lens);
 }

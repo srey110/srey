@@ -92,7 +92,7 @@ static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     }
 }
 // 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)
-static uint32_t _iocp_loop_check(watcher_ctx *watcher, uint32_t *shrink_cnt, uint64_t *shrink_start) {
+static inline uint32_t _iocp_loop_check(watcher_ctx *watcher, uint32_t *shrink_cnt, uint64_t *shrink_start) {
     uint64_t now_ms;
     uint32_t next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
     (*shrink_cnt)++;
@@ -110,7 +110,7 @@ timer_ctx *_evpub_watcher_timer(watcher_ctx *watcher) {
     return &watcher->timer;
 }
 // stop 后判断事件循环是否应退出：排空完成(element 空)或排空超时则返回 1，否则(含未 stop)返回 0
-static int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint64_t *drain_deadline) {
+static inline int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint64_t *drain_deadline) {
     if (0 == stop) {
         return 0;
     }

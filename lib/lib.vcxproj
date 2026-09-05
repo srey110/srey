@@ -154,7 +154,6 @@
     <ClCompile Include="containers\sarray.c" />
     <ClCompile Include="containers\queue.c" />
     <ClCompile Include="containers\fsqu.c" />
-    <ClCompile Include="containers\slist.c" />
     <ClCompile Include="crypt\aes.c" />
     <ClCompile Include="crypt\base64.c" />
     <ClCompile Include="crypt\cipher.c" />

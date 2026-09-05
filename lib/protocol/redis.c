@@ -259,7 +259,7 @@ char *redis_pack(size_t *size, const char *fmt, ...) {
     return buf;
 }
 // 获取或创建 ud_cxt 关联的解包上下文（首次调用时分配并初始化）
-static reader_ctx *_redis_create_reader(ud_cxt *ud) {
+static inline reader_ctx *_redis_create_reader(ud_cxt *ud) {
     if (NULL == ud->context) {
         reader_ctx *rd;
         MALLOC(rd, sizeof(reader_ctx));
@@ -298,7 +298,7 @@ static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk, int64_t o
     }
 }
 // 定位下一个 CRLF；未找到时按已累积字节数区分"数据不足"与"行首长度已超限"，置 status 并返回 ERR_FAILED
-static int32_t _redis_find_crlf(buffer_ctx *buf, int32_t *status) {
+static inline int32_t _redis_find_crlf(buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
         if (buffer_size(buf) > REDIS_MAX_LINE_LENS) {
@@ -310,7 +310,7 @@ static int32_t _redis_find_crlf(buffer_ctx *buf, int32_t *status) {
     return pos;
 }
 // 解析长度行(CRLF 位于 pos)紧邻的数值 token为 >= -1 的整数；容量不够/非纯数字/溢出 int64 时置 PROT_ERROR
-static int32_t _redis_parse_len(buffer_ctx *buf, int32_t pos, int32_t *status, int64_t *out) {
+static inline int32_t _redis_parse_len(buffer_ctx *buf, int32_t pos, int32_t *status, int64_t *out) {
     char num[64];
     int32_t lens = pos - 1;
     if (lens <= 0 || lens >= (int32_t)sizeof(num)) {

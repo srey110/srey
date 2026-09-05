@@ -37,26 +37,6 @@ static inline void array_grow_if_full(array_ctx *arr) {
         array_resize(arr, arr->maxsize * 2);
     }
 }
-/// <summary>
-/// 在指定位置插入元素（pos 之后的元素整体后移）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="elem">指向待插入元素的指针，拷贝 elsize 字节</param>
-/// <param name="pos">插入位置，[0, size]；负数表示从尾部反向索引</param>
-void array_add(array_ctx *arr, const void *elem, int32_t pos);
-/// <summary>
-/// 删除指定位置元素（保持顺序，后续元素整体前移）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="pos">删除位置，[0, size)；负数表示从尾部反向索引</param>
-void array_del(array_ctx *arr, int32_t pos);
-/// <summary>
-/// 交换两个位置的元素
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="pos1">位置 1，[0, size)；负数表示从尾部反向索引</param>
-/// <param name="pos2">位置 2，[0, size)；负数表示从尾部反向索引</param>
-void array_swap(array_ctx *arr, int32_t pos1, int32_t pos2);
 // 负下标归一(-1 即末元素)并校验范围, 返回归一后的下标。
 // inclusive 非 0 时允许等于 size —— 那是 array_add 的插入位, 其余入口一律要求 < size
 static inline uint32_t _array_norm_pos(const array_ctx *arr, int32_t pos, int32_t inclusive) {
@@ -67,6 +47,44 @@ static inline uint32_t _array_norm_pos(const array_ctx *arr, int32_t pos, int32_
     ASSERTAB(pos >= 0 && (uint32_t)pos < lim, "array pos out of range.");
     return (uint32_t)pos;
 }
+/// <summary>
+/// 在指定位置插入元素（pos 之后的元素整体后移）
+/// </summary>
+/// <param name="arr">array_ctx</param>
+/// <param name="elem">指向待插入元素的指针，拷贝 elsize 字节</param>
+/// <param name="pos">插入位置，[0, size]；负数表示从尾部反向索引</param>
+static inline void array_add(array_ctx *arr, const void *elem, int32_t pos) {
+    uint32_t p = _array_norm_pos(arr, pos, 1);// 插入位允许等于 size
+    array_grow_if_full(arr);
+    if (p < arr->size) {
+        memmove((char *)arr->ptr + ((size_t)p + 1) * arr->elsize,
+                (char *)arr->ptr + (size_t)p * arr->elsize,
+                (size_t)(arr->size - p) * arr->elsize);
+    }
+    memcpy((char *)arr->ptr + (size_t)p * arr->elsize, elem, arr->elsize);
+    arr->size++;
+}
+/// <summary>
+/// 删除指定位置元素（保持顺序，后续元素整体前移）
+/// </summary>
+/// <param name="arr">array_ctx</param>
+/// <param name="pos">删除位置，[0, size)；负数表示从尾部反向索引</param>
+static inline void array_del(array_ctx *arr, int32_t pos) {
+    uint32_t p = _array_norm_pos(arr, pos, 0);
+    arr->size--;
+    if (p < arr->size) {
+        memmove((char *)arr->ptr + (size_t)p * arr->elsize,
+                (char *)arr->ptr + ((size_t)p + 1) * arr->elsize,
+                (size_t)(arr->size - p) * arr->elsize);
+    }
+}
+/// <summary>
+/// 交换两个位置的元素
+/// </summary>
+/// <param name="arr">array_ctx</param>
+/// <param name="pos1">位置 1，[0, size)；负数表示从尾部反向索引</param>
+/// <param name="pos2">位置 2，[0, size)；负数表示从尾部反向索引</param>
+void array_swap(array_ctx *arr, int32_t pos1, int32_t pos2);
 /// <summary>
 /// 当前元素数量
 /// </summary>

@@ -123,13 +123,13 @@ typedef struct coro_ctx {
 
 static mco_desc _coro_desc; // 全局协程描述符，由 coro_desc_init 初始化
 
-static void _coro_fork_run(task_ctx *task, fork_item *item);
+static inline void _coro_fork_run(task_ctx *task, fork_item *item);
 // 最小堆比较函数：timeout 小的优先（堆顶是最早到期的）
 static int _coro_timeout_cmp(const heap_node *lhs, const heap_node *rhs) {
     return _TE_FROM_HNODE(lhs)->timeout < _TE_FROM_HNODE(rhs)->timeout;
 }
 // 创建 timeout_entry 并插入超时堆，返回堆节点指针（用于后续删除）
-static timeout_entry *_coro_te_insert(coro_ctx *coctx, uint64_t timeout, uint64_t sess) {
+static inline timeout_entry *_coro_te_insert(coro_ctx *coctx, uint64_t timeout, uint64_t sess) {
     timeout_entry *te = (timeout_entry *)pool_pop(&coctx->te_pool, NULL, 0);
     te->timeout = timeout;
     te->sess = sess;
@@ -151,7 +151,7 @@ static int _coro_cosess_compare(const void *a, const void *b, void *ud) {
 }
 // 将挂起的协程注册到 mapco
 // keep 0: 链表为空,主动从map移除节点,其他：不主动移除节点，在close消息后强制设置为0
-static void _coro_cosess_set(task_ctx *task, mco_coro *coro, uint64_t sess, msg_type mtype, uint32_t ms) {
+static inline void _coro_cosess_set(task_ctx *task, mco_coro *coro, uint64_t sess, msg_type mtype, uint32_t ms) {
     coro_ctx *coctx = task->arg;
     uint64_t now = timer_cur_ms(&coctx->timer);
     coro_info *coinfo = (coro_info *)pool_pop(&coctx->coinfo_pool, NULL, 0);
@@ -174,7 +174,7 @@ static void _coro_cosess_set(task_ctx *task, mco_coro *coro, uint64_t sess, msg_
     }
 }
 // 从 mapco 中删除指定 sess 的记录
-static void _coro_cosess_delete(coro_ctx *coctx, uint64_t sess) {
+static inline void _coro_cosess_delete(coro_ctx *coctx, uint64_t sess) {
     coro_sess key;
     key.sess = sess;
     hashmap_delete(coctx->mapco, &key);
@@ -182,7 +182,7 @@ static void _coro_cosess_delete(coro_ctx *coctx, uint64_t sess) {
 // 从 mapco 查找匹配 sess 的挂起协程节点，仅检测队头：mtype 匹配才摘除返回，
 // 队头不匹配（含 keep 保留的空条目）视为无等待者，不越过队头继续查找（保持严格 FIFO）；
 // 摘除后链表为空且 !keep 时才删除 mapco 条目
-static coro_info *_coro_cosess_get(coro_ctx *coctx, uint64_t sess, msg_type mtype) {
+static inline coro_info *_coro_cosess_get(coro_ctx *coctx, uint64_t sess, msg_type mtype) {
     coro_sess key;
     key.sess = sess;
     coro_sess *cofind = (coro_sess *)hashmap_get(coctx->mapco, &key);
@@ -327,7 +327,7 @@ static void _coro_ctx_free(void *arg) {
     FREE(coctx);
 }
 // 从协程对象池取出可用协程，池为空时新建并首次 resume 到第一个 yield 点
-static mco_coro *_coro_pool_get(task_ctx *task) {
+static inline mco_coro *_coro_pool_get(task_ctx *task) {
     coro_ctx *coctx = task->arg;
     return (mco_coro *)pool_pop(&coctx->copool, NULL, 0);
 }
@@ -337,7 +337,7 @@ static mco_coro *_coro_pool_get(task_ctx *task) {
 // 对着它 mco_yield 撞 MCO_STACK_OVERFLOW abort(minicoro 先判栈范围后判状态,别照字面调 stacksize);
 // 顶层漏清则 coro_fork / coro_fork_wait / coro_serial_enter 三处"不在协程里就拒绝"的守卫从第一条消息起永不成立。
 // 顶层调用的"原值"就是 NULL,同样由本函数还原,不必各写一份
-static mco_result _coro_resume_switch(coro_ctx *coctx, mco_coro *co) {
+static inline mco_result _coro_resume_switch(coro_ctx *coctx, mco_coro *co) {
     mco_coro *self = coctx->curco;
     coctx->curco = co;
     mco_result rtn = mco_resume(co);
@@ -356,7 +356,7 @@ static inline void _coro_resume_reap(coro_ctx *coctx, mco_coro *co) {
 }
 // 从对象池取出协程并推入分发参数，开始执行新的消息处理流程。
 // 五个调用点(消息分发表各项与 _coro_drain_forks)全在顶层,curco 恒为 NULL
-static void _coro_mco_create(task_dispatch_arg *arg) {
+static inline void _coro_mco_create(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
     mco_coro *co = _coro_pool_get(arg->task);
     // 推入 8 字节指针而非整个结构体，由 _coro_mco_cb 在 resume 后自行复制
@@ -365,7 +365,7 @@ static void _coro_mco_create(task_dispatch_arg *arg) {
     _coro_resume_reap(coctx, co);
 }
 // 唤醒已挂起的协程，推入消息指针后 resume，返回后清理消息资源
-static void _coro_mco_resume(mco_coro *coro, task_dispatch_arg *arg) {
+static inline void _coro_mco_resume(mco_coro *coro, task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
     // 推入 8 字节消息指针，避免拷贝整个 message_ctx
     message_ctx *msgptr = &arg->msg;
@@ -641,7 +641,7 @@ void *coro_request(task_ctx *dst, task_ctx *src,
 // 四个等待点(ssl exchange / handshake / connect / recv)只差 mtype、超时值与告警里的动作名,
 // tag 仅进日志。返回的指针在本协程下次 _coro_wait 前有效。
 // CLOSE 分支有意不告警:对端关连接是正常事件,而调用方是每命令一轮的循环,一条连接断掉能刷出几十条
-static message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
+static inline message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
                                    msg_type mtype, uint32_t ms, const char *tag) {
     // 连接已 teardown 就别挂上去:等不到唤醒,只会挂满超时再对 INVALID_SOCK 调一次 ev_close、
     // 打一条假的 timeout 日志。四个 coro_* 入口都经本函数,守卫收在这里一处
@@ -660,7 +660,7 @@ static message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
     return msg;
 }
 // 等待 SSL 交换完成消息，失败的处理见 _coro_wait_msg
-static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
+static inline int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
     return NULL == _coro_wait_msg(task, fd, skid, MSG_TYPE_SSLEXCHANGED,
                                   task_get_netread_timeout(task), "ssl exchange")
            ? ERR_FAILED : ERR_OK;
@@ -718,7 +718,7 @@ void coro_close(task_ctx *task, SOCKET fd, uint64_t skid) {
     _coro_wait(task, skid, MSG_TYPE_CLOSE, task_get_netread_timeout(task));
 }
 // 等待指定连接的下一条接收消息，失败的处理与指针有效期见 _coro_wait_msg
-static message_ctx *_coro_wait_recved(task_ctx *task, SOCKET fd, uint64_t skid) {
+static inline message_ctx *_coro_wait_recved(task_ctx *task, SOCKET fd, uint64_t skid) {
     return _coro_wait_msg(task, fd, skid, MSG_TYPE_RECV, task_get_netread_timeout(task), "netread");
 }
 void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
@@ -777,7 +777,7 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     return rfmsg->data;
 }
 // fork 子协程体：跑用户函数后 FREE item；属 fork_wait 的（fwctx!=NULL）递减 waited，归零同步 curco 唤醒 waiter
-static void _coro_fork_run(task_ctx *task, fork_item *item) {
+static inline void _coro_fork_run(task_ctx *task, fork_item *item) {
     coro_ctx *coctx = (coro_ctx *)task->arg;
     item->fkcb(task, item->arg);
     fork_wait_ctx *fw = item->fwctx;// 先缓存：fw 在 waiter 协程栈内，mco_destroy(waiter) 后整块释放

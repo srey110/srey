@@ -39,7 +39,7 @@ static bufnode_ctx *_buffer_node_new(const size_t size) {
     node->buffer = (char *)(node + 1);
     return node;
 }
-static void _buffer_node_free(bufnode_ctx *node) {
+static inline void _buffer_node_free(bufnode_ctx *node) {
     if (NULL != node->_free) {
         node->_free(node->buffer);
     }
@@ -74,7 +74,7 @@ static inline int32_t _buffer_should_realign(bufnode_ctx *node, const size_t len
         (node->off <= MAX_REALIGN_IN_EXPAND);
 }
 //对齐
-static void _buffer_align(bufnode_ctx *node) {
+static inline void _buffer_align(bufnode_ctx *node) {
     memmove(node->buffer, node->buffer + node->misalign, node->off);
     node->misalign = 0;
 }
@@ -110,7 +110,7 @@ static bufnode_ctx **_buffer_free_trailing_empty_node(buffer_ctx *ctx) {
     return node;
 }
 //插入,清理末尾空节点
-static void _buffer_node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
+static inline void _buffer_node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     if (NULL == *ctx->tail_with_data) {
         ASSERTAB(ctx->tail_with_data == &ctx->head, "tail_with_data not equ head.");
         ASSERTAB(ctx->head == NULL, "head not NULL.");
@@ -126,7 +126,7 @@ static void _buffer_node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     ctx->total_lens += node->off;
 }
 //新建节点并插入
-static bufnode_ctx *_buffer_node_insert_new(buffer_ctx *ctx, const size_t lens) {
+static inline bufnode_ctx *_buffer_node_insert_new(buffer_ctx *ctx, const size_t lens) {
     bufnode_ctx *pnode = _buffer_node_new(lens);
     _buffer_node_insert(ctx, pnode);
     return pnode;

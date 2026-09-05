@@ -39,7 +39,9 @@ int32_t spsc_pop(spsc_ctx *q, void *out);
 /// </summary>
 /// <param name="q">spsc_ctx</param>
 /// <returns>元素数量，取值 [0, capacity]</returns>
-uint32_t spsc_size(spsc_ctx *q);
+static inline uint32_t spsc_size(spsc_ctx *q) {
+    return _ringq_size(&q->rq);
+}
 /// <summary>
 /// 返回队列最大容量
 /// </summary>

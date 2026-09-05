@@ -88,7 +88,7 @@ void mail_html(mail_ctx *mail, const char *html, size_t lens) {
     bs64_encode(html, lens, mail->html);
 }
 // 填充 mail_addr 结构：设置显示名称和邮箱地址，name 为 NULL 或空时清空 name 字段
-static void _mail_addr(mail_addr *addr, const char *name, const char *email) {
+static inline void _mail_addr(mail_addr *addr, const char *name, const char *email) {
     if (EMPTYSTR(name)) {
         addr->name[0] = '\0';
     } else {
@@ -198,7 +198,7 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
 // 后面再伪造出一个附件或 text/html 替代段，顶着发件人的地址与签名发出去。
 // 各 part 现在全是 base64（正文 / html / 附件），行首只可能是 base64 字符、出不了 '-'，
 // 所以撞不上；随机化是为了满足 RFC 的唯一性要求，也给将来真加了非 base64 的 part 留一层保险
-static int32_t _mail_gen_boundary(char *out, size_t cap) {
+static inline int32_t _mail_gen_boundary(char *out, size_t cap) {
     ASSERTAB(cap >= HEX_ENSIZE(MIME_BOUND_RAND) + 5, ERRSTR_INVPARAM);
     char rnd[MIME_BOUND_RAND];
     if (ERR_OK != csprng_rand(rnd, sizeof(rnd))) {
@@ -315,7 +315,7 @@ static void _mail_set_text_b64(binary_ctx *bw, const char *msg) {
 }
 // 把"段头 + 可选正文"写出来。text/plain 段在三条路径上出现（多段无 html、多段有 html 的
 // alternative 内层、单段），三份逐字相同
-static void _mail_set_text_part(binary_ctx *bw, const char *msg) {
+static inline void _mail_set_text_part(binary_ctx *bw, const char *msg) {
     binary_set_va(bw, "%s", "Content-Type: text/plain; charset=" MIME_CHARSET
         "\r\nContent-Transfer-Encoding: base64\r\n\r\n");
     if (!EMPTYSTR(msg)) {

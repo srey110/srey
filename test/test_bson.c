@@ -1330,6 +1330,44 @@ static void test_bson_find_dotted_iter_continue(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
+// 空键是合法的 BSON e_name，find("") 要能命中它；点分路径里的空段仍须一律拒绝
+static void test_bson_iter_find_empty_key(CuTest *tc) {
+    int32_t err;
+    bson_ctx bson;
+    bson_init(&bson, NULL, 0);
+    bson_append_int32(&bson, "", 42);
+    bson_append_int32(&bson, "x", 7);
+    bson_append_end(&bson);
+    CuAssertTrue(tc, bson_complete(&bson));
+
+    bson_iter result;
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&iter, "", &result));
+        CuAssertIntEquals(tc, 42, bson_iter_int32(&result, &err));
+        CuAssertIntEquals(tc, ERR_OK, err);
+    }
+    // 非空键不受影响
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&iter, "x", &result));
+        CuAssertIntEquals(tc, 7, bson_iter_int32(&result, &err));
+    }
+    // 点分路径的空段:开头、结尾、中间、单个点,全部拒绝
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter, ".", &result));
+    }
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter, "x.", &result));
+    }
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter, ".x", &result));
+    }
+    BSON_FREE(&bson);
+}
 void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_primitives);
     SUITE_ADD_TEST(suite, test_bson_iter_no_next);
@@ -1340,6 +1378,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_iter_find_deep_miss);
     SUITE_ADD_TEST(suite, test_bson_iter_find_miss_keeps_iter);
     SUITE_ADD_TEST(suite, test_bson_iter_find_self_alias);
+    SUITE_ADD_TEST(suite, test_bson_iter_find_empty_key);
     SUITE_ADD_TEST(suite, test_bson_cat_self_alias);
     SUITE_ADD_TEST(suite, test_bson_complete_cat);
     SUITE_ADD_TEST(suite, test_bson_cat_bounds);

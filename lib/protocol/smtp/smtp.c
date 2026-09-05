@@ -157,7 +157,7 @@ static void _smtp_push_errline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx 
     _hs_push(fd, skid, 1, ud, ERR_FAILED, line, (size_t)crlf);
 }
 // 把缓冲里第一行(到首个 CRLF 为止)作为失败原因交给等待方；没有 CRLF 或该行超长即不交
-static void _smtp_push_firstline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx *buf) {
+static inline void _smtp_push_firstline(SOCKET fd, uint64_t skid, ud_cxt *ud, buffer_ctx *buf) {
     int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (crlf <= 0
         || crlf > SMTP_MAX_PACK_LENS) {

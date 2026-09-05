@@ -69,7 +69,7 @@ static void _uev_init_cmd(watcher_ctx *watcher) {
 }
 #ifdef COMMIT_NCHANGES
 // 检查changes数组是否已满，满时扩容（kqueue）或批量提交（devpoll）
-static void _uev_check_changes(watcher_ctx *watcher) {
+static inline void _uev_check_changes(watcher_ctx *watcher) {
     if (watcher->nchanges >= watcher->nsize) {
 #if defined(EV_KQUEUE)
         watcher->nsize *= 2;
@@ -309,7 +309,7 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
 #endif
 }
 // 解析平台事件结构体，提取事件类型掩码、fd和用户数据指针
-static int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
+static inline int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
     int32_t rtn = 0;
     *fd = INVALID_SOCK;
     *arg = NULL;

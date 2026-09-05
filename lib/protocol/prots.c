@@ -185,7 +185,7 @@ void prots_udfree(void *arg) {
 // 本就是同一件事，两处都调也幂等。它比 udfree 少挂几个协议：状态会被上层观察到的
 // （DB / smtp / kcp）才挂，图的是"先清理后唤醒"——emit CLOSE 之前状态已置断开；纯解析状态
 // 的那几个（http / websock / mqtt / redis）等 ud_free 兜底就够
-static void prots_closed(ud_cxt *ud) {
+static inline void prots_closed(ud_cxt *ud) {
     if (NULL == ud) {
         return;
     }
@@ -195,17 +195,17 @@ static void prots_closed(ud_cxt *ud) {
     }
 }
 // 新连接被接受时的回调。返回非 ERR_OK 即拒收该连接(evpub.h 的 accept_cb 契约:失败则自动关闭)
-static int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+static inline int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     return (NULL != v->accepted) ? v->accepted(ev, fd, skid, ud) : ERR_OK;
 }
 // 主动连接建立后的回调，部分协议需在此发送初始化包
-static int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
+static inline int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     return (NULL != v->connected) ? v->connected(ev, fd, skid, ud, err) : err;
 }
 // SSL 握手完成后的回调，部分协议需在 SSL 建立后发送认证包（pgsql 用于 SCRAM-SHA-256-PLUS 通道绑定）
-static int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
+static inline int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
     (void)fd;
     (void)skid;
     (void)client;
@@ -213,7 +213,7 @@ static int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t
     return (NULL != v->ssl_exchanged) ? v->ssl_exchanged(ev, ud, ssl) : ERR_OK;
 }
 // 默认解包：将缓冲区所有数据一次性取出，适用于 PACK_NONE（透传）场景
-static void *_prots_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
+static inline void *_prots_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     (void)ud;
     size_t lens = buffer_size(buf);
     if (0 == lens) {
@@ -274,7 +274,7 @@ int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     return rtn;
 }
 // 构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target。erro 取 close_type
-static void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t client,
+static inline void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t client,
                               int32_t erro, ud_cxt *ud) {
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CLOSE;
@@ -319,7 +319,7 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
 // RECV 消息里随连接固定的那几项。两个产出 RECV 的地方共用：逐包解出的 prots_net_recv，
 // 与关闭时补末片的 _prots_emit_close_tail。data / size / slice / sess 由各自填——
 // sess 在 prots_net_recv 那边是每包重读的，不能提到这里来
-static void _prots_recv_msg_init(message_ctx *msg, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+static inline void _prots_recv_msg_init(message_ctx *msg, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     ZERO(msg, sizeof(*msg));
     msg->mtype = MSG_TYPE_RECV;
     msg->subtype = ud->pktype;
@@ -416,7 +416,7 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cl
 }
 // 关连接时补末片：只有"由连接关闭界定 body"的协议有这回事，且必须在 prots_closed 清状态之前跑。
 // 仅 CLOSE_TYPE_ORDERLY 才认为那类消息收完了，其余一律不补
-static void _prots_emit_close_tail(void *target, SOCKET fd, uint64_t skid, int32_t client,
+static inline void _prots_emit_close_tail(void *target, SOCKET fd, uint64_t skid, int32_t client,
                                    int32_t erro, ud_cxt *ud) {
     if (CLOSE_TYPE_ORDERLY != erro) {
         return;
@@ -446,7 +446,7 @@ void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, int32
     _prots_emit_close(target, fd, skid, client, erro, ud);
     g_emit.end(target);
 }
-static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static inline void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         ev_close(ev, fd, skid);

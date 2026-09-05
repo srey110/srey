@@ -25,7 +25,7 @@ void pgsql_pack_append_end(binary_ctx *bwriter, size_t offset) {
 }
 // 写一条协议 String 字段。binary_set_string 对 NULL 是一个字节都不写（连结束 NUL 都没有），
 // 而协议 String 至少要有一个 NUL——缺了它后端读不到终止符，整条消息的后续字段全体错位一字节
-static void _pgpack_set_string(binary_ctx *bwriter, const char *str) {
+static inline void _pgpack_set_string(binary_ctx *bwriter, const char *str) {
     if (NULL == str) {
         binary_set_int8(bwriter, 0);
         return;

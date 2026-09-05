@@ -1,6 +1,7 @@
 ﻿#ifndef BINARY_H_
 #define BINARY_H_
 
+#include "base/base.h"
 #include "base/structs.h"
 #include "utils/utils.h"
 
@@ -10,6 +11,7 @@ typedef struct binary_ctx {
     size_t size;//总长度
     size_t offset;//数据长度
 }binary_ctx;
+
 /// <summary>
 /// 连续内存读写初始化。
 /// buf=NULL：内部托管（malloc + 自动扩容），可用全部 binary_set_* / binary_get_* 接口；
@@ -28,24 +30,64 @@ void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc);
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 void binary_free(binary_ctx *ctx);
+// 扩展缓冲区，确保有足够空间写入 size 字节（仅内部托管可扩容）
+static inline void _binary_expand(binary_ctx *ctx, size_t size) {
+    //inc==0 标记外部托管 buf：不接管所有权，任何 binary_set_* 都会从 offset 起改写调用方内存，
+    //超出容量时还要对栈/静态/异分配器内存调 REALLOC(UB)。守卫必须在容量判断之前——
+    //放在 if 内只挡得住写溢出的那次，写得下的同样非法却会静默损坏调用方数据
+    ASSERTAB(0 != ctx->inc, "external buffer is read-only: use binary_init(NULL,...) for writable mode");
+    ASSERTAB(size <= SIZE_MAX - ctx->offset - 1, "binary buffer size overflow");
+    size += ctx->offset + 1;
+    if (size > ctx->size) {
+        size_t lens = ctx->size * 2;
+        if (lens < size) {
+            lens = size;
+        }
+        ctx->size = ROUND_UP(lens, ctx->inc);
+        REALLOC(ctx->data, ctx->data, ctx->size);
+    }
+}
+// 追加 lens 字节到末尾。reserve 是本次除 lens 外还要一次扩够的容量,给 binary_set_string 的结尾 NUL 用,
+// 分两次扩容会在容量刚好卡住时多 REALLOC 一趟。
+// buf 允许指向 ctx 自己的缓冲:扩容的 REALLOC 会把它搬走,所以先换算成下标,拷贝也随之改走 memmove。
+// 判定走 uintptr_t 减法而非指针关系比较:buf 多数时候与 ctx->data 不属同一对象,直接比 C99 §6.5.8p5 未定义,
+// -O2 -flto 下允许被折成恒假、把 memmove 分支整个删掉。无符号回绕让 buf 在缓冲之前时也自然落到界外
+static inline void _binary_append(binary_ctx *ctx, const char *buf, size_t lens, size_t reserve) {
+    uintptr_t aoff = (uintptr_t)buf - (uintptr_t)ctx->data;
+    int32_t inner = (NULL != ctx->data && aoff < ctx->size);
+    _binary_expand(ctx, lens + reserve);
+    memmove(ctx->data + ctx->offset, inner ? ctx->data + aoff : buf, lens);
+    ctx->offset += lens;
+}
 /// <summary>
 /// 设置偏移值
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="off">偏移</param>
-void binary_offset(binary_ctx *ctx, size_t off);
+static inline void binary_offset(binary_ctx *ctx, size_t off) {
+    ASSERTAB(off <= ctx->size, "binary offset out of bounds");
+    ctx->offset = off;
+}
 /// <summary>
 /// 写入int8
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="val">值</param>
-void binary_set_int8(binary_ctx *ctx, int8_t val);
+static inline void binary_set_int8(binary_ctx *ctx, int8_t val) {
+    _binary_expand(ctx, sizeof(val));
+    (ctx->data + ctx->offset)[0] = val;
+    ctx->offset += sizeof(val);
+}
 /// <summary>
 /// 写入uint8
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="val">值</param>
-void binary_set_uint8(binary_ctx *ctx, uint8_t val);
+static inline void binary_set_uint8(binary_ctx *ctx, uint8_t val) {
+    _binary_expand(ctx, sizeof(val));
+    (ctx->data + ctx->offset)[0] = (int8_t)val;
+    ctx->offset += sizeof(val);
+}
 /// <summary>
 /// 写入整数
 /// </summary>
@@ -53,7 +95,11 @@ void binary_set_uint8(binary_ctx *ctx, uint8_t val);
 /// <param name="val">值</param>
 /// <param name="lens">val字节数</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
-void binary_set_integer(binary_ctx *ctx, int64_t val, size_t lens, int32_t islittle);
+static inline void binary_set_integer(binary_ctx *ctx, int64_t val, size_t lens, int32_t islittle) {
+    _binary_expand(ctx, lens);
+    pack_integer(ctx->data + ctx->offset, (uint64_t)val, (int32_t)lens, islittle);
+    ctx->offset += lens;
+}
 /// <summary>
 /// 写入无符号整数
 /// </summary>
@@ -61,47 +107,79 @@ void binary_set_integer(binary_ctx *ctx, int64_t val, size_t lens, int32_t islit
 /// <param name="val">值</param>
 /// <param name="lens">val字节数</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
-void binary_set_uinteger(binary_ctx *ctx, uint64_t val, size_t lens, int32_t islittle);
+static inline void binary_set_uinteger(binary_ctx *ctx, uint64_t val, size_t lens, int32_t islittle) {
+    _binary_expand(ctx, lens);
+    pack_integer(ctx->data + ctx->offset, val, (int32_t)lens, islittle);
+    ctx->offset += lens;
+}
 /// <summary>
 /// 写入float
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="val">值</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
-void binary_set_float(binary_ctx *ctx, float val, int32_t islittle);
+static inline void binary_set_float(binary_ctx *ctx, float val, int32_t islittle) {
+    _binary_expand(ctx, sizeof(val));
+    pack_float(ctx->data + ctx->offset, val, islittle);
+    ctx->offset += sizeof(val);
+}
 /// <summary>
 /// 写入double
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="val">值</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
-void binary_set_double(binary_ctx *ctx, double val, int32_t islittle);
+static inline void binary_set_double(binary_ctx *ctx, double val, int32_t islittle) {
+    _binary_expand(ctx, sizeof(val));
+    pack_double(ctx->data + ctx->offset, val, islittle);
+    ctx->offset += sizeof(val);
+}
 /// <summary>
 /// 写入以'\0'结束的字符串。buf 允许指向本 ctx 自己的缓冲，规则同 binary_set_binary
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="buf">值</param>
-void binary_set_string(binary_ctx *ctx, const char *buf);
+static inline void binary_set_string(binary_ctx *ctx, const char *buf) {
+    if (NULL == buf) {
+        return;
+    }
+    _binary_append(ctx, buf, strlen(buf), 1);
+    ctx->data[ctx->offset] = '\0';
+    ctx->offset++;
+}
 /// <summary>
 /// 写入char *。buf 允许指向本 ctx 自己的缓冲：扩容搬走后会自动换算成新地址，重叠也按 memmove 处理
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="buf">值</param>
 /// <param name="lens">字节数</param>
-void binary_set_binary(binary_ctx *ctx, const char *buf, size_t lens);
+static inline void binary_set_binary(binary_ctx *ctx, const char *buf, size_t lens) {
+    if (NULL == buf || 0 == lens) {
+        return;
+    }
+    _binary_append(ctx, buf, lens, 0);
+}
 /// <summary>
 /// 填充
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="val">以该值填充</param>
 /// <param name="lens">填充长度</param>
-void binary_set_fill(binary_ctx *ctx, char val, size_t lens);
+static inline void binary_set_fill(binary_ctx *ctx, char val, size_t lens) {
+    _binary_expand(ctx, lens);
+    memset(ctx->data + ctx->offset, val, lens);
+    ctx->offset += lens;
+}
 /// <summary>
 /// 跳过指定长度
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="lens">长度</param>
-void binary_set_skip(binary_ctx *ctx, size_t lens);
+static inline void binary_set_skip(binary_ctx *ctx, size_t lens) {
+    _binary_expand(ctx, lens);
+    ctx->offset += lens;
+}
+// 变参函数不放头文件:va_start 让编译器一律拒绝内联,搬进来只会让每个 TU 各留一份副本
 /// <summary>
 /// 写入变参数据
 /// </summary>
@@ -137,19 +215,32 @@ static inline int32_t binary_have(binary_ctx *ctx, uint64_t lens) {
 /// <param name="ctx">binary_ctx</param>
 /// <param name="pos">位置</param>
 /// <returns>char *</returns>
-char *binary_at(binary_ctx *ctx, size_t pos);
+static inline char *binary_at(binary_ctx *ctx, size_t pos) {
+    ASSERTAB(pos < ctx->size, "out of memory.");
+    return ctx->data + pos;
+}
 /// <summary>
 /// 获取int8
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <returns>int8_t</returns>
-int8_t binary_get_int8(binary_ctx *ctx);
+static inline int8_t binary_get_int8(binary_ctx *ctx) {
+    ASSERTAB(binary_have(ctx, sizeof(int8_t)), "out of memory.");
+    int8_t val = (ctx->data + ctx->offset)[0];
+    ctx->offset += sizeof(val);
+    return val;
+}
 /// <summary>
 /// 获取uint8
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <returns>uint8_t</returns>
-uint8_t binary_get_uint8(binary_ctx *ctx);
+static inline uint8_t binary_get_uint8(binary_ctx *ctx) {
+    ASSERTAB(binary_have(ctx, sizeof(uint8_t)), "out of memory.");
+    uint8_t val = (uint8_t)(ctx->data + ctx->offset)[0];
+    ctx->offset += sizeof(val);
+    return val;
+}
 /// <summary>
 /// 获取整数值
 /// </summary>
@@ -157,7 +248,13 @@ uint8_t binary_get_uint8(binary_ctx *ctx);
 /// <param name="lens">字节数</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>int64_t</returns>
-int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle);
+static inline int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle) {
+    //先减后比，避免攻击者构造极大 lens 让 offset+lens size_t 溢出绕过断言
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    int64_t val = unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 1);
+    ctx->offset += lens;
+    return val;
+}
 /// <summary>
 /// 获取无符号整数值
 /// </summary>
@@ -165,47 +262,86 @@ int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle);
 /// <param name="lens">字节数</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>uint64_t</returns>
-uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t islittle);
+static inline uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t islittle) {
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    uint64_t val = (uint64_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 0);
+    ctx->offset += lens;
+    return val;
+}
 /// <summary>
 /// 获取float值
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>float</returns>
-float binary_get_float(binary_ctx *ctx, int32_t islittle);
+static inline float binary_get_float(binary_ctx *ctx, int32_t islittle) {
+    ASSERTAB(binary_have(ctx, sizeof(float)), "out of memory.");
+    float val = unpack_float(ctx->data + ctx->offset, islittle);
+    ctx->offset += sizeof(val);
+    return val;
+}
 /// <summary>
 /// 获取double值
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>double</returns>
-double binary_get_double(binary_ctx *ctx, int32_t islittle);
-/// <summary>
-/// 获取字符串值,取到'\0'结束。剩余字节里没有 '\0' 即 ASSERTAB abort,
-/// 长度由对端决定的报文改用 binary_try_get_string
-/// </summary>
-/// <param name="ctx">binary_ctx</param>
-/// <returns>char *</returns>
-char *binary_get_string(binary_ctx *ctx);
+static inline double binary_get_double(binary_ctx *ctx, int32_t islittle) {
+    ASSERTAB(binary_have(ctx, sizeof(double)), "out of memory.");
+    double val = unpack_double(ctx->data + ctx->offset, islittle);
+    ctx->offset += sizeof(val);
+    return val;
+}
 /// <summary>
 /// 同 binary_get_string,但剩余字节里没有 '\0' 时失败而不是断言。
 /// 越界条件是"扫不到 NUL",binary_have 预判不了,所以单给一个接口
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <returns>字符串首址;剩余字节里没有 '\0' 返回 NULL(offset 不动)</returns>
-char *binary_try_get_string(binary_ctx *ctx);
+static inline char *binary_try_get_string(binary_ctx *ctx) {
+    char *val = ctx->data + ctx->offset;
+    size_t remain = binary_remain(ctx);
+    size_t slen = strnlen(val, remain);
+    if (slen >= remain) {
+        return NULL;
+    }
+    ctx->offset += slen + 1;
+    return val;
+}
+/// <summary>
+/// 获取字符串值,取到'\0'结束。剩余字节里没有 '\0' 即 ASSERTAB abort,
+/// 长度由对端决定的报文改用 binary_try_get_string
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <returns>char *</returns>
+static inline char *binary_get_string(binary_ctx *ctx) {
+    char *val = binary_try_get_string(ctx);
+    ASSERTAB(NULL != val, "out of memory.");
+    return val;
+}
 /// <summary>
 /// 获取指定长度的数据
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="lens">长度</param>
 /// <returns>char *;lens 为 0 时返回 NULL</returns>
-char *binary_get_binary(binary_ctx *ctx, size_t lens);
+static inline char *binary_get_binary(binary_ctx *ctx, size_t lens) {
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    if (0 == lens) {
+        return NULL;
+    }
+    char *val = ctx->data + ctx->offset;
+    ctx->offset += lens;
+    return val;
+}
 /// <summary>
 /// 跳过指定字节
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="lens">长度</param>
-void binary_get_skip(binary_ctx *ctx, size_t lens);
+static inline void binary_get_skip(binary_ctx *ctx, size_t lens) {
+    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    ctx->offset += lens;
+}
 
 #endif//BINARY_H_

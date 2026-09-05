@@ -318,7 +318,7 @@ static inline int32_t _evpub_sock_read_ssl(SSL *ssl, IOV_TYPE *iov, size_t *nrea
 }
 #endif
 // 从socket普通读取（使用readv/WSARecv）
-static int32_t _evpub_sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
+static inline int32_t _evpub_sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
 #ifdef EV_IOCP
     DWORD bytes, flags = 0;
     if (SOCKET_ERROR != WSARecv(fd,
@@ -416,7 +416,7 @@ static void _evpub_off_buf_apply_sent(queue_ctx *buf_s, off_buf_ctx *sndbuf[MAX_
     }
 }
 // 调用writev/WSASend发送iov数组中的数据，返回ERR_OK并更新sended
-static int32_t _evpub_sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *sended) {
+static inline int32_t _evpub_sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *sended) {
     *sended = 0;
 #ifdef EV_IOCP
     DWORD bytes;

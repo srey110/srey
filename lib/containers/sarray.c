@@ -25,26 +25,6 @@ void array_resize(array_ctx *arr, uint32_t maxsize) {
     REALLOC(arr->ptr, arr->ptr, (size_t)arr->elsize * maxsize);
     arr->maxsize = maxsize;
 }
-void array_add(array_ctx *arr, const void *elem, int32_t pos) {
-    uint32_t p = _array_norm_pos(arr, pos, 1);// 插入位允许等于 size
-    array_grow_if_full(arr);
-    if (p < arr->size) {
-        memmove((char *)arr->ptr + ((size_t)p + 1) * arr->elsize,
-                (char *)arr->ptr + (size_t)p * arr->elsize,
-                (size_t)(arr->size - p) * arr->elsize);
-    }
-    memcpy((char *)arr->ptr + (size_t)p * arr->elsize, elem, arr->elsize);
-    arr->size++;
-}
-void array_del(array_ctx *arr, int32_t pos) {
-    uint32_t p = _array_norm_pos(arr, pos, 0);
-    arr->size--;
-    if (p < arr->size) {
-        memmove((char *)arr->ptr + (size_t)p * arr->elsize,
-                (char *)arr->ptr + ((size_t)p + 1) * arr->elsize,
-                (size_t)(arr->size - p) * arr->elsize);
-    }
-}
 void array_swap(array_ctx *arr, int32_t pos1, int32_t pos2) {
     uint32_t p1 = _array_norm_pos(arr, pos1, 0);
     uint32_t p2 = _array_norm_pos(arr, pos2, 0);

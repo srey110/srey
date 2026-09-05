@@ -55,7 +55,7 @@ static HANDLE _console = NULL;
 static CONSOLE_SCREEN_BUFFER_INFO _def_console;
 #endif
 
-static const char *_log_lvstr(int32_t lv) {
+static inline const char *_log_lvstr(int32_t lv) {
     switch (lv) {
     case LOGLV_FATAL: return "fatal";
     case LOGLV_ERROR: return "error";
@@ -65,7 +65,7 @@ static const char *_log_lvstr(int32_t lv) {
     }
     return "";
 }
-static log_color _log_color_of(int32_t lv) {
+static inline log_color _log_color_of(int32_t lv) {
     switch (lv) {
     case LOGLV_FATAL:
     case LOGLV_ERROR:
@@ -79,24 +79,24 @@ static log_color _log_color_of(int32_t lv) {
 // 由 _log_color_begin / _log_color_end 处理。stdio 每次调用只锁一次流，整行必须走一次 fprintf——
 // stdout 不归日志线程独占，PRINT 就是裸 printf，插在转义头与复位码之间会让终端一直停在彩色
 #ifdef OS_WIN
-static const char *_log_color_begin(log_color color) {
+static inline const char *_log_color_begin(log_color color) {
     if (NULL != _console) {
         SetConsoleTextAttribute(_console, LOG_COLOR_RED == color ? 0xc : 0x6);
     }
     return "";
 }
 // 控制台属性作用于字节写出去的那一刻，得先把缓冲刷到控制台，再改回默认色
-static void _log_color_end(void) {
+static inline void _log_color_end(void) {
     fflush(stdout);
     if (NULL != _console) {
         SetConsoleTextAttribute(_console, _def_console.wAttributes);
     }
 }
 #else
-static const char *_log_color_begin(log_color color) {
+static inline const char *_log_color_begin(log_color color) {
     return LOG_COLOR_RED == color ? "\033[0;31m" : "\033[0;33m";
 }
-static void _log_color_end(void) {
+static inline void _log_color_end(void) {
     fflush(stdout);
 }
 #endif
@@ -105,18 +105,18 @@ static void _log_color_end(void) {
 // 业务线程只在 _log_sync 那几条兜底上碰得到它。
 // pre/post 是上色前后缀，必须与正文同一次 fprintf 打出去，整行才不会被别的 stdout 写方插断。
 // 秒串与毫秒分两个参数传，由本函数一次成型
-static void _log_fprint(FILE *f, const log_item *item, const char *time, int32_t msec,
+static inline void _log_fprint(FILE *f, const log_item *item, const char *time, int32_t msec,
                         const char *msg, const char *pre, const char *post) {
     fprintf(f, "%s"LOG_FMT"%s", pre, time, msec, _log_lvstr(item->lv), msg, post);
 }
 // 兜底输出流。必须与 _log_write_item 同口径：无日志文件时走 stdout 而非 stderr，
 // 否则兜底行与正文分家，-b 模式下 stderr 已 dup2 到 /dev/null，那几行会直接消失
-static FILE *_log_out(void) {
+static inline FILE *_log_out(void) {
     return NULL != _handle ? _handle : stdout;
 }
 // 业务线程上的同步写：不入队、不加锁，也不碰 _log_timestr 的缓存（那份静态只属于日志线程）。
 // 用在格式化失败、队列满、以及 log_abort 三条进不了日志线程的路径上
-static void _log_sync(FILE *f, const log_item *item, const char *msg) {
+static inline void _log_sync(FILE *f, const log_item *item, const char *msg) {
     char time[TIME_LENS];
     if (ERR_OK != sectostr(item->ms / 1000, LOG_TIME_FMT, time)) {
         time[0] = '\0';
@@ -127,7 +127,7 @@ static void _log_sync(FILE *f, const log_item *item, const char *msg) {
 // 秒级部分按秒缓存：一批日志基本落在同一秒里，省掉 localtime_r 与 strftime。
 // 缓存是无锁静态，只许 _log_write_item 这条串行路径用(日志线程，以及 thread_join
 // 之后的 log_free)；业务线程的 _log_sync 自己现算
-static const char *_log_timestr(uint64_t ms) {
+static inline const char *_log_timestr(uint64_t ms) {
     static uint64_t cache_sec = 0;
     static char cache[TIME_LENS] = { 0 };
     uint64_t sec = ms / 1000;
@@ -140,7 +140,7 @@ static const char *_log_timestr(uint64_t ms) {
     }
     return cache;
 }
-static void _log_write_item(const log_item *item) {
+static inline void _log_write_item(const log_item *item) {
     const char *time = _log_timestr(item->ms);
     int32_t msec = (int32_t)(item->ms % 1000);
     if (NULL != _handle) {

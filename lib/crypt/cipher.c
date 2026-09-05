@@ -60,7 +60,7 @@ void cipher_reset(cipher_ctx *cipher) {
     }
 }
 // 预处理待加解密数据：校验长度合法性，必要时执行填充，返回实际处理指针
-static const void *_cipher_process_data(cipher_ctx *cipher, const void *data, size_t lens, size_t *size) {
+static inline const void *_cipher_process_data(cipher_ctx *cipher, const void *data, size_t lens, size_t *size) {
     if (lens > cipher->block_lens) {
         return NULL;
     }

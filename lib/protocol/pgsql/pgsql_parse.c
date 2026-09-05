@@ -33,13 +33,13 @@ char *_pgpack_error_notice(binary_ctx *breader) {
     return bwriter.data;
 }
 // 分配并初始化一个空的 pgpack_ctx
-static pgpack_ctx *_pgpack_new(pgpack_type type) {
+static inline pgpack_ctx *_pgpack_new(pgpack_type type) {
     pgpack_ctx *pgpack;
     CALLOC(pgpack, 1, sizeof(pgpack_ctx));
     pgpack->type = type;
     return pgpack;
 }
-static void _pgpack_results_clear(pgpack_ctx *pgpack) {
+static inline void _pgpack_results_clear(pgpack_ctx *pgpack) {
     pgsql_result *res;
     for (uint32_t i = 0; i < array_size(&pgpack->results); i++) {
         res = array_at(&pgpack->results, i);
@@ -133,7 +133,7 @@ void _pgpack_reader_free(void *arg) {
     FREE(reader->fields);
 }
 // 获取或创建 pgpack_ctx 中的 pgsql_reader_ctx，并设置释放回调
-static pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
+static inline pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
     if (NULL != pgpack->pack) {
         return pgpack->pack; // 已存在则复用（同一查询的多条 DataRow 共享同一 reader）
     }
@@ -288,7 +288,7 @@ static int32_t _pgpack_copy_out_response(pgpack_ctx *pgpack, binary_ctx *breader
     return ERR_OK;
 }
 // 解析 CopyData（'d'），将数据追加到 pg->pack 的 PGPACK_COPY_OUT 累积缓冲区
-static void _pgpack_copy_data(pgpack_ctx *pgpack, binary_ctx *breader) {
+static inline void _pgpack_copy_data(pgpack_ctx *pgpack, binary_ctx *breader) {
     pgpack_copy_out_ctx *copyout = pgpack->pack;
     size_t datalen = binary_remain(breader);
     if (0 == datalen) {

@@ -121,16 +121,18 @@
     #define CACHELINE_SIZE  64
 #endif
 
-// 按 cache line 对齐的属性,与 CACHELINE_SIZE 配对使用(消除 false sharing)。
-// 按编译器分派而不是按 OS(同 macro_atomic.h):Windows 上的 MinGW / clang-cl 认 GCC 属性、
-// 不认 declspec(align),按 OS 挑会被静默丢掉。Sun Studio / xlC 没有对应属性,那里退化成
-// 相邻对象共用 cache line —— 只影响并发写入快慢,不影响正确性
+// 两个编译器属性宏,按编译器分派而不是按 OS(理由同 macro_atomic.h)。
+// CACHELINE_ALIGN:与 CACHELINE_SIZE 配对,消除 false sharing
+// FORCE_INLINE:强制内联,只给实测有效的热路径小函数用;必须与 static 配对,否则链接失败
 #if defined(__GNUC__) || defined(__clang__)
     #define CACHELINE_ALIGN __attribute__((aligned(CACHELINE_SIZE)))
+    #define FORCE_INLINE inline __attribute__((always_inline))
 #elif defined(OS_WIN)
     #define CACHELINE_ALIGN __declspec(align(CACHELINE_SIZE))
+    #define FORCE_INLINE __forceinline
 #else
     #define CACHELINE_ALIGN
+    #define FORCE_INLINE inline
 #endif
 
 // accept4 / pipe2 能力：无标准 feature-test 宏，按 OS 推导（新增支持平台在此一处维护）

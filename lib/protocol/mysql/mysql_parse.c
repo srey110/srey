@@ -23,7 +23,7 @@ typedef enum eof_final {
     EOF_FINAL_BROKEN    // EOF 包本身截断，按协议错误处理
 }eof_final;
 // 读取当前 offset 处首字节（不前进），用于响应包类型分派
-static inline uint8_t _mysql_peek(binary_ctx *breader) {
+static uint8_t _mysql_peek(binary_ctx *breader) {
     return (uint8_t)(binary_at(breader, breader->offset)[0]);
 }
 // 当前是否为 EOF 包：首字节 0xfe 且包长 < 9（防与 8 字节 lenenc 值混淆）
@@ -31,7 +31,7 @@ static inline int32_t _mysql_is_eof_packet(binary_ctx *breader) {
     return MYSQL_EOF == _mysql_peek(breader) && breader->size < 9;
 }
 // 解析 MySQL 数据包头部（4 字节），输出 payload 长度；数据不足时返回 ERR_FAILED
-static int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens) {
+static inline int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens) {
     size_t size = buffer_size(buf);
     if (size < MYSQL_HEAD_LENS) {
         return ERR_FAILED;
@@ -179,7 +179,7 @@ void _mpack_err(mysql_ctx *mysql, binary_ctx *breader) {
     }
 }
 // 分配并初始化一个新的 mpack_ctx，挂上 payload 指针
-static mpack_ctx *_mpack_new(char *payload) {
+static inline mpack_ctx *_mpack_new(char *payload) {
     mpack_ctx *mpack;
     CALLOC(mpack, 1, sizeof(mpack_ctx));
     mpack->payload = payload;
@@ -247,7 +247,7 @@ static int32_t _mpack_reader_new(mysql_ctx *mysql, binary_ctx *breader, mpack_ty
     return ERR_OK;
 }
 // 从缓冲区继续读取下一个 MySQL 数据包，并初始化 breader 指向新 payload
-static int32_t _mpack_more_data(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
+static inline int32_t _mpack_more_data(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
     size_t payload_lens;
     char *payload = _mysql_payload(mysql, buf, &payload_lens, status);
     if (NULL == payload) {
@@ -257,7 +257,7 @@ static int32_t _mpack_more_data(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *b
     return ERR_OK;
 }
 // 检查 EOF 包中的状态标志。进来时调用方已保证至少剩 1 字节（判过 offset < size 且 peek 过）
-static eof_final _mpack_check_final(binary_ctx *breader, int32_t *status) {
+static inline eof_final _mpack_check_final(binary_ctx *breader, int32_t *status) {
     binary_get_skip(breader, 1);
     int16_t status_flags;
     if (ERR_OK != _mpack_eof(breader, &status_flags)) {
@@ -497,7 +497,7 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
 }
 // 读一个 lenenc 字符串：buf->data 指向 payload 内的原始字节（非 NUL 结尾），lens 为 0 时 data 为 NULL；
 // lenenc 本身读取失败返回 ERR_FAILED
-static int32_t _mpack_parse_lenenc_field(binary_ctx *breader, buf_ctx *buf) {
+static inline int32_t _mpack_parse_lenenc_field(binary_ctx *breader, buf_ctx *buf) {
     int32_t rtn;
     uint64_t lens = _mysql_get_lenenc(breader, &rtn);
     if (ERR_OK != rtn

@@ -17,17 +17,17 @@ typedef enum msgdata_kind {
 }msgdata_kind;
 
 // 将任务名指针插入任务哈希表（重复时触发断言）
-static void _task_map_set(struct hashmap *map, task_ctx *task) {
+static inline void _task_map_set(struct hashmap *map, task_ctx *task) {
     name_t *key = &task->handle;
     ASSERTAB(NULL == hashmap_set(map, &key), "task name repeat.");
 }
 // 从任务哈希表中删除指定任务名，返回被删除的元素指针
-static void *_task_map_del(struct hashmap *map, name_t handle) {
+static inline void *_task_map_del(struct hashmap *map, name_t handle) {
     name_t *key = &handle;
     return (void *)hashmap_delete(map, &key);
 }
 // 按任务名从哈希表中查找并返回 task_ctx，未找到返回 NULL
-static task_ctx *_task_map_get(struct hashmap *map, name_t handle) {
+static inline task_ctx *_task_map_get(struct hashmap *map, name_t handle) {
     name_t *key = &handle;
     name_t **ptr = (name_t **)hashmap_get(map, &key);
     if (NULL == ptr) {
@@ -36,18 +36,18 @@ static task_ctx *_task_map_get(struct hashmap *map, name_t handle) {
     return UPCAST(*ptr, task_ctx, handle);
 }
 // 写入 字符串名 → 句柄 索引；name 借用 task->name（调用方持 lckmaptasks 写锁，且已查重）
-static void _task_name_map_set(struct hashmap *map, char *name, name_t handle) {
+static inline void _task_name_map_set(struct hashmap *map, char *name, name_t handle) {
     name_handle_entry e = { .name = name, .handle = handle };
     hashmap_set(map, &e);
 }
 // 按字符串名查句柄，未找到返回 INVALID_TNAME（调用方持 lckmaptasks 读/写锁）
-static name_t _task_name_map_get(struct hashmap *map, const char *name) {
+static inline name_t _task_name_map_get(struct hashmap *map, const char *name) {
     name_handle_entry q = { .name = (char *)name, .handle = INVALID_TNAME };
     name_handle_entry *r = (name_handle_entry *)hashmap_get(map, &q);
     return (NULL == r) ? INVALID_TNAME : r->handle;
 }
 // 删除 字符串名 索引项（元素借用 name，无 elfree；调用方持 lckmaptasks 写锁）
-static void _task_name_map_del(struct hashmap *map, const char *name) {
+static inline void _task_name_map_del(struct hashmap *map, const char *name) {
     name_handle_entry q = { .name = (char *)name, .handle = INVALID_TNAME };
     hashmap_delete(map, &q);
 }
@@ -322,7 +322,7 @@ void task_ungrab(task_ctx *task) {
         }
     }
 }
-static msgdata_kind _message_data_kind(msg_type mtype) {
+static inline msgdata_kind _message_data_kind(msg_type mtype) {
     switch (mtype) {
     case MSG_TYPE_RECV:
         return MSGDATA_PROT;

@@ -15,7 +15,7 @@ typedef struct harbor_ctx {
 }harbor_ctx;
 
 // 填一条响应头：key/val 须在 router_req_respond 组包完成前保持有效(组包时按值拷进缓冲)
-static void _harbor_set_head(http_header_ctx *hd, const char *key, const char *val) {
+static inline void _harbor_set_head(http_header_ctx *hd, const char *key, const char *val) {
     hd->key.data = (void *)key;
     hd->key.lens = strlen(key);
     hd->value.data = (void *)val;
@@ -26,7 +26,7 @@ static void _harbor_set_head(http_header_ctx *hd, const char *key, const char *v
 // erro 非 NULL 时经 X-Srey-Erro 头回带目标真实错误码；ctype 为 NULL 则不写 Content-Type。
 // 组头后交 router_req_respond 发出：响应管线(pack_resp → 头 → content → ev_send copy=0 →
 // 置 responded)只在 router.c 一处实现，harbor 这里只负责自己的头策略
-static void _harbor_respond(router_req *ctx, int32_t code, const int32_t *erro,
+static inline void _harbor_respond(router_req *ctx, int32_t code, const int32_t *erro,
                             const char *ctype, void *body, size_t lens) {
     char ebuf[16];
     http_header_ctx extra[3];
@@ -44,7 +44,7 @@ static void _harbor_respond(router_req *ctx, int32_t code, const int32_t *erro,
 }
 // harbor 自身的诊断响应(非转发目标响应)：以状态文本为 body。Content-Type 与 router_req_text
 // 保持一致(带 charset)，避免同一框架的两个 HTTP 面对同类响应给出不同的类型串
-static void _harbor_respond_text(router_req *ctx, int32_t code) {
+static inline void _harbor_respond_text(router_req *ctx, int32_t code) {
     const char *txt = http_code_status(code);
     _harbor_respond(ctx, code, NULL, "text/plain; charset=utf-8", (void *)txt, strlen(txt));
 }

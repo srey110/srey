@@ -135,33 +135,6 @@ char *trim(char *data, size_t dlens, size_t *lens) {
     }
     return trim_right(cur, n, lens);
 }
-int32_t safe_fill_str(char *dst, size_t dstsz, const char *src) {
-    if (0 == dstsz) {
-        return ERR_FAILED;
-    }
-    if (NULL == src) {
-        dst[0] = '\0';
-        return ERR_OK;
-    }
-    return copy_bounded(src, strlen(src), dst, dstsz, 1);
-}
-int32_t copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict) {
-    if (0 == cap) {
-        return ERR_FAILED;
-    }
-    size_t cplen = lens;
-    if (lens >= cap) {
-        if (0 != strict) {
-            return ERR_FAILED;
-        }
-        cplen = cap - 1;
-    }
-    if (cplen > 0) {
-        memcpy(dst, data, cplen);
-    }
-    dst[cplen] = '\0';
-    return ERR_OK;
-}
 char *dup_zero(const void *src, size_t lens) {
     char *dst;
     MALLOC(dst, lens + 1);
@@ -274,7 +247,7 @@ int32_t fromhex(char c) {
     return ERR_FAILED;
 }
 // 按指定字节序将 src 的 size 字节复制到 dest，自动处理大小端转换
-static void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
+static inline void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
     ASSERTAB(size > 0, "pack_float/double size must be positive.");
     if (islittle == is_little()) {
         memcpy(dest, src, size);

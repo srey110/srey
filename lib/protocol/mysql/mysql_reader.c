@@ -139,7 +139,7 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
 }
 // 文本协议浮点解析公共逻辑：空串 / 有残留字符 / 上溢的判定全在 parse_double_strict 里，
 // 与 pgsql 侧共用同一份（见 prots_pub.h），这里只负责写 err 和打日志
-static double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
+static inline double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
     double val;
     if (ERR_OK != parse_double_strict(row->val.data, row->val.lens, &val)) {
         SET_PTR(err, ERR_FAILED);

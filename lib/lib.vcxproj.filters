@@ -726,9 +726,6 @@
     <ClCompile Include="containers\fsqu.c">
       <Filter>containers</Filter>
     </ClCompile>
-    <ClCompile Include="containers\slist.c">
-      <Filter>containers</Filter>
-    </ClCompile>
     <ClCompile Include="protocol\kcp\ikcp.c">
       <Filter>protocol\kcp</Filter>
     </ClCompile>

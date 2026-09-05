@@ -5,7 +5,7 @@
 
 // 取走第 idx 个结果的 reader; 下标须已由调用方确认在范围内。所有权转移给调用方,
 // 槽位置 NULL 以免 _pgpack_free 二次释放
-static pgsql_reader_ctx *_pgsql_reader_take(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
+static inline pgsql_reader_ctx *_pgsql_reader_take(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
     pgsql_result *res = array_at(&pgpack->results, idx);
     if (NULL == res->reader) {
         return NULL; // 该语句无结果集（INSERT/UPDATE 无 RETURNING）
@@ -230,7 +230,7 @@ const char *pgsql_reader_bytea(pgsql_reader_ctx *reader, const char *name, int32
     return row->val;
 }
 // JDN 计算（与 PostgreSQL date2j 逻辑一致）：返回相对 PG 纪元（2000-01-01）的天数
-static int32_t _pgsql_date_to_days(int32_t y, int32_t m, int32_t d) {
+static inline int32_t _pgsql_date_to_days(int32_t y, int32_t m, int32_t d) {
     int32_t century, julian;
     if (m > 2) { 
         m++; y += 4800; 

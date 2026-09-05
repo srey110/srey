@@ -25,7 +25,7 @@ typedef struct http_pack_ctx {
 
 // 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)；全为 OWS 时收成 *start 处的空区间。
 // trim 只读不写，故这里丢弃 const 安全（底层缓冲本就是可写的解析区）
-static void _http_trim_ows(const char **start, const char **end) {
+static inline void _http_trim_ows(const char **start, const char **end) {
     size_t lens = 0;
     const char *cur = trim((char *)*start, (size_t)(*end - *start), &lens);
     if (NULL == cur) {
@@ -69,7 +69,7 @@ int32_t _http_check_keyval(http_header_ctx *head,
 }
 // 解析 Content-Length 字段的十进制值；拒绝空值与非纯数字（含正负号与空白）。
 // 两侧 OWS 已由 _http_parse_field 的 trim 剥掉，此处 value 即纯字段值
-static int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
+static inline int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
     char *vbuf = (char *)field->value.data;
     size_t vlen = field->value.lens;
     if (0 == vlen) {
@@ -154,7 +154,7 @@ static int32_t _http_check_transfer(http_pack_ctx *pack, http_header_ctx *field,
     return ERR_OK;
 }
 // 是否为 RFC 7230 §2.6 的 HTTP-version（HTTP/DIGIT.DIGIT，恰 8 字节）
-static int32_t _http_is_version(buf_ctx *seg) {
+static inline int32_t _http_is_version(buf_ctx *seg) {
     const char *ver = (const char *)seg->data;
     return 8 == seg->lens
         && 0 == memcmp(ver, "HTTP/", 5)
@@ -169,7 +169,7 @@ int32_t http_code_nobody(int32_t code) {
 // client 为 0 时收到的是请求，一律返 0：本端解析不出方向——_http_parse_status 只要求首段或末段
 // 是 HTTP-version，"HTTP/1.1 204 z" 这种伪请求行照样能过，在服务端按响应处理就是一次请求走私
 // 是否 1xx 中间响应:首行校验与 _http_nobody_resp 同一套,只是判的区间不同
-static int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
+static inline int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
     if (0 == client
         || !_http_is_version(&pack->status[0])
         || 3 != pack->status[1].lens) {
@@ -181,7 +181,7 @@ static int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
     }
     return code < 200;
 }
-static int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
+static inline int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
     if (0 == client
         || !_http_is_version(&pack->status[0])
         || 3 != pack->status[1].lens) {
@@ -228,7 +228,7 @@ static char *_http_scan_line(const char *head, size_t remain, char mark,
 // 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针。
 // 状态行 HTTP-version 在首段、请求行在末段，故两段须恰有一段是 HTTP-version：
 // 请求行末段因此不能含多余 SP，也不能是任意垃圾串
-static char *_http_parse_status(http_pack_ctx *pack) {
+static inline char *_http_parse_status(http_pack_ctx *pack) {
     char *head = pack->head.data;
     if (0 == pack->head.lens
         || is_ows(*head)) {
@@ -258,7 +258,7 @@ static char *_http_parse_status(http_pack_ctx *pack) {
     return pcrlf + CRLF_SIZE;
 }
 // 解析单个头部字段行（key ":" OWS value CRLF），拒绝空 key 与 obs-fold 续行，成功后 *phead 推进到下一行行首
-static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_ctx *field) {
+static inline int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_ctx *field) {
     char *head = *phead;
     // RFC 7230 §3.2.4：字段行不得以 OWS(SP/HTAB) 开头(obs-fold 续行折叠)，须拒绝防上游折进请求行的边界分歧走私
     if (is_ows(*head)) {
@@ -313,7 +313,7 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     return ERR_OK;
 }
 // 等待并读取 Content-Length 模式下的数据体，数据完整后重置 ud 状态
-static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     http_pack_ctx *pack = ud->context;
     if (buffer_size(buf) >= pack->data.lens) {
         if (pack->data.lens > 0) {
@@ -331,7 +331,7 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status
 // 头块与 trailer 块都搜 CRLFCRLF，且都靠 ud->prot_offset 续扫：半包到达时记下已扫过的字节数，
 // 下次从它减 3 起搜——少 3 才能让跨两次读取的 CRLFCRLF 仍然命中。命中或出错都把它归零。
 // 返回块总长(含结尾 CRLFCRLF)；0 表示没解出来，等更多数据还是超 HTTP_MAX_HEADLENS 看 status
-static size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static inline size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
     size_t start = ud->prot_offset > (flens - 1) ? ud->prot_offset - (flens - 1) : 0;
     int32_t pos = buffer_search(buf, 0, start, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
@@ -357,7 +357,7 @@ static size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 // 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组。
 // 只清结构体前缀：那 lens 字节紧接着就被 _http_parsehead 的 buffer_remove 整块写满，
 // 连它一起清等于每请求白 memset 一个头块（上限 HTTP_MAX_HEADLENS）
-static http_pack_ctx *_http_headpack(size_t lens) {
+static inline http_pack_ctx *_http_headpack(size_t lens) {
     char *pack;
     MALLOC(pack, sizeof(http_pack_ctx) + lens);
     ZERO(pack, sizeof(http_pack_ctx));
@@ -383,7 +383,7 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, i
 }
 // 解析 HTTP 头部后根据传输方式决定：直接返回（无数据体/chunked）或进入数据体读取。
 // nobody 只由 ud->status 决定，故在此就地取——由调用方另传一个形参就是同一事实记两处
-static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status) {
+static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status) {
     int32_t nobody = (INIT_NOBODY == ud->status) ? 1 : 0;
     int32_t transfer;
     http_pack_ctx *pack = _http_parsehead(buf, ud, &transfer, status);
@@ -428,7 +428,7 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, 
 // 分配 chunked 数据包结构体，lens>0 时数据紧随其后，chunked 字段固定设为 2。
 // 只清结构体前缀，同 _http_headpack：载荷由 buffer_copyout 整块写满，而这里是每帧一次，
 // 连载荷一起清就等于把整条流的字节数白 memset 一遍
-static http_pack_ctx *_http_chunkedpack(size_t lens) {
+static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
     char *pack;
     MALLOC(pack, sizeof(http_pack_ctx) + lens);
     ZERO(pack, sizeof(http_pack_ctx));
@@ -555,7 +555,7 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
 }
 // 由连接关闭界定 body(RFC 7230 §3.3.3 规则 7)：缓冲里现有的字节全都是 body，原样切一片投出去。
 // 不在解析器里攒完整 body——那要无界累积并另配一个总长上限，而分片投递业务本来就在用(chunked)
-static http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
+static inline http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
     size_t lens = buffer_size(buf);
     if (0 == lens) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -733,7 +733,7 @@ void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
 }
 // 头值有没有 CR / LF。逐字符挡而非只挡 "\r\n" 连对：孤立 LF 也被相当多的解析器当行终止符，
 // 放过它等于给按长度传值的这一路留下头注入口子。空值(lens 为 0)恒合法
-static int32_t _http_head_val_nocrlf(const char *val, size_t lens) {
+static inline int32_t _http_head_val_nocrlf(const char *val, size_t lens) {
     if (0 == lens) {
         return 1;
     }

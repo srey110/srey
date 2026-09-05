@@ -67,7 +67,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     }
 }
 // 根据节点的到期时间计算应放入 tv1～tv5 中的哪个槽位
-static list_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
+static inline list_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     list_ctx *slot;
     if (node->expires <= ctx->jiffies) {
         // 已过期：放入当前 jiffies 对应的 tv1 槽，下一次 _tw_run 立即触发

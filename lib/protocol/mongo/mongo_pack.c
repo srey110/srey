@@ -101,7 +101,7 @@
     }
 
 // 组包前的入参长度闸门：cap 为 0（不预估容量）时无可判，直接放行
-static int32_t _mongo_cap_toolong(size_t cap) {
+static inline int32_t _mongo_cap_toolong(size_t cap) {
     if (cap <= MONGO_MAX_PACK_LENS) {
         return 0;
     }
@@ -388,7 +388,7 @@ char *mongo_transaction_options(mongo_session *session, size_t *lens) {
 }
 // 事务收尾两个 packer 共用：组包从 mongo->session 取事务上下文(TRANSACTION_OPTIONS)，
 // 入参 session 必须就是连接当前绑定的那个，分叉了会把这次收尾挂到别人的事务上
-static int32_t _mongo_txn_bound(mongo_session *session, const char *op) {
+static inline int32_t _mongo_txn_bound(mongo_session *session, const char *op) {
     if (session->mongo->session == session) {
         return 1;
     }

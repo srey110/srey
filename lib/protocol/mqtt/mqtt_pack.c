@@ -2,7 +2,7 @@
 #include "protocol/varint.h"
 
 // 长度前缀字符串字段：2 字节大端长度 + 体（lens==0 仅写长度）
-static void _mqtt_pack_lenstr(binary_ctx *bw, const void *buf, size_t lens) {
+static inline void _mqtt_pack_lenstr(binary_ctx *bw, const void *buf, size_t lens) {
     ASSERTAB(lens <= UINT16_MAX, "mqtt string/binary length must be <= 65535");
     binary_set_uinteger(bw, lens, 2, 0);
     binary_set_binary(bw, (const char *)buf, lens);
@@ -40,7 +40,7 @@ int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val) 
     return ERR_OK;
 }
 // 将可变长度整数属性值写入属性缓冲区
-static int32_t _mqtt_props_varnum(binary_ctx *props, uint32_t val) {
+static inline int32_t _mqtt_props_varnum(binary_ctx *props, uint32_t val) {
     char buf[4];
     int32_t lens = varint_encode_mqtt(val, buf);
     if (0 == lens) {
@@ -134,7 +134,7 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic) {
     return ERR_OK;
 }
 // 计算并编码属性段长度（MQTT5.0），返回属性长度字段占用字节数；非5.0版本返回0
-static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, char vlens[4], uint32_t *off) {
+static inline int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, char vlens[4], uint32_t *off) {
     if (version < MQTT_50) {
         return 0;
     }
@@ -157,7 +157,7 @@ static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, 
 // 所有 mqtt_pack_* 共用的前导：编码剩余长度、开缓冲、写固定报头与剩余长度。
 // 缓冲大小算式 1 + roccupy + total 只此一处，写错就是欠分配。
 // 返回 ERR_FAILED 表示 total 超出剩余长度的 4 字节变长上限，此时 bw 未初始化
-static int32_t _mqtt_pack_begin(binary_ctx *bw, int8_t fixhead, uint32_t total) {
+static inline int32_t _mqtt_pack_begin(binary_ctx *bw, int8_t fixhead, uint32_t total) {
     char rmain[4];
     int32_t roccupy = varint_encode_mqtt(total, rmain);
     if (0 == roccupy) {

@@ -72,7 +72,7 @@ void _mysql_udfree(ud_cxt *ud) {
     PROT_REF_RELEASE(mysql);
 }
 // 将字符集名称转换为 MySQL 协议中的字符集 ID
-static uint8_t _mysql_charset(const char *charset) {
+static inline uint8_t _mysql_charset(const char *charset) {
     if (0 == strcmp("big5", charset)) {
         return 1;
     } else if (0 == strcmp("dec8", charset)) {
@@ -211,7 +211,7 @@ static void _mysql_connect_attrs(binary_ctx *battrs) {
 }
 // 组包收尾：回填 3 字节长度头 → 失败即释放缓冲 → 成功把缓冲交给 ev_send(copy=0，所有权转移)。
 // 认证阶段五处发包共用，别在调用点再各写一遍那个 binary_free
-static int32_t _mysql_send_pack(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *bwriter) {
+static inline int32_t _mysql_send_pack(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *bwriter) {
     if (ERR_OK != _mysql_set_payload_lens(bwriter)) {
         binary_free(bwriter);
         return ERR_FAILED;
@@ -487,7 +487,6 @@ static EVP_PKEY_CTX *_mysql_encrypt_init(char *pubkey, size_t klens) {
     return evpctx;
 }
 #endif
-
 // 使用服务器公钥对异或后的密码进行 RSA-OAEP 分块加密，将密文写入 bwriter
 static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, char *xorpsw, size_t xlens) {
 #if WITH_SSL

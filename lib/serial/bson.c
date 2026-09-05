@@ -7,6 +7,9 @@
 #define BSON_APPEND_KEY(type) \
     binary_set_int8(&bson->doc, (int8_t)type);\
     BSON_APPEND_CSTRING(key)
+// 迭代器推进失败的哨兵。doclens 已由 bson_iter_init 校验不超过 buffer 大小,
+// 真实 offset 取不到这个值
+#define ITER_BAD ((size_t)-1)
 
 static char _bson_empty[5] = { 0 };
 static uint8_t _oid_header[5];
@@ -204,7 +207,7 @@ void bson_append_maxkey(bson_ctx *bson, const char *key) {
     BSON_APPEND_KEY(BSON_MAXKEY);
 }
 // 清空迭代器的当前字段信息（类型、长度、key、val 等）
-static void _bson_iter_clear(bson_iter *iter) {
+static inline void _bson_iter_clear(bson_iter *iter) {
     iter->subtype = 0;
     iter->keylens = 0;
     iter->lens = 0;
@@ -214,7 +217,7 @@ static void _bson_iter_clear(bson_iter *iter) {
 }
 // 置"无有效当前元素":type 回 BSON_EOD 哨兵令 _bson_iter_check 对任何真实类型都失败。
 // 解析失败路径必须调用,否则 type 停在畸形元素的类型而 val 为 NULL,getter 会通过类型检查后解引用 NULL
-static void _bson_iter_poison(bson_iter *iter) {
+static inline void _bson_iter_poison(bson_iter *iter) {
     _bson_iter_clear(iter);
     iter->type = BSON_EOD;
 }
@@ -246,11 +249,11 @@ void bson_iter_reset(bson_iter *iter) {
 int32_t bson_iter_error(const bson_iter *iter) {
     return iter->err;
 }
-// 从当前 offset 起在 doclens 边界内定位一个 NUL 结尾的 C 串;找到返 1 并回填 out/lens
-// (不推进 offset,两个出参都可传 NULL),找不到返 0。key 与 regex 的两个 cstring 共用这一份边界判定
-static int32_t _bson_iter_cstring(bson_iter *iter, const char **out, uint32_t *lens) {
-    const char *start = iter->doc->data + iter->doc->offset;
-    size_t avail = iter->doclens > iter->doc->offset ? iter->doclens - iter->doc->offset : 0;
+// 从 off 起在 doclens 边界内定位一个 NUL 结尾的 C 串;找到返 1 并回填 out/lens
+// (不推进 off,两个出参都可传 NULL),找不到返 0。key 与 regex 的两个 cstring 共用这一份边界判定
+static inline int32_t _bson_iter_cstring(bson_iter *iter, size_t off, const char **out, uint32_t *lens) {
+    const char *start = iter->doc->data + off;
+    size_t avail = iter->doclens > off ? iter->doclens - off : 0;
     const char *nul = memchr(start, '\0', avail);
     if (NULL == nul) {
         return 0;
@@ -259,34 +262,35 @@ static int32_t _bson_iter_cstring(bson_iter *iter, const char **out, uint32_t *l
     SET_PTR(lens, (uint32_t)(nul - start));
     return 1;
 }
-static int32_t _bson_iter_read_key(bson_iter *iter) {
-    if (0 == _bson_iter_cstring(iter, &iter->key, &iter->keylens)) {
+// 读出 key 并跳过它。返回推进后的 off,失败返 ITER_BAD
+static inline size_t _bson_iter_read_key(bson_iter *iter, size_t off) {
+    if (0 == _bson_iter_cstring(iter, off, &iter->key, &iter->keylens)) {
         LOG_WARN("invalid bson key.");
-        return 0;
+        return ITER_BAD;
     }
-    binary_offset(iter->doc, iter->doc->offset + iter->keylens + 1);
-    return 1;
+    return off + iter->keylens + 1;
 }
-// 定长类型统一读取:read_key + 边界检查 + binary_get_binary;成功返 ERR_OK,失败返 ERR_FAILED
-static int32_t _bson_iter_fixed(bson_iter *iter, size_t lens) {
-    if (0 == _bson_iter_read_key(iter)) {
-        return ERR_FAILED;
+// 定长类型统一读取:read_key + 边界检查 + 取值。返回推进后的 off,失败返 ITER_BAD
+static FORCE_INLINE size_t _bson_iter_fixed(bson_iter *iter, size_t off, size_t lens) {
+    off = _bson_iter_read_key(iter, off);
+    if (ITER_BAD == off) {
+        return ITER_BAD;
     }
     iter->lens = lens;
-    if (iter->doc->offset > iter->doclens
-        || iter->lens > iter->doclens - iter->doc->offset) {
+    if (off > iter->doclens
+        || lens > iter->doclens - off) {
         LOG_WARN("invalid bson %s.", bson_type_tostring(iter->type));
-        return ERR_FAILED;
+        return ITER_BAD;
     }
-    iter->val = binary_get_binary(iter->doc, iter->lens);
-    return ERR_OK;
+    iter->val = iter->doc->data + off;
+    return off + lens;
 }
-// 变长类型统一前导:read_key + 确认还剩 4 字节 + 读 int32 长度 + 校验可读空间;成功返 ERR_OK。
+// 变长类型统一前导:read_key + 确认还剩 4 字节 + 读 int32 长度 + 校验可读空间。
 // 下限与修正量由类型定死,不当参数传:调用处填成数字的话搭错一对照样编过,只是长度校验静默出错;
 // 收进来以后新增类型漏写 case 直接落 default 报错。修正量是长度值之外还要占的字节数——
 // 字符串的结尾 \0 与 binary 的 subtype 各 +1,document/array 的声明长度把长度字段自身那 4 字节
-// 也算进去了故 -4。out_off 为长度字段起点,document/array 靠它回退把长度前缀一起带走,不需要可传 NULL
-static int32_t _bson_iter_lenprefix(bson_iter *iter, size_t *out_lens, size_t *out_off) {
+// 也算进去了故 -4。返回长度字段之后的 off(长度字段起点即 off-4),失败返 ITER_BAD
+static FORCE_INLINE size_t _bson_iter_lenprefix(bson_iter *iter, size_t off, size_t *out_lens) {
     int64_t min, adjust;
     switch (iter->type) {
     case BSON_UTF8:
@@ -305,235 +309,211 @@ static int32_t _bson_iter_lenprefix(bson_iter *iter, size_t *out_lens, size_t *o
         break;
     default:
         LOG_WARN("bson type %d has no length prefix.", iter->type);
-        return ERR_FAILED;
+        return ITER_BAD;
     }
-    if (0 == _bson_iter_read_key(iter)) {
-        return ERR_FAILED;
+    off = _bson_iter_read_key(iter, off);
+    if (ITER_BAD == off) {
+        return ITER_BAD;
     }
-    if (iter->doc->offset > iter->doclens
-        || 4 > iter->doclens - iter->doc->offset) {
+    if (off > iter->doclens
+        || 4 > iter->doclens - off) {
         LOG_WARN("invalid bson %s length.", bson_type_tostring(iter->type));
-        return ERR_FAILED;
+        return ITER_BAD;
     }
-    size_t off = iter->doc->offset;
-    int64_t lens = binary_get_integer(iter->doc, 4, 1);
+    int64_t lens = unpack_integer(iter->doc->data + off, 4, 1, 1);
+    off += 4;
     if (lens < min
-        || iter->doc->offset > iter->doclens
-        || (size_t)(lens + adjust) > iter->doclens - iter->doc->offset) {
+        || (size_t)(lens + adjust) > iter->doclens - off) {
         LOG_WARN("invalid bson %s length %" PRId64 ".", bson_type_tostring(iter->type), lens);
-        return ERR_FAILED;
+        return ITER_BAD;
     }
     *out_lens = (size_t)lens;
-    SET_PTR(out_off, off);
-    return ERR_OK;
+    return off;
+}
+// 读一个 cstring 值(regex 的 pattern / options):定位、取指针、跳过它。失败返 ITER_BAD
+static inline size_t _bson_iter_cstr_val(bson_iter *iter, size_t off, char **out) {
+    uint32_t rlens;
+    if (0 == _bson_iter_cstring(iter, off, NULL, &rlens)) {
+        LOG_WARN("invalid bson regex.");
+        return ITER_BAD;
+    }
+    *out = iter->doc->data + off;
+    return off + rlens + 1;
 }
 int32_t bson_iter_next(bson_iter *iter) {
-    if (iter->doc->offset >= iter->doclens) {
+    size_t off = iter->doc->offset;
+    if (off >= iter->doclens) {
         if (BSON_EOD != iter->type) {
             iter->err = 1;
         }
         _bson_iter_poison(iter);
         return 0;
     }
-    size_t off;
     size_t vlens;
-    int32_t more = 1;
     _bson_iter_clear(iter);
-    iter->type = (uint8_t)binary_get_int8(iter->doc);//signed_byte(type)
+    iter->type = (uint8_t)iter->doc->data[off];//signed_byte(type)
+    off++;
     switch (iter->type) {
     case BSON_EOD:
-        more = 0;
-        break;
+        binary_offset(iter->doc, off);
+        _bson_iter_poison(iter);
+        return 0;
     case BSON_DOUBLE://e_name double
-        if (ERR_OK != _bson_iter_fixed(iter, sizeof(double))) {
-            more = 0;
-        }
+        off = _bson_iter_fixed(iter, off, sizeof(double));
         break;
     case BSON_UTF8://e_name string
     case BSON_JSCODE://e_name string
         /* 长度字段含末尾 \0，合法值 >= 1；为 0 或负数时 (size_t)(lens-1) 下溢，
-         * binary_get_binary 读越界。*/
-        if (ERR_OK != _bson_iter_lenprefix(iter, &vlens, NULL)) {
-            more = 0;
+         * 读越界。*/
+        off = _bson_iter_lenprefix(iter, off, &vlens);
+        if (ITER_BAD == off) {
             break;
         }
         iter->lens = vlens - 1;
-        iter->val = binary_get_binary(iter->doc, iter->lens + 1);
+        iter->val = iter->doc->data + off;
         if ('\0' != iter->val[iter->lens]) {
             iter->val = NULL;
-            more = 0;
+            off = ITER_BAD;
             LOG_WARN("invalid bson string, not null-terminated.");
+            break;
         }
+        off += iter->lens + 1;
         break;
     case BSON_DOCUMENT://e_name document
     case BSON_ARRAY://e_name document
-        if (ERR_OK != _bson_iter_lenprefix(iter, &vlens, &off)) {
-            more = 0;
+        off = _bson_iter_lenprefix(iter, off, &vlens);
+        if (ITER_BAD == off) {
             break;
         }
         iter->lens = vlens;
-        binary_offset(iter->doc, off);//回退到长度字段起点，子文档要连长度前缀一起带走
-        iter->val = binary_get_binary(iter->doc, iter->lens);
+        iter->val = iter->doc->data + off - 4;//子文档要连长度前缀一起带走
+        off += iter->lens - 4;
         break;
     case BSON_BINARY://e_name binary
-        if (ERR_OK != _bson_iter_lenprefix(iter, &vlens, NULL)) {
-            more = 0;
+        off = _bson_iter_lenprefix(iter, off, &vlens);
+        if (ITER_BAD == off) {
             break;
         }
         iter->lens = vlens;
-        iter->subtype = (uint8_t)binary_get_int8(iter->doc);//adjust 的 +1 就是这个字节
-        // 零长 binary 合法,但 binary_get_binary 对 lens==0 返 NULL,会破坏"type 有效 ⟹ val 非 NULL";
-        // 指到当前偏移处,有无数据由 lens 表达
-        iter->val = (0 == iter->lens)
-            ? iter->doc->data + iter->doc->offset
-            : binary_get_binary(iter->doc, iter->lens);
+        iter->subtype = (uint8_t)iter->doc->data[off];//adjust 的 +1 就是这个字节
+        off++;
+        // 零长 binary 合法,指到当前偏移处即可,有无数据由 lens 表达
+        iter->val = iter->doc->data + off;
+        off += iter->lens;
         break;
     case BSON_OID://e_name (byte*12)
-        if (ERR_OK != _bson_iter_fixed(iter, BSON_OID_LENS)) {
-            more = 0;
-        }
+        off = _bson_iter_fixed(iter, off, BSON_OID_LENS);
         break;
     case BSON_BOOL://e_name unsigned_byte(0/1)
-        if (ERR_OK != _bson_iter_fixed(iter, sizeof(uint8_t))) {
-            more = 0;
-        }
+        off = _bson_iter_fixed(iter, off, sizeof(uint8_t));
         break;
     case BSON_DATE://e_name int64
     case BSON_TIMESTAMP://e_name uint64
     case BSON_INT64://e_name int64
-        if (ERR_OK != _bson_iter_fixed(iter, sizeof(uint64_t))) {
-            more = 0;
-        }
+        off = _bson_iter_fixed(iter, off, sizeof(uint64_t));
         break;
     case BSON_NULL://e_name
     case BSON_MINKEY://e_name
     case BSON_MAXKEY://e_name
-        if (0 == _bson_iter_read_key(iter)) {
-            more = 0;
-        }
+        off = _bson_iter_read_key(iter, off);
         break;
     case BSON_REGEX://e_name cstring(regex pattern) cstring(regex options)
-        if (0 == _bson_iter_read_key(iter)) {
-            more = 0;
+        off = _bson_iter_read_key(iter, off);
+        if (ITER_BAD == off) {
             break;
         }
-        if (0 == _bson_iter_cstring(iter, NULL, NULL)) {
-            more = 0;
-            LOG_WARN("invalid bson regex.");
+        off = _bson_iter_cstr_val(iter, off, &iter->val);
+        if (ITER_BAD == off) {
             break;
         }
-        iter->val = binary_get_string(iter->doc);
-        if (0 == _bson_iter_cstring(iter, NULL, NULL)) {
-            more = 0;
-            LOG_WARN("invalid bson regex.");
-            break;
-        }
-        iter->val2 = binary_get_string(iter->doc);
+        off = _bson_iter_cstr_val(iter, off, &iter->val2);
         break;
     case BSON_INT32://e_name int32
-        if (ERR_OK != _bson_iter_fixed(iter, sizeof(int32_t))) {
-            more = 0;
-        }
+        off = _bson_iter_fixed(iter, off, sizeof(int32_t));
         break;
     case BSON_DECIMAL128://e_name decimal128
-        if (ERR_OK != _bson_iter_fixed(iter, BSON_DECIMAL128_LENS)) {
-            more = 0;
-        }
+        off = _bson_iter_fixed(iter, off, BSON_DECIMAL128_LENS);
         break;
     default:
-        more = 0;
+        off = ITER_BAD;
         LOG_WARN("unsupported bson type %d.", iter->type);
         break;
     }
-    if (0 == more) {
-        // switch 里唯一合法的 more=0 是 case BSON_EOD;其余都是读不下去(元素坏了或类型不认识)。
-        // 必须在毒化之前判断——_bson_iter_poison 会把 type 置成 BSON_EOD
-        if (BSON_EOD != iter->type) {
-            iter->err = 1;
-        }
+    if (ITER_BAD == off) {
+        // 元素坏了之后的字节位置就不可信,不再往下猜;offset 推到末尾避免同一个坏元素
+        // 被反复重解析(每次重复一条告警),下次进来直接从开头的边界判定返回
+        iter->err = 1;
         _bson_iter_poison(iter);
+        binary_offset(iter->doc, iter->doclens);
+        return 0;
     }
-    return more;
+    binary_offset(iter->doc, off);
+    return 1;
 }
-// 在当前层级查找指定 key，找到时将 result 设为当前 iter
-static int32_t _bson_iter_find(bson_iter *iter, const char *key, size_t klens, bson_iter *result) {
+// 在当前层级顺序扫描指定 key;找到时 iter 即停在该元素上
+static int32_t _bson_iter_find(bson_iter *iter, const char *key, size_t klens) {
     while (bson_iter_next(iter)) {
         if (klens == (size_t)iter->keylens
             && 0 == memcmp(iter->key, key, klens)) {
-            *result = *iter;
             return ERR_OK;
         }
     }
     return ERR_FAILED;
 }
 int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
+    const char *seg = keys;
+    const char *kend = keys + strlen(keys);
+    const char *dot;
+    size_t slens;
+    int32_t depth = 0;
     int32_t rtn = ERR_FAILED;
-    size_t klens = strlen(keys);
-    // result 可与 iter 是同一对象,下面会把 iter->doc 改指到 nested_doc,还原得按原文档来
-    binary_ctx *doc = iter->doc;
-    size_t offset = doc->offset;
-    if (NULL == strstr(keys, ".")) {
-        // 扫描用一份独立游标,全程不碰调用方的 doc: 没找到时 iter 得保持原位,
-        // 而 result 可与 iter 同体, 直接扫会被 *result = *iter 覆盖掉推进后的偏移
-        bson_iter cur_iter = *iter;
-        cur_iter.nested_doc = *doc;
-        cur_iter.doc = &cur_iter.nested_doc;
-        rtn = _bson_iter_find(&cur_iter, keys, klens, result);
-        if (ERR_OK != rtn) {
-            // "文档结构非法"是文档级事实要留住:调用方靠 bson_iter_error 分辨"没这个 key"
-            // 和"后面全坏了"。只置不清,别把进函数前就有的标志抹掉
-            if (0 != cur_iter.err) {
-                iter->err = 1;
-            }
-            return rtn;
-        }
-        // cur_iter 是纯局部,不受上面那次 *result 覆盖影响,推进后的视图只能从它取
-        result->nested_doc = cur_iter.nested_doc;
-        result->doc = &result->nested_doc;
-        return ERR_OK;
-    }
-    buf_ctx segs[BSON_MAX_DEPTH];
-    buf_ctx *psegs = segs;
-    int32_t n = split((char *)keys, klens, ".", 1, &psegs, BSON_MAX_DEPTH, 0);
-    if (n < 0) {
-        binary_offset(doc, offset);
-        return ERR_FAILED;
-    }
-    bson_iter cur_iter = *iter;
-    bson_iter found;
-    bson_ctx bson;
-    for (int32_t i = 0; i < n; i++) {
-        if (0 == segs[i].lens) {
+    // 扫描全程走独立游标,不碰调用方的 doc:没找到时 iter 要保持原位,而 result 可与 iter 同体
+    bson_iter cur = *iter;
+    bson_ctx sub;
+    cur.nested_doc = *iter->doc;
+    cur.doc = &cur.nested_doc;
+    for (;;) {
+        depth++;
+        if (depth > BSON_MAX_DEPTH) {
+            LOG_WARN("bson key path exceeds %d segments.", BSON_MAX_DEPTH);
             rtn = ERR_FAILED;
             break;
         }
-        rtn = _bson_iter_find(&cur_iter, segs[i].data, segs[i].lens, &found);
-        if (ERR_OK != rtn) {
-            break;
-        }
-        if (i == n - 1) {//最后一层
-            break;
-        }
-        if (BSON_DOCUMENT != found.type
-            && BSON_ARRAY != found.type) {
+        dot = memchr(seg, '.', (size_t)(kend - seg));
+        slens = (NULL == dot) ? (size_t)(kend - seg) : (size_t)(dot - seg);
+        // 空段一律非法,只有"整个 keys 就是一个空键名"例外——空串是合法的 BSON 键名
+        if (0 == slens
+            && !(seg == keys && NULL == dot)) {
             rtn = ERR_FAILED;
             break;
         }
-        bson_init(&bson, found.val, found.lens);
-        bson_iter_init(&cur_iter, &bson);
+        rtn = _bson_iter_find(&cur, seg, slens);
+        if (ERR_OK != rtn
+            || NULL == dot) {
+            break;
+        }
+        if (BSON_DOCUMENT != cur.type
+            && BSON_ARRAY != cur.type) {
+            rtn = ERR_FAILED;
+            break;
+        }
+        bson_init(&sub, cur.val, cur.lens);
+        bson_iter_init(&cur, &sub);
+        seg = dot + 1;
     }
-    // 还原排在装 result 之前: doc 可能就是 result 自己的 nested_doc(链式原地收窄),
-    // 后还原就把刚装好的子文档视图按外层偏移改了, 越界即撞 binary_offset 的断言
-    binary_offset(doc, offset);
-    if (ERR_OK == rtn) {
-        // n >= 2(有点号才走到这里),成功即至少跑过一次非末层分支,bson 必已初始化
-        *result = found;
-        result->nested_doc = bson.doc;
-        result->doc = &result->nested_doc;
-    } else if (0 != cur_iter.err) {
-        iter->err = 1;// 与单键路径同口径,理由见那边
+    if (ERR_OK != rtn) {
+        // "文档结构非法"是文档级事实要留住:调用方靠 bson_iter_error 分辨"没这个 key"
+        // 和"后面全坏了"。只置不清,别把进函数前就有的标志抹掉
+        if (0 != cur.err) {
+            iter->err = 1;
+        }
+        return rtn;
     }
-    return rtn;
+    // 末层视图必须拷进 result 自持:点分路径下 cur.doc 指向本函数栈上的 sub,带出去就是死地址
+    cur.nested_doc = *cur.doc;
+    *result = cur;
+    result->doc = &result->nested_doc;
+    return ERR_OK;
 }
 // 检查迭代器当前字段类型是否与期望类型一致，不一致时设置 err
 static int32_t _bson_iter_check(bson_iter *iter, bson_type type, int32_t *err) {

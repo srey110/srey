@@ -329,14 +329,16 @@ int32_t bson_iter_next(bson_iter *iter);
 /// result 绑定的是**包含被找到元素的那层文档**：不含点时即 iter 所在文档，
 /// 点分路径则是最内层子文档。于是 result 上继续 bson_iter_next 吐出的是该元素的同级字段，
 /// bson_iter_reset 回到的也是那一层的开头——find("a.b.c") 之后 reset 重扫的是 a.b 而不是根文档。
-/// result 可以就是 iter 本身（原地收窄）：未被 result 接管的那层文档偏移按进函数时还原
+/// result 可以就是 iter 本身（原地收窄）：未被 result 接管的那层文档偏移不受影响
 /// </summary>
 /// <param name="iter">起始迭代器</param>
 /// <param name="keys">点分键路径，如 "cursor.id"</param>
 /// <param name="result">找到时输出结果迭代器</param>
 /// <returns>ERR_OK 找到，ERR_FAILED 未找到。未找到时 iter 保持原位——当前元素与文档偏移
 /// 都不变，可以接着 bson_iter_next；但扫描途中撞上结构错误会置上 iter 的错误标志，
-/// 调用方靠 bson_iter_error 分辨"没这个 key"与"文档后面全坏了"</returns>
+/// 调用方靠 bson_iter_error 分辨"没这个 key"与"文档后面全坏了"。
+/// 路径本身不合法同样返回 ERR_FAILED，但不置错误标志：段数超过 BSON_MAX_DEPTH，或出现空段
+/// （keys 整体为空串是例外，空键名是合法的 BSON e_name，按普通键查）</returns>
 int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result);
 /// <summary>
 /// 从迭代器当前字段读取 double 值

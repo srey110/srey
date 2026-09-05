@@ -78,7 +78,7 @@ static char *_url_rchr(char *cur, char what, size_t lens) {
 // 以 what 字符为界解析两段字段（buf1:buf2），返回指向 what 之后的指针。
 // last 非 0 时以最后一个 what 为界：userinfo 按 RFC 3986 §3.2 就该取最后一个 '@'，
 // 取第一个会把 "user@host@evil.com" 的 host 认成 "host@evil.com"，与浏览器/curl 不一致
-static char *_url_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size_t lens, int32_t last) {
+static inline char *_url_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size_t lens, int32_t last) {
     char *pos = (0 != last) ? _url_rchr(cur, what, lens) : memchr(cur, what, lens);
     if (NULL == pos) {
         if ('/' == what) {
@@ -96,7 +96,7 @@ static char *_url_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, 
     return pos + 1;
 }
 // 解析路径部分（直到 '?' 或 '#'），返回指向下一段（查询或片段）的指针
-static char *_url_path(buf_ctx *path, char *cur, size_t lens) {
+static inline char *_url_path(buf_ctx *path, char *cur, size_t lens) {
     char *hash = memchr(cur, '#', lens);
     size_t search_lens = (NULL != hash) ? (size_t)(hash - cur) : lens;
     char *pos = memchr(cur, '?', search_lens);
@@ -120,7 +120,7 @@ static char *_url_path(buf_ctx *path, char *cur, size_t lens) {
     return pos + 1;
 }
 // 从当前段中提取锚点（# 之后的部分），返回锚点之前的查询参数段长度
-static size_t _url_anchor(buf_ctx *anchor, char *cur, size_t lens) {
+static inline size_t _url_anchor(buf_ctx *anchor, char *cur, size_t lens) {
     char *pos = memchr(cur, '#', lens);
     if (NULL == pos) {
         return lens;

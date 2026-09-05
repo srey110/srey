@@ -107,26 +107,9 @@ typedef unsigned long long IUINT64;
 #endif
 #endif
 
-#ifndef INLINE
-#if defined(__GNUC__)
 
-#if (__GNUC__ > 3) || ((__GNUC__ == 3) && (__GNUC_MINOR__ >= 1))
-#define INLINE         __inline__ __attribute__((always_inline))
-#else
-#define INLINE         __inline__
-#endif
-
-#elif (defined(_MSC_VER) || defined(__BORLANDC__) || defined(__WATCOMC__))
-#define INLINE __inline
-#else
-#define INLINE 
-#endif
-#endif
-
-#if (!defined(__cplusplus)) && (!defined(inline))
-#define inline INLINE
-#endif
-
+// 上游自带的 INLINE 兼容层已删:它的 #define inline INLINE 会把本 TU 里后续所有
+// inline 改写成 always_inline(含变参函数,GCC 报硬错误)。按上游重新同步时勿恢复
 
 //=====================================================================
 // QUEUE DEFINITION                                                  

@@ -5,7 +5,7 @@
 // 组包收尾：回填 3 字节长度头 → 失败即释放缓冲并把 *size 归零 → 成功交出缓冲长度。
 // 调用方固定写 if (ERR_OK != _mysql_pack_finish(...)) { return NULL; }，别在各处再抄一遍 binary_free。
 // 与 mysql.c 的 _mysql_send_pack 是同一件事的两种收尾：那边直接 ev_send，这边把缓冲交回调用方
-static int32_t _mysql_pack_finish(binary_ctx *bwriter, size_t *size) {
+static inline int32_t _mysql_pack_finish(binary_ctx *bwriter, size_t *size) {
     if (ERR_OK != _mysql_set_payload_lens(bwriter)) {
         binary_free(bwriter);
         *size = 0;

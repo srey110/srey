@@ -85,6 +85,7 @@ typedef struct overlap_udp_ctx {
 
 static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes); // 前向声明：TCP接收完成回调
 static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes); // 前向声明：TCP发送完成回调
+static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp); // 前向声明：与下面的重试 tick 互相调用
 
 void _iocp_sk_shutdown(sock_ctx *skctx) {
 #if WITH_SSL
@@ -279,7 +280,7 @@ static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
 // 0 字节 wakeup：
 // 成功 → kernel 有空间 → continue
 // EWOULDBLOCK → kernel 满 → 0 字节 post pend → 等到 buffer 空出空间触发完成 → continue
-static int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
+static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
     oltcp->bytes_s = 0;
     ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
     if (ERR_OK != WSASend(oltcp->ol_s.fd,
@@ -295,7 +296,7 @@ static int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
     }
     return ERR_OK;
 }
-static int32_t _olp_wantwrite(overlap_tcp_ctx *oltcp) {
+static inline int32_t _olp_wantwrite(overlap_tcp_ctx *oltcp) {
     if (!BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_SENDING);
         if (ERR_OK != _olp_post_send(oltcp)) {
@@ -380,7 +381,7 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     return _olp_post_recv(oltcp);
 }
 // 关闭TCP连接：若正在发送则标记延迟关闭，否则立即执行关闭回调并回收到对象池
-static void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static inline void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     BIT_SET(oltcp->status, STATUS_ERROR);
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
@@ -573,7 +574,7 @@ static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *o
     return rtn;
 }
 #endif
-static void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static inline void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_REMOVE)
         || BIT_CHECK(oltcp->status, STATUS_NORECV)) {
         _olp_call_close_cb(watcher->ev, oltcp);
@@ -823,7 +824,7 @@ static inline void _olp_take_close(SOCKET volatile *pfd) {
     }
 }
 // 提交一个AcceptEx异步接受请求（创建新socket并挂起等待连接）
-static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
+static inline int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
     SOCKET fd = sock_create_cloexec(olacp->lsn->family, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -850,7 +851,7 @@ static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
     return ERR_OK;
 }
 // listener dead 槽计数与全局 ndead_total 单点同步，杜绝两者 drift
-static void _olp_ndead_add(ev_ctx *ev, listener_ctx *lsn, int32_t delta) {
+static inline void _olp_ndead_add(ev_ctx *ev, listener_ctx *lsn, int32_t delta) {
     ATOMIC_ADD(&lsn->ndead, delta);
     ATOMIC_ADD(&ev->ndead_total, delta);
 }
@@ -1145,7 +1146,7 @@ void _iocp_acpex_release(sock_ctx *skctx) {
     _iocp_try_freelsn(olacp->lsn);
 }
 // 提交WSARecvFrom异步UDP接收请求
-static int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {
+static inline int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {
     ZERO(&oludp->ol_r.overlapped, sizeof(oludp->ol_r.overlapped));
     oludp->flag = oludp->bytes_r = 0;
     oludp->addrlen = netaddr_size(&oludp->addr_r);
@@ -1165,7 +1166,7 @@ static int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {
     return ERR_OK;
 }
 // 处理UDP接收侧关闭：若正在发送则标记延迟，否则直接移除并释放
-static void _olp_on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
+static inline void _olp_on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     _olp_call_udp_close_cb(watcher->ev, oludp);
     if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         BIT_SET(oludp->status, STATUS_REMOVE);
@@ -1203,7 +1204,7 @@ static void _olp_on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byt
 //   1           这一条彻底毁了、fd 还能用,丢掉接着发队列里的下一条
 //   2           这一条只是暂时发不出去(资源紧张之类),原样留在队头等下次驱动
 //   ERR_FAILED  fd 本身已废,须关连接
-static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) {
+static inline int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;
     oludp->addr_s = buf->addr;
@@ -1245,7 +1246,6 @@ static inline void _olp_sendto_retry_stop(overlap_udp_ctx *oludp) {
     oludp->send_tick.cb = NULL;
     _evpub_tick_remove(oludp->watcher, &oludp->send_tick);
 }
-static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp); // 前向声明：与下面的重试 tick 互相调用
 // 重试 tick:再排一次队。drain 内部按结果自行摘除或续挂,这里只负责退避与致命错误善后
 static uint32_t _olp_on_sendto_retry(void *ud, uint64_t now_ms) {
     overlap_udp_ctx *oludp = ud;
@@ -1280,7 +1280,7 @@ static uint32_t _olp_on_sendto_retry(void *ud, uint64_t now_ms) {
 // ev_sendto —— 队头堵住等于该 fd 整条发送路径停摆(后来的包全排在它后面),业务若就此不再
 // 发送就一直停到关连接。做法与 usock.c 的 accept EMFILE 退避同构:cb 非 NULL 表示已挂。
 // 从 EVENT_TICK_MIN 起步、翻倍到 EVENT_WAIT_TIMEOUT 封顶,免得资源持续紧张时 10ms 空转
-static void _olp_sendto_retry(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
+static inline void _olp_sendto_retry(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     if (NULL != oludp->send_tick.cb) {
         return;
     }

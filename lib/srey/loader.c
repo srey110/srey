@@ -158,7 +158,7 @@ void _task_message_push(task_ctx *task, message_ctx *msg) {
 }
 // 从本地队列或其他 worker 队列（工作窃取）取出下一个待处理任务名
 // inflight 出参：没取到时回传本轮有没有撞上在途元素，调用方据此决定退避还是休眠
-static name_t _loader_task_name_get(loader_ctx *loader, worker_ctx *worker, int32_t *inflight) {
+static inline name_t _loader_task_name_get(loader_ctx *loader, worker_ctx *worker, int32_t *inflight) {
     name_t handle;
     int32_t rtn = fsqu_pop(&worker->qutasks, &handle);
     if (ERR_OK == rtn) {

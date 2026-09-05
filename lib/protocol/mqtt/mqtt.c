@@ -97,7 +97,7 @@ int32_t _mqtt_may_resume(void *data) {
     return ERR_OK;
 }
 // 从缓冲区读取固定长度整数（1/2/4字节），存入 num
-static int32_t _mqtt_data_fixnum(buffer_ctx *buf, size_t lens, int32_t *num) {
+static inline int32_t _mqtt_data_fixnum(buffer_ctx *buf, size_t lens, int32_t *num) {
     char tmp[4];
     if (lens > sizeof(tmp)) {
         return ERR_FAILED;
@@ -115,7 +115,7 @@ static int32_t _mqtt_data_fixnum(buffer_ctx *buf, size_t lens, int32_t *num) {
     return ERR_OK;
 }
 // 从缓冲区读取 4 字节无符号大端整数（用于 MQTT v5 四字节属性，避免 int32 截断负数）
-static int32_t _mqtt_data_u32(buffer_ctx *buf, int64_t *num) {
+static inline int32_t _mqtt_data_u32(buffer_ctx *buf, int64_t *num) {
     char tmp[4];
     if (sizeof(tmp) != buffer_remove(buf, tmp, sizeof(tmp))) {
         return ERR_FAILED;
@@ -124,7 +124,7 @@ static int32_t _mqtt_data_u32(buffer_ctx *buf, int64_t *num) {
     return ERR_OK;
 }
 // 从缓冲区读取可变长度整数，返回占用字节数，失败返回 ERR_FAILED
-static int32_t _mqtt_data_varnum(buffer_ctx *buf, int32_t *num) {
+static inline int32_t _mqtt_data_varnum(buffer_ctx *buf, int32_t *num) {
     size_t val;
     int32_t occupy = varint_decode_mqtt(buf, 0, buffer_size(buf), &val);
     if (ERR_FAILED == occupy) {
@@ -137,7 +137,7 @@ static int32_t _mqtt_data_varnum(buffer_ctx *buf, int32_t *num) {
 // 读 2 字节长度前缀，并卡住"声明长度不得超过缓冲剩余字节"。
 // 读完就按这个长度分配的字段都走它，必须先卡再分配；有更紧判定的(协议名定长 4、PUBLISH 主题名
 // 不超 remaining_lens)自己判
-static int32_t _mqtt_data_lens(buffer_ctx *buf, int32_t *num) {
+static inline int32_t _mqtt_data_lens(buffer_ctx *buf, int32_t *num) {
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, num)
         || (size_t)(*num) > buffer_size(buf)) {
         return ERR_FAILED;
@@ -145,7 +145,7 @@ static int32_t _mqtt_data_lens(buffer_ctx *buf, int32_t *num) {
     return ERR_OK;
 }
 // 从缓冲区读取 UTF-8 字符串，构建 mqtt_propertie（fval 存储字符串）
-static mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
+static inline mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
     int32_t num;
     if (ERR_OK != _mqtt_data_lens(buf, &num)) {
         return NULL;
@@ -162,7 +162,7 @@ static mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
     return propt;
 }
 // 从缓冲区读取 UTF-8 字符串，返回堆分配的 C 字符串（需调用者释放）
-static char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
+static inline char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
     if (ERR_OK != _mqtt_data_lens(buf, num)) {
         return NULL;
     }
@@ -178,7 +178,7 @@ static char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
 // 读 UTF-8 字符串字段。MQTT-1.5.4-2：含 U+0000 即为非法报文，必须拒收——这些字段解析后
 // 只剩 char*、长度不再保留，放过去就会在第一个 NUL 处截断，"victim\0evil" 与 "victim"
 // 塌缩成同一个 clientid / topic。遗嘱载荷与密码是二进制字段，允许含 NUL，不走这里
-static char *_mqtt_data_utf8(buffer_ctx *buf, int32_t *num) {
+static inline char *_mqtt_data_utf8(buffer_ctx *buf, int32_t *num) {
     char *rtn = _mqtt_data_string2(buf, num);
     if (NULL != rtn
         && NULL != memchr(rtn, '\0', (size_t)(*num))) {
@@ -188,7 +188,7 @@ static char *_mqtt_data_utf8(buffer_ctx *buf, int32_t *num) {
     return rtn;
 }
 // 从缓冲区读取键值对字符串（用户属性），fval 存储 key，sval 存储 value
-static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
+static inline mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     //key
     int32_t num;
     if (ERR_OK != _mqtt_data_lens(buf, &num)) {
@@ -330,7 +330,7 @@ static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *to
     return arrpropts;
 }
 // 验证 CONNECT 报文中的协议名和协议版本，成功返回版本号，失败返回 ERR_FAILED
-static int32_t _mqtt_check_prot(buffer_ctx *buf) {
+static inline int32_t _mqtt_check_prot(buffer_ctx *buf) {
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//协议名长度
         return ERR_FAILED;
@@ -517,7 +517,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
 // PUBLISH 那一整块的大小：pack / varhead / topic / 载荷合在一起，偏移由 _mqtt_publish 边解析边定。
 // 容量按上界给——topic 与载荷之和不超过 remaining_lens，MQTT_PUB_SLACK 覆盖两个结尾 NUL 与对齐补白。
 // 分配点与块内越界断言共用这一处，两边各抄一份算式的话，改一边漏一边编译器看不出来
-static size_t _mqtt_publish_blk(size_t remaining_lens) {
+static inline size_t _mqtt_publish_blk(size_t remaining_lens) {
     return sizeof(mqtt_pack_ctx) + sizeof(mqtt_publish_varhead) + sizeof(mqtt_publish_payload)
          + remaining_lens + MQTT_PUB_SLACK;
 }

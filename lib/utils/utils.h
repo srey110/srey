@@ -26,7 +26,9 @@ uint64_t createid(void);
 /// </summary>
 /// <param name="id">createid 返回的 ID</param>
 /// <returns>服务器 id（与 serviceid 设置值一致，范围 0..0x7FFF）</returns>
-uint16_t parse_svid(uint64_t id);
+static inline uint16_t parse_svid(uint64_t id) {
+    return (uint16_t)(id >> 48);
+}
 /// <summary>
 /// 当前线程ID
 /// </summary>
@@ -149,7 +151,13 @@ uint64_t strtots(const char *time, const char *fmt);
 /// <param name="buf">要计算的数据</param>
 /// <param name="len">数据长度</param>
 /// <returns>hash</returns>
-uint64_t hash(const char *buf, size_t len);
+static inline uint64_t hash(const char *buf, size_t len) {
+    uint64_t rtn = 0;
+    for (; len > 0; --len) {
+        rtn = (rtn * 131) + (unsigned char)*buf++;
+    }
+    return rtn;
+}
 /// <summary>
 /// 64 位整数专用哈希（splitmix64
 /// </summary>

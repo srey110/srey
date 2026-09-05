@@ -207,7 +207,7 @@ static http_header_ctx *_websock_hscheck(struct http_pack_ctx *hpack, const ws_h
     return hit == all ? sign : NULL;
 }
 // 服务端侧握手校验：验证 GET 请求中的 Connection/Upgrade/Sec-WebSocket-Version/Key 字段
-static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
+static inline http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
     static const ws_hscheck _svtbl[] = {
         { 0, "connection", sizeof("connection") - 1, "upgrade", sizeof("upgrade") - 1 },
         { 0, "upgrade", sizeof("upgrade") - 1, "websocket", sizeof("websocket") - 1 },
@@ -257,7 +257,7 @@ static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
 // 所以 "mqtt,,," 只算一个。
 // trunc 只有服务端侧给 1:客户端的 offer 数超上限是我们自己配错了,截断会变成
 // "服务端选了第 9 个而我们不认它的回显",不如在组包时就失败
-static int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx prots[WS_MAXCNT_SECPROT],
+static inline int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx prots[WS_MAXCNT_SECPROT],
                                       int32_t trunc) {
     buf_ctx *psegs = prots;
     int32_t n = split(data, lens, SECPROT_SPLIT_FLAG, sizeof(SECPROT_SPLIT_FLAG) - 1,
@@ -361,7 +361,7 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
     }
 }
 // 客户端侧握手状态行校验：确认响应状态码为 101
-static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
+static inline int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
     if (NULL == status
         || !buf_compare(&status[1], "101", strlen("101"))) {
@@ -370,7 +370,7 @@ static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     return ERR_OK;
 }
 // 客户端侧握手头部校验：验证 Connection/Upgrade/Sec-WebSocket-Accept 字段
-static http_header_ctx *_websock_client_checkhs(struct http_pack_ctx *hpack) {
+static inline http_header_ctx *_websock_client_checkhs(struct http_pack_ctx *hpack) {
     static const ws_hscheck _cltbl[] = {
         { 0, "connection", sizeof("connection") - 1, "upgrade", sizeof("upgrade") - 1 },
         { 0, "upgrade", sizeof("upgrade") - 1, "websocket", sizeof("websocket") - 1 },
@@ -391,7 +391,7 @@ static int32_t _websock_have_secprot(buf_ctx *segs, int32_t cnt, const char *sec
     return 0;
 }
 // 客户端子协议校验
-static int32_t _websock_secprot_check_client(ws_hs_ctx *hsctx, char *secprot, size_t lens, pack_type *sectype, ws_secprots_ctx **spctx) {
+static inline int32_t _websock_secprot_check_client(ws_hs_ctx *hsctx, char *secprot, size_t lens, pack_type *sectype, ws_secprots_ctx **spctx) {
     if (!_websock_have_secprot(hsctx->prots, hsctx->cnt, secprot, lens)) {
         return ERR_FAILED;
     }
@@ -523,7 +523,7 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
     return head;
 }
 // 子协议统一解包入口，将 WebSocket 帧数据转发给对应子协议处理
-static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
+static inline websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
     websock_pack_ctx *rtn = NULL;
     switch (ws->secprot) {
     case PACK_MQTT:
@@ -587,7 +587,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     return pack;
 }
 // 根据 payloadlen 字段（7位）解析真实数据长度并分配 websock_pack_ctx
-static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
+static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
     uint8_t mask, uint8_t payloadlen, int32_t *status) {
     size_t dlens;// 载荷字节数
     size_t atlest = HEAD_LESN;// 帧头 + 扩展长度字段，最后一并丢弃
@@ -718,14 +718,14 @@ void *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
 }
 // 扩展长度字段宽度：<=125 不带；<=0xffff 用 2 字节；否则 8 字节。
 // 分配大小与写入偏移必须共用这一处——两边各写一遍分档表，改一边漏一边就是按小尺寸分配却按大尺寸写
-static size_t _websock_pllens_size(size_t dlens) {
+static inline size_t _websock_pllens_size(size_t dlens) {
     if (dlens <= 125) {
         return 0;
     }
     return (dlens <= 0xffff) ? sizeof(uint16_t) : sizeof(uint64_t);
 }
 // 计算 WebSocket 帧总长度（头部 + 可选扩展长度字段 + 可选掩码 + 数据体）
-static size_t _websock_create_callens(char *key, size_t dlens) {
+static inline size_t _websock_create_callens(char *key, size_t dlens) {
     size_t size = HEAD_LESN + dlens + _websock_pllens_size(dlens);
     if (NULL != key) {
         size += MASK_KEY_LENS;
@@ -782,7 +782,7 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *da
     return frame;
 }
 // 按 mask 选 key=NULL(无掩码)或随机生成,后调 _websock_create_pack
-static void *_websock_pack_frame(int32_t mask, uint8_t fin, uint8_t prot,
+static inline void *_websock_pack_frame(int32_t mask, uint8_t fin, uint8_t prot,
                                 void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(fin, prot, NULL, data, dlens, size);

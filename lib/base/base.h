@@ -104,15 +104,6 @@ char *trim_right(char *data, size_t dlens, size_t *lens);
 /// <returns>指向剔除后首字节(仍在 data 内)，全为空字节则返回 NULL</returns>
 char *trim(char *data, size_t dlens, size_t *lens);
 /// <summary>
-/// 安全填充定长字符串缓冲：src 为 NULL 时 dst 写空串；成功时保证 dst 以 '\0' 结尾。
-/// 装不下时不截断——截断的值拿去用是静默出错；报错文案由调用方判返回值后自己打
-/// </summary>
-/// <param name="dst">目标缓冲，dstsz 字节</param>
-/// <param name="dstsz">目标缓冲总字节数（含末尾终止符）</param>
-/// <param name="src">源字符串，可为 NULL</param>
-/// <returns>ERR_OK 成功；ERR_FAILED dstsz 为 0 或 src 装不下（此时 dst 未被改动）</returns>
-int32_t safe_fill_str(char *dst, size_t dstsz, const char *src);
-/// <summary>
 /// 把 (指针, 长度) 的字节段复制进定长栈缓冲并补 NUL。协议层把对端给的定长切片转成 C 串时用，
 /// 这类地方是不可信字节进固定缓冲的唯一屏障，散着写容易各自漏一个 -1。
 /// **默认用 strict 非 0**：截断只在这段字节纯给人看、没有任何逻辑解析它时才成立
@@ -123,7 +114,41 @@ int32_t safe_fill_str(char *dst, size_t dstsz, const char *src);
 /// <param name="cap">目标缓冲总字节数(含 NUL)</param>
 /// <param name="strict">非 0 装不下即返 ERR_FAILED；0 则截断</param>
 /// <returns>ERR_OK 成功；ERR_FAILED：cap 为 0，或 strict 且装不下</returns>
-int32_t copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict);
+static inline int32_t copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict) {
+    if (0 == cap) {
+        return ERR_FAILED;
+    }
+    size_t cplen = lens;
+    if (lens >= cap) {
+        if (0 != strict) {
+            return ERR_FAILED;
+        }
+        cplen = cap - 1;
+    }
+    if (cplen > 0) {
+        memcpy(dst, data, cplen);
+    }
+    dst[cplen] = '\0';
+    return ERR_OK;
+}
+/// <summary>
+/// 安全填充定长字符串缓冲：src 为 NULL 时 dst 写空串；成功时保证 dst 以 '\0' 结尾。
+/// 装不下时不截断——截断的值拿去用是静默出错；报错文案由调用方判返回值后自己打
+/// </summary>
+/// <param name="dst">目标缓冲，dstsz 字节</param>
+/// <param name="dstsz">目标缓冲总字节数（含末尾终止符）</param>
+/// <param name="src">源字符串，可为 NULL</param>
+/// <returns>ERR_OK 成功；ERR_FAILED dstsz 为 0 或 src 装不下（此时 dst 未被改动）</returns>
+static inline int32_t safe_fill_str(char *dst, size_t dstsz, const char *src) {
+    if (0 == dstsz) {
+        return ERR_FAILED;
+    }
+    if (NULL == src) {
+        dst[0] = '\0';
+        return ERR_OK;
+    }
+    return copy_bounded(src, strlen(src), dst, dstsz, 1);
+}
 /// <summary>
 /// 复制 src 的 lens 字节为新分配的 NUL 结尾字符串；按定长字节复制，不依赖 src 含 NUL。
 /// </summary>

@@ -3,7 +3,7 @@
 
 // 取 BSON 的 ok 字段(线上是 double)。NaN/Inf/超范围转 int32 各架构结论不同，
 // x86 上会得到非 0 值被判成成功，所以取不到合法数值一律当失败
-static int32_t _mongo_iter_ok(bson_iter *iter) {
+static inline int32_t _mongo_iter_ok(bson_iter *iter) {
     double val = bson_iter_double(iter, NULL);
     if (isnan(val)
         || isinf(val)
