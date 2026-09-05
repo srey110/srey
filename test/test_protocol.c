@@ -3008,6 +3008,37 @@ static void test_smtp_plain_line_fold(CuTest *tc) {
     mail_free(&mail);
 }
 
+// 纯 ASCII 长主题：原样写出会造出一条超 998 octet 的 Subject 行，须改走 encoded-word（自带折行）。
+// 顺带确认短主题不受影响、仍旧裸写
+static void test_smtp_subject_line_fold(CuTest *tc) {
+    char subject[2048];
+    size_t i;
+    // 全是字母不带空格：折不了行，只能靠 encoded-word 切段
+    for (i = 0; i < sizeof(subject) - 1; i++) {
+        subject[i] = (char)('a' + (i % 26));
+    }
+    subject[sizeof(subject) - 1] = '\0';
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, subject);
+    mail_msg(&mail, "body");
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    size_t maxline = _max_line_lens(out);
+    CuAssert(tc, "long ASCII subject must be encoded-word folded, not written raw", maxline <= 998);
+    CuAssertPtrNotNull(tc, strstr(out, "=?utf-8?B?"));
+    // 短主题不受影响，仍旧裸写
+    FREE(out);
+    mail_subject(&mail, "plain short");
+    out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    CuAssertPtrNotNull(tc, strstr(out, "Subject: plain short\r\n"));
+    FREE(out);
+    mail_free(&mail);
+}
+
 // MIME boundary 必须每封随机。写死的字面量摆在源码里，正文放一行 "--<boundary>" 就能提前
 // 终结 text 段、再伪造出一个附件或 text/html 替代段（RFC 2046 §5.1.1 要求 boundary 不得
 // 出现在任何 body part 中，常量做不到）
@@ -5976,6 +6007,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_smtp_body_transparency);
     SUITE_ADD_TEST(suite, test_smtp_plain_mime_headers);
     SUITE_ADD_TEST(suite, test_smtp_plain_line_fold);
+    SUITE_ADD_TEST(suite, test_smtp_subject_line_fold);
     SUITE_ADD_TEST(suite, test_smtp_boundary_random);
     SUITE_ADD_TEST(suite, test_smtp_display_name_quote);
     SUITE_ADD_TEST(suite, test_smtp_header_encoded_word);

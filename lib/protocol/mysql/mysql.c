@@ -224,7 +224,7 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_integer(&bwriter, mysql->client.caps, 4, 1);//client_flag
     binary_set_integer(&bwriter, mysql->client.maxpack, 4, 1);//max_packet_size
     binary_set_uint8(&bwriter, mysql->client.charset);//character_set
@@ -283,7 +283,7 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_integer(&bwriter, mysql->client.caps, 4, 1);//client_flag
     binary_set_integer(&bwriter, mysql->client.maxpack, 4, 1);//max_packet_size
     binary_set_uint8(&bwriter, mysql->client.charset);//character_set
@@ -441,7 +441,7 @@ static int32_t _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, 0x02);
     return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
 }
@@ -536,7 +536,7 @@ static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 300, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     size_t lens;
     char *xorpsw = _mysql_password_xor_salt(mysql, &lens);
     if (ERR_OK != _mysql_sha2_rsa(&bwriter, pubkey, klens, xorpsw, lens)) {
@@ -554,7 +554,7 @@ static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_string(&bwriter, mysql->client.password);
     return _mysql_send_pack(mysql, ev, &bwriter);
 }
@@ -571,7 +571,7 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     if (EMPTYSTR(mysql->client.password)) {
         // 空密码：AuthSwitchResponse 发送空 auth data，不写签名
     } else if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {

@@ -91,8 +91,9 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包；失败返回 NULL(*lens 置 0)。
-/// 以下"组包失败"三条为全部 mqtt_pack_* 共有：属性段编码失败(含 version 低于 MQTT_50 却带了属性)、
-/// 任一字符串/载荷长度超 UINT16_MAX、剩余长度超 varint 上限。
+/// 以下"组包失败"三条为全部 mqtt_pack_* 共有：属性段编码失败、任一字符串/载荷长度超 UINT16_MAX、
+/// 剩余长度超 varint 上限。version 低于 MQTT_50 时属性整体忽略，不算失败——3.1.1 没有属性段，
+/// 调用方可以只建一份 props 发给两种版本。
 /// 本函数另有一条：MQTT 3.1.1 下零长度 clientid 配 cleanstart=0</returns>
 char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t keepalive, const char *clientid,
     const char *user, char *password, size_t pwlens,

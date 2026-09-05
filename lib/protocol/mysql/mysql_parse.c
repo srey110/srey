@@ -42,7 +42,7 @@ static inline int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *pay
     if (size < *payload_lens + sizeof(head)) {
         return ERR_FAILED;
     }
-    mysql->id = head[3];
+    mysql->id = (uint8_t)head[3];
     ASSERTAB(sizeof(head) == buffer_drain(buf, sizeof(head)), "drain buffer failed.");
     return ERR_OK;
 }

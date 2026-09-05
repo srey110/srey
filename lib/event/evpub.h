@@ -226,17 +226,16 @@ int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs
 SOCKET _evpub_listen(netaddr_ctx *addr);
 // 创建并绑定UDP socket
 SOCKET _evpub_udp(netaddr_ctx *addr);
-// 从socket读取数据（支持SSL/普通）；返回 1 表示裸 socket 读到 FIN（对端有序关闭）。
-// 取正数,这样只认 ERR_OK 的调用方仍按失败处理,漏改一处不会静默死循环
+// 从socket读取数据（支持SSL/普通）；返回 1 表示对端有序关闭——裸 socket 读到 FIN，
+// SSL 收到 close_notify。取正数,这样只认 ERR_OK 的调用方仍按失败处理,漏改一处不会静默死循环
 int32_t _evpub_sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
 // 记下这次收发失败是"对端有序结束"还是"异常中断"，供关闭回调回带 close_type。
-// rtn 传本次收发的返回码，发送失败传 ERR_FAILED。
-// SSL 连接不看 rtn 看 close_notify：evssl_read 只返回 ERR_OK / ERR_FAILED，
-// 而 SSL_RECEIVED_SHUTDOWN 是 SSL 对象上的持久位，读失败之后再查也准
-void _evpub_mark_close(int32_t *status, int32_t rtn, void *ssl);
+// rtn 传本次收发的返回码，发送失败传 ERR_FAILED
+void _evpub_mark_close(int32_t *status, int32_t rtn);
 // 由 STATUS_PEER_* 得出 close_type，两个位都没置即本地主动关闭
 int32_t _evpub_close_type(int32_t status);
-// 向socket发送数据（支持SSL/普通）
+// 向socket发送数据（支持SSL/普通）；返回 1 表示发送方向先读到了对端 close_notify（仅 SSL 路径，
+// 明文路径只返 ERR_OK / ERR_FAILED），口径与 _evpub_sock_read 一致
 int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg);
 // UDP 发送缓冲入队并尝试立即发送（IOCP/uev 平台无关封装）；
 // tried 非 0 表示调用方在入队前已经尝试过一次发送（如 _evpub_try_sendto 遇到 EAGAIN），

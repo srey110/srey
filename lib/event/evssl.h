@@ -137,7 +137,9 @@ int32_t evssl_tryconn(SSL *ssl);
 /// <param name="readed">读到的字节数；可为 0</param>
 /// <returns>ERR_OK 表示"没出错"，含 WANT_READ / WANT_WRITE 两种要重试的情形，
 ///   此时 readed 可为 0。TLS1.3 数据期 SSL_read 也可能要求先写，调用方须在返回后自行
-///   SSL_want_write() 探测并注册写事件，本函数不回传这个诉求</returns>
+///   SSL_want_write() 探测并注册写事件，本函数不回传这个诉求。
+///   返回 1 表示对端发来了 close_notify（TLS 层有序结束），口径与裸 socket 读到 FIN 一致；
+///   判据只认 SSL_ERROR_ZERO_RETURN，无 close_notify 的 EOF 与 fatal alert 都归 ERR_FAILED</returns>
 int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed);
 /// <summary>
 /// 数据写入
@@ -148,7 +150,8 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed);
 /// <param name="sended">写入的字节数；可为 0 或小于 len</param>
 /// <returns>ERR_OK 表示"没出错"，含 WANT_READ / WANT_WRITE 两种要重试的情形。
 ///   未设 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER，故重试**必须传同一个 buf 指针与同一 len**；
-///   要写事件时调用方须自行 SSL_want_read() 探测，本函数不回传这个诉求</returns>
+///   要写事件时调用方须自行 SSL_want_read() 探测，本函数不回传这个诉求。
+///   返回 1 的含义同 evssl_read——发送方向也可能先读到对端的 close_notify</returns>
 int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 /// <summary>
 /// shutdown
@@ -156,13 +159,6 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 /// <param name="ssl">SSL</param>
 /// <param name="fd">socket句柄</param>
 void evssl_shutdown(SSL *ssl, SOCKET fd);
-/// <summary>
-/// 是否收到过对端的 close_notify。查的是 SSL 对象上的持久位，读失败之后再问也准，
-/// 不必在出错那一刻抓 SSL_get_error
-/// </summary>
-/// <param name="ssl">SSL</param>
-/// <returns>1 收到过（TLS 层有序结束）；0 未收到（连接被截断或尚未结束）</returns>
-int32_t evssl_recvd_shutdown(SSL *ssl);
 /// <summary>
 /// ssl版本，完成握手后调用
 /// </summary>

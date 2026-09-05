@@ -1194,6 +1194,40 @@ static void test_pgsql_setter_atomic(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, pgsql_set_db(&pg, "db2"));
     CuAssertStrEquals(tc, "db2", pg.database);
 }
+// SSLRequest 的应答只有一个字节，而且它是在明文上收的。配了 evssl 却收到 'N'
+// 必须拒收——这是唯一一道防 MITM 把 'S' 改写成 'N'、把连接降级到明文 Startup 的闸，
+// 而明文 Startup 上服务端一句 AuthCleartextPassword 就能拿到口令原文
+static void test_pgsql_ssl_downgrade_refused(CuTest *tc) {
+    pgsql_ctx pg;
+    ZERO(&pg, sizeof(pg));
+    // 'N' 分支只判非空不解引用，随便给个非 NULL 顶上
+    pg.evssl = (struct evssl_ctx *)&pg;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.context = &pg;// status 归零即 pgsql.c 的 INIT：等 SSL 协商响应
+    buffer_ctx buf;
+    buffer_init(&buf);
+    int32_t status = 0;
+
+    // 1) 强制降级：必须报错，不能悄悄接着走明文
+    buffer_append(&buf, "N", 1);
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(1, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+
+    // 2) 未知应答字节同样拒收
+    status = 0;
+    buffer_append(&buf, "X", 1);
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(1, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+
+    // 3) 一个字节都还没到：只能报要更多数据，不许误判成错误
+    status = 0;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(1, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+
+    buffer_free(&buf);
+}
 void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_iter);
     SUITE_ADD_TEST(suite, test_pgsql_result_multi);
@@ -1222,4 +1256,5 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgpack_row_description_overlong_name);
     SUITE_ADD_TEST(suite, test_pgsql_affected_rows);
     SUITE_ADD_TEST(suite, test_pgsql_setter_atomic);
+    SUITE_ADD_TEST(suite, test_pgsql_ssl_downgrade_refused);
 }

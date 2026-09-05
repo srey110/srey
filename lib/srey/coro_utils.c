@@ -1243,6 +1243,8 @@ void mongo_freesession(mongo_session *session) {
     // 也不看连接换没换过:服务端的会话记录不随连接消失,漏发这一包就要挂到会话超时才回收
     size_t lens;
     void *endsession = mongo_pack_endsession(session, &lens);
+    // 释放必须排在 _mongo_send 之后:它取的 serial 锁把本函数排在在途 commit/rollback 之后,
+    // 那边醒来还要读 session->options。提前释放就是让它读已释放内存
     _mongo_send(mongo, endsession, lens, NULL);
     FREE(session->options);
     FREE(session);

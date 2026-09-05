@@ -75,8 +75,6 @@ static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
     // 触发字节仅作唤醒信号，先抽干清可读态（零字节 WSARecv re-arm 只在新字节到达时再触发）
     while (recv(olcmd->ol_r.fd, ntrigger, sizeof(ntrigger), 0) > 0) { }
-    // 与字节数解耦全量抽干：队头被并发生产者占槽未发布时本轮提前停，其触发字节随后必到再唤醒补齐，不丢命令也不空转。
-    // 同 _uev_cmd_run：有意不设每轮上限，理由见该函数注释
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {

@@ -171,15 +171,8 @@ void _evpub_disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
     _uev_disconnect(watcher, skctx);
 #endif
 }
-void _evpub_mark_close(int32_t *status, int32_t rtn, void *ssl) {
-    int32_t fin;
-#if WITH_SSL
-    fin = (NULL != ssl) ? evssl_recvd_shutdown((SSL *)ssl) : (1 == rtn);
-#else
-    (void)ssl;
-    fin = (1 == rtn);
-#endif
-    BIT_SET(*status, fin ? STATUS_PEER_FIN : STATUS_PEER_ABORT);
+void _evpub_mark_close(int32_t *status, int32_t rtn) {
+    BIT_SET(*status, (1 == rtn) ? STATUS_PEER_FIN : STATUS_PEER_ABORT);
 }
 int32_t _evpub_close_type(int32_t status) {
     // FIN 先判：异常路径可能在标过 FIN 之后再叠一次 ABORT，这样置位处就不用互斥

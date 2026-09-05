@@ -457,7 +457,8 @@ int32_t mongo_refreshsession(mongo_session *session);
 /// endsessions 命令 使会话过期,释放mongo_session。
 /// endsessions 一律发送：服务端的会话记录不随连接消失，漏发要挂到会话超时才回收
 /// </summary>
-/// <param name="session">mongo_session</param>
+/// <param name="session">mongo_session；进函数即被释放，返回后调用方手上的指针失效。
+///   发 endsessions 会挂起，故这期间不得有别的协程还拿着同一个 session</param>
 void mongo_freesession(mongo_session *session);
 /// <summary>
 /// 事务开始。一条连接同时只允许一个活跃事务（CRUD 命令的事务上下文取自连接上的当前绑定），

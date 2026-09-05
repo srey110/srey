@@ -727,11 +727,16 @@ static int32_t _timeout_habor_reject(task_ctx *task) {
     return ERR_OK;
 #endif
 }
+// 失败即时落盘,不等轮末:中途 task_isclosing 提前 return 会把本轮的失败丢掉(见 _failed 注释)
+static inline void _timeout_failed(task_timeout_ctx *ctx) {
+    ctx->_failed = 1;
+    *ctx->_ok = 0;
+}
 static void _timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
     task_timeout_ctx *ctx = coro_get_arg(task);
     if (ERR_OK != _timeout_sleep(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("sleep test error.");
     }
     if (task_isclosing(task)) {
@@ -742,49 +747,49 @@ static void _timeout(task_ctx *task, uint64_t sess) {
         return;
     }
     if (ERR_OK != _timeout_rpc(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("rpc call test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_udp(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("udp test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_tcp(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("tcp test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_http(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("http test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_ws(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("ws test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_habor(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("habor test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_habor_reject(task)) {
-        ctx->_failed = 1;
+        _timeout_failed(ctx);
         LOG_WARN("habor reject test error.");
     }
     *ctx->_ok = ctx->_failed ? 0 : 1;

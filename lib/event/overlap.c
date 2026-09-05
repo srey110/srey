@@ -369,7 +369,7 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     _olp_call_recv_cb(watcher->ev, oltcp, nread);
     // 先记再往下走：下面 _olp_wantwrite / _olp_post_recv 会覆写 rtn，那是本地投递失败，不是对端关的
     if (ERR_OK != rtn) {
-        _evpub_mark_close(&oltcp->status, rtn, TCP_SSL(oltcp));
+        _evpub_mark_close(&oltcp->status, rtn);
         return rtn;
     }
 #if WITH_SSL
@@ -394,13 +394,15 @@ static inline void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *ol
 // IOCP TCP接收完成回调：处理SSL握手或普通数据接收
 static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    // 完成状态非成功即 RST 一类的传输错；优雅 FIN 是"成功 + 0 字节"，落到下面 _olp_tcp_recv 去标
-    int32_t iofail = (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal);
-    if (iofail) {
-        _evpub_mark_close(&oltcp->status, ERR_FAILED, TCP_SSL(oltcp));
+    // 本地已在关就不标 PEER_*，close_type 即 LOCAL。这道判定必须排在 iofail 之前——
+    // ev_close 的 CancelIoEx 会让在途 ol_r 以"已取消"完成，iofail 同样为 1，颠倒就把本地关判成 ABORT
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        _olp_on_recv_cb_err(watcher, oltcp);
+        return;
     }
-    if (iofail
-        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {// 只有 STATUS_ERROR：本地已在关，不标
+    // 完成状态非成功即 RST 一类的传输错；优雅 FIN 是"成功 + 0 字节"，落到下面 _olp_tcp_recv 去标
+    if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal) {
+        _evpub_mark_close(&oltcp->status, ERR_FAILED);
         _olp_on_recv_cb_err(watcher, oltcp);
         return;
     }
@@ -506,7 +508,7 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     oltcp->wb_size -= nsend;
     _olp_call_send_cb(watcher->ev, oltcp, nsend);
     if (ERR_OK != rtn) {
-        _evpub_mark_close(&oltcp->status, ERR_FAILED, TCP_SSL(oltcp));
+        _evpub_mark_close(&oltcp->status, rtn);
         return ERR_FAILED;
     }
     uint32_t cnt = queue_size(&oltcp->buf_s);
@@ -557,7 +559,7 @@ static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *o
     int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, oltcp->ssl);
     _olp_call_recv_cb(watcher->ev, oltcp, nread);
     if (ERR_OK != rtn) {
-        _evpub_mark_close(&oltcp->status, rtn, oltcp->ssl);
+        _evpub_mark_close(&oltcp->status, rtn);
         return ERR_FAILED;
     }
     if (SSL_want_write(oltcp->ssl)) {// 没冲完,直接重投探针:SENDING 已持有,不走 wantwrite
@@ -588,13 +590,13 @@ static inline void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *ol
 // IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调
 static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_s);
-    // 同 _olp_on_recv_cb：发送完成状态非成功即传输错，标异常；STATUS_ERROR 那支是本地已在关，不标
-    int32_t iofail = (ERROR_SUCCESS != oltcp->ol_s.overlapped.Internal);
-    if (iofail) {
-        _evpub_mark_close(&oltcp->status, ERR_FAILED, TCP_SSL(oltcp));
+    // 判定顺序同 _olp_on_recv_cb：先认本地关，再认传输错
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        _olp_send_close_tcp(watcher, oltcp);
+        return;
     }
-    if (iofail
-        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+    if (ERROR_SUCCESS != oltcp->ol_s.overlapped.Internal) {
+        _evpub_mark_close(&oltcp->status, ERR_FAILED);
         _olp_send_close_tcp(watcher, oltcp);
         return;
     }

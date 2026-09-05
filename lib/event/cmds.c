@@ -34,25 +34,29 @@ ud_cxt *_evpub_get_ud(struct sock_ctx *skctx) {
     return _uev_get_ud(skctx);
 #endif
 }
+// EAGAIN 即缓冲满,满就说明唤醒已在路上,而消费端抽的是队列到空,故这个字节可丢
+// (IOCP 是 TCP,缓冲可能只是在等 ACK,那个窄窗口里命令留在队列等下次唤醒,同样不丢)。
+// 别改回自旋等:事件线程自己也会投命令(收包判错走 ev_close),自旋就没人来抽干本线程的管道
 void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
     int32_t erro;
     static const char trigger[1] = { 's' };
 #ifdef EV_IOCP
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     fsqu_push(&olcmd->qu, cmd);
-    while (0 == ATOMIC_GET(&watcher->stop)
+    if (0 == ATOMIC_GET(&watcher->stop)
         && SOCKET_ERROR == send(olcmd->fd, trigger, sizeof(trigger), 0)) {
         erro = ERRNO;
         ASSERTAB(IS_EAGAIN(erro), ERRORSTR(erro));
-        CPU_PAUSE();
     }
 #else
     fsqu_push(&watcher->pipe.qu, cmd);
-    while (0 == ATOMIC_GET(&watcher->stop)
+    while (0 == ATOMIC_GET(&watcher->stop)//while 防止 "EINTR 系统调用被信号打断了,什么都没做"。Windows侧无
            && ERR_FAILED == write(watcher->pipe.pipes[1], trigger, sizeof(trigger))) {
         erro = ERRNO;
         ASSERTAB(ERR_RW_RETRIABLE(erro), ERRORSTR(erro));
-        CPU_PAUSE();
+        if (IS_EAGAIN(erro)) {
+            break;
+        }
     }
 #endif//EV_IOCP
 }

@@ -142,27 +142,143 @@ static void test_evpub_close_type(CuTest *tc) {
 
     /* 2) 读到 FIN：有序结束 */
     st = STATUS_ESTABLISHED;
-    _evpub_mark_close(&st, 1, NULL);
+    _evpub_mark_close(&st, 1);
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_PEER_FIN));
     CuAssertIntEquals(tc, CLOSE_TYPE_ORDERLY, _evpub_close_type(st));
 
     /* 3) 读写失败：异常中断 */
     st = STATUS_ESTABLISHED;
-    _evpub_mark_close(&st, ERR_FAILED, NULL);
+    _evpub_mark_close(&st, ERR_FAILED);
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_PEER_ABORT));
     CuAssertIntEquals(tc, CLOSE_TYPE_ABORT, _evpub_close_type(st));
 
     /* 4) 先 FIN 再叠 ABORT 仍判有序：IOCP 侧收完成与错误处理是两条路径，会叠加 */
     st = STATUS_ESTABLISHED;
-    _evpub_mark_close(&st, 1, NULL);
-    _evpub_mark_close(&st, ERR_FAILED, NULL);
+    _evpub_mark_close(&st, 1);
+    _evpub_mark_close(&st, ERR_FAILED);
     CuAssertIntEquals(tc, CLOSE_TYPE_ORDERLY, _evpub_close_type(st));
 
     /* 5) 不碰其他状态位 */
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_ESTABLISHED));
 }
+#if WITH_SSL
+// 非阻塞下两端轮流推进握手：谁 WANT_READ/WANT_WRITE 就换另一边喂，直到两边都成
+static int32_t _ssl_shake(SSL *cli, SSL *srv) {
+    int32_t i, c = 1, s = 1;
+    for (i = 0; i < 500 && (ERR_OK != c || ERR_OK != s); i++) {
+        if (ERR_OK != c) {
+            c = evssl_tryconn(cli);
+            if (ERR_FAILED == c) {
+                return ERR_FAILED;
+            }
+        }
+        if (ERR_OK != s) {
+            s = evssl_tryacpt(srv);
+            if (ERR_FAILED == s) {
+                return ERR_FAILED;
+            }
+        }
+    }
+    return (ERR_OK == c && ERR_OK == s) ? ERR_OK : ERR_FAILED;
+}
+// 建一对握完手的 SSL。返回 1 成功；0 表示证书没生成（用例跳过）；-1 是真失败
+static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evssl_ctx **cc) {
+    const char *local = procpath();
+    char ca[PATH_LENS], crt[PATH_LENS], key[PATH_LENS];
+    SNPRINTF(ca, sizeof(ca), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
+    SNPRINTF(crt, sizeof(crt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.crt");
+    SNPRINTF(key, sizeof(key), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.key");
+    *sc = evssl_new(ca, crt, key, SSL_FILETYPE_PEM);
+    if (NULL == *sc) {
+        return 0;
+    }
+    *cc = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
+    if (NULL == *cc) {
+        evssl_free(*sc);
+        return -1;
+    }
+    if (ERR_OK != sock_pair(sk, 1)) {
+        evssl_free(*sc);
+        evssl_free(*cc);
+        return -1;
+    }
+    *cli = evssl_setfd(*cc, sk[0]);
+    *srv = evssl_setfd(*sc, sk[1]);
+    if (NULL == *cli || NULL == *srv
+        || ERR_OK != _ssl_shake(*cli, *srv)) {
+        // 调用方在这条路径上会断言失败并 longjmp 出去，自己不收就会挂在收尾的 memcheck 上
+        FREE_SSL(*cli);
+        FREE_SSL(*srv);
+        CLOSE_SOCK(sk[0]);
+        CLOSE_SOCK(sk[1]);
+        evssl_free(*sc);
+        evssl_free(*cc);
+        return -1;
+    }
+    return 1;
+}
+// close_notify 与"连接被截断"必须分得开：前者有序结束（返 1），后者异常中断（返 ERR_FAILED）。
+// 判据见 evssl_read 的 <returns>
+static void test_evssl_read_close_notify(CuTest *tc) {
+    SOCKET sk[2];
+    SSL *cli = NULL, *srv = NULL;
+    evssl_ctx *sc = NULL, *cc = NULL;
+    char buf[64];
+    size_t readed;
+    int32_t rtn;
+
+    /* 1) 对端 SSL_shutdown 发了 close_notify：读侧必须报 1 */
+    rtn = _ssl_pair(sk, &cli, &srv, &sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_evssl_read_close_notify, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    evssl_shutdown(srv, sk[1]);
+    int32_t i;
+    // close_notify 未必立刻可见，未到时读的是 WANT_READ(ERR_OK)，故有界重试（同 test_evpub_read_fin）
+    rtn = ERR_OK;
+    for (i = 0; i < 200 && ERR_OK == rtn; i++) {
+        readed = 1;
+        rtn = evssl_read(cli, buf, sizeof(buf), &readed);
+        if (ERR_OK == rtn) {
+            MSLEEP(1);
+        }
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    CuAssertTrue(tc, 0 == readed);
+    FREE_SSL(cli);
+    FREE_SSL(srv);
+    CLOSE_SOCK(sk[0]);
+    CLOSE_SOCK(sk[1]);
+    evssl_free(sc);
+    evssl_free(cc);
+
+    /* 2) 对端直接关 TCP、不发 close_notify：必须报 ERR_FAILED，不能当成有序结束 */
+    CuAssertIntEquals(tc, 1, _ssl_pair(sk, &cli, &srv, &sc, &cc));
+    FREE_SSL(srv);
+    CLOSE_SOCK(sk[1]);
+    rtn = ERR_OK;
+    // 同上：EOF 未必立刻可见
+    for (i = 0; i < 200 && ERR_OK == rtn; i++) {
+        readed = 1;
+        rtn = evssl_read(cli, buf, sizeof(buf), &readed);
+        if (ERR_OK == rtn) {
+            MSLEEP(1);
+        }
+    }
+    CuAssertIntEquals(tc, ERR_FAILED, rtn);
+    FREE_SSL(cli);
+    CLOSE_SOCK(sk[0]);
+    evssl_free(sc);
+    evssl_free(cc);
+}
+#endif
 void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_close_flush);
     SUITE_ADD_TEST(suite, test_evpub_read_fin);
     SUITE_ADD_TEST(suite, test_evpub_close_type);
+#if WITH_SSL
+    SUITE_ADD_TEST(suite, test_evssl_read_close_notify);
+#endif
 }

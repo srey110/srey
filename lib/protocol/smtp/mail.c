@@ -12,6 +12,9 @@
 // 每个 RFC 2047 encoded-word 最多编码的原文字节数。单个 word 连同 "=?utf-8?B?" 与 "?=" 不得
 // 超过 75 字符：45 字节原文 → base64 60 字符 + 12 字符外壳 = 72，是 3 的整数倍里最大的那个
 #define MIME_EW_RAW 45
+// 头字段裸写 ASCII 的长度上限。RFC 5322 §2.1.1 限一行 998 octet，减去字段名与余量；
+// 超过就改走 encoded-word，那条路按 MIME_EW_RAW 切段且自带折行
+#define MIME_HDR_RAW_MAX 900
 
 void mail_init(mail_ctx *mail) {
     ZERO(mail, sizeof(mail_ctx));
@@ -217,14 +220,15 @@ static int32_t _mail_has_nonascii(const char *s, size_t lens) {
     }
     return 0;
 }
-// 头字段文本：纯 ASCII 原样写，含非 ASCII 时按 RFC 2047 编成 encoded-word。
+// 头字段文本：短的纯 ASCII 原样写，含非 ASCII 或过长时按 RFC 2047 编成 encoded-word。
 // RFC 5322 §2.2 规定 header field body 只能是 US-ASCII，而本实现从不协商 SMTPUTF8
 // （EHLO 响应只解析 AUTH 类型），裸 UTF-8 主题在严格服务端上会被改写甚至拒收。
 // 超过一个 word 时按 RFC 5322 §2.2.3 折行（CRLF + 一个空格）；切段必须落在 UTF-8 字符边界上，
 // 从中间劈开会让对端解出半个字
 static void _mail_set_header_text(binary_ctx *bw, const char *s) {
     size_t lens = strlen(s);
-    if (!_mail_has_nonascii(s, lens)) {
+    if (lens <= MIME_HDR_RAW_MAX
+        && !_mail_has_nonascii(s, lens)) {
         binary_set_binary(bw, s, lens);
         return;
     }

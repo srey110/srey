@@ -34,7 +34,7 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) 
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, lens + 1, 3, 1);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_INIT_DB);
     binary_set_binary(&bwriter, database, lens);
     *size = bwriter.offset;
@@ -46,7 +46,7 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PING);
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_PING;
@@ -63,7 +63,7 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_QUERY);//command
     if (BIT_CHECK(mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
         size_t count = 0;
@@ -97,7 +97,7 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PREPARE);
     binary_set_binary(&bwriter, sql, lens);
     if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
@@ -117,7 +117,7 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, stmt->mysql->id);
+    binary_set_uint8(&bwriter, stmt->mysql->id);
     binary_set_uint8(&bwriter, MYSQL_EXECUTE);//status
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);//statement_id
     binary_set_int8(&bwriter, 0);//flags
@@ -157,7 +157,7 @@ void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 5, 3, 1);
-    binary_set_int8(&bwriter, stmt->mysql->id);
+    binary_set_uint8(&bwriter, stmt->mysql->id);
     binary_set_uint8(&bwriter, MYSQL_STMT_RESET);
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);
     *size = bwriter.offset;
@@ -169,7 +169,7 @@ void *mysql_pack_stmt_close(mysql_stmt_ctx *stmt, size_t *size) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 5, 3, 1);
-    binary_set_int8(&bwriter, stmt->mysql->id);
+    binary_set_uint8(&bwriter, stmt->mysql->id);
     binary_set_uint8(&bwriter, MYSQL_STMT_CLOSE);
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);
     *size = bwriter.offset;

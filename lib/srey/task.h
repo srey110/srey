@@ -39,7 +39,8 @@ void task_free(task_ctx *task);
 /// <param name="task">task_ctx</param>
 /// <param name="_startup">任务初始化回调函数</param>
 /// <param name="_closing">任务关闭回调函数,做业务相关收尾工作._closing执行后，不代表该任务已经无引用</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功。失败(名字重名)时 task 从未进过 loader 的表，所有权仍在调用方手上，
+/// 须自行 task_free；此时调 task_ungrab 不会释放它，也不会有任何提示</returns>
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing);
 /// <summary>
 /// 任务关闭 MSG_TYPE_CLOSING

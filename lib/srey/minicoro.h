@@ -415,7 +415,9 @@ extern "C" {
 #endif
 
 /* Number used only to assist checking for stack overflows. */
-#define MCO_MAGIC_NUMBER 0x7E3CB1A9
+/* 写满整个 size_t:只填低半宽的话每个守卫字另一半恒为 0,越界写零就探不出来。
+   移位拼而不是写 64 位字面量:后者在 32 位构建上是截断转换,MSVC 报 C4310 */
+#define MCO_MAGIC_NUMBER (((size_t)0x7E3CB1A9u << (sizeof(size_t) * 4)) | (size_t)0x7E3CB1A9u)
 
 /* 守卫字数。字节数与后端选择都在公开段,见 MCO_STACK_GUARD_SIZE */
 #define MCO_STACK_GUARD_WORDS (MCO_STACK_GUARD_SIZE / sizeof(size_t))

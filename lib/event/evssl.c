@@ -27,11 +27,12 @@ static array_ctx *_arr_certs = NULL;// 全局证书注册池（元素 certs_ctx�
 static rwlock_ctx *_rwlck_certs = NULL;// 保护证书池的读写锁
 static atomic_t _init_once = 0;// 保证证书池只初始化一次
 
-// 设置SSL_CTX的通用选项：忽略意外EOF、禁止重协商、不验证对端
+// 设置SSL_CTX的通用选项：禁止重协商、不验证对端
+// 不设 SSL_OP_IGNORE_UNEXPECTED_EOF：它把无 close_notify 的 EOF 伪装成 ZERO_RETURN，
+// 关闭类型就分不出有序结束与截断。它只压一条错误串，而本文件的读写路径本就不打印错误队列
 // 不设 SSL_MODE_AUTO_RETRY：该模式在非阻塞 socket 上会使 SSL_read/write 内部自旋，
 // 阻塞 watcher 线程。WANT_READ/WANT_WRITE 由事件循环驱动重试。
 static void _evssl_options(evssl_ctx *evssl) {
-    SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF); // 忽略: error:0A000126:SSL routines::unexpected eof while reading
 #ifdef SSL_OP_NO_RENEGOTIATION
     SSL_CTX_set_options(evssl->ssl, SSL_OP_NO_RENEGOTIATION);
 #endif
@@ -300,10 +301,10 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
         *readed = (size_t)rtn;
         return ERR_OK;
     }
-    if (0 == rtn) {
-        return ERR_FAILED;
-    }
     int32_t err = SSL_get_error(ssl, rtn);
+    if (SSL_ERROR_ZERO_RETURN == err) {
+        return 1;
+    }
     /* post-handshake（TLS1.3 KeyUpdate）期间 SSL_read 也可能返回 WANT_WRITE，同等对待 */
     if (SSL_ERROR_WANT_READ == err
         || SSL_ERROR_WANT_WRITE == err) {
@@ -325,11 +326,12 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
         if (rtn > 0) {
             *sended += rtn;
         } else {
-            //与 evssl_read 对称：rtn==0 通常表示连接已关闭，直接失败，省一次 SSL_get_error
-            if (0 == rtn) {
-                return ERR_FAILED;
-            }
             err = SSL_get_error(ssl, rtn);
+            // 发送方向也可能先撞上 close_notify:post-handshake 期 SSL_write 会读入站记录。
+            // 判据与返回码同 evssl_read
+            if (SSL_ERROR_ZERO_RETURN == err) {
+                return 1;
+            }
             /* post-handshake（TLS1.3 KeyUpdate）期间 SSL_write 也可能返回 WANT_READ，同等对待 */
             if (SSL_ERROR_WANT_WRITE == err
                 || SSL_ERROR_WANT_READ == err) {
@@ -346,9 +348,6 @@ void evssl_shutdown(SSL *ssl, SOCKET fd) {
         SSL_shutdown(ssl);
     }
     shutdown(fd, SHUT_RD);
-}
-int32_t evssl_recvd_shutdown(SSL *ssl) {
-    return (0 != (SSL_RECEIVED_SHUTDOWN & SSL_get_shutdown(ssl))) ? 1 : 0;
 }
 int32_t evssl_version(SSL *ssl) {
     return SSL_version(ssl);

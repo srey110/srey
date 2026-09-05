@@ -342,7 +342,7 @@ static inline int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
 #endif
     _usk_call_recv_cb(watcher->ev, tcp, nread);
     if (ERR_OK != rtn) {
-        _evpub_mark_close(&tcp->status, rtn, TCP_SSL(tcp));
+        _evpub_mark_close(&tcp->status, rtn);
         return ERR_FAILED;
     }
     if (ERR_OK != evrtn) {
@@ -359,7 +359,7 @@ static inline int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     tcp->wb_size -= nsend;
     _usk_call_send_cb(watcher->ev, tcp, nsend);
     if (ERR_OK != rtn) {
-        _evpub_mark_close(&tcp->status, ERR_FAILED, TCP_SSL(tcp));
+        _evpub_mark_close(&tcp->status, rtn);
         return rtn;
     }
     uint32_t cnt = queue_size(&tcp->buf_s);
