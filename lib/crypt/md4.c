@@ -12,9 +12,9 @@
 #define S32 9
 #define S33 11
 #define S34 15
-#define F(x, y, z) (((x) & (y)) | ((~x) & (z)))           // 轮函数 F：选择函数
+#define F(x, y, z) (((x) & (y)) | ((~x) & (z))) // 轮函数 F：选择函数
 #define G(x, y, z) (((x) & (y)) | ((x) & (z)) | ((y) & (z))) // 轮函数 G：多数函数
-#define H(x, y, z) ((x) ^ (y) ^ (z))                       // 轮函数 H：奇偶函数
+#define H(x, y, z) ((x) ^ (y) ^ (z)) // 轮函数 H：奇偶函数
 #define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n)))) // 循环左移
 // 第一轮操作
 #define FF(a, b, c, d, x, s) { (a) += F ((b), (c), (d)) + (x); \

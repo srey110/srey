@@ -14,7 +14,7 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
     uint64_t curms = nowms();
     if (mbits < 1
         || sbits < 1
-        || mbits + sbits > 22
+        || mbits > 22 - sbits
         || machineid < 0
         || machineid > (int32_t)((1u << mbits) - 1)
         || epoch >= curms) {

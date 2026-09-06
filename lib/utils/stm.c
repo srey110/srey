@@ -11,7 +11,9 @@ static stm_data *_stm_new_data(void *data, size_t sz, int32_t copy) {
         snap->data = data;
     } else {
         MALLOC(snap->data, sz);
-        memcpy(snap->data, data, sz);
+        if (0 != sz) {
+            memcpy(snap->data, data, sz);
+        }
     }
     return snap;
 }

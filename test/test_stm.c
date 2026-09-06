@@ -192,6 +192,28 @@ static void test_stm_concurrent_read(CuTest *tc) {
     stm_free(s.ctx);
 }
 
+/* sz=0 且 data 为 NULL：上层放行这种入参，构造快照时不能拿 NULL 当 memcpy 源。
+ * 同上，只在 Linux 的 UBSan 构建下变红；这里主要是把"(NULL, 0) 合法"钉进用例 */
+static void test_stm_empty(CuTest *tc) {
+    stm_ctx *ctx = stm_new(NULL, 0, 1);
+    stm_data *snap = stm_grab_data(ctx);
+    // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉 ctx 与快照，一次真失败还要多报一笔假泄漏
+    int32_t has1 = (NULL != snap);
+    size_t sz1 = has1 ? snap->sz : (size_t)-1;
+    stm_ungrab_data(snap);
+    /* update 走同一条构造路径 */
+    stm_update(ctx, NULL, 0, 1);
+    snap = stm_grab_data(ctx);
+    int32_t has2 = (NULL != snap);
+    size_t sz2 = has2 ? snap->sz : (size_t)-1;
+    stm_ungrab_data(snap);
+    stm_free(ctx);
+    CuAssertTrue(tc, 0 != has1);
+    CuAssertIntEquals(tc, 0, (int)sz1);
+    CuAssertTrue(tc, 0 != has2);
+    CuAssertIntEquals(tc, 0, (int)sz2);
+}
+
 /* ======================================================================= */
 
 void test_stm(CuSuite *suite) {
@@ -202,4 +224,5 @@ void test_stm(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_stm_reader_first);
     SUITE_ADD_TEST(suite, test_stm_grab_chain);
     SUITE_ADD_TEST(suite, test_stm_concurrent_read);
+    SUITE_ADD_TEST(suite, test_stm_empty);
 }

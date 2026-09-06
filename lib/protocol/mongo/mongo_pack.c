@@ -10,7 +10,7 @@
 // commitTransaction / abortTransaction 按规范只能发往 admin 库，与连接当前的 $db 无关；
 // 发错库服务端回 code 13 Unauthorized "may only be run against the admin database"
 #define MONGO_TXN_DB "admin"
-#define BSON_HEADROOM 256          // 大消息 cap 估算余量（命令名+集合名+元数据+session options 等）
+#define BSON_HEADROOM 256 // 大消息 cap 估算余量（命令名+集合名+元数据+session options 等）
 // 拼接 options：源文档超单包上限、或结构不合法(bson_cat 拒收)时整条命令作废——
 // 继续打包会发出缺 options 的命令，服务端照常执行并返回错误结果集。
 // *size 显式置 0：调用方按"返回非 NULL 才读 size"约定，早退路径不能留未初始化值

@@ -3,11 +3,10 @@
 static const unsigned char hexchars[] = "0123456789ABCDEF"; // URL 编码用十六进制字符表
 char *url_encode(const char *data, const size_t lens, char *out, int32_t space2plus) {
     register unsigned char c;
-    unsigned char const *from, *end;
-    from = (unsigned char *)data;
-    end = (unsigned char *)data + lens;
+    size_t i;
+    unsigned char const *from = (unsigned char *)data;
     unsigned char *to = (unsigned char *)out;
-    while (from < end) {
+    for (i = 0; i < lens; i++) {
         c = *from++;
         if (c == ' ' && space2plus) {
             *to++ = '+';

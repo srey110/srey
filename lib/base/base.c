@@ -20,16 +20,20 @@ static const char hex_char_lower[16] = {
     'c', 'd', 'e', 'f'
 };
 
+// barrier 是承重的:去掉它下面那句 memset 会被 -O2 -flto 的 DSE 整段删除。
+// MSVC 没有这道 barrier,那边只能继续走 volatile 逐字节写
 void secure_zero(void *buf, size_t len) {
     if (EMPTYPTR(buf, len)) {
         return;
     }
+#if defined(__GNUC__) || defined(__clang__)
+    memset(buf, 0, len);
+    __asm__ __volatile__("" : : "r"(buf) : "memory");
+#else
     volatile unsigned char *p = (volatile unsigned char *)buf;
     while (len--) {
         *p++ = 0;
     }
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__ __volatile__("" : : "r"(buf) : "memory");
 #endif
 }
 void *memichr(const void *ptr, int32_t val, size_t maxlen) {

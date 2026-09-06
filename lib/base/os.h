@@ -122,7 +122,7 @@
 #endif
 
 // 两个编译器属性宏,按编译器分派而不是按 OS(理由同 macro_atomic.h)。
-// CACHELINE_ALIGN:与 CACHELINE_SIZE 配对,消除 false sharing
+// CACHELINE_ALIGN:与 CACHELINE_SIZE 配对,消除 false sharing;落 #else 空实现只影响并发写入快慢,不影响正确性
 // FORCE_INLINE:强制内联,只给实测有效的热路径小函数用;必须与 static 配对,否则链接失败
 #if defined(__GNUC__) || defined(__clang__)
     #define CACHELINE_ALIGN __attribute__((aligned(CACHELINE_SIZE)))

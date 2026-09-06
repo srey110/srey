@@ -66,15 +66,13 @@ int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd) {
     }
     return ERR_OK;
 }
-// 命令管道可读事件回调：批量窃取队列后无锁处理
+// 命令通道完成包回调：先清在途标志再抽干队列，两步不能颠倒，颠倒会丢唤醒（见 _send_cmd）
 static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     size_t cnt_total = 0;
     int32_t i, cnt;
-    char ntrigger[CMD_MAX_NREAD];
     cmd_ctx cmds[CMD_MAX_NREAD];
     overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
-    // 触发字节仅作唤醒信号，先抽干清可读态（零字节 WSARecv re-arm 只在新字节到达时再触发）
-    while (recv(olcmd->ol_r.fd, ntrigger, sizeof(ntrigger), 0) > 0) { }
+    ATOMIC_SET(&olcmd->wake_pending, 0);
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
@@ -82,11 +80,9 @@ static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         }
         cnt_total += (size_t)cnt;
     } while (cnt > 0);
-    if (tda_check(&olcmd->tda, cnt_total)) {
+    if (cnt_total > 0
+        && tda_check(&olcmd->tda, cnt_total)) {
         LOG_WARN("watcher %d cmd queue overload, count %zu.", watcher->index, cnt_total);
-    }
-    if (0 == ATOMIC_GET(&watcher->stop)) {
-        ASSERTAB(ERR_OK == _iocp_post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
 // 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)
@@ -114,7 +110,7 @@ static inline int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint6
     }
     // 停止后收干 CancelIoEx 触发的在途完成:element 里的 socket 仅在其 IRP 全完成、refcount 归 0 时
     // 才被摘除,count 归 0 即无在途 IRP,hashmap_free 才不会释放仍有在途 IRP 的 sock_ctx(内核 write-after-free)
-    // cmd socket 在处理完 CMD_STOP 命令已不再投递
+    // cmd 通道不建 socket 也不进 element，不影响这个计数
     if (0 == hashmap_count(watcher->element)) {
         return 1;
     }
@@ -247,21 +243,14 @@ static void _iocp_sockel_free(void *item) {
         _iocp_free_udp(sock);
     }
 }
-// 初始化watcher的命令通道（sock_pair + IOCP注册 + 提交首次WSARecv）
+// 初始化watcher的命令通道（不建 socket：唤醒由 _send_cmd 直接投完成包）
 static void _iocp_init_cmd(watcher_ctx *watcher) {
-    SOCKET pair[2];
     overlap_cmd_ctx *olcmd = &watcher->cmd;
-    ASSERTAB(ERR_OK == sock_pair(pair, 1), ERRORSTR(ERRNO));
     olcmd->ol_r.ev_cb = _iocp_on_cmd;
-    olcmd->ol_r.fd = pair[0];
+    olcmd->ol_r.fd = INVALID_SOCK;
     olcmd->ol_r.type = 0;
-    olcmd->fd = pair[1];
     fsqu_init(&olcmd->qu, sizeof(cmd_ctx), 4 * ONEK);
     tda_init(&olcmd->tda, (size_t)(fsqu_capacity(&olcmd->qu) / QUEUE_OVERLOAD_RATIO));
-    olcmd->wsabuf.IOV_PTR_FIELD = NULL;
-    olcmd->wsabuf.IOV_LEN_FIELD = 0;
-    ASSERTAB(ERR_OK == _iocp_join(watcher, olcmd->ol_r.fd), ERRORSTR(ERRNO));
-    ASSERTAB(ERR_OK == _iocp_post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
@@ -313,15 +302,13 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     }
     LOG_INFO("event: %s", EV_NAME);
 }
-// 释放watcher的命令通道（排空队列中未处理的命令，释放内存，关闭socket对）
+// 释放watcher的命令通道（排空队列中未处理的命令，释放内存）
 static void _iocp_free_cmd(watcher_ctx *watcher) {
     cmd_ctx cmd_local;
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     while (ERR_OK == fsqu_pop_sc(&olcmd->qu, &cmd_local)) {
         _cmd_drain_free(&cmd_local);
     }
-    CLOSE_SOCK(olcmd->ol_r.fd);
-    CLOSE_SOCK(olcmd->fd);
     fsqu_free(&olcmd->qu);
 }
 static void _iocp_stop_acpex_thread(ev_ctx *ctx) {

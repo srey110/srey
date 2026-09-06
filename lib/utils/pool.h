@@ -78,6 +78,7 @@ static inline uint32_t _pool_qu_size(pool_ctx *pool) {
     return pool->thsafe ? fsqu_size(&pool->qu.safe_qu) : queue_size(&pool->qu.normal_qu);
 }
 // 释放 nfree 个空闲对象。安全池按批出队摊薄原子操作，普通池逐个取。
+// nkeep 下限由调用方保证；安全池那条循环额外复查是因为并发 push/pop 下只能尽力而为
 // 不做 inline:批量出队的落地数组有 1KB，内联进来会把每个 pool_shrink 调用方的栈帧撑大
 void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree);
 /// <summary>

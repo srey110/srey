@@ -64,7 +64,7 @@ typedef struct bson_iter {
     char *val;//值1
     char *val2;//值2
     binary_ctx *doc;//bson_ctx中的doc
-    binary_ctx nested_doc;//点分路径查找时持有子文档 binary_ctx 副本（避免指向栈变量）；不可调 binary_free，为父 buffer 的视图别名
+    binary_ctx nested_doc;//查找时持有文档 binary_ctx 副本（避免指向栈变量）；不可调 binary_free，为父 buffer 的视图别名
 } bson_iter;
 
 /// <summary>
@@ -316,7 +316,8 @@ void bson_iter_reset(bson_iter *iter);
 /// 边界，故两类的后果相同——后面的元素一律读不到。后者另有一条 unsupported bson type 的告警</returns>
 int32_t bson_iter_error(const bson_iter *iter);
 /// <summary>
-/// 迭代到下一个字段
+/// 迭代到下一个字段。err 置位时 doc 的 offset 会被推到 doclens，
+/// 判文档是否完好不能只看 offset，须查 bson_iter_error
 /// </summary>
 /// <param name="iter">bson_iter</param>
 /// <returns>非零表示有值；0 表示遍历结束，成因由 bson_iter_error 区分——读到 EOD 正常结束

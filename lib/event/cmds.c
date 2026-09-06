@@ -34,24 +34,29 @@ ud_cxt *_evpub_get_ud(struct sock_ctx *skctx) {
     return _uev_get_ud(skctx);
 #endif
 }
-// EAGAIN 即缓冲满,满就说明唤醒已在路上,而消费端抽的是队列到空,故这个字节可丢
-// (IOCP 是 TCP,缓冲可能只是在等 ACK,那个窄窗口里命令留在队列等下次唤醒,同样不丢)。
-// 别改回自旋等:事件线程自己也会投命令(收包判错走 ev_close),自旋就没人来抽干本线程的管道
+// 唤醒只管叫醒事件线程,命令在无界队列里,消费端抽的是队列到空,故唤醒数与命令数不必对齐。
+// 在途标志保证同时最多一个唤醒:CAS 抢到才投,消费端抽队列前清 0,两步顺序不能颠倒;
+// 也不能改成"先 ATOMIC_GET 判再 CAS",MSVC 没有足序读,那条快路径会漏唤醒。
+// 别改成自旋等:事件线程自己也会投命令,自旋会把本线程锁死
 void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
-    int32_t erro;
-    static const char trigger[1] = { 's' };
 #ifdef EV_IOCP
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     fsqu_push(&olcmd->qu, cmd);
     if (0 == ATOMIC_GET(&watcher->stop)
-        && SOCKET_ERROR == send(olcmd->fd, trigger, sizeof(trigger), 0)) {
-        erro = ERRNO;
-        ASSERTAB(IS_EAGAIN(erro), ERRORSTR(erro));
+        && ATOMIC_CAS(&olcmd->wake_pending, 0, 1)) {
+        ASSERTAB(PostQueuedCompletionStatus(watcher->iocp, 0, 0, &olcmd->ol_r.overlapped), ERRORSTR(ERRNO));
     }
 #else
-    fsqu_push(&watcher->pipe.qu, cmd);
+    int32_t erro;
+    static const char trigger[1] = { 's' };
+    pip_ctx *pip = &watcher->pipe;
+    fsqu_push(&pip->qu, cmd);
+    if (0 != ATOMIC_GET(&watcher->stop)
+        || !ATOMIC_CAS(&pip->wake_pending, 0, 1)) {
+        return;
+    }
     while (0 == ATOMIC_GET(&watcher->stop)//while 防止 "EINTR 系统调用被信号打断了,什么都没做"。Windows侧无
-           && ERR_FAILED == write(watcher->pipe.pipes[1], trigger, sizeof(trigger))) {
+           && ERR_FAILED == write(pip->pipes[1], trigger, sizeof(trigger))) {
         erro = ERRNO;
         ASSERTAB(ERR_RW_RETRIABLE(erro), ERRORSTR(erro));
         if (IS_EAGAIN(erro)) {

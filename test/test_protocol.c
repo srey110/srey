@@ -5494,8 +5494,9 @@ static void test_mail_attach_pack(CuTest *tc) {
     size_t plen = sizeof(payload) - 1; // 含中间 \0，需用 sizeof
     FILE *fp = fopen(tmpfile, "wb");
     CuAssertPtrNotNull(tc, fp);
-    CuAssertTrue(tc, plen == fwrite(payload, 1, plen, fp));
+    size_t nwrite = fwrite(payload, 1, plen, fp);
     fclose(fp);
+    CuAssertTrue(tc, plen == nwrite);
 
     // 2. 构造 mail：含正文 + 附件
     mail_ctx mail;
@@ -5506,53 +5507,75 @@ static void test_mail_attach_pack(CuTest *tc) {
     mail_subject(&mail, "with-attach");
     mail_msg(&mail, "see attach");
     mail_attach_add(&mail, tmpfile);
-    CuAssertIntEquals(tc, 1, (int)array_size(&mail.attach));
+    // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉 mail / pkt / pkt2 与临时文件，
+    // 一次真失败还要在收尾内存检查里多报几笔假泄漏。全部结论先落成局部量，函数尾统一断言
+    int32_t natt1 = (int32_t)array_size(&mail.attach);
 
     // 3. 附件结构字段：extension 取自文件名最后 '.'，file 仅含文件名（不含目录）
     mail_attach *att = array_at(&mail.attach, 0);
-    CuAssertTrue(tc, 0 == strcmp(att->extension, ".txt"));
-    CuAssertTrue(tc, NULL != strstr(att->file, "test_mail_attach.txt"));
-    CuAssertPtrNotNull(tc, att->content);
-    CuAssertTrue(tc, strlen(att->content) > 0);
+    int32_t ext_ok = (0 == strcmp(att->extension, ".txt"));
+    int32_t file_ok = (NULL != strstr(att->file, "test_mail_attach.txt"));
+    int32_t content_ok = (NULL != att->content && strlen(att->content) > 0);
 
     // 4. mail_pack：含 multipart/mixed boundary + 附件 header + base64 内容
     char *pkt = mail_pack(&mail);
-    CuAssertPtrNotNull(tc, pkt);
-    CuAssertTrue(tc, NULL != strstr(pkt, "MIME-Version: 1.0"));
-    CuAssertTrue(tc, NULL != strstr(pkt, "multipart/mixed"));
-    CuAssertTrue(tc, NULL != strstr(pkt, "Content-Type: text/plain"));
-    CuAssertTrue(tc, NULL != strstr(pkt, "Content-Transfer-Encoding: base64"));
-    CuAssertTrue(tc, NULL != strstr(pkt, "Content-Disposition: attachment; filename=\""));
-    // 附件文件名出现在 Content-Disposition 行
-    CuAssertTrue(tc, NULL != strstr(pkt, "test_mail_attach.txt"));
-    // base64 编码后的附件 content 应在 pkt 中（注意不能用 strlen 验证原文，二进制含 \0）
-    CuAssertTrue(tc, NULL != strstr(pkt, att->content));
-    // 邮件以 "\r\n.\r\n" 终止（DATA body 终止序列）
-    CuAssertTrue(tc, NULL != strstr(pkt, "\r\n.\r\n"));
+    int32_t pkt_ok = (NULL != pkt);
+    int32_t mime_ok = 0, mixed_ok = 0, ctype_ok = 0, cte_ok = 0;
+    int32_t cdisp_ok = 0, fname_ok = 0, b64_ok = 0, term_ok = 0;
+    if (pkt_ok) {
+        mime_ok = (NULL != strstr(pkt, "MIME-Version: 1.0"));
+        mixed_ok = (NULL != strstr(pkt, "multipart/mixed"));
+        ctype_ok = (NULL != strstr(pkt, "Content-Type: text/plain"));
+        cte_ok = (NULL != strstr(pkt, "Content-Transfer-Encoding: base64"));
+        cdisp_ok = (NULL != strstr(pkt, "Content-Disposition: attachment; filename=\""));
+        // 附件文件名出现在 Content-Disposition 行
+        fname_ok = (NULL != strstr(pkt, "test_mail_attach.txt"));
+        // base64 编码后的附件 content 应在 pkt 中（注意不能用 strlen 验证原文，二进制含 \0）
+        b64_ok = (content_ok && NULL != strstr(pkt, att->content));
+        // 邮件以 "\r\n.\r\n" 终止（DATA body 终止序列）
+        term_ok = (NULL != strstr(pkt, "\r\n.\r\n"));
+    }
     FREE(pkt);
 
     // 5. mail_attach_clear：附件数组清空，内部 content 释放
     mail_attach_clear(&mail);
-    CuAssertIntEquals(tc, 0, (int)array_size(&mail.attach));
+    int32_t natt2 = (int32_t)array_size(&mail.attach);
 
     // 6. 多附件场景：插入两个，验证 mail_pack 不崩，含两段 base64
     mail_attach_add(&mail, tmpfile);
     mail_attach_add(&mail, tmpfile);
-    CuAssertIntEquals(tc, 2, (int)array_size(&mail.attach));
+    int32_t natt3 = (int32_t)array_size(&mail.attach);
     char *pkt2 = mail_pack(&mail);
-    CuAssertPtrNotNull(tc, pkt2);
+    int32_t pkt2_ok = (NULL != pkt2);
     // 两个附件的同名 filename 至少出现 2 次（Content-Disposition 各一次）
+    int32_t filename_hits = 0;
     const char *p = pkt2;
-    int filename_hits = 0;
-    while (NULL != (p = strstr(p, "test_mail_attach.txt"))) {
+    while (pkt2_ok
+           && NULL != (p = strstr(p, "test_mail_attach.txt"))) {
         filename_hits++;
         p++;
     }
-    CuAssertTrue(tc, filename_hits >= 2);
     FREE(pkt2);
-
     mail_free(&mail);
     remove(tmpfile);
+
+    CuAssertIntEquals(tc, 1, natt1);
+    CuAssertTrue(tc, 0 != ext_ok);
+    CuAssertTrue(tc, 0 != file_ok);
+    CuAssertTrue(tc, 0 != content_ok);
+    CuAssertTrue(tc, 0 != pkt_ok);
+    CuAssertTrue(tc, 0 != mime_ok);
+    CuAssertTrue(tc, 0 != mixed_ok);
+    CuAssertTrue(tc, 0 != ctype_ok);
+    CuAssertTrue(tc, 0 != cte_ok);
+    CuAssertTrue(tc, 0 != cdisp_ok);
+    CuAssertTrue(tc, 0 != fname_ok);
+    CuAssertTrue(tc, 0 != b64_ok);
+    CuAssertTrue(tc, 0 != term_ok);
+    CuAssertIntEquals(tc, 0, natt2);
+    CuAssertIntEquals(tc, 2, natt3);
+    CuAssertTrue(tc, 0 != pkt2_ok);
+    CuAssertTrue(tc, filename_hits >= 2);
 }
 
 // 握手回传桩，_smtp_ud_setup 每个用例都装一次。_smtp_connected 与 _smtp_auth_check 在被

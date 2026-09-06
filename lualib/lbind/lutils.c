@@ -295,17 +295,15 @@ static int32_t _ltrend_new(lua_State *lua) {
 /// 与 C 侧各池的收缩判据同源——调用方不必也不该再抄一份字面量
 /// </summary>
 /// <param name="self" type="userdata">负载趋势对象</param>
-/// <param name="cur" type="integer">当前采样值</param>
+/// <param name="cur" type="integer">当前采样值，取值 [0, UINT32_MAX]</param>
 /// <param name="busy_num" type="integer?">繁忙阈值分子；缺省与 busy_den 一并取 SHRINK_BUSY</param>
 /// <param name="busy_den" type="integer?">繁忙阈值分母</param>
 /// <returns type="boolean">繁忙 true；不忙 false</returns>
 static int32_t _ltrend_busy(lua_State *lua) {
     load_trend_ctx *trend = luaL_checkudata(lua, 1, MT_LOAD_TREND);
-    // 采样值不是长度，不走 lpub_check_lens（那句报的是 "length out of range"），但同样得挡负数：
-    // 转 size_t 后成天文数字，繁忙判定直接给出垃圾结论
-    lua_Integer sample = luaL_checkinteger(lua, 2);
-    luaL_argcheck(lua, sample >= 0, 2, "sample must not be negative");
-    size_t cur = (size_t)sample;
+    // 采样值不是长度，不走 lpub_check_lens（那句报的是 "length out of range"）；
+    // 负数与超 uint32 都会让忙闲判定给出垃圾结论，两头都挡
+    size_t cur = (size_t)lpub_check_range(lua, 2, 0, UINT32_MAX, "sample out of range");
     if (lua_isnoneornil(lua, 3)) {
         return lpub_rtn_bool(lua, load_trend_busy(trend, cur, SHRINK_BUSY));
     }

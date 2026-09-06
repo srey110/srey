@@ -64,6 +64,7 @@ typedef struct pip_ctx {
     tda_ctx tda;                    // 队列长度告警翻倍状态（init = fsqu 容量 / QUEUE_OVERLOAD_RATIO）
     sock_ctx skpip;                 // 读端的sock_ctx（ev_cb = _uev_cmd_loop）
     fsqu_ctx qu;
+    atomic_t wake_pending;          // 同 overlap_cmd_ctx.wake_pending
 }pip_ctx;
 // 隔离队列元素：close 后对象先入此队列暂存 QTN_MS 毫秒，让 stale event 消化完再真释放
 typedef struct qtn_entry {

@@ -38,7 +38,9 @@ static int32_t _lcrypt_url_decode(lua_State *lua) {
     int32_t plus2space = (int32_t)luaL_optinteger(lua, idx, 1);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, size);
-    memcpy(out, data, size);
+    if (0 != size) {
+        memcpy(out, data, size);
+    }
     size_t decoded = url_decode(out, size, plus2space);
     luaL_pushresultsize(&lbuf, decoded);
     return 1;

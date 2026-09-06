@@ -314,27 +314,32 @@ static void test_thread_basic(CuTest *tc) {
 static void test_rwlock_distr_basic(CuTest *tc) {
     rwlock_distr_ctx ctx;
     rwlock_distr_init(&ctx, 4);
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctx));
+    // 观测值先攒进局部量,收拾完再判(同 385 行那条规矩):CuAssert 失败走 longjmp,夹在中间
+    // 不只漏掉 free 里的 slots_raw,还把 TLS 里的 owner 留成指向已销毁栈帧的地址
+    int32_t reg = rwlock_distr_register(&ctx);
     rwlock_distr_rdlock(&ctx);
     rwlock_distr_runlock(&ctx);
     rwlock_distr_wrlock(&ctx);
     rwlock_distr_wrunlock(&ctx);
     rwlock_distr_unregister(&ctx);
     rwlock_distr_free(&ctx);
+    CuAssertIntEquals(tc, ERR_OK, reg);
 }
 
 // 幂等:同实例重复 register/unregister 安全
 static void test_rwlock_distr_idempotent(CuTest *tc) {
     rwlock_distr_ctx ctx;
     rwlock_distr_init(&ctx, 4);
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctx));
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctx));
+    int32_t reg1 = rwlock_distr_register(&ctx);
+    int32_t reg2 = rwlock_distr_register(&ctx);
     rwlock_distr_unregister(&ctx);
     rwlock_distr_unregister(&ctx);
-    // 重新 register 仍可成功
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctx));
+    int32_t reg3 = rwlock_distr_register(&ctx);
     rwlock_distr_unregister(&ctx);
     rwlock_distr_free(&ctx);
+    CuAssertIntEquals(tc, ERR_OK, reg1);
+    CuAssertIntEquals(tc, ERR_OK, reg2);
+    CuAssertIntEquals(tc, ERR_OK, reg3);// 重新 register 仍可成功
 }
 
 // 多实例并发持有:同线程可同时注册多个不同 ctx,各自走快路径互不串扰
@@ -342,8 +347,8 @@ static void test_rwlock_distr_multi_register(CuTest *tc) {
     rwlock_distr_ctx a, b;
     rwlock_distr_init(&a, 4);
     rwlock_distr_init(&b, 4);
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&a));
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&b));
+    int32_t rega = rwlock_distr_register(&a);
+    int32_t regb = rwlock_distr_register(&b);
     // 嵌套 rdlock:a 与 b 走各自快路径,锁字段独立
     rwlock_distr_rdlock(&a);
     rwlock_distr_rdlock(&b);
@@ -351,11 +356,13 @@ static void test_rwlock_distr_multi_register(CuTest *tc) {
     rwlock_distr_runlock(&a);
     rwlock_distr_unregister(&b);
     rwlock_distr_unregister(&a);
-    // unregister 后重新 register 仍可
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&a));
+    int32_t rega2 = rwlock_distr_register(&a);
     rwlock_distr_unregister(&a);
     rwlock_distr_free(&a);
     rwlock_distr_free(&b);
+    CuAssertIntEquals(tc, ERR_OK, rega);
+    CuAssertIntEquals(tc, ERR_OK, regb);
+    CuAssertIntEquals(tc, ERR_OK, rega2);// unregister 后重新 register 仍可
 }
 
 // 同一 ctx 上递归 rdlock:整个嵌套期间 writer 必须一直被挡在临界区外。
@@ -399,11 +406,7 @@ static void test_rwlock_distr_recursive_rdlock(CuTest *tc) {
 
     rwlock_distr_runlock(&ctx);
     thread_join(th);
-    CuAssertIntEquals(tc, 0, timeout);// 0=writer 按时置上 write_flag
-    CuAssertIntEquals(tc, 0, in_wait);
-    CuAssertIntEquals(tc, 0, in_recur);// 重入 rdlock 期间 writer 不得挤进来
-    CuAssertIntEquals(tc, 0, in_inner_out);// 内层 runlock 后仍持外层读锁
-    CuAssertIntEquals(tc, 1, ATOMIC_GET(&_distr_writer_in));
+    int32_t writer_in_end = (int32_t)ATOMIC_GET(&_distr_writer_in);
 
     rwlock_distr_rdlock(&ctx);
     rwlock_distr_runlock(&ctx);
@@ -411,34 +414,44 @@ static void test_rwlock_distr_recursive_rdlock(CuTest *tc) {
     rwlock_distr_wrunlock(&ctx);
     rwlock_distr_unregister(&ctx);
     rwlock_distr_free(&ctx);
+    CuAssertIntEquals(tc, 0, timeout);// 0=writer 按时置上 write_flag
+    CuAssertIntEquals(tc, 0, in_wait);
+    CuAssertIntEquals(tc, 0, in_recur);// 重入 rdlock 期间 writer 不得挤进来
+    CuAssertIntEquals(tc, 0, in_inner_out);// 内层 runlock 后仍持外层读锁
+    CuAssertIntEquals(tc, 1, writer_in_end);
 }
 
 // TLS 数组耗尽:超过 RWLOCK_DISTR_MAX_TLS 的 ctx 注册失败,rdlock 走 fallback 仍能工作;
 // 释放一个槽位后,新 ctx 可补位注册成功
 static void test_rwlock_distr_tls_exhaust(CuTest *tc) {
     rwlock_distr_ctx ctxs[RWLOCK_DISTR_MAX_TLS + 1];
+    int32_t regs[RWLOCK_DISTR_MAX_TLS + 1];
+    int32_t refill;
     int32_t i;
     for (i = 0; i < RWLOCK_DISTR_MAX_TLS + 1; i++) {
         rwlock_distr_init(&ctxs[i], 4);
     }
-    // 前 MAX_TLS 个注册全部成功
-    for (i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
-        CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctxs[i]));
+    for (i = 0; i < RWLOCK_DISTR_MAX_TLS + 1; i++) {
+        regs[i] = rwlock_distr_register(&ctxs[i]);
     }
-    // 第 MAX_TLS+1 个超出 TLS 容量,返回失败
-    CuAssertIntEquals(tc, ERR_FAILED, rwlock_distr_register(&ctxs[RWLOCK_DISTR_MAX_TLS]));
     // 注册失败的 ctx,rdlock 仍能走 fallback 不卡死
     rwlock_distr_rdlock(&ctxs[RWLOCK_DISTR_MAX_TLS]);
     rwlock_distr_runlock(&ctxs[RWLOCK_DISTR_MAX_TLS]);
     // 释放一个槽位,溢出 ctx 可补位
     rwlock_distr_unregister(&ctxs[0]);
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctxs[RWLOCK_DISTR_MAX_TLS]));
+    refill = rwlock_distr_register(&ctxs[RWLOCK_DISTR_MAX_TLS]);
     for (i = 1; i < RWLOCK_DISTR_MAX_TLS + 1; i++) {
         rwlock_distr_unregister(&ctxs[i]);
     }
     for (i = 0; i < RWLOCK_DISTR_MAX_TLS + 1; i++) {
         rwlock_distr_free(&ctxs[i]);
     }
+    // 前 MAX_TLS 个注册全部成功
+    for (i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
+        CuAssertIntEquals(tc, ERR_OK, regs[i]);
+    }
+    CuAssertIntEquals(tc, ERR_FAILED, regs[RWLOCK_DISTR_MAX_TLS]);// 超出 TLS 容量
+    CuAssertIntEquals(tc, ERR_OK, refill);// 腾出槽位后可补位
 }
 
 // slot 池耗尽:slot=1,A 占用后 B 注册必失败,走 fallback rdlock 仍能工作
@@ -494,8 +507,8 @@ static void test_rwlock_distr_pool_exhausted(CuTest *tc) {
     pthread_t b = thread_creat(_distr_pool_worker_b, &s);
     thread_join(b);
     thread_join(a);
-    CuAssertIntEquals(tc, ERR_FAILED, s.b_reg_result);
     rwlock_distr_free(&ctx);
+    CuAssertIntEquals(tc, ERR_FAILED, s.b_reg_result);
 }
 
 // 未注册线程 rdlock 走 fallback,功能正确。

@@ -399,9 +399,7 @@ static void test_bson_find(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
-// 点分路径的中间层命中不能直接写调用方的 result：第 2 层起它的 doc 指向 bson_iter_find
-// 自己栈上的 bson_ctx，末层失败会跳过末尾那两行重绑定，result->doc 就带着已死栈地址返回。
-// 两段路径碰不到（失败时 _bson_iter_find 根本不写 result），要三段起才走得到那一步
+// bson_iter_find 全程走自己栈上的 bson_ctx，末层未命中时 result 不能带着那个已死的栈地址返回
 static void test_bson_iter_find_deep_miss(CuTest *tc) {
     int32_t err;
     bson_ctx bson;
@@ -441,12 +439,7 @@ static void test_bson_iter_find_deep_miss(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
-// result 与 iter 是同一对象时,bson_iter_find 会把 iter->doc 改指到 nested_doc,
-// 还原偏移必须按进函数时的原文档来:点分路径下子文档比外层小,拿外层偏移去还原
-// 就撞 binary_offset 的 ASSERTAB
-// 单键 find 没找到不能毁掉 iter 的当前元素：_bson_iter_find 会把传进去的 iter 一路推到
-// EOD 并毒化，旧实现直接把 iter 交进去，只还原偏移不还原 type/key/val。点分路径用副本，
-// 两条路径行为相反
+// find 未命中不能毁掉 iter 的当前元素与文档偏移:扫描全程走独立游标,不碰调用方的 doc
 static void test_bson_iter_find_miss_keeps_iter(CuTest *tc) {
     int32_t err;
     bson_ctx bson;
@@ -507,8 +500,8 @@ static void test_bson_iter_find_self_alias(CuTest *tc) {
     CuAssertIntEquals(tc, 7, bson_iter_int32(&iter2, &err));
     CuAssertIntEquals(tc, ERR_OK, err);
 
-    // 链式原地收窄:第一次 find 后 iter->doc 已指向自己的 nested_doc,
-    // 第二次 find 若照旧还原偏移就会把 z 重吐一遍,这里必须拿到 w
+    // 链式原地收窄:第一次 find 后 iter 已绑到 a 那一层,第二次 find 在该层内定位 z,
+    // 继续 next 要吐出同级的下一个字段
     BSON_ITER_FROM(bson, rd3, iter3);
     CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter3, "a", &iter3));
     CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter3, "z", &iter3));
@@ -1001,9 +994,9 @@ static void test_bson_check_depth_malformed(CuTest *tc) {
     BSON_FREE(&ok);
 }
 
-// ③ 声明长度被恰好耗尽却缺终止 EOD 字节：bson_iter_next 首行的 offset>=doclens 早退是唯一
-// 绕过 err 判定的出口，改前 err 保持 0，bson_check_depth 于是给截断文档发 ERR_OK。
-// noeod 声明 11 字节、含一个完整 INT32 元素、无尾部 0x00；withead 是同一文档补上 EOD 的对照。
+// ③ 声明长度被恰好耗尽却缺终止 EOD 字节：元素消耗完必须给 EOD 留一字节，故第一次 next
+// 就要拒收并置 err——否则 bson_iter_find 这类命中即返回的调用方拿不到任何失败信号。
+// noeod 声明 11 字节、含一个完整 INT32 元素、无尾部 0x00；witheod 是同一文档补上 EOD 的对照。
 // ④ bson_iter_reset 须与 bson_iter_init 一样毒化当前元素：reset 后在下一次 next 之前
 // 调 getter 必须失败，而不是拿到 reset 前那个元素的值
 static void test_bson_truncated_and_reset(CuTest *tc) {
@@ -1019,8 +1012,6 @@ static void test_bson_truncated_and_reset(CuTest *tc) {
 
     bson_init(&bson, noeod, sizeof(noeod));
     bson_iter_init(&iter, &bson);
-    CuAssertTrue(tc, 0 != bson_iter_next(&iter));
-    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
     CuAssertIntEquals(tc, 0, bson_iter_next(&iter));
     CuAssertTrue(tc, 0 != bson_iter_error(&iter));
 
@@ -1172,8 +1163,64 @@ static void test_bson_binary_zero_length(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
+// 子文档/定长值把根文档的 EOD 吃掉：合法文档末尾必有一字节 EOD，元素消耗完必须给它留位
+static void test_bson_iter_eod_reserved(CuTest *tc) {
+    bson_ctx reader;
+    bson_iter iter;
+    char buf[13];
+    // 畸形：声明 12 字节 = 4(len) + 1(type) + 2(key) + 5(子文档) —— 根文档自己没有 EOD
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x0C;//doc size = 12
+    buf[4] = 0x03;//BSON_DOCUMENT
+    buf[5] = 'a'; buf[6] = 0x00;//key "a"
+    buf[7] = 0x05;//子文档声明长度 5 = 4(len) + 1(eod)
+    // buf[11] = 0x00 即子文档的 EOD，同时是根文档的最后一字节
+    bson_init(&reader, buf, 12);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    // 断言 err：把"被拒收"与"正常读到 EOD"区分开，两者的 next 都返 0
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+
+    // 合法：多一字节给根文档自己的 EOD，必须照常读出
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x0D;//doc size = 13
+    buf[4] = 0x03;
+    buf[5] = 'a'; buf[6] = 0x00;
+    buf[7] = 0x05;
+    // buf[11] 子文档 EOD，buf[12] 根文档 EOD
+    bson_init(&reader, buf, 13);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_DOCUMENT, iter.type);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+
+    // 定长类型走的是另一条边界判定,同样不许吃掉 EOD:声明 11 = 4 + 1(type) + 2(key) + 4(int32)
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x0B;
+    buf[4] = 0x10;//BSON_INT32
+    buf[5] = 'a'; buf[6] = 0x00;
+    buf[7] = 0x2A;//值 42
+    bson_init(&reader, buf, 11);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+
+    // 合法:多一字节给 EOD
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x0C;
+    buf[4] = 0x10;
+    buf[5] = 'a'; buf[6] = 0x00;
+    buf[7] = 0x2A;
+    bson_init(&reader, buf, 12);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 42, bson_iter_int32(&iter, NULL));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+}
 // BSN-2：doc->size > doclens 时，内层字段长度检查须以 doclens 为界而非 doc->size
-// 构造：声明 doc size=15，buffer size=20；UTF8 字段 lens=5 → lens+1=6 > doclens-offset=4，应拒绝
+// 构造：声明 doc size=15，buffer size=20；UTF8 字段 lens=5 → 5 > doclens-offset=4，应拒绝
 static void test_bson_iter_field_exceeds_doclens(CuTest *tc) {
     bson_ctx reader;
     bson_iter iter;
@@ -1185,7 +1232,7 @@ static void test_bson_iter_field_exceeds_doclens(CuTest *tc) {
     buf[5] = 'a'; buf[6] = 0x00;//key "a"
     buf[7] = 0x05; buf[8] = 0x00; buf[9] = 0x00; buf[10] = 0x00;//string lens = 5
     // buf[11..19]：padding（共 9 字节，使 doc->size=20 > doclens=15）
-    // 检查：lens+1=6 > doclens(15)-offset(11)=4 → 拒绝
+    // 检查：lens=5 > doclens(15)-offset(11)=4 → 拒绝
     bson_init(&reader, buf, sizeof(buf));//doc->size = 20
     bson_iter_init(&iter, &reader);//doclens = 15
     CuAssertTrue(tc, !bson_iter_next(&iter));
@@ -1386,6 +1433,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_check_depth);
     SUITE_ADD_TEST(suite, test_bson_iter_neg_lens);
     SUITE_ADD_TEST(suite, test_bson_iter_field_exceeds_doclens);
+    SUITE_ADD_TEST(suite, test_bson_iter_eod_reserved);
     SUITE_ADD_TEST(suite, test_bson_iter_utf8_no_terminator);
     SUITE_ADD_TEST(suite, test_bson_check_depth_boundary);
     SUITE_ADD_TEST(suite, test_bson_check_depth_malformed);

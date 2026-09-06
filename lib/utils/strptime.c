@@ -201,7 +201,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'c':/* Date and time, using the locale's format. */
                 //            new_fmt = _TIME_LOCALE(loc)->d_t_fmt;
         new_fmt = HERE_D_T_FMT;
-        state |= S_WDAY | S_MON | S_MDAY | S_YEAR;
+        state |= S_WDAY | S_MON | S_MDAY | S_YEAR | S_HOUR;
         goto recurse;
 
     case 'F':/* The date as "%Y-%m-%d". */
@@ -213,12 +213,14 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'R':/* The time as "%H:%M". */
         new_fmt = "%H:%M";
         LEGAL_ALT(0);
+        state |= S_HOUR;
         goto recurse;
 
     case 'r':/* The time in 12-hour clock representation. */
                 //            new_fmt = _TIME_LOCALE(loc)->t_fmt_ampm;
         new_fmt = HERE_T_FMT_AMPM;
         LEGAL_ALT(0);
+        state |= S_HOUR;
         goto recurse;
 
     case 'X':/* The time, using the locale's format. */
@@ -227,6 +229,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'T':/* The time as "%H:%M:%S". */
         new_fmt = HERE_T_FMT;
         LEGAL_ALT(0);
+        state |= S_HOUR;
 
     recurse:
         bp = (const unsigned char *)_strptime((const char *)bp,
@@ -338,6 +341,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
             return NULL;
         tm->tm_hour += i * 12;
         LEGAL_ALT(0);
+        state |= S_HOUR;
         continue;
 
     case 'S':/* The seconds. */
@@ -374,7 +378,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
 #else
         if (localtime_r(&sse, tm))
 #endif
-            state |= S_YDAY | S_WDAY | S_MON | S_MDAY | S_YEAR;
+            state |= S_YDAY | S_WDAY | S_MON | S_MDAY | S_YEAR | S_HOUR;
         else
             bp = NULL;
     }

@@ -339,6 +339,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     item->ms = nowms();
     //先尝试写入 inline_buf，短消息（典型场景）至此完成单次 malloc；
     //超长消息再单独 heap 分配，行为与原 _format_va 等价。
+    const char *syncmsg;
     va_list args, args2;
     va_start(args, fmt);
     va_copy(args2, args);
@@ -346,9 +347,8 @@ void slog(int32_t lv, const char *fmt, ...) {
     va_end(args);
     if (rtn < 0) {
         va_end(args2);
-        _log_sync(_log_out(), item, fmt);
-        pool_push(&_itempool, item, 0);
-        return;
+        syncmsg = fmt;
+        goto sync;
     }
     if (rtn < LOG_INLINE_SIZE) {
         item->msg = item->inline_buf;
@@ -359,22 +359,24 @@ void slog(int32_t lv, const char *fmt, ...) {
         rtn = vsnprintf(heap_msg, (size_t)rtn + 1, fmt, args2);
         va_end(args2);
         if (rtn < 0) {
-            _log_sync(_log_out(), item, fmt);
             FREE(heap_msg);
-            pool_push(&_itempool, item, 0);
-            return;
+            syncmsg = fmt;
+            goto sync;
         }
         item->msg = heap_msg;
     }
     //队列满时不阻塞业务线程，直接丢弃并同步写出兜底
     if (ERR_OK != fsqu_trypush(&_que, &item)) {
-        _log_sync(_log_out(), item, item->msg);
-        pool_push(&_itempool, item, 0);
-        return;
+        syncmsg = item->msg;
+        goto sync;
     }
     if (_log_need_wake()) {
         mutex_lock(&_mtx);
         cond_signal(&_cond);
         mutex_unlock(&_mtx);
     }
+    return;
+sync:
+    _log_sync(_log_out(), item, syncmsg);
+    pool_push(&_itempool, item, 0);
 }

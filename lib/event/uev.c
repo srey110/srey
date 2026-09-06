@@ -15,6 +15,7 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) 
     char ntrigger[CMD_MAX_NREAD];
     // 触发字节仅作唤醒信号，先抽干清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）
     while (read(skctx->fd, ntrigger, sizeof(ntrigger)) > 0) { }
+    ATOMIC_SET(&pip->wake_pending, 0);
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {

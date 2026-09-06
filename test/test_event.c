@@ -245,14 +245,15 @@ static void test_evssl_read_close_notify(CuTest *tc) {
             MSLEEP(1);
         }
     }
-    CuAssertIntEquals(tc, 1, rtn);
-    CuAssertTrue(tc, 0 == readed);
+    // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉这六件，一次真失败还要多报一笔假泄漏（同 _ssl_pair）
     FREE_SSL(cli);
     FREE_SSL(srv);
     CLOSE_SOCK(sk[0]);
     CLOSE_SOCK(sk[1]);
     evssl_free(sc);
     evssl_free(cc);
+    CuAssertIntEquals(tc, 1, rtn);
+    CuAssertTrue(tc, 0 == readed);
 
     /* 2) 对端直接关 TCP、不发 close_notify：必须报 ERR_FAILED，不能当成有序结束 */
     CuAssertIntEquals(tc, 1, _ssl_pair(sk, &cli, &srv, &sc, &cc));
@@ -267,11 +268,11 @@ static void test_evssl_read_close_notify(CuTest *tc) {
             MSLEEP(1);
         }
     }
-    CuAssertIntEquals(tc, ERR_FAILED, rtn);
     FREE_SSL(cli);
     CLOSE_SOCK(sk[0]);
     evssl_free(sc);
     evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn);
 }
 #endif
 void test_event(CuSuite *suite) {

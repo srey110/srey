@@ -1611,6 +1611,17 @@ static void test_sha512_nist(CuTest *tc) {
         "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
         "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
         hex);
+    // 缓冲里已有半块时喂 (NULL, 0)：绑定层的 lpub_check_buf 放行这种入参，摘要必须与不喂时一致。
+    // 只有 Linux 的 glibc 构建 + sh mk.sh test asan debug 才会因 memcpy 的 __nonnull 变红，macOS 不报
+    sha512_init(&ctx);
+    sha512_update(&ctx, "abc", 3);
+    sha512_update(&ctx, NULL, 0);
+    sha512_final(&ctx, hash);
+    tohex(hash, SHA512_BLOCK_SIZE, hex, 1);
+    CuAssertStrEquals(tc,
+        "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+        "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+        hex);
     // FIPS 180-2 二段长输入（112 字节，临界 128-byte block + padding）
     const char *two_block =
         "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmn"

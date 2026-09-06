@@ -1,7 +1,7 @@
 ﻿#include "crypt/sha512.h"
 
-#define SHA512_BLOCK_LENGTH 128                                                        // SHA-512 输入块长度（字节）
-#define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16)                          // 末尾块长度阈值（留出 128 位存放长度）
+#define SHA512_BLOCK_LENGTH 128 // SHA-512 输入块长度（字节）
+#define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16) // 末尾块长度阈值（留出 128 位存放长度）
 // 摘要十六进制字符串长度。原先写的 SHA512_DIGEST_LENGTH 全仓不存在，展开即编译失败；
 // 摘要长度这边叫 SHA512_BLOCK_SIZE（sha512.h），别跟上面输入块长的 SHA512_BLOCK_LENGTH 弄混
 #define SHA512_DIGEST_STRING_LENGTH (SHA512_BLOCK_SIZE * 2 + 1)
@@ -20,14 +20,14 @@
         (w)[1]++; \
     } \
 } while (0)
-#define R(b,x) ((x) >> (b))                                                           // 逻辑右移
-#define S64(b,x) (((x) >> (b)) | ((x) << (64 - (b))))                                // 64 位循环右移
-#define Ch(x,y,z) (((x) & (y)) ^ ((~(x)) & (z)))                                     // 选择函数
-#define Maj(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))                        // 多数函数
-#define Sigma0_512(x) (S64(28, (x)) ^ S64(34, (x)) ^ S64(39, (x)))                   // 大 Σ0 函数
-#define Sigma1_512(x) (S64(14, (x)) ^ S64(18, (x)) ^ S64(41, (x)))                   // 大 Σ1 函数
-#define sigma0_512(x) (S64( 1, (x)) ^ S64( 8, (x)) ^ R( 7,   (x)))                   // 小 σ0 函数
-#define sigma1_512(x) (S64(19, (x)) ^ S64(61, (x)) ^ R( 6,   (x)))                   // 小 σ1 函数
+#define R(b,x) ((x) >> (b)) // 逻辑右移
+#define S64(b,x) (((x) >> (b)) | ((x) << (64 - (b)))) // 64 位循环右移
+#define Ch(x,y,z) (((x) & (y)) ^ ((~(x)) & (z))) // 选择函数
+#define Maj(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z))) // 多数函数
+#define Sigma0_512(x) (S64(28, (x)) ^ S64(34, (x)) ^ S64(39, (x))) // 大 Σ0 函数
+#define Sigma1_512(x) (S64(14, (x)) ^ S64(18, (x)) ^ S64(41, (x))) // 大 Σ1 函数
+#define sigma0_512(x) (S64( 1, (x)) ^ S64( 8, (x)) ^ R( 7,   (x))) // 小 σ0 函数
+#define sigma1_512(x) (S64(19, (x)) ^ S64(61, (x)) ^ R( 6,   (x))) // 小 σ1 函数
 
 static const uint64_t k512[80] = {
     0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL,
@@ -150,6 +150,9 @@ static void _sha512_transform(sha512_ctx *sha512, const uint64_t *data) {
     sha512->state[7] += h;
 }
 void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
+    if (0 == lens) {
+        return;
+    }
     uint8_t *p = (uint8_t *)data;
     size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_BLOCK_LENGTH;
     if (usedspace > 0) {

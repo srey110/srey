@@ -50,8 +50,7 @@ static inline void _binary_expand(binary_ctx *ctx, size_t size) {
 // 追加 lens 字节到末尾。reserve 是本次除 lens 外还要一次扩够的容量,给 binary_set_string 的结尾 NUL 用,
 // 分两次扩容会在容量刚好卡住时多 REALLOC 一趟。
 // buf 允许指向 ctx 自己的缓冲:扩容的 REALLOC 会把它搬走,所以先换算成下标,拷贝也随之改走 memmove。
-// 判定走 uintptr_t 减法而非指针关系比较:buf 多数时候与 ctx->data 不属同一对象,直接比 C99 §6.5.8p5 未定义,
-// -O2 -flto 下允许被折成恒假、把 memmove 分支整个删掉。无符号回绕让 buf 在缓冲之前时也自然落到界外
+// 别把内外判定改成指针关系比较:两者多数时候不属同一对象,那样是 UB,优化后会被折成恒假
 static inline void _binary_append(binary_ctx *ctx, const char *buf, size_t lens, size_t reserve) {
     uintptr_t aoff = (uintptr_t)buf - (uintptr_t)ctx->data;
     int32_t inner = (NULL != ctx->data && aoff < ctx->size);
@@ -179,9 +178,8 @@ static inline void binary_set_skip(binary_ctx *ctx, size_t lens) {
     _binary_expand(ctx, lens);
     ctx->offset += lens;
 }
-// 变参函数不放头文件:va_start 让编译器一律拒绝内联,搬进来只会让每个 TU 各留一份副本
 /// <summary>
-/// 写入变参数据
+/// 写入变参数据，按需扩容。外部托管的缓冲不支持，传进来即断言
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="fmt">格式化</param>

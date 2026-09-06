@@ -38,7 +38,8 @@ int32_t chan_is_closed(chan_ctx *chan);
 /// <param name="chan">chan_ctx</param>
 /// <param name="data">数据</param>
 /// <param name="lens">data长度</param>
-/// <param name="copy">是否需要拷贝</param>
+/// <param name="copy">非 0 时内部拷贝一份, data 仍由调用方释放;
+/// 0 转移 data 所有权, 但只在成功时转移, 失败时 data 仍归调用方</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy);
 /// <summary>

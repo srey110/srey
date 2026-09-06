@@ -249,12 +249,16 @@ void bson_iter_reset(bson_iter *iter) {
 int32_t bson_iter_error(const bson_iter *iter) {
     return iter->err;
 }
+// 从 off 起还能读多少字节;off 越界返 0。注意 lens 传 0 时 "lens > avail" 恒假,越界的 off 会被放行——
+// 现有调用点传的都是非零常量,新增调用点须自己确认
+static inline size_t _bson_iter_avail(const bson_iter *iter, size_t off) {
+    return iter->doclens > off ? iter->doclens - off : 0;
+}
 // 从 off 起在 doclens 边界内定位一个 NUL 结尾的 C 串;找到返 1 并回填 out/lens
 // (不推进 off,两个出参都可传 NULL),找不到返 0。key 与 regex 的两个 cstring 共用这一份边界判定
 static inline int32_t _bson_iter_cstring(bson_iter *iter, size_t off, const char **out, uint32_t *lens) {
     const char *start = iter->doc->data + off;
-    size_t avail = iter->doclens > off ? iter->doclens - off : 0;
-    const char *nul = memchr(start, '\0', avail);
+    const char *nul = memchr(start, '\0', _bson_iter_avail(iter, off));
     if (NULL == nul) {
         return 0;
     }
@@ -276,27 +280,27 @@ static FORCE_INLINE size_t _bson_iter_fixed(bson_iter *iter, size_t off, size_t 
     if (ITER_BAD == off) {
         return ITER_BAD;
     }
-    iter->lens = lens;
-    if (off > iter->doclens
-        || lens > iter->doclens - off) {
+    if (lens > _bson_iter_avail(iter, off)) {
         LOG_WARN("invalid bson %s.", bson_type_tostring(iter->type));
         return ITER_BAD;
     }
+    iter->lens = lens;
     iter->val = iter->doc->data + off;
     return off + lens;
 }
 // 变长类型统一前导:read_key + 确认还剩 4 字节 + 读 int32 长度 + 校验可读空间。
 // 下限与修正量由类型定死,不当参数传:调用处填成数字的话搭错一对照样编过,只是长度校验静默出错;
-// 收进来以后新增类型漏写 case 直接落 default 报错。修正量是长度值之外还要占的字节数——
-// 字符串的结尾 \0 与 binary 的 subtype 各 +1,document/array 的声明长度把长度字段自身那 4 字节
-// 也算进去了故 -4。返回长度字段之后的 off(长度字段起点即 off-4),失败返 ITER_BAD
+// 收进来以后新增类型漏写 case 直接落 default 报错。修正量是长度值之外还多占的字节数——
+// binary 的 subtype 占 1,document/array 的声明长度含长度字段自身那 4 字节故 -4,
+// 字符串的声明长度已含结尾 \0 故为 0。
+// 返回长度字段之后的 off(长度字段起点即 off-4),失败返 ITER_BAD
 static FORCE_INLINE size_t _bson_iter_lenprefix(bson_iter *iter, size_t off, size_t *out_lens) {
     int64_t min, adjust;
     switch (iter->type) {
     case BSON_UTF8:
     case BSON_JSCODE:
         min = 1;
-        adjust = 1;
+        adjust = 0;
         break;
     case BSON_DOCUMENT:
     case BSON_ARRAY:
@@ -315,15 +319,14 @@ static FORCE_INLINE size_t _bson_iter_lenprefix(bson_iter *iter, size_t off, siz
     if (ITER_BAD == off) {
         return ITER_BAD;
     }
-    if (off > iter->doclens
-        || 4 > iter->doclens - off) {
+    if (4 > _bson_iter_avail(iter, off)) {
         LOG_WARN("invalid bson %s length.", bson_type_tostring(iter->type));
         return ITER_BAD;
     }
     int64_t lens = unpack_integer(iter->doc->data + off, 4, 1, 1);
     off += 4;
     if (lens < min
-        || (size_t)(lens + adjust) > iter->doclens - off) {
+        || (size_t)(lens + adjust) > _bson_iter_avail(iter, off)) {
         LOG_WARN("invalid bson %s length %" PRId64 ".", bson_type_tostring(iter->type), lens);
         return ITER_BAD;
     }
@@ -372,7 +375,6 @@ int32_t bson_iter_next(bson_iter *iter) {
         iter->lens = vlens - 1;
         iter->val = iter->doc->data + off;
         if ('\0' != iter->val[iter->lens]) {
-            iter->val = NULL;
             off = ITER_BAD;
             LOG_WARN("invalid bson string, not null-terminated.");
             break;
@@ -439,7 +441,10 @@ int32_t bson_iter_next(bson_iter *iter) {
         LOG_WARN("unsupported bson type %d.", iter->type);
         break;
     }
-    if (ITER_BAD == off) {
+    // off == doclens 说明这个元素把末尾那字节吃掉了,而合法文档必以 EOD 收尾——
+    // 十种元素的边界判定各管各的可读范围,这条"给 EOD 留一字节"的不变式统一在此处判
+    if (ITER_BAD == off
+        || off >= iter->doclens) {
         // 元素坏了之后的字节位置就不可信,不再往下猜;offset 推到末尾避免同一个坏元素
         // 被反复重解析(每次重复一条告警),下次进来直接从开头的边界判定返回
         iter->err = 1;
@@ -751,6 +756,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     char *bin;
     char *hexbuf;
     char oidhex[HEX_ENSIZE(BSON_OID_LENS)];
+    char dechex[HEX_ENSIZE(BSON_DECIMAL128_LENS)];
     while (bson_iter_next(&iter)) {
         binary_set_fill(str, ' ', index * 4);
         binary_set_binary(str, iter.key, iter.keylens);
@@ -824,6 +830,10 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         case BSON_INT64:
             i64val = bson_iter_int64(&iter, NULL);
             binary_set_va(str, "%"PRId64, i64val);
+            break;
+        case BSON_DECIMAL128:
+            tohex(iter.val, BSON_DECIMAL128_LENS, dechex, 0);
+            binary_set_binary(str, dechex, strlen(dechex));
             break;
         case BSON_NULL:
         case BSON_MINKEY:

@@ -59,6 +59,7 @@
 #define LOCALTIME(ts, dt) localtime_s((dt), (ts))
 #define GMTIME(ts, dt) gmtime_s((dt), (ts))
 #define ERRNO GetLastError() // 获取上一个 Windows 错误码
+#define ERRORSTR(errcode) _fmterror(errcode) // 将错误码转换为字符串
 // 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）
 static inline const char *_fmterror(DWORD error) {
     char *err = NULL;
@@ -82,8 +83,7 @@ static inline const char *_fmterror(DWORD error) {
     errstr[ilens] = '\0';
     LocalFree(err);
     return errstr;
-};
-#define ERRORSTR(errcode) _fmterror(errcode) // 将错误码转换为字符串
+}
 
 #endif
 #endif//MACRO_WIN_H_

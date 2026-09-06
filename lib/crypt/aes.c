@@ -5,7 +5,7 @@
 #ifndef FULL_UNROLL
 #define FULL_UNROLL 1
 #endif
-#define KEYLENGTH(keybits) ((keybits) / 8)                            // 将密钥位数转换为字节数
+#define KEYLENGTH(keybits) ((keybits) / 8) // 将密钥位数转换为字节数
 // 从字节数组大端读取 uint32
 #define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \
                             ((uint32_t)(plaintext)[1] << 16) ^ \

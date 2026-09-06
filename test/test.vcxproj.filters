@@ -15,7 +15,6 @@
     <ClCompile Include="task_pgsql.c" />
     <ClCompile Include="task_redis.c" />
     <ClCompile Include="task_mongo.c" />
-    <ClCompile Include="bench_evcmd.c" />
     <ClCompile Include="bench_hashmap.c" />
     <ClCompile Include="bench_lbytecache.c" />
     <ClCompile Include="bench_mpq.c" />
@@ -75,7 +74,6 @@
     <ClInclude Include="task_pgsql.h" />
     <ClInclude Include="task_redis.h" />
     <ClInclude Include="task_mongo.h" />
-    <ClInclude Include="bench_evcmd.h" />
     <ClInclude Include="bench_hashmap.h" />
     <ClInclude Include="test_rand.h" />
     <ClInclude Include="bench_lbytecache.h" />

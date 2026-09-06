@@ -612,49 +612,50 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
         LOG_WARN("scram password not set.");
         return ERR_FAILED;
     }
+    int32_t rtn = ERR_FAILED;
     size_t lens;
-    char *cbind_val = _scram_attr_value(msg, mlens, "c=", &lens);
+    char *cbind_b64 = NULL;
+    char *buf = NULL;
+    char *cbind_val;
+    char *nonce;
+    char *client_proof;
+    char proof[B64EN_SIZE(DG_BLOCK_SIZE)];
+    cbind_val = _scram_attr_value(msg, mlens, "c=", &lens);
     if (NULL == cbind_val) {
-        return ERR_FAILED;
+        goto clean;
     }
-    char *cbind_b64 = _scram_cbind_b64(scram);
+    cbind_b64 = _scram_cbind_b64(scram);
     if (NULL == cbind_b64) {
-        return ERR_FAILED;
+        goto clean;
     }
     if (!_scram_ct_eq(cbind_b64, cbind_val, lens)) {
-        FREE(cbind_b64);
-        return ERR_FAILED;
+        goto clean;
     }
-    char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
+    nonce = _scram_attr_value(msg, mlens, "r=", &lens);
     if (NULL == nonce) {
-        FREE(cbind_b64);
-        return ERR_FAILED;
+        goto clean;
     }
-    char *buf = format_va("%s%s", scram->remote_nonce, scram->local_nonce);
+    buf = format_va("%s%s", scram->remote_nonce, scram->local_nonce);
     if (!_scram_ct_eq(buf, nonce, lens)) {
-        FREE(cbind_b64);
-        FREE(buf);
-        return ERR_FAILED;
+        goto clean;
     }
-    char *client_proof = _scram_attr_value(msg, mlens, "p=", &lens);
+    client_proof = _scram_attr_value(msg, mlens, "p=", &lens);
     if (NULL == client_proof) {
-        FREE(cbind_b64);
-        FREE(buf);
-        return ERR_FAILED;
+        goto clean;
     }
     scram->final_message_without_proof = format_va("c=%s,r=%s", cbind_b64, buf);
-    FREE(cbind_b64);
-    FREE(buf);
-    char proof[B64EN_SIZE(DG_BLOCK_SIZE)];
     _scram_challenge_clientkey(scram, proof);
     if (!_scram_ct_eq(proof, client_proof, lens)) {
-        secure_zero(proof, sizeof(proof));
         _scram_free_str(&scram->final_message_without_proof);
-        return ERR_FAILED;
+    } else {
+        scram->status = SCRAM_REMOTE_FINAL;
+        rtn = ERR_OK;
     }
     secure_zero(proof, sizeof(proof));
-    scram->status = SCRAM_REMOTE_FINAL;
-    return ERR_OK;
+clean:
+    FREE(cbind_b64);
+    FREE(buf);
+    return rtn;
 }
 // 服务端生成最终消息（格式：v=<ServerSignature_base64>）
 static char *_scram_server_final_message(scram_ctx *scram) {

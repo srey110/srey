@@ -25,7 +25,7 @@ typedef struct { int64_t val; } lbson_int64_t;
 typedef struct { bson_ctx *owner; char *data; bson_iter iter; } lbson_iter_t;
 
 // 可写对象(bson.new() / bson.encode())与只读对象(bson.new(data, size))共用同一个 bson_ctx,
-// 但挂不同元表:只读对象一旦调写入方法会走到 binary.c "external buffer is read-only" 断言,
+// 但挂不同元表:只读对象一旦调写入方法会走到 binary.h "external buffer is read-only" 断言,
 // 直接 abort 掉整个进程,故只读元表不提供任何写入方法。本函数供两类对象都能调的方法
 // (data / tostring / __gc / iter.new / decode)校验第 1 个参数;complete 是写入方是否配平
 // doc_begin/end 的概念,只读元表上不提供,故仍只认可写元表
@@ -68,7 +68,7 @@ static bson_ctx *_lbson_check_writable(lua_State *lua) {
 static size_t _lbson_lens(bson_ctx *bson) {
     return 0 == bson->doc.inc ? bson->doc.size : bson->doc.offset;
 }
-// 只读元表上所有写入方法名的占位:报 Lua 错(可被 pcall 捕获)而非任其走到 binary.c 的断言。
+// 只读元表上所有写入方法名的占位:报 Lua 错(可被 pcall 捕获)而非任其走到 binary.h 的断言。
 // 将来给可写元表加写入方法却忘了在只读元表登记,退化为 "attempt to call a nil value",
 // 消息变差但同样不会 abort
 static int32_t _lbson_readonly(lua_State *lua) {
@@ -79,7 +79,7 @@ static int32_t _lbson_readonly(lua_State *lua) {
 /// 创建 bson 文档构建器。省略 data 得可写对象（MT_BSON，全部方法可用）；
 /// 传入 data 得只读对象（MT_BSON_READER），仅有 :data / :tostring / :free，可交给
 /// bson.iter.new 与 bson.decode；写入方法在只读元表上是报错占位——外部托管缓冲不可扩容，
-/// 若照可写元表调下去会撞上 binary.c 的断言 abort 掉整个进程
+/// 若照可写元表调下去会撞上 binary.h 的断言 abort 掉整个进程
 /// </summary>
 /// <param name="data" type="lightuserdata?">已有 BSON 数据指针，只读模式；省略时新建可写空文档。给了但为 NULL 会报错——那会造出一个挂着只读元表却处于未闭合态、写不了也读不了的对象</param>
 /// <param name="size" type="integer?">data 提供时必填，已有数据字节数，取值 [0, INT32_MAX]，越界报错</param>
@@ -1083,7 +1083,7 @@ LUAMOD_API int luaopen_bson(lua_State *lua) {
 }
 // ---- bson.iter ----
 // 全部 iter 方法的取值口:类型校验 + 源 bson 是否已 :free()。注意不能改判 iter->doc->data ——
-// bson_iter_find 走点分路径时会把 doc 指向 nested_doc,那是源缓冲的别名视图,源缓冲释放后
+// bson_iter_find 会把 doc 指向 nested_doc,那是源缓冲的别名视图,源缓冲释放后
 // 它仍是个非 NULL 的悬垂指针,只有源对象自己的 doc.data 会被 binary_free 置空
 static bson_iter *_lbson_iter_check(lua_State *lua) {
     lbson_iter_t *wrap = luaL_checkudata(lua, 1, MT_BSON_ITER);

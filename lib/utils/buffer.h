@@ -39,7 +39,7 @@ void buffer_init(buffer_ctx *ctx);
 /// <summary>
 /// 分散内存释放。调用后 ctx 回到 buffer_init 后的空状态，可安全重复调用；
 /// 复位是为了重复释放不变成 double free、释放后读不到陈旧节点与字节数，
-/// 不是"清空并复用"的入口——需要保留已分配节点的清空请用 buffer_drain。
+/// 不是"清空并复用"的入口。
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 void buffer_free(buffer_ctx *ctx);

@@ -38,8 +38,7 @@ void binary_free(binary_ctx *ctx) {
     ctx->size = 0;
     ctx->offset = 0;
 }
-// 使用 va_list 格式化字符串写入缓冲区，自动扩容（仅内部托管）
-static void _binary_va(binary_ctx *ctx, const char *fmt, va_list args) {
+void binary_set_va(binary_ctx *ctx, const char *fmt, ...) {
     //外部托管下 ctx->inc==0，ctx->inc-1 下溢为 SIZE_MAX 会让后续逻辑错乱，提前拒绝
     ASSERTAB(0 != ctx->inc, "external buffer cannot binary_set_va: use binary_init(NULL,...) for writable mode");
     if (0 == ctx->size - ctx->offset) {
@@ -47,7 +46,8 @@ static void _binary_va(binary_ctx *ctx, const char *fmt, va_list args) {
     }
     int32_t rtn;
     size_t size;
-    va_list tmp;
+    va_list args, tmp;
+    va_start(args, fmt);
     while (1) {
         size = ctx->size - ctx->offset;
         va_copy(tmp, args);
@@ -62,10 +62,5 @@ static void _binary_va(binary_ctx *ctx, const char *fmt, va_list args) {
         }
         _binary_expand(ctx, rtn);
     }
-}
-void binary_set_va(binary_ctx *ctx, const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    _binary_va(ctx, fmt, args);
     va_end(args);
 }

@@ -5,7 +5,7 @@
 
 #define URL_MAX_PARAM       64 // 参数上限
 #define URL_MAX_PATH_DEPTH  64 // 路径上限
-#define URL_BUF_LENS   ONEK  // url_parse 内部工作缓冲区大小
+#define URL_BUF_LENS   ONEK // url_parse 内部工作缓冲区大小
 
 typedef struct url_param {
     buf_ctx key; // 参数名

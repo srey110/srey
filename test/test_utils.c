@@ -86,7 +86,7 @@ static void test_binary(CuTest *tc) {
     float   fv = -3.14159f; binary_set_float(&bw, fv, 1);
     double  dv = 2.718281828; binary_set_double(&bw, dv, 1);
     binary_set_fill(&bw, 0xAB, 4);/* 填充 4 字节 0xAB */
-    binary_set_skip(&bw, 2);/* 只推进 offset，不写内容（binary.c: expand 后 offset += lens）*/
+    binary_set_skip(&bw, 2);/* 只推进 offset，不写内容（binary.h: expand 后 offset += lens）*/
     const char *str = "hello";
     binary_set_string(&bw, str);/* 含 \0 */
     const char *bin = "world";
@@ -1573,13 +1573,17 @@ static void test_popen2(CuTest *tc) {
 #else
     SNPRINTF(cmd, sizeof(cmd), "sh \"%s\" r", script);
 #endif
-    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, "r"));
-    CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
+    // 先收拾再断言：夹在中间的失败会 longjmp 掉 popen_free，留下没回收的子进程
+    int32_t start_ok = (ERR_OK == popen_startup(&ctx, cmd, "r"));
+    int32_t wait_ok = (ERR_OK == popen_waitexit(&ctx, 3000));
     ZERO(buf, sizeof(buf));
     n = popen_read(&ctx, buf, sizeof(buf) - 1, NULL);
-    CuAssertTrue(tc, n > 0);
-    CuAssertTrue(tc, NULL != strstr(buf, "hello popen"));
+    int32_t hit_ok = (NULL != strstr(buf, "hello popen"));
     popen_free(&ctx);
+    CuAssertTrue(tc, 0 != start_ok);
+    CuAssertTrue(tc, 0 != wait_ok);
+    CuAssertTrue(tc, n > 0);
+    CuAssertTrue(tc, 0 != hit_ok);
 
     /* 3. 读写模式：写入一行，等待脚本回显，验证读回内容一致 */
 #ifdef OS_WIN
@@ -1587,22 +1591,27 @@ static void test_popen2(CuTest *tc) {
 #else
     SNPRINTF(cmd, sizeof(cmd), "sh \"%s\" rw", script);
 #endif
-    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, "rw"));
     const char *msg = "srey test\n";
-    n = popen_write(&ctx, msg, strlen(msg));
-    CuAssertTrue(tc, n > 0);
-    CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
+    start_ok = (ERR_OK == popen_startup(&ctx, cmd, "rw"));
+    int32_t nwrite = popen_write(&ctx, msg, strlen(msg));
+    wait_ok = (ERR_OK == popen_waitexit(&ctx, 3000));
     ZERO(buf, sizeof(buf));
     n = popen_read(&ctx, buf, sizeof(buf) - 1, NULL);
-    CuAssertTrue(tc, n > 0);
-    CuAssertTrue(tc, NULL != strstr(buf, "srey test"));
+    hit_ok = (NULL != strstr(buf, "srey test"));
     popen_free(&ctx);
+    CuAssertTrue(tc, 0 != start_ok);
+    CuAssertTrue(tc, nwrite > 0);
+    CuAssertTrue(tc, 0 != wait_ok);
+    CuAssertTrue(tc, n > 0);
+    CuAssertTrue(tc, 0 != hit_ok);
 
-    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, "rw"));
-    n = popen_write(&ctx, msg, strlen(msg));
-    CuAssertTrue(tc, n > 0);
-    CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
+    start_ok = (ERR_OK == popen_startup(&ctx, cmd, "rw"));
+    nwrite = popen_write(&ctx, msg, strlen(msg));
+    wait_ok = (ERR_OK == popen_waitexit(&ctx, 3000));
     popen_free(&ctx);
+    CuAssertTrue(tc, 0 != start_ok);
+    CuAssertTrue(tc, nwrite > 0);
+    CuAssertTrue(tc, 0 != wait_ok);
     popen_free(&ctx);
     CuAssert(tc, "popen_free idempotent: double free must not close the handle twice",
         ERR_FAILED == popen_read(&ctx, buf, sizeof(buf) - 1, NULL));
@@ -1630,10 +1639,11 @@ static void test_popen2(CuTest *tc) {
             MSLEEP(1);
         }
     }
-    CuAssertIntEquals(tc, 1, eof);
     popen_close(&ctx);
-    CuAssertIntEquals(tc, 7, popen_exitcode(&ctx));
+    int32_t code = popen_exitcode(&ctx);
     popen_free(&ctx);
+    CuAssertIntEquals(tc, 1, eof);
+    CuAssertIntEquals(tc, 7, code);
 
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sleep 30", "w"));
     size_t big = ONEK * ONEK;
@@ -1642,13 +1652,13 @@ static void test_popen2(CuTest *tc) {
     memset(payload, 'x', big);
     n = popen_write(&ctx, payload, big);
     FREE(payload);
-    CuAssertTrue(tc, n > 0);
-    CuAssertTrue(tc, (size_t)n < big);// 一次写不完，返回部分
     // 必须 close 再 free：kill + waitpid 在 close 里，free 只关 socket。
     // 少这一句，sleep 30 会活过本用例成为没人回收的子进程，而 ./bin/test 要阻塞等 SIGINT，
-    // 它就一直挂到整个会话结束，每跑一轮再漏一个
+    // 它就一直挂到整个会话结束，每跑一轮再漏一个。断言同理必须排在这两句之后：CuAssert 走 longjmp
     popen_close(&ctx);
     popen_free(&ctx);
+    CuAssertTrue(tc, n > 0);
+    CuAssertTrue(tc, (size_t)n < big);// 一次写不完，返回部分
 #endif
 }
 
@@ -2379,29 +2389,39 @@ static void test_utils_filesystem(CuTest *tc) {
     size_t clen = strlen(content);
     FILE *fp = fopen_cloexec(tmpfile, "wb");
     CuAssertPtrNotNull(tc, fp);
-    CuAssertTrue(tc, clen == fwrite(content, 1, clen, fp));
-    // 底层描述符必须带"子进程不可继承"标记，否则 popen 起的 /bin/sh 能拿到它
+    size_t nwrite = fwrite(content, 1, clen, fp);
+    // 底层描述符必须带"子进程不可继承"标记，否则 popen 起的 /bin/sh 能拿到它。
+    // 判定要 fp 还活着，故先取到局部量，fclose 之后再断言（断言失败会 longjmp 跳过 fclose）
 #ifdef OS_WIN
     DWORD hflag = 0;
-    CuAssertTrue(tc, 0 != GetHandleInformation((HANDLE)_get_osfhandle(_fileno(fp)), &hflag));
-    CuAssertTrue(tc, 0 == (hflag & HANDLE_FLAG_INHERIT));
+    int32_t hok = (0 != GetHandleInformation((HANDLE)_get_osfhandle(_fileno(fp)), &hflag));
 #else
     int32_t fdflag = fcntl(fileno(fp), F_GETFD);
+#endif
+    fclose(fp);
+    CuAssertTrue(tc, clen == nwrite);
+#ifdef OS_WIN
+    CuAssertTrue(tc, hok);
+    CuAssertTrue(tc, 0 == (hflag & HANDLE_FLAG_INHERIT));
+#else
     CuAssertTrue(tc, -1 != fdflag);
     CuAssertTrue(tc, 0 != (fdflag & FD_CLOEXEC));
 #endif
-    fclose(fp);
 
     CuAssertIntEquals(tc, ERR_OK, isfile(tmpfile));
     CuAssertTrue(tc, ERR_OK != isdir(tmpfile));
     CuAssertTrue(tc, (int64_t)clen == filesize(tmpfile));
 
+    // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉 data
     size_t got = 0;
     char *data = readall(tmpfile, &got);
-    CuAssertPtrNotNull(tc, data);
-    CuAssertTrue(tc, clen == got);
-    CuAssertTrue(tc, 0 == memcmp(content, data, clen));
+    int32_t data_ok = (NULL != data);
+    int32_t len_ok = (clen == got);
+    int32_t cmp_ok = (data_ok && 0 == memcmp(content, data, clen));
     FREE(data);
+    CuAssertTrue(tc, 0 != data_ok);
+    CuAssertTrue(tc, 0 != len_ok);
+    CuAssertTrue(tc, 0 != cmp_ok);
 
     // 不存在的路径：isfile / isdir 返回非 ERR_OK，filesize 返回负值，readall 返回 NULL
     const char *bogus = "/nonexistent/path/to/nowhere_xyzzy";
@@ -2418,11 +2438,12 @@ static void test_utils_filesystem(CuTest *tc) {
     fclose(fp);
     errno = 0;
     got = 0;
-    CuAssertTrue(tc, NULL == readall(tmpfile, &got));
-    CuAssertTrue(tc, 0 != errno);
-
-    // 清理
+    int32_t empty_ok = (NULL == readall(tmpfile, &got));
+    int32_t errno_ok = (0 != errno);
+    // 临时文件先删掉：断言排在后面，中途 longjmp 会把它留在 bin/ 下
     remove(tmpfile);
+    CuAssertTrue(tc, 0 != empty_ok);
+    CuAssertTrue(tc, 0 != errno_ok);
 }
 
 /* =======================================================================
@@ -2473,13 +2494,19 @@ static void test_popen_free_reaps(CuTest *tc) {
 #endif
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, NULL));
 #ifndef OS_WIN
-    CuAssertTrue(tc, 0 != ctx.pid);
-    CuAssertIntEquals(tc, 0, ctx.exited);
+    /* free 是本用例唯一的收尸口，断言不能夹在它前面：longjmp 会把 sleep 30 留成孤儿 */
+    int32_t has_pid = (0 != ctx.pid);
+    int32_t exited0 = ctx.exited;
 #endif
     /* 故意跳过 popen_close，直接 free */
     uint64_t t0 = nowms();
     popen_free(&ctx);
-    CuAssertTrue(tc, nowms() - t0 < 5000);/* 同步 SIGKILL + waitpid，不该等满 30 秒 */
+    uint64_t cost = nowms() - t0;
+#ifndef OS_WIN
+    CuAssertTrue(tc, has_pid);
+    CuAssertIntEquals(tc, 0, exited0);
+#endif
+    CuAssertTrue(tc, cost < 5000);/* 同步 SIGKILL + waitpid，不该等满 30 秒 */
 #ifndef OS_WIN
     CuAssertIntEquals(tc, 1, ctx.exited);/* free 内部已收尸，没有留下孤儿 */
 #endif
@@ -2721,6 +2748,41 @@ static void test_strptime_neg_yday_with_mon(CuTest *tc) {
     CuAssertPtrNotNull(tc, end);
     CuAssertTrue(tc, tm.tm_mday >= 1 && tm.tm_mday <= 31);
     CuAssertTrue(tc, 124 == tm.tm_year);
+}
+
+/* =======================================================================
+ * %p 的"小时已定就不许再加 12"守卫读的是 state 里的 S_HOUR，而 %c/%R/%r/%T/%X
+ * 走 goto recurse 另起一次 _strptime，内层置的位从不回传外层，守卫被静默跳过：
+ * "%T %p" 喂 "13:00:00 PM" 会得到 tm_hour=25 且返回成功，下游 mktime 静默滚到第二天。
+ * 每个写 tm_hour 的地方都补上置位后，本用例才成立
+ * ======================================================================= */
+static void test_strptime_ampm_overflow(CuTest *tc) {
+    struct tm tm;
+    char *end;
+
+    /* 递归格式串解出的小时 > 11，后面再跟 %p 必须被挡下 */
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("13:00:00 PM", "%T %p", &tm));
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("13:00:00 PM", "%X %p", &tm));
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("13:00 PM", "%R %p", &tm));
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("Mon Jan  1 13:00:00 2024 PM", "%c %p", &tm));
+    /* 直写 %H 的那条路本来就挡得住，作为对照 */
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("13:00:00 PM", "%H:%M:%S %p", &tm));
+
+    /* 合法输入不能被误挡：上午 + PM 仍要正常加 12 */
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("01:00:00 PM", "%T %p", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertIntEquals(tc, 13, tm.tm_hour);
+    /* 不带 %p 的递归格式行为不变 */
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("13:00:00", "%T", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertIntEquals(tc, 13, tm.tm_hour);
 }
 
 /* sectostr 忽略 LOCALTIME 失败的话，未初始化的 struct tm 会交给 strftime，
@@ -3241,6 +3303,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_strptime_week_rollover);
     SUITE_ADD_TEST(suite, test_strptime_week_neg_yday);
     SUITE_ADD_TEST(suite, test_strptime_neg_yday_with_mon);
+    SUITE_ADD_TEST(suite, test_strptime_ampm_overflow);
     SUITE_ADD_TEST(suite, test_timestr_out_of_range);
     SUITE_ADD_TEST(suite, test_tw);
     SUITE_ADD_TEST(suite, test_tw_long_timeout);

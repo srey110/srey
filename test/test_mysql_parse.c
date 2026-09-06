@@ -1566,7 +1566,7 @@ static void _push_oversized_field(mysql_reader_ctx *reader, size_t cap) {
 }
 // 超长文本字段一律拒绝，不截断也不越界。integer/uinteger 已改走 str2u64 按 lens 解析，
 // 靠上界判定挡下；float/double(cap=128) 与 datetime/time(cap=48) 仍走 copy_bounded
-// strict=1 (utils.c)，lens >= cap 直接返回 ERR_FAILED 且不写入目标缓冲
+// strict=1 (base.h)，lens >= cap 直接返回 ERR_FAILED 且不写入目标缓冲
 static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
     char names[1][64] = { "n" };
 

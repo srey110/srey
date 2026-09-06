@@ -2,10 +2,10 @@
 #include "base/config.h"
 #include "utils/utils.h"
 
-#define DNS_FLAG1_RD        0x01u   // 期望递归（请求时设置）
-#define DNS_FLAG1_TC        0x02u   // 响应被截断（响应时可能设置，见 RFC 1035 §4.1.1）
+#define DNS_FLAG1_RD        0x01u // 期望递归（请求时设置）
+#define DNS_FLAG1_TC        0x02u // 响应被截断（响应时可能设置，见 RFC 1035 §4.1.1）
 #define DNS_FLAG2_RCODE(f)  ((f) & 0x0Fu) // 提取响应码
-#define DNS_A    1  // IPv4 地址记录类型
+#define DNS_A    1 // IPv4 地址记录类型
 #define DNS_AAAA 28 // IPv6 地址记录类型
 
 // DNS 报文头部结构（RFC 1035 §4.1.1，wire 字节序：网络字节序）

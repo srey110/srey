@@ -11,7 +11,7 @@ static inline void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *chil
     heap_node *pparent = parent->parent;
     heap_node *lchild = child->left;
     heap_node *rchild = child->right;
-    heap_node *sibling = NULL;
+    heap_node *sibling;
     if (NULL == pparent) {
         heap->root = child;
     } else if (pparent->left == parent) {
@@ -109,7 +109,7 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
     heap_node *parent = _heap_last_parent(heap, heap->nelts, &path);
     --heap->nelts;
     // 用末尾节点替换待删除节点
-    heap_node *last = NULL;
+    heap_node *last;
     if (path & 1) {
         last = parent->right;
         parent->right = NULL;
@@ -127,7 +127,7 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
     _heap_replace(heap, node, last);
     node->parent = node->left = node->right = NULL;
     heap_node *v = last;
-    heap_node *est = NULL;
+    heap_node *est;
     // 下沉调整
     while (1) {
         est = v;
