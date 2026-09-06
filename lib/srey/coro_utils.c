@@ -874,6 +874,10 @@ pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *
     }
     size_t lens;
     void *exec = pgsql_pack_stmt_execute(name, bind, resultformat, &lens);
+    if (NULL == exec) {
+        _serial_unlock(held);
+        return NULL;
+    }
     pgpack_ctx *rtn = coro_send(pg->task, pg->sk.fd, pg->sk.skid, exec, lens, NULL, 0);
     _serial_unlock(held);
     return rtn;

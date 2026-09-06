@@ -17,11 +17,11 @@ local redis   = {}
 ---@param psw string? 密码；为 nil 或空时跳过 AUTH
 ---@param netev NET_EV? 事件订阅掩码
 ---@return integer fd socket fd；失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；仅在 fd 有效时返回
+---@return integer? skid 连接 skid；失败时为 nil，返回值个数恒为 2
 function redis.connect(ip, port, sslname, psw, netev)
     local fd, skid = srey.connect(PACK_TYPE.REDIS, sslname, ip, port, netev)
     if INVALID_SOCK == fd then
-        return INVALID_SOCK
+        return INVALID_SOCK, nil
     end
     if str_nullorempty(psw) then
         return fd, skid
@@ -32,7 +32,7 @@ function redis.connect(ip, port, sslname, psw, netev)
     local result = rtn and redis.unpack(rtn)
     if "OK" ~= result then
         srey.close(fd, skid)
-        return INVALID_SOCK
+        return INVALID_SOCK, nil
     end
     return fd, skid
 end
@@ -138,6 +138,7 @@ end
 ---@field agg    RedisAggPayload 所属聚合节点（哨兵已摘，只装载荷）
 ---@field ismap  boolean       压栈时按 kind 算好的"是否键值对聚合"，替代读表判定
 ---@field isattr boolean       压栈时按 kind 算好的"是否 attr"
+---@field key    any?          map/attr 解析到 key 时暂存，读到 val 时配对写进 agg
 
 ---更新栈顶计数器；计数归零时弹出并归还对象池；attr 完成后立即 break，
 ---因为 attr 之后跟随被修饰的真实数据，需由上层继续处理，不能连续弹出

@@ -114,7 +114,8 @@ static int32_t _lcrypt_bs64_decode(lua_State *lua) {
     // 不区分的话 decode("dXNlcm5hbWU6!!!") 与 decode("") 都得到空串,
     // 调用方那句 if d then use(d) end 会把损坏数据当成合法凭据收下
     int32_t bad = (0 == declens && 0 != size);
-    //失败也得先把 luaL_Buffer 收掉,它在栈上留着中间对象,不能直接丢下去压 nil
+    // 失败也得先 luaL_pushresultsize 再 pop：luaL_buffinitsize 会在栈上留一个中间对象，
+    // 不收就直接压 nil 的话它还压在返回值下面
     luaL_pushresultsize(&lbuf, declens);
     if (bad) {
         lua_pop(lua, 1);
@@ -447,7 +448,7 @@ static int32_t _lcrypt_cipher_dofinal(lua_State *lua) {
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, outlen);
     int32_t rtn = cipher_dofinal(cipher, data, size, out, &size);
-    //失败也得先把 luaL_Buffer 收掉,它在栈上留着中间对象,不能直接丢下去压 nil
+    // 失败也先收 luaL_Buffer 再 pop，理由见 _lcrypt_bs64_decode
     luaL_pushresultsize(&lbuf, ERR_OK == rtn ? size : 0);
     if (ERR_OK != rtn) {
         lua_pop(lua, 1);

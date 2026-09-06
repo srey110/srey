@@ -70,11 +70,15 @@ static int32_t _lkcp_start(lua_State *lua) {
 /// 变更会话数据推送目标 task
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
-/// <param name="handle" type="integer">目标 task handle(srey.task_handle 取)</param>
-/// <returns type="boolean">成功 true</returns>
+/// <param name="handle" type="string|integer">目标 task：字符串按名字查，整数按句柄直取</param>
+/// <returns type="boolean">成功 true；名字查不到（kcp_handle 不校验句柄，放过去等于把推送目标
+/// 指到一个不存在的 task 上）或会话已 stop 时 false</returns>
 static int32_t _lkcp_handle(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
-    name_t handle = (name_t)luaL_checkinteger(lua, 2);
+    name_t handle = lpub_task_handle(lua, 2);
+    if (INVALID_TNAME == handle) {
+        return lpub_rtn_bool(lua, 0);
+    }
     return lpub_rtn_bool(lua, ERR_OK == kcp_handle(kcp, handle));
 }
 /// <summary>

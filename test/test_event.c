@@ -181,6 +181,28 @@ static int32_t _ssl_shake(SSL *cli, SSL *srv) {
     }
     return (ERR_OK == c && ERR_OK == s) ? ERR_OK : ERR_FAILED;
 }
+// 收拾一对握完手的 SSL。六件都用自清空的宏/在调用方保证非空，用例单独收过某件后再调是空操作
+static void _ssl_drop(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx *sc, evssl_ctx *cc) {
+    FREE_SSL(*cli);
+    FREE_SSL(*srv);
+    CLOSE_SOCK(sk[0]);
+    CLOSE_SOCK(sk[1]);
+    evssl_free(sc);
+    evssl_free(cc);
+}
+// close_notify 与 EOF 都未必立刻可见，未到时读的是 WANT_READ(ERR_OK)，故有界重试（同 test_evpub_read_fin）
+static int32_t _ssl_read_until(SSL *cli, char *buf, size_t cap, size_t *readed) {
+    int32_t rtn = ERR_OK;
+    int32_t i;
+    for (i = 0; i < 200 && ERR_OK == rtn; i++) {
+        *readed = 1;
+        rtn = evssl_read(cli, buf, cap, readed);
+        if (ERR_OK == rtn) {
+            MSLEEP(1);
+        }
+    }
+    return rtn;
+}
 // 建一对握完手的 SSL。返回 1 成功；0 表示证书没生成（用例跳过）；-1 是真失败
 static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evssl_ctx **cc) {
     const char *local = procpath();
@@ -207,12 +229,7 @@ static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evs
     if (NULL == *cli || NULL == *srv
         || ERR_OK != _ssl_shake(*cli, *srv)) {
         // 调用方在这条路径上会断言失败并 longjmp 出去，自己不收就会挂在收尾的 memcheck 上
-        FREE_SSL(*cli);
-        FREE_SSL(*srv);
-        CLOSE_SOCK(sk[0]);
-        CLOSE_SOCK(sk[1]);
-        evssl_free(*sc);
-        evssl_free(*cc);
+        _ssl_drop(sk, cli, srv, *sc, *cc);
         return -1;
     }
     return 1;
@@ -235,23 +252,9 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     }
     CuAssertIntEquals(tc, 1, rtn);
     evssl_shutdown(srv, sk[1]);
-    int32_t i;
-    // close_notify 未必立刻可见，未到时读的是 WANT_READ(ERR_OK)，故有界重试（同 test_evpub_read_fin）
-    rtn = ERR_OK;
-    for (i = 0; i < 200 && ERR_OK == rtn; i++) {
-        readed = 1;
-        rtn = evssl_read(cli, buf, sizeof(buf), &readed);
-        if (ERR_OK == rtn) {
-            MSLEEP(1);
-        }
-    }
-    // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉这六件，一次真失败还要多报一笔假泄漏（同 _ssl_pair）
-    FREE_SSL(cli);
-    FREE_SSL(srv);
-    CLOSE_SOCK(sk[0]);
-    CLOSE_SOCK(sk[1]);
-    evssl_free(sc);
-    evssl_free(cc);
+    rtn = _ssl_read_until(cli, buf, sizeof(buf), &readed);
+    // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉收尾，一次真失败还要多报一笔假泄漏（同 _ssl_pair）
+    _ssl_drop(sk, &cli, &srv, sc, cc);
     CuAssertIntEquals(tc, 1, rtn);
     CuAssertTrue(tc, 0 == readed);
 
@@ -259,19 +262,8 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     CuAssertIntEquals(tc, 1, _ssl_pair(sk, &cli, &srv, &sc, &cc));
     FREE_SSL(srv);
     CLOSE_SOCK(sk[1]);
-    rtn = ERR_OK;
-    // 同上：EOF 未必立刻可见
-    for (i = 0; i < 200 && ERR_OK == rtn; i++) {
-        readed = 1;
-        rtn = evssl_read(cli, buf, sizeof(buf), &readed);
-        if (ERR_OK == rtn) {
-            MSLEEP(1);
-        }
-    }
-    FREE_SSL(cli);
-    CLOSE_SOCK(sk[0]);
-    evssl_free(sc);
-    evssl_free(cc);
+    rtn = _ssl_read_until(cli, buf, sizeof(buf), &readed);
+    _ssl_drop(sk, &cli, &srv, sc, cc);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 }
 #endif

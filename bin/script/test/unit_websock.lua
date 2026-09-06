@@ -24,6 +24,10 @@ local function _test_frame_flag_range(t)
     local ok, pk = pcall(wbsk.text_fin, 0, 1, "hi")
     t:eq(true, ok, "pack_text: 合法 0/1 照常接受")
     if ok then utils.ud_free(pk) end
+    -- netev 非整数在 core.connect 里抛出，此时 _handshake 已经把 hspack / hsctx 分配出来了，
+    -- 两块都还没转移给 C 层。漏接的话每调一次泄漏两块，退出时的内存检查报出来
+    t:eq(false, pcall(wbsk.connect, "ws://127.0.0.1:1/x", SSL_NAME.NONE, nil, false),
+         "netev 非整数时 wbsk.connect 抛出，握手包与 hsctx 不留孤儿")
 end
 
 local PORT = 15048

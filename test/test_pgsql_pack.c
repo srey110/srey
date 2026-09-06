@@ -208,6 +208,37 @@ static void test_pgsql_stmt_execute(CuTest *tc) {
     pgsql_bind_free(&bind);
 }
 
+/* 实际绑定个数与 pgsql_bind_init 声明的 nparam 不符：组包侧直接拒绝。
+   format/values 两个头部的计数在 init 时就按 nparam 写死了，个数不符时服务端会把多出来的
+   格式码当成"参数值数量"、把值长度字段当成值，从计数字段起整条 Bind 错位成另一条语义无关的
+   报文，既不报协议错也发不出去正确的查询 */
+static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
+    pgsql_bind_ctx bind;
+    size_t few_size = 1;
+    size_t ok_size = 0;
+    size_t many_size = 1;
+    char *few;
+    char *ok;
+    char *many;
+
+    pgsql_bind_init(&bind, 2);
+    pgsql_bind_int32(&bind, 1);
+    few = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &few_size);/* 少绑一个 */
+    pgsql_bind_int32(&bind, 2);
+    ok = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &ok_size);/* 正好 */
+    pgsql_bind_int32(&bind, 3);
+    many = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &many_size);/* 多绑一个 */
+    pgsql_bind_free(&bind);
+    FREE(ok);
+
+    /* 断言排在收拾之后：CuAssert 走 longjmp，夹在 alloc/free 中间会漏释放并报出假泄漏 */
+    CuAssertPtrEquals(tc, NULL, few);
+    CuAssertTrue(tc, 0 == few_size);
+    CuAssertPtrEquals(tc, NULL, many);
+    CuAssertTrue(tc, 0 == many_size);
+    CuAssertTrue(tc, ok_size > 0);
+}
+
 /* =======================================================================
  * pgsql_bind_* —— 绑定接口写入计数与格式
  * ======================================================================= */
@@ -447,6 +478,7 @@ void test_pgsql_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_stmt_close);
     SUITE_ADD_TEST(suite, test_pgsql_null_name);
     SUITE_ADD_TEST(suite, test_pgsql_stmt_execute);
+    SUITE_ADD_TEST(suite, test_pgsql_stmt_execute_bind_mismatch);
     SUITE_ADD_TEST(suite, test_pgsql_bind_basic);
     SUITE_ADD_TEST(suite, test_pgsql_bind_extra_types);
     SUITE_ADD_TEST(suite, test_pgsql_bind_free_reuse);

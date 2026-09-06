@@ -67,10 +67,9 @@ function pub:_doconnect(gen)
         return true
     end
     local ok = self:_connect()
-    if ok then
-        self.generation = self.generation + 1
-    end
-    -- 失败也要落：_connect 里的 try_connect 已经无条件覆写过 sk.fd，原来那条连接不在了
+    -- 代次与 established 都无条件落：_connect 里的 try_connect 已经无条件覆写过 sk.fd，成败与否
+    -- 原来那条连接都不在了。只在成功时前进代次的话，拿旧代次比对的 stmt 守卫在失败重连后会失灵
+    self.generation = self.generation + 1
     self.established = ok
     return ok
 end

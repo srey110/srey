@@ -31,7 +31,7 @@ typedef struct config_ctx {
         char name[TASK_NAME_LEN];       // 任务名（"" 表示不启动）
         char ssl[EVSSL_NAME_LEN];       // SSL 名称（"" 表示不启用 SSL）
         char ip[IP_LENS];               // 监听 IP
-        uint16_t port;                  // 监听端口
+        uint16_t port;                  // 监听端口（0 表示不启动，同 debug.port）
     }harbor;
 }config_ctx;
 

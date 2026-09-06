@@ -80,8 +80,7 @@ static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         }
         cnt_total += (size_t)cnt;
     } while (cnt > 0);
-    if (cnt_total > 0
-        && tda_check(&olcmd->tda, cnt_total)) {
+    if (tda_check(&olcmd->tda, cnt_total)) {
         LOG_WARN("watcher %d cmd queue overload, count %zu.", watcher->index, cnt_total);
     }
 }

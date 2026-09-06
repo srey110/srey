@@ -47,9 +47,9 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size);
 /// 构造 COM_STMT_EXECUTE 请求包（预处理语句执行）
 /// </summary>
 /// <param name="stmt">mysql_stmt_ctx</param>
-/// <param name="mbind">绑定参数上下文，NULL 表示无参数</param>
+/// <param name="mbind">绑定参数上下文，无参数时可为 NULL；实际绑定个数必须等于 prepare 得到的 params_count</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放</returns>
+/// <returns>请求包数据，调用方负责释放；绑定个数与 params_count 不符时返回 NULL 并把 size 置 0</returns>
 void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_t *size);
 /// <summary>
 /// 构造 COM_STMT_RESET 请求包（重置预处理语句状态）

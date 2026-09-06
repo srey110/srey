@@ -53,6 +53,10 @@ runner.run(function(t)
         b:string("k_str", "srey-mysql-bind")
         b:datetime("k_dt", os.time())
         b:time("k_tm", 0, 0, 1, 30, 0)
+        -- days 与后面三个字段同口径卡下界：线格式里它是 4 字节无符号，-1 写出去解成
+        -- 4294967295 天，远超 MySQL TIME 的 ±838:59:59，服务端截成另一个合法时间且无从报错
+        t:eq(false, pcall(b.time, b, "k_tm", 0, -1, 1, 30, 0), "bind:time days 负数被拒")
+        t:eq(true,  pcall(b.time, b, "k_tm", 1, 0, 1, 30, 0),  "bind:time days 0 + 负号标志合法")
         b:null("k_null")
         -- 重复 clear + 再填，验证可复用
         b:clear()
@@ -121,6 +125,26 @@ runner.run(function(t)
              "pack_stmt_prepare 负 nparam 被拒")
         t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", 32768),
              "pack_stmt_prepare 超 INT16_MAX 被拒")
+        -- oids 逐个校验：裸 lua_tointeger 会把非整数、字符串、缺的格子统统静默变成 0，
+        -- 而 0 在 Parse 报文里是合法值（"该参数类型由服务端推断"），推断出来的类型与业务随后
+        -- 按二进制格式绑的字节不符时，要到 execute 才以一句服务端类型错误浮出来
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select $1", 1, { 1043.5 }),
+             "oids 非整数被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select $1", 1, { "varchar" }),
+             "oids 字符串被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select $1", 1, { -1 }),
+             "oids 负数被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select $1", 1, { 4294967296 }),
+             "oids 超 UINT32_MAX 被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select $1, $2", 2, { 23 }),
+             "oids 短于 nparam 被拒（缺的格子原先静默补 0）")
+        do
+            -- 合法路径照常：整值浮点 1043.0 在 Lua 5.5 里能精确转成整数,不该误伤
+            local pk, sz = pgsql.pack_stmt_prepare("st", "select $1, $2", 2, { 23, 1043.0 })
+            local ok = pk ~= nil and sz > 0
+            utils.ud_free(pk)
+            t:eq(true, ok, "oids 合法值（含整值浮点）照常组包")
+        end
 
         -- 时间相关
         local b3 = pbind.new(3)

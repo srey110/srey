@@ -591,7 +591,8 @@ static mqtt_pack_ctx *_lmqtt_pack_of(lua_State *lua, mqtt_prot prot) {
 /// 返回报文可变头的属性数组
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="lightuserdata?">属性数组指针；无属性或不支持的报文类型返回 nil</returns>
+/// <returns type="lightuserdata?">属性数组指针；无属性或不支持的报文类型返回 nil。这是 pack
+/// 内部持有的**借用**指针，所有权约束同 props:data()</returns>
 /// <returns type="integer">属性条数；空时为 0</returns>
 static int32_t _lmqtt_props_of(lua_State *lua) {
     LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
@@ -607,7 +608,8 @@ static int32_t _lmqtt_props_of(lua_State *lua) {
 /// 返回 CONNECT 报文载荷中的遗嘱属性数组
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="lightuserdata?">属性数组指针；非 CONNECT 报文或无遗嘱属性返回 nil</returns>
+/// <returns type="lightuserdata?">属性数组指针；非 CONNECT 报文或无遗嘱属性返回 nil。这是 pack
+/// 内部持有的**借用**指针，所有权约束同 props:data()</returns>
 /// <returns type="integer">属性条数；空时为 0</returns>
 static int32_t _lmqtt_connect_will_props(lua_State *lua) {
     LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);

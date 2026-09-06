@@ -72,12 +72,15 @@ void evssl_seclevel(evssl_ctx *evssl, int32_t level);
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="version">
 ///        协议版本：
+///            0 不设下限，用库支持的最低版本（OpenSSL 的默认状态，getter 也用 0 表示它）
 ///            TLS1_VERSION(0x0301)
 ///            TLS1_1_VERSION(0x0302)
 ///            TLS1_2_VERSION(0x0303)
 ///            TLS1_3_VERSION(0x0304)
 /// </param>
-void evssl_min_proto(evssl_ctx *evssl, int32_t version);
+/// <returns>ERR_OK 成功。版本号不在上表内、或该版本被当前构建/安全级别排除时返回 ERR_FAILED，
+/// 此时最低版本保持原样——不判返回值就会以为下限抬上去了，实际仍在接受更低的版本</returns>
+int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version);
 /// <summary>
 /// 释放evssl_ctx
 /// </summary>

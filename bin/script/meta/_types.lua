@@ -42,14 +42,14 @@
 ---@field live   integer 当前活跃分配数
 
 ---@class TaskListItem
----@field name   string?  task 名；匿名 task 无此字段
+---@field name   string?  task 名；匿名 task、以及名字超 63 字节的 task 无此字段（见 core.task_list）
 ---@field handle integer  task 句柄
 
 ---@class ParsedURL
----@field scheme string               协议（如 "http"、"https"）
+---@field scheme string?              协议（如 "http"、"https"）；相对 URL（"/a?b=1"）无此字段
 ---@field user   string?              用户名；URL 中无用户信息时为 nil
 ---@field psw    string?              密码；URL 中无密码时为 nil
----@field host   string               主机名或 IP
+---@field host   string?              主机名或 IP；host 为空（如 "ws://:8080/x"）时无此字段
 ---@field port   string?              端口号字符串（如 "8080"）；URL 中无端口时为 nil
 ---@field path   string?              重组后的路径（如 "/user/42"）；语义随 decode 参数：decode=true 已解码，decode=false 保留原始编码；无路径段时为 nil
 ---@field query  string?              重组后的查询字符串（如 "k=v&k2=v2"）；语义随 decode 参数；无查询参数时为 nil

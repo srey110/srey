@@ -133,7 +133,67 @@ static void test_router_shadow_mask(CuTest *tc) {
     router_free(r);
 }
 
+/* router_seg_index 把注册期 _router_parse_seg 的结果交出去，反向生成 URL 的调用方
+ * (bin/script/advance/router.lua 的 Router:url) 靠它回填占位符，段语法就只剩这一份。
+ * 四种段类型各取一次，再验三种越界 —— 逐段遍历正是以 ERR_FAILED 收尾 */
+static void test_router_seg_index(CuTest *tc) {
+    router_ctx *r = router_new();
+    router_seg_type t;
+    const char *str;
+    uint32_t slen;
+    int32_t idx;
+
+    CuAssertPtrNotNull(tc, r);
+
+    idx = router_add_index(r, "GET", 3, "/user/{id}/{tag?}/*", 19);
+    CuAssertTrue(tc, idx >= 0);
+
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 0, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_LIT, t);
+    CuAssertIntEquals(tc, 4, (int32_t)slen);
+    CuAssertStrEquals(tc, "user", str);
+
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 1, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_PARAM, t);
+    CuAssertIntEquals(tc, 2, (int32_t)slen);
+    CuAssertStrEquals(tc, "id", str);
+
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 2, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_OPT, t);
+    CuAssertIntEquals(tc, 3, (int32_t)slen);
+    CuAssertStrEquals(tc, "tag", str);
+
+    /* 通配段不带名字 */
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 3, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_WILD, t);
+    CuAssertPtrEquals(tc, NULL, (void *)str);
+    CuAssertIntEquals(tc, 0, (int32_t)slen);
+
+    /* 段取完 / k 为负 / idx 越界 */
+    CuAssertIntEquals(tc, ERR_FAILED, router_seg_index(r, idx, 4, &t, &str, &slen));
+    CuAssertIntEquals(tc, ERR_FAILED, router_seg_index(r, idx, -1, &t, &str, &slen));
+    CuAssertIntEquals(tc, ERR_FAILED, router_seg_index(r, idx + 1, 0, &t, &str, &slen));
+
+    /* 名字为空、名字内部含 '?' 都退化为字面量，退化后交回的是含花括号的原文 */
+    idx = router_add_index(r, "GET", 3, "/{}/{a?b}", 9);
+    CuAssertTrue(tc, idx >= 0);
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 0, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_LIT, t);
+    CuAssertStrEquals(tc, "{}", str);
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 1, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_LIT, t);
+    CuAssertStrEquals(tc, "{a?b}", str);
+
+    /* 根路径拆出 0 段，第 0 段就越界 */
+    idx = router_add_index(r, "GET", 3, "/", 1);
+    CuAssertTrue(tc, idx >= 0);
+    CuAssertIntEquals(tc, ERR_FAILED, router_seg_index(r, idx, 0, &t, &str, &slen));
+
+    router_free(r);
+}
+
 void test_advance(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_router_url_normalize);
     SUITE_ADD_TEST(suite, test_router_shadow_mask);
+    SUITE_ADD_TEST(suite, test_router_seg_index);
 }

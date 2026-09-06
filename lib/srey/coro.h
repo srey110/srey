@@ -169,7 +169,9 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
 ///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL——连接已 teardown 时挂上去等不到唤醒</returns>
 void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size);
 /// <summary>
-/// 等待分片消息
+/// 等待分片消息。等待按 skid 排队、只认队头，而本函数每次调用都重新排到队尾——同一连接上
+/// 有其他等待者时，后续分片会被派给别人，两边各拿到半截。整趟分片循环期间调用方须保证
+/// 这条连接上没有并发的等待者
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket句柄</param>

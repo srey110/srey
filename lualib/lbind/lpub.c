@@ -217,14 +217,6 @@ int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size) {
     lua_pushinteger(lua, (lua_Integer)size);
     return 2;
 }
-int32_t lpub_rtn_reader(lua_State *lua, int32_t err) {
-    if (1 == err) {
-        lua_pushboolean(lua, 1);// 字段值为 NULL：算读取成功，但不给第二个返回值
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
-}
 void lpub_push_url_param(lua_State *lua, url_ctx *url) {
     lua_createtable(lua, 0, url->nparam);// 按实际参数个数建表,不按 URL_MAX_PARAM 预留
     url_param *param;

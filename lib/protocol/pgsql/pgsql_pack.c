@@ -68,6 +68,12 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
     return bwriter.data;
 }
 void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat, size_t *size) {
+    if (NULL != bind
+        && 0 != bind->nparam
+        && bind->format.offset != (size_t)bind->nparam * 2 + 2) {
+        *size = 0;
+        return NULL;
+    }
     binary_ctx bwriter;
     // Bind：Byte1('B') Int32 String String Int16 [Int16] Int16 [Int32 Byten] Int16 [Int16]
     pgsql_pack_start(&bwriter, 'B');

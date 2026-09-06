@@ -224,6 +224,34 @@ runner.run(function(t)
     t:check(ctx:ping(), "RSET 失败后 ping 能重连")
     ctx:quit()
 
+    -- 建链失败时代次同样要前进：_connect 里的 try_connect 已经无条件覆写过 sk.fd，原来那条连接
+    -- 不在了。只在成功时前进的话，失败重连之后 stmt/session 拿旧代次一比仍算"没换过连接"，
+    -- st:close() 会朝 INVALID_SOCK 发包返 false，而它的注解写的是"重连后无需再发返 true"。
+    -- 直接换掉 _connect 是为了造出"建链失败"这个状态，此刻无并发协程，绕开锁安全
+    do
+        local saved = rawget(ctx, "_connect")
+        local fgen = ctx.generation
+        ctx._connect = function() return false end
+        t:eq(false, ctx:_doconnect(fgen), "_connect 失败时 _doconnect 返 false")
+        ctx._connect = saved
+        t:check(fgen < ctx.generation, "建链失败同样让代次前进")
+        t:eq(false, ctx.established, "建链失败后 established 为 false")
+        t:check(ctx:ping(), "之后照常能重连")
+        ctx:quit()
+    end
+
+    -- Lua 侧镜像列表与 C 侧必须同进退：先写镜像再调可抛错的 C 绑定的话，抛出之后 addrs_get
+    -- 会多出一个 MIME 头里根本没有的地址，而 smtp:send 照样按它发 RCPT TO
+    do
+        local em = mail.new()
+        em:from("srey", "c10@t")
+        em:addrs_add("r10@t", MAIL_ADDR_TYPE.TO)
+        t:eq(false, pcall(em.addrs_add, em, "bad@t", 9), "越界收件人类型被拒")
+        t:eq(1, #em:addrs_get(), "抛错后收件人镜像列表不变")
+        t:eq(false, pcall(em.from, em, "x", nil), "from 非法入参被拒")
+        t:eq("c10@t", em:from_get(), "抛错后发件人镜像不变")
+    end
+
     -- 两种问候形态都得走通：正常那半边照服务端给的主机名填 EHLO，刁钻那半边退回 localhost。
     -- 放在最后是因为服务端逐连接轮换，要等上面这些重连都发生过才凑齐两种
     t:check(ehlo_hosts["normal.smtp.local"], "正常问候下 EHLO 用服务端给的主机名")

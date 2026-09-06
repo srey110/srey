@@ -395,7 +395,7 @@ end
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
----@return integer? n 成功时为 nModified
+---@return integer? n 成功时为应答里的 n，即匹配到的文档数（matched，不是 nModified——值未变化的 $set 同样计入）
 function ctx:update(col, updates, ulens, opts, optslens)
     if not self.mongo:collection(col) then
         return false

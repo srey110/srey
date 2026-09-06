@@ -11,7 +11,8 @@
         return luaL_error((lua), "mysql stmt: owner mysql already freed"); \
     }
 // 六个按列名取值的 reader 入口共用的开场白：取 reader + 取列名 + 备好 err。
-// 失败尾巴走 lpub_rtn_reader，前奏散在各处等于把同一套三态契约的一半拆开
+// err 是三态(ERR_OK 有值 / 1 字段是 SQL NULL / 其余读取失败)，由 mysql_reader、pgsql_reader 两侧
+// 共同产出：有值那支自己压 true 加值，另两态一律 lpub_rtn_bool(lua, 1 == err) 收尾（NULL 也算成功）
 #define LMYSQL_READER_GET(lua, rvar, nvar, evar) \
     LPUB_UD_ARG((lua), mysql_reader_ctx, MT_MYSQL_READER, rvar, "reader freed") \
     const char *nvar = luaL_checkstring((lua), 2); \
@@ -170,7 +171,7 @@ static int32_t _lmysql_bind_datetime(lua_State *lua) {
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
 /// <param name="is_negative" type="integer">1 表示负值时间段，0 正值</param>
-/// <param name="days" type="integer">天数</param>
+/// <param name="days" type="integer">天数，须 大于等于 0（符号只由 is_negative 表示）；线格式里是 4 字节无符号字段，负数写出去就是四十亿天</param>
 /// <param name="hour" type="integer">小时，须 大于等于 0（符号只由 is_negative 表示）</param>
 /// <param name="minute" type="integer">分钟，须 大于等于 0</param>
 /// <param name="second" type="integer">秒，须 大于等于 0</param>
@@ -180,7 +181,7 @@ static int32_t _lmysql_bind_time(lua_State *lua) {
     // 五个字段原样进 MYSQL_TYPE_TIME 报文, 截断或传负数出来都是另一个合法时间且无从报错:
     // 符号由 is_negative 单独带, 时分秒各占一个字节, 传 -1 到服务端就成了 255
     int8_t is_negative = (int8_t)lpub_check_flag(lua, 3);
-    int32_t days = lpub_check_i32(lua, 4, "days out of range");
+    int32_t days = (int32_t)lpub_check_range(lua, 4, 0, INT32_MAX, "days out of range");
     int8_t hour = (int8_t)lpub_check_range(lua, 5, 0, INT8_MAX, "hour out of range");
     int8_t minute = (int8_t)lpub_check_range(lua, 6, 0, INT8_MAX, "minute out of range");
     int8_t second = (int8_t)lpub_check_range(lua, 7, 0, INT8_MAX, "second out of range");
@@ -291,7 +292,7 @@ static int32_t _lmysql_reader_integer(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的单精度浮点值
@@ -308,7 +309,7 @@ static int32_t _lmysql_reader_float(lua_State *lua) {
         lua_pushnumber(lua, (double)val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的双精度浮点值
@@ -325,7 +326,7 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
         lua_pushnumber(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的字符串值（返回 lightuserdata + 长度）
@@ -346,7 +347,7 @@ static int32_t _lmysql_reader_string(lua_State *lua) {
         lua_pushinteger(lua, lens);
         return 3;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的 DATETIME 值（微秒精度）
@@ -363,7 +364,7 @@ static int32_t _lmysql_reader_datetime(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的 TIME 值
@@ -392,7 +393,7 @@ static int32_t _lmysql_reader_time(lua_State *lua) {
         lua_pushinteger(lua, usec);
         return 7;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 //mysql.reader
 LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
@@ -629,7 +630,7 @@ static int32_t _lmysql_new(lua_State *lua) {
     mysql_ctx *mysql;
     MALLOC(mysql, sizeof(mysql_ctx));
     if (ERR_OK != mysql_init(mysql, ip, port, evssl, user, password, database, charset, maxpk)) {
-        FREE(mysql);
+        SECURE_FREE(mysql, sizeof(mysql_ctx));
         return lpub_rtn_nil(lua, 1);
     }
     ATOMIC_SET(&mysql->ref, 1);// Lua 持有者份额

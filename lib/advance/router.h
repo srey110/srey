@@ -156,6 +156,13 @@ typedef enum router_method {
     ROUTER_M_OPTIONS = 1 << 6,
     ROUTER_M_ANY     = 0xFF
 } router_method;
+// 路径段类型; router_seg_index 交回, 反向生成 URL 的调用方据此还原模板
+typedef enum router_seg_type {
+    ROUTER_SEG_LIT,    // 字面量
+    ROUTER_SEG_PARAM,  // {name}    必填路径参数
+    ROUTER_SEG_OPT,    // {name?}   可选路径参数
+    ROUTER_SEG_WILD    // *         末尾通配, 出现即吞掉后续所有请求段
+} router_seg_type;
 
 typedef struct router_ctx router_ctx;
 typedef struct router_entry router_entry;
@@ -403,6 +410,21 @@ router_entry *router_put_stream(router_ctx *r, const router_group *g, const char
 /// 如 /u/{id} 之于 /u/{uid}）；掩码只有交集不算遮蔽，先注册者拿走它覆盖的方法即可</returns>
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                          const char *path, size_t path_len);
+/// <summary>
+/// 取第 idx 条路由第 k 段的解析结果。注册时解析过一遍，这里只把结果交出去，
+/// 供反向生成 URL 一类的调用方复用，不必自行再解析一遍路径模板
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="idx">路由索引（router_add_index 的返回值）</param>
+/// <param name="k">段下标，从 0 起</param>
+/// <param name="t">出参，段类型；必须非 NULL，函数内裸解引用</param>
+/// <param name="str">出参，LIT 为字面量内容、PARAM/OPT 为参数名（不含花括号与问号）、
+/// WILD 为 NULL；带 NUL 结尾，长度另由 str_len 给出。指向路由表内部，下一次 router_add* 之前有效
+/// （路由表是连续数组，扩容会 realloc 整块）。必须非 NULL，函数内裸解引用</param>
+/// <param name="str_len">出参，str 字节数；必须非 NULL，函数内裸解引用</param>
+/// <returns>ERR_OK 取到；idx 或 k 越界返回 ERR_FAILED，逐段遍历即以此收尾</returns>
+int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type *t,
+                         const char **str, uint32_t *str_len);
 /// <summary>
 /// 路径匹配（不执行 handler/中间件）；调用方提供已零初始化的 ctx 与 url 存储。
 /// 成功后 ctx->params/params_n 已填充，ctx->url 为 backing store

@@ -221,6 +221,8 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
 /// <summary>
 /// 把 Lua 值编码成 JSON 字符串。整数精确写出（不经 %.14g），浮点按最短往返格式；
 /// 键全为 >= 1 的整数才编成数组，空表编成 {}，过度稀疏的数组直接报错而非静默转对象；
+/// 数字 key 串成字符串当键名，故 [1] 与 "1" 撞成同一个键，本函数不查重（同 bson.encode），撞了就
+/// 产出带重复键的 JSON、decode 回来只剩其一，调用方自己保证不撞；
 /// 嵌套超过 LYYJSON_MAX_DEPTH 层、出现 table/number/string/boolean/nil 之外的类型都报错。
 /// 非 UTF-8 字节原样写出不报错：Lua 字符串就是字节串，框架里 srey.ud_str 取出的
 /// 二进制载荷进 JSON 是常态，卡死会让这类请求一个字节都发不出去

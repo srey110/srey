@@ -43,7 +43,7 @@ function wbsk.prottostr(prot)
 end
 
 ---解包 WebSocket 帧
----@type fun(pack:lightuserdata):{ fin:integer, prot:integer, secprot:integer?, secpack:lightuserdata?, data:lightuserdata?, size:integer }
+---@type fun(pack:lightuserdata):WebSocketFrame
 wbsk.unpack = websock.unpack
 
 ---解析 ws:// / wss:// URL 并校验 scheme 与 SSL 配套
@@ -58,8 +58,9 @@ local function _parse_url(ws, sslname)
     -- RFC 3986 §3.1:scheme 大小写无关。url_parse 原样切出不归一化,C 侧 coro_utils 是 buf_icompare 比的,
     -- 故此处先转小写——下游 _resolve_addr / _reorg 拿的是同一个表,默认端口那两处比较随之对齐
     url.scheme = url.scheme and url.scheme:lower()
-    -- host 判空串不能只判 nil：url_parse 对 "ws://:8080/x" 切出的是空串，空串是真值，
-    -- 放过去 _resolve_addr 会按 hostname 给空名字跑一趟 DNS，白等一个连接超时才失败
+    -- host 判空要用 str_nullorempty：绑定层对空字段整个不 setfield，"ws://:8080/x" 切出来的
+    -- host 是 nil 而不是空串。漏判的话 _resolve_addr 会按 hostname 给空名字跑一趟 DNS，
+    -- 白等一个连接超时才失败
     if ("ws" ~= url.scheme and "wss" ~= url.scheme) or str_nullorempty(url.host) then
         return nil
     end
@@ -125,26 +126,33 @@ end
 ---@param uri string request-target
 ---@param secprot string? 子协议名，可逗号分隔多个
 ---@return integer fd socket fd；任一步失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；仅在 fd 有效时返回
+---@return integer? skid 连接 skid；失败时为 nil，返回值个数恒为 3
 ---@return lightuserdata? spctx 协商到的子协议(ws_secprots_ctx)
 local function _handshake(sslname, ip, port, netev, host_hdr, uri, secprot)
     local hspack, size, hsctx = websock.pack_handshake(host_hdr, uri, secprot)
     if not hspack then
-        return INVALID_SOCK
+        return INVALID_SOCK, nil, nil
     end
-    local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, sslname, ip, port, netev, hsctx)
+    -- srey.connect 抛出(入参非法 / 无当前 task)时 hsctx 没转移给 C 层，它和 hspack 都还归本函数；
+    -- 不接住的话两块既没进框架也没人释放。失败对象落在 fd 那一位上，原样抛回去
+    local ok, fd, skid = pcall(srey.connect, PACK_TYPE.WEBSOCK, sslname, ip, port, netev, hsctx)
+    if not ok then
+        utils.ud_free(hspack)
+        utils.ud_free(hsctx)
+        error(fd, 0)
+    end
     if INVALID_SOCK == fd then
         utils.ud_free(hspack)   -- TCP 连接失败，释放 C 层分配的握手包内存
-        return INVALID_SOCK
+        return INVALID_SOCK, nil, nil
     end
     if not srey.send(fd, skid, hspack, size, 0) then
         srey.close(fd, skid)
-        return INVALID_SOCK
+        return INVALID_SOCK, nil, nil
     end
     -- 等待服务端 101 Switching Protocols（C 层完成验证后触发 HANDSHAKED 消息）
     local ok, spctx = srey.wait_handshaked(fd, skid)
     if not ok then
-        return INVALID_SOCK
+        return INVALID_SOCK, nil, nil
     end
     return fd, skid, spctx
 end
@@ -156,16 +164,16 @@ end
 --- 协商到 "mqtt" 时本函数只完成 WS 握手，上下文还须经 mqtt.ws_bind 注入，约束见该函数文档
 ---@param netev NET_EV? 事件订阅掩码
 ---@return integer fd socket fd；任一步失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；仅在 fd 有效时返回
+---@return integer? skid 连接 skid；失败时为 nil，返回值个数恒为 3
 ---@return lightuserdata? spctx 协商到的子协议(ws_secprots_ctx)，用 websock.secprots 解析；未协商/降级为 nil；仅本协程下次挂起前有效
 function wbsk.connect(ws, sslname, secprot, netev)
     local url = _parse_url(ws, sslname)
     if not url then
-        return INVALID_SOCK
+        return INVALID_SOCK, nil, nil
     end
     local ip, port = _resolve_addr(url)
     if not ip then
-        return INVALID_SOCK
+        return INVALID_SOCK, nil, nil
     end
     local host_hdr, uri = _reorg(url, port)
     return _handshake(sslname, ip, port, netev, host_hdr, uri, secprot)

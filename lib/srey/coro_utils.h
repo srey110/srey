@@ -223,7 +223,7 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="name">名称</param>
-/// <param name="bind">pgsql_bind_ctx</param>
+/// <param name="bind">pgsql_bind_ctx；实际绑定个数须等于 pgsql_bind_init 声明的 nparam，不符即失败</param>
 /// <param name="resultformat">pgpack_format</param>
 /// <returns>NULL 失败  pgpack_ctx</returns>
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat);
@@ -315,7 +315,7 @@ int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, 
 /// <param name="ulens">updates长度</param>
 /// <param name="options">可选 其他参数 document (ordered maxTimeMS writeConcern bypassDocumentValidation comment let)</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
-/// <returns>ERR_FAILED 失败  其他 更新的数量</returns>
+/// <returns>ERR_FAILED 失败  其他 应答里的 n,即匹配到的文档数(matched);不是 nModified,值未变化的 $set 同样计入</returns>
 int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens);
 /// <summary>
 /// delete 命令 删除一个或多个文档 MORETOCOME 可用

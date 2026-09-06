@@ -1119,6 +1119,30 @@ runner.run(function(t)
         t:eq(SLICE_TYPE.END, log[5], "最后是 END")
     end
 
+    -- 9.1a 首帧回调里读得到请求头：_pack 要等 START 回调跑完才摘（口径同 C 侧 _router_st_begin），
+    -- 提前摘的话 ctx:header 在 START 里恒返 nil。ctx.headers 不是等价替代——它的键是报文原样
+    -- 大小写，而 ctx:header 走 C 的 buf_icompare 大小写无关
+    do
+        local r = Route.new()
+        local seen = {}
+        r:post_stream("/hd", function(ctx, slice, data)
+            if SLICE_TYPE.START == slice then
+                seen.start = ctx:header("content-type")
+                ctx.buf = {}
+            elseif SLICE_TYPE.END == slice then
+                ctx:text(200, "ok")
+            else
+                seen.mid = ctx:header("content-type")
+                ctx.buf[#ctx.buf + 1] = data
+            end
+        end)
+        last_resp = nil
+        feed_stream(r, "/hd", { "a" }, { ["Content-Type"] = "text/plain" })
+        t:eq("text/plain", seen.start, "START 回调里 ctx:header 读得到，且大小写无关")
+        t:eq(nil, seen.mid, "首帧之后 _pack 已摘，ctx:header 返 nil")
+        t:eq(200, (last_resp or {}).code, "流照常收齐")
+    end
+
     -- 9.2 零数据块：只有首帧与终止块，回显空 body
     do
         local r = Route.new()
@@ -1164,6 +1188,59 @@ runner.run(function(t)
         last_resp = nil
         feed(r, SLICE_TYPE.START, make_pack("FROB", "/plain"))
         t:eq(405, (last_resp or {}).code, "chunked 未知方法 → 405")
+    end
+
+    -- 9.3a 命名路由反查：Route:url 拿注册时的完整路径回填占位符
+    do
+        local r = Route.new()
+        r:get("/user/{id}", function(ctx) ctx:text(200, "u") end):name("user.show")
+        r:get("/file/{path?}", function(ctx) ctx:text(200, "f") end):name("file.show")
+        r:get("/static/*", function(ctx) ctx:text(200, "s") end):name("static.any")
+        t:eq("/user/42", r:url("user.show", { id = 42 }), "必填占位符回填")
+        t:eq("/user/42?page=2", r:url("user.show", { id = 42, page = 2 }),
+             "用不到的键拼成查询串")
+        t:eq("/user/a%20b", r:url("user.show", { id = "a b" }), "路径段用 %20 编码空格")
+        t:eq("/file", r:url("file.show", {}), "可选占位符缺参时整段丢弃")
+        t:eq("/file/x", r:url("file.show", { path = "x" }), "可选占位符有参时照常回填")
+        t:eq("/static", r:url("static.any", {}), "末尾通配缺参时整段丢弃")
+        t:eq("/static/a/b", r:url("static.any", { ["*"] = "a/b" }),
+             "末尾通配取 params[\"*\"]（'/' 不编码，通配本就跨段）")
+        t:eq("/static/a//b/", r:url("static.any", { ["*"] = "a//b/" }),
+             "通配值原样保留空段与尾斜杠，拆开重拼会改掉调用方给的值")
+        t:eq("/static/a%20b/c", r:url("static.any", { ["*"] = "a b/c" }),
+             "通配段内空格照编，作分隔的 '/' 不动")
+        t:eq("/static/", r:url("static.any", { ["*"] = "" }),
+             "通配值为空串留尾斜杠，与缺参丢整段区分开")
+        t:eq("/user/42?a=1&b=2&c=3", r:url("user.show", { id = 42, a = 1, b = 2, c = 3 }),
+             "多个剩余键按整串排序，同一组参数每次给出同一个 URL")
+        t:eq(false, pcall(r.url, r, "user.show", {}), "必填占位符缺参报错")
+        t:eq(false, pcall(r.url, r, "nosuch", {}), "未登记的名字报错")
+
+        -- 生成与匹配共用 C 侧那一份段解析（Route:url 走注册时交回的 entry._segs），这里把生成的
+        -- 路径喂回匹配器验闭环：段序列的消费方式、占位符编码与 C 侧解码得两两对得上
+        local function back(u)
+            local hit, _, _, idx, ps = r._c_router:match("GET", u)
+            return hit, (nil ~= idx) and r._routes[idx]._name or nil, ps or {}
+        end
+        local hit, nm, ps = back(r:url("user.show", { id = 42 }))
+        t:check(hit, "url 生成的路径能被 C 匹配器接住")
+        t:eq("user.show", nm, "必填占位符往返后落回同一条路由")
+        t:eq("42", ps.id, "占位符取值原样还回")
+        _, nm, ps = back(r:url("user.show", { id = "a b" }))
+        t:eq("user.show", nm, "含空格的取值往返后仍落回同一条路由")
+        t:eq("a b", ps.id, "生成时编的 %20 被 C 侧解码还原")
+        _, nm, ps = back(r:url("user.show", { id = 42, page = 2 }))
+        t:eq("user.show", nm, "带查询串的 url 照样落回同一条路由")
+        t:eq("42", ps.id, "查询串不影响占位符取值")
+        _, nm = back(r:url("file.show", {}))
+        t:eq("file.show", nm, "可选段缺参生成的路径落回同一条路由")
+        _, nm, ps = back(r:url("file.show", { path = "x" }))
+        t:eq("file.show", nm, "可选段有参生成的路径落回同一条路由")
+        t:eq("x", ps.path, "可选占位符取值原样还回")
+        _, nm = back(r:url("static.any", {}))
+        t:eq("static.any", nm, "末尾通配缺参生成的路径落回同一条路由")
+        _, nm = back(r:url("static.any", { ["*"] = "a/b" }))
+        t:eq("static.any", nm, "末尾通配有参生成的路径落回同一条路由")
     end
 
     -- 9.4 准入中间件截断 → 401 且不建流；带对 token 则放行收齐

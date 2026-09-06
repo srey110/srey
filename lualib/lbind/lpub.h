@@ -283,16 +283,6 @@ int32_t lpub_rtn_nil(lua_State *lua, int32_t n);
 /// <returns>压栈的返回值个数，恒为 2</returns>
 int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size);
 /// <summary>
-/// reader 取值类绑定的失败/NULL 收尾：err 为 1(字段是 SQL NULL) 压 true；其余(读取失败)压 false。
-/// 读到值的分支自己压 true 加值，其余情况一律交给它。
-/// 这条三态契约(ERR_OK 有值 / 1 为 NULL / 其余失败)由 mysql_reader / pgsql_reader 两侧共同产出，
-/// 收在一处才不至于改契约时漏改某个字段类型
-/// </summary>
-/// <param name="lua">Lua 虚拟机状态</param>
-/// <param name="err">reader 取值函数写回的错误码</param>
-/// <returns>压栈的返回值个数，恒为 1</returns>
-int32_t lpub_rtn_reader(lua_State *lua, int32_t err);
-/// <summary>
 /// 把 URL 查询参数压成一张 key→value 表放在栈顶,挂到哪个字段上由调用方 setfield 决定。
 /// 值空(?a=)压空串而不是让键缺席——"键不存在"与"值为空"是两回事,调用方靠这个区分。
 /// router 的 ctx.query 与 url.parse 的 param 都从这里取,免得空值表示分叉成两个答案
@@ -301,7 +291,8 @@ int32_t lpub_rtn_reader(lua_State *lua, int32_t err);
 /// <param name="url">已由 url_parse 填充的 url_ctx</param>
 void lpub_push_url_param(lua_State *lua, url_ctx *url);
 /// <summary>
-/// 将 url_ctx 字段打包为 Lua 表并压栈（scheme/user/psw/host/port/path/query/segs/param）
+/// 将 url_ctx 字段打包为 Lua 表并压栈（scheme/user/psw/host/port/path/query/segs/anchor/param）；
+/// 空字段整个不 setfield，取值方按 nil 判
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="url">已由 url_parse 填充的 url_ctx</param>

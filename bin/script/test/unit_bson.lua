@@ -255,7 +255,7 @@ runner.run(function(t)
         t:eq(-42, tb.i32, "builder int32 round-trip")
         t:check(tb.i64 ~= nil and tb.i64:val() == 9000000000, "builder int64 round-trip")
         t:eq(true, tb.ok, "builder bool true round-trip")
-        t:eq(nil, tb.nul, "builder null decoded as nil")
+        t:eq(bson.null, tb.nul, "builder null decoded as bson.null")
         t:check(tb.dt ~= nil and tb.dt:ms() == 1700000000123, "builder date round-trip")
         -- minkey / maxkey 标题里点名了却一条断言都没有。它们解到 Lua 侧没有值可读，
         -- 从 tostring 的 "<key>(<类型名>)" 行认（同 C 侧 test_bson_tostring_subtypes）
@@ -767,6 +767,61 @@ runner.run(function(t)
         t:eq(true, pcall(b.binary, b, "k", 4, "ab"), "b:binary: 合法子类型照常接受")
         t:eq(false, pcall(bson.mkbinary, 260, "ab"), "bson.mkbinary: subtype 260 被拒")
         t:eq(true, pcall(bson.mkbinary, 128, "ab"), "bson.mkbinary: 自定义区间 0x80 放行")
+    end
+
+    -- 30. BSON null 与「Lua 侧没有表示」的类型落在数组里：null 解成 bson.null 占住下标，
+    -- 无表示类型被丢弃后后续元素前移，两种情形都不留空洞（留洞的话 # 与 ipairs 在洞处截断，
+    -- {a:[1,null,3]} 是 Mongo 应答里的常见形状，第 3 个元素会被静默吃掉）
+    do
+        t:eq(yyjson.null, bson.null, "bson.null 与 yyjson.null 是同一个空指针哨兵")
+
+        local b = bson.new()
+        b:arr_begin("a")
+            b:int32("0", 1)
+            b:null("1")
+            b:int32("2", 3)
+            b["end"](b)
+        b["end"](b)
+        local tb = bson.decode(b)
+        t:eq(3, #tb.a, "数组含 null 时长度不被截断")
+        t:eq(bson.null, tb.a[2], "数组里的 null 解成 bson.null 而不是留洞")
+        t:eq(3, tb.a[3], "null 之后的元素下标不偏")
+        local cnt = 0
+        for _ in ipairs(tb.a) do
+            cnt = cnt + 1
+        end
+        t:eq(3, cnt, "ipairs 走满 3 个元素")
+
+        -- TIMESTAMP 在 Lua 侧确实没有表示，只能丢；丢了之后数组变短，但仍不留洞
+        local b2 = bson.new()
+        b2:arr_begin("a")
+            b2:int32("0", 1)
+            b2:timestamp("1", 100, 1)
+            b2:int32("2", 3)
+            b2["end"](b2)
+        b2["end"](b2)
+        local tb2 = bson.decode(b2)
+        t:eq(2, #tb2.a, "被丢弃的元素不占下标，数组变短")
+        t:eq(1, tb2.a[1], "前移后第一个元素不变")
+        t:eq(3, tb2.a[2], "被丢弃元素之后的元素前移补位")
+
+        -- 文档路径：null 同样解成哨兵，无表示的类型仍然整条丢
+        local b3 = bson.new()
+        b3:null("n")
+        b3:timestamp("ts", 100, 1)
+        b3:int32("i", 7)
+        b3["end"](b3)
+        local tb3 = bson.decode(b3)
+        t:eq(bson.null, tb3.n, "文档里的 null 也解成 bson.null")
+        t:eq(nil, tb3.ts, "文档里无表示的类型仍然丢弃")
+        t:eq(7, tb3.i, "丢弃不影响后续字段")
+
+        -- encode 必须认哨兵，否则 encode(decode(x)) 撞 unsupported type，round-trip 断掉
+        local rt = bson.decode(bson.encode({ z = bson.null, k = 1 }))
+        t:eq(bson.null, rt.z, "bson.null encode 回 BSON null 并解回哨兵")
+        t:eq(1, rt.k, "同表其余字段不受影响")
+        local eptr = bson.empty()
+        t:eq(false, pcall(bson.encode, { z = eptr }), "非空 light userdata 仍被拒")
     end
 end)
 end)

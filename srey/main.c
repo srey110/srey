@@ -89,10 +89,10 @@ static void _parse_config(config_ctx *cnf) {
         return;
     }
     yyjson_val *json = yyjson_doc_get_root(doc);
-    CFG_NUM(json, "", "serviceid", UINT16_MAX, cnf->serviceid, uint16_t);
+    CFG_NUM(json, "", "serviceid", SERVICEID_MAX, cnf->serviceid, uint16_t);
     CFG_NUM(json, "", "nnet", UINT16_MAX, cnf->nnet, uint16_t);
     CFG_NUM(json, "", "nworker", UINT16_MAX, cnf->nworker, uint16_t);
-    CFG_NUM(json, "", "loglv", UINT8_MAX, cnf->loglv, uint8_t);
+    CFG_NUM(json, "", "loglv", LOGLV_DEBUG, cnf->loglv, uint8_t);
     CFG_NUM(json, "", "stacksize", UINT32_MAX, cnf->stacksize, uint32_t);
     CFG_NUM(json, "", "twqueuelens", UINT32_MAX, cnf->twqueuelens, uint32_t);
     CFG_NUM(json, "", "logqueuelens", UINT32_MAX, cnf->logqueuelens, uint32_t);
@@ -547,7 +547,7 @@ int main(int argc, char *argv[]) {
         PRINT("UseAge:\"./srey\" or \"./srey -d\" or \"./srey -b\".");
         return ERR_FAILED;
     }
-    int32_t is_daemon = (argc > 1 && 0 == strcmp("-b", argv[1]));
+    int32_t is_daemon = (argc > 1);
     // 无参与 -b 都要 fork，两条都用 pipe 同步：子进程 service_init 成功写 'R'，失败 close
     // 让父端读 EOF。少了它父进程只能恒返 ERR_OK，配置错、端口占用一律报成功，
     // `./srey && echo ok` 在服务根本没起来时照样打 ok

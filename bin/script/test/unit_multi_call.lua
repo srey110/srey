@@ -158,6 +158,18 @@ runner.run(function(t)
         t:eq(false, ok, "sess=0 抛错")
     end
 
+    -- ── 边界: sess=0 抛错时,copy=0 的载荷所有权仍在调用方 ─────────────
+    -- sess 校验(lpub_check_sess)排在 _lcore_opt_buf 取载荷之前,抛出时 C 侧一次都没接管过这块内存,
+    -- 与同函数其余抛出路径同口径。上面那条传的是字符串(copy 缺省 1)走不到这里;
+    -- 这里若由被调方代为释放,调用方照下面这样收尾就是二次 free(退出时的内存检查报出)
+    do
+        local ud, usize = custz.pack(PACK_TYPE.CUSTZ_FIXED, "sess0_owner")
+        t:check(ud ~= nil and usize > 0, "custz.pack 拿到一块 C 堆缓冲")
+        t:eq(false, pcall(function() srey.multi_request(SUBS, 102, 0, ud, usize, 0) end),
+             "sess=0 + copy=0 抛错")
+        utils.ud_free(ud)
+    end
+
     -- ── 回归: core 侧 longjmp(非法 reqtype)时错误须透传,且不泄漏 task 引用 ──
     -- 全部 grab-in-C:reqtype/data 校验在 grab 前,longjmp 时未 grab → 错误透传(下面断言)+ 无引用泄漏(退出无死锁,ASan 验证)
     do

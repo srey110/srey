@@ -5549,11 +5549,11 @@ static void test_mail_attach_pack(CuTest *tc) {
     int32_t pkt2_ok = (NULL != pkt2);
     // 两个附件的同名 filename 至少出现 2 次（Content-Disposition 各一次）
     int32_t filename_hits = 0;
-    const char *p = pkt2;
-    while (pkt2_ok
-           && NULL != (p = strstr(p, "test_mail_attach.txt"))) {
-        filename_hits++;
-        p++;
+    const char *p;
+    if (pkt2_ok) {
+        for (p = pkt2; NULL != (p = strstr(p, "test_mail_attach.txt")); p++) {
+            filename_hits++;
+        }
     }
     FREE(pkt2);
     mail_free(&mail);

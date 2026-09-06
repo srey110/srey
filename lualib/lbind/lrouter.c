@@ -18,6 +18,32 @@ static int32_t _lrouter_free(lua_State *lua) {
     }
     return 0;
 }
+// 把注册时解析好的段序列交回 Lua：字面量段压字符串，占位符段压 { key, opt }。
+// 段全部取完(router_seg_index 报越界)才收手，故根路径这种零段路由得到一张空表
+static void _lrouter_push_segs(lua_State *lua, router_ctx *r, int32_t idx) {
+    router_seg_type t;
+    const char *str;
+    uint32_t str_len;
+    int32_t k = 0;
+    lua_newtable(lua);
+    while (ERR_OK == router_seg_index(r, idx, k, &t, &str, &str_len)) {
+        if (ROUTER_SEG_LIT == t) {
+            lua_pushlstring(lua, str, str_len);
+        } else {
+            lua_createtable(lua, 0, 2);
+            if (ROUTER_SEG_WILD == t) {
+                lua_pushliteral(lua, "*");
+            } else {
+                lua_pushlstring(lua, str, str_len);
+            }
+            lua_setfield(lua, -2, "key");
+            lua_pushboolean(lua, ROUTER_SEG_PARAM != t);
+            lua_setfield(lua, -2, "opt");
+        }
+        lua_rawseti(lua, -2, k + 1);
+        k++;
+    }
+}
 /// <summary>
 /// 注册一条路由
 /// </summary>
@@ -27,6 +53,9 @@ static int32_t _lrouter_free(lua_State *lua) {
 /// <returns type="boolean">true=注册成功；false=被拒</returns>
 /// <returns type="integer">成功时是路由索引（≥0）；失败时是 router_add_index 的失败码
 /// （-1 路径非法或方法未知，-2 已有等价路由把它遮住），调用方据此给出不同提示</returns>
+/// <returns type="(string|RouterSeg)[]?">段序列，仅注册成功时返回：字面量段是字符串，
+/// 占位符段是 { key = 名字, opt = 是否可选 }（末尾通配的 key 为 "*"）。反向生成 URL 用它，
+/// 别再照路径模板自己解析一遍 —— 段语法只有 C 侧一份</returns>
 static int32_t _lrouter_add(lua_State *lua) {
     LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
     size_t mlen;
@@ -35,8 +64,12 @@ static int32_t _lrouter_add(lua_State *lua) {
     const char *path = luaL_checklstring(lua, 3, &plen);
     int32_t idx = router_add_index(*pr, method, mlen, path, plen);
     lua_pushboolean(lua, idx >= 0);
-    lua_pushinteger(lua, idx);// 成功是索引，失败是失败码；两条路径返回值个数一致
-    return 2;
+    lua_pushinteger(lua, idx);// 成功是索引，失败是失败码
+    if (idx < 0) {
+        return 2;
+    }
+    _lrouter_push_segs(lua, *pr, idx);
+    return 3;
 }
 // dispatch 只用 path 与 param 两个字段（见 router.lua 的 _make_ctx），这里就只压这两个
 static void _lrouter_push_url(lua_State *lua, url_ctx *url) {

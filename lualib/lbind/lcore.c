@@ -1,6 +1,8 @@
 ﻿#include "lbind/lpub.h"
 
 #define MTYPE_OUT_OF_RANGE "message type out of range"
+#define SECLEVEL_OUT_OF_RANGE "ssl security level out of range"
+#define TLSVER_OUT_OF_RANGE "tls version out of range"
 
 // multi_request / multi_call 投递一次所需的全部东西。两个 int32 挨着放在 8 字节字段之前,不留 padding
 typedef struct {
@@ -261,7 +263,7 @@ static int32_t _lcore_listen(lua_State *lua) {
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
     uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
-    int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
+    int32_t netev = (int32_t)luaL_optinteger(lua, 5, NETEV_NONE);
     uint64_t id;
     LPUB_CUR_TASK(lua, task);
     if (ERR_OK != task_listen(task, pktype, evssl, ip, port, &id, netev)) {
@@ -298,7 +300,7 @@ static int32_t _lcore_connect(lua_State *lua) {
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
     uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
-    int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
+    int32_t netev = (int32_t)luaL_optinteger(lua, 5, NETEV_NONE);
     // extra 的所有权在 lua_touserdata 那一刻就离开了 Lua，之后到 task_connect 接管为止不能再有
     // 任何会 longjmp 的调用，否则它既没进框架也没人 ud_free。setsess 与取 task 因此排在前面
     int32_t setsess = (int32_t)luaL_optinteger(lua, 7, 1);
@@ -398,37 +400,33 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     luaL_checktype(lua, 2, LUA_TTABLE);
     lua_Integer n_fds = luaL_len(lua, 1);
     lua_Integer n_skids = luaL_len(lua, 2);
-    void *data;
-    size_t size;
-    int32_t copy;
-    data = lpub_check_buf(lua, 3, &size, &copy);
     if (n_fds != n_skids) {
-        CHECK_COPY_FREE(data, copy);
         return luaL_error(lua, "fds and skids length mismatch (%d vs %d)",
                           (int)n_fds, (int)n_skids);
     }
-    if (n_fds <= 0) {
-        CHECK_COPY_FREE(data, copy);
-        return lpub_rtn_bool(lua, 0);
-    }
-    // 校验必须整趟走完再分配：n_fds 来自 luaL_len，会走 __len 元方法，是业务可控的。
-    // 撒谎的 __len 在这里撞上首个 nil 就报错退出，分配那步根本到不了
+    // 校验必须整趟走完再取载荷：n_fds 来自 luaL_len，会走 __len 元方法，是业务可控的。
+    // 撒谎的 __len 在这里撞上首个 nil 就报错退出，接管那步根本到不了
     lua_Integer i;
     for (i = 0; i < n_fds; i++) {
         lua_rawgeti(lua, 1, i + 1);
         if (!lua_isinteger(lua, -1)) {
-            CHECK_COPY_FREE(data, copy);
             return luaL_error(lua, "fds[%d] must be an integer, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
         lua_pop(lua, 1);
         lua_rawgeti(lua, 2, i + 1);
         if (!lua_isinteger(lua, -1)) {
-            CHECK_COPY_FREE(data, copy);
             return luaL_error(lua, "skids[%d] must be an integer, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
         lua_pop(lua, 1);
+    }
+    size_t size;
+    int32_t copy;
+    void *data = lpub_check_buf(lua, 3, &size, &copy);
+    if (n_fds <= 0) {
+        CHECK_COPY_FREE(data, copy);
+        return lpub_rtn_bool(lua, 0);
     }
     // 一块内存切两段，skids 在前：它要 8 字节对齐，SOCKET 的对齐要求不高于它，故 fds 接在后面必然合法。
     // 只有 skids 是分配返回的那个指针，释放也只能释放它
@@ -674,16 +672,17 @@ static void _lcore_task_list_collect(const char *name, name_t handle, void *arg)
     _task_entry entry = { 0 };
     entry.handle = handle;
     if (ERR_OK != safe_fill_str(entry.name, sizeof(entry.name), name)) {
-        // 名字比缓冲长:宁可少这一条也不发个截断的名字出去,调用方拿它去 grab 会查到别的 task
-        LOG_WARN("task_list: task name exceeds %zu bytes, skipped.", sizeof(entry.name) - 1);
-        return;
+        // 名字比缓冲长:只丢名字不丢这一条。截断的名字不能发出去(调用方拿它去 grab 会查到别的
+        // task),但整条丢掉的话这个 task 在列表里彻底不存在,巡检 / 路由会当它没注册
+        LOG_WARN("task_list: task name exceeds %zu bytes, name dropped.", sizeof(entry.name) - 1);
     }
     array_push_back((array_ctx *)arg, &entry);
 }
 /// <summary>
 /// 枚举当前 loader 已注册的所有 task（C 层列表）
 /// </summary>
-/// <returns type="TaskListItem[]">task 列表；无 task 时为空表</returns>
+/// <returns type="TaskListItem[]">task 列表；无 task 时为空表。名字超 63 字节的 task 只交出 handle、
+/// 不带 name（截断的名字拿去 grab 会命中别的 task），另打一条 WARN</returns>
 static int32_t _lcore_task_list(lua_State *lua) {
     array_ctx arr;
     array_init(&arr, sizeof(_task_entry), 128);
@@ -825,11 +824,11 @@ static int32_t _lcore_ssl_qury(lua_State *lua) {
 /// 设置 SSL 安全级别
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
-/// <param name="level" type="integer">安全级别 0-5</param>
+/// <param name="level" type="integer">安全级别 0-5；越界报错</param>
 static int32_t _lcore_ssl_seclevel(lua_State *lua) {
 #if WITH_SSL
     LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
-    int32_t level = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t level = (int32_t)lpub_check_range(lua, 2, 0, 5, SECLEVEL_OUT_OF_RANGE);
     evssl_seclevel(ssl, level);
 #else
     (void)lua;
@@ -842,20 +841,26 @@ static int32_t _lcore_ssl_seclevel(lua_State *lua) {
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
 /// <param name="version" type="TLS_VERSION">
 ///        协议版本：
+///            AUTO(0) 不设下限，用库支持的最低版本（OpenSSL 的默认状态，getter 也用 0 表示它）
 ///            TLS1_VERSION(0x0301)
 ///            TLS1_1_VERSION(0x0302)
 ///            TLS1_2_VERSION(0x0303)
 ///            TLS1_3_VERSION(0x0304)
+///        表外的值报错
 /// </param>
+/// <returns type="boolean">设置成功 true；该版本被当前构建或安全级别排除时 false，此时最低版本
+/// 保持原样。不判返回值就会以为下限抬上去了，实际仍在接受更低的版本。WITH_SSL 关闭时恒 false</returns>
 static int32_t _lcore_ssl_min_proto(lua_State *lua) {
 #if WITH_SSL
     LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
-    int32_t version = (int32_t)luaL_checkinteger(lua, 2);
-    evssl_min_proto(ssl, version);
+    lua_Integer version = luaL_checkinteger(lua, 2);
+    luaL_argcheck(lua, 0 == version
+                  || (version >= TLS1_VERSION && version <= TLS1_3_VERSION),
+                  2, TLSVER_OUT_OF_RANGE);
+    return lpub_rtn_bool(lua, ERR_OK == evssl_min_proto(ssl, (int32_t)version));
 #else
-    (void)lua;
+    return lpub_rtn_bool(lua, 0);
 #endif
-    return 0;
 }
 /// <summary>
 /// 设置 SSL 上下文是否验证对端证书

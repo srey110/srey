@@ -30,15 +30,73 @@ runner.run(function(t)
         local dup = core.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
         t:eq(nil, dup, "重复 register 同 name 拒绝")
 
-        -- ssl ctx 操作本身无返回值，只能钉"调完之后 ctx 还能用"：
-        -- 三个 setter 里任何一个把 ctx 搞坏，紧接着的 ssl_free 或再注册就会露馅
+        -- seclevel / verify 无返回值（OpenSSL 那两个函数本身就没有），只能钉"调完之后 ctx 还能用"：
+        -- 任何一个把 ctx 搞坏，紧接着的 ssl_free 或再注册就会露馅
         core.ssl_seclevel(ssl, 1)
-        core.ssl_min_proto(ssl, TLS_VERSION.TLS1_2)
         core.ssl_verify(ssl, 0)
+        -- 0 是 OpenSSL 文档里的默认值（不设下限），绑定层不该把它挡在值域外；排在 TLS1_2 之前跑，
+        -- 跑完这一段 ctx 的下限与不加这条时一致
+        t:eq(true, core.ssl_min_proto(ssl, TLS_VERSION.AUTO), "ssl_min_proto 收 0(不设下限)")
+        t:eq(true, core.ssl_min_proto(ssl, TLS_VERSION.TLS1_2), "ssl_min_proto 合法版本返 true")
         t:eq(ssl, core.ssl_qury(NAME_PEM), "三个 setter 调完后 ctx 仍在注册表里")
         -- 非法入参必须被绑定层拒（收窄前会被 lua_tointeger 静默转 0）
         t:eq(false, pcall(core.ssl_seclevel, ssl, "x"), "ssl_seclevel 拒非数字")
         t:eq(false, pcall(core.ssl_min_proto, ssl, {}), "ssl_min_proto 拒非数字")
+        -- 值域同样得拒：打错一个字节的版本号（0x0399）落在 TLS1_0..TLS1_3 之外，放过去的话
+        -- OpenSSL 返 0、最低版本原样保持无下限，而业务以为自己已经把下限抬上去了
+        t:eq(false, pcall(core.ssl_min_proto, ssl, 0x0399), "ssl_min_proto 拒表外版本号")
+        t:eq(false, pcall(core.ssl_seclevel, ssl, 99), "ssl_seclevel 拒超上界")
+        t:eq(false, pcall(core.ssl_seclevel, ssl, -1), "ssl_seclevel 拒负数")
+    end
+
+    -- ── core.listen / core.connect: netev 非整数不得静默降级 ───────────
+    -- 用 lua_isinteger 三目取值时，整值浮点（Lua 里 2^2 恒为 float）与任何非数字都会静默变成
+    -- NETEV_NONE：listen 返回合法 id，acp_cb / s_cb 却一个都不装，C 层、Lua 层、日志三处均无提示。
+    -- 三条都在 task_listen 之前抛出，不会真去 bind 端口
+    do
+        t:eq(false, pcall(core.listen, PACK_TYPE.CUSTZ_FIXED, nil, "127.0.0.1", 0, 1.5),
+             "listen netev 非整数浮点报错而不是静默 NETEV_NONE")
+        t:eq(false, pcall(core.listen, PACK_TYPE.CUSTZ_FIXED, nil, "127.0.0.1", 0, "x"),
+             "listen netev 非数字报错")
+        t:eq(false, pcall(core.connect, PACK_TYPE.CUSTZ_FIXED, nil, "127.0.0.1", 0, 1.5),
+             "connect netev 同口径")
+    end
+
+    -- ── core.task_list: 名字装不下时只丢名字，不丢整条 ─────────────────
+    -- _task_entry.name 是 64 字节定长缓冲，而 task 名在 C 层没有任何长度上限。截断的名字不能
+    -- 发出去（调用方拿它去 grab 会命中别的 task），但整条丢掉的话这个 task 在列表里彻底不存在，
+    -- 巡检 / 路由会当它没注册——它明明建得出来、收得到消息、grab 也照样命中
+    do
+        local LONG = string.rep("L", 80)
+        local SHORT = "tasklist_short"
+        t:check(task.register("test.toplevel_bind", LONG, 0) ~= nil, "80 字节名字的 task 注册成功")
+        t:check(task.register("test.toplevel_bind", SHORT, 0) ~= nil, "短名字的 task 注册成功")
+        -- task.handle(nil) 取的是当前 task，grab 结果必须先判空再取句柄，否则匹配到的是自己
+        local long_tk = task.grab(LONG)
+        local short_tk = task.grab(SHORT)
+        local long_h = long_tk and task.handle(long_tk)
+        local short_h = short_tk and task.handle(short_tk)
+        local long_item, short_item
+        for _, item in ipairs(core.task_list()) do
+            if nil ~= long_h and item.handle == long_h then
+                long_item = item
+            elseif nil ~= short_h and item.handle == short_h then
+                short_item = item
+            end
+        end
+        -- 收尾排在断言之前：断言失败会中断本块，两个 task 连同各自的 lua_State 活到进程结束
+        if long_tk then
+            task.close(long_tk)
+            task.ungrab(long_tk)
+        end
+        if short_tk then
+            task.close(short_tk)
+            task.ungrab(short_tk)
+        end
+        t:check(long_tk ~= nil, "80 字节名字的 task 能按名 grab 到")
+        t:check(long_item ~= nil, "超长名字的 task 仍出现在 task_list 里")
+        t:eq(nil, long_item and long_item.name, "超长名字不带 name 字段")
+        t:eq(SHORT, short_item and short_item.name, "短名字照常带 name")
     end
     do
         -- p12_register

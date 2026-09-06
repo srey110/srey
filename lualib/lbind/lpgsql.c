@@ -384,7 +384,7 @@ static int32_t _lpgsql_reader_bool(lua_State *lua) {
         lua_pushboolean(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的整数值（支持 int2/int4/int8）
@@ -401,7 +401,7 @@ static int32_t _lpgsql_reader_integer(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的浮点值（支持 float4/float8）
@@ -418,7 +418,7 @@ static int32_t _lpgsql_reader_double(lua_State *lua) {
         lua_pushnumber(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的文本值
@@ -439,7 +439,7 @@ static int32_t _lpgsql_reader_text(lua_State *lua) {
         lua_pushinteger(lua, lens);
         return 3;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的 BYTEA 值
@@ -460,7 +460,7 @@ static int32_t _lpgsql_reader_bytea(lua_State *lua) {
         lua_pushinteger(lua, lens);
         return 3;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的 TIMESTAMP / TIMESTAMPTZ 值（相对 PG 纪元的微秒数）
@@ -477,7 +477,7 @@ static int32_t _lpgsql_reader_timestamp(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的 DATE 值（相对 PG 纪元的天数）
@@ -494,7 +494,7 @@ static int32_t _lpgsql_reader_date(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 读取当前行指定字段的 UUID 值（16 字节），以 Lua 字符串返回
@@ -514,7 +514,7 @@ static int32_t _lpgsql_reader_uuid(lua_State *lua) {
         lua_pushlstring(lua, uuid, 16);
         return 2;
     }
-    return lpub_rtn_reader(lua, err);
+    return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
 /// 判断当前行指定字段是否为 NULL
@@ -719,7 +719,7 @@ static int32_t _lpgsql_pack_terminate(lua_State *lua) {
 /// <param name="name" type="string">语句名（""= 未命名）</param>
 /// <param name="sql" type="string">SQL 语句</param>
 /// <param name="nparam" type="integer">参数数量，取值 [0, INT16_MAX]，越界报错</param>
-/// <param name="oids" type="integer[]?">OID 整数数组（按参数顺序）；nil 表示由服务端推断</param>
+/// <param name="oids" type="integer[]?">OID 整数数组（按参数顺序），元素数须不少于 nparam、取值 [0, UINT32_MAX]，非整数或越界报错（多余的忽略）；整个参数为 nil 表示全部由服务端推断，只想让某一个推断就把那格写 0</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
@@ -730,10 +730,19 @@ static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
     int16_t i;
     if (LUA_TTABLE == lua_type(lua, 4) && nparam > 0) {
         MALLOC(oids, sizeof(uint32_t) * nparam);
+        int32_t isnum;
+        lua_Integer oid;
         for (i = 0; i < nparam; i++) {
             lua_rawgeti(lua, 4, i + 1);
-            oids[i] = (uint32_t)lua_tointeger(lua, -1);
+            oid = lua_tointegerx(lua, -1, &isnum);
             lua_pop(lua, 1);
+            if (0 == isnum
+                || oid < 0
+                || oid > UINT32_MAX) {
+                FREE(oids);
+                return luaL_error(lua, "oids[%d] must be an integer in [0, UINT32_MAX]", (int32_t)i + 1);
+            }
+            oids[i] = (uint32_t)oid;
         }
     }
     size_t size;
@@ -745,7 +754,8 @@ static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
 /// 打包预处理语句 Bind + Describe + Execute + Sync 消息
 /// </summary>
 /// <param name="name" type="string">语句名</param>
-/// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参</param>
+/// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参。实际绑定个数与 bind.new(nparam)
+/// 声明的不符时报错，理由见 pgsql_pack_stmt_execute</param>
 /// <param name="fmt" type="integer?">结果列格式（0 文本，1 二进制），默认 0；其余值报错</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
@@ -761,6 +771,9 @@ static int32_t _lpgsql_pack_stmt_execute(lua_State *lua) {
     }
     size_t size;
     void *pack = pgsql_pack_stmt_execute(name, bind, fmt, &size);
+    if (NULL == pack) {
+        return luaL_error(lua, "stmt_execute pack failed: bind count mismatch with bind.new(nparam).");
+    }
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -839,7 +852,7 @@ static int32_t _lpgsql_new(lua_State *lua) {
     pgsql_ctx *pg;
     MALLOC(pg, sizeof(pgsql_ctx));
     if (ERR_OK != pgsql_init(pg, ip, port, evssl, user, password, database)) {
-        FREE(pg);
+        SECURE_FREE(pg, sizeof(pgsql_ctx));
         return lpub_rtn_nil(lua, 1);
     }
     ATOMIC_SET(&pg->ref, 1);// Lua 持有者份额

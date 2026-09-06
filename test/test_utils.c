@@ -1608,11 +1608,13 @@ static void test_popen2(CuTest *tc) {
     start_ok = (ERR_OK == popen_startup(&ctx, cmd, "rw"));
     nwrite = popen_write(&ctx, msg, strlen(msg));
     wait_ok = (ERR_OK == popen_waitexit(&ctx, 3000));
+    // 第二次 popen_free 是被测对象不是收尾，断言一律排在它后面：夹在两次 free 之间的话，
+    // 前面任一条挂掉就 longjmp 走了，重复释放这条唯一的覆盖跟着一起丢
+    popen_free(&ctx);
     popen_free(&ctx);
     CuAssertTrue(tc, 0 != start_ok);
     CuAssertTrue(tc, nwrite > 0);
     CuAssertTrue(tc, 0 != wait_ok);
-    popen_free(&ctx);
     CuAssert(tc, "popen_free idempotent: double free must not close the handle twice",
         ERR_FAILED == popen_read(&ctx, buf, sizeof(buf) - 1, NULL));
     CuAssert(tc, "popen_free idempotent: write after free must fail, not write a closed handle",

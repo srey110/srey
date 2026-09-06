@@ -63,16 +63,16 @@ cmqtt.PROP = {
 ---@param port integer 对端端口
 ---@param netev NET_EV? 事件订阅掩码，默认 0
 ---@return integer fd socket fd；失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；仅在 fd 有效时返回
+---@return integer? skid 连接 skid；失败时为 nil，返回值个数恒为 2
 function cmqtt.connect(version, sslname, ip, port, netev)
     local fd, skid = cmqtt.try_connect(version, sslname or SSL_NAME.NONE, ip, port, netev or 0)
     if INVALID_SOCK == fd then
-        return INVALID_SOCK
+        return INVALID_SOCK, nil
     end
     -- wait_connect 内 `if nil ~= ssl` 把 false 视为 truthy 触发 SSL 等待，故显式 or nil 跳过
     local need_ssl = (sslname and SSL_NAME.NONE ~= sslname) or nil
     if not srey.wait_connect(fd, skid, need_ssl) then
-        return INVALID_SOCK
+        return INVALID_SOCK, nil
     end
     return fd, skid
 end

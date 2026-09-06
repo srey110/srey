@@ -57,6 +57,7 @@ SSL_NAME = {
 -- TLS 协议版本；用于 core.ssl_min_proto() 设置最低允许版本
 ---@enum TLS_VERSION
 TLS_VERSION = {
+    AUTO   = 0x0000,-- 不设下限，用库支持的最低版本（OpenSSL 的默认状态）
     TLS1_0 = 0x0301,
     TLS1_1 = 0x0302,
     TLS1_2 = 0x0303,

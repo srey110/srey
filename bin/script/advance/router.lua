@@ -15,8 +15,9 @@
 --   Route:get("/user/{id}", handler)
 --   Route:get("/file/{path?}", handler)          -- 可选参数
 --   Route:post("/user", handler, {"auth"})        -- 路由级中间件（名称或函数）
---   -- 命名路由
+--   -- 命名路由：登记后可用 Route:url 反向生成 URL
 --   Route:get("/user/{id}", handler):name("user.show")
+--   Route:url("user.show", { id = 42, page = 2 })     -- "/user/42?page=2"
 --   -- 流式分组（仿 Laravel prefix/middleware/group 链）
 --   Route:prefix("/api")
 --       :middleware("auth")
@@ -41,7 +42,8 @@
 --       else ctx.buf = nil end                                              -- STREAM_ABORT，只清理
 --   end)
 --   srey.on_recved(function(...) Route:net_recv(...) end)
---   srey.on_closed(function(_, fd, skid) Route:closed(fd, skid) end)
+--   -- 不必接 on_closed：流式路由的 CLOSE 清理已由 Route 自己经 srey.watch_closed 订阅，
+--   -- 而 on_closed 是单槽、后注册者静默覆盖前者，接了反而会顶掉业务自己的回调
 -- ctx 字段:
 --   ctx.fd / ctx.skid / ctx.client
 --   ctx.method  -- "GET" "POST" ...
@@ -77,6 +79,7 @@
 local srey        = require("lib.srey")
 local http        = require("lib.http")
 local _srey_router_new = require("srey.router").new
+local url         = require("srey.url")
 local SLICE_TYPE = srey.SLICE_TYPE
 -- 流式路由的中止通知，与 C 侧 ROUTER_STREAM_ABORT 同值。协议层不会产生这个 slice，
 -- 由 router 自造：流没收齐就没了（连接断 / 同连接又来一个流式首帧 / 回调自己抛异常）
@@ -317,7 +320,7 @@ function Router.new()
         -- [C索引] = {handler, mws, raw}。C 侧索引只增不回收也没有删除接口，add 成功即在此写入，
         -- 中间无失败点，所以 match 命中的 idx 必然取得到 entry
         _routes    = {},
-        _named     = {},    -- 命名路由索引：name → entry，由 :name("key") 写入
+        _named     = {},    -- 命名路由索引：name → entry，由 :name("key") 写入，Router:url 反查
         _global_mw = {},    -- 全局中间件列表，对所有路由生效
         _mw_reg    = {},    -- 具名中间件注册表：name → fun，由 :define() 写入
         _stack     = {},    -- 分组上下文栈，group() 进入时压栈、退出时弹栈
@@ -386,12 +389,17 @@ end
 local _bad_entry = {}
 _bad_entry.name = function(_, n) WARN("router: :name(%s) on rejected entry.", tostring(n)) return _bad_entry end
 
+---@class RouterSeg
+---@field key string  占位符名字；末尾通配为 "*"
+---@field opt boolean 缺参时可否整段丢弃（{x?} 与末尾通配为 true）
+
 ---@class RouteEntry
 ---@field raw     string                          注册时的完整路径（含 prefix），调试用
 ---@field handler fun(ctx:Ctx)                    路由处理函数。注册后只读：首次 dispatch 会把它连同
 ---                                               中间件拼成执行链缓存起来，之后改这个字段不会生效
 ---@field mws     fun(ctx:Ctx,next:fun())[]        路由级中间件列表（分组中间件已静态合并）。
 ---                                               同 handler，注册后只读
+---@field _segs   (string|RouterSeg)[]             注册时 C 侧解析好的段序列，Router:url 回填占位符用
 ---@field _name   string?                         命名路由键，由 :name("key") 写入
 ---@field _chain  fun(ctx:Ctx,next:fun())[]?      dispatch 缓存的执行链（全局中间件+路由级+handler）
 ---@field _chain_ver integer?                     _chain 对应的全局中间件版本号，与 Router._mw_version 不等即重建
@@ -425,7 +433,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
     -- 去重由 C 侧 router_add_index 做：它按 (已注册项的掩码把新掩码整个包住, 匹配意义上的
     -- 段序列) 比对，能覆盖这里用字符串 key 看不出来的两类——先注册的 ANY /x 遮住后注册的
     -- GET /x、/u/{id} 与 /u/{uid} 参数名不同但路由等价。dispatch 取首条命中，被遮的永远够不着
-    local ok, code = self._c_router:add(method, full)
+    local ok, code, csegs = self._c_router:add(method, full)
     if not ok then
         if -2 == code then
             WARN("router: %s '%s' is shadowed by an existing route, this registration is ignored.", method, full)
@@ -441,6 +449,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
         handler  = handler,  -- 普通路由处理函数 fun(ctx)；流式路由为 nil
         on_chunk = on_chunk, -- 流式路由数据回调 fun(ctx, slice, data)；普通路由为 nil
         mws      = mws,      -- 路由级中间件列表（分组中间件已静态合并进来）
+        _segs    = csegs,    -- C 侧解析好的段序列，Router:url 回填占位符用
         _name    = nil,      -- 命名路由键，由 :name("key") 写入
     }
     -- :name("key") 链式命名路由
@@ -608,6 +617,61 @@ function Router:middleware(...)
     return _gb_new(self, "", mws)
 end
 
+-- 通配段是路径余部，里面的 '/' 是真分隔符不能编码，只编码段内内容，空段与首尾斜杠原样留着——
+-- 拆开再拼会把调用方给的值改掉。占位符段不走这条：{id} 取值里的 '/' 必须编成 %2F，
+-- 否则业务给个 "42/admin" 就凭空多出一段
+local function _encode_path(v)
+    return (string.gsub(v, "[^/]+", function(piece)
+        return url.encode(piece, 0)
+    end))
+end
+
+---按名字反向生成 URL：拿注册时 C 侧解析好的段序列回填占位符，params 里没被占位符用掉的键拼成查询串。
+---口径同 Laravel 的 route()：必填占位符缺参报错，可选占位符（{x?}）与末尾通配（*）缺参时整段丢弃。
+---占位符取值与查询串都经 url.encode，路径段用 %20、查询串用 '+' 编码空格；通配段的 '/' 不编码。
+---查询串按 "键=值" 整串排序：Lua 表无序，不排的话同一组参数每个进程给出的 URL 都不一样
+---@param name string :name("key") 登记的名字
+---@param params table<string,any>? 占位符取值；末尾通配取 params["*"]，其余键按查询串附加
+---@return string url 以 "/" 开头的路径，带查询串时以 "?" 分隔
+function Router:url(name, params)
+    local entry = self._named[name]
+    if not entry then
+        error(string.format("router: no named route '%s'", tostring(name)), 2)
+    end
+    params = params or {}
+    local used = {}
+    local segs = {}
+    local csegs = entry._segs
+    local seg, val
+    for i = 1, #csegs do
+        seg = csegs[i]
+        if "string" == type(seg) then
+            segs[#segs + 1] = seg
+        else
+            used[seg.key] = true
+            val = params[seg.key]
+            if nil ~= val then
+                segs[#segs + 1] = ("*" == seg.key) and _encode_path(tostring(val))
+                                                   or url.encode(tostring(val), 0)
+            elseif not seg.opt then
+                error(string.format("router: url('%s') missing param '%s'", name, seg.key), 2)
+            end
+        end
+    end
+    local path = "/" .. table.concat(segs, "/")
+    local qs = {}
+    for k, v in pairs(params) do
+        if not used[k] then
+            qs[#qs + 1] = url.encode(tostring(k)) .. "=" .. url.encode(tostring(v))
+        end
+    end
+    if 0 == #qs then
+        return path
+    end
+    table.sort(qs)
+    return path .. "?" .. table.concat(qs, "&")
+end
+
 ---两条派发入口（一次到齐 / chunked 首帧）共用的前半段：取状态行 → C 侧匹配 → 建 ctx。
 ---方法识别、url_parse、空段过滤、路由扫描全在 C 侧完成，状态码由 C 一处决定（200/400/404/405）。
 ---匹配不上就按那个码回响应；要不要顺带关连接由调用方给 close_on_fail 决定
@@ -730,15 +794,15 @@ function Router:_st_begin(fd, skid, pack, client)
         return
     end
     -- 这条 ctx 要跨帧活到 END/ABORT，而 pack 只在首帧有效：把 headers/body 就地固化下来，
-    -- 之后摘掉 _pack。不固化的话后续帧读 headers 会拿到 nil —— 流式是低频路径，
-    -- 这次急切物化的开销无所谓，换的是"跨帧还读得到请求头"这条既有行为不变
+    -- 首帧回调跑完再摘 _pack（契约说首帧读得到请求头，提前摘 ctx:header 在 START 里恒返 nil）。
+    -- 不固化的话后续帧读 headers 会拿到 nil —— 流式是低频路径，这次急切物化的开销无所谓
     local _ = ctx.headers
     _ = ctx.body
-    ctx._pack = nil
     -- 建记录要排在回调之前：回调里若关连接，也才找得到这条记录
     local rec = { skid = skid, route = route, ctx = ctx }
     self._streams[fd] = rec
     self:_st_call(rec, SLICE_TYPE.START, nil)
+    ctx._pack = nil
 end
 
 -- 流式中间/结束帧：原样把 slice 与数据交给 on_chunk

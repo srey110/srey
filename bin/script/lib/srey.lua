@@ -131,16 +131,19 @@ end
 ---@param copy integer? 1 或缺省=已复制，不释放；0=所有权已转移，须释放
 srey._ud_free_copy = _ud_free_copy
 
----带错误捕获的函数调用；异常时自动打印错误信息和调用栈
----@param func fun(...):any 待调用函数
----@param ... any 函数参数
----@return boolean ok 是否成功
----@return any ... func 的返回值（成功）或错误信息（失败）
+-- xpcall 的错误处理器：打印错误与调用栈后把 err 原样交回，供 xpcall 当第二个返回值
 local function _xpcall_error(err)
     ERROR("%s\n%s.", err, debug.traceback())
     return err
 end
 
+---带错误捕获的函数调用；异常时自动打印错误信息和调用栈。
+---第一个返回值恒为 ok，func 自己的返回值从第二个起——写成 local ok, ret = srey.xpcall(f)
+---会把第二个之后的悄悄丢掉
+---@param func fun(...):any 待调用函数
+---@param ... any 函数参数
+---@return boolean ok 是否成功
+---@return any ... func 的返回值（成功）或错误信息（失败）
 function srey.xpcall(func, ...)
     return xpcall(func, _xpcall_error, ...)
 end
@@ -309,6 +312,7 @@ function srey.fork_wait(funcs)
     if 0 == n then
         return {}
     end
+    -- 协程守卫排在空表早退之后：C 侧 coro_fork_wait 的 n<=0 同样先返回，不看 curco
     if coroutine_running() ~= coro_running then
         error("srey.fork_wait must be called from within a srey coroutine", 2)
     end
@@ -464,8 +468,9 @@ srey.parse_svid = utils.parse_svid
 ---@type fun(data:lightuserdata, size:integer):string?
 srey.ud_str = utils.ud_str
 
----将 C 层 userdata 转换为十六进制字符串（调试用）
----@type fun(data:lightuserdata, size:integer):string
+---将数据转为十六进制字符串（调试用）。data 为字符串时**不得**传 size——lower 紧跟在 data 之后，
+---多传一个就占掉 lower 的位置并报 boolean expected
+---@type fun(data:string|lightuserdata, size:integer?, lower:boolean?):string
 srey.hex = utils.hex
 
 ---获取指定 fd 对端的 IP 地址和端口
@@ -812,20 +817,11 @@ end
 ---广播请求（fire-and-forget RPC）：同一份 data 投递给 N 个 task,各 dst 可独立 task_response 回当前 task
 ---（共用同一 sess）。框架不挂起协程不做聚合,响应到达时触发 srey.on_responsed 回调,业务在回调内据 sess
 ---累计 / 区分。sess 由调用方传入(非 0),典型用法是配合 srey.id() 分配避免与 srey.request 自动 sess 冲突。
----@param dsts TASK_NAME[] 目标 task name 数组；TASK_NAME.NONE 与 grab 失败的项被跳过
----@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的值为框架保留,业务请避开
----@param sess integer 会话 id(非 0),N 个 dst 共用此 sess
----@param data string|lightuserdata|nil 消息内容
----@param size integer? data 为 lightuserdata 时必填
----@param copy integer? 是否复制数据，默认 1
----@return integer valid 实际成功投递的 dst 数（0 表示全部跳过）
-function srey.multi_request(dsts, reqtype, sess, data, size, copy)
-    if 0 == sess then
-        _ud_free_copy(data, copy)
-        error("multi_request sess must be non-zero")
-    end
-    return core.multi_request(dsts, reqtype, sess, data, size, copy)
-end
+---每一条抛出路径(reqtype 越界 / sess 为 0 / dsts 非法)都发生在 C 层取载荷之前,抛出时 copy=0 的
+---载荷所有权仍在调用方手上,须自行 utils.ud_free；无处可投返回 0 那条走到了取载荷之后,由 C 释放。
+---口径同 srey.send_multi。逐参说明见 core.multi_request
+---@type fun(dsts:TASK_NAME[], reqtype:integer, sess:integer, data:string|lightuserdata|nil, size:integer?, copy:integer?):integer
+srey.multi_request = core.multi_request
 
 ---单向广播跨 task 消息（fire-and-forget）：同一份 data 投递给 N 个 task，
 ---C 层 shared_data 引用计数自动释放，比 N 次 srey.call 节省 N-1 份内存拷贝
@@ -1055,15 +1051,15 @@ end
 ---@param ip string 对端 IP
 ---@param port integer 对端端口
 ---@param netev NET_EV? 事件订阅掩码
----@param extra lightuserdata? 协议专用附加参数（如 WebSocket 握手验证 key）
+---@param extra lightuserdata? 协议专用附加参数（如 WebSocket 握手验证 key）；本函数正常返回即所有权
+---已转移 C 层（连接失败也由 C 侧 ud_free 回收），抛出时没转移、仍归调用方释放
 ---@return integer fd socket fd；失败返回 INVALID_SOCK
 ---@return integer? skid 连接 skid；失败为 nil（失败与成功的返回值个数一致，见 lpub_rtn_nil）
 function srey.connect(pktype, sslname, ip, port, netev, extra)
     local ok, ssl = srey.ssl_qury(sslname)
     if not ok then
         WARN("ssl_qury not find ssl name %s.", sslname)
-        -- extra 尚未传给 C 层，由本函数释放；
-        -- 此路径以外 extra 所有权已转移 C 层（ev_connect 失败由 cbs->ud_free 释放）
+        -- extra 尚未传给 C 层，由本函数释放
         if extra then
             utils.ud_free(extra)
         end
@@ -1177,33 +1173,15 @@ end
 
 ---异步发送数据（不等待响应）
 ---发送数据（参数详见 core.send）
----@type fun(fd:integer, skid:integer, data:string|lightuserdata, size:integer?, copy:integer):boolean
+---@type fun(fd:integer, skid:integer, data:string|lightuserdata, size:integer?, copy:integer?):boolean
 srey.send = core.send
 
----多播发送：把同一份 data 零拷贝广播给多个 fd；C 层 shared_data 引用计数自动释放
----@param fds integer[] socket fd 数组
----@param skids integer[] 连接 skid 数组，与 fds 一一配对
----@param data string|lightuserdata 数据
----@param size integer? data 为 lightuserdata 时必填
----@param copy integer? 是否复制数据,默认 1
----@return boolean ok 至少 1 个 fd 投递成功 true
-function srey.send_multi(fds, skids, data, size, copy)
-    -- 所有不进入 core.send_multi 的退出路径都先 utils.ud_free 兜底,
-    -- 避免 C 端 luaL_error longjmp / 空表 return 漏 FREE 调用方已转移的 data
-    if "table" ~= type(fds) or "table" ~= type(skids) then
-        _ud_free_copy(data, copy)
-        error("send_multi fds and skids must be tables")
-    end
-    if #fds ~= #skids then
-        _ud_free_copy(data, copy)
-        error(string.format("send_multi fds and skids length mismatch (%d vs %d)", #fds, #skids))
-    end
-    if 0 == #fds then
-        _ud_free_copy(data, copy)
-        return false
-    end
-    return core.send_multi(fds, skids, data, size, copy)
-end
+---多播发送：把同一份 data 零拷贝广播给多个 fd；C 层 shared_data 引用计数自动释放。
+---每一条抛出路径(fds/skids 非 table / 长度不等 / 元素非整数)都发生在 C 层取载荷之前，抛出时
+---copy=0 的载荷所有权仍在调用方手上，须自行 utils.ud_free；空数组返回 false 那条走到了取载荷
+---之后，由 C 释放。口径同 srey.multi_request。逐参说明见 core.send_multi
+---@type fun(fds:integer[], skids:integer[], data:string|lightuserdata, size:integer?, copy:integer?):boolean
+srey.send_multi = core.send_multi
 
 ---内部辅助：挂起协程等待该 socket 的下一个 RECV 消息（含超时/断开处理）
 ---@param fd integer socket fd

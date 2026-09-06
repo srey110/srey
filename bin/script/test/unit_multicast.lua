@@ -6,6 +6,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local yyjson = require("yyjson")-- yyjson.null 是 NULL lightuserdata，配 size 0 可以走到 copy 校验而不碰缓冲
 local core   = require("srey.core")-- 绕开 srey.lua 的 wrapper，直打 C 层早退分支
+local utils  = require("srey.utils")
 
 -- 端口全仓唯一：15013 是 C 套件 v6only_test 的，那条用例断言"IPv4 侧无人监听"，
 -- 两个二进制同跑时会被这里的 0.0.0.0 监听打成假失败
@@ -29,13 +30,20 @@ runner.run(function(t)
         t:eq(false, ok, "长度不匹配抛 error")
     end
 
-    -- ── 边界: 直接打 C 层的两条早退分支（copy=0，验它把所有权接过去后真的释放了）──
-    -- 上面两条走的是 srey.lua 的 wrapper，C 侧同名分支（405-412 的 CHECK_COPY_FREE）
-    -- 一次都没执行过；漏 free 的话进程退出时 not free 不为 0
+    -- ── 边界: copy=0 的早退分支，验所有权按 C 取载荷的位置一分为二 ──
+    -- 校验全排在取载荷之前，抛出时所有权没转过去，得由这里释放；空数组返 false 那条排在
+    -- 取载荷之后，由 C 释放。任一侧记错账，进程退出时 not free 就不为 0
     do
         local seri = require("srey.seri")
         local buf, sz = seri.pack("multicast-c-branch")
         t:eq(false, pcall(core.send_multi, {1, 2}, {1}, buf, sz, 0), "C 层长度不匹配抛错")
+        utils.ud_free(buf)
+        buf, sz = seri.pack("multicast-c-branch")
+        t:eq(false, pcall(core.send_multi, {1, "x"}, {1, 2}, buf, sz, 0), "C 层元素非整数抛错")
+        utils.ud_free(buf)
+        buf, sz = seri.pack("multicast-c-branch")
+        t:eq(false, pcall(core.send_multi, nil, {1}, buf, sz, 0), "C 层 fds 非 table 抛错")
+        utils.ud_free(buf)
         buf, sz = seri.pack("multicast-c-branch")
         t:eq(false, core.send_multi({}, {}, buf, sz, 0), "C 层空数组返 false")
     end

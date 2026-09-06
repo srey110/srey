@@ -736,6 +736,12 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
         }
         break;
     }
+    case LUA_TLIGHTUSERDATA:
+        if (NULL != lua_touserdata(lua, val_idx)) {
+            luaL_error(lua, "bson encode unsupported light userdata, key '%s'", key);
+        }
+        bson_append_null(bson, key);
+        break;
     case LUA_TUSERDATA:
         if (NULL != luaL_testudata(lua, val_idx, MT_BSON_OID)) {
             lbson_oid_t *ud = lua_touserdata(lua, val_idx);
@@ -759,7 +765,9 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
     }
 }
 /// <summary>
-/// 将 Lua table 编码为 BSON 文档，返回 bson_ctx userdata；顶层始终作为 DOCUMENT，嵌套纯序列 table 作为 ARRAY
+/// 将 Lua table 编码为 BSON 文档，返回 bson_ctx userdata；顶层始终作为 DOCUMENT，嵌套纯序列 table 作为 ARRAY。
+/// nil 与 bson.null 都编成 BSON null。整数 key 串成十进制字符串当字段名，故 [1] 与 "1" 会撞成同一个
+/// 字段名，本函数不查重（同 yyjson.encode），撞了就产出带重复字段的文档、回读只剩其一，调用方自己保证不撞
 /// </summary>
 /// <param name="t" type="table">待编码的 Lua table</param>
 /// <returns type="_bson_ctx">完整 bson 对象，可直接调用 :data() 传给 mongo API</returns>
@@ -779,11 +787,11 @@ static int32_t _lbson_encode(lua_State *lua) {
 }
 // ---- decode 辅助 ----
 static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int32_t is_array, int32_t depth);
-// 将迭代器当前字段解码并写入栈顶 table。
+// 将迭代器当前字段解码并写入栈顶 table，返回是否写入(数组下标据此推进,丢弃的元素不占位)。
 // REGEX / TIMESTAMP / DECIMAL128 / MINKEY / MAXKEY 这几种 Lua 侧没有对应表示，本函数跳过并记一条 DEBUG——
 // 它们能用 bson.new():regex()/:timestamp() 之类写进去，也能用 bson.iter 的同名取值器读出来，
 // 只有 decode 这条路表达不了。MongoDB 应答常带 TIMESTAMP(operationTime / $clusterTime.clusterTime)
-static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_array, int32_t idx, int32_t depth) {
+static int32_t _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_array, int32_t idx, int32_t depth) {
     int32_t err;
     if (is_array) {
         // BSON 数组 key 是 "0","1"...，转为 Lua 1-base 整数索引
@@ -796,7 +804,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         double val = bson_iter_double(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lua_pushnumber(lua, val);
         break;
@@ -805,7 +813,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         const char *val = bson_iter_utf8(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lua_pushlstring(lua, val, iter->lens);
         break;
@@ -814,7 +822,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         const char *val = bson_iter_jscode(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lua_pushlstring(lua, val, iter->lens);
         break;
@@ -824,7 +832,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         char *ddata = bson_iter_document(iter, &dlens, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         _lbson_decode_document(lua, ddata, dlens, 0, depth + 1);
         break;
@@ -834,7 +842,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         char *adata = bson_iter_array(iter, &alens, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         _lbson_decode_document(lua, adata, alens, 1, depth + 1);
         break;
@@ -845,7 +853,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         char *bdata = bson_iter_binary(iter, &subtype, &blens, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lbson_binary_t *ud = lua_newuserdata(lua, sizeof(lbson_binary_t) + blens);
         ud->subtype = subtype;
@@ -860,7 +868,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         char *oid = bson_iter_oid(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lbson_oid_t *ud = lua_newuserdata(lua, sizeof(lbson_oid_t));
         memcpy(ud->data, oid, BSON_OID_LENS);
@@ -871,7 +879,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         int32_t val = bson_iter_bool(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lua_pushboolean(lua, val);
         break;
@@ -880,7 +888,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         int64_t ms = bson_iter_date(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lbson_date_t *ud = lua_newuserdata(lua, sizeof(lbson_date_t));
         ud->ms = ms;
@@ -888,13 +896,13 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         break;
     }
     case BSON_NULL:
-        lua_pop(lua, 1);
-        return;
+        lua_pushlightuserdata(lua, NULL);
+        break;
     case BSON_INT32: {
         int32_t val = bson_iter_int32(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lua_pushinteger(lua, val);
         break;
@@ -903,7 +911,7 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         int64_t val = bson_iter_int64(iter, &err);
         if (ERR_OK != err) {
             lua_pop(lua, 1);
-            return;
+            return 0;
         }
         lbson_int64_t *ud = lua_newuserdata(lua, sizeof(lbson_int64_t));
         ud->val = val;
@@ -916,9 +924,10 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         LOG_DEBUG("bson decode: field \"%s\" type 0x%02X has no lua representation, dropped.",
                   (NULL != iter->key ? iter->key : ""), (uint32_t)iter->type);
         lua_pop(lua, 1);
-        return;
+        return 0;
     }
     lua_rawset(lua, -3);
+    return 1;
 }
 static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int32_t is_array, int32_t depth) {
     luaL_checkstack(lua, 6, "bson decode");
@@ -936,8 +945,7 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
     bson_iter_init(&iter, &sub);
     int32_t idx = 0;
     while (bson_iter_next(&iter)) {
-        _lbson_decode_field(lua, &iter, is_array, idx, depth);
-        idx++;
+        idx += _lbson_decode_field(lua, &iter, is_array, idx, depth);
     }
     if (0 != bson_iter_error(&iter)) {
         // 表里此刻只有卡住那一处之前的前缀,原样交出去调用方分不清"文档就这么几个字段"
@@ -948,8 +956,10 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
 }
 /// <summary>
 /// 将 BSON 数据解码为 Lua table；BSON ARRAY 字段解码为整数 key（1-base）table，DOCUMENT 解码为字符串 key table。
+/// BSON null 解成 bson.null（NULL light userdata，与 yyjson.null 同值），encode 时写回 BSON null。
 /// REGEX / TIMESTAMP / DECIMAL128 / MINKEY / MAXKEY 在 Lua 侧无对应表示，会被**丢弃**并逐个记一条 DEBUG
-/// 日志（不是告警：Mongo 应答几乎都带 TIMESTAMP），结果表里没有那些字段。
+/// 日志（不是告警：Mongo 应答几乎都带 TIMESTAMP），结果表里没有那些字段；落在数组里时后续元素依次前移
+/// 补上空位，故数组长度可能短于原文档，但不留空洞（留洞的话 # 与 ipairs 会在洞处截断）。
 /// 要读它们请改用 bson.iter 的同名取值器（iter:regex() / iter:timestamp() …）。
 /// 遍历中途卡住时报错而不是交出半截结果——那样调用方分不清"文档就这么几个字段"和"后面全丢了"。
 /// 三类成因都会报错：文档结构非法、撞上本实现不认识的类型字节（几个废弃类型，理由与清单
@@ -1079,6 +1089,10 @@ LUAMOD_API int luaopen_bson(lua_State *lua) {
     };
     _lbson_reg_wrapper_mt(lua, MT_BSON_READER, reader_mt);
     REG_MTABLE(lua, MT_BSON, reg_new, reg_func);
+    /// <field name="null" type="lightuserdata">BSON null 的哨兵，本身就是空指针（与 yyjson.null 同值）。
+    /// decode 解出来的每个 BSON null 都是它，encode 时写回 BSON null；别拿去喂吃 lightuserdata 的接口</field>
+    lua_pushlightuserdata(lua, NULL);
+    lua_setfield(lua, -2, "null");
     return 1;
 }
 // ---- bson.iter ----
@@ -1225,7 +1239,8 @@ static int32_t _lbson_iter_utf8(lua_State *lua) {
 /// 读取当前字段的嵌套文档数据
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="lightuserdata?">文档数据指针；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
+/// <returns type="lightuserdata?">文档数据指针；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）。
+/// 这是源 bson 缓冲的**借用**指针，所有权约束同 :data()</returns>
 /// <returns type="integer?">字节数</returns>
 static int32_t _lbson_iter_document(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
@@ -1241,7 +1256,8 @@ static int32_t _lbson_iter_document(lua_State *lua) {
 /// 读取当前字段的数组数据
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
-/// <returns type="lightuserdata?">数组数据指针；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）</returns>
+/// <returns type="lightuserdata?">数组数据指针；类型不符返回 nil（连同后续返回值一并为 nil，共 2 个）。
+/// 这是源 bson 缓冲的**借用**指针，所有权约束同 :data()</returns>
 /// <returns type="integer?">字节数</returns>
 static int32_t _lbson_iter_array(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);
@@ -1258,7 +1274,7 @@ static int32_t _lbson_iter_array(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
 /// <returns type="integer?">bson_subtype 枚举值；类型不符返回 nil（连同后续返回值一并为 nil，共 3 个）</returns>
-/// <returns type="lightuserdata?">数据指针</returns>
+/// <returns type="lightuserdata?">数据指针；这是源 bson 缓冲的**借用**指针，所有权约束同 :data()</returns>
 /// <returns type="integer?">字节数</returns>
 static int32_t _lbson_iter_binary(lua_State *lua) {
     bson_iter *iter = _lbson_iter_check(lua);

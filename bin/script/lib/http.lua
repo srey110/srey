@@ -10,7 +10,6 @@ local srey_http = require("srey.http")
 local json = require("yyjson")
 local table = table
 local string = string
-local math = math
 local type = type
 local HTTP_VERSION = "1.1" -- 固定使用 HTTP/1.1
 -- 头名 / 头值校验取自 C，不在这里重抄：is_token 取 utils.h、head_val_ok 取 http.h
@@ -316,6 +315,10 @@ end
 -- ── 公共 API ──────────────────────────────────────────────────────────────
 
 ---同步 GET 请求
+---
+---与同一连接上的其他请求并发时，须用 srey.serial 把整个调用圈进临界区：分片响应
+---（chunked / 1xx / 既无 Content-Length 又无 Transfer-Encoding）的后续分片会被排在前面的协程
+---拿走，双方各得半截；非分片响应不受影响。口径同 C 侧 coro_slice
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
@@ -336,8 +339,8 @@ end
 ---解包侧拿不到请求方法，故发送前须先把 "HEAD" 登记到连接上（本函数已代劳）；漏登记的后果是
 ---带 Content-Length 的 HEAD 响应被当成有报文体，keep-alive 上会把下一条响应吃掉。
 ---
----登记挂在连接上而不是这一次请求上：本函数与同一连接上的其他请求并发时，须用 srey.serial
----把整个调用圈进临界区，否则那个登记会落到别人的响应上，把它的 body 当作不存在
+---登记挂在连接上而不是这一次请求上，故并发时同样须 srey.serial 圈住（理由见 http.get），
+---否则那个登记会落到别人的响应上，把它的 body 当作不存在
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
@@ -362,6 +365,8 @@ function http.head_req(fd, skid, url, headers)
 end
 
 ---同步 POST 请求；info 为报文体（string/table/function），用法同 _http_msg
+---
+---并发约束同 http.get
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）

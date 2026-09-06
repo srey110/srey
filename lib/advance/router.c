@@ -27,18 +27,7 @@ router_entry *router_##name##_stream(router_ctx *r, const router_group *g,  \
     return router_add_stream(r, g, mask, path, sh, mws, mws_n); \
 }
 
-// 路径段类型
-typedef enum router_seg_type {
-    ROUTER_SEG_LIT,    // 字面量
-    ROUTER_SEG_PARAM,  // {name}    必填路径参数
-    ROUTER_SEG_OPT,    // {name?}   可选路径参数
-    ROUTER_SEG_WILD    // *         末尾通配, 出现即吞掉后续所有请求段
-} router_seg_type;
-// 路径段
-// - LIT:    str 存字面量内容
-// - PARAM:  str 存参数名 (不含花括号)
-// - OPT:    str 存参数名 (不含花括号和问号)
-// - WILD:   str 为 NULL
+// 路径段; str 在各类型下装什么见 router.h 的 router_seg_index。
 // str 由 _router_parse_seg MALLOC, router_free 中逐段 FREE
 typedef struct router_seg {
     uint32_t str_len;
@@ -841,6 +830,20 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
         return rtn;//-1 路径非法 / -2 被已注册路由遮蔽
     }
     return _router_entry_push(r, m, segs, segs_n, segs_nopt);
+}
+int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type *t,
+                         const char **str, uint32_t *str_len) {
+    if (idx < 0
+        || idx >= r->routes_n
+        || k < 0
+        || k >= r->routes[idx].segs_n) {
+        return ERR_FAILED;
+    }
+    router_seg *seg = &r->routes[idx].segs[k];
+    *t = seg->t;
+    *str = seg->str;
+    *str_len = seg->str_len;
+    return ERR_OK;
 }
 // 在已 url_parse 的 ctx->url 上匹配：就地剔除空段（RFC 允许 /a//b）后线性
 // 扫描路由表，方法掩码命中 + 路径匹配，返回首条命中索引，无命中返回 -1

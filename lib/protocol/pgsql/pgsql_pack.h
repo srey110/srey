@@ -58,10 +58,11 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
 /// 打包 Bind + Describe + Execute + Sync 消息，用于执行预处理语句
 /// </summary>
 /// <param name="name">预处理语句名称</param>
-/// <param name="bind">参数绑定上下文，无参数时可为 NULL</param>
+/// <param name="bind">参数绑定上下文，无参数时可为 NULL；实际绑定个数必须等于 pgsql_bind_init 声明的 nparam</param>
 /// <param name="resultformat">结果列的格式（文本或二进制）</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>消息数据指针，调用方负责释放；绑定个数与 nparam 不符时返回 NULL 并把 size 置 0。
+/// 口径同 mysql_pack_stmt_execute</returns>
 void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat, size_t *size);
 /// <summary>
 /// 打包 Close + Sync 消息，用于关闭预处理语句

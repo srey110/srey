@@ -478,11 +478,13 @@ static int32_t _evpub_sock_send_ssl(SSL *ssl, queue_ctx *buf_s, size_t *nsend) {
             lens = MAX_SSL_SEND_SIZE;
         }
         rtn = evssl_send(ssl, (char *)buf->data + buf->offset, lens, &sended);
+        // 记账排在判错之前:evssl_send 跨自己的内部循环累加 sended,失败时先前几轮写出去的字节
+        // 也在里面。非 SSL 那支不必如此,它一次 writev 到底,出错时 sended 恒为 0
+        (*nsend) += sended;
+        buf->offset += sended;
         if (ERR_OK != rtn) {
             break;
         }
-        (*nsend) += sended;
-        buf->offset += sended;
         if (0 == sended) {
             break;
         }

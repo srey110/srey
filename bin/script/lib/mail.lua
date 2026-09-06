@@ -49,8 +49,10 @@ end
 ---@param name string 显示名称
 ---@param email string 邮箱地址
 function ctx:from(name, email)
-    self.sender = email
+    -- 先调 C 再落镜像：反过来的话 C 抛错(已 free / 参数非法)时 self.sender 已经改掉，
+    -- 调用方 pcall 住继续用，MAIL FROM 会用上一个 MIME 头里不存在的发件人
     self.mail:from(name, email)
+    self.sender = email
 end
 
 ---获取发件人邮箱地址
@@ -63,8 +65,8 @@ end
 ---@param email string 收件人邮箱
 ---@param type MAIL_ADDR_TYPE 收件人类型
 function ctx:addrs_add(email, type)
+    self.mail:addrs_add(email, type)-- 顺序同 ctx:from，理由见那里
     table.insert(self.addrs, email)
-    self.mail:addrs_add(email, type)
 end
 
 ---获取收件人邮箱列表（用于 SMTP RCPT TO 命令遍历）
@@ -75,8 +77,8 @@ end
 
 ---清空所有收件人
 function ctx:addrs_clear()
+    self.mail:addrs_clear()-- 顺序同 ctx:from，理由见那里
     self.addrs = {}
-    self.mail:addrs_clear()
 end
 
 ---添加附件
@@ -99,14 +101,14 @@ end
 ---重置邮件内容（主题、正文、收件人、附件、发件人均清空）。
 ---C 侧 mail_clear 会把 reply 标志复位为 1，同一对象复用时若需 No-Reply 须在每次 clear 后重新调 reply(0)
 function ctx:clear()
+    self.mail:clear()-- 顺序同 ctx:from，理由见那里
     self.sender = ""
     self.addrs = {}
-    self.mail:clear()
 end
 
 ---将邮件序列化为 SMTP DATA 正文字节串
----@return lightuserdata? data MIME 字节串指针；取不到熵生成 MIME boundary 时为 nil（此时无第二个返回值）
----@return integer? size 字节数
+---@return lightuserdata? data MIME 字节串指针；取不到熵生成 MIME boundary 时为 nil
+---@return integer? size 字节数；失败时两个返回值都是 nil，个数恒为 2
 function ctx:pack()
     return self.mail:pack()
 end

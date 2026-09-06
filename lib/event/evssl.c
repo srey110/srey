@@ -147,8 +147,8 @@ void evssl_verify(evssl_ctx *evssl, int32_t mod, SSL_verify_cb vcb) {
 void evssl_seclevel(evssl_ctx *evssl, int32_t level) {
     SSL_CTX_set_security_level(evssl->ssl, level);
 }
-void evssl_min_proto(evssl_ctx *evssl, int32_t version) {
-    SSL_CTX_set_min_proto_version(evssl->ssl, version);
+int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version) {
+    return (1 == SSL_CTX_set_min_proto_version(evssl->ssl, version)) ? ERR_OK : ERR_FAILED;
 }
 void evssl_free(evssl_ctx *evssl) {
     SSL_CTX_free(evssl->ssl);
