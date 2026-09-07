@@ -950,6 +950,17 @@ static int32_t _lprot_mail_from(lua_State *lua) {
     return 0;
 }
 /// <summary>
+/// 取发件人邮箱地址
+/// </summary>
+/// <param name="self" type="userdata">邮件对象</param>
+/// <returns type="string">发件人邮箱；没设过发件人时为空串。交出的是存量值——CRLF 已被剔除、
+///   超出 mail_addr.addr 容量的部分已被截掉，与调 from 时传进来的原串可能不同</returns>
+static int32_t _lprot_mail_from_get(lua_State *lua) {
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
+    lua_pushstring(lua, (*ud)->from.addr);
+    return 1;
+}
+/// <summary>
 /// 添加收件人地址
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
@@ -962,6 +973,21 @@ static int32_t _lprot_mail_addrs_add(lua_State *lua) {
     mail_addr_type type = (mail_addr_type)lpub_check_range(lua, 3, TO, BCC, "mail address type out of range (TO/CC/BCC)");
     mail_addrs_add(*ud, email, type);
     return 0;
+}
+/// <summary>
+/// 取全部收件人邮箱，含 TO / CC / BCC，按加入顺序
+/// </summary>
+/// <param name="self" type="userdata">邮件对象</param>
+/// <returns type="string[]">收件人邮箱数组；一个都没加时为空表。每个元素的口径同 from_get</returns>
+static int32_t _lprot_mail_addrs_get(lua_State *lua) {
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
+    uint32_t n = array_size(&(*ud)->addrs);
+    lua_createtable(lua, (int32_t)n, 0);
+    for (uint32_t i = 0; i < n; i++) {
+        lua_pushstring(lua, ((mail_addr *)array_at(&(*ud)->addrs, (int32_t)i))->addr);
+        lua_rawseti(lua, -2, (lua_Integer)i + 1);
+    }
+    return 1;
 }
 /// <summary>
 /// 清空所有收件人列表
@@ -1031,7 +1057,9 @@ LUAMOD_API int luaopen_mail(lua_State *lua) {
         { "msg",  _lprot_mail_msg },
         { "html",  _lprot_mail_html },
         { "from",  _lprot_mail_from },
+        { "from_get",  _lprot_mail_from_get },
         { "addrs_add",  _lprot_mail_addrs_add },
+        { "addrs_get",  _lprot_mail_addrs_get },
         { "addrs_clear",  _lprot_mail_addrs_clear },
         { "attach_add",  _lprot_mail_attach_add },
         { "attach_clear",  _lprot_mail_attach_clear },

@@ -80,8 +80,8 @@ void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t
 /// <summary>SSL 握手完成：完成协议 SSL 初始化并推送 MSG_TYPE_SSLEXCHANGED</summary>
 int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl);
 /// <summary>连接关闭：通知协议层并推送 MSG_TYPE_CLOSE</summary>
-/// <param name="erro">close_type，连接是怎么断的。仅 CLOSE_TYPE_ORDERLY 才认为
-/// "body 由连接关闭界定"的那类消息收完了，其余一律不补末片</param>
+/// <param name="erro">close_type，连接是怎么断的。CLOSE_TYPE_ORDERLY 与 CLOSE_TYPE_TRUNCATED 才认为
+/// "body 由连接关闭界定"的那类消息收完了，其余一律不补末片；后者的末片是否可信由收到 CLOSE 的一方判</param>
 void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, int32_t erro, ud_cxt *ud);
 /// <summary>UDP 接收：打包地址+数据并推送 MSG_TYPE_RECVFROM</summary>
 void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);

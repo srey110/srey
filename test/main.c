@@ -498,7 +498,7 @@ int main(int argc, char *argv[]) {
     }
     uint32_t nclose = get_close_count();
     // 退出时的 CLOSING 广播自己就会记一笔，故 >= 2 才说明 task_close 真跑过
-    PRINT("auto close count: (%u)", nclose);
+    PRINT("auto close count: %u", nclose);
     if (nclose < 2) {
         unit_failed++;
     }

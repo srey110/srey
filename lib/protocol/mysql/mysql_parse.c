@@ -23,7 +23,7 @@ typedef enum eof_final {
     EOF_FINAL_BROKEN    // EOF 包本身截断，按协议错误处理
 }eof_final;
 // 读取当前 offset 处首字节（不前进），用于响应包类型分派
-static uint8_t _mysql_peek(binary_ctx *breader) {
+static inline uint8_t _mysql_peek(binary_ctx *breader) {
     return (uint8_t)(binary_at(breader, breader->offset)[0]);
 }
 // 当前是否为 EOF 包：首字节 0xfe 且包长 < 9（防与 8 字节 lenenc 值混淆）

@@ -81,8 +81,8 @@ function ctx:stop()
 end
 
 ---变更数据推送目标 task
----@param handle integer 目标 task handle(srey.task_handle 取)
----@return boolean ok
+---@param handle integer|string 目标 task：字符串按名字查，整数按句柄直取(srey.task_handle 取)
+---@return boolean ok 名字查不到或会话已 stop 时 false
 function ctx:handle(handle)
     return self.kcp:handle(handle)
 end

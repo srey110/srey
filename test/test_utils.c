@@ -1794,6 +1794,24 @@ static void test_strptime(CuTest *tc) {
     CuAssertIntEquals(tc, 5 - 1,       tm.tm_mon);
     CuAssertIntEquals(tc, 21,          tm.tm_mday);
 
+    /* 日期类递归格式串要把 S_YEAR|S_MON|S_MDAY 报回外层，收尾段才算得出 tm_yday；
+       少报一位这里就停在 0。年月日本身是子解析直接写进 tm 的，验不到这条通路。
+       2024 是闰年，5-21 的 yday = 31+29+31+30+21-1 = 141 */
+    ZERO(&tm, sizeof(tm));
+    CuAssertPtrNotNull(tc, _strptime("2024-05-21", "%F", &tm));
+    CuAssertIntEquals(tc, 141, tm.tm_yday);
+    ZERO(&tm, sizeof(tm));
+    CuAssertPtrNotNull(tc, _strptime("05/21/24", "%D", &tm));
+    CuAssertIntEquals(tc, 141, tm.tm_yday);
+    ZERO(&tm, sizeof(tm));
+    CuAssertPtrNotNull(tc, _strptime("24/05/21", "%x", &tm));
+    CuAssertIntEquals(tc, 141, tm.tm_yday);
+    /* %c 一次报五位，wday 由 %a 直接写、yday 仍走收尾段 */
+    ZERO(&tm, sizeof(tm));
+    CuAssertPtrNotNull(tc, _strptime("Tue May 21 00:00:00 2024", "%c", &tm));
+    CuAssertIntEquals(tc, 141, tm.tm_yday);
+    CuAssertIntEquals(tc, 2,   tm.tm_wday);
+
     /* %b 匹配不上时不得带着未写过的 tm_mon 去跑收尾段(曾越界索引 start_of_month) */
     ZERO(&tm, sizeof(tm));
     tm.tm_mon = 100000;

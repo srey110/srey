@@ -42,7 +42,7 @@
 ---@field live   integer 当前活跃分配数
 
 ---@class TaskListItem
----@field name   string?  task 名；匿名 task、以及名字超 63 字节的 task 无此字段（见 core.task_list）
+---@field name   string?  task 名；匿名 task（task_new 时名字为空）无此字段
 ---@field handle integer  task 句柄
 
 ---@class ParsedURL

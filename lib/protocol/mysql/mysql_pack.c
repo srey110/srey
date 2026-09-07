@@ -75,11 +75,8 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
         _mysql_set_lenenc(&bwriter, 1);//parameter_set_count
         if (count > 0) {
             binary_set_binary(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
-            int8_t bind_flag = 1;
-            binary_set_int8(&bwriter, bind_flag);//new_params_bind_flag
-            if (bind_flag) {
-                binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset);//param_type_and_flag parameter name
-            }
+            binary_set_int8(&bwriter, 1);//new_params_bind_flag,类型恒随包重发所以写死 1
+            binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset);//param_type_and_flag parameter name
             binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
         }
     }
@@ -108,8 +105,8 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     return bwriter.data;
 }
 void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_t *size) {
-    if (stmt->params_count > 0
-        && (NULL == mbind || (size_t)mbind->count != (size_t)stmt->params_count)) {
+    size_t count = (NULL == mbind || mbind->count < 0) ? 0 : (size_t)mbind->count;
+    if (count != (size_t)stmt->params_count) {
         *size = 0;
         return NULL;
     }
@@ -122,28 +119,18 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);//statement_id
     binary_set_int8(&bwriter, 0);//flags
     binary_set_integer(&bwriter, 1, 4, 1);//iteration_count
-    if (stmt->params_count > 0) {
-        size_t count = 0;
-        if (NULL != mbind
-            && 0 != mbind->count) {
-            count = (size_t)mbind->count;
-        }
+    if (count > 0) {
         if (BIT_CHECK(stmt->mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
             _mysql_set_lenenc(&bwriter, count);//parameter_count
         }
-        if (count > 0) {
-            binary_set_binary(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
-            int8_t bind_flag = 1;
-            binary_set_int8(&bwriter, bind_flag);//new_params_bind_flag
-            if (bind_flag) {
-                if (BIT_CHECK(stmt->mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
-                    binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset); //parameter_type parameter_name
-                } else {
-                    binary_set_binary(&bwriter, mbind->type.data, mbind->type.offset);//parameter_type
-                }
-            }
-            binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
+        binary_set_binary(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
+        binary_set_int8(&bwriter, 1);//new_params_bind_flag,类型恒随包重发所以写死 1
+        if (BIT_CHECK(stmt->mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
+            binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset);//parameter_type parameter_name
+        } else {
+            binary_set_binary(&bwriter, mbind->type.data, mbind->type.offset);//parameter_type
         }
+        binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
     }
     if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
         return NULL;

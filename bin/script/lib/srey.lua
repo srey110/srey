@@ -114,8 +114,9 @@ srey.SLICE_TYPE = SLICE_TYPE
 local CLOSE_TYPE = {
     ORDERLY   = 0,  -- 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
     LOCAL     = 1,  -- 本地主动：close / task 拆除 / 发队列溢出 / 解析错误
-    ABORT     = 2,  -- 异常中断：RST、读写错误、SSL 协议错、无 close_notify 的 EOF
-    NEVERCONN = 3   -- 连接/会话从未建立，本消息只为唤醒等待方，不触发 on_closed
+    ABORT     = 2,  -- 异常中断：RST、读写错误、SSL 协议错
+    NEVERCONN = 3,  -- 连接/会话从未建立，本消息只为唤醒等待方，不触发 on_closed
+    TRUNCATED = 4   -- TLS 没发 close_notify 就断了：字节可能已收全，也可能被截断，框架分不出
 }
 srey.CLOSE_TYPE = CLOSE_TYPE
 
@@ -1051,8 +1052,8 @@ end
 ---@param ip string 对端 IP
 ---@param port integer 对端端口
 ---@param netev NET_EV? 事件订阅掩码
----@param extra lightuserdata? 协议专用附加参数（如 WebSocket 握手验证 key）；本函数正常返回即所有权
----已转移 C 层（连接失败也由 C 侧 ud_free 回收），抛出时没转移、仍归调用方释放
+---@param extra lightuserdata? 协议专用附加参数（如 WebSocket 握手验证 key）；所有权一律在本函数内交出——
+---正常返回时归 C 层（连接失败也由 C 侧 ud_free 回收），抛出前本函数已自行释放。调用方无论哪条路径都不要再碰它
 ---@return integer fd socket fd；失败返回 INVALID_SOCK
 ---@return integer? skid 连接 skid；失败为 nil（失败与成功的返回值个数一致，见 lpub_rtn_nil）
 function srey.connect(pktype, sslname, ip, port, netev, extra)
@@ -1067,7 +1068,15 @@ function srey.connect(pktype, sslname, ip, port, netev, extra)
         -- srey.close(srey.connect(...)) 这类转发在失败分支上参数错位
         return INVALID_SOCK, nil
     end
-    local fd, skid = core.connect(pktype, ssl, ip, port, netev, extra, 1)
+    local fd, skid
+    ok, fd, skid = pcall(core.connect, pktype, ssl, ip, port, netev, extra, 1)
+    if not ok then
+        -- core.connect 的入参检查都排在取 extra 之前，抛到这里说明所有权还没交出去
+        if extra then
+            utils.ud_free(extra)
+        end
+        error(fd, 0)
+    end
     if INVALID_SOCK == fd then
         WARN("connect %s:%d error.", ip, port)
         return INVALID_SOCK, nil

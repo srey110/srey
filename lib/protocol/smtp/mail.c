@@ -251,6 +251,38 @@ static void _mail_set_header_text(binary_ctx *bw, const char *s) {
         }
     }
 }
+// 头字段参数值（Content-Type 的 name= 与 Content-Disposition 的 filename=）。纯 ASCII 且不含
+// quoted-string 转义字符时裸写引号形式，否则按 RFC 2231 编成 key*=UTF-8''<百分号编码>。
+// 不能改走 _mail_set_header_text：RFC 2047 §5 禁止 encoded-word 出现在 quoted-string 里。
+// 编码集取 RFC 3986 unreserved，它是 RFC 2231 attribute-char 的子集，多编几个字符合法
+static void _mail_set_header_param(binary_ctx *bw, const char *key, const char *val) {
+    size_t lens = strlen(val);
+    if (!_mail_has_nonascii(val, lens)
+        && NULL == strpbrk(val, "\"\\")) {
+        binary_set_va(bw, "%s=\"%s\"", key, val);
+        return;
+    }
+    static const char hexchars[] = "0123456789ABCDEF";
+    unsigned char c;
+    char pct[3];
+    binary_set_va(bw, "%s*=" MIME_CHARSET "''", key);
+    for (size_t i = 0; i < lens; i++) {
+        c = (unsigned char)val[i];
+        if ((c >= 'A' && c <= 'Z')
+            || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9')
+            || '-' == c
+            || '.' == c
+            || '_' == c) {
+            binary_set_binary(bw, val + i, 1);
+            continue;
+        }
+        pct[0] = '%';
+        pct[1] = hexchars[c >> 4];
+        pct[2] = hexchars[c & 15];
+        binary_set_binary(bw, pct, sizeof(pct));
+    }
+}
 // 发件人显示名。RFC 5322 §3.4 的 display-name 是 phrase：只由 atom 组成时可以裸写，
 // 一旦含 specials（RFC 5322 §3.2.3 的 ()<>[]:;@\,." 这几个）就必须整体加引号——
 // 否则 "Doe, John <a@b>" 会被解析成 "Doe" 与 "John <a@b>" 两个地址。
@@ -379,7 +411,7 @@ char *mail_pack(mail_ctx *mail) {
         _mail_set_header_text(&bwriter, mail->subject);
     }
     // 空行终止头部
-    binary_set_binary(&bwriter, "\r\n\r\n", 4);
+    binary_set_binary(&bwriter, CONCAT2(FLAG_CRLF, FLAG_CRLF), CRLF_SIZE * 2);
     if (multipart) {
         binary_set_va(&bwriter, "This is a MIME encapsulated message\r\n\r\n--%s\r\n", boundary);
         if (EMPTYSTR(mail->html)) {
@@ -407,9 +439,13 @@ char *mail_pack(mail_ctx *mail) {
         for (uint32_t i = 0; i < nattach; i++) {
             att = array_at(&mail->attach, i);
             binary_set_va(&bwriter, "Content-Type: %s;\r\n", contenttype(att->extension));
-            binary_set_va(&bwriter, "\tname=\"%s\"\r\n", att->file);
+            binary_set_binary(&bwriter, "\t", 1);
+            _mail_set_header_param(&bwriter, "name", att->file);
+            binary_set_binary(&bwriter, FLAG_CRLF, CRLF_SIZE);
             binary_set_va(&bwriter, "%s", "Content-Transfer-Encoding: base64\r\n");
-            binary_set_va(&bwriter, "Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", att->file);
+            binary_set_va(&bwriter, "%s", "Content-Disposition: attachment; ");
+            _mail_set_header_param(&bwriter, "filename", att->file);
+            binary_set_binary(&bwriter, CONCAT2(FLAG_CRLF, FLAG_CRLF), CRLF_SIZE * 2);
             _mail_set_b64(&bwriter, att->content);
             if (i + 1 == nattach) {
                 binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", boundary);

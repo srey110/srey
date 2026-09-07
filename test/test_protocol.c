@@ -4611,8 +4611,8 @@ static void _tillclose_enter(CuTest *tc, buffer_ctx *buf, ud_cxt *ud) {
     CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_START));
     _http_pkfree(pack);
 }
-// close_type 门禁：规则 7 的 body 没有长度可校验，只有对端有序结束才补末片；
-// 截断时补末片就等于把半条 body 报成完整的
+// close_type 门禁：规则 7 的 body 没有长度可校验。有序结束与 TLS 无 close_notify 断开(TRUNCATED)
+// 都补末片，后者是否可信由业务看 CLOSE 的 erro 自己判；真出错的那两档补末片就等于把半条 body 报成完整的
 static void test_prots_net_close_tail_gate(CuTest *tc) {
     prots_init(&g_stub_emit);
     buffer_ctx buf;
@@ -4630,13 +4630,22 @@ static void test_prots_net_close_tail_gate(CuTest *tc) {
     CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
     CuAssertIntEquals(tc, CLOSE_TYPE_ORDERLY, g_stub_last_msg.erro);
 
-    // 2) 异常中断 / 本地主动：只有 CLOSE，业务在分片循环里拿到失败而不是"收完了"
+    // 2) TLS 没发 close_notify 就断：同样补末片，但 CLOSE 上的 erro 是 TRUNCATED
+    _tillclose_enter(tc, &buf, &ud);
+    g_stub_emit_calls = 0;
+    prots_net_close(NULL, INVALID_SOCK, 2, 1, CLOSE_TYPE_TRUNCATED, &ud);
+    CuAssertIntEquals(tc, 2, g_stub_emit_calls);
+    CuAssertIntEquals(tc, PROT_SLICE_END, (int)g_stub_first_msg.slice);
+    _http_pkfree(g_stub_first_msg.data);
+    CuAssertIntEquals(tc, CLOSE_TYPE_TRUNCATED, g_stub_last_msg.erro);
+
+    // 3) 异常中断 / 本地主动：只有 CLOSE，业务在分片循环里拿到失败而不是"收完了"
     int32_t types[] = { CLOSE_TYPE_ABORT, CLOSE_TYPE_LOCAL };
     size_t i;
     for (i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
         _tillclose_enter(tc, &buf, &ud);
         g_stub_emit_calls = 0;
-        prots_net_close(NULL, INVALID_SOCK, 2 + (uint64_t)i, 1, types[i], &ud);
+        prots_net_close(NULL, INVALID_SOCK, 3 + (uint64_t)i, 1, types[i], &ud);
         CuAssertIntEquals(tc, 1, g_stub_emit_calls);
         CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
         CuAssertIntEquals(tc, types[i], g_stub_last_msg.erro);
@@ -5579,6 +5588,74 @@ static void test_mail_attach_pack(CuTest *tc) {
     CuAssertTrue(tc, filename_hits >= 2);
 }
 
+// 附件名含非 ASCII：RFC 5322 §2.2 只许头字段体是 US-ASCII，而 smtp.c 从不协商 SMTPUTF8，
+// 裸 UTF-8 名到严格 MTA 上会被拒或改写。主题走的 RFC 2047 encoded-word 在这里用不了——
+// §5 明确禁止它出现在 quoted-string 内，参数值只能按 RFC 2231 编成 filename*=UTF-8''
+static void test_mail_attach_name_rfc2231(CuTest *tc) {
+    const char *dir = procpath();
+    char tmpfile[PATH_LENS];
+    SNPRINTF(tmpfile, sizeof(tmpfile), "%s%stest_mail_2231.txt", dir, PATH_SEPARATORSTR);
+    FILE *fp = fopen(tmpfile, "wb");
+    CuAssertPtrNotNull(tc, fp);
+    size_t nwrite = fwrite("x", 1, 1, fp);
+    fclose(fp);
+
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "attach");
+    mail_msg(&mail, "body");
+    mail_attach_add(&mail, tmpfile);
+    int32_t natt = (int32_t)array_size(&mail.attach);
+
+    // 直接改 att->file，不去造一个 UTF-8 文件名的真文件：磁盘文件名编码各平台不同，
+    // 这里要测的只是组包侧怎么写这个字段。"报表.pdf"
+    mail_attach *att = (1 == natt) ? array_at(&mail.attach, 0) : NULL;
+    if (NULL != att) {
+        SNPRINTF(att->file, sizeof(att->file), "%s", "\xe6\x8a\xa5\xe8\xa1\xa8.pdf");
+    }
+    char *pkt = mail_pack(&mail);
+    int32_t pkt_ok = (NULL != pkt);
+    int32_t ext_ok = 0, raw_ok = 0, ascii_ok = 1;
+    const char *q;
+    if (pkt_ok) {
+        // name*= 要带上前导 tab 才验得到 Content-Type 那行——不带的话
+        // 这个子串被下面 filename*= 那条整个包含，等于白判
+        ext_ok = (NULL != strstr(pkt, "Content-Disposition: attachment; filename*=utf-8''%E6%8A%A5%E8%A1%A8.pdf")
+            && NULL != strstr(pkt, "\tname*=utf-8''%E6%8A%A5%E8%A1%A8.pdf"));
+        raw_ok = (NULL == strstr(pkt, "\xe6\x8a\xa5\xe8\xa1\xa8.pdf"));
+        // 主题走 encoded-word、正文与附件走 base64，所以整封信应当逐字节都是 7bit
+        for (q = pkt; '\0' != *q; q++) {
+            if (0 != (0x80 & (unsigned char)*q)) {
+                ascii_ok = 0;
+                break;
+            }
+        }
+    }
+    FREE(pkt);
+
+    // 纯 ASCII 名不该被一起编码，仍走引号形式
+    if (NULL != att) {
+        SNPRINTF(att->file, sizeof(att->file), "%s", "plain.pdf");
+    }
+    pkt = mail_pack(&mail);
+    int32_t quoted_ok = (NULL != pkt
+        && NULL != strstr(pkt, "Content-Disposition: attachment; filename=\"plain.pdf\"")
+        && NULL == strstr(pkt, "filename*="));
+    FREE(pkt);
+    mail_free(&mail);
+    remove(tmpfile);
+
+    CuAssertTrue(tc, 1 == nwrite);
+    CuAssertIntEquals(tc, 1, natt);
+    CuAssertTrue(tc, 0 != pkt_ok);
+    CuAssertTrue(tc, 0 != ext_ok);
+    CuAssertTrue(tc, 0 != raw_ok);
+    CuAssertTrue(tc, 0 != ascii_ok);
+    CuAssertTrue(tc, 0 != quoted_ok);
+}
+
 // 握手回传桩，_smtp_ud_setup 每个用例都装一次。_smtp_connected 与 _smtp_auth_check 在被
 // 服务端拒绝时会把原文推给上层，而纯解析测试没起 loader，不装桩这条路没人收载荷。
 // 生产路径由 task 接管并释放，这里桩自己收，免得 MEMORY_CHECK 报泄漏
@@ -6109,4 +6186,5 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_prots_may_resume_websock_mqtt);
     SUITE_ADD_TEST(suite, test_mail_html_and_clear);
     SUITE_ADD_TEST(suite, test_mail_attach_pack);
+    SUITE_ADD_TEST(suite, test_mail_attach_name_rfc2231);
 }

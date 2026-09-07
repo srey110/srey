@@ -151,10 +151,13 @@ static const unsigned char *_find_string(const unsigned char *bp, int *tgt, cons
     /* Nothing matched */
     return NULL;
 }
-char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
+// state 由子解析回传:%c/%F/%R/%r/%T/%X/%x/%D 递归的子格式串产生哪些字段,只有子解析自己知道。
+// 回传即免去"格式串与掩码两处同步"的耦合——改 HERE_* 那几个格式串不必再记得改掩码。
+// outstate 只在成功返回时写;失败时 bp 已为 NULL,外层立刻结束,state 本来就被丢弃
+static char *_strptime_st(const char *buf, const char *fmt, struct tm *tm, int *outstate) {
     unsigned char c;
     const unsigned char *bp, *ep, *zname;
-    int alt_format, i, split_year = 0, neg = 0, state = 0,
+    int alt_format, i, split_year = 0, neg = 0, state = 0, substate = 0,
         day_offset = -1, week_offset = 0, offs, mandatory, year;
     const char *new_fmt;
     time_t sse;
@@ -201,26 +204,22 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'c':/* Date and time, using the locale's format. */
                 //            new_fmt = _TIME_LOCALE(loc)->d_t_fmt;
         new_fmt = HERE_D_T_FMT;
-        state |= S_WDAY | S_MON | S_MDAY | S_YEAR | S_HOUR;
         goto recurse;
 
     case 'F':/* The date as "%Y-%m-%d". */
         new_fmt = "%Y-%m-%d";
         LEGAL_ALT(0);
-        state |= S_MON | S_MDAY | S_YEAR;
         goto recurse;
 
     case 'R':/* The time as "%H:%M". */
         new_fmt = "%H:%M";
         LEGAL_ALT(0);
-        state |= S_HOUR;
         goto recurse;
 
     case 'r':/* The time in 12-hour clock representation. */
                 //            new_fmt = _TIME_LOCALE(loc)->t_fmt_ampm;
         new_fmt = HERE_T_FMT_AMPM;
         LEGAL_ALT(0);
-        state |= S_HOUR;
         goto recurse;
 
     case 'X':/* The time, using the locale's format. */
@@ -229,11 +228,12 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'T':/* The time as "%H:%M:%S". */
         new_fmt = HERE_T_FMT;
         LEGAL_ALT(0);
-        state |= S_HOUR;
 
     recurse:
-        bp = (const unsigned char *)_strptime((const char *)bp,
-            new_fmt, tm);
+        substate = 0;
+        bp = (const unsigned char *)_strptime_st((const char *)bp,
+            new_fmt, tm, &substate);
+        state |= substate;
         LEGAL_ALT(ALT_E);
         continue;
 
@@ -244,11 +244,12 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     {
         new_fmt = ('D' == c) ? POSIX_D_FMT : HERE_D_FMT;
         LEGAL_ALT(0);
-        state |= S_MON | S_MDAY | S_YEAR;
         year = split_year ? tm->tm_year : 0;
 
-        bp = (const unsigned char *)_strptime((const char *)bp,
-            new_fmt, tm);
+        substate = 0;
+        bp = (const unsigned char *)_strptime_st((const char *)bp,
+            new_fmt, tm, &substate);
+        state |= substate;
         LEGAL_ALT(ALT_E);
         tm->tm_year += year;
         if (split_year && tm->tm_year % (2000 - TM_YEAR_BASE) <= 68)
@@ -743,5 +744,10 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
         }
     }
 
+    *outstate = state;
     return (char*)bp;
+}
+char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
+    int state = 0;
+    return _strptime_st(buf, fmt, tm, &state);
 }

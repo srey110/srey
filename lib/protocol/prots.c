@@ -415,10 +415,12 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cl
     return rtn;
 }
 // 关连接时补末片：只有"由连接关闭界定 body"的协议有这回事，且必须在 prots_closed 清状态之前跑。
-// 仅 CLOSE_TYPE_ORDERLY 才认为那类消息收完了，其余一律不补
+// ORDERLY 与 TRUNCATED 才认为那类消息收完了，其余一律不补。TRUNCATED 也补是因为 TLS 少发一个
+// close_notify 与真被截断在本层分不出，末片照给，信不信由收到 CLOSE 的一方按 erro 自行判
 static inline void _prots_emit_close_tail(void *target, SOCKET fd, uint64_t skid, int32_t client,
                                    int32_t erro, ud_cxt *ud) {
-    if (CLOSE_TYPE_ORDERLY != erro) {
+    if (CLOSE_TYPE_ORDERLY != erro
+        && CLOSE_TYPE_TRUNCATED != erro) {
         return;
     }
     const prot_vtbl *v = _prots_vtbl(ud->pktype);

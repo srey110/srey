@@ -346,7 +346,7 @@ static void test_mysql_pack_stmt_prepare(CuTest *tc) {
 /* =======================================================================
  * mysql_pack_stmt_execute —— COM_STMT_EXECUTE = 0x17
  * 无参数情形：固定 14 字节（4 head + 1 cmd + 4 stmt_id + 1 flags + 4 iter）
- * 参数数量与 mbind->count 不一致 → 返回 NULL
+ * 参数数量与 mbind->count 不一致 → 返回 NULL（含 params_count=0 却带了绑定）
  * ======================================================================= */
 static void test_mysql_pack_stmt_execute(CuTest *tc) {
     mysql_ctx mysql;
@@ -403,6 +403,12 @@ static void test_mysql_pack_stmt_execute(CuTest *tc) {
     /* 包含参数 payload 应比无参情形大 */
     CuAssertTrue(tc, size > 14);
     FREE(pack);
+
+    /* 声明 0 个参数却带了绑定 → 拒绝。以前守卫整条以 params_count>0 为前提，
+       这一路直接漏过去，绑定被静默丢弃而服务端只看到一条无参 EXECUTE */
+    pack = mysql_pack_stmt_execute(&stmt0, &mb, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
     mysql_bind_free(&mb);
 }
 

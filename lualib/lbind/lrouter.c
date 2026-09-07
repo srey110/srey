@@ -53,9 +53,9 @@ static void _lrouter_push_segs(lua_State *lua, router_ctx *r, int32_t idx) {
 /// <returns type="boolean">true=注册成功；false=被拒</returns>
 /// <returns type="integer">成功时是路由索引（≥0）；失败时是 router_add_index 的失败码
 /// （-1 路径非法或方法未知，-2 已有等价路由把它遮住），调用方据此给出不同提示</returns>
-/// <returns type="(string|RouterSeg)[]?">段序列，仅注册成功时返回：字面量段是字符串，
-/// 占位符段是 { key = 名字, opt = 是否可选 }（末尾通配的 key 为 "*"）。反向生成 URL 用它，
-/// 别再照路径模板自己解析一遍 —— 段语法只有 C 侧一份</returns>
+/// <returns type="(string|RouterSeg)[]?">段序列，注册失败时为 nil：字面量段是字符串，
+/// 占位符段是 { key = 名字, opt = 是否可选 }（末尾通配的 key 为 "*"；占位符名字只认 \w，
+/// 故与它撞不上）。反向生成 URL 用它，别再照路径模板自己解析一遍 —— 段语法只有 C 侧一份</returns>
 static int32_t _lrouter_add(lua_State *lua) {
     LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
     size_t mlen;
@@ -66,7 +66,8 @@ static int32_t _lrouter_add(lua_State *lua) {
     lua_pushboolean(lua, idx >= 0);
     lua_pushinteger(lua, idx);// 成功是索引，失败是失败码
     if (idx < 0) {
-        return 2;
+        lua_pushnil(lua);// 补齐到与成功路径同样 3 个返回值，规矩见 lpub_rtn_nil
+        return 3;
     }
     _lrouter_push_segs(lua, *pr, idx);
     return 3;

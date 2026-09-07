@@ -328,30 +328,34 @@ function Router.new()
         -- 正在接收的流式请求：[fd] = {skid, route, ctx}。只按 fd 索引、把 skid 存进记录里比对，
         -- 省掉每帧一个 "fd:skid" 字符串键；fd 被新连接复用时 skid 对不上，当没有记录处理
         _streams   = {},
-        _st_watched = false,-- 是否已订阅 CLOSE，见 _watch_closed_once
     }, Router)
     return r
 end
 
+-- 注册过流式路由的 router 集合。弱键：业务丢掉一个 router 后它就可回收，不被下面那个
+-- 常驻闭包钉住。srey.fork 只往队列追加、本条消息末尾才起，故遍历期间没有用户代码插键
+local stream_routers = setmetatable({}, { __mode = "k" })
+local st_watching = false
 -- 自订阅连接关闭：流式请求上下文只有 _st_drop 能回收，而 srey.on_closed 是单槽、库抢不到，
 -- 漏接就是每条没收齐的 chunked 请求常驻约 5KB 直到进程退出。业务仍可照常用 on_closed。
--- watch_closed 没有反注册，故推迟到第一条流式路由才订：没有流式路由的 router 不占位
+-- watch_closed 没有反注册，故整个模块只订一次：没有流式路由的 router 不占位，有的也只进弱键表
 function Router:_watch_closed_once()
-    if self._st_watched then
+    stream_routers[self] = true
+    if st_watching then
         return
     end
-    self._st_watched = true
-    local r = self
+    st_watching = true
     srey.watch_closed(function(_, fd, skid)
-        if nil == r._streams[fd] then
-            return
+        for r in pairs(stream_routers) do
+            if nil ~= r._streams[fd] then
+                -- 观察者由 _net_close_dispatch 在主线程直接调，不在协程里，而 _st_drop 要回调用户
+                -- 的 on_chunk(ABORT)——它在其余三条路径上都是可挂起的，这里 fork 出协程保持一致。
+                -- fd 被新连接复用时 _st_drop 按 skid 比对，认不出就不动
+                srey.fork(function()
+                    r:_st_drop(fd, skid)
+                end)
+            end
         end
-        -- 观察者由 _net_close_dispatch 在主线程直接调，不在协程里，而 _st_drop 要回调用户的
-        -- on_chunk(ABORT)——它在其余三条路径上都是可挂起的，这里 fork 出协程保持一致。
-        -- 推迟到本条消息末尾才跑：fd 被新连接复用时 _st_drop 按 skid 比对，认不出就不动
-        srey.fork(function()
-            r:_st_drop(fd, skid)
-        end)
     end)
 end
 
@@ -390,7 +394,7 @@ local _bad_entry = {}
 _bad_entry.name = function(_, n) WARN("router: :name(%s) on rejected entry.", tostring(n)) return _bad_entry end
 
 ---@class RouterSeg
----@field key string  占位符名字；末尾通配为 "*"
+---@field key string  占位符名字；末尾通配为 "*"（占位符名字只认 \w，与它撞不上）
 ---@field opt boolean 缺参时可否整段丢弃（{x?} 与末尾通配为 true）
 
 ---@class RouteEntry
@@ -844,8 +848,8 @@ function Router:net_recv(pktype, fd, skid, client, slice, data, size)
     return self:_st_feed(fd, skid, data, slice)
 end
 
----连接关闭时清掉该连接尚未收齐的流式请求。注册第一条流式路由时已经经 srey.watch_closed
----自订阅，正常不必再调；留作自己接管 CLOSE 分发（不走 srey 的分发器）时的手动入口。
+---连接关闭时清掉该连接尚未收齐的流式请求。本模块注册第一条流式路由时已经经 srey.watch_closed
+---自订阅（模块级，只订一次），正常不必再调；留作自己接管 CLOSE 分发（不走 srey 的分发器）时的手动入口。
 ---回收前会投一次 STREAM_ABORT
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid

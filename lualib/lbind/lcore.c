@@ -8,13 +8,13 @@
 typedef struct {
     int32_t    count; // grab 成功数;0 表示无处可投
     int32_t    copy;  // 载荷 copy 语义,透传给 task_multi_*
+    size_t     size;  // 载荷字节数
     task_ctx **dsts;  // grab 到的目标数组
     void      *data;  // 载荷,可为 NULL
-    size_t     size;  // 载荷字节数
 }_multi_args;
 typedef struct _task_entry {
+    char  *name; // strdup 的任务名，匿名 task 为 NULL；押进 Lua 表后即 FREE
     name_t handle;
-    char name[64];
 }_task_entry;
 
 
@@ -665,24 +665,21 @@ static int32_t _lcore_message_str(lua_State *lua) {
     return 1;
 }
 // task_list 收集回调：仅存入 C 数组，不调 Lua API，避免 OOM longjmp 绕过 rwlock 解锁。
-// 容量翻倍交给 array_push_back；名字用 safe_fill_str 填（NULL 写空串，装不下即失败不写）
+// 名字必须在锁内拷走：task->name 出锁后随 task 一起可能被释放。拷贝由 _lcore_task_list 押完即 FREE
 static void _lcore_task_list_collect(const char *name, name_t handle, void *arg) {
-    // 整体清零再填:下面按 sizeof 整块 memcpy 进数组,name 里 NUL 之后的字节与结构体
-    // 对齐填充不清就是复制未初始化内存
+    // 清零承重在 name 上:名字为空时下面那个分支不跑,不清零就是把野指针整块 memcpy 进数组
     _task_entry entry = { 0 };
     entry.handle = handle;
-    if (ERR_OK != safe_fill_str(entry.name, sizeof(entry.name), name)) {
-        // 名字比缓冲长:只丢名字不丢这一条。截断的名字不能发出去(调用方拿它去 grab 会查到别的
-        // task),但整条丢掉的话这个 task 在列表里彻底不存在,巡检 / 路由会当它没注册
-        LOG_WARN("task_list: task name exceeds %zu bytes, name dropped.", sizeof(entry.name) - 1);
+    if (!EMPTYSTR(name)) {
+        entry.name = dup_zero(name, strlen(name));
     }
     array_push_back((array_ctx *)arg, &entry);
 }
 /// <summary>
 /// 枚举当前 loader 已注册的所有 task（C 层列表）
 /// </summary>
-/// <returns type="TaskListItem[]">task 列表；无 task 时为空表。名字超 63 字节的 task 只交出 handle、
-/// 不带 name（截断的名字拿去 grab 会命中别的 task），另打一条 WARN</returns>
+/// <returns type="TaskListItem[]">task 列表；无 task 时为空表。匿名 task（task_new 时名字为空）
+/// 只交出 handle、不带 name</returns>
 static int32_t _lcore_task_list(lua_State *lua) {
     array_ctx arr;
     array_init(&arr, sizeof(_task_entry), 128);
@@ -693,9 +690,10 @@ static int32_t _lcore_task_list(lua_State *lua) {
     for (uint32_t i = 0; i < n; i++) {
         entry = (_task_entry *)array_at(&arr, (int32_t)i);
         lua_newtable(lua);
-        if ('\0' != entry->name[0]) {
+        if (NULL != entry->name) {
             lua_pushstring(lua, entry->name);
             lua_setfield(lua, -2, "name");
+            FREE(entry->name);
         }
         lua_pushinteger(lua, (lua_Integer)entry->handle);
         lua_setfield(lua, -2, "handle");

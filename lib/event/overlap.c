@@ -370,7 +370,7 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     // 先记再往下走：下面 _olp_wantwrite / _olp_post_recv 会覆写 rtn，那是本地投递失败，不是对端关的
     if (ERR_OK != rtn) {
         _evpub_mark_close(&oltcp->status, rtn);
-        return rtn;
+        return ERR_FAILED;// 分类已进 status, 不透传 evssl_* 的 1/2(口径同 _olp_tcp_send)
     }
 #if WITH_SSL
     if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_WRITE)) {// 处理 KeyUpdate 触发可写

@@ -16,14 +16,11 @@ MAIL_ADDR_TYPE = {
 }
 
 -- smtp_mail_ctx：单封邮件的构造上下文。
--- self.sender：发件人邮箱地址（供 SMTP MAIL FROM 命令使用）。
--- self.addrs ：收件人邮箱列表（供 SMTP RCPT TO 命令使用）。
--- self.mail  ：C 层邮件对象，负责 MIME 格式化。
+-- self.mail：C 层邮件对象，负责 MIME 格式化。发件人与收件人只存在它里面，本层不留副本——
+-- 留了就得跟 C 侧的 CRLF 净化与定长截断一直对齐，两份状态迟早分叉。
 local ctx = class("smtp_mail_ctx")
 function ctx:ctor()
-    self.sender = ""
-    self.addrs  = {}
-    self.mail   = mail.new()
+    self.mail = mail.new()
 end
 
 ---设置邮件主题
@@ -45,40 +42,35 @@ function ctx:html(html)
     self.mail:html(html)
 end
 
----设置发件人；email 同时缓存到 self.sender 供 SMTP MAIL FROM 使用
+---设置发件人
 ---@param name string 显示名称
 ---@param email string 邮箱地址
 function ctx:from(name, email)
-    -- 先调 C 再落镜像：反过来的话 C 抛错(已 free / 参数非法)时 self.sender 已经改掉，
-    -- 调用方 pcall 住继续用，MAIL FROM 会用上一个 MIME 头里不存在的发件人
     self.mail:from(name, email)
-    self.sender = email
 end
 
----获取发件人邮箱地址
----@return string email 发件人邮箱
+---获取发件人邮箱地址，供 SMTP MAIL FROM 使用
+---@return string email 发件人邮箱；交出的是 C 侧存量值，CRLF 已剔除、过长已截断
 function ctx:from_get()
-    return self.sender
+    return self.mail:from_get()
 end
 
----添加一个收件人；email 同时追加到 self.addrs 供上层 SMTP RCPT TO 遍历
+---添加一个收件人
 ---@param email string 收件人邮箱
 ---@param type MAIL_ADDR_TYPE 收件人类型
 function ctx:addrs_add(email, type)
-    self.mail:addrs_add(email, type)-- 顺序同 ctx:from，理由见那里
-    table.insert(self.addrs, email)
+    self.mail:addrs_add(email, type)
 end
 
----获取收件人邮箱列表（用于 SMTP RCPT TO 命令遍历）
----@return string[] addrs 收件人邮箱数组
+---获取收件人邮箱列表（用于 SMTP RCPT TO 命令遍历），含 TO / CC / BCC，按加入顺序
+---@return string[] addrs 收件人邮箱数组；每个元素的口径同 from_get
 function ctx:addrs_get()
-    return self.addrs
+    return self.mail:addrs_get()
 end
 
 ---清空所有收件人
 function ctx:addrs_clear()
-    self.mail:addrs_clear()-- 顺序同 ctx:from，理由见那里
-    self.addrs = {}
+    self.mail:addrs_clear()
 end
 
 ---添加附件
@@ -101,9 +93,7 @@ end
 ---重置邮件内容（主题、正文、收件人、附件、发件人均清空）。
 ---C 侧 mail_clear 会把 reply 标志复位为 1，同一对象复用时若需 No-Reply 须在每次 clear 后重新调 reply(0)
 function ctx:clear()
-    self.mail:clear()-- 顺序同 ctx:from，理由见那里
-    self.sender = ""
-    self.addrs = {}
+    self.mail:clear()
 end
 
 ---将邮件序列化为 SMTP DATA 正文字节串

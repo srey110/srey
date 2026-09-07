@@ -61,8 +61,10 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
 /// <param name="bind">参数绑定上下文，无参数时可为 NULL；实际绑定个数必须等于 pgsql_bind_init 声明的 nparam</param>
 /// <param name="resultformat">结果列的格式（文本或二进制）</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放；绑定个数与 nparam 不符时返回 NULL 并把 size 置 0。
-/// 口径同 mysql_pack_stmt_execute</returns>
+/// <returns>消息数据指针，调用方负责释放；与 pgsql_bind_init 声明的 nparam 不符时返回 NULL 并把 size 置 0。
+/// 只查绑定上下文自身自洽：预处理语句声明了几个参数本地无从得知（Parse 无响应体，要另发 Describe 问服务端），
+/// 个数与语句不符由服务端回执行错误，包尾 Sync 保证连接随后恢复。这点与 mysql_pack_stmt_execute 不同，
+/// 那边的 params_count 是 COM_STMT_PREPARE 响应带回来的</returns>
 void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat, size_t *size);
 /// <summary>
 /// 打包 Close + Sync 消息，用于关闭预处理语句

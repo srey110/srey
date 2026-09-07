@@ -52,8 +52,8 @@ srey.close = function(fd, skid)
     closed_log[#closed_log + 1] = { fd = fd, skid = skid }
 end
 
--- watch_closed 同样换掉：它往 task 级观察者表里塞的闭包没有反注册，而用例要建几十个 router。
--- 顺带拿计数断言"没有流式路由就不订阅"
+-- watch_closed 同样换掉：它往 task 级观察者表里塞的闭包没有反注册，真跑会在测试 task 上留一个。
+-- 顺带拿计数断言"没有流式路由就不订阅"与"整个模块只订一次"
 local watch_n = 0
 srey.watch_closed = function(_)
     watch_n = watch_n + 1
@@ -1243,6 +1243,24 @@ runner.run(function(t)
         t:eq("static.any", nm, "末尾通配有参生成的路径落回同一条路由")
     end
 
+    -- 9.3c 占位符名字只认 \w，{*} 与 {a-b} 都落字面量。{*} 尤其不能当占位符——它与末尾
+    -- 通配交回的 key 都是 "*"，Router:url 分不开，生成出来的路径自己就 404。
+    -- 同块再验 C 侧 add 的返回值个数：失败少压一个，整串塞进别处实参位就错位
+    do
+        local r = Route.new()
+        r:get("/a/{*}", function(ctx) ctx:text(200, "ok") end):name("brace.wild")
+        r:get("/b/{a-b}", function(ctx) ctx:text(200, "ok") end):name("brace.dash")
+        t:eq("/a/{*}", r:url("brace.wild", {}), "{*} 是字面量，不吃 params[\"*\"]")
+        t:eq("/b/{a-b}", r:url("brace.dash", {}), "{a-b} 是字面量，不当占位符")
+
+        local rt = Route.new()._c_router
+        t:eq(3, select("#", rt:add("NOPE", "/arity")), "add 失败也返 3 个值")
+        local aok, _, asegs = rt:add("NOPE", "/arity")
+        t:eq(false, aok, "未知方法被拒")
+        t:check(nil == asegs, "失败时第三个返回值是 nil")
+        t:eq(3, select("#", rt:add("GET", "/arity")), "add 成功返 3 个值")
+    end
+
     -- 9.4 准入中间件截断 → 401 且不建流；带对 token 则放行收齐
     do
         local r = Route.new()
@@ -1340,17 +1358,34 @@ runner.run(function(t)
         t:eq(500, (last_resp or {}).code, "收齐仍未响应 → 兜底 500")
     end
 
-    -- 9.10 CLOSE 订阅推迟到第一条流式路由：srey.watch_closed 没有反注册，
-    -- 每个 router 订一次就是永久占位，没有流式路由的 router 不该付这份
+    -- 9.10 CLOSE 订阅是模块级的：srey.watch_closed 没有反注册，所以整个模块只订一次，
+    -- router 走弱键表进出。建几十个 router 不再各占一个永久闭包，丢掉的也能被回收
     do
         local before = watch_n
         local r = Route.new()
         r:get("/plain", function(ctx) ctx:text(200, "ok") end)
         t:eq(before, watch_n, "纯 REST router 不订阅 CLOSE")
         r:post_stream("/lazy", function() end)
-        t:eq(before + 1, watch_n, "第一条流式路由触发订阅")
         r:put_stream("/lazy2", function() end)
-        t:eq(before + 1, watch_n, "第二条流式路由不重复订阅")
+        -- 断言绝对值而不是 before+1：模块级订阅与本块在文件里的位置无关，
+        -- 前面的块订过就还是 1，挪到最前面也是 1
+        t:eq(1, watch_n, "整个模块只订一次，与 router 个数无关")
+
+        -- 弱键要守的就是这条：注册过流式路由的 router 被业务丢掉后必须能回收。
+        -- stream_routers 换成强引用表的话，下面这条必然失败
+        local probe = setmetatable({}, { __mode = "v" })
+        do
+            local tmp = Route.new()
+            tmp:post_stream("/gone", function() end)
+            probe[1] = tmp
+        end
+        for _ = 1, 5 do
+            if nil == probe[1] then
+                break
+            end
+            collectgarbage("collect")
+        end
+        t:check(nil == probe[1], "丢掉的流式 router 可被回收，没被 CLOSE 观察者钉住")
     end
 
 end)

@@ -35,30 +35,31 @@ ud_cxt *_evpub_get_ud(struct sock_ctx *skctx) {
 #endif
 }
 // 唤醒只管叫醒事件线程,命令在无界队列里,消费端抽的是队列到空,故唤醒数与命令数不必对齐。
-// 在途标志保证同时最多一个唤醒:CAS 抢到才投,消费端抽队列前清 0,两步顺序不能颠倒;也不能改成
-// "先 ATOMIC_GET 判再 CAS",MSVC 没有足序读,那条快路径会漏唤醒。
-// 在途最多一个字节,管道填不满,故写失败只可能是 EINTR
+// 在途标志保证同时最多一个唤醒:CAS 抢到才投,消费端抽队列前清 0,两步顺序不能颠倒;
+// 标志只能靠 CAS 判——MSVC 没有足序的原子读。
+// 在途最多一个字节,管道填不满,故写失败只可能是 EINTR。
+// stop 置位后不再唤醒也不丢命令:watcher 已在退出路径上,队列残留由 ev_free 的 drain 收
 void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     fsqu_push(&olcmd->qu, cmd);
     if (0 == ATOMIC_GET(&watcher->stop)
         && ATOMIC_CAS(&olcmd->wake_pending, 0, 1)) {
-        ASSERTAB(PostQueuedCompletionStatus(watcher->iocp, 0, 0, &olcmd->ol_r.overlapped), ERRORSTR(ERRNO));
+        int32_t posted = (int32_t)PostQueuedCompletionStatus(watcher->iocp, 0, 0, &olcmd->ol_r.overlapped);
+        ASSERTAB(0 != posted, ERRORSTR(ERRNO));
     }
 #else
     int32_t erro;
     static const char trigger[1] = { 's' };
     pip_ctx *pip = &watcher->pipe;
     fsqu_push(&pip->qu, cmd);
-    if (0 != ATOMIC_GET(&watcher->stop)
-        || !ATOMIC_CAS(&pip->wake_pending, 0, 1)) {
-        return;
-    }
-    while (0 == ATOMIC_GET(&watcher->stop)//while 防止 "EINTR 系统调用被信号打断了,什么都没做"。Windows侧无
-           && ERR_FAILED == write(pip->pipes[1], trigger, sizeof(trigger))) {
-        erro = ERRNO;
-        ASSERTAB(EINTR == erro, ERRORSTR(erro));
+    if (0 == ATOMIC_GET(&watcher->stop)
+        && ATOMIC_CAS(&pip->wake_pending, 0, 1)) {
+        while (0 == ATOMIC_GET(&watcher->stop)//while 防止 "EINTR 系统调用被信号打断了,什么都没做"。Windows侧无
+               && ERR_FAILED == write(pip->pipes[1], trigger, sizeof(trigger))) {
+            erro = ERRNO;
+            ASSERTAB(EINTR == erro, ERRORSTR(erro));
+        }
     }
 #endif//EV_IOCP
 }

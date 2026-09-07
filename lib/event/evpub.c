@@ -172,12 +172,21 @@ void _evpub_disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
 #endif
 }
 void _evpub_mark_close(int32_t *status, int32_t rtn) {
-    BIT_SET(*status, (1 == rtn) ? STATUS_PEER_FIN : STATUS_PEER_ABORT);
+    if (1 == rtn) {
+        BIT_SET(*status, STATUS_PEER_FIN);
+    } else if (2 == rtn) {
+        BIT_SET(*status, STATUS_PEER_TRUNCATED);
+    } else {
+        BIT_SET(*status, STATUS_PEER_ABORT);
+    }
 }
 int32_t _evpub_close_type(int32_t status) {
-    // FIN 先判：异常路径可能在标过 FIN 之后再叠一次 ABORT，这样置位处就不用互斥
+    // FIN 与 TRUNCATED 先判：异常路径可能在标过它们之后再叠一次 ABORT，这样置位处就不用互斥
     if (BIT_CHECK(status, STATUS_PEER_FIN)) {
         return CLOSE_TYPE_ORDERLY;
+    }
+    if (BIT_CHECK(status, STATUS_PEER_TRUNCATED)) {
+        return CLOSE_TYPE_TRUNCATED;
     }
     if (BIT_CHECK(status, STATUS_PEER_ABORT)) {
         return CLOSE_TYPE_ABORT;
@@ -478,13 +487,11 @@ static int32_t _evpub_sock_send_ssl(SSL *ssl, queue_ctx *buf_s, size_t *nsend) {
             lens = MAX_SSL_SEND_SIZE;
         }
         rtn = evssl_send(ssl, (char *)buf->data + buf->offset, lens, &sended);
-        // 记账排在判错之前:evssl_send 跨自己的内部循环累加 sended,失败时先前几轮写出去的字节
-        // 也在里面。非 SSL 那支不必如此,它一次 writev 到底,出错时 sended 恒为 0
-        (*nsend) += sended;
-        buf->offset += sended;
         if (ERR_OK != rtn) {
             break;
         }
+        (*nsend) += sended;
+        buf->offset += sended;
         if (0 == sended) {
             break;
         }

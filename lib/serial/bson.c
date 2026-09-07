@@ -335,12 +335,13 @@ static FORCE_INLINE size_t _bson_iter_lenprefix(bson_iter *iter, size_t off, siz
 }
 // 读一个 cstring 值(regex 的 pattern / options):定位、取指针、跳过它。失败返 ITER_BAD
 static inline size_t _bson_iter_cstr_val(bson_iter *iter, size_t off, char **out) {
+    const char *start;
     uint32_t rlens;
-    if (0 == _bson_iter_cstring(iter, off, NULL, &rlens)) {
+    if (0 == _bson_iter_cstring(iter, off, &start, &rlens)) {
         LOG_WARN("invalid bson regex.");
         return ITER_BAD;
     }
-    *out = iter->doc->data + off;
+    *out = (char *)start;
     return off + rlens + 1;
 }
 int32_t bson_iter_next(bson_iter *iter) {
@@ -442,9 +443,9 @@ int32_t bson_iter_next(bson_iter *iter) {
         break;
     }
     // off == doclens 说明这个元素把末尾那字节吃掉了,而合法文档必以 EOD 收尾——
-    // 十种元素的边界判定各管各的可读范围,这条"给 EOD 留一字节"的不变式统一在此处判
-    if (ITER_BAD == off
-        || off >= iter->doclens) {
+    // 十种元素的边界判定各管各的可读范围,这条"给 EOD 留一字节"的不变式统一在此处判。
+    // 上面任一分支失败返的 ITER_BAD 就是 SIZE_MAX,同样落在这条里
+    if (off >= iter->doclens) {
         // 元素坏了之后的字节位置就不可信,不再往下猜;offset 推到末尾避免同一个坏元素
         // 被反复重解析(每次重复一条告警),下次进来直接从开头的边界判定返回
         iter->err = 1;
@@ -802,13 +803,13 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             binary_set_binary(str, ") ", 2);
             MALLOC(hexbuf, HEX_ENSIZE(lens));
             tohex(bin, lens, hexbuf, 0);
-            binary_set_binary(str, hexbuf, strlen(hexbuf));
+            binary_set_binary(str, hexbuf, lens * 2);
             FREE(hexbuf);
             break;
         case BSON_OID:
             bin = bson_iter_oid(&iter, NULL);
             tohex(bin, BSON_OID_LENS, oidhex, 0);
-            binary_set_binary(str, oidhex, strlen(oidhex));
+            binary_set_binary(str, oidhex, BSON_OID_LENS * 2);
             break;
         case BSON_BOOL:
             ival = bson_iter_bool(&iter, NULL);
@@ -833,7 +834,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             break;
         case BSON_DECIMAL128:
             tohex(iter.val, BSON_DECIMAL128_LENS, dechex, 0);
-            binary_set_binary(str, dechex, strlen(dechex));
+            binary_set_binary(str, dechex, BSON_DECIMAL128_LENS * 2);
             break;
         case BSON_NULL:
         case BSON_MINKEY:

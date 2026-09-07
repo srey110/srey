@@ -54,10 +54,11 @@ typedef enum sock_status {
     STATUS_KEYUPDATE_READ = 0x100,// 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
                                   // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针
     STATUS_ESTABLISHED = 0x200,   // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
-    // 下面两个记"连接是怎么断的"，只由收发失败路径置位（_evpub_mark_close）；
-    // 两个都没置即本地主动关闭，故 ev_close / task 拆除等路径无需标记
-    STATUS_PEER_FIN = 0x400,      // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
-    STATUS_PEER_ABORT = 0x800     // 收发失败：RST、读写错误、无 close_notify 的 EOF
+    // 下面三个记"连接是怎么断的"，只由收发失败路径置位（_evpub_mark_close）；
+    // 都没置即本地主动关闭，故 ev_close / task 拆除等路径无需标记
+    STATUS_PEER_FIN = 0x400,           // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
+    STATUS_PEER_ABORT = 0x800,         // 收发失败：RST、读写错误、SSL 协议错
+    STATUS_PEER_TRUNCATED = 0x1000     // TLS 没发 close_notify 就断了，收全与被截断分不出
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写
 typedef enum udp_opt_type {
@@ -227,15 +228,16 @@ SOCKET _evpub_listen(netaddr_ctx *addr);
 // 创建并绑定UDP socket
 SOCKET _evpub_udp(netaddr_ctx *addr);
 // 从socket读取数据（支持SSL/普通）；返回 1 表示对端有序关闭——裸 socket 读到 FIN，
-// SSL 收到 close_notify。取正数,这样只认 ERR_OK 的调用方仍按失败处理,漏改一处不会静默死循环
+// SSL 收到 close_notify；返回 2 表示 TLS 没发 close_notify 就断了。
+// 取正数,这样只认 ERR_OK 的调用方仍按失败处理,漏改一处不会静默死循环
 int32_t _evpub_sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
-// 记下这次收发失败是"对端有序结束"还是"异常中断"，供关闭回调回带 close_type。
-// rtn 传本次收发的返回码，发送失败传 ERR_FAILED
+// 记下这次收发失败是"对端有序结束"、"TLS 无 close_notify 断开"还是"异常中断"，供关闭回调回带 close_type。
+// rtn 传本次收发的返回码，传输层自身报错时传 ERR_FAILED
 void _evpub_mark_close(int32_t *status, int32_t rtn);
-// 由 STATUS_PEER_* 得出 close_type，两个位都没置即本地主动关闭
+// 由 STATUS_PEER_* 得出 close_type，三个位都没置即本地主动关闭
 int32_t _evpub_close_type(int32_t status);
-// 向socket发送数据（支持SSL/普通）；返回 1 表示发送方向先读到了对端 close_notify（仅 SSL 路径，
-// 明文路径只返 ERR_OK / ERR_FAILED），口径与 _evpub_sock_read 一致
+// 向socket发送数据（支持SSL/普通）；返回 1 / 2 的含义与取正数的理由同 _evpub_sock_read，
+// 只是触发点在发送方向先读到对端记录时（仅 SSL 路径，明文路径只返 ERR_OK / ERR_FAILED）
 int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg);
 // UDP 发送缓冲入队并尝试立即发送（IOCP/uev 平台无关封装）；
 // tried 非 0 表示调用方在入队前已经尝试过一次发送（如 _evpub_try_sendto 遇到 EAGAIN），

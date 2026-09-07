@@ -360,7 +360,7 @@ static inline int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     _usk_call_send_cb(watcher->ev, tcp, nsend);
     if (ERR_OK != rtn) {
         _evpub_mark_close(&tcp->status, rtn);
-        return rtn;
+        return ERR_FAILED;// 分类已进 status, 不透传 evssl_* 的 1/2(口径同 _usk_tcp_recv)
     }
     uint32_t cnt = queue_size(&tcp->buf_s);
 #if WITH_SSL

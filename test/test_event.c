@@ -132,11 +132,11 @@ static void test_evpub_read_fin(CuTest *tc) {
     nread = 1;
     CuAssertIntEquals(tc, ERR_FAILED, _evpub_sock_read(sk[0], &iov, 1, NULL, &nread));
 }
-// close_type 三档判定 + FIN 优先
+// close_type 四档判定 + FIN / TRUNCATED 优先
 static void test_evpub_close_type(CuTest *tc) {
     int32_t st;
 
-    /* 1) 两个位都没置：本地主动关 */
+    /* 1) 三个位都没置：本地主动关 */
     st = STATUS_ESTABLISHED;
     CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, _evpub_close_type(st));
 
@@ -152,13 +152,26 @@ static void test_evpub_close_type(CuTest *tc) {
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_PEER_ABORT));
     CuAssertIntEquals(tc, CLOSE_TYPE_ABORT, _evpub_close_type(st));
 
-    /* 4) 先 FIN 再叠 ABORT 仍判有序：IOCP 侧收完成与错误处理是两条路径，会叠加 */
+    /* 4) TLS 无 close_notify 断开：截断档，与 ABORT 分开 */
+    st = STATUS_ESTABLISHED;
+    _evpub_mark_close(&st, 2);
+    CuAssertTrue(tc, BIT_CHECK(st, STATUS_PEER_TRUNCATED));
+    CuAssertTrue(tc, !BIT_CHECK(st, STATUS_PEER_ABORT));
+    CuAssertIntEquals(tc, CLOSE_TYPE_TRUNCATED, _evpub_close_type(st));
+
+    /* 5) 先 FIN 再叠 ABORT 仍判有序：IOCP 侧收完成与错误处理是两条路径，会叠加 */
     st = STATUS_ESTABLISHED;
     _evpub_mark_close(&st, 1);
     _evpub_mark_close(&st, ERR_FAILED);
     CuAssertIntEquals(tc, CLOSE_TYPE_ORDERLY, _evpub_close_type(st));
 
-    /* 5) 不碰其他状态位 */
+    /* 6) TRUNCATED 叠 ABORT 仍判截断：同上，置位处不互斥 */
+    st = STATUS_ESTABLISHED;
+    _evpub_mark_close(&st, 2);
+    _evpub_mark_close(&st, ERR_FAILED);
+    CuAssertIntEquals(tc, CLOSE_TYPE_TRUNCATED, _evpub_close_type(st));
+
+    /* 7) 不碰其他状态位 */
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_ESTABLISHED));
 }
 #if WITH_SSL
@@ -242,7 +255,9 @@ static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evs
     }
     return 1;
 }
-// close_notify 与"连接被截断"必须分得开：前者有序结束（返 1），后者异常中断（返 ERR_FAILED）。
+// evssl_read 对"连接怎么结束的"三档分类必须分得开：收到 close_notify 是有序结束（返 1），
+// 对端不发 close_notify 就断是截断（返 2），真正的协议错仍是 ERR_FAILED。
+// 这三档一路传到 CLOSE 消息的 close_type 上，混在一起就分不出"收全了"与"被人截断了"。
 // 判据见 evssl_read 的 <returns>
 static void test_evssl_read_close_notify(CuTest *tc) {
     SOCKET sk[2];
@@ -250,7 +265,7 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     evssl_ctx *sc = NULL, *cc = NULL;
     char buf[64];
     size_t readed;
-    int32_t rtn;
+    int32_t rtn, sent;
 
     /* 1) 对端 SSL_shutdown 发了 close_notify：读侧必须报 1 */
     rtn = _ssl_pair(sk, &cli, &srv, &sc, &cc);
@@ -266,12 +281,24 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     CuAssertIntEquals(tc, 1, rtn);
     CuAssertTrue(tc, 0 == readed);
 
-    /* 2) 对端直接关 TCP、不发 close_notify：必须报 ERR_FAILED，不能当成有序结束 */
+    /* 2) 对端直接关 TCP、不发 close_notify：报 2（截断）。既不能当有序结束——那样
+       close-delimited 的 body 会被判成收全了；也不能混进协议错——那样正常收完的响应
+       会被判成失败。FREE_SSL 不发 close_notify（只有 SSL_shutdown 发），故这里就是裸 FIN */
     CuAssertIntEquals(tc, 1, _ssl_pair(sk, &cli, &srv, &sc, &cc));
     FREE_SSL(srv);
     CLOSE_SOCK(sk[1]);
     rtn = _ssl_read_until(cli, buf, sizeof(buf), &readed);
     _ssl_drop(sk, &cli, &srv, sc, cc);
+    CuAssertIntEquals(tc, 2, rtn);
+
+    /* 3) 往裸 socket 灌非 TLS 字节：记录头的版本号就对不上，必须仍是 ERR_FAILED，
+       不能被截断那一档吞掉（两者都走 SSL_ERROR_SSL，只差 reason 码） */
+    CuAssertIntEquals(tc, 1, _ssl_pair(sk, &cli, &srv, &sc, &cc));
+    memset(buf, 0xFF, sizeof(buf));
+    sent = (int32_t)send(sk[1], buf, (int32_t)sizeof(buf), 0);
+    rtn = _ssl_read_until(cli, buf, sizeof(buf), &readed);
+    _ssl_drop(sk, &cli, &srv, sc, cc);
+    CuAssertIntEquals(tc, (int32_t)sizeof(buf), sent);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 }
 #endif

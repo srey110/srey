@@ -651,8 +651,8 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
         scram->status = SCRAM_REMOTE_FINAL;
         rtn = ERR_OK;
     }
-    secure_zero(proof, sizeof(proof));
 clean:
+    secure_zero(proof, sizeof(proof));// 摆在标签下: 六条早退 goto 也得擦, 别挪回比对那边
     FREE(cbind_b64);
     FREE(buf);
     return rtn;

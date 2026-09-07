@@ -10,11 +10,15 @@ static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd); // 命令�
 //pipe作为触发器，命令在qu里面获取
 static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) {
     size_t cnt_total = 0;
-    int32_t i, cnt;
+    int32_t i, cnt, rd;
     cmd_ctx cmds[CMD_MAX_NREAD];
-    char ntrigger[CMD_MAX_NREAD];
-    // 触发字节仅作唤醒信号，先抽干清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）
-    while (read(skctx->fd, ntrigger, sizeof(ntrigger)) > 0) { }
+    char ntrigger[8];
+    // 触发字节仅作唤醒信号，先抽干清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）。
+    // 抽干靠的是循环到 EAGAIN，不是缓冲大小；写侧一次写 1 个、在途最多 1 个，8 是余量。
+    // EINTR 必须续读：早退留下未读字节，_send_cmd 依赖的"在途最多 1 个"就不成立
+    do {
+        rd = (int32_t)read(skctx->fd, ntrigger, sizeof(ntrigger));
+    } while (rd > 0 || (ERR_FAILED == rd && EINTR == ERRNO));
     ATOMIC_SET(&pip->wake_pending, 0);
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);

@@ -29,7 +29,7 @@ static atomic_t _init_once = 0;// 保证证书池只初始化一次
 
 // 设置SSL_CTX的通用选项：禁止重协商、不验证对端
 // 不设 SSL_OP_IGNORE_UNEXPECTED_EOF：它把无 close_notify 的 EOF 伪装成 ZERO_RETURN，
-// 关闭类型就分不出有序结束与截断。它只压一条错误串，而本文件的读写路径本就不打印错误队列
+// 关闭类型就分不出有序结束与截断。留着这条错误串是 _evssl_unexpected_eof 的判据，别再压掉
 // 不设 SSL_MODE_AUTO_RETRY：该模式在非阻塞 socket 上会使 SSL_read/write 内部自旋，
 // 阻塞 watcher 线程。WANT_READ/WANT_WRITE 由事件循环驱动重试。
 static void _evssl_options(evssl_ctx *evssl) {
@@ -293,6 +293,18 @@ int32_t evssl_tryconn(SSL *ssl) {
     }
     return ERR_FAILED;
 }
+// 对端没发 close_notify 就断了。OpenSSL 3.0 起报成 SSL_ERROR_SSL 加这个 reason；
+// 更早的版本与 LibreSSL 没有该 reason 码，那里一律当协议错，只是分不出截断。
+// 判据取自错误队列，故每个 SSL_* 入口调用前都必须先 ERR_clear_error()，残留会被误判成截断
+static inline int32_t _evssl_unexpected_eof(int32_t err) {
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
+    return (SSL_ERROR_SSL == err
+        && SSL_R_UNEXPECTED_EOF_WHILE_READING == ERR_GET_REASON(ERR_peek_error())) ? 1 : 0;
+#else
+    (void)err;
+    return 0;
+#endif
+}
 int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
     *readed = 0;
     ERR_clear_error();
@@ -309,6 +321,9 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
     if (SSL_ERROR_WANT_READ == err
         || SSL_ERROR_WANT_WRITE == err) {
         return ERR_OK;
+    }
+    if (_evssl_unexpected_eof(err)) {
+        return 2;
     }
     return ERR_FAILED;
 }
@@ -336,6 +351,9 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
             if (SSL_ERROR_WANT_WRITE == err
                 || SSL_ERROR_WANT_READ == err) {
                 return ERR_OK;
+            }
+            if (_evssl_unexpected_eof(err)) {
+                return 2;
             }
             return ERR_FAILED;
         }

@@ -96,8 +96,22 @@ static void _router_grow(void **arr, int32_t *cap, int32_t need, size_t elem_siz
     REALLOC(*arr, *arr, (size_t)newcap * elem_size);
     *cap = (int32_t)newcap;
 }
+// 占位符名字只认 [A-Za-z0-9_]。不用 isalnum: 它跟 locale 走, 同一条路由换个 locale 会变意思
+static int32_t _router_seg_name_ok(const char *s, size_t len) {
+    char c;
+    for (size_t i = 0; i < len; i++) {
+        c = s[i];
+        if (!((c >= 'A' && c <= 'Z')
+            || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9')
+            || '_' == c)) {
+            return 0;
+        }
+    }
+    return 1;
+}
 // 解析单段, 写入 out。src 不要求以 \0 结尾, 仅按 len 读取。任何输入都能解析出一段:
-// 认不出占位符形态(名字为空 / 名字里有 '?')就当字面量, 故没有失败返回
+// 认不出占位符形态(名字为空 / 名字含非 \w 字符)就当字面量, 故没有失败返回
 static void _router_parse_seg(const char *src, size_t len, router_seg *out) {
     out->str = NULL;
     out->str_len = 0;
@@ -116,10 +130,11 @@ static void _router_parse_seg(const char *src, size_t len, router_seg *out) {
             is_opt = 1;
             name_len--;
         }
-        // 名字为空({?}; {} 长度不够, 压根进不来)或名字内部含 '?'({a?b})都不认作占位符,
-        // 落字面量而不是让整条路由注册失败
+        // 名字为空({?}; {} 长度不够, 压根进不来)或含非 \w 字符({a-b} / {a?b} / {*})都不认作
+        // 占位符, 落字面量而不是让整条路由注册失败。名字字符集同 Laravel 的 \{(\w+?)\??\}:
+        // {*} 若也当占位符, 段序列里它与末尾通配的 key 都是 "*", 反向生成 URL 时分不开
         if (0 != name_len
-            && NULL == memchr(name_src, '?', name_len)) {
+            && _router_seg_name_ok(name_src, name_len)) {
             // +1 字节存 \0, router_req_param 内可直接 memcmp 不必再带长度
             out->str = dup_zero(name_src, name_len);
             out->str_len = (uint32_t)name_len;

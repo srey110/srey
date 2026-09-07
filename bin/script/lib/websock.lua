@@ -133,12 +133,11 @@ local function _handshake(sslname, ip, port, netev, host_hdr, uri, secprot)
     if not hspack then
         return INVALID_SOCK, nil, nil
     end
-    -- srey.connect 抛出(入参非法 / 无当前 task)时 hsctx 没转移给 C 层，它和 hspack 都还归本函数；
-    -- 不接住的话两块既没进框架也没人释放。失败对象落在 fd 那一位上，原样抛回去
+    -- hsctx 进 srey.connect 就把所有权交出去了(见该函数 @param extra)，这里只管 hspack：
+    -- 它要到 srey.send 才转移，抛出时仍归本函数。失败对象落在 fd 那一位上，原样抛回去
     local ok, fd, skid = pcall(srey.connect, PACK_TYPE.WEBSOCK, sslname, ip, port, netev, hsctx)
     if not ok then
         utils.ud_free(hspack)
-        utils.ud_free(hsctx)
         error(fd, 0)
     end
     if INVALID_SOCK == fd then

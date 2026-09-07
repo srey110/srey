@@ -204,6 +204,22 @@ runner.run(function(t)
         t:eq(false, pcall(function() m:addrs_add("x@example.com", 9) end), "越界收件人类型被拒")
         t:eq(false, pcall(function() m:addrs_add("x@example.com", 0) end), "类型 0 被拒")
         m:addrs_add("alice@example.com", 1) -- TO
+        -- 发件人/收件人只存在 C 侧，取值一律回读 mail_ctx。Lua 层再留一份副本的话，
+        -- CRLF 净化与定长截断这两道改写就会让两份状态分叉（MIME 头一个样、RCPT TO 另一个样）
+        t:eq("srey@example.com", m:from_get(), "from_get 回读 C 侧发件人")
+        t:eq("alice@example.com", m:addrs_get()[1], "addrs_get 回读 C 侧收件人")
+        m:addrs_add("bob@example.com", 2) -- CC
+        m:addrs_add("eve@example.com", 3) -- BCC
+        local got = m:addrs_get()
+        t:eq(3, #got, "TO/CC/BCC 都在 addrs_get 里")
+        t:eq("eve@example.com", got[3], "按加入顺序交出")
+        m:addrs_clear()
+        t:eq(0, #m:addrs_get(), "addrs_clear 后 addrs_get 为空表")
+        -- 这一条是删掉 Lua 镜像的理由：交出来的必须是净化后的存量值，不是传进去的原串
+        m:from("Srey", "a\r\nb@example.com")
+        t:eq("ab@example.com", m:from_get(), "from_get 交出剔除 CRLF 后的存量值")
+        m:from("Srey", "srey@example.com")
+        m:addrs_add("alice@example.com", 1)
         m:subject("unit test")
         m:msg("plain text body")
         m:html("<h1>hi</h1>")
@@ -237,6 +253,8 @@ runner.run(function(t)
         -- array_free 只置空 ptr 不复位 size/maxsize，无守卫时 array_push_back 跳过扩容分支
         -- 直接往 NULL 基址 memcpy，是空指针写而非断言
         t:eq(false, pcall(function() m:addrs_add("bob@example.com", 1) end), "释放后 addrs_add 被拒")
+        t:eq(false, pcall(function() return m:from_get() end),  "释放后 from_get 被拒")
+        t:eq(false, pcall(function() return m:addrs_get() end), "释放后 addrs_get 被拒")
         t:eq(false, pcall(function() m:attach_clear() end), "释放后 attach_clear 被拒")
         t:eq(false, pcall(function() m:subject("x") end),   "释放后 subject 被拒")
         t:eq(false, pcall(function() m:clear() end),        "释放后 clear 被拒")

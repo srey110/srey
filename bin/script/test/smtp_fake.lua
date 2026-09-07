@@ -240,16 +240,16 @@ runner.run(function(t)
         ctx:quit()
     end
 
-    -- Lua 侧镜像列表与 C 侧必须同进退：先写镜像再调可抛错的 C 绑定的话，抛出之后 addrs_get
-    -- 会多出一个 MIME 头里根本没有的地址，而 smtp:send 照样按它发 RCPT TO
+    -- 取值全部回读 C 侧（lib.mail 不再留副本），故被拒的调用不可能改到状态：
+    -- smtp:send 发 RCPT TO 用的就是 MIME 头里那份，两者再没有分叉的余地
     do
         local em = mail.new()
         em:from("srey", "c10@t")
         em:addrs_add("r10@t", MAIL_ADDR_TYPE.TO)
         t:eq(false, pcall(em.addrs_add, em, "bad@t", 9), "越界收件人类型被拒")
-        t:eq(1, #em:addrs_get(), "抛错后收件人镜像列表不变")
+        t:eq(1, #em:addrs_get(), "抛错后收件人列表不变")
         t:eq(false, pcall(em.from, em, "x", nil), "from 非法入参被拒")
-        t:eq("c10@t", em:from_get(), "抛错后发件人镜像不变")
+        t:eq("c10@t", em:from_get(), "抛错后发件人不变")
     end
 
     -- 两种问候形态都得走通：正常那半边照服务端给的主机名填 EHLO，刁钻那半边退回 localhost。

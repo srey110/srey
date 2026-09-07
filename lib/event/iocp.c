@@ -247,7 +247,6 @@ static void _iocp_init_cmd(watcher_ctx *watcher) {
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     olcmd->ol_r.ev_cb = _iocp_on_cmd;
     olcmd->ol_r.fd = INVALID_SOCK;
-    olcmd->ol_r.type = 0;
     fsqu_init(&olcmd->qu, sizeof(cmd_ctx), 4 * ONEK);
     tda_init(&olcmd->tda, (size_t)(fsqu_capacity(&olcmd->qu) / QUEUE_OVERLOAD_RATIO));
 }

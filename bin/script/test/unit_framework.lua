@@ -62,10 +62,10 @@ runner.run(function(t)
              "connect netev 同口径")
     end
 
-    -- ── core.task_list: 名字装不下时只丢名字，不丢整条 ─────────────────
-    -- _task_entry.name 是 64 字节定长缓冲，而 task 名在 C 层没有任何长度上限。截断的名字不能
-    -- 发出去（调用方拿它去 grab 会命中别的 task），但整条丢掉的话这个 task 在列表里彻底不存在，
-    -- 巡检 / 路由会当它没注册——它明明建得出来、收得到消息、grab 也照样命中
+    -- ── core.task_list: 任意长度的名字都原样交出 ───────────────────────
+    -- task 名在 C 层没有长度上限（task_new 里是 dup_zero），搬运用的 _task_entry.name 也是
+    -- 堆指针而非定长缓冲。名字既不截断（截断的名字拿去 grab 会命中别的 task）也不丢，
+    -- 于是"没有 name 字段"就只剩匿名 task 一种含义，不再与"名字太长"混在一起
     do
         local LONG = string.rep("L", 80)
         local SHORT = "tasklist_short"
@@ -95,7 +95,7 @@ runner.run(function(t)
         end
         t:check(long_tk ~= nil, "80 字节名字的 task 能按名 grab 到")
         t:check(long_item ~= nil, "超长名字的 task 仍出现在 task_list 里")
-        t:eq(nil, long_item and long_item.name, "超长名字不带 name 字段")
+        t:eq(LONG, long_item and long_item.name, "80 字节名字原样交出，不截断不丢弃")
         t:eq(SHORT, short_item and short_item.name, "短名字照常带 name")
     end
     do

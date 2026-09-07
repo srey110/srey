@@ -223,7 +223,8 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="name">名称</param>
-/// <param name="bind">pgsql_bind_ctx；实际绑定个数须等于 pgsql_bind_init 声明的 nparam，不符即失败</param>
+/// <param name="bind">pgsql_bind_ctx；实际绑定个数须等于 pgsql_bind_init 声明的 nparam，不符即失败。
+/// 与预处理语句声明的个数是否相符不在本地校验，见 pgsql_pack_stmt_execute</param>
 /// <param name="resultformat">pgpack_format</param>
 /// <returns>NULL 失败  pgpack_ctx</returns>
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat);
@@ -457,8 +458,10 @@ int32_t mongo_refreshsession(mongo_session *session);
 /// endsessions 命令 使会话过期,释放mongo_session。
 /// endsessions 一律发送：服务端的会话记录不随连接消失，漏发要挂到会话超时才回收
 /// </summary>
-/// <param name="session">mongo_session；进函数即被释放，返回后调用方手上的指针失效。
-///   发 endsessions 会挂起，故这期间不得有别的协程还拿着同一个 session</param>
+/// <param name="session">mongo_session；所有权交出，返回后调用方手上的指针失效。
+///   释放排在内部那次会挂起的 endsessions 之后：挂起窗口里 session 仍然有效，在途的
+///   commit/rollback 由 serial 锁排在本函数之前，醒来还要读 session->options。
+///   调用方不得在此期间另行释放，返回后也不得再碰</param>
 void mongo_freesession(mongo_session *session);
 /// <summary>
 /// 事务开始。一条连接同时只允许一个活跃事务（CRUD 命令的事务上下文取自连接上的当前绑定），

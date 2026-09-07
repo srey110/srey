@@ -184,6 +184,24 @@ static void test_router_seg_index(CuTest *tc) {
     CuAssertIntEquals(tc, ROUTER_SEG_LIT, t);
     CuAssertStrEquals(tc, "{a?b}", str);
 
+    /* 名字只认 [A-Za-z0-9_]，'-' 与 '*' 都不是，整段退化为字面量。{*} 尤其不能认作
+     * 占位符：它与末尾通配交回的 key 都会是 "*"，反向生成 URL 的调用方就分不开 */
+    idx = router_add_index(r, "GET", 3, "/{a-b}/{*}", 10);
+    CuAssertTrue(tc, idx >= 0);
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 0, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_LIT, t);
+    CuAssertStrEquals(tc, "{a-b}", str);
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 1, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_LIT, t);
+    CuAssertStrEquals(tc, "{*}", str);
+
+    /* 下划线与数字仍是合法名字 */
+    idx = router_add_index(r, "GET", 3, "/{a_1}", 6);
+    CuAssertTrue(tc, idx >= 0);
+    CuAssertIntEquals(tc, ERR_OK, router_seg_index(r, idx, 0, &t, &str, &slen));
+    CuAssertIntEquals(tc, ROUTER_SEG_PARAM, t);
+    CuAssertStrEquals(tc, "a_1", str);
+
     /* 根路径拆出 0 段，第 0 段就越界 */
     idx = router_add_index(r, "GET", 3, "/", 1);
     CuAssertTrue(tc, idx >= 0);
