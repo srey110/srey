@@ -123,9 +123,11 @@ runner.run(function(t)
         local elapsed = srey.timer_ms() - t0
         t:eq(2, #r, "fork_wait + sleep 两个任务都返回")
         -- 上界证明是并发（串行要 60ms），下界证明 sleep 真的睡了：
-        -- 只卡上界的话 srey.sleep 变成空操作也算过，而那时"并发"根本没被验证
-        t:check(elapsed >= 25 and elapsed < 50,
-                "两个 sleep(30) 并发，25ms <= " .. elapsed .. "ms < 50ms")
+        -- 只卡上界的话 srey.sleep 变成空操作也算过，而那时"并发"根本没被验证。
+        -- 上界贴着串行下界取 58 而不是 50：32 个测试 task 同时起跑时 worker 被占满，
+        -- TIMEOUT 消息多排队十几毫秒是常事，留 8ms 余量的话本条会偶发假红
+        t:check(elapsed >= 25 and elapsed < 58,
+                "两个 sleep(30) 并发，25ms <= " .. elapsed .. "ms < 58ms")
     end
 
     -- ── srey.fork_bind：参数预绑定，返回无参 lambda ───────────────────

@@ -3,9 +3,7 @@
 
 #include "CuTest.h"
 
-/// <summary>
-/// 注册加密测试套件：base64、crc、digest、hmac、urlraw、xor、scram
-/// </summary>
+// 注册加密测试套件：base64、crc、digest、hmac、urlraw、xor、scram
 void test_crypt(CuSuite *suite);
 
 #endif//TEST_CRYPT_H_

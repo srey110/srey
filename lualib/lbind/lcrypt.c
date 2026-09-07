@@ -184,13 +184,22 @@ static int32_t _lcrypt_digest_new(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_DIGEST);
     return 1;
 }
+// digest / hmac 的对象按值存在 userdata 里,没有可置 NULL 的指针,故已释放的判据是 attr 归零。
+// __gc 经 __index 也是个普通方法,业务一行 d:__gc() 就能提前释放,此后每个入口都得报可捕获的错
+static digest_ctx *_lcrypt_check_digest(lua_State *lua) {
+    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    if (NULL == digest->attr) {
+        luaL_error(lua, "digest already freed");
+    }
+    return digest;
+}
 /// <summary>
 /// 返回当前摘要算法的输出长度
 /// </summary>
 /// <param name="self" type="userdata">摘要对象</param>
 /// <returns type="integer">输出字节数</returns>
 static int32_t _lcrypt_digest_size(lua_State *lua) {
-    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    digest_ctx *digest = _lcrypt_check_digest(lua);
     lua_pushinteger(lua, digest_size(digest));
     return 1;
 }
@@ -200,7 +209,7 @@ static int32_t _lcrypt_digest_size(lua_State *lua) {
 /// <param name="self" type="userdata">摘要对象</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_digest_reset(lua_State *lua) {
-    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    digest_ctx *digest = _lcrypt_check_digest(lua);
     digest_reset(digest);
     return 0;
 }
@@ -212,7 +221,7 @@ static int32_t _lcrypt_digest_reset(lua_State *lua) {
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_digest_update(lua_State *lua) {
-    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    digest_ctx *digest = _lcrypt_check_digest(lua);
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 2, &size, NULL);
@@ -225,7 +234,7 @@ static int32_t _lcrypt_digest_update(lua_State *lua) {
 /// <param name="self" type="userdata">摘要对象</param>
 /// <returns type="string">原始二进制摘要</returns>
 static int32_t _lcrypt_digest_final(lua_State *lua) {
-    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    digest_ctx *digest = _lcrypt_check_digest(lua);
     char out[DG_BLOCK_SIZE];
     size_t lens = digest_final(digest, out);
     lua_pushlstring(lua, out, lens);
@@ -270,13 +279,21 @@ static int32_t _lcrypt_hmac_new(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_HMAC);
     return 1;
 }
+// 判据同 _lcrypt_check_digest:hmac_free 整块 secure_zero,4 个内嵌 digest 的 attr 一起归零
+static hmac_ctx *_lcrypt_check_hmac(lua_State *lua) {
+    hmac_ctx *hmac = luaL_checkudata(lua, 1, MT_HMAC);
+    if (NULL == hmac->inside.attr) {
+        luaL_error(lua, "hmac already freed");
+    }
+    return hmac;
+}
 /// <summary>
 /// 返回 HMAC 输出长度
 /// </summary>
 /// <param name="self" type="userdata">HMAC 对象</param>
 /// <returns type="integer">输出字节数</returns>
 static int32_t _lcrypt_hmac_size(lua_State *lua) {
-    hmac_ctx *hmac = luaL_checkudata(lua, 1, MT_HMAC);
+    hmac_ctx *hmac = _lcrypt_check_hmac(lua);
     lua_pushinteger(lua, hmac_size(hmac));
     return 1;
 }
@@ -286,7 +303,7 @@ static int32_t _lcrypt_hmac_size(lua_State *lua) {
 /// <param name="self" type="userdata">HMAC 对象</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_hmac_reset(lua_State *lua) {
-    hmac_ctx *hmac = luaL_checkudata(lua, 1, MT_HMAC);
+    hmac_ctx *hmac = _lcrypt_check_hmac(lua);
     hmac_reset(hmac);
     return 0;
 }
@@ -298,7 +315,7 @@ static int32_t _lcrypt_hmac_reset(lua_State *lua) {
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_hmac_update(lua_State *lua) {
-    hmac_ctx *hmac = luaL_checkudata(lua, 1, MT_HMAC);
+    hmac_ctx *hmac = _lcrypt_check_hmac(lua);
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 2, &size, NULL);
@@ -311,7 +328,7 @@ static int32_t _lcrypt_hmac_update(lua_State *lua) {
 /// <param name="self" type="userdata">HMAC 对象</param>
 /// <returns type="string">原始二进制 HMAC 结果</returns>
 static int32_t _lcrypt_hmac_final(lua_State *lua) {
-    hmac_ctx *hmac = luaL_checkudata(lua, 1, MT_HMAC);
+    hmac_ctx *hmac = _lcrypt_check_hmac(lua);
     char out[DG_BLOCK_SIZE];
     size_t lens = hmac_final(hmac, out);
     lua_pushlstring(lua, out, lens);

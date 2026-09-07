@@ -45,7 +45,7 @@ typedef void(*_net_connect_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, int3
 typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// SSL 交换完成回调
 typedef void(*_net_handshake_cb)(task_ctx *task, sk_id *sk,
                                  subtype_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);// 应用层握手完成回调
-typedef void(*_net_close_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// 连接关闭回调
+typedef void(*_net_close_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro);// 连接关闭回调
 typedef void(*_net_recvfrom_cb)(task_ctx *task, sk_id *sk, subtype_t pktype,
                                 char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
 // 工作线程版本快照，供监控线程检测卡死

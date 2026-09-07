@@ -388,15 +388,14 @@ function http.post(fd, skid, url, headers, ckfunc, info, ...)
     return _http_msg(false, false, false, fd, skid, status, headers, ckfunc, info, ...)
 end
 
----向客户端发送 HTTP 响应（单向，不等待回包）
+---http.response 与 http.response_head 的共同实现。headonly 由那两个入口各自写死,
+---业务不直接调本函数;fd 之后各参数的完整约束见 http.response
+---@param headonly boolean 回 HEAD 请求：头与同一资源的 GET 逐字节一致，但不发报文体
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@param code integer 状态码（如 200、404）
 ---@param headers table<string,string|number>? 附加头部
----@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
----       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
----       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
----       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
+---@param info string|table<any,any>|fun(...):string?|nil 报文体，约束见 http.response
 ---@param ... any 传给 info 函数的额外参数
 local function _response(headonly, fd, skid, code, headers, info, ...)
     local status = string.format("HTTP/%s %03d %s\r\n", HTTP_VERSION, code, http.code_status(code))
@@ -409,6 +408,16 @@ local function _response(headonly, fd, skid, code, headers, info, ...)
     end
     _http_msg(true, nocl, headonly, fd, skid, status, headers, nil, info, ...)
 end
+---向客户端发送 HTTP 响应（单向，不等待回包）
+---@param fd integer socket fd
+---@param skid integer 连接 skid
+---@param code integer 状态码（如 200、404）
+---@param headers table<string,string|number>? 附加头部
+---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
+---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
+---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
+---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
+---@param ... any 传给 info 函数的额外参数
 function http.response(fd, skid, code, headers, info, ...)
     _response(false, fd, skid, code, headers, info, ...)
 end

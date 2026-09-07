@@ -99,7 +99,7 @@ static int32_t _lpgsql_bind_bool(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 绑定 int16 参数（大端二进制；非 number 时绑定 NULL）
+/// 绑定 int16 参数（大端二进制；非 number 时绑定 NULL，超 int16 范围报错）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="val" type="integer|nil">int16 值</param>
@@ -110,7 +110,7 @@ static int32_t _lpgsql_bind_int16(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 绑定 int32 参数（大端二进制；非 number 时绑定 NULL）
+/// 绑定 int32 参数（大端二进制；非 number 时绑定 NULL，超 int32 范围报错）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="val" type="integer|nil">int32 值</param>
@@ -121,7 +121,7 @@ static int32_t _lpgsql_bind_int32(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 绑定 int64 参数（大端二进制；非 number 时绑定 NULL）
+/// 绑定 int64 参数（大端二进制；非 number 时绑定 NULL，带小数的 number 报错）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="val" type="integer|nil">int64 值</param>
@@ -190,7 +190,7 @@ static int32_t _lpgsql_bind_bytea(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 绑定 TIMESTAMP 参数（非 number 时绑定 NULL）
+/// 绑定 TIMESTAMP 参数（非 number 时绑定 NULL，带小数的 number 报错）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="usec" type="integer|nil">相对 PG 纪元（2000-01-01）的微秒数</param>
@@ -201,7 +201,7 @@ static int32_t _lpgsql_bind_timestamp(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 绑定 TIMESTAMPTZ 参数（非 number 时绑定 NULL）
+/// 绑定 TIMESTAMPTZ 参数（非 number 时绑定 NULL，带小数的 number 报错）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="usec" type="integer|nil">相对 PG UTC 纪元的微秒数</param>
@@ -212,7 +212,7 @@ static int32_t _lpgsql_bind_timestamptz(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 绑定 DATE 参数（非 number 时绑定 NULL）
+/// 绑定 DATE 参数（非 number 时绑定 NULL，超 int32 范围报错）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="days" type="integer|nil">相对 PG 纪元（2000-01-01）的天数</param>
@@ -223,7 +223,7 @@ static int32_t _lpgsql_bind_date(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 绑定 UUID 参数（接受长度恰好为 16 字节的二进制字符串；其他绑定 NULL）
+/// 绑定 UUID 参数（只有长度恰好 16 字节的二进制字符串才生效；nil 或其他长度绑 NULL，非字符串报错）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="data" type="string|nil">16 字节 UUID 二进制串</param>
@@ -232,6 +232,7 @@ static int32_t _lpgsql_bind_uuid(lua_State *lua) {
     LPGSQL_BIND_ARG(lua, bind);
     size_t size = 0;
     const char *data = NULL;
+    luaL_argcheck(lua, lua_isnoneornil(lua, 2) || LUA_TSTRING == lua_type(lua, 2), 2, "uuid must be a string");
     if (LUA_TSTRING == lua_type(lua, 2)) {
         data = luaL_checklstring(lua, 2, &size);
         if (16 != size) {

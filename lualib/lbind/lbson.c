@@ -68,9 +68,15 @@ static bson_ctx *_lbson_check_writable(lua_State *lua) {
 static size_t _lbson_lens(bson_ctx *bson) {
     return 0 == bson->doc.inc ? bson->doc.size : bson->doc.offset;
 }
-// 只读元表上所有写入方法名的占位:报 Lua 错(可被 pcall 捕获)而非任其走到 binary.h 的断言。
+// 只读元表上所有写入方法名的占位,报 Lua 错而非任其走到 binary.h 的断言。
 // 将来给可写元表加写入方法却忘了在只读元表登记,退化为 "attempt to call a nil value",
 // 消息变差但同样不会 abort
+/// <summary>
+/// 只读对象（bson.new(data, size) 交出的那种）没有写入能力：调用本方法一律报 Lua 错，可被 pcall 捕获
+/// </summary>
+/// <param name="self" type="userdata">只读 bson 对象</param>
+/// <param name="..." type="any">一概忽略</param>
+/// <returns>无</returns>
 static int32_t _lbson_readonly(lua_State *lua) {
     return luaL_error(lua, "bson: read-only document from bson.new(data, size), write methods unavailable");
 }
@@ -442,7 +448,7 @@ static int32_t _lbson_complete(lua_State *lua) {
     return lpub_rtn_bool(lua, bson_complete(bson));
 }
 /// <summary>
-/// 返回内部 BSON 数据
+/// 取内部 BSON 数据
 /// </summary>
 /// <param name="self" type="userdata">bson 对象</param>
 /// <returns type="lightuserdata">数据指针（bson 内部缓冲的**借用**指针，随 bson 对象释放而失效，
@@ -479,7 +485,7 @@ static int32_t _lbson_gen_oid(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回空 BSON 文档数据（指针为静态存储，勿释放）
+/// 取空 BSON 文档数据（指针为静态存储，勿释放）
 /// </summary>
 /// <param>无</param>
 /// <returns type="lightuserdata">空文档数据指针</returns>
@@ -541,7 +547,11 @@ static int32_t _lbson_mkoid(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_BSON_OID);
     return 1;
 }
-// 返回 12 字节 OID 原始字符串
+/// <summary>
+/// 取 ObjectId 的原始字节
+/// </summary>
+/// <param name="self" type="userdata">_bson_oid 对象</param>
+/// <returns type="string">12 字节原始 OID</returns>
 static int32_t _lbson_mkoid_data(lua_State *lua) {
     lbson_oid_t *ud = luaL_checkudata(lua, 1, MT_BSON_OID);
     lua_pushlstring(lua, ud->data, BSON_OID_LENS);
@@ -560,7 +570,11 @@ static int32_t _lbson_mkdate(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_BSON_DATE);
     return 1;
 }
-// 返回 UTC 毫秒时间戳
+/// <summary>
+/// 取日期时间值
+/// </summary>
+/// <param name="self" type="userdata">_bson_date 对象</param>
+/// <returns type="integer">UTC 毫秒时间戳</returns>
 static int32_t _lbson_mkdate_ms(lua_State *lua) {
     lbson_date_t *ud = luaL_checkudata(lua, 1, MT_BSON_DATE);
     lua_pushinteger(lua, ud->ms);
@@ -587,13 +601,21 @@ static int32_t _lbson_mkbinary(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_BSON_BINARY);
     return 1;
 }
-// 返回 bson_subtype 枚举值
+/// <summary>
+/// 取二进制子类型
+/// </summary>
+/// <param name="self" type="userdata">_bson_binary 对象</param>
+/// <returns type="integer">bson_subtype 枚举值</returns>
 static int32_t _lbson_mkbinary_subtype(lua_State *lua) {
     lbson_binary_t *ud = luaL_checkudata(lua, 1, MT_BSON_BINARY);
     lua_pushinteger(lua, ud->subtype);
     return 1;
 }
-// 返回二进制内容（Lua 字符串）
+/// <summary>
+/// 取二进制载荷
+/// </summary>
+/// <param name="self" type="userdata">_bson_binary 对象</param>
+/// <returns type="string">二进制内容</returns>
 static int32_t _lbson_mkbinary_data(lua_State *lua) {
     lbson_binary_t *ud = luaL_checkudata(lua, 1, MT_BSON_BINARY);
     lua_pushlstring(lua, (const char *)(ud + 1), ud->lens);
@@ -612,7 +634,11 @@ static int32_t _lbson_mkint64(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_BSON_INT64);
     return 1;
 }
-// 返回 int64 整数值
+/// <summary>
+/// 取 int64 值
+/// </summary>
+/// <param name="self" type="userdata">_bson_int64 对象</param>
+/// <returns type="integer">int64 整数值</returns>
 static int32_t _lbson_mkint64_val(lua_State *lua) {
     lbson_int64_t *ud = luaL_checkudata(lua, 1, MT_BSON_INT64);
     lua_pushinteger(lua, ud->val);
@@ -769,7 +795,7 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
 /// nil 与 bson.null 都编成 BSON null。整数 key 串成十进制字符串当字段名，故 [1] 与 "1" 会撞成同一个
 /// 字段名，本函数不查重（同 yyjson.encode），撞了就产出带重复字段的文档、回读只剩其一，调用方自己保证不撞
 /// </summary>
-/// <param name="t" type="table">待编码的 Lua table</param>
+/// <param name="t" type="table&lt;string,any&gt;|any[]">待编码的 Lua table</param>
 /// <returns type="_bson_ctx">完整 bson 对象，可直接调用 :data() 传给 mongo API</returns>
 static int32_t _lbson_encode(lua_State *lua) {
     luaL_checktype(lua, 1, LUA_TTABLE);
@@ -1182,7 +1208,7 @@ static int32_t _lbson_iter_find(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回当前字段的 BSON 类型枚举整数
+/// 取当前字段的 BSON 类型
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
 /// <returns type="integer">bson_type 枚举值</returns>
@@ -1192,7 +1218,7 @@ static int32_t _lbson_iter_type(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回当前字段的键名
+/// 取当前字段的键名
 /// </summary>
 /// <param name="self" type="userdata">iter 对象</param>
 /// <returns type="string?">字段名；无当前元素（尚未 next / 遍历结束 / 解析失败）返回 nil。

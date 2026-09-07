@@ -176,45 +176,36 @@ runner.run(function(t)
     t:check(sok, "并发段种子文档插入 ok")
     t:eq(N, sn, "并发段种子文档 n=" .. N)
 
-    local got, done = {}, 0
+    -- 用 srey.fork_wait 而不是手写 done 计数 + 有界轮询,理由同 db_mysql.lua
+    local fns = {}
     for i = 1, N do
-        srey.fork(function()
+        fns[i] = function()
             for _ = 1, ROUNDS do
                 if not mg:ping() then
-                    got[i] = "ping failed"
-                    done = done + 1
-                    return
+                    return "ping failed"
                 end
                 local q = bson.encode({ id = 1000 + i })
                 local qptr, qsz = q:data()
                 local mp = mg:find("srey_test", qptr, qsz)
                 if not mp then
-                    got[i] = "find failed"
-                    done = done + 1
-                    return
+                    return "find failed"
                 end
                 local fp, fl = mgmod.doc(mp)
                 local r = bson.decode(fp, fl)
                 local batch = r and r.cursor and r.cursor.firstBatch
                 if not batch or 1 ~= #batch or (1000 + i) ~= batch[1].id then
-                    got[i] = string.format("got id %s want %d",
+                    return string.format("got id %s want %d",
                         tostring(batch and batch[1] and batch[1].id), 1000 + i)
-                    done = done + 1
-                    return
                 end
             end
-            got[i] = true
-            done = done + 1
-        end)
+            return true
+        end
     end
-    -- 有界等待，理由同 db_mysql.lua：无界 while 会把 fork 协程抛错变成整份汇总挂住
-    for _ = 1, 1500 do -- 1500 x 20ms = 30s 上限
-        if done >= N then break end
-        srey.sleep(20)
-    end
-    t:eq(N, done, "并发协程全部完成 (" .. done .. "/" .. N .. ")")
+    local res = srey.fork_wait(fns)
+    t:eq(N, #res, "fork_wait 收齐 N 项 (" .. #res .. "/" .. N .. ")")
     for i = 1, N do
-        t:check(true == got[i], "mongo 并发协程 " .. i .. ": " .. tostring(got[i]))
+        t:check(res[i].ok and true == res[i].val,
+                "mongo 并发协程 " .. i .. ": " .. tostring(res[i].ok and res[i].val or res[i][1]))
     end
 
     mg:quit()

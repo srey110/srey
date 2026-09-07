@@ -3,9 +3,7 @@
 
 #include "CuTest.h"
 
-/// <summary>
-/// 注册 utils 测试套件：pack/unpack、binary、buffer、sfid、hash_ring、netaddr
-/// </summary>
+// 注册 utils 测试套件：pack/unpack、binary、buffer、sfid、hash_ring、netaddr
 void test_utils(CuSuite *suite);
 
 #endif//TEST_UTILS_H_

@@ -153,9 +153,11 @@ runner.run(function(t)
     t:check(true, "fake smtp connected")
 
     -- 并发：每个协程发自己编号的邮件，服务端按事务状态机校验没有交错
-    local done, got = 0, {}
+    -- 用 srey.fork_wait 而不是手写 done 计数 + 有界轮询:srey.fork 的错被 _coro_cb 的 xpcall
+    -- 吞掉不传播,协程体任一处抛错手写版就再也不会 done+1;fork_wait 照样收敛,错误原文进 r[i][1]
+    local fns = {}
     for i = 1, CONC_N do
-        srey.fork(function()
+        fns[i] = function()
             for _ = 1, ROUNDS do
                 local m = mail.new()
                 m:from("srey", string.format("c%d@t", i))
@@ -164,24 +166,17 @@ runner.run(function(t)
                 m:msg("body")
                 m:reply(0)
                 if not ctx:send(m) then
-                    got[i] = "send failed"
-                    done = done + 1
-                    return
+                    return "send failed"
                 end
             end
-            got[i] = true
-            done = done + 1
-        end)
+            return true
+        end
     end
-    -- 有界等待：srey.fork 的错被 _coro_cb 的 xpcall 吞掉不传播，
-    -- 协程体任一处抛错就再也不会 done+1，无界 while 会把整个模块挂到 reporter 超时
-    for _ = 1, 1500 do-- 1500 x 20ms = 30s 上限
-        if done >= CONC_N then break end
-        srey.sleep(20)
-    end
-    t:eq(CONC_N, done, "并发协程全部完成 (" .. done .. "/" .. CONC_N .. ")")
+    local res = srey.fork_wait(fns)
+    t:eq(CONC_N, #res, "fork_wait 收齐 CONC_N 项 (" .. #res .. "/" .. CONC_N .. ")")
     for i = 1, CONC_N do
-        t:check(true == got[i], "并发协程 " .. i .. ": " .. tostring(got[i]))
+        t:check(res[i].ok and true == res[i].val,
+                "并发协程 " .. i .. ": " .. tostring(res[i].ok and res[i].val or res[i][1]))
     end
     t:eq(0, interleave, "服务端未检出命令交错")
     t:eq(CONC_N * ROUNDS, mails, "服务端收下的邮件数")

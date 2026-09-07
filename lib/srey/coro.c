@@ -805,7 +805,7 @@ void coro_fork(task_ctx *task, fork_serial_cb func, void *arg) {
     }
     _coro_fork_enqueue(coctx, func, arg, NULL);
 }
-int32_t coro_fork_wait(task_ctx *task, int32_t n, fork_serial_cb funcs[], void *args[]) {
+int32_t coro_fork_wait(task_ctx *task, fork_serial_cb funcs[], void *args[], int32_t n) {
     if (n <= 0) {
         return ERR_OK;
     }

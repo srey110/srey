@@ -219,11 +219,11 @@ void coro_fork(task_ctx *task, fork_serial_cb func, void *arg);
 /// 总耗时 ≈ max(t_i)，而非 sum(t_i)。
 /// </summary>
 /// <param name="task">所属 task</param>
-/// <param name="n">并发任务数；n 小于等于 0 立即返回 ERR_OK</param>
 /// <param name="funcs">长度为 n 的函数指针数组</param>
 /// <param name="args">长度为 n 的参数指针数组，args[i] 与 funcs[i] 配对</param>
+/// <param name="n">并发任务数；n 小于等于 0 立即返回 ERR_OK</param>
 /// <returns>ERR_OK 成功；ERR_FAILED 调用方不在协程内</returns>
-int32_t coro_fork_wait(task_ctx *task, int32_t n, fork_serial_cb funcs[], void *args[]);
+int32_t coro_fork_wait(task_ctx *task, fork_serial_cb funcs[], void *args[], int32_t n);
 /// <summary>
 /// 创建协程串行化执行器（critical section）。同 task 内多协程对同一资源并发访问时
 /// 串行进入，避免穿插；同一协程嵌套调用安全（ref 计数）。

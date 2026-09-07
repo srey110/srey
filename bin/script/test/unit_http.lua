@@ -1,6 +1,8 @@
 -- lib.http 客户端 chunked 违约路径:生产者返回非 string 时,http.post 须先把对端必回的响应收掉再返回 nil。
 -- 漏收则残留响应会被同一连接上的下一次请求错认——_wait_net_recv 按 skid 匹配,不区分是哪次请求。
 -- 同一 task 内起 server(PACK_HTTP 监听)与 client(连回本机):server 对分片请求回固定串,非分片请求回显 body。
+-- 另覆盖客户端 chunked 接收段(lib/http.lua 的 srey.syn_slice 循环):server 回真 chunked 响应,
+-- client 分传 / 不传 ckfunc 两种走法。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -28,6 +30,11 @@ local INTERIM_RSP = "HTTP/1.1 103 Early Hints\r\nLink: </s.css>; rel=preload\r\n
     .. "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
 local N204 = "want204"-- 触发 server 回 204+body，验证 body 与 Content-Length 都被丢弃
 local BADBODY = "wantbadbody"-- 触发 server 回一个类型不受支持的 body（数字），验证告警确实打出来
+-- 触发 server 回真 chunked 响应(生产者吐两块)。lib.http 的接收段原先零覆盖:现有 /chunked
+-- 那条是 HEAD,headonly 下生产者一次都不调,走不到 srey.syn_slice 那个循环
+local CKBODY = "wantckbody"
+local CK1 = "chunk-one"
+local CK2 = "chunk-two-longer"
 
 -- WARN 打桩，用来断言"响应带了不支持的 body 类型时确实告警"。
 -- 每个 unit 模块是独立 task（各有各的 lua_State），改全局波及不到别的模块。
@@ -50,6 +57,18 @@ local function _warned(sub)
 end
 -- 单条头就把头部块顶过 HTTP_MAX_HEADLENS(4096)：组包侧不卡长度，该原样发出
 local BIG = string.rep("b", 4096)
+
+-- chunked 响应的生产者:吐两块再返回 nil 终止
+local function _ck_producer(state)
+    state.n = state.n + 1
+    if 1 == state.n then
+        return CK1
+    end
+    if 2 == state.n then
+        return CK2
+    end
+    return nil
+end
 
 -- 第 1 块正常发出(让对端收到一条语法完整的 chunked 请求),第 2 块返回非 string 触发违约
 local function _bad_producer(state)
@@ -138,6 +157,11 @@ runner.run(function(t)
             http.response(fd, skid, 204, nil, "dropped")
             return
         end
+        if CKBODY == body then
+            -- info 传函数即 chunked:每次调它取一块,返 nil 终止
+            http.response(fd, skid, 200, nil, _ck_producer, { n = 0 })
+            return
+        end
         if BADBODY == body then
             -- body 是数字：三个 body 分支都不命中，按无 body 发走并告警
             http.response(fd, skid, 200, nil, 42)
@@ -178,6 +202,32 @@ runner.run(function(t)
     t:check(nil ~= after, "被拒后连接仍可用(一个字节都没写出去)")
     if after then
         t:eq(PROBE2, after.data, "拒绝的请求未在连接上留下任何残留")
+    end
+
+    -- lib.http 的 chunked 接收段:不传 ckfunc 时逐块累积再拼进 pack.data
+    local ckp = http.post(cli_fd, cli_skid, "/", nil, nil, CKBODY)
+    t:check(nil ~= ckp, "chunked 响应收到")
+    if ckp then
+        t:eq(CK1 .. CK2, ckp.data, "两块 chunk 按序拼进 pack.data")
+        t:eq(#CK1 + #CK2, ckp.cksize, "cksize 累加两块的字节数")
+    end
+    -- 传 ckfunc 时逐块回调、不落 pack.data。只断言最后一次回调的 fin 而不数回调次数:
+    -- 终止块是否单独成一次回调由 C 侧的分片边界决定,不该在这里锁死
+    local got, fins = {}, {}
+    local ckp2 = http.post(cli_fd, cli_skid, "/", nil, function(fin, d, sz)
+        if d and sz > 0 then
+            got[#got + 1] = srey.ud_str(d, sz)
+        end
+        fins[#fins + 1] = fin
+    end, CKBODY)
+    t:check(nil ~= ckp2, "带 ckfunc 的 chunked 响应收到")
+    if ckp2 then
+        t:eq(2, #got, "ckfunc 收到两块非空 chunk")
+        t:eq(CK1, got[1], "ckfunc 第一块内容")
+        t:eq(CK2, got[2], "ckfunc 第二块内容")
+        t:eq(true, fins[#fins], "末次回调 fin=true")
+        t:eq(#CK1 + #CK2, ckp2.cksize, "带 ckfunc 时 cksize 同样累加")
+        t:eq(nil, ckp2.data, "带 ckfunc 时不落 pack.data")
     end
 
     -- 裸连接读原始字节：srey 自己的解析器对"无 CL 无 chunked"是宽容的，

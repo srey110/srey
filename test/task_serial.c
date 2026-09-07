@@ -109,7 +109,7 @@ static int32_t _test_fifo(task_ctx *task) {
     // 三个协程依次 fork，进入 cs 的先后顺序 = fork 顺序（_drain_fork_queue 顺序起协程）
     void (*fifo_fns[3])(task_ctx *, void *) = { _fifo_worker, _fifo_worker, _fifo_worker };
     void *fifo_args[3] = { &ja, &jb, &jc };
-    coro_fork_wait(task, 3, fifo_fns, fifo_args);
+    coro_fork_wait(task, fifo_fns, fifo_args, 3);
     // 期望 order = [1(A 进), 1(A 出), 2(B), 3(C)]：A 完全退出后 B 才能进
     if (4 != cnt || 1 != order[0] || 1 != order[1] || 2 != order[2] || 3 != order[3]) {
         LOG_ERROR("serial fifo: expect [1,1,2,3], got cnt=%d [%d,%d,%d,%d].",
@@ -215,7 +215,7 @@ static int32_t _test_mutex(task_ctx *task) {
     mutex_arg a = { .s = s, .in_cs = &in_cs, .peak = &peak };
     void (*mutex_fns[2])(task_ctx *, void *) = { _mutex_worker, _mutex_worker };
     void *mutex_args[2] = { &a, &a };
-    coro_fork_wait(task, 2, mutex_fns, mutex_args);
+    coro_fork_wait(task, mutex_fns, mutex_args, 2);
     if (1 != peak) {
         LOG_ERROR("serial mutex: expect peak=1, got %d.", peak);
         coro_serial_free(s);
@@ -268,7 +268,7 @@ static int32_t _test_curco_restore(task_ctx *task) {
     curco_arg arg = { .s = s, .a_done = &a_done, .b_done = &b_done };
     void (*curco_fns[2])(task_ctx *, void *) = { _curco_worker_a, _curco_worker_b };
     void *curco_args[2] = { &arg, &arg };
-    coro_fork_wait(task, 2, curco_fns, curco_args);// A 先 fork → 占锁 sleep，B 后 fork → 跨协程路径入队
+    coro_fork_wait(task, curco_fns, curco_args, 2);// A 先 fork → 占锁 sleep，B 后 fork → 跨协程路径入队
     if (1 != a_done) {
         LOG_ERROR("serial curco_restore: A did not finish post-cs coro_sleep (curco stale?), a_done=%d.", a_done);
         coro_serial_free(s);
@@ -322,7 +322,7 @@ static int32_t _test_serial_pool_reuse(task_ctx *task) {
         args[i] = &rest;
     }
     for (r = 0; r < ROUNDS; r++) {
-        if (ERR_OK != coro_fork_wait(task, CONTEND, funcs, args)) {
+        if (ERR_OK != coro_fork_wait(task, funcs, args, CONTEND)) {
             LOG_ERROR("serial pool reuse: round %d fork_wait failed.", r);
             coro_serial_free(s);
             return ERR_FAILED;
@@ -381,7 +381,7 @@ static int32_t _test_serial_free_busy(task_ctx *task) {
     sfree_arg killer = { .s = s, .nfail = &nfail, .nhold = &nhold, .hold_ms = KILL_MS };
     fork_serial_cb funcs[4] = { _sfree_worker, _sfree_worker, _sfree_worker, _sfree_killer };
     void *args[4] = { &holder, &waiter, &waiter, &killer };
-    if (ERR_OK != coro_fork_wait(task, 4, funcs, args)) {
+    if (ERR_OK != coro_fork_wait(task, funcs, args, 4)) {
         LOG_ERROR("serial free busy: fork_wait failed.");
         coro_serial_free(s);// 没有协程跑起来，killer 那次 free 也就没发生
         return ERR_FAILED;
@@ -477,7 +477,7 @@ static int32_t _test_serial_quit_order(task_ctx *task) {
     sq_arg late = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = LATE_MS };
     fork_serial_cb funcs[4] = { _sq_holder, _sq_quit, _sq_quit, _sq_quit };
     void *args[4] = { &holder, &quitter, &quitter, &late };
-    if (ERR_OK != coro_fork_wait(task, 4, funcs, args)) {
+    if (ERR_OK != coro_fork_wait(task, funcs, args, 4)) {
         LOG_ERROR("serial quit order: fork_wait failed.");
         coro_serial_free(slot);
         return ERR_FAILED;

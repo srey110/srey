@@ -181,6 +181,26 @@ runner.run(function(t)
         t:eq(true, okempty, "digest:update NULL 指针 + 0 长度放行")
     end
 
+    do
+        -- REG_MTABLE 令 __gc 经 __index 也是个普通方法,业务一行 d:__gc() 就能提前释放。
+        -- digest/hmac 按值存进 userdata,没有可置 NULL 的指针,判据是 attr 归零；
+        -- 少这道守卫时每个入口都是 NULL 解引用或 NULL 函数指针调用,直接 SEGV 而不是可捕获的错
+        local d = digest.new(DIGEST_TYPE.MD5)
+        d:__gc()
+        t:eq(false, pcall(d.size, d), "digest 释放后 size 被拒")
+        t:eq(false, pcall(d.reset, d), "digest 释放后 reset 被拒")
+        t:eq(false, pcall(d.update, d, "x"), "digest 释放后 update 被拒")
+        t:eq(false, pcall(d.final, d), "digest 释放后 final 被拒")
+        t:eq(true, pcall(d.__gc, d), "digest 重复 __gc 不崩")
+        local h = hmac.new(DIGEST_TYPE.SHA256, string.rep("\x0b", 20))
+        h:__gc()
+        t:eq(false, pcall(h.size, h), "hmac 释放后 size 被拒")
+        t:eq(false, pcall(h.reset, h), "hmac 释放后 reset 被拒")
+        t:eq(false, pcall(h.update, h, "x"), "hmac 释放后 update 被拒")
+        t:eq(false, pcall(h.final, h), "hmac 释放后 final 被拒")
+        t:eq(true, pcall(h.__gc, h), "hmac 重复 __gc 不崩")
+    end
+
     -- ── cipher ─────────────────────────────────────────────────────────
     do
         -- AES-128 ECB round-trip（dofinal 自动 PKCS7 padding）

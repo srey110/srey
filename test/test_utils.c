@@ -447,6 +447,10 @@ static void test_hash_ring(CuTest *tc) {
     CuAssertPtrNotNull(tc, n4);
 
     hash_ring_free(&ring);
+    /* free 后必须重新 init 才能复用：今天能跑通只因 hash_ring_free 末尾顺手调了
+       hash_ring_init，而 hash_ring.h 明确写了那次复位只为"重复释放不崩 + 释放后 find
+       不解引用已置空的 items"，不是复用入口 —— 别把实现细节当契约用 */
+    hash_ring_init(&ring);
 
     /* 环定位：2 节点各 150 副本，200 个固定 key 两个节点都得命中过。
        md5 分布可重现，但不钉"哪个 key 落哪个节点"；二分退化成恒取 items[0]
@@ -1192,8 +1196,8 @@ static void test_chan(CuTest *tc) {
     CuAssertTrue(tc, 3 == (int)chan_size(ch));
 
     /* 按序接收 */
+    size_t lens = 0;
     for (uintptr_t i = 1; i <= 3; i++) {
-        size_t lens = 0;
         void *p = chan_recv(ch, &lens);
         CuAssertTrue(tc, (void *)i == p);
         CuAssertTrue(tc, 0 == (int)lens);
@@ -1206,7 +1210,7 @@ static void test_chan(CuTest *tc) {
     CuAssertTrue(tc, ERR_OK != chan_send(ch, (void *)99, 0, 0));
 
     /* close 后接收返回 NULL（队列已空且已关闭）*/
-    size_t lens = 0;
+    lens = 0;
     CuAssertTrue(tc, NULL == chan_recv(ch, &lens));
 
     chan_free(ch);
@@ -3044,6 +3048,10 @@ static void _pool_basic_check(CuTest *tc, int32_t thsafe) {
     CuAssertIntEquals(tc, 1, _pt_new); // 未新建
     CuAssertIntEquals(tc, 1, _pt_reset);
     CuAssertPtrEquals(tc, &arg, _pt_reset_args);
+    // per-object 计数:文件静态量给不出"是哪个对象被 reset/clear 了"——多对象在池时分不清。
+    // 这两个字段原先只写不读,看着像在校验复用语义,实际什么都没校验
+    CuAssertIntEquals(tc, 1, (int)o2->reset_cnt);
+    CuAssertIntEquals(tc, 1, (int)o2->clear_cnt);
     CuAssertIntEquals(tc, 0, pool_size(&pool));
     pool_push(&pool, o2, 0);
     pool_free(&pool);
@@ -3237,6 +3245,11 @@ static void test_strtod_c(CuTest *tc) {
         CuAssertTrue(tc, '\0' == cvend);
         CuAssertDblEquals(tc, 3.0, sv, 1e-9);
         CuAssertTrue(tc, '.' == svend);
+    } else {
+        // 一个候选 locale 都设不上时(精简容器/Alpine 常不带这些 locale 数据),上面只剩
+        // "普通 strtod 也成立"的那条,strtod_c 存在的理由——不受 LC_NUMERIC 影响——本轮
+        // 没被验证。打一行让人看出来,口径同 test_event.c 的证书缺失
+        PRINT("skip strtod_c locale check, no comma-decimal locale available.");
     }
 }
 

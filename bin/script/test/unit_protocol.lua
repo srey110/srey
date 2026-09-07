@@ -1,5 +1,5 @@
 -- protocol 绑定层单元测试（不走网络）：
--- websock pack_*, smtp pack_*, mail pack, redis.pack, harbor.pack, http.code_status
+-- websock pack_*, smtp pack_*, mail pack, redis.pack/value/next, harbor.pack, http.code_status
 
 local srey    = require("lib.srey")
 local runner  = require("test.runner")
@@ -45,6 +45,20 @@ runner.run(function(t)
                 "大整数值浮点不退化成科学计数法")
         -- 真正的小数原样保留
         t:check(nil ~= redis.pack("SET", "k", 3.25):find("3.25", 1, true), "小数原样编码")
+    end
+
+    -- ── redis.value / redis.next 的 nil 语义 ───────────────────────────
+    -- 链表遍历配对：next 走到尾返回的是 Lua nil,而两者的文档都承诺 nil 时返回 nil。
+    -- 少了那道 nil 闸,LUACHECK_LUDATA_OPT 会抛 "light userdata expected",
+    -- redis.value(redis.next(node)) 这个惯用法会把整个协程记成错误
+    do
+        t:eq(nil, redis.value(nil), "redis.value(nil) 返回 nil 而不抛")
+        t:eq(nil, redis.next(nil), "redis.next(nil) 返回 nil 而不抛")
+        t:eq(1, select("#", redis.value(nil)), "nil 路径也只返 1 个值")
+        t:eq(1, select("#", redis.next(nil)), "next 的 nil 路径同样返 1 个值")
+        -- 别的类型仍算误用,照抛
+        t:eq(false, pcall(redis.value, 42), "redis.value 收数字仍被拒")
+        t:eq(false, pcall(redis.next, {}), "redis.next 收 table 仍被拒")
     end
 
     -- ── harbor.pack ────────────────────────────────────────────────────

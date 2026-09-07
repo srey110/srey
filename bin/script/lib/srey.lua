@@ -941,13 +941,18 @@ srey.sock_status = core.status
 ---@type fun(fd:integer, skid:integer, tname:TASK_NAME):boolean
 srey.sock_bind_task = core.bind_task
 
----查 SSL 上下文:NONE→(true,nil) 明文;查到→(true,ssl);name 未注册→(false,nil);error/WARN 由调用处按需处理
+---查 SSL 上下文:NONE→(true,nil) 明文;查到→(true,ssl);name 未注册或非字符串→(false,nil);error/WARN 由调用处按需处理。
+---三种结局之外不抛:core.ssl_qury 是 luaL_checkstring,漏传或传错类型会抛,而 srey.connect 的
+---extra 释放排在本函数之后,抛出去就把它漏掉了
 ---@param sslname SSL_NAME
----@return boolean ok  name 已注册(或 NONE)为 true;未注册 false
+---@return boolean ok  name 已注册(或 NONE)为 true;未注册或非字符串 false
 ---@return lightuserdata? ssl  NONE 时 nil
 function srey.ssl_qury(sslname)
     if SSL_NAME.NONE == sslname then
         return true
+    end
+    if "string" ~= type(sslname) then
+        return false
     end
     local ssl = core.ssl_qury(sslname)
     if not ssl then
@@ -1351,8 +1356,10 @@ local function _net_sended_dispatch(msg)
     end
 end
 
----注册连接关闭回调；CLOSE 消息会先唤醒所有在该 skid 上挂起等待的协程，再调用此回调
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, client:integer) CLOSE 回调
+---注册连接关闭回调；CLOSE 消息会先唤醒所有在该 skid 上挂起等待的协程，再调用此回调。
+---erro 说明连接是怎么断的：TRUNCATED 时"由连接关闭界定 body"那类协议的末片照给但可能被
+---截断，收不收由业务自己判。CLOSE_TYPE.NEVERCONN 不会投到本回调（连接从未建立）
+---@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, client:integer, erro:CLOSE_TYPE) CLOSE 回调
 function srey.on_closed(func)
     func_cbs[MSG_TYPE.CLOSE] = func
 end
@@ -1362,7 +1369,7 @@ local close_watchers = {}-- 库级 CLOSE 观察者；业务的 on_closed 仍是�
 ---在文档里要求业务代为转接，漏接就是资源无声常驻（router 的流式请求上下文即如此）。
 ---本表与 func_cbs 并存，先于业务回调按注册顺序同步调用，故观察者内不得挂起。
 ---没有反注册：库对象与 task 同生命周期，用完就随 task 一起没了
----@param func fun(subtype:integer, fd:integer, skid:integer, client:integer) 观察者
+---@param func fun(subtype:integer, fd:integer, skid:integer, client:integer, erro:CLOSE_TYPE) 观察者
 function srey.watch_closed(func)
     close_watchers[#close_watchers + 1] = func
 end
@@ -1408,11 +1415,11 @@ local function _net_close_dispatch(msg)
     if CLOSE_TYPE.NEVERCONN ~= msg.erro then
         -- 库级观察者就地同步调：它们只做摘表/释放，起协程反而让清理排到本条消息之后
         for i = 1, #close_watchers do
-            srey.xpcall(close_watchers[i], msg.subtype, msg.fd, msg.skid, msg.client)
+            srey.xpcall(close_watchers[i], msg.subtype, msg.fd, msg.skid, msg.client, msg.erro)
         end
         local func = func_cbs[MSG_TYPE.CLOSE]
         if func then
-            _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client)
+            _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro)
         end
     end
     _coro_sess_del_empty(sess)
@@ -1573,7 +1580,6 @@ local function _timeout_scan()
         local cur_sess
         for i = 1, cnt do
             cur_sess = _timeout_buf[i]
-            _timeout_buf[i] = nil
             -- nearest 是按"这批都会被摘掉"算的。摘不掉就得把游标退回 0 重扫，
             -- 否则那些 deadline 比 next_timeout 还早的等待者从此永远扫不到：
             -- 它们的协程不会醒、nwait 回不到 0、task 退不掉

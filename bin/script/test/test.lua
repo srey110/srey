@@ -36,6 +36,8 @@ local TESTS = {
     { "test.unit_kcp",            "kcp" },
     { "test.unit_http",           "http_client" },
     { "test.unit_websock",        "websock_client" },
+    -- task 名不能叫 harbor:那是 startup.c 起的真 harbor 服务的名字(config.json harbor.name)
+    { "test.unit_harbor",         "harbor_rpc" },
     -- 同一 task 内起假 SMTP 服务端再用 4 个协程并发投递,验证 smtp.lua 的命令串行化
     -- (镜像 C 层 task_smtp.c 的同名用例);不依赖外网账号,末参为监听端口
     { "test.smtp_fake",           "smtp_fake", 12526 },
@@ -45,6 +47,12 @@ local TESTS = {
     { "test.db_pgsql",            "db_pgsql" },
     { "test.db_redis",            "db_redis" },
     { "test.db_mongo",            "db_mongo" },
+    -- SMTP 客户端(仿照 test/task_smtp.c 参数风格,连真实外网账号)。默认禁用:用户名/密码/
+    -- 邮箱地址按实际邮箱服务填好再放开。放在表里而不是另写一句 task.register:注册与
+    -- reporter 的期望名单同出这一列,放开后收不到就是 [MISS],不会汇总打完才上报被静默丢弃
+    -- { "test.smtp_client",         "smtp_client", SSL_NAME.CLIENT, "smtp.gmail.com", 465,
+    --   "your-account@gmail.com", "your-app-password",
+    --   "your-account@gmail.com", "recipient1@example.com", "recipient2@example.com", "" },
 }
 
 -- 注册 reporter + 各测试 task。task 名取 TESTS 的第 2 列。
@@ -73,14 +81,6 @@ local function register()
     task.register("test.server_http", "server_http", 0)
     task.register("test.server_ws",   "server_ws", 0)
     task.register("test.server_mqtt", "server_mqtt", 0)
-
-    -- SMTP 客户端测试(仿照 test/task_smtp.c 参数风格)。
-    -- 默认禁用:用户名/密码/邮箱地址需根据实际邮箱服务填写后再去掉注释。
-    -- task.register("test.smtp_client", "smtp_client", 0,
-    --               SSL_NAME.CLIENT, "smtp.gmail.com", 465,
-    --               "your-account@gmail.com", "your-app-password",
-    --               "your-account@gmail.com", "recipient1@example.com", "recipient2@example.com",
-    --               "")
 end
 
 return register

@@ -151,7 +151,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
         funcs[i] = _debug_bcast_one;
         args[i] = &bargs[i];
     }
-    coro_fork_wait(task, (int32_t)tl.n, funcs, args);
+    coro_fork_wait(task, funcs, args, (int32_t)tl.n);
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     const char *nm;
@@ -341,9 +341,10 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
 // 连接关闭回调：清掉该连接尚未收齐的流式请求。理由同 harbor 的同名回调
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
     (void)client;
+    (void)erro;
     debug_console_ctx *ctx = coro_get_arg(task);
     router_closed(ctx->router, sk->fd, sk->skid);
 }

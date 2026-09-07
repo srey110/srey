@@ -69,6 +69,10 @@ runner.run(function(t)
         end
     end
     t:check(insert_ok, "bulk insert 3 rows")
+    -- last_id / affectd_rows 是业务判"插了几行 / 自增主键是多少"的唯一入口,返错值不会让
+    -- 任何断言变红。单行 INSERT 的影响行数恒为 1;表有自增主键,last_id 必 > 0
+    t:eq(1, mctx:affectd_rows(), "单行 INSERT 的 affectd_rows 是 1")
+    t:check((mctx:last_id() or 0) > 0, "自增主键的 last_id > 0")
 
     -- 普通 SELECT：逐字段读回来比对，而不是只数行数。原来只有 _count_rows(reader) == 3，
     -- 于是 bind 的十种类型映射（double 恒写 0、string 截成空串、datetime 写错 epoch、
@@ -180,38 +184,31 @@ runner.run(function(t)
     -- 并发：多协程同一条连接各查自己的常量，回读必须原样。没有串行化时命令交错，
     -- MySQL 半双工加上每连接一份的解析状态，表现为串号、少行乃至解析崩掉
     local N, ROUNDS = 4, 6
-    local got, done = {}, 0
+    -- 用 srey.fork_wait 而不是手写 done 计数 + 有界轮询:协程体抛错时 fork_wait 照样收敛
+    -- (r[i].ok=false、r[i][1] 就是错误原文,且全部完成即刻返回);手写版是 done 到不了 N、
+    -- 空烧满 1500x20ms=30s,真原因只在日志另一处
+    local fns = {}
     for i = 1, N do
-        srey.fork(function()
+        fns[i] = function()
             local want = 1000 + i
             for _ = 1, ROUNDS do
                 local r = mctx:query(string.format("select %d as v", want))
                 if not (r and 1 == #r and r[1]) then
-                    got[i] = "query failed"
-                    done = done + 1
-                    return
+                    return "query failed"
                 end
                 local rok, v = r[1]:integer("v")
                 if not rok or v ~= want then
-                    got[i] = string.format("got %s want %d", tostring(v), want)
-                    done = done + 1
-                    return
+                    return string.format("got %s want %d", tostring(v), want)
                 end
             end
-            got[i] = true
-            done = done + 1
-        end)
+            return true
+        end
     end
-    -- 有界等待。fork 出去的协程抛错时 done 永远到不了 N（srey.fork 的错误由 _coro_cb 的
-    -- xpcall 吞掉、只打 ERROR 日志、不向外传播），无界 while 会让本 task 的 runner.run
-    -- 永远走不到 t:done()，整份汇总要么不出现要么靠超时兜底报 MISS，真原因只在日志另一处
-    for _ = 1, 1500 do -- 1500 x 20ms = 30s 上限
-        if done >= N then break end
-        srey.sleep(20)
-    end
-    t:eq(N, done, "并发协程全部完成 (" .. done .. "/" .. N .. ")")
+    local res = srey.fork_wait(fns)
+    t:eq(N, #res, "fork_wait 收齐 N 项 (" .. #res .. "/" .. N .. ")")
     for i = 1, N do
-        t:check(true == got[i], "mysql 并发协程 " .. i .. ": " .. tostring(got[i]))
+        t:check(res[i].ok and true == res[i].val,
+                "mysql 并发协程 " .. i .. ": " .. tostring(res[i].ok and res[i].val or res[i][1]))
     end
 
     mctx:quit()

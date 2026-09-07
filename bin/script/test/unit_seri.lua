@@ -154,7 +154,7 @@ runner.run(function(t)
         t:eq(300, cnt, "many top-level nils count")
     end
 
-    -- 14. 恶意流谎报超大 array_n：不预分配天量内存，读到流尾即报 malformed（F-SERI-2）
+    -- 14. 恶意流谎报超大 array_n：不预分配天量内存，读到流尾即报 malformed
     do
         -- 0xFE=ARRAY+escape，0x22=NUMBER DWORD，后随 u32 小端 0x10000000(2.68 亿) 声称的数组长度，但无元素数据
         local bad = string.char(0xFE, 0x22, 0x00, 0x00, 0x00, 0x10)

@@ -264,6 +264,53 @@ runner.run(function(t)
         -- 走 ssl_qury 那条失败路径，它在任何挂起之前就返回，不依赖网络
         t:eq(2, select("#", srey.connect(PACK_TYPE.NONE, "no-such-ssl-name", "127.0.0.1", 1)),
             "srey.connect 失败也返 2 个值")
+        -- ssl_qury 的契约只有 (true,nil)/(true,ssl)/(false,nil) 三档,没有"抛出"这一档：
+        -- core.ssl_qury 是 luaL_checkstring,漏传 sslname 会抛,而 srey.connect 的 extra
+        -- 释放排在它之后——websock 的 hsctx 就那样漏掉一份(lightuserdata,没有 __gc)
+        t:eq(false, srey.ssl_qury(nil), "ssl_qury 漏传返 false 而不抛")
+        t:eq(false, srey.ssl_qury(42), "ssl_qury 收非字符串返 false")
+        t:eq(true, srey.ssl_qury(SSL_NAME.NONE), "SSL_NAME.NONE 仍是明文放行")
+        t:eq(2, select("#", srey.connect(PACK_TYPE.NONE, nil, "127.0.0.1", 1)),
+            "sslname 漏传时 srey.connect 仍返 2 个值")
+    end
+
+    -- ── srey.closing: CLOSING 回调被调到，且回调抛错不影响 task_ungrab ─────
+    -- 这条路径 Lua 侧原先零注册：func_cbs[MSG_TYPE.CLOSING] 恒为 nil，_closing 里
+    -- srey.xpcall(func) 那一支从没执行过。而 MEMORY 记的正是它出过
+    -- "task ref 不归零 → _loader_task_closing 死循环 → Ctrl+C 失效"
+    do
+        local got = {}
+        srey.on_requested(function(reqtype, _, _, data, size)
+            if 200 == reqtype and data then
+                got[#got + 1] = srey.ud_str(data, size)
+            end
+        end)
+        local NORMAL, RAISE = "closing_ok", "closing_raise"
+        t:check(nil ~= task.register("test.closing_probe", NORMAL, 0, "framework", 0),
+                "closing 探针注册成功")
+        t:check(nil ~= task.register("test.closing_probe", RAISE, 0, "framework", 1),
+                "closing 抛错探针注册成功")
+        srey.sleep(100)-- 等两个探针的 startup 跑完(closing 是在 startup 里注册的)
+        local ntk = task.grab(NORMAL)
+        if ntk then
+            task.close(ntk)
+            task.ungrab(ntk)
+        end
+        local rtk = task.grab(RAISE)
+        if rtk then
+            task.close(rtk)
+            task.ungrab(rtk)
+        end
+        srey.sleep(300)-- task_close 是异步的,等 CLOSING 派发 + ungrab + free 走完
+        t:eq(1, #got, "CLOSING 回调被调到一次 (" .. #got .. ")")
+        t:eq("closed", got[1], "回调里 srey.call 回来的负载")
+        -- 必须接住再判:grab 命中时返回的是裸 lightuserdata,没有 __gc,不 ungrab 就永久多一个 ref,
+        -- 那个 task 再也不会 free,退出时 _loader_task_closing 等 maptasks 归零会等不到,Ctrl+C 失效
+        local rtk2 = task.grab(RAISE)
+        t:eq(nil, rtk2, "closing 抛错的 task 仍然消失(task_ungrab 未被跳过)")
+        if rtk2 then
+            task.ungrab(rtk2)
+        end
     end
 
     -- ── srey.core: sock_session 的会话键写死 skid，与 C 侧 coro_sync 对齐 ────

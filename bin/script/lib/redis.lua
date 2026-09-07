@@ -77,7 +77,7 @@ end
 redis.value = srey_redis.value
 
 ---获取响应链表中下一个节点指针
----@type fun(pk:lightuserdata):lightuserdata|nil
+---@type fun(pk:lightuserdata?):lightuserdata|nil
 redis.next = srey_redis.next
 
 -- unpack 的解析循环每个 RESP 节点都要调这两个，提成 local 免得逐节点重查模块表
@@ -159,6 +159,22 @@ local function _update_mark(mark)
             break
         end
     end
+end
+
+---聚合节点按 nelem 三态取值:>0 取 val,==0 取空表,<0(RESP3 的 nil 聚合)取 neg。
+---neg 由调用点显式给:父为 map 暂存 key 时取 nil(让 _key_ok 拦掉整对),其余三处取 false。
+---@param val any 聚合值
+---@param nelem integer 元素计数
+---@param neg any nelem<0 时的取值
+---@return any
+local function _aggval(val, nelem, neg)
+    if nelem > 0 then
+        return val
+    end
+    if 0 == nelem then
+        return {}
+    end
+    return neg
 end
 
 ---将聚合节点压入解析栈；map/attr 的元素个数需乘以 2（每元素占 key+val 两节点）
@@ -251,13 +267,9 @@ function redis.unpack(pk)
         if not parent then
             -- 无父节点（顶层多值响应，如 pipeline）
             if _is_agg(kind) then
+                table.insert(rtn, _aggval(val, nelem, false))
                 if nelem > 0 then
-                    table.insert(rtn, val)
                     _add_mark(mark, val, kind, nelem)
-                elseif 0 == nelem then
-                    table.insert(rtn, {})
-                else
-                    table.insert(rtn, false)
                 end
             else
                 table.insert(rtn, val ~= nil and val or false)
@@ -270,35 +282,17 @@ function redis.unpack(pk)
                     if 0 == parent.status then
                         -- 作为 key 暂存
                         parent.status = 1
-                        if nelem > 0 then
-                            parent.key = val
-                        elseif 0 == nelem then
-                            parent.key = {}
-                        else
-                            parent.key = nil
-                        end
+                        parent.key = _aggval(val, nelem, nil)
                     else
                         -- 作为 val 写入父 map
                         parent.status = 0
                         if _key_ok(parent.key) then
-                            if nelem > 0 then
-                                parent.agg[parent.key] = val
-                            elseif 0 == nelem then
-                                parent.agg[parent.key] = {}
-                            else
-                                parent.agg[parent.key] = false
-                            end
+                            parent.agg[parent.key] = _aggval(val, nelem, false)
                         end
                     end
                 else
                     -- 父为 array/set/push 或当前节点为 attr：顺序追加
-                    if nelem > 0 then
-                        table.insert(parent.agg, val)
-                    elseif 0 == nelem then
-                        table.insert(parent.agg, {})
-                    else
-                        table.insert(parent.agg, false)
-                    end
+                    table.insert(parent.agg, _aggval(val, nelem, false))
                 end
                 if nelem > 0 then
                     _add_mark(mark, val, kind, nelem)

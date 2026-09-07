@@ -2028,6 +2028,26 @@ static void test_hashmap_clear_update_cap(CuTest *tc) {
     }
     CuAssertTrue(tc, 101 == (int)hashmap_count(map));
 
+    /* growpower 的下界钳位：power=0 不钳的话扩容时 new_cap = nbuckets << 0 == nbuckets,
+       撞上 hashmap.c 里 new_cap <= nbuckets 那道守卫 → oom → 插不进去、count 停住;
+       钳到 1 才照常翻倍。growpower 在 hashmap.c 的私有结构里读不到,只能这样验行为。
+       上界(>16 钳成 16)测不了：即便钳住,16 << 16 也要一百万个桶,单元测试不该分配那么多 */
+    {
+        struct hashmap *m0 = hashmap_new(sizeof(_kv), 16, 0, 0,
+                                         _kv_hash, _kv_cmp, NULL, NULL);
+        CuAssertPtrNotNull(tc, m0);
+        hashmap_set_grow_by_power(m0, 0);
+        for (int i = 0; i < 256; i++) {
+            _kv kv;
+            SNPRINTF(kv.key, sizeof(kv.key), "p0_%d", i);
+            kv.val = i;
+            hashmap_set(m0, &kv);
+        }
+        CuAssertTrue(tc, !hashmap_oom(m0));
+        CuAssertTrue(tc, 256 == (int)hashmap_count(m0));
+        hashmap_free(m0);
+    }
+
     /* hashmap_probe：按 buckets 索引访问 */
     int probed = 0;
     for (size_t pos = 0; pos < 64 && probed < 5; pos++) {

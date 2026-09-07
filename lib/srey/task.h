@@ -299,7 +299,10 @@ void task_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged);
 /// <param name="_handshake">_net_handshake_cb 回调函数</param>
 void task_handshaked(task_ctx *task, _net_handshake_cb _handshake);
 /// <summary>
-/// 注册连接关闭回调函数
+/// 注册连接关闭回调函数。回调的 erro 是 close_type，说明连接是怎么断的：TLS 少发 close_notify
+/// 的 CLOSE_TYPE_TRUNCATED 下，"由连接关闭界定 body"的那类协议末片照给但可能被截断，
+/// 收不收由本回调按 erro 自行判（判据见 prots_net_close）。CLOSE_TYPE_NEVERCONN 不会投到
+/// 本回调——连接从未建立，失败已由 CONNECT（TCP）或 HANDSHAKED（KCP）的 erro 交出
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_close">_net_close_cb 回调函数</param>

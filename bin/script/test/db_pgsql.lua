@@ -35,6 +35,10 @@ runner.run(function(t)
             "insert 2 rows")
     -- 刚插了 2 行，affected_rows 就该是 2；>= 0 那种写法恒真，返 0 也照样过
     t:eq(2, pg:affected_rows(), "affected_rows 与本次 INSERT 的行数一致")
+    -- readyforquery 返回状态字符码(73 'I' 空闲 / 84 'T' 事务中 / 69 'E' 事务失败 / 0 未收到),
+    -- 不是 boolean。必须 t:eq 比值:Lua 里 0 也为真,t:check 连"没收到 ReadyForQuery"都拦不住。
+    -- 这里刚跑完一条非事务命令,应回到 'I'
+    t:eq(73, pg:readyforquery(), "命令完成后连接回到 ReadyForQuery('I')")
 
     -- SELECT + reader（单语句：数组恰好一个元素）
     local rs = pg:query("select id, name, score from srey_test order by id")
@@ -184,36 +188,29 @@ runner.run(function(t)
     -- 并发：多协程同一条连接各查自己的常量，回读必须原样。没有串行化时命令交错，
     -- 一条 pgsql 命令要读到 ReadyForQuery 才算完，交错会让响应对错协程
     local N, ROUNDS = 4, 6
-    local got, done = {}, 0
+    -- 用 srey.fork_wait 而不是手写 done 计数 + 有界轮询,理由同 db_mysql.lua
+    local fns = {}
     for i = 1, N do
-        srey.fork(function()
+        fns[i] = function()
             local want = 1000 + i
             for _ = 1, ROUNDS do
                 local qrs = pg:query(string.format("select %d as v", want))
                 if not qrs or "userdata" ~= type(qrs[1]) then
-                    got[i] = "query failed"
-                    done = done + 1
-                    return
+                    return "query failed"
                 end
                 local rok, v = qrs[1]:integer("v")
                 if not rok or v ~= want then
-                    got[i] = string.format("got %s want %d", tostring(v), want)
-                    done = done + 1
-                    return
+                    return string.format("got %s want %d", tostring(v), want)
                 end
             end
-            got[i] = true
-            done = done + 1
-        end)
+            return true
+        end
     end
-    -- 有界等待，理由同 db_mysql.lua：无界 while 会把 fork 协程抛错变成整份汇总挂住
-    for _ = 1, 1500 do -- 1500 x 20ms = 30s 上限
-        if done >= N then break end
-        srey.sleep(20)
-    end
-    t:eq(N, done, "并发协程全部完成 (" .. done .. "/" .. N .. ")")
+    local res = srey.fork_wait(fns)
+    t:eq(N, #res, "fork_wait 收齐 N 项 (" .. #res .. "/" .. N .. ")")
     for i = 1, N do
-        t:check(true == got[i], "pgsql 并发协程 " .. i .. ": " .. tostring(got[i]))
+        t:check(res[i].ok and true == res[i].val,
+                "pgsql 并发协程 " .. i .. ": " .. tostring(res[i].ok and res[i].val or res[i][1]))
     end
 
     pg:quit()

@@ -218,8 +218,8 @@ static void test_pgsql_reader_cursor(CuTest *tc) {
     CuAssertIntEquals(tc, 1, pgsql_reader_eof(r));
 
     // 3 行
+    char *p;
     for (int i = 0; i < 3; i++) {
-        char *p;
         MALLOC(p, 4);
         p[0] = (char)('1' + i);
         pgpack_row cols[1] = { { 1, p, NULL } };

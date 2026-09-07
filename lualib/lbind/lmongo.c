@@ -828,11 +828,6 @@ static int32_t _lmongo_session_expires(lua_State *lua) {
     lua_pushinteger(lua, (lua_Integer)mongo_session_expires(*ud));
     return 1;
 }
-/// <summary>
-/// 释放会话内存（不发送 endSessions，由 Lua 层负责；同时作为 __gc / free 调用）
-/// </summary>
-/// <param name="self" type="userdata">session 对象</param>
-/// <returns>无</returns>
 // 解除宿主对本 session 的绑定。宿主可能已被 m:__gc() 先释放，那时 session->mongo 是悬垂指针，
 // 连读都不能读，所以先确认宿主还在
 static void _lmongo_session_unbind(lua_State *lua, mongo_session *session) {
@@ -841,6 +836,12 @@ static void _lmongo_session_unbind(lua_State *lua, mongo_session *session) {
         session->mongo->session = NULL;
     }
 }
+/// <summary>
+/// 释放会话：先解绑宿主 mongo 上的引用，再释放 options 与自身；同时作为 __gc 调用。
+/// 不发送 endSessions，那一步由 Lua 层负责。可重复调用——内部指针置空后二次调用即早退
+/// </summary>
+/// <param name="self" type="userdata">mongo 会话对象</param>
+/// <returns>无</returns>
 static int32_t _lmongo_session_free(lua_State *lua) {
     mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
     if (NULL != *psession) {

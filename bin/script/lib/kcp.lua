@@ -9,14 +9,15 @@ local ckcp = require("srey.kcp")
 
 local ctx = class("kcp_ctx")
 
+-- 下面各字段的取值域由绑定层校验,越界即报错并点出字段名。落在域内的值仍可能被库调整,见各字段
 ---@class kcp_config
----@field nodelay integer? 0 普通 / 1 nodelay;缺省不改
----@field interval integer? flush 间隔 ms;缺省不改
----@field resend integer? 快速重传阈值;缺省不改
----@field nc integer? 0 开流控 / 1 关流控;缺省不改
----@field sndwnd integer? 发送窗口;缺省不改
----@field rcvwnd integer? 接收窗口;缺省不改
----@field mtu integer? MTU;缺省不改
+---@field nodelay integer? 0 普通 / 1 nodelay;缺省不改。取 [-1, 1]
+---@field interval integer? flush 间隔 ms(库钳到 10~5000);缺省不改。取 [-1, 5000]
+---@field resend integer? 快速重传阈值(典型 2);缺省不改。取 [-1, INT32_MAX]
+---@field nc integer? 0 开流控 / 1 关流控;缺省不改。取 [-1, 1]
+---@field sndwnd integer? 发送窗口(默认 32);缺省不改。取 [0, 65535]
+---@field rcvwnd integer? 接收窗口(默认 128,填 1~127 会被库抬到 128);缺省不改。取 [0, 65535]
+---@field mtu integer? MTU(默认 1400,库只认 50~65535);缺省不改。取 [0, 65535]
 
 ---绑定底层 UDP socket 与会话号(不建立会话,需再调 start)
 ---@param fd integer UDP socket fd
@@ -82,7 +83,8 @@ end
 
 ---变更数据推送目标 task
 ---@param handle integer|string 目标 task：字符串按名字查，整数按句柄直取(srey.task_handle 取)
----@return boolean ok 名字查不到或会话已 stop 时 false
+---@return boolean ok 目标不存在(名字未注册 / 数字句柄对应 task 已退出)或会话已 stop 时 false。
+--- 仅保证调用时目标存在:目标若在此之后退出,该会话的消息会被静默丢弃。探测口径同 srey.sock_bind_task
 function ctx:handle(handle)
     return self.kcp:handle(handle)
 end

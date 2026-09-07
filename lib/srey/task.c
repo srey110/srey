@@ -112,13 +112,13 @@ static void _task_handle_send(task_ctx *task, message_ctx *msg) {
 }
 // 处理连接关闭消息
 static void _task_handle_close(task_ctx *task, message_ctx *msg) {
-    // NEVERCONN 的合成 CLOSE(prots_net_connect 的 TCP 失败、_kcp_start 的 conv 冲突)只为唤醒等待方,
-    // 不代表真实连接关闭;_net_close_cb 签名里没有 erro,业务无从分辨,故在此过滤
+    // NEVERCONN 的合成 CLOSE 只为唤醒等待方。连接从未建立,没有"关闭"可通知,故不投给业务;
+    // 失败本身已由 CONNECT(TCP)或 HANDSHAKED(KCP)的 erro 交出去了
     if (CLOSE_TYPE_NEVERCONN == msg->erro) {
         return;
     }
     if (NULL != task->_net_close) {
-        task->_net_close(task, &msg->sk, msg->subtype, msg->client);
+        task->_net_close(task, &msg->sk, msg->subtype, msg->client, msg->erro);
     }
 }
 // 处理 UDP 数据接收消息：从消息数据中解析出地址和载荷，处理后清理

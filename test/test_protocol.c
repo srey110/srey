@@ -46,6 +46,17 @@ static void _ws_ctx_init(websock_ctx *ws, ud_cxt *ud) {
     ud->status = 1;// websock 内部 START
     ud->context = ws;
 }
+// redis 解包用的最小上下文:buf 装上 wire、ud 清零、status 摆到 PROT_INIT,随后解一次。
+// 理由同 _ws_ctx_init —— 改 ud_cxt 布局或前置状态时只改这里,不必逐个改用例。
+// buf 与 ud 仍归调用方,收尾照旧 buffer_free / _redis_udfree
+static redis_pack_ctx *_t_redis_one(buffer_ctx *buf, ud_cxt *ud,
+    const char *wire, int32_t *status) {
+    buffer_init(buf);
+    _bput(buf, wire);
+    ZERO(ud, sizeof(ud_cxt));
+    *status = PROT_INIT;
+    return _t_redis_unpack(0, buf, ud, NULL, status);
+}
 static void *_t_smtp_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
     return smtp_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
@@ -1264,12 +1275,9 @@ static void test_redis_simple(CuTest *tc) {
     /* +OK\r\n */
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "+OK\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud_cxt));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "+OK\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_STRING == pack->prot);
         CuAssertTrue(tc, 2 == pack->len);
@@ -1281,12 +1289,9 @@ static void test_redis_simple(CuTest *tc) {
     /* -ERR some message\r\n */
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "-ERR some message\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud_cxt));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "-ERR some message\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_ERROR == pack->prot);
         /* 解析内容："ERR some message"（去掉前缀 '-' 和 '\r\n'）*/
@@ -1299,12 +1304,9 @@ static void test_redis_simple(CuTest *tc) {
     /* :42\r\n */
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, ":42\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud_cxt));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, ":42\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_INTEGER == pack->prot);
         CuAssertTrue(tc, 42 == pack->ival);
@@ -1315,12 +1317,9 @@ static void test_redis_simple(CuTest *tc) {
     /* _\r\n (RESP3 Null) */
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "_\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud_cxt));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "_\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_NIL == pack->prot);
         CuAssertTrue(tc, 0 == pack->len);
@@ -1400,12 +1399,9 @@ static void test_redis_bulk_bad_crlf(CuTest *tc) {
     _redis_reject_check(tc, "$3\r\nfoobar\r\n", 12);
     // 反向不误拒：长度与尾部 CRLF 都对
     buffer_ctx buf;
-    buffer_init(&buf);
-    _bput(&buf, "$6\r\nfoobar\r\n");
     ud_cxt ud;
-    ZERO(&ud, sizeof(ud_cxt));
-    int32_t status = PROT_INIT;
-    redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+    int32_t status;
+    redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "$6\r\nfoobar\r\n", &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertTrue(tc, 6 == pack->len);
@@ -1674,12 +1670,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // BOOL true: "#t\r\n"
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "#t\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "#t\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_BOOL == pack->prot);
         CuAssertTrue(tc, 1 == pack->ival);
@@ -1690,12 +1683,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // BOOL false: "#f\r\n"
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "#f\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "#f\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_BOOL == pack->prot);
         CuAssertTrue(tc, 0 == pack->ival);
@@ -1706,12 +1696,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // BOOL 非法字符: "#x\r\n" → PROT_ERROR
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "#x\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "#x\r\n", &status);
         CuAssertTrue(tc, NULL == pack);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
         _redis_udfree(&ud);
@@ -1735,12 +1722,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // DOUBLE 普通值: ",3.14\r\n"
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, ",3.14\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, ",3.14\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_DOUBLE == pack->prot);
         CuAssertDblEquals(tc, 3.14, pack->dval, 1e-9);
@@ -1751,12 +1735,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // DOUBLE inf
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, ",inf\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, ",inf\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_DOUBLE == pack->prot);
         CuAssertTrue(tc, isinf(pack->dval) && pack->dval > 0);
@@ -1767,12 +1748,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // DOUBLE -inf
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, ",-inf\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, ",-inf\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_DOUBLE == pack->prot);
         CuAssertTrue(tc, isinf(pack->dval) && pack->dval < 0);
@@ -1783,12 +1761,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // DOUBLE nan
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, ",nan\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, ",nan\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_DOUBLE == pack->prot);
         CuAssertTrue(tc, isnan(pack->dval));
@@ -1799,12 +1774,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // BIGNUM 按字符串原样保留(不解析 ival): "(9223372036854775807\r\n"
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "(9223372036854775807\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "(9223372036854775807\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_BIGNUM == pack->prot);
         CuAssertTrue(tc, 19 == pack->len);
@@ -1816,12 +1788,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // BERROR: "!21\r\nSYNTAX invalid syntax\r\n"
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "!21\r\nSYNTAX invalid syntax\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "!21\r\nSYNTAX invalid syntax\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_BERROR == pack->prot);
         CuAssertTrue(tc, 21 == pack->len);
@@ -1833,12 +1802,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // VERB: "=15\r\ntxt:Some string\r\n" → venc="txt"，data="Some string"(11 字节)
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "=15\r\ntxt:Some string\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "=15\r\ntxt:Some string\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_VERB == pack->prot);
         CuAssertTrue(tc, 11 == pack->len);
@@ -1851,12 +1817,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // VERB 长度 < 4（不足容纳 3 字节编码 + ':'）: "=2\r\nab\r\n" → PROT_ERROR
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "=2\r\nab\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "=2\r\nab\r\n", &status);
         CuAssertTrue(tc, NULL == pack);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
         _redis_udfree(&ud);
@@ -1865,12 +1828,9 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     // VERB 第 4 字节非 ':': "=5\r\ntxtXY\r\n" → PROT_ERROR
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "=5\r\ntxtXY\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "=5\r\ntxtXY\r\n", &status);
         CuAssertTrue(tc, NULL == pack);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
         _redis_udfree(&ud);
@@ -1884,12 +1844,9 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // SET: "~3\r\n+a\r\n+b\r\n+c\r\n"
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "~3\r\n+a\r\n+b\r\n+c\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "~3\r\n+a\r\n+b\r\n+c\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_SET == pack->prot);
         CuAssertTrue(tc, 3 == pack->nelem);
@@ -1910,12 +1867,9 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // PUSHE（发布订阅推送）: ">2\r\n+pub\r\n+msg\r\n"
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, ">2\r\n+pub\r\n+msg\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, ">2\r\n+pub\r\n+msg\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_PUSHE == pack->prot);
         CuAssertTrue(tc, 2 == pack->nelem);
@@ -1929,12 +1883,9 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // MAP: "%2\r\n+k1\r\n:1\r\n+k2\r\n:2\r\n" — 2 个键值对 = 4 个子节点
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "%2\r\n+k1\r\n:1\r\n+k2\r\n:2\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "%2\r\n+k1\r\n:1\r\n+k2\r\n:2\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_MAP == pack->prot);
         CuAssertTrue(tc, 2 == pack->nelem);
@@ -1962,12 +1913,9 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // ATTR 后必须紧跟实际响应（这里是 +OK\r\n）才算完整
     {
         buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "|1\r\n+key\r\n+val\r\n+OK\r\n");
         ud_cxt ud;
-        ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, "|1\r\n+key\r\n+val\r\n+OK\r\n", &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_ATTR == pack->prot);
         CuAssertTrue(tc, 1 == pack->nelem);
@@ -4531,8 +4479,8 @@ static void test_prots_pkfree_default(CuTest *tc) {
                              PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
     uint64_t a0, f0, a1, f1;
     mem_stat(&a0, &f0);
+    void *p;
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
-        void *p;
         MALLOC(p, 64);
         memset(p, 0xaa, 64);
         prots_pkfree(defaults[i], p);
@@ -4547,8 +4495,8 @@ static void test_prots_hsfree_default(CuTest *tc) {
                              PACK_REDIS, PACK_MYSQL, PACK_PGSQL };
     uint64_t a0, f0, a1, f1;
     mem_stat(&a0, &f0);
+    void *p;
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
-        void *p;
         MALLOC(p, 32);
         prots_hsfree(defaults[i], p);
     }
@@ -4562,8 +4510,8 @@ static void test_prots_udfree_default(CuTest *tc) {
                              PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
     uint64_t a0, f0, a1, f1;
     mem_stat(&a0, &f0);
+    ud_cxt ud;
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
-        ud_cxt ud;
         ZERO(&ud, sizeof(ud));
         ud.pktype = (subtype_t)defaults[i];
         MALLOC(ud.context, 16);
@@ -4587,8 +4535,8 @@ static void test_prots_net_close_default(CuTest *tc) {
     prots_init(&g_stub_emit);
     pack_type defaults[] = { PACK_NONE, PACK_DNS, PACK_HTTP, PACK_WEBSOCK,
                              PACK_MQTT, PACK_CUSTZ_FIXED, PACK_REDIS };
+    ud_cxt ud;
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
-        ud_cxt ud;
         ZERO(&ud, sizeof(ud));
         ud.pktype = (subtype_t)defaults[i];
         g_stub_emit_calls = 0;

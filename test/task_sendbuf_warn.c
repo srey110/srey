@@ -23,8 +23,8 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
     }
     ATOMIC_ADD(&g_recv_bytes, (atomic_t)size);
 }
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
-    (void)task; (void)sk; (void)pktype;
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+    (void)task; (void)sk; (void)pktype; (void)erro;
     if (client) {
         return;
     }

@@ -480,6 +480,7 @@ static int32_t _lcore_udp_join(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     const char *group_ip = luaL_checkstring(lua, 3);
+    luaL_argcheck(lua, lua_isnoneornil(lua, 4) || LUA_TSTRING == lua_type(lua, 4), 4, "iface must be a string");
     const char *iface_str = (LUA_TSTRING == lua_type(lua, 4)) ? luaL_checkstring(lua, 4) : NULL;
     return lpub_rtn_bool(lua, ERR_OK == ev_udp_join(&g_loader->netev, fd, skid, group_ip, iface_str));
 }
@@ -495,6 +496,7 @@ static int32_t _lcore_udp_leave(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     const char *group_ip = luaL_checkstring(lua, 3);
+    luaL_argcheck(lua, lua_isnoneornil(lua, 4) || LUA_TSTRING == lua_type(lua, 4), 4, "iface must be a string");
     const char *iface_str = (LUA_TSTRING == lua_type(lua, 4)) ? luaL_checkstring(lua, 4) : NULL;
     return lpub_rtn_bool(lua, ERR_OK == ev_udp_leave(&g_loader->netev, fd, skid, group_ip, iface_str));
 }

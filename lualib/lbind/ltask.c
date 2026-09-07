@@ -271,7 +271,7 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
         return ERR_FAILED;
     }
     lua_getglobal(lua, MSG_DISP_FUNC);
-    if (LUA_TFUNCTION != lua_type(lua, 1)) {
+    if (LUA_TFUNCTION != lua_type(lua, -1)) {
         lua_close(lua);
         ltask->lua = NULL;
         LOG_ERROR("not find function %s.", MSG_DISP_FUNC);

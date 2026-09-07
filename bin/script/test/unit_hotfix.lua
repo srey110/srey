@@ -207,7 +207,7 @@ runner.run(function(t)
         t:eq("h:1", package.loaded.hotfix_unit_mod.handle(), "路径 B handle 看到同一 counter")
     end
 
-    -- ── 子段 12:路径 B 写 counter 后 chunk 抛错 → apply false 且 counter 已回滚(F-HF-1) ───
+    -- ── 子段 12:路径 B 写 counter 后 chunk 抛错 → apply false 且 counter 已回滚 ─────────
     do
         local mod = _setup_module()
         t:eq(1, mod.bump(), "bump 初始 1") -- counter=1
@@ -242,7 +242,7 @@ runner.run(function(t)
         _G.hf_probe_keep = nil
     end
 
-    -- ── 子段 13:patch 仅裸写 counter 无函数替换 → "no matching" 失败同样回滚(F-HF-1) ───
+    -- ── 子段 13:patch 仅裸写 counter 无函数替换 → "no matching" 失败同样回滚 ───────────
     do
         local mod = _setup_module()
         t:eq(1, mod.bump(), "bump 初始 1") -- counter=1

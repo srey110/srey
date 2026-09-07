@@ -20,6 +20,7 @@
 // 下面两个 typedef 用到的 SC_HANDLE / WINADVAPI 出自 winsvc.h, 由 os.h 的 <Windows.h> 带入
 #define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
 #define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
+#define WINSV_INIT_FAILED 1 // service_init 失败报给 SCM 的 service-specific 码；具体原因只在日志里
 typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID); // ChangeServiceConfig2A 函数指针类型
 typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型
 
@@ -58,8 +59,10 @@ static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data
 static int32_t _path_ok(int32_t rtn, size_t cap) {
     return rtn >= 0 && (size_t)rtn < cap;
 }
-// 读取进程目录下 configs/config.json 的内容，返回堆分配字符串（调用方负责释放）
-static char *_config_read(void) {
+// 读取进程目录下 configs/config.json 的内容，返回堆分配字符串（调用方负责释放）。
+// lens 交出 readall 记的真实字节数：不能让调用方拿 strlen 重推——文件里出现 NUL 时
+// strlen 短于真实长度，截断后恰好合法的 JSON 前缀会被静默当成整份配置收下
+static char *_config_read(size_t *lens) {
     char config[PATH_LENS];
     int32_t plen = SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
         procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
@@ -67,8 +70,7 @@ static char *_config_read(void) {
         PRINT("config path too long under %s.", procpath());
         return NULL;
     }
-    size_t lens;
-    char *info = readall(config, &lens);
+    char *info = readall(config, lens);
     if (NULL == info) {
         PRINT("%s", strerror(errno));
         return NULL;
@@ -77,12 +79,13 @@ static char *_config_read(void) {
 }
 // 解析配置文件，将各字段填充到 config_ctx（解析失败时使用默认值）
 static void _parse_config(config_ctx *cnf) {
-    char *config = _config_read();
+    size_t lens;
+    char *config = _config_read(&lens);
     if (NULL == config) {
         return;
     }
     yyjson_read_err erro;
-    yyjson_doc *doc = yyjson_read_opts(config, strlen(config), YYJSON_READ_ALLOW_BOM, NULL, &erro);
+    yyjson_doc *doc = yyjson_read_opts(config, lens, YYJSON_READ_ALLOW_BOM, NULL, &erro);
     FREE(config);
     if (NULL == doc) {
         PRINT("parse config error at byte %zu: %s", erro.pos, erro.msg);
@@ -300,9 +303,12 @@ static int32_t _wsv_initbasic(void) {
     SetUnhandledExceptionFilter((LPTOP_LEVEL_EXCEPTION_FILTER)_wsv_exception);
     return ERR_OK;
 }
-// 向 SCM 上报服务当前状态
-static void _wsv_setstatus(DWORD status) {
+// 向 SCM 上报服务的终态(RUNNING / STOPPED)。win32err 非 NO_ERROR 即异常停止。
+// dwWaitHint 一并清零:它只对挂起状态有意义,挂起态走 _wsv_pending
+static void _wsv_setstatus(DWORD status, DWORD win32err) {
     svstatus.dwCheckPoint = 0;
+    svstatus.dwWaitHint = 0;
+    svstatus.dwWin32ExitCode = win32err;
     svstatus.dwCurrentState = status;
     SetServiceStatus(psvstatus, &svstatus);
 }
@@ -354,13 +360,16 @@ static void WINAPI _wsv_service(DWORD argc, LPTSTR *argv) {
         return;
     }
     psvstatus = RegisterServiceCtrlHandlerExA(argv[0], _wsv_event, NULL);
+    DWORD win32err = ERROR_SERVICE_SPECIFIC_ERROR;
+    svstatus.dwServiceSpecificExitCode = WINSV_INIT_FAILED;
     _wsv_pending(SERVICE_START_PENDING, WINSV_START_TIMEOUT);
     if (ERR_OK == _wsv_runfuncs(initcbs)) {
-        _wsv_setstatus(SERVICE_RUNNING);
+        _wsv_setstatus(SERVICE_RUNNING, NO_ERROR);
         hug_wait(&_hug);
         _wsv_runfuncs(exitcbs);
+        win32err = NO_ERROR;
     }
-    _wsv_setstatus(SERVICE_STOPPED);
+    _wsv_setstatus(SERVICE_STOPPED, win32err);
     hug_free(&_hug);
 }
 // 以服务模式启动并连接到 SCM

@@ -209,13 +209,18 @@ end
 ---@field respond fun(self:Ctx, code:integer, headers:table<string,any>?, body:string?)  自定义响应
 ---@field header  fun(self:Ctx, name:string):string?  按名字取单个请求头，大小写无关
 
--- body 为 nil 时保持 nil，非 nil 统一转 string——数字等类型直接往下传会被
--- http.response 的类型分派当"无 body"丢掉
-local function _body_str(body)
-    if nil == body then
+-- 值转文本。nil 保持 nil：非 nil 统一转 string 是因为数字等类型直接往下传会被
+-- http.response 的类型分派当"无 body"丢掉。整数值的浮点走 num_str——Lua 的 / 恒出浮点,
+-- tostring(84/2) 是 "42.0",生成的 URL 打回来后 params 里就是字符串 "42.0"。只对真数字转,
+-- num_str 会把字符串 "42.0" 也算成 42
+local function _val_str(v)
+    if nil == v then
         return nil
     end
-    return tostring(body)
+    if "number" ~= type(v) then
+        return tostring(v)
+    end
+    return num_str(v)
 end
 
 -- 四个 ctx 响应方法的共同尾巴：发出去并置位 responded。HEAD 分流见 _send
@@ -229,13 +234,13 @@ function CtxMethods:text(code, body)
     -- 带 Content-Type：不带的话浏览器与代理会按内容嗅探，回显用户输入的纯文本能被当成
     -- text/html 执行。C 侧 router_req_text 写的就是 text/plain，本模块的 4xx/5xx 也走
     -- _PLAIN_HEADERS，只有这里漏了
-    _ctx_send(self, code, _PLAIN_HEADERS, _body_str(body))
+    _ctx_send(self, code, _PLAIN_HEADERS, _val_str(body))
 end
 function CtxMethods:json(code, tbl)
     _ctx_send(self, code, nil, tbl)
 end
 function CtxMethods:html(code, body)
-    _ctx_send(self, code, _HTML_HEADERS, _body_str(body))
+    _ctx_send(self, code, _HTML_HEADERS, _val_str(body))
 end
 function CtxMethods:respond(code, headers, body)
     _ctx_send(self, code, headers, body)
@@ -421,10 +426,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
         WARN("router: %s '%s' handler must be a function, got %s.", method, full, type(cb))
         return _bad_entry
     end
-    local mws = {}
-    for _, mw in ipairs(ctx_mws) do
-        mws[#mws + 1] = mw
-    end
+    local mws = ctx_mws
     if extra_mws then
         -- 不能用 ipairs：撞上中间的 nil 就停，后面的中间件一起丢掉且 _resolve 压根不被调用。
         -- 表表示不了"中间有个 nil"，所以拿 pairs 的计数与 # 比一次，对不上就当场报错
@@ -655,8 +657,9 @@ function Router:url(name, params)
             used[seg.key] = true
             val = params[seg.key]
             if nil ~= val then
-                segs[#segs + 1] = ("*" == seg.key) and _encode_path(tostring(val))
-                                                   or url.encode(tostring(val), 0)
+                val = _val_str(val)
+                segs[#segs + 1] = ("*" == seg.key) and _encode_path(val)
+                                                   or url.encode(val, 0)
             elseif not seg.opt then
                 error(string.format("router: url('%s') missing param '%s'", name, seg.key), 2)
             end
@@ -666,7 +669,7 @@ function Router:url(name, params)
     local qs = {}
     for k, v in pairs(params) do
         if not used[k] then
-            qs[#qs + 1] = url.encode(tostring(k)) .. "=" .. url.encode(tostring(v))
+            qs[#qs + 1] = url.encode(_val_str(k)) .. "=" .. url.encode(_val_str(v))
         end
     end
     if 0 == #qs then

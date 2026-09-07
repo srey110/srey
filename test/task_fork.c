@@ -135,7 +135,7 @@ static int32_t _test_scatter(task_ctx *task) {
         _scatter_worker, _scatter_worker, _scatter_worker,
     };
     uint64_t t0 = nowms();
-    int32_t r = coro_fork_wait(task, 3, funcs, args);
+    int32_t r = coro_fork_wait(task, funcs, args, 3);
     uint64_t elapsed = nowms() - t0;
     if (ERR_OK != r) {
         LOG_ERROR("fork_wait scatter: return %d.", r);
@@ -156,7 +156,7 @@ static int32_t _test_scatter(task_ctx *task) {
 
 // ── 测试 6：fork_wait 0 任务立即返回 ──────────────────────────────────────
 static int32_t _test_empty_wait(task_ctx *task) {
-    int32_t r = coro_fork_wait(task, 0, NULL, NULL);
+    int32_t r = coro_fork_wait(task, NULL, NULL, 0);
     if (ERR_OK != r) {
         LOG_ERROR("fork_wait empty: expect ERR_OK, got %d.", r);
         return ERR_FAILED;
@@ -185,7 +185,7 @@ static int32_t _test_multi_yield(task_ctx *task) {
     void (*funcs[2])(task_ctx *, void *) = {
         _multi_yield_worker, _multi_yield_worker,
     };
-    int32_t r = coro_fork_wait(task, 2, funcs, args);
+    int32_t r = coro_fork_wait(task, funcs, args, 2);
     if (ERR_OK != r) {
         LOG_ERROR("fork_wait multi_yield: return %d.", r);
         return ERR_FAILED;
@@ -217,7 +217,7 @@ static void _concurrent_driver(task_ctx *task, void *arg) {
     concurrent_arg *a = (concurrent_arg *)arg;
     void *wargs[1] = { a };
     void (*wfuncs[1])(task_ctx *, void *) = { _concurrent_worker };
-    if (ERR_OK == coro_fork_wait(task, 1, wfuncs, wargs) && 1 == a->done) {
+    if (ERR_OK == coro_fork_wait(task, wfuncs, wargs, 1) && 1 == a->done) {
         *(a->ok) = 1;
     }
 }
@@ -268,7 +268,7 @@ static int32_t _test_fork_pool_reuse(task_ctx *task) {
         args[i] = &pa;
     }
     for (r = 0; r < ROUNDS; r++) {
-        if (ERR_OK != coro_fork_wait(task, BATCH, funcs, args)) {
+        if (ERR_OK != coro_fork_wait(task, funcs, args, BATCH)) {
             LOG_ERROR("fork pool reuse: round %d fork_wait failed.", r);
             return ERR_FAILED;
         }

@@ -4,9 +4,7 @@
 
 #include "CuTest.h"
 
-/// <summary>
-/// 注册协议层单元测试套件：HTTP、Redis RESP、URL 解析、Custz 打包
-/// </summary>
+// 注册协议层单元测试套件：HTTP、Redis RESP、URL 解析、Custz 打包
 void test_protocol(CuSuite *suite);
 
 #endif//TEST_PROTOCOL_H_

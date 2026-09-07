@@ -176,9 +176,9 @@ static void test_stm_concurrent_read(CuTest *tc) {
     }
     // 主线程作为 writer 持续 update
     char buf[16];
+    size_t bz;
     for (i = 1; i <= _STM_CONC_UPDATES; i++) {
         SNPRINTF(buf, sizeof(buf), "v%d", i);
-        size_t bz;
         void *bd = _stm_make(buf, &bz);
         stm_update(s.ctx, bd, bz, 0);
     }

@@ -1213,6 +1213,15 @@ runner.run(function(t)
              "通配值为空串留尾斜杠，与缺参丢整段区分开")
         t:eq("/user/42?a=1&b=2&c=3", r:url("user.show", { id = 42, a = 1, b = 2, c = 3 }),
              "多个剩余键按整串排序，同一组参数每次给出同一个 URL")
+        -- Lua 的 / 恒出浮点,tostring(84/2) 是 "42.0"：生成出 /user/42.0 再打回来,
+        -- ctx.params.id 就是字符串 "42.0",业务 tonumber 后查库查不到。口径同 lib/redis.lua
+        -- 的 _arg_str 与 lib/http.lua 的 _head_val
+        t:eq("/user/42", r:url("user.show", { id = 84 / 2 }), "整数值浮点按整数回填")
+        t:eq("/user/42?page=2", r:url("user.show", { id = 42, page = 10 / 5 }),
+             "查询串同样按整数编码")
+        -- 只对真数字转：num_str 会把字符串 "42.0" 也算成 42,那就改了调用方给的值
+        t:eq("/user/42.0", r:url("user.show", { id = "42.0" }), "字符串原样交出不被改")
+        t:eq("/user/3.5", r:url("user.show", { id = 3.5 }), "真小数原样保留")
         t:eq(false, pcall(r.url, r, "user.show", {}), "必填占位符缺参报错")
         t:eq(false, pcall(r.url, r, "nosuch", {}), "未登记的名字报错")
 

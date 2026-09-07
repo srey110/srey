@@ -367,9 +367,10 @@ static void _server_net_recv(task_ctx *task, sk_id *sk,
     router_net_recv((router_ctx *)task->arg, task, sk, pktype, client, slice, data, size);
 }
 // 注册了流式路由就必须接这个, 否则连接中途断开时 router 持有的请求上下文不回收
-static void _server_net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _server_net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
     (void)client;
+    (void)erro;
     router_closed((router_ctx *)task->arg, sk->fd, sk->skid);
 }
 // 用户数据释放(argfree, task_free 时调): router_free 一并释放所有 entry/segs/mws/named 字符串

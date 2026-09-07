@@ -139,10 +139,15 @@ runner.run(function(t)
     t:eq(N, received, "全部 N 个 client 收到广播 (" .. received .. "/" .. N .. ")")
 
     -- 库级 CLOSE 观察者：on_closed 是单槽、库抢不到，watch_closed 与业务回调并存。
-    -- router 的流式上下文回收就靠它，这里借关连接验一次真的会被调到
+    -- router 的流式上下文回收就靠它，这里借关连接验一次真的会被调到。
+    -- 两条转发路径都要把 erro 交出来：watch_closed 就地同步调，on_closed 走协程
     local seen = {}
-    srey.watch_closed(function(_, fd, _)
-        seen[fd] = true
+    local seen_cb = {}
+    srey.watch_closed(function(_, fd, _, _, erro)
+        seen[fd] = erro
+    end)
+    srey.on_closed(function(_, fd, _, _, erro)
+        seen_cb[fd] = erro
     end)
 
     -- 收尾: 关掉两侧连接再 unlisten 释放端口。srey.close 要 (fd, skid) 两个值，
@@ -156,12 +161,26 @@ runner.run(function(t)
     srey.unlisten(lid)
 
     srey.sleep(200)
-    local nseen = 0
+    local CLOSE_TYPE = srey.CLOSE_TYPE
+    local nseen, nlocal, ncb = 0, 0, 0
+    local fd
     for i = 1, #cli_fds do
-        if seen[cli_fds[i]] then
+        fd = cli_fds[i]
+        if nil ~= seen[fd] then
             nseen = nseen + 1
+        end
+        -- client 侧是上面那轮 srey.close 主动关的(且先于 server 侧那轮)，erro 必是 LOCAL。
+        -- 判 LOCAL 而不是"非 nil"：ORDERLY 恰好等于 0，只判非 nil 的话"转发点漏传 erro
+        -- 拿到 nil"与"传了 ORDERLY"分不开，形参加了却传常量 0 也照样过
+        if CLOSE_TYPE.LOCAL == seen[fd] then
+            nlocal = nlocal + 1
+        end
+        if CLOSE_TYPE.LOCAL == seen_cb[fd] then
+            ncb = ncb + 1
         end
     end
     t:eq(N, nseen, "watch_closed 观察到全部 client 连接的关闭 (" .. nseen .. "/" .. N .. ")")
+    t:eq(N, nlocal, "watch_closed 拿到的 erro 是 LOCAL (" .. nlocal .. "/" .. N .. ")")
+    t:eq(N, ncb, "on_closed 拿到的 erro 是 LOCAL (" .. ncb .. "/" .. N .. ")")
 end)
 end)

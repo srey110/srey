@@ -48,7 +48,9 @@ static int32_t _cb_record(mpack_ctx *mpack, void *udata) {
 static int32_t _clear_table(mysql_ctx *mysql) {
     if (ERR_OK != mysql_query(mysql, "delete from test_bind", NULL, _cb_expect_ok, NULL)) {
         int32_t code = 0;
-        LOG_ERROR("mysql delete error: %s (code=%d)", mysql_erro(mysql, &code), code);
+        // 先取 msg 再打:实参求值顺序未定,与 code 同表时可能先读到 code 的旧值(打成 0)
+        const char *msg = mysql_erro(mysql, &code);
+        LOG_ERROR("mysql delete error: %s (code=%d)", msg, code);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -59,6 +61,19 @@ static int32_t _insert_rows(mysql_ctx *mysql) {
     mysql_bind_ctx bind;
     mysql_bind_init(&bind);
     int32_t rtn = ERR_OK;
+    const char *sql = "insert into test_bind"
+        " (t_int8,t_int16,t_int32,t_int64,t_float,t_double,t_string,t_datetime,t_time,t_nil)"
+        " values("
+        "mysql_query_attribute_string('t_int8'),"
+        "mysql_query_attribute_string('t_int16'),"
+        "mysql_query_attribute_string('t_int32'),"
+        "mysql_query_attribute_string('t_int64'),"
+        "mysql_query_attribute_string('t_float'),"
+        "mysql_query_attribute_string('t_double'),"
+        "mysql_query_attribute_string('t_string'),"
+        "mysql_query_attribute_string('t_datetime'),"
+        "mysql_query_attribute_string('t_time'),"
+        "mysql_query_attribute_string('t_nil'))";
     for (int32_t i = 1; i <= 3; i++) {
         mysql_bind_clear(&bind);
         mysql_bind_integer(&bind, "t_int8", i);
@@ -71,23 +86,10 @@ static int32_t _insert_rows(mysql_ctx *mysql) {
         mysql_bind_datetime(&bind, "t_datetime", time(NULL));
         mysql_bind_time(&bind, "t_time", 0, 0, 1, 30, 0);
         mysql_bind_nil(&bind, "t_nil");
-        const char *sql = "insert into test_bind"
-            " (t_int8,t_int16,t_int32,t_int64,t_float,t_double,t_string,t_datetime,t_time,t_nil)"
-            " values("
-            "mysql_query_attribute_string('t_int8'),"
-            "mysql_query_attribute_string('t_int16'),"
-            "mysql_query_attribute_string('t_int32'),"
-            "mysql_query_attribute_string('t_int64'),"
-            "mysql_query_attribute_string('t_float'),"
-            "mysql_query_attribute_string('t_double'),"
-            "mysql_query_attribute_string('t_string'),"
-            "mysql_query_attribute_string('t_datetime'),"
-            "mysql_query_attribute_string('t_time'),"
-            "mysql_query_attribute_string('t_nil'))";
         if (ERR_OK != mysql_query(mysql, sql, &bind, _cb_expect_ok, NULL)) {
             int32_t code = 0;
-            LOG_ERROR("mysql insert(bind) error: %s (code=%d)",
-                      mysql_erro(mysql, &code), code);
+            const char *msg = mysql_erro(mysql, &code);
+            LOG_ERROR("mysql insert(bind) error: %s (code=%d)", msg, code);
             rtn = ERR_FAILED;
             break;
         }
@@ -244,7 +246,8 @@ static int32_t _multi_result(mysql_ctx *mysql) {
 static int32_t _session_track(mysql_ctx *mysql, const char *back) {
     int32_t code = 0;
     if (ERR_OK != mysql_query(mysql, "USE information_schema", NULL, _cb_expect_ok, NULL)) {
-        LOG_ERROR("mysql USE information_schema error: %s (code=%d)", mysql_erro(mysql, &code), code);
+        const char *msg = mysql_erro(mysql, &code);
+        LOG_ERROR("mysql USE information_schema error: %s (code=%d)", msg, code);
         return ERR_FAILED;
     }
     if (0 != strcmp(mysql->client.database, "information_schema")) {
@@ -255,7 +258,8 @@ static int32_t _session_track(mysql_ctx *mysql, const char *back) {
     char sql[64];
     SNPRINTF(sql, sizeof(sql), "USE %s", back);
     if (ERR_OK != mysql_query(mysql, sql, NULL, _cb_expect_ok, NULL)) {
-        LOG_ERROR("mysql USE %s error: %s (code=%d)", back, mysql_erro(mysql, &code), code);
+        const char *msg = mysql_erro(mysql, &code);
+        LOG_ERROR("mysql USE %s error: %s (code=%d)", back, msg, code);
         return ERR_FAILED;
     }
     if (0 != strcmp(mysql->client.database, back)) {
@@ -317,7 +321,7 @@ static int32_t _concurrent_query(mysql_ctx *mysql) {
         funcs[i] = _conc_worker;
         argp[i] = &args[i];
     }
-    if (ERR_OK != coro_fork_wait(mysql->task, _CONC_N, funcs, argp)) {
+    if (ERR_OK != coro_fork_wait(mysql->task, funcs, argp, _CONC_N)) {
         LOG_ERROR("mysql concurrent: fork_wait error.");
         return ERR_FAILED;
     }
@@ -347,7 +351,8 @@ static void _startup(task_ctx *task) {
     *(arg->ok) = -1;
     if (ERR_OK != mysql_selectdb(&arg->mysql, arg->database)) {
         int32_t code = 0;
-        LOG_ERROR("mysql selectdb error: %s (code=%d)", mysql_erro(&arg->mysql, &code), code);
+        const char *msg = mysql_erro(&arg->mysql, &code);
+        LOG_ERROR("mysql selectdb error: %s (code=%d)", msg, code);
         mysql_quit(&arg->mysql);
         return;
     }

@@ -166,10 +166,10 @@ def extract_reg_tables(text: str) -> dict:
 
 
 def extract_luaopen_bodies(text: str) -> list:
-    """切出每个 LUAMOD_API int luaopen_xxx(...) { ... } 的函数体。"""
+    """切出每个 LUAMOD_API int / int32_t luaopen_xxx(...) { ... } 的函数体。"""
     out = []
     header_re = re.compile(
-        r"LUAMOD_API\s+int\s+luaopen_([A-Za-z0-9_]+)\s*\(\s*lua_State\s*\*[^)]*\)\s*\{"
+        r"LUAMOD_API\s+int(?:32_t)?\s+luaopen_([A-Za-z0-9_]+)\s*\(\s*lua_State\s*\*[^)]*\)\s*\{"
     )
     pos = 0
     while True:
@@ -403,11 +403,19 @@ def main() -> int:
         return 1
 
     total = 0
+    nmismatch = 0
     for path in c_files:
         text = read_text(path)
         mt_map = extract_mt_defines(text)
         func_map = extract_func_docs(text)
         bodies = extract_luaopen_bodies(text)
+        # 对账：源码里有几个 luaopen_ 定义就该切出几个 body。只放宽 header_re 治不了别的
+        # 写法偏离，而不对账就是静默少生成一整个模块的存根，脚本照样打 done 并返 0
+        nsym = len(re.findall(r"\bluaopen_[A-Za-z0-9_]+\s*\(", text))
+        if nsym != len(bodies):
+            sys.stderr.write(f"{path.name}: {nsym} luaopen_ symbol(s)"
+                             f" but {len(bodies)} body(ies) parsed\n")
+            nmismatch += 1
         for mb in bodies:
             classified = classify_module(mb["body"], mt_map)
             fields = extract_fields(mb["body"])
@@ -418,6 +426,10 @@ def main() -> int:
             out_path.write_text(content, encoding="utf-8")
             print(f"generated {out_path.relative_to(ROOT)}")
             total += 1
+    if nmismatch:
+        sys.stderr.write(f"{nmismatch} file(s) with unparsed luaopen_, meta is incomplete.\n")
+        print(f"FAILED, {total} module(s) generated, {nmismatch} file(s) unparsed.")
+        return 1
     print(f"done, {total} module(s) generated.")
     return 0
 

@@ -154,8 +154,8 @@ static void test_mysql_reader_cursor(CuTest *tc) {
     CuAssertIntEquals(tc, 1, mysql_reader_eof(r));
 
     // 3 行数据（每行 payload "1"/"2"/"3"）
+    char *p;
     for (int i = 0; i < 3; i++) {
-        char *p;
         MALLOC(p, 4);
         p[0] = (char)('1' + i);
         p[1] = '\0';

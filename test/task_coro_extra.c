@@ -213,7 +213,7 @@ static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
         funcs[i] = _sendto_one;
         argp[i] = &args[i];
     }
-    (void)coro_fork_wait(task, CONCURRENT_N, funcs, argp);
+    (void)coro_fork_wait(task, funcs, argp, CONCURRENT_N);
     ev_close(&task->loader->netev, fd, skid);
     if (CONCURRENT_N != nok) {
         LOG_ERROR("concurrent sendto: only %d/%d coroutines got a response.", nok, CONCURRENT_N);

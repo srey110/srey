@@ -340,7 +340,7 @@ static int32_t _concurrent_query(pgsql_ctx *pg) {
         funcs[i] = _conc_worker;
         argp[i] = &args[i];
     }
-    if (ERR_OK != coro_fork_wait(pg->task, _CONC_N, funcs, argp)) {
+    if (ERR_OK != coro_fork_wait(pg->task, funcs, argp, _CONC_N)) {
         LOG_ERROR("pgsql concurrent: fork_wait error.");
         return ERR_FAILED;
     }

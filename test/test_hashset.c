@@ -152,9 +152,9 @@ static void test_hs_elfree(CuTest *tc) {
     hashset *s = hashset_new(sizeof(_bag), 0, _bag_hash, _bag_cmp, _bag_free, NULL);
     _bag b;
     int32_t i;
+    const size_t len = 16;
     for (i = 0; i < 10; i++) {
         b.key = i;
-        size_t len = 16;
         MALLOC(b.name, len);
         snprintf(b.name, len, "name_%d", i);
         hashset_add(s, &b);

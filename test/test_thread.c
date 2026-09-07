@@ -566,11 +566,11 @@ static void _distr_mu_reader(void *arg) {
         THREAD_YIELD();
     }
     int i, spin;
+    atomic_t cur;
     for (i = 0; i < 500; i++) {
         rwlock_distr_rdlock(&s->ctx);
         // 进入临界区:统计并发读者
         atomic_t r = ATOMIC_ADD(&s->reader_count, 1) + 1;
-        atomic_t cur;
         do {
             cur = ATOMIC_GET(&s->max_readers);
             if (r <= cur) {

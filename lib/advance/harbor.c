@@ -105,9 +105,10 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
 }
 // 连接关闭回调：清掉该连接尚未收齐的流式请求。
 // 本服务眼下没有流式路由，接着是为了以后加了不至于漏，理由见 router_closed 的说明
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
     (void)client;
+    (void)erro;
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
     router_closed(ctx->router, sk->fd, sk->skid);
 }

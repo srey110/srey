@@ -19,10 +19,13 @@
     int32_t evar
 // 七个 bind 入口共用的开场白: 取 bind 对象 + 取可选具名参数(栈位 2 非字符串即按位置绑定)。
 // 具名参数的取法散在七处的话, 将来要换取法(如改用 luaL_optlstring 拿长度)得挨个找齐,
-// 改漏一个不会有编译期信号 —— 那个 bind 会静默退化成按位置绑定, 参数错位写进 MySQL
+// 改漏一个不会有编译期信号 —— 那个 bind 会静默退化成按位置绑定, 参数错位写进 MySQL。
+// 名字传错类型是同一个后果, 故在宏里卡死类型: 只收字符串或不传, 别的当场报错
 #define LMYSQL_BIND_ARG(lua, bindvar, namevar) \
     mysql_bind_ctx *bindvar = luaL_checkudata((lua), 1, MT_MYSQL_BIND); \
     char *namevar = NULL; \
+    luaL_argcheck((lua), lua_isnoneornil((lua), 2) || LUA_TSTRING == lua_type((lua), 2), 2, \
+                  "name must be a string"); \
     if (LUA_TSTRING == lua_type((lua), 2)) { \
         namevar = (char *)luaL_checkstring((lua), 2); \
     }

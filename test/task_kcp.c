@@ -225,7 +225,7 @@ static void _close_startup(task_ctx *task) {
     kcp_close_ctx ctx = { &kcp, NULL, 0, 0 };
     void (*funcs[2])(task_ctx *task, void *arg) = { _close_waiter, _close_stopper };
     void *args[2] = { &ctx, &ctx };
-    int32_t rtn = coro_fork_wait(task, 2, funcs, args);
+    int32_t rtn = coro_fork_wait(task, funcs, args, 2);
     ev_close(&task->loader->netev, ufd, uskid);
     if (ERR_OK != rtn) {
         LOG_ERROR("kcp close test fork_wait error.");
@@ -326,7 +326,7 @@ static void _fifo_startup(task_ctx *task) {
         funcs[i] = _fifo_worker;
         args[i] = &ctxs[i];
     }
-    int32_t rtn = coro_fork_wait(task, KCP_FIFO_N, funcs, args);
+    int32_t rtn = coro_fork_wait(task, funcs, args, KCP_FIFO_N);
     kcp_stop(&kcp);
     ev_close(&task->loader->netev, ufd, uskid);
     if (ERR_OK != rtn) {

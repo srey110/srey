@@ -212,6 +212,9 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
 /// 没走到 srey.connect（打完包就不连了、中途出错）时它仍归业务，必须自己 ud_free。
 /// 失败时三个返回值都是 nil，个数恒为 3</returns>
 static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
+    luaL_argcheck(lua, lua_isnoneornil(lua, 1) || LUA_TSTRING == lua_type(lua, 1), 1, "host must be a string");
+    luaL_argcheck(lua, lua_isnoneornil(lua, 2) || LUA_TSTRING == lua_type(lua, 2), 2, "uri must be a string");
+    luaL_argcheck(lua, lua_isnoneornil(lua, 3) || LUA_TSTRING == lua_type(lua, 3), 3, "secprot must be a string");
     char *host = NULL;
     if (LUA_TSTRING == lua_type(lua, 1)) {
         host = (char *)luaL_checkstring(lua, 1);
@@ -546,9 +549,13 @@ static void _lprot_redis_agg(lua_State *lua, const char *type, int64_t nelem, in
 /// <summary>
 /// 解析一个 Redis RESP 节点的值
 /// </summary>
-/// <param name="pk" type="lightuserdata">redis_pack_ctx 节点指针；nil 时返回 nil</param>
+/// <param name="pk" type="lightuserdata?">redis_pack_ctx 节点指针；nil 时返回 nil</param>
 /// <returns type="string|integer|number|boolean|nil|RedisAggValue">标量直接返回；聚合类型（array/set/map/push/attr）返回 RedisAggValue</returns>
 static int32_t _lprot_redis_value(lua_State *lua) {
+    int32_t type = lua_type(lua, 1);
+    if (LUA_TNIL == type || LUA_TNONE == type) {
+        return lpub_rtn_nil(lua, 1);
+    }
     LUACHECK_LUDATA_OPT(lua, 1);
     redis_pack_ctx *pk = lua_touserdata(lua, 1);
     if (NULL == pk) {
@@ -607,9 +614,13 @@ static int32_t _lprot_redis_value(lua_State *lua) {
 /// <summary>
 /// 获取 Redis RESP 链表中下一个节点指针
 /// </summary>
-/// <param name="pk" type="lightuserdata">redis_pack_ctx 节点指针</param>
+/// <param name="pk" type="lightuserdata?">redis_pack_ctx 节点指针；nil 时返回 nil</param>
 /// <returns type="lightuserdata?">下一个节点指针；无后续节点返回 nil</returns>
 static int32_t _lprot_redis_next(lua_State *lua) {
+    int32_t type = lua_type(lua, 1);
+    if (LUA_TNIL == type || LUA_TNONE == type) {
+        return lpub_rtn_nil(lua, 1);
+    }
     LUACHECK_LUDATA_OPT(lua, 1);
     redis_pack_ctx *pk = lua_touserdata(lua, 1);
     if (NULL == pk

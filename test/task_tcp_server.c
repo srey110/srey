@@ -101,10 +101,11 @@ static void _net_send(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
     }
 }
 // 连接关闭
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)task;
     (void)pktype;
     (void)client;
+    (void)erro;
     if (_prt) {
         LOG_INFO("socket %d closed", (uint32_t)sk->fd);
     }

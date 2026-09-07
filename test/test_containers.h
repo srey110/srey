@@ -3,9 +3,7 @@
 
 #include "CuTest.h"
 
-/// <summary>
-/// 注册容器测试套件：mpq、hashmap、heap、queue、sarray
-/// </summary>
+// 注册容器测试套件：mpq、hashmap、heap、queue、sarray
 void test_containers(CuSuite *suite);
 
 #endif//TEST_CONTAINERS_H_

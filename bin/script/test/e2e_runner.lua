@@ -37,21 +37,46 @@ srey.startup(function()
                 t:fail("popen.new " .. cmd)
                 goto continue
             end
-            if not ctx:waitexit(_PY_TIMEOUT_MS) then
-                t:fail(name .. ": python timeout " .. _PY_TIMEOUT_MS .. "ms")
-                ctx:close()
-                goto continue
+            -- 边等边抽,不能只 waitexit 完再读：popen2.c 的管道是 socketpair(AF_UNIX, SOCK_STREAM)
+            -- 且不设 SO_SNDBUF,读端不抽时 python 输出填满缓冲(macOS 约 8KB)就阻塞在 write 永不退出,
+            -- 症状是 waitexit 超时而真因是这边没读。超时分支也得把已抽到的打出来——它是唯一的线索
+            local chunks = {}
+            local t0 = srey.timer_ms()
+            local exited = false
+            local chunk
+            while true do
+                if ctx:waitexit(0) then
+                    exited = true
+                    break
+                end
+                if srey.timer_ms() - t0 >= _PY_TIMEOUT_MS then
+                    break
+                end
+                chunk = ctx:read(64 * 1024)
+                if chunk and #chunk > 0 then
+                    chunks[#chunks + 1] = chunk
+                else
+                    srey.sleep(50)
+                end
             end
-            local code = ctx:exitcode()
-            local output = ctx:read(256 * 1024)
+            chunk = ctx:read(256 * 1024)
+            if chunk and #chunk > 0 then
+                chunks[#chunks + 1] = chunk
+            end
+            local output = table.concat(chunks)
             io.write(output)
-            if "\n" ~= output:sub(-1) then
+            if "" ~= output and "\n" ~= output:sub(-1) then
                 io.write("\n")
             end
             io.write("\n")
             io.stdout:flush()
-            t:check(0 == code, name .. ": python exit code " .. tostring(code))
-            -- 成功分支也要 close：ctx 只是个 local，回收全靠 __gc，而这个循环几乎不分配、
+            if exited then
+                local code = ctx:exitcode()
+                t:check(0 == code, name .. ": python exit code " .. tostring(code))
+            else
+                t:fail(name .. ": python timeout " .. _PY_TIMEOUT_MS .. "ms")
+            end
+            -- 两条分支都要 close：ctx 只是个 local，回收全靠 __gc，而这个循环几乎不分配、
             -- GC 未必在下一轮前触发，四条 socketpair fd 会一直攥到 e2e 阶段结束
             ctx:close()
             ::continue::

@@ -48,7 +48,7 @@ static int32_t _lutils_log(lua_State *lua) {
 /// <summary>
 /// 将 C userdata 指针按指定长度转换为 Lua 字符串
 /// </summary>
-/// <param name="data" type="lightuserdata">C 指针；为 nil 时函数返回 nil</param>
+/// <param name="data" type="lightuserdata?">C 指针；为 nil 时函数返回 nil</param>
 /// <param name="size" type="integer">数据字节数，取值 [0, INT32_MAX]</param>
 /// <returns type="string?">转换后的字符串；data 为 nil 时返回 nil</returns>
 static int32_t _lutils_ud_str(lua_State *lua) {
@@ -136,10 +136,12 @@ static int32_t _lutils_csprng_rand(lua_State *lua) {
     }
     luaL_Buffer lbuf;
     char *buf = luaL_buffinitsize(lua, &lbuf, n);
-    if (ERR_OK != csprng_rand(buf, n)) {
+    int32_t bad = (ERR_OK != csprng_rand(buf, n));
+    luaL_pushresultsize(&lbuf, bad ? 0 : n);
+    if (bad) {
+        lua_pop(lua, 1);
         return lpub_rtn_nil(lua, 1);
     }
-    luaL_pushresultsize(&lbuf, n);
     return 1;
 }
 /// <summary>

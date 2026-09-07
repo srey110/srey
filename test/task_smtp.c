@@ -93,10 +93,11 @@ static void _startup(task_ctx *task) {
     *(ctx->ok) = 1;
 }
 // 连接断开：若两封邮件未全部发送完则说明服务端提前关闭连接
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)sk;
     (void)pktype;
     (void)client;
+    (void)erro;
     task_smtp_ctx *ctx = (task_smtp_ctx *)coro_get_arg(task);
     if (!(*(ctx->ok))) {
         LOG_WARN("disconnect by remote,befor test complete.");
@@ -348,8 +349,9 @@ static void _fake_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clie
         _fake_cmd(task, sk, ctx, fc, line);
     }
 }
-static void _fake_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _fake_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
+    (void)erro;
     if (client) {
         return;
     }
@@ -422,7 +424,7 @@ static void _fake_startup(task_ctx *task) {
         funcs[i] = _fake_conc_worker;
         argp[i] = &args[i];
     }
-    if (ERR_OK != coro_fork_wait(task, FAKE_CONC_N, funcs, argp)) {
+    if (ERR_OK != coro_fork_wait(task, funcs, argp, FAKE_CONC_N)) {
         LOG_ERROR("fake smtp: fork_wait error.");
         smtp_quit(&ctx->smtp);
         return;

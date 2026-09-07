@@ -46,6 +46,52 @@ runner.run(function(t)
     -- 被 _kcp_resolve 静默丢弃,绑定层却照样返 true
     t:eq(false, dup_kcp:handle(srey.task_handle()), "start 失败后 handle 被 stopped 守卫拒绝")
 
+    -- 数字句柄不探存在性的话,kcp_handle 会把推送目标指到一个已退出的 task 上,之后该会话每条
+    -- 消息都被 task_grab 静默丢弃而绑定层照样返 true。用一个必然没分配过的句柄验探测生效
+    -- (INVALID_TNAME 是 0,加个大偏移确保不是靠旧那道 0 判定过的)
+    t:eq(false, cli_kcp:handle(srey.task_handle() + 1000000), "不存在的数字句柄被拒")
+    t:eq(true, cli_kcp:handle(srey.task_handle()), "本 task 句柄仍可设")
+
+    -- config 字段越界须报错并点出字段名,不能静默截断成另一个合法值：
+    -- mtu = 2^32+1480 截成 int32 正好是 1480,ikcp_setmtu 会成功且不打 WARN,
+    -- 调用方以为自己设的是别的值。报错发生在 kcp_start 之前,这几条都不碰网络
+    do
+        local ck = kcp.new(cli_fd, cli_skid, CONV + 90)
+        local cfgok, cfgerr = pcall(ck.start, ck, "127.0.0.1", SV_PORT, { mtu = 4294968776 })
+        t:eq(false, cfgok, "mtu 超 int32 被拒而非截成 1480")
+        t:check(cfgerr and nil ~= tostring(cfgerr):find("mtu", 1, true),
+                "报错点出字段名 mtu: " .. tostring(cfgerr))
+        t:eq(false, (pcall(ck.start, ck, "127.0.0.1", SV_PORT, { nodelay = 4294967296 })),
+             "nodelay 超界被拒(截断后是 0,开关会反)")
+        t:eq(false, (pcall(ck.start, ck, "127.0.0.1", SV_PORT, { sndwnd = 2147483648 })),
+             "sndwnd 超界被拒(截断后是 INT32_MIN)")
+        t:eq(false, (pcall(ck.start, ck, "127.0.0.1", SV_PORT, { interval = "x" })),
+             "非整数字段被拒")
+        -- 窗口上界取 65535 而非 INT32_MAX：线上 wnd 字段是 16 位(ikcp.c 的 ikcp_encode16u),
+        -- 更大的值既表达不出去,又会让收包窗口判定在半个序号空间上恒成立、rcv_buf 无上界涨
+        t:eq(false, (pcall(ck.start, ck, "127.0.0.1", SV_PORT, { rcvwnd = 65536 })),
+             "rcvwnd 超 16 位被拒")
+        t:eq(false, (pcall(ck.start, ck, "127.0.0.1", SV_PORT, { sndwnd = 65536 })),
+             "sndwnd 超 16 位被拒")
+        -- 非整数与越界必须报不同的话:3.5 落在 [0, 65535] 里,报"out of range"会让人去查值域
+        local fok, ferr = pcall(ck.start, ck, "127.0.0.1", SV_PORT, { mtu = 3.5 })
+        t:eq(false, fok, "非整值浮点被拒")
+        t:check(ferr and nil ~= tostring(ferr):find("must be an integer", 1, true),
+                "浮点报非整数而不是越界: " .. tostring(ferr))
+        -- config 传成非 table 时不能静默丢掉整份调参:那样会返 true、日志一行不打,
+        -- 现场表现是"参数明明配了却没生效",没有任何线索
+        t:eq(false, (pcall(ck.start, ck, "127.0.0.1", SV_PORT, "nodelay=1")),
+             "config 传字符串被拒而非静默忽略")
+        -- 合法值照常放行,别把哨兵档一起卡死
+        t:eq(true, ck:start("127.0.0.1", SV_PORT,
+                            { nodelay = 1, interval = 10, resend = 2, nc = 1,
+                              sndwnd = 32, rcvwnd = 128, mtu = 1400 }),
+             "七个字段的合法值放行")
+        ck:stop()
+        t:eq(true, ck:start("127.0.0.1", SV_PORT), "config 不传仍走库默认")
+        ck:stop()
+    end
+
     -- server 收到数据原样 echo(异步走回调);client send 的响应由框架按 sess 唤醒协程,不进此回调
     srey.on_recvedfrom(function(pktype, fd, skid, ip, port, data, size)
         if fd == sv_fd then

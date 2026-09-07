@@ -28,12 +28,25 @@ static int32_t _lkcp_stop(lua_State *lua) {
     kcp_stop(kcp);
     return 0;
 }
-// 从 idx 处 table 读整数字段 key,缺省返回 dft
-static lua_Integer _lkcp_optint(lua_State *lua, int32_t tidx, const char *key, lua_Integer dft) {
+// 从 idx 处 table 读整数字段 key,缺省返回 dft,越界或非整数即报错并点出字段名。
+// 取值域见 lib/kcp.lua 的 kcp_config:窗口上界是绑定层策略,kcp.h 不卡
+static int32_t _lkcp_cfgint(lua_State *lua, int32_t tidx, const char *key,
+                            int32_t dft, int32_t lo, int32_t hi) {
     lua_getfield(lua, tidx, key);
-    lua_Integer v = luaL_optinteger(lua, -1, dft);
+    if (lua_isnoneornil(lua, -1)) {
+        lua_pop(lua, 1);
+        return dft;
+    }
+    int32_t isnum;
+    lua_Integer v = lua_tointegerx(lua, -1, &isnum);
+    if (0 == isnum) {
+        return luaL_error(lua, "kcp config '%s' must be an integer", key);
+    }
+    if (v < lo || v > hi) {
+        return luaL_error(lua, "kcp config '%s' out of range [%d, %d]", key, lo, hi);
+    }
     lua_pop(lua, 1);
-    return v;
+    return (int32_t)v;
 }
 /// <summary>
 /// 建立会话,数据到达以当前 task 为推送目标(MSG_TYPE.RECVFROM)。
@@ -44,7 +57,8 @@ static lua_Integer _lkcp_optint(lua_State *lua, int32_t tidx, const char *key, l
 ///   每次 start 须传新值:stop 后重启若复用旧 sess,上一会话在途的 CLOSE 会击穿本次等待</param>
 /// <param name="ip" type="string">对端 IP</param>
 /// <param name="port" type="integer">对端端口</param>
-/// <param name="config" type="kcp_config?">KCP 可调参数,缺省用库默认;字段见 lib/kcp.lua 的 kcp_config</param>
+/// <param name="config" type="kcp_config?">KCP 可调参数,缺省用库默认,非 table 报错;
+///   字段与取值域见 lib/kcp.lua 的 kcp_config</param>
 /// <returns type="boolean">成功 true,失败 false</returns>
 static int32_t _lkcp_start(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
@@ -52,16 +66,17 @@ static int32_t _lkcp_start(lua_State *lua) {
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
     uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
+    luaL_argcheck(lua, lua_isnoneornil(lua, 5) || lua_istable(lua, 5), 5, "config must be a table");
     kcp_config cfg;
     kcp_config *pcfg = NULL;
     if (lua_istable(lua, 5)) {
-        cfg.nodelay = (int32_t)_lkcp_optint(lua, 5, "nodelay", -1);
-        cfg.interval = (int32_t)_lkcp_optint(lua, 5, "interval", -1);
-        cfg.resend = (int32_t)_lkcp_optint(lua, 5, "resend", -1);
-        cfg.nc = (int32_t)_lkcp_optint(lua, 5, "nc", -1);
-        cfg.sndwnd = (int32_t)_lkcp_optint(lua, 5, "sndwnd", 0);
-        cfg.rcvwnd = (int32_t)_lkcp_optint(lua, 5, "rcvwnd", 0);
-        cfg.mtu = (int32_t)_lkcp_optint(lua, 5, "mtu", 0);
+        cfg.nodelay = _lkcp_cfgint(lua, 5, "nodelay", -1, -1, 1);
+        cfg.interval = _lkcp_cfgint(lua, 5, "interval", -1, -1, 5000);
+        cfg.resend = _lkcp_cfgint(lua, 5, "resend", -1, -1, INT32_MAX);
+        cfg.nc = _lkcp_cfgint(lua, 5, "nc", -1, -1, 1);
+        cfg.sndwnd = _lkcp_cfgint(lua, 5, "sndwnd", 0, 0, UINT16_MAX);
+        cfg.rcvwnd = _lkcp_cfgint(lua, 5, "rcvwnd", 0, 0, UINT16_MAX);
+        cfg.mtu = _lkcp_cfgint(lua, 5, "mtu", 0, 0, UINT16_MAX);
         pcfg = &cfg;
     }
     return lpub_rtn_bool(lua, ERR_OK == kcp_start(kcp, task->handle, sess, ip, port, pcfg));
@@ -71,14 +86,16 @@ static int32_t _lkcp_start(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
 /// <param name="handle" type="string|integer">目标 task：字符串按名字查，整数按句柄直取</param>
-/// <returns type="boolean">成功 true；名字查不到（kcp_handle 不校验句柄，放过去等于把推送目标
-/// 指到一个不存在的 task 上）或会话已 stop 时 false</returns>
+/// <returns type="boolean">成功 true；目标不存在（名字未注册 / 数字句柄对应 task 已退出）或会话已 stop 时 false。
+/// 仅保证调用时目标存在：目标若在此之后退出，该会话的消息会被静默丢弃。探测口径同 core.bind_task</returns>
 static int32_t _lkcp_handle(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
     name_t handle = lpub_task_handle(lua, 2);
-    if (INVALID_TNAME == handle) {
+    task_ctx *dst = task_grab(g_loader, handle);
+    if (NULL == dst) {
         return lpub_rtn_bool(lua, 0);
     }
+    task_ungrab(dst);
     return lpub_rtn_bool(lua, ERR_OK == kcp_handle(kcp, handle));
 }
 /// <summary>

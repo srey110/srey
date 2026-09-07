@@ -13,6 +13,7 @@ typedef struct close_flush_args {
 
 static atomic_t g_recv_bytes;// server 端累计收到字节(整 task 内共享)
 static atomic_t g_close_cnt;// server 端 _net_close 触发次数
+static atomic_t g_close_erro_bad;// client 端 CLOSE 的 erro 不是 LOCAL 的次数
 
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {
@@ -23,9 +24,14 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
     }
     ATOMIC_ADD(&g_recv_bytes, (atomic_t)size);
 }
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)task; (void)sk; (void)pktype;
+    // client 端是本 task 自己 ev_close 的,erro 必是 LOCAL。这条才是"erro 真被投递"的判据:
+    // ORDERLY 恰好等于 0,只看 server 端分不出"传了 ORDERLY"和"形参加了但没传值"
     if (client) {
+        if (CLOSE_TYPE_LOCAL != erro) {
+            ATOMIC_ADD(&g_close_erro_bad, 1);
+        }
         return;
     }
     ATOMIC_ADD(&g_close_cnt, 1);
@@ -41,6 +47,7 @@ static void _startup(task_ctx *task) {
     }
     ATOMIC_SET(&g_recv_bytes, 0);
     ATOMIC_SET(&g_close_cnt, 0);
+    ATOMIC_SET(&g_close_erro_bad, 0);
 
     int32_t i;
     SOCKET fd;
@@ -73,9 +80,11 @@ static void _startup(task_ctx *task) {
     int32_t expect = ROUNDS * SMALL_BYTES;
     int32_t received = ATOMIC_GET(&g_recv_bytes);
     int32_t closed = ATOMIC_GET(&g_close_cnt);
-    if (received != expect || closed != ROUNDS) {
-        LOG_ERROR("close_flush small: expect %d bytes / %d closes, got %d bytes / %d closes.",
-                  expect, ROUNDS, received, closed);
+    int32_t erro_bad = ATOMIC_GET(&g_close_erro_bad);
+    if (received != expect || closed != ROUNDS || 0 != erro_bad) {
+        LOG_ERROR("close_flush small: expect %d bytes / %d closes / 0 bad erro,"
+                  " got %d bytes / %d closes / %d bad erro.",
+                  expect, ROUNDS, received, closed, erro_bad);
         return;
     }
     // 第二段:大包必然剩一截在 buf_s 里被丢掉,但连接一定关得掉——不断言送达量,只断言 close_cb
@@ -95,8 +104,10 @@ static void _startup(task_ctx *task) {
         coro_sleep(task, 50);
         wait_ms += 50;
     }
-    if (ATOMIC_GET(&g_close_cnt) != ROUNDS + 1) {
-        LOG_ERROR("close_flush big: close_cb not fired, %d closes.", (int32_t)ATOMIC_GET(&g_close_cnt));
+    erro_bad = ATOMIC_GET(&g_close_erro_bad);
+    if (ATOMIC_GET(&g_close_cnt) != ROUNDS + 1 || 0 != erro_bad) {
+        LOG_ERROR("close_flush big: %d closes / %d bad erro (want %d / 0).",
+                  (int32_t)ATOMIC_GET(&g_close_cnt), erro_bad, ROUNDS + 1);
         return;
     }
     *(arg->ok) = 1;
