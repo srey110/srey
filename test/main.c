@@ -83,6 +83,17 @@ static void _on_sigcb(int32_t sig, void *arg) {
     hug_wakeup((hug_ctx *)arg);
 }
 
+// 逐条列出套件里失败的用例; 成功的只进总计不占篇幅
+static void _cusuite_fails(CuSuite *suite) {
+    CuTest *tc;
+    for (int32_t i = 0; i < suite->count; i++) {
+        tc = suite->list[i];
+        if (tc->failed) {
+            PRINT("  x %s: %s", tc->name, tc->message);
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -131,7 +142,6 @@ int main(int argc, char *argv[]) {
     return 0;
 #endif
     /* ── 层 1：纯内存单元测试套件 ── */
-    CuString *output = CuStringNew();
     CuSuite *suite = CuSuiteNew();
 
     test_base(suite);/* 内存宏、原子操作 */
@@ -155,14 +165,8 @@ int main(int argc, char *argv[]) {
     test_advance(suite);/* advance 层：router 路径规范化 */
 
     CuSuiteRun(suite);
-    CuSuiteSummary(suite, output);
-    CuSuiteDetails(suite, output);
-    printf("%s\n", output->buffer);
-
-    int32_t unit_failed = suite->failCount;
-
-    CuStringDelete(output);
-    CuSuiteDelete(suite);
+    // 套件留着不删，等槽位套件跑完在 test result 里合成一份总计。
+    // 就地打结果的话中间隔着几百行集成日志，翻不回来
 
     g_loader = loader_init(0, 0, 0);
     char pandan[PATH_LENS];
@@ -467,16 +471,9 @@ int main(int argc, char *argv[]) {
     loader_free(g_loader);
 
     /* ── 会用光全局槽位的用例：排在集成阶段之后，别把分条计数提前关掉 ── */
-    CuString *slotout = CuStringNew();
     CuSuite *slotsuite = CuSuiteNew();
     test_base_slots(slotsuite);
     CuSuiteRun(slotsuite);
-    CuSuiteSummary(slotsuite, slotout);
-    CuSuiteDetails(slotsuite, slotout);
-    printf("%s\n", slotout->buffer);
-    unit_failed += slotsuite->failCount;
-    CuStringDelete(slotout);
-    CuSuiteDelete(slotsuite);
     hug_free(&_hug);
     sock_clean();
 #if defined(OS_WIN)
@@ -486,6 +483,14 @@ int main(int argc, char *argv[]) {
     int64_t leak = _memcheck();
     locale_free();
     PRINT("%s", "-----------test result-----------");
+    // CuSuite 走的是裸 malloc，不进 _memcheck 的账，留到内存检查之后再收也不会多报一笔
+    int32_t cu_total = suite->count + slotsuite->count;
+    int32_t unit_failed = suite->failCount + slotsuite->failCount;
+    PRINT("cutest: total %d, passed %d, failed %d", cu_total, cu_total - unit_failed, unit_failed);
+    _cusuite_fails(suite);
+    _cusuite_fails(slotsuite);
+    CuSuiteDelete(suite);
+    CuSuiteDelete(slotsuite);
     // 泄漏与多释放都算失败。这一路以前只打印不计数，于是所有"漏没漏由收尾内存检查兜底"
     // 的用例都等于没有断言
     if (0 != leak) {

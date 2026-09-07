@@ -229,12 +229,18 @@ static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
     pgsql_bind_int32(&bind, 3);
     many = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &many_size);/* 多绑一个 */
     pgsql_bind_free(&bind);
+    /* 守卫一旦回归，few/many 就是活缓冲，三块都得收；判定先攒进局部量，
+       FREE 会把指针置 NULL，收完再断言指针就永远成立了 */
+    int32_t few_null = (NULL == few);
+    int32_t many_null = (NULL == many);
+    FREE(few);
     FREE(ok);
+    FREE(many);
 
     /* 断言排在收拾之后：CuAssert 走 longjmp，夹在 alloc/free 中间会漏释放并报出假泄漏 */
-    CuAssertPtrEquals(tc, NULL, few);
+    CuAssertTrue(tc, 0 != few_null);
     CuAssertTrue(tc, 0 == few_size);
-    CuAssertPtrEquals(tc, NULL, many);
+    CuAssertTrue(tc, 0 != many_null);
     CuAssertTrue(tc, 0 == many_size);
     CuAssertTrue(tc, ok_size > 0);
 }

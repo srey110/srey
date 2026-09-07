@@ -1238,6 +1238,63 @@ static void test_bson_iter_field_exceeds_doclens(CuTest *tc) {
     CuAssertTrue(tc, !bson_iter_next(&iter));
 }
 
+// BINARY 的 subtype 字节在末尾 EOD 判定之前就被解引用,挡住它的只有 _bson_iter_lenprefix 里
+// binary 专属的 +1 修正量。构造可读空间恰等于声明长度的畸形文档:修正量在时被拒,
+// 去掉修正量则读到文档末尾之后一字节。精确分配让 ASan 的 redzone 紧贴末尾 ——
+// 无 ASan 时两条路都落到末尾判定,观测结果相同,只有 sh mk.sh test asan debug 能变红
+static void test_bson_iter_binary_subtype_bound(CuTest *tc) {
+    bson_ctx reader;
+    bson_iter iter;
+    // wire: int32 doclen=11 | 0x05 BINARY | key "b\0" | int32 lens=0 | 到此为止,subtype 位缺失
+    size_t dlen = 11;
+    char *buf;
+    MALLOC(buf, dlen);
+    buf[0] = 0x0B; buf[1] = 0x00; buf[2] = 0x00; buf[3] = 0x00;// doclen = 11
+    buf[4] = 0x05;// BSON_BINARY
+    buf[5] = 'b'; buf[6] = 0x00;// key "b"
+    buf[7] = 0x00; buf[8] = 0x00; buf[9] = 0x00; buf[10] = 0x00;// binary lens = 0
+
+    bson_init(&reader, buf, dlen);
+    bson_iter_init(&iter, &reader);// doclens = 11
+    int32_t next_rtn = bson_iter_next(&iter);
+    int32_t err = bson_iter_error(&iter);
+    FREE(buf);
+    CuAssertTrue(tc, !next_rtn);
+    CuAssertTrue(tc, 0 != err);
+}
+
+// 定长类型的长度检查(_bson_iter_fixed)独立于变长那条,拿覆盖为零的 DECIMAL128 钉它:
+// 声明长度装不下 16 字节值时须拒收,装得下则照常读出
+static void test_bson_iter_decimal128_bound(CuTest *tc) {
+    bson_ctx reader;
+    bson_iter iter;
+    char buf[24];
+
+    // 畸形:doclen=20,值起点 7,可读 13 < 16
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x14;// doclen = 20
+    buf[4] = 0x13;// BSON_DECIMAL128
+    buf[5] = 'd'; buf[6] = 0x00;// key "d"
+    bson_init(&reader, buf, 20);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+
+    // 合法:doclen=24 = 4 + 1 + 2 + 16 + 1(EOD)
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x18;// doclen = 24
+    buf[4] = 0x13;
+    buf[5] = 'd'; buf[6] = 0x00;
+    buf[7] = 0x2A;// 值首字节,只验读得出、不解码(无 decimal128 取值接口)
+    bson_init(&reader, buf, sizeof(buf));
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_DECIMAL128, iter.type);
+    CuAssertIntEquals(tc, BSON_DECIMAL128_LENS, (int32_t)iter.lens);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+}
+
 // UTF8/JSCODE 字段声明长度的末尾字节必须是 NUL;畸形为非 NUL 时 bson_iter_next 须拒绝,
 // 否则下游 _bson_dump strlen / lua_pushstring 会越过文档末尾读堆外内存
 static void test_bson_iter_utf8_no_terminator(CuTest *tc) {
@@ -1384,6 +1441,12 @@ static void test_bson_iter_find_empty_key(CuTest *tc) {
     bson_init(&bson, NULL, 0);
     bson_append_int32(&bson, "", 42);
     bson_append_int32(&bson, "x", 7);
+    // 子文档里也放一个空键:没有它的话,下面的点分路径全被"父段不是文档"那条守卫兜住,
+    // 空段守卫删掉照样过,钉不住任何东西
+    bson_append_document_begain(&bson, "d");
+    bson_append_int32(&bson, "", 9);
+    bson_append_int32(&bson, "y", 1);
+    bson_append_end(&bson);
     bson_append_end(&bson);
     CuAssertTrue(tc, bson_complete(&bson));
 
@@ -1413,6 +1476,22 @@ static void test_bson_iter_find_empty_key(CuTest *tc) {
         BSON_ITER_FROM(bson, rd, iter);
         CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter, ".x", &result));
     }
+    // 结尾空段:父段是真文档、子文档里那个空键确实存在,拒收只能来自空段守卫本身
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter, "d.", &result));
+    }
+    // 中间空段
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter, "d..y", &result));
+    }
+    // 对照:同一层的非空段照常命中,守卫没把正常路径一起挡掉
+    {
+        BSON_ITER_FROM(bson, rd, iter);
+        CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&iter, "d.y", &result));
+        CuAssertIntEquals(tc, 1, bson_iter_int32(&result, &err));
+    }
     BSON_FREE(&bson);
 }
 void test_bson(CuSuite *suite) {
@@ -1433,6 +1512,8 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_check_depth);
     SUITE_ADD_TEST(suite, test_bson_iter_neg_lens);
     SUITE_ADD_TEST(suite, test_bson_iter_field_exceeds_doclens);
+    SUITE_ADD_TEST(suite, test_bson_iter_binary_subtype_bound);
+    SUITE_ADD_TEST(suite, test_bson_iter_decimal128_bound);
     SUITE_ADD_TEST(suite, test_bson_iter_eod_reserved);
     SUITE_ADD_TEST(suite, test_bson_iter_utf8_no_terminator);
     SUITE_ADD_TEST(suite, test_bson_check_depth_boundary);

@@ -1562,10 +1562,14 @@ static void test_popen2(CuTest *tc) {
 #else
     SNPRINTF(cmd, sizeof(cmd), "sh \"%s\"", script);
 #endif
-    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, NULL));
-    CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
-    CuAssertIntEquals(tc, 0, popen_exitcode(&ctx));
+    // 先收拾再断言，同下面几段：夹在中间的失败会 longjmp 掉 popen_free，留下没回收的子进程
+    int32_t no_pipe_ok = (ERR_OK == popen_startup(&ctx, cmd, NULL));
+    int32_t no_pipe_wait = (ERR_OK == popen_waitexit(&ctx, 3000));
+    int32_t no_pipe_code = popen_exitcode(&ctx);
     popen_free(&ctx);
+    CuAssertTrue(tc, 0 != no_pipe_ok);
+    CuAssertTrue(tc, 0 != no_pipe_wait);
+    CuAssertIntEquals(tc, 0, no_pipe_code);
 
     /* 2. 只读模式：脚本输出固定字符串，验证读到 "hello popen" */
 #ifdef OS_WIN
@@ -1573,7 +1577,6 @@ static void test_popen2(CuTest *tc) {
 #else
     SNPRINTF(cmd, sizeof(cmd), "sh \"%s\" r", script);
 #endif
-    // 先收拾再断言：夹在中间的失败会 longjmp 掉 popen_free，留下没回收的子进程
     int32_t start_ok = (ERR_OK == popen_startup(&ctx, cmd, "r"));
     int32_t wait_ok = (ERR_OK == popen_waitexit(&ctx, 3000));
     ZERO(buf, sizeof(buf));
@@ -2440,8 +2443,10 @@ static void test_utils_filesystem(CuTest *tc) {
     fclose(fp);
     errno = 0;
     got = 0;
-    int32_t empty_ok = (NULL == readall(tmpfile, &got));
+    char *rdempty = readall(tmpfile, &got);
+    int32_t empty_ok = (NULL == rdempty);
     int32_t errno_ok = (0 != errno);
+    FREE(rdempty);// 回归成"空文件也返缓冲"时不漏，否则真失败之外还多报一笔 not free
     // 临时文件先删掉：断言排在后面，中途 longjmp 会把它留在 bin/ 下
     remove(tmpfile);
     CuAssertTrue(tc, 0 != empty_ok);
@@ -2632,9 +2637,8 @@ static void test_strptime_invalid(CuTest *tc) {
     ZERO(&tm, sizeof(tm));
     CuAssertTrue(tc, NULL == _strptime("notnumber", "%Y", &tm));
 
-    /* 未知转换符 %X 不支持 → NULL（fallthrough 由实现处理） */
+    /* 未知转换符 → NULL（%X 是支持的，见 test_strptime_ampm_overflow；%Q 才不存在） */
     ZERO(&tm, sizeof(tm));
-    /* %Q 不存在 */
     CuAssertTrue(tc, NULL == _strptime("2024", "%Q", &tm));
 
     /* 日期越界：32 日 */
@@ -2771,9 +2775,36 @@ static void test_strptime_ampm_overflow(CuTest *tc) {
     CuAssertTrue(tc, NULL == _strptime("13:00 PM", "%R %p", &tm));
     ZERO(&tm, sizeof(tm));
     CuAssertTrue(tc, NULL == _strptime("Mon Jan  1 13:00:00 2024 PM", "%c %p", &tm));
+    /* %r 自身就是 "%I:%M:%S %p"，内层加过的 12 不回传外层的话还能再加一次 */
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("11:00:00 PM PM", "%r %p", &tm));
+    /* %p 自己也要置位：连着两个 %p 不能累加两次 12 */
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("PM PM", "%p %p", &tm));
     /* 直写 %H 的那条路本来就挡得住，作为对照 */
     ZERO(&tm, sizeof(tm));
     CuAssertTrue(tc, NULL == _strptime("13:00:00 PM", "%H:%M:%S %p", &tm));
+
+    /* %s 经 localtime 把整个 tm 填掉，小时随本机时区变，所以先量出来再据此判定。
+     * 两个时间戳相隔 12 小时，任何时区下必有一个落在 12 点之后，那一个才验得到守卫 */
+    static const char *const epochs[] = { "1700000000", "1700043200" };
+    char sinput[32];
+    int32_t shour;
+    size_t si;
+    for (si = 0; si < sizeof(epochs) / sizeof(epochs[0]); si++) {
+        ZERO(&tm, sizeof(tm));
+        CuAssertPtrNotNull(tc, _strptime(epochs[si], "%s", &tm));
+        shour = tm.tm_hour;
+        SNPRINTF(sinput, sizeof(sinput), "%s PM", epochs[si]);
+        ZERO(&tm, sizeof(tm));
+        end = _strptime(sinput, "%s %p", &tm);
+        if (shour > 11) {
+            CuAssertTrue(tc, NULL == end);
+        } else {
+            CuAssertPtrNotNull(tc, end);
+            CuAssertIntEquals(tc, shour + 12, tm.tm_hour);
+        }
+    }
 
     /* 合法输入不能被误挡：上午 + PM 仍要正常加 12 */
     ZERO(&tm, sizeof(tm));

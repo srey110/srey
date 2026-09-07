@@ -381,7 +381,7 @@ static void test_rwlock_distr_recursive_rdlock(CuTest *tc) {
     pthread_t th;
 
     rwlock_distr_init(&ctx, 4);
-    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctx));
+    int32_t reg = rwlock_distr_register(&ctx);
     ATOMIC_SET(&_distr_writer_in, 0);
 
     rwlock_distr_rdlock(&ctx);
@@ -414,6 +414,7 @@ static void test_rwlock_distr_recursive_rdlock(CuTest *tc) {
     rwlock_distr_wrunlock(&ctx);
     rwlock_distr_unregister(&ctx);
     rwlock_distr_free(&ctx);
+    CuAssertIntEquals(tc, ERR_OK, reg);
     CuAssertIntEquals(tc, 0, timeout);// 0=writer 按时置上 write_flag
     CuAssertIntEquals(tc, 0, in_wait);
     CuAssertIntEquals(tc, 0, in_recur);// 重入 rdlock 期间 writer 不得挤进来

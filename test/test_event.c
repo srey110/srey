@@ -178,6 +178,7 @@ static int32_t _ssl_shake(SSL *cli, SSL *srv) {
                 return ERR_FAILED;
             }
         }
+        MSLEEP(1);// 握手报文对上未必立刻可见，不睡的话整轮预算不到 1ms（同 _recv_all）
     }
     return (ERR_OK == c && ERR_OK == s) ? ERR_OK : ERR_FAILED;
 }
@@ -210,9 +211,16 @@ static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evs
     SNPRINTF(ca, sizeof(ca), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
     SNPRINTF(crt, sizeof(crt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.crt");
     SNPRINTF(key, sizeof(key), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.key");
+    // 只有证书文件不在才算"跳过"。三个都在却建不出 ctx（证书与私钥不匹配、CA 载不进等）
+    // 是真回归，evssl_new 一律返 NULL 分不出来，混进跳过那条路会被 CuTest 记成通过
+    if (ERR_OK != isfile(ca)
+        || ERR_OK != isfile(crt)
+        || ERR_OK != isfile(key)) {
+        return 0;
+    }
     *sc = evssl_new(ca, crt, key, SSL_FILETYPE_PEM);
     if (NULL == *sc) {
-        return 0;
+        return -1;
     }
     *cc = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
     if (NULL == *cc) {

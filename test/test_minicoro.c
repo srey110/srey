@@ -25,43 +25,51 @@
 // 踩的是协程自己那块分配里的守卫槽，不越界、不污染堆。
 
 static int32_t g_stomp_off;// 本轮往 stack_base 下方第几个字节写
+static unsigned char g_stomp_val;// 本轮写进去的字节值
 static mco_result g_yield_rtn;// 协程内 mco_yield 的返回值
 
 static void _mco_stomp_entry(mco_coro *co) {
     unsigned char *base = (unsigned char *)co->stack_base;
-    base[-g_stomp_off] = 0xAA;
+    base[-g_stomp_off] = g_stomp_val;
     g_yield_rtn = mco_yield(co);// 判定失败才会返回，成功则挂起在这
 }
 static void _mco_clean_entry(mco_coro *co) {
     g_yield_rtn = mco_yield(co);
 }
 // 守卫整带都要拦，每个 size_t 字都填都查：只填查一个字（早期写法）时 [-8] 与 [-1] 会漏网。
+// 踩的值也要两种：magic 只有半字宽时每个守卫字的高半恒为 0x00，写 0x00 进去无从察觉，
+// 而 ZERO / memset(buf, 0, n) 正是最常见的越界形状；0xAA 跟半宽、全宽 magic 都不等，
+// 只踩它的话 magic 退回半宽也测不出来。
 // 所有用例都先跑完再断言：CuAssert 失败走 longjmp，夹在中间会漏掉 mco_destroy，
 // 一次守卫回归就会同时报出一个真失败和一个假的 MEMORY_CHECK 泄漏
 static void test_mco_stack_guard(CuTest *tc) {
     static const int32_t offs[] = { 1, 8, 9, 16, 33, 40, 64 };
+    static const unsigned char vals[] = { 0xAA, 0x00 };
     mco_desc desc;
     mco_coro *co;
     mco_result rres, rdes;
     mco_state st;
-    size_t i;
+    size_t i, v;
     // offs 是按 64 字节守卫带挑的，带宽改了这里得跟着改：
     // 最大那几个偏移会落到守卫下方的 storage / back_ctx 上，变成踩上下文而不是踩守卫
     CuAssertIntEquals(tc, 64, (int32_t)MCO_STACK_GUARD_SIZE);
-    for (i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
-        g_stomp_off = offs[i];
-        g_yield_rtn = MCO_SUCCESS;
-        desc = mco_desc_init(_mco_stomp_entry, 0);
-        CuAssertTrue(tc, MCO_SUCCESS == mco_create(&co, &desc));
-        // 协程踩完守卫后 mco_yield 判定失败并返回，协程体跑完转 DEAD；
-        // mco_resume 回到线程栈后再查一次守卫，同样报 STACK_OVERFLOW
-        rres = mco_resume(co);
-        st = mco_status(co);
-        rdes = mco_destroy(co);
-        CuAssertTrue(tc, MCO_STACK_OVERFLOW == rres);
-        CuAssertTrue(tc, MCO_STACK_OVERFLOW == g_yield_rtn);
-        CuAssertTrue(tc, MCO_DEAD == st);
-        CuAssertTrue(tc, MCO_SUCCESS == rdes);
+    for (v = 0; v < sizeof(vals) / sizeof(vals[0]); v++) {
+        for (i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
+            g_stomp_off = offs[i];
+            g_stomp_val = vals[v];
+            g_yield_rtn = MCO_SUCCESS;
+            desc = mco_desc_init(_mco_stomp_entry, 0);
+            CuAssertTrue(tc, MCO_SUCCESS == mco_create(&co, &desc));
+            // 协程踩完守卫后 mco_yield 判定失败并返回，协程体跑完转 DEAD；
+            // mco_resume 回到线程栈后再查一次守卫，同样报 STACK_OVERFLOW
+            rres = mco_resume(co);
+            st = mco_status(co);
+            rdes = mco_destroy(co);
+            CuAssertTrue(tc, MCO_STACK_OVERFLOW == rres);
+            CuAssertTrue(tc, MCO_STACK_OVERFLOW == g_yield_rtn);
+            CuAssertTrue(tc, MCO_DEAD == st);
+            CuAssertTrue(tc, MCO_SUCCESS == rdes);
+        }
     }
 }
 // 反向对照：不踩守卫时不得误报，否则每次 yield 都会假阳性

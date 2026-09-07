@@ -26,9 +26,20 @@ def _skip_dir(name):
 
 
 def iter_sources(roots):
+    # roots 重叠时(如 `add_bom.py lib/base/base.c lib`)同一个文件会被产出多次,
+    # 补 BOM 那步无条件写,补两次就是双 BOM,编译直接挂。按真实路径去重
+    seen = set()
+
+    def _emit(path):
+        real = os.path.realpath(path)
+        if real in seen:
+            return False
+        seen.add(real)
+        return True
+
     for root in roots:
         if os.path.isfile(root):
-            if root.endswith((".c", ".h")):
+            if root.endswith((".c", ".h")) and _emit(root):
                 yield root
             continue
         for dirpath, dirnames, names in os.walk(root):
@@ -36,7 +47,9 @@ def iter_sources(roots):
             dirnames[:] = [d for d in dirnames if not _skip_dir(d)]
             for n in names:
                 if n.endswith((".c", ".h")):
-                    yield os.path.join(dirpath, n)
+                    p = os.path.join(dirpath, n)
+                    if _emit(p):
+                        yield p
 
 
 def has_bom(path):

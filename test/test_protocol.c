@@ -5512,10 +5512,11 @@ static void test_mail_attach_pack(CuTest *tc) {
     int32_t natt1 = (int32_t)array_size(&mail.attach);
 
     // 3. 附件结构字段：extension 取自文件名最后 '.'，file 仅含文件名（不含目录）
-    mail_attach *att = array_at(&mail.attach, 0);
-    int32_t ext_ok = (0 == strcmp(att->extension, ".txt"));
-    int32_t file_ok = (NULL != strstr(att->file, "test_mail_attach.txt"));
-    int32_t content_ok = (NULL != att->content && strlen(att->content) > 0);
+    // 空数组时 array_at 走 ASSERTAB 直接 abort，整轮跑连收尾汇总都没了，故先按 natt1 取
+    mail_attach *att = (1 == natt1) ? array_at(&mail.attach, 0) : NULL;
+    int32_t ext_ok = (NULL != att && 0 == strcmp(att->extension, ".txt"));
+    int32_t file_ok = (NULL != att && NULL != strstr(att->file, "test_mail_attach.txt"));
+    int32_t content_ok = (NULL != att && NULL != att->content && strlen(att->content) > 0);
 
     // 4. mail_pack：含 multipart/mixed boundary + 附件 header + base64 内容
     char *pkt = mail_pack(&mail);

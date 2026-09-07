@@ -191,7 +191,7 @@ def extract_luaopen_bodies(text: str) -> list:
     return out
 
 
-def classify_module(body: str, _unused: dict, mt_map: dict) -> dict:
+def classify_module(body: str, mt_map: dict) -> dict:
     """识别模块级函数和元表方法。
     reg 表从 body 内局部提取，避免同名 reg_new / reg_func 被后续 luaopen 覆盖。"""
     reg_tables = extract_reg_tables(body)
@@ -234,6 +234,19 @@ def classify_module(body: str, _unused: dict, mt_map: dict) -> dict:
             result["classes"].setdefault(cls_name, []).extend(
                 reg_tables.get(rid, [])
             )
+
+    # <helper>(lua, MT_X, reg_x);——注册动作藏在文件自己的 helper 里（如 lbson 的包装元表），
+    # body 内看不到 luaL_newmetatable。按"第 2 参是已知 MT 宏、第 3 参是已知 reg 表"认，
+    # 两条都命中才算，认不出就当没有
+    for m in re.finditer(
+        r"\b_[A-Za-z0-9_]+\s*\(\s*lua\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*,"
+        r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        body,
+    ):
+        mt_tok, rid = m.group(1), m.group(2)
+        if mt_tok not in mt_map or rid not in reg_tables:
+            continue
+        result["classes"].setdefault(mt_map[mt_tok], []).extend(reg_tables[rid])
 
     # fallback：三种标准模式(newlib/REG_MTABLE/newmetatable)均未命中时，
     # 解析 lua_createtable 模块表上的注册
@@ -394,10 +407,9 @@ def main() -> int:
         text = read_text(path)
         mt_map = extract_mt_defines(text)
         func_map = extract_func_docs(text)
-        reg_tables = extract_reg_tables(text)
         bodies = extract_luaopen_bodies(text)
         for mb in bodies:
-            classified = classify_module(mb["body"], reg_tables, mt_map)
+            classified = classify_module(mb["body"], mt_map)
             fields = extract_fields(mb["body"])
             content = gen_module(mb["name"], classified, func_map, path,
                                  require_map, fields)

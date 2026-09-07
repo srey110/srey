@@ -74,8 +74,3 @@
 ---@class TaskStat
 ---@field total   TaskStatItem                    各 mtype 桶之和
 ---@field by_type table<integer, TaskStatItem>    mtype 整数 → 桶；仅包含至少处理过 1 条消息的 mtype
-
----@class _bson_binary  BSON Binary 包装 userdata（lualib/lbind/lbson.c MT_BSON_BINARY，opaque）
----@class _bson_date    BSON Date 包装 userdata（lualib/lbind/lbson.c MT_BSON_DATE，opaque）
----@class _bson_int64   BSON INT64 包装 userdata（lualib/lbind/lbson.c MT_BSON_INT64，opaque）
----@class _bson_oid     BSON OID 包装 userdata（lualib/lbind/lbson.c MT_BSON_OID，opaque）
