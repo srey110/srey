@@ -33,7 +33,6 @@
 --   Route:dispatch(fd, skid, data)
 --   Route:dispatch(fd, skid, data, client)
 --   -- 流式路由（chunked 请求体逐块到，router 不缓存）；用它就得把两个回调都接上
---   local SLICE_TYPE = require("lib.srey").SLICE_TYPE
 --   Route:post_stream("/upload", function(ctx, slice, data)
 --       if 0 == slice then ctx:text(200, data or "")                        -- 非 chunked，一次到齐
 --       elseif SLICE_TYPE.START == slice then ctx.buf = {}                  -- 首帧，头部/参数已可读
@@ -80,7 +79,7 @@ local srey        = require("lib.srey")
 local http        = require("lib.http")
 local _srey_router_new = require("srey.router").new
 local url         = require("srey.url")
-local SLICE_TYPE = srey.SLICE_TYPE
+local SLICE_TYPE = SLICE_TYPE
 -- 流式路由的中止通知，与 C 侧 ROUTER_STREAM_ABORT 同值。协议层不会产生这个 slice，
 -- 由 router 自造：流没收齐就没了（连接断 / 同连接又来一个流式首帧 / 回调自己抛异常）
 local STREAM_ABORT = 0x80

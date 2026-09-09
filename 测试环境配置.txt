@@ -149,13 +149,13 @@ EMQX Dashboard 18083    admin      public        http://localhost:18083
         DEBUG=1 sh mk.sh               # 调试版（ASan + UBSan）
         sh mk.sh test                  # 编译 test 套件
 
-      或用 CMake（带 SSL）：
-        cmake -S . -B build -DWITH_LUA=ON -DWITH_SSL=ON \
-              -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3
-        cmake --build build
+      第三方依赖（首次或换 debug/release、换架构时）：
+        python3 tools/deps.py          # openssl + mimalloc，产物进 lib/ 与 bin/
+        python3 tools/deps.py clean    # 换变体前先清
 
       Windows：
-        用 srey.sln（VS2015+）打开，选 Release|x64 → 生成 → 生成解决方案
+        mk.bat all                     # 命令行（VS 开发者提示符里）
+        或用 srey.sln 打开，选 Release|x64 → 生成 → 生成解决方案
 
   6.2 跑 C 集成测试
 

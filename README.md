@@ -45,8 +45,9 @@ srey/
 │   ├── keys/               SSL 证书
 │   ├── py_assist/          Python 辅助脚本
 │   └── script/             Lua 脚本与测试用例
-├── CMakeLists.txt
-├── mk.sh
+├── mk.sh                   Unix 构建脚本
+├── mk.bat                  Windows 构建脚本
+├── tools/deps.py           第三方依赖(openssl/mimalloc)拉取与编译
 └── srey.sln                Visual Studio 解决方案
 ```
 
@@ -92,36 +93,33 @@ sh mk.sh clean
 
 ---
 
-### CMake
+### 第三方依赖
+
+openssl 与 mimalloc 由脚本拉取并编译，产物落到 `lib/`（头）与 `bin/`（静态库）。
 
 ```sh
-# 配置（macOS 示例）
-cmake -S . -B build \
-    -DWITH_LUA=ON \
-    -DWITH_SSL=ON \
-    -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3
-
-# 编译
-cmake --build build
-
-# Debug
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DWITH_LUA=ON -DWITH_SSL=ON
-cmake --build build
+python3 tools/deps.py         # 按 config.h 的 WITH_* 决定做哪几个
+python3 tools/deps.py clean   # 删克隆与产物；要重编就先 clean
+python3 tools/deps.py debug   # Debug 依赖（默认 Release）
+python3 tools/deps.py m32     # 指定架构；不传按系统探测
 ```
 
-**CMake 选项**
-
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `WITH_SSL` | `OFF` | 启用 SSL/TLS |
-| `WITH_LUA` | `ON`  | 启用 Lua 脚本 |
-| `CMAKE_BUILD_TYPE` | `Release` | `Debug` 开启 ASan/UBSan |
+`bin/` 一次只放一套：产物名不含架构也不含 debug/release，换任一都要先 `clean`。
+Windows 上编 Debug 必须配 `deps.py debug`，否则 mimalloc 的 `/MD` 撞程序的 `/MDd`。
 
 ---
 
 ### Windows
 
-用 Visual Studio 2015+ 打开 `srey.sln`，直接编译。
+```bat
+mk.bat            :: 编译 srey（Release x64）
+mk.bat all        :: srey + test
+mk.bat clean      :: 清理四组配置
+mk.bat debug      :: Debug
+mk.bat m32        :: 32 位
+```
+
+须在 VS 开发者命令提示符里运行。也可以直接开 `srey.sln`，两者走同一套 `.vcxproj`。
 
 ---
 

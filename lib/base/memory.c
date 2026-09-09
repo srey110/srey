@@ -1,10 +1,22 @@
 ﻿#include "base/memory.h"
 #include "base/macro.h"
 
-#define _MALLOC  malloc
-#define _CALLOC  calloc
-#define _REALLOC realloc
-#define _FREE    free
+// 全项目的分配都收在这四个宏,换分配器只动这里。头与库由 tools/deps.py 摆到 lib/ 与 bin/
+#if WITH_MIMALLOC
+    #if ENABLED_ASAN || ENABLED_TSAN
+        #error "WITH_MIMALLOC conflicts with ASan/TSan: both hook the allocator. Turn it off in config.h"
+    #endif
+    #include "mimalloc/mimalloc.h"
+    #define _MALLOC  mi_malloc
+    #define _CALLOC  mi_calloc
+    #define _REALLOC mi_realloc
+    #define _FREE    mi_free
+#else
+    #define _MALLOC  malloc
+    #define _CALLOC  calloc
+    #define _REALLOC realloc
+    #define _FREE    free
+#endif
 
 // 分配追踪要同时满足三个条件,下面所有相关段落统一判这一个
 #if MEMORY_CHECK && MEMORY_TRACE && defined(HAVE_BACKTRACE)

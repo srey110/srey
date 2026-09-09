@@ -161,7 +161,6 @@ runner.run(function(t)
     srey.unlisten(lid)
 
     srey.sleep(200)
-    local CLOSE_TYPE = srey.CLOSE_TYPE
     local nseen, nlocal, ncb = 0, 0, 0
     local fd
     for i = 1, #cli_fds do

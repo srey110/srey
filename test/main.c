@@ -61,17 +61,22 @@
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "winmm.lib")
     #pragma comment(lib, "lib.lib")
-#if WITH_LUA && ENABLE_LUA_BYTECACHE
-    #pragma comment(lib, "lualib.lib")
-#endif
+    #if WITH_MIMALLOC
+        #pragma comment(lib, "mimalloc.lib")
+    #endif
+    // 库名不含架构:tools/deps.py 编出来的两个架构同名,bin/ 一次只放一套。
+    // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
+    // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
     #if WITH_SSL
-        #ifdef ARCH_X64
-            #pragma comment(lib, "libcrypto_x64.lib")
-            #pragma comment(lib, "libssl_x64.lib")
-        #else
-            #pragma comment(lib, "libcrypto.lib")
-            #pragma comment(lib, "libssl.lib")
-        #endif
+        #pragma comment(lib, "libcrypto.lib")
+        #pragma comment(lib, "libssl.lib")
+        #pragma comment(lib, "crypt32.lib")
+        #pragma comment(lib, "advapi32.lib")
+        #pragma comment(lib, "user32.lib")
+        #pragma comment(lib, "gdi32.lib")
+    #endif
+    #if WITH_LUA && ENABLE_LUA_BYTECACHE
+        #pragma comment(lib, "lualib.lib")
     #endif
 #endif
 

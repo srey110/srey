@@ -11,8 +11,7 @@ typedef struct ringq_ctx {
     uint32_t      elsize;   //单元素字节数（init 时指定）
     uint32_t      stride;   //每槽位字节数，由各队列自己算（mpq 每槽多一个序列号）
     char          *cells;   //槽位数组基址（按 stride 步进寻址，不可用下标索引）
-    char          _pad0[CACHELINE_SIZE];//把上面这几个只读字段与 enq 隔开：每次推进 enq
-                            //都会让别的核重读 mask/stride/elsize/cells，而收发每次都要用它们
+    char          _pad0[CACHELINE_SIZE];//把上面这几个只读字段与 enq 隔开
     atomic_aln_t  enq;      //入队位置计数器（与 deq 各占一条 cache line）
     atomic_aln_t  deq;      //出队位置计数器
 } ringq_ctx;

@@ -9,7 +9,7 @@ local mysql = require("srey.mysql")
 local reader = require("srey.mysql.reader")
 local pub   = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 local mpub  = require("lib.mysql_pub")-- 与 mysql_stmt.lua 共用的请求收尾，见该模块头部
-local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
+local MYSQL_PACK_TYPE = mpub.PACK_TYPE
 
 -- mysql_ctx：MySQL 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。

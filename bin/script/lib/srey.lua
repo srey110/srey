@@ -36,6 +36,8 @@ local cur_task  = _curtask -- 当前 task 的 C 层指针，由 loader 注入
 local TASK_NAME = TASK_NAME
 local SSL_NAME  = SSL_NAME
 local REQUEST_TYPE = REQUEST_TYPE
+local SLICE_TYPE = SLICE_TYPE
+local CLOSE_TYPE = CLOSE_TYPE
 local CORO_POOL_MAX      = 128 -- 协程池上限；超出后空闲协程自然退出由 GC 回收
 local CORO_POOL_MIN_KEEP = 4 -- 协程池收缩底线
 local CORO_SHRINK_TICKS  = 10 -- 收缩门控：_coro_timeout 每 1s 触发，累计 10 次(≈SHRINK_TIME 10s)收缩一次，与 C 侧统一
@@ -102,23 +104,6 @@ local MSG_TYPE = {
 }
 srey.MSG_TYPE = MSG_TYPE
 local MTYPE_RECV = MSG_TYPE.RECV-- 每包分发都要取,单独提一份
--- 数据分片标志（对应 C 层 slice_type）
-local SLICE_TYPE = {
-    START = 0x01,   -- 分片开始
-    SLICE = 0x02,   -- 中间分片
-    END   = 0x04,   -- 最后一片（完整消息）
-}
-srey.SLICE_TYPE = SLICE_TYPE
--- CLOSE 消息 erro 的取值（对应 C 层 close_type），连接是怎么断的
----@enum CLOSE_TYPE
-local CLOSE_TYPE = {
-    ORDERLY   = 0,  -- 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
-    LOCAL     = 1,  -- 本地主动：close / task 拆除 / 发队列溢出 / 解析错误
-    ABORT     = 2,  -- 异常中断：RST、读写错误、SSL 协议错
-    NEVERCONN = 3,  -- 连接/会话从未建立，本消息只为唤醒等待方，不触发 on_closed
-    TRUNCATED = 4   -- TLS 没发 close_notify 就断了：字节可能已收全，也可能被截断，框架分不出
-}
-srey.CLOSE_TYPE = CLOSE_TYPE
 
 -- 早退路径统一兜底：copy=0 时调用方已转移 data 所有权,需主动 utils.ud_free 释放
 -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
@@ -1231,7 +1216,7 @@ end
 ---@return lightuserdata|nil rdata 响应数据指针；同 syn_send 语义，仅本协程下次 yield 前有效；
 ---超时/断开返回 nil；fd 为 INVALID_SOCK 时不挂起直接返回 nil
 ---@return integer? rsize 响应数据长度
----@return integer? slice 分片标记，取值同 srey.SLICE_TYPE；0 表示非分片完整消息
+---@return integer? slice 分片标记，取值同 SLICE_TYPE；0 表示非分片完整消息
 function srey.syn_recv(fd, skid)
     local msg = _wait_net_recv(fd, skid)
     if not msg then

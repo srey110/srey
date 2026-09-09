@@ -66,8 +66,8 @@
 #else
     #define THREAD_LOCAL __thread
 #endif
-#define TIMEB  timeb // 时间结构体类型
-#define FTIME  ftime // 获取当前时间（毫秒精度）
+#define TIMEB timeb // 时间结构体类型
+#define FTIME ftime // 获取当前时间（毫秒精度）
 #define ACCESS access // 检查文件访问权限
 #define MKDIR(path) mkdir(path, S_IRWXU) // 创建目录（仅属主 rwx；目录必须含 x 位才能 traverse 进入，否则后续在目录内 fopen 会因路径解析 EACCES 失败）
 // 线程安全的本地时间转换；返回 0 成功、非 0 失败（与 Windows 侧 localtime_s 同约定）。
@@ -76,7 +76,7 @@
 #define GMTIME(ts, dt) (NULL == gmtime_r((ts), (dt)) ? -1 : 0)
 #define SOCK_CLOSE  close // 关闭 socket
 #define SET_CLOEXEC(fd) (void)fcntl((fd), F_SETFD, FD_CLOEXEC) // 标记 fd 为 exec 时关闭(防子进程继承)
-#define ERRNO       errno // 获取当前 errno 错误码
+#define ERRNO errno // 获取当前 errno 错误码
 #define ERRORSTR(errcode) strerror(errcode) // 将错误码转换为字符串
 
 #endif//OS_WIN

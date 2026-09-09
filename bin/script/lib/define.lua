@@ -22,30 +22,6 @@ TASK_TYPE = {
 REQUEST_TYPE = {
     REQ_DEBUG             = 0x01, -- 调试命令
 }
--- MySQL 响应包类型，与 C 层 mysql_pack_type 枚举一一对应。
----@enum MYSQL_PACK_TYPE
-MYSQL_PACK_TYPE =  {
-    MPACK_OK = 0x00,     -- 命令执行成功（无结果集）
-    MPACK_ERR = 0x01,    -- 服务端返回错误
-    MPACK_QUERY = 0x02,  -- 查询结果集
-    MPACK_STMT_PREPARE = 0x03,  -- 预处理语句准备响应
-    MPACK_STMT_EXECUTE = 0x04   -- 预处理语句执行响应
-}
--- PostgreSQL 响应包类型，与 C 层 pgpack_type 枚举一一对应。
----@enum PGPACK_TYPE
-PGPACK_TYPE = {
-    OK           = 0x00, -- 命令执行成功
-    ERR          = 0x01, -- 服务端返回错误
-    NOTIFICATION = 0x02, -- 异步通知（LISTEN/NOTIFY）
-    COPY_IN      = 0x03, -- COPY FROM STDIN 就绪
-    COPY_OUT     = 0x04, -- COPY TO STDOUT 数据流
-}
--- PostgreSQL 参数与结果集的传输格式，与 C 层取值一致。
----@enum PG_FORMAT
-PG_FORMAT = {
-    TEXT   = 0, -- 文本
-    BINARY = 1, -- 二进制
-}
 -- SSL 上下文名称；与 C 层 ssl_name 枚举对应。
 -- NONE 表示不启用 TLS，SERVER/CLIENT 分别对应服务端和客户端证书上下文。
 ---@enum SSL_NAME
@@ -97,6 +73,12 @@ PACK_TYPE = {
 
     UDP_KCP = 0x40   -- KCP 可靠 UDP
 }
+-- 数据分片标志（对应 C 层 slice_type）
+SLICE_TYPE = {
+    START = 0x01,   -- 分片开始
+    SLICE = 0x02,   -- 中间分片
+    END   = 0x04,   -- 最后一片（完整消息）
+}
 -- 对称加密算法类型
 ---@enum CIPHER_TYPE
 CIPHER_TYPE = {
@@ -133,6 +115,16 @@ DIGEST_TYPE = {
     SHA512 = 0x06
 }
 
+INVALID_SOCK = -1 -- 无效 socket fd
 ERR_OK     = 0 -- 操作成功
 ERR_FAILED = -1 -- 操作失败
-INVALID_SOCK = -1 -- 无效 socket fd
+
+-- CLOSE 消息 erro 的取值（对应 C 层 close_type），连接是怎么断的
+---@enum CLOSE_TYPE
+CLOSE_TYPE = {
+    ORDERLY   = 0,  -- 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
+    LOCAL     = 1,  -- 本地主动：close / task 拆除 / 发队列溢出 / 解析错误
+    ABORT     = 2,  -- 异常中断：RST、读写错误、SSL 协议错
+    TRUNCATED = 3,  -- TLS 没发 close_notify 就断了：字节可能已收全，也可能被截断，框架分不出
+    NEVERCONN = 4   -- 连接/会话从未建立，本消息只为唤醒等待方，不触发 on_closed
+}

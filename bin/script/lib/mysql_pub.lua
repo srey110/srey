@@ -11,6 +11,17 @@ local mysql = require("srey.mysql")-- C 绑定，只用 pack_type
 
 local M = {}
 
+-- MySQL 响应包类型，与 C 层 mysql_pack_type 枚举一一对应。
+---@enum MYSQL_PACK_TYPE
+local MYSQL_PACK_TYPE = {
+    MPACK_OK = 0x00,     -- 命令执行成功（无结果集）
+    MPACK_ERR = 0x01,    -- 服务端返回错误
+    MPACK_QUERY = 0x02,  -- 查询结果集
+    MPACK_STMT_PREPARE = 0x03,  -- 预处理语句准备响应
+    MPACK_STMT_EXECUTE = 0x04   -- 预处理语句执行响应
+}
+M.PACK_TYPE = MYSQL_PACK_TYPE
+
 ---组好包之后的固定三步：取 fd/skid → syn_send → 发送或接收失败返 nil。
 ---fd/skid 一并带出来，是因为多结果集的续读（_read_results）还要用同一条连接，
 ---调用方再取一次 sock_id 就可能取到重连后的新值

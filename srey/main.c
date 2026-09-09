@@ -5,33 +5,38 @@
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "winmm.lib")
     #pragma comment(lib, "lib.lib")
-#if WITH_SSL
-    #ifdef ARCH_X64
-        #pragma comment(lib, "libcrypto_x64.lib")
-        #pragma comment(lib, "libssl_x64.lib")
-    #else
+    #if WITH_MIMALLOC
+        #pragma comment(lib, "mimalloc.lib")
+    #endif
+    // 库名不含架构:tools/deps.py 编出来的两个架构同名,bin/ 一次只放一套。
+    // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
+    // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
+    #if WITH_SSL
         #pragma comment(lib, "libcrypto.lib")
         #pragma comment(lib, "libssl.lib")
+        #pragma comment(lib, "crypt32.lib")
+        #pragma comment(lib, "advapi32.lib")
+        #pragma comment(lib, "user32.lib")
+        #pragma comment(lib, "gdi32.lib")
     #endif
-#endif
-#if WITH_LUA
-    #pragma comment(lib, "lualib.lib")
-#endif
-// 下面两个 typedef 用到的 SC_HANDLE / WINADVAPI 出自 winsvc.h, 由 os.h 的 <Windows.h> 带入
-#define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
-#define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
-#define WINSV_INIT_FAILED 1 // service_init 失败报给 SCM 的 service-specific 码；具体原因只在日志里
-typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID); // ChangeServiceConfig2A 函数指针类型
-typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型
+    #if WITH_LUA
+        #pragma comment(lib, "lualib.lib")
+    #endif
+    // 下面两个 typedef 用到的 SC_HANDLE / WINADVAPI 出自 winsvc.h, 由 os.h 的 <Windows.h> 带入
+    #define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
+    #define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
+    #define WINSV_INIT_FAILED 1 // service_init 失败报给 SCM 的 service-specific 码；具体原因只在日志里
+    typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID); // ChangeServiceConfig2A 函数指针类型
+    typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型
 
-// 三个都定义在本文件下方; 两张回调表挪到文件头后必须先声明, 否则是引用未声明标识符
-static int32_t _wsv_initbasic(void);
-static int32_t service_init(void);
-static int32_t service_exit(void);
-static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
-static _wsv_cb exitcbs[] = { service_exit, NULL };
-static SERVICE_STATUS_HANDLE psvstatus;
-static SERVICE_STATUS svstatus;
+    // 三个都定义在本文件下方; 两张回调表挪到文件头后必须先声明, 否则是引用未声明标识符
+    static int32_t _wsv_initbasic(void);
+    static int32_t service_init(void);
+    static int32_t service_exit(void);
+    static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
+    static _wsv_cb exitcbs[] = { service_exit, NULL };
+    static SERVICE_STATUS_HANDLE psvstatus;
+    static SERVICE_STATUS svstatus;
 #endif//OS_WIN
 static int32_t _log_use_file = 1; //是否将日志写文件
 static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准输出

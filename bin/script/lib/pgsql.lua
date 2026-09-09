@@ -10,6 +10,8 @@ local pgsql  = require("srey.pgsql")
 local reader = require("srey.pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 失败原因与 err 契约，见该模块头部
 local pub    = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
+local PGPACK_TYPE = ppub.PACK_TYPE
+local PG_FORMAT = ppub.FORMAT
 
 -- pgsql_ctx：PostgreSQL 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
@@ -348,8 +350,5 @@ end
 function ctx:affected_rows()
     return self.affected
 end
-
-ctx.PACK_TYPE = PGPACK_TYPE
-ctx.FORMAT    = PG_FORMAT
 
 return ctx

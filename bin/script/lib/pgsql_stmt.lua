@@ -7,6 +7,8 @@ local srey   = require("lib.srey")
 local pgsql  = require("srey.pgsql")
 local reader = require("srey.pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 与 pgsql.lua 共用的失败原因，见该模块头部
+local PGPACK_TYPE = ppub.PACK_TYPE
+local PG_FORMAT = ppub.FORMAT
 
 ---预处理语句执行上下文
 ---@class pgsql_stmt_ctx

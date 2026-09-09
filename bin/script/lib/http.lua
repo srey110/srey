@@ -8,6 +8,7 @@ local srey = require("lib.srey")
 local core = require("srey.core")
 local srey_http = require("srey.http")
 local json = require("yyjson")
+local SLICE_TYPE = SLICE_TYPE
 local table = table
 local string = string
 local type = type
@@ -108,7 +109,7 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
     -- 按协议层给的分片标记决定要不要接着收，不只认 chunked：响应既无 Content-Length 又无
     -- Transfer-Encoding 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7)，C 侧同样按分片投、
     -- 末片由关闭事件补。判定留在 C 一处，这里重抄一遍必然分叉(1xx/204/304 也没有 CL/TE)
-    if srey.SLICE_TYPE.START == slice then
+    if SLICE_TYPE.START == slice then
         pack.cksize = 0
         local ok, data, hdata, hsize, fin
         local chunks

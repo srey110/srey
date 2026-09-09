@@ -15,6 +15,24 @@ local pgsql = require("srey.pgsql")-- C 绑定，只用 pack_type / erro
 
 local M = {}
 
+-- PostgreSQL 响应包类型，与 C 层 pgpack_type 枚举一一对应。
+---@enum PGPACK_TYPE
+local PGPACK_TYPE = {
+    OK           = 0x00, -- 命令执行成功
+    ERR          = 0x01, -- 服务端返回错误
+    NOTIFICATION = 0x02, -- 异步通知（LISTEN/NOTIFY）
+    COPY_IN      = 0x03, -- COPY FROM STDIN 就绪
+    COPY_OUT     = 0x04, -- COPY TO STDOUT 数据流
+}
+M.PACK_TYPE = PGPACK_TYPE
+-- PostgreSQL 参数与结果集的传输格式，与 C 层取值一致。
+---@enum PG_FORMAT
+local PG_FORMAT = {
+    TEXT   = 0, -- 文本
+    BINARY = 1, -- 二进制
+}
+M.FORMAT = PG_FORMAT
+
 ---发送失败或连接已断
 M.SEND = "pgsql: send failed or connection closed"
 

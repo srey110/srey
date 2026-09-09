@@ -10,6 +10,8 @@
 #endif
 //是否追踪分配调用栈,退出时 dump 未释放块的 backtrace(需 MEMORY_CHECK 同时为 1,有性能开销)
 #define MEMORY_TRACE        0
+//是否启用mimalloc
+#define WITH_MIMALLOC       0
 //是否启用SSL
 #define WITH_SSL            1
 //是否启用LUA
@@ -39,8 +41,6 @@
 #define SHRINK_BUSY      4, 5 // pool_shrink 的 load_trend busy 判定比例 num/den:空闲骤降至上次的 4/5 以下视为忙,跳过本次收缩
 #define QTN_MS              500 // 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
 #define EVENT_CHECK_INTERVAL 5 // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
-// 两个都是"自旋多少次",但不是一把尺子,别合并:一次 SPIN_CNT 是一次完整的抢锁尝试(要跨核抢
-// cache line),一次 SPIN_YIELD_CNT 只是一条 CPU_PAUSE(几十周期,不碰内存)
 #define SPIN_CNT             32 // spin_init 的自旋次数,仅 Windows 生效(临界区退回内核前先试这么多次);Linux/macOS 传了也不用
 #define SPIN_YIELD_CNT       64 // spin_backoff 等对方释放时自旋这么多次仍等不到就 THREAD_YIELD 让出 CPU
 

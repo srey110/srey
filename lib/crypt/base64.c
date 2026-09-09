@@ -29,8 +29,8 @@ size_t bs64_encode(const void *data, const size_t lens, char *out) {
     size_t i = 0, j = 0;
     // 主循环：每次消耗 3 字节输入，输出 4 个 Base64 字符
     for (; i + 3 <= lens; i += 3) {
-        out[j++] = b64en[(p[i]     >> 2) & 0x3F];
-        out[j++] = b64en[((p[i]     & 0x03) << 4) | ((p[i + 1] >> 4) & 0x0F)];
+        out[j++] = b64en[(p[i] >> 2) & 0x3F];
+        out[j++] = b64en[((p[i] & 0x03) << 4) | ((p[i + 1] >> 4) & 0x0F)];
         out[j++] = b64en[((p[i + 1] & 0x0F) << 2) | ((p[i + 2] >> 6) & 0x03)];
         out[j++] = b64en[  p[i + 2] & 0x3F];
     }
@@ -43,8 +43,8 @@ size_t bs64_encode(const void *data, const size_t lens, char *out) {
         out[j++] = '=';
         break;
     case 2:
-        out[j++] = b64en[(p[i]     >> 2) & 0x3F];
-        out[j++] = b64en[((p[i]     & 0x03) << 4) | ((p[i + 1] >> 4) & 0x0F)];
+        out[j++] = b64en[(p[i] >> 2) & 0x3F];
+        out[j++] = b64en[((p[i] & 0x03) << 4) | ((p[i + 1] >> 4) & 0x0F)];
         out[j++] = b64en[ (p[i + 1] & 0x0F) << 2];
         out[j++] = '=';
         break;

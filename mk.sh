@@ -37,6 +37,10 @@ do
     then
         LUA=`echo $line|$WK -F ' ' '{print int($3)}'`
     fi
+    if [ "$val" = "WITH_MIMALLOC" ]
+    then
+        MIMALLOC=`echo $line|$WK -F ' ' '{print int($3)}'`
+    fi
     if [ "$val" = "WITH_SSL" ]
     then
         if [ `echo $line|$WK -F ' ' '{print int($3)}'` -eq 1 ]
@@ -45,6 +49,12 @@ do
         fi
     fi
 done < `pwd`/lib/base/config.h
+# mimalloc 必须排在 -lsrey 之后:引用方是 libsrey.a 里的 memory.o,静态库按顺序解析。
+# 循环外追加,否则会被上面 WITH_SSL 那支的赋值覆盖(config.h 里它排在 WITH_SSL 前面)
+if [ "$MIMALLOC" = "1" ]
+then
+    EXTRALIB=$EXTRALIB" -lmimalloc"
+fi
 # 共享库目录（参与 libsrey.a；srey 与 test 二进制共用）
 SHARED_DIR="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/serial lib/serial/yyjson lib/srey lib/thread"
 SHARED_DIR=$SHARED_DIR" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp lib/protocol/kcp"

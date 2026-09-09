@@ -60,7 +60,7 @@ srey.watch_closed = function(_)
 end
 
 local Route = require("advance.router")
-local SLICE_TYPE   = srey.SLICE_TYPE
+local SLICE_TYPE   = SLICE_TYPE
 local STREAM_ABORT = Route.STREAM_ABORT
 
 -- 构造 mock pack；_status[1] 是 HTTP 方法，_status[2] 是完整 URI（含查询字符串）

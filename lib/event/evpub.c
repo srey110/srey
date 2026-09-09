@@ -105,7 +105,7 @@ void _evpub_sendto_clear(queue_ctx *bufs) {
     queue_clear(bufs);
 }
 // 队列超上限判定,TCP / UDP 两条文案各占一支——LOG 宏会拼接 fmt,fmt 必须是字面量
-static int32_t _evpub_sendqu_full(queue_ctx *buf_s, SOCKET fd, int32_t istcp) {
+static inline int32_t _evpub_sendqu_full(queue_ctx *buf_s, SOCKET fd, int32_t istcp) {
     if (0 != MAX_SENDQ_CNT
         && queue_size(buf_s) >= MAX_SENDQ_CNT) {
         if (0 != istcp) {
