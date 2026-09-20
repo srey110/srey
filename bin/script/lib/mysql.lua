@@ -41,11 +41,11 @@ function ctx:_connect()
     if not self.mysql:try_connect() then
         return false
     end
-    local fd, skid = self.mysql:sock_id()
-    if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
+    local sk = self.mysql:sock_id()
+    if not srey.wait_connect(sk, SSL_NAME.NONE ~= self.sslname or nil) then
         return false
     end
-    local ok,_,_ = srey.wait_handshaked(fd, skid)
+    local ok,_,_ = srey.wait_handshaked(sk)
     return ok
 end
 
@@ -70,11 +70,10 @@ function ctx:_ping()
 end
 
 ---收齐一次请求的全部响应包（多语句 / CALL 会产生多个结果集），query 与 stmt:execute 共用
----@param fd integer socket fd
----@param skid integer 会话键
+---@param sk userdata 连接标识
 ---@param mpack lightuserdata 首个响应包
 ---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；中途断连或结果集异常返回 nil
-function ctx:_read_results(fd, skid, mpack)
+function ctx:_read_results(sk, mpack)
     local results = {}
     local failed = false
     while true do
@@ -95,7 +94,7 @@ function ctx:_read_results(fd, skid, mpack)
         if not more then
             break
         end
-        mpack = srey.syn_recv(fd, skid)
+        mpack = srey.syn_recv(sk)
         if not mpack then
             return nil
         end
@@ -124,11 +123,11 @@ function ctx:_query(sql, mbind)
         WARN("mysql query payload exceeds 16MB.")
         return nil
     end
-    local mpack, fd, skid = mpub.request(self.mysql, pack, size)
+    local mpack, sk = mpub.request(self.mysql, pack, size)
     if not mpack then
         return nil
     end
-    return self:_read_results(fd, skid, mpack)
+    return self:_read_results(sk, mpack)
 end
 
 ---准备预处理语句（COM_STMT_PREPARE）
@@ -160,13 +159,13 @@ end
 
 -- conn_pub 的断开钩子：COM_QUIT 不等响应，发完直接关
 function ctx:_doquit()
-    local fd, skid = self.mysql:sock_id()
-    if INVALID_SOCK == fd then
+    local sk = self.mysql:sock_id()
+    if not sk.valid then
         return
     end
     local pack, size = self.mysql:pack_quit()
-    srey.send(fd, skid, pack, size, 0)
-    srey.sync_close(fd, skid)
+    srey.send(sk, pack, size, 0)
+    srey.sync_close(sk)
 end
 
 ---返回服务端版本字符串（握手阶段获取）

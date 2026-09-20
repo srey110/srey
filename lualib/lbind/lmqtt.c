@@ -55,7 +55,7 @@ static void _lmqtt_get_payload(lua_State *lua, int idx, char **data, size_t *len
 /// <returns type="_mqtt_props_ctx">props 对象</returns>
 static int32_t _lmqtt_props_new(lua_State *lua) {
     binary_ctx *props = lua_newuserdata(lua, sizeof(binary_ctx));
-    binary_init(props, NULL, 0, 0);
+    binary_init_write(props, 0, 0);
     ASSOC_MTABLE(lua, MT_MQTT_PROPS);
     return 1;
 }
@@ -189,7 +189,7 @@ static int32_t _lmqtt_props_reset(lua_State *lua) {
 }
 /// <summary>
 /// 发起异步 MQTT 连接。协议层内部 malloc 一份 mqtt_ctx 作为 ud->context，
-/// 由框架 _mqtt_udfree 自动回收。调用方需用 srey.wait_connect(fd, skid, ssl)
+/// 由框架 _mqtt_udfree 自动回收。调用方需用 srey.wait_connect(&sk, ssl)
 /// 同步等待 TCP（含 SSL 握手）就绪
 /// </summary>
 /// <param name="version" type="integer">协议版本 mqtt_protversion，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
@@ -197,8 +197,7 @@ static int32_t _lmqtt_props_reset(lua_State *lua) {
 /// <param name="ip" type="string">对端 IP</param>
 /// <param name="port" type="integer">对端端口</param>
 /// <param name="netev" type="integer?">事件订阅掩码，默认 0</param>
-/// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
-/// <returns type="integer?">skid；失败时为 nil，返回值个数恒为 2</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false，返回值个数恒为 1</returns>
 static int32_t _lmqtt_try_connect(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
     const char *sslname = luaL_optstring(lua, 2, NULL);
@@ -211,23 +210,18 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
         evssl = evssl_qury(sslname);
 #endif
         if (NULL == evssl) {
-            // 失败也返 2 个值,理由见 lpub.h 的 lpub_rtn_nil
-            lua_pushinteger(lua, INVALID_SOCK);
-            lua_pushnil(lua);
-            return 2;
+            // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
+            return lpub_push_sock_invalid(lua);
         }
     }
     LPUB_CUR_TASK(lua, task);
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != mqtt_try_connect(task, evssl, ip, port, netev, version, 1, &fd, &skid)) {
-        lua_pushinteger(lua, INVALID_SOCK);
-        lua_pushnil(lua);
-        return 2;
+    sock_ctx sk;
+    if (ERR_OK != mqtt_try_connect(task, evssl, ip, port, netev, version, 1, &sk)) {
+        // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
+        return lpub_push_sock_invalid(lua);
     }
-    lua_pushinteger(lua, fd);
-    lua_pushinteger(lua, (lua_Integer)skid);
-    return 2;
+    lpub_push_sock(lua, &sk);
+    return 1;
 }
 /// <summary>
 /// 给一条已完成 WebSocket 握手、且协商到 "mqtt" 子协议的连接绑定 MQTT 上下文。
@@ -235,18 +229,16 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
 /// CONNACK，那里只认已存在的上下文，缺了就判协议错并断连。
 /// 须在发出 MQTT CONNECT 之前调用——它与随后的 srey.send 同走一条命令队列，先投的先生效
 /// </summary>
-/// <param name="fd" type="integer">socket fd，来自 websock 的连接接口</param>
-/// <param name="skid" type="integer">链接 ID</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="version" type="integer">协议版本 mqtt_protversion，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
 /// <returns type="boolean">true 命令已投递，fd 非法返回 false；true 也只表示投递成功、不代表
 /// 真的绑上了——非 WebSocket 连接、握手未完成、子协议无内建解析器、已绑过一次，这几种都
 /// 判误用：协议层拒收并就地断连。被拒时上下文已由绑定层回收，业务侧不必也不能再管</returns>
 static int32_t _lmqtt_ws_bind(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    mqtt_protversion version = _lmqtt_check_version(lua, 3);
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    mqtt_protversion version = _lmqtt_check_version(lua, 2);
     LPUB_CUR_TASK(lua, task);
-    return lpub_rtn_bool(lua, ERR_OK == mqtt_ws_bind(task, fd, skid, version));
+    return lpub_rtn_bool(lua, ERR_OK == mqtt_ws_bind(task, sk, version));
 }
 // ---- 组包函数（模块级，第 1 参均为 version: mqtt_protversion） ----
 /// <summary>

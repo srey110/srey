@@ -6,39 +6,39 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess) {
     PROT_REF_ACQUIRE(mysql);// connect失败由prots_udfree兜底减引用
     return task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
         NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL,
-        mysql, setsess, &mysql->client.sk.fd, &mysql->client.sk.skid);
+        mysql, setsess, &mysql->client.sk);
 }
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess) {
     pg->task = task;
     PROT_REF_ACQUIRE(pg);
     return task_connect(task, PACK_PGSQL, NULL, pg->ip, pg->port,
-        NETEV_AUTHSSL, pg, setsess, &pg->sk.fd, &pg->sk.skid);
+        NETEV_AUTHSSL, pg, setsess, &pg->sk);
 }
 int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess) {
     mongo->task = task;
     PROT_REF_ACQUIRE(mongo);
     return task_connect(task, PACK_MONGO, mongo->evssl, mongo->ip, mongo->port,
-        NETEV_NONE, mongo, setsess, &mongo->sk.fd, &mongo->sk.skid);
+        NETEV_NONE, mongo, setsess, &mongo->sk);
 }
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess) {
     smtp->task = task;
     PROT_REF_ACQUIRE(smtp);
     return task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port,
-        NETEV_NONE, smtp, setsess, &smtp->sk.fd, &smtp->sk.skid);
+        NETEV_NONE, smtp, setsess, &smtp->sk);
 }
 int32_t mqtt_try_connect(task_ctx *task, struct evssl_ctx *evssl,
                          const char *ip, uint16_t port, int32_t netev,
-                         mqtt_protversion version, int32_t setsess, SOCKET *fd, uint64_t *skid) {
+                         mqtt_protversion version, int32_t setsess, sock_ctx *sk) {
     mqtt_ctx *mq = mqtt_ctx_new(version);
     if (NULL == mq) {
         return ERR_FAILED;
     }
-    return task_connect(task, PACK_MQTT, evssl, ip, port, netev, mq, setsess, fd, skid);
+    return task_connect(task, PACK_MQTT, evssl, ip, port, netev, mq, setsess, sk);
 }
-int32_t mqtt_ws_bind(task_ctx *task, SOCKET fd, uint64_t skid, mqtt_protversion version) {
+int32_t mqtt_ws_bind(task_ctx *task, sock_ctx *sk, mqtt_protversion version) {
     mqtt_ctx *mq = mqtt_ctx_new(version);
     if (NULL == mq) {
         return ERR_FAILED;
     }
-    return websock_set_secextra(&task->loader->netev, fd, skid, mq, mqtt_ctx_free);
+    return websock_set_secextra(&task->loader->netev, sk, mq, mqtt_ctx_free);
 }

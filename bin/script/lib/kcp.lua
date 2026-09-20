@@ -1,12 +1,11 @@
 -- KCP 会话封装:class 包住 C 层 userdata 句柄(lkcp.c),new 时 kcp_init 一次,后续方法复用同一句柄。
 -- 数据到达以创建时所在 task 为目标推送(MSG_TYPE.RECVFROM);ikcp_update 由 event 线程 tick 自动驱动。
 -- socket 用 srey.udp(PACK_TYPE.UDP_KCP) 创建,数据接收复用 srey.on_recvedfrom。
--- 使用方:local kcp = require("lib.kcp"); local k = kcp.new(fd, skid, conv); k:start(ip, port)
+-- 使用方:local kcp = require("lib.kcp"); local k = kcp.new(sk, conv); k:start(ip, port)
 --        第 4 参数是 sync(boolean),传 true 则 start/send 同步等响应;缺省只走异步。
---        注意 Lua 中 0 为真值,旧写法 kcp.new(fd, skid, conv, 0) 会被当成 sync=true
+--        注意 Lua 中 0 为真值,旧写法 kcp.new(sk, conv, 0) 会被当成 sync=true
 local srey = require("lib.srey")
 local ckcp = require("srey.kcp")
-
 local ctx = class("kcp_ctx")
 
 -- 下面各字段的取值域由绑定层校验,越界即报错并点出字段名。落在域内的值仍可能被库调整,见各字段
@@ -20,14 +19,13 @@ local ctx = class("kcp_ctx")
 ---@field mtu integer? MTU(默认 1400,库只认 50~65535);缺省不改。取 [0, 65535]
 
 ---绑定底层 UDP socket 与会话号(不建立会话,需再调 start)
----@param fd integer UDP socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param conv integer 会话号(同一 socket 内唯一,两端约定一致)
 ---@param sync boolean? true=start/send 同步等待响应,缺省=只走异步
-function ctx:ctor(fd, skid, conv, sync)
+function ctx:ctor(sk, conv, sync)
     self.sync = sync and true or false
     self.sess = 0
-    self.kcp = ckcp.new(fd, skid, conv)
+    self.kcp = ckcp.new(sk, conv)
 end
 
 ---建立会话:数据到达以当前 task 为推送目标;ctor 未传 sync 时异步发起(不等结果),

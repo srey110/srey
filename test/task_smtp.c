@@ -93,7 +93,7 @@ static void _startup(task_ctx *task) {
     *(ctx->ok) = 1;
 }
 // 连接断开：若两封邮件未全部发送完则说明服务端提前关闭连接
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)sk;
     (void)pktype;
     (void)client;
@@ -169,8 +169,8 @@ typedef struct fake_smtp_ctx {
     fake_conn conns[FAKE_MAXCONN];
 }fake_smtp_ctx;
 
-static void _fake_reply(task_ctx *task, sk_id *sk, const char *resp) {
-    ev_send(&task->loader->netev, sk->fd, sk->skid, (void *)resp, strlen(resp), 1);
+static void _fake_reply(task_ctx *task, sock_ctx *sk, const char *resp) {
+    ev_send(&task->loader->netev, sk, (void *)resp, strlen(resp), 1);
 }
 static fake_conn *_fake_conn_get(fake_smtp_ctx *ctx, uint64_t skid, int32_t create) {
     int32_t i;
@@ -210,7 +210,7 @@ static int32_t _fake_tag(const char *line, char prefix) {
     return n;
 }
 // 处理一行命令（line 已去掉 CRLF 并以 '\0' 结尾）
-static void _fake_cmd(task_ctx *task, sk_id *sk, fake_smtp_ctx *ctx, fake_conn *fc, char *line) {
+static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_conn *fc, char *line) {
     int32_t tag;
     if (0 == STRNCMP(line, "EHLO", 4)
         || 0 == STRNCMP(line, "HELO", 4)) {
@@ -280,7 +280,7 @@ static void _fake_cmd(task_ctx *task, sk_id *sk, fake_smtp_ctx *ctx, fake_conn *
     }
     _fake_reply(task, sk, "250 OK\r\n");// NOOP 及其余一律 250
 }
-static void _fake_accept(task_ctx *task, sk_id *sk, subtype_t pktype) {
+static void _fake_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
     (void)pktype;
     fake_smtp_ctx *ctx = (fake_smtp_ctx *)coro_get_arg(task);
     if (NULL == _fake_conn_get(ctx, sk->skid, 1)) {
@@ -289,7 +289,7 @@ static void _fake_accept(task_ctx *task, sk_id *sk, subtype_t pktype) {
     }
     _fake_reply(task, sk, "220 fake.smtp.local ESMTP\r\n");
 }
-static void _fake_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client,
+static void _fake_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)slice;
@@ -349,7 +349,7 @@ static void _fake_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clie
         _fake_cmd(task, sk, ctx, fc, line);
     }
 }
-static void _fake_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _fake_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
     (void)erro;
     if (client) {

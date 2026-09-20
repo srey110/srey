@@ -21,6 +21,7 @@
 #include "bench_rwlock.h"
 #include "bench_mpq.h"
 #include "bench_hashmap.h"
+#include "bench_weights.h"
 #include "task_tcp_server.h"
 #include "task_udp_server.h"
 #include "task_rpc.h"
@@ -46,9 +47,12 @@
 #include "task_multi_call.h"
 #include "task_debug.h"
 #include "task_listen_churn.h"
+#include "task_acpstorm.h"
 #include "task_v6only.h"
 #include "task_listen_unlisten_race.h"
 #include "task_close_flush.h"
+#include "task_ssl_deadlock.h"
+#include "task_ssl_keyupdate.h"
 #include "task_sendbuf_warn.h"
 #include "task_priority.h"
 #include "task_selfpost.h"
@@ -62,14 +66,14 @@
     #pragma comment(lib, "winmm.lib")
     #pragma comment(lib, "lib.lib")
     #if WITH_MIMALLOC
-        #pragma comment(lib, "mimalloc.lib")
+        #pragma comment(lib, "mimalloc" DEPS_LIB_SUFFIX ".lib")
     #endif
-    // 库名不含架构:tools/deps.py 编出来的两个架构同名,bin/ 一次只放一套。
+    // 库名后缀由 os.h 的 DEPS_LIB_SUFFIX 拼,对应 tools/deps.py 落在 bin/ 的那个变体。
     // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
     // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
     #if WITH_SSL
-        #pragma comment(lib, "libcrypto.lib")
-        #pragma comment(lib, "libssl.lib")
+        #pragma comment(lib, "libcrypto" DEPS_LIB_SUFFIX ".lib")
+        #pragma comment(lib, "libssl" DEPS_LIB_SUFFIX ".lib")
         #pragma comment(lib, "crypt32.lib")
         #pragma comment(lib, "advapi32.lib")
         #pragma comment(lib, "user32.lib")
@@ -142,6 +146,9 @@ int main(int argc, char *argv[]) {
     LOG_INFO("--------------------------------------------------");
     //hashmap set/get/delete 吞吐:默认初始容量(全程扩容) vs 预留容量(无扩容)
     bench_hashmap();
+    LOG_INFO("--------------------------------------------------");
+    //loader worker weight 分档:不同 nworker 下的吞吐与各 task 完成离差
+    bench_weights();
     LOG_INFO("*******************benchmark end*******************");
     log_free();
     return 0;
@@ -179,10 +186,11 @@ int main(int argc, char *argv[]) {
     void *evssl_server = NULL;
     void *evssl_null = NULL;
     void *evssl_hbcli = NULL;
-    const char *ssl_server = "";
     const char *ssl_clientnull = "";
     const char *ssl_harbor = "";
 #if WITH_SSL
+    const char *ssl_server;// 只在本块内用,放外面 WITH_SSL=0 时是 unused
+    void *evssl_ku = NULL;// 同上
     char ca[PATH_LENS];
     char svcrt[PATH_LENS];
     char svkey[PATH_LENS];
@@ -226,6 +234,13 @@ int main(int argc, char *argv[]) {
         evssl_verify(evssl_hbcli, SSL_VERIFY_PEER, NULL);
     }
     evssl_register("hbclient", evssl_hbcli);
+    // ssl_keyupdate 专用:KeyUpdate 是 TLS1.3 独有的，钉死下限，
+    // 否则协商到 1.2 时 evssl_keyupdate 直接失败，用例退化成普通大流量测试还报绿
+    evssl_ku = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM);
+    if (NULL != evssl_ku) {
+        evssl_min_proto(evssl_ku, TLS1_3_VERSION);
+    }
+    evssl_register("tls13", evssl_ku);
 #endif
 
     name_val_ctx testlist[] = {
@@ -251,9 +266,14 @@ int main(int argc, char *argv[]) {
         {"multi_call_test", 0},
         {"debug_test", 0},
         {"listen_churn", 0},
+        {"acpstorm", 0},
         {"v6only_test", 0},
         {"unlisten_race", 0},
         {"close_flush", 0},
+#if WITH_SSL
+        {"ssl_deadlock", 0},
+        {"ssl_keyupdate", 0},
+#endif
         {"sendbuf_warn", 0},
         {"priority_test", 0},
         {"selfpost_test", 0},
@@ -278,6 +298,7 @@ int main(int argc, char *argv[]) {
         {"router_sv", 15005},
         {"router_idx_sv", 15006},
         {"debug_console", 15017},
+        {"acpstorm", 15100},// 每轮 +1,占到 15129
         {"kcp_tcp", 15040},
         {"kcp_udp", 15041},
 
@@ -362,6 +383,9 @@ int main(int argc, char *argv[]) {
     //Listener 动态生命周期回归：用专用端口 15010 避开其他服务
     task_listen_churn_start(g_loader, "listen_churn", 15010,
         _get_name_val(testlist, "listen_churn"));
+    task_acpstorm_start(g_loader, "acpstorm",
+        (uint16_t)*(_get_name_val(portlist, "acpstorm")),
+        _get_name_val(testlist, "acpstorm"));
     //IPV6_V6ONLY 强制生效回归：端口 15013
     task_v6only_start(g_loader, "v6only_test", 15013,
         _get_name_val(testlist, "v6only_test"));
@@ -371,6 +395,14 @@ int main(int argc, char *argv[]) {
     //ev_close 关闭前冲刷一次的契约（小包全达 / 大包截断但关得掉）：端口 15015
     task_close_flush_start(g_loader, "close_flush", 15015,
         _get_name_val(testlist, "close_flush"));
+#if WITH_SSL
+    //STATUS_WPEND_SSL 停读会不会让两端成环：SSL 环回互推 8MB，端口 15018
+    task_ssl_deadlock_start(g_loader, "ssl_deadlock", 15018, evssl_server,
+        _get_name_val(testlist, "ssl_deadlock"));
+    //单向 8MB + 穿插 KeyUpdate：挂起写那条路能不能自己走完（够不到 KEYUPDATE_READ，见 .h），端口 15019
+    task_ssl_keyupdate_start(g_loader, "ssl_keyupdate", 15019, evssl_ku,
+        _get_name_val(testlist, "ssl_keyupdate"));
+#endif
     //wb_size 字节告警 + 大数据完整性：端口 15016
     task_sendbuf_warn_start(g_loader, "sendbuf_warn", 15016,
         _get_name_val(testlist, "sendbuf_warn"));
@@ -485,6 +517,7 @@ int main(int argc, char *argv[]) {
     timeEndPeriod(1);
 #endif
     log_free();
+    buffer_thread_cleanup();
     int64_t leak = _memcheck();
     locale_free();
     PRINT("%s", "-----------test result-----------");

@@ -59,9 +59,12 @@ static inline void _bson_append_start(bson_ctx *bson) {
 }
 void bson_init(bson_ctx *bson, char *data, size_t lens) {
     bson->depth = 0;
-    binary_init(&bson->doc, data, lens, 0);
     if (NULL == data) {
+        //构建模式：自己开缓冲,并预留顶层文档的 4 字节长度前缀
+        binary_init_write(&bson->doc, lens, 0);
         _bson_append_start(bson);
+    } else {
+        binary_init_read(&bson->doc, data, lens);
     }
 }
 int32_t bson_complete(bson_ctx *bson) {
@@ -860,7 +863,7 @@ char *bson_tostring(bson_ctx *bson) {
     size_t offset = bson->doc.offset;
     binary_offset(&bson->doc, 0);
     binary_ctx str;
-    binary_init(&str, NULL, 0, 0);
+    binary_init_write(&str, 0, 0);
     binary_set_binary(&str, "{\r\n", 3);
     _bson_dump(bson, 1, 0, &str);
     binary_set_binary(&str, "}", 1);

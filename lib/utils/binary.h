@@ -13,19 +13,25 @@ typedef struct binary_ctx {
 }binary_ctx;
 
 /// <summary>
-/// 连续内存读写初始化。
-/// buf=NULL：内部托管（malloc + 自动扩容），可用全部 binary_set_* / binary_get_* 接口；
-/// buf!=NULL：外部托管（不接管所有权，调用方负责 buf 生命周期），仅可用 binary_get_* /
-/// binary_offset / binary_at 等不扩容接口；调用 binary_set_* / binary_set_va 会 ASSERT 失败。
+/// 写模式初始化：自己 malloc 一块可扩容的缓冲，binary_set_* 与 binary_get_* 都能用。
+/// 用完须 binary_free。组包走这个，解包走 binary_init_read。
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
-/// <param name="buf">外部缓冲区指针；NULL 时切换为内部托管模式</param>
-/// <param name="lens">外部模式下为 buf 长度；内部模式下为初始容量提示</param>
+/// <param name="lens">初始容量提示；0 表示只按 inc 开一块</param>
 /// <param name="inc">扩容增量基数，取值 [0, INT32_MAX]，超界断言。内部会向上取到 2 的幂
-/// （下限 2）——它随后当对齐模数用，非 2 的幂对不齐；0 表示用默认值。外部模式下被忽略并标记为 0</param>
-void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc);
+/// （下限 2）——它随后当对齐模数用，非 2 的幂对不齐；0 表示用默认值</param>
+void binary_init_write(binary_ctx *ctx, size_t lens, size_t inc);
 /// <summary>
-/// 释放内部托管缓冲区；对外部托管 buf（inc==0）不做任何操作。
+/// 读模式初始化：直接包住调用方给的内存，不分配、不扩容，binary_free 也不会释放它。
+/// 只能用 binary_get_* / binary_offset / binary_at 这些不扩容的接口，
+/// 调用 binary_set_* / binary_set_va 会 ASSERT 失败。
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <param name="buf">外部缓冲区，须非 NULL 且在 ctx 用完前一直有效；所有权不转移</param>
+/// <param name="lens">buf 的可读长度</param>
+void binary_init_read(binary_ctx *ctx, char *buf, size_t lens);
+/// <summary>
+/// 释放写模式自己分配的缓冲；读模式（inc==0）包着的外部内存不动。
 /// 调用后 data=NULL、size=offset=0，可安全重复调用。
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
@@ -35,7 +41,7 @@ static inline void _binary_expand(binary_ctx *ctx, size_t size) {
     //inc==0 标记外部托管 buf：不接管所有权，任何 binary_set_* 都会从 offset 起改写调用方内存，
     //超出容量时还要对栈/静态/异分配器内存调 REALLOC(UB)。守卫必须在容量判断之前——
     //放在 if 内只挡得住写溢出的那次，写得下的同样非法却会静默损坏调用方数据
-    ASSERTAB(0 != ctx->inc, "external buffer is read-only: use binary_init(NULL,...) for writable mode");
+    ASSERTAB(0 != ctx->inc, "read-mode buffer is read-only: use binary_init_write for writable mode");
     ASSERTAB(size <= SIZE_MAX - ctx->offset - 1, "binary buffer size overflow");
     size += ctx->offset + 1;
     if (size > ctx->size) {
@@ -44,6 +50,8 @@ static inline void _binary_expand(binary_ctx *ctx, size_t size) {
             lens = size;
         }
         ctx->size = ROUND_UP(lens, ctx->inc);
+        // 翻倍与取整都可能溢出回绕成 0，而 _realloc(0) 按契约释放并返回 NULL，下面就 memmove 到空指针
+        ASSERTAB(0 != ctx->size, "binary buffer size overflow");
         REALLOC(ctx->data, ctx->data, ctx->size);
     }
 }

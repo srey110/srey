@@ -10,7 +10,7 @@ void _pgsql_pkfree(void *pack);
 // 释放 ud_cxt 中绑定的 pgsql 上下文资源
 void _pgsql_udfree(ud_cxt *ud);
 // 连接建立后处理：配置 evssl 则发送 SSL 协商请求，否则跳过协商直接发送 Startup
-int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err);
+int32_t _pgsql_on_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err);
 // SSL 握手完成后提取服务端证书摘要（用于 SCRAM-PLUS 通道绑定）并发送 Startup 消息
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl);
 // 判断当前数据包是否允许 task 恢复（通知包不允许立即恢复）
@@ -23,7 +23,7 @@ int32_t _pgsql_may_resume(void *data);
 /// <param name="ud">连接上下文，内部维护解析状态</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>命令阶段返回 pgpack_ctx，认证阶段内部消费返回 NULL；数据不足或出错返回 NULL</returns>
-void *pgsql_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 初始化 pgsql 连接参数

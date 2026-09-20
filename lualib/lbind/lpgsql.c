@@ -871,12 +871,12 @@ static int32_t _lpgsql_free(lua_State *lua) {
     if (NULL == pg) {
         return 0;
     }
-    if (NULL != pg->task && INVALID_SOCK != pg->sk.fd) {
+    if (NULL != pg->task && !sock_is_invalid(&pg->sk)) {
         size_t size;
         void *pack = pgsql_pack_terminate(&size);
-        ev_send(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, pack, size, 0);
+        ev_send(&pg->task->loader->netev, &pg->sk, pack, size, 0);
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid);
+        ev_close(&pg->task->loader->netev, &pg->sk);
     }
     *ud = NULL;
     // pack/scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；
@@ -932,14 +932,12 @@ static int32_t _lpgsql_get_db(lua_State *lua) {
 /// 返回当前 pgsql 连接的 fd 和 skid
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
-/// <returns type="integer">socket fd</returns>
-/// <returns type="integer">skid</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false</returns>
 static int32_t _lpgsql_sock_id(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     pgsql_ctx *pg = *ud;
-    lua_pushinteger(lua, pg->sk.fd);
-    lua_pushinteger(lua, pg->sk.skid);
-    return 2;
+    lpub_push_sock(lua, &pg->sk);
+    return 1;
 }
 /// <summary>
 /// 构造 CancelRequest 消息（使用连接的 pid 和 key）

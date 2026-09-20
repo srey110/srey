@@ -15,12 +15,12 @@
 
 static void _lenenc_roundtrip(CuTest *tc, uint64_t value, size_t expected_bytes) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 32);
+    binary_init_write(&bw, 0, 32);
     _mysql_set_lenenc(&bw, (size_t)value);
     CuAssertTrue(tc, expected_bytes == bw.offset);
 
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     int32_t err = ERR_FAILED;
     uint64_t got = _mysql_get_lenenc(&br, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -55,10 +55,10 @@ static void test_mysql_lenenc(CuTest *tc) {
 
     /* 异常 flag：0xff 在 _mysql_get_lenenc 内未定义 */
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 8);
+    binary_init_write(&bw, 0, 8);
     binary_set_uint8(&bw, 0xff);
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     int32_t err = ERR_OK;
     _mysql_get_lenenc(&br, &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
@@ -70,7 +70,7 @@ static void test_mysql_lenenc(CuTest *tc) {
  * ======================================================================= */
 static void test_mysql_set_payload_lens(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 32);
+    binary_init_write(&bw, 0, 32);
     /* MySQL 包头 4 字节：3 字节长度 + 1 字节 sequence id */
     binary_set_skip(&bw, 4);
     /* 写 7 字节 payload */
@@ -89,13 +89,13 @@ static void test_mysql_set_payload_lens(CuTest *tc) {
 
     /* payload 恰好 16MB 必须拒绝：3 字节长度字段装不下，硬写下去是个截断的长度，
        服务端照它切包，整条连接从此错位。返回值原来没人接，这条守卫删掉也没人知道 */
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_skip(&bw, MYSQL_HEAD_LENS + INT3_MAX);
     CuAssertIntEquals(tc, ERR_FAILED, _mysql_set_payload_lens(&bw));
     binary_free(&bw);
 
     /* 差一个字节则放行，且长度字段三个字节全满 */
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_skip(&bw, MYSQL_HEAD_LENS + INT3_MAX - 1);
     CuAssertIntEquals(tc, ERR_OK, _mysql_set_payload_lens(&bw));
     CuAssertIntEquals(tc, 0xFE, (uint8_t)bw.data[0]);/* 0xFFFFFE 小端：低位在前 */

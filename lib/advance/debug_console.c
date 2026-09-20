@@ -71,7 +71,7 @@ static int32_t _debug_cmp_handle(const void *a, const void *b) {
 }
 // 把命令位置化打包进 bw：首元素 cmd 字符串（与 C/Lua 的 REQ_DEBUG seri 解码对齐）
 static void _debug_pack_cmd(binary_ctx *bw, const char *cmd) {
-    binary_init(bw, NULL, 0, 0);
+    binary_init_write(bw, 0, 0);
     seri_append_string(bw, cmd, strlen(cmd));
 }
 // 广播 fork 协程：向单个 task 发 REQ_DEBUG，响应复制进 arg->resp
@@ -153,7 +153,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
     }
     coro_fork_wait(task, funcs, args, (int32_t)tl.n);
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     const char *nm;
     for (i = 0; i < tl.n; i++) {
         nm = (NULL == tl.items[i].name) ? "(anonymous)" : tl.items[i].name;
@@ -240,7 +240,7 @@ static void _debug_alive(router_req *ctx) {
         qsort(tl.items, (size_t)tl.n, sizeof(dbg_task), _debug_cmp_handle);
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     uint32_t i;
     for (i = 0; i < tl.n; i++) {
         binary_set_va(&bw, "%"PRIu64"\t%s\n",
@@ -335,18 +335,18 @@ static void _debug_hotfix(router_req *ctx) {
     _debug_forward(ctx, &cmd, 1);
 }
 // HTTP 接收回调：取出本服务的 router 后转 router_net_recv（chunked 与派发都在那里）
-static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
+static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype,
                       uint8_t client, uint8_t slice, void *data, size_t size) {
     debug_console_ctx *ctx = coro_get_arg(task);
     router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
 // 连接关闭回调：清掉该连接尚未收齐的流式请求。理由同 harbor 的同名回调
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
     (void)client;
     (void)erro;
     debug_console_ctx *ctx = coro_get_arg(task);
-    router_closed(ctx->router, sk->fd, sk->skid);
+    router_closed(ctx->router, sk);
 }
 // 启动回调：建路由器 + 注册路由 + 监听 HTTP
 static void _debug_startup(task_ctx *task) {

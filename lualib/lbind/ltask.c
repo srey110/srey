@@ -3,45 +3,21 @@
 #include "lbind/lbytecache.h"
 #endif
 
-// 下面四个都是多语句宏，一律裹 do/while(0)：不裹的话 if (x) LUA_TB_XXX(...); else ...
-// 会让 else 绑到宏内层的 if 上，for/while 也只循环到第一条语句为止
-// 向 Lua table 中写入整数字段（setfield 比 push+settable 省一次 lock 配对）
+// 向 Lua table 中写入整数字段（setfield 比 push+settable 省一次 lock 配对）。
 #define LUA_TB_NUMBER(key, val)\
     do {\
         lua_pushinteger(lua, val);\
         lua_setfield(lua, -2, key);\
     } while (0)
 
-// 向 Lua table 中写入字符串字段
-#define LUA_TB_STRING(key, val)\
-    do {\
-        lua_pushstring(lua, val);\
-        lua_setfield(lua, -2, key);\
-    } while (0)
-
-// 向 Lua table 中写入 userdata 指针和对应长度；val 为 NULL 时仅写入 size
-#define LUA_TB_UD(val, size)\
-    do {\
-        if (NULL != val) {\
-            lua_pushlightuserdata(lua, val);\
-            lua_setfield(lua, -2, "data");\
-        }\
-        lua_pushinteger(lua, size);\
-        lua_setfield(lua, -2, "size");\
-    } while (0)
-
-// 向 Lua table 中写入网络公共字段：subtype、fd、skid
-#define LUA_TB_NETPUB(msg)\
-    do {\
-        LUA_TB_NUMBER("subtype", msg->subtype);\
-        LUA_TB_NUMBER("fd", msg->sk.fd);\
-        LUA_TB_NUMBER("skid", msg->sk.skid);\
-    } while (0)
-
 // Lua task 上下文：保存 Lua 虚拟机、消息分发函数引用、计时器、内存统计
+#define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
+#define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
+
 typedef struct ltask_ctx {
     int32_t    ref;       // message_dispatch 函数在 Lua 注册表中的引用 id
-    int32_t    msg_gc_mtref; // 消息 table 的 __gc 元表在注册表中的整数引用；0=尚未创建，luaL_ref 恒不返回 0
+    int32_t    msg_mtref;    // 无载荷消息的元表 ref（只有 __index）；0=尚未创建，luaL_ref 恒不返回 0
+    int32_t    msg_mtref_gc; // 带载荷消息的元表 ref（__index + __gc）；同上
     size_t     mem;       // 当前 Lua 累计内存（字节，单 worker 串行操作，无需 atomic）
     task_ctx  *task;      // 回指 task_ctx，供 allocator 日志取 name
     lua_State *lua;       // 当前 task 独占的 Lua 虚拟机（主 thread）
@@ -105,6 +81,7 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
     lua_setglobal(lua, PATH_NAME);
     lua_pushstring(lua, PATH_SEPARATORSTR);
     lua_setglobal(lua, PATH_SEP_NAME);
+    lpub_reg_sock(lua);
     if (NULL != task) {
         lua_pushlightuserdata(lua, task);
         lua_setglobal(lua, CUR_TASK_NAME);
@@ -288,138 +265,173 @@ static void _ltask_arg_free(void *arg) {
     }
     FREE(ltask);
 }
-// 消息表的 __gc: 从 mtype / subtype / data / shared 四个字段还原 message_ctx 再交给
-// _message_clean 释放。这四个字段业务可写 —— __metatable 只挡"拿元表", 而键已存在时
-// __newindex 也不触发, 挡不住 msg.data = x。改错 mtype 会用错释放器, 改 data 就是一次
-// 任意释放。这条不变式只靠"业务别碰这四个字段"的约定守着
+// 消息对象的 __gc：payload 就是 message_ctx 本身，直接交给 _message_clean。
+// 字段在 Lua 侧不可写（userdata 无 __newindex），故不存在改 mtype/data 换掉释放契约的问题
 static int32_t _msg_clean(lua_State *lua) {
-    ASSERTAB(LUA_TTABLE == lua_type(lua, 1), "_msg_clean type error.");
-    message_ctx tmp = { 0 };
-    lua_getfield(lua, 1, "mtype");
-    tmp.mtype = (msg_type)lua_tointeger(lua, -1);
-    lua_pop(lua, 1);
-    lua_getfield(lua, 1, "subtype");
-    tmp.subtype = (subtype_t)lua_tointeger(lua, -1);
-    lua_pop(lua, 1);
-    lua_getfield(lua, 1, "data");
-    tmp.data = lua_touserdata(lua, -1);
-    lua_pop(lua, 1);
-    lua_getfield(lua, 1, "shared");
-    tmp.shared = (shared_data *)lua_touserdata(lua, -1);
-    lua_pop(lua, 1);
+    message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
+    if (NULL == ud) {
+        return 0;
+    }
     // shared 非 NULL 走广播 ref-- 分支；shared 为 NULL 时仅 data 非 NULL 才需清理
-    if (NULL != tmp.shared || NULL != tmp.data) {
-        _message_clean(&tmp);
+    if (NULL != ud->shared
+        || NULL != ud->data) {
+        _message_clean(ud);
     }
     return 0;
 }
-// 将 C 层 message_ctx 打包为 Lua table，按 mtype 类型填充对应字段
-static inline void _ltask_pack_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
-    lua_createtable(lua, 0, 11);
-    if (ERR_OK == _message_should_clean(msg)) {
-        // 需要手动释放内存的消息挂 __gc 元方法；元表整数引用缓存在 ltask_ctx，首次创建后
-        // 各消息按整数下标直取，避免 luaL_newmetatable 内部等价的 registry 字符串查找
-        if (0 == ltask->msg_gc_mtref) {
-            lua_newtable(lua);
-            lua_pushcfunction(lua, _msg_clean);
-            lua_setfield(lua, -2, "__gc");
-            lua_pushstring(lua, "msg");
-            lua_setfield(lua, -2, "__metatable");
-            ltask->msg_gc_mtref = luaL_ref(lua, LUA_REGISTRYINDEX);
+// 消息对象的 __index：按字段名取 message_ctx 里的值。按长度 + 首字符分发，不做全量串比。
+// data/shared 为空时返回 nil 而不是 0，调用方有 if msg.data then 这类真值判断；
+// ip/port/udata 只有 RECVFROM 才从 recvfrom_ctx 里取，别的类型 data 不是那个结构
+static int32_t _msg_index(lua_State *lua) {
+    message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
+    size_t len;
+    const char *k = lua_tolstring(lua, 2, &len);
+    if (NULL == ud
+        || NULL == k) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    // 按字段长度 + 首字符分发
+    switch (len) {
+    case 2:// ip sk
+        // 连接标识只经 sk 给出,按 skid 缓存在注册表里,取多少次都是同一个 userdata
+        if ('s' == k[0]) {
+            lpub_push_sock_msg(lua, &ud->sk);
+            return 1;
         }
-        lua_rawgeti(lua, LUA_REGISTRYINDEX, ltask->msg_gc_mtref);
-        lua_setmetatable(lua, -2);
-    }
-    LUA_TB_NUMBER("mtype", msg->mtype);
-    switch (msg->mtype) {
-    case MSG_TYPE_STARTUP:
-        break;
-    case MSG_TYPE_CLOSING:
-        break;
-    case MSG_TYPE_TIMEOUT:
-        LUA_TB_NUMBER("sess", msg->sess);
-        break;
-    case MSG_TYPE_ACCEPT:
-        LUA_TB_NETPUB(msg);
-        break;
-    case MSG_TYPE_RECV:
-        LUA_TB_NETPUB(msg);
-        LUA_TB_NUMBER("client", msg->client);
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("slice", msg->slice);
-        LUA_TB_UD(msg->data, msg->size);
-        break;
-    case MSG_TYPE_SEND:
-        LUA_TB_NETPUB(msg);
-        LUA_TB_NUMBER("client", msg->client);
-        LUA_TB_NUMBER("size", msg->size);
-        break;
-    case MSG_TYPE_CLOSE:
-        LUA_TB_NETPUB(msg);
-        LUA_TB_NUMBER("client", msg->client);
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("erro", msg->erro);
-        break;
-    case MSG_TYPE_CONNECT:
-        LUA_TB_NETPUB(msg);
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("erro", msg->erro);
-        break;
-    case MSG_TYPE_SSLEXCHANGED:
-        LUA_TB_NETPUB(msg);
-        LUA_TB_NUMBER("client", msg->client);
-        LUA_TB_NUMBER("sess", msg->sess);
-        break;
-    case MSG_TYPE_HANDSHAKED:
-        LUA_TB_NETPUB(msg);
-        LUA_TB_NUMBER("client", msg->client);
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("erro", msg->erro);
-        LUA_TB_UD(msg->data, msg->size);
-        break;
-    case MSG_TYPE_RECVFROM: {
-        LUA_TB_NUMBER("fd", msg->sk.fd);
-        LUA_TB_NUMBER("skid", msg->sk.skid);
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("subtype", msg->subtype);
-        recvfrom_ctx *rfmsg = msg->data;
-        char ip[IP_LENS];
-        netaddr_ip(&rfmsg->addr, ip);
-        LUA_TB_STRING("ip", ip);
-        LUA_TB_NUMBER("port", netaddr_port(&rfmsg->addr));
-        lua_pushlightuserdata(lua, rfmsg->data);
-        lua_setfield(lua, -2, "udata");
-        LUA_TB_UD(msg->data, rfmsg->len);
-        break;
-    }
-    case MSG_TYPE_REQUEST:
-        LUA_TB_NUMBER("subtype", msg->subtype);
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("src", msg->src);
-        LUA_TB_UD(msg->data, msg->size);
-        // task_multi_call / task_multi_request 广播路径：shared 透传到 Lua 表,__gc 时走 ref-- 分支
-        if (NULL != msg->shared) {
-            lua_pushlightuserdata(lua, msg->shared);
-            lua_setfield(lua, -2, "shared");
+        if ('i' == k[0]) {
+            if (MSG_TYPE_RECVFROM != ud->mtype
+                || NULL == ud->data) {
+                break;
+            }
+            char ip[IP_LENS];
+            netaddr_ip(&((recvfrom_ctx *)ud->data)->addr, ip);
+            lua_pushstring(lua, ip);
+            return 1;
         }
         break;
-    case MSG_TYPE_RESPONSE:
-        LUA_TB_NUMBER("subtype", msg->subtype);
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("erro", msg->erro);
-        LUA_TB_UD(msg->data, msg->size);
+    case 3:// src
+        if ('s' == k[0]) {
+            lua_pushinteger(lua, (lua_Integer)ud->src);
+            return 1;
+        }
+        break;
+    case 4:// sess size erro data port
+        switch (k[0]) {
+        case 's':// sess size,再比第二字符
+            if ('e' == k[1]) {
+                lua_pushinteger(lua, (lua_Integer)ud->sess);
+                return 1;
+            }
+            if ('i' == k[1]) {
+                lua_pushinteger(lua, (lua_Integer)ud->size);
+                return 1;
+            }
+            break;
+        case 'e':// erro
+            lua_pushinteger(lua, ud->erro);
+            return 1;
+        case 'd':// data
+            if (NULL == ud->data) {
+                break;
+            }
+            lua_pushlightuserdata(lua, ud->data);
+            return 1;
+        case 'p':// port
+            if (MSG_TYPE_RECVFROM != ud->mtype
+                || NULL == ud->data) {
+                break;
+            }
+            lua_pushinteger(lua, netaddr_port(&((recvfrom_ctx *)ud->data)->addr));
+            return 1;
+        default:
+            break;
+        }
+        break;
+    case 5:// mtype slice udata
+        if ('m' == k[0]) {
+            lua_pushinteger(lua, ud->mtype);
+            return 1;
+        }
+        if ('s' == k[0]) {
+            lua_pushinteger(lua, ud->slice);
+            return 1;
+        }
+        if ('u' == k[0]) {
+            if (MSG_TYPE_RECVFROM != ud->mtype
+                || NULL == ud->data) {
+                break;
+            }
+            lua_pushlightuserdata(lua, ((recvfrom_ctx *)ud->data)->data);
+            return 1;
+        }
+        break;
+    case 6:// client shared
+        if ('c' == k[0]) {
+            lua_pushinteger(lua, ud->client);
+            return 1;
+        }
+        if ('s' == k[0]) {
+            if (NULL == ud->shared) {
+                break;
+            }
+            lua_pushlightuserdata(lua, ud->shared);
+            return 1;
+        }
+        break;
+    case 7:// subtype
+        if ('s' == k[0]) {
+            lua_pushinteger(lua, ud->subtype);
+            return 1;
+        }
         break;
     default:
         break;
     }
+    lua_pushnil(lua);
+    return 1;
+}
+// 取消息对象的元表压栈。分两张：带载荷的才挂 __gc，无载荷的不挂——挂了 __gc 的对象
+// 回收时要多走一遍 finalizer 链，没东西可释放的消息不该付这笔。
+// 元表 ref 缓存在 ltask_ctx，按整数下标直取，省掉 registry 的字符串查找
+static inline void _ltask_msg_mt(lua_State *lua, ltask_ctx *ltask, int32_t withgc) {
+    int32_t *ref = (0 != withgc) ? &ltask->msg_mtref_gc : &ltask->msg_mtref;
+    if (0 != *ref) {
+        lua_rawgeti(lua, LUA_REGISTRYINDEX, *ref);
+        return;
+    }
+    lua_newtable(lua);
+    if (0 != withgc) {
+        lua_pushcfunction(lua, _msg_clean);
+        lua_setfield(lua, -2, "__gc");
+    }
+    lua_pushcfunction(lua, _msg_index);
+    lua_setfield(lua, -2, "__index");
+    lua_pushstring(lua, "msg");
+    lua_setfield(lua, -2, "__metatable");
+    lua_pushvalue(lua, -1);
+    *ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+}
+// 把 message_ctx 整个拷进 userdata 交给 Lua，字段经 __index 按需取。
+// 不建表是因为表要为每条消息付一次 hash 部分的分配（16 槽）和逐字段 setfield，
+// 而 Lua 侧多数时候只读其中几个
+static inline void _ltask_push_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
+    message_ctx *ud = (message_ctx *)lua_newuserdatauv(lua, sizeof(message_ctx), 0);
+    *ud = *msg;
+    _ltask_msg_mt(lua, ltask, ERR_OK == _message_should_clean(msg));
+    lua_setmetatable(lua, -2);
 }
 // task 消息分发回调：从注册表取消息分发函数，打包消息后调用 Lua
 static void _ltask_run(task_dispatch_arg *arg) {
     ltask_ctx *ltask = arg->task->arg;
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
-    _ltask_pack_msg(ltask->lua, ltask, &arg->msg);
+    _ltask_push_msg(ltask->lua, ltask, &arg->msg);
     if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
         _ltask_log_err(ltask->lua);
+    }
+    // 连接关了才摘缓存,且必须排在分发之后——业务回调里还要用这条 sk
+    if (MSG_TYPE_CLOSE == arg->msg.mtype) {
+        lpub_sock_uncache(ltask->lua, arg->msg.sk.skid);
     }
 }
 /// <summary>
@@ -429,7 +441,7 @@ static void _ltask_run(task_dispatch_arg *arg) {
 /// </summary>
 /// <param name="file" type="string">脚本文件名（不含 .lua 后缀，支持 a.b 形式映射到目录）</param>
 /// <param name="name" type="string?">字符串 task 名；nil 或空串=匿名（仅有句柄）</param>
-/// <param name="quecap" type="integer">消息队列容量；0 用默认 ONEK。
+/// <param name="quecap" type="integer">消息队列容量（条数）；0 用默认 TASK_QUEUE_CAP。
 /// 取值须在 [0, UINT32_MAX]，越界直接报错而不是截断——截断的话 0x100000000 会变成 0、
 /// 再被 fsqu_init 悄悄换成默认 1K，调用方从返回值看不出自己要的容量根本没生效</param>
 /// <param name="..." type="any">传给脚本的可变参数（nil/bool/number/string）</param>

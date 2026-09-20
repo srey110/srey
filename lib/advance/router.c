@@ -61,7 +61,7 @@ struct router_ctx {
     int32_t global_mw_cap;
     int32_t named_n;
     int32_t named_cap;
-    int32_t has_stream;      // 注册过流式路由; 没有就走 _router_chunked_nostream, 不必堆分配 router_stream
+    int32_t has_stream; // 注册过流式路由; 没有就走 _router_chunked_nostream, 不必堆分配 router_stream
     router_entry *routes;
     router_cb *global_mw;
     named_mw *named;
@@ -77,7 +77,7 @@ typedef struct router_stream {
 } router_stream;
 // 流式表的元素: 键 + 本体指针。本体近 5KB, 按值入表的话查一次就得在栈上摆一个同样大的探针
 typedef struct router_st_ent {
-    sk_id sk;              // hashmap 的键
+    sock_ctx sk;              // hashmap 的键
     router_stream *st;
 } router_st_ent;
 
@@ -423,8 +423,9 @@ router_ctx *router_new(void) {
     ZERO(r, sizeof(router_ctx));
     return r;
 }
-// 流式表的 hash / compare / elfree。key 是 sk_id，按字段逐个喂而不是整体 memhash：
-// sk_id 里 fd 与 skid 之间有对齐填充，填充字节是未初始化的
+// 流式表的 hash / compare / elfree。key 是 sock_ctx，按字段逐个喂而不是整体 memhash：
+// 一是结构里仍有对齐填充(Win64 落在 index 与 skid 之间)，填充字节未初始化;
+// 二是 index 由 fd 派生,喂进键反而会让同一连接的两份标识判成不等(失效的填 INVALID_INDEX,正常的填真值)
 static uint64_t _router_st_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     (void)seed0;
     (void)seed1;
@@ -456,7 +457,7 @@ static void _router_st_free(void *item) {
     FREE(st);
 }
 // 摘掉一条流式记录并释放它。hashmap_delete 只返回元素副本、不会自动调 elfree, 得在这里补上
-static void _router_st_drop(router_ctx *r, sk_id *sk) {
+static void _router_st_drop(router_ctx *r, sock_ctx *sk) {
     if (NULL == r->streams) {
         return;
     }
@@ -472,7 +473,7 @@ static void _router_st_drop(router_ctx *r, sk_id *sk) {
 static void _router_st_drain(router_ctx *r) {
     size_t i;
     void *item;
-    sk_id sk;
+    sock_ctx sk;
     while (0 != hashmap_count(r->streams)) {
         i = 0;
         if (!hashmap_iter(r->streams, &i, &item)) {
@@ -975,12 +976,12 @@ void *router_req_body(router_req *ctx, size_t *lens) {
 // 不接 router_req, 供无 ctx 的错误路径共用; 有 ctx 的入口走 _router_send_resp 包一层置 responded。
 // head_only 非 0 时只回头不回体, 但 Content-Length 仍写 body 的真实长度 —— RFC 7231 §4.3.2
 // 要求 HEAD 的响应头与同一资源的 GET 一致, 多发的字节会被当成下一条响应而让 keep-alive 错位
-static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code,
+static void _router_send_core(task_ctx *task, sock_ctx *sk, int32_t code,
                               int32_t head_only, const char *content_type,
                               const http_header_ctx *extra, int32_t extra_n,
                               const char *body, size_t body_len) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_resp(&bw, code);
     if (NULL != content_type) {
         http_pack_head(&bw, "Content-Type", content_type);
@@ -1033,13 +1034,13 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
     } else {
         http_pack_content(&bw, (void *)body, body_len);
     }
-    ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 0);
+    ev_send(&task->loader->netev, sk, bw.data, bw.offset, 0);
 }
 // _router_send_core 的 router_req 版: 发完置 responded 避免 dispatch 末尾兜底 500 又发一遍
 static void _router_send_resp(router_req *ctx, int32_t code, const char *content_type,
                               const http_header_ctx *extra, int32_t extra_n,
                               const char *body, size_t body_len) {
-    _router_send_core(ctx->task, ctx->sk.fd, ctx->sk.skid, code,
+    _router_send_core(ctx->task, &ctx->sk, code,
                       ROUTER_M_HEAD == ctx->method, content_type,
                       extra, extra_n, body, body_len);
     ctx->responded = 1;
@@ -1061,16 +1062,16 @@ void router_req_respond(router_req *ctx, int32_t code,
 // 兜底响应 (404 / 405 / 500); body 走 strlen 的纯文本简写, 适合 dispatch 未匹配 /
 // 未识别方法 / 中间件链溢出等错误路径。部分调用方 (router_reject_chunked) 无 router_req
 // 可用, 故不接 ctx —— 有 ctx 的调用方需自行在调用后置 ctx->responded = 1 防止兜底 500 重发
-static void _router_send_simple(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code,
+static void _router_send_simple(task_ctx *task, sock_ctx *sk, int32_t code,
                                 int32_t head_only, const char *body) {
-    _router_send_core(task, fd, skid, code, head_only, "text/plain; charset=utf-8", NULL, 0,
+    _router_send_core(task, sk, code, head_only, "text/plain; charset=utf-8", NULL, 0,
                       body, (NULL == body) ? 0 : strlen(body));
 }
 // 拒绝 chunked 请求：回 411 后立即关闭连接
-void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid) {
+void router_reject_chunked(task_ctx *task, sock_ctx *sk) {
     // HEAD 请求没有报文体, 不可能是 chunked, 故这里恒非 HEAD
-    _router_send_simple(task, fd, skid, 411, 0, "chunked request not supported\n");
-    ev_close(&task->loader->netev, fd, skid);
+    _router_send_simple(task, sk, 411, 0, "chunked request not supported\n");
+    ev_close(&task->loader->netev, sk);
 }
 // 流式路由的链尾哨兵: 跑到这里说明每个中间件都调了 router_next。不能拿 chain_i == chain_n 判,
 // 最后一个中间件调不调 next 留下的游标完全一样
@@ -1103,11 +1104,10 @@ static void _router_code_body(int32_t code, char body[ROUTER_CODE_BODY_LENS]) {
 }
 // 按 code 生成正文并回给客户端。chunked 首帧那面不走这里(它要的是 _router_st_reject
 // 的关连接收尾), 自己另有一份同样的栈缓冲
-static void _router_send_code(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code,
-                              int32_t head_only) {
+static void _router_send_code(task_ctx *task, sock_ctx *sk, int32_t code, int32_t head_only) {
     char body[ROUTER_CODE_BODY_LENS];
     _router_code_body(code, body);
-    _router_send_simple(task, fd, skid, code, head_only, body);
+    _router_send_simple(task, sk, code, head_only, body);
 }
 // status[0] = 方法, status[1] = 请求 URI; pack 为空或任一段为空都算无效 HTTP。
 // 三个派发入口共用: 返 NULL 即静默丢, 连响应都不发——对面发的不是 HTTP, 回什么都没意义
@@ -1126,12 +1126,11 @@ static buf_ctx *_router_http_status(struct http_pack_ctx *pack) {
 // 栈上请求上下文的装配。url 由调用方持有: 它得和 ctx 活得一样久, 且有意不清零
 // (url_parse 自己清该清的, 那三个大数组白清就是每请求 4KB 死写)
 static void _router_req_init(router_req *ctx, url_ctx *url, task_ctx *task,
-                             SOCKET fd, uint64_t skid, struct http_pack_ctx *pack) {
+                             sock_ctx *sk, struct http_pack_ctx *pack) {
     ZERO(ctx, sizeof(router_req));
     ctx->url = url;
     ctx->task = task;
-    ctx->sk.fd = fd;
-    ctx->sk.skid = skid;
+    ctx->sk = *sk;
     ctx->pack = pack;
 }
 // 解方法 + URL parse + 扫表 + 错误码映射, 两个派发入口共用这一份。
@@ -1158,9 +1157,7 @@ static int32_t _router_entry_misconfigured(const router_entry *e, int32_t idx) {
     return 1;
 }
 // 派发流程: 解方法 → URL parse → 线性扫表 → 拼 chain → 推进 → 兜底 500
-void router_dispatch(router_ctx *r, task_ctx *task,
-                     SOCKET fd, uint64_t skid,
-                     struct http_pack_ctx *pack) {
+void router_dispatch(router_ctx *r, task_ctx *task, sock_ctx *sk, struct http_pack_ctx *pack) {
     if (NULL == r) {
         return;
     }
@@ -1170,20 +1167,20 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     }
     url_ctx url;
     router_req ctx;
-    _router_req_init(&ctx, &url, task, fd, skid, pack);
+    _router_req_init(&ctx, &url, task, sk, pack);
     int32_t idx;
     int32_t code = _router_match_entry(r, &ctx, status, &idx);
     if (200 != code) {
-        _router_send_code(task, fd, skid, code, ROUTER_M_HEAD == ctx.method);
+        _router_send_code(task, sk, code, ROUTER_M_HEAD == ctx.method);
         return;
     }
     router_entry *matched = &r->routes[idx];
     if (0 != _router_entry_misconfigured(matched, idx)) {
-        _router_send_simple(task, fd, skid, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
+        _router_send_simple(task, sk, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
         return;
     }
     if (ERR_OK != _router_chain_build(r, matched, &ctx)) {
-        _router_send_simple(task, fd, skid, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_CHAIN);
+        _router_send_simple(task, sk, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_CHAIN);
         return;
     }
     // 启动链路, 第一个中间件 / handler 通过 router_next 递归推进
@@ -1198,31 +1195,28 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     // 中间件主动 return 不调 router_next 是合法截断; 但都没写响应 (handler 漏发 + 中间件
     // 也没截断) 时, 客户端会卡死, 这里兜底 500 让它别等
     if (!ctx.responded) {
-        _router_send_simple(task, fd, skid, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
+        _router_send_simple(task, sk, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
     }
 }
-void router_closed(router_ctx *r, SOCKET fd, uint64_t skid) {
+void router_closed(router_ctx *r, sock_ctx *sk) {
     if (NULL == r
         || NULL == r->streams) {
         return;
     }
-    sk_id sk;
-    sk.fd = fd;
-    sk.skid = skid;
-    _router_st_drop(r, &sk);
+    _router_st_drop(r, sk);
 }
 // 首帧不通过时的统一收尾: 回响应 → 关连接 → 丢记录。请求体还在后面, 连接留着也收不了。
 // code 传 0 表示调用方已经写过响应, 只关连接
 static void _router_st_reject(router_stream *st, task_ctx *task, int32_t code, const char *body) {
     if (code > 0) {
-        _router_send_simple(task, st->req.sk.fd, st->req.sk.skid, code,
+        _router_send_simple(task, &st->req.sk, code,
                             ROUTER_M_HEAD == st->req.method, body);
     }
-    ev_close(&task->loader->netev, st->req.sk.fd, st->req.sk.skid);
+    ev_close(&task->loader->netev, &st->req.sk);
     FREE(st);
 }
 // 流式首帧: 匹配路由 → 跑准入链 → 进表 → 回调 PROT_SLICE_START
-static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct http_pack_ctx *pack) {
+static void _router_st_begin(router_ctx *r, task_ctx *task, sock_ctx *sk, struct http_pack_ctx *pack) {
     buf_ctx *status = _router_http_status(pack);
     if (NULL == status) {
         return;// 无效 HTTP, 静默丢, 同 router_dispatch
@@ -1234,7 +1228,7 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct ht
     // MALLOC 不清零, 靠逐字段写满: 往 router_stream 加字段必须同时进这里(同 _router_group_fill)。
     // req 交给 _router_req_init, url 有意不清(理由见那里)
     st->on_chunk = NULL;
-    _router_req_init(&st->req, &st->url, task, sk->fd, sk->skid, pack);
+    _router_req_init(&st->req, &st->url, task, sk, pack);
     int32_t idx;
     int32_t code = _router_match_entry(r, &st->req, status, &idx);
     if (200 != code) {
@@ -1253,7 +1247,7 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct ht
     // 命中的不是流式路由: 请求体正一块块往这边来, 普通 handler 接不住
     if (NULL == matched->on_chunk) {
         FREE(st);
-        router_reject_chunked(task, sk->fd, sk->skid);
+        router_reject_chunked(task, sk);
         return;
     }
     st->on_chunk = matched->on_chunk;
@@ -1295,7 +1289,7 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sk_id *sk, struct ht
     }
 }
 // 流式中间/结束帧: 原样把 slice 与数据交给 on_chunk
-static void _router_st_feed(router_ctx *r, task_ctx *task, sk_id *sk,
+static void _router_st_feed(router_ctx *r, task_ctx *task, sock_ctx *sk,
                             uint8_t slice, struct http_pack_ctx *pack) {
     if (NULL == r->streams) {
         return;
@@ -1318,14 +1312,14 @@ static void _router_st_feed(router_ctx *r, task_ctx *task, sk_id *sk,
     hashmap_delete(r->streams, &probe);
     st->on_chunk(&st->req, slice, data, dlens);
     if (!st->req.responded) {
-        _router_send_simple(task, sk->fd, sk->skid, 500,
+        _router_send_simple(task, sk, 500,
                             ROUTER_M_HEAD == st->req.method, ROUTER_BODY_500);
     }
     FREE(st);
 }
 // 没注册过流式路由时的 chunked 首帧: 结局只能是"匹配不上"/"命中普通路由"/"命中 index 条目",
 // 三种都能用栈上 req 算出来, 不必先堆分配 router_stream。给的码与一次到齐的同一请求完全一致
-static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sk_id *sk,
+static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sock_ctx *sk,
                                      struct http_pack_ctx *pack) {
     buf_ctx *status = _router_http_status(pack);
     if (NULL == status) {
@@ -1333,32 +1327,32 @@ static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sk_id *sk,
     }
     url_ctx url;
     router_req ctx;
-    _router_req_init(&ctx, &url, task, sk->fd, sk->skid, pack);
+    _router_req_init(&ctx, &url, task, sk, pack);
     int32_t idx;
     int32_t code = _router_match_entry(r, &ctx, status, &idx);
     if (200 == code
         && 0 == _router_entry_misconfigured(&r->routes[idx], idx)) {
-        router_reject_chunked(task, sk->fd, sk->skid);// 命中普通路由, 请求体接不住
+        router_reject_chunked(task, sk);// 命中普通路由, 请求体接不住
         return;
     }
     if (200 == code) {
-        _router_send_simple(task, sk->fd, sk->skid, 500,
+        _router_send_simple(task, sk, 500,
                             ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
     } else {
-        _router_send_code(task, sk->fd, sk->skid, code, ROUTER_M_HEAD == ctx.method);
+        _router_send_code(task, sk, code, ROUTER_M_HEAD == ctx.method);
     }
-    ev_close(&task->loader->netev, sk->fd, sk->skid);
+    ev_close(&task->loader->netev, sk);
 }
 // _net_recv 回调的标准实现: 一次到齐的请求直接派发; chunked 命中流式路由则逐帧交给它,
 // 命中普通路由回 411, 匹配不上按普通请求的码走(404/400/405)。
 // harbor / debug_console 各自的回调只负责从 task 参数里取出自己的 router 再转到这里
-void router_net_recv(router_ctx *r, task_ctx *task, sk_id *sk,
+void router_net_recv(router_ctx *r, task_ctx *task, sock_ctx *sk,
                      subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)size;
     if (0 == slice) {
-        router_dispatch(r, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
+        router_dispatch(r, task, sk, (struct http_pack_ctx *)data);
         return;
     }
     if (NULL == r) {

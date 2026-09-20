@@ -253,7 +253,7 @@ static inline int32_t _mpack_more_data(mysql_ctx *mysql, buffer_ctx *buf, binary
     if (NULL == payload) {
         return ERR_FAILED;
     }
-    binary_init(breader, payload, payload_lens, 0);
+    binary_init_read(breader, payload, payload_lens);
     return ERR_OK;
 }
 // 检查 EOF 包中的状态标志。进来时调用方已保证至少剩 1 字节（判过 offset < size 且 peek 过）

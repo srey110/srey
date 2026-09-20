@@ -98,19 +98,19 @@ static void _harbor_request(router_req *ctx) {
     _harbor_dispatch(ctx, 0);
 }
 // HTTP 接收回调：取出本服务的 router 后转 router_net_recv（chunked 与派发都在那里）
-static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
+static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
     router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
 // 连接关闭回调：清掉该连接尚未收齐的流式请求。
 // 本服务眼下没有流式路由，接着是为了以后加了不至于漏，理由见 router_closed 的说明
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
     (void)client;
     (void)erro;
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
-    router_closed(ctx->router, sk->fd, sk->skid);
+    router_closed(ctx->router, sk);
 }
 // harbor任务启动回调：建路由器 + 注册 /call 与 /request + 监听
 static void _harbor_startup(task_ctx *harbor) {
@@ -210,7 +210,7 @@ void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, void *data, size
         SNPRINTF(url, sizeof(url), "/request?dst=%"PRIu64"&type=%u", task, reqtype);
     }
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     http_pack_req(&bwriter, "POST", url);
     http_pack_head(&bwriter, "Connection", "Keep-Alive");
     http_pack_head(&bwriter, "Content-Type", "application/octet-stream");

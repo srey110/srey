@@ -1,5 +1,6 @@
 ﻿#include "lbind/lpub.h"
 
+#define CERT_FOLDER "keys" // SSL 证书文件所在子目录名
 #define MTYPE_OUT_OF_RANGE "message type out of range"
 #define SECLEVEL_OUT_OF_RANGE "ssl security level out of range"
 #define TLSVER_OUT_OF_RANGE "tls version out of range"
@@ -293,8 +294,7 @@ static int32_t _lcore_unlisten(lua_State *lua) {
 /// <param name="netev" type="integer?">事件订阅掩码，默认 NETEV_NONE</param>
 /// <param name="extra" type="lightuserdata?">协议握手所需附加上下文，所有权移交框架</param>
 /// <param name="setsess" type="integer?">是否连接时置 ud->sess=skid（同步请求/响应模式），默认 1</param>
-/// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
-/// <returns type="integer?">skid（连接唯一序号）；仅在 fd 有效时有效</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false，返回值个数恒为 1</returns>
 static int32_t _lcore_connect(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
@@ -310,37 +310,30 @@ static int32_t _lcore_connect(lua_State *lua) {
         LUACHECK_LUDATA(lua, 6);
         extra = lua_touserdata(lua, 6);
     }
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, setsess, &fd, &skid)) {
-        // 失败也返 2 个值:lpub.h 写死的全仓规矩是"失败与成功的返回值个数必须一致"——
-        // 返回值直接塞进另一个调用时少一个就整体错位
-        lua_pushinteger(lua, INVALID_SOCK);
-        lua_pushnil(lua);
-        return 2;
+    sock_ctx sk;
+    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, setsess, &sk)) {
+        // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
+        return lpub_push_sock_invalid(lua);
     }
-    lua_pushinteger(lua, fd);
-    lua_pushinteger(lua, skid);
-    return 2;
+    lpub_push_sock(lua, &sk);
+    return 1;
 }
 /// <summary>
 /// 对已有明文连接发起 SSL 升级握手
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错</param>
 /// <param name="evssl" type="lightuserdata">SSL 上下文；为 nil 或非 userdata 时直接失败</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_ssl_exchange(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = lpub_check_flag(lua, 3);
-    if (!lua_islightuserdata(lua, 4)) {
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    int32_t client = lpub_check_flag(lua, 2);
+    if (!lua_islightuserdata(lua, 3)) {
         return lpub_rtn_bool(lua, 0);
     }
-    struct evssl_ctx *evssl = lua_touserdata(lua, 4);
+    struct evssl_ctx *evssl = lua_touserdata(lua, 3);
     LPUB_CUR_TASK(lua, task);
-    return lpub_rtn_bool(lua, ERR_OK == ev_ssl(&task->loader->netev, fd, skid, client, evssl));
+    return lpub_rtn_bool(lua, ERR_OK == ev_ssl(&task->loader->netev, sk, client, evssl));
 }
 /// <summary>
 /// 创建 UDP 套接字并绑定地址
@@ -348,109 +341,80 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
 /// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
 /// <param name="ip" type="string">绑定 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)；多播时组地址须与此同族</param>
 /// <param name="port" type="integer">绑定端口</param>
-/// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
-/// <returns type="integer?">skid；仅在 fd 有效时有效</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false，返回值个数恒为 1</returns>
 static int32_t _lcore_udp(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
     const char *ip = luaL_checkstring(lua, 2);
     uint16_t port = lpub_check_u16(lua, 3, PORT_OUT_OF_RANGE);
-    SOCKET fd;
-    uint64_t skid;
+    sock_ctx sk;
     LPUB_CUR_TASK(lua, task);
-    if (ERR_OK != task_udp(task, pktype, ip, port, &fd, &skid)) {
-        // 失败也返 2 个值:lpub.h 写死的全仓规矩是"失败与成功的返回值个数必须一致"——
-        // 返回值直接塞进另一个调用时少一个就整体错位
-        lua_pushinteger(lua, INVALID_SOCK);
-        lua_pushnil(lua);
-        return 2;
+    if (ERR_OK != task_udp(task, pktype, ip, port, &sk)) {
+        // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
+        return lpub_push_sock_invalid(lua);
     }
-    lua_pushinteger(lua, fd);
-    lua_pushinteger(lua, skid);
-    return 2;
+    lpub_push_sock(lua, &sk);
+    return 1;
 }
 /// <summary>
 /// 向指定 fd/skid 发送 TCP 数据
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_send(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    sock_ctx *sk = lpub_check_sock(lua, 1);
     void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 3, &size, &copy);
-    return lpub_rtn_bool(lua, ERR_OK == ev_send(&g_loader->netev, fd, skid, data, size, copy));
+    data = lpub_check_buf(lua, 2, &size, &copy);
+    return lpub_rtn_bool(lua, ERR_OK == ev_send(&g_loader->netev, sk, data, size, copy));
 }
 /// <summary>
-/// 多播 TCP 数据：把同一份 data 零拷贝广播给多个 fd（N 个 buf 共享，引用计数自动释放）
+/// 多播 TCP 数据：把同一份 data 零拷贝广播给多个连接（N 个 buf 共享，引用计数自动释放）
 /// </summary>
-/// <param name="fds" type="integer[]">socket fd 数组(Lua table)</param>
-/// <param name="skids" type="integer[]">连接 skid 数组,与 fds 等长一一配对</param>
+/// <param name="sks" type="userdata[]">连接标识数组(Lua table)</param>
 /// <param name="data" type="string|lightuserdata">数据；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
 /// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1（复制）;0 时直接转移所有权</param>
-/// <returns type="boolean">至少 1 个 fd 投递成功 true,全部无效 false</returns>
+/// <returns type="boolean">至少 1 个连接投递成功 true,全部无效 false</returns>
 static int32_t _lcore_send_multi(lua_State *lua) {
     luaL_checktype(lua, 1, LUA_TTABLE);
-    luaL_checktype(lua, 2, LUA_TTABLE);
-    lua_Integer n_fds = luaL_len(lua, 1);
-    lua_Integer n_skids = luaL_len(lua, 2);
-    if (n_fds != n_skids) {
-        return luaL_error(lua, "fds and skids length mismatch (%d vs %d)",
-                          (int)n_fds, (int)n_skids);
-    }
-    // 校验必须整趟走完再取载荷：n_fds 来自 luaL_len，会走 __len 元方法，是业务可控的。
-    // 撒谎的 __len 在这里撞上首个 nil 就报错退出，接管那步根本到不了
+    lua_Integer n = luaL_len(lua, 1);
+    // 校验必须整趟走完再取载荷：n 来自 luaL_len，会走 __len 元方法，是业务可控的。
+    // 撒谎的 __len 在这里撞上首个非法元素就报错退出，接管那步根本到不了
     lua_Integer i;
-    for (i = 0; i < n_fds; i++) {
+    for (i = 0; i < n; i++) {
         lua_rawgeti(lua, 1, i + 1);
-        if (!lua_isinteger(lua, -1)) {
-            return luaL_error(lua, "fds[%d] must be an integer, got %s",
-                              (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
-        }
-        lua_pop(lua, 1);
-        lua_rawgeti(lua, 2, i + 1);
-        if (!lua_isinteger(lua, -1)) {
-            return luaL_error(lua, "skids[%d] must be an integer, got %s",
+        if (!lpub_is_sock(lua, -1)) {
+            return luaL_error(lua, "sks[%d] must be a sock, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
         lua_pop(lua, 1);
     }
     size_t size;
     int32_t copy;
-    void *data = lpub_check_buf(lua, 3, &size, &copy);
-    if (n_fds <= 0) {
+    void *data = lpub_check_buf(lua, 2, &size, &copy);
+    if (n <= 0) {
         CHECK_COPY_FREE(data, copy);
         return lpub_rtn_bool(lua, 0);
     }
-    // 一块内存切两段，skids 在前：它要 8 字节对齐，SOCKET 的对齐要求不高于它，故 fds 接在后面必然合法。
-    // 只有 skids 是分配返回的那个指针，释放也只能释放它
-    uint64_t *skids;
-    MALLOC(skids, (sizeof(uint64_t) + sizeof(SOCKET)) * (size_t)n_fds);
-    SOCKET *fds = (SOCKET *)(skids + n_fds);
-    for (i = 0; i < n_fds; i++) {
+    sock_ctx *sks;
+    MALLOC(sks, sizeof(sock_ctx) * (size_t)n);
+    for (i = 0; i < n; i++) {
         lua_rawgeti(lua, 1, i + 1);
-        fds[i] = (SOCKET)lua_tointeger(lua, -1);
-        lua_pop(lua, 1);
-        lua_rawgeti(lua, 2, i + 1);
-        skids[i] = (uint64_t)lua_tointeger(lua, -1);
+        sks[i] = *(sock_ctx *)lua_touserdata(lua, -1);
         lua_pop(lua, 1);
     }
-    int32_t r = ev_send_multi(&g_loader->netev, fds, skids, (int32_t)n_fds,
-                              data, size, copy);
-    FREE(skids);
+    int32_t r = ev_send_multi(&g_loader->netev, sks, (int32_t)n, data, size, copy);
+    FREE(sks);
     return lpub_rtn_bool(lua, ERR_OK == r);
 }
 /// <summary>
 /// 向指定 ip:port 发送 UDP 数据
 /// </summary>
-/// <param name="fd" type="integer">UDP socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="ip" type="string">目标 IP</param>
 /// <param name="port" type="integer">目标端口</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
@@ -458,128 +422,119 @@ static int32_t _lcore_send_multi(lua_State *lua) {
 /// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_sendto(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    const char *ip = luaL_checkstring(lua, 2);
+    uint16_t port = lpub_check_u16(lua, 3, PORT_OUT_OF_RANGE);
     void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 5, &size, &copy);
-    return lpub_rtn_bool(lua, ERR_OK == ev_sendto(&g_loader->netev, fd, skid, ip, port, data, size, copy));
+    data = lpub_check_buf(lua, 4, &size, &copy);
+    return lpub_rtn_bool(lua, ERR_OK == ev_sendto(&g_loader->netev, sk, ip, port, data, size, copy));
 }
 /// <summary>
 /// UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)
 /// </summary>
-/// <param name="fd" type="integer">UDP socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="group_ip" type="string">多播组地址(IPv4 224.0.0.0/4 段 / IPv6 ff00::/8 段)，必须与 socket 绑定地址同族，不同族返 false</param>
 /// <param name="iface_str" type="string?">网卡 IP(IPv4) / 接口名(IPv6),nil 走系统默认</param>
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_join(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    const char *group_ip = luaL_checkstring(lua, 3);
-    luaL_argcheck(lua, lua_isnoneornil(lua, 4) || LUA_TSTRING == lua_type(lua, 4), 4, "iface must be a string");
-    const char *iface_str = (LUA_TSTRING == lua_type(lua, 4)) ? luaL_checkstring(lua, 4) : NULL;
-    return lpub_rtn_bool(lua, ERR_OK == ev_udp_join(&g_loader->netev, fd, skid, group_ip, iface_str));
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    const char *group_ip = luaL_checkstring(lua, 2);
+    luaL_argcheck(lua, lua_isnoneornil(lua, 3) || LUA_TSTRING == lua_type(lua, 3), 3, "iface must be a string");
+    const char *iface_str = (LUA_TSTRING == lua_type(lua, 3)) ? luaL_checkstring(lua, 3) : NULL;
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_join(&g_loader->netev, sk, group_ip, iface_str));
 }
 /// <summary>
 /// UDP socket 离开多播组,参数同 udp_join
 /// </summary>
-/// <param name="fd" type="integer">UDP socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="group_ip" type="string">多播组地址(IPv4 224.0.0.0/4 段 / IPv6 ff00::/8 段)，必须与 socket 绑定地址同族，不同族返 false</param>
 /// <param name="iface_str" type="string?">网卡 IP(IPv4) / 接口名(IPv6),nil 走系统默认</param>
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_leave(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    const char *group_ip = luaL_checkstring(lua, 3);
-    luaL_argcheck(lua, lua_isnoneornil(lua, 4) || LUA_TSTRING == lua_type(lua, 4), 4, "iface must be a string");
-    const char *iface_str = (LUA_TSTRING == lua_type(lua, 4)) ? luaL_checkstring(lua, 4) : NULL;
-    return lpub_rtn_bool(lua, ERR_OK == ev_udp_leave(&g_loader->netev, fd, skid, group_ip, iface_str));
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    const char *group_ip = luaL_checkstring(lua, 2);
+    luaL_argcheck(lua, lua_isnoneornil(lua, 3) || LUA_TSTRING == lua_type(lua, 3), 3, "iface must be a string");
+    const char *iface_str = (LUA_TSTRING == lua_type(lua, 3)) ? luaL_checkstring(lua, 3) : NULL;
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_leave(&g_loader->netev, sk, group_ip, iface_str));
 }
 /// <summary>
 /// 设置 UDP 多播 TTL(IPv4) / Hop Limit(IPv6)
 /// </summary>
-/// <param name="fd" type="integer">UDP socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="ttl" type="integer">0-255；0 只到本机，1(默认) 只到本网段，逐跳递减。
 /// 越界即抛错——直接窄化到 uint8_t 的话 256 会静默变成 0，多播从此出不了本机，
 /// 是语义反转而不是"值不对"，排查起来比报错难得多</param>
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_ttl(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    lua_Integer val = luaL_checkinteger(lua, 3);
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    lua_Integer val = luaL_checkinteger(lua, 2);
     luaL_argcheck(lua, val >= 0 && val <= 255, 3, "ttl out of range [0, 255]");
-    return lpub_rtn_bool(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, fd, skid, (uint8_t)val));
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, sk, (uint8_t)val));
 }
 /// <summary>
 /// 设置 UDP 多播本机回环,默认 1(发出去自己也能收到),0=不收
 /// </summary>
-/// <param name="fd" type="integer">UDP socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="enable" type="integer">1=回环(默认,发出自收),0=不收；其余值报错</param>
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_loop(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t enable = lpub_check_flag(lua, 3);
-    return lpub_rtn_bool(lua, ERR_OK == ev_udp_loop(&g_loader->netev, fd, skid, enable));
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    int32_t enable = lpub_check_flag(lua, 2);
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_loop(&g_loader->netev, sk, enable));
+}
+/// <summary>
+/// 取一个无效的连接标识。供脚本侧"还没走到 C 就失败"的路径用，
+/// 让成功与失败返回同一种类型，调用方只判 sk.valid
+/// </summary>
+/// <returns type="userdata">连接标识，其 valid 字段恒为 false</returns>
+static int32_t _lcore_sock_invalid(lua_State *lua) {
+    return lpub_push_sock_invalid(lua);
 }
 /// <summary>
 /// 主动关闭指定 fd/skid 的网络连接；未发数据的丢弃契约同 ev_close
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <returns>无</returns>
 static int32_t _lcore_close(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    ev_close(&g_loader->netev, fd, skid);
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    ev_close(&g_loader->netev, sk);
     return 0;
 }
 /// <summary>
 /// 动态修改指定连接的封包协议类型
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="pktype" type="integer">新封包协议类型，参考 PACK_TYPE</param>
 /// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_pack_type(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    sock_ctx *sk = lpub_check_sock(lua, 1);
     // ud->pktype 是 uint16_t，比 pack_type 还窄；不校验的话 65538 截成 2 就成了 PACK_HTTP
-    subtype_t pktype = (subtype_t)lpub_check_pktype(lua, 3);
-    return lpub_rtn_bool(lua, ERR_OK == ev_ud_pktype(&g_loader->netev, fd, skid, pktype));
+    subtype_t pktype = (subtype_t)lpub_check_pktype(lua, 2);
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_pktype(&g_loader->netev, sk, pktype));
 }
 /// <summary>
 /// 设置指定连接的用户自定义状态值
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="status" type="integer">用户自定义状态值（int8）</param>
 /// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_status(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int8_t status = lpub_check_i8(lua, 3, "status out of range");
-    return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&g_loader->netev, fd, skid, status));
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    int8_t status = lpub_check_i8(lua, 2, "status out of range");
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&g_loader->netev, sk, status));
 }
 /// <summary>
 /// 将指定连接绑定到目标 task（后续网络消息投递到该 task）
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="name" type="string|integer">目标字符串名或数字句柄</param>
 /// <returns type="boolean">成功 true；目标 task 不存在(名字未注册 / 句柄对应 task 已退出)或事件线程已停时 false。
 ///   仅保证调用时目标存在——若目标在绑定之后才退出,该连接下一条消息仍会被静默关闭</returns>
 static int32_t _lcore_bind_task(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    name_t handle = lpub_task_handle(lua, 3);
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    name_t handle = lpub_task_handle(lua, 2);
     // 用 grab 探存在性:lpub_task_handle 对数字句柄原样返回,业务缓存的旧句柄在目标退出后
     // 照样非 INVALID_TNAME、单查该值会放行;task_grab 首行已挡 INVALID_TNAME,一次覆盖两种
     task_ctx *dst = task_grab(g_loader, handle);
@@ -587,21 +542,19 @@ static int32_t _lcore_bind_task(lua_State *lua) {
         return lpub_rtn_bool(lua, 0);
     }
     task_ungrab(dst);
-    return lpub_rtn_bool(lua, ERR_OK == ev_ud_handle(&g_loader->netev, fd, skid, handle));
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_handle(&g_loader->netev, sk, handle));
 }
-// session / session_clear 共用：取 (fd, skid),把会话键设成 use_skid 非 0 时的 skid、否则 0
+// session / session_clear 共用：取连接标识,把会话键设成 use_skid 非 0 时的 skid、否则 0
 static int32_t _lcore_session_set(lua_State *lua, int32_t use_skid) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    uint64_t sess = (0 != use_skid) ? skid : 0;
-    return lpub_rtn_bool(lua, ERR_OK == ev_ud_sess(&g_loader->netev, fd, skid, sess));
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    uint64_t sess = (0 != use_skid) ? sk->skid : 0;
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_sess(&g_loader->netev, sk, sess));
 }
 /// <summary>
 /// 把连接的会话键设为它自己的 skid，后续该 socket 的消息携带此值。与 C 侧 coro_sync 同形，
 /// 会话键不可自定义：CLOSE 恒以 skid 为 sess 发出，挂在别的键上的等待者断连时一个都唤不到
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid，同时用作会话键</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_session(lua_State *lua) {
     return _lcore_session_set(lua, 1);
@@ -611,8 +564,7 @@ static int32_t _lcore_session(lua_State *lua) {
 /// 0 上挂不了等待者(会话 id 由 createid 生成，恒非 0)，故清除不会漏唤醒已挂起的协程；
 /// 清除前已挂起在该 skid 上的等待者仍由 CLOSE 唤醒——它恒以 skid 为 sess 发出，与本设置无关
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_session_clear(lua_State *lua) {
     return _lcore_session_set(lua, 0);
@@ -621,15 +573,13 @@ static int32_t _lcore_session_clear(lua_State *lua) {
 /// 把本次要发的请求方法登记到连接上：HTTP 解包侧要靠它才能判定响应有无报文体，契约见 http_set_method。
 /// 与组请求成对调用即可，须在发送之前；哪些方法需要特殊处理由 C 侧判断
 /// </summary>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="method" type="string">与请求行同一个 method；按 RFC 7231 §4.1 区分大小写</param>
 /// <returns type="boolean">成功 true（含"该方法无需登记"这一档）；fd 为 INVALID_SOCK 时 false</returns>
 static int32_t _lcore_http_set_method(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    const char *method = luaL_checkstring(lua, 3);
-    return lpub_rtn_bool(lua, ERR_OK == http_set_method(&g_loader->netev, fd, skid, method));
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    const char *method = luaL_checkstring(lua, 2);
+    return lpub_rtn_bool(lua, ERR_OK == http_set_method(&g_loader->netev, sk, method));
 }
 /// <summary>
 /// 询问协议层指定封包能否唤醒等待者(非 true 时框架改新建协程走 on_recved),契约见 prots_may_resume
@@ -720,6 +670,14 @@ static int32_t _lcore_mem_stat(lua_State *lua) {
     lua_pushinteger(lua, (lua_Integer)((nalloc >= nfree) ? (nalloc - nfree) : 0));
     lua_setfield(lua, -2, "live");
     return 1;
+}
+/// <summary>
+/// 查询本次构建有没有把 SSL 编进来
+/// </summary>
+/// <returns type="boolean">编了 true；没编 false，此时 cert_register / p12_register 恒返 nil、
+/// ssl_min_proto 恒返 false、seclevel / verify 是空操作</returns>
+static int32_t _lcore_with_ssl(lua_State *lua) {
+    return lpub_rtn_bool(lua, WITH_SSL);
 }
 #if WITH_SSL
 // name 非空时把 cert 目录下的完整路径写进 out；为空则 out 保持调用方给的空串(表示不加载)
@@ -900,6 +858,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "udp_ttl", _lcore_udp_ttl },
         { "udp_loop", _lcore_udp_loop },
         { "close", _lcore_close },
+        { "sock_invalid", _lcore_sock_invalid },
 
         { "pack_type", _lcore_pack_type },
         { "status", _lcore_status },
@@ -915,6 +874,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "task_list", _lcore_task_list },
         { "mem_stat", _lcore_mem_stat },
 
+        { "with_ssl", _lcore_with_ssl },
         { "cert_register", _lcore_cert_register },
         { "p12_register", _lcore_p12_register },
         { "ssl_qury", _lcore_ssl_qury },

@@ -14,6 +14,7 @@
 #define IP_LENS              64 // IP 地址字符串缓冲区长度
 #define UUID_LENS            16 // UUID 字节长度
 #define INVALID_FD           -1 // 无效文件描述符
+#define INVALID_INDEX        -1 // 无效下标
 
 #define FLAG_CRLF           "\r\n" // HTTP/文本协议行结束符
 #define CRLF_SIZE           2 // CRLF 字节数

@@ -8,10 +8,18 @@
 // 改 ERR_error_string_n 写各自栈缓冲
 #define SSLCTX_ERRO()\
     do {\
-        unsigned long err = ERR_get_error();\
-        char errbuf[256];\
-        ERR_error_string_n(err, errbuf, sizeof(errbuf));\
-        LOG_WARN("errno: %lu, %s", err, errbuf);\
+        unsigned long _sslec = ERR_get_error();\
+        char _sslebuf[256];\
+        ERR_error_string_n(_sslec, _sslebuf, sizeof(_sslebuf));\
+        LOG_WARN("errno: %lu, %s", _sslec, _sslebuf);\
+    } while (0)
+// 每个 SSL_* 入口前都得保证错误队列是干净的,否则残留会被 _evssl_unexpected_eof 误判成截断。
+// 队列空时 clear 仍要走一遍清理流程,比 peek 贵不少,而稳态下它恒为空,故先 peek 再决定
+#define SSL_ERRQU_CLEAR()\
+    do {\
+        if (0 != ERR_peek_error()) {\
+            ERR_clear_error();\
+        }\
     } while (0)
 
 // SSL上下文封装结构
@@ -32,10 +40,16 @@ static atomic_t _init_once = 0;// 保证证书池只初始化一次
 // 关闭类型就分不出有序结束与截断。留着这条错误串是 _evssl_unexpected_eof 的判据，别再压掉
 // 不设 SSL_MODE_AUTO_RETRY：该模式在非阻塞 socket 上会使 SSL_read/write 内部自旋，
 // 阻塞 watcher 线程。WANT_READ/WANT_WRITE 由事件循环驱动重试。
+// 设 SSL_MODE_RELEASE_BUFFERS：空闲连接交还读写缓冲(每条约 34KB)，代价是再收发时重新分配
+// 写分片跟着 MAX_SSL_SEND_SIZE 收窄：_evpub_sock_send_ssl 本就把每次 SSL_write 卡在那个值上，
+// 默认 16KB 的写缓冲永远填不满，收窄后每条连接省约 12.5KB 而行为不变。
+// 超出 OpenSSL 允许的 512~16384 时该调用返 0，写缓冲退回默认值，只是省不到内存，不影响收发
 static void _evssl_options(evssl_ctx *evssl) {
 #ifdef SSL_OP_NO_RENEGOTIATION
     SSL_CTX_set_options(evssl->ssl, SSL_OP_NO_RENEGOTIATION);
 #endif
+    SSL_CTX_set_mode(evssl->ssl, SSL_MODE_RELEASE_BUFFERS);
+    SSL_CTX_set_max_send_fragment(evssl->ssl, MAX_SSL_SEND_SIZE);
     SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_NONE, NULL);
 }
 void evssl_init(void) {
@@ -45,7 +59,7 @@ void evssl_init(void) {
 static evssl_ctx *_evssl_new(void) {
     evssl_ctx *evssl;
     MALLOC(evssl, sizeof(evssl_ctx));
-    ERR_clear_error();
+    SSL_ERRQU_CLEAR();
     evssl->ssl = SSL_CTX_new(TLS_method());
     if (NULL == evssl->ssl) {
         FREE(evssl);
@@ -250,7 +264,7 @@ SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
         LOG_ERROR("fd %llu exceeds INT_MAX, SSL_set_fd skipped.", (unsigned long long)fd);
         return NULL;
     }
-    ERR_clear_error();
+    SSL_ERRQU_CLEAR();
     SSL *ssl = SSL_new(evssl->ssl);
     if (NULL == ssl) {
         SSLCTX_ERRO();
@@ -264,9 +278,13 @@ SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     return ssl;
 }
 int32_t evssl_tryacpt(SSL *ssl) {
-    ERR_clear_error();
+    SSL_ERRQU_CLEAR();
     int32_t rtn = SSL_accept(ssl);
     if (1 == rtn) {
+        // 开预读省掉逐条记录各一次 recv。只能握手完成后设,不能提到 SSL_CTX 上——握手若由纯写
+        // 就绪收尾,两个平台都不跑收取循环,CTX 级预读会把握手尾随的应用数据吸进 rbuf 搁住,
+        // 要等下一次可读事件才被取走
+        SSL_set_read_ahead(ssl, 1);
         return ERR_OK;
     }
     int32_t err = SSL_get_error(ssl, rtn);
@@ -279,9 +297,10 @@ int32_t evssl_tryacpt(SSL *ssl) {
     return ERR_FAILED;
 }
 int32_t evssl_tryconn(SSL *ssl) {
-    ERR_clear_error();
+    SSL_ERRQU_CLEAR();
     int32_t rtn = SSL_connect(ssl);
     if (1 == rtn) {
+        SSL_set_read_ahead(ssl, 1);// 理由见 evssl_tryacpt
         return ERR_OK;
     }
     int32_t err = SSL_get_error(ssl, rtn);
@@ -295,7 +314,7 @@ int32_t evssl_tryconn(SSL *ssl) {
 }
 // 对端没发 close_notify 就断了。OpenSSL 3.0 起报成 SSL_ERROR_SSL 加这个 reason；
 // 更早的版本与 LibreSSL 没有该 reason 码，那里一律当协议错，只是分不出截断。
-// 判据取自错误队列，故每个 SSL_* 入口调用前都必须先 ERR_clear_error()，残留会被误判成截断
+// 判据取自错误队列，故每个 SSL_* 入口调用前都必须先清干净（见 SSL_ERRQU_CLEAR），残留会被误判成截断
 static inline int32_t _evssl_unexpected_eof(int32_t err) {
 #ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
     return (SSL_ERROR_SSL == err
@@ -307,7 +326,7 @@ static inline int32_t _evssl_unexpected_eof(int32_t err) {
 }
 int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
     *readed = 0;
-    ERR_clear_error();
+    SSL_ERRQU_CLEAR();
     int32_t rtn = SSL_read(ssl, buf, len > INT32_MAX ? INT32_MAX : (int32_t)len);
     if (rtn > 0) {
         *readed = (size_t)rtn;
@@ -325,6 +344,8 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
     if (_evssl_unexpected_eof(err)) {
         return 2;
     }
+    // 这一行是 SSL 错误在日志里的唯一出口：错误码不往上传，上层拿到 ERR_FAILED 直接关连接
+    SSLCTX_ERRO();
     return ERR_FAILED;
 }
 int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
@@ -336,7 +357,7 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
     do {
         remain = len - *sended;
         chunk = remain > INT32_MAX ? INT32_MAX : (int32_t)remain;
-        ERR_clear_error();
+        SSL_ERRQU_CLEAR();
         rtn = SSL_write(ssl, buf + *sended, chunk);
         if (rtn > 0) {
             *sended += rtn;
@@ -355,6 +376,7 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
             if (_evssl_unexpected_eof(err)) {
                 return 2;
             }
+            SSLCTX_ERRO();
             return ERR_FAILED;
         }
     } while (*sended < len);
@@ -362,7 +384,7 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
 }
 void evssl_shutdown(SSL *ssl, SOCKET fd) {
     if (NULL != ssl) {
-        ERR_clear_error();
+        SSL_ERRQU_CLEAR();
         SSL_shutdown(ssl);
     }
     shutdown(fd, SHUT_RD);
@@ -371,7 +393,7 @@ int32_t evssl_version(SSL *ssl) {
     return SSL_version(ssl);
 }
 int32_t evssl_keyupdate(SSL *ssl, int32_t updatetype) {
-    ERR_clear_error();
+    SSL_ERRQU_CLEAR();
     if (TLS1_3_VERSION != evssl_version(ssl)) {
         return ERR_FAILED;
     }

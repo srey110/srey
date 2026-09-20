@@ -578,6 +578,12 @@ static MCO_FORCE_INLINE size_t _mco_align_forward(size_t addr, size_t align) {
 
 /* Variable holding the current running coroutine per thread. */
 static MCO_THREAD_LOCAL mco_coro* mco_current_co = NULL;
+// 本地补丁:写侧必须和读侧(_mco_running)一样挡住优化。上游只挡了读,裸写在 clang+LTO 下
+// 会被缓存或重排,协程换栈后 jumpin 读回陈旧值,prev_co 指向自己、state 变 NORMAL,
+// 下一次 mco_yield 即 MCO_NOT_RUNNING abort。gcc+LTO 不复现,别据此以为是平台问题
+static MCO_NO_INLINE void _mco_set_current(mco_coro* co) {
+  mco_current_co = co;
+}
 #ifdef _MCO_USE_ASAN
 /* 线程栈边界。ASan 只在 finish 时吐出来,首次拿到就存住,退回线程栈时原样交回去。
    不能拿 finish 当场的 bottom_old 当去向:那是"最近一次切进来的栈",嵌套唤醒下并非要回去的那个 */
@@ -606,7 +612,7 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpin(mco_coro* co) {
     MCO_ASSERT(prev_co->state == MCO_RUNNING);
     prev_co->state = MCO_NORMAL;
   }
-  mco_current_co = co;
+  _mco_set_current(co);
 #ifdef _MCO_USE_ASAN
   if(prev_co) {
     void* bottom_old = NULL;
@@ -632,7 +638,7 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpout(mco_coro* co) {
     /* MCO_ASSERT(prev_co->state == MCO_NORMAL); */
     prev_co->state = MCO_RUNNING;
   }
-  mco_current_co = prev_co;
+  _mco_set_current(prev_co);
 #ifdef _MCO_USE_ASAN
   void* bottom_old = NULL;
   size_t size_old = 0;

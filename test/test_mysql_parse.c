@@ -11,11 +11,13 @@
 #pragma warning(disable:4312)
 #endif
 
-// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
+static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
+// 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
 // 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
 static void *_t_mysql_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mysql_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return mysql_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 
 // 构造一个最小可用的 mysql_reader_ctx：指定 pack_type、field 列表，便于后续 push 行数据
@@ -803,7 +805,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
 // 造一个 OK 包喂给 _mysql_feed。affected=5 last_id=17，status_flags 由调用方给，
 // warnings 固定 3（本库跳过，写进来只为让读位置对齐），末尾附两字节验 skip 剩余
 static mpack_ctx *_ok_feed(mysql_ctx *mysql, int16_t status_flags, binary_ctx *bw, int32_t *status) {
-    binary_init(bw, NULL, 0, 0);
+    binary_init_write(bw, 0, 0);
     binary_set_uint8(bw, MYSQL_OK);// 包类型标志，_mpack_resultset_response 据它分派到 OK 分支
     _mysql_set_lenenc(bw, 5);
     _mysql_set_lenenc(bw, 17);
@@ -858,42 +860,42 @@ static void test_mpack_ok_parse(CuTest *tc) {
 static void test_mysql_lenenc_truncated(CuTest *tc) {
     int32_t rtn;
     binary_ctx br;
-    // 1) 空缓冲：连 flag 字节都没有。须传非 NULL 的 buf 走"外部托管"，
-    //    binary_init 对 NULL 是自己 MALLOC 一块可扩容缓冲，那样 size 就不是 0 了
+    // 1) 空缓冲：连 flag 字节都没有。读模式才能包出 size=0，
+    //    binary_init_write 会自己 MALLOC 一块可扩容缓冲，size 就不是 0 了
     char empty[1] = { 0 };
-    binary_init(&br, empty, 0, 0);
+    binary_init_read(&br, empty, 0);
     _mysql_get_lenenc(&br, &rtn);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 
     // 2) flag 说后面有 2/3/8 字节，实际都差一个
     unsigned char t2[2] = { 0xfc, 0x01 };
-    binary_init(&br, (char *)t2, sizeof(t2), 0);
+    binary_init_read(&br, (char *)t2, sizeof(t2));
     _mysql_get_lenenc(&br, &rtn);
     CuAssert(tc, "0xfc with 1 trailing byte must fail, not abort", ERR_FAILED == rtn);
     unsigned char t3[3] = { 0xfd, 0x01, 0x02 };
-    binary_init(&br, (char *)t3, sizeof(t3), 0);
+    binary_init_read(&br, (char *)t3, sizeof(t3));
     _mysql_get_lenenc(&br, &rtn);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
     unsigned char t8[8] = { 0xfe, 1, 2, 3, 4, 5, 6, 7 };
-    binary_init(&br, (char *)t8, sizeof(t8), 0);
+    binary_init_read(&br, (char *)t8, sizeof(t8));
     _mysql_get_lenenc(&br, &rtn);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 
     // 3) 未知 flag 仍是失败（原有行为不变）
     unsigned char bad[2] = { 0xfb, 0x00 };
-    binary_init(&br, (char *)bad, sizeof(bad), 0);
+    binary_init_read(&br, (char *)bad, sizeof(bad));
     _mysql_get_lenenc(&br, &rtn);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 
     // 4) 合法值照常读出，别把正常路径一起挡了
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     _mysql_set_lenenc(&bw, 0x0a);
     _mysql_set_lenenc(&bw, 0x1234);
     _mysql_set_lenenc(&bw, 0x123456);
     // 超 0xffffff 走 8 字节编码；取值须在 32 位 size_t 内，否则 m32 构建上写入即截断
     _mysql_set_lenenc(&bw, 0x12345678);
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     CuAssertTrue(tc, 0x0a == _mysql_get_lenenc(&br, &rtn) && ERR_OK == rtn);
     CuAssertTrue(tc, 0x1234 == _mysql_get_lenenc(&br, &rtn) && ERR_OK == rtn);
     CuAssertTrue(tc, 0x123456 == _mysql_get_lenenc(&br, &rtn) && ERR_OK == rtn);
@@ -911,7 +913,7 @@ static void test_mpack_ok_track_truncated(CuTest *tc) {
     mpack_ctx *mpack;
 
     // 1) 尾部一个字节都没有
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_OK);
     _mysql_set_lenenc(&bw, 1);
     _mysql_set_lenenc(&bw, 0);
@@ -928,7 +930,7 @@ static void test_mpack_ok_track_truncated(CuTest *tc) {
     binary_free(&bw);
 
     // 2) info 段长度自洽但紧跟其后的 session_state 长度字节缺失
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_OK);
     _mysql_set_lenenc(&bw, 1);
     _mysql_set_lenenc(&bw, 0);
@@ -950,7 +952,7 @@ static void test_mpack_ok_track_truncated(CuTest *tc) {
 // _mpack_err 解析 ERR 包：error_code + 跳过 6 字节 SQL state + 剩余字节为 msg
 static void test_mpack_err_parse(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     // error_code 0x1234
     binary_set_integer(&bw, 0x1234, 2, 1);
     // sql_state_marker(1) + sql_state(5) = 6 字节
@@ -960,7 +962,7 @@ static void test_mpack_err_parse(CuTest *tc) {
     binary_set_binary(&bw, msg, strlen(msg));
 
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     mysql_ctx mysql;
     ZERO(&mysql, sizeof(mysql));
     _mpack_err(&mysql, &br);
@@ -972,13 +974,13 @@ static void test_mpack_err_parse(CuTest *tc) {
 // _mpack_err 空错误消息：error_msg 长度 0，mysql.error_msg 为空字符串
 static void test_mpack_err_empty_msg(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_integer(&bw, 1045, 2, 1);
     binary_set_binary(&bw, "#28000", 6);
     // 无 msg
 
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     mysql_ctx mysql;
     ZERO(&mysql, sizeof(mysql));
     _mpack_err(&mysql, &br);
@@ -991,13 +993,13 @@ static void test_mpack_err_empty_msg(CuTest *tc) {
 // 无条件跳 6 字节会从正文里啃掉六个字符
 static void test_mpack_err_no_sqlstate(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_integer(&bw, 1040, 2, 1);
     const char *msg = "Too many connections";
     binary_set_binary(&bw, msg, strlen(msg));
 
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     mysql_ctx mysql;
     ZERO(&mysql, sizeof(mysql));
     _mpack_err(&mysql, &br);
@@ -1009,11 +1011,11 @@ static void test_mpack_err_no_sqlstate(CuTest *tc) {
 // _mpack_err 报文不足 2 字节：连 error_code 都读不出来，须归零而不是读越界
 static void test_mpack_err_truncated(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_int8(&bw, 0x12);// 只有 1 字节
 
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     mysql_ctx mysql;
     ZERO(&mysql, sizeof(mysql));
     mysql.error_code = 0x7fff;// 打脏，确认被清成 0
@@ -1131,7 +1133,7 @@ static void test_mysql_binary_row_temporal_invalid_len(CuTest *tc) {
         uint8_t types[1] = { MYSQL_TYPE_DATETIME };
         mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
         binary_ctx bw;
-        binary_init(&bw, NULL, 0, 0);
+        binary_init_write(&bw, 0, 0);
         binary_set_uint8(&bw, 0x00);// 二进制协议行包的前导字节，_mpack_reader_rows 校验后 skip 掉
         binary_set_uint8(&bw, 0x00);//NULL 位图：field 0 不为 NULL
         binary_set_uint8(&bw, 9);//DATETIME 长度前缀：9（非法）
@@ -1147,7 +1149,7 @@ static void test_mysql_binary_row_temporal_invalid_len(CuTest *tc) {
         uint8_t types[1] = { MYSQL_TYPE_TIME };
         mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
         binary_ctx bw;
-        binary_init(&bw, NULL, 0, 0);
+        binary_init_write(&bw, 0, 0);
         binary_set_uint8(&bw, 0x00);// 二进制协议行包的前导字节，_mpack_reader_rows 校验后 skip 掉
         binary_set_uint8(&bw, 0x00);//NULL 位图
         binary_set_uint8(&bw, 5);//TIME 长度前缀：5（非法）
@@ -1220,7 +1222,7 @@ static void test_mpack_parse_binary_row_bitmap(CuTest *tc) {
     uint8_t types[3] = { MYSQL_TYPE_LONG, MYSQL_TYPE_LONG, MYSQL_TYPE_LONG };
     mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 3, names, types);
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, 0x00);// 前导字节
     // 位图长度 (3 + 9) / 8 = 1；标记列 1 为 NULL → 第 1 + 2 = 3 位 → 0x08
     binary_set_uint8(&bw, 0x08);
@@ -1250,7 +1252,7 @@ static void test_mpack_parse_binary_row_bitmap(CuTest *tc) {
 static void test_mpack_prepare_response(CuTest *tc) {
     // 无参数无字段：一个包就完事，立即交出 mpack
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, 0x00);// OK 标志
     binary_set_integer(&bw, 0x11223344, 4, 1);// stmt_id
     binary_set_integer(&bw, 0, 2, 1);// field_count
@@ -1275,7 +1277,7 @@ static void test_mpack_prepare_response(CuTest *tc) {
     _mysql_pkfree(out);
 
     // 三个字段只给 7 字节（差 1）：不分配任何东西，报协议错
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, 0x00);
     binary_set_fill(&bw, 0, 7);
     ZERO(&mysql, sizeof(mysql));
@@ -1285,7 +1287,7 @@ static void test_mpack_prepare_response(CuTest *tc) {
     binary_free(&bw);
 
     // prepare 阶段的 ERR：交出 MPACK_ERR 而不是置协议错
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_ERR);
     binary_set_integer(&bw, 1064, 2, 1);// ER_PARSE_ERROR
     binary_set_binary(&bw, "#42000", 6);
@@ -1319,7 +1321,7 @@ static void test_mpack_row_err_midstream(CuTest *tc) {
     buf_ctx cols[1] = { { .data = p, .lens = 1 } };
     _reader_push_row(r, p, cols, NULL);
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_ERR);
     binary_set_integer(&bw, 1317, 2, 1);// ER_QUERY_INTERRUPTED
     binary_set_binary(&bw, "#70100", 6);
@@ -1349,7 +1351,7 @@ static void test_mpack_row_eof_more_results(CuTest *tc) {
     uint8_t types[1] = { MYSQL_TYPE_LONG };
     mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, types);
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_EOF);
     binary_set_integer(&bw, 0, 2, 1);// warnings
     binary_set_integer(&bw, SERVER_MORE_RESULTS_EXISTS, 2, 1);// status_flags
@@ -1382,7 +1384,7 @@ static void test_mysql_truncated_row(CuTest *tc) {
         }
         mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 16, names, types);
         binary_ctx bw;
-        binary_init(&bw, NULL, 0, 0);
+        binary_init_write(&bw, 0, 0);
         binary_set_uint8(&bw, 0x00);// 二进制协议行包的前导字节，_mpack_reader_rows 校验后 skip 掉
         binary_set_uint8(&bw, 0x00);
         binary_set_uint8(&bw, 0x00);// 只有 2 字节，位图要 3 字节
@@ -1399,7 +1401,7 @@ static void test_mysql_truncated_row(CuTest *tc) {
         uint8_t types[1] = { MYSQL_TYPE_STRING };
         mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
         binary_ctx bw;
-        binary_init(&bw, NULL, 0, 0);
+        binary_init_write(&bw, 0, 0);
         binary_set_uint8(&bw, 0x00);// 二进制协议行包的前导字节，_mpack_reader_rows 校验后 skip 掉
         binary_set_uint8(&bw, 0x00);// NULL 位图
         _mysql_set_lenenc(&bw, 10);// 声明 10 字节
@@ -1419,7 +1421,7 @@ static void test_mysql_truncated_row(CuTest *tc) {
         uint8_t types[1] = { MYSQL_TYPE_LONG };
         mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
         binary_ctx bw;
-        binary_init(&bw, NULL, 0, 0);
+        binary_init_write(&bw, 0, 0);
         binary_set_uint8(&bw, 0x00);// 二进制协议行包的前导字节，_mpack_reader_rows 校验后 skip 掉
         binary_set_uint8(&bw, 0x00);// 只有 NULL 位图
         mysql_ctx mysql;
@@ -1432,7 +1434,7 @@ static void test_mysql_truncated_row(CuTest *tc) {
     // 4) 列定义包的 catalog 长度说 10，实际只剩 2 字节
     {
         binary_ctx bw;
-        binary_init(&bw, NULL, 0, 0);
+        binary_init_write(&bw, 0, 0);
         _mysql_set_lenenc(&bw, 10);
         binary_set_uint8(&bw, 'd');
         binary_set_uint8(&bw, 'e');
@@ -1614,7 +1616,7 @@ static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
 // 同时验证 _mpack_parse_field 成功时把 breader->data 的所有权转给 field->payload
 static void test_mpack_parse_field_long_name(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     // catalog（任意值，_mpack_parse_field 内部只 skip）
     _mysql_set_lenenc(&bw, 3);
     binary_set_binary(&bw, "def", 3);
@@ -1669,7 +1671,7 @@ static void test_mpack_parse_field_long_name(CuTest *tc) {
 }
 // 一条合法的列定义包体（catalog/schema/table/org_table/name/org_name + 定长段）
 static void _build_field_packet(binary_ctx *bw) {
-    binary_init(bw, NULL, 0, 0);
+    binary_init_write(bw, 0, 0);
     _mysql_set_lenenc(bw, 3);
     binary_set_binary(bw, "def", 3);
     _mysql_set_lenenc(bw, 2);
@@ -1699,7 +1701,7 @@ static void test_mpack_fields_short_of_count(CuTest *tc) {
     MALLOC(first, 1);
     first[0] = 2;
     binary_ctx breader;
-    binary_init(&breader, first, 1, 0);
+    binary_init_read(&breader, first, 1);
 
     // 后续包排进 buf：只有 1 条列定义，紧接着就是 EOF
     binary_ctx fw;
@@ -1730,7 +1732,7 @@ static void test_mpack_fields_match_count(CuTest *tc) {
     MALLOC(first, 1);
     first[0] = 1;// 声明 1 列
     binary_ctx breader;
-    binary_init(&breader, first, 1, 0);
+    binary_init_read(&breader, first, 1);
 
     binary_ctx fw;
     _build_field_packet(&fw);
@@ -1771,7 +1773,7 @@ static void test_mysql_udfree_reset(CuTest *tc) {
     _mysql_udfree(&ud);
 
     CuAssertTrue(tc, NULL == ud.context);
-    CuAssertTrue(tc, INVALID_SOCK == mysql.client.sk.fd);
+    CuAssertTrue(tc, sock_is_invalid(&mysql.client.sk));
     CuAssertTrue(tc, NULL == mysql.mpack);
     CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);

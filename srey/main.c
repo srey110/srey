@@ -6,14 +6,14 @@
     #pragma comment(lib, "winmm.lib")
     #pragma comment(lib, "lib.lib")
     #if WITH_MIMALLOC
-        #pragma comment(lib, "mimalloc.lib")
+        #pragma comment(lib, "mimalloc" DEPS_LIB_SUFFIX ".lib")
     #endif
-    // 库名不含架构:tools/deps.py 编出来的两个架构同名,bin/ 一次只放一套。
+    // 库名后缀由 os.h 的 DEPS_LIB_SUFFIX 拼,对应 tools/deps.py 落在 bin/ 的那个变体。
     // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
     // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
     #if WITH_SSL
-        #pragma comment(lib, "libcrypto.lib")
-        #pragma comment(lib, "libssl.lib")
+        #pragma comment(lib, "libcrypto" DEPS_LIB_SUFFIX ".lib")
+        #pragma comment(lib, "libssl" DEPS_LIB_SUFFIX ".lib")
         #pragma comment(lib, "crypt32.lib")
         #pragma comment(lib, "advapi32.lib")
         #pragma comment(lib, "user32.lib")
@@ -195,6 +195,7 @@ static int32_t service_exit(void) {
         logstream = NULL;
     }
     _free_globle();
+    buffer_thread_cleanup();
     _memcheck();
     return ERR_OK;
 }

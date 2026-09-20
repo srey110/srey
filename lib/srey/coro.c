@@ -591,8 +591,8 @@ int32_t coro_incoro(task_ctx *task) {
     }
     return NULL != ((coro_ctx *)task->arg)->curco;
 }
-int32_t coro_sync(task_ctx *task, SOCKET fd, uint64_t skid) {
-    return ev_ud_sess(&task->loader->netev, fd, skid, skid);
+int32_t coro_sync(task_ctx *task, sock_ctx *sk) {
+    return ev_ud_sess(&task->loader->netev, sk, sk->skid);
 }
 // 挂起当前协程并等待下一条匹配消息
 // 返回指向分发参数中 msg 的指针，在下次 _coro_wait 或 _coro_mco_resume 返回前有效
@@ -641,17 +641,17 @@ void *coro_request(task_ctx *dst, task_ctx *src,
 // 四个等待点(ssl exchange / handshake / connect / recv)只差 mtype、超时值与告警里的动作名,
 // tag 仅进日志。返回的指针在本协程下次 _coro_wait 前有效。
 // CLOSE 分支有意不告警:对端关连接是正常事件,而调用方是每命令一轮的循环,一条连接断掉能刷出几十条
-static inline message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t skid,
+static inline message_ctx *_coro_wait_msg(task_ctx *task, sock_ctx *sk,
                                    msg_type mtype, uint32_t ms, const char *tag) {
     // 连接已 teardown 就别挂上去:等不到唤醒,只会挂满超时再对 INVALID_SOCK 调一次 ev_close、
     // 打一条假的 timeout 日志。四个 coro_* 入口都经本函数,守卫收在这里一处
-    if (INVALID_SOCK == fd) {
+    if (sock_is_invalid(sk)) {
         return NULL;
     }
-    message_ctx *msg = _coro_wait(task, skid, mtype, ms);
+    message_ctx *msg = _coro_wait(task, sk->skid, mtype, ms);
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_close(&task->loader->netev, fd, skid);
-        LOG_WARN("task %s, %s timeout, skid %"PRIu64".", _NAME_OR(task->name), tag, skid);
+        ev_close(&task->loader->netev, sk);
+        LOG_WARN("task %s, %s timeout, skid %"PRIu64".", _NAME_OR(task->name), tag, sk->skid);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
@@ -660,20 +660,19 @@ static inline message_ctx *_coro_wait_msg(task_ctx *task, SOCKET fd, uint64_t sk
     return msg;
 }
 // 等待 SSL 交换完成消息，失败的处理见 _coro_wait_msg
-static inline int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
-    return NULL == _coro_wait_msg(task, fd, skid, MSG_TYPE_SSLEXCHANGED,
+static inline int32_t _wait_ssl_exchanged(task_ctx *task, sock_ctx *sk) {
+    return NULL == _coro_wait_msg(task, sk, MSG_TYPE_SSLEXCHANGED,
                                   task_get_netread_timeout(task), "ssl exchange")
            ? ERR_FAILED : ERR_OK;
 }
-int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
-                          int32_t client, struct evssl_ctx *evssl) {
-    if (ERR_OK != ev_ssl(&task->loader->netev, fd, skid, client, evssl)) {
+int32_t coro_ssl_exchange(task_ctx *task, sock_ctx *sk, int32_t client, struct evssl_ctx *evssl) {
+    if (ERR_OK != ev_ssl(&task->loader->netev, sk, client, evssl)) {
         return ERR_FAILED;
     }
-    return _wait_ssl_exchanged(task, fd, skid);
+    return _wait_ssl_exchanged(task, sk);
 }
-void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size) {
-    message_ctx *msg = _coro_wait_msg(task, fd, skid, MSG_TYPE_HANDSHAKED,
+void *coro_handshaked(task_ctx *task, sock_ctx *sk, int32_t *err, size_t *size) {
+    message_ctx *msg = _coro_wait_msg(task, sk, MSG_TYPE_HANDSHAKED,
                                       task_get_netread_timeout(task), "handshake");
     if (NULL == msg) {
         *err = ERR_FAILED;
@@ -683,18 +682,18 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
     SET_PTR(size, msg->size);
     return msg->data;
 }
-int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl_ctx *evssl) {
-    message_ctx *msg = _coro_wait_msg(task, fd, skid, MSG_TYPE_CONNECT,
+int32_t coro_wait_connect(task_ctx *task, sock_ctx *sk, struct evssl_ctx *evssl) {
+    message_ctx *msg = _coro_wait_msg(task, sk, MSG_TYPE_CONNECT,
                                       task_get_connect_timeout(task), "connect");
     if (NULL == msg) {
         return ERR_FAILED;
     }
     if (ERR_OK != msg->erro) {
-        LOG_WARN("task %s, connect error, skid %"PRIu64".", _NAME_OR(task->name), skid);
+        LOG_WARN("task %s, connect error, skid %"PRIu64".", _NAME_OR(task->name), sk->skid);
         return ERR_FAILED;
     }
     if (NULL != evssl) {
-        if (ERR_OK != _wait_ssl_exchanged(task, fd, skid)) {
+        if (ERR_OK != _wait_ssl_exchanged(task, sk)) {
             return ERR_FAILED;
         }
     }
@@ -703,30 +702,29 @@ int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl
 int32_t coro_connect(task_ctx *task, pack_type pktype,
                      struct evssl_ctx *evssl, const char *ip, uint16_t port,
                      int32_t netev, void *extra,
-                     SOCKET *fd, uint64_t *skid) {
-    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, 1, fd, skid)) {
+                     sock_ctx *sk) {
+    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, 1, sk)) {
         LOG_WARN("task: %s, connect %s:%d error.", _NAME_OR(task->name), ip, port);
         return ERR_FAILED;
     }
-    return coro_wait_connect(task, *fd, *skid, evssl);
+    return coro_wait_connect(task, sk, evssl);
 }
-void coro_close(task_ctx *task, SOCKET fd, uint64_t skid) {
-    if (INVALID_SOCK == fd) {
+void coro_close(task_ctx *task, sock_ctx *sk) {
+    if (sock_is_invalid(sk)) {
         return;
     }
-    ev_close(&task->loader->netev, fd, skid);
-    _coro_wait(task, skid, MSG_TYPE_CLOSE, task_get_netread_timeout(task));
+    ev_close(&task->loader->netev, sk);
+    _coro_wait(task, sk->skid, MSG_TYPE_CLOSE, task_get_netread_timeout(task));
 }
 // 等待指定连接的下一条接收消息，失败的处理与指针有效期见 _coro_wait_msg
-static inline message_ctx *_coro_wait_recved(task_ctx *task, SOCKET fd, uint64_t skid) {
-    return _coro_wait_msg(task, fd, skid, MSG_TYPE_RECV, task_get_netread_timeout(task), "netread");
+static inline message_ctx *_coro_wait_recved(task_ctx *task, sock_ctx *sk) {
+    return _coro_wait_msg(task, sk, MSG_TYPE_RECV, task_get_netread_timeout(task), "netread");
 }
-void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
-                void *data, size_t len, size_t *size, int32_t copy) {
-    if (ERR_OK != ev_send(&task->loader->netev, fd, skid, data, len, copy)) {
+void *coro_send(task_ctx *task, sock_ctx *sk, void *data, size_t len, size_t *size, int32_t copy) {
+    if (ERR_OK != ev_send(&task->loader->netev, sk, data, len, copy)) {
         return NULL;
     }
-    message_ctx *msg = _coro_wait_recved(task, fd, skid);
+    message_ctx *msg = _coro_wait_recved(task, sk);
     if (NULL == msg) {
         return NULL;
     }
@@ -735,17 +733,17 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
 }
 // 只收不发:一次请求产生多个响应时续读后续包(如 MySQL 多结果集)。
 // 与 coro_send 一样,返回的指针只在本协程下次挂起前有效
-void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size) {
-    message_ctx *msg = _coro_wait_recved(task, fd, skid);
+void *coro_recv(task_ctx *task, sock_ctx *sk, size_t *size) {
+    message_ctx *msg = _coro_wait_recved(task, sk);
     if (NULL == msg) {
         return NULL;
     }
     SET_PTR(size, msg->size);
     return msg->data;
 }
-void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end) {
+void *coro_slice(task_ctx *task, sock_ctx *sk, size_t *size, int32_t *end) {
     *end = 0;// 任何失败路径都不再往下写,统一在此归零,保证"返回 NULL 时 end 为 0"
-    message_ctx *msg = _coro_wait_recved(task, fd, skid);
+    message_ctx *msg = _coro_wait_recved(task, sk);
     if (NULL == msg) {
         return NULL;
     }
@@ -757,16 +755,16 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 // 同步收发前须由调用方显式 coro_sync 一次(与 TCP 服务端 accept 连接同约定,见文件头注释)；
 // 之后同一 skid 上可连续多次调用；并发多次调用（不等上一次响应返回）时两次响应按到达顺序 FIFO
 // 匹配给两次调用，若网络乱序仍可能与发送顺序不一致——UDP 协议本身无法避免的限制
-void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
+void *coro_sendto(task_ctx *task, sock_ctx *sk,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy) {
-    if (ERR_OK != ev_sendto(&task->loader->netev, fd, skid, ip, port, data, len, copy)) {
-        LOG_WARN("task %s, sendto error, skid %"PRIu64".", _NAME_OR(task->name), skid);
+    if (ERR_OK != ev_sendto(&task->loader->netev, sk, ip, port, data, len, copy)) {
+        LOG_WARN("task %s, sendto error, skid %"PRIu64".", _NAME_OR(task->name), sk->skid);
         return NULL;
     }
-    message_ctx *msg = _coro_wait(task, skid, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, sk->skid, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        LOG_WARN("task %s, sendto timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
+        LOG_WARN("task %s, sendto timeout, skid %"PRIu64".", _NAME_OR(task->name), sk->skid);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
@@ -980,7 +978,7 @@ char *coro_dump(task_ctx *task, size_t *size) {
     }
     coro_ctx *coctx = (coro_ctx *)task->arg;
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     coro_sess *corosess;
     size_t iter = 0;
     int32_t total = 0;

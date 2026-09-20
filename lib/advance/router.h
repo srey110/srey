@@ -62,7 +62,7 @@
 //       size_t n; const char *id = router_req_param(ctx, "id", &n);
 //       router_req_text(ctx, 200, id, n);
 //   }
-//   static void _net_recv(task_ctx *task, sk_id *sk,
+//   static void _net_recv(task_ctx *task, sock_ctx *sk,
 //                         subtype_t pktype, uint8_t client, uint8_t slice,
 //                         void *data, size_t size) {
 //       router_net_recv(g_router, task, sk, pktype, client, slice, data, size);
@@ -111,7 +111,7 @@
 //   函数的栈对象, yield 期间 ctx 失效。
 //   如需异步: handler 内 coro_fork 把 fd/skid/响应所需数据复制到堆参数,
 //   立即置 ctx->responded = 1 防止兜底 500, handler 返回, 异步处理完后由
-//   fork 出的协程自己用 binary_init + http_pack_resp + ev_send 写响应。
+//   fork 出的协程自己用 binary_init_write + http_pack_resp + ev_send 写响应。
 //   协程 task (coro_task_register): _net_recv 已在协程栈, router_dispatch 及栈上
 //   的 ctx 跨 yield 保留, handler 可直接 coro_request / coro_fork_wait, 返回前再用
 //   ctx 写响应 (见 lib/advance/harbor.c、lib/advance/debug_console.c)。
@@ -211,7 +211,7 @@ struct router_req {
     struct http_pack_ctx *pack;       // 原始 http 包, 供 http_data / http_header 访问;
                                       // 流式路由过了首帧即为 NULL
     void *user;       // 中间件间传值, 用户自管
-    sk_id sk;                 // 连接标识 fd+skid
+    sock_ctx sk;                 // 连接标识 fd+skid
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
     // URL 解析结果 (内部使用)。存储由调用方提供并在调用 router_match_index 前赋值:
@@ -456,21 +456,17 @@ int32_t router_match_code(int32_t idx);
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="task">task</param>
-/// <param name="fd">socket fd</param>
-/// <param name="skid">连接 skid</param>
+/// <param name="sk">连接标识</param>
 /// <param name="pack">http_pack_ctx 指针 (即 _net_recv 的 data 参数)</param>
-void router_dispatch(router_ctx *r, task_ctx *task,
-                     SOCKET fd, uint64_t skid,
-                     struct http_pack_ctx *pack);
+void router_dispatch(router_ctx *r, task_ctx *task, sock_ctx *sk, struct http_pack_ctx *pack);
 /// <summary>
 /// 拒绝 chunked 请求 —— 回 HTTP 411 后立即关闭连接。router_net_recv 命中非流式路由时
 /// 内部即调本函数; 自己写 _net_recv 而不打算支持 chunked 的, 在 slice == PROT_SLICE_START
 /// 分支调它
 /// </summary>
 /// <param name="task">task</param>
-/// <param name="fd">socket fd</param>
-/// <param name="skid">连接 skid</param>
-void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid);
+/// <param name="sk">连接标识</param>
+void router_reject_chunked(task_ctx *task, sock_ctx *sk);
 /// <summary>
 /// 连接关闭时清理该连接尚未收齐的流式请求 —— 在 _net_close_cb 中调用。
 /// 用 router_net_recv 且注册了流式路由就**必须**接上本函数(task_closed 注册):
@@ -478,9 +474,8 @@ void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid);
 /// ROUTER_STREAM_ABORT 让 on_chunk 清 ctx->user; 漏接则两者都泄漏, 无上限兜底
 /// </summary>
 /// <param name="r">router_ctx</param>
-/// <param name="fd">socket fd</param>
-/// <param name="skid">连接 skid</param>
-void router_closed(router_ctx *r, SOCKET fd, uint64_t skid);
+/// <param name="sk">连接标识</param>
+void router_closed(router_ctx *r, sock_ctx *sk);
 /// <summary>
 /// _net_recv 回调的标准实现 —— slice == 0 的完整请求直接转 router_dispatch;
 /// chunked 命中流式路由则逐帧交给它, 命中普通路由则回 411 并关连接。匹配不上仍是
@@ -495,7 +490,7 @@ void router_closed(router_ctx *r, SOCKET fd, uint64_t skid);
 /// <param name="slice">分片标志; 0 表示完整消息</param>
 /// <param name="data">http_pack_ctx 指针</param>
 /// <param name="size">数据字节数 (未使用)</param>
-void router_net_recv(router_ctx *r, task_ctx *task, sk_id *sk,
+void router_net_recv(router_ctx *r, task_ctx *task, sock_ctx *sk,
                      subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size);
 /// <summary>
 /// 中间件链推进; 中间件内调用即执行下一节点 (handler 或下一个中间件),

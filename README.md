@@ -99,13 +99,18 @@ openssl 与 mimalloc 由脚本拉取并编译，产物落到 `lib/`（头）与 
 
 ```sh
 python3 tools/deps.py         # 按 config.h 的 WITH_* 决定做哪几个
-python3 tools/deps.py clean   # 删克隆与产物；要重编就先 clean
+python3 tools/deps.py clean   # 清构建残留与产物，保留 deps/ 下的源码
 python3 tools/deps.py debug   # Debug 依赖（默认 Release）
 python3 tools/deps.py m32     # 指定架构；不传按系统探测
 ```
 
-`bin/` 一次只放一套：产物名不含架构也不含 debug/release，换任一都要先 `clean`。
+版本策略：`deps/<name>/` 在就用它，不在才去拉远端最新的正式版。想固定版本就自己把源码
+放进 `deps/<name>/`（不必是 git 克隆），想升级就删掉该目录再跑一次。
+
+库名带 `[d]_<arch>` 后缀，各变体在 `bin/` 里共存，换架构或换 debug/release 不必先 `clean`。
 Windows 上编 Debug 必须配 `deps.py debug`，否则 mimalloc 的 `/MD` 撞程序的 `/MDd`。
+Windows ARM64 的 openssl 一律降到 `/O1`：MSVC 的 `/O2` 会把它编坏，TLS 握手必崩，
+与 openssl 版本无关。
 
 ---
 
@@ -236,7 +241,7 @@ coro_connect(task, PACK_HTTP, ssl, "127.0.0.1", 443, 0, NULL, &fd, &skid);
 ```c
 // 打包响应（复用 binary_ctx）
 binary_ctx bwriter;
-binary_init(&bwriter, NULL, 0, 0);
+binary_init_write(&bwriter, 0, 0);
 http_pack_resp(&bwriter, 200);
 http_pack_content(&bwriter, body, body_len);
 ev_send(&task->loader->netev, fd, skid, bwriter.data, bwriter.offset, 0);

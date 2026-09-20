@@ -81,8 +81,8 @@ end
 ---@param want PGPACK_TYPE 期望的响应包类型
 ---@return boolean ok 收到包且类型相符
 function M.request_ok(self, pack, size, want)
-    local fd, skid = self.pg:sock_id()
-    local pgpack = srey.syn_send(fd, skid, pack, size, 0)
+    local sk = self.pg:sock_id()
+    local pgpack = srey.syn_send(sk, pack, size, 0)
     return nil ~= pgpack and want == pgsql.pack_type(pgpack)
 end
 
@@ -94,8 +94,8 @@ end
 ---@param want PGPACK_TYPE 期望的响应包类型
 ---@return lightuserdata|false pgpack 响应包；失败时 err 已写好并返回 false
 function M.request(self, pack, size, want)
-    local fd, skid = self.pg:sock_id()
-    local pgpack = srey.syn_send(fd, skid, pack, size, 0)
+    local sk = self.pg:sock_id()
+    local pgpack = srey.syn_send(sk, pack, size, 0)
     if not pgpack then
         return M.fail(self, M.SEND)
     end

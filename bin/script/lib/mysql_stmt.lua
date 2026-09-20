@@ -47,11 +47,11 @@ function ctx:_execute(mbind)
         return nil
     end
     local pack, size = self.stmt:pack_stmt_execute(mbind)
-    local mpack, fd, skid = mpub.request(self.stmt, pack, size)
+    local mpack, sk = mpub.request(self.stmt, pack, size)
     if not mpack then
         return nil
     end
-    return self.owner:_read_results(fd, skid, mpack)
+    return self.owner:_read_results(sk, mpack)
 end
 
 ---发送 COM_STMT_RESET：清除服务端语句执行状态，保留 prepare 结果，下次 execute 可绑定新参数
@@ -90,9 +90,9 @@ function ctx:_close()
         -- 重连后服务端已自动清理旧语句，无需再发 COM_STMT_CLOSE（口径同 pgsql_stmt）
         return true
     end
-    local fd, skid = self.stmt:sock_id()
+    local sk = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_close()
-    return srey.send(fd, skid, pack, size, 0)
+    return srey.send(sk, pack, size, 0)
 end
 
 ---返回最近一次错误信息并清除错误状态

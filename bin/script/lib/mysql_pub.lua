@@ -32,12 +32,12 @@ M.PACK_TYPE = MYSQL_PACK_TYPE
 ---@return integer? fd 本次请求所用的 socket fd
 ---@return integer? skid 本次请求所用的连接 skid
 function M.request(handle, pack, size)
-    local fd, skid = handle:sock_id()
-    local mpack = srey.syn_send(fd, skid, pack, size, 0)
+    local sk = handle:sock_id()
+    local mpack = srey.syn_send(sk, pack, size, 0)
     if not mpack then
         return nil
     end
-    return mpack, fd, skid
+    return mpack, sk
 end
 
 ---request 之上再判一次 MPACK_OK，给"一个往返、应答只看成没成"的命令用（selectdb / ping / stmt reset）。

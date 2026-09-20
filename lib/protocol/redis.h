@@ -59,7 +59,7 @@ char *redis_pack(size_t *size, const char *fmt, ...);
 /// <param name="ud">ud_cxt 指针，内部维护解包中间状态</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 redis_pack_ctx 链表头，数据不足或出错返回 NULL</returns>
-void *redis_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
 #endif//REDIS_H_

@@ -31,7 +31,7 @@ void _mongo_udfree(ud_cxt *ud) {
     mongo_ctx *mongo = (mongo_ctx *)ud->context;
     scram_free(mongo->scram);
     mongo->scram = NULL;
-    mongo->sk.fd = INVALID_SOCK;
+    sock_set_invalid(&mongo->sk);
     ud->context = NULL;
     PROT_REF_RELEASE(mongo);
 }
@@ -83,7 +83,7 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     size_t flens = strlen(client_final);
     void *data = mongo_pack_scram_client_final(mongo, convid, client_final, flens, &size);
     SECURE_FREE(client_final, flens + 1);
-    return ev_send(ev, mongo->sk.fd, mongo->sk.skid, data, size, 0);
+    return ev_send(ev, &mongo->sk, data, size, 0);
 }
 // 处理 SCRAM 服务端最终消息：验证服务端签名，确认认证完成
 static int32_t _mongo_server_final_message(mongo_ctx *mongo, mgopack_ctx *mgopack) {
@@ -105,7 +105,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     if (NULL == mongo->scram) {
         LOG_WARN("mongo scram auth response received without prior SCRAM initialization.");
         ud->status = COMMAND;
-        _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, ERR_FAILED, NULL, 0);
+        _hs_push(&mongo->sk, 1, ud, ERR_FAILED, NULL, 0);
         _mongo_pkfree(mgopack);
         return;
     }
@@ -119,7 +119,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
             scram_free(mongo->scram);
             mongo->scram = NULL;
             ud->status = COMMAND;
-            _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
+            _hs_push(&mongo->sk, 1, ud, rtn, NULL, 0);
         }
         break;
     case SCRAM_LOCAL_FINAL:
@@ -127,7 +127,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
         scram_free(mongo->scram);
         mongo->scram = NULL;
         ud->status = COMMAND;
-        _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
+        _hs_push(&mongo->sk, 1, ud, rtn, NULL, 0);
         break;
     default:
         break;
@@ -197,9 +197,9 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
     }
     return ERR_OK;
 }
-void *mongo_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)fd; (void)skid; (void)client; (void)size;
+    (void)sk; (void)client; (void)size;
     size_t blens = buffer_size(buf);
     if (blens < 4) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -222,7 +222,7 @@ void *mongo_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     ASSERTAB(total == buffer_remove(buf, mgopack->payload, total), "copy buffer failed.");
     mgopack->total = total;
     binary_ctx breader;
-    binary_init(&breader, mgopack->payload, total, 0);
+    binary_init_read(&breader, mgopack->payload, total);
     binary_get_skip(&breader, 4);
     mgopack->reqid = (int32_t)binary_get_integer(&breader, 4, 1);
     mgopack->respto = (int32_t)binary_get_integer(&breader, 4, 1);
@@ -271,7 +271,7 @@ int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl
     const char *initdb = EMPTYSTR(db) ? "admin" : db;
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->reqid = 1;
-    mongo->sk.fd = INVALID_SOCK;
+    sock_set_invalid(&mongo->sk);
     // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED。失败时 mongo 已被 ZERO 且可能填了
     // 前一个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
     if (ERR_OK != safe_fill_str(mongo->ip, sizeof(mongo->ip), ip)) {

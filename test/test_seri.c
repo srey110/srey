@@ -5,7 +5,7 @@
 // nil / true / false 三元基础往返
 static void test_seri_basic_nil_bool(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_nil(&bw);
     seri_append_bool(&bw, 1);
     seri_append_bool(&bw, 0);
@@ -38,7 +38,7 @@ static void test_seri_int_buckets(CuTest *tc) {
     };
     size_t n = sizeof(vals) / sizeof(vals[0]);
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     size_t i;
     for (i = 0; i < n; i++) {
         seri_append_int(&bw, vals[i]);
@@ -59,7 +59,7 @@ static void test_seri_int_buckets(CuTest *tc) {
 // 实数精度往返
 static void test_seri_real(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_real(&bw, 3.14159265358979);
     seri_append_real(&bw, -1.0e-300);
     seri_append_real(&bw, 0.0);
@@ -80,7 +80,7 @@ static void test_seri_real(CuTest *tc) {
 // 字符串短/长边界：长度 0 / 1 / 31(短) / 32(长 u16) 临界，含二进制 NUL
 static void test_seri_string(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_string(&bw, "", 0);
     seri_append_string(&bw, "a", 1);
     char s31[31];
@@ -117,7 +117,7 @@ static void test_seri_string(CuTest *tc) {
 // userdata 指针往返
 static void test_seri_userdata(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     int local_var = 0;
     void *p1 = &local_var;
     void *p2 = (void *)(uintptr_t)0xCAFEBABE12345678ULL;
@@ -138,7 +138,7 @@ static void test_seri_userdata(CuTest *tc) {
 // 简单 array：数组段 [10, 20]，hash 段 {"k1"=true}
 static void test_seri_array_simple(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_array_start(&bw, 2);
     seri_append_int(&bw, 10);
     seri_append_int(&bw, 20);
@@ -175,7 +175,7 @@ static void test_seri_array_simple(CuTest *tc) {
 // 长 array 转义：array_n >= 31 时 cookie=31 后跟 INT 真实长度
 static void test_seri_array_long(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     uint32_t n = 100;
     seri_append_array_start(&bw, n);
     uint32_t i;
@@ -202,7 +202,7 @@ static void test_seri_array_long(CuTest *tc) {
 // 嵌套 array：外层 [42, inner_array]，inner = {3.14, "hi"}
 static void test_seri_array_nested(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_array_start(&bw, 2);
     seri_append_int(&bw, 42);
     seri_append_array_start(&bw, 2);// 嵌套
@@ -246,7 +246,7 @@ static void test_seri_array_nested(CuTest *tc) {
 static void test_seri_invalid_stream(CuTest *tc) {
     // 构造一个完整 INT(QWORD) 然后截掉一半
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_int(&bw, 0x1234567890ABCDEFLL);
 
     seri_iter iter;

@@ -24,8 +24,8 @@ local ehlo_injected = false -- 客户端把问候里的裸 LF 原样拼进 EHLO 
 local hostile = false -- 逐连接轮换：一次发正常应答，一次发合法但刁钻的形态，两边都得走通
 local ehlo_hosts = {} -- 收到过的 EHLO 参数,用来确认正常问候下主机名是照着服务端给的填
 
-local function _reply(fd, skid, resp)
-    srey.send(fd, skid, resp, #resp, 1)
+local function _reply(sk, resp)
+    srey.send(sk, resp, #resp, 1)
 end
 -- 从 "<c3@t>" 这类地址里取出编号；取不到返回 -1
 local function _tag(line, prefix)
@@ -33,7 +33,7 @@ local function _tag(line, prefix)
     return n and tonumber(n) or -1
 end
 -- 处理一行命令（已去掉 CRLF）
-local function _cmd(fd, skid, fc, line)
+local function _cmd(sk, fc, line)
     local up = line:upper()
     if up:find("^EHLO") or up:find("^HELO") then
         if line:find("\n", 1, true) then
@@ -41,21 +41,21 @@ local function _cmd(fd, skid, fc, line)
         end
         ehlo_hosts[line:match("^%a+%s+(%S+)") or ""] = true
         -- 只广告 LOGIN：客户端的 _smtp_get_authtype 优先 PLAIN，不给它选择余地
-        _reply(fd, skid, "250-fake.smtp.local\r\n250-AUTH LOGIN\r\n250 OK\r\n")
+        _reply(sk, "250-fake.smtp.local\r\n250-AUTH LOGIN\r\n250 OK\r\n")
     elseif up:find("^AUTH LOGIN") then
         fc.authstep = 1
-        _reply(fd, skid, "334 VXNlcm5hbWU6\r\n")-- base64("Username:")
+        _reply(sk, "334 VXNlcm5hbWU6\r\n")-- base64("Username:")
     elseif 1 == fc.authstep then
         fc.authstep = 2
-        _reply(fd, skid, "334 UGFzc3dvcmQ6\r\n")-- base64("Password:")
+        _reply(sk, "334 UGFzc3dvcmQ6\r\n")-- base64("Password:")
     elseif 2 == fc.authstep then
         fc.authstep = 3
         -- 多行 235 是合法形式，客户端只消费首行的话剩下那行会错开后续配对；
         -- 单行才是常见形态，两种轮换着发，谁都不能少了覆盖
         if fc.hostile then
-            _reply(fd, skid, "235-2.7.0 Authentication successful\r\n235 2.7.0 Welcome\r\n")
+            _reply(sk, "235-2.7.0 Authentication successful\r\n235 2.7.0 Welcome\r\n")
         else
-            _reply(fd, skid, "235 2.7.0 Authentication successful\r\n")
+            _reply(sk, "235 2.7.0 Authentication successful\r\n")
         end
     elseif up:find("^MAIL FROM:") then
         local tag = _tag(line, "c")
@@ -64,48 +64,48 @@ local function _cmd(fd, skid, fc, line)
             ERROR("fake smtp: MAIL FROM c%d while c%d still open.", tag, fc.sender)
         end
         fc.sender = tag
-        _reply(fd, skid, "250 OK\r\n")
+        _reply(sk, "250 OK\r\n")
     elseif up:find("^RCPT TO:") then
         local tag = _tag(line, "r")
         if tag ~= fc.sender then-- 收件人编号与本事务发件人对不上：交错
             interleave = interleave + 1
             ERROR("fake smtp: RCPT r%d under sender c%d.", tag, fc.sender)
         end
-        _reply(fd, skid, "250 OK\r\n")
+        _reply(sk, "250 OK\r\n")
     elseif up:find("^DATA") then
         fc.indata = true
-        _reply(fd, skid, "354 End data with <CR><LF>.<CR><LF>\r\n")
+        _reply(sk, "354 End data with <CR><LF>.<CR><LF>\r\n")
     elseif up:find("^RSET") then
         fc.sender = -1
         if fail_rset then
             fail_rset = false
-            _reply(fd, skid, "500 rset rejected\r\n")
+            _reply(sk, "500 rset rejected\r\n")
         else
-            _reply(fd, skid, "250 OK\r\n")
+            _reply(sk, "250 OK\r\n")
         end
     elseif up:find("^QUIT") then
-        _reply(fd, skid, "221 Bye\r\n")
+        _reply(sk, "221 Bye\r\n")
     else
-        _reply(fd, skid, "250 OK\r\n")-- NOOP 及其余一律 250
+        _reply(sk, "250 OK\r\n")-- NOOP 及其余一律 250
     end
 end
 
 srey.startup(function()
-    srey.on_accepted(function(pktype, fd, skid)
+    srey.on_accepted(function(pktype, sk)
         hostile = not hostile
-        conns[skid] = { buf = "", authstep = 0, indata = false, sender = -1, hostile = hostile }
+        conns[sk.skid] = { buf = "", authstep = 0, indata = false, sender = -1, hostile = hostile }
         if hostile then
             -- 裸 LF 不是 CRLF，客户端的多行响应扫描认不出它，会一路活到 EHLO 参数里
-            _reply(fd, skid, "220 fake.smtp.local\nRSET injected\r\n")
+            _reply(sk, "220 fake.smtp.local\nRSET injected\r\n")
         else
-            _reply(fd, skid, "220 normal.smtp.local ESMTP\r\n")
+            _reply(sk, "220 normal.smtp.local ESMTP\r\n")
         end
     end)
-    srey.on_closed(function(pktype, fd, skid, client)
-        conns[skid] = nil
+    srey.on_closed(function(pktype, sk, client)
+        conns[sk.skid] = nil
     end)
-    srey.on_recved(function(pktype, fd, skid, client, slice, data, size)
-        local fc = conns[skid]
+    srey.on_recved(function(pktype, sk, client, slice, data, size)
+        local fc = conns[sk.skid]
         if not fc or not data then
             return
         end
@@ -124,7 +124,7 @@ srey.startup(function()
                 fc.indata = false
                 fc.sender = -1-- 一封收完，事务结束
                 mails = mails + 1
-                _reply(fd, skid, "250 OK\r\n")
+                _reply(sk, "250 OK\r\n")
             else
                 local s, e = fc.buf:find("\r\n", 1, true)
                 if not s then
@@ -132,7 +132,7 @@ srey.startup(function()
                 end
                 local line = fc.buf:sub(1, s - 1)
                 fc.buf = fc.buf:sub(e + 1)
-                _cmd(fd, skid, fc, line)
+                _cmd(sk, fc, line)
             end
         end
     end)
@@ -201,7 +201,7 @@ runner.run(function(t)
     -- 短路条件若只认代次就会对着已关的连接报成功，故这里必须真把连接建起来。
     -- 直接调内部 _doconnect 是为了造出"过期代次"这个入参，此刻无并发协程，绕开锁安全
     t:eq(true, ctx:_doconnect(stale_gen), "拿过期代次的 connect 返回成功")
-    t:check(INVALID_SOCK ~= ctx.conn:sock_id(), "且连接是真建起来的，不是短路返回")
+    t:check(ctx.conn:sock_id().valid, "且连接是真建起来的，不是短路返回")
 
     -- RSET 失败：邮件本身已投成功故 send 返 true，但连接要就地拆掉且状态同步落账——
     -- established 不清的话，之后排队醒来的 connect 会对着这条已关的连接短路报成功
@@ -221,7 +221,7 @@ runner.run(function(t)
 
     -- 建链失败时代次同样要前进：_connect 里的 try_connect 已经无条件覆写过 sk.fd，原来那条连接
     -- 不在了。只在成功时前进的话，失败重连之后 stmt/session 拿旧代次一比仍算"没换过连接"，
-    -- st:close() 会朝 INVALID_SOCK 发包返 false，而它的注解写的是"重连后无需再发返 true"。
+    -- st:close() 会朝已失效的连接发包返 false，而它的注解写的是"重连后无需再发返 true"。
     -- 直接换掉 _connect 是为了造出"建链失败"这个状态，此刻无并发协程，绕开锁安全
     do
         local saved = rawget(ctx, "_connect")

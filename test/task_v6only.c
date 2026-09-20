@@ -8,8 +8,7 @@ typedef struct task_v6only_args {
 static void _startup(task_ctx *task) {
     task_v6only_args *arg = (task_v6only_args *)coro_get_arg(task);
     uint64_t lsnid;
-    SOCKET cfd;
-    uint64_t cskid;
+    sock_ctx csk;
     if (task_isclosing(task)) {
         return;
     }
@@ -19,16 +18,16 @@ static void _startup(task_ctx *task) {
         return;
     }
     // 先确认 IPv6 回环本身是通的，否则下面 IPv4 连不上就分不清是 v6only 生效还是监听坏了
-    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "::1", arg->port, 0, NULL, &cfd, &cskid)) {
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "::1", arg->port, 0, NULL, &csk)) {
         LOG_INFO("v6only: connect ::1 failed, no IPv6 loopback, skip.");
         ev_unlisten(&task->loader->netev, lsnid);
         *(arg->ok) = 1;
         return;
     }
-    ev_close(&task->loader->netev, cfd, cskid);
+    ev_close(&task->loader->netev, &csk);
     // 正题：v6only=1 之下 "::" 没有占住 IPv4 通配地址，这个端口的 IPv4 侧应当无人监听
-    if (ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", arg->port, 0, NULL, &cfd, &cskid)) {
-        ev_close(&task->loader->netev, cfd, cskid);
+    if (ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", arg->port, 0, NULL, &csk)) {
+        ev_close(&task->loader->netev, &csk);
         ev_unlisten(&task->loader->netev, lsnid);
         LOG_ERROR("v6only: 127.0.0.1 reached a :: listener, IPV6_V6ONLY not in effect.");
         return;

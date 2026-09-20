@@ -163,7 +163,7 @@ static inline int32_t _mqtt_pack_begin(binary_ctx *bw, int8_t fixhead, uint32_t 
     if (0 == roccupy) {
         return ERR_FAILED;
     }
-    binary_init(bw, NULL, 1 + roccupy + total, 0);
+    binary_init_write(bw, 1 + roccupy + total, 0);
     binary_set_int8(bw, fixhead);//固定报头
     binary_set_binary(bw, rmain, roccupy);//剩余长度
     return ERR_OK;

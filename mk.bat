@@ -14,11 +14,12 @@ rem
 rem   options:
 rem     m64     64-bit（默认）
 rem     m32     32-bit
+rem     arm64   ARM64（本机是 ARM64 时用它出原生产物）
 rem     debug   Debug 配置，默认 Release
 rem
-rem   第三方依赖(openssl/mimalloc)由 tools\deps.py 准备，配置必须跟这里一致:
-rem   编 debug 就要先 python3 tools\deps.py clean 再 deps.py debug，
-rem   否则 mimalloc 的 /MD 撞上程序的 /MDd，链接期 LNK4098 两套 CRT。
+rem   第三方依赖(openssl/mimalloc)由 tools\deps.py 准备，产物带变体后缀各自共存：
+rem   编 debug 就先 python3 tools\deps.py <架构> debug，换架构同理，都不用先 clean。
+rem   变体配错不会再静默链上另一套 CRT —— 库名对不上，链接期直接报缺文件。
 rem ***********************************************
 setlocal enabledelayedexpansion
 
@@ -41,7 +42,8 @@ if /i "%~1"=="clean" set "TARGET=clean"                            & set "OK=1"
 if /i "%~1"=="debug" set "CONFIG=Debug"  & set "CFGSET=1"           & set "OK=1"
 if /i "%~1"=="m32"   set "PLATFORM=x86"  & set "PLATSET=1"          & set "OK=1"
 if /i "%~1"=="m64"   set "PLATFORM=x64"  & set "PLATSET=1"          & set "OK=1"
-if not defined OK echo 未知参数 %~1；target: all, test, clean；options: m32, m64, debug& exit /b 1
+if /i "%~1"=="arm64" set "PLATFORM=ARM64" & set "PLATSET=1"         & set "OK=1"
+if not defined OK echo 未知参数 %~1；target: all, test, clean；options: m32, m64, arm64, debug& exit /b 1
 shift
 goto parse
 :parsed
@@ -54,22 +56,9 @@ for /f "tokens=2,3" %%a in ('findstr /r /c:"^#define WITH_" lib\base\config.h') 
 
 if /i "%TARGET%"=="clean" goto doclean
 
-rem 依赖变体核对:bin\ 一次只放一套,Debug 程序(/MDd)链 Release 的 mimalloc(/MD)
-rem 就是 LNK4098 两套 CRT。标记由 tools\deps.py 写,没有就不拦(可能是手工摆的)
-set "WANTARCH=m64"
-if /i "%PLATFORM%"=="x86" set "WANTARCH=m32"
-set "WANTVAR=%WANTARCH% release"
-set "DEPSARG=%WANTARCH%"
-if /i "%CONFIG%"=="Debug" set "WANTVAR=%WANTARCH% debug"
-if /i "%CONFIG%"=="Debug" set "DEPSARG=%WANTARCH% debug"
-if exist bin\.deps_variant (
-    set /p HAVEVAR=<bin\.deps_variant
-    if /i not "!HAVEVAR!"=="!WANTVAR!" (
-        echo   [警告] bin\ 里的依赖是「!HAVEVAR!」,本次要编的是「!WANTVAR!」
-        echo          python3 tools\deps.py clean
-        echo          python3 tools\deps.py !DEPSARG!
-    )
-)
+rem 依赖不再需要变体核对:tools\deps.py 的产物名带「[d]_<x86|x64|arm64>」后缀,各变体在 bin\ 里
+rem 共存,链哪一个由 os.h 的 DEPS_LIB_SUFFIX 拼出来。缺哪个变体,链接器直接报出它要的那个文件名
+rem (如 libssld_x64.lib),照着名字跑一次 deps.py 即可,不会再静默串用另一套 CRT
 
 echo ====================== Build %MSTARGET% %CONFIG%^|%PLATFORM% ======================
 msbuild srey.sln /t:%MSTARGET% /p:Configuration=%CONFIG% /p:Platform=%PLATFORM% /m /v:normal /nologo > mk_build.log 2>&1
@@ -85,15 +74,15 @@ if not "!NWARN!"=="0" echo   有告警,按项目约定要清干净
 exit /b !RC!
 
 :doclean
-rem 没点名 debug/m32 就把四组全清掉:msbuild 的 /t:Clean 只作用于指定的那一组,
+rem 没点名 debug/m32/arm64 就把六组全清掉:msbuild 的 /t:Clean 只作用于指定的那一组,
 rem 而 mk.sh clean 是无条件删产物,不对齐的话"清过了"是假的
 if defined CFGSET goto cleanone
 if defined PLATSET goto cleanone
-for %%c in (Debug Release) do for %%p in (x64 x86) do (
+for %%c in (Debug Release) do for %%p in (x64 x86 ARM64) do (
     echo ====================== Clean %%c %%p ======================
     msbuild srey.sln /t:Clean /p:Configuration=%%c /p:Platform=%%p /v:minimal /nologo
 )
-echo   四组配置均已清理。第三方依赖不在此列,用 python3 tools\deps.py clean
+echo   六组配置均已清理。第三方依赖不在此列,用 python3 tools\deps.py clean
 exit /b 0
 
 :cleanone

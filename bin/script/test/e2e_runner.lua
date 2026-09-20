@@ -4,6 +4,7 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
+local core   = require("srey.core")
 local popen  = require("srey.popen")
 
 local _PY_TIMEOUT_MS = 60 * 1000
@@ -17,8 +18,11 @@ local _SCRIPTS = {
     "ws",
     "mqtt",
     "mixed",
-    "ssl_reneg",
 }
+-- ssl_reneg 连 15443，没编 SSL 时 server_http 起不了那个监听
+if core.with_ssl() then
+    _SCRIPTS[#_SCRIPTS + 1] = "ssl_reneg"
+end
 
 -- 用 _propath（C 层注入的程序根路径）拼绝对路径，避免依赖 cwd
 local _PY_DIR = _propath .. _pathsep .. "py_assist" .. _pathsep

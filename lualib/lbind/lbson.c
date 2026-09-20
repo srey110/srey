@@ -37,7 +37,7 @@ static bson_ctx *_lbson_check(lua_State *lua) {
     return (bson_ctx *)ud;
 }
 // 同上,外加"文档已闭合"判定。depth 非 0 表示还有没配对 end() 的 doc_begin(含 bson.new() 建出来的
-// 隐式顶层文档),这时首 4 字节长度前缀还是 binary_init 里 MALLOC 出来的未初始化堆——
+// 隐式顶层文档),这时首 4 字节长度前缀还是 binary_init_write 里 MALLOC 出来的未初始化堆——
 // _bson_append_start 的 binary_set_skip 只推进 offset 不写字节,那 4 字节唯一的写者是 bson_append_end。
 // 放出去就是把进程堆内容当文档长度交给调用方,:tostring 更会照着这个长度把堆序列化进 Lua 字符串。
 // 只读对象(bson.new(data,size))的 depth 恒为 0,不受影响
@@ -64,7 +64,7 @@ static bson_ctx *_lbson_check_writable(lua_State *lua) {
     return bson;
 }
 // 文档字节数:可写对象取已写入的 doc.offset(doc.size 是含扩容余量的容量);只读对象是外部托管
-// 缓冲(inc==0),binary_init 恒把 offset 置 0,真实长度只在 doc.size 里,且不受 iter 推进影响
+// 缓冲(inc==0),binary_init_read 恒把 offset 置 0,真实长度只在 doc.size 里,且不受 iter 推进影响
 static size_t _lbson_lens(bson_ctx *bson) {
     return 0 == bson->doc.inc ? bson->doc.size : bson->doc.offset;
 }

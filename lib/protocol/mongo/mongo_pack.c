@@ -112,8 +112,9 @@ static inline int32_t _mongo_cap_toolong(size_t cap) {
 static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, char *docs, size_t dlens, size_t *size) {
     mongo->reqid++;
     binary_ctx bwriter;
-    size_t init_cap = 17 + dlens + (1 == kind ? 4 + strlen(docid) + 1 : 0);
-    binary_init(&bwriter, NULL, init_cap, 0);
+    size_t dclens = (1 == kind) ? strlen(docid) : 0;
+    size_t init_cap = 17 + dlens + (1 == kind ? 4 + dclens + 1 : 0);
+    binary_init_write(&bwriter, init_cap, 0);
     binary_set_skip(&bwriter, 4);//size
     binary_set_integer(&bwriter, mongo->reqid, 4, 1);//reqid
     binary_set_integer(&bwriter, 0, 4, 1);//respto
@@ -123,8 +124,8 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
         binary_set_int8(&bwriter, 0);//kind
     } else {
         binary_set_int8(&bwriter, 1);//kind
-        binary_set_integer(&bwriter, 4 + strlen(docid) + 1 + dlens, 4, 1);
-        binary_set_string(&bwriter, docid);
+        binary_set_integer(&bwriter, 4 + dclens + 1 + dlens, 4, 1);
+        binary_set_binary(&bwriter, docid, dclens + 1);
     }
     binary_set_binary(&bwriter, docs, dlens);//正文
     *size = bwriter.offset;
@@ -146,7 +147,7 @@ int32_t mongo_pack_check_flag(void *pack, mongo_flags flag) {
         return 0;
     }
     binary_ctx breader;
-    binary_init(&breader, (char *)pack, MSG_FLAGS_OFF + 4, 0);
+    binary_init_read(&breader, (char *)pack, MSG_FLAGS_OFF + 4);
     binary_offset(&breader, MSG_FLAGS_OFF);
     return BIT_CHECK((int32_t)binary_get_integer(&breader, 4, 1), flag);
 }

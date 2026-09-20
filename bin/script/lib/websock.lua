@@ -125,35 +125,34 @@ end
 ---@param host_hdr string Host 头值
 ---@param uri string request-target
 ---@param secprot string? 子协议名，可逗号分隔多个
----@return integer fd socket fd；任一步失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；失败时为 nil，返回值个数恒为 3
+---@return userdata sk 连接标识；失败时 sk.valid 为 false
 ---@return lightuserdata? spctx 协商到的子协议(ws_secprots_ctx)
 local function _handshake(sslname, ip, port, netev, host_hdr, uri, secprot)
     local hspack, size, hsctx = websock.pack_handshake(host_hdr, uri, secprot)
     if not hspack then
-        return INVALID_SOCK, nil, nil
+        return srey.sock_invalid(), nil
     end
     -- hsctx 进 srey.connect 就把所有权交出去了(见该函数 @param extra)，这里只管 hspack：
-    -- 它要到 srey.send 才转移，抛出时仍归本函数。失败对象落在 fd 那一位上，原样抛回去
-    local ok, fd, skid = pcall(srey.connect, PACK_TYPE.WEBSOCK, sslname, ip, port, netev, hsctx)
+    -- 它要到 srey.send 才转移，抛出时仍归本函数。失败对象落在 sk 那一位上，原样抛回去
+    local ok, sk = pcall(srey.connect, PACK_TYPE.WEBSOCK, sslname, ip, port, netev, hsctx)
     if not ok then
         utils.ud_free(hspack)
-        error(fd, 0)
+        error(sk, 0)
     end
-    if INVALID_SOCK == fd then
+    if not sk.valid then
         utils.ud_free(hspack)   -- TCP 连接失败，释放 C 层分配的握手包内存
-        return INVALID_SOCK, nil, nil
+        return srey.sock_invalid(), nil
     end
-    if not srey.send(fd, skid, hspack, size, 0) then
-        srey.close(fd, skid)
-        return INVALID_SOCK, nil, nil
+    if not srey.send(sk, hspack, size, 0) then
+        srey.close(sk)
+        return srey.sock_invalid(), nil
     end
     -- 等待服务端 101 Switching Protocols（C 层完成验证后触发 HANDSHAKED 消息）
-    local ok, spctx = srey.wait_handshaked(fd, skid)
+    local ok, spctx = srey.wait_handshaked(sk)
     if not ok then
-        return INVALID_SOCK, nil, nil
+        return srey.sock_invalid(), nil
     end
-    return fd, skid, spctx
+    return sk, spctx
 end
 
 ---解析 ws:// 或 wss:// URL，建立 WebSocket 连接并完成握手
@@ -162,17 +161,16 @@ end
 ---@param secprot string? 子协议名（Sec-WebSocket-Protocol），可逗号分隔多个。
 --- 协商到 "mqtt" 时本函数只完成 WS 握手，上下文还须经 mqtt.ws_bind 注入，约束见该函数文档
 ---@param netev NET_EV? 事件订阅掩码
----@return integer fd socket fd；任一步失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；失败时为 nil，返回值个数恒为 3
+---@return userdata sk 连接标识；失败时 sk.valid 为 false
 ---@return lightuserdata? spctx 协商到的子协议(ws_secprots_ctx)，用 websock.secprots 解析；未协商/降级为 nil；仅本协程下次挂起前有效
 function wbsk.connect(ws, sslname, secprot, netev)
     local url = _parse_url(ws, sslname)
     if not url then
-        return INVALID_SOCK, nil, nil
+        return srey.sock_invalid(), nil
     end
     local ip, port = _resolve_addr(url)
     if not ip then
-        return INVALID_SOCK, nil, nil
+        return srey.sock_invalid(), nil
     end
     local host_hdr, uri = _reorg(url, port)
     return _handshake(sslname, ip, port, netev, host_hdr, uri, secprot)
@@ -255,23 +253,22 @@ end
 -- websock_pack_* 返 nil 有两种原因（C 侧已打日志，这里不复述）：客户端帧取不到掩码 key 的熵；
 -- 载荷长度大到使帧长回绕。不判空的话 nil 一路走到 srey.send 里的 lpub_check_buf，撞
 -- "string or light userdata expected" 把整条协程打断
-local function _send_end_frame(fd, skid, client)
+local function _send_end_frame(sk, client)
     local data, size = wbsk.continua(client, 1, "", 0)
     if nil == data then
         ERROR("websock pack end frame failed.")
         return false
     end
-    return srey.send(fd, skid, data, size, 0)
+    return srey.send(sk, data, size, 0)
 end
 
 ---首帧 text_fin/binary_fin(fin=0)，中间/最后帧用 continua；func 返回 nil 或空块时发 fin=1 终止帧
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param prot WEBSOCK_PROT.TEXT | WEBSOCK_PROT.BINARY
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止
 ---@param ... any 传给 func 的额外参数
-local function _continua(fd, skid, prot, client, func, ...)
+local function _continua(sk, prot, client, func, ...)
     local data, size = func(...)
     local state = _blk_state(data, size)
     if "bad" == state then
@@ -294,7 +291,7 @@ local function _continua(fd, skid, prot, client, func, ...)
         ERROR("websock pack first frame failed.")
         return false
     end
-    if not srey.send(fd, skid, data, size, 0) then
+    if not srey.send(sk, data, size, 0) then
         return false -- 首帧失败 socket 已坏，不发终止帧
     end
     while true do
@@ -304,32 +301,31 @@ local function _continua(fd, skid, prot, client, func, ...)
             -- 违约:消息已发出部分帧,仍补终止帧让对端退出 continuation 累积状态,但按失败返回,
             -- 不能沿用 "end" 分支的成功语义——那等于把截断的消息当完整消息交付
             ERROR("websock continua func must return string or (lightuserdata, size), got %s.", type(data))
-            _send_end_frame(fd, skid, client)
+            _send_end_frame(sk, client)
             return false
         end
         -- 空块(含 nil)即结束：发 fin=1 空延续帧标记消息结束。
         -- 不可仅跳过空块继续循环——零状态推进会无限发 fin=0 空帧
         if "end" == state then
-            return _send_end_frame(fd, skid, client)
+            return _send_end_frame(sk, client)
         end
         data, size = wbsk.continua(client, 0, data, size)
         if nil == data then
             -- 已发出部分帧，仍补终止帧让对端退出累积状态，再按失败返回
             ERROR("websock pack continuation frame failed.")
-            _send_end_frame(fd, skid, client)
+            _send_end_frame(sk, client)
             return false
         end
-        if not srey.send(fd, skid, data, size, 0) then
+        if not srey.send(sk, data, size, 0) then
             -- 中间帧失败仍尝试发终止帧让 server 退出 continuation 累积状态
-            _send_end_frame(fd, skid, client)
+            _send_end_frame(sk, client)
             return false
         end
     end
 end
 
 ---以 TEXT 分片模式流式发送
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
 ---lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回（消息已截断）
@@ -338,13 +334,12 @@ end
 ---这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 func 的额外参数
 ---@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约时为 false
-function wbsk.text_continua(fd, skid, client, func, ...)
-    return _continua(fd, skid, WEBSOCK_PROT.TEXT, client, func, ...)
+function wbsk.text_continua(sk, client, func, ...)
+    return _continua(sk, WEBSOCK_PROT.TEXT, client, func, ...)
 end
 
 ---以 BINARY 分片模式流式发送
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
 ---lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回（消息已截断）
@@ -353,8 +348,8 @@ end
 ---这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 func 的额外参数
 ---@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约时为 false
-function wbsk.binary_continua(fd, skid, client, func, ...)
-    return _continua(fd, skid, WEBSOCK_PROT.BINARY, client, func, ...)
+function wbsk.binary_continua(sk, client, func, ...)
+    return _continua(sk, WEBSOCK_PROT.BINARY, client, func, ...)
 end
 
 return wbsk

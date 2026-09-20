@@ -53,8 +53,7 @@ int32_t prots_may_resume(pack_type pktype, void *data);
 /// 统一解包入口，根据 ud->pktype 调用对应协议的解包函数
 /// </summary>
 /// <param name="ev">事件上下文</param>
-/// <param name="fd">套接字</param>
-/// <param name="skid">套接字 ID</param>
+/// <param name="sk">连接标识</param>
 /// <param name="client">1=客户端 0=服务端</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">ud_cxt 指针</param>
@@ -64,26 +63,26 @@ int32_t prots_may_resume(pack_type pktype, void *data);
 ///   这个 0 会原样传到 _net_recv_cb 的 size 形参</param>
 /// <param name="status">输出：解包状态标志</param>
 /// <returns>解包后的数据指针，NULL 表示数据不足或出错</returns>
-void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 // 以下 7 个为网络事件回调，由 task_listen/connect/udp 装入 cbs_ctx、event 层触发；
 // 各自经 prots_init 注册的消息汇 begin→emit→end 把事件转成 message_ctx 推给上层；
 // 签名与 cbs_ctx 对应回调（accept_cb/connect_cb/recv_cb/...）一致。
 /// <summary>接受新连接：完成协议初始化并推送 MSG_TYPE_ACCEPT</summary>
-int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
+int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud);
 /// <summary>主动连接建立：完成协议初始化并推送 MSG_TYPE_CONNECT</summary>
-int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud);
+int32_t prots_net_connect(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud);
 /// <summary>数据接收：循环解包并推送 MSG_TYPE_RECV（按 slice 标记分片）</summary>
-void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);
+void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);
 /// <summary>发送完成：推送 MSG_TYPE_SEND</summary>
-void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud);
+void prots_net_send(ev_ctx *ev, sock_ctx *sk, int32_t client, size_t size, ud_cxt *ud);
 /// <summary>SSL 握手完成：完成协议 SSL 初始化并推送 MSG_TYPE_SSLEXCHANGED</summary>
-int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl);
+int32_t prots_net_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl);
 /// <summary>连接关闭：通知协议层并推送 MSG_TYPE_CLOSE</summary>
 /// <param name="erro">close_type，连接是怎么断的。CLOSE_TYPE_ORDERLY 与 CLOSE_TYPE_TRUNCATED 才认为
 /// "body 由连接关闭界定"的那类消息收完了，其余一律不补末片；后者的末片是否可信由收到 CLOSE 的一方判</param>
-void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, int32_t erro, ud_cxt *ud);
+void prots_net_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud);
 /// <summary>UDP 接收：打包地址+数据并推送 MSG_TYPE_RECVFROM</summary>
-void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
+void prots_net_recvfrom(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 
 #endif//PROTS_H_

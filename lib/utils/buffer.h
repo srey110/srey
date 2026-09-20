@@ -20,9 +20,13 @@
 #define IOV_LEN_TYPE size_t
 #endif
 
+// buffer_from_sock 的 _readv 回调除成功/失败外可回的额外码：这次读成功，且回调侧确知自己
+// 那层缓冲(如 SSL)已空、无须再问。收到后按成功处理并停止本轮抽取，不会透传给调用方
+#define BUFFER_READV_DRAINED 3
+
 typedef struct buffer_ctx {
-    volatile int32_t freeze_read;  //读冻结标志：非零时禁止并发读操作
-    volatile int32_t freeze_write; //写冻结标志：非零时禁止并发写操作
+    volatile int32_t freeze_read;  //读暂存态：buffer_get 到 buffer_commit_get 之间置位，期间禁调读接口
+    volatile int32_t freeze_write; //写暂存态：buffer_expand 到 buffer_commit_expand 之间置位，期间禁调写接口
     struct bufnode_ctx *head;      //节点链表头
     struct bufnode_ctx *tail;      //节点链表尾
     struct bufnode_ctx **tail_with_data; //指向最后一个有数据节点的指针的指针
@@ -31,6 +35,11 @@ typedef struct buffer_ctx {
     size_t             hint_base_off; //游标节点之前所有节点的累计字节偏移
     uint32_t           pinned_n;      //buffer_get 本次锁定的节点数，buffer_commit_get 按它精确解锁
 }buffer_ctx;
+/// <summary>
+/// 释放本线程留存的备用节点。任何调用过 buffer_* 的线程在退出前都要调一次，
+/// 否则那一个节点会以泄漏的形式留到进程结束。可安全重复调用。
+/// </summary>
+void buffer_thread_cleanup(void);
 /// <summary>
 /// 分散内存初始化
 /// </summary>
@@ -129,15 +138,19 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
 /// <returns>char</returns>
 char buffer_at(buffer_ctx *ctx, size_t pos);
 /// <summary>
-/// 获取指定长度的内存,供外部写入。返回后进入写暂存态，在 buffer_commit_expand 之前
+/// 获取至少 lens 字节的可写空间,供外部写入。新建节点按 ROUND_UP 分配,挤出来的余量
+/// 一并登记进 iov,故实际交出的总量可能大于 lens。返回后进入写暂存态，在 buffer_commit_expand 之前
 /// 不得再调用本模块任何写接口，也不可与 buffer_get 的读暂存态交叠，均以断言拦截
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="lens">要获取的大小</param>
+/// <param name="lens">要获取的最小大小</param>
 /// <param name="iov">IOV数组</param>
 /// <param name="cnt">IOV数组长度</param>
+/// <param name="iovlens">出参，回传这批 iov 的字节总和（即实际交出的总量，见 summary）。
+/// 必须非 NULL，函数内裸解引用</param>
 /// <returns>IOV数量</returns>
-uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt);
+uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov,
+                       const uint32_t cnt, size_t *iovlens);
 /// <summary>
 /// buffer_expand 提交写入
 /// </summary>
@@ -165,18 +178,22 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
 /// <param name="lens">要删除的长度，0 表示只解除暂存不删除数据</param>
 void buffer_commit_get(buffer_ctx *ctx, size_t lens);
 /// <summary>
-/// 从socket中读数据。按边缘触发契约循环读到无数据为止；
-/// 上一轮未读满时认为 socket 已空，下一轮只用 buffer_space 报出的现成空间去做确认性
-/// readv，不为这次大概率空转的读再分配节点（读满则说明还有数据，仍按 MAX_RECV_SIZE 取）
+/// 从socket中读数据，循环到读不出为止。未读满即认定 socket 已空直接停，剩余数据由下次
+/// 可读事件领走；只有 epoll 边缘触发（TRIGGER_ET=1）例外，它必须读到 EAGAIN，那一轮只用
+/// buffer_space 报出的现成空间去读，不为它再分配节点。
+/// 本函数自己的早退只对裸 socket 生效；带缓冲的 _readv（arg 非 NULL）由回调侧自行判断，
+/// 判定已空时回 BUFFER_READV_DRAINED
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="fd">socket描述符</param>
 /// <param name="nread">读取到的长度</param>
-/// <param name="_readv">读取函数</param>
+/// <param name="_readv">读取函数。可回 BUFFER_READV_DRAINED 表示自己那层缓冲已空，本函数
+/// 据此停止抽取并把返回值归一成 ERR_OK</param>
 /// <param name="arg">透传给 _readv 的参数。非 NULL 表示这不是裸 socket 读（调用方在 _readv 里
-/// 另有一层缓冲，如 SSL），AIX 上那道 readv 早退会因此不生效——早退只对"未读数据留在内核
-/// socket buffer 里、下一次可读事件还会来"成立</param>
-/// <returns>ERR_OK 成功；其余原样透传 _readv 最后一次的返回码，调用方按自己的约定解读</returns>
+/// 另有一层缓冲，如 SSL），本函数自己的两档早退会因此不生效——它们只对"未读数据留在
+/// 内核 socket buffer 里、下一次可读事件还会来"成立，看不见那层缓冲</param>
+/// <returns>ERR_OK 成功；其余原样透传 _readv 最后一次的返回码，调用方按自己的约定解读。
+/// BUFFER_READV_DRAINED 不会透传出来，它在内部已被归一成 ERR_OK</returns>
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg);
 

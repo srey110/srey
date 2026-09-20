@@ -14,11 +14,13 @@
 #if defined(OS_WIN)
 // Windows SOCKET 句柄恒为 4 的倍数(低 2 位保留),fd%n 在偶数 n 下残值聚集(n=4 全落 watcher 0)致 IOCP 多线程退化;
 // 先右移 2 位消除恒零低位再取模,恢复均匀分布
-#define GET_POS(fd, n) (((fd) >> 2) % (n))
+#define CALC_WATCHER_INDEX(fd, n) (((fd) >> 2) % (n))
 #else
-#define GET_POS(fd, n) ((fd) % (n))// 根据fd计算索引位置
+#define CALC_WATCHER_INDEX(fd, n) ((fd) % (n))// 由 fd 算所属 watcher 下标,即 sock_ctx.index 的取值
 #endif
-#define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))])// 根据fd获取对应的指针
+// 只在手上还没有 sock_ctx(刚 accept 出裸 fd)时用来定归属;已有 sock_ctx 的一律读 sk->index,
+// 别再按 fd 重算——listener 与 pipe 的 index 本来就不等于 CALC_WATCHER_INDEX(fd)
+#define CALC_WATCHER(p, n, fd) (1 == (n) ? (p) : &(p)[CALC_WATCHER_INDEX((fd), (n))])
 #define EVENT_TICK_MIN 10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
 #define ACCEPT_BACKOFF_MS 500// accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
 #define UDP_RECV_MAX_ERRS 8// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
@@ -36,29 +38,48 @@
 
 struct evssl_ctx;
 struct watcher_ctx;
-struct sock_ctx;
+struct evsock_ctx;
 struct listener_ctx;
 struct timer_ctx;
 // socket 状态标志位
 typedef enum sock_status {
     STATUS_NONE = 0x00,         // 无状态
-    STATUS_SENDING = 0x01,      // 正在发送数据
-    STATUS_NORECV = 0x02,       // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
-    STATUS_ERROR = 0x04,        // 发生错误
-    STATUS_REMOVE = 0x08,       // 待移除
-    STATUS_CLIENT = 0x10,       // 作为客户端
-    STATUS_SSLEXCHANGE = 0x20,  // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
-    STATUS_AUTHSSL = 0x40,      // SSL握手中
-    // 下面两个是数据期 TLS1.3 的读写互卡，后缀表示"在等哪一边就绪"
-    STATUS_KEYUPDATE_WRITE = 0x80,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
-    STATUS_KEYUPDATE_READ = 0x100,// 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
-                                  // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针
-    STATUS_ESTABLISHED = 0x200,   // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
+    STATUS_SENDING = 0x01,      // 正在发送数据。IOCP 指 WSASend 在途(跨完成回调)；uev 只覆盖 s_cb 执行期,用于挡回调里的同步重入
+    STATUS_ERROR = 0x02,        // 发生错误
+    STATUS_REMOVE = 0x04,       // 待移除
+    STATUS_CLIENT = 0x08,       // 作为客户端
+    // 仅 uev：数据已入 buf_s 但故意没发，等本轮派发结束后一次 writev 合并发出。
+    // 置清位都只在 _usk_flush_link / _usk_flush_unlink，位与在 watcher->flushes 上一一对应
+    STATUS_FLUSHPEND = 0x10,
+    STATUS_ESTABLISHED = 0x20,     // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
     // 下面三个记"连接是怎么断的"，只由收发失败路径置位（_evpub_mark_close）；
     // 都没置即本地主动关闭，故 ev_close / task 拆除等路径无需标记
-    STATUS_PEER_FIN = 0x400,           // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
-    STATUS_PEER_ABORT = 0x800,         // 收发失败：RST、读写错误、SSL 协议错
-    STATUS_PEER_TRUNCATED = 0x1000     // TLS 没发 close_notify 就断了，收全与被截断分不出
+    STATUS_PEER_FIN = 0x40,        // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
+    STATUS_PEER_ABORT = 0x80,      // 收发失败：RST、读写错误、SSL 协议错
+    // 以下 SSL 专用；新增非 SSL 位加在 #if 上面，别插进来
+#if WITH_SSL
+    STATUS_PEER_TRUNCATED = 0x100, // TLS 没发 close_notify 就断了，收全与被截断分不出
+    STATUS_SSLEXCHANGE = 0x200, // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
+    STATUS_AUTHSSL = 0x400,     // SSL握手中
+#ifdef EV_IOCP
+    STATUS_NORECV = 0x800,      // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
+#endif
+    // 下面三个是数据期 TLS1.3 的读写互卡。前两个的后缀表示"在等哪一边就绪"，
+    // 第三个表示"我这边还有没发完的应用写"。后两个互斥，由 _usk_tcp_send /
+    // _olp_tcp_send 单点保证；KEYUPDATE_WRITE 可与 KEYUPDATE_READ 共存，它与
+    // WPEND_SSL 不共存只是各发送入口那道 !KEYUPDATE_WRITE 守卫撑出来的，别删
+    STATUS_KEYUPDATE_WRITE = 0x1000,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
+    STATUS_KEYUPDATE_READ = 0x2000, // 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
+                                    // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针。
+                                    // 置位来自对端把 post-handshake 消息(现实中是 NewSessionTicket)
+                                    // 拆到多条 TLS 记录、后一条未到；KeyUpdate 本身触发不了。
+                                    // 前提由 test_event.c 的 test_ssl_write_wants_read 钉着，别当死码删
+    STATUS_WPEND_SSL = 0x4000       // 发的时候撞上 socket 满(WANT_WRITE)：OpenSSL 把那条应用记录挂着，
+                                    // 此期间不得调 SSL_read——它处理对端 KeyUpdate 要回发的握手记录更短，
+                                    // 走同一个 ssl3_write_bytes，会撞上"重试长度不得小于挂起量"那道守卫，
+                                    // 整条连接被判死。置清位都只在 wpend_link/unlink：
+                                    // 发送排空、改挂 KEYUPDATE_READ、连接关闭、看门狗到期都会清
+#endif
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写
 typedef enum udp_opt_type {
@@ -106,22 +127,20 @@ typedef struct ev_ctx {
 // accept_cb/connect_cb 返回失败则自动关闭链接，并触发close_cb回调
 // 启用 ssl 握手未完成前（ssl_exchanged_cb）不能调用发送，否则会关闭链接
 // ssl_exchanged_cb 返回失败则自动关闭链接
-typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                            ud_cxt *ud);// 接受新连接回调
-typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                             int32_t err, ud_cxt *ud);// 连接完成回调
-typedef int32_t(*ssl_exchanged_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                                   int32_t client, ud_cxt *ud, void *ssl);// SSL握手完成回调（ssl 为 SSL 对象指针，WITH_SSL 时有效，否则为 NULL）
-typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                      int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);// 接收数据回调
-typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                       int32_t client, size_t size, ud_cxt *ud);// 发送完成回调
-typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                        int32_t client, int32_t erro, ud_cxt *ud);// 连接关闭回调（erro 为 close_type）
-typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+typedef int32_t(*accept_cb)(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud);// 接受新连接回调
+typedef int32_t(*connect_cb)(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud);// 连接完成回调
+typedef int32_t(*ssl_exchanged_cb)(ev_ctx *ev, sock_ctx *sk, int32_t client,
+                                   ud_cxt *ud, void *ssl);// SSL握手完成回调（ssl 为 SSL 对象指针，WITH_SSL 时有效，否则为 NULL）
+typedef void(*recv_cb)(ev_ctx *ev, sock_ctx *sk, int32_t client,
+                       buffer_ctx *buf, size_t size, ud_cxt *ud);// 接收数据回调
+typedef void(*send_cb)(ev_ctx *ev, sock_ctx *sk, int32_t client,
+                       size_t size, ud_cxt *ud);// 发送完成回调
+typedef void(*close_cb)(ev_ctx *ev, sock_ctx *sk, int32_t client,
+                        int32_t erro, ud_cxt *ud);// 连接关闭回调（erro 为 close_type）
+typedef void(*recvfrom_cb)(ev_ctx *ev, sock_ctx *sk,
                            char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);// UDP接收回调
-typedef int32_t(*props_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx,
-    void *data, uint64_t number);// 返回值为0 不执行free。
+typedef int32_t(*props_cb)(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
+                           void *data, uint64_t number);// 返回值为0 不执行free。
 // 回调函数集合
 typedef struct cbs_ctx {
     accept_cb acp_cb;       // 接受连接回调
@@ -133,8 +152,11 @@ typedef struct cbs_ctx {
     recvfrom_cb rf_cb;      // UDP接收回调
     free_cb ud_free;        // 用户数据释放回调
 }cbs_ctx;
+// 对象池构造/复位的入参。sk 只带 fd 与 index 两个值,skid 传 0 表示待分配——
+// _evpub_sk_new / _evpub_sk_reset 一律用 createid() 覆写它。整体传 sock_ctx 而非摊开字段,
+// 是为了以后 sock_ctx 再加字段时这几个构造函数不用跟着改
 typedef struct skpool_args {
-    SOCKET fd;
+    sock_ctx sk;
     cbs_ctx *cbs;
     ud_cxt *ud;
 }skpool_args;
@@ -147,20 +169,24 @@ typedef struct ev_tick {
     void *ud;      // 透传给 cb 的上下文
 }ev_tick;
 
-// fd → sock_ctx hashmap 工具集
+// 登记/注销本线程正在跑的 watcher 事件循环，须在循环入口与出口各调一次
+void _evpub_set_cur_watcher(struct watcher_ctx *watcher);
+// 调用方是否就在该 watcher 的事件线程上；是则命令可就地执行，不必入队
+int32_t _evpub_inloop(struct watcher_ctx *watcher);
+// fd → evsock_ctx hashmap 工具集
 // hashmap哈希函数：以fd作为key计算哈希值（hashmap_new 回调）
 uint64_t _evpub_sockel_hash(const void *item, uint64_t seed0, uint64_t seed1);
-// hashmap比较函数：比较两个sock_ctx的fd（hashmap_new 回调）
+// hashmap比较函数：比较两个evsock_ctx的fd（hashmap_new 回调）
 int _evpub_sockel_compare(const void *a, const void *b, void *ud);
-// 根据fd从watcher的hashmap查找sock_ctx
-struct sock_ctx *_evpub_sockel_get(struct watcher_ctx *watcher, SOCKET fd);
-// 将sock_ctx加入watcher的hashmap（断言不重复）
-void _evpub_sockel_add(struct watcher_ctx *watcher, struct sock_ctx *skctx);
+// 根据fd从watcher的hashmap查找evsock_ctx
+struct evsock_ctx *_evpub_sockel_get(struct watcher_ctx *watcher, SOCKET fd);
+// 将evsock_ctx加入watcher的hashmap（断言不重复）
+void _evpub_sockel_add(struct watcher_ctx *watcher, struct evsock_ctx *evsk);
 // 从watcher的hashmap中移除fd，返回 hashmap spare 缓冲指针（下次操作前有效，调用方按需用）
 void *_evpub_sockel_remove(struct watcher_ctx *watcher, SOCKET fd);
-int32_t _evpub_checkid(struct sock_ctx *skctx, const uint64_t skid);
+int32_t _evpub_checkid(struct evsock_ctx *evsk, const uint64_t skid);
 // 获取ud_cxt
-ud_cxt *_evpub_get_ud(struct sock_ctx *skctx);
+ud_cxt *_evpub_get_ud(struct evsock_ctx *evsk);
 // 注册周期驱动节点到 watcher->ticks(须在该 fd 所属 event 线程内调用)
 void _evpub_tick_add(struct watcher_ctx *watcher, ev_tick *tk);
 // 从 watcher->ticks 注销周期驱动节点(须在该 fd 所属 event 线程内调用)
@@ -170,10 +196,10 @@ void _evpub_tick_remove(struct watcher_ctx *watcher, ev_tick *tk);
 uint32_t _evpub_tick_drive(struct watcher_ctx *watcher, struct timer_ctx *timer, uint64_t *now_ms);
 // 该 watcher的 计时器
 struct timer_ctx *_evpub_watcher_timer(struct watcher_ctx *watcher);
-// 获取 sock_ctx 的 socket 类型（SOCK_STREAM/SOCK_DGRAM），供不知道 sock_ctx 完整定义的调用方使用
-int32_t _evpub_sock_type(struct sock_ctx *skctx);
+// 获取 evsock_ctx 的 socket 类型（SOCK_STREAM/SOCK_DGRAM），供不知道 evsock_ctx 完整定义的调用方使用
+int32_t _evpub_sock_type(struct evsock_ctx *evsk);
 
-//sock_ctx 池相关
+//evsock_ctx 池相关
 void *_evpub_sk_new(void *args);
 void _evpub_sk_free(void *sk);
 void _evpub_sk_clear(void *sk);
@@ -191,6 +217,7 @@ void _evpub_off_buf_clear(queue_ctx *bufs);
 void _evpub_sendto_clear(queue_ctx *bufs);
 // TCP 发送队列准入(未建连 / SSL 握手期 / 队列超上限)：通过返 1；拒收返 0 且已落 WARN，调用方丢数据并断连。
 // "已在关闭流程"那道门动作不同(只丢不断)，留在调用点
+int32_t _evpub_recvbuf_full(buffer_ctx *buf_r, SOCKET fd);
 int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd);
 // UDP 发送队列准入：仅判队列超上限。通过返 1；拒收返 0 且已落 WARN，调用方丢包不断连
 int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd);
@@ -200,23 +227,20 @@ void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
 // 连同连接一起丢并落 WARN。不留"等发完再关"的中间态——那个态没有上限，对端不读就永久占住 fd。
 // KeyUpdate 挂着 SSL_read(理由见 _uev_add_bufs_send)时发不得，只丢不冲。
 // 冲出去的字节不报 MSG_TYPE_SEND：调用方此刻尚未置 STATUS_ERROR，回调进来即重入。
-// ssl 收 void * 而非 SSL *：同 _evpub_ssl_exchange_check，不跟着 #if WITH_SSL 一起切
+// ssl 收 void * 而非 SSL *：明文路径也走这里，不跟着 #if WITH_SSL 一起切
 void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t *wb_size, void *ssl);
 // 就地拆连接，两平台各走自己的断连实现。给协议层的命令回调用：命令通道只报成功/失败，
 // 没有 unpack 路径上 PROT_ERROR 那条断链通道，撞上必须断连的误用时只能由它来关
-void _evpub_disconnect(struct watcher_ctx *watcher, struct sock_ctx *skctx);
+void _evpub_disconnect(struct watcher_ctx *watcher, struct evsock_ctx *evsk);
+#if WITH_SSL
 // ssl_exchange 的准入门 + CLIENT 位落定，两平台逐字相同的那一段。通过返 1 且 CLIENT 位已按 client 落定；
 // 拒收返 0，该告警的已落 WARN。
 // "不是 SOCK_STREAM" 那道门不在此处：它是调用方 UPCAST 成 tcp 结构的前提，进来晚了就已经越界读了。
-// 收 const void * 而非 SSL * 是有意的：这样它不依赖 SSL 类型，无需跟着 #if WITH_SSL 一起切
+// 收 const void * 而非 SSL *：evpub.h 不引 openssl 头
 int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t client);
-// 建连前就要设好的 socket 选项：无延迟 + 非阻塞（非阻塞是发起异步 connect 的前提）。
-// connect 与 accept 两侧共用，加同类选项就加在这里，别在调用点各自补。
-// keepalive 有意不在这里：Windows 下它是 SIO_KEEPALIVE_VALS 这个 IOCTL，对未 bind 未连接的
-// socket 下它没有意义，改由 _evpub_tcp_keepalive 在 socket 连通后调
-int32_t _evpub_tcp_sockopts(SOCKET fd);
-// 连通后才能设的那一项：keepalive。超时参数只在本函数里定，四个调用点（两平台 × connect/accept）
-// 不得各带一套。失败一律按丢连接处理：没有它，对端静默消失的连接就永远不会被回收
+#endif
+// 连通后才能设的那一项：keepalive。Windows 下它是 SIO_KEEPALIVE_VALS 这个 IOCTL，对未 bind 未连接的
+// socket 没有意义，故不能跟 nodelay 一道在建连前设。
 int32_t _evpub_tcp_keepalive(SOCKET fd);
 // ev_connect / ev_listen / ev_udp 的公共前导：校验回调、拒绝 ev_free 期间的调用、解析地址。
 // 失败时调用方直接 return ERR_FAILED，不要再碰 ud：ud 已被 UD_FREE，唯一例外是 cbs 本身为 NULL
@@ -242,11 +266,11 @@ int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg);
 // UDP 发送缓冲入队并尝试立即发送（IOCP/uev 平台无关封装）；
 // tried 非 0 表示调用方在入队前已经尝试过一次发送（如 _evpub_try_sendto 遇到 EAGAIN），
 // 此次必然复现，跳过重复尝试，仅确保写事件已注册（IOCP 平台忽略该参数）
-void _evpub_add_bufs_sendto(struct watcher_ctx *watcher, struct sock_ctx *skctx, sendto_ctx *buf, int32_t tried);
+void _evpub_add_bufs_sendto(struct watcher_ctx *watcher, struct evsock_ctx *evsk, sendto_ctx *buf, int32_t tried);
 // 尝试直接发送 UDP 数据，不转移 data 所有权（调用方返回后可自由处置该内存）；
 // 返回 0 表示已处理完(发送成功或致命错误已断开)，调用方无需任何后续操作；
-// 返回 1 表示需要调用方继续(发送队列已有积压、EAGAIN，或 IOCP 平台发送恒为异步)，
+// 返回 1 表示需要调用方继续(发送队列已有积压、EAGAIN，或 IOCP 侧另有在途 IRP)，
 // 自行 MALLOC+memcpy 后以 tried=1 转入 _evpub_add_bufs_sendto 排队
-int32_t _evpub_try_sendto(struct watcher_ctx *watcher, struct sock_ctx *skctx, const void *data, size_t len, netaddr_ctx *addr);
+int32_t _evpub_try_sendto(struct watcher_ctx *watcher, struct evsock_ctx *evsk, const void *data, size_t len, netaddr_ctx *addr);
 
 #endif//EVPUB_H_

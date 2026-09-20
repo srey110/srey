@@ -375,7 +375,7 @@ char *mail_pack(mail_ctx *mail) {
         }
     }
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, ONEK, ONEK);
+    binary_init_write(&bwriter, ONEK, ONEK);
     // RFC 5322 §3.4 的 name-addr 形式：display-name <addr-spec>。
     // 原来写的是 "addr (name)"——把名字塞进注释里，虽然合法但没有哪个 MUA 会拿它当发件人名显示
     binary_set_binary(&bwriter, "From: ", 6);

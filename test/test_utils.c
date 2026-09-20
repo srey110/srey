@@ -66,7 +66,7 @@ static void test_pack_unpack(CuTest *tc) {
  * ======================================================================= */
 static void test_binary(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 64); /* 动态分配，初始不设缓冲 */
+    binary_init_write(&bw, 0, 64); /* 动态分配，初始不设缓冲 */
 
     /* 写入各种类型 */
     int8_t i8 = -120;
@@ -94,7 +94,7 @@ static void test_binary(CuTest *tc) {
 
     /* 读取并逐一验证 */
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
 
     CuAssertTrue(tc, i8  == binary_get_int8(&br));
     CuAssertTrue(tc, u8  == binary_get_uint8(&br));
@@ -137,7 +137,7 @@ static void test_binary_set_binary_self_alias(CuTest *tc) {
     char pad[200];
     char snap[200];
     memset(pad, 'x', sizeof(pad));
-    binary_init(&bin, NULL, 0, 0);
+    binary_init_write(&bin, 0, 0);
     binary_set_binary(&bin, pad, sizeof(pad));
     memcpy(snap, bin.data, bin.offset);
     size_t before = bin.offset;
@@ -153,7 +153,7 @@ static void test_binary_set_binary_self_alias(CuTest *tc) {
     char str[200];
     memset(str, 'y', sizeof(str) - 1);
     str[sizeof(str) - 1] = '\0';
-    binary_init(&bs, NULL, 0, 0);
+    binary_init_write(&bs, 0, 0);
     binary_set_string(&bs, str);
     CuAssertTrue(tc, sizeof(str) == bs.offset);
 
@@ -170,7 +170,7 @@ static void test_binary_set_binary_self_alias(CuTest *tc) {
     binary_ctx bov;
     uint8_t seq[200];
     uint32_t k;
-    binary_init(&bov, NULL, 0, 0);
+    binary_init_write(&bov, 0, 0);
     for (k = 0; k < sizeof(seq); k++) {
         seq[k] = (uint8_t)k;
     }
@@ -191,7 +191,7 @@ static void test_binary_set_binary_self_alias(CuTest *tc) {
 static void test_binary_bounds(CuTest *tc) {
     char raw[8] = { 'a', 'b', 'c', 0, 'd', 'e', 'f', 'g' };
     binary_ctx br;
-    binary_init(&br, raw, sizeof(raw), 0);
+    binary_init_read(&br, raw, sizeof(raw));
 
     /* remain 随游标递减，读到底为 0 */
     CuAssertTrue(tc, sizeof(raw) == binary_remain(&br));
@@ -225,7 +225,7 @@ static void test_binary_bounds(CuTest *tc) {
     /* 空串是合法结果：只消耗那一个 NUL */
     char nul[1] = { 0 };
     binary_ctx bn;
-    binary_init(&bn, nul, sizeof(nul), 0);
+    binary_init_read(&bn, nul, sizeof(nul));
     char *e = binary_try_get_string(&bn);
     CuAssertPtrNotNull(tc, e);
     CuAssertTrue(tc, '\0' == e[0] && 1 == bn.offset);
@@ -603,7 +603,7 @@ static void test_binary_extra(CuTest *tc) {
     binary_ctx bw;
 
     /* ── binary_set_va：格式化写入 ── */
-    binary_init(&bw, NULL, 0, 32);
+    binary_init_write(&bw, 0, 32);
     binary_set_va(&bw, "val=%d", 42);
     /* binary_set_va 写入 "val=42\0"，offset 停在 '\0' 前 */
     CuAssertTrue(tc, 6 == (int)bw.offset);
@@ -611,7 +611,7 @@ static void test_binary_extra(CuTest *tc) {
     binary_free(&bw);
 
     /* ── binary_at：按位置取指针 ── */
-    binary_init(&bw, NULL, 0, 32);
+    binary_init_write(&bw, 0, 32);
     binary_set_int8(&bw, 'A');
     binary_set_int8(&bw, 'B');
     binary_set_int8(&bw, 'C');
@@ -621,7 +621,7 @@ static void test_binary_extra(CuTest *tc) {
     binary_free(&bw);
 
     /* ── binary_offset (回填模式)：先占位，写内容后回到占位处回填 ── */
-    binary_init(&bw, NULL, 0, 64);
+    binary_init_write(&bw, 0, 64);
     binary_set_skip(&bw, 4);/* 预留 4 字节长度字段 */
     size_t body_start = bw.offset;
     binary_set_binary(&bw, "body", 4);/* 写入消息体（4 字节，无 \0）*/
@@ -634,7 +634,7 @@ static void test_binary_extra(CuTest *tc) {
 
     /* 验证：从头读取长度字段和消息体 */
     binary_ctx br;
-    binary_init(&br, bw.data, body_end, 0);
+    binary_init_read(&br, bw.data, body_end);
     uint32_t filled = (uint32_t)binary_get_uinteger(&br, 4, 0);
     CuAssertTrue(tc, 4 == (int)filled);
     const char *body = binary_get_binary(&br, 4);
@@ -949,11 +949,15 @@ static void test_buffer_space(CuTest *tc) {
 }
 
 /* =======================================================================
- * buffer_from_sock 的读循环不再为确认性 readv 白分配节点。
- * epoll 是 EPOLLET，必须读到无数据为止，所以短读后那一轮 readv 省不掉；
+ * buffer_from_sock 的读循环按事件后端分两档，这里两档都测。
+ * 早退档(TRIGGER_LT 的四套后端 + IOCP)：没读满即 socket 已空，那轮必然 EAGAIN 的
+ * 确认读整个省掉，剩下的由下次可读事件领走。IOCP 能同档是因为它的 ol_r 投 0 字节
+ * WSARecv 探针，socket 还有数据时重投立即完成，与电平同效。
+ * 不早退档(epoll 边缘触发，TRIGGER_ET=1)：ET 必须读到 EAGAIN，那一轮省不掉；
  * 但它大概率直接 EAGAIN，没必要为它再要一个 MAX_RECV_SIZE 的新节点 ——
  * 改为只用 buffer_space 报出的现成余量。读满的那轮说明还有数据，仍按
- * MAX_RECV_SIZE 取，否则大流量下每轮只读几百字节，readv 次数翻倍
+ * MAX_RECV_SIZE 取，否则大流量下每轮只读几百字节，readv 次数翻倍。
+ * 读满的那轮两档行为一致，故场景二不分档
  * ======================================================================= */
 static size_t _fake_rv_want[FAKE_RV_MAX];// 第 i 次调用要吐出的字节数
 static size_t _fake_rv_offer[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 总空间
@@ -1016,18 +1020,43 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
     CuAssertTrue(tc, 2000 == nread);
     CuAssertTrue(tc, 2000 == buffer_size(&buf));
+#if defined(TRIGGER_LT) || defined(EV_IOCP)
+    // 早退档：没读满就认定 socket 已空，那轮必然 EAGAIN 的确认读被整个省掉
+    CuAssertIntEquals(tc, 1, _fake_rv_calls);
+#else
     // 确认轮确实发生了 —— 不能靠"不读"来省开销，那会违反 ET 契约
     CuAssertIntEquals(tc, 2, _fake_rv_calls);
-    // 首轮无历史可依，仍按 MAX_RECV_SIZE 要空间
-    CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
     // 确认轮只拿首节点写剩的余量，不为它新建节点 —— 这一条才是被测行为本身
     CuAssertTrue(tc, _fake_rv_offer[1] < MAX_RECV_SIZE);
+#endif
+    // 首轮无历史可依，仍按 MAX_RECV_SIZE 要空间
+    CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
     // 首节点是为 MAX_RECV_SIZE 建的，写掉 2000 后余量必然小于 MAX_RECV_SIZE；
     // 若确认轮又建了一个空节点，可写空间会被顶到 MAX_RECV_SIZE 以上
     CuAssertTrue(tc, buffer_space(&buf, MAX_EXPAND_NIOV) < MAX_RECV_SIZE);
     buffer_free(&buf);
 
-    // 场景二：连续两轮读满，后续轮次仍须按 MAX_RECV_SIZE 要空间
+#if defined(TRIGGER_LT) || defined(EV_IOCP)
+    // 场景二(早退档)：填满就得接着读。want 给足让假 readv 把 iov 填满 ——
+    // 这一条直接钉早退判据用的是本轮 iov 实际给出的总量(offer)而不是 nbuf：
+    // expand 给出的空间大于 nbuf 时，用 nbuf 判会把"填满了"误当"读空了"，每轮少读一截
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = MAX_RECV_SIZE * 4;
+    _fake_rv_want[1] = MAX_RECV_SIZE * 4;
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    // 前两轮都被填满故不早退，第三轮吐 0 才停
+    CuAssertIntEquals(tc, 3, _fake_rv_calls);
+    CuAssertTrue(tc, nread == _fake_rv_offer[0] + _fake_rv_offer[1]);
+    CuAssertTrue(tc, nread == buffer_size(&buf));
+    // 每轮给出的空间都不小于 MAX_RECV_SIZE：读满的那轮说明还有数据，不该缩水
+    CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
+    CuAssertTrue(tc, _fake_rv_offer[1] >= MAX_RECV_SIZE);
+    CuAssertTrue(tc, _fake_rv_offer[2] >= MAX_RECV_SIZE);
+    buffer_free(&buf);
+#else
+    // 场景二(不早退档，即 epoll 边缘触发)：连续两轮读满，后续轮次仍须按 MAX_RECV_SIZE 要空间。
+    // 这里 want 取 MAX_RECV_SIZE 而非填满 offer——该档不看 offer，读满与否只影响下轮 nbuf
     buffer_init(&buf);
     _fake_rv_reset();
     _fake_rv_want[0] = MAX_RECV_SIZE;
@@ -1040,6 +1069,7 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     CuAssertTrue(tc, _fake_rv_offer[1] >= MAX_RECV_SIZE);
     CuAssertTrue(tc, _fake_rv_offer[2] >= MAX_RECV_SIZE);
     buffer_free(&buf);
+#endif
 #endif
 }
 
@@ -1062,9 +1092,10 @@ static void test_buffer_from_sock_readv_fail(CuTest *tc) {
     CuAssertTrue(tc, 0 == buffer_size(&buf));
     buffer_free(&buf);
 
-#ifndef READV_EINVAL
+#if !defined(READV_EINVAL) && !defined(TRIGGER_LT) && !defined(EV_IOCP)
     // 短读一轮后确认轮失败：失败码照样上传，前一轮的 1500 字节完好可读。
-    // READV_EINVAL 平台短读即 break，根本走不到确认轮，故只跳过这一段
+    // 短读即 break 的那几档(READV_EINVAL / TRIGGER_LT / EV_IOCP)根本走不到确认轮，故只跳过这一段；
+    // 上面"首轮就失败"那段与后端无关，照跑
     char readback[8];
     buffer_init(&buf);
     _fake_rv_reset();
@@ -2361,7 +2392,7 @@ static void test_sock_options(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, sock_reuseport(fds[0]));
 #endif
     // istcp=1 在 Windows 走 SO_EXCLUSIVEADDRUSE，该选项须在 bind 前设置，故另建裸 socket
-    SOCKET lsn = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
+    SOCKET lsn = sock_create_cloexec(AF_INET, SOCK_STREAM, 0, 0);
     CuAssertTrue(tc, INVALID_SOCK != lsn);
     CuAssertIntEquals(tc, ERR_OK, sock_reuseaddr(lsn, 1));
     CLOSE_SOCK(lsn);
@@ -3322,6 +3353,137 @@ static void test_sfid_init_keeps_ctx(CuTest *tc) {
     CuAssertIntEquals(tc, 22, ctx.timestampshift);
 }
 
+/* 备用槽：稳态 append+drain 循环只应在首轮走一次分配器。
+ * 这条断言是第 1 条优化的唯一硬判据——改之前同样的循环会得到 ROUNDS 次分配 */
+static void test_buffer_node_spare(CuTest *tc) {
+    char data[64];
+    memset(data, 'x', sizeof(data));
+    buffer_ctx buf;
+    buffer_init(&buf);
+    // 先跑一轮把备用槽填上，免得把"首次分配"算进统计窗口
+    CuAssertTrue(tc, ERR_OK == buffer_append(&buf, data, sizeof(data)));
+    CuAssertTrue(tc, sizeof(data) == buffer_drain(&buf, sizeof(data)));
+    const int32_t rounds = 1000;
+    uint64_t a0, f0, a1, f1;
+    int32_t i;
+    mem_stat(&a0, &f0);
+    for (i = 0; i < rounds; i++) {
+        CuAssertTrue(tc, ERR_OK == buffer_append(&buf, data, sizeof(data)));
+        CuAssertTrue(tc, sizeof(data) == buffer_size(&buf));
+        CuAssertTrue(tc, sizeof(data) == buffer_drain(&buf, sizeof(data)));
+    }
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    // 全程零分配零释放：节点在备用槽里来回取还
+    CuAssertTrue(tc, a1 == a0);
+    CuAssertTrue(tc, f1 == f0);
+    buffer_free(&buf);
+    buffer_thread_cleanup();
+}
+/* 三条快路径与通用路径的对拍：单节点 search、跨节点 search、buffer_at。
+ * 单节点走 memchr 直路，双节点（buffer_external 造出来）走通用路径，两者结果必须一致 */
+/* =======================================================================
+ * buffer_at 的尾节点直取：落在最后一个有数据节点时按 tail_with_data 一步到位，
+ * 不再从 head 逐节点游走。协议层校验包尾 CRLF（redis bulk / http chunk）走的就是这条。
+ * 用 external 造多节点链，逐字节与"一次性拼好的单节点"对拍，跨界处也要对
+ * ======================================================================= */
+static void test_buffer_at_tail_node(CuTest *tc) {
+    // 三个节点：12 + 7 + 9 = 28 字节，内容各不相同便于定位错位
+    const char *s1 = "AAAABBBBCCCC";
+    const char *s2 = "DDDEEEE";
+    const char *s3 = "FFFGGGHH";
+    size_t l1 = strlen(s1), l2 = strlen(s2), l3 = strlen(s3);
+    size_t total = l1 + l2 + l3;
+    char *p1, *p2, *p3;
+    MALLOC(p1, l1); MALLOC(p2, l2); MALLOC(p3, l3);
+    memcpy(p1, s1, l1); memcpy(p2, s2, l2); memcpy(p3, s3, l3);
+    buffer_ctx many;
+    buffer_init(&many);
+    buffer_external(&many, p1, l1, _ext_free);
+    buffer_external(&many, p2, l2, _ext_free);
+    buffer_external(&many, p3, l3, _ext_free);
+    CuAssertTrue(tc, total == buffer_size(&many));
+    // 单节点参照
+    char whole[64];
+    memcpy(whole, s1, l1); memcpy(whole + l1, s2, l2); memcpy(whole + l1 + l2, s3, l3);
+    buffer_ctx one;
+    buffer_init(&one);
+    CuAssertTrue(tc, ERR_OK == buffer_append(&one, whole, total));
+    // 逐字节对拍：覆盖首节点、中间节点、尾节点以及两处跨界
+    size_t i;
+    for (i = 0; i < total; i++) {
+        CuAssertIntEquals(tc, whole[i], buffer_at(&many, i));
+        CuAssertIntEquals(tc, whole[i], buffer_at(&one, i));
+    }
+    // 末两字节是本用例的正主（协议层校验包尾 CRLF 的形状）
+    CuAssertIntEquals(tc, whole[total - 2], buffer_at(&many, total - 2));
+    CuAssertIntEquals(tc, whole[total - 1], buffer_at(&many, total - 1));
+    // 倒序再走一遍：不依赖 hint 被前一次调用推到尾部
+    for (i = total; i > 0; i--) {
+        CuAssertIntEquals(tc, whole[i - 1], buffer_at(&many, i - 1));
+    }
+    // drain 掉首节点后尾节点的基偏移随之变化，直取必须跟着对
+    CuAssertTrue(tc, l1 == buffer_drain(&many, l1));
+    CuAssertTrue(tc, (total - l1) == buffer_size(&many));
+    for (i = 0; i < total - l1; i++) {
+        CuAssertIntEquals(tc, whole[l1 + i], buffer_at(&many, i));
+    }
+    buffer_free(&many);
+    buffer_free(&one);
+}
+static void test_buffer_fastpath_equiv(CuTest *tc) {
+    const char *body = "GET /path HTTP/1.1\r\nHost: a.b\r\n\r\nBODY";
+    size_t blens = strlen(body);
+    buffer_ctx one;
+    buffer_init(&one);
+    CuAssertTrue(tc, ERR_OK == buffer_append(&one, (void *)body, blens));
+    // 同样内容切成两个 external 节点，强制走通用路径
+    char *p1, *p2;
+    size_t cut = 10;
+    MALLOC(p1, cut);
+    MALLOC(p2, blens - cut);
+    memcpy(p1, body, cut);
+    memcpy(p2, body + cut, blens - cut);
+    buffer_ctx two;
+    buffer_init(&two);
+    buffer_external(&two, p1, cut, _ext_free);
+    buffer_external(&two, p2, blens - cut, _ext_free);
+    CuAssertTrue(tc, blens == buffer_size(&one));
+    CuAssertTrue(tc, blens == buffer_size(&two));
+    const char *pats[] = { "\r\n\r\n", "\r\n", "H", "HTTP/1.1", "Host: a.b", "zz", "BODY", "Y" };
+    size_t i;
+    int32_t r1, r2;
+    for (i = 0; i < sizeof(pats) / sizeof(pats[0]); i++) {
+        r1 = buffer_search(&one, 0, 0, 0, (char *)pats[i], strlen(pats[i]));
+        r2 = buffer_search(&two, 0, 0, 0, (char *)pats[i], strlen(pats[i]));
+        CuAssertIntEquals(tc, r2, r1);
+    }
+    // 带 start/end 窗口
+    for (i = 0; i < blens; i++) {
+        r1 = buffer_search(&one, 0, i, 0, "\r\n", 2);
+        r2 = buffer_search(&two, 0, i, 0, "\r\n", 2);
+        CuAssertIntEquals(tc, r2, r1);
+    }
+    // buffer_at 逐字节对拍
+    for (i = 0; i < blens; i++) {
+        CuAssertTrue(tc, buffer_at(&one, i) == buffer_at(&two, i));
+        CuAssertTrue(tc, buffer_at(&one, i) == body[i]);
+    }
+    // drain 一半后再对拍一轮：单节点走的是 misalign 前移那条直路
+    CuAssertTrue(tc, 5 == buffer_drain(&one, 5));
+    CuAssertTrue(tc, 5 == buffer_drain(&two, 5));
+    for (i = 0; i < sizeof(pats) / sizeof(pats[0]); i++) {
+        r1 = buffer_search(&one, 0, 0, 0, (char *)pats[i], strlen(pats[i]));
+        r2 = buffer_search(&two, 0, 0, 0, (char *)pats[i], strlen(pats[i]));
+        CuAssertIntEquals(tc, r2, r1);
+    }
+    for (i = 0; i < blens - 5; i++) {
+        CuAssertTrue(tc, buffer_at(&one, i) == buffer_at(&two, i));
+    }
+    buffer_free(&one);
+    buffer_free(&two);
+}
+
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_binary);
@@ -3342,6 +3504,9 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_from_sock_readv_fail);
     SUITE_ADD_TEST(suite, test_buffer_free_resets);
     SUITE_ADD_TEST(suite, test_buffer_hint_after_migrate);
+    SUITE_ADD_TEST(suite, test_buffer_node_spare);
+    SUITE_ADD_TEST(suite, test_buffer_at_tail_node);
+    SUITE_ADD_TEST(suite, test_buffer_fastpath_equiv);
     SUITE_ADD_TEST(suite, test_sfid);
     SUITE_ADD_TEST(suite, test_sfid_seq_exhaust);
     SUITE_ADD_TEST(suite, test_sfid_invalid);

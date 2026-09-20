@@ -67,7 +67,7 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql->mpack = NULL;
     mysql->parse_status = 0;
     mysql->cur_cmd = 0;
-    mysql->client.sk.fd = INVALID_SOCK;
+    sock_set_invalid(&mysql->client.sk);
     ud->context = NULL;
     PROT_REF_RELEASE(mysql);
 }
@@ -216,13 +216,13 @@ static inline int32_t _mysql_send_pack(mysql_ctx *mysql, ev_ctx *ev, binary_ctx 
         binary_free(bwriter);
         return ERR_FAILED;
     }
-    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter->data, bwriter->offset, 0);
+    return ev_send(ev, &mysql->client.sk, bwriter->data, bwriter->offset, 0);
 }
 // 发送客户端认证响应包（HandshakeResponse），包含用户名、密码签名、连接属性等
 static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_integer(&bwriter, mysql->client.caps, 4, 1);//client_flag
@@ -268,7 +268,7 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_ATTRS)) {
         binary_ctx battrs;
-        binary_init(&battrs, NULL, 0, 0);
+        binary_init_write(&battrs, 0, 0);
         _mysql_connect_attrs(&battrs);
         _mysql_set_lenenc(&bwriter, battrs.offset);
         binary_set_binary(&bwriter, battrs.data, battrs.offset);
@@ -281,7 +281,7 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
 static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_integer(&bwriter, mysql->client.caps, 4, 1);//client_flag
@@ -290,7 +290,7 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_fill(&bwriter, 0, 23);//filler
     ud->status = SSL_EXCHANGE;
     if (ERR_OK != _mysql_send_pack(mysql, ev, &bwriter)
-        || ERR_OK != ev_ssl(ev, mysql->client.sk.fd, mysql->client.sk.skid, 1, mysql->client.evssl)) {
+        || ERR_OK != ev_ssl(ev, &mysql->client.sk, 1, mysql->client.evssl)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -307,11 +307,11 @@ static void _mysql_auth_err(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, i
     // 载荷所有权交给 _hs_push；空串仍传 NULL，不给上层一个长度为 0 的非空指针
     size_t lens = strlen(mysql->error_msg);
     char *msg = (lens > 0) ? dup_zero(mysql->error_msg, lens) : NULL;
-    _hs_push(mysql->client.sk.fd, mysql->client.sk.skid, 1, ud, ERR_FAILED, msg, lens);
+    _hs_push(&mysql->client.sk, 1, ud, ERR_FAILED, msg, lens);
 }
 // 认证成功：通知上层握手完成，切换到命令阶段
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
-    if (ERR_OK != _hs_push(mysql->client.sk.fd, mysql->client.sk.skid, 1, ud, ERR_OK, NULL, 0)) {
+    if (ERR_OK != _hs_push(&mysql->client.sk, 1, ud, ERR_OK, NULL, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return;
     }
@@ -326,7 +326,7 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         return;
     }
     binary_ctx breader;
-    binary_init(&breader, payload, payload_lens, 0);
+    binary_init_read(&breader, payload, payload_lens);
     uint8_t protover = binary_get_uint8(&breader);
     // 服务端可以不发握手包而直接回 ERR：1040 Too many connections、1129 Host is blocked、
     // 1130 Host is not privileged
@@ -439,11 +439,11 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
 static int32_t _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
     mysql->id++;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, 0x02);
-    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, &mysql->client.sk, bwriter.data, bwriter.offset, 0);
 }
 // 将密码与服务器盐值进行逐字节异或，返回异或后的数据（调用方负责释放）
 static char *_mysql_password_xor_salt(mysql_ctx *mysql, size_t *lens) {
@@ -534,7 +534,7 @@ static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, 
 static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size_t klens) {
     mysql->id++;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 300, 0);
+    binary_init_write(&bwriter, 300, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     size_t lens;
@@ -552,7 +552,7 @@ static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size
 static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     mysql->id++;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_string(&bwriter, mysql->client.password);
@@ -569,7 +569,7 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     mysql->id++;
     memcpy(mysql->server.salt, auswitch->provided.data, sizeof(mysql->server.salt));
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     if (EMPTYSTR(mysql->client.password)) {
@@ -658,7 +658,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         return;
     }
     binary_ctx breader;
-    binary_init(&breader, payload, payload_lens, 0);
+    binary_init_read(&breader, payload, payload_lens);
     switch (binary_get_uint8(&breader)) {
     case MYSQL_OK:
         _mysql_auth_ok(mysql, ud, status);
@@ -688,12 +688,12 @@ static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *s
         return NULL;
     }
     binary_ctx breader;
-    binary_init(&breader, payload, payload_lens, 0);
+    binary_init_read(&breader, payload, payload_lens);
     return _mpack_parser(mysql, buf, &breader, status);
 }
-void *mysql_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *mysql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)fd; (void)skid; (void)client; (void)size;
+    (void)sk; (void)client; (void)size;
     if (NULL == ud->context) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
@@ -740,7 +740,7 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     mysql->client.evssl = evssl;
     mysql->client.charset = _mysql_charset(charset);
     mysql->client.maxpack = 0 == maxpk ? ONEK * ONEK : maxpk;
-    mysql->client.sk.fd = INVALID_SOCK;
+    sock_set_invalid(&mysql->client.sk);
     return ERR_OK;
 }
 const char *mysql_version(mysql_ctx *mysql) {

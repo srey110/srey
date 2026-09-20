@@ -20,15 +20,15 @@ local WS_TEXT, WS_BINARY, WS_PING, WS_CLOSE = 0x01, 0x02, 0x09, 0x08
 local MQTT_CONNECT = 0x01 -- 同上，避免为一个常量 require lib.mqtt
 
 srey.startup(function()
-    srey.on_recved(function(pktype, fd, skid, client, slice, data, size)
+    srey.on_recved(function(pktype, sk, client, slice, data, size)
         if 0 ~= slice then
             if 0 ~= (slice & 4) then -- PROT_SLICE_END
                 local frame, fsize = websock.pack_text(0, 0, "a")
-                srey.send(fd, skid, frame, fsize, 0)
+                srey.send(sk, frame, fsize, 0)
                 frame, fsize = websock.pack_continua(0, 0, "b")
-                srey.send(fd, skid, frame, fsize, 0)
+                srey.send(sk, frame, fsize, 0)
                 frame, fsize = websock.pack_continua(0, 1, "c")
-                srey.send(fd, skid, frame, fsize, 0)
+                srey.send(sk, frame, fsize, 0)
             end
             return
         end
@@ -42,7 +42,7 @@ srey.startup(function()
                 if ack then
                     local frame, fsize = websock.pack_binary(0, 1, ack, alens)
                     if frame then
-                        srey.send(fd, skid, frame, fsize, 0)
+                        srey.send(sk, frame, fsize, 0)
                     end
                     utils.ud_free(ack)
                 end
@@ -51,15 +51,15 @@ srey.startup(function()
         end
         if WS_TEXT == pack.prot then
             local frame, fsize = websock.pack_text(0, 1, pack.data, pack.size)
-            srey.send(fd, skid, frame, fsize, 0)
+            srey.send(sk, frame, fsize, 0)
         elseif WS_BINARY == pack.prot then
             local frame, fsize = websock.pack_binary(0, 1, pack.data, pack.size)
-            srey.send(fd, skid, frame, fsize, 0)
+            srey.send(sk, frame, fsize, 0)
         elseif WS_PING == pack.prot then
             local frame, fsize = websock.pack_pong(0)
-            srey.send(fd, skid, frame, fsize, 0)
+            srey.send(sk, frame, fsize, 0)
         elseif WS_CLOSE == pack.prot then
-            srey.close(fd, skid)
+            srey.close(sk)
         end
     end)
     if ERR_FAILED == srey.listen(PACK_TYPE.WEBSOCK, SSL_NAME.NONE, "0.0.0.0", _PORT) then

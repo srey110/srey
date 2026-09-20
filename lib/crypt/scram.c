@@ -161,7 +161,7 @@ const char *scram_get_user(scram_ctx *scram) {
 // 对用户名进行转义（RFC 5802 规定 ',' 编码为 '=2C'，'=' 编码为 '=3D'）
 static char *_scram_username_filter(const char *user) {
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     size_t ulen = strlen(user);
     for (size_t i = 0; i < ulen; i++) {
         if (',' == user[i]) {
@@ -181,7 +181,7 @@ static char *_scram_username_filter(const char *user) {
 // RFC 5802 §5.1：'=' 后只能跟 "2C" 或 "3D"，其他 =XX 视为非法 SASLname 返 NULL
 static char *_scram_username_recover(const char *user, size_t ulens) {
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     for (size_t i = 0; i < ulens;) {
         if ('=' == user[i]) {
             if (i + 3 > ulens) {

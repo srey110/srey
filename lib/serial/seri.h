@@ -33,7 +33,7 @@ typedef struct seri_iter {
 /// <summary>
 /// 追加 nil 值（1 字节 tag）
 /// </summary>
-/// <param name="bw">binary_ctx，需 binary_init(bw, NULL, 0, 0) 内部托管模式</param>
+/// <param name="bw">binary_ctx，需 binary_init_write(bw, 0, 0) 内部托管模式</param>
 void seri_append_nil(binary_ctx *bw);
 /// <summary>
 /// 追加 bool 值（1 字节 tag，bool 状态编码在高 5 位 cookie 中）

@@ -5,17 +5,15 @@
 /// <summary>
 /// 创建 KCP 会话句柄
 /// </summary>
-/// <param name="fd" type="integer">底层 UDP socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="conv" type="integer">会话号(同一 socket 内唯一,两端约定一致)</param>
 /// <returns type="userdata">kcp 会话句柄(_kcp_ctx)</returns>
 static int32_t _lkcp_new(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    uint32_t conv = lpub_check_u32(lua, 3, "conv out of range");
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    uint32_t conv = lpub_check_u32(lua, 2, "conv out of range");
     kcp_ctx *kcp = lua_newuserdata(lua, sizeof(kcp_ctx));
-    kcp_init(kcp, &task->loader->netev, fd, skid, conv);
+    kcp_init(kcp, &task->loader->netev, sk, conv);
     ASSOC_MTABLE(lua, MT_KCP);
     return 1;
 }

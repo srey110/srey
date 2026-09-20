@@ -16,7 +16,8 @@ runner.run(function(t)
     -- 使用一组独立 name（unit_pem/unit_p12）避免污染其他 task 用的 SSL_NAME.SERVER/CLIENT
     local NAME_PEM = "unit_pem"
     local NAME_P12 = "unit_p12"
-    do
+    -- 没编 SSL 时这些绑定按契约恒返 nil/false，整段无从断言，跳过
+    if core.with_ssl() then
         -- 注册 PEM 服务端证书；返回 ssl ctx lightuserdata，未注册时返回 nil
         local ssl = core.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
         t:check(ssl ~= nil, "cert_register PEM 返回 ssl ctx")
@@ -98,7 +99,7 @@ runner.run(function(t)
         t:eq(LONG, long_item and long_item.name, "80 字节名字原样交出，不截断不丢弃")
         t:eq(SHORT, short_item and short_item.name, "短名字照常带 name")
     end
-    do
+    if core.with_ssl() then
         -- p12_register
         local ssl = core.p12_register(NAME_P12, "client.p12", "srey")
         t:check(ssl ~= nil, "p12_register 返回 ssl ctx")
@@ -146,13 +147,13 @@ runner.run(function(t)
     -- 字符串名走 task_find_name 返 INVALID_TNAME 可挡；数字句柄原样下传，
     -- 只查 INVALID_TNAME 的话陈旧句柄会被放行，绑定后该连接下一条消息才被静默关闭
     do
-        local fd, skid = srey.udp(PACK_TYPE.NONE, "0.0.0.0", UDP_PORT)
-        t:check(fd and fd ~= INVALID_SOCK, "bind_task 用 udp 创建")
-        if fd and fd ~= INVALID_SOCK then
-            t:eq(false, srey.sock_bind_task(fd, skid, "no_such_task_name"), "未注册的字符串名返回 false")
-            t:eq(false, srey.sock_bind_task(fd, skid, 0x7FFFFFFF), "不存在的数字句柄返回 false")
-            t:eq(true, srey.sock_bind_task(fd, skid, task.handle()), "有效数字句柄绑定成功(确认没把有效的也挡掉)")
-            srey.close(fd, skid)
+        local sk = srey.udp(PACK_TYPE.NONE, "0.0.0.0", UDP_PORT)
+        t:check(sk and sk.valid, "bind_task 用 udp 创建")
+        if sk and sk.valid then
+            t:eq(false, srey.sock_bind_task(sk, "no_such_task_name"), "未注册的字符串名返回 false")
+            t:eq(false, srey.sock_bind_task(sk, 0x7FFFFFFF), "不存在的数字句柄返回 false")
+            t:eq(true, srey.sock_bind_task(sk, task.handle()), "有效数字句柄绑定成功(确认没把有效的也挡掉)")
+            srey.close(sk)
         end
     end
 
@@ -245,33 +246,33 @@ runner.run(function(t)
     -- ── srey.core: 失败与成功的返回值个数必须一致 ────────────────────
     -- lpub_rtn_nil 写死的全仓规矩：返回值直接塞进另一个调用时少一个就整体错位
     do
-        t:eq(2, select("#", core.udp(PACK_TYPE.NONE, "300.300.300.300", 0)),
-            "core.udp 失败也返 2 个值")
-        local fd, skid = core.udp(PACK_TYPE.NONE, "127.0.0.1", 0)
-        t:check(fd and INVALID_SOCK ~= fd, "core.udp 绑定成功")
-        if fd and INVALID_SOCK ~= fd then
-            -- 用 table.pack 而非 select("#", ...)：后者把 fd/skid 吞掉，那个 socket
+        t:eq(1, select("#", core.udp(PACK_TYPE.NONE, "300.300.300.300", 0)),
+            "core.udp 失败也返 1 个值")
+        local sk = core.udp(PACK_TYPE.NONE, "127.0.0.1", 0)
+        t:check(sk and sk.valid, "core.udp 绑定成功")
+        if sk and sk.valid then
+            -- 用 table.pack 而非 select("#", ...)：后者把 sk 吞掉，那个 socket
             -- 建出来就没有任何路径能 close 它（下面那句 close 关的是上面第一个）
             local ret = table.pack(core.udp(PACK_TYPE.NONE, "127.0.0.1", 0))
-            t:eq(2, ret.n, "core.udp 成功返 2 个值")
-            t:check(ret[1] and INVALID_SOCK ~= ret[1] and ret[2], "两个返回值都有效")
-            if ret[1] and INVALID_SOCK ~= ret[1] then
-                srey.close(ret[1], ret[2])
+            t:eq(1, ret.n, "core.udp 成功返 1 个值")
+            t:check(ret[1] and ret[1].valid, "返回的连接标识有效")
+            if ret[1] and ret[1].valid then
+                srey.close(ret[1])
             end
-            srey.close(fd, skid)
+            srey.close(sk)
         end
-        -- 同一条规矩也管 Lua 包装层：srey.connect 成功返 (fd, skid)，失败也得返两个。
+        -- 同一条规矩也管 Lua 包装层：srey.connect 成功返 sk，失败返无效 sk，个数一致。
         -- 走 ssl_qury 那条失败路径，它在任何挂起之前就返回，不依赖网络
-        t:eq(2, select("#", srey.connect(PACK_TYPE.NONE, "no-such-ssl-name", "127.0.0.1", 1)),
-            "srey.connect 失败也返 2 个值")
+        t:eq(1, select("#", srey.connect(PACK_TYPE.NONE, "no-such-ssl-name", "127.0.0.1", 1)),
+            "srey.connect 失败也返 1 个值")
         -- ssl_qury 的契约只有 (true,nil)/(true,ssl)/(false,nil) 三档,没有"抛出"这一档：
         -- core.ssl_qury 是 luaL_checkstring,漏传 sslname 会抛,而 srey.connect 的 extra
         -- 释放排在它之后——websock 的 hsctx 就那样漏掉一份(lightuserdata,没有 __gc)
         t:eq(false, srey.ssl_qury(nil), "ssl_qury 漏传返 false 而不抛")
         t:eq(false, srey.ssl_qury(42), "ssl_qury 收非字符串返 false")
         t:eq(true, srey.ssl_qury(SSL_NAME.NONE), "SSL_NAME.NONE 仍是明文放行")
-        t:eq(2, select("#", srey.connect(PACK_TYPE.NONE, nil, "127.0.0.1", 1)),
-            "sslname 漏传时 srey.connect 仍返 2 个值")
+        t:eq(1, select("#", srey.connect(PACK_TYPE.NONE, nil, "127.0.0.1", 1)),
+            "sslname 漏传时 srey.connect 仍返 1 个值")
     end
 
     -- ── srey.closing: CLOSING 回调被调到，且回调抛错不影响 task_ungrab ─────
@@ -315,11 +316,12 @@ runner.run(function(t)
 
     -- ── srey.core: sock_session 的会话键写死 skid，与 C 侧 coro_sync 对齐 ────
     -- CLOSE 恒以 skid 为 sess 发出，挂在别的键上的等待者断连时一个都唤不到（ms>0 白等满
-    -- 超时、ms==0 永久挂起），故不再开放自定义。fd 传 INVALID_SOCK：ev_props 对它直接早退
+    -- 超时、ms==0 永久挂起），故不再开放自定义。传无效连接标识：ev_props 对它直接早退
     do
-        t:eq(false, core.session(-1, 2), "sock_session: 两参形态可调用，无效 fd 返 false")
+        local bad = srey.sock_invalid()
+        t:eq(false, core.session(bad), "sock_session: 可调用，无效连接返 false")
         -- 旧的 sess=0 语义搬到独立接口，不再靠第 3 参表达
-        t:eq(false, core.session_clear(-1, 2), "session_clear: 两参形态可调用，无效 fd 返 false")
+        t:eq(false, core.session_clear(bad), "session_clear: 可调用，无效连接返 false")
     end
 
     -- ── srey.task: set_priority 超界 clamp 而不是被截断 ───────────────

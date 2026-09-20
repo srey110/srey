@@ -4,7 +4,7 @@ static uint16_t _port = 0;
 static int32_t _prt = 1;
 
 // 收到 MQTT 数据包，按协议类型分发处理
-static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)slice;
@@ -22,7 +22,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         size_t plens;
         if (pack->version >= MQTT_50) {
             binary_ctx props;
-            binary_init(&props, NULL, 0, 0);
+            binary_init_write(&props, 0, 0);
             mqtt_props_fixnum(&props, SESSION_EXPIRY, 120);
             mqtt_props_fixnum(&props, RECEIVE_MAXIMUM, 15000);
             mqtt_props_fixnum(&props, MAXIMUM_QOS, 1);
@@ -40,7 +40,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             if (_prt) {
                 LOG_INFO("S->CONNACK");
             }
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, plens, 0);
+            ev_send(&task->loader->netev, sk, pk, plens, 0);
         }
         break;
     }
@@ -61,7 +61,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
                 if (_prt) {
                     LOG_INFO("S->DISCONNECT");
                 }
-                ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+                ev_send(&task->loader->netev, sk, pk, lens, 0);
             }
             break;
         }
@@ -75,7 +75,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         // test_mqtt_pack.c 的 test_mqtt_acks 在纯内存里确定性覆盖（含非零 reason），
         // 这里只保留"带属性/不带属性"两形态，让运行时链路的断言能精确到 reason == 0
         binary_ctx props;
-        binary_init(&props, NULL, 0, 0);
+        binary_init_write(&props, 0, 0);
         mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
         if (1 == vh->qos) {
             pk = mqtt_pack_puback(pack->version, vh->packid, 0, &props, &lens);
@@ -91,7 +91,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         }
         binary_free(&props);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
         }
         break;
     }
@@ -108,7 +108,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             if (_prt) {
                 LOG_INFO("S->PUBCOMP");
             }
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
         }
         break;
     }
@@ -123,14 +123,14 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         size_t lens;
         uint8_t reasons[1] = { 0 };
         binary_ctx props;
-        binary_init(&props, NULL, 0, 0);
+        binary_init_write(&props, 0, 0);
         mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
         pk = mqtt_pack_suback(pack->version, vh->packid, reasons, 1, &props, &lens);
         if (NULL != pk) {
             if (_prt) {
                 LOG_INFO("S->SUBACK");
             }
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
         }
         binary_free(&props);
         pk = mqtt_pack_publish(pack->version, 0, 0, 0, "/test/topic1", 0, "server push", strlen("server push"), NULL, &lens);
@@ -138,7 +138,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             if (_prt) {
                 LOG_INFO("S->PUBLISH QoS0");
             }
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
         }
         break;
     }
@@ -152,14 +152,14 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         size_t lens;
         uint8_t reasons[1] = { 0 };
         binary_ctx props;
-        binary_init(&props, NULL, 0, 0);
+        binary_init_write(&props, 0, 0);
         mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
         pk = mqtt_pack_unsuback(pack->version, vh->packid, reasons, 1, &props, &lens);
         if (NULL != pk) {
             if (_prt) {
                 LOG_INFO("S->UNSUBACK");
             }
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
         }
         binary_free(&props);
         break;
@@ -176,7 +176,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             if (_prt) {
                 LOG_INFO("S->PINGRESP");
             }
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
         }
         break;
     }

@@ -36,11 +36,11 @@ struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int3
 /// <param name="secprot">Sec-WebSocket-Protocol。协商到 "mqtt" 时本函数只完成 WS 握手，
 /// 客户端方向的 mqtt_ctx 须由调用方在返回后经 mqtt_ws_bind 注入，约束见 prots_wrap.h</param>
 /// <param name="netev">task_netev</param>
-/// <param name="skid">链接ID</param>
+/// <param name="sk">out 连接标识，仅返回 ERR_OK 时有效</param>
 /// <param name="spctx">out 协商到的子协议(ws_secprots_ctx)，可为 NULL 忽略；NULL 表示未协商(降级纯 WS)。由消息系统持有，仅本协程下次挂起前有效，勿持有勿释放</param>
-/// <returns>socket句柄</returns>
-SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot,
-    int32_t netev, uint64_t *skid, struct ws_secprots_ctx **spctx);
+/// <returns>ERR_OK 成功</returns>
+int32_t wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot,
+    int32_t netev, sock_ctx *sk, struct ws_secprots_ctx **spctx);
 /// <summary>
 /// redis链接
 /// </summary>
@@ -50,10 +50,10 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
 /// <param name="port">端口</param>
 /// <param name="key">密码</param>
 /// <param name="netev">task_netev</param>
-/// <param name="skid">链接ID</param>
-/// <returns>socket句柄</returns>
-SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
-    const char *key, int32_t netev, uint64_t *skid);
+/// <param name="sk">out 连接标识，仅返回 ERR_OK 时有效</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
+    const char *key, int32_t netev, sock_ctx *sk);
 /// <summary>
 /// myql链接。多协程共用一个 ctx 时是幂等的：排队等锁期间已有人把连接建好，本次直接返回成功
 /// 而不再建一条——否则后来那条会覆写 ctx 里的 fd/skid，把前一条孤立到对端超时才回收

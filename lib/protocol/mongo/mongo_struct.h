@@ -43,7 +43,7 @@ typedef struct mongo_ctx {
     struct evssl_ctx *evssl;    //TLS 上下文，NULL 表示不加密
     struct scram_ctx *scram;    //SCRAM 认证上下文
     struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
-    sk_id sk;                   //连接标识 fd+skid
+    sock_ctx sk;                   //连接标识 fd+skid
     char ip[IP_LENS];           //服务器 IP 地址
     char db[64];                //当前数据库名
     char authdb[64];            //认证数据库名

@@ -679,11 +679,11 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
     if (NULL == smtp) {
         return 0;
     }
-    if (NULL != smtp->task && INVALID_SOCK != smtp->sk.fd) {
+    if (NULL != smtp->task && !sock_is_invalid(&smtp->sk)) {
         char *cmd = smtp_pack_quit();
-        ev_send(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), 0);
+        ev_send(&smtp->task->loader->netev, &smtp->sk, cmd, strlen(cmd), 0);
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid);
+        ev_close(&smtp->task->loader->netev, &smtp->sk);
     }
     *ud = NULL;
     // 密码不在这里擦：ev_close 只是投命令，网络线程可能正读着它组认证串。
@@ -695,14 +695,12 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
 /// 返回 SMTP 连接的 fd 和 skid
 /// </summary>
 /// <param name="self" type="userdata">SMTP 对象</param>
-/// <returns type="integer">socket fd</returns>
-/// <returns type="integer">skid</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false</returns>
 static int32_t _lprot_smtp_sock_id(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     smtp_ctx *smtp = *ud;
-    lua_pushinteger(lua, smtp->sk.fd);
-    lua_pushinteger(lua, smtp->sk.skid);
-    return 2;
+    lpub_push_sock(lua, &smtp->sk);
+    return 1;
 }
 /// <summary>
 /// 尝试建立 SMTP 连接（异步）

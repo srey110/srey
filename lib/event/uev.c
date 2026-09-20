@@ -5,20 +5,27 @@
 
 #ifndef EV_IOCP
 
+static atomic_t _init_once = 0;// 保证命令回调表只初始化一次，口径同 IOCP 侧 _iocp_init_funcs
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd); // 命令回调函数表
 
-//pipe作为触发器，命令在qu里面获取
-static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) {
+//触发器只负责唤醒，命令在qu里面获取
+static size_t _uev_cmd_run(watcher_ctx *watcher, evsock_ctx *evsk, pip_ctx *pip) {
     size_t cnt_total = 0;
-    int32_t i, cnt, rd;
+    int32_t i, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
+#ifdef NO_CMD_PIPE
+    (void)evsk;
+#else
+    int32_t rd;
     char ntrigger[8];
-    // 触发字节仅作唤醒信号，先抽干清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）。
-    // 抽干靠的是循环到 EAGAIN，不是缓冲大小；写侧一次写 1 个、在途最多 1 个，8 是余量。
-    // EINTR 必须续读：早退留下未读字节，_send_cmd 依赖的"在途最多 1 个"就不成立
+    // 触发字节仅作唤醒信号，读一次即清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）。
+    // 敢只读一次是因为写侧有门控：_send_cmd 把 wake_pending 从 0 CAS 成 1 才写那个字节，
+    // 而清零在下面、晚于本次读，读期间别人 CAS 必失败，故在途恒不超过 1 个字节（8 是余量）。
+    // EINTR 必须续读，否则这次唤醒一个字节都没读到，可读态不清
     do {
-        rd = (int32_t)read(skctx->fd, ntrigger, sizeof(ntrigger));
-    } while (rd > 0 || (ERR_FAILED == rd && EINTR == ERRNO));
+        rd = (int32_t)read(evsk->sk.fd, ntrigger, sizeof(ntrigger));
+    } while (ERR_FAILED == rd && EINTR == ERRNO);
+#endif
     ATOMIC_SET(&pip->wake_pending, 0);
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
@@ -30,23 +37,28 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) 
     return cnt_total;
 }
 // 命令管道可读事件回调：批量读取并处理所有待处理命令
-static void _uev_cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
+static void _uev_cmd_loop(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
     (void)ev;
-    pip_ctx *pip = UPCAST(skctx, pip_ctx, skpip);
-    size_t cnt_total = _uev_cmd_run(watcher, skctx, pip);
+    pip_ctx *pip = UPCAST(evsk, pip_ctx, skpip);
+    size_t cnt_total = _uev_cmd_run(watcher, evsk, pip);
     if (tda_check(&pip->tda, cnt_total)) {
         LOG_WARN("watcher %d cmd pipe overload, count %zu.", watcher->index, cnt_total);
     }
 #ifdef MANUAL_ADD
     // 命令管道只关心读事件，硬编码 EVENT_READ 避免依赖回调入参（evport 平台下避免误注册写事件造成忙循环）
     if (0 == ATOMIC_GET(&watcher->stop)) {
-        ASSERTAB(ERR_OK == _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), ERRORSTR(ERRNO));
+        ASSERTAB(ERR_OK == _uev_add_event(watcher, evsk->sk.fd, &evsk->events, EVENT_READ, evsk), ERRORSTR(ERRNO));
     }
 #endif
 }
 // 初始化命令回调函数表，_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
-// 如 在_ev_send里面直接发送数据
+// 如 在_ev_send里面直接发送数据。
+// cmd_cbs 是进程全局、且事件线程在派发热路径上裸读它，所以只许写一次：ev_init 是公开接口，
+// 已有 ev_ctx 在跑时再建一个(见 test/task_acpstorm.c)就会与那些线程并发写同一批槽位
 static void _uev_init_callback(void) {
+    if (!ATOMIC_CAS(&_init_once, 0, 1)) {
+        return;
+    }
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_CONN] = _on_cmd_conn;
@@ -57,18 +69,34 @@ static void _uev_init_callback(void) {
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
 }
-// 将命令管道读端注册到事件循环（读事件触发_uev_cmd_loop）
+// 将命令唤醒源注册到事件循环（触发_uev_cmd_loop）
 static void _uev_init_cmd(watcher_ctx *watcher) {
-    sock_ctx *skctx = &watcher->pipe.skpip;
-    skctx->fd = watcher->pipe.pipes[0];
-    skctx->events = 0;
+    evsock_ctx *evsk = &watcher->pipe.skpip;
+    evsk->events = 0;
 #ifdef COMMIT_NCHANGES
-    skctx->chg_round = 0;
+    evsk->chg_round = 0;
 #endif
-    skctx->type = 0;
-    skctx->ev_cb = _uev_cmd_loop;
-    _evpub_sockel_add(watcher, skctx);
-    ASSERTAB(ERR_OK == _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), ERRORSTR(ERRNO));
+    evsk->type = 0;
+    evsk->ev_cb = _uev_cmd_loop;
+    evsk->sk.index = watcher->index;// 命令通道恒属本 watcher,同样不按 fd 取模
+#ifdef NO_CMD_PIPE
+#if defined(EV_KQUEUE)
+    // 没有 fd 就不进 element,口径同 IOCP 侧的 _iocp_init_cmd。EV_CLEAR 让取到即自动复位;
+    // udata 这里和 _send_cmd 的 NOTE_TRIGGER 那次必须挂同一个指针,只挂一次取回的是 NULL。
+    // ident 取 0:knote 按 (ident, filter) 索引,与按 fd 索引的读写事件互不干扰
+    evsk->sk.fd = INVALID_SOCK;
+    changes_t kev;
+    EV_SET(&kev, 0, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, evsk);
+    ASSERTAB(ERR_FAILED != kevent(watcher->evfd, &kev, 1, NULL, 0, NULL), ERRORSTR(ERRNO));
+#else
+    #error "Unsupported!"
+#endif
+#else
+    evsk->sk.fd = watcher->pipe.pipes[0];
+    _evpub_sockel_add(watcher, evsk);
+    ASSERTAB(ERR_OK == _uev_add_event(watcher, evsk->sk.fd, &evsk->events, EVENT_READ, evsk),
+        ERRORSTR(ERRNO));
+#endif
 }
 #ifdef COMMIT_NCHANGES
 // 检查changes数组是否已满，满时扩容（kqueue）或批量提交（devpoll）
@@ -87,14 +115,14 @@ static inline void _uev_check_changes(watcher_ctx *watcher) {
 }
 #endif
 // 戳不等于当轮就直接返回:nchanges 每轮轮首归零,而任何追加都同时打当轮戳,所以本轮没追加过的
-// sock 数组里必无它的项。误命中(回绕/回池残留)只是多扫一遍,"该扫却跳过"构造不出来。
+// evsk 数组里必无它的项。误命中(回绕/回池残留)只是多扫一遍,"该扫却跳过"构造不出来。
 // 扫完不把戳归零:_usk_on_connect_cb_err 的补排就紧跟在本函数之后
-void _uev_drop_changes(watcher_ctx *watcher, sock_ctx *skctx) {
+void _uev_drop_changes(watcher_ctx *watcher, evsock_ctx *evsk) {
 #if defined(EV_KQUEUE) || defined(EV_DEVPOLL)
-    if (skctx->chg_round != watcher->chg_round) {
+    if (evsk->chg_round != watcher->chg_round) {
         return;
     }
-    SOCKET fd = skctx->fd;
+    SOCKET fd = evsk->sk.fd;
     int32_t n = 0;
     for (int32_t i = 0; i < watcher->nchanges; i++) {
 #if defined(EV_KQUEUE)
@@ -111,7 +139,7 @@ void _uev_drop_changes(watcher_ctx *watcher, sock_ctx *skctx) {
     watcher->nchanges = n;
 #else
     (void)watcher;
-    (void)skctx;
+    (void)evsk;
 #endif
 }
 #if defined(EV_EVPORT) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
@@ -143,7 +171,7 @@ static inline int32_t _uev_poll2ev(int32_t revents) {
 #endif
 #if defined(EV_EPOLL)
 // EVENT_* → epoll 位。ET 位只在这里加,add 与 del 走的 EPOLL_CTL_MOD 都经过它——
-// 分开写漏一处,MOD 就把边缘触发静默降级成水平触发
+// 分开写漏一处,MOD 就把边缘触发静默降级成水平触发。默认 TRIGGER_ET=0 即不加,见 os.h
 static inline uint32_t _uev_ev2epoll(int32_t ev) {
     uint32_t rtn = 0;
     if (BIT_CHECK(ev, EVENT_READ)) {
@@ -172,10 +200,10 @@ static inline int32_t _uev_epoll2ev(uint32_t revents) {
     return rtn;
 }
 #endif
-int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, sock_ctx *skctx) {
+int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, evsock_ctx *evsk) {
 #if defined(EV_EPOLL)
     events_t epev = { 0 };
-    epev.data.ptr = skctx;
+    epev.data.ptr = evsk;
     int32_t newevents = ev | (*curevents);
     epev.events = _uev_ev2epoll(newevents);
     if (ERR_FAILED == epoll_ctl(watcher->evfd,
@@ -191,28 +219,28 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int3
         BIT_SET((*curevents), EVENT_READ);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_READ, EV_ADD, 0, 0, skctx);
+        EV_SET(kev, fd, EVFILT_READ, EV_ADD, 0, 0, evsk);
         watcher->nchanges++;
-        skctx->chg_round = watcher->chg_round;
+        evsk->chg_round = watcher->chg_round;
     }
     if (BIT_CHECK(ev, EVENT_WRITE)
         && !BIT_CHECK((*curevents), EVENT_WRITE)) {
         BIT_SET((*curevents), EVENT_WRITE);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_WRITE, EV_ADD, 0, 0, skctx);
+        EV_SET(kev, fd, EVFILT_WRITE, EV_ADD, 0, 0, evsk);
         watcher->nchanges++;
-        skctx->chg_round = watcher->chg_round;
+        evsk->chg_round = watcher->chg_round;
     }
 #elif defined(EV_EVPORT)
     int32_t newevents = ev | (*curevents);
     int32_t pollev = _uev_ev2poll(newevents);
-    if (ERR_FAILED == port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, skctx)) {
+    if (ERR_FAILED == port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, evsk)) {
         return ERR_FAILED;
     }
     *curevents = newevents;
 #elif defined(EV_POLLSET)
-    (void)skctx;
+    (void)evsk;
     int32_t newevents = ev | (*curevents);
     struct poll_ctl ctl;
     ctl.fd = fd;
@@ -230,14 +258,14 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int3
     pfd->revents = 0;
     pfd->events = (short)_uev_ev2poll(*curevents);
     watcher->nchanges++;
-    skctx->chg_round = watcher->chg_round;
+    evsk->chg_round = watcher->chg_round;
 #endif
     return ERR_OK;
 }
-void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, sock_ctx *skctx) {
+void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, evsock_ctx *evsk) {
 #if defined(EV_EPOLL)
     events_t epev = { 0 };
-    epev.data.ptr = skctx;
+    epev.data.ptr = evsk;
     BIT_REMOVE((*curevents), ev);
     if (0 == (*curevents)) {
         (void)epoll_ctl(watcher->evfd, EPOLL_CTL_DEL, fd, &epev);
@@ -251,18 +279,18 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
         BIT_REMOVE((*curevents), EVENT_READ);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_READ, EV_DELETE, 0, 0, skctx);
+        EV_SET(kev, fd, EVFILT_READ, EV_DELETE, 0, 0, evsk);
         watcher->nchanges++;
-        skctx->chg_round = watcher->chg_round;
+        evsk->chg_round = watcher->chg_round;
     }
     if (BIT_CHECK(ev, EVENT_WRITE)
         && BIT_CHECK((*curevents), EVENT_WRITE)) {
         BIT_REMOVE((*curevents), EVENT_WRITE);
         _uev_check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
-        EV_SET(kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, skctx);
+        EV_SET(kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, evsk);
         watcher->nchanges++;
-        skctx->chg_round = watcher->chg_round;
+        evsk->chg_round = watcher->chg_round;
     }
 #elif defined(EV_EVPORT)
     BIT_REMOVE((*curevents), ev);
@@ -270,10 +298,10 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
         (void)port_dissociate(watcher->evfd, PORT_SOURCE_FD, fd);
     } else {
         int32_t pollev = _uev_ev2poll(*curevents);
-        (void)port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, skctx);
+        (void)port_associate(watcher->evfd, PORT_SOURCE_FD, fd, pollev, evsk);
     }
 #elif defined(EV_POLLSET)
-    (void)skctx;
+    (void)evsk;
     BIT_REMOVE((*curevents), ev);
     if (0 == (*curevents)) {
         struct poll_ctl ctl;
@@ -299,7 +327,7 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
     pfd->events = POLLREMOVE;
     pfd->revents = 0;
     watcher->nchanges++;
-    skctx->chg_round = watcher->chg_round;
+    evsk->chg_round = watcher->chg_round;
     if (0 != (*curevents)) {
         _uev_check_changes(watcher);
         pfd = &watcher->changes[watcher->nchanges];
@@ -307,7 +335,7 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t
         pfd->revents = 0;
         pfd->events = (short)_uev_ev2poll(*curevents);
         watcher->nchanges++;
-        skctx->chg_round = watcher->chg_round;
+        evsk->chg_round = watcher->chg_round;
     }
 #endif
 }
@@ -334,6 +362,11 @@ static inline int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
         if (EVFILT_WRITE == ev->filter) {
             BIT_SET(rtn, EVENT_WRITE);
         }
+#ifdef NO_CMD_PIPE
+        if (EVFILT_USER == ev->filter) {
+            BIT_SET(rtn, EVENT_READ);
+        }
+#endif
     }
     *arg = ev->udata;
 #elif defined(EV_EVPORT)
@@ -351,6 +384,7 @@ static inline int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
 // 事件循环主函数（Unix平台：epoll/kqueue/evport/pollset/devpoll）
 static void _uev_loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
+    _evpub_set_cur_watcher(watcher);
 #if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
     int32_t timeout;
 #else
@@ -366,7 +400,7 @@ static void _uev_loop_event(void *arg) {
     int32_t err;
 #endif
     SOCKET fd = INVALID_SOCK;
-    sock_ctx *skctx;
+    evsock_ctx *evsk;
     int32_t i, cnt, ev;
     uint32_t loop_cnt = 0, next_to = EVENT_WAIT_TIMEOUT;
     uint64_t now_ms, shrink_start = timer_cur_ms(&watcher->timer);
@@ -417,15 +451,15 @@ static void _uev_loop_event(void *arg) {
         cnt = ioctl(watcher->evfd, DP_POLL, &dvp);
 #endif
         for (i = 0; i < cnt; i++) {
-            ev = _uev_parse_event(&watcher->events[i], &fd, (void **)&skctx);
+            ev = _uev_parse_event(&watcher->events[i], &fd, (void **)&evsk);
 #ifdef NO_UDATA
-            skctx = _evpub_sockel_get(watcher, fd);
+            evsk = _evpub_sockel_get(watcher, fd);
 #endif
-            if (NULL == skctx) {
+            if (NULL == evsk) {
                 continue;
             }
-            // _close_tcp 路径会清 ev_cb=NULL；qtn 隔离期内 skctx 内存活，读 ev_cb 安全
-            if (NULL == skctx->ev_cb) {
+            // _close_tcp 路径会清 ev_cb=NULL；qtn 隔离期内 evsk 内存活，读 ev_cb 安全
+            if (NULL == evsk->ev_cb) {
                 continue;
             }
 #if defined(EV_KQUEUE)
@@ -433,25 +467,28 @@ static void _uev_loop_event(void *arg) {
                 // 注册失败的 fd 已无 knote,再等事件就永不关闭,故置位后本轮同步派发读写,
                 // 由入口的 STATUS_ERROR 分支就地 close；pipe / listen(type 为 0)不能走
                 // _uev_disconnect(它对非 SOCK_STREAM 一律 UPCAST 成 udp_ctx 会越界),只记日志
-                if (SOCK_STREAM == skctx->type
-                    || SOCK_DGRAM == skctx->type) {
-                    _uev_disconnect(watcher, skctx);
-                } else if (skctx == &watcher->pipe.skpip) {
+                if (SOCK_STREAM == evsk->type
+                    || SOCK_DGRAM == evsk->type) {
+                    _uev_disconnect(watcher, evsk);
+                } else if (evsk == &watcher->pipe.skpip) {
                     LOG_FATAL("watcher %d cmd pipe lost its knote, this thread no longer takes commands.",
                               watcher->index);
                 } else {
                     LOG_ERROR("watcher %d listener fd %d lost its knote, no longer accepts.",
-                              watcher->index, (int32_t)skctx->fd);
+                              watcher->index, (int32_t)evsk->sk.fd);
                 }
-                skctx->ev_cb(watcher, skctx, (EVENT_READ | EVENT_WRITE));
+                evsk->ev_cb(watcher, evsk, (EVENT_READ | EVENT_WRITE));
                 continue;
             }
             if (0 == ev) {
                 continue;// EV_ERROR 被过滤(data 为 0 / ENOENT)时无有效事件位，空掩码会让忽略 ev 的回调(_usk_on_connect_cb)误判就绪
             }
 #endif
-            skctx->ev_cb(watcher, skctx, ev);
+            evsk->ev_cb(watcher, evsk, ev);
         }
+        // 本轮派发完统一冲:命令回调与读回调攒下的发送都在这里发出,
+        // 合并窗口是整轮派发,同一 fd 的多条 ev_send 仍合成一次 writev
+        _uev_flush_pending(watcher);
         if (0 == ATOMIC_GET(&watcher->stop)
             && cnt == watcher->nevents) {
             watcher->nevents *= 2;
@@ -474,17 +511,18 @@ static void _uev_loop_event(void *arg) {
         _uev_qtn_drain(watcher, now_ms);
         _evpub_pool_shrink(watcher, &shrink_start, now_ms);
     }
+    _evpub_set_cur_watcher(NULL);
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
 // hashmap元素释放回调：根据socket类型选择释放函数（管道fd type=0不释放）
 static void _uev_free_element(void *item) {
-    sock_ctx *sock = *((sock_ctx **)item);
-    if (SOCK_STREAM == sock->type) {
-        _evpub_sk_free(sock);
+    evsock_ctx *evsk = *((evsock_ctx **)item);
+    if (SOCK_STREAM == evsk->type) {
+        _evpub_sk_free(evsk);
         return;
     }
-    if (SOCK_DGRAM == sock->type) {
-        _uev_free_udp(sock);
+    if (SOCK_DGRAM == evsk->type) {
+        _uev_free_udp(evsk);
     }
 }
 // 根据编译宏创建对应平台的事件fd（epoll_create1/kqueue/port_create等）
@@ -507,8 +545,10 @@ static int32_t _uev_init_evfd(void) {
 #endif
     return evfd;
 }
-// 创建匿名管道，读写两端均设为非阻塞
+// 创建命令通道：命令一律存 fsqu，只有传唤醒信号的载体按平台分叉（NO_CMD_PIPE 下是
+// kqueue 用户事件，不占 fd，故无管道可建）
 static void _uev_new_pipe(pip_ctx *pip) {
+#ifndef NO_CMD_PIPE
 #if defined(HAVE_PIPE2)
     // 支持 pipe2 的平台：原子设置 CLOEXEC，防被 fork+exec 的子进程继承
     ASSERTAB(ERR_OK == pipe2(pip->pipes, O_CLOEXEC), ERRORSTR(ERRNO));
@@ -522,12 +562,19 @@ static void _uev_new_pipe(pip_ctx *pip) {
     // 写端非阻塞：_send_cmd 写触发字节不会永久阻塞
     ASSERTAB(ERR_OK == sock_nonblock(pip->pipes[0]), ERRORSTR(ERRNO));
     ASSERTAB(ERR_OK == sock_nonblock(pip->pipes[1]), ERRORSTR(ERRNO));
-    // 命令存 fsqu、pipe 仅传 1 字节信号，告警阈值按 fsqu 容量算
+#endif//NO_CMD_PIPE
+    // 命令存 fsqu、触发器只负责唤醒，告警阈值按 fsqu 容量算
     fsqu_init(&pip->qu, sizeof(cmd_ctx), 4 * ONEK);
     tda_init(&pip->tda, (size_t)(fsqu_capacity(&pip->qu) / QUEUE_OVERLOAD_RATIO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
+#if defined(EV_KQUEUE)
+    // kqueue 上多线程反而更慢,epoll/IOCP 无此问题
+    if (ctx->nthreads > 1) {
+        LOG_WARN("kqueue with %u net threads, throughput may fall below single thread.", ctx->nthreads);
+    }
+#endif
     ATOMIC_SET(&ctx->stopping, 0);
     spin_init(&ctx->spin, SPIN_CNT);
     array_init(&ctx->arrlsn, sizeof(struct listener_ctx *), 0);
@@ -548,11 +595,16 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _uev_init_evfd();
         _uev_new_pipe(&watcher->pipe);
-        watcher->element = hashmap_new(sizeof(sock_ctx *), ONEK, 0, 0,
+        watcher->element = hashmap_new(sizeof(evsock_ctx *), ONEK, 0, 0,
                                        _evpub_sockel_hash, _evpub_sockel_compare, _uev_free_element, NULL);
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         queue_init(&watcher->qtn, sizeof(qtn_entry), ONEK);
         list_init(&watcher->ticks);
+        list_init(&watcher->flushes);
+#if WITH_SSL
+        list_init(&watcher->wpends);
+        watcher->wpend_tick.cb = NULL;
+#endif
         timer_init(&watcher->timer);
         _uev_init_cmd(watcher);
         if (NULL != hooks) {
@@ -583,8 +635,10 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
             _cmd_drain_free(&cmds[j]);
         }
     }
+#ifndef NO_CMD_PIPE
     close(watcher->pipe.pipes[0]);
     close(watcher->pipe.pipes[1]);
+#endif
     fsqu_free(&watcher->pipe.qu);
 }
 static void _uev_stop_watcher(ev_ctx *ctx) {
@@ -605,8 +659,8 @@ static void _uev_free_watcher(ev_ctx *ctx) {
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
-        // _uev_init_cmd 将 pip_ctx::skpip（嵌入 watcher->pipe，不由 element 持有）以 type=0
-        // 注册进 element，_uev_free_element 靠 type==0 跳过它
+        // 走管道那档时 _uev_init_cmd 会把 pip_ctx::skpip（嵌入 watcher->pipe，不由 element 持有）
+        // 以 type=0 注册进 element，_uev_free_element 靠 type==0 跳过它；NO_CMD_PIPE 下它压根不进表
         hashmap_free(watcher->element);
         pool_free(&watcher->pool);
         _uev_free_pipe(watcher);

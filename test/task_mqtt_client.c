@@ -13,7 +13,7 @@ typedef struct mqtt_client_args {
 }mqtt_client_args;
 
 // TCP 连接建立后发送 CONNECT 包，MQTT 5.0 时携带扩展连接属性和遗嘱属性
-static void _net_connect(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t erro) {
+static void _net_connect(task_ctx *task, sock_ctx *sk, subtype_t pktype, int32_t erro) {
     (void)pktype;
     mqtt_client_args *arg = coro_get_arg(task);
     if (ERR_OK != erro) {
@@ -23,12 +23,12 @@ static void _net_connect(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t er
     // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
     *(arg->ok) = -1;
     binary_ctx connprop;
-    binary_init(&connprop, NULL, 0, 0);
+    binary_init_write(&connprop, 0, 0);
     mqtt_props_fixnum(&connprop, SESSION_EXPIRY, 120);
     mqtt_props_fixnum(&connprop, RECEIVE_MAXIMUM, 20000);
     mqtt_props_kv(&connprop, USER_PROPERTY, "key1", 4, "val1", 4);
     binary_ctx willprop;
-    binary_init(&willprop, NULL, 0, 0);
+    binary_init_write(&willprop, 0, 0);
     mqtt_props_fixnum(&willprop, WILLDELAY_INTERVAL, 60);
     mqtt_props_kv(&willprop, USER_PROPERTY, "key2", 4, "val2", 4);
     size_t lens;
@@ -39,30 +39,30 @@ static void _net_connect(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t er
     binary_free(&connprop);
     binary_free(&willprop);
     if (NULL != pk) {
-        ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+        ev_send(&task->loader->netev, sk, pk, lens, 0);
         if (arg->prt) {
             LOG_INFO("C->CONNECT");
         }
     }
 }
 // 发送 PUBLISH 包，qos 指定服务质量等级，payload 固定为测试字符串
-static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, SOCKET fd, uint64_t skid, int8_t qos) {
+static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, sock_ctx *sk, int8_t qos) {
     mqtt_client_args *arg = coro_get_arg(task);
     binary_ctx props;
-    binary_init(&props, NULL, 0, 0);
+    binary_init_write(&props, 0, 0);
     mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
     size_t lens;
     char *pk = mqtt_pack_publish(pack->version, 1, qos, 1, "srey/will", (uint16_t)randrange(100, 20000), "publish payload", strlen("publish payload"), &props, &lens);
     binary_free(&props);
     if (NULL != pk) {
-        ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+        ev_send(&task->loader->netev, sk, pk, lens, 0);
         if (arg->prt) {
             LOG_INFO("C->PUBLISH QoS %d", qos);
         }
     }
 }
 // 收到服务端数据包，驱动完整的 MQTT 消息流程状态机
-static void _net_recv(task_ctx *task, sk_id *sk,
+static void _net_recv(task_ctx *task, sock_ctx *sk,
      subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
@@ -80,8 +80,8 @@ static void _net_recv(task_ctx *task, sk_id *sk,
         if (0x00 != vh->reason) {
             break;
         }
-        _send_publish(pack, task, sk->fd, sk->skid, 0);
-        _send_publish(pack, task, sk->fd, sk->skid, 1);
+        _send_publish(pack, task, sk, 0);
+        _send_publish(pack, task, sk, 1);
         break;
     }
     case MQTT_PUBLISH: {
@@ -106,7 +106,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
             LOG_INFO("PUBACK<-S %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
         }
         if (0x00 == vh->reason || 0x10 == vh->reason) {
-            _send_publish(pack, task, sk->fd, sk->skid, 2);
+            _send_publish(pack, task, sk, 2);
         }
         break;
     }
@@ -120,7 +120,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
             size_t lens;
             char *pk = mqtt_pack_pubrel(pack->version, vh->packid, 0, NULL, &lens);
             if (NULL != pk) {
-                ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+                ev_send(&task->loader->netev, sk, pk, lens, 0);
                 if (arg->prt) {
                     LOG_INFO("C->PUBREL");
                 }
@@ -135,7 +135,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
             LOG_INFO("PUBCOMP<-S %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
         }
         binary_ctx topics;
-        binary_init(&topics, NULL, 0, 0);
+        binary_init_write(&topics, 0, 0);
         if (ERR_OK != mqtt_topics_subscribe(&topics, pack->version, "/test/topic1", 1, 1, 1, 1)) {
             binary_free(&topics);
             break;
@@ -144,7 +144,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
         char *pk = mqtt_pack_subscribe(pack->version, (uint16_t)randrange(100, 20000), &topics, NULL, &lens);
         binary_free(&topics);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
             if (arg->prt) {
                 LOG_INFO("C->SUBSCRIBE");
             }
@@ -159,7 +159,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
         }
         if (0x00 == pl->reasons[0] || 0x01 == pl->reasons[0] || 0x02 == pl->reasons[0]) {
             binary_ctx topics;
-            binary_init(&topics, NULL, 0, 0);
+            binary_init_write(&topics, 0, 0);
             if (ERR_OK != mqtt_topics_unsubscribe(&topics, "/test/topic1")) {
                 binary_free(&topics);
                 break;
@@ -168,7 +168,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
             char *pk = mqtt_pack_unsubscribe(pack->version, (uint16_t)randrange(100, 20000), &topics, NULL, &lens);
             binary_free(&topics);
             if (NULL != pk) {
-                ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+                ev_send(&task->loader->netev, sk, pk, lens, 0);
                 if (arg->prt) {
                     LOG_INFO("C->UNSUBSCRIBE");
                 }
@@ -189,7 +189,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
         size_t lens;
         char *pk = mqtt_pack_ping(&lens);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
             if (arg->prt) {
                 LOG_INFO("C->PING");
             }
@@ -204,7 +204,7 @@ static void _net_recv(task_ctx *task, sk_id *sk,
         size_t lens;
         char *pk = mqtt_pack_disconnect(pack->version, 0, NULL, &lens);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk, pk, lens, 0);
             if (arg->prt) {
                 LOG_INFO("C->DISCONNECT");
             }
@@ -223,8 +223,7 @@ static void _startup(task_ctx *task) {
 
     mqtt_client_args *arg = coro_get_arg(task);
     int32_t rtn;
-    SOCKET fd;
-    uint64_t skid;
+    sock_ctx sk;
     if (0 != arg->delay) {
         coro_sleep(task, arg->delay);// 等进程内 broker 的 _startup 被派发, 见头文件
     }
@@ -236,10 +235,10 @@ static void _startup(task_ctx *task) {
             LOG_ERROR("dns_lookup error.");
             return;
         }
-        rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, 1, &fd, &skid);
+        rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, 1, &sk);
         FREE(ips);
     } else {
-        rtn = mqtt_try_connect(task, NULL, arg->host, arg->port, 0, arg->version, 1, &fd, &skid);
+        rtn = mqtt_try_connect(task, NULL, arg->host, arg->port, 0, arg->version, 1, &sk);
     }
     if (ERR_OK != rtn) {
         LOG_WARN("task_connect %s error.", arg->host);

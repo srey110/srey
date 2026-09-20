@@ -33,9 +33,9 @@ runner.run(function(t)
     -- 服务端侧回显：keep 那段要让客户端 skid 上真收到一条 RECV（走正常摘空，不是超时）。
     -- 只回显 accept 来的那条（client==0）：客户端那条的 RECV 有协程等着，先被 _resume_waiter
     -- 摘走、根本到不了这里，等它没人等了再回显就成互相打乒乓
-    srey.on_recved(function(_, fd, skid, client, _, data, size)
+    srey.on_recved(function(_, sk, client, _, data, size)
         if 0 == client and data then
-            srey.send(fd, skid, data, size, 1)
+            srey.send(sk, data, size, 1)
         end
     end)
 
@@ -50,18 +50,18 @@ runner.run(function(t)
 
         -- srey.connect 内部已经等过 CONNECT 了，返回有效 fd 即已连上；
         -- 再调一次 srey.wait_connect 会去等第二条永远不来的 CONNECT，白等满 5s 连接超时
-        local fd, skid = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
-        t:check(fd and INVALID_SOCK ~= fd, "connect 回自己的监听口")
-        if fd and INVALID_SOCK ~= fd then
+        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
+        t:check(sk and sk.valid, "connect 回自己的监听口")
+        if sk and sk.valid then
             local first, second
             srey.fork(function()
                 -- 3s 只是失败时的兜底上界，正常路径是被下面那句 close 的 CLOSE 广播唤醒
-                first = srey._coro_wait(skid, srey.MSG_TYPE.RECV, 3000).mtype
+                first = srey._coro_wait(sk.skid, srey.MSG_TYPE.RECV, 3000).mtype
                 -- 关键动作：就在 CLOSE 的排空循环里，同一个 sess 上再注册一次
-                second = srey._coro_wait(skid, srey.MSG_TYPE.RECV, 200).mtype
+                second = srey._coro_wait(sk.skid, srey.MSG_TYPE.RECV, 200).mtype
             end)
             srey.sleep(30)
-            srey.close(fd, skid)
+            srey.close(sk)
             srey.sleep(200 + SETTLE)
 
             t:eq(srey.MSG_TYPE.CLOSE, first, "第一次等待被 CLOSE 广播唤醒")
@@ -77,9 +77,9 @@ runner.run(function(t)
     -- 不断言"第 i 个协程收到第 i 份数据"：UDP 到达顺序本身不保证，
     -- 那样断言会变成一条随机失败的用例。能确定的是配对不丢、内容不串。
     do
-        local fd, skid = srey.udp(PACK_TYPE.NONE, "0.0.0.0", UDP_PORT)
-        t:check(fd and INVALID_SOCK ~= fd, "udp 建 socket")
-        if fd and INVALID_SOCK ~= fd then
+        local sk = srey.udp(PACK_TYPE.NONE, "0.0.0.0", UDP_PORT)
+        t:check(sk and sk.valid, "udp 建 socket")
+        if sk and sk.valid then
             -- 默认 netread 超时 10s，失败时会把用例拖满；缩短后还原
             local old = srey.get_netread_timeout()
             srey.set_netread_timeout(500)
@@ -88,7 +88,7 @@ runner.run(function(t)
             for i = 1, NSEND do
                 srey.fork(function()
                     local payload = "p" .. i
-                    local d, s = srey.syn_sendto(fd, skid, "127.0.0.1", UDP_PORT, payload, #payload, 1)
+                    local d, s = srey.syn_sendto(sk, "127.0.0.1", UDP_PORT, payload, #payload, 1)
                     if d then
                         got[srey.ud_str(d, s)] = true
                     end
@@ -105,7 +105,7 @@ runner.run(function(t)
             end
             t:eq(NSEND, n, "N 份响应各自配到一个协程，内容不重不漏")
 
-            srey.close(fd, skid)
+            srey.close(sk)
         end
     end
 
@@ -152,27 +152,27 @@ runner.run(function(t)
     do
         local s0 = _sessions() -- 连之前先取基线
         local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT, NET_EV.ACCEPT)
-        local fd, skid = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
-        t:check(fd and INVALID_SOCK ~= fd, "connect 回自己的监听口")
-        if fd and INVALID_SOCK ~= fd then
+        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
+        t:check(sk and sk.valid, "connect 回自己的监听口")
+        if sk and sk.valid then
             -- srey.connect 内部就在 skid 上等过 CONNECT，而 CONNECT 也在 may_keep 那六个里，
             -- 所以走到这里条目已经建好、keep 已经是 true 了
             t:eq(s0 + 1, _sessions(), "connect 之后 skid 上留下 keep=true 的条目")
 
             local woke
             srey.fork(function()
-                woke = srey._coro_wait(skid, srey.MSG_TYPE.RECV, 3000).mtype
+                woke = srey._coro_wait(sk.skid, srey.MSG_TYPE.RECV, 3000).mtype
             end)
             srey.sleep(30)
             t:eq(s0 + 1, _sessions(), "RECV 等待者追加到已有条目，不新建第二个")
 
             -- 从对端回写让 RECV 正常到达，把 waiters 摘空（不是超时路径）
-            srey.send(fd, skid, "z", 1, 1)
+            srey.send(sk, "z", 1, 1)
             srey.sleep(200)
             t:eq(srey.MSG_TYPE.RECV, woke, "等待者被 RECV 唤醒")
             t:eq(s0 + 1, _sessions(), "keep=true 的条目摘空 waiters 后仍留着")
 
-            srey.close(fd, skid)
+            srey.close(sk)
             srey.sleep(200)
             t:eq(s0, _sessions(), "CLOSE 清零 keep 后条目才真正删掉")
         end
@@ -185,19 +185,19 @@ runner.run(function(t)
     do
         local s0 = _sessions()
         local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT, NET_EV.ACCEPT)
-        local fd, skid = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
-        t:check(fd and INVALID_SOCK ~= fd, "connect 回自己的监听口")
-        if fd and INVALID_SOCK ~= fd then
+        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
+        t:check(sk and sk.valid, "connect 回自己的监听口")
+        if sk and sk.valid then
             t:eq(s0 + 1, _sessions(), "connect 之后条目已在（keep=true）")
             local woke
             srey.fork(function()
-                woke = srey._coro_wait(skid, srey.MSG_TYPE.RECV, 200).mtype
+                woke = srey._coro_wait(sk.skid, srey.MSG_TYPE.RECV, 200).mtype
             end)
             srey.sleep(200 + SETTLE)
             t:eq(srey.MSG_TYPE.TIMEOUT, woke, "等待者超时唤醒")
             -- 与上一段对照：同样是 keep=true 的条目，走摘空活着、走超时就删
             t:eq(s0, _sessions(), "超时摘空后条目被删，不受 keep=true 保护")
-            srey.close(fd, skid)
+            srey.close(sk)
         end
         srey.unlisten(lid)
     end

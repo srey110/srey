@@ -96,10 +96,10 @@ typedef struct message_ctx {
     uint64_t sess;  // 会话 ID（用于请求/响应匹配）
     void *data;     // 消息数据指针
     shared_data *shared; // NULL=独占（默认 _message_clean 走 prots_pkfree/FREE）；非 NULL=task_multi_call / task_multi_request 广播,N 个 task 共享同一 data,各 task 释放时 ATOMIC_ADD(&ref,-1) 归 0 才 FREE
-    sk_id sk;       // 连接标识 fd+skid
+    sock_ctx sk;       // 连接标识
 }message_ctx;
 // 握手完成后的推送回调函数类型
-typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client,
+typedef int32_t(*_handshaked_push)(sock_ctx *sk, int32_t client,
     ud_cxt *ud, int32_t erro, void *data, size_t lens);
 // 消息汇：网络事件回调向上推消息的接口，由 task 层注册实现
 typedef void*(*prots_emit_begin_cb)(void *loader, name_t handle);// 开窗：grab 目标，返回不透明句柄，NULL=目标不存在

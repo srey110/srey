@@ -7,7 +7,7 @@ char *_pgpack_error_notice(binary_ctx *breader) {
     char flag;
     char *tmp;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     for (;;) {
         if (!binary_have(breader, 1)) {
             break;
@@ -282,7 +282,7 @@ static int32_t _pgpack_copy_out_response(pgpack_ctx *pgpack, binary_ctx *breader
     CALLOC(copyout, 1, sizeof(pgpack_copy_out_ctx));
     copyout->format = (pgpack_format)binary_get_int8(breader);
     copyout->ncol = (int16_t)binary_get_integer(breader, 2, 0);
-    binary_init(&copyout->data, NULL, 0, 0);
+    binary_init_write(&copyout->data, 0, 0);
     pgpack->pack = copyout;
     pgpack->_free_pgpack = _pgpack_copy_out_free;
     return ERR_OK;

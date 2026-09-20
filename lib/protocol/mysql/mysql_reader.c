@@ -253,7 +253,7 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
         struct tm dt = { 0 };
         dt.tm_isdst = -1;// 由 mktime 依日期/本地时区自行判定夏令时，否则 DST 期恒按标准时解释偏 1 小时
         binary_ctx breader;
-        binary_init(&breader, row->val.data, row->val.lens, 0);
+        binary_init_read(&breader, row->val.data, row->val.lens);
         dt.tm_year = (int32_t)binary_get_integer(&breader, 2, 1) - 1900;
         dt.tm_mon = (int32_t)binary_get_int8(&breader) - 1;
         dt.tm_mday = (int32_t)binary_get_int8(&breader);
@@ -317,7 +317,7 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
             return 0;
         }
         binary_ctx breader;
-        binary_init(&breader, row->val.data, row->val.lens, 0);
+        binary_init_read(&breader, row->val.data, row->val.lens);
         is_negative = (int32_t)binary_get_int8(&breader);
         time->tm_mday = (int32_t)binary_get_integer(&breader, 4, 1);
         time->tm_hour = (int32_t)binary_get_int8(&breader);

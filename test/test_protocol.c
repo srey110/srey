@@ -22,19 +22,21 @@ static void _bput(buffer_ctx *b, const char *s) {
     buffer_append(b, (void *)s, strlen(s));
 }
 
-// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
+static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
+// 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
 // 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
 static void *_t_http_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return http_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return http_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 static void *_t_redis_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return redis_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return redis_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 static void *_t_websock_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return websock_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return websock_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 
 // websock 解包用的最小上下文：ws 清零 + 无子协议，ud 摆到握手已完成的 START 状态并挂上 ws。
@@ -59,23 +61,23 @@ static redis_pack_ctx *_t_redis_one(buffer_ctx *buf, ud_cxt *ud,
 }
 static void *_t_smtp_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return smtp_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return smtp_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 static void *_t_custz_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return custz_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return custz_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 static void *_t_dns_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return dns_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return dns_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 static void *_t_prots_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return prots_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return prots_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 static void *_t_mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mqtt_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return mqtt_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 
 /* =======================================================================
@@ -288,7 +290,7 @@ static void test_http_response(CuTest *tc) {
 /* 组包（POST 请求）后再解包，验证往返一致性 */
 static void test_http_pack_req(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 256);
+    binary_init_write(&bw, 0, 256);
     http_pack_req(&bw, "POST", "/test");
     http_pack_head(&bw, "Host", "localhost");
     /* http_pack_content 写入 Content-Length: N\r\n\r\n + 消息体 */
@@ -1167,7 +1169,7 @@ static void test_http_code_status(CuTest *tc) {
     CuAssertStrEquals(tc, "Unknown", http_code_status(-1));
     // http_pack_resp 应使用 http_code_status 的描述串
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_resp(&bw, 200);
     CuAssertTrue(tc, NULL != memstr(0, bw.data, bw.offset, "HTTP/1.1 200 OK\r\n", 17));
     binary_free(&bw);
@@ -1180,7 +1182,7 @@ static void test_http_code_status(CuTest *tc) {
 // 4) 拼接后用 http_unpack 重放，逐块解析得到 PROT_SLICE_START / PROT_SLICE / PROT_SLICE_END
 static void test_http_pack_chunked(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     // 第一段：状态行 + 头部 + chunk1
     http_pack_resp(&bw, 200);
     http_pack_head(&bw, "Content-Type", "text/plain");
@@ -4511,6 +4513,8 @@ static void test_prots_udfree_default(CuTest *tc) {
     uint64_t a0, f0, a1, f1;
     mem_stat(&a0, &f0);
     ud_cxt ud;
+    sock_ctx sk;
+    sock_set_invalid(&sk);
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         ZERO(&ud, sizeof(ud));
         ud.pktype = (subtype_t)defaults[i];
@@ -4536,11 +4540,14 @@ static void test_prots_net_close_default(CuTest *tc) {
     pack_type defaults[] = { PACK_NONE, PACK_DNS, PACK_HTTP, PACK_WEBSOCK,
                              PACK_MQTT, PACK_CUSTZ_FIXED, PACK_REDIS };
     ud_cxt ud;
+    sock_ctx sk;
+    sock_set_invalid(&sk);
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         ZERO(&ud, sizeof(ud));
         ud.pktype = (subtype_t)defaults[i];
         g_stub_emit_calls = 0;
-        prots_net_close(NULL, INVALID_SOCK, 100 + (uint64_t)i, 0, CLOSE_TYPE_LOCAL, &ud);
+        sk.skid = 100 + (uint64_t)i;
+        prots_net_close(NULL, &sk, 0, CLOSE_TYPE_LOCAL, &ud);
         CuAssertIntEquals(tc, 1, g_stub_emit_calls);
         CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
         CuAssertIntEquals(tc, (int)defaults[i], (int)g_stub_last_msg.subtype);
@@ -4566,11 +4573,14 @@ static void test_prots_net_close_tail_gate(CuTest *tc) {
     buffer_ctx buf;
     buffer_init(&buf);
     ud_cxt ud;
+    sock_ctx sk;
+    sock_set_invalid(&sk);
 
     // 1) 有序结束：末片 + CLOSE 两条，末片带 SLICE_END
     _tillclose_enter(tc, &buf, &ud);
     g_stub_emit_calls = 0;
-    prots_net_close(NULL, INVALID_SOCK, 1, 1, CLOSE_TYPE_ORDERLY, &ud);
+    sk.skid = 1;
+    prots_net_close(NULL, &sk, 1, CLOSE_TYPE_ORDERLY, &ud);
     CuAssertIntEquals(tc, 2, g_stub_emit_calls);
     CuAssertIntEquals(tc, (int)MSG_TYPE_RECV, (int)g_stub_first_msg.mtype);
     CuAssertIntEquals(tc, PROT_SLICE_END, (int)g_stub_first_msg.slice);
@@ -4581,7 +4591,8 @@ static void test_prots_net_close_tail_gate(CuTest *tc) {
     // 2) TLS 没发 close_notify 就断：同样补末片，但 CLOSE 上的 erro 是 TRUNCATED
     _tillclose_enter(tc, &buf, &ud);
     g_stub_emit_calls = 0;
-    prots_net_close(NULL, INVALID_SOCK, 2, 1, CLOSE_TYPE_TRUNCATED, &ud);
+    sk.skid = 2;
+    prots_net_close(NULL, &sk, 1, CLOSE_TYPE_TRUNCATED, &ud);
     CuAssertIntEquals(tc, 2, g_stub_emit_calls);
     CuAssertIntEquals(tc, PROT_SLICE_END, (int)g_stub_first_msg.slice);
     _http_pkfree(g_stub_first_msg.data);
@@ -4593,7 +4604,8 @@ static void test_prots_net_close_tail_gate(CuTest *tc) {
     for (i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
         _tillclose_enter(tc, &buf, &ud);
         g_stub_emit_calls = 0;
-        prots_net_close(NULL, INVALID_SOCK, 3 + (uint64_t)i, 1, types[i], &ud);
+        sk.skid = 3 + (uint64_t)i;
+        prots_net_close(NULL, &sk, 1, types[i], &ud);
         CuAssertIntEquals(tc, 1, g_stub_emit_calls);
         CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
         CuAssertIntEquals(tc, types[i], g_stub_last_msg.erro);
@@ -5610,10 +5622,9 @@ static void test_mail_attach_name_rfc2231(CuTest *tc) {
 static int32_t g_smtp_hs_calls;
 static int32_t g_smtp_hs_erro;
 static char g_smtp_hs_msg[128];
-static int32_t _stub_smtp_hspush(SOCKET fd, uint64_t skid, int32_t client,
+static int32_t _stub_smtp_hspush(sock_ctx *sk, int32_t client,
                                  ud_cxt *ud, int32_t erro, void *data, size_t lens) {
-    (void)fd;
-    (void)skid;
+    (void)sk;
     (void)client;
     (void)ud;
     g_smtp_hs_calls++;

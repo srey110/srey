@@ -5,11 +5,8 @@
 #include "lua/lualib.h"
 #include "lua/lauxlib.h"
 
-#define CERT_FOLDER "keys" // SSL 证书文件所在子目录名
 #define CUR_TASK_NAME "_curtask" // Lua 全局变量名：当前 task 指针
 #define PATH_NAME "_propath" // Lua 全局变量名：程序根路径
-#define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
-#define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
 #define PORT_OUT_OF_RANGE "port out of range" // 端口越界文案，各 connect / listen 绑定共用
 #define REQTYPE_OUT_OF_RANGE "reqtype out of range" // 请求类型越界文案，core 与 harbor 绑定共用
 #define LENS_RANGE "length out of range" // 长度越界文案，lpub 的取 buf 一族与 mqtt 载荷共用
@@ -297,5 +294,52 @@ void lpub_push_url_param(lua_State *lua, url_ctx *url);
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="url">已由 url_parse 填充的 url_ctx</param>
 void lpub_push_url_table(lua_State *lua, url_ctx *url);
+/// <summary>
+/// 注册连接标识(sock_ctx)的元表。每个 lua_State 建一次，由 Lua 初始化时调用
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+void lpub_reg_sock(lua_State *lua);
+/// <summary>
+/// 把连接标识按值拷进 userdata 并压栈。可读字段 fd / skid / valid，经 __index 按需取；
+/// 连接级创建（accept / connect / udp），不要按消息造——那会给每条消息加一次 GC 分配
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="sk">连接标识，按值拷贝，压栈后与原对象无关</param>
+void lpub_push_sock(lua_State *lua, sock_ctx *sk);
+/// <summary>
+/// 同 lpub_push_sock，但按 skid 复用同一个 userdata（命中时刷新其值）。
+/// 只给消息分发用：别处调会把已关连接的 skid 写回缓存，而摘除只在 CLOSE 分发后发生一次
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="sk">连接标识，按值拷贝</param>
+void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk);
+/// <summary>
+/// 从栈位 idx 取连接标识
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">栈位置</param>
+/// <returns>指向 userdata 内部的 sock_ctx，仅该 userdata 在栈上期间有效；
+///   类型不符经 luaL_argerror 抛出(longjmp，不返回)</returns>
+sock_ctx *lpub_check_sock(lua_State *lua, int32_t idx);
+/// <summary>
+/// 判断栈位 idx 是不是连接标识。元表名是 lpub.c 的实现细节，别处要判类型走这里
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">栈位置</param>
+/// <returns>是返回 1，否返回 0</returns>
+int32_t lpub_is_sock(lua_State *lua, int32_t idx);
+/// <summary>
+/// 从缓存里摘掉一条连接标识。连接关闭时调，否则该 skid 的 userdata 随 lua_State 常驻
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="skid">连接 skid；0 视为无效标识，直接返回</param>
+void lpub_sock_uncache(lua_State *lua, uint64_t skid);
+/// <summary>
+/// 压一个无效的连接标识。各 connect 类入口的失败路径用它，
+/// 让成功与失败推同样个数的返回值，调用方只需判 sk.valid
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <returns>压栈的返回值个数，恒为 1</returns>
+int32_t lpub_push_sock_invalid(lua_State *lua);
 
 #endif//LPUB_H_

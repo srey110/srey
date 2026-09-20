@@ -459,8 +459,8 @@ srey.ud_str = utils.ud_str
 ---@type fun(data:string|lightuserdata, size:integer?, lower:boolean?):string
 srey.hex = utils.hex
 
----获取指定 fd 对端的 IP 地址和端口
----@type fun(fd:integer):string?, integer?
+---获取指定连接对端的 IP 地址和端口
+---@type fun(sk:userdata):string?, integer?
 srey.remote_addr = utils.remote_addr
 
 ---注册新 task；变参作为脚本 chunk 的 `...` 传入，脚本顶层 `local a,b,...= ...` 接收
@@ -655,7 +655,7 @@ local function _coro_sess_del_empty(sess)
 end
 
 ---找到匹配等待者就唤醒它。与 _dispatch_cb 分成两个而不是一个带变参的尾部，是因为回调实参
----（msg.subtype / msg.fd / … 那一串）在调用点就地求值：合成一个函数的话，命中等待者时那 4~7 次
+---（msg.subtype / msg.sk / … 那一串）在调用点就地求值：合成一个函数的话，命中等待者时那 4~7 次
 ---字符串键查表也照算一遍再当变参丢掉，而命中是客户端类 task 每个包的常态
 ---@param msg Message
 ---@param mtype integer 期望匹配的消息类型
@@ -906,24 +906,24 @@ end
 
 ---把 socket 的会话键设为它自己的 skid，后续该 socket 消息携带此值。
 ---会话键不可自定义，理由见 core.session
----@type fun(fd:integer, skid:integer):boolean
+---@type fun(sk:userdata):boolean
 srey.sock_session = core.session
 
 ---清除 socket 的会话键，此后该 socket 消息走注册的回调而非协程等待
----@type fun(fd:integer, skid:integer):boolean
+---@type fun(sk:userdata):boolean
 srey.sock_session_clear = core.session_clear
 
 ---切换 socket 的应用层协议类型
----@type fun(fd:integer, skid:integer, pktype:PACK_TYPE):boolean
+---@type fun(sk:userdata, pktype:PACK_TYPE):boolean
 srey.sock_pack_type = core.pack_type
 
 ---设置 socket 状态标志（具体含义由协议层定义）
----@type fun(fd:integer, skid:integer, status:integer):boolean
+---@type fun(sk:userdata, status:integer):boolean
 srey.sock_status = core.status
 
 ---将 socket 绑定到指定 task（跨 task 推送场景）；目标不存在（名字未注册 / 数字句柄对应 task 已退出）返回 false。
 ---仅保证调用时目标存在：目标若在绑定之后才退出，该连接下一条消息会被静默关闭
----@type fun(fd:integer, skid:integer, tname:TASK_NAME):boolean
+---@type fun(sk:userdata, tname:TASK_NAME):boolean
 srey.sock_bind_task = core.bind_task
 
 ---查 SSL 上下文:NONE→(true,nil) 明文;查到→(true,ssl);name 未注册或非字符串→(false,nil);error/WARN 由调用处按需处理。
@@ -947,7 +947,7 @@ function srey.ssl_qury(sslname)
 end
 
 ---注册新连接 accept 回调；每次有连接进来在新协程中调用
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer) accept 回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata) accept 回调
 function srey.on_accepted(func)
     func_cbs[MSG_TYPE.ACCEPT] = func
 end
@@ -968,6 +968,11 @@ function srey.listen(pktype, sslname, ip, port, netev)
     return core.listen(pktype, ssl, ip, port, netev)
 end
 
+---取一个无效的连接标识。各 connect 类包装在"还没走到 C 就失败"的路径上用它，
+---让成功与失败返回同一种类型，调用方只判 sk.valid
+---@type fun():userdata
+srey.sock_invalid = core.sock_invalid
+
 ---停止监听（关闭监听 socket），已建立的连接不受影响
 ---@type fun(lsnid:integer)
 srey.unlisten = core.unlisten
@@ -975,12 +980,12 @@ srey.unlisten = core.unlisten
 local function _net_accept_dispatch(msg)
     local func = func_cbs[MSG_TYPE.ACCEPT]
     if func then
-        _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid)
+        _coro_run(_coro_cb, func, nil, msg.subtype, msg.sk)
     end
 end
 
 ---注册主动连接结果回调；仅在没有协程等待该连接时触发（非 srey.connect 发起的）
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, err:integer) connect 回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata, err:integer) connect 回调
 function srey.on_connected(func)
     func_cbs[MSG_TYPE.CONNECT] = func
 end
@@ -989,53 +994,51 @@ end
 ---四个等待点(connect / ssl exchange / handshake / recv)只差 mtype、超时值与告警里的动作名。
 ---C 侧 coro.c 的 _coro_wait_msg 结构同一套，但它的 CLOSE 分支不告警（那边调用方是每命令
 ---一轮的循环，一条连接断掉能刷几十条）。改任一端的结构要同步改另一端
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param mtype integer MSG_TYPE.* 期望的消息类型
 ---@param ms integer 超时毫秒
 ---@param tag string 告警文案里的动作名
 ---@return Message|nil msg 收到的消息表；超时/断开返回 nil
-local function _wait_msg(fd, skid, mtype, ms, tag)
+local function _wait_msg(sk, mtype, ms, tag)
     -- 连接已 teardown 就别挂上去,理由同 C 侧 _coro_wait_msg;各 wait_* / syn_* 入口都经本函数
-    if INVALID_SOCK == fd then
+    if not sk.valid then
         return nil
     end
-    local msg = srey._coro_wait(skid, mtype, ms)
+    local msg = srey._coro_wait(sk.skid, mtype, ms)
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.close(fd, skid)
-        WARN("%s timeout, skid %s.", tag, tostring(skid))
+        srey.close(sk)
+        WARN("%s timeout, skid %s.", tag, tostring(sk.skid))
         return nil
     end
     if MSG_TYPE.CLOSE == msg.mtype then
-        WARN("%s connection closed, skid %s.", tag, tostring(skid))
+        WARN("%s connection closed, skid %s.", tag, tostring(sk.skid))
         return nil
     end
     return msg
 end
 
 ---同步等待异步 connect 完成（由 task_connect / core.connect 异步发起后调用）；ssl 非 nil 时同时等待 SSL 握手
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param ssl any? 非 nil 时表示需要等待 SSL 握手
 ---@return boolean ok 成功 true；超时/失败时已关闭 fd 并返回 false
-function srey.wait_connect(fd, skid, ssl)
-    local msg = _wait_msg(fd, skid, MSG_TYPE.CONNECT, srey.get_connect_timeout(), "connect")
+function srey.wait_connect(sk, ssl)
+    local msg = _wait_msg(sk, MSG_TYPE.CONNECT, srey.get_connect_timeout(), "connect")
     if not msg then
         return false
     end
     if ERR_OK ~= msg.erro then
-        WARN("connect error, skid %s.", tostring(skid))
+        WARN("connect error, skid %s.", tostring(sk.skid))
         return false
     end
     if nil ~= ssl then
-        if not srey.wait_ssl_exchanged(fd, skid) then
+        if not srey.wait_ssl_exchanged(sk) then
             return false
         end
     end
     return true
 end
 
----同步发起 TCP/TLS 连接：挂起协程等待连接结果，超时则关闭并返回 INVALID_SOCK；
+---同步发起 TCP/TLS 连接：挂起协程等待连接结果，超时则关闭并返回无效连接标识；
 ---成功后若启用 TLS 自动等待 SSL 握手完成；连接建立即置 ud->sess=skid（同步请求/响应模式）
 ---@param pktype PACK_TYPE 应用层协议类型
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
@@ -1044,8 +1047,7 @@ end
 ---@param netev NET_EV? 事件订阅掩码
 ---@param extra lightuserdata? 协议专用附加参数（如 WebSocket 握手验证 key）；所有权一律在本函数内交出——
 ---正常返回时归 C 层（连接失败也由 C 侧 ud_free 回收），抛出前本函数已自行释放。调用方无论哪条路径都不要再碰它
----@return integer fd socket fd；失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；失败为 nil（失败与成功的返回值个数一致，见 lpub_rtn_nil）
+---@return userdata sk 连接标识；失败时 sk.valid 为 false（失败与成功都只返 1 个值）
 function srey.connect(pktype, sslname, ip, port, netev, extra)
     local ok, ssl = srey.ssl_qury(sslname)
     if not ok then
@@ -1054,49 +1056,48 @@ function srey.connect(pktype, sslname, ip, port, netev, extra)
         if extra then
             utils.ud_free(extra)
         end
-        -- 三条失败路径都得补上第二个值：成功返 (fd, skid)，少返一个会让
-        -- srey.close(srey.connect(...)) 这类转发在失败分支上参数错位
-        return INVALID_SOCK, nil
+        -- 三条失败路径都返无效连接标识：让 srey.close(srey.connect(...)) 这类转发
+        -- 在失败分支上仍是同一种类型，调用方只判 sk.valid
+        return core.sock_invalid()
     end
-    local fd, skid
-    ok, fd, skid = pcall(core.connect, pktype, ssl, ip, port, netev, extra, 1)
+    local sk
+    ok, sk = pcall(core.connect, pktype, ssl, ip, port, netev, extra, 1)
     if not ok then
         -- core.connect 的入参检查都排在取 extra 之前，抛到这里说明所有权还没交出去
         if extra then
             utils.ud_free(extra)
         end
-        error(fd, 0)
+        error(sk, 0)
     end
-    if INVALID_SOCK == fd then
+    if not sk.valid then
         WARN("connect %s:%d error.", ip, port)
-        return INVALID_SOCK, nil
+        return sk
     end
-    if not srey.wait_connect(fd, skid, ssl) then
-        return INVALID_SOCK, nil
+    if not srey.wait_connect(sk, ssl) then
+        return core.sock_invalid()
     end
-    return fd, skid
+    return sk
 end
 
 ---@param msg Message
 local function _net_connect_dispatch(msg)
     if not _resume_waiter(msg, MSG_TYPE.CONNECT) then
-        _dispatch_cb(msg, func_cbs[MSG_TYPE.CONNECT], msg.subtype, msg.fd, msg.skid, msg.erro)
+        _dispatch_cb(msg, func_cbs[MSG_TYPE.CONNECT], msg.subtype, msg.sk, msg.erro)
     end
 end
 
 ---注册 TLS 握手完成回调；仅在没有协程等待该事件时触发
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, client:integer) SSL 握手完成回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata, client:integer) SSL 握手完成回调
 function srey.on_ssl_exchanged(func)
     func_cbs[MSG_TYPE.SSLEXCHANGED] = func
 end
 
 ---异步触发 TLS 握手（非阻塞，结果通过 SSLEXCHANGED 消息通知）
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param client integer 1=客户端（发 ClientHello），0=服务端
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 时返回 false
 ---@return boolean ok 发起成功 true
-function srey.ssl_exchange(fd, skid, client, sslname)
+function srey.ssl_exchange(sk, client, sslname)
     local ok, ssl = srey.ssl_qury(sslname)
     if not ok then
         WARN("ssl_qury not find ssl name %s.", sslname)
@@ -1105,51 +1106,48 @@ function srey.ssl_exchange(fd, skid, client, sslname)
     if not ssl then -- SSL_NAME.NONE:无 SSL 可交换
         return false
     end
-    return core.ssl_exchange(fd, skid, client, ssl)
+    return core.ssl_exchange(sk, client, ssl)
 end
 
 ---同步 TLS 握手：触发握手并挂起协程等待完成（或超时/断开）
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param client integer 1=客户端，0=服务端
 ---@param sslname SSL_NAME SSL 上下文名
 ---@return boolean ok 握手成功 true
-function srey.syn_ssl_exchange(fd, skid, client, sslname)
-    if not srey.ssl_exchange(fd, skid, client, sslname) then
+function srey.syn_ssl_exchange(sk, client, sslname)
+    if not srey.ssl_exchange(sk, client, sslname) then
         return false
     end
-    return srey.wait_ssl_exchanged(fd, skid)
+    return srey.wait_ssl_exchanged(sk)
 end
 
 ---挂起协程等待 TLS 握手完成事件（SSLEXCHANGED 或 CLOSE / TIMEOUT）
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@return boolean ok 握手成功 true；超时/断开返回 false
-function srey.wait_ssl_exchanged(fd, skid)
-    return nil ~= _wait_msg(fd, skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout(), "ssl exchange")
+function srey.wait_ssl_exchanged(sk)
+    return nil ~= _wait_msg(sk, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout(), "ssl exchange")
 end
 
 ---@param msg Message
 local function _net_ssl_exchanged_dispatch(msg)
     if not _resume_waiter(msg, MSG_TYPE.SSLEXCHANGED) then
-        _dispatch_cb(msg, func_cbs[MSG_TYPE.SSLEXCHANGED], msg.subtype, msg.fd, msg.skid, msg.client)
+        _dispatch_cb(msg, func_cbs[MSG_TYPE.SSLEXCHANGED], msg.subtype, msg.sk, msg.client)
     end
 end
 
 ---注册应用层握手完成回调；适用于 MySQL 认证 / SMTP 欢迎行 / WebSocket Upgrade 等协议
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, client:integer, erro:integer, data:lightuserdata?, size:integer) 握手回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata, client:integer, erro:integer, data:lightuserdata?, size:integer) 握手回调
 function srey.on_handshaked(func)
     func_cbs[MSG_TYPE.HANDSHAKED] = func
 end
 
 ---挂起协程等待应用层握手结果
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@return boolean ok 握手成功 true；超时/断开/错误返回 false
 ---@return lightuserdata? data 握手附带数据（可为 nil）；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝
 ---@return integer? size 数据长度
-function srey.wait_handshaked(fd, skid)
-    local msg = _wait_msg(fd, skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout(), "handshake")
+function srey.wait_handshaked(sk)
+    local msg = _wait_msg(sk, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout(), "handshake")
     if not msg then
         return false
     end
@@ -1160,39 +1158,37 @@ end
 local function _net_handshaked_dispatch(msg)
     if not _resume_waiter(msg, MSG_TYPE.HANDSHAKED) then
         _dispatch_cb(msg, func_cbs[MSG_TYPE.HANDSHAKED],
-                     msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
+                     msg.subtype, msg.sk, msg.client, msg.erro, msg.data, msg.size)
     end
 end
 
 ---注册数据接收回调；仅在没有协程通过 syn_send 等待该 socket 时触发
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, client:integer, slice:integer, data:lightuserdata?, size:integer) RECV 回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata, client:integer, slice:integer, data:lightuserdata?, size:integer) RECV 回调
 function srey.on_recved(func)
     func_cbs[MSG_TYPE.RECV] = func
 end
 
 ---异步发送数据（不等待响应）
 ---发送数据（参数详见 core.send）
----@type fun(fd:integer, skid:integer, data:string|lightuserdata, size:integer?, copy:integer?):boolean
+---@type fun(sk:userdata, data:string|lightuserdata, size:integer?, copy:integer?):boolean
 srey.send = core.send
 
----多播发送：把同一份 data 零拷贝广播给多个 fd；C 层 shared_data 引用计数自动释放。
+---多播发送：把同一份 data 零拷贝广播给多个连接；C 层 shared_data 引用计数自动释放。
 ---每一条抛出路径(fds/skids 非 table / 长度不等 / 元素非整数)都发生在 C 层取载荷之前，抛出时
 ---copy=0 的载荷所有权仍在调用方手上，须自行 utils.ud_free；空数组返回 false 那条走到了取载荷
 ---之后，由 C 释放。口径同 srey.multi_request。逐参说明见 core.send_multi
----@type fun(fds:integer[], skids:integer[], data:string|lightuserdata, size:integer?, copy:integer?):boolean
+---@type fun(sks:userdata[], data:string|lightuserdata, size:integer?, copy:integer?):boolean
 srey.send_multi = core.send_multi
 
 ---内部辅助：挂起协程等待该 socket 的下一个 RECV 消息（含超时/断开处理）
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@return Message|nil msg 收到的消息表；超时/断开返回 nil
-local function _wait_net_recv(fd, skid)
-    return _wait_msg(fd, skid, MSG_TYPE.RECV, srey.get_netread_timeout(), "netread")
+local function _wait_net_recv(sk)
+    return _wait_msg(sk, MSG_TYPE.RECV, srey.get_netread_timeout(), "netread")
 end
 
 ---同步发送并等待响应：发送后挂起协程，收到回包后返回数据；适用于请求-响应模式
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param data string|lightuserdata 数据
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer 1=复制；0=零拷贝
@@ -1200,25 +1196,24 @@ end
 ---@return integer? rsize 响应数据长度
 ---@return integer? rslice 分片类型（SLICE_TYPE.*，0 为非分片）；为 SLICE_TYPE.START 时本条只是首片，
 ---调用方须接着用 syn_slice 循环收到 fin 为止。哪些响应算分片由协议层判定，不要在这里另抄一套规则
-function srey.syn_send(fd, skid, data, size, copy)
-    if not srey.send(fd, skid, data, size, copy) then
+function srey.syn_send(sk, data, size, copy)
+    if not srey.send(sk, data, size, copy) then
         return nil
     end
-    local msg = _wait_net_recv(fd, skid)
+    local msg = _wait_net_recv(sk)
     if not msg then
         return nil
     end
     return msg.data, msg.size, msg.slice
 end
 ---同步接收下一个响应包（不发送）：用于一次请求产生多个响应的场景（如 MySQL 多结果集续接）
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@return lightuserdata|nil rdata 响应数据指针；同 syn_send 语义，仅本协程下次 yield 前有效；
----超时/断开返回 nil；fd 为 INVALID_SOCK 时不挂起直接返回 nil
+---超时/断开返回 nil；连接已失效(sk.valid 为 false)时不挂起直接返回 nil
 ---@return integer? rsize 响应数据长度
 ---@return integer? slice 分片标记，取值同 SLICE_TYPE；0 表示非分片完整消息
-function srey.syn_recv(fd, skid)
-    local msg = _wait_net_recv(fd, skid)
+function srey.syn_recv(sk)
+    local msg = _wait_net_recv(sk)
     if not msg then
         return nil
     end
@@ -1226,14 +1221,13 @@ function srey.syn_recv(fd, skid)
 end
 
 ---同步接收下一个数据分片（不发送）
----@param fd integer socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@return boolean ok 接收成功 true
 ---@return boolean? fin 是否为最后一片或非分片完整消息（仅 ok=true 时）
 ---@return lightuserdata? data 分片数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝
 ---@return integer? size 分片字节数
-function srey.syn_slice(fd, skid)
-    local msg = _wait_net_recv(fd, skid)
+function srey.syn_slice(sk)
+    local msg = _wait_net_recv(sk)
     if not msg then
         return false
     end
@@ -1246,28 +1240,27 @@ end
 ---@param name string 调用方名字，仅用于 WARN 文案
 ---@return string[]|nil status 状态行分段；任一步失败为 nil（失败原因已打过 WARN）
 ---@return lightuserdata? respdata 成功时的完整响应包，供调用方继续取 heads / body
-local function _net_rpc(fd, skid, dst, oneway, reqtype, data, size, name)
+local function _net_rpc(sk, dst, oneway, reqtype, data, size, name)
     if "number" ~= type(dst) then
         WARN("%s dst must be a remote task handle(integer).", name)
         return nil
     end
     local reqdata, reqsize = harbor.pack(dst, oneway, reqtype, data, size)
-    local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
+    local respdata, _ = srey.syn_send(sk, reqdata, reqsize, 0)
     if not respdata then
-        WARN("syn_send error, skid %s.", tostring(skid))
+        WARN("syn_send error, skid %s.", tostring(sk.skid))
         return nil
     end
     local status = http.status(respdata)
     if not status then
-        WARN("not have status, skid %s.", tostring(skid))
+        WARN("not have status, skid %s.", tostring(sk.skid))
         return nil
     end
     return status, respdata
 end
 
 ---通过 harbor 协议向目标 task 发起单向 call（HTTP 封装，不等待返回数据）
----@param fd integer harbor 连接 fd（pktype 必须为 HTTP）
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
 ---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（由对端上报）；
 ---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
@@ -1275,8 +1268,8 @@ end
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@return boolean ok 远端返回 200 OK 时 true
-function srey.net_call(fd, skid, dst, reqtype, data, size)
-    local status = _net_rpc(fd, skid, dst, 1, reqtype, data, size, "net_call")
+function srey.net_call(sk, dst, reqtype, data, size)
+    local status = _net_rpc(sk, dst, 1, reqtype, data, size, "net_call")
     if not status then
         return false
     end
@@ -1284,8 +1277,7 @@ function srey.net_call(fd, skid, dst, reqtype, data, size)
 end
 
 ---通过 harbor 协议向目标 task 发起同步请求，等待返回数据
----@param fd integer harbor 连接 fd（pktype 必须为 HTTP）
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
 ---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（由对端上报）；
 ---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
@@ -1297,8 +1289,8 @@ end
 ---@return lightuserdata? rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；目标未回负载时为 nil
 ---@return integer? rsize 响应数据长度，无负载为 0
 ---@return integer? erro 目标真实错误码，取自对端 X-Srey-Erro 头（十进制）；对端未带该头时为 nil
-function srey.net_request(fd, skid, dst, reqtype, data, size)
-    local status, respdata = _net_rpc(fd, skid, dst, 0, reqtype, data, size, "net_request")
+function srey.net_request(sk, dst, reqtype, data, size)
+    local status, respdata = _net_rpc(sk, dst, 0, reqtype, data, size, "net_request")
     if not status then
         return false
     end
@@ -1306,7 +1298,7 @@ function srey.net_request(fd, skid, dst, reqtype, data, size)
     -- 顺带省掉物化整张头表
     local erro = tonumber(http.head(respdata, "X-Srey-Erro"))
     if "200" ~= status[2] then
-        WARN("net request return code %s erro %s skid %s.", status[2], tostring(erro), tostring(skid))
+        WARN("net request return code %s erro %s skid %s.", status[2], tostring(erro), tostring(sk.skid))
         return false, nil, 0, erro
     end
     local rdata, rsize = http.data(respdata)
@@ -1318,17 +1310,17 @@ local function _net_recv_dispatch(msg)
     local func = func_cbs[MTYPE_RECV]
     if 0 == msg.sess or not may_resume(msg.subtype, msg.data) then
         if func then
-            _coro_run(_coro_cb, func, msg, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+            _coro_run(_coro_cb, func, msg, msg.subtype, msg.sk, msg.client, msg.slice, msg.data, msg.size)
         end
         return
     end
     if not _resume_waiter(msg, MTYPE_RECV) then
-        _dispatch_cb(msg, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+        _dispatch_cb(msg, func, msg.subtype, msg.sk, msg.client, msg.slice, msg.data, msg.size)
     end
 end
 
 ---注册数据发送完成回调；仅在 NET_EV.SEND 标志启用时触发，可用于流控或写缓冲监控
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, client:integer, size:integer) SEND 回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata, client:integer, size:integer) SEND 回调
 function srey.on_sended(func)
     func_cbs[MSG_TYPE.SEND] = func
 end
@@ -1337,14 +1329,14 @@ end
 local function _net_sended_dispatch(msg)
     local func = func_cbs[MSG_TYPE.SEND]
     if func then
-        _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client, msg.size)
+        _coro_run(_coro_cb, func, nil, msg.subtype, msg.sk, msg.client, msg.size)
     end
 end
 
 ---注册连接关闭回调；CLOSE 消息会先唤醒所有在该 skid 上挂起等待的协程，再调用此回调。
 ---erro 说明连接是怎么断的：TRUNCATED 时"由连接关闭界定 body"那类协议的末片照给但可能被
 ---截断，收不收由业务自己判。CLOSE_TYPE.NEVERCONN 不会投到本回调（连接从未建立）
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, client:integer, erro:CLOSE_TYPE) CLOSE 回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata, client:integer, erro:CLOSE_TYPE) CLOSE 回调
 function srey.on_closed(func)
     func_cbs[MSG_TYPE.CLOSE] = func
 end
@@ -1354,30 +1346,28 @@ local close_watchers = {}-- 库级 CLOSE 观察者；业务的 on_closed 仍是�
 ---在文档里要求业务代为转接，漏接就是资源无声常驻（router 的流式请求上下文即如此）。
 ---本表与 func_cbs 并存，先于业务回调按注册顺序同步调用，故观察者内不得挂起。
 ---没有反注册：库对象与 task 同生命周期，用完就随 task 一起没了
----@param func fun(subtype:integer, fd:integer, skid:integer, client:integer, erro:CLOSE_TYPE) 观察者
+---@param func fun(subtype:integer, sk:userdata, client:integer, erro:CLOSE_TYPE) 观察者
 function srey.watch_closed(func)
     close_watchers[#close_watchers + 1] = func
 end
 
 ---主动关闭 TCP 连接（发送 FIN）。关闭前对发送队列冲一次：能写进内核的送达，写不进去的连同
 ---连接一起丢弃。没有"等发完再关"的模式——要保证大块数据送达，须自行确认对端已收齐再关
----@param fd integer socket fd
----@param skid integer 连接 skid
-function srey.close(fd, skid)
-    core.close(fd, skid)
+---@param sk userdata 连接标识
+function srey.close(sk)
+    core.close(sk)
 end
 
 ---同步关闭：发起关闭后挂起协程等 CLOSE，保证协议层 close 回调（含 ctx->fd 复位）已执行；
 ---重连前用，避免旧连接异步 teardown 与新连接 try_connect 共享同一 ctx 时清掉新 fd。
 ---未发数据的丢弃契约同 srey.close：等的是"关完了"，不是"发完了"
----@param fd integer socket fd
----@param skid integer 连接 skid
-function srey.sync_close(fd, skid)
-    if INVALID_SOCK == fd then
+---@param sk userdata 连接标识
+function srey.sync_close(sk)
+    if not sk.valid then
         return
     end
-    core.close(fd, skid)
-    srey._coro_wait(skid, MSG_TYPE.CLOSE, srey.get_netread_timeout())
+    core.close(sk)
+    srey._coro_wait(sk.skid, MSG_TYPE.CLOSE, srey.get_netread_timeout())
 end
 
 ---处理连接关闭消息：进入时探测一次会话表，把该 sess(连接类即 skid)下全部挂起等待者转移到本地数组再消费，
@@ -1398,20 +1388,21 @@ local function _net_close_dispatch(msg)
     end
     -- NEVERCONN 的合成 CLOSE 只为唤醒上面那批等待方，不触发 on_closed 观察者
     if CLOSE_TYPE.NEVERCONN ~= msg.erro then
+        local sk = msg.sk
         -- 库级观察者就地同步调：它们只做摘表/释放，起协程反而让清理排到本条消息之后
         for i = 1, #close_watchers do
-            srey.xpcall(close_watchers[i], msg.subtype, msg.fd, msg.skid, msg.client, msg.erro)
+            srey.xpcall(close_watchers[i], msg.subtype, sk, msg.client, msg.erro)
         end
         local func = func_cbs[MSG_TYPE.CLOSE]
         if func then
-            _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro)
+            _coro_run(_coro_cb, func, nil, msg.subtype, sk, msg.client, msg.erro)
         end
     end
     _coro_sess_del_empty(sess)
 end
 
 ---注册 UDP 数据接收回调
----@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, ip:string, port:integer, data:lightuserdata?, size:integer) RECVFROM 回调
+---@param func fun(pktype:PACK_TYPE, sk:userdata, ip:string, port:integer, data:lightuserdata?, size:integer) RECVFROM 回调
 function srey.on_recvedfrom(func)
     func_cbs[MSG_TYPE.RECVFROM] = func
 end
@@ -1420,8 +1411,7 @@ end
 ---@param pktype integer 封包协议类型，参考 PACK_TYPE（原始透传用 PACK_TYPE.NONE）
 ---@param ip string? 绑定 IP，默认 "0.0.0.0"。"::" 只收 IPv6(强制 IPV6_V6ONLY)；多播时组地址须与此同族
 ---@param port integer? 绑定端口，默认 0（由 OS 分配）
----@return integer fd socket fd；失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；失败为 nil（失败与成功的返回值个数一致，见 lpub_rtn_nil）
+---@return userdata sk 连接标识；失败时 sk.valid 为 false
 function srey.udp(pktype, ip, port)
     if not ip then
         ip = "0.0.0.0"
@@ -1435,30 +1425,29 @@ end
 ---UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)。组地址不合法或与 socket 绑定地址不同族直接返 false。
 ---返回 true 只表示参数合法且命令已入队,setsockopt 在事件线程执行、成败不回传(失败只有一条日志),
 ---下面 leave / ttl / loop 同此契约
----@type fun(fd:integer, skid:integer, group_ip:string, iface_str:string?):boolean
+---@type fun(sk:userdata, group_ip:string, iface_str:string?):boolean
 srey.udp_join = core.udp_join
 
 ---UDP socket 离开多播组,参数同 udp_join
----@type fun(fd:integer, skid:integer, group_ip:string, iface_str:string?):boolean
+---@type fun(sk:userdata, group_ip:string, iface_str:string?):boolean
 srey.udp_leave = core.udp_leave
 
 ---设置 UDP 多播 TTL(IPv4)/Hop Limit(IPv6)。默认 1 仅本网段,32 跨网段,255 跨广域
----@type fun(fd:integer, skid:integer, ttl:integer):boolean
+---@type fun(sk:userdata, ttl:integer):boolean
 srey.udp_ttl = core.udp_ttl
 
 ---设置 UDP 多播本机回环。默认 1(发出去自己也能收到),0=不收
----@type fun(fd:integer, skid:integer, enable:integer):boolean
+---@type fun(sk:userdata, enable:integer):boolean
 srey.udp_loop = core.udp_loop
 
 ---异步 UDP 发送（参数详见 core.sendto）
----@type fun(fd:integer, skid:integer, ip:string, port:integer, data:string|lightuserdata, size:integer?, copy:integer):boolean
+---@type fun(sk:userdata, ip:string, port:integer, data:string|lightuserdata, size:integer?, copy:integer):boolean
 srey.sendto = core.sendto
 
 ---同步 UDP 发送并等待响应：设置会话键 → sendto → 挂起协程等 RECVFROM；
 ---同一 skid 上可连续/并发多次调用，多次调用与多次响应按到达顺序 FIFO 配对；
 ---网络乱序时配对结果仍可能与发送顺序不一致——UDP 协议本身无法避免的限制
----@param fd integer UDP socket fd
----@param skid integer 连接 skid
+---@param sk userdata 连接标识
 ---@param ip string 目标 IP
 ---@param port integer 目标端口
 ---@param data string|lightuserdata 数据
@@ -1466,20 +1455,20 @@ srey.sendto = core.sendto
 ---@param copy integer 1=复制；0=零拷贝
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；超时/失败返回 nil
 ---@return integer|nil rsize 响应数据长度
-function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
+function srey.syn_sendto(sk, ip, port, data, size, copy)
     -- 调 core.sendto 前的早退出路径：copy=0 时调用方已转移所有权,主动 utils.ud_free 兜底
     -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
-    if not srey.sock_session(fd, skid) then
+    if not srey.sock_session(sk) then
         _ud_free_copy(data, copy)
         return nil
     end
-    if not srey.sendto(fd, skid, ip, port, data, size, copy) then
-        WARN("sendto error, skid %s.", tostring(skid))
+    if not srey.sendto(sk, ip, port, data, size, copy) then
+        WARN("sendto error, skid %s.", tostring(sk.skid))
         return nil
     end
-    local msg = srey._coro_wait(skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
+    local msg = srey._coro_wait(sk.skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        WARN("sendto timeout, skid %s.", tostring(skid))
+        WARN("sendto timeout, skid %s.", tostring(sk.skid))
         return nil
     end
     if MSG_TYPE.CLOSE == msg.mtype then
@@ -1493,7 +1482,7 @@ local function _net_recvfrom_dispatch(msg)
     -- UDP 本身不保证顺序与送达，找不到等待者（迟到/孤儿包）是正常场景，故 warn 传 false
     if not _resume_waiter(msg, MSG_TYPE.RECVFROM) then
         _dispatch_cb(msg, func_cbs[MSG_TYPE.RECVFROM],
-                     msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
+                     msg.subtype, msg.sk, msg.ip, msg.port, msg.udata, msg.size)
     end
 end
 
@@ -1583,15 +1572,15 @@ local function _coro_timeout()
     srey.xpcall(_timeout_scan)
     _coro_pool_shrink()
 end
----消息表：全部字段只读。带载荷的消息（RECV/RECVFROM/HANDSHAKED/REQUEST/RESPONSE）挂了 __gc，
----回收时按 mtype 选释放函数、按 data/shared 取指针——改写它们等于换掉 C 侧的释放契约：
----mtype 写成别的类型会用错释放器（例如 RECV 的 http_pack_ctx 被当成裸 buffer 直接 FREE），
----data 换成别的指针则是拿它去做一次任意释放。元表本身已由 __metatable 挡住，字段挡不住。
+---消息对象：C 侧 message_ctx 的 userdata 视图，字段经 __index 按需取，一律只读
+---（userdata 没有 __newindex，赋值直接报错，所以改不掉 mtype/data 去换 C 侧的释放契约）。
+---带载荷的消息（RECV/RECVFROM/HANDSHAKED/REQUEST/RESPONSE）才挂 __gc，按 mtype 选释放函数；
+---无载荷的连 __gc 都不挂，不进 finalizer 链。元表由 __metatable 挡住。
 ---@class Message
 ---@field mtype   MSG_TYPE       消息类型（MSG_TYPE.*），始终存在
 ---@field sess    integer?       会话 id；TIMEOUT/RECV/CLOSE/CONNECT/SSLEXCHANGED/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带
----@field fd      integer?       socket fd；网络消息(ACCEPT/RECV/SEND/CLOSE/CONNECT/SSLEXCHANGED/HANDSHAKED/RECVFROM)携带
----@field skid    integer?       连接 skid；同 fd 一起携带
+---@field sk      userdata?      连接标识；网络消息(ACCEPT/RECV/SEND/CLOSE/CONNECT/SSLEXCHANGED/HANDSHAKED/RECVFROM)携带。
+---按 skid 缓存在 C 侧注册表里，同一连接取多少次都是同一个 userdata
 ---@field subtype PACK_TYPE?     封包协议类型；上述网络消息及 REQUEST/RESPONSE 携带
 ---@field erro    integer?       错误码；CONNECT/HANDSHAKED/RESPONSE 携带。CLOSE 上是 CLOSE_TYPE.*，表示连接是怎么断的
 ---@field client  integer?       1=客户端 0=服务端（非地址）；RECV/SEND/CLOSE/SSLEXCHANGED/HANDSHAKED 携带

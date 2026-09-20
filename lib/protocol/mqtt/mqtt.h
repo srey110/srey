@@ -17,7 +17,7 @@ int32_t _mqtt_may_resume(void *data);
 /// <param name="ud">连接上下文，内部存储协议版本和解析状态</param>
 /// <param name="status">解析结果标志位（PROT_MOREDATA / PROT_ERROR / PROT_CLOSE）</param>
 /// <returns>解析成功返回 mqtt_pack_ctx*，数据不足或出错返回 NULL</returns>
-void *mqtt_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 新建 MQTT 连接上下文(只记协议版本)。用在需要调用方注入上下文的承载场景：

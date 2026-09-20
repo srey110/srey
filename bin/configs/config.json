@@ -1,6 +1,6 @@
 {
     "serviceid": 1,
-    "nnet": 2,
+    "nnet": 1,
     "nworker": 8,
     "twqueuelens": 4096,
     "loglv": 4,

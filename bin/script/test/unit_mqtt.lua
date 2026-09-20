@@ -91,7 +91,7 @@ runner.run(function(t)
     do
         -- 组包失败（clientid 超 UINT16_MAX，mqtt_pack_connect 返 NULL）时，lpub_rtn_lud
         -- 压 2 个 nil 而不是 1 个：返回值个数与成功路径一致，业务把它整段塞进
-        -- srey.send(fd, skid, mqtt.pack_connect(...)) 才不会错位
+        -- srey.send(sk, mqtt.pack_connect(...)) 才不会错位
         local pack, size = mqtt.pack_connect(
             mqtt.VERSION.V311, 1, 60, string.rep("a", 70000),
             "user", "psw", nil, nil, 0, 0, nil, nil)

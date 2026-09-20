@@ -1,7 +1,7 @@
 ﻿#include "protocol/pgsql/pgsql_pack.h"
 
 void pgsql_pack_start(binary_ctx *bwriter, int8_t code) {
-    binary_init(bwriter, NULL, 0, 0);
+    binary_init_write(bwriter, 0, 0);
     binary_set_int8(bwriter, code); // 写入消息类型码
     binary_set_skip(bwriter, 4); // 预留 4 字节消息体长度字段
 }

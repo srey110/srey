@@ -60,9 +60,9 @@ static int32_t _lmongo_free(lua_State *lua) {
     if (NULL == mongo) {
         return 0;
     }
-    if (NULL != mongo->task && INVALID_SOCK != mongo->sk.fd) {
+    if (NULL != mongo->task && !sock_is_invalid(&mongo->sk)) {
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid);
+        ev_close(&mongo->task->loader->netev, &mongo->sk);
     }
     *ud = NULL;
     // scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；
@@ -71,51 +71,43 @@ static int32_t _lmongo_free(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 发起异步 TCP 连接。调用方需用 srey.wait_connect(fd, skid, ssl) 同步等待连接建立
+/// 发起异步 TCP 连接。调用方需用 srey.wait_connect(&sk, ssl) 同步等待连接建立
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
-/// <returns type="integer?">skid；失败时为 nil，返回值个数恒为 2</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false，返回值个数恒为 1</returns>
 static int32_t _lmongo_try_connect(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     mongo_ctx *mongo = *ud;
     LPUB_CUR_TASK(lua, task);
     if (ERR_OK != mongo_try_connect(task, mongo, 1)) {
-        // 失败也返 2 个值,理由见 lpub.h 的 lpub_rtn_nil
-        lua_pushinteger(lua, INVALID_SOCK);
-        lua_pushnil(lua);
-        return 2;
+        // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
+        return lpub_push_sock_invalid(lua);
     }
-    lua_pushinteger(lua, mongo->sk.fd);
-    lua_pushinteger(lua, (lua_Integer)mongo->sk.skid);
-    return 2;
+    lpub_push_sock(lua, &mongo->sk);
+    return 1;
 }
 /// <summary>
 /// 返回当前 MongoDB 连接的 fd 和 skid
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <returns type="integer">socket fd</returns>
-/// <returns type="integer">skid</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false</returns>
 static int32_t _lmongo_sock_id(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     mongo_ctx *mongo = *ud;
-    lua_pushinteger(lua, mongo->sk.fd);
-    lua_pushinteger(lua, (lua_Integer)mongo->sk.skid);
-    return 2;
+    lpub_push_sock(lua, &mongo->sk);
+    return 1;
 }
 /// <summary>
 /// 将指定连接切换到 AUTH 状态，供 SCRAM 认证流程使用
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="fd" type="integer">socket fd</param>
-/// <param name="skid" type="integer">连接 skid</param>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lmongo_set_auth_status(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
+    sock_ctx *sk = lpub_check_sock(lua, 2);
     LPUB_CUR_TASK(lua, task);
-    return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&task->loader->netev, fd, skid, (uint8_t)mongo_status_auth()));
+    return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&task->loader->netev, sk, (uint8_t)mongo_status_auth()));
 }
 /// <summary>
 /// 设置当前数据库名

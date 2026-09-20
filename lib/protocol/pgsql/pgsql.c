@@ -41,7 +41,7 @@ void _pgsql_udfree(ud_cxt *ud) {
     pg->pack = NULL;
     scram_free(pg->scram);
     pg->scram = NULL;
-    pg->sk.fd = INVALID_SOCK;
+    sock_set_invalid(&pg->sk);
     pg->readyforquery = 0;
     pg->pid = 0;
     pg->key = 0;
@@ -66,7 +66,7 @@ int32_t _pgsql_may_resume(void *data) {
 static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 4); // 预留长度字段
     binary_set_integer(&bwriter, 3, 2, 0); // 协议主版本号 3
     binary_set_integer(&bwriter, 0, 2, 0); // 协议次版本号 0
@@ -81,11 +81,11 @@ static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     binary_offset(&bwriter, 0);
     binary_set_integer(&bwriter, size, 4, 0); // 回填消息总长度
     ud->status = AUTH;
-    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, size, 0);
+    return ev_send(ev, &pg->sk, bwriter.data, size, 0);
 }
 // 连接建立后请求是否启用 SSL 加密；evssl 未配置(明文模式)时跳过 SSLRequest 协商直接进入 Startup，
 // 否则服务端应答 'S' 时无 evssl 可升级只能拒收(见 _pgsql_ssl_response case 'S')，明文连接必然失败
-int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
+int32_t _pgsql_on_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err) {
     if (ERR_OK != err) {
         return err;
     }
@@ -96,7 +96,7 @@ int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, in
     char buf[8];
     pack_integer(buf, 8, 4, 0); // 消息总长度 = 8
     pack_integer(buf + 4, 80877103, 4, 0); // SSLRequest 魔数
-    return ev_send(ev, fd, skid, buf, sizeof(buf), 1);
+    return ev_send(ev, sk, buf, sizeof(buf), 1);
 }
 // 处理服务端 SSL 响应：'S' 升级为 SSL，'N' 直接发送 Startup 消息
 static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -110,7 +110,7 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
     case 'S':
         // 服务端支持 SSL；若客户端未配置 evssl 则状态不一致（已发 SSLRequest 却无 evssl 上下文可升级），拒收
         if (NULL != pg->evssl) {
-            if (ERR_OK != ev_ssl(ev, pg->sk.fd, pg->sk.skid, 1, pg->evssl)) {
+            if (ERR_OK != ev_ssl(ev, &pg->sk, 1, pg->evssl)) {
                 BIT_SET(*status, PROT_ERROR);
             }
         } else {
@@ -155,7 +155,7 @@ int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
     return _pgsql_startup(ev, ud);
 }
 // 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回堆上的数据指针。
-// total 输出的是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init，别再自己 +1：
+// total 输出的是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init_read，别再自己 +1：
 // 协议长度字段是 int32，服务端发 INT32_MAX 时那次加法有符号溢出，回绕成负数再转 size_t
 // 就是个天文数字，binary 的越界断言从此全部失效
 static char *_pgsql_payload(buffer_ctx *buf, size_t *total, int32_t *status) {
@@ -232,7 +232,7 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, pg->password);
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, &pg->sk, bwriter.data, bwriter.offset, 0);
 }
 // MD5 密码认证（AuthenticationMD5Password）
 // 响应格式："md5" + hex(md5(hex(md5(password+user)) + salt)) + '\0'
@@ -271,7 +271,7 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     binary_set_string(&bwriter, response);
     secure_zero(response, sizeof(response));
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, &pg->sk, bwriter.data, bwriter.offset, 0);
 }
 // SCRAM 第一步：发送 client-first-message（SCRAM-SHA-256 或 SCRAM-SHA-256-PLUS）
 static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *mod) {
@@ -305,7 +305,7 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
     binary_set_binary(&bwriter, first_message, fmlens);
     FREE(first_message);
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, &pg->sk, bwriter.data, bwriter.offset, 0);
 }
 // SCRAM-SHA-256 第二步：解析 server-first-message 并发送 client-final-message
 static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
@@ -332,7 +332,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
     binary_set_binary(&bwriter, final_message, mlens);
     SECURE_FREE(final_message, mlens + 1);
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, &pg->sk, bwriter.data, bwriter.offset, 0);
 }
 // 根据认证类型码分派具体的认证处理逻辑
 static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
@@ -402,12 +402,12 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
         return;
     }
     binary_ctx breader;
-    binary_init(&breader, pack, total, 0);
+    binary_init_read(&breader, pack, total);
     binary_get_skip(&breader, 5); // 跳过类型码(1) + 长度(4)
     switch (pack[0]) {
     case 'E': { // ErrorResponse：认证失败，推送错误消息
         char *err = _pgpack_error_notice(&breader);
-        _hs_push(pg->sk.fd, pg->sk.skid, 1, ud, ERR_FAILED, err, strlen(err));
+        _hs_push(&pg->sk, 1, ud, ERR_FAILED, err, strlen(err));
         BIT_SET(*status, PROT_ERROR);
         break;
     }
@@ -445,7 +445,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
         pg->readyforquery = binary_get_int8(&breader);
         // 同 _mysql_auth_ok / smtp：push 失败说明目标 task 已经没了，此时不能把状态推进到
         // COMMAND——那会留下一条"握手完成却没有任何协程在等"的半死连接
-        if (ERR_OK != _hs_push(pg->sk.fd, pg->sk.skid, 1, ud, ERR_OK, NULL, 0)) {
+        if (ERR_OK != _hs_push(&pg->sk, 1, ud, ERR_OK, NULL, 0)) {
             BIT_SET(*status, PROT_ERROR);
             break;
         }
@@ -465,12 +465,12 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
         return NULL;
     }
     binary_ctx breader;
-    binary_init(&breader, payload, total, 0);
+    binary_init_read(&breader, payload, total);
     return _pgpack_parser(pg, &breader, ud, status);
 }
-void *pgsql_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)fd; (void)skid; (void)client; (void)size;
+    (void)sk; (void)client; (void)size;
     if (NULL == ud->context) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
@@ -514,7 +514,7 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
         return ERR_FAILED;
     }
     pg->port = 0 == port ? 5432 : port;
-    pg->sk.fd = INVALID_SOCK;
+    sock_set_invalid(&pg->sk);
     pg->evssl = evssl;
     return ERR_OK;
 }

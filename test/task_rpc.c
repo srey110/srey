@@ -12,7 +12,7 @@ static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t 
     case 100: {
         // 整数加法：读取两个 int32（网络字节序），返回和（网络字节序）
         binary_ctx breader;
-        binary_init(&breader, data, size, 0);
+        binary_init_read(&breader, data, size);
         int32_t a = (int32_t)binary_get_integer(&breader, 4, 0);
         int32_t b = (int32_t)binary_get_integer(&breader, 4, 0);
         int sum = _add(a, b);

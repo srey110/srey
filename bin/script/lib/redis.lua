@@ -16,25 +16,24 @@ local redis   = {}
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
 ---@param psw string? 密码；为 nil 或空时跳过 AUTH
 ---@param netev NET_EV? 事件订阅掩码
----@return integer fd socket fd；失败返回 INVALID_SOCK
----@return integer? skid 连接 skid；失败时为 nil，返回值个数恒为 2
+---@return userdata sk 连接标识；失败时 sk.valid 为 false
 function redis.connect(ip, port, sslname, psw, netev)
-    local fd, skid = srey.connect(PACK_TYPE.REDIS, sslname, ip, port, netev)
-    if INVALID_SOCK == fd then
-        return INVALID_SOCK, nil
+    local sk = srey.connect(PACK_TYPE.REDIS, sslname, ip, port, netev)
+    if not sk.valid then
+        return srey.sock_invalid()
     end
     if str_nullorempty(psw) then
-        return fd, skid
+        return sk
     end
     -- 发送 AUTH 命令验证密码
     local auth = redis.pack("AUTH", psw)
-    local rtn, _ = srey.syn_send(fd, skid, auth, #auth, 1)
+    local rtn, _ = srey.syn_send(sk, auth, #auth, 1)
     local result = rtn and redis.unpack(rtn)
     if "OK" ~= result then
-        srey.close(fd, skid)
-        return INVALID_SOCK, nil
+        srey.close(sk)
+        return srey.sock_invalid()
     end
-    return fd, skid
+    return sk
 end
 
 -- 单个参数转上线的字节。浮点走 num_str，其余原样 tostring

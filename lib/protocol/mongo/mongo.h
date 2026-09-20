@@ -19,7 +19,7 @@ void _mongo_udfree(ud_cxt *ud);
 /// <param name="ud">连接上下文（含 mongo_ctx 和解析状态）</param>
 /// <param name="status">解析结果标志位（PROT_MOREDATA / PROT_ERROR）</param>
 /// <returns>COMMAND 状态下返回 mgopack_ctx*，AUTH 状态下内部消费返回 NULL</returns>
-void *mongo_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// mongo_ctx 初始化

@@ -47,7 +47,7 @@
 #else
     #error "Unsupported operating system platform!"
 #endif
-
+// io模型
 #if defined(OS_WIN)
     #define EV_IOCP
     #define EV_NAME "IOCP"
@@ -72,7 +72,6 @@
     #define EV_DEVPOLL
     #define EV_NAME "DEVPOLL"
 #endif
-
 /* 检测 CPU 架构：x64/x86/ARM/ARM64/PPC */
 #if defined(OS_WIN)
     #if defined(_M_ARM64) || defined(_M_ARM64EC)
@@ -106,7 +105,33 @@
         #define ARCH_NAME "PPC"
     #endif
 #endif
-
+// tools/deps.py 落在 bin/ 的第三方库名带变体后缀「[d]_<x86|x64|arm64>」,各变体共存。
+// Windows 靠 #pragma comment(lib) 链,名字得在源码里拼;POSIX 那边由 mk.sh 拼 -l
+#if defined(OS_WIN)
+    #if defined(ARCH_ARM64)
+        #define DEPS_ARCH_SUFFIX "arm64"
+    #elif defined(ARCH_X64)
+        #define DEPS_ARCH_SUFFIX "x64"
+    #else
+        #define DEPS_ARCH_SUFFIX "x86"
+    #endif
+    #ifdef _DEBUG
+        #define DEPS_LIB_SUFFIX "d_" DEPS_ARCH_SUFFIX
+    #else
+        #define DEPS_LIB_SUFFIX "_" DEPS_ARCH_SUFFIX
+    #endif
+#endif
+// 触发模式。epoll 两种都支持,默认取水平触发:边缘触发下每个读事件都要多付一次必然
+// EAGAIN 的 recv,水平触发让 buffer_from_sock 读到没填满即停,省掉那一次。
+// 改回 1 即切边缘触发,下面的 TRIGGER_LT 会自动让开,两者恒互斥
+#if defined(EV_EPOLL) && !defined(TRIGGER_ET)
+    #define TRIGGER_ET          0 // epoll 是否使用边缘触发模式
+#endif
+// 水平触发:没读干净事件会重复报,收数据不必读到 EAGAIN 才停。IOCP 是完成通知,不在此列
+#if defined(EV_KQUEUE) || defined(EV_EVPORT) || defined(EV_POLLSET) || defined(EV_DEVPOLL) \
+    || (defined(EV_EPOLL) && 0 == TRIGGER_ET)
+    #define TRIGGER_LT          1 // kqueue/evport/pollset/devpoll 恒是;epoll 看 TRIGGER_ET
+#endif
 // CPU cache line 大小,用于消除并发结构 false sharing
 // 主流 x86_64 / ARM64 = 64;Apple Silicon / IBM POWER = 128;IBM z = 256;老 ARMv6 及以下 = 32
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -120,7 +145,6 @@
 #else
     #define CACHELINE_SIZE  64
 #endif
-
 // 两个编译器属性宏,按编译器分派而不是按 OS(理由同 macro_atomic.h)。
 // CACHELINE_ALIGN:与 CACHELINE_SIZE 配对,消除 false sharing;落 #else 空实现只影响并发写入快慢,不影响正确性
 // FORCE_INLINE:强制内联,只给实测有效的热路径小函数用;必须与 static 配对,否则链接失败
@@ -134,18 +158,15 @@
     #define CACHELINE_ALIGN
     #define FORCE_INLINE inline
 #endif
-
 // accept4 / pipe2 能力：无标准 feature-test 宏，按 OS 推导（新增支持平台在此一处维护）
 #if defined(OS_LINUX) || defined(OS_BSD)
     #define HAVE_ACCEPT4
     #define HAVE_PIPE2
 #endif
-
 // backtrace / <execinfo.h> 能力：AIX 没有（新增不支持的平台在此一处维护）
 #ifndef OS_AIX
     #define HAVE_BACKTRACE
 #endif
-
 // 是否启用了 AddressSanitizer：gcc 看 __SANITIZE_ADDRESS__，clang 看 __has_feature
 #if defined(__SANITIZE_ADDRESS__)
     #define ENABLED_ASAN       1

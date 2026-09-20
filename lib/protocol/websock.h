@@ -64,8 +64,7 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
 /// 服务端方向 MQTT 由 _mqtt_connect 解 CONNECT 时自建上下文，不要往那个方向注入
 /// </summary>
 /// <param name="ev">ev_ctx</param>
-/// <param name="fd">socket句柄</param>
-/// <param name="skid">链接ID</param>
+/// <param name="sk">连接标识</param>
 /// <param name="val">业务自定义数据,设置成功后所有权转移给 ws->ud->context</param>
 /// <param name="fcb">val 的释放回调，可为 NULL(不释放)。凡没能真的设上一律用它回收 val：
 /// fd 非法、命令到达时连接已不在、协议层拒收、事件循环拆除时命令还没执行</param>
@@ -73,19 +72,18 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
 /// 返回 ERR_FAILED 并已用 fcb 回收 val，调用方不可再释放。
 /// 非 WebSocket 连接、握手尚未完成、子协议没有内建解析器、已注入过一次——这几种一律不设置
 /// 且就地断开该连接，已注入过的那个旧值留给拆连接时回收</returns>
-int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val, free_cb fcb);
+int32_t websock_set_secextra(ev_ctx *ev, sock_ctx *sk, void *val, free_cb fcb);
 /// <summary>
 /// WebSocket 解包：握手阶段完成 HTTP 升级，数据阶段从缓冲区解析一个完整帧（含分片）
 /// </summary>
 /// <param name="ev">事件上下文</param>
-/// <param name="fd">socket 句柄</param>
-/// <param name="skid">链接 ID</param>
+/// <param name="sk">连接标识</param>
 /// <param name="client">非0 客户端解析，0 服务端解析</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护握手/解析状态</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 websock_pack_ctx，数据不足或握手未完成返回 NULL</returns>
-void *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 握手包

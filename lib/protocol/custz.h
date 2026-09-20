@@ -13,7 +13,7 @@
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>数据体指针，*size 为其长度，调用方负责释放；NULL 须结合 status 区分：
 /// 置 PROT_ERROR 为协议错误、置 PROT_MOREDATA 为数据不足待续、无标志则为零长合法包（头部已消耗、数据体为空）</returns>
-void *custz_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 自定义协议组包，根据 pktype 选择固定长度/标志位/变长编码方式

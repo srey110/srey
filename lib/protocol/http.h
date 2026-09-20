@@ -32,7 +32,7 @@ void *_http_on_close(ud_cxt *ud);
 /// 规则 1 的 HEAD 那半靠发起方登记：本接口拿不到请求方法，须由 http_set_method 登记</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 http_pack_ctx，数据不足或出错返回 NULL</returns>
-void *http_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *http_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 获取状态码对应描述
@@ -65,13 +65,12 @@ void http_pack_req(binary_ctx *bwriter, const char *method, const char *url);
 /// 多协程共享同一连接时，用 coro_serial 把"登记 → 发送 → 收响应"整段圈进临界区（见 coro_serial_new）
 /// </summary>
 /// <param name="ev">ev_ctx</param>
-/// <param name="fd">socket 句柄</param>
-/// <param name="skid">链接ID</param>
+/// <param name="sk">连接标识</param>
 /// <param name="method">与 http_pack_req 同一个 method；按 RFC 7231 §4.1 区分大小写</param>
 /// <returns>ERR_OK 已登记，或该方法无需登记——后者不投命令，因而也不校验 fd。
 ///   需要登记的方法在 fd 为 INVALID_SOCK 时返 ERR_FAILED；
 ///   命令执行时连接不是 HTTP、或正在读某条响应的 body，则该次登记被忽略并落 WARN</returns>
-int32_t http_set_method(struct ev_ctx *ev, SOCKET fd, uint64_t skid, const char *method);
+int32_t http_set_method(struct ev_ctx *ev, sock_ctx *sk, const char *method);
 /// <summary>
 /// http响应包
 /// </summary>

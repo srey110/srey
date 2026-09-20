@@ -16,7 +16,7 @@ static inline int32_t _mysql_pack_finish(binary_ctx *bwriter, size_t *size) {
 }
 void *mysql_pack_quit(size_t *size) {
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
     binary_set_int8(&bwriter, 0);
     binary_set_uint8(&bwriter, MYSQL_QUIT);
@@ -32,7 +32,7 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) 
     }
     mysql->id = 0;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_integer(&bwriter, lens + 1, 3, 1);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_INIT_DB);
@@ -44,7 +44,7 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) 
 void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
     mysql->id = 0;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PING);
@@ -61,7 +61,7 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
     }
     mysql->id = 0;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_QUERY);//command
@@ -92,7 +92,7 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     mysql->id = 0;
     size_t lens = strlen(sql);
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PREPARE);
@@ -112,7 +112,7 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
     }
     stmt->mysql->id = 0;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, stmt->mysql->id);
     binary_set_uint8(&bwriter, MYSQL_EXECUTE);//status
@@ -142,7 +142,7 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
 void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size) {
     stmt->mysql->id = 0;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_integer(&bwriter, 5, 3, 1);
     binary_set_uint8(&bwriter, stmt->mysql->id);
     binary_set_uint8(&bwriter, MYSQL_STMT_RESET);
@@ -154,7 +154,7 @@ void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size) {
 void *mysql_pack_stmt_close(mysql_stmt_ctx *stmt, size_t *size) {
     stmt->mysql->id = 0;
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
+    binary_init_write(&bwriter, 0, 0);
     binary_set_integer(&bwriter, 5, 3, 1);
     binary_set_uint8(&bwriter, stmt->mysql->id);
     binary_set_uint8(&bwriter, MYSQL_STMT_CLOSE);

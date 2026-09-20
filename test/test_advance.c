@@ -138,9 +138,11 @@ static void test_router_shadow_mask(CuTest *tc) {
  * 四种段类型各取一次，再验三种越界 —— 逐段遍历正是以 ERR_FAILED 收尾 */
 static void test_router_seg_index(CuTest *tc) {
     router_ctx *r = router_new();
-    router_seg_type t;
-    const char *str;
-    uint32_t slen;
+    // 三个出参只在 router_seg_index 返 ERR_OK 时才写；断言失败会 longjmp 出去走不到下面，
+    // 但 gcc 看不穿 longjmp，不给初值就报 -Wmaybe-uninitialized
+    router_seg_type t = ROUTER_SEG_LIT;
+    const char *str = NULL;
+    uint32_t slen = 0;
     int32_t idx;
 
     CuAssertPtrNotNull(tc, r);

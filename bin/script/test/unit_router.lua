@@ -30,15 +30,15 @@ local mock_http = {
         return nil
     end,
     code_status = require("srey.http").code_status,
-    response    = function(fd, skid, code, headers, body)
+    response    = function(sk, code, headers, body)
         nresp = nresp + 1
-        last_resp = { fd = fd, skid = skid, code = code,
+        last_resp = { sk = sk, code = code,
                       headers = headers, body = body }
     end,
     -- HEAD 出口：真实现只发头不发体，这里同样把 body 记成 nil，
     -- 但留下 headonly 与算出的长度，好让用例断言"头与 GET 一致、体没发"
-    response_head = function(fd, skid, code, headers, body)
-        last_resp = { fd = fd, skid = skid, code = code, headers = headers,
+    response_head = function(sk, code, headers, body)
+        last_resp = { sk = sk, code = code, headers = headers,
                       body = nil, headonly = true,
                       clen = ("string" == type(body)) and #body or 0 }
     end,
@@ -48,8 +48,8 @@ package.loaded["lib.http"] = mock_http
 -- srey.close 一并换掉：这里的 fd/skid 是假的，真去关会打到 C 层的事件线程。
 -- 每个 unit 模块是独立 task（各有各的 lua_State），改这里波及不到别的模块
 local closed_log = {}
-srey.close = function(fd, skid)
-    closed_log[#closed_log + 1] = { fd = fd, skid = skid }
+srey.close = function(sk)
+    closed_log[#closed_log + 1] = { sk = sk }
 end
 
 -- watch_closed 同样换掉：它往 task 级观察者表里塞的闭包没有反注册，真跑会在测试 task 上留一个。
@@ -72,16 +72,24 @@ local function make_pack(method, path, body, headers, version)
     }
 end
 
+-- 这些用例只把 sk 当不透明身份用(http 与 close 都是 mock,不真发包)，但连接标识不能由脚本
+-- 凭两个整数拼出来，故在 runner.run 里开两个真 UDP socket 借它们的标识。声明放模块级：
+-- 下面的 dispatch 辅助函数在 runner.run 之外，读局部读不到
+local sk_a, sk_b
+
 -- 分发一次请求并返回捕获到的响应（单次响应场景）
 local function dispatch(router, method, path, body, headers, version)
     last_resp = nil
     -- 第 4 个参数是 on_recved 的 client 标志(1=客户端 0=服务端)，不是地址
-    router:dispatch(1, 1, make_pack(method, path, body, headers, version), 0)
+    router:dispatch(sk_a, make_pack(method, path, body, headers, version), 0)
     return last_resp
 end
 
 srey.startup(function()
 runner.run(function(t)
+    sk_a = srey.udp(PACK_TYPE.NONE, "127.0.0.1", 0)
+    sk_b = srey.udp(PACK_TYPE.NONE, "127.0.0.1", 0)
+
 
     -- ── 1. 基础路由匹配 ─────────────────────────────────────────────────────
 
@@ -195,7 +203,7 @@ runner.run(function(t)
         local r = Route.new()
         r:get("/a", function(ctx) ctx:text(200, "ok") end)
         last_resp = nil
-        r:dispatch(1, 1, { _status = nil, _path = "/a" }, nil)
+        r:dispatch(sk_a, { _status = nil, _path = "/a" }, nil)
         t:eq(nil, last_resp, "nil status → no response")
     end
 
@@ -264,21 +272,19 @@ runner.run(function(t)
             got.id      = ctx.params.id
             got.body    = ctx.body
             got.client  = ctx.client
-            got.fd      = ctx.fd
-            got.skid    = ctx.skid
+            got.sk      = ctx.sk
             ctx:text(200, "ok")
         end)
         local pack = make_pack("POST", "/items/5", "hello",
                                { ["content-type"] = "text/plain" })
-        r:dispatch(10, 20, pack, 0)
+        r:dispatch(sk_a, pack, 0)
         t:eq("POST",      got.method, "ctx.method")
         t:eq("/items/5",  got.path,   "ctx.path")
         t:eq("5",         got.id,     "ctx.params.id")
         t:eq("hello",     got.body,   "ctx.body")
-        -- client 是连接方向标志(1=客户端 0=服务端)，不是地址；取对端 IP 走 utils.remote_addr(fd)
+        -- client 是连接方向标志(1=客户端 0=服务端)，不是地址；取对端 IP 走 utils.remote_addr(sk)
         t:eq(0,           got.client, "ctx.client")
-        t:eq(10,          got.fd,     "ctx.fd")
-        t:eq(20,          got.skid,   "ctx.skid")
+        t:eq(sk_a,        got.sk,     "ctx.sk")
     end
 
     -- 空段 URL（/a//b）：匹配按压缩段进行，回填的 ctx.path 不应残留重复/空段
@@ -291,7 +297,7 @@ runner.run(function(t)
             ctx:text(200, "ok")
         end)
         local pack = make_pack("GET", "/a//b")
-        r:dispatch(1, 1, pack, nil)
+        r:dispatch(sk_a, pack, nil)
         t:eq("/a/b", got.path, "ctx.path 去空段不残留 (/a//b)")
     end
 
@@ -304,7 +310,7 @@ runner.run(function(t)
             ctx:text(200, "ok")
         end)
         local pack = make_pack("GET", "/q?page=3&sort=asc")
-        r:dispatch(1, 1, pack, nil)
+        r:dispatch(sk_a, pack, nil)
         t:eq("3",   got_q and got_q.page, "ctx.query.page")
         t:eq("asc", got_q and got_q.sort, "ctx.query.sort")
     end
@@ -905,9 +911,9 @@ runner.run(function(t)
     do
         local resp_count = 0
         local orig_resp = mock_http.response
-        mock_http.response = function(fd, skid, code, headers, body)
+        mock_http.response = function(sk, code, headers, body)
             resp_count = resp_count + 1
-            orig_resp(fd, skid, code, headers, body)
+            orig_resp(sk, code, headers, body)
         end
         local r = Route.new()
         r:get("/late", function(ctx)
@@ -1075,16 +1081,16 @@ runner.run(function(t)
     -- ── 9. 流式路由（chunked） ──────────────────────────────────────────────
 
     -- 喂一帧给 net_recv：首帧带首行与头部，数据帧只带 body，终止块两者都没有
-    local function feed(r, slice, pack, fd, skid)
-        r:net_recv(nil, fd or 1, skid or 1, 0, slice, pack, nil)
+    local function feed(r, slice, pack, sk)
+        r:net_recv(nil, sk or sk_a, 0, slice, pack, nil)
     end
     -- 走完一条完整的 chunked 请求：首帧 → 若干数据块 → 终止块
-    local function feed_stream(r, path, chunks, headers, fd, skid)
-        feed(r, SLICE_TYPE.START, make_pack("POST", path, nil, headers), fd, skid)
+    local function feed_stream(r, path, chunks, headers, sk)
+        feed(r, SLICE_TYPE.START, make_pack("POST", path, nil, headers), sk)
         for _, c in ipairs(chunks) do
-            feed(r, SLICE_TYPE.SLICE, { _body = c }, fd, skid)
+            feed(r, SLICE_TYPE.SLICE, { _body = c }, sk)
         end
-        feed(r, SLICE_TYPE.END, {}, fd, skid)
+        feed(r, SLICE_TYPE.END, {}, sk)
     end
     -- 把每次回调的 slice 记进 log；收齐时回显拼起来的 body
     local function echo_stream(log)
@@ -1300,7 +1306,7 @@ runner.run(function(t)
         local log = {}
         r:post_stream("/st", echo_stream(log))
         last_resp = nil
-        r:net_recv(nil, 1, 1, 0, 0, make_pack("POST", "/st", "whole"), nil)
+        r:net_recv(nil, sk_a, 0, 0, make_pack("POST", "/st", "whole"), nil)
         t:eq(200, (last_resp or {}).code, "一次到齐打流式路由 → 200")
         t:eq("whole", (last_resp or {}).body, "slice==0 时 data 即完整 body")
         t:eq(1, #log, "只调一次")
@@ -1315,16 +1321,16 @@ runner.run(function(t)
         feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
         feed(r, SLICE_TYPE.SLICE, { _body = "half" })
         last_resp = nil
-        r:closed(1, 1)
+        r:closed(sk_a)
         t:eq(3, #log, "START + SLICE + ABORT 共 3 次")
         t:eq(STREAM_ABORT, log[3], "中途断开 → 投 STREAM_ABORT")
         t:eq(nil, last_resp, "ABORT 那次不写响应")
-        r:closed(1, 1)
+        r:closed(sk_a)
         t:eq(3, #log, "记录已摘，重复 closed 不再投")
-        -- skid 对不上（fd 被新连接复用）不该动到别人的记录
+        -- 关掉另一条连接不该动到这条的记录（流表按 skid 做键，skid 进程内唯一不复用）
         feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
-        r:closed(1, 999)
-        t:eq(4, #log, "skid 不匹配时不投 ABORT")
+        r:closed(sk_b)
+        t:eq(4, #log, "关别的连接时不投 ABORT")
     end
 
     -- 9.7 同连接又来一个流式首帧 → 旧记录被顶掉并收到 ABORT
@@ -1397,5 +1403,7 @@ runner.run(function(t)
         t:check(nil == probe[1], "丢掉的流式 router 可被回收，没被 CLOSE 观察者钉住")
     end
 
+    srey.close(sk_a)
+    srey.close(sk_b)
 end)
 end)

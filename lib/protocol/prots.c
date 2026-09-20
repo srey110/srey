@@ -18,15 +18,15 @@ typedef struct prot_vtbl {
     void (*udp_pkfree)(void *data);// 释放 UDP 收包；NULL 走 FREE。当前无协议实现是有意的，预留按协议分化，勿当死代码删
     void (*hsfree)(void *data);// 释放推给上层的握手载荷；NULL 走 FREE
     void (*udfree)(ud_cxt *ud);// 释放 ud 上挂的协议上下文；NULL 走 FREE(ud->context)
-    int32_t (*accepted)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);// accept 期准入判断，返非 ERR_OK 即拒收该连接；NULL 一律放行。当前无协议实现是有意的，预留准入钩子，勿当死代码删
-    int32_t (*connected)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err);// 连上后发协议初始化包；NULL 原样返回入参 err
+    int32_t (*accepted)(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud);// accept 期准入判断，返非 ERR_OK 即拒收该连接；NULL 一律放行。当前无协议实现是有意的，预留准入钩子，勿当死代码删
+    int32_t (*connected)(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err);// 连上后发协议初始化包；NULL 原样返回入参 err
     int32_t (*ssl_exchanged)(ev_ctx *ev, ud_cxt *ud, void *ssl);// SSL 建好后发认证包；NULL 返 ERR_OK
     void (*closed)(ud_cxt *ud);// 连接关闭时清理协议状态；NULL 无动作
-    void *(*unpack)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+    void *(*unpack)(ev_ctx *ev, sock_ctx *sk, int32_t client,
                     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);// 从缓冲切出一个完整包；NULL 表示透传整段缓冲
     void *(*next_pack)(void *pack);// 取本次解包顺带解出的下一个包；NULL 表示不会带后继包
     int32_t (*may_resume)(void *data);// 判本包能否唤醒等待该 session 的协程；NULL 表示收到包即可唤醒
-    void (*recvfrom)(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size,
+    void (*recvfrom)(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size,
                      netaddr_ctx *addr, ud_cxt *ud);// UDP 收包入口；NULL 表示整个 datagram 原样上抛
     void *(*close_tail)(ud_cxt *ud);// 关连接时问"还要补一片吗"，返回要补的那片；NULL 表示该协议无此事
 }prot_vtbl;
@@ -103,7 +103,7 @@ static const prot_vtbl *_prots_vtbl(pack_type pktype) {
     return &_vtbl_none;// 到不了：上面已穷举 pack_type，这句只为消 -Wreturn-type
 }
 // 应用层握手完成推送：各协议握手完成时回调（注册见 prots_init），经消息汇推 MSG_TYPE_HANDSHAKED
-static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client,
+static int32_t _prots_handshaked(sock_ctx *sk, int32_t client,
     ud_cxt *ud, int32_t erro, void *data, size_t lens) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
@@ -113,8 +113,7 @@ static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client,
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_HANDSHAKED;
     msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
+    msg.sk = *sk;
     msg.client = client;
     msg.erro = erro;
     msg.data = data;
@@ -195,19 +194,18 @@ static inline void prots_closed(ud_cxt *ud) {
     }
 }
 // 新连接被接受时的回调。返回非 ERR_OK 即拒收该连接(evpub.h 的 accept_cb 契约:失败则自动关闭)
-static inline int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+static inline int32_t prots_accepted(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
-    return (NULL != v->accepted) ? v->accepted(ev, fd, skid, ud) : ERR_OK;
+    return (NULL != v->accepted) ? v->accepted(ev, sk, ud) : ERR_OK;
 }
 // 主动连接建立后的回调，部分协议需在此发送初始化包
-static inline int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
+static inline int32_t prots_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err) {
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
-    return (NULL != v->connected) ? v->connected(ev, fd, skid, ud, err) : err;
+    return (NULL != v->connected) ? v->connected(ev, sk, ud, err) : err;
 }
 // SSL 握手完成后的回调，部分协议需在 SSL 建立后发送认证包（pgsql 用于 SCRAM-SHA-256-PLUS 通道绑定）
-static inline int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
-    (void)fd;
-    (void)skid;
+static inline int32_t prots_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl) {
+    (void)sk;
     (void)client;
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     return (NULL != v->ssl_exchanged) ? v->ssl_exchanged(ev, ud, ssl) : ERR_OK;
@@ -244,50 +242,48 @@ int32_t prots_may_resume(pack_type pktype, void *data) {
     const prot_vtbl *v = _prots_vtbl(pktype);
     return (NULL != v->may_resume) ? v->may_resume(data) : ERR_OK;
 }
-void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
     *status = PROT_INIT;
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     if (NULL != v->unpack) {
-        return v->unpack(ev, fd, skid, client, buf, ud, size, status);
+        return v->unpack(ev, sk, client, buf, ud, size, status);
     }
     // 透传：PACK_NONE 本就不解包，KCP 的分包在 _kcp_unpack 里按 UDP 路径走
     return _prots_unpack_default(buf, size, ud);
 }
-int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return ERR_FAILED;
     }
     // 被 prots_accepted 拒收时不投 ACCEPT 消息：上层不该看到一条随即被关掉的连接
-    int32_t rtn = prots_accepted(ev, fd, skid, ud);
+    int32_t rtn = prots_accepted(ev, sk, ud);
     if (ERR_OK == rtn) {
         message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_ACCEPT;
         msg.subtype = ud->pktype;
-        msg.sk.fd = fd;
-        msg.sk.skid = skid;
+        msg.sk = *sk;
         g_emit.emit(target, &msg);
     }
     g_emit.end(target);
     return rtn;
 }
 // 构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target。erro 取 close_type
-static inline void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t client,
+static inline void _prots_emit_close(void *target, sock_ctx *sk, int32_t client,
                               int32_t erro, ud_cxt *ud) {
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CLOSE;
     msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
+    msg.sk = *sk;
     msg.client = client;
     msg.erro = erro;
-    msg.sess = skid;// 始终尝试唤醒
+    msg.sess = sk->skid;// 始终尝试唤醒
     prots_closed(ud);
     g_emit.emit(target, &msg);
 }
-int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
+int32_t prots_net_connect(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return ERR_FAILED;
@@ -296,22 +292,21 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
     // TCP 成功但 prots_connected 才失败时 fd 仍在监听表中,_usk_on_connect_cb/_olp_on_connect_cb
     // 会因返回值非 ERR_OK 自行 _uev_disconnect 触发真实 CLOSE,此处再补会重复
     int32_t emitclose = ERR_OK != err;
-    int32_t rtn = prots_connected(ev, fd, skid, ud, err);
+    int32_t rtn = prots_connected(ev, sk, ud, err);
     if (ERR_OK != rtn) {
         err = rtn;
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CONNECT;
     msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
+    msg.sk = *sk;
     msg.erro = err;
     msg.sess = ud->sess;
     g_emit.emit(target, &msg);
     if (emitclose) {
         // CONNECT 只发生在客户端发起连接场景，client 恒为 1；NEVERCONN 标记这是因连接失败补发的
         // 合成 CLOSE，分发层据此跳过 on_close 观察者。失败原因已在上面那条 CONNECT 的 erro 里
-        _prots_emit_close(target, fd, skid, 1, CLOSE_TYPE_NEVERCONN, ud);
+        _prots_emit_close(target, sk, 1, CLOSE_TYPE_NEVERCONN, ud);
     }
     g_emit.end(target);
     return err;
@@ -319,22 +314,21 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
 // RECV 消息里随连接固定的那几项。两个产出 RECV 的地方共用：逐包解出的 prots_net_recv，
 // 与关闭时补末片的 _prots_emit_close_tail。data / size / slice / sess 由各自填——
 // sess 在 prots_net_recv 那边是每包重读的，不能提到这里来
-static inline void _prots_recv_msg_init(message_ctx *msg, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+static inline void _prots_recv_msg_init(message_ctx *msg, sock_ctx *sk, int32_t client, ud_cxt *ud) {
     ZERO(msg, sizeof(*msg));
     msg->mtype = MSG_TYPE_RECV;
     msg->subtype = ud->pktype;
-    msg->sk.fd = fd;
-    msg->sk.skid = skid;
+    msg->sk = *sk;
     msg->client = client;
 }
-void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
-        ev_close(ev, fd, skid);
+        ev_close(ev, sk);
         return;
     }
     message_ctx msg;
-    _prots_recv_msg_init(&msg, fd, skid, client, ud);
+    _prots_recv_msg_init(&msg, sk, client, ud);
     // 单帧多包只有 websock 承载子协议时才有，其余协议这里恒 NULL。pktype 在本次调用内不变
     // (msg.subtype 已按它快照)，故入口取一次，别每包查一遍表
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
@@ -343,7 +337,7 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
     size_t esize;
     for (;;) {
         size = buffer_size(buf);
-        data = prots_unpack(ev, fd, skid, client, buf, ud, &msg.size, &status);
+        data = prots_unpack(ev, sk, client, buf, ud, &msg.size, &status);
         while (NULL != data) {
             msg.data = data;
             msg.sess = ud->sess;
@@ -361,13 +355,13 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
             data = next;
         }
         if (BIT_CHECK(status, PROT_ERROR)) {
-            ev_close(ev, fd, skid);
+            ev_close(ev, sk);
             break;
         }
         if (BIT_CHECK(status, PROT_CLOSE)) {
             // 协议层正常关闭信号(如 WebSocket close frame):业务应答的那一帧可能还在 buf_s,
             // ev_close 关闭前会冲一次,小控制帧一次就写进内核了
-            ev_close(ev, fd, skid);
+            ev_close(ev, sk);
             break;
         }
         esize = buffer_size(buf);
@@ -379,34 +373,32 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
     }
     g_emit.end(target);
 }
-void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud) {
+void prots_net_send(ev_ctx *ev, sock_ctx *sk, int32_t client, size_t size, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
-        ev_close(ev, fd, skid);
+        ev_close(ev, sk);
         return;
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_SEND;
     msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
+    msg.sk = *sk;
     msg.client = client;
     msg.size = size;
     g_emit.emit(target, &msg);
     g_emit.end(target);
 }
-int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
+int32_t prots_net_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return ERR_FAILED;
     }
-    int32_t rtn = prots_ssl_exchanged(ev, fd, skid, client, ud, ssl);
+    int32_t rtn = prots_ssl_exchanged(ev, sk, client, ud, ssl);
     if (ERR_OK == rtn) {
         message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_SSLEXCHANGED;
         msg.subtype = ud->pktype;
-        msg.sk.fd = fd;
-        msg.sk.skid = skid;
+        msg.sk = *sk;
         msg.client = client;
         msg.sess = ud->sess;
         g_emit.emit(target, &msg);
@@ -417,7 +409,7 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cl
 // 关连接时补末片：只有"由连接关闭界定 body"的协议有这回事，且必须在 prots_closed 清状态之前跑。
 // ORDERLY 与 TRUNCATED 才认为那类消息收完了，其余一律不补。TRUNCATED 也补是因为 TLS 少发一个
 // close_notify 与真被截断在本层分不出，末片照给，信不信由收到 CLOSE 的一方按 erro 自行判
-static inline void _prots_emit_close_tail(void *target, SOCKET fd, uint64_t skid, int32_t client,
+static inline void _prots_emit_close_tail(void *target, sock_ctx *sk, int32_t client,
                                    int32_t erro, ud_cxt *ud) {
     if (CLOSE_TYPE_ORDERLY != erro
         && CLOSE_TYPE_TRUNCATED != erro) {
@@ -432,33 +424,32 @@ static inline void _prots_emit_close_tail(void *target, SOCKET fd, uint64_t skid
         return;
     }
     message_ctx msg;
-    _prots_recv_msg_init(&msg, fd, skid, client, ud);
+    _prots_recv_msg_init(&msg, sk, client, ud);
     msg.sess = ud->sess;
     msg.slice = PROT_SLICE_END;
     msg.data = pack;// size 留 0：末片是空载荷
     g_emit.emit(target, &msg);
 }
-void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, int32_t erro, ud_cxt *ud) {
+void prots_net_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
     (void)ev;
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return;
     }
-    _prots_emit_close_tail(target, fd, skid, client, erro, ud);
-    _prots_emit_close(target, fd, skid, client, erro, ud);
+    _prots_emit_close_tail(target, sk, client, erro, ud);
+    _prots_emit_close(target, sk, client, erro, ud);
     g_emit.end(target);
 }
-static inline void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static inline void _prots_udp_default(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
-        ev_close(ev, fd, skid);
+        ev_close(ev, sk);
         return;
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
     msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
+    msg.sk = *sk;
     recvfrom_ctx *umsg;
     MALLOC(umsg, sizeof(recvfrom_ctx) + size);
     umsg->addr = *addr;
@@ -470,12 +461,12 @@ static inline void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char
     g_emit.emit(target, &msg);
     g_emit.end(target);
 }
-void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+void prots_net_recvfrom(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     if (NULL != v->recvfrom) {
-        v->recvfrom(ev, fd, skid, buf, size, addr, ud);
+        v->recvfrom(ev, sk, buf, size, addr, ud);
     } else {
         // 非 KCP 的 UDP 一律把整个 datagram 原样上抛
-        _prots_udp_default(ev, fd, skid, buf, size, addr, ud);
+        _prots_udp_default(ev, sk, buf, size, addr, ud);
     }
 }

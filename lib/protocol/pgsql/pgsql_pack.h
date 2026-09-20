@@ -6,10 +6,10 @@
 
 // 命令打包辅助函数
 /// <summary>
-/// 开始构建一个新的 pgsql 消息：内部已调用 binary_init(NULL) 初始化写缓冲区，
+/// 开始构建一个新的 pgsql 消息：内部已调用 binary_init_write 初始化写缓冲区，
 /// 调用方传入未初始化的 binary_ctx 即可；随后写入消息类型码和长度占位符
 /// </summary>
-/// <param name="bwriter">未初始化的写缓冲区；外层无需先 binary_init，否则原 buffer 会被覆盖泄漏</param>
+/// <param name="bwriter">未初始化的写缓冲区；外层无需先 binary_init_write，否则原 buffer 会被覆盖泄漏</param>
 /// <param name="code">消息类型码（如 'Q'、'P' 等）</param>
 void pgsql_pack_start(binary_ctx *bwriter, int8_t code);
 /// <summary>

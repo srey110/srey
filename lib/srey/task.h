@@ -20,7 +20,8 @@ typedef enum task_netev {
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示匿名（仅有句柄，不进名表）</param>
-/// <param name="quecap">消息队列容量；0 用默认 ONEK。类型即底层 fsqu 的容量类型，
+/// <param name="quecap">消息队列容量（条数，一条 message_ctx 按值入队）；0 用默认 TASK_QUEUE_CAP。
+/// 类型即底层 fsqu 的容量类型，
 /// 调用方若持有更宽的值须自行判上界，不要靠这里截断</param>
 /// <param name="_dispatch">消息分发函数, NULL默认分发函数</param>
 /// <param name="_argfree">用户参数释放函数</param>
@@ -184,12 +185,10 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 /// <param name="netev">task_netev</param>
 /// <param name="extra">ud_cxt extra</param>
 /// <param name="setsess">是否设置sess</param>
-/// <param name="fd">SOCKET</param>
-/// <param name="skid">链接ID</param>
+/// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, int32_t netev, void *extra,
-    int32_t setsess, SOCKET *fd, uint64_t *skid);
+    const char *ip, uint16_t port, int32_t netev, void *extra, int32_t setsess, sock_ctx *sk);
 /// <summary>
 /// UDP
 /// </summary>
@@ -197,11 +196,9 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 /// <param name="pktype">包类型</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
-/// <param name="fd">SOCKET</param>
-/// <param name="skid">链接ID</param>
+/// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port,
-                 SOCKET *fd, uint64_t *skid);
+int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, sock_ctx *sk);
 /// <summary>
 /// 设置 task 调度优先级。priority 越大,worker 单次消费消息越多:
 /// n = n_base * (1 + priority/8),cap 到当前队列长度,n_base 由 worker.weight 推导。

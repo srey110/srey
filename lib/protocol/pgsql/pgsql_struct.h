@@ -74,7 +74,7 @@ typedef struct pgsql_ctx {
     struct scram_ctx *scram;    // SCRAM 认证上下文（认证完成后释放）
     pgpack_ctx *pack;           // 当前正在累积的数据包
     struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
-    sk_id sk;                   // 连接标识 fd+skid
+    sock_ctx sk;                   // 连接标识 fd+skid
     char ip[IP_LENS];           // 服务端 IP 地址
     char user[64];              // 登录用户名
     char password[64];          // 登录密码

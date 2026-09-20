@@ -19,6 +19,7 @@
     <ClCompile Include="bench_lbytecache.c" />
     <ClCompile Include="bench_mpq.c" />
     <ClCompile Include="bench_rwlock.c" />
+    <ClCompile Include="bench_weights.c" />
     <ClCompile Include="task_auto_close.c" />
     <ClCompile Include="task_close_flush.c" />
     <ClCompile Include="task_coro_extra.c" />
@@ -26,6 +27,7 @@
     <ClCompile Include="task_fork.c" />
     <ClCompile Include="task_http_server.c" />
     <ClCompile Include="task_listen_churn.c" />
+    <ClCompile Include="task_acpstorm.c" />
     <ClCompile Include="task_listen_unlisten_race.c" />
     <ClCompile Include="task_mqtt_client.c" />
     <ClCompile Include="task_mqtt_server.c" />
@@ -38,6 +40,8 @@
     <ClCompile Include="task_sendbuf_warn.c" />
     <ClCompile Include="task_serial.c" />
     <ClCompile Include="task_smtp.c" />
+    <ClCompile Include="task_ssl_deadlock.c" />
+    <ClCompile Include="task_ssl_keyupdate.c" />
     <ClCompile Include="task_tcp_server.c" />
     <ClCompile Include="task_timeout.c" />
     <ClCompile Include="task_udp_multicast.c" />
@@ -79,6 +83,7 @@
     <ClInclude Include="bench_lbytecache.h" />
     <ClInclude Include="bench_mpq.h" />
     <ClInclude Include="bench_rwlock.h" />
+    <ClInclude Include="bench_weights.h" />
     <ClInclude Include="task_auto_close.h" />
     <ClInclude Include="task_close_flush.h" />
     <ClInclude Include="task_coro_extra.h" />
@@ -86,6 +91,7 @@
     <ClInclude Include="task_fork.h" />
     <ClInclude Include="task_http_server.h" />
     <ClInclude Include="task_listen_churn.h" />
+    <ClInclude Include="task_acpstorm.h" />
     <ClInclude Include="task_listen_unlisten_race.h" />
     <ClInclude Include="task_mqtt_client.h" />
     <ClInclude Include="task_mqtt_server.h" />
@@ -99,6 +105,8 @@
     <ClInclude Include="task_sendbuf_warn.h" />
     <ClInclude Include="task_serial.h" />
     <ClInclude Include="task_smtp.h" />
+    <ClInclude Include="task_ssl_deadlock.h" />
+    <ClInclude Include="task_ssl_keyupdate.h" />
     <ClInclude Include="task_tcp_server.h" />
     <ClInclude Include="task_timeout.h" />
     <ClInclude Include="task_udp_multicast.h" />

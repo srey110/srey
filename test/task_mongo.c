@@ -222,7 +222,7 @@ static int32_t _txn_reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
         return ERR_FAILED;
     }
     uint64_t oldskid = mongo->sk.skid;
-    ev_close(&task->loader->netev, mongo->sk.fd, mongo->sk.skid);
+    ev_close(&task->loader->netev, &mongo->sk);
     if (ERR_OK != mongo_ping(mongo)) {
         LOG_ERROR("mongo reconnect(txn) error.");
         mongo_freesession(sess);
@@ -382,7 +382,7 @@ static int32_t _txn_unbound_flow(mongo_ctx *mongo) {
 // ping 自动重连（含 re-auth）：强制关闭连接后 mongo_ping 应重连并恢复可用，count 验证
 static int32_t _reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
     uint64_t oldskid = mongo->sk.skid;
-    ev_close(&task->loader->netev, mongo->sk.fd, mongo->sk.skid);
+    ev_close(&task->loader->netev, &mongo->sk);
     if (ERR_OK != mongo_ping(mongo)) {
         LOG_ERROR("mongo ping reconnect error.");
         return ERR_FAILED;
@@ -455,45 +455,45 @@ static void _startup(task_ctx *task) {
     *(arg->ok) = -1;
     if (ERR_OK != mongo_ping(&arg->mongo)) {
         LOG_ERROR("mongo ping error.");
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _crud_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _duplicate_key_error(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _reconnect_flow(task, &arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _moretocome_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _txn_pack_fail_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _txn_second_session_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _txn_unbound_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     // 事务路径要求 mongo 以副本集运行：docker-compose 的 MONGO_REPLSET 默认 rs0 即满足。
     // 排在全部计数断言之后，故它多插的一行不影响 _crud_flow / _reconnect_flow / _moretocome_flow
     if (ERR_OK != _txn_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     if (ERR_OK != _txn_reconnect_flow(task, &arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid);
+        ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
     mongo_quit(&arg->mongo);

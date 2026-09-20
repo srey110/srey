@@ -1,6 +1,25 @@
 ﻿#include "test_event.h"
 #include "lib.h"
 
+#if WITH_SSL
+// mem BIO 之间搬一次数据，limit < 0 表示能搬多少搬多少。返回实际搬运字节数
+static size_t _biopump(BIO *from, BIO *to, long limit) {
+    char buf[16384];
+    int32_t want = (limit < 0 || limit > (long)sizeof(buf)) ? (int32_t)sizeof(buf) : (int32_t)limit;
+    int32_t n = BIO_read(from, buf, want);
+    if (n <= 0) {
+        return 0;
+    }
+    BIO_write(to, buf, n);
+    return (size_t)n;
+}
+// 两个方向都搬空
+static void _biopump_all(BIO *cw, BIO *sr, BIO *sw, BIO *cr) {
+    while (_biopump(cw, sr, -1) || _biopump(sw, cr, -1)) {
+        ;
+    }
+}
+#endif
 // 往发送队列塞一条待发数据，data 由 _evpub_off_buf_release / 冲刷成功后释放
 static void _push_sendbuf(queue_ctx *bufs, const char *s, size_t lens) {
     off_buf_ctx buf;
@@ -10,11 +29,13 @@ static void _push_sendbuf(queue_ctx *bufs, const char *s, size_t lens) {
     buf.lens = lens;
     queue_push(bufs, &buf);
 }
+#if WITH_SSL
 // 探一次有没有数据可读：证否用，不等待
 static int32_t _recv_none(SOCKET fd) {
     char c;
     return (int32_t)recv(fd, &c, 1, 0) <= 0 ? 1 : 0;
 }
+#endif
 // 从 fd 上收满 want 字节，回带实收字节数；loopback 对上数据未必立刻到，故有界重试
 static size_t _recv_all(SOCKET fd, char *out, size_t want) {
     size_t got = 0;
@@ -58,6 +79,7 @@ static void test_evpub_close_flush(CuTest *tc) {
     CuAssertTrue(tc, 11 == nrecv);
     CuAssertTrue(tc, 0 == memcmp(got, "hello world", 11));
 
+#if WITH_SSL
     /* 3) KEYUPDATE_WRITE：挂着一个待重试的 SSL_read，此时不能再调 SSL_write，整队不冲 */
     _push_sendbuf(&bufs, "blocked", 7);
     wb = 7;
@@ -90,6 +112,7 @@ static void test_evpub_close_flush(CuTest *tc) {
     nrecv = _recv_all(sk[1], got, 7);
     CuAssertTrue(tc, 7 == nrecv);
     CuAssertTrue(tc, 0 == memcmp(got, "authssl", 7));
+#endif
 
     queue_free(&bufs);
     CLOSE_SOCK(sk[0]);
@@ -152,12 +175,14 @@ static void test_evpub_close_type(CuTest *tc) {
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_PEER_ABORT));
     CuAssertIntEquals(tc, CLOSE_TYPE_ABORT, _evpub_close_type(st));
 
+#if WITH_SSL
     /* 4) TLS 无 close_notify 断开：截断档，与 ABORT 分开 */
     st = STATUS_ESTABLISHED;
     _evpub_mark_close(&st, 2);
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_PEER_TRUNCATED));
     CuAssertTrue(tc, !BIT_CHECK(st, STATUS_PEER_ABORT));
     CuAssertIntEquals(tc, CLOSE_TYPE_TRUNCATED, _evpub_close_type(st));
+#endif
 
     /* 5) 先 FIN 再叠 ABORT 仍判有序：IOCP 侧收完成与错误处理是两条路径，会叠加 */
     st = STATUS_ESTABLISHED;
@@ -165,11 +190,13 @@ static void test_evpub_close_type(CuTest *tc) {
     _evpub_mark_close(&st, ERR_FAILED);
     CuAssertIntEquals(tc, CLOSE_TYPE_ORDERLY, _evpub_close_type(st));
 
+#if WITH_SSL
     /* 6) TRUNCATED 叠 ABORT 仍判截断：同上，置位处不互斥 */
     st = STATUS_ESTABLISHED;
     _evpub_mark_close(&st, 2);
     _evpub_mark_close(&st, ERR_FAILED);
     CuAssertIntEquals(tc, CLOSE_TYPE_TRUNCATED, _evpub_close_type(st));
+#endif
 
     /* 7) 不碰其他状态位 */
     CuAssertTrue(tc, BIT_CHECK(st, STATUS_ESTABLISHED));
@@ -302,11 +329,113 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 }
 #endif
+#if WITH_SSL
+// STATUS_KEYUPDATE_READ 赖以存在的前提:SSL_write 真的会返回 WANT_READ。
+// 条件不是 KeyUpdate(它走纯写路径)，而是对端把一条 post-handshake 消息拆到多条 TLS 记录、
+// 后一条还没到——此时状态机停在读子状态,任何 SSL_write 都得先等那条记录。
+// 用 mem BIO 精确控制记录投递:不碰网络、不碰事件层、无 timing。
+// OpenSSL 换版本后若这个前提不成立,这里先红,而不是等审计员把接力代码当死码删掉
+static void test_ssl_write_wants_read(CuTest *tc) {
+    const char *local = procpath();
+    char ca[PATH_LENS], crt[PATH_LENS], key[PATH_LENS], ccrt[PATH_LENS], ckey[PATH_LENS];
+    SNPRINTF(ca, sizeof(ca), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
+    SNPRINTF(crt, sizeof(crt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.crt");
+    SNPRINTF(key, sizeof(key), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "server.key");
+    SNPRINTF(ccrt, sizeof(ccrt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.crt");
+    SNPRINTF(ckey, sizeof(ckey), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.key");
+    if (ERR_OK != isfile(ca)
+        || ERR_OK != isfile(crt)
+        || ERR_OK != isfile(key)
+        || ERR_OK != isfile(ccrt)
+        || ERR_OK != isfile(ckey)) {
+        PRINT("skip test_ssl_write_wants_read, run bin/keys/create.sh first.");
+        return;
+    }
+    SSL_CTX *cctx = SSL_CTX_new(TLS_client_method());
+    SSL_CTX *sctx = SSL_CTX_new(TLS_server_method());
+    CuAssertPtrNotNull(tc, cctx);
+    CuAssertPtrNotNull(tc, sctx);
+    SSL_CTX_set_min_proto_version(cctx, TLS1_3_VERSION);
+    SSL_CTX_set_min_proto_version(sctx, TLS1_3_VERSION);
+    CuAssertIntEquals(tc, 1, SSL_CTX_use_certificate_file(sctx, crt, SSL_FILETYPE_PEM));
+    CuAssertIntEquals(tc, 1, SSL_CTX_use_PrivateKey_file(sctx, key, SSL_FILETYPE_PEM));
+    // mTLS:客户端证书会被服务端塞进 NewSessionTicket,把它撑过下面那个 512 的分片阈值
+    CuAssertIntEquals(tc, 1, SSL_CTX_use_certificate_file(cctx, ccrt, SSL_FILETYPE_PEM));
+    CuAssertIntEquals(tc, 1, SSL_CTX_use_PrivateKey_file(cctx, ckey, SSL_FILETYPE_PEM));
+    SSL_CTX_set_verify(sctx, SSL_VERIFY_PEER, NULL);
+    CuAssertIntEquals(tc, 1, SSL_CTX_load_verify_locations(sctx, ca, NULL));
+    SSL_CTX_set_verify(cctx, SSL_VERIFY_NONE, NULL);
+    SSL_CTX_set_num_tickets(sctx, 0);// 握手尾部不发票,留到握手完成后手工发,才控得住时机
+    SSL *cli = SSL_new(cctx);
+    SSL *srv = SSL_new(sctx);
+    BIO *cli_rb = BIO_new(BIO_s_mem());
+    BIO *cli_wb = BIO_new(BIO_s_mem());
+    BIO *srv_rb = BIO_new(BIO_s_mem());
+    BIO *srv_wb = BIO_new(BIO_s_mem());
+    SSL_set_bio(cli, cli_rb, cli_wb);
+    SSL_set_bio(srv, srv_rb, srv_wb);
+    SSL_set_connect_state(cli);
+    SSL_set_accept_state(srv);
+    char buf[16384];
+    int32_t i;
+    for (i = 0; i < 20; i++) {
+        SSL_do_handshake(cli);
+        _biopump_all(cli_wb, srv_rb, srv_wb, cli_rb);
+        SSL_do_handshake(srv);
+        _biopump_all(cli_wb, srv_rb, srv_wb, cli_rb);
+        if (SSL_is_init_finished(cli) && SSL_is_init_finished(srv)) {
+            break;
+        }
+    }
+    CuAssertIntEquals(tc, 1, SSL_is_init_finished(cli));
+    CuAssertIntEquals(tc, 1, SSL_is_init_finished(srv));
+    CuAssertStrEquals(tc, "TLSv1.3", SSL_get_version(cli));
+    // 双向各走一轮,确保没有残留记录干扰后面的"只投第一条"
+    SSL_write(srv, "a", 1);
+    _biopump_all(cli_wb, srv_rb, srv_wb, cli_rb);
+    SSL_read(cli, buf, sizeof(buf));
+    _biopump_all(cli_wb, srv_rb, srv_wb, cli_rb);
+    SSL_write(cli, "b", 1);
+    _biopump_all(cli_wb, srv_rb, srv_wb, cli_rb);
+    SSL_read(srv, buf, sizeof(buf));
+    _biopump_all(cli_wb, srv_rb, srv_wb, cli_rb);
+    CuAssertTrue(tc, 0 == BIO_ctrl_pending(srv_wb));
+    // 把 NST 切成多条记录,只投第一条
+    SSL_set_max_send_fragment(srv, 512);
+    CuAssertIntEquals(tc, 1, SSL_new_session_ticket(srv));
+    CuAssertIntEquals(tc, 1, SSL_write(srv, "z", 1));
+    CuAssertTrue(tc, BIO_ctrl_pending(srv_wb) > 512);
+    unsigned char hdr[5];
+    CuAssertIntEquals(tc, 5, BIO_read(srv_wb, hdr, 5));
+    long rlen = (long)((hdr[3] << 8) | hdr[4]);
+    CuAssertIntEquals(tc, 5, BIO_write(cli_rb, hdr, 5));
+    while (rlen > 0) {
+        rlen -= (long)_biopump(srv_wb, cli_rb, rlen);
+    }
+    CuAssertTrue(tc, BIO_ctrl_pending(srv_wb) > 0);// 第二条扣在手里
+    // 客户端读到半条 NST,状态机停在读子状态
+    CuAssertIntEquals(tc, -1, SSL_read(cli, buf, sizeof(buf)));
+    CuAssertIntEquals(tc, 1, SSL_in_init(cli));
+    // 这就是本用例要钉的那一行:此刻 SSL_write 必须报 want_read
+    CuAssertIntEquals(tc, -1, SSL_write(cli, "w", 1));
+    CuAssertIntEquals(tc, 1, SSL_want_read(cli));
+    CuAssertIntEquals(tc, SSL_ERROR_WANT_READ, SSL_get_error(cli, -1));
+    // 补上第二条记录后必须自行恢复,否则就不是"等数据"而是卡死
+    _biopump(srv_wb, cli_rb, -1);
+    CuAssertIntEquals(tc, 1, SSL_write(cli, "w", 1));
+    CuAssertIntEquals(tc, 0, SSL_want_read(cli));
+    SSL_free(cli);
+    SSL_free(srv);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(sctx);
+}
+#endif
 void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_close_flush);
     SUITE_ADD_TEST(suite, test_evpub_read_fin);
     SUITE_ADD_TEST(suite, test_evpub_close_type);
 #if WITH_SSL
     SUITE_ADD_TEST(suite, test_evssl_read_close_notify);
+    SUITE_ADD_TEST(suite, test_ssl_write_wants_read);
 #endif
 }

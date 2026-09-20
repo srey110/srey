@@ -15,8 +15,7 @@ typedef struct task_listen_churn_args {
 static void _startup(task_ctx *task) {
     task_listen_churn_args *arg = (task_listen_churn_args *)coro_get_arg(task);
     uint64_t lsnid;
-    SOCKET cfd;
-    uint64_t cskid;
+    sock_ctx csk;
     int32_t r;
     int32_t i;
     int32_t nconn = 0;
@@ -28,10 +27,10 @@ static void _startup(task_ctx *task) {
             LOG_ERROR("listen_churn iter %d: task_listen %u failed.", i, arg->port);
             return;
         }
-        r = coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", arg->port, 0, NULL, &cfd, &cskid);
+        r = coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", arg->port, 0, NULL, &csk);
         if (ERR_OK == r) {
             nconn++;
-            ev_close(&task->loader->netev, cfd, cskid);
+            ev_close(&task->loader->netev, &csk);
         }
         // 立即 unlisten；accept 完成事件可能正落在 watcher 队列里，命中 _uev_qtn_freelsn 引用计数路径
         ev_unlisten(&task->loader->netev, lsnid);

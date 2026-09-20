@@ -20,7 +20,7 @@ typedef struct smtp_ctx {
     struct evssl_ctx *evssl; //TLS 上下文，NULL 表示不加密
     struct task_ctx *task;   //所属任务上下文
     struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
-    sk_id sk;                //连接标识 fd+skid
+    sock_ctx sk;                //连接标识 fd+skid
     char user[64];           //SMTP 用户名
     char psw[64];            //SMTP 密码
     char ip[IP_LENS];        //SMTP 服务器 IP 地址
@@ -103,14 +103,13 @@ char *smtp_pack_data(void);
 /// COMMAND 状态下返回响应数据包，其余状态内部驱动握手流程
 /// </summary>
 /// <param name="ev">事件上下文</param>
-/// <param name="fd">套接字文件描述符</param>
-/// <param name="skid">套接字唯一 ID</param>
+/// <param name="sk">连接标识</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文（含 smtp_ctx 和解析状态）</param>
 /// <param name="size">COMMAND 状态下输出数据包长度</param>
 /// <param name="status">解析结果标志位（PROT_MOREDATA / PROT_ERROR）</param>
 /// <returns>COMMAND 状态下返回响应数据包（需调用者释放），其余状态返回 NULL</returns>
-void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *smtp_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
 #endif//SMTP_H_

@@ -34,8 +34,7 @@ typedef struct waiter_arg {
 }waiter_arg;
 // 并发 sendto 的每协程入参；nok / seen 指向调用方栈上的共享计数
 typedef struct sendto_arg {
-    SOCKET fd;
-    uint64_t skid;
+    sock_ctx sk;
     uint16_t port;
     int32_t idx;
     int32_t *nok;
@@ -58,12 +57,11 @@ static int32_t _test_sleep_cascade(task_ctx *task) {
 
 // coro_connect 到 127.0.0.1:1（保留端口，必拒绝），验证错误返回
 static int32_t _test_connect_refused(task_ctx *task) {
-    SOCKET fd;
-    uint64_t skid;
-    int32_t r = coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", 1, 0, NULL, &fd, &skid);
+    sock_ctx sk;
+    int32_t r = coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", 1, 0, NULL, &sk);
     if (ERR_OK == r) {
         // 不应该连成功；连上了立即关掉再报错
-        ev_close(&task->loader->netev, fd, skid);
+        ev_close(&task->loader->netev, &sk);
         LOG_ERROR("coro_connect refused: 127.0.0.1:1 unexpectedly accepted.");
         return ERR_FAILED;
     }
@@ -72,19 +70,18 @@ static int32_t _test_connect_refused(task_ctx *task) {
 
 // 先连上 http server，立即 ev_close 后再调 coro_send，验证 send 在断开 fd 上正确失败
 static int32_t _test_send_after_close(task_ctx *task, uint16_t httpport) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &sk)) {
         LOG_ERROR("coro_send-after-close: pre-connect to http_sv failed.");
         return ERR_FAILED;
     }
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     // 等关连接消息穿过事件循环；时间轮粒度 1ms，50ms 足够
     coro_sleep(task, 50);
     // 构造一个最小 HTTP GET 包发送，预期 coro_send 返回 NULL
     const char *req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
     size_t rsize = 0;
-    void *resp = coro_send(task, fd, skid, (void *)req, strlen(req), &rsize, 1);
+    void *resp = coro_send(task, &sk, (void *)req, strlen(req), &rsize, 1);
     if (NULL != resp) {
         LOG_ERROR("coro_send-after-close: expected NULL, got resp size=%zu.", rsize);
         return ERR_FAILED;
@@ -141,22 +138,21 @@ static void _reregister_waiter(task_ctx *task, void *arg) {
 // 就在这一轮里重新注册同一个 sess，循环后那句"空了就删"必须看见它。删错了它永远醒不过来——
 // 连超时监视器都找不到它（mapco 条目已经没了），表现为 second 一直是 0
 static int32_t _test_close_reregister(task_ctx *task, uint16_t httpport) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &sk)) {
         LOG_ERROR("close-reregister: connect to http_sv failed.");
         return ERR_FAILED;
     }
     // fork 出去的等待者写的是这里的存储，而下面的失败路径会在它还挂着时就 return。
     // 放 static 免掉"每条失败路径都得先把等待者等干净"的时序推理（task 内单线程、用例顺序跑）
     static reregister_arg a;
-    a.skid = skid;
+    a.skid = sk.skid;
     a.first = (msg_type)0;
     a.second = (msg_type)0;
     coro_fork(task, _reregister_waiter, &a);
     // fork 的协程在本条消息 dispatch 末尾才起，先让出一次给它挂上等待
     coro_sleep(task, 30);
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     coro_sleep(task, 200 + TIMEOUT_SETTLE_MS);
     if (MSG_TYPE_CLOSE != a.first) {
         LOG_ERROR("close-reregister: first wait expected CLOSE, got %d.", (int32_t)a.first);
@@ -175,7 +171,7 @@ static void _sendto_one(task_ctx *task, void *arg) {
     char buf[4];
     SNPRINTF(buf, sizeof(buf), "p%d", a->idx);
     size_t rlens = 0;
-    void *resp = coro_sendto(task, a->fd, a->skid, "127.0.0.1", a->port, buf, 2, &rlens, 1);
+    void *resp = coro_sendto(task, &a->sk, "127.0.0.1", a->port, buf, 2, &rlens, 1);
     if (NULL == resp || 2 != rlens) {
         return;
     }
@@ -190,13 +186,12 @@ static void _sendto_one(task_ctx *task, void *arg) {
 // 同一个 skid 上并发 coro_sendto：N 个协程都挂在 sess=skid 等 RECVFROM，每条数据报唤醒队头。
 // 取队头那步若越过队头找、或摘空后把条目删早了，后面的协程就再也醒不过来——表现为 nok < N
 static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, &sk)) {
         LOG_ERROR("concurrent sendto: task_udp failed.");
         return ERR_FAILED;
     }
-    coro_sync(task, fd, skid);
+    coro_sync(task, &sk);
     int32_t nok = 0;
     int32_t seen[CONCURRENT_N] = { 0 };
     sendto_arg args[CONCURRENT_N];
@@ -204,8 +199,7 @@ static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
     void *argp[CONCURRENT_N];
     int32_t i;
     for (i = 0; i < CONCURRENT_N; i++) {
-        args[i].fd = fd;
-        args[i].skid = skid;
+        args[i].sk = sk;
         args[i].port = udpport;
         args[i].idx = i + 1;
         args[i].nok = &nok;
@@ -214,7 +208,7 @@ static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
         argp[i] = &args[i];
     }
     (void)coro_fork_wait(task, funcs, argp, CONCURRENT_N);
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     if (CONCURRENT_N != nok) {
         LOG_ERROR("concurrent sendto: only %d/%d coroutines got a response.", nok, CONCURRENT_N);
         return ERR_FAILED;
@@ -310,10 +304,9 @@ static int32_t _test_head_mtype_gate(task_ctx *task) {
 // RECV 属于 _message_may_keep 为真的六个 mtype，摘空 waiters 后条目应当留着；
 // 直到 CLOSE 把 keep 清 false，它才真正可删
 static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
-    SOCKET fd;
-    uint64_t skid;
+    sock_ctx sk;
     int32_t s0 = _sessions(task);// 基线要在 connect 之前取，理由见下
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &fd, &skid)) {
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &sk)) {
         LOG_ERROR("keep lifetime: connect to http_sv failed.");
         return ERR_FAILED;
     }
@@ -321,11 +314,11 @@ static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
     // 所以走到这里条目已经建好、keep 已经是 true
     if (s0 + 1 != _sessions(task)) {
         LOG_ERROR("keep lifetime: connect left no entry (s0=%d now=%d).", s0, _sessions(task));
-        ev_close(&task->loader->netev, fd, skid);
+        ev_close(&task->loader->netev, &sk);
         return ERR_FAILED;
     }
     static waiter_arg a;// 存储期理由同 _test_close_reregister
-    a.sess = skid;
+    a.sess = sk.skid;
     a.mtype = MSG_TYPE_RECV;
     a.ms = 3000;
     a.woke = (msg_type)0;
@@ -334,24 +327,24 @@ static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
     // 追加到已有条目，不新建第二个
     if (s0 + 1 != _sessions(task)) {
         LOG_ERROR("keep lifetime: waiter did not append to the existing entry.");
-        ev_close(&task->loader->netev, fd, skid);
+        ev_close(&task->loader->netev, &sk);
         return ERR_FAILED;
     }
     // 发一条 HTTP 请求让服务端回包，走正常摘空而不是超时
     const char *req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
-    ev_send(&task->loader->netev, fd, skid, (void *)req, strlen(req), 1);
+    ev_send(&task->loader->netev, &sk, (void *)req, strlen(req), 1);
     coro_sleep(task, 300);
     if (MSG_TYPE_RECV != a.woke) {
         LOG_ERROR("keep lifetime: waiter woke with mtype %d, expected RECV.", (int32_t)a.woke);
-        ev_close(&task->loader->netev, fd, skid);
+        ev_close(&task->loader->netev, &sk);
         return ERR_FAILED;
     }
     if (s0 + 1 != _sessions(task)) {
         LOG_ERROR("keep lifetime: keep=true entry dropped after normal drain.");
-        ev_close(&task->loader->netev, fd, skid);
+        ev_close(&task->loader->netev, &sk);
         return ERR_FAILED;
     }
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     coro_sleep(task, 300);
     if (s0 != _sessions(task)) {
         LOG_ERROR("keep lifetime: entry survived CLOSE (s0=%d now=%d).", s0, _sessions(task));
@@ -363,20 +356,19 @@ static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
 // 超时路径无视 keep：同样是 keep=true 的 RECV 条目，上面那条扛过了"摘空"，走超时就该直接删。
 // 留着的话该 skid 的 CLOSE 已被消费过，条目再没有任何路径能删掉
 static int32_t _test_timeout_ignores_keep(task_ctx *task, uint16_t httpport) {
-    SOCKET fd;
-    uint64_t skid;
+    sock_ctx sk;
     int32_t s0 = _sessions(task);// 同 _test_keep_lifetime：基线取在 connect 之前
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &fd, &skid)) {
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &sk)) {
         LOG_ERROR("timeout-ignores-keep: connect to http_sv failed.");
         return ERR_FAILED;
     }
     if (s0 + 1 != _sessions(task)) {
         LOG_ERROR("timeout-ignores-keep: connect left no entry.");
-        ev_close(&task->loader->netev, fd, skid);
+        ev_close(&task->loader->netev, &sk);
         return ERR_FAILED;
     }
     static waiter_arg a;// 存储期理由同 _test_close_reregister
-    a.sess = skid;
+    a.sess = sk.skid;
     a.mtype = MSG_TYPE_RECV;
     a.ms = 200;
     a.woke = (msg_type)0;
@@ -390,7 +382,7 @@ static int32_t _test_timeout_ignores_keep(task_ctx *task, uint16_t httpport) {
         LOG_ERROR("timeout-ignores-keep: keep=true entry survived the timeout path.");
         rtn = ERR_FAILED;
     }
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 

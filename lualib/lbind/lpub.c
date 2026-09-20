@@ -1,7 +1,13 @@
 ﻿#include "lbind/lpub.h"
 
+#define MT_SOCK "_sock_ctx" // 连接标识 userdata 的元表名，只是本文件的实现细节
+
 // 0/1 开关越界文案，只由 lpub_check_flag / lpub_opt_flag 用
 #define FLAG_OUT_OF_RANGE "flag must be 0 or 1"
+
+// 注册表里那张连接标识缓存表的键(只取地址用)。一个 lua_State 一张,按 skid 存,
+// 免得每条消息取 sk 都造一个新 userdata
+static const char _sk_cache_key = 0;
 
 // 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
 void *global_userdata(lua_State *lua, const char *name) {
@@ -279,4 +285,115 @@ void lpub_push_url_table(lua_State *lua, url_ctx *url) {
         luaL_pushresultsize(&qbuf, url_reorg_param(url, qq, qcap));
         lua_setfield(lua, -2, "query");
     }
+}
+// 连接标识的 __index：只有 fd / skid / valid 三个可读键。
+// valid 让"连接是否失效"只有一处判据，业务不必自己比 INVALID_SOCK，口径同 C 侧 sock_is_invalid
+static int32_t _sock_index(lua_State *lua) {
+    sock_ctx *sk = lua_touserdata(lua, 1);
+    const char *k = lua_tostring(lua, 2);
+    if (NULL == sk || NULL == k) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    if (0 == strcmp(k, "fd")) {
+        lua_pushinteger(lua, (lua_Integer)sk->fd);
+    } else if (0 == strcmp(k, "skid")) {
+        lua_pushinteger(lua, (lua_Integer)sk->skid);
+    } else if (0 == strcmp(k, "valid")) {
+        lua_pushboolean(lua, !sock_is_invalid(sk));
+    } else {
+        lua_pushnil(lua);
+    }
+    return 1;
+}
+// 按值比较两个连接标识。两侧都要 testudata 而非 checkudata：两个 full userdata 相比时
+// Lua 不看元表是否相同,只要一侧挂了 __eq 就派发到这里,拿 sock 比别的 userdata 会抛参数错
+static int32_t _sock_eq(lua_State *lua) {
+    sock_ctx *a = luaL_testudata(lua, 1, MT_SOCK);
+    sock_ctx *b = luaL_testudata(lua, 2, MT_SOCK);
+    lua_pushboolean(lua, NULL != a && NULL != b
+                         && a->fd == b->fd && a->skid == b->skid);
+    return 1;
+}
+static int32_t _sock_tostring(lua_State *lua) {
+    sock_ctx *sk = luaL_checkudata(lua, 1, MT_SOCK);
+    lua_pushfstring(lua, "sock(%d,%I)", (int)sk->fd, (lua_Integer)sk->skid);
+    return 1;
+}
+void lpub_reg_sock(lua_State *lua) {
+    luaL_newmetatable(lua, MT_SOCK);
+    lua_pushcfunction(lua, _sock_index);
+    lua_setfield(lua, -2, "__index");
+    lua_pushcfunction(lua, _sock_eq);
+    lua_setfield(lua, -2, "__eq");
+    lua_pushcfunction(lua, _sock_tostring);
+    lua_setfield(lua, -2, "__tostring");
+    lua_pushstring(lua, MT_SOCK);
+    lua_setfield(lua, -2, "__metatable");
+    lua_pop(lua, 1);
+}
+// 取缓存表压栈,不存在就建。建的是弱值表：缓存只为同一 skid 复用同一 userdata 省一次分配,
+// 摘除点却只有 CLOSE 分发那一处——连接被 bind_task 转交后 CLOSE 落在别的 task,
+// 原 task 这条 skid 再没有路径删得掉。弱值让条目随 userdata 一起被回收,不必依赖摘除点
+static void _sk_cache_push(lua_State *lua) {
+    if (LUA_TTABLE != lua_rawgetp(lua, LUA_REGISTRYINDEX, &_sk_cache_key)) {
+        lua_pop(lua, 1);
+        lua_newtable(lua);
+        lua_newtable(lua);
+        lua_pushstring(lua, "v");
+        lua_setfield(lua, -2, "__mode");
+        lua_setmetatable(lua, -2);
+        lua_pushvalue(lua, -1);
+        lua_rawsetp(lua, LUA_REGISTRYINDEX, &_sk_cache_key);
+    }
+}
+void lpub_push_sock(lua_State *lua, sock_ctx *sk) {
+    sock_ctx *ud = (sock_ctx *)lua_newuserdatauv(lua, sizeof(sock_ctx), 0);
+    *ud = *sk;
+    ASSOC_MTABLE(lua, MT_SOCK);
+}
+// 消息分发专用:按 skid 复用同一个 userdata,免得每条消息都造一个。
+// 命中必须刷新值——teardown 会先把 fd 复位再发 CLOSE,拿旧快照会让 valid 恒真。
+// 只给这条路用:别处(sock_id / connect / udp)走上面那个不入缓存的,否则连接关掉之后
+// 再取一次就会把死 skid 写回表里,而 uncache 只在 CLOSE 分发后触发一次,再没人摘得掉
+void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk) {
+    if (0 == sk->skid) {
+        lpub_push_sock(lua, sk);
+        return;
+    }
+    _sk_cache_push(lua);
+    if (LUA_TUSERDATA == lua_rawgeti(lua, -1, (lua_Integer)sk->skid)) {
+        *(sock_ctx *)lua_touserdata(lua, -1) = *sk;
+        lua_remove(lua, -2);
+        return;
+    }
+    lua_pop(lua, 1);
+    sock_ctx *ud = (sock_ctx *)lua_newuserdatauv(lua, sizeof(sock_ctx), 0);
+    *ud = *sk;
+    ASSOC_MTABLE(lua, MT_SOCK);
+    lua_pushvalue(lua, -1);
+    lua_rawseti(lua, -3, (lua_Integer)sk->skid);
+    lua_remove(lua, -2);
+}
+void lpub_sock_uncache(lua_State *lua, uint64_t skid) {
+    if (0 == skid) {
+        return;
+    }
+    _sk_cache_push(lua);
+    lua_pushnil(lua);
+    lua_rawseti(lua, -2, (lua_Integer)skid);
+    lua_pop(lua, 1);
+}
+sock_ctx *lpub_check_sock(lua_State *lua, int32_t idx) {
+    return (sock_ctx *)luaL_checkudata(lua, idx, MT_SOCK);
+}
+int32_t lpub_push_sock_invalid(lua_State *lua) {
+    sock_ctx sk;
+    sock_set_invalid(&sk);
+    sk.skid = 0;
+    lpub_push_sock(lua, &sk);
+    return 1;
+}
+int32_t lpub_is_sock(lua_State *lua, int32_t idx) {
+    return NULL != luaL_testudata(lua, idx, MT_SOCK);
 }

@@ -36,27 +36,27 @@ runner.run(function(t)
     -- ── lib/mqtt.lua: connect (try_connect + wait_connect 同步等待) ───
     do
         -- 连本机 server_mqtt（1883），明文，无握手层应用协议
-        local fd, skid = mqtt.connect(mqtt.VERSION.V311, SSL_NAME.NONE, "127.0.0.1", 1883)
-        if INVALID_SOCK == fd then
+        local sk = mqtt.connect(mqtt.VERSION.V311, SSL_NAME.NONE, "127.0.0.1", 1883)
+        if not sk.valid then
             t:fail("mqtt.connect v3.1.1 to 127.0.0.1:1883")
         else
-            t:check(fd > 0 and skid ~= nil, "mqtt.connect v3.1.1 returns fd+skid")
-            srey.close(fd, skid)
+            t:check(sk.fd > 0, "mqtt.connect v3.1.1 returns a valid sock")
+            srey.close(sk)
         end
     end
     do
-        local fd, skid = mqtt.connect(mqtt.VERSION.V50, SSL_NAME.NONE, "127.0.0.1", 1883)
-        if INVALID_SOCK == fd then
+        local sk = mqtt.connect(mqtt.VERSION.V50, SSL_NAME.NONE, "127.0.0.1", 1883)
+        if not sk.valid then
             t:fail("mqtt.connect v5.0 to 127.0.0.1:1883")
         else
-            t:check(fd > 0 and skid ~= nil, "mqtt.connect v5.0 returns fd+skid")
-            srey.close(fd, skid)
+            t:check(sk.fd > 0, "mqtt.connect v5.0 returns a valid sock")
+            srey.close(sk)
         end
     end
     do
         -- 连接不存在端口失败（127.0.0.1:1 一般不监听）
-        local fd = mqtt.connect(mqtt.VERSION.V311, SSL_NAME.NONE, "127.0.0.1", 1)
-        t:eq(INVALID_SOCK, fd, "mqtt.connect failed port returns INVALID_SOCK")
+        local sk = mqtt.connect(mqtt.VERSION.V311, SSL_NAME.NONE, "127.0.0.1", 1)
+        t:check(not sk.valid, "mqtt.connect failed port returns invalid sock")
     end
 end)
 end)

@@ -7,9 +7,9 @@ void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
         ZERO(&bind->values, sizeof(bind->values));
         return;
     }
-    binary_init(&bind->format, NULL, 0, 0);
+    binary_init_write(&bind->format, 0, 0);
     binary_set_integer(&bind->format, bind->nparam, 2, 0); // 写入参数格式代码数量
-    binary_init(&bind->values, NULL, 0, 0);
+    binary_init_write(&bind->values, 0, 0);
     binary_set_integer(&bind->values, bind->nparam, 2, 0); // 写入参数值数量
 }
 void pgsql_bind_free(pgsql_bind_ctx *bind) {

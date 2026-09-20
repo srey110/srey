@@ -509,13 +509,11 @@ static int32_t _lmysql_pack_stmt_close(lua_State *lua) {
 /// 获取预处理语句所属连接的 fd 和 skid
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
-/// <returns type="integer">socket fd</returns>
-/// <returns type="integer">skid</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false</returns>
 static int32_t _lmysql_stmt_sock_id(lua_State *lua) {
     LMYSQL_STMT_ARG(lua, stmt);
-    lua_pushinteger(lua, (*stmt)->mysql->client.sk.fd);
-    lua_pushinteger(lua, (*stmt)->mysql->client.sk.skid);
-    return 2;
+    lpub_push_sock(lua, &(*stmt)->mysql->client.sk);
+    return 1;
 }
 //mysql.stmt
 LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
@@ -671,12 +669,12 @@ static int32_t _lmysql_free(lua_State *lua) {
         return 0;
     }
     if (NULL != mysql->task
-        && INVALID_SOCK != mysql->client.sk.fd) {
+        && !sock_is_invalid(&mysql->client.sk)) {
         size_t size;
         void *pack = mysql_pack_quit(&size);
-        ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, pack, size, 0);
+        ev_send(&mysql->task->loader->netev, &mysql->client.sk, pack, size, 0);
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
-        ev_close(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid);
+        ev_close(&mysql->task->loader->netev, &mysql->client.sk);
     }
     *ud = NULL;
     // mpack 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；
@@ -725,14 +723,12 @@ static int32_t _lmysql_erro(lua_State *lua) {
 /// 返回当前 MySQL 连接的 fd 和 skid
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
-/// <returns type="integer">socket fd</returns>
-/// <returns type="integer">skid</returns>
+/// <returns type="userdata">连接标识；失败时其 valid 字段为 false</returns>
 static int32_t _lmysql_sock_id(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     mysql_ctx *mysql = *ud;
-    lua_pushinteger(lua, mysql->client.sk.fd);
-    lua_pushinteger(lua, mysql->client.sk.skid);
-    return 2;
+    lpub_push_sock(lua, &mysql->client.sk);
+    return 1;
 }
 /// <summary>
 /// 返回最后一次 INSERT 操作生成的自增 id

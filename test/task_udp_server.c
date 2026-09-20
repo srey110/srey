@@ -4,16 +4,15 @@ static pack_type _pktype = PACK_NONE;
 static uint16_t _port = 0;
 
 // 收到 UDP 数据报后原样回发给发送方
-static void _net_recvfrom(task_ctx *task, sk_id *sk, subtype_t pktype,
+static void _net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype,
     char ip[IP_LENS], uint16_t port, void *data, size_t size) {
     (void)pktype;
-    ev_sendto(&task->loader->netev, sk->fd, sk->skid, ip, port, data, size, 1);
+    ev_sendto(&task->loader->netev, sk, ip, port, data, size, 1);
 }
 static void _startup(task_ctx *task) {
     task_recvedfrom(task, _net_recvfrom);
-    SOCKET fd;
-    uint64_t id;
-    if (ERR_OK != task_udp(task, _pktype, "0.0.0.0", _port, &fd, &id)) {
+    sock_ctx sk;
+    if (ERR_OK != task_udp(task, _pktype, "0.0.0.0", _port, &sk)) {
         LOG_WARN("start udp server error.");
     }
 }

@@ -64,7 +64,8 @@ int32_t sock_nonblock(SOCKET fd);
 /// <returns>ERR_OK 成功</returns>
 int32_t sock_reuseaddr(SOCKET fd, int32_t istcp);
 /// <summary>
-/// 设置端口重用
+/// 设置端口重用。FreeBSD 优先用 SO_REUSEPORT_LB(它的 SO_REUSEPORT 不分发 TCP 连接),
+/// 两者互斥:同一 addr:port 上一半 fd 用 _LB 另一半用 SO_REUSEPORT 会 EADDRINUSE
 /// </summary>
 /// <param name="fd">socket 句柄</param>
 /// <returns>ERR_OK 成功</returns>
@@ -105,15 +106,17 @@ int32_t sock_pair(SOCKET sock[2], int32_t nonblock);
 /// <param name="family">地址族</param>
 /// <param name="type">socket 类型</param>
 /// <param name="proto">协议，0 表示按 family/type 选默认</param>
+/// <param name="nonblock">非 0 则一并设为非阻塞，设不上按创建失败处理</param>
 /// <returns>socket 句柄，失败返回 INVALID_SOCK</returns>
-SOCKET sock_create_cloexec(int32_t family, int32_t type, int32_t proto);
+SOCKET sock_create_cloexec(int32_t family, int32_t type, int32_t proto, int32_t nonblock);
 /// <summary>
 /// accept 并带 CLOEXEC，避免被 fork+exec 的子进程继承
 /// </summary>
 /// <param name="fd">监听 socket</param>
 /// <param name="addr">对端地址，可为 NULL</param>
 /// <param name="addrlen">地址长度，可为 NULL</param>
-/// <returns>新连接 socket，失败返回 INVALID_SOCK</returns>
-SOCKET sock_accept_cloexec(SOCKET fd, struct sockaddr *addr, socklen_t *addrlen);
+/// <param name="nonblock">非 0 则连同非阻塞一并设好，调用方无须再 sock_nonblock；设不上按 accept 失败处理</param>
+/// <returns>新连接 socket，失败返回 INVALID_SOCK（此时错误码可分类，含非阻塞设置失败那种）</returns>
+SOCKET sock_accept_cloexec(SOCKET fd, struct sockaddr *addr, socklen_t *addrlen, int32_t nonblock);
 
 #endif

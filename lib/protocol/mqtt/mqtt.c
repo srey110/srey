@@ -959,9 +959,9 @@ static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     }
     return rtn;
 }
-void *mqtt_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)fd; (void)skid; (void)size;
+    (void)ev; (void)sk; (void)size;
     size_t blens = buffer_size(buf);
     if (blens < 2) {//固定头至少2字节
         BIT_SET(*status, PROT_MOREDATA);

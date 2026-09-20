@@ -14,11 +14,13 @@
 #define _MSG_OFF_PROT   12
 #define _MSG_OFF_FLAGS  16
 
-// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
+static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
+// 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
 // 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
 static void *_t_mongo_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mongo_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return mongo_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 
 // 从 wire 包指定偏移读取小端 int32
@@ -259,7 +261,7 @@ static void test_mongo_pack_check_flag(CuTest *tc) {
     CuAssertIntEquals(tc, 0, mongo_pack_check_flag(pack, MORETOCOME));
     FREE(pack);
 
-    // NULL 直接返回 0，不落到 binary_init 的内部托管分支去 MALLOC
+    // NULL 直接返回 0，不落到 binary_init_write 去 MALLOC
     CuAssertIntEquals(tc, 0, mongo_pack_check_flag(NULL, MORETOCOME));
 
     BSON_FREE(&doc);
@@ -1093,7 +1095,7 @@ static void test_mongo_udfree_keeps_session(CuTest *tc) {
     _mongo_udfree(&ud);
 
     CuAssertTrue(tc, NULL == ud.context);
-    CuAssertTrue(tc, INVALID_SOCK == mongo.sk.fd);
+    CuAssertTrue(tc, sock_is_invalid(&mongo.sk));
     // session 必须原样留着:改回在这里置空就是把跨线程写又加回来了
     CuAssertTrue(tc, &sess == mongo.session);
     CuAssertTrue(tc, 1 == sess.started);

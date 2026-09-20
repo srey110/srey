@@ -24,11 +24,15 @@ typedef struct ud_cxt {
     void    *loader;  // 指向 loader_ctx，用于访问 loader
     void    *context; // 上层上下文指针（超时回调时使用）
 }ud_cxt;
-// socket 标识：fd 定位 socket，skid 防 fd 复用，两者合起来确定一条活连接
-typedef struct sk_id {
+// socket 标识：fd 定位 socket，skid 防 fd 复用，index 记所属 watcher，三者合起来确定一条活连接。
+// index 一般等于 CALC_WATCHER_INDEX(fd, nthreads);listener 与 pipe 按所在 watcher 的下标填,失效的填 INVALID_INDEX。
+// 字段顺序不能动：挪到末尾 unix 下 sizeof 从 16 涨到 24;挪到开头会让 { INVALID_SOCK, INVALID_INDEX, 0 }
+// 这类位置初始化整体错位,Windows 下 fd 拿到的是 -1 而非 INVALID_SOCKET,sock_is_invalid 会漏判
+typedef struct sock_ctx {
     SOCKET   fd;    // socket 句柄
+    int32_t  index; // 所属 watcher 在 ctx->watcher 中的下标,取值 [0, nthreads) 或 INVALID_INDEX
     uint64_t skid;  // 连接 ID（防 fd 复用误操作）
-}sk_id;
+}sock_ctx;
 // 通用数据缓冲区（仅持有指针，不管理内存所有权）
 typedef struct buf_ctx {
     size_t  lens; // 数据长度（字节）
@@ -65,6 +69,16 @@ typedef struct off_buf_ctx {
         } \
     } while (0)
 
+// 连接标识是否失效。只看 fd——skid 要留着判"中途是否重连过"
+static inline int32_t sock_is_invalid(sock_ctx *sk) {
+    return INVALID_SOCK == sk->fd;
+}
+// 把连接标识置为失效。不动 skid，理由同 sock_is_invalid；index 置 INVALID_INDEX——
+// 0 是合法下标,表达不了"未设置",拿它去索引会静默投到 watcher[0] 上
+static inline void sock_set_invalid(sock_ctx *sk) {
+    sk->fd = INVALID_SOCK;
+    sk->index = INVALID_INDEX;
+}
 // 判断 buf_ctx 是否为空（指针或数据为 NULL 或长度为 0）
 static inline int32_t buf_empty(buf_ctx *buf) {
     return NULL == buf || EMPTYPTR(buf->data, buf->lens);

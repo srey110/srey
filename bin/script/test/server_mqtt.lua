@@ -10,11 +10,11 @@ local _PORT = 1883
 -- QoS1/2 PUBLISH 计数器，循环覆盖三种 PUBACK reason code 分支
 local _publish = 0
 
-local function _send(fd, skid, pack, size)
-    if pack then srey.send(fd, skid, pack, size, 0) end
+local function _send(sk, pack, size)
+    if pack then srey.send(sk, pack, size, 0) end
 end
 
-local function _handle(_, fd, skid, _, _, data, _)
+local function _handle(_, sk, _, _, data, _)
     local prot = mqtt.prot(data)
     local ver = mqtt.pack_version(data)
     if mqtt.PROT.CONNECT == prot then
@@ -34,12 +34,12 @@ local function _handle(_, fd, skid, _, _, data, _)
         -- sesspresent 恒 0：不持久化会话 + 客户端一律 CleanSession=1，MQTT 3.1.1 §3.2.2.2 要求回 0
         local pk, sz = mqtt.pack_connack(ver, 0, 0, props)
         if props then props:free() end
-        _send(fd, skid, pk, sz)
+        _send(sk, pk, sz)
     elseif mqtt.PROT.PUBLISH == prot then
         local _, qos, _, packid, _, content = mqtt.publish(data)
         if "bye" == content then
             local pk, sz = mqtt.pack_disconnect(ver, 0, nil)
-            _send(fd, skid, pk, sz)
+            _send(sk, pk, sz)
             return
         end
         if 0 == qos then return end
@@ -66,12 +66,12 @@ local function _handle(_, fd, skid, _, _, data, _)
                 pk, sz = mqtt.pack_pubrec(ver, packid, 0, nil)
             end
         end
-        _send(fd, skid, pk, sz)
+        _send(sk, pk, sz)
         if 3 == _publish then _publish = 0 end
     elseif mqtt.PROT.PUBREL == prot then
         local packid = mqtt.pubrel(data)
         local pk, sz = mqtt.pack_pubcomp(ver, packid, 0, nil)
-        _send(fd, skid, pk, sz)
+        _send(sk, pk, sz)
     elseif mqtt.PROT.SUBSCRIBE == prot then
         local packid, topics = mqtt.subscribe(data)
         printd("mqtt subscribe: %d topic(s), first=%s", #topics, topics[1] and topics[1].topic or "")
@@ -80,10 +80,10 @@ local function _handle(_, fd, skid, _, _, data, _)
         props:kv(mqtt.PROP.USER_PROPERTY, "key1", "val1")
         local pk, sz = mqtt.pack_suback(ver, packid, reasons, props)
         props:free()
-        _send(fd, skid, pk, sz)
+        _send(sk, pk, sz)
         -- 主动推 QoS0 publish，覆盖 server -> client 路径
         pk, sz = mqtt.pack_publish(ver, 0, 0, 0, "/test/topic1", 0, "server push")
-        _send(fd, skid, pk, sz)
+        _send(sk, pk, sz)
     elseif mqtt.PROT.UNSUBSCRIBE == prot then
         local packid, topics = mqtt.unsubscribe(data)
         printd("mqtt unsubscribe: %d topic(s), first=%s", #topics, topics[1] or "")
@@ -91,10 +91,10 @@ local function _handle(_, fd, skid, _, _, data, _)
         props:kv(mqtt.PROP.USER_PROPERTY, "key1", "val1")
         local pk, sz = mqtt.pack_unsuback(ver, packid, string.char(0), props)
         props:free()
-        _send(fd, skid, pk, sz)
+        _send(sk, pk, sz)
     elseif mqtt.PROT.PINGREQ == prot then
         local pk, sz = mqtt.pack_pong()
-        _send(fd, skid, pk, sz)
+        _send(sk, pk, sz)
     -- DISCONNECT / AUTH 不需要回复
     end
 end

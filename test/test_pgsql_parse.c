@@ -10,11 +10,13 @@
 #pragma warning(disable:4312)
 #endif
 
-// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
+static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
+// 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
 // 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
 static void *_t_pgsql_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return pgsql_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return pgsql_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 
 // 构造一个 pgsql_reader_ctx：fields 数量 + 类型 + 名称
@@ -878,7 +880,7 @@ static void test_pgsql_reader_index(CuTest *tc) {
 static void test_pgpack_error_notice(CuTest *tc) {
     // 构造一个 ErrorResponse 风格的字节流：S:ERROR\0M:bad command\0C:42601\0\0
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_int8(&bw, 'S');
     binary_set_string(&bw, "ERROR");
     binary_set_int8(&bw, 'M');
@@ -888,7 +890,7 @@ static void test_pgpack_error_notice(CuTest *tc) {
     binary_set_int8(&bw, 0);
 
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     char *msg = _pgpack_error_notice(&br);
     CuAssertPtrNotNull(tc, msg);
     // 字符串应含 "S: ERROR", "M: bad command", "C: 42601"
@@ -902,11 +904,11 @@ static void test_pgpack_error_notice(CuTest *tc) {
 // _pgpack_error_notice：空输入 → 空字符串（仅 NUL 结尾）
 static void test_pgpack_error_notice_empty(CuTest *tc) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_int8(&bw, 0); // 立即结束
 
     binary_ctx br;
-    binary_init(&br, bw.data, bw.offset, 0);
+    binary_init_read(&br, bw.data, bw.offset);
     char *msg = _pgpack_error_notice(&br);
     CuAssertPtrNotNull(tc, msg);
     // 内容应为空（首字节即为 NUL）
@@ -919,7 +921,7 @@ static void test_pgpack_error_notice_empty(CuTest *tc) {
 static void test_pgpack_error_notice_unterminated(CuTest *tc) {
     char raw[] = { 'S', 'E', 'R', 'R' }; // 标志 'S' 后跟 3 字节且不带 NUL
     binary_ctx br;
-    binary_init(&br, raw, sizeof(raw), 0);
+    binary_init_read(&br, raw, sizeof(raw));
     char *msg = _pgpack_error_notice(&br);
     CuAssertPtrNotNull(tc, msg);
     CuAssertIntEquals(tc, 0, (int)msg[0]); // 这一字段整个丢掉，结果是空串
@@ -938,7 +940,7 @@ static void *_pg_feed(pgsql_ctx *pg, ud_cxt *ud, char code,
     if (blens > 0) {
         memcpy(raw + 5, body, blens);
     }
-    binary_init(&br, raw, 5 + blens, 0);
+    binary_init_read(&br, raw, 5 + blens);
     *status = PROT_INIT;
     return _pgpack_parser(pg, &br, ud, status);
 }
@@ -1017,7 +1019,7 @@ static void test_pgpack_parser_empty_body(CuTest *tc) {
         MALLOC(raw, 5);
         raw[0] = codes[i];
         pack_integer(raw + 1, 4, 4, 0); // 长度字段含自身，4 即消息体为空
-        binary_init(&br, raw, 5, 0);
+        binary_init_read(&br, raw, 5);
         status = PROT_INIT;
         CuAssertTrue(tc, NULL == _pgpack_parser(&pg, &br, &ud, &status));
         CuAssert(tc, "an empty message body must be a protocol error, not an abort",
@@ -1112,7 +1114,7 @@ static void test_pgsql_payload_framing(CuTest *tc) {
 static void test_pgpack_row_description_overlong_name(CuTest *tc) {
     // 2 列 → 需 2*19=38 字节；给足 40 字节，但第一列名字就吃掉 30 字节
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_integer(&bw, 2, 2, 0);
     binary_set_string(&bw, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // 29 字符 + NUL
     for (int32_t i = 0; i < 12; i++) {
@@ -1128,7 +1130,7 @@ static void test_pgpack_row_description_overlong_name(CuTest *tc) {
     pack_integer(raw + 1, 4 + bw.offset, 4, 0);
     memcpy(raw + 5, bw.data, bw.offset);
     binary_ctx br;
-    binary_init(&br, raw, 5 + bw.offset, 0);
+    binary_init_read(&br, raw, 5 + bw.offset);
     int32_t status = PROT_INIT;
     CuAssertTrue(tc, NULL == _pgpack_parser(&pg, &br, &ud, &status));
     CuAssert(tc, "a field name that crowds out later columns must fail",

@@ -45,11 +45,11 @@ function ctx:_connect()
     if not self.pg:try_connect() then
         return false
     end
-    local fd, skid = self.pg:sock_id()
-    if not srey.wait_connect(fd, skid) then
+    local sk = self.pg:sock_id()
+    if not srey.wait_connect(sk) then
         return false
     end
-    local ok, _, _ = srey.wait_handshaked(fd, skid)
+    local ok, _, _ = srey.wait_handshaked(sk)
     return ok
 end
 
@@ -160,7 +160,7 @@ end
 -- 任何异常都靠 error 抛给调用方那个 pcall，由它统一发 CopyFail
 ---@return boolean more
 ---@return string? reason
-function ctx:_copy_stream(fd, skid, producer, format, ncol)
+function ctx:_copy_stream(sk, producer, format, ncol)
     local pack, psize
     local data, extra
     while true do
@@ -172,7 +172,7 @@ function ctx:_copy_stream(fd, skid, producer, format, ncol)
             return false, extra
         end
         pack, psize = pgsql.pack_copy_data(data, extra)
-        if not srey.send(fd, skid, pack, psize, 0) then
+        if not srey.send(sk, pack, psize, 0) then
             error(ppub.SEND, 0)
         end
     end
@@ -188,13 +188,13 @@ function ctx:_copy_in(sql, producer)
         return false
     end
     -- fd/skid 下面串流还要用，单独取一次；ppub.request 内部那次只服务它自己
-    local fd, skid = self.pg:sock_id()
+    local sk = self.pg:sock_id()
     -- 服务端期望的格式与列数透给 producer：折叠成一个方法之后，调用方再没有别的途径拿到它
     local cfmt, cncol = pgsql.copy_in_info(pgpack)
     -- 自此服务端已进 COPY IN 模式，任何一条失败路径都必须先把它拉出来再返回。
     -- 整段串流收进一个 pcall 而不是只包 producer：会抛的不止它，漏了就把服务端
     -- 留在 copy-in 模式上攥着开放事务和表锁，而 err 还是空的
-    local ok, more, reason = pcall(self._copy_stream, self, fd, skid, producer, cfmt, cncol)
+    local ok, more, reason = pcall(self._copy_stream, self, sk, producer, cfmt, cncol)
     if not ok then
         self:_copy_fail(more)
         return self:_fail("copy_in: " .. _safe_str(more))
@@ -237,13 +237,13 @@ end
 
 -- conn_pub 的断开钩子：Terminate 不等响应，发完直接关
 function ctx:_doquit()
-    local fd, skid = self.pg:sock_id()
-    if INVALID_SOCK == fd then
+    local sk = self.pg:sock_id()
+    if not sk.valid then
         return
     end
     local pack, size = pgsql.pack_terminate()
-    srey.send(fd, skid, pack, size, 0)
-    srey.sync_close(fd, skid)
+    srey.send(sk, pack, size, 0)
+    srey.sync_close(sk)
 end
 
 ---切换数据库：关闭当前连接 → 更新库名 → 重连（重连后旧 prepare 语句失效；
@@ -276,15 +276,15 @@ end
 ---取消当前正在执行的查询：在独立连接上发送 CancelRequest，服务端处理后主动断开、无响应
 ---@return boolean ok 发送成功 true；未连接、或握手还没拿到 BackendKeyData（pid 未就绪）返回 false
 function ctx:cancel()
-    local fd = self.pg:sock_id()
-    if INVALID_SOCK == fd then
+    local sk = self.pg:sock_id()
+    if not sk.valid then
         return false
     end
     if SSL_NAME.NONE ~= self.sslname then
         WARN("pgsql cancel: CancelRequest sent in plaintext (BackendKeyData pid+key exposed); SSL cancel not supported")
     end
-    local cfd, cskid = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, self.ip, self.port)
-    if INVALID_SOCK == cfd then
+    local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, self.ip, self.port)
+    if not csk.valid then
         return false
     end
     -- 组包必须排在 connect 之后：connect 会挂起，先组包发出去的可能是已被重连换掉的
@@ -292,11 +292,11 @@ function ctx:cancel()
     -- 撞上"重连中、握手未完成"那档由 pid 为 0 被绑定层拒掉
     local pack = self.pg:pack_cancel()
     if not pack then
-        srey.close(cfd, cskid)
+        srey.close(csk)
         return false
     end
-    srey.send(cfd, cskid, pack, #pack, 1)
-    srey.close(cfd, cskid)
+    srey.send(csk, pack, #pack, 1)
+    srey.close(csk)
     return true
 end
 

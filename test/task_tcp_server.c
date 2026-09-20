@@ -6,7 +6,7 @@ static int32_t _prt = 0;
 static name_t _rpcname = INVALID_TNAME;
 
 // 新连接接入
-static void _net_accept(task_ctx *task, sk_id *sk, subtype_t pktype) {
+static void _net_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
     (void)task;
     (void)pktype;
     if (_prt) {
@@ -14,7 +14,7 @@ static void _net_accept(task_ctx *task, sk_id *sk, subtype_t pktype) {
     }
 }
 // SSL 握手完成
-static void _net_ssl_exchanged(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+static void _net_ssl_exchanged(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client) {
     (void)task;
     (void)pktype;
     (void)client;
@@ -23,40 +23,40 @@ static void _net_ssl_exchanged(task_ctx *task, sk_id *sk, subtype_t pktype, uint
     }
 }
 // 收到数据包，按首字节指令分发处理
-static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)slice;
     binary_ctx reader;
-    binary_init(&reader, data, size, 0);
+    binary_init_read(&reader, data, size);
     int8_t prot = binary_get_int8(&reader);
     switch (prot) {
     case TEST_ECHO: {
         // 原样回显整个数据包
         size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
+        ev_send(&task->loader->netev, sk, outbuf, lens, 0);
         break;
     }
     case TEST_SSL_CHANGE: {
-        // 先回显告知客户端可以开始握手，再投 ev_ssl；
-        // 两条命令顺序入同一 watcher 队列，客户端收到回显时
-        // 必然已处理完毕，服务端已就绪，避免多任务并发时握手失败
+        // 回显与切 SSL 必须是同一条命令:本回调跑在 worker 上,拆成两条投的话
+        // 本线程一旦在两者之间被抢占,客户端的 ClientHello 就会被当明文协议解
         size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
-        if (ERR_OK != ev_ssl(&task->loader->netev, sk->fd, sk->skid, client, _evssl)) {
-            LOG_WARN("ev_ssl error.");
-            ev_close(&task->loader->netev, sk->fd, sk->skid);
+        if (ERR_OK != ev_send_ssl(&task->loader->netev, sk,
+                                  outbuf, lens, 0, client, _evssl)) {
+            LOG_WARN("ev_send_ssl error.");
+            ev_close(&task->loader->netev, sk);
         }
         break;
     }
     case TEST_PKTYPE_CHANGE: {
-        // 先回显当前协议格式的确认包，再切换本端 pack_type；
-        // 客户端收到回显后同步切换，保证双端同步
+        // 必须先切本端再回显:回显字节已按旧格式打好,切了也不影响它;
+        // 反过来先回显的话,本线程一旦在两条命令之间被抢占,客户端收到回显就按新格式发下一包,
+        // 而本端还在用旧格式解 —— 这正是 timeout_test 偶发的成因
         uint8_t type = (uint8_t)binary_get_int8(&reader);
         size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
-        ev_ud_pktype(&task->loader->netev, sk->fd, sk->skid, type);
+        ev_ud_pktype(&task->loader->netev, sk, type);
+        ev_send(&task->loader->netev, sk, outbuf, lens, 0);
         break;
     }
     case TEST_RPC_ECHO: {
@@ -65,7 +65,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         task_ctx *rpc = task_grab(task->loader, _rpcname);
         if (NULL == rpc) {
             LOG_WARN("grab rpc task error.");
-            ev_close(&task->loader->netev, sk->fd, sk->skid);
+            ev_close(&task->loader->netev, sk);
             break;
         }
         int32_t erro;
@@ -74,25 +74,25 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         task_ungrab(rpc);
         if (ERR_OK != erro || NULL == echo || rlen != size) {
             LOG_WARN("rpc echo error.");
-            ev_close(&task->loader->netev, sk->fd, sk->skid);
+            ev_close(&task->loader->netev, sk);
             break;
         }
         size_t lens = 0;
         void *outbuf = custz_pack(pktype, echo, rlen, &lens);
-        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
+        ev_send(&task->loader->netev, sk, outbuf, lens, 0);
         break;
     }
     default: {
         // 未知指令一律回显
         size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
+        ev_send(&task->loader->netev, sk, outbuf, lens, 0);
         break;
     }
     }
 }
 // 数据发送完成
-static void _net_send(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, size_t size) {
+static void _net_send(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, size_t size) {
     (void)task;
     (void)pktype;
     (void)client;
@@ -101,7 +101,7 @@ static void _net_send(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
     }
 }
 // 连接关闭
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)task;
     (void)pktype;
     (void)client;

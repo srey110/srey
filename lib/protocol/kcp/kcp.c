@@ -17,11 +17,11 @@ typedef struct kcp_element {
     uint8_t warned;
     uint32_t conv;
     IUINT32 next_update; // 下次应调用 ikcp_update 的时刻(ms),由 ikcp_check 算出;<=now 才真正 update
-    struct watcher_ctx *watcher; // 所属 event 线程,_kcp_start 时赋值,_kcp_output 用于取 skctx
+    struct watcher_ctx *watcher; // 所属 event 线程,_kcp_start 时赋值,_kcp_output 用于取 evsk
     ikcpcb *ikcp;
     name_t handle;
     uint64_t sess;
-    sk_id sk;
+    sock_ctx sk;
     netaddr_ctx addr;
 }kcp_element;
 #if KCP_TICK_HEAP
@@ -155,8 +155,7 @@ void _kcp_udfree(ud_cxt *ud) {
     FREE(ctx);
     ud->context = NULL;
 }
-void _kcp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                 char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     (void)ev;
     if (size < KCP_MIN_OVERHEAD
         || NULL == ud->context) {
@@ -190,8 +189,7 @@ void _kcp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
     msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
+    msg.sk = *sk;
     int32_t rtn;
     recvfrom_ctx *umsg;
     for (;;) {
@@ -227,17 +225,17 @@ static int _kcp_output(const char *buf, int len, ikcpcb *ikcp, void *user) {
     }
     kcp_element *kel = user;
     struct watcher_ctx *watcher = kel->watcher;
-    struct sock_ctx *skctx = _evpub_sockel_get(watcher, kel->sk.fd);
-    if (NULL == skctx
-        || ERR_OK != _evpub_checkid(skctx, kel->sk.skid)) {
+    struct evsock_ctx *evsk = _evpub_sockel_get(watcher, kel->sk.fd);
+    if (NULL == evsk
+        || ERR_OK != _evpub_checkid(evsk, kel->sk.skid)) {
         if (!kel->warned) {
             LOG_WARN("maybe forgot stop kcp.");
             kel->warned = 1;
         }
         return ERR_FAILED;
     }
-    // 非iocp且发送队列为空，尝试直接发送。
-    if (!_evpub_try_sendto(watcher, skctx, buf, (size_t)len, &kel->addr)) {
+    // 队列空且无在途发送时就地发出去,省掉下面那次 MALLOC+memcpy
+    if (!_evpub_try_sendto(watcher, evsk, buf, (size_t)len, &kel->addr)) {
         return ERR_OK;
     }
     sendto_ctx sbuf;
@@ -245,7 +243,7 @@ static int _kcp_output(const char *buf, int len, ikcpcb *ikcp, void *user) {
     memcpy(sbuf.data, buf, len);
     sbuf.addr = kel->addr;
     sbuf.len = len;
-    _evpub_add_bufs_sendto(watcher, skctx, &sbuf, 1);
+    _evpub_add_bufs_sendto(watcher, evsk, &sbuf, 1);
     return ERR_OK;
 }
 // 单次 kcp_send 消息上限 = 最大分片数 × mss;mtu<=0 按默认
@@ -255,14 +253,13 @@ static size_t _kcp_maxpack(int32_t mtu) {
     }
     return (size_t)(KCP_WND_RCV - 1) * (size_t)(mtu - KCP_MIN_OVERHEAD);
 }
-void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t conv) {
+void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv) {
     kcp->stopped = 1;
     kcp->conv = conv;
     kcp->sess = 0;
     kcp->netev = netev;
     kcp->maxpack = _kcp_maxpack(0);
-    kcp->sk.fd = fd;
-    kcp->sk.skid = skid;
+    kcp->sk = *sk;
 }
 static void _kcp_element_free(void *arg) {
     if (NULL == arg) {
@@ -368,16 +365,15 @@ static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, uint64_t sess
     kel->conv = kcp->conv;
     kel->sess = sess;
     kel->handle = handle;
-    kel->sk.fd = kcp->sk.fd;
-    kel->sk.skid = kcp->sk.skid;
+    kel->sk = kcp->sk;
     return kel;
 }
-static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+static int32_t _kcp_start(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)number;
-    ud_cxt *ud = _evpub_get_ud(skctx);
+    ud_cxt *ud = _evpub_get_ud(evsk);
     kcp_element *kel = data;
-    if (SOCK_DGRAM != _evpub_sock_type(skctx) || PACK_UDP_KCP != ud->pktype) {
+    if (SOCK_DGRAM != _evpub_sock_type(evsk) || PACK_UDP_KCP != ud->pktype) {
         LOG_ERROR("kcp_start called on non-UDP_KCP fd %d, drop.", (int32_t)kel->sk.fd);
         _kcp_notify_handshaked(ud, kel, ERR_FAILED);
         // 会话未进表故此后无人补 CLOSE:合成一条清掉等待方 keep=1 的占位条目,免其无界累积
@@ -424,7 +420,7 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
     }
     // maxpack 须在投递前算:ev_props 成功后 kel 所有权已转给 event 线程,不可再读
     size_t maxpack = _kcp_maxpack((int32_t)kel->ikcp->mtu);
-    if (ERR_OK != ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+    if (ERR_OK != ev_props(kcp->netev, &kcp->sk,
                            _kcp_start, _kcp_element_free, kel, 0)) {
         return ERR_FAILED;
     }
@@ -438,9 +434,9 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
 }
 // quiet 只关"找不到会话"那一条告警,给 stop 用:停一个已经不在表里的会话是正常的 no-op
 // (start 被拒后调用方仍要置 stopped,那条命令必然解析不到),对 send / handle 则是真错误
-static kcp_element *_kcp_resolve(struct sock_ctx *skctx, ud_cxt *ud, uint32_t conv,
+static kcp_element *_kcp_resolve(struct evsock_ctx *evsk, ud_cxt *ud, uint32_t conv,
     uint64_t sess, int32_t quiet) {
-    if (SOCK_DGRAM != _evpub_sock_type(skctx) || PACK_UDP_KCP != ud->pktype) {
+    if (SOCK_DGRAM != _evpub_sock_type(evsk) || PACK_UDP_KCP != ud->pktype) {
         LOG_ERROR("kcp resolve called on non-UDP_KCP fd, conv %u, drop.", conv);
         return NULL;
     }
@@ -457,11 +453,11 @@ static kcp_element *_kcp_resolve(struct sock_ctx *skctx, ud_cxt *ud, uint32_t co
     }
     return kel;
 }
-static int32_t _kcp_stop(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+static int32_t _kcp_stop(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)watcher;
-    ud_cxt *ud = _evpub_get_ud(skctx);
-    kcp_element *kel = _kcp_resolve(skctx, ud, (uint32_t)(uintptr_t)data, number, 1);
+    ud_cxt *ud = _evpub_get_ud(evsk);
+    kcp_element *kel = _kcp_resolve(evsk, ud, (uint32_t)(uintptr_t)data, number, 1);
     if (NULL == kel) {
         return 0;
     }
@@ -475,16 +471,16 @@ void kcp_stop(kcp_ctx *kcp) {
         return;
     }
     kcp->stopped = 1;
-    (void)ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+    (void)ev_props(kcp->netev, &kcp->sk,
         _kcp_stop, NULL, (void *)(uintptr_t)kcp->conv, kcp->sess);
 }
 // number 校验 sess，防止 conv 被 stop 后以新 sess 重建期间，持旧 kcp_ctx 副本的 stale 调用改到新会话的推送目标（同 _kcp_stop）
-static int32_t _kcp_handle(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+static int32_t _kcp_handle(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)watcher;
-    ud_cxt *ud = _evpub_get_ud(skctx);
+    ud_cxt *ud = _evpub_get_ud(evsk);
     kcp_handle_arg *arg = data;
-    kcp_element *kel = _kcp_resolve(skctx, ud, arg->conv, arg->sess, 0);
+    kcp_element *kel = _kcp_resolve(evsk, ud, arg->conv, arg->sess, 0);
     if (NULL != kel) {
         kel->handle = (name_t)number;
     }
@@ -498,7 +494,7 @@ int32_t kcp_handle(kcp_ctx *kcp, name_t handle) {
     MALLOC(arg, sizeof(kcp_handle_arg));
     arg->conv = kcp->conv;
     arg->sess = kcp->sess;
-    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+    return ev_props(kcp->netev, &kcp->sk,
         _kcp_handle, _free, arg, handle);
 }
 static void _kcp_send_free(void *arg) {
@@ -512,12 +508,12 @@ static void _kcp_send_free(void *arg) {
     FREE(buf);
 }
 // number 校验 sess，防止 conv 被 stop 后以新 sess 重建期间，持旧 kcp_ctx 副本的 stale 调用把数据注入新会话（同 _kcp_stop）
-static int32_t _kcp_send(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+static int32_t _kcp_send(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)watcher;
-    ud_cxt *ud = _evpub_get_ud(skctx);
+    ud_cxt *ud = _evpub_get_ud(evsk);
     kcp_send_buf *buf = data;
-    kcp_element *kel = _kcp_resolve(skctx, ud, buf->conv, number, 0);
+    kcp_element *kel = _kcp_resolve(evsk, ud, buf->conv, number, 0);
     if (NULL != kel) {
         ikcp_send(kel->ikcp, buf->data, (int32_t)buf->lens);
     }
@@ -544,6 +540,6 @@ int32_t kcp_send(kcp_ctx *kcp, void *data, size_t lens, int32_t copy) {
     }
     buf->conv = kcp->conv;
     buf->lens = lens;
-    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+    return ev_props(kcp->netev, &kcp->sk,
         _kcp_send, _kcp_send_free, buf, kcp->sess);
 }

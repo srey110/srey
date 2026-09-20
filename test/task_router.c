@@ -335,12 +335,12 @@ static void _h_st_echo(router_req *ctx, uint8_t slice, void *data, size_t lens) 
         // 契约要求这里调 router_closed 是安全的 no-op: 投 ABORT 前该流已从表里摘掉。
         // 两条 ABORT 路径(连接断 / router_free)都得成立 —— router_free 若退回边遍历边回调,
         // 这一行就会让同一条流二次 ABORT + 二次 FREE, ASan 构建下当场报 double-free
-        router_closed(_g_router, ctx->sk.fd, ctx->sk.skid);
+        router_closed(_g_router, &ctx->sk);
         return;
     }
     if (PROT_SLICE_START & slice) {
         MALLOC(bw, sizeof(binary_ctx));
-        binary_init(bw, NULL, 0, 0);
+        binary_init_write(bw, 0, 0);
         ctx->user = bw;
         return;
     }
@@ -361,17 +361,17 @@ static void _h_st_echo(router_req *ctx, uint8_t slice, void *data, size_t lens) 
 
 // server _net_recv: 整串转 router_net_recv, 与 harbor.c / debug_console.c 同款接法。
 // 完整请求直接派发, chunked 逐帧交给流式路由
-static void _server_net_recv(task_ctx *task, sk_id *sk,
+static void _server_net_recv(task_ctx *task, sock_ctx *sk,
                              subtype_t pktype, uint8_t client, uint8_t slice,
                              void *data, size_t size) {
     router_net_recv((router_ctx *)task->arg, task, sk, pktype, client, slice, data, size);
 }
 // 注册了流式路由就必须接这个, 否则连接中途断开时 router 持有的请求上下文不回收
-static void _server_net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _server_net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)pktype;
     (void)client;
     (void)erro;
-    router_closed((router_ctx *)task->arg, sk->fd, sk->skid);
+    router_closed((router_ctx *)task->arg, sk);
 }
 // 用户数据释放(argfree, task_free 时调): router_free 一并释放所有 entry/segs/mws/named 字符串
 static void _router_free(void *arg) {
@@ -576,15 +576,14 @@ static int32_t _do_req(task_ctx *task, uint16_t port,
                        const char *method, const char *url,
                        const char *hk, const char *hv,
                        int32_t expect_code, const char *expect_body) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for %s %s.", port, method, url);
         return ERR_FAILED;
     }
     // 组装请求: method url HTTP/1.1\r\nHost: ...\r\n[hk: hv\r\n]\r\n
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, method, url);
     http_pack_head(&bw, "Host", "127.0.0.1");
     if (NULL != hk) {
@@ -593,7 +592,7 @@ static int32_t _do_req(task_ctx *task, uint16_t port,
     http_pack_end(&bw);
     size_t rsize;
     // coro_send 内部 yield 等响应包, 返回时框架已完成 http_unpack
-    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     int32_t rtn = ERR_FAILED;
     if (NULL == resp) {
         LOG_WARN("router test: coro_send failed for %s %s.", method, url);
@@ -614,28 +613,27 @@ static int32_t _do_req(task_ctx *task, uint16_t port,
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 
 // 头部断言族的共用前导: 连上去发一条无 body 的 GET, 收响应并查状态码 200 与 Content-Length 唯一。
-// 无论成败都回填 fd/skid, 调用方一律在 done: 处 ev_close —— 连接失败时是 INVALID_SOCK
+// 无论成败都回填 sk, 调用方一律在 done: 处 ev_close —— 连接失败时是 INVALID_SOCK
 // (ev_props 首行即挡, 无副作用), 连上之后才失败的则是真 fd, 必须靠这次 ev_close 收掉
-static struct http_pack_ctx *_do_get(task_ctx *task, uint16_t port, const char *url,
-                                     SOCKET *fd, uint64_t *skid) {
-    *fd = INVALID_SOCK;
-    *skid = 0;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, fd, skid)) {
+static struct http_pack_ctx *_do_get(task_ctx *task, uint16_t port, const char *url, sock_ctx *sk) {
+    sock_set_invalid(sk);
+    sk->skid = 0;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, sk)) {
         LOG_WARN("router test: connect to %d failed for %s.", port, url);
         return NULL;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "GET", url);
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
     size_t rsize;
-    struct http_pack_ctx *resp = coro_send(task, *fd, *skid, bw.data, bw.offset, &rsize, 0);
+    struct http_pack_ctx *resp = coro_send(task, sk, bw.data, bw.offset, &rsize, 0);
     if (NULL == resp) {
         LOG_WARN("router test: %s got no response.", url);
         return NULL;
@@ -676,9 +674,8 @@ static int32_t _hdr_check(struct http_pack_ctx *resp, const char *url,
 // 客户端解包侧拿不到请求方法, 发前须 http_set_method 登记, 否则会挂在等报文体上
 static int32_t _do_head_then_get(task_ctx *task, uint16_t port, const char *url,
                                  const char *get_body) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for HEAD %s.", port, url);
         return ERR_FAILED;
     }
@@ -691,15 +688,15 @@ static int32_t _do_head_then_get(task_ctx *task, uint16_t port, const char *url,
     char want[24];
     void *body;
     struct http_pack_ctx *resp;
-    if (ERR_OK != http_set_method(&task->loader->netev, fd, skid, "HEAD")) {
+    if (ERR_OK != http_set_method(&task->loader->netev, &sk, "HEAD")) {
         LOG_WARN("router test: set method HEAD failed for %s.", url);
         goto done;
     }
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "HEAD", url);
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
-    resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     if (NULL == resp
         || ERR_OK != _resp_check(resp, "HEAD", url, 200)) {
         goto done;
@@ -714,11 +711,11 @@ static int32_t _do_head_then_get(task_ctx *task, uint16_t port, const char *url,
         goto done;
     }
     // 同一条连接再发一次 GET: 上一条若多发了字节, 这里读到的就是错位的内容
-    binary_init(&bw2, NULL, 0, 0);
+    binary_init_write(&bw2, 0, 0);
     http_pack_req(&bw2, "GET", url);
     http_pack_head(&bw2, "Host", "127.0.0.1");
     http_pack_end(&bw2);
-    resp = coro_send(task, fd, skid, bw2.data, bw2.offset, &rsize, 0);
+    resp = coro_send(task, &sk, bw2.data, bw2.offset, &rsize, 0);
     if (NULL == resp
         || ERR_OK != _resp_check(resp, "GET", url, 200)) {
         goto done;
@@ -732,14 +729,13 @@ static int32_t _do_head_then_get(task_ctx *task, uint16_t port, const char *url,
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
                            const char *hk, const char *want, size_t wantlen) {
-    SOCKET fd;
-    uint64_t skid;
-    struct http_pack_ctx *resp = _do_get(task, port, url, &fd, &skid);
+    sock_ctx sk;
+    struct http_pack_ctx *resp = _do_get(task, port, url, &sk);
     int32_t rtn = ERR_FAILED;
     if (NULL == resp) {
         goto done;
@@ -749,22 +745,21 @@ static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 
 // /hdrsum 断言: 三条头累计越过 HTTP_MAX_HEADLENS, 组包侧不卡, 三条都该上线缆。
 // 必须裸读: 这个头部块 srey 自己的解析器按接收侧上限就拒了, 走 PACK_HTTP 拿不到响应
 static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
-    SOCKET fd;
-    uint64_t skid;
+    sock_ctx sk;
     int32_t rtn = ERR_FAILED;
-    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for /hdrsum.", port);
         return ERR_FAILED;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "GET", "/hdrsum");
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
@@ -776,7 +771,7 @@ static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
     size_t rsize = 0;
     int32_t poll;
     // PACK_NONE 不分帧, 一次收到的未必是整条响应头, 累积到空行为止
-    void *seg = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    void *seg = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     for (poll = 0; poll < 64 && NULL != seg; poll++) {
         if (rsize > HDRSUM_ACC - 1 - used) {
             break;
@@ -788,7 +783,7 @@ static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
             rtn = ERR_OK;
             break;
         }
-        seg = coro_recv(task, fd, skid, &rsize);
+        seg = coro_recv(task, &sk, &rsize);
     }
     if (ERR_OK != rtn) {
         LOG_WARN("router test: /hdrsum got no complete response head, %zu bytes.", used);
@@ -811,7 +806,7 @@ static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
 done:
     // copy=0: bw.data 所有权已转给框架 (同 _do_req), 这里只还 acc
     FREE(acc);
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 
@@ -819,10 +814,9 @@ done:
 // 放行的话线缆上会是两条 Content-Length 叠一条 TE, srey 自己的解析器判走私整包丢弃,
 // 这里同样收不到响应 —— 两种失败形态都会被下面的断言拦住
 static int32_t _do_req_framing(task_ctx *task, uint16_t port) {
-    SOCKET fd;
-    uint64_t skid;
+    sock_ctx sk;
     // Content-Length 唯一性由 _do_get 里的 _resp_check 数, 正是本用例要守的那条
-    struct http_pack_ctx *resp = _do_get(task, port, "/framing", &fd, &skid);
+    struct http_pack_ctx *resp = _do_get(task, port, "/framing", &sk);
     int32_t rtn = ERR_FAILED;
     if (NULL == resp) {
         goto done;
@@ -833,15 +827,14 @@ static int32_t _do_req_framing(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 
 // /nullhdr 断言: 值为 NULL 的头整条丢弃, 同批的正常头不受牵连
 static int32_t _do_req_nullhdr(task_ctx *task, uint16_t port) {
-    SOCKET fd;
-    uint64_t skid;
-    struct http_pack_ctx *resp = _do_get(task, port, "/nullhdr", &fd, &skid);
+    sock_ctx sk;
+    struct http_pack_ctx *resp = _do_get(task, port, "/nullhdr", &sk);
     int32_t rtn = ERR_FAILED;
     if (NULL == resp) {
         goto done;
@@ -852,7 +845,7 @@ static int32_t _do_req_nullhdr(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 // 25 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
@@ -1204,14 +1197,13 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
 static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *method, const char *path,
                            const char *const *chunks, int32_t n,
                            const char *token, int32_t expect, const char *want_body) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for chunked.", port);
         return ERR_FAILED;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, method, path);
     http_pack_head(&bw, "Host", "127.0.0.1");
     if (NULL != token) {
@@ -1223,13 +1215,13 @@ static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *method, co
     // 写游标退回 0, 否则那个头会被重复附加 (copy=1 让 bw 可以接着复用)
     for (i = 0; i < n; i++) {
         http_pack_chunked(&bw, (void *)chunks[i], strlen(chunks[i]));
-        ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 1);
+        ev_send(&task->loader->netev, &sk, bw.data, bw.offset, 1);
         binary_offset(&bw, 0);
     }
     http_pack_chunked(&bw, NULL, 0);// 终止块
     size_t rsize;
     // copy=0: bw.data 所有权转给框架, 后面不能再 binary_free (同 _do_req)
-    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     if (NULL == resp) {
         LOG_WARN("router test: chunked coro_send failed.");
         goto done;
@@ -1250,46 +1242,44 @@ static int32_t _do_chunked(task_ctx *task, uint16_t port, const char *method, co
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 // 发首帧 + 一块数据就断开, 不发终止块: 服务端只能靠 router_closed 收尾,
 // 流式回调应收到一次 ROUTER_STREAM_ABORT。ev_close 关闭前冲一次, 这点数据一次就写进内核
 static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for chunked abort.", port);
         return ERR_FAILED;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "POST", "/st");
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_chunked(&bw, (void *)"half", 4);
-    ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 1);
+    ev_send(&task->loader->netev, &sk, bw.data, bw.offset, 1);
     binary_free(&bw);
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return ERR_OK;
 }
 // 完整(非 chunked)请求命中流式路由且准入放行: 走 _h_st_echo 的 slice == 0 分支,
 // body 一次到齐并原样回显。/st 没有准入中间件, 是唯一能走到这条分支的路由
 static int32_t _do_stream_plain_echo(task_ctx *task, uint16_t port) {
     const char *body = "plain-oneshot";
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for stream plain echo.", port);
         return ERR_FAILED;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "POST", "/st");
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_content(&bw, (void *)body, strlen(body));
     size_t rsize;
     int32_t rtn = ERR_FAILED;
-    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     if (NULL == resp) {
         LOG_WARN("router test: /st plain got no response.");
         goto done;
@@ -1305,27 +1295,26 @@ static int32_t _do_stream_plain_echo(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 // 流式路由被完整(非 chunked)请求命中、准入被拒且没写响应: 兜底 500 之后连接照旧可用,
 // 只有 chunked 首帧那面(_router_st_reject)才关。用同一条连接再发一次验它没被关掉
 static int32_t _do_stream_plain_reject(task_ctx *task, uint16_t port) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for stream plain reject.", port);
         return ERR_FAILED;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "POST", "/stsilent");
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
     size_t rsize;
     int32_t rtn = ERR_FAILED;
     // copy=0: bw.data 所有权转给框架, 后面不能再 binary_free (同 _do_req)
-    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     if (NULL == resp) {
         LOG_WARN("router test: /stsilent got no response.");
         goto done;
@@ -1335,11 +1324,11 @@ static int32_t _do_stream_plain_reject(task_ctx *task, uint16_t port) {
     }
     // 一次到齐的请求 body 已全收完, 没有残留帧要丢弃, 所以兜底 500 之后连接照旧可用
     // (chunked 首帧那面才必须关, 理由见 _router_st_reject)
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "POST", "/stsilent");
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
-    resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     if (NULL == resp) {
         LOG_WARN("router test: /stsilent closed after the 500 fallback.");
         goto done;
@@ -1349,24 +1338,23 @@ static int32_t _do_stream_plain_reject(task_ctx *task, uint16_t port) {
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 // 发首帧 + 一块数据后就不管了, 连接一直留着: 这条流会挂在 r->streams 里活到进程收尾,
 // 由 router_free 排空并投 ABORT。留给 ASan 盯 router_free 那条路径的重入(见 _h_st_echo)
 static int32_t _do_chunked_dangling(task_ctx *task, uint16_t port) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_WARN("router test: connect to %d failed for dangling stream.", port);
         return ERR_FAILED;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "POST", "/st");
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_chunked(&bw, (void *)"live", 4);
-    ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 1);
+    ev_send(&task->loader->netev, &sk, bw.data, bw.offset, 1);
     binary_free(&bw);
     return ERR_OK;// 有意不 ev_close
 }

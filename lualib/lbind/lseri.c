@@ -98,7 +98,7 @@ static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int3
 /// <returns type="integer">buffer 字节数；一个值都没传时为 0</returns>
 static int32_t _lseri_pack(lua_State *lua) {
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     int32_t top = lua_gettop(lua);
     int32_t i;
     for (i = 1; i <= top; i++) {

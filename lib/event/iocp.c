@@ -28,10 +28,10 @@ static void *_iocp_exfunc(SOCKET fd, GUID *guid) {
 }
 static bool _iocp_disconnect_iter(const void *item, void *udata) {
     (void)udata;
-    sock_ctx *sk = *((sock_ctx **)item);
+    evsock_ctx *evsk = *((evsock_ctx **)item);
     //防止 ERROR socket 还有在途未被取消的
-    CancelIoEx((HANDLE)sk->fd, NULL);
-    _iocp_disconnect(sk);
+    CancelIoEx((HANDLE)evsk->sk.fd, NULL);
+    _iocp_disconnect(evsk);
     return true;
 }
 void _iocp_disconnect_all(watcher_ctx *watcher) {
@@ -50,7 +50,7 @@ static void _iocp_init_callback(void) {
 // 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
 static void _iocp_init_funcs(void) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
-        SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
+        SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0, 0);
         ASSERTAB(INVALID_SOCK != fd, ERRORSTR(ERRNO));
         GUID accept_uid = WSAID_ACCEPTEX;
         GUID connect_uid = WSAID_CONNECTEX;
@@ -64,14 +64,15 @@ int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd) {
     if (NULL == CreateIoCompletionPort((HANDLE)fd, watcher->iocp, 0, 1)) {
         return ERR_FAILED;
     }
+    SetFileCompletionNotificationModes((HANDLE)fd, FILE_SKIP_SET_EVENT_ON_HANDLE);
     return ERR_OK;
 }
 // 命令通道完成包回调：先清在途标志再抽干队列，两步不能颠倒，颠倒会丢唤醒（见 _send_cmd）
-static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
+static void _iocp_on_cmd(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
     size_t cnt_total = 0;
     int32_t i, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
-    overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
+    overlap_cmd_ctx *olcmd = UPCAST(evsk, overlap_cmd_ctx, ol_r);
     ATOMIC_SET(&olcmd->wake_pending, 0);
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
@@ -108,7 +109,7 @@ static inline int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint6
         return 0;
     }
     // 停止后收干 CancelIoEx 触发的在途完成:element 里的 socket 仅在其 IRP 全完成、refcount 归 0 时
-    // 才被摘除,count 归 0 即无在途 IRP,hashmap_free 才不会释放仍有在途 IRP 的 sock_ctx(内核 write-after-free)
+    // 才被摘除,count 归 0 即无在途 IRP,hashmap_free 才不会释放仍有在途 IRP 的 evsock_ctx(内核 write-after-free)
     // cmd 通道不建 socket 也不进 element，不影响这个计数
     if (0 == hashmap_count(watcher->element)) {
         return 1;
@@ -127,9 +128,10 @@ static inline int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint6
 // 事件循环主函数（使用GetQueuedCompletionStatusEx批量获取事件）
 static void _iocp_loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
+    _evpub_set_cur_watcher(watcher);
     int32_t err, stop;
     ULONG i, count, nevent = INIT_EVENTS_CNT;
-    sock_ctx *sock;
+    evsock_ctx *evsk;
     uint32_t shrink_cnt = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
     BOOL ok = FALSE;
@@ -156,8 +158,8 @@ static void _iocp_loop_event(void *arg) {
                 if (NULL == overlap) {
                     continue;
                 }
-                sock = UPCAST(overlap, sock_ctx, overlapped);
-                sock->ev_cb(watcher, sock, overlappeds[i].dwNumberOfBytesTransferred);
+                evsk = UPCAST(overlap, evsock_ctx, overlapped);
+                evsk->ev_cb(watcher, evsk, overlappeds[i].dwNumberOfBytesTransferred);
             }
             if (count == nevent
                 && 0 == ATOMIC_GET(&watcher->stop)) {
@@ -171,6 +173,7 @@ static void _iocp_loop_event(void *arg) {
         }
         next_to = _iocp_loop_check(watcher, &shrink_cnt, &shrink_start);
     }
+    _evpub_set_cur_watcher(NULL);
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
 }
@@ -179,7 +182,7 @@ static void _iocp_loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
     int32_t err, loop_cnt = 0;
     ULONG i, count, nevent = INIT_EVENTS_CNT;
-    sock_ctx *sock;
+    evsock_ctx *evsk;
     BOOL ok;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY tmp;
@@ -203,8 +206,8 @@ static void _iocp_loop_acpex(void *arg) {
                 if (NULL == overlap) {
                     continue;
                 }
-                sock = UPCAST(overlap, sock_ctx, overlapped);
-                sock->ev_cb(acpex, sock, overlappeds[i].dwNumberOfBytesTransferred);
+                evsk = UPCAST(overlap, evsock_ctx, overlapped);
+                evsk->ev_cb(acpex, evsk, overlappeds[i].dwNumberOfBytesTransferred);
             }
             if (count == nevent
                 && 0 == ATOMIC_GET(&acpex->stop)) {
@@ -235,18 +238,19 @@ static void _iocp_loop_acpex(void *arg) {
 }
 // hashmap元素释放回调：根据socket类型选择释放函数
 static void _iocp_sockel_free(void *item) {
-    sock_ctx *sock = *((sock_ctx **)item);
-    if (SOCK_STREAM == sock->type) {
-        _evpub_sk_free(sock);
+    evsock_ctx *evsk = *((evsock_ctx **)item);
+    if (SOCK_STREAM == evsk->type) {
+        _evpub_sk_free(evsk);
     } else {
-        _iocp_free_udp(sock);
+        _iocp_free_udp(evsk);
     }
 }
 // 初始化watcher的命令通道（不建 socket：唤醒由 _send_cmd 直接投完成包）
 static void _iocp_init_cmd(watcher_ctx *watcher) {
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     olcmd->ol_r.ev_cb = _iocp_on_cmd;
-    olcmd->ol_r.fd = INVALID_SOCK;
+    olcmd->ol_r.sk.fd = INVALID_SOCK;
+    olcmd->ol_r.sk.index = watcher->index;// 命令通道恒属本 watcher,口径同 unix 侧 _uev_init_cmd
     fsqu_init(&olcmd->qu, sizeof(cmd_ctx), 4 * ONEK);
     tda_init(&olcmd->tda, (size_t)(fsqu_capacity(&olcmd->qu) / QUEUE_OVERLOAD_RATIO));
 }
@@ -268,12 +272,16 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);// 1线程 对同一socket操作是线程安全
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
-        watcher->element = hashmap_new(sizeof(sock_ctx *), ONEK, 0, 0,
+        watcher->element = hashmap_new(sizeof(evsock_ctx *), ONEK, 0, 0,
                                        _evpub_sockel_hash, _evpub_sockel_compare, _iocp_sockel_free, NULL);
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);
         list_init(&watcher->ticks);
+#if WITH_SSL
+        list_init(&watcher->wpends);
+        watcher->wpend_tick.cb = NULL;
+#endif
         if (NULL != hooks) {
             watcher->thevent = thread_creat_hooks(_iocp_loop_event, hooks->init, hooks->exit, watcher, hooks->assist);
         } else {
@@ -346,15 +354,15 @@ static void _iocp_free_acpex(ev_ctx *ctx) {
     DWORD bytes;
     ULONG_PTR key;
     LPOVERLAPPED overlap;
-    sock_ctx *sock;
+    evsock_ctx *evsk;
     uint32_t idle = 0;
     BOOL got;
     while (ATOMIC_GET(&ctx->nlsn) > 0) {
         overlap = NULL;
         got = GetQueuedCompletionStatus(ctx->acpex[0].iocp, &bytes, &key, &overlap, EVENT_WAIT_TIMEOUT);
         if (NULL != overlap) {
-            sock = UPCAST(overlap, sock_ctx, overlapped);
-            _iocp_acpex_release(sock);
+            evsk = UPCAST(overlap, evsock_ctx, overlapped);
+            _iocp_acpex_release(evsk);
             idle = 0;
         } else if (!got) {
             // 只有真等满 EVENT_WAIT_TIMEOUT(或句柄出错)才算空转。取到 lpOverlapped==NULL 且

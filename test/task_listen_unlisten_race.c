@@ -21,11 +21,10 @@ static atomic_t _race_nconn;
 // fork 出的客户端工作协程：连一次后立即关闭，连接失败静默忽略（unlisten 已发生）
 static void _client_worker(task_ctx *task, void *arg) {
     uint16_t port = (uint16_t)(uintptr_t)arg;
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK == coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK == coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         ATOMIC_ADD(&_race_nconn, 1);
-        ev_close(&task->loader->netev, fd, skid);
+        ev_close(&task->loader->netev, &sk);
     }
 }
 

@@ -81,27 +81,26 @@ end
 
 -- 裸连接（PACK_TYPE.NONE 不分帧）上发一条请求并累积到出现 term 为止。
 -- 一次 RECV 未必是整条响应，只取第一段的话会把"没收全"误报成"服务端过滤掉了"
----@param fd integer
----@param skid integer
+---@param sk userdata 连接标识
 ---@param req string 完整请求报文
 ---@param term string 收齐判据（如 "\r\n\r\n"）
 ---@return string txt 累积到的全部字节
-local function _raw_probe(fd, skid, req, term)
+local function _raw_probe(sk, req, term)
     local txt = ""
-    local rsp, rlen = srey.syn_send(fd, skid, req, #req, 1)
+    local rsp, rlen = srey.syn_send(sk, req, #req, 1)
     while rsp do
         txt = txt .. srey.ud_str(rsp, rlen)
         if string.find(txt, term, 1, true) then
             break
         end
-        rsp, rlen = srey.syn_recv(fd, skid)
+        rsp, rlen = srey.syn_recv(sk)
     end
     return txt
 end
 
 srey.startup(function()
 runner.run(function(t)
-    srey.on_recved(function(pktype, fd, skid, client, slice, data, size)
+    srey.on_recved(function(pktype, sk, client, slice, data, size)
         -- 只处理 accept 来的连接;客户端侧响应由 syn_send 的等待者接走。
         -- 不能按 fd 值排除客户端 socket:客户端 fd 关掉后号会被后续 accept 复用,
         -- 闭包里的旧值就把服务端自己的 socket 当成客户端放过去,于是永不回应、对端等满超时
@@ -111,15 +110,15 @@ runner.run(function(t)
         if PACK_TYPE.NONE == pktype then
             -- 裸监听侧，两个用例共用：按请求目标分流
             if nil ~= string.find(srey.ud_str(data, size), INTERIM_URI, 1, true) then
-                srey.send(fd, skid, INTERIM_RSP, #INTERIM_RSP, 1)
+                srey.send(sk, INTERIM_RSP, #INTERIM_RSP, 1)
             else
-                srey.send(fd, skid, HEAD_RSP, #HEAD_RSP, 1)
+                srey.send(sk, HEAD_RSP, #HEAD_RSP, 1)
             end
             return
         end
         if 0 ~= slice then
             if 0 ~= (slice & 4) then-- PROT_SLICE_END:分片请求收齐才回
-                http.response(fd, skid, 200, nil, CK_RSP)
+                http.response(sk, 200, nil, CK_RSP)
             end
             return
         end
@@ -127,10 +126,10 @@ runner.run(function(t)
         if st and "HEAD" == st[1] then
             if "/chunked" == st[2] then
                 -- body 是生产者函数：长度未知省掉 CL，但 GET 会发的 TE 得照发
-                http.response_head(fd, skid, 200, nil, function() return nil end)
+                http.response_head(sk, 200, nil, function() return nil end)
             else
                 -- info 传 nil：验 HEAD 分支照样补 Content-Length: 0
-                http.response_head(fd, skid, 200, { ["X-Head-Probe"] = "v" }, nil)
+                http.response_head(sk, 200, { ["X-Head-Probe"] = "v" }, nil)
             end
             return
         end
@@ -139,7 +138,7 @@ runner.run(function(t)
             -- 六种头一次过：合法 token / 值含 CRLF / 名非 token / 顶过 HTTP_MAX_HEADLENS /
             -- 整数值浮点 / __tostring 会抛的值；且不带 body。
             -- 最后那个若照旧走 tostring，异常会越过整条校验链把这次响应整个吞掉
-            http.response(fd, skid, 200, { ["X-Ok"] = "v", ["X-Inj"] = INJ, ["Bad Key"] = "x", ["X-Big"] = BIG,
+            http.response(sk, 200, { ["X-Ok"] = "v", ["X-Inj"] = INJ, ["Bad Key"] = "x", ["X-Big"] = BIG,
                                            ["X-Num"] = 3600000 / 1000,
                                            ["X-Raiser"] = setmetatable({}, { __tostring = function() error("boom") end }) })
             return
@@ -148,26 +147,26 @@ runner.run(function(t)
             -- 带 body 的响应，调用方同时塞进本函数自己会生成的两条帧长头。
             -- 大小写故意写乱：HTTP 头名大小写无关，判定不能只认标准写法。
             -- 放行的话线缆上会是 TE 叠一条自造 CL 再叠调用方那条 CL，走私形态
-            http.response(fd, skid, 200,
+            http.response(sk, 200,
                 { ["transfer-ENCODING"] = "chunked", ["Content-Length"] = "999", ["X-Keep"] = "1" }, BODY)
             return
         end
         if N204 == body then
             -- 204 禁带报文体：故意塞一个 body，验证被 http.response 丢弃
-            http.response(fd, skid, 204, nil, "dropped")
+            http.response(sk, 204, nil, "dropped")
             return
         end
         if CKBODY == body then
             -- info 传函数即 chunked:每次调它取一块,返 nil 终止
-            http.response(fd, skid, 200, nil, _ck_producer, { n = 0 })
+            http.response(sk, 200, nil, _ck_producer, { n = 0 })
             return
         end
         if BADBODY == body then
             -- body 是数字：三个 body 分支都不命中，按无 body 发走并告警
-            http.response(fd, skid, 200, nil, 42)
+            http.response(sk, 200, nil, 42)
             return
         end
-        http.response(fd, skid, 200, nil, (body and #body > 0) and body or "ok")
+        http.response(sk, 200, nil, (body and #body > 0) and body or "ok")
     end)
 
     local lid = srey.listen(PACK_TYPE.HTTP, SSL_NAME.NONE, "0.0.0.0", PORT)
@@ -175,18 +174,18 @@ runner.run(function(t)
     if ERR_FAILED == lid then
         return
     end
-    local cli_fd, cli_skid
-    cli_fd, cli_skid = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", PORT)
-    t:check(cli_fd and INVALID_SOCK ~= cli_fd, "connect")
-    if not cli_fd or INVALID_SOCK == cli_fd then
+    local cli_sk
+    cli_sk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", PORT)
+    t:check(cli_sk and cli_sk.valid, "connect")
+    if not cli_sk or not cli_sk.valid then
         srey.unlisten(lid)
         return
     end
 
-    t:eq(nil, http.post(cli_fd, cli_skid, "/", nil, nil, _bad_producer, { n = 0 }), "生产者违约返回 nil")
+    t:eq(nil, http.post(cli_sk, "/", nil, nil, _bad_producer, { n = 0 }), "生产者违约返回 nil")
     -- 关键断言:同一连接的下一次请求必须拿到属于自己的响应。上一条响应未被收掉时,
     -- 它会被本次注册的等待者接走,这里拿到的是 CK_RSP 而非 BODY
-    local pack = http.post(cli_fd, cli_skid, "/", nil, nil, BODY)
+    local pack = http.post(cli_sk, "/", nil, nil, BODY)
     t:check(nil ~= pack, "后续请求拿到响应")
     if pack then
         t:eq(BODY, pack.data, "响应属于本次请求(未错认上一条残留)")
@@ -195,17 +194,17 @@ runner.run(function(t)
     -- url 里塞 CRLF 就是请求拆分：放行的话对端会看到两条完整请求、回两条响应，
     -- 多出来那条被下一次请求的等待者接走，连接从此错开一位。
     -- 必须在写 socket 之前就拒，故断言"下一次正常请求仍拿到属于自己的响应"
-    t:eq(nil, http.get(cli_fd, cli_skid, URL_INJ), "url 含 CRLF 的 GET 被拒")
-    t:eq(nil, http.post(cli_fd, cli_skid, URL_INJ, nil, nil, BODY), "url 含 CRLF 的 POST 被拒")
-    t:eq(nil, http.get(cli_fd, cli_skid, "/x\0y"), "url 含 NUL 被拒")
-    local after = http.post(cli_fd, cli_skid, "/", nil, nil, PROBE2)
+    t:eq(nil, http.get(cli_sk, URL_INJ), "url 含 CRLF 的 GET 被拒")
+    t:eq(nil, http.post(cli_sk, URL_INJ, nil, nil, BODY), "url 含 CRLF 的 POST 被拒")
+    t:eq(nil, http.get(cli_sk, "/x\0y"), "url 含 NUL 被拒")
+    local after = http.post(cli_sk, "/", nil, nil, PROBE2)
     t:check(nil ~= after, "被拒后连接仍可用(一个字节都没写出去)")
     if after then
         t:eq(PROBE2, after.data, "拒绝的请求未在连接上留下任何残留")
     end
 
     -- lib.http 的 chunked 接收段:不传 ckfunc 时逐块累积再拼进 pack.data
-    local ckp = http.post(cli_fd, cli_skid, "/", nil, nil, CKBODY)
+    local ckp = http.post(cli_sk, "/", nil, nil, CKBODY)
     t:check(nil ~= ckp, "chunked 响应收到")
     if ckp then
         t:eq(CK1 .. CK2, ckp.data, "两块 chunk 按序拼进 pack.data")
@@ -214,7 +213,7 @@ runner.run(function(t)
     -- 传 ckfunc 时逐块回调、不落 pack.data。只断言最后一次回调的 fin 而不数回调次数:
     -- 终止块是否单独成一次回调由 C 侧的分片边界决定,不该在这里锁死
     local got, fins = {}, {}
-    local ckp2 = http.post(cli_fd, cli_skid, "/", nil, function(fin, d, sz)
+    local ckp2 = http.post(cli_sk, "/", nil, function(fin, d, sz)
         if d and sz > 0 then
             got[#got + 1] = srey.ud_str(d, sz)
         end
@@ -232,15 +231,15 @@ runner.run(function(t)
 
     -- 裸连接读原始字节：srey 自己的解析器对"无 CL 无 chunked"是宽容的，
     -- 用解析后的 pack 断言区分不出 Content-Length 有没有发出去，只能看线缆上的字节
-    local raw_fd, raw_skid
-    raw_fd, raw_skid = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PORT)
-    t:check(raw_fd and INVALID_SOCK ~= raw_fd, "raw connect")
-    if raw_fd and INVALID_SOCK ~= raw_fd then
+    local raw_sk
+    raw_sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PORT)
+    t:check(raw_sk and raw_sk.valid, "raw connect")
+    if raw_sk and raw_sk.valid then
         local req = string.format("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\n\r\n%s",
                                   #PROBE, PROBE)
         -- PACK_TYPE.NONE 不分帧,一次 RECV 未必是整条响应；累积到空行(头结束)为止再断言。
         -- 直接拿第一段就断言的话,被 TCP 切开时会把"没收全"误报成"注入头已被过滤"
-        local txt = _raw_probe(raw_fd, raw_skid, req, "\r\n\r\n")
+        local txt = _raw_probe(raw_sk, req, "\r\n\r\n")
         t:check(nil ~= string.find(txt, "\r\n\r\n", 1, true), "raw 探针收到完整响应头")
         if string.find(txt, "\r\n\r\n", 1, true) then
             t:check(nil == string.find(txt, "X-Evil", 1, true), "值含 CRLF 的头被丢弃,报文未被劈成两条")
@@ -255,7 +254,7 @@ runner.run(function(t)
         -- 这次要读到 body 结束(空行 + BODY)，不能只读到头结束
         local freq = string.format("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\n\r\n%s",
                                    #FRAME, FRAME)
-        local ftxt = _raw_probe(raw_fd, raw_skid, freq, "\r\n\r\n" .. BODY)
+        local ftxt = _raw_probe(raw_sk, freq, "\r\n\r\n" .. BODY)
         t:check(nil ~= string.find(ftxt, "\r\n\r\n" .. BODY, 1, true), "帧长探针收到完整响应")
         if nil ~= string.find(ftxt, "\r\n\r\n" .. BODY, 1, true) then
             local ncl = select(2, string.gsub(string.lower(ftxt), "content%-length:", ""))
@@ -270,7 +269,7 @@ runner.run(function(t)
         -- 204 无 body，读到头结束(空行)就是整条响应
         local nreq = string.format("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\n\r\n%s",
                                    #N204, N204)
-        local ntxt = _raw_probe(raw_fd, raw_skid, nreq, "\r\n\r\n")
+        local ntxt = _raw_probe(raw_sk, nreq, "\r\n\r\n")
         -- 守卫与它的 companion 用同一个判据：换成 "收到了 \r\n\r\n" 的话，
         -- 探针超时收不到响应时下面两条会被静默跳过，一条 FAIL 都不出
         if t:check(nil ~= string.find(ntxt, " 204 ", 1, true), "204 探针收到 204 响应") then
@@ -287,7 +286,7 @@ runner.run(function(t)
         end
         local breq = string.format("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\n\r\n%s",
                                    #BADBODY, BADBODY)
-        local btxt = _raw_probe(raw_fd, raw_skid, breq, "\r\n\r\n")
+        local btxt = _raw_probe(raw_sk, breq, "\r\n\r\n")
         t:check(nil ~= string.find(btxt, " 200 ", 1, true), "不支持的 body 类型仍回 200")
         t:check(nil ~= string.find(btxt, "Content-Length: 0", 1, true),
                 "不支持的 body 类型按无 body 发出(Content-Length: 0)")
@@ -296,7 +295,7 @@ runner.run(function(t)
         -- 同一条裸连接再来一次：HEAD + info 为 nil。头必须与同一资源的 GET 一致，
         -- GET 那条走"响应无 body"分支会写 Content-Length: 0，HEAD 不能因为不发体就把它省掉
         local hreq = "HEAD / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
-        local htxt = _raw_probe(raw_fd, raw_skid, hreq, "\r\n\r\n")
+        local htxt = _raw_probe(raw_sk, hreq, "\r\n\r\n")
         t:check(nil ~= string.find(htxt, " 200 ", 1, true), "HEAD 探针收到 200 响应")
         t:check(nil ~= string.find(htxt, "Content-Length: 0", 1, true),
                 "HEAD 无 body 时照写 Content-Length: 0(与同资源的 GET 一致)")
@@ -304,13 +303,13 @@ runner.run(function(t)
         -- 再来一次：body 是生产者函数。长度未知省掉 CL 是有意的，但 GET 那条会发
         -- Transfer-Encoding，HEAD 省掉它两个方法的头就对不上了
         local creq = "HEAD /chunked HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
-        local ctxt = _raw_probe(raw_fd, raw_skid, creq, "\r\n\r\n")
+        local ctxt = _raw_probe(raw_sk, creq, "\r\n\r\n")
         t:check(nil ~= string.find(ctxt, " 200 ", 1, true), "HEAD 生产者函数体收到 200 响应")
         t:check(nil ~= string.find(ctxt, "Transfer-Encoding: chunked", 1, true),
                 "HEAD 的生产者函数体照发 Transfer-Encoding(与同资源的 GET 一致)")
         t:check(nil == string.find(ctxt, "Content-Length", 1, true),
                 "长度未知时不写 Content-Length")
-        srey.close(raw_fd, raw_skid)
+        srey.close(raw_sk)
     end
 
     -- token 判定与头部块上限都取自 C，不再在 Lua 重抄一份
@@ -326,40 +325,40 @@ runner.run(function(t)
     local hlid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
     t:check(ERR_FAILED ~= hlid, "listen " .. HEAD_PORT)
     if ERR_FAILED ~= hlid then
-        local head_fd, head_skid
-        head_fd, head_skid = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
-        t:check(head_fd and INVALID_SOCK ~= head_fd, "head connect")
-        if head_fd and INVALID_SOCK ~= head_fd then
-            local hp = http.head_req(head_fd, head_skid, "/")
+        local head_sk
+        head_sk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
+        t:check(head_sk and head_sk.valid, "head connect")
+        if head_sk and head_sk.valid then
+            local hp = http.head_req(head_sk, "/")
             t:check(nil ~= hp, "HEAD 拿到响应(没挂在等报文体上)")
             if hp then
                 t:eq("v", hp.heads and hp.heads["X-Head"], "HEAD 响应头可读")
                 t:check(nil == hp.data or 0 == #hp.data, "HEAD 响应无报文体")
             end
             -- 登记只对紧随那一条生效,第二次得重新登记(http.head_req 已代劳);同一连接连发验证这点
-            t:check(nil ~= http.head_req(head_fd, head_skid, "/again"), "同一连接第二次 HEAD 仍拿到响应")
-            srey.close(head_fd, head_skid)
+            t:check(nil ~= http.head_req(head_sk, "/again"), "同一连接第二次 HEAD 仍拿到响应")
+            srey.close(head_sk)
         end
 
         -- 1xx 中间响应：服务端先回 103 再回 200（RFC 7231 §6.2，Cloudflare/Fastly 默认开
         -- 103 Early Hints）。C 侧把 1xx 当独立完整消息投出，客户端不跳过就会返回 103、
         -- 把 200 留在连接上，此后同一 keep-alive 连接每次请求都错一格
-        local itm_fd, itm_skid
-        itm_fd, itm_skid = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
-        t:check(itm_fd and INVALID_SOCK ~= itm_fd, "interim connect")
-        if itm_fd and INVALID_SOCK ~= itm_fd then
-            local ip = http.get(itm_fd, itm_skid, INTERIM_URI)
+        local itm_sk
+        itm_sk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
+        t:check(itm_sk and itm_sk.valid, "interim connect")
+        if itm_sk and itm_sk.valid then
+            local ip = http.get(itm_sk, INTERIM_URI)
             t:check(nil ~= ip, "1xx 之后拿到最终响应")
             if ip then
                 t:eq("200", ip.status and ip.status[2], "跳过 103，返回的是 200 而不是中间响应")
                 t:eq("hello", ip.data, "最终响应的 body 完整")
             end
-            srey.close(itm_fd, itm_skid)
+            srey.close(itm_sk)
         end
         srey.unlisten(hlid)
     end
 
-    srey.close(cli_fd, cli_skid)
+    srey.close(cli_sk)
     srey.unlisten(lid)-- 释放端口给后续测试
 end)
 end)

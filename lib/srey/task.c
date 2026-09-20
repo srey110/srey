@@ -3,8 +3,9 @@
 #include "containers/hashmap.h"
 #include "utils/utils.h"
 
+// task 消息队列默认条数
+#define TASK_QUEUE_CAP 256
 typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
-
 // 消息 data 的归属方式。"哪些消息类型持有需要释放的堆数据"只在这一个 switch 里定义：
 // _message_should_clean 与 _message_clean 都问它，新增带数据的消息类型只改这一处，
 // 不会出现"清理加了、判定漏了"这种只在某一条消费路径上泄漏、编译器与测试都不相关的分歧
@@ -15,6 +16,9 @@ typedef enum msgdata_kind {
     MSGDATA_HS,         // 握手数据，prots_hsfree
     MSGDATA_RAW         // 裸 MALLOC，FREE
 }msgdata_kind;
+// 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=激活+ungrab；经 _task_net_emit 注册给 prots 作为消息汇。
+// 本轮已入队条数，begin/emit/end 三者同在一条 event 线程上配对，故用线程局部变量
+static THREAD_LOCAL int32_t _emit_cnt;
 
 // 将任务名指针插入任务哈希表（重复时触发断言）
 static inline void _task_map_set(struct hashmap *map, task_ctx *task) {
@@ -207,7 +211,7 @@ task_ctx *task_new(loader_ctx *loader, const char *name, uint32_t quecap,
     }
     task->_arg_free = _argfree;
     task->arg = arg;
-    fsqu_init(&task->qumsg, sizeof(message_ctx *), 0 == quecap ? ONEK : quecap);
+    fsqu_init(&task->qumsg, sizeof(message_ctx), 0 == quecap ? TASK_QUEUE_CAP : quecap);
     tda_init(&task->tda, (size_t)(fsqu_capacity(&task->qumsg) / QUEUE_OVERLOAD_RATIO));
     return task;
 }
@@ -217,10 +221,9 @@ void task_free(task_ctx *task) {
         task->_arg_free(task->arg);
     }
     // ref 归零进入 task_free，无其他持有者；qumsg 单消费者排空
-    message_ctx *msg;
+    message_ctx msg;
     while (ERR_OK == fsqu_pop_sc(&task->qumsg, &msg)) {
-        _message_clean(msg);
-        pool_push(&task->loader->msg_pool, msg, 0);// 与 _loader_task_run 同一归还点,别把池对象漏给分配器
+        _message_clean(&msg);
     }
     fsqu_free(&task->qumsg);
     FREE(task->name);
@@ -243,7 +246,7 @@ int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_c
     if (NULL != task->name) {
         _task_name_map_set(task->loader->mapnames, task->name, task->handle);
     }
-    _task_message_push(task, &startup);
+    _task_message_post(task, &startup);
     // loader 正在广播关闭时（closing=1），此 task 晚于广播注册，
     // 不会收到全局 CLOSING，须在此立即补发，确保 task 能正常退出
     if (ATOMIC_GET(&task->loader->closing)) {
@@ -256,7 +259,7 @@ void task_close(task_ctx *task) {
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
         message_ctx closing = { 0 };
         closing.mtype = MSG_TYPE_CLOSING;
-        _task_message_push(task, &closing);
+        _task_message_post(task, &closing);
     }
 }
 int32_t task_isclosing(task_ctx *task) {
@@ -396,7 +399,7 @@ static void _task_message_timeout_push(ud_cxt *ud) {
     msg.mtype = MSG_TYPE_TIMEOUT;
     msg.sess = ud->sess;
     msg.data = ud->context;
-    _task_message_push(task, &msg);
+    _task_message_post(task, &msg);
     task_ungrab(task);
 }
 void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeout) {
@@ -426,7 +429,7 @@ void task_request(task_ctx *dst, task_ctx *src, subtype_t reqtype, uint64_t sess
         msg.data = data;
     }
     msg.size = size;
-    _task_message_push(dst, &msg);
+    _task_message_post(dst, &msg);
 }
 void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
                    int32_t erro, void *data, size_t size, int32_t copy) {
@@ -441,7 +444,7 @@ void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
     } else {
         msg.data = data;
     }
-    _task_message_push(dst, &msg);
+    _task_message_post(dst, &msg);
 }
 void task_call(task_ctx *dst, subtype_t reqtype, void *data, size_t size, int32_t copy) {
     task_request(dst, NULL, reqtype, 0, data, size, copy);
@@ -487,7 +490,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
     msg.shared = shared;
     for (i = 0; i < n; i++) {
         if (NULL != dsts[i]) {
-            _task_message_push(dsts[i], &msg);
+            _task_message_post(dsts[i], &msg);
         }
     }
     return valid;
@@ -496,15 +499,22 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy) {
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
 }
-// 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=ungrab；经 _task_net_emit 注册给 prots 作为消息汇
 static void *_task_emit_begin(void *loader, name_t handle) {
+    _emit_cnt = 0;
     return task_grab(loader, handle);
 }
 static void _task_emit(void *target, message_ctx *msg) {
     _task_message_push((task_ctx *)target, msg);
+    ++_emit_cnt;
 }
+// 一次可读事件解出的多个包统一激活一次：每包都激活的话，worker 可能在还没解完时
+// 就排空睡下，同一次事件里唤醒好几回。一条没解出来（半包）就不激活，免得白唤醒
 static void _task_emit_end(void *target) {
-    task_ungrab((task_ctx *)target);
+    task_ctx *task = (task_ctx *)target;
+    if (_emit_cnt > 0) {
+        _task_message_active(task);
+    }
+    task_ungrab(task);
 }
 static prot_emit g_task_emit = { _task_emit_begin, _task_emit, _task_emit_end };
 prot_emit *_task_net_emit(void) {
@@ -534,7 +544,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 }
 int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t netev, void *extra,
-    int32_t setsess, SOCKET *fd, uint64_t *skid) {
+    int32_t setsess, sock_ctx *sk) {
     ud_cxt ud = { 0 };
     ud.pktype = pktype;
     ud.handle = task->handle;
@@ -552,10 +562,9 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs.r_cb = prots_net_recv;
     cbs.c_cb = prots_net_close;
     cbs.ud_free = prots_udfree;
-    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, setsess, fd, skid);
+    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, setsess, sk);
 }
-int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port,
-                 SOCKET *fd, uint64_t *skid) {
+int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, sock_ctx *sk) {
     ud_cxt ud = { 0 };
     ud.pktype = pktype;
     ud.handle = task->handle;
@@ -564,7 +573,7 @@ int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port
     cbs.c_cb = prots_net_close;
     cbs.rf_cb = prots_net_recvfrom;
     cbs.ud_free = prots_udfree;
-    return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, fd, skid);
+    return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, sk);
 }
 void task_set_priority(task_ctx *task, int32_t priority) {
     int32_t p = priority;

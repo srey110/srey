@@ -43,11 +43,11 @@ function ctx:_connect()
     if not self.smtp:try_connect() then
         return false
     end
-    local fd, skid = self.smtp:sock_id()
-    if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
+    local sk = self.smtp:sock_id()
+    if not srey.wait_connect(sk, SSL_NAME.NONE ~= self.sslname or nil) then
         return false
     end
-    local ok, err, elens = srey.wait_handshaked(fd, skid)
+    local ok, err, elens = srey.wait_handshaked(sk)
     if not ok and err then
         WARN("%s", srey.ud_str(err, elens))
     end
@@ -64,9 +64,9 @@ end
 ---@param packer fun(smtp:userdata):lightuserdata,integer 组包方法，如 smtp.pack_reset
 ---@return boolean ok 应答为 250 时 true
 function ctx:_cmd_ok(packer)
-    local fd, skid = self.smtp:sock_id()
+    local sk = self.smtp:sock_id()
     local cmd, csize = packer(self.smtp)
-    local pack = srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack = srey.syn_send(sk, cmd, csize, 0)
     if nil == pack then
         return false
     end
@@ -88,12 +88,12 @@ end
 ---@param mail any mail_ctx 邮件对象
 ---@return boolean ok 每步应答码都符合预期时 true（MAIL/RCPT/正文判 250，DATA 判 354）
 function ctx:_send(mail)
-    local fd, skid = self.smtp:sock_id()
+    local sk = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_from(mail:from_get())
     if not cmd then
         return false
     end
-    local pack = srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack = srey.syn_send(sk, cmd, csize, 0)
     if nil == pack or not self.smtp:check_ok(pack)  then
         return false
     end
@@ -102,13 +102,13 @@ function ctx:_send(mail)
         if not cmd then
             return false
         end
-        pack = srey.syn_send(fd, skid, cmd, csize, 0)
+        pack = srey.syn_send(sk, cmd, csize, 0)
         if nil == pack or not self.smtp:check_codes(pack, RCPT_CODES) then
             return false
         end
     end
     cmd, csize = self.smtp:pack_data()
-    pack = srey.syn_send(fd, skid, cmd, csize, 0)
+    pack = srey.syn_send(sk, cmd, csize, 0)
     if nil == pack or not self.smtp:check_code(pack, "354") then
         return false
     end
@@ -119,7 +119,7 @@ function ctx:_send(mail)
     if nil == cmd then
         return false
     end
-    pack = srey.syn_send(fd, skid, cmd, csize, 0)
+    pack = srey.syn_send(sk, cmd, csize, 0)
     if nil == pack or not self.smtp:check_ok(pack) then
         return false
     end
@@ -147,25 +147,24 @@ function ctx:_sendmail(mail)
 end
 
 ---内部 QUIT 命令（不关闭 socket，供 quit 调用）
----@param fd integer socket fd
----@param skid integer 连接 skid
-function ctx:_quit(fd, skid)
+---@param sk userdata 连接标识
+function ctx:_quit(sk)
     local cmd, csize = self.smtp:pack_quit()
-    srey.syn_send(fd, skid, cmd, csize, 0)
+    srey.syn_send(sk, cmd, csize, 0)
 end
 
 -- conn_pub 的断开钩子：QUIT 要等服务端 221，等完再关 TCP
 function ctx:_doquit()
-    local fd, skid = self.smtp:sock_id()
-    if INVALID_SOCK == fd then
+    local sk = self.smtp:sock_id()
+    if not sk.valid then
         return
     end
-    self:_quit(fd, skid)
-    fd, skid = self.smtp:sock_id()
-    if INVALID_SOCK == fd then
+    self:_quit(sk)
+    sk = self.smtp:sock_id()
+    if not sk.valid then
         return
     end
-    srey.sync_close(fd, skid)
+    srey.sync_close(sk)
 end
 
 return ctx

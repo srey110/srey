@@ -15,6 +15,7 @@
 #   options:
 #     m64     强制 64-bit（-m64），未设置则自动检测
 #     m32     强制 32-bit（-m32），未设置则自动检测
+#     arm64   ARM64 原生（不加位宽 flag）；只能在 ARM64 主机上用，本脚本不做交叉编译
 #     debug   调试模式（-O0 -g3），默认不开启
 #     asan    ASan/UBSan 检测（-fsanitize=address,undefined），默认不开启
 #             macOS ARM64 须与 debug 同用，否则协程切栈时 ASan 可能产生误报
@@ -43,18 +44,9 @@ do
     fi
     if [ "$val" = "WITH_SSL" ]
     then
-        if [ `echo $line|$WK -F ' ' '{print int($3)}'` -eq 1 ]
-        then
-            EXTRALIB="-lssl -lcrypto"
-        fi
+        SSL=`echo $line|$WK -F ' ' '{print int($3)}'`
     fi
 done < `pwd`/lib/base/config.h
-# mimalloc 必须排在 -lsrey 之后:引用方是 libsrey.a 里的 memory.o,静态库按顺序解析。
-# 循环外追加,否则会被上面 WITH_SSL 那支的赋值覆盖(config.h 里它排在 WITH_SSL 前面)
-if [ "$MIMALLOC" = "1" ]
-then
-    EXTRALIB=$EXTRALIB" -lmimalloc"
-fi
 # 共享库目录（参与 libsrey.a；srey 与 test 二进制共用）
 SHARED_DIR="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/serial lib/serial/yyjson lib/srey lib/thread"
 SHARED_DIR=$SHARED_DIR" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp lib/protocol/kcp"
@@ -79,7 +71,7 @@ WITH_DEBUG=0
 for a in "$@"
 do
     case "$a" in
-        m64|m32) ARCH_OPT=$a ;;
+        m64|m32|arm64) ARCH_OPT=$a ;;
         debug)   WITH_DEBUG=1 ;;
         asan)    WITH_ASAN=1 ;;
         tsan)    WITH_TSAN=1 ;;
@@ -95,6 +87,48 @@ then
     echo "Error: macOS 不支持 m32（Apple 已移除 32-bit 支持）"
     exit 1
 fi
+if [ "$ARCH_OPT" = "arm64" ]
+then
+    HOST_ARCH=`uname -m`
+    if [ "$HOST_ARCH" != "arm64" ] && [ "$HOST_ARCH" != "aarch64" ]
+    then
+        echo "Error: 本机是 $HOST_ARCH，不是 ARM64；mk.sh 不做交叉编译"
+        exit 1
+    fi
+fi
+# tools/deps.py 落在 bin/ 的库名带变体后缀「[d]_<x86|x64|arm64>」,各变体共存,这里按同一
+# 规则拼出要链哪一个。名字对不上就是链不到,不会像以前那样静默链上另一套 CRT 的库
+DEPS_ARCH="x64"
+if [ -n "$ARCH_OPT" ]
+then
+    if [ "$ARCH_OPT" = "m32" ]
+    then
+        DEPS_ARCH="x86"
+    elif [ "$ARCH_OPT" = "arm64" ]
+    then
+        DEPS_ARCH="arm64"
+    fi
+else
+    DEPS_MACHINE=`uname -m`
+    case "$DEPS_MACHINE" in
+        arm64|aarch64) DEPS_ARCH="arm64" ;;
+        i386|i686)     DEPS_ARCH="x86" ;;
+    esac
+fi
+DEPS_SFX="_$DEPS_ARCH"
+if [ $WITH_DEBUG -eq 1 ]
+then
+    DEPS_SFX="d_$DEPS_ARCH"
+fi
+if [ "$SSL" = "1" ]
+then
+    EXTRALIB="-lssl$DEPS_SFX -lcrypto$DEPS_SFX"
+fi
+# mimalloc 必须排在 -lsrey 之后:引用方是 libsrey.a 里的 memory.o,静态库按顺序解析
+if [ "$MIMALLOC" = "1" ]
+then
+    EXTRALIB=$EXTRALIB" -lmimalloc$DEPS_SFX"
+fi
 #包含库
 INCLUDELIB="-lpthread -lm"
 if [ "$OSNAME" != "Darwin" ]
@@ -108,6 +142,12 @@ fi
 if [ "$OSNAME" = "SunOS" ]
 then
 	INCLUDELIB=$INCLUDELIB" -lsocket -lnsl"
+fi
+# backtrace 系列在 FreeBSD 是独立的 libexecinfo,glibc 与 macOS 都在 libc 里自带;
+# MEMORY_TRACE=1 时 memory.c 会引用它们
+if [ "$OSNAME" = "FreeBSD" ]
+then
+    INCLUDELIB=$INCLUDELIB" -lexecinfo"
 fi
 #结果存放路径
 RSTPATH="bin"
@@ -169,6 +209,7 @@ then
 fi
 if [ -n "$ARCH_OPT" ]
 then
+    # arm64 落在两条分支之外,什么都不加:aarch64 上的 gcc/clang 没有 -m64 这种位宽开关,加了直接报错
     if [ "$ARCH_OPT" = "m64" ]
     then
         CFLAGS=$CFLAGS" -m64"

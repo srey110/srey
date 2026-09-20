@@ -145,6 +145,12 @@ int32_t sock_reuseaddr(SOCKET fd, int32_t istcp) {
     return _setsockopt_flag(fd, SOL_SOCKET, SO_REUSEADDR);
 }
 int32_t sock_reuseport(SOCKET fd) {
+#ifdef SO_REUSEPORT_LB
+    // FreeBSD 的 SO_REUSEPORT 只允许重复绑定,TCP 监听并不分发,要 _LB 才按连接派发到各 fd
+    if (ERR_OK == _setsockopt_flag(fd, SOL_SOCKET, SO_REUSEPORT_LB)) {
+        return ERR_OK;
+    }
+#endif
 #ifdef SO_REUSEPORT
     return _setsockopt_flag(fd, SOL_SOCKET, SO_REUSEPORT);
 #else
@@ -216,31 +222,61 @@ int32_t sock_linger(SOCKET fd) {
     }
     return ERR_OK;
 }
-SOCKET sock_create_cloexec(int32_t family, int32_t type, int32_t proto) {
+SOCKET sock_create_cloexec(int32_t family, int32_t type, int32_t proto, int32_t nonblock) {
+#if defined(SOCK_CLOEXEC)
+    // Linux/BSD/Solaris：并进 type 原子设置，无 create→设标志 的竞态窗口
+    type |= SOCK_CLOEXEC;
+#endif
+#if defined(SOCK_NONBLOCK)
+    // 有这个标志就跟 CLOEXEC 一道设完,省掉下面那次 fcntl;置 0 表示已办完
+    if (0 != nonblock) {
+        type |= SOCK_NONBLOCK;
+        nonblock = 0;
+    }
+#endif
 #if defined(OS_WIN)
-    // Windows：WSASocket 建 overlapped(IOCP 必需) + 禁句柄被 CreateProcess 继承；proto=0 按 family/type 选默认(TCP/UDP)
-    return WSASocket(family, type, proto, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
-#elif defined(SOCK_CLOEXEC)
-    // Linux/BSD/Solaris：SOCK_CLOEXEC 原子设置，无 create→设标志 的竞态窗口
-    return socket(family, type | SOCK_CLOEXEC, proto);
+    // WSASocket 建 overlapped(IOCP 必需) + 禁句柄被 CreateProcess 继承；proto=0 按 family/type 选默认(TCP/UDP)
+    SOCKET fd = WSASocket(family, type, proto, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
 #else
-    // macOS 等：无 SOCK_CLOEXEC，create 后 fcntl 兜底
     SOCKET fd = socket(family, type, proto);
-    if (INVALID_SOCK != fd) {
-        SET_CLOEXEC(fd);
+#endif
+    if (INVALID_SOCK == fd) {
+        return INVALID_SOCK;
+    }
+#if !defined(SOCK_CLOEXEC) && !defined(OS_WIN)
+    // macOS 等：无 SOCK_CLOEXEC，create 后 fcntl 兜底
+    SET_CLOEXEC(fd);
+#endif
+    // 设失败必须关掉重报:调用方拿到个阻塞 fd 会在事件循环里挂死,比返回失败难查得多
+    if (0 != nonblock
+        && ERR_OK != sock_nonblock(fd)) {
+        CLOSE_SOCK(fd);
+        return INVALID_SOCK;
     }
     return fd;
-#endif
 }
-SOCKET sock_accept_cloexec(SOCKET fd, struct sockaddr *addr, socklen_t *addrlen) {
+SOCKET sock_accept_cloexec(SOCKET fd, struct sockaddr *addr, socklen_t *addrlen, int32_t nonblock) {
 #if defined(HAVE_ACCEPT4)
-    // 支持 accept4 的平台：原子设置 SOCK_CLOEXEC
-    return accept4(fd, addr, addrlen, SOCK_CLOEXEC);
+    // 有 accept4 就把非阻塞和 CLOEXEC 一次设完,省掉调用方那次 F_SETFL
+    return accept4(fd, addr, addrlen, nonblock ? (SOCK_CLOEXEC | SOCK_NONBLOCK) : SOCK_CLOEXEC);
 #else
     // macOS/Solaris/Windows：无 accept4，accept 后兜底设标志
     SOCKET nfd = accept(fd, addr, addrlen);
     if (INVALID_SOCK != nfd) {
         SET_CLOEXEC(nfd);
+        // 设不上按 accept 失败处理:调用方不再补设,放行一个阻塞 fd 进事件循环是挂死不是报错。
+        // 关之前存下错误码再还原——调用方要靠它分类(见 _usk_check_accept),CLOSE_SOCK 会覆盖它
+        if (0 != nonblock
+            && ERR_OK != sock_nonblock(nfd)) {
+            int32_t err = ERRNO;
+            CLOSE_SOCK(nfd);
+#if defined(OS_WIN)
+            SetLastError((DWORD)err);
+#else
+            errno = err;
+#endif
+            return INVALID_SOCK;
+        }
     }
     return nfd;
 #endif
@@ -251,7 +287,8 @@ static SOCKET _sock_listen(void) {
     if (ERR_OK != netaddr_set(&addr, "127.0.0.1", 0)) {
         return INVALID_SOCK;
     }
-    SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
+    // 建阻塞的:下面那次 accept 要同步等对端连上来
+    SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0, 0);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
@@ -267,7 +304,9 @@ static SOCKET _sock_listen(void) {
 }
 // 连接到指定地址，返回连接成功的套接字，供 sock_pair 使用
 static SOCKET _sockcnt(union netaddr_ctx *paddr) {
-    SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
+    // 同样建阻塞的:下面是同步 connect,非阻塞会返 EINPROGRESS 被当成失败。
+    // 要非阻塞由 sock_pair 连通后再转
+    SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0, 0);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
@@ -294,7 +333,7 @@ int32_t sock_pair(SOCKET acSock[2], int32_t nonblock) {
     }
     netaddr_ctx listen_addr;
     socklen_t addrlen = (socklen_t)sizeof(netaddr_ctx);
-    SOCKET fdacp = sock_accept_cloexec(fdlsn, netaddr_addr(&listen_addr), &addrlen);
+    SOCKET fdacp = sock_accept_cloexec(fdlsn, netaddr_addr(&listen_addr), &addrlen, nonblock);
     if (INVALID_SOCK == fdacp) {
         CLOSE_SOCK(fdlsn);
         CLOSE_SOCK(fdcn);
@@ -314,7 +353,7 @@ int32_t sock_pair(SOCKET acSock[2], int32_t nonblock) {
     sock_nodelay(fdacp);
     sock_nodelay(fdcn);
     if (nonblock) {
-        sock_nonblock(fdacp);
+        // fdacp 已由 sock_accept_cloexec 一并设好，这里只补主动连的那端
         sock_nonblock(fdcn);
     }
     acSock[0] = fdacp;

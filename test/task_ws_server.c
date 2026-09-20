@@ -6,7 +6,7 @@ static uint16_t _port = 0;
 //   分片帧 - 收齐完整消息（PROT_SLICE_END）后回复三帧分片消息（text_fin0 + continua_fin0 + continua_fin1）
 //   MQTT 子协议帧 - 收到 CONNECT 回 CONNACK
 //   非分片帧 - 回显 text/binary，ping 回 pong，close 关闭连接
-static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)size;
@@ -20,11 +20,11 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
     if (0 != slice) {
         if (PROT_SLICE_END == slice) {
             frame = websock_pack_text(0, 0, "a", 1, &fsize);
-            ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+            ev_send(&task->loader->netev, sk, frame, fsize, 0);
             frame = websock_pack_continua(0, 0, "b", 1, &fsize);
-            ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+            ev_send(&task->loader->netev, sk, frame, fsize, 0);
             frame = websock_pack_continua(0, 1, "c", 1, &fsize);
-            ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+            ev_send(&task->loader->netev, sk, frame, fsize, 0);
         }
         return;
     }
@@ -39,7 +39,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             char *ack = mqtt_pack_connack((mqtt_protversion)mpack->version, 0, 0, NULL, &alens);
             if (NULL != ack) {
                 frame = websock_pack_binary(0, 1, ack, alens, &fsize);
-                ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+                ev_send(&task->loader->netev, sk, frame, fsize, 0);
                 FREE(ack);
             }
         }
@@ -53,12 +53,12 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         } else {
             frame = websock_pack_binary(0, 1, wdata, dlens, &fsize);
         }
-        ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+        ev_send(&task->loader->netev, sk, frame, fsize, 0);
     } else if (WS_PING == prot) {
         frame = websock_pack_pong(0, &fsize);
-        ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
+        ev_send(&task->loader->netev, sk, frame, fsize, 0);
     } else if (WS_CLOSE == prot) {
-        ev_close(&task->loader->netev, sk->fd, sk->skid);
+        ev_close(&task->loader->netev, sk);
     }
 }
 static void _startup(task_ctx *task) {

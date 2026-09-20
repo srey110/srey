@@ -10,11 +10,13 @@
 #define _MQ_INIT     0
 #define _MQ_COMMAND  1
 
-// 解包入口的 ev / fd / skid 在测试里恒为空：只喂缓冲，不发包也不认连接。
+// 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
+static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
+// 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
 // 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
 static void *_t_mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mqtt_unpack(NULL, INVALID_SOCK, 0, client, buf, ud, size, status);
+    return mqtt_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 
 // mqtt 解包用的最小上下文：新建 mqtt_ctx 挂进清零的 ud，并摆到指定解析阶段。
@@ -200,7 +202,7 @@ static void test_mqtt_connack(CuTest *tc) {
     _mqtt_connack_case(tc, MQTT_50, 1, 0x87, NULL);
     // 5.0 带属性段：走属性长度 varint + 属性体，也是零覆盖
     binary_ctx props;
-    binary_init(&props, NULL, 0, 0);
+    binary_init_write(&props, 0, 0);
     mqtt_props_fixnum(&props, SESSION_EXPIRY, 3600);
     _mqtt_connack_case(tc, MQTT_50, 0, 0, &props);
     binary_free(&props);
@@ -324,7 +326,7 @@ static void _mq_publish_case(CuTest *tc, mqtt_protversion version, int8_t qos, u
     binary_ctx props;
     binary_ctx *pprops = NULL;
     if (withprops) {
-        binary_init(&props, NULL, 0, 64);
+        binary_init_write(&props, 0, 64);
         CuAssertIntEquals(tc, ERR_OK, mqtt_props_fixnum(&props, PAYLOAD_FORMAT, 1));
         CuAssertIntEquals(tc, ERR_OK, mqtt_props_kv(&props, USER_PROPERTY, "k", 1, "v", 1));
         pprops = &props;
@@ -424,7 +426,7 @@ static void _mqtt_subunsub_case(CuTest *tc, mqtt_protversion ver) {
     const int8_t rap = (MQTT_50 == ver) ? 1 : 0;
     const int8_t rh = (MQTT_50 == ver) ? 2 : 0;
     binary_ctx topics;
-    binary_init(&topics, NULL, 0, 64);
+    binary_init_write(&topics, 0, 64);
     CuAssertIntEquals(tc, ERR_OK, mqtt_topics_subscribe(&topics, ver, "topic/a", 0, 0, 0, 0));
     CuAssertIntEquals(tc, ERR_OK, mqtt_topics_subscribe(&topics, ver, "topic/b", 1, nl, rap, rh));
 
@@ -482,7 +484,7 @@ static void _mqtt_subunsub_case(CuTest *tc, mqtt_protversion ver) {
 
     /* UNSUBSCRIBE */
     binary_ctx untopics;
-    binary_init(&untopics, NULL, 0, 64);
+    binary_init_write(&untopics, 0, 64);
     CuAssertIntEquals(tc, ERR_OK, mqtt_topics_unsubscribe(&untopics, "topic/a"));
     CuAssertIntEquals(tc, ERR_OK, mqtt_topics_unsubscribe(&untopics, "topic/b"));
     pack = mqtt_pack_unsubscribe(ver, 0xCCDD, &untopics, NULL, &lens);
@@ -703,7 +705,7 @@ static void test_mqtt_auth_compact_no_props(CuTest *tc) {
  * ======================================================================= */
 static void test_mqtt_props(CuTest *tc) {
     binary_ctx props;
-    binary_init(&props, NULL, 0, 64);
+    binary_init_write(&props, 0, 64);
 
     /* fixnum 三档宽度各喂一个，别都走 4 字节那支：
        1 字节 MAXIMUM_QOS=0x24 / 2 字节 RECEIVE_MAXIMUM=0x21 / 4 字节 SESSION_EXPIRY=0x11 */
@@ -850,7 +852,7 @@ static void _mqtt_extract_auth(mqtt_pack_ctx *p,
 static void _mqtt_pack_auth_sasl(CuTest *tc, buffer_ctx *out,
     uint8_t reason, const char *method, const char *data, size_t dlen) {
     binary_ctx props;
-    binary_init(&props, NULL, 0, 64);
+    binary_init_write(&props, 0, 64);
     CuAssert(tc, "props: AUTH_METHOD",
         ERR_OK == mqtt_props_binary(&props, AUTH_METHOD, (void *)method, strlen(method)));
     CuAssert(tc, "props: AUTH_DATA",

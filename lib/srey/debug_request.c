@@ -58,7 +58,7 @@ static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {
     uint64_t cpu[MSG_TYPE_ALL];
     task_stat(task, nmsg, cpu);
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     binary_set_va(&bw, "%-14s %12s %18s %14s\n", "MTYPE", "NMSG", "DISPATCH_CPU_NS", "AVG_NS");
     uint64_t tnmsg = 0;
     uint64_t tcpu = 0;

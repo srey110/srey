@@ -69,7 +69,7 @@ static int32_t _test_builtin(task_ctx *task, name_t noreq) {
     size_t len;
     void *rtn;
     char snip[160];
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_string(&bw, "stat", strlen("stat"));
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
     // MTYPE / TOTAL 两个串都出自格式串常量，跟 task_stat 取回的数值无关：把 nmsg[] 全写 0，
@@ -101,7 +101,7 @@ static int32_t _test_builtin(task_ctx *task, name_t noreq) {
     }
     binary_free(&bw);
     // 靶子是 TASK_MCO，coro_dump 必有输出；非协程 task 走另一条文案，这里不涉及
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_string(&bw, "coros", strlen("coros"));
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
     // 只判非空的话，coro_dump 拼错文案、甚至把汇总行整段丢掉都看不出来，
@@ -129,7 +129,7 @@ static int32_t _test_loglv(task_ctx *task, name_t noreq) {
     char want[32];
     log_level lv0 = log_getlv();
     SNPRINTF(want, sizeof(want), "log level => %d", (int32_t)lv0);
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_string(&bw, "loglv", strlen("loglv"));
     seri_append_int(&bw, (int64_t)lv0);
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
@@ -141,7 +141,7 @@ static int32_t _test_loglv(task_ctx *task, name_t noreq) {
     }
     binary_free(&bw);
     // 缺参
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_string(&bw, "loglv", strlen("loglv"));
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
     if (ERR_OK != err || !_eq_text(rtn, len, "loglv: missing level.")) {
@@ -152,7 +152,7 @@ static int32_t _test_loglv(task_ctx *task, name_t noreq) {
     }
     binary_free(&bw);
     // 越界：级别不变
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_string(&bw, "loglv", strlen("loglv"));
     seri_append_int(&bw, (int64_t)(LOGLV_DEBUG + 1));
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
@@ -182,7 +182,7 @@ static int32_t _test_passthrough(task_ctx *task, name_t noreq, name_t hasreq) {
     char snip[160];
     size_t i;
     for (i = 0; i < ARRAY_SIZE(cmds); i++) {
-        binary_init(&bw, NULL, 0, 0);
+        binary_init_write(&bw, 0, 0);
         seri_append_string(&bw, cmds[i], strlen(cmds[i]));
         rtn = _dbg_send(task, noreq, &bw, &err, &len);
         if (ERR_FAILED != err || !_eq_text(rtn, len, _NOREQ)) {
@@ -195,7 +195,7 @@ static int32_t _test_passthrough(task_ctx *task, name_t noreq, name_t hasreq) {
         binary_free(&bw);
     }
     // 注册了 on_requested 的目标：拿到的是业务自己的文案，而不是框架那句
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_string(&bw, "mem", strlen("mem"));
     rtn = _dbg_send(task, hasreq, &bw, &err, &len);
     if (ERR_FAILED != err || !_eq_text(rtn, len, _HASREQ)) {
@@ -206,7 +206,7 @@ static int32_t _test_passthrough(task_ctx *task, name_t noreq, name_t hasreq) {
     }
     binary_free(&bw);
     // 非位置化载荷（首元素不是字符串）：同样透传
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     seri_append_int(&bw, 1);
     rtn = _dbg_send(task, noreq, &bw, &err, &len);
     if (ERR_FAILED != err || !_eq_text(rtn, len, _NOREQ)) {
@@ -223,20 +223,19 @@ static int32_t _test_passthrough(task_ctx *task, name_t noreq, name_t hasreq) {
 // exact 非 0 比全串，否则只查子串（广播响应里还夹着各 task 名与分隔行）
 static int32_t _http_get(task_ctx *task, uint16_t port, const char *url,
                          int32_t code, const char *want, int32_t exact) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
         LOG_ERROR("debug test: connect console %d failed for %s.", (int32_t)port, url);
         return ERR_FAILED;
     }
     binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
+    binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "GET", url);
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
     size_t rsize = 0;// coro_send 的必填出参；HTTP 走的是 pack 语义，长度信息看 http_data
     // copy=0：缓冲所有权交给 ev_send，不再 binary_free
-    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     int32_t rtn = ERR_FAILED;
     char snip[256];
     char codestr[8];
@@ -261,7 +260,7 @@ static int32_t _http_get(task_ctx *task, uint16_t port, const char *url,
     }
     rtn = ERR_OK;
 done:
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     return rtn;
 }
 static int32_t _test_console(task_ctx *task, task_debug_args *arg) {

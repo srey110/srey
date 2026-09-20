@@ -3,10 +3,10 @@
 
 void mysql_bind_init(mysql_bind_ctx *mbind) {
     mbind->count = 0;
-    binary_init(&mbind->bitmap, NULL, 0, 0);
-    binary_init(&mbind->type, NULL, 0, 0);
-    binary_init(&mbind->type_name, NULL, 0, 0);
-    binary_init(&mbind->value, NULL, 0, 0);
+    binary_init_write(&mbind->bitmap, 0, 0);
+    binary_init_write(&mbind->type, 0, 0);
+    binary_init_write(&mbind->type_name, 0, 0);
+    binary_init_write(&mbind->value, 0, 0);
 }
 void mysql_bind_free(mysql_bind_ctx *mbind) {
     mbind->count = 0;
@@ -23,7 +23,7 @@ void mysql_bind_clear(mysql_bind_ctx *mbind) {
     binary_offset(&mbind->value, 0);
 }
 // 更新 NULL 位图：每 8 个参数共用一个字节，nil 为 1 时将对应位置 1
-static void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
+static inline void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
     int32_t index = mbind->count % 8;
     if (0 == index) {
         binary_set_fill(&mbind->bitmap, 0, 1);
@@ -35,7 +35,7 @@ static void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
     ++mbind->count;
 }
 // 向类型缓冲区和类型+名称缓冲区中写入字段类型及参数名称
-static void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type, const char *name, int32_t is_unsigned) {
+static inline void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type, const char *name, int32_t is_unsigned) {
     // 无符号标志位(第 15 位)超出枚举取值范围(全部 <= 255), 必须用整型承载:
     // 回写进 enum 变量时 -fshort-enums 下兼容类型可为 unsigned char, 该位会被静默截掉
     int32_t typeflag = is_unsigned ? ((int32_t)type | 0x8000) : (int32_t)type;

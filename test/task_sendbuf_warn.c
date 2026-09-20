@@ -15,7 +15,7 @@ typedef struct sendbuf_warn_args {
 static atomic_t g_recv_bytes;// server 端累计收到字节
 static atomic_t g_close_cnt;// server 端 close 回调触发次数
 
-static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client,
+static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {
     (void)task; (void)sk; (void)pktype; (void)slice; (void)data;
     if (client) {
@@ -23,7 +23,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
     }
     ATOMIC_ADD(&g_recv_bytes, (atomic_t)size);
 }
-static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
     (void)task; (void)sk; (void)pktype; (void)erro;
     if (client) {
         return;
@@ -42,9 +42,8 @@ static void _startup(task_ctx *task) {
     ATOMIC_SET(&g_recv_bytes, 0);
     ATOMIC_SET(&g_close_cnt, 0);
 
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", arg->port, 0, NULL, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", arg->port, 0, NULL, &sk)) {
         LOG_ERROR("sendbuf_warn: coro_connect failed.");
         return;
     }
@@ -58,7 +57,7 @@ static void _startup(task_ctx *task) {
         MALLOC(data, BYTES_PER_ROUND);
         memset(data, 'Y', BYTES_PER_ROUND);
         // 单次 ev_send 即 _uev_add_write_inloop 把整块入队，wb_size += 4MB 必触告警
-        ev_send(&task->loader->netev, fd, skid, data, BYTES_PER_ROUND, 0);
+        ev_send(&task->loader->netev, &sk, data, BYTES_PER_ROUND, 0);
     }
     // ev_close 只在关闭前冲一次，写不进内核的会被丢掉；要完整送达就得自己先等收齐再关
     int32_t expect = ROUNDS * BYTES_PER_ROUND;
@@ -70,7 +69,7 @@ static void _startup(task_ctx *task) {
         coro_sleep(task, 100);
         wait_ms += 100;
     }
-    ev_close(&task->loader->netev, fd, skid);
+    ev_close(&task->loader->netev, &sk);
     wait_ms = 0;
     while (ATOMIC_GET(&g_close_cnt) < 1 && wait_ms < 30000) {
         if (task_isclosing(task)) {

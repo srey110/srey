@@ -12,7 +12,7 @@ typedef struct task_udp_multicast_args {
 static atomic_t _recv_count;
 
 // 单播自收回调：验证 task_recvedfrom 路径基本工作
-static void _net_recvfrom(task_ctx *task, sk_id *sk, subtype_t pktype,
+static void _net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype,
                           char ip[IP_LENS], uint16_t port, void *data, size_t size) {
     (void)task; (void)sk; (void)pktype; (void)ip; (void)port;
     if (UNI_LEN == size && 0 == memcmp(data, UNI_MSG, UNI_LEN)) {
@@ -24,23 +24,22 @@ static void _startup(task_ctx *task) {
     task_udp_multicast_args *arg = (task_udp_multicast_args *)coro_get_arg(task);
     ATOMIC_SET(&_recv_count, 0);
     task_recvedfrom(task, _net_recvfrom);
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", arg->port, &fd, &skid)) {
+    sock_ctx sk;
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", arg->port, &sk)) {
         LOG_ERROR("udp_multicast: task_udp failed.");
         return;
     }
     ev_ctx *ev = &task->loader->netev;
     // 多播 4 API 路径验证：调用应一律 ERR_OK 投递成功(实际 setsockopt 在事件线程执行)
-    if (ERR_OK != ev_udp_ttl(ev, fd, skid, 1)) {
+    if (ERR_OK != ev_udp_ttl(ev, &sk, 1)) {
         LOG_ERROR("udp_multicast: ev_udp_ttl post failed.");
         return;
     }
-    if (ERR_OK != ev_udp_loop(ev, fd, skid, 1)) {
+    if (ERR_OK != ev_udp_loop(ev, &sk, 1)) {
         LOG_ERROR("udp_multicast: ev_udp_loop post failed.");
         return;
     }
-    if (ERR_OK != ev_udp_join(ev, fd, skid, MCAST_GROUP, NULL)) {
+    if (ERR_OK != ev_udp_join(ev, &sk, MCAST_GROUP, NULL)) {
         LOG_ERROR("udp_multicast: ev_udp_join post failed.");
         return;
     }
@@ -51,7 +50,7 @@ static void _startup(task_ctx *task) {
     char *payload;
     MALLOC(payload, UNI_LEN);
     memcpy(payload, UNI_MSG, UNI_LEN);
-    if (ERR_OK != ev_sendto(ev, fd, skid, "127.0.0.1", arg->port, payload, UNI_LEN, 0)) {
+    if (ERR_OK != ev_sendto(ev, &sk, "127.0.0.1", arg->port, payload, UNI_LEN, 0)) {
         LOG_ERROR("udp_multicast: ev_sendto unicast failed.");
         return;
     }
@@ -68,7 +67,7 @@ static void _startup(task_ctx *task) {
         return;
     }
     // 验证 leave API 路径
-    if (ERR_OK != ev_udp_leave(ev, fd, skid, MCAST_GROUP, NULL)) {
+    if (ERR_OK != ev_udp_leave(ev, &sk, MCAST_GROUP, NULL)) {
         LOG_ERROR("udp_multicast: ev_udp_leave post failed.");
         return;
     }

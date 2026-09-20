@@ -15,7 +15,7 @@ typedef struct kcp_ctx {
     uint64_t sess;      // 唤醒 sess,每次 kcp_start 传入,会话内不变;0 表示不唤醒(纯异步)
     ev_ctx *netev;      // 事件上下文
     size_t maxpack;     // 单次 kcp_send 消息上限 = 127×(mtu-24),kcp_start 按 config 算,kcp_send 前置校验
-    sk_id sk;           // 底层 UDP socket 标识(fd + skid)
+    sock_ctx sk;           // 底层 UDP socket 标识(fd + skid)
 }kcp_ctx;
 // KCP 可调参数,传给 kcp_start(NULL=全用库默认)。
 // nodelay/interval/resend/nc 透传 ikcp_nodelay:填 <0 表示该项不改(interval 填 0 会被库钳到 10ms);
@@ -35,17 +35,15 @@ void _kcp_init(prot_emit *emit);
 // 释放 UDP socket 上的 kcp 上下文及其所有会话(由 prots_udfree 调用)
 void _kcp_udfree(ud_cxt *ud);
 // UDP 数据解包:ikcp_input 喂入后 ikcp_recv 取完整消息上抛(由 prots_net_recvfrom 调用)。
-void _kcp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
-                 char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
+void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 /// <summary>
 /// 初始化 kcp 句柄:绑定底层 UDP socket 与会话号,不建立会话(需再调 kcp_start)
 /// </summary>
 /// <param name="kcp">待初始化的 kcp_ctx(存储由调用方持有)</param>
 /// <param name="netev">事件上下文</param>
-/// <param name="fd">底层 UDP socket 句柄</param>
-/// <param name="skid">连接 ID</param>
+/// <param name="sk">连接标识</param>
 /// <param name="conv">会话号(两端须一致)</param>
-void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t conv);
+void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv);
 /// <summary>
 /// 建立 kcp 会话(异步,发起后立即返回):在 event 线程创建会话对象并加入该 socket 的会话表;
 /// 此后该会话收到的数据以 MSG_TYPE_RECVFROM 推送给 handle 所属 task。

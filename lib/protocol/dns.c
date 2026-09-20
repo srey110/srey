@@ -100,9 +100,9 @@ size_t dns_request_pack_tcp(char *buf, const char *domain, int32_t ipv6, uint16_
     memcpy(buf, &nlen, sizeof(nlen));
     return dlens + sizeof(nlen);
 }
-void *dns_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *dns_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)fd; (void)skid; (void)client; (void)ud;
+    (void)ev; (void)sk; (void)client; (void)ud;
     size_t avail = buffer_size(buf);
     if (avail < sizeof(uint16_t)) {
         BIT_SET(*status, PROT_MOREDATA);

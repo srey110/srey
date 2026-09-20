@@ -36,18 +36,18 @@ typedef void(*_request_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                            name_t src, void *data, size_t size);// 任务请求回调
 typedef void(*_response_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                             int32_t error, void *data, size_t size);// 任务响应回调
-typedef void(*_net_accept_cb)(task_ctx *task, sk_id *sk, subtype_t pktype);// 新连接接受回调
+typedef void(*_net_accept_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype);// 新连接接受回调
 // 数据接收回调。size 仅对部分协议有效，恒为 0 的那几个见 prots_unpack 的 size 契约
-typedef void(*_net_recv_cb)(task_ctx *task, sk_id *sk,
-                            subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size);
-typedef void(*_net_send_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
-typedef void(*_net_connect_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t erro);// 连接建立回调
-typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// SSL 交换完成回调
-typedef void(*_net_handshake_cb)(task_ctx *task, sk_id *sk,
-                                 subtype_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);// 应用层握手完成回调
-typedef void(*_net_close_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, int32_t erro);// 连接关闭回调
-typedef void(*_net_recvfrom_cb)(task_ctx *task, sk_id *sk, subtype_t pktype,
-                                char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
+typedef void(*_net_recv_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
+                            uint8_t slice, void *data, size_t size);
+typedef void(*_net_send_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
+typedef void(*_net_connect_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, int32_t erro);// 连接建立回调
+typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client);// SSL 交换完成回调
+typedef void(*_net_handshake_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
+                                 int32_t erro, void *data, size_t lens);// 应用层握手完成回调
+typedef void(*_net_close_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro);// 连接关闭回调
+typedef void(*_net_recvfrom_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, char ip[IP_LENS], uint16_t port,
+                                void *data, size_t size);// UDP 数据接收回调
 // 工作线程版本快照，供监控线程检测卡死
 typedef struct worker_version {
     int32_t ckver;     // 上次检查时记录的版本号（仅monitor读写，无竞态）
@@ -68,9 +68,10 @@ typedef struct worker_ctx {
     uint16_t index;        // 工作线程索引
     int32_t weight;        // 权重
     atomic_t waiting;      // 当前是否在休眠等待（原子维护，快速路径无锁读）
+    atomic_t spinning;     // 非 0 表示正空转等活：生产者直投即可，不必发唤醒
     loader_ctx *loader;    // 所属 loader
     pthread_t thread_worker; // 工作线程句柄
-    fsqu_ctx qutasks;     // 任务名队列（平台自适应 fsqu，替代原 spinlock + qu_task）
+    fsqu_ctx qutasks;      // 待调度任务队列，按值存 task_ctx*；入队时已 incref，由队列持有到 worker 跑完
     mutex_ctx mutex;       // 配合条件变量使用的互斥锁
     cond_ctx cond;         // 工作线程休眠/唤醒条件变量
 }worker_ctx;
@@ -98,7 +99,6 @@ struct loader_ctx {
     cond_ctx closing_cond;     // 最后一个 task 摘除时唤醒 _loader_task_closing
     tw_ctx tw;                 // 时间轮（超时调度）
     ev_ctx netev;              // 网络事件驱动上下文
-    pool_ctx msg_pool;        // message_ctx 对象回收池（减少跨线程 malloc/free 开销）
 };
 // 任务上下文
 struct task_ctx {
@@ -151,8 +151,12 @@ const char *_message_str(msg_type type);
 void _message_run(task_ctx *task, message_ctx *msg);
 // 返回 task 层实现的网络事件消息汇（注册给 prots_init，内部接口）
 prot_emit *_task_net_emit(void);
-// 将消息推入任务的无锁消息队列（内部接口）
+// 只入队不触发调度；一次可读事件解出多个包时用它，末尾再 _task_message_active 一次（内部接口）
 void _task_message_push(task_ctx *task, message_ctx *msg);
+// 触发调度：队列非空而尚未被调度时唤醒一个 worker（内部接口）
+void _task_message_active(task_ctx *task);
+// 入队并触发调度：非网络生产者都走这个（内部接口）
+void _task_message_post(task_ctx *task, message_ctx *msg);
 // 判断消息是否需要清理数据（内部接口）
 int32_t _message_should_clean(message_ctx *msg);
 // 根据消息类型释放消息数据（内部接口）

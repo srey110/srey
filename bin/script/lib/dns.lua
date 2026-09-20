@@ -17,24 +17,24 @@ local isipv6 = ("ipv6" == host_type(dns_ip))
 ---@return boolean? nodata 第二返回值：true 表示服务端已明确答复"无此记录"，回退 TCP 也是同一结果
 local function nslookup_udp(domain, ipv6)
     -- 根据 DNS 服务器类型创建对应的 UDP socket（IPv6 本地地址为 "::"）
-    local fd, skid
+    local sk
     if isipv6 then
-        fd, skid = srey.udp(PACK_TYPE.NONE, "::", 0)
+        sk = srey.udp(PACK_TYPE.NONE, "::", 0)
     else
-        fd, skid = srey.udp(PACK_TYPE.NONE)
+        sk = srey.udp(PACK_TYPE.NONE)
     end
-    if INVALID_SOCK == fd then
+    if not sk.valid then
         WARN("init udp error.")
         return nil
     end
     -- 打包 DNS 查询报文并同步发送到 DNS 服务器的 53 端口，等待响应
     local req, id = dns.pack(domain, ipv6 and 1 or 0)
     if not req then
-        srey.close(fd, skid)
+        srey.close(sk)
         return nil
     end
-    local resp, resplens = srey.syn_sendto(fd, skid, dns_ip, 53, req, #req, 1)
-    srey.close(fd, skid)
+    local resp, resplens = srey.syn_sendto(sk, dns_ip, 53, req, #req, 1)
+    srey.close(sk)
     if not resp then
         return nil
     end
@@ -47,18 +47,18 @@ end
 ---@param ipv6 boolean true 时查询 AAAA 记录，否则 A 记录
 ---@return string[]|nil ips IP 字符串数组；失败或无结果时返回 nil
 local function nslookup_tcp(domain, ipv6)
-    local fd, skid = srey.connect(PACK_TYPE.DNS, SSL_NAME.NONE, dns_ip, 53)
-    if INVALID_SOCK == fd then
+    local sk = srey.connect(PACK_TYPE.DNS, SSL_NAME.NONE, dns_ip, 53)
+    if not sk.valid then
         return nil
     end
     local req, id = dns.pack_tcp(domain, ipv6 and 1 or 0)
     if not req then
-        srey.close(fd, skid)
+        srey.close(sk)
         return nil
     end
     -- C 层 dns_unpack 已剥离 2 字节长度前缀，resp 即裸 DNS 报文，可直接走 dns.unpack
-    local resp, resplens = srey.syn_send(fd, skid, req, #req, 1)
-    srey.close(fd, skid)
+    local resp, resplens = srey.syn_send(sk, req, #req, 1)
+    srey.close(sk)
     if not resp then
         return nil
     end

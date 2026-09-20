@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """按 lib/base/config.h 的开关拉取并编译第三方依赖,产物就位到树内。
 
+版本策略:deps/<name>/ 在就用它,不在才去拉远端最新的正式版。所以想固定版本就自己把
+源码放进 deps/<name>/(不必是 git 克隆),想升级就删掉该目录再跑一次。
+
 依赖源码克隆到 deps/<name>(不入版本控制),编译产物按仓库既有约定摆放:
     头文件 -> lib/<name>/     (与 -Ilib、MSVC 的 ../lib 对齐,#include <openssl/ssl.h> 直接命中)
     静态库 -> bin/            (与 -Lbin、MSVC 的 ../bin/ 对齐)
@@ -9,17 +12,24 @@
 
 用法(项目根目录运行):
     python3 tools/deps.py              # 按 config.h 的开关决定做哪几个
-    python3 tools/deps.py clean        # 删掉 deps/ 下的克隆与产物;要重编就先 clean
-    python3 tools/deps.py m32          # 指定目标架构(mk.sh 风格);不传就按系统探测
+    python3 tools/deps.py clean        # 清构建残留与产物,保留 deps/ 下的源码
+    python3 tools/deps.py m32          # 指定目标架构(m32/m64/arm64,也认 x86/x64/aarch64)
     python3 tools/deps.py debug        # 出 Debug 依赖(默认 Release)
 
-做哪几个依赖只由 config.h 的 WITH_* 决定,不能在命令行点名单个——产物名
-(libssl.a / mimalloc.lib 等)不含架构也不含 debug/release,bin/ 只能存一套,
-换架构或换 debug/release 都要先 clean 再整轮重来。
+做哪几个依赖只由 config.h 的 WITH_* 决定,不能在命令行点名单个。
+
+库名带变体后缀「<名字>[d]_<x86|x64|arm64>」,如 libssl_x64.a / libssld_x86.lib /
+libmimalloc_arm64.a。各变体在 bin/ 里互不覆盖,一个平台每种变体各编一次就够,
+换架构或换 debug/release 不用先 clean。链接侧按同一规则拼名字:POSIX 由 mk.sh 拼 -l,
+Windows 由 os.h 的 DEPS_LIB_SUFFIX 拼进两个 main.c 的 #pragma comment(lib)。
+头不带后缀,各变体共用一份(装的是公开头,最后一次构建装上去的那份)。
+
+Windows ARM64 的 OpenSSL 一律降到 /O1(见文件前部的 WIN_ARM64_OSSL_CFLAGS):
+MSVC 在 /O2 下会把它编坏,TLS 握手必崩,与 OpenSSL 版本无关。
 
 Windows 上 Debug 必须配 debug 依赖:mimalloc 是 Release(/MD)时会内嵌 MSVCRT,
-链进 /MDd 的 Debug 程序就是 LNK4098 两套 CRT。OpenSSL 静态库带 /Zl(不写默认库名),
-两种 CRT 都能链,给它 --debug 只是为了能跟进去调试。
+链进 /MDd 的 Debug 程序就是 LNK4098 两套 CRT。后缀把这条从"靠约定"变成"名字对不上直接链不到"。
+OpenSSL 静态库带 /Zl(不写默认库名),两种 CRT 都能链,给它 --debug 只是为了能跟进去调试。
 """
 from __future__ import annotations
 
@@ -32,24 +42,42 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows 控制台按 cp936/cp1252 编码,print 中文会抛 UnicodeEncodeError 把脚本打断;
+# errors="replace" 保证终端不支持时只显示成问号,不中断
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_H = ROOT / "lib" / "base" / "config.h"
 DEPS_DIR = ROOT / "deps"
 INC_DIR = ROOT / "lib"
 LIB_DIR = ROOT / "bin"
+# Windows ARM64 编 openssl 时额外塞给 Configure 的编译选项。
+# MSVC 在 /O2 下会把 openssl 编坏:TLS 握手解析扩展时把小整数当指针解引用,进程直接
+# 0xC0000005。3.5.5/3.5.8/4.0.2 都一样,换版本躲不掉,关汇编也没用;降到 /O1 即可,
+# 仍是优化构建,实测握手与全套测试都过。置空则不加,完全按上游默认走
+WIN_ARM64_OSSL_CFLAGS = "/O1"
 
-# 每个依赖:仓库地址 + 钉住的版本 + 由 config.h 哪个开关决定要不要做。
-# tag 缺省(或置 None)则不带 --branch,取远端默认分支
+# 每个依赖:仓库地址 + 由 config.h 哪个开关决定要不要做 + 版本 tag 的形状 + 清理规则。
+# 不钉版本:deps/<name>/ 不在就按 tag_re 挑远端最新的正式版拉,在就原样用。
+# 要固定版本,自己把源码放进 deps/<name>/ 即可,脚本不会去动它
 DEPS = {
     "openssl": {
         "url": "https://github.com/openssl/openssl.git",
-        "tag": "openssl-3.5.5",
         "flag": "WITH_SSL",
+        "tag_re": r"^openssl-(\d+)\.(\d+)\.(\d+)$",# 形如 openssl-3.5.8
+        # 产物散在源码树里,先让上游 distclean 清,再按模式扫它漏下的
+        "clean_make": ("distclean",),
+        "clean_globs": ("configdata.pm", "makefile", "Makefile",
+                        "**/*.obj", "**/*.o", "**/*.lib", "**/*.a", "**/*.pdb"),
     },
     "mimalloc": {
         "url": "https://github.com/microsoft/mimalloc.git",
-        "tag": "v3.5.0",
         "flag": "WITH_MIMALLOC",
+        "tag_re": r"^v(\d+)\.(\d+)\.(\d+)$",# 形如 v3.5.0
+        # cmake 的 out-of-source:产物全在 build/ 下,删掉就彻底,用不上上游的 clean 目标
+        "clean_dirs": ("build",),
     },
 }
 
@@ -62,6 +90,9 @@ ARCH_SPECS = {
     "m64": {"vc": "VC-WIN64A", "cflag": "-m64"},
     "arm64": {"vc": "VC-WIN64-ARM", "cflag": None},
 }
+# 库名后缀里用的架构词。与 ARCH_SPECS 的键分开:那边是 mk 脚本风格的入参(m32/m64),
+# 这边是文件名上看得懂的架构名(x86/x64),两套不混用
+SFX_ARCH = {"m32": "x86", "m64": "x64", "arm64": "arm64"}
 # 探测用:环境变量/CPU 名 -> ARCH_SPECS 的键。键一律小写,查表前先 lower()
 # ——VS2015 的 vcvarsall 设的是 Platform=X64(大写),大小写敏感会漏
 ARCH_ALIAS = {
@@ -146,6 +177,16 @@ def run(cmd, cwd=None, env=None):
                          shell=isinstance(cmd, str))
     if 0 != rc:
         raise RuntimeError(f"命令失败(rc={rc}): {printable}")
+
+
+def run_soft(cmd, cwd=None) -> int:
+    """给清理用:上游 clean 目标失败不该中断整轮,后面还有模式兜底"""
+    printable = " ".join(str(c) for c in cmd)
+    print(f"  $ {printable}")
+    rc = subprocess.call(cmd, cwd=str(cwd) if cwd else None)
+    if 0 != rc:
+        print(f"  [提示] {printable} 返回 {rc},改由模式清理接手")
+    return rc
 
 
 def out(cmd, cwd=None) -> str:
@@ -242,33 +283,61 @@ def read_flags() -> dict:
     return flags
 
 
+def latest_tag(spec: dict) -> str:
+    """问远端要最新的正式版 tag。按 tag_re 过滤,alpha/beta/rc 这类预发布天然不匹配。
+    版本号按数字逐段比,避免 3.5.10 被字符串序排到 3.5.9 前面"""
+    txt = out(["git", "ls-remote", "--tags", "--refs", spec["url"]])
+    if not txt:
+        return ""
+    pat = re.compile(spec["tag_re"])
+    best_ver, best_tag = None, ""
+    for line in txt.splitlines():
+        ref = line.rsplit("/", 1)[-1].strip()
+        m = pat.match(ref)
+        if not m:
+            continue
+        ver = tuple(int(x) for x in m.groups())
+        if best_ver is None or ver > best_ver:
+            best_ver, best_tag = ver, ref
+    return best_tag
+
+
 def ensure_clone(name: str, spec: dict) -> Path:
-    """目录不存在则克隆;已存在只核对版本,不动它——用户可能在里面改过东西"""
+    """目录在就原样用,不在才去拉远端最新的正式版。
+    这条就是版本策略:想固定版本把源码放进 deps/<name>/,想升级先 clean 再跑"""
     src = DEPS_DIR / name
-    tag = spec.get("tag")
     if src.is_dir():
         desc = out(["git", "describe", "--tags", "--always"], cwd=src)
-        if tag and desc and not desc.startswith(tag):
-            print(f"  [警告] {name} 已存在但版本是 {desc},期望 {tag};按现状使用")
-            print( "         要换版本请先 python3 tools/deps.py clean")
-        else:
-            print(f"  已有 {src.relative_to(ROOT)} ({desc or '未知版本'})")
+        print(f"  已有 {src.relative_to(ROOT)} ({desc or '非 git 源码'}),按现状使用")
+        print( "         要换版本:删掉该目录再跑,会拉远端最新正式版")
         return src
     DEPS_DIR.mkdir(parents=True, exist_ok=True)
+    tag = latest_tag(spec)
     cmd = ["git", "clone", "--depth", "1"]
     if tag:
+        print(f"  远端最新正式版: {tag}")
         cmd += ["--branch", tag]
+    else:
+        print(f"  [警告] 没问到 {name} 的版本 tag,退回远端默认分支")
     cmd += [spec["url"], str(src)]
     run(cmd)
     return src
 
 
-def copy_into(files: list, dest: Path, strip: str = "") -> list:
-    """strip 非空时从文件名里去掉那一段——上游给 debug 构建加的后缀在这里抹平"""
+def lib_sfx(arch: str, dbg: bool) -> str:
+    """库名后缀:debug 的 d 贴在名字后面,架构跟在下划线后,如 d_x64 / _arm64"""
+    return ("d" if dbg else "") + "_" + SFX_ARCH[arch]
+
+
+def copy_into(files: list, dest: Path, sfx: str, strip: str = "") -> list:
+    """按 <名字><sfx>.<扩展名> 落地。strip 非空时先去掉上游给 debug 加的那段,
+    免得 mimalloc-debug 变成 mimalloc-debugd_x64"""
     dest.mkdir(parents=True, exist_ok=True)
     done = []
     for f in files:
         name = f.name.replace(strip, "") if strip else f.name
+        stem, dot, ext = name.rpartition(".")
+        name = (stem + sfx + dot + ext) if dot else (name + sfx)
         shutil.copy2(str(f), str(dest / name))
         done.append(dest / name)
     return done
@@ -282,6 +351,9 @@ def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
     if dbg:
         opts.append("--debug")
     if IS_WIN:
+        # 理由见 WIN_ARM64_OSSL_CFLAGS
+        if "arm64" == arch and WIN_ARM64_OSSL_CFLAGS:
+            opts.append(WIN_ARM64_OSSL_CFLAGS)
         run(["perl", "Configure", ARCH_SPECS[arch]["vc"]] + opts, cwd=src)
     else:
         # 不指定时让 ./config 自己探测;显式指定才附加 -m32/-m64,口径同 mk.sh 的 CFLAGS
@@ -313,7 +385,7 @@ def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
             libs += sorted((prefix / d).glob(pat)) if (prefix / d).is_dir() else []
     if not libs:
         raise RuntimeError(f"在 {prefix} 下找不到 crypto/ssl 静态库")
-    return [dst_inc] + copy_into(libs, LIB_DIR)
+    return [dst_inc] + copy_into(libs, LIB_DIR, lib_sfx(arch, dbg))
 
 
 def build_mimalloc(src: Path, arch: str, forced: bool, dbg: bool) -> list:
@@ -350,8 +422,8 @@ def build_mimalloc(src: Path, arch: str, forced: bool, dbg: bool) -> list:
     if not libs:
         raise RuntimeError(f"在 {build} 下找不到 mimalloc 静态库")
     # Debug 时上游把库名改成 mimalloc-debug(见其 CMakeLists 的 mi_libname),
-    # 而 srey 的 pragma 只认 mimalloc.lib;bin/ 一次只放一套,拷过去时统一成规范名
-    return [dst_inc / "mimalloc.h"] + copy_into(libs, LIB_DIR, "-debug")
+    # 先抹掉它再按本项目的规则贴 d_<arch>,免得出来 mimalloc-debugd_x64
+    return [dst_inc / "mimalloc.h"] + copy_into(libs, LIB_DIR, lib_sfx(arch, dbg), "-debug")
 
 
 BUILDERS = {"openssl": build_openssl, "mimalloc": build_mimalloc}
@@ -365,56 +437,65 @@ ARTIFACTS = {
     "openssl": {
         "inc": INC_DIR / "openssl",
         "anchor": INC_DIR / "openssl" / "ssl.h",
-        "libs": ("libssl*.a", "libcrypto*.a", "*ssl*.lib", "*crypto*.lib"),
+        "libs": ("libssl{sfx}.a", "libcrypto{sfx}.a", "*ssl{sfx}.lib", "*crypto{sfx}.lib"),
     },
     "mimalloc": {
         "inc": INC_DIR / "mimalloc",
         "anchor": INC_DIR / "mimalloc" / "mimalloc.h",
-        "libs": ("libmimalloc*.a", "mimalloc*.lib"),
+        "libs": ("libmimalloc{sfx}.a", "mimalloc{sfx}.lib"),
     },
 }
 
 
-# bin/ 一次只放一套依赖,把"这套是什么变体"记下来。不记的话:已有 Release 产物时
-# 请求 debug 会被 already_done 判成"已完成"而跳过,静默拿 Release 顶包——
-# Windows 上就是 LNK4098 两套 CRT,正是这套工具链最初要解决的问题
-VARIANT_FILE = LIB_DIR / ".deps_variant"
+# 旧版本在 bin/ 下记过"这套依赖是什么变体",库名带后缀之后各变体可以共存,这个标记没用了。
+# 见到就顺手删掉(clean 里做),不再读也不再写
+STALE_VARIANT_FILE = LIB_DIR / ".deps_variant"
 
 
-def variant_str(arch: str, dbg: bool) -> str:
-    return f"{arch} {'debug' if dbg else 'release'}"
-
-
-def check_variant(want: str) -> None:
-    """标记缺失时放行(旧产物或手工摆的),只在明确不一致时拦"""
-    if not VARIANT_FILE.is_file():
-        return
-    have = VARIANT_FILE.read_text(encoding="utf-8", errors="replace").strip()
-    if have and have != want:
-        sys.stderr.write(f"bin/ 里已有的依赖是「{have}」,与本次请求的「{want}」不一致。\n"
-                         f"  产物名不含架构与 debug/release,一次只能存一套;\n"
-                         f"  先 python3 tools/deps.py clean 再重来\n")
-        sys.exit(1)
-
-
-def found_libs(name: str) -> list:
+def found_libs(name: str, sfx: str = "*") -> list:
+    """sfx 给具体后缀就是查某个变体,默认 * 是全部变体(clean 用)"""
     got = []
     for pat in ARTIFACTS[name]["libs"]:
-        got += sorted(LIB_DIR.glob(pat))
+        got += sorted(LIB_DIR.glob(pat.format(sfx=sfx)))
     return got
 
 
-def already_done(name: str) -> bool:
-    """头和库都在才算做过。只认头会在 bin/*.a 被清掉后误判成已完成"""
-    return ARTIFACTS[name]["anchor"].exists() and 0 != len(found_libs(name))
+def already_done(name: str, sfx: str) -> bool:
+    """头和库都在才算做过。只认头会在 bin/*.a 被清掉后误判成已完成。
+    查的是本次这个变体的库名,所以先编 release 再编 debug 不会被判成已完成"""
+    return ARTIFACTS[name]["anchor"].exists() and 0 != len(found_libs(name, sfx))
+
+
+def clean_src(name: str, spec: dict, src: Path) -> None:
+    """清源码树里的构建残留,保留源码本身(自己下载的源码没有 .git,所以不能靠 git clean)。
+    先跑上游的 clean 目标,再按模式扫一遍它漏下的——openssl 的 distclean 实测会留下
+    providers/legacy.lib 这类孤立产物,而残留的 .obj 会让下次构建走增量、编出混合版本的库"""
+    has_mk = any((src / n).is_file() for n in ("makefile", "Makefile"))
+    for tgt in spec.get("clean_make", ()):
+        # makefile 是 configure 生成的,没有它说明还没构建过,自然没有残留
+        if has_mk:
+            run_soft([make_cmd(), tgt], cwd=src)
+    for d in spec.get("clean_dirs", ()):
+        path = src / d
+        if path.is_dir():
+            print(f"  删除 {path.relative_to(ROOT)}")
+            rmtree(path)
+    left = 0
+    for pat in spec.get("clean_globs", ()):
+        for f in src.glob(pat):
+            if f.is_file():
+                f.unlink()
+                left += 1
+    if 0 != left:
+        print(f"  另清掉 {left} 个上游 clean 漏下的产物")
 
 
 def clean() -> int:
-    for n in DEPS:
+    for n, spec in DEPS.items():
         src = DEPS_DIR / n
         if src.is_dir():
-            print(f"删除 {src.relative_to(ROOT)}")
-            rmtree(src)
+            print(f"清理 {src.relative_to(ROOT)} 的构建残留(保留源码)")
+            clean_src(n, spec, src)
         inc = ARTIFACTS[n]["inc"]
         if inc.is_dir():
             print(f"删除 {inc.relative_to(ROOT)}")
@@ -422,11 +503,9 @@ def clean() -> int:
         for f in found_libs(n):
             print(f"删除 {f.relative_to(ROOT)}")
             f.unlink()
-    if VARIANT_FILE.is_file():
-        print(f"删除 {VARIANT_FILE.relative_to(ROOT)}")
-        VARIANT_FILE.unlink()
-    if DEPS_DIR.is_dir() and not any(DEPS_DIR.iterdir()):
-        DEPS_DIR.rmdir()
+    if STALE_VARIANT_FILE.is_file():
+        print(f"删除 {STALE_VARIANT_FILE.relative_to(ROOT)}(旧版本留下的变体标记,已废弃)")
+        STALE_VARIANT_FILE.unlink()
     return 0
 
 
@@ -442,13 +521,15 @@ def main() -> int:
         return usage()
     do_clean = "clean" in args
     dbg = "debug" in args
-    archs = [a for a in args if a in ARCH_SPECS]
-    if 1 < len(archs):
+    # 架构既认 mk 脚本的 m32/m64/arm64,也认 x86/x64/aarch64 这些同义写法,省得记两套词
+    archs = [ARCH_ALIAS.get(a.lower(), a) for a in args if a in ARCH_SPECS or a.lower() in ARCH_ALIAS]
+    if 1 < len(set(archs)):
         sys.stderr.write(f"架构参数只能给一个,收到: {', '.join(archs)}\n")
         return 1
     for a in args:
-        if a not in ("clean", "debug") and a not in ARCH_SPECS:
-            sys.stderr.write(f"未知参数 {a};可用: clean, debug, {', '.join(ARCH_SPECS)}\n")
+        if a not in ("clean", "debug") and a not in ARCH_SPECS and a.lower() not in ARCH_ALIAS:
+            sys.stderr.write(f"未知参数 {a};可用: clean, debug, "
+                             f"{', '.join(ARCH_SPECS)}(或 {', '.join(sorted(set(ARCH_ALIAS)))})\n")
             return 1
     arch_forced = 0 != len(archs)
     arch = archs[0] if arch_forced else detect_arch()
@@ -465,18 +546,25 @@ def main() -> int:
     if not todo:
         print("没有需要处理的依赖。改 lib/base/config.h 的 WITH_* 开关。")
         return 0
-    want = variant_str(arch, dbg)
-    check_variant(want)
+    sfx = lib_sfx(arch, dbg)
     print(f"目标架构: {arch}" + ("(指定)" if arch_forced else "(探测)")
-          + f"  构建类型: {'Debug' if dbg else 'Release'}")
+          + f"  构建类型: {'Debug' if dbg else 'Release'}"
+          + f"  库名后缀: {sfx}")
 
     report = []
     for name in todo:
         spec = DEPS[name]
-        print(f"===== {name} ({spec.get('tag') or '默认分支'}) =====")
-        if already_done(name):
-            print("  产物已存在,跳过(要重编先 clean)")
-            report.append((name, "已存在", [ARTIFACTS[name]["inc"]] + found_libs(name)))
+        # 版本取自 deps/<name>/ 的实际源码:不钉版本之后,"要拉哪个"已不是定值,
+        # 报出来的必须是这次真正在用的那份
+        src_dir = DEPS_DIR / name
+        if src_dir.is_dir():
+            ver = out(["git", "describe", "--tags", "--always"], cwd=src_dir) or "非 git 源码"
+        else:
+            ver = "待拉取"
+        print(f"===== {name} ({ver}) =====")
+        if already_done(name, sfx):
+            print(f"  该变体产物已存在,跳过(要重编先 clean)")
+            report.append((name, "已存在", [ARTIFACTS[name]["inc"]] + found_libs(name, sfx)))
             continue
         need_tools(BUILD_TOOLS[name])
         if "openssl" == name:
@@ -494,9 +582,8 @@ def main() -> int:
                 print(f"           -> {p.relative_to(ROOT)}")
             except ValueError:
                 print(f"           -> {p}")
-    LIB_DIR.mkdir(parents=True, exist_ok=True)
-    VARIANT_FILE.write_text(want + "\n", encoding="utf-8")
     print("\n提示: 头在 lib/ 下、库在 bin/ 下,mk.sh 与 .vcxproj 的搜索路径本来就覆盖这两处。")
+    print(f"      本次库名后缀是 {sfx},换架构或换 debug/release 直接再跑一次,不会互相覆盖。")
     return 0
 
 

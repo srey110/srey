@@ -193,37 +193,43 @@ static inline int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
     }
     return http_code_nobody((int32_t)code);
 }
-// 首行与字段行共用的单趟行扫描：扫到行尾 CRLF 为止，顺带记下行内出现的分隔符位置。
+// 首行与字段行共用的行扫描：扫到行尾 CRLF 为止，顺带记下行内出现的分隔符位置。
 // 只有 CRLF 才算收行，裸 CR、裸 LF 和 NUL 一律拒（RFC 9110 §5.5）：放行裸 LF 会与上游切出
 // 不同的头部边界，四道 TE/CL 走私守卫按字段名精确匹配，看不见折进值里的那条 TE。
 // mark 为要记录的分隔符（首行传 ' '，字段行传 ':'），按出现顺序最多记 nmark 个写入 marks，
 // 实到个数写回 *nout（行内超过 nmark 个时只记前 nmark 个，多出来的归调用方自行处理）。
-// 返回行尾 CRLF 的起始位置；未收到完整行或撞上非法字节返回 NULL
+// 返回行尾 CRLF 起始位置；未收完整行或撞上非法字节返 NULL，此时 marks 与 *nout 未定义
 static char *_http_scan_line(const char *head, size_t remain, char mark,
                              char **marks, int32_t nmark, int32_t *nout) {
-    const char *cur = head;
-    size_t scanned = 0;
+    // 用 memchr 而不是一趟逐字节：libc 的是向量化的，而这里是整个解析最热的地方
     *nout = 0;
-    while (scanned < remain) {
-        if (mark == *cur
-            && *nout < nmark) {
-            marks[(*nout)++] = (char *)cur;
-        }
-        if ('\r' == *cur) {
-            if (scanned + 1 >= remain
-                || '\n' != *(cur + 1)) {
-                return NULL;
-            }
-            return (char *)cur;
-        }
-        if ('\n' == *cur
-            || '\0' == *cur) {
-            return NULL;
-        }
-        cur++;
-        scanned++;
+    const char *cr = memchr(head, '\r', remain);
+    if (NULL == cr) {
+        return NULL;
     }
-    return NULL;
+    size_t linelens = (size_t)(cr - head);
+    if (linelens + 1 >= remain
+        || '\n' != *(cr + 1)) {
+        return NULL;
+    }
+    if (NULL != memchr(head, '\n', linelens)
+        || NULL != memchr(head, '\0', linelens)) {
+        return NULL;
+    }
+    const char *cur = head;
+    const char *pos;
+    size_t left = linelens;
+    while (*nout < nmark
+        && left > 0) {
+        pos = memchr(cur, mark, left);
+        if (NULL == pos) {
+            break;
+        }
+        marks[(*nout)++] = (char *)pos;
+        left -= (size_t)(pos - cur) + 1;
+        cur = pos + 1;
+    }
+    return (char *)cr;
 }
 // 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针。
 // 状态行 HTTP-version 在首段、请求行在末段，故两段须恰有一段是 HTTP-version：
@@ -588,9 +594,9 @@ void _http_udfree(ud_cxt *ud) {
     _http_pkfree(ud->context);
     ud->context = NULL;
 }
-void *http_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *http_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)fd; (void)skid; (void)size;
+    (void)ev; (void)sk; (void)size;
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
@@ -651,13 +657,13 @@ void http_pack_req(binary_ctx *bwriter, const char *method, const char *url) {
     ASSERTAB(NULL == strpbrk(method, "\r\n") && NULL == strpbrk(url, "\r\n"), "HTTP method/url must not contain CRLF.");
     binary_set_va(bwriter, "%s %s HTTP/1.1"FLAG_CRLF, method, url);
 }
-static int32_t _http_set_nobody_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+static int32_t _http_set_nobody_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)watcher;
     (void)data;
-    ud_cxt *ud = _evpub_get_ud(skctx);
+    ud_cxt *ud = _evpub_get_ud(evsk);
     // ud->status 是各协议共用的解析状态字节,写到非 HTTP 连接上就是把别人的状态机踢乱。
-    // 本接口收的是裸 fd(调用方可传任意 fd),故必须自己认协议,口径同 _prots_emit_close_tail
+    // 本接口收的是裸连接标识(调用方可传任意连接),故必须自己认协议,口径同 _prots_emit_close_tail
     if (PACK_HTTP != ud->pktype) {
         LOG_WARN("http set nobody on fd %d: not an http connection.", (int32_t)number);
         return 0;
@@ -670,13 +676,13 @@ static int32_t _http_set_nobody_cb(struct watcher_ctx *watcher, struct sock_ctx 
     ud->status = INIT_NOBODY;
     return 0;
 }
-int32_t http_set_method(ev_ctx *ev, SOCKET fd, uint64_t skid, const char *method) {
+int32_t http_set_method(ev_ctx *ev, sock_ctx *sk, const char *method) {
     // 目前只有 HEAD 需要登记,其余方法是空操作,连命令都不投。
     // 方法按 RFC 7231 §4.1 区分大小写,故直接 strcmp
     if (0 != strcmp(method, "HEAD")) {
         return ERR_OK;
     }
-    return ev_props(ev, fd, skid, _http_set_nobody_cb, NULL, NULL, (uint64_t)fd);
+    return ev_props(ev, sk, _http_set_nobody_cb, NULL, NULL, (uint64_t)sk->fd);
 }
 const char *http_code_status(int32_t code) {
     switch (code) {

@@ -28,11 +28,11 @@ ctx.FLAGS = {
 -- MORETOCOME 问包不问 mgo:check_flag，理由见 C 层 mongo_pack_check_flag
 local function _wdo(mgoctx, pack, size)
     local mgo = mgoctx.mongo
-    local fd, skid = mgo:sock_id()
+    local sk = mgo:sock_id()
     if mongo.pack_check_flag(pack, ctx.FLAGS.MORETOCOME) then
-        return srey.send(fd, skid, pack, size, 0), nil
+        return srey.send(sk, pack, size, 0), nil
     end
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack, _ = srey.syn_send(sk, pack, size, 0)
     if mgopack then
         -- 写命令同样带 lsid，续期口径与 _rdo 一致；MORETOCOME 那支没有应答，不续
         mgo:session_touch()
@@ -89,8 +89,8 @@ end
 -- 统一"发送 + 同步等待响应"(不受 MORETOCOME 影响)。组包被拒与网络失败都返回 nil,调用方判一次即可;
 -- 错误码校验留给调用方——有的直接把 mgopack 交给上层解析。镜像 C 层 _mongo_call 去掉 check_error 的部分
 local function _rdo(mgoctx, pack, size)
-    local fd, skid = mgoctx.mongo:sock_id()-- 锁内读,理由同 _wdo
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local sk = mgoctx.mongo:sock_id()-- 锁内读,理由同 _wdo
+    local mgopack, _ = srey.syn_send(sk, pack, size, 0)
     if mgopack then
         -- 应答回来了就说明服务端处理过这条命令；事务中每条命令都带着 lsid,
         -- 服务端那边的会话寿命已被延长,本地跟着记一次 expires_in 才准
@@ -280,17 +280,17 @@ end
 -- 认证走 srey.send + wait_handshaked 绕开了漏斗，而那期间连接处于 AUTH 态，
 -- 别人的普通命令挤进来会被当成认证响应解析——靠 conn_pub 把整段包在锁内
 function ctx:_connect()
-    local fd, skid = self.mongo:try_connect()
-    if INVALID_SOCK == fd then
+    local sk = self.mongo:try_connect()
+    if not sk.valid then
         return false
     end
-    if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
+    if not srey.wait_connect(sk, SSL_NAME.NONE ~= self.sslname or nil) then
         return false -- wait_connect 内已 close
     end
     -- 从此处往后失败需 close fd；用 sync_close 等复位完成再返回，避免旧连接异步 teardown 追上后清掉下一次 connect() 的新 fd
     local function _fail()
-        local cfd, cskid = self.mongo:sock_id()-- 现取:对端已断时 sk.fd 已被 teardown 复位为 INVALID,sync_close 内 guard 直接返回不空等
-        srey.sync_close(cfd, cskid)
+        local csk = self.mongo:sock_id()-- 现取:对端已断时 sk.fd 已被 teardown 复位为 INVALID,sync_close 内 guard 直接返回不空等
+        srey.sync_close(csk)
         return false
     end
     -- 解绑上一代事务会话，否则 pack_hello 及后续命令会带上旧的 lsid/txnNumber。
@@ -301,9 +301,9 @@ function ctx:_connect()
     if not mgopack then return _fail() end
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
     if self.user then
-        -- ev_ud_status 只在 fd 为 INVALID_SOCK 时失败,而 fd 上面已判过,这支实际不可达;
+        -- ev_ud_status 只在连接失效时失败,而上面已判过 sk.valid,这支实际不可达;
         -- 留着是为了它哪天新增失败原因时不漏 fd,所以走 _fail() 而不是裸 return
-        if not self.mongo:set_auth_status(fd, skid) then
+        if not self.mongo:set_auth_status(sk) then
             return _fail()
         end
         -- 不走 _pack_noflag：清零要盖住"组包+发送+等握手"整段(SCRAM 多次往返)，不是只盖组包。
@@ -311,8 +311,8 @@ function ctx:_connect()
         local aflags = self.mongo:clear_flag()
         local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
         local ok = false
-        if authpack and srey.send(fd, skid, authpack, authsize, 0) then
-            ok = srey.wait_handshaked(fd, skid)
+        if authpack and srey.send(sk, authpack, authsize, 0) then
+            ok = srey.wait_handshaked(sk)
         end
         self.mongo:set_flag(aflags)
         if not ok then return _fail() end
@@ -637,8 +637,8 @@ end
 
 -- conn_pub 的断开钩子：MongoDB 无专用断开命令，直接 close socket
 function ctx:_doquit()
-    local fd, skid = self.mongo:sock_id()
-    srey.sync_close(fd, skid)
+    local sk = self.mongo:sock_id()
+    srey.sync_close(sk)
 end
 
 return ctx

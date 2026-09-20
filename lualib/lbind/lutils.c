@@ -145,18 +145,18 @@ static int32_t _lutils_csprng_rand(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 获取指定 fd 对端的 IP 地址和端口号
+/// 获取指定连接对端的 IP 地址和端口号
 /// </summary>
-/// <param name="fd" type="integer">socket 文件描述符</param>
-/// <returns type="string?">对端 IP；fd 无效或获取失败时返回 nil</returns>
+/// <param name="sk" type="userdata">连接标识</param>
+/// <returns type="string?">对端 IP；连接无效或获取失败时返回 nil</returns>
 /// <returns type="integer?">对端端口；仅在第一个返回值非 nil 时有效</returns>
 static int32_t _lutils_remote_addr(lua_State *lua) {
     netaddr_ctx addr;
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    if (-1 == fd) {
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    if (sock_is_invalid(sk)) {
         return lpub_rtn_nil(lua, 2);
     }
-    if (ERR_OK != netaddr_remote(&addr, fd)) {
+    if (ERR_OK != netaddr_remote(&addr, sk->fd)) {
         return lpub_rtn_nil(lua, 2);
     }
     char ip[IP_LENS];

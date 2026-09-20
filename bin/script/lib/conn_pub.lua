@@ -7,7 +7,7 @@
 --   2) 实现三个钩子（都在锁内被调用，不要自己再进 self.serial，虽然可重入但没必要）：
 --      _connect()  建链 + 协议握手，成功返 true；代次与 established 由本模块统一维护，钩子内不要动
 --      _ping()     探活，服务端有正常响应返 true；不要在里面重连
---      _doquit()   发协议的断开命令并关 socket；连接已关（fd 为 INVALID_SOCK）时自行早退
+--      _doquit()   发协议的断开命令并关 socket；连接已关（sk.valid 为 false）时自行早退
 --
 -- 为什么句柄要在 init 里另存一份 self.conn：基类只在重连前取一次 sock_id，
 -- 而四家各自的字段名不同（self.mysql / self.pg / self.smtp / self.mongo），
@@ -83,8 +83,8 @@ end
 -- 排队者醒来拿到的自然是新连接
 function pub:_pingreconn()
     if not self:_ping() then
-        local fd, skid = self.conn:sock_id()
-        srey.sync_close(fd, skid)
+        local sk = self.conn:sock_id()
+        srey.sync_close(sk)
         return self:connect()
     end
     return true
@@ -107,9 +107,9 @@ end
 -- 子类要在 _doconnect / _doquit 之外关连接时必须走这里，否则 established 会留下
 -- "还连着"的假值，把 _doconnect 的短路变成对着已关的连接报成功
 function pub:_closereset()
-    local fd, skid = self.conn:sock_id()
-    if INVALID_SOCK ~= fd then
-        srey.sync_close(fd, skid)
+    local sk = self.conn:sock_id()
+    if sk.valid then
+        srey.sync_close(sk)
     end
     self.generation = self.generation + 1
     self.established = false

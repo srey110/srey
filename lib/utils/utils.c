@@ -9,6 +9,9 @@
 #ifdef OS_WIN
 #pragma comment(lib, "Dbghelp.lib" )
 #pragma comment(lib, "Bcrypt.lib")
+// MiniDump 提权用的 OpenProcessToken / AdjustTokenPrivileges 等出自这里。
+// WITH_SSL 时它由 OpenSSL 那组 pragma 顺带链上,关掉就缺,故本文件自己声明
+#pragma comment(lib, "advapi32.lib")
 static atomic_t _exindex = 0;
 static _locale_t g_numeric_c;
 #else

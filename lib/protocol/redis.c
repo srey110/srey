@@ -84,8 +84,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     int32_t pending = 0;
     int32_t fmterr = 0;
     binary_ctx fbuf, sdsbuf;
-    binary_init(&fbuf, NULL, 0, 0);
-    binary_init(&sdsbuf, NULL, 0, 0);
+    binary_init_write(&fbuf, 0, 0);
+    binary_init_write(&sdsbuf, 0, 0);
     /* 在 sdsbuf 头部预留 MAX_HEADER_RESERVE 字节，用于回填 "*n\r\n" 头部；
      * 只有扫描完所有参数确定 n 之后才能写入该头部。 */
     binary_set_skip(&sdsbuf, MAX_HEADER_RESERVE);
@@ -527,9 +527,9 @@ static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf, 
     _redis_add_node(rd, pk, open);
     return ERR_OK;
 }
-void *redis_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)fd; (void)skid; (void)client; (void)size;
+    (void)ev; (void)sk; (void)client; (void)size;
     int32_t rtn, prot;
     uint32_t cnt;
     redis_pack_ctx *pk;

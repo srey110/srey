@@ -1,9 +1,9 @@
 ﻿#include "protocol/custz.h"
 #include "protocol/custz_head.h"
 
-void *custz_unpack(struct ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)fd; (void)skid; (void)client;
+    (void)ev; (void)sk; (void)client;
     size_t hlens;
     int32_t rtn = ERR_FAILED;
     // 根据包类型调用对应的头部解码函数；子类型取自 ud，与另外九个 *_unpack 同签名
