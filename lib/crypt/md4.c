@@ -105,9 +105,8 @@ void md4_update(md4_ctx *md4, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
     // 已缓存字节数藏在位计数器低位,必须赶在累加本次长度之前取
     uint32_t index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
-    // 位数先按 64 位算再拆进 count[0]/count[1]。原先低位取 (uint32_t)lens << 3、
-    // 高位取 (uint32_t)lens >> 29,lens 一过 4GiB 高位就丢了;更要命的是那时分支判定
-    // 用截断值而末尾 memcpy 用完整 lens,能往 64 字节的 data[] 里写下整段输入
+    // 位数先按 64 位算再拆进 count[0]/count[1]:直接对 lens 做 32 位移位会在
+    // lens 过 4GiB 时丢高位,分支判定拿到截断值而 memcpy 用完整 lens,写爆 data[64]
     uint64_t bits = (uint64_t)lens << 3;
     uint32_t low = (uint32_t)bits;
     if ((md4->count[0] += low) < low) {

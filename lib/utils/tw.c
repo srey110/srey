@@ -31,7 +31,7 @@ void tw_free(tw_ctx *ctx) {
     /* 排空 reqadd 队列并释放节点（tw 主线程已 join，单消费者，批量出队） */
     tw_node_ctx *nodes[TW_REQADD_BATCH];
     uint32_t n, i;
-    while ((n = fsqu_pop_sc_batch(&ctx->reqadd, nodes, TW_REQADD_BATCH)) > 0) {
+    while ((n = twq_pop_sc_batch(&ctx->reqadd, nodes, TW_REQADD_BATCH)) > 0) {
         for (i = 0; i < n; i++) {
             if (NULL != nodes[i]->_freecb) {
                 nodes[i]->_freecb(&nodes[i]->ud);
@@ -39,7 +39,7 @@ void tw_free(tw_ctx *ctx) {
             FREE(nodes[i]);
         }
     }
-    fsqu_free(&ctx->reqadd);
+    twq_free(&ctx->reqadd);
     /* 释放节点池 */
     pool_free(&ctx->node_pool);
     cond_free(&ctx->cond);
@@ -47,7 +47,7 @@ void tw_free(tw_ctx *ctx) {
 }
 /*  注意：reqadd 容量 4096，常规负载下不会触底 —— 排空是信号驱动而非 tick 驱动：
  *  pending 由 0→1 的那次 push 立刻唤醒轮线程，队列不会随轮线程睡得久而积压。
- *  极端突发或时间轮主线程被严重抢占时触底，fsqu_push 降级到无界溢出层，不阻塞调用方。*/
+ *  极端突发或时间轮主线程被严重抢占时触底，twq_push 降级到无界溢出层，不阻塞调用方。*/
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud) {
     if (0 == timeout) {
         _cb(ud);
@@ -58,7 +58,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     node->expires = timer_cur_ms(&ctx->timer) + timeout;
     node->_cb = _cb;
     node->_freecb = _freecb;
-    fsqu_push(&ctx->reqadd, &node);
+    twq_push(&ctx->reqadd, &node);
     /* 仅当标志由 0→1 时（首批新任务）才唤醒轮线程，批量入队后续节点不重复 signal */
     if (ATOMIC_CAS(&ctx->reqadd_pending, 0, 1)) {
         mutex_lock(&ctx->mu);
@@ -134,7 +134,7 @@ static void _tw_run(tw_ctx *ctx) {
 // 批量排空 reqadd 队列，将节点分发到对应时间轮槽位
 static void _tw_insert_all(tw_ctx *ctx, tw_node_ctx **nodes) {
     uint32_t n, i;
-    while ((n = fsqu_pop_sc_batch(&ctx->reqadd, nodes, TW_REQADD_BATCH)) > 0) {
+    while ((n = twq_pop_sc_batch(&ctx->reqadd, nodes, TW_REQADD_BATCH)) > 0) {
         for (i = 0; i < n; i++) {
             list_push_tail(_tw_getslot(ctx, nodes[i]), &nodes[i]->node);
         }
@@ -208,8 +208,8 @@ void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks) {
     mutex_init(&ctx->mu);
     cond_init(&ctx->cond);
     timer_init(&ctx->timer);
-    fsqu_init(&ctx->reqadd, sizeof(tw_node_ctx *), 0 == capacity ? 4 * ONEK : capacity);
-    pool_init(&ctx->node_pool, sizeof(tw_node_ctx), TW_NODE_POOL_MAX, TW_NODE_POOL_MAX / 4, 1, NULL);
+    twq_init(&ctx->reqadd, 0 == capacity ? 4 * ONEK : capacity);
+    pool_init(&ctx->node_pool, sizeof(tw_node_ctx), TW_NODE_POOL_MAX, TW_NODE_POOL_MAX / 4, POOL_THSAFE, NULL);
     ZERO(ctx->tv1, sizeof(ctx->tv1));
     ZERO(ctx->tv2, sizeof(ctx->tv2));
     ZERO(ctx->tv3, sizeof(ctx->tv3));

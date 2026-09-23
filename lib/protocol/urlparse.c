@@ -77,7 +77,7 @@ static char *_url_rchr(char *cur, char what, size_t lens) {
 }
 // 以 what 字符为界解析两段字段（buf1:buf2），返回指向 what 之后的指针。
 // last 非 0 时以最后一个 what 为界：userinfo 按 RFC 3986 §3.2 就该取最后一个 '@'，
-// 取第一个会把 "user@host@evil.com" 的 host 认成 "host@evil.com"，与浏览器/curl 不一致
+// 取第一个会把 "user@host@evil.com" 的 host 认成 "host@evil.com"
 static inline char *_url_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size_t lens, int32_t last) {
     char *pos = (0 != last) ? _url_rchr(cur, what, lens) : memchr(cur, what, lens);
     if (NULL == pos) {

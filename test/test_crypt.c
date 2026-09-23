@@ -8,6 +8,136 @@ static const char _SALT16[16] = {
 };
 static const char _SALT8[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
 
+/* xxhash 官方向量：期望值取自 xxHash tests/sanity_test_vectors.h（按 len、seed 查），
+ * 输入为 _xxh_testbuf 生成的数据；XXH3 的 seed 0x9E3779B185EBCA8D 是测试程序的常量，不是算法里的 PRIME64_1 */
+#define XXH_TESTBUF_LENS 2367
+typedef struct { uint32_t len; uint32_t seed; uint32_t h; } _xxh32_vec;
+typedef struct { uint32_t len; uint64_t seed; uint64_t h; } _xxh64_vec;
+typedef struct { uint32_t len; uint64_t seed; uint64_t low; uint64_t high; } _xxh128_vec;
+static const _xxh32_vec _XXH32_VEC[] = {
+    {    0, 0x00000000U, 0x02CC5D05U },
+    {    0, 0x9E3779B1U, 0x36B78AE7U },
+    {    1, 0x00000000U, 0xCF65B03EU },
+    {    1, 0x9E3779B1U, 0xB4545AA4U },
+    {    4, 0x00000000U, 0xA9DE7CE9U },
+    {    4, 0x9E3779B1U, 0x2BAAFE83U },
+    {   14, 0x00000000U, 0x1208E7E2U },
+    {   14, 0x9E3779B1U, 0x6AF1D1FEU },
+    {   16, 0x00000000U, 0x93BA3759U },
+    {   16, 0x9E3779B1U, 0xA94FC1E1U },
+    {   17, 0x00000000U, 0x89FDC23EU },
+    {   17, 0x9E3779B1U, 0xC9910739U },
+    {   32, 0x00000000U, 0xD89829ECU },
+    {   32, 0x9E3779B1U, 0xA5C44467U },
+    {  222, 0x00000000U, 0x5BD11DBDU },
+    {  222, 0x9E3779B1U, 0x58803C5FU },
+    { 2367, 0x00000000U, 0x4C8A9773U },
+    { 2367, 0x9E3779B1U, 0x6D5366F6U }
+};
+static const _xxh64_vec _XXH64_VEC[] = {
+    {    0, 0x0000000000000000ULL, 0xEF46DB3751D8E999ULL },
+    {    0, 0x000000009E3779B1ULL, 0xAC75FDA2929B17EFULL },
+    {    1, 0x0000000000000000ULL, 0xE934A84ADB052768ULL },
+    {    1, 0x000000009E3779B1ULL, 0x5014607643A9B4C3ULL },
+    {    3, 0x0000000000000000ULL, 0xFF7E1959CB50794AULL },
+    {    3, 0x000000009E3779B1ULL, 0xAA8584E83660F7D1ULL },
+    {    4, 0x0000000000000000ULL, 0x9136A0DCA57457EEULL },
+    {    4, 0x000000009E3779B1ULL, 0xCAAB286BD8E9FDB5ULL },
+    {    8, 0x0000000000000000ULL, 0xCDBCF538E71D1348ULL },
+    {    8, 0x000000009E3779B1ULL, 0xFE0C047A5353CDACULL },
+    {   14, 0x0000000000000000ULL, 0x8282DCC4994E35C8ULL },
+    {   14, 0x000000009E3779B1ULL, 0xC3BD6BF63DEB6DF0ULL },
+    {   16, 0x0000000000000000ULL, 0x98C90B57FDFCB55CULL },
+    {   16, 0x000000009E3779B1ULL, 0xC900AD2D536B607EULL },
+    {   17, 0x0000000000000000ULL, 0x0D39A2D051A30C2CULL },
+    {   17, 0x000000009E3779B1ULL, 0x495CD68A647C7A22ULL },
+    {   24, 0x0000000000000000ULL, 0xF75A6DEA42DC5BF4ULL },
+    {   24, 0x000000009E3779B1ULL, 0x8B7C67EB59778E22ULL },
+    {   32, 0x0000000000000000ULL, 0x18B216492BB44B70ULL },
+    {   32, 0x000000009E3779B1ULL, 0xB3F33BDF93ADE409ULL },
+    {  222, 0x0000000000000000ULL, 0xB641AE8CB691C174ULL },
+    {  222, 0x000000009E3779B1ULL, 0x20CB8AB7AE10C14AULL },
+    { 2367, 0x0000000000000000ULL, 0xA82418DDEC0EA581ULL },
+    { 2367, 0x000000009E3779B1ULL, 0xA36A93C18052673AULL }
+};
+static const _xxh64_vec _XXH3_64_VEC[] = {
+    {    0, 0x0000000000000000ULL, 0x2D06800538D394C2ULL },
+    {    0, 0x9E3779B185EBCA8DULL, 0xA8A6B918B2F0364AULL },
+    {    1, 0x0000000000000000ULL, 0xC44BDFF4074EECDBULL },
+    {    1, 0x9E3779B185EBCA8DULL, 0x032BE332DD766EF8ULL },
+    {    3, 0x0000000000000000ULL, 0x54247382A8D6B94DULL },
+    {    3, 0x9E3779B185EBCA8DULL, 0x634B8990B4976373ULL },
+    {    4, 0x0000000000000000ULL, 0xE5DC74BC51848A51ULL },
+    {    4, 0x9E3779B185EBCA8DULL, 0xAA2E7ECCB0C8F747ULL },
+    {    8, 0x0000000000000000ULL, 0x24CCC9ACAA9F65E4ULL },
+    {    8, 0x9E3779B185EBCA8DULL, 0x8F973410999B8F6BULL },
+    {   12, 0x0000000000000000ULL, 0xA713DAF0DFBB77E7ULL },
+    {   12, 0x9E3779B185EBCA8DULL, 0xE7303E1B2336DE0EULL },
+    {   16, 0x0000000000000000ULL, 0x981B17D36C7498C9ULL },
+    {   16, 0x9E3779B185EBCA8DULL, 0x663F29333B4DB6B1ULL },
+    {   17, 0x0000000000000000ULL, 0x796F5ACD3A60F862ULL },
+    {   17, 0x9E3779B185EBCA8DULL, 0xF3EC5067F4306DB3ULL },
+    {  128, 0x0000000000000000ULL, 0xFCFF24126754D861ULL },
+    {  128, 0x9E3779B185EBCA8DULL, 0x73FDE75280646649ULL },
+    {  129, 0x0000000000000000ULL, 0x98F1B0A679A2CA29ULL },
+    {  129, 0x9E3779B185EBCA8DULL, 0x21FFFDBCA099C844ULL },
+    {  240, 0x0000000000000000ULL, 0x81C3C2B67F568CCFULL },
+    {  240, 0x9E3779B185EBCA8DULL, 0xCC0F58C27EF3D8EEULL },
+    {  241, 0x0000000000000000ULL, 0xC5A639ECD2030E5EULL },
+    {  241, 0x9E3779B185EBCA8DULL, 0xDDA9B0A161D4829AULL },
+    {  403, 0x0000000000000000ULL, 0xCDEB804D65C6DEA4ULL },
+    {  403, 0x9E3779B185EBCA8DULL, 0x6259F6ECFD6443FDULL },
+    {  512, 0x0000000000000000ULL, 0x617E49599013CB6BULL },
+    {  512, 0x9E3779B185EBCA8DULL, 0x3CE457DE14C27708ULL },
+    { 2048, 0x0000000000000000ULL, 0xDD59E2C3A5F038E0ULL },
+    { 2048, 0x9E3779B185EBCA8DULL, 0x66F81670669ABABCULL },
+    { 2099, 0x0000000000000000ULL, 0xC6B9D9B3FC9AC765ULL },
+    { 2099, 0x9E3779B185EBCA8DULL, 0x184F316843663974ULL },
+    { 2240, 0x0000000000000000ULL, 0x6E73A90539CF2948ULL },
+    { 2240, 0x9E3779B185EBCA8DULL, 0x757BA8487D1B5247ULL },
+    { 2367, 0x0000000000000000ULL, 0xCB37AEB9E5D361EDULL },
+    { 2367, 0x9E3779B185EBCA8DULL, 0xD2DB3415B942B42AULL }
+};
+static const _xxh128_vec _XXH3_128_VEC[] = {
+    {    0, 0x0000000000000000ULL, 0x6001C324468D497FULL, 0x99AA06D3014798D8ULL },
+    {    0, 0x000000009E3779B1ULL, 0x5444F7869C671AB0ULL, 0x92220AE55E14AB50ULL },
+    {    0, 0x9E3779B185EBCA8DULL, 0xA986DFC5D7605BFEULL, 0x00FEAA732A3CE25EULL },
+    {    1, 0x0000000000000000ULL, 0xC44BDFF4074EECDBULL, 0xA6CD5E9392000F6AULL },
+    {    1, 0x000000009E3779B1ULL, 0xB53D5557E7F76F8DULL, 0x89B99554BA22467CULL },
+    {    3, 0x0000000000000000ULL, 0x54247382A8D6B94DULL, 0x20EFC49FF02422EAULL },
+    {    3, 0x000000009E3779B1ULL, 0xF173D14DAD53A5DCULL, 0x48F82C2FE0ABD468ULL },
+    {    4, 0x0000000000000000ULL, 0x2E7D8D6876A39FE9ULL, 0x970D585AC632BF8EULL },
+    {    4, 0x000000009E3779B1ULL, 0xEF78D5C489CFE10BULL, 0x7170492A2AA08992ULL },
+    {    8, 0x0000000000000000ULL, 0x64C69CAB4BB21DC5ULL, 0x47A7F080D82BB456ULL },
+    {    8, 0x000000009E3779B1ULL, 0x5F462F3DE2E8B940ULL, 0xF959013232655FF1ULL },
+    {   12, 0x0000000000000000ULL, 0x061A192713F69AD9ULL, 0x6E3EFD8FC7802B18ULL },
+    {   12, 0x000000009E3779B1ULL, 0x9BE9F9A67F3C7DFBULL, 0xD7E09D518A3405D3ULL },
+    {   16, 0x0000000000000000ULL, 0x562980258A998629ULL, 0xC68C368ECF8A9C05ULL },
+    {   16, 0x000000009E3779B1ULL, 0xB07EEEAB4C56392BULL, 0x3767C90D0CDBB93DULL },
+    {   17, 0x0000000000000000ULL, 0xABBC12D11973D7DBULL, 0x955FA78643ED3669ULL },
+    {   17, 0x000000009E3779B1ULL, 0x3CC9FF6CAE79ACCBULL, 0x99E7C628E75D6431ULL },
+    {  128, 0x0000000000000000ULL, 0xEBB15E34A7FB5AB1ULL, 0x39992220E045260AULL },
+    {  128, 0x000000009E3779B1ULL, 0x1453819941D93C1DULL, 0x98801187DF8D614DULL },
+    {  129, 0x0000000000000000ULL, 0x86C9E3BC8F0A3B5CULL, 0x03815FC91F1B30B6ULL },
+    {  129, 0x000000009E3779B1ULL, 0xB37B716F66B40F02ULL, 0xB7F7349A47B39E56ULL },
+    {  240, 0x0000000000000000ULL, 0x5C9AAE94C8EBE5A0ULL, 0xAA4202DAA2769DC8ULL },
+    {  240, 0x000000009E3779B1ULL, 0xCA19087F1D335DAEULL, 0xDA888104BEAE5AE0ULL },
+    {  241, 0x0000000000000000ULL, 0xC5A639ECD2030E5EULL, 0x99A80ECF0ECFC647ULL },
+    {  241, 0x000000009E3779B1ULL, 0x5927E3637BAC8149ULL, 0x4BF2229C3A8FC3C3ULL },
+    {  403, 0x0000000000000000ULL, 0xCDEB804D65C6DEA4ULL, 0x1B6DE21E332DD73DULL },
+    {  403, 0x000000009E3779B1ULL, 0x1FEF87BD75DBE404ULL, 0x1EF41459552CB839ULL },
+    {  512, 0x0000000000000000ULL, 0x617E49599013CB6BULL, 0x18D2D110DCC9BCA1ULL },
+    {  512, 0x000000009E3779B1ULL, 0x545F610E9F5A78ECULL, 0x06EEB0D56508040FULL },
+    { 2048, 0x0000000000000000ULL, 0xDD59E2C3A5F038E0ULL, 0xF736557FD47073A5ULL },
+    { 2048, 0x000000009E3779B1ULL, 0x230D43F30206260BULL, 0x7FB03F7E7186C3EAULL },
+    { 2048, 0x9E3779B185EBCA8DULL, 0x66F81670669ABABCULL, 0x23CC3A2E75EBAAEAULL },
+    { 2367, 0x0000000000000000ULL, 0xCB37AEB9E5D361EDULL, 0xE89C0F6FF369B427ULL },
+    { 2367, 0x000000009E3779B1ULL, 0x6F5360AE69C2F406ULL, 0xD23AAE4B76C31ECBULL }
+};
+// 流式分块大小：覆盖 16/32/256 字节缓冲边界与 1024 字节块边界，最后一项为整块一次 update
+static const size_t _XXH_CHUNKS[] = { 1, 7, 63, 64, 65, 255, 256, 257, 1024, (size_t)-1 };
+static uint8_t _xxh_buf[XXH_TESTBUF_LENS];
+
 /* =======================================================================
  * base64 编解码
  * ======================================================================= */
@@ -2348,6 +2478,11 @@ static void test_digest_attr_table(CuTest *tc) {
         { DG_SHA512, SHA512_BLOCK_SIZE, 128, sizeof(sha512_ctx),
           "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
           "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f" },
+        /* xxhash：key_block 为 0（hmac_init 据此拒绝），abc 列是 seed=0 的大端 canonical */
+        { DG_XXH32,  XXH32_BLOCK_SIZE,  0,   sizeof(xxh32_ctx),
+          "32d153ff" },
+        { DG_XXH64,  XXH64_BLOCK_SIZE,  0,   sizeof(xxh64_ctx),
+          "44bc2cf5ad770999" },
     };
     digest_ctx d;
     char hash[DG_BLOCK_SIZE];
@@ -2734,6 +2869,180 @@ static void test_des3_null_key(CuTest *tc) {
     cipher_free(&c);
 }
 
+/* =======================================================================
+ * xxhash —— 官方向量、流式与一次性一致、非对齐、(NULL,0)、digest 路径
+ * ======================================================================= */
+// 测试数据生成器（同 xxHash cli/xsum_sanity_check.c）：gen 从 PRIME32 起，每字节取最高 8 位后乘 PRIME64
+static const uint8_t *_xxh_testbuf(void) {
+    uint64_t gen = 0x9E3779B1ULL;
+    size_t i;
+    for (i = 0; i < XXH_TESTBUF_LENS; i++) {
+        _xxh_buf[i] = (uint8_t)(gen >> 56);
+        gen *= 0x9E3779B185EBCA8DULL;
+    }
+    return _xxh_buf;
+}
+// 按 chunk 分块流式计算；每次 update 后都 digest 一次并与前缀的一次性结果比对，
+// 既验证中途 digest 不改 ctx（之后还能继续 update），也验证各缓冲边界
+static uint32_t _xxh32_stream(CuTest *tc, const uint8_t *buf, size_t len, uint32_t seed, size_t chunk) {
+    xxh32_ctx ctx;
+    size_t off = 0;
+    size_t n;
+    xxh32_init(&ctx, seed);
+    while (off < len) {
+        n = len - off < chunk ? len - off : chunk;
+        xxh32_update(&ctx, buf + off, n);
+        off += n;
+        CuAssertTrue(tc, xxh32(buf, off, seed) == xxh32_digest(&ctx));
+    }
+    return xxh32_digest(&ctx);
+}
+static uint64_t _xxh64_stream(CuTest *tc, const uint8_t *buf, size_t len, uint64_t seed, size_t chunk) {
+    xxh64_ctx ctx;
+    size_t off = 0;
+    size_t n;
+    xxh64_init(&ctx, seed);
+    while (off < len) {
+        n = len - off < chunk ? len - off : chunk;
+        xxh64_update(&ctx, buf + off, n);
+        off += n;
+        CuAssertTrue(tc, xxh64(buf, off, seed) == xxh64_digest(&ctx));
+    }
+    return xxh64_digest(&ctx);
+}
+// 同一个 xxh3_ctx 同时出 64 位与 128 位结果
+static void _xxh3_stream(CuTest *tc, const uint8_t *buf, size_t len, uint64_t seed, size_t chunk,
+    uint64_t *h64, xxh128_t *h128) {
+    xxh3_ctx ctx;
+    xxh128_t a, b;
+    size_t off = 0;
+    size_t n;
+    xxh3_init(&ctx, seed);
+    while (off < len) {
+        n = len - off < chunk ? len - off : chunk;
+        xxh3_update(&ctx, buf + off, n);
+        off += n;
+        CuAssertTrue(tc, xxh3_64(buf, off, seed) == xxh3_digest64(&ctx));
+        a = xxh3_128(buf, off, seed);
+        b = xxh3_digest128(&ctx);
+        CuAssertTrue(tc, a.low == b.low && a.high == b.high);
+    }
+    *h64 = xxh3_digest64(&ctx);
+    *h128 = xxh3_digest128(&ctx);
+}
+static void test_xxh32_vectors(CuTest *tc) {
+    const uint8_t *buf = _xxh_testbuf();
+    char msg[64];
+    size_t i, c;
+    for (i = 0; i < ARRAY_SIZE(_XXH32_VEC); i++) {
+        SNPRINTF(msg, sizeof(msg), "xxh32 len=%u seed=%08x", _XXH32_VEC[i].len, _XXH32_VEC[i].seed);
+        CuAssert(tc, msg, _XXH32_VEC[i].h == xxh32(buf, _XXH32_VEC[i].len, _XXH32_VEC[i].seed));
+        for (c = 0; c < ARRAY_SIZE(_XXH_CHUNKS); c++) {
+            CuAssert(tc, msg, _XXH32_VEC[i].h == _xxh32_stream(tc, buf, _XXH32_VEC[i].len, _XXH32_VEC[i].seed, _XXH_CHUNKS[c]));
+        }
+    }
+}
+static void test_xxh64_vectors(CuTest *tc) {
+    const uint8_t *buf = _xxh_testbuf();
+    char msg[64];
+    size_t i, c;
+    for (i = 0; i < ARRAY_SIZE(_XXH64_VEC); i++) {
+        SNPRINTF(msg, sizeof(msg), "xxh64 len=%u seed=%016llx", _XXH64_VEC[i].len, (unsigned long long)_XXH64_VEC[i].seed);
+        CuAssert(tc, msg, _XXH64_VEC[i].h == xxh64(buf, _XXH64_VEC[i].len, _XXH64_VEC[i].seed));
+        for (c = 0; c < ARRAY_SIZE(_XXH_CHUNKS); c++) {
+            CuAssert(tc, msg, _XXH64_VEC[i].h == _xxh64_stream(tc, buf, _XXH64_VEC[i].len, _XXH64_VEC[i].seed, _XXH_CHUNKS[c]));
+        }
+    }
+}
+static void test_xxh3_64_vectors(CuTest *tc) {
+    const uint8_t *buf = _xxh_testbuf();
+    char msg[64];
+    uint64_t h64;
+    xxh128_t h128;
+    size_t i, c;
+    for (i = 0; i < ARRAY_SIZE(_XXH3_64_VEC); i++) {
+        SNPRINTF(msg, sizeof(msg), "xxh3_64 len=%u seed=%016llx", _XXH3_64_VEC[i].len, (unsigned long long)_XXH3_64_VEC[i].seed);
+        CuAssert(tc, msg, _XXH3_64_VEC[i].h == xxh3_64(buf, _XXH3_64_VEC[i].len, _XXH3_64_VEC[i].seed));
+        for (c = 0; c < ARRAY_SIZE(_XXH_CHUNKS); c++) {
+            _xxh3_stream(tc, buf, _XXH3_64_VEC[i].len, _XXH3_64_VEC[i].seed, _XXH_CHUNKS[c], &h64, &h128);
+            CuAssert(tc, msg, _XXH3_64_VEC[i].h == h64);
+        }
+    }
+}
+static void test_xxh3_128_vectors(CuTest *tc) {
+    const uint8_t *buf = _xxh_testbuf();
+    char msg[64];
+    uint64_t h64;
+    xxh128_t h128;
+    size_t i, c;
+    for (i = 0; i < ARRAY_SIZE(_XXH3_128_VEC); i++) {
+        SNPRINTF(msg, sizeof(msg), "xxh3_128 len=%u seed=%016llx", _XXH3_128_VEC[i].len, (unsigned long long)_XXH3_128_VEC[i].seed);
+        h128 = xxh3_128(buf, _XXH3_128_VEC[i].len, _XXH3_128_VEC[i].seed);
+        CuAssert(tc, msg, _XXH3_128_VEC[i].low == h128.low && _XXH3_128_VEC[i].high == h128.high);
+        for (c = 0; c < ARRAY_SIZE(_XXH_CHUNKS); c++) {
+            _xxh3_stream(tc, buf, _XXH3_128_VEC[i].len, _XXH3_128_VEC[i].seed, _XXH_CHUNKS[c], &h64, &h128);
+            CuAssert(tc, msg, _XXH3_128_VEC[i].low == h128.low && _XXH3_128_VEC[i].high == h128.high);
+        }
+    }
+}
+static void test_xxh_misc(CuTest *tc) {
+    // 覆盖各算法的短路径、中键路径和 XXH3 长路径（>240）
+    const size_t lens[] = { 0, 3, 15, 17, 33, 129, 241, 1025, XXH_TESTBUF_LENS - 1 };
+    const uint8_t *buf = _xxh_testbuf();
+    uint64_t al[XXH_TESTBUF_LENS / 8 + 1];
+    xxh32_ctx c32;
+    xxh64_ctx c64;
+    xxh3_ctx c3;
+    digest_ctx d;
+    char out[DG_BLOCK_SIZE];
+    char want[XXH64_BLOCK_SIZE];
+    xxh128_t a, b;
+    size_t i;
+    /* 非对齐：从 buf+1 算，要等于先 memmove 到对齐地址再算 */
+    for (i = 0; i < ARRAY_SIZE(lens); i++) {
+        memmove(al, buf + 1, lens[i]);
+        CuAssertTrue(tc, xxh32(buf + 1, lens[i], 7) == xxh32(al, lens[i], 7));
+        CuAssertTrue(tc, xxh64(buf + 1, lens[i], 7) == xxh64(al, lens[i], 7));
+        CuAssertTrue(tc, xxh3_64(buf + 1, lens[i], 7) == xxh3_64(al, lens[i], 7));
+        a = xxh3_128(buf + 1, lens[i], 7);
+        b = xxh3_128(al, lens[i], 7);
+        CuAssertTrue(tc, a.low == b.low && a.high == b.high);
+    }
+    /* (NULL, 0) 等于空串，一次性与流式都不对 NULL 做指针运算（UBSan 构建下才看得出） */
+    CuAssertTrue(tc, 0x02CC5D05U == xxh32(NULL, 0, 0));
+    CuAssertTrue(tc, xxh32("", 0, 0) == xxh32(NULL, 0, 0));
+    CuAssertTrue(tc, 0xEF46DB3751D8E999ULL == xxh64(NULL, 0, 0));
+    CuAssertTrue(tc, 0x2D06800538D394C2ULL == xxh3_64(NULL, 0, 0));
+    a = xxh3_128(NULL, 0, 0);
+    CuAssertTrue(tc, 0x6001C324468D497FULL == a.low && 0x99AA06D3014798D8ULL == a.high);
+    xxh32_init(&c32, 0);
+    xxh32_update(&c32, NULL, 0);
+    CuAssertTrue(tc, 0x02CC5D05U == xxh32_digest(&c32));
+    xxh64_init(&c64, 0);
+    xxh64_update(&c64, NULL, 0);
+    CuAssertTrue(tc, 0xEF46DB3751D8E999ULL == xxh64_digest(&c64));
+    xxh3_init(&c3, 0);
+    xxh3_update(&c3, NULL, 0);
+    CuAssertTrue(tc, 0x2D06800538D394C2ULL == xxh3_digest64(&c3));
+    /* 已有数据时再喂 (NULL, 0) 不改变结果 */
+    xxh3_update(&c3, buf, 300);
+    xxh3_update(&c3, NULL, 0);
+    CuAssertTrue(tc, xxh3_64(buf, 300, 0) == xxh3_digest64(&c3));
+    /* digest 路径：固定 seed=0，输出大端 canonical 字节 */
+    digest_init(&d, DG_XXH64);
+    digest_update(&d, buf, XXH_TESTBUF_LENS);
+    CuAssertTrue(tc, XXH64_BLOCK_SIZE == digest_final(&d, out));
+    pack_integer(want, xxh64(buf, XXH_TESTBUF_LENS, 0), XXH64_BLOCK_SIZE, 0);
+    CuAssertTrue(tc, 0 == memcmp(want, out, XXH64_BLOCK_SIZE));
+    digest_free(&d);
+    digest_init(&d, DG_XXH32);
+    digest_update(&d, buf, XXH_TESTBUF_LENS);
+    CuAssertTrue(tc, XXH32_BLOCK_SIZE == digest_final(&d, out));
+    pack_integer(want, xxh32(buf, XXH_TESTBUF_LENS, 0), XXH32_BLOCK_SIZE, 0);
+    CuAssertTrue(tc, 0 == memcmp(want, out, XXH32_BLOCK_SIZE));
+    digest_free(&d);
+}
+
 void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_base64);
     SUITE_ADD_TEST(suite, test_base64_invalid);
@@ -2765,6 +3074,11 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_sha1_nist);
     SUITE_ADD_TEST(suite, test_sha256_nist);
     SUITE_ADD_TEST(suite, test_sha512_nist);
+    SUITE_ADD_TEST(suite, test_xxh32_vectors);
+    SUITE_ADD_TEST(suite, test_xxh64_vectors);
+    SUITE_ADD_TEST(suite, test_xxh3_64_vectors);
+    SUITE_ADD_TEST(suite, test_xxh3_128_vectors);
+    SUITE_ADD_TEST(suite, test_xxh_misc);
     SUITE_ADD_TEST(suite, test_aes_direct);
     SUITE_ADD_TEST(suite, test_des_direct);
     SUITE_ADD_TEST(suite, test_scram_handshake);

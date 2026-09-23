@@ -1,54 +1,101 @@
 ﻿#ifndef SPSC_H_
 #define SPSC_H_
 
-#include "containers/cont_pub.h"
+#include "base/macro.h"
 
-//无锁单生产者单消费者有界队列 (SPSC Lock-Free Queue)
-//无锁 SPSC 队列上下文
-typedef struct spsc_ctx {
-    ringq_ctx rq; //公共队列头，字段说明见 cont_pub.h；每槽只存数据
-} spsc_ctx;
-/// <summary>
-/// 初始化队列
-/// </summary>
-/// <param name="q">spsc_ctx</param>
-/// <param name="elsize">单元素字节数（按值存储，须 大于 0）</param>
-/// <param name="capacity">期望容量，0 则使用默认值，非 2 的幂自动向上取整，下限为 2</param>
-void spsc_init(spsc_ctx *q, size_t elsize, uint32_t capacity);
-/// <summary>
-/// 释放队列内部内存，不释放 q 本身
-/// </summary>
-/// <param name="q">spsc_ctx</param>
-void spsc_free(spsc_ctx *q);
-/// <summary>
-/// 非阻塞入队。仅允许单一生产者线程调用，并发调用 trypush 行为未定义。
-/// </summary>
-/// <param name="q">spsc_ctx</param>
-/// <param name="data">指向待入队元素的指针，不得为 NULL（拷贝 elsize 字节）</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 队列已满</returns>
-int32_t spsc_trypush(spsc_ctx *q, const void *data);
-/// <summary>
-/// 出队，非阻塞。仅允许单一消费者线程调用，并发调用 pop 行为未定义。
-/// </summary>
-/// <param name="q">spsc_ctx</param>
-/// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
-int32_t spsc_pop(spsc_ctx *q, void *out);
-/// <summary>
-/// 返回当前队列元素数量的近似值：只会高估不会低估(上限 capacity)，不会把有元素报成 0。同 mpq_size
-/// </summary>
-/// <param name="q">spsc_ctx</param>
-/// <returns>元素数量，取值 [0, capacity]</returns>
-static inline uint32_t spsc_size(spsc_ctx *q) {
-    return _ringq_size(&q->rq);
-}
-/// <summary>
-/// 返回队列最大容量
-/// </summary>
-/// <param name="q">spsc_ctx</param>
-/// <returns>最大容量</returns>
-static inline uint32_t spsc_capacity(const spsc_ctx *q) {
-    return q->rq.capacity;
+// 无锁单生产者单消费者有界队列。元素类型编译期固化，故搬运是结构体赋值而非运行期 memcpy。
+// 生产者与消费者各自缓存对端的下标，只有缓存显示"满/空"时才真去读对方那条 cache line——
+// 不缓存的话每次 push/pop 都要拉一次对端缓存行，是这类队列最主要的一致性开销。
+// 两个 cache 各由一侧独占读写，故是普通变量、不需要原子。
+//
+// 典型用法：
+//   typedef struct { int a; } my_elem;
+//   SPSC_DECL(my_q, my_elem)
+//   my_q q; my_q_init(&q, 1024);
+//   my_elem e = { 1 };
+//   if (ERR_OK == my_q_trypush(&q, &e)) { ... }  // 满则 ERR_FAILED
+//   my_elem out;
+//   if (ERR_OK == my_q_pop(&q, &out)) { ... }    // 空则 ERR_FAILED
+//   my_q_free(&q);
+//
+// 契约：只允许一个生产者线程调 trypush、一个消费者线程调 pop；size/empty 两侧都可调，
+//       但拿到的是保守快照（只会把空报成非空，不会把非空报成空）。
+
+#define SPSC_DEFAULT_CAP 1024 // 默认容量
+
+// 入参写 T const * 而不是 const T *:T 是指针类型时,后者会被解析成指向 const 的指针。
+// SPSC_DECL(name, T)：name 生成的类型名，T 元素类型
+#define SPSC_DECL(name, T)                                                     \
+typedef struct {                                                                \
+    T *cell;                                                                    \
+    uint32_t capacity;                                                          \
+    uint32_t mask;                                                              \
+    CACHELINE_ALIGN atomic_t enq;      /* 生产者独占写 */                        \
+    uint32_t deq_cache;                /* 生产者私有:消费者下标的缓存 */          \
+    CACHELINE_ALIGN atomic_t deq;      /* 消费者独占写 */                        \
+    uint32_t enq_cache;                /* 消费者私有:生产者下标的缓存 */          \
+} name;                                                                         \
+static inline void name##_init(name *q, uint32_t capacity) {                    \
+    ASSERTAB(NULL != q, ERRSTR_NULLP);                                          \
+    q->capacity = (0 == capacity) ? SPSC_DEFAULT_CAP                            \
+                                  : pow2_ceil(capacity < 2 ? 2 : capacity);     \
+    q->mask = q->capacity - 1;                                                  \
+    ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)q->capacity, "byte size overflow.");\
+    MALLOC(q->cell, sizeof(T) * (size_t)q->capacity);                           \
+    ATOMIC_SET(&q->enq, 0);                                                     \
+    ATOMIC_SET(&q->deq, 0);                                                     \
+    q->deq_cache = 0;                                                           \
+    q->enq_cache = 0;                                                           \
+}                                                                               \
+static inline void name##_free(name *q) {                                       \
+    if (NULL == q) {                                                            \
+        return;                                                                 \
+    }                                                                           \
+    FREE(q->cell);                                                              \
+    q->capacity = 0;                                                            \
+    q->mask = 0;                                                                \
+}                                                                               \
+static inline uint32_t name##_capacity(const name *q) { return q->capacity; }   \
+static inline uint32_t name##_elsize(const name *q) { (void)q; return (uint32_t)sizeof(T); }\
+/* 保守快照:先读 deq 后读 enq,只会把空报成非空,不会把非空报成空 */                \
+static inline uint32_t name##_size(name *q) {                                   \
+    uint32_t deq = (uint32_t)ATOMIC_GET(&q->deq);                               \
+    return (uint32_t)ATOMIC_GET(&q->enq) - deq;                                 \
+}                                                                               \
+static inline int32_t name##_empty(name *q) {                                   \
+    uint32_t deq = (uint32_t)ATOMIC_GET(&q->deq);                               \
+    return (uint32_t)ATOMIC_GET(&q->enq) == deq;                                \
+}                                                                               \
+/* 入队(单生产者):独占 enq 无需 CAS。先看本地缓存的 deq,缓存说满了才真读对方。       \
+   写数据后用 release 发布——不许上面那次赋值下沉,消费者 acquire 到新 enq 就一定看得到 */\
+static inline int32_t name##_trypush(name *q, T const *data) {                 \
+    uint32_t enq = (uint32_t)ATOMIC_GET_RELAXED(&q->enq);                               \
+    if (enq - q->deq_cache >= q->capacity) {                                    \
+        q->deq_cache = (uint32_t)ATOMIC_GET(&q->deq);                           \
+        if (enq - q->deq_cache >= q->capacity) {                                \
+            return ERR_FAILED;                                                  \
+        }                                                                       \
+    }                                                                           \
+    q->cell[enq & q->mask] = *data;                                            \
+    ATOMIC_SET_RELEASE(&q->enq, enq + 1);                                       \
+    return ERR_OK;                                                              \
+}                                                                               \
+/* 出队(单消费者):独占 deq 无需 CAS。缓存说空了才真读对方。                        \
+   ATOMIC_GET(enq) 是 acquire,取数据能看到生产者发布前写入的内容;                  \
+   推进 deq 用 release,不许上面那次读下沉到它之后,否则槽可能已被覆盖 */            \
+static inline int32_t name##_pop(name *q, T *out) {                             \
+    uint32_t deq;                                                               \
+    ASSERTAB(NULL != out, ERRSTR_NULLP);                                        \
+    deq = (uint32_t)ATOMIC_GET_RELAXED(&q->deq);                                        \
+    if (deq == q->enq_cache) {                                                  \
+        q->enq_cache = (uint32_t)ATOMIC_GET(&q->enq);                           \
+        if (deq == q->enq_cache) {                                              \
+            return ERR_FAILED;                                                  \
+        }                                                                       \
+    }                                                                           \
+    *out = q->cell[deq & q->mask];                                              \
+    ATOMIC_SET_RELEASE(&q->deq, deq + 1);                                       \
+    return ERR_OK;                                                              \
 }
 
 #endif//SPSC_H_

@@ -5,7 +5,7 @@ typedef struct close_flush_args {
     int32_t *ok;
 }close_flush_args;
 
-// 小包取 4KB:远小于任何平台的默认发送缓冲,ev_send 那步就全部写进内核
+// 小包取 4KB:远小于任何平台的默认发送缓冲,冲刷时一次就能全部写进内核
 // 大包取 4MB:必然超出发送缓冲,用来验证"丢尾巴但照样关得掉"
 #define SMALL_BYTES (4 * 1024)
 #define BIG_BYTES   (4 * 1024 * 1024)
@@ -15,6 +15,7 @@ static atomic_t g_recv_bytes;// server 端累计收到字节(整 task 内共享)
 static atomic_t g_close_cnt;// server 端 _net_close 触发次数
 static atomic_t g_close_erro_bad;// client 端 CLOSE 的 erro 不是 LOCAL 的次数
 static atomic_t g_srv_erro_bad;// server 端 CLOSE 的 erro 不是 ORDERLY 的次数
+static atomic_t g_perr_srv_erro;// 第三段 server 端 CLOSE 的 erro + 1,0 表示还没到
 
 static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {
@@ -26,7 +27,14 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     ATOMIC_ADD(&g_recv_bytes, (atomic_t)size);
 }
 static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)task; (void)sk; (void)pktype;
+    (void)task; (void)sk;
+    // 第三段(PACK_HTTP)只记 server 端的档位;client 端是被对端关的,档位不定
+    if (PACK_HTTP == pktype) {
+        if (!client) {
+            ATOMIC_SET(&g_perr_srv_erro, (atomic_t)erro + 1);
+        }
+        return;
+    }
     // client 端是本 task 自己 ev_close 的,erro 必是 LOCAL。这条才是"erro 真被投递"的判据:
     // ORDERLY 恰好等于 0,只看 server 端分不出"传了 ORDERLY"和"形参加了但没传值"
     if (client) {
@@ -67,7 +75,7 @@ static void _startup(task_ctx *task) {
             LOG_ERROR("close_flush iter %d: coro_connect failed.", i);
             return;
         }
-        // 小包 + 立即 close:ev_send 当场写进内核,server 端应收全
+        // 小包 + 立即 close:数据由关闭冲刷或轮末冲刷送出(见头文件),server 端应收全
         MALLOC(data, SMALL_BYTES);
         memset(data, 'X', SMALL_BYTES);
         ev_send(&task->loader->netev, &sk, data, SMALL_BYTES, 0);
@@ -119,8 +127,36 @@ static void _startup(task_ctx *task) {
                   (int32_t)ATOMIC_GET(&g_close_cnt), erro_bad, ROUNDS + 1);
         return;
     }
+    // 第三段:头部超长又没有 CRLFCRLF,server 端在事件线程的收包回调里就地关连接,
+    // 档位必须是 LOCAL。IOCP 上关完还会重投一次收,那次必然失败,不能把它记成对端中止
+    uint16_t perr_port = (uint16_t)(arg->port + 5);
+    ATOMIC_SET(&g_perr_srv_erro, 0);
+    if (ERR_OK != task_listen(task, PACK_HTTP, NULL, "127.0.0.1", perr_port, &lsnid, 0)) {
+        LOG_ERROR("close_flush parse error: task_listen %u failed.", perr_port);
+        return;
+    }
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", perr_port, 0, NULL, &sk)) {
+        LOG_ERROR("close_flush parse error: coro_connect failed.");
+        return;
+    }
+    MALLOC(data, HTTP_MAX_HEADLENS * 2);
+    memset(data, 'Y', HTTP_MAX_HEADLENS * 2);
+    ev_send(&task->loader->netev, &sk, data, HTTP_MAX_HEADLENS * 2, 0);
+    wait_ms = 0;
+    while (0 == ATOMIC_GET(&g_perr_srv_erro) && wait_ms < 10000) {
+        if (task_isclosing(task)) {
+            return;
+        }
+        coro_sleep(task, 50);
+        wait_ms += 50;
+    }
+    if ((atomic_t)CLOSE_TYPE_LOCAL + 1 != ATOMIC_GET(&g_perr_srv_erro)) {
+        LOG_ERROR("close_flush parse error: server erro+1 = %d (want %d).",
+                  (int32_t)ATOMIC_GET(&g_perr_srv_erro), CLOSE_TYPE_LOCAL + 1);
+        return;
+    }
     *(arg->ok) = 1;
-    LOG_INFO("close_flush tested (%d x %dKB intact, %dMB truncated but closed).",
+    LOG_INFO("close_flush tested (%d x %dKB intact, %dMB truncated but closed, parse error closes as LOCAL).",
              ROUNDS, SMALL_BYTES / 1024, BIG_BYTES / 1024 / 1024);
 }
 void task_close_flush_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

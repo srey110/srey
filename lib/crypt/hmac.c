@@ -11,7 +11,7 @@ void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens)
     digest_init(&hmac->inside_init, dtype);
     digest_init(&hmac->outside_init, dtype);
     size_t key_block = hmac->inside.attr->key_block;
-    ASSERTAB(key_block <= HMAC_MAX_KEY_LENS, "key block exceeds stack buffer.");
+    ASSERTAB(0 < key_block && key_block <= HMAC_MAX_KEY_LENS, "digest type not usable for hmac or key block exceeds stack buffer.");
     char *key_used;
     char key_temp[DG_BLOCK_SIZE], block_ipad[HMAC_MAX_KEY_LENS], block_opad[HMAC_MAX_KEY_LENS];
     key_used = (char *)key;

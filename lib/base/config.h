@@ -12,7 +12,6 @@
 #ifndef MEMORY_TRACE
     #define MEMORY_TRACE 0
 #endif
-//下面三个都留 #ifndef：构建配置(如 .vcxproj 的 ARM64)要能从命令行 -D 覆盖，口径同上面的 MEMORY_CHECK
 //是否启用mimalloc
 #ifndef WITH_MIMALLOC
     #define WITH_MIMALLOC 0
@@ -36,11 +35,6 @@
 
 #define KEEPALIVE_TIME      30 // TCP keepalive 空闲时间（秒）
 #define KEEPALIVE_INTERVAL  2 // TCP keepalive 探测间隔（秒）
-#define CMD_MAX_NREAD       128 // 命令单次读取最大数量
-#define QUEUE_OVERLOAD_RATIO 3 // 队列积压告警初始阈值 = 容量 / RATIO，触发后翻倍，空队列重置
-#define EVENT_WAIT_TIMEOUT  100 // 事件循环等待超时（毫秒）
-#define EVENT_CHANGES_CNT   128 // 事件变更队列初始容量
-#define INIT_EVENTS_CNT     256 // 初始事件槽位数量
 // 单次读向 buffer 要多大空间（字节），不是缓冲上限。读满说明 socket 里还有,
 // 下一轮按它翻倍再要一次、到 2 倍封顶（见 buffer_from_sock），大块接收的读次数因此减半
 #define MAX_RECV_SIZE       4096
@@ -58,17 +52,7 @@
 #define MAX_SEND_NIOV       16 // scatter/gather 发送最大 iov 数量
 #define MAX_EXPAND_NIOV     4 // scatter/gather 接收最大 iov 数量
 #define MAX_SENDQ_CNT       ONEK // 单 sock 发送队列上限(buf 数)；超限 TCP 丢数据并断连、UDP 丢包；0 表示不限制
-#define INIT_SENDBUF_LEN    32 // 发送缓冲区初始长度
-#define WB_WARN_INIT_SIZE   (1024 * 1024) // 单 sock 发送缓冲字节告警首阈值；触发后翻倍（1MB→2MB→4MB...），队列清空后复位；0 表示禁用
-#define SHRINK_TIME         10000 // 缓冲区收缩检测周期（毫秒）
-#define SHRINK_BUSY      4, 5 // pool_shrink 的 load_trend busy 判定比例 num/den:空闲骤降至上次的 4/5 以下视为忙,跳过本次收缩
-#define QTN_MS              500 // 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
 #define SSL_WPEND_MAX_MS    30000 // 挂起的 SSL 写零进展上限（毫秒），超限判死断连；须 > 0，取 0 不是关闭而是所有挂起写立刻判死
-#define EVENT_CHECK_INTERVAL 5 // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
-#define SPIN_CNT             32 // spin_init 的自旋次数,仅 Windows 生效(临界区退回内核前先试这么多次);Linux/macOS 传了也不用
-#define SPIN_YIELD_CNT       64 // spin_backoff 等对方释放时自旋这么多次仍等不到就 THREAD_YIELD 让出 CPU
-#define WORKER_IDLE_SPIN   1024 // worker 睡前空转等下一批的次数,0 关闭;空转期间生产者直投不唤醒,见 _loader_worker_wakeup。
-                                // 调大吞吐还能涨一点但每核效率掉,1024 是单 task/多 task 两头都不吃亏的点
 
 //内核 reuseport 对 TCP 监听做不做连接级分发。为 1 时 accept 出的连接直接留在 accept 它的
 //event 线程,省掉一次跨线程投递;为 0 时按 fd 取模重新分配。
@@ -84,13 +68,12 @@
         #define REUSEPORT_BALANCED 0
     #endif
 #endif
-
-//FSQU_MPQ 根据test里面的benchmark(bench_mpq)决定
-//判断fsqu队列使用mpq 还是queue+spin
+// fsqu 的快路径用哪个,根据 test 里的 benchmark(bench_mpq)决定。
+// 非 0 都是"无锁环 + 满了降级到无界溢出层",0 是整条队列一把自旋锁
 #if defined(OS_DARWIN) || defined(OS_BSD)
-    #define FSQU_MPQ 0 //queue+spin
+    #define FSQU_FAST_MODEL 0 //queue+spin
 #else
-    #define FSQU_MPQ 1 //mpq
+    #define FSQU_FAST_MODEL 1 //mpq 无锁有界环;2 = bbq 无锁分块环(容量上限 2^20,超了 init 中止,见 bbq.h)
 #endif
 
 #endif//CONFIG_H_

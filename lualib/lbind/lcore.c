@@ -17,7 +17,7 @@ typedef struct _task_entry {
     char  *name; // strdup 的任务名，匿名 task 为 NULL；押进 Lua 表后即 FREE
     name_t handle;
 }_task_entry;
-
+ARR_DECL(tentry_arr, _task_entry)
 
 /// <summary>
 /// 向当前 task 注册一个一次性超时事件
@@ -625,7 +625,7 @@ static void _lcore_task_list_collect(const char *name, name_t handle, void *arg)
     if (!EMPTYSTR(name)) {
         entry.name = dup_zero(name, strlen(name));
     }
-    array_push_back((array_ctx *)arg, &entry);
+    tentry_arr_push_back((tentry_arr *)arg, &entry);
 }
 /// <summary>
 /// 枚举当前 loader 已注册的所有 task（C 层列表）
@@ -633,14 +633,14 @@ static void _lcore_task_list_collect(const char *name, name_t handle, void *arg)
 /// <returns type="TaskListItem[]">task 列表；无 task 时为空表。匿名 task（task_new 时名字为空）
 /// 只交出 handle、不带 name</returns>
 static int32_t _lcore_task_list(lua_State *lua) {
-    array_ctx arr;
-    array_init(&arr, sizeof(_task_entry), 128);
+    tentry_arr arr;
+    tentry_arr_init(&arr, 128);
     loader_task_each(g_loader, _lcore_task_list_collect, &arr);
     lua_newtable(lua);
     _task_entry *entry;
-    uint32_t n = array_size(&arr);
+    uint32_t n = tentry_arr_size(&arr);
     for (uint32_t i = 0; i < n; i++) {
-        entry = (_task_entry *)array_at(&arr, (int32_t)i);
+        entry = tentry_arr_at(&arr, (int32_t)i);
         lua_newtable(lua);
         if (NULL != entry->name) {
             lua_pushstring(lua, entry->name);
@@ -651,7 +651,7 @@ static int32_t _lcore_task_list(lua_State *lua) {
         lua_setfield(lua, -2, "handle");
         lua_rawseti(lua, -2, (lua_Integer)i + 1);
     }
-    array_free(&arr);
+    tentry_arr_free(&arr);
     return 1;
 }
 /// <summary>

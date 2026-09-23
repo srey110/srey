@@ -293,7 +293,7 @@ static int32_t _ltrend_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 采样当前值并基于趋势判断负载是否繁忙。阈值缺省取 config.h 的 SHRINK_BUSY，
+/// 采样当前值并基于趋势判断负载是否繁忙。阈值缺省取 utils/pool.h 的 SHRINK_BUSY，
 /// 与 C 侧各池的收缩判据同源——调用方不必也不该再抄一份字面量
 /// </summary>
 /// <param name="self" type="userdata">负载趋势对象</param>

@@ -21,39 +21,41 @@ typedef enum msgdata_kind {
 static THREAD_LOCAL int32_t _emit_cnt;
 
 // 将任务名指针插入任务哈希表（重复时触发断言）
-static inline void _task_map_set(struct hashmap *map, task_ctx *task) {
+static inline void _task_map_set(task_map *map, task_ctx *task) {
     name_t *key = &task->handle;
-    ASSERTAB(NULL == hashmap_set(map, &key), "task name repeat.");
+    ASSERTAB(NULL == task_map_set(map, &key), "task name repeat.");
 }
 // 从任务哈希表中删除指定任务名，返回被删除的元素指针
-static inline void *_task_map_del(struct hashmap *map, name_t handle) {
+static inline void *_task_map_del(task_map *map, name_t handle) {
     name_t *key = &handle;
-    return (void *)hashmap_delete(map, &key);
+    return (void *)task_map_delete(map, &key);
 }
 // 按任务名从哈希表中查找并返回 task_ctx，未找到返回 NULL
-static inline task_ctx *_task_map_get(struct hashmap *map, name_t handle) {
+static inline task_ctx *_task_map_get(task_map *map, name_t handle) {
     name_t *key = &handle;
-    name_t **ptr = (name_t **)hashmap_get(map, &key);
+    name_t **ptr = task_map_get(map, &key);
     if (NULL == ptr) {
         return NULL;
     }
     return UPCAST(*ptr, task_ctx, handle);
 }
-// 写入 字符串名 → 句柄 索引；name 借用 task->name（调用方持 lckmaptasks 写锁，且已查重）
-static inline void _task_name_map_set(struct hashmap *map, char *name, name_t handle) {
+// 写入 字符串名 → 句柄 索引，重名返回 ERR_FAILED 且不改表；name 借用 task->name（调用方持 lckmaptasks 写锁）
+static inline int32_t _task_name_map_add(tname_map *map, char *name, name_t handle) {
+    int32_t found;
     name_handle_entry e = { .name = name, .handle = handle };
-    hashmap_set(map, &e);
+    tname_map_get_set(map, &e, &found);
+    return found ? ERR_FAILED : ERR_OK;
 }
 // 按字符串名查句柄，未找到返回 INVALID_TNAME（调用方持 lckmaptasks 读/写锁）
-static inline name_t _task_name_map_get(struct hashmap *map, const char *name) {
+static inline name_t _task_name_map_get(tname_map *map, const char *name) {
     name_handle_entry q = { .name = (char *)name, .handle = INVALID_TNAME };
-    name_handle_entry *r = (name_handle_entry *)hashmap_get(map, &q);
+    name_handle_entry *r = tname_map_get(map, &q);
     return (NULL == r) ? INVALID_TNAME : r->handle;
 }
 // 删除 字符串名 索引项（元素借用 name，无 elfree；调用方持 lckmaptasks 写锁）
-static inline void _task_name_map_del(struct hashmap *map, const char *name) {
+static inline void _task_name_map_del(tname_map *map, const char *name) {
     name_handle_entry q = { .name = (char *)name, .handle = INVALID_TNAME };
-    hashmap_delete(map, &q);
+    tname_map_delete(map, &q);
 }
 // 处理启动消息：调用任务的 _task_startup 回调
 static void _task_handle_startup(task_ctx *task, message_ctx *msg) {
@@ -188,7 +190,7 @@ void _message_run(task_ctx *task, message_ctx *msg) {
 }
 // 默认消息分发函数（直接调用 _message_run）
 static void _task_message_dispatch(task_dispatch_arg *arg) {
-    _message_run(arg->task, &arg->msg);
+    _message_run(arg->task, arg->msg);
 }
 task_ctx *task_new(loader_ctx *loader, const char *name, uint32_t quecap,
                    _task_dispatch_cb _dispatch, free_cb _argfree, void *arg) {
@@ -211,8 +213,8 @@ task_ctx *task_new(loader_ctx *loader, const char *name, uint32_t quecap,
     }
     task->_arg_free = _argfree;
     task->arg = arg;
-    fsqu_init(&task->qumsg, sizeof(message_ctx), 0 == quecap ? TASK_QUEUE_CAP : quecap);
-    tda_init(&task->tda, (size_t)(fsqu_capacity(&task->qumsg) / QUEUE_OVERLOAD_RATIO));
+    msgq_init(&task->qumsg, 0 == quecap ? TASK_QUEUE_CAP : quecap);
+    tda_init(&task->tda, (size_t)(msgq_capacity(&task->qumsg) / QUEUE_OVERLOAD_RATIO));
     return task;
 }
 void task_free(task_ctx *task) {
@@ -222,10 +224,10 @@ void task_free(task_ctx *task) {
     }
     // ref 归零进入 task_free，无其他持有者；qumsg 单消费者排空
     message_ctx msg;
-    while (ERR_OK == fsqu_pop_sc(&task->qumsg, &msg)) {
+    while (ERR_OK == msgq_pop_sc(&task->qumsg, &msg)) {
         _message_clean(&msg);
     }
-    fsqu_free(&task->qumsg);
+    msgq_free(&task->qumsg);
     FREE(task->name);
     FREE(task);
 }
@@ -237,15 +239,12 @@ int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_c
     rwlock_distr_wrlock(&task->loader->lckmaptasks);
     // 字符串名重名拒绝（句柄由 createid 保证唯一，maptasks 由 _task_map_set 的断言兜底）
     if (NULL != task->name
-        && INVALID_TNAME != _task_name_map_get(task->loader->mapnames, task->name)) {
+        && ERR_OK != _task_name_map_add(task->loader->mapnames, task->name, task->handle)) {
         rwlock_distr_wrunlock(&task->loader->lckmaptasks);
         LOG_ERROR("task name %s repeat.", task->name);
         return ERR_FAILED;
     }
     _task_map_set(task->loader->maptasks, task);
-    if (NULL != task->name) {
-        _task_name_map_set(task->loader->mapnames, task->name, task->handle);
-    }
     _task_message_post(task, &startup);
     // loader 正在广播关闭时（closing=1），此 task 晚于广播注册，
     // 不会收到全局 CLOSING，须在此立即补发，确保 task 能正常退出

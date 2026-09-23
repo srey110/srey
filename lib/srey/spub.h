@@ -4,6 +4,7 @@
 #include "protocol/prots.h"
 #include "event/event.h"
 #include "containers/sarray.h"
+#include "containers/hashmap.h"
 #include "thread/rwlock_distr.h"
 #include "thread/spinlock.h"
 #include "thread/mutex.h"
@@ -27,6 +28,8 @@ typedef enum request_type {
 typedef struct loader_ctx loader_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct task_dispatch_arg task_dispatch_arg;
+FSQU_DECL(taskq, task_ctx *)
+FSQU_DECL(msgq, message_ctx)
 
 typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);// 消息分发回调
 typedef void(*_task_startup_cb)(task_ctx *task);// 任务启动回调
@@ -71,7 +74,7 @@ typedef struct worker_ctx {
     atomic_t spinning;     // 非 0 表示正空转等活：生产者直投即可，不必发唤醒
     loader_ctx *loader;    // 所属 loader
     pthread_t thread_worker; // 工作线程句柄
-    fsqu_ctx qutasks;      // 待调度任务队列，按值存 task_ctx*；入队时已 incref，由队列持有到 worker 跑完
+    taskq qutasks;      // 待调度任务队列，按值存 task_ctx*；入队时已 incref，由队列持有到 worker 跑完
     mutex_ctx mutex;       // 配合条件变量使用的互斥锁
     cond_ctx cond;         // 工作线程休眠/唤醒条件变量
 }worker_ctx;
@@ -80,6 +83,15 @@ typedef struct name_handle_entry {
     char *name;
     name_t handle;
 }name_handle_entry;
+// 元素是指向 task_ctx.handle 的指针,故 **e 才是句柄本身。
+// name_t 是 uint64_t,比较不能用减法(差值溢出会翻转符号)
+#define _TASK_MAP_HASH(e) hash_u64(**(e))
+#define _TASK_MAP_CMP(a, b) ((**(a) > **(b)) - (**(a) < **(b)))
+HASHMAP_DECL(task_map, name_t *, _TASK_MAP_HASH, _TASK_MAP_CMP)
+// 按 name 字符串散列/比较；元素借用 task_ctx.name，无 elfree
+#define _TNAME_MAP_HASH(e) hash((e)->name, strlen((e)->name))
+#define _TNAME_MAP_CMP(a, b) strcmp((a)->name, (b)->name)
+HASHMAP_DECL(tname_map, name_handle_entry, _TNAME_MAP_HASH, _TNAME_MAP_CMP)
 // 任务调度器全局上下文
 struct loader_ctx {
     uint16_t nworker;          // 工作线程数量
@@ -87,8 +99,8 @@ struct loader_ctx {
     atomic_t closing;          // 非 0 表示正在广播关闭消息，新注册 task 须立即关闭
     atomic64_t index;          // 轮询工作线程的原子计数器
     worker_ctx *worker;        // 工作线程数组
-    struct hashmap *maptasks;  // 句柄 → task_ctx 的哈希映射
-    struct hashmap *mapnames;  // 字符串名 → 句柄 的本地索引（与 maptasks 共用 lckmaptasks）
+    task_map *maptasks;        // 句柄 → task_ctx 的哈希映射
+    tname_map *mapnames;       // 字符串名 → 句柄 的本地索引（与 maptasks 共用 lckmaptasks）
     rwlock_distr_ctx lckmaptasks; // 保护 maptasks 与 mapnames 的分布式读写锁
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
     rwlock_distr_ctx lckcache; //lua bytecache 锁
@@ -106,7 +118,7 @@ struct task_ctx {
     atomic_t global;           // 0=未调度 1=已调度/运行中（无锁调度标志）
     atomic_t closing;          // 是否已发送关闭消息（防重复）
     atomic_t ref;              // 引用计数
-    atomic_t priority;         // 调度优先级：值越大单轮消费消息越多，0=默认与历史一致；详见 task_set_priority
+    atomic_t priority;         // 调度优先级：值越大单轮消费消息越多，0=默认；详见 task_set_priority
     atomic_t timeout_request;  // task_request 超时时间（毫秒）
     atomic_t timeout_connect;  // task_connect 超时时间（毫秒）
     atomic_t timeout_netread;  // 网络读取超时时间（毫秒）
@@ -129,7 +141,7 @@ struct task_ctx {
     _response_cb _response;              // 任务响应回调
     _net_ssl_exchanged_cb _ssl_exchanged; // SSL 交换完成回调
     tda_ctx tda;                   // 队列长度告警翻倍状态（init = fsqu 容量 / QUEUE_OVERLOAD_RATIO）
-    fsqu_ctx qumsg;          // 消息队列（平台自适应 fsqu，替代原 spinlock + qu_message）
+    msgq qumsg;              // 消息队列（平台自适应 fsqu，替代原 spinlock + qu_message）
 #if ENABLE_DISPATCH_STAT
     uint64_t dispatch_cpu_ns[MSG_TYPE_ALL]; // 按 mtype 分桶累计 dispatch 占用的线程 CPU 纳秒（task->global=1 保证单写，无需原子）
     uint64_t nmsg[MSG_TYPE_ALL];        // 按 mtype 分桶累计已处理消息条数（同上）
@@ -138,7 +150,7 @@ struct task_ctx {
 // 消息分发时传递给 _task_dispatch 的参数包
 struct task_dispatch_arg {
     task_ctx *task;    // 目标任务
-    message_ctx msg;   // 消息体（值拷贝）
+    message_ctx *msg;  // 消息体，指向调用方（loader 批量缓冲 / 本地构造）；仅本次 _task_dispatch 调用期间有效，要留过 yield 必须自己拷
 };
 
 // 是否框架保留 subtype：harbor 不转发这些，业务自定义 reqtype 须避开

@@ -3,6 +3,9 @@
 
 #include "base/macro.h"
 
+#define SPIN_CNT        32 // spin_init 的自旋次数,仅 Windows 生效(临界区退回内核前先试这么多次);Linux/macOS 传了也不用
+#define SPIN_YIELD_CNT  64 // spin_backoff 等对方释放时自旋这么多次仍等不到就 THREAD_YIELD 让出 CPU。
+                           // 是次数不是周期预算,别按 CPU_PAUSE_CYCLES 去折算
 #if defined(OS_WIN)
 typedef CRITICAL_SECTION spin_ctx;
 #elif defined(OS_DARWIN)

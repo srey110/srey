@@ -10,7 +10,7 @@ typedef struct chan_ctx chan_ctx;
 /// <summary>
 /// 模拟go的chan
 /// </summary>
-/// <param name="capacity">最大容量，非 0 时向上取到偶数(见 queue_init)；0 使用非缓存方式</param>
+/// <param name="capacity">最大容量，非 0 时向上取到 2 的幂、最小 2(传 1 实得 2)；0 使用非缓存方式</param>
 /// <returns>chan_ctx</returns>
 chan_ctx *chan_init(uint32_t capacity);
 /// <summary>

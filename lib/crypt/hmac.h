@@ -13,7 +13,7 @@ typedef struct hmac_ctx {
 /// HMAC 初始化
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
-/// <param name="dtype">摘要算法</param>
+/// <param name="dtype">摘要算法，只接受 DG_MD2..DG_SHA512，传 xxhash 会被 ASSERTAB 终止</param>
 /// <param name="key">密码</param>
 /// <param name="klens">密码长度</param>
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens);

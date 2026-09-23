@@ -11,6 +11,7 @@ typedef enum parse_status {
 }parse_status;
 // PUBLISH 单块分配的富余量：topic 与载荷各一个结尾 NUL，加载荷头最多 3 字节对齐补白
 #define MQTT_PUB_SLACK 8
+#define MQTT_ARR_INITCAP 8
 
 void _mqtt_pkfree(void *data) {
     if (NULL == data) {
@@ -224,7 +225,7 @@ static inline mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
 // 不能按整个接收缓冲。只按 id 决定读几个字节,两件事未查:同一属性重复出现、属性 id 与当前
 // 报文类型不匹配(按 MQTT-5.0 §2.2.2.2 两者都算 Protocol Error)。数组按 wire 顺序原样交上层,
 // 重复属性会出现多个同 id 元素,上层若只读先遇到的那个,取到的可能不是对端的本意
-static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *total, size_t maxlens) {
+static mprop_arr *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *total, size_t maxlens) {
     int32_t plens;
     int32_t occupy = _mqtt_data_varnum(buf, &plens);//属性长度
     if (ERR_FAILED == occupy
@@ -242,9 +243,9 @@ static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *to
     size_t off;
     mqtt_prop_flag flag;
     mqtt_propertie *propt;
-    array_ctx *arrpropts;
-    MALLOC(arrpropts, sizeof(array_ctx));
-    array_init(arrpropts, sizeof(mqtt_propertie *), 0);
+    mprop_arr *arrpropts;
+    MALLOC(arrpropts, sizeof(mprop_arr));
+    mprop_arr_init(arrpropts, MQTT_ARR_INITCAP);//实际装 0~几个,别按默认 32 槽预付
     for (off = 0; off < (size_t)plens;) {
         if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {
             BIT_SET(*status, PROT_ERROR);
@@ -320,7 +321,7 @@ static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *to
             return NULL;
         }
         propt->flag = flag;
-        array_push_back(arrpropts, &propt);
+        mprop_arr_push_back(arrpropts, &propt);
     }
     if ((int32_t)off != plens) {
         BIT_SET(*status, PROT_ERROR);
@@ -707,7 +708,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     mqtt_subscribe_payload *pl;
     CALLOC(pl, 1, sizeof(mqtt_subscribe_payload));
     pack->payload = pl;
-    array_init(&pl->subop, sizeof(subscribe_option *), 0);
+    msubop_arr_init(&pl->subop, MQTT_ARR_INITCAP);
     for (off = 0; off < remain;) {
         topic = _mqtt_data_utf8(buf, &num);//主题
         if (NULL == topic) {
@@ -738,7 +739,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
             subop->retain = BIT_GETN(num, 4);
             subop->retain |= (BIT_GETN(num, 5) << 1);
         }
-        array_push_back(&pl->subop, &subop);
+        msubop_arr_push_back(&pl->subop, &subop);
     }
     if (off != remain) {
         BIT_SET(*status, PROT_ERROR);
@@ -771,7 +772,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     mqtt_unsubscribe_payload *pl;
     CALLOC(pl, 1, sizeof(mqtt_unsubscribe_payload));
     pack->payload = pl;
-    array_init(&pl->topics, sizeof(char *), 0);
+    mtopic_arr_init(&pl->topics, MQTT_ARR_INITCAP);
     for (off = 0; off < remain;) {
         topic = _mqtt_data_utf8(buf, &num);//主题
         if (NULL == topic) {
@@ -779,7 +780,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
             return ERR_FAILED;
         }
         off += (2 + num);
-        array_push_back(&pl->topics, &topic);
+        mtopic_arr_push_back(&pl->topics, &topic);
     }
     if (off != remain) {
         BIT_SET(*status, PROT_ERROR);

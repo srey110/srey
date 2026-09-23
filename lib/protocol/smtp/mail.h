@@ -16,16 +16,18 @@ typedef struct mail_addr {
 typedef struct mail_attach {
     char *content;          //附件内容（Base64 编码后的数据）
     char extension[32];     //文件扩展名（含点号，如 ".pdf"）
-    char file[PATH_LENS];   //文件名（不含目录）
+    char file[768];         //文件名（不含目录）。APFS/NTFS 按字符限 255,UTF-8 最长 765 字节
 }mail_attach;
+ARR_DECL(maddr_arr, mail_addr)
+ARR_DECL(mattach_arr, mail_attach)
 typedef struct mail_ctx {
     int32_t reply;            //是否要求回复：1 回复（默认），0 不回复
     char *subject;            //邮件主题
     char *msg;                //纯文本正文
     char *html;               //HTML 正文（Base64 编码）
     mail_addr from;           //发件人
-    array_ctx addrs;          //收件/抄送/密送地址列表（元素 mail_addr）
-    array_ctx attach;         //附件列表（元素 mail_attach）
+    maddr_arr addrs;          //收件/抄送/密送地址列表
+    mattach_arr attach;       //附件列表
 }mail_ctx;
 
 /// <summary>

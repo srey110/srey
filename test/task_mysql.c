@@ -255,7 +255,9 @@ static int32_t _session_track(mysql_ctx *mysql, const char *back) {
                   mysql->client.database);
         return ERR_FAILED;
     }
-    char sql[64];
+    // "USE " + database(task_mysql_args 里是 char[64],最长 63 字符) + NUL = 68。
+    // 定成 64 时 GCC 关 LTO 后会报 -Wformat-truncation,而且是真会截断
+    char sql[68];
     SNPRINTF(sql, sizeof(sql), "USE %s", back);
     if (ERR_OK != mysql_query(mysql, sql, NULL, _cb_expect_ok, NULL)) {
         const char *msg = mysql_erro(mysql, &code);

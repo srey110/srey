@@ -3,171 +3,128 @@
 
 #include "base/macro.h"
 
-typedef struct array_ctx {
-    uint32_t elsize;      // 单元素字节数（init 时指定）
-    uint32_t size;        // 当前元素数量
-    uint32_t maxsize;     // 当前分配容量
-    void    *ptr;         // 数据存储数组
-}array_ctx;
-/// <summary>
-/// 初始化数组
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="elsize">单元素字节数，须 大于 0</param>
-/// <param name="maxsize">期望初始容量，0 使用默认值 ARRAY_INIT_SIZE</param>
-void array_init(array_ctx *arr, uint32_t elsize, uint32_t maxsize);
-/// <summary>
-/// 释放数组内部内存，不释放 arr 本身
-/// </summary>
-/// <param name="arr">array_ctx</param>
-void array_free(array_ctx *arr);
-/// <summary>
-/// 调整数组容量（不缩减元素数量）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="maxsize">新容量，必须 大于等于 当前 size；0 使用默认值 ARRAY_INIT_SIZE</param>
-void array_resize(array_ctx *arr, uint32_t maxsize);
-/// <summary>
-/// 满则扩容到原 2 倍。倍增策略只写在这一处，array_add / array_push_back 都走它
-/// </summary>
-/// <param name="arr">array_ctx</param>
-static inline void array_grow_if_full(array_ctx *arr) {
-    if (arr->size == arr->maxsize) {
-        ASSERTAB(arr->maxsize <= UINT32_MAX / 2, "array maxsize overflow.");
-        array_resize(arr, arr->maxsize * 2);
-    }
-}
-// 负下标归一(-1 即末元素)并校验范围, 返回归一后的下标。
-// inclusive 非 0 时允许等于 size —— 那是 array_add 的插入位, 其余入口一律要求 < size
-static inline uint32_t _array_norm_pos(const array_ctx *arr, int32_t pos, int32_t inclusive) {
-    if (pos < 0) {
-        pos += (int32_t)arr->size;
-    }
-    uint32_t lim = (0 != inclusive) ? arr->size + 1 : arr->size;
-    ASSERTAB(pos >= 0 && (uint32_t)pos < lim, "array pos out of range.");
-    return (uint32_t)pos;
-}
-/// <summary>
-/// 在指定位置插入元素（pos 之后的元素整体后移）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="elem">指向待插入元素的指针，拷贝 elsize 字节</param>
-/// <param name="pos">插入位置，[0, size]；负数表示从尾部反向索引</param>
-static inline void array_add(array_ctx *arr, const void *elem, int32_t pos) {
-    uint32_t p = _array_norm_pos(arr, pos, 1);// 插入位允许等于 size
-    array_grow_if_full(arr);
-    if (p < arr->size) {
-        memmove((char *)arr->ptr + ((size_t)p + 1) * arr->elsize,
-                (char *)arr->ptr + (size_t)p * arr->elsize,
-                (size_t)(arr->size - p) * arr->elsize);
-    }
-    memcpy((char *)arr->ptr + (size_t)p * arr->elsize, elem, arr->elsize);
-    arr->size++;
-}
-/// <summary>
-/// 删除指定位置元素（保持顺序，后续元素整体前移）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="pos">删除位置，[0, size)；负数表示从尾部反向索引</param>
-static inline void array_del(array_ctx *arr, int32_t pos) {
-    uint32_t p = _array_norm_pos(arr, pos, 0);
-    arr->size--;
-    if (p < arr->size) {
-        memmove((char *)arr->ptr + (size_t)p * arr->elsize,
-                (char *)arr->ptr + ((size_t)p + 1) * arr->elsize,
-                (size_t)(arr->size - p) * arr->elsize);
-    }
-}
-/// <summary>
-/// 交换两个位置的元素
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="pos1">位置 1，[0, size)；负数表示从尾部反向索引</param>
-/// <param name="pos2">位置 2，[0, size)；负数表示从尾部反向索引</param>
-void array_swap(array_ctx *arr, int32_t pos1, int32_t pos2);
-/// <summary>
-/// 当前元素数量
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <returns>元素数量</returns>
-static inline uint32_t array_size(array_ctx *arr) {
-    return arr->size;
-}
-/// <summary>
-/// 数组是否为空
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <returns>非 0 表示空，0 表示非空</returns>
-static inline int32_t array_empty(array_ctx *arr) {
-    return 0 == arr->size;
-}
-/// <summary>
-/// 清空数组（保留已分配容量，下次复用）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-static inline void array_clear(array_ctx *arr) {
-    arr->size = 0;
-}
-/// <summary>
-/// 按索引访问元素（越界 ASSERT 终止）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="pos">索引；负数表示从尾部反向索引</param>
-/// <returns>指向元素的指针（可隐式转 T *）</returns>
-static inline void *array_at(array_ctx *arr, int32_t pos) {
-    uint32_t p = _array_norm_pos(arr, pos, 0);
-    return (char *)arr->ptr + (size_t)p * arr->elsize;
-}
-/// <summary>
-/// 首元素指针
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <returns>首元素指针，空数组返回 NULL</returns>
-static inline void *array_front(array_ctx *arr) {
-    return 0 == arr->size ? NULL : arr->ptr;
-}
-/// <summary>
-/// 末元素指针
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <returns>末元素指针，空数组返回 NULL</returns>
-static inline void *array_back(array_ctx *arr) {
-    return 0 == arr->size ? NULL : (char *)arr->ptr + (size_t)(arr->size - 1) * arr->elsize;
-}
-/// <summary>
-/// 尾部追加元素（容量不足自动扩容到原 2 倍）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="elem">指向待追加元素的指针，拷贝 elsize 字节</param>
-static inline void array_push_back(array_ctx *arr, const void *elem) {
-    array_grow_if_full(arr);
-    memcpy((char *)arr->ptr + (size_t)arr->size * arr->elsize, elem, arr->elsize);
-    arr->size++;
-}
-/// <summary>
-/// 弹出末元素
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <returns>指向已弹出元素的指针（下次 push 前有效），空数组返回 NULL</returns>
-static inline void *array_pop_back(array_ctx *arr) {
-    if (0 == arr->size) {
-        return NULL;
-    }
-    arr->size--;
-    return (char *)arr->ptr + (size_t)arr->size * arr->elsize;
-}
-/// <summary>
-/// 删除指定位置元素（不保持顺序，用末元素填补，O(1)）
-/// </summary>
-/// <param name="arr">array_ctx</param>
-/// <param name="pos">删除位置，[0, size)；负数表示从尾部反向索引</param>
-static inline void array_del_nomove(array_ctx *arr, int32_t pos) {
-    uint32_t p = _array_norm_pos(arr, pos, 0);
-    arr->size--;
-    if (p < arr->size) {
-        memcpy((char *)arr->ptr + (size_t)p * arr->elsize,
-               (char *)arr->ptr + (size_t)arr->size * arr->elsize, arr->elsize);
-    }
+// 动态数组(连续存储、倍增扩容)。元素类型编译期固化，故搬运是结构体赋值而非运行期 memcpy。
+//
+// 典型用法：
+//   typedef struct { int a; } my_elem;
+//   ARR_DECL(my_arr, my_elem)
+//   my_arr arr; my_arr_init(&arr, 0);        // 0 = 延迟分配，首次 push_back 才申请
+//   my_elem e = { 1 }; my_arr_push_back(&arr, &e);
+//   my_elem *p = my_arr_at(&arr, -1);         // 负下标从尾部反向索引
+//   my_arr_free(&arr);
+//
+// 元素一律按指针传入，取出一律返回指针；pos 为 int32_t，负数从尾部反向索引。
+
+#define ARRAY_INIT_SIZE 32 // 默认初始容量
+
+// 入参写 T const * 而不是 const T *:T 是指针类型时,后者会被解析成指向 const 的指针。
+// ARR_DECL(name, T)：name 生成的类型名，T 元素类型
+#define ARR_DECL(name, T)                                                      \
+typedef struct { uint32_t size; uint32_t maxsize; T *ptr; } name;               \
+static inline void name##_resize(name *arr, uint32_t maxsize) {                 \
+    ASSERTAB(maxsize < UINT32_MAX, "array maxsize overflow.");                  \
+    maxsize = (0 == maxsize) ? ARRAY_INIT_SIZE : (uint32_t)ROUND_UP(maxsize, 2);\
+    ASSERTAB(maxsize >= arr->size, "max size must big than element count.");    \
+    ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)maxsize, "byte size overflow.");   \
+    REALLOC(arr->ptr, arr->ptr, sizeof(T) * (size_t)maxsize);                   \
+    arr->maxsize = maxsize;                                                     \
+}                                                                               \
+static inline void name##_init(name *arr, uint32_t maxsize) {                   \
+    arr->size = 0;                                                              \
+    if (0 == maxsize) {                                                         \
+        /* 延迟分配:不预付内存,首次 push_back/add 命中 size==maxsize 才申请 */   \
+        arr->maxsize = 0;                                                       \
+        arr->ptr = NULL;                                                        \
+        return;                                                                 \
+    }                                                                           \
+    ASSERTAB(maxsize < UINT32_MAX, "array maxsize overflow.");                  \
+    arr->maxsize = (uint32_t)ROUND_UP(maxsize, 2);                              \
+    ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)arr->maxsize, "byte size overflow.");\
+    MALLOC(arr->ptr, sizeof(T) * (size_t)arr->maxsize);                         \
+}                                                                               \
+static inline void name##_free(name *arr) {                                     \
+    FREE(arr->ptr);                                                             \
+    /* 长度字段留旧值的话,free 后再 push_back 会绕过扩容分支往 NULL 上写 */      \
+    arr->size = 0;                                                              \
+    arr->maxsize = 0;                                                           \
+}                                                                               \
+static inline void name##_grow_if_full(name *arr) {                             \
+    if (arr->size == arr->maxsize) {                                            \
+        ASSERTAB(arr->maxsize <= UINT32_MAX / 2, "array maxsize overflow.");    \
+        name##_resize(arr, arr->maxsize * 2);                                   \
+    }                                                                           \
+}                                                                               \
+/* 负下标归一(-1 即末元素)并校验范围。inclusive 非 0 时允许等于 size ——              \
+   那是 add 的插入位,其余入口一律要求 < size */                                 \
+static inline uint32_t name##_norm_pos(const name *arr, int32_t pos, int32_t inclusive) {\
+    uint32_t lim;                                                               \
+    if (pos < 0) {                                                              \
+        pos += (int32_t)arr->size;                                              \
+    }                                                                           \
+    lim = (0 != inclusive) ? arr->size + 1 : arr->size;                         \
+    ASSERTAB(pos >= 0 && (uint32_t)pos < lim, "array pos out of range.");       \
+    return (uint32_t)pos;                                                       \
+}                                                                               \
+static inline uint32_t name##_size(const name *arr) { return arr->size; }       \
+static inline uint32_t name##_capacity(const name *arr) { return arr->maxsize; } \
+static inline uint32_t name##_elsize(const name *arr) { (void)arr; return (uint32_t)sizeof(T); } \
+static inline int32_t name##_empty(const name *arr) { return 0 == arr->size; }  \
+static inline void name##_clear(name *arr) { arr->size = 0; }                   \
+static inline T *name##_at(name *arr, int32_t pos) {                            \
+    return arr->ptr + name##_norm_pos(arr, pos, 0);                             \
+}                                                                               \
+static inline T *name##_front(name *arr) {                                      \
+    return (0 == arr->size) ? NULL : arr->ptr;                                  \
+}                                                                               \
+static inline T *name##_back(name *arr) {                                       \
+    return (0 == arr->size) ? NULL : arr->ptr + (arr->size - 1);                \
+}                                                                               \
+static inline void name##_push_back(name *arr, T const *elem) {                \
+    name##_grow_if_full(arr);                                                   \
+    arr->ptr[arr->size] = *elem;                                               \
+    arr->size++;                                                                \
+}                                                                               \
+static inline T *name##_pop_back(name *arr) {                                   \
+    if (0 == arr->size) {                                                       \
+        return NULL;                                                            \
+    }                                                                           \
+    arr->size--;                                                                \
+    return arr->ptr + arr->size;                                                \
+}                                                                               \
+static inline void name##_add(name *arr, T const *elem, int32_t pos) {         \
+    uint32_t p = name##_norm_pos(arr, pos, 1);/* 插入位允许等于 size */          \
+    name##_grow_if_full(arr);                                                   \
+    if (p < arr->size) {                                                        \
+        memmove(arr->ptr + p + 1, arr->ptr + p, sizeof(T) * (size_t)(arr->size - p));\
+    }                                                                           \
+    arr->ptr[p] = *elem;                                                       \
+    arr->size++;                                                                \
+}                                                                               \
+static inline void name##_del(name *arr, int32_t pos) {                         \
+    uint32_t p = name##_norm_pos(arr, pos, 0);                                  \
+    arr->size--;                                                                \
+    if (p < arr->size) {                                                        \
+        memmove(arr->ptr + p, arr->ptr + p + 1, sizeof(T) * (size_t)(arr->size - p));\
+    }                                                                           \
+}                                                                               \
+/* 用末元素顶替被删位置,不保持顺序 */                                            \
+static inline void name##_del_nomove(name *arr, int32_t pos) {                  \
+    uint32_t p = name##_norm_pos(arr, pos, 0);                                  \
+    arr->size--;                                                                \
+    if (p < arr->size) {                                                        \
+        arr->ptr[p] = arr->ptr[arr->size];                                      \
+    }                                                                           \
+}                                                                               \
+static inline void name##_swap(name *arr, int32_t pos1, int32_t pos2) {         \
+    uint32_t p1 = name##_norm_pos(arr, pos1, 0);                                \
+    uint32_t p2 = name##_norm_pos(arr, pos2, 0);                                \
+    T tmp;                                                                      \
+    if (p1 == p2) {                                                             \
+        return;                                                                 \
+    }                                                                           \
+    tmp = arr->ptr[p1];                                                         \
+    arr->ptr[p1] = arr->ptr[p2];                                                \
+    arr->ptr[p2] = tmp;                                                         \
 }
 
 #endif//SARRAY_H_

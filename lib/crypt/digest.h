@@ -7,6 +7,7 @@
 #include "crypt/sha1.h"
 #include "crypt/sha256.h"
 #include "crypt/sha512.h"
+#include "crypt/xxhash.h"
 
 #define DG_BLOCK_SIZE SHA512_BLOCK_SIZE
 typedef void(*_init_cb)(void *);
@@ -19,13 +20,15 @@ typedef enum digest_type {
     DG_MD5,
     DG_SHA1,
     DG_SHA256,
-    DG_SHA512
+    DG_SHA512,
+    DG_XXH32,   // 非密码学哈希，seed 固定为 0，输出大端 canonical 字节；要带 seed 改用 xxhash.h 的独立接口
+    DG_XXH64    // 同 DG_XXH32
 }digest_type;
 // 单个摘要算法的属性。digest.c 的算法表与 digest_ctx 共用这一份字段列表,
 // 加一项只改这里,不会出现"表填了、ctx 忘拷"这种静默走样
 typedef struct dg_attr {
     size_t block_lens;      // 当前摘要算法的输出长度（字节）
-    size_t key_block;       // 压缩函数的输入分组长度 B（HMAC 的 ipad/opad 长度，不是输出长度）
+    size_t key_block;       // 压缩函数的输入分组长度 B（HMAC 的 ipad/opad 长度，不是输出长度）；xxhash 填 0，hmac_init 据此拒绝
     size_t eng_lens;        // 当前引擎 ctx 的实际字节数；eng_ctx 是联合体，按它拷贝而非整份
     _init_cb _init;         // 初始化回调
     _update_cb _update;     // 数据输入回调
@@ -40,6 +43,8 @@ typedef struct digest_ctx {
         sha1_ctx sha1;
         sha256_ctx sha256;
         sha512_ctx sha512;
+        xxh32_ctx xxh32;
+        xxh64_ctx xxh64;
     }eng_ctx;               // 各算法上下文联合体
 }digest_ctx;
 /// <summary>

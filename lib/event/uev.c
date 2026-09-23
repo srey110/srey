@@ -28,7 +28,7 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, evsock_ctx *evsk, pip_ctx *pip)
 #endif
     ATOMIC_SET(&pip->wake_pending, 0);
     do {
-        cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
+        cnt = (int32_t)cmdq_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
             cmd_cbs[cmds[i].cmd](watcher, &cmds[i]);
         }
@@ -514,7 +514,7 @@ static void _uev_loop_event(void *arg) {
     _evpub_set_cur_watcher(NULL);
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
-// hashmap元素释放回调：根据socket类型选择释放函数（管道fd type=0不释放）
+// sockel_map 元素释放回调：根据socket类型选择释放函数（管道fd type=0不释放）
 static void _uev_free_element(void *item) {
     evsock_ctx *evsk = *((evsock_ctx **)item);
     if (SOCK_STREAM == evsk->type) {
@@ -564,8 +564,8 @@ static void _uev_new_pipe(pip_ctx *pip) {
     ASSERTAB(ERR_OK == sock_nonblock(pip->pipes[1]), ERRORSTR(ERRNO));
 #endif//NO_CMD_PIPE
     // 命令存 fsqu、触发器只负责唤醒，告警阈值按 fsqu 容量算
-    fsqu_init(&pip->qu, sizeof(cmd_ctx), 4 * ONEK);
-    tda_init(&pip->tda, (size_t)(fsqu_capacity(&pip->qu) / QUEUE_OVERLOAD_RATIO));
+    cmdq_init(&pip->qu, 4 * ONEK);
+    tda_init(&pip->tda, (size_t)(cmdq_capacity(&pip->qu) / QUEUE_OVERLOAD_RATIO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
@@ -577,7 +577,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
 #endif
     ATOMIC_SET(&ctx->stopping, 0);
     spin_init(&ctx->spin, SPIN_CNT);
-    array_init(&ctx->arrlsn, sizeof(struct listener_ctx *), 0);
+    lsn_arr_init(&ctx->arrlsn, 0);
     _uev_init_callback();
     CALLOC(ctx->watcher, ctx->nthreads, sizeof(watcher_ctx));
     watcher_ctx *watcher;
@@ -595,10 +595,9 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _uev_init_evfd();
         _uev_new_pipe(&watcher->pipe);
-        watcher->element = hashmap_new(sizeof(evsock_ctx *), ONEK, 0, 0,
-                                       _evpub_sockel_hash, _evpub_sockel_compare, _uev_free_element, NULL);
-        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
-        queue_init(&watcher->qtn, sizeof(qtn_entry), ONEK);
+        watcher->element = sockel_map_new(ONEK, _uev_free_element);
+        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
+        qtn_que_init(&watcher->qtn, ONEK);
         list_init(&watcher->ticks);
         list_init(&watcher->flushes);
 #if WITH_SSL
@@ -627,7 +626,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
     int32_t j, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
     for (;;) {
-        cnt = (int32_t)fsqu_pop_sc_batch(&watcher->pipe.qu, cmds, CMD_MAX_NREAD);
+        cnt = (int32_t)cmdq_pop_sc_batch(&watcher->pipe.qu, cmds, CMD_MAX_NREAD);
         if (cnt <= 0) {
             break;
         }
@@ -639,7 +638,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
     close(watcher->pipe.pipes[0]);
     close(watcher->pipe.pipes[1]);
 #endif
-    fsqu_free(&watcher->pipe.qu);
+    cmdq_free(&watcher->pipe.qu);
 }
 static void _uev_stop_watcher(ev_ctx *ctx) {
     uint32_t i;
@@ -661,7 +660,7 @@ static void _uev_free_watcher(ev_ctx *ctx) {
         watcher = &ctx->watcher[i];
         // 走管道那档时 _uev_init_cmd 会把 pip_ctx::skpip（嵌入 watcher->pipe，不由 element 持有）
         // 以 type=0 注册进 element，_uev_free_element 靠 type==0 跳过它；NO_CMD_PIPE 下它压根不进表
-        hashmap_free(watcher->element);
+        sockel_map_free(watcher->element);
         pool_free(&watcher->pool);
         _uev_free_pipe(watcher);
         // worker 已退出 _uev_loop_event, 兜底 flush 隔离队列剩余对象
@@ -681,12 +680,12 @@ static void _uev_free_watcher(ev_ctx *ctx) {
 static void _uev_free_alllsn(ev_ctx *ctx) {
     struct listener_ctx **lsn;
     uint32_t i;
-    uint32_t nlsn = array_size(&ctx->arrlsn);
+    uint32_t nlsn = lsn_arr_size(&ctx->arrlsn);
     for (i = 0; i < nlsn; i++) {
-        lsn = (struct listener_ctx **)array_at(&ctx->arrlsn, i);
+        lsn = lsn_arr_at(&ctx->arrlsn, (int32_t)i);
         _uev_freelsn(*lsn);
     }
-    array_free(&ctx->arrlsn);
+    lsn_arr_free(&ctx->arrlsn);
 }
 void ev_free(ev_ctx *ctx) {
     // 先置关停标志再停线程：此后 ev_listen/ev_connect/ev_udp 一律拒绝，

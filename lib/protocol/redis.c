@@ -1,23 +1,18 @@
 ﻿#include "protocol/redis.h"
 #include "utils/binary.h"
-#include "containers/sarray.h"
 
 /* RESP 数组计数头 "*n\r\n" 所需的最大字节数。
  * 即使 "*999999\r\n" 也只有 10 字节；32 字节预留足够裕量。 */
 #define MAX_HEADER_RESERVE  32
 //最大聚合嵌套层数，防御恶意 server 用 *1\r\n*1\r\n... 嵌套数组导致堆 OOM
-//（每层嵌套都只是再压一帧、永不清空帧栈，故永不触发完整 pack 返回，节点持续累积到 rd->arr）
+//（每层嵌套都只是再压一帧、永不清空帧栈，故永不触发完整 pack 返回，节点持续累积到 rd 的链表上）
 //含 stack[0] 顶层虚拟帧，故实际可嵌套 REDIS_MAX_DEPTH-1 层
 #define REDIS_MAX_DEPTH     18
 //单次 RESP 解包最大节点数，纯内存兜底；正确性由 REDIS_MAX_DEPTH 保证，
 //此值只决定为一个未完成回复最多垫多少内存，不应低到误伤合法的扁平大结果集。
-//1<<18 时最坏约 19MB（节点约 64B/个 + 指针数组 2MB），仍是现有 7 万元素用例的 3.7 倍余量；
+//1<<18 时最坏约 17MB（节点约 64B/个），仍是现有 7 万元素用例的 3.7 倍余量；
 //再往上抬只是让恶意 server 能用约 4MB 流量顶出几十 MB，业务侧的大结果集应分页取
 #define REDIS_MAX_NODES     (1 << 18)
-//复位时保留的 rd->arr 容量地板（元素个数，8192 个指针 = 64KB）：array_clear 只置 size 不缩容，
-//一次大结果集之后容量会按连接常驻，超过此值即缩回本值。缩到地板而非重新 array_init，
-//后者会退到 ARRAY_INIT_SIZE(32)，让反复取大结果集的连接每次都从 32 一路翻倍长回去
-#define REDIS_ARR_KEEP      8192
 #define FMT_INTEGER_FLAG  "diouxX" // 整型格式字符集
 // 提取 [p, f] 范围的格式说明符，格式化并追加到 fbuf
 #define FMT_TYPE(type)\
@@ -34,8 +29,10 @@ typedef struct redis_frame {
     int64_t remain;   // 本层还差多少元素才闭合
 }redis_frame;
 typedef struct reader_ctx {
-    array_ctx arr;    // 已解析节点的指针数组（元素 redis_pack_ctx *），数组追加比头尾链表更缓存友好
-    int32_t depth;    // 当前未闭合聚合层数，stack[0] 为顶层虚拟帧；归零即一条完整回复解析完毕
+    int32_t depth;          // 当前未闭合聚合层数，stack[0] 为顶层虚拟帧；归零即一条完整回复解析完毕
+    uint32_t count;         // 当前回复已解析的节点数，REDIS_MAX_NODES 兜底用
+    redis_pack_ctx *head;   // 已解析节点按到达顺序串成的链表，回复完整后整条交给调用方
+    redis_pack_ctx *tail;   // 链表尾，尾插用
     redis_frame stack[REDIS_MAX_DEPTH];
 }reader_ctx;
 
@@ -57,12 +54,7 @@ void _redis_udfree(ud_cxt *ud) {
         return;
     }
     reader_ctx *rd = ud->context;
-    /* 节点由扁平数组追踪；->next 仅在完整响应交给调用方时才串联。
-     * 因此直接逐元素释放，无需走链表。 */
-    for (uint32_t i = 0; i < array_size(&rd->arr); i++) {
-        FREE(*(redis_pack_ctx **)array_at(&rd->arr, i));
-    }
-    array_free(&rd->arr);
+    _redis_pkfree(rd->head);// 未完成回复里已解析的节点
     FREE(rd);
     ud->context = NULL;
 }
@@ -96,7 +88,9 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     while ('\0' != *f) {
         if ('%' != *f) {
             p = f;
-            while ('\0' != *f && '%' != *f && ' ' != *f) f++;
+            while ('\0' != *f && '%' != *f && ' ' != *f) {
+                f++;
+            }
             lens = (size_t)(f - p);
             if (lens > 0) {
                 binary_set_binary(&fbuf, p, lens);
@@ -147,11 +141,17 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         }
         default: {
             // 跳过格式标志位（#、0、-、+、空格）
-            while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
-            while ('\0' != *f && isdigit((unsigned char)*f)) f++;
+            while ('\0' != *f && NULL != strchr("#0-+ ", *f)) {
+                f++;
+            }
+            while ('\0' != *f && isdigit((unsigned char)*f)) {
+                f++;
+            }
             if ('.' == *f) {
                 f++;
-                while ('\0' != *f && isdigit((unsigned char)*f)) f++;
+                while ('\0' != *f && isdigit((unsigned char)*f)) {
+                    f++;
+                }
             }
             if ('\0' == *f) {// '%' 之后只有标志/宽度就到串尾，没有转换符
                 fmterr = 1;
@@ -263,7 +263,9 @@ static inline reader_ctx *_redis_create_reader(ud_cxt *ud) {
     if (NULL == ud->context) {
         reader_ctx *rd;
         MALLOC(rd, sizeof(reader_ctx));
-        array_init(&rd->arr, sizeof(redis_pack_ctx *), 0);
+        rd->count = 0;
+        rd->head = NULL;
+        rd->tail = NULL;
         rd->depth = 1; // 顶层虚拟帧，期望 1 个顶层元素
         rd->stack[0].remain = 1;
         rd->stack[0].attr = 0;
@@ -271,11 +273,17 @@ static inline reader_ctx *_redis_create_reader(ud_cxt *ud) {
     }
     return ud->context;
 }
-// 将已解析节点追加到数组，并消费帧栈上的一格。
+// 将已解析节点尾插到链表（节点由 CALLOC 分配，next 已为 NULL），并消费帧栈上的一格。
 // open > 0 为声明了元素的聚合类型：压入新层，父层的这个元素要等它闭合才算完成；
 // 否则为叶子或空聚合：消费栈顶一格，栈顶归零则逐层弹出并级联消费父层（ATTR 层闭合不消费父层）
 static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk, int64_t open) {
-    array_push_back(&rd->arr, &pk);
+    if (NULL == rd->tail) {
+        rd->head = pk;
+    } else {
+        rd->tail->next = pk;
+    }
+    rd->tail = pk;
+    rd->count++;
     if (open > 0) {
         ASSERTAB(rd->depth < REDIS_MAX_DEPTH, "redis frame stack overflow.");
         rd->stack[rd->depth].remain = open;
@@ -531,11 +539,10 @@ void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     (void)ev; (void)sk; (void)client; (void)size;
     int32_t rtn, prot;
-    uint32_t cnt;
     redis_pack_ctx *pk;
     reader_ctx *rd = _redis_create_reader(ud);
     for (;;) {
-        if (array_size(&rd->arr) >= REDIS_MAX_NODES) {
+        if (rd->count >= REDIS_MAX_NODES) {
             BIT_SET(*status, PROT_ERROR);
             break;
         }
@@ -574,19 +581,10 @@ void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
             break;
         }
         if (0 == rd->depth) {
-            cnt = array_size(&rd->arr);
-            for (uint32_t i = 0; i + 1 < cnt; i++) {
-                (*(redis_pack_ctx **)array_at(&rd->arr, i))->next =
-                    *(redis_pack_ctx **)array_at(&rd->arr, i + 1);
-            }
-            if (cnt > 0) {
-                (*(redis_pack_ctx **)array_at(&rd->arr, cnt - 1))->next = NULL;
-            }
-            pk = (cnt > 0) ? *(redis_pack_ctx **)array_at(&rd->arr, 0) : NULL;
-            array_clear(&rd->arr);
-            if (rd->arr.maxsize > REDIS_ARR_KEEP) {
-                array_resize(&rd->arr, REDIS_ARR_KEEP);
-            }
+            pk = rd->head;
+            rd->head = NULL;
+            rd->tail = NULL;
+            rd->count = 0;
             rd->depth = 1;
             rd->stack[0].remain = 1;
             rd->stack[0].attr = 0;

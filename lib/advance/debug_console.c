@@ -10,8 +10,7 @@
 #include "utils/utils.h"
 #include "utils/log.h"
 
-// Lua VM 专属命令打到非 Lua task 时的应答；由发起方（各路由 handler 传的 needlua）判定，
-// C 侧 debug_request 不再维护命令名字表
+// Lua VM 专属命令打到非 Lua task 时的应答；由发起方（各路由 handler 传的 needlua）判定
 #define _DBG_NOTLUA "command not supported in C task."
 // task 列表收集项 + 动态数组（用于 /__alive 与广播）
 typedef struct dbg_task {
@@ -184,7 +183,6 @@ static void _debug_forward(router_req *ctx, binary_ctx *cmd, int32_t needlua) {
         binary_free(cmd);
         return;
     }
-    // 原来先截到 63 字节再 strtoull，且不看 errno：超长句柄会被当成 UINT64_MAX 收下
     uint64_t hv;
     if (ERR_OK != str2u64(ts, n, UINT64_MAX, &hv)) {
         router_req_text(ctx, 404, "invalid task handle\n", strlen("invalid task handle\n"));
@@ -290,7 +288,7 @@ static void _debug_coros(router_req *ctx) {
     _debug_forward(ctx, &cmd, 0);
 }
 // GET /{handle}/loglv/{lv}：lv 须 0-4；日志级别是进程级的一份原子变量，就地设掉即可，
-// URL 里的 {handle} 忽略。曾经恒走广播是为了同步各 task 的 Lua 侧级别缓存，那份缓存已经去掉
+// URL 里的 {handle} 忽略
 static void _debug_loglv(router_req *ctx) {
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);

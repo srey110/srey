@@ -45,6 +45,8 @@
     #define ATOMIC64_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
     #define ATOMIC_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
     #define ATOMIC64_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
+    #define ATOMIC_GET_RELAXED(ptr)   __atomic_load_n((ptr), __ATOMIC_RELAXED)
+    #define ATOMIC64_GET_RELAXED(ptr) __atomic_load_n((ptr), __ATOMIC_RELAXED)
 #elif defined(OS_WIN)
     #define ATOMIC_THREAD_FENCE_SEQCST() MemoryBarrier()
     #if defined(ARCH_ARM64)
@@ -88,11 +90,14 @@
     #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
     #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
     #define ATOMIC_SET_RELAXED(ptr, val) (*(volatile atomic_t *)(ptr) = (val))
+    #define ATOMIC_GET_RELAXED(ptr) (*(volatile atomic_t *)(ptr))
     #if defined(ARCH_ARM) || defined(ARCH_X86)
-        // 32 位写 64 位会拆成两条 mov 而撕裂，退回 Interlocked64
+        // 32 位读写 64 位都会拆成两条 mov 而撕裂，退回 Interlocked64
         #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
+        #define ATOMIC64_GET_RELAXED(ptr) ATOMIC64_GET(ptr)
     #else
         #define ATOMIC64_SET_RELAXED(ptr, val) (*(volatile atomic64_t *)(ptr) = (val))
+        #define ATOMIC64_GET_RELAXED(ptr) (*(volatile atomic64_t *)(ptr))
     #endif
 #elif defined(OS_SUN)
     // Sun Studio：atomic_ops(3C) 的原语不带内存序，前后各夹一道屏障凑成 seq_cst
@@ -233,7 +238,7 @@
     #error "atomic ops: unsupported compiler (need GCC/Clang, MSVC, Sun Studio on Solaris, or xlC on AIX)"
 #endif
 // 弱序别名兜底: 没有更弱版本可用的后端(Sun / AIX)一律退化到全屏障版, 语义只会更强不会更弱。
-// 六个别名按后端整组给出, 所以一个 #ifndef 守住全组即可; GCC/Clang 与 MSVC 自己定义齐了不会进来
+// 八个别名按后端整组给出, 所以一个 #ifndef 守住全组即可; GCC/Clang 与 MSVC 自己定义齐了不会进来
 #ifndef ATOMIC_SET_RELEASE
     #define ATOMIC_SET_RELEASE(ptr, val) ATOMIC_SET(ptr, val)
     #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
@@ -241,6 +246,8 @@
     #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
     #define ATOMIC_SET_RELAXED(ptr, val) ATOMIC_SET(ptr, val)
     #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
+    #define ATOMIC_GET_RELAXED(ptr) ATOMIC_GET(ptr)
+    #define ATOMIC64_GET_RELAXED(ptr) ATOMIC64_GET(ptr)
 #endif
 
 #endif//MACRO_ATOMIC_H_

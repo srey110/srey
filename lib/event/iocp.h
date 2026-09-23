@@ -3,6 +3,7 @@
 
 #include "event/event.h"
 #include "utils/pool.h"
+#include "containers/hashmap.h"
 #include "event/cmds.h"
 #include "thread/thread.h"
 #include "utils/tda.h"
@@ -19,11 +20,12 @@ typedef struct evsock_ctx {
     event_cb ev_cb;        // 事件触发时的回调函数
     sock_ctx sk;           // 连接标识；listener/pipe 的 skid 恒为 0，createid() 最小返 1 故不与真连接碰撞
 }evsock_ctx;
+HASHMAP_DECL(sockel_map, evsock_ctx *, SOCKEL_HASH, SOCKEL_CMP)
 // IOCP命令通道上下文（每个watcher一个；唤醒走 PQCS，ol_r 只是完成包回投的身份标记，不做真实 I/O）
 typedef struct overlap_cmd_ctx {
     evsock_ctx ol_r;          // 完成包回投的 evsock_ctx：ev_cb = _iocp_on_cmd，fd 恒为 INVALID_SOCK
     tda_ctx tda;            // 队列长度告警翻倍状态（init = fsqu 容量 / QUEUE_OVERLOAD_RATIO）
-    fsqu_ctx qu;            // 命令队列（多生产者，单消费者批量 pop；元素 cmd_ctx）
+    cmdq qu;            // 命令队列（多生产者，单消费者批量 pop；元素 cmd_ctx）
     atomic_t wake_pending;  // 唤醒在途标志：1=已投未消费，生产者据此不再重投；消费端抽队列前清 0
 }overlap_cmd_ctx;
 // 事件监听器上下文（每个工作线程一个）
@@ -32,7 +34,7 @@ typedef struct watcher_ctx {
     atomic_t stop;              // 停止标志
     HANDLE iocp;                // IOCP句柄
     ev_ctx *ev;                 // 所属ev_ctx
-    struct hashmap *element;    // fd -> evsock_ctx 哈希表
+    sockel_map *element;        // fd -> evsock_ctx 哈希表
     pthread_t thevent;          // 事件循环线程
     pool_ctx pool;              // evsock_ctx对象池
     timer_ctx timer;            // 计时器

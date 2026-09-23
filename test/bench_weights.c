@@ -51,12 +51,12 @@ static atomic_t _bw_ndone;
 
 // 自定义分发：不跑业务只记账。消息不带 data，故无需清理
 static void _bw_dispatch(task_dispatch_arg *arg) {
-    if (MSG_TYPE_REQUEST != arg->msg.mtype) {
+    if (MSG_TYPE_REQUEST != arg->msg->mtype) {
         // STARTUP / CLOSING 等框架消息必须交回默认处理,直接丢会让 task 关不掉、loader_free 死等
-        _message_run(arg->task, &arg->msg);
+        _message_run(arg->task, arg->msg);
         return;
     }
-    bw_stat *st = &_bw_stats[(uint32_t)arg->msg.sess];
+    bw_stat *st = &_bw_stats[(uint32_t)arg->msg->sess];
     st->nrecv++;
     if (BW_NMSG == st->nrecv) {
         st->t_done = nowms();

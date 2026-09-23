@@ -343,13 +343,17 @@ static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     return ERR_OK;
 }
 #endif
-// 跨平台获取当前可执行文件所在目录路径（末尾不含斜杠）
+// 跨平台获取当前可执行文件所在目录路径（末尾不含斜杠）。
+// GetModuleFileName 与 readlink 装不下时都不报错、只把结果截断（前者在 XP 上还不补 NUL，
+// 拿去 strrchr 会越界读），故这两支必须连同"返回值顶到缓冲大小"一起判失败
 static int32_t _get_procpath(char path[PATH_LENS]) {
 #ifndef OS_AIX
     size_t len = PATH_LENS;
 #endif
 #if defined(OS_WIN)
-    if (0 == GetModuleFileName(NULL, path, (DWORD)len - 1)) {
+    DWORD wlen = GetModuleFileName(NULL, path, (DWORD)len);
+    if (0 == wlen
+        || wlen >= len) {
         return ERR_FAILED;
     }
 #elif defined(OS_LINUX) || defined(OS_NBSD) || defined(OS_DFBSD) || defined(OS_SUN)
@@ -367,7 +371,8 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     #error "_get_procpath: add the symlink path for this platform"
   #endif
     ssize_t rlen = readlink(link, path, len - 1);
-    if (0 > rlen) {
+    if (0 > rlen
+        || (size_t)rlen >= len - 1) {
         return ERR_FAILED;
     }
     path[rlen] = '\0';

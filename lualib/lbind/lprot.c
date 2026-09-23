@@ -990,10 +990,10 @@ static int32_t _lprot_mail_addrs_add(lua_State *lua) {
 /// <returns type="string[]">收件人邮箱数组；一个都没加时为空表。每个元素的口径同 from_get</returns>
 static int32_t _lprot_mail_addrs_get(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    uint32_t n = array_size(&(*ud)->addrs);
+    uint32_t n = maddr_arr_size(&(*ud)->addrs);
     lua_createtable(lua, (int32_t)n, 0);
     for (uint32_t i = 0; i < n; i++) {
-        lua_pushstring(lua, ((mail_addr *)array_at(&(*ud)->addrs, (int32_t)i))->addr);
+        lua_pushstring(lua, maddr_arr_at(&(*ud)->addrs, (int32_t)i)->addr);
         lua_rawseti(lua, -2, (lua_Integer)i + 1);
     }
     return 1;

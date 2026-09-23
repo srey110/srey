@@ -365,7 +365,7 @@ static void _mq_publish_case(CuTest *tc, mqtt_protversion version, int8_t qos, u
     if (withprops) {
         // 属性段非空时必须解出来，且载荷仍在它之后
         CuAssertPtrNotNull(tc, vh->properties);
-        CuAssertIntEquals(tc, 2, (int)array_size(vh->properties));
+        CuAssertIntEquals(tc, 2, (int)mprop_arr_size(vh->properties));
     }
     _mqtt_pkfree(p);
     _mqtt_udfree(&ud);
@@ -449,9 +449,9 @@ static void _mqtt_subunsub_case(CuTest *tc, mqtt_protversion ver) {
     CuAssertIntEquals(tc, 0xAABB, vh->packid);
 
     mqtt_subscribe_payload *pl = (mqtt_subscribe_payload *)p->payload;
-    CuAssertIntEquals(tc, 2, (int)array_size(&pl->subop));
-    subscribe_option *opt0 = *(subscribe_option **)array_at(&pl->subop, 0);
-    subscribe_option *opt1 = *(subscribe_option **)array_at(&pl->subop, 1);
+    CuAssertIntEquals(tc, 2, (int)msubop_arr_size(&pl->subop));
+    subscribe_option *opt0 = *msubop_arr_at(&pl->subop, 0);
+    subscribe_option *opt1 = *msubop_arr_at(&pl->subop, 1);
     CuAssertStrEquals(tc, "topic/a", opt0->topic);
     CuAssertStrEquals(tc, "topic/b", opt1->topic);
     CuAssertIntEquals(tc, 1, opt1->qos);
@@ -498,7 +498,7 @@ static void _mqtt_subunsub_case(CuTest *tc, mqtt_protversion ver) {
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_UNSUBSCRIBE, p->fixhead.prot);
     mqtt_unsubscribe_payload *upl = (mqtt_unsubscribe_payload *)p->payload;
-    CuAssertIntEquals(tc, 2, (int)array_size(&upl->topics));
+    CuAssertIntEquals(tc, 2, (int)mtopic_arr_size(&upl->topics));
     _mqtt_pkfree(p);
     buffer_free(&buf);
 
@@ -749,12 +749,12 @@ static void test_mqtt_props(CuTest *tc) {
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     mqtt_reason_varhead *vh = (mqtt_reason_varhead *)p->varhead;
     CuAssertPtrNotNull(tc, vh->properties);
-    CuAssertIntEquals(tc, 6, (int)array_size(vh->properties));
+    CuAssertIntEquals(tc, 6, (int)mprop_arr_size(vh->properties));
 
     mqtt_propertie *pr;
     int32_t seen = 0;
-    for (uint32_t i = 0; i < array_size(vh->properties); i++) {
-        pr = *(mqtt_propertie **)array_at(vh->properties, (int32_t)i);
+    for (uint32_t i = 0; i < mprop_arr_size(vh->properties); i++) {
+        pr = *mprop_arr_at(vh->properties, (int32_t)i);
         CuAssertPtrNotNull(tc, pr);
         switch (pr->flag) {
         case MAXIMUM_QOS:
@@ -834,9 +834,9 @@ static void _mqtt_extract_auth(mqtt_pack_ctx *p,
     if (NULL == vh || NULL == vh->properties) {
         return;
     }
-    uint32_t n = array_size(vh->properties);
+    uint32_t n = mprop_arr_size(vh->properties);
     for (uint32_t i = 0; i < n; i++) {
-        mqtt_propertie *prop = *(mqtt_propertie **)array_at(vh->properties, i);
+        mqtt_propertie *prop = *mprop_arr_at(vh->properties, (int32_t)i);
         if (AUTH_METHOD == prop->flag) {
             *method = prop->fval;
             *mlen   = prop->flens;
@@ -1037,32 +1037,32 @@ static void test_mqtt_struct_empty_free(CuTest *tc) {
     // subscribe payload：subop 数组为空时也应正常释放
     mqtt_subscribe_payload *spl;
     CALLOC(spl, 1, sizeof(*spl));
-    array_init(&spl->subop, sizeof(subscribe_option *), 0);
+    msubop_arr_init(&spl->subop, 0);
     _mqtt_subscribe_payload_free(spl);
     // unsubscribe payload：topics 数组为空
     mqtt_unsubscribe_payload *upl;
     CALLOC(upl, 1, sizeof(*upl));
-    array_init(&upl->topics, sizeof(char *), 0);
+    mtopic_arr_init(&upl->topics, 0);
     _mqtt_unsubscribe_payload_free(upl);
 }
 
 // mqtt_struct.c _mqtt_propertie_free 释放含 sval 与不含 sval 的混合数组
 static void test_mqtt_struct_propertie_free(CuTest *tc) {
     (void)tc;
-    array_ctx *props;
+    mprop_arr *props;
     MALLOC(props, sizeof(*props));
-    array_init(props, sizeof(mqtt_propertie *), 0);
+    mprop_arr_init(props, 0);
     // 元素 1：含 sval 字符串
     mqtt_propertie *p1;
     CALLOC(p1, 1, sizeof(*p1));
     MALLOC(p1->sval, 8);
     memcpy(p1->sval, "topic1", 7);
-    array_push_back(props, &p1);
+    mprop_arr_push_back(props, &p1);
     // 元素 2：sval 为 NULL（int 类型属性）
     mqtt_propertie *p2;
     CALLOC(p2, 1, sizeof(*p2));
     p2->sval = NULL;
-    array_push_back(props, &p2);
+    mprop_arr_push_back(props, &p2);
     // 释放后 props/p1->sval/p1/p2 应全部归还，ASan 下应无泄漏
     _mqtt_propertie_free(props);
 }

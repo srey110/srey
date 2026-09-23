@@ -2,6 +2,9 @@
 #define CMDS_H_
 
 #include "event/event.h"
+#include "containers/fsqu.h"
+
+#define CMD_MAX_NREAD       128 // 命令单次读取最大数量
 
 // 事件循环内部命令枚举
 typedef enum ev_cmds {
@@ -31,6 +34,7 @@ typedef struct cmd_ctx {
         sendto_ctx sendto;// CMD_SENDTO
     } args;
 }cmd_ctx;
+FSQU_DECL(cmdq, cmd_ctx)
 
 // 向watcher投递命令。命令必入队,故无返回值：stop 时 watcher 已停止消费,残留由 ev_free 的 drain 兜底释放
 void _send_cmd(struct watcher_ctx *watcher, cmd_ctx *cmd);

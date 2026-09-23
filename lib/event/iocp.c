@@ -26,16 +26,16 @@ static void *_iocp_exfunc(SOCKET fd, GUID *guid) {
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
-static bool _iocp_disconnect_iter(const void *item, void *udata) {
+static int32_t _iocp_disconnect_iter(evsock_ctx *const *item, void *udata) {
     (void)udata;
-    evsock_ctx *evsk = *((evsock_ctx **)item);
+    evsock_ctx *evsk = *item;
     //防止 ERROR socket 还有在途未被取消的
     CancelIoEx((HANDLE)evsk->sk.fd, NULL);
     _iocp_disconnect(evsk);
-    return true;
+    return 1;
 }
 void _iocp_disconnect_all(watcher_ctx *watcher) {
-    hashmap_scan(watcher->element, _iocp_disconnect_iter, NULL);
+    sockel_map_scan(watcher->element, _iocp_disconnect_iter, NULL);
 }
 // 初始化命令回调函数表，_iocp_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
 // 如 在_ev_send里面直接发送数据
@@ -75,7 +75,7 @@ static void _iocp_on_cmd(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
     overlap_cmd_ctx *olcmd = UPCAST(evsk, overlap_cmd_ctx, ol_r);
     ATOMIC_SET(&olcmd->wake_pending, 0);
     do {
-        cnt = (int32_t)fsqu_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
+        cnt = (int32_t)cmdq_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
             cmd_cbs[cmds[i].cmd](watcher, &cmds[i]);
         }
@@ -109,9 +109,9 @@ static inline int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint6
         return 0;
     }
     // 停止后收干 CancelIoEx 触发的在途完成:element 里的 socket 仅在其 IRP 全完成、refcount 归 0 时
-    // 才被摘除,count 归 0 即无在途 IRP,hashmap_free 才不会释放仍有在途 IRP 的 evsock_ctx(内核 write-after-free)
+    // 才被摘除,count 归 0 即无在途 IRP,sockel_map_free 才不会释放仍有在途 IRP 的 evsock_ctx(内核 write-after-free)
     // cmd 通道不建 socket 也不进 element，不影响这个计数
-    if (0 == hashmap_count(watcher->element)) {
+    if (0 == sockel_map_size(watcher->element)) {
         return 1;
     }
     uint64_t now = timer_cur_ms(&watcher->timer);
@@ -119,8 +119,8 @@ static inline int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint6
         *drain_deadline = now + IOCP_STOP_DRAIN_TIMEOUT;
     } else if (now >= *drain_deadline) {
         // 超时兜底:仍有 socket 未从 map 摘除,说明有 close 后未被完成回调移除的 socket(程序 bug),告警后退出防挂死
-        LOG_ERROR("watcher %d stop drain timeout, %zu socket(s) still in map (possible leak/bug).",
-            watcher->index, hashmap_count(watcher->element));
+        LOG_ERROR("watcher %d stop drain timeout, %u socket(s) still in map (possible leak/bug).",
+            watcher->index, sockel_map_size(watcher->element));
         return 1;
     }
     return 0;
@@ -236,7 +236,7 @@ static void _iocp_loop_acpex(void *arg) {
     LOG_INFO("accept thread %d exited.", acpex->index);
     FREE(overlappeds);
 }
-// hashmap元素释放回调：根据socket类型选择释放函数
+// sockel_map 元素释放回调：根据socket类型选择释放函数
 static void _iocp_sockel_free(void *item) {
     evsock_ctx *evsk = *((evsock_ctx **)item);
     if (SOCK_STREAM == evsk->type) {
@@ -251,8 +251,8 @@ static void _iocp_init_cmd(watcher_ctx *watcher) {
     olcmd->ol_r.ev_cb = _iocp_on_cmd;
     olcmd->ol_r.sk.fd = INVALID_SOCK;
     olcmd->ol_r.sk.index = watcher->index;// 命令通道恒属本 watcher,口径同 unix 侧 _uev_init_cmd
-    fsqu_init(&olcmd->qu, sizeof(cmd_ctx), 4 * ONEK);
-    tda_init(&olcmd->tda, (size_t)(fsqu_capacity(&olcmd->qu) / QUEUE_OVERLOAD_RATIO));
+    cmdq_init(&olcmd->qu, 4 * ONEK);
+    tda_init(&olcmd->tda, (size_t)(cmdq_capacity(&olcmd->qu) / QUEUE_OVERLOAD_RATIO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
@@ -272,9 +272,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);// 1线程 对同一socket操作是线程安全
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
-        watcher->element = hashmap_new(sizeof(evsock_ctx *), ONEK, 0, 0,
-                                       _evpub_sockel_hash, _evpub_sockel_compare, _iocp_sockel_free, NULL);
-        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
+        watcher->element = sockel_map_new(ONEK, _iocp_sockel_free);
+        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
         timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);
         list_init(&watcher->ticks);
@@ -289,7 +288,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         }
     }
     spin_init(&ctx->spin, SPIN_CNT);
-    array_init(&ctx->arrlsn, sizeof(struct listener_ctx *), 0);
+    lsn_arr_init(&ctx->arrlsn, 0);
     HANDLE iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nacpex);
     ASSERTAB(NULL != iocp, ERRORSTR(ERRNO));
     CALLOC(ctx->acpex, ctx->nacpex, sizeof(acceptex_ctx));
@@ -312,10 +311,10 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
 static void _iocp_free_cmd(watcher_ctx *watcher) {
     cmd_ctx cmd_local;
     overlap_cmd_ctx *olcmd = &watcher->cmd;
-    while (ERR_OK == fsqu_pop_sc(&olcmd->qu, &cmd_local)) {
+    while (ERR_OK == cmdq_pop_sc(&olcmd->qu, &cmd_local)) {
         _cmd_drain_free(&cmd_local);
     }
-    fsqu_free(&olcmd->qu);
+    cmdq_free(&olcmd->qu);
 }
 static void _iocp_stop_acpex_thread(ev_ctx *ctx) {
     uint32_t i;
@@ -345,7 +344,7 @@ static void _iocp_free_watcher(ev_ctx *ctx) {
         thread_join(watcher->thevent);
         (void)CloseHandle(watcher->iocp);
         _iocp_free_cmd(watcher);
-        hashmap_free(watcher->element);
+        sockel_map_free(watcher->element);
         pool_free(&watcher->pool);
     }
     FREE(ctx->watcher);
@@ -393,7 +392,7 @@ void ev_free(ev_ctx *ctx) {
     //    _olp_on_accept_cb 见 remove==1 走释放分支只减 ref，ref 归零 → _iocp_freelsn 安全释放（内核已写完 OVERLAPPED）。
     //    排空到 nlsn 归零；连续 IOCP_STOP_DRAIN_TIMEOUT 无完成仍未清零 → LOG_ERROR（取消完成缺失=bug，宁可残留泄漏也不强释造成 UAF）。
     _iocp_free_acpex(ctx);
-    array_free(&ctx->arrlsn);
+    lsn_arr_free(&ctx->arrlsn);
     spin_free(&ctx->spin);
 }
 

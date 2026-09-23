@@ -32,7 +32,7 @@ static pgsql_reader_ctx *_pg_reader_new(uint16_t field_count, const int32_t *typ
             safe_fill_str(r->fields[i].name, sizeof(r->fields[i].name), names[i]);
         }
     }
-    array_init(&r->arr_rows, sizeof(pgpack_row *), 0);
+    pgrow_arr_init(&r->arr_rows, 0);
     return r;
 }
 
@@ -47,8 +47,7 @@ static void _pg_reader_push_row(pgsql_reader_ctx *r, char *payload,
         row[i].lens = cols[i].lens;
         row[i].val = cols[i].val;
     }
-    void *p = row;
-    array_push_back(&r->arr_rows, &p);
+    pgrow_arr_push_back(&r->arr_rows, &row);
 }
 
 // 造一个"单列单行、值为给定字节串"的 reader。payload 由 reader 释放
@@ -67,8 +66,8 @@ static pgsql_reader_ctx *_pg_reader_one(const int32_t *oids, char (*names)[64],
 
 // 往 pgpack 的结果数组里追加一个结果（模拟解析侧 CommandComplete 的提交动作）
 static void _pg_result_push(pgpack_ctx *pg, pgsql_reader_ctx *reader, const char *complete) {
-    if (NULL == pg->results.ptr) {// 与 _pgpack_complete 同一判据(array_free 会把 ptr 置空)
-        array_init(&pg->results, sizeof(pgsql_result), 2);
+    if (NULL == pg->results.ptr) {// 与 _pgpack_complete 同一判据(pgres_arr_free 会把 ptr 置空)
+        pgres_arr_init(&pg->results, 2);
     }
     pgsql_result res;
     ZERO(&res, sizeof(res));
@@ -76,19 +75,19 @@ static void _pg_result_push(pgpack_ctx *pg, pgsql_reader_ctx *reader, const char
     if (NULL != complete) {
         safe_fill_str(res.complete, sizeof(res.complete), complete);
     }
-    array_push_back(&pg->results, &res);
+    pgres_arr_push_back(&pg->results, &res);
 }
 // 与 _pg_result_push 成对的清理。库里那份 _pgpack_results_clear 是 static,
 // 这里照它的逻辑自建一份,不为测试把它提成公共函数
 static void _pg_results_clear(pgpack_ctx *pgpack) {
     pgsql_result *res;
-    for (uint32_t i = 0; i < array_size(&pgpack->results); i++) {
-        res = array_at(&pgpack->results, i);
+    for (uint32_t i = 0; i < pgres_arr_size(&pgpack->results); i++) {
+        res = pgres_arr_at(&pgpack->results, (int32_t)i);
         if (NULL != res->reader) {
             pgsql_reader_free(res->reader);
         }
     }
-    array_free(&pgpack->results);
+    pgres_arr_free(&pgpack->results);
     pgpack->iter_cursor = 0;
 }
 
@@ -837,6 +836,14 @@ static void test_pgsql_reader_uuid(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, pgsql_reader_uuid(r3, "u", uuid2, &err));
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r3);
+
+    // 长度恰为 36、横线也是 4 条且都在字节边界上,只是位置不对(16-4-4-4-4) → ERR_FAILED。
+    // 逐对读、见横线就跳的宽松解析会把它收下,必须按 8-4-4-4-12 卡位置
+    const char *bad = "0102030405060708-090a-0b0c-0d0e-0f10";
+    pgsql_reader_ctx *r4 = _pg_reader_one(oids, names, FORMAT_TEXT, bad, (int32_t)strlen(bad));
+    CuAssertIntEquals(tc, ERR_FAILED, pgsql_reader_uuid(r4, "u", uuid2, &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    pgsql_reader_free(r4);
 }
 
 // pgsql_reader_index 直接按列序号取数据
@@ -950,7 +957,7 @@ static void *_pg_feed(pgsql_ctx *pg, ud_cxt *ud, char code,
  * 这一条同时钉住四个可破坏点：
  *   1) 把 `pg->pack->pack = NULL`（所有权移入结果数组）删掉 → _pgpack_free 会先释放 reader、
  *      再由 _pgpack_results_clear 对同一指针 pgsql_reader_free → double free
- *   2) 把 array_push_back(&results) 删掉 → result_count 变 0，多结果集整段丢失
+ *   2) 把 pgres_arr_push_back(&results) 删掉 → result_count 变 0，多结果集整段丢失
  *   3) field->type_oid(4B) 与 field->lens(2B) 读取顺序对调 → 类型 OID 白名单判错、取值失败
  *   4) `-1 == row->lens` 与 `0 == row->lens` 两支对调 → NULL 与空串互换 */
 static void test_pgpack_parser_full_flow(CuTest *tc) {

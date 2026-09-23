@@ -6,6 +6,8 @@
 
 #ifndef EV_IOCP
 
+#define QTN_MS   500 // 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
+
 // 监听socket与所属监听器的绑定（SO_REUSEPORT时每个watcher有独立fd）
 typedef struct lsnsock_ctx {
     evsock_ctx sock;          // 监听socket的事件上下文
@@ -41,7 +43,7 @@ typedef struct tcp_ctx {
     size_t wb_size;         // 当前 buf_s 中字节累计
     tda_ctx tda;            // 字节告警翻倍状态
     buffer_ctx buf_r;       // 接收缓冲区
-    queue_ctx buf_s;        // 发送队列
+    obuf_que buf_s;        // 发送队列
     cbs_ctx cbs;            // 回调函数集合
     ud_cxt ud;              // 用户数据
 }tcp_ctx;
@@ -52,7 +54,7 @@ typedef struct udp_ctx {
     size_t wb_size;             // 当前 buf_s 中字节累计
     tda_ctx tda;                // 字节告警翻倍状态
     cbs_ctx cbs;                // 回调函数集合
-    queue_ctx buf_s;            // 发送队列
+    sbuf_que buf_s;            // 发送队列
     ud_cxt ud;                  // 用户数据
 }udp_ctx;
 
@@ -86,7 +88,7 @@ void *_evpub_sk_new(void *args) {
     tcp->cbs = *skargs->cbs;
     COPY_UD(tcp->ud, skargs->ud);
     buffer_init(&tcp->buf_r);
-    queue_init(&tcp->buf_s, sizeof(off_buf_ctx), INIT_SENDBUF_LEN);
+    obuf_que_init(&tcp->buf_s, INIT_SENDBUF_LEN);
     tcp->wb_size = 0;
     tda_init(&tcp->tda, WB_WARN_INIT_SIZE);
     return &tcp->sock;
@@ -99,7 +101,7 @@ void _evpub_sk_free(void *sk) {
     CLOSE_SOCK(tcp->sock.sk.fd);
     buffer_free(&tcp->buf_r);
     _evpub_off_buf_clear(&tcp->buf_s);
-    queue_free(&tcp->buf_s);
+    obuf_que_free(&tcp->buf_s);
     UD_FREE(tcp->cbs.ud_free, &tcp->ud);
     FREE(tcp);
 }
@@ -117,8 +119,8 @@ void _evpub_sk_clear(void *sk) {
     CLOSE_SOCK(tcp->sock.sk.fd);
     _evpub_off_buf_clear(&tcp->buf_s);
     // clear 只归零不缩容,背压期涨上去的环会跟着对象一直待在池里,回池这步缩回初始容量
-    if (queue_maxsize(&tcp->buf_s) > INIT_SENDBUF_LEN) {
-        queue_resize(&tcp->buf_s, INIT_SENDBUF_LEN);
+    if (obuf_que_capacity(&tcp->buf_s) > INIT_SENDBUF_LEN) {
+        obuf_que_resize(&tcp->buf_s, INIT_SENDBUF_LEN);
     }
     tcp->wb_size = 0;
     tda_init(&tcp->tda, WB_WARN_INIT_SIZE);
@@ -424,7 +426,7 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl_
     }
     // 判队列非空而不是判 EVENT_WRITE：攒发链上的连接数据还在队列里、写事件却尚未注册，
     // 看 EVENT_WRITE 会把"还没发"当成"已发完"，握手报文就抢在明文尾包前面出去
-    if (0 != queue_size(&tcp->buf_s)) {
+    if (!obuf_que_empty(&tcp->buf_s)) {
         tcp->evssl = evssl;
         BIT_SET(tcp->status, STATUS_SSLEXCHANGE);
     } else {
@@ -479,7 +481,7 @@ static inline int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
         _evpub_mark_close(&tcp->status, rtn);
         return ERR_FAILED;// 分类已进 status, 不透传 evssl_* 的 1/2(口径同 _usk_tcp_recv)
     }
-    uint32_t cnt = queue_size(&tcp->buf_s);
+    uint32_t cnt = obuf_que_size(&tcp->buf_s);
 #if WITH_SSL
     // 挂读，并且必须摘掉写事件：水平触发下留着写事件就每轮重进本函数、SSL_write 再返
     // WANT_READ，空转烧满 watcher 线程。
@@ -534,7 +536,7 @@ void _uev_flush_pending(watcher_ctx *watcher) {
         BIT_REMOVE(tcp->status, STATUS_FLUSHPEND);
         // 挂链之后同一批命令又把它关了：队列已由关闭路径接管，再发会重挂事件
         if (BIT_CHECK(tcp->status, STATUS_ERROR)
-            || 0 == queue_size(&tcp->buf_s)) {
+            || obuf_que_empty(&tcp->buf_s)) {
             continue;
         }
         if (ERR_OK != _usk_tcp_send(watcher, tcp)) {
@@ -611,7 +613,7 @@ static void _usk_on_rw_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
         } else {
             if (evwrite && BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)) {// tls1.3 KeyUpdate 处理
                 BIT_REMOVE(tcp->status, STATUS_KEYUPDATE_WRITE);
-                if (0 == queue_size(&tcp->buf_s)) {
+                if (obuf_que_empty(&tcp->buf_s)) {
                     evwrite = 0;
                     _uev_del_event(watcher, tcp->sock.sk.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
                 }
@@ -692,18 +694,18 @@ void _uev_add_bufs_send(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf
         _evpub_off_buf_release(buf);
         return;
     }
-    if (!_evpub_sendqu_check_tcp(&tcp->buf_s, tcp->status, evsk->sk.fd)) {
+    if (!_evpub_sendqu_check_tcp(obuf_que_size(&tcp->buf_s), tcp->status, evsk->sk.fd)) {
         _evpub_off_buf_release(buf);
         _uev_disconnect(watcher, evsk);
         return;
     }
-    int32_t was_empty = (0 == queue_size(&tcp->buf_s));
+    int32_t was_empty = obuf_que_empty(&tcp->buf_s);
     tcp->wb_size += buf->lens;
 #ifdef FLUSH_WATERMARK
     watcher->flush_bytes += buf->lens;
 #endif
     _evpub_sendqu_tda(&tcp->tda, tcp->wb_size, evsk->sk.fd, 1);
-    queue_push(&tcp->buf_s, buf);
+    obuf_que_push(&tcp->buf_s, buf);
     // s_cb 执行期：外层 _usk_tcp_send 尚未做完回调后那段记账,此刻发或改攒发链都会打乱它。
     // 只入队即可,外层按回调之后重读的 cnt 把这批一并带出去,不会拖到下一轮
     if (BIT_CHECK(tcp->status, STATUS_SENDING)) {
@@ -711,7 +713,7 @@ void _uev_add_bufs_send(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf
     }
     // 已在攒发链上：堆满一次 iov 就先发一批，免得一轮里的巨量 ev_send 全压到轮末
     if (BIT_CHECK(tcp->status, STATUS_FLUSHPEND)) {
-        if (queue_size(&tcp->buf_s) < MAX_SEND_NIOV) {
+        if (obuf_que_size(&tcp->buf_s) < MAX_SEND_NIOV) {
             return;
         }
         _usk_flush_unlink(watcher, tcp);
@@ -1078,7 +1080,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock);
     }
     spin_lock(&ctx->spin);
-    array_push_back(&ctx->arrlsn, &lsn);
+    lsn_arr_push_back(&ctx->arrlsn, &lsn);
     spin_unlock(&ctx->spin);
     SET_PTR(id, lsn->id);
     return ERR_OK;
@@ -1109,7 +1111,7 @@ void _uev_qtn_push(watcher_ctx *watcher, void *obj, qtn_type type) {
     e.obj = obj;
     e.enter_ms = timer_cur_ms(&watcher->timer);
     e.type = type;
-    queue_push(&watcher->qtn, &e);
+    qtn_que_push(&watcher->qtn, &e);
 }
 void _uev_qtn_freelsn(watcher_ctx *watcher, listener_ctx *lsn) {
     if (1 == ATOMIC_ADD(&lsn->ref, -1)) {
@@ -1138,32 +1140,32 @@ static void _uev_qtn_release(watcher_ctx *watcher, qtn_entry *e, int32_t hard) {
 }
 void _uev_qtn_drain(watcher_ctx *watcher, uint64_t now_ms) {
     qtn_entry *e;
-    while (NULL != (e = (qtn_entry *)queue_peek(&watcher->qtn))) {
+    while (NULL != (e = qtn_que_peek(&watcher->qtn))) {
         if (now_ms - e->enter_ms < QTN_MS) {
             break;
         }
         _uev_qtn_release(watcher, e, 0);
-        queue_pop(&watcher->qtn);
+        qtn_que_pop(&watcher->qtn);
     }
 }
 void _uev_qtn_flush(watcher_ctx *watcher) {
     qtn_entry *e;
-    while (NULL != (e = (qtn_entry *)queue_pop(&watcher->qtn))) {
+    while (NULL != (e = qtn_que_pop(&watcher->qtn))) {
         _uev_qtn_release(watcher, e, 1);
     }
-    queue_free(&watcher->qtn);
+    qtn_que_free(&watcher->qtn);
 }
 // 根据id从arrlsn中查找并移除listener_ctx（加自旋锁保护）
 static listener_ctx * _usk_get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;
     listener_ctx **tmp;
     spin_lock(&ctx->spin);
-    uint32_t n = array_size(&ctx->arrlsn);
+    uint32_t n = lsn_arr_size(&ctx->arrlsn);
     for (uint32_t i = 0; i < n; i++) {
-        tmp = (listener_ctx **)array_at(&ctx->arrlsn, i);
+        tmp = lsn_arr_at(&ctx->arrlsn, (int32_t)i);
         if ((*tmp)->id == id) {
             lsn = *tmp;
-            array_del_nomove(&ctx->arrlsn, i);
+            lsn_arr_del_nomove(&ctx->arrlsn, (int32_t)i);
             break;
         }
     }
@@ -1297,19 +1299,19 @@ static inline int32_t _usk_udp_sendmsg_once(SOCKET fd, const void *data, size_t 
 static int32_t _usk_on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
     sendto_ctx *buf;
     int32_t snd;
-    while (NULL != (buf = queue_peek(&udp->buf_s))) {
+    while (NULL != (buf = sbuf_que_peek(&udp->buf_s))) {
         snd = _usk_udp_sendmsg_once(udp->sock.sk.fd, buf->data, buf->len, &buf->addr);
         if (1 == snd) {
             break;
         }
         udp->wb_size -= buf->len;
         FREE(buf->data);
-        queue_pop(&udp->buf_s);
+        sbuf_que_pop(&udp->buf_s);
         if (ERR_FAILED == snd) {
             return ERR_FAILED;
         }
     }
-    if (0 == queue_size(&udp->buf_s)) {
+    if (sbuf_que_empty(&udp->buf_s)) {
         if (BIT_CHECK(udp->sock.events, EVENT_WRITE)) {// 直发快路径无EVENT_WRITE
             _uev_del_event(watcher, udp->sock.sk.fd, &udp->sock.events, EVENT_WRITE, &udp->sock);
         }
@@ -1341,14 +1343,14 @@ void _uev_add_bufs_sendto(watcher_ctx *watcher, evsock_ctx *evsk, sendto_ctx *bu
     udp_ctx *udp = UPCAST(evsk, udp_ctx, sock);
     // ERROR 期拒收:否则绕过 _usk_on_udp_rw 的 STATUS_ERROR 检查直接触达 _usk_on_udp_wcb
     if (BIT_CHECK(udp->status, STATUS_ERROR)
-        || !_evpub_sendqu_check_udp(&udp->buf_s, evsk->sk.fd)) {
+        || !_evpub_sendqu_check_udp(sbuf_que_size(&udp->buf_s), evsk->sk.fd)) {
         FREE(buf->data);
         return;
     }
-    int32_t was_empty = (0 == queue_size(&udp->buf_s));
+    int32_t was_empty = sbuf_que_empty(&udp->buf_s);
     udp->wb_size += buf->len;
     _evpub_sendqu_tda(&udp->tda, udp->wb_size, evsk->sk.fd, 0);
-    queue_push(&udp->buf_s, buf);
+    sbuf_que_push(&udp->buf_s, buf);
     // 队列本来就非空：EVENT_WRITE 必然已经注册（否则数据早发不出去），无需重复处理
     if (!was_empty) {
         return;
@@ -1375,7 +1377,7 @@ int32_t _uev_try_sendto(watcher_ctx *watcher, evsock_ctx *evsk, const void *data
     if (BIT_CHECK(udp->status, STATUS_ERROR)) {
         return 0;
     }
-    if (0 != queue_size(&udp->buf_s)) {
+    if (!sbuf_que_empty(&udp->buf_s)) {
         return 1;
     }
     int32_t snd = _usk_udp_sendmsg_once(evsk->sk.fd, data, len, addr);
@@ -1403,7 +1405,7 @@ static evsock_ctx *_usk_new_udp(skpool_args *skargs) {
     udp->sock.sk.skid = createid();
     udp->cbs = *skargs->cbs;
     COPY_UD(udp->ud, skargs->ud);
-    queue_init(&udp->buf_s, sizeof(sendto_ctx), INIT_SENDBUF_LEN);
+    sbuf_que_init(&udp->buf_s, INIT_SENDBUF_LEN);
     udp->wb_size = 0;
     tda_init(&udp->tda, WB_WARN_INIT_SIZE);
     return &udp->sock;
@@ -1412,7 +1414,7 @@ void _uev_free_udp(evsock_ctx *evsk) {
     udp_ctx *udp = UPCAST(evsk, udp_ctx, sock);
     CLOSE_SOCK(udp->sock.sk.fd);
     _evpub_sendto_clear(&udp->buf_s);
-    queue_free(&udp->buf_s);
+    sbuf_que_free(&udp->buf_s);
     UD_FREE(udp->cbs.ud_free, &udp->ud);
     FREE(udp);
 }

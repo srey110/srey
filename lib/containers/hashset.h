@@ -1,78 +1,54 @@
 ﻿#ifndef HASHSET_H_
 #define HASHSET_H_
 
-#include "base/macro.h"
+#include "containers/hashmap.h"
 
-typedef struct hashset hashset;
+// 类型化 hashset:HASHMAP_DECL 的薄包装(键即元素本身,不另存 value)。
+// 语义与 name##_hm 的同名函数一一对应,只是 contains 把指针压成 0/1。
+//
+// 典型用法:
+//   HASHSET_DECL(id_set, uint64_t, id_hash, id_cmp)
+//   id_set *s = id_set_new(0, NULL);
+//
+// 生成的 name##_hm_* 也可直接用(需要 get / get_set / probe / 指定 hash 的变体时)。
 
-/// <summary>
-/// 创建 hashset。
-/// </summary>
-/// <param name="elsize">元素大小(bytes)</param>
-/// <param name="cap">初始容量;0 用默认</param>
-/// <param name="hash">hash 函数;签名与 hashmap 兼容,可直接传 hashmap_sip/hashmap_xxhash3,
-///     用户自写时可忽略 seed0/seed1(内部固定 0)</param>
-/// <param name="compare">比较函数;返回 0 相等</param>
-/// <param name="elfree">元素释放回调(by-value 元素含指针时用,可 NULL)</param>
-/// <param name="udata">透传给 compare 的上下文(可 NULL)</param>
-/// <returns>hashset 指针;失败返 NULL</returns>
-hashset *hashset_new(size_t elsize, size_t cap,
-                     uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
-                     int (*compare)(const void *a, const void *b, void *udata),
-                     void (*elfree)(void *item),
-                     void *udata);
-/// <summary>释放 hashset。若设置了 elfree,会对所有元素调用一次</summary>
-/// <param name="s">hashset 指针;NULL 安全</param>
-void hashset_free(hashset *s);
-/// <summary>清空所有元素。若设置了 elfree,会对每个元素调用一次</summary>
-/// <param name="s">hashset 指针</param>
-/// <param name="update_cap">语义与名字直觉相反:非 0 = 把 cap 抬到当前已增长的桶数,不做任何分配,
-/// 峰值容量就此保留且不再回缩;0 = 重新分配桶数组缩回建表时的 cap(一次 malloc + free)。
-/// 每次复用的 scratch 容器应传非 0</param>
-void hashset_clear(hashset *s, int32_t update_cap);
-/// <summary>当前元素数</summary>
-/// <param name="s">hashset 指针</param>
-/// <returns>元素个数</returns>
-size_t hashset_count(const hashset *s);
-/// <summary>最近一次 add 因内存分配失败时为 OOM 状态</summary>
-/// <param name="s">hashset 指针</param>
-/// <returns>1 OOM(本次 add 未成功);0 正常</returns>
-int32_t hashset_oom(const hashset *s);
-/// <summary>
-/// 加入元素。已存在时更新(覆写为新值)。若设置了 elfree,覆写时不自动调用,
-/// 被顶掉的旧元素由调用方按需处理(元素内部的 strdup / MALLOC 字段否则全部泄漏)。
-/// </summary>
-/// <param name="s">hashset 指针</param>
-/// <param name="item">元素指针;按 elsize 字节读取</param>
-/// <returns>hashmap 内部 item 指针(指向被覆写的旧元素副本,下次 add/grow 前有效);
-///     新增或内存分配失败时返回 NULL,可用 hashset_oom 区分是否 OOM</returns>
-const void *hashset_add(hashset *s, const void *item);
-/// <summary>判断元素是否存在</summary>
-/// <param name="s">hashset 指针</param>
-/// <param name="item">查询元素</param>
-/// <returns>1 存在;0 不存在</returns>
-int32_t hashset_contains(const hashset *s, const void *item);
-/// <summary>
-/// 删除元素。若设置了 elfree,删除后不自动调用,由调用方按需处理。
-/// </summary>
-/// <param name="s">hashset 指针</param>
-/// <param name="item">待删除元素</param>
-/// <returns>hashmap 内部 item 指针(指向被删除元素副本,下次 add/grow 前有效);
-///     元素不存在返 NULL</returns>
-const void *hashset_remove(hashset *s, const void *item);
-/// <summary>
-/// 遍历全部元素;遍历期间不可增删,否则未定义行为。
-/// </summary>
-/// <param name="s">hashset 指针</param>
-/// <param name="iter">每个元素调用一次;返回非 0 继续,返 0 终止</param>
-/// <param name="udata">透传给 iter 的上下文</param>
-/// <returns>1 遍历完;0 被 iter 提前终止</returns>
-int32_t hashset_scan(hashset *s, int32_t (*iter)(const void *item, void *udata), void *udata);
-/// <summary>迭代器风格遍历;遍历期间不可增删</summary>
-/// <param name="s">hashset 指针</param>
-/// <param name="i">迭代器状态;首次传入 *i=0,每次调用后内部自增</param>
-/// <param name="item">出参:指向当前元素</param>
-/// <returns>1 取到元素;0 遍历结束</returns>
-int32_t hashset_iter(hashset *s, size_t *i, void **item);
+// HASHSET_DECL(name, T, HASHFN, CMPFN):参数含义同 HASHMAP_DECL
+#define HASHSET_DECL(name, T, HASHFN, CMPFN)                                   \
+HASHMAP_DECL(name##_hm, T, HASHFN, CMPFN)                                       \
+typedef name##_hm name;                                                         \
+static inline name *name##_new(size_t cap, void (*elfree)(void *item)) {       \
+    return name##_hm_new(cap, elfree);                                         \
+}                                                                              \
+static inline void name##_free(name *s) {                                       \
+    name##_hm_free(s);                                                          \
+}                                                                               \
+static inline void name##_clear(name *s, int32_t update_cap) {                  \
+    name##_hm_clear(s, update_cap);                                             \
+}                                                                               \
+static inline uint32_t name##_size(const name *s) {                            \
+    return name##_hm_size(s);                                                  \
+}                                                                               \
+static inline uint32_t name##_elsize(const name *s) {                           \
+    return name##_hm_elsize(s);                                                 \
+}                                                                               \
+static inline int32_t name##_oom(const name *s) {                               \
+    return name##_hm_oom(s);                                                    \
+}                                                                               \
+static inline T *name##_add(name *s, T const *item) {                           \
+    return name##_hm_set(s, item);                                              \
+}                                                                               \
+static inline int32_t name##_contains(const name *s, T const *item) {           \
+    return NULL != name##_hm_get(s, item);                                      \
+}                                                                               \
+static inline T *name##_remove(name *s, T const *item) {                        \
+    return name##_hm_delete(s, item);                                           \
+}                                                                               \
+static inline int32_t name##_scan(name *s,                                      \
+        int32_t (*iter)(T const *item, void *udata), void *udata) {             \
+    return name##_hm_scan(s, iter, udata);                                      \
+}                                                                               \
+static inline int32_t name##_iter(name *s, size_t *i, T **item) {               \
+    return name##_hm_iter(s, i, item);                                          \
+}
 
 #endif//HASHSET_H_

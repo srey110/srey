@@ -2,6 +2,7 @@
 #include "lib.h"
 #include "utils/strptime.h"
 #include "utils/pool.h"
+#include "utils/uuid.h"
 #include <locale.h>
 
 #define FAKE_RV_MAX 3// 场景二是最长的一路: 两轮读满 + 一轮确认
@@ -10,6 +11,15 @@
 // 带标记的测试对象:_elfree 收到真实对象时 magic 必为 POOL_T_MAGIC;
 // 若收到队列槽位地址(历史 bug),magic 不符,_pt_free_bad 增长
 #define POOL_T_MAGIC 0x5ada5adau
+#define UUID_MT_THREADS 4// uuid 多线程用例的线程数
+#define UUID_MT_PER 20000// 每个线程生成的 v7 个数
+
+// uuid 多线程用例：每个线程把生成的 v7 顺序存进自己那段 ids
+typedef struct _uuid_mt_arg {
+    int32_t n;
+    int32_t nfail;
+    char *ids;
+} _uuid_mt_arg;
 
 /* =======================================================================
  * pack / unpack —— 整数、浮点数的字节序读写
@@ -409,6 +419,219 @@ static void test_sfid_epoch_underflow(CuTest *tc) {
 }
 
 /* =======================================================================
+ * uuid —— v4 / v7 生成、版本号、文本互转
+ * ======================================================================= */
+// RFC 9562 附录的两个示例：往返、版本号、v7 时间戳
+static void test_uuid_rfc_vectors(CuTest *tc) {
+    const char *v7 = "017F22E2-79B0-7CC3-98C4-DC0C0C07398F";// A.6，输入大写
+    const char *v4 = "919108f7-52d1-4320-9bac-f847db4148a8";// A.3
+    // 逐字节写出期望值，挡住 fromstr / tostr 错得对称
+    const unsigned char v7bin[UUID_LENS] = { 0x01, 0x7F, 0x22, 0xE2, 0x79, 0xB0, 0x7C, 0xC3,
+                                             0x98, 0xC4, 0xDC, 0x0C, 0x0C, 0x07, 0x39, 0x8F };
+    char u[UUID_LENS];
+    char s[UUID_STR_LENS];
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr(v7, strlen(v7), u));
+    CuAssertTrue(tc, 0 == memcmp(u, v7bin, UUID_LENS));
+    memset(s, 'X', sizeof(s));
+    uuid_tostr(u, s);
+    CuAssertStrEquals(tc, "017f22e2-79b0-7cc3-98c4-dc0c0c07398f", s);// 输出固定小写
+    CuAssertIntEquals(tc, 7, uuid_version(u));
+    CuAssertTrue(tc, 0x017F22E279B0ULL == uuid_v7_ms(u));
+
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr(v4, strlen(v4), u));
+    uuid_tostr(u, s);
+    CuAssertStrEquals(tc, v4, s);
+    CuAssertIntEquals(tc, 4, uuid_version(u));
+    CuAssertTrue(tc, 0 == uuid_v7_ms(u));
+}
+// 非法输入全返 ERR_FAILED；大小写、Nil / Max、不以 '\0' 结尾的缓冲都能解析
+static void test_uuid_fromstr_invalid(CuTest *tc) {
+    const char *ok = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f";
+    const char *bad[] = {
+        "017f22e-279b0-7cc3-98c4-dc0c0c07398f",// 连字符前移一位
+        "017f22e279-b0-7cc3-98c4-dc0c0c07398f",// 连字符后移两位
+        "017f22e2079b007cc3098c40dc0c0c07398f",// 连字符全换成 0
+        "017f22e2--9b0-7cc3-98c4-dc0c0c07398f",// 多一个连字符
+        "017f22e2-79b0-7cc3-98c4+dc0c0c07398f",
+        "017f22e2-79b0-7cc3-98c4-dc0c0c07398g",
+        "017f22e2-79b0-7cc3-98c4-dc0c0c0739 f",
+        "{17f22e2-79b0-7cc3-98c4-dc0c0c07398}",// 36 字节的花括号形式
+        "urn:uuid:017f22e2-79b0-7cc3-98c4-dc0",// 36 字节的 urn 前缀
+    };
+    // 十六进制边界两侧的字符 + 连字符 + 一个合法数字
+    const char *edge = "/:@G`g-0";
+    char u[UUID_LENS];
+    char ref[UUID_LENS];
+    char s[UUID_STR_LENS];
+    char buf[64];
+    char *exact;
+    size_t i, j;
+    int32_t isdash, valid;
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr(ok, strlen(ok), ref));
+    for (i = 0; i < ARRAY_SIZE(bad); i++) {
+        CuAssertIntEquals(tc, 36, (int)strlen(bad[i]));// 长度对了才测得到别的检查
+        CuAssertIntEquals(tc, ERR_FAILED, uuid_fromstr(bad[i], strlen(bad[i]), u));
+    }
+    // 36 个位置逐个替换：连字符位只认 '-'，其余位只认十六进制
+    for (i = 0; i < 36; i++) {
+        isdash = (8 == i || 13 == i || 18 == i || 23 == i);
+        for (j = 0; j < strlen(edge); j++) {
+            memcpy(buf, ok, 36);
+            buf[i] = edge[j];
+            valid = isdash ? ('-' == edge[j]) : ('0' == edge[j]);
+            CuAssertIntEquals(tc, valid ? ERR_OK : ERR_FAILED, uuid_fromstr(buf, 36, u));
+        }
+    }
+    // 长度必须恰好 36
+    CuAssertIntEquals(tc, ERR_FAILED, uuid_fromstr(ok, 35, u));
+    memcpy(buf, ok, 36);
+    buf[36] = '0';
+    CuAssertIntEquals(tc, ERR_FAILED, uuid_fromstr(buf, 37, u));
+    CuAssertIntEquals(tc, ERR_FAILED, uuid_fromstr(buf, 0, u));
+    CuAssertIntEquals(tc, ERR_FAILED, uuid_fromstr("{017f22e2-79b0-7cc3-98c4-dc0c0c07398f}", 38, u));
+    CuAssertIntEquals(tc, ERR_FAILED, uuid_fromstr("urn:uuid:017f22e2-79b0-7cc3-98c4-dc0c0c07398f", 45, u));
+    // 大写、混合大小写
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr("017F22E2-79B0-7CC3-98C4-DC0C0C07398F", 36, u));
+    CuAssertTrue(tc, 0 == memcmp(u, ref, UUID_LENS));
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr("017f22E2-79B0-7cC3-98c4-Dc0C0c07398F", 36, u));
+    CuAssertTrue(tc, 0 == memcmp(u, ref, UUID_LENS));
+    // 恰好 36 字节、后面没有 '\0' 的堆缓冲：越界读会被 ASan 抓到
+    MALLOC(exact, 36);
+    memcpy(exact, ok, 36);
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr(exact, 36, u));
+    CuAssertTrue(tc, 0 == memcmp(u, ref, UUID_LENS));
+    FREE(exact);
+    // 后面紧跟非 '\0' 字符
+    memcpy(buf, ok, 36);
+    memcpy(buf + 36, "ffff", 5);
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr(buf, 36, u));
+    CuAssertTrue(tc, 0 == memcmp(u, ref, UUID_LENS));
+    // Nil、Max 能解析，但变体不是 10，版本号与毫秒都得 0
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr("00000000-0000-0000-0000-000000000000", 36, u));
+    CuAssertIntEquals(tc, 0, uuid_version(u));
+    CuAssertTrue(tc, 0 == uuid_v7_ms(u));
+    uuid_tostr(u, s);
+    CuAssertStrEquals(tc, "00000000-0000-0000-0000-000000000000", s);
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", 36, u));
+    CuAssertIntEquals(tc, 0, uuid_version(u));
+    CuAssertTrue(tc, 0 == uuid_v7_ms(u));
+    uuid_tostr(u, s);
+    CuAssertStrEquals(tc, "ffffffff-ffff-ffff-ffff-ffffffffffff", s);
+    // 版本位是 7 但变体位不是 10：同样不认
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr("017f22e2-79b0-7cc3-18c4-dc0c0c07398f", 36, u));
+    CuAssertIntEquals(tc, 0, uuid_version(u));
+    CuAssertTrue(tc, 0 == uuid_v7_ms(u));
+    CuAssertIntEquals(tc, ERR_OK, uuid_fromstr("017f22e2-79b0-7cc3-d8c4-dc0c0c07398f", 36, u));
+    CuAssertIntEquals(tc, 0, uuid_version(u));
+    CuAssertTrue(tc, 0 == uuid_v7_ms(u));
+}
+// 版本位、变体位固定，其余随机位 1000 次里 0 和 1 都出现过
+static void test_uuid_version_bits(CuTest *tc) {
+    unsigned char or4[UUID_LENS], and4[UUID_LENS], or7[UUID_LENS], and7[UUID_LENS];
+    char a[UUID_LENS];
+    char b[UUID_LENS];
+    int32_t i, k;
+    memset(or4, 0, sizeof(or4));
+    memset(and4, 0xFF, sizeof(and4));
+    memset(or7, 0, sizeof(or7));
+    memset(and7, 0xFF, sizeof(and7));
+    for (i = 0; i < 1000; i++) {
+        CuAssertIntEquals(tc, ERR_OK, uuid_v4(a));
+        CuAssertIntEquals(tc, 4, uuid_version(a));
+        CuAssertIntEquals(tc, ERR_OK, uuid_v7(b));
+        CuAssertIntEquals(tc, 7, uuid_version(b));
+        for (k = 0; k < UUID_LENS; k++) {
+            or4[k] |= (unsigned char)a[k];
+            and4[k] &= (unsigned char)a[k];
+            or7[k] |= (unsigned char)b[k];
+            and7[k] &= (unsigned char)b[k];
+        }
+    }
+    // v4：只有第 6 字节高 4 位（0100）和第 8 字节高 2 位（10）固定
+    for (k = 0; k < UUID_LENS; k++) {
+        CuAssertIntEquals(tc, 6 == k ? 0x4F : (8 == k ? 0xBF : 0xFF), or4[k]);
+        CuAssertIntEquals(tc, 6 == k ? 0x40 : (8 == k ? 0x80 : 0x00), and4[k]);
+    }
+    // v7：rand_b 是第 8 字节低 6 位加第 9~15 字节
+    CuAssertIntEquals(tc, 0x70, or7[6] & 0xF0);
+    CuAssertIntEquals(tc, 0x70, and7[6] & 0xF0);
+    for (k = 8; k < UUID_LENS; k++) {
+        CuAssertIntEquals(tc, 8 == k ? 0xBF : 0xFF, or7[k]);
+        CuAssertIntEquals(tc, 8 == k ? 0x80 : 0x00, and7[k]);
+    }
+    // 两次 v4 相同的概率是 2^-122
+    CuAssertIntEquals(tc, ERR_OK, uuid_v4(a));
+    CuAssertIntEquals(tc, ERR_OK, uuid_v4(b));
+    CuAssertTrue(tc, 0 != memcmp(a, b, UUID_LENS));
+}
+// 单线程连续 10000 个 v7 按 memcmp 严格递增，毫秒夹在生成前后的 nowms 之间
+static void test_uuid_v7_monotonic(CuTest *tc) {
+    const int32_t n = 10000;
+    char *ids;
+    uint64_t t0, t1, ms;
+    int32_t i;
+    MALLOC(ids, (size_t)n * UUID_LENS);
+    t0 = nowms();
+    for (i = 0; i < n; i++) {
+        CuAssertIntEquals(tc, ERR_OK, uuid_v7(ids + (size_t)i * UUID_LENS));
+    }
+    t1 = nowms();
+    for (i = 0; i < n; i++) {
+        if (i > 0) {
+            CuAssertTrue(tc, memcmp(ids + (size_t)(i - 1) * UUID_LENS, ids + (size_t)i * UUID_LENS, UUID_LENS) < 0);
+        }
+        ms = uuid_v7_ms(ids + (size_t)i * UUID_LENS);
+        // 上界：同一毫秒超过 2048 个才会把时间戳推前，每 4096 个推 1ms；兜住进位算错
+        CuAssertTrue(tc, t0 <= ms && ms <= t1 + (uint64_t)n / 2048 + 1);
+    }
+    FREE(ids);
+}
+static void _uuid_mt_gen(void *arg) {
+    _uuid_mt_arg *a = (_uuid_mt_arg *)arg;
+    int32_t i;
+    for (i = 0; i < a->n; i++) {
+        if (ERR_OK != uuid_v7(a->ids + (size_t)i * UUID_LENS)) {
+            a->nfail++;
+        }
+    }
+}
+// 按前 8 字节（毫秒、版本、计数器）比较
+static int _uuid_cmp8(const void *a, const void *b) {
+    return memcmp(a, b, 8);
+}
+// 多线程：各线程内部严格递增；合并后前 8 字节没有重复，即 CAS 没把同一个 (毫秒, 计数器) 发给两个线程
+static void test_uuid_v7_threads(CuTest *tc) {
+    _uuid_mt_arg args[UUID_MT_THREADS];
+    pthread_t th[UUID_MT_THREADS];
+    size_t per = (size_t)UUID_MT_PER * UUID_LENS;
+    size_t total = (size_t)UUID_MT_PER * UUID_MT_THREADS;
+    char *all;
+    size_t i;
+    int32_t t;
+    MALLOC(all, per * UUID_MT_THREADS);
+    for (t = 0; t < UUID_MT_THREADS; t++) {
+        args[t].n = UUID_MT_PER;
+        args[t].nfail = 0;
+        args[t].ids = all + per * (size_t)t;
+        th[t] = thread_creat(_uuid_mt_gen, &args[t]);
+    }
+    for (t = 0; t < UUID_MT_THREADS; t++) {
+        thread_join(th[t]);
+    }
+    for (t = 0; t < UUID_MT_THREADS; t++) {
+        CuAssertIntEquals(tc, 0, args[t].nfail);
+        for (i = 1; i < (size_t)UUID_MT_PER; i++) {
+            CuAssertTrue(tc, memcmp(args[t].ids + (i - 1) * UUID_LENS, args[t].ids + i * UUID_LENS, UUID_LENS) < 0);
+        }
+    }
+    qsort(all, total, UUID_LENS, _uuid_cmp8);
+    for (i = 1; i < total; i++) {
+        CuAssertTrue(tc, memcmp(all + (i - 1) * UUID_LENS, all + i * UUID_LENS, 8) < 0);
+    }
+    FREE(all);
+}
+
+/* =======================================================================
  * hash_ring —— 一致性哈希
  * ======================================================================= */
 static void test_hash_ring(CuTest *tc) {
@@ -453,7 +676,7 @@ static void test_hash_ring(CuTest *tc) {
     hash_ring_init(&ring);
 
     /* 环定位：2 节点各 150 副本，200 个固定 key 两个节点都得命中过。
-       md5 分布可重现，但不钉"哪个 key 落哪个节点"；二分退化成恒取 items[0]
+       哈希分布可重现，但不钉"哪个 key 落哪个节点"；二分退化成恒取 items[0]
        时全部 key 会挤到同一个节点上 */
     char skey[16];
     int32_t nhit_a = 0, nhit_b = 0;
@@ -1270,6 +1493,31 @@ static void test_chan(CuTest *tc) {
     CuAssertTrue(tc, 500500LL == sum);
 
     chan_free(ch);
+}
+// 缓冲 chan 的容量向上取到 2 的幂、最小 2:按 can_send 数能写几条(不会卡在 send 里),
+// 写满后不可再发,再按 FIFO 读空,读空后不可再收
+static void _chan_cap_check(CuTest *tc, uint32_t cap, uint32_t want) {
+    chan_ctx *ch = chan_init(cap);
+    uintptr_t n = 0, i;
+    size_t lens;
+    while (chan_can_send(ch) && n < 1024) {// 1024 只是防取整出错时死循环
+        n++;
+        CuAssertIntEquals(tc, ERR_OK, chan_send(ch, (void *)n, 0, 0));
+    }
+    CuAssertIntEquals(tc, (int)want, (int)n);
+    CuAssertIntEquals(tc, (int)want, (int)chan_size(ch));
+    CuAssertIntEquals(tc, 0, chan_can_send(ch));
+    for (i = 1; i <= n; i++) {
+        CuAssertTrue(tc, (void *)i == chan_recv(ch, &lens));
+    }
+    CuAssertIntEquals(tc, 0, chan_can_recv(ch));
+    chan_free(ch);
+}
+static void test_chan_capacity_round(CuTest *tc) {
+    _chan_cap_check(tc, 1, 2);
+    _chan_cap_check(tc, 3, 4);
+    _chan_cap_check(tc, 5, 8);
+    _chan_cap_check(tc, 100, 128);
 }
 
 /* =======================================================================
@@ -3015,7 +3263,7 @@ static void test_tw_wakeup_after_idle(CuTest *tc) {
     CuAssertTrue(tc, waited < 100);
 }
 /* =======================================================================
- * pool —— 对象池:取/还/复用、满处理、收缩、释放(thsafe=0 queue / thsafe=1 fsqu)
+ * pool —— 对象池:取/还/复用、满处理、收缩、释放(flags=0 queue / POOL_THSAFE fsqu)
  * ======================================================================= */
 typedef struct pool_t_obj {
     uint32_t magic;      // _elnew 置 POOL_T_MAGIC
@@ -3057,12 +3305,12 @@ static void _pt_elclear(void *data) {
 static pool_cbs _pt_cbs = { _pt_elnew, _pt_elfree, _pt_elreset, _pt_elclear };
 
 // 取/还/复用:空池 pop 走 _elnew,push 走 _elclear,命中 pop 走 _elreset(不再 new),args 透传
-static void _pool_basic_check(CuTest *tc, int32_t thsafe) {
+static void _pool_basic_check(CuTest *tc, int32_t flags) {
     pool_ctx pool;
     pool_t_obj *o, *o2;
     int32_t arg = 7;
     _pt_counters_reset();
-    pool_init(&pool, sizeof(pool_t_obj), 8, 2, thsafe, &_pt_cbs);
+    pool_init(&pool, sizeof(pool_t_obj), 8, 2, flags, &_pt_cbs);
     CuAssertIntEquals(tc, 0, pool_size(&pool));
     CuAssertTrue(tc, pool_capacity(&pool) >= 8);
     o = (pool_t_obj *)pool_pop(&pool, &arg, 0);
@@ -3091,7 +3339,7 @@ static void _pool_basic_check(CuTest *tc, int32_t thsafe) {
 }
 static void test_pool_basic(CuTest *tc) {
     _pool_basic_check(tc, 0);
-    _pool_basic_check(tc, 1);
+    _pool_basic_check(tc, POOL_THSAFE);
 }
 // 满池:pool_push 满则 _elfree;POOL_OP_NOFREE 满则不释放,对象仍归调用方
 static void test_pool_full(CuTest *tc) {
@@ -3137,12 +3385,12 @@ static void test_pool_full(CuTest *tc) {
     CuAssertIntEquals(tc, 0, _pt_free_bad);
 }
 // 收缩:释放至 max(keep,nkeep),且交给 _elfree 的都是真实对象(magic 正确)——历史 bug 回归点
-static void _pool_shrink_check(CuTest *tc, int32_t thsafe) {
+static void _pool_shrink_check(CuTest *tc, int32_t flags) {
     pool_ctx pool;
     pool_t_obj *objs[8];
     uint32_t i;
     _pt_counters_reset();
-    pool_init(&pool, sizeof(pool_t_obj), 16, 2, thsafe, &_pt_cbs);
+    pool_init(&pool, sizeof(pool_t_obj), 16, 2, flags, &_pt_cbs);
     for (i = 0; i < 8; i++) {
         objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
     }
@@ -3160,9 +3408,9 @@ static void _pool_shrink_check(CuTest *tc, int32_t thsafe) {
 }
 static void test_pool_shrink(CuTest *tc) {
     _pool_shrink_check(tc, 0); // 非线程安全 queue —— 本次修复路径
-    _pool_shrink_check(tc, 1); // 线程安全 fsqu —— 确认仍正确
+    _pool_shrink_check(tc, POOL_THSAFE); // 线程安全 fsqu —— 确认仍正确
 }
-// 收缩策略:nkeep 下限 与 load_trend busy 跳过(thsafe=0,确定性)
+// 收缩策略:nkeep 下限 与 load_trend busy 跳过(flags=0,确定性)
 static void test_pool_shrink_policy(CuTest *tc) {
     pool_ctx pool;
     pool_t_obj *objs[8];
@@ -3209,6 +3457,80 @@ static void test_pool_default(CuTest *tc) {
     CuAssertPtrEquals(tc, a, b); // 命中复用
     pool_push(&pool, b, 0);
     pool_free(&pool);
+}
+// 出队顺序:非安全池默认后进先出(拿刚还的),POOL_FIFO 与线程安全池先进先出。
+// 收缩不论哪种都从最冷的队头释放,留下的是最近归还的那个
+static void _pool_order_check(CuTest *tc, int32_t flags, int32_t lifo) {
+    pool_ctx pool;
+    pool_t_obj *a, *b, *c, *got, *left;
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 8, 0, flags, &_pt_cbs);
+    a = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    b = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    c = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    pool_push(&pool, a, 0);
+    pool_push(&pool, b, 0);
+    pool_push(&pool, c, 0);
+    got = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    CuAssertPtrEquals(tc, lifo ? c : a, got);
+    pool_push(&pool, got, 0);// 还回队尾,成了最热的那个
+    pool_shrink_to(&pool, 1);
+    CuAssertIntEquals(tc, 2, _pt_free);
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+    CuAssertIntEquals(tc, 1, pool_size(&pool));
+    left = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    CuAssertPtrEquals(tc, got, left);
+    pool_push(&pool, left, 0);
+    pool_free(&pool);
+    CuAssertIntEquals(tc, 3, _pt_free);
+}
+static void test_pool_order(CuTest *tc) {
+    _pool_order_check(tc, 0, 1);
+    _pool_order_check(tc, POOL_FIFO, 0);
+    _pool_order_check(tc, POOL_THSAFE, 0);
+    _pool_order_check(tc, POOL_THSAFE | POOL_FIFO, 0);// FIFO 对安全池不起作用,本来就先进先出
+}
+// 容量非 2 的幂时向上取到 2 的幂:写满 want 个后再还即失败(对象被释放),取空后再取走新建
+static void _pool_cap_check(CuTest *tc, int32_t flags, uint32_t cap, uint32_t want) {
+    pool_ctx pool;
+    pool_t_obj *objs[128], *over;
+    uint32_t i;
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), cap, 0, flags, &_pt_cbs);
+    CuAssertIntEquals(tc, (int)want, (int)pool_capacity(&pool));
+    for (i = 0; i < want; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    }
+    for (i = 0; i < want; i++) {
+        CuAssertIntEquals(tc, ERR_OK, pool_push(&pool, objs[i], 0));
+    }
+    CuAssertIntEquals(tc, (int)want, (int)pool_size(&pool));
+    over = (pool_t_obj *)_pt_elnew(NULL);
+    CuAssertIntEquals(tc, ERR_FAILED, pool_push(&pool, over, 0));
+    CuAssertIntEquals(tc, 1, _pt_free);
+    for (i = 0; i < want; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    }
+    CuAssertIntEquals(tc, 0, pool_size(&pool));
+    CuAssertIntEquals(tc, (int)want + 1, (int)_pt_new);// want 个首次新建 + over,取空前没有多建
+    over = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    CuAssertIntEquals(tc, (int)want + 2, (int)_pt_new);// 已取空,再取只能新建
+    _pt_elfree(over);
+    for (i = 0; i < want; i++) {
+        _pt_elfree(objs[i]);
+    }
+    pool_free(&pool);
+    CuAssertIntEquals(tc, (int)want + 2, (int)_pt_free);
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+}
+static void test_pool_capacity_round(CuTest *tc) {
+    _pool_cap_check(tc, 0, 1, 2);// queue 最小 2
+    _pool_cap_check(tc, 0, 3, 4);
+    _pool_cap_check(tc, 0, 5, 8);
+    _pool_cap_check(tc, 0, 100, 128);
+    // 安全池只取 >= 8 的:bbq 后端最小容量就是 8,更小的值在它上面取整结果不同
+    _pool_cap_check(tc, POOL_THSAFE, 5, 8);
+    _pool_cap_check(tc, POOL_THSAFE, 100, 128);
 }
 
 // TDA-1：threshold 翻倍溢出修复验证
@@ -3510,11 +3832,17 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_sfid);
     SUITE_ADD_TEST(suite, test_sfid_seq_exhaust);
     SUITE_ADD_TEST(suite, test_sfid_invalid);
+    SUITE_ADD_TEST(suite, test_uuid_rfc_vectors);
+    SUITE_ADD_TEST(suite, test_uuid_fromstr_invalid);
+    SUITE_ADD_TEST(suite, test_uuid_version_bits);
+    SUITE_ADD_TEST(suite, test_uuid_v7_monotonic);
+    SUITE_ADD_TEST(suite, test_uuid_v7_threads);
     SUITE_ADD_TEST(suite, test_hash_ring);
     SUITE_ADD_TEST(suite, test_hash_ring_edge);
     SUITE_ADD_TEST(suite, test_netaddr);
     SUITE_ADD_TEST(suite, test_netaddr_extra);
     SUITE_ADD_TEST(suite, test_chan);
+    SUITE_ADD_TEST(suite, test_chan_capacity_round);
     SUITE_ADD_TEST(suite, test_hug);
     SUITE_ADD_TEST(suite, test_hug_wakeup_flood);
     SUITE_ADD_TEST(suite, test_timeofday_consistent);
@@ -3552,6 +3880,8 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pool_shrink);
     SUITE_ADD_TEST(suite, test_pool_shrink_policy);
     SUITE_ADD_TEST(suite, test_pool_default);
+    SUITE_ADD_TEST(suite, test_pool_order);
+    SUITE_ADD_TEST(suite, test_pool_capacity_round);
     SUITE_ADD_TEST(suite, test_tda_overflow);
     SUITE_ADD_TEST(suite, test_strtod_c);
     SUITE_ADD_TEST(suite, test_str2u64);

@@ -1,17 +1,17 @@
 ﻿#include "protocol/mqtt/mqtt_struct.h"
 
 // 释放属性数组及每个属性条目（含 sval）
-void _mqtt_propertie_free(array_ctx *properties) {
+void _mqtt_propertie_free(mprop_arr *properties) {
     if (NULL == properties) {
         return;
     }
     mqtt_propertie *propt;
-    for (uint32_t i = 0; i < array_size(properties); i++) {
-        propt = *(mqtt_propertie **)array_at(properties, i);
+    for (uint32_t i = 0; i < mprop_arr_size(properties); i++) {
+        propt = *mprop_arr_at(properties, (int32_t)i);
         FREE(propt->sval);
         FREE(propt);
     }
-    array_free(properties);
+    mprop_arr_free(properties);
     FREE(properties);
 }
 void _mqtt_connect_varhead_free(void *data) {
@@ -67,12 +67,12 @@ void _mqtt_subscribe_payload_free(void *data) {
     }
     subscribe_option *subop;
     mqtt_subscribe_payload *pl = (mqtt_subscribe_payload *)data;
-    for (uint32_t i = 0; i < array_size(&pl->subop); i++) {
-        subop = *(subscribe_option **)array_at(&pl->subop, i);
+    for (uint32_t i = 0; i < msubop_arr_size(&pl->subop); i++) {
+        subop = *msubop_arr_at(&pl->subop, (int32_t)i);
         FREE(subop->topic);
         FREE(subop);
     }
-    array_free(&pl->subop);
+    msubop_arr_free(&pl->subop);
     FREE(pl);
 }
 void _mqtt_unsubscribe_payload_free(void *data) {
@@ -81,11 +81,11 @@ void _mqtt_unsubscribe_payload_free(void *data) {
     }
     void *topic;
     mqtt_unsubscribe_payload *pl = (mqtt_unsubscribe_payload *)data;
-    for (uint32_t i = 0; i < array_size(&pl->topics); i++) {
-        topic = *(void **)array_at(&pl->topics, i);
+    for (uint32_t i = 0; i < mtopic_arr_size(&pl->topics); i++) {
+        topic = *mtopic_arr_at(&pl->topics, (int32_t)i);
         FREE(topic);
     }
-    array_free(&pl->topics);
+    mtopic_arr_free(&pl->topics);
     FREE(pl);
 }
 void _mqtt_reasonlist_payload_free(void *data) {

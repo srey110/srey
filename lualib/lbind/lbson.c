@@ -694,7 +694,7 @@ static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bs
             snprintf(keybuf, sizeof(keybuf), "%lld", (long long)lua_tointeger(lua, -2));
             key = keybuf;
         } else {
-            // 与下方 value 类型不支持时的处理一致改为报错，不再静默丢弃该键值对
+            // 与下方 value 类型不支持时的处理一致：报错，不静默丢弃该键值对
             luaL_error(lua, "bson encode unsupported key type '%s'", lua_typename(lua, lua_type(lua, -2)));
         }
         _lbson_encode_value(lua, lua_gettop(lua), bson, key);

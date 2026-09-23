@@ -44,21 +44,30 @@
 // 毫秒级睡眠
 #define MSLEEP(ms) USLEEP((uint64_t)(ms) * 1000)
 #define THREAD_YIELD() sched_yield() // OS 级线程让出，用于自旋超限后的兜底退避
-/* 自旋等待 CPU 暂停提示，降低功耗并减少流水线压力 */
+/* 自旋等待 CPU 暂停提示，降低功耗并减少流水线压力。
+   CPU_PAUSE_CYCLES 是它大致值多少个周期，供按"要等多久"来用它的地方换算次数——
+   各平台单价差三个数量级。没实测过的平台一律往贵了估：估贵了只是少等一点，
+   估便宜了会等过头，在低竞争下真掉速 */
 #if defined(ARCH_X86) || defined(ARCH_X64)
     #define CPU_PAUSE() __asm__ volatile("pause" ::: "memory") // x86/x64 平台：使用 pause 指令
+    #define CPU_PAUSE_CYCLES 140 // Skylake 起约 140,更早的与 Zen 都更便宜,按上面的规则取最贵的
 #elif defined(ARCH_ARM64)
     #define CPU_PAUSE() __asm__ volatile("yield" ::: "memory") // ARM64：使用 yield 指令
+    #define CPU_PAUSE_CYCLES 1 // 近似 nop
 #elif defined(ARCH_ARM)
     #if defined(__ARM_ARCH) && __ARM_ARCH >= 7
         #define CPU_PAUSE() __asm__ volatile("yield" ::: "memory") // ARMv7+：使用 yield 指令
+        #define CPU_PAUSE_CYCLES 1 // 同 ARM64，近似 nop
     #else
         #define CPU_PAUSE() sched_yield() // ARMv4/5/6：让出 CPU
+        #define CPU_PAUSE_CYCLES 4096 // 系统调用
     #endif
 #elif defined(ARCH_PPC)
     #define CPU_PAUSE() __asm__ volatile("or 27,27,27" ::: "memory") // PPC 平台：低优先级提示
+    #define CPU_PAUSE_CYCLES 4096 // 没实测过，按最贵算
 #else
     #define CPU_PAUSE() sched_yield() // 其他平台：主动让出 CPU
+    #define CPU_PAUSE_CYCLES 4096 // 系统调用
 #endif
 // 线程局部存储
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)

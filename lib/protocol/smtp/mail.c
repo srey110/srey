@@ -19,22 +19,22 @@
 void mail_init(mail_ctx *mail) {
     ZERO(mail, sizeof(mail_ctx));
     mail->reply = 1;
-    array_init(&mail->addrs, sizeof(mail_addr), 0);
-    array_init(&mail->attach, sizeof(mail_attach), 0);
+    maddr_arr_init(&mail->addrs, 0);
+    mattach_arr_init(&mail->attach, 0);
 }
 // 释放附件列表中每个附件的 content 缓冲区（不释放数组本身）
-static void _mail_attach_free(array_ctx *attach) {
-    for (uint32_t i = 0; i < array_size(attach); i++) {
-        FREE(((mail_attach *)array_at(attach, i))->content);
+static void _mail_attach_free(mattach_arr *attach) {
+    for (uint32_t i = 0; i < mattach_arr_size(attach); i++) {
+        FREE(mattach_arr_at(attach, (int32_t)i)->content);
     }
 }
 void mail_free(mail_ctx *mail) {
     FREE(mail->subject);
     FREE(mail->msg);
     FREE(mail->html);
-    array_free(&mail->addrs);
+    maddr_arr_free(&mail->addrs);
     _mail_attach_free(&mail->attach);
-    array_free(&mail->attach);
+    mattach_arr_free(&mail->attach);
 }
 void mail_reply(mail_ctx *mail, int32_t reply) {
     mail->reply = reply;
@@ -106,10 +106,10 @@ void mail_addrs_add(mail_ctx *mail, const char *email, mail_addr_type type) {
     mail_addr addr;
     addr.addr_type = type;
     _mail_addr(&addr, NULL, email);
-    array_push_back(&mail->addrs, &addr);
+    maddr_arr_push_back(&mail->addrs, &addr);
 }
 void mail_addrs_clear(mail_ctx *mail) {
-    array_clear(&mail->addrs);
+    maddr_arr_clear(&mail->addrs);
 }
 void mail_attach_add(mail_ctx *mail, const char *file) {
     size_t flens;
@@ -130,11 +130,11 @@ void mail_attach_add(mail_ctx *mail, const char *file) {
     MALLOC(att.content, b64lens);
     bs64_encode(info, flens, att.content);
     FREE(info);
-    array_push_back(&mail->attach, &att);
+    mattach_arr_push_back(&mail->attach, &att);
 }
 void mail_attach_clear(mail_ctx *mail) {
     _mail_attach_free(&mail->attach);
-    array_clear(&mail->attach);
+    mattach_arr_clear(&mail->attach);
 }
 void mail_clear(mail_ctx *mail) {
     if (NULL != mail->subject) {
@@ -155,8 +155,8 @@ void mail_clear(mail_ctx *mail) {
 // 统计指定类型（TO/CC/BCC）的地址数量
 static uint32_t _mail_addr_count(mail_ctx *mail, mail_addr_type type) {
     uint32_t count = 0;
-    for (uint32_t i = 0; i < array_size(&mail->addrs); i++) {
-        if (type == ((mail_addr *)array_at(&mail->addrs, i))->addr_type) {
+    for (uint32_t i = 0; i < maddr_arr_size(&mail->addrs); i++) {
+        if (type == maddr_arr_at(&mail->addrs, (int32_t)i)->addr_type) {
             count++;
         }
     }
@@ -180,8 +180,8 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
     }
     uint32_t index = 0;
     mail_addr *addr;
-    for (uint32_t i = 0; i < array_size(&mail->addrs); i++) {
-        addr = array_at(&mail->addrs, i);
+    for (uint32_t i = 0; i < maddr_arr_size(&mail->addrs); i++) {
+        addr = maddr_arr_at(&mail->addrs, (int32_t)i);
         if (type != addr->addr_type) {
             continue;
         }
@@ -359,7 +359,7 @@ static inline void _mail_set_text_part(binary_ctx *bw, const char *msg) {
     }
 }
 char *mail_pack(mail_ctx *mail) {
-    uint32_t nattach = array_size(&mail->attach);
+    uint32_t nattach = mattach_arr_size(&mail->attach);
     int32_t multipart = (!EMPTYSTR(mail->html) || nattach > 0) ? 1 : 0;
     // 用不到的分支不生成：innerboundary 只有 multipart/alternative(即有 html)才用得上，
     // 而 csprng_rand 在 Linux 上是裸 getrandom，熵池未就绪时会阻塞。
@@ -376,8 +376,7 @@ char *mail_pack(mail_ctx *mail) {
     }
     binary_ctx bwriter;
     binary_init_write(&bwriter, ONEK, ONEK);
-    // RFC 5322 §3.4 的 name-addr 形式：display-name <addr-spec>。
-    // 原来写的是 "addr (name)"——把名字塞进注释里，虽然合法但没有哪个 MUA 会拿它当发件人名显示
+    // RFC 5322 §3.4 的 name-addr 形式：display-name <addr-spec>
     binary_set_binary(&bwriter, "From: ", 6);
     if (0 != strlen(mail->from.name)) {
         _mail_set_display_name(&bwriter, mail->from.name);
@@ -437,7 +436,7 @@ char *mail_pack(mail_ctx *mail) {
         }
         mail_attach *att;
         for (uint32_t i = 0; i < nattach; i++) {
-            att = array_at(&mail->attach, i);
+            att = mattach_arr_at(&mail->attach, (int32_t)i);
             binary_set_va(&bwriter, "Content-Type: %s;\r\n", contenttype(att->extension));
             binary_set_binary(&bwriter, "\t", 1);
             _mail_set_header_param(&bwriter, "name", att->file);

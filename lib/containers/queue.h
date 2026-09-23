@@ -3,146 +3,184 @@
 
 #include "base/macro.h"
 
-typedef struct queue_ctx {
-    uint32_t elsize;       // 单元素字节数（init 时指定）
-    uint32_t offset;       // 队头偏移（循环起始位置）
-    uint32_t size;         // 当前元素数量
-    uint32_t maxsize;      // 当前分配容量
-    void    *ptr;          // 数据存储数组
-}queue_ctx;
-/// <summary>
-/// 初始化循环队列
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <param name="elsize">单元素字节数，须 大于 0</param>
-/// <param name="maxsize">期望初始容量，非 0 时向上取到偶数(同 queue_resize)；0 表示延迟分配
-///   ——此刻不申请内存，首次入队(push 或 trypush 均可)时按默认容量分配。
-///   给"多数实例可能一个元素都装不进来"的场景省掉预付内存</param>
-void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize);
-/// <summary>
-/// 释放队列内部内存，不释放 qu 本身
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-void queue_free(queue_ctx *qu);
-/// <summary>
-/// 调整队列容量；扩容后元素重排到新缓冲起始位置（offset 归 0）
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <param name="maxsize">新容量，必须 大于等于 当前 size；0 使用默认值</param>
-void queue_resize(queue_ctx *qu, uint32_t maxsize);
-/// <summary>
-/// 删除指定位置元素（保持顺序，后续元素整体前移）
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <param name="pos">删除位置，[0, size)</param>
-void queue_del_at(queue_ctx *qu, uint32_t pos);
-// 环形下标回绕。前提是 off < 2 * maxsize —— offset 与 pos 各自都 < maxsize,
-// 队列内部所有下标计算都满足它;不满足时这个减法回绕不到位, 会读到错误槽位
-static inline uint32_t _queue_wrap(const queue_ctx *qu, uint32_t off) {
-    return off >= qu->maxsize ? off - qu->maxsize : off;
-}
-/// <summary>
-/// 当前元素数量
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <returns>元素数量</returns>
-static inline uint32_t queue_size(queue_ctx *qu) {
-    return qu->size;
-}
-/// <summary>
-/// 队列容量
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <returns>当前分配容量</returns>
-static inline uint32_t queue_maxsize(queue_ctx *qu) {
-    return qu->maxsize;
-}
-/// <summary>
-/// 队列是否为空
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <returns>非 0 表示空，0 表示非空</returns>
-static inline int32_t queue_empty(queue_ctx *qu) {
-    return 0 == qu->size;
-}
-/// <summary>
-/// 清空队列（保留已分配容量，下次复用）
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-static inline void queue_clear(queue_ctx *qu) {
-    qu->size = 0;
-    qu->offset = 0;
-}
-/// <summary>
-/// 按队头偏移访问元素(不弹出)
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <param name="pos">相对队头的偏移，[0, size)</param>
-/// <returns>指向元素的指针(可隐式转 T *)，越界返 NULL</returns>
-static inline void *queue_at(queue_ctx *qu, uint32_t pos) {
-    if (pos >= qu->size) {
-        return NULL;
-    }
-    uint32_t cur = _queue_wrap(qu, qu->offset + pos);
-    return (char *)qu->ptr + (size_t)cur * qu->elsize;
-}
-/// <summary>
-/// 查看队头元素（不弹出）
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <returns>指向队头元素的指针，空队列返 NULL</returns>
-static inline void *queue_peek(queue_ctx *qu) {
-    return 0 == qu->size ? NULL : (char *)qu->ptr + (size_t)qu->offset * qu->elsize;
-}
-/// <summary>
-/// 队尾追加元素（容量不足自动扩容到原 2 倍）
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <param name="elem">指向待追加元素的指针，拷贝 elsize 字节</param>
-static inline void queue_push(queue_ctx *qu, const void *elem) {
-    if (qu->size == qu->maxsize) {
-        ASSERTAB(qu->maxsize <= UINT32_MAX / 2, "queue maxsize overflow.");
-        queue_resize(qu, qu->maxsize * 2);
-    }
-    uint32_t pos = _queue_wrap(qu, qu->offset + qu->size);
-    memcpy((char *)qu->ptr + (size_t)pos * qu->elsize, elem, qu->elsize);
-    qu->size++;
-}
-/// <summary>
-/// 队列是否已满(元素数达当前分配容量)。queue_push 会自动扩容,只有想要"满就拒"的
-/// 调用方才需要先问这个
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <returns>非 0 表示已满。延迟分配态(maxsize 为 0)报未满——那是"还没申请"，不是"装不下"</returns>
-static inline int32_t queue_full(queue_ctx *qu) {
-    return 0 != qu->maxsize && qu->size >= qu->maxsize;
-}
-/// <summary>
-/// 队尾追加元素,满则失败且不扩容。有界队列共用这一处判定,不必各写一遍
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <param name="elem">指向待追加元素的指针，拷贝 elsize 字节</param>
-/// <returns>ERR_OK 已入队；ERR_FAILED 队列已满,元素未写入</returns>
-static inline int32_t queue_trypush(queue_ctx *qu, const void *elem) {
-    if (queue_full(qu)) {
-        return ERR_FAILED;
-    }
-    queue_push(qu, elem);
-    return ERR_OK;
-}
-/// <summary>
-/// 弹出队头元素
-/// </summary>
-/// <param name="qu">queue_ctx</param>
-/// <returns>指向已弹出元素的指针(下次 push 前有效)，空队列返 NULL</returns>
-static inline void *queue_pop(queue_ctx *qu) {
-    if (0 == qu->size) {
-        return NULL;
-    }
-    void *elem = (char *)qu->ptr + (size_t)qu->offset * qu->elsize;
-    qu->offset = _queue_wrap(qu, qu->offset + 1);
-    qu->size--;
-    return elem;
+// 环形队列(定长元素、倍增扩容、容量恒为 2 的幂)。元素类型编译期固化，
+// 故搬运是结构体赋值、回绕是一次与运算。
+//
+// 典型用法：
+//   typedef struct { int a; } my_elem;
+//   QUE_DECL(my_que, my_elem)
+//   my_que q; my_que_init(&q, 0);            // 0 = 延迟分配，首次 push 才申请
+//   my_elem e = { 1 }; my_que_push(&q, &e);
+//   my_elem *p = my_que_pop(&q);              // 空队返 NULL
+//   my_que_free(&q);
+//
+// 元素按指针传入(同 ARR_DECL)，取出一律返回指针——指针在下次 push/resize 前有效。
+
+#define QUEUE_INIT_SIZE 32 // 默认初始容量
+
+// 入参写 T const * 而不是 const T *:T 是指针类型时,后者会被解析成指向 const 的指针。
+// QUE_DECL(name, T)：name 生成的类型名，T 元素类型
+#define QUE_DECL(name, T)                                                      \
+typedef struct { uint32_t size; uint32_t maxsize; uint32_t mask; uint32_t offset; T *ptr; } name;\
+/* 环形下标回绕。容量恒为 2 的幂，一次与运算即可。maxsize 为 0(延迟分配、尚未装入   \
+   元素)时 size 也必为 0，各调用点的 size 守卫会先拦下，不会走到这里拿 mask=0 去算 */\
+static inline uint32_t name##_wrap(const name *qu, uint32_t off) {              \
+    return off & qu->mask;                                                      \
+}                                                                               \
+static inline uint32_t name##_size(const name *qu) { return qu->size; }         \
+static inline uint32_t name##_capacity(const name *qu) { return qu->maxsize; }   \
+static inline uint32_t name##_elsize(const name *qu) { (void)qu; return (uint32_t)sizeof(T); } \
+static inline int32_t name##_empty(const name *qu) { return 0 == qu->size; }    \
+/* 延迟分配态(maxsize 为 0)报未满——那是"还没申请",不是"装不下" */                 \
+static inline int32_t name##_full(const name *qu) {                             \
+    return 0 != qu->maxsize && qu->size >= qu->maxsize;                         \
+}                                                                               \
+static inline void name##_clear(name *qu) { qu->size = 0; qu->offset = 0; }     \
+static inline void name##_init(name *qu, uint32_t maxsize) {                    \
+    ASSERTAB(maxsize < UINT32_MAX, "queue maxsize overflow.");                  \
+    qu->offset = 0;                                                             \
+    qu->size = 0;                                                               \
+    if (0 == maxsize) {                                                         \
+        /* 延迟分配:供可能永不装入元素的层使用(如 fsqu 的溢出层) */              \
+        qu->maxsize = 0;                                                        \
+        qu->mask = 0;                                                           \
+        qu->ptr = NULL;                                                         \
+        return;                                                                 \
+    }                                                                           \
+    qu->maxsize = pow2_ceil(maxsize < 2 ? 2 : maxsize);                         \
+    qu->mask = qu->maxsize - 1;                                                 \
+    ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)qu->maxsize, "byte size overflow.");\
+    MALLOC(qu->ptr, sizeof(T) * (size_t)qu->maxsize);                           \
+}                                                                               \
+static inline void name##_free(name *qu) {                                      \
+    FREE(qu->ptr);                                                              \
+    /* 长度字段一并复位:只置空 ptr 会留下 size < maxsize 的不一致态,               \
+       再 push 不触发 resize 而是直接往 NULL 上算偏移写(同 binary_free) */        \
+    qu->offset = 0;                                                             \
+    qu->size = 0;                                                               \
+    qu->maxsize = 0;                                                            \
+    qu->mask = 0;                                                               \
+}                                                                               \
+/* 调整容量 */                                                                  \
+static inline void name##_resize(name *qu, uint32_t maxsize) {                  \
+    T *pnew;                                                                    \
+    uint32_t first;                                                             \
+    ASSERTAB(maxsize < UINT32_MAX, "queue maxsize overflow.");                  \
+    maxsize = (0 == maxsize) ? QUEUE_INIT_SIZE : pow2_ceil(maxsize < 2 ? 2 : maxsize);\
+    ASSERTAB(maxsize >= qu->size, "max size must big than element count.");     \
+    ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)maxsize, "byte size overflow.");   \
+    MALLOC(pnew, sizeof(T) * (size_t)maxsize);                                  \
+    /* 旧缓冲按 offset 环形排列，新缓冲从下标 0 起线性放置；环形最多跨两段，       \
+       故两次拷贝足够。不逐元素拷:fsqu 的溢出层是在自旋锁内扩容的 */             \
+    if (0 != qu->size) {                                                        \
+        first = qu->maxsize - qu->offset;                                       \
+        if (first > qu->size) {                                                 \
+            first = qu->size;                                                   \
+        }                                                                       \
+        memcpy(pnew, qu->ptr + qu->offset, sizeof(T) * (size_t)first);          \
+        if (qu->size > first) {                                                 \
+            memcpy(pnew + first, qu->ptr, sizeof(T) * (size_t)(qu->size - first));\
+        }                                                                       \
+    }                                                                           \
+    FREE(qu->ptr);                                                              \
+    qu->ptr = pnew;                                                             \
+    qu->offset = 0;                                                             \
+    qu->maxsize = maxsize;                                                      \
+    qu->mask = maxsize - 1;                                                     \
+}                                                                               \
+static inline T *name##_at(name *qu, uint32_t pos) {                            \
+    if (pos >= qu->size) {                                                      \
+        return NULL;                                                            \
+    }                                                                           \
+    return qu->ptr + name##_wrap(qu, qu->offset + pos);                         \
+}                                                                               \
+static inline T *name##_peek(name *qu) {                                        \
+    return (0 == qu->size) ? NULL : qu->ptr + qu->offset;                       \
+}                                                                               \
+/* 满了才走的冷路径。NOINLINE 承重别删;sarray 上照搬无效,别套用 */                \
+NOINLINE static UNUSED void name##_grow(name *qu) {                            \
+    ASSERTAB(qu->maxsize <= UINT32_MAX / 2, "queue maxsize overflow.");        \
+    name##_resize(qu, qu->maxsize * 2);                                        \
+}                                                                              \
+static inline void name##_push(name *qu, T const *elem) {                      \
+    if (qu->size == qu->maxsize) {                                              \
+        name##_grow(qu);                                                       \
+    }                                                                           \
+    qu->ptr[name##_wrap(qu, qu->offset + qu->size)] = *elem;                   \
+    qu->size++;                                                                 \
+}                                                                               \
+/* 队尾追加,满则失败且不扩容。有界队列共用这一处判定,不必各写一遍 */              \
+static inline int32_t name##_trypush(name *qu, T const *elem) {                \
+    if (name##_full(qu)) {                                                      \
+        return ERR_FAILED;                                                      \
+    }                                                                           \
+    name##_push(qu, elem);                                                      \
+    return ERR_OK;                                                              \
+}                                                                               \
+static inline T *name##_pop(name *qu) {                                         \
+    T *elem;                                                                    \
+    if (0 == qu->size) {                                                        \
+        return NULL;                                                            \
+    }                                                                           \
+    elem = qu->ptr + qu->offset;                                                \
+    qu->offset = name##_wrap(qu, qu->offset + 1);                               \
+    qu->size--;                                                                 \
+    return elem;                                                                \
+}                                                                               \
+/* 弹出队尾。与 push 配对即后进先出——对象池要的是这个:拿到的是刚归还、cache 最热的 */\
+static inline T *name##_pop_back(name *qu) {                                    \
+    if (0 == qu->size) {                                                        \
+        return NULL;                                                            \
+    }                                                                           \
+    qu->size--;                                                                 \
+    return qu->ptr + name##_wrap(qu, qu->offset + qu->size);                    \
+}                                                                               \
+/* 一次取走至多 max 条到 out，返回实际取到的条数。同 resize:环形最多跨两段，       \
+   两次拷贝就够——调用方是在自旋锁内取的，逐个 pop 会把锁持有时间按元素个数拉长 */ \
+static inline uint32_t name##_pop_batch(name *qu, T *out, uint32_t max) {        \
+    uint32_t n = (max < qu->size) ? max : qu->size;                             \
+    uint32_t first;                                                             \
+    if (0 == n) {                                                               \
+        return 0;                                                               \
+    }                                                                           \
+    first = qu->maxsize - qu->offset;                                           \
+    if (first > n) {                                                            \
+        first = n;                                                              \
+    }                                                                           \
+    memcpy(out, qu->ptr + qu->offset, sizeof(T) * (size_t)first);               \
+    if (n > first) {                                                            \
+        memcpy(out + first, qu->ptr, sizeof(T) * (size_t)(n - first));          \
+    }                                                                           \
+    qu->offset = name##_wrap(qu, qu->offset + n);                               \
+    qu->size -= n;                                                              \
+    return n;                                                                   \
+}                                                                               \
+/* 删除指定位置元素(保持顺序,后续元素整体前移) */                                 \
+static inline void name##_del_at(name *qu, uint32_t pos) {                      \
+    uint32_t src, dst, seg, rest;                                               \
+    if (pos >= qu->size) {                                                      \
+        return;                                                                 \
+    }                                                                           \
+    if (0 == pos) {                                                             \
+        qu->offset = name##_wrap(qu, qu->offset + 1);                           \
+        qu->size--;                                                             \
+        return;                                                                 \
+    }                                                                           \
+    dst = name##_wrap(qu, qu->offset + pos);                                    \
+    src = name##_wrap(qu, qu->offset + pos + 1);                                \
+    rest = qu->size - pos - 1;                                                  \
+    while (0 != rest) {                                                         \
+        /* 一次搬到缓冲末尾或搬完为止,跨回绕时再绕回头部继续 */                   \
+        seg = qu->maxsize - (src > dst ? src : dst);                            \
+        if (seg > rest) {                                                       \
+            seg = rest;                                                         \
+        }                                                                       \
+        memmove(qu->ptr + dst, qu->ptr + src, sizeof(T) * (size_t)seg);         \
+        dst = name##_wrap(qu, dst + seg);                                       \
+        src = name##_wrap(qu, src + seg);                                       \
+        rest -= seg;                                                            \
+    }                                                                           \
+    qu->size--;                                                                 \
 }
 
 #endif//QUEUE_H_

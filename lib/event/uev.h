@@ -3,6 +3,7 @@
 
 #include "event/event.h"
 #include "utils/pool.h"
+#include "containers/hashmap.h"
 #include "event/cmds.h"
 #include "thread/thread.h"
 #include "utils/tda.h"
@@ -68,6 +69,7 @@ typedef struct evsock_ctx {
     event_cb ev_cb;     // 事件触发时的回调函数
     sock_ctx sk;        // 连接标识；listener/pipe 的 skid 恒为 0，createid() 最小返 1 故不与真连接碰撞
 }evsock_ctx;
+HASHMAP_DECL(sockel_map, evsock_ctx *, SOCKEL_HASH, SOCKEL_CMP)
 // 命令通道上下文：命令存 fsqu，唤醒信号走管道（NO_CMD_PIPE 下走 kqueue 用户事件，不建管道）
 typedef struct pip_ctx {
 #ifndef NO_CMD_PIPE
@@ -75,7 +77,7 @@ typedef struct pip_ctx {
 #endif
     tda_ctx tda;                    // 队列长度告警翻倍状态（init = fsqu 容量 / QUEUE_OVERLOAD_RATIO）
     evsock_ctx skpip;                 // 唤醒信号的evsock_ctx（ev_cb = _uev_cmd_loop）；NO_CMD_PIPE 下 fd 恒 INVALID_SOCK
-    fsqu_ctx qu;
+    cmdq qu;
     atomic_t wake_pending;          // 同 overlap_cmd_ctx.wake_pending
 }pip_ctx;
 // 隔离队列元素：close 后对象先入此队列暂存 QTN_MS 毫秒，让 stale event 消化完再真释放
@@ -84,6 +86,7 @@ typedef struct qtn_entry {
     void *obj;          // evsock_ctx * 或 listener_ctx *
     uint64_t enter_ms;  // 入队时刻（monotonic 毫秒）
 }qtn_entry;
+QUE_DECL(qtn_que, qtn_entry)// 隔离队列
 // 事件监听器上下文（每个工作线程一个）
 typedef struct watcher_ctx {
     int32_t index;              // 当前watcher编号
@@ -98,11 +101,11 @@ typedef struct watcher_ctx {
 #endif
     events_t *events;           // 就绪事件数组
     ev_ctx *ev;                 // 所属ev_ctx
-    struct hashmap *element;    // fd -> evsock_ctx 哈希表
+    sockel_map *element;        // fd -> evsock_ctx 哈希表
     pthread_t thevent;          // 事件循环线程
     pool_ctx pool;              // evsock_ctx对象池
     timer_ctx timer;            // 计时器
-    queue_ctx qtn;              // 隔离队列 FIFO，元素 qtn_entry
+    qtn_que qtn;                // 隔离队列 FIFO
     pip_ctx pipe;               // 命令通道（fsqu 存命令 + 单管道传唤醒信号）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
 #ifdef FLUSH_WATERMARK
@@ -164,7 +167,7 @@ void _uev_try_freelsn(struct listener_ctx *lsn);
 // 释放对象入隔离队列 watcher->qtn；QTN_MS 毫秒后由 _uev_qtn_drain 真正释放
 // 用于避开 kqueue/epoll close 后跨轮 stale event 读已释放内存触发 UAF
 void _uev_qtn_push(watcher_ctx *watcher, void *obj, qtn_type type);
-// 减 listener_ctx 引用计数，归 0 时入 watcher->qtn（替代 _defer_freelsn 旧路径）
+// 减 listener_ctx 引用计数，归 0 时入 watcher->qtn
 // 封装让外部模块（如 cmds.c）不直接触碰 listener_ctx 内部字段
 void _uev_qtn_freelsn(watcher_ctx *watcher, struct listener_ctx *lsn);
 // _uev_loop_event 末尾扫描隔离队列：队头超过 QTN_MS 则真释放（FIFO 性质，

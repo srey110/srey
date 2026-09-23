@@ -1,8 +1,8 @@
 ﻿#ifndef BENCH_MPQ_H_
 #define BENCH_MPQ_H_
 
-// mpq(无锁多生产者队列)与 普通 queue + spinlock 的多生产者并发 push 性能对比。
-// 多生产者并发入队场景下,mpq 走无锁 CAS,queue 需 spinlock 串行化。结果经 LOG_INFO 输出。
+// FSQU_FAST_MODEL 三个后端(queue+spin / mpq / bbq)直接用 fsqu 本体实例化的入队出队对比,
+// 分纯入队、MPSC 逐条出队、MPSC 批量出队三个维度,容量取产线几档,详见 bench_mpq.c 文件头。结果经 LOG_INFO 输出。
 void bench_mpq(void);
 
 #endif//BENCH_MPQ_H_

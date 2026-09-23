@@ -281,5 +281,77 @@ runner.run(function(t)
         t:eq(true, ok, "pack_disconnect: MQTT_50 照常接受")
         if ok then utils.ud_free(pk) end
     end
+
+    -- ── 解包侧属性读取：pack_props / connect_will_props / prop_at ─────────
+    -- 这三个只认解包出来的报文：同一 task 起 MQTT 监听，连回本机发一条带属性和遗嘱属性的
+    -- 5.0 CONNECT，在服务端收包回调里读（报文指针只在回调期间有效）。服务端不回 CONNACK
+    do
+        local PORT = 15051
+        local got
+        srey.on_recved(function(_, _, client, _, data, _)
+            if 0 ~= client or mqtt.PROT.CONNECT ~= mqtt.prot(data) then
+                return
+            end
+            local r = {}
+            local arr, warr
+            arr, r.n = mqtt.pack_props(data)
+            warr, r.wn = mqtt.connect_will_props(data)
+            if arr then
+                r.p1 = { mqtt.prop_at(arr, 1) }
+                r.p2 = { mqtt.prop_at(arr, 2) }
+                r.nover = select("#", mqtt.prop_at(arr, r.n + 1))
+                r.over = mqtt.prop_at(arr, r.n + 1)
+                r.zero = mqtt.prop_at(arr, 0)
+            end
+            if warr then
+                r.w1 = { mqtt.prop_at(warr, 1) }
+                r.w2 = { mqtt.prop_at(warr, 2) }
+            end
+            got = r
+        end)
+        local lid = srey.listen(PACK_TYPE.MQTT, SSL_NAME.NONE, "0.0.0.0", PORT)
+        t:check(ERR_FAILED ~= lid, "listen mqtt " .. PORT)
+        if ERR_FAILED ~= lid then
+            local sk = mqtt.connect(mqtt.VERSION.V50, SSL_NAME.NONE, "127.0.0.1", PORT)
+            t:check(sk.valid, "connect mqtt " .. PORT)
+            if sk.valid then
+                local cp = mqtt.props()
+                cp:fixnum(mqtt.PROP.SESSION_EXPIRY, 120)
+                cp:kv(mqtt.PROP.USER_PROPERTY, "k", "v")
+                local wp = mqtt.props()
+                wp:fixnum(mqtt.PROP.WILLDELAY_INTERVAL, 30)
+                wp:binary(mqtt.PROP.CONTENT_TYPE, "text/plain")
+                local pack, size = mqtt.pack_connect(mqtt.VERSION.V50, 1, 60, "props-cid",
+                    nil, nil, "/will", "bye", 0, 0, cp, wp)
+                cp:free()
+                wp:free()
+                srey.send(sk, pack, size, 0)
+                for _ = 1, 60 do
+                    if got then break end
+                    srey.sleep(50)
+                end
+                srey.close(sk)
+            end
+            srey.unlisten(lid)-- 释放端口给后续测试
+        end
+        t:check(got ~= nil, "服务端收到带属性的 CONNECT")
+        if got then
+            t:eq(2, got.n, "pack_props 条数等于发送方放入的 2 条")
+            t:eq(mqtt.PROP.SESSION_EXPIRY, got.p1 and got.p1[1], "prop_at 1: flag")
+            t:eq(120, got.p1 and got.p1[2], "prop_at 1: 数字值")
+            t:eq(nil, got.p1 and got.p1[3], "prop_at 1: 数字属性没有字符串值")
+            t:eq(mqtt.PROP.USER_PROPERTY, got.p2 and got.p2[1], "prop_at 2: flag")
+            t:eq("k", got.p2 and got.p2[3], "prop_at 2: USER_PROPERTY 的 key")
+            t:eq("v", got.p2 and got.p2[4], "prop_at 2: USER_PROPERTY 的 value")
+            t:eq(4, got.nover, "prop_at 越界时返回值个数仍为 4")
+            t:eq(nil, got.over, "prop_at 越界返回 nil")
+            t:eq(nil, got.zero, "prop_at 下标 0 返回 nil")
+            t:eq(2, got.wn, "connect_will_props 条数等于发送方放入的 2 条")
+            t:eq(mqtt.PROP.WILLDELAY_INTERVAL, got.w1 and got.w1[1], "遗嘱属性 1: flag")
+            t:eq(30, got.w1 and got.w1[2], "遗嘱属性 1: 数字值")
+            t:eq(mqtt.PROP.CONTENT_TYPE, got.w2 and got.w2[1], "遗嘱属性 2: flag")
+            t:eq("text/plain", got.w2 and got.w2[3], "遗嘱属性 2: 字符串值")
+        end
+    end
 end)
 end)

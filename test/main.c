@@ -17,10 +17,7 @@
 #include "test_mysql_parse.h"
 #include "test_pgsql_parse.h"
 #include "test_advance.h"
-#include "bench_lbytecache.h"
-#include "bench_rwlock.h"
 #include "bench_mpq.h"
-#include "bench_hashmap.h"
 #include "bench_weights.h"
 #include "task_tcp_server.h"
 #include "task_udp_server.h"
@@ -57,9 +54,6 @@
 #include "task_priority.h"
 #include "task_selfpost.h"
 #include "lib.h"
-#if WITH_LUA && ENABLE_LUA_BYTECACHE
-#include "lbind/lbytecache.h"
-#endif
 
 #ifdef OS_WIN
     #pragma comment(lib, "ws2_32.lib")
@@ -128,24 +122,8 @@ int main(int argc, char *argv[]) {
 #if 0
     //对比测试
     LOG_INFO("*********************benchmark*********************");
-    //lua普通加载与 lbytecache
-#if WITH_LUA && ENABLE_LUA_BYTECACHE
-    rwlock_distr_ctx lcklbc;
-    rwlock_distr_init(&lcklbc, 2);
-    lbc_init(&lcklbc);
-    bench_lbytecache();
-    lbc_free();
-    rwlock_distr_free(&lcklbc);
-#endif
-    LOG_INFO("--------------------------------------------------");
-    //rwlock_distr_ctx rwlock_ctx
-    bench_rwlock();
-    LOG_INFO("--------------------------------------------------");
-    //mpq 与 queue + spinlock
+    //fsqu 三个后端(queue+spin / mpq / bbq)的入队出队
     bench_mpq();
-    LOG_INFO("--------------------------------------------------");
-    //hashmap set/get/delete 吞吐:默认初始容量(全程扩容) vs 预留容量(无扩容)
-    bench_hashmap();
     LOG_INFO("--------------------------------------------------");
     //loader worker weight 分档:不同 nworker 下的吞吐与各 task 完成离差
     bench_weights();
@@ -157,10 +135,10 @@ int main(int argc, char *argv[]) {
     CuSuite *suite = CuSuiteNew();
 
     test_base(suite);/* 内存宏、原子操作 */
-    test_containers(suite);/* mpq、hashmap、heap、queue、sarray */
+    test_containers(suite);/* mpq、bbq、spsc、fsqu、chan、hashmap、heap、queue、sarray、slist、rbtree */
     test_hashset(suite);/* hashset(hashmap 包装) */
-    test_crypt(suite);/* base64、crc、digest、hmac、urlraw、xor */
-    test_utils(suite);/* pack/unpack、binary、buffer、sfid、hash_ring、netaddr */
+    test_crypt(suite);/* base64、crc、digest、hmac、urlraw、xor、xxhash */
+    test_utils(suite);/* pack/unpack、binary、buffer、sfid、uuid、hash_ring、netaddr */
     test_seri(suite);/* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table；yyjson_helper */
     test_thread(suite);/* mutex、spinlock、rwlock、cond、thread */
     test_stm(suite);/* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
@@ -392,7 +370,7 @@ int main(int argc, char *argv[]) {
     //SO_REUSEPORT + 多 watcher 下 ev_unlisten 与 in-flight accept 并发压力：端口 15011
     task_listen_unlisten_race_start(g_loader, "unlisten_race", 15011,
         _get_name_val(testlist, "unlisten_race"));
-    //ev_close 关闭前冲刷一次的契约（小包全达 / 大包截断但关得掉）：端口 15015
+    //ev_close 关闭前冲刷一次的契约（小包全达 / 大包截断但关得掉 / 解析出错就地关记 LOCAL）：端口 15015，解析出错那段用 15020
     task_close_flush_start(g_loader, "close_flush", 15015,
         _get_name_val(testlist, "close_flush"));
 #if WITH_SSL

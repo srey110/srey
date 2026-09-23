@@ -43,8 +43,7 @@ static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准�
 static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
 
 // 读一个配置字段：取到就写进去，取不到且字段确实存在才告警（可选字段缺席是正常的）。
-// 键名在整条语句里只出现一次——原来每段都要写两遍（一遍取值一遍拼日志），
-// 复制上一段只改了其中一个的话，就变成读错键而日志报对键名，排查时被带向反方向
+// 键名在整条语句里只出现一次：取值与告警共用同一个 keystr，不会读一个键报另一个键
 #define CFG_NUM(obj, prefix, keystr, max, field, type) do { \
         double _v; \
         if (ERR_OK == json_get_num_range((obj), (keystr), 0, (max), &_v)) { \
@@ -423,7 +422,7 @@ static BOOL wsv_install(LPCTSTR name) {
     if (!scm) {
         return FALSE;
     }
-    // ImagePath = "<自身路径>" "-r" "<服务名>"：propath 最长 MAX_PATH-1，服务名 Windows 上限
+    // ImagePath = "<自身路径>" "-r" "<服务名>"：propath 最长 PATH_LENS-1，服务名 Windows 上限
     // 256，加固定的引号与 "-r" 共 10 字节；+512 把这两截连同 NUL 一起兜住，合法入参不会截断
     char tmp[PATH_LENS + 512];
     char propath[PATH_LENS] = { 0 };

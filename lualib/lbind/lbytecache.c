@@ -20,20 +20,14 @@ typedef struct dump_buf {
     char *buf;
 }dump_buf;
 
-static struct hashmap *_bc_map;// path -> bc_entry
+// 按 path 哈希/比较;元素释放 path + code 由 _lbc_entry_free 负责
+#define _BC_MAP_HASH(e) hash((e)->path, strlen((e)->path))
+#define _BC_MAP_CMP(a, b) strcmp((a)->path, (b)->path)
+HASHMAP_DECL(bc_map, bc_entry, _BC_MAP_HASH, _BC_MAP_CMP)
+
+static bc_map *_bc_map;         // path -> bc_entry
 static rwlock_distr_ctx *_bc_lock;// 复用 loader->lckcache,不自建锁
 
-// hashmap 回调:按 path 哈希/比较;元素释放 path + code
-static uint64_t _lbc_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    (void)seed0;
-    (void)seed1;
-    const bc_entry *e = (const bc_entry *)item;
-    return hash(e->path, strlen(e->path));
-}
-static int _lbc_compare(const void *a, const void *b, void *ud) {
-    (void)ud;
-    return strcmp(((const bc_entry *)a)->path, ((const bc_entry *)b)->path);
-}
 static void _lbc_entry_free(void *item) {
     bc_entry *e = (bc_entry *)item;
     FREE(e->path);
@@ -41,12 +35,11 @@ static void _lbc_entry_free(void *item) {
 }
 void lbc_init(rwlock_distr_ctx *lck) {
     _bc_lock = lck;
-    _bc_map = hashmap_new(sizeof(bc_entry), ONEK, 0, 0,
-                          _lbc_hash, _lbc_compare, _lbc_entry_free, NULL);
+    _bc_map = bc_map_new(ONEK, _lbc_entry_free);
 }
 void lbc_free(void) {
     if (NULL != _bc_map) {
-        hashmap_free(_bc_map);
+        bc_map_free(_bc_map);
         _bc_map = NULL;
     }
 }
@@ -70,7 +63,7 @@ static int _lbc_writer(lua_State *lua, const void *p, size_t sz, void *ud) {
 static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) {
     bc_entry key;
     key.path = (char *)path;
-    bc_entry *found = (bc_entry *)hashmap_get(_bc_map, &key);
+    bc_entry *found = bc_map_get(_bc_map, &key);
     if (NULL != found) {
         if (found->mtime == mtime) {
             FREE(code);
@@ -88,7 +81,7 @@ static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) 
     ne.code = code;
     ne.size = size;
     ne.mtime = mtime;
-    hashmap_set(_bc_map, &ne);
+    bc_map_set(_bc_map, &ne);
 }
 int32_t lbc_loadfile(lua_State *lua, const char *path) {
     bc_entry key;
@@ -98,7 +91,7 @@ int32_t lbc_loadfile(lua_State *lua, const char *path) {
     mt = file_mtime(path);
 #endif
     rwlock_distr_rdlock(_bc_lock);
-    const bc_entry *e = (const bc_entry *)hashmap_get(_bc_map, &key);
+    const bc_entry *e = bc_map_get(_bc_map, &key);
     int32_t hit = (NULL != e);
 #if LBC_CHECK_MTIME
     if (0 != hit && e->mtime != mt) {
@@ -151,11 +144,11 @@ void lbc_install_searcher(lua_State *lua) {
 void lbc_clear(const char *path) {
     rwlock_distr_wrlock(_bc_lock);
     if (NULL == path) {
-        hashmap_clear(_bc_map, 0);
+        bc_map_clear(_bc_map, 0);
     } else {
         bc_entry key;
         key.path = (char *)path;
-        bc_entry *removed = (bc_entry *)hashmap_delete(_bc_map, &key);
+        bc_entry *removed = bc_map_delete(_bc_map, &key);
         if (NULL != removed) {
             _lbc_entry_free(removed);
         }

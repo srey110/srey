@@ -145,18 +145,33 @@
 #else
     #define CACHELINE_SIZE  64
 #endif
-// 两个编译器属性宏,按编译器分派而不是按 OS(理由同 macro_atomic.h)。
+// 五个编译器属性宏,按编译器分派而不是按 OS(理由同 macro_atomic.h)。
 // CACHELINE_ALIGN:与 CACHELINE_SIZE 配对,消除 false sharing;落 #else 空实现只影响并发写入快慢,不影响正确性
+// ALIGN8:按 8 字节对齐,给"序列号 + 定长元素"这类槽位用;落 #else 只影响寻址是否规整,不影响正确性
 // FORCE_INLINE:强制内联,只给实测有效的热路径小函数用;必须与 static 配对,否则链接失败
+// NOINLINE:禁止内联。给"热函数里那条几乎不走的慢路径"用——慢路径可内联时会把热函数的
+//   内联成本顶过编译器阈值,于是热函数整个进不了内联,反而更慢。同样只在实测有效时加
+// UNUSED:允许这个 static 函数没人调。只给"必须去掉 inline"的头文件函数用:inline 与
+//   noinline 同时写 gcc 报 -Wattributes,去掉 inline 又会报 -Wunused-function,两头堵。
+//   写法固定为 NOINLINE static UNUSED;其余头文件函数照旧 static inline,别拿它代替 inline
 #if defined(__GNUC__) || defined(__clang__)
     #define CACHELINE_ALIGN __attribute__((aligned(CACHELINE_SIZE)))
+    #define ALIGN8 __attribute__((aligned(8)))
     #define FORCE_INLINE inline __attribute__((always_inline))
+    #define NOINLINE __attribute__((noinline))
+    #define UNUSED __attribute__((unused))
 #elif defined(OS_WIN)
     #define CACHELINE_ALIGN __declspec(align(CACHELINE_SIZE))
+    #define ALIGN8 __declspec(align(8))
     #define FORCE_INLINE __forceinline
+    #define NOINLINE __declspec(noinline)
+    #define UNUSED
 #else
     #define CACHELINE_ALIGN
+    #define ALIGN8
     #define FORCE_INLINE inline
+    #define NOINLINE
+    #define UNUSED
 #endif
 // accept4 / pipe2 能力：无标准 feature-test 宏，按 OS 推导（新增支持平台在此一处维护）
 #if defined(OS_LINUX) || defined(OS_BSD)

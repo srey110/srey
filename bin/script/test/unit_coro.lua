@@ -201,5 +201,35 @@ runner.run(function(t)
         end
         srey.unlisten(lid)
     end
+
+    -- ── ⑤ 超时摘的是到期的那个等待者本身，不一定是队头 ─────────────────
+    -- 与 C 侧 task_coro_extra 的 _test_timeout_non_head 对应。两个 sess 各排两个 RESPONSE 等待者：
+    -- sessA 队尾先到期，sessB 队头先到期。还剩等待者的条目不删，之后的 RESPONSE 叫醒剩下那个
+    do
+        local s0 = _sessions()
+        local sessA, sessB = srey.id(), srey.id()
+        local woke = {}
+        local plan = { { sessA, 3000 }, { sessA, 200 }, { sessB, 200 }, { sessB, 3000 } }
+        for i = 1, #plan do
+            srey.fork(function()
+                woke[i] = srey._coro_wait(plan[i][1], srey.MSG_TYPE.RESPONSE, plan[i][2]).mtype
+            end)
+        end
+        srey.sleep(30)
+        t:eq(s0 + 2, _sessions(), "两个 sess 各一个条目")
+        srey.sleep(200 + SETTLE)
+        t:eq(nil, woke[1], "sessA 队头未到期，仍在等")
+        t:eq(srey.MSG_TYPE.TIMEOUT, woke[2], "sessA 队尾先到期，被单独摘走")
+        t:eq(srey.MSG_TYPE.TIMEOUT, woke[3], "sessB 队头到期被摘走")
+        t:eq(nil, woke[4], "sessB 队尾未到期，仍在等")
+        t:eq(s0 + 2, _sessions(), "还剩等待者的条目不删")
+        local me = srey.task_handle()
+        srey.response(me, 0, sessA, 0, "a")
+        srey.response(me, 0, sessB, 0, "b")
+        srey.sleep(150)
+        t:eq(srey.MSG_TYPE.RESPONSE, woke[1], "sessA 剩下的等待者被 RESPONSE 叫醒")
+        t:eq(srey.MSG_TYPE.RESPONSE, woke[4], "sessB 剩下的等待者被 RESPONSE 叫醒")
+        t:eq(s0, _sessions(), "等待者全摘空后两个条目都删了")
+    end
 end)
 end)

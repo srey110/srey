@@ -246,10 +246,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="bench_hashmap.c" />
-    <ClCompile Include="bench_lbytecache.c" />
     <ClCompile Include="bench_mpq.c" />
-    <ClCompile Include="bench_rwlock.c" />
     <ClCompile Include="bench_weights.c" />
     <ClCompile Include="CuTest.c" />
     <ClCompile Include="main.c" />
@@ -292,6 +289,7 @@
     <ClCompile Include="test_containers.c" />
     <ClCompile Include="test_crypt.c" />
     <ClCompile Include="test_hashset.c" />
+    <ClCompile Include="test_hashmap_unver.c" />
     <ClCompile Include="test_mongo_pack.c" />
     <ClCompile Include="test_mqtt_pack.c" />
     <ClCompile Include="test_mysql_pack.c" />
@@ -308,11 +306,8 @@
     <ClCompile Include="test_utils.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="bench_hashmap.h" />
     <ClInclude Include="test_rand.h" />
-    <ClInclude Include="bench_lbytecache.h" />
     <ClInclude Include="bench_mpq.h" />
-    <ClInclude Include="bench_rwlock.h" />
     <ClInclude Include="bench_weights.h" />
     <ClInclude Include="CuTest.h" />
     <ClInclude Include="task_auto_close.h" />

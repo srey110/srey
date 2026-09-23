@@ -5,16 +5,17 @@
 #include "containers/heap.h"
 #endif
 
+#define MAPKCP_INIT_CAP 32 // mapkcp 建表容量,同时是缩容地板,见建表处
 #define KCP_MIN_OVERHEAD 24
 // 须与 ikcp.c 的 IKCP_MTU_DEF / IKCP_WND_RCV 一致(ikcp.h 未导出这两个常量)
 #define KCP_MTU_DEF 1400
 #define KCP_WND_RCV 128
 
 typedef struct kcp_element {
-#if KCP_TICK_HEAP
-    heap_node hnode;     // 按 next_update 排序的最小堆节点,必须在首位,供 UPCAST 使用
-#endif
     uint8_t warned;
+#if KCP_TICK_HEAP
+    uint32_t hidx;       // 在 heap_due 中的下标,由堆维护
+#endif
     uint32_t conv;
     IUINT32 next_update; // 下次应调用 ikcp_update 的时刻(ms),由 ikcp_check 算出;<=now 才真正 update
     struct watcher_ctx *watcher; // 所属 event 线程,_kcp_start 时赋值,_kcp_output 用于取 evsk
@@ -25,8 +26,9 @@ typedef struct kcp_element {
     netaddr_ctx addr;
 }kcp_element;
 #if KCP_TICK_HEAP
-// 从堆节点指针还原 kcp_element 指针
-#define _KEL_FROM_HNODE(n) UPCAST(n, kcp_element, hnode)
+// 按 next_update 排序的最小堆;有符号减法防 32 位时间戳回绕
+#define _KCP_DUE_LT(lhs, rhs) ((IINT32)((lhs)->next_update - (rhs)->next_update) < 0)
+HEAP_DECL(kcp_heap, kcp_element, hidx, _KCP_DUE_LT)
 #else
 typedef struct kcp_tick_arg {
     IUINT32  now;   // 本轮驱动时刻
@@ -46,56 +48,49 @@ typedef struct kcp_handle_arg {
     uint32_t conv;
     uint64_t sess;
 } kcp_handle_arg;
+// conv 为键。比较不用相减:conv 是 uint32_t,差值会截断成 int 溢出
+#define _KCP_MAP_HASH(e) hash_u64((uint64_t)(*(e))->conv)
+#define _KCP_MAP_CMP(a, b) (((*(a))->conv < (*(b))->conv) ? -1 : ((*(a))->conv > (*(b))->conv) ? 1 : 0)
+HASHMAP_DECL(kcp_map, kcp_element *, _KCP_MAP_HASH, _KCP_MAP_CMP)
 typedef struct kcp_ud_ctx {
     int32_t in_tick;             // 正在 _kcp_tick_update 迭代中:期间 _kcp_udfree 只置 closing 延后,不真正释放
     int32_t closing;             // tick 内被请求关闭的延后标记;tick 循环结束后才真正释放
     ud_cxt *ud;                  // 反指所属 ud(延后释放时取用);ud->context == 本 ctx
     struct watcher_ctx *watcher; // 所属 event 线程(注销 tick 用)
-    struct hashmap *mapkcp;      // conv -> kcp_element 会话表
+    kcp_map *mapkcp;             // conv -> kcp_element 会话表
 #if KCP_TICK_HEAP
-    heap_ctx heap_due;           // 按 next_update 排序的最小堆(节点为 kcp_element.hnode),tick 早退用
+    kcp_heap heap_due;           // 按 next_update 排序的最小堆,tick 早退用
 #endif
     ev_tick tick;                // 注册到 watcher->ticks 的周期驱动节点
 }kcp_ud_ctx;
 
 static prot_emit *g_emit;
 
-static uint64_t _kcp_map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    (void)seed0;
-    (void)seed1;
-    return hash_u64((uint64_t)(*(const kcp_element **)item)->conv);
-}
-static int _kcp_map_compare(const void *a, const void *b, void *ud) {
-    (void)ud;
-    uint32_t kela = (*(const kcp_element **)a)->conv;
-    uint32_t kelb = (*(const kcp_element **)b)->conv;
-    return (kela < kelb) ? -1 : (kela > kelb) ? 1 : 0; // 三路比较，避免 UINT_PTR 相减截断为 int 溢出
-}
-#if KCP_TICK_HEAP
-// 最小堆比较函数：next_update 小的优先(堆顶是最早到期的);有符号减法防 32 位时间戳回绕
-static int _kcp_due_cmp(const heap_node *lhs, const heap_node *rhs) {
-    return (IINT32)(_KEL_FROM_HNODE(lhs)->next_update - _KEL_FROM_HNODE(rhs)->next_update) < 0;
-}
-#endif
 static inline kcp_element *_kcp_map_get(kcp_ud_ctx *ctx, uint32_t conv) {
     kcp_element key;
     key.conv = conv;
     kcp_element *pkey = &key;
-    void **tmp = (void **)hashmap_get(ctx->mapkcp, &pkey);
+    kcp_element **tmp = kcp_map_get(ctx->mapkcp, &pkey);
     return NULL == tmp ? NULL : *tmp;
 }
-static inline void _kcp_map_add(kcp_ud_ctx *ctx, kcp_element *kel) {
-    ASSERTAB(NULL == hashmap_set(ctx->mapkcp, &kel), "kcp conv repeat.");
-    ASSERTAB(!hashmap_oom(ctx->mapkcp), "hashmap oom.");
+// 会话入表并挂上定时堆；conv 已存在返回 ERR_FAILED 且不改表
+static inline int32_t _kcp_map_add(kcp_ud_ctx *ctx, kcp_element *kel) {
+    int32_t found;
+    kcp_map_get_set(ctx->mapkcp, &kel, &found);
+    ASSERTAB(!kcp_map_oom(ctx->mapkcp), "hashmap oom.");
+    if (found) {
+        return ERR_FAILED;
+    }
 #if KCP_TICK_HEAP
-    heap_insert(&ctx->heap_due, &kel->hnode);
+    kcp_heap_insert(&ctx->heap_due, kel);
 #endif
+    return ERR_OK;
 }
 static inline void _kcp_map_remove(kcp_ud_ctx *ctx, kcp_element *kel) {
     kcp_element *pkey = kel;
-    hashmap_delete(ctx->mapkcp, &pkey);
+    kcp_map_delete(ctx->mapkcp, &pkey);
 #if KCP_TICK_HEAP
-    heap_remove(&ctx->heap_due, &kel->hnode);
+    kcp_heap_remove(&ctx->heap_due, kel);
 #endif
 }
 void _kcp_init(prot_emit *emit) {
@@ -133,10 +128,9 @@ static void _kcp_notify_handshaked(ud_cxt *ud, kcp_element *kel, int32_t erro) {
     g_emit->emit(target, &msg);
     g_emit->end(target);
 }
-static bool _kcp_notify_closed_iter(const void *item, void *udata) {
-    kcp_element *kel = *(kcp_element *const *)item;
-    _kcp_notify_closed((ud_cxt *)udata, kel, CLOSE_TYPE_LOCAL);
-    return true;
+static int32_t _kcp_notify_closed_iter(kcp_element *const *item, void *udata) {
+    _kcp_notify_closed((ud_cxt *)udata, *item, CLOSE_TYPE_LOCAL);
+    return 1;
 }
 void _kcp_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
@@ -150,8 +144,11 @@ void _kcp_udfree(ud_cxt *ud) {
         return;
     }
     _evpub_tick_remove(ctx->watcher, &ctx->tick);
-    hashmap_scan(ctx->mapkcp, _kcp_notify_closed_iter, ud);
-    hashmap_free(ctx->mapkcp);
+    kcp_map_scan(ctx->mapkcp, _kcp_notify_closed_iter, ud);
+    kcp_map_free(ctx->mapkcp);
+#if KCP_TICK_HEAP
+    kcp_heap_free(&ctx->heap_due);
+#endif
     FREE(ctx);
     ud->context = NULL;
 }
@@ -277,40 +274,39 @@ static void _kcp_map_elfree(void *item) {
     _kcp_element_free(*(kcp_element **)item);
 }
 #if KCP_TICK_HEAP
-// ev_tick 回调:堆顶到期(<=now)才 update,更新后按新 next_update 重新入堆;
-// 堆为空或堆顶未到期直接返回,避免每轮对全部会话做 hashmap_scan
+// ev_tick 回调:堆顶到期(<=now)才 update,更新后按新 next_update 原地下沉;
+// 堆为空或堆顶未到期直接返回,避免每轮对全部会话做 kcp_map_scan。
+// 原地下沉的前提:ikcp_update 期间堆不被改动(关闭一律经 in_tick/closing 延后),kel 始终是堆顶
 static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
     IUINT32 now = (IUINT32)now_ms;
-    uint32_t remain = ctx->heap_due.nelts;// 至多处理本轮已有会话数,防 ikcp_check 异常返回<=now 时死循环
+    uint32_t remain = kcp_heap_size(&ctx->heap_due);// 至多处理本轮已有会话数,防 ikcp_check 异常返回<=now 时死循环
     kcp_element *kel;
     ctx->in_tick = 1;
-    while (remain-- > 0 && NULL != ctx->heap_due.root) {
-        kel = _KEL_FROM_HNODE(ctx->heap_due.root);
+    while (remain-- > 0 && NULL != (kel = kcp_heap_min(&ctx->heap_due))) {
         if ((IINT32)(now - kel->next_update) < 0) {// 堆顶未到期,防回绕
             break;
         }
-        heap_remove(&ctx->heap_due, &kel->hnode);
         ikcp_update(kel->ikcp, now);
         if (ctx->closing) {// ikcp_update 内发送失败触发了本 socket 关闭:kel/ctx 待释放,勿再触碰
             break;
         }
         kel->next_update = ikcp_check(kel->ikcp, now);
-        heap_insert(&ctx->heap_due, &kel->hnode);
+        kcp_heap_sift_down(&ctx->heap_due, kel->hidx);
     }
     ctx->in_tick = 0;
     if (ctx->closing) {// 延后至此真正释放(in_tick 已清零,_kcp_udfree 走真正释放分支)
         _kcp_udfree(ctx->ud);
         return EVENT_WAIT_TIMEOUT;
     }
-    if (NULL == ctx->heap_due.root) {
+    if (kcp_heap_empty(&ctx->heap_due)) {
         return EVENT_WAIT_TIMEOUT;
     }
-    IINT32 diff = (IINT32)(_KEL_FROM_HNODE(ctx->heap_due.root)->next_update - now);
+    IINT32 diff = (IINT32)(kcp_heap_min(&ctx->heap_due)->next_update - now);
     return (diff > 0) ? (uint32_t)diff : 0;
 }
 #else
-static bool _kcp_tick_iter(const void *item, void *udata) {
-    kcp_element *kel = *(kcp_element *const *)item;
+static int32_t _kcp_tick_iter(kcp_element *const *item, void *udata) {
+    kcp_element *kel = *item;
     kcp_tick_arg *a = udata;
     if ((IINT32)(a->now - kel->next_update) >= 0) {// 到期,防回绕
         ikcp_update(kel->ikcp, a->now);
@@ -320,13 +316,13 @@ static bool _kcp_tick_iter(const void *item, void *udata) {
     if (d < a->next) {
         a->next = d;
     }
-    return true;
+    return 1;
 }
 // ev_tick 回调:驱动本 socket 所有会话 ikcp_update,返回距下次最近的 ikcp_check 间隔(ms)
 static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
     kcp_tick_arg a = { (IUINT32)now_ms, EVENT_WAIT_TIMEOUT };
     ctx->in_tick = 1;
-    hashmap_scan(ctx->mapkcp, _kcp_tick_iter, &a);
+    kcp_map_scan(ctx->mapkcp, _kcp_tick_iter, &a);
     ctx->in_tick = 0;
     if (ctx->closing) {// 扫描中某会话 ikcp_update 发送失败触发关闭:延后至此真正释放
         _kcp_udfree(ctx->ud);
@@ -388,23 +384,23 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
         ctx->in_tick = 0;
         ctx->closing = 0;
         ctx->ud = ud;
-        ctx->mapkcp = hashmap_new(sizeof(kcp_element *), ONEK, 0, 0,
-                                  _kcp_map_hash, _kcp_map_compare, _kcp_map_elfree, NULL);
+        // 同 coro.c 的 mapco:cap 兼作缩容地板,每个 UDP socket 一张,客户端通常只有一个 conv
+        ctx->mapkcp = kcp_map_new(MAPKCP_INIT_CAP, _kcp_map_elfree);
 #if KCP_TICK_HEAP
-        heap_init(&ctx->heap_due, _kcp_due_cmp);
+        kcp_heap_init(&ctx->heap_due, 0);
 #endif
         ctx->watcher = watcher;
         ctx->tick.cb = _kcp_tick;
         ctx->tick.ud = ctx;
         _evpub_tick_add(watcher, &ctx->tick);
         ud->context = ctx;
-    } else if (NULL != _kcp_map_get(ctx, kel->conv)) {
+    }
+    if (ERR_OK != _kcp_map_add(ctx, kel)) {
         LOG_WARN("kcp conv %u repeat, ignore.", kel->conv);
         _kcp_notify_handshaked(ud, kel, ERR_FAILED);
         _kcp_notify_closed(ud, kel, CLOSE_TYPE_NEVERCONN);// 同上:合成 CLOSE 清占位
         return 1;
     }
-    _kcp_map_add(ctx, kel);
     _kcp_notify_handshaked(ud, kel, ERR_OK);
     return 0;
 }

@@ -386,8 +386,77 @@ static int32_t _test_timeout_ignores_keep(task_ctx *task, uint16_t httpport) {
     return rtn;
 }
 
+// 超时摘的是到期那个等待者本身,不一定是队头。两个 sess 上各排两个 RESPONSE 等待者:
+// [0][1] 让队尾先到期,[2][3] 让队头先到期。到期者醒来为 TIMEOUT,另一个仍在等、条目留着;
+// 随后一条 RESPONSE 唤醒剩下那个,摘空后条目删掉
+static int32_t _test_timeout_non_head(task_ctx *task) {
+    static waiter_arg a[4];// 存储期理由同 _test_close_reregister
+    const uint32_t ms[4] = { 3000, 200, 200, 3000 };
+    uint64_t sess[2];
+    int32_t i;
+    int32_t s0 = _sessions(task);
+    sess[0] = createid();
+    sess[1] = createid();
+    for (i = 0; i < 4; i++) {
+        a[i].sess = sess[i / 2];
+        a[i].mtype = MSG_TYPE_RESPONSE;
+        a[i].ms = ms[i];
+        a[i].woke = (msg_type)0;
+        coro_fork(task, _one_waiter, &a[i]);
+    }
+    coro_sleep(task, 30);
+    if (s0 + 2 != _sessions(task)) {
+        LOG_ERROR("timeout non-head: expected 2 new entries (s0=%d now=%d).", s0, _sessions(task));
+        return ERR_FAILED;
+    }
+    coro_sleep(task, 200 + TIMEOUT_SETTLE_MS);
+    if (0 != a[0].woke || MSG_TYPE_TIMEOUT != a[1].woke
+        || MSG_TYPE_TIMEOUT != a[2].woke || 0 != a[3].woke) {
+        LOG_ERROR("timeout non-head: woke %d,%d,%d,%d, expected 0,TIMEOUT,TIMEOUT,0.",
+                  (int32_t)a[0].woke, (int32_t)a[1].woke, (int32_t)a[2].woke, (int32_t)a[3].woke);
+        return ERR_FAILED;
+    }
+    if (s0 + 2 != _sessions(task)) {
+        LOG_ERROR("timeout non-head: entry with a waiter left was dropped (s0=%d now=%d).",
+                  s0, _sessions(task));
+        return ERR_FAILED;
+    }
+    task_response(task, 0, sess[0], ERR_OK, "r", 1, 1);
+    task_response(task, 0, sess[1], ERR_OK, "r", 1, 1);
+    coro_sleep(task, 150);
+    if (MSG_TYPE_RESPONSE != a[0].woke || MSG_TYPE_RESPONSE != a[3].woke) {
+        LOG_ERROR("timeout non-head: remaining waiters woke %d,%d, expected RESPONSE.",
+                  (int32_t)a[0].woke, (int32_t)a[3].woke);
+        return ERR_FAILED;
+    }
+    if (s0 != _sessions(task)) {
+        LOG_ERROR("timeout non-head: entries survived the last waiter (s0=%d now=%d).", s0, _sessions(task));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// 同名 task 第二次注册必须被拒,且已注册那个的名字索引不受影响
+static int32_t _test_register_dup_name(task_ctx *task) {
+    task_ctx *dup = task_new(task->loader, task->name, 0, NULL, NULL, NULL);
+    if (ERR_OK == task_register(dup, NULL, NULL)) {
+        // 被错误接受时它已归 loader 管,不能再 task_free
+        LOG_ERROR("register dup name: second task named %s was accepted.", task->name);
+        return ERR_FAILED;
+    }
+    task_free(dup);// 注册失败的 task 仍归调用方
+    if (task->handle != task_find_name(task->loader, task->name)) {
+        LOG_ERROR("register dup name: %s no longer maps to the first task.", task->name);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_coro_extra_args *arg = (task_coro_extra_args *)coro_get_arg(task);
+    if (ERR_OK != _test_register_dup_name(task)) {
+        return;
+    }
     if (ERR_OK != _test_sleep_cascade(task)) {
         return;
     }
@@ -443,6 +512,12 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_timeout_ignores_keep(task, arg->httpport)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_timeout_non_head(task)) {
         return;
     }
     if (task_isclosing(task)) {

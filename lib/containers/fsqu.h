@@ -1,282 +1,277 @@
 ﻿#ifndef FSQU_H_
 #define FSQU_H_
 
-#include "containers/mpq.h"
 #include "containers/queue.h"
 #include "thread/spinlock.h"
+// 快路径的实现由 FSQU_FAST_MODEL 选,三家的接口签名相同,换一行 DECL 即可。
+// 这个别名是在 FSQU_DECL 的调用点展开的,不是定义点——别 #undef,undef 了每个
+// FSQU_DECL(...) 都会原样吐出 FSQU_FAST_DECL(...) 而不是报宏错
+#if 2 == FSQU_FAST_MODEL
+    #include "containers/bbq.h"
+    #define FSQU_FAST_DECL BBQ_DECL
+#elif 1 == FSQU_FAST_MODEL
+    #include "containers/mpq.h"
+    #define FSQU_FAST_DECL MPQ_DECL
+#elif 0 != FSQU_FAST_MODEL
+    /* 不挡的话:FSQU_FAST_DECL 没定义,而下面 #if FSQU_FAST_MODEL 照样成立,
+       报错会散到每个 FSQU_DECL(...) 调用点上,看不出是这里写错了 */
+    #error "FSQU_FAST_MODEL must be 0 (queue+spin), 1 (mpq) or 2 (bbq)"
+#endif
 
-typedef struct fsqu_ctx {
-#if FSQU_MPQ
-    atomic_t novf;// 溢出层元素数镜像，锁外无锁读（push 粘滞判定 / pop、size 快路径）
-#endif
-    spin_ctx lck;// 保护 qu
-    queue_ctx qu;// MPQ=0：主队列；MPQ=1：mpq 满时的溢出层
-#if FSQU_MPQ
-    mpq_ctx mpq;// 无锁有界环，满则降级到 qu
-#endif
-}fsqu_ctx;
+// 平台自适应队列:FSQU_FAST_MODEL 选快路径——0 = queue+spin(整条队列一把自旋锁),
+// 1 = mpq(无锁有界环),2 = bbq(无锁分块环);后两者满了降级到无界溢出层。
+// 三种后端的接口签名一致,调用方不必关心;例外是选 2 时容量上限 2^20,超了 init 就中止(见 bbq.h)。
+//
+// 典型用法：
+//   FSQU_DECL(msg_fsqu, message_ctx)
+//   msg_fsqu q; msg_fsqu_init(&q, 1024);
+//   message_ctx m = { 0 };
+//   msg_fsqu_push(&q, &m);                    // 永不失败
+//   message_ctx out;
+//   if (ERR_OK == msg_fsqu_pop_sc(&q, &out)) { ... }
+//   msg_fsqu_free(&q);
+//
+// 元素一律按指针传(同快路径那三家)。
 
-/// <summary>
-/// 初始化平台自适应队列,由 FSQU_MPQ 宏控制使用那种方式
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="elsize">单元素字节数，须 大于 0</param>
-/// <param name="capacity">期望容量，0 使用默认值。实际容量会向上取整：mpq 侧取到 2 的幂，
-///   queue 侧取到偶数，下限都是 2，所以 fsqu_capacity 可能大于这里给的值</param>
-void fsqu_init(fsqu_ctx *fsqu, size_t elsize, uint32_t capacity);
-/// <summary>
-/// 释放队列内部内存，不释放 fsqu 本身
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-void fsqu_free(fsqu_ctx *fsqu);
-/// <summary>
-/// 非阻塞入队（多生产者）：队列满时不阻塞、不扩容、不落溢出层。同一实例上 fsqu_push 曾落过
-/// 溢出层且尚未排空时同样失败——快路径空着也拒。这道守卫是 best-effort：读 novf 与随后的
-/// 入队不是一个原子步，跨生产者顺序本就不保证
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="data">指向待入队元素的指针，拷贝 elsize 字节</param>
-/// <returns>ERR_OK 成功；ERR_FAILED 快路径已满，或溢出层非空(见上)</returns>
-static inline int32_t fsqu_trypush(fsqu_ctx *fsqu, const void *data) {
-#if FSQU_MPQ
-    // 与 fsqu_push 同守粘滞规则：溢出层非空期间一律拒绝，免新元素排到更早的溢出元素之前。
-    if (0 != ATOMIC_GET(&fsqu->novf)) {
-        return ERR_FAILED;
-    }
-    return mpq_trypush(&fsqu->mpq, data);
+#define FSQU_DEFAULT_CAP 1024 // 默认容量;各后端共用一个默认值
+
+// 入参写 T const * 而不是 const T *：T 是指针类型(如 void *)时，后者会被解析成指向 const 的指针，调用方传普通指针就告警。
+// FSQU_DECL(name, T)：name 生成的类型名，T 元素类型，按 FSQU_FAST_MODEL 展开成下面两种本体之一。
+// 产线只用 FSQU_DECL；要在同一个二进制里并排比几种后端时才直接用本体：
+// FSQU_RING_DECL 的 FASTDECL 传 MPQ_DECL 或 BBQ_DECL(头文件由调用方自己 include)，FSQU_SPIN_DECL 即 0 号后端
+#define FSQU_RING_DECL(name, T, FASTDECL)                                    \
+QUE_DECL(name##_ovf, T)                                                         \
+FASTDECL(name##_fast, T)                                                        \
+typedef struct {                                                                \
+    atomic_t novf;      /* 溢出层元素数镜像，锁外无锁读(push 粘滞判定 / pop、size 快路径) */\
+    spin_ctx lck;       /* 保护 qu */                                            \
+    name##_ovf qu;      /* 快路径满时的溢出层 */                                  \
+    name##_fast fast;   /* 快路径(无锁环)，满则降级到 qu */                        \
+} name;                                                                         \
+static inline void name##_init(name *fsqu, uint32_t capacity) {                 \
+    capacity = (0 == capacity) ? FSQU_DEFAULT_CAP : capacity;                    \
+    ATOMIC_SET(&fsqu->novf, 0);                                                 \
+    spin_init(&fsqu->lck, SPIN_CNT);                                            \
+    /* 溢出层走延迟分配:首次溢出才由 push 申请缓冲 */                              \
+    name##_ovf_init(&fsqu->qu, 0);                                              \
+    name##_fast_init(&fsqu->fast, capacity);                                    \
+}                                                                               \
+static inline void name##_free(name *fsqu) {                                    \
+    name##_fast_free(&fsqu->fast);                                              \
+    name##_ovf_free(&fsqu->qu);                                                 \
+    spin_free(&fsqu->lck);                                                      \
+}                                                                               \
+/* 非阻塞入队:队满不阻塞、不扩容、不落溢出层。溢出层非空期间一律拒,免新元素排到      \
+   更早的溢出元素之前。这道守卫是 best-effort——读 novf 与随后的入队不是一个原子步 */ \
+static inline int32_t name##_trypush(name *fsqu, T const *data) {               \
+    if (0 != ATOMIC_GET(&fsqu->novf)) {                                         \
+        return ERR_FAILED;                                                      \
+    }                                                                           \
+    return name##_fast_trypush(&fsqu->fast, data);                              \
+}                                                                               \
+/* 入队:永不阻塞、永不失败。快路径满时降级到无界溢出层,该层只增不减、峰值保留到 free。\
+   这是为消除自投递死锁有意接受的取舍 */                                          \
+static inline void name##_push(name *fsqu, T const *data) {                     \
+    if (0 == ATOMIC_GET(&fsqu->novf)                                            \
+        && ERR_OK == name##_fast_trypush(&fsqu->fast, data)) {                  \
+        return;                                                                 \
+    }                                                                           \
+    spin_lock(&fsqu->lck);                                                      \
+    /* 置位排在入队之前:生产者侧免锁读 novf,排在后面会留出"已进溢出层、novf 仍为 0"的窗口 */\
+    ATOMIC_ADD(&fsqu->novf, 1);                                                 \
+    name##_ovf_push(&fsqu->qu, data);                                          \
+    spin_unlock(&fsqu->lck);                                                    \
+}                                                                               \
+static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) {\
+    uint32_t i = 0;                                                             \
+    uint32_t nleft;                                                             \
+    /* 粘滞降级:溢出层非空时整批直落溢出,不与更早的溢出元素交错 */                   \
+    if (0 == ATOMIC_GET(&fsqu->novf)) {                                         \
+        while (i < count                                                        \
+               && ERR_OK == name##_fast_trypush(&fsqu->fast, data + i)) {       \
+            i++;                                                                \
+        }                                                                       \
+    }                                                                           \
+    if (i >= count) {                                                           \
+        return;                                                                 \
+    }                                                                           \
+    nleft = count - i;                                                          \
+    spin_lock(&fsqu->lck);                                                      \
+    ATOMIC_ADD(&fsqu->novf, (atomic_t)nleft);/* 同 push:先置位再入队 */           \
+    for (; i < count; i++) {                                                    \
+        name##_ovf_push(&fsqu->qu, &data[i]);                                  \
+    }                                                                           \
+    spin_unlock(&fsqu->lck);                                                    \
+}                                                                               \
+/* 快路径取完后从溢出层续取补齐到 out[*n..max);*fastrtn 回写为锁内那次查快路径的结果。    \
+   锁内必须先把快路径查到底再取溢出层:放溢出层要持锁,同一生产者更早进快路径的元素锁内必然可见,\
+   凭锁外那次"快路径空"直接排溢出层会乱序。快路径在途(1)就不碰溢出层 */               \
+static inline void name##_ovf_drain(name *fsqu, T *out, uint32_t max,           \
+                                    uint32_t *n, int32_t *fastrtn, int32_t sc) { \
+    int32_t k;                                                                  \
+    if (*n >= max || 1 == *fastrtn || 0 == ATOMIC_GET(&fsqu->novf)) {           \
+        return;                                                                 \
+    }                                                                           \
+    spin_lock(&fsqu->lck);                                                      \
+    while (*n < max                                                             \
+           && ERR_OK == (*fastrtn = sc ? name##_fast_pop_sc(&fsqu->fast, out + *n)\
+                                       : name##_fast_pop(&fsqu->fast, out + *n))) {\
+        (*n)++;                                                                 \
+    }                                                                           \
+    if (*n < max                                                                \
+        && 1 != *fastrtn) {                                                     \
+        k = (int32_t)name##_ovf_pop_batch(&fsqu->qu, out + *n, max - *n);       \
+        if (0 != k) {                                                           \
+            *n += (uint32_t)k;                                                  \
+            ATOMIC_ADD(&fsqu->novf, -k);/* 批量一次扣减,省 k-1 次原子操作 */       \
+        }                                                                       \
+    }                                                                           \
+    spin_unlock(&fsqu->lck);                                                    \
+}                                                                               \
+/* 批量出队主体,pop_batch / pop_sc_batch 共用;sc 传字面量,分支被常量折叠。          \
+   批量的 rtn 不分真空与在途,要续取溢出层时由 ovf_drain 锁内那次单条查询给出准确结果 */ \
+static inline uint32_t name##_pop_batch_impl(name *fsqu, T *out, uint32_t max, int32_t sc) {\
+    int32_t rtn = ERR_FAILED;                                                   \
+    /* 只有单消费者侧走批量:多消费者一次抢一批槽,消费者一多就几乎抢不到,不如逐条 */  \
+    uint32_t n = sc ? name##_fast_pop_sc_batch(&fsqu->fast, out, max, &rtn) : 0; \
+    if (!sc) {                                                                  \
+        while (n < max                                                          \
+               && ERR_OK == (rtn = name##_fast_pop(&fsqu->fast, out + n))) {    \
+            n++;                                                                \
+        }                                                                       \
+    }                                                                           \
+    name##_ovf_drain(fsqu, out, max, &n, &rtn, sc);                             \
+    return n;                                                                   \
+}                                                                               \
+/* 单条出队主体,pop / pop_sc 共用;sc 传字面量 */                                  \
+static inline int32_t name##_pop_impl(name *fsqu, T *out, int32_t sc) {         \
+    uint32_t n = 0;                                                             \
+    int32_t rtn = sc ? name##_fast_pop_sc(&fsqu->fast, out) : name##_fast_pop(&fsqu->fast, out);\
+    if (ERR_OK == rtn) {                                                        \
+        return ERR_OK;                                                          \
+    }                                                                           \
+    name##_ovf_drain(fsqu, out, 1, &n, &rtn, sc);                               \
+    return (0 != n) ? ERR_OK : rtn;                                             \
+}                                                                               \
+/* 三态返回,同 MPQ_DECL 的 pop:ERR_OK 成功;ERR_FAILED 确实为空;                    \
+   1 有元素已被生产者抢占、尚未发布。靠 size 决定睡不睡的调用方必须区分后两者 */      \
+static inline int32_t name##_pop(name *fsqu, T *out) {                          \
+    return name##_pop_impl(fsqu, out, 0);                                       \
+}                                                                               \
+static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     \
+    return name##_pop_batch_impl(fsqu, out, max, 0);                            \
+}                                                                               \
+/* 单消费者版:仅允许单一消费者线程调用,不可与 pop 混用 */                          \
+static inline int32_t name##_pop_sc(name *fsqu, T *out) {                       \
+    return name##_pop_impl(fsqu, out, 1);                                       \
+}                                                                               \
+static inline uint32_t name##_pop_sc_batch(name *fsqu, T *out, uint32_t max) {  \
+    return name##_pop_batch_impl(fsqu, out, max, 1);                            \
+}                                                                               \
+/* 含溢出层:调用方以此判空决定重调度/休眠,漏算会让溢出元素滞留。只高估不低估 */       \
+static inline uint32_t name##_size(name *fsqu) {                                \
+    return name##_fast_size(&fsqu->fast) + (uint32_t)ATOMIC_GET(&fsqu->novf);   \
+}                                                                               \
+static inline int32_t name##_empty(name *fsqu) {                                \
+    /* 读序与 size 一致(先快路径后 novf),短路排在常见的"有活"那一侧 */            \
+    if (!name##_fast_empty(&fsqu->fast)) {                                      \
+        return 0;                                                               \
+    }                                                                           \
+    return 0 == ATOMIC_GET(&fsqu->novf);                                        \
+}                                                                               \
+/* 快路径固定容量(降级阈值,不含无界的溢出层) */                                    \
+static inline uint32_t name##_elsize(const name *fsqu) { (void)fsqu; return (uint32_t)sizeof(T); }\
+static inline uint32_t name##_capacity(name *fsqu) {                            \
+    return name##_fast_capacity(&fsqu->fast);                                   \
+}
+#define FSQU_SPIN_DECL(name, T)                                                \
+QUE_DECL(name##_ovf, T)                                                         \
+typedef struct {                                                                \
+    spin_ctx lck;       /* 保护 qu */                                            \
+    name##_ovf qu;      /* 主队列 */                                             \
+} name;                                                                         \
+static inline void name##_init(name *fsqu, uint32_t capacity) {                 \
+    capacity = (0 == capacity) ? FSQU_DEFAULT_CAP : capacity;                    \
+    spin_init(&fsqu->lck, SPIN_CNT);                                            \
+    name##_ovf_init(&fsqu->qu, capacity);                                       \
+}                                                                               \
+static inline void name##_free(name *fsqu) {                                    \
+    name##_ovf_free(&fsqu->qu);                                                 \
+    spin_free(&fsqu->lck);                                                      \
+}                                                                               \
+static inline int32_t name##_trypush(name *fsqu, T const *data) {               \
+    int32_t rtn;                                                                \
+    spin_lock(&fsqu->lck);                                                      \
+    rtn = name##_ovf_trypush(&fsqu->qu, data);                                 \
+    spin_unlock(&fsqu->lck);                                                    \
+    return rtn;                                                                 \
+}                                                                               \
+static inline void name##_push(name *fsqu, T const *data) {                     \
+    spin_lock(&fsqu->lck);                                                      \
+    name##_ovf_push(&fsqu->qu, data);                                          \
+    spin_unlock(&fsqu->lck);                                                    \
+}                                                                               \
+static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) {\
+    uint32_t i;                                                                 \
+    spin_lock(&fsqu->lck);                                                      \
+    for (i = 0; i < count; i++) {                                               \
+        name##_ovf_push(&fsqu->qu, &data[i]);                                  \
+    }                                                                           \
+    spin_unlock(&fsqu->lck);                                                    \
+}                                                                               \
+/* 三态里的 1 只有无锁环后端(mpq / bbq)会产生,这里只返 ERR_OK / ERR_FAILED */       \
+static inline int32_t name##_pop(name *fsqu, T *out) {                          \
+    T *elem;                                                                    \
+    spin_lock(&fsqu->lck);                                                      \
+    elem = name##_ovf_pop(&fsqu->qu);                                           \
+    if (NULL == elem) {                                                         \
+        spin_unlock(&fsqu->lck);                                                \
+        return ERR_FAILED;                                                      \
+    }                                                                           \
+    *out = *elem;                                                               \
+    spin_unlock(&fsqu->lck);                                                    \
+    return ERR_OK;                                                              \
+}                                                                               \
+static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     \
+    uint32_t n;                                                                 \
+    spin_lock(&fsqu->lck);                                                      \
+    n = name##_ovf_pop_batch(&fsqu->qu, out, max);                              \
+    spin_unlock(&fsqu->lck);                                                    \
+    return n;                                                                   \
+}                                                                               \
+static inline int32_t name##_pop_sc(name *fsqu, T *out) {                       \
+    return name##_pop(fsqu, out);                                               \
+}                                                                               \
+static inline uint32_t name##_pop_sc_batch(name *fsqu, T *out, uint32_t max) {  \
+    return name##_pop_batch(fsqu, out, max);                                    \
+}                                                                               \
+static inline uint32_t name##_size(name *fsqu) {                                \
+    uint32_t n;                                                                 \
+    spin_lock(&fsqu->lck);                                                      \
+    n = name##_ovf_size(&fsqu->qu);                                             \
+    spin_unlock(&fsqu->lck);                                                    \
+    return n;                                                                   \
+}                                                                               \
+static inline int32_t name##_empty(name *fsqu) {                                \
+    int32_t rtn;                                                                \
+    spin_lock(&fsqu->lck);                                                      \
+    rtn = name##_ovf_empty(&fsqu->qu);                                          \
+    spin_unlock(&fsqu->lck);                                                    \
+    return rtn;                                                                 \
+}                                                                               \
+static inline uint32_t name##_elsize(const name *fsqu) { (void)fsqu; return (uint32_t)sizeof(T); }\
+static inline uint32_t name##_capacity(name *fsqu) {                            \
+    uint32_t cap;                                                               \
+    spin_lock(&fsqu->lck);                                                      \
+    cap = name##_ovf_capacity(&fsqu->qu);                                        \
+    spin_unlock(&fsqu->lck);                                                    \
+    return cap;                                                                 \
+}
+
+#if FSQU_FAST_MODEL
+    #define FSQU_DECL(name, T) FSQU_RING_DECL(name, T, FSQU_FAST_DECL)
 #else
-    spin_lock(&fsqu->lck);
-    int32_t rtn = queue_trypush(&fsqu->qu, data);
-    spin_unlock(&fsqu->lck);
-    return rtn;
+    #define FSQU_DECL(name, T) FSQU_SPIN_DECL(name, T)
 #endif
-}
-/// <summary>
-/// 入队单个元素（多生产者），永不阻塞、永不失败：mpq 侧满时降级到无界溢出层，该层只增不减，
-/// 峰值容量保留到 fsqu_free。这是为消除自投递死锁有意接受的取舍，不是疏漏
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="data">指向待入队元素的指针，拷贝 elsize 字节</param>
-static inline void fsqu_push(fsqu_ctx *fsqu, const void *data) {
-#if FSQU_MPQ
-    // 粘滞降级：溢出层非空期间不得再走 mpq，否则新元素会插到更早的溢出元素之前
-    if (0 == ATOMIC_GET(&fsqu->novf)
-        && ERR_OK == mpq_trypush(&fsqu->mpq, data)) {
-        return;
-    }
-    spin_lock(&fsqu->lck);
-    // 置位排在 queue_push 之前:生产者侧是免锁读 novf,排在后面会留出"元素已进溢出层、
-    // novf 仍为 0"的窗口。收窄不等于消除,故上面的守卫按 best-effort 声明
-    ATOMIC_ADD(&fsqu->novf, 1);
-    queue_push(&fsqu->qu, data);
-    spin_unlock(&fsqu->lck);
-#else
-    spin_lock(&fsqu->lck);
-    queue_push(&fsqu->qu, data);
-    spin_unlock(&fsqu->lck);
-#endif
-}
-/// <summary>
-/// 批量入队（多生产者），永不阻塞、永不失败
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="data">指向连续元素数组的指针，拷贝 count * elsize 字节</param>
-/// <param name="count">入队元素个数</param>
-static inline void fsqu_push_batch(fsqu_ctx *fsqu, const void *data, uint32_t count) {
-    uint32_t i = 0;
-    const char *src = (const char *)data;
-#if FSQU_MPQ
-    uint32_t elsize = mpq_elsize(&fsqu->mpq);
-    uint32_t nleft;
-    // 粘滞降级：溢出层非空时整批直落溢出，不与更早的溢出元素交错
-    if (0 == ATOMIC_GET(&fsqu->novf)) {
-        while (i < count
-               && ERR_OK == mpq_trypush(&fsqu->mpq, src)) {
-            src += elsize;
-            i++;
-        }
-    }
-    if (i >= count) {
-        return;
-    }
-    nleft = count - i;
-    spin_lock(&fsqu->lck);
-    ATOMIC_ADD(&fsqu->novf, nleft);// 同 fsqu_push:先置位再入队,收窄免锁读到 0 的窗口
-    for (; i < count; i++) {
-        queue_push(&fsqu->qu, src);
-        src += elsize;
-    }
-    spin_unlock(&fsqu->lck);
-#else
-    spin_lock(&fsqu->lck);
-    for (i = 0; i < count; i++) {
-        queue_push(&fsqu->qu, src);
-        src += fsqu->qu.elsize;
-    }
-    spin_unlock(&fsqu->lck);
-#endif
-}
-#if FSQU_MPQ
-// 快路径取完后从溢出层续取补齐
-static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint32_t *n, int32_t mpqrtn) {
-    if (*n >= max
-        || 1 == mpqrtn
-        || 0 == ATOMIC_GET(&fsqu->novf)) {
-        return;
-    }
-    uint32_t elsize = mpq_elsize(&fsqu->mpq);
-    int32_t k = 0;
-    void *elem;
-    spin_lock(&fsqu->lck);
-    while (*n < max
-           && NULL != (elem = queue_pop(&fsqu->qu))) {
-        memcpy(dst, elem, elsize);// queue_pop 的指针仅在下次 push 前有效，须锁内拷出
-        dst += elsize;
-        (*n)++;
-        k++;
-    }
-    if (0 != k) {
-        // 批量一次扣减，省 k-1 次原子操作
-        ATOMIC_ADD(&fsqu->novf, -k);
-    }
-    spin_unlock(&fsqu->lck);
-}
-// 从溢出层取一个元素；取不到就把 mpq 的三态原样回传(ERR_FAILED 真空 / 1 有在途)
-static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out, int32_t mpqrtn) {
-    uint32_t n = 0;
-    _fsqu_ovf_drain(fsqu, (char *)out, 1, &n, mpqrtn);
-    return (0 != n) ? ERR_OK : mpqrtn;
-}
-// 批量出队的 MPQ 实现，fsqu_pop_batch / fsqu_pop_sc_batch 共用；sc 传字面量，分支被常量折叠。
-// rtn 在每个出口都有确定值：取满 max 退出时是最后一次成功的 ERR_OK（drain 由 *n >= max 早退），
-// max 为 0 时是这里的初值 —— _fsqu_ovf_drain 靠它决定要不要去溢出层续取
-static inline uint32_t _fsqu_pop_batch_mpq(fsqu_ctx *fsqu, void *out, uint32_t max, int32_t sc) {
-    uint32_t n = 0;
-    uint32_t elsize = mpq_elsize(&fsqu->mpq);
-    char *dst = (char *)out;
-    int32_t rtn = ERR_FAILED;
-    while (n < max
-           && ERR_OK == (rtn = (sc ? mpq_pop_sc(&fsqu->mpq, dst) : mpq_pop(&fsqu->mpq, dst)))) {
-        dst += elsize;
-        n++;
-    }
-    _fsqu_ovf_drain(fsqu, dst, max, &n, rtn);
-    return n;
-}
-#endif
-/// <summary>
-/// 出队单个元素（多消费者）
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>三态，语义同 mpq_pop：ERR_OK 成功；ERR_FAILED 确实为空；1 有元素已被生产者
-/// 抢占、尚未发布(queue+spin 后端不产生这一态)。只判 ERR_OK 的调用方当空处理即可；
-/// 靠 fsqu_size 决定睡不睡的调用方必须区分 1 与 ERR_FAILED，退避用 spin_backoff</returns>
-static inline int32_t fsqu_pop(fsqu_ctx *fsqu, void *out) {
-#if FSQU_MPQ
-    int32_t rtn = mpq_pop(&fsqu->mpq, out);
-    if (ERR_OK == rtn) {
-        return ERR_OK;
-    }
-    return _fsqu_ovf_pop(fsqu, out, rtn);
-#else
-    spin_lock(&fsqu->lck);
-    void *elem = queue_pop(&fsqu->qu);
-    if (NULL == elem) {
-        spin_unlock(&fsqu->lck);
-        return ERR_FAILED;
-    }
-    memcpy(out, elem, fsqu->qu.elsize);
-    spin_unlock(&fsqu->lck);
-    return ERR_OK;
-#endif
-}
-/// <summary>
-/// 批量出队（多消费者）
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="out">出参：接收出队元素的数组，至少 max * elsize 字节</param>
-/// <param name="max">最多出队个数</param>
-/// <returns>实际出队个数，0 到 max</returns>
-static inline uint32_t fsqu_pop_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
-#if FSQU_MPQ
-    return _fsqu_pop_batch_mpq(fsqu, out, max, 0);
-#else
-    uint32_t n = 0;
-    char *dst = (char *)out;
-    void *elem;
-    spin_lock(&fsqu->lck);
-    while (n < max && NULL != (elem = queue_pop(&fsqu->qu))) {
-        memcpy(dst, elem, fsqu->qu.elsize);
-        dst += fsqu->qu.elsize;
-        n++;
-    }
-    spin_unlock(&fsqu->lck);
-    return n;
-#endif
-}
-/// <summary>
-/// 出队单个元素（单消费者）：仅允许单一消费者线程调用，且不可与 fsqu_pop 混用(同 mpq_pop_sc)
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>三态，同 fsqu_pop</returns>
-static inline int32_t fsqu_pop_sc(fsqu_ctx *fsqu, void *out) {
-#if FSQU_MPQ
-    int32_t rtn = mpq_pop_sc(&fsqu->mpq, out);
-    if (ERR_OK == rtn) {
-        return ERR_OK;
-    }
-    return _fsqu_ovf_pop(fsqu, out, rtn);
-#else
-    return fsqu_pop(fsqu, out);
-#endif
-}
-/// <summary>
-/// 批量出队（单消费者）：约束同 fsqu_pop_sc
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <param name="out">出参：接收出队元素的数组，至少 max * elsize 字节</param>
-/// <param name="max">最多出队个数</param>
-/// <returns>实际出队个数，0 到 max</returns>
-static inline uint32_t fsqu_pop_sc_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
-#if FSQU_MPQ
-    return _fsqu_pop_batch_mpq(fsqu, out, max, 1);
-#else
-    return fsqu_pop_batch(fsqu, out, max);
-#endif
-}
-/// <summary>
-/// 返回当前队列元素数量的近似值(含溢出层)：只会高估不会低估，不会把有元素报成 0
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <returns>元素数量</returns>
-static inline uint32_t fsqu_size(fsqu_ctx *fsqu) {
-#if FSQU_MPQ
-    // 须含溢出层：调用方以此判空决定重调度/休眠，漏算会让溢出元素滞留
-    return mpq_size(&fsqu->mpq) + (uint32_t)ATOMIC_GET(&fsqu->novf);
-#else
-    spin_lock(&fsqu->lck);
-    uint32_t n = queue_size(&fsqu->qu);
-    spin_unlock(&fsqu->lck);
-    return n;
-#endif
-}
-/// <summary>
-/// 返回队列容量；mpq 侧是快路径固定容量(降级到溢出层的阈值，不含无界的溢出层)，
-/// queue 侧是当前已分配容量。调用方据此推导过载告警阈值
-/// </summary>
-/// <param name="fsqu">fsqu_ctx</param>
-/// <returns>容量</returns>
-static inline uint32_t fsqu_capacity(fsqu_ctx *fsqu) {
-#if FSQU_MPQ
-    return mpq_capacity(&fsqu->mpq);
-#else
-    spin_lock(&fsqu->lck);
-    uint32_t cap = fsqu->qu.maxsize;
-    spin_unlock(&fsqu->lck);
-    return cap;
-#endif
-}
 
 #endif//FSQU_H_

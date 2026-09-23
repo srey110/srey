@@ -96,6 +96,7 @@ typedef struct mpack_row {
     buf_ctx val;            // 字段值数据（nil 为 0 且 val.data==NULL 时表示空字符串）
     char *payload;          // 行原始 payload 数据（仅第一个字段持有内存所有权）
 }mpack_row;
+ARR_DECL(mrow_arr, mpack_row *)
 
 // 查询结果集读取器（Resultset）
 typedef struct mysql_reader_ctx {
@@ -103,7 +104,7 @@ typedef struct mysql_reader_ctx {
     int32_t field_count;    // 列数量
     int32_t index;          // 当前行游标
     mpack_field *fields;    // 列描述信息数组
-    array_ctx arr_rows;     // 行数据数组（元素 mpack_row *）
+    mrow_arr arr_rows;      // 行数据数组
 }mysql_reader_ctx;
 
 // 预处理语句上下文

@@ -11,22 +11,24 @@
 #include "base/structs.h"
 #include "containers/slist.h"
 
+#define EVENT_WAIT_TIMEOUT   100 // 事件循环等待超时（毫秒）
+#define EVENT_CHANGES_CNT    128 // 事件变更队列初始容量
+#define EVENT_CHECK_INTERVAL 5 // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
+#define INIT_EVENTS_CNT      256 // 初始事件槽位数量
+#define INIT_SENDBUF_LEN     32 // 发送缓冲区初始长度
+#define QUEUE_OVERLOAD_RATIO 3 // 队列积压告警初始阈值 = 容量 / RATIO，触发后翻倍，空队列重置
+#define WB_WARN_INIT_SIZE   (1024 * 1024) // 单 sock 发送缓冲字节告警首阈值；触发后翻倍（1MB→2MB→4MB...），队列清空后复位；0 表示禁用
+#define EVENT_TICK_MIN       10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
+#define ACCEPT_BACKOFF_MS    500// accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
+#define UDP_RECV_MAX_ERRS    3// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
+
 #if defined(OS_WIN)
 // Windows SOCKET 句柄恒为 4 的倍数(低 2 位保留),fd%n 在偶数 n 下残值聚集(n=4 全落 watcher 0)致 IOCP 多线程退化;
 // 先右移 2 位消除恒零低位再取模,恢复均匀分布
 #define CALC_WATCHER_INDEX(fd, n) (((fd) >> 2) % (n))
 #else
 #define CALC_WATCHER_INDEX(fd, n) ((fd) % (n))// 由 fd 算所属 watcher 下标,即 sock_ctx.index 的取值
-#endif
-// 只在手上还没有 sock_ctx(刚 accept 出裸 fd)时用来定归属;已有 sock_ctx 的一律读 sk->index,
-// 别再按 fd 重算——listener 与 pipe 的 index 本来就不等于 CALC_WATCHER_INDEX(fd)
-#define CALC_WATCHER(p, n, fd) (1 == (n) ? (p) : &(p)[CALC_WATCHER_INDEX((fd), (n))])
-#define EVENT_TICK_MIN 10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
-#define ACCEPT_BACKOFF_MS 500// accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
-#define UDP_RECV_MAX_ERRS 8// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
-// 回调与消息里的 client 形参恒取 0/1。BIT_CHECK 拿到的是 0x10，必须在这里归一化——
-// 上层文档都按 1 写，透传原值会让 == 1 的判定永远不成立
-#define SOCK_IS_CLIENT(status) (BIT_CHECK((status), STATUS_CLIENT) ? 1 : 0)
+#endif// OS_WIN
 // 取 tcp 结构上的 SSL 对象；未编 SSL 时恒 NULL。收 ssl 的那几个函数形参都是 void *，
 // 本就不跟着 #if WITH_SSL 切（见 _evpub_sock_send / _evpub_close_flush_tcp 的说明），
 // 调用点也不该各套一层：unix 与 IOCP 两侧共 8 处，只差这一个实参
@@ -34,7 +36,18 @@
 #define TCP_SSL(t) ((t)->ssl)
 #else
 #define TCP_SSL(t) NULL
-#endif
+#endif// WITH_SSL
+// 只在手上还没有 sock_ctx(刚 accept 出裸 fd)时用来定归属;已有 sock_ctx 的一律读 sk->index,
+// 别再按 fd 重算——listener 与 pipe 的 index 本来就不等于 CALC_WATCHER_INDEX(fd)
+#define CALC_WATCHER(p, n, fd) (1 == (n) ? (p) : &(p)[CALC_WATCHER_INDEX((fd), (n))])
+// 回调与消息里的 client 形参恒取 0/1。BIT_CHECK 拿到的是 STATUS_CLIENT 的原值、不是 1，必须在这里归一化——
+// 上层文档都按 1 写，透传原值会让 == 1 的判定永远不成立
+#define SOCK_IS_CLIENT(status) (BIT_CHECK((status), STATUS_CLIENT) ? 1 : 0)
+// fd → evsock_ctx 哈希表的 HASHFN / CMPFN。表由 uev.h / iocp.h 各自 HASHMAP_DECL 出来
+// (evsock_ctx 是平台各自定义的),宏到那时才展开,所以这里 evsock_ctx 不完整也没关系。
+// 比较不用相减:SOCKET 在 Win64 是 UINT_PTR,差值会截断成 int 溢出
+#define SOCKEL_HASH(e) hash_u64((uint64_t)(*(e))->sk.fd)
+#define SOCKEL_CMP(a, b) (((*(a))->sk.fd < (*(b))->sk.fd) ? -1 : ((*(a))->sk.fd > (*(b))->sk.fd) ? 1 : 0)
 
 struct evssl_ctx;
 struct watcher_ctx;
@@ -103,11 +116,14 @@ typedef struct sendto_ctx {
     void *data;        // payload 指针(copy=1 时为内部 MALLOC,copy=0 时为调用方转移所有权)
     netaddr_ctx addr;  // 目标地址
 }sendto_ctx;
+QUE_DECL(obuf_que, off_buf_ctx)// TCP 发送队列
+QUE_DECL(sbuf_que, sendto_ctx)// UDP 发送队列
 typedef struct recvfrom_ctx {
     size_t len;
     netaddr_ctx addr;  // 发送端地址
     char data[];
 }recvfrom_ctx;
+ARR_DECL(lsn_arr, struct listener_ctx *)
 // 网络事件上下文
 typedef struct ev_ctx {
     uint32_t nthreads;              // 工作线程数
@@ -119,7 +135,7 @@ typedef struct ev_ctx {
     struct acceptex_ctx *acpex;     // AcceptEx上下文数组
 #endif
     struct watcher_ctx *watcher;    // 事件监听器数组
-    array_ctx arrlsn;               // 监听器列表（元素 listener_ctx *）
+    lsn_arr arrlsn;                 // 监听器列表
     spin_ctx spin;                  // 保护arrlsn的自旋锁
 }ev_ctx;
 
@@ -173,16 +189,12 @@ typedef struct ev_tick {
 void _evpub_set_cur_watcher(struct watcher_ctx *watcher);
 // 调用方是否就在该 watcher 的事件线程上；是则命令可就地执行，不必入队
 int32_t _evpub_inloop(struct watcher_ctx *watcher);
-// fd → evsock_ctx hashmap 工具集
-// hashmap哈希函数：以fd作为key计算哈希值（hashmap_new 回调）
-uint64_t _evpub_sockel_hash(const void *item, uint64_t seed0, uint64_t seed1);
-// hashmap比较函数：比较两个evsock_ctx的fd（hashmap_new 回调）
-int _evpub_sockel_compare(const void *a, const void *b, void *ud);
-// 根据fd从watcher的hashmap查找evsock_ctx
+// fd → evsock_ctx 哈希表(sockel_map)工具集
+// 根据fd从watcher的哈希表查找evsock_ctx
 struct evsock_ctx *_evpub_sockel_get(struct watcher_ctx *watcher, SOCKET fd);
-// 将evsock_ctx加入watcher的hashmap（断言不重复）
+// 将evsock_ctx加入watcher的哈希表（断言不重复）
 void _evpub_sockel_add(struct watcher_ctx *watcher, struct evsock_ctx *evsk);
-// 从watcher的hashmap中移除fd，返回 hashmap spare 缓冲指针（下次操作前有效，调用方按需用）
+// 从watcher的哈希表中移除fd，返回表内 spare 缓冲指针（下次操作前有效，调用方按需用）
 void *_evpub_sockel_remove(struct watcher_ctx *watcher, SOCKET fd);
 int32_t _evpub_checkid(struct evsock_ctx *evsk, const uint64_t skid);
 // 获取ud_cxt
@@ -212,15 +224,15 @@ void _evpub_share_data_free(void *arg);
 void _evpub_off_buf_release(off_buf_ctx *buf);
 // 以下为模块内部公共函数
 // 清空发送缓冲队列并释放数据
-void _evpub_off_buf_clear(queue_ctx *bufs);
+void _evpub_off_buf_clear(obuf_que *bufs);
 // 清空 UDP 发送队列(sendto_ctx)并释放各 payload
-void _evpub_sendto_clear(queue_ctx *bufs);
+void _evpub_sendto_clear(sbuf_que *bufs);
 // TCP 发送队列准入(未建连 / SSL 握手期 / 队列超上限)：通过返 1；拒收返 0 且已落 WARN，调用方丢数据并断连。
 // "已在关闭流程"那道门动作不同(只丢不断)，留在调用点
 int32_t _evpub_recvbuf_full(buffer_ctx *buf_r, SOCKET fd);
-int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd);
+int32_t _evpub_sendqu_check_tcp(uint32_t nqu, int32_t status, SOCKET fd);
 // UDP 发送队列准入：仅判队列超上限。通过返 1；拒收返 0 且已落 WARN，调用方丢包不断连
-int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd);
+int32_t _evpub_sendqu_check_udp(uint32_t nqu, SOCKET fd);
 // 入队字节累计的增长告警(tda 翻倍阈值)；istcp 只用于挑 TCP / UDP 两条文案
 void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
 // 关闭前把 send queue 冲一次：能写进内核的(关闭帧、COM_QUIT 这类小控制包)送达，写不进去的
@@ -228,7 +240,7 @@ void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp);
 // KeyUpdate 挂着 SSL_read(理由见 _uev_add_bufs_send)时发不得，只丢不冲。
 // 冲出去的字节不报 MSG_TYPE_SEND：调用方此刻尚未置 STATUS_ERROR，回调进来即重入。
 // ssl 收 void * 而非 SSL *：明文路径也走这里，不跟着 #if WITH_SSL 一起切
-void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t *wb_size, void *ssl);
+void _evpub_close_flush_tcp(SOCKET fd, obuf_que *buf_s, int32_t status, size_t *wb_size, void *ssl);
 // 就地拆连接，两平台各走自己的断连实现。给协议层的命令回调用：命令通道只报成功/失败，
 // 没有 unpack 路径上 PROT_ERROR 那条断链通道，撞上必须断连的误用时只能由它来关
 void _evpub_disconnect(struct watcher_ctx *watcher, struct evsock_ctx *evsk);
@@ -262,7 +274,7 @@ void _evpub_mark_close(int32_t *status, int32_t rtn);
 int32_t _evpub_close_type(int32_t status);
 // 向socket发送数据（支持SSL/普通）；返回 1 / 2 的含义与取正数的理由同 _evpub_sock_read，
 // 只是触发点在发送方向先读到对端记录时（仅 SSL 路径，明文路径只返 ERR_OK / ERR_FAILED）
-int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg);
+int32_t _evpub_sock_send(SOCKET fd, obuf_que *buf_s, size_t *nsend, void *arg);
 // UDP 发送缓冲入队并尝试立即发送（IOCP/uev 平台无关封装）；
 // tried 非 0 表示调用方在入队前已经尝试过一次发送（如 _evpub_try_sendto 遇到 EAGAIN），
 // 此次必然复现，跳过重复尝试，仅确保写事件已注册（IOCP 平台忽略该参数）

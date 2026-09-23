@@ -41,13 +41,13 @@ static inline pgpack_ctx *_pgpack_new(pgpack_type type) {
 }
 static inline void _pgpack_results_clear(pgpack_ctx *pgpack) {
     pgsql_result *res;
-    for (uint32_t i = 0; i < array_size(&pgpack->results); i++) {
-        res = array_at(&pgpack->results, i);
+    for (uint32_t i = 0; i < pgres_arr_size(&pgpack->results); i++) {
+        res = pgres_arr_at(&pgpack->results, (int32_t)i);
         if (NULL != res->reader) {
             pgsql_reader_free(res->reader);
         }
     }
-    array_free(&pgpack->results);// 内部就是 FREE(ptr), 置空后即"数组还没建"
+    pgres_arr_free(&pgpack->results);// 内部就是 FREE(ptr), 置空后即"数组还没建"
     pgpack->iter_cursor = 0;
 }
 // 获取或创建 pgsql_ctx 当前累积的 pgpack_ctx；pg 为 NULL 时直接分配新的（用于通知包）
@@ -124,12 +124,12 @@ static pgpack_ctx *_pgpack_notification_response(binary_ctx *breader) {
 void _pgpack_reader_free(void *arg) {
     pgsql_reader_ctx *reader = arg;
     pgpack_row *row;
-    for (uint32_t i = 0; i < array_size(&reader->arr_rows); i++) {
-        row = *(pgpack_row **)array_at(&reader->arr_rows, i);
+    for (uint32_t i = 0; i < pgrow_arr_size(&reader->arr_rows); i++) {
+        row = *pgrow_arr_at(&reader->arr_rows, (int32_t)i);
         FREE(row->payload); // 释放首列持有的原始行缓冲区
         FREE(row);
     }
-    array_free(&reader->arr_rows);
+    pgrow_arr_free(&reader->arr_rows);
     FREE(reader->fields);
 }
 // 获取或创建 pgpack_ctx 中的 pgsql_reader_ctx，并设置释放回调
@@ -141,7 +141,7 @@ static inline pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
     CALLOC(reader, 1, sizeof(pgsql_reader_ctx));
     pgpack->pack = reader;
     pgpack->_free_pgpack = _pgpack_reader_free;
-    array_init(&reader->arr_rows, sizeof(pgpack_row *), 0);
+    pgrow_arr_init(&reader->arr_rows, 0);
     return reader;
 }
 // 解析 RowDescription（'T'），填充字段描述数组
@@ -248,7 +248,7 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
             return ERR_FAILED;
         }
     }
-    array_push_back(&reader->arr_rows, &rows);
+    pgrow_arr_push_back(&reader->arr_rows, &rows);
     return ERR_OK;
 }
 // 解析 CopyInResponse（'G'），返回新分配的 pgpack_ctx（PGPACK_COPY_IN 类型，立即返回给调用方）；
@@ -318,7 +318,7 @@ static int32_t _pgpack_complete(pgsql_ctx *pg, binary_ctx *breader) {
         return ERR_OK;
     }
     if (NULL == pg->pack->results.ptr) {// 首次提交才建数组，无结果可提交的包（通知 / 认证期 / COPY OUT）不分配
-        array_init(&pg->pack->results, sizeof(pgsql_result), 2);
+        pgres_arr_init(&pg->pack->results, 2);
     }
     pgsql_result res;
     ZERO(&res, sizeof(res));
@@ -326,7 +326,7 @@ static int32_t _pgpack_complete(pgsql_ctx *pg, binary_ctx *breader) {
     // 按目的数组自校验并只搬到 NUL: memcpy 定长要靠"两个 complete 数组恰好同样大"这个巧合,
     // 且会把源数组 NUL 之后上一条标签的残字一起拷进来
     safe_fill_str(res.complete, sizeof(res.complete), pg->pack->complete);
-    array_push_back(&pg->pack->results, &res);
+    pgres_arr_push_back(&pg->pack->results, &res);
     pg->pack->pack = NULL; // reader 所有权移入结果数组
     pg->pack->_free_pgpack = NULL;
     return ERR_OK;
@@ -424,7 +424,7 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         }
         pg->readyforquery = binary_get_int8(breader);
         // 攒了行却没等到 CommandComplete: 协议要求每条语句由 C / E / I 收尾, 走不到这里。
-        // 这些行不交出去(同 libpq), 但别让调用方只看到一个空结果集
+        // 这些行不交出去, 但别让调用方只看到一个空结果集
         if (NULL != pg->pack
             && PGPACK_OK == pg->pack->type
             && NULL != pg->pack->pack) {

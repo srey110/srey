@@ -1,8 +1,9 @@
 ﻿#include "task_selfpost.h"
 
 // 故意设小的 qumsg 容量, 使自投递立刻越过快路径进入溢出层。
-// 取 2 而非更大值有第二个理由: task_new 按 fsqu_capacity / QUEUE_OVERLOAD_RATIO 推导过载告警阈值,
+// 取 2 而非更大值有第二个理由: task_new 按 msgq_capacity / QUEUE_OVERLOAD_RATIO 推导过载告警阈值,
 // 2/3 == 0 而 tda_check 把 0 视为禁用, 于是不会每次跑测试都打一条与真实背压无法区分的 overload 警告。
+// 这条只在 FSQU_FAST_MODEL 为 0/1 时成立; 选 bbq(2) 时最小容量取整到 8、阈值为 2, 会打一条 overload 警告, 属预期。
 #define SELFPOST_QUECAP  2
 // 自投递条数, 须远大于 SELFPOST_QUECAP
 #define SELFPOST_CNT     64
@@ -29,10 +30,10 @@ static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t 
     }
     task_selfpost_args *arg = (task_selfpost_args *)coro_get_arg(task);
     *(arg->ok) = 1;
-#if FSQU_MPQ
+#if FSQU_FAST_MODEL
     LOG_INFO("selfpost tested, %d messages received.", SELFPOST_CNT);
 #else
-    LOG_INFO("selfpost tested, %d messages received (FSQU_MPQ=0: fsqu_push is unbounded, mpq overflow fallback not covered).",
+    LOG_INFO("selfpost tested, %d messages received (FSQU_FAST_MODEL=0: msgq_push is unbounded, overflow fallback not covered).",
              SELFPOST_CNT);
 #endif
 }

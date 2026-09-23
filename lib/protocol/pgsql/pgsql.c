@@ -552,7 +552,7 @@ const char *pgsql_get_db(pgsql_ctx *pg) {
     return pg->database;
 }
 uint32_t pgsql_result_count(pgpack_ctx *pgpack) {
-    return (PGPACK_OK == pgpack->type) ? array_size(&pgpack->results) : 0;
+    return (PGPACK_OK == pgpack->type) ? pgres_arr_size(&pgpack->results) : 0;
 }
 // 从命令完成标签末尾反向找最后一个空格，取其后的数字字符串
 static int64_t _pgsql_tag_rows(const char *tag) {
@@ -577,5 +577,5 @@ int64_t pgsql_affected_at(pgpack_ctx *pgpack, uint32_t idx) {
     if (idx >= pgsql_result_count(pgpack)) {
         return 0;
     }
-    return _pgsql_tag_rows(((pgsql_result *)array_at(&pgpack->results, idx))->complete);
+    return _pgsql_tag_rows(pgres_arr_at(&pgpack->results, (int32_t)idx)->complete);
 }

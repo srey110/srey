@@ -2,11 +2,12 @@
 #include "protocol/pgsql/pgsql_parse.h"
 #include "protocol/pgsql/pgsql.h"// pgsql_result_count
 #include "utils/strptime.h"
+#include "utils/uuid.h"
 
 // 取走第 idx 个结果的 reader; 下标须已由调用方确认在范围内。所有权转移给调用方,
 // 槽位置 NULL 以免 _pgpack_free 二次释放
 static inline pgsql_reader_ctx *_pgsql_reader_take(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
-    pgsql_result *res = array_at(&pgpack->results, idx);
+    pgsql_result *res = pgres_arr_at(&pgpack->results, (int32_t)idx);
     if (NULL == res->reader) {
         return NULL; // 该语句无结果集（INSERT/UPDATE 无 RETURNING）
     }
@@ -40,28 +41,28 @@ void pgsql_reader_free(pgsql_reader_ctx *reader) {
     FREE(reader);
 }
 size_t pgsql_reader_size(pgsql_reader_ctx *reader) {
-    return array_size(&reader->arr_rows);
+    return pgrow_arr_size(&reader->arr_rows);
 }
 void pgsql_reader_seek(pgsql_reader_ctx *reader, size_t pos) {
-    if (pos >= array_size(&reader->arr_rows)) {
+    if (pos >= pgrow_arr_size(&reader->arr_rows)) {
         return; // 目标位置超出范围，不移动游标
     }
     reader->index = (int32_t)pos;
 }
 int32_t pgsql_reader_eof(pgsql_reader_ctx *reader) {
-    return (reader->index >= (int32_t)array_size(&reader->arr_rows)) ? 1 : 0;
+    return (reader->index >= (int32_t)pgrow_arr_size(&reader->arr_rows)) ? 1 : 0;
 }
 void pgsql_reader_next(pgsql_reader_ctx *reader) {
-    if (reader->index < (int32_t)array_size(&reader->arr_rows)) {
+    if (reader->index < (int32_t)pgrow_arr_size(&reader->arr_rows)) {
         reader->index++;
     }
 }
 pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_field **field) {
-    if (reader->index >= (int32_t)array_size(&reader->arr_rows)
+    if (reader->index >= (int32_t)pgrow_arr_size(&reader->arr_rows)
         || (index < 0 || index >= reader->field_count)) {
         return NULL;
     }
-    pgpack_row *row = *(pgpack_row **)array_at(&reader->arr_rows, (uint32_t)reader->index);
+    pgpack_row *row = *pgrow_arr_at(&reader->arr_rows, reader->index);
     if (NULL != field
         && NULL != reader->fields) {
         *field = &reader->fields[index]; // 同时输出字段描述指针
@@ -177,9 +178,7 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
-        // 文本格式：空串 / 有残留字符 / 上溢的判定与 mysql 侧共用 parse_double_strict。
-        // 原先这里只查"消费长度相符"，"1e400" 会带着 inf 和 ERR_OK 交出去，而同一个值在
-        // mysql 侧是被拒的——两个镜像实现各写一份必然分叉，收到 prots_pub 一处
+        // 文本格式：空串 / 有残留字符 / 上溢的判定与 mysql 侧共用 parse_double_strict
         double val;
         if (ERR_OK != parse_double_strict(row->val, (size_t)row->lens, &val)) {
             SET_PTR(err, ERR_FAILED);
@@ -346,31 +345,6 @@ int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *e
     }
     return (int32_t)unpack_integer(row->val, row->lens, 0, 1);
 }
-// 将文本格式 UUID "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"（36 字符）解析为 16 字节
-static int32_t _pgsql_uuid_from_text(const char *s, int32_t lens, char uuid[16]) {
-    if (36 != lens) {
-        return ERR_FAILED;
-    }
-    int32_t hi, lo;
-    int32_t bi = 0;
-    for (int32_t i = 0; i < 36; ) {
-        if ('-' == s[i]) {
-            i++;
-            continue;
-        }
-        if (i + 1 >= 36 || bi >= 16) {
-            return ERR_FAILED;
-        }
-        hi = fromhex(s[i]);
-        lo = fromhex(s[i + 1]);
-        if (hi < 0 || lo < 0) {
-            return ERR_FAILED;
-        }
-        uuid[bi++] = (char)((hi << 4) | lo);
-        i += 2;
-    }
-    return (16 == bi) ? ERR_OK : ERR_FAILED;
-}
 int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[16], int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { UUIDOID };
@@ -388,7 +362,7 @@ int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[
         return ERR_OK;
     }
     // 文本格式："xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"（36 字符）
-    if (ERR_OK != _pgsql_uuid_from_text(row->val, row->lens, uuid)) {
+    if (ERR_OK != uuid_fromstr(row->val, (size_t)row->lens, uuid)) {
         SET_PTR(err, ERR_FAILED);
         return ERR_FAILED;
     }

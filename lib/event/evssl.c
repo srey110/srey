@@ -31,7 +31,8 @@ typedef struct certs_ctx {
     struct evssl_ctx *ssl;     // 对应的evssl_ctx
     char name[EVSSL_NAME_LEN]; // 注册名称
 }certs_ctx;
-static array_ctx *_arr_certs = NULL;// 全局证书注册池（元素 certs_ctx）
+ARR_DECL(certs_arr, certs_ctx)
+static certs_arr *_arr_certs = NULL;// 全局证书注册池
 static rwlock_ctx *_rwlck_certs = NULL;// 保护证书池的读写锁
 static atomic_t _init_once = 0;// 保证证书池只初始化一次
 
@@ -171,9 +172,9 @@ void evssl_free(evssl_ctx *evssl) {
 void evssl_pool_init(void) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
         MALLOC(_rwlck_certs, sizeof(rwlock_ctx));
-        MALLOC(_arr_certs, sizeof(array_ctx));
+        MALLOC(_arr_certs, sizeof(certs_arr));
         rwlock_init(_rwlck_certs);
-        array_init(_arr_certs, sizeof(certs_ctx), 0);
+        certs_arr_init(_arr_certs, 0);
     }
 }
 void evssl_pool_free(void) {
@@ -181,11 +182,11 @@ void evssl_pool_free(void) {
         || NULL == _rwlck_certs) {
         return;
     }
-    uint32_t n = array_size(_arr_certs);
+    uint32_t n = certs_arr_size(_arr_certs);
     for (uint32_t i = 0; i < n; i++) {
-        evssl_free(((certs_ctx *)array_at(_arr_certs, i))->ssl);
+        evssl_free(certs_arr_at(_arr_certs, (int32_t)i)->ssl);
     }
-    array_free(_arr_certs);
+    certs_arr_free(_arr_certs);
     rwlock_free(_rwlck_certs);
     FREE(_arr_certs);
     FREE(_rwlck_certs);
@@ -195,9 +196,9 @@ void evssl_pool_free(void) {
 // 在证书池中按名称查找certs_ctx（调用前须持有读锁）
 static certs_ctx *_evssl_get(const char *name) {
     certs_ctx *cert;
-    uint32_t n = array_size(_arr_certs);
+    uint32_t n = certs_arr_size(_arr_certs);
     for (uint32_t i = 0; i < n; i++) {
-        cert = array_at(_arr_certs, i);
+        cert = certs_arr_at(_arr_certs, (int32_t)i);
         if (0 == strcmp(name, cert->name)) {
             return cert;
         }
@@ -235,7 +236,7 @@ int32_t evssl_register(const char *name, evssl_ctx *evssl) {
         LOG_ERROR("ssl name %s repeat.", name);
         rtn = ERR_FAILED;
     } else {
-        array_push_back(_arr_certs, &cert);
+        certs_arr_push_back(_arr_certs, &cert);
         rtn = ERR_OK;
     }
     rwlock_unlock(_rwlck_certs);

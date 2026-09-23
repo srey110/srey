@@ -52,7 +52,7 @@ static inline watcher_ctx *_cmd_get_watcher(ev_ctx *ctx, sock_ctx *sk) {
     return &ctx->watcher[sk->index];
 }
 #ifdef NO_CMD_PIPE
-static FORCE_INLINE void _cmd_note_trigger(watcher_ctx *watcher, pip_ctx *pip) {
+static inline void _cmd_note_trigger(watcher_ctx *watcher, pip_ctx *pip) {
     int32_t erro;
 #ifdef EV_KQUEUE
     changes_t kev;
@@ -75,7 +75,7 @@ static FORCE_INLINE void _cmd_note_trigger(watcher_ctx *watcher, pip_ctx *pip) {
 void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
     overlap_cmd_ctx *olcmd = &watcher->cmd;
-    fsqu_push(&olcmd->qu, cmd);
+    cmdq_push(&olcmd->qu, cmd);
     if (ATOMIC_CAS(&olcmd->wake_pending, 0, 1)
         && 0 == ATOMIC_GET(&watcher->stop)) {
         int32_t posted = (int32_t)PostQueuedCompletionStatus(watcher->iocp, 0, 0, &olcmd->ol_r.overlapped);
@@ -83,7 +83,7 @@ void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
     }
 #else
     pip_ctx *pip = &watcher->pipe;
-    fsqu_push(&pip->qu, cmd);
+    cmdq_push(&pip->qu, cmd);
     if (ATOMIC_CAS(&pip->wake_pending, 0, 1)) {
 #ifdef NO_CMD_PIPE
         _cmd_note_trigger(watcher, pip);

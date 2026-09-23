@@ -35,7 +35,7 @@ static mysql_reader_ctx *_reader_new(mpack_type pktype, int32_t field_count,
             reader->fields[i].type = types[i];
         }
     }
-    array_init(&reader->arr_rows, sizeof(mpack_row *), 16);
+    mrow_arr_init(&reader->arr_rows, 16);
     return reader;
 }
 
@@ -94,7 +94,7 @@ static void _reader_push_row(mysql_reader_ctx *reader, char *payload,
             row[i].val = cols[i];
         }
     }
-    array_push_back(&reader->arr_rows, &row);
+    mrow_arr_push_back(&reader->arr_rows, &row);
 }
 
 // 造一个"单列单行、值为给定文本"的 reader。payload 由 reader 释放（_mpack_reader_free）
@@ -353,6 +353,31 @@ static void test_mysql_reader_uinteger(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 200 == v);
     mysql_reader_free(r2);
+
+    // 文本路径只收纯十进制数字:带符号、带空白、超 UINT64_MAX 一律拒,"-1" 不能回绕成 UINT64_MAX 收下
+    char snames[5][64] = { "neg", "plus", "lead", "trail", "over" };
+    uint8_t stypes[5] = { MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG,
+                          MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG };
+    mysql_reader_ctx *r3 = _reader_new(MPACK_QUERY, 5, snames, stypes);
+    const char *ssrc = "-1" "+1" " 5" "5 " "18446744073709551616";
+    char *p3;
+    MALLOC(p3, 32);
+    memcpy(p3, ssrc, strlen(ssrc));
+    buf_ctx c3[5] = {
+        { .data = p3,     .lens = 2  },// neg
+        { .data = p3 + 2, .lens = 2  },// plus
+        { .data = p3 + 4, .lens = 2  },// lead:前导空格
+        { .data = p3 + 6, .lens = 2  },// trail:尾随空格
+        { .data = p3 + 8, .lens = 20 },// over:UINT64_MAX + 1
+    };
+    _reader_push_row(r3, p3, c3, NULL);
+    int32_t i;
+    for (i = 0; i < 5; i++) {
+        v = mysql_reader_uinteger(r3, snames[i], &err);
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+        CuAssertTrue(tc, 0 == v);
+    }
+    mysql_reader_free(r3);
 }
 
 // mysql_reader_float / double 文本路径

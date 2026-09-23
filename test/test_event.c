@@ -21,13 +21,13 @@ static void _biopump_all(BIO *cw, BIO *sr, BIO *sw, BIO *cr) {
 }
 #endif
 // 往发送队列塞一条待发数据，data 由 _evpub_off_buf_release / 冲刷成功后释放
-static void _push_sendbuf(queue_ctx *bufs, const char *s, size_t lens) {
+static void _push_sendbuf(obuf_que *bufs, const char *s, size_t lens) {
     off_buf_ctx buf;
     ZERO(&buf, sizeof(buf));
     MALLOC(buf.data, lens);
     memcpy(buf.data, s, lens);
     buf.lens = lens;
-    queue_push(bufs, &buf);
+    obuf_que_push(bufs, &buf);
 }
 #if WITH_SSL
 // 探一次有没有数据可读：证否用，不等待
@@ -50,14 +50,13 @@ static size_t _recv_all(SOCKET fd, char *out, size_t want) {
     }
     return got;
 }
-// 关闭前冲刷 _evpub_close_flush_tcp。为什么走单测而不是集成用例（task_close_flush）：
-// 队列非空是冲刷干活的前提，而 unix 侧只要 socket 可写，正常写路径就已经把队列抽干了，
-// 也就是说集成场景下"队列非空"必然意味着"此刻写不进去"，观察不到冲刷把字节送出去
+// 关闭前冲刷 _evpub_close_flush_tcp。集成用例（task_close_flush）只走得到常规冲刷那一支，
+// 队列空早退、各 SSL 状态下冲不冲这几支造不出确定的现场，在这里直接构造
 static void test_evpub_close_flush(CuTest *tc) {
     SOCKET sk[2];
     CuAssertIntEquals(tc, ERR_OK, sock_pair(sk, 1));
-    queue_ctx bufs;
-    queue_init(&bufs, sizeof(off_buf_ctx), 8);
+    obuf_que bufs;
+    obuf_que_init(&bufs, 8);
     char got[32];
     size_t nrecv;
     size_t wb;
@@ -72,7 +71,7 @@ static void test_evpub_close_flush(CuTest *tc) {
     _push_sendbuf(&bufs, " world", 6);
     wb = 11;
     _evpub_close_flush_tcp(sk[0], &bufs, STATUS_ESTABLISHED, &wb, NULL);
-    CuAssertTrue(tc, 0 == queue_size(&bufs));
+    CuAssertTrue(tc, 0 == obuf_que_size(&bufs));
     CuAssertTrue(tc, 0 == wb);
     ZERO(got, sizeof(got));
     nrecv = _recv_all(sk[1], got, 11);
@@ -84,7 +83,7 @@ static void test_evpub_close_flush(CuTest *tc) {
     _push_sendbuf(&bufs, "blocked", 7);
     wb = 7;
     _evpub_close_flush_tcp(sk[0], &bufs, STATUS_ESTABLISHED | STATUS_KEYUPDATE_WRITE, &wb, NULL);
-    CuAssertTrue(tc, 1 == queue_size(&bufs));
+    CuAssertTrue(tc, 1 == obuf_que_size(&bufs));
     CuAssertTrue(tc, 7 == wb);
     CuAssertTrue(tc, 0 != _recv_none(sk[1]));
     _evpub_off_buf_clear(&bufs);
@@ -93,7 +92,7 @@ static void test_evpub_close_flush(CuTest *tc) {
     _push_sendbuf(&bufs, "plain", 5);
     wb = 5;
     _evpub_close_flush_tcp(sk[0], &bufs, STATUS_ESTABLISHED | STATUS_SSLEXCHANGE, &wb, NULL);
-    CuAssertTrue(tc, 0 == queue_size(&bufs));
+    CuAssertTrue(tc, 0 == obuf_que_size(&bufs));
     CuAssertTrue(tc, 0 == wb);
     ZERO(got, sizeof(got));
     nrecv = _recv_all(sk[1], got, 5);
@@ -102,11 +101,11 @@ static void test_evpub_close_flush(CuTest *tc) {
 
     /* 5) AUTHSSL 同样不挡：守卫只剩 KEYUPDATE_WRITE 一位，别再按"SSL 相关状态一律不冲"加回来。
           生产里这个组合不可达——两个平台仅有的两处入队都过 _evpub_sendqu_check_tcp，
-          它对 AUTHSSL/SSLEXCHANGE 都拒收，握手期队列必空、上面那道 queue_size 早退就返回了 */
+          它对 AUTHSSL/SSLEXCHANGE 都拒收，握手期队列必空、上面那道 obuf_que_size 早退就返回了 */
     _push_sendbuf(&bufs, "authssl", 7);
     wb = 7;
     _evpub_close_flush_tcp(sk[0], &bufs, STATUS_ESTABLISHED | STATUS_AUTHSSL, &wb, NULL);
-    CuAssertTrue(tc, 0 == queue_size(&bufs));
+    CuAssertTrue(tc, 0 == obuf_que_size(&bufs));
     CuAssertTrue(tc, 0 == wb);
     ZERO(got, sizeof(got));
     nrecv = _recv_all(sk[1], got, 7);
@@ -114,7 +113,7 @@ static void test_evpub_close_flush(CuTest *tc) {
     CuAssertTrue(tc, 0 == memcmp(got, "authssl", 7));
 #endif
 
-    queue_free(&bufs);
+    obuf_que_free(&bufs);
     CLOSE_SOCK(sk[0]);
     CLOSE_SOCK(sk[1]);
 }

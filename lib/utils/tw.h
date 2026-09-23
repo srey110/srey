@@ -24,6 +24,7 @@ typedef struct tw_node_ctx {
     ud_cxt ud;          //用户数据
     uint64_t expires;   //到期时间（毫秒绝对时间）
 }tw_node_ctx;
+FSQU_DECL(twq, tw_node_ctx *)
 typedef struct tw_ctx {
     atomic_t exit;          //退出标志，非零时轮线程退出
     atomic_t reqadd_pending;  //入队脏标志：0 已感知，1 有待处理节点；仅在 0→1 时才唤醒轮线程
@@ -32,7 +33,7 @@ typedef struct tw_ctx {
     timer_ctx timer;        //高精度计时器
     mutex_ctx mu;
     cond_ctx cond;
-    fsqu_ctx reqadd;          //外部新增请求暂存队列（平台自适应 fsqu，容量 capacity）
+    twq reqadd;          //外部新增请求暂存队列（平台自适应 fsqu，容量 capacity）
     pool_ctx node_pool;       //空闲节点复用池（utils/pool，容量 TW_NODE_POOL_MAX）
     list_ctx tv1[TVR_SIZE];   //最低精度轮（精度 1ms，范围 256ms），槽即 slist（元素 tw_node_ctx）
     list_ctx tv2[TVN_SIZE];   //第 2 级精度轮

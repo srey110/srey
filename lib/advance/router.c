@@ -2,6 +2,7 @@
 #include "utils/utils.h"
 #include "utils/binary.h"
 #include "containers/hashmap.h"
+#include "containers/sarray.h"
 #include "srey/loader.h"
 #include "srey/task.h"
 
@@ -52,21 +53,11 @@ struct router_entry {
     router_cb handler;          // 普通路由; 与 on_chunk 互斥
     router_stream_cb on_chunk;  // 流式路由; 两者皆空即 router_add_index 注册的纯匹配条目
 };
-// 路由器
-// 三组动态数组共享一份 _router_grow 几何扩容逻辑; 全局中间件 / 路由表 / 具名表互不影响
-struct router_ctx {
-    int32_t routes_n;
-    int32_t routes_cap;
-    int32_t global_mw_n;
-    int32_t global_mw_cap;
-    int32_t named_n;
-    int32_t named_cap;
-    int32_t has_stream; // 注册过流式路由; 没有就走 _router_chunked_nostream, 不必堆分配 router_stream
-    router_entry *routes;
-    router_cb *global_mw;
-    named_mw *named;
-    struct hashmap *streams; // router_st_ent 表; 首次遇到流式请求才建
-};
+// 三组动态数组直接用容器层的 ARR_DECL(倍增策略归它管);
+// 全局中间件 / 路由表 / 具名表互不影响
+ARR_DECL(route_arr, router_entry)
+ARR_DECL(rmw_arr, router_cb)
+ARR_DECL(rnamed_arr, named_mw)
 // 一条正在接收的流式请求。req / url 要跨帧活到收齐, 故整体堆分配, 表里只放下面那个小元素
 // —— 表扩容搬的是指针, 交给 on_chunk 的 ctx 地址始终不变。
 // 首包不留副本: req.pack 只在它活着的那段时间(准入链 + 首帧回调)有效, 之后置 NULL
@@ -77,25 +68,31 @@ typedef struct router_stream {
 } router_stream;
 // 流式表的元素: 键 + 本体指针。本体近 5KB, 按值入表的话查一次就得在栈上摆一个同样大的探针
 typedef struct router_st_ent {
-    sock_ctx sk;              // hashmap 的键
+    sock_ctx sk;              // st_map 的键
     router_stream *st;
 } router_st_ent;
+// 流式表的 HASHFN / CMPFN(键是 sk 的 fd + skid 两段,多行所以用函数不用宏)。
+// 定义与 _router_st_free 一族放在一起,这里只前向声明,好让下面的 HASHMAP_DECL 能用
+static inline uint64_t _router_st_hash(const router_st_ent *ent);
+static inline int _router_st_cmp(const router_st_ent *x, const router_st_ent *y);
+HASHMAP_DECL(st_map, router_st_ent, _router_st_hash, _router_st_cmp)
+// 路由器
+struct router_ctx {
+    int32_t has_stream; // 注册过流式路由; 没有就走 _router_chunked_nostream, 不必堆分配 router_stream
+    route_arr routes;
+    rmw_arr global_mw;
+    rnamed_arr named;
+    st_map *streams;    // router_st_ent 表; 首次遇到流式请求才建
+};
+// 三个数组按基址下标访问:循环上界就是 *_size, *_at 每轮再跑一遍负下标归一与越界
+// 断言是重复的。空数组时 *_front 返 NULL,各处的 for 上界与显式判空已挡住解引用
+#define _R_ROUTES(r)   route_arr_front(&(r)->routes)
+#define _R_GMW(r)      rmw_arr_front(&(r)->global_mw)
+#define _R_NAMED(r)    rnamed_arr_front(&(r)->named)
+#define _R_ROUTES_N(r) ((int32_t)route_arr_size(&(r)->routes))
+#define _R_GMW_N(r)    ((int32_t)rmw_arr_size(&(r)->global_mw))
+#define _R_NAMED_N(r)  ((int32_t)rnamed_arr_size(&(r)->named))
 
-// 对存放 router_entry / router_cb / named_mw 三种结构体 (含指针成员) 的数组
-// 这里直接 REALLOC 几何扩容, 由调用方自己写 [size++] 入位置
-static void _router_grow(void **arr, int32_t *cap, int32_t need, size_t elem_size) {
-    if (need <= *cap) {
-        return;
-    }
-    // 起始 8, 之后翻倍直到满足 need; REALLOC 在 *arr=NULL 时等价 malloc。
-    // 翻倍走无符号: int32_t 溢出是 UB, 编译器可据此把 newcap < need 推成恒真
-    uint32_t newcap = (0 == *cap) ? 8u : (uint32_t)*cap;
-    while (newcap < (uint32_t)need) {
-        newcap *= 2;
-    }
-    REALLOC(*arr, *arr, (size_t)newcap * elem_size);
-    *cap = (int32_t)newcap;
-}
 // 占位符名字只认 [A-Za-z0-9_]。不用 isalnum: 它跟 locale 走, 同一条路由换个 locale 会变意思
 static int32_t _router_seg_name_ok(const char *s, size_t len) {
     char c;
@@ -421,24 +418,17 @@ router_ctx *router_new(void) {
     router_ctx *r;
     MALLOC(r, sizeof(router_ctx));
     ZERO(r, sizeof(router_ctx));
+    route_arr_init(&r->routes, 8);
+    rmw_arr_init(&r->global_mw, 8);
+    rnamed_arr_init(&r->named, 8);
     return r;
 }
-// 流式表的 hash / compare / elfree。key 是 sock_ctx，按字段逐个喂而不是整体 memhash：
-// 一是结构里仍有对齐填充(Win64 落在 index 与 skid 之间)，填充字节未初始化;
-// 二是 index 由 fd 派生,喂进键反而会让同一连接的两份标识判成不等(失效的填 INVALID_INDEX,正常的填真值)
-static uint64_t _router_st_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    (void)seed0;
-    (void)seed1;
-    const router_st_ent *ent = (const router_st_ent *)item;
-    uint64_t key[2];
-    key[0] = (uint64_t)ent->sk.fd;
-    key[1] = ent->sk.skid;
-    return hash((const char *)key, sizeof(key));
+// 流式表的 hash / compare / elfree。hash 只取 skid(键相等则 skid 必相等);compare 比 fd+skid,
+// 不能比 index:它由 fd 派生,同一连接的两份标识可能一份填 INVALID_INDEX、一份填真值
+static inline uint64_t _router_st_hash(const router_st_ent *ent) {
+    return hash_u64(ent->sk.skid);
 }
-static int _router_st_cmp(const void *a, const void *b, void *ud) {
-    (void)ud;
-    const router_st_ent *x = (const router_st_ent *)a;
-    const router_st_ent *y = (const router_st_ent *)b;
+static inline int _router_st_cmp(const router_st_ent *x, const router_st_ent *y) {
     if (x->sk.fd != y->sk.fd) {
         return (x->sk.fd < y->sk.fd) ? -1 : 1;
     }
@@ -456,7 +446,7 @@ static void _router_st_free(void *item) {
     st->on_chunk(&st->req, ROUTER_STREAM_ABORT, NULL, 0);
     FREE(st);
 }
-// 摘掉一条流式记录并释放它。hashmap_delete 只返回元素副本、不会自动调 elfree, 得在这里补上
+// 摘掉一条流式记录并释放它。st_map_delete 只返回元素副本、不会自动调 elfree, 得在这里补上
 static void _router_st_drop(router_ctx *r, sock_ctx *sk) {
     if (NULL == r->streams) {
         return;
@@ -464,22 +454,22 @@ static void _router_st_drop(router_ctx *r, sock_ctx *sk) {
     router_st_ent probe;
     probe.sk = *sk;
     probe.st = NULL;
-    router_st_ent *removed = (router_st_ent *)hashmap_delete(r->streams, &probe);
+    router_st_ent *removed = st_map_delete(r->streams, &probe);
     if (NULL != removed) {
         _router_st_free(removed);
     }
 }
-// 排空流式表。每轮都从 i = 0 重新起步, 不复用被 hashmap_delete 作废的游标
+// 排空流式表。每轮都从 i = 0 重新起步, 不复用被 st_map_delete 作废的游标
 static void _router_st_drain(router_ctx *r) {
     size_t i;
-    void *item;
+    router_st_ent *item;
     sock_ctx sk;
-    while (0 != hashmap_count(r->streams)) {
+    while (0 != st_map_size(r->streams)) {
         i = 0;
-        if (!hashmap_iter(r->streams, &i, &item)) {
+        if (!st_map_iter(r->streams, &i, &item)) {
             break;
         }
-        sk = ((router_st_ent *)item)->sk;
+        sk = item->sk;
         _router_st_drop(r, &sk);
     }
 }
@@ -491,30 +481,33 @@ void router_free(router_ctx *r) {
     // 那次回调还能读路径参数, 而 params[].key 指向下面就要被释放的 segs[].str
     if (NULL != r->streams) {
         _router_st_drain(r);
-        hashmap_free(r->streams);
+        st_map_free(r->streams);
     }
     router_entry *e;
     // 逐 entry 释放其内嵌的字符串和数组
-    for (int32_t i = 0; i < r->routes_n; i++) {
-        e = &r->routes[i];
+    router_entry *rts = _R_ROUTES(r);
+    for (int32_t i = 0; i < _R_ROUTES_N(r); i++) {
+        e = &rts[i];
         _router_segs_free_str(e->segs, e->segs_n);
         FREE(e->segs);
         FREE(e->mws);
     }
-    FREE(r->routes);
-    FREE(r->global_mw);
+    route_arr_free(&r->routes);
+    rmw_arr_free(&r->global_mw);
     // 具名表 name 是 router_define 中 MALLOC + memcpy 的副本
-    for (int32_t i = 0; i < r->named_n; i++) {
-        FREE(r->named[i].name);
+    named_mw *nms = _R_NAMED(r);
+    for (int32_t i = 0; i < _R_NAMED_N(r); i++) {
+        FREE(nms[i].name);
     }
-    FREE(r->named);
+    rnamed_arr_free(&r->named);
     FREE(r);
 }
 // 按名查具名中间件; 数量小, 线性扫描即可, 未注册视为 router_use / 路由 mws 引用错误
 static router_cb _router_resolve_mw(router_ctx *r, const char *name) {
-    for (int32_t i = 0; i < r->named_n; i++) {
-        if (0 == strcmp(r->named[i].name, name)) {
-            return r->named[i].fn;
+    named_mw *nms = _R_NAMED(r);
+    for (int32_t i = 0; i < _R_NAMED_N(r); i++) {
+        if (0 == strcmp(nms[i].name, name)) {
+            return nms[i].fn;
         }
     }
     LOG_WARN("router: middleware '%s' not defined.", name);
@@ -523,24 +516,26 @@ static router_cb _router_resolve_mw(router_ctx *r, const char *name) {
 void router_define(router_ctx *r, const char *name, router_cb fn) {
     // 同名直接覆盖 named 表项; 注意 router_add / router_use 在被调时已把函数指针快照
     // 存进 entry->mws / global_mw, 覆盖只影响其后注册的路由 / 全局中间件
-    for (int32_t i = 0; i < r->named_n; i++) {
-        if (0 == strcmp(r->named[i].name, name)) {
-            r->named[i].fn = fn;
+    named_mw *nms = _R_NAMED(r);
+    for (int32_t i = 0; i < _R_NAMED_N(r); i++) {
+        if (0 == strcmp(nms[i].name, name)) {
+            nms[i].fn = fn;
             return;
         }
     }
-    _router_grow((void **)&r->named, &r->named_cap, r->named_n + 1, sizeof(named_mw));
+
     // strdup 一份, 调用方栈上 / 常量区字符串都能用
     size_t len = strlen(name);
     char *dup = dup_zero(name, len);
-    r->named[r->named_n].name = dup;
-    r->named[r->named_n].fn = fn;
-    r->named_n++;
+    named_mw item;
+    item.name = dup;
+    item.fn = fn;
+    rnamed_arr_push_back(&r->named, &item);
 }
 // 执行链长度 = 全局中间件 + 路由级中间件 + 末位一格(普通路由的 handler / 流式路由的准入哨兵)。
 // 注册时、后加全局中间件时、派发前各判一次, 三处共用这一个谓词
 static inline int32_t _router_chain_over(const router_ctx *r, int32_t mws_n) {
-    return r->global_mw_n + mws_n + 1 > ROUTER_MAX_CHAIN;
+    return _R_GMW_N(r) + mws_n + 1 > ROUTER_MAX_CHAIN;
 }
 void router_use(router_ctx *r, const char *name) {
     // 走 _router_resolve_mw 把名字转成函数指针, 再委托给 _use_fn 统一入数组
@@ -551,14 +546,14 @@ void router_use(router_ctx *r, const char *name) {
     router_use_fn(r, fn);
 }
 void router_use_fn(router_ctx *r, router_cb fn) {
-    _router_grow((void **)&r->global_mw, &r->global_mw_cap, r->global_mw_n + 1, sizeof(router_cb));
-    r->global_mw[r->global_mw_n++] = fn;
-    // 已注册的路由是按当时的 global_mw_n 判过链长的; 全局中间件后加就得回头再判一遍,
+    rmw_arr_push_back(&r->global_mw, &fn);
+    // 已注册的路由是按当时的全局中间件数判过链长的; 全局中间件后加就得回头再判一遍,
     // 否则超限只在跑起来后表现为每请求 500 "Chain too long"
-    for (int32_t i = 0; i < r->routes_n; i++) {
-        if (0 != _router_chain_over(r, r->routes[i].mws_n)) {
+    router_entry *rts = _R_ROUTES(r);
+    for (int32_t i = 0; i < _R_ROUTES_N(r); i++) {
+        if (0 != _router_chain_over(r, rts[i].mws_n)) {
             LOG_WARN("router: route %d chain now exceeds %d (global=%d, route=%d) after router_use.",
-                     i, ROUTER_MAX_CHAIN, r->global_mw_n, r->routes[i].mws_n);
+                     i, ROUTER_MAX_CHAIN, _R_GMW_N(r), rts[i].mws_n);
         }
     }
 }
@@ -634,8 +629,9 @@ static int32_t _router_shadowed(router_ctx *r, router_method m,
                                 const router_seg *segs, int32_t segs_n) {
     router_entry *e;
     int32_t k;
-    for (int32_t i = 0; i < r->routes_n; i++) {
-        e = &r->routes[i];
+    router_entry *rts = _R_ROUTES(r);
+    for (int32_t i = 0; i < _R_ROUTES_N(r); i++) {
+        e = &rts[i];
         if (0 != (m & ~e->method_mask)
             || e->segs_n != segs_n) {
             continue;
@@ -678,14 +674,15 @@ static int32_t _router_segs_prepare(router_ctx *r, router_method m, const char *
 // 段数组入路由表尾。填 method_mask 与三个 segs 字段，其余清零留给调用方补
 static int32_t _router_entry_push(router_ctx *r, router_method m,
                                   router_seg *segs, int32_t segs_n, int32_t segs_nopt) {
-    _router_grow((void **)&r->routes, &r->routes_cap, r->routes_n + 1, sizeof(router_entry));
-    router_entry *e = &r->routes[r->routes_n];
-    ZERO(e, sizeof(*e));
-    e->method_mask = m;
-    e->segs = segs;
-    e->segs_n = segs_n;
-    e->segs_nopt = segs_nopt;
-    return r->routes_n++;//后自增：返回值即新条目的稳定下标
+    // 栈上填好再整体入位
+    router_entry e;
+    ZERO(&e, sizeof(e));
+    e.method_mask = m;
+    e.segs = segs;
+    e.segs_n = segs_n;
+    e.segs_nopt = segs_nopt;
+    route_arr_push_back(&r->routes, &e);
+    return _R_ROUTES_N(r) - 1;//刚入位那条的下标
 }
 // router_add / router_add_stream 的共同实现: h 与 sh 恰有一个非空,
 // 决定这条路由是普通派发还是流式接收
@@ -754,12 +751,11 @@ static router_entry *_router_add_common(router_ctx *r, const router_group *g,
     // 4) 入路由表 (尾插, dispatch 时按注册顺序线性扫描)
     if (0 != _router_chain_over(r, total_mws)) {
         LOG_WARN("router: chain will exceed %d (global=%d, route=%d) at dispatch.",
-                 ROUTER_MAX_CHAIN, r->global_mw_n, total_mws);
+                 ROUTER_MAX_CHAIN, _R_GMW_N(r), total_mws);
     }
-    // 下标与取址必须分成两条语句：&r->routes[f()] 里 r->routes 与 f() 的求值顺序未定义，
-    // 而 _router_entry_push 内部的 _router_grow 可能 REALLOC 掉 r->routes
+    // 取址必须排在 push 之后:扩容会搬走底层缓冲
     int32_t idx = _router_entry_push(r, method, segs, segs_n, segs_nopt);
-    router_entry *e = &r->routes[idx];
+    router_entry *e = &_R_ROUTES(r)[idx];
     e->mws = mws_arr;
     e->mws_n = total_mws;
     e->handler = h;
@@ -803,8 +799,8 @@ DEF_ROUTE_FN(options, ROUTER_M_OPTIONS)
 DEF_ROUTE_FN(any,     ROUTER_M_ANY)
 DEF_STREAM_FN(post, ROUTER_M_POST)
 DEF_STREAM_FN(put,  ROUTER_M_PUT)
-// 注册用的方法串 → 掩码。支持 '|' 分隔的组合("GET|HEAD"): router_add 本就收掩码,
-// 只有这条字符串入口原来是 1:1。ANY 也在这里映射(_router_method_str_to_mask 不含它);
+// 注册用的方法串 → 掩码。支持 '|' 分隔的组合("GET|HEAD"): router_add 本就收掩码。
+// ANY 也在这里映射(_router_method_str_to_mask 不含它);
 // 任一段不认识、或出现空段("GET||HEAD" / 首尾竖线)一律整体失败, 不做部分接受
 static router_method _router_method_list_to_mask(const char *m, size_t n) {
     router_method mask = 0;
@@ -850,12 +846,12 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type *t,
                          const char **str, uint32_t *str_len) {
     if (idx < 0
-        || idx >= r->routes_n
+        || idx >= _R_ROUTES_N(r)
         || k < 0
-        || k >= r->routes[idx].segs_n) {
+        || k >= _R_ROUTES(r)[idx].segs_n) {
         return ERR_FAILED;
     }
-    router_seg *seg = &r->routes[idx].segs[k];
+    router_seg *seg = &_R_ROUTES(r)[idx].segs[k];
     *t = seg->t;
     *str = seg->str;
     *str_len = seg->str_len;
@@ -877,8 +873,9 @@ static int32_t _router_find(router_ctx *r, router_method m, router_req *ctx) {
     // pathlens 得跟着段数一起收,url_ctx 声明的是 pathlens == Σ(segs[i].lens + 1),
     // 下游按它预分配重组缓冲
     ctx->url->pathlens = plens;
-    for (int32_t i = 0; i < r->routes_n; i++) {
-        e = &r->routes[i];
+    router_entry *rts = _R_ROUTES(r);
+    for (int32_t i = 0; i < _R_ROUTES_N(r); i++) {
+        e = &rts[i];
         if (0 == (e->method_mask & m)) {
             continue;
         }
@@ -1083,12 +1080,13 @@ static void _router_admit(router_req *ctx) {
 static int32_t _router_chain_build(router_ctx *r, router_entry *e, router_req *ctx) {
     if (0 != _router_chain_over(r, e->mws_n)) {
         LOG_WARN("router: chain exceeds %d (global=%d, route=%d), rejected.",
-                 ROUTER_MAX_CHAIN, r->global_mw_n, e->mws_n);
+                 ROUTER_MAX_CHAIN, _R_GMW_N(r), e->mws_n);
         return ERR_FAILED;
     }
     int32_t k = 0;
-    for (int32_t i = 0; i < r->global_mw_n; i++) {
-        ctx->chain[k++] = r->global_mw[i];
+    router_cb *gmw = _R_GMW(r);
+    for (int32_t i = 0; i < _R_GMW_N(r); i++) {
+        ctx->chain[k++] = gmw[i];
     }
     for (int32_t i = 0; i < e->mws_n; i++) {
         ctx->chain[k++] = e->mws[i];
@@ -1174,7 +1172,7 @@ void router_dispatch(router_ctx *r, task_ctx *task, sock_ctx *sk, struct http_pa
         _router_send_code(task, sk, code, ROUTER_M_HEAD == ctx.method);
         return;
     }
-    router_entry *matched = &r->routes[idx];
+    router_entry *matched = &_R_ROUTES(r)[idx];
     if (0 != _router_entry_misconfigured(matched, idx)) {
         _router_send_simple(task, sk, 500, ROUTER_M_HEAD == ctx.method, ROUTER_BODY_500);
         return;
@@ -1237,7 +1235,7 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sock_ctx *sk, struct
         _router_st_reject(st, task, code, body);
         return;
     }
-    router_entry *matched = &r->routes[idx];
+    router_entry *matched = &_R_ROUTES(r)[idx];
     // 配置错误要与 dispatch 给同一个码; 排在下面的 411 之前, 否则 index 条目会被
     // 当成"普通路由收到 chunked"而回 411, 同一个错两个码
     if (0 != _router_entry_misconfigured(matched, idx)) {
@@ -1263,8 +1261,7 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sock_ctx *sk, struct
     }
     // 流式表懒建: 多数 router 一辈子见不到一个流式请求, 不必都摊这份内存
     if (NULL == r->streams) {
-        r->streams = hashmap_new(sizeof(router_st_ent), 8, 0, 0,
-                                 _router_st_hash, _router_st_cmp, NULL, NULL);
+        r->streams = st_map_new(8, NULL);
         if (NULL == r->streams) {
             _router_st_reject(st, task, 500, ROUTER_BODY_500);
             return;
@@ -1274,15 +1271,15 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sock_ctx *sk, struct
     router_st_ent ent;
     ent.sk = *sk;
     ent.st = st;
-    hashmap_set(r->streams, &ent);
-    if (hashmap_oom(r->streams)) {
+    st_map_set(r->streams, &ent);
+    if (st_map_oom(r->streams)) {
         _router_st_reject(st, task, 500, ROUTER_BODY_500);
         return;
     }
     st->on_chunk(&st->req, PROT_SLICE_START, NULL, 0);
     // 首包随本次回调结束即被协议层回收, 后面几帧头部一律读不到。
     // 回调里可能把这条流关掉(router_closed), 那时 st 已经释放, 先确认表里还是它才能写
-    const router_st_ent *cur = (const router_st_ent *)hashmap_get(r->streams, &ent);
+    const router_st_ent *cur = st_map_get(r->streams, &ent);
     if (NULL != cur
         && cur->st == st) {
         st->req.pack = NULL;
@@ -1297,7 +1294,7 @@ static void _router_st_feed(router_ctx *r, task_ctx *task, sock_ctx *sk,
     router_st_ent probe;
     probe.sk = *sk;
     probe.st = NULL;
-    const router_st_ent *found = (const router_st_ent *)hashmap_get(r->streams, &probe);
+    const router_st_ent *found = st_map_get(r->streams, &probe);
     if (NULL == found) {
         return;// 首帧被拒过, 连接那时就关了, 后续帧静默丢
     }
@@ -1309,7 +1306,7 @@ static void _router_st_feed(router_ctx *r, task_ctx *task, sock_ctx *sk,
         return;
     }
     // 结束帧: 先摘表项再回调, 回调返回后连同 req 一起释放
-    hashmap_delete(r->streams, &probe);
+    st_map_delete(r->streams, &probe);
     st->on_chunk(&st->req, slice, data, dlens);
     if (!st->req.responded) {
         _router_send_simple(task, sk, 500,
@@ -1331,7 +1328,7 @@ static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sock_ctx *sk
     int32_t idx;
     int32_t code = _router_match_entry(r, &ctx, status, &idx);
     if (200 == code
-        && 0 == _router_entry_misconfigured(&r->routes[idx], idx)) {
+        && 0 == _router_entry_misconfigured(&_R_ROUTES(r)[idx], idx)) {
         router_reject_chunked(task, sk);// 命中普通路由, 请求体接不住
         return;
     }

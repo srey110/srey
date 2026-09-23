@@ -54,7 +54,7 @@ typedef struct overlap_tcp_ctx {
     tda_ctx tda;            // 字节告警翻倍状态
     IOV_TYPE wsabuf;        // WSARecv缓冲区描述符
     buffer_ctx buf_r;       // 接收缓冲区
-    queue_ctx buf_s;        // 发送队列
+    obuf_que buf_s;        // 发送队列
     cbs_ctx cbs;            // 回调函数集合
     ud_cxt ud;              // 用户数据
 }overlap_tcp_ctx;
@@ -76,7 +76,7 @@ typedef struct overlap_udp_ctx {
     cbs_ctx cbs;            // 回调函数集合
     IOV_TYPE wsabuf_s;      // 发送缓冲区描述符
     IOV_TYPE wsabuf_r;      // 接收缓冲区描述符（指向buf）
-    queue_ctx buf_s;        // 发送队列
+    sbuf_que buf_s;        // 发送队列
     netaddr_ctx addr_r;     // 接收到的对端地址（WSARecvFrom填充）
     netaddr_ctx addr_s;     // 在途 WSASendTo 目标地址（异步期间须持久,不可指向队列元素）
     ud_cxt ud;              // 用户数据
@@ -116,7 +116,7 @@ void *_evpub_sk_new(void *args) {
     oltcp->cbs = *skargs->cbs;
     COPY_UD(oltcp->ud, skargs->ud);
     buffer_init(&oltcp->buf_r);
-    queue_init(&oltcp->buf_s, sizeof(off_buf_ctx), INIT_SENDBUF_LEN);
+    obuf_que_init(&oltcp->buf_s, INIT_SENDBUF_LEN);
     oltcp->wb_size = 0;
     tda_init(&oltcp->tda, WB_WARN_INIT_SIZE);
     return &oltcp->ol_r;
@@ -129,7 +129,7 @@ void _evpub_sk_free(void *sk) {
     CLOSE_SOCK(oltcp->ol_r.sk.fd);
     buffer_free(&oltcp->buf_r);
     _evpub_off_buf_clear(&oltcp->buf_s);
-    queue_free(&oltcp->buf_s);
+    obuf_que_free(&oltcp->buf_s);
     UD_FREE(oltcp->cbs.ud_free, &oltcp->ud);
     FREE(oltcp);
 }
@@ -144,8 +144,8 @@ void _evpub_sk_clear(void *sk)  {
     oltcp->ol_s.sk.fd = INVALID_SOCK;
     _evpub_off_buf_clear(&oltcp->buf_s);
     // clear 只归零不缩容,背压期涨上去的环会跟着对象一直待在池里,回池这步缩回初始容量
-    if (queue_maxsize(&oltcp->buf_s) > INIT_SENDBUF_LEN) {
-        queue_resize(&oltcp->buf_s, INIT_SENDBUF_LEN);
+    if (obuf_que_capacity(&oltcp->buf_s) > INIT_SENDBUF_LEN) {
+        obuf_que_resize(&oltcp->buf_s, INIT_SENDBUF_LEN);
     }
     oltcp->wb_size = 0;
     tda_init(&oltcp->tda, WB_WARN_INIT_SIZE);
@@ -269,10 +269,21 @@ int32_t _iocp_post_recv(evsock_ctx *evsk, DWORD *bytes, DWORD *flag, IOV_TYPE *w
     }
     return ERR_OK;
 }
-static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
-    return _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1);
+// 投递同步失败即连接已坏（RST 一类），按对端中止记：调用方只管关，不再各自分类。
+// 本地已在关（STATUS_ERROR）就不标：recv_cb 里就地关连接后重投必然失败，close_type 须留在 LOCAL
+static inline void _olp_post_fail(overlap_tcp_ctx *oltcp) {
+    if (!BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        _evpub_mark_close(&oltcp->status, ERR_FAILED);
+    }
 }
-// 提交WSASend异步发送请求
+static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
+    if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
+        _olp_post_fail(oltcp);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 提交WSASend异步发送请求；同步失败走 _olp_post_fail
 // 0 字节 wakeup：
 // 成功 → kernel 有空间 → continue
 // EWOULDBLOCK → kernel 满 → 0 字节 post pend → 等到 buffer 空出空间触发完成 → continue
@@ -287,6 +298,7 @@ static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
                           &oltcp->ol_s.overlapped,
                           NULL)) {
         if (ERROR_IO_PENDING != ERRNO) {
+            _olp_post_fail(oltcp);
             return ERR_FAILED;
         }
     }
@@ -371,7 +383,7 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     }
 #endif
     _olp_call_recv_cb(watcher->ev, oltcp, nread);
-    // 先记再往下走：下面 _olp_wantwrite / _olp_post_recv 会覆写 rtn，那是本地投递失败，不是对端关的
+    // 读失败先按 rtn 记下断连原因；下面投递的同步失败由 _olp_post_fail 自己分类
     if (ERR_OK != rtn) {
         _evpub_mark_close(&oltcp->status, rtn);
         return ERR_FAILED;// 分类已进 status, 不透传 evssl_* 的 1/2(口径同 _olp_tcp_send)
@@ -595,7 +607,7 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
         _evpub_mark_close(&oltcp->status, rtn);
         return ERR_FAILED;
     }
-    uint32_t cnt = queue_size(&oltcp->buf_s);
+    uint32_t cnt = obuf_que_size(&oltcp->buf_s);
 #if WITH_SSL
     if (NULL != oltcp->ssl) {
         // 先全清再按 SSL 在等哪一边挂一个:两档互斥,队列空则一个都不该挂
@@ -756,14 +768,14 @@ void _iocp_add_bufs_trypost(evsock_ctx *evsk, off_buf_ctx *buf) {
         _evpub_off_buf_release(buf);
         return;
     }
-    if (!_evpub_sendqu_check_tcp(&oltcp->buf_s, oltcp->status, oltcp->ol_s.sk.fd)) {
+    if (!_evpub_sendqu_check_tcp(obuf_que_size(&oltcp->buf_s), oltcp->status, oltcp->ol_s.sk.fd)) {
         _evpub_off_buf_release(buf);
         _iocp_disconnect(&oltcp->ol_r);
         return;
     }
     oltcp->wb_size += buf->lens;
     _evpub_sendqu_tda(&oltcp->tda, oltcp->wb_size, oltcp->ol_s.sk.fd, 1);
-    queue_push(&oltcp->buf_s, buf);
+    obuf_que_push(&oltcp->buf_s, buf);
 #if WITH_SSL
     // 方向 B 挂着未完成的 SSL_write，投探针只是空转；数据留队等 _olp_on_recv_cb 那次重试。
     // 对应 usock 的 _uev_add_bufs_send，那边还判 KEYUPDATE_WRITE——本平台方向 A 期 SENDING 必为 1，
@@ -1015,10 +1027,10 @@ void _olp_revive_dead(ev_ctx *ev) {
     listener_ctx *snap[REVIVE_SNAP_CAP];
     uint32_t cnt = 0;
     spin_lock(&ev->spin);
-    uint32_t n = array_size(&ev->arrlsn);
+    uint32_t n = lsn_arr_size(&ev->arrlsn);
     listener_ctx *lsn;
     for (uint32_t i = 0; i < n && cnt < REVIVE_SNAP_CAP; i++) {
-        lsn = *(listener_ctx **)array_at(&ev->arrlsn, i);
+        lsn = *lsn_arr_at(&ev->arrlsn, (int32_t)i);
         if (0 != ATOMIC_GET(&lsn->ndead)) {
             ATOMIC_ADD(&lsn->ref, 1);
             snap[cnt++] = lsn;
@@ -1193,7 +1205,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     }
     lsn->id = createid();
     spin_lock(&ctx->spin);
-    array_push_back(&ctx->arrlsn, &lsn);
+    lsn_arr_push_back(&ctx->arrlsn, &lsn);
     spin_unlock(&ctx->spin);
     SET_PTR(id, lsn->id);
     return ERR_OK;
@@ -1224,12 +1236,12 @@ static listener_ctx * _olp_get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;
     listener_ctx **tmp;
     spin_lock(&ctx->spin);
-    uint32_t n = array_size(&ctx->arrlsn);
+    uint32_t n = lsn_arr_size(&ctx->arrlsn);
     for (uint32_t i = 0; i < n; i++) {
-        tmp = (listener_ctx **)array_at(&ctx->arrlsn, i);
+        tmp = lsn_arr_at(&ctx->arrlsn, (int32_t)i);
         if ((*tmp)->id == id) {
             lsn = *tmp;
-            array_del_nomove(&ctx->arrlsn, i);
+            lsn_arr_del_nomove(&ctx->arrlsn, (int32_t)i);
             break;
         }
     }
@@ -1249,17 +1261,17 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     _iocp_try_freelsn(lsn);
 }
 // ev_free关闭阶段：ev_unlisten掉所有仍在arrlsn中的listener（remove=1+取消在途AcceptEx）。
-// 释放交由取消完成驱动（cb减ref至0走_iocp_freelsn），取代旧的强制_iocp_freelsn——
-// 后者在内核异步写取消完成的内嵌OVERLAPPED之前FREE(lsn)，构成write-after-free。
+// 释放交由取消完成驱动（cb减ref至0走_iocp_freelsn）：这里不能直接FREE(lsn)，
+// 内核还要往它内嵌的OVERLAPPED写取消完成，先释放就是write-after-free。
 void _iocp_unlisten_all(ev_ctx *ctx) {
     uint64_t id;
     for (;;) {
         spin_lock(&ctx->spin);
-        if (0 == array_size(&ctx->arrlsn)) {
+        if (lsn_arr_empty(&ctx->arrlsn)) {
             spin_unlock(&ctx->spin);
             break;
         }
-        id = (*(listener_ctx **)array_at(&ctx->arrlsn, 0))->id;
+        id = (*lsn_arr_at(&ctx->arrlsn, 0))->id;
         spin_unlock(&ctx->spin);
         ev_unlisten(ctx, id);
     }
@@ -1445,12 +1457,12 @@ static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     int32_t rtn;
     void *data;
     sendto_ctx *sendbuf;
-    while (NULL != (sendbuf = queue_peek(&oludp->buf_s))) {
-        // 同步发成功就地回收接着发下一条,整队一次抽干;原来每条都要等一个完成包再回来
+    while (NULL != (sendbuf = sbuf_que_peek(&oludp->buf_s))) {
+        // 同步发成功就地回收接着发下一条,整队一次抽干
         if (ERR_OK == _olp_sendto_sync(oludp, sendbuf)) {
             oludp->wb_size -= sendbuf->len;
             data = sendbuf->data;
-            queue_pop(&oludp->buf_s);
+            sbuf_que_pop(&oludp->buf_s);
             FREE(data);
             continue;
         }
@@ -1462,7 +1474,7 @@ static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
         }
         oludp->wb_size -= sendbuf->len;
         data = sendbuf->data;
-        queue_pop(&oludp->buf_s);
+        sbuf_que_pop(&oludp->buf_s);
         if (ERR_OK == rtn) {
             _olp_sendto_retry_stop(oludp);
             return ERR_OK;
@@ -1514,7 +1526,7 @@ int32_t _iocp_try_sendto(evsock_ctx *evsk, const void *data, size_t len, netaddr
     }
     // 三种在途态都得让路,否则这条会插到已排队的前面去。STATUS_SENDING 单独列是因为
     // _olp_sendto_drain 投递成功后就 pop 了,存在队列已空而 IRP 仍在途的窗口
-    if (0 != queue_size(&oludp->buf_s)
+    if (!sbuf_que_empty(&oludp->buf_s)
         || NULL != oludp->send_tick.cb
         || BIT_CHECK(oludp->status, STATUS_SENDING)) {
         return 1;
@@ -1541,13 +1553,13 @@ void _iocp_add_bufs_trysendto(watcher_ctx *watcher, evsock_ctx *evsk, sendto_ctx
     overlap_udp_ctx *oludp = UPCAST(evsk, overlap_udp_ctx, ol_r);
     // 已在 error 关闭流程：拒收新数据
     if (BIT_CHECK(oludp->status, STATUS_ERROR)
-        || !_evpub_sendqu_check_udp(&oludp->buf_s, oludp->ol_s.sk.fd)) {
+        || !_evpub_sendqu_check_udp(sbuf_que_size(&oludp->buf_s), oludp->ol_s.sk.fd)) {
         FREE(buf->data);
         return;
     }
     oludp->wb_size += buf->len;
     _evpub_sendqu_tda(&oludp->tda, oludp->wb_size, oludp->ol_s.sk.fd, 0);
-    queue_push(&oludp->buf_s, buf);
+    sbuf_que_push(&oludp->buf_s, buf);
     if (NULL != oludp->send_tick.cb
         || BIT_CHECK(oludp->status, STATUS_SENDING)) {
         return;
@@ -1576,7 +1588,7 @@ static evsock_ctx *_olp_new_udp(skpool_args *skargs) {
     oludp->addrlen = netaddr_size(&oludp->addr_r);
     oludp->wsabuf_r.buf = oludp->buf;
     oludp->wsabuf_r.len = sizeof(oludp->buf);
-    queue_init(&oludp->buf_s, sizeof(sendto_ctx), INIT_SENDBUF_LEN);
+    sbuf_que_init(&oludp->buf_s, INIT_SENDBUF_LEN);
     oludp->wb_size = 0;
     oludp->watcher = NULL;
     oludp->retry_ms = 0;
@@ -1590,7 +1602,7 @@ void _iocp_free_udp(evsock_ctx *evsk) {
     _olp_sendto_retry_stop(oludp);// 先摘重试节点,否则 watcher->ticks 里留一个指向已释放内存的节点
     CLOSE_SOCK(oludp->ol_r.sk.fd);
     _evpub_sendto_clear(&oludp->buf_s);
-    queue_free(&oludp->buf_s);
+    sbuf_que_free(&oludp->buf_s);
     UD_FREE(oludp->cbs.ud_free, &oludp->ud);
     FREE(oludp);
 }

@@ -40,7 +40,7 @@
 #define BIT_CHECK(status, flag)  ((status) & (flag)) // 检查位标志是否已设置
 #define BIT_REMOVE(status, flag) ((status) &= ~(flag)) // 清除位标志
 #define BIT_GETN(x, n)           (((x) >> (n)) & 1u) // 获取第 n 位的值
-// 将 x 的第 n 位设为 val 的最低位；x、n 被多次求值，须传入无副作用表达式（ __typeof__ 不兼容 MSVC）
+// 将 x 的第 n 位设为 val 的最低位；x、n 被多次求值，须传入无副作用表达式（MSVC 要 VS 17.9 起才有 __typeof__，工程没钉工具集版本，故不拿它消多次求值）
 #define BIT_SETN(x, n, val) ((x) = (((x) & ~((uint64_t)1 << (n))) | (((uint64_t)(val) & 1) << (n))))
 
 #define ZERO(name, len) memset(name, 0, len) // 将内存区域清零

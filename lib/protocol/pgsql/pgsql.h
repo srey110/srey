@@ -65,7 +65,7 @@ const char *pgsql_get_db(pgsql_ctx *pg);
 /// 结果连同行一起丢。COPY FROM STDIN 走独立包，不动这里的下标。
 /// 所有语句的结果都攒到 ReadyForQuery 才一起交出，峰值内存是各结果集之和，没有分批取法。
 /// 服务端没按协议用 CommandComplete / ErrorResponse / EmptyQueryResponse 收尾的语句
-/// 只打一条 WARN 就跳过，与 libpq 同口径
+/// 只打一条 WARN 就跳过
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针</param>
 /// <returns>结果个数；类型不是 PGPACK_OK、或响应不带 CommandComplete（prepare / stmt_close /

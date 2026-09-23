@@ -25,19 +25,19 @@ void mysql_reader_free(mysql_reader_ctx *reader) {
     FREE(reader);
 }
 size_t mysql_reader_size(mysql_reader_ctx *reader) {
-    return array_size(&reader->arr_rows);
+    return mrow_arr_size(&reader->arr_rows);
 }
 void mysql_reader_seek(mysql_reader_ctx *reader, size_t pos) {
-    if (pos >= array_size(&reader->arr_rows)) {
+    if (pos >= mrow_arr_size(&reader->arr_rows)) {
         return;
     }
     reader->index = (int32_t)pos;
 }
 int32_t mysql_reader_eof(mysql_reader_ctx *reader) {
-    return (reader->index >= (int32_t)array_size(&reader->arr_rows)) ? 1 : 0;
+    return (reader->index >= (int32_t)mrow_arr_size(&reader->arr_rows)) ? 1 : 0;
 }
 void mysql_reader_next(mysql_reader_ctx *reader) {
-    if (reader->index < (int32_t)array_size(&reader->arr_rows)) {
+    if (reader->index < (int32_t)mrow_arr_size(&reader->arr_rows)) {
         reader->index++;
     }
 }
@@ -55,11 +55,11 @@ static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *na
 // 每个取值函数开头那三段（定位当前行 → NULL 判定 → 字段类型白名单）收在这里，
 // types/ntype 是调用方允许的 enum_field_types 列表。
 // 返回 NULL 时 err 已写好（1=该字段是 SQL NULL，ERR_FAILED=取不到或类型不符），调用方只管返自己的零值。
-// NULL 判定排在类型判定之前，与 pgsql_reader 相反——那边先判类型；这里保持原有行为，
-// 列值为 NULL 时不再多报一次类型不符
+// NULL 判定排在类型判定之前，与 pgsql_reader 相反——那边先判类型；
+// 这里先判 NULL，列值为 NULL 时不再多报一次类型不符
 static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
                                     const uint8_t *types, int32_t ntype, int32_t *err) {
-    if (reader->index >= (int32_t)array_size(&reader->arr_rows)) {
+    if (reader->index >= (int32_t)mrow_arr_size(&reader->arr_rows)) {
         SET_PTR(err, ERR_FAILED);
         return NULL;
     }
@@ -69,7 +69,7 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
         SET_PTR(err, ERR_FAILED);
         return NULL;
     }
-    mpack_row *row = *(mpack_row **)(array_at(&reader->arr_rows, (uint32_t)reader->index));
+    mpack_row *row = *mrow_arr_at(&reader->arr_rows, reader->index);
     if (row[pos].nil) {
         SET_PTR(err, 1); // 1 表示该字段值为 NULL
         return NULL;
@@ -119,8 +119,7 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        // 文本协议：字段值为字符串，需转换为无符号整数。按 lens 直接解析，
-        // 不再中转定长栈缓冲——原来的 strtoull 会把 "-1" 回绕成 UINT64_MAX 当合法值收下
+        // 文本协议：字段值为字符串，需转换为无符号整数。按 lens 直接解析
         uint64_t val;
         if (ERR_OK != str2u64((const char *)row->val.data, row->val.lens, UINT64_MAX, &val)) {
             SET_PTR(err, ERR_FAILED);

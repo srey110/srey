@@ -5,9 +5,11 @@
 #include "utils/utils.h"
 #include "utils/timer.h"
 
-#define TASK_MSG_BATCH 32 // 单次批量 pop 消息的最大条数,也是 worker 栈上那个数组的长度
-                          // (按值存,一条 72 字节);调大摊薄出队开销,代价是栈占用等比涨
-#define CLOSING_WARN_MS 15000// 关闭期每隔这么久把还没退的 task 打一遍
+#define TASK_MSG_BATCH   32 // 单次批量 pop 消息的最大条数,也是 worker 栈上那个数组的长度
+                            // (按值存,一条 72 字节);调大摊薄出队开销,代价是栈占用等比涨
+#define CLOSING_WARN_MS  15000// 关闭期每隔这么久把还没退的 task 打一遍
+#define WORKER_IDLE_SPIN 1024 // worker 睡前空转等下一批的次数,0 关闭;空转期间生产者直投不唤醒,见 _loader_worker_wakeup。
+                              // 调大吞吐还能涨一点但每核效率掉,1024 是单 task/多 task 两头都不吃亏的点
 
 typedef struct _task_each_arg {
     task_each_cb cb;
@@ -16,35 +18,9 @@ typedef struct _task_each_arg {
 
 loader_ctx *g_loader; // 全局 loader 单例，由 loader_init 创建
 
-// 计算任务名在哈希表中的哈希值
-static uint64_t _loader_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    (void)seed0;
-    (void)seed1;
-    return hash_u64((uint64_t)(*(*(name_t **)item)));
-}
-// 比较两个任务名（用于哈希表碰撞解决）
-// name_t 为 uint64_t，不能用减法（差值溢出导致符号翻转），
-// 使用三路比较确保所有 uint64_t 值均正确排序。
-static int _loader_task_compare(const void *a, const void *b, void *ud) {
-    (void)ud;
-    name_t va = *(*(name_t **)a);
-    name_t vb = *(*(name_t **)b);
-    return (va > vb) - (va < vb);
-}
 // 哈希表元素析构回调：通过任务名指针反推 task_ctx 并释放
 static void _loader_task_free(void *item) {
     task_free(UPCAST(*((name_t **)item), task_ctx, handle));
-}
-// mapnames 哈希回调：按 name_handle_entry.name 字符串计算/比较；元素借用 task_ctx.name，无 free 回调
-static uint64_t _loader_name_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    (void)seed0;
-    (void)seed1;
-    const name_handle_entry *e = (const name_handle_entry *)item;
-    return hash(e->name, strlen(e->name));
-}
-static int _loader_name_compare(const void *a, const void *b, void *ud) {
-    (void)ud;
-    return strcmp(((const name_handle_entry *)a)->name, ((const name_handle_entry *)b)->name);
 }
 // 分布式读锁的 slot 注册:失败不致命(退化成抢 fallback 共享锁),但槽位是手算的,
 // 算漏了只能靠这条日志看出来。两把锁各自的容量表达式见 loader_init
@@ -101,7 +77,7 @@ static inline uint32_t _loader_ring_next(uint16_t start, uint16_t k, uint16_t n)
 }
 // 选一个 worker 接这个 task：RR 选起点扫一遍，正空转等活的最优（投完它自己就看见，
 // 省一次 futex 唤醒），其次是睡着的，全忙则退回 RR 起点（自调节交给 work-stealing）
-static FORCE_INLINE uint16_t _loader_pick_worker(loader_ctx *loader) {
+static inline uint16_t _loader_pick_worker(loader_ctx *loader) {
     if (1 == loader->nworker) {
         return 0;
     }
@@ -126,7 +102,7 @@ static FORCE_INLINE uint16_t _loader_pick_worker(loader_ctx *loader) {
 static inline void _loader_worker_wakeup(loader_ctx *loader, task_ctx *task) {
     worker_ctx *worker = &loader->worker[_loader_pick_worker(loader)];
     task_incref(task);
-    fsqu_push(&worker->qutasks, &task);
+    taskq_push(&worker->qutasks, &task);
     // 必须先入队再读 waiting，与消费者"先写 waiting 再检查队列"形成对称屏障，
     // 确保两者至少有一方能观察到对方的写入，从而消除丢失唤醒窗口。
     // waiting == 0 时 worker 正在运行，无需 signal；仅在 > 0 时才获取 mutex 发信号。
@@ -142,7 +118,7 @@ static inline void _loader_worker_wakeup(loader_ctx *loader, task_ctx *task) {
 // 队列按值存 message_ctx：存指针要另配一个所有线程共抢的对象池（每条消息一取一还），
 // 消费侧还得解引用一次生产者线程写的堆对象，白吃一次跨核 cache miss
 void _task_message_push(task_ctx *task, message_ctx *msg) {
-    fsqu_push(&task->qumsg, msg);
+    msgq_push(&task->qumsg, msg);
 }
 // 触发调度：队列非空而尚未被调度时唤醒一个 worker
 void _task_message_active(task_ctx *task) {
@@ -168,7 +144,7 @@ static inline int32_t _loader_max_task_index(loader_ctx *loader, uint16_t exclud
         if (i == exclude) {
             continue;
         }
-        count = fsqu_size(&loader->worker[i].qutasks);
+        count = taskq_size(&loader->worker[i].qutasks);
         if (count > max) {
             index = i;
             max = count;
@@ -180,7 +156,7 @@ static inline int32_t _loader_max_task_index(loader_ctx *loader, uint16_t exclud
 // inflight 出参：没取到时回传本轮有没有撞上在途元素，调用方据此决定退避还是休眠
 static inline task_ctx *_loader_task_get(loader_ctx *loader, worker_ctx *worker, int32_t *inflight) {
     task_ctx *task;
-    int32_t rtn = fsqu_pop(&worker->qutasks, &task);
+    int32_t rtn = taskq_pop(&worker->qutasks, &task);
     if (ERR_OK == rtn) {
         *inflight = 0;
         return task;
@@ -189,7 +165,7 @@ static inline task_ctx *_loader_task_get(loader_ctx *loader, worker_ctx *worker,
     // 本地队列为空：尝试从积压最多的 worker 偷一个任务
     int32_t index = _loader_max_task_index(loader, worker->index);
     if (-1 != index) {
-        rtn = fsqu_pop(&loader->worker[index].qutasks, &task);
+        rtn = taskq_pop(&loader->worker[index].qutasks, &task);
         if (ERR_OK == rtn) {
             *inflight = 0;
             return task;
@@ -202,7 +178,7 @@ static inline task_ctx *_loader_task_get(loader_ctx *loader, worker_ctx *worker,
 }
 // 本轮该消费几条：worker.weight 定基数（lens >> weight，-1 固定 1 条），
 // task.priority 再以基数的 1/8 为单位加成（每 +8 翻倍，每 +1 约 +12.5%，
-// 0 走快路径与历史等价），结果夹在 [1, lens]
+// 0 走快路径），结果夹在 [1, lens]
 static inline uint32_t _loader_msg_quota(worker_ctx *worker, task_ctx *task, uint32_t lens) {
     uint32_t n_base = worker->weight >= 0 ? (lens >> worker->weight) : 1;
     atomic_t prio = ATOMIC_GET(&task->priority);
@@ -216,7 +192,7 @@ static inline uint32_t _loader_msg_quota(worker_ctx *worker, task_ctx *task, uin
 static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg, message_ctx *msgbatch) {
     task_ctx *task = runarg->task;
-    uint32_t lens = fsqu_size(&task->qumsg);
+    uint32_t lens = msgq_size(&task->qumsg);
     if (tda_check(&task->tda, lens)) {
         LOG_WARN("task %s overload, message queue length %u.", _NAME_OR(task->name), lens);
     }
@@ -233,19 +209,19 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
         if (want > TASK_MSG_BATCH) {
             want = TASK_MSG_BATCH;
         }
-        got = fsqu_pop_sc_batch(&task->qumsg, msgbatch, want);
+        got = msgq_pop_sc_batch(&task->qumsg, msgbatch, want);
         if (0 == got) {
             break;
         }
         for (k = 0; k < got; k++) {
-            runarg->msg = msgbatch[k];
+            runarg->msg = &msgbatch[k];
             ATOMIC_ADD_RELAXED(&version->ver, 1);
-            ATOMIC_SET_RELAXED(&version->msgtype, runarg->msg.mtype);
+            ATOMIC_SET_RELAXED(&version->msgtype, runarg->msg->mtype);
 #if ENABLE_DISPATCH_STAT
             t0 = timer_thread_cpu_ns();
             task->_task_dispatch(runarg);
-            task->dispatch_cpu_ns[runarg->msg.mtype] += timer_thread_cpu_ns() - t0;
-            ++task->nmsg[runarg->msg.mtype];
+            task->dispatch_cpu_ns[runarg->msg->mtype] += timer_thread_cpu_ns() - t0;
+            ++task->nmsg[runarg->msg->mtype];
 #else
             task->_task_dispatch(runarg);
 #endif
@@ -258,7 +234,7 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
     // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
     // 两步均为 seq_cst 原子操作，保证不丢消息。
     ATOMIC_CAS(&task->global, 1, 0);
-    if (fsqu_size(&task->qumsg) > 0) {
+    if (!msgq_empty(&task->qumsg)) {
         if (ATOMIC_CAS(&task->global, 0, 1)) {
             _loader_worker_wakeup(loader, task);
         }
@@ -272,7 +248,7 @@ static inline int32_t _loader_worker_idle_spin(worker_ctx *worker) {
     uint32_t idle;
     ATOMIC_SET(&worker->spinning, 1);
     for (idle = 0; idle < WORKER_IDLE_SPIN; idle++) {
-        if (fsqu_size(&worker->qutasks) > 0) {
+        if (!taskq_empty(&worker->qutasks)) {
             break;
         }
         CPU_PAUSE();
@@ -287,7 +263,7 @@ static inline void _loader_worker_sleep(loader_ctx *loader, worker_ctx *worker) 
     mutex_lock(&worker->mutex);
     ATOMIC_ADD(&worker->waiting, 1);
     ATOMIC_THREAD_FENCE_SEQCST();
-    if (fsqu_size(&worker->qutasks) > 0
+    if (!taskq_empty(&worker->qutasks)
         || 0 != ATOMIC_GET(&loader->stop)) {
         ATOMIC_ADD(&worker->waiting, -1);
         mutex_unlock(&worker->mutex);
@@ -404,10 +380,8 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     const thread_hooks hooks_base = {
         _loader_hook_init_base, _loader_hook_exit_base, loader
     };
-    loader->maptasks = hashmap_new(sizeof(name_t *), ONEK, 0, 0,
-                                   _loader_task_hash, _loader_task_compare, _loader_task_free, NULL);
-    loader->mapnames = hashmap_new(sizeof(name_handle_entry), ONEK, 0, 0,
-                                   _loader_name_hash, _loader_name_compare, NULL, NULL);
+    loader->maptasks = task_map_new(ONEK, _loader_task_free);
+    loader->mapnames = tname_map_new(ONEK, NULL);
     loader->monitor.thread_monitor = thread_creat(_loader_monitor_loop, loader);
     // 每轮处理消息数 = lens >> weight（-1 是特例，固定 1 条），故 weight 越大越保守：
     //   -1: 1 条    0: 全量    1: lens/2    2: lens/4    3: lens/8
@@ -423,15 +397,15 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     };
     worker_ctx *worker;
     uint16_t i, wn = ARRAY_SIZE(weights);
-    // 先把所有 worker 的字段初始化完(fsqu_init/mutex_init/cond_init)
+    // 先把所有 worker 的字段初始化完(taskq_init/mutex_init/cond_init)
     // 再启动 worker 线程;否则 worker[0] 启动后会跨 worker 遍历 worker[1..N-1].qutasks
-    // 而后者的 fsqu_init 还在主线程进行中(TSan 报 fsqu_size 的 race)
+    // 而后者的 taskq_init 还在主线程进行中(TSan 报 taskq_size 的 race)
     for (i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         worker->index = i;
         worker->weight = weights[i % wn];
         worker->loader = loader;
-        fsqu_init(&worker->qutasks, sizeof(task_ctx *), ONEK);
+        taskq_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);
         cond_init(&worker->cond);
     }
@@ -449,20 +423,20 @@ rwlock_distr_ctx *loader_lckcache(loader_ctx *loader) {
     return &loader->lckcache;
 }
 #endif
-// hashmap_scan 回调：向每个任务推送 MSG_TYPE_CLOSING 消息（仅推一次）
-static bool _loader_closing_push(const void *item, void *udata) {
-    task_ctx *task = UPCAST(*((name_t **)item), task_ctx, handle);
+// task_map_scan 回调：向每个任务推送 MSG_TYPE_CLOSING 消息（仅推一次）
+static int32_t _loader_closing_push(name_t *const *item, void *udata) {
+    task_ctx *task = UPCAST(*item, task_ctx, handle);
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
         _task_message_post(task, udata);
     }
-    return true;
+    return 1;/* 非 0 = 继续扫 */
 }
-// hashmap_scan 回调：打印仍未退出的任务警告（关闭超时时使用）
-static bool _loader_closing_timeout(const void *item, void *udata) {
+// task_map_scan 回调：打印仍未退出的任务警告（关闭超时时使用）
+static int32_t _loader_closing_timeout(name_t *const *item, void *udata) {
     (void)udata;
-    task_ctx *task = UPCAST(*((name_t **)item), task_ctx, handle);
+    task_ctx *task = UPCAST(*item, task_ctx, handle);
     LOG_WARN("task %s close timeout, ref %d.", _NAME_OR(task->name), ATOMIC_GET(&task->ref));
-    return true;
+    return 1;/* 非 0 = 继续扫 */
 }
 // 广播关闭消息给所有任务，并等待所有任务退出（每 CLOSING_WARN_MS 毫秒打一次仍在的 task）
 static void _loader_task_closing(loader_ctx *loader) {
@@ -472,7 +446,7 @@ static void _loader_task_closing(loader_ctx *loader) {
     // 在持锁期间置位 closing，与 task_register 的写锁互斥：先注册的被本次扫描覆盖，
     // 后注册的由 task_register 自己看到 closing=1 追加 CLOSING，两侧都不会漏
     ATOMIC_SET(&loader->closing, 1);
-    hashmap_scan(loader->maptasks, _loader_closing_push, &closing);
+    task_map_scan(loader->maptasks, _loader_closing_push, &closing);
     rwlock_distr_runlock(&loader->lckmaptasks);
     // 全程持 closing_mutex：查计数与 cond_timedwait 必须在同一临界区内，否则
     // "查到非 0 → 发布方摘掉最后一个并 signal → 本线程才开始 wait" 会永久睡死。
@@ -485,7 +459,7 @@ static void _loader_task_closing(loader_ctx *loader) {
     mutex_lock(&loader->closing_mutex);
     for (;;) {
         rwlock_distr_rdlock(&loader->lckmaptasks);
-        n = hashmap_count(loader->maptasks);
+        n = task_map_size(loader->maptasks);
         rwlock_distr_runlock(&loader->lckmaptasks);
         if (0 == n) {
             break;
@@ -494,7 +468,7 @@ static void _loader_task_closing(loader_ctx *loader) {
         if (now >= next_warn) {
             next_warn = now + CLOSING_WARN_MS;
             rwlock_distr_rdlock(&loader->lckmaptasks);
-            hashmap_scan(loader->maptasks, _loader_closing_timeout, NULL);
+            task_map_scan(loader->maptasks, _loader_closing_timeout, NULL);
             rwlock_distr_runlock(&loader->lckmaptasks);
             continue;
         }
@@ -502,16 +476,16 @@ static void _loader_task_closing(loader_ctx *loader) {
     }
     mutex_unlock(&loader->closing_mutex);
 }
-static bool _loader_task_each_scan(const void *item, void *udata) {
+static int32_t _loader_task_each_scan(name_t *const *item, void *udata) {
     _task_each_arg *w = (_task_each_arg *)udata;
-    task_ctx *task = UPCAST(*((name_t **)item), task_ctx, handle);
+    task_ctx *task = UPCAST(*item, task_ctx, handle);
     w->cb(task->name, task->handle, w->arg);
-    return true;
+    return 1;/* 非 0 = 继续扫 */
 }
 void loader_task_each(loader_ctx *loader, task_each_cb cb, void *arg) {
     _task_each_arg wrap = { cb, arg };
     rwlock_distr_rdlock(&loader->lckmaptasks);
-    hashmap_scan(loader->maptasks, _loader_task_each_scan, &wrap);
+    task_map_scan(loader->maptasks, _loader_task_each_scan, &wrap);
     rwlock_distr_runlock(&loader->lckmaptasks);
 }
 void loader_free(loader_ctx *loader) {
@@ -536,12 +510,12 @@ void loader_free(loader_ctx *loader) {
     cond_free(&loader->closing_cond);
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
-        fsqu_free(&worker->qutasks);
+        taskq_free(&worker->qutasks);
         mutex_free(&worker->mutex);
         cond_free(&worker->cond);
     }
-    hashmap_free(loader->maptasks);
-    hashmap_free(loader->mapnames);
+    task_map_free(loader->maptasks);
+    tname_map_free(loader->mapnames);
     rwlock_distr_free(&loader->lckmaptasks);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
     rwlock_distr_free(&loader->lckcache);

@@ -696,10 +696,10 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     if (ERR_OK != _smtp_cmd(smtp, smtp_pack_from(mail->from.addr), SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK))) {
         return ERR_FAILED;
     }
-    uint32_t naddr = array_size(&mail->addrs);
+    uint32_t naddr = maddr_arr_size(&mail->addrs);
     mail_addr *addr;
     for (uint32_t i = 0; i < naddr; i++) {
-        addr = (mail_addr *)array_at(&mail->addrs, i);
+        addr = maddr_arr_at(&mail->addrs, (int32_t)i);
         if (ERR_OK != _smtp_cmd(smtp, smtp_pack_rcpt(addr->addr), SMTP_CODE_RCPT, ARRAY_SIZE(SMTP_CODE_RCPT))) {
             return ERR_FAILED;
         }

@@ -15,29 +15,16 @@ void _evpub_set_cur_watcher(struct watcher_ctx *watcher) {
 int32_t _evpub_inloop(struct watcher_ctx *watcher) {
     return watcher == _cur_watcher;
 }
-// hashmap 哈希函数：以 fd 为 key
-uint64_t _evpub_sockel_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    (void)seed0;
-    (void)seed1;
-    return hash_u64((uint64_t)(*(const evsock_ctx **)item)->sk.fd);
-}
-// hashmap比较函数：比较两个evsock_ctx的fd
-int _evpub_sockel_compare(const void *a, const void *b, void *ud) {
-    (void)ud;
-    SOCKET fa = (*(const evsock_ctx **)a)->sk.fd;
-    SOCKET fb = (*(const evsock_ctx **)b)->sk.fd;
-    return (fa < fb) ? -1 : (fa > fb) ? 1 : 0; // 三路比较，避免 UINT_PTR 相减截断为 int 溢出
-}
 evsock_ctx *_evpub_sockel_get(watcher_ctx *watcher, SOCKET fd) {
     evsock_ctx key;
     key.sk.fd = fd;
     evsock_ctx *pkey = &key;
-    void **tmp = (void **)hashmap_get(watcher->element, &pkey);
+    evsock_ctx **tmp = sockel_map_get(watcher->element, &pkey);
     return NULL == tmp ? NULL : *tmp;
 }
 void _evpub_sockel_add(watcher_ctx *watcher, evsock_ctx *evsk) {
-    ASSERTAB(NULL == hashmap_set(watcher->element, &evsk), "socket repeat.");
-    ASSERTAB(!hashmap_oom(watcher->element), "hashmap oom.");
+    ASSERTAB(NULL == sockel_map_set(watcher->element, &evsk), "socket repeat.");
+    ASSERTAB(!sockel_map_oom(watcher->element), "hashmap oom.");
 }
 void *_evpub_sockel_remove(watcher_ctx *watcher, SOCKET fd) {
     if (INVALID_SOCK == fd) {
@@ -46,7 +33,7 @@ void *_evpub_sockel_remove(watcher_ctx *watcher, SOCKET fd) {
     evsock_ctx key;
     key.sk.fd = fd;
     evsock_ctx *pkey = &key;
-    return (void *)hashmap_delete(watcher->element, &pkey);
+    return (void *)sockel_map_delete(watcher->element, &pkey);
 }
 void _evpub_tick_add(watcher_ctx *watcher, ev_tick *tk) {
     list_push_tail(&watcher->ticks, &tk->node);
@@ -78,12 +65,12 @@ int32_t _evpub_sock_type(evsock_ctx *evsk) {
     return evsk->type;
 }
 // 定期收缩对象池（调用方按 EVENT_CHECK_INTERVAL 节流触发，避免频繁 syscall）。
-// hashmap_count 作收缩基数：IOCP 下 cmd sock 不入 hashmap（精确），Unix 下含 1 个 cmd 管道 sock（偏差可忽略）。
+// sockel_map_size 作收缩基数：IOCP 下 cmd sock 不入 hashmap（精确），Unix 下含 1 个 cmd 管道 sock（偏差可忽略）。
 void _evpub_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms) {
     if (!pool_shrink_due(shrink_start, now_ms)) {
         return;
     }
-    pool_shrink_to(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)));
+    pool_shrink_to(&watcher->pool, shrink_nkeep(sockel_map_size(watcher->element)));
 }
 void _evpub_share_data_free(void *arg) {
     shared_data_free(arg, _free);
@@ -98,24 +85,25 @@ void _evpub_off_buf_release(off_buf_ctx *buf) {
     buf->data = NULL;
     buf->shared = NULL;
 }
-void _evpub_off_buf_clear(queue_ctx *bufs) {
+void _evpub_off_buf_clear(obuf_que *bufs) {
     off_buf_ctx *buf;
-    while (NULL != (buf = queue_pop(bufs))) {
+    while (NULL != (buf = obuf_que_pop(bufs))) {
         _evpub_off_buf_release(buf);
     }
-    queue_clear(bufs);
+    obuf_que_clear(bufs);
 }
-void _evpub_sendto_clear(queue_ctx *bufs) {
+void _evpub_sendto_clear(sbuf_que *bufs) {
     sendto_ctx *buf;
-    while (NULL != (buf = queue_pop(bufs))) {
+    while (NULL != (buf = sbuf_que_pop(bufs))) {
         FREE(buf->data);
     }
-    queue_clear(bufs);
+    sbuf_que_clear(bufs);
 }
-// 队列超上限判定,TCP / UDP 两条文案各占一支——LOG 宏会拼接 fmt,fmt 必须是字面量
-static inline int32_t _evpub_sendqu_full(queue_ctx *buf_s, SOCKET fd, int32_t istcp) {
+// 队列超上限判定,TCP / UDP 两条文案各占一支——LOG 宏会拼接 fmt,fmt 必须是字面量。
+// 收元素数而非队列指针:TCP 与 UDP 的发送队列宏化后是两个类型,这里只需要个数
+static inline int32_t _evpub_sendqu_full(uint32_t nqu, SOCKET fd, int32_t istcp) {
     if (0 != MAX_SENDQ_CNT
-        && queue_size(buf_s) >= MAX_SENDQ_CNT) {
+        && nqu >= MAX_SENDQ_CNT) {
         if (0 != istcp) {
             LOG_WARN("TCP send queue overflow on fd %d (>= %d), disconnect.", (int32_t)fd, MAX_SENDQ_CNT);
         } else {
@@ -139,7 +127,7 @@ int32_t _evpub_recvbuf_full(buffer_ctx *buf_r, SOCKET fd) {
              (int32_t)fd, cached, (int32_t)MAX_RECV_CASH);
     return 1;
 }
-int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd) {
+int32_t _evpub_sendqu_check_tcp(uint32_t nqu, int32_t status, SOCKET fd) {
     // 连接未完成时写事件表示等待 connect 而非待发数据,入队会被 connect 回调连同写事件一起删掉;
     // IOCP 侧则是 ConnectEx 未完成就 WSASend,必以 WSAENOTCONN 失败
     if (!BIT_CHECK(status, STATUS_ESTABLISHED)) {
@@ -155,10 +143,10 @@ int32_t _evpub_sendqu_check_tcp(queue_ctx *buf_s, int32_t status, SOCKET fd) {
     }
 #endif
     // 慢消费者保护:业务无脑写会打爆内存
-    return 0 == _evpub_sendqu_full(buf_s, fd, 1);
+    return 0 == _evpub_sendqu_full(nqu, fd, 1);
 }
-int32_t _evpub_sendqu_check_udp(queue_ctx *buf_s, SOCKET fd) {
-    return 0 == _evpub_sendqu_full(buf_s, fd, 0);
+int32_t _evpub_sendqu_check_udp(uint32_t nqu, SOCKET fd) {
+    return 0 == _evpub_sendqu_full(nqu, fd, 0);
 }
 void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp) {
     if (!tda_check(tda, wb_size)) {
@@ -170,8 +158,8 @@ void _evpub_sendqu_tda(tda_ctx *tda, size_t wb_size, SOCKET fd, int32_t istcp) {
         LOG_WARN("UDP send buf growing on fd %d: %zu bytes.", (int32_t)fd, wb_size);
     }
 }
-void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t *wb_size, void *ssl) {
-    if (0 == queue_size(buf_s)) {
+void _evpub_close_flush_tcp(SOCKET fd, obuf_que *buf_s, int32_t status, size_t *wb_size, void *ssl) {
+    if (obuf_que_empty(buf_s)) {
         return;
     }
 #if WITH_SSL
@@ -187,7 +175,7 @@ void _evpub_close_flush_tcp(SOCKET fd, queue_ctx *buf_s, int32_t status, size_t 
         (void)_evpub_sock_send(fd, buf_s, &nsend, ssl);
         *wb_size -= nsend;
     }
-    if (queue_size(buf_s) > 0) {
+    if (!obuf_que_empty(buf_s)) {
         LOG_WARN("close fd %d with %zu bytes undelivered.", (int32_t)fd, *wb_size);
     }
 }
@@ -432,7 +420,7 @@ int32_t _evpub_sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, siz
 // 将发送队列中的前N个缓冲区填充到iov数组，返回实际填充数量（最多 MAX_SEND_NIOV 条，
 // 总大小不超过 MAX_SEND_SIZE;后者为 0 时不限,条数就是唯一约束）。
 // total 出参回传这批 iov 的字节总和，供调用方判断是否短写
-static uint32_t _evpub_off_buf_fill_iov(queue_ctx *buf_s, size_t nbuf,
+static uint32_t _evpub_off_buf_fill_iov(obuf_que *buf_s, size_t nbuf,
                                         IOV_TYPE iov[MAX_SEND_NIOV],
                                         off_buf_ctx *sndbuf[MAX_SEND_NIOV],
                                         size_t *total) {
@@ -443,7 +431,7 @@ static uint32_t _evpub_off_buf_fill_iov(queue_ctx *buf_s, size_t nbuf,
     off_buf_ctx *buf;
     size_t remain, sum = 0;
     for (uint32_t i = 0; i < (uint32_t)nbuf; i++) {
-        buf = queue_at(buf_s, i);
+        buf = obuf_que_at(buf_s, i);
         remain = buf->lens - buf->offset;
 #if defined(OS_WIN)
         // WSABUF.len 是 ULONG(32位):单块 >=4GB 且 4GB 整数倍会截断为 0 → WSASend 发 0 字节、offset 不进的忙循环;限到 ULONG 上界
@@ -466,7 +454,7 @@ static uint32_t _evpub_off_buf_fill_iov(queue_ctx *buf_s, size_t nbuf,
     return cnt;
 }
 // 根据实际发送字节数sent，从发送队列头部消费已完成的缓冲区，更新offset或弹出并释放
-static void _evpub_off_buf_apply_sent(queue_ctx *buf_s, off_buf_ctx *sndbuf[MAX_SEND_NIOV],
+static void _evpub_off_buf_apply_sent(obuf_que *buf_s, off_buf_ctx *sndbuf[MAX_SEND_NIOV],
                                       uint32_t niov, size_t sent) {
     off_buf_ctx *buf;
     size_t buflen;
@@ -476,7 +464,7 @@ static void _evpub_off_buf_apply_sent(queue_ctx *buf_s, off_buf_ctx *sndbuf[MAX_
         if (sent >= buflen) {
             sent -= buflen;
             _evpub_off_buf_release(buf);
-            queue_pop(buf_s);
+            obuf_que_pop(buf_s);
         } else {
             buf->offset += sent;
             sent = 0;
@@ -520,13 +508,13 @@ static inline int32_t _evpub_sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t ni
 #endif
 }
 // 循环发送队列中所有普通（非SSL）数据，直到队列空或发生错误
-static int32_t _evpub_sock_send_normal(SOCKET fd, queue_ctx *buf_s, size_t *nsend) {
+static int32_t _evpub_sock_send_normal(SOCKET fd, obuf_que *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t nbuf, sended, total;
     uint32_t niov;
     IOV_TYPE iov[MAX_SEND_NIOV];
     off_buf_ctx *sndbuf[MAX_SEND_NIOV];
-    while (0 != (nbuf = queue_size(buf_s))) {
+    while (0 != (nbuf = obuf_que_size(buf_s))) {
         niov = _evpub_off_buf_fill_iov(buf_s, nbuf, iov, sndbuf, &total);
         rtn = _evpub_sock_send_iov(fd, iov, niov, &sended);
         if (ERR_OK != rtn) {
@@ -547,12 +535,12 @@ static int32_t _evpub_sock_send_normal(SOCKET fd, queue_ctx *buf_s, size_t *nsen
 #if WITH_SSL
 // 通过 SSL 发送队列中的数据。单次上限与抽干循环两条都不能去掉：超过 MAX_SSL_SEND_SIZE
 // 会让 TLS1.3 KeyUpdate 断连，不抽干则边缘触发下发送就此停住
-static int32_t _evpub_sock_send_ssl(SSL *ssl, queue_ctx *buf_s, size_t *nsend) {
+static int32_t _evpub_sock_send_ssl(SSL *ssl, obuf_que *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t sended, lens;
     off_buf_ctx *buf;
     for (;;) {
-        buf = queue_peek(buf_s);
+        buf = obuf_que_peek(buf_s);
         if (NULL == buf) {
             break;
         }
@@ -570,14 +558,14 @@ static int32_t _evpub_sock_send_ssl(SSL *ssl, queue_ctx *buf_s, size_t *nsend) {
             break;
         }
         if (buf->offset == buf->lens) {
-            queue_pop(buf_s);
+            obuf_que_pop(buf_s);
             _evpub_off_buf_release(buf);
         }
     }
     return rtn;
 }
 #endif
-int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg) {
+int32_t _evpub_sock_send(SOCKET fd, obuf_que *buf_s, size_t *nsend, void *arg) {
     *nsend = 0;
 #if WITH_SSL
     if (NULL == arg) {

@@ -1,6 +1,6 @@
 ﻿#include "hash_ring.h"
 #include "utils/utils.h"
-#include "crypt/digest.h"
+#include "crypt/xxhash.h"
 
 /* 栈上分配的最大名称长度，避免每个副本都堆分配。
  * 节点名通常为 host:port 短字符串，512 字节可覆盖绝大多数场景，
@@ -51,16 +51,9 @@ void hash_ring_free(hash_ring_ctx *ring) {
     FREE(ring->items);
     hash_ring_init(ring);
 }
-/* 计算数据的 MD5 哈希并取前 4 字节作为哈希值（小端）。
- * 使用栈上局部 digest_ctx，每次调用完全独立，线程安全。 */
-static uint64_t _hash_ring_hash(void *data, size_t lens) {
-    digest_ctx md5;
-    uint8_t digest[DG_BLOCK_SIZE];
-    digest_init(&md5, DG_MD5);
-    digest_update(&md5, data, lens);
-    digest_final(&md5, (char *)digest);
-    //逐项 cast 到 uint32_t 再位移，避免 (int)0xFF << 24 = 0xFF000000 超过 INT32_MAX 触发 C99 §6.5.7 UB
-    return ((uint32_t)digest[3] << 24) | ((uint32_t)digest[2] << 16) | ((uint32_t)digest[1] << 8) | (uint32_t)digest[0];
+// 环上位置取 xxh64 的完整 64 位：截成 32 位时副本一多就会撞位，撞上的两个副本谁在前由 qsort 随机决定
+static inline uint64_t _hash_ring_hash(void *data, size_t lens) {
+    return xxh64(data, lens, 0);
 }
 // 为节点生成所有虚拟副本（replica）并添加到 items 数组
 static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {

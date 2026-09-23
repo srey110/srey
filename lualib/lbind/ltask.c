@@ -425,13 +425,13 @@ static inline void _ltask_push_msg(lua_State *lua, ltask_ctx *ltask, message_ctx
 static void _ltask_run(task_dispatch_arg *arg) {
     ltask_ctx *ltask = arg->task->arg;
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
-    _ltask_push_msg(ltask->lua, ltask, &arg->msg);
+    _ltask_push_msg(ltask->lua, ltask, arg->msg);
     if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
         _ltask_log_err(ltask->lua);
     }
     // 连接关了才摘缓存,且必须排在分发之后——业务回调里还要用这条 sk
-    if (MSG_TYPE_CLOSE == arg->msg.mtype) {
-        lpub_sock_uncache(ltask->lua, arg->msg.sk.skid);
+    if (MSG_TYPE_CLOSE == arg->msg->mtype) {
+        lpub_sock_uncache(ltask->lua, arg->msg->sk.skid);
     }
 }
 /// <summary>
@@ -443,7 +443,7 @@ static void _ltask_run(task_dispatch_arg *arg) {
 /// <param name="name" type="string?">字符串 task 名；nil 或空串=匿名（仅有句柄）</param>
 /// <param name="quecap" type="integer">消息队列容量（条数）；0 用默认 TASK_QUEUE_CAP。
 /// 取值须在 [0, UINT32_MAX]，越界直接报错而不是截断——截断的话 0x100000000 会变成 0、
-/// 再被 fsqu_init 悄悄换成默认 1K，调用方从返回值看不出自己要的容量根本没生效</param>
+/// 被 task_new 悄悄换成默认 TASK_QUEUE_CAP，调用方从返回值看不出自己要的容量根本没生效</param>
 /// <param name="..." type="any">传给脚本的可变参数（nil/bool/number/string）</param>
 /// <returns type="lightuserdata?">task 指针；失败返回 nil</returns>
 static int32_t _ltask_register(lua_State *lua) {

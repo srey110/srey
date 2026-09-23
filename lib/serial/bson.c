@@ -751,8 +751,8 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     uint32_t inc;
     uint32_t ts;
     char *options;
-    // 各 case 的取值变量按类型分开命名后一并提到循环外; 同名不同类型的 val 是原来
-    // 每个 case 都得自带一层花括号的唯一原因
+    // 各 case 的取值变量按类型分开命名、一并提到循环外:叫同一个名字就得给每个
+    // case 套一层花括号(房屋规范禁止裸花括号只为限定作用域)
     double dval;
     int32_t ival;
     int64_t i64val;

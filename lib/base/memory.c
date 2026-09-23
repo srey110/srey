@@ -26,9 +26,9 @@
 #endif
 
 #if MEMORY_CHECK
-/* 分条计数：两个相邻的全局计数器会让每次 malloc/free 都在同一条 cache line 上跨核来回。
- * 改成每线程独占一格、各占一条 cache line，槽位用尽(活过的线程数超过 MEM_SLOTS)的
- * 线程共用末尾那一格 —— 两条路径的计数都精确。*/
+/* 分条计数：每线程独占一格、各占一条 cache line，免得每次 malloc/free 都在同一条
+ * cache line 上跨核来回。槽位用尽(活过的线程数超过 MEM_SLOTS)的线程共用末尾那一格
+ * —— 两条路径的计数都精确。*/
 #define MEM_SLOTS 64 // 独占槽位数;只增不回收,用尽即共用末尾那格
 typedef struct mem_slot {
     atomic64_t nalloc; // 本槽位累计分配次数

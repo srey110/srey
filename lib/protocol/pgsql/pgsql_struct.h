@@ -14,6 +14,7 @@ typedef struct pgsql_result {
     struct pgsql_reader_ctx *reader;// 结果集，无结果集语句（INSERT/UPDATE 无 RETURNING）为 NULL
     char complete[32];              // 该语句的 CommandComplete 命令完成标签
 }pgsql_result;
+ARR_DECL(pgres_arr, pgsql_result)
 
 // pgsql 数据包上下文
 typedef struct pgpack_ctx {
@@ -21,7 +22,7 @@ typedef struct pgpack_ctx {
     uint32_t iter_cursor;           // pgsql_reader_iter 的扫描起点，只前进不回头（占 type 后的对齐空洞）
     void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息或通知）
     void(*_free_pgpack)(void *);    // 释放 pack 的回调函数
-    array_ctx results;              // 已完成语句的结果数组（元素 pgsql_result）；CALLOC 全零即合法空数组，首条 CommandComplete 提交时才 array_init
+    pgres_arr results;              // 已完成语句的结果数组；CALLOC 全零即合法空数组，首条 CommandComplete 提交时才 pgres_arr_init
     char complete[32];              // 最后一条 CommandComplete 命令完成标签，格式示例：INSERT oid rows / UPDATE rows 等
 }pgpack_ctx;
 
@@ -50,6 +51,7 @@ typedef struct pgpack_row {
     char *val;          // 列值数据指针
     char *payload;      // 完整原始消息（首列持有，用于内存管理）
 }pgpack_row;
+ARR_DECL(pgrow_arr, pgpack_row *)
 
 // 查询结果读取器上下文
 typedef struct pgsql_reader_ctx {
@@ -57,7 +59,7 @@ typedef struct pgsql_reader_ctx {
     pgpack_format format;       // 结果格式（文本或二进制）
     int32_t index;              // 当前读取行的游标位置
     pgpack_field *fields;       // 字段描述数组
-    array_ctx arr_rows;         // 数据行指针数组（元素 pgpack_row *）
+    pgrow_arr arr_rows;         // 数据行指针数组
 }pgsql_reader_ctx;
 
 // pgsql 连接上下文

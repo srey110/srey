@@ -224,7 +224,9 @@ else
         CFLAGS=$CFLAGS" -m64"
     fi
 fi
-if [ "$OSNAME" = "Darwin" ]
+# clang 会把 .c 里没用到的 static inline 也算 unused-function,而 XXX_DECL 一次就生成整套
+# 接口,调用方总只用其中几个。gcc 对 static inline 从不报,故 Linux 那边仍然拦得住真正的死函数
+if [ "$OSNAME" = "Darwin" ] || [ "$OSNAME" = "FreeBSD" ]
 then
     CFLAGS=$CFLAGS" -Wno-unused-function"
 fi

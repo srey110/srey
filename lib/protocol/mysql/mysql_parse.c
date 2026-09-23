@@ -71,7 +71,7 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
 }
 // OK 包尾部的 session-state-change：服务端切换当前库（USE / COM_INIT_DB / 存储过程内切库）都经此回带，
 // 是 client.database 的权威来源。SERVER_SESSION_STATE_CHANGED 只会由接受了 CLIENT_SESSION_TRACK 的
-// 服务端置位，故该位本身即可判定尾部是 lenenc 布局，不必再看协商结果；老服务端不置位就走原来的整段跳过。
+// 服务端置位，故该位本身即可判定尾部是 lenenc 布局，不必再看协商结果；老服务端不置位,尾部整段跳过。
 // 本段只是可选信息，任何不自洽都当"没带"静默放弃而不是拖垮进程：读长度一律走
 // _mysql_get_lenenc（缓冲不够它返 ERR_FAILED），读出来的长度再与剩余字节比过才用
 static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
@@ -213,12 +213,12 @@ static void _mpack_fields_free(mpack_field *fields, int32_t n) {
 void _mpack_reader_free(void *pack) {
     mpack_row *rows;
     mysql_reader_ctx *reader = pack;
-    for (uint32_t i = 0; i < array_size(&reader->arr_rows); i++) {
-        rows = *(mpack_row **)(array_at(&reader->arr_rows, i));
+    for (uint32_t i = 0; i < mrow_arr_size(&reader->arr_rows); i++) {
+        rows = *mrow_arr_at(&reader->arr_rows, (int32_t)i);
         FREE(rows->payload);
         FREE(rows);
     }
-    array_free(&reader->arr_rows);
+    mrow_arr_free(&reader->arr_rows);
     _mpack_fields_free(reader->fields, reader->field_count);
     FREE(reader->fields);
 }
@@ -240,7 +240,7 @@ static int32_t _mpack_reader_new(mysql_ctx *mysql, binary_ctx *breader, mpack_ty
     if (reader->field_count > 0) {
         CALLOC(reader->fields, 1, sizeof(mpack_field) * (size_t)reader->field_count);
     }
-    array_init(&reader->arr_rows, sizeof(mpack_row *), 64);
+    mrow_arr_init(&reader->arr_rows, 64);
     mysql->mpack->pack = reader;
     mysql->mpack->_free_mpack = _mpack_reader_free;
     mysql->mpack->pack_type = pktype;
@@ -298,7 +298,7 @@ static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *bread
             row[i].val.data = binary_get_binary(breader, row[i].val.lens);
         }
     }
-    array_push_back(&reader->arr_rows, &row);
+    mrow_arr_push_back(&reader->arr_rows, &row);
     return ERR_OK;
 }
 // 解析二进制协议（COM_STMT_EXECUTE）结果集中的一行数据，字段值按类型固定或 lenenc 长度读取
@@ -410,7 +410,7 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
             row[i].val.data = binary_get_binary(breader, row[i].val.lens);
         }
     }
-    array_push_back(&reader->arr_rows, &row);
+    mrow_arr_push_back(&reader->arr_rows, &row);
     return ERR_OK;
 }
 // 结果集字段/行阶段遇 ERR(0xff) 包：MySQL 协议允许 ERR 提前终止结果集(KILL QUERY / max_execution_time 等)，

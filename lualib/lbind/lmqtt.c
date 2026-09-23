@@ -549,7 +549,7 @@ static int32_t _lmqtt_pack_auth(lua_State *lua) {
 // 从 pack->varhead 中取 properties 指针（按 prot 分派）；无属性时返回 NULL。
 // varhead 为 NULL 是合法状态（PUBLISH 没走到 _mqtt_publish 就是这样，见 _mqtt_pkfree），
 // 判据同兄弟 _lmqtt_pack_of
-static array_ctx *_lmqtt_varhead_props(mqtt_pack_ctx *pack) {
+static mprop_arr *_lmqtt_varhead_props(mqtt_pack_ctx *pack) {
     if (NULL == pack->varhead) {
         return NULL;
     }
@@ -588,13 +588,13 @@ static mqtt_pack_ctx *_lmqtt_pack_of(lua_State *lua, mqtt_prot prot) {
 /// <returns type="integer">属性条数；空时为 0</returns>
 static int32_t _lmqtt_props_of(lua_State *lua) {
     LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
-    array_ctx *arr = _lmqtt_varhead_props(pack);
-    if (NULL == arr || 0 == array_size(arr)) {
+    mprop_arr *arr = _lmqtt_varhead_props(pack);
+    if (NULL == arr || mprop_arr_empty(arr)) {
         lua_pushnil(lua);
         lua_pushinteger(lua, 0);
         return 2;
     }
-    return lpub_rtn_lud(lua, arr, array_size(arr));
+    return lpub_rtn_lud(lua, arr, mprop_arr_size(arr));
 }
 /// <summary>
 /// 返回 CONNECT 报文载荷中的遗嘱属性数组
@@ -611,12 +611,12 @@ static int32_t _lmqtt_connect_will_props(lua_State *lua) {
         return 2;
     }
     mqtt_connect_payload *pl = (mqtt_connect_payload *)pack->payload;
-    if (NULL == pl || EMPTYPTR(pl->properties, array_size(pl->properties))) {
+    if (NULL == pl || EMPTYPTR(pl->properties, mprop_arr_size(pl->properties))) {
         lua_pushnil(lua);
         lua_pushinteger(lua, 0);
         return 2;
     }
-    return lpub_rtn_lud(lua, pl->properties, array_size(pl->properties));
+    return lpub_rtn_lud(lua, pl->properties, mprop_arr_size(pl->properties));
 }
 /// <summary>
 /// 按 1 起始下标读取属性数组中的一条属性
@@ -628,12 +628,12 @@ static int32_t _lmqtt_connect_will_props(lua_State *lua) {
 /// <returns type="string?">字符串/二进制属性的值或 USER_PROPERTY 的 key；数字属性为 nil</returns>
 /// <returns type="string?">USER_PROPERTY 的 value；其他属性为 nil</returns>
 static int32_t _lmqtt_prop_at(lua_State *lua) {
-    LPUB_LUD_ARG(lua, array_ctx, 1, arr);
-    int64_t at = lpub_check_index0(lua, 2, array_size(arr));
+    LPUB_LUD_ARG(lua, mprop_arr, 1, arr);
+    int64_t at = lpub_check_index0(lua, 2, mprop_arr_size(arr));
     if (at < 0) {
         return lpub_rtn_nil(lua, 4);
     }
-    mqtt_propertie *p = *(mqtt_propertie **)array_at(arr, (int32_t)at);
+    mqtt_propertie *p = *mprop_arr_at(arr, (int32_t)at);
     lua_pushinteger(lua, p->flag);
     lua_pushinteger(lua, p->nval);
     if (p->flens > 0) {
@@ -825,12 +825,12 @@ static int32_t _lmqtt_subscribe(lua_State *lua) {
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
     mqtt_subscribe_payload *pl = (mqtt_subscribe_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
-    uint32_t cnt = (NULL == pl) ? 0 : array_size(&pl->subop);
+    uint32_t cnt = (NULL == pl) ? 0 : msubop_arr_size(&pl->subop);
     lua_createtable(lua, (int32_t)cnt, 0);
     int32_t i;
     subscribe_option *op;
     for (i = 0; (uint32_t)i < cnt; i++) {
-        op = *(subscribe_option **)array_at(&pl->subop, i);
+        op = *msubop_arr_at(&pl->subop, (int32_t)i);
         lua_createtable(lua, 0, 5);
         if (NULL != op->topic) {
             lua_pushstring(lua, op->topic);
@@ -858,12 +858,12 @@ static int32_t _lmqtt_unsubscribe(lua_State *lua) {
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
     mqtt_unsubscribe_payload *pl = (mqtt_unsubscribe_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
-    uint32_t cnt = (NULL == pl) ? 0 : array_size(&pl->topics);
+    uint32_t cnt = (NULL == pl) ? 0 : mtopic_arr_size(&pl->topics);
     lua_createtable(lua, (int32_t)cnt, 0);
     int32_t i;
     char *topic;
     for (i = 0; (uint32_t)i < cnt; i++) {
-        topic = *(char **)array_at(&pl->topics, i);
+        topic = *mtopic_arr_at(&pl->topics, (int32_t)i);
         lua_pushstring(lua, (NULL != topic) ? topic : "");
         lua_rawseti(lua, -2, i + 1);
     }

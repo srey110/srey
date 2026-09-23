@@ -115,9 +115,6 @@
     <ClInclude Include="srey\spub.h">
       <Filter>srey</Filter>
     </ClInclude>
-    <ClInclude Include="containers\cont_pub.h">
-      <Filter>containers</Filter>
-    </ClInclude>
     <ClInclude Include="containers\hashmap.h">
       <Filter>containers</Filter>
     </ClInclude>
@@ -185,6 +182,9 @@
       <Filter>serial</Filter>
     </ClInclude>
     <ClInclude Include="utils\sfid.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\uuid.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\strptime.h">
@@ -272,6 +272,9 @@
       <Filter>crypt\digest</Filter>
     </ClInclude>
     <ClInclude Include="crypt\sha512.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\xxhash.h">
       <Filter>crypt\digest</Filter>
     </ClInclude>
     <ClInclude Include="crypt\aes.h">
@@ -421,6 +424,9 @@
     <ClInclude Include="containers\mpq.h">
       <Filter>containers</Filter>
     </ClInclude>
+    <ClInclude Include="containers\bbq.h">
+      <Filter>containers</Filter>
+    </ClInclude>
     <ClInclude Include="containers\spsc.h">
       <Filter>containers</Filter>
     </ClInclude>
@@ -428,6 +434,9 @@
       <Filter>containers</Filter>
     </ClInclude>
     <ClInclude Include="containers\slist.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\rbtree.h">
       <Filter>containers</Filter>
     </ClInclude>
     <ClInclude Include="protocol\kcp\ikcp.h">
@@ -471,12 +480,6 @@
     <ClCompile Include="srey\debug_request.c">
       <Filter>srey</Filter>
     </ClCompile>
-    <ClCompile Include="containers\hashmap.c">
-      <Filter>containers</Filter>
-    </ClCompile>
-    <ClCompile Include="containers\hashset.c">
-      <Filter>containers</Filter>
-    </ClCompile>
     <ClCompile Include="base\base.c">
       <Filter>base</Filter>
     </ClCompile>
@@ -508,6 +511,9 @@
       <Filter>serial</Filter>
     </ClCompile>
     <ClCompile Include="utils\sfid.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\uuid.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\strptime.c">
@@ -591,6 +597,9 @@
     <ClCompile Include="crypt\sha512.c">
       <Filter>crypt\digest</Filter>
     </ClCompile>
+    <ClCompile Include="crypt\xxhash.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
     <ClCompile Include="crypt\aes.c">
       <Filter>crypt\cipher</Filter>
     </ClCompile>
@@ -623,9 +632,6 @@
     </ClCompile>
     <ClCompile Include="utils\hug.c">
       <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="containers\heap.c">
-      <Filter>containers</Filter>
     </ClCompile>
     <ClCompile Include="protocol\custz_head.c">
       <Filter>protocol</Filter>
@@ -710,21 +716,6 @@
     </ClCompile>
     <ClCompile Include="protocol\mongo\mongo_parse.c">
       <Filter>protocol\mongo</Filter>
-    </ClCompile>
-    <ClCompile Include="containers\mpq.c">
-      <Filter>containers</Filter>
-    </ClCompile>
-    <ClCompile Include="containers\spsc.c">
-      <Filter>containers</Filter>
-    </ClCompile>
-    <ClCompile Include="containers\sarray.c">
-      <Filter>containers</Filter>
-    </ClCompile>
-    <ClCompile Include="containers\queue.c">
-      <Filter>containers</Filter>
-    </ClCompile>
-    <ClCompile Include="containers\fsqu.c">
-      <Filter>containers</Filter>
     </ClCompile>
     <ClCompile Include="protocol\kcp\ikcp.c">
       <Filter>protocol\kcp</Filter>

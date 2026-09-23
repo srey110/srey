@@ -8,7 +8,7 @@
 #define DLL_EXNAME "dll" // 动态库扩展名
 #define PATH_SEPARATOR '\\' // 路径分隔符
 #define PATH_SEPARATORSTR "\\" // 路径分隔符字符串
-#define PATH_LENS MAX_PATH // 路径最大长度
+#define PATH_LENS 1024 // 路径最大长度；取 1024 只为长路径不被截断，超过 MAX_PATH(260) 的路径文件 API 仍打不开
 #define INVALID_SOCK INVALID_SOCKET // 无效 socket 句柄
 
 #define IS_EAGAIN(e) (WSAEWOULDBLOCK == (e) || EAGAIN == (e)) // 判断是否为非阻塞重试错误
@@ -36,7 +36,14 @@
 
 #define MSLEEP(ms) Sleep(ms) // 毫秒级睡眠
 #define THREAD_YIELD() SwitchToThread() // OS 级线程让出，用于自旋超限后的兜底退避
-#define CPU_PAUSE() YieldProcessor() // 自旋等待 CPU 暂停提示
+/* 自旋等待 CPU 暂停提示。CPU_PAUSE_CYCLES 的口径见 macro_unix.h 同名宏，
+   两边必须一致。YieldProcessor 在 ARM 上展开成 yield、在 x86 上展开成 _mm_pause */
+#define CPU_PAUSE() YieldProcessor()
+#if defined(ARCH_ARM64) || defined(ARCH_ARM)
+    #define CPU_PAUSE_CYCLES 1
+#else
+    #define CPU_PAUSE_CYCLES 140
+#endif
 #define THREAD_LOCAL __declspec(thread) // 线程局部存储
 #define TIMEB  _timeb // 时间结构体类型
 #define FTIME  _ftime // 获取当前时间（毫秒精度）

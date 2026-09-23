@@ -1596,6 +1596,70 @@ static void test_redis_moredata(CuTest *tc) {
     buffer_free(&buf);
 }
 
+// 一条多元素回复分两次到达:已解析的节点留在 ud 里跨调用续挂,补齐后整条交出;
+// 同一 ud 紧接着的下一条回复要从空链表重新开始,不能挂到已交出那条的尾上
+static void test_redis_resume_across_calls(CuTest *tc) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    redis_pack_ctx *pack, *p1, *p2, *p3;
+    pack = _t_redis_one(&buf, &ud, "*2\r\n:1\r\n", &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+
+    _bput(&buf, ":2\r\n*1\r\n:3\r\n");
+    status = PROT_INIT;
+    pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, RESP_ARRAY == pack->prot && 2 == pack->nelem);
+    p1 = pack->next;
+    CuAssertTrue(tc, NULL != p1 && RESP_INTEGER == p1->prot && 1 == p1->ival);
+    p2 = p1->next;
+    CuAssertTrue(tc, NULL != p2 && RESP_INTEGER == p2->prot && 2 == p2->ival);
+    CuAssertTrue(tc, NULL == p2->next);
+    _redis_pkfree(pack);// 先交还第一条:第二条若还往它尾上挂,下面拿到的是 NULL(ASan 下直接报 UAF)
+
+    status = PROT_INIT;
+    pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, RESP_ARRAY == pack->prot && 1 == pack->nelem);
+    p3 = pack->next;
+    CuAssertTrue(tc, NULL != p3 && RESP_INTEGER == p3->prot && 3 == p3->ival);
+    CuAssertTrue(tc, NULL == p3->next);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
+// 同一 ud 连解两条大回复:节点计数每条回复清零,两条合计超 REDIS_MAX_NODES(1<<18)也不能误判超限
+static void test_redis_back_to_back_count(CuTest *tc) {
+    const int32_t nelem = 150000;
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status, i, k;
+    redis_pack_ctx *pack;
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    for (k = 0; k < 2; k++) {
+        _bput(&buf, "*150000\r\n");
+        for (i = 0; i < nelem; i++) {
+            _bput(&buf, ":1\r\n");
+        }
+    }
+    for (k = 0; k < 2; k++) {
+        status = PROT_INIT;
+        pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertTrue(tc, RESP_ARRAY == pack->prot && nelem == pack->nelem);
+        _redis_pkfree(pack);
+    }
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
+
 // _reader_line / _reader_bulk 长度行无 CRLF 持续累积超 REDIS_MAX_LINE_LENS(64KB) 应 PROT_ERROR
 static void test_redis_oversize_no_crlf(CuTest *tc) {
     // 1. 单行 RESP "+aaa..." 无 CRLF 超 64KB
@@ -4831,13 +4895,13 @@ static void test_mail_html_and_clear(CuTest *tc) {
     FREE(pkt);
 
     /* mail_addrs_clear 后地址数归零 */
-    CuAssertTrue(tc, 3 == array_size(&mail.addrs));
+    CuAssertTrue(tc, 3 == maddr_arr_size(&mail.addrs));
     mail_addrs_clear(&mail);
-    CuAssertTrue(tc, 0 == array_size(&mail.addrs));
+    CuAssertTrue(tc, 0 == maddr_arr_size(&mail.addrs));
 
     /* mail_attach_clear 在空附件下安全 */
     mail_attach_clear(&mail);
-    CuAssertTrue(tc, 0 == array_size(&mail.attach));
+    CuAssertTrue(tc, 0 == mattach_arr_size(&mail.attach));
 
     /* mail_clear 不释放字段，只清空内容：subject/html/msg 首字节置 '\0'；
      * addrs 和 attach 数组清空，from 显示名/地址首字节归零 */
@@ -4852,7 +4916,7 @@ static void test_mail_html_and_clear(CuTest *tc) {
     CuAssertTrue(tc, '\0' == mail.from.name[0]);
     CuAssertTrue(tc, '\0' == mail.from.addr[0]);
     /* 地址列表清空 */
-    CuAssertTrue(tc, 0 == array_size(&mail.addrs));
+    CuAssertTrue(tc, 0 == maddr_arr_size(&mail.addrs));
 
     mail_free(&mail);
 }
@@ -5148,7 +5212,7 @@ static void test_http_header_at(CuTest *tc) {
     CuAssertTrue(tc, 10 == h2->key.lens);
     CuAssertTrue(tc, 0 == memcmp(h2->key.data, "User-Agent", 10));
 
-    /* 注：array_at 在 pos 越界时 ASSERTAB abort，并不返回 NULL；
+    /* 注：hdr_arr_at 在 pos 越界时 ASSERTAB abort，并不返回 NULL；
      * API 契约要求调用方先用 http_nheader 检查范围，故无法测试越界路径 */
 
     _http_pkfree(pack);
@@ -5478,11 +5542,11 @@ static void test_mail_attach_pack(CuTest *tc) {
     mail_attach_add(&mail, tmpfile);
     // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉 mail / pkt / pkt2 与临时文件，
     // 一次真失败还要在收尾内存检查里多报几笔假泄漏。全部结论先落成局部量，函数尾统一断言
-    int32_t natt1 = (int32_t)array_size(&mail.attach);
+    int32_t natt1 = (int32_t)mattach_arr_size(&mail.attach);
 
     // 3. 附件结构字段：extension 取自文件名最后 '.'，file 仅含文件名（不含目录）
-    // 空数组时 array_at 走 ASSERTAB 直接 abort，整轮跑连收尾汇总都没了，故先按 natt1 取
-    mail_attach *att = (1 == natt1) ? array_at(&mail.attach, 0) : NULL;
+    // 空数组时 mattach_arr_at 走 ASSERTAB 直接 abort，整轮跑连收尾汇总都没了，故先按 natt1 取
+    mail_attach *att = (1 == natt1) ? mattach_arr_at(&mail.attach, 0) : NULL;
     int32_t ext_ok = (NULL != att && 0 == strcmp(att->extension, ".txt"));
     int32_t file_ok = (NULL != att && NULL != strstr(att->file, "test_mail_attach.txt"));
     int32_t content_ok = (NULL != att && NULL != att->content && strlen(att->content) > 0);
@@ -5509,12 +5573,12 @@ static void test_mail_attach_pack(CuTest *tc) {
 
     // 5. mail_attach_clear：附件数组清空，内部 content 释放
     mail_attach_clear(&mail);
-    int32_t natt2 = (int32_t)array_size(&mail.attach);
+    int32_t natt2 = (int32_t)mattach_arr_size(&mail.attach);
 
     // 6. 多附件场景：插入两个，验证 mail_pack 不崩，含两段 base64
     mail_attach_add(&mail, tmpfile);
     mail_attach_add(&mail, tmpfile);
-    int32_t natt3 = (int32_t)array_size(&mail.attach);
+    int32_t natt3 = (int32_t)mattach_arr_size(&mail.attach);
     char *pkt2 = mail_pack(&mail);
     int32_t pkt2_ok = (NULL != pkt2);
     // 两个附件的同名 filename 至少出现 2 次（Content-Disposition 各一次）
@@ -5567,11 +5631,11 @@ static void test_mail_attach_name_rfc2231(CuTest *tc) {
     mail_subject(&mail, "attach");
     mail_msg(&mail, "body");
     mail_attach_add(&mail, tmpfile);
-    int32_t natt = (int32_t)array_size(&mail.attach);
+    int32_t natt = (int32_t)mattach_arr_size(&mail.attach);
 
     // 直接改 att->file，不去造一个 UTF-8 文件名的真文件：磁盘文件名编码各平台不同，
     // 这里要测的只是组包侧怎么写这个字段。"报表.pdf"
-    mail_attach *att = (1 == natt) ? array_at(&mail.attach, 0) : NULL;
+    mail_attach *att = (1 == natt) ? mattach_arr_at(&mail.attach, 0) : NULL;
     if (NULL != att) {
         SNPRINTF(att->file, sizeof(att->file), "%s", "\xe6\x8a\xa5\xe8\xa1\xa8.pdf");
     }
@@ -5614,6 +5678,44 @@ static void test_mail_attach_name_rfc2231(CuTest *tc) {
     CuAssertTrue(tc, 0 != raw_ok);
     CuAssertTrue(tc, 0 != ascii_ok);
     CuAssertTrue(tc, 0 != quoted_ok);
+}
+
+// 长 UTF-8 附件名不能被截断：APFS/NTFS 按字符限 255，中文名可达 765 字节，
+// 截在 255 字节会丢掉扩展名、末尾剩半个字符。ext4 按字节限 255 建不出这种文件，建不出就跳过真文件那段
+static void test_mail_attach_long_name(CuTest *tc) {
+    // 装得下最长的合法 basename 再加 NUL
+    CuAssertTrue(tc, sizeof(((mail_attach *)0)->file) > 765);
+
+    char name[512];
+    size_t off = 0;
+    int32_t i;
+    for (i = 0; i < 100; i++) {// 100 个"报"= 300 字节
+        memcpy(name + off, "\xe6\x8a\xa5", 3);
+        off += 3;
+    }
+    memcpy(name + off, ".pdf", sizeof(".pdf"));
+    char tmpfile[PATH_LENS];
+    SNPRINTF(tmpfile, sizeof(tmpfile), "%s%s%s", procpath(), PATH_SEPARATORSTR, name);
+    FILE *fp = fopen(tmpfile, "wb");
+    if (NULL == fp) {
+        return;
+    }
+    fwrite("x", 1, 1, fp);
+    fclose(fp);
+
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_attach_add(&mail, tmpfile);
+    int32_t natt = (int32_t)mattach_arr_size(&mail.attach);
+    mail_attach *att = (1 == natt) ? mattach_arr_at(&mail.attach, 0) : NULL;
+    int32_t file_ok = (NULL != att && 0 == strcmp(att->file, name));
+    int32_t ext_ok = (NULL != att && 0 == strcmp(att->extension, ".pdf"));
+    mail_free(&mail);
+    remove(tmpfile);
+
+    CuAssertIntEquals(tc, 1, natt);
+    CuAssertTrue(tc, 0 != file_ok);
+    CuAssertTrue(tc, 0 != ext_ok);
 }
 
 // 握手回传桩，_smtp_ud_setup 每个用例都装一次。_smtp_connected 与 _smtp_auth_check 在被
@@ -6047,6 +6149,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_redis_pack);
     SUITE_ADD_TEST(suite, test_redis_pack_bad_format);
     SUITE_ADD_TEST(suite, test_redis_moredata);
+    SUITE_ADD_TEST(suite, test_redis_resume_across_calls);
+    SUITE_ADD_TEST(suite, test_redis_back_to_back_count);
     SUITE_ADD_TEST(suite, test_redis_oversize_no_crlf);
     SUITE_ADD_TEST(suite, test_redis_resp3_scalar);
     SUITE_ADD_TEST(suite, test_redis_resp3_aggregate);
@@ -6146,4 +6250,5 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mail_html_and_clear);
     SUITE_ADD_TEST(suite, test_mail_attach_pack);
     SUITE_ADD_TEST(suite, test_mail_attach_name_rfc2231);
+    SUITE_ADD_TEST(suite, test_mail_attach_long_name);
 }

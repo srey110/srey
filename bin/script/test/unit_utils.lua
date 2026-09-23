@@ -82,7 +82,7 @@ runner.run(function(t)
         local hit2 = ring:find("user:42")
         t:check(hit1 ~= nil, "hashring find returns node")
         t:eq(hit1, hit2, "hashring find consistent")
-        t:check(hit1 == "node1" or hit1 == "node2" or hit1 == "node3",
+        t:check(hit1 == "node1" or hit1 == "node2" or hit1 == "node3" or hit1 == "toobig",
                 "hashring hit is one of nodes")
 
         -- remove 后落点应仅在剩余节点
@@ -110,7 +110,7 @@ runner.run(function(t)
 
     -- ── (指针,长度) 入口：长度必须挡住负数 ─────────────────────────────
     -- 负数转 size_t 是个天文数字，下游"剩余长度 < 需要长度"那类判定会全部恒假，
-    -- 于是照着缓冲后面的堆内存一路读下去（hashring:find 更是直接喂进 md5 的裸读循环，
+    -- 于是照着缓冲后面的堆内存一路读下去（hashring:find 更是直接喂进 xxh64 的裸读循环，
     -- 沿途没有任何分配失败或上限判断可以兜底）。这些入口现在统一走 lpub_check_lens /
     -- lpub_check_buf，一律报可被 pcall 捕获的 Lua 错。
     -- 这些都是收发缓冲，没有协议上界，故 max 传 0 只校验下界；BSON 那边传 INT32_MAX

@@ -11,7 +11,7 @@
 //   list_remove(&l, &n.node);                 // 任意节点 O(1)，无需搜索/前驱
 //   list_foreach(&l, it) { my_node *e = UPCAST(it, my_node, node); /* ... */ }
 // 契约：一个节点同时只属于一个链表；remove/pop/insert 不校验成员关系，由调用方保证
-//       （同 heap_remove）；insert_before/insert_after 的 pos 须为表中有效节点（空表用 push_*）。
+//       （同 HEAP_DECL 生成的 remove）；insert_before/insert_after 的 pos 须为表中有效节点（空表用 push_*）。
 // 链表节点，嵌入用户结构体使用（侵入式）
 typedef struct list_node {
     struct list_node *next; // 后继，队尾为 NULL

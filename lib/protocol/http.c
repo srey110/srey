@@ -14,13 +14,14 @@ typedef enum parse_status{
     TILLCLOSE,  // 响应无 CL/TE，body 由连接关闭界定（RFC 7230 §3.3.3 规则 7）
     INIT_NOBODY // 同 INIT，但紧随的那一条响应按"无报文体"处理（HEAD 用，见 http_set_method）
 }parse_status;
+ARR_DECL(hdr_arr, http_header_ctx)
 typedef struct http_pack_ctx {
     int32_t chunked;          // 0=非 chunked，1=chunked 起始包，2=chunked 数据包
     int32_t chunked_last;     // 最近一次见到的 Transfer-Encoding 行，其末尾 token 是否为 chunked
     buf_ctx head;             // 原始头部数据（含第一行和所有字段）
     buf_ctx data;             // 数据体
     buf_ctx status[3];        // 第一行拆分：status[0]=方法/版本，status[1]=状态码/路径，status[2]=描述/版本
-    array_ctx header;         // 所有头部字段列表（元素 http_header_ctx）
+    hdr_arr header;           // 所有头部字段列表
 }http_pack_ctx;
 
 // 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)；全为 OWS 时收成 *start 处的空区间。
@@ -309,7 +310,7 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
         if (ERR_OK != _http_check_transfer(pack, &field, transfer)) {
             return ERR_FAILED;
         }
-        array_push_back(&pack->header, &field);
+        hdr_arr_push_back(&pack->header, &field);
     }
     // 全部头部行都见过之后才能确定 chunked 是否为最后一个 transfer-coding
     if (CHUNKED == *transfer && !pack->chunked_last) {
@@ -369,7 +370,7 @@ static inline http_pack_ctx *_http_headpack(size_t lens) {
     ZERO(pack, sizeof(http_pack_ctx));
     ((http_pack_ctx *)pack)->head.data = pack + sizeof(http_pack_ctx);
     ((http_pack_ctx *)pack)->head.lens = lens;
-    array_init(&((http_pack_ctx *)pack)->header, sizeof(http_header_ctx), 0);
+    hdr_arr_init(&((http_pack_ctx *)pack)->header, 0);
     return (http_pack_ctx *)pack;
 }
 http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, int32_t *status) {
@@ -579,7 +580,7 @@ void _http_pkfree(void *data) {
     }
     if (NULL != pack->head.data) {
         FREE(pack->data.data);
-        array_free(&pack->header);
+        hdr_arr_free(&pack->header);
     }
     FREE(pack);
 }
@@ -625,23 +626,22 @@ buf_ctx *http_status(http_pack_ctx *pack) {
     return (NULL != pack->head.data) ? pack->status : NULL;
 }
 uint32_t http_nheader(http_pack_ctx *pack) {
-    return (NULL != pack->head.data) ? array_size(&pack->header) : 0;
+    return (NULL != pack->head.data) ? hdr_arr_size(&pack->header) : 0;
 }
 http_header_ctx *http_header_at(http_pack_ctx *pack, uint32_t pos) {
-    return (NULL != pack->head.data) ? array_at(&pack->header, pos) : NULL;
+    return (NULL != pack->head.data) ? hdr_arr_at(&pack->header, (int32_t)pos) : NULL;
 }
 char *http_header(http_pack_ctx *pack, const char *header, size_t *lens) {
     if (NULL == pack->head.data) {
         return NULL;
     }
-    http_header_ctx *filed;
+    http_header_ctx *fields = hdr_arr_front(&pack->header);
     size_t klens = strlen(header);
-    uint32_t n = array_size(&pack->header);
+    uint32_t n = hdr_arr_size(&pack->header);
     for (uint32_t i = 0; i < n; i++) {
-        filed = array_at(&pack->header, i);
-        if (buf_icompare(&filed->key, header, klens)) {
-            *lens = filed->value.lens;
-            return filed->value.data;
+        if (buf_icompare(&fields[i].key, header, klens)) {
+            *lens = fields[i].value.lens;
+            return fields[i].value.data;
         }
     }
     return NULL;

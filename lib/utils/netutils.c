@@ -22,8 +22,8 @@ void sock_init(void) {
             ATOMIC_ADD(&_init_sock_ref, 1);
             return;
         }
-        // 值为 1:别人正在 init,或 sock_clean 已减到 1 还没置 0。原先在这里死等 >= 2,
-        // 后者永远等不到;改成回头重试 CAS,对方置 0 后即可接手
+        // 值为 1:别人正在 init,或 sock_clean 已减到 1 还没置 0。不能死等 >= 2
+        // (状态 1 可能正走向 0),回头重试 CAS,对方置 0 后即可接手
         CPU_PAUSE();
     }
 #endif

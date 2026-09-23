@@ -36,6 +36,7 @@ typedef struct {
     char *msg;// 指向 inline_buf 或独立 heap 分配
     char inline_buf[LOG_INLINE_SIZE]; // 短消息内嵌，避免 _format_va 第二次 malloc
 } log_item;
+FSQU_DECL(logq, log_item *)
 
 static FILE *_handle = NULL;
 static atomic_t _log_lv = LOGLV_DEBUG;
@@ -46,7 +47,7 @@ static atomic_t _drained = 0; /* 完成一轮排空自增,log_abort 据此判断
 static pthread_t _th;
 // 本线程是不是日志线程本身。断言若发生在它身上，log_abort 据此跳过排空
 static THREAD_LOCAL int32_t _in_logth = 0;
-static fsqu_ctx _que;
+static logq _que;
 static pool_ctx _itempool;
 static mutex_ctx _mtx;
 static cond_ctx _cond;
@@ -170,11 +171,11 @@ static void _log_item_clear(void *data) {
     }
     it->msg = it->inline_buf;
 }
-// 返回本轮写出的条数：0 而 fsqu_size 非 0 即撞上在途元素，调用方据此退避而不是空转
+// 返回本轮写出的条数：0 而队列非空即撞上在途元素，调用方据此退避而不是空转
 static uint32_t _log_write_all(log_item **items) {
     log_item *item;
     uint32_t n, i, total = 0;
-    while ((n = fsqu_pop_sc_batch(&_que, items, LOG_POP_BATCH)) > 0) {
+    while ((n = logq_pop_sc_batch(&_que, items, LOG_POP_BATCH)) > 0) {
         for (i = 0; i < n; i++) {
             item = items[i];
             _log_write_item(item);
@@ -206,7 +207,7 @@ static void _log_loop(void *arg) {
     while (ATOMIC_GET(&_running)) {
         nwrote = _log_write_all(items);
         if (0 == nwrote
-            && fsqu_size(&_que) > 0) {
+            && !logq_empty(&_que)) {
             spin_backoff(&spins);
             continue;
         }
@@ -219,13 +220,13 @@ static void _log_loop(void *arg) {
         }
         mutex_lock(&_mtx);
         // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩
-        if (0 == fsqu_size(&_que) && ATOMIC_GET(&_running)) {
+        if (logq_empty(&_que) && ATOMIC_GET(&_running)) {
             ATOMIC_SET(&_sleeping, 1);
             // 防丢失唤醒：置 _sleeping 后再查一次队列，仍空才等。中间那道 fence 不能省:
-            // fsqu_size 是 acquire 读, 在部分 ARM 上会跑到置位之前, 于是这边看不到刚入队的
+            // logq_empty 是 acquire 读, 在部分 ARM 上会跑到置位之前, 于是这边看不到刚入队的
             // 元素、生产者又还没看到 _sleeping, 两边同时看漏就是漏唤醒
             ATOMIC_THREAD_FENCE_SEQCST();
-            if (0 == fsqu_size(&_que)) {
+            if (logq_empty(&_que)) {
                 cond_timedwait(&_cond, &_mtx, SHRINK_TIME);
             }
             ATOMIC_SET(&_sleeping, 0);
@@ -250,7 +251,7 @@ static void _log_drain_wait(void) {
         mutex_unlock(&_mtx);
     }
     int32_t nstep = LOG_FLUSH_WAIT / LOG_FLUSH_STEP;
-    while ((fsqu_size(&_que) > 0 || gen == ATOMIC_GET(&_drained))
+    while ((!logq_empty(&_que) || gen == ATOMIC_GET(&_drained))
         && nstep-- > 0) {
         MSLEEP(LOG_FLUSH_STEP);
     }
@@ -264,17 +265,17 @@ void log_init(FILE *file, uint32_t capacity) {
     }
 #endif
     uint32_t cap = 0 == capacity ? 4 * ONEK : capacity;
-    fsqu_init(&_que, sizeof(log_item *), cap);
+    logq_init(&_que, cap);
     pool_cbs _logitem_cbs = { NULL, NULL, NULL, _log_item_clear };
-    pool_init(&_itempool, sizeof(log_item), cap, cap / 4, 1, &_logitem_cbs);
+    pool_init(&_itempool, sizeof(log_item), cap, cap / 4, POOL_THSAFE, &_logitem_cbs);
     mutex_init(&_mtx);
     cond_init(&_cond);
     ATOMIC_SET(&_running, 1); 
     _th = thread_creat(_log_loop, NULL);
 }
 /* 调用约定：log_free 必须在所有可能调用 slog 的线程停止后才能调用。
- * _running 置 0 与 fsqu_trypush 之间没有临界区，若有线程在检查 _running==1
- * 之后、fsqu_trypush 之前被抢占，等到 fsqu_free 执行后再恢复则会 UAF。
+ * _running 置 0 与 logq_trypush 之间没有临界区，若有线程在检查 _running==1
+ * 之后、logq_trypush 之前被抢占，等到 logq_free 执行后再恢复则会 UAF。
  * 正确关闭顺序：先 join 所有业务线程 → 再调用 log_free。*/
 void log_free(void) {
     mutex_lock(&_mtx);
@@ -285,7 +286,7 @@ void log_free(void) {
     log_item *items[LOG_POP_BATCH];
     _log_write_all(items);
     _log_write_exit();
-    fsqu_free(&_que);
+    logq_free(&_que);
     pool_free(&_itempool);
     mutex_free(&_mtx);
     cond_free(&_cond);
@@ -366,7 +367,7 @@ void slog(int32_t lv, const char *fmt, ...) {
         item->msg = heap_msg;
     }
     //队列满时不阻塞业务线程，直接丢弃并同步写出兜底
-    if (ERR_OK != fsqu_trypush(&_que, &item)) {
+    if (ERR_OK != logq_trypush(&_que, &item)) {
         syncmsg = item->msg;
         goto sync;
     }
