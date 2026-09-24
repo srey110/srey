@@ -52,6 +52,7 @@
     <ClInclude Include="crypt\base64.h" />
     <ClInclude Include="crypt\cipher.h" />
     <ClInclude Include="crypt\crc.h" />
+    <ClInclude Include="crypt\crypt_pub.h" />
     <ClInclude Include="crypt\des.h" />
     <ClInclude Include="crypt\digest.h" />
     <ClInclude Include="crypt\hmac.h" />

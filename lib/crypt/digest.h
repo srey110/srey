@@ -33,6 +33,8 @@ typedef struct dg_attr {
     _init_cb _init;         // 初始化回调
     _update_cb _update;     // 数据输入回调
     _final_cb _final;       // 结果输出回调
+    _final_cb _state;       // 按输出字节序写出当前状态，不填充、不擦除、不复位；只给定长快路径用，md2/xxhash 为 NULL
+    int32_t islittle;       // 状态字与填充长度字段是否小端（md4/md5 为 1）
 }dg_attr;
 typedef struct digest_ctx {
     const dg_attr *attr;    // 算法属性，指向 digest.c 里那张 static const 表的一行

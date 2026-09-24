@@ -250,6 +250,9 @@
     <ClInclude Include="crypt\crc.h">
       <Filter>crypt</Filter>
     </ClInclude>
+    <ClInclude Include="crypt\crypt_pub.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
     <ClInclude Include="crypt\urlraw.h">
       <Filter>crypt</Filter>
     </ClInclude>

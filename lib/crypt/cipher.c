@@ -99,10 +99,18 @@ static inline const void *_cipher_process_data(cipher_ctx *cipher, const void *d
     *size = lens;
     return data;
 }
-// 将 data 与 xorbuf 按字节异或，结果存入 cipher->xor_data
-static void _cipher_xor_data(cipher_ctx *cipher, const uint8_t *data, const uint8_t *xorbuf, size_t lens) {
-    for (size_t i = 0; i < lens; i++) {
-        cipher->xor_data[i] = data[i] ^ xorbuf[i];
+// 将 data 与 xorbuf 异或，结果存入 out（可与 data 重合）；按 4 字节一组做，不足一组的尾部逐字节
+static void _cipher_xor_data(uint8_t *out, const uint8_t *data, const uint8_t *xorbuf, size_t lens) {
+    uint32_t a, b;
+    size_t i = 0;
+    for (; i + sizeof(a) <= lens; i += sizeof(a)) {
+        memcpy(&a, data + i, sizeof(a));
+        memcpy(&b, xorbuf + i, sizeof(b));
+        a ^= b;
+        memcpy(out + i, &a, sizeof(a));
+    }
+    for (; i < lens; i++) {
+        out[i] = data[i] ^ xorbuf[i];
     }
 }
 // CTR 模式下将整个 IV 块作为大端计数器自增
@@ -118,45 +126,122 @@ static void _cipher_inc_iv(uint8_t *iv, int32_t block_lens) {
 static inline void *_cipher_ecb_model(cipher_ctx *cipher, const void *data) {
     return (void *)cipher->_cipher(&cipher->eng_ctx, data);
 }
+// 以下 CBC/CFB/OFB/CTR 的 blk 为分组长度
 // CBC 模式：加密时先与 IV 异或再加密，解密时先解密再与 IV 异或
-static inline void *_cipher_cbc_model(cipher_ctx *cipher, const void *data) {
+static inline void *_cipher_cbc_model(cipher_ctx *cipher, const void *data, size_t blk) {
     if (cipher->encrypt) {
-        _cipher_xor_data(cipher, data, cipher->cur_iv, cipher->block_lens);
+        _cipher_xor_data(cipher->xor_data, data, cipher->cur_iv, blk);
         void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->xor_data);
-        memcpy(cipher->cur_iv, en, cipher->block_lens);
+        memcpy(cipher->cur_iv, en, blk);
         return en;
     }
     void *de = (void *)cipher->_cipher(&cipher->eng_ctx, data);
-    _cipher_xor_data(cipher, de, cipher->cur_iv, cipher->block_lens);
-    memcpy(cipher->cur_iv, data, cipher->block_lens);
+    _cipher_xor_data(cipher->xor_data, de, cipher->cur_iv, blk);
+    memcpy(cipher->cur_iv, data, blk);
     return (void *)cipher->xor_data;
 }
 // CFB 模式：加密 IV 得到密钥流，与数据异或；移位寄存器更新为密文块
-static inline void *_cipher_cfb_model(cipher_ctx *cipher, const void *data, size_t lens) {
+static inline void *_cipher_cfb_model(cipher_ctx *cipher, const void *data, size_t lens, size_t blk) {
     void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
-    _cipher_xor_data(cipher, data, en, lens);
-    if (lens == cipher->block_lens) {
+    _cipher_xor_data(cipher->xor_data, data, en, lens);
+    if (lens == blk) {
         if (cipher->encrypt) {
-            memcpy(cipher->cur_iv, cipher->xor_data, cipher->block_lens);
+            memcpy(cipher->cur_iv, cipher->xor_data, blk);
         } else {
-            memcpy(cipher->cur_iv, data, cipher->block_lens);
+            memcpy(cipher->cur_iv, data, blk);
         }
     }
     return (void *)cipher->xor_data;
 }
 // OFB 模式：将数据与加密后的 IV 异或，加解密共用同一逻辑
-static inline void *_cipher_ofb_model(cipher_ctx *cipher, const void *data, size_t lens) {
+static inline void *_cipher_ofb_model(cipher_ctx *cipher, const void *data, size_t lens, size_t blk) {
     void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
-    _cipher_xor_data(cipher, data, en, lens);
-    memcpy(cipher->cur_iv, en, cipher->block_lens);
+    _cipher_xor_data(cipher->xor_data, data, en, lens);
+    memcpy(cipher->cur_iv, en, blk);
     return (void *)cipher->xor_data;
 }
 // CTR 模式：加密计数器后与数据异或，并自增计数器
-static inline void *_cipher_ctr_model(cipher_ctx *cipher, const void *data, size_t lens) {
+static inline void *_cipher_ctr_model(cipher_ctx *cipher, const void *data, size_t lens, size_t blk) {
     void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
-    _cipher_xor_data(cipher, data, en, lens);
-    _cipher_inc_iv(cipher->cur_iv, (int32_t)cipher->block_lens);
+    _cipher_xor_data(cipher->xor_data, data, en, lens);
+    _cipher_inc_iv(cipher->cur_iv, (int32_t)blk);
     return (void *)cipher->xor_data;
+}
+// 连续处理 lens 字节（16 的正整数倍）的整分组：整分组无需预处理必然成功，模式判断提到循环外；
+// 只走 AES，output 与 data 重合（原地加解密）也安全
+static inline void _cipher_full_blocks(cipher_ctx *cipher, const uint8_t *data, size_t lens, uint8_t *output) {
+    const size_t blk = AES_BLOCK_SIZE;
+    const uint8_t *prev, *en;
+    uint64_t iv[2], cur[2], pt[2];
+    size_t i;
+    switch (cipher->model) {
+    case ECB:
+        for (i = 0; i < lens; i += blk) {
+            memcpy(output + i, _cipher_ecb_model(cipher, data + i), blk);
+        }
+        break;
+    case CBC:
+        if (cipher->encrypt) {
+            //上一组密文直接取引擎输出，整段做完再写回 cur_iv
+            prev = cipher->cur_iv;
+            for (i = 0; i < lens; i += blk) {
+                _cipher_xor_data(cipher->xor_data, data + i, prev, blk);
+                prev = (const uint8_t *)cipher->_cipher(&cipher->eng_ctx, cipher->xor_data);
+                memcpy(output + i, prev, blk);
+            }
+            memcpy(cipher->cur_iv, prev, blk);
+        } else {
+            //本组密文先存进 cur 再写输出，原地解密时下一组的 IV 不会被覆盖
+            memcpy(iv, cipher->cur_iv, sizeof(iv));
+            for (i = 0; i < lens; i += blk) {
+                memcpy(cur, data + i, sizeof(cur));
+                memcpy(pt, cipher->_cipher(&cipher->eng_ctx, data + i), sizeof(pt));
+                pt[0] ^= iv[0];
+                pt[1] ^= iv[1];
+                memcpy(output + i, pt, sizeof(pt));
+                iv[0] = cur[0];
+                iv[1] = cur[1];
+            }
+            memcpy(cipher->cur_iv, iv, sizeof(iv));
+            secure_zero(pt, sizeof(pt));// 末块明文别留在栈上
+        }
+        break;
+    case CFB:
+        if (cipher->encrypt) {
+            //移位寄存器即上一组密文，直接取 output 里刚写的那组，整段做完再写回 cur_iv
+            prev = cipher->cur_iv;
+            for (i = 0; i < lens; i += blk) {
+                en = (const uint8_t *)cipher->_cipher(&cipher->eng_ctx, prev);
+                _cipher_xor_data(output + i, data + i, en, blk);
+                prev = output + i;
+            }
+            memcpy(cipher->cur_iv, prev, blk);
+        } else {
+            //本组密文先存进 cur_iv 再写输出，原地解密时移位寄存器不会被覆盖
+            for (i = 0; i < lens; i += blk) {
+                en = (const uint8_t *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
+                memcpy(cipher->cur_iv, data + i, blk);
+                _cipher_xor_data(output + i, data + i, en, blk);
+            }
+        }
+        break;
+    case OFB:
+        //密钥流直接在引擎输出缓冲上迭代（引擎先读完输入再写输出），整段做完再写回 cur_iv
+        prev = cipher->cur_iv;
+        for (i = 0; i < lens; i += blk) {
+            prev = (const uint8_t *)cipher->_cipher(&cipher->eng_ctx, prev);
+            _cipher_xor_data(output + i, data + i, prev, blk);
+        }
+        memcpy(cipher->cur_iv, prev, blk);
+        break;
+    case CTR:
+        for (i = 0; i < lens; i += blk) {
+            en = (const uint8_t *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
+            _cipher_xor_data(output + i, data + i, en, blk);
+            _cipher_inc_iv(cipher->cur_iv, (int32_t)blk);
+        }
+        break;
+    }
 }
 void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *size) {
     const void *input = _cipher_process_data(cipher, data, lens, &lens);
@@ -170,16 +255,16 @@ void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *si
         rtn = _cipher_ecb_model(cipher, input);
         break;
     case CBC:
-        rtn = _cipher_cbc_model(cipher, input);
+        rtn = _cipher_cbc_model(cipher, input, cipher->block_lens);
         break;
     case CFB:
-        rtn = _cipher_cfb_model(cipher, input, lens);
+        rtn = _cipher_cfb_model(cipher, input, lens, cipher->block_lens);
         break;
     case OFB:
-        rtn = _cipher_ofb_model(cipher, input, lens);
+        rtn = _cipher_ofb_model(cipher, input, lens, cipher->block_lens);
         break;
     case CTR:
-        rtn = _cipher_ctr_model(cipher, input, lens);
+        rtn = _cipher_ctr_model(cipher, input, lens, cipher->block_lens);
         break;
     default:
         break;
@@ -191,7 +276,12 @@ int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *
     size_t enlens, size = 0;
     *outlens = 0;
     cipher_reset(cipher);
-    for (size_t i = 0; i < lens; i += cipher->block_lens) {
+    //AES 的整分组成批处理；DES 的分组与末尾不足一组的部分照旧逐组经 cipher_block 校验与填充
+    if (AES_BLOCK_SIZE == cipher->block_lens && lens >= AES_BLOCK_SIZE) {
+        size = lens - lens % AES_BLOCK_SIZE;
+        _cipher_full_blocks(cipher, data, size, (uint8_t *)output);
+    }
+    for (size_t i = size; i < lens; i += cipher->block_lens) {
         enlens = (i + cipher->block_lens > lens ? lens - i : cipher->block_lens);
         buf = cipher_block(cipher, (const char *)data + i, enlens, &enlens);
         if (NULL == buf) {

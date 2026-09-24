@@ -21,25 +21,31 @@ static const uint8_t s[256] = {
     31, 26, 219, 153, 141, 51, 159, 17, 131, 20
 };
 // MD2 核心变换：更新 state 和 checksum
+// 工作状态放 32 位字：各值按构造不超过 255，每步不必再截断成字节；跨块只需留前 16 字节
 static void _md2_transform(md2_ctx *md2, const uint8_t *data) {
-    int32_t j, k, t;
+    uint32_t x[48], j, k, t;
     for (j = 0; j < 16; ++j) {
-        md2->state[j + 16] = data[j];
-        md2->state[j + 32] = (md2->state[j + 16] ^ md2->state[j]);
+        x[j] = md2->state[j];
+        x[j + 16] = data[j];
+        x[j + 32] = x[j] ^ data[j];
     }
     t = 0;
     for (j = 0; j < 18; ++j) {
         for (k = 0; k < 48; ++k) {
-            md2->state[k] ^= s[t];
-            t = md2->state[k];
+            x[k] ^= s[t];
+            t = x[k];
         }
         t = (t + j) & 0xFF;
+    }
+    for (j = 0; j < 16; ++j) {
+        md2->state[j] = (uint8_t)x[j];
     }
     t = md2->checksum[15];
     for (j = 0; j < 16; ++j) {
         md2->checksum[j] ^= s[data[j] ^ t];
         t = md2->checksum[j];
     }
+    secure_zero(x, sizeof(x));
 }
 void md2_init(md2_ctx *md2) {
     ZERO(md2->state, sizeof(md2->state));

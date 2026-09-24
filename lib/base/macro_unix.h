@@ -5,6 +5,12 @@
 
 #ifndef OS_WIN
 
+// 主机字节序：常量联合体读首字节，编译期即可折成常量。IS_LITTLE 是表达式不是预处理常量，不能写进 #if
+static const union {
+    int32_t dummy;
+    int8_t little;// 小端机器上为 1
+} _host_endian = { 1 };
+#define IS_LITTLE (0 != _host_endian.little) // 1 小端，0 大端
 #define DLL_EXNAME "so" // 动态库扩展名
 #define PATH_SEPARATOR '/' // 路径分隔符
 #define PATH_SEPARATORSTR "/" // 路径分隔符字符串

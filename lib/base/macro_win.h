@@ -5,6 +5,7 @@
 
 #ifdef OS_WIN
 
+#define IS_LITTLE 1 // 主机字节序：Windows 各目标都是小端
 #define DLL_EXNAME "dll" // 动态库扩展名
 #define PATH_SEPARATOR '\\' // 路径分隔符
 #define PATH_SEPARATORSTR "\\" // 路径分隔符字符串

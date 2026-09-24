@@ -2425,7 +2425,7 @@ static void test_format_va(CuTest *tc) {
 }
 
 /* =======================================================================
- * hash / randrange / randstr / is_little / timeoffset / fill_timespec / threadid
+ * hash / randrange / randstr / IS_LITTLE / timeoffset / fill_timespec / threadid
  * ======================================================================= */
 static void test_misc_helpers(CuTest *tc) {
     /* hash：相同输入相同输出，不同输入大概率不同 */
@@ -2457,8 +2457,8 @@ static void test_misc_helpers(CuTest *tc) {
     randstr(buf2, 32);
     CuAssertTrue(tc, 0 != memcmp(buf, buf2, 32));
 
-    /* is_little：当前平台（macOS/Linux x86/ARM）均小端 */
-    CuAssertIntEquals(tc, 1, is_little());
+    /* IS_LITTLE：当前平台（macOS/Linux x86/ARM）均小端 */
+    CuAssertIntEquals(tc, 1, IS_LITTLE);
 
     /* timeoffset：分钟数，绝对值不超 24*60 */
     int32_t off = timeoffset();
@@ -2506,6 +2506,20 @@ static void test_security_helpers(CuTest *tc) {
     secure_zero(NULL, 0);
     secure_zero(NULL, 16);
     secure_zero(buf, 0);
+    /* 起点偏移 0~8、长度 0~40：MSVC 分支先逐字节写到 8 字节对齐、中间按 8 字节写、余下逐字节，
+       三段都要走到；范围内全清零，范围外一个字节都不能碰 */
+    uint64_t al[12];
+    unsigned char *zb = (unsigned char *)al;
+    size_t off, zl, k;
+    for (off = 0; off <= 8; off++) {
+        for (zl = 0; zl <= 40; zl++) {
+            memset(al, 0xAB, sizeof(al));
+            secure_zero(zb + off, zl);
+            for (k = 0; k < sizeof(al); k++) {
+                CuAssertTrue(tc, (k >= off && k < off + zl) ? (0 == zb[k]) : (0xAB == zb[k]));
+            }
+        }
+    }
 
     /* csprng_rand：填充非全零（统计意义上 32 字节全零概率 2^-256，可忽略）*/
     char rnd[32];

@@ -112,7 +112,9 @@ DIGEST_TYPE = {
     MD5    = 0x03,
     SHA1   = 0x04,
     SHA256 = 0x05,
-    SHA512 = 0x06
+    SHA512 = 0x06,
+    XXH32  = 0x07,  -- 非密码学哈希，seed 固定为 0，输出大端 4 字节；hmac 不支持
+    XXH64  = 0x08   -- 同 XXH32，输出大端 8 字节
 }
 
 INVALID_SOCK = -1 -- 无效 socket fd

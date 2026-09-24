@@ -128,6 +128,28 @@ runner.run(function(t)
         local h2 = d2:final()
         t:eq(srey.hex(h1, true), srey.hex(h2, true), "SHA1 分段 update 一致")
     end
+    do
+        -- XXH32/XXH64：seed 固定 0，final 出大端 canonical 字节
+        local d = digest.new(DIGEST_TYPE.XXH32)
+        t:eq(4, d:size(), "XXH32 size")
+        d:update("")
+        t:eq("02cc5d05", srey.hex(d:final(), true), "XXH32 empty")
+        d:update("a")
+        d:update("bc")
+        t:eq("32d153ff", srey.hex(d:final(), true), "XXH32 abc 分段")
+        local d64 = digest.new(DIGEST_TYPE.XXH64)
+        t:eq(8, d64:size(), "XXH64 size")
+        d64:update("abc")
+        t:eq("44bc2cf5ad770999", srey.hex(d64:final(), true), "XXH64 abc")
+        d64:update("")
+        t:eq("ef46db3751d8e999", srey.hex(d64:final(), true), "XXH64 final 后复位")
+        -- hmac 不接受 xxhash，报可捕获的错而不是中止进程
+        t:eq(false, (pcall(hmac.new, DIGEST_TYPE.XXH32, "k")), "hmac 拒绝 XXH32")
+        t:eq(false, (pcall(hmac.new, DIGEST_TYPE.XXH64, "k")), "hmac 拒绝 XXH64")
+        -- digest.new 的上界放到 XXH64 后，两端越界仍须报可捕获的错（落到 C 侧 digest_init 的 ASSERTAB 会中止进程）
+        t:eq(false, (pcall(digest.new, DIGEST_TYPE.MD2 - 1)), "digest.new 拒绝下界之外")
+        t:eq(false, (pcall(digest.new, DIGEST_TYPE.XXH64 + 1)), "digest.new 拒绝上界之外")
+    end
 
     -- ── hmac ───────────────────────────────────────────────────────────
     do

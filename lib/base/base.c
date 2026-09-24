@@ -3,10 +3,6 @@
 
 #define _MC ((1 << CHAR_BIT) - 1) //字节掩码（0xff），用于逐字节提取整数
 
-static const union {
-    int32_t dummy;
-    int8_t little;  /* 若为小端机器则为 1 */
-} nativeendian = { 1 };
 static const char hex_char_upper[16] = {
     '0', '1', '2', '3',
     '4', '5', '6', '7',
@@ -21,7 +17,7 @@ static const char hex_char_lower[16] = {
 };
 
 // barrier 是承重的:去掉它下面那句 memset 会被 -O2 -flto 的 DSE 整段删除。
-// MSVC 没有这道 barrier,那边只能继续走 volatile 逐字节写
+// MSVC 没有这道 barrier,那边靠 volatile 写:先逐字节写到 8 字节对齐,中间按 8 字节写,余下逐字节
 void secure_zero(void *buf, size_t len) {
     if (EMPTYPTR(buf, len)) {
         return;
@@ -31,6 +27,16 @@ void secure_zero(void *buf, size_t len) {
     __asm__ __volatile__("" : : "r"(buf) : "memory");
 #else
     volatile unsigned char *p = (volatile unsigned char *)buf;
+    volatile uint64_t *w;
+    while (0 != ((uintptr_t)p & 7) && len > 0) {
+        *p++ = 0;
+        len--;
+    }
+    w = (volatile uint64_t *)p;
+    for (; len >= 8; len -= 8) {
+        *w++ = 0;
+    }
+    p = (volatile unsigned char *)w;
     while (len--) {
         *p++ = 0;
     }
@@ -253,7 +259,7 @@ int32_t fromhex(char c) {
 // 按指定字节序将 src 的 size 字节复制到 dest，自动处理大小端转换
 static inline void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
     ASSERTAB(size > 0, "pack_float/double size must be positive.");
-    if (islittle == is_little()) {
+    if (islittle == IS_LITTLE) {
         memcpy(dest, src, size);
     } else {
         dest += size - 1;
@@ -261,9 +267,6 @@ static inline void _copy_with_endian(char *dest, const char *src, size_t size, i
             *(dest--) = *(src++);
         }
     }
-}
-int32_t is_little(void) {
-    return nativeendian.little;
 }
 void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle) {
     ASSERTAB(size > 0, "pack_integer size must be positive.");
@@ -309,7 +312,7 @@ double unpack_double(const char *buf, int32_t islittle) {
 }
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
 uint64_t ntohll(uint64_t val) {
-    if (!is_little()) {
+    if (!IS_LITTLE) {
         return val;
     }
     uint64_t rtn;

@@ -24,7 +24,7 @@ void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int3
 /// aes加解密
 /// </summary>
 /// <param name="aes">aes_ctx</param>
-/// <param name="data">待加解密数据,长度:AES_BLOCK_SIZE</param>
+/// <param name="data">待加解密数据,长度:AES_BLOCK_SIZE；可以就是上次返回的输出缓冲（先读完输入再写输出）</param>
 /// <returns>加解密后的数据,长度:AES_BLOCK_SIZE</returns>
 char *aes_crypt(aes_ctx *aes, const void *data);
 

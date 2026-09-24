@@ -174,11 +174,11 @@ LUAMOD_API int luaopen_crc(lua_State *lua) {
 /// <summary>
 /// 创建摘要（Hash）上下文
 /// </summary>
-/// <param name="dtype" type="integer">算法类型（MD5 / SHA1 / SHA256 等）</param>
+/// <param name="dtype" type="integer">算法类型（MD5 / SHA1 / SHA256 / XXH32 / XXH64 等）</param>
 /// <returns type="_digest_ctx">摘要对象</returns>
 static int32_t _lcrypt_digest_new(lua_State *lua) {
     lua_Integer dtype = luaL_checkinteger(lua, 1);
-    luaL_argcheck(lua, dtype >= DG_MD2 && dtype <= DG_SHA512, 1, "invalid digest type");
+    luaL_argcheck(lua, dtype >= DG_MD2 && dtype <= DG_XXH64, 1, "invalid digest type");
     digest_ctx *digest = lua_newuserdata(lua, sizeof(digest_ctx));
     digest_init(digest, (digest_type)dtype);
     ASSOC_MTABLE(lua, MT_DIGEST);
@@ -266,12 +266,13 @@ LUAMOD_API int luaopen_digest(lua_State *lua) {
 /// <summary>
 /// 创建 HMAC 上下文
 /// </summary>
-/// <param name="dtype" type="integer">底层 Hash 算法类型（MD5 / SHA1 / SHA256 等）</param>
+/// <param name="dtype" type="integer">底层 Hash 算法类型（MD5 / SHA1 / SHA256 等）；XXH32 / XXH64 不支持</param>
 /// <param name="key" type="string">密钥</param>
 /// <returns type="_hmac_ctx">HMAC 对象</returns>
 static int32_t _lcrypt_hmac_new(lua_State *lua) {
     size_t lens;
     lua_Integer dtype = luaL_checkinteger(lua, 1);
+    // 上界停在 SHA512：xxhash 没有分组长度，放进来会打到 hmac_init 的 ASSERTAB 整进程中止
     luaL_argcheck(lua, dtype >= DG_MD2 && dtype <= DG_SHA512, 1, "invalid digest type");
     const char *key = luaL_checklstring(lua, 2, &lens);
     hmac_ctx *hmac = lua_newuserdata(lua, sizeof(hmac_ctx));

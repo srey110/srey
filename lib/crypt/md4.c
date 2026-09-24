@@ -1,4 +1,5 @@
 ﻿#include "crypt/md4.h"
+#include "crypt/crypt_pub.h"
 
 #define S11 3
 #define S12 7
@@ -13,86 +14,93 @@
 #define S33 11
 #define S34 15
 #define F(x, y, z) (((x) & (y)) | ((~x) & (z))) // 轮函数 F：选择函数
-#define G(x, y, z) (((x) & (y)) | ((x) & (z)) | ((y) & (z))) // 轮函数 G：多数函数
 #define H(x, y, z) ((x) ^ (y) ^ (z)) // 轮函数 H：奇偶函数
 #define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n)))) // 循环左移
+#if defined(__GNUC__) || defined(__clang__)
+#define MD4_OPAQUE(v) __asm__("" : "+r"(v))
+#else
+#define MD4_OPAQUE(v) (void)0
+#endif
+// 每步先加与本步新值无关的项，最后才加依赖 b 的那项
 // 第一轮操作
-#define FF(a, b, c, d, x, s) { (a) += F ((b), (c), (d)) + (x); \
+#define FF(a, b, c, d, x, s) { (a) += (x); MD4_OPAQUE(a); (a) += F ((b), (c), (d)); \
                                (a) = ROTATE_LEFT ((a), (s)); }
-// 第二轮操作
-#define GG(a, b, c, d, x, s) { (a) += G ((b), (c), (d)) + (x) + (uint32_t)0x5a827999; \
+// 第二轮操作：多数函数 = (c & d) | (b & (c ^ d))，两半不相交，按加法拆开结果不变
+#define GG(a, b, c, d, x, s) { (a) += (x) + (uint32_t)0x5a827999 + ((c) & (d)); MD4_OPAQUE(a); (a) += (b) & ((c) ^ (d)); \
                                (a) = ROTATE_LEFT ((a), (s)); }
 // 第三轮操作
-#define HH(a, b, c, d, x, s) { (a) += H ((b), (c), (d)) + (x) + (uint32_t)0x6ed9eba1; \
+#define HH(a, b, c, d, x, s) { (a) += (x) + (uint32_t)0x6ed9eba1; MD4_OPAQUE(a); (a) += H ((b), (c), (d)); \
                                (a) = ROTATE_LEFT ((a), (s)); }
 
-static const uint8_t pd[64] = {
-    0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-// MD4 核心变换：对 64 字节块执行三轮操作并更新状态
-static void _md4_transform(md4_ctx *md4, const uint8_t *data) {
-    uint32_t i, j, a = md4->state[0], b = md4->state[1], c = md4->state[2], d = md4->state[3], x[16];
-    for (i = 0, j = 0; j < 64; i++, j += 4) {
-        x[i] = ((uint32_t)data[j]) | (((uint32_t)data[j + 1]) << 8) | (((uint32_t)data[j + 2]) << 16) | (((uint32_t)data[j + 3]) << 24);
+// MD4 核心变换：依次压缩 nblk 个 64 字节块并更新状态
+static void _md4_transform(md4_ctx *md4, const uint8_t *data, size_t nblk) {
+    uint32_t i, a, b, c, d, x[16];
+    for (; nblk > 0; --nblk, data += 64) {
+        for (i = 0; i < 16; ++i) {
+            x[i] = _crypt_read32le(data + i * 4);
+        }
+        a = md4->state[0];
+        b = md4->state[1];
+        c = md4->state[2];
+        d = md4->state[3];
+        // 第一轮：使用 F 函数
+        FF(a, b, c, d, x[0], S11); /* 1 */
+        FF(d, a, b, c, x[1], S12); /* 2 */
+        FF(c, d, a, b, x[2], S13); /* 3 */
+        FF(b, c, d, a, x[3], S14); /* 4 */
+        FF(a, b, c, d, x[4], S11); /* 5 */
+        FF(d, a, b, c, x[5], S12); /* 6 */
+        FF(c, d, a, b, x[6], S13); /* 7 */
+        FF(b, c, d, a, x[7], S14); /* 8 */
+        FF(a, b, c, d, x[8], S11); /* 9 */
+        FF(d, a, b, c, x[9], S12); /* 10 */
+        FF(c, d, a, b, x[10], S13); /* 11 */
+        FF(b, c, d, a, x[11], S14); /* 12 */
+        FF(a, b, c, d, x[12], S11); /* 13 */
+        FF(d, a, b, c, x[13], S12); /* 14 */
+        FF(c, d, a, b, x[14], S13); /* 15 */
+        FF(b, c, d, a, x[15], S14); /* 16 */
+        // 第二轮：使用 G 函数
+        GG(a, b, c, d, x[0], S21); /* 17 */
+        GG(d, a, b, c, x[4], S22); /* 18 */
+        GG(c, d, a, b, x[8], S23); /* 19 */
+        GG(b, c, d, a, x[12], S24); /* 20 */
+        GG(a, b, c, d, x[1], S21); /* 21 */
+        GG(d, a, b, c, x[5], S22); /* 22 */
+        GG(c, d, a, b, x[9], S23); /* 23 */
+        GG(b, c, d, a, x[13], S24); /* 24 */
+        GG(a, b, c, d, x[2], S21); /* 25 */
+        GG(d, a, b, c, x[6], S22); /* 26 */
+        GG(c, d, a, b, x[10], S23); /* 27 */
+        GG(b, c, d, a, x[14], S24); /* 28 */
+        GG(a, b, c, d, x[3], S21); /* 29 */
+        GG(d, a, b, c, x[7], S22); /* 30 */
+        GG(c, d, a, b, x[11], S23); /* 31 */
+        GG(b, c, d, a, x[15], S24); /* 32 */
+        // 第三轮：使用 H 函数
+        HH(a, b, c, d, x[0], S31); /* 33 */
+        HH(d, a, b, c, x[8], S32); /* 34 */
+        HH(c, d, a, b, x[4], S33); /* 35 */
+        HH(b, c, d, a, x[12], S34); /* 36 */
+        HH(a, b, c, d, x[2], S31); /* 37 */
+        HH(d, a, b, c, x[10], S32); /* 38 */
+        HH(c, d, a, b, x[6], S33); /* 39 */
+        HH(b, c, d, a, x[14], S34); /* 40 */
+        HH(a, b, c, d, x[1], S31); /* 41 */
+        HH(d, a, b, c, x[9], S32); /* 42 */
+        HH(c, d, a, b, x[5], S33); /* 43 */
+        HH(b, c, d, a, x[13], S34); /* 44 */
+        HH(a, b, c, d, x[3], S31); /* 45 */
+        HH(d, a, b, c, x[11], S32); /* 46 */
+        HH(c, d, a, b, x[7], S33); /* 47 */
+        HH(b, c, d, a, x[15], S34); /* 48 */
+        // 先擦调度表再累加状态，理由同 sha1.c
+        secure_zero(x, sizeof(x));
+        md4->state[0] += a;
+        md4->state[1] += b;
+        md4->state[2] += c;
+        md4->state[3] += d;
     }
-    // 第一轮：使用 F 函数
-    FF(a, b, c, d, x[0], S11); /* 1 */
-    FF(d, a, b, c, x[1], S12); /* 2 */
-    FF(c, d, a, b, x[2], S13); /* 3 */
-    FF(b, c, d, a, x[3], S14); /* 4 */
-    FF(a, b, c, d, x[4], S11); /* 5 */
-    FF(d, a, b, c, x[5], S12); /* 6 */
-    FF(c, d, a, b, x[6], S13); /* 7 */
-    FF(b, c, d, a, x[7], S14); /* 8 */
-    FF(a, b, c, d, x[8], S11); /* 9 */
-    FF(d, a, b, c, x[9], S12); /* 10 */
-    FF(c, d, a, b, x[10], S13); /* 11 */
-    FF(b, c, d, a, x[11], S14); /* 12 */
-    FF(a, b, c, d, x[12], S11); /* 13 */
-    FF(d, a, b, c, x[13], S12); /* 14 */
-    FF(c, d, a, b, x[14], S13); /* 15 */
-    FF(b, c, d, a, x[15], S14); /* 16 */
-    // 第二轮：使用 G 函数
-    GG(a, b, c, d, x[0], S21); /* 17 */
-    GG(d, a, b, c, x[4], S22); /* 18 */
-    GG(c, d, a, b, x[8], S23); /* 19 */
-    GG(b, c, d, a, x[12], S24); /* 20 */
-    GG(a, b, c, d, x[1], S21); /* 21 */
-    GG(d, a, b, c, x[5], S22); /* 22 */
-    GG(c, d, a, b, x[9], S23); /* 23 */
-    GG(b, c, d, a, x[13], S24); /* 24 */
-    GG(a, b, c, d, x[2], S21); /* 25 */
-    GG(d, a, b, c, x[6], S22); /* 26 */
-    GG(c, d, a, b, x[10], S23); /* 27 */
-    GG(b, c, d, a, x[14], S24); /* 28 */
-    GG(a, b, c, d, x[3], S21); /* 29 */
-    GG(d, a, b, c, x[7], S22); /* 30 */
-    GG(c, d, a, b, x[11], S23); /* 31 */
-    GG(b, c, d, a, x[15], S24); /* 32 */
-    // 第三轮：使用 H 函数
-    HH(a, b, c, d, x[0], S31); /* 33 */
-    HH(d, a, b, c, x[8], S32); /* 34 */
-    HH(c, d, a, b, x[4], S33); /* 35 */
-    HH(b, c, d, a, x[12], S34); /* 36 */
-    HH(a, b, c, d, x[2], S31); /* 37 */
-    HH(d, a, b, c, x[10], S32); /* 38 */
-    HH(c, d, a, b, x[6], S33); /* 39 */
-    HH(b, c, d, a, x[14], S34); /* 40 */
-    HH(a, b, c, d, x[1], S31); /* 41 */
-    HH(d, a, b, c, x[9], S32); /* 42 */
-    HH(c, d, a, b, x[5], S33); /* 43 */
-    HH(b, c, d, a, x[13], S34); /* 44 */
-    HH(a, b, c, d, x[3], S31); /* 45 */
-    HH(d, a, b, c, x[11], S32); /* 46 */
-    HH(c, d, a, b, x[7], S33); /* 47 */
-    HH(b, c, d, a, x[15], S34); /* 48 */
-    md4->state[0] += a;
-    md4->state[1] += b;
-    md4->state[2] += c;
-    md4->state[3] += d;
-    secure_zero(x, sizeof(x));
 }
 void md4_init(md4_ctx *md4) {
     md4->count[0] = md4->count[1] = 0;
@@ -114,40 +122,36 @@ void md4_update(md4_ctx *md4, const void *data, size_t lens) {
     }
     md4->count[1] += (uint32_t)(bits >> 32);
     size_t left = 64 - index;
-    if (lens >= left) {
+    if (index > 0 && lens >= left) {
         memcpy(&md4->data[index], p, left);
-        _md4_transform(md4, md4->data);
+        _md4_transform(md4, md4->data, 1);
         p += left;
         lens -= left;
         index = 0;
-        while (lens >= 64) {
-            _md4_transform(md4, p);
-            p += 64;
-            lens -= 64;
-        }
+    }
+    if (lens >= 64) {
+        _md4_transform(md4, p, lens / 64);
+        p += lens & ~(size_t)63;
+        lens &= 63;
     }
     if (lens > 0) {
         memcpy(&md4->data[index], p, lens);
     }
 }
-// 将 uint32 数组按小端序编码为字节数组
-static void _md4_encode(const uint32_t *data, uint32_t lens, uint8_t *out) {
-    uint32_t i, j;
-    for (i = 0, j = 0; j < lens; i++, j += 4) {
-        out[j] = (uint8_t)(data[i] & 0xff);
-        out[j + 1] = (uint8_t)((data[i] >> 8) & 0xff);
-        out[j + 2] = (uint8_t)((data[i] >> 16) & 0xff);
-        out[j + 3] = (uint8_t)((data[i] >> 24) & 0xff);
-    }
-}
 void md4_final(md4_ctx *md4, char hash[MD4_BLOCK_SIZE]) {
-    uint8_t bits[8];
-    uint32_t index, padlens;
-    _md4_encode(md4->count, 8, bits);
-    index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
-    padlens = (index < 56) ? (56 - index) : (120 - index);
-    md4_update(md4, pd, padlens);
-    md4_update(md4, bits, 8);
-    _md4_encode(md4->state, 16, (uint8_t *)hash);
+    uint32_t i = (uint32_t)((md4->count[0] >> 3) & 0x3f);
+    md4->data[i++] = 0x80;
+    if (i > 56) {
+        memset(md4->data + i, 0, 64 - i);
+        _md4_transform(md4, md4->data, 1);
+        i = 0;
+    }
+    memset(md4->data + i, 0, 56 - i);
+    _crypt_write32le(md4->data + 56, md4->count[0]);
+    _crypt_write32le(md4->data + 60, md4->count[1]);
+    _md4_transform(md4, md4->data, 1);
+    for (i = 0; i < 4; ++i) {
+        _crypt_write32le((uint8_t *)hash + i * 4, md4->state[i]);
+    }
     secure_zero(md4, sizeof(md4_ctx));
 }

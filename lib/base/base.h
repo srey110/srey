@@ -221,11 +221,6 @@ char *tohex(const void *buf, size_t len, char *out, int32_t lower);
 /// <returns>0-15；ERR_FAILED 不是十六进制字符</returns>
 int32_t fromhex(char c);
 /// <summary>
-/// 大小端判断
-/// </summary>
-/// <returns>1 小端, 0 大端</returns>
-int32_t is_little(void);
-/// <summary>
 /// 数字转 char*
 /// </summary>
 /// <param name="buf">buffer</param>

@@ -5,6 +5,15 @@
 #if defined(OS_DARWIN) || defined(OS_BSD)
     #include <xlocale.h>
 #endif
+#if defined(OS_LINUX)
+    #include <sys/syscall.h>
+#endif
+// Linux 优先 getrandom(2)；头文件太老（内核头 < 3.17）没有这个调用号时整段退到 /dev/urandom
+#if defined(OS_LINUX) && defined(SYS_getrandom)
+    #define CSPRNG_GETRANDOM 1
+#else
+    #define CSPRNG_GETRANDOM 0
+#endif
 
 #ifdef OS_WIN
 #pragma comment(lib, "Dbghelp.lib" )
@@ -791,14 +800,17 @@ char *format_va(const char *fmt, ...) {
 }
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_BSD)
 // 反复取直到填满：一次调用未必给够，EINTR 之类可重试错误继续，其余即失败。
-// Linux 走 getrandom(2) 不用 fd，其余 Unix 从 /dev/urandom 的 fd 读
+// fd < 0 走 getrandom(2)，否则从该 fd 读
 static int32_t _rand_drain(void *buf, size_t len, int32_t fd) {
     size_t got = 0;
     ssize_t ret;
-    (void)fd;
     while (got < len) {
-#if defined(OS_LINUX)
-        ret = syscall(SYS_getrandom, (char *)buf + got, len - got, 0);
+#if CSPRNG_GETRANDOM
+        if (fd < 0) {
+            ret = syscall(SYS_getrandom, (char *)buf + got, len - got, 0);
+        } else {
+            ret = read(fd, (char *)buf + got, len - got);
+        }
 #else
         ret = read(fd, (char *)buf + got, len - got);
 #endif
@@ -815,27 +827,10 @@ static int32_t _rand_drain(void *buf, size_t len, int32_t fd) {
     }
     return ERR_OK;
 }
-#endif
-int32_t csprng_rand(void *buf, size_t len) {
-#if defined(OS_WIN)
-    /* Windows：BCryptGenRandom 使用系统首选 CSPRNG，不依赖进程安全句柄。*/
-    if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)len,
-                                        BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
-        return ERR_FAILED;
-    }
-    return ERR_OK;
-#elif defined(OS_DARWIN) || defined(OS_BSD)
-    /* Darwin / BSD（macOS、FreeBSD、NetBSD、OpenBSD、DragonFly）：
-     * arc4random_buf 由内核 CSPRNG 支撑，永不失败，无需检查返回值。*/
-    arc4random_buf(buf, len);
-    return ERR_OK;
-#elif defined(OS_LINUX)
-    /* Linux：getrandom(2) 系统调用（内核 3.17+），阻塞直至熵池就绪。*/
-    return _rand_drain(buf, len, -1);
-#else
-    /* 其余 Unix（Solaris、AIX、HP-UX 等）读 /dev/urandom, 缓存 fd 省掉每次 open+close。
-     * 存的是 fd+1: 0 表示未初始化, 否则真 fd = 值-1 —— daemon 关掉 stdin 后 fd 会是 0,
-     * 不加偏移就分不清"没初始化"和"fd 就是 0"。fd 长期持有, 进程退出交给 OS 清理。*/
+// 读 /dev/urandom，缓存 fd 省掉每次 open+close。
+// 存的是 fd+1: 0 表示未初始化, 否则真 fd = 值-1 —— daemon 关掉 stdin 后 fd 会是 0,
+// 不加偏移就分不清"没初始化"和"fd 就是 0"。fd 长期持有, 进程退出交给 OS 清理
+static int32_t _rand_urandom(void *buf, size_t len) {
     static atomic_t _urand_fd_plus1 = 0;
     int32_t fd;
     atomic_t cur = ATOMIC_GET(&_urand_fd_plus1);
@@ -855,5 +850,37 @@ int32_t csprng_rand(void *buf, size_t len) {
         fd = (int32_t)cur - 1;
     }
     return _rand_drain(buf, len, fd);
+}
+#endif
+int32_t csprng_rand(void *buf, size_t len) {
+#if defined(OS_WIN)
+    /* Windows：BCryptGenRandom 使用系统首选 CSPRNG，不依赖进程安全句柄。*/
+    if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)len,
+                                        BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+#elif defined(OS_DARWIN) || defined(OS_BSD)
+    /* Darwin / BSD（macOS、FreeBSD、NetBSD、OpenBSD、DragonFly）：
+     * arc4random_buf 由内核 CSPRNG 支撑，永不失败，无需检查返回值。*/
+    arc4random_buf(buf, len);
+    return ERR_OK;
+#else
+#if CSPRNG_GETRANDOM
+    /* Linux：getrandom(2)（内核 3.17+），阻塞直至熵池就绪。老内核首次调用就报 ENOSYS（此时一个字节都没填），
+     * 记下后改读 /dev/urandom */
+    static atomic_t _getrandom_nosys = 0;
+    if (0 == ATOMIC_GET(&_getrandom_nosys)) {
+        if (ERR_OK == _rand_drain(buf, len, -1)) {
+            return ERR_OK;
+        }
+        if (ENOSYS != ERRNO) {
+            return ERR_FAILED;
+        }
+        ATOMIC_SET(&_getrandom_nosys, 1);
+    }
+#endif
+    /* 其余 Unix（Solaris、AIX、HP-UX 等）与退回的 Linux 读 /dev/urandom */
+    return _rand_urandom(buf, len);
 #endif
 }

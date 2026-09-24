@@ -109,7 +109,7 @@ uint64_t xxh3_64(const void *data, size_t lens, uint64_t seed);
 /// <returns>哈希值</returns>
 xxh128_t xxh3_128(const void *data, size_t lens, uint64_t seed);
 /// <summary>
-/// XXH3 流式初始化，64 位与 128 位共用，整个 ctx 重新初始化
+/// XXH3 流式初始化，64 位与 128 位共用；流状态全部重置，buf 不清零（旧内容读不到，不必清）
 /// </summary>
 /// <param name="ctx">xxh3_ctx</param>
 /// <param name="seed">种子</param>

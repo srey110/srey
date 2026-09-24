@@ -2515,6 +2515,39 @@ static void test_array(CuTest *tc) {
     iarr_free(&a);
 }
 
+// 负下标的合法边界：-1 是末元素、-size 是首元素；add 的插入位允许等于 size（即追加），
+// 负下标插在该元素之前。越界会 abort，进程内测不了，这里只覆盖各入口的合法端点
+static void test_array_negpos(CuTest *tc) {
+    iarr a;
+    int i, v;
+    iarr_init(&a, 4);
+    for (i = 1; i <= 8; i++) {
+        iarr_push_back(&a, &i);
+    }
+    CuAssertTrue(tc, 8 == *iarr_at(&a, -1));
+    CuAssertTrue(tc, 7 == *iarr_at(&a, -2));
+    CuAssertTrue(tc, 1 == *iarr_at(&a, -8));
+    v = 99;
+    iarr_add(&a, &v, -1);// [1..7, 99, 8]
+    CuAssertTrue(tc, 9 == (int)iarr_size(&a));
+    CuAssertTrue(tc, 99 == *iarr_at(&a, -2));
+    CuAssertTrue(tc, 8 == *iarr_at(&a, -1));
+    v = 100;
+    iarr_add(&a, &v, (int32_t)iarr_size(&a));// 插入位等于 size：[1..7, 99, 8, 100]
+    CuAssertTrue(tc, 100 == *iarr_at(&a, -1));
+    iarr_swap(&a, 0, -1);// [100, 2..7, 99, 8, 1]
+    CuAssertTrue(tc, 100 == *iarr_at(&a, 0));
+    CuAssertTrue(tc, 1 == *iarr_at(&a, -1));
+    iarr_del(&a, -1);// [100, 2..7, 99, 8]
+    CuAssertTrue(tc, 8 == *iarr_at(&a, -1));
+    iarr_del(&a, -(int32_t)iarr_size(&a));// 删首元素：[2..7, 99, 8]
+    CuAssertTrue(tc, 2 == *iarr_at(&a, 0));
+    iarr_del_nomove(&a, -1);// 删的就是末元素，不搬动：[2..7, 99]
+    CuAssertTrue(tc, 99 == *iarr_at(&a, -1));
+    CuAssertTrue(tc, 7 == (int)iarr_size(&a));
+    iarr_free(&a);
+}
+
 // 以 void * 元素再过一遍，验证指针类型场景同样工作
 static void test_array_ptr(CuTest *tc) {
     parr a;
@@ -4390,6 +4423,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hashmap_get_set);
     SUITE_ADD_TEST(suite, test_hashmap_miss_after_delete);
     SUITE_ADD_TEST(suite, test_array);
+    SUITE_ADD_TEST(suite, test_array_negpos);
     SUITE_ADD_TEST(suite, test_array_ptr);
 }
 

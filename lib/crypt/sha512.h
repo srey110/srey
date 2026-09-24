@@ -9,10 +9,7 @@
 typedef struct sha512_ctx {
     uint64_t state[8];    // 摘要状态（a~h 八个 64 位字）
     uint64_t bitlen[2];   // 已处理的总位数（128 位，低位在前）
-    union {
-        uint8_t bytes[128];   // 按字节访问
-        uint64_t words[16];   // 按 64 位字访问（消除 strict aliasing）
-    } data;
+    uint8_t data[128];    // 当前未满一块的输入缓冲
 } sha512_ctx;
 
 /// <summary>初始化 SHA-512 上下文</summary>

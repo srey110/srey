@@ -55,14 +55,16 @@ static inline void name##_grow_if_full(name *arr) {                             
     }                                                                           \
 }                                                                               \
 /* 负下标归一(-1 即末元素)并校验范围。inclusive 非 0 时允许等于 size ——              \
-   那是 add 的插入位,其余入口一律要求 < size */                                 \
+   那是 add 的插入位,其余入口一律要求 < size。                                  \
+   归一后仍为负的 pos 转成无符号必 >= 2^31、不小于 lim,故一次无符号比较同时挡住 \
+   负数与越界;前提同 (int32_t)arr->size:size 不超过 INT32_MAX */                \
 static inline uint32_t name##_norm_pos(const name *arr, int32_t pos, int32_t inclusive) {\
     uint32_t lim;                                                               \
     if (pos < 0) {                                                              \
         pos += (int32_t)arr->size;                                              \
     }                                                                           \
     lim = (0 != inclusive) ? arr->size + 1 : arr->size;                         \
-    ASSERTAB(pos >= 0 && (uint32_t)pos < lim, "array pos out of range.");       \
+    ASSERTAB((uint32_t)pos < lim, "array pos out of range.");                   \
     return (uint32_t)pos;                                                       \
 }                                                                               \
 static inline uint32_t name##_size(const name *arr) { return arr->size; }       \

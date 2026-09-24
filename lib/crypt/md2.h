@@ -8,7 +8,7 @@
 
 typedef struct md2_ctx {
     uint8_t data[16];       // 当前未满一块的输入缓冲
-    uint8_t state[48];      // MD2 内部状态（分三段：前16字节为当前状态）
+    uint8_t state[16];      // MD2 当前状态（变换用的 48 字节工作区在栈上）
     uint8_t checksum[16];   // 校验和
     int32_t lens;           // 当前缓冲中的字节数
 } md2_ctx;

@@ -7,7 +7,7 @@
 typedef struct des_ctx {
     int32_t des3;                   // 1 为 3DES，0 为标准 DES
     uint8_t output[DES_BLOCK_SIZE]; // 加解密结果缓冲区
-    uint8_t schedule[3 * 16 * 6];  // 轮密钥调度表（3DES 包含三组）
+    uint32_t schedule[3 * 16 * 2];  // 轮密钥调度表，每轮两个字（3DES 包含三组）
 }des_ctx;
 /// <summary>
 /// des 初始化

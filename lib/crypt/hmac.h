@@ -48,5 +48,16 @@ size_t hmac_final(hmac_ctx *hmac, char *hash);
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
 void hmac_reset(hmac_ctx *hmac);
+/// <summary>
+/// PBKDF2（RFC 8018）的第一个输出块：U1 = HMAC(P, salt || INT(1))，Ui = HMAC(P, Ui-1)，结果是 U1 ^ ... ^ Uiter。
+/// 输出长度即摘要长度，需要更长输出的派生不适用
+/// </summary>
+/// <param name="hmac">已用口令 hmac_init 过、且未 update 过的上下文；返回后已复位（密钥仍在）</param>
+/// <param name="salt">盐</param>
+/// <param name="slens">盐长度</param>
+/// <param name="iter">迭代次数，小于 1 按 1 算</param>
+/// <param name="out">输出缓冲，容量须 >= hmac_size 的返回值</param>
+/// <returns>输出长度</returns>
+size_t hmac_pbkdf2(hmac_ctx *hmac, const void *salt, size_t slens, int32_t iter, char *out);
 
 #endif//HMAC_H_

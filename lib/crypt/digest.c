@@ -15,6 +15,21 @@
         nm##_update((nm##_ctx *)ctx, data, lens); \
     } \
     static void _dg_##nm##_final(void *ctx, char *hash) { pack_integer(hash, nm##_digest((nm##_ctx *)ctx), nbytes, 0); }
+// 状态字与填充长度字段的字节序（1 小端），DG_STATE_THUNK 与下面的表共用这一处
+#define DG_LE_md4 1
+#define DG_LE_md5 1
+#define DG_LE_sha1 0
+#define DG_LE_sha256 0
+#define DG_LE_sha512 0
+// 只导出 state 字段，所以只适用于"状态即输出"的 MD 结构引擎
+#define DG_STATE_THUNK(nm) \
+    static void _dg_##nm##_state(void *ctx, char *hash) { \
+        nm##_ctx *eng = (nm##_ctx *)ctx; \
+        size_t i; \
+        for (i = 0; i < ARRAY_SIZE(eng->state); i++) { \
+            pack_integer(hash + i * sizeof(eng->state[0]), eng->state[i], (int32_t)sizeof(eng->state[0]), DG_LE_##nm); \
+        } \
+    }
 
 DG_THUNK(md2)
 DG_THUNK(md4)
@@ -24,17 +39,22 @@ DG_THUNK(sha256)
 DG_THUNK(sha512)
 DG_XXH_THUNK(xxh32, XXH32_BLOCK_SIZE)
 DG_XXH_THUNK(xxh64, XXH64_BLOCK_SIZE)
+DG_STATE_THUNK(md4)
+DG_STATE_THUNK(md5)
+DG_STATE_THUNK(sha1)
+DG_STATE_THUNK(sha256)
+DG_STATE_THUNK(sha512)
 // 每种摘要算法的一行参数，下标即 digest_type 的值。新增算法只加一行，放哪都行——
 // 指定了下标，往枚举中间插值也不会整体错位；没填的下标整行为零，由 digest_init 挡下
 static const dg_attr _dg_tbl[] = {
-    [DG_MD2]    = { MD2_BLOCK_SIZE,    MD2_KEY_BLOCK,    sizeof(md2_ctx),    _dg_md2_init,    _dg_md2_update,    _dg_md2_final    },
-    [DG_MD4]    = { MD4_BLOCK_SIZE,    MD4_KEY_BLOCK,    sizeof(md4_ctx),    _dg_md4_init,    _dg_md4_update,    _dg_md4_final    },
-    [DG_MD5]    = { MD5_BLOCK_SIZE,    MD5_KEY_BLOCK,    sizeof(md5_ctx),    _dg_md5_init,    _dg_md5_update,    _dg_md5_final    },
-    [DG_SHA1]   = { SHA1_BLOCK_SIZE,   SHA1_KEY_BLOCK,   sizeof(sha1_ctx),   _dg_sha1_init,   _dg_sha1_update,   _dg_sha1_final   },
-    [DG_SHA256] = { SHA256_BLOCK_SIZE, SHA256_KEY_BLOCK, sizeof(sha256_ctx), _dg_sha256_init, _dg_sha256_update, _dg_sha256_final },
-    [DG_SHA512] = { SHA512_BLOCK_SIZE, SHA512_KEY_BLOCK, sizeof(sha512_ctx), _dg_sha512_init, _dg_sha512_update, _dg_sha512_final },
-    [DG_XXH32]  = { XXH32_BLOCK_SIZE,  0,                sizeof(xxh32_ctx),  _dg_xxh32_init,  _dg_xxh32_update,  _dg_xxh32_final  },
-    [DG_XXH64]  = { XXH64_BLOCK_SIZE,  0,                sizeof(xxh64_ctx),  _dg_xxh64_init,  _dg_xxh64_update,  _dg_xxh64_final  }
+    [DG_MD2]    = { MD2_BLOCK_SIZE,    MD2_KEY_BLOCK,    sizeof(md2_ctx),    _dg_md2_init,    _dg_md2_update,    _dg_md2_final,    NULL,             0 },
+    [DG_MD4]    = { MD4_BLOCK_SIZE,    MD4_KEY_BLOCK,    sizeof(md4_ctx),    _dg_md4_init,    _dg_md4_update,    _dg_md4_final,    _dg_md4_state,    DG_LE_md4 },
+    [DG_MD5]    = { MD5_BLOCK_SIZE,    MD5_KEY_BLOCK,    sizeof(md5_ctx),    _dg_md5_init,    _dg_md5_update,    _dg_md5_final,    _dg_md5_state,    DG_LE_md5 },
+    [DG_SHA1]   = { SHA1_BLOCK_SIZE,   SHA1_KEY_BLOCK,   sizeof(sha1_ctx),   _dg_sha1_init,   _dg_sha1_update,   _dg_sha1_final,   _dg_sha1_state,   DG_LE_sha1 },
+    [DG_SHA256] = { SHA256_BLOCK_SIZE, SHA256_KEY_BLOCK, sizeof(sha256_ctx), _dg_sha256_init, _dg_sha256_update, _dg_sha256_final, _dg_sha256_state, DG_LE_sha256 },
+    [DG_SHA512] = { SHA512_BLOCK_SIZE, SHA512_KEY_BLOCK, sizeof(sha512_ctx), _dg_sha512_init, _dg_sha512_update, _dg_sha512_final, _dg_sha512_state, DG_LE_sha512 },
+    [DG_XXH32]  = { XXH32_BLOCK_SIZE,  0,                sizeof(xxh32_ctx),  _dg_xxh32_init,  _dg_xxh32_update,  _dg_xxh32_final,  NULL,             0 },
+    [DG_XXH64]  = { XXH64_BLOCK_SIZE,  0,                sizeof(xxh64_ctx),  _dg_xxh64_init,  _dg_xxh64_update,  _dg_xxh64_final,  NULL,             0 }
 };
 
 void digest_init(digest_ctx *digest, digest_type dtype) {

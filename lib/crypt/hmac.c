@@ -46,14 +46,15 @@ size_t hmac_size(hmac_ctx *hmac) {
 void hmac_update(hmac_ctx *hmac, const void *data, size_t lens) {
     digest_update(&hmac->inside, data, lens);
 }
-// digest_final 只把两个 digest 复位到算法 IV，而 HMAC 要的是 ipad/opad 吸收之后的状态,
+// 不走 digest_final：它复位到算法 IV，而 HMAC 要的是 ipad/opad 吸收之后的状态，统一由 hmac_reset 恢复。
 // 少这一步则第二次 final 变成"无密钥"的摘要，对任何密钥都得到同一个常量
 size_t hmac_final(hmac_ctx *hmac, char *hash) {
-    size_t lens = digest_final(&hmac->inside, hash);
-    digest_update(&hmac->outside, hash, lens);
-    lens = digest_final(&hmac->outside, hash);
+    const dg_attr *attr = hmac->inside.attr;
+    attr->_final(&hmac->inside.eng_ctx, hash);
+    attr->_update(&hmac->outside.eng_ctx, hash, attr->block_lens);
+    attr->_final(&hmac->outside.eng_ctx, hash);
     hmac_reset(hmac);
-    return lens;
+    return attr->block_lens;
 }
 // 按当前引擎的实际 ctx 大小拷，不按联合体整份：PBKDF2 每轮要拷两次，多拷的部分随迭代次数放大
 void hmac_reset(hmac_ctx *hmac) {
@@ -62,4 +63,49 @@ void hmac_reset(hmac_ctx *hmac) {
              "engine ctx larger than hmac buffer.");
     memcpy(&hmac->inside.eng_ctx, &hmac->inside_init.eng_ctx, hmac->inside_init.attr->eng_lens);
     memcpy(&hmac->outside.eng_ctx, &hmac->outside_init.eng_ctx, hmac->outside_init.attr->eng_lens);
+}
+// 定长消息"整块 + hs 字节"的末块：前 hs 字节留给每轮的 U，其余填充只写一次。
+// 长度只写末 8 字节，sha512 的 16 字节长度字段高半恒为 0，由 memset 顺带清掉
+static void _hmac_pad_tail(const dg_attr *attr, char *blk) {
+    size_t hs = attr->block_lens, kb = attr->key_block;
+    blk[hs] = (char)0x80;
+    memset(blk + hs + 1, 0, kb - hs - 1 - sizeof(uint64_t));
+    pack_integer(blk + kb - sizeof(uint64_t), (uint64_t)(kb + hs) * 8, (int32_t)sizeof(uint64_t), attr->islittle);
+}
+// 从吸收完 ipad/opad 的状态出发压一块 blk，结果写回 blk 的前 hs 字节；绕开 _final 的填充与擦除
+static void _hmac_block(digest_ctx *work, const digest_ctx *init, char *blk) {
+    const dg_attr *attr = init->attr;
+    memcpy(&work->eng_ctx, &init->eng_ctx, attr->eng_lens);
+    attr->_update(&work->eng_ctx, blk, attr->key_block);
+    attr->_state(&work->eng_ctx, blk);
+}
+size_t hmac_pbkdf2(hmac_ctx *hmac, const void *salt, size_t slens, int32_t iter, char *out) {
+    static const char one[4] = { 0, 0, 0, 1 };
+    const dg_attr *attr = hmac->inside.attr;
+    size_t hs = attr->block_lens, j;
+    char u[HMAC_MAX_KEY_LENS];
+    int32_t i;
+    hmac_update(hmac, salt, slens);
+    hmac_update(hmac, one, sizeof(one));
+    hmac_final(hmac, u);
+    memcpy(out, u, hs);
+    if (NULL != attr->_state) {
+        _hmac_pad_tail(attr, u);
+    }
+    for (i = 1; i < iter; i++) {
+        if (NULL != attr->_state) {
+            _hmac_block(&hmac->inside, &hmac->inside_init, u);
+            _hmac_block(&hmac->outside, &hmac->outside_init, u);
+        } else {
+            hmac_update(hmac, u, hs);
+            hmac_final(hmac, u);
+        }
+        for (j = 0; j < hs; j++) {
+            out[j] ^= u[j];
+        }
+    }
+    // 快路径把中间状态留在了 inside/outside 里，复位同时覆盖掉它
+    hmac_reset(hmac);
+    secure_zero(u, sizeof(u));
+    return hs;
 }

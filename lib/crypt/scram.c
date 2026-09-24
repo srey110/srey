@@ -253,24 +253,9 @@ static inline int32_t _scram_ct_eq(const char *nulstr, const void *p, size_t len
 }
 // 计算 SaltedPassword = PBKDF2(password, salt, iter)（使用 HMAC 迭代实现）
 static void _scram_salt_password(scram_ctx *scram, const char *password) {
-    char hash[DG_BLOCK_SIZE];
     hmac_ctx hmac;
     hmac_init(&hmac, scram->dtype, password, strlen(password));
-    hmac_update(&hmac, scram->salt, scram->saltlen);
-    uint32_t one = (uint32_t)htonl(1);
-    hmac_update(&hmac, &one, sizeof(one));
-    hmac_final(&hmac, hash);
-    scram->hslens = (int32_t)hmac_size(&hmac);
-    memcpy(scram->saltedpwd, hash, scram->hslens);
-    int32_t j;
-    for (int32_t i = 1; i < scram->iter; i++) {
-        hmac_update(&hmac, hash, scram->hslens);
-        hmac_final(&hmac, hash);
-        for (j = 0; j < scram->hslens; j++) {
-            scram->saltedpwd[j] ^= hash[j];
-        }
-    }
-    secure_zero(hash, sizeof(hash));
+    scram->hslens = (int32_t)hmac_pbkdf2(&hmac, scram->salt, (size_t)scram->saltlen, scram->iter, scram->saltedpwd);
     hmac_free(&hmac);
 }
 // 计算 HMAC(SaltedPassword, key)，用于派生 ClientKey 或 ServerKey
