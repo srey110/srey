@@ -159,11 +159,12 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed);
 ///   返回 1 / 2 的含义同 evssl_read——发送方向也可能先读到对端的 close_notify 或断开</returns>
 int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 /// <summary>
-/// shutdown
+/// 有 SSL 先发 close_notify，再按 how 关 socket 的一个方向
 /// </summary>
-/// <param name="ssl">SSL</param>
+/// <param name="ssl">SSL，NULL 时只做 shutdown</param>
 /// <param name="fd">socket句柄</param>
-void evssl_shutdown(SSL *ssl, SOCKET fd);
+/// <param name="how">SHUT_RD / SHUT_WR</param>
+void evssl_shutdown(SSL *ssl, SOCKET fd, int32_t how);
 /// <summary>
 /// ssl版本，完成握手后调用
 /// </summary>

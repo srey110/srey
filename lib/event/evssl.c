@@ -383,12 +383,12 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
     } while (*sended < len);
     return ERR_OK;
 }
-void evssl_shutdown(SSL *ssl, SOCKET fd) {
+void evssl_shutdown(SSL *ssl, SOCKET fd, int32_t how) {
     if (NULL != ssl) {
         SSL_ERRQU_CLEAR();
         SSL_shutdown(ssl);
     }
-    shutdown(fd, SHUT_RD);
+    shutdown(fd, how);
 }
 int32_t evssl_version(SSL *ssl) {
     return SSL_version(ssl);

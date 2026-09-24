@@ -30,15 +30,14 @@ static void _loader_slot_reg(rwlock_distr_ctx *lck, const char *which) {
     }
 }
 // 线程 init / exit 钩子,thread_creat_hooks 在业务回调前后各调一次。
-// 新增线程级缓存(THREAD_LOCAL)时,清理一律挂进 exit 这一支:它是每条线程退出的必经点,
-// 漏挂就是每线程泄漏一份。base 供 net / acpex / tw 用,不跑 Lua 故不要 lckcache slot
+// 只管 loader 自己的线程级状态(slot、coro 缓存);与 loader 无关的线程级缓存(如 buffer 备用节点)
+// 挂 main 注册的 thread_global_hooks,对所有线程生效。base 供 net / acpex / tw 用,不跑 Lua 故不要 lckcache slot
 static void _loader_hook_init_base(void *udata, void *assist) {
     (void)udata;
     _loader_slot_reg(&((loader_ctx *)assist)->lckmaptasks, "maptasks");
 }
 static void _loader_hook_exit_base(void *udata, void *assist) {
     (void)udata;
-    buffer_thread_cleanup();
     rwlock_distr_unregister(&((loader_ctx *)assist)->lckmaptasks);
 }
 // worker 钩子:base 之外多一把 lckcache slot(只有 worker 加载脚本与 require 访问字节码缓存)

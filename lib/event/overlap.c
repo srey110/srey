@@ -50,6 +50,9 @@ typedef struct overlap_tcp_ctx {
     uint64_t wpend_ms;      // STATUS_WPEND_SSL 的零进展起点，仅该位置位期间有效
     list_node wpend_node;   // 挂 watcher->wpends；只在 STATUS_WPEND_SSL 置位期间在链上
 #endif
+    list_node linger_node;  // 挂 watcher->lingers；只在 STATUS_LINGERING 置位期间在链上
+    uint64_t linger_until;  // 延迟关闭的截止时刻，仅 STATUS_LINGERING 期间有效
+    size_t linger_bytes;    // 延迟关闭期间已读掉的字节数
     size_t wb_size;         // 当前 buf_s 中字节累计
     tda_ctx tda;            // 字节告警翻倍状态
     IOV_TYPE wsabuf;        // WSARecv缓冲区描述符
@@ -87,12 +90,12 @@ static void _olp_on_recv_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes)
 static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes); // 前向声明：TCP发送完成回调
 static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp); // 前向声明：与下面的重试 tick 互相调用
 
-void _iocp_sk_shutdown(evsock_ctx *evsk) {
+void _iocp_sk_shutdown(evsock_ctx *evsk, int32_t how) {
 #if WITH_SSL
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
-    evssl_shutdown(oltcp->ssl, oltcp->ol_r.sk.fd);
+    evssl_shutdown(oltcp->ssl, oltcp->ol_r.sk.fd, how);
 #else
-    shutdown(evsk->sk.fd, SHUT_RD);
+    shutdown(evsk->sk.fd, how);
 #endif
 }
 void *_evpub_sk_new(void *args) {
@@ -183,7 +186,12 @@ void _iocp_disconnect(evsock_ctx *evsk) {
         // ev_send 在本平台只是入队并投 0 字节探针,payload 此刻还在 buf_s,不冲就是整包丢
         _evpub_close_flush_tcp(tcp->ol_s.sk.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, TCP_SSL(tcp));
         BIT_SET(tcp->status, STATUS_ERROR);
-        _iocp_sk_shutdown(evsk);
+        if (_evpub_linger_want(tcp->status)) {
+            BIT_SET(tcp->status, STATUS_LINGER);
+            _iocp_sk_shutdown(evsk, SHUT_WR);
+        } else {
+            _iocp_sk_shutdown(evsk, SHUT_RD);
+        }
         CancelIoEx((HANDLE)evsk->sk.fd, NULL);
     } else {
         // UDP datagram 无连接,没有待发队列要冲
@@ -270,13 +278,18 @@ int32_t _iocp_post_recv(evsock_ctx *evsk, DWORD *bytes, DWORD *flag, IOV_TYPE *w
     return ERR_OK;
 }
 // 投递同步失败即连接已坏（RST 一类），按对端中止记：调用方只管关，不再各自分类。
-// 本地已在关（STATUS_ERROR）就不标：recv_cb 里就地关连接后重投必然失败，close_type 须留在 LOCAL
+// 本地已在关（STATUS_ERROR）就不标：那之后的投递失败是本端关闭造成的，close_type 须留在 LOCAL
 static inline void _olp_post_fail(overlap_tcp_ctx *oltcp) {
     if (!BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         _evpub_mark_close(&oltcp->status, ERR_FAILED);
     }
 }
+// 重投 ol_r 的零字节探针。本地已在关（含 recv_cb 里同步 ev_close）就不投、按失败返回，由调用方
+// 各自的失败路径收尾：关闭时的取消已经发过，这时新投的探针没人取消，关闭会一直等到对端先动
 static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        return ERR_FAILED;
+    }
     if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _olp_post_fail(oltcp);
         return ERR_FAILED;
@@ -428,8 +441,7 @@ static uint32_t _olp_wpend_tick(void *ud, uint64_t now_ms) {
         _evpub_mark_close(&oltcp->status, ERR_FAILED);
         _iocp_disconnect(&oltcp->ol_r);
     }
-    watcher->wpend_tick.cb = NULL;
-    _evpub_tick_remove(watcher, &watcher->wpend_tick);
+    _evpub_tick_detach(watcher, &watcher->wpend_tick);
     return EVENT_WAIT_TIMEOUT;
 }
 static void _olp_wpend_link(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, int32_t progress) {
@@ -443,26 +455,99 @@ static void _olp_wpend_link(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, int32_
     }
     oltcp->wpend_ms = timer_cur_ms(&watcher->timer);
     list_push_tail(&watcher->wpends, &oltcp->wpend_node);
-    if (NULL == watcher->wpend_tick.cb) {
-        watcher->wpend_tick.cb = _olp_wpend_tick;
-        watcher->wpend_tick.ud = watcher;
-        _evpub_tick_add(watcher, &watcher->wpend_tick);
-    }
+    _evpub_tick_attach(watcher, &watcher->wpend_tick, _olp_wpend_tick, watcher);
 }
 #endif
-// 关闭TCP连接：若正在发送则标记延迟关闭，否则立即执行关闭回调并回收到对象池
+// 延迟关闭(机制见 STATUS_LINGER)，职责与定义序同 usock.c 的 _usk_linger_end 那一块。
+// 本平台多一条：ol_r 上的探针在途时绝不回池，到期只摘链并取消，由完成回调收尾
+static void _olp_linger_end(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    if (BIT_CHECK(oltcp->status, STATUS_LINGERING)) {
+        BIT_REMOVE(oltcp->status, STATUS_LINGERING);
+        list_remove(&watcher->lingers, &oltcp->linger_node);
+    }
+    _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
+    pool_push(&watcher->pool, &oltcp->ol_r, 0);
+}
+static uint32_t _olp_linger_tick(void *ud, uint64_t now_ms) {
+    watcher_ctx *watcher = ud;
+    list_node *head;
+    overlap_tcp_ctx *oltcp;
+    for (;;) {
+        head = watcher->lingers.head;
+        if (NULL == head) {
+            break;
+        }
+        oltcp = UPCAST(head, overlap_tcp_ctx, linger_node);
+        if (now_ms < oltcp->linger_until) {
+            return (uint32_t)(oltcp->linger_until - now_ms);
+        }
+        BIT_REMOVE(oltcp->status, STATUS_LINGERING);
+        list_remove(&watcher->lingers, &oltcp->linger_node);
+        CancelIoEx((HANDLE)oltcp->ol_r.sk.fd, &oltcp->ol_r.overlapped);
+    }
+    _evpub_tick_detach(watcher, &watcher->linger_tick);
+    return EVENT_WAIT_TIMEOUT;
+}
+// ol_r 零字节探针的完成：读掉丢弃后重投。已到期(不在链上)、watcher 在停、完成状态非成功
+// (被取消或 RST)、对端 FIN、读错或丢满上限都收尾
+static void _olp_linger_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
+    overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
+    (void)bytes;
+    if (BIT_CHECK(oltcp->status, STATUS_LINGERING)
+        && 0 == ATOMIC_GET(&watcher->stop)
+        && ERROR_SUCCESS == oltcp->ol_r.overlapped.Internal
+        && 0 == _evpub_linger_drain(oltcp->ol_r.sk.fd, &oltcp->linger_bytes)
+        && ERR_OK == _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
+        return;
+    }
+    _olp_linger_end(watcher, oltcp);
+}
+// 进入延迟关闭：换回调、投零字节探针、挂链。watcher 在停时不进：停止时的取消已经发过，
+// 新投的探针没人取消，会把排空拖到超时。skid 置 0、收发缓冲当场清掉同 usock.c 的 _usk_linger_begin；
+// ud 也当场清掉，不跟着回池拖到延迟关闭结束(理由同 usock.c 的 _usk_close_tcp)
+static int32_t _olp_linger_begin(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    if (0 != ATOMIC_GET(&watcher->stop)) {
+        return ERR_FAILED;
+    }
+    oltcp->ol_r.ev_cb = _olp_linger_cb;
+    if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
+        return ERR_FAILED;
+    }
+    oltcp->ol_r.sk.skid = 0;
+    oltcp->ol_s.sk.skid = 0;
+    UD_FREE(oltcp->cbs.ud_free, &oltcp->ud);
+    _evpub_off_buf_clear(&oltcp->buf_s);
+    oltcp->wb_size = 0;
+    buffer_drain(&oltcp->buf_r, buffer_size(&oltcp->buf_r));
+    oltcp->linger_bytes = 0;
+    oltcp->linger_until = timer_cur_ms(&watcher->timer) + CLOSE_LINGER_MS;
+    BIT_SET(oltcp->status, STATUS_LINGERING);
+    list_push_tail(&watcher->lingers, &oltcp->linger_node);
+    _evpub_tick_attach(watcher, &watcher->linger_tick, _olp_linger_tick, watcher);
+    return ERR_OK;
+}
+// 最后一次完成回调里的收尾(ol_r/ol_s 都已没有在途 IO)：调关闭回调，
+// 要延迟关闭的转入 _olp_linger_begin，其余摘表回池
+static void _olp_close_final(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+#if WITH_SSL
+    // 对象回池前必须摘链,否则 watcher->wpends 留悬空节点(口径同 usock.c 的 _usk_close_tcp)
+    _olp_wpend_unlink(watcher, oltcp);
+#endif
+    _olp_call_close_cb(watcher->ev, oltcp);
+    if (BIT_CHECK(oltcp->status, STATUS_LINGER)
+        && ERR_OK == _olp_linger_begin(watcher, oltcp)) {
+        return;
+    }
+    _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
+    pool_push(&watcher->pool, &oltcp->ol_r, 0);
+}
+// 关闭TCP连接：WSASend 探针在途就等它完成再收尾，否则立即收尾
 static inline void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     BIT_SET(oltcp->status, STATUS_ERROR);
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
     } else {
-#if WITH_SSL
-        // 对象回池前必须摘链,否则 watcher->wpends 留悬空节点(口径同 usock.c 的 _usk_close_tcp)
-        _olp_wpend_unlink(watcher, oltcp);
-#endif
-        _olp_call_close_cb(watcher->ev, oltcp);
-        _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r, 0);
+        _olp_close_final(watcher, oltcp);
     }
 }
 // IOCP TCP接收完成回调：处理SSL握手或普通数据接收
@@ -708,18 +793,15 @@ static inline void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *ol
 #endif
     if (0 != norecv ||
         BIT_CHECK(oltcp->status, STATUS_REMOVE)) {
-#if WITH_SSL
-        _olp_wpend_unlink(watcher, oltcp);
-#endif
-        _olp_call_close_cb(watcher->ev, oltcp);
-        _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r, 0);
+        _olp_close_final(watcher, oltcp);
     } else {
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
         _iocp_disconnect(&oltcp->ol_r);
     }
 }
-// IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调
+// IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调。
+// 中途的回调(握手完成、KeyUpdate 冲刷里的 r_cb)可能同步 ev_close，发送前要再判一次本端已在关，
+// 否则会对已发过 close_notify 的连接 SSL_write，本端关闭被报成 ABORT(口径同 usock.c 的 _usk_tcp_send)
 static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_s);
     // 判定顺序同 _olp_on_recv_cb：先认本地关，再认传输错
@@ -756,6 +838,10 @@ static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes)
         }
     }
 #endif
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        _olp_send_close_tcp(watcher, oltcp);
+        return;
+    }
     if (ERR_OK != _olp_tcp_send(watcher, oltcp)) {
         _olp_send_close_tcp(watcher, oltcp);
         return;
@@ -1375,20 +1461,12 @@ static inline int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) 
     }
     return ERR_OK;
 }
-// 摘除重试节点;幂等,未挂时直接返回。释放 oludp 前必须调用,否则 watcher->ticks 里留悬空节点
-static inline void _olp_sendto_retry_stop(overlap_udp_ctx *oludp) {
-    if (NULL == oludp->send_tick.cb) {
-        return;
-    }
-    oludp->send_tick.cb = NULL;
-    _evpub_tick_remove(oludp->watcher, &oludp->send_tick);
-}
 // 重试 tick:再排一次队。drain 内部按结果自行摘除或续挂,这里只负责退避与致命错误善后
 static uint32_t _olp_on_sendto_retry(void *ud, uint64_t now_ms) {
     overlap_udp_ctx *oludp = ud;
     // 已进关闭流程:不再投递,摘掉自己等在途完成包把 oludp 释放掉
     if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
-        _olp_sendto_retry_stop(oludp);
+        _evpub_tick_detach(oludp->watcher, &oludp->send_tick);
         return EVENT_WAIT_TIMEOUT;
     }
     if (now_ms < oludp->retry_until) {
@@ -1424,9 +1502,7 @@ static inline void _olp_sendto_retry(watcher_ctx *watcher, overlap_udp_ctx *olud
     oludp->watcher = watcher;
     oludp->retry_ms = EVENT_TICK_MIN;
     oludp->retry_until = timer_cur_ms(&watcher->timer) + EVENT_TICK_MIN;
-    oludp->send_tick.cb = _olp_on_sendto_retry;
-    oludp->send_tick.ud = oludp;
-    _evpub_tick_add(watcher, &oludp->send_tick);
+    _evpub_tick_attach(watcher, &oludp->send_tick, _olp_on_sendto_retry, oludp);
 }
 // 同步发:成过就不必投 IRP,省掉一个完成包与一次回调派发。
 static inline int32_t _olp_sendto_sync(overlap_udp_ctx *oludp, sendto_ctx *buf) {
@@ -1476,16 +1552,16 @@ static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
         data = sendbuf->data;
         sbuf_que_pop(&oludp->buf_s);
         if (ERR_OK == rtn) {
-            _olp_sendto_retry_stop(oludp);
+            _evpub_tick_detach(watcher, &oludp->send_tick);
             return ERR_OK;
         }
         FREE(data);
         if (ERR_FAILED == rtn) {
-            _olp_sendto_retry_stop(oludp);
+            _evpub_tick_detach(watcher, &oludp->send_tick);
             return ERR_FAILED;
         }
     }
-    _olp_sendto_retry_stop(oludp);
+    _evpub_tick_detach(watcher, &oludp->send_tick);
     BIT_REMOVE(oludp->status, STATUS_SENDING);
     return ERR_OK;
 }
@@ -1599,7 +1675,7 @@ static evsock_ctx *_olp_new_udp(skpool_args *skargs) {
 }
 void _iocp_free_udp(evsock_ctx *evsk) {
     overlap_udp_ctx *oludp = UPCAST(evsk, overlap_udp_ctx, ol_r);
-    _olp_sendto_retry_stop(oludp);// 先摘重试节点,否则 watcher->ticks 里留一个指向已释放内存的节点
+    _evpub_tick_detach(oludp->watcher, &oludp->send_tick);// 先摘重试节点,否则 watcher->ticks 里留一个指向已释放内存的节点
     CLOSE_SOCK(oludp->ol_r.sk.fd);
     _evpub_sendto_clear(&oludp->buf_s);
     sbuf_que_free(&oludp->buf_s);

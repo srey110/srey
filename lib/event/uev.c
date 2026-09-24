@@ -600,6 +600,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         qtn_que_init(&watcher->qtn, ONEK);
         list_init(&watcher->ticks);
         list_init(&watcher->flushes);
+        list_init(&watcher->lingers);
+        watcher->linger_tick.cb = NULL;
 #if WITH_SSL
         list_init(&watcher->wpends);
         watcher->wpend_tick.cb = NULL;

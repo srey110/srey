@@ -15,14 +15,20 @@ typedef struct th_ctx {
     th_cb thcb; // 用户线程回调函数
     thread_hooks hooks;
 }th_ctx;
+// 进程级钩子:只在创建任何线程前写一次,读都发生在之后创建的线程上,线程创建本身保证可见,故不用原子
+static hook_cb _global_init = NULL;
+static hook_cb _global_exit = NULL;
 
-// 线程入口函数（内部使用）：调用用户回调后释放 th_ctx
+// 线程入口函数（内部使用）：全局钩子包在线程钩子外侧，调用用户回调后释放 th_ctx
 #if defined(OS_WIN)
 static uint32_t __stdcall _thread_cb(void *arg) {
 #else
 static void *_thread_cb(void *arg) {
 #endif
     th_ctx *th = (th_ctx *)arg;
+    if (NULL != _global_init) {
+        _global_init(NULL, NULL);
+    }
     if (NULL != th->hooks.init) {
         th->hooks.init(th->udata, th->hooks.assist);
     }
@@ -32,12 +38,19 @@ static void *_thread_cb(void *arg) {
     if (NULL != th->hooks.exit) {
         th->hooks.exit(th->udata, th->hooks.assist);
     }
+    if (NULL != _global_exit) {
+        _global_exit(NULL, NULL);
+    }
     FREE(th);
 #if defined(OS_WIN)
     return ERR_OK;
 #else
     return NULL;
 #endif
+}
+void thread_global_hooks(hook_cb _init, hook_cb _exit) {
+    _global_init = _init;
+    _global_exit = _exit;
 }
 pthread_t thread_creat_hooks(th_cb _cb, hook_cb _init, hook_cb _exit,
                              void *udata, void *assist) {

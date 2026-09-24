@@ -40,6 +40,8 @@ typedef struct watcher_ctx {
     timer_ctx timer;            // 计时器
     overlap_cmd_ctx cmd;        // 命令通道（fsqu 多生产者，单通道足够）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
+    list_ctx lingers;           // 延迟关闭中的连接(按进入时刻先后串,队头最旧)
+    ev_tick linger_tick;        // 驱动上面那条链的 tick(cb 非 NULL 表示已挂;链空即摘)
 #if WITH_SSL
     list_ctx wpends;            // 挂起 SSL 写的连接(按 wpend_ms 先后串,队头最旧)
     ev_tick wpend_tick;         // 驱动上面那条链的 tick(cb 非 NULL 表示已挂;链空即摘)
@@ -83,8 +85,8 @@ void _iocp_add_bufs_trypost(evsock_ctx *evsk, off_buf_ctx *buf);
 int32_t _iocp_try_sendto(evsock_ctx *evsk, const void *data, size_t len, netaddr_ctx *addr);
 // 将UDP数据加入发送队列，若当前未发送则立即提交WSASendTo
 void _iocp_add_bufs_trysendto(watcher_ctx *watcher, evsock_ctx *evsk, sendto_ctx *buf);
-// shutdown socket读端（触发对端关闭流程）
-void _iocp_sk_shutdown(evsock_ctx *evsk);
+// 关闭流程里的 shutdown：how 取 SHUT_RD 或 SHUT_WR，有 SSL 先发 close_notify
+void _iocp_sk_shutdown(evsock_ctx *evsk, int32_t how);
 // 标记连接为错误状态并取消所有IOCP挂起操作
 // TCP 先走 _evpub_close_flush_tcp 冲一次 send queue，再 CancelIoEx 掉在途探针；其余同 _uev_disconnect
 void _iocp_disconnect(evsock_ctx *evsk);

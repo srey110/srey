@@ -85,6 +85,15 @@ static void _on_sigcb(int32_t sig, void *arg) {
     (void)sig;
     hug_wakeup((hug_ctx *)arg);
 }
+// thread_global_hooks 的全局 exit:与具体模块无关的线程级缓存在这里收,与 srey/main.c 同步(含 OpenSSL 那条的理由)
+static void _thread_exit_hook(void *udata, void *assist) {
+    (void)udata;
+    (void)assist;
+    buffer_thread_cleanup();
+#if WITH_SSL && defined(OS_WIN)
+    OPENSSL_thread_stop();
+#endif
+}
 
 // 逐条列出套件里失败的用例; 成功的只进总计不占篇幅
 static void _cusuite_fails(CuSuite *suite) {
@@ -106,6 +115,7 @@ int main(int argc, char *argv[]) {
     }
     sighandle(_on_sigcb, &_hug);
     /* 基础初始化。与 srey/main.c 的 service_init 是同一套全局初始化，加减项要两处同步 */
+    thread_global_hooks(NULL, _thread_exit_hook);/* 须早于任何线程创建(log_init 起日志线程) */
 #if defined(OS_WIN)
     timeBeginPeriod(1);
 #endif

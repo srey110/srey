@@ -187,7 +187,9 @@ int32_t ev_udp_ttl(ev_ctx *ctx, sock_ctx *sk, uint8_t ttl);
 int32_t ev_udp_loop(ev_ctx *ctx, sock_ctx *sk, int32_t enable);
 /// <summary>
 /// 关闭链接。关闭前对 send queue 冲一次：能写进内核的送达，写不进去的未发数据连同连接一起丢弃
-/// 并落 WARN。没有"等发完再关"的模式——要保证大块数据送达，须自行确认对端已收齐再调用
+/// 并落 WARN。没有"等发完再关"的模式——要保证大块数据送达，须自行确认对端已收齐再调用。
+/// 已连通的 TCP 连接此后只关写方向，对端再发来的数据由事件层读掉丢弃，等对端关闭、CLOSE_LINGER_MS
+/// 到期或丢满 CLOSE_LINGER_BYTES 才真正关 fd，免得对端收到 RST 丢掉最后的响应；关闭回调不等这一段
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>

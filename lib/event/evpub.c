@@ -41,6 +41,21 @@ void _evpub_tick_add(watcher_ctx *watcher, ev_tick *tk) {
 void _evpub_tick_remove(watcher_ctx *watcher, ev_tick *tk) {
     list_remove(&watcher->ticks, &tk->node);
 }
+void _evpub_tick_attach(watcher_ctx *watcher, ev_tick *tk, ev_tick_cb cb, void *ud) {
+    if (NULL != tk->cb) {
+        return;
+    }
+    tk->cb = cb;
+    tk->ud = ud;
+    _evpub_tick_add(watcher, tk);
+}
+void _evpub_tick_detach(watcher_ctx *watcher, ev_tick *tk) {
+    if (NULL == tk->cb) {
+        return;
+    }
+    tk->cb = NULL;
+    _evpub_tick_remove(watcher, tk);
+}
 uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now_ms) {
     *now_ms = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
@@ -216,6 +231,30 @@ int32_t _evpub_close_type(int32_t status) {
         return CLOSE_TYPE_ABORT;
     }
     return CLOSE_TYPE_LOCAL;
+}
+int32_t _evpub_linger_want(int32_t status) {
+    return 0 != CLOSE_LINGER_MS
+        && BIT_CHECK(status, STATUS_ESTABLISHED)
+        && CLOSE_TYPE_LOCAL == _evpub_close_type(status);
+}
+int32_t _evpub_linger_drain(SOCKET fd, size_t *bytes) {
+    char buf[MAX_RECV_SIZE];
+    IOV_TYPE iov;
+    size_t nread;
+    iov.IOV_PTR_FIELD = buf;
+    iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)sizeof(buf);
+    for (;;) {
+        if (ERR_OK != _evpub_sock_read(fd, &iov, 1, NULL, &nread)) {
+            return 1;
+        }
+        if (0 == nread) {
+            return 0;
+        }
+        *bytes += nread;
+        if (*bytes > (size_t)CLOSE_LINGER_BYTES) {
+            return 1;
+        }
+    }
 }
 #if WITH_SSL
 int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t client) {

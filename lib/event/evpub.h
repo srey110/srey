@@ -21,6 +21,8 @@
 #define EVENT_TICK_MIN       10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
 #define ACCEPT_BACKOFF_MS    500// accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
 #define UDP_RECV_MAX_ERRS    3// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
+#define CLOSE_LINGER_MS      3000// 本端主动关闭后继续读掉对端数据的最长时间(毫秒，机制见 STATUS_LINGER)；0 表示不延迟关闭
+#define CLOSE_LINGER_BYTES   (1024 * 1024)// 延迟关闭期间最多读掉的字节数，超过就直接关 fd；它不是开关，取 0 即对端再发一个字节就关
 
 #if defined(OS_WIN)
 // Windows SOCKET 句柄恒为 4 的倍数(低 2 位保留),fd%n 在偶数 n 下残值聚集(n=4 全落 watcher 0)致 IOCP 多线程退化;
@@ -65,29 +67,34 @@ typedef enum sock_status {
     // 置清位都只在 _usk_flush_link / _usk_flush_unlink，位与在 watcher->flushes 上一一对应
     STATUS_FLUSHPEND = 0x10,
     STATUS_ESTABLISHED = 0x20,     // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
+    // 本端主动关闭已连通的连接时不关读：先关写发 FIN，之后读到的一律丢掉，等对端 FIN、到 CLOSE_LINGER_MS
+    // 或丢满 CLOSE_LINGER_BYTES 才关 fd。关读或带着没读的数据关 fd 都会让内核回 RST，Windows 收到 RST
+    // 会把已到但没读的响应一起丢掉。关闭回调、ud 清理都在进入延迟关闭前做完，对上层不可见
+    STATUS_LINGER = 0x40,          // 关闭时置位：关 fd 之前要延迟关闭
+    STATUS_LINGERING = 0x80,       // 延迟关闭中；与"在 watcher->lingers 上"一一对应
     // 下面三个记"连接是怎么断的"，只由收发失败路径置位（_evpub_mark_close）；
     // 都没置即本地主动关闭，故 ev_close / task 拆除等路径无需标记
-    STATUS_PEER_FIN = 0x40,        // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
-    STATUS_PEER_ABORT = 0x80,      // 收发失败：RST、读写错误、SSL 协议错
+    STATUS_PEER_FIN = 0x100,       // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
+    STATUS_PEER_ABORT = 0x200,     // 收发失败：RST、读写错误、SSL 协议错
     // 以下 SSL 专用；新增非 SSL 位加在 #if 上面，别插进来
 #if WITH_SSL
-    STATUS_PEER_TRUNCATED = 0x100, // TLS 没发 close_notify 就断了，收全与被截断分不出
-    STATUS_SSLEXCHANGE = 0x200, // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
-    STATUS_AUTHSSL = 0x400,     // SSL握手中
+    STATUS_PEER_TRUNCATED = 0x400, // TLS 没发 close_notify 就断了，收全与被截断分不出
+    STATUS_SSLEXCHANGE = 0x800, // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
+    STATUS_AUTHSSL = 0x1000,    // SSL握手中
 #ifdef EV_IOCP
-    STATUS_NORECV = 0x800,      // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
+    STATUS_NORECV = 0x2000,     // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
 #endif
     // 下面三个是数据期 TLS1.3 的读写互卡。前两个的后缀表示"在等哪一边就绪"，
     // 第三个表示"我这边还有没发完的应用写"。后两个互斥，由 _usk_tcp_send /
     // _olp_tcp_send 单点保证；KEYUPDATE_WRITE 可与 KEYUPDATE_READ 共存，它与
     // WPEND_SSL 不共存只是各发送入口那道 !KEYUPDATE_WRITE 守卫撑出来的，别删
-    STATUS_KEYUPDATE_WRITE = 0x1000,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
-    STATUS_KEYUPDATE_READ = 0x2000, // 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
+    STATUS_KEYUPDATE_WRITE = 0x4000,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
+    STATUS_KEYUPDATE_READ = 0x8000, // 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
                                     // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针。
                                     // 置位来自对端把 post-handshake 消息(现实中是 NewSessionTicket)
                                     // 拆到多条 TLS 记录、后一条未到；KeyUpdate 本身触发不了。
                                     // 前提由 test_event.c 的 test_ssl_write_wants_read 钉着，别当死码删
-    STATUS_WPEND_SSL = 0x4000       // 发的时候撞上 socket 满(WANT_WRITE)：OpenSSL 把那条应用记录挂着，
+    STATUS_WPEND_SSL = 0x10000      // 发的时候撞上 socket 满(WANT_WRITE)：OpenSSL 把那条应用记录挂着，
                                     // 此期间不得调 SSL_read——它处理对端 KeyUpdate 要回发的握手记录更短，
                                     // 走同一个 ssl3_write_bytes，会撞上"重试长度不得小于挂起量"那道守卫，
                                     // 整条连接被判死。置清位都只在 wpend_link/unlink：
@@ -203,6 +210,10 @@ ud_cxt *_evpub_get_ud(struct evsock_ctx *evsk);
 void _evpub_tick_add(struct watcher_ctx *watcher, ev_tick *tk);
 // 从 watcher->ticks 注销周期驱动节点(须在该 fd 所属 event 线程内调用)
 void _evpub_tick_remove(struct watcher_ctx *watcher, ev_tick *tk);
+// 按"cb 非 NULL 即已挂"的口径挂/摘周期驱动节点，须在该 watcher 的 event 线程内调用。
+// attach 已挂则不动，否则记下 cb/ud 并挂进 watcher->ticks；detach 未挂则不动，否则摘出并把 cb 置 NULL
+void _evpub_tick_attach(struct watcher_ctx *watcher, ev_tick *tk, ev_tick_cb cb, void *ud);
+void _evpub_tick_detach(struct watcher_ctx *watcher, ev_tick *tk);
 // 驱动 watcher->ticks 全部节点:逐个调用 tick 回调,返回下轮 wait 超时(ms,clamp 到 [EVENT_TICK_MIN, EVENT_WAIT_TIMEOUT]);
 // *now_ms 回填本轮时钟,无 tick 时置 0(供调用方 drain/shrink 复用,省一次 timer_cur_ms)
 uint32_t _evpub_tick_drive(struct watcher_ctx *watcher, struct timer_ctx *timer, uint64_t *now_ms);
@@ -272,6 +283,11 @@ int32_t _evpub_sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, siz
 void _evpub_mark_close(int32_t *status, int32_t rtn);
 // 由 STATUS_PEER_* 得出 close_type，三个位都没置即本地主动关闭
 int32_t _evpub_close_type(int32_t status);
+// 本端主动关闭时要不要延迟关闭(机制见 STATUS_LINGER)：已连通、对端还没表态结束、且功能没关
+int32_t _evpub_linger_want(int32_t status);
+// 延迟关闭期间把 fd 上已到的数据读掉丢弃，*bytes 按次累加。返回 0 表示读空了接着等；
+// 返回 1 表示该收尾了：对端 FIN、读错、或累计丢弃超过 CLOSE_LINGER_BYTES
+int32_t _evpub_linger_drain(SOCKET fd, size_t *bytes);
 // 向socket发送数据（支持SSL/普通）；返回 1 / 2 的含义与取正数的理由同 _evpub_sock_read，
 // 只是触发点在发送方向先读到对端记录时（仅 SSL 路径，明文路径只返 ERR_OK / ERR_FAILED）
 int32_t _evpub_sock_send(SOCKET fd, obuf_que *buf_s, size_t *nsend, void *arg);

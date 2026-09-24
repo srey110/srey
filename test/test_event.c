@@ -1,6 +1,19 @@
 ﻿#include "test_event.h"
 #include "lib.h"
 
+// 延迟关闭用例：服务端收到第一段就回这条响应并 ev_close
+#define LINGER_RESP "HTTP/1.1 411 Length Required\r\nContent-Length: 0\r\n\r\n"
+// 各用例各占一个端口：Windows 监听口带 SO_EXCLUSIVEADDRUSE，立即重绑同端口会失败
+#define LINGER_PORT 15090
+// 忙连接用例里服务端一次回的大包：要大到内核发送缓冲装不下，发送队列留有积压、写事件挂着
+#define LINGER_BIG (8 * 1024 * 1024)
+// _linger_server 的服务端行为
+typedef enum linger_mode {
+    LINGER_CLOSE_IN_RECV = 0,   // 收到就回响应并关
+    LINGER_CLOSE_IN_SENT,       // 只回响应，关放在 s_cb 里
+    LINGER_CLOSE_BUSY           // 先回大包制造积压，第 2 字节卡住事件线程，第 3 字节再关
+}linger_mode;
+
 #if WITH_SSL
 // mem BIO 之间搬一次数据，limit < 0 表示能搬多少搬多少。返回实际搬运字节数
 static size_t _biopump(BIO *from, BIO *to, long limit) {
@@ -300,9 +313,18 @@ static void test_evssl_read_close_notify(CuTest *tc) {
         return;
     }
     CuAssertIntEquals(tc, 1, rtn);
-    evssl_shutdown(srv, sk[1]);
+    evssl_shutdown(srv, sk[1], SHUT_RD);
     rtn = _ssl_read_until(cli, buf, sizeof(buf), &readed);
     // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉收尾，一次真失败还要多报一笔假泄漏（同 _ssl_pair）
+    _ssl_drop(sk, &cli, &srv, sc, cc);
+    CuAssertIntEquals(tc, 1, rtn);
+    CuAssertTrue(tc, 0 == readed);
+
+    /* 1b) 延迟关闭走的是先发 close_notify 再关写(SHUT_WR)：读侧照样报 1。顺序颠倒的话
+          close_notify 写不出去，读侧只看到 FIN，报 2（截断） */
+    CuAssertIntEquals(tc, 1, _ssl_pair(sk, &cli, &srv, &sc, &cc));
+    evssl_shutdown(srv, sk[1], SHUT_WR);
+    rtn = _ssl_read_until(cli, buf, sizeof(buf), &readed);
     _ssl_drop(sk, &cli, &srv, sc, cc);
     CuAssertIntEquals(tc, 1, rtn);
     CuAssertTrue(tc, 0 == readed);
@@ -429,10 +451,369 @@ static void test_ssl_write_wants_read(CuTest *tc) {
     SSL_CTX_free(sctx);
 }
 #endif
+#if 0 != CLOSE_LINGER_MS
+// 服务端关闭回调次数：用来确认"本端关闭"确实走完了，没有卡在等对端动
+static atomic_t _g_linger_closed;
+// 服务端最后一次关闭回调带的 close_type：本端主动关必须是 LOCAL，不能被报成 ABORT
+static atomic_t _g_linger_erro;
+// 忙连接模式下服务端累计收到的字节数，按它区分第几条消息
+static atomic_t _g_linger_nrecv;
+// 服务端：收到第一段就回一条响应并关连接（对端的请求体还在路上）
+static void _linger_on_recv(ev_ctx *ev, sock_ctx *sk,
+                            int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)client;
+    (void)size;
+    (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+    ev_send(ev, sk, (void *)LINGER_RESP, strlen(LINGER_RESP), 1);
+    ev_close(ev, sk);
+}
+// 同上但只回响应，关连接放到发送完成回调里做
+static void _linger_on_recv_sendonly(ev_ctx *ev, sock_ctx *sk,
+                                     int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)client;
+    (void)size;
+    (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+    ev_send(ev, sk, (void *)LINGER_RESP, strlen(LINGER_RESP), 1);
+}
+// 忙连接：第 1 字节回一个大包(发送队列积压、写事件挂上)；第 2 字节把事件线程卡住 200ms，
+// 让客户端趁这段时间读走一截(变可写)再发第 3 字节(可读)，于是下一轮 epoll 读写同时就绪；
+// 第 3 字节到了就关。epoll 下这正是"同一次回调里读到后同步 ev_close、接着又走写分支"
+static void _linger_on_recv_busy(ev_ctx *ev, sock_ctx *sk,
+                                 int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    char *big;
+    size_t n = buffer_size(buf);
+    atomic_t old;
+    (void)client;
+    (void)size;
+    (void)ud;
+    buffer_drain(buf, n);
+    old = ATOMIC_ADD(&_g_linger_nrecv, (atomic_t)n);
+    if (0 == old) {
+        MALLOC(big, LINGER_BIG);
+        memset(big, 'b', LINGER_BIG);
+        ev_send(ev, sk, big, LINGER_BIG, 0);
+        return;
+    }
+    if (1 == old) {
+        MSLEEP(200);
+        return;
+    }
+    ev_close(ev, sk);
+}
+static void _linger_on_sent(ev_ctx *ev, sock_ctx *sk, int32_t client, size_t size, ud_cxt *ud) {
+    (void)client;
+    (void)size;
+    (void)ud;
+    ev_close(ev, sk);
+}
+static void _linger_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev;
+    (void)sk;
+    (void)client;
+    (void)ud;
+    ATOMIC_SET(&_g_linger_erro, (atomic_t)erro);
+    ATOMIC_ADD(&_g_linger_closed, 1);
+}
+static int32_t _linger_server(ev_ctx *ev, uint16_t port, linger_mode mode) {
+    cbs_ctx cbs;
+    uint64_t id;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.c_cb = _linger_on_close;
+    switch (mode) {
+    case LINGER_CLOSE_IN_SENT:
+        cbs.r_cb = _linger_on_recv_sendonly;
+        cbs.s_cb = _linger_on_sent;
+        break;
+    case LINGER_CLOSE_BUSY:
+        cbs.r_cb = _linger_on_recv_busy;
+        break;
+    default:
+        cbs.r_cb = _linger_on_recv;
+        break;
+    }
+    ATOMIC_SET(&_g_linger_closed, 0);
+    ATOMIC_SET(&_g_linger_erro, -1);
+    ATOMIC_SET(&_g_linger_nrecv, 0);
+    ev_init(ev, 1, NULL);
+    if (ERR_OK != ev_listen(ev, NULL, "127.0.0.1", port, &cbs, NULL, &id)) {
+        ev_free(ev);
+        return ERR_FAILED;
+    }
+    MSLEEP(50);// listen 落地是异步的
+    return ERR_OK;
+}
+// 阻塞 connect 后切非阻塞，便于有界轮询读
+static SOCKET _linger_client(uint16_t port) {
+    netaddr_ctx addr;
+    SOCKET fd;
+    if (ERR_OK != netaddr_set(&addr, "127.0.0.1", port)) {
+        return INVALID_SOCK;
+    }
+    fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    if (INVALID_SOCK == fd) {
+        return fd;
+    }
+    if (0 != connect(fd, netaddr_addr(&addr), netaddr_size(&addr))
+        || ERR_OK != sock_nonblock(fd)) {
+        CLOSE_SOCK(fd);
+        return INVALID_SOCK;
+    }
+    return fd;
+}
+// 读到 FIN 返回 1、出错(如收到 RST)返回 -1、ms 毫秒内没结果返回 0；读到的字节累加进 *got
+static int32_t _linger_read_end(SOCKET fd, char *out, size_t cap, size_t *got, int32_t ms) {
+    int32_t n;
+    int32_t i = 0;
+    while (i < ms) {
+        if (*got >= cap) {
+            return -1;
+        }
+        n = (int32_t)recv(fd, out + *got, (int32_t)(cap - *got), 0);
+        if (n > 0) {
+            *got += (size_t)n;
+            continue;
+        }
+        if (0 == n) {
+            return 1;
+        }
+        if (!IS_EAGAIN(ERRNO)) {
+            return -1;
+        }
+        MSLEEP(1);
+        i++;
+    }
+    return 0;
+}
+// 对端是否已回 RST：发一段，等它到对端，再发一次。收到 RST 之后的那次 send 必失败；
+// 读侧看不出来——读到 FIN 之后 Linux 上 recv 一直返回 0
+static int32_t _linger_peer_reset(SOCKET fd) {
+    (void)send(fd, "x", 1, 0);
+    MSLEEP(100);
+    return (int32_t)send(fd, "y", 1, 0) < 0 && !IS_EAGAIN(ERRNO) ? 1 : 0;
+}
+// 服务端关闭回调在 ms 毫秒内来了没有
+static int32_t _linger_wait_closed(int32_t ms) {
+    int32_t i;
+    for (i = 0; i < ms && 0 == ATOMIC_GET(&_g_linger_closed); i++) {
+        MSLEEP(1);
+    }
+    return (int32_t)ATOMIC_GET(&_g_linger_closed);
+}
+// 连上、发第一段、等服务端回完响应并关闭、读到 FIN，此后客户端不关也不发
+static SOCKET _linger_half_closed(uint16_t port, int32_t *fin) {
+    char out[256];
+    size_t got = 0;
+    SOCKET fd = _linger_client(port);
+    *fin = 0;
+    if (INVALID_SOCK == fd) {
+        return fd;
+    }
+    (void)send(fd, "HDR+CHUNK", 9, 0);
+    MSLEEP(100);
+    *fin = _linger_read_end(fd, out, sizeof(out), &got, 1000);
+    return fd;
+}
+// 服务端回完响应就关、客户端的后半段在关闭之后才到：客户端仍须读全响应并读到 FIN，
+// 之后再发的数据被服务端静默读掉而不是回 RST。
+// 关读或带着没读的数据关 fd 都会让内核回 RST，Windows 收到 RST 连已到的响应一起丢
+static void test_ev_linger_late_data(CuTest *tc) {
+    ev_ctx ev;
+    char out[256];
+    size_t got = 0;
+    int32_t sent1, sent2, early, rtn = 0;
+    CuAssertIntEquals(tc, ERR_OK, _linger_server(&ev, LINGER_PORT, LINGER_CLOSE_IN_RECV));
+    SOCKET fd = _linger_client(LINGER_PORT);
+    if (INVALID_SOCK == fd) {
+        ev_free(&ev);
+        CuFail(tc, "connect failed");
+    }
+    sent1 = (int32_t)send(fd, "HDR+CHUNK", 9, 0);
+    MSLEEP(100);// 服务端已回响应并关闭
+    sent2 = (int32_t)send(fd, "TERM", 4, 0);
+    MSLEEP(100);
+    rtn = _linger_read_end(fd, out, sizeof(out), &got, 1000);
+    early = _linger_peer_reset(fd);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 9, sent1);
+    CuAssertIntEquals(tc, 4, sent2);
+    CuAssertTrue(tc, strlen(LINGER_RESP) == got);
+    CuAssertTrue(tc, 0 == memcmp(out, LINGER_RESP, got));
+    CuAssertIntEquals(tc, 1, rtn);
+    CuAssertIntEquals(tc, 0, early);
+}
+// 对端读到 FIN 后完全静默：关闭回调照常马上来(计时从本端关闭起算，不等对端动)，
+// 到期后服务端 fd 已关，对端再发就会收到 RST
+static void test_ev_linger_timeout(CuTest *tc) {
+    ev_ctx ev;
+    int32_t fin, closed, late, erro;
+    CuAssertIntEquals(tc, ERR_OK, _linger_server(&ev, LINGER_PORT + 1, LINGER_CLOSE_IN_RECV));
+    SOCKET fd = _linger_half_closed(LINGER_PORT + 1, &fin);
+    if (INVALID_SOCK == fd) {
+        ev_free(&ev);
+        CuFail(tc, "connect failed");
+    }
+    closed = _linger_wait_closed(500);
+    erro = (int32_t)ATOMIC_GET(&_g_linger_erro);
+    MSLEEP(CLOSE_LINGER_MS + 300);
+    late = _linger_peer_reset(fd);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, fin);
+    CuAssertIntEquals(tc, 1, closed);
+    CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, erro);
+    CuAssertIntEquals(tc, 1, late);
+}
+// 关连接放在 s_cb 里：发送路径里同步 ev_close 之后，关闭照样要马上走完
+static void test_ev_linger_close_in_sent(CuTest *tc) {
+    ev_ctx ev;
+    int32_t fin, closed, early, erro;
+    CuAssertIntEquals(tc, ERR_OK, _linger_server(&ev, LINGER_PORT + 4, LINGER_CLOSE_IN_SENT));
+    SOCKET fd = _linger_half_closed(LINGER_PORT + 4, &fin);
+    if (INVALID_SOCK == fd) {
+        ev_free(&ev);
+        CuFail(tc, "connect failed");
+    }
+    closed = _linger_wait_closed(500);
+    erro = (int32_t)ATOMIC_GET(&_g_linger_erro);
+    early = _linger_peer_reset(fd);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, fin);
+    CuAssertIntEquals(tc, 1, closed);
+    CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, erro);
+    CuAssertIntEquals(tc, 0, early);
+}
+// 对端读到 FIN 后猛灌数据：丢满 CLOSE_LINGER_BYTES 就提前关，不等到期
+static void test_ev_linger_bytes(CuTest *tc) {
+    ev_ctx ev;
+    char blk[65536];
+    int32_t fin, n, reset = 0;
+    size_t total = 0;
+    uint64_t t0, cost;
+    CuAssertIntEquals(tc, ERR_OK, _linger_server(&ev, LINGER_PORT + 2, LINGER_CLOSE_IN_RECV));
+    SOCKET fd = _linger_half_closed(LINGER_PORT + 2, &fin);
+    if (INVALID_SOCK == fd) {
+        ev_free(&ev);
+        CuFail(tc, "connect failed");
+    }
+    ZERO(blk, sizeof(blk));
+    t0 = nowms();
+    // 灌到出错为止，最多灌上限的 4 倍、最长 CLOSE_LINGER_MS
+    while (total < 4 * (size_t)CLOSE_LINGER_BYTES && nowms() - t0 < CLOSE_LINGER_MS) {
+        n = (int32_t)send(fd, blk, (int32_t)sizeof(blk), 0);
+        if (n > 0) {
+            total += (size_t)n;
+            continue;
+        }
+        if (n < 0 && !IS_EAGAIN(ERRNO)) {
+            reset = 1;
+            break;
+        }
+        MSLEEP(1);
+    }
+    if (0 == reset) {
+        reset = _linger_peer_reset(fd);
+    }
+    cost = nowms() - t0;
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, fin);
+    CuAssertIntEquals(tc, 1, reset);
+    CuAssertTrue(tc, total > (size_t)CLOSE_LINGER_BYTES);
+    CuAssertTrue(tc, cost < CLOSE_LINGER_MS);
+}
+// 有连接正在延迟关闭时 ev_free：立即拆完，不等它到期(泄漏由结尾的内存检查兜)
+static void test_ev_linger_free(CuTest *tc) {
+    ev_ctx ev;
+    int32_t fin, closed, erro;
+    uint64_t t0, cost;
+    CuAssertIntEquals(tc, ERR_OK, _linger_server(&ev, LINGER_PORT + 3, LINGER_CLOSE_IN_RECV));
+    SOCKET fd = _linger_half_closed(LINGER_PORT + 3, &fin);
+    int32_t connected = INVALID_SOCK != fd;
+    closed = _linger_wait_closed(500);// 确认已进入延迟关闭再拆
+    erro = (int32_t)ATOMIC_GET(&_g_linger_erro);
+    t0 = nowms();
+    ev_free(&ev);
+    cost = nowms() - t0;
+    if (connected) {
+        CLOSE_SOCK(fd);// 会把 fd 置成 INVALID_SOCK，所以上面先记下 connected
+    }
+    CuAssertTrue(tc, connected);
+    CuAssertIntEquals(tc, 1, fin);
+    CuAssertIntEquals(tc, 1, closed);
+    CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, erro);
+    CuAssertTrue(tc, cost < CLOSE_LINGER_MS / 2);
+}
+// 读写同时就绪的那一次回调里同步 ev_close（epoll 才会把两者合成一次回调，kqueue/IOCP 上照跑不报错）：
+// 关闭照样要马上走完且报 LOCAL。发送路径若不认"本端已在关"，队列冲空时会把驱动关闭的写事件摘掉
+// (关闭卡住)，没冲空时会往已关写的 socket 上发(被报成 ABORT)
+static void test_ev_linger_close_busy(CuTest *tc) {
+    ev_ctx ev;
+    char blk[65536];
+    size_t got = 0;
+    int32_t n, closed, erro;
+    CuAssertIntEquals(tc, ERR_OK, _linger_server(&ev, LINGER_PORT + 5, LINGER_CLOSE_BUSY));
+    SOCKET fd = _linger_client(LINGER_PORT + 5);
+    if (INVALID_SOCK == fd) {
+        ev_free(&ev);
+        CuFail(tc, "connect failed");
+    }
+    (void)send(fd, "g", 1, 0);
+    MSLEEP(100);// 服务端回大包，发送队列积压、写事件挂上
+    (void)send(fd, "h", 1, 0);
+    MSLEEP(50);// 服务端正卡在处理 "h" 的回调里
+    while (got < 4 * sizeof(blk)) {
+        n = (int32_t)recv(fd, blk, (int32_t)sizeof(blk), 0);
+        if (n <= 0) {
+            break;
+        }
+        got += (size_t)n;
+    }
+    (void)send(fd, "c", 1, 0);// 服务端这时既可写(刚被读走一截)又可读
+    closed = _linger_wait_closed(1000);
+    erro = (int32_t)ATOMIC_GET(&_g_linger_erro);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertTrue(tc, got > 0);
+    CuAssertIntEquals(tc, 1, closed);
+    CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, erro);
+}
+// 延迟关闭只给"已连通、本端主动关"的连接：未连通、对端已表态(FIN/ABORT/TRUNCATED)的一律不延迟，保留关读
+static void test_evpub_linger_want(CuTest *tc) {
+    int32_t st;
+    CuAssertTrue(tc, 0 != _evpub_linger_want(STATUS_ESTABLISHED));
+    CuAssertTrue(tc, 0 != _evpub_linger_want(STATUS_ESTABLISHED | STATUS_CLIENT | STATUS_ERROR));
+    CuAssertTrue(tc, 0 == _evpub_linger_want(STATUS_NONE));
+    CuAssertTrue(tc, 0 == _evpub_linger_want(STATUS_CLIENT | STATUS_ERROR));
+    st = STATUS_ESTABLISHED;
+    _evpub_mark_close(&st, 1);
+    CuAssertTrue(tc, 0 == _evpub_linger_want(st));
+    st = STATUS_ESTABLISHED;
+    _evpub_mark_close(&st, ERR_FAILED);
+    CuAssertTrue(tc, 0 == _evpub_linger_want(st));
+#if WITH_SSL
+    st = STATUS_ESTABLISHED;
+    _evpub_mark_close(&st, 2);
+    CuAssertTrue(tc, 0 == _evpub_linger_want(st));
+#endif
+}
+#endif
 void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_close_flush);
     SUITE_ADD_TEST(suite, test_evpub_read_fin);
     SUITE_ADD_TEST(suite, test_evpub_close_type);
+#if 0 != CLOSE_LINGER_MS
+    SUITE_ADD_TEST(suite, test_ev_linger_late_data);
+    SUITE_ADD_TEST(suite, test_ev_linger_timeout);
+    SUITE_ADD_TEST(suite, test_ev_linger_close_in_sent);
+    SUITE_ADD_TEST(suite, test_ev_linger_bytes);
+    SUITE_ADD_TEST(suite, test_ev_linger_free);
+    SUITE_ADD_TEST(suite, test_ev_linger_close_busy);
+    SUITE_ADD_TEST(suite, test_evpub_linger_want);
+#endif
 #if WITH_SSL
     SUITE_ADD_TEST(suite, test_evssl_read_close_notify);
     SUITE_ADD_TEST(suite, test_ssl_write_wants_read);

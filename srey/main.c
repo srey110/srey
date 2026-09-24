@@ -165,8 +165,20 @@ static void _open_log(uint32_t capacity) {
     }
     log_init(logstream, capacity);
 }
-// 初始化全局基础设施（socket、随机数种子、BSON 库）
+// thread_global_hooks 的全局 exit:与具体模块无关的线程级缓存在这里收,与 test/main.c 同步。
+// Windows 上静态链接的 OpenSSL 不随线程退出释放线程级状态，每条线程须自己调 OPENSSL_thread_stop
+// (主线程由 OPENSSL_cleanup 收，-r 服务模式下跑 service_init/service_exit 的服务线程由 service_exit 收)
+static void _thread_exit_hook(void *udata, void *assist) {
+    (void)udata;
+    (void)assist;
+    buffer_thread_cleanup();
+#if WITH_SSL && defined(OS_WIN)
+    OPENSSL_thread_stop();
+#endif
+}
+// 初始化全局基础设施（线程全局钩子、socket、随机数种子、BSON 库）。线程钩子须早于任何线程创建
 static void _init_globle(void) {
+    thread_global_hooks(NULL, _thread_exit_hook);
 #if defined(OS_WIN)
     // 提升 Windows 系统定时器精度至 1ms，使 cond_timedwait 等睡眠接口得到更准确的唤醒
     timeBeginPeriod(1);
@@ -195,6 +207,11 @@ static int32_t service_exit(void) {
     }
     _free_globle();
     buffer_thread_cleanup();
+#if WITH_SSL && defined(OS_WIN)
+    // -r 服务模式下本函数跑在 SCM 建的服务线程上，不经 thread_creat，全局 exit 钩子管不到：这里收它的
+    // OpenSSL 线程级状态。放在最后，之后再碰 OpenSSL 会重新分配；前台模式下是主线程，提前收一次也无害
+    OPENSSL_thread_stop();
+#endif
     _memcheck();
     return ERR_OK;
 }

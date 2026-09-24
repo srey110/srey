@@ -38,6 +38,8 @@ typedef struct buffer_ctx {
 /// <summary>
 /// 释放本线程留存的备用节点。任何调用过 buffer_* 的线程在退出前都要调一次，
 /// 否则那一个节点会以泄漏的形式留到进程结束。可安全重复调用。
+/// 经 thread_creat / thread_creat_hooks 创建的线程由 main 注册的 thread_global_hooks 全局 exit 统一调，
+/// 主线程等不经它们创建的线程须自己调
 /// </summary>
 void buffer_thread_cleanup(void);
 /// <summary>

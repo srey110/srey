@@ -277,6 +277,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);
         list_init(&watcher->ticks);
+        list_init(&watcher->lingers);
+        watcher->linger_tick.cb = NULL;
 #if WITH_SSL
         list_init(&watcher->wpends);
         watcher->wpend_tick.cb = NULL;
@@ -330,6 +332,8 @@ static void _iocp_stop_acpex_thread(ev_ctx *ctx) {
         thread_join(ctx->acpex[i].thacp);
     }
 }
+// 停止并释放全部 watcher：先全部 join 再逐个释放。排空期间某个 watcher 上的回调可能给别的 watcher
+// 投命令，逐个 join 逐个释放会往已释放的队列与已关的 IOCP 句柄上投(同 uev.c 的 _uev_stop_watcher)
 static void _iocp_free_watcher(ev_ctx *ctx) {
     uint32_t i;
     cmd_ctx cmd = { 0 };
@@ -340,8 +344,10 @@ static void _iocp_free_watcher(ev_ctx *ctx) {
         (void)_send_cmd(watcher, &cmd);
     }
     for (i = 0; i < ctx->nthreads; i++) {
+        thread_join(ctx->watcher[i].thevent);
+    }
+    for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
-        thread_join(watcher->thevent);
         (void)CloseHandle(watcher->iocp);
         _iocp_free_cmd(watcher);
         sockel_map_free(watcher->element);

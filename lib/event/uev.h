@@ -113,6 +113,8 @@ typedef struct watcher_ctx {
 #endif
     list_ctx flushes;           // 本轮攒下待发的连接(STATUS_FLUSHPEND 置位期间在链上)，
                                 // 由 _uev_loop_event 每轮派发后统一冲；见 _usk_flush_link
+    list_ctx lingers;           // 延迟关闭中的连接(按进入时刻先后串,队头最旧)
+    ev_tick linger_tick;        // 驱动上面那条链的 tick(cb 非 NULL 表示已挂;链空即摘)
 #if WITH_SSL
     list_ctx wpends;            // 挂起 SSL 写的连接(按 wpend_ms 先后串,队头最旧)
     ev_tick wpend_tick;         // 驱动上面那条链的 tick(cb 非 NULL 表示已挂;链空即摘)
@@ -152,8 +154,8 @@ int32_t _uev_try_sendto(watcher_ctx *watcher, evsock_ctx *evsk, const void *data
 // 在事件循环内将socket注册读事件（TCP/UDP通用）
 void _uev_add_fd_inloop(watcher_ctx *watcher, evsock_ctx *evsk);
 
-// shutdown socket读端（触发关闭流程）
-void _uev_sk_shutdown(evsock_ctx *evsk);
+// 关闭流程里的 shutdown：how 取 SHUT_RD 或 SHUT_WR，有 SSL 先发 close_notify
+void _uev_sk_shutdown(evsock_ctx *evsk, int32_t how);
 // 释放UDP socket上下文
 void _uev_free_udp(evsock_ctx *evsk);
 // 标记连接为错误状态并触发关闭（TCP shutdown/UDP注册写事件）；已置 STATUS_ERROR 时直接返回

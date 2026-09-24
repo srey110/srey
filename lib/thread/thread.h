@@ -16,6 +16,14 @@ typedef struct thread_hooks {
 } thread_hooks;
 
 /// <summary>
+/// 设置进程级 init / exit 钩子,对之后经 thread_creat / thread_creat_hooks 创建的每条线程生效。
+/// 调用顺序:全局 init → 线程 init → 业务回调 → 线程 exit → 全局 exit,参数恒为 (NULL, NULL)。
+/// 须在创建任何线程之前调用一次;与具体模块无关的线程级缓存(如 buffer_thread_cleanup)挂在这里
+/// </summary>
+/// <param name="init">每条线程最先调用,可为 NULL</param>
+/// <param name="exit">每条线程最后调用,可为 NULL</param>
+void thread_global_hooks(hook_cb _init, hook_cb _exit);
+/// <summary>
 /// 创建线程并附加 init / exit 钩子
 /// </summary>
 /// <param name="cb">业务线程回调函数</param>
