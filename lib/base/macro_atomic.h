@@ -14,6 +14,7 @@
 //   ATOMIC_*_RELAXED     只有一个线程写、读方也不在乎它与别的读写谁先谁后时用，最省
 //   ATOMIC_GET_SEQCST    握手：双方"我先置标志，再看对方"这类互相试探的场景（log.c、loader.c
 //   ATOMIC_THREAD_FENCE_SEQCST   的丢唤醒防护）。两边都得用足序版本，否则会同时看漏
+//   ATOMIC_SET_SEQCST    握手里"置标志"那一步，配 ATOMIC_GET_SEQCST 用。比 ATOMIC_SET 便宜，但不返回旧值
 // 带 64 的是 64 位版本，语义与 32 位一致
 #if defined(OS_AIX)
     #ifndef __64BIT__
@@ -39,6 +40,8 @@
     // ARMv8.3+ 上普通 acquire 读可能编成 LDAPR, 挡不住握手要的那种顺序, 得是 seq_cst 才编成 LDAR
     #define ATOMIC_GET_SEQCST(ptr)   __atomic_load_n((ptr), __ATOMIC_SEQ_CST)
     #define ATOMIC64_GET_SEQCST(ptr) __atomic_load_n((ptr), __ATOMIC_SEQ_CST)
+    #define ATOMIC_SET_SEQCST(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_SEQ_CST)
+    #define ATOMIC64_SET_SEQCST(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
     #define ATOMIC64_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
     #define ATOMIC_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
@@ -71,6 +74,15 @@
     #define ATOMIC_GET_SEQCST(ptr)   ATOMIC_GET(ptr)
     #define ATOMIC64_GET_SEQCST(ptr) ATOMIC64_GET(ptr)
     #if defined(ARCH_ARM64)
+        // STLR 之后的 LDAR 不会先于它执行，配上面的 __ldar32/64 就是足序握手
+        #define ATOMIC_SET_SEQCST(ptr, val) __stlr32((unsigned __int32 volatile *)(ptr), (unsigned __int32)(val))
+        #define ATOMIC64_SET_SEQCST(ptr, val) __stlr64((unsigned __int64 volatile *)(ptr), (unsigned __int64)(val))
+    #else
+        // x86/x64 的足序写本来就是一条 XCHG；32 位 ARM 没有对应的单条指令
+        #define ATOMIC_SET_SEQCST(ptr, val) ATOMIC_SET(ptr, val)
+        #define ATOMIC64_SET_SEQCST(ptr, val) ATOMIC64_SET(ptr, val)
+    #endif
+    #if defined(ARCH_ARM64)
         // __stlr32/64 就是一条 store-release 指令，与 __ldar32/64 配对
         #define ATOMIC_SET_RELEASE(ptr, val) __stlr32((unsigned __int32 volatile *)(ptr), (unsigned __int32)(val))
         #define ATOMIC64_SET_RELEASE(ptr, val) __stlr64((unsigned __int64 volatile *)(ptr), (unsigned __int64)(val))
@@ -87,8 +99,14 @@
         #define ATOMIC_SET_RELEASE(ptr, val) (*(volatile atomic_t *)(ptr) = (val))
         #define ATOMIC64_SET_RELEASE(ptr, val) (*(volatile atomic64_t *)(ptr) = (val))
     #endif
-    #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
-    #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
+    #if defined(ARCH_ARM64)
+        // _nf 是不带屏障的版本，只保原子性
+        #define ATOMIC_ADD_RELAXED(ptr, val) _InterlockedExchangeAdd_nf((long volatile *)(ptr), (long)(val))
+        #define ATOMIC64_ADD_RELAXED(ptr, val) _InterlockedExchangeAdd64_nf((__int64 volatile *)(ptr), (__int64)(val))
+    #else
+        #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
+        #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
+    #endif
     #define ATOMIC_SET_RELAXED(ptr, val) (*(volatile atomic_t *)(ptr) = (val))
     #define ATOMIC_GET_RELAXED(ptr) (*(volatile atomic_t *)(ptr))
     #if defined(ARCH_ARM) || defined(ARCH_X86)
@@ -238,8 +256,10 @@
     #error "atomic ops: unsupported compiler (need GCC/Clang, MSVC, Sun Studio on Solaris, or xlC on AIX)"
 #endif
 // 弱序别名兜底: 没有更弱版本可用的后端(Sun / AIX)一律退化到全屏障版, 语义只会更强不会更弱。
-// 八个别名按后端整组给出, 所以一个 #ifndef 守住全组即可; GCC/Clang 与 MSVC 自己定义齐了不会进来
+// 十个别名按后端整组给出, 所以一个 #ifndef 守住全组即可; GCC/Clang 与 MSVC 自己定义齐了不会进来
 #ifndef ATOMIC_SET_RELEASE
+    #define ATOMIC_SET_SEQCST(ptr, val) ATOMIC_SET(ptr, val)
+    #define ATOMIC64_SET_SEQCST(ptr, val) ATOMIC64_SET(ptr, val)
     #define ATOMIC_SET_RELEASE(ptr, val) ATOMIC_SET(ptr, val)
     #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
     #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)

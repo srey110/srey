@@ -29,7 +29,9 @@
 /* 分条计数：每线程独占一格、各占一条 cache line，免得每次 malloc/free 都在同一条
  * cache line 上跨核来回。槽位用尽(活过的线程数超过 MEM_SLOTS)的线程共用末尾那一格
  * —— 两条路径的计数都精确。*/
-#define MEM_SLOTS 64 // 独占槽位数;只增不回收,用尽即共用末尾那格
+// 独占槽位数;只增不回收,用尽即共用末尾那格(那一格上每次分配都要跨核争抢,慢一个数量级以上)。
+// 线程数约 nnet + nworker + 4,两者取 0 时按核数算,取 256 够 120 核上下的机器
+#define MEM_SLOTS 256
 typedef struct mem_slot {
     atomic64_t nalloc; // 本槽位累计分配次数
     atomic64_t nfree;  // 本槽位累计释放次数
@@ -98,19 +100,19 @@ static void _trk_del(void *ptr) {
     if (NULL == ptr) {
         return;
     }
+    mem_trk_ctx *dead = NULL;
     MEM_TRK_LOCK();
-    mem_trk_ctx *dead;
     mem_trk_ctx **pp = &_trk_bucket[_trk_hash(ptr)];
     while (NULL != *pp) {
         if ((*pp)->ptr == ptr) {
             dead = *pp;
             *pp = dead->next;
-            _FREE(dead);
             break;
         }
         pp = &(*pp)->next;
     }
     MEM_TRK_UNLOCK();
+    _FREE(dead);
 }
 // 符号化打印一条未释放块的调用栈
 static void _trk_print(const mem_trk_ctx *node) {
@@ -155,23 +157,34 @@ static void _trk_dump(void) {
 #endif//MEM_TRACE_ON
 
 #if MEMORY_CHECK
-// 首次调用给本线程钉一格,此后只自增。末尾那格可能被多个线程共用,原子自增照样精确
-static void _mem_count(int32_t is_alloc) {
+// 首次调用给本线程钉一格,此后只自增。独占格只有本线程写,读一次写一次即可;
+// 末尾那格可能被多个线程共用,仍得原子自增才不丢
+static inline void _mem_count(int32_t is_alloc) {
     if (NULL == _slot) {
-        int64_t seq = ATOMIC64_ADD(&_slotseq, 1);// 返回旧值
+        int64_t seq = ATOMIC64_ADD_RELAXED(&_slotseq, 1);// 返回旧值
         _slot = &_slots[(seq < MEM_SLOTS) ? (size_t)seq : MEM_SLOTS];
     }
-    ATOMIC64_ADD_RELAXED(is_alloc ? &_slot->nalloc : &_slot->nfree, 1);
+    mem_slot *slot = _slot;
+    atomic64_t *cnt = is_alloc ? &slot->nalloc : &slot->nfree;
+    if (&_slots[MEM_SLOTS] != slot) {
+        ATOMIC64_SET_RELAXED(cnt, ATOMIC64_GET_RELAXED(cnt) + 1);
+    } else {
+        ATOMIC64_ADD_RELAXED(cnt, 1);
+    }
 }
 #endif//MEMORY_CHECK
 void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
 #if MEMORY_CHECK
-    uint64_t na = 0;
-    uint64_t nf = 0;
-    int32_t i;
-    for (i = 0; i <= MEM_SLOTS; i++) {
-        na += (uint64_t)ATOMIC64_GET(&_slots[i].nalloc);
-        nf += (uint64_t)ATOMIC64_GET(&_slots[i].nfree);
+    uint64_t na = (uint64_t)ATOMIC64_GET_RELAXED(&_slots[MEM_SLOTS].nalloc);
+    uint64_t nf = (uint64_t)ATOMIC64_GET_RELAXED(&_slots[MEM_SLOTS].nfree);
+    uint64_t n = (uint64_t)ATOMIC64_GET_RELAXED(&_slotseq);
+    uint64_t i;
+    if (n > MEM_SLOTS) {
+        n = MEM_SLOTS;
+    }
+    for (i = 0; i < n; i++) {
+        na += (uint64_t)ATOMIC64_GET_RELAXED(&_slots[i].nalloc);
+        nf += (uint64_t)ATOMIC64_GET_RELAXED(&_slots[i].nfree);
     }
     SET_PTR(nalloc, na);
     SET_PTR(nfree, nf);
@@ -210,25 +223,15 @@ void *_calloc(size_t count, size_t size) {
     return ptr;
 }
 void *_realloc(void* oldptr, size_t size) {
-#if MEMORY_CHECK
-    if (NULL == oldptr && 0 != size) {
-        _mem_count(1);
-    } else if (NULL != oldptr && 0 == size) {
-        _mem_count(0);
+    if (NULL == oldptr) {
+        return 0 == size ? NULL : _malloc(size);
     }
-    // (NULL, 0) no-op + (非NULL, >0) realloc 改大小，均不计数
-#endif
     if (0 == size) {
-#if MEM_TRACE_ON
-        _trk_del(oldptr);
-#endif
-        _FREE(oldptr);
+        _free(oldptr);
         return NULL;
     }
 #if MEM_TRACE_ON
-    if (NULL != oldptr) {
-        _trk_del(oldptr);
-    }
+    _trk_del(oldptr);
 #endif
     void *ptr = _REALLOC(oldptr, size);
     if (NULL == ptr) {

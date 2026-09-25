@@ -15,7 +15,7 @@ void sock_init(void) {
             WSADATA wsdata;
             WORD ver = MAKEWORD(2, 2);
             ASSERTAB_CODE(WSAStartup(ver, &wsdata));
-            ATOMIC_SET(&_init_sock_ref, 2);
+            ATOMIC_SET_RELEASE(&_init_sock_ref, 2);
             return;
         }
         if (ATOMIC_GET(&_init_sock_ref) >= 2) {
@@ -32,7 +32,7 @@ void sock_clean(void) {
 #ifdef OS_WIN
     if (2 == ATOMIC_ADD(&_init_sock_ref, -1)) {
         (void)WSACleanup();
-        ATOMIC_SET(&_init_sock_ref, 0);
+        ATOMIC_SET_RELEASE(&_init_sock_ref, 0);
     }
 #endif
 }

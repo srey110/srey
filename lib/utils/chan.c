@@ -30,9 +30,9 @@ chan_ctx *chan_init(uint32_t capacity) {
     mutex_init(&chan->m_mu);
     cond_init(&chan->r_cond);
     cond_init(&chan->w_cond);
-    ATOMIC_SET(&chan->closed, 0);
-    ATOMIC_SET(&chan->r_waiting, 0);
-    ATOMIC_SET(&chan->w_waiting, 0);
+    ATOMIC_SET_RELAXED(&chan->closed, 0);
+    ATOMIC_SET_RELAXED(&chan->r_waiting, 0);
+    ATOMIC_SET_RELAXED(&chan->w_waiting, 0);
     return chan;
 }
 void chan_free(chan_ctx *chan) {
@@ -52,7 +52,7 @@ void chan_free(chan_ctx *chan) {
 void chan_close(chan_ctx *chan) {
     mutex_lock(&chan->m_mu);
     if (!ATOMIC_GET(&chan->closed)) {
-        ATOMIC_SET(&chan->closed, 1);
+        ATOMIC_SET_RELEASE(&chan->closed, 1);
         cond_broadcast(&chan->r_cond);
         cond_broadcast(&chan->w_cond);
     }
@@ -71,9 +71,9 @@ static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
             return ERR_FAILED;
         }
         //阻塞直到有元素被取走
-        ATOMIC_ADD(&chan->w_waiting, 1);
+        ATOMIC_ADD_RELAXED(&chan->w_waiting, 1);
         cond_wait(&chan->w_cond, &chan->m_mu);
-        ATOMIC_ADD(&chan->w_waiting, -1);
+        ATOMIC_ADD_RELAXED(&chan->w_waiting, -1);
     }
     if (ATOMIC_GET(&chan->closed)) {
         mutex_unlock(&chan->m_mu);
@@ -96,9 +96,9 @@ static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
             return NULL;
         }
         //阻塞直到有元素被放入
-        ATOMIC_ADD(&chan->r_waiting, 1);
+        ATOMIC_ADD_RELAXED(&chan->r_waiting, 1);
         cond_wait(&chan->r_cond, &chan->m_mu);
-        ATOMIC_ADD(&chan->r_waiting, -1);
+        ATOMIC_ADD_RELAXED(&chan->r_waiting, -1);
     }
     buf_ctx *msg = cbuf_que_pop(&chan->qudata);
     void *data = msg->data;
@@ -120,7 +120,7 @@ static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
         return ERR_FAILED;
     }
     chan->data = *buf;
-    ATOMIC_ADD(&chan->w_waiting, 1);
+    ATOMIC_ADD_RELAXED(&chan->w_waiting, 1);
     if (ATOMIC_GET(&chan->r_waiting) > 0) {
         //唤醒等待接收的线程
         cond_signal(&chan->r_cond);
@@ -129,7 +129,7 @@ static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     while (ATOMIC_GET(&chan->w_waiting) > 0) {
         if (ATOMIC_GET(&chan->closed)
             && 0 == ATOMIC_GET(&chan->r_waiting)) {
-            ATOMIC_ADD(&chan->w_waiting, -1);
+            ATOMIC_ADD_RELAXED(&chan->w_waiting, -1);
             mutex_unlock(&chan->m_mu);
             mutex_unlock(&chan->w_mu);
             return ERR_FAILED;
@@ -147,9 +147,9 @@ static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
     while (!ATOMIC_GET(&chan->closed)
         && !ATOMIC_GET(&chan->w_waiting)) {
         //阻塞直到发送方设置 chan->data
-        ATOMIC_ADD(&chan->r_waiting, 1);
+        ATOMIC_ADD_RELAXED(&chan->r_waiting, 1);
         cond_wait(&chan->r_cond, &chan->m_mu);
-        ATOMIC_ADD(&chan->r_waiting, -1);
+        ATOMIC_ADD_RELAXED(&chan->r_waiting, -1);
     }
     if (0 == ATOMIC_GET(&chan->w_waiting)) {
         mutex_unlock(&chan->m_mu);
@@ -158,7 +158,7 @@ static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
     }
     void *msg = chan->data.data;
     *lens = chan->data.lens;
-    ATOMIC_ADD(&chan->w_waiting, -1);
+    ATOMIC_ADD_RELAXED(&chan->w_waiting, -1);
     //唤醒等待发送的线程
     cond_signal(&chan->w_cond);
     mutex_unlock(&chan->m_mu);

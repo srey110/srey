@@ -23,8 +23,7 @@ const yyjson_alc g_yyjson_alc = {
 int32_t json_has(yyjson_val *json, const char *name) {
     return NULL != yyjson_obj_get(json, name);
 }
-int32_t json_get_number(yyjson_val *json, const char *name, double *val) {
-    yyjson_val *jval = yyjson_obj_get(json, name);
+int32_t json_val_number(yyjson_val *jval, double *val) {
     if (NULL == jval
         || !yyjson_is_num(jval)) {
         return ERR_FAILED;
@@ -36,9 +35,12 @@ int32_t json_get_number(yyjson_val *json, const char *name, double *val) {
     *val = d;
     return ERR_OK;
 }
-int32_t json_get_num_range(yyjson_val *json, const char *name, double min, double max, double *val) {
+int32_t json_get_number(yyjson_val *json, const char *name, double *val) {
+    return json_val_number(yyjson_obj_get(json, name), val);
+}
+int32_t json_val_num_range(yyjson_val *jval, double min, double max, double *val) {
     double num = 0;
-    if (ERR_OK != json_get_number(json, name, &num)) {
+    if (ERR_OK != json_val_number(jval, &num)) {
         return ERR_FAILED;
     }
     if (num < min
@@ -48,8 +50,10 @@ int32_t json_get_num_range(yyjson_val *json, const char *name, double min, doubl
     *val = num;
     return ERR_OK;
 }
-int32_t json_get_string(yyjson_val *json, const char *name, char *str, size_t lens) {
-    yyjson_val *val = yyjson_obj_get(json, name);
+int32_t json_get_num_range(yyjson_val *json, const char *name, double min, double max, double *val) {
+    return json_val_num_range(yyjson_obj_get(json, name), min, max, val);
+}
+int32_t json_val_string(yyjson_val *val, char *str, size_t lens) {
     if (NULL == val
         || !yyjson_is_str(val)) {
         return ERR_FAILED;
@@ -63,4 +67,7 @@ int32_t json_get_string(yyjson_val *json, const char *name, char *str, size_t le
     // 用 yyjson 记的真实长度而不是 strlen：`"sc\u0000ript"` 是合法 JSON，strlen 只看到 2，
     // 装不下的值会被误判成装得下
     return copy_bounded(sval, slens, str, lens, 1);
+}
+int32_t json_get_string(yyjson_val *json, const char *name, char *str, size_t lens) {
+    return json_val_string(yyjson_obj_get(json, name), str, lens);
 }

@@ -45,8 +45,8 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
     q->mask = q->capacity - 1;                                                  \
     ASSERTAB(sizeof(name##_cell) <= SIZE_MAX / (size_t)q->capacity, "byte size overflow.");\
     MALLOC(q->cells, sizeof(name##_cell) * (size_t)q->capacity);                \
-    ATOMIC_SET(&q->enq, 0);                                                     \
-    ATOMIC_SET(&q->deq, 0);                                                     \
+    ATOMIC_SET_RELAXED(&q->enq, 0);                                                     \
+    ATOMIC_SET_RELAXED(&q->deq, 0);                                                     \
     /* 每槽序列号初始化为其下标，表示"可入队"。init 期间队列对别的线程不可见，        \
        普通写即可：发布时的建线程 / 加锁已保证对方看得到 */                        \
     cells = q->cells;                                                           \

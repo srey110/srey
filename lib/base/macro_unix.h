@@ -32,8 +32,6 @@ static const union {
 #define ERR_RW_RETRIABLE(e)      ((e) == EINTR || IS_EAGAIN(e)) // 判断读写错误是否可重试
 #define ERR_CONNECT_RETRIABLE(e) ((e) == EINTR || (e) == EINPROGRESS) // 判断连接错误是否可重试
 #define GETPID   getpid // 获取当前进程 ID
-#define STRICMP  strcasecmp // 不区分大小写字符串比较
-#define STRNCMP  strncasecmp // 不区分大小写的前 n 字节字符串比较
 #define STRTOK   strtok_r // 线程安全的字符串分割
 #define SNPRINTF snprintf // 格式化输出到缓冲区
 #define SWPRINTF swprintf // 宽字符格式化输出

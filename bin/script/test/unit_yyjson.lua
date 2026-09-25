@@ -153,5 +153,100 @@ runner.run(function(t)
             t:eq("caf\xe9", tb3.name, "Latin-1 字节原样收下")
         end
     end
+
+    -- ── 数字键的键名文本：与 tostring（即 lua_tolstring 的十进制）逐字相同 ──
+    -- 整数键改走手写十进制，负数、0 与两端极值最容易写错；1.5 这类浮点键仍走 Lua 格式化
+    do
+        -- 单键对象：输出唯一，直接整串比对
+        t:eq('{"0":1}', yyjson.encode({ [0] = 1 }), "键 0 编成对象键 \"0\"")
+        t:eq('{"-1":1}', yyjson.encode({ [-1] = 1 }), "键 -1")
+        t:eq('{"-5":1}', yyjson.encode({ [-5] = 1 }), "键 -5")
+        t:eq('{"-9223372036854775808":1}', yyjson.encode({ [math.mininteger] = 1 }), "键 mininteger")
+        t:eq('{"1.5":1}', yyjson.encode({ [1.5] = 1 }), "浮点键 1.5")
+        t:eq('{"-0.5":1}', yyjson.encode({ [-0.5] = 1 }), "浮点键 -0.5")
+        -- 混合表：键序由 lua_next 决定，逐个找片段
+        local src = { [-5] = "n5", [0] = "z", [1] = "p1", [2] = "p2",
+                      [math.maxinteger] = "max", [math.mininteger] = "min", [1.5] = "f" }
+        local js = yyjson.encode(src)
+        local n = 0
+        for k, v in pairs(src) do
+            n = n + 1
+            t:check(nil ~= js:find(string.format('"%s":"%s"', tostring(k), v), 1, true),
+                    "混合表键 " .. tostring(k) .. " 的键名文本与 tostring 一致")
+        end
+        t:eq(7, n, "混合表源 7 个键")
+        -- 极值另写死期望文本，不只靠 tostring 对照
+        t:check(nil ~= js:find('"9223372036854775807":"max"', 1, true), "混合表 maxinteger 键名")
+        t:check(nil ~= js:find('"-9223372036854775808":"min"', 1, true), "混合表 mininteger 键名")
+        t:check(nil ~= js:find('"1.5":"f"', 1, true), "混合表浮点键名")
+        local dec = yyjson.decode(js)
+        local cnt = 0
+        for _ in pairs(dec) do cnt = cnt + 1 end
+        t:eq(7, cnt, "混合表 decode 回来键数不变")
+        for k, v in pairs(src) do
+            t:eq(v, dec[tostring(k)], "混合表 decode 回来键 " .. tostring(k) .. " 在")
+        end
+    end
+
+    -- ── 纯整数数组与稀疏判定：整数键快路径不改变判定结果 ──────
+    do
+        local rev = {}
+        for i = 5, 1, -1 do rev[i] = i * 10 end
+        t:eq("[10,20,30,40,50]", yyjson.encode(rev), "倒序插入的整数键编成数组")
+        t:eq('["x","y","z"]', yyjson.encode({ "x", "y", "z" }), "字符串元素数组")
+        t:eq("[[1,2],[3]]", yyjson.encode({ { 1, 2 }, { 3 } }), "嵌套数组")
+        t:eq("[" .. math.maxinteger .. "," .. math.mininteger .. "]",
+             yyjson.encode({ math.maxinteger, math.mininteger }), "数组里的整数极值精确写出")
+        -- 0 不是数组下标：整表当对象
+        local o = yyjson.decode(yyjson.encode({ [0] = "a", [1] = "b" }))
+        t:eq("a", o["0"], "含 0 键的表当对象，0 键在")
+        t:eq("b", o["1"], "含 0 键的表当对象，1 键在")
+        -- 判定式 max > items*2 且 max > 10：items=7 max=12 不稀疏，空位补 null
+        t:eq("[1,2,3,4,5,6,null,null,null,null,null,12]",
+             yyjson.encode({ 1, 2, 3, 4, 5, 6, [12] = 12 }), "max=12 items=7 仍编成数组")
+        local ok, err = pcall(yyjson.encode, { 1, 2, 3, 4, 5, [13] = 13 })
+        t:eq(false, ok, "max=13 items=6 过度稀疏报错")
+        t:check(type(err) == "string" and nil ~= err:find("sparse", 1, true), "报错点明稀疏")
+        t:eq(false, pcall(yyjson.encode, { [1] = 1, [11] = 1 }), "max=11 刚过 safe 阈值即报错")
+        t:eq(false, pcall(yyjson.encode, { [math.maxinteger] = 1 }), "单个 maxinteger 键按过度稀疏报错")
+        t:eq(false, pcall(yyjson.encode, { a = { [1] = 1, [50] = 1 } }), "嵌套层过度稀疏同样报错")
+    end
+
+    -- ── 字符串值 / 字符串键：按长度写全，NUL 与需转义字符都对 ──
+    do
+        t:eq('{"key":"val"}', yyjson.encode({ key = "val" }), "字符串键 + 字符串值")
+        t:eq('{"same":"same"}', yyjson.encode({ same = "same" }), "键与值是同一个字符串")
+        t:eq('""', yyjson.encode(""), "空串")
+        t:eq('{"":""}', yyjson.encode({ [""] = "" }), "空串键与空串值")
+        t:eq('"\\u0000"', yyjson.encode("\0"), "只有一个 NUL")
+        t:eq('"a\\u0000b"', yyjson.encode("a\0b"), "顶层字符串含 NUL 不截断")
+        t:eq('{"s":"x\\u0000y"}', yyjson.encode({ s = "x\0y" }), "字符串值含 NUL")
+        t:eq('{"k\\u0000z":1}', yyjson.encode({ ["k\0z"] = 1 }), "字符串键含 NUL")
+        t:eq('"q\\"b\\\\s\\n"', yyjson.encode('q"b\\s\n'), "引号 / 反斜杠 / 换行转义")
+        local rt = yyjson.decode(yyjson.encode({ s = "x\0y", ["k\0z"] = "a\0\0b" }))
+        t:eq("x\0y", rt.s, "含 NUL 的值往返")
+        t:eq("a\0\0b", rt["k\0z"], "含 NUL 的键与值往返")
+        -- 运行期拼出的短串与长串（长串不进字符串池）作值和键
+        local long = string.rep("L", 1000)
+        t:eq('"' .. long .. '"', yyjson.encode(long), "长串顶层值原样写出")
+        local arr = {}
+        for i = 1, 200 do arr[i] = "v" .. i .. long:sub(1, i) end
+        local back = yyjson.decode(yyjson.encode(arr))
+        local same = #back == 200
+        for i = 1, 200 do
+            if back[i] ~= arr[i] then same = false end
+        end
+        t:check(same, "200 个运行期字符串值往返逐个相同")
+        local obj = {}
+        for i = 1, 50 do obj["k" .. i .. long:sub(1, i * 10)] = "v" .. i end
+        local bo = yyjson.decode(yyjson.encode(obj))
+        local nk = 0
+        local kok = true
+        for _ in pairs(bo) do nk = nk + 1 end
+        for k, v in pairs(obj) do
+            if bo[k] ~= v then kok = false end
+        end
+        t:check(kok and nk == 50, "50 个长字符串键往返逐个相同")
+    end
 end)
 end)

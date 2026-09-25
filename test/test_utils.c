@@ -13,6 +13,8 @@
 #define POOL_T_MAGIC 0x5ada5adau
 #define UUID_MT_THREADS 4// uuid 多线程用例的线程数
 #define UUID_MT_PER 20000// 每个线程生成的 v7 个数
+#define MEMSTR_HAY 48// memstr 随机比对用例的最大源长度
+#define MEMSTR_ROUNDS 6000// memstr 随机比对每种 ncs 的轮数
 
 // uuid 多线程用例：每个线程把生成的 v7 顺序存进自己那段 ids
 typedef struct _uuid_mt_arg {
@@ -2150,6 +2152,57 @@ static void test_mem_helpers(CuTest *tc) {
     CuAssertTrue(tc, s + 6 == memichr(s, 'w', strlen(s)));
     CuAssertTrue(tc, NULL  == memichr(s, 'z', strlen(s)));
 
+    /* memcasecmp：只折 ASCII 字母，先折叠再比大小，按长度比(内嵌 NUL 照常往后比) */
+    CuAssertIntEquals(tc, 0, memcasecmp("Content-Length", "content-LENGTH", 14));
+    CuAssertIntEquals(tc, 0, memcasecmp("abc", "xyz", 0));
+    CuAssertIntEquals(tc, 1, memcasecmp("A", "_", 1));/* 折成 'a'(0x61) 才比 '_'(0x5f) 大；不折叠直接比是 -1 */
+    CuAssertIntEquals(tc, -1, memcasecmp("@", "`", 1));/* 紧挨字母两端的 0x40/0x60/0x5b/0x7b 不参与折叠 */
+    CuAssertIntEquals(tc, -1, memcasecmp("[", "{", 1));
+    CuAssertIntEquals(tc, 0, memcasecmp("a\0B", "A\0b", 3));
+    CuAssertIntEquals(tc, -1, memcasecmp("a\0b", "A\0c", 3));
+    CuAssertIntEquals(tc, -1, memcasecmp("\xC1", "\xE1", 1));/* 0x80 以上原样比，不按任何 locale 折 */
+    CuAssertIntEquals(tc, 1, memcasecmp("\xE1", "a", 1));/* 按无符号字节比 */
+
+    /* STRICMP / STRNCMP：折叠规则同上，遇 NUL 结束；短串是长串前缀时短串小 */
+    CuAssertIntEquals(tc, 0, STRICMP(".HTML", ".html"));
+    CuAssertIntEquals(tc, -1, STRICMP(".htm", ".html"));
+    CuAssertIntEquals(tc, 1, STRICMP(".json", ".JS"));
+    CuAssertIntEquals(tc, 1, STRICMP("A", "_"));
+    CuAssertIntEquals(tc, 0, STRICMP("", ""));
+    CuAssertIntEquals(tc, 1, STRICMP("\xC1", "a"));
+    CuAssertIntEquals(tc, 0, STRNCMP("Keep-Alive", "keep-alivexx", 10));
+    CuAssertIntEquals(tc, 0, STRNCMP("ab\0x", "AB\0y", 4));/* 第 3 字节两边都是 NUL,到此为止 */
+    CuAssertIntEquals(tc, -1, STRNCMP("ab", "abc", 3));
+    CuAssertIntEquals(tc, 0, STRNCMP("abc", "xyz", 0));
+    {
+        /* 单字节全组合对照 ASCII 折叠规则；memichr 在 0..255 全表里找到的必须是第一个折叠后相等的位置 */
+        unsigned char all[256];
+        unsigned char ca, cb;
+        int32_t a, b, fa, fb, want, bad = 0;
+        const unsigned char *hit;
+        for (a = 0; a < 256; a++) {
+            all[a] = (unsigned char)a;
+        }
+        for (a = 0; a < 256; a++) {
+            ca = (unsigned char)a;
+            fa = (a >= 'A' && a <= 'Z') ? a + 32 : a;
+            for (b = 0; b < 256; b++) {
+                cb = (unsigned char)b;
+                fb = (b >= 'A' && b <= 'Z') ? b + 32 : b;
+                want = fa == fb ? 0 : (fa > fb ? 1 : -1);
+                if (want != memcasecmp(&ca, &cb, 1)) {
+                    bad++;
+                }
+            }
+            hit = (const unsigned char *)memichr(all, a, sizeof(all));
+            want = (a >= 'a' && a <= 'z') ? a - 32 : a;/* 全表里大写在前，小写字母先命中其大写 */
+            if (NULL == hit || want != (int32_t)(hit - all)) {
+                bad++;
+            }
+        }
+        CuAssertIntEquals(tc, 0, bad);
+    }
+
     /* memstr ncs=0：区分大小写 */
     CuAssertTrue(tc, s + 6 == memstr(0, s, strlen(s), "World", 5));
     CuAssertTrue(tc, NULL  == memstr(0, s, strlen(s), "world", 5));
@@ -3667,6 +3720,409 @@ static void test_str2u64(CuTest *tc) {
     CuAssertTrue(tc, 0x5a5a5a5a == v);
 }
 
+/* =======================================================================
+ * base.c 字符串 / 字节序辅助：与改写前的写法逐一对照
+ * ======================================================================= */
+// fromhex 查表前的写法
+static int32_t _fromhex_ref(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return ERR_FAILED;
+}
+// 0..255 每个字节都与旧写法一致（含有符号 char 平台上的负值）
+static void test_fromhex_table(CuTest *tc) {
+    int32_t i, bad = 0;
+    for (i = 0; i < 256; i++) {
+        if (_fromhex_ref((char)i) != fromhex((char)i)) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+}
+
+// str2u64 改 cut/lim 前的判溢出写法
+static int32_t _str2u64_ref(const char *str, size_t lens, uint64_t max, uint64_t *out) {
+    uint64_t v = 0;
+    uint64_t d;
+    size_t i;
+    if (0 == lens
+        || NULL == str) {
+        return ERR_FAILED;
+    }
+    for (i = 0; i < lens; i++) {
+        if (str[i] < '0'
+            || str[i] > '9') {
+            return ERR_FAILED;
+        }
+        d = (uint64_t)(str[i] - '0');
+        if (d > max
+            || v > (max - d) / 10) {
+            return ERR_FAILED;
+        }
+        v = v * 10 + d;
+    }
+    *out = v;
+    return ERR_OK;
+}
+// 新旧两版对同一输入：返回值一致，写出的值一致（失败时都不写）；*acc 累计新版收下的个数
+static int32_t _str2u64_same(const char *s, size_t lens, uint64_t max, int32_t *acc) {
+    uint64_t a = 0x5a5a5a5a;
+    uint64_t b = 0x5a5a5a5a;
+    int32_t ra = str2u64(s, lens, max, &a);
+    int32_t rb = _str2u64_ref(s, lens, max, &b);
+    if (NULL != acc && ERR_OK == ra) {
+        (*acc)++;
+    }
+    return ra == rb && a == b;
+}
+// 十进制串原地加一，进位到头时在前面补 '1'（s 须多留一个字节）
+static void _dec_inc(char *s) {
+    size_t n = strlen(s);
+    while (n > 0) {
+        n--;
+        if ('9' != s[n]) {
+            s[n]++;
+            return;
+        }
+        s[n] = '0';
+    }
+    memmove(s + 1, s, strlen(s) + 1);
+    s[0] = '1';
+}
+static void test_str2u64_ref(CuTest *tc) {
+    const uint64_t maxs[] = { 0, 1, 4, 9, 10, 11, 19, 20, 99, 100, 101, 255, 999, 1000, 65535,
+        UINT32_MAX, (uint64_t)INT64_MAX, UINT64_MAX / 10, UINT64_MAX / 10 + 1, UINT64_MAX - 1, UINT64_MAX };
+    const char junk[] = { '/', ':', 'x', ' ', '-', '+', '\0', (char)0xB0 };// '0'-1、'9'+1、字母、空白、符号、NUL、高位字节
+    const char *fixed[] = {
+        "000000000000000000001", "000000000000000000000", "100000000000000000000",
+        "184467440737095516150", "999999999999999999999", "9999999999999999999999999",
+        "0000000000000000000000018446744073709551615", "0000000000000000000000018446744073709551616"
+    };
+    char num[32], buf[64];
+    size_t mi, ji, fi, lens, pos, k;
+    uint64_t max, start, cnt, c;
+    int32_t acc, bad = 0;
+    for (mi = 0; mi < ARRAY_SIZE(maxs); mi++) {
+        max = maxs[mi];
+        start = max >= 12 ? max - 12 : 0;
+        cnt = max - start + 13;// start..max+12
+        snprintf(num, sizeof(num), "%" PRIu64, start);
+        acc = 0;
+        for (c = 0; c < cnt; c++, _dec_inc(num)) {
+            lens = strlen(num);
+            // 原串：只有 <= max 的那几个收下
+            if (!_str2u64_same(num, lens, max, &acc)) {
+                bad++;
+            }
+            // lens 只取前缀
+            if (lens > 1 && !_str2u64_same(num, lens - 1, max, NULL)) {
+                bad++;
+            }
+            // 前导零
+            snprintf(buf, sizeof(buf), "000%s", num);
+            if (!_str2u64_same(buf, lens + 3, max, NULL)) {
+                bad++;
+            }
+            // 首、中、尾插一个非数字
+            for (ji = 0; ji < sizeof(junk); ji++) {
+                for (k = 0; k < 3; k++) {
+                    pos = 0 == k ? 0 : (1 == k ? lens / 2 : lens);
+                    memcpy(buf, num, pos);
+                    buf[pos] = junk[ji];
+                    memcpy(buf + pos + 1, num + pos, lens - pos + 1);
+                    if (!_str2u64_same(buf, lens + 1, max, NULL)) {
+                        bad++;
+                    }
+                }
+            }
+        }
+        // 收下的个数必须正好是 start..max
+        if ((uint64_t)acc != max - start + 1) {
+            bad++;
+        }
+        // 超长串 / 大量前导零
+        for (fi = 0; fi < ARRAY_SIZE(fixed); fi++) {
+            if (!_str2u64_same(fixed[fi], strlen(fixed[fi]), max, NULL)) {
+                bad++;
+            }
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+}
+
+// ASCII 折叠参考：只折 A-Z
+static int32_t _fold_ref(int32_t c) {
+    return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+}
+// memstr 的朴素参考：逐个起点整段比
+static const char *_memstr_ref(int32_t ncs, const char *p, size_t plens, const char *w, size_t wlen) {
+    size_t i, j;
+    int32_t a, b;
+    if (0 == wlen
+        || wlen > plens) {
+        return NULL;
+    }
+    for (i = 0; i + wlen <= plens; i++) {
+        for (j = 0; j < wlen; j++) {
+            a = (unsigned char)p[i + j];
+            b = (unsigned char)w[j];
+            if (0 != ncs) {
+                a = _fold_ref(a);
+                b = _fold_ref(b);
+            }
+            if (a != b) {
+                break;
+            }
+        }
+        if (j == wlen) {
+            return p + i;
+        }
+    }
+    return NULL;
+}
+static uint32_t _lcg_next(uint32_t *s) {
+    *s = *s * 1103515245u + 12345u;
+    return *s >> 16;
+}
+// 小字母表制造大量部分重叠；源缓冲 plens 之后也填随机字母，越窗读会被比出来
+static void test_memstr_ref(CuTest *tc) {
+    const char *alpha[2] = { "aAb", "aAbB" };
+    char hay[MEMSTR_HAY + 8], what[MEMSTR_HAY + 8];
+    uint32_t seed = 20260925u;
+    size_t alen, plens, wlen, pos, i;
+    int32_t ncs, r, mode, bad = 0, nhit = 0, nmiss = 0, nend = 0;
+    const char *got;
+    for (ncs = 0; ncs < 2; ncs++) {
+        alen = strlen(alpha[ncs]);
+        for (r = 0; r < MEMSTR_ROUNDS; r++) {
+            for (i = 0; i < sizeof(hay); i++) {
+                hay[i] = alpha[ncs][_lcg_next(&seed) % alen];
+            }
+            plens = 1 + _lcg_next(&seed) % MEMSTR_HAY;
+            mode = (int32_t)(_lcg_next(&seed) % 6);
+            // 0: wlen==1  1: wlen==plens  2: 源末尾子串  3: 任意子串  4: 随机串  5: wlen 超过 plens
+            if (0 == mode) {
+                wlen = 1;
+            } else if (1 == mode) {
+                wlen = plens;
+            } else if (5 == mode) {
+                wlen = plens + 1 + _lcg_next(&seed) % 4;
+            } else {
+                wlen = 1 + _lcg_next(&seed) % plens;
+            }
+            if (mode <= 3 && wlen <= plens) {
+                pos = (1 == mode || 2 == mode) ? plens - wlen : _lcg_next(&seed) % (plens - wlen + 1);
+                memcpy(what, hay + pos, wlen);
+                // ncs=1 时把子串翻成大小写混杂，必须照样命中
+                if (0 != ncs) {
+                    for (i = 0; i < wlen; i++) {
+                        if (0 != (_lcg_next(&seed) & 1) && what[i] >= 'a' && what[i] <= 'z') {
+                            what[i] = (char)(what[i] - ('a' - 'A'));
+                        }
+                    }
+                }
+            } else {
+                for (i = 0; i < wlen; i++) {
+                    what[i] = alpha[ncs][_lcg_next(&seed) % alen];
+                }
+            }
+            got = (const char *)memstr(ncs, hay, plens, what, wlen);
+            if (got != _memstr_ref(ncs, hay, plens, what, wlen)) {
+                bad++;
+            }
+            if (NULL == got) {
+                nmiss++;
+            } else {
+                nhit++;
+                if ((size_t)(got - hay) == plens - wlen) {
+                    nend++;
+                }
+            }
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+    CuAssertTrue(tc, nhit > 0 && nmiss > 0 && nend > 0);
+    // 确定性边界：匹配在窗口末尾、只差窗口外一个字节、wlen==plens
+    CuAssertTrue(tc, NULL == memstr(0, "xxab", 3, "ab", 2));
+    CuAssertTrue(tc, NULL == memstr(1, "xxAB", 3, "ab", 2));
+    const char *tail = "aaab";
+    CuAssertTrue(tc, tail + 2 == memstr(0, tail, 4, "ab", 2));
+    CuAssertTrue(tc, tail + 2 == memstr(1, tail, 4, "AB", 2));
+    CuAssertTrue(tc, tail + 3 == memstr(0, tail, 4, "b", 1));
+    CuAssertTrue(tc, tail == memstr(1, tail, 4, "AAAB", 4));
+    CuAssertTrue(tc, NULL == memstr(0, tail, 4, "aaaa", 4));
+}
+
+// memichr 的参考：按 (unsigned char)val 折叠后找第一个
+static const unsigned char *_memichr_ref(const unsigned char *p, int32_t val, size_t n) {
+    int32_t want = _fold_ref((unsigned char)val);
+    size_t i;
+    for (i = 0; i < n; i++) {
+        if (_fold_ref(p[i]) == want) {
+            return p + i;
+        }
+    }
+    return NULL;
+}
+// 倒序全字节表（小写字母排在大写前）上逐 maxlen 比对；val 另覆盖负值与 >255
+static void test_memichr_ref(CuTest *tc) {
+    unsigned char rev[256];
+    int32_t v, bad = 0;
+    size_t n;
+    for (v = 0; v < 256; v++) {
+        rev[v] = (unsigned char)(255 - v);
+    }
+    for (v = 0; v < 256; v++) {
+        for (n = 0; n <= sizeof(rev); n++) {
+            if ((const unsigned char *)memichr(rev, v, n) != _memichr_ref(rev, v, n)) {
+                bad++;
+            }
+        }
+    }
+    for (v = -128; v < 512; v++) {
+        if ((const unsigned char *)memichr(rev, v, sizeof(rev)) != _memichr_ref(rev, v, sizeof(rev))) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+}
+
+// ct_memcmp：任一位置任一位不同都非 0，差异落在 len 之外不算，全等为 0
+static void test_ct_memcmp_each_byte(CuTest *tc) {
+    unsigned char a[64], b[64];
+    size_t len, pos;
+    int32_t bit, bad = 0;
+    for (pos = 0; pos < sizeof(a); pos++) {
+        a[pos] = (unsigned char)(pos * 37 + 11);
+    }
+    memcpy(b, a, sizeof(a));
+    for (len = 0; len <= sizeof(a); len++) {
+        if (0 != ct_memcmp(a, b, len)) {
+            bad++;
+        }
+        for (pos = 0; pos < len; pos++) {
+            for (bit = 0; bit < 8; bit++) {
+                b[pos] ^= (unsigned char)(1u << bit);
+                if (0 == ct_memcmp(a, b, len)) {
+                    bad++;
+                }
+                if (0 != ct_memcmp(a, b, pos)) {
+                    bad++;
+                }
+                b[pos] ^= (unsigned char)(1u << bit);
+            }
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+}
+
+// pack/unpack_float/double 对照 IEEE754 已知字节，缓冲故意不对齐；NaN 载荷与 -0.0 要逐位保住
+static void test_pack_float_bytes(CuTest *tc) {
+    const float fv[] = { 1.0f, -2.5f, 3.14159265f, -0.0f };
+    const unsigned char fbe[4][4] = {
+        { 0x3F, 0x80, 0x00, 0x00 }, { 0xC0, 0x20, 0x00, 0x00 }, { 0x40, 0x49, 0x0F, 0xDB }, { 0x80, 0x00, 0x00, 0x00 }
+    };
+    const double dv[] = { 1.0, -2.5, 3.141592653589793, -0.0 };
+    const unsigned char dbe[4][8] = {
+        { 0x3F, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, { 0xC0, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+        { 0x40, 0x09, 0x21, 0xFB, 0x54, 0x44, 0x2D, 0x18 }, { 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+    };
+    unsigned char raw[9], le[8];
+    size_t i, k;
+    int32_t bad = 0;
+    float f;
+    double d;
+    uint32_t fb, fb2;
+    uint64_t db, db2;
+    for (i = 0; i < 4; i++) {
+        for (k = 0; k < 4; k++) {
+            le[k] = fbe[i][3 - k];
+        }
+        pack_float((char *)raw + 1, fv[i], 0);
+        if (0 != memcmp(raw + 1, fbe[i], 4)) {
+            bad++;
+        }
+        pack_float((char *)raw + 1, fv[i], 1);
+        if (0 != memcmp(raw + 1, le, 4)) {
+            bad++;
+        }
+        // 解包比位模式，-0.0 与 0.0 用 == 分不开
+        memcpy(&fb, &fv[i], 4);
+        memcpy(raw + 1, fbe[i], 4);
+        f = unpack_float((const char *)raw + 1, 0);
+        memcpy(&fb2, &f, 4);
+        if (fb != fb2) {
+            bad++;
+        }
+        memcpy(raw + 1, le, 4);
+        f = unpack_float((const char *)raw + 1, 1);
+        memcpy(&fb2, &f, 4);
+        if (fb != fb2) {
+            bad++;
+        }
+    }
+    for (i = 0; i < 4; i++) {
+        for (k = 0; k < 8; k++) {
+            le[k] = dbe[i][7 - k];
+        }
+        pack_double((char *)raw + 1, dv[i], 0);
+        if (0 != memcmp(raw + 1, dbe[i], 8)) {
+            bad++;
+        }
+        pack_double((char *)raw + 1, dv[i], 1);
+        if (0 != memcmp(raw + 1, le, 8)) {
+            bad++;
+        }
+        memcpy(&db, &dv[i], 8);
+        memcpy(raw + 1, dbe[i], 8);
+        d = unpack_double((const char *)raw + 1, 0);
+        memcpy(&db2, &d, 8);
+        if (db != db2) {
+            bad++;
+        }
+        memcpy(raw + 1, le, 8);
+        d = unpack_double((const char *)raw + 1, 1);
+        memcpy(&db2, &d, 8);
+        if (db != db2) {
+            bad++;
+        }
+    }
+    // 带载荷的 quiet NaN 大小端往返
+    fb = 0x7FC01234u;
+    memcpy(&f, &fb, 4);
+    pack_float((char *)raw + 1, f, 0);
+    f = unpack_float((const char *)raw + 1, 0);
+    memcpy(&fb2, &f, 4);
+    if (fb != fb2) {
+        bad++;
+    }
+    db = 0x7FF8000000001234ULL;
+    memcpy(&d, &db, 8);
+    pack_double((char *)raw + 1, d, 1);
+    d = unpack_double((const char *)raw + 1, 1);
+    memcpy(&db2, &d, 8);
+    if (db != db2) {
+        bad++;
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+    // 这些平台用 base.c 自己的 ntohll/htonll：每个字节都不对称，换错一段就比得出来
+    const uint64_t hv = 0xF1E2D3C4B5A69788ULL;
+    const unsigned char hbe[8] = { 0xF1, 0xE2, 0xD3, 0xC4, 0xB5, 0xA6, 0x97, 0x88 };
+    uint64_t hn = htonll(hv);
+    CuAssertTrue(tc, 0 == memcmp(&hn, hbe, sizeof(hbe)));
+    memcpy(&hn, hbe, sizeof(hbe));
+    CuAssertTrue(tc, hv == ntohll(hn));
+#endif
+}
+
 /* sfid_init 失败时一个字节都不写 ctx：校验全走局部量，
  * 调用方忽略返回值也拿不到半初始化的 ctx（timestampshift 是垃圾位移量） */
 static void test_sfid_init_keeps_ctx(CuTest *tc) {
@@ -3899,5 +4355,11 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_tda_overflow);
     SUITE_ADD_TEST(suite, test_strtod_c);
     SUITE_ADD_TEST(suite, test_str2u64);
+    SUITE_ADD_TEST(suite, test_str2u64_ref);
+    SUITE_ADD_TEST(suite, test_fromhex_table);
+    SUITE_ADD_TEST(suite, test_memstr_ref);
+    SUITE_ADD_TEST(suite, test_memichr_ref);
+    SUITE_ADD_TEST(suite, test_ct_memcmp_each_byte);
+    SUITE_ADD_TEST(suite, test_pack_float_bytes);
     SUITE_ADD_TEST(suite, test_sfid_init_keeps_ctx);
 }

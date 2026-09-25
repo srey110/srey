@@ -59,7 +59,7 @@ int32_t _http_check_keyval(http_header_ctx *head,
         _http_trim_ows(&tstart, &tend);
         // 大小写不敏感全等比较
         if ((size_t)(tend - tstart) == vlen
-            && 0 == STRNCMP(tstart, val, vlen)) {
+            && 0 == memcasecmp(tstart, val, vlen)) {
             return ERR_OK;
         }
         if (p < end) {
@@ -99,7 +99,7 @@ static int32_t _http_check_lastval(http_header_ctx *head, const char *val, size_
         tend = end;
         _http_trim_ows(&tstart, &tend);
         if (tstart < tend) {
-            return (size_t)(tend - tstart) == vlen && 0 == STRNCMP(tstart, val, vlen) ? ERR_OK : ERR_FAILED;
+            return (size_t)(tend - tstart) == vlen && 0 == memcasecmp(tstart, val, vlen) ? ERR_OK : ERR_FAILED;
         }
         // RFC 7230 §7：list 末尾/连续逗号引入的空元素须被忽略，跳过该逗号继续找上一个 token
         if (start == data) {
@@ -481,41 +481,29 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         // 多字节、零填充的 chunk-size 又正好 16 字节，两者都是合法传输
         int32_t semi = buffer_search(buf, 0, 0, (size_t)pos, ";", 1);
         int32_t hexlens = (semi >= 0) ? semi : pos;
-        char lensbuf[17] = { 0 };// 64 位十六进制最多 16 位 + NUL
+        char lensbuf[16];// 64 位十六进制最多 16 位
         if (hexlens <= 0
-            || hexlens >= (int32_t)sizeof(lensbuf)) {
+            || hexlens > (int32_t)sizeof(lensbuf)) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         ASSERTAB(hexlens == (int32_t)buffer_copyout(buf, 0, lensbuf, (size_t)hexlens), "copy buffer failed.");
-        // RFC 7230 §4.1：chunk-size = 1*HEXDIG。首字符必须是 HEXDIG，否则 strtoul 会跳过前导空白、
-        // 吞 '+'/'-'、或在空白后接受 "0x" 前缀，造成与上下游对 chunk 边界解析分歧（请求走私）
-        unsigned char c0 = (unsigned char)lensbuf[0];
-        if (!((c0 >= '0' && c0 <= '9') || (c0 >= 'a' && c0 <= 'f') || (c0 >= 'A' && c0 <= 'F'))) {
-            BIT_SET(*status, PROT_ERROR);
-            return NULL;
-        }
-        // 无前导空白的 "0x"/"0X"（首字符 '0' 已过上面校验）：strtoul base=16 会接受，显式拒绝
-        if ('0' == lensbuf[0]
-            && ('x' == lensbuf[1] || 'X' == lensbuf[1])) {
-            BIT_SET(*status, PROT_ERROR);
-            return NULL;
-        }
-        char *_endptr;
-        errno = 0;
-        size_t dlens = (size_t)strtoul(lensbuf, &_endptr, 16);
-        // 截出来的这段必须整段都是 hex：_endptr 要停在 NUL 上（ext 已在上面切掉，不再放行 ';'）。
-        // ERANGE 也判：溢出时 strtoul 返 ULONG_MAX，下面那道上限同样挡得住，这里只是把
-        // "数值溢出"与"超上限"分成两种拒因
-        if (_endptr == lensbuf
-            || '\0' != *_endptr
-            || ERANGE == errno) {
-            BIT_SET(*status, PROT_ERROR);
-            return NULL;
-        }
-        if (dlens > HTTP_MAX_CHUNK_LENS) {
-            BIT_SET(*status, PROT_ERROR);
-            return NULL;
+        // RFC 7230 §4.1：chunk-size 严格按 1*HEXDIG，前导空白/符号/"0x" 一律拒，免得与上下游切出不同的 chunk 边界(请求走私)。
+        // 移位前先卡上限的 1/16、累加后再卡上限，不论上限调多大都不会溢出
+        size_t dlens = 0;
+        int32_t h, i;
+        for (i = 0; i < hexlens; i++) {
+            h = fromhex(lensbuf[i]);
+            if (h < 0
+                || dlens > (HTTP_MAX_CHUNK_LENS >> 4)) {
+                BIT_SET(*status, PROT_ERROR);
+                return NULL;
+            }
+            dlens = (dlens << 4) | (size_t)h;
+            if (dlens > HTTP_MAX_CHUNK_LENS) {
+                BIT_SET(*status, PROT_ERROR);
+                return NULL;
+            }
         }
         drain = pos + CRLF_SIZE;
         ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");

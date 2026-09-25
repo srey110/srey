@@ -1,6 +1,9 @@
 ﻿#include "protocol/mongo/mongo_parse.h"
 #include "serial/bson.h"
 
+// 字段名等于字面量：先比长度，再定长比较
+#define KEY_IS(it, lit) ((sizeof(lit) - 1) == (it).keylens && 0 == memcmp((it).key, lit, sizeof(lit) - 1))
+
 // 取 BSON 的 ok 字段(线上是 double)。NaN/Inf/超范围转 int32 各架构结论不同，
 // x86 上会得到非 0 值被判成成功，所以取不到合法数值一律当失败
 static inline int32_t _mongo_iter_ok(bson_iter *iter) {
@@ -24,13 +27,13 @@ int32_t mongo_parse_auth_response(mgopack_ctx *mgopack, int32_t *convid, int32_t
     bson_iter iter;
     bson_iter_init(&iter, &bson);
     while (bson_iter_next(&iter)) {
-        if (0 == strcmp(iter.key, "conversationId")) {
+        if (KEY_IS(iter, "conversationId")) {
             *convid = bson_iter_int32(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "done")) {
+        } else if (KEY_IS(iter, "done")) {
             *done = bson_iter_bool(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "ok")) {
+        } else if (KEY_IS(iter, "ok")) {
             ok = _mongo_iter_ok(&iter);
-        } else if (0 == strcmp(iter.key, "payload")) {
+        } else if (KEY_IS(iter, "payload")) {
             *payload = bson_iter_binary(&iter, NULL, plens, NULL);
         }
     }
@@ -63,25 +66,25 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack) {
     int32_t count = 0;
     int32_t ok = 0, n = 0, writeerrors = 0, writeconcernerror = 0, errmsg = 0, nerrors = 0;
     while (bson_iter_next(&iter)) {
-        if (0 == strcmp(iter.key, "ok")) {
+        if (KEY_IS(iter, "ok")) {
             count++;
             ok = _mongo_iter_ok(&iter);
             if (!ok) {
                 break;
             }
-        } else if (0 == strcmp(iter.key, "n")) {
+        } else if (KEY_IS(iter, "n")) {
             count++;
             n = bson_iter_int32(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "writeErrors")) {
+        } else if (KEY_IS(iter, "writeErrors")) {
             count++;
             writeerrors = 1;
-        } else if (0 == strcmp(iter.key, "writeConcernError")) {
+        } else if (KEY_IS(iter, "writeConcernError")) {
             count++;
             writeconcernerror = 1;
-        } else if (0 == strcmp(iter.key, "errmsg")) {
+        } else if (KEY_IS(iter, "errmsg")) {
             count++;
             errmsg = 1;
-        } else if (0 == strcmp(iter.key, "nErrors")) {
+        } else if (KEY_IS(iter, "nErrors")) {
             count++;
             nerrors = bson_iter_int32(&iter, NULL);
         }
@@ -109,14 +112,14 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
     int32_t ok = 0;
     int32_t hasid = 0;
     while (bson_iter_next(&iter)) {
-        if (0 == strcmp(iter.key, "ok")) {
+        if (KEY_IS(iter, "ok")) {
             ok = _mongo_iter_ok(&iter);
             if (!ok) {
                 break;
             }
-        } else if (0 == strcmp(iter.key, "timeoutMinutes")) {
+        } else if (KEY_IS(iter, "timeoutMinutes")) {
             *timeout = bson_iter_int32(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "id")) {
+        } else if (KEY_IS(iter, "id")) {
             if (BSON_DOCUMENT != iter.type) {
                 break;
             }

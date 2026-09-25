@@ -27,56 +27,62 @@ void seri_append_nil(binary_ctx *bw) {
 void seri_append_bool(binary_ctx *bw, int32_t b) {
     binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_BOOLEAN, b ? 1 : 0));
 }
+// 一次扩够 n 字节并推进 offset，返回这 n 字节的起点
+static inline char *_seri_reserve(binary_ctx *bw, size_t n) {
+    size_t start = bw->offset;
+    binary_set_skip(bw, n);
+    return bw->data + start;
+}
+// 写 tag 加 n 字节小端整数
+static inline void _seri_put_num(binary_ctx *bw, uint8_t tag, uint64_t v, size_t n) {
+    char *p = _seri_reserve(bw, 1 + n);
+    p[0] = (char)tag;
+    pack_integer(p + 1, v, (int32_t)n, 1);
+}
 void seri_append_int(binary_ctx *bw, int64_t v) {
     if (0 == v) {
         binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_ZERO));
     } else if (v != (int32_t)v) {
         // 越出 int32 范围 → QWORD(i64)
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_QWORD));
-        binary_set_integer(bw, v, 8, 1);
+        _seri_put_num(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_QWORD), (uint64_t)v, 8);
     } else if (v < 0) {
         // 负数走 DWORD(i32)
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_DWORD));
-        binary_set_integer(bw, v, 4, 1);
+        _seri_put_num(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_DWORD), (uint64_t)v, 4);
     } else if (v < 0x100) {
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_BYTE));
-        binary_set_uinteger(bw, (uint64_t)v, 1, 1);
+        _seri_put_num(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_BYTE), (uint64_t)v, 1);
     } else if (v < 0x10000) {
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_WORD));
-        binary_set_uinteger(bw, (uint64_t)v, 2, 1);
+        _seri_put_num(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_WORD), (uint64_t)v, 2);
     } else {
         // 0x10000 <= v <= INT32_MAX：DWORD(u32)(>INT32_MAX 已在上面走 QWORD)
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_DWORD));
-        binary_set_uinteger(bw, (uint64_t)v, 4, 1);
+        _seri_put_num(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_DWORD), (uint64_t)v, 4);
     }
 }
 void seri_append_real(binary_ctx *bw, double v) {
-    binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_REAL));
-    binary_set_double(bw, v, 1);
+    char *p = _seri_reserve(bw, 1 + sizeof(double));
+    p[0] = (char)COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_REAL);
+    pack_double(p + 1, v, 1);
 }
 void seri_append_string(binary_ctx *bw, const char *s, size_t len) {
     // 仅 64 位守卫 4 字节长度前缀上界；32 位 size_t≤UINT32_MAX 恒真，略过以免 -Wtype-limits
 #if SIZE_MAX > UINT32_MAX
     ASSERTAB(len <= UINT32_MAX, "seri string length exceeds 4GB limit");
 #endif
-    if (len < SERI_MAX_COOKIE) {
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_SHORT_STRING, (uint8_t)len));
-        if (len > 0) {
-            binary_set_binary(bw, s, len);
-        }
-    } else if (len < 0x10000) {
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_LONG_STRING, 2));
-        binary_set_uinteger(bw, (uint64_t)len, 2, 1);
-        binary_set_binary(bw, s, len);
+    uintptr_t soff = (uintptr_t)s - (uintptr_t)bw->data;
+    int32_t inner = (NULL != bw->data && soff < bw->size);
+    size_t pre = len < SERI_MAX_COOKIE ? 0 : (len < 0x10000 ? 2 : 4);
+    char *p = _seri_reserve(bw, 1 + pre + len);
+    if (0 == pre) {
+        p[0] = (char)COMBINE_TYPE(SERI_TYPE_SHORT_STRING, (uint8_t)len);
     } else {
-        binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_LONG_STRING, 4));
-        binary_set_uinteger(bw, (uint64_t)len, 4, 1);
-        binary_set_binary(bw, s, len);
+        p[0] = (char)COMBINE_TYPE(SERI_TYPE_LONG_STRING, (uint8_t)pre);
+        pack_integer(p + 1, (uint64_t)len, (int32_t)pre, 1);
+    }
+    if (len > 0) {
+        memmove(p + 1 + pre, inner ? bw->data + soff : s, len);
     }
 }
 void seri_append_userdata(binary_ctx *bw, void *ud) {
-    binary_set_uint8(bw, SERI_TYPE_USERDATA);
-    binary_set_uinteger(bw, (uint64_t)(uintptr_t)ud, sizeof(void *), 1);
+    _seri_put_num(bw, SERI_TYPE_USERDATA, (uint64_t)(uintptr_t)ud, sizeof(void *));
 }
 void seri_append_array_start(binary_ctx *bw, uint32_t array_n) {
     if (array_n < SERI_MAX_COOKIE - 1) {

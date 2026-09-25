@@ -57,7 +57,7 @@ void seri_append_real(binary_ctx *bw, double v);
 /// len 小于 65536 → 长字符串 + u16 长度前缀；其余 → + u32 长度前缀。
 /// </summary>
 /// <param name="bw">binary_ctx</param>
-/// <param name="s">payload；len==0 时可为 NULL</param>
+/// <param name="s">payload；len==0 时可为 NULL；允许指向 bw 自己的缓冲，规则同 binary_set_binary</param>
 /// <param name="len">字节数</param>
 void seri_append_string(binary_ctx *bw, const char *s, size_t len);
 /// <summary>

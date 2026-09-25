@@ -130,7 +130,7 @@ int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *e
         int32_t n = (int32_t)ARRAY_SIZE(_pgsql_true);
         for (int32_t i = 0; i < n; i++) {
             if ((int32_t)strlen(_pgsql_true[i]) == row->lens
-                && 0 == _memicmp(row->val, _pgsql_true[i], row->lens)) {
+                && 0 == memcasecmp(row->val, _pgsql_true[i], row->lens)) {
                 return 1;
             }
         }

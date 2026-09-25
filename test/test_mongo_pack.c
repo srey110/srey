@@ -113,6 +113,40 @@ static double _bson_find_number(char *doc, size_t lens, const char *key, int32_t
     return 0.0;
 }
 
+// 逐字段核 OP_MSG 前 21 字节(size / reqid / respto / opcode / flags / kind)，再核偏移 21 起的文档：
+// 长度字段正好到包尾、末字节是 EOD、能一路迭代到最后追加的 $db。
+// 最后原样喂给 mongo_unpack，它按同一套规则拆出的 doc/dlens 须正好是这一段。返回文档起点
+static char *_assert_msg_wire(CuTest *tc, void *pack, size_t size, int32_t reqid, int32_t flags) {
+    char *p = (char *)pack;
+    char *doc = _assert_msg_head(tc, pack, size);
+    size_t dlens = size - _MSG_HEAD_LENS;
+    CuAssertIntEquals(tc, reqid, _read_le32(p, _MSG_OFF_REQID));
+    CuAssertIntEquals(tc, flags, _read_le32(p, _MSG_OFF_FLAGS));
+    CuAssertIntEquals(tc, (int)dlens, _read_le32(doc, 0));
+    CuAssertIntEquals(tc, 0, (int)(uint8_t)p[size - 1]);
+    CuAssertStrEquals(tc, "testdb", _bson_find_utf8(doc, dlens, "$db"));
+
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, pack, size);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    int32_t status = 0;
+    mgopack_ctx *mg = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, mg);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, size == (size_t)mg->total);
+    CuAssertIntEquals(tc, reqid, mg->reqid);
+    CuAssertIntEquals(tc, flags, mg->flags);
+    CuAssertIntEquals(tc, 0, (int)mg->kind);
+    CuAssertTrue(tc, dlens == (size_t)mg->dlens);
+    CuAssertTrue(tc, 0 == memcmp(mg->doc, doc, dlens));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _mongo_pkfree(mg);
+    buffer_free(&buf);
+    return doc;
+}
+
 // mongo_pack_ping 包头 + bson "ping":1 / "$db":"testdb"
 static void test_mongo_pack_ping(CuTest *tc) {
     mongo_ctx mongo;
@@ -866,6 +900,77 @@ static void test_mongo_parse_check_error(CuTest *tc) {
     }
 }
 
+// 闭合文档后交给 mongo_parse_check_error，顺手释放
+static int32_t _check_error_end(bson_ctx *b) {
+    mgopack_ctx mg;
+    int32_t rtn;
+    bson_append_end(b);
+    _mgopack_of(&mg, b);
+    rtn = mongo_parse_check_error(&mg);
+    BSON_FREE(b);
+    return rtn;
+}
+// 字段名改成先比长度再 memcmp 后，判定须与原来 strcmp 全等一致：大小写不同、前缀相同的相近名一律不算。
+// 每个相近名的值都取"一旦被误认就会改变结果"的那种
+static void test_mongo_parse_check_error_keys(CuTest *tc) {
+    bson_ctx b;
+    // ok 的相近名都填 0：误认成 ok 就会判失败
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "n", 3);
+    bson_append_double(&b, "o", 0.0);
+    bson_append_double(&b, "okk", 0.0);
+    bson_append_double(&b, "OK", 0.0);
+    bson_append_double(&b, "Ok", 0.0);
+    CuAssertIntEquals(tc, 3, _check_error_end(&b));
+
+    // 只有相近名、没有真正的 ok：不能当成功
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "o", 1.0);
+    bson_append_double(&b, "okk", 1.0);
+    bson_append_double(&b, "OK", 1.0);
+    bson_append_int32(&b, "n", 3);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+
+    // n 的相近名放在真 n 之后，误认就会把 3 覆盖掉；"nErrors" 以 n 打头也不算 n，空键名也不算
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "n", 3);
+    bson_append_int32(&b, "nX", 9);
+    bson_append_int32(&b, "N", 9);
+    bson_append_int32(&b, "", 9);
+    bson_append_int32(&b, "nErrors", 0);
+    CuAssertIntEquals(tc, 3, _check_error_end(&b));
+
+    // 错误类字段的相近名(大小写 / 截短 / 加长，长度跨过 8、16 字节)：都不算错误
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "n", 2);
+    bson_append_int32(&b, "writeerrors", 1);
+    bson_append_int32(&b, "WriteErrors", 1);
+    bson_append_int32(&b, "writeError", 1);
+    bson_append_int32(&b, "writeErrorsX", 1);
+    bson_append_int32(&b, "writeConcernErro", 1);
+    bson_append_int32(&b, "writeConcernErrors", 1);
+    bson_append_utf8(&b, "errms", "x");
+    bson_append_utf8(&b, "errmsgX", "x");
+    bson_append_utf8(&b, "Errmsg", "x");
+    bson_append_int32(&b, "nError", 5);
+    bson_append_int32(&b, "nerrors", 5);
+    bson_append_int32(&b, "nErrorsX", 5);
+    CuAssertIntEquals(tc, 2, _check_error_end(&b));
+
+    // 反向对照：真名照常判失败(errmsg / nErrors 已在 test_mongo_parse_check_error)
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "writeErrors", 1);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "writeConcernError", 1);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+}
+
 // mongo_parse_startsession：含合法 id 子文档 + timeoutMinutes → 成功提取 UUID
 static void test_mongo_parse_startsession(CuTest *tc) {
     char uuid[UUID_LENS];
@@ -1258,6 +1363,84 @@ static void test_mongo_pack_oversize_docs(CuTest *tc) {
     CuAssertTrue(tc, size > 0);
     FREE(pack);
 }
+
+// 组包改成在 bson 缓冲前预留 21 字节、收尾就地填头后，头部每个字段与文档边界都得和原来另拷一份时一样。
+// 三条路径：带容量预估的 insert、置了 MORETOCOME 的 update、容量传 0 的 ping；reqid 须接着连接上的值递增
+static void test_mongo_pack_msg_wire(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    mongo.reqid = 100;
+
+    bson_ctx arr;
+    bson_init(&arr, NULL, 0);
+    bson_append_document_begain(&arr, "0");
+    bson_append_utf8(&arr, "name", "tom");
+    bson_append_end(&arr);
+    bson_append_end(&arr);
+
+    size_t size = 0;
+    void *pack = mongo_pack_insert(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
+    char *doc = _assert_msg_wire(tc, pack, size, 101, 0);
+    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(doc, size - _MSG_HEAD_LENS, "insert"));
+    // 文档数组原样嵌在正文里
+    CuAssertTrue(tc, NULL != memstr(0, doc, size - _MSG_HEAD_LENS, arr.doc.data, arr.doc.offset));
+    FREE(pack);
+
+    mongo_set_flag(&mongo, MORETOCOME);
+    pack = mongo_pack_update(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
+    _assert_msg_wire(tc, pack, size, 102, MORETOCOME);
+    FREE(pack);
+    mongo_clear_flag(&mongo);
+
+    pack = mongo_pack_ping(&mongo, &size);
+    _assert_msg_wire(tc, pack, size, 103, 0);
+    FREE(pack);
+    CuAssertIntEquals(tc, 103, mongo.reqid);
+    BSON_FREE(&arr);
+}
+// 大于 64KB 的包：insert 的文档数组与 options 各带 70000 字节，options 超出容量预估的余量，组包中途必扩容；
+// find 只带大 filter，落在预估之内。两条包的头与文档边界照样自洽，大块内容原样落在正文里
+static void test_mongo_pack_msg_large(CuTest *tc) {
+    const size_t blens = 70000;
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    char *blob;
+    size_t i;
+    MALLOC(blob, blens);
+    for (i = 0; i < blens; i++) {
+        blob[i] = (char)(i * 131 + 7);
+    }
+    bson_ctx arr;
+    bson_init(&arr, NULL, 0);
+    bson_append_document_begain(&arr, "0");
+    bson_append_binary(&arr, "blob", BSON_SUBTYPE_BINARY, blob, blens);
+    bson_append_end(&arr);
+    bson_append_end(&arr);
+    bson_ctx opts;
+    bson_init(&opts, NULL, 0);
+    bson_append_binary(&opts, "comment", BSON_SUBTYPE_BINARY, blob, blens);
+    bson_append_end(&opts);
+
+    size_t size = 0;
+    void *pack = mongo_pack_insert(&mongo, arr.doc.data, arr.doc.offset, opts.doc.data, opts.doc.offset, &size);
+    CuAssertTrue(tc, size > arr.doc.offset + opts.doc.offset);
+    char *doc = _assert_msg_wire(tc, pack, size, 1, 0);
+    CuAssertTrue(tc, NULL != memstr(0, doc, size - _MSG_HEAD_LENS, arr.doc.data, arr.doc.offset));
+    // options 经 bson_cat 去掉外层长度与 EOD 后并入，里面的元素原样在
+    CuAssertTrue(tc, NULL != memstr(0, doc, size - _MSG_HEAD_LENS, opts.doc.data + 4, opts.doc.offset - 5));
+    FREE(pack);
+
+    pack = mongo_pack_find(&mongo, opts.doc.data, opts.doc.offset, NULL, 0, &size);
+    CuAssertTrue(tc, size > opts.doc.offset);
+    doc = _assert_msg_wire(tc, pack, size, 2, 0);
+    CuAssertIntEquals(tc, BSON_DOCUMENT, _bson_find_type(doc, size - _MSG_HEAD_LENS, "filter"));
+    CuAssertTrue(tc, NULL != memstr(0, doc, size - _MSG_HEAD_LENS, opts.doc.data, opts.doc.offset));
+    FREE(pack);
+
+    BSON_FREE(&arr);
+    BSON_FREE(&opts);
+    FREE(blob);
+}
 void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_ping);
     SUITE_ADD_TEST(suite, test_mongo_pack_hello);
@@ -1266,6 +1449,8 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_check_flag);
     SUITE_ADD_TEST(suite, test_mongo_pack_oversize_options);
     SUITE_ADD_TEST(suite, test_mongo_pack_oversize_docs);
+    SUITE_ADD_TEST(suite, test_mongo_pack_msg_wire);
+    SUITE_ADD_TEST(suite, test_mongo_pack_msg_large);
     SUITE_ADD_TEST(suite, test_mongo_pack_update_delete_bulk);
     SUITE_ADD_TEST(suite, test_mongo_pack_find);
     SUITE_ADD_TEST(suite, test_mongo_pack_misc);
@@ -1278,6 +1463,7 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_parse_auth_response);
     SUITE_ADD_TEST(suite, test_mongo_parse_cursorid);
     SUITE_ADD_TEST(suite, test_mongo_parse_check_error);
+    SUITE_ADD_TEST(suite, test_mongo_parse_check_error_keys);
     SUITE_ADD_TEST(suite, test_mongo_parse_startsession);
     SUITE_ADD_TEST(suite, test_mongo_unpack_kind0_ok);
     SUITE_ADD_TEST(suite, test_mongo_unpack_flags_whitelist);

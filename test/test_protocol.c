@@ -742,11 +742,11 @@ static void _chunked_size_check(CuTest *tc, const char *sizeline, int32_t expect
     _http_udfree(&ud);
     buffer_free(&buf);
 }
-// RFC 7230 §4.1：chunk-size 首字符须为 HEXDIG；strtoul 会跳前导空白 / 吞 '+'/'-' / 空白后接受 "0x"（请求走私）
+// RFC 7230 §4.1：chunk-size 严格按 1*HEXDIG；前导空白 / '+' '-' / "0x" 都是旧实现走 strtoul 时被放过的走私写法，一律拒
 static void test_http_chunked_size_smuggle(CuTest *tc) {
     _chunked_size_check(tc, " 0x10\r\n", 1);// 前导空白 + 0x（旧代码绕过 0x 拒绝）
     _chunked_size_check(tc, "0x10\r\n", 1);// 无空白 0x
-    _chunked_size_check(tc, "+5\r\n", 1);// strtoul 吞 '+'
+    _chunked_size_check(tc, "+5\r\n", 1);// 符号位（旧实现 strtoul 会吞 '+'）
     _chunked_size_check(tc, " 5\r\n", 1);// 前导空白
     _chunked_size_check(tc, "a\r\n", 0);// 合法 hex，不误拒（解析成功后等 data）
 }
@@ -792,8 +792,68 @@ static void test_http_chunked_lens_bound(CuTest *tc) {
     // 上限 +1：拒
     SNPRINTF(line, sizeof(line), "%zx\r\n", (size_t)HTTP_MAX_CHUNK_LENS + 1);
     _chunked_size_check(tc, line, 1);
-    // 16 位十六进制满值：strtoul 溢出与否都超上限，两种平台上都拒
+    // 16 位十六进制满值：逐位累加到第 5 位就超上限，拒
     _chunked_size_check(tc, "ffffffffffffffff\r\n", 1);
+}
+
+// 长度行合法时再核数值：后面正好补 expect 字节数据 + CRLF，第二次 unpack 须吐出 expect 字节的块并把缓冲吃空。
+// 数值解错的话要么等不齐(MOREDATA)，要么块尾 CRLF 对不上(ERROR)，都过不了
+static void _chunked_size_value(CuTest *tc, const char *sizeline, size_t expect) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    _bput(&buf, "GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+    _bput(&buf, sizeline);
+    char *body;
+    MALLOC(body, expect + CRLF_SIZE);
+    memset(body, 'x', expect);
+    memcpy(body + expect, "\r\n", CRLF_SIZE);
+    buffer_append(&buf, body, expect + CRLF_SIZE);
+    FREE(body);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    int32_t status = PROT_INIT;
+    struct http_pack_ctx *pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 1) header
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 2) 长度行 + 数据块
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 2, http_chunked(pack));
+    size_t dlen = 0;
+    http_data(pack, &dlen);
+    CuAssertTrue(tc, expect == dlen);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+// chunk-size 改成 fromhex 逐位累加、每位卡 HTTP_MAX_CHUNK_LENS 后，接受集合须与原来
+// "首字符 HEXDIG + 非 0x + strtoul 整段吃完 + 不超上限"一致，且数值与 strtoul 按 16 进制解出的相同
+static void test_http_chunked_size_strict(CuTest *tc) {
+    char line[64];
+    // 拒：符号 / 0X / 空白夹在 hex 与 ';' 之间或行尾 / 零填充后超上限 / 16 位大值
+    _chunked_size_check(tc, "-10\r\n", 1);
+    _chunked_size_check(tc, "0X10\r\n", 1);
+    _chunked_size_check(tc, "+10\r\n", 1);
+    _chunked_size_check(tc, " 10\r\n", 1);
+    _chunked_size_check(tc, "\t10\r\n", 1);
+    _chunked_size_check(tc, "10 \r\n", 1);
+    _chunked_size_check(tc, "10 ;ext=1\r\n", 1);
+    SNPRINTF(line, sizeof(line), "%016zx\r\n", (size_t)HTTP_MAX_CHUNK_LENS + 1);
+    _chunked_size_check(tc, line, 1);// 16 位零填充的上限 + 1
+    _chunked_size_check(tc, "1000000000000000\r\n", 1);// 2^60，逐位卡上限时不能先溢出再判
+    _chunked_size_check(tc, "00000000000000010\r\n", 1);// 17 位，哪怕值只有 16
+    // 收，并核数值
+    _chunked_size_value(tc, "10\r\n", 16);// 按 16 进制，不是 10
+    _chunked_size_value(tc, "10;ext=1\r\n", 16);
+    _chunked_size_value(tc, "0000000000000010\r\n", 16);// 16 位零填充
+    _chunked_size_value(tc, "aB\r\n", 0xab);// 大小写混用
+    // 恰等于上限：大写，以及 16 位零填充的大写
+    SNPRINTF(line, sizeof(line), "%zX\r\n", (size_t)HTTP_MAX_CHUNK_LENS);
+    _chunked_size_value(tc, line, (size_t)HTTP_MAX_CHUNK_LENS);
+    SNPRINTF(line, sizeof(line), "%016zX\r\n", (size_t)HTTP_MAX_CHUNK_LENS);
+    _chunked_size_value(tc, line, (size_t)HTTP_MAX_CHUNK_LENS);
 }
 
 // chunk-size 行迟迟等不到 CRLF 时必须有上限。没有的话对端只要一直发不带 CRLF 的字节，
@@ -1413,8 +1473,8 @@ static void test_redis_bulk_bad_crlf(CuTest *tc) {
     _redis_udfree(&ud);
     buffer_free(&buf);
 }
-// 长度行的首字符只许数字或 '-'（null 的 "-1"）。放开的话 strtoll 会跳前导空白、吞 '+'，
-// 与严格按 1*DIGIT 解析的对端切出不同的包边界
+// 长度行严格按 ['-']1*DIGIT（'-' 只为 null 的 "-1"）；前导空白与 '+' 是旧实现走 strtoll 时被放过的写法，
+// 放行会与严格解析的对端切出不同的包边界
 static void test_redis_len_first_char(CuTest *tc) {
     // bulk 侧
     _redis_reject_check(tc, "$+6\r\nfoobar\r\n", 13);
@@ -1426,6 +1486,55 @@ static void test_redis_len_first_char(CuTest *tc) {
     // 首字符过了白名单，数值仍须 >= -1
     _redis_reject_check(tc, "$-2\r\n", 5);
     _redis_reject_check(tc, "*-2\r\n", 5);
+}
+// 投一段长度行打头的回复，断言整段吃完、首节点类型对、长度(bulk 看 len，聚合看 nelem)等于 expect
+static void _redis_len_accept(CuTest *tc, const char *raw, int32_t prot, int64_t expect) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    redis_pack_ctx *pack = _t_redis_one(&buf, &ud, raw, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, prot == pack->prot);
+    CuAssertTrue(tc, expect == (RESP_BSTRING == prot ? pack->len : pack->nelem));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
+// 长度行改走 parse_int64_strict 后，接受集合须与原来"首字符是数字或 '-'、strtoll 整段吃完、不 ERANGE、>= -1"逐条一致。
+// 首字符 '+'/空白、"-2" 等已在 test_redis_len_first_char，这里补数值本身的边界
+static void test_redis_len_strict(CuTest *tc) {
+    static const char *rejects[] = {
+        "$-\r\n",// 只有负号
+        "*-\r\n",
+        "$--1\r\n",
+        "$1-\r\n",
+        "$5 \r\nhello\r\n",// 尾随空白：strtoll 停在空格上，没吃完整段
+        "$0x5\r\n",// 十进制里没有 0x
+        "$9223372036854775808\r\n",// INT64_MAX + 1：原来 ERANGE
+        "*9223372036854775808\r\n",
+        "$-9223372036854775809\r\n",// 负向越过 INT64_MIN
+        "$99999999999999999999\r\n",// 20 位，连 uint64 都装不下
+    };
+    char line[128];
+    size_t i;
+    // null 与空：-1 是 null，"-0" 与 "-01" 按 strtoll 分别是 0 和 -1
+    _redis_len_accept(tc, "$-1\r\n", RESP_BSTRING, -1);
+    _redis_len_accept(tc, "*-1\r\n", RESP_ARRAY, -1);
+    _redis_len_accept(tc, "$-0\r\n\r\n", RESP_BSTRING, 0);
+    _redis_len_accept(tc, "*-0\r\n", RESP_ARRAY, 0);
+    _redis_len_accept(tc, "$-01\r\n", RESP_BSTRING, -1);
+    // 前导零照常按十进制：007 就是 7
+    _redis_len_accept(tc, "$007\r\nfoobarx\r\n", RESP_BSTRING, 7);
+    // 63 位零填充(长度行缓冲 64 字节的上限内)：前导零再多也不能被当成溢出
+    line[0] = '$';
+    memset(line + 1, '0', 62);
+    memcpy(line + 63, "3\r\nfoo\r\n", sizeof("3\r\nfoo\r\n"));
+    _redis_len_accept(tc, line, RESP_BSTRING, 3);
+    for (i = 0; i < ARRAY_SIZE(rejects); i++) {
+        _redis_reject_check(tc, rejects[i], strlen(rejects[i]));
+    }
 }
 // RESP2 的空数组两种写法都是合法回复：*-1 是 null array（BLPOP 超时就发这个），
 // *0 是零元素数组。谁在这里补一条 nelem < 0 的"自然防御"，每次 BLPOP 超时就会掉连接
@@ -6133,6 +6242,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_chunked_size_no_crlf_bound);
     SUITE_ADD_TEST(suite, test_http_chunked_ext);
     SUITE_ADD_TEST(suite, test_http_chunked_lens_bound);
+    SUITE_ADD_TEST(suite, test_http_chunked_size_strict);
     SUITE_ADD_TEST(suite, test_http_check_keyval_token);
     SUITE_ADD_TEST(suite, test_http_chunked_trailer_limit);
     SUITE_ADD_TEST(suite, test_http_moredata);
@@ -6144,6 +6254,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_redis_null_bulk);
     SUITE_ADD_TEST(suite, test_redis_bulk_bad_crlf);
     SUITE_ADD_TEST(suite, test_redis_len_first_char);
+    SUITE_ADD_TEST(suite, test_redis_len_strict);
     SUITE_ADD_TEST(suite, test_redis_empty_array);
     SUITE_ADD_TEST(suite, test_redis_array);
     SUITE_ADD_TEST(suite, test_redis_pack);

@@ -691,8 +691,7 @@ static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bs
                 luaL_error(lua, "bson encode: key must not contain NUL");
             }
         } else if (lua_isinteger(lua, -2)) {
-            snprintf(keybuf, sizeof(keybuf), "%lld", (long long)lua_tointeger(lua, -2));
-            key = keybuf;
+            key = lpub_int_str(keybuf, sizeof(keybuf), lua_tointeger(lua, -2), NULL);
         } else {
             // 与下方 value 类型不支持时的处理一致：报错，不静默丢弃该键值对
             luaL_error(lua, "bson encode unsupported key type '%s'", lua_typename(lua, lua_type(lua, -2)));
@@ -701,22 +700,12 @@ static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bs
         lua_pop(lua, 1);
     }
 }
-// 非负整数(数组下标 0..n-1)转十进制字符串写入 buf 尾部，返回结果起始指针；避免 snprintf 热路径开销
-static const char *_bson_arr_key(char *buf, size_t buflen, lua_Integer i) {
-    char *p = buf + buflen - 1;
-    *p = '\0';
-    do {
-        *(--p) = (char)('0' + (int)(i % 10));
-        i /= 10;
-    } while (0 != i);
-    return p;
-}
 static void _lbson_encode_table_as_arr(lua_State *lua, int32_t idx, bson_ctx *bson, lua_Integer n) {
     lua_Integer i;
     char keybuf[24];
     const char *key;
     for (i = 1; i <= n; i++) {
-        key = _bson_arr_key(keybuf, sizeof(keybuf), i - 1);
+        key = lpub_int_str(keybuf, sizeof(keybuf), i - 1, NULL);
         lua_rawgeti(lua, idx, i);
         _lbson_encode_value(lua, lua_gettop(lua), bson, key);
         lua_pop(lua, 1);
@@ -957,8 +946,8 @@ static int32_t _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_a
 }
 static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int32_t is_array, int32_t depth) {
     luaL_checkstack(lua, 6, "bson decode");
-    lua_newtable(lua);
     if (NULL == data) {
+        lua_newtable(lua);
         return;
     }
     if (depth > BSON_MAX_DEPTH) {
@@ -967,14 +956,24 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
     }
     bson_ctx sub;
     bson_iter iter;
+    int32_t cnt = 0;
     bson_init(&sub, data, lens);
     bson_iter_init(&iter, &sub);
+    if (!is_array) {
+        while (bson_iter_next(&iter)) {
+            cnt++;
+        }
+        if (0 == bson_iter_error(&iter)) {
+            bson_iter_reset(&iter);
+        }
+    }
+    lua_createtable(lua, 0, cnt);
     int32_t idx = 0;
     while (bson_iter_next(&iter)) {
         idx += _lbson_decode_field(lua, &iter, is_array, idx, depth);
     }
     if (0 != bson_iter_error(&iter)) {
-        // 表里此刻只有卡住那一处之前的前缀,原样交出去调用方分不清"文档就这么几个字段"
+        // 表此刻是残缺的(数组是卡住之前的前缀,文档在计数时就出错所以是空表),原样交出去调用方分不清"文档就这么几个字段"
         // 和"后面全丢了"。两类成因都读不下去,故都报错;具体是哪类看日志。
         // sub 是只读模式,没有需要先释放的资源
         luaL_error(lua, "bson decode failed: malformed document or unsupported element type");

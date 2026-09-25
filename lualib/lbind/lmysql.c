@@ -634,7 +634,7 @@ static int32_t _lmysql_new(lua_State *lua) {
         SECURE_FREE(mysql, sizeof(mysql_ctx));
         return lpub_rtn_nil(lua, 1);
     }
-    ATOMIC_SET(&mysql->ref, 1);// Lua 持有者份额
+    ATOMIC_SET_RELAXED(&mysql->ref, 1);// Lua 持有者份额
     *ud = mysql;
     return 1;
 }

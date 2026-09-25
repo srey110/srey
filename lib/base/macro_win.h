@@ -14,8 +14,6 @@
 
 #define IS_EAGAIN(e) (WSAEWOULDBLOCK == (e) || EAGAIN == (e)) // 判断是否为非阻塞重试错误
 #define GETPID   _getpid // 获取当前进程 ID
-#define STRICMP  _stricmp // 不区分大小写字符串比较
-#define STRNCMP  _strnicmp // 不区分大小写的前 n 字节字符串比较
 #define STRTOK   strtok_s // 线程安全的字符串分割
 #define SNPRINTF snprintf // 格式化输出到缓冲区
 #define SWPRINTF swprintf // 宽字符格式化输出
@@ -68,30 +66,9 @@
 #define GMTIME(ts, dt) gmtime_s((dt), (ts))
 #define ERRNO GetLastError() // 获取上一个 Windows 错误码
 #define ERRORSTR(errcode) _fmterror(errcode) // 将错误码转换为字符串
-// 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）
-static inline const char *_fmterror(DWORD error) {
-    char *err = NULL;
-    if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                            NULL,
-                            error,
-                            MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-                            (LPTSTR)&err,
-                            0,
-                            NULL)) {
-        return "FormatMessageA error.";
-    }
-    static THREAD_LOCAL char errstr[4096]; // 线程局部存储，避免多线程竞争
-    size_t ilens = strlen(err);
-    ilens = ilens >= sizeof(errstr) ? sizeof(errstr) - 1 : ilens;
-    memcpy(errstr, err, ilens);
-    // FormatMessageA 的文本自带结尾 CRLF，留着每条错误日志后面都多一个空行
-    while (ilens > 0 && ('\r' == errstr[ilens - 1] || '\n' == errstr[ilens - 1])) {
-        ilens--;
-    }
-    errstr[ilens] = '\0';
-    LocalFree(err);
-    return errstr;
-}
+// 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）。定义在 base.c，全程序只一份线程局部缓冲；
+// 返回那块缓冲（FormatMessageA 失败时返回固定串），不用释放，本线程下次调用前有效
+const char *_fmterror(DWORD error);
 
 #endif
 #endif//MACRO_WIN_H_

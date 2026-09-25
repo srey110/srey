@@ -397,3 +397,18 @@ int32_t lpub_push_sock_invalid(lua_State *lua) {
 int32_t lpub_is_sock(lua_State *lua, int32_t idx) {
     return NULL != luaL_testudata(lua, idx, MT_SOCK);
 }
+const char *lpub_int_str(char *buf, size_t buflen, lua_Integer i, size_t *lens) {
+    uint64_t u = i < 0 ? 0 - (uint64_t)i : (uint64_t)i;
+    char *end = buf + buflen - 1;
+    char *p = end;
+    *end = '\0';
+    do {
+        *(--p) = (char)('0' + (int)(u % 10));
+        u /= 10;
+    } while (0 != u);
+    if (i < 0) {
+        *(--p) = '-';
+    }
+    SET_PTR(lens, (size_t)(end - p));
+    return p;
+}

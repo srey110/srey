@@ -92,6 +92,13 @@ const char *bson_empty(size_t *lens);
 /// <param name="lens">data!=NULL 时为 data 长度；data==NULL 时为预分配容量提示（0=默认 256，传入预估大小可消除写入过程中的 doubling 重分配）</param>
 void bson_init(bson_ctx *bson, char *data, size_t lens);
 /// <summary>
+/// 构建模式初始化，文档前空出 prefix 字节给上层写报文头；BSON_DOC 指向报文头而不是文档
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="lens">文档预估容量</param>
+/// <param name="prefix">文档前预留的字节数</param>
+void bson_init_prefix(bson_ctx *bson, size_t lens, size_t prefix);
+/// <summary>
 /// 检查 BSON 是否已完整写入（depth 为 0 且有内容）
 /// </summary>
 /// <param name="bson">bson_ctx</param>

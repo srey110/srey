@@ -249,7 +249,7 @@ int32_t redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, u
         }
         if (RESP_STRING != rtn->prot
             || 2 != rtn->len
-            || 0 != _memicmp(rtn->data, "ok", (size_t)rtn->len)) {
+            || 0 != memcasecmp(rtn->data, "ok", (size_t)rtn->len)) {
             ev_close(&task->loader->netev, sk);
             return ERR_FAILED;
         }

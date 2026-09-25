@@ -9,12 +9,18 @@ typedef CRITICAL_SECTION mutex_ctx;
 typedef pthread_mutex_t mutex_ctx;
 #endif
 /// <summary>
-/// 互斥锁初始化
+/// 互斥锁初始化。glibc 与 FreeBSD 上用自适应锁：争用时先短暂自旋再睡
 /// </summary>
 /// <param name="ctx">mutex_ctx</param>
 static inline void mutex_init(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     InitializeCriticalSection(ctx);
+#elif defined(PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP)
+    pthread_mutexattr_t attr;
+    ASSERTAB_CODE(pthread_mutexattr_init(&attr));
+    ASSERTAB_CODE(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ADAPTIVE_NP));
+    ASSERTAB_CODE(pthread_mutex_init(ctx, &attr));
+    (void)pthread_mutexattr_destroy(&attr);
 #else
     ASSERTAB_CODE(pthread_mutex_init(ctx, (const pthread_mutexattr_t*)NULL));
 #endif

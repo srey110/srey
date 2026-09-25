@@ -42,8 +42,8 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
     q->mask = q->capacity - 1;                                                  \
     ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)q->capacity, "byte size overflow.");\
     MALLOC(q->cell, sizeof(T) * (size_t)q->capacity);                           \
-    ATOMIC_SET(&q->enq, 0);                                                     \
-    ATOMIC_SET(&q->deq, 0);                                                     \
+    ATOMIC_SET_RELAXED(&q->enq, 0);                                                     \
+    ATOMIC_SET_RELAXED(&q->deq, 0);                                                     \
     q->deq_cache = 0;                                                           \
     q->enq_cache = 0;                                                           \
 }                                                                               \

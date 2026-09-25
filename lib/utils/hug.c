@@ -2,7 +2,7 @@
 #include "utils/utils.h"
 
 int32_t hug_init(hug_ctx *ctx) {
-    ATOMIC_SET(&ctx->exitflag, 0);
+    ATOMIC_SET_RELAXED(&ctx->exitflag, 0);
 #ifdef OS_WIN
     mutex_init(&ctx->muexit);
     cond_init(&ctx->condexit);
@@ -45,7 +45,7 @@ void hug_wakeup(hug_ctx *ctx) {
 #ifdef OS_WIN
     // 置位必须在 mutex 内, 否则会漏唤醒
     mutex_lock(&ctx->muexit);
-    ATOMIC_SET(&ctx->exitflag, 1);
+    ATOMIC_SET_RELAXED(&ctx->exitflag, 1);
     mutex_unlock(&ctx->muexit);
     cond_signal(&ctx->condexit);
 #else

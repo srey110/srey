@@ -276,7 +276,7 @@ task_ctx *task_grab(loader_ctx *loader, name_t handle) {
     rwlock_distr_rdlock(&loader->lckmaptasks);
     task_ctx *task = _task_map_get(loader->maptasks, handle);
     if (NULL != task) {
-        ATOMIC_ADD(&task->ref, 1);
+        ATOMIC_ADD_RELAXED(&task->ref, 1);
     }
     rwlock_distr_runlock(&loader->lckmaptasks);
     return task;
@@ -291,7 +291,7 @@ name_t task_find_name(loader_ctx *loader, const char *name) {
     return handle;
 }
 void task_incref(task_ctx *task) {
-    ATOMIC_ADD(&task->ref, 1);
+    ATOMIC_ADD_RELAXED(&task->ref, 1);
 }
 // 摘除后唤醒 _loader_task_closing：这是全仓唯一从 maptasks 摘 task 的地方，
 // 也就是"计数可能归零"的唯一发布点。signal 必须排在 wrunlock 之后——
@@ -473,7 +473,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
     } else {
         shared->data = data;
     }
-    ATOMIC_SET(&shared->ref, valid);
+    ATOMIC_SET_RELAXED(&shared->ref, valid);
     // 投递 N 条 message：共用 shared，_message_clean 走 shared 分支 ref-- 归 0 才 FREE
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_REQUEST;
@@ -581,7 +581,7 @@ void task_set_priority(task_ctx *task, int32_t priority) {
     } else if (p > TASK_PRIORITY_MAX) {
         p = TASK_PRIORITY_MAX;
     }
-    ATOMIC_SET(&task->priority, (atomic_t)p);
+    ATOMIC_SET_RELAXED(&task->priority, (atomic_t)p);
 }
 int32_t task_get_priority(task_ctx *task) {
     return (int32_t)ATOMIC_GET(&task->priority);
@@ -590,7 +590,7 @@ void task_set_request_timeout(task_ctx *task, uint32_t ms) {
     if (0 == ms) {
         return;
     }
-    ATOMIC_SET(&task->timeout_request, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
+    ATOMIC_SET_RELAXED(&task->timeout_request, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
 }
 uint32_t task_get_request_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_request);
@@ -599,7 +599,7 @@ void task_set_connect_timeout(task_ctx *task, uint32_t ms) {
     if (0 == ms) {
         return;
     }
-    ATOMIC_SET(&task->timeout_connect, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
+    ATOMIC_SET_RELAXED(&task->timeout_connect, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
 }
 uint32_t task_get_connect_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_connect);
@@ -608,7 +608,7 @@ void task_set_netread_timeout(task_ctx *task, uint32_t ms) {
     if (0 == ms) {
         return;
     }
-    ATOMIC_SET(&task->timeout_netread, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
+    ATOMIC_SET_RELAXED(&task->timeout_netread, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
 }
 uint32_t task_get_netread_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_netread);

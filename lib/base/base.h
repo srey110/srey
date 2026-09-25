@@ -16,23 +16,36 @@ typedef int32_t(*cmp_func)(const void *, const void *, size_t); //内存比较�
 /// <param name="len">字节数（0 时直接返回）</param>
 void secure_zero(void *buf, size_t len);
 /// <summary>
-/// 查找字符，不区分大小写
+/// 查找字符，不区分大小写。大小写只按 ASCII 折叠('A'..'Z')，0x80 以上的字节原样比，不随 locale 变
 /// </summary>
 /// <param name="ptr">源字符</param>
 /// <param name="val">需要查找的字符</param>
 /// <param name="maxlen">最多搜索长度</param>
 /// <returns>void * 字符出现的指针, NULL无</returns>
 void *memichr(const void *ptr, int32_t val, size_t maxlen);
-#ifndef OS_WIN
 /// <summary>
-/// 不区分大小写的内存比较（Unix 平台实现；Windows 用 CRT 同名函数）
+/// 不区分大小写的内存比较，各平台同一份实现。折叠规则同 memichr；按长度比，内嵌 NUL 照常往后比
 /// </summary>
 /// <param name="ptr1">第一块内存指针</param>
 /// <param name="ptr2">第二块内存指针</param>
 /// <param name="lens">比较字节数</param>
-/// <returns>0 表示相等，正数表示 ptr1 大，负数表示 ptr1 小</returns>
-int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens);
-#endif//OS_WIN
+/// <returns>0 相等；1 ptr1 大；-1 ptr1 小。大小按折叠后的无符号字节值比</returns>
+int32_t memcasecmp(const void *ptr1, const void *ptr2, size_t lens);
+/// <summary>
+/// 不区分大小写的 C 串比较，折叠规则同 memichr。一般经 STRICMP 宏调用
+/// </summary>
+/// <param name="s1">第一个串，须以 NUL 结尾</param>
+/// <param name="s2">第二个串，须以 NUL 结尾</param>
+/// <returns>0 相等；1 s1 大；-1 s1 小。大小按折叠后的无符号字节值比，短串是长串前缀时短串小</returns>
+int32_t strcasecmp(const char *s1, const char *s2);
+/// <summary>
+/// 同 strcasecmp，但最多比前 n 个字节，遇 NUL 提前结束。一般经 STRNCMP 宏调用
+/// </summary>
+/// <param name="s1">第一个串</param>
+/// <param name="s2">第二个串</param>
+/// <param name="n">最多比较的字节数</param>
+/// <returns>同 strcasecmp；n 为 0 返回 0</returns>
+int32_t strncasecmp(const char *s1, const char *s2, size_t n);
 /// <summary>
 /// 按 ncs 选大小写敏感(0)或不敏感的查找/比较组合。凡按 ncs 分流的搜索入口都用它,
 /// 别各自写 if/else —— 分支写反只表现为搜索结果多一条或少一条, 不会崩, 极难发现
@@ -46,7 +59,7 @@ static inline void mem_funcs_pick(int32_t ncs, chr_func *chr, cmp_func *cmp) {
         *cmp = memcmp;
     } else {
         *chr = memichr;
-        *cmp = _memicmp;
+        *cmp = memcasecmp;
     }
 }
 /// <summary>
@@ -308,7 +321,7 @@ void slog(int32_t lv, const char *fmt, ...);
 /// 尽力而为——不保证落盘，但每一步都有上限，不会把崩溃卡成挂起。可并发调用、可重复调用，
 /// 各种情形下分别做什么见实现里的分支注释
 /// </summary>
-/// <param name="file">断言所在文件，由 ASSERTAB 传 __FILENAME__(__FILE__)</param>
+/// <param name="file">断言所在文件，由 ASSERTAB 传 __FILENAME__</param>
 /// <param name="func">断言所在函数</param>
 /// <param name="line">断言所在行</param>
 /// <param name="msg">断言的错误描述，非空</param>

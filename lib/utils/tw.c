@@ -17,11 +17,11 @@ static void _tw_free_slot(list_ctx *slot, const size_t len) {
     }
 }
 void tw_free(tw_ctx *ctx) {
-    ATOMIC_SET(&ctx->exit, 1);
+    ATOMIC_SET_RELAXED(&ctx->exit, 1);
     /* 唤醒轮线程，让它检查 exit 标志并退出 */
     mutex_lock(&ctx->mu);
-    cond_signal(&ctx->cond);
     mutex_unlock(&ctx->mu);
+    cond_signal(&ctx->cond);
     thread_join(ctx->thtw);
     _tw_free_slot(ctx->tv1, TVR_SIZE);
     _tw_free_slot(ctx->tv2, TVN_SIZE);
@@ -62,8 +62,8 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     /* 仅当标志由 0→1 时（首批新任务）才唤醒轮线程，批量入队后续节点不重复 signal */
     if (ATOMIC_CAS(&ctx->reqadd_pending, 0, 1)) {
         mutex_lock(&ctx->mu);
-        cond_signal(&ctx->cond);
         mutex_unlock(&ctx->mu);
+        cond_signal(&ctx->cond);
     }
 }
 // 根据节点的到期时间计算应放入 tv1～tv5 中的哪个槽位
@@ -202,9 +202,9 @@ static void _tw_loop(void *arg) {
     LOG_INFO("%s", "timewheel thread exited.");
 }
 void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks) {
-    ATOMIC_SET(&ctx->exit, 0);
+    ATOMIC_SET_RELAXED(&ctx->exit, 0);
     ctx->jiffies = 0;
-    ATOMIC_SET(&ctx->reqadd_pending, 0);
+    ATOMIC_SET_RELAXED(&ctx->reqadd_pending, 0);
     mutex_init(&ctx->mu);
     cond_init(&ctx->cond);
     timer_init(&ctx->timer);

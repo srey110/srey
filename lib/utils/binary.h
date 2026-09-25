@@ -36,23 +36,16 @@ void binary_init_read(binary_ctx *ctx, char *buf, size_t lens);
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 void binary_free(binary_ctx *ctx);
-// 扩展缓冲区，确保有足够空间写入 size 字节（仅内部托管可扩容）
+// 断言与扩容的慢路径，只由 _binary_expand 调用
+void _binary_grow(binary_ctx *ctx, size_t size);
+// 扩展缓冲区，确保有足够空间写入 size 字节（仅内部托管可扩容）。快路径只判一次能不能直接写，
+// 读模式、长度溢出、容量不够都进 _binary_grow。inc==0 必须和容量一起判：只在容量不够时查，
+// 写得下的那些非法写就会静默改掉调用方内存(原因见 _binary_grow)
 static inline void _binary_expand(binary_ctx *ctx, size_t size) {
-    //inc==0 标记外部托管 buf：不接管所有权，任何 binary_set_* 都会从 offset 起改写调用方内存，
-    //超出容量时还要对栈/静态/异分配器内存调 REALLOC(UB)。守卫必须在容量判断之前——
-    //放在 if 内只挡得住写溢出的那次，写得下的同样非法却会静默损坏调用方数据
-    ASSERTAB(0 != ctx->inc, "read-mode buffer is read-only: use binary_init_write for writable mode");
-    ASSERTAB(size <= SIZE_MAX - ctx->offset - 1, "binary buffer size overflow");
-    size += ctx->offset + 1;
-    if (size > ctx->size) {
-        size_t lens = ctx->size * 2;
-        if (lens < size) {
-            lens = size;
-        }
-        ctx->size = ROUND_UP(lens, ctx->inc);
-        // 翻倍与取整都可能溢出回绕成 0，而 _realloc(0) 按契约释放并返回 NULL，下面就 memmove 到空指针
-        ASSERTAB(0 != ctx->size, "binary buffer size overflow");
-        REALLOC(ctx->data, ctx->data, ctx->size);
+    if (UNLIKELY(0 == ctx->inc
+                 || size > SIZE_MAX - ctx->offset - 1
+                 || size + ctx->offset + 1 > ctx->size)) {
+        _binary_grow(ctx, size);
     }
 }
 // 追加 lens 字节到末尾。reserve 是本次除 lens 外还要一次扩够的容量,给 binary_set_string 的结尾 NUL 用,

@@ -191,7 +191,7 @@ void evssl_pool_free(void) {
     FREE(_arr_certs);
     FREE(_rwlck_certs);
     // 重置 _init_once，允许 evssl_pool_init 二次调用（嵌入式 loader_init/free 循环）
-    ATOMIC_SET(&_init_once, 0);
+    ATOMIC_SET_RELEASE(&_init_once, 0);
 }
 // 在证书池中按名称查找certs_ctx（调用前须持有读锁）
 static certs_ctx *_evssl_get(const char *name) {

@@ -326,20 +326,11 @@ static inline int32_t _redis_parse_len(buffer_ctx *buf, int32_t pos, int32_t *st
         return ERR_FAILED;
     }
     buffer_copyout(buf, 1, num, lens);
-    num[lens] = '\0';
-    // 长度是纯十进制(允许 null 的 "-1"):首字符必须是数字或 '-',否则 strtoll 会跳过前导空白、
-    // 吞 '+',与严格按 1*DIGIT 解析的对端切出不同的包边界。RESP_INTEGER 的 ':' 本就允许 '+'(见 redis.h),不套此判
-    unsigned char c0 = (unsigned char)num[0];
-    if (!((c0 >= '0' && c0 <= '9') || '-' == c0)) {
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    char *end;
-    errno = 0;
-    int64_t val = (int64_t)strtoll(num, &end, 10);
-    if (num + lens != end
-        || val < -1
-        || errno == ERANGE) {
+    // 长度严格按 ['-']1*DIGIT 解析(允许 null 的 "-1"),前导空白与 '+' 一律拒,免得与对端切出不同的包边界。
+    // RESP_INTEGER 的 ':' 本就允许 '+'(见 redis.h),不走这里
+    int64_t val;
+    if (ERR_OK != parse_int64_strict(num, (size_t)lens, &val)
+        || val < -1) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -410,12 +401,12 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
             break;
         }
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
-        if (3 == pk->len && 0 == _memicmp(pk->data, "inf", (size_t)pk->len)) {
+        if (3 == pk->len && 0 == memcasecmp(pk->data, "inf", (size_t)pk->len)) {
             pk->dval = INFINITY;
-        } else if (4 == pk->len && 0 == _memicmp(pk->data, "-inf", (size_t)pk->len)) {
+        } else if (4 == pk->len && 0 == memcasecmp(pk->data, "-inf", (size_t)pk->len)) {
             pk->dval = -INFINITY;
-        } else if ((3 == pk->len && 0 == _memicmp(pk->data, "nan", (size_t)pk->len))
-                   ||(4 == pk->len && 0 == _memicmp(pk->data, "-nan", (size_t)pk->len))) {
+        } else if ((3 == pk->len && 0 == memcasecmp(pk->data, "nan", (size_t)pk->len))
+                   ||(4 == pk->len && 0 == memcasecmp(pk->data, "-nan", (size_t)pk->len))) {
             pk->dval = NAN;
         } else {
             char *end;

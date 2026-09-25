@@ -1,8 +1,10 @@
 ﻿#include "test_base.h"
 #include "lib.h"
 
-#define MEMCNT_THREADS 80 // mem_stat 分条计数用例的线程数
+#define MEMCNT_BATCH   32 // mem_stat 分条计数用例每批并发的线程数
+#define MEMCNT_ROUNDS  9 // 批数;总线程数 288 要超过 memory.c 的 MEM_SLOTS(256)
 #define MEMCNT_EACH    500 // 每线程的 malloc/free 轮次
+#define MEMRE_N 256// _realloc 计数用例每种调用的次数
 
 /* -----------------------------------------------------------------------
  * 内存宏：MALLOC / CALLOC / REALLOC / FREE
@@ -35,6 +37,93 @@ static void test_memory(CuTest *tc) {
         CuAssertIntEquals(tc, i * 7 + 1, nbuf[i]);
     }
     FREE(nbuf);
+}
+
+/* -----------------------------------------------------------------------
+ * _realloc 的四种入参：(NULL,n) 记一次分配，(p,0) 记一次释放，(NULL,0) 与 (p,n) 不计数。
+ * 每种连做 MEMRE_N 次，增量落在 [N, 2N) 才算对：少了是漏记，到 2N 是记重；
+ * 别的线程(日志线程)也在分配，所以不断言恰好等于 N，只要求噪声远小于 N
+ * ----------------------------------------------------------------------- */
+#if MEMORY_CHECK
+// 增量 d 恰好对应 N 次计数(允许少量外部噪声)
+static int32_t _memre_hit(uint64_t d) {
+    return d >= MEMRE_N && d < 2 * MEMRE_N;
+}
+#endif
+static void test_realloc_edges(CuTest *tc) {
+    void *ps[MEMRE_N];
+    int32_t i, bad = 0;
+#if MEMORY_CHECK
+    uint64_t a0, f0, a1, f1;
+#endif
+
+    /* (NULL, n)：等同 malloc，返回可写的新块 */
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        ps[i] = _realloc(NULL, 16);
+        if (NULL == ps[i]) {
+            bad++;
+        } else {
+            memset(ps[i], i & 0xff, 16);
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, _memre_hit(a1 - a0));
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
+
+    /* (p, n>0)：改大小不计数，原内容保留 */
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        ps[i] = _realloc(ps[i], 64);
+        if (NULL == ps[i] || (unsigned char)(i & 0xff) != ((unsigned char *)ps[i])[15]) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
+
+    /* (p, 0)：等同 free，返回 NULL */
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        if (NULL != _realloc(ps[i], 0)) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, _memre_hit(f1 - f0));
+#endif
+
+    /* (NULL, 0)：什么都不做，返回 NULL */
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        if (NULL != _realloc(NULL, 0)) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
 }
 
 /* -----------------------------------------------------------------------
@@ -108,10 +197,11 @@ static void test_set_ptr_expr_arg(CuTest *tc) {
 }
 
 /* -----------------------------------------------------------------------
- * mem_stat 的分条计数：80 个线程并发 malloc/free 一个计数都不许丢。落独占格还是
- * 落共享的兜底格取决于此前已用掉多少槽位，两条路径都不丢，断言对两者都成立。
+ * mem_stat 的分条计数：288 个线程分 9 批、每批 32 个并发 malloc/free，一个计数都不许丢。
+ * 总数超过 MEM_SLOTS，前面的线程落独占格(本线程读写自增)，后面的落共享兜底格(原子自增)，
+ * 两条路径都走到，断言对两者都成立。分批是为了并发线程数有界(32 位进程的地址空间放不下几百个栈)。
  * 断言用 >= 而不是 ==：本进程还有别的线程(日志线程等)也在分配，增量只会偏大；
- * 而要防的回归恰好是"少算"——槽位共享时用裸自增就会丢
+ * 而要防的回归恰好是"少算"——共享格用裸自增就会丢
  * MEMORY_CHECK 关掉时 mem_stat 恒写 0，增量必为 0，断言必挂，所以整块随开关编译
  * ----------------------------------------------------------------------- */
 #if MEMORY_CHECK
@@ -126,17 +216,19 @@ static void _memcnt_worker(void *arg) {
 }
 static void test_mem_stat_striped(CuTest *tc) {
     uint64_t a0, f0, a1, f1;
-    pthread_t th[MEMCNT_THREADS];
-    int32_t i;
+    pthread_t th[MEMCNT_BATCH];
+    int32_t i, r;
     mem_stat(&a0, &f0);
-    for (i = 0; i < MEMCNT_THREADS; i++) {
-        th[i] = thread_creat(_memcnt_worker, NULL);
-    }
-    for (i = 0; i < MEMCNT_THREADS; i++) {
-        thread_join(th[i]);
+    for (r = 0; r < MEMCNT_ROUNDS; r++) {
+        for (i = 0; i < MEMCNT_BATCH; i++) {
+            th[i] = thread_creat(_memcnt_worker, NULL);
+        }
+        for (i = 0; i < MEMCNT_BATCH; i++) {
+            thread_join(th[i]);
+        }
     }
     mem_stat(&a1, &f1);
-    const uint64_t want = (uint64_t)MEMCNT_THREADS * MEMCNT_EACH;
+    const uint64_t want = (uint64_t)MEMCNT_ROUNDS * MEMCNT_BATCH * MEMCNT_EACH;
     CuAssertTrue(tc, a1 - a0 >= want);
     CuAssertTrue(tc, f1 - f0 >= want);
 }
@@ -167,6 +259,7 @@ static void test_round_up_narrow_modulus(CuTest *tc) {
 
 void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_memory);
+    SUITE_ADD_TEST(suite, test_realloc_edges);
     SUITE_ADD_TEST(suite, test_atomic32);
     SUITE_ADD_TEST(suite, test_atomic64);
     SUITE_ADD_TEST(suite, test_set_ptr_expr_arg);

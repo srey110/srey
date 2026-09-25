@@ -1039,7 +1039,7 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev
         } else {
             // 跨 watcher 投递前 ref++ 占位：防 ev_unlisten 在目标 watcher 取出
             // CMD_ADDACP 前将 lsn ref 减到 0 释放，_on_cmd_addacp/_uev_free_pipe 配对减
-            ATOMIC_ADD(&acpt->lsn->ref, 1);
+            ATOMIC_ADD_RELAXED(&acpt->lsn->ref, 1);
             _cmd_add_acpfd(to, fd, acpt->lsn);
         }
     }
@@ -1116,8 +1116,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 #else
     lsn->nlsn = ctx->nthreads;
 #endif
-    ATOMIC_SET(&lsn->ref, 0);
-    ATOMIC_SET(&lsn->remove, 0);
+    ATOMIC_SET_RELAXED(&lsn->ref, 0);
+    ATOMIC_SET_RELAXED(&lsn->remove, 0);
     lsn->cbs = *cbs;
     COPY_UD(lsn->ud, ud);
 #if WITH_SSL
@@ -1145,7 +1145,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
 #endif
     }
-    ATOMIC_SET(&lsn->ref, lsn->nlsn);
+    ATOMIC_SET_RELAXED(&lsn->ref, lsn->nlsn);
     lsn->id = createid();
     for (i = 0; i < lsn->nlsn; i++) {
         _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock);
@@ -1250,8 +1250,8 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     }
     // 占位 +1：防止 for 循环期间 watcher 把 ref 减到 0 触发 FREE(lsn)，后续读 lsn->nlsn UAF。
     // 末尾减占位仲裁：watcher 全处理完则此处归零释放，否则由最后一个 _uev_remove_lsn 释放
-    ATOMIC_ADD(&lsn->ref, 1);
-    ATOMIC_SET(&lsn->remove, 1);
+    ATOMIC_ADD_RELAXED(&lsn->ref, 1);
+    ATOMIC_SET_RELEASE(&lsn->remove, 1);
     for (int32_t i = 0; i < lsn->nlsn; i++) {
         _cmd_unlisten(&ctx->watcher[i], lsn);
     }

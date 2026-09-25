@@ -14,6 +14,7 @@ typedef struct task_timeout_ctx {
                     // 也不能等到轮末再并——中途 task_isclosing 提前 return 会把本轮的失败丢掉
     int32_t _autoclose;
     int32_t _rebind_done;// WS 重复注入只验一次；每 task 一份，timeout_test1/2/3 是三个并发 task
+    int32_t _reject_done;// harbor 无证书拒绝只验一次，理由同上
     name_t _rpcname;
     int32_t *_ok;
     name_val_ctx *_ports;
@@ -779,9 +780,13 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     if (task_isclosing(task)) {
         return;
     }
-    if (ERR_OK != _timeout_habor_reject(task)) {
-        _timeout_failed(ctx);
-        LOG_WARN("habor reject test error.");
+    // 只验一次——_timeout 每秒自我重挂，每轮都连一次，被拒握手的 SSL 告警会一直刷到收尾
+    if (0 == ctx->_reject_done) {
+        ctx->_reject_done = 1;
+        if (ERR_OK != _timeout_habor_reject(task)) {
+            _timeout_failed(ctx);
+            LOG_WARN("habor reject test error.");
+        }
     }
     *ctx->_ok = ctx->_failed ? 0 : 1;
     task_timeout(task, 0, 1000, _timeout);

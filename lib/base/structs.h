@@ -82,7 +82,7 @@ static inline int32_t buf_compare(buf_ctx *buf, const char *data, size_t lens) {
 };
 // 不区分大小写地比较 buf_ctx 与指定数据是否相等
 static inline int32_t buf_icompare(buf_ctx *buf, const char *data, size_t lens) {
-    return buf->lens == lens && 0 == _memicmp(buf->data, data, lens);
+    return buf->lens == lens && 0 == memcasecmp(buf->data, data, lens);
 };
 static inline void shared_data_free(void *sdate, free_cb fcb) {
     shared_data *date = sdate;

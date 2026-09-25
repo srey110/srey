@@ -28,8 +28,17 @@
 #define LOG_PREFIX_FMT "[%s %s %d] " // 日志/PRINT 行首:文件 函数 行号
 #define CONCAT2(a, b) a b // 拼接两个字符串字面量
 #define CONCAT3(a, b, c) a b c // 拼接三个字符串字面量
-#define __FILENAME__(file) _filename(file)
-#define PRINT(fmt, ...) printf(CONCAT3(LOG_PREFIX_FMT, fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带位置信息的标准输出
+#define STRICMP strcasecmp // 不区分大小写字符串比较(只按 ASCII 折叠,各平台同一份)
+#define STRNCMP strncasecmp // 不区分大小写的前 n 字节字符串比较,规则同 STRICMP
+// 当前源文件名：编译器给得出 __FILE_NAME__(clang 9+ / gcc 12+)就编译期定死，否则运行时从 __FILE__ 里切。
+// 要切的是任意路径(不是当前源文件)时直接调 _filename
+#ifdef __FILE_NAME__
+    #define __FILENAME__ __FILE_NAME__
+#endif
+#ifndef __FILENAME__
+    #define __FILENAME__ _filename(__FILE__)
+#endif
+#define PRINT(fmt, ...) printf(CONCAT3(LOG_PREFIX_FMT, fmt, "\n"),  __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带位置信息的标准输出
 
 #ifndef offsetof
     #define offsetof(type, field) ((size_t)(&((type *)0)->field)) // 获取结构体字段偏移量
@@ -91,9 +100,9 @@
             if (EMPTYSTR(_abstr)) {\
                 _abstr = "assertion failed";\
             }\
-            fprintf(stderr, "[ABORT][%s %s %d] %s\n", __FILENAME__(__FILE__), __FUNCTION__, __LINE__, _abstr);\
+            fprintf(stderr, "[ABORT][%s %s %d] %s\n", __FILENAME__, __FUNCTION__, __LINE__, _abstr);\
             fflush(stderr);\
-            log_abort(__FILENAME__(__FILE__), __FUNCTION__, __LINE__, _abstr);\
+            log_abort(__FILENAME__, __FUNCTION__, __LINE__, _abstr);\
             abort();\
         }\
     } while(0)
@@ -113,7 +122,7 @@ typedef enum log_level {
     LOGLV_INFO,      // 信息
     LOGLV_DEBUG,     // 调试
 }log_level;
-#define LOG(lv, fmt, ...) slog(lv, CONCAT2(LOG_PREFIX_FMT, fmt), __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带文件/函数/行号的日志宏
+#define LOG(lv, fmt, ...) slog(lv, CONCAT2(LOG_PREFIX_FMT, fmt), __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带文件/函数/行号的日志宏
 #define LOG_FATAL(fmt, ...) LOG(LOGLV_FATAL, fmt, ##__VA_ARGS__) // 致命错误日志
 #define LOG_ERROR(fmt, ...) LOG(LOGLV_ERROR, fmt, ##__VA_ARGS__) // 错误日志
 #define LOG_WARN(fmt, ...)  LOG(LOGLV_WARN,  fmt, ##__VA_ARGS__) // 警告日志

@@ -39,7 +39,6 @@
 #define isleap_sum(a, b) isleap((a) % 400 + (b) % 400)
 #ifdef _MSC_VER
 #define tzname              _tzname
-#define strncasecmp         _strnicmp
 #endif
 #define delim(p) ((p) == '\0' || isspace((unsigned char)(p)))
 

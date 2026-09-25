@@ -343,7 +343,7 @@ static inline int32_t _mqtt_check_prot(buffer_ctx *buf) {
     if (num != (int32_t)buffer_remove(buf, tmp, num)) {//协议名
         return ERR_FAILED;
     }
-    if (0 != _memicmp(tmp, "mqtt", num)) {
+    if (0 != memcasecmp(tmp, "mqtt", num)) {
         return ERR_FAILED;
     }
     if (1 != buffer_remove(buf, tmp, 1)) {//协议级别

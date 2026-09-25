@@ -341,5 +341,14 @@ void lpub_sock_uncache(lua_State *lua, uint64_t skid);
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <returns>压栈的返回值个数，恒为 1</returns>
 int32_t lpub_push_sock_invalid(lua_State *lua);
+/// <summary>
+/// 整数转十进制字符串，写在 buf 尾部并补 NUL；bson 编码的整数 key / 数组下标、json 编码的整数键共用，替代 snprintf
+/// </summary>
+/// <param name="buf">输出缓冲，至少 21 字节（lua_Integer 最长 20 个字符含负号，另加 NUL）</param>
+/// <param name="buflen">buf 大小</param>
+/// <param name="i">要转换的整数</param>
+/// <param name="lens">出参：字符数（不含 NUL）；不需要可传 NULL</param>
+/// <returns>结果的起点，位于 buf 内</returns>
+const char *lpub_int_str(char *buf, size_t buflen, lua_Integer i, size_t *lens);
 
 #endif//LPUB_H_

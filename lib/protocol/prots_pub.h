@@ -134,7 +134,8 @@ uint32_t parse_usec_frac(const char *str);
 int32_t parse_double_strict(const void *data, size_t lens, double *val);
 /// <summary>
 /// (指针, 长度) 的十进制整数文本转 int64，按符号拆开走 str2u64。
-/// mysql / pgsql 两侧的文本协议共用，别再各写一份
+/// mysql / pgsql 的文本协议与 redis 的长度行共用，别再各写一份。
+/// 只认 ['-']1*DIGIT：前导空白、'+' 都拒，redis 长度行靠这一点与对端切出同样的包边界
 /// </summary>
 /// <param name="data">源字节段(可非 NUL 结尾)</param>
 /// <param name="lens">源字节数；0 视为失败</param>

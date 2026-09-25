@@ -256,10 +256,10 @@ static void _iocp_init_cmd(watcher_ctx *watcher) {
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
-    ATOMIC_SET(&ctx->stopping, 0);
+    ATOMIC_SET_RELAXED(&ctx->stopping, 0);
     ctx->nacpex = ctx->nthreads > 3 ? 2 : 1;
-    ATOMIC_SET(&ctx->nlsn, 0);
-    ATOMIC_SET(&ctx->ndead_total, 0);
+    ATOMIC_SET_RELAXED(&ctx->nlsn, 0);
+    ATOMIC_SET_RELAXED(&ctx->ndead_total, 0);
     _iocp_init_funcs();
     CALLOC(ctx->watcher, ctx->nthreads, sizeof(watcher_ctx));
     watcher_ctx *watcher;
@@ -268,7 +268,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         watcher->index = i;
-        ATOMIC_SET(&watcher->stop, 0);
+        ATOMIC_SET_RELAXED(&watcher->stop, 0);
         watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);// 1线程 对同一socket操作是线程安全
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
@@ -298,7 +298,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     for (i = 0; i < ctx->nacpex; i++) {
         acpex = &ctx->acpex[i];
         acpex->index = i;
-        ATOMIC_SET(&acpex->stop, 0);
+        ATOMIC_SET_RELAXED(&acpex->stop, 0);
         acpex->ev = ctx;
         acpex->iocp = iocp;
         if (NULL != hooks) {
@@ -322,7 +322,7 @@ static void _iocp_stop_acpex_thread(ev_ctx *ctx) {
     uint32_t i;
     // 停止 AcceptEx 线程（暂不关共用 IOCP，步骤4 仍需从中取出取消完成）
     for (i = 0; i < ctx->nacpex; i++) {
-        ATOMIC_SET(&ctx->acpex[i].stop, 1);
+        ATOMIC_SET_RELEASE(&ctx->acpex[i].stop, 1);
         // 投递空包唤醒线程；失败时线程会在 EVENT_WAIT_TIMEOUT 后自行检测 stop 退出
         if (!PostQueuedCompletionStatus(ctx->acpex[i].iocp, 0, ((ULONG_PTR)-1), NULL)) {
             LOG_ERROR("PostQueuedCompletionStatus failed: %s", ERRORSTR(ERRNO));
@@ -387,7 +387,7 @@ static void _iocp_free_acpex(ev_ctx *ctx) {
 }
 void ev_free(ev_ctx *ctx) {
     // 先置关停标志：此后 ev_listen/ev_connect/ev_udp 一律拒绝，免调用方拿到永不被处理的句柄
-    ATOMIC_SET(&ctx->stopping, 1);
+    ATOMIC_SET_RELEASE(&ctx->stopping, 1);
     // 1. 停止 AcceptEx 线程（暂不关共用 IOCP，步骤4 仍需从中取出取消完成）
     _iocp_stop_acpex_thread(ctx);
     // 2. ev_unlisten 全部残留 listener：取消在途 AcceptEx，取消完成排队到仍开着的 acpex IOCP（步骤4排空）

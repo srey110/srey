@@ -5,7 +5,7 @@
 static stm_data *_stm_new_data(void *data, size_t sz, int32_t copy) {
     stm_data *snap;
     MALLOC(snap, sizeof(stm_data));
-    ATOMIC_SET(&snap->ref, 1);
+    ATOMIC_SET_RELAXED(&snap->ref, 1);
     snap->sz = sz;
     if (0 == copy) {
         snap->data = data;
@@ -31,7 +31,7 @@ stm_ctx *stm_new(void *data, size_t sz, int32_t copy) {
     stm_ctx *ctx;
     MALLOC(ctx, sizeof(stm_ctx));
     rwlock_init(&ctx->lock);
-    ATOMIC_SET(&ctx->ref, 1);
+    ATOMIC_SET_RELAXED(&ctx->ref, 1);
     ctx->data = _stm_new_data(data, sz, copy);
     return ctx;
 }

@@ -118,7 +118,7 @@ void mail_attach_add(mail_ctx *mail, const char *file) {
         return;
     }
     mail_attach att;
-    _mail_strip_crlf(att.file, __FILENAME__(file), sizeof(att.file));
+    _mail_strip_crlf(att.file, _filename(file), sizeof(att.file));
     char *ex = strrchr(att.file, '.');
     // 扩展名装不下就当没有：截断会查出一个错误的 Content-Type，留空则退化为通用类型，
     // 附件本身照常发出去（att 是栈上未初始化结构，safe_fill_str 失败时不写，必须自己兜底）

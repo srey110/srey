@@ -823,5 +823,117 @@ runner.run(function(t)
         local eptr = bson.empty()
         t:eq(false, pcall(bson.encode, { z = eptr }), "非空 light userdata 仍被拒")
     end
+
+    -- 31. 整数 key 走手写十进制：负数、0 与两端极值的键名须与 tostring（即旧 %lld）逐字相同
+    do
+        local src = { [-5] = "n5", [-1] = "n1", [0] = "z",
+                      [math.mininteger] = "min", [math.maxinteger] = "max", name = "s" }
+        local tb = bson.decode(bson.encode(src))
+        local cnt = 0
+        for _ in pairs(tb) do cnt = cnt + 1 end
+        t:eq(6, cnt, "负整数键表 decode 回来字段数不变")
+        for k, v in pairs(src) do
+            t:eq(v, tb[tostring(k)], "整数键 " .. tostring(k) .. " decode 回来键名为十进制串")
+        end
+        -- 极值另写死期望文本，不只靠 tostring 对照
+        t:eq("min", tb["-9223372036854775808"], "mininteger 键名")
+        t:eq("max", tb["9223372036854775807"], "maxinteger 键名")
+        -- 线上键名逐个用 iter:key 取出（长度 1~20 不等），须全在期望集合里
+        local want = {}
+        for k in pairs(src) do want[tostring(k)] = true end
+        local it = bson.iter.new(bson.encode(src))
+        local seen = 0
+        local allin = true
+        while it:next() do
+            seen = seen + 1
+            if not want[it:key()] then allin = false end
+        end
+        t:check(allin and seen == 6, "iter 取出的 6 个键名都在期望集合里")
+        -- 正整数序列混一个负键：不是纯序列，整数键全按字符串 key 写
+        local mixed = bson.decode(bson.encode({ "a", "b", [-3] = "c" }))
+        t:eq("a", mixed["1"], "混负键的序列：键 1")
+        t:eq("b", mixed["2"], "混负键的序列：键 2")
+        t:eq("c", mixed["-3"], "混负键的序列：键 -3")
+        t:eq(false, pcall(bson.encode, { [1.5] = 1 }), "非整数的数字键仍被拒")
+        -- 数组下标 0..n-1 同走这条十进制：第 11 个元素的线上键名是 "10"
+        local arr = {}
+        for i = 1, 12 do arr[i] = "e" .. i end
+        local ab = bson.encode({ tags = arr })
+        local at = bson.decode(ab)
+        t:eq(12, #at.tags, "12 元素数组长度")
+        t:eq("e12", at.tags[12], "12 元素数组末元素")
+        local ait = bson.iter.new(ab)
+        t:eq(true, ait:find("tags.10"), "数组下标 10 的键名是 \"10\"")
+        t:eq("e11", ait:utf8(), "键 \"10\" 对应第 11 个元素")
+        ait = bson.iter.new(ab)
+        t:eq(true, ait:find("tags.0"), "数组下标 0 的键名是 \"0\"")
+        t:eq("e1", ait:utf8(), "键 \"0\" 对应第 1 个元素")
+    end
+
+    -- 32. 文档 decode 先数字段再建表：被丢弃的 TIMESTAMP 也会数进去，但结果表里不能有它；
+    --     嵌套文档与数组各自解对（数组不预数）
+    do
+        local function nkeys(x)
+            local c = 0
+            for _ in pairs(x) do c = c + 1 end
+            return c
+        end
+        local b = bson.new()
+        b:int32("a", 1)
+        b:timestamp("ts", 1700000000, 1)
+        b:doc_begin("d")
+            b:utf8("s", "x")
+            b:timestamp("t2", 1, 2)
+            b:int32("n", 2)
+            b:doc_begin("dd")
+                b:timestamp("only", 3, 4)
+                b["end"](b)
+            b["end"](b)
+        b:arr_begin("arr")
+            b:int32("0", 10)
+            b:timestamp("1", 5, 6)
+            b:utf8("2", "z")
+            b:doc_begin("3")
+                b:bool("ok", true)
+                b["end"](b)
+            b["end"](b)
+        b:utf8("tail", "end")
+        b["end"](b)
+        local tb = bson.decode(b)
+        -- 顶层 5 个元素(a ts d arr tail)丢掉 ts 剩 4 个
+        t:eq(4, nkeys(tb), "顶层字段数：丢掉 TIMESTAMP 后 4 个")
+        t:eq(1, tb.a, "顶层 a")
+        t:eq(nil, tb.ts, "顶层 TIMESTAMP 被丢")
+        t:eq("end", tb.tail, "嵌套之后的顶层字段")
+        if t:check(type(tb.d) == "table", "子文档解成 table") then
+            -- 子文档 4 个元素(s t2 n dd)丢掉 t2 剩 3 个
+            t:eq(3, nkeys(tb.d), "子文档字段数：丢掉 TIMESTAMP 后 3 个")
+            t:eq("x", tb.d.s, "子文档 s")
+            t:eq(2, tb.d.n, "子文档 TIMESTAMP 之后的 n")
+            t:eq(nil, tb.d.t2, "子文档 TIMESTAMP 被丢")
+            if t:check(type(tb.d.dd) == "table", "只含 TIMESTAMP 的孙文档仍是 table") then
+                t:eq(0, nkeys(tb.d.dd), "只含 TIMESTAMP 的孙文档解成空表")
+            end
+        end
+        if t:check(type(tb.arr) == "table", "数组解成 table") then
+            t:eq(3, #tb.arr, "数组 4 个元素丢 1 个剩 3 个")
+            t:eq(3, nkeys(tb.arr), "数组无多余键")
+            t:eq(10, tb.arr[1], "数组 [1]")
+            t:eq("z", tb.arr[2], "数组 [2] 前移补位")
+            t:check(type(tb.arr[3]) == "table" and true == tb.arr[3].ok, "数组里的子文档")
+        end
+        local only = bson.new()
+        only:timestamp("ts", 1, 1)
+        only["end"](only)
+        t:eq(0, nkeys(bson.decode(only)), "顶层只有 TIMESTAMP 解成空表")
+        local big = {}
+        for i = 1, 100 do big["f" .. i] = i end
+        local bt = bson.decode(bson.encode(big))
+        local allok = 100 == nkeys(bt)
+        for i = 1, 100 do
+            if bt["f" .. i] ~= i then allok = false end
+        end
+        t:check(allok, "100 个字段的文档 decode 字段数与值全对")
+    end
 end)
 end)

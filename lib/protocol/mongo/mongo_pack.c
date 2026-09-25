@@ -7,6 +7,7 @@
 
 // OP_MSG 头里 flagBits 的字节偏移：size / reqid / respto / opcode 各占 4 字节，见 _mongo_pack_msg
 #define MSG_FLAGS_OFF 16
+#define MONGO_MSG_HDR 21 // OP_MSG 头：size/reqid/respto/opcode/flags 各 4 字节 + kind 1 字节
 // commitTransaction / abortTransaction 按规范只能发往 admin 库，与连接当前的 $db 无关；
 // 发错库服务端回 code 13 Unauthorized "may only be run against the admin database"
 #define MONGO_TXN_DB "admin"
@@ -49,7 +50,8 @@
 // 函数开头：声明并初始化局部 bson_ctx bson（必须置于函数体顶部）。要求函数有名为 size 的出参。
 // cap：BSON 预估容量，0=默认；大消息传 dlens + BSON_HEADROOM 消除 doubling 重分配。宏内只求值一次。
 // 超单包上限在这里就拒：cap 正是那几个大入参的长度，等到 _mongo_pack_msg 判总长时源数据
-// 已经被全量分配并拷贝两遍，内存不够时分配器是 exit 而不是返 NULL
+// 已经被全量分配并拷贝过，内存不够时分配器是 exit 而不是返 NULL。
+// 文档前预留 MONGO_MSG_HDR 字节，收尾时就地填 OP_MSG 头，正文不再另拷一份
 #define MONGO_PACK_BEGIN(cap) \
     bson_ctx bson; \
     size_t _cap = (size_t)(cap); \
@@ -57,13 +59,12 @@
         *size = 0; \
         return NULL; \
     } \
-    bson_init(&bson, NULL, _cap)
-// 两个 RETURN 共用的通用收尾：$db + 闭合 + 打包 OP_MSG + 释放 bson，结果留在 _data
+    bson_init_prefix(&bson, _cap, MONGO_MSG_HDR)
+// 两个 RETURN 共用的通用收尾：$db + 闭合 + 填 OP_MSG 头，bson 的缓冲就是结果，留在 _data（失败时已释放）
 #define _MONGO_PACK_TAIL(db) \
         bson_append_utf8(&bson, "$db", (db)); \
         bson_append_end(&bson); \
-        void *_data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size); \
-        BSON_FREE(&bson)
+        void *_data = _mongo_pack_msg(mongo, &bson, size)
 // 函数收尾。db 形参为 mongo->db / mongo->authdb 等
 #define MONGO_PACK_RETURN(db) do { \
         _MONGO_PACK_TAIL(db); \
@@ -108,39 +109,26 @@ static inline int32_t _mongo_cap_toolong(size_t cap) {
     LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_MAX_PACK_LENS, cap);
     return 1;
 }
-// 构造 OP_MSG 原始数据包：填充消息头、flags、Section 和正文，并回填总长度
-static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, char *docs, size_t dlens, size_t *size) {
+// 在 bson 预留的 MONGO_MSG_HDR 字节里就地填 OP_MSG 头（Section kind 0），交出 bson 的缓冲；失败时释放 bson
+static void *_mongo_pack_msg(mongo_ctx *mongo, bson_ctx *bson, size_t *size) {
+    char *p = bson->doc.data;
     mongo->reqid++;
-    binary_ctx bwriter;
-    size_t dclens = (1 == kind) ? strlen(docid) : 0;
-    size_t init_cap = 17 + dlens + (1 == kind ? 4 + dclens + 1 : 0);
-    binary_init_write(&bwriter, init_cap, 0);
-    binary_set_skip(&bwriter, 4);//size
-    binary_set_integer(&bwriter, mongo->reqid, 4, 1);//reqid
-    binary_set_integer(&bwriter, 0, 4, 1);//respto
-    binary_set_integer(&bwriter, OP_MSG, 4, 1);//prot
-    binary_set_integer(&bwriter, mongo->flags, 4, 1);//flags
-    if (0 == kind) {
-        binary_set_int8(&bwriter, 0);//kind
-    } else {
-        binary_set_int8(&bwriter, 1);//kind
-        binary_set_integer(&bwriter, 4 + dclens + 1 + dlens, 4, 1);
-        binary_set_binary(&bwriter, docid, dclens + 1);
-    }
-    binary_set_binary(&bwriter, docs, dlens);//正文
-    *size = bwriter.offset;
+    *size = bson->doc.offset;
     // 总长在此判:MONGO_PACK_CAT 只管每一片,拼完仍可能超 64MB;而下面要把 *size 写进 4 字节头,
     // 超 4GB 会回绕成一个虚假的小长度。拒法同 MONGO_PACK_CAT:落 ERROR 后返 NULL,由 _mongo_send* 吸收
     if (*size > MONGO_MAX_PACK_LENS) {
         LOG_ERROR("mongo message exceeds %d bytes: %zu.", MONGO_MAX_PACK_LENS, *size);
-        binary_free(&bwriter);
+        BSON_FREE(bson);
         *size = 0;
         return NULL;
     }
-    binary_offset(&bwriter, 0);
-    binary_set_integer(&bwriter, *size, 4, 1);
-    binary_offset(&bwriter, *size);
-    return bwriter.data;
+    pack_integer(p, (uint64_t)*size, 4, 1);
+    pack_integer(p + 4, (uint64_t)mongo->reqid, 4, 1);
+    pack_integer(p + 8, 0, 4, 1);
+    pack_integer(p + 12, OP_MSG, 4, 1);
+    pack_integer(p + MSG_FLAGS_OFF, (uint64_t)mongo->flags, 4, 1);
+    p[MONGO_MSG_HDR - 1] = 0;
+    return p;
 }
 int32_t mongo_pack_check_flag(void *pack, mongo_flags flag) {
     if (NULL == pack) {

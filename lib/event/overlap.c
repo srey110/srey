@@ -1074,8 +1074,8 @@ static inline int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
 }
 // listener dead 槽计数与全局 ndead_total 单点同步，杜绝两者 drift
 static inline void _olp_ndead_add(ev_ctx *ev, listener_ctx *lsn, int32_t delta) {
-    ATOMIC_ADD(&lsn->ndead, delta);
-    ATOMIC_ADD(&ev->ndead_total, delta);
+    ATOMIC_ADD_RELAXED(&lsn->ndead, delta);
+    ATOMIC_ADD_RELAXED(&ev->ndead_total, delta);
 }
 // 重投该 listener 全部此前 _olp_post_accept 失败、已被放弃的槽位；
 // 某槽重投再失败(fd 仍耗尽)即停止本轮(余下同样会失败)，留待下次 periodic 扫描
@@ -1093,7 +1093,7 @@ static void _olp_try_revive_slot(ev_ctx *ev, listener_ctx *lsn) {
         ATOMIC_ADD(&lsn->ref, 1);
         if (ERR_OK != _olp_post_accept(olacp)) {
             ATOMIC_ADD(&lsn->ref, -1);
-            ATOMIC_SET(&olacp->dead, 1);
+            ATOMIC_SET_RELEASE(&olacp->dead, 1);
             _olp_ndead_add(ev, lsn, 1);
             break;
         }
@@ -1150,7 +1150,7 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, evsock_ctx *evsk, DWORD byte
     if (ERR_OK != _olp_post_accept(olacp)) {
         SOCKET log_fd = lsn->fd;
         CLOSE_SOCK(fd);
-        ATOMIC_SET(&olacp->dead, 1);
+        ATOMIC_SET_RELEASE(&olacp->dead, 1);
         _olp_ndead_add(acpctx->ev, lsn, 1);
         int32_t old = ATOMIC_ADD(&lsn->ref, -2);
         if (2 == old) {
@@ -1227,7 +1227,7 @@ static void _olp_free_acceptex(listener_ctx *lsn, int32_t cnt) {
 static int32_t _olp_acceptex(ev_ctx *ev, listener_ctx *lsn) {
     // 占位先 +1 提前到任何失败点之前：_olp_acceptex 失败时 ref 始终 >= 1，
     // ev_listen 失败路径统一减占位释放；同时保证 cb 任何路径减 ref 不会下溢
-    ATOMIC_SET(&lsn->ref, 1);
+    ATOMIC_SET_RELAXED(&lsn->ref, 1);
     if (NULL == CreateIoCompletionPort((HANDLE)lsn->fd, ev->acpex[0].iocp, 0, ev->nacpex)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -1272,7 +1272,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     }
     lsn->ev = ctx;
     // 存活计数+1，须在任何走_iocp_freelsn的失败路径之前；_iocp_freelsn统一-1
-    ATOMIC_ADD(&ctx->nlsn, 1);
+    ATOMIC_ADD_RELAXED(&ctx->nlsn, 1);
     lsn->family = netaddr_family(&addr);
     lsn->fd = fd;
     lsn->cbs = *cbs;
@@ -1305,9 +1305,9 @@ void _iocp_freelsn(listener_ctx *lsn) {
     // 释放前扣除本 listener 尚未复活的 dead 槽，保持 ndead_total==sum(存活 lsn->ndead)
     int32_t ndead = (int32_t)ATOMIC_GET(&lsn->ndead);
     if (0 != ndead) {
-        ATOMIC_ADD(&lsn->ev->ndead_total, -ndead);
+        ATOMIC_ADD_RELAXED(&lsn->ev->ndead_total, -ndead);
     }
-    ATOMIC_ADD(&lsn->ev->nlsn, -1);
+    ATOMIC_ADD_RELAXED(&lsn->ev->nlsn, -1);
     FREE(lsn);
 }
 // 递减 lsn 引用计数；归零时释放 listener_ctx。listener_ctx 完整定义仅在本文件可见，

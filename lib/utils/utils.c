@@ -139,7 +139,7 @@ static DWORD WINAPI _dump_thread(LPVOID arg) {
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acdmp[PATH_LENS];
     SNPRINTF(acdmp, sizeof(acdmp), "%s%s%"PRIu64"_%d.dmp",
-        procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
+        procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD_RELAXED(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
         _dump_err("OpenThreadToken", ERRNO);
@@ -252,7 +252,7 @@ int32_t serviceid(uint16_t id) {
     return ERR_OK;
 }
 uint64_t createid(void) {
-    return ((uint64_t)_serviceid << 48) | ((uint64_t)ATOMIC64_ADD(&_ids, 1) & 0xFFFFFFFFFFFFULL);
+    return ((uint64_t)_serviceid << 48) | ((uint64_t)ATOMIC64_ADD_RELAXED(&_ids, 1) & 0xFFFFFFFFFFFFULL);
 }
 uint64_t threadid(void) {
 #if defined(OS_WIN)
@@ -877,7 +877,7 @@ int32_t csprng_rand(void *buf, size_t len) {
         if (ENOSYS != ERRNO) {
             return ERR_FAILED;
         }
-        ATOMIC_SET(&_getrandom_nosys, 1);
+        ATOMIC_SET_RELAXED(&_getrandom_nosys, 1);
     }
 #endif
     /* 其余 Unix（Solaris、AIX、HP-UX 等）与退回的 Linux 读 /dev/urandom */

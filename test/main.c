@@ -106,6 +106,57 @@ static void _cusuite_fails(CuSuite *suite) {
     }
 }
 
+// 依赖本机 docker 的用例（外部 EMQX 与四个数据库），没启动允许失败
+static int32_t _test_optional(const char *name) {
+    return 0 == strcmp(name, "mqtt_test1")
+        || 0 == strcmp(name, "mqtt_test2")
+        || 0 == strcmp(name, "mysql_test")
+        || 0 == strcmp(name, "pgsql_test")
+        || 0 == strcmp(name, "redis_test")
+        || 0 == strcmp(name, "mongo_test");
+}
+// 还没到终态的结果槽个数。1 是通过；可选用例停在 0 说明压根没连上，也算终态；
+// 其余（0 没走完、-1 连上后没走完或断言失败）都算未完成。print 非 0 时顺带逐个列出
+static int32_t _test_pending(name_val_ctx *list, int32_t print) {
+    int32_t n = 0;
+    int32_t val;
+    for (int32_t i = 0; NULL != list[i].name; i++) {
+        val = *(volatile int32_t *)&list[i].val;// 各 task 在自己的线程里写，这里只要最终看得到
+        if (1 == val
+            || (0 == val && _test_optional(list[i].name))) {
+            continue;
+        }
+        n++;
+        if (print) {
+            PRINT("  pending: %s (%d)", list[i].name, val);
+        }
+    }
+    return n;
+}
+// 集成用例全部出结果就自己收尾，不必再手动发 SIGINT；有用例卡住就等到上限，列出未完成项照样收尾。
+// SIGINT 仍可随时打断
+static void _test_wait(hug_ctx *hug, name_val_ctx *list) {
+    const uint64_t maxms = 300000;
+    const uint32_t stepms = 200;
+    uint64_t start = nowms();
+    for (;;) {
+        if (0 != ATOMIC_GET(&hug->exitflag)) {
+            PRINT("%s", "exit signaled, shutting down.");
+            return;
+        }
+        if (0 == _test_pending(list, 0)) {
+            PRINT("%s", "all integration items finished, shutting down.");
+            return;
+        }
+        if (nowms() - start >= maxms) {
+            PRINT("integration wait timed out after %u s, shutting down with:", (uint32_t)(maxms / 1000));
+            _test_pending(list, 1);
+            return;
+        }
+        MSLEEP(stepms);
+    }
+}
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -492,7 +543,7 @@ int main(int argc, char *argv[]) {
             break;
         }
     }
-    hug_wait(&_hug);
+    _test_wait(&_hug, testlist);
     loader_free(g_loader);
 
     /* ── 会用光全局槽位的用例：排在集成阶段之后，别把分条计数提前关掉 ── */
@@ -533,15 +584,9 @@ int main(int argc, char *argv[]) {
         if (NULL == testlist[i].name) {
             break;
         }
-        // mqtt_test1/2 + mysql/pgsql/redis/mongo 依赖本机 docker，未启动允许失败。
-        // 只放行 val == 0（压根没连上），val == -1 是连上之后断言失败，一律计失败——
+        // 可选用例只放行 val == 0（压根没连上），val == -1 是连上之后断言失败，一律计失败——
         // 两者以前都是 0，于是这六条在 docker 起着的标准环境下永久不 gate 任何东西
-        optional = (0 == strcmp(testlist[i].name, "mqtt_test1")
-                    || 0 == strcmp(testlist[i].name, "mqtt_test2")
-                    || 0 == strcmp(testlist[i].name, "mysql_test")
-                    || 0 == strcmp(testlist[i].name, "pgsql_test")
-                    || 0 == strcmp(testlist[i].name, "redis_test")
-                    || 0 == strcmp(testlist[i].name, "mongo_test"));
+        optional = _test_optional(testlist[i].name);
         if (1 == testlist[i].val) {
             PRINT("%s: ok", testlist[i].name);
         } else if (0 == testlist[i].val && optional) {

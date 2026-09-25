@@ -3,10 +3,6 @@
 // bson_cat / 迭代器 / bson_check_depth 三处校验严在不同的轴上, 别拿一处的宽松当漏检去补齐。
 // 最易踩: 提前出现 EOD 后还剩没用掉的字节, 迭代器当遍历正常结束静默忽略, 只有 bson_check_depth 拒
 
-#define BSON_APPEND_CSTRING(str) binary_set_string(&bson->doc, str)
-#define BSON_APPEND_KEY(type) \
-    binary_set_int8(&bson->doc, (int8_t)type);\
-    BSON_APPEND_CSTRING(key)
 // 迭代器推进失败的哨兵。doclens 已由 bson_iter_init 校验不超过 buffer 大小,
 // 真实 offset 取不到这个值
 #define ITER_BAD ((size_t)-1)
@@ -41,7 +37,7 @@ void bson_globle_init(void) {
 }
 void bson_oid(char oid[BSON_OID_LENS]) {
     time_t ti = time(NULL);
-    uint32_t id = ATOMIC_ADD(&_oid_counter, 1);
+    uint32_t id = ATOMIC_ADD_RELAXED(&_oid_counter, 1);
     pack_integer(oid, (uint64_t)ti, 4, 0);
     memcpy(oid + 4, _oid_header, 5);
     pack_integer(oid + 9, id, 3, 0);
@@ -57,6 +53,52 @@ static inline void _bson_append_start(bson_ctx *bson) {
     bson->offsets[bson->depth - 1] = bson->doc.offset;
     binary_set_skip(&bson->doc, 4);
 }
+// src 可能指向本 ctx 自己的缓冲(key 与各 append 的值参数都可能取自 BSON_DOC(bson) 区间),
+// 规则同 binary_set_binary:扩容会把它搬走,扩容前记下标,扩容后按下标重取
+static inline uintptr_t _bson_src_mark(bson_ctx *bson, const void *src, int32_t *inner) {
+    uintptr_t off = (uintptr_t)src - (uintptr_t)bson->doc.data;
+    *inner = (NULL != bson->doc.data && off < bson->doc.size);
+    return off;
+}
+// 一次扩够 type + key + NUL + vlens 字节并写好 type 与 key,返回值区起点。key 同样可能指向本 ctx 的缓冲
+static inline char *_bson_append_head(bson_ctx *bson, bson_type type, const char *key, size_t vlens) {
+    size_t klens = strlen(key);
+    int32_t inner;
+    uintptr_t koff = _bson_src_mark(bson, key, &inner);
+    size_t start = bson->doc.offset;
+    binary_set_skip(&bson->doc, 1 + klens + 1 + vlens);
+    char *p = bson->doc.data + start;
+    p[0] = (char)type;
+    memmove(p + 1, inner ? bson->doc.data + koff : key, klens + 1);
+    return p + 2 + klens;
+}
+// 子文档/数组的开头:key 与 4 字节长度占位一次扩够,并记下长度字段的位置
+static inline void _bson_append_sub(bson_ctx *bson, bson_type type, const char *key) {
+    char *p = _bson_append_head(bson, type, key, 4);
+    bson->depth++;
+    ASSERTAB(bson->depth <= BSON_MAX_DEPTH, "too much depth.");
+    bson->offsets[bson->depth - 1] = (size_t)(p - bson->doc.data);
+}
+// 带 int32 长度前缀、结尾补 NUL 的字符串值(utf8 / jscode)
+static inline void _bson_append_str(bson_ctx *bson, bson_type type, const char *key, const char *val, size_t lens) {
+    int32_t inner;
+    uintptr_t off = _bson_src_mark(bson, val, &inner);
+    char *p = _bson_append_head(bson, type, key, 4 + lens + 1);
+    pack_integer(p, lens + 1, 4, 1);
+    if (lens > 0) {
+        memmove(p + 4, inner ? bson->doc.data + off : val, lens);
+    }
+    p[4 + lens] = '\0';
+}
+// 原样拷入一段已编好的子文档/数组
+static inline void _bson_append_raw(bson_ctx *bson, bson_type type, const char *key, const char *doc, size_t lens) {
+    int32_t inner;
+    uintptr_t off = _bson_src_mark(bson, doc, &inner);
+    char *p = _bson_append_head(bson, type, key, (NULL == doc) ? 0 : lens);
+    if (NULL != doc && lens > 0) {
+        memmove(p, inner ? bson->doc.data + off : doc, lens);
+    }
+}
 void bson_init(bson_ctx *bson, char *data, size_t lens) {
     bson->depth = 0;
     if (NULL == data) {
@@ -67,6 +109,12 @@ void bson_init(bson_ctx *bson, char *data, size_t lens) {
         binary_init_read(&bson->doc, data, lens);
     }
 }
+void bson_init_prefix(bson_ctx *bson, size_t lens, size_t prefix) {
+    bson->depth = 0;
+    binary_init_write(&bson->doc, lens + prefix, 0);
+    binary_set_skip(&bson->doc, prefix);
+    _bson_append_start(bson);
+}
 int32_t bson_complete(bson_ctx *bson) {
     return 0 == bson->depth && bson->doc.offset > 0;
 }
@@ -76,9 +124,7 @@ void bson_append_end(bson_ctx *bson) {
     size_t endoff = bson->doc.offset;
     size_t startoff = bson->offsets[bson->depth - 1];
     ASSERTAB(endoff - startoff <= INT32_MAX, "BSON document length exceeds 2GB limit");
-    binary_offset(&bson->doc, startoff);
-    binary_set_integer(&bson->doc, endoff - startoff, 4, 1);
-    binary_offset(&bson->doc, endoff);
+    pack_integer(bson->doc.data + startoff, (uint64_t)(endoff - startoff), 4, 1);
     bson->depth--;
 }
 int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens) {
@@ -108,78 +154,77 @@ int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens) {
     return ERR_OK;
 }
 void bson_append_document_begain(bson_ctx *bson, const char *key) {
-    BSON_APPEND_KEY(BSON_DOCUMENT);
-    _bson_append_start(bson);
+    _bson_append_sub(bson, BSON_DOCUMENT, key);
 }
 void bson_append_array_begain(bson_ctx *bson, const char *key) {
-    BSON_APPEND_KEY(BSON_ARRAY);
-    _bson_append_start(bson);
+    _bson_append_sub(bson, BSON_ARRAY, key);
 }
 //signed_byte(1) e_name double
 void bson_append_double(bson_ctx *bson, const char *key, double val) {
-    BSON_APPEND_KEY(BSON_DOUBLE);
-    binary_set_double(&bson->doc, val, 1);
+    pack_double(_bson_append_head(bson, BSON_DOUBLE, key, sizeof(double)), val, 1);
 }
 //signed_byte(2) e_name string
 void bson_append_utf8_n(bson_ctx *bson, const char *key, const char *val, size_t lens) {
     ASSERTAB(lens <= INT32_MAX - 1, "BSON UTF-8 string length exceeds 2GB limit");
-    BSON_APPEND_KEY(BSON_UTF8);
-    binary_set_integer(&bson->doc, lens + 1, 4, 1);
-    binary_set_binary(&bson->doc, val, lens);
-    binary_set_int8(&bson->doc, 0);
+    _bson_append_str(bson, BSON_UTF8, key, val, lens);
 }
 void bson_append_utf8(bson_ctx *bson, const char *key, const char *val) {
     bson_append_utf8_n(bson, key, val, strlen(val));
 }
 //signed_byte(3) e_name document
 void bson_append_document(bson_ctx *bson, const char *key, char *doc, size_t lens) {
-    BSON_APPEND_KEY(BSON_DOCUMENT);
-    binary_set_binary(&bson->doc, doc, lens);
+    _bson_append_raw(bson, BSON_DOCUMENT, key, doc, lens);
 }
 //signed_byte(4) e_name document
 void bson_append_array(bson_ctx *bson, const char *key, char *doc, size_t lens) {
-    BSON_APPEND_KEY(BSON_ARRAY);
-    binary_set_binary(&bson->doc, doc, lens);
+    _bson_append_raw(bson, BSON_ARRAY, key, doc, lens);
 }
 //signed_byte(5) e_name binary
 void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char *val, size_t lens) {
     ASSERTAB(lens <= INT32_MAX, "BSON binary length exceeds 2GB limit");
-    BSON_APPEND_KEY(BSON_BINARY);
-    binary_set_integer(&bson->doc, lens, 4, 1);
-    binary_set_int8(&bson->doc, type);
-    binary_set_binary(&bson->doc, val, lens);
+    int32_t inner;
+    uintptr_t off = _bson_src_mark(bson, val, &inner);
+    char *p = _bson_append_head(bson, BSON_BINARY, key, 4 + 1 + lens);
+    pack_integer(p, lens, 4, 1);
+    p[4] = (char)type;
+    if (lens > 0) {
+        memmove(p + 5, inner ? bson->doc.data + off : val, lens);
+    }
 }
 //signed_byte(7) e_name (byte*12)
 void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]) {
-    BSON_APPEND_KEY(BSON_OID);
-    binary_set_binary(&bson->doc, oid, BSON_OID_LENS);
+    int32_t inner;
+    uintptr_t off = _bson_src_mark(bson, oid, &inner);
+    char *p = _bson_append_head(bson, BSON_OID, key, BSON_OID_LENS);
+    memmove(p, inner ? bson->doc.data + off : oid, BSON_OID_LENS);
 }
 //signed_byte(8) e_name unsigned_byte(0/1)
 void bson_append_bool(bson_ctx *bson, const char *key, int8_t b) {
-    BSON_APPEND_KEY(BSON_BOOL);
-    binary_set_int8(&bson->doc, b ? 1 : 0);
+    _bson_append_head(bson, BSON_BOOL, key, 1)[0] = b ? 1 : 0;
 }
 //signed_byte(9) e_name int64
 void bson_append_date(bson_ctx *bson, const char *key, int64_t date) {
-    BSON_APPEND_KEY(BSON_DATE);
-    binary_set_integer(&bson->doc, date, 8, 1);
+    pack_integer(_bson_append_head(bson, BSON_DATE, key, 8), (uint64_t)date, 8, 1);
 }
 //signed_byte(10) e_name
 void bson_append_null(bson_ctx *bson, const char *key) {
-    BSON_APPEND_KEY(BSON_NULL);
+    _bson_append_head(bson, BSON_NULL, key, 0);
 }
 //signed_byte(11) e_name cstring cstring
 void bson_append_regex(bson_ctx *bson, const char *key, const char *pattern, const char *options) {
-    BSON_APPEND_KEY(BSON_REGEX);
-    BSON_APPEND_CSTRING(pattern);
-    BSON_APPEND_CSTRING(options);
+    int32_t pinner;
+    int32_t oinner;
+    uintptr_t poff = _bson_src_mark(bson, pattern, &pinner);
+    uintptr_t ooff = _bson_src_mark(bson, options, &oinner);
+    size_t plens = strlen(pattern);
+    size_t olens = strlen(options);
+    char *p = _bson_append_head(bson, BSON_REGEX, key, plens + 1 + olens + 1);
+    memmove(p, pinner ? bson->doc.data + poff : pattern, plens + 1);
+    memmove(p + plens + 1, oinner ? bson->doc.data + ooff : options, olens + 1);
 }
 void bson_append_jscode_n(bson_ctx *bson, const char *key, const char *jscode, size_t lens) {
     ASSERTAB(lens <= INT32_MAX - 1, "BSON JavaScript code length exceeds 2GB limit");
-    BSON_APPEND_KEY(BSON_JSCODE);
-    binary_set_integer(&bson->doc, lens + 1, 4, 1);
-    binary_set_binary(&bson->doc, jscode, lens);
-    binary_set_int8(&bson->doc, 0);
+    _bson_append_str(bson, BSON_JSCODE, key, jscode, lens);
 }
 //signed_byte(13) e_name string
 void bson_append_jscode(bson_ctx *bson, const char *key, const char *jscode) {
@@ -187,27 +232,25 @@ void bson_append_jscode(bson_ctx *bson, const char *key, const char *jscode) {
 }
 //signed_byte(16) e_name int32
 void bson_append_int32(bson_ctx *bson, const char *key, int32_t val) {
-    BSON_APPEND_KEY(BSON_INT32);
-    binary_set_integer(&bson->doc, val, 4, 1);
+    pack_integer(_bson_append_head(bson, BSON_INT32, key, 4), (uint64_t)(int64_t)val, 4, 1);
 }
 //signed_byte(17) e_name uint64
 void bson_append_timestamp(bson_ctx *bson, const char *key, uint32_t ts, uint32_t inc) {
-    BSON_APPEND_KEY(BSON_TIMESTAMP);
-    binary_set_integer(&bson->doc, inc, 4, 1);
-    binary_set_integer(&bson->doc, ts, 4, 1);
+    char *p = _bson_append_head(bson, BSON_TIMESTAMP, key, 8);
+    pack_integer(p, inc, 4, 1);
+    pack_integer(p + 4, ts, 4, 1);
 }
 //signed_byte(18) e_name int64
 void bson_append_int64(bson_ctx *bson, const char *key, int64_t val) {
-    BSON_APPEND_KEY(BSON_INT64);
-    binary_set_integer(&bson->doc, val, 8, 1);
+    pack_integer(_bson_append_head(bson, BSON_INT64, key, 8), (uint64_t)val, 8, 1);
 }
 //signed_byte(-1) e_name
 void bson_append_minkey(bson_ctx *bson, const char *key) {
-    BSON_APPEND_KEY(BSON_MINKEY);
+    _bson_append_head(bson, BSON_MINKEY, key, 0);
 }
 //signed_byte(127) e_name
 void bson_append_maxkey(bson_ctx *bson, const char *key) {
-    BSON_APPEND_KEY(BSON_MAXKEY);
+    _bson_append_head(bson, BSON_MAXKEY, key, 0);
 }
 // 清空迭代器的当前字段信息（类型、长度、key、val 等）
 static inline void _bson_iter_clear(bson_iter *iter) {
@@ -257,11 +300,48 @@ int32_t bson_iter_error(const bson_iter *iter) {
 static inline size_t _bson_iter_avail(const bson_iter *iter, size_t off) {
     return iter->doclens > off ? iter->doclens - off : 0;
 }
+// m 是 _bson_iter_cstring 里算出的掩码(非 0,小端读入):0 字节的最高位被标成 1。返回第一个 0 字节在这 8 字节里的下标
+static inline size_t _bson_zero_byte(uint64_t m) {
+#if defined(__GNUC__) || defined(__clang__)
+    return (size_t)(__builtin_ctzll(m) >> 3);
+#elif defined(_MSC_VER) && (defined(ARCH_X64) || defined(ARCH_ARM64))
+    unsigned long bi;
+    _BitScanForward64(&bi, m);
+    return (size_t)(bi >> 3);
+#else
+    size_t i = 0;
+    while (0 == (m & 0x80)) {
+        m >>= 8;
+        i++;
+    }
+    return i;
+#endif
+}
 // 从 off 起在 doclens 边界内定位一个 NUL 结尾的 C 串;找到返 1 并回填 out/lens
 // (不推进 off,两个出参都可传 NULL),找不到返 0。key 与 regex 的两个 cstring 共用这一份边界判定
 static inline int32_t _bson_iter_cstring(bson_iter *iter, size_t off, const char **out, uint32_t *lens) {
     const char *start = iter->doc->data + off;
-    const char *nul = memchr(start, '\0', _bson_iter_avail(iter, off));
+    size_t avail = _bson_iter_avail(iter, off);
+    size_t i = 0;
+    uint64_t v;
+    uint64_t m;
+    const char *nul = NULL;
+    if (IS_LITTLE) {
+        while (i + 8 <= avail) {
+            memcpy(&v, start + i, 8);
+            // 一次查 8 个字节里有没有 0：每字节减 1，原来是 0 的字节借位变成 0xFF、最高位成 1；
+            // 与上 ~v 去掉本来最高位就是 1 的字节。结果非 0 就有 0 字节，最低那个置位字节就是第一个 0
+            m = (v - 0x0101010101010101ull) & ~v & 0x8080808080808080ull;
+            if (0 != m) {
+                nul = start + i + _bson_zero_byte(m);
+                break;
+            }
+            i += 8;
+        }
+    }
+    if (NULL == nul) {
+        nul = memchr(start + i, '\0', avail - i);
+    }
     if (NULL == nul) {
         return 0;
     }
@@ -362,7 +442,7 @@ int32_t bson_iter_next(bson_iter *iter) {
     off++;
     switch (iter->type) {
     case BSON_EOD:
-        binary_offset(iter->doc, off);
+        iter->doc->offset = off;
         _bson_iter_poison(iter);
         return 0;
     case BSON_DOUBLE://e_name double
@@ -453,10 +533,10 @@ int32_t bson_iter_next(bson_iter *iter) {
         // 被反复重解析(每次重复一条告警),下次进来直接从开头的边界判定返回
         iter->err = 1;
         _bson_iter_poison(iter);
-        binary_offset(iter->doc, iter->doclens);
+        iter->doc->offset = iter->doclens;
         return 0;
     }
-    binary_offset(iter->doc, off);
+    iter->doc->offset = off;
     return 1;
 }
 // 在当前层级顺序扫描指定 key;找到时 iter 即停在该元素上
@@ -583,7 +663,7 @@ int64_t bson_iter_date(bson_iter *iter, int32_t *err) {
     if (ERR_OK != _bson_iter_check(iter, BSON_DATE, err)) {
         return 0;
     }
-    return unpack_integer(iter->val, (int32_t)iter->lens, 1, 0);
+    return unpack_integer(iter->val, 8, 1, 0);
 }
 const char *bson_iter_regex(bson_iter *iter, char **options, int32_t *err) {
     if (ERR_OK != _bson_iter_check(iter, BSON_REGEX, err)) {
@@ -602,7 +682,7 @@ int32_t bson_iter_int32(bson_iter *iter, int32_t *err) {
     if (ERR_OK != _bson_iter_check(iter, BSON_INT32, err)) {
         return 0;
     }
-    return (int32_t)unpack_integer(iter->val, (int32_t)iter->lens, 1, 1);
+    return (int32_t)unpack_integer(iter->val, 4, 1, 1);
 }
 uint32_t bson_iter_timestamp(bson_iter *iter, uint32_t *inc, int32_t *err) {
     if (ERR_OK != _bson_iter_check(iter, BSON_TIMESTAMP, err)) {
@@ -615,7 +695,7 @@ int64_t bson_iter_int64(bson_iter *iter, int32_t *err) {
     if (ERR_OK != _bson_iter_check(iter, BSON_INT64, err)) {
         return 0;
     }
-    return unpack_integer(iter->val, (int32_t)iter->lens, 1, 1);
+    return unpack_integer(iter->val, 8, 1, 1);
 }
 const char *bson_type_tostring(bson_type type) {
     switch (type) {
@@ -723,13 +803,11 @@ int32_t bson_check_depth(char *data, size_t lens) {
 // 原样写进去后半段谁也看不到，等于让运维只拿到半截错误
 static void _bson_dump_text(binary_ctx *str, const char *val, size_t lens) {
     size_t beg = 0;
-    for (size_t i = 0; i < lens; i++) {
-        if ('\0' != val[i]) {
-            continue;
-        }
-        binary_set_binary(str, val + beg, i - beg);
+    const char *nul;
+    while (NULL != (nul = memchr(val + beg, '\0', lens - beg))) {
+        binary_set_binary(str, val + beg, (size_t)(nul - val) - beg);
         binary_set_binary(str, "\\0", 2);
-        beg = i + 1;
+        beg = (size_t)(nul - val) + 1;
     }
     binary_set_binary(str, val + beg, lens - beg);
 }
@@ -758,17 +836,13 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     int64_t i64val;
     const char *cstr;
     char *bin;
-    char *hexbuf;
-    char oidhex[HEX_ENSIZE(BSON_OID_LENS)];
-    char dechex[HEX_ENSIZE(BSON_DECIMAL128_LENS)];
     while (bson_iter_next(&iter)) {
         binary_set_fill(str, ' ', index * 4);
         binary_set_binary(str, iter.key, iter.keylens);
         binary_set_binary(str, "(", 1);
         strtype = bson_type_tostring(iter.type);
         binary_set_binary(str, strtype, strlen(strtype));
-        binary_set_binary(str, ")", 1);
-        binary_set_binary(str, ": ", 2);
+        binary_set_binary(str, "): ", 3);
         switch (iter.type) {
         case BSON_DOUBLE:
             dval = bson_iter_double(&iter, NULL);
@@ -804,15 +878,13 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             binary_set_binary(str, "(", 1);
             binary_set_binary(str, subtstr, strlen(subtstr));
             binary_set_binary(str, ") ", 2);
-            MALLOC(hexbuf, HEX_ENSIZE(lens));
-            tohex(bin, lens, hexbuf, 0);
-            binary_set_binary(str, hexbuf, lens * 2);
-            FREE(hexbuf);
+            binary_set_skip(str, lens * 2);
+            tohex(bin, lens, str->data + str->offset - lens * 2, 0);
             break;
         case BSON_OID:
             bin = bson_iter_oid(&iter, NULL);
-            tohex(bin, BSON_OID_LENS, oidhex, 0);
-            binary_set_binary(str, oidhex, BSON_OID_LENS * 2);
+            binary_set_skip(str, BSON_OID_LENS * 2);
+            tohex(bin, BSON_OID_LENS, str->data + str->offset - BSON_OID_LENS * 2, 0);
             break;
         case BSON_BOOL:
             ival = bson_iter_bool(&iter, NULL);
@@ -836,8 +908,8 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             binary_set_va(str, "%"PRId64, i64val);
             break;
         case BSON_DECIMAL128:
-            tohex(iter.val, BSON_DECIMAL128_LENS, dechex, 0);
-            binary_set_binary(str, dechex, BSON_DECIMAL128_LENS * 2);
+            binary_set_skip(str, BSON_DECIMAL128_LENS * 2);
+            tohex(iter.val, BSON_DECIMAL128_LENS, str->data + str->offset - BSON_DECIMAL128_LENS * 2, 0);
             break;
         case BSON_NULL:
         case BSON_MINKEY:

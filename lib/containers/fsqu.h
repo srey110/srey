@@ -50,7 +50,7 @@ typedef struct {                                                                
 } name;                                                                         \
 static inline void name##_init(name *fsqu, uint32_t capacity) {                 \
     capacity = (0 == capacity) ? FSQU_DEFAULT_CAP : capacity;                    \
-    ATOMIC_SET(&fsqu->novf, 0);                                                 \
+    ATOMIC_SET_RELAXED(&fsqu->novf, 0);                                                 \
     spin_init(&fsqu->lck, SPIN_CNT);                                            \
     /* 溢出层走延迟分配:首次溢出才由 push 申请缓冲 */                              \
     name##_ovf_init(&fsqu->qu, 0);                                              \
@@ -123,7 +123,7 @@ static inline void name##_ovf_drain(name *fsqu, T *out, uint32_t max,           
         k = (int32_t)name##_ovf_pop_batch(&fsqu->qu, out + *n, max - *n);       \
         if (0 != k) {                                                           \
             *n += (uint32_t)k;                                                  \
-            ATOMIC_ADD(&fsqu->novf, -k);/* 批量一次扣减,省 k-1 次原子操作 */       \
+            ATOMIC_ADD_RELAXED(&fsqu->novf, -k);/* 批量一次扣减,省 k-1 次原子操作 */       \
         }                                                                       \
     }                                                                           \
     spin_unlock(&fsqu->lck);                                                    \

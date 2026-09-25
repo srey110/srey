@@ -39,9 +39,9 @@ static int32_t _lutils_log(lua_State *lua) {
     const char *log = luaL_checkstring(lua, 4);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
     if (NULL == task) {
-        slog(lv, "[%s %d] %s", __FILENAME__(file), line, log);
+        slog(lv, "[%s %d] %s", _filename(file), line, log);
     } else {
-        slog(lv, "[%s %d][%s] %s", __FILENAME__(file), line, _NAME_OR(task->name), log);
+        slog(lv, "[%s %d][%s] %s", _filename(file), line, _NAME_OR(task->name), log);
     }
     return 0;
 }
@@ -101,7 +101,7 @@ static int32_t _lutils_hex(lua_State *lua) {
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, HEX_ENSIZE(size));
     tohex(data, size, out, lower);
-    luaL_pushresultsize(&lbuf, strlen(out));
+    luaL_pushresultsize(&lbuf, size * 2);
     return 1;
 }
 /// <summary>

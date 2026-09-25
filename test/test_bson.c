@@ -9,6 +9,8 @@
     bson_iter iter; \
     bson_init(&reader, BSON_DOC(&bson), BSON_DOC_LENS(&bson)); \
     bson_iter_init(&iter, &reader)
+// key 长度用例覆盖 0..BSON_T_KEYMAX
+#define BSON_T_KEYMAX 40
 
 /* =======================================================================
  * 基本类型：double / utf8 / int32 / int64 / bool / null / oid / binary / date
@@ -1494,6 +1496,566 @@ static void test_bson_iter_find_empty_key(CuTest *tc) {
     }
     BSON_FREE(&bson);
 }
+
+// 按长度 klen 生成 key（不写结尾 NUL）。混入 0x01 / 0x80 / 0xFF / 0x7F 这类最容易让
+// "8 字节一起查 0"误判的字节，起点随 klen 错开，各长度的 key 内容互不相同
+static void _bson_mk_key(char *key, size_t klen) {
+    static const char tbl[] = { 'a', 0x01, (char)0x80, (char)0xFF, 'Z', 0x7F, (char)0x81, (char)0xFE, '.', '9' };
+    size_t i;
+    for (i = 0; i < klen; i++) {
+        key[i] = tbl[(i + klen) % sizeof(tbl)];
+    }
+}
+// 遍历 data：应恰好是 key 长度 0..BSON_T_KEYMAX 各一个的 int32 字段，值为 0x01010101 + klen
+static void _bson_check_keys(CuTest *tc, char *data, size_t lens) {
+    char key[BSON_T_KEYMAX + 1];
+    bson_ctx rd;
+    bson_iter iter;
+    size_t k;
+    int32_t err;
+    bson_init(&rd, data, lens);
+    bson_iter_init(&iter, &rd);
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    for (k = 0; k <= BSON_T_KEYMAX; k++) {
+        _bson_mk_key(key, k);
+        CuAssertTrue(tc, bson_iter_next(&iter));
+        CuAssertIntEquals(tc, BSON_INT32, iter.type);
+        CuAssertIntEquals(tc, (int32_t)k, (int32_t)iter.keylens);
+        CuAssertTrue(tc, 0 == memcmp(iter.key, key, k));
+        CuAssertTrue(tc, '\0' == iter.key[k]);
+        err = ERR_FAILED;
+        CuAssertIntEquals(tc, (int32_t)(0x01010101 + k), bson_iter_int32(&iter, &err));
+        CuAssertIntEquals(tc, ERR_OK, err);
+    }
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+}
+// key 找结尾 NUL 的边界：长度 0..40 的 key 各追加一个 int32 后逐个读回，keylens / key 内容 / 值都要对。
+// 值取 0x01010101 + klen：紧跟在 NUL 后面的全是 0x01，8 字节一起查时这类字节最容易被误当成 0。
+// 同一文档再拷到偏移 1..7 的缓冲上重读一遍，缓冲末尾恰好是文档末尾（ASan 下多读一字节即报）
+static void test_bson_key_lens_scan(CuTest *tc) {
+    char key[BSON_T_KEYMAX + 1];
+    bson_ctx bson;
+    size_t k, shift, lens;
+    char *raw;
+
+    bson_init(&bson, NULL, 0);
+    for (k = 0; k <= BSON_T_KEYMAX; k++) {
+        _bson_mk_key(key, k);
+        key[k] = '\0';
+        bson_append_int32(&bson, key, (int32_t)(0x01010101 + k));
+    }
+    bson_append_end(&bson);
+    CuAssertTrue(tc, bson_complete(&bson));
+    lens = BSON_DOC_LENS(&bson);
+    _bson_check_keys(tc, BSON_DOC(&bson), lens);
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(BSON_DOC(&bson), lens));
+
+    for (shift = 1; shift <= 7; shift++) {
+        MALLOC(raw, lens + shift);
+        memcpy(raw + shift, BSON_DOC(&bson), lens);
+        _bson_check_keys(tc, raw + shift, lens);
+        CuAssertIntEquals(tc, ERR_OK, bson_check_depth(raw + shift, lens));
+        FREE(raw);
+    }
+    BSON_FREE(&bson);
+}
+// key 一直延伸到声明长度末尾、中间没有 NUL：遍历必须报错，且不能到声明长度之外去找 NUL。
+// 对照组是同一个 key 补上 NUL、类型换成不带值的 NULL、再补 EOD：key 的 NUL 落在倒数第二字节，照常读出
+static void test_bson_key_no_nul(CuTest *tc) {
+    char key[BSON_T_KEYMAX + 1];
+    bson_ctx rd;
+    bson_iter iter;
+    size_t klen, dlen;
+    char *buf;
+
+    for (klen = 0; klen <= 24; klen++) {
+        _bson_mk_key(key, klen);
+
+        // 1) 精确分配：[len][0x10][key...] 到此为止，没有 NUL 也没有 EOD
+        dlen = 5 + klen;
+        MALLOC(buf, dlen);
+        ZERO(buf, 4);
+        buf[0] = (char)dlen;
+        buf[4] = BSON_INT32;
+        memcpy(buf + 5, key, klen);
+        bson_init(&rd, buf, dlen);
+        bson_iter_init(&iter, &rd);
+        CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+        CuAssertTrue(tc, !bson_iter_next(&iter));
+        CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+        CuAssertIntEquals(tc, BSON_EOD, iter.type);
+        CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(buf, dlen));
+        FREE(buf);
+
+        // 2) 缓冲比声明长度多出 16 个 0：NUL 只出现在声明长度之外，仍然不算数
+        MALLOC(buf, dlen + 16);
+        ZERO(buf, dlen + 16);
+        buf[0] = (char)dlen;
+        buf[4] = BSON_INT32;
+        memcpy(buf + 5, key, klen);
+        bson_init(&rd, buf, dlen + 16);
+        bson_iter_init(&iter, &rd);
+        CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+        CuAssertTrue(tc, !bson_iter_next(&iter));
+        CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+        FREE(buf);
+
+        // 3) 对照：[len][0x0A][key][NUL][EOD]，精确分配
+        dlen = 5 + klen + 2;
+        MALLOC(buf, dlen);
+        ZERO(buf, 4);
+        buf[0] = (char)dlen;
+        buf[4] = BSON_NULL;
+        memcpy(buf + 5, key, klen);
+        buf[5 + klen] = '\0';
+        buf[6 + klen] = '\0';
+        bson_init(&rd, buf, dlen);
+        bson_iter_init(&iter, &rd);
+        CuAssertTrue(tc, bson_iter_next(&iter));
+        CuAssertIntEquals(tc, BSON_NULL, iter.type);
+        CuAssertIntEquals(tc, (int32_t)klen, (int32_t)iter.keylens);
+        CuAssertTrue(tc, 0 == memcmp(iter.key, key, klen));
+        CuAssertTrue(tc, !bson_iter_next(&iter));
+        CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+        CuAssertIntEquals(tc, ERR_OK, bson_check_depth(buf, dlen));
+        FREE(buf);
+    }
+}
+
+// 把 b 的余量压到装不下 need 字节，逼下一次追加扩容；ref 跟着写同样的填充字段，两边字节保持一致。
+// 扩容条件是 need + offset + 1 > size，即余量 <= need
+static void _bson_squeeze(bson_ctx *b, bson_ctx *ref, size_t need) {
+    while (b->doc.size - b->doc.offset > need) {
+        bson_append_int32(b, "f", 1);
+        bson_append_int32(ref, "f", 1);
+    }
+}
+// 数一遍 data 里 key 为 key、且值与期望一致的字段个数
+static int32_t _bson_count_alias(char *data, size_t lens, const char *key, const char *bin, const char *oid) {
+    bson_ctx rd, sub;
+    bson_iter iter, siter;
+    bson_subtype st;
+    size_t blens;
+    char *p;
+    int32_t err, n = 0;
+    bson_init(&rd, data, lens);
+    bson_iter_init(&iter, &rd);
+    while (bson_iter_next(&iter)) {
+        if (0 != strcmp(iter.key, key)) {
+            continue;
+        }
+        switch (iter.type) {
+        case BSON_UTF8:
+            p = (char *)bson_iter_utf8(&iter, &err);
+            if (ERR_OK == err && 0 == strcmp(p, "self-alias-value")) {
+                n++;
+            }
+            break;
+        case BSON_BINARY:
+            p = bson_iter_binary(&iter, &st, &blens, &err);
+            if (ERR_OK == err && BSON_SUBTYPE_USER == st && 32 == blens && 0 == memcmp(p, bin, 32)) {
+                n++;
+            }
+            break;
+        case BSON_OID:
+            p = bson_iter_oid(&iter, &err);
+            if (ERR_OK == err && 0 == memcmp(p, oid, BSON_OID_LENS)) {
+                n++;
+            }
+            break;
+        case BSON_DOCUMENT:
+            p = bson_iter_document(&iter, &blens, &err);
+            if (ERR_OK != err) {
+                break;
+            }
+            bson_init(&sub, p, blens);
+            bson_iter_init(&siter, &sub);
+            if (bson_iter_next(&siter) && 42 == bson_iter_int32(&siter, &err) && ERR_OK == err) {
+                n++;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return n;
+}
+// key 与 val 都指向本 ctx 自己的缓冲、且这次追加必然扩容（ASan 下 realloc 必换地址）：
+// 结果须与用独立拷贝追加的 ref 逐字节一致，读回来的值也与原字段相同。
+// 下标在写字段前按 wire 布局算好：type 1 字节之后是 key，key 的 NUL 之后是值
+// bson_append_regex 的 key / pattern / options 都指向本 ctx 自己的缓冲，且这次追加必然扩容：
+// 结果须与用独立拷贝追加逐字节一致，两份 regex 都读得回原值
+static void test_bson_append_regex_self_alias(CuTest *tc) {
+    char kcopy[16];
+    char pcopy[16];
+    char ocopy[16];
+    bson_ctx b, ref, rd;
+    bson_iter it;
+    size_t i, oldsize, koff, poff, ooff;
+    const char *pat;
+    char *opt;
+    int32_t hits = 0;
+
+    bson_init(&b, NULL, 0);
+    bson_init(&ref, NULL, 0);
+    for (i = 0; i < 30; i++) {
+        bson_append_int32(&b, "fill", (int32_t)i);
+        bson_append_int32(&ref, "fill", (int32_t)i);
+    }
+    koff = b.doc.offset + 1;
+    poff = koff + 3;// "re\0"
+    ooff = poff + 6;// "abc.*\0"
+    bson_append_regex(&b, "re", "abc.*", "im");
+    bson_append_regex(&ref, "re", "abc.*", "im");
+    CuAssertStrEquals(tc, "re", b.doc.data + koff);
+    CuAssertStrEquals(tc, "abc.*", b.doc.data + poff);
+    CuAssertStrEquals(tc, "im", b.doc.data + ooff);
+
+    // 1 + "re\0" + "abc.*\0" + "im\0"
+    _bson_squeeze(&b, &ref, 1 + 3 + 6 + 3);
+    oldsize = b.doc.size;
+    strcpy(kcopy, b.doc.data + koff);
+    strcpy(pcopy, b.doc.data + poff);
+    strcpy(ocopy, b.doc.data + ooff);
+    bson_append_regex(&b, b.doc.data + koff, b.doc.data + poff, b.doc.data + ooff);
+    bson_append_regex(&ref, kcopy, pcopy, ocopy);
+    CuAssertTrue(tc, b.doc.size > oldsize);
+
+    bson_append_end(&b);
+    bson_append_end(&ref);
+    CuAssertTrue(tc, BSON_DOC_LENS(&ref) == BSON_DOC_LENS(&b));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&ref), BSON_DOC(&b), BSON_DOC_LENS(&b)));
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(BSON_DOC(&b), BSON_DOC_LENS(&b)));
+    bson_init(&rd, BSON_DOC(&b), BSON_DOC_LENS(&b));
+    bson_iter_init(&it, &rd);
+    while (bson_iter_next(&it)) {
+        if (BSON_REGEX != it.type) {
+            continue;
+        }
+        opt = NULL;
+        pat = bson_iter_regex(&it, &opt, NULL);
+        CuAssertStrEquals(tc, "re", it.key);
+        CuAssertStrEquals(tc, "abc.*", pat);
+        CuAssertStrEquals(tc, "im", opt);
+        hits++;
+    }
+    CuAssertIntEquals(tc, 0, bson_iter_error(&it));
+    CuAssertIntEquals(tc, 2, hits);
+    BSON_FREE(&b);
+    BSON_FREE(&ref);
+}
+static void test_bson_append_self_alias(CuTest *tc) {
+    char bin[32];
+    char oid[BSON_OID_LENS];
+    char kcopy[16];
+    char vcopy[64];
+    bson_ctx b, ref;
+    size_t i, oldsize, sublens;
+    size_t koff_name, voff_name, koff_bin, voff_bin, koff_oid, voff_oid, koff_sub, voff_sub;
+
+    for (i = 0; i < sizeof(bin); i++) {
+        bin[i] = (char)(0xF0 - i);
+    }
+    for (i = 0; i < BSON_OID_LENS; i++) {
+        oid[i] = (char)(0x30 + i);
+    }
+    bson_init(&b, NULL, 0);
+    bson_init(&ref, NULL, 0);
+    // 先写几十个字段让缓冲先长起来
+    for (i = 0; i < 30; i++) {
+        bson_append_int32(&b, "fill", (int32_t)i);
+        bson_append_int32(&ref, "fill", (int32_t)i);
+    }
+    koff_name = b.doc.offset + 1;
+    voff_name = koff_name + 5 + 4;// "name\0" + int32 长度
+    bson_append_utf8(&b, "name", "self-alias-value");
+    bson_append_utf8(&ref, "name", "self-alias-value");
+    koff_bin = b.doc.offset + 1;
+    voff_bin = koff_bin + 4 + 4 + 1;// "bin\0" + int32 长度 + subtype
+    bson_append_binary(&b, "bin", BSON_SUBTYPE_USER, bin, sizeof(bin));
+    bson_append_binary(&ref, "bin", BSON_SUBTYPE_USER, bin, sizeof(bin));
+    koff_oid = b.doc.offset + 1;
+    voff_oid = koff_oid + 4;// "oid\0"
+    bson_append_oid(&b, "oid", oid);
+    bson_append_oid(&ref, "oid", oid);
+    koff_sub = b.doc.offset + 1;
+    voff_sub = koff_sub + 4;// "sub\0"
+    bson_append_document_begain(&b, "sub");
+    bson_append_int32(&b, "x", 42);
+    bson_append_utf8(&b, "y", "z");
+    bson_append_end(&b);
+    bson_append_document_begain(&ref, "sub");
+    bson_append_int32(&ref, "x", 42);
+    bson_append_utf8(&ref, "y", "z");
+    bson_append_end(&ref);
+    sublens = b.doc.offset - voff_sub;
+    CuAssertTrue(tc, sublens <= sizeof(vcopy));
+
+    // 下标确实指着预期的内容
+    CuAssertStrEquals(tc, "name", b.doc.data + koff_name);
+    CuAssertStrEquals(tc, "self-alias-value", b.doc.data + voff_name);
+    CuAssertStrEquals(tc, "bin", b.doc.data + koff_bin);
+    CuAssertTrue(tc, 0 == memcmp(b.doc.data + voff_bin, bin, sizeof(bin)));
+    CuAssertStrEquals(tc, "oid", b.doc.data + koff_oid);
+    CuAssertTrue(tc, 0 == memcmp(b.doc.data + voff_oid, oid, BSON_OID_LENS));
+    CuAssertStrEquals(tc, "sub", b.doc.data + koff_sub);
+    CuAssertTrue(tc, (int32_t)sublens == (int32_t)unpack_integer(b.doc.data + voff_sub, 4, 1, 1));
+
+    // utf8：1 + "name\0" + 4 + 16 + 1
+    _bson_squeeze(&b, &ref, 1 + 5 + 4 + 16 + 1);
+    oldsize = b.doc.size;
+    strcpy(kcopy, b.doc.data + koff_name);
+    strcpy(vcopy, b.doc.data + voff_name);
+    bson_append_utf8(&b, b.doc.data + koff_name, b.doc.data + voff_name);
+    bson_append_utf8(&ref, kcopy, vcopy);
+    CuAssertTrue(tc, b.doc.size > oldsize);
+
+    // binary：1 + "bin\0" + 4 + 1 + 32
+    _bson_squeeze(&b, &ref, 1 + 4 + 4 + 1 + sizeof(bin));
+    oldsize = b.doc.size;
+    strcpy(kcopy, b.doc.data + koff_bin);
+    memcpy(vcopy, b.doc.data + voff_bin, sizeof(bin));
+    bson_append_binary(&b, b.doc.data + koff_bin, BSON_SUBTYPE_USER, b.doc.data + voff_bin, sizeof(bin));
+    bson_append_binary(&ref, kcopy, BSON_SUBTYPE_USER, vcopy, sizeof(bin));
+    CuAssertTrue(tc, b.doc.size > oldsize);
+
+    // oid：1 + "oid\0" + 12
+    _bson_squeeze(&b, &ref, 1 + 4 + BSON_OID_LENS);
+    oldsize = b.doc.size;
+    strcpy(kcopy, b.doc.data + koff_oid);
+    memcpy(vcopy, b.doc.data + voff_oid, BSON_OID_LENS);
+    bson_append_oid(&b, b.doc.data + koff_oid, b.doc.data + voff_oid);
+    bson_append_oid(&ref, kcopy, vcopy);
+    CuAssertTrue(tc, b.doc.size > oldsize);
+
+    // document：1 + "sub\0" + 子文档整段
+    _bson_squeeze(&b, &ref, 1 + 4 + sublens);
+    oldsize = b.doc.size;
+    strcpy(kcopy, b.doc.data + koff_sub);
+    memcpy(vcopy, b.doc.data + voff_sub, sublens);
+    bson_append_document(&b, b.doc.data + koff_sub, b.doc.data + voff_sub, sublens);
+    bson_append_document(&ref, kcopy, vcopy, sublens);
+    CuAssertTrue(tc, b.doc.size > oldsize);
+
+    bson_append_end(&b);
+    bson_append_end(&ref);
+    CuAssertTrue(tc, bson_complete(&b));
+    CuAssertTrue(tc, BSON_DOC_LENS(&ref) == BSON_DOC_LENS(&b));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&ref), BSON_DOC(&b), BSON_DOC_LENS(&b)));
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(BSON_DOC(&b), BSON_DOC_LENS(&b)));
+    // 原字段与自指追加的那一份都读得回原值：每个 key 各两份
+    CuAssertIntEquals(tc, 2, _bson_count_alias(BSON_DOC(&b), BSON_DOC_LENS(&b), "name", bin, oid));
+    CuAssertIntEquals(tc, 2, _bson_count_alias(BSON_DOC(&b), BSON_DOC_LENS(&b), "bin", bin, oid));
+    CuAssertIntEquals(tc, 2, _bson_count_alias(BSON_DOC(&b), BSON_DOC_LENS(&b), "oid", bin, oid));
+    CuAssertIntEquals(tc, 2, _bson_count_alias(BSON_DOC(&b), BSON_DOC_LENS(&b), "sub", bin, oid));
+    BSON_FREE(&b);
+    BSON_FREE(&ref);
+}
+
+// bson_init_prefix 用例共用的一组字段：600 字节字符串逼扩容，两层嵌套检查各层长度回填
+static void _bson_prefix_fill(bson_ctx *b, const char *big) {
+    bson_append_int32(b, "a", 1);
+    bson_append_utf8(b, "big", big);
+    bson_append_document_begain(b, "d");
+    bson_append_int32(b, "x", 2);
+    bson_append_array_begain(b, "arr");
+    bson_append_utf8(b, "0", "p");
+    bson_append_utf8(b, "1", "q");
+    bson_append_end(b);
+    bson_append_end(b);
+    bson_append_int64(b, "z", 3);
+}
+// bson_init_prefix：预留的 prefix 字节在扩容后原样保留、不被改写；文档从 prefix 起，
+// 与普通 bson_init 写出的逐字节相同，能从 prefix 处用读模式遍历，各层 bson_append_end 回填正确
+static void test_bson_init_prefix(CuTest *tc) {
+    const size_t prefixes[] = { 0, 1, 7, 21 };
+    const size_t caps[] = { 0, 16, 4096 };
+    // {"d": {"x": 1}}：外层 20 字节，内层 12 字节
+    static const uint8_t want[] = {
+        0x14, 0x00, 0x00, 0x00,
+        BSON_DOCUMENT, 'd', 0x00,
+        0x0C, 0x00, 0x00, 0x00,
+        BSON_INT32, 'x', 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00,
+        0x00
+    };
+    char big[601];
+    bson_ctx b, ref, rd, sub, arr;
+    bson_iter iter, siter, aiter;
+    size_t pi, ci, i, dlens, slens;
+    int32_t err;
+    char *p;
+
+    memset(big, 'b', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
+    bson_init(&ref, NULL, 0);
+    _bson_prefix_fill(&ref, big);
+    bson_append_end(&ref);
+
+    for (pi = 0; pi < sizeof(prefixes) / sizeof(prefixes[0]); pi++) {
+        for (ci = 0; ci < sizeof(caps) / sizeof(caps[0]); ci++) {
+            bson_init_prefix(&b, caps[ci], prefixes[pi]);
+            // 刚初始化：prefix 之后只有 4 字节长度占位，文档还没闭合
+            CuAssertTrue(tc, prefixes[pi] + 4 == BSON_DOC_LENS(&b));
+            memset(BSON_DOC(&b), 0xA5, prefixes[pi]);
+            _bson_prefix_fill(&b, big);
+            bson_append_end(&b);
+            CuAssertTrue(tc, bson_complete(&b));
+            for (i = 0; i < prefixes[pi]; i++) {
+                CuAssertIntEquals(tc, 0xA5, (uint8_t)BSON_DOC(&b)[i]);
+            }
+            dlens = BSON_DOC_LENS(&b) - prefixes[pi];
+            CuAssertTrue(tc, dlens == BSON_DOC_LENS(&ref));
+            CuAssertTrue(tc, (int64_t)dlens == unpack_integer(BSON_DOC(&b) + prefixes[pi], 4, 1, 1));
+            CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&b) + prefixes[pi], BSON_DOC(&ref), dlens));
+            CuAssertIntEquals(tc, ERR_OK, bson_check_depth(BSON_DOC(&b) + prefixes[pi], dlens));
+
+            bson_init(&rd, BSON_DOC(&b) + prefixes[pi], dlens);
+            bson_iter_init(&iter, &rd);
+            CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+            CuAssertTrue(tc, bson_iter_next(&iter));
+            CuAssertStrEquals(tc, "a", iter.key);
+            CuAssertIntEquals(tc, 1, bson_iter_int32(&iter, &err));
+            CuAssertTrue(tc, bson_iter_next(&iter));
+            CuAssertStrEquals(tc, "big", iter.key);
+            CuAssertStrEquals(tc, big, bson_iter_utf8(&iter, &err));
+            CuAssertTrue(tc, bson_iter_next(&iter));
+            CuAssertIntEquals(tc, BSON_DOCUMENT, iter.type);
+            p = bson_iter_document(&iter, &slens, &err);
+            CuAssertIntEquals(tc, ERR_OK, err);
+            bson_init(&sub, p, slens);
+            bson_iter_init(&siter, &sub);
+            CuAssertTrue(tc, bson_iter_next(&siter));
+            CuAssertIntEquals(tc, 2, bson_iter_int32(&siter, &err));
+            CuAssertTrue(tc, bson_iter_next(&siter));
+            CuAssertIntEquals(tc, BSON_ARRAY, siter.type);
+            p = bson_iter_array(&siter, &slens, &err);
+            CuAssertIntEquals(tc, ERR_OK, err);
+            bson_init(&arr, p, slens);
+            bson_iter_init(&aiter, &arr);
+            CuAssertTrue(tc, bson_iter_next(&aiter));
+            CuAssertStrEquals(tc, "p", bson_iter_utf8(&aiter, &err));
+            CuAssertTrue(tc, bson_iter_next(&aiter));
+            CuAssertStrEquals(tc, "q", bson_iter_utf8(&aiter, &err));
+            CuAssertTrue(tc, !bson_iter_next(&aiter));
+            CuAssertIntEquals(tc, 0, bson_iter_error(&aiter));
+            CuAssertTrue(tc, !bson_iter_next(&siter));
+            CuAssertIntEquals(tc, 0, bson_iter_error(&siter));
+            CuAssertTrue(tc, bson_iter_next(&iter));
+            CuAssertStrEquals(tc, "z", iter.key);
+            CuAssertTrue(tc, 3 == bson_iter_int64(&iter, &err));
+            CuAssertTrue(tc, !bson_iter_next(&iter));
+            CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+            BSON_FREE(&b);
+        }
+    }
+    BSON_FREE(&ref);
+
+    // 字节级：prefix=3 写 {"d": {"x": 1}}，外层长度从 prefix 处算起，内层从内层长度字段算起
+    bson_init_prefix(&b, 0, 3);
+    memset(BSON_DOC(&b), 0x5A, 3);
+    bson_append_document_begain(&b, "d");
+    bson_append_int32(&b, "x", 1);
+    bson_append_end(&b);
+    bson_append_end(&b);
+    CuAssertTrue(tc, 3 + sizeof(want) == BSON_DOC_LENS(&b));
+    for (i = 0; i < 3; i++) {
+        CuAssertIntEquals(tc, 0x5A, (uint8_t)BSON_DOC(&b)[i]);
+    }
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&b) + 3, want, sizeof(want)));
+    BSON_FREE(&b);
+}
+
+// bson_tostring 对 binary / oid / decimal128 的十六进制输出（大写、无分隔）逐字比对全文，
+// 顺带覆盖零长 binary、内嵌 NUL 的转义、空串、嵌套缩进。decimal128 没有 append 接口，手工拼一篇再 bson_cat
+static void test_bson_tostring_hex_exact(CuTest *tc) {
+    static const char want[] =
+        "{\r\n"
+        "    bin(binData): (binary) 0001ABFF\r\n"
+        "    empty(binData): (uuid) \r\n"
+        "    _id(objectId): 000102030405060708090A0B\r\n"
+        "    dec(decimal): 101112131415161718191A1B1C1D1E1F\r\n"
+        "    s(string): \\0a\\0\\0b\\0\r\n"
+        "    e(string): \r\n"
+        "    d(object): {\r\n"
+        "        x(binData): (binary) 7F\r\n"
+        "    }\r\n"
+        "}";
+    static const char hexd[] = "0123456789ABCDEF";
+    const char *line = "    k(binData): (binary) ";
+    char bin[4] = { 0x00, 0x01, (char)0xAB, (char)0xFF };
+    char oid[BSON_OID_LENS];
+    char dec[26];// {"dec": decimal128} = 4 + 1 + "dec\0" + 16 + 1
+    char one = 0x7F;
+    char payload[37];
+    char hex2[2];
+    binary_ctx expect;
+    bson_ctx b;
+    size_t i, j, before;
+    char *s;
+
+    for (i = 0; i < BSON_OID_LENS; i++) {
+        oid[i] = (char)i;
+    }
+    ZERO(dec, sizeof(dec));
+    dec[0] = (char)sizeof(dec);
+    dec[4] = BSON_DECIMAL128;
+    memcpy(dec + 5, "dec", 4);
+    for (i = 0; i < BSON_DECIMAL128_LENS; i++) {
+        dec[9 + i] = (char)(0x10 + i);
+    }
+
+    bson_init(&b, NULL, 0);
+    bson_append_binary(&b, "bin", BSON_SUBTYPE_BINARY, bin, sizeof(bin));
+    bson_append_binary(&b, "empty", BSON_SUBTYPE_UUID, NULL, 0);
+    bson_append_oid(&b, "_id", oid);
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&b, dec, sizeof(dec)));
+    bson_append_utf8_n(&b, "s", "\0a\0\0b\0", 6);
+    bson_append_utf8(&b, "e", "");
+    bson_append_document_begain(&b, "d");
+    bson_append_binary(&b, "x", BSON_SUBTYPE_BINARY, &one, 1);
+    bson_append_end(&b);
+    bson_append_end(&b);
+
+    before = BSON_DOC_LENS(&b);
+    s = bson_tostring(&b);
+    CuAssertStrEquals(tc, want, s);
+    FREE(s);
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&b));// 串化不改写入位置
+    // 同一份字节走读模式入口
+    s = bson_tostring2(BSON_DOC(&b), BSON_DOC_LENS(&b));
+    CuAssertStrEquals(tc, want, s);
+    FREE(s);
+    BSON_FREE(&b);
+
+    // 200 个 37 字节 binary：串化文本远超输出缓冲的初始容量，中途多次扩容后十六进制仍须落在正确位置。
+    // 期望文本用本地查表独立生成
+    binary_init_write(&expect, 0, 0);
+    binary_set_binary(&expect, "{\r\n", 3);
+    bson_init(&b, NULL, 0);
+    for (i = 0; i < 200; i++) {
+        for (j = 0; j < sizeof(payload); j++) {
+            payload[j] = (char)(i * sizeof(payload) + j);
+        }
+        bson_append_binary(&b, "k", BSON_SUBTYPE_BINARY, payload, sizeof(payload));
+        binary_set_binary(&expect, line, strlen(line));
+        for (j = 0; j < sizeof(payload); j++) {
+            hex2[0] = hexd[(uint8_t)payload[j] >> 4];
+            hex2[1] = hexd[(uint8_t)payload[j] & 0x0F];
+            binary_set_binary(&expect, hex2, 2);
+        }
+        binary_set_binary(&expect, "\r\n", 2);
+    }
+    bson_append_end(&b);
+    binary_set_binary(&expect, "}", 1);
+    binary_set_int8(&expect, 0);
+    s = bson_tostring2(BSON_DOC(&b), BSON_DOC_LENS(&b));
+    CuAssertStrEquals(tc, expect.data, s);
+    FREE(s);
+    binary_free(&expect);
+    BSON_FREE(&b);
+}
 void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_primitives);
     SUITE_ADD_TEST(suite, test_bson_iter_no_next);
@@ -1529,4 +2091,10 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_misc);
     SUITE_ADD_TEST(suite, test_bson_find_dotted_iter_continue);
     SUITE_ADD_TEST(suite, test_bson_wire_layout);
+    SUITE_ADD_TEST(suite, test_bson_key_lens_scan);
+    SUITE_ADD_TEST(suite, test_bson_key_no_nul);
+    SUITE_ADD_TEST(suite, test_bson_append_self_alias);
+    SUITE_ADD_TEST(suite, test_bson_append_regex_self_alias);
+    SUITE_ADD_TEST(suite, test_bson_init_prefix);
+    SUITE_ADD_TEST(suite, test_bson_tostring_hex_exact);
 }

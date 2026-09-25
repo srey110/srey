@@ -44,17 +44,20 @@ static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data
 
 // 读一个配置字段：取到就写进去，取不到且字段确实存在才告警（可选字段缺席是正常的）。
 // 键名在整条语句里只出现一次：取值与告警共用同一个 keystr，不会读一个键报另一个键
-#define CFG_NUM(obj, prefix, keystr, max, field, type) do { \
+// it 是该对象的 yyjson_obj_iter：从上次命中处往后找，到末尾绕回开头，按文件键序查询时每次只比一个键
+#define CFG_NUM(it, prefix, keystr, max, field, type) do { \
         double _v; \
-        if (ERR_OK == json_get_num_range((obj), (keystr), 0, (max), &_v)) { \
+        yyjson_val *_jv = yyjson_obj_iter_get((it), (keystr)); \
+        if (ERR_OK == json_val_num_range(_jv, 0, (max), &_v)) { \
             (field) = (type)_v; \
-        } else if (json_has((obj), (keystr))) { \
+        } else if (NULL != _jv) { \
             PRINT("%s%s invalid, use default.", (prefix), (keystr)); \
         } \
     } while (0)
-#define CFG_STR(obj, prefix, keystr, field) do { \
-        if (ERR_OK != json_get_string((obj), (keystr), (field), sizeof(field)) \
-            && json_has((obj), (keystr))) { \
+#define CFG_STR(it, prefix, keystr, field) do { \
+        yyjson_val *_jv = yyjson_obj_iter_get((it), (keystr)); \
+        if (ERR_OK != json_val_string(_jv, (field), sizeof(field)) \
+            && NULL != _jv) { \
             PRINT("%s%s invalid, use default.", (prefix), (keystr)); \
         } \
     } while (0)
@@ -95,29 +98,32 @@ static void _parse_config(config_ctx *cnf) {
         PRINT("parse config error at byte %zu: %s", erro.pos, erro.msg);
         return;
     }
-    yyjson_val *json = yyjson_doc_get_root(doc);
-    CFG_NUM(json, "", "serviceid", SERVICEID_MAX, cnf->serviceid, uint16_t);
-    CFG_NUM(json, "", "nnet", UINT16_MAX, cnf->nnet, uint16_t);
-    CFG_NUM(json, "", "nworker", UINT16_MAX, cnf->nworker, uint16_t);
-    CFG_NUM(json, "", "loglv", LOGLV_DEBUG, cnf->loglv, uint8_t);
-    CFG_NUM(json, "", "stacksize", UINT32_MAX, cnf->stacksize, uint32_t);
-    CFG_NUM(json, "", "twqueuelens", UINT32_MAX, cnf->twqueuelens, uint32_t);
-    CFG_NUM(json, "", "logqueuelens", UINT32_MAX, cnf->logqueuelens, uint32_t);
-    CFG_STR(json, "", "dns", cnf->dns);
-    CFG_STR(json, "", "script", cnf->script);
-    // debug / harbor 各为嵌套对象
-    yyjson_val *debug = yyjson_obj_get(json, "debug");
-    if (NULL != debug) {
-        CFG_STR(debug, "debug.", "name", cnf->debug.name);
-        CFG_STR(debug, "debug.", "ip", cnf->debug.ip);
-        CFG_NUM(debug, "debug.", "port", UINT16_MAX, cnf->debug.port, uint16_t);
+    yyjson_obj_iter it;
+    yyjson_obj_iter sub;
+    if (!yyjson_obj_iter_init(yyjson_doc_get_root(doc), &it)) {
+        yyjson_doc_free(doc);
+        return;
     }
-    yyjson_val *harbor = yyjson_obj_get(json, "harbor");
-    if (NULL != harbor) {
-        CFG_STR(harbor, "harbor.", "name", cnf->harbor.name);
-        CFG_STR(harbor, "harbor.", "ssl", cnf->harbor.ssl);
-        CFG_STR(harbor, "harbor.", "ip", cnf->harbor.ip);
-        CFG_NUM(harbor, "harbor.", "port", UINT16_MAX, cnf->harbor.port, uint16_t);
+    CFG_NUM(&it, "", "serviceid", SERVICEID_MAX, cnf->serviceid, uint16_t);
+    CFG_NUM(&it, "", "nnet", UINT16_MAX, cnf->nnet, uint16_t);
+    CFG_NUM(&it, "", "nworker", UINT16_MAX, cnf->nworker, uint16_t);
+    CFG_NUM(&it, "", "loglv", LOGLV_DEBUG, cnf->loglv, uint8_t);
+    CFG_NUM(&it, "", "stacksize", UINT32_MAX, cnf->stacksize, uint32_t);
+    CFG_NUM(&it, "", "twqueuelens", UINT32_MAX, cnf->twqueuelens, uint32_t);
+    CFG_NUM(&it, "", "logqueuelens", UINT32_MAX, cnf->logqueuelens, uint32_t);
+    CFG_STR(&it, "", "dns", cnf->dns);
+    CFG_STR(&it, "", "script", cnf->script);
+    // debug / harbor 各为嵌套对象
+    if (yyjson_obj_iter_init(yyjson_obj_iter_get(&it, "debug"), &sub)) {
+        CFG_STR(&sub, "debug.", "name", cnf->debug.name);
+        CFG_STR(&sub, "debug.", "ip", cnf->debug.ip);
+        CFG_NUM(&sub, "debug.", "port", UINT16_MAX, cnf->debug.port, uint16_t);
+    }
+    if (yyjson_obj_iter_init(yyjson_obj_iter_get(&it, "harbor"), &sub)) {
+        CFG_STR(&sub, "harbor.", "name", cnf->harbor.name);
+        CFG_STR(&sub, "harbor.", "ssl", cnf->harbor.ssl);
+        CFG_STR(&sub, "harbor.", "ip", cnf->harbor.ip);
+        CFG_NUM(&sub, "harbor.", "port", UINT16_MAX, cnf->harbor.port, uint16_t);
     }
     yyjson_doc_free(doc);
 }

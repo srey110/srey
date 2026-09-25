@@ -20,7 +20,8 @@ typedef pthread_cond_t cond_ctx;
 /// 信号量初始化。具备 pthread_condattr_setclock 与 CLOCK_MONOTONIC 的 POSIX 平台强制
 /// 把条件变量绑定到 CLOCK_MONOTONIC，绑定失败直接 abort——半绑定会让 cond_timedwait
 /// 的截止时间两套时钟对不上、退化成静默忙等。
-/// 缺任一能力的平台（macOS / 老 HP-UX）两端一致地用 CLOCK_REALTIME
+/// 缺任一能力的平台（macOS / 老 HP-UX）保持默认 CLOCK_REALTIME：老 HP-UX 的 cond_timedwait
+/// 同样按 CLOCK_REALTIME 算截止时刻，macOS 的 cond_timedwait 按相对时长等，不涉及时钟
 /// </summary>
 /// <param name="ctx">cond_ctx</param>
 static inline void cond_init(cond_ctx *ctx) {
@@ -70,7 +71,8 @@ static inline void _cond_timedwait_erro(int32_t code) {
     fflush(stderr);
 }
 /// <summary>
-/// 等待信号。出错时错误码写 stderr 而非日志系统（详见 _cond_timedwait_erro）
+/// 等待信号。出错时错误码写 stderr 而非日志系统（详见 _cond_timedwait_erro）。
+/// macOS 直接按相对时长等，不先读时钟换算截止时刻
 /// </summary>
 /// <param name="ctx">cond_ctx</param>
 /// <param name="mu">mutex_ctx</param>
@@ -87,6 +89,13 @@ static inline int32_t cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_
         return ERR_FAILED;
     }
     return ERR_OK;
+#else
+    int32_t rtn;
+#if defined(OS_DARWIN)
+    struct timespec rel;
+    rel.tv_sec = (time_t)(ms / 1000);
+    rel.tv_nsec = (long)(ms % 1000) * 1000000;
+    rtn = pthread_cond_timedwait_relative_np(ctx, mu, &rel);
 #else
     long seconds = ms / 1000;
     long nanoseconds = (ms % 1000) * 1000000;
@@ -105,7 +114,8 @@ static inline int32_t cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_
 #endif
     timewait.tv_sec += timewait.tv_nsec / 1000000000;
     timewait.tv_nsec %= 1000000000;
-    int32_t rtn = pthread_cond_timedwait(ctx, mu, &timewait);
+    rtn = pthread_cond_timedwait(ctx, mu, &timewait);
+#endif
     if (0 == rtn) {
         return ERR_OK;
     }

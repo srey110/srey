@@ -41,7 +41,7 @@ FSQU_DECL(logq, log_item *)
 static FILE *_handle = NULL;
 static atomic_t _log_lv = LOGLV_DEBUG;
 static atomic_t _running = 0; /* atomic 保证跨平台内存可见 */
-static atomic_t _sleeping = 0;
+static atomic_t _sleeping = 0; /* 日志线程睡前置 1；生产者 CAS 抢到 1→0 的那个负责唤醒，其余不再重复 signal */
 static atomic_t _aborting = LOG_ABORT_IDLE; /* 取值见 log_abort_state */
 static atomic_t _drained = 0; /* 完成一轮排空自增,log_abort 据此判断落盘 */
 static pthread_t _th;
@@ -191,7 +191,7 @@ static void _log_write_exit(void) {
     logexit.lv = LOGLV_INFO;
     logexit.ms = nowms();
     SNPRINTF(logexit.inline_buf, sizeof(logexit.inline_buf),
-        CONCAT2(LOG_PREFIX_FMT, "%s"), __FILENAME__(__FILE__), __FUNCTION__, __LINE__,
+        CONCAT2(LOG_PREFIX_FMT, "%s"), __FILENAME__, __FUNCTION__, __LINE__,
         "log thread exited.");
     logexit.msg = logexit.inline_buf;
     _log_write_item(&logexit);
@@ -221,7 +221,7 @@ static void _log_loop(void *arg) {
         mutex_lock(&_mtx);
         // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩
         if (logq_empty(&_que) && ATOMIC_GET(&_running)) {
-            ATOMIC_SET(&_sleeping, 1);
+            ATOMIC_SET_SEQCST(&_sleeping, 1);
             // 防丢失唤醒：置 _sleeping 后再查一次队列，仍空才等。中间那道 fence 不能省:
             // logq_empty 是 acquire 读, 在部分 ARM 上会跑到置位之前, 于是这边看不到刚入队的
             // 元素、生产者又还没看到 _sleeping, 两边同时看漏就是漏唤醒
@@ -229,24 +229,23 @@ static void _log_loop(void *arg) {
             if (logq_empty(&_que)) {
                 cond_timedwait(&_cond, &_mtx, SHRINK_TIME);
             }
-            ATOMIC_SET(&_sleeping, 0);
+            ATOMIC_SET_RELAXED(&_sleeping, 0);
         }
         mutex_unlock(&_mtx);
     }
 }
 // 日志线程是否正睡着、需要唤醒。必须是足序读，与上面置 _sleeping 前那道 fence 对称：
 // 换成普通读，弱序平台上两边会同时看漏（消费者没看到新元素、生产者没看到 _sleeping）。
-// 加锁策略由调用方定：slog 用 mutex_lock，log_abort 在崩溃路径上用 trylock，宁可不唤醒也不卡住
+// 只有 slog 用它；_log_drain_wait 不看它：_sleeping 可能已被别的生产者清零、signal 却还没发出
 static inline int32_t _log_need_wake(void) {
     return ATOMIC_GET_SEQCST(&_sleeping);
 }
-// 唤醒日志线程并等它把队列排空，上限 LOG_FLUSH_WAIT。
+// 唤醒日志线程并等它把队列排空，上限 LOG_FLUSH_WAIT。崩溃路径上只 trylock，宁可不唤醒也不卡住。
 // 只有在业务线程上调用才有意义：断言若发生在日志线程自己身上，唯一能推进队列的就是它，
 // 等下去必然空转满整个上限，故调用方须先判 _in_logth
 static void _log_drain_wait(void) {
     atomic_t gen = ATOMIC_GET(&_drained);
-    if (_log_need_wake()
-        && ERR_OK == mutex_trylock(&_mtx)) {
+    if (ERR_OK == mutex_trylock(&_mtx)) {
         cond_signal(&_cond);
         mutex_unlock(&_mtx);
     }
@@ -270,7 +269,7 @@ void log_init(FILE *file, uint32_t capacity) {
     pool_init(&_itempool, sizeof(log_item), cap, cap / 4, POOL_THSAFE, &_logitem_cbs);
     mutex_init(&_mtx);
     cond_init(&_cond);
-    ATOMIC_SET(&_running, 1); 
+    ATOMIC_SET_RELEASE(&_running, 1); 
     _th = thread_creat(_log_loop, NULL);
 }
 /* 调用约定：log_free 必须在所有可能调用 slog 的线程停止后才能调用。
@@ -279,9 +278,9 @@ void log_init(FILE *file, uint32_t capacity) {
  * 正确关闭顺序：先 join 所有业务线程 → 再调用 log_free。*/
 void log_free(void) {
     mutex_lock(&_mtx);
-    ATOMIC_SET(&_running, 0);
-    cond_signal(&_cond);
+    ATOMIC_SET_RELAXED(&_running, 0);
     mutex_unlock(&_mtx);
+    cond_signal(&_cond);
     thread_join(_th);
     log_item *items[LOG_POP_BATCH];
     _log_write_all(items);
@@ -322,10 +321,10 @@ void log_abort(const char *file, const char *func, int32_t line, const char *msg
     } else {
         fflush(stdout);
     }
-    ATOMIC_SET(&_aborting, LOG_ABORT_DONE);
+    ATOMIC_SET_RELEASE(&_aborting, LOG_ABORT_DONE);
 }
 void log_setlv(log_level lv) {
-    ATOMIC_SET(&_log_lv, (int32_t)lv);
+    ATOMIC_SET_RELAXED(&_log_lv, (int32_t)lv);
 }
 log_level log_getlv(void) {
     return (log_level)ATOMIC_GET(&_log_lv);
@@ -371,7 +370,8 @@ void slog(int32_t lv, const char *fmt, ...) {
         syncmsg = item->msg;
         goto sync;
     }
-    if (_log_need_wake()) {
+    if (_log_need_wake()
+        && ATOMIC_CAS(&_sleeping, 1, 0)) {
         mutex_lock(&_mtx);
         cond_signal(&_cond);
         mutex_unlock(&_mtx);

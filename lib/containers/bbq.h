@@ -78,16 +78,16 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
     ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)q->capacity, "byte size overflow.");\
     MALLOC(q->blocks, sizeof(name##_block) * (size_t)q->nblk);                  \
     MALLOC(q->cells, sizeof(T) * (size_t)q->capacity);                          \
-    ATOMIC64_SET(&q->phead, (atomic64_t)q->nblk);                               \
-    ATOMIC64_SET(&q->chead, (atomic64_t)q->nblk);                               \
+    ATOMIC64_SET_RELAXED(&q->phead, (atomic64_t)q->nblk);                               \
+    ATOMIC64_SET_RELAXED(&q->chead, (atomic64_t)q->nblk);                               \
     /* 0 号块是起点(本代全空),其余块装成"上一代已跑完",于是接管任何一块都是同一个    \
        判据,没有 0 号块特例。两个头从 nblk 而不是 0 起步也是为了这个 */             \
     for (i = 0; i < q->nblk; i++) {                                             \
         cur = (0 == i) ? BBQ_CUR(q->nblk, 0) : BBQ_CUR(i, q->blksz);            \
-        ATOMIC64_SET(&q->blocks[i].allocated, (atomic64_t)cur);                 \
-        ATOMIC64_SET(&q->blocks[i].committed, (atomic64_t)cur);                 \
-        ATOMIC64_SET(&q->blocks[i].reserved, (atomic64_t)cur);                  \
-        ATOMIC64_SET(&q->blocks[i].consumed, (atomic64_t)cur);                  \
+        ATOMIC64_SET_RELAXED(&q->blocks[i].allocated, (atomic64_t)cur);                 \
+        ATOMIC64_SET_RELAXED(&q->blocks[i].committed, (atomic64_t)cur);                 \
+        ATOMIC64_SET_RELAXED(&q->blocks[i].reserved, (atomic64_t)cur);                  \
+        ATOMIC64_SET_RELAXED(&q->blocks[i].consumed, (atomic64_t)cur);                  \
     }                                                                           \
 }                                                                               \
 static inline void name##_free(name *q) {                                       \

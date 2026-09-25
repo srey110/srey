@@ -856,7 +856,7 @@ static int32_t _lpgsql_new(lua_State *lua) {
         SECURE_FREE(pg, sizeof(pgsql_ctx));
         return lpub_rtn_nil(lua, 1);
     }
-    ATOMIC_SET(&pg->ref, 1);// Lua 持有者份额
+    ATOMIC_SET_RELAXED(&pg->ref, 1);// Lua 持有者份额
     *ud = pg;
     return 1;
 }

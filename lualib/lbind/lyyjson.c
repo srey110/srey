@@ -7,7 +7,9 @@
 #define LYYJSON_SPARSE_SAFE  10
 
 // 编解码上下文。出错只记文案不当场抛：在递归里 luaL_error 会 longjmp 跳过
-// yyjson_doc_free，内存账立刻不平，所以一律返回 NULL/ERR_FAILED 逐层退到入口再报
+// yyjson_doc_free，内存账立刻不平，所以一律返回 NULL/ERR_FAILED 逐层退到入口再报。
+// 编码时字符串值与字符串键不拷贝、直接交给 yyjson，写出前不得有任何 Lua 分配：一分配就可能跑 GC，
+// 弱表里的值会被回收，指针随之悬空。数字键因此用 lpub_int_str / lua_numbertocstring，不走 lua_tolstring
 typedef struct lyyjson_ctx {
     lua_State *lua;
     yyjson_mut_doc *doc;
@@ -21,10 +23,21 @@ static yyjson_mut_val *_lyyjson_pack(lyyjson_ctx *ctx, int32_t depth);
 static int64_t _lyyjson_arrlen(lua_State *lua) {
     int64_t max = 0;
     int64_t items = 0;
+    lua_Integer ik;
     lua_Number k;
     lua_pushnil(lua);
     while (0 != lua_next(lua, -2)) {
-        if (LUA_TNUMBER == lua_type(lua, -2)) {
+        if (lua_isinteger(lua, -2)) {
+            ik = lua_tointeger(lua, -2);
+            if (ik >= 1) {
+                if (ik > max) {
+                    max = ik;
+                }
+                items++;
+                lua_pop(lua, 1);
+                continue;
+            }
+        } else if (LUA_TNUMBER == lua_type(lua, -2)) {
             k = lua_tonumber(lua, -2);
             if (floor(k) == k
                 && k >= 1) {
@@ -68,6 +81,7 @@ static yyjson_mut_val *_lyyjson_pack_obj(lyyjson_ctx *ctx, int32_t depth) {
     size_t klens;
     int32_t ktype;
     const char *kstr;
+    char kbuf[LUA_N2SBUFFSZ];
     yyjson_mut_val *key;
     yyjson_mut_val *val;
     yyjson_mut_val *obj = yyjson_mut_obj(ctx->doc);
@@ -80,17 +94,17 @@ static yyjson_mut_val *_lyyjson_pack_obj(lyyjson_ctx *ctx, int32_t depth) {
         ktype = lua_type(lua, -2);
         if (LUA_TSTRING == ktype) {
             kstr = lua_tolstring(lua, -2, &klens);
+            key = yyjson_mut_strn(ctx->doc, kstr, klens);
+        } else if (lua_isinteger(lua, -2)) {
+            kstr = lpub_int_str(kbuf, sizeof(kbuf), lua_tointeger(lua, -2), &klens);
+            key = yyjson_mut_strncpy(ctx->doc, kstr, klens);
         } else if (LUA_TNUMBER == ktype) {
-            lua_pushvalue(lua, -2);
-            kstr = lua_tolstring(lua, -1, &klens);
+            klens = (size_t)lua_numbertocstring(lua, -2, kbuf) - 1;
+            key = yyjson_mut_strncpy(ctx->doc, kbuf, klens);
         } else {
             ctx->erro = "table key must be a number or string";
             lua_pop(lua, 2);
             return NULL;
-        }
-        key = yyjson_mut_strncpy(ctx->doc, kstr, klens);
-        if (LUA_TNUMBER == ktype) {
-            lua_pop(lua, 1);
         }
         if (NULL == key) {
             ctx->erro = "out of memory";
@@ -141,7 +155,7 @@ static yyjson_mut_val *_lyyjson_pack(lyyjson_ctx *ctx, int32_t depth) {
         return yyjson_mut_real(ctx->doc, lua_tonumber(lua, -1));
     case LUA_TSTRING:
         str = lua_tolstring(lua, -1, &lens);
-        return yyjson_mut_strncpy(ctx->doc, str, lens);
+        return yyjson_mut_strn(ctx->doc, str, lens);
     case LUA_TTABLE:
         return _lyyjson_pack_tbl(ctx, depth);
     case LUA_TLIGHTUSERDATA:

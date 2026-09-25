@@ -210,7 +210,7 @@ void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
     _iocp_disconnect_all(watcher);
 #endif
-    ATOMIC_SET(&watcher->stop, 1);
+    ATOMIC_SET_RELAXED(&watcher->stop, 1);
 }
 static inline void _cmd_props(watcher_ctx *watcher, sock_ctx *sk,
                           props_cb ppcb, free_cb fcb, void *data, uint64_t number) {
@@ -435,7 +435,7 @@ int32_t ev_send_multi(ev_ctx *ctx, sock_ctx sks[], int32_t n,
     shared_data *pack;
     MALLOC(pack, sizeof(shared_data));
     pack->data = _cmd_cpy_buf(data, len, copy);
-    ATOMIC_SET(&pack->ref, valid);
+    ATOMIC_SET_RELAXED(&pack->ref, valid);
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_PROPS;
     cmd.args.props.ppcb = _ev_send_multi;

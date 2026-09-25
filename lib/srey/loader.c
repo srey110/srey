@@ -62,8 +62,8 @@ static void _loader_worker_wakeup_all(loader_ctx *loader) {
         worker = &loader->worker[i];
         if (ATOMIC_GET_SEQCST(&worker->waiting) > 0) {
             mutex_lock(&worker->mutex);
-            cond_broadcast(&worker->cond);
             mutex_unlock(&worker->mutex);
+            cond_broadcast(&worker->cond);
         }
     }
 }
@@ -80,17 +80,17 @@ static inline uint16_t _loader_pick_worker(loader_ctx *loader) {
     if (1 == loader->nworker) {
         return 0;
     }
-    uint16_t start = (uint16_t)(ATOMIC64_ADD(&loader->index, 1) % loader->nworker);
+    uint16_t start = (uint16_t)(ATOMIC64_ADD_RELAXED(&loader->index, 1) % loader->nworker);
     uint16_t idx, hit = loader->nworker;
     for (uint16_t i = 0; i < loader->nworker; i++) {
         // 从 start 起点的环形迭代器：不固定从 0 开始，既避免总命中索引最小的空闲 worker，
         // 也保证全员忙时 fallback 与 RR 公平性一致
         idx = (uint16_t)_loader_ring_next(start, i, loader->nworker);
-        if (ATOMIC_GET(&loader->worker[idx].spinning) > 0) {
+        if (ATOMIC_GET_RELAXED(&loader->worker[idx].spinning) > 0) {
             return idx;
         }
         if (loader->nworker == hit
-            && ATOMIC_GET(&loader->worker[idx].waiting) > 0) {
+            && ATOMIC_GET_RELAXED(&loader->worker[idx].waiting) > 0) {
             hit = idx;
         }
     }
@@ -245,14 +245,14 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
 // 返回非 0 表示空转期间等到了活，调用方别睡了
 static inline int32_t _loader_worker_idle_spin(worker_ctx *worker) {
     uint32_t idle;
-    ATOMIC_SET(&worker->spinning, 1);
+    ATOMIC_SET_RELAXED(&worker->spinning, 1);
     for (idle = 0; idle < WORKER_IDLE_SPIN; idle++) {
         if (!taskq_empty(&worker->qutasks)) {
             break;
         }
         CPU_PAUSE();
     }
-    ATOMIC_SET(&worker->spinning, 0);
+    ATOMIC_SET_RELAXED(&worker->spinning, 0);
     return idle < WORKER_IDLE_SPIN;
 }
 // 挂起等唤醒：先写 waiting 再复查队列，与 _loader_worker_wakeup 那侧的"先入队再读
@@ -260,16 +260,16 @@ static inline int32_t _loader_worker_idle_spin(worker_ctx *worker) {
 // 复查到已有活或已停就不睡了
 static inline void _loader_worker_sleep(loader_ctx *loader, worker_ctx *worker) {
     mutex_lock(&worker->mutex);
-    ATOMIC_ADD(&worker->waiting, 1);
+    ATOMIC_SET_RELAXED(&worker->waiting, 1);
     ATOMIC_THREAD_FENCE_SEQCST();
     if (!taskq_empty(&worker->qutasks)
         || 0 != ATOMIC_GET(&loader->stop)) {
-        ATOMIC_ADD(&worker->waiting, -1);
+        ATOMIC_SET_RELAXED(&worker->waiting, 0);
         mutex_unlock(&worker->mutex);
         return;
     }
     cond_wait(&worker->cond, &worker->mutex);
-    ATOMIC_ADD(&worker->waiting, -1);
+    ATOMIC_SET_RELAXED(&worker->waiting, 0);
     mutex_unlock(&worker->mutex);
 }
 // 工作线程主循环：持续从队列取任务并分发消息，队列空时阻塞等待唤醒
@@ -282,7 +282,7 @@ static void _loader_worker_loop(void *arg) {
     message_ctx msgbatch[TASK_MSG_BATCH];
     int32_t inflight = 0;
     uint32_t spins = 0;
-    while (0 == ATOMIC_GET(&loader->stop)) {
+    while (0 == ATOMIC_GET_RELAXED(&loader->stop)) {
         // 从队列取一任务
         task = _loader_task_get(loader, worker, &inflight);
         if (NULL != task) {
@@ -444,7 +444,7 @@ static void _loader_task_closing(loader_ctx *loader) {
     rwlock_distr_rdlock(&loader->lckmaptasks);
     // 在持锁期间置位 closing，与 task_register 的写锁互斥：先注册的被本次扫描覆盖，
     // 后注册的由 task_register 自己看到 closing=1 追加 CLOSING，两侧都不会漏
-    ATOMIC_SET(&loader->closing, 1);
+    ATOMIC_SET_RELAXED(&loader->closing, 1);
     task_map_scan(loader->maptasks, _loader_closing_push, &closing);
     rwlock_distr_runlock(&loader->lckmaptasks);
     // 全程持 closing_mutex：查计数与 cond_timedwait 必须在同一临界区内，否则
@@ -489,7 +489,7 @@ void loader_task_each(loader_ctx *loader, task_each_cb cb, void *arg) {
 }
 void loader_free(loader_ctx *loader) {
     _loader_task_closing(loader);
-    ATOMIC_SET(&loader->stop, 1);
+    ATOMIC_SET_SEQCST(&loader->stop, 1);
     worker_ctx *worker;
     _loader_worker_wakeup_all(loader);
     for (uint16_t i = 0; i < loader->nworker; i++) {
@@ -497,9 +497,9 @@ void loader_free(loader_ctx *loader) {
         thread_join(worker->thread_worker);
     }
     mutex_lock(&loader->monitor.mutex);
-    ATOMIC_SET(&loader->monitor.stop, 1);
-    cond_signal(&loader->monitor.cond);
+    ATOMIC_SET_RELAXED(&loader->monitor.stop, 1);
     mutex_unlock(&loader->monitor.mutex);
+    cond_signal(&loader->monitor.cond);
     thread_join(loader->monitor.thread_monitor);
     mutex_free(&loader->monitor.mutex);
     cond_free(&loader->monitor.cond);

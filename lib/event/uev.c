@@ -575,7 +575,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         LOG_WARN("kqueue with %u net threads, throughput may fall below single thread.", ctx->nthreads);
     }
 #endif
-    ATOMIC_SET(&ctx->stopping, 0);
+    ATOMIC_SET_RELAXED(&ctx->stopping, 0);
     spin_init(&ctx->spin, SPIN_CNT);
     lsn_arr_init(&ctx->arrlsn, 0);
     _uev_init_callback();
@@ -585,7 +585,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     for (uint32_t i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         watcher->index = i;
-        ATOMIC_SET(&watcher->stop, 0);
+        ATOMIC_SET_RELAXED(&watcher->stop, 0);
         watcher->ev = ctx;
 #ifdef COMMIT_NCHANGES
         watcher->nsize = EVENT_CHANGES_CNT;
@@ -692,7 +692,7 @@ static void _uev_free_alllsn(ev_ctx *ctx) {
 void ev_free(ev_ctx *ctx) {
     // 先置关停标志再停线程：此后 ev_listen/ev_connect/ev_udp 一律拒绝，
     // 免调用方拿到"已入队但永不被 watcher 处理"的句柄
-    ATOMIC_SET(&ctx->stopping, 1);
+    ATOMIC_SET_RELEASE(&ctx->stopping, 1);
     // 先停全部 watcher 线程再释放，防 accept 向已释放队列 push
     _uev_stop_watcher(ctx);
     _uev_free_watcher(ctx);

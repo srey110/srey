@@ -29,7 +29,7 @@ static void _spin_until_zero(atomic_t *flag, uint32_t *spins) {
 void rwlock_distr_init(rwlock_distr_ctx *ctx, uint32_t slot_count) {
     ASSERTAB(slot_count > 0, "rwlock_distr_init: slot_count must be > 0");
     rwlock_init(&ctx->fallback);
-    ATOMIC_SET(&ctx->write_flag, 0);
+    ATOMIC_SET_RELAXED(&ctx->write_flag, 0);
     ctx->slot_count = slot_count;
     // 多分配一个 cache line 用于手动对齐,保证首个 slot 在 cache line 边界
     size_t total = (size_t)slot_count * sizeof(rwlock_distr_slot) + CACHELINE_SIZE;
@@ -62,7 +62,7 @@ int32_t rwlock_distr_register(rwlock_distr_ctx *ctx) {
     }
     // GET-then-CAS 扫描空 slot;先 GET 降低热槽 CAS 失败带来的 cache 弹跳
     for (uint32_t i = 0; i < ctx->slot_count; i++) {
-        if (0 == ATOMIC_GET(&ctx->slots[i].in_use)
+        if (0 == ATOMIC_GET_RELAXED(&ctx->slots[i].in_use)
             && ATOMIC_CAS(&ctx->slots[i].in_use, 0, 1)) {
             _tls[free_idx].owner = ctx;
             _tls[free_idx].slot = (int32_t)i;
@@ -82,8 +82,8 @@ void rwlock_distr_unregister(rwlock_distr_ctx *ctx) {
     // depth 必须一并清零:TLS 条目会被后续 register 复用,残留层数会让下次最外层 rdlock 被当成嵌套
     _tls[i].depth = 0;
     // 兜底清 active,即使调用方违反契约也不让 writer 卡死
-    ATOMIC_SET(&ctx->slots[idx].active, 0);
-    ATOMIC_SET(&ctx->slots[idx].in_use, 0);
+    ATOMIC_SET_RELEASE(&ctx->slots[idx].active, 0);
+    ATOMIC_SET_RELEASE(&ctx->slots[idx].in_use, 0);
 }
 void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
     int32_t i = _rwlock_distr_tls_find(ctx);
@@ -95,16 +95,16 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
         }
         int32_t slot = _tls[i].slot;
         uint32_t spins = 0;
-        // 两边先各自置位, 再查看对方: 置 active=1 之后必须用足序版本读 write_flag。
+        // 两边先各自置位, 再查看对方: 置 active=1 与随后读 write_flag 都得用足序版本。
         // 用 acquire 版在部分 ARM 上挡不住重排, 两边会同时看漏对方而一起进临界区。
-        // writer 侧对称: 置 write_flag=1 之后同样用足序版本读各 slot 的 active
+        // writer 侧对称: 置 write_flag=1 与读各 slot 的 active 同样用足序版本
         for (;;) {
-            ATOMIC_SET(&ctx->slots[slot].active, 1);
+            ATOMIC_SET_SEQCST(&ctx->slots[slot].active, 1);
             if (!ATOMIC_GET_SEQCST(&ctx->write_flag)) {
                 return;
             }
             // 检测到 writer,让步避免死锁
-            ATOMIC_SET(&ctx->slots[slot].active, 0);
+            ATOMIC_SET_RELEASE(&ctx->slots[slot].active, 0);
             _spin_until_zero(&ctx->write_flag, &spins);
         }
     }
@@ -119,7 +119,7 @@ void rwlock_distr_runlock(rwlock_distr_ctx *ctx) {
         if (--_tls[i].depth > 0) {
             return;
         }
-        ATOMIC_SET(&ctx->slots[_tls[i].slot].active, 0);
+        ATOMIC_SET_RELEASE(&ctx->slots[_tls[i].slot].active, 0);
         return;
     }
     rwlock_unlock(&ctx->fallback);
@@ -131,7 +131,7 @@ void rwlock_distr_wrlock(rwlock_distr_ctx *ctx) {
     // 先拿 fallback 写锁:阻塞未注册 reader 与并发 writer
     rwlock_wrlock(&ctx->fallback);
     // 再置 write_flag:阻塞新 slot reader
-    ATOMIC_SET(&ctx->write_flag, 1);
+    ATOMIC_SET_SEQCST(&ctx->write_flag, 1);
     // 等所有已进入 slot reader 退出
     uint32_t spins = 0;
     for (uint32_t i = 0; i < ctx->slot_count; i++) {
@@ -139,6 +139,6 @@ void rwlock_distr_wrlock(rwlock_distr_ctx *ctx) {
     }
 }
 void rwlock_distr_wrunlock(rwlock_distr_ctx *ctx) {
-    ATOMIC_SET(&ctx->write_flag, 0);
+    ATOMIC_SET_RELEASE(&ctx->write_flag, 0);
     rwlock_unlock(&ctx->fallback);
 }

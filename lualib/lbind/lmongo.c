@@ -45,7 +45,7 @@ static int32_t _lmongo_new(lua_State *lua) {
         FREE(mongo);
         return lpub_rtn_nil(lua, 1);
     }
-    ATOMIC_SET(&mongo->ref, 1);// Lua 持有者份额
+    ATOMIC_SET_RELAXED(&mongo->ref, 1);// Lua 持有者份额
     *ud = mongo;
     return 1;
 }

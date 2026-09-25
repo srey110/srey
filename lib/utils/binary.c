@@ -36,6 +36,23 @@ void binary_free(binary_ctx *ctx) {
     ctx->size = 0;
     ctx->offset = 0;
 }
+void _binary_grow(binary_ctx *ctx, size_t size) {
+    //inc==0 标记外部托管 buf：不接管所有权，任何 binary_set_* 都会从 offset 起改写调用方内存，
+    //超出容量时还要对栈/静态/异分配器内存调 REALLOC(UB)
+    ASSERTAB(0 != ctx->inc, "read-mode buffer is read-only: use binary_init_write for writable mode");
+    ASSERTAB(size <= SIZE_MAX - ctx->offset - 1, "binary buffer size overflow");
+    size += ctx->offset + 1;
+    if (size > ctx->size) {
+        size_t lens = ctx->size * 2;
+        if (lens < size) {
+            lens = size;
+        }
+        ctx->size = ROUND_UP(lens, ctx->inc);
+        // 翻倍与取整都可能溢出回绕成 0，而 _realloc(0) 按契约释放并返回 NULL，下面就 memmove 到空指针
+        ASSERTAB(0 != ctx->size, "binary buffer size overflow");
+        REALLOC(ctx->data, ctx->data, ctx->size);
+    }
+}
 void binary_set_va(binary_ctx *ctx, const char *fmt, ...) {
     //外部托管下 ctx->inc==0，ctx->inc-1 下溢为 SIZE_MAX 会让后续逻辑错乱，提前拒绝
     ASSERTAB(0 != ctx->inc, "read-mode buffer cannot binary_set_va: use binary_init_write for writable mode");
