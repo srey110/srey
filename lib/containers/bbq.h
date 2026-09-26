@@ -65,6 +65,7 @@ typedef struct {                                                                
     CACHELINE_ALIGN atomic64_t phead;/* 生产头,与 chead 各占一条 cache line */     \
     CACHELINE_ALIGN atomic64_t chead;/* 消费头 */                                \
 } name;                                                                         \
+/* 容量按文件头的规则取整后一次分配,之后不扩容;取整后超过 2^20 ASSERTAB 中止 */ \
 static inline void name##_init(name *q, uint32_t capacity) {                    \
     uint32_t i;                                                                 \
     uint64_t cur;                                                               \
@@ -90,6 +91,7 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
         ATOMIC64_SET_RELAXED(&q->blocks[i].consumed, (atomic64_t)cur);                  \
     }                                                                           \
 }                                                                               \
+/* 释放块与槽数组;q 为 NULL 时不做事 */                                         \
 static inline void name##_free(name *q) {                                       \
     if (NULL == q) {                                                            \
         return;                                                                 \
@@ -101,7 +103,9 @@ static inline void name##_free(name *q) {                                       
     q->idxmask = 0;                                                             \
     q->blksz = 0;                                                               \
 }                                                                               \
+/* 取整后的容量 */                                                              \
 static inline uint32_t name##_capacity(const name *q) { return q->capacity; }   \
+/* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *q) { (void)q; return (uint32_t)sizeof(T); }\
 /* 保守快照:先读消费侧后读生产侧,只会把空报成非空,不会把非空报成空。                 \
    按 allocated 计数,已抢槽未发布的也算在内——fsqu 的漏唤醒守卫依赖这个方向。         \

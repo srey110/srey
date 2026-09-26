@@ -128,7 +128,7 @@ typedef struct { list_node node; int val; } _lnode;
 HASHMAP_DECL(up_imap, int32_t, _UP_HASH_INT, _UP_CMP_INT)
 HASHMAP_DECL(up_smap, char *, _UP_HASH_STR, _UP_CMP_STR)
 
-/* rbtree 用例的元素，同一元素挂两棵树：bykey 允许重复键（add），byid 唯一键（find_add）。
+/* rbtree 用例的元素，同一元素挂两棵树：bykey 允许重复键（MULTI），byid 唯一键（UNIQUE）。
    两个 rbt_node 都不放首位，覆盖 entry 对 NULL 的判断 */
 typedef struct {
     int32_t key;
@@ -138,17 +138,14 @@ typedef struct {
     int32_t pad;
     rbt_node byid;
 } _rbe;
-#define _RBK_CMP(a, b) (((a)->key > (b)->key) - ((a)->key < (b)->key))
-#define _RBK_KCMP(k, e) (((k) > (e)->key) - ((k) < (e)->key))
-RBT_DECL(_rbk, _rbe, bykey, _RBK_CMP)
-RBT_DECL_KEY(_rbk, _rbe, int32_t, _RBK_KCMP)
-#define _RBI_CMP(a, b) (((a)->id > (b)->id) - ((a)->id < (b)->id))
-#define _RBI_KCMP(k, e) (((k) > (e)->id) - ((k) < (e)->id))
-RBT_DECL(_rbi, _rbe, byid, _RBI_CMP)
-RBT_DECL_KEY(_rbi, _rbe, uint32_t, _RBI_KCMP)
+#define _RB_LT(a, b) ((a) < (b))
+#define _RBE_KEY(e) ((e)->key)
+#define _RBE_ID(e) ((e)->id)
+RBT_DECL(_rbk, _rbe, bykey, int32_t, _RBE_KEY, _RB_LT, RBT_MULTI)
+RBT_DECL(_rbi, _rbe, byid, uint32_t, _RBE_ID, _RB_LT, RBT_UNIQUE)
 
-/* rbtree 正常用法示例用的元素：一个"任务"同时挂三棵树 —— 按名字查（字符串键集合）、按分数排（组合键有序集合）、
-   按到期时间排（定时器队列：手写下降循环 + 最左缓存，同一时刻允许多个） */
+/* rbtree 正常用法示例用的元素：一个"任务"同时挂三棵树 —— 按名字查（字符串键）、按分数排（组合键）、
+   按到期时间排（定时器队列：底层接口手写下降循环 + 最左缓存，同一时刻允许多个） */
 typedef struct {
     uint32_t id;
     int32_t fired;
@@ -159,20 +156,33 @@ typedef struct {
     rbt_node byscore;
     rbt_node bydue;
 } _rbu;
-#define _RBU_NAME_CMP(a, b) strcmp((a)->name, (b)->name)
-#define _RBU_NAME_KCMP(k, e) strcmp((k), (e)->name)
-RBT_DECL(_rbu_name, _rbu, byname, _RBU_NAME_CMP)
-RBT_DECL_KEY(_rbu_name, _rbu, const char *, _RBU_NAME_KCMP)
-/* 分数相同再比 id，组合键唯一；按分数查区间时 KCMP 只比分数（比 CMP 粗，相等段仍连续） */
-#define _RBU_SCORE_CMP(a, b) ((a)->score != (b)->score \
-    ? (((a)->score > (b)->score) - ((a)->score < (b)->score)) : (((a)->id > (b)->id) - ((a)->id < (b)->id)))
-#define _RBU_SCORE_KCMP(k, e) (((k) > (e)->score) - ((k) < (e)->score))
-RBT_DECL(_rbu_score, _rbu, byscore, _RBU_SCORE_CMP)
-RBT_DECL_KEY(_rbu_score, _rbu, int64_t, _RBU_SCORE_KCMP)
-#define _RBU_DUE_CMP(a, b) (((a)->due > (b)->due) - ((a)->due < (b)->due))
-#define _RBU_DUE_KCMP(k, e) (((k) > (e)->due) - ((k) < (e)->due))
-RBT_DECL(_rbu_due, _rbu, bydue, _RBU_DUE_CMP)
-RBT_DECL_KEY(_rbu_due, _rbu, uint64_t, _RBU_DUE_KCMP)
+/* 分数相同再比 id，组合键唯一；按分数查区间就用 lower_bound({分数, 0}) */
+typedef struct {
+    int64_t score;
+    uint32_t id;
+} _rbu_sk;
+#define _RBU_NAME(e) ((e)->name)
+#define _RBU_STR_LT(a, b) (strcmp((a), (b)) < 0)
+RBT_DECL(_rbu_name, _rbu, byname, const char *, _RBU_NAME, _RBU_STR_LT, RBT_UNIQUE)
+#define _RBU_SK(e) ((_rbu_sk){ (e)->score, (e)->id })
+#define _RBU_SK_LT(a, b) ((a).score < (b).score || ((a).score == (b).score && (a).id < (b).id))
+RBT_DECL(_rbu_score, _rbu, byscore, _rbu_sk, _RBU_SK, _RBU_SK_LT, RBT_UNIQUE)
+
+/* rbtset 用例的元素：key 参与比较，val 不参与（区分覆盖前后、校验重复键的插入序） */
+typedef struct {
+    int32_t key;
+    int32_t val;
+} _rse;
+#define _RSE_KEY(e) ((e)->key)
+RBTSET_DECL(_rsu, _rse, int32_t, _RSE_KEY, _RB_LT, RBT_UNIQUE)
+RBTSET_DECL(_rsm, _rse, int32_t, _RSE_KEY, _RB_LT, RBT_MULTI)
+/* 持有堆内存的元素：校验只有 free 调 elfree，覆盖与删除交出的副本归调用方 */
+typedef struct {
+    int32_t key;
+    char *name;
+} _rss;
+RBTSET_DECL(_rss_set, _rss, int32_t, _RSE_KEY, _RB_LT, RBT_UNIQUE)
+#define _RSS_NAME_LEN 16
 
 /* 宏生成的用例里断言行号都落在展开那一行，靠把条件原文放进失败信息来定位 */
 #define _FQ_ASSERT(tc, cond) CuAssert(tc, #cond, cond)
@@ -3608,14 +3618,12 @@ static void _rbt_check_shape(CuTest *tc, const rbt_root *root, uint32_t n) {
     CuAssertTrue(tc, n == cnt);
     CuAssertTrue(tc, ((uint64_t)1 << (maxdepth / 2)) <= (uint64_t)n + 1);
 }
-/* bykey 树：形状 + 正向中序非降且相等段按插入序 + 反向遍历对称 */
-static void _rbk_check(CuTest *tc, const rbt_root *root, uint32_t n) {
+/* bykey 次序：形状 + 正向中序非降且相等段按插入序（底层根也能用） */
+static void _rbk_check_root(CuTest *tc, const rbt_root *root, uint32_t n) {
     _rbe *e;
-    _rbe *prev;
-    uint32_t cnt;
+    _rbe *prev = NULL;
+    uint32_t cnt = 0;
     _rbt_check_shape(tc, root, n);
-    cnt = 0;
-    prev = NULL;
     for (e = _rbk_entry(rbt_first(root)); NULL != e; e = _rbk_entry(rbt_next(&e->bykey))) {
         if (NULL != prev) {
             CuAssertTrue(tc, prev->key < e->key || (prev->key == e->key && prev->seq < e->seq));
@@ -3624,24 +3632,35 @@ static void _rbk_check(CuTest *tc, const rbt_root *root, uint32_t n) {
         cnt++;
     }
     CuAssertTrue(tc, n == cnt);
-    cnt = 0;
-    prev = NULL;
-    for (e = _rbk_entry(rbt_last(root)); NULL != e; e = _rbk_entry(rbt_prev(&e->bykey))) {
-        if (NULL != prev) {
-            CuAssertTrue(tc, e->key < prev->key || (e->key == prev->key && e->seq < prev->seq));
-        }
+}
+/* bykey 树：次序 + 元素数 + 最左缓存 + 都标着在树里 + 反向遍历对称 */
+static void _rbk_check(CuTest *tc, _rbk *t, uint32_t n) {
+    _rbe *e;
+    _rbe *prev = NULL;
+    uint32_t cnt = 0;
+    _rbk_check_root(tc, &t->root.rbt_root, n);
+    CuAssertTrue(tc, n == _rbk_size(t) && (0 == n) == _rbk_empty(t));
+    CuAssertTrue(tc, t->root.rbt_leftmost == rbt_first(&t->root.rbt_root));
+    rbt_foreach(t, _rbk, e) {
+        CuAssertTrue(tc, _rbk_linked(e));
         prev = e;
         cnt++;
     }
     CuAssertTrue(tc, n == cnt);
+    CuAssertTrue(tc, prev == _rbk_last(t));
+    for (e = _rbk_last(t); NULL != e; e = _rbk_prev(e)) {
+        cnt--;
+    }
+    CuAssertTrue(tc, 0 == cnt);
 }
-/* byid 树：形状 + 中序严格递增 */
-static void _rbi_check(CuTest *tc, const rbt_root *root, uint32_t n) {
+/* byid 树：形状 + 元素数 + 中序严格递增 */
+static void _rbi_check(CuTest *tc, _rbi *t, uint32_t n) {
     _rbe *e;
     _rbe *prev = NULL;
     uint32_t cnt = 0;
-    _rbt_check_shape(tc, root, n);
-    for (e = _rbi_entry(rbt_first(root)); NULL != e; e = _rbi_entry(rbt_next(&e->byid))) {
+    _rbt_check_shape(tc, &t->root.rbt_root, n);
+    CuAssertTrue(tc, n == _rbi_size(t));
+    rbt_foreach(t, _rbi, e) {
         if (NULL != prev) {
             CuAssertTrue(tc, prev->id < e->id);
         }
@@ -3651,57 +3670,59 @@ static void _rbi_check(CuTest *tc, const rbt_root *root, uint32_t n) {
     CuAssertTrue(tc, n == cnt);
 }
 
-/* 空树 / 单元素 / 运行期重置；删掉带孩子的节点后 CLEAR，next/prev 不能顺着残留指针走 */
+/* 空树 / 清零即不在树里 / 单元素 / 删掉带孩子的节点后节点清零、next/prev 不能顺着残留指针走 / 运行期重置 */
 static void test_rbtree_empty(CuTest *tc) {
     rbt_root root = RBT_ROOT_INIT;
     rbt_root_cached rc = RBT_ROOT_CACHED_INIT;
+    _rbk t;
     _rbe es[3];
+    _rbe z;
     int32_t i;
+    // 底层空树
     CuAssertTrue(tc, RBT_EMPTY_ROOT(&root));
-    CuAssertTrue(tc, NULL == rbt_first(&root));
-    CuAssertTrue(tc, NULL == rbt_last(&root));
-    CuAssertTrue(tc, NULL == rbt_first_postorder(&root));
-    CuAssertTrue(tc, NULL == rbt_next_postorder(NULL));
-    CuAssertTrue(tc, NULL == _rbk_find(1, &root));
-    CuAssertTrue(tc, NULL == _rbk_find_first(1, &root));
+    CuAssertTrue(tc, NULL == rbt_first(&root) && NULL == rbt_last(&root));
+    CuAssertTrue(tc, NULL == rbt_first_postorder(&root) && NULL == rbt_next_postorder(NULL));
     CuAssertTrue(tc, NULL == rbt_first_cached(&rc));
-    _rbk_check(tc, &root, 0);
-
+    // 带类型的空树：查找、摘除、边界都安全返回
+    _rbk_init(&t);
+    CuAssertTrue(tc, NULL == _rbk_first(&t) && NULL == _rbk_last(&t) && NULL == _rbk_pop_first(&t));
+    CuAssertTrue(tc, NULL == _rbk_find(&t, 1) && NULL == _rbk_extract(&t, 1));
+    CuAssertTrue(tc, 0 == _rbk_count(&t, 1) && !_rbk_contains(&t, 1));
+    CuAssertTrue(tc, NULL == _rbk_lower_bound(&t, 1) && NULL == _rbk_upper_bound(&t, 1));
+    _rbk_check(tc, &t, 0);
+    // 整体清零即不在树里；对它调 next / prev 返回 NULL
+    memset(&z, 0, sizeof(z));
+    CuAssertTrue(tc, !_rbk_linked(&z) && RBT_EMPTY_NODE(&z.bykey));
+    CuAssertTrue(tc, NULL == rbt_next(&z.bykey) && NULL == rbt_prev(&z.bykey));
+    // 单元素
     es[0].key = 5;
     es[0].seq = 0;
-    _rbk_add(&es[0], &root);
-    _rbk_check(tc, &root, 1);
-    CuAssertTrue(tc, &es[0] == _rbk_entry(rbt_first(&root)));
-    CuAssertTrue(tc, &es[0] == _rbk_entry(rbt_last(&root)));
-    CuAssertTrue(tc, NULL == rbt_next(&es[0].bykey));
-    CuAssertTrue(tc, NULL == rbt_prev(&es[0].bykey));
-    CuAssertTrue(tc, &es[0] == _rbk_find(5, &root));
-    CuAssertTrue(tc, !RBT_EMPTY_NODE(&es[0].bykey));
-    rbt_erase(&es[0].bykey, &root);
-    _rbk_check(tc, &root, 0);
-
-    /* 1、2、3 升序插入后 2 是根且有两个孩子；删掉它，节点里的孩子指针仍是旧值 */
+    CuAssertTrue(tc, NULL == _rbk_insert(&t, &es[0]));
+    _rbk_check(tc, &t, 1);
+    CuAssertTrue(tc, &es[0] == _rbk_first(&t) && &es[0] == _rbk_last(&t));
+    CuAssertTrue(tc, NULL == _rbk_next(&es[0]) && NULL == _rbk_prev(&es[0]));
+    CuAssertTrue(tc, &es[0] == _rbk_find(&t, 5) && _rbk_linked(&es[0]));
+    _rbk_erase(&t, &es[0]);
+    CuAssertTrue(tc, !_rbk_linked(&es[0]));
+    _rbk_check(tc, &t, 0);
+    // 1、2、3 升序插入后 2 是根且有两个孩子；删掉它，节点里的孩子指针仍是旧值，但节点已清零
     for (i = 0; i < 3; i++) {
         es[i].key = i + 1;
         es[i].seq = (uint32_t)i;
-        _rbk_add(&es[i], &root);
+        _rbk_insert(&t, &es[i]);
     }
-    CuAssertTrue(tc, &es[1].bykey == root.rbt_node);
-    rbt_erase(&es[1].bykey, &root);
-    RBT_CLEAR_NODE(&es[1].bykey);
+    CuAssertTrue(tc, &es[1].bykey == t.root.rbt_root.rbt_node);
+    _rbk_erase(&t, &es[1]);
     CuAssertTrue(tc, RBT_EMPTY_NODE(&es[1].bykey));
-    CuAssertTrue(tc, NULL == rbt_next(&es[1].bykey));
-    CuAssertTrue(tc, NULL == rbt_prev(&es[1].bykey));
-    _rbk_check(tc, &root, 2);
-
-    /* 运行期重置（RBT_ROOT_INIT 只能用于定义） */
+    CuAssertTrue(tc, NULL == _rbk_next(&es[1]) && NULL == _rbk_prev(&es[1]));
+    _rbk_check(tc, &t, 2);
+    // 运行期重置（RBT_ROOT_INIT 只能用于定义）
+    _rbk_init(&t);
+    _rbk_check(tc, &t, 0);
     rbt_root_init(&root);
     CuAssertTrue(tc, RBT_EMPTY_ROOT(&root));
-    CuAssertTrue(tc, &es[0] == _rbk_add_cached(&es[0], &rc));
-    CuAssertTrue(tc, &es[0].bykey == rbt_first_cached(&rc));
     rbt_root_cached_init(&rc);
-    CuAssertTrue(tc, NULL == rbt_first_cached(&rc));
-    CuAssertTrue(tc, RBT_EMPTY_ROOT(&rc.rbt_root));
+    CuAssertTrue(tc, NULL == rbt_first_cached(&rc) && RBT_EMPTY_ROOT(&rc.rbt_root));
 }
 
 /* 升序 / 降序 / 锯齿 / 乱序各插 1000 个，每步校验；再乱序删光，每步校验，隔段核对剩余元素仍能按键找到本尊 */
@@ -3709,7 +3730,7 @@ static void test_rbtree_patterns(CuTest *tc) {
     const int32_t npat = 1000;
     _rbe *es;
     int32_t *order;
-    rbt_root root;
+    _rbk t;
     test_rng rng;
     int32_t pat, i, j;
     MALLOC(es, sizeof(_rbe) * npat);
@@ -3728,12 +3749,12 @@ static void test_rbtree_patterns(CuTest *tc) {
         if (3 == pat) {
             test_shuffle(&rng, order, npat);
         }
-        rbt_root_init(&root);
+        _rbk_init(&t);
         for (i = 0; i < npat; i++) {
             es[i].key = order[i];
             es[i].seq = (uint32_t)i;
-            _rbk_add(&es[i], &root);
-            _rbk_check(tc, &root, (uint32_t)i + 1);
+            _rbk_insert(&t, &es[i]);
+            _rbk_check(tc, &t, (uint32_t)i + 1);
         }
         /* order 改作删除用的下标序列 */
         for (i = 0; i < npat; i++) {
@@ -3741,149 +3762,178 @@ static void test_rbtree_patterns(CuTest *tc) {
         }
         test_shuffle(&rng, order, npat);
         for (i = 0; i < npat; i++) {
-            rbt_erase(&es[order[i]].bykey, &root);
-            CuAssertTrue(tc, NULL == _rbk_find(es[order[i]].key, &root));
-            _rbk_check(tc, &root, (uint32_t)(npat - 1 - i));
+            _rbk_erase(&t, &es[order[i]]);
+            CuAssertTrue(tc, NULL == _rbk_find(&t, es[order[i]].key));
+            _rbk_check(tc, &t, (uint32_t)(npat - 1 - i));
             if (0 == i % 50) {
                 for (j = i + 1; j < npat; j++) {
-                    CuAssertTrue(tc, &es[order[j]] == _rbk_find(es[order[j]].key, &root));
+                    CuAssertTrue(tc, &es[order[j]] == _rbk_find(&t, es[order[j]].key));
                 }
             }
         }
-        CuAssertTrue(tc, RBT_EMPTY_ROOT(&root));
+        CuAssertTrue(tc, _rbk_empty(&t));
     }
     FREE(order);
     FREE(es);
 }
 
-/* 重复键：同键按插入序排列；find_first / next_match / rbt_for_each 覆盖整个相等段 */
+/* 重复键：同键按插入序排列；find 取相等段首；rbt_foreach_equal / count 覆盖整个相等段；extract 摘段首 */
 static void test_rbtree_dup(CuTest *tc) {
     _rbe es[300];
-    rbt_root root = RBT_ROOT_INIT;
+    _rbk t;
     _rbe *it;
     uint32_t i, cnt, last;
+    _rbk_init(&t);
     for (i = 0; i < 300; i++) {
         es[i].key = (int32_t)(i % 3) * 10;// 0、10、20 交替，各 100 个
         es[i].seq = i;
-        _rbk_add(&es[i], &root);
+        CuAssertTrue(tc, NULL == _rbk_insert(&t, &es[i]));
     }
-    _rbk_check(tc, &root, 300);
-    CuAssertTrue(tc, &es[1] == _rbk_find_first(10, &root));
+    _rbk_check(tc, &t, 300);
+    CuAssertTrue(tc, &es[1] == _rbk_find(&t, 10));
+    CuAssertTrue(tc, 100 == _rbk_count(&t, 10) && _rbk_contains(&t, 10));
     cnt = 0;
     last = 0;
-    rbt_for_each(it, 10, &root, _rbk) {
+    rbt_foreach_equal(&t, _rbk, 10, it) {
         CuAssertTrue(tc, 10 == it->key);
         CuAssertTrue(tc, 0 == cnt || it->seq > last);
         last = it->seq;
         cnt++;
     }
-    CuAssertTrue(tc, 100 == cnt);
-    CuAssertTrue(tc, 298 == last);
-    /* next_match 只看紧邻后继：段尾之后是 20，e 不在匹配段内也只看后继 */
-    CuAssertTrue(tc, NULL == _rbk_next_match(10, &es[298]));
-    CuAssertTrue(tc, NULL == _rbk_next_match(10, &es[0]));
-    it = _rbk_find(20, &root);
-    CuAssertTrue(tc, NULL != it && 20 == it->key);
-    CuAssertTrue(tc, NULL == _rbk_find(5, &root));
-    CuAssertTrue(tc, NULL == _rbk_find_first(5, &root));
-    CuAssertTrue(tc, NULL == _rbk_find_first(-1, &root));
-    CuAssertTrue(tc, NULL == _rbk_find_first(30, &root));
-    /* 删掉段首，find_first 顺延到同键的下一个 */
-    rbt_erase(&es[1].bykey, &root);
-    CuAssertTrue(tc, &es[4] == _rbk_find_first(10, &root));
-    _rbk_check(tc, &root, 299);
+    CuAssertTrue(tc, 100 == cnt && 298 == last);
+    /* next_equal 只看紧邻后继：段尾之后是 20 */
+    CuAssertTrue(tc, NULL == _rbk_next_equal(&es[298], 10));
+    CuAssertTrue(tc, &es[2] == _rbk_find(&t, 20));
+    CuAssertTrue(tc, NULL == _rbk_find(&t, 5) && NULL == _rbk_find(&t, -1) && NULL == _rbk_find(&t, 30));
+    CuAssertTrue(tc, 0 == _rbk_count(&t, 5) && !_rbk_contains(&t, 5));
+    cnt = 0;
+    rbt_foreach_equal(&t, _rbk, 5, it) {
+        cnt++;
+    }
+    CuAssertTrue(tc, 0 == cnt);
+    /* extract 摘段首并清零节点，find 顺延到同键的下一个 */
+    CuAssertTrue(tc, &es[1] == _rbk_extract(&t, 10) && !_rbk_linked(&es[1]));
+    CuAssertTrue(tc, &es[4] == _rbk_find(&t, 10) && 99 == _rbk_count(&t, 10));
+    _rbk_check(tc, &t, 299);
 }
 
-/* 唯一键：find_add 冲突返回已有元素且被拒元素字节不变；cached 版同样，且最左始终等于 rbt_first */
-static void test_rbtree_find_add(CuTest *tc) {
+/* 唯一键：冲突时 insert 返回已有元素、被拒元素字节不变；insert_check / insert_commit 两段式；
+   MULTI 下 check 从不返回已有元素，插入点在相等段末尾，比最小还小时成为新最左 */
+static void test_rbtree_unique(CuTest *tc) {
     _rbe es[64];
     _rbe clash, snap;
-    rbt_root root = RBT_ROOT_INIT;
-    rbt_root_cached rc = RBT_ROOT_CACHED_INIT;
+    _rbi t;
+    _rbk tk;
+    rbt_insert_pos pos;
     uint32_t i;
+    _rbi_init(&t);
     for (i = 0; i < 64; i++) {
         es[i].id = (i * 37 + 5) % 64;// 0..63 的一个排列，且不从最小键开始：非空树上会两次出现新最左
         es[i].key = (int32_t)es[i].id;
         es[i].seq = i;
-        CuAssertTrue(tc, NULL == _rbi_find_add(&es[i], &root));
-        CuAssertTrue(tc, NULL == _rbk_find_add_cached(&es[i], &rc));
-        CuAssertTrue(tc, rc.rbt_leftmost == rbt_first(&rc.rbt_root));
+        CuAssertTrue(tc, NULL == _rbi_insert(&t, &es[i]));
+        CuAssertTrue(tc, t.root.rbt_leftmost == rbt_first(&t.root.rbt_root));
     }
-    _rbi_check(tc, &root, 64);
-    _rbk_check(tc, &rc.rbt_root, 64);
+    _rbi_check(tc, &t, 64);
     memset(&clash, 0xA5, sizeof(clash));
     clash.id = es[10].id;
-    clash.key = es[10].key;
     memcpy(&snap, &clash, sizeof(clash));
-    CuAssertTrue(tc, &es[10] == _rbi_find_add(&clash, &root));
-    CuAssertTrue(tc, &es[10] == _rbk_find_add_cached(&clash, &rc));
+    CuAssertTrue(tc, &es[10] == _rbi_insert(&t, &clash));
     CuAssertTrue(tc, 0 == memcmp(&snap, &clash, sizeof(clash)));
-    _rbi_check(tc, &root, 64);
-    _rbk_check(tc, &rc.rbt_root, 64);
+    _rbi_check(tc, &t, 64);
     for (i = 0; i < 64; i++) {
-        CuAssertTrue(tc, &es[i] == _rbi_find(es[i].id, &root));
+        CuAssertTrue(tc, &es[i] == _rbi_find(&t, es[i].id));
     }
-    CuAssertTrue(tc, NULL == _rbi_find(64, &root));
+    CuAssertTrue(tc, NULL == _rbi_find(&t, 64));
+    // 两段式：已有则 check 直接返回它；没有才构造元素再 commit
+    CuAssertTrue(tc, &es[3] == _rbi_insert_check(&t, es[3].id, &pos));
+    CuAssertTrue(tc, NULL == _rbi_insert_check(&t, 100, &pos));
+    memset(&clash, 0, sizeof(clash));
+    clash.id = 100;
+    _rbi_insert_commit(&t, &clash, &pos);
+    CuAssertTrue(tc, &clash == _rbi_find(&t, 100) && &clash == _rbi_last(&t));
+    _rbi_check(tc, &t, 65);
+    // 唯一键的 extract
+    CuAssertTrue(tc, &clash == _rbi_extract(&t, 100) && NULL == _rbi_find(&t, 100));
+    _rbi_check(tc, &t, 64);
+    // MULTI 的两段式（元素的 bykey 与 byid 是两个节点，互不影响）
+    _rbk_init(&tk);
+    es[0].key = 10;
+    es[0].seq = 0;
+    _rbk_insert(&tk, &es[0]);
+    es[1].key = 10;
+    es[1].seq = 1;
+    CuAssertTrue(tc, NULL == _rbk_insert_check(&tk, 10, &pos) && 0 == pos.leftmost);
+    _rbk_insert_commit(&tk, &es[1], &pos);
+    CuAssertTrue(tc, &es[1] == _rbk_next(&es[0]));
+    es[2].key = 5;
+    es[2].seq = 2;
+    CuAssertTrue(tc, NULL == _rbk_insert_check(&tk, 5, &pos) && 1 == pos.leftmost);
+    _rbk_insert_commit(&tk, &es[2], &pos);
+    CuAssertTrue(tc, &es[2] == _rbk_first(&tk));
+    _rbk_check(tc, &tk, 3);
+    _rbi_check(tc, &t, 64);
 }
 
 /* lower_bound / upper_bound（同 std::set）：边界逐条核对，再与中序序列的线性扫描逐键比指针 */
 static void test_rbtree_bound(CuTest *tc) {
     _rbe es[500];
-    rbt_root root = RBT_ROOT_INIT;
+    _rbk t;
     test_rng rng;
     _rbe *e;
     _rbe *lo;
     _rbe *up;
     int32_t k;
     uint32_t i, cnt;
-    CuAssertTrue(tc, NULL == _rbk_lower_bound(0, &root));
-    CuAssertTrue(tc, NULL == _rbk_upper_bound(0, &root));
+    _rbk_init(&t);
+    CuAssertTrue(tc, NULL == _rbk_lower_bound(&t, 0));
+    CuAssertTrue(tc, NULL == _rbk_upper_bound(&t, 0));
 
     /* 偶数键 0..98，50 另有两个重复 */
     for (i = 0; i < 50; i++) {
         es[i].key = (int32_t)(i * 2);
         es[i].seq = i;
-        _rbk_add(&es[i], &root);
+        _rbk_insert(&t, &es[i]);
     }
     for (i = 50; i < 52; i++) {
         es[i].key = 50;
         es[i].seq = i;
-        _rbk_add(&es[i], &root);
+        _rbk_insert(&t, &es[i]);
     }
-    CuAssertTrue(tc, &es[0] == _rbk_lower_bound(-5, &root));// 比最小还小：两者都是最小
-    CuAssertTrue(tc, &es[0] == _rbk_upper_bound(-5, &root));
-    CuAssertTrue(tc, &es[10] == _rbk_lower_bound(19, &root));// 落在空隙：两者都是下一个
-    CuAssertTrue(tc, &es[10] == _rbk_upper_bound(19, &root));
-    CuAssertTrue(tc, &es[10] == _rbk_lower_bound(20, &root));// 恰好相等：lower 是它，upper 是下一个
-    CuAssertTrue(tc, &es[11] == _rbk_upper_bound(20, &root));
-    CuAssertTrue(tc, &es[25] == _rbk_lower_bound(50, &root));// 相等段：lower 是段首（最早插入），upper 越过整段
-    CuAssertTrue(tc, &es[26] == _rbk_upper_bound(50, &root));
-    CuAssertTrue(tc, &es[49] == _rbk_lower_bound(98, &root));// 等于最大：upper 为空
-    CuAssertTrue(tc, NULL == _rbk_upper_bound(98, &root));
-    CuAssertTrue(tc, NULL == _rbk_lower_bound(99, &root));// 比最大还大：两者都为空
-    CuAssertTrue(tc, NULL == _rbk_upper_bound(99, &root));
+    CuAssertTrue(tc, &es[0] == _rbk_lower_bound(&t, -5));// 比最小还小：两者都是最小
+    CuAssertTrue(tc, &es[0] == _rbk_upper_bound(&t, -5));
+    CuAssertTrue(tc, &es[10] == _rbk_lower_bound(&t, 19));// 落在空隙：两者都是下一个
+    CuAssertTrue(tc, &es[10] == _rbk_upper_bound(&t, 19));
+    CuAssertTrue(tc, &es[10] == _rbk_lower_bound(&t, 20));// 恰好相等：lower 是它，upper 是下一个
+    CuAssertTrue(tc, &es[11] == _rbk_upper_bound(&t, 20));
+    CuAssertTrue(tc, &es[25] == _rbk_lower_bound(&t, 50));// 相等段：lower 是段首（最早插入），upper 越过整段
+    CuAssertTrue(tc, &es[26] == _rbk_upper_bound(&t, 50));
+    CuAssertTrue(tc, &es[49] == _rbk_lower_bound(&t, 98));// 等于最大：upper 为空
+    CuAssertTrue(tc, NULL == _rbk_upper_bound(&t, 98));
+    CuAssertTrue(tc, NULL == _rbk_lower_bound(&t, 99));// 比最大还大：两者都为空
+    CuAssertTrue(tc, NULL == _rbk_upper_bound(&t, 99));
     /* 半开区间 [20, 40) 的遍历：lower_bound(20) 起，走到 lower_bound(40) 为止 */
     cnt = 0;
-    up = _rbk_lower_bound(40, &root);
-    for (e = _rbk_lower_bound(20, &root); e != up; e = _rbk_entry(rbt_next(&e->bykey))) {
+    up = _rbk_lower_bound(&t, 40);
+    for (e = _rbk_lower_bound(&t, 20); e != up; e = _rbk_next(e)) {
         CuAssertTrue(tc, e->key >= 20 && e->key < 40);
         cnt++;
     }
     CuAssertTrue(tc, 10 == cnt);
 
     /* 随机键（键域小、重复多），每个查询键都与中序线性扫描的答案比指针 */
-    rbt_root_init(&root);
+    _rbk_init(&t);
     test_rng_init(&rng, 17);
     for (i = 0; i < 500; i++) {
         es[i].key = (int32_t)(test_rng_next(&rng) % 100);
         es[i].seq = i;
-        _rbk_add(&es[i], &root);
+        _rbk_insert(&t, &es[i]);
     }
-    _rbk_check(tc, &root, 500);
+    _rbk_check(tc, &t, 500);
     for (k = -2; k <= 101; k++) {
         lo = NULL;
         up = NULL;
-        for (e = _rbk_entry(rbt_first(&root)); NULL != e; e = _rbk_entry(rbt_next(&e->bykey))) {
+        rbt_foreach(&t, _rbk, e) {
             if (NULL == lo && e->key >= k) {
                 lo = e;
             }
@@ -3892,12 +3942,18 @@ static void test_rbtree_bound(CuTest *tc) {
                 break;
             }
         }
-        CuAssertTrue(tc, lo == _rbk_lower_bound(k, &root));
-        CuAssertTrue(tc, up == _rbk_upper_bound(k, &root));
+        CuAssertTrue(tc, lo == _rbk_lower_bound(&t, k));
+        CuAssertTrue(tc, up == _rbk_upper_bound(&t, k));
+        CuAssertTrue(tc, ((NULL != lo && k == lo->key) ? lo : NULL) == _rbk_find(&t, k));
     }
 }
 
-/* 正常用法示例（一个函数走完）：建 → 字符串键集合 → 有序集合 → 定时器队列 → 整树销毁 */
+/* usage 收尾：整树销毁时的回调，数一下并释放元素 */
+static void _rbu_free_cb(_rbu *e, void *ud) {
+    (*(int32_t *)ud)++;
+    FREE(e);
+}
+/* 正常用法示例（一个函数走完）：建 → 字符串键集合 → 组合键有序集合 → 定时器队列（底层接口）→ 整树销毁 */
 static void test_rbtree_usage(CuTest *tc) {
     static const char *names[] = { "job.backup", "job.report", "job.clean", "user.alice",
                                    "user.bob", "job.index", "sys.gc", "user.carol" };
@@ -3905,15 +3961,13 @@ static void test_rbtree_usage(CuTest *tc) {
     static const uint64_t dues[] = { 300, 100, 200, 100, 400, 100, 500, 250 };
     static const char *same_due[] = { "job.report", "user.alice", "job.index" };
     const uint32_t n = 8;
-    rbt_root byname = RBT_ROOT_INIT;
-    rbt_root byscore = RBT_ROOT_INIT;
+    _rbu_name byname;
+    _rbu_score byscore;
     rbt_root_cached bydue = RBT_ROOT_CACHED_INIT;
     rbt_node **link;
     rbt_node *parent;
     rbt_node *cur;
     _rbu *t;
-    _rbu *pos;
-    _rbu *nxt;
     _rbu *stop;
     _rbu twin;
     int32_t leftmost, cnt;
@@ -3922,6 +3976,8 @@ static void test_rbtree_usage(CuTest *tc) {
     uint32_t i;
 
     /* 1. 建：元素单独分配，同时挂上三棵树 */
+    _rbu_name_init(&byname);
+    _rbu_score_init(&byscore);
     for (i = 0; i < n; i++) {
         MALLOC(t, sizeof(_rbu));
         t->id = i;
@@ -3929,16 +3985,16 @@ static void test_rbtree_usage(CuTest *tc) {
         t->name = names[i];
         t->score = scores[i];
         t->due = dues[i];
-        CuAssertTrue(tc, NULL == _rbu_name_find_add(t, &byname));// 名字唯一
-        CuAssertTrue(tc, NULL == _rbu_score_find_add(t, &byscore));// (分数, id) 唯一
-        /* 定时器用手写下降循环插入：相等往右，同一时刻按加入顺序排；一路往左才是新最左 */
+        CuAssertTrue(tc, NULL == _rbu_name_insert(&byname, t));// 名字唯一
+        CuAssertTrue(tc, NULL == _rbu_score_insert(&byscore, t));// (分数, id) 唯一
+        /* 定时器用底层接口手写下降循环：相等往右，同一时刻按加入顺序排；一路往左才是新最左 */
         link = &bydue.rbt_root.rbt_node;
         parent = NULL;
         cur = *link;
         leftmost = 1;
         while (NULL != cur) {
             parent = cur;
-            if (t->due < _rbu_due_entry(cur)->due) {
+            if (t->due < UPCAST(cur, _rbu, bydue)->due) {
                 link = &cur->rbt_left;
             } else {
                 link = &cur->rbt_right;
@@ -3947,159 +4003,178 @@ static void test_rbtree_usage(CuTest *tc) {
             cur = *link;
         }
         rbt_link_node(&t->bydue, parent, link);
-        rbt_insert_color_cached(&t->bydue, &bydue, leftmost);
+        rbt_insert_color_cached(&bydue, &t->bydue, leftmost);
     }
 
     /* 2. 字符串键集合：精确查找、重名被拒（返回已有的那个）、前缀区间按字典序遍历 */
-    t = _rbu_name_find("user.bob", &byname);
+    t = _rbu_name_find(&byname, "user.bob");
     CuAssertTrue(tc, NULL != t && 50 == t->score);
-    CuAssertTrue(tc, NULL == _rbu_name_find("user.dave", &byname));
+    CuAssertTrue(tc, NULL == _rbu_name_find(&byname, "user.dave"));
     memset(&twin, 0, sizeof(twin));
     twin.name = "job.clean";
-    CuAssertTrue(tc, _rbu_name_find("job.clean", &byname) == _rbu_name_find_add(&twin, &byname));
+    CuAssertTrue(tc, _rbu_name_find(&byname, "job.clean") == _rbu_name_insert(&byname, &twin));
+    CuAssertTrue(tc, !_rbu_name_linked(&twin));
     cnt = 0;
-    for (t = _rbu_name_lower_bound("job.", &byname); NULL != t && 0 == strncmp(t->name, "job.", 4);
-         t = _rbu_name_entry(rbt_next(&t->byname))) {
+    for (t = _rbu_name_lower_bound(&byname, "job."); NULL != t && 0 == strncmp(t->name, "job.", 4);
+         t = _rbu_name_next(t)) {
         cnt++;
     }
     CuAssertIntEquals(tc, 4, cnt);// job.backup job.clean job.index job.report
-    CuAssertStrEquals(tc, "job.backup", _rbu_name_lower_bound("job.", &byname)->name);
+    CuAssertStrEquals(tc, "job.backup", _rbu_name_lower_bound(&byname, "job.")->name);
 
-    /* 3. 有序集合：分数区间 [30, 70)、同分按 id、倒序取前三、改分数 = 先删再插 */
+    /* 3. 组合键有序集合：分数区间 [30, 70)、同分按 id、倒序取前三、改分数 = 先删再插 */
     cnt = 0;
     sum = 0;
-    stop = _rbu_score_lower_bound(70, &byscore);
-    for (t = _rbu_score_lower_bound(30, &byscore); t != stop; t = _rbu_score_entry(rbt_next(&t->byscore))) {
+    stop = _rbu_score_lower_bound(&byscore, (_rbu_sk){ 70, 0 });
+    for (t = _rbu_score_lower_bound(&byscore, (_rbu_sk){ 30, 0 }); t != stop; t = _rbu_score_next(t)) {
         cnt++;
         sum += t->score;
     }
     CuAssertIntEquals(tc, 4, cnt);// backup(30) clean(30) bob(50) carol(50)
     CuAssertTrue(tc, 160 == sum);
-    t = _rbu_score_find_first(90, &byscore);
+    t = _rbu_score_lower_bound(&byscore, (_rbu_sk){ 90, 0 });
     CuAssertStrEquals(tc, "job.report", t->name);// 同分 90：id 小的在前
-    t = _rbu_score_next_match(90, t);
+    t = _rbu_score_next(t);
     CuAssertStrEquals(tc, "job.index", t->name);
-    CuAssertTrue(tc, NULL == _rbu_score_next_match(90, t));
-    t = _rbu_score_entry(rbt_last(&byscore));// 倒序：分数最高的三个
+    CuAssertTrue(tc, NULL == _rbu_score_next(t));
+    t = _rbu_score_last(&byscore);// 倒序：分数最高的三个
     CuAssertStrEquals(tc, "job.index", t->name);
-    t = _rbu_score_entry(rbt_prev(&t->byscore));
+    t = _rbu_score_prev(t);
     CuAssertStrEquals(tc, "job.report", t->name);
-    t = _rbu_score_entry(rbt_prev(&t->byscore));
+    t = _rbu_score_prev(t);
     CuAssertStrEquals(tc, "user.alice", t->name);
-    t = _rbu_name_find("sys.gc", &byname);// 改分数 10 → 95：参与比较的字段不能原地改，先删再插
-    rbt_erase(&t->byscore, &byscore);
+    t = _rbu_name_find(&byname, "sys.gc");// 改分数 10 → 95：参与比较的字段不能原地改，先删再插
+    _rbu_score_erase(&byscore, t);
     t->score = 95;
-    CuAssertTrue(tc, NULL == _rbu_score_find_add(t, &byscore));
-    CuAssertTrue(tc, t == _rbu_score_entry(rbt_last(&byscore)));
-    CuAssertTrue(tc, t == _rbu_score_upper_bound(90, &byscore));
-    _rbt_check_shape(tc, &byscore, n);
+    CuAssertTrue(tc, NULL == _rbu_score_insert(&byscore, t));
+    CuAssertTrue(tc, t == _rbu_score_last(&byscore));
+    CuAssertTrue(tc, t == _rbu_score_upper_bound(&byscore, (_rbu_sk){ 90, UINT32_MAX }));
+    _rbt_check_shape(tc, &byscore.root.rbt_root, n);
 
-    /* 4. 定时器队列：取消一个；同一时刻按加入顺序；推进时钟到 250，按到期先后逐个触发 */
-    t = _rbu_name_find("user.bob", &byname);
-    rbt_erase_cached(&t->bydue, &bydue);
-    RBT_CLEAR_NODE(&t->bydue);// 清掉节点，之后能用 RBT_EMPTY_NODE 判断它已不在队列
+    /* 4. 定时器队列（底层接口）：取消一个；同一时刻按加入顺序；推进时钟到 250，按到期先后逐个触发 */
+    t = _rbu_name_find(&byname, "user.bob");
+    rbt_erase_cached(&bydue, &t->bydue);
+    RBT_CLEAR_NODE(&t->bydue);// 底层 erase 不清节点，要靠 RBT_EMPTY_NODE 判断就自己清
     CuAssertTrue(tc, RBT_EMPTY_NODE(&t->bydue));
     cnt = 0;
-    rbt_for_each(t, 100, &bydue.rbt_root, _rbu_due) {
-        CuAssertStrEquals(tc, same_due[cnt], t->name);
+    for (cur = rbt_first_cached(&bydue); NULL != cur && 100 == UPCAST(cur, _rbu, bydue)->due; cur = rbt_next(cur)) {
+        CuAssertStrEquals(tc, same_due[cnt], UPCAST(cur, _rbu, bydue)->name);
         cnt++;
     }
     CuAssertIntEquals(tc, 3, cnt);
     now = 250;
     last = 0;
     cnt = 0;
-    while (NULL != (t = _rbu_due_entry(rbt_first_cached(&bydue))) && t->due <= now) {
-        rbt_erase_cached(&t->bydue, &bydue);
-        RBT_CLEAR_NODE(&t->bydue);
+    while (NULL != (cur = rbt_first_cached(&bydue)) && (t = UPCAST(cur, _rbu, bydue))->due <= now) {
+        rbt_erase_cached(&bydue, cur);
+        RBT_CLEAR_NODE(cur);
         CuAssertTrue(tc, t->due >= last);
         last = t->due;
         t->fired = 1;
         cnt++;
     }
     CuAssertIntEquals(tc, 5, cnt);// 100×3、200、250；bob 已取消
-    CuAssertStrEquals(tc, "job.backup", _rbu_due_entry(rbt_first_cached(&bydue))->name);
-    CuAssertTrue(tc, 1 == _rbu_name_find("user.carol", &byname)->fired);
-    CuAssertTrue(tc, 0 == _rbu_name_find("user.bob", &byname)->fired);
+    CuAssertStrEquals(tc, "job.backup", UPCAST(rbt_first_cached(&bydue), _rbu, bydue)->name);
+    CuAssertTrue(tc, 1 == _rbu_name_find(&byname, "user.carol")->fired);
+    CuAssertTrue(tc, 0 == _rbu_name_find(&byname, "user.bob")->fired);
 
-    /* 5. 销毁：byname 挂着全部元素，后序遍历边走边释放；走完三棵树的根都要重置 */
+    /* 5. 销毁：byname 挂着全部元素，clear 回调里释放；另两棵树的元素已随之释放，只重置根 */
     cnt = 0;
-    rbt_postorder_for_each_entry_safe(pos, nxt, &byname, _rbu_name) {
-        FREE(pos);
-        cnt++;
-    }
-    rbt_root_init(&byname);
-    rbt_root_init(&byscore);
-    rbt_root_cached_init(&bydue);
+    _rbu_name_clear(&byname, _rbu_free_cb, &cnt);
     CuAssertIntEquals(tc, 8, cnt);
+    CuAssertTrue(tc, _rbu_name_empty(&byname));
+    _rbu_score_init(&byscore);
+    rbt_root_cached_init(&bydue);
 }
 
-/* 中序遍历中先取 next 再删当前：隔一个删一个，再删光 */
+/* rbt_foreach_safe 里删当前元素：隔一个删一个，再删光 */
 static void test_rbtree_iter_erase(CuTest *tc) {
     _rbe es[200];
-    rbt_root root = RBT_ROOT_INIT;
+    _rbk t;
     _rbe *e;
     _rbe *next;
-    uint32_t i, k, n = 200;
+    uint32_t i, k;
+    _rbk_init(&t);
     for (i = 0; i < 200; i++) {
         es[i].key = (int32_t)i;
         es[i].seq = i;
-        _rbk_add(&es[i], &root);
+        _rbk_insert(&t, &es[i]);
     }
     k = 0;
-    for (e = _rbk_entry(rbt_first(&root)); NULL != e; e = next) {
-        next = _rbk_entry(rbt_next(&e->bykey));
+    rbt_foreach_safe(&t, _rbk, e, next) {
         if (0 == (k++ & 1)) {
-            rbt_erase(&e->bykey, &root);
-            n--;
+            _rbk_erase(&t, e);
         }
     }
-    CuAssertTrue(tc, 100 == n);
-    _rbk_check(tc, &root, n);
-    for (e = _rbk_entry(rbt_first(&root)); NULL != e; e = _rbk_entry(rbt_next(&e->bykey))) {
+    _rbk_check(tc, &t, 100);
+    rbt_foreach(&t, _rbk, e) {
         CuAssertTrue(tc, 1 == (e->key & 1));
     }
-    for (e = _rbk_entry(rbt_first(&root)); NULL != e; e = next) {
-        next = _rbk_entry(rbt_next(&e->bykey));
-        rbt_erase(&e->bykey, &root);
-        n--;
+    rbt_foreach_safe(&t, _rbk, e, next) {
+        _rbk_erase(&t, e);
     }
-    CuAssertTrue(tc, 0 == n);
-    CuAssertTrue(tc, RBT_EMPTY_ROOT(&root));
+    _rbk_check(tc, &t, 0);
+    for (i = 0; i < 200; i++) {
+        CuAssertTrue(tc, !_rbk_linked(&es[i]));
+    }
 }
 
-/* 同一元素挂两棵树：从一棵删掉不影响另一棵；节点先填 0xFF 再插（无需预清零），删后不清直接重插 */
+/* 同一元素挂两棵树：从一棵删掉不影响另一棵；节点先填 0xFF 再插（插入不要求预清零），删后直接重插 */
 static void test_rbtree_two_trees(CuTest *tc) {
     _rbe es[128];
-    rbt_root bykey = RBT_ROOT_INIT;
-    rbt_root byid = RBT_ROOT_INIT;
+    _rbk bykey;
+    _rbi byid;
     uint32_t i;
+    _rbk_init(&bykey);
+    _rbi_init(&byid);
     memset(es, 0xFF, sizeof(es));
     for (i = 0; i < 128; i++) {
         es[i].key = (int32_t)(i % 15);// 模数取奇数：同一个键下奇偶下标都有，删偶数再重插后新旧同段
         es[i].seq = i;
         es[i].id = 127 - i;
-        _rbk_add(&es[i], &bykey);
-        CuAssertTrue(tc, NULL == _rbi_find_add(&es[i], &byid));
+        _rbk_insert(&bykey, &es[i]);
+        CuAssertTrue(tc, NULL == _rbi_insert(&byid, &es[i]));
     }
     _rbk_check(tc, &bykey, 128);
     _rbi_check(tc, &byid, 128);
     for (i = 0; i < 128; i += 2) {
-        rbt_erase(&es[i].bykey, &bykey);
+        _rbk_erase(&bykey, &es[i]);
+        CuAssertTrue(tc, !_rbk_linked(&es[i]) && _rbi_linked(&es[i]));
     }
     _rbk_check(tc, &bykey, 64);
     _rbi_check(tc, &byid, 128);
     for (i = 0; i < 128; i++) {
-        CuAssertTrue(tc, &es[i] == _rbi_find(es[i].id, &byid));
+        CuAssertTrue(tc, &es[i] == _rbi_find(&byid, es[i].id));
     }
     /* 重插的 seq 比在树的都大，相等段仍按插入序 */
     for (i = 0; i < 128; i += 2) {
         es[i].seq = 1000 + i;
-        _rbk_add(&es[i], &bykey);
+        _rbk_insert(&bykey, &es[i]);
     }
     _rbk_check(tc, &bykey, 128);
 }
 
-/* cached：add_cached 的返回值、最左始终等于 rbt_first、erase_cached 的两种返回值、replace_cached 换最左 */
+/* 底层接口：手写下降循环插到 cached 树，相等往右；返回是否成为新最左 */
+static int32_t _rbt_ll_add(rbt_root_cached *rc, _rbe *e) {
+    rbt_node **link = &rc->rbt_root.rbt_node;
+    rbt_node *parent = NULL;
+    rbt_node *cur = *link;
+    int32_t leftmost = 1;
+    while (NULL != cur) {
+        parent = cur;
+        if (e->key < _rbk_entry(cur)->key) {
+            link = &cur->rbt_left;
+        } else {
+            link = &cur->rbt_right;
+            leftmost = 0;
+        }
+        cur = *link;
+    }
+    rbt_link_node(&e->bykey, parent, link);
+    rbt_insert_color_cached(rc, &e->bykey, leftmost);
+    return leftmost;
+}
+/* 底层 cached 系列：最左始终等于 rbt_first、erase_cached 的两种返回值、replace_cached 换最左 */
 static void test_rbtree_cached(CuTest *tc) {
     _rbe es[101];
     _rbe rep;
@@ -4108,6 +4183,7 @@ static void test_rbtree_cached(CuTest *tc) {
     rbt_root_cached rc = RBT_ROOT_CACHED_INIT;
     test_rng rng;
     _rbe *ret;
+    _rbe *mid = NULL;
     rbt_node *lm;
     int32_t minkey = INT32_MAX;
     uint32_t i, n = 0;
@@ -4119,8 +4195,10 @@ static void test_rbtree_cached(CuTest *tc) {
     for (i = 0; i < 100; i++) {
         es[i].key = keys[i];
         es[i].seq = i;
-        ret = _rbk_add_cached(&es[i], &rc);
-        CuAssertTrue(tc, (keys[i] < minkey) ? (&es[i] == ret) : (NULL == ret));
+        if (50 == keys[i]) {
+            mid = &es[i];
+        }
+        CuAssertTrue(tc, (keys[i] < minkey) == _rbt_ll_add(&rc, &es[i]));
         if (keys[i] < minkey) {
             minkey = keys[i];
         }
@@ -4130,25 +4208,25 @@ static void test_rbtree_cached(CuTest *tc) {
     /* 与最小键相等的排在它后面，不算新最左 */
     es[100].key = minkey;
     es[100].seq = 100;
-    CuAssertTrue(tc, NULL == _rbk_add_cached(&es[100], &rc));
+    CuAssertTrue(tc, 0 == _rbt_ll_add(&rc, &es[100]));
     n++;
     CuAssertTrue(tc, rc.rbt_leftmost != &es[100].bykey);
-    _rbk_check(tc, &rc.rbt_root, n);
+    _rbk_check_root(tc, &rc.rbt_root, n);
     /* 删的不是最左：返回 NULL，缓存不变 */
     lm = rc.rbt_leftmost;
-    CuAssertTrue(tc, NULL == rbt_erase_cached(&_rbk_find(50, &rc.rbt_root)->bykey, &rc));
+    CuAssertTrue(tc, NULL == rbt_erase_cached(&rc, &mid->bykey));
     n--;
     CuAssertTrue(tc, lm == rc.rbt_leftmost);
-    /* 最左换成等键的新节点（新节点不需初始化），旧节点不会被清空 */
+    /* 最左换成等键的新节点（新节点不需初始化），底层 replace 不清旧节点 */
     memset(&rep, 0xCC, sizeof(rep));
     ret = _rbk_entry(rc.rbt_leftmost);
     rep.key = ret->key;
     rep.seq = ret->seq;
-    rbt_replace_node_cached(&ret->bykey, &rep.bykey, &rc);
+    rbt_replace_node_cached(&rc, &ret->bykey, &rep.bykey);
     CuAssertTrue(tc, &rep.bykey == rc.rbt_leftmost);
     CuAssertTrue(tc, &rep.bykey == rbt_first(&rc.rbt_root));
     CuAssertTrue(tc, !RBT_EMPTY_NODE(&ret->bykey));
-    _rbk_check(tc, &rc.rbt_root, n);
+    _rbk_check_root(tc, &rc.rbt_root, n);
     /* 换掉非最左的最大元素（必是某个节点的右孩子）：最左缓存不变 */
     lm = rc.rbt_leftmost;
     ret = _rbk_entry(rbt_last(&rc.rbt_root));
@@ -4156,15 +4234,15 @@ static void test_rbtree_cached(CuTest *tc) {
     memset(&rep2, 0xCC, sizeof(rep2));
     rep2.key = ret->key;
     rep2.seq = ret->seq;
-    rbt_replace_node_cached(&ret->bykey, &rep2.bykey, &rc);
+    rbt_replace_node_cached(&rc, &ret->bykey, &rep2.bykey);
     CuAssertTrue(tc, lm == rc.rbt_leftmost);
     CuAssertTrue(tc, &rep2.bykey == rbt_last(&rc.rbt_root));
-    _rbk_check(tc, &rc.rbt_root, n);
+    _rbk_check_root(tc, &rc.rbt_root, n);
     /* 反复删最左：每次返回新的最左，删空时返回 NULL */
     while (NULL != rc.rbt_leftmost) {
         lm = rc.rbt_leftmost;
         ret = _rbk_entry(rbt_next(lm));
-        CuAssertTrue(tc, (NULL == ret ? NULL : &ret->bykey) == rbt_erase_cached(lm, &rc));
+        CuAssertTrue(tc, (NULL == ret ? NULL : &ret->bykey) == rbt_erase_cached(&rc, lm));
         n--;
         CuAssertTrue(tc, rc.rbt_leftmost == rbt_first(&rc.rbt_root));
     }
@@ -4172,43 +4250,58 @@ static void test_rbtree_cached(CuTest *tc) {
     CuAssertTrue(tc, RBT_EMPTY_ROOT(&rc.rbt_root));
 }
 
-/* replace：换掉有两个孩子的根，新节点接管位置与颜色，按键找到的是新节点，旧节点不在遍历里 */
+/* replace：换掉有两个孩子的根，新节点接管位置与颜色，按键找到的是新节点，旧节点清零且不在遍历里；换最左时缓存跟着换 */
 static void test_rbtree_replace(CuTest *tc) {
     _rbe es[50];
     _rbe rep;
+    _rbe rep2;
     _rbe *victim;
     _rbe *e;
-    rbt_root root = RBT_ROOT_INIT;
+    _rbk t;
     uint32_t i;
+    _rbk_init(&t);
     for (i = 0; i < 50; i++) {
         es[i].key = (int32_t)i;
         es[i].seq = i;
-        _rbk_add(&es[i], &root);
+        _rbk_insert(&t, &es[i]);
     }
-    victim = _rbk_entry(root.rbt_node);
+    victim = _rbk_entry(t.root.rbt_root.rbt_node);
     CuAssertTrue(tc, NULL != victim->bykey.rbt_left && NULL != victim->bykey.rbt_right);
     memset(&rep, 0xCC, sizeof(rep));
     rep.key = victim->key;
     rep.seq = victim->seq;
-    rbt_replace_node(&victim->bykey, &rep.bykey, &root);
-    CuAssertTrue(tc, &rep.bykey == root.rbt_node);
-    CuAssertTrue(tc, &rep == _rbk_find(rep.key, &root));
-    _rbk_check(tc, &root, 50);
-    for (e = _rbk_entry(rbt_first(&root)); NULL != e; e = _rbk_entry(rbt_next(&e->bykey))) {
+    _rbk_replace(&t, victim, &rep);
+    CuAssertTrue(tc, &rep.bykey == t.root.rbt_root.rbt_node);
+    CuAssertTrue(tc, &rep == _rbk_find(&t, rep.key));
+    CuAssertTrue(tc, !_rbk_linked(victim));
+    _rbk_check(tc, &t, 50);
+    rbt_foreach(&t, _rbk, e) {
         CuAssertTrue(tc, e != victim);
     }
-    CuAssertTrue(tc, !RBT_EMPTY_NODE(&victim->bykey));
+    victim = _rbk_first(&t);
+    memset(&rep2, 0xCC, sizeof(rep2));
+    rep2.key = victim->key;
+    rep2.seq = victim->seq;
+    _rbk_replace(&t, victim, &rep2);
+    CuAssertTrue(tc, &rep2 == _rbk_first(&t));
+    _rbk_check(tc, &t, 50);
 }
 
-/* 后序：每个节点恰好一次、孩子先于父；每个元素单独 MALLOC，边走边 FREE，走完重置 root */
+/* clear 回调：数一下并释放元素 */
+static void _rbe_free_cb(_rbe *e, void *ud) {
+    (*(uint32_t *)ud)++;
+    FREE(e);
+}
+/* 底层后序遍历：每个节点恰好一次、孩子先于父；clear(NULL) 把节点全部清零；元素单独 MALLOC 时在 clear 回调里释放 */
 static void test_rbtree_postorder(CuTest *tc) {
     _rbe es[255];
     uint8_t seen[255];
     int32_t keys[255];
-    rbt_root root = RBT_ROOT_INIT;
+    _rbk t;
     test_rng rng;
+    rbt_node *pn;
+    rbt_node *nn;
     _rbe *pos;
-    _rbe *n;
     _rbe *c;
     uint32_t i, cnt;
     for (i = 0; i < 255; i++) {
@@ -4216,14 +4309,17 @@ static void test_rbtree_postorder(CuTest *tc) {
     }
     test_rng_init(&rng, 11);
     test_shuffle(&rng, keys, 255);
+    _rbk_init(&t);
     for (i = 0; i < 255; i++) {
         es[i].key = keys[i];
         es[i].seq = i;
-        _rbk_add(&es[i], &root);
+        _rbk_insert(&t, &es[i]);
     }
     memset(seen, 0, sizeof(seen));
     cnt = 0;
-    rbt_postorder_for_each_entry_safe(pos, n, &root, _rbk) {
+    for (pn = rbt_first_postorder(&t.root.rbt_root); NULL != pn; pn = nn) {
+        nn = rbt_next_postorder(pn);
+        pos = _rbk_entry(pn);
         CuAssertTrue(tc, 0 == seen[pos->key]);
         c = _rbk_entry(pos->bykey.rbt_left);
         CuAssertTrue(tc, NULL == c || 1 == seen[c->key]);
@@ -4233,21 +4329,52 @@ static void test_rbtree_postorder(CuTest *tc) {
         cnt++;
     }
     CuAssertTrue(tc, 255 == cnt);
+    _rbk_clear(&t, NULL, NULL);
+    _rbk_check(tc, &t, 0);
+    for (i = 0; i < 255; i++) {
+        CuAssertTrue(tc, !_rbk_linked(&es[i]));
+    }
 
-    rbt_root_init(&root);
     for (i = 0; i < 255; i++) {
         MALLOC(pos, sizeof(_rbe));
         pos->key = keys[i];
         pos->seq = i;
-        _rbk_add(pos, &root);
+        _rbk_insert(&t, pos);
     }
     cnt = 0;
-    rbt_postorder_for_each_entry_safe(pos, n, &root, _rbk) {
-        FREE(pos);
-        cnt++;
-    }
-    rbt_root_init(&root);
+    _rbk_clear(&t, _rbe_free_cb, &cnt);
     CuAssertTrue(tc, 255 == cnt);
+    _rbk_check(tc, &t, 0);
+}
+
+/* pop_first 按键从小到大、同键按插入序摘；extract 按键摘；摘下的节点都清零，可以直接重插 */
+static void test_rbtree_pop_extract(CuTest *tc) {
+    _rbe es[64];
+    _rbk t;
+    _rbe *e;
+    int32_t prevkey = INT32_MIN;
+    uint32_t prevseq = 0, i, n = 0;
+    _rbk_init(&t);
+    for (i = 0; i < 64; i++) {
+        es[i].key = (int32_t)((i * 29) % 16);// 每个键 4 个；键 7 最早的两个是 es[3]、es[19]
+        es[i].seq = i;
+        _rbk_insert(&t, &es[i]);
+    }
+    CuAssertTrue(tc, &es[3] == _rbk_extract(&t, 7) && !_rbk_linked(&es[3]));
+    CuAssertTrue(tc, &es[19] == _rbk_extract(&t, 7));
+    CuAssertTrue(tc, 2 == _rbk_count(&t, 7));
+    es[3].seq = 100;// 重插：seq 最大，排在同键末尾
+    _rbk_insert(&t, &es[3]);
+    _rbk_check(tc, &t, 63);
+    while (NULL != (e = _rbk_pop_first(&t))) {
+        CuAssertTrue(tc, !_rbk_linked(e));
+        CuAssertTrue(tc, e->key > prevkey || (e->key == prevkey && e->seq > prevseq));
+        prevkey = e->key;
+        prevseq = e->seq;
+        n++;
+    }
+    CuAssertTrue(tc, 63 == n);
+    _rbk_check(tc, &t, 0);
 }
 
 /* churn 基准：按 (key, seq) 排序后与中序序列逐个比指针 */
@@ -4259,11 +4386,11 @@ static int _rbe_ref_cmp(const void *a, const void *b) {
     }
     return (x->seq > y->seq) - (x->seq < y->seq);
 }
-static void _rbt_churn_cmp(CuTest *tc, const rbt_root *root, _rbe **live, uint32_t n) {
+static void _rbt_churn_cmp(CuTest *tc, _rbk *t, _rbe **live, uint32_t n) {
     _rbe *e;
     uint32_t i = 0;
     qsort(live, n, sizeof(_rbe *), _rbe_ref_cmp);
-    for (e = _rbk_entry(rbt_first(root)); NULL != e; e = _rbk_entry(rbt_next(&e->bykey))) {
+    rbt_foreach(t, _rbk, e) {
         CuAssertTrue(tc, i < n && live[i] == e);
         i++;
     }
@@ -4290,7 +4417,7 @@ static void _rbt_churn(CuTest *tc, uint32_t cap, uint32_t fill, uint32_t steps, 
     _rbe **live;
     _rbe **freel;
     _rbe *e;
-    rbt_root root = RBT_ROOT_INIT;
+    _rbk t;
     test_rng rng;
     uint32_t nlive = 0, nfree = cap, seq = 0, i, j, step;
     MALLOC(pool, sizeof(_rbe) * cap);
@@ -4299,29 +4426,30 @@ static void _rbt_churn(CuTest *tc, uint32_t cap, uint32_t fill, uint32_t steps, 
     for (i = 0; i < cap; i++) {
         freel[i] = &pool[i];
     }
+    _rbk_init(&t);
     test_rng_init(&rng, seed);
     for (step = 0; step < steps; step++) {
         if (nlive < fill || 0 == nlive || (0 != nfree && 0 == (test_rng_next(&rng) & 1))) {
             e = freel[--nfree];
             e->key = (int32_t)(test_rng_next(&rng) % (cap / 4 + 1));
             e->seq = seq++;
-            _rbk_add(e, &root);
+            _rbk_insert(&t, e);
             live[nlive++] = e;
         } else {
             j = (uint32_t)(test_rng_next(&rng) % nlive);
             e = live[j];
             shapes[_rbt_shape_of(&e->bykey)]++;
-            rbt_erase(&e->bykey, &root);
+            _rbk_erase(&t, e);
             live[j] = live[--nlive];
             freel[nfree++] = e;
         }
         if (0 == step % every) {
-            _rbk_check(tc, &root, nlive);
-            _rbt_churn_cmp(tc, &root, live, nlive);
+            _rbk_check(tc, &t, nlive);
+            _rbt_churn_cmp(tc, &t, live, nlive);
         }
     }
-    _rbk_check(tc, &root, nlive);
-    _rbt_churn_cmp(tc, &root, live, nlive);
+    _rbk_check(tc, &t, nlive);
+    _rbt_churn_cmp(tc, &t, live, nlive);
     FREE(freel);
     FREE(live);
     FREE(pool);
@@ -4335,6 +4463,379 @@ static void test_rbtree_churn(CuTest *tc) {
     for (i = 0; i < 6; i++) {
         CuAssertTrue(tc, shapes[i] > 0);
     }
+}
+
+/* =======================================================================
+ * rbtset —— rbtree 的持有型有序集合
+ * ======================================================================= */
+
+/* 中序：key 非降，相等段 val 递增（MULTI 下 val 即插入序；UNIQUE 下 key 严格递增）；反向遍历对称；
+   first 与最左缓存一致；n 为期望元素数 */
+static void _rsm_check(CuTest *tc, _rsm *s, uint32_t n) {
+    _rse *e;
+    _rse *prev = NULL;
+    uint32_t cnt = 0;
+    _rbt_check_shape(tc, &s->tree.root.rbt_root, n);
+    CuAssertTrue(tc, n == _rsm_size(s));
+    CuAssertTrue(tc, s->nfree <= s->maxfree);
+    CuAssertTrue(tc, _rsm_first(s) == _rsm_item(_rsm_rb_entry(rbt_first(&s->tree.root.rbt_root))));
+    for (e = _rsm_first(s); NULL != e; e = _rsm_next(e)) {
+        if (NULL != prev) {
+            CuAssertTrue(tc, prev->key < e->key || (prev->key == e->key && prev->val < e->val));
+        }
+        prev = e;
+        cnt++;
+    }
+    CuAssertTrue(tc, n == cnt);
+    CuAssertTrue(tc, prev == _rsm_last(s));
+    for (e = _rsm_last(s); NULL != e; e = _rsm_prev(e)) {
+        cnt--;
+    }
+    CuAssertTrue(tc, 0 == cnt);
+}
+static void test_rbtset_unique(CuTest *tc) {
+    _rsu s;
+    _rse item;
+    _rse key;
+    _rse *e;
+    _rse *p;
+    _rse *ret;
+    _rse *next;
+    int32_t found;
+    int32_t i;
+    _rsu_init(&s, NULL);
+    // 空集合：查找、删除、边界、遍历都安全返回
+    key.key = 1;
+    CuAssertTrue(tc, 0 == _rsu_size(&s));
+    CuAssertTrue(tc, NULL == _rsu_first(&s) && NULL == _rsu_last(&s));
+    CuAssertTrue(tc, NULL == _rsu_find(&s, key.key) && 0 == _rsu_contains(&s, key.key) && 0 == _rsu_count(&s, key.key));
+    CuAssertTrue(tc, NULL == _rsu_extract(&s, key.key));
+    CuAssertTrue(tc, NULL == _rsu_lower_bound(&s, key.key) && NULL == _rsu_upper_bound(&s, key.key));
+    // 乱序插入 0..99（37 与 100 互素，i*37%100 走遍全部）
+    for (i = 0; i < 100; i++) {
+        item.key = i * 37 % 100;
+        item.val = item.key * 10;
+        CuAssertTrue(tc, NULL == _rsu_insert_or_assign(&s, &item));
+    }
+    CuAssertTrue(tc, 100 == _rsu_size(&s));
+    _rbt_check_shape(tc, &s.tree.root.rbt_root, 100);
+    for (i = 0, e = _rsu_first(&s); NULL != e; i++, e = _rsu_next(e)) {
+        CuAssertTrue(tc, i == e->key);
+    }
+    CuAssertTrue(tc, 100 == i);
+    for (i = 99, e = _rsu_last(&s); NULL != e; i--, e = _rsu_prev(e)) {
+        CuAssertTrue(tc, i == e->key);
+    }
+    // 覆盖：返回旧值副本，元素地址不变，个数不变
+    key.key = 42;
+    p = _rsu_find(&s, key.key);
+    CuAssertTrue(tc, NULL != p && 420 == p->val && 1 == _rsu_count(&s, key.key));
+    item.key = 42;
+    item.val = -1;
+    ret = _rsu_insert_or_assign(&s, &item);
+    CuAssertTrue(tc, &s.spare == ret && 42 == ret->key && 420 == ret->val);
+    CuAssertTrue(tc, p == _rsu_find(&s, key.key) && -1 == p->val && 100 == _rsu_size(&s));
+    // 副本原样传回 insert_or_assign：节点拿回 420，副本变成 -1
+    ret = _rsu_insert_or_assign(&s, &s.spare);
+    CuAssertTrue(tc, &s.spare == ret && -1 == ret->val && 420 == p->val);
+    // insert：已有不覆盖；没有才插入；found 可传 NULL
+    item.val = 7;
+    CuAssertTrue(tc, p == _rsu_insert(&s, &item, &found) && 1 == found && 420 == p->val);
+    item.key = 1000;
+    item.val = 5;
+    e = _rsu_insert(&s, &item, &found);
+    CuAssertTrue(tc, 0 == found && 1000 == e->key && 5 == e->val && 101 == _rsu_size(&s));
+    key.key = 1000;
+    CuAssertTrue(tc, e == _rsu_find(&s, key.key) && e == _rsu_last(&s));
+    CuAssertTrue(tc, e == _rsu_insert(&s, &item, NULL));
+    // extract：交出副本，找不到返回 NULL
+    ret = _rsu_extract(&s, key.key);
+    CuAssertTrue(tc, &s.spare == ret && 1000 == ret->key && 5 == ret->val && 100 == _rsu_size(&s));
+    CuAssertTrue(tc, 0 == _rsu_contains(&s, key.key) && NULL == _rsu_extract(&s, key.key));
+    // 副本当 key 用
+    CuAssertTrue(tc, NULL == _rsu_find(&s, s.spare.key));
+    // 遍历中删：先取 next 再 erase，删掉全部奇数键和 0（最左变动走缓存）
+    for (e = _rsu_first(&s); NULL != e; e = next) {
+        next = _rsu_next(e);
+        if (0 != (e->key & 1) || 0 == e->key) {
+            ret = _rsu_erase(&s, e);
+            CuAssertTrue(tc, &s.spare == ret);
+        }
+    }
+    CuAssertTrue(tc, 49 == _rsu_size(&s));
+    _rbt_check_shape(tc, &s.tree.root.rbt_root, 49);
+    CuAssertTrue(tc, 2 == _rsu_first(&s)->key && 98 == _rsu_last(&s)->key);
+    CuAssertTrue(tc, _rsu_first(&s) == _rsu_item(_rsu_rb_entry(rbt_first(&s.tree.root.rbt_root))));
+    // 边界
+    key.key = 3;
+    CuAssertTrue(tc, 4 == _rsu_lower_bound(&s, key.key)->key && 4 == _rsu_upper_bound(&s, key.key)->key);
+    key.key = 4;
+    CuAssertTrue(tc, 4 == _rsu_lower_bound(&s, key.key)->key && 6 == _rsu_upper_bound(&s, key.key)->key);
+    key.key = -5;
+    CuAssertTrue(tc, 2 == _rsu_lower_bound(&s, key.key)->key);
+    key.key = 98;
+    CuAssertTrue(tc, 98 == _rsu_lower_bound(&s, key.key)->key && NULL == _rsu_upper_bound(&s, key.key));
+    key.key = 99;
+    CuAssertTrue(tc, NULL == _rsu_lower_bound(&s, key.key));
+    // free 后可直接再用
+    _rsu_free(&s);
+    CuAssertTrue(tc, 0 == _rsu_size(&s) && NULL == _rsu_first(&s) && RBT_EMPTY_ROOT(&s.tree.root.rbt_root));
+    item.key = 1;
+    CuAssertTrue(tc, NULL == _rsu_insert_or_assign(&s, &item) && 1 == _rsu_size(&s));
+    _rsu_free(&s);
+}
+static void test_rbtset_multi(CuTest *tc) {
+    _rsm s;
+    _rse item;
+    _rse key;
+    _rse *e;
+    _rse *nx;
+    _rse *ret;
+    int32_t found;
+    int32_t i;
+    int32_t n;
+    _rsm_init(&s, NULL);
+    // 0..5 各 10 个，val 为插入序
+    for (i = 0; i < 60; i++) {
+        item.key = i % 6;
+        item.val = i;
+        CuAssertTrue(tc, NULL == _rsm_insert_or_assign(&s, &item));
+    }
+    _rsm_check(tc, &s, 60);
+    key.key = 3;
+    CuAssertTrue(tc, 10 == _rsm_count(&s, key.key) && 1 == _rsm_contains(&s, key.key));
+    CuAssertTrue(tc, 3 == _rsm_find(&s, key.key)->val);// 取最早插入的
+    key.key = 9;
+    CuAssertTrue(tc, 0 == _rsm_count(&s, key.key) && NULL == _rsm_find(&s, key.key));
+    // 重复键总是插入，排到相等段末尾
+    item.key = 3;
+    item.val = 100;
+    CuAssertTrue(tc, NULL == _rsm_insert_or_assign(&s, &item));
+    key.key = 3;
+    CuAssertTrue(tc, 11 == _rsm_count(&s, key.key));
+    CuAssertTrue(tc, 100 == _rsm_prev(_rsm_upper_bound(&s, key.key))->val);
+    _rsm_check(tc, &s, 61);
+    // extract 删最早插入的那个
+    ret = _rsm_extract(&s, key.key);
+    CuAssertTrue(tc, &s.spare == ret && 3 == ret->key && 3 == ret->val);
+    CuAssertTrue(tc, 9 == _rsm_find(&s, key.key)->val && 10 == _rsm_count(&s, key.key));
+    // erase 删相等段中间指定的一个（key 2 的 val 20）
+    key.key = 2;
+    for (e = _rsm_find(&s, key.key); NULL != e && 20 != e->val; e = _rsm_next(e)) {
+    }
+    CuAssertTrue(tc, NULL != e && 2 == e->key);
+    ret = _rsm_erase(&s, e);
+    CuAssertTrue(tc, 20 == ret->val && 9 == _rsm_count(&s, key.key));
+    for (i = 2, e = _rsm_find(&s, key.key); NULL != e && 2 == e->key; e = _rsm_next(e), i += 6) {
+        if (20 == i) {
+            i += 6;
+        }
+        CuAssertTrue(tc, i == e->val);
+    }
+    CuAssertTrue(tc, 62 == i);
+    _rsm_check(tc, &s, 59);
+    // MULTI 下 insert 同 std::multiset：已有相等的也照插，排到相等段末尾；再按指针删掉
+    item.key = 4;
+    item.val = 999;
+    e = _rsm_insert(&s, &item, &found);
+    CuAssertTrue(tc, 0 == found && 4 == e->key && 999 == e->val && 60 == _rsm_size(&s));
+    key.key = 4;
+    CuAssertTrue(tc, e == _rsm_prev(_rsm_upper_bound(&s, key.key)) && 11 == _rsm_count(&s, key.key));
+    CuAssertTrue(tc, 999 == _rsm_erase(&s, e)->val && 59 == _rsm_size(&s));
+    // 边界：lower 停在相等段首，upper 越过整段
+    key.key = 4;
+    CuAssertTrue(tc, 4 == _rsm_lower_bound(&s, key.key)->val && 5 == _rsm_upper_bound(&s, key.key)->val);
+    // 按键删光一段
+    key.key = 5;
+    for (n = 0; NULL != _rsm_extract(&s, key.key); n++) {
+    }
+    CuAssertTrue(tc, 10 == n && 0 == _rsm_count(&s, key.key));
+    key.key = 4;
+    CuAssertTrue(tc, 4 == _rsm_last(&s)->key && NULL == _rsm_upper_bound(&s, key.key));
+    _rsm_check(tc, &s, 49);
+    // rbtree.h 的三个遍历宏同样适用于 rbtset 类型：全遍历、按键遍历（插入序）、遍历中删掉 key 3 的全部 10 个
+    n = 0;
+    rbt_foreach(&s, _rsm, e) {
+        n++;
+    }
+    CuAssertTrue(tc, 49 == n);
+    key.key = 3;
+    n = 0;
+    i = -1;
+    rbt_foreach_equal(&s, _rsm, key.key, e) {
+        CuAssertTrue(tc, 3 == e->key && e->val > i);
+        i = e->val;
+        n++;
+    }
+    CuAssertTrue(tc, 10 == n && (size_t)n == _rsm_count(&s, key.key));
+    rbt_foreach_safe(&s, _rsm, e, nx) {
+        if (3 == e->key) {
+            _rsm_erase(&s, e);
+        }
+    }
+    CuAssertTrue(tc, 0 == _rsm_count(&s, key.key));
+    _rsm_check(tc, &s, 39);
+    _rsm_free(&s);
+    _rsm_check(tc, &s, 0);
+}
+static int32_t _rss_freed;
+static void _rss_elfree(void *item) {
+    _rss *e = (_rss *)item;
+    FREE(e->name);
+    _rss_freed++;
+}
+static void test_rbtset_elfree(CuTest *tc) {
+    _rss_set s;
+    _rss item;
+    _rss *ret;
+    int32_t i;
+    _rss_freed = 0;
+    _rss_set_init(&s, _rss_elfree);
+    for (i = 0; i < 10; i++) {
+        item.key = i;
+        MALLOC(item.name, _RSS_NAME_LEN);
+        SNPRINTF(item.name, _RSS_NAME_LEN, "n%d", i);
+        CuAssertTrue(tc, NULL == _rss_set_insert_or_assign(&s, &item));
+    }
+    // 覆盖交出的旧值归调用方释放，不走 elfree
+    item.key = 3;
+    MALLOC(item.name, _RSS_NAME_LEN);
+    SNPRINTF(item.name, _RSS_NAME_LEN, "new3");
+    ret = _rss_set_insert_or_assign(&s, &item);
+    CuAssertStrEquals(tc, "n3", ret->name);
+    FREE(ret->name);
+    CuAssertStrEquals(tc, "new3", _rss_set_find(&s, item.key)->name);
+    // 删除交出的副本同样归调用方
+    item.key = 4;
+    ret = _rss_set_extract(&s, item.key);
+    CuAssertStrEquals(tc, "n4", ret->name);
+    CuAssertTrue(tc, 0 == _rss_freed);
+    _rss_elfree(ret);
+    CuAssertTrue(tc, 1 == _rss_freed);
+    // free 对剩下的 9 个逐个调 elfree
+    _rss_set_free(&s);
+    CuAssertTrue(tc, 10 == _rss_freed && 0 == _rss_set_size(&s));
+}
+/* 随机增删与参照计数比对：MULTI 下 extract 删最早的、erase 删相等段最后一个，每 64 步全量校验；
+   maxfree 为池上限，0 即不开池 */
+static void _rsm_churn(CuTest *tc, size_t maxfree) {
+    enum { NKEY = 64, STEPS = 20000 };
+    _rsm s;
+    _rse item;
+    _rse key;
+    _rse *e;
+    _rse *ret;
+    test_rng rng;
+    uint32_t cnt[NKEY];
+    uint32_t total = 0;
+    int32_t seq = 0;
+    int32_t want;
+    int32_t step;
+    uint64_t r;
+    ZERO(cnt, sizeof(cnt));
+    test_rng_init(&rng, 20260925ULL);
+    _rsm_init(&s, NULL);
+    _rsm_set_pool(&s, maxfree);
+    for (step = 1; step <= STEPS; step++) {
+        r = test_rng_next(&rng);
+        key.key = (int32_t)(r % NKEY);
+        switch ((r >> 32) % 4) {
+        case 0:
+        case 1:
+            item.key = key.key;
+            item.val = seq++;
+            CuAssertTrue(tc, NULL == _rsm_insert_or_assign(&s, &item));
+            cnt[key.key]++;
+            total++;
+            break;
+        case 2:
+            e = _rsm_find(&s, key.key);
+            want = (NULL == e) ? -1 : e->val;
+            ret = _rsm_extract(&s, key.key);
+            CuAssertTrue(tc, (NULL == ret) == (0 == cnt[key.key]));
+            if (NULL != ret) {
+                CuAssertTrue(tc, want == ret->val);
+                cnt[key.key]--;
+                total--;
+            }
+            break;
+        default:
+            e = _rsm_upper_bound(&s, key.key);
+            e = (NULL == e) ? _rsm_last(&s) : _rsm_prev(e);
+            if (NULL != e && key.key == e->key) {
+                want = e->val;
+                CuAssertTrue(tc, want == _rsm_erase(&s, e)->val);
+                cnt[key.key]--;
+                total--;
+            } else {
+                CuAssertTrue(tc, 0 == cnt[key.key]);
+            }
+            break;
+        }
+        if (0 == step % 64) {
+            _rsm_check(tc, &s, total);
+            for (key.key = 0; key.key < NKEY; key.key++) {
+                CuAssertTrue(tc, cnt[key.key] == _rsm_count(&s, key.key));
+            }
+        }
+    }
+    _rsm_free(&s);
+    CuAssertTrue(tc, 0 == s.nfree && maxfree == s.maxfree);
+}
+static void test_rbtset_churn(CuTest *tc) {
+    _rsm_churn(tc, 0);
+    _rsm_churn(tc, 16);
+}
+/* 节点池：默认不留；开池后删除入池、插入先取刚放回的（地址相同即复用）；上限生效；调低上限与 free 当场释放。
+   池里的节点有没有真的释放，由收尾的 not free 检查兜底 */
+static void test_rbtset_pool(CuTest *tc) {
+    _rsu s;
+    _rse item;
+    _rse *e[10];
+    int32_t i;
+    // 默认关：删除直接释放
+    _rsu_init(&s, NULL);
+    CuAssertTrue(tc, 0 == s.maxfree && 0 == s.nfree);
+    item.key = 1;
+    item.val = 1;
+    _rsu_insert_or_assign(&s, &item);
+    _rsu_extract(&s, item.key);
+    CuAssertTrue(tc, 0 == s.nfree && NULL == s.freelist);
+    // 开池，上限 4：删 6 个，前 4 个入池，后 2 个释放
+    _rsu_set_pool(&s, 4);
+    for (i = 0; i < 10; i++) {
+        item.key = i;
+        item.val = i;
+        _rsu_insert_or_assign(&s, &item);
+    }
+    for (i = 0; i < 10; i++) {
+        item.key = i;
+        e[i] = _rsu_find(&s, item.key);
+    }
+    for (i = 0; i < 6; i++) {
+        _rsu_erase(&s, e[i]);
+        CuAssertTrue(tc, s.nfree == (size_t)(i < 4 ? i + 1 : 4));
+    }
+    // 插入先取最后放回的那个：依次拿到 e[3]、e[2]
+    item.key = 100;
+    item.val = 100;
+    _rsu_insert_or_assign(&s, &item);
+    CuAssertTrue(tc, e[3] == _rsu_find(&s, item.key) && 100 == e[3]->val && 3 == s.nfree);
+    item.key = 101;
+    _rsu_insert_or_assign(&s, &item);
+    CuAssertTrue(tc, e[2] == _rsu_find(&s, item.key) && 2 == s.nfree);
+    _rbt_check_shape(tc, &s.tree.root.rbt_root, 6);
+    // 调低上限：多出来的当场释放
+    _rsu_set_pool(&s, 1);
+    CuAssertTrue(tc, 1 == s.nfree && 1 == s.maxfree);
+    // free 连池一起释放，上限保留；之后再用照常
+    _rsu_free(&s);
+    CuAssertTrue(tc, 0 == s.nfree && NULL == s.freelist && 1 == s.maxfree && 0 == _rsu_size(&s));
+    _rsu_insert_or_assign(&s, &item);
+    _rsu_extract(&s, item.key);
+    CuAssertTrue(tc, 1 == s.nfree);
+    _rsu_free(&s);
+    CuAssertTrue(tc, 0 == s.nfree);
 }
 
 void test_containers(CuSuite *suite) {
@@ -4404,7 +4905,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_rbtree_empty);
     SUITE_ADD_TEST(suite, test_rbtree_patterns);
     SUITE_ADD_TEST(suite, test_rbtree_dup);
-    SUITE_ADD_TEST(suite, test_rbtree_find_add);
+    SUITE_ADD_TEST(suite, test_rbtree_unique);
     SUITE_ADD_TEST(suite, test_rbtree_bound);
     SUITE_ADD_TEST(suite, test_rbtree_usage);
     SUITE_ADD_TEST(suite, test_rbtree_iter_erase);
@@ -4412,7 +4913,13 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_rbtree_cached);
     SUITE_ADD_TEST(suite, test_rbtree_replace);
     SUITE_ADD_TEST(suite, test_rbtree_postorder);
+    SUITE_ADD_TEST(suite, test_rbtree_pop_extract);
     SUITE_ADD_TEST(suite, test_rbtree_churn);
+    SUITE_ADD_TEST(suite, test_rbtset_unique);
+    SUITE_ADD_TEST(suite, test_rbtset_multi);
+    SUITE_ADD_TEST(suite, test_rbtset_elfree);
+    SUITE_ADD_TEST(suite, test_rbtset_churn);
+    SUITE_ADD_TEST(suite, test_rbtset_pool);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_queue_lazy_trypush);
     SUITE_ADD_TEST(suite, test_queue_array_free_resets);

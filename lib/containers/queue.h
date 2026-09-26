@@ -27,15 +27,21 @@ typedef struct { uint32_t size; uint32_t maxsize; uint32_t mask; uint32_t offset
 static inline uint32_t name##_wrap(const name *qu, uint32_t off) {              \
     return off & qu->mask;                                                      \
 }                                                                               \
+/* 元素数 */                                                                    \
 static inline uint32_t name##_size(const name *qu) { return qu->size; }         \
+/* 容量(延迟分配态为 0) */                                                      \
 static inline uint32_t name##_capacity(const name *qu) { return qu->maxsize; }   \
+/* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *qu) { (void)qu; return (uint32_t)sizeof(T); } \
+/* 是否为空 */                                                                  \
 static inline int32_t name##_empty(const name *qu) { return 0 == qu->size; }    \
 /* 延迟分配态(maxsize 为 0)报未满——那是"还没申请",不是"装不下" */                 \
 static inline int32_t name##_full(const name *qu) {                             \
     return 0 != qu->maxsize && qu->size >= qu->maxsize;                         \
 }                                                                               \
+/* 清空,不释放缓冲 */                                                           \
 static inline void name##_clear(name *qu) { qu->size = 0; qu->offset = 0; }     \
+/* 容量取不小于 maxsize 的 2 的幂(至少 2);0 为延迟分配,首次 push 才申请 */      \
 static inline void name##_init(name *qu, uint32_t maxsize) {                    \
     ASSERTAB(maxsize < UINT32_MAX, "queue maxsize overflow.");                  \
     qu->offset = 0;                                                             \
@@ -52,6 +58,7 @@ static inline void name##_init(name *qu, uint32_t maxsize) {                    
     ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)qu->maxsize, "byte size overflow.");\
     MALLOC(qu->ptr, sizeof(T) * (size_t)qu->maxsize);                           \
 }                                                                               \
+/* 释放缓冲并复位,之后可直接再 push */                                          \
 static inline void name##_free(name *qu) {                                      \
     FREE(qu->ptr);                                                              \
     /* 长度字段一并复位:只置空 ptr 会留下 size < maxsize 的不一致态,               \
@@ -88,12 +95,14 @@ static inline void name##_resize(name *qu, uint32_t maxsize) {                  
     qu->maxsize = maxsize;                                                      \
     qu->mask = maxsize - 1;                                                     \
 }                                                                               \
+/* 从队头数第 pos 个,越界返回 NULL */                                           \
 static inline T *name##_at(name *qu, uint32_t pos) {                            \
     if (pos >= qu->size) {                                                      \
         return NULL;                                                            \
     }                                                                           \
     return qu->ptr + name##_wrap(qu, qu->offset + pos);                         \
 }                                                                               \
+/* 队头元素,空队返回 NULL,不出队 */                                             \
 static inline T *name##_peek(name *qu) {                                        \
     return (0 == qu->size) ? NULL : qu->ptr + qu->offset;                       \
 }                                                                               \
@@ -102,6 +111,7 @@ NOINLINE static UNUSED void name##_grow(name *qu) {                            \
     ASSERTAB(qu->maxsize <= UINT32_MAX / 2, "queue maxsize overflow.");        \
     name##_resize(qu, qu->maxsize * 2);                                        \
 }                                                                              \
+/* 队尾追加,满了自动倍增 */                                                     \
 static inline void name##_push(name *qu, T const *elem) {                      \
     if (qu->size == qu->maxsize) {                                              \
         name##_grow(qu);                                                       \
@@ -117,6 +127,7 @@ static inline int32_t name##_trypush(name *qu, T const *elem) {                \
     name##_push(qu, elem);                                                      \
     return ERR_OK;                                                              \
 }                                                                               \
+/* 弹出队头,空队返回 NULL */                                                    \
 static inline T *name##_pop(name *qu) {                                         \
     T *elem;                                                                    \
     if (0 == qu->size) {                                                        \

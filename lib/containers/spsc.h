@@ -35,6 +35,7 @@ typedef struct {                                                                
     CACHELINE_ALIGN atomic_t deq;      /* 消费者独占写 */                        \
     uint32_t enq_cache;                /* 消费者私有:生产者下标的缓存 */          \
 } name;                                                                         \
+/* 容量取不小于 capacity 的 2 的幂(至少 2),0 取 SPSC_DEFAULT_CAP;一次分配,之后不扩容 */ \
 static inline void name##_init(name *q, uint32_t capacity) {                    \
     ASSERTAB(NULL != q, ERRSTR_NULLP);                                          \
     q->capacity = (0 == capacity) ? SPSC_DEFAULT_CAP                            \
@@ -47,6 +48,7 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
     q->deq_cache = 0;                                                           \
     q->enq_cache = 0;                                                           \
 }                                                                               \
+/* 释放缓冲;q 为 NULL 时不做事 */                                               \
 static inline void name##_free(name *q) {                                       \
     if (NULL == q) {                                                            \
         return;                                                                 \
@@ -55,13 +57,16 @@ static inline void name##_free(name *q) {                                       
     q->capacity = 0;                                                            \
     q->mask = 0;                                                                \
 }                                                                               \
+/* 容量 */                                                                      \
 static inline uint32_t name##_capacity(const name *q) { return q->capacity; }   \
+/* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *q) { (void)q; return (uint32_t)sizeof(T); }\
 /* 保守快照:先读 deq 后读 enq,只会把空报成非空,不会把非空报成空 */                \
 static inline uint32_t name##_size(name *q) {                                   \
     uint32_t deq = (uint32_t)ATOMIC_GET(&q->deq);                               \
     return (uint32_t)ATOMIC_GET(&q->enq) - deq;                                 \
 }                                                                               \
+/* 是否为空,口径同 size */                                                      \
 static inline int32_t name##_empty(name *q) {                                   \
     uint32_t deq = (uint32_t)ATOMIC_GET(&q->deq);                               \
     return (uint32_t)ATOMIC_GET(&q->enq) == deq;                                \

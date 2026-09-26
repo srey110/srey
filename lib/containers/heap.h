@@ -24,6 +24,7 @@
 // IDXFIELD 元素内回指下标的字段名，LT(a,b) 比较宏（a、b 均为 T *）
 #define HEAP_DECL(name, T, IDXFIELD, LT)                                       \
 typedef struct { T **p; uint32_t size; uint32_t maxsize; } name;                \
+/* 0 为延迟分配,首次 insert 才申请 */                                           \
 static inline void name##_init(name *h, uint32_t maxsize) {                     \
     h->size = 0;                                                                \
     h->maxsize = maxsize;                                                       \
@@ -32,14 +33,19 @@ static inline void name##_init(name *h, uint32_t maxsize) {                     
         MALLOC(h->p, sizeof(T *) * maxsize);                                    \
     }                                                                           \
 }                                                                               \
+/* 释放元素指针数组并复位;元素归调用方,free 不碰 */                             \
 static inline void name##_free(name *h) {                                       \
     FREE(h->p);                                                                 \
     h->size = 0;                                                                \
     h->maxsize = 0;                                                             \
 }                                                                               \
+/* 元素数 */                                                                    \
 static inline uint32_t name##_size(const name *h) { return h->size; }           \
+/* 容量(延迟分配态为 0) */                                                      \
 static inline uint32_t name##_capacity(const name *h) { return h->maxsize; }    \
+/* 是否为空 */                                                                  \
 static inline int32_t name##_empty(const name *h) { return 0 == h->size; }      \
+/* 堆顶(按 LT 最优先的那个),空堆返回 NULL,不出堆 */                             \
 static inline T *name##_min(const name *h) {                                    \
     return (0 == h->size) ? NULL : h->p[0];                                     \
 }                                                                               \
@@ -81,6 +87,7 @@ static inline void name##_sift_down(name *h, uint32_t pos) {                    
     h->p[pos] = e;                                                              \
     e->IDXFIELD = pos;                                                          \
 }                                                                               \
+/* 入堆,满了自动倍增 */                                                         \
 static inline void name##_insert(name *h, T *elem) {                            \
     if (h->size == h->maxsize) {                                                \
         ASSERTAB(h->maxsize <= UINT32_MAX / 2, "heap maxsize overflow.");       \
@@ -92,6 +99,7 @@ static inline void name##_insert(name *h, T *elem) {                            
     h->size++;                                                                  \
     name##_sift_up(h, h->size - 1);                                             \
 }                                                                               \
+/* 按引用删除任意元素,不校验元素是否在堆内 */                                   \
 static inline void name##_remove(name *h, T *elem) {                            \
     uint32_t pos = elem->IDXFIELD;                                              \
     T *last;                                                                    \
@@ -109,6 +117,7 @@ static inline void name##_remove(name *h, T *elem) {                            
         name##_sift_down(h, pos);                                               \
     }                                                                           \
 }                                                                               \
+/* 删掉堆顶,空堆不做事 */                                                       \
 static inline void name##_dequeue(name *h) {                                    \
     if (0 != h->size) {                                                         \
         name##_remove(h, h->p[0]);                                              \

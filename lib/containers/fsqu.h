@@ -48,6 +48,7 @@ typedef struct {                                                                
     name##_ovf qu;      /* 快路径满时的溢出层 */                                  \
     name##_fast fast;   /* 快路径(无锁环)，满则降级到 qu */                        \
 } name;                                                                         \
+/* capacity 为快路径容量,0 取 FSQU_DEFAULT_CAP;溢出层首次溢出才分配 */          \
 static inline void name##_init(name *fsqu, uint32_t capacity) {                 \
     capacity = (0 == capacity) ? FSQU_DEFAULT_CAP : capacity;                    \
     ATOMIC_SET_RELAXED(&fsqu->novf, 0);                                                 \
@@ -56,6 +57,7 @@ static inline void name##_init(name *fsqu, uint32_t capacity) {                 
     name##_ovf_init(&fsqu->qu, 0);                                              \
     name##_fast_init(&fsqu->fast, capacity);                                    \
 }                                                                               \
+/* 释放快路径、溢出层与锁 */                                                    \
 static inline void name##_free(name *fsqu) {                                    \
     name##_fast_free(&fsqu->fast);                                              \
     name##_ovf_free(&fsqu->qu);                                                 \
@@ -82,6 +84,7 @@ static inline void name##_push(name *fsqu, T const *data) {                     
     name##_ovf_push(&fsqu->qu, data);                                          \
     spin_unlock(&fsqu->lck);                                                    \
 }                                                                               \
+/* 批量入队,语义同 push */                                                      \
 static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) {\
     uint32_t i = 0;                                                             \
     uint32_t nleft;                                                             \
@@ -158,6 +161,7 @@ static inline int32_t name##_pop_impl(name *fsqu, T *out, int32_t sc) {         
 static inline int32_t name##_pop(name *fsqu, T *out) {                          \
     return name##_pop_impl(fsqu, out, 0);                                       \
 }                                                                               \
+/* 批量出队(多消费者安全),返回取到的个数 */                                     \
 static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     \
     return name##_pop_batch_impl(fsqu, out, max, 0);                            \
 }                                                                               \
@@ -165,6 +169,7 @@ static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     
 static inline int32_t name##_pop_sc(name *fsqu, T *out) {                       \
     return name##_pop_impl(fsqu, out, 1);                                       \
 }                                                                               \
+/* 批量出队(单消费者),返回取到的个数 */                                         \
 static inline uint32_t name##_pop_sc_batch(name *fsqu, T *out, uint32_t max) {  \
     return name##_pop_batch_impl(fsqu, out, max, 1);                            \
 }                                                                               \
@@ -172,6 +177,7 @@ static inline uint32_t name##_pop_sc_batch(name *fsqu, T *out, uint32_t max) {  
 static inline uint32_t name##_size(name *fsqu) {                                \
     return name##_fast_size(&fsqu->fast) + (uint32_t)ATOMIC_GET(&fsqu->novf);   \
 }                                                                               \
+/* 是否为空,含溢出层,口径同 size */                                             \
 static inline int32_t name##_empty(name *fsqu) {                                \
     /* 读序与 size 一致(先快路径后 novf),短路排在常见的"有活"那一侧 */            \
     if (!name##_fast_empty(&fsqu->fast)) {                                      \
@@ -179,8 +185,9 @@ static inline int32_t name##_empty(name *fsqu) {                                
     }                                                                           \
     return 0 == ATOMIC_GET(&fsqu->novf);                                        \
 }                                                                               \
-/* 快路径固定容量(降级阈值,不含无界的溢出层) */                                    \
+/* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *fsqu) { (void)fsqu; return (uint32_t)sizeof(T); }\
+/* 快路径固定容量(降级阈值,不含无界的溢出层) */                                    \
 static inline uint32_t name##_capacity(name *fsqu) {                            \
     return name##_fast_capacity(&fsqu->fast);                                   \
 }
@@ -190,15 +197,18 @@ typedef struct {                                                                
     spin_ctx lck;       /* 保护 qu */                                            \
     name##_ovf qu;      /* 主队列 */                                             \
 } name;                                                                         \
+/* capacity 为那一条队列的初始容量,0 取 FSQU_DEFAULT_CAP */                     \
 static inline void name##_init(name *fsqu, uint32_t capacity) {                 \
     capacity = (0 == capacity) ? FSQU_DEFAULT_CAP : capacity;                    \
     spin_init(&fsqu->lck, SPIN_CNT);                                            \
     name##_ovf_init(&fsqu->qu, capacity);                                       \
 }                                                                               \
+/* 释放队列与锁 */                                                              \
 static inline void name##_free(name *fsqu) {                                    \
     name##_ovf_free(&fsqu->qu);                                                 \
     spin_free(&fsqu->lck);                                                      \
 }                                                                               \
+/* 满了返回 ERR_FAILED,不扩容 */                                                \
 static inline int32_t name##_trypush(name *fsqu, T const *data) {               \
     int32_t rtn;                                                                \
     spin_lock(&fsqu->lck);                                                      \
@@ -206,11 +216,13 @@ static inline int32_t name##_trypush(name *fsqu, T const *data) {               
     spin_unlock(&fsqu->lck);                                                    \
     return rtn;                                                                 \
 }                                                                               \
+/* 入队,满了自动扩容,永不失败 */                                                \
 static inline void name##_push(name *fsqu, T const *data) {                     \
     spin_lock(&fsqu->lck);                                                      \
     name##_ovf_push(&fsqu->qu, data);                                          \
     spin_unlock(&fsqu->lck);                                                    \
 }                                                                               \
+/* 批量入队,语义同 push */                                                      \
 static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) {\
     uint32_t i;                                                                 \
     spin_lock(&fsqu->lck);                                                      \
@@ -232,6 +244,7 @@ static inline int32_t name##_pop(name *fsqu, T *out) {                          
     spin_unlock(&fsqu->lck);                                                    \
     return ERR_OK;                                                              \
 }                                                                               \
+/* 批量出队,返回取到的个数 */                                                   \
 static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     \
     uint32_t n;                                                                 \
     spin_lock(&fsqu->lck);                                                      \
@@ -239,12 +252,15 @@ static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     
     spin_unlock(&fsqu->lck);                                                    \
     return n;                                                                   \
 }                                                                               \
+/* 同 pop,本后端没有单消费者优化 */                                             \
 static inline int32_t name##_pop_sc(name *fsqu, T *out) {                       \
     return name##_pop(fsqu, out);                                               \
 }                                                                               \
+/* 同 pop_batch */                                                              \
 static inline uint32_t name##_pop_sc_batch(name *fsqu, T *out, uint32_t max) {  \
     return name##_pop_batch(fsqu, out, max);                                    \
 }                                                                               \
+/* 元素数 */                                                                    \
 static inline uint32_t name##_size(name *fsqu) {                                \
     uint32_t n;                                                                 \
     spin_lock(&fsqu->lck);                                                      \
@@ -252,6 +268,7 @@ static inline uint32_t name##_size(name *fsqu) {                                
     spin_unlock(&fsqu->lck);                                                    \
     return n;                                                                   \
 }                                                                               \
+/* 是否为空 */                                                                  \
 static inline int32_t name##_empty(name *fsqu) {                                \
     int32_t rtn;                                                                \
     spin_lock(&fsqu->lck);                                                      \
@@ -259,7 +276,9 @@ static inline int32_t name##_empty(name *fsqu) {                                
     spin_unlock(&fsqu->lck);                                                    \
     return rtn;                                                                 \
 }                                                                               \
+/* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *fsqu) { (void)fsqu; return (uint32_t)sizeof(T); }\
+/* 队列当前容量,push 扩容后会变大 */                                            \
 static inline uint32_t name##_capacity(name *fsqu) {                            \
     uint32_t cap;                                                               \
     spin_lock(&fsqu->lck);                                                      \

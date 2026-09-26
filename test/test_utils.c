@@ -4276,6 +4276,550 @@ static void test_buffer_fastpath_equiv(CuTest *tc) {
     buffer_free(&two);
 }
 
+/* =======================================================================
+ * mmap —— 文件 / 匿名 / 命名共享内存映射
+ * ======================================================================= */
+// 临时文件放在可执行文件目录下
+static void _mm_path(char *buf, size_t lens, const char *name) {
+    SNPRINTF(buf, lens, "%s%s%s", procpath(), PATH_SEPARATORSTR, name);
+}
+// 写一个第 i 字节为 i % 251 的文件
+static int32_t _mm_mkfile(const char *path, size_t lens) {
+    FILE *fp = fopen_cloexec(path, "wb");
+    size_t i;
+    char c;
+    if (NULL == fp) {
+        return ERR_FAILED;
+    }
+    for (i = 0; i < lens; i++) {
+        c = (char)(i % 251);
+        fwrite(&c, 1, 1, fp);
+    }
+    fclose(fp);
+    return ERR_OK;
+}
+static int32_t _mm_pattern_ok(const char *p, uint64_t foff, size_t lens) {
+    size_t i;
+    for (i = 0; i < lens; i++) {
+        if ((char)((foff + i) % 251) != p[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+// 读写往返：新建、写满、刷盘、关掉后只读打开读回；EXCL 撞已存在文件失败
+static void test_mmap_rdwr_roundtrip(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t i, n = 3 * mmap_granularity() + 123;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_rw.tmp");
+    remove(path);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE | MMAP_EXCL;
+    o.size = n;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertTrue(tc, NULL != mm.addr && n == mm.size);
+    for (i = 0; i < n; i++) {
+        mm.addr[i] = (char)(i % 251);
+    }
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, 0, 0, 0));
+    CuAssertTrue(tc, (int64_t)n == mmap_filesize(&mm));
+    mmap_close(&mm);
+    CuAssertTrue(tc, (int64_t)n == filesize(path));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = n == mm.size && _mm_pattern_ok(mm.addr, 0, n);
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE | MMAP_EXCL;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, &o));
+    CuAssertTrue(tc, NULL == mm.addr);
+    mmap_close(&mm);
+    remove(path);
+}
+// 空文件与越界参数：size 为 0 不建映射；只读越过文件末尾、只读预留、非法 mode 都失败；全零 ctx 与重复 close 安全
+static void test_mmap_empty_bounds(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t n = 1000;
+    ZERO(&mm, sizeof(mm));
+    mmap_close(&mm);
+    _mm_path(path, sizeof(path), "test_mmap_empty.tmp");
+    remove(path);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertTrue(tc, NULL == mm.addr && 0 == mm.size);
+    mmap_close(&mm);
+    mmap_close(&mm);
+    CuAssertTrue(tc, 0 == filesize(path));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertTrue(tc, NULL == mm.addr && 0 == mm.size);
+    mmap_close(&mm);
+    CuAssertIntEquals(tc, ERR_OK, _mm_mkfile(path, n));
+    o.size = n + 1;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, &o));
+    o.size = 0;
+    o.off = n + 1;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, &o));
+    o.off = n;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertTrue(tc, NULL == mm.addr && 0 == mm.size);
+    mmap_close(&mm);
+    o.off = 0;
+    o.size = 10;
+    o.cap = 100;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, &o));
+    o.mode = MMAP_COPY;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, &o));
+    o.mode = 7;
+    o.cap = 0;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, &o));
+    remove(path);
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, &o));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_open(&mm, path, NULL));
+}
+// 任意偏移：内部向下对齐，addr 已加回偏差
+static void test_mmap_offset(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t gran = mmap_granularity(), n = 3 * gran + 500;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_off.tmp");
+    CuAssertIntEquals(tc, ERR_OK, _mm_mkfile(path, n));
+    ZERO(&o, sizeof(o));
+    o.off = gran + 7;
+    o.size = 1000;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = 1000 == mm.size && 7 == mm.delta && _mm_pattern_ok(mm.addr, gran + 7, 1000);
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    o.mode = MMAP_COPY;
+    o.off = 5;
+    o.size = 0;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = n - 5 == mm.size && _mm_pattern_ok(mm.addr, 5, n - 5);
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    remove(path);
+}
+// 预留容量：cap 内变长变短 addr 不变；close 时文件截回 off + size
+static void test_mmap_cap_grow(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t gran = mmap_granularity();
+    char *a0;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_cap.tmp");
+    remove(path);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE;
+    o.size = 100;
+    o.cap = 16 * gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    a0 = mm.addr;
+    CuAssertTrue(tc, NULL != a0 && 100 == mm.size && 16 * gran == mm.cap);
+    CuAssertTrue(tc, mmap_filesize(&mm) >= 100);
+    a0[0] = 'A';
+    a0[99] = 'B';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 8 * gran + 3, 0));
+    CuAssertTrue(tc, a0 == mm.addr && 16 * gran == mm.cap);
+    CuAssertTrue(tc, mmap_filesize(&mm) >= (int64_t)(8 * gran + 3));
+    a0[8 * gran + 2] = 'C';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 2 * gran, 0));
+    CuAssertTrue(tc, a0 == mm.addr && 2 * gran == mm.size);
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 5 * gran, 0));
+    CuAssertTrue(tc, a0 == mm.addr);
+    a0[5 * gran - 1] = 'D';
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, 0, 0, 0));
+    mmap_close(&mm);
+    CuAssertTrue(tc, (int64_t)(5 * gran) == filesize(path));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = 5 * gran == mm.size && 'A' == mm.addr[0] && 'B' == mm.addr[99] && 'D' == mm.addr[5 * gran - 1];
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    remove(path);
+}
+// 窗口映射：只截本映射扩出来的部分，映射前已有的数据不动
+static void test_mmap_window_keep(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t gran = mmap_granularity(), n = 4 * gran;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_win.tmp");
+    CuAssertIntEquals(tc, ERR_OK, _mm_mkfile(path, n));
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.off = gran;
+    o.size = gran;
+    o.cap = 4 * gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 3 * gran, 0));
+    mm.addr[3 * gran - 1] = 'Z';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, gran / 2, 0));
+    mmap_close(&mm);
+    CuAssertTrue(tc, (int64_t)n == filesize(path));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = n == mm.size && _mm_pattern_ok(mm.addr, 0, n - 1) && 'Z' == mm.addr[n - 1];
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    remove(path);
+}
+// close 只截本映射自己扩出来的部分：别人先写长的那段（含数据）留着
+static void test_mmap_trim_others(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx a, b;
+    mmap_opts o;
+    size_t gran = mmap_granularity();
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_trim.tmp");
+    remove(path);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE;
+    o.size = gran;
+    o.cap = 16 * gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&a, path, &o));
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&b, path, &o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&b, 4 * gran, 0));
+    b.addr[3 * gran] = 'B';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&a, 8 * gran, 0));
+    a.addr[7 * gran] = 'A';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&a, gran / 2, 0));
+    mmap_close(&b);
+    mmap_close(&a);
+    CuAssertTrue(tc, (int64_t)(4 * gran) == filesize(path));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&a, path, &o));
+    ok = 4 * gran == a.size && 'B' == a.addr[3 * gran];
+    mmap_close(&a);
+    CuAssertTrue(tc, ok);
+    remove(path);
+}
+// 超出 cap：按新 cap 重映射，内容不丢；之后在新 cap 内 addr 不变
+static void test_mmap_beyond_cap(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t gran = mmap_granularity();
+    char *a1;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_regrow.tmp");
+    remove(path);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE;
+    o.size = gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertTrue(tc, gran == mm.cap);
+    mm.addr[0] = 'H';
+    mm.addr[gran - 1] = 'T';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 4 * gran + 10, 0));
+    CuAssertTrue(tc, 4 * gran + 10 == mm.size && 4 * gran + 10 == mm.cap);
+    CuAssertTrue(tc, 'H' == mm.addr[0] && 'T' == mm.addr[gran - 1]);
+    mm.addr[4 * gran + 9] = 'E';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 4 * gran + 10, 16 * gran));
+    CuAssertTrue(tc, 16 * gran == mm.cap && 'H' == mm.addr[0] && 'E' == mm.addr[4 * gran + 9]);
+    a1 = mm.addr;
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 10 * gran, 0));
+    CuAssertTrue(tc, a1 == mm.addr);
+    mm.addr[10 * gran - 1] = 'F';
+    mmap_close(&mm);
+    CuAssertTrue(tc, (int64_t)(10 * gran) == filesize(path));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = 'H' == mm.addr[0] && 'T' == mm.addr[gran - 1] && 'E' == mm.addr[4 * gran + 9] && 'F' == mm.addr[10 * gran - 1];
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    remove(path);
+}
+// 只读 / 写时复制映射跟上别人写长的文件；写时复制的私有改动重映射后仍在；越过文件末尾或要求预留都失败
+static void test_mmap_rdonly_follow(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx w, r, c;
+    mmap_opts o;
+    size_t gran = mmap_granularity();
+    _mm_path(path, sizeof(path), "test_mmap_follow.tmp");
+    remove(path);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE;
+    o.size = gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&w, path, &o));
+    w.addr[1] = 'w';
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&r, path, &o));
+    CuAssertTrue(tc, gran == r.size && 'w' == r.addr[1]);
+    o.mode = MMAP_COPY;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&c, path, &o));
+    c.addr[1] = 'q';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&w, 3 * gran, 0));
+    w.addr[2 * gran + 5] = 'n';
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&c, 3 * gran, 0));
+    CuAssertTrue(tc, 'q' == c.addr[1] && 'n' == c.addr[2 * gran + 5] && 'w' == w.addr[1]);
+    mmap_close(&c);
+    CuAssertTrue(tc, (int64_t)(3 * gran) == mmap_filesize(&r));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&r, 3 * gran, 0));
+    CuAssertTrue(tc, 'n' == r.addr[2 * gran + 5] && 'w' == r.addr[1]);
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_resize(&r, 3 * gran + 1, 0));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_resize(&r, gran, 2 * gran));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&r, gran, 0));
+    CuAssertTrue(tc, 'w' == r.addr[1]);
+    mmap_close(&r);
+    mmap_close(&w);
+    remove(path);
+}
+// 写时复制与保护属性：改动不进文件；只读映射不能改成可写
+static void test_mmap_copy_protect(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t gran = mmap_granularity(), n = 2 * gran;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_cow.tmp");
+    CuAssertIntEquals(tc, ERR_OK, _mm_mkfile(path, n));
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_COPY;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    mm.addr[0] = 'Z';
+    CuAssertIntEquals(tc, ERR_OK, mmap_protect(&mm, 0, gran, MMAP_RDONLY));
+    CuAssertIntEquals(tc, ERR_OK, mmap_protect(&mm, 0, gran, MMAP_RDWR));
+    mm.addr[1] = 'Y';
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_protect(&mm, 0, 0, MMAP_COPY));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_protect(&mm, n, 1, MMAP_RDONLY));
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, 0, 0, 0));
+    mmap_close(&mm);
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = _mm_pattern_ok(mm.addr, 0, n);
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_protect(&mm, 0, 0, MMAP_RDWR));
+    CuAssertIntEquals(tc, ERR_OK, mmap_protect(&mm, 0, 0, MMAP_RDONLY));
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    o.mode = MMAP_RDWR;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_protect(&mm, 10, 100, MMAP_RDONLY));
+    CuAssertIntEquals(tc, ERR_OK, mmap_protect(&mm, 10, 100, MMAP_RDWR));
+    mm.addr[20] = 'P';
+    mmap_close(&mm);
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = 'P' == mm.addr[20];
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    remove(path);
+}
+// 按句柄映射：内部复制句柄，调用方关掉自己的之后刷盘、变长照样可用
+static void test_mmap_map_fd(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t n = 5000;
+    mmap_fd fd;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_fd.tmp");
+    CuAssertIntEquals(tc, ERR_OK, _mm_mkfile(path, n));
+#ifdef OS_WIN
+    fd = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    CuAssertTrue(tc, INVALID_HANDLE_VALUE != fd);
+#else
+    fd = open(path, O_RDWR | O_CLOEXEC);
+    CuAssertTrue(tc, -1 != fd);
+#endif
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    ok = ERR_OK == mmap_map_fd(&mm, fd, &o);
+#ifdef OS_WIN
+    CloseHandle(fd);
+#else
+    close(fd);
+#endif
+    CuAssertTrue(tc, ok);
+    CuAssertTrue(tc, n == mm.size && _mm_pattern_ok(mm.addr, 0, n));
+    mm.addr[0] = 'F';
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, 0, 0, 0));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 2 * n, 0));
+    mm.addr[2 * n - 1] = 'L';
+    mmap_close(&mm);
+    CuAssertTrue(tc, (int64_t)(2 * n) == filesize(path));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = 'F' == mm.addr[0] && 'L' == mm.addr[2 * n - 1];
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+#ifdef OS_WIN
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_map_fd(&mm, INVALID_HANDLE_VALUE, &o));
+#else
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_map_fd(&mm, -1, &o));
+#endif
+    remove(path);
+}
+// 匿名映射：初始为 0；cap 内变长变短 addr 不变，还回去再提交的部分重新为 0；超出 cap 拷过去
+static void test_mmap_anon(CuTest *tc) {
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t i, gran = mmap_granularity();
+    char *a0;
+    int32_t ok = 1;
+    ZERO(&o, sizeof(o));
+    o.size = 3 * gran;
+    o.cap = 64 * gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_anon(&mm, &o));
+    a0 = mm.addr;
+    for (i = 0; i < 3 * gran; i++) {
+        ok = ok && 0 == a0[i];
+    }
+    CuAssertTrue(tc, ok);
+    memset(a0, 0x5a, 3 * gran);
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 10 * gran, 0));
+    CuAssertTrue(tc, a0 == mm.addr && 0x5a == a0[3 * gran - 1] && 0 == a0[10 * gran - 1]);
+    memset(a0, 0x5a, 10 * gran);
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, gran, 0));
+    CuAssertTrue(tc, a0 == mm.addr && 0x5a == a0[gran - 1]);
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 4 * gran, 0));
+    CuAssertTrue(tc, a0 == mm.addr && 0x5a == a0[0] && 0 == a0[2 * gran] && 0 == a0[4 * gran - 1]);
+    CuAssertTrue(tc, ERR_FAILED == mmap_filesize(&mm));
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, 0, 0, 0));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_advise(&mm, 0, 0, MMAP_DONTNEED));
+    CuAssertIntEquals(tc, ERR_OK, mmap_advise(&mm, 0, 0, MMAP_WILLNEED));
+    CuAssertIntEquals(tc, ERR_OK, mmap_lock(&mm, 0, gran));
+    CuAssertIntEquals(tc, ERR_OK, mmap_unlock(&mm, 0, gran));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 100 * gran, 0));
+    CuAssertTrue(tc, 100 * gran == mm.cap && 0x5a == mm.addr[0] && 0x5a == mm.addr[gran - 1] && 0 == mm.addr[100 * gran - 1]);
+    mmap_close(&mm);
+    o.size = 0;
+    o.cap = 8 * gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_anon(&mm, &o));
+    CuAssertTrue(tc, NULL == mm.addr);
+    CuAssertTrue(tc, mmap_in_range(&mm, 0, 0) && !mmap_in_range(&mm, 0, 1));
+    CuAssertTrue(tc, NULL == mmap_ptr(&mm, 0, 0) && 0 == mmap_size(&mm));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, gran, 0));
+    a0 = mm.addr;
+    CuAssertTrue(tc, NULL != a0 && 8 * gran == mm.cap);
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 8 * gran, 0));
+    CuAssertTrue(tc, a0 == mm.addr);
+    mmap_close(&mm);
+}
+// 命名共享内存：创建、另一个视图看得见、EXCL 冲突、不支持 resize；生命周期按平台区分
+static void test_mmap_shm(CuTest *tc) {
+    char name[32], bad[40];
+    mmap_ctx a, b, c;
+    mmap_opts o;
+    SNPRINTF(name, sizeof(name), "/srey_t_%d", (int32_t)GETPID());
+    (void)mmap_shm_unlink(name);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE | MMAP_EXCL;
+    o.size = 5000;
+    CuAssertIntEquals(tc, ERR_OK, mmap_shm(&a, name, &o));
+    CuAssertTrue(tc, 5000 == a.size);
+    memcpy(a.addr, "hello", 5);
+    a.addr[4999] = 'E';
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+    ZERO(&o, sizeof(o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_shm(&b, name, &o));
+    CuAssertTrue(tc, b.size >= 5000 && 0 == memcmp(b.addr, "hello", 5) && 'E' == b.addr[4999]);
+    o.mode = MMAP_COPY;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+    o.mode = MMAP_RDONLY;
+    o.size = 1024 * 1024;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_resize(&a, 100, 0));
+    CuAssertTrue(tc, ERR_FAILED == mmap_filesize(&a));
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&a, 0, 0, 0));
+    mmap_close(&b);
+    mmap_close(&a);
+    o.size = 0;
+#ifdef OS_WIN
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+#else
+    CuAssertIntEquals(tc, ERR_OK, mmap_shm(&c, name, &o));
+    int32_t ok = 0 == memcmp(c.addr, "hello", 5);
+    mmap_close(&c);
+    CuAssertTrue(tc, ok);
+    CuAssertIntEquals(tc, ERR_OK, mmap_shm_unlink(name));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+#endif
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, "noslash", &o));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, "/a/b", &o));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, "/", &o));
+    memset(bad, 'x', sizeof(bad));
+    bad[0] = '/';
+    bad[32] = '\0';
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, bad, &o));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm_unlink(bad));
+    o.flags = MMAP_CREATE;
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+}
+// advise / sync / populate 的参数与越界检查
+static void test_mmap_advise_sync(CuTest *tc) {
+    char path[PATH_LENS];
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t gran = mmap_granularity(), n = 4 * gran;
+    int32_t ok;
+    _mm_path(path, sizeof(path), "test_mmap_adv.tmp");
+    CuAssertIntEquals(tc, ERR_OK, _mm_mkfile(path, n));
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertIntEquals(tc, ERR_OK, mmap_advise(&mm, 0, 0, MMAP_NORMAL));
+    CuAssertIntEquals(tc, ERR_OK, mmap_advise(&mm, 1, 100, MMAP_SEQUENTIAL));
+    CuAssertIntEquals(tc, ERR_OK, mmap_advise(&mm, gran + 3, gran, MMAP_RANDOM));
+    CuAssertIntEquals(tc, ERR_OK, mmap_advise(&mm, 0, 0, MMAP_WILLNEED));
+    mm.addr[7] = 'Q';
+    CuAssertIntEquals(tc, ERR_OK, mmap_advise(&mm, 0, 0, MMAP_DONTNEED));
+    CuAssertTrue(tc, 'Q' == mm.addr[7] && _mm_pattern_ok(mm.addr + 8, 8, n - 8));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_advise(&mm, 0, 0, 9));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_advise(&mm, n + 1, 0, MMAP_NORMAL));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_advise(&mm, n - 1, 2, MMAP_NORMAL));
+    CuAssertIntEquals(tc, ERR_OK, mmap_advise(&mm, n, 0, MMAP_NORMAL));
+    // 越界宏：恰到末尾合法，越过一个字节或 off + lens 溢出都判越界
+    CuAssertTrue(tc, mmap_in_range(&mm, 0, n) && mmap_in_range(&mm, n, 0) && mmap_in_range(&mm, n - 1, 1));
+    CuAssertTrue(tc, !mmap_in_range(&mm, n, 1) && !mmap_in_range(&mm, n + 1, 0) && !mmap_in_range(&mm, 1, SIZE_MAX));
+    // 取地址：范围内返回 addr + off，越界返回 NULL
+    CuAssertTrue(tc, n == mmap_size(&mm) && mm.addr == mmap_ptr(&mm, 0, n) && mm.addr + 5 == mmap_ptr(&mm, 5, 10));
+    CuAssertTrue(tc, NULL == mmap_ptr(&mm, n, 1) && NULL == mmap_ptr(&mm, 1, SIZE_MAX));
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, 5, 100, 1));
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, gran + 1, 10, 0));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_sync(&mm, n, 1, 0));
+    mmap_close(&mm);
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_sync(&mm, 0, 0, 0));
+    ZERO(&o, sizeof(o));
+    o.flags = MMAP_POPULATE;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    ok = 'Q' == mm.addr[7] && _mm_pattern_ok(mm.addr + 8, 8, n - 8);
+    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&mm, 0, 0, 0));
+    mmap_close(&mm);
+    CuAssertTrue(tc, ok);
+    o.mode = MMAP_COPY;
+    o.flags = 0;
+    CuAssertIntEquals(tc, ERR_OK, mmap_open(&mm, path, &o));
+    CuAssertIntEquals(tc, ERR_FAILED, mmap_advise(&mm, 0, 0, MMAP_DONTNEED));
+    mmap_close(&mm);
+    remove(path);
+}
+static void test_mmap_granularity(CuTest *tc) {
+    size_t gran = mmap_granularity();
+    CuAssertTrue(tc, gran >= 4096 && 0 == (gran & (gran - 1)));
+}
+
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_binary);
@@ -4362,4 +4906,18 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ct_memcmp_each_byte);
     SUITE_ADD_TEST(suite, test_pack_float_bytes);
     SUITE_ADD_TEST(suite, test_sfid_init_keeps_ctx);
+    SUITE_ADD_TEST(suite, test_mmap_rdwr_roundtrip);
+    SUITE_ADD_TEST(suite, test_mmap_empty_bounds);
+    SUITE_ADD_TEST(suite, test_mmap_offset);
+    SUITE_ADD_TEST(suite, test_mmap_cap_grow);
+    SUITE_ADD_TEST(suite, test_mmap_window_keep);
+    SUITE_ADD_TEST(suite, test_mmap_beyond_cap);
+    SUITE_ADD_TEST(suite, test_mmap_trim_others);
+    SUITE_ADD_TEST(suite, test_mmap_rdonly_follow);
+    SUITE_ADD_TEST(suite, test_mmap_copy_protect);
+    SUITE_ADD_TEST(suite, test_mmap_map_fd);
+    SUITE_ADD_TEST(suite, test_mmap_anon);
+    SUITE_ADD_TEST(suite, test_mmap_shm);
+    SUITE_ADD_TEST(suite, test_mmap_advise_sync);
+    SUITE_ADD_TEST(suite, test_mmap_granularity);
 }

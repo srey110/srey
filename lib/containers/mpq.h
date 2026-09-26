@@ -36,6 +36,7 @@ typedef struct {                                                                
     CACHELINE_ALIGN atomic_t enq;   /* 与 deq 各占一条 cache line */             \
     CACHELINE_ALIGN atomic_t deq;                                               \
 } name;                                                                         \
+/* 容量取不小于 capacity 的 2 的幂(至少 2),0 取 MPQ_DEFAULT_CAP;一次分配,之后不扩容 */ \
 static inline void name##_init(name *q, uint32_t capacity) {                    \
     uint32_t i, cap;                                                            \
     name##_cell *cells;                                                         \
@@ -55,6 +56,7 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
         ATOMIC_SET_RELAXED(&cells[i].sequence, (atomic_t)i);                    \
     }                                                                           \
 }                                                                               \
+/* 释放槽数组;q 为 NULL 时不做事 */                                             \
 static inline void name##_free(name *q) {                                       \
     if (NULL == q) {                                                            \
         return;                                                                 \
@@ -63,7 +65,9 @@ static inline void name##_free(name *q) {                                       
     q->capacity = 0;                                                            \
     q->mask = 0;                                                                \
 }                                                                               \
+/* 容量 */                                                                      \
 static inline uint32_t name##_capacity(const name *q) { return q->capacity; }   \
+/* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *q) { (void)q; return (uint32_t)sizeof(T); }\
 /* 保守快照:先读 deq 后读 enq,只会把空报成非空,不会把非空报成空。                 \
    已抢槽未发布的也算在内——fsqu 的漏唤醒守卫依赖这个方向 */                      \
@@ -73,6 +77,7 @@ static inline uint32_t name##_size(name *q) {                                   
     uint32_t n = enq - deq;                                                     \
     return (n > q->capacity) ? q->capacity : n;                                 \
 }                                                                               \
+/* 是否为空,口径同 size */                                                      \
 static inline int32_t name##_empty(name *q) {                                   \
     uint32_t deq = (uint32_t)ATOMIC_GET(&q->deq);                               \
     return (uint32_t)ATOMIC_GET(&q->enq) == deq;                                \

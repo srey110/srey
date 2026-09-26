@@ -304,6 +304,9 @@
     <ClInclude Include="utils\popen2.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="utils\mmap.h">
+      <Filter>utils</Filter>
+    </ClInclude>
     <ClInclude Include="srey\loader.h">
       <Filter>srey</Filter>
     </ClInclude>
@@ -440,6 +443,9 @@
       <Filter>containers</Filter>
     </ClInclude>
     <ClInclude Include="containers\rbtree.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\rbtset.h">
       <Filter>containers</Filter>
     </ClInclude>
     <ClInclude Include="protocol\kcp\ikcp.h">
@@ -625,6 +631,9 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\popen2.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\mmap.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="srey\loader.c">

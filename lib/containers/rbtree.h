@@ -4,239 +4,252 @@
 #include "base/macro.h"
 
 // 红黑树（侵入式）。rbt_node 嵌入元素，树不分配内存，元素地址即句柄。
+// 上层是 RBT_DECL 生成的带类型树，一般只用它；
+// 下层是 rbt_* 节点级接口（红黑树算法本身），只在要手写下降循环时才直接用。
 //
-// 典型用法一：宏生成带类型的辅助（比较器是宏，必然内联）
+// 典型用法：
 //   typedef struct { uint64_t due; rbt_node node; } tmr;
-//   #define TMR_CMP(a, b)  (((a)->due > (b)->due) - ((a)->due < (b)->due))
-//   #define TMR_KCMP(k, e) (((k) > (e)->due) - ((k) < (e)->due))
-//   RBT_DECL(tmr_tree, tmr, node, TMR_CMP)
-//   RBT_DECL_KEY(tmr_tree, tmr, uint64_t, TMR_KCMP)
-//   rbt_root_cached q = RBT_ROOT_CACHED_INIT;
-//   tmr_tree_add_cached(&t, &q);                        // 允许重复键，相等的排到末尾
-//   tmr *first = tmr_tree_entry(rbt_first_cached(&q));  // O(1) 取最小
-//   rbt_erase_cached(&t.node, &q);
-// 典型用法二：手写下降循环
+//   #define TMR_KEY(e) ((e)->due)
+//   #define U64_LT(a, b) ((a) < (b))
+//   RBT_DECL(tmr_tree, tmr, node, uint64_t, TMR_KEY, U64_LT, RBT_MULTI)
+//   tmr_tree q; tmr_tree_init(&q);
+//   tmr_tree_insert(&q, &t);                              // MULTI：相等的排到相等段末尾
+//   tmr *hit = tmr_tree_find(&q, 100);                     // 相等段里最早插入的那个
+//   tmr *first = tmr_tree_pop_first(&q);                   // 摘下最小（找最小是 O(1)）
+//   rbt_foreach(&q, tmr_tree, e) { ... }                   // 中序遍历，e 为 tmr *
+//   tmr_tree_clear(&q, NULL, NULL);
+// 手写下降循环（底层接口）：
 //   rbt_node **link = &root->rbt_node, *parent = NULL, *cur = *link;
 //   while (NULL != cur) { parent = cur; link = 小于 ? &cur->rbt_left : &cur->rbt_right; cur = *link; }
 //   rbt_link_node(&e->node, parent, link);
-//   rbt_insert_color(&e->node, root);
-//
-// RBT_DECL(name, T, FIELD, CMP) 生成（name 只作函数前缀，不生成类型）：
-//   name##_entry(n) / name##_node(e)：rbt_node * 与 T * 互转，entry 对 NULL 返回 NULL
-//   name##_add(e, root) / name##_add_cached(e, root)：允许重复键，相等的排到相等段末尾；
-//       add_cached 在 e 成为新最左时返回 e，否则 NULL
-//   name##_find_add(e, root) / name##_find_add_cached(e, root)：已有相等元素则返回它且不碰 e，
-//       否则插入并返回 NULL（不报告是否成为新最左）
-// RBT_DECL_KEY(name, T, K, KCMP) 生成（须在同名 RBT_DECL 之后）：
-//   name##_find(k, root)：任一匹配（有重复键时不保证是哪一个）
-//   name##_find_first(k, root)：最左匹配
-//   name##_next_match(k, e)：e 的中序后继与 k 匹配则返回它，否则 NULL（不向后扫描）
-//   name##_lower_bound(k, root) / name##_upper_bound(k, root)：同 std::set，第一个 >= k / > k 的元素，
-//       没有返回 NULL；半开区间 [a, b) 就是从 lower_bound(a) 沿 rbt_next 走到 lower_bound(b) 为止
+//   rbt_insert_color(root, &e->node);
 //
 // 契约：
 //   1. 一个 rbt_node 字段同时只属于一棵树；插入前节点必须不在任何树里（同一节点重复插入会破坏树）；
-//      一个元素挂多棵树就放多个 rbt_node 字段、各自 DECL。rbt_link_node 写全三个字段，插入前无需清零。
-//   2. rbt_erase 不校验成员关系、也不清节点；要靠 RBT_EMPTY_NODE 判断在不在树里，就在初始化时和
-//      erase 之后自己 RBT_CLEAR_NODE。对 RBT_EMPTY_NODE 的节点调 rbt_next / rbt_prev 返回 NULL。
+//      一个元素挂多棵树就放多个 rbt_node 字段、各自 DECL。rbt_link_node 写全三个字段。
+//   2. 节点的 rbt_parent_color 为 0 即不在任何树里（在树的节点此字段恒非 0：只有根的父为空，而根恒黑），
+//      所以元素整体清零就是"不在树里"。name##_erase / extract / pop_first / replace / clear 摘下的节点都会清零；
+//      底层 rbt_erase 系列不清，用它们时自己 RBT_CLEAR_NODE。对不在树里的节点调 rbt_next / rbt_prev 返回 NULL。
 //   3. 元素在树中期间不得移动地址，不得改动参与比较的字段（改键先 erase 再重新插入）。
-//   4. CMP(a, b) 三路比较，a、b 为 T const *：可以返回 0（相等可并存），但符号必须有意义，
-//      比 HASHMAP_DECL 的 CMPFN 严格。KCMP(k, e) 的 e 为 T const *，必须与 CMP 同向：按中序看 KCMP(k, ·)
-//      只能先 >0、再 =0、后 <0；可以比 CMP 粗（如 CMP 比 (分数, id)、KCMP 只比分数），不能换一种排序依据，
-//      否则 find 系列会漏找。回绕比较只在树内键都落在半个取值区间内时成立。
-//      两者的返回值都会存进 int32_t，写成 (a > b) - (a < b)，别写相减（宽类型相减会截断）。
-//   5. 手写 rbt_next 循环时可以先取 next 再 erase 当前节点；rbt_for_each 的步进要读当前节点，
-//      循环体内禁止增删替换。后序遍历中只许释放 pos 的内存，禁止增删替换，走完后调用方把 root 重置为空。
-//   6. cached 树只能用 *_cached 系列增删替换，否则缓存的最左会过期；只读接口可以直接传 &root->rbt_root。
+//   4. LESS(a, b) 是键上的严格弱序：a 排在 b 前面才为真；相等由 !LESS(a, b) && !LESS(b, a) 推出。
+//      KEYOF(e) 的 e 为 T *，返回 K。回绕比较只在树内键都落在半个取值区间内时成立。
+//   5. rbt_foreach / rbt_foreach_equal 循环体内禁止增删；要删当前元素用 rbt_foreach_safe（删别的仍然禁止）。
+//      手写 rbt_next 循环时可以先取 next 再删当前节点。底层后序遍历（rbt_first_postorder / rbt_next_postorder）
+//      中只许释放已访问过的节点，禁止增删替换，走完后调用方把根重置为空。
+//   6. 别绕过 name##_* 直接对 name 的 root 调底层增删，否则 size 与最左缓存都会过期；只读接口不受限。
+//      底层单独用时，cached 树只能用 *_cached 系列增删替换。
 //   7. rbt_replace_node：新旧节点须等键；新节点无需初始化但不得在任何树中；旧节点替换后不会被清空。
 //   8. rbt_node 不得放进 packed 结构（颜色占父地址的最低位）。
 
 #define RBT_RED ((uintptr_t)0) // rbt_parent_color 的 bit0：0 红 1 黑
 #define RBT_BLACK ((uintptr_t)1)
+#define RBT_UNIQUE 0 // 不允许重复键（std::set）
+#define RBT_MULTI 1 // 允许重复键，相等元素按插入先后排（std::multiset）
 
 #define RBT_ROOT_INIT { NULL } // 只能用于定义时初始化，运行期重置用 rbt_root_init
 #define RBT_ROOT_CACHED_INIT { { NULL }, NULL } // 同上，运行期重置用 rbt_root_cached_init
 #define RBT_EMPTY_ROOT(root) (NULL == (root)->rbt_node)
-// 父指针指向自己表示节点不在任何树里；node 会多次求值，须传无副作用的表达式
-#define RBT_EMPTY_NODE(node) ((node)->rbt_parent_color == (uintptr_t)(const void *)(node))
-#define RBT_CLEAR_NODE(node) ((node)->rbt_parent_color = (uintptr_t)(void *)(node))
+// 节点在不在树里（契约第 2 条）；node 会多次求值，须传无副作用的表达式
+#define RBT_EMPTY_NODE(node) (0 == (node)->rbt_parent_color)
+#define RBT_CLEAR_NODE(node) ((node)->rbt_parent_color = 0)
 
-// 遍历与 key 匹配的所有元素；it 为 T *，由调用方先声明；key 会多次求值；循环体内禁止增删替换
-#define rbt_for_each(it, key, root, name) \
-    for ((it) = name##_find_first((key), (root)); NULL != (it); (it) = name##_next_match((key), (it)))
-// 后序遍历（孩子先于父），循环体内可释放 pos；pos、n 为 T *，由调用方先声明；循环中禁止增删替换
-#define rbt_postorder_for_each_entry_safe(pos, n, root, name)                                   \
-    for ((pos) = name##_entry(rbt_first_postorder(root)),                                       \
-         (n) = (NULL != (pos)) ? name##_entry(rbt_next_postorder(name##_node(pos))) : NULL;     \
-         NULL != (pos);                                                                         \
-         (pos) = (n), (n) = (NULL != (pos)) ? name##_entry(rbt_next_postorder(name##_node(pos))) : NULL)
+// 以下三个遍历宏对 RBT_DECL 与 RBTSET_DECL 生成的类型都适用；e、tmp 为元素指针，由调用方先声明
+// 中序遍历全部元素
+#define rbt_foreach(t, name, e) \
+    for ((e) = name##_first(t); NULL != (e); (e) = name##_next(e))
+// 同上，循环体内可以删掉当前元素 e
+#define rbt_foreach_safe(t, name, e, tmp)                                                        \
+    for ((e) = name##_first(t), (tmp) = (NULL != (e)) ? name##_next(e) : NULL;                  \
+         NULL != (e);                                                                           \
+         (e) = (tmp), (tmp) = (NULL != (e)) ? name##_next(e) : NULL)
+// 按插入先后遍历与 k 相等的元素；k 会多次求值
+#define rbt_foreach_equal(t, name, k, e) \
+    for ((e) = name##_find((t), (k)); NULL != (e); (e) = name##_next_equal((e), (k)))
 
-// RBT_DECL(name, T, FIELD, CMP)：name 生成函数的前缀，T 元素类型，FIELD 元素内 rbt_node 字段名，
-// CMP(a, b) 三路比较宏（契约见文件头第 4 条）
-#define RBT_DECL(name, T, FIELD, CMP)                                              \
-/* FIELD 不是首字段时 UPCAST(NULL) 不是 NULL，须先判 */                            \
-static inline T *name##_entry(rbt_node *n) {                                      \
-    return (NULL == n) ? NULL : UPCAST(n, T, FIELD);                               \
-}                                                                                 \
-static inline rbt_node *name##_node(T *e) {                                       \
-    return &e->FIELD;                                                              \
-}                                                                                 \
-/* 相等时往右走，新元素排到相等段末尾 */                                           \
-static inline void name##_add(T *e, rbt_root *root) {                             \
-    rbt_node **link = &root->rbt_node;                                             \
-    rbt_node *parent = NULL;                                                       \
-    rbt_node *cur = *link;                                                         \
-    while (NULL != cur) {                                                          \
-        parent = cur;                                                              \
-        if (CMP(e, UPCAST(cur, T, FIELD)) < 0) {                                   \
-            link = &cur->rbt_left;                                                 \
-        } else {                                                                   \
-            link = &cur->rbt_right;                                                \
-        }                                                                          \
-        cur = *link;                                                               \
-    }                                                                              \
-    rbt_link_node(&e->FIELD, parent, link);                                        \
-    rbt_insert_color(&e->FIELD, root);                                             \
-}                                                                                 \
-/* 一路往左才是新最左 */                                                           \
-static inline T *name##_add_cached(T *e, rbt_root_cached *root) {                 \
-    rbt_node **link = &root->rbt_root.rbt_node;                                    \
-    rbt_node *parent = NULL;                                                       \
-    rbt_node *cur = *link;                                                         \
-    int32_t leftmost = 1;                                                          \
-    while (NULL != cur) {                                                          \
-        parent = cur;                                                              \
-        if (CMP(e, UPCAST(cur, T, FIELD)) < 0) {                                   \
-            link = &cur->rbt_left;                                                 \
-        } else {                                                                   \
-            link = &cur->rbt_right;                                                \
-            leftmost = 0;                                                          \
-        }                                                                          \
-        cur = *link;                                                               \
-    }                                                                              \
-    rbt_link_node(&e->FIELD, parent, link);                                        \
-    rbt_insert_color_cached(&e->FIELD, root, leftmost);                            \
-    return leftmost ? e : NULL;                                                    \
-}                                                                                 \
-static inline T *name##_find_add(T *e, rbt_root *root) {                          \
-    rbt_node **link = &root->rbt_node;                                             \
-    rbt_node *parent = NULL;                                                       \
-    rbt_node *cur = *link;                                                         \
-    int32_t c;                                                                     \
-    while (NULL != cur) {                                                          \
-        parent = cur;                                                              \
-        c = CMP(e, UPCAST(cur, T, FIELD));                                         \
-        if (c < 0) {                                                               \
-            link = &cur->rbt_left;                                                 \
-        } else if (c > 0) {                                                        \
-            link = &cur->rbt_right;                                                \
-        } else {                                                                   \
-            return UPCAST(cur, T, FIELD);                                          \
-        }                                                                          \
-        cur = *link;                                                               \
-    }                                                                              \
-    rbt_link_node(&e->FIELD, parent, link);                                        \
-    rbt_insert_color(&e->FIELD, root);                                             \
-    return NULL;                                                                   \
-}                                                                                 \
-static inline T *name##_find_add_cached(T *e, rbt_root_cached *root) {            \
-    rbt_node **link = &root->rbt_root.rbt_node;                                    \
-    rbt_node *parent = NULL;                                                       \
-    rbt_node *cur = *link;                                                         \
-    int32_t leftmost = 1;                                                          \
-    int32_t c;                                                                     \
-    while (NULL != cur) {                                                          \
-        parent = cur;                                                              \
-        c = CMP(e, UPCAST(cur, T, FIELD));                                         \
-        if (c < 0) {                                                               \
-            link = &cur->rbt_left;                                                 \
-        } else if (c > 0) {                                                        \
-            link = &cur->rbt_right;                                                \
-            leftmost = 0;                                                          \
-        } else {                                                                   \
-            return UPCAST(cur, T, FIELD);                                          \
-        }                                                                          \
-        cur = *link;                                                               \
-    }                                                                              \
-    rbt_link_node(&e->FIELD, parent, link);                                        \
-    rbt_insert_color_cached(&e->FIELD, root, leftmost);                            \
-    return NULL;                                                                   \
-}
-
-// RBT_DECL_KEY(name, T, K, KCMP)：name、T 同 RBT_DECL，K 键类型，KCMP(k, e) 三路比较宏（契约见文件头第 4 条）
-#define RBT_DECL_KEY(name, T, K, KCMP)                                             \
-static inline T *name##_find(K k, const rbt_root *root) {                         \
-    rbt_node *node = root->rbt_node;                                               \
-    T *e;                                                                          \
-    int32_t c;                                                                     \
-    while (NULL != node) {                                                         \
-        e = name##_entry(node);                                                    \
-        c = KCMP(k, e);                                                            \
-        if (c < 0) {                                                               \
-            node = node->rbt_left;                                                 \
-        } else if (c > 0) {                                                        \
-            node = node->rbt_right;                                                \
-        } else {                                                                   \
-            return e;                                                              \
-        }                                                                          \
-    }                                                                              \
-    return NULL;                                                                   \
-}                                                                                 \
-/* 命中后继续往左找，停在相等段最左 */                                             \
-static inline T *name##_find_first(K k, const rbt_root *root) {                   \
-    rbt_node *node = root->rbt_node;                                               \
-    T *match = NULL;                                                               \
-    T *e;                                                                          \
-    int32_t c;                                                                     \
-    while (NULL != node) {                                                         \
-        e = name##_entry(node);                                                    \
-        c = KCMP(k, e);                                                            \
-        if (c <= 0) {                                                              \
-            if (0 == c) {                                                          \
-                match = e;                                                         \
-            }                                                                      \
-            node = node->rbt_left;                                                 \
-        } else {                                                                   \
-            node = node->rbt_right;                                                \
-        }                                                                          \
-    }                                                                              \
-    return match;                                                                  \
-}                                                                                 \
-/* 同 std::set::lower_bound：第一个不小于 k 的元素，有重复键时停在相等段首 */      \
-static inline T *name##_lower_bound(K k, const rbt_root *root) {                  \
-    rbt_node *node = root->rbt_node;                                               \
-    T *res = NULL;                                                                 \
-    T *e;                                                                          \
-    while (NULL != node) {                                                         \
-        e = name##_entry(node);                                                    \
-        if (KCMP(k, e) <= 0) {/* e 不小于 k：记为候选，往左找更靠前的 */            \
-            res = e;                                                               \
-            node = node->rbt_left;                                                 \
-        } else {                                                                   \
-            node = node->rbt_right;                                                \
-        }                                                                          \
-    }                                                                              \
-    return res;                                                                    \
-}                                                                                 \
-/* 同 std::set::upper_bound：第一个大于 k 的元素，有重复键时越过整个相等段 */      \
-static inline T *name##_upper_bound(K k, const rbt_root *root) {                  \
-    rbt_node *node = root->rbt_node;                                               \
-    T *res = NULL;                                                                 \
-    T *e;                                                                          \
-    while (NULL != node) {                                                         \
-        e = name##_entry(node);                                                    \
-        if (KCMP(k, e) < 0) {/* e 大于 k：记为候选，往左找更靠前的 */               \
-            res = e;                                                               \
-            node = node->rbt_left;                                                 \
-        } else {                                                                   \
-            node = node->rbt_right;                                                \
-        }                                                                          \
-    }                                                                              \
-    return res;                                                                    \
-}                                                                                 \
-static inline T *name##_next_match(K k, T *e) {                                   \
-    T *next = name##_entry(rbt_next(name##_node(e)));                              \
-    return (NULL != next && 0 == KCMP(k, next)) ? next : NULL;                     \
+// 入参写 T const * 而不是 const T *：理由同 hashmap.h。
+// RBT_DECL(name, T, FIELD, K, KEYOF, LESS, MODE)：name 生成的类型名，T 元素类型，FIELD 元素内 rbt_node 字段名，
+// K 键类型，KEYOF(e) 从元素取键，LESS(a, b) 键的小于比较（契约第 4 条），MODE 取 RBT_UNIQUE / RBT_MULTI
+#define RBT_DECL(name, T, FIELD, K, KEYOF, LESS, MODE)                                               \
+typedef struct name {                                                                                \
+    rbt_root_cached root;       /* 带最左缓存，first 为 O(1) */                                      \
+    size_t size;                /* 元素数 */                                                         \
+} name;                                                                                              \
+/* 节点转元素指针，NULL 进 NULL 出；FIELD 不是首字段时 UPCAST(NULL) 不是 NULL，须先判 */             \
+static inline T *name##_entry(rbt_node *n) {                                                         \
+    return (NULL == n) ? NULL : UPCAST(n, T, FIELD);                                                 \
+}                                                                                                    \
+/* 初始化为空树，也用于运行期重置 */                                                                 \
+static inline void name##_init(name *t) {                                                            \
+    rbt_root_cached_init(&t->root);                                                                  \
+    t->size = 0;                                                                                     \
+}                                                                                                    \
+/* 元素数 */                                                                                         \
+static inline size_t name##_size(const name *t) {                                                    \
+    return t->size;                                                                                  \
+}                                                                                                    \
+/* 是否为空 */                                                                                       \
+static inline int32_t name##_empty(const name *t) {                                                  \
+    return 0 == t->size;                                                                             \
+}                                                                                                    \
+/* e 是否在某棵树里（契约第 2 条） */                                                                \
+static inline int32_t name##_linked(T const *e) {                                                    \
+    return !RBT_EMPTY_NODE(&e->FIELD);                                                               \
+}                                                                                                    \
+/* 最小元素，O(1)；空树返回 NULL */                                                                  \
+static inline T *name##_first(const name *t) {                                                       \
+    return name##_entry(rbt_first_cached(&t->root));                                                 \
+}                                                                                                    \
+/* 最大元素，空树返回 NULL */                                                                        \
+static inline T *name##_last(const name *t) {                                                        \
+    return name##_entry(rbt_last(&t->root.rbt_root));                                                \
+}                                                                                                    \
+/* 中序后继，到头返回 NULL */                                                                        \
+static inline T *name##_next(T *e) {                                                                 \
+    return name##_entry(rbt_next(&e->FIELD));                                                        \
+}                                                                                                    \
+/* 中序前驱，到头返回 NULL */                                                                        \
+static inline T *name##_prev(T *e) {                                                                 \
+    return name##_entry(rbt_prev(&e->FIELD));                                                        \
+}                                                                                                    \
+/* 同 std::set：第一个不小于 k 的元素，有重复键时是相等段里最早插入的；没有返回 NULL */              \
+static inline T *name##_lower_bound(const name *t, K k) {                                            \
+    rbt_node *node = t->root.rbt_root.rbt_node;                                                      \
+    T *res = NULL;                                                                                   \
+    T *e;                                                                                            \
+    while (NULL != node) {                                                                           \
+        e = UPCAST(node, T, FIELD);                                                                  \
+        if (!(LESS(KEYOF(e), k))) {                                                                  \
+            res = e;                                                                                 \
+            node = node->rbt_left;                                                                   \
+        } else {                                                                                     \
+            node = node->rbt_right;                                                                  \
+        }                                                                                            \
+    }                                                                                                \
+    return res;                                                                                      \
+}                                                                                                    \
+/* 同 std::set：第一个大于 k 的元素，没有返回 NULL */                                                \
+static inline T *name##_upper_bound(const name *t, K k) {                                            \
+    rbt_node *node = t->root.rbt_root.rbt_node;                                                      \
+    T *res = NULL;                                                                                   \
+    T *e;                                                                                            \
+    while (NULL != node) {                                                                           \
+        e = UPCAST(node, T, FIELD);                                                                  \
+        if (LESS(k, KEYOF(e))) {                                                                     \
+            res = e;                                                                                 \
+            node = node->rbt_left;                                                                   \
+        } else {                                                                                     \
+            node = node->rbt_right;                                                                  \
+        }                                                                                            \
+    }                                                                                                \
+    return res;                                                                                      \
+}                                                                                                    \
+/* 与 k 相等的元素，MULTI 下是最早插入的那个；没有返回 NULL */                                       \
+static inline T *name##_find(const name *t, K k) {                                                   \
+    T *e = name##_lower_bound(t, k);                                                                 \
+    return (NULL != e && !(LESS(k, KEYOF(e)))) ? e : NULL;                                           \
+}                                                                                                    \
+/* 是否存在与 k 相等的元素 */                                                                        \
+static inline int32_t name##_contains(const name *t, K k) {                                          \
+    return NULL != name##_find(t, k);                                                                \
+}                                                                                                    \
+/* e 的中序后继与 k 相等则返回它，否则 NULL；e 须与 k 相等（rbt_foreach_equal 用） */                \
+static inline T *name##_next_equal(T *e, K k) {                                                      \
+    T *n = name##_entry(rbt_next(&e->FIELD));                                                        \
+    return (NULL != n && !(LESS(k, KEYOF(n)))) ? n : NULL;                                           \
+}                                                                                                    \
+/* 与 k 相等的元素个数 */                                                                            \
+static inline size_t name##_count(const name *t, K k) {                                              \
+    T *e;                                                                                            \
+    size_t n = 0;                                                                                    \
+    rbt_foreach_equal(t, name, k, e) {                                                               \
+        n++;                                                                                         \
+    }                                                                                                \
+    return n;                                                                                        \
+}                                                                                                    \
+/* 找插入位置：UNIQUE 下已有相等元素则返回它，pos 不写；否则返回 NULL，pos 记下插入点（MULTI 排到相等段末尾）。 \
+   pos 只给紧接着的 insert_commit 用，两者之间不得增删 */                                            \
+static inline T *name##_insert_check(name *t, K k, rbt_insert_pos *pos) {                            \
+    rbt_node **link = &t->root.rbt_root.rbt_node;                                                    \
+    rbt_node *parent = NULL;                                                                         \
+    rbt_node *cur = *link;                                                                           \
+    rbt_node *cand = NULL;                                                                           \
+    int32_t leftmost = 1;                                                                            \
+    while (NULL != cur) {                                                                            \
+        parent = cur;                                                                                \
+        if (LESS(k, KEYOF(UPCAST(cur, T, FIELD)))) {                                                 \
+            link = &cur->rbt_left;                                                                   \
+        } else {                                                                                     \
+            cand = cur;                                                                              \
+            link = &cur->rbt_right;                                                                  \
+            leftmost = 0;                                                                            \
+        }                                                                                            \
+        cur = *link;                                                                                 \
+    }                                                                                                \
+    if (RBT_UNIQUE == (MODE) && NULL != cand && !(LESS(KEYOF(UPCAST(cand, T, FIELD)), k))) {         \
+        return UPCAST(cand, T, FIELD);                                                               \
+    }                                                                                                \
+    pos->parent = parent;                                                                            \
+    pos->link = link;                                                                                \
+    pos->leftmost = leftmost;                                                                        \
+    return NULL;                                                                                     \
+}                                                                                                    \
+/* 把 e 挂到 insert_check 给出的位置；e 的键须与 check 时的 k 相等，e 不得在任何树中 */              \
+static inline void name##_insert_commit(name *t, T *e, const rbt_insert_pos *pos) {                  \
+    rbt_link_node(&e->FIELD, pos->parent, pos->link);                                                \
+    rbt_insert_color_cached(&t->root, &e->FIELD, pos->leftmost);                                     \
+    t->size++;                                                                                       \
+}                                                                                                    \
+/* UNIQUE：已有相等元素则返回它、e 不入树，否则插入并返回 NULL；MULTI：总是插入到相等段末尾，返回 NULL */ \
+static inline T *name##_insert(name *t, T *e) {                                                      \
+    rbt_insert_pos pos;                                                                              \
+    T *old = name##_insert_check(t, KEYOF(e), &pos);                                                 \
+    if (NULL == old) {                                                                               \
+        name##_insert_commit(t, e, &pos);                                                            \
+    }                                                                                                \
+    return old;                                                                                      \
+}                                                                                                    \
+/* 删除 e 并把节点清零；不校验 e 是否在 t 中 */                                                      \
+static inline void name##_erase(name *t, T *e) {                                                     \
+    rbt_erase_cached(&t->root, &e->FIELD);                                                           \
+    RBT_CLEAR_NODE(&e->FIELD);                                                                       \
+    t->size--;                                                                                       \
+}                                                                                                    \
+/* 摘下与 k 相等的元素（MULTI 下是最早插入的那个）并返回，节点清零；没有返回 NULL */                 \
+static inline T *name##_extract(name *t, K k) {                                                      \
+    T *e = name##_find(t, k);                                                                        \
+    if (NULL != e) {                                                                                 \
+        name##_erase(t, e);                                                                          \
+    }                                                                                                \
+    return e;                                                                                        \
+}                                                                                                    \
+/* 摘下最小元素并返回，节点清零；空树返回 NULL */                                                    \
+static inline T *name##_pop_first(name *t) {                                                         \
+    T *e = name##_first(t);                                                                          \
+    if (NULL != e) {                                                                                 \
+        name##_erase(t, e);                                                                          \
+    }                                                                                                \
+    return e;                                                                                        \
+}                                                                                                    \
+/* 用 e 原位顶替 old：二者须等键，e 不得在任何树中；old 的节点随后清零 */                            \
+static inline void name##_replace(name *t, T *old, T *e) {                                           \
+    rbt_replace_node_cached(&t->root, &old->FIELD, &e->FIELD);                                       \
+    RBT_CLEAR_NODE(&old->FIELD);                                                                     \
+}                                                                                                    \
+/* 清空：后序逐个把节点清零后调 fn(e, ud)（fn 可为 NULL，里面可以释放元素），不做旋转 */             \
+static inline void name##_clear(name *t, void (*fn)(T *e, void *ud), void *ud) {                     \
+    rbt_node *n = rbt_first_postorder(&t->root.rbt_root);                                            \
+    rbt_node *next;                                                                                  \
+    T *e;                                                                                            \
+    while (NULL != n) {                                                                              \
+        next = rbt_next_postorder(n);                                                                \
+        e = UPCAST(n, T, FIELD);                                                                     \
+        RBT_CLEAR_NODE(n);                                                                           \
+        if (NULL != fn) {                                                                            \
+            fn(e, ud);                                                                               \
+        }                                                                                            \
+        n = next;                                                                                    \
+    }                                                                                                \
+    name##_init(t);                                                                                  \
 }
 
 // 树节点，嵌入元素使用；字段由树维护，调用方不得改动
@@ -254,6 +267,12 @@ typedef struct rbt_root_cached {
     rbt_root rbt_root;          // 普通树根，只读接口可直接传它
     rbt_node *rbt_leftmost;     // 最左节点，空树为 NULL
 }rbt_root_cached;
+// insert_check 给出的插入点，只给紧接着的 insert_commit 用
+typedef struct rbt_insert_pos {
+    rbt_node *parent;           // 挂到它下面，空树为 NULL
+    rbt_node **link;            // parent 里要写的那个孩子指针（空树时为根指针）
+    int32_t leftmost;           // 下降时一路往左（成为新最左）为 1
+}rbt_insert_pos;
 
 // 父指针与颜色压在一个字段里（pc）：父地址去掉低两位即得，指针与整数互转一律经 void *
 static inline rbt_node *_rbt_pc_parent(uintptr_t pc) {
@@ -340,9 +359,9 @@ static inline void rbt_link_node(rbt_node *node, rbt_node *parent, rbt_node **li
 /// <summary>
 /// 插入修色：rbt_link_node 挂上的红节点破坏了红黑性质，逐层向上修复
 /// </summary>
-/// <param name="node">刚由 rbt_link_node 挂上的节点</param>
 /// <param name="root">所在树</param>
-static inline void rbt_insert_color(rbt_node *node, rbt_root *root) {
+/// <param name="node">刚由 rbt_link_node 挂上的节点</param>
+static inline void rbt_insert_color(rbt_root *root, rbt_node *node) {
     rbt_node *parent = _rbt_red_parent(node);
     rbt_node *gparent;
     rbt_node *tmp;
@@ -594,9 +613,9 @@ static inline void _rbt_erase_color(rbt_node *parent, rbt_root *root) {
 /// <summary>
 /// 从树中删除 node 并修色；不校验 node 是否在树中，也不清 node 的字段
 /// </summary>
-/// <param name="node">树中节点</param>
 /// <param name="root">所在树；cached 树须改用 rbt_erase_cached</param>
-static inline void rbt_erase(rbt_node *node, rbt_root *root) {
+/// <param name="node">树中节点</param>
+static inline void rbt_erase(rbt_root *root, rbt_node *node) {
     rbt_node *rebalance = _rbt_erase_node(node, root);
     if (NULL != rebalance) {
         _rbt_erase_color(rebalance, root);
@@ -680,10 +699,10 @@ static inline rbt_node *rbt_prev(const rbt_node *node) {
 /// <summary>
 /// 用 rep 原位替换 victim，不修色、不改变树形；调用方保证二者等键
 /// </summary>
+/// <param name="root">所在树；cached 树须改用 rbt_replace_node_cached</param>
 /// <param name="victim">树中节点，替换后字段保持原样、不会被清空</param>
 /// <param name="rep">替换节点，无需初始化，但不得在任何树中</param>
-/// <param name="root">所在树；cached 树须改用 rbt_replace_node_cached</param>
-static inline void rbt_replace_node(rbt_node *victim, rbt_node *rep, rbt_root *root) {
+static inline void rbt_replace_node(rbt_root *root, rbt_node *victim, rbt_node *rep) {
     rbt_node *parent = rbt_parent(victim);
     *rep = *victim;// 指针与颜色整个拷过去，再让孩子与父节点改指 rep
     if (NULL != victim->rbt_left) {
@@ -745,41 +764,41 @@ static inline rbt_node *rbt_first_cached(const rbt_root_cached *root) {
 /// <summary>
 /// 同 rbt_insert_color，另维护最左缓存
 /// </summary>
-/// <param name="node">刚由 rbt_link_node 挂上的节点</param>
 /// <param name="root">所在树</param>
+/// <param name="node">刚由 rbt_link_node 挂上的节点</param>
 /// <param name="leftmost">下降时一路往左（node 成为新最左）为非 0</param>
-static inline void rbt_insert_color_cached(rbt_node *node, rbt_root_cached *root, int32_t leftmost) {
+static inline void rbt_insert_color_cached(rbt_root_cached *root, rbt_node *node, int32_t leftmost) {
     if (leftmost) {
         root->rbt_leftmost = node;
     }
-    rbt_insert_color(node, &root->rbt_root);
+    rbt_insert_color(&root->rbt_root, node);
 }
 /// <summary>
 /// 同 rbt_erase，另维护最左缓存
 /// </summary>
-/// <param name="node">树中节点</param>
 /// <param name="root">所在树</param>
+/// <param name="node">树中节点</param>
 /// <returns>node 是最左时返回新的最左节点（删空为 NULL）；node 不是最左时返回 NULL，缓存不变</returns>
-static inline rbt_node *rbt_erase_cached(rbt_node *node, rbt_root_cached *root) {
+static inline rbt_node *rbt_erase_cached(rbt_root_cached *root, rbt_node *node) {
     rbt_node *leftmost = NULL;
     if (root->rbt_leftmost == node) {
         leftmost = rbt_next(node);// 必须在摘除之前取后继
         root->rbt_leftmost = leftmost;
     }
-    rbt_erase(node, &root->rbt_root);
+    rbt_erase(&root->rbt_root, node);
     return leftmost;
 }
 /// <summary>
 /// 同 rbt_replace_node，另维护最左缓存
 /// </summary>
+/// <param name="root">所在树</param>
 /// <param name="victim">树中节点</param>
 /// <param name="rep">替换节点，约束同 rbt_replace_node</param>
-/// <param name="root">所在树</param>
-static inline void rbt_replace_node_cached(rbt_node *victim, rbt_node *rep, rbt_root_cached *root) {
+static inline void rbt_replace_node_cached(rbt_root_cached *root, rbt_node *victim, rbt_node *rep) {
     if (root->rbt_leftmost == victim) {
         root->rbt_leftmost = rep;
     }
-    rbt_replace_node(victim, rep, &root->rbt_root);
+    rbt_replace_node(&root->rbt_root, victim, rep);
 }
 
 #endif//RBTREE_H_

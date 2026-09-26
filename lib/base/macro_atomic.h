@@ -6,7 +6,6 @@
 // 跨平台原子操作。四套后端：GCC/Clang 用编译器内建（一份覆盖所有 OS，含 Windows 上的
 // MinGW/clang-cl），MSVC 用 Interlocked，Sun Studio 用 libc atomic，xlC 用 AIX 原子服务。
 // 后两家的原语本身不带内存序，靠前后各夹一道 ATOMIC_THREAD_FENCE_SEQCST 凑出来。
-//
 // 该用哪个：
 //   ATOMIC_GET / ATOMIC_SET / ATOMIC_ADD / ATOMIC_CAS  默认用这四个，够强，不会错
 //   ATOMIC_SET_RELEASE   发布：写完一段数据再置标志位，对方 ATOMIC_GET 到标志就能看到数据。
@@ -15,6 +14,11 @@
 //   ATOMIC_GET_SEQCST    握手：双方"我先置标志，再看对方"这类互相试探的场景（log.c、loader.c
 //   ATOMIC_THREAD_FENCE_SEQCST   的丢唤醒防护）。两边都得用足序版本，否则会同时看漏
 //   ATOMIC_SET_SEQCST    握手里"置标志"那一步，配 ATOMIC_GET_SEQCST 用。比 ATOMIC_SET 便宜，但不返回旧值
+// 内存序参数（GCC/Clang 内建里的 __ATOMIC_*）：
+//   __ATOMIC_ACQUIRE     用在读上：读到对方用 RELEASE 写进去的值，就一定能看到对方在那次写之前写的数据
+//   __ATOMIC_RELEASE     用在写上：配对方的 ACQUIRE 读，保证这次写之前的数据不会晚于它被对方看到
+//   __ATOMIC_SEQ_CST     最严：所有线程看到的读写先后都一致，握手场景要它
+//   __ATOMIC_RELAXED     只保证这个变量本身读写不撕裂，不管它和别的读写谁先谁后
 // 带 64 的是 64 位版本，语义与 32 位一致
 #if defined(OS_AIX)
     #ifndef __64BIT__
@@ -28,6 +32,7 @@
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
+    // 防止编译器和 CPU 对前后内存读写进行重排，并保证全局的顺序一致性
     #define ATOMIC_THREAD_FENCE_SEQCST() __atomic_thread_fence(__ATOMIC_SEQ_CST)
     #define ATOMIC_GET(ptr)   __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
     #define ATOMIC_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
@@ -44,6 +49,7 @@
     #define ATOMIC64_SET_SEQCST(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
     #define ATOMIC64_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
+    // 宽松内存顺序
     #define ATOMIC_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
     #define ATOMIC64_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
     #define ATOMIC_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
