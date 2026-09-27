@@ -48,9 +48,9 @@ void buffer_thread_cleanup(void);
 /// <param name="ctx">buffer_ctx</param>
 void buffer_init(buffer_ctx *ctx);
 /// <summary>
-/// 分散内存释放。调用后 ctx 回到 buffer_init 后的空状态，可安全重复调用；
-/// 复位是为了重复释放不变成 double free、释放后读不到陈旧节点与字节数，
-/// 不是"清空并复用"的入口。
+/// 分散内存释放。调用后 ctx 回到 buffer_init 后的空状态，可安全重复调用，也可接着用。
+/// 只想丢数据用 buffer_drain：它不还空节点（读到 FIN 那次 expand 出来的节点就是空的），
+/// 对象要回池或长时间闲置时用本函数把节点全还掉
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 void buffer_free(buffer_ctx *ctx);
@@ -66,8 +66,9 @@ size_t buffer_size(buffer_ctx *ctx);
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="cnt">随后 buffer_expand 将使用的 IOV 数组长度</param>
-/// <returns>可直接写入的字节数，即传给 buffer_expand 不会触发新节点分配的最大 lens；
-/// 0 表示链上已无空闲空间，任何 expand 都会新建节点</returns>
+/// <returns>可直接写入的字节数：传给 buffer_expand 的 lens 不超过它就不会新建节点
+/// （expand 还可能把尾节点的残包前移腾出更多，所以这是下界）；
+/// 0 表示链上已无空闲空间</returns>
 size_t buffer_space(buffer_ctx *ctx, const uint32_t cnt);
 /// <summary>
 /// 将外部缓存data添加到buffer,不做一次拷贝,供零拷贝的读取用。

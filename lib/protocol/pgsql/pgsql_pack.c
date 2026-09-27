@@ -1,7 +1,7 @@
 ﻿#include "protocol/pgsql/pgsql_pack.h"
 
-void pgsql_pack_start(binary_ctx *bwriter, int8_t code) {
-    binary_init_write(bwriter, 0, 0);
+void pgsql_pack_start(binary_ctx *bwriter, int8_t code, size_t lens) {
+    binary_init_write(bwriter, lens, 0);
     binary_set_int8(bwriter, code); // 写入消息类型码
     binary_set_skip(bwriter, 4); // 预留 4 字节消息体长度字段
 }
@@ -32,16 +32,20 @@ static inline void _pgpack_set_string(binary_ctx *bwriter, const char *str) {
     }
     binary_set_string(bwriter, str);
 }
+// _pgpack_set_string 会写的字节数，给 pgsql_pack_start 估容量用
+static inline size_t _pgpack_strsize(const char *str) {
+    return NULL == str ? 1 : strlen(str) + 1;
+}
 void *pgsql_pack_terminate(size_t *size) {
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'X'); // Terminate：Byte1('X') Int32(4)
+    pgsql_pack_start(&bwriter, 'X', 0); // Terminate：Byte1('X') Int32(4)
     pgsql_pack_end(&bwriter);
     *size = bwriter.offset;
     return bwriter.data;
 }
 void *pgsql_pack_query(const char *sql, size_t *size) {
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'Q'); // Query：Byte1('Q') Int32 String
+    pgsql_pack_start(&bwriter, 'Q', 5 + _pgpack_strsize(sql)); // Query：Byte1('Q') Int32 String
     _pgpack_set_string(&bwriter, sql);
     pgsql_pack_end(&bwriter);
     *size = bwriter.offset;
@@ -49,7 +53,11 @@ void *pgsql_pack_query(const char *sql, size_t *size) {
 }
 void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size) {
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'P'); // Parse：Byte1('P') Int32 String String Int16 [Int32]
+    size_t lens = 5 + _pgpack_strsize(name) + _pgpack_strsize(sql) + 2 + 5;
+    if (nparam > 0 && NULL != oids) {
+        lens += (size_t)nparam * 4;
+    }
+    pgsql_pack_start(&bwriter, 'P', lens); // Parse：Byte1('P') Int32 String String Int16 [Int32]
     _pgpack_set_string(&bwriter, name); // 目标预处理语句名称（NULL / 空名即匿名预处理语句）
     _pgpack_set_string(&bwriter, sql); // 要解析的 SQL 查询字符串
     if (nparam > 0 && NULL != oids) {
@@ -75,8 +83,11 @@ void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_for
         return NULL;
     }
     binary_ctx bwriter;
+    size_t namesize = _pgpack_strsize(name);
+    size_t lens = 5 + 1 + namesize + 4 + (5 + 1 + namesize) + (5 + 1 + 4) + 5;
+    lens += (NULL == bind || 0 == bind->nparam) ? 4 : bind->format.offset + bind->values.offset;
     // Bind：Byte1('B') Int32 String String Int16 [Int16] Int16 [Int32 Byten] Int16 [Int16]
-    pgsql_pack_start(&bwriter, 'B');
+    pgsql_pack_start(&bwriter, 'B', lens);
     binary_set_string(&bwriter, ""); // 目标门户名称（空字符串表示未命名门户）
     _pgpack_set_string(&bwriter, name); // 源预处理语句名称
     if (NULL == bind || 0 == bind->nparam) {
@@ -108,7 +119,7 @@ void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_for
 void *pgsql_pack_stmt_close(const char *name, size_t *size) {
     binary_ctx bwriter;
     // Close：Byte1('C') Int32 Byte1 String
-    pgsql_pack_start(&bwriter, 'C');
+    pgsql_pack_start(&bwriter, 'C', 0);
     binary_set_int8(&bwriter, 'S'); // 'S' 关闭预处理语句，'P' 关闭门户
     _pgpack_set_string(&bwriter, name);
     pgsql_pack_end(&bwriter);
@@ -121,7 +132,7 @@ void *pgsql_pack_stmt_close(const char *name, size_t *size) {
 void *pgsql_pack_copy_data(const void *data, size_t lens, size_t *size) {
     binary_ctx bwriter;
     // CopyData：Byte1('d') Int32(4+lens) ByteN(data)
-    pgsql_pack_start(&bwriter, 'd');
+    pgsql_pack_start(&bwriter, 'd', 5 + lens);
     binary_set_binary(&bwriter, data, lens);
     pgsql_pack_end(&bwriter);
     *size = bwriter.offset;
@@ -130,7 +141,7 @@ void *pgsql_pack_copy_data(const void *data, size_t lens, size_t *size) {
 void *pgsql_pack_copy_done(size_t *size) {
     binary_ctx bwriter;
     // CopyDone：Byte1('c') Int32(4)
-    pgsql_pack_start(&bwriter, 'c');
+    pgsql_pack_start(&bwriter, 'c', 0);
     pgsql_pack_end(&bwriter);
     *size = bwriter.offset;
     return bwriter.data;
@@ -138,7 +149,7 @@ void *pgsql_pack_copy_done(size_t *size) {
 void *pgsql_pack_copy_fail(const char *msg, size_t *size) {
     binary_ctx bwriter;
     // CopyFail：Byte1('f') Int32 String
-    pgsql_pack_start(&bwriter, 'f');
+    pgsql_pack_start(&bwriter, 'f', 5 + _pgpack_strsize(msg));
     _pgpack_set_string(&bwriter, msg);
     pgsql_pack_end(&bwriter);
     *size = bwriter.offset;

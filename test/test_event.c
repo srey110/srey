@@ -5,6 +5,15 @@
 #define LINGER_RESP "HTTP/1.1 411 Length Required\r\nContent-Length: 0\r\n\r\n"
 // 各用例各占一个端口：Windows 监听口带 SO_EXCLUSIVEADDRUSE，立即重绑同端口会失败
 #define LINGER_PORT 15090
+// accept 选项用例的端口，紧跟延迟关闭那组(15090~15095)之后
+#define ACP_OPTS_PORT 15096
+#define UDP_CLOSE_PORT 15097
+// 读保活空闲时长的选项名，取法同 sock_keepalive
+#if defined(TCP_KEEPIDLE)
+    #define ACP_IDLE_OPT TCP_KEEPIDLE
+#elif defined(TCP_KEEPALIVE) && !defined(OS_SUN)
+    #define ACP_IDLE_OPT TCP_KEEPALIVE
+#endif
 // 忙连接用例里服务端一次回的大包：要大到内核发送缓冲装不下，发送队列留有积压、写事件挂着
 #define LINGER_BIG (8 * 1024 * 1024)
 // _linger_server 的服务端行为
@@ -451,6 +460,112 @@ static void test_ssl_write_wants_read(CuTest *tc) {
     SSL_CTX_free(sctx);
 }
 #endif
+// accept 出的连接上读到的 nodelay / 保活开关(0 或 1) 与保活空闲时长(秒)，-1 表示还没取到
+static atomic_t _g_acp_nodelay;
+static atomic_t _g_acp_keep;
+static atomic_t _g_acp_idle;
+static int32_t _acp_getopt(SOCKET fd, int32_t level, int32_t opt) {
+    int32_t v = 0;
+    socklen_t lens = (socklen_t)sizeof(v);
+    if (0 != getsockopt(fd, level, opt, (char *)&v, &lens)) {
+        return -2;
+    }
+    return v;
+}
+static int32_t _acp_opts_on_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ev;
+    (void)ud;
+    ATOMIC_SET(&_g_acp_keep, 0 != _acp_getopt(sk->fd, SOL_SOCKET, SO_KEEPALIVE));
+#ifdef ACP_IDLE_OPT
+    ATOMIC_SET(&_g_acp_idle, _acp_getopt(sk->fd, IPPROTO_TCP, ACP_IDLE_OPT));
+#endif
+    ATOMIC_SET(&_g_acp_nodelay, 0 != _acp_getopt(sk->fd, IPPROTO_TCP, TCP_NODELAY));// 最后写，主线程拿它当"取完了"
+    return ERR_OK;
+}
+static void _acp_opts_on_recv(ev_ctx *ev, sock_ctx *sk,
+                              int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+}
+// accept 出的连接在 acp_cb 里就得带着 nodelay、保活与 KEEPALIVE_TIME 的空闲时长：
+// 这几项多数平台靠从监听 socket 继承(ACCEPT_INHERIT_OPTS)，内核哪天不继承了只会悄悄丢
+static void test_ev_accept_opts(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    netaddr_ctx addr;
+    uint64_t id;
+    SOCKET fd = INVALID_SOCK;
+    int32_t i;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.acp_cb = _acp_opts_on_accept;
+    cbs.r_cb = _acp_opts_on_recv;
+    ATOMIC_SET(&_g_acp_nodelay, -1);
+    ATOMIC_SET(&_g_acp_keep, -1);
+    ATOMIC_SET(&_g_acp_idle, -1);
+    ev_init(&ev, 1, NULL);
+    CuAssertIntEquals(tc, ERR_OK, ev_listen(&ev, NULL, "127.0.0.1", ACP_OPTS_PORT, &cbs, NULL, &id));
+    MSLEEP(50);// listen 落地是异步的
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&addr, "127.0.0.1", ACP_OPTS_PORT));
+    fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    CuAssertTrue(tc, INVALID_SOCK != fd);
+    CuAssertIntEquals(tc, 0, connect(fd, netaddr_addr(&addr), netaddr_size(&addr)));
+    for (i = 0; i < 1000 && -1 == (int32_t)ATOMIC_GET(&_g_acp_nodelay); i++) {
+        MSLEEP(1);
+    }
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_acp_nodelay));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_acp_keep));
+#ifdef ACP_IDLE_OPT
+    CuAssertIntEquals(tc, KEEPALIVE_TIME, (int32_t)ATOMIC_GET(&_g_acp_idle));
+#endif
+}
+// UDP 用例：已投递的 datagram 数与关闭回调次数
+static atomic_t _g_udp_nrecv;
+static atomic_t _g_udp_nclose;
+static void _udp_close_on_recvfrom(ev_ctx *ev, sock_ctx *sk,
+                                   char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+    (void)buf; (void)size; (void)addr; (void)ud;
+    if (1 == ATOMIC_ADD(&_g_udp_nrecv, 1)) {
+        ev_close(ev, sk);// 事件线程上同步关
+    }
+}
+static void _udp_close_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)erro; (void)ud;
+    ATOMIC_ADD(&_g_udp_nclose, 1);
+}
+// 收包回调里关 socket：一次读事件里已收上来的后续 datagram 不得再投递(批量收时它们已在本地缓冲里)，
+// 关闭回调只走一次。不论几包落在同一批，投递数都必须恰好是 2
+static void test_ev_udp_close_in_recv(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    netaddr_ctx addr;
+    sock_ctx sk;
+    SOCKET fd;
+    int32_t i;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.rf_cb = _udp_close_on_recvfrom;
+    cbs.c_cb = _udp_close_on_close;
+    ATOMIC_SET(&_g_udp_nrecv, 0);
+    ATOMIC_SET(&_g_udp_nclose, 0);
+    ev_init(&ev, 1, NULL);
+    CuAssertIntEquals(tc, ERR_OK, ev_udp(&ev, "127.0.0.1", UDP_CLOSE_PORT, &cbs, NULL, &sk));
+    MSLEEP(50);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&addr, "127.0.0.1", UDP_CLOSE_PORT));
+    fd = sock_create_cloexec(netaddr_family(&addr), SOCK_DGRAM, 0, 0);
+    CuAssertTrue(tc, INVALID_SOCK != fd);
+    for (i = 0; i < 16; i++) {
+        sendto(fd, "0123456789", 10, 0, netaddr_addr(&addr), netaddr_size(&addr));
+    }
+    for (i = 0; i < 500 && 0 == (int32_t)ATOMIC_GET(&_g_udp_nclose); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关错了的话后面的包还会陆续投递，多等一会儿再数
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&_g_udp_nrecv));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_udp_nclose));
+}
 #if 0 != CLOSE_LINGER_MS
 // 服务端关闭回调次数：用来确认"本端关闭"确实走完了，没有卡在等对端动
 static atomic_t _g_linger_closed;
@@ -805,6 +920,8 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_close_flush);
     SUITE_ADD_TEST(suite, test_evpub_read_fin);
     SUITE_ADD_TEST(suite, test_evpub_close_type);
+    SUITE_ADD_TEST(suite, test_ev_accept_opts);
+    SUITE_ADD_TEST(suite, test_ev_udp_close_in_recv);
 #if 0 != CLOSE_LINGER_MS
     SUITE_ADD_TEST(suite, test_ev_linger_late_data);
     SUITE_ADD_TEST(suite, test_ev_linger_timeout);

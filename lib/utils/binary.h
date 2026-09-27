@@ -17,7 +17,7 @@ typedef struct binary_ctx {
 /// 用完须 binary_free。组包走这个，解包走 binary_init_read。
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
-/// <param name="lens">初始容量提示；0 表示只按 inc 开一块</param>
+/// <param name="lens">初始容量提示：写满 lens 字节也不扩容（结尾 NUL 那 1 字节另留）；0 表示只按 inc 开一块</param>
 /// <param name="inc">扩容增量基数，取值 [0, INT32_MAX]，超界断言。内部会向上取到 2 的幂
 /// （下限 2）——它随后当对齐模数用，非 2 的幂对不齐；0 表示用默认值</param>
 void binary_init_write(binary_ctx *ctx, size_t lens, size_t inc);
@@ -186,6 +186,13 @@ static inline void binary_set_skip(binary_ctx *ctx, size_t lens) {
 /// <param name="fmt">格式化</param>
 /// <param name="...">变参</param>
 void binary_set_va(binary_ctx *ctx, const char *fmt, ...);
+/// <summary>
+/// 写入无符号整数的文本（小写、无前导零，同 %llu / %llx），按需扩容。只拼数字时用它代替 binary_set_va
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <param name="val">值</param>
+/// <param name="base">进制，取值 [2, 16]，超界断言</param>
+void binary_set_uint(binary_ctx *ctx, uint64_t val, uint32_t base);
 // 全部 binary_get_* 越界即 ASSERTAB abort 进程，没有失败回传通道。凡是长度由对端决定的
 // 报文，读之前必须先用下面两个判一遍——判定与读挨着写，漏判在 review 里看得见。
 // binary_get_string 是唯一预判不了的（越界条件是"剩余字节里没有 NUL"，得先扫），

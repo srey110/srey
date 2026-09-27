@@ -95,13 +95,14 @@ static inline list_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     }
     return slot;
 }
-// 将高精度槽位中的节点重新分配到低精度槽位（时间轮进位）
+// 将高精度槽位中的节点重新分配到低精度槽位（时间轮进位）：源槽整条摘下再逐个改投，不逐个摘除
 static uint32_t _tw_cascade(tw_ctx *ctx, list_ctx *slot, const uint32_t index) {
     tw_node_ctx *pnode;
-    list_foreach_safe(&slot[index], ln, tmp) {
+    list_ctx moving = slot[index];
+    list_init(&slot[index]);
+    list_foreach_safe(&moving, ln, tmp) {
         pnode = UPCAST(ln, tw_node_ctx, node);
-        list_remove(&slot[index], ln);// 从源槽摘除
-        list_push_tail(_tw_getslot(ctx, pnode), &pnode->node);// 改投目标槽（cascade 必降级,目标≠源槽）
+        list_push_tail(_tw_getslot(ctx, pnode), &pnode->node);
     }
     return index;
 }
@@ -160,6 +161,7 @@ static void _tw_loop(void *arg) {
     uint64_t curtick;
     uint64_t wake_at;
     uint32_t sleep_ms;
+    int32_t ran;
     tw_ctx *ctx = (tw_ctx *)arg;
     tw_node_ctx *nodes[TW_REQADD_BATCH];
     ctx->jiffies = timer_cur_ms(&ctx->timer);
@@ -173,17 +175,21 @@ static void _tw_loop(void *arg) {
         _tw_insert_all(ctx, nodes);
         /* 2. 处理所有已到期的 jiffies */
         curtick = timer_cur_ms(&ctx->timer);
+        ran = ctx->jiffies <= curtick;
         while (ctx->jiffies <= curtick) {
             _tw_run(ctx);
         }
         // 空闲时按 SHRINK_TIME 门控回落节点池
         if (pool_shrink_due(&shrink_start, curtick)) {
             pool_shrink(&ctx->node_pool);
+            ran = 1;
         }
         /* 睡到下一个必须醒的 jiffy: 最近的 tv1 到期或下一个 cascade 边界, 上界由
          * _tw_next_delta 保证不超过 256ms, 不用钳位。wake_at 已过说明本轮耗时超过了
          * 下一到期, 不睡直接回追赶循环; tw_add / tw_free 会提前 cond_signal 唤醒。*/
-        curtick = timer_cur_ms(&ctx->timer);
+        if (ran) {
+            curtick = timer_cur_ms(&ctx->timer);
+        }
         wake_at = ctx->jiffies + _tw_next_delta(ctx);
         if (wake_at <= curtick) {
             continue;
@@ -209,7 +215,7 @@ void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks) {
     cond_init(&ctx->cond);
     timer_init(&ctx->timer);
     twq_init(&ctx->reqadd, 0 == capacity ? 4 * ONEK : capacity);
-    pool_init(&ctx->node_pool, sizeof(tw_node_ctx), TW_NODE_POOL_MAX, TW_NODE_POOL_MAX / 4, POOL_THSAFE, NULL);
+    pool_init(&ctx->node_pool, sizeof(tw_node_ctx), TW_NODE_POOL_MAX, TW_REQADD_BATCH, POOL_THSAFE, NULL);
     ZERO(ctx->tv1, sizeof(ctx->tv1));
     ZERO(ctx->tv2, sizeof(ctx->tv2));
     ZERO(ctx->tv3, sizeof(ctx->tv3));

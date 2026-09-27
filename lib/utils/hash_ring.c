@@ -2,9 +2,9 @@
 #include "utils/utils.h"
 #include "crypt/xxhash.h"
 
-/* 栈上分配的最大名称长度，避免每个副本都堆分配。
+/* 栈上分配的最大名称长度，避免堆分配。
  * 节点名通常为 host:port 短字符串，512 字节可覆盖绝大多数场景，
- * 超出时回退为单次堆分配。 */
+ * 超出时每个节点回退为一次堆分配。 */
 #define NAME_STACK_LEN  512
 
 /* 单节点虚拟副本数上限。实际用量在几十到几百，这里留了三个数量级余量。
@@ -55,40 +55,46 @@ void hash_ring_free(hash_ring_ctx *ring) {
 static inline uint64_t _hash_ring_hash(void *data, size_t lens) {
     return xxh64(data, lens, 0);
 }
-// 为节点生成所有虚拟副本（replica）并添加到 items 数组
+// 为节点生成所有虚拟副本（replica）并添加到 items 数组。副本名是"节点名-序号"：节点名只拷一次，
+// 序号手写十进制。产出必须与 "-%u" 逐字节相同——名字一变 digest 就变，环上位置全漂
 static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
-    char concat_buf[16];
-    int32_t rtn;
-    size_t concat_len;
-    hash_ring_item *item;
     char name_stack[NAME_STACK_LEN];
-    char *name;
-    size_t name_len;
-    int32_t heap;
+    char digits[12];// '-' 加 uint32 最多 10 位
+    char *name, *d;
+    size_t nlen;
+    uint32_t v;
+    hash_ring_item *item;
+    // 节点名加最长的后缀放不进栈缓冲才上堆，整个节点只分配这一次
+    int32_t heap = node->lens + sizeof(digits) > NAME_STACK_LEN;
+    // items 一次扩够本节点全部副本，循环里只往尾部填
     REALLOC(ring->items, ring->items, sizeof(hash_ring_item *) * ((size_t)ring->nitems + node->nreplicas));
+    if (heap) {
+        MALLOC(name, node->lens + sizeof(digits));
+    } else {
+        name = name_stack;
+    }
+    memcpy(name, node->name, node->lens);// 节点名只拷一次，每轮只改后面的 "-序号"
     for (uint32_t i = 0; i < node->nreplicas; i++) {
-        rtn = SNPRINTF(concat_buf, sizeof(concat_buf), "-%u", i);
-        ASSERTAB(rtn > 0, "snprintf failed.");
-        concat_len = snprintf_lens(rtn, sizeof(concat_buf));
-        name_len = node->lens + concat_len;
-        if (name_len <= NAME_STACK_LEN) {
-            name = name_stack;
-            heap = 0;
-        } else {
-            MALLOC(name, name_len);
-            heap = 1;
-        }
-        memcpy(name, node->name, node->lens);
-        memcpy(name + node->lens, concat_buf, concat_len);
+        // 序号从低位到高位倒着写进 digits 末尾，再在最前补 '-'，得到与 "-%u" 相同的串
+        d = digits + sizeof(digits);
+        v = i;
+        do {
+            *--d = (char)('0' + v % 10);
+            v /= 10;
+        } while (0 != v);
+        *--d = '-';
+        nlen = (size_t)(digits + sizeof(digits) - d);
+        // 后缀接在节点名后面；序号位数会变，digest 按本轮实际长度算
+        memcpy(name + node->lens, d, nlen);
         MALLOC(item, sizeof(hash_ring_item));
         item->node = node;
-        item->digest = _hash_ring_hash(name, name_len);
+        item->digest = _hash_ring_hash(name, node->lens + nlen);
         ring->items[ring->nitems + i] = item;
-        if (heap) {
-            FREE(name);
-        }
     }
-    ring->nitems += node->nreplicas;
+    if (heap) {
+        FREE(name);
+    }
+    ring->nitems += node->nreplicas;// 新副本先追加在尾部，排序由调用方做(hash_ring_add 归并 / hash_ring_sort)
 }
 // 在节点链表中按名称查找，返回链表包装（remove 要靠它拿 lnode），不存在返 NULL。
 // add 判重复注册与 remove 定位目标必须用同一个谓词：分叉就是加得进去删不掉，node
@@ -140,11 +146,29 @@ int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint3
     _hash_ring_add_items(ring, node);
     return ERR_OK;
 }
+// 只排新加的副本，再与已有的有序段从尾部归并：逐个加节点时不必每次整体重排。
+// 新段先拷到临时数组——它就躺在 items 尾部，从尾归并会先写到那里
 int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
+    uint32_t old = NULL == ring ? 0 : ring->nitems;
     int32_t rtn = hash_ring_add_nosort(ring, name, lens, nreplicas);
-    if (ERR_OK == rtn) {
-        hash_ring_sort(ring);
+    if (ERR_OK != rtn) {
+        return rtn;
     }
+    uint32_t nnew = ring->nitems - old;
+    int64_t i = (int64_t)old - 1, j = (int64_t)nnew - 1, k = (int64_t)ring->nitems - 1;
+    hash_ring_item **tmp;
+    qsort((void **)(ring->items + old), nnew, sizeof(hash_ring_item *), _hash_ring_sort);
+    MALLOC(tmp, sizeof(hash_ring_item *) * nnew);
+    memcpy(tmp, ring->items + old, sizeof(hash_ring_item *) * nnew);
+    while (j >= 0) {
+        if (i >= 0
+            && ring->items[i]->digest > tmp[j]->digest) {
+            ring->items[k--] = ring->items[i--];
+        } else {
+            ring->items[k--] = tmp[j--];
+        }
+    }
+    FREE(tmp);
     return rtn;
 }
 void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
@@ -219,7 +243,7 @@ hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
     }
 }
 void hash_ring_print(hash_ring_ctx *ring) {
-    uint32_t x, y;
+    uint32_t x;
     printf("----------------------------------------\n");
     printf("hash_ring\n\n");
     printf("Nodes: \n\n");
@@ -231,9 +255,7 @@ void hash_ring_print(hash_ring_ctx *ring) {
         cur = UPCAST(ln, hash_ring_list, lnode);
         printf("%u: ", x);
         name = cur->node->name;
-        for (y = 0; y < cur->node->lens; y++) {
-            printf("%c", name[y]);
-        }
+        fwrite(name, 1, cur->node->lens, stdout);
         printf("\n");
         x++;
     }
@@ -243,9 +265,7 @@ void hash_ring_print(hash_ring_ctx *ring) {
         item = ring->items[x];
         printf("%" PRIu64 " : ", item->digest);
         name = item->node->name;
-        for (y = 0; y < item->node->lens; y++) {
-            printf("%c", name[y]);
-        }
+        fwrite(name, 1, item->node->lens, stdout);
         printf("\n");
     }
     printf("\n");

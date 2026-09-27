@@ -899,16 +899,14 @@ static pgpack_ctx *_pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *da
     }
     // 第一次 coro_send 的返回值 pgpack 由框架在下次 yield 时经 _message_clean 自动释放，此处无需手动释放
     // 第二步：将 CopyData + CopyDone 合并为一个缓冲区，一次发送并等待 ReadyForQuery
-    size_t dsize, csize;
-    void *copy_data = pgsql_pack_copy_data(data, lens, &dsize);
-    void *copy_done = pgsql_pack_copy_done(&csize);
-    // 合并两段到连续缓冲区后发送，避免两次系统调用
+    // 两段直接拼在同一个缓冲里一次发送，避免两次系统调用
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_binary(&bwriter, copy_data, dsize);
-    binary_set_binary(&bwriter, copy_done, csize);
-    FREE(copy_data);
-    FREE(copy_done);
+    binary_init_write(&bwriter, 5 + lens + 5, 0);
+    size_t offset = pgsql_pack_append_start(&bwriter, 'd');
+    binary_set_binary(&bwriter, data, lens);
+    pgsql_pack_append_end(&bwriter, offset);
+    offset = pgsql_pack_append_start(&bwriter, 'c');
+    pgsql_pack_append_end(&bwriter, offset);
     return coro_send(pg->task, &pg->sk, bwriter.data, bwriter.offset, NULL, 0);
 }
 pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {

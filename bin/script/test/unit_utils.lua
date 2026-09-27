@@ -16,7 +16,7 @@ srey.startup(function()
 runner.run(function(t)
     -- ── srey.utils ─────────────────────────────────────────────────────
     do
-        -- id() 单调递增
+        -- id() 同一线程内递增（跨线程不保证先后）
         local a = utils.id()
         local b = utils.id()
         t:check(type(a) == "number" and type(b) == "number", "id() returns number")

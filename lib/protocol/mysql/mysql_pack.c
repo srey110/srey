@@ -60,8 +60,12 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
         return NULL;
     }
     mysql->id = 0;
+    size_t hint = 5 + 18 + sqllen;
+    if (NULL != mbind) {
+        hint += mbind->bitmap.offset + 1 + mbind->type_name.offset + mbind->value.offset;
+    }
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
+    binary_init_write(&bwriter, hint, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_QUERY);//command
@@ -92,7 +96,7 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     mysql->id = 0;
     size_t lens = strlen(sql);
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
+    binary_init_write(&bwriter, 5 + lens, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PREPARE);
@@ -111,8 +115,12 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
         return NULL;
     }
     stmt->mysql->id = 0;
+    size_t hint = 14;
+    if (count > 0) {
+        hint += 9 + mbind->bitmap.offset + 1 + mbind->type_name.offset + mbind->type.offset + mbind->value.offset;
+    }
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
+    binary_init_write(&bwriter, hint, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_uint8(&bwriter, stmt->mysql->id);
     binary_set_uint8(&bwriter, MYSQL_EXECUTE);//status

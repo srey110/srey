@@ -81,19 +81,36 @@ static void *_mysql_feed(mysql_ctx *mysql, const void *payload, size_t plens, in
     return out;
 }
 
-// 向 reader 追加一行：payload 作为整行的内存所有者，每个 row[i] 引用 payload 中的某段
-// payload 由 reader 释放（_mpack_reader_free 内 FREE(rows->payload)）
-static void _reader_push_row(mysql_reader_ctx *reader, char *payload,
+// 向 reader 追加一行，每个 row[i] 引用 payload 中的某段。同解析侧：payload 与行数组拼成一块、
+// 块首记在首列，reader 释放时只释放这一块（_mpack_reader_free）。调用方交出 *payload：
+// 这里把用到的那段搬进新块、列值按偏移改指新块，释放原 payload 后把 *payload 改指新块
+static void _reader_push_row(mysql_reader_ctx *reader, char **ppayload,
                              const buf_ctx *cols, const int32_t *nils) {
-    mpack_row *row;
-    CALLOC(row, 1, sizeof(mpack_row) * (size_t)reader->field_count);
-    row[0].payload = payload;
-    for (int32_t i = 0; i < reader->field_count; i++) {
-        row[i].nil = nils ? nils[i] : 0;
-        if (!row[i].nil && cols) {
-            row[i].val = cols[i];
+    char *payload = *ppayload;
+    size_t used = 0, end, off;
+    int32_t i;
+    for (i = 0; NULL != cols && i < reader->field_count; i++) {
+        if (!(nils && nils[i]) && NULL != cols[i].data) {
+            end = (size_t)((char *)cols[i].data - payload) + cols[i].lens;
+            used = end > used ? end : used;
         }
     }
+    off = ROUND_UP(used, 8);
+    char *block;
+    MALLOC(block, off + sizeof(mpack_row) * (size_t)reader->field_count);
+    memcpy(block, payload, used);
+    mpack_row *row = (mpack_row *)(block + off);
+    ZERO(row, sizeof(mpack_row) * (size_t)reader->field_count);
+    row[0].payload = block;
+    for (i = 0; i < reader->field_count; i++) {
+        row[i].nil = nils ? nils[i] : 0;
+        if (!row[i].nil && cols) {
+            row[i].val.lens = cols[i].lens;
+            row[i].val.data = (NULL == cols[i].data) ? NULL : block + ((char *)cols[i].data - payload);
+        }
+    }
+    FREE(payload);
+    *ppayload = block;
     mrow_arr_push_back(&reader->arr_rows, &row);
 }
 
@@ -107,7 +124,7 @@ static mysql_reader_ctx *_reader_one_text(mpack_type mptype, const char (*names)
     memcpy(p, val, lens);
     p[lens] = '\0';
     buf_ctx c[1] = { { .data = p, .lens = lens } };
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     return r;
 }
 
@@ -162,7 +179,7 @@ static void test_mysql_reader_cursor(CuTest *tc) {
         p[0] = (char)('1' + i);
         p[1] = '\0';
         buf_ctx cols[1] = { { .data = p, .lens = 1 } };
-        _reader_push_row(r, p, cols, NULL);
+        _reader_push_row(r, &p, cols, NULL);
     }
     CuAssertIntEquals(tc, 3, (int)mysql_reader_size(r));
     CuAssertIntEquals(tc, 0, mysql_reader_eof(r));
@@ -203,7 +220,7 @@ static void test_mysql_reader_integer_text(CuTest *tc) {
     memcpy(p1 + 2, "x", 1);
     buf_ctx c1[3] = { { .data = p1, .lens = 2 }, { .data = p1 + 2, .lens = 1 }, { .data = NULL, .lens = 0 } };
     int32_t n1[3] = { 0, 0, 1 };
-    _reader_push_row(r, p1, c1, n1);
+    _reader_push_row(r, &p1, c1, n1);
 
     int32_t err;
     int64_t v = mysql_reader_integer(r, "a", &err);
@@ -257,7 +274,7 @@ static void test_mysql_reader_integer_text_bounds(CuTest *tc) {
         { .data = p + 43, .lens = 2  },// space：" 4"，strtoll 会跳空白当合法
         { .data = p + 45, .lens = 1  },// onlyminus：只有符号没有数字
     };
-    _reader_push_row(r, p, cols, NULL);
+    _reader_push_row(r, &p, cols, NULL);
 
     int32_t err;
     int64_t v = mysql_reader_integer(r, "empty", &err);
@@ -301,7 +318,7 @@ static void test_mysql_reader_integer_binary(CuTest *tc) {
     MALLOC(p, 4);
     pack_integer(p, (uint64_t)(int64_t)-123, 4, 1);
     buf_ctx c1[1] = { { .data = p, .lens = 4 } };
-    _reader_push_row(r, p, c1, NULL);
+    _reader_push_row(r, &p, c1, NULL);
 
     int32_t err;
     int64_t v = mysql_reader_integer(r, "x", &err);
@@ -316,7 +333,7 @@ static void test_mysql_reader_integer_binary(CuTest *tc) {
     MALLOC(p2, 1);
     p2[0] = (char)127;
     buf_ctx c2[1] = { { .data = p2, .lens = 1 } };
-    _reader_push_row(r2, p2, c2, NULL);
+    _reader_push_row(r2, &p2, c2, NULL);
     v = mysql_reader_integer(r2, "x", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 127 == v);
@@ -333,7 +350,7 @@ static void test_mysql_reader_uinteger(CuTest *tc) {
     const char *s = "18446744073709551610"; // 接近 UINT64_MAX
     memcpy(p, s, strlen(s));
     buf_ctx c[1] = { { .data = p, .lens = strlen(s) } };
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     int32_t err;
     uint64_t v = mysql_reader_uinteger(r, "n", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -348,7 +365,7 @@ static void test_mysql_reader_uinteger(CuTest *tc) {
     MALLOC(p2, 1);
     p2[0] = (char)200;
     buf_ctx c2[1] = { { .data = p2, .lens = 1 } };
-    _reader_push_row(r2, p2, c2, NULL);
+    _reader_push_row(r2, &p2, c2, NULL);
     v = mysql_reader_uinteger(r2, "u", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 200 == v);
@@ -370,7 +387,7 @@ static void test_mysql_reader_uinteger(CuTest *tc) {
         { .data = p3 + 6, .lens = 2  },// trail:尾随空格
         { .data = p3 + 8, .lens = 20 },// over:UINT64_MAX + 1
     };
-    _reader_push_row(r3, p3, c3, NULL);
+    _reader_push_row(r3, &p3, c3, NULL);
     int32_t i;
     for (i = 0; i < 5; i++) {
         v = mysql_reader_uinteger(r3, snames[i], &err);
@@ -390,7 +407,7 @@ static void test_mysql_reader_float_double_text(CuTest *tc) {
     memcpy(p, "3.14", 4);
     memcpy(p + 4, "2.71828", 7);
     buf_ctx c[2] = { { .data = p, .lens = 4 }, { .data = p + 4, .lens = 7 } };
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     int32_t err;
     float f = mysql_reader_float(r, "f", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -419,7 +436,7 @@ static void test_mysql_reader_float_text_bounds(CuTest *tc) {
     char *p1;
     MALLOC(p1, 8);
     buf_ctx empty[2] = { { .data = p1, .lens = 0 }, { .data = p1, .lens = 0 } };
-    _reader_push_row(r, p1, empty, NULL);
+    _reader_push_row(r, &p1, empty, NULL);
     CuAssertTrue(tc, 0.0f == mysql_reader_float(r, "f", &err));
     CuAssertIntEquals(tc, ERR_FAILED, err);
     CuAssertTrue(tc, 0.0 == mysql_reader_double(r, "d", &err));
@@ -433,7 +450,7 @@ static void test_mysql_reader_float_text_bounds(CuTest *tc) {
     memcpy(p2, "1e400", 5);
     memcpy(p2 + 5, "-1e400", 6);
     buf_ctx ovf[2] = { { .data = p2, .lens = 5 }, { .data = p2 + 5, .lens = 6 } };
-    _reader_push_row(r, p2, ovf, NULL);
+    _reader_push_row(r, &p2, ovf, NULL);
     CuAssertTrue(tc, 0.0f == mysql_reader_float(r, "f", &err));
     CuAssertIntEquals(tc, ERR_FAILED, err);
     CuAssertTrue(tc, 0.0 == mysql_reader_double(r, "d", &err));
@@ -447,7 +464,7 @@ static void test_mysql_reader_float_text_bounds(CuTest *tc) {
     memcpy(p3, "1.5", 3);
     memcpy(p3 + 3, "-2.25", 5);
     buf_ctx ok[2] = { { .data = p3, .lens = 3 }, { .data = p3 + 3, .lens = 5 } };
-    _reader_push_row(r, p3, ok, NULL);
+    _reader_push_row(r, &p3, ok, NULL);
     CuAssertTrue(tc, 1.5f == mysql_reader_float(r, "f", &err));
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, -2.25 == mysql_reader_double(r, "d", &err));
@@ -461,7 +478,7 @@ static void test_mysql_reader_float_text_bounds(CuTest *tc) {
     MALLOC(p4, 16);
     memcpy(p4, "1e-320", 6);
     buf_ctx sub[2] = { { .data = p4, .lens = 6 }, { .data = p4, .lens = 6 } };
-    _reader_push_row(r, p4, sub, NULL);
+    _reader_push_row(r, &p4, sub, NULL);
     double dv = mysql_reader_double(r, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, dv > 0.0 && dv < 1e-300);
@@ -481,7 +498,7 @@ static void test_mysql_reader_string(CuTest *tc) {
     memcpy(p, "hello", 5);
     memcpy(p + 5, "1", 1);
     buf_ctx c[2] = { { .data = p, .lens = 5 }, { .data = p + 5, .lens = 1 } };
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     size_t lens = 0;
     int32_t err;
     char *s = mysql_reader_string(r, "s", &lens, &err);
@@ -512,7 +529,7 @@ static void test_mysql_reader_datetime_binary(CuTest *tc) {
     p[5] = 45;// min
     p[6] = 30;// sec
     buf_ctx c[1] = { { .data = p, .lens = 7 } };
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     int32_t err;
     int64_t ts = mysql_reader_datetime(r, "dt", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -524,7 +541,7 @@ static void test_mysql_reader_datetime_binary(CuTest *tc) {
     char *p2;
     MALLOC(p2, 4);
     buf_ctx c2[1] = { { .data = p2, .lens = 0 } };
-    _reader_push_row(r2, p2, c2, NULL);
+    _reader_push_row(r2, &p2, c2, NULL);
     (void)mysql_reader_datetime(r2, "dt", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r2);
@@ -540,7 +557,7 @@ static int64_t _my_text_dt(const char *s, int32_t *err) {
     MALLOC(p, n);
     memcpy(p, s, n);
     buf_ctx c[1] = { { .data = p, .lens = n } };
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     int64_t v = mysql_reader_datetime(r, "dt", err);
     mysql_reader_free(r);
     return v;
@@ -610,7 +627,7 @@ static void test_mysql_reader_datetime_zero_date(CuTest *tc) {
     char *p;
     MALLOC(p, 4);
     buf_ctx c[1] = { { .data = p, .lens = 0 } };
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "dt", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 0 == ts);
@@ -679,7 +696,7 @@ static void test_mysql_reader_time(CuTest *tc) {
         p[6] = 30;// min
         p[7] = 45;// sec
         buf_ctx c[1] = { { .data = p, .lens = 8 } };
-        _reader_push_row(r, p, c, NULL);
+        _reader_push_row(r, &p, c, NULL);
         struct tm t;
         uint32_t usec = 0;
         ZERO(&t, sizeof(t));
@@ -717,7 +734,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     MALLOC(p, 4);
     pack_float(p, 3.5f, 1);
     c[0].data = p; c[0].lens = 4;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     f = mysql_reader_float(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, f > 3.49f && f < 3.51f);
@@ -728,7 +745,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     MALLOC(p, 8);
     pack_double(p, 3.5, 1);
     c[0].data = p; c[0].lens = 8;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     (void)mysql_reader_float(r, "v", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r);
@@ -738,7 +755,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     MALLOC(p, 8);
     pack_double(p, 2.5, 1);
     c[0].data = p; c[0].lens = 8;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     dd = mysql_reader_double(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, dd > 2.49 && dd < 2.51);
@@ -749,7 +766,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     MALLOC(p, 4);
     pack_float(p, 2.5f, 1);
     c[0].data = p; c[0].lens = 4;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     (void)mysql_reader_double(r, "v", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r);
@@ -760,7 +777,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     pack_integer(p, 2024, 2, 1);
     p[2] = 6; p[3] = 15;
     c[0].data = p; c[0].lens = 4;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
@@ -773,7 +790,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     p[2] = 6; p[3] = 15; p[4] = 10; p[5] = 20; p[6] = 30;
     pack_integer(p + 7, 123456, 4, 1);
     c[0].data = p; c[0].lens = 11;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
@@ -786,7 +803,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     pack_integer(p, 2024, 2, 1);
     p[2] = 6; p[3] = 15; p[4] = 10;
     c[0].data = p; c[0].lens = 5;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     (void)mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r);
@@ -799,7 +816,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     p[5] = 8; p[6] = 15; p[7] = 30;
     pack_integer(p + 8, 654321, 4, 1);
     c[0].data = p; c[0].lens = 12;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ZERO(&tmv, sizeof(tmv));
     usec = 0;
     neg = mysql_reader_time(r, "t", &tmv, &usec, &err);
@@ -819,7 +836,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     pack_integer(p + 1, 3, 4, 1);
     p[5] = 8; p[6] = 15;
     c[0].data = p; c[0].lens = 7;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ZERO(&tmv, sizeof(tmv));
     usec = 0;
     (void)mysql_reader_time(r, "t", &tmv, &usec, &err);
@@ -1344,7 +1361,7 @@ static void test_mpack_row_err_midstream(CuTest *tc) {
     p[0] = '7';
     p[1] = '\0';
     buf_ctx cols[1] = { { .data = p, .lens = 1 } };
-    _reader_push_row(r, p, cols, NULL);
+    _reader_push_row(r, &p, cols, NULL);
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_ERR);
@@ -1488,7 +1505,7 @@ static void test_mysql_reader_datetime_text(CuTest *tc) {
     MALLOC(p, 16);
     memcpy(p, "2024-06-15", 10);
     c[0].data = p; c[0].lens = 10;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
@@ -1499,7 +1516,7 @@ static void test_mysql_reader_datetime_text(CuTest *tc) {
     MALLOC(p, 32);
     memcpy(p, "2024-06-15 10:20:30", 19);
     c[0].data = p; c[0].lens = 19;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
@@ -1510,7 +1527,7 @@ static void test_mysql_reader_datetime_text(CuTest *tc) {
     MALLOC(p, 32);
     memcpy(p, "2024-06-15 10:20:30.123456", 26);
     c[0].data = p; c[0].lens = 26;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
@@ -1521,7 +1538,7 @@ static void test_mysql_reader_datetime_text(CuTest *tc) {
     MALLOC(p, 16);
     memcpy(p, "not-a-date", 10);
     c[0].data = p; c[0].lens = 10;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     (void)mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r);
@@ -1544,7 +1561,7 @@ static void test_mysql_reader_datetime2_types(CuTest *tc) {
     pack_integer(p, 2024, 2, 1);
     p[2] = 3; p[3] = 10; p[4] = 14; p[5] = 30; p[6] = 45;
     c[0].data = p; c[0].lens = 7;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
@@ -1557,7 +1574,7 @@ static void test_mysql_reader_datetime2_types(CuTest *tc) {
     p[2] = 1; p[3] = 1; p[4] = 0; p[5] = 0; p[6] = 0;
     pack_integer(p + 7, 999999, 4, 1);
     c[0].data = p; c[0].lens = 11;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
@@ -1570,7 +1587,7 @@ static void test_mysql_reader_datetime2_types(CuTest *tc) {
     pack_integer(p + 1, 1, 4, 1);
     p[5] = 2; p[6] = 3; p[7] = 4;
     c[0].data = p; c[0].lens = 8;
-    _reader_push_row(r, p, c, NULL);
+    _reader_push_row(r, &p, c, NULL);
     ZERO(&tmv, sizeof(tmv));
     usec = 0;
     neg = mysql_reader_time(r, "t", &tmv, &usec, &err);
@@ -1589,7 +1606,7 @@ static void _push_oversized_field(mysql_reader_ctx *reader, size_t cap) {
     MALLOC(p, cap);
     memset(p, '1', cap);
     buf_ctx c[1] = { { .data = p, .lens = cap } };
-    _reader_push_row(reader, p, c, NULL);
+    _reader_push_row(reader, &p, c, NULL);
 }
 // 超长文本字段一律拒绝，不截断也不越界。integer/uinteger 已改走 str2u64 按 lens 解析，
 // 靠上界判定挡下；float/double(cap=128) 与 datetime/time(cap=48) 仍走 copy_bounded

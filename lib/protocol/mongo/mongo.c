@@ -20,9 +20,7 @@ void _mongo_pkfree(void *pack) {
     if (NULL == pack) {
         return;
     }
-    mgopack_ctx *mgopack = pack;
-    FREE(mgopack->payload);
-    FREE(mgopack);
+    FREE(pack);
 }
 void _mongo_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
@@ -217,8 +215,9 @@ void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         return NULL;
     }
     mgopack_ctx *mgopack;
-    CALLOC(mgopack, 1, sizeof(mgopack_ctx));
-    MALLOC(mgopack->payload, total);
+    MALLOC(mgopack, sizeof(mgopack_ctx) + (size_t)total);
+    ZERO(mgopack, sizeof(mgopack_ctx));
+    mgopack->payload = (char *)(mgopack + 1);
     ASSERTAB(total == buffer_remove(buf, mgopack->payload, total), "copy buffer failed.");
     mgopack->total = total;
     binary_ctx breader;

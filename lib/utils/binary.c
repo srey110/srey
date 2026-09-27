@@ -16,7 +16,7 @@ void binary_init_write(binary_ctx *ctx, size_t lens, size_t inc) {
     if (0 == lens) {
         ctx->size = ctx->inc;
     } else {
-        ctx->size = ROUND_UP(lens, ctx->inc);
+        ctx->size = ROUND_UP(lens + 1, ctx->inc);
     }
     MALLOC(ctx->data, ctx->size);
 }
@@ -52,6 +52,16 @@ void _binary_grow(binary_ctx *ctx, size_t size) {
         ASSERTAB(0 != ctx->size, "binary buffer size overflow");
         REALLOC(ctx->data, ctx->data, ctx->size);
     }
+}
+void binary_set_uint(binary_ctx *ctx, uint64_t val, uint32_t base) {
+    ASSERTAB(base >= 2 && base <= 16, ERRSTR_INVPARAM);
+    char buf[64];
+    char *p = buf + sizeof(buf);
+    do {
+        *--p = "0123456789abcdef"[val % base];
+        val /= base;
+    } while (0 != val);
+    binary_set_binary(ctx, p, (size_t)(buf + sizeof(buf) - p));
 }
 void binary_set_va(binary_ctx *ctx, const char *fmt, ...) {
     //外部托管下 ctx->inc==0，ctx->inc-1 下溢为 SIZE_MAX 会让后续逻辑错乱，提前拒绝

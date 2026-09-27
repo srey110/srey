@@ -17,7 +17,7 @@ typedef struct mgopack_ctx {
     uint32_t dlens;  //doc 数据长度
     char *docid;     //文档序列标识符（kind == 1 时有效）
     char *doc;       //BSON 文档数据指针（指向 payload 内部）
-    char *payload;   //完整消息原始数据缓冲区
+    char *payload;   //完整消息原始数据缓冲区，紧跟在本结构后面同一块分配，不单独释放
 }mgopack_ctx;
 
 typedef struct mongo_session {

@@ -977,8 +977,10 @@ static void _router_send_core(task_ctx *task, sock_ctx *sk, int32_t code,
                               int32_t head_only, const char *content_type,
                               const http_header_ctx *extra, int32_t extra_n,
                               const char *body, size_t body_len) {
+    const size_t head_reserve = 256;
+    int32_t withbody = !http_code_nobody(code) && 0 == head_only && !EMPTYPTR(body, body_len);
     binary_ctx bw;
-    binary_init_write(&bw, 0, 0);
+    binary_init_write(&bw, withbody ? body_len + head_reserve : 0, 0);
     http_pack_resp(&bw, code);
     if (NULL != content_type) {
         http_pack_head(&bw, "Content-Type", content_type);
@@ -1022,11 +1024,11 @@ static void _router_send_core(task_ctx *task, sock_ctx *sk, int32_t code,
     if (http_code_nobody(code)) {
         http_pack_end(&bw);
     } else if (0 != head_only) {
-        char cl[24];
         // 空判照抄 http_pack_content 的 EMPTYPTR: 同一资源的 GET 走那条会写 0,
-        // 这里算出别的数就是两个方法自报的长度不一致
-        SNPRINTF(cl, sizeof(cl), "%zu", EMPTYPTR(body, body_len) ? (size_t)0 : body_len);
-        http_pack_head(&bw, "Content-Length", cl);
+        // 这里算出别的数就是两个方法自报的长度不一致。线格式同 http_pack_head
+        binary_set_binary(&bw, "Content-Length: ", sizeof("Content-Length: ") - 1);
+        binary_set_uint(&bw, EMPTYPTR(body, body_len) ? 0 : (uint64_t)body_len, 10);
+        binary_set_binary(&bw, FLAG_CRLF, CRLF_SIZE);
         http_pack_end(&bw);
     } else {
         http_pack_content(&bw, (void *)body, body_len);
@@ -1098,7 +1100,14 @@ static int32_t _router_chain_build(router_ctx *r, router_entry *e, router_req *c
 }
 // 按 code 生成错误正文; 为什么两个入口必须共用见 ROUTER_CODE_BODY_LENS 处的说明
 static void _router_code_body(int32_t code, char body[ROUTER_CODE_BODY_LENS]) {
-    SNPRINTF(body, ROUTER_CODE_BODY_LENS, "%s\n", http_code_status(code));
+    const char *txt = http_code_status(code);
+    size_t n = strlen(txt);
+    if (n > ROUTER_CODE_BODY_LENS - 2) {
+        n = ROUTER_CODE_BODY_LENS - 2;
+    }
+    memcpy(body, txt, n);
+    body[n] = '\n';
+    body[n + 1] = '\0';
 }
 // 按 code 生成正文并回给客户端。chunked 首帧那面不走这里(它要的是 _router_st_reject
 // 的关连接收尾), 自己另有一份同样的栈缓冲
@@ -1125,7 +1134,7 @@ static buf_ctx *_router_http_status(struct http_pack_ctx *pack) {
 // (url_parse 自己清该清的, 那三个大数组白清就是每请求 4KB 死写)
 static void _router_req_init(router_req *ctx, url_ctx *url, task_ctx *task,
                              sock_ctx *sk, struct http_pack_ctx *pack) {
-    ZERO(ctx, sizeof(router_req));
+    ZERO(ctx, offsetof(router_req, chain));
     ctx->url = url;
     ctx->task = task;
     ctx->sk = *sk;

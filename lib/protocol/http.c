@@ -6,6 +6,7 @@
 
 // 头部缓冲区从 cur 起的剩余字节数。形参名避开 head：宏体里 (p)->head 的 head 也会被替换
 #define HEAD_REMAIN(p, cur) ((p)->head.lens - (size_t)((cur) - (char *)(p)->head.data))
+#define HTTP_SET_LIT(bw, lit) binary_set_binary((bw), (lit), sizeof(lit) - 1) // 追加字符串字面量(不含结尾 '\0')
 
 typedef enum parse_status{
     INIT = 0,   // 初始状态，等待头部
@@ -433,11 +434,12 @@ static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t c
     }
 }
 // 分配 chunked 数据包结构体，lens>0 时数据紧随其后，chunked 字段固定设为 2。
+// slack 是载荷后面多留、不计入 data.lens 的字节(chunk 连同结尾 CRLF 一次拷出来再校验)。
 // 只清结构体前缀，同 _http_headpack：载荷由 buffer_copyout 整块写满，而这里是每帧一次，
 // 连载荷一起清就等于把整条流的字节数白 memset 一遍
-static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
+static inline http_pack_ctx *_http_chunkedpack(size_t lens, size_t slack) {
     char *pack;
-    MALLOC(pack, sizeof(http_pack_ctx) + lens);
+    MALLOC(pack, sizeof(http_pack_ctx) + lens + slack);
     ZERO(pack, sizeof(http_pack_ctx));
     http_pack_ctx *pctx = (http_pack_ctx *)pack;
     if (lens > 0) {
@@ -476,18 +478,19 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        // RFC 7230 §4.1：chunk = chunk-size [ chunk-ext ] CRLF。只截 ';' 之前的 chunk-size，
-        // ext 原样跳过：不能拿整行长度去卡下面那个 16 字节栈缓冲——带签名的 chunk-ext 有 80
-        // 多字节、零填充的 chunk-size 又正好 16 字节，两者都是合法传输
-        int32_t semi = buffer_search(buf, 0, 0, (size_t)pos, ";", 1);
-        int32_t hexlens = (semi >= 0) ? semi : pos;
-        char lensbuf[16];// 64 位十六进制最多 16 位
+        // RFC 7230 §4.1：chunk = chunk-size [ chunk-ext ] CRLF。只截 ';' 之前的 chunk-size，ext 原样跳过
+        // (带签名的 ext 有 80 多字节、零填充的 chunk-size 正好 16 位，都合法)。64 位十六进制最多 16 位，
+        // 多拷 1 字节：前 17 字节里没有 ';' 且整行超过 16 字节就必是超长
+        char lensbuf[17];
+        size_t ncopy = (size_t)pos < sizeof(lensbuf) ? (size_t)pos : sizeof(lensbuf);
+        ASSERTAB(ncopy == buffer_copyout(buf, 0, lensbuf, ncopy), "copy buffer failed.");
+        char *semi = memchr(lensbuf, ';', ncopy);
+        int32_t hexlens = (NULL != semi) ? (int32_t)(semi - lensbuf) : pos;
         if (hexlens <= 0
-            || hexlens > (int32_t)sizeof(lensbuf)) {
+            || hexlens > (int32_t)sizeof(lensbuf) - 1) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        ASSERTAB(hexlens == (int32_t)buffer_copyout(buf, 0, lensbuf, (size_t)hexlens), "copy buffer failed.");
         // RFC 7230 §4.1：chunk-size 严格按 1*HEXDIG，前导空白/符号/"0x" 一律拒，免得与上下游切出不同的 chunk 边界(请求走私)。
         // 移位前先卡上限的 1/16、累加后再卡上限，不论上限调多大都不会溢出
         size_t dlens = 0;
@@ -507,7 +510,7 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         }
         drain = pos + CRLF_SIZE;
         ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
-        pack = _http_chunkedpack(dlens);
+        pack = _http_chunkedpack(dlens, CRLF_SIZE);
         ud->context = pack;
     }
     if (pack->data.lens > 0) {
@@ -516,13 +519,14 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             BIT_SET(*status, PROT_MOREDATA);
             return NULL;
         }
-        if ('\r' != buffer_at(buf, pack->data.lens)
-            || '\n' != buffer_at(buf, pack->data.lens + 1)) {
+        ASSERTAB(drain == buffer_copyout(buf, 0, pack->data.data, drain), "copy buffer failed.");
+        char *crlf = (char *)pack->data.data + pack->data.lens;
+        if ('\r' != crlf[0]
+            || '\n' != crlf[1]) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         BIT_SET(*status, PROT_SLICE);
-        ASSERTAB(pack->data.lens == buffer_copyout(buf, 0, pack->data.data, pack->data.lens), "copy buffer failed.");
     } else {
         // 末尾块：跳过可选 trailer headers + 终止空行（RFC 7230 §4.1）
         // 无 trailer: \r\n
@@ -556,7 +560,7 @@ static inline http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    http_pack_ctx *pack = _http_chunkedpack(lens);
+    http_pack_ctx *pack = _http_chunkedpack(lens, 0);
     ASSERTAB(lens == buffer_remove(buf, pack->data.data, lens), "copy buffer failed.");
     BIT_SET(*status, PROT_SLICE);
     return pack;
@@ -577,7 +581,7 @@ void *_http_on_close(ud_cxt *ud) {
         return NULL;
     }
     ud->status = INIT;
-    return _http_chunkedpack(0);
+    return _http_chunkedpack(0, 0);
 }
 void _http_udfree(ud_cxt *ud) {
     _http_pkfree(ud->context);
@@ -643,7 +647,10 @@ void *http_data(http_pack_ctx *pack, size_t *lens) {
 }
 void http_pack_req(binary_ctx *bwriter, const char *method, const char *url) {
     ASSERTAB(NULL == strpbrk(method, "\r\n") && NULL == strpbrk(url, "\r\n"), "HTTP method/url must not contain CRLF.");
-    binary_set_va(bwriter, "%s %s HTTP/1.1"FLAG_CRLF, method, url);
+    binary_set_binary(bwriter, method, strlen(method));
+    HTTP_SET_LIT(bwriter, " ");
+    binary_set_binary(bwriter, url, strlen(url));
+    HTTP_SET_LIT(bwriter, " HTTP/1.1"FLAG_CRLF);
 }
 static int32_t _http_set_nobody_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
@@ -719,7 +726,17 @@ const char *http_code_status(int32_t code) {
     }
 }
 void http_pack_resp(binary_ctx *bwriter, int32_t code) {
-    binary_set_va(bwriter, "HTTP/1.1 %d %s"FLAG_CRLF, code, http_code_status(code));
+    const char *status = http_code_status(code);
+    HTTP_SET_LIT(bwriter, "HTTP/1.1 ");
+    if (code < 0) {
+        HTTP_SET_LIT(bwriter, "-");
+        binary_set_uint(bwriter, (uint64_t)(-(int64_t)code), 10);
+    } else {
+        binary_set_uint(bwriter, (uint64_t)code, 10);
+    }
+    HTTP_SET_LIT(bwriter, " ");
+    binary_set_binary(bwriter, status, strlen(status));
+    HTTP_SET_LIT(bwriter, FLAG_CRLF);
 }
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
     // 只是 head2 的 \0 结尾入口: 头的线格式与校验规则单点落在 head2, 免得两处各改一半
@@ -745,7 +762,8 @@ int32_t http_head_val_ok(const char *val, size_t lens) {
 void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens) {
     ASSERTAB(NULL == strpbrk(key, FLAG_CRLF) && 0 != _http_head_val_nocrlf(val, lens),
         "HTTP header key/val must not contain CRLF.");
-    binary_set_va(bwriter, "%s: ", key);
+    binary_set_binary(bwriter, key, strlen(key));
+    HTTP_SET_LIT(bwriter, ": ");
     binary_set_binary(bwriter, val, lens);
     binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);
 }
@@ -754,20 +772,23 @@ void http_pack_end(binary_ctx *bwriter) {
 }
 void http_pack_content(binary_ctx *bwriter, void *data, size_t lens) {
     if (!EMPTYPTR(data, lens)) {
-        binary_set_va(bwriter, "Content-Length: %zu"CONCAT2(FLAG_CRLF, FLAG_CRLF), lens);
+        HTTP_SET_LIT(bwriter, "Content-Length: ");
+        binary_set_uint(bwriter, (uint64_t)lens, 10);
+        HTTP_SET_LIT(bwriter, CONCAT2(FLAG_CRLF, FLAG_CRLF));
         binary_set_binary(bwriter, data, lens);
     } else {
-        binary_set_va(bwriter, "%s", "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
+        HTTP_SET_LIT(bwriter, "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
 }
 void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens) {
     if (bwriter->offset > 0){
-        binary_set_va(bwriter, "Transfer-Encoding: Chunked"CONCAT2(FLAG_CRLF, FLAG_CRLF));
+        HTTP_SET_LIT(bwriter, "Transfer-Encoding: Chunked"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
     if (EMPTYPTR(data, lens)) {
-        binary_set_va(bwriter, "0"FLAG_CRLF);
+        HTTP_SET_LIT(bwriter, "0"FLAG_CRLF);
     } else {
-        binary_set_va(bwriter, "%zx"FLAG_CRLF, lens);
+        binary_set_uint(bwriter, (uint64_t)lens, 16);
+        HTTP_SET_LIT(bwriter, FLAG_CRLF);
         binary_set_binary(bwriter, data, lens);
     }
     binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);

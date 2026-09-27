@@ -5,6 +5,9 @@
 #include "utils/binary.h"
 #include "utils/utils.h"
 
+// harbor_pack 请求行在 type 之后的部分与两条固定头，线格式同 http_pack_req + http_pack_head
+#define HARBOR_REQ_TAIL " HTTP/1.1"FLAG_CRLF"Connection: Keep-Alive"FLAG_CRLF"Content-Type: application/octet-stream"FLAG_CRLF
+
 // harbor 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取；仅监听信息）
 typedef struct harbor_ctx {
     uint16_t port;          // 监听端口
@@ -203,17 +206,18 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     return ERR_OK;
 }
 void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, void *data, size_t size, size_t *lens) {
-    char url[512];
-    if (0 != call) {
-        SNPRINTF(url, sizeof(url), "/call?dst=%"PRIu64"&type=%u", task, reqtype);
-    } else {
-        SNPRINTF(url, sizeof(url), "/request?dst=%"PRIu64"&type=%u", task, reqtype);
-    }
+    const size_t head_reserve = 256;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    http_pack_req(&bwriter, "POST", url);
-    http_pack_head(&bwriter, "Connection", "Keep-Alive");
-    http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
+    binary_init_write(&bwriter, size + head_reserve, 0);
+    if (0 != call) {
+        binary_set_binary(&bwriter, "POST /call?dst=", sizeof("POST /call?dst=") - 1);
+    } else {
+        binary_set_binary(&bwriter, "POST /request?dst=", sizeof("POST /request?dst=") - 1);
+    }
+    binary_set_uint(&bwriter, task, 10);
+    binary_set_binary(&bwriter, "&type=", sizeof("&type=") - 1);
+    binary_set_uint(&bwriter, reqtype, 10);
+    binary_set_binary(&bwriter, HARBOR_REQ_TAIL, sizeof(HARBOR_REQ_TAIL) - 1);
     http_pack_content(&bwriter, data, size);
     *lens = bwriter.offset;
     return bwriter.data;

@@ -120,17 +120,30 @@ static pgpack_ctx *_pgpack_notification_response(binary_ctx *breader) {
     pgpack->_free_pgpack = _pgpack_notification_response_free;
     return pgpack;
 }
-// 释放 pgsql_reader_ctx 内部所有行数据和字段描述（不释放结构体本身）
+// 释放 pgsql_reader_ctx 内部所有行数据和字段描述（不释放结构体本身）。
+// 行数组与 payload 同一块(块首记在首列 payload)：先把块首取到局部再 FREE，
+// 直接 FREE(row->payload) 的置空会写进刚释放的块
 void _pgpack_reader_free(void *arg) {
     pgsql_reader_ctx *reader = arg;
-    pgpack_row *row;
+    char *block;
     for (uint32_t i = 0; i < pgrow_arr_size(&reader->arr_rows); i++) {
-        row = *pgrow_arr_at(&reader->arr_rows, (int32_t)i);
-        FREE(row->payload); // 释放首列持有的原始行缓冲区
-        FREE(row);
+        block = (*pgrow_arr_at(&reader->arr_rows, (int32_t)i))->payload;
+        FREE(block);
     }
     pgrow_arr_free(&reader->arr_rows);
     FREE(reader->fields);
+}
+// 已建好字段描述的 reader（DataRow 能落行的唯一状态），否则 NULL
+static inline pgsql_reader_ctx *_pgpack_rows_reader(pgpack_ctx *pgpack) {
+    if (NULL == pgpack || PGPACK_OK != pgpack->type || NULL == pgpack->pack) {
+        return NULL;
+    }
+    pgsql_reader_ctx *reader = pgpack->pack;
+    return (NULL == reader->fields) ? NULL : reader;
+}
+size_t _pgpack_row_extra(pgsql_ctx *pg) {
+    pgsql_reader_ctx *reader = _pgpack_rows_reader(pg->pack);
+    return (NULL == reader) ? 0 : sizeof(pgpack_row) * (size_t)reader->field_count;
 }
 // 获取或创建 pgpack_ctx 中的 pgsql_reader_ctx，并设置释放回调
 static inline pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
@@ -198,7 +211,7 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
     }
     return ERR_OK;
 }
-// 解析 DataRow（'D'），将列值追加到 reader 的行数组中。
+// 解析 DataRow（'D'），将列值追加到 reader 的行数组中。行数组就在 payload 块尾(见 _pgsql_payload)。
 // 无论返回什么，breader->data 都已被本函数处置（转交 rows[0].payload 或就地释放），
 // 调用方一律不得再触碰。返回 ERR_FAILED 表示协议异常
 // 注意 0 列的 DataRow 是合法报文：不建行、就地释放，仍返回 ERR_OK
@@ -218,20 +231,18 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
         return ERR_FAILED;
     }
     pgpack_row *row;
-    pgpack_row *rows;
-    CALLOC(rows, ncolumn, sizeof(pgpack_row));
-    rows->payload = breader->data; // 首列持有原始消息缓冲区所有权
+    pgpack_row *rows = (pgpack_row *)(breader->data + ROUND_UP(breader->size, 8));
+    ZERO(rows, sizeof(pgpack_row) * ncolumn);
+    rows->payload = breader->data; // 首列持有整块所有权
     for (uint16_t i = 0; i < ncolumn; i++) {
         row = &rows[i];
         if (!binary_have(breader, 4)) {// 列长度字段本身也可能被截断
-            FREE(rows);
             FREE(breader->data);
             return ERR_FAILED;
         }
         row->lens = (int32_t)binary_get_integer(breader, 4, 0);
         if (row->lens > 0) {
             if (!binary_have(breader, (size_t)row->lens)) {
-                FREE(rows);
                 FREE(breader->data);
                 return ERR_FAILED;
             }
@@ -243,7 +254,6 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
             row->val = NULL; // SQL NULL
         } else {
             // 非法 column length（PostgreSQL 协议仅 -1 表 NULL，其他负数协议非法）
-            FREE(rows);
             FREE(breader->data);
             return ERR_FAILED;
         }

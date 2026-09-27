@@ -14,7 +14,7 @@ typedef struct mqtt_propertie {//属性
     int64_t nval;//数字值
     size_t slens;//sval长度
     size_t flens;//fval长度
-    char *sval;//第二值(用户属性时为value)
+    char *sval;//第二值(用户属性时为value)；指向本结构同一块分配的内存，不单独释放
     char fval[];//第一值(用户属性时为key值)
 }mqtt_propertie;
 ARR_DECL(mprop_arr, mqtt_propertie *)

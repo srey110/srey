@@ -6,11 +6,12 @@
 
 // 共享只读快照 (software transactional memory):
 
-// 单次快照, 可被 N 个 reader 引用; ref 归 0 时 FREE(data) + FREE(自身)
+// 单次快照, 可被 N 个 reader 引用; ref 归 0 时释放 (inl 为 0 才另 FREE data)
 typedef struct stm_data {
     atomic_t ref;   // 引用计数: writer 持 1 + 每个 stm_grab_data 的 reader +1
+    int32_t inl;    // 非 0 即 data 与本结构同一块分配(copy=1 建的), 释放时不单独 FREE data
     size_t sz;      // 数据字节数
-    void *data;     // MALLOC 持有, ref 归 0 时 FREE
+    void *data;     // ref 归 0 时释放; copy=1 建的快照与本结构同一块分配
 } stm_data;
 // writer 长期持有的对象, 跨多次 update 复用; ctx 内存由 stm 内部管理
 typedef struct stm_ctx {
@@ -62,7 +63,15 @@ void stm_ungrab(stm_ctx *ctx);
 /// <returns>stm_data 指针; writer 已释放时 NULL</returns>
 stm_data *stm_grab_data(stm_ctx *ctx);
 /// <summary>
-/// 释放 stm_data 引用, ref 归 0 时 FREE(data->data) + FREE(data).
+/// 同 stm_grab_data, 但快照仍是 last 时不加引用, 给轮询"有没有更新"用.
+/// </summary>
+/// <param name="ctx">stm_ctx</param>
+/// <param name="last">调用方上次拿到且仍持有引用的快照, 可为 NULL</param>
+/// <returns>当前快照. 等于 last 时没有新增引用, 调用方不得为这次再 stm_ungrab_data;
+/// 不等于 last 时同 stm_grab_data (已加引用; NULL 表示 writer 已释放)</returns>
+stm_data *stm_grab_data_since(stm_ctx *ctx, stm_data *last);
+/// <summary>
+/// 释放 stm_data 引用, ref 归 0 时释放快照 (inl 为 0 才另 FREE data->data).
 /// 允许 data=NULL.
 /// </summary>
 /// <param name="data">stm_data</param>

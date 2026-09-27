@@ -5,7 +5,9 @@
 #include "utils/pool.h"
 #include "utils/timer.h"
 
-#define LOG_FMT "[%s %03d][%s]%s\n"
+#define LOG_FMT "[%s %03d][%s]%s" // 行首时间、级别与正文，换行由 _log_fprint 补
+#define LOG_LINE_STACK 512 // _log_fprint 栈上拼行的缓冲，装不下的长行退回 fprintf
+#define LOG_BATCH_BYTES (64 * ONEK) // 日志文件模式下日志线程攒行的缓冲，攒满或一批写完就一次 fwrite
 #define LOG_TIME_FMT "%Y-%m-%d %H:%M:%S" // 秒级部分;毫秒由调用方另拼
 #define LOG_INLINE_SIZE 256
 #define LOG_POP_BATCH   128
@@ -47,6 +49,12 @@ static atomic_t _drained = 0; /* 完成一轮排空自增,log_abort 据此判断
 static pthread_t _th;
 // 本线程是不是日志线程本身。断言若发生在它身上，log_abort 据此跳过排空
 static THREAD_LOCAL int32_t _in_logth = 0;
+// 业务线程走 _log_sync 兜底时自己的秒级时间串缓存，见 _log_timestr_cached
+static THREAD_LOCAL uint64_t _sync_sec = 0;
+static THREAD_LOCAL char _sync_time[TIME_LENS] = { 0 };
+// 日志文件模式下攒的行，只许 _log_write_item 这条串行路径用，口径同 _log_timestr
+static char _batch[LOG_BATCH_BYTES];
+static size_t _nbatch = 0;
 static logq _que;
 static pool_ctx _itempool;
 static mutex_ctx _mtx;
@@ -76,8 +84,8 @@ static inline log_color _log_color_of(int32_t lv) {
     }
     return LOG_COLOR_NONE;
 }
-// 上色分两半：进字节流的前后缀交给同一次 fprintf 打出去，不进字节流的（Windows 控制台属性）
-// 由 _log_color_begin / _log_color_end 处理。stdio 每次调用只锁一次流，整行必须走一次 fprintf——
+// 上色分两半：进字节流的前后缀与正文同一次 stdio 写调用打出去，不进字节流的（Windows 控制台属性）
+// 由 _log_color_begin / _log_color_end 处理。stdio 每次调用只锁一次流，整行必须一次写出——
 // stdout 不归日志线程独占，PRINT 就是裸 printf，插在转义头与复位码之间会让终端一直停在彩色
 #ifdef OS_WIN
 static inline const char *_log_color_begin(log_color color) {
@@ -97,58 +105,114 @@ static inline void _log_color_end(void) {
 static inline const char *_log_color_begin(log_color color) {
     return LOG_COLOR_RED == color ? "\033[0;31m" : "\033[0;33m";
 }
+// 颜色在字节流里，写完不必单独刷；WARN 及以上由 _log_write_all 每批刷一次
 static inline void _log_color_end(void) {
-    fflush(stdout);
 }
 #endif
-// 唯一的成行出口。时间串由调用方给：算它要过 localtime_r 那把 libc 时区锁，
-// N 个业务线程一起写日志就在一把与本程序无关的锁上串起来，所以正常路径推迟到日志线程；
-// 业务线程只在 _log_sync 那几条兜底上碰得到它。
-// pre/post 是上色前后缀，必须与正文同一次 fprintf 打出去，整行才不会被别的 stdout 写方插断。
-// 秒串与毫秒分两个参数传，由本函数一次成型
+// 拼行处：整行拼进 dst，返回字节数；装不下返回 0，dst 不动(调用方改走 LOG_FMT 兜底)。
+// 时间串由调用方给(取法见 _log_timestr)，毫秒 msec 取值 [0, 999]。
+// pre/post 是上色前后缀，必须与正文同一次写出去，整行才不会被别的 stdout 写方插断。
+// 复位码排在换行之前——行缓冲的 stdout 一遇换行就刷，排在后面会单独多出一次 write
+static inline size_t _log_line(char *dst, size_t cap, const log_item *item, const char *time, int32_t msec,
+                               const char *msg, const char *pre, const char *post) {
+    char *p = dst;
+    const char *lv = _log_lvstr(item->lv);
+    const size_t fixed = sizeof("[ 000][]\n") - 1;
+    size_t npre = strlen(pre), ntime = strlen(time), nlv = strlen(lv), nmsg = strlen(msg), npost = strlen(post);
+    if (npre + ntime + nlv + nmsg + npost + fixed > cap) {
+        return 0;
+    }
+    memcpy(p, pre, npre);
+    p += npre;
+    *p++ = '[';
+    memcpy(p, time, ntime);
+    p += ntime;
+    *p++ = ' ';
+    *p++ = (char)('0' + msec / 100);
+    *p++ = (char)('0' + msec / 10 % 10);
+    *p++ = (char)('0' + msec % 10);
+    *p++ = ']';
+    *p++ = '[';
+    memcpy(p, lv, nlv);
+    p += nlv;
+    *p++ = ']';
+    memcpy(p, msg, nmsg);
+    p += nmsg;
+    memcpy(p, post, npost);
+    p += npost;
+    *p++ = '\n';
+    return (size_t)(p - dst);
+}
+// 单行直接写：栈上拼好一次 fwrite，太长才退回 fprintf
 static inline void _log_fprint(FILE *f, const log_item *item, const char *time, int32_t msec,
-                        const char *msg, const char *pre, const char *post) {
-    fprintf(f, "%s"LOG_FMT"%s", pre, time, msec, _log_lvstr(item->lv), msg, post);
+                               const char *msg, const char *pre, const char *post) {
+    char line[LOG_LINE_STACK];
+    size_t n = _log_line(line, sizeof(line), item, time, msec, msg, pre, post);
+    if (0 == n) {
+        fprintf(f, "%s"LOG_FMT"%s\n", pre, time, msec, _log_lvstr(item->lv), msg, post);
+        return;
+    }
+    fwrite(line, 1, n, f);
 }
 // 兜底输出流。必须与 _log_write_item 同口径：无日志文件时走 stdout 而非 stderr，
 // 否则兜底行与正文分家，-b 模式下 stderr 已 dup2 到 /dev/null，那几行会直接消失
 static inline FILE *_log_out(void) {
     return NULL != _handle ? _handle : stdout;
 }
-// 业务线程上的同步写：不入队、不加锁，也不碰 _log_timestr 的缓存（那份静态只属于日志线程）。
-// 用在格式化失败、队列满、以及 log_abort 三条进不了日志线程的路径上
-static inline void _log_sync(FILE *f, const log_item *item, const char *msg) {
-    char time[TIME_LENS];
-    if (ERR_OK != sectostr(item->ms / 1000, LOG_TIME_FMT, time)) {
-        time[0] = '\0';
-    }
-    _log_fprint(f, item, time, (int32_t)(item->ms % 1000), msg, "", "");
-    fflush(f);
-}
-// 秒级部分按秒缓存：一批日志基本落在同一秒里，省掉 localtime_r 与 strftime。
-// 缓存是无锁静态，只许 _log_write_item 这条串行路径用(日志线程，以及 thread_join
-// 之后的 log_free)；业务线程的 _log_sync 自己现算
-static inline const char *_log_timestr(uint64_t ms) {
-    static uint64_t cache_sec = 0;
-    static char cache[TIME_LENS] = { 0 };
+// 秒级时间串按秒缓存：一批日志基本落在同一秒里，省掉 localtime_r 与 strftime。localtime_r 要过
+// libc 的时区锁，N 个线程一起算就在这把与本程序无关的锁上串起来，所以正常路径推迟到日志线程。
+// 缓存无锁，每条路径用自己那份：日志线程见 _log_timestr，业务线程见 _log_sync
+static inline const char *_log_timestr_cached(uint64_t ms, uint64_t *csec, char cache[TIME_LENS]) {
     uint64_t sec = ms / 1000;
     if ('\0' == cache[0]
-        || sec != cache_sec) {
+        || sec != *csec) {
         if (ERR_OK != sectostr(sec, LOG_TIME_FMT, cache)) {
             return "";// sectostr 失败即把 cache 置空串, 下次重算
         }
-        cache_sec = sec;
+        *csec = sec;
     }
     return cache;
 }
+// 日志线程那份缓存，只许 _log_write_item 这条串行路径用(日志线程，以及 thread_join 之后的 log_free)
+static inline const char *_log_timestr(uint64_t ms) {
+    static uint64_t cache_sec = 0;
+    static char cache[TIME_LENS] = { 0 };
+    return _log_timestr_cached(ms, &cache_sec, cache);
+}
+// 业务线程上的同步写：不入队、不加锁，时间串用本线程自己的缓存。
+// 用在格式化失败、队列满、以及 log_abort 三条进不了日志线程的路径上。
+// WARN 及以上立刻刷，其余留给日志线程入睡前那次刷
+static inline void _log_sync(FILE *f, const log_item *item, const char *msg) {
+    _log_fprint(f, item, _log_timestr_cached(item->ms, &_sync_sec, _sync_time),
+                (int32_t)(item->ms % 1000), msg, "", "");
+    if (item->lv <= LOGLV_WARN) {
+        fflush(f);
+    }
+}
+// 攒下的行写进日志文件
+static inline void _log_batch_flush(void) {
+    if (0 != _nbatch) {
+        fwrite(_batch, 1, _nbatch, _handle);
+        _nbatch = 0;
+    }
+}
+// 日志文件模式攒进 _batch，由调用方在一批末尾 _log_batch_flush；控制台模式逐行写：
+// Windows 上色是调 API 不在字节流里，没法攒
 static inline void _log_write_item(const log_item *item) {
     const char *time = _log_timestr(item->ms);
     int32_t msec = (int32_t)(item->ms % 1000);
+    size_t n;
     if (NULL != _handle) {
-        _log_fprint(_handle, item, time, msec, item->msg, "", "");
-        if (item->lv <= LOGLV_WARN) {
-            fflush(_handle);
+        n = _log_line(_batch + _nbatch, sizeof(_batch) - _nbatch, item, time, msec, item->msg, "", "");
+        if (0 == n) {
+            _log_batch_flush();
+            n = _log_line(_batch, sizeof(_batch), item, time, msec, item->msg, "", "");
+            if (0 == n) {
+                _log_fprint(_handle, item, time, msec, item->msg, "", "");
+                return;
+            }
         }
+        _nbatch += n;
         return;
     }
     log_color color = _log_color_of(item->lv);
@@ -171,15 +235,23 @@ static void _log_item_clear(void *data) {
     }
     it->msg = it->inline_buf;
 }
-// 返回本轮写出的条数：0 而队列非空即撞上在途元素，调用方据此退避而不是空转
+// 返回本轮写出的条数：0 而队列非空即撞上在途元素，调用方据此退避而不是空转。
+// 批里有 WARN 及以上就在这批写完后刷一次，不逐条刷：告警风暴时逐条刷就是每条一次 write
 static uint32_t _log_write_all(log_item **items) {
     log_item *item;
     uint32_t n, i, total = 0;
+    int32_t urgent;
     while ((n = logq_pop_sc_batch(&_que, items, LOG_POP_BATCH)) > 0) {
+        urgent = 0;
         for (i = 0; i < n; i++) {
             item = items[i];
             _log_write_item(item);
+            urgent |= item->lv <= LOGLV_WARN;
             pool_push(&_itempool, item, 0);
+        }
+        _log_batch_flush();
+        if (urgent) {
+            fflush(_log_out());
         }
         total += n;
     }
@@ -195,7 +267,10 @@ static void _log_write_exit(void) {
         "log thread exited.");
     logexit.msg = logexit.inline_buf;
     _log_write_item(&logexit);
+    _log_batch_flush();
 }
+// 日志线程主循环。排空后准备睡之前刷一次输出流：日志文件是全缓冲，不刷的话低频日志要攒满缓冲、
+// 或等到下一条 WARN 才落盘
 static void _log_loop(void *arg) {
     (void)arg;
     _in_logth = 1;
@@ -217,6 +292,9 @@ static void _log_loop(void *arg) {
         now = timer_cur_ms(&timer);
         if (pool_shrink_due(&shrink_start, now)) {
             pool_shrink(&_itempool);
+        }
+        if (logq_empty(&_que)) {
+            fflush(_log_out());
         }
         mutex_lock(&_mtx);
         // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩
@@ -266,7 +344,7 @@ void log_init(FILE *file, uint32_t capacity) {
     uint32_t cap = 0 == capacity ? 4 * ONEK : capacity;
     logq_init(&_que, cap);
     pool_cbs _logitem_cbs = { NULL, NULL, NULL, _log_item_clear };
-    pool_init(&_itempool, sizeof(log_item), cap, cap / 4, POOL_THSAFE, &_logitem_cbs);
+    pool_init(&_itempool, sizeof(log_item), cap, LOG_POP_BATCH, POOL_THSAFE, &_logitem_cbs);
     mutex_init(&_mtx);
     cond_init(&_cond);
     ATOMIC_SET_RELEASE(&_running, 1); 
@@ -305,9 +383,11 @@ void log_abort(const char *file, const char *func, int32_t line, const char *msg
         }
         return;
     }
-    // 断言发生在日志线程自己身上时没人能推进队列，等也是白等
+    // 断言发生在日志线程自己身上时没人能推进队列，等也是白等，只把它手里攒的那批写出去
     if (0 == _in_logth) {
         _log_drain_wait();
+    } else {
+        _log_batch_flush();
     }
     // 控制台模式不重复写原因行（ASSERTAB 三行前已打到 stderr），只把刚排空进 stdout 的刷出去
     if (NULL != _handle) {
@@ -329,17 +409,42 @@ void log_setlv(log_level lv) {
 log_level log_getlv(void) {
     return (log_level)ATOMIC_GET(&_log_lv);
 }
-void slog(int32_t lv, const char *fmt, ...) {
+// slog 一族的开头：级别过滤并取一个 item，被滤掉或日志线程未起返回 NULL
+static inline log_item *_log_take(int32_t lv) {
     if (lv > (int32_t)ATOMIC_GET(&_log_lv)
         || 0 == ATOMIC_GET(&_running)) {
-        return;
+        return NULL;
     }
     log_item *item = (log_item *)pool_pop(&_itempool, NULL, 0);
     item->lv = lv;
     item->ms = nowms();
+    return item;
+}
+// 进不了队列时在业务线程上同步写掉并归还 item
+static void _log_drop(log_item *item, const char *msg) {
+    _log_sync(_log_out(), item, msg);
+    pool_push(&_itempool, item, 0);
+}
+// slog 一族的收尾：入队并按需唤醒日志线程；队列满不阻塞业务线程，同步写出兜底
+static inline void _log_commit(log_item *item) {
+    if (ERR_OK != logq_trypush(&_que, &item)) {
+        _log_drop(item, item->msg);
+        return;
+    }
+    if (_log_need_wake()
+        && ATOMIC_CAS(&_sleeping, 1, 0)) {
+        mutex_lock(&_mtx);
+        cond_signal(&_cond);
+        mutex_unlock(&_mtx);
+    }
+}
+void slog(int32_t lv, const char *fmt, ...) {
+    log_item *item = _log_take(lv);
+    if (NULL == item) {
+        return;
+    }
     //先尝试写入 inline_buf，短消息（典型场景）至此完成单次 malloc；
     //超长消息再单独 heap 分配，行为与原 _format_va 等价。
-    const char *syncmsg;
     va_list args, args2;
     va_start(args, fmt);
     va_copy(args2, args);
@@ -347,8 +452,8 @@ void slog(int32_t lv, const char *fmt, ...) {
     va_end(args);
     if (rtn < 0) {
         va_end(args2);
-        syncmsg = fmt;
-        goto sync;
+        _log_drop(item, fmt);
+        return;
     }
     if (rtn < LOG_INLINE_SIZE) {
         item->msg = item->inline_buf;
@@ -360,24 +465,32 @@ void slog(int32_t lv, const char *fmt, ...) {
         va_end(args2);
         if (rtn < 0) {
             FREE(heap_msg);
-            syncmsg = fmt;
-            goto sync;
+            _log_drop(item, fmt);
+            return;
         }
         item->msg = heap_msg;
     }
-    //队列满时不阻塞业务线程，直接丢弃并同步写出兜底
-    if (ERR_OK != logq_trypush(&_que, &item)) {
-        syncmsg = item->msg;
-        goto sync;
+    _log_commit(item);
+}
+void slog_parts(int32_t lv, const char *const *parts, const size_t *lens, uint32_t n) {
+    log_item *item = _log_take(lv);
+    if (NULL == item) {
+        return;
     }
-    if (_log_need_wake()
-        && ATOMIC_CAS(&_sleeping, 1, 0)) {
-        mutex_lock(&_mtx);
-        cond_signal(&_cond);
-        mutex_unlock(&_mtx);
+    size_t total = 0;
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        total += lens[i];
     }
-    return;
-sync:
-    _log_sync(_log_out(), item, syncmsg);
-    pool_push(&_itempool, item, 0);
+    char *p = item->inline_buf;
+    if (total >= LOG_INLINE_SIZE) {
+        MALLOC(p, total + 1);
+    }
+    item->msg = p;
+    for (i = 0; i < n; i++) {
+        memcpy(p, parts[i], lens[i]);
+        p += lens[i];
+    }
+    *p = '\0';
+    _log_commit(item);
 }

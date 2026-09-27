@@ -6,6 +6,8 @@
 
 // 解析 ErrorResponse / NoticeResponse，返回格式化错误描述字符串，调用方负责释放
 char *_pgpack_error_notice(binary_ctx *breader);
+// DataRow 块尾要多分的行数组字节数：pg 当前有建好字段描述的 reader 时为 列数 × sizeof(pgpack_row)，否则 0
+size_t _pgpack_row_extra(pgsql_ctx *pg);
 // 释放 pgpack_ctx 及其持有的内部数据
 void _pgpack_free(pgpack_ctx *pgpack);
 // 释放 pgsql_reader_ctx 内部数据（行数组与字段数组），不释放结构体本身

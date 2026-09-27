@@ -152,7 +152,7 @@ void _evpub_sk_clear(void *sk)  {
     }
     oltcp->wb_size = 0;
     tda_init(&oltcp->tda, WB_WARN_INIT_SIZE);
-    buffer_drain(&oltcp->buf_r, buffer_size(&oltcp->buf_r));
+    buffer_free(&oltcp->buf_r);
     UD_FREE(oltcp->cbs.ud_free, &oltcp->ud);
 }
 void _evpub_sk_reset(void *sk, void *args) {
@@ -492,11 +492,12 @@ static uint32_t _olp_linger_tick(void *ud, uint64_t now_ms) {
 // (被取消或 RST)、对端 FIN、读错或丢满上限都收尾
 static void _olp_linger_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
+    char buf[MAX_RECV_SIZE];
     (void)bytes;
     if (BIT_CHECK(oltcp->status, STATUS_LINGERING)
         && 0 == ATOMIC_GET(&watcher->stop)
         && ERROR_SUCCESS == oltcp->ol_r.overlapped.Internal
-        && 0 == _evpub_linger_drain(oltcp->ol_r.sk.fd, &oltcp->linger_bytes)
+        && 0 == _evpub_linger_drain(oltcp->ol_r.sk.fd, buf, sizeof(buf), &oltcp->linger_bytes)
         && ERR_OK == _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         return;
     }
@@ -518,7 +519,7 @@ static int32_t _olp_linger_begin(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     UD_FREE(oltcp->cbs.ud_free, &oltcp->ud);
     _evpub_off_buf_clear(&oltcp->buf_s);
     oltcp->wb_size = 0;
-    buffer_drain(&oltcp->buf_r, buffer_size(&oltcp->buf_r));
+    buffer_free(&oltcp->buf_r);
     oltcp->linger_bytes = 0;
     oltcp->linger_until = timer_cur_ms(&watcher->timer) + CLOSE_LINGER_MS;
     BIT_SET(oltcp->status, STATUS_LINGERING);
@@ -876,17 +877,9 @@ void _iocp_add_bufs_trypost(evsock_ctx *evsk, off_buf_ctx *buf) {
 }
 // 将socket绑定到通配地址（ConnectEx要求socket必须先bind）
 static int32_t _olp_trybind(SOCKET fd, int32_t family) {
-    int32_t rtn;
     netaddr_ctx addr;
-    if (AF_INET == family) {
-        rtn = netaddr_set(&addr, "0.0.0.0", 0);
-    } else {
-        rtn = netaddr_set(&addr, "::", 0);
-    }
-    if (ERR_OK != rtn) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        return ERR_FAILED;
-    }
+    netaddr_empty(&addr);
+    addr.addr.sa_family = (ADDRESS_FAMILY)family;
     if (ERR_OK != bind(fd, netaddr_addr(&addr), netaddr_size(&addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -1173,8 +1166,7 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, evsock_ctx *evsk, DWORD byte
                              SO_UPDATE_ACCEPT_CONTEXT,
                              (char *)&lsn->fd,
                              (int32_t)sizeof(lsn->fd))
-        || ERR_OK != sock_nodelay(fd)
-        || ERR_OK != _evpub_tcp_keepalive(fd)) {
+        || ERR_OK != _evpub_accept_opts(fd)) {
         CLOSE_SOCK(fd);
         _iocp_try_freelsn(lsn);
         return;

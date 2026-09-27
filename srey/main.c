@@ -127,7 +127,8 @@ static void _parse_config(config_ctx *cnf) {
     }
     yyjson_doc_free(doc);
 }
-// 在进程目录下创建 logs 目录并打开以当前时间命名的日志文件
+// 在进程目录下创建 logs 目录并打开以当前时间命名的日志文件。
+// 文件缓冲开到 64KB(须在首次读写前设)
 static void _open_log(uint32_t capacity) {
     if (!_log_use_file) {
         log_init(NULL, capacity);
@@ -165,6 +166,7 @@ static void _open_log(uint32_t capacity) {
         // fopen 失败时退化为终端输出；写 stderr 以便部署排查
         fprintf(stderr, "open log file %s failed: %s\n", logfile, strerror(errno));
     } else {
+        setvbuf(logstream, NULL, _IOFBF, 64 * ONEK);
 #ifndef OS_WIN
         PRINT("tail -f \"%s\"", logfile);
 #endif

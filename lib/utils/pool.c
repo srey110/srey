@@ -48,12 +48,19 @@ void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
 }
 void pool_free(pool_ctx *pool) {
     void *data = NULL;
+    void *elems[POOL_NELFREE];
+    uint32_t i, n;
+    if (BIT_CHECK(pool->flags, POOL_THSAFE)) {
+        while ((n = pfsq_pop_batch(&pool->qu.safe_qu, elems, POOL_NELFREE)) > 0) {
+            for (i = 0; i < n; i++) {
+                _pool_elfree(pool, elems[i]);
+            }
+        }
+        pfsq_free(&pool->qu.safe_qu);
+        return;
+    }
     while (ERR_OK == _pool_qu_pop(pool, &data)) {
         _pool_elfree(pool, data);
     }
-    if (BIT_CHECK(pool->flags, POOL_THSAFE)) {
-        pfsq_free(&pool->qu.safe_qu);
-    } else {
-        pptr_que_free(&pool->qu.normal_qu);
-    }
+    pptr_que_free(&pool->qu.normal_qu);
 }

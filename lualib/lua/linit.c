@@ -39,8 +39,12 @@ static const luaL_Reg stdlibs[] = {
   {NULL, NULL}
 };
 
+/*
+** srey 扩展模块：除 yyjson 外都进 PRELOAD，第一次 require 才打开。
+** 某模块若要造"别的模块 luaopen 时注册的元表"的对象，须在自己的 luaopen 里
+** luaL_requiref 那个模块，否则脚本没 require 它时对象拿不到方法
+*/
 static const luaL_Reg extlibs[] = {
-  {LUA_YYJSONLIBNAME, luaopen_yyjson},
   {LUA_SREY_TASK, luaopen_task},
   {LUA_SREY_CORE, luaopen_core},
   {LUA_SREY_HARBOR, luaopen_harbor},
@@ -98,9 +102,11 @@ LUALIB_API void luaL_openselectedlibs (lua_State *L, int load, int preload) {
     }
   }
   lua_assert((mask >> 1) == LUA_UTF8LIBK);
+  luaL_requiref(L, LUA_YYJSONLIBNAME, luaopen_yyjson, 1);  /* 脚本不 require 直接用全局 yyjson，仍立即打开 */
+  lua_pop(L, 1);
   for (lib = extlibs; lib->name != NULL; lib++) {
-    luaL_requiref(L, lib->name, lib->func, 1);
-    lua_pop(L, 1);
+    lua_pushcfunction(L, lib->func);
+    lua_setfield(L, -2, lib->name);
   }
   lua_pop(L, 1);  /* remove PRELOAD table */
 }

@@ -49,7 +49,7 @@ typedef struct pgpack_field {
 typedef struct pgpack_row {
     int32_t lens;       // 列值的字节长度，0 表示空字符串，-1 表示 NULL
     char *val;          // 列值数据指针
-    char *payload;      // 完整原始消息（首列持有，用于内存管理）
+    char *payload;      // 完整原始消息（首列持有，用于内存管理）；行数组与它同一块分配，只释放它
 }pgpack_row;
 ARR_DECL(pgrow_arr, pgpack_row *)
 

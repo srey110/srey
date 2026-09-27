@@ -371,6 +371,139 @@ static void _mq_publish_case(CuTest *tc, mqtt_protversion version, int8_t qos, u
     _mqtt_udfree(&ud);
     buffer_free(&buf);
 }
+static void _mq_ext_free(void *data) {
+    FREE(data);
+}
+static void _mq_ext_push(buffer_ctx *buf, const char *data, size_t lens) {
+    char *p;
+    MALLOC(p, lens);
+    memcpy(p, data, lens);
+    buffer_external(buf, p, lens, _mq_ext_free);
+}
+// 包跨缓冲节点：首节点装不下整包时拷出来解析，与就地解析是两条路。包在 cut 处拆成两个节点，
+// 先只给前半截(须等而不报错)，再补后半截并跟一个完整小包：跨节点那包要解对、只消费本包，小包照常解出。
+// cut 取 0 表示只差最后一个字节；qos 为 0 时不带报文标识符
+static void _mq_split_case(CuTest *tc, mqtt_protversion version, int8_t qos, size_t cut) {
+    char body[300];
+    const char *tbody = "tail";
+    binary_ctx props;
+    size_t lens = 0, tlens = 0;
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    mqtt_pack_ctx *p;
+    memset(body, 'q', sizeof(body));
+    binary_init_write(&props, 0, 64);
+    CuAssertIntEquals(tc, ERR_OK, mqtt_props_kv(&props, USER_PROPERTY, "k", 1, "v", 1));
+    char *pack = mqtt_pack_publish(version, 0, qos, 0, "split/topic", 0 == qos ? 0 : 321, body, sizeof(body), &props, &lens);
+    binary_free(&props);
+    char *tail = mqtt_pack_publish(version, 0, 0, 0, "t/z", 0, (char *)tbody, strlen(tbody), NULL, &tlens);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertPtrNotNull(tc, tail);
+    if (0 == cut) {
+        cut = lens - 1;
+    }
+    CuAssertTrue(tc, cut < lens);
+    buffer_init(&buf);
+    _mq_ext_push(&buf, pack, cut);
+    _mq_ud_init(&ud, version, _MQ_COMMAND);
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_mqtt_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, (int32_t)cut, (int32_t)buffer_size(&buf));
+
+    _mq_ext_push(&buf, pack + cut, lens - cut);
+    _mq_ext_push(&buf, tail, tlens);
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, (int32_t)tlens, (int32_t)buffer_size(&buf));
+    mqtt_publish_varhead *vh = (mqtt_publish_varhead *)p->varhead;
+    mqtt_publish_payload *pl = (mqtt_publish_payload *)p->payload;
+    CuAssertStrEquals(tc, "split/topic", vh->topic);
+    CuAssertIntEquals(tc, 0 == qos ? 0 : 321, vh->packid);
+    CuAssertIntEquals(tc, qos, vh->qos);
+    CuAssertIntEquals(tc, (int32_t)sizeof(body), pl->lens);
+    CuAssertTrue(tc, 0 == memcmp(pl->content, body, sizeof(body)));
+    if (MQTT_50 == version) {
+        CuAssertPtrNotNull(tc, vh->properties);
+        CuAssertIntEquals(tc, 1, (int)mprop_arr_size(vh->properties));
+    }
+    _mqtt_pkfree(p);
+
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertStrEquals(tc, "t/z", ((mqtt_publish_varhead *)p->varhead)->topic);
+    pl = (mqtt_publish_payload *)p->payload;
+    CuAssertIntEquals(tc, 4, pl->lens);
+    CuAssertTrue(tc, 0 == memcmp(pl->content, tbody, 4));
+    CuAssertIntEquals(tc, 0, (int32_t)buffer_size(&buf));
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+    FREE(pack);
+    FREE(tail);
+}
+// 切点：只有类型字节 / 剩余长度 varint 中间(载荷 300B，varint 占 2 字节) / 主题名长度中间 / 报文标识符与
+// v5 属性段里(固定头 3 + 主题 13 + 标识符 2，属性长度在第 18 字节) / 包中间 / 差最后一个字节
+static void test_mqtt_publish_split(CuTest *tc) {
+    const mqtt_protversion vers[] = { MQTT_311, MQTT_50 };
+    const int8_t qoss[] = { 0, 1 };
+    const size_t cuts[] = { 1, 2, 3, 4, 17, 18, 19, 22, 150, 0 };
+    size_t v, q, c;
+    for (v = 0; v < ARRAY_SIZE(vers); v++) {
+        for (q = 0; q < ARRAY_SIZE(qoss); q++) {
+            for (c = 0; c < ARRAY_SIZE(cuts); c++) {
+                _mq_split_case(tc, vers[v], qoss[q], cuts[c]);
+            }
+        }
+    }
+}
+// v5 PUBLISH 把属性长度改大 bump 字节(总长不变)，属性段会吞进载荷开头当属性解：跨节点只拷头部那条路按这个
+// 长度算载荷起点，同样得判协议错，不能越界也不能解出包；与单节点整包解析的结论一致
+static void _mq_split_bad(CuTest *tc, uint8_t bump, size_t cut) {
+    char body[300];
+    binary_ctx props;
+    size_t lens = 0;
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    memset(body, 'q', sizeof(body));
+    binary_init_write(&props, 0, 64);
+    CuAssertIntEquals(tc, ERR_OK, mqtt_props_kv(&props, USER_PROPERTY, "k", 1, "v", 1));
+    char *pack = mqtt_pack_publish(MQTT_50, 0, 1, 0, "split/topic", 321, body, sizeof(body), &props, &lens);
+    binary_free(&props);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 7, (int)pack[18]);// 属性长度：用户属性 1 + 2 + 1 + 2 + 1
+    pack[18] = (char)(7 + bump);
+    buffer_init(&buf);
+    if (0 == cut) {
+        _mq_ext_push(&buf, pack, lens);
+    } else {
+        _mq_ext_push(&buf, pack, cut);
+        _mq_ext_push(&buf, pack + cut, lens - cut);
+    }
+    _mq_ud_init(&ud, MQTT_50, _MQ_COMMAND);
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_mqtt_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+    FREE(pack);
+}
+static void test_mqtt_publish_split_bad(CuTest *tc) {
+    const uint8_t bumps[] = { 1, 5, 100, 120 };
+    const size_t cuts[] = { 0, 10, 150 };
+    size_t b, c;
+    for (b = 0; b < ARRAY_SIZE(bumps); b++) {
+        for (c = 0; c < ARRAY_SIZE(cuts); c++) {
+            _mq_split_bad(tc, bumps[b], cuts[c]);
+        }
+    }
+}
 // PUBLISH 单块分配的边界：空 topic / 空载荷 / 各 qos 档 / v5 属性段
 static void test_mqtt_publish_block(CuTest *tc) {
     const char *body = "payload-bytes";
@@ -1052,18 +1185,22 @@ static void test_mqtt_struct_propertie_free(CuTest *tc) {
     mprop_arr *props;
     MALLOC(props, sizeof(*props));
     mprop_arr_init(props, 0);
-    // 元素 1：含 sval 字符串
+    // 元素 1：用户属性。同解析侧(_mqtt_data_kv)，key 与 value 都在条目块内，sval 指向 key 之后
     mqtt_propertie *p1;
-    CALLOC(p1, 1, sizeof(*p1));
-    MALLOC(p1->sval, 8);
+    MALLOC(p1, sizeof(*p1) + 2 + 7);
+    ZERO(p1, sizeof(*p1));
+    memcpy(p1->fval, "k", 2);
+    p1->flens = 1;
+    p1->sval = p1->fval + 2;
     memcpy(p1->sval, "topic1", 7);
+    p1->slens = 6;
     mprop_arr_push_back(props, &p1);
     // 元素 2：sval 为 NULL（int 类型属性）
     mqtt_propertie *p2;
     CALLOC(p2, 1, sizeof(*p2));
     p2->sval = NULL;
     mprop_arr_push_back(props, &p2);
-    // 释放后 props/p1->sval/p1/p2 应全部归还，ASan 下应无泄漏
+    // 释放后 props/p1/p2 应全部归还(sval 随 p1 一起)，ASan 下应无泄漏
     _mqtt_propertie_free(props);
 }
 
@@ -1274,6 +1411,8 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_acks);
     SUITE_ADD_TEST(suite, test_mqtt_publish);
     SUITE_ADD_TEST(suite, test_mqtt_publish_block);
+    SUITE_ADD_TEST(suite, test_mqtt_publish_split);
+    SUITE_ADD_TEST(suite, test_mqtt_publish_split_bad);
     SUITE_ADD_TEST(suite, test_mqtt_publish_bad_topiclen);
     SUITE_ADD_TEST(suite, test_mqtt_subscribe);
     SUITE_ADD_TEST(suite, test_mqtt_malformed_reject);

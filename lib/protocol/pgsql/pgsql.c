@@ -158,16 +158,17 @@ int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
 // total 输出的是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init_read，别再自己 +1：
 // 协议长度字段是 int32，服务端发 INT32_MAX 时那次加法有符号溢出，回绕成负数再转 size_t
 // 就是个天文数字，binary 的越界断言从此全部失效
-static char *_pgsql_payload(buffer_ctx *buf, size_t *total, int32_t *status) {
+// pg 非 NULL 且是 DataRow 时块尾多分行数组：[payload][补齐到 8][pgpack_row × 列数]
+static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (5 > blens) {
         // 数据不足一个完整消息头（1字节类型码 + 4字节长度）
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    int32_t lens;
-    ASSERTAB((size_t)sizeof(lens) == buffer_copyout(buf, 1, &lens, sizeof(lens)), "copy buffer failed.");
-    lens = (int32_t)unpack_integer((const char*)&lens, 4, 0, 0);
+    char head[5];
+    ASSERTAB(sizeof(head) == buffer_copyout(buf, 0, head, sizeof(head)), "copy buffer failed.");
+    int32_t lens = (int32_t)unpack_integer(head + 1, 4, 0, 0);
     if (lens < 4) {
         // pgsql 协议规定 length 字段含自身 4 字节，合法值 ≥ 4；非法值会让后续解析下溢/越界
         BIT_SET(*status, PROT_ERROR);
@@ -178,8 +179,9 @@ static char *_pgsql_payload(buffer_ctx *buf, size_t *total, int32_t *status) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
+    size_t extra = (NULL != pg && 'D' == head[0]) ? _pgpack_row_extra(pg) : 0;
     char *pack;
-    MALLOC(pack, *total);
+    MALLOC(pack, 0 == extra ? *total : ROUND_UP(*total, 8) + extra);
     ASSERTAB(*total == buffer_remove(buf, pack, *total), "copy buffer failed.");
     return pack;
 }
@@ -229,7 +231,7 @@ static const char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
 // 明文密码认证（AuthenticationCleartextPassword / GSSResponse）
 static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'p');
+    pgsql_pack_start(&bwriter, 'p', 0);
     binary_set_string(&bwriter, pg->password);
     pgsql_pack_end(&bwriter);
     return ev_send(ev, &pg->sk, bwriter.data, bwriter.offset, 0);
@@ -267,7 +269,7 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     secure_zero(inner_hex, sizeof(inner_hex));
     secure_zero(&md5, sizeof(md5));
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'p');
+    pgsql_pack_start(&bwriter, 'p', 0);
     binary_set_string(&bwriter, response);
     secure_zero(response, sizeof(response));
     pgsql_pack_end(&bwriter);
@@ -298,7 +300,7 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
         return ERR_FAILED;
     }
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'p');
+    pgsql_pack_start(&bwriter, 'p', 0);
     binary_set_string(&bwriter, mod); // 所选 SASL 机制名称
     size_t fmlens = strlen(first_message);
     binary_set_integer(&bwriter, fmlens, 4, 0); // client-first-message 长度
@@ -327,7 +329,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
         return ERR_FAILED;
     }
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'p');
+    pgsql_pack_start(&bwriter, 'p', 0);
     size_t mlens = strlen(final_message);
     binary_set_binary(&bwriter, final_message, mlens);
     SECURE_FREE(final_message, mlens + 1);
@@ -397,7 +399,7 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
 // 处理认证阶段收到的服务端消息（R/S/K/Z/E）
 static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t total;
-    char *pack = _pgsql_payload(buf, &total, status);
+    char *pack = _pgsql_payload(NULL, buf, &total, status);
     if (NULL == pack) {
         return;
     }
@@ -460,7 +462,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
 // 处理命令阶段收到的服务端消息，返回在 ReadyForQuery 时累积完成的 pgpack_ctx
 static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t total;
-    char *payload = _pgsql_payload(buf, &total, status);
+    char *payload = _pgsql_payload(pg, buf, &total, status);
     if (NULL == payload) {
         return NULL;
     }

@@ -235,7 +235,6 @@
     #include <winsock2.h>
     #include <ws2ipdef.h>
     #include <ws2tcpip.h>
-    #include <TlHelp32.h>
     #include <io.h>
     #include <tchar.h>
     #include <direct.h>

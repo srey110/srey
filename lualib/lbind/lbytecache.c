@@ -21,7 +21,7 @@ typedef struct dump_buf {
 }dump_buf;
 
 // 按 path 哈希/比较;元素释放 path + code 由 _lbc_entry_free 负责
-#define _BC_MAP_HASH(e) hash((e)->path, strlen((e)->path))
+#define _BC_MAP_HASH(e) hash_str((e)->path)
 #define _BC_MAP_CMP(a, b) strcmp((a)->path, (b)->path)
 HASHMAP_DECL(bc_map, bc_entry, _BC_MAP_HASH, _BC_MAP_CMP)
 
@@ -83,13 +83,10 @@ static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) 
     ne.mtime = mtime;
     bc_map_set(_bc_map, &ne);
 }
-int32_t lbc_loadfile(lua_State *lua, const char *path) {
+// 同 lbc_loadfile，mtime 由调用方给(LBC_CHECK_MTIME=0 时传 0)
+static int32_t _lbc_load(lua_State *lua, const char *path, uint64_t mt) {
     bc_entry key;
     key.path = (char *)path;
-    uint64_t mt = 0;
-#if LBC_CHECK_MTIME
-    mt = file_mtime(path);
-#endif
     rwlock_distr_rdlock(_bc_lock);
     const bc_entry *e = bc_map_get(_bc_map, &key);
     int32_t hit = (NULL != e);
@@ -116,23 +113,93 @@ int32_t lbc_loadfile(lua_State *lua, const char *path) {
     rwlock_distr_wrunlock(_bc_lock);
     return LUA_OK;
 }
-// require 缓存版 Lua searcher:package.searchpath 定位文件 + lbc_loadfile
+int32_t lbc_loadfile(lua_State *lua, const char *path) {
+    uint64_t mt = 0;
+#if LBC_CHECK_MTIME
+    mt = file_mtime(path);
+#endif
+    return _lbc_load(lua, path, mt);
+}
+// 是普通文件才算命中，顺手取 mtime
+static int32_t _lbc_stat(const char *file, uint64_t *mt) {
+    struct FSTAT st;
+    if (ERR_OK != FSTAT(file, &st)) {
+        return ERR_FAILED;
+    }
+#if defined(OS_WIN)
+    if (!BIT_CHECK(st.st_mode, _S_IFREG)) {
+        return ERR_FAILED;
+    }
+#else
+    if (!S_ISREG(st.st_mode)) {
+        return ERR_FAILED;
+    }
+#endif
+    *mt = (uint64_t)st.st_mtime;
+    return ERR_OK;
+}
+// 同 loadlib.c 的 getnextfilename：从 ';' 分隔的串里切出下一个文件名
+static const char *_lbc_nextfile(char **path, char *end) {
+    char *sep;
+    char *name = *path;
+    if (name == end) {
+        return NULL;
+    }
+    if ('\0' == *name) {
+        *name = *LUA_PATH_SEP;
+        name++;
+    }
+    sep = strchr(name, *LUA_PATH_SEP);
+    if (NULL == sep) {
+        sep = end;
+    }
+    *sep = '\0';
+    *path = sep;
+    return name;
+}
+// require 缓存版 Lua searcher：按 package.path 逐模板 stat 定位，命中即带 mtime 加载。
+// 名字替换与未命中的报错串照抄 package.searchpath，两边必须一致
 static int _lbc_searcher(lua_State *lua) {
-    luaL_checkstring(lua, 1);
+    const char *name = luaL_checkstring(lua, 1);
     lua_getglobal(lua, "package");
-    lua_getfield(lua, -1, "searchpath");
-    lua_pushvalue(lua, 1);
-    lua_getfield(lua, -3, "path");
-    lua_call(lua, 2, 2);
-    if (lua_isnil(lua, -2)) {
-        return 1;
+    lua_getfield(lua, -1, "path");
+    const char *path = lua_tostring(lua, -1);
+    if (NULL == path) {
+        return luaL_error(lua, "'package.path' must be a string");
     }
-    const char *path = lua_tostring(lua, -2);
-    if (LUA_OK != lbc_loadfile(lua, path)) {
-        return lua_error(lua);
+    if (NULL != strchr(name, '.')) {
+        name = luaL_gsub(lua, name, ".", LUA_DIRSEP);
     }
-    lua_pushstring(lua, path);
-    return 2;
+    luaL_Buffer buff;
+    luaL_buffinit(lua, &buff);
+    luaL_addgsub(&buff, path, LUA_PATH_MARK, name);
+    luaL_addchar(&buff, '\0');
+    char *pathname = luaL_buffaddr(&buff);
+    char *end = pathname + luaL_bufflen(&buff) - 1;
+    const char *file;
+    uint64_t mt = 0;
+    while (NULL != (file = _lbc_nextfile(&pathname, end))) {
+        if (ERR_OK != _lbc_stat(file, &mt)) {
+            continue;
+        }
+#if !LBC_CHECK_MTIME
+        mt = 0;
+#endif
+        if (LUA_OK != _lbc_load(lua, file, mt)) {
+            return lua_error(lua);
+        }
+        lua_pushstring(lua, file);
+        return 2;
+    }
+    luaL_pushresult(&buff);
+    const char *tried = lua_tostring(lua, -1);
+    luaL_Buffer b;
+    luaL_buffinit(lua, &b);
+    luaL_addstring(&b, "no file '");
+    luaL_addgsub(&b, tried, LUA_PATH_SEP, "'\n\tno file '");
+    luaL_addstring(&b, "'");
+    luaL_pushresult(&b);
+    return 1;
 }
 void lbc_install_searcher(lua_State *lua) {
     lua_getglobal(lua, "package");

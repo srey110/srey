@@ -19,10 +19,10 @@
 typedef void(*tw_cb)(ud_cxt *ud); //超时回调函数类型
 typedef struct tw_node_ctx {
     list_node node;     //侵入式链表节点（slist，UPCAST 复原）
+    uint64_t expires;   //到期时间（毫秒绝对时间）；紧跟 node，别挪
     tw_cb _cb;          //超时触发的回调函数
     free_cb _freecb;    //用户数据释放回调
     ud_cxt ud;          //用户数据
-    uint64_t expires;   //到期时间（毫秒绝对时间）
 }tw_node_ctx;
 FSQU_DECL(twq, tw_node_ctx *)
 typedef struct tw_ctx {

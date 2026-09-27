@@ -62,8 +62,10 @@ int32_t chan_is_closed(chan_ctx *chan) {
     /* closed 是 atomic_t：直接原子读，无需持锁 */
     return (int32_t)ATOMIC_GET(&chan->closed);
 }
-// 缓存模式下发送数据，队列满时阻塞等待，chan 关闭时返回失败
+// 缓存模式下发送数据，队列满时阻塞等待，chan 关闭时返回失败。
+// 唤醒放到解锁之后：持锁 signal 的话对方一醒就撞上还没放的锁，得再睡一次
 static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
+    int32_t wake;
     mutex_lock(&chan->m_mu);
     while (cbuf_que_full(&chan->qudata)) {
         if (ATOMIC_GET(&chan->closed)) {
@@ -80,15 +82,17 @@ static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
         return ERR_FAILED;
     }
     cbuf_que_push(&chan->qudata, buf);
-    if (ATOMIC_GET(&chan->r_waiting) > 0) {
+    wake = ATOMIC_GET(&chan->r_waiting) > 0;
+    mutex_unlock(&chan->m_mu);
+    if (wake) {
         //唤醒等待接收的线程
         cond_signal(&chan->r_cond);
     }
-    mutex_unlock(&chan->m_mu);
     return ERR_OK;
 }
-// 缓存模式下接收数据，队列空时阻塞等待，chan 关闭时返回 NULL
+// 缓存模式下接收数据，队列空时阻塞等待，chan 关闭时返回 NULL。唤醒在解锁后，理由同 _buffered_chan_send
 static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
+    int32_t wake;
     mutex_lock(&chan->m_mu);
     while (cbuf_que_empty(&chan->qudata)) {
         if (ATOMIC_GET(&chan->closed)) {
@@ -103,11 +107,12 @@ static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
     buf_ctx *msg = cbuf_que_pop(&chan->qudata);
     void *data = msg->data;
     *lens = msg->lens;
-    if (ATOMIC_GET(&chan->w_waiting) > 0) {
+    wake = ATOMIC_GET(&chan->w_waiting) > 0;
+    mutex_unlock(&chan->m_mu);
+    if (wake) {
         //唤醒等待发送的线程
         cond_signal(&chan->w_cond);
     }
-    mutex_unlock(&chan->m_mu);
     return data;
 }
 // 非缓存模式下发送数据，等待接收方取走后返回，chan 关闭时返回失败
@@ -140,7 +145,8 @@ static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     mutex_unlock(&chan->w_mu);
     return ERR_OK;
 }
-// 非缓存模式下接收数据，等待发送方放入后返回；关闭且没有待交接数据时返回 NULL
+// 非缓存模式下接收数据，等待发送方放入后返回；关闭且没有待交接数据时返回 NULL。
+// 唤醒发送方放在解开 m_mu 之后，理由同 _buffered_chan_send；发送方被 w_mu 串行化，w_cond 上只有它一个在等
 static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
     mutex_lock(&chan->r_mu);
     mutex_lock(&chan->m_mu);
@@ -159,9 +165,9 @@ static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
     void *msg = chan->data.data;
     *lens = chan->data.lens;
     ATOMIC_ADD_RELAXED(&chan->w_waiting, -1);
+    mutex_unlock(&chan->m_mu);
     //唤醒等待发送的线程
     cond_signal(&chan->w_cond);
-    mutex_unlock(&chan->m_mu);
     mutex_unlock(&chan->r_mu);
     return msg;
 }

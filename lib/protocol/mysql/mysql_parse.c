@@ -46,6 +46,14 @@ static inline int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *pay
     ASSERTAB(sizeof(head) == buffer_drain(buf, sizeof(head)), "drain buffer failed.");
     return ERR_OK;
 }
+// 行阶段的包在块尾多分行数组：[payload][补齐到 8][mpack_row × 列数]；STMT_PREPARE_FIELD 与 RST_ROW 同值，须再判命令
+static inline size_t _mpack_row_extra(mysql_ctx *mysql) {
+    if (RST_ROW != mysql->parse_status
+        || (MYSQL_QUERY != mysql->cur_cmd && MYSQL_EXECUTE != mysql->cur_cmd)) {
+        return 0;
+    }
+    return sizeof(mpack_row) * (size_t)((mysql_reader_ctx *)mysql->mpack->pack)->field_count;
+}
 char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, int32_t *status) {
     if (ERR_OK != _mysql_head(mysql, buf, payload_lens)) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -64,8 +72,9 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
+    size_t extra = _mpack_row_extra(mysql);
     char *payload;
-    MALLOC(payload, *payload_lens);
+    MALLOC(payload, 0 == extra ? *payload_lens : ROUND_UP(*payload_lens, 8) + extra);
     ASSERTAB(*payload_lens == buffer_remove(buf, payload, *payload_lens), "copy buffer failed.");
     return payload;
 }
@@ -210,13 +219,13 @@ static void _mpack_fields_free(mpack_field *fields, int32_t n) {
         FREE(fields[i].payload);
     }
 }
+// 行数组与 payload 同一块：先把块首取到局部再 FREE，理由同 _pgpack_reader_free
 void _mpack_reader_free(void *pack) {
-    mpack_row *rows;
+    char *block;
     mysql_reader_ctx *reader = pack;
     for (uint32_t i = 0; i < mrow_arr_size(&reader->arr_rows); i++) {
-        rows = *mrow_arr_at(&reader->arr_rows, (int32_t)i);
-        FREE(rows->payload);
-        FREE(rows);
+        block = (*mrow_arr_at(&reader->arr_rows, (int32_t)i))->payload;
+        FREE(block);
     }
     mrow_arr_free(&reader->arr_rows);
     _mpack_fields_free(reader->fields, reader->field_count);
@@ -269,16 +278,21 @@ static inline eof_final _mpack_check_final(binary_ctx *breader, int32_t *status)
     }
     return EOF_FINAL_DONE;
 }
+// 取 payload 块尾的行数组并清零，块首所有权记在首列；块由 _mysql_payload 按 _mpack_row_extra 多分
+static inline mpack_row *_mpack_row_place(mysql_reader_ctx *reader, binary_ctx *breader) {
+    mpack_row *row = (mpack_row *)(breader->data + ROUND_UP(breader->size, 8));
+    ZERO(row, sizeof(mpack_row) * (size_t)reader->field_count);
+    row->payload = breader->data;
+    return row;
+}
 // 解析文本协议（COM_QUERY）结果集中的一行数据，字段值以 lenenc 字符串存储
 static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *breader) {
     int32_t _rtn;
     uint64_t vlens;
     mpack_row *row;
-    CALLOC(row, 1, sizeof(mpack_row) * (size_t)reader->field_count);
-    row->payload = breader->data;
+    row = _mpack_row_place(reader, breader);
     for (int32_t i = 0; i < reader->field_count; i++) {
         if (!binary_have(breader, 1)) {
-            FREE(row);
             return ERR_FAILED;
         }
         if (0xfb == _mysql_peek(breader)) {
@@ -290,7 +304,6 @@ static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *bread
         vlens = _mysql_get_lenenc(breader, &_rtn);
         if (ERR_OK != _rtn
             || !binary_have(breader, vlens)) {
-            FREE(row);
             return ERR_FAILED;
         }
         row[i].val.lens = (size_t)vlens;
@@ -307,14 +320,12 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
     int32_t _rtn;
     uint64_t vlens;
     mpack_row *row;
-    CALLOC(row, 1, sizeof(mpack_row) * (size_t)reader->field_count);
-    row->payload = breader->data;
+    row = _mpack_row_place(reader, breader);
     // 读取 NULL 位图（偏移量 +2 是因为二进制协议位图从第 3 位开始）。
     // 位图长度来自上一个包声明的 field_count（上限 65535，位图可达 8193 字节），
     // 与本包实际长度无关，故读之前必须比一遍
     size_t bmlens = ((size_t)reader->field_count + 9) / 8;
     if (!binary_have(breader, bmlens)) {
-        FREE(row);
         return ERR_FAILED;
     }
     char *bitmap = binary_get_binary(breader, bmlens);
@@ -351,25 +362,21 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
         case MYSQL_TYPE_TIMESTAMP:
         case MYSQL_TYPE_TIMESTAMP2:
             if (!binary_have(breader, sizeof(uint8_t))) {// 长度前缀本身也可能被截断
-                FREE(row);
                 return ERR_FAILED;
             }
             row[i].val.lens = (size_t)binary_get_uint8(breader);
             if (0 != row[i].val.lens && 4 != row[i].val.lens
                 && 7 != row[i].val.lens && 11 != row[i].val.lens) {
-                FREE(row);
                 return ERR_FAILED;
             }
             break;
         case MYSQL_TYPE_TIME:
         case MYSQL_TYPE_TIME2:
             if (!binary_have(breader, sizeof(uint8_t))) {// 长度前缀本身也可能被截断
-                FREE(row);
                 return ERR_FAILED;
             }
             row[i].val.lens = (size_t)binary_get_uint8(breader);
             if (0 != row[i].val.lens && 8 != row[i].val.lens && 12 != row[i].val.lens) {
-                FREE(row);
                 return ERR_FAILED;
             }
             break;
@@ -391,19 +398,16 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
             vlens = _mysql_get_lenenc(breader, &_rtn);
             if (ERR_OK != _rtn
                 || !binary_have(breader, vlens)) {
-                FREE(row);
                 return ERR_FAILED;
             }
             row[i].val.lens = (size_t)vlens;
             break;
         default:
             LOG_WARN("unknow data type %d.", (int32_t)reader->fields[i].type);
-            FREE(row);
             return ERR_FAILED;
         }
         // 定长分支的长度虽是常量，截断的报文照样读不出来，故与 lenenc 分支共用这道判定
         if (!binary_have(breader, row[i].val.lens)) {
-            FREE(row);
             return ERR_FAILED;
         }
         if (row[i].val.lens > 0) {

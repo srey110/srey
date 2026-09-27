@@ -37,15 +37,15 @@ int32_t memcasecmp(const void *ptr1, const void *ptr2, size_t lens);
 /// <param name="s1">第一个串，须以 NUL 结尾</param>
 /// <param name="s2">第二个串，须以 NUL 结尾</param>
 /// <returns>0 相等；1 s1 大；-1 s1 小。大小按折叠后的无符号字节值比，短串是长串前缀时短串小</returns>
-int32_t strcasecmp(const char *s1, const char *s2);
+int32_t strcasecmp_s(const char *s1, const char *s2);
 /// <summary>
-/// 同 strcasecmp，但最多比前 n 个字节，遇 NUL 提前结束。一般经 STRNCMP 宏调用
+/// 同 strcasecmp_s，但最多比前 n 个字节，遇 NUL 提前结束。一般经 STRNCMP 宏调用
 /// </summary>
 /// <param name="s1">第一个串</param>
 /// <param name="s2">第二个串</param>
 /// <param name="n">最多比较的字节数</param>
-/// <returns>同 strcasecmp；n 为 0 返回 0</returns>
-int32_t strncasecmp(const char *s1, const char *s2, size_t n);
+/// <returns>同 strcasecmp_s；n 为 0 返回 0</returns>
+int32_t strncasecmp_s(const char *s1, const char *s2, size_t n);
 /// <summary>
 /// 按 ncs 选大小写敏感(0)或不敏感的查找/比较组合。凡按 ncs 分流的搜索入口都用它,
 /// 别各自写 if/else —— 分支写反只表现为搜索结果多一条或少一条, 不会崩, 极难发现

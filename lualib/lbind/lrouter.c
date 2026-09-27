@@ -108,7 +108,7 @@ static int32_t _lrouter_match(lua_State *lua) {
     const char *url = luaL_checklstring(lua, 3, &ulen);
     url_ctx urlstorage;
     router_req ctx;
-    ZERO(&ctx, sizeof(ctx));
+    ZERO(&ctx, offsetof(router_req, chain));
     ctx.url = &urlstorage;
     int32_t idx = router_match_index(*pr, method, mlen, url, ulen, &ctx);
     int32_t code = router_match_code(idx);

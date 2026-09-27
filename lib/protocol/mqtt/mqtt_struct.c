@@ -1,6 +1,6 @@
 ﻿#include "protocol/mqtt/mqtt_struct.h"
 
-// 释放属性数组及每个属性条目（含 sval）
+// 释放属性数组及每个属性条目（sval 与条目同一块分配，见 _mqtt_data_kv）
 void _mqtt_propertie_free(mprop_arr *properties) {
     if (NULL == properties) {
         return;
@@ -8,7 +8,6 @@ void _mqtt_propertie_free(mprop_arr *properties) {
     mqtt_propertie *propt;
     for (uint32_t i = 0; i < mprop_arr_size(properties); i++) {
         propt = *mprop_arr_at(properties, (int32_t)i);
-        FREE(propt->sval);
         FREE(propt);
     }
     mprop_arr_free(properties);

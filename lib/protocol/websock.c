@@ -59,8 +59,9 @@ static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqt
     #include <arm_neon.h>
     #define WEBSOCK_MASK_HAS_NEON 1
 #endif
-// 用 4 字节掩码对 data 做 XOR，按平台选择 SIMD 路径；尾部 < 块大小 字节走 8 字节标量
-static inline void _websock_mask_xor(char *data, size_t lens, const char key[4]) {
+// 用 4 字节掩码对 src 做 XOR 写进 dst，按平台选择 SIMD 路径；尾部 < 块大小 字节走 8 字节标量。
+// dst 与 src 可以是同一块（原地解掩码），部分重叠不行
+static inline void _websock_mask_xor(char *dst, const char *src, size_t lens, const char key[4]) {
     size_t i = 0;
 #if defined(WEBSOCK_MASK_HAS_SSE2)
     uint32_t key32;
@@ -68,9 +69,9 @@ static inline void _websock_mask_xor(char *data, size_t lens, const char key[4])
     memcpy(&key32, key, 4);
     vkey = _mm_set1_epi32((int32_t)key32);
     for (; i + 16 <= lens; i += 16) {
-        v = _mm_loadu_si128((const __m128i *)(data + i));
+        v = _mm_loadu_si128((const __m128i *)(src + i));
         v = _mm_xor_si128(v, vkey);
-        _mm_storeu_si128((__m128i *)(data + i), v);
+        _mm_storeu_si128((__m128i *)(dst + i), v);
     }
 #elif defined(WEBSOCK_MASK_HAS_NEON)
     // 用 u8 load/store + reinterpret 确保 ISO 严格别名合规（字节类型可访问任意内存）；
@@ -80,9 +81,9 @@ static inline void _websock_mask_xor(char *data, size_t lens, const char key[4])
     memcpy(&key32, key, 4);
     vkey = vreinterpretq_u8_u32(vdupq_n_u32(key32));
     for (; i + 16 <= lens; i += 16) {
-        v = vld1q_u8((const uint8_t *)(data + i));
+        v = vld1q_u8((const uint8_t *)(src + i));
         v = veorq_u8(v, vkey);
-        vst1q_u8((uint8_t *)(data + i), v);
+        vst1q_u8((uint8_t *)(dst + i), v);
     }
 #endif
     // 8 字节标量块（覆盖 SIMD 尾部 16 字节内的 8 字节对齐残余，或无 SIMD 平台主路径）
@@ -91,13 +92,13 @@ static inline void _websock_mask_xor(char *data, size_t lens, const char key[4])
     memcpy(&key32s, key, 4);
     key64 = (uint64_t)key32s | ((uint64_t)key32s << 32);
     for (; i + 8 <= lens; i += 8) {
-        memcpy(&block, data + i, 8);
+        memcpy(&block, src + i, 8);
         block ^= key64;
-        memcpy(data + i, &block, 8);
+        memcpy(dst + i, &block, 8);
     }
     // 最后 0-7 字节
     for (; i < lens; i++) {
-        data[i] ^= key[i & 3];
+        dst[i] = src[i] ^ key[i & 3];
     }
 }
 
@@ -553,7 +554,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         } else {
             ASSERTAB(sizeof(pack->key) == buffer_copyout(buf, 0, pack->key, sizeof(pack->key)), "copy buffer failed.");
             ASSERTAB(pack->dlens == buffer_copyout(buf, sizeof(pack->key), pack->data, pack->dlens), "copy buffer failed.");
-            _websock_mask_xor(pack->data, pack->dlens, pack->key);
+            _websock_mask_xor(pack->data, pack->data, pack->dlens, pack->key);
         }
         ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
     }
@@ -772,8 +773,7 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *da
         memcpy(frame + offset, key, MASK_KEY_LENS);
         offset += MASK_KEY_LENS;
         if (NULL != data) {
-            memcpy(frame + offset, data, dlens);
-            _websock_mask_xor(frame + offset, dlens, key);
+            _websock_mask_xor(frame + offset, data, dlens, key);
         }
     } else {
         if (NULL != data) {

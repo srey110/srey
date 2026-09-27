@@ -127,7 +127,7 @@ void _evpub_sk_clear(void *sk) {
     }
     tcp->wb_size = 0;
     tda_init(&tcp->tda, WB_WARN_INIT_SIZE);
-    buffer_drain(&tcp->buf_r, buffer_size(&tcp->buf_r));
+    buffer_free(&tcp->buf_r);
     UD_FREE(tcp->cbs.ud_free, &tcp->ud);
 }
 void _evpub_sk_reset(void *sk, void *args) {
@@ -288,7 +288,7 @@ static uint32_t _usk_linger_tick(void *ud, uint64_t now_ms) {
 static void _usk_linger_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
     tcp_ctx *tcp = UPCAST(evsk, tcp_ctx, sock);
     (void)ev;
-    if (0 != _evpub_linger_drain(evsk->sk.fd, &tcp->linger_bytes)
+    if (0 != _evpub_linger_drain(evsk->sk.fd, watcher->udp_rbuf, sizeof(watcher->udp_rbuf), &tcp->linger_bytes)
         || ERR_OK != _usk_keep_event(watcher, evsk, EVENT_READ)) {
         _usk_linger_end(watcher, tcp);
     }
@@ -306,7 +306,7 @@ static int32_t _usk_linger_begin(watcher_ctx *watcher, tcp_ctx *tcp) {
     tcp->sock.ev_cb = _usk_linger_cb;
     _evpub_off_buf_clear(&tcp->buf_s);
     tcp->wb_size = 0;
-    buffer_drain(&tcp->buf_r, buffer_size(&tcp->buf_r));
+    buffer_free(&tcp->buf_r);
     tcp->linger_bytes = 0;
     tcp->linger_until = timer_cur_ms(&watcher->timer) + CLOSE_LINGER_MS;
     BIT_SET(tcp->status, STATUS_LINGERING);
@@ -840,18 +840,15 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t e
     (void)ev;
     tcp_ctx *tcp = UPCAST(evsk, tcp_ctx, sock);
     tcp->sock.ev_cb = _usk_on_rw_cb;
+#if !defined(EV_EPOLL)
     _uev_del_event(watcher, tcp->sock.sk.fd, &tcp->sock.events, tcp->sock.events, evsk);
+#endif
     if (BIT_CHECK(tcp->status, STATUS_ERROR)
         || ERR_OK != sock_checkconn(tcp->sock.sk.fd)) {
         _usk_on_connect_cb_err(watcher, tcp);
         return;
     }
     BIT_SET(tcp->status, STATUS_ESTABLISHED);
-    if (ERR_OK != _evpub_tcp_keepalive(tcp->sock.sk.fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        _usk_on_connect_cb_err(watcher, tcp);
-        return;
-    }
 #if WITH_SSL
     if (NULL != tcp->evssl) {// 默认启用ssl，初始化
         tcp->ssl = evssl_setfd(tcp->evssl, tcp->sock.sk.fd);
@@ -862,7 +859,11 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t e
         BIT_SET(tcp->status, STATUS_AUTHSSL);
     }
 #endif
+#if defined(EV_EPOLL)
+    if (ERR_OK != _uev_mod_event(watcher, tcp->sock.sk.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
+#else
     if (ERR_OK != _uev_add_event(watcher, tcp->sock.sk.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
+#endif
         _usk_on_connect_cb_err(watcher, tcp);
         return;
     }
@@ -908,7 +909,8 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    if (ERR_OK != sock_nodelay(sk->fd)) {
+    if (ERR_OK != sock_nodelay(sk->fd)
+        || ERR_OK != _evpub_tcp_keepalive(sk->fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK((sk->fd));
         UD_FREE(cbs->ud_free, ud);
@@ -1008,23 +1010,31 @@ static inline int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt)
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher。
 // 末尾重挂 READ 失败时这条监听 socket 从此收不到事件，只能弃掉：cbs_ctx 里没有"监听失效"
 // 这类回调，通知不到业务，故把后果写进日志——SO_REUSEPORT 下每个 watcher 一条，掉一条只是
-// 少一份 accept 容量，端口照常可连，不打出来没人会发现。清 ev_cb 的理由见 _usk_detach
+// 少一份 accept 容量，端口照常可连，不打出来没人会发现。清 ev_cb 的理由见 _usk_detach。
+// kqueue 报了待接连接数(kevent.data)就只 accept 这么多次，省掉最后那次必然 EAGAIN 的；之后新到的留给下次事件
 static void _usk_on_accept_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
     (void)ev;
     lsnsock_ctx *acpt = UPCAST(evsk, lsnsock_ctx, sock);
     SOCKET fd;
     watcher_ctx *to;
     int32_t unremove;
+#if defined(EV_KQUEUE)
+    intptr_t npend = watcher->evdata > 0 ? watcher->evdata : -1;
+#endif
     while ((unremove = (0 == ATOMIC_GET(&acpt->lsn->remove)))) {
-        fd = sock_accept_cloexec(acpt->sock.sk.fd, NULL, NULL, 1);
+#if defined(EV_KQUEUE)
+        if (0 == npend--) {
+            break;
+        }
+#endif
+        fd = sock_accept_cloexec(acpt->sock.sk.fd, NULL, NULL, !ACCEPT_INHERIT_NONBLOCK);
         if (INVALID_SOCK == fd) {
             if (ERR_OK == _usk_check_accept(watcher, acpt)) {
                 continue;
             }
             break;
         }
-        if (ERR_OK != sock_nodelay(fd)
-            || ERR_OK != _evpub_tcp_keepalive(fd)) {
+        if (ERR_OK != _evpub_accept_opts(fd)) {
             CLOSE_SOCK(fd);
             continue;
         }
@@ -1290,16 +1300,113 @@ static inline void _usk_init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_T
     msg->msg_iov = iov;
     msg->msg_iovlen = niov;
 }
-// UDP接收处理：循环 recvmsg 直到 EAGAIN，一次事件尽量收干净，少等几轮事件循环
+// recvmsg / recvmmsg 失败后的处置，两个版本的 _usk_on_udp_rcb 共用。与发送侧 _usk_udp_sendmsg_once /
+// IOCP 侧 _olp_on_recvfrom_cb 一致：单包失败告警丢弃并继续排空，不因一个瞬时错误关掉承载所有对端的
+// UDP socket；但不消耗 datagram 的错误(如 EINVAL)会原地打转，故连续失败达 UDP_RECV_MAX_ERRS 即认 fd 异常。
+// 须紧跟在失败的那次调用之后调(先读 ERRNO)。返回 ERR_OK 已读空；1 单包失败已告警、接着收；
+// ERR_FAILED fd 失效或连续失败达上限，调用方关闭
+static inline int32_t _usk_udp_recv_err(udp_ctx *udp, int32_t *nerr) {
+    int32_t err = ERRNO;
+    if (ERR_RW_RETRIABLE(err)) {
+        return ERR_OK;
+    }
+    if (EBADF == err
+        || ENOTSOCK == err) {
+        return ERR_FAILED;
+    }
+    LOG_WARN("UDP recvmsg dropped on fd %d: %s.", (int32_t)udp->sock.sk.fd, ERRORSTR(err));
+    return (++(*nerr) >= UDP_RECV_MAX_ERRS) ? ERR_FAILED : 1;
+}
+// 收到一个 datagram 后的处置，两个版本的 _usk_on_udp_rcb 共用。超过 MAX_RECVFROM_SIZE 被截断的残缺数据
+// 不上抛，告警丢弃后继续收(不关 socket)；0 字节是合法 datagram 不视为对端关闭，由 _usk_call_recvfrom_cb
+// 过滤不上抛。返回 0 已投递，1 截断丢弃。投递后调用方须查 STATUS_ERROR：回调里调了 ev_close 就返回
+// ERR_FAILED 当场关，本次已收上来的不再投递(同 IOCP 侧 _olp_on_recvfrom_cb)
+static inline int32_t _usk_udp_deliver(watcher_ctx *watcher, udp_ctx *udp, int32_t flags,
+                                       char *buf, netaddr_ctx *addr, size_t lens) {
+    if (flags & MSG_TRUNC) {
+        LOG_WARN("UDP datagram truncated on fd %d (exceeds %d bytes), dropped.",
+                 (int32_t)udp->sock.sk.fd, MAX_RECVFROM_SIZE);
+        return 1;
+    }
+    _usk_call_recvfrom_cb(watcher->ev, udp, buf, addr, lens);
+    return 0;
+}
+#if defined(UDP_RECV_BATCH)
+// UDP 读事件，批量收：recvmmsg 一次取 UDP_RECV_BATCH 个，其余同 #else 分支的逐个收——照旧收到 EAGAIN 为止，
+// kqueue 仍按 kevent.data 读够即停。别按"一批没取满"判读空：末尾那次常能读到刚到的下一包，停了反而每包多等一轮事件
+static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
+    int32_t rtn = ERR_OK;
+    int32_t i, n;
+    int32_t nerr = 0;
+    netaddr_ctx addr[UDP_RECV_BATCH];
+    IOV_TYPE iov[UDP_RECV_BATCH];
+    struct mmsghdr vec[UDP_RECV_BATCH];
+#if defined(EV_KQUEUE)
+    intptr_t want = watcher->evdata;
+    intptr_t got = 0;
+#endif
+    ZERO(addr, sizeof(addr));
+    ZERO(vec, sizeof(vec));
+    for (i = 0; i < UDP_RECV_BATCH; i++) {
+        iov[i].IOV_PTR_FIELD = 0 == i ? watcher->udp_rbuf : watcher->udp_rbufx[i - 1];
+        iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)MAX_RECVFROM_SIZE;
+        vec[i].msg_hdr.msg_name = &addr[i];
+        vec[i].msg_hdr.msg_iov = &iov[i];
+        vec[i].msg_hdr.msg_iovlen = 1;
+    }
+    for (;;) {
+        for (i = 0; i < UDP_RECV_BATCH; i++) {
+            vec[i].msg_hdr.msg_namelen = (socklen_t)sizeof(netaddr_ctx);
+        }
+        n = recvmmsg(udp->sock.sk.fd, vec, UDP_RECV_BATCH, 0, NULL);
+        if (n > 0) {
+            nerr = 0;
+            for (i = 0; i < n; i++) {
+                if (0 != _usk_udp_deliver(watcher, udp, vec[i].msg_hdr.msg_flags, (char *)iov[i].IOV_PTR_FIELD,
+                                          &addr[i], (size_t)vec[i].msg_len)) {
+                    continue;
+                }
+                if (BIT_CHECK(udp->status, STATUS_ERROR)) {
+                    return ERR_FAILED;
+                }
+#if defined(EV_KQUEUE)
+                got += (intptr_t)vec[i].msg_len;
+#endif
+            }
+#if defined(EV_KQUEUE)
+            if (want > 0
+                && got >= want) {
+                rtn = ERR_OK;
+                break;
+            }
+#endif
+            continue;
+        }
+        rtn = _usk_udp_recv_err(udp, &nerr);
+        if (1 != rtn) {
+            break;
+        }
+    }
+    if (ERR_OK == rtn) {
+        rtn = _usk_keep_event(watcher, &udp->sock, EVENT_READ);
+    }
+    return rtn;
+}
+#else
+// UDP 读事件，逐个收：循环 recvmsg 直到 EAGAIN，一次事件尽量收干净，少等几轮事件循环。
 // 单次 recvmsg 仅读一个 datagram；ET 模式下若 buffer 仍有 datagram 不会再触发 EVENT_READ，
-// 必须本次唤醒就读光，否则后续 datagram 卡到 buffer 直到新边沿到达
+// 必须本次唤醒就读光，否则后续 datagram 卡到 buffer 直到新边沿到达。
+// kqueue 报了排队负载字节数(kevent.data)就读够这么多即停，省掉最后那次必然 EAGAIN 的；
+// 0 字节包不计入这个数，可能晚一个事件才读到，它本来就不上抛
 static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
     int32_t rtn;
-    int32_t err;
     int32_t nerr = 0;
     netaddr_ctx addr;
     IOV_TYPE iov;
     struct msghdr msg;
+#if defined(EV_KQUEUE)
+    intptr_t left = watcher->evdata > 0 ? watcher->evdata : -1;
+#endif
     netaddr_empty(&addr);
     iov.IOV_PTR_FIELD = watcher->udp_rbuf;
     iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)MAX_RECVFROM_SIZE;
@@ -1310,30 +1417,23 @@ static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
         rtn = (int32_t)recvmsg(udp->sock.sk.fd, &msg, 0);
         if (rtn >= 0) {
             nerr = 0;// 读到 datagram 即证 fd 正常,失败计数按"连续"而非累计,免高流量下偶发失败攒满上限误关
-            if (msg.msg_flags & MSG_TRUNC) {
-                // datagram 超过 MAX_RECVFROM_SIZE 被截断：残缺数据不上抛，告警丢弃后继续收（不关 socket）
-                LOG_WARN("UDP datagram truncated on fd %d (exceeds %d bytes), dropped.",
-                         (int32_t)udp->sock.sk.fd, MAX_RECVFROM_SIZE);
+            if (0 != _usk_udp_deliver(watcher, udp, msg.msg_flags, watcher->udp_rbuf, &addr, (size_t)rtn)) {
                 continue;
             }
-            // 0 字节是合法 UDP datagram 不视为对端关闭；由 _usk_call_recvfrom_cb 过滤不向上抛
-            _usk_call_recvfrom_cb(watcher->ev, udp, watcher->udp_rbuf, &addr, (size_t)rtn);
+            if (BIT_CHECK(udp->status, STATUS_ERROR)) {
+                return ERR_FAILED;
+            }
+#if defined(EV_KQUEUE)
+            if (left > 0
+                && (left -= rtn) <= 0) {
+                rtn = ERR_OK;
+                break;
+            }
+#endif
             continue;
         }
-        err = ERRNO;
-        if (ERR_RW_RETRIABLE(err)) {
-            rtn = ERR_OK;
-            break;
-        }
-        if (EBADF == err
-            || ENOTSOCK == err) {
-            break;// fd 本身失效,rtn 保持负值让调用方关闭
-        }
-        // 与发送侧 _usk_udp_sendmsg_once / IOCP 侧 _olp_on_recvfrom_cb 一致：单包失败告警丢弃并
-        // 继续排空,不因一个瞬时错误关掉承载所有对端的 UDP socket；但不消耗 datagram 的错误
-        // (如 EINVAL)会原地打转,故连续失败超上限即认 fd 异常,保持 rtn 负值让调用方关闭
-        LOG_WARN("UDP recvmsg dropped on fd %d: %s.", (int32_t)udp->sock.sk.fd, ERRORSTR(err));
-        if (++nerr >= UDP_RECV_MAX_ERRS) {
+        rtn = _usk_udp_recv_err(udp, &nerr);
+        if (1 != rtn) {
             break;
         }
     }
@@ -1342,6 +1442,7 @@ static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
     }
     return rtn;
 }
+#endif
 // 对单个 UDP payload 尝试一次 sendmsg；返回 ERR_OK 该包已处理完(发送成功，或遇到无害的单包错误已丢弃)；
 // 返回 1 为 EAGAIN/EINTR，可重试，调用方需保留该包；返回 ERR_FAILED 为 EBADF/ENOTSOCK，fd 本身已失效
 static inline int32_t _usk_udp_sendmsg_once(SOCKET fd, const void *data, size_t len, netaddr_ctx *addr) {

@@ -7,7 +7,7 @@
 //
 // 典型用法:
 //   typedef struct { char *name; uint64_t handle; } ent;
-//   #define ENT_HASH(e)     hash((e)->name, strlen((e)->name))
+//   #define ENT_HASH(e)     hash_str((e)->name)
 //   #define ENT_CMP(a, b)   strcmp((a)->name, (b)->name)
 //   HASHMAP_DECL(ent_map, ent, ENT_HASH, ENT_CMP)
 //   ent_map *m = ent_map_new(1024, NULL);

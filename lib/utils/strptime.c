@@ -141,7 +141,7 @@ static const unsigned char *_find_string(const unsigned char *bp, int *tgt, cons
     for (; n1 != NULL; n1 = n2, n2 = NULL) {
         for (i = 0; i < c; i++, n1++) {
             len = strlen(*n1);
-            if (strncasecmp(*n1, (const char *)bp, len) == 0) {
+            if (STRNCMP(*n1, (const char *)bp, len) == 0) {
                 *tgt = i;
                 return bp + len;
             }
@@ -732,11 +732,9 @@ static char *_strptime_st(const char *buf, const char *fmt, struct tm *tm, int *
 
         if (!HAVE_WDAY(state)) {
             /* calculate day of week */
-            i = 0;
             week_offset = _first_wday_of(tm->tm_year + TM_YEAR_BASE);
-            while (++i <= tm->tm_yday) {
-                if (week_offset++ >= 6)
-                    week_offset = 0;
+            if (tm->tm_yday > 0) {
+                week_offset = (week_offset + tm->tm_yday) % 7;
             }
             tm->tm_wday = week_offset;
             state |= S_WDAY;

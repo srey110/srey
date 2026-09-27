@@ -17,7 +17,8 @@
 /// <returns>ERR_OK 成功；id 超过 SERVICEID_MAX 时返回 ERR_FAILED</returns>
 int32_t serviceid(uint16_t id);
 /// <summary>
-/// 获取全局唯一ID：高16位为服务器id(serviceid)，低48位为进程内自增计数
+/// 获取全局唯一ID：高16位为服务器id(serviceid)，低48位为进程内计数。
+/// 同一线程内递增，跨线程不保证先后（各线程按段领号），不能拿大小判断创建先后
 /// </summary>
 /// <returns>ID</returns>
 uint64_t createid(void);
@@ -47,7 +48,7 @@ void unlimit(void);
 /// <param name="data">参数</param>
 void sighandle(void(*cb)(int32_t, void *), void *data);
 /// <summary>
-/// cpu核心数
+/// cpu核心数。首次取到后缓存，运行期 CPU 热插拔不再反映；各线程同时首调只是各算一遍同一个值
 /// </summary>
 /// <returns>核心数</returns>
 uint32_t procscnt(void);
@@ -155,6 +156,18 @@ static inline uint64_t hash(const char *buf, size_t len) {
     uint64_t rtn = 0;
     for (; len > 0; --len) {
         rtn = (rtn * 131) + (unsigned char)*buf++;
+    }
+    return rtn;
+}
+/// <summary>
+/// '\0' 结尾字符串的 hash，结果与 hash(str, strlen(str)) 相同，只扫一遍
+/// </summary>
+/// <param name="str">要计算的字符串</param>
+/// <returns>hash</returns>
+static inline uint64_t hash_str(const char *str) {
+    uint64_t rtn = 0;
+    for (; '\0' != *str; ++str) {
+        rtn = (rtn * 131) + (unsigned char)*str;
     }
     return rtn;
 }

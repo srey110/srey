@@ -262,6 +262,18 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int3
 #endif
     return ERR_OK;
 }
+#if defined(EV_EPOLL)
+int32_t _uev_mod_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, evsock_ctx *evsk) {
+    events_t epev = { 0 };
+    epev.data.ptr = evsk;
+    epev.events = _uev_ev2epoll(ev);
+    if (ERR_FAILED == epoll_ctl(watcher->evfd, EPOLL_CTL_MOD, fd, &epev)) {
+        return ERR_FAILED;
+    }
+    *curevents = ev;
+    return ERR_OK;
+}
+#endif
 void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, evsock_ctx *evsk) {
 #if defined(EV_EPOLL)
     events_t epev = { 0 };
@@ -477,12 +489,14 @@ static void _uev_loop_event(void *arg) {
                     LOG_ERROR("watcher %d listener fd %d lost its knote, no longer accepts.",
                               watcher->index, (int32_t)evsk->sk.fd);
                 }
+                watcher->evdata = 0;
                 evsk->ev_cb(watcher, evsk, (EVENT_READ | EVENT_WRITE));
                 continue;
             }
             if (0 == ev) {
                 continue;// EV_ERROR 被过滤(data 为 0 / ENOENT)时无有效事件位，空掩码会让忽略 ev 的回调(_usk_on_connect_cb)误判就绪
             }
+            watcher->evdata = watcher->events[i].data;
 #endif
             evsk->ev_cb(watcher, evsk, ev);
         }

@@ -31,7 +31,8 @@ typedef struct bufnode_ctx {
 }bufnode_ctx;
 // 每线程留一个排空的节点不还给分配器:稳态是"收一个包-解一个包-drain 到空",
 // 不留的话每个包都要一次 MALLOC + FREE。单槽不做数组——尺寸对不上就照常走分配器,
-// 不会互相顶掉,生产上稳定停着一个接收节点。线程退出前必须调 buffer_thread_cleanup
+// 不会互相顶掉,生产上稳定停着一个接收节点(_buffer_expand 补的节点也按接收那一档开,
+// 否则零头尺寸停进槽里, 本线程之后的首读就都对不上)。线程退出前必须调 buffer_thread_cleanup
 static THREAD_LOCAL bufnode_ctx *_node_spare = NULL;
 
 // 外部托管(零拷贝)节点判定:内部节点的 buffer 由 _buffer_node_new 与节点头一次分配、紧随其后,
@@ -87,7 +88,7 @@ void buffer_thread_cleanup(void) {
 }
 // 一个节点在 iov 登记里的贡献:返回可写字节数,*slot 置 1 表示它要占掉一条 iov。
 // 带数据的节点计空闲区(空闲为 0 时不占 iov),空外部节点不可写但仍占一条,空内部节点整块可写。
-// _buffer_expand 据此登记 iov、buffer_space 据此预估"不触发分配的最大 lens",两边必须同源——
+// _buffer_expand 据此登记 iov、buffer_space 据此预估"不触发分配的 lens",两边必须同源——
 // 一旦分歧, buffer_from_sock 要么少读一截要么白扩一个节点
 static inline size_t _buffer_node_avail(bufnode_ctx *node, uint32_t *slot) {
     size_t space;
@@ -232,6 +233,18 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
     _buffer_node_free(node);
     return tmp;
 }
+// 尾节点剩的空闲不够 lens、而前面已消费的空间够时，先把残包挪到节点开头(判据同 _buffer_expand_single)。
+// 读事件常切在包中间，不挪的话每次都要另建一个节点，解包也跟着走跨节点的慢路径
+static inline void _buffer_tail_realign(buffer_ctx *ctx, const size_t lens) {
+    bufnode_ctx *node = *ctx->tail_with_data;
+    if (NULL != node
+        && 0 != node->off
+        && 0 != node->misalign
+        && (size_t)NODE_SPACE_LEN(node) < lens
+        && _buffer_should_realign(node, lens)) {
+        _buffer_align(node);
+    }
+}
 // 外部托管节点必须占一条零长 iov 项而不能被跳过:_buffer_commit_expand 按"iov[i] 对应链上
 // 第 i 个节点"逐位校验,只容许跳过首个零空间节点,中途少记一项后续节点即全部错位并 abort;
 // 而记 buffer_lens 又会把调用方的外部缓冲当可写空间(排空后 off==0 时尤其致命)。
@@ -253,6 +266,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     }
     used = 0; //使用了多少个节点
     avail = 0;//可用空间
+    _buffer_tail_realign(ctx, lens);
     for (node = *ctx->tail_with_data; NULL != node; node = node->next) {
         // 登记的字节数与槽位归 _buffer_node_avail 统管, 这里只补 expand 独有的副作用
         if (0 != node->off) {
@@ -277,7 +291,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     if (used < cnt) {
         remain = lens - avail;
         ASSERTAB(NULL == node, "pnode not equ NULL.");
-        tmp = _buffer_node_new(remain);
+        tmp = _buffer_node_new(remain < MAX_RECV_SIZE ? MAX_RECV_SIZE : remain);
         ctx->tail->next = tmp;
         ctx->tail = tmp;
         RECOED_IOV(tmp, NODE_SPACE_LEN(tmp));
@@ -309,7 +323,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     }
     ASSERTAB(lens >= avail, "logic error.");
     remain = lens - avail;
-    tmp = _buffer_node_new(remain);
+    tmp = _buffer_node_new(remain < MAX_RECV_SIZE ? MAX_RECV_SIZE : remain);
     RECOED_IOV(tmp, NODE_SPACE_LEN(tmp));
     if (delall) {
         ctx->head = ctx->tail = tmp;
@@ -415,7 +429,7 @@ size_t buffer_size(buffer_ctx *ctx) {
     return ctx->total_lens;
 }
 // 按 _buffer_node_avail 逐节点累加(与 _buffer_expand 同源, 差别只在这里不改节点状态),
-// 同样受 cnt 条 iov 的上限约束, 故返回值恰是"expand 不会新建节点"的最大 lens
+// 同样受 cnt 条 iov 的上限约束, 故 lens 不超过返回值时 expand 必不新建节点(expand 另有残包前移, 可能腾出更多)
 size_t buffer_space(buffer_ctx *ctx, const uint32_t cnt) {
     bufnode_ctx *node;
     size_t avail = 0;
@@ -571,7 +585,9 @@ static bufnode_ctx *_buffer_search_start_cached(buffer_ctx *ctx, size_t start,
     }
     return NULL;
 }
-size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
+// buffer_copyout / drain / search / at 都拆成两段：入口只接访问区间落在首节点内（drain 另要求单节点）、
+// 未锁定的常见情形，不调别的函数；其余（跨节点、越界、锁定态的断言）原样放进各自的 NOINLINE _xxx_slow。NOINLINE 承重别删
+NOINLINE static size_t _buffer_copyout_slow(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     if (start >= ctx->total_lens || 0 == lens) {
         return 0;
@@ -587,10 +603,14 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
         node = ctx->head;
     } else {
         size_t totaloff = 0;
-        size_t off = 0;
-        node = _buffer_search_start_cached(ctx, start, &totaloff, &off);
-        if (NULL == node) {
-            return 0;
+        size_t off = start;
+        if (start < ctx->head->off) {
+            node = ctx->head;
+        } else {
+            node = _buffer_search_start_cached(ctx, start, &totaloff, &off);
+            if (NULL == node) {
+                return 0;
+            }
         }
         if (off > 0) {
             remain = node->off - off;
@@ -618,7 +638,20 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
     }
     return nread;
 }
-size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
+size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
+    bufnode_ctx *head = ctx->head;
+    if (NULL != head
+        && 0 == ctx->freeze_read
+        && start < head->off
+        && 0 != lens
+        && lens <= head->off - start) {
+        memcpy(out, head->buffer + head->misalign + start, lens);
+        return lens;
+    }
+    return _buffer_copyout_slow(ctx, start, out, lens);
+}
+// 拆法见 _buffer_copyout_slow
+NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
     bufnode_ctx *node, *next;
@@ -630,17 +663,10 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     if (lens > oldlen) {
         lens = oldlen;
     }
-    /* 单节点且未被 buffer_get 锁定：不碰链表，也整段跳过游标的保存-清零-恢复。
-     * 此刻游标只可能落在这个节点上：数据没排完就随 misalign 一起前移（基偏移恒 0，
-     * 不需要改），排完了则节点连同游标一起没，buffer_init 会把它清掉 */
+    /* 单节点且未被 buffer_get 锁定：没排完的那种 buffer_drain 已接走，到这里必是整段排空，
+     * 节点连同游标一起没，buffer_init 会把它清掉 */
     if (ctx->head == ctx->tail
         && 0 == ctx->head->used) {
-        if (lens < ctx->head->off) {
-            ctx->head->misalign += lens;
-            ctx->head->off -= lens;
-            ctx->total_lens -= lens;
-            return lens;
-        }
         _buffer_node_free(ctx->head);
         buffer_init(ctx);
         return lens;
@@ -693,18 +719,42 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     }
     return lens;
 }
+/* 单节点且未被 buffer_get 锁定、没排完：不碰链表，也整段跳过游标的保存-清零-恢复。
+ * 此刻游标只可能落在这个节点上，随 misalign 一起前移（基偏移恒 0，不需要改） */
+size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
+    bufnode_ctx *head = ctx->head;
+    if (NULL != head
+        && head == ctx->tail
+        && 0 == head->used
+        && lens < head->off
+        && 0 == ctx->freeze_read
+        && 0 == ctx->freeze_write) {
+        head->misalign += lens;
+        head->off -= lens;
+        ctx->total_lens -= lens;
+        return lens;
+    }
+    return _buffer_drain_slow(ctx, lens);
+}
 size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens) {
-    /* 单节点未锁定且取不空:一次 memcpy 加三行推进,省掉 copyout 与 drain 各自的入口校验
-     * 与链表定位。三行的不变式(游标随 misalign 前移故不必动)见 buffer_drain 的单节点直路;
-     * 取空要连节点带游标一起收,那段仍交给它。断言只在这条路上补——慢路径由二者自己查 */
+    /* 单节点未锁定:一次 memcpy 加三行推进,取空则连节点带游标一起收,省掉 copyout 与 drain
+     * 各自的入口校验与链表定位。两支的终态与 buffer_drain 单节点直路逐字段相同(游标随 misalign
+     * 前移故不必动)。off 为 0 的节点照旧交给慢路径。断言只在这条路上补——慢路径由二者自己查 */
     bufnode_ctx *head = ctx->head;
     if (NULL != head
         && head == ctx->tail
         && 0 == head->used
         && 0 != lens
-        && lens < head->off) {
+        && 0 != head->off) {
         ASSERTAB(0 == ctx->freeze_read, "read freezed");
         ASSERTAB(0 == ctx->freeze_write, "write freezed");
+        if (lens >= head->off) {
+            lens = head->off;
+            memcpy(out, head->buffer + head->misalign, lens);
+            _buffer_node_free(head);
+            buffer_init(ctx);
+            return lens;
+        }
         memcpy(out, head->buffer + head->misalign, lens);
         head->misalign += lens;
         head->off -= lens;
@@ -753,7 +803,8 @@ static inline int32_t _buffer_search_eq(bufnode_ctx *node, cmp_func cmp, size_t 
     }
     return ERR_OK;
 }
-int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
+// 拆法见 _buffer_copyout_slow
+NOINLINE static int32_t _buffer_search_slow(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     if (EMPTYPTR(what, wlens)) {
@@ -772,30 +823,6 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
         || wlens > end - start) {
         return ERR_FAILED;
     }
-    /* 单节点且区分大小写：直调 memchr，省掉 mem_funcs_pick 的函数指针间接调用与整套节点游走。
-     * 末字节先比挡掉绝大多数 memcmp；wlens<=2 时首末两字节已覆盖全部，无需再比中间。
-     * 不更新 hint 是安全的：hint 只是优化，其余路径照常维护 */
-    if (0 == ncs
-        && NULL != ctx->head
-        && end <= ctx->head->off) {
-        char *base = ctx->head->buffer + ctx->head->misalign;
-        char *last = base + end - wlens;
-        char *cur = base + start;
-        size_t found;
-        while (cur <= last) {
-            cur = (char *)memchr(cur, what[0], (size_t)(last - cur) + 1);
-            if (NULL == cur) {
-                return ERR_FAILED;
-            }
-            if (what[wlens - 1] == cur[wlens - 1]
-                && (wlens <= 2 || 0 == memcmp(cur + 1, what + 1, wlens - 2))) {
-                found = (size_t)(cur - base);
-                return (found > (size_t)INT32_MAX) ? ERR_FAILED : (int32_t)found;
-            }
-            cur++;
-        }
-        return ERR_FAILED;
-    }
     chr_func chr;
     cmp_func cmp;
     mem_funcs_pick(ncs, &chr, &cmp);
@@ -805,18 +832,19 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     bufnode_ctx *node = _buffer_search_start_cached(ctx, start, &totaloff, &uioff);
     ASSERTAB(NULL != node && 0 != node->off, "can't search start node.");
     char *pschar, *pstart;
-    size_t hit;
+    size_t hit, scan;
     while (NULL != node && 0 != node->off) {
         if (totaloff - node->off + uioff + wlens > end) {
             break;
         }
+        scan = end - wlens - (totaloff - node->off + uioff) + 1;
+        if (scan > node->off - uioff) {
+            scan = node->off - uioff;
+        }
         pstart = node->buffer + node->misalign + uioff;
-        pschar = (char *)chr(pstart, what[0], node->off - uioff);
+        pschar = (char *)chr(pstart, what[0], scan);
         if (NULL != pschar) {
             uioff += (pschar - pstart);
-            if (totaloff - node->off + uioff + wlens > end) {
-                break;
-            }
             if (ERR_OK == _buffer_search_eq(node, cmp, uioff, what, wlens, ncs)) {
                 hit = totaloff - node->off + uioff;
                 // 返回类型是 int32_t, 装不下的位置只能报未找到: 截断会得到一个负数或
@@ -844,15 +872,47 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     }
     return ERR_FAILED;
 }
-char buffer_at(buffer_ctx *ctx, size_t pos) {
+/* 查找区间落在首节点内且区分大小写：直调 memchr，省掉 mem_funcs_pick 的函数指针间接调用与整套节点游走。
+ * 末字节先比挡掉绝大多数 memcmp；wlens<=2 时首末两字节已覆盖全部，无需再比中间。
+ * 不更新 hint 是安全的：hint 只是优化，其余路径照常维护。end 的换算与慢路径相同 */
+int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
+    const size_t start, size_t end, char *what, size_t wlens) {
+    bufnode_ctx *head = ctx->head;
+    char *base, *last, *cur;
+    size_t e, found;
+    if (0 == ncs
+        && NULL != head
+        && 0 == ctx->freeze_read
+        && NULL != what
+        && 0 != wlens) {
+        e = (0 == end || end >= ctx->total_lens) ? ctx->total_lens : end + 1;
+        if (e <= head->off
+            && start < e
+            && wlens <= e - start) {
+            base = head->buffer + head->misalign;
+            last = base + e - wlens;
+            cur = base + start;
+            while (cur <= last) {
+                cur = (char *)memchr(cur, what[0], (size_t)(last - cur) + 1);
+                if (NULL == cur) {
+                    return ERR_FAILED;
+                }
+                if (what[wlens - 1] == cur[wlens - 1]
+                    && (wlens <= 2 || 0 == memcmp(cur + 1, what + 1, wlens - 2))) {
+                    found = (size_t)(cur - base);
+                    return (found > (size_t)INT32_MAX) ? ERR_FAILED : (int32_t)found;
+                }
+                cur++;
+            }
+            return ERR_FAILED;
+        }
+    }
+    return _buffer_search_slow(ctx, ncs, start, end, what, wlens);
+}
+// 拆法见 _buffer_copyout_slow。落在首节点的已被 buffer_at 接走
+NOINLINE static char _buffer_at_slow(buffer_ctx *ctx, size_t pos) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ASSERTAB(pos < ctx->total_lens, "index error.");
-    // 落在首节点就直接取，省掉 _buffer_search_start_cached 及它对 hint 的两次写
-    bufnode_ctx *head = ctx->head;
-    if (NULL != head
-        && pos < head->off) {
-        return (head->buffer + head->misalign)[pos];
-    }
     /* 落在最后一个有数据的节点同理:tail_with_data 之后的节点 off 恒 0、不计入 total_lens,
      * 故尾节点覆盖 [total_lens - off, total_lens)。协议校验包尾 CRLF 走的正是这条,
      * 否则要从头逐节点跳到链尾;off 守卫挡掉 drain 留下的零长尾节点 */
@@ -869,6 +929,16 @@ char buffer_at(buffer_ctx *ctx, size_t pos) {
     bufnode_ctx *node = _buffer_search_start_cached(ctx, pos, &totaloff, &off);
     ASSERTAB(NULL != node, "index error.");
     return (node->buffer + node->misalign + off)[0];
+}
+// 落在首节点就直接取，省掉 _buffer_search_start_cached 及它对 hint 的两次写
+char buffer_at(buffer_ctx *ctx, size_t pos) {
+    bufnode_ctx *head = ctx->head;
+    if (NULL != head
+        && 0 == ctx->freeze_read
+        && pos < head->off) {
+        return (head->buffer + head->misalign)[pos];
+    }
+    return _buffer_at_slow(ctx, pos);
 }
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov,
                        const uint32_t cnt, size_t *iovlens) {

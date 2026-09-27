@@ -24,6 +24,23 @@
 #define CLOSE_LINGER_MS      3000// 本端主动关闭后继续读掉对端数据的最长时间(毫秒，机制见 STATUS_LINGER)；0 表示不延迟关闭
 #define CLOSE_LINGER_BYTES   (1024 * 1024)// 延迟关闭期间最多读掉的字节数，超过就直接关 fd；它不是开关，取 0 即对端再发一个字节就关
 
+// accept 出的连接继承监听 socket 上的 TCP_NODELAY 与保活参数，非 0 的平台都先在监听 socket 上设一次：
+// 1 = 全部继承(Linux / FreeBSD / Windows 实测)；2 = 只有保活空闲时长不继承、accept 后补这一项(macOS 实测)；
+// 0 = 没验证过，仍逐连接全设
+#if defined(OS_LINUX) || defined(OS_FBSD) || defined(OS_WIN)
+    #define ACCEPT_INHERIT_OPTS 1
+#elif defined(OS_DARWIN)
+    #define ACCEPT_INHERIT_OPTS 2
+#else
+    #define ACCEPT_INHERIT_OPTS 0
+#endif
+// accept 出的 fd 继承监听 fd 的非阻塞(macOS 实测；Linux 不继承，BSD 走 accept4 用不上)，不用再设一次。
+// 前提是监听 fd 恒由 _evpub_listen 建成非阻塞
+#if defined(OS_DARWIN)
+    #define ACCEPT_INHERIT_NONBLOCK 1
+#else
+    #define ACCEPT_INHERIT_NONBLOCK 0
+#endif
 #if defined(OS_WIN)
 // Windows SOCKET 句柄恒为 4 的倍数(低 2 位保留),fd%n 在偶数 n 下残值聚集(n=4 全落 watcher 0)致 IOCP 多线程退化;
 // 先右移 2 位消除恒零低位再取模,恢复均匀分布
@@ -262,9 +279,11 @@ void _evpub_disconnect(struct watcher_ctx *watcher, struct evsock_ctx *evsk);
 // 收 const void * 而非 SSL *：evpub.h 不引 openssl 头
 int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t client);
 #endif
-// 连通后才能设的那一项：keepalive。Windows 下它是 SIO_KEEPALIVE_VALS 这个 IOCTL，对未 bind 未连接的
-// socket 没有意义，故不能跟 nodelay 一道在建连前设。
+// 设保活。Windows 下它是 SIO_KEEPALIVE_VALS 这个 IOCTL，对未 bind 未连接的 socket 没有意义，
+// 故 IOCP 侧外连要等连通后才设；Unix 上是普通 socket 选项，ev_connect 在 connect 前就跟 nodelay 一道设了
 int32_t _evpub_tcp_keepalive(SOCKET fd);
+// accept 出的连接补设 TCP_NODELAY 与保活；ACCEPT_INHERIT_OPTS 取 1 直接返回，取 2 只补保活空闲时长
+int32_t _evpub_accept_opts(SOCKET fd);
 // ev_connect / ev_listen / ev_udp 的公共前导：校验回调、拒绝 ev_free 期间的调用、解析地址。
 // 失败时调用方直接 return ERR_FAILED，不要再碰 ud：ud 已被 UD_FREE，唯一例外是 cbs 本身为 NULL
 // （ud_free 就挂在 cbs 里，无从释放）。只有地址解析失败那条会落日志，前两条静默
@@ -286,8 +305,9 @@ int32_t _evpub_close_type(int32_t status);
 // 本端主动关闭时要不要延迟关闭(机制见 STATUS_LINGER)：已连通、对端还没表态结束、且功能没关
 int32_t _evpub_linger_want(int32_t status);
 // 延迟关闭期间把 fd 上已到的数据读掉丢弃，*bytes 按次累加。返回 0 表示读空了接着等；
-// 返回 1 表示该收尾了：对端 FIN、读错、或累计丢弃超过 CLOSE_LINGER_BYTES
-int32_t _evpub_linger_drain(SOCKET fd, size_t *bytes);
+// 返回 1 表示该收尾了：对端 FIN、读错、或累计丢弃超过 CLOSE_LINGER_BYTES。
+// buf/lens 只当读的落脚处，内容随即丢掉，越大系统调用越少
+int32_t _evpub_linger_drain(SOCKET fd, char *buf, size_t lens, size_t *bytes);
 // 向socket发送数据（支持SSL/普通）；返回 1 / 2 的含义与取正数的理由同 _evpub_sock_read，
 // 只是触发点在发送方向先读到对端记录时（仅 SSL 路径，明文路径只返 ERR_OK / ERR_FAILED）
 int32_t _evpub_sock_send(SOCKET fd, obuf_que *buf_s, size_t *nsend, void *arg);

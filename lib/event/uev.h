@@ -42,6 +42,12 @@
     #define COMMIT_NCHANGES
     #define NO_UDATA
 #endif
+// UDP 批量收，见 _usk_on_udp_rcb。只在 recvmmsg 是真系统调用的 Linux、NetBSD 7+、OpenBSD 7.2+ 开，MSG_WAITFORONE
+// 与它一起定义，拿它判版本够不够。FreeBSD 的是 libc 里套 recvmsg 的循环、批量收反而更慢，Solaris 11.4 / AIX 7.2
+// 实现不明，都走逐个收。watcher 为此多备 UDP_RECV_BATCH - 1 块 MAX_RECVFROM_SIZE 的接收缓冲
+#if defined(MSG_WAITFORONE) && (defined(OS_LINUX) || defined(OS_NBSD) || defined(OS_OBSD))
+    #define UDP_RECV_BATCH 8 // 单次 recvmmsg 最多取回的 datagram 数
+#endif
 
 // I/O事件类型
 typedef enum events {
@@ -99,6 +105,10 @@ typedef struct watcher_ctx {
     uint32_t chg_round;         // 事件循环轮次，每轮 +1；与 evsock_ctx.chg_round 配对，见 _uev_drop_changes
     changes_t *changes;         // 变更列表（kqueue/devpoll使用）
 #endif
+#if defined(EV_KQUEUE)
+    intptr_t evdata;            // 正在派发的那条 kevent 的 data：监听 socket 上是待 accept 的连接数，
+                                // UDP socket 上是排队中所有包的负载字节总和(0 字节包不计)；拿不到时为 0
+#endif
     events_t *events;           // 就绪事件数组
     ev_ctx *ev;                 // 所属ev_ctx
     sockel_map *element;        // fd -> evsock_ctx 哈希表
@@ -119,13 +129,20 @@ typedef struct watcher_ctx {
     list_ctx wpends;            // 挂起 SSL 写的连接(按 wpend_ms 先后串,队头最旧)
     ev_tick wpend_tick;         // 驱动上面那条链的 tick(cb 非 NULL 表示已挂;链空即摘)
 #endif
-    char udp_rbuf[MAX_RECVFROM_SIZE]; // UDP 接收共享缓冲：本线程所有 UDP socket 复用
+    char udp_rbuf[MAX_RECVFROM_SIZE]; // 本线程共享的读缓冲：UDP 接收与 TCP 延迟关闭丢数据复用
+#if defined(UDP_RECV_BATCH)
+    char udp_rbufx[UDP_RECV_BATCH - 1][MAX_RECVFROM_SIZE]; // recvmmsg 第 2 块起的接收缓冲,首块用 udp_rbuf
+#endif
 }watcher_ctx;
 
 // 向事件多路复用器注册或追加监听事件；批量提交的平台上真排了条目时给 evsk 打轮次戳
 int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, evsock_ctx *evsk);
 // 从事件多路复用器删除或减少监听事件；打戳同 _uev_add_event
 void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, evsock_ctx *evsk);
+#if defined(EV_EPOLL)
+// 把已注册的事件整个换成 ev，一次 EPOLL_CTL_MOD 顶掉 del + add 两次；fd 必须已在 epoll 里
+int32_t _uev_mod_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, evsock_ctx *evsk);
+#endif
 // close fd 前从待提交 changes 移除该 fd 的项，防 fd 复用后陈旧变更(旧 udata)落到新 fd；非 kqueue/devpoll 平台空操作
 void _uev_drop_changes(watcher_ctx *watcher, evsock_ctx *evsk);
 // 在事件循环内完成监听socket的注册

@@ -1,29 +1,37 @@
 ﻿#include "utils/stm.h"
 
+#define STM_HEAD_SIZE ROUND_UP(sizeof(stm_data), 16) // copy=1 时数据紧跟在头后面同一块分配，头补到 16 字节保持单独 MALLOC 的对齐
+
 // 创建 stm_data: 持有 data + sz, ref 初始为 1 (writer 那一票)
-// copy=1 时内部 MALLOC 拷贝 data, 调用方仍持有原 data; copy=0 时直接接管 data 所有权
+// copy=1 时拷进与头同一块的内存, 调用方仍持有原 data; copy=0 时直接接管 data 所有权
 static stm_data *_stm_new_data(void *data, size_t sz, int32_t copy) {
     stm_data *snap;
-    MALLOC(snap, sizeof(stm_data));
-    ATOMIC_SET_RELAXED(&snap->ref, 1);
-    snap->sz = sz;
     if (0 == copy) {
+        MALLOC(snap, sizeof(stm_data));
+        snap->inl = 0;
         snap->data = data;
     } else {
-        MALLOC(snap->data, sz);
+        ASSERTAB(sz <= SIZE_MAX - STM_HEAD_SIZE, "stm data size overflow");
+        MALLOC(snap, STM_HEAD_SIZE + sz);
+        snap->inl = 1;
+        snap->data = (char *)snap + STM_HEAD_SIZE;
         if (0 != sz) {
             memcpy(snap->data, data, sz);
         }
     }
+    ATOMIC_SET_RELAXED(&snap->ref, 1);
+    snap->sz = sz;
     return snap;
 }
-// 释放 stm_data 引用; ref 归 0 时 FREE data + FREE 自身; snap=NULL 安全 noop
+// 释放 stm_data 引用; ref 归 0 时释放快照 (inl 为 0 才另 FREE data); snap=NULL 安全 noop
 static void _stm_free_data(stm_data *snap) {
     if (NULL == snap) {
         return;
     }
     if (1 == ATOMIC_ADD(&snap->ref, -1)) {
-        FREE(snap->data);
+        if (0 == snap->inl) {
+            FREE(snap->data);
+        }
         FREE(snap);
     }
 }
@@ -73,6 +81,15 @@ stm_data *stm_grab_data(stm_ctx *ctx) {
     rwlock_rdlock(&ctx->lock);
     stm_data *snap = ctx->data;
     if (NULL != snap) {
+        ATOMIC_ADD(&snap->ref, 1);
+    }
+    rwlock_unlock(&ctx->lock);
+    return snap;
+}
+stm_data *stm_grab_data_since(stm_ctx *ctx, stm_data *last) {
+    rwlock_rdlock(&ctx->lock);
+    stm_data *snap = ctx->data;
+    if (NULL != snap && snap != last) {
         ATOMIC_ADD(&snap->ref, 1);
     }
     rwlock_unlock(&ctx->lock);

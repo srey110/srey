@@ -121,6 +121,11 @@ int32_t sock_nonblock(SOCKET fd) {
     if (ioctlsocket(fd, FIONBIO, &flag) < ERR_OK) {
         return ERR_FAILED;
     }
+#elif defined(OS_LINUX) || defined(OS_DARWIN) || defined(OS_BSD)
+    int32_t on = 1;
+    if (ioctl(fd, FIONBIO, &on) < ERR_OK) {
+        return ERR_FAILED;
+    }
 #else
     int32_t flag = fcntl(fd, F_GETFL, NULL);
     if (ERR_FAILED == flag) {

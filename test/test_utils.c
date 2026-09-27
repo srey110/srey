@@ -15,7 +15,13 @@
 #define UUID_MT_PER 20000// 每个线程生成的 v7 个数
 #define MEMSTR_HAY 48// memstr 随机比对用例的最大源长度
 #define MEMSTR_ROUNDS 6000// memstr 随机比对每种 ncs 的轮数
+#define ID_MT_THREADS 4// createid 多线程用例的线程数
+#define ID_MT_PER 5000// 每个线程发的号数，超过一段(1024)才能跨段
 
+// createid 多线程用例：每个线程把发到的号顺序存进自己那段 ids
+typedef struct _id_mt_arg {
+    uint64_t *ids;
+} _id_mt_arg;
 // uuid 多线程用例：每个线程把生成的 v7 顺序存进自己那段 ids
 typedef struct _uuid_mt_arg {
     int32_t n;
@@ -636,6 +642,44 @@ static void test_uuid_v7_threads(CuTest *tc) {
 /* =======================================================================
  * hash_ring —— 一致性哈希
  * ======================================================================= */
+// hash_ring_add 只排新副本再归并：逐个 add 与 add_nosort + 整体 sort 建出的环必须一致；
+// 副本名 "节点名-序号" 手写拼接，落点钉死为改写前算出的值(名字差一个字节 digest 就变)
+static void test_hash_ring_incremental(CuTest *tc) {
+    static const char *expect[12] = { "node3", "node15", "node2", "node19", "node10", "node12",
+                                      "node2", "node5", "node14", "node1", "node15", "node4" };
+    hash_ring_ctx a, b;
+    char name[700], key[16];
+    int32_t i, len;
+    hash_ring_node *na, *nb;
+    hash_ring_init(&a);
+    hash_ring_init(&b);
+    for (i = 0; i < 20; i++) {
+        len = snprintf(name, sizeof(name), "node%d", i);
+        CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&a, name, (size_t)len, 160));
+        CuAssertIntEquals(tc, ERR_OK, hash_ring_add_nosort(&b, name, (size_t)len, 160));
+    }
+    for (i = 0; i < 12; i++) {
+        len = snprintf(key, sizeof(key), "key%d", i);
+        na = hash_ring_find(&a, key, (size_t)len);
+        CuAssertTrue(tc, strlen(expect[i]) == na->lens && 0 == memcmp(expect[i], na->name, na->lens));
+    }
+    // 再加一个超长名(走堆分支)与副本数各异的节点，两种建法仍须一致
+    memset(name, 'L', 600);
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&a, name, 600, 77));
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add_nosort(&b, name, 600, 77));
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&a, (void *)"tail", 4, 1));
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add_nosort(&b, (void *)"tail", 4, 1));
+    hash_ring_sort(&b);
+    CuAssertIntEquals(tc, (int32_t)b.nitems, (int32_t)a.nitems);
+    for (i = 0; i < 5000; i++) {
+        len = snprintf(key, sizeof(key), "user:%d", i);
+        na = hash_ring_find(&a, key, (size_t)len);
+        nb = hash_ring_find(&b, key, (size_t)len);
+        CuAssertTrue(tc, na->lens == nb->lens && 0 == memcmp(na->name, nb->name, na->lens));
+    }
+    hash_ring_free(&a);
+    hash_ring_free(&b);
+}
 static void test_hash_ring(CuTest *tc) {
     hash_ring_ctx ring;
     hash_ring_init(&ring);
@@ -913,8 +957,8 @@ static void test_buffer_extra(CuTest *tc) {
 
     /* copyout 请求量超出时，返回实际可读字节数 */
     buffer_append(&buf, "hello", 5);
-    char out[16];
-    size_t nr = buffer_copyout(&buf, 0, out, 100);
+    char out[100];// 容量须够请求量：可读的若真有 100 字节就会全拷进来
+    size_t nr = buffer_copyout(&buf, 0, out, sizeof(out));
     CuAssertTrue(tc, 5 == (int)nr);
     CuAssertTrue(tc, 0 == memcmp("hello", out, 5));
 
@@ -1186,6 +1230,7 @@ static void test_buffer_space(CuTest *tc) {
  * ======================================================================= */
 static size_t _fake_rv_want[FAKE_RV_MAX];// 第 i 次调用要吐出的字节数
 static size_t _fake_rv_offer[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 总空间
+static uint32_t _fake_rv_niov[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 条数
 static int32_t _fake_rv_calls;
 static int32_t _fake_rv_fail_at;// 第几次调用返 ERR_FAILED(1 起算),0 为一路成功
 // 假 readv：无需真 socket 即可驱动 buffer_from_sock 的 ET 读循环
@@ -1201,6 +1246,7 @@ static int32_t _fake_readv(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, s
     }
     if (_fake_rv_calls < FAKE_RV_MAX) {
         _fake_rv_offer[_fake_rv_calls] = offer;
+        _fake_rv_niov[_fake_rv_calls] = niov;
         remain = _fake_rv_want[_fake_rv_calls];
     }
     _fake_rv_calls++;
@@ -1226,6 +1272,7 @@ static int32_t _fake_readv(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, s
 static void _fake_rv_reset(void) {
     memset(_fake_rv_want, 0, sizeof(_fake_rv_want));
     memset(_fake_rv_offer, 0, sizeof(_fake_rv_offer));
+    memset(_fake_rv_niov, 0, sizeof(_fake_rv_niov));
     _fake_rv_calls = 0;
     _fake_rv_fail_at = 0;
 }
@@ -1675,6 +1722,20 @@ static void test_load_trend(CuTest *tc) {
     CuAssertIntEquals(tc, 0, load_trend_busy(&trend, 5, 4, 5));
 }
 
+// timer_cur 的刻度换算(macOS ARM64 的 125/3、Windows 的 QPC 频率走乘移位)：拿 nowms 当尺子，
+// 200ms 里两边走的差须在 ±10% 内。上面那组只挡 4 倍以上的错，换算多一倍(移位少 1)也照样过
+static void test_timer_ratio(CuTest *tc) {
+    timer_ctx t;
+    timer_init(&t);
+    uint64_t t0 = timer_cur(&t);
+    uint64_t w0 = nowms();
+    MSLEEP(200);
+    uint64_t dt = (timer_cur(&t) - t0) / 1000000ULL;
+    uint64_t dw = nowms() - w0;
+    CuAssertTrue(tc, dw >= 150);
+    CuAssertTrue(tc, dt * 10 >= dw * 9);
+    CuAssertTrue(tc, dt * 10 <= dw * 11);
+}
 // timer 补充：timer_cur 纳秒 + 真实 sleep 后 elapsed 准确性 + 多次 elapsed 单调递增
 static void test_timer_extra(CuTest *tc) {
     timer_ctx t;
@@ -1975,6 +2036,102 @@ static void test_log_lv(CuTest *tc) {
     log_setlv(prev);
 }
 
+// 日志文件模式：slog_parts 与 slog 同内容输出相同(含堆分配与段内 NUL)；攒批写满中途回刷、
+// 超过攒批缓冲(64KB)的长行回退直写、log_free 退出补刷，行数与先后都不能乱。借全局日志用，测完换回控制台
+static void test_log_file_mode(CuTest *tc) {
+    const char *path = "log_file_mode.tmp";
+    const int32_t nbatch = 200;
+    const size_t nlong = 70000;
+    log_level prev = log_getlv();
+    FILE *f = fopen(path, "wb+");
+    char fill[600], head[16];
+    char *big, *all, *cur, *eol, *msg;
+    const char *parts[2];
+    size_t lens[2], i;
+    long flen;
+    int32_t k, nline = 0;
+    CuAssertPtrNotNull(tc, f);
+    MALLOC(big, nlong);
+    memset(fill, 'y', sizeof(fill));
+    memset(big, 'z', nlong);
+    log_free();
+    log_init(f, 0);
+    log_setlv(LOGLV_DEBUG);
+    slog(LOGLV_INFO, "S:%s|%d", "abc", 7);
+    parts[0] = "S:abc";
+    lens[0] = 5;
+    parts[1] = "|7";
+    lens[1] = 2;
+    slog_parts(LOGLV_INFO, parts, lens, 2);
+    slog(LOGLV_INFO, "H:%.300s", fill);// 总长 302 >= 256，两边都走堆
+    parts[0] = "H:";
+    lens[0] = 2;
+    parts[1] = fill;
+    lens[1] = 300;
+    slog_parts(LOGLV_INFO, parts, lens, 2);
+    parts[1] = "ab\0cd";
+    lens[1] = 5;
+    parts[0] = "N:";
+    slog_parts(LOGLV_INFO, parts, lens, 2);// 截在第一个 NUL 处
+    for (k = 0; k < nbatch; k++) {// 200 x 600B 一批装不进 64KB，中途必回刷
+        SNPRINTF(head, sizeof(head), "B%03d:", k);
+        parts[0] = head;
+        lens[0] = strlen(head);
+        parts[1] = fill;
+        lens[1] = sizeof(fill);
+        slog_parts(LOGLV_INFO, parts, lens, 2);
+    }
+    parts[0] = "L:";
+    lens[0] = 2;
+    parts[1] = big;
+    lens[1] = nlong;
+    slog_parts(LOGLV_INFO, parts, lens, 2);
+    log_free();
+    log_init(NULL, 0);
+    log_setlv(prev);
+    FREE(big);
+
+    fseek(f, 0, SEEK_END);
+    flen = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    MALLOC(all, (size_t)flen + 1);
+    CuAssertIntEquals(tc, (int32_t)flen, (int32_t)fread(all, 1, (size_t)flen, f));
+    all[flen] = '\0';
+    fclose(f);
+    remove(path);
+    cur = all;
+    while (NULL != (eol = strchr(cur, '\n'))) {
+        *eol = '\0';
+        msg = strstr(cur, "][info]");
+        CuAssertPtrNotNull(tc, msg);
+        msg += 7;
+        if (nline < 2) {
+            CuAssertStrEquals(tc, "S:abc|7", msg);
+        } else if (nline < 4) {
+            CuAssertIntEquals(tc, 302, (int32_t)strlen(msg));
+            CuAssertTrue(tc, 'H' == msg[0] && ':' == msg[1] && 'y' == msg[2] && 'y' == msg[301]);
+        } else if (4 == nline) {
+            CuAssertStrEquals(tc, "N:ab", msg);
+        } else if (nline < 5 + nbatch) {
+            SNPRINTF(head, sizeof(head), "B%03d:", nline - 5);
+            CuAssertIntEquals(tc, 0, memcmp(msg, head, 5));
+            CuAssertIntEquals(tc, 5 + (int32_t)sizeof(fill), (int32_t)strlen(msg));
+            CuAssertTrue(tc, 'y' == msg[5] && 'y' == msg[5 + sizeof(fill) - 1]);
+        } else if (5 + nbatch == nline) {
+            CuAssertIntEquals(tc, 2 + (int32_t)nlong, (int32_t)strlen(msg));
+            for (i = 2; i < 2 + nlong && 'z' == msg[i]; i++) {
+            }
+            CuAssertTrue(tc, 'L' == msg[0] && 2 + nlong == i);
+        } else {
+            CuAssertPtrNotNull(tc, strstr(msg, "log thread exited."));
+        }
+        nline++;
+        cur = eol + 1;
+    }
+    CuAssertTrue(tc, '\0' == *cur);
+    FREE(all);
+    CuAssertIntEquals(tc, 7 + nbatch, nline);
+}
 // slog 等级过滤路径：lv > _log_lv 时早返，既不入队也不分配
 // 注：mpq 入队/丢弃路径已由 test_mpq_concurrent_mc 覆盖，slog 入队路径无需重复测试
 static void test_log_slog_filter(CuTest *tc) {
@@ -2509,6 +2666,17 @@ static void test_misc_helpers(CuTest *tc) {
     char buf2[33];
     randstr(buf2, 32);
     CuAssertTrue(tc, 0 != memcmp(buf, buf2, 32));
+    /* 按 6 位切随机数、62 以外丢弃：只出字母数字，62 个字符都取得到(含表尾的 '8' '9') */
+    char big[62 * 200 + 1];
+    int32_t seen[256] = { 0 }, nseen = 0;
+    randstr(big, sizeof(big) - 1);
+    for (size_t ri = 0; ri < sizeof(big) - 1; ri++) {
+        CuAssertTrue(tc, 0 != isalnum((unsigned char)big[ri]));
+        if (0 == seen[(unsigned char)big[ri]]++) {
+            nseen++;
+        }
+    }
+    CuAssertIntEquals(tc, 62, nseen);
 
     /* IS_LITTLE：当前平台（macOS/Linux x86/ARM）均小端 */
     CuAssertIntEquals(tc, 1, IS_LITTLE);
@@ -2824,7 +2992,7 @@ static void test_utils_filesystem(CuTest *tc) {
 /* =======================================================================
  * popen_close —— 子进程未结束时强制终止并回收
  * Unix: SIGKILL + waitpid 收尸，ctx->exited=1 / exitcode=ERR_FAILED
- * Windows: TerminateProcess
+ * Windows: 结束整个作业对象(子进程及其派生的孙进程)
  * ======================================================================= */
 static void test_popen_close(CuTest *tc) {
     popen_ctx ctx;
@@ -2836,12 +3004,39 @@ static void test_popen_close(CuTest *tc) {
 #endif
     /* 启动 30 秒长任务，无管道模式即可 */
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, NULL));
+#ifdef OS_WIN
+    /* 作业对象里应是 cmd 与它派生的 timeout.exe：先等孙进程起来，否则 close 太早测不到它 */
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION acct;
+    int32_t alive = -1, waits;
+    CuAssertPtrNotNull(tc, ctx.job);
+    for (waits = 0; waits < 500; waits++) {
+        if (QueryInformationJobObject(ctx.job, JobObjectBasicAccountingInformation, &acct, sizeof(acct), NULL)
+            && acct.ActiveProcesses >= 2) {
+            break;
+        }
+        MSLEEP(10);
+    }
+    CuAssertTrue(tc, waits < 500);
+#endif
 
     /* 立即 popen_close 应在毫秒级返回（SIGKILL + waitpid 同步收尸） */
     uint64_t t0 = nowms();
     popen_close(&ctx);
     uint64_t elapsed = nowms() - t0;
     CuAssertTrue(tc, elapsed < 5000); /* 5s 内必结束（实际应远低于 100ms） */
+#ifdef OS_WIN
+    /* 连孙进程一起结束：作业里的活进程数归零 */
+    for (waits = 0; waits < 500; waits++) {
+        if (QueryInformationJobObject(ctx.job, JobObjectBasicAccountingInformation, &acct, sizeof(acct), NULL)) {
+            alive = (int32_t)acct.ActiveProcesses;
+            if (0 == alive) {
+                break;
+            }
+        }
+        MSLEEP(10);
+    }
+    CuAssertIntEquals(tc, 0, alive);
+#endif
 #ifndef OS_WIN
     /* Unix 下 popen_close 自带 waitpid，exited 标志置 1 */
     CuAssertIntEquals(tc, 1, ctx.exited);
@@ -2856,6 +3051,32 @@ static void test_popen_close(CuTest *tc) {
     popen_free(&ctx);
 }
 
+/* popen_waitexit 等退出事件(POSIX)：子进程一退出就返回并拿到退出码，不必等退避轮询的下一拍；
+ * 超时那支照旧返 ERR_FAILED，ms=0 只探一次。时间上下界放得很宽，只挡"等满超时"这种回归 */
+static void test_popen_waitexit_event(CuTest *tc) {
+#ifndef OS_WIN
+    popen_ctx ctx;
+    uint64_t t0, cost;
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sh -c 'sleep 0.2; exit 3'", NULL));
+    t0 = nowms();
+    CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 10000));
+    cost = nowms() - t0;
+    CuAssertTrue(tc, cost < 5000);
+    CuAssertIntEquals(tc, 3, popen_exitcode(&ctx));
+    popen_free(&ctx);
+
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sh -c 'sleep 30'", NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, popen_waitexit(&ctx, 0));
+    t0 = nowms();
+    CuAssertIntEquals(tc, ERR_FAILED, popen_waitexit(&ctx, 150));
+    cost = nowms() - t0;
+    CuAssertTrue(tc, cost >= 140 && cost < 5000);
+    popen_close(&ctx);
+    popen_free(&ctx);
+#else
+    (void)tc;
+#endif
+}
 /* popen_free 必须自己兜底收尾：它一执行调用方就永久失去 pid，漏调 popen_close 即永久孤儿。
  * 子进程自成进程组后终端信号也够不到它，这条与有没有终端无关。
  * 有了这层兜底，Lua 侧 __gc 才能只留 popen_free 一句 */
@@ -4820,6 +5041,332 @@ static void test_mmap_granularity(CuTest *tc) {
     CuAssertTrue(tc, gran >= 4096 && 0 == (gran & (gran - 1)));
 }
 
+/* =======================================================================
+ * 效率改写的等价性：输出必须与改写前逐字节相同
+ * ======================================================================= */
+// netaddr_ip 的 IPv4 手写转换对照 inet_ntop，覆盖 1/2/3 位数各档与边界
+static void test_netaddr_ip4_format(CuTest *tc) {
+    static const uint8_t vals[] = { 0, 1, 9, 10, 11, 99, 100, 101, 199, 200, 249, 250, 255 };
+    const size_t n = sizeof(vals);
+    netaddr_ctx addr;
+    char ip[IP_LENS], ref[IP_LENS];
+    uint8_t b[4];
+    size_t i, j, k;
+    ZERO(&addr, sizeof(addr));
+    addr.ipv4.sin_family = AF_INET;
+    for (i = 0; i < n; i++) {
+        for (j = 0; j < n; j++) {
+            for (k = 0; k < n; k++) {
+                b[0] = vals[i];
+                b[1] = vals[j];
+                b[2] = vals[k];
+                b[3] = vals[(i + j + k) % n];
+                memcpy(&addr.ipv4.sin_addr, b, sizeof(b));
+                CuAssertIntEquals(tc, ERR_OK, netaddr_ip(&addr, ip));
+                CuAssertPtrNotNull(tc, inet_ntop(AF_INET, &addr.ipv4.sin_addr, ref, sizeof(ref)));
+                CuAssertStrEquals(tc, ref, ip);
+            }
+        }
+    }
+    // 0~255 每个值在每一段都出现一次(查表逐项)
+    for (i = 0; i < 256; i++) {
+        b[0] = (uint8_t)i;
+        b[1] = (uint8_t)(255 - i);
+        b[2] = (uint8_t)(i * 7);
+        b[3] = (uint8_t)(i * 13 + 5);
+        memcpy(&addr.ipv4.sin_addr, b, sizeof(b));
+        CuAssertIntEquals(tc, ERR_OK, netaddr_ip(&addr, ip));
+        CuAssertPtrNotNull(tc, inet_ntop(AF_INET, &addr.ipv4.sin_addr, ref, sizeof(ref)));
+        CuAssertStrEquals(tc, ref, ip);
+    }
+}
+// Sakamoto 算法独立算星期(0 = 周日)
+static int32_t _dow_ref(int32_t y, int32_t m, int32_t d) {
+    static const int32_t t[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+    if (m < 3) {
+        y -= 1;
+    }
+    return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+}
+// _strptime 由年月日补出的 tm_wday：逐日覆盖 1896~2104(含闰年、世纪年、400 年闰)
+static void test_strptime_wday(CuTest *tc) {
+    static const int32_t mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    char buf[32];
+    struct tm tm;
+    int32_t y, m, d, dim, leap;
+    for (y = 1896; y <= 2104; y++) {
+        leap = (0 == y % 4 && 0 != y % 100) || 0 == y % 400;
+        for (m = 1; m <= 12; m++) {
+            dim = mdays[m - 1] + ((2 == m && leap) ? 1 : 0);
+            for (d = 1; d <= dim; d++) {
+                snprintf(buf, sizeof(buf), "%04d-%02d-%02d", y, m, d);
+                ZERO(&tm, sizeof(tm));
+                CuAssertPtrNotNull(tc, _strptime(buf, "%Y-%m-%d", &tm));
+                CuAssertIntEquals(tc, _dow_ref(y, m, d), tm.tm_wday);
+            }
+        }
+    }
+}
+// hash_str 与 hash(s, strlen(s)) 结果相同(含空串与高位字节)
+static void test_hash_str(CuTest *tc) {
+    static const char *strs[] = { "", "a", "harbor", "task_name_with_a_longer_suffix_0123456789", "\xff\x80z" };
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(strs); i++) {
+        CuAssertTrue(tc, hash_str(strs[i]) == hash(strs[i], strlen(strs[i])));
+    }
+}
+// binary_set_uint 对照 snprintf 的 %llu / %llx
+static void test_binary_set_uint(CuTest *tc) {
+    static const uint64_t vals[] = { 0, 1, 9, 10, 15, 16, 255, 4096, 1000000007ULL, UINT64_MAX };
+    binary_ctx bw;
+    char ref[80];
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(vals); i++) {
+        binary_init_write(&bw, 0, 0);
+        binary_set_uint(&bw, vals[i], 10);
+        snprintf(ref, sizeof(ref), "%"PRIu64, vals[i]);
+        CuAssertTrue(tc, strlen(ref) == bw.offset && 0 == memcmp(ref, bw.data, bw.offset));
+        binary_offset(&bw, 0);
+        binary_set_uint(&bw, vals[i], 16);
+        snprintf(ref, sizeof(ref), "%"PRIx64, vals[i]);
+        CuAssertTrue(tc, strlen(ref) == bw.offset && 0 == memcmp(ref, bw.data, bw.offset));
+        binary_free(&bw);
+    }
+}
+static void _id_mt_gen(void *arg) {
+    _id_mt_arg *a = (_id_mt_arg *)arg;
+    for (int32_t i = 0; i < ID_MT_PER; i++) {
+        a->ids[i] = createid();
+    }
+}
+static int _u64_cmp(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return (x > y) - (x < y);
+}
+// createid 各线程按段领号：多线程合并后没有重复、都非 0，同一线程内严格递增(跨段也是)
+static void test_createid_threads(CuTest *tc) {
+    _id_mt_arg args[ID_MT_THREADS];
+    pthread_t th[ID_MT_THREADS];
+    size_t total = (size_t)ID_MT_PER * ID_MT_THREADS;
+    uint64_t *all;
+    size_t i;
+    int32_t t;
+    MALLOC(all, sizeof(uint64_t) * total);
+    for (t = 0; t < ID_MT_THREADS; t++) {
+        args[t].ids = all + (size_t)ID_MT_PER * (size_t)t;
+        th[t] = thread_creat(_id_mt_gen, &args[t]);
+    }
+    for (t = 0; t < ID_MT_THREADS; t++) {
+        thread_join(th[t]);
+    }
+    for (t = 0; t < ID_MT_THREADS; t++) {
+        for (i = 1; i < (size_t)ID_MT_PER; i++) {
+            CuAssertTrue(tc, args[t].ids[i - 1] < args[t].ids[i]);
+        }
+    }
+    qsort(all, total, sizeof(uint64_t), _u64_cmp);
+    CuAssertTrue(tc, 0 != all[0]);
+    for (i = 1; i < total; i++) {
+        CuAssertTrue(tc, all[i - 1] != all[i]);
+    }
+    FREE(all);
+}
+// 尾节点被消费掉大半、剩一截残包时，下个读事件把残包前移，不另建节点(只给一条 iov)，数据不乱
+static void test_buffer_tail_realign(CuTest *tc) {
+    buffer_ctx buf;
+    char pat[MAX_RECV_SIZE], out[MAX_RECV_SIZE];
+    size_t nread, i;
+    // 残包取 300：32 位下节点按 512 取整、容量更小，残包太长就不满足前移判据
+    const size_t keep = 300;
+    const size_t eaten = MAX_RECV_SIZE - keep;
+    for (i = 0; i < sizeof(pat); i++) {
+        pat[i] = (char)(i * 7 + 3);
+    }
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, pat, sizeof(pat)));
+    CuAssertTrue(tc, eaten == buffer_remove(&buf, out, eaten));
+    _fake_rv_reset();
+    _fake_rv_want[0] = 1000;
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertTrue(tc, 1000 == nread);
+    CuAssertIntEquals(tc, 1, (int32_t)_fake_rv_niov[0]);
+    CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
+    CuAssertTrue(tc, keep + 1000 == buffer_size(&buf));
+    CuAssertTrue(tc, keep + 1000 == buffer_copyout(&buf, 0, out, sizeof(out)));
+    CuAssertTrue(tc, 0 == memcmp(out, pat + eaten, keep));
+    for (i = keep; i < keep + 1000; i++) {
+        CuAssertTrue(tc, 'R' == out[i]);
+    }
+    buffer_free(&buf);
+}
+// 预留 lens 字节后正好写满 lens 也不扩容(容量另留结尾 NUL 那 1 字节)；lens 取 inc 整倍数及其前后
+static void test_binary_init_exact(CuTest *tc) {
+    static const size_t lens[] = { 1, 255, 256, 257, 511, 512, 513, 4096 };
+    char src[4096];
+    binary_ctx bw;
+    size_t i, size0;
+    memset(src, 'x', sizeof(src));
+    for (i = 0; i < ARRAY_SIZE(lens); i++) {
+        binary_init_write(&bw, lens[i], 0);
+        size0 = bw.size;
+        CuAssertTrue(tc, size0 > lens[i]);
+        binary_set_binary(&bw, src, lens[i]);
+        CuAssertTrue(tc, size0 == bw.size);
+        CuAssertTrue(tc, lens[i] == bw.offset);
+        binary_free(&bw);
+    }
+}
+// buffer_search 的参照实现：在 [start, e) 里放得下整个 w 的第一个位置，e 的换算同 buffer_search
+static int32_t _search_ref(const char *s, size_t n, int32_t ncs, size_t start, size_t end,
+                           const char *w, size_t wl) {
+    size_t e, p, i;
+    if (0 == n || 0 == wl) {
+        return ERR_FAILED;
+    }
+    e = (0 == end || end >= n) ? n : end + 1;
+    for (p = start; p < e && wl <= e - p; p++) {
+        for (i = 0; i < wl; i++) {
+            if (0 != ncs ? tolower((uint8_t)s[p + i]) != tolower((uint8_t)w[i]) : s[p + i] != w[i]) {
+                break;
+            }
+        }
+        if (i == wl) {
+            return (int32_t)p;
+        }
+    }
+    return ERR_FAILED;
+}
+// 同一份数据分别放成 1 个节点和 3 个 external 节点，search / copyout / at / drain 与参照实现逐一对拍：
+// 单节点走各函数入口的快路径，多节点走慢路径(含 search 按 end 截扫描范围那段)
+static void test_buffer_split_equiv(CuTest *tc) {
+    const char *flat = "aB;cd\r\nEf;gh;\r\nxyz;AbX\r\n;;tail;aB";
+    const char *pats[] = { ";", "\r\n", "aB", "xyz", "Ab;", "tail;aB" };
+    size_t n = strlen(flat), cut1 = 5, cut2 = 17;
+    buffer_ctx one, three;
+    char *p1, *p2, *p3;
+    char out[64];
+    size_t i, start, end, lens, want, k;
+    int32_t ncs, r1, r3, ref;
+    buffer_init(&one);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&one, (void *)flat, n));
+    MALLOC(p1, cut1);
+    MALLOC(p2, cut2 - cut1);
+    MALLOC(p3, n - cut2);
+    memcpy(p1, flat, cut1);
+    memcpy(p2, flat + cut1, cut2 - cut1);
+    memcpy(p3, flat + cut2, n - cut2);
+    buffer_init(&three);
+    buffer_external(&three, p1, cut1, _ext_free);
+    buffer_external(&three, p2, cut2 - cut1, _ext_free);
+    buffer_external(&three, p3, n - cut2, _ext_free);
+    for (k = 0; k < 2; k++) {
+        for (i = 0; i < ARRAY_SIZE(pats); i++) {
+            for (ncs = 0; ncs < 2; ncs++) {
+                for (start = 0; start <= n; start++) {
+                    for (end = 0; end <= n + 1; end++) {
+                        ref = _search_ref(flat, n, ncs, start, end, pats[i], strlen(pats[i]));
+                        r1 = buffer_search(&one, ncs, start, end, (char *)pats[i], strlen(pats[i]));
+                        r3 = buffer_search(&three, ncs, start, end, (char *)pats[i], strlen(pats[i]));
+                        CuAssertIntEquals(tc, ref, r1);
+                        CuAssertIntEquals(tc, ref, r3);
+                    }
+                }
+            }
+        }
+        for (start = 0; start <= n + 1; start++) {
+            for (lens = 0; lens <= n + 1; lens++) {
+                want = start >= n ? 0 : (lens < n - start ? lens : n - start);
+                memset(out, 0, sizeof(out));
+                CuAssertTrue(tc, want == buffer_copyout(&one, start, out, lens));
+                CuAssertTrue(tc, 0 == memcmp(out, flat + (start < n ? start : n), want));
+                memset(out, 0, sizeof(out));
+                CuAssertTrue(tc, want == buffer_copyout(&three, start, out, lens));
+                CuAssertTrue(tc, 0 == memcmp(out, flat + (start < n ? start : n), want));
+            }
+        }
+        for (i = 0; i < n; i++) {
+            CuAssertTrue(tc, flat[i] == buffer_at(&one, i));
+            CuAssertTrue(tc, flat[i] == buffer_at(&three, i));
+        }
+        // 第二轮：两边各排掉 3 字节再对拍一遍(单节点走 drain 快路径，三节点走慢路径)
+        CuAssertTrue(tc, 3 == buffer_drain(&one, 3));
+        CuAssertTrue(tc, 3 == buffer_drain(&three, 3));
+        flat += 3;
+        n -= 3;
+    }
+    buffer_free(&one);
+    buffer_free(&three);
+}
+// netaddr_set 的 IPv4 快路径与 inet_pton 逐项对照：接受与否、族、地址字节都得一致；
+// 前导零各平台 inet_pton 说法不同，这里只要求与本平台 inet_pton 相同
+static void test_netaddr_set_pton(CuTest *tc) {
+    static const char *ips[] = {
+        "1.2.3.4", "0.0.0.0", "255.255.255.255", "10.0.0.1", "192.168.100.200",
+        "01.2.3.4", "1.2.3.04", "00.1.1.1", "256.1.1.1", "1.2.3.256", "1.2.3", "1.2.3.4.5",
+        "", ".", "1..2.3", " 1.2.3.4", "1.2.3.4 ", "1.2.3.4a", "a.b.c.d", "1234.1.1.1",
+        "::1", "::", "::ffff:1.2.3.4", "fe80::1", "1:2:3:4:5:6:7:8", "1.2.3.4::"
+    };
+    struct in_addr a4;
+    struct in6_addr a6;
+    netaddr_ctx addr;
+    size_t i;
+    int32_t is4, is6, rtn;
+    for (i = 0; i < ARRAY_SIZE(ips); i++) {
+        is4 = (1 == inet_pton(AF_INET, ips[i], &a4));
+        is6 = !is4 && (1 == inet_pton(AF_INET6, ips[i], &a6));
+        rtn = netaddr_set(&addr, ips[i], 80);
+        CuAssertIntEquals(tc, (is4 || is6) ? ERR_OK : ERR_FAILED, rtn);
+        if (is4) {
+            CuAssertIntEquals(tc, AF_INET, netaddr_family(&addr));
+            CuAssertTrue(tc, 0 == memcmp(&addr.ipv4.sin_addr, &a4, sizeof(a4)));
+            CuAssertIntEquals(tc, 80, netaddr_port(&addr));
+        } else if (is6) {
+            CuAssertIntEquals(tc, AF_INET6, netaddr_family(&addr));
+            CuAssertTrue(tc, 0 == memcmp(&addr.ipv6.sin6_addr, &a6, sizeof(a6)));
+            CuAssertTrue(tc, 0 == addr.ipv6.sin6_flowinfo);
+            CuAssertIntEquals(tc, 80, netaddr_port(&addr));
+        }
+    }
+}
+// contenttype 表首、尾与中间几项逐字对照(表改成按偏移取串，偏移错一位就会串到别的类型上)
+static void test_contenttype_rows(CuTest *tc) {
+    CuAssertStrEquals(tc, "text/h323", contenttype(".323"));
+    CuAssertStrEquals(tc, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", contenttype(".docx"));
+    CuAssertStrEquals(tc, "video/mp4", contenttype(".MP4"));
+    CuAssertStrEquals(tc, "image/x-xwindowdump", contenttype(".xwd"));
+    CuAssertStrEquals(tc, "application/x-zip-compressed", contenttype(".zip"));
+    CuAssertStrEquals(tc, "application/X-other-1", contenttype(".zip2"));
+    CuAssertStrEquals(tc, "application/X-other-1", contenttype(""));
+}
+// procscnt 缓存后多次取值不变
+static void test_procscnt_cached(CuTest *tc) {
+    uint32_t n = procscnt();
+    CuAssertTrue(tc, n >= 1);
+    CuAssertTrue(tc, n == procscnt());
+    CuAssertTrue(tc, n == procscnt());
+}
+// 子进程自成进程组(pgid == 子进程 pid)，popen_close 才能连孙进程一起杀
+static void test_popen_pgroup(CuTest *tc) {
+#ifndef OS_WIN
+    popen_ctx ctx;
+    char buf[64];
+    int32_t n, wait_ok;
+    long pgid;
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "ps -o pgid= -p $$", "r"));
+    wait_ok = (ERR_OK == popen_waitexit(&ctx, 5000));
+    ZERO(buf, sizeof(buf));
+    n = popen_read(&ctx, buf, sizeof(buf) - 1, NULL);
+    pgid = strtol(buf, NULL, 10);
+    int32_t same = ((long)ctx.pid == pgid);
+    // 先收拾再断言，理由同 test_popen2
+    popen_free(&ctx);
+    CuAssertTrue(tc, 0 != wait_ok);
+    CuAssertTrue(tc, n > 0);
+    CuAssertTrue(tc, 0 != same);
+#else
+    (void)tc;
+#endif
+}
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_binary);
@@ -4862,6 +5409,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_timeofday_consistent);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_timer_extra);
+    SUITE_ADD_TEST(suite, test_timer_ratio);
     SUITE_ADD_TEST(suite, test_load_trend);
     SUITE_ADD_TEST(suite, test_utils_misc);
     SUITE_ADD_TEST(suite, test_popen2);
@@ -4869,6 +5417,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_popen_free_reaps);
     SUITE_ADD_TEST(suite, test_log_lv);
     SUITE_ADD_TEST(suite, test_log_slog_filter);
+    SUITE_ADD_TEST(suite, test_log_file_mode);
     SUITE_ADD_TEST(suite, test_strptime);
     SUITE_ADD_TEST(suite, test_strptime_invalid);
     SUITE_ADD_TEST(suite, test_strptime_week_rollover);
@@ -4920,4 +5469,18 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mmap_shm);
     SUITE_ADD_TEST(suite, test_mmap_advise_sync);
     SUITE_ADD_TEST(suite, test_mmap_granularity);
+    SUITE_ADD_TEST(suite, test_netaddr_ip4_format);
+    SUITE_ADD_TEST(suite, test_strptime_wday);
+    SUITE_ADD_TEST(suite, test_hash_str);
+    SUITE_ADD_TEST(suite, test_binary_set_uint);
+    SUITE_ADD_TEST(suite, test_createid_threads);
+    SUITE_ADD_TEST(suite, test_buffer_tail_realign);
+    SUITE_ADD_TEST(suite, test_hash_ring_incremental);
+    SUITE_ADD_TEST(suite, test_popen_waitexit_event);
+    SUITE_ADD_TEST(suite, test_binary_init_exact);
+    SUITE_ADD_TEST(suite, test_buffer_split_equiv);
+    SUITE_ADD_TEST(suite, test_netaddr_set_pton);
+    SUITE_ADD_TEST(suite, test_contenttype_rows);
+    SUITE_ADD_TEST(suite, test_procscnt_cached);
+    SUITE_ADD_TEST(suite, test_popen_pgroup);
 }

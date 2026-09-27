@@ -68,10 +68,13 @@ static const uint8_t TCHAR_TBL[256] = {
     /* 0xF */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 };
 #define _FMT_STACK_SIZE 512
+#define _ID_BLOCK 1024 // createid 每个线程一次领走的号数
 static void *_ud;//信号处理回调的用户数据
 static void(*_sig_cb)(int32_t, void *);//用户注册的信号处理回调函数
 static uint16_t _serviceid = 1;
-static atomic64_t _ids = 1;//全局自增 ID 原子计数器
+static atomic64_t _ids = 1;//发号计数，各线程按 _ID_BLOCK 一段一段领
+static THREAD_LOCAL uint64_t _id_next = 0;//本线程手里这段的下一个号
+static THREAD_LOCAL uint64_t _id_end = 0;//本线程手里这段的末尾(不含)
 static char _path[PATH_LENS] = { 0 };//程序所在目录路径缓存
 static atomic_t _path_once = 0;//路径初始化状态：0=未初始化 1=初始化中 2=已完成
 
@@ -251,8 +254,14 @@ int32_t serviceid(uint16_t id) {
     _serviceid = id;
     return ERR_OK;
 }
+// 每个线程一次领一段号，段内自己发，全局计数每 _ID_BLOCK 次才碰一次。
+// 段与段不重叠所以仍全局唯一；同一线程内递增，跨线程不保证先后
 uint64_t createid(void) {
-    return ((uint64_t)_serviceid << 48) | ((uint64_t)ATOMIC64_ADD_RELAXED(&_ids, 1) & 0xFFFFFFFFFFFFULL);
+    if (_id_next == _id_end) {
+        _id_next = (uint64_t)ATOMIC64_ADD_RELAXED(&_ids, _ID_BLOCK);
+        _id_end = _id_next + _ID_BLOCK;
+    }
+    return ((uint64_t)_serviceid << 48) | (_id_next++ & 0xFFFFFFFFFFFFULL);
 }
 uint64_t threadid(void) {
 #if defined(OS_WIN)
@@ -262,13 +271,20 @@ uint64_t threadid(void) {
 #endif
 }
 uint32_t procscnt(void) {
+    static atomic_t cnt = 0;
+    uint32_t n = (uint32_t)ATOMIC_GET_RELAXED(&cnt);
+    if (0 != n) {
+        return n;
+    }
 #if defined(OS_WIN)
     SYSTEM_INFO stinfo;
     GetSystemInfo(&stinfo);
-    return (uint32_t)stinfo.dwNumberOfProcessors;
+    n = (uint32_t)stinfo.dwNumberOfProcessors;
 #else
-    return (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
+    n = (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
+    ATOMIC_SET_RELAXED(&cnt, n);
+    return n;
 }
 int32_t isfile(const char *file) {
     struct FSTAT st;
@@ -441,6 +457,9 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     return ERR_OK;
 }
 const char *procpath(void) {
+    if (2 == ATOMIC_GET(&_path_once)) {
+        return _path;
+    }
     if (ATOMIC_CAS(&_path_once, 0, 1)) {
         /* 赢得 CAS(0→1)：唯一写者，填充 _path */
         ASSERTAB(ERR_OK == _get_procpath(_path), ERRORSTR(ERRNO));
@@ -657,7 +676,8 @@ int32_t randrange(int32_t min, int32_t max) {
     }
     return (int32_t)((uint32_t)min + (uint32_t)(_xorshift64() % range));
 }
-// buf 必须至少分配 len+1 字节；函数在 buf[len] 处写 '\0'
+// buf 必须至少分配 len+1 字节；函数在 buf[len] 处写 '\0'。
+// 每个 64 位随机数按 6 位切出字符，落在 62 个字符以外的丢掉重取(不偏)，不必每个字符一次取模
 char *randstr(char *buf, size_t len) {
     static char characters[] = {
         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U',
@@ -665,8 +685,20 @@ char *randstr(char *buf, size_t len) {
         'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     };
     size_t i = 0;
-    for (; i < len; i++) {
-        buf[i] = characters[randrange(0, sizeof(characters) - 1)];
+    uint64_t r = 0;
+    int32_t bits = 0;
+    uint32_t v;
+    while (i < len) {
+        if (bits < 6) {
+            r = _xorshift64();
+            bits = 64;
+        }
+        v = (uint32_t)(r & 63);
+        r >>= 6;
+        bits -= 6;
+        if (v < sizeof(characters)) {
+            buf[i++] = characters[v];
+        }
     }
     buf[i] = '\0';
     return buf;

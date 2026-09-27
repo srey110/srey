@@ -52,11 +52,12 @@ static void *_ltask_lalloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     }
     return np;
 }
-// 设置 Lua package 搜索路径（cpath 或 path），追加 luapath 下的对应扩展名目录
+// 设置 Lua package 搜索路径（cpath 或 path），把 luapath 下的对应扩展名目录放在最前：
+// srey 自己的模块一次命中，同名时 srey 目录里的优先于 Lua 默认路径
 static void _ltask_setpath(lua_State *lua, const char *name, const char *exname) {
     lua_getglobal(lua, "package");
     lua_getfield(lua, -1, name);
-    lua_pushfstring(lua, "%s;%s?.%s", lua_tostring(lua, -1), luapath, exname);
+    lua_pushfstring(lua, "%s?.%s;%s", luapath, exname, lua_tostring(lua, -1));
     lua_setfield(lua, -3, name);
     lua_pop(lua, 2);
 }

@@ -104,7 +104,7 @@ static int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
         return ERR_FAILED;
     }
     int32_t pos = 0;
-    char line[SMTP_CODE_LENS];
+    char line[SMTP_CODE_LENS + 1];
     char expect[SMTP_CODE_LENS] = { 0 };
     char sep;
     int32_t crlf;
@@ -117,7 +117,7 @@ static int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
         if (blens - (size_t)pos < SMTP_CODE_LENS + CRLF_SIZE) {
             return 0;
         }
-        if (SMTP_CODE_LENS != buffer_copyout(buf, (size_t)pos, line, SMTP_CODE_LENS)) {
+        if (sizeof(line) != buffer_copyout(buf, (size_t)pos, line, sizeof(line))) {
             return 0;
         }
         if (!haveexp) {
@@ -127,9 +127,7 @@ static int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
         if (0 != memcmp(line, expect, SMTP_CODE_LENS)) {
             return ERR_FAILED;
         }
-        if (1 != buffer_copyout(buf, (size_t)pos + SMTP_CODE_LENS, &sep, 1)) {
-            return 0;
-        }
+        sep = line[SMTP_CODE_LENS];
         //code 之后是 '-'(续行) / ' '(结束行) / CR(裸结束行 "<code>\r\n")，其余非法
         if ('-' != sep && ' ' != sep && '\r' != sep) {
             return ERR_FAILED;

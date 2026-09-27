@@ -287,6 +287,44 @@ static void test_http_response(CuTest *tc) {
     buffer_free(&buf);
 }
 
+/* 组包逐字节核对：状态行、头、Content-Length、chunked 长度行都不再走 vsnprintf，输出必须与原格式一致 */
+static void test_http_pack_bytes(CuTest *tc) {
+    static const char expect[] =
+        "HTTP/1.1 404 Not Found\r\n"
+        "HTTP/1.1 -7 Unknown\r\n"
+        "Content-Type: text/html\r\n"
+        "X-Id: 12\r\n"
+        "Content-Length: 1234\r\n\r\n";
+    static const char chunk[] =
+        "Transfer-Encoding: Chunked\r\n\r\n"
+        "a2b\r\n";
+    binary_ctx bw;
+    char body[0xa2b];
+    memset(body, 'b', sizeof(body));
+    binary_init_write(&bw, 0, 0);
+    http_pack_resp(&bw, 404);
+    http_pack_resp(&bw, -7);
+    http_pack_head(&bw, "Content-Type", "text/html");
+    http_pack_head2(&bw, "X-Id", "12", 2);
+    http_pack_content(&bw, body, 1234);
+    CuAssertTrue(tc, sizeof(expect) - 1 + 1234 == bw.offset);
+    CuAssertTrue(tc, 0 == memcmp(bw.data, expect, sizeof(expect) - 1));
+    binary_offset(&bw, 0);
+    http_pack_content(&bw, NULL, 0);
+    CuAssertTrue(tc, bw.offset == strlen("Content-Length: 0\r\n\r\n"));
+    CuAssertTrue(tc, 0 == memcmp(bw.data, "Content-Length: 0\r\n\r\n", bw.offset));
+    binary_offset(&bw, 0);
+    http_pack_req(&bw, "GET", "/x?y=1");
+    CuAssertTrue(tc, bw.offset == strlen("GET /x?y=1 HTTP/1.1\r\n"));
+    CuAssertTrue(tc, 0 == memcmp(bw.data, "GET /x?y=1 HTTP/1.1\r\n", bw.offset));
+    // offset 非 0 时首块自动补 Transfer-Encoding 头；长度行是小写十六进制、无前导零
+    http_pack_chunked(&bw, body, sizeof(body));
+    CuAssertTrue(tc, 0 == memcmp(bw.data + strlen("GET /x?y=1 HTTP/1.1\r\n"), chunk, sizeof(chunk) - 1));
+    binary_offset(&bw, 0);
+    http_pack_chunked(&bw, NULL, 0);
+    CuAssertTrue(tc, bw.offset == 5 && 0 == memcmp(bw.data, "0\r\n\r\n", 5));
+    binary_free(&bw);
+}
 /* 组包（POST 请求）后再解包，验证往返一致性 */
 static void test_http_pack_req(CuTest *tc) {
     binary_ctx bw;
@@ -772,6 +810,9 @@ static void test_http_chunked_ext(CuTest *tc) {
     _chunked_size_check(tc, "5g;ext=1\r\n", 1);
     // 6. hex 段超过 16 位（64 位十六进制的上限）→ 拒
     _chunked_size_check(tc, "00000000000000005\r\n", 1);
+    // 6b. 16 位 hex 紧跟 ';'：';' 正好落在 lensbuf 多拷的第 17 字节上，须认；17 位 hex 再带 ext 仍拒
+    _chunked_size_check(tc, "0000000000000005;x=1\r\n", 0);
+    _chunked_size_check(tc, "00000000000000005;x\r\n", 1);
     // 7. 整行超过 HTTP_MAX_HEADLENS → 拒（ext 再长也有个头）
     char *big;
     MALLOC(big, HTTP_MAX_HEADLENS + 64);
@@ -1406,12 +1447,76 @@ static void test_redis_bulk(CuTest *tc) {
     CuAssertTrue(tc, RESP_BSTRING == pack->prot);
     CuAssertTrue(tc, 6 == pack->len);
     CuAssertTrue(tc, 0 == memcmp(pack->data, "foobar", 6));
+    // 块不再整段清零，结尾 NUL 与 next 得是解析时补上的
+    CuAssertTrue(tc, '\0' == pack->data[6]);
+    CuAssertTrue(tc, NULL == pack->next);
 
     _redis_pkfree(pack);
     _redis_udfree(&ud);
     buffer_free(&buf);
 }
 
+// 元素头先拷进 66 字节的本地副本解析：行长超过副本(退回整缓冲查找)、整元素在副本里、
+// 数据段超出副本、分两段喂(第一段不够时 MOREDATA，补齐后照常解出)，几种走法结果都得一样
+static void test_redis_hdr_local(CuTest *tc) {
+    char longline[128], bulk[160], body[100];
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    redis_pack_ctx *pack;
+    memset(body, 'x', sizeof(body));
+    // 80 字节的简单字符串：CRLF 落在副本之外
+    memcpy(longline, "+", 1);
+    memcpy(longline + 1, body, 80);
+    memcpy(longline + 81, "\r\n", 3);
+    pack = _t_redis_one(&buf, &ud, longline, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, RESP_STRING == pack->prot && 80 == pack->len);
+    CuAssertTrue(tc, 0 == memcmp(pack->data, body, 80) && '\0' == pack->data[80]);
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+    // 整个 bulk 都在副本里
+    pack = _t_redis_one(&buf, &ud, "$3\r\nabc\r\n", &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, RESP_BSTRING == pack->prot && 3 == pack->len);
+    CuAssertTrue(tc, 0 == memcmp(pack->data, "abc", 4));
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+    // 数据段 100 字节，整元素超出副本，数据从缓冲里拷
+    int32_t n = snprintf(bulk, sizeof(bulk), "$100\r\n");
+    memcpy(bulk + n, body, 100);
+    memcpy(bulk + n + 100, "\r\n", 3);
+    pack = _t_redis_one(&buf, &ud, bulk, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, 100 == pack->len && 0 == memcmp(pack->data, body, 100) && '\0' == pack->data[100]);
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+    // 分两段喂：先只给长度行和一半数据
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud));
+    buffer_append(&buf, bulk, (size_t)n + 50);
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_redis_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA) && !BIT_CHECK(status, PROT_ERROR));
+    buffer_append(&buf, bulk + n + 50, 52);
+    status = PROT_INIT;
+    pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, 100 == pack->len && 0 == memcmp(pack->data, body, 100));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+    // 尾巴不是 CRLF：数据段超出副本时同样拒
+    bulk[n + 100] = 'X';
+    pack = _t_redis_one(&buf, &ud, bulk, &status);
+    CuAssertTrue(tc, NULL == pack && BIT_CHECK(status, PROT_ERROR));
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
 // Null Bulk String：$-1\r\n → pack->len == -1，修复前按 UINT64_MAX 比对上限，永久拒绝此合法包
 static void test_redis_null_bulk(CuTest *tc) {
     buffer_ctx buf;
@@ -1985,6 +2090,8 @@ static void test_redis_resp3_scalar(CuTest *tc) {
         CuAssertTrue(tc, 11 == pack->len);
         CuAssertTrue(tc, 0 == memcmp(pack->venc, "txt", 3));
         CuAssertTrue(tc, 0 == memcmp(pack->data, "Some string", 11));
+        CuAssertTrue(tc, '\0' == pack->venc[3]);
+        CuAssertTrue(tc, '\0' == pack->data[11]);
         _redis_pkfree(pack);
         _redis_udfree(&ud);
         buffer_free(&buf);
@@ -6189,8 +6296,56 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertStrEquals(tc, "a/bevil", ((mqtt_publish_varhead *)pack->varhead)->topic);
+    // PUBLISH 块不再整段清零：QoS 0 没有报文标识符、3.1.1 没有属性、载荷为空，这几项全靠显式清零
+    CuAssertIntEquals(tc, 0, ((mqtt_publish_varhead *)pack->varhead)->packid);
+    CuAssertTrue(tc, NULL == ((mqtt_publish_varhead *)pack->varhead)->properties);
+    CuAssertIntEquals(tc, 0, ((mqtt_publish_payload *)pack->payload)->lens);
+    CuAssertTrue(tc, '\0' == ((mqtt_publish_payload *)pack->payload)->content[0]);
     _mqtt_pkfree(pack);
     // 这里 ud.context 自始至终是栈上的 mctx（PUBLISH 路径不换它），不能走 _mqtt_udfree
+    buffer_free(&buf);
+
+    /* 带载荷：剩余长度 = 2 + 7 + 3，载荷 "xyz" 后面要有结尾 NUL */
+    char okpayload[] = {
+        (char)0x30, 0x0C, 0x00, 0x07, 'a', '/', 'b', 'e', 'v', 'i', 'l', 'x', 'y', 'z'
+    };
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1;
+    ud.context = &mctx;
+    buffer_init(&buf);
+    buffer_append(&buf, okpayload, sizeof(okpayload));
+    status = PROT_INIT;
+    pack = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 3, ((mqtt_publish_payload *)pack->payload)->lens);
+    CuAssertTrue(tc, 0 == memcmp(((mqtt_publish_payload *)pack->payload)->content, "xyz", 4));
+    _mqtt_pkfree(pack);
+    buffer_free(&buf);
+
+    /* 5.0 带一个用户属性 k=vv：key 与 value 同一块分配，两段都要以 NUL 结尾。
+       剩余长度 = 3(主题) + 1(属性长) + 8(属性) + 1(载荷) */
+    mqtt_ctx mctx5 = { MQTT_50 };
+    char userprop[] = {
+        (char)0x30, 0x0D, 0x00, 0x01, 't', 0x08, 0x26, 0x00, 0x01, 'k', 0x00, 0x02, 'v', 'v', 'p'
+    };
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1;
+    ud.context = &mctx5;
+    buffer_init(&buf);
+    buffer_append(&buf, userprop, sizeof(userprop));
+    status = PROT_INIT;
+    pack = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    mprop_arr *props = ((mqtt_publish_varhead *)pack->varhead)->properties;
+    CuAssertPtrNotNull(tc, props);
+    CuAssertIntEquals(tc, 1, (int32_t)mprop_arr_size(props));
+    mqtt_propertie *propt = *mprop_arr_at(props, 0);
+    CuAssertIntEquals(tc, USER_PROPERTY, propt->flag);
+    CuAssertTrue(tc, 1 == propt->flens && 0 == memcmp(propt->fval, "k", 2));
+    CuAssertTrue(tc, 2 == propt->slens && 0 == memcmp(propt->sval, "vv", 3));
+    CuAssertIntEquals(tc, 1, ((mqtt_publish_payload *)pack->payload)->lens);
+    CuAssertTrue(tc, 'p' == ((mqtt_publish_payload *)pack->payload)->content[0]);
+    _mqtt_pkfree(pack);
     buffer_free(&buf);
 }
 // MQTT 3.1.1：CONNECT 有密码无用户名(MQTT-3.1.2-22)打包必拒；同组合在 v5 合法
@@ -6235,6 +6390,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_tillclose_request_only);
     SUITE_ADD_TEST(suite, test_http_response);
     SUITE_ADD_TEST(suite, test_http_pack_req);
+    SUITE_ADD_TEST(suite, test_http_pack_bytes);
     SUITE_ADD_TEST(suite, test_http_smuggling);
     SUITE_ADD_TEST(suite, test_http_status_line);
     SUITE_ADD_TEST(suite, test_http_nobody_status);
@@ -6251,6 +6407,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_header_at);
     SUITE_ADD_TEST(suite, test_redis_simple);
     SUITE_ADD_TEST(suite, test_redis_bulk);
+    SUITE_ADD_TEST(suite, test_redis_hdr_local);
     SUITE_ADD_TEST(suite, test_redis_null_bulk);
     SUITE_ADD_TEST(suite, test_redis_bulk_bad_crlf);
     SUITE_ADD_TEST(suite, test_redis_len_first_char);

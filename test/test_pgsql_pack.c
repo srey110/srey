@@ -306,7 +306,7 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
     binary_ctx bw;
 
     /* 主消息：'Q' + body */
-    pgsql_pack_start(&bw, 'Q');
+    pgsql_pack_start(&bw, 'Q', 0);
     /* 写入一段固定 body */
     binary_set_binary(&bw, "BODY", 4);
     pgsql_pack_end(&bw);
@@ -320,7 +320,7 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
     binary_free(&bw);
 
     /* 子消息追加 */
-    pgsql_pack_start(&bw, 'A');
+    pgsql_pack_start(&bw, 'A', 0);
     binary_set_binary(&bw, "AA", 2);
     pgsql_pack_end(&bw);
 

@@ -19,6 +19,7 @@
 #include "test_advance.h"
 #include "bench_mpq.h"
 #include "bench_weights.h"
+#include "bench_recvmmsg.h"
 #include "task_tcp_server.h"
 #include "task_udp_server.h"
 #include "task_rpc.h"
@@ -188,6 +189,9 @@ int main(int argc, char *argv[]) {
     LOG_INFO("--------------------------------------------------");
     //loader worker weight 分档:不同 nworker 下的吞吐与各 task 完成离差
     bench_weights();
+    LOG_INFO("--------------------------------------------------");
+    //UDP 批量收(recvmmsg)对逐个收:定某平台该不该开 UDP_RECV_BATCH
+    bench_recvmmsg();
     LOG_INFO("*******************benchmark end*******************");
     log_free();
     return 0;

@@ -31,6 +31,33 @@ static void test_stm_basic(CuTest *tc) {
     stm_free(ctx);
 }
 
+// stm_grab_data_since: 快照没换时原样返回 last 且不加引用; 换了才拿到新快照(带引用); writer 释放后返回 NULL
+static void test_stm_grab_since(CuTest *tc) {
+    size_t sz;
+    void *data = _stm_make("v1", &sz);
+    stm_ctx *ctx = stm_new(data, sz, 0);
+    stm_data *last = stm_grab_data(ctx);// writer 1 + 本 reader 1
+    CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&last->ref));
+    CuAssertPtrEquals(tc, last, stm_grab_data_since(ctx, last));
+    CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&last->ref));
+    stm_update(ctx, "v2", 3, 1);// 旧快照只剩本 reader 那一票
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&last->ref));
+    stm_data *cur = stm_grab_data_since(ctx, last);
+    CuAssertTrue(tc, cur != last);
+    CuAssertTrue(tc, 0 == memcmp(cur->data, "v2", 3));
+    CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&cur->ref));
+    stm_ungrab_data(last);
+    // last 为 NULL 时退化成 stm_grab_data
+    stm_data *again = stm_grab_data_since(ctx, NULL);
+    CuAssertPtrEquals(tc, cur, again);
+    CuAssertIntEquals(tc, 3, (int32_t)ATOMIC_GET(&cur->ref));
+    stm_ungrab_data(again);
+    stm_grab(ctx);
+    stm_free(ctx);
+    CuAssertPtrEquals(tc, NULL, stm_grab_data_since(ctx, cur));
+    stm_ungrab_data(cur);
+    stm_ungrab(ctx);
+}
 // update 后 stm_grab_data 拿到新快照指针; 旧快照仍可读到旧值
 static void test_stm_update(CuTest *tc) {
     size_t sz1, sz2;
@@ -225,4 +252,5 @@ void test_stm(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_stm_grab_chain);
     SUITE_ADD_TEST(suite, test_stm_concurrent_read);
     SUITE_ADD_TEST(suite, test_stm_empty);
+    SUITE_ADD_TEST(suite, test_stm_grab_since);
 }

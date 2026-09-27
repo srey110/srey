@@ -3,10 +3,6 @@
 
 static atomic64_t _v7_last;// 上次发出的 (毫秒 << 12) | 计数器，全进程共用
 
-// 第 i 个字节的十六进制文本前面是否有连字符
-static inline int32_t _dash_before(int32_t i) {
-    return 4 == i || 6 == i || 8 == i || 10 == i;
-}
 int32_t uuid_v4(char uuid[UUID_LENS]) {
     if (ERR_OK != csprng_rand(uuid, UUID_LENS)) {
         return ERR_FAILED;
@@ -44,35 +40,32 @@ uint64_t uuid_v7_ms(const char uuid[UUID_LENS]) {
     }
     return (uint64_t)unpack_integer(uuid, 6, 0, 0);
 }
+// 按 8-4-4-4-12 分五段转，连字符写在段间；最后一段的 tohex 顺带写结尾 '\0'
 void uuid_tostr(const char uuid[UUID_LENS], char out[UUID_STR_LENS]) {
-    int32_t i;
-    for (i = 0; i < UUID_LENS; i++) {
-        if (_dash_before(i)) {
-            *out++ = '-';
-        }
-        tohex(uuid + i, 1, out, 1);
-        out += 2;
-    }
+    tohex(uuid, 4, out, 1);
+    out[8] = '-';
+    tohex(uuid + 4, 2, out + 9, 1);
+    out[13] = '-';
+    tohex(uuid + 6, 2, out + 14, 1);
+    out[18] = '-';
+    tohex(uuid + 8, 2, out + 19, 1);
+    out[23] = '-';
+    tohex(uuid + 10, 6, out + 24, 1);
 }
+// 布局固定：先认四个连字符，再按固定偏移解 16 个字节。非法字符 fromhex 返负数，
+// 各字节的结果按位或起来最后只判一次(失败时 uuid 内容无定义，契约允许)
 int32_t uuid_fromstr(const char *str, size_t lens, char uuid[UUID_LENS]) {
-    int32_t i, hi, lo;
-    if (UUID_STR_LENS - 1 != lens) {
+    static const uint8_t pos[UUID_LENS] = { 0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34 };
+    int32_t i, hi, lo, bad = 0;
+    if (UUID_STR_LENS - 1 != lens
+        || '-' != str[8] || '-' != str[13] || '-' != str[18] || '-' != str[23]) {
         return ERR_FAILED;
     }
     for (i = 0; i < UUID_LENS; i++) {
-        if (_dash_before(i)) {
-            if ('-' != *str) {
-                return ERR_FAILED;
-            }
-            str++;
-        }
-        hi = fromhex(str[0]);
-        lo = fromhex(str[1]);
-        if (hi < 0 || lo < 0) {
-            return ERR_FAILED;
-        }
-        uuid[i] = (char)((hi << 4) | lo);
-        str += 2;
+        hi = fromhex(str[pos[i]]);
+        lo = fromhex(str[pos[i] + 1]);
+        bad |= hi | lo;
+        uuid[i] = (char)(((uint32_t)hi << 4) | (uint32_t)lo);
     }
-    return ERR_OK;
+    return bad < 0 ? ERR_FAILED : ERR_OK;
 }

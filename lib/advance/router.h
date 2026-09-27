@@ -212,6 +212,7 @@ struct router_req {
                                       // 流式路由过了首帧即为 NULL
     void *user;       // 中间件间传值, 用户自管
     sock_ctx sk;                 // 连接标识 fd+skid
+    // 从 chain 起的两个数组只按 chain_n / params_n 取用，零初始化只清到 chain 之前；新字段别加在这后面
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
     // URL 解析结果 (内部使用)。存储由调用方提供并在调用 router_match_index 前赋值:
@@ -426,7 +427,7 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type *t,
                          const char **str, uint32_t *str_len);
 /// <summary>
-/// 路径匹配（不执行 handler/中间件）；调用方提供已零初始化的 ctx 与 url 存储。
+/// 路径匹配（不执行 handler/中间件）；调用方提供 chain 之前已清零的 ctx 与 url 存储。
 /// 成功后 ctx->params/params_n 已填充，ctx->url 为 backing store
 /// </summary>
 /// <param name="r">router_ctx</param>
@@ -434,7 +435,7 @@ int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type 
 /// <param name="method_len">method 长度</param>
 /// <param name="url">原始请求 URI（含查询字符串）</param>
 /// <param name="url_len">url 长度</param>
-/// <param name="ctx">调用方提供的 router_req，**必须已整体零初始化**（匹配失败不写 params_n，
+/// <param name="ctx">调用方提供的 router_req，**chain 之前的字段必须已清零**（匹配失败不写 params_n，
 /// 脏值会让 router_req_param 读到未初始化指针），同一个 ctx 不可跨请求复用。
 /// ctx->url 须指向一块调用方持有的 url_ctx，不必预先清零；仅返回 ≥0 或 -1 时其内容可用，
 /// 且是**规范化后**的：空段一律剔除（"/a//b" 读出来是 "/a/b"），"/" 与 "//" 的 npath 与

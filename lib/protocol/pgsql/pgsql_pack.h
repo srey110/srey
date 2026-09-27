@@ -11,7 +11,9 @@
 /// </summary>
 /// <param name="bwriter">未初始化的写缓冲区；外层无需先 binary_init_write，否则原 buffer 会被覆盖泄漏</param>
 /// <param name="code">消息类型码（如 'Q'、'P' 等）</param>
-void pgsql_pack_start(binary_ctx *bwriter, int8_t code);
+/// <param name="lens">整个缓冲预计要写的字节数（含类型码与长度字段，以及随后追加的子消息），
+/// 只当初始容量用，估小了照样扩容；0 表示按默认起步</param>
+void pgsql_pack_start(binary_ctx *bwriter, int8_t code, size_t lens);
 /// <summary>
 /// 结束消息构建并回填消息体长度字段
 /// </summary>

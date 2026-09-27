@@ -1,16 +1,32 @@
 ﻿#include "utils/popen2.h"
 #include "utils/netutils.h"
 #include "utils/utils.h"
+#if defined(OS_LINUX)
+#include <sys/syscall.h>
+#endif
+#ifndef OS_WIN
+#include <spawn.h>
+extern char **environ;
+#endif
+
+// popen_waitexit 等子进程退出的办法：Linux 用 pidfd(内核 5.3+)，kqueue 平台用 EVFILT_PROC，
+// 都没有、或运行时拿不到就退避轮询。等到事件后若还收不了尸(退出通知与可收尸之间的先后各内核不同)，
+// 同样落到轮询把剩余时间等完，不当超时报
+#if defined(OS_LINUX) && defined(SYS_pidfd_open)
+    #define POPEN_WAIT_PIDFD
+#elif defined(EV_KQUEUE)
+    #define POPEN_WAIT_KQUEUE
+#endif
 
 #ifdef OS_WIN
 #define PIPE_INBUF_SIZE  ONEK * 16
 #define PIPE_OUTBUF_SIZE ONEK * 64
 #define PIPE_PREFIX      "\\\\.\\pipe\\LOCAL\\srey_pipe_"
 
-// Windows 下创建命名管道对，供子进程与父进程通信
+// Windows 下创建命名管道对，供子进程与父进程通信。管道名整台机器共用，createid 只在进程内唯一，故名字带进程号
 static int32_t _popen_pipe(HANDLE pipe[2]) {
     char pname[256];
-    SNPRINTF(pname, sizeof(pname), "%s%"PRIu64, PIPE_PREFIX, createid());
+    SNPRINTF(pname, sizeof(pname), "%s%lu_%"PRIu64, PIPE_PREFIX, (unsigned long)GetCurrentProcessId(), createid());
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(SECURITY_ATTRIBUTES);
     sa.lpSecurityDescriptor = NULL;//使用系统默认安全描述符
@@ -107,17 +123,29 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         startup.hStdError = ctx->pipe[0];//子进程标准错误重定向到管道
         startup.hStdOutput = ctx->pipe[0];//子进程标准输出重定向到管道
     }
+    ctx->job = CreateJobObject(NULL, NULL);
     if (!CreateProcess(NULL,
                       TEXT((char *)cmd),
                       NULL,
                       NULL,
                       TRUE,
-                      0,
+                      CREATE_SUSPENDED,
                       NULL,
                       NULL,
                       &startup,
                       &ctx->process)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
+        popen_free(ctx);
+        return ERR_FAILED;
+    }
+    if (NULL != ctx->job
+        && !AssignProcessToJobObject(ctx->job, ctx->process.hProcess)) {
+        LOG_WARN("%s", ERRORSTR(ERRNO));
+        CLOSE_HANDLE(ctx->job);
+    }
+    if ((DWORD)-1 == ResumeThread(ctx->process.hThread)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        TerminateProcess(ctx->process.hProcess, ERR_FAILED);
         popen_free(ctx);
         return ERR_FAILED;
     }
@@ -141,46 +169,39 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
             return ERR_FAILED;
         }
     }
-    pid_t pid = fork();
-    if (0 == pid) {
-        //自成进程组(pgid == 本进程 pid),popen_close 才能用 kill(-pgid) 连 sh 派生的孙进程一起杀。
-        //只杀 sh 的话 "a | b" 这种复合命令会把 a/b 留成孤儿。失败不致命,退化成只杀直接子进程
-        (void)!setpgid(0, 0);
-        if (w) {
-            dup2(sock[0], STDIN_FILENO);
-        }
-        if (r) {
-            dup2(sock[0], STDOUT_FILENO);
-            dup2(sock[0], STDERR_FILENO);
-        }
-        if (r || w) {
-            close(sock[0]);
-            close(sock[1]);
-        }
-        execl("/bin/sh", "sh", "-c", cmd, NULL);
-        //fork 后子进程严格只能调 async-signal-safe 函数；log 走 fsqu+malloc+cond 不安全，
-        //且子进程未继承日志消费线程，入队消息无人消费；exit() 会 fflush 父子共享的 stdio buffer。
-        //改用 write + _exit（均 async-signal-safe），约定退出码 127 表示 exec 失败（shell 惯例）。
-        const char prefix[] = "popen execl failed: ";
-        (void)!write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
-        (void)!write(STDERR_FILENO, cmd, strlen(cmd));
-        (void)!write(STDERR_FILENO, "\n", 1);
-        _exit(127);
-    } else if (pid > 0) {
-        ctx->pid = pid;
-        if (r || w) {
-            close(sock[0]);
-            ctx->sock = sock[1];
-            sock_nonblock(ctx->sock);
-        }
-        return ERR_OK;
-    } else {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+    //自成进程组(pgid == 子进程 pid),popen_close 才能用 kill(-pgid) 连 sh 派生的孙进程一起杀。
+    //只杀 sh 的话 "a | b" 这种复合命令会把 a/b 留成孤儿。进程组与标准流都由 posix_spawn 在 exec 前设好
+    posix_spawn_file_actions_t acts;
+    posix_spawnattr_t attr;
+    char *argv[] = { "sh", "-c", (char *)cmd, NULL };
+    pid_t pid;
+    posix_spawn_file_actions_init(&acts);
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attr, 0);
+    if (w) {
+        posix_spawn_file_actions_adddup2(&acts, sock[0], STDIN_FILENO);
+    }
+    if (r) {
+        posix_spawn_file_actions_adddup2(&acts, sock[0], STDOUT_FILENO);
+        posix_spawn_file_actions_adddup2(&acts, sock[0], STDERR_FILENO);
+    }
+    int32_t err = posix_spawn(&pid, "/bin/sh", &acts, &attr, argv, environ);
+    posix_spawn_file_actions_destroy(&acts);
+    posix_spawnattr_destroy(&attr);
+    if (0 != err) {
+        LOG_ERROR("%s", ERRORSTR(err));
         if (r || w) {
             close(sock[0]);
             close(sock[1]);
         }
         return ERR_FAILED;
+    }
+    ctx->pid = pid;
+    if (r || w) {
+        close(sock[0]);
+        ctx->sock = sock[1];
+        sock_nonblock(ctx->sock);
     }
 #endif
     return ERR_OK;
@@ -202,6 +223,96 @@ static int32_t _popen_child_exited(popen_ctx *ctx, int wstatus) {
     // 到不了这里;WCOREDUMP 也只在 WIFSIGNALED 为真时才有定义,不能在这一档求值
     return ERR_FAILED;
 }
+// 非阻塞收尸：已退出则记下退出码返回 1，还在跑返回 0，waitpid 出错返回 ERR_FAILED
+static int32_t _popen_reap(popen_ctx *ctx) {
+    int wstatus;
+    pid_t rtn;
+    while (-1 == (rtn = waitpid(ctx->pid, &wstatus, WNOHANG)) && EINTR == errno) {
+    }
+    if (ERR_FAILED == rtn) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    if (ctx->pid == rtn
+        && ERR_OK == _popen_child_exited(ctx, wstatus)) {
+        return 1;
+    }
+    return 0;
+}
+#if defined(POPEN_WAIT_PIDFD)
+// 阻塞到子进程退出或到 deadline(nowms 毫秒)，不收尸，由调用方再 _popen_reap。
+// 已退出没收尸的子进程也拿得到 pidfd 并立刻可读。拿不到(老内核、容器 seccomp)或 poll 出错返回 ERR_FAILED，
+// 调用方退回轮询
+static int32_t _popen_wait_event(popen_ctx *ctx, uint64_t deadline) {
+    struct pollfd pfd;
+    uint64_t now, left;
+    int32_t r, rtn = ERR_OK;
+    int32_t fd = (int32_t)syscall(SYS_pidfd_open, ctx->pid, 0);
+    if (fd < 0) {
+        return ERR_FAILED;
+    }
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    for (;;) {
+        now = nowms();
+        if (now >= deadline) {
+            break;
+        }
+        left = deadline - now;
+        r = poll(&pfd, 1, left > INT32_MAX ? INT32_MAX : (int)left);
+        if (r > 0) {
+            break;
+        }
+        if (r < 0
+            && EINTR != errno) {
+            rtn = ERR_FAILED;
+            break;
+        }
+    }
+    close(fd);
+    return rtn;
+}
+#elif defined(POPEN_WAIT_KQUEUE)
+// 同上，kqueue 版。注册时子进程已退出：macOS 返 ESRCH、FreeBSD 立即触发，两种都直接去收尸；
+// 注册成功之后才退出的，NOTE_EXIT 一定会到
+static int32_t _popen_wait_event(popen_ctx *ctx, uint64_t deadline) {
+    struct kevent ev;
+    struct timespec ts;
+    uint64_t now, left;
+    int32_t r, rtn = ERR_OK;
+    int32_t kq = kqueue();
+    if (kq < 0) {
+        return ERR_FAILED;
+    }
+    EV_SET(&ev, ctx->pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+    if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
+        rtn = ESRCH == errno ? ERR_OK : ERR_FAILED;
+        close(kq);
+        return rtn;
+    }
+    for (;;) {
+        now = nowms();
+        if (now >= deadline) {
+            break;
+        }
+        left = deadline - now;
+        ts.tv_sec = (time_t)(left / 1000);
+        ts.tv_nsec = (long)(left % 1000) * 1000000L;
+        r = kevent(kq, NULL, 0, &ev, 1, &ts);
+        if (r > 0) {
+            break;
+        }
+        if (r < 0
+            && EINTR != errno) {
+            rtn = ERR_FAILED;
+            break;
+        }
+    }
+    close(kq);
+    return rtn;
+}
+#endif
 #endif
 void popen_close(popen_ctx *ctx) {
     ctx->closed = 1;
@@ -218,34 +329,15 @@ void popen_close(popen_ctx *ctx) {
     if (STILL_ACTIVE != exitcode) {//进程已经退出则直接返回
         return;
     }
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);//获取当前系统进程快照
-    if (NULL == snapshot) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        TerminateProcess(ctx->process.hProcess, ERR_FAILED);
+    if (NULL != ctx->job
+        && TerminateJobObject(ctx->job, ERR_FAILED)) {
         return;
     }
-    HANDLE pvchild;
-    PROCESSENTRY32 proentry32;
-    proentry32.dwSize = sizeof(PROCESSENTRY32);
-    BOOL ok = Process32First(snapshot, &proentry32);//枚举第一个进程
-    while (ok) {
-        if (proentry32.th32ParentProcessID == ctx->process.dwProcessId) {
-            pvchild = OpenProcess(PROCESS_ALL_ACCESS, FALSE, proentry32.th32ProcessID);
-            if (NULL != pvchild) {
-                TerminateProcess(pvchild, ERR_FAILED);
-                CloseHandle(pvchild);
-            } else {
-                LOG_ERROR("%s", ERRORSTR(ERRNO));
-            }
-        }
-        ok = Process32Next(snapshot, &proentry32);
-    }
     TerminateProcess(ctx->process.hProcess, ERR_FAILED);
-    CloseHandle(snapshot);
 #else
     if (0 != ctx->pid && !ctx->exited) {
-        // 杀整个进程组:子进程 setpgid(0,0) 后 pgid == ctx->pid,sh 派生的孙进程都在组里。
-        // 组不存在(setpgid 失败)时 kill(-pid) 返 ESRCH,再退化成只打 sh 自己
+        // 杀整个进程组:posix_spawn 建的子进程 pgid == ctx->pid,sh 派生的孙进程都在组里。
+        // 组不存在时 kill(-pid) 返 ESRCH,再退化成只打 sh 自己
         if (0 != kill(-ctx->pid, SIGKILL)) {
             kill(ctx->pid, SIGKILL);
         }
@@ -271,6 +363,7 @@ void popen_free(popen_ctx *ctx) {
 #ifdef OS_WIN
     CLOSE_HANDLE(ctx->process.hProcess);
     CLOSE_HANDLE(ctx->process.hThread);
+    CLOSE_HANDLE(ctx->job);
     CLOSE_HANDLE(ctx->pipe[0]);
     CLOSE_HANDLE(ctx->pipe[1]);
 #else
@@ -281,31 +374,6 @@ void popen_free(popen_ctx *ctx) {
     }
 #endif
 }
-#ifndef OS_WIN
-// 非阻塞探测 sock 是否可读：1=就绪可读，0=未就绪，ERR_FAILED=poll 出错（EINTR 已重试）
-static int32_t _popen_poll_readable(int32_t sock) {
-    struct pollfd pfd = { .fd = sock, .events = POLLIN };
-    int32_t r;
-    do {
-        r = poll(&pfd, 1, 0);
-    } while (r < 0 && EINTR == errno);
-    if (r < 0) {
-        return ERR_FAILED;
-    }
-    return (0 == r) ? 0 : 1;
-}
-// 非阻塞检查套接字是否已关闭（对端断开），返回 1 表示已关闭
-static int32_t _popen_sock_closed(int32_t sock) {
-    int32_t r = _popen_poll_readable(sock);
-    if (0 == r) {
-        return 0;
-    }
-    if (ERR_FAILED == r) {
-        return 1;
-    }
-    return sock_nread(sock) <= 0;
-}
-#endif
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
 #ifdef OS_WIN
     if (NULL == ctx->process.hProcess) {
@@ -319,32 +387,29 @@ int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
     if (0 == ctx->pid || ctx->exited) {
         return ERR_OK;
     }
-    if (INVALID_SOCK != ctx->sock
-        && _popen_sock_closed(ctx->sock)) {
-        int wstatus;
-        pid_t rtn = waitpid(ctx->pid, &wstatus, WNOHANG);
-        if (ctx->pid == rtn) {
-            _popen_child_exited(ctx, wstatus);
-            return ERR_OK;
+    int32_t r = _popen_reap(ctx);
+    if (0 != r) {
+        return 1 == r ? ERR_OK : ERR_FAILED;
+    }
+    if (0 == ms) {
+        return ERR_FAILED;
+    }
+    uint64_t startms = nowms();
+#if defined(POPEN_WAIT_PIDFD) || defined(POPEN_WAIT_KQUEUE)
+    if (ERR_OK == _popen_wait_event(ctx, startms + ms)) {
+        r = _popen_reap(ctx);
+        if (0 != r) {
+            return 1 == r ? ERR_OK : ERR_FAILED;
         }
     }
-    pid_t rtn;
-    int wstatus;
-    uint64_t startms = nowms();
+#endif
     uint32_t sleep_ms = 1;
     uint64_t elapsed;
     uint32_t remaining, s;
     for (;;) {
-        while (-1 == (rtn = waitpid(ctx->pid, &wstatus, WNOHANG)) && EINTR == errno) {
-        }
-        if (ERR_FAILED == rtn) {
-            LOG_ERROR("%s", ERRORSTR(ERRNO));
-            return ERR_FAILED;
-        }
-        if (ctx->pid == rtn) {
-            if (ERR_OK == _popen_child_exited(ctx, wstatus)) {
-                return ERR_OK;
-            }
+        r = _popen_reap(ctx);
+        if (0 != r) {
+            return 1 == r ? ERR_OK : ERR_FAILED;
         }
         elapsed = nowms() - startms;
         if (elapsed >= ms) {
@@ -417,22 +482,15 @@ int32_t popen_read(popen_ctx *ctx, char *output, size_t lens, int32_t *eof) {
     if (INVALID_SOCK == ctx->sock) {
         return ERR_FAILED;
     }
-    int32_t r = _popen_poll_readable(ctx->sock);
-    if (ERR_FAILED == r) {
-        return ERR_FAILED;
-    }
-    if (0 == r) {
-        return 0;
-    }
     ssize_t rn;
     do {
         rn = read(ctx->sock, output, lens);
     } while (-1 == rn && EINTR == errno);
     if (-1 == rn) {
-        return ERR_FAILED;
+        return ERR_RW_RETRIABLE(errno) ? 0 : ERR_FAILED;
     }
     if (0 == rn) {
-        // poll 就绪却读到 0 字节:写端全关,即 EOF
+        // 读到 0 字节:写端全关,即 EOF
         SET_PTR(eof, 1);
         return 0;
     }

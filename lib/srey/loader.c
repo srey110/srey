@@ -198,7 +198,7 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
     uint32_t n = _loader_msg_quota(worker, task, lens);
     uint32_t want, got, k, processed = 0;
 #if ENABLE_DISPATCH_STAT
-    uint64_t t0;
+    uint64_t t0, t1;
 #endif
     // version 是每 worker 独占的单写者字段, monitor 每 5s 才读一次, 用 RELAXED 换掉不必要的 seq_cst 屏障
     ATOMIC64_SET_RELAXED(&version->handle, task->handle);
@@ -212,14 +212,18 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
         if (0 == got) {
             break;
         }
+#if ENABLE_DISPATCH_STAT
+        t0 = timer_thread_cpu_ns();
+#endif
         for (k = 0; k < got; k++) {
             runarg->msg = &msgbatch[k];
             ATOMIC_ADD_RELAXED(&version->ver, 1);
             ATOMIC_SET_RELAXED(&version->msgtype, runarg->msg->mtype);
 #if ENABLE_DISPATCH_STAT
-            t0 = timer_thread_cpu_ns();
             task->_task_dispatch(runarg);
-            task->dispatch_cpu_ns[runarg->msg->mtype] += timer_thread_cpu_ns() - t0;
+            t1 = timer_thread_cpu_ns();
+            task->dispatch_cpu_ns[runarg->msg->mtype] += t1 - t0;
+            t0 = t1;
             ++task->nmsg[runarg->msg->mtype];
 #else
             task->_task_dispatch(runarg);

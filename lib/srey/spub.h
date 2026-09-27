@@ -89,7 +89,7 @@ typedef struct name_handle_entry {
 #define _TASK_MAP_CMP(a, b) ((**(a) > **(b)) - (**(a) < **(b)))
 HASHMAP_DECL(task_map, name_t *, _TASK_MAP_HASH, _TASK_MAP_CMP)
 // 按 name 字符串散列/比较；元素借用 task_ctx.name，无 elfree
-#define _TNAME_MAP_HASH(e) hash((e)->name, strlen((e)->name))
+#define _TNAME_MAP_HASH(e) hash_str((e)->name)
 #define _TNAME_MAP_CMP(a, b) strcmp((a)->name, (b)->name)
 HASHMAP_DECL(tname_map, name_handle_entry, _TNAME_MAP_HASH, _TNAME_MAP_CMP)
 // 任务调度器全局上下文

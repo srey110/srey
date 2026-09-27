@@ -29,7 +29,8 @@ void hash_ring_init(hash_ring_ctx *ring);
 /// <param name="ring">hash_ring_ctx</param>
 void hash_ring_free(hash_ring_ctx *ring);
 /// <summary>
-/// 添加节点并排序
+/// 添加节点并排序：只排新加的副本，再与已有部分归并，所以已有部分须有序——
+/// 用过 hash_ring_add_nosort 的，先 hash_ring_sort 再调本函数
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
 /// <param name="name">节点名</param>

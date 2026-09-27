@@ -94,7 +94,7 @@ int32_t memcasecmp(const void *ptr1, const void *ptr2, size_t lens) {
     }
     return 0;
 }
-int32_t strcasecmp(const char *s1, const char *s2) {
+int32_t strcasecmp_s(const char *s1, const char *s2) {
     const unsigned char *p1 = (const unsigned char *)s1;
     const unsigned char *p2 = (const unsigned char *)s2;
     int32_t c1, c2;
@@ -104,7 +104,7 @@ int32_t strcasecmp(const char *s1, const char *s2) {
     } while (c1 == c2 && 0 != c1);
     return c1 == c2 ? 0 : (c1 > c2 ? 1 : -1);
 }
-int32_t strncasecmp(const char *s1, const char *s2, size_t n) {
+int32_t strncasecmp_s(const char *s1, const char *s2, size_t n) {
     const unsigned char *p1 = (const unsigned char *)s1;
     const unsigned char *p2 = (const unsigned char *)s2;
     int32_t c1, c2;

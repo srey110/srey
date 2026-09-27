@@ -36,17 +36,34 @@ static pgsql_reader_ctx *_pg_reader_new(uint16_t field_count, const int32_t *typ
     return r;
 }
 
-// 给 reader 添加一行；payload 由首列持有，cols 每项的 lens/val 直接拷入 row
-// cols[i].lens 设为 -1 表示该列 NULL
-static void _pg_reader_push_row(pgsql_reader_ctx *r, char *payload,
+// 给 reader 添加一行；cols[i].lens 设为 -1 表示该列 NULL。
+// 同解析侧：payload 与行数组拼成一块、块首记在首列，reader 释放时只释放这一块。
+// 调用方交出 *payload 且列值都指向它内部：这里把用到的那段搬进新块、列值按偏移改指新块，
+// 释放原 payload 后把 *payload 改指新块，调用方之后照旧能用它读(reader 释放前有效)
+static void _pg_reader_push_row(pgsql_reader_ctx *r, char **ppayload,
                                 const pgpack_row *cols) {
-    pgpack_row *row;
-    CALLOC(row, 1, sizeof(pgpack_row) * r->field_count);
-    row[0].payload = payload;
-    for (uint16_t i = 0; i < r->field_count; i++) {
-        row[i].lens = cols[i].lens;
-        row[i].val = cols[i].val;
+    char *payload = *ppayload;
+    size_t used = 0, end, off;
+    uint16_t i;
+    for (i = 0; i < r->field_count; i++) {
+        if (NULL != cols[i].val) {
+            end = (size_t)(cols[i].val - payload) + (cols[i].lens > 0 ? (size_t)cols[i].lens : 0);
+            used = end > used ? end : used;
+        }
     }
+    off = ROUND_UP(used, 8);
+    char *block;
+    MALLOC(block, off + sizeof(pgpack_row) * r->field_count);
+    memcpy(block, payload, used);
+    pgpack_row *row = (pgpack_row *)(block + off);
+    ZERO(row, sizeof(pgpack_row) * r->field_count);
+    row[0].payload = block;
+    for (i = 0; i < r->field_count; i++) {
+        row[i].lens = cols[i].lens;
+        row[i].val = (NULL == cols[i].val) ? NULL : block + (cols[i].val - payload);
+    }
+    FREE(payload);
+    *ppayload = block;
     pgrow_arr_push_back(&r->arr_rows, &row);
 }
 
@@ -60,7 +77,7 @@ static pgsql_reader_ctx *_pg_reader_one(const int32_t *oids, char (*names)[64],
     memcpy(p, val, (size_t)lens);
     p[lens] = '\0';
     pgpack_row cols[1] = { { lens, p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     return r;
 }
 
@@ -190,7 +207,7 @@ static void test_pgsql_result_multi(CuTest *tc) {
     char *payload;
     MALLOC(payload, 8);
     pgpack_row cols[1] = { { 1, payload, NULL } };
-    _pg_reader_push_row(keep, payload, cols);// 带行数据，漏回收时泄漏的不止 reader 本身
+    _pg_reader_push_row(keep, &payload, cols);// 带行数据，漏回收时泄漏的不止 reader 本身
     _pg_result_push(heap, keep, "SELECT 1");
     _pg_result_push(heap, _pg_reader_new(1, oids, names), "SELECT 2");
     _pgpack_free(heap);
@@ -224,7 +241,7 @@ static void test_pgsql_reader_cursor(CuTest *tc) {
         MALLOC(p, 4);
         p[0] = (char)('1' + i);
         pgpack_row cols[1] = { { 1, p, NULL } };
-        _pg_reader_push_row(r, p, cols);
+        _pg_reader_push_row(r, &p, cols);
     }
     CuAssertIntEquals(tc, 3, (int)pgsql_reader_size(r));
     CuAssertIntEquals(tc, 0, pgsql_reader_eof(r));
@@ -263,7 +280,7 @@ static void test_pgsql_reader_bool(CuTest *tc) {
         { 2, p + 4, NULL },// b: "no"（不在真值列表，返回 0 但 err=ERR_OK）
         { -1, NULL, NULL }// c: NULL (int4)
     };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
 
     int32_t err;
     CuAssertIntEquals(tc, 1, pgsql_reader_bool(r, "a", &err));
@@ -301,7 +318,7 @@ static void test_pgsql_reader_integer(CuTest *tc) {
     MALLOC(p2, 4);
     pack_integer(p2, (uint64_t)0x12345678, 4, 0); // 大端
     pgpack_row cols2[1] = { { 4, p2, NULL } };
-    _pg_reader_push_row(r2, p2, cols2);
+    _pg_reader_push_row(r2, &p2, cols2);
     CuAssertTrue(tc, 0x12345678 == pgsql_reader_integer(r2, "n", &err));
     CuAssertIntEquals(tc, ERR_OK, err);
     pgsql_reader_free(r2);
@@ -312,7 +329,7 @@ static void test_pgsql_reader_integer(CuTest *tc) {
     char *p3;
     MALLOC(p3, 4);
     pgpack_row cols3[1] = { { -1, NULL, NULL } };
-    _pg_reader_push_row(r3, p3, cols3);
+    _pg_reader_push_row(r3, &p3, cols3);
     pgsql_reader_integer(r3, "n", &err);
     CuAssertIntEquals(tc, 1, err);
     pgsql_reader_free(r3);
@@ -330,7 +347,7 @@ static int32_t _pg_int_text(const char *val, int32_t lens, int64_t *out) {
         memcpy(p, val, (size_t)lens);
     }
     pgpack_row cols[1] = { { lens, p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     int32_t err;
     int64_t v = pgsql_reader_integer(r, "n", &err);
     SET_PTR(out, v);
@@ -373,7 +390,7 @@ static void test_pgsql_reader_double_bounds(CuTest *tc) {
     char *p;
     MALLOC(p, 1);
     pgpack_row cols[1] = { { 0, p, NULL } };// lens=0：合法空字符串，但不是一个数
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     pgsql_reader_double(r, "d", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r);
@@ -411,7 +428,7 @@ static void test_pgsql_reader_double(CuTest *tc) {
     MALLOC(p2, 8);
     pack_double(p2, 2.71828, 0);
     pgpack_row cols2[1] = { { 8, p2, NULL } };
-    _pg_reader_push_row(r2, p2, cols2);
+    _pg_reader_push_row(r2, &p2, cols2);
     d = pgsql_reader_double(r2, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, d > 2.71 && d < 2.72);
@@ -425,7 +442,7 @@ static void test_pgsql_reader_double(CuTest *tc) {
     MALLOC(p3, 4);
     pack_float(p3, 1.5f, 0);
     pgpack_row cols3[1] = { { 4, p3, NULL } };
-    _pg_reader_push_row(r3, p3, cols3);
+    _pg_reader_push_row(r3, &p3, cols3);
     d = pgsql_reader_double(r3, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, d > 1.49 && d < 1.51);
@@ -439,7 +456,7 @@ static void test_pgsql_reader_double(CuTest *tc) {
     MALLOC(p4, 4);
     pack_float(p4, 1.5f, 0);
     pgpack_row cols4[1] = { { 4, p4, NULL } };
-    _pg_reader_push_row(r4, p4, cols4);
+    _pg_reader_push_row(r4, &p4, cols4);
     pgsql_reader_double(r4, "d", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r4);
@@ -450,7 +467,7 @@ static void test_pgsql_reader_double(CuTest *tc) {
     MALLOC(p5, 8);
     pack_double(p5, 2.0, 0);
     pgpack_row cols5[1] = { { 8, p5, NULL } };
-    _pg_reader_push_row(r5, p5, cols5);
+    _pg_reader_push_row(r5, &p5, cols5);
     pgsql_reader_double(r5, "d", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r5);
@@ -469,7 +486,7 @@ static void test_pgsql_reader_isnull_text(CuTest *tc) {
         { 5, p, NULL },
         { -1, NULL, NULL }
     };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
 
     CuAssertIntEquals(tc, 0, pgsql_reader_isnull(r, "s1"));
     CuAssertIntEquals(tc, 1, pgsql_reader_isnull(r, "s2"));
@@ -500,7 +517,7 @@ static void test_pgsql_reader_bytea(CuTest *tc) {
     MALLOC(p, 4);
     p[0] = 0x01; p[1] = 0x02; p[2] = 0x03; p[3] = 0x04;
     pgpack_row cols[1] = { { 4, p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     int32_t lens = 0, err;
     const char *b = pgsql_reader_bytea(r, "b", &lens, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -521,7 +538,7 @@ static void test_pgsql_reader_timestamp_text(CuTest *tc) {
     const char *s = "2000-01-02 00:00:00";
     memcpy(p, s, strlen(s));
     pgpack_row cols[1] = { { (int32_t)strlen(s), p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     int32_t err;
     int64_t usec = pgsql_reader_timestamp(r, "ts", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -536,7 +553,7 @@ static void test_pgsql_reader_timestamp_text(CuTest *tc) {
     const char *s2 = "2000-01-01 00:00:01.234567";
     memcpy(p2, s2, strlen(s2));
     pgpack_row cols2[1] = { { (int32_t)strlen(s2), p2, NULL } };
-    _pg_reader_push_row(r2, p2, cols2);
+    _pg_reader_push_row(r2, &p2, cols2);
     usec = pgsql_reader_timestamp(r2, "ts", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 1234567LL == usec);
@@ -554,7 +571,7 @@ static void test_pgsql_reader_date(CuTest *tc) {
     const char *s = "2000-01-02";
     memcpy(p, s, strlen(s));
     pgpack_row cols[1] = { { (int32_t)strlen(s), p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     int32_t err;
     int32_t days = pgsql_reader_date(r, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
@@ -581,7 +598,7 @@ static void test_pgsql_reader_double_text_bounds(CuTest *tc) {
         MALLOC(p, n + 1);
         memcpy(p, cases[i], n);
         pgpack_row cols[1] = { { (int32_t)n, p, NULL } };
-        _pg_reader_push_row(r, p, cols);
+        _pg_reader_push_row(r, &p, cols);
         (void)pgsql_reader_double(r, "d", &err);
         CuAssertIntEquals(tc, ERR_FAILED, err);
         pgsql_reader_free(r);
@@ -593,7 +610,7 @@ static void test_pgsql_reader_double_text_bounds(CuTest *tc) {
     MALLOC(p, 8);
     memcpy(p, "1e-320", 6);
     pgpack_row sub[1] = { { 6, p, NULL } };
-    _pg_reader_push_row(r, p, sub);
+    _pg_reader_push_row(r, &p, sub);
     double dv = pgsql_reader_double(r, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, dv > 0.0 && dv < 1e-300);
@@ -605,7 +622,7 @@ static void test_pgsql_reader_double_text_bounds(CuTest *tc) {
     MALLOC(p, 8);
     memcpy(p, "-2.25", 5);
     pgpack_row ok[1] = { { 5, p, NULL } };
-    _pg_reader_push_row(r, p, ok);
+    _pg_reader_push_row(r, &p, ok);
     CuAssertTrue(tc, -2.25 == pgsql_reader_double(r, "d", &err));
     CuAssertIntEquals(tc, ERR_OK, err);
     pgsql_reader_free(r);
@@ -622,7 +639,7 @@ static int64_t _pg_text_ts(const char *s, int32_t *err) {
     MALLOC(p, n);
     memcpy(p, s, n);
     pgpack_row cols[1] = { { (int32_t)n, p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     int64_t v = pgsql_reader_timestamp(r, "ts", err);
     pgsql_reader_free(r);
     return v;
@@ -638,7 +655,7 @@ static int32_t _pg_text_date(const char *s, int32_t *err) {
     MALLOC(p, n);
     memcpy(p, s, n);
     pgpack_row cols[1] = { { (int32_t)n, p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     int32_t v = pgsql_reader_date(r, "d", err);
     pgsql_reader_free(r);
     return v;
@@ -753,7 +770,7 @@ static void test_pgsql_reader_temporal_binary(CuTest *tc) {
     MALLOC(p, 8);
     pack_integer(p, (uint64_t)86400000000LL, 8, 0);
     cols[0] = (pgpack_row){ 8, p, NULL };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     usec = pgsql_reader_timestamp(r, "ts", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 86400000000LL == usec);
@@ -765,7 +782,7 @@ static void test_pgsql_reader_temporal_binary(CuTest *tc) {
     MALLOC(p, 4);
     pack_integer(p, 1, 4, 0);
     cols[0] = (pgpack_row){ 4, p, NULL };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     (void)pgsql_reader_timestamp(r, "ts", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r);
@@ -776,7 +793,7 @@ static void test_pgsql_reader_temporal_binary(CuTest *tc) {
     MALLOC(p, 4);
     pack_integer(p, 1, 4, 0);
     cols[0] = (pgpack_row){ 4, p, NULL };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     days = pgsql_reader_date(r, "d", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertIntEquals(tc, 1, days);
@@ -788,7 +805,7 @@ static void test_pgsql_reader_temporal_binary(CuTest *tc) {
     MALLOC(p, 8);
     pack_integer(p, 1, 8, 0);
     cols[0] = (pgpack_row){ 8, p, NULL };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     (void)pgsql_reader_date(r, "d", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     pgsql_reader_free(r);
@@ -806,7 +823,7 @@ static void test_pgsql_reader_uuid(CuTest *tc) {
     const char *s = "01020304-0506-0708-090a-0b0c0d0e0f10";
     memcpy(p, s, strlen(s));
     pgpack_row cols[1] = { { (int32_t)strlen(s), p, NULL } };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
     char uuid[16];
     int32_t err;
     CuAssertIntEquals(tc, ERR_OK, pgsql_reader_uuid(r, "u", uuid, &err));
@@ -825,7 +842,7 @@ static void test_pgsql_reader_uuid(CuTest *tc) {
     MALLOC(p2, 16);
     memcpy(p2, expect, 16);
     pgpack_row cols2[1] = { { 16, p2, NULL } };
-    _pg_reader_push_row(r2, p2, cols2);
+    _pg_reader_push_row(r2, &p2, cols2);
     char uuid2[16];
     CuAssertIntEquals(tc, ERR_OK, pgsql_reader_uuid(r2, "u", uuid2, &err));
     CuAssertTrue(tc, 0 == memcmp(uuid2, expect, 16));
@@ -860,7 +877,7 @@ static void test_pgsql_reader_index(CuTest *tc) {
         { 2, p, NULL },
         { 3, p + 2, NULL }
     };
-    _pg_reader_push_row(r, p, cols);
+    _pg_reader_push_row(r, &p, cols);
 
     pgpack_field *field;
     pgpack_row *row = pgsql_reader_index(r, 0, &field);
@@ -941,7 +958,9 @@ static void *_pg_feed(pgsql_ctx *pg, ud_cxt *ud, char code,
     const char *body, size_t blens, int32_t *status) {
     char *raw;
     binary_ctx br;
-    MALLOC(raw, 5 + blens);
+    // 同 _pgsql_payload：DataRow 的行数组放在 payload 块尾，块要按 _pgpack_row_extra 多留
+    size_t extra = ('D' == code) ? _pgpack_row_extra(pg) : 0;
+    MALLOC(raw, 0 == extra ? 5 + blens : ROUND_UP(5 + blens, 8) + extra);
     raw[0] = code;
     pack_integer(raw + 1, (uint64_t)(4 + blens), 4, 0);
     if (blens > 0) {
@@ -1117,6 +1136,108 @@ static void test_pgsql_payload_framing(CuTest *tc) {
     _pgpack_free(pg.pack);
 }
 
+// RowDescription 正文：n 列 INT4 文本列，列名依次 "c0" "c1" ...
+static size_t _pg_rowdesc(char *body, uint16_t n) {
+    char *p = body;
+    uint16_t i;
+    pack_integer(p, n, 2, 0); p += 2;
+    for (i = 0; i < n; i++) {
+        *p++ = 'c'; *p++ = (char)('0' + i); *p++ = '\0';
+        pack_integer(p, 0, 4, 0); p += 4;// table_oid
+        pack_integer(p, i + 1, 2, 0); p += 2;// index
+        pack_integer(p, INT4OID, 4, 0); p += 4;
+        pack_integer(p, 4, 2, 0); p += 2;// lens
+        pack_integer(p, (uint64_t)-1, 4, 0); p += 4;// type_modifier
+        pack_integer(p, FORMAT_TEXT, 2, 0); p += 2;
+    }
+    return (size_t)(p - body);
+}
+// DataRow 正文：n 列，第 j 列的文本值是 row * 10 + j
+static size_t _pg_datarow(char *body, uint16_t n, int32_t row) {
+    char *p = body;
+    char num[16];
+    size_t lens;
+    uint16_t j;
+    pack_integer(p, n, 2, 0); p += 2;
+    for (j = 0; j < n; j++) {
+        lens = (size_t)SNPRINTF(num, sizeof(num), "%d", row * 10 + j);
+        pack_integer(p, lens, 4, 0); p += 4;
+        memcpy(p, num, lens); p += lens;
+    }
+    return (size_t)(p - body);
+}
+// 经 pgsql_unpack 分帧走 T → D×3 → C → Z：DataRow 的块尾行数组(_pgsql_payload 多分的那段)要装得下、
+// 行值要读得对；列数与 T 对不上、没有 T 就来 D 都得判协议错。行数组越界写时 ASan 构建会直接报
+static void test_pgsql_unpack_rows(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    pgsql_reader_ctx *reader;
+    void *pack = NULL;
+    char tbody[128], dbody[64];
+    size_t tl, dl;
+    int32_t status, err, i;
+    ZERO(&pg, sizeof(pg));
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND
+    ud.context = &pg;
+    tl = _pg_rowdesc(tbody, 2);
+
+    buffer_init(&buf);
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    for (i = 0; i < 3; i++) {
+        dl = _pg_datarow(dbody, 2, i);
+        _pg_push_msg(&buf, 'D', dbody, dl);
+    }
+    _pg_push_msg(&buf, 'C', "SELECT 3", 9);
+    _pg_push_msg(&buf, 'Z', "I", 1);
+    for (i = 0; i < 6 && NULL == pack; i++) {
+        status = PROT_INIT;
+        pack = _t_pgsql_unpack(0, &buf, &ud, NULL, &status);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    }
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    buffer_free(&buf);
+    reader = pgsql_reader_iter((pgpack_ctx *)pack, FORMAT_TEXT);
+    CuAssertPtrNotNull(tc, reader);
+    CuAssertIntEquals(tc, 3, (int)pgsql_reader_size(reader));
+    for (i = 0; i < 3; i++) {
+        CuAssertTrue(tc, i * 10 == pgsql_reader_integer(reader, "c0", &err));
+        CuAssertIntEquals(tc, ERR_OK, err);
+        CuAssertTrue(tc, i * 10 + 1 == pgsql_reader_integer(reader, "c1", &err));
+        CuAssertIntEquals(tc, ERR_OK, err);
+        pgsql_reader_next(reader);
+    }
+    CuAssertTrue(tc, 0 != pgsql_reader_eof(reader));
+    pgsql_reader_free(reader);
+    _pgpack_free((pgpack_ctx *)pack);
+
+    // T 声明 2 列、D 带 3 列
+    buffer_init(&buf);
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    dl = _pg_datarow(dbody, 3, 0);
+    _pg_push_msg(&buf, 'D', dbody, dl);
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+    _pgpack_free(pg.pack);
+    pg.pack = NULL;
+
+    // 没有 T 就来 D
+    buffer_init(&buf);
+    dl = _pg_datarow(dbody, 2, 0);
+    _pg_push_msg(&buf, 'D', dbody, dl);
+    status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+    _pgpack_free(pg.pack);
+}
 // 回归：RowDescription 声明的列数对得上总长，但某个列名超长把后面的列挤出报文时也须判失败
 static void test_pgpack_row_description_overlong_name(CuTest *tc) {
     // 2 列 → 需 2*19=38 字节；给足 40 字节，但第一列名字就吃掉 30 字节
@@ -1262,6 +1383,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgpack_parser_full_flow);
     SUITE_ADD_TEST(suite, test_pgpack_parser_empty_body);
     SUITE_ADD_TEST(suite, test_pgsql_payload_framing);
+    SUITE_ADD_TEST(suite, test_pgsql_unpack_rows);
     SUITE_ADD_TEST(suite, test_pgpack_row_description_overlong_name);
     SUITE_ADD_TEST(suite, test_pgsql_affected_rows);
     SUITE_ADD_TEST(suite, test_pgsql_setter_atomic);

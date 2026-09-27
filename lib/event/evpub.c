@@ -237,12 +237,11 @@ int32_t _evpub_linger_want(int32_t status) {
         && BIT_CHECK(status, STATUS_ESTABLISHED)
         && CLOSE_TYPE_LOCAL == _evpub_close_type(status);
 }
-int32_t _evpub_linger_drain(SOCKET fd, size_t *bytes) {
-    char buf[MAX_RECV_SIZE];
+int32_t _evpub_linger_drain(SOCKET fd, char *buf, size_t lens, size_t *bytes) {
     IOV_TYPE iov;
     size_t nread;
     iov.IOV_PTR_FIELD = buf;
-    iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)sizeof(buf);
+    iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)lens;
     for (;;) {
         if (ERR_OK != _evpub_sock_read(fd, &iov, 1, NULL, &nread)) {
             return 1;
@@ -287,6 +286,24 @@ int32_t _evpub_ssl_exchange_check(const void *ssl, int32_t *status, int32_t clie
 int32_t _evpub_tcp_keepalive(SOCKET fd) {
     return sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL);
 }
+int32_t _evpub_accept_opts(SOCKET fd) {
+#if 1 == ACCEPT_INHERIT_OPTS
+    (void)fd;
+    return ERR_OK;
+#elif 2 == ACCEPT_INHERIT_OPTS
+    int32_t idle = KEEPALIVE_TIME;
+    if (idle > 0
+        && setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (char *)&idle, (int32_t)sizeof(idle)) < ERR_OK) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+#else
+    if (ERR_OK != sock_nodelay(fd)) {
+        return ERR_FAILED;
+    }
+    return _evpub_tcp_keepalive(fd);
+#endif
+}
 int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs_ctx *cbs,
                                  ud_cxt *ud, int32_t isudp, netaddr_ctx *addr) {
     if (NULL == cbs
@@ -326,6 +343,14 @@ SOCKET _evpub_listen(netaddr_ctx *addr) {
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
+#if ACCEPT_INHERIT_OPTS
+    if (ERR_OK != sock_nodelay(fd)
+        || ERR_OK != _evpub_tcp_keepalive(fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        CLOSE_SOCK(fd);
+        return INVALID_SOCK;
+    }
+#endif
     if (ERR_OK != listen(fd, SOMAXCONN)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);

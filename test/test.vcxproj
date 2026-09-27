@@ -247,6 +247,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="bench_mpq.c" />
+    <ClCompile Include="bench_recvmmsg.c" />
     <ClCompile Include="bench_weights.c" />
     <ClCompile Include="CuTest.c" />
     <ClCompile Include="main.c" />
@@ -308,6 +309,7 @@
   <ItemGroup>
     <ClInclude Include="test_rand.h" />
     <ClInclude Include="bench_mpq.h" />
+    <ClInclude Include="bench_recvmmsg.h" />
     <ClInclude Include="bench_weights.h" />
     <ClInclude Include="CuTest.h" />
     <ClInclude Include="task_auto_close.h" />

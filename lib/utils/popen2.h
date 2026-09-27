@@ -8,6 +8,8 @@ typedef struct popen_ctx {
 #ifdef OS_WIN
     HANDLE pipe[2];              //命名管道句柄对：[0] 服务端（子进程端），[1] 客户端（父进程端）
     PROCESS_INFORMATION process; //子进程信息
+    HANDLE job;                  //子进程所在的作业对象，popen_close 靠它连同孙进程一起结束；NULL 表示没建成，只能结束子进程本身。
+                                 //子进程挂起创建、放进作业后才放行，否则它抢先派生的孙进程不在作业里
 #else
     int32_t exited;   //子进程是否已退出
     int32_t exitcode; //子进程退出码
@@ -37,11 +39,12 @@ void popen_close(popen_ctx *ctx);
 /// <param name="ctx">popen_ctx</param>
 void popen_free(popen_ctx *ctx);
 /// <summary>
-/// 等待执行完成
+/// 等待执行完成：子进程一退出就返回(Linux 等 pidfd、kqueue 平台等 NOTE_EXIT，都用不了时退避轮询)，
+/// 期间阻塞调用线程
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
-/// <param name="ms">超时 毫秒</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="ms">超时 毫秒；0 只探一次不等</param>
+/// <returns>ERR_OK 已退出(退出码已记下，见 popen_exitcode)或本来就没有子进程；超时或 waitpid 出错 ERR_FAILED</returns>
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms);
 /// <summary>
 /// 获取退出码 非windows 不一定能取到；须在 popen_free 之前调用（free 后 windows 已不持有进程句柄）

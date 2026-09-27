@@ -212,8 +212,25 @@ static void test_router_seg_index(CuTest *tc) {
     router_free(r);
 }
 
+// harbor_pack 直接写线格式，必须与原先 snprintf + http_pack_req/http_pack_head 拼出来的逐字节相同
+static void test_harbor_pack_wire(CuTest *tc) {
+    static const char want_call[] = "POST /call?dst=18446744073709551615&type=65535 HTTP/1.1\r\n"
+        "Connection: Keep-Alive\r\nContent-Type: application/octet-stream\r\nContent-Length: 3\r\n\r\nabc";
+    static const char want_req[] = "POST /request?dst=0&type=0 HTTP/1.1\r\n"
+        "Connection: Keep-Alive\r\nContent-Type: application/octet-stream\r\nContent-Length: 0\r\n\r\n";
+    size_t lens;
+    char *p = harbor_pack(UINT64_MAX, 1, 65535, (void *)"abc", 3, &lens);
+    int32_t ok_call = (sizeof(want_call) - 1 == lens && 0 == memcmp(p, want_call, lens));
+    FREE(p);
+    p = harbor_pack(0, 0, 0, NULL, 0, &lens);
+    int32_t ok_req = (sizeof(want_req) - 1 == lens && 0 == memcmp(p, want_req, lens));
+    FREE(p);
+    CuAssertTrue(tc, 0 != ok_call);
+    CuAssertTrue(tc, 0 != ok_req);
+}
 void test_advance(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_router_url_normalize);
+    SUITE_ADD_TEST(suite, test_harbor_pack_wire);
     SUITE_ADD_TEST(suite, test_router_shadow_mask);
     SUITE_ADD_TEST(suite, test_router_seg_index);
 }

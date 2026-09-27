@@ -158,9 +158,12 @@ static int32_t _mmap_setlen(mmap_ctx *ctx, uint64_t cur, uint64_t len) {
     return ERR_OK;
 }
 #ifndef OS_WIN
-// 文件不短于 len，不够就扩
+// 文件不短于 len，不够就扩。不超过 hw 时不必查：映射期间文件只增不减（契约 4）
 static int32_t _mmap_ensure(mmap_ctx *ctx, uint64_t len) {
     uint64_t flen;
+    if (len <= ctx->hw) {
+        return ERR_OK;
+    }
     if (ERR_OK != _mmap_flen(ctx, &flen)) {
         return ERR_FAILED;
     }
@@ -330,6 +333,9 @@ static int32_t _mmap_win_grow(mmap_ctx *ctx, uint64_t want) {
     uint64_t flen, aoff = ctx->off - ctx->delta;
     size_t ps = _mmap_pagesize(), from, to;
     char *base = ctx->addr - ctx->delta;
+    if (want <= ctx->hw) {
+        return ERR_OK;
+    }
     if (ERR_OK != _mmap_flen(ctx, &flen)) {
         return ERR_FAILED;
     }

@@ -94,7 +94,7 @@ typedef struct mpack_field {
 typedef struct mpack_row {
     int32_t nil;            // 1 表示该字段值为 NULL
     buf_ctx val;            // 字段值数据（nil 为 0 且 val.data==NULL 时表示空字符串）
-    char *payload;          // 行原始 payload 数据（仅第一个字段持有内存所有权）
+    char *payload;          // 行原始 payload 数据（仅第一个字段持有内存所有权）；行数组与它同一块分配，只释放它
 }mpack_row;
 ARR_DECL(mrow_arr, mpack_row *)
 

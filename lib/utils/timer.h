@@ -5,13 +5,16 @@
 
 typedef struct timer_ctx {
 #if defined(OS_WIN)
+    uint32_t shift;               //定点乘数的小数位数，见 mult
     uint64_t freq;                //QueryPerformanceFrequency 计数频率（Hz）
     uint64_t nsfactor;            //整数倍换算因子，见下方 OS_DARWIN 同名字段
+    uint64_t mult;                //除不尽时的定点乘数：纳秒 = ticks * mult >> shift，只会比精确值略小（连续运行百年也在几纳秒内）
 #elif defined(OS_DARWIN)
     uint32_t numer;               //mach_timebase 分子（nanoseconds = ticks * numer / denom）
     uint32_t denom;               //mach_timebase 分母
-    uint64_t(*timefunc)(void);    //实际使用的时间函数（优先 mach_continuous_time）
-    uint64_t nsfactor;            //ticks 到纳秒恰好是整数倍时的因子，0 表示除不尽只能走除法
+    uint32_t shift;               //同 OS_WIN
+    uint64_t nsfactor;            //ticks 到纳秒恰好是整数倍时的因子，0 表示除不尽
+    uint64_t mult;                //同 OS_WIN
 #else
 #endif
     uint64_t starttick;           //计时起始时刻（纳秒）

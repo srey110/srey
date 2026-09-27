@@ -36,12 +36,21 @@ static int32_t _lutils_log(lua_State *lua) {
     log_level lv = (log_level)lpub_check_range(lua, 1, LOGLV_FATAL, LOGLV_DEBUG, LOGLV_OUT_OF_RANGE);
     const char *file = luaL_checkstring(lua, 2);
     int32_t line = (int32_t)luaL_checkinteger(lua, 3);
-    const char *log = luaL_checkstring(lua, 4);
+    size_t mlen, nlen;
+    const char *log = luaL_checklstring(lua, 4, &mlen);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    const char *fname = _filename(file);
+    char num[24];
+    const char *nstr = lpub_int_str(num, sizeof(num), line, &nlen);
     if (NULL == task) {
-        slog(lv, "[%s %d] %s", _filename(file), line, log);
+        const char *parts[] = { "[", fname, " ", nstr, "] ", log };
+        size_t lens[] = { 1, strlen(fname), 1, nlen, 2, mlen };
+        slog_parts(lv, parts, lens, 6);
     } else {
-        slog(lv, "[%s %d][%s] %s", _filename(file), line, _NAME_OR(task->name), log);
+        const char *tname = _NAME_OR(task->name);
+        const char *parts[] = { "[", fname, " ", nstr, "][", tname, "] ", log };
+        size_t lens[] = { 1, strlen(fname), 1, nlen, 2, strlen(tname), 2, mlen };
+        slog_parts(lv, parts, lens, 8);
     }
     return 0;
 }
@@ -105,7 +114,7 @@ static int32_t _lutils_hex(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 生成全局唯一 id（基于 createid 实现的单调递增 64 位整数）
+/// 生成全局唯一 id（基于 createid 的 64 位整数；同一线程内递增，跨线程不保证先后）
 /// </summary>
 /// <param>无</param>
 /// <returns type="integer">全局唯一 id</returns>

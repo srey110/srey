@@ -82,7 +82,7 @@ static inline int32_t mmap_in_range(const mmap_ctx *ctx, size_t off, size_t lens
 /// <param name="lens">要访问的长度</param>
 /// <returns>addr + off；越界或没建映射时 NULL。只到下次 resize / close 前有效（契约 1）</returns>
 static inline void *mmap_ptr(const mmap_ctx *ctx, size_t off, size_t lens) {
-    return mmap_in_range(ctx, off, lens) && NULL != ctx->addr ? ctx->addr + off : NULL;
+    return off <= ctx->size && lens <= ctx->size - off && NULL != ctx->addr ? ctx->addr + off : NULL;
 }
 /// <summary>
 /// 可访问长度

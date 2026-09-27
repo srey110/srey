@@ -115,10 +115,9 @@ static int32_t _lstm_deletereader(lua_State *lua) {
 static int32_t _lstm_read(lua_State *lua) {
     lua_stm_data *box = _lstm_checkreader(lua);
     luaL_checktype(lua, 2, LUA_TFUNCTION);
-    stm_data *snap = stm_grab_data(box->ctx);
+    stm_data *snap = stm_grab_data_since(box->ctx, box->lastcopy);
     if (snap == box->lastcopy) {
         // 与上次相同, 未更新
-        stm_ungrab_data(snap);
         return lpub_rtn_bool(lua, 0);
     }
     if (NULL != snap) {
