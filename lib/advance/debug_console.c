@@ -74,7 +74,8 @@ static void _debug_pack_cmd(binary_ctx *bw, const char *cmd) {
     seri_append_string(bw, cmd, strlen(cmd));
 }
 // 广播 fork 协程：向单个 task 发 REQ_DEBUG，响应复制进 arg->resp
-static void _debug_bcast_one(task_ctx *task, void *arg) {
+static void _debug_bcast_one(void *owner, void *arg) {
+    task_ctx *task = owner;
     bcast_arg *ba = arg;
     ba->resp = NULL;
     ba->resp_len = 0;
@@ -123,6 +124,7 @@ static void _debug_tasklist_free(dbg_tasklist *tl) {
     FREE(tl->items);
 }
 // 广播命令到所有 task（coro_fork_wait 并发），按 name 升序聚合响应（"name:\n<resp 或 (unavailable)>\n"）
+// bargs / funcs / args 三个等长数组同一块分配，依次排开
 static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t needlua) {
     task_ctx *task = ctx->task;
     dbg_tasklist tl = { 0, 0, NULL };
@@ -134,11 +136,9 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
     }
     qsort(tl.items, (size_t)tl.n, sizeof(dbg_task), _debug_cmp_name);
     bcast_arg *bargs;
-    MALLOC(bargs, sizeof(bcast_arg) * (size_t)tl.n);
-    void (**funcs)(task_ctx *, void *);
-    MALLOC(funcs, sizeof(void *) * (size_t)tl.n);
-    void **args;
-    MALLOC(args, sizeof(void *) * (size_t)tl.n);
+    MALLOC(bargs, (sizeof(bcast_arg) + sizeof(void *) * 2) * (size_t)tl.n);
+    coro_fn *funcs = (coro_fn *)(bargs + tl.n);
+    void **args = (void **)(funcs + tl.n);
     uint32_t i;
     for (i = 0; i < tl.n; i++) {
         bargs[i].handle = tl.items[i].handle;
@@ -150,13 +150,14 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
         funcs[i] = _debug_bcast_one;
         args[i] = &bargs[i];
     }
-    coro_fork_wait(task, funcs, args, (int32_t)tl.n);
+    coro_fork_wait(coro_task_co(task), funcs, args, (int32_t)tl.n);
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
     const char *nm;
     for (i = 0; i < tl.n; i++) {
         nm = (NULL == tl.items[i].name) ? "(anonymous)" : tl.items[i].name;
-        binary_set_va(&bw, "%s:\n", nm);
+        binary_set_binary(&bw, nm, strlen(nm));
+        binary_set_binary(&bw, ":\n", 2);
         if (NULL != bargs[i].resp && bargs[i].resp_len > 0) {
             binary_set_binary(&bw, bargs[i].resp, bargs[i].resp_len);
             FREE(bargs[i].resp);
@@ -168,8 +169,6 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
     router_req_text(ctx, 200, bw.data, bw.offset);
     binary_free(&bw);
     FREE(bargs);
-    FREE(funcs);
-    FREE(args);
     _debug_tasklist_free(&tl);
 }
 // handler 公共转发：取 handle，单发直接 coro_request、handle=0 广播；cmd 由本函数接管，完成后 binary_free
@@ -184,7 +183,7 @@ static void _debug_forward(router_req *ctx, binary_ctx *cmd, int32_t needlua) {
         return;
     }
     uint64_t hv;
-    if (ERR_OK != str2u64(ts, n, UINT64_MAX, &hv)) {
+    if (ERR_OK != strtou64(ts, n, UINT64_MAX, &hv)) {
         router_req_text(ctx, 404, "invalid task handle\n", strlen("invalid task handle\n"));
         binary_free(cmd);
         return;
@@ -241,8 +240,12 @@ static void _debug_alive(router_req *ctx) {
     binary_init_write(&bw, 0, 0);
     uint32_t i;
     for (i = 0; i < tl.n; i++) {
-        binary_set_va(&bw, "%"PRIu64"\t%s\n",
-            tl.items[i].handle, (NULL == tl.items[i].name) ? "" : tl.items[i].name);
+        binary_set_uint(&bw, tl.items[i].handle, 10);
+        binary_set_binary(&bw, "\t", 1);
+        if (NULL != tl.items[i].name) {
+            binary_set_binary(&bw, tl.items[i].name, strlen(tl.items[i].name));
+        }
+        binary_set_binary(&bw, "\n", 1);
     }
     router_req_text(ctx, 200, bw.data, bw.offset);
     binary_free(&bw);
@@ -292,9 +295,9 @@ static void _debug_coros(router_req *ctx) {
 static void _debug_loglv(router_req *ctx) {
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);
-    // max 传 LOGLV_DEBUG，上界检查一并折进去；负号 / 空白 / 尾随垃圾都由 str2u64 挡掉
+    // max 传 LOGLV_DEBUG，上界检查一并折进去；负号 / 空白 / 尾随垃圾都由 strtou64 挡掉
     uint64_t lvv;
-    if (ERR_OK != str2u64(lv_s, n, LOGLV_DEBUG, &lvv)) {
+    if (ERR_OK != strtou64(lv_s, n, LOGLV_DEBUG, &lvv)) {
         router_req_text(ctx, 400, "usage: /{handle}/loglv/<0-4>\n", strlen("usage: /{handle}/loglv/<0-4>\n"));
         return;
     }

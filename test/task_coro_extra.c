@@ -2,7 +2,7 @@
 
 // 并发 coro_sendto 的协程数；payload 固定 2 字节("pN")，靠末位数字回认是哪一份
 #define CONCURRENT_N 4
-// 等超时唤醒要多给的富余：_coro_timeout_monitor 每 1s 才扫一次到期堆(coro.c)，
+// 等超时唤醒要多给的富余：coro_task.c 的 _coro_timeout_monitor 每 1s 才调一次 coro_expire 扫到期堆，
 // 所以 N 毫秒的 _coro_wait 最坏 N+1000 才被观察到。凡断言超时的地方一律等 N + 本值
 #define TIMEOUT_SETTLE_MS 1300
 
@@ -128,7 +128,8 @@ static int32_t _test_request_timeout(task_ctx *task, const char *rpcname) {
 }
 
 // 被 CLOSE 广播唤醒后，就在排空的那一轮里重新在同一 sess 上注册
-static void _reregister_waiter(task_ctx *task, void *arg) {
+static void _reregister_waiter(void *owner, void *arg) {
+    task_ctx *task = owner;
     reregister_arg *a = (reregister_arg *)arg;
     // 3000ms 只是失败时的兜底上界，正常路径是被 ev_close 的 CLOSE 广播唤醒
     a->first = _coro_wait(task, a->skid, MSG_TYPE_RECV, 3000)->mtype;
@@ -149,7 +150,7 @@ static int32_t _test_close_reregister(task_ctx *task, uint16_t httpport) {
     a.skid = sk.skid;
     a.first = (msg_type)0;
     a.second = (msg_type)0;
-    coro_fork(task, _reregister_waiter, &a);
+    coro_fork(coro_task_co(task), _reregister_waiter, &a);
     // fork 的协程在本条消息 dispatch 末尾才起，先让出一次给它挂上等待
     coro_sleep(task, 30);
     ev_close(&task->loader->netev, &sk);
@@ -166,7 +167,8 @@ static int32_t _test_close_reregister(task_ctx *task, uint16_t httpport) {
     return ERR_OK;
 }
 
-static void _sendto_one(task_ctx *task, void *arg) {
+static void _sendto_one(void *owner, void *arg) {
+    task_ctx *task = owner;
     sendto_arg *a = (sendto_arg *)arg;
     char buf[4];
     SNPRINTF(buf, sizeof(buf), "p%d", a->idx);
@@ -195,7 +197,7 @@ static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
     int32_t nok = 0;
     int32_t seen[CONCURRENT_N] = { 0 };
     sendto_arg args[CONCURRENT_N];
-    fork_serial_cb funcs[CONCURRENT_N];
+    coro_fn funcs[CONCURRENT_N];
     void *argp[CONCURRENT_N];
     int32_t i;
     for (i = 0; i < CONCURRENT_N; i++) {
@@ -207,7 +209,7 @@ static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
         funcs[i] = _sendto_one;
         argp[i] = &args[i];
     }
-    (void)coro_fork_wait(task, funcs, argp, CONCURRENT_N);
+    (void)coro_fork_wait(coro_task_co(task), funcs, argp, CONCURRENT_N);
     ev_close(&task->loader->netev, &sk);
     if (CONCURRENT_N != nok) {
         LOG_ERROR("concurrent sendto: only %d/%d coroutines got a response.", nok, CONCURRENT_N);
@@ -225,7 +227,7 @@ static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
 // 从 coro_dump 的汇总行里抠出 coro_sess 条目数；取不到返回 -1
 static int32_t _sessions(task_ctx *task) {
     size_t lens = 0;
-    char *dump = coro_dump(task, &lens);
+    char *dump = coro_dump(coro_task_co(task), &lens);
     if (NULL == dump) {
         return -1;
     }
@@ -245,7 +247,8 @@ static int32_t _sessions(task_ctx *task) {
     return n;
 }
 
-static void _fifo_waiter(task_ctx *task, void *arg) {
+static void _fifo_waiter(void *owner, void *arg) {
+    task_ctx *task = owner;
     fifo_arg *a = (fifo_arg *)arg;
     (void)_coro_wait(task, a->sess, MSG_TYPE_RESPONSE, 2000);
     a->order[(*a->n)++] = a->idx;
@@ -265,7 +268,7 @@ static int32_t _test_fifo_order(task_ctx *task) {
         a[i].idx = i + 1;
         a[i].n = &n;
         a[i].order = order;
-        coro_fork(task, _fifo_waiter, &a[i]);
+        coro_fork(coro_task_co(task), _fifo_waiter, &a[i]);
     }
     coro_sleep(task, 30);
     task_response(task, 0, sess, ERR_OK, "r1", 2, 1);
@@ -278,7 +281,8 @@ static int32_t _test_fifo_order(task_ctx *task) {
     return ERR_OK;
 }
 
-static void _one_waiter(task_ctx *task, void *arg) {
+static void _one_waiter(void *owner, void *arg) {
+    task_ctx *task = owner;
     waiter_arg *a = (waiter_arg *)arg;
     a->woke = _coro_wait(task, a->sess, a->mtype, a->ms)->mtype;
 }
@@ -290,7 +294,7 @@ static int32_t _test_head_mtype_gate(task_ctx *task) {
     a.mtype = MSG_TYPE_RECV;
     a.ms = 300;
     a.woke = (msg_type)0;
-    coro_fork(task, _one_waiter, &a);
+    coro_fork(coro_task_co(task), _one_waiter, &a);
     coro_sleep(task, 30);
     task_response(task, 0, a.sess, ERR_OK, "x", 1, 1);
     coro_sleep(task, 300 + TIMEOUT_SETTLE_MS);
@@ -301,7 +305,7 @@ static int32_t _test_head_mtype_gate(task_ctx *task) {
     return ERR_OK;
 }
 
-// RECV 属于 _message_may_keep 为真的六个 mtype，摘空 waiters 后条目应当留着；
+// RECV 属于 message_may_keep 为真的六个 mtype，摘空 waiters 后条目应当留着；
 // 直到 CLOSE 把 keep 清 false，它才真正可删
 static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
     sock_ctx sk;
@@ -310,7 +314,7 @@ static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
         LOG_ERROR("keep lifetime: connect to http_sv failed.");
         return ERR_FAILED;
     }
-    // coro_connect 自己就在 skid 上等过 CONNECT，而 CONNECT 也在 _message_may_keep 那六个里，
+    // coro_connect 自己就在 skid 上等过 CONNECT，而 CONNECT 也在 message_may_keep 那六个里，
     // 所以走到这里条目已经建好、keep 已经是 true
     if (s0 + 1 != _sessions(task)) {
         LOG_ERROR("keep lifetime: connect left no entry (s0=%d now=%d).", s0, _sessions(task));
@@ -322,7 +326,7 @@ static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
     a.mtype = MSG_TYPE_RECV;
     a.ms = 3000;
     a.woke = (msg_type)0;
-    coro_fork(task, _one_waiter, &a);
+    coro_fork(coro_task_co(task), _one_waiter, &a);
     coro_sleep(task, 30);
     // 追加到已有条目，不新建第二个
     if (s0 + 1 != _sessions(task)) {
@@ -372,7 +376,7 @@ static int32_t _test_timeout_ignores_keep(task_ctx *task, uint16_t httpport) {
     a.mtype = MSG_TYPE_RECV;
     a.ms = 200;
     a.woke = (msg_type)0;
-    coro_fork(task, _one_waiter, &a);
+    coro_fork(coro_task_co(task), _one_waiter, &a);
     coro_sleep(task, 200 + TIMEOUT_SETTLE_MS);
     int32_t rtn = ERR_OK;
     if (MSG_TYPE_TIMEOUT != a.woke) {
@@ -402,7 +406,7 @@ static int32_t _test_timeout_non_head(task_ctx *task) {
         a[i].mtype = MSG_TYPE_RESPONSE;
         a[i].ms = ms[i];
         a[i].woke = (msg_type)0;
-        coro_fork(task, _one_waiter, &a[i]);
+        coro_fork(coro_task_co(task), _one_waiter, &a[i]);
     }
     coro_sleep(task, 30);
     if (s0 + 2 != _sessions(task)) {

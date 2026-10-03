@@ -19,6 +19,8 @@
 #include <stdio.h>
 
 #define IKCP_FASTACK_CONSERVE
+// 每个 kcp 最多留这么多空闲满段(一个约 1.4KB，每会话闲置时最多占约 23KB)
+#define IKCP_SEG_POOL_MAX 16
 
 //=====================================================================
 // KCP BASIC
@@ -172,17 +174,51 @@ void ikcp_allocator(void* (*new_malloc)(size_t), void (*new_free)(void*))
 }
 
 // allocate a new kcp segment
+// [mss/2, mss] 的段一律按 mss 容量分配、删除时回 seg_pool，再要时先从链上取；其余按实际大小分配
 static IKCPSEG* ikcp_segment_new(ikcpcb *kcp, int size)
 {
-	(void)kcp;
-	return (IKCPSEG*)ikcp_malloc(sizeof(IKCPSEG) + size);
+	IKCPSEG *seg;
+	if (size > (int)kcp->mss || size < (int)(kcp->mss / 2)) {
+		seg = (IKCPSEG*)ikcp_malloc(sizeof(IKCPSEG) + size);
+		if (seg) {
+			seg->cap = 0;
+		}
+		return seg;
+	}
+	if (!iqueue_is_empty(&kcp->seg_pool)) {
+		seg = iqueue_entry(kcp->seg_pool.next, IKCPSEG, node);
+		iqueue_del(&seg->node);
+		kcp->nseg_pool--;
+		return seg;
+	}
+	seg = (IKCPSEG*)ikcp_malloc(sizeof(IKCPSEG) + kcp->mss);
+	if (seg) {
+		seg->cap = kcp->mss;
+	}
+	return seg;
 }
 
 // delete a segment
 static void ikcp_segment_delete(ikcpcb *kcp, IKCPSEG *seg)
 {
-	(void)kcp;
+	if (seg->cap == kcp->mss && kcp->nseg_pool < IKCP_SEG_POOL_MAX) {
+		iqueue_add(&seg->node, &kcp->seg_pool);
+		kcp->nseg_pool++;
+		return;
+	}
 	ikcp_free(seg);
+}
+
+// 空闲满段链整条还给分配器
+static void ikcp_seg_pool_clear(ikcpcb *kcp)
+{
+	IKCPSEG *seg;
+	while (!iqueue_is_empty(&kcp->seg_pool)) {
+		seg = iqueue_entry(kcp->seg_pool.next, IKCPSEG, node);
+		iqueue_del(&seg->node);
+		ikcp_free(seg);
+	}
+	kcp->nseg_pool = 0;
 }
 
 // write log
@@ -270,6 +306,8 @@ ikcpcb* ikcp_create(IUINT32 conv, void *user)
 	iqueue_init(&kcp->rcv_queue);
 	iqueue_init(&kcp->snd_buf);
 	iqueue_init(&kcp->rcv_buf);
+	iqueue_init(&kcp->seg_pool);
+	kcp->nseg_pool = 0;
 	kcp->nrcv_buf = 0;
 	kcp->nsnd_buf = 0;
 	kcp->nrcv_que = 0;
@@ -335,6 +373,7 @@ void ikcp_release(ikcpcb *kcp)
 			iqueue_del(&seg->node);
 			ikcp_segment_delete(kcp, seg);
 		}
+		ikcp_seg_pool_clear(kcp);
 		if (kcp->buffer) {
 			ikcp_free(kcp->buffer);
 		}
@@ -717,37 +756,45 @@ static void ikcp_ack_get(const ikcpcb *kcp, int p, IUINT32 *sn, IUINT32 *ts)
 //---------------------------------------------------------------------
 // parse data
 //---------------------------------------------------------------------
-void ikcp_parse_data(ikcpcb *kcp, IKCPSEG *newseg)
+// sn 在接收窗口内且 rcv_buf 里还没有时返回插入点(新段挂在它后面)，出窗口返回 NULL，重复时 *repeat 置 1 并返回 NULL
+static struct IQUEUEHEAD *ikcp_rcv_pos(ikcpcb *kcp, IUINT32 sn, int *repeat)
 {
 	struct IQUEUEHEAD *p, *prev;
-	IUINT32 sn = newseg->sn;
-	int repeat = 0;
-	
+	*repeat = 0;
 	if (_itimediff(sn, kcp->rcv_nxt + kcp->rcv_wnd) >= 0 ||
 		_itimediff(sn, kcp->rcv_nxt) < 0) {
-		ikcp_segment_delete(kcp, newseg);
-		return;
+		return NULL;
 	}
-
 	for (p = kcp->rcv_buf.prev; p != &kcp->rcv_buf; p = prev) {
 		IKCPSEG *seg = iqueue_entry(p, IKCPSEG, node);
 		prev = p->prev;
 		if (seg->sn == sn) {
-			repeat = 1;
-			break;
+			*repeat = 1;
+			return NULL;
 		}
 		if (_itimediff(sn, seg->sn) > 0) {
 			break;
 		}
 	}
+	return p;
+}
 
-	if (repeat == 0) {
+// 把 rcv_buf 头部已连续的段挪进 rcv_queue
+static void ikcp_rcv_move(ikcpcb *kcp);
+
+// 新段挂到 ikcp_rcv_pos 给出的插入点(NULL 表示不插)，再挪可交付的段
+static void ikcp_rcv_insert(ikcpcb *kcp, IKCPSEG *newseg, struct IQUEUEHEAD *p)
+{
+	if (NULL != p) {
 		iqueue_init(&newseg->node);
 		iqueue_add(&newseg->node, p);
 		kcp->nrcv_buf++;
-	}	else {
-		ikcp_segment_delete(kcp, newseg);
 	}
+	ikcp_rcv_move(kcp);
+}
+
+static void ikcp_rcv_move(ikcpcb *kcp)
+{
 
 #if 0
 	ikcp_qprint("rcvbuf", &kcp->rcv_buf);
@@ -868,21 +915,27 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 			if (_itimediff(sn, kcp->rcv_nxt + kcp->rcv_wnd) < 0) {
 				ikcp_ack_push(kcp, sn, ts);
 				if (_itimediff(sn, kcp->rcv_nxt) >= 0) {
-					seg = ikcp_segment_new(kcp, len);
-					seg->conv = conv;
-					seg->cmd = cmd;
-					seg->frg = frg;
-					seg->wnd = wnd;
-					seg->ts = ts;
-					seg->sn = sn;
-					seg->una = una;
-					seg->len = len;
+					// 先定插入点再建段：重复段(对端没收到 ACK 的重传)不必分配、拷贝后又删掉
+					int repeat;
+					struct IQUEUEHEAD *pos = ikcp_rcv_pos(kcp, sn, &repeat);
+					if (NULL != pos) {
+						seg = ikcp_segment_new(kcp, len);
+						seg->conv = conv;
+						seg->cmd = cmd;
+						seg->frg = frg;
+						seg->wnd = wnd;
+						seg->ts = ts;
+						seg->sn = sn;
+						seg->una = una;
+						seg->len = len;
 
-					if (len > 0) {
-						memcpy(seg->data, data, len);
+						if (len > 0) {
+							memcpy(seg->data, data, len);
+						}
+						ikcp_rcv_insert(kcp, seg, pos);
+					} else if (repeat) {
+						ikcp_rcv_move(kcp);
 					}
-
-					ikcp_parse_data(kcp, seg);
 				}
 			}
 		}
@@ -1328,6 +1381,7 @@ int ikcp_setmtu(ikcpcb *kcp, int mtu)
 		return -2;
 	kcp->mtu = mtu;
 	kcp->mss = kcp->mtu - IKCP_OVERHEAD;
+	ikcp_seg_pool_clear(kcp);
 	ikcp_free(kcp->buffer);
 	kcp->buffer = buffer;
 	return 0;

@@ -1,7 +1,6 @@
 ﻿#include "protocol/custz_head.h"
 #include "protocol/prots_pub.h"
 #include "utils/utils.h"
-#include "protocol/varint.h"
 
 #define CUSTZ_FIXED_LENS 4 // 固定头长度（字节数）
 
@@ -14,7 +13,7 @@ int32_t _custz_decode_fixed(buffer_ctx *buf, size_t *hlens, size_t *size, int32_
     *hlens = CUSTZ_FIXED_LENS;
     char head[CUSTZ_FIXED_LENS];
     ASSERTAB(sizeof(head) == buffer_copyout(buf, 0, head, sizeof(head)), "copy buffer error.");
-    *size = (size_t)unpack_integer(head, sizeof(head), 0, 0);
+    *size = (size_t)read_be32(head);
     return ERR_OK;
 }
 // 固定 4 字节头编码：分配连续内存，将数据长度写入头部前 4 字节；
@@ -30,7 +29,7 @@ char *_custz_encode_fixed(size_t dlens, size_t *hlens, size_t *size) {
     *size = *hlens + dlens;
     char *pack;
     MALLOC(pack, *size);
-    pack_integer(pack, dlens, CUSTZ_FIXED_LENS, 0);
+    write_be32(pack, (uint32_t)dlens);
     return pack;
 }
 // 标志位变长头解码：首字节 <=0xfc 表示长度即为该值，0xfd/0xfe/0xff 分别后跟 2/4/8 字节长度
@@ -53,7 +52,7 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
             return ERR_FAILED;
         }
         ASSERTAB(sizeof(buf16) == buffer_copyout(buf, sizeof(flag), buf16, sizeof(buf16)), "copy buffer error.");
-        *size = (size_t)unpack_integer(buf16, sizeof(buf16), 0, 0);
+        *size = (size_t)read_be16(buf16);
     } else if (0xfe == flag) {
         // 后跟 4 字节长度
         char buf32[sizeof(uint32_t)];
@@ -63,7 +62,7 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
             return ERR_FAILED;
         }
         ASSERTAB(sizeof(buf32) == buffer_copyout(buf, sizeof(flag), buf32, sizeof(buf32)), "copy buffer error.");
-        *size = (size_t)unpack_integer(buf32, sizeof(buf32), 0, 0);
+        *size = (size_t)read_be32(buf32);
     } else {
         // 0xff：后跟 8 字节长度
         char buf64[sizeof(uint64_t)];
@@ -73,7 +72,7 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
             return ERR_FAILED;
         }
         ASSERTAB(sizeof(buf64) == buffer_copyout(buf, sizeof(flag), buf64, sizeof(buf64)), "copy buffer error.");
-        uint64_t val64 = (uint64_t)unpack_integer(buf64, sizeof(buf64), 0, 0);
+        uint64_t val64 = read_be64(buf64);
 #if SIZE_MAX < UINT64_MAX// 仅在 32 位平台
         if (val64 > (uint64_t)SIZE_MAX) {
             BIT_SET(*status, PROT_ERROR);
@@ -99,7 +98,7 @@ char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size) {
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = 0xfd;
-        pack_integer(pack + sizeof(uint8_t), dlens, sizeof(uint16_t), 0);
+        write_be16(pack + sizeof(uint8_t), (uint16_t)dlens);
     } else if ((uint64_t)dlens <= UINT32_MAX) {
         // 5 字节头：标志 0xfe + 4 字节长度。
         // 上界先转 uint64_t 再比，size_t 为 32 位的构建上直接比是恒真，-Wtype-limits 会报错
@@ -111,7 +110,7 @@ char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size) {
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = 0xfe;
-        pack_integer(pack + sizeof(uint8_t), dlens, sizeof(uint32_t), 0);
+        write_be32(pack + sizeof(uint8_t), (uint32_t)dlens);
     } else {
         // 9 字节头：标志 0xff + 8 字节长度
         *hlens += sizeof(uint64_t);
@@ -122,7 +121,7 @@ char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size) {
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = 0xff;
-        pack_integer(pack + sizeof(uint8_t), dlens, sizeof(uint64_t), 0);
+        write_be64(pack + sizeof(uint8_t), (uint64_t)dlens);
     }
     return pack;
 }

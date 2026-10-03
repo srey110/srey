@@ -12,6 +12,8 @@
 #define SECPROT_SPLIT_FLAG ","
 // 帧头最宽的一种：2 固定 + 8 扩展长度 + 4 掩码键。组包侧只用它挡长度回绕
 #define FRAME_HEAD_MAX (HEAD_LESN + sizeof(uint64_t) + MASK_KEY_LENS)
+#define WS_UNMASK_NIOV 16 // 带掩码帧直接从节点解掩码时最多跨几个节点，再多退回拷出后原地解
+#define WS_KEYPOOL_LENS 256 // 每线程攒的掩码熵字节数，一次 csprng 顶 64 帧
 
 // WebSocket 帧解析状态
 typedef enum parse_status {
@@ -45,63 +47,66 @@ typedef struct ws_hscheck {
     const char *val;   // NULL：只查键存在，不比值
     size_t vlens;
 }ws_hscheck;
+// 客户端掩码 key 的每线程熵池：从尾部往前切，每 4 字节都是独立的 CSPRNG 输出
+typedef struct ws_keypool {
+    char buf[WS_KEYPOOL_LENS];
+    uint32_t left;             // 还剩多少字节没用，0 即要重新取
+}ws_keypool;
 static _handshaked_push _hs_push; // 握手完成后的推送回调
+TLS_DEFINE(ws_keypool, _keypool, 1)
 // 承载子协议表。prots.c 只在 pkfree / udfree / may_resume 三个钩子里按 secprot 下钻,
 // _vtbl_websock 的 closed / connected / ssl_exchanged / close_tail / recvfrom 五个仍是 NULL,
 // 留 NULL 编译器不报——往这张表里加带关闭副作用的协议(mysql/pgsql/mongo/smtp 那类)时必须同步补上
 static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqtt") - 1, "mqtt"} };
 
-#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-    #include <emmintrin.h>
-    #define WEBSOCK_MASK_HAS_SSE2 1
-#endif
-#if defined(__ARM_NEON) || defined(__aarch64__)
-    #include <arm_neon.h>
-    #define WEBSOCK_MASK_HAS_NEON 1
-#endif
 // 用 4 字节掩码对 src 做 XOR 写进 dst，按平台选择 SIMD 路径；尾部 < 块大小 字节走 8 字节标量。
 // dst 与 src 可以是同一块（原地解掩码），部分重叠不行
 static inline void _websock_mask_xor(char *dst, const char *src, size_t lens, const char key[4]) {
     size_t i = 0;
-#if defined(WEBSOCK_MASK_HAS_SSE2)
+#if defined(SIMD_SSE2)
     uint32_t key32;
-    __m128i vkey, v;
-    memcpy(&key32, key, 4);
+    __m128i vkey, v;// __m128i：装 16 字节的向量类型
+    memcpy(&key32, key, 4);// key 未必 4 字节对齐，memcpy 读最稳，编译器会编成一条普通读
+    // set1_epi32 把 4 字节 key 重复 4 次铺满 16 字节，正好对上载荷每 4 字节轮一次 key
     vkey = _mm_set1_epi32((int32_t)key32);
     for (; i + 16 <= lens; i += 16) {
+        // loadu / storeu：读写 16 字节，不要求地址对齐；xor_si128：16 字节逐位异或
         v = _mm_loadu_si128((const __m128i *)(src + i));
         v = _mm_xor_si128(v, vkey);
         _mm_storeu_si128((__m128i *)(dst + i), v);
     }
-#elif defined(WEBSOCK_MASK_HAS_NEON)
+#elif defined(SIMD_NEON)
     // 用 u8 load/store + reinterpret 确保 ISO 严格别名合规（字节类型可访问任意内存）；
     // vreinterpretq 是位级类型重解释，零运行时开销
     uint32_t key32;
-    uint8x16_t vkey, v;
+    uint8x16_t vkey, v;// uint8x16_t：16 个字节组成的向量类型
     memcpy(&key32, key, 4);
+    // vdupq_n_u32 把 4 字节 key 重复 4 次铺满 16 字节；vreinterpretq_u8_u32 把这 4 个 u32 原样看成 16 个字节
     vkey = vreinterpretq_u8_u32(vdupq_n_u32(key32));
     for (; i + 16 <= lens; i += 16) {
+        // vld1q_u8 / vst1q_u8：读写 16 字节，不要求对齐；veorq_u8：16 字节逐位异或
         v = vld1q_u8((const uint8_t *)(src + i));
         v = veorq_u8(v, vkey);
         vst1q_u8((uint8_t *)(dst + i), v);
     }
 #endif
-    // 8 字节标量块（覆盖 SIMD 尾部 16 字节内的 8 字节对齐残余，或无 SIMD 平台主路径）
+    // 8 字节标量块（覆盖 SIMD 尾部 16 字节内的 8 字节对齐残余，或无 SIMD 平台主路径）。
+    // 走到这里 i 一定是 4 的倍数，每块开头都正好对上 key[0]，所以 key 可以整段拼好直接异或
     uint32_t key32s;
     uint64_t key64, block;
     memcpy(&key32s, key, 4);
-    key64 = (uint64_t)key32s | ((uint64_t)key32s << 32);
+    key64 = (uint64_t)key32s | ((uint64_t)key32s << 32);// 4 字节 key 连拼两遍凑成 8 字节
     for (; i + 8 <= lens; i += 8) {
+        // src / dst 未必 8 字节对齐，用 memcpy 读写，编译器会编成普通的 8 字节读写
         memcpy(&block, src + i, 8);
         block ^= key64;
         memcpy(dst + i, &block, 8);
     }
-    // 最后 0-7 字节
+    // 最后 0-7 字节逐个异或，i & 3 即 i % 4，第 i 个字节配 key 的第 i % 4 个
     for (; i < lens; i++) {
         dst[i] = src[i] ^ key[i & 3];
     }
 }
-
 // 与 _redis_pkfree 同契约：整条链一起释放。当前唯一的消费路径 prots_net_recv 会先用
 // _websock_pack_next 把节点逐个摘下来（摘时置 next 为 NULL），所以实际每次只释放一个；
 // 遍历是为了将来出现"拿到链头就整条丢弃"的路径（错误 unwind 之类）时不会漏掉尾部节点
@@ -440,7 +445,7 @@ static int32_t _websock_handshake_client(sock_ctx *sk, int32_t client, ud_cxt *u
         // 请求了子协议但服务端未回显：RFC 6455 §4.1 允许，降级为纯 WS
         LOG_WARN("Sec-WebSocket-Protocol not negotiated by server, downgraded to plain WebSocket.");
     }
-    //spctx 最终在 _message_clean 释放
+    //spctx 最终在 message_clean 释放
     if (ERR_OK != _hs_push(sk, client, ud, ERR_OK, spctx, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -510,7 +515,8 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
     sock_ctx nosk = { INVALID_SOCK, INVALID_INDEX, 0 };// 子协议解包不认连接,给个无效标识而非 NULL——同族 unpack 有裸解引用的
     // ws->buf 一次性吐空,一帧内含多个完整 MQTT 包时串成链表,避免余包积压到无新数据触发才被拾起
     while (NULL != (mpack = mqtt_unpack(NULL, &nosk, client, ws->buf, ws->ud, &seclens, status))) {
-        CALLOC(node, 1, sizeof(websock_pack_ctx));
+        MALLOC(node, sizeof(websock_pack_ctx));
+        ZERO(node, sizeof(websock_pack_ctx));
         node->fin = 1;
         node->prot = WS_BINARY;
         node->secprot = ws->secprot;
@@ -540,6 +546,53 @@ static inline websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pac
     BIT_REMOVE(*status, PROT_MOREDATA);
     return rtn;
 }
+// 带掩码帧：从接收缓冲各节点直接异或写进 pack->data，载荷只读写一遍，连同掩码键一起消费掉。
+// 跨节点时按已写字节数给掩码转相位；节点数超过 WS_UNMASK_NIOV 退回拷出再原地异或
+static void _websock_unmask_from(buffer_ctx *buf, websock_pack_ctx *pack) {
+    IOV_TYPE iov[WS_UNMASK_NIOV];
+    char rk[MASK_KEY_LENS];
+    const char *src;
+    size_t total = pack->remain;
+    size_t seg, got = 0, done = 0, k = 0;
+    uint32_t n, i;
+    int32_t j;
+    n = buffer_get(buf, total, iov, WS_UNMASK_NIOV);
+    src = (const char *)iov[0].IOV_PTR_FIELD;
+    if ((size_t)iov[0].IOV_LEN_FIELD >= total) {
+        memcpy(pack->key, src, sizeof(pack->key));
+        _websock_mask_xor(pack->data, src + sizeof(pack->key), pack->dlens, pack->key);
+        buffer_commit_get(buf, total);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        got += (size_t)iov[i].IOV_LEN_FIELD;
+    }
+    if (got < total) {
+        buffer_commit_get(buf, 0);
+        ASSERTAB(sizeof(pack->key) == buffer_copyout(buf, 0, pack->key, sizeof(pack->key)), "copy buffer failed.");
+        ASSERTAB(pack->dlens == buffer_copyout(buf, sizeof(pack->key), pack->data, pack->dlens), "copy buffer failed.");
+        _websock_mask_xor(pack->data, pack->data, pack->dlens, pack->key);
+        ASSERTAB(total == buffer_drain(buf, total), "drain buffer failed.");
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        src = (const char *)iov[i].IOV_PTR_FIELD;
+        seg = (size_t)iov[i].IOV_LEN_FIELD;
+        while (k < sizeof(pack->key) && seg > 0) {
+            pack->key[k++] = *src++;
+            seg--;
+        }
+        if (0 == seg) {
+            continue;
+        }
+        for (j = 0; j < MASK_KEY_LENS; j++) {
+            rk[j] = pack->key[(done + (size_t)j) & 3];
+        }
+        _websock_mask_xor(pack->data + done, src, seg, rk);
+        done += seg;
+    }
+    buffer_commit_get(buf, total);
+}
 // 读取 WebSocket 帧数据体（含掩码解码），设置分片状态标志，按需交子协议处理
 static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud_cxt *ud, int32_t *status) {
     websock_ctx *ws = (websock_ctx *)ud->context;
@@ -548,14 +601,10 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    if (pack->remain > 0) {
-        if (0 == pack->mask) {
-            ASSERTAB(pack->dlens == buffer_copyout(buf, 0, pack->data, pack->dlens), "copy buffer failed.");
-        } else {
-            ASSERTAB(sizeof(pack->key) == buffer_copyout(buf, 0, pack->key, sizeof(pack->key)), "copy buffer failed.");
-            ASSERTAB(pack->dlens == buffer_copyout(buf, sizeof(pack->key), pack->data, pack->dlens), "copy buffer failed.");
-            _websock_mask_xor(pack->data, pack->data, pack->dlens, pack->key);
-        }
+    if (0 != pack->mask) {
+        _websock_unmask_from(buf, pack);
+    } else if (pack->remain > 0) {
+        ASSERTAB(pack->dlens == buffer_copyout(buf, 0, pack->data, pack->dlens), "copy buffer failed.");
         ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
     }
     // 分片帧判断：起始帧 FIN=0 且 opcode≠0；中间帧 FIN=0 且 opcode=0；结束帧 FIN=1 且 opcode=0
@@ -603,8 +652,7 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
             return NULL;
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
-        pllens = ntohs(pllens);
-        dlens = pllens;
+        dlens = read_be16(&pllens);
         if (dlens > WS_MAX_PAYLOAD_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
@@ -617,7 +665,7 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
             return NULL;
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
-        pllens = ntohll(pllens);
+        pllens = read_be64(&pllens);
         if (pllens > WS_MAX_PAYLOAD_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
@@ -760,12 +808,10 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *da
         BIT_SET(frame[1], dlens);
     } else if (dlens <= 0xffff) {
         BIT_SET(frame[1], 126);
-        uint16_t pllens = htons((u_short)dlens);
-        memcpy(frame + offset, &pllens, sizeof(pllens));
+        write_be16(frame + offset, (uint16_t)dlens);
     } else {
         BIT_SET(frame[1], 127);
-        uint64_t pllens = htonll((uint64_t)dlens);
-        memcpy(frame + offset, &pllens, sizeof(pllens));
+        write_be64(frame + offset, (uint64_t)dlens);
     }
     // 推进量取自与分配同一处，分支里只决定写哪种整型
     offset += _websock_pllens_size(dlens);
@@ -782,6 +828,19 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *da
     }
     return frame;
 }
+// 从本线程熵池切一个掩码 key，池空才整块向 csprng 要；取不到熵照旧失败，不退化到弱随机源
+static inline int32_t _websock_mask_key(char key[MASK_KEY_LENS]) {
+    ws_keypool *kp = _keypool_tls();
+    if (0 == kp->left) {
+        if (ERR_OK != csprng_rand(kp->buf, sizeof(kp->buf))) {
+            return ERR_FAILED;
+        }
+        kp->left = sizeof(kp->buf);
+    }
+    kp->left -= MASK_KEY_LENS;
+    memcpy(key, kp->buf + kp->left, MASK_KEY_LENS);
+    return ERR_OK;
+}
 // 按 mask 选 key=NULL(无掩码)或随机生成,后调 _websock_create_pack
 static inline void *_websock_pack_frame(int32_t mask, uint8_t fin, uint8_t prot,
                                 void *data, size_t dlens, size_t *size) {
@@ -789,7 +848,7 @@ static inline void *_websock_pack_frame(int32_t mask, uint8_t fin, uint8_t prot,
         return _websock_create_pack(fin, prot, NULL, data, dlens, size);
     }
     char key[MASK_KEY_LENS];
-    if (ERR_OK != csprng_rand(key, MASK_KEY_LENS)) {
+    if (ERR_OK != _websock_mask_key(key)) {
         *size = 0;
         return NULL;
     }
@@ -856,11 +915,16 @@ static ws_hs_ctx *_websock_hsctx_init(const char *secprot, size_t splens) {
     }
     return ctx;
 }
+// \0 结尾串里有没有 CR / LF
+static inline int32_t _websock_has_crlf(const char *s) {
+    size_t lens = strlen(s);
+    return lens != memcspn(s, lens, FLAG_CRLF, CRLF_SIZE);
+}
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx) {
     //拒绝 CRLF 注入：三个入参都原样进请求行与 HTTP 头，组包侧是 ASSERTAB，必须在这挡下
-    if ((NULL != host && NULL != strpbrk(host, FLAG_CRLF))
-        || (NULL != uri && NULL != strpbrk(uri, FLAG_CRLF))
-        || (NULL != secprot && NULL != strpbrk(secprot, FLAG_CRLF))) {
+    if ((NULL != host && _websock_has_crlf(host))
+        || (NULL != uri && _websock_has_crlf(uri))
+        || (NULL != secprot && _websock_has_crlf(secprot))) {
         return NULL;
     }
     size_t splens = (NULL == secprot ? 0 : strlen(secprot));

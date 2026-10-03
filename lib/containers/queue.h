@@ -1,7 +1,7 @@
 ﻿#ifndef QUEUE_H_
 #define QUEUE_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 环形队列(定长元素、倍增扩容、容量恒为 2 的幂)。元素类型编译期固化，
 // 故搬运是结构体赋值、回绕是一次与运算。

@@ -8,12 +8,6 @@
 #define EP1(x) (ROTRIGHT(x,6) ^ ROTRIGHT(x,11) ^ ROTRIGHT(x,25))
 #define SIG0(x) (ROTRIGHT(x,7) ^ ROTRIGHT(x,18) ^ ((x) >> 3))
 #define SIG1(x) (ROTRIGHT(x,17) ^ ROTRIGHT(x,19) ^ ((x) >> 10))
-// 按大端取 32 位字，不要求对齐
-#if defined(OS_WIN)
-#define LOAD32BE(p) _crypt_read32be(p)// Windows 下走公共头的读函数
-#else
-#define LOAD32BE(p) (((uint32_t)(p)[0] << 24) | ((uint32_t)(p)[1] << 16) | ((uint32_t)(p)[2] << 8) | ((uint32_t)(p)[3]))
-#endif
 // 一轮压缩：进来时 t1 已是本轮消息字。a~h 不搬动，靠调用方每轮把名字轮换一位
 #define ROUND(i,a,b,c,d,e,f,g,h) do { \
     t1 += (h) + EP1(e) + CH(e, f, g) + k[i]; \
@@ -23,7 +17,7 @@
 } while (0)
 // 前 16 轮：消息字直接取自输入
 #define ROUND_00_15(i,a,b,c,d,e,f,g,h) do { \
-    t1 = m[i] = LOAD32BE(data + (i) * 4); \
+    t1 = m[i] = read_be32(data + (i) * 4); \
     ROUND(i, a, b, c, d, e, f, g, h); \
 } while (0)
 // 后 48 轮：调度表只留最近 16 个字循环复用
@@ -42,6 +36,7 @@ static const uint32_t k[64] = {
     0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
+
 // SHA-256 核心变换：连续处理 blocks 个 64 字节块
 static void _sha256_transform(uint32_t state[8], const uint8_t *data, size_t blocks) {
     uint32_t a, b, c, d, e, f, g, h, t1, m[16];
@@ -129,10 +124,10 @@ void sha256_final(sha256_ctx *sha256, char hash[SHA256_BLOCK_SIZE]) {
         memset(sha256->data, 0, 56);
     }
     sha256->bitlen += sha256->datalen * 8;
-    _crypt_write64be(sha256->data + 56, sha256->bitlen);
+    write_be64(sha256->data + 56, sha256->bitlen);
     _sha256_transform(sha256->state, sha256->data, 1);
     for (i = 0; i < 8; ++i) {
-        _crypt_write32be(hash + i * 4, sha256->state[i]);
+        write_be32(hash + i * 4, sha256->state[i]);
     }
     secure_zero(sha256, sizeof(sha256_ctx));
 }

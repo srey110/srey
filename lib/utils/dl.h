@@ -1,7 +1,7 @@
 ﻿#ifndef DYNALIB_H_
 #define DYNALIB_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 //dll so 操作
 typedef struct dl_ctx {
@@ -15,6 +15,7 @@ typedef struct dl_ctx {
 #endif
 #endif
 }dl_ctx;
+
 /// <summary>
 /// 加载动态库
 /// </summary>

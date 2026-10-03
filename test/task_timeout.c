@@ -719,8 +719,13 @@ static int32_t _timeout_habor_reject(task_ctx *task) {
     return ERR_OK;
 #endif
 }
-// 失败即时落盘,不等轮末:中途 task_isclosing 提前 return 会把本轮的失败丢掉(见 _failed 注释)
-static inline void _timeout_failed(task_timeout_ctx *ctx) {
+// 失败即时落盘,不等轮末:中途 task_isclosing 提前 return 会把本轮的失败丢掉(见 _failed 注释)。
+// 收尾已开始时不记:本任务每秒重跑一轮,main 判定全部通过后关连接,正在跑的那一轮必然失败,
+// 那是关闭造成的;此前各轮的真失败已经粘在 _failed 上,不会因此漏掉
+static inline void _timeout_failed(task_ctx *task, task_timeout_ctx *ctx) {
+    if (task_isclosing(task)) {
+        return;
+    }
     ctx->_failed = 1;
     *ctx->_ok = 0;
 }
@@ -728,7 +733,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
     task_timeout_ctx *ctx = coro_get_arg(task);
     if (ERR_OK != _timeout_sleep(task)) {
-        _timeout_failed(ctx);
+        _timeout_failed(task, ctx);
         LOG_WARN("sleep test error.");
     }
     if (task_isclosing(task)) {
@@ -739,42 +744,42 @@ static void _timeout(task_ctx *task, uint64_t sess) {
         return;
     }
     if (ERR_OK != _timeout_rpc(task)) {
-        _timeout_failed(ctx);
+        _timeout_failed(task, ctx);
         LOG_WARN("rpc call test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_udp(task)) {
-        _timeout_failed(ctx);
+        _timeout_failed(task, ctx);
         LOG_WARN("udp test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_tcp(task)) {
-        _timeout_failed(ctx);
+        _timeout_failed(task, ctx);
         LOG_WARN("tcp test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_http(task)) {
-        _timeout_failed(ctx);
+        _timeout_failed(task, ctx);
         LOG_WARN("http test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_ws(task)) {
-        _timeout_failed(ctx);
+        _timeout_failed(task, ctx);
         LOG_WARN("ws test error.");
     }
     if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _timeout_habor(task)) {
-        _timeout_failed(ctx);
+        _timeout_failed(task, ctx);
         LOG_WARN("habor test error.");
     }
     if (task_isclosing(task)) {
@@ -784,7 +789,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     if (0 == ctx->_reject_done) {
         ctx->_reject_done = 1;
         if (ERR_OK != _timeout_habor_reject(task)) {
-            _timeout_failed(ctx);
+            _timeout_failed(task, ctx);
             LOG_WARN("habor reject test error.");
         }
     }

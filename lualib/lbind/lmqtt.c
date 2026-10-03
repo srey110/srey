@@ -188,8 +188,8 @@ static int32_t _lmqtt_props_reset(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 发起异步 MQTT 连接。协议层内部 malloc 一份 mqtt_ctx 作为 ud->context，
-/// 由框架 _mqtt_udfree 自动回收。调用方需用 srey.wait_connect(&sk, ssl)
+/// 发起异步 MQTT 连接。协议层取一份 mqtt_ctx(按版本的全局只读实例)作为 ud->context，
+/// 由框架 _mqtt_udfree 自动交还。调用方需用 srey.wait_connect(&sk, ssl)
 /// 同步等待 TCP（含 SSL 握手）就绪
 /// </summary>
 /// <param name="version" type="integer">协议版本 mqtt_protversion，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>

@@ -60,6 +60,7 @@ scram_final_message                     ->  scram_check_final_message           
 SCRAM_LOCAL_FINAL->SCRAM_REMOTE_FINAL       SCRAM_REMOTE_FINAL->SCRAM_LOCAL_FINAL
 scram_check_final_message               <-  scram_final_message                       [e=] v=
 */
+
 /// <summary>
 /// 创建并初始化 SCRAM 上下文
 /// 支持 SCRAM-SHA-1、SCRAM-SHA-256、SCRAM-SHA-512 及其 -PLUS 变体（channel binding）

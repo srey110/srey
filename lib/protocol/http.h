@@ -87,7 +87,7 @@ void http_pack_head(binary_ctx *bwriter, const char *key, const char *val);
 /// <summary>
 /// http头（值按长度取，不要求 \0 结尾，可含 NUL 等非文本字节）；键仍须 \0 结尾。
 /// 键或值含 CR 或 LF 一律断言失败即退进程，故值若来自不可信来源，调用方必须先行过滤
-/// 而不能依赖本函数拒绝（router_req_respond 即在其上层先筛后调）
+/// 而不能依赖本函数拒绝
 /// </summary>
 /// <param name="bwriter">binary_ctx</param>
 /// <param name="key">键，\0 结尾</param>
@@ -167,8 +167,17 @@ int32_t http_chunked(struct http_pack_ctx *pack);
 /// <returns>数据包</returns>
 void *http_data(struct http_pack_ctx *pack, size_t *lens);
 /// <summary>
+/// 把 Content-Length 请求/响应的数据体整块摘走，省掉一次拷贝；pack 照常由协议层释放
+/// </summary>
+/// <param name="pack">http_pack_ctx</param>
+/// <param name="lens">必须非 NULL；写入数据体长度，返回 NULL 时写 0</param>
+/// <returns>数据体，末尾另有一个不计入 lens 的 '\0'，所有权归调用方(用 FREE 释放)；返回非 NULL 后同一 pack 上
+/// http_data 返回 NULL、长度 0。无数据体、已摘过、或 chunked / 连接关闭界定的分片(载荷与 pack 同一块分配，
+/// 交不出去)返回 NULL</returns>
+void *http_take_data(struct http_pack_ctx *pack, size_t *lens);
+/// <summary>
 /// 判一段头值能否进线格式：CR / LF 会把一条报文劈成两条，NUL 会让按 C 字符串取值的下游截断。
-/// 收业务数据的组包方(router 等)拿它筛完再送进 http_pack_head2。头名的规则是 is_token。
+/// 收业务数据的组包方(router 等)拿它筛完再组头行。头名的规则是 is_token。
 /// 比 http_pack_head2 的断言严：那道只挡结构性的 CR / LF，本函数还挡 NUL
 /// </summary>
 /// <param name="val">头值；lens 非 0 时不得为 NULL</param>

@@ -134,7 +134,7 @@ static const char *_lbson_check_key(lua_State *lua, int32_t idx) {
 static void _lbson_check_doc(lua_State *lua, int32_t idx, const char *doc, size_t lens) {
     if (NULL != doc
         && lens >= 5
-        && (size_t)unpack_integer(doc, 4, 1, 0) == lens
+        && (size_t)read_le32(doc) == lens
         && 0 == doc[lens - 1]) {
         return;
     }

@@ -12,11 +12,12 @@
 #endif
 
 //https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html
+#define MYSQL_FIRST_STK 260 // 命令响应首包的栈缓冲(含 4 字节包头)：OK / ERR / 列数这类首包几乎都放得下
 // 客户端能力标志位组合：涵盖协议 4.1、多结果集、插件认证、连接属性等必要能力
 #define CLIENT_CAPS\
     (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 | CLIENT_INTERACTIVE | CLIENT_RESERVED2 |\
     CLIENT_MULTI_STATEMENTS | CLIENT_MULTI_RESULTS | CLIENT_PS_MULTI_RESULTS | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_ATTRS |\
-    CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_QUERY_ATTRIBUTES | CLIENT_SESSION_TRACK)
+    CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_QUERY_ATTRIBUTES | CLIENT_SESSION_TRACK | CLIENT_DEPRECATE_EOF)
 
 // 连接解析状态枚举
 typedef enum parse_status {
@@ -25,7 +26,6 @@ typedef enum parse_status {
     AUTH_PROCESS,   // 认证响应处理中
     COMMAND         // 命令交互阶段
 }parse_status;
-
 // 认证插件切换请求数据
 typedef struct mpack_auth_switch {
     char *plugin;       // 切换目标认证插件名称
@@ -36,9 +36,24 @@ typedef struct connect_attr {
     const char *key;
     const char *val;
 }connect_attr;
+// 字符集名称与协议 ID 的对照项
+typedef struct mysql_charset {
+    uint8_t id;
+    const char *name;
+}mysql_charset;
 
 // 握手完成后的推送回调函数指针
 static _handshaked_push _hs_push;
+// 字符集名称 → MySQL 协议里的字符集 ID(取各字符集的默认排序规则)
+static const mysql_charset _mysql_charsets[] = {
+    { 1, "big5" }, { 3, "dec8" }, { 4, "cp850" }, { 6, "hp8" }, { 7, "koi8r" }, { 8, "latin1" }, { 9, "latin2" },
+    { 10, "swe7" }, { 11, "ascii" }, { 12, "ujis" }, { 13, "sjis" }, { 16, "hebrew" }, { 18, "tis620" },
+    { 19, "euckr" }, { 22, "koi8u" }, { 24, "gb2312" }, { 25, "greek" }, { 26, "cp1250" }, { 28, "gbk" },
+    { 30, "latin5" }, { 32, "armscii8" }, { 33, "utf8" }, { 36, "cp866" }, { 37, "keybcs2" }, { 38, "macce" },
+    { 39, "macroman" }, { 40, "cp852" }, { 41, "latin7" }, { 45, "utf8mb4" }, { 51, "cp1251" },
+    { 56, "utf16le" }, { 57, "cp1256" }, { 59, "cp1257" }, { 63, "binary" }, { 92, "geostd8" }, { 95, "cp932" },
+    { 97, "eucjpms" }, { 248, "gb18030" }
+};
 
 void _mysql_init(void *hspush) {
     _hs_push = (_handshaked_push)hspush;
@@ -52,7 +67,6 @@ void _mysql_pkfree(void *pack) {
         mpack->_free_mpack(mpack->pack);
     }
     FREE(mpack->pack);
-    FREE(mpack->payload);
     FREE(mpack);
 }
 int32_t mysql_more(mpack_ctx *mpack) {
@@ -71,87 +85,16 @@ void _mysql_udfree(ud_cxt *ud) {
     ud->context = NULL;
     PROT_REF_RELEASE(mysql);
 }
-// 将字符集名称转换为 MySQL 协议中的字符集 ID
+// 将字符集名称转换为 MySQL 协议中的字符集 ID，名称不分大小写；没查到打警告并返回 0
 static inline uint8_t _mysql_charset(const char *charset) {
-    if (0 == strcmp("big5", charset)) {
-        return 1;
-    } else if (0 == strcmp("dec8", charset)) {
-        return 3;
-    } else if (0 == strcmp("cp850", charset)) {
-        return 4;
-    } else if (0 == strcmp("hp8", charset)) {
-        return 6;
-    } else if (0 == strcmp("koi8r", charset)) {
-        return 7;
-    } else if (0 == strcmp("latin1", charset)) {
-        return 8;
-    } else if (0 == strcmp("latin2", charset)) {
-        return 9;
-    } else if (0 == strcmp("swe7", charset)) {
-        return 10;
-    } else if (0 == strcmp("ascii", charset)) {
-        return 11;
-    } else if (0 == strcmp("ujis", charset)) {
-        return 12;
-    } else if (0 == strcmp("sjis", charset)) {
-        return 13;
-    } else if (0 == strcmp("hebrew", charset)) {
-        return 16;
-    } else if (0 == strcmp("tis620", charset)) {
-        return 18;
-    } else if (0 == strcmp("euckr", charset)) {
-        return 19;
-    } else if (0 == strcmp("koi8u", charset)) {
-        return 22;
-    } else if (0 == strcmp("gb2312", charset)) {
-        return 24;
-    } else if (0 == strcmp("greek", charset)) {
-        return 25;
-    } else if (0 == strcmp("cp1250", charset)) {
-        return 26;
-    } else if (0 == strcmp("gbk", charset)) {
-        return 28;
-    } else if (0 == strcmp("latin5", charset)) {
-        return 30;
-    } else if (0 == strcmp("armscii8", charset)) {
-        return 32;
-    } else if (0 == strcmp("utf8", charset)) {
-        return 33;
-    } else if (0 == strcmp("cp866", charset)) {
-        return 36;
-    } else if (0 == strcmp("keybcs2", charset)) {
-        return 37;
-    } else if (0 == strcmp("macce", charset)) {
-        return 38;
-    } else if (0 == strcmp("macroman", charset)) {
-        return 39;
-    } else if (0 == strcmp("cp852", charset)) {
-        return 40;
-    } else if (0 == strcmp("latin7", charset)) {
-        return 41;
-    } else if (0 == strcmp("utf8mb4", charset)) {
-        return 45;
-    } else if (0 == strcmp("cp1251", charset)) {
-        return 51;
-    } else if (0 == strcmp("utf16le", charset)) {
-        return 56;
-    } else if (0 == strcmp("cp1256", charset)) {
-        return 57;
-    } else if (0 == strcmp("cp1257", charset)) {
-        return 59;
-    } else if (0 == strcmp("binary", charset)) {
-        return 63;
-    } else if (0 == strcmp("geostd8", charset)) {
-        return 92;
-    } else if (0 == strcmp("cp932", charset)) {
-        return 95;
-    } else if (0 == strcmp("eucjpms", charset)) {
-        return 97;
-    } else if (0 == strcmp("gb18030", charset)) {
-        return 248;
-    } else {
-        return 0;
+    size_t lens = strlen(charset) + 1;// 连 '\0' 一起比，长短不同在短的那头就对不上
+    for (size_t i = 0; i < ARRAY_SIZE(_mysql_charsets); i++) {
+        if (0 == memcasecmp(charset, _mysql_charsets[i].name, lens)) {
+            return _mysql_charsets[i].id;
+        }
     }
+    LOG_WARN("unknown mysql charset: %s, send 0 to server.", charset);
+    return 0;
 }
 // 使用 mysql_native_password 算法计算认证签名（SHA1 双重哈希后与盐值异或）
 static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
@@ -193,20 +136,24 @@ static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZ
     secure_zero(shscr, sizeof(shscr));
     digest_free(&digest);
 }
-// 将连接属性（application、os 等）写入二进制缓冲区
-static void _mysql_connect_attrs(binary_ctx *battrs) {
+// 将连接属性（application、os 等）连同前面的 lenenc 总长写入 bwriter；键值都是短常量(<251)，各自的 lenenc 恒为 1 字节
+static void _mysql_connect_attrs(binary_ctx *bwriter) {
     static const connect_attr attrs[] = {
         { "application", "srey" },
         { "os", OS_NAME }
     };
-    size_t lens;
-    for (size_t i = 0; i < ARRAY_SIZE(attrs); i++) {
+    size_t i, lens, total = 0;
+    for (i = 0; i < ARRAY_SIZE(attrs); i++) {
+        total += 2 + strlen(attrs[i].key) + strlen(attrs[i].val);
+    }
+    _mysql_set_lenenc(bwriter, total);
+    for (i = 0; i < ARRAY_SIZE(attrs); i++) {
         lens = strlen(attrs[i].key);
-        _mysql_set_lenenc(battrs, lens);
-        binary_set_binary(battrs, attrs[i].key, lens);
+        _mysql_set_lenenc(bwriter, lens);
+        binary_set_binary(bwriter, attrs[i].key, lens);
         lens = strlen(attrs[i].val);
-        _mysql_set_lenenc(battrs, lens);
-        binary_set_binary(battrs, attrs[i].val, lens);
+        _mysql_set_lenenc(bwriter, lens);
+        binary_set_binary(bwriter, attrs[i].val, lens);
     }
 }
 // 组包收尾：回填 3 字节长度头 → 失败即释放缓冲 → 成功把缓冲交给 ev_send(copy=0，所有权转移)。
@@ -267,12 +214,7 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         binary_set_string(&bwriter, mysql->server.plugin);//client_plugin_name
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_ATTRS)) {
-        binary_ctx battrs;
-        binary_init_write(&battrs, 0, 0);
-        _mysql_connect_attrs(&battrs);
-        _mysql_set_lenenc(&bwriter, battrs.offset);
-        binary_set_binary(&bwriter, battrs.data, battrs.offset);
-        binary_free(&battrs);
+        _mysql_connect_attrs(&bwriter);
     }
     ud->status = AUTH_PROCESS;
     return _mysql_send_pack(mysql, ev, &bwriter);
@@ -679,17 +621,33 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     FREE(payload);
 }
-// 命令阶段数据处理：读取 payload 后交由 _mpack_parser 解析响应包
+// 命令阶段数据处理：读取 payload 后交由 _mpack_parser 解析响应包。首包(parse_status 为 0)读进栈上缓冲，
+// parser 用完不留(见 _mpack_parser)；续接包按各阶段的归属走
 static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
+    char *payload;
+    mpack_ctx *mpack;
+    binary_ctx breader;
+    char stk[MYSQL_FIRST_STK];
     mysql_ctx *mysql = ud->context;
-    char *payload = _mysql_payload(mysql, buf, &payload_lens, status);
+    if (0 != mysql->parse_status) {
+        payload = _mysql_payload(mysql, buf, &payload_lens, status);
+        if (NULL == payload) {
+            return NULL;
+        }
+        binary_init_read(&breader, payload, payload_lens);
+        return _mpack_parser(mysql, buf, &breader, status);
+    }
+    payload = _mysql_payload_first(mysql, buf, stk, sizeof(stk), &payload_lens, status);
     if (NULL == payload) {
         return NULL;
     }
-    binary_ctx breader;
     binary_init_read(&breader, payload, payload_lens);
-    return _mpack_parser(mysql, buf, &breader, status);
+    mpack = _mpack_parser(mysql, buf, &breader, status);
+    if (payload != stk + MYSQL_HEAD_LENS) {
+        FREE(payload);
+    }
+    return mpack;
 }
 void *mysql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {

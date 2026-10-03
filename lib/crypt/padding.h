@@ -1,7 +1,7 @@
 ﻿#ifndef PADDING_H_
 #define PADDING_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef enum padding_model {
     NoPadding = 0x00, // 不填充
@@ -10,6 +10,7 @@ typedef enum padding_model {
     ISO10126,         // ISO 10126 填充（随机字节 + 末尾填充长度）
     ANSIX923          // ANSI X.923 填充（零字节 + 末尾填充长度）
 }padding_model;
+
 /// <summary>
 /// 数据填充
 /// </summary>

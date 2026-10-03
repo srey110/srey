@@ -1,7 +1,7 @@
 ﻿#ifndef SHA256_H_
 #define SHA256_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define SHA256_BLOCK_SIZE 32 // SHA-256 摘要输出长度（字节）
 #define SHA256_KEY_BLOCK 64 // SHA-256 压缩分组长度 B（HMAC 的 ipad/opad 长度）

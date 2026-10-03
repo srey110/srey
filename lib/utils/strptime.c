@@ -141,7 +141,7 @@ static const unsigned char *_find_string(const unsigned char *bp, int *tgt, cons
     for (; n1 != NULL; n1 = n2, n2 = NULL) {
         for (i = 0; i < c; i++, n1++) {
             len = strlen(*n1);
-            if (STRNCMP(*n1, (const char *)bp, len) == 0) {
+            if (memcasecmp(*n1, bp, len) == 0) {// bp 不足 len 时在它的 '\0' 处先对不上就停
                 *tgt = i;
                 return bp + len;
             }

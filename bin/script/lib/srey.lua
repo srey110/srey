@@ -49,8 +49,8 @@ local nyield = 0 -- 当前挂起等待的协程总数（closing 时用于告警�
 -- 上面那些里"登记进了 coro_sess、因而可能被超时扫描找到"的那部分。两个计数不能合并：
 -- nyield 还含 fork_wait 与 serial 排队的协程，它们裸 yield、不进 coro_sess，
 -- 拿 nyield 当扫描门槛的话，一个协程在 serial 队列里趴多久，就白扫多少秒整张 coro_sess。
--- C 侧只有 nyield 一个计数不是漏改：coro.c 的 _coro_timeout_monitor 门禁判的是
--- timeout_heap.root，不入堆的挂起协程堆空时直接短路，且扫描体堆顶未到期即 break
+-- C 侧只有 nyield 一个计数不是漏改：lib/coro/coro.c 的 coro_expire 判的是超时堆，
+-- 不入堆的挂起协程堆空时直接短路，且堆顶未到期即 break
 local nwait = 0
 -- 下一个到期时刻(ms)。0 = 未知必须全扫，math.huge = 没有带超时的等待者。
 -- 只在插入时取 min、在全扫后重算：条目被摘除而不重算只会让它偏小，后果是多白扫一次
@@ -99,8 +99,7 @@ local MSG_TYPE = {
     CLOSE        = 0x0a,   -- 连接关闭
     RECVFROM     = 0x0b,   -- UDP 收到数据
     REQUEST      = 0x0c,   -- 收到跨 task 请求
-    RESPONSE     = 0x0d,   -- 收到跨 task 响应
-    FORK         = 0x0e    -- coro_fork 自发消息（C 层内部 mtype，Lua 业务一般不用）
+    RESPONSE     = 0x0d    -- 收到跨 task 响应
 }
 srey.MSG_TYPE = MSG_TYPE
 local MTYPE_RECV = MSG_TYPE.RECV-- 每包分发都要取,单独提一份
@@ -245,7 +244,7 @@ end
 
 ---协程包装器：执行前 incref 防止 task 被提前销毁，执行后 ungrab；并持有 msg 至回调返回——
 ---使 msg 的 __gc(释放 msg.data)推迟到回调结束，避免"首次 yield 前未消费 data → dispatch 返回后
----msg 被 GC → 恢复时解引用悬空"(与 C 侧 _message_clean 延后对齐)。data 型消息传其 msg；
+---msg 被 GC → 恢复时解引用悬空"(与 C 侧 message_clean 延后对齐)。data 型消息传其 msg；
 ---无 data 的调用点传 nil(无实参时可省略，默认 nil)。
 ---@param func fun(...) 业务回调
 ---@param msg Message|nil 仅保活，不传给 func
@@ -992,7 +991,7 @@ end
 
 ---内部辅助：等一条指定类型的消息。超时则关连接并告警，连接已关也告警，两种都返 nil。
 ---四个等待点(connect / ssl exchange / handshake / recv)只差 mtype、超时值与告警里的动作名。
----C 侧 coro.c 的 _coro_wait_msg 结构同一套，但它的 CLOSE 分支不告警（那边调用方是每命令
+---C 侧 coro_task.c 的 _coro_wait_msg 结构同一套，但它的 CLOSE 分支不告警（那边调用方是每命令
 ---一轮的循环，一条连接断掉能刷几十条）。改任一端的结构要同步改另一端
 ---@param sk userdata 连接标识
 ---@param mtype integer MSG_TYPE.* 期望的消息类型
@@ -1507,7 +1506,7 @@ local function _timeout_wake(sess, now)
             j = j + 1
         end
     end
-    -- 超时路径无视 keep：理由同 C 侧 _coro_timeout_monitor
+    -- 超时路径无视 keep：理由同 C 侧 lib/coro/coro.c 的 coro_expire
     if 0 == #corosess.waiters then
         coro_sess[sess] = nil
     end
@@ -1521,7 +1520,7 @@ local function _timeout_scan()
         local now = srey.timer_ms()
         -- coro_sess 的条目数是"活跃会话数"而不是"挂起协程数"：keep 的 sess 摘空 waiters 后
         -- 仍留到 CLOSE 才清。只按 nwait 开闸的话，持几百条连接的 client task 每秒都要白走
-        -- 一遍全表，而真到期的通常是 0 个。C 侧 _coro_timeout_monitor 判的是堆顶，同一道理
+        -- 一遍全表，而真到期的通常是 0 个。C 侧 coro_expire 判的是堆顶，同一道理
         if now < next_timeout then
             return
         end

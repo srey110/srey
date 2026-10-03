@@ -1,7 +1,7 @@
 ﻿#ifndef HASHMAP_H_
 #define HASHMAP_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 类型化 hashmap(robin-hood 开放寻址)。元素按值存在一个桶数组里,桶数恒为 2 的幂。
 //

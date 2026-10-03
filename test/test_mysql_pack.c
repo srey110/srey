@@ -122,8 +122,7 @@ static void test_mysql_bind_basic(CuTest *tc) {
     mysql_bind_double(&mb, "d1", 2.71828);
 
     CuAssertIntEquals(tc, 6, mb.count);
-    /* 各缓冲均有写入 */
-    CuAssertTrue(tc, mb.bitmap.offset > 0);
+    /* 各缓冲均有写入(NULL 位图不单存，组包时按类型现算) */
     CuAssertTrue(tc, mb.type.offset > 0);
     CuAssertTrue(tc, mb.type_name.offset > 0);
     CuAssertTrue(tc, mb.value.offset > 0);
@@ -131,7 +130,6 @@ static void test_mysql_bind_basic(CuTest *tc) {
     /* clear 后 count 回零，缓冲 offset 回零 */
     mysql_bind_clear(&mb);
     CuAssertIntEquals(tc, 0, mb.count);
-    CuAssertTrue(tc, 0 == mb.bitmap.offset);
     CuAssertTrue(tc, 0 == mb.type.offset);
     CuAssertTrue(tc, 0 == mb.type_name.offset);
     CuAssertTrue(tc, 0 == mb.value.offset);
@@ -485,13 +483,12 @@ static void test_mysql_bind_free_reuse(CuTest *tc) {
     CuAssertIntEquals(tc, 2, mb.count);
 
     mysql_bind_free(&mb);
-    /* 四个缓冲全部回到"未分配"状态，count 归零 */
+    /* 三个缓冲全部回到"未分配"状态，count 归零 */
     CuAssertIntEquals(tc, 0, mb.count);
-    CuAssertPtrEquals(tc, NULL, mb.bitmap.data);
     CuAssertPtrEquals(tc, NULL, mb.type.data);
     CuAssertPtrEquals(tc, NULL, mb.type_name.data);
     CuAssertPtrEquals(tc, NULL, mb.value.data);
-    CuAssertTrue(tc, 0 == mb.bitmap.size && 0 == mb.bitmap.offset);
+    CuAssertTrue(tc, 0 == mb.type.size && 0 == mb.type.offset);
     CuAssertTrue(tc, 0 == mb.value.size && 0 == mb.value.offset);
 
     /* 重复 free 不炸 */
@@ -499,10 +496,10 @@ static void test_mysql_bind_free_reuse(CuTest *tc) {
     CuAssertPtrEquals(tc, NULL, mb.value.data);
 
     /* free 后再绑定：旧实现留着 size=256/offset，_binary_expand 会认为"还写得下"
-       从而跳过 REALLOC，data 仍是 NULL，_mysql_bind_bitmap 的 memset 直接段错误 */
+       从而跳过 REALLOC，data 仍是 NULL，第一次写类型就往 NULL 上写 */
     mysql_bind_string(&mb, "s2", "world", 5);
     CuAssertIntEquals(tc, 1, mb.count);
-    CuAssertPtrNotNull(tc, mb.bitmap.data);
+    CuAssertPtrNotNull(tc, mb.type.data);
     CuAssertPtrNotNull(tc, mb.value.data);
     CuAssertTrue(tc, mb.value.offset > 0);
 
@@ -518,7 +515,8 @@ static void test_mysql_bind_wire(CuTest *tc) {
     const uint8_t *p;
     mysql_bind_init(&mb);
 
-    /* NULL 位图：每 8 个参数共用一字节，第 i 个占 bit (i % 8)。
+    /* NULL 位图：每 8 个参数共用一字节，第 i 个占 bit (i % 8)。位图组包时按类型现算，
+       故从 COM_STMT_EXECUTE 包里取：未协商 QUERY_ATTRIBUTES 时它紧跟 4 头 + 1 命令 + 4 id + 1 flags + 4 次数。
        位序写反成 (1 << (7 - index)) 时这两个字节会变成 0x51 / 0x80 */
     mysql_bind_integer(&mb, "a0", 1);
     mysql_bind_nil(&mb, "a1");
@@ -530,10 +528,21 @@ static void test_mysql_bind_wire(CuTest *tc) {
     mysql_bind_nil(&mb, "a7");
     mysql_bind_nil(&mb, "a8");
     CuAssertIntEquals(tc, 9, mb.count);
-    CuAssertTrue(tc, 2 == mb.bitmap.offset);
-    p = (const uint8_t *)mb.bitmap.data;
+    mysql_ctx bmy;
+    mysql_stmt_ctx bst;
+    size_t bsize = 0;
+    ZERO(&bmy, sizeof(bmy));
+    ZERO(&bst, sizeof(bst));
+    bst.mysql = &bmy;
+    bst.params_count = 9;
+    char *bpack = mysql_pack_stmt_execute(&bst, &mb, &bsize);
+    CuAssertPtrNotNull(tc, bpack);
+    CuAssertTrue(tc, bsize > 16);
+    p = (const uint8_t *)bpack + 14;
     CuAssertIntEquals(tc, 0x8A, p[0]);/* bit1|bit3|bit7 */
     CuAssertIntEquals(tc, 0x01, p[1]);/* 第 9 个参数落第二字节的 bit0 */
+    CuAssertIntEquals(tc, 1, p[2]);/* 位图之后是 new_params_bind_flag，位图恰好 2 字节 */
+    FREE(bpack);
 
     /* 无符号标志在第 15 位。去掉 | 0x8000 之后服务端会把大 uint64 按有符号解释 */
     mysql_bind_clear(&mb);

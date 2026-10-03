@@ -4,7 +4,7 @@
 #include "containers/hashmap.h"
 #include "thread/rwlock_distr.h"
 #include "utils/utils.h"
-#include "base/macro.h"
+#include "base/base.h"
 
 // 缓存条目:path 作 key(strdup),code 为编译后字节码(MALLOC);进程级常驻
 typedef struct bc_entry {

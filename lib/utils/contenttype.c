@@ -853,7 +853,7 @@ static const contenttype_ctx _typegreg[] = {
 
 // 供 bsearch 使用：key 为裸扩展名字符串，elem 为 contenttype_ctx
 static int32_t _contenttype_cmp(const void *key, const void *elem) {
-    return STRICMP((const char *)key, ((const contenttype_ctx *)elem)->extension);
+    return memcasecmp(key, ((const contenttype_ctx *)elem)->extension, strlen((const char *)key) + 1);// 连 '\0' 一起比，排序同 strcasecmp
 }
 const char *contenttype(const char *extension) {
     const contenttype_ctx *found = bsearch(extension, _typegreg,

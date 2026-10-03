@@ -16,6 +16,7 @@ typedef pthread_cond_t cond_ctx;
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && defined(CLOCK_MONOTONIC)
     #define COND_MONOTONIC
 #endif
+
 /// <summary>
 /// 信号量初始化。具备 pthread_condattr_setclock 与 CLOCK_MONOTONIC 的 POSIX 平台强制
 /// 把条件变量绑定到 CLOCK_MONOTONIC，绑定失败直接 abort——半绑定会让 cond_timedwait
@@ -63,8 +64,8 @@ static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu) {
 };
 // cond_timedwait 的错误上报只能写 stderr，不能走 LOG_*：它是持调用方互斥量返回的，
 // 而当那个互斥量正是 log.c 的 _mtx 时，slog 在消费者 _sleeping 置位期间会去锁同一个
-// 互斥量，NORMAL 互斥量重锁即自死锁(glibc 永久阻塞并连带堵住所有写日志的线程，
-// macOS 返 EDEADLK 触发 mutex_lock 的断言，Windows 因 CRITICAL_SECTION 可重入而无事)。
+// 互斥量，同线程重锁即自死锁(glibc 与 macOS 永久阻塞并连带堵住所有写日志的线程，
+// FreeBSD 的自适应锁返 EDEADLK 触发 mutex_lock 的断言，Windows 因 CRITICAL_SECTION 可重入而无事)。
 // 与 log.c 自身队列满/格式化失败时改写 stderr 的兜底同一策略
 static inline void _cond_timedwait_erro(int32_t code) {
     fprintf(stderr, "[ERROR][cond.h cond_timedwait] code %d, %s\n", code, ERRORSTR(code));

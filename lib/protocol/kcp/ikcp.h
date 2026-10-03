@@ -134,7 +134,7 @@ typedef struct IQUEUEHEAD iqueue_head;
 #define IQUEUE_INIT(ptr) ( \
 	(ptr)->next = (ptr), (ptr)->prev = (ptr))
 
-#define IOFFSETOF(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+#define IOFFSETOF(TYPE, MEMBER) offsetof(TYPE, MEMBER)
 
 #define ICONTAINEROF(ptr, type, member) ( \
 		(type*)( ((char*)((type*)ptr)) - IOFFSETOF(type, member)) )
@@ -269,6 +269,7 @@ struct IKCPSEG
 	IUINT32 rto;
 	IUINT32 fastack;
 	IUINT32 xmit;
+	IUINT32 cap;			// 按 mss 容量分配的满段记 mss，删除时可回空闲链；其余为 0
 	char data[1];
 };
 
@@ -318,10 +319,12 @@ struct IKCPCB
 	struct IQUEUEHEAD rcv_queue;
 	struct IQUEUEHEAD snd_buf;
 	struct IQUEUEHEAD rcv_buf;
+	struct IQUEUEHEAD seg_pool;	// 空闲满段链，最多 IKCP_SEG_POOL_MAX 个，setmtu 时清空
 	IUINT32 *acklist;
 	IUINT32 ackcount;
 	IUINT32 ackblock;
 	IUINT32 ackedlen;
+	IUINT32 nseg_pool;		// seg_pool 里的段数(补在 ackedlen 与 user 之间的空洞里)
 	void *user;
 	char *buffer;
 	int fastresend;

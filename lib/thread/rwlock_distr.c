@@ -8,12 +8,12 @@ typedef struct rwlock_distr_tls_entry {
     int32_t depth;            // 本线程对该 ctx 的 rdlock 嵌套层数;线程私有,无需原子
     rwlock_distr_ctx *owner;  // 注册到的 ctx;NULL=空闲
 } rwlock_distr_tls_entry;
-static THREAD_LOCAL rwlock_distr_tls_entry _tls[RWLOCK_DISTR_MAX_TLS];
+TLS_DEFINE(rwlock_distr_tls_entry, _ent, RWLOCK_DISTR_MAX_TLS)
 
-// 线性扫 _tls 返回 ctx 对应槽位下标;未注册返回 -1
-static int32_t _rwlock_distr_tls_find(rwlock_distr_ctx *ctx) {
+// 线性扫本线程的表项 tls(由 _ent_tls() 取得)返回 ctx 对应槽位下标;未注册返回 -1
+static int32_t _rwlock_distr_tls_find(rwlock_distr_tls_entry *tls, rwlock_distr_ctx *ctx) {
     for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
-        if (_tls[i].owner == ctx) {
+        if (tls[i].owner == ctx) {
             return i;
         }
     }
@@ -46,13 +46,14 @@ void rwlock_distr_free(rwlock_distr_ctx *ctx) {
     ctx->slot_count = 0;
 }
 int32_t rwlock_distr_register(rwlock_distr_ctx *ctx) {
-    // 扫 _tls:已注册到本 ctx 则幂等返回;同时记录第一个空闲槽位以备分配
+    // 扫本线程表项:已注册到本 ctx 则幂等返回;同时记录第一个空闲槽位以备分配
+    rwlock_distr_tls_entry *tls = _ent_tls();
     int32_t free_idx = -1;
     for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
-        if (_tls[i].owner == ctx) {
+        if (tls[i].owner == ctx) {
             return ERR_OK;
         }
-        if (NULL == _tls[i].owner && -1 == free_idx) {
+        if (NULL == tls[i].owner && -1 == free_idx) {
             free_idx = i;
         }
     }
@@ -64,36 +65,38 @@ int32_t rwlock_distr_register(rwlock_distr_ctx *ctx) {
     for (uint32_t i = 0; i < ctx->slot_count; i++) {
         if (0 == ATOMIC_GET_RELAXED(&ctx->slots[i].in_use)
             && ATOMIC_CAS(&ctx->slots[i].in_use, 0, 1)) {
-            _tls[free_idx].owner = ctx;
-            _tls[free_idx].slot = (int32_t)i;
+            tls[free_idx].owner = ctx;
+            tls[free_idx].slot = (int32_t)i;
             return ERR_OK;
         }
     }
     return ERR_FAILED;
 }
 void rwlock_distr_unregister(rwlock_distr_ctx *ctx) {
-    int32_t i = _rwlock_distr_tls_find(ctx);
+    rwlock_distr_tls_entry *tls = _ent_tls();
+    int32_t i = _rwlock_distr_tls_find(tls, ctx);
     if (-1 == i) {
         return;
     }
-    int32_t idx = _tls[i].slot;
-    _tls[i].owner = NULL;
-    _tls[i].slot = 0;
+    int32_t idx = tls[i].slot;
+    tls[i].owner = NULL;
+    tls[i].slot = 0;
     // depth 必须一并清零:TLS 条目会被后续 register 复用,残留层数会让下次最外层 rdlock 被当成嵌套
-    _tls[i].depth = 0;
+    tls[i].depth = 0;
     // 兜底清 active,即使调用方违反契约也不让 writer 卡死
     ATOMIC_SET_RELEASE(&ctx->slots[idx].active, 0);
     ATOMIC_SET_RELEASE(&ctx->slots[idx].in_use, 0);
 }
 void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
-    int32_t i = _rwlock_distr_tls_find(ctx);
+    rwlock_distr_tls_entry *tls = _ent_tls();
+    int32_t i = _rwlock_distr_tls_find(tls, ctx);
     if (-1 != i) {
         // 嵌套 rdlock:本线程已持读锁,writer 正被本 slot 的 active 挡在临界区外,计数后直接返回。
         // 若在此重走握手,让步分支会清 active 把 writer 放进去,而外层读区仍在运行
-        if (_tls[i].depth++ > 0) {
+        if (tls[i].depth++ > 0) {
             return;
         }
-        int32_t slot = _tls[i].slot;
+        int32_t slot = tls[i].slot;
         uint32_t spins = 0;
         // 两边先各自置位, 再查看对方: 置 active=1 与随后读 write_flag 都得用足序版本。
         // 用 acquire 版在部分 ARM 上挡不住重排, 两边会同时看漏对方而一起进临界区。
@@ -112,21 +115,23 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
     rwlock_rdlock(&ctx->fallback);
 }
 void rwlock_distr_runlock(rwlock_distr_ctx *ctx) {
-    int32_t i = _rwlock_distr_tls_find(ctx);
+    rwlock_distr_tls_entry *tls = _ent_tls();
+    int32_t i = _rwlock_distr_tls_find(tls, ctx);
     if (-1 != i) {
         // 仅最外层解锁才清 active,内层只递减计数,否则外层读区会失去保护
-        ASSERTAB(_tls[i].depth > 0, "rwlock_distr: runlock without a matching rdlock");
-        if (--_tls[i].depth > 0) {
+        ASSERTAB(tls[i].depth > 0, "rwlock_distr: runlock without a matching rdlock");
+        if (--tls[i].depth > 0) {
             return;
         }
-        ATOMIC_SET_RELEASE(&ctx->slots[_tls[i].slot].active, 0);
+        ATOMIC_SET_RELEASE(&ctx->slots[tls[i].slot].active, 0);
         return;
     }
     rwlock_unlock(&ctx->fallback);
 }
 void rwlock_distr_wrlock(rwlock_distr_ctx *ctx) {
-    int32_t tls = _rwlock_distr_tls_find(ctx);
-    ASSERTAB(-1 == tls || 0 == _tls[tls].depth,
+    rwlock_distr_tls_entry *tls = _ent_tls();
+    int32_t idx = _rwlock_distr_tls_find(tls, ctx);
+    ASSERTAB(-1 == idx || 0 == tls[idx].depth,
         "rwlock_distr: wrlock while holding rdlock on the same ctx, self-deadlock");
     // 先拿 fallback 写锁:阻塞未注册 reader 与并发 writer
     rwlock_wrlock(&ctx->fallback);

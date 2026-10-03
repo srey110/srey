@@ -7,13 +7,13 @@
 #include "event/uev.h"
 #endif
 
-static THREAD_LOCAL struct watcher_ctx *_cur_watcher = NULL;
+TLS_DEFINE(struct watcher_ctx *, _cur_watcher, 1)
 
 void _evpub_set_cur_watcher(struct watcher_ctx *watcher) {
-    _cur_watcher = watcher;
+    *_cur_watcher_tls() = watcher;
 }
 int32_t _evpub_inloop(struct watcher_ctx *watcher) {
-    return watcher == _cur_watcher;
+    return watcher == *_cur_watcher_tls();
 }
 evsock_ctx *_evpub_sockel_get(watcher_ctx *watcher, SOCKET fd) {
     evsock_ctx key;

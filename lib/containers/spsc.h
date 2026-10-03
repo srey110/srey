@@ -1,7 +1,7 @@
 ﻿#ifndef SPSC_H_
 #define SPSC_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 无锁单生产者单消费者有界队列。元素类型编译期固化，故搬运是结构体赋值而非运行期 memcpy。
 // 生产者与消费者各自缓存对端的下标，只有缓存显示"满/空"时才真去读对方那条 cache line——

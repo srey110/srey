@@ -10,8 +10,8 @@ typedef struct single_arg {
     int32_t expect_val;
 }single_arg;
 
-static void _single_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _single_worker(void *owner, void *arg) {
+    (void)owner;
     single_arg *a = (single_arg *)arg;
     a->hit = a->expect_val;
 }
@@ -22,7 +22,7 @@ static int32_t _test_single(task_ctx *task) {
     static single_arg a;
     a.hit = 0;
     a.expect_val = 42;
-    coro_fork(task, _single_worker, &a);
+    coro_fork(coro_task_co(task), _single_worker, &a);
     // fork 不立即执行，需 yield 让出当前协程
     coro_sleep(task, 30);
     if (42 != a.hit) {
@@ -35,17 +35,17 @@ static int32_t _test_single(task_ctx *task) {
 // ── 测试 2：多个 fork 顺序 ────────────────────────────────────────────────
 static int32_t g_multi_count;
 
-static void _multi_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _multi_worker(void *owner, void *arg) {
+    (void)owner;
     (void)arg;
     ++g_multi_count;
 }
 
 static int32_t _test_multi(task_ctx *task) {
     g_multi_count = 0;
-    coro_fork(task, _multi_worker, NULL);
-    coro_fork(task, _multi_worker, NULL);
-    coro_fork(task, _multi_worker, NULL);
+    coro_fork(coro_task_co(task), _multi_worker, NULL);
+    coro_fork(coro_task_co(task), _multi_worker, NULL);
+    coro_fork(coro_task_co(task), _multi_worker, NULL);
     coro_sleep(task, 50);
     if (3 != g_multi_count) {
         LOG_ERROR("fork multi: expect 3, got %d.", g_multi_count);
@@ -60,7 +60,8 @@ typedef struct yield_arg {
     int32_t after;
 }yield_arg;
 
-static void _yield_worker(task_ctx *task, void *arg) {
+static void _yield_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     yield_arg *a = (yield_arg *)arg;
     a->before = 1;
     coro_sleep(task, 20);
@@ -71,7 +72,7 @@ static int32_t _test_yield(task_ctx *task) {
     static yield_arg a;// 理由同 _test_single
     a.before = 0;
     a.after = 0;
-    coro_fork(task, _yield_worker, &a);
+    coro_fork(coro_task_co(task), _yield_worker, &a);
     coro_sleep(task, 100);
     if (1 != a.before || 2 != a.after) {
         LOG_ERROR("fork yield: expect before=1 after=2, got before=%d after=%d.",
@@ -85,23 +86,24 @@ static int32_t _test_yield(task_ctx *task) {
 static int32_t g_nested_depth;
 static int32_t g_nested_inner_hit;
 
-static void _nested_inner(task_ctx *task, void *arg) {
-    (void)task;
+static void _nested_inner(void *owner, void *arg) {
+    (void)owner;
     (void)arg;
     ++g_nested_inner_hit;
 }
 
-static void _nested_outer(task_ctx *task, void *arg) {
+static void _nested_outer(void *owner, void *arg) {
+    task_ctx *task = owner;
     (void)arg;
     ++g_nested_depth;
-    coro_fork(task, _nested_inner, NULL);
-    coro_fork(task, _nested_inner, NULL);
+    coro_fork(coro_task_co(task), _nested_inner, NULL);
+    coro_fork(coro_task_co(task), _nested_inner, NULL);
 }
 
 static int32_t _test_nested(task_ctx *task) {
     g_nested_depth = 0;
     g_nested_inner_hit = 0;
-    coro_fork(task, _nested_outer, NULL);
+    coro_fork(coro_task_co(task), _nested_outer, NULL);
     // 等外层 + 两个内层 fork 全跑完
     coro_sleep(task, 80);
     if (1 != g_nested_depth || 2 != g_nested_inner_hit) {
@@ -118,7 +120,8 @@ typedef struct scatter_arg {
     uint64_t finish_ms;
 }scatter_arg;
 
-static void _scatter_worker(task_ctx *task, void *arg) {
+static void _scatter_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     scatter_arg *a = (scatter_arg *)arg;
     coro_sleep(task, a->sleep_ms);
     a->finish_ms = nowms();
@@ -131,11 +134,11 @@ static int32_t _test_scatter(task_ctx *task) {
         { .sleep_ms = 50, .finish_ms = 0 },
     };
     void *args[3] = { &sa[0], &sa[1], &sa[2] };
-    void (*funcs[3])(task_ctx *, void *) = {
+    coro_fn funcs[3] = {
         _scatter_worker, _scatter_worker, _scatter_worker,
     };
     uint64_t t0 = nowms();
-    int32_t r = coro_fork_wait(task, funcs, args, 3);
+    int32_t r = coro_fork_wait(coro_task_co(task), funcs, args, 3);
     uint64_t elapsed = nowms() - t0;
     if (ERR_OK != r) {
         LOG_ERROR("fork_wait scatter: return %d.", r);
@@ -156,7 +159,7 @@ static int32_t _test_scatter(task_ctx *task) {
 
 // ── 测试 6：fork_wait 0 任务立即返回 ──────────────────────────────────────
 static int32_t _test_empty_wait(task_ctx *task) {
-    int32_t r = coro_fork_wait(task, NULL, NULL, 0);
+    int32_t r = coro_fork_wait(coro_task_co(task), NULL, NULL, 0);
     if (ERR_OK != r) {
         LOG_ERROR("fork_wait empty: expect ERR_OK, got %d.", r);
         return ERR_FAILED;
@@ -169,7 +172,8 @@ typedef struct multi_yield_arg {
     int32_t step;
 }multi_yield_arg;
 
-static void _multi_yield_worker(task_ctx *task, void *arg) {
+static void _multi_yield_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     multi_yield_arg *a = (multi_yield_arg *)arg;
     coro_sleep(task, 10);
     a->step = 1;
@@ -182,10 +186,10 @@ static void _multi_yield_worker(task_ctx *task, void *arg) {
 static int32_t _test_multi_yield(task_ctx *task) {
     multi_yield_arg ma[2] = { { .step = 0 }, { .step = 0 } };
     void *args[2] = { &ma[0], &ma[1] };
-    void (*funcs[2])(task_ctx *, void *) = {
+    coro_fn funcs[2] = {
         _multi_yield_worker, _multi_yield_worker,
     };
-    int32_t r = coro_fork_wait(task, funcs, args, 2);
+    int32_t r = coro_fork_wait(coro_task_co(task), funcs, args, 2);
     if (ERR_OK != r) {
         LOG_ERROR("fork_wait multi_yield: return %d.", r);
         return ERR_FAILED;
@@ -200,24 +204,26 @@ static int32_t _test_multi_yield(task_ctx *task) {
 
 // ── 测试 8：并发 fork_wait 非 LIFO 完成 ───────────────────────────────────
 // 两个独立协程各 coro_fork_wait：先入 fork_waited 链表者(A)其 worker 先完成 →
-// 移除的是链表非头节点，回归"按节点解链不假设 LIFO"，否则关闭时 _coro_ctx_free 崩
+// 移除的是链表非头节点，回归"按节点解链不假设 LIFO"，否则关闭时 coro_free 崩
 typedef struct concurrent_arg {
     uint32_t sleep_ms;
     int32_t done;
     int32_t *ok;
 }concurrent_arg;
 
-static void _concurrent_worker(task_ctx *task, void *arg) {
+static void _concurrent_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     concurrent_arg *a = (concurrent_arg *)arg;
     coro_sleep(task, a->sleep_ms);
     a->done = 1;
 }
 
-static void _concurrent_driver(task_ctx *task, void *arg) {
+static void _concurrent_driver(void *owner, void *arg) {
+    task_ctx *task = owner;
     concurrent_arg *a = (concurrent_arg *)arg;
     void *wargs[1] = { a };
-    void (*wfuncs[1])(task_ctx *, void *) = { _concurrent_worker };
-    if (ERR_OK == coro_fork_wait(task, wfuncs, wargs, 1) && 1 == a->done) {
+    coro_fn wfuncs[1] = { _concurrent_worker };
+    if (ERR_OK == coro_fork_wait(coro_task_co(task), wfuncs, wargs, 1) && 1 == a->done) {
         *(a->ok) = 1;
     }
 }
@@ -233,8 +239,8 @@ static int32_t _test_concurrent_fork_wait(task_ctx *task) {
     ca.sleep_ms = 20; ca.done = 0; ca.ok = &a_ok;
     cb.sleep_ms = 60; cb.done = 0; cb.ok = &b_ok;
     // A 先 fork（先入链表，处于链表尾），B 后 fork（链表头）；A 先完成 → 非 LIFO 移除
-    coro_fork(task, _concurrent_driver, &ca);
-    coro_fork(task, _concurrent_driver, &cb);
+    coro_fork(coro_task_co(task), _concurrent_driver, &ca);
+    coro_fork(coro_task_co(task), _concurrent_driver, &cb);
     coro_sleep(task, 140);// 等 A(~20ms) 与 B(~60ms) 两个 fork_wait 都完成
     if (1 != a_ok || 1 != b_ok) {
         LOG_ERROR("fork_wait concurrent: expect both ok, got a=%d b=%d.", a_ok, b_ok);
@@ -250,7 +256,8 @@ typedef struct fpool_arg {
     int32_t *cnt;
 }fpool_arg;
 
-static void _fpool_worker(task_ctx *task, void *arg) {
+static void _fpool_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     fpool_arg *a = (fpool_arg *)arg;
     ++(*a->cnt);
     coro_sleep(task, 1);// yield：fork_item 在此期间保持 checked-out
@@ -260,7 +267,7 @@ static int32_t _test_fork_pool_reuse(task_ctx *task) {
     enum { ROUNDS = 20, BATCH = 16 };
     int32_t cnt = 0;
     fpool_arg pa = { .cnt = &cnt };
-    fork_serial_cb funcs[BATCH];
+    coro_fn funcs[BATCH];
     void *args[BATCH];
     int32_t i, r;
     for (i = 0; i < BATCH; i++) {
@@ -268,7 +275,7 @@ static int32_t _test_fork_pool_reuse(task_ctx *task) {
         args[i] = &pa;
     }
     for (r = 0; r < ROUNDS; r++) {
-        if (ERR_OK != coro_fork_wait(task, funcs, args, BATCH)) {
+        if (ERR_OK != coro_fork_wait(coro_task_co(task), funcs, args, BATCH)) {
             LOG_ERROR("fork pool reuse: round %d fork_wait failed.", r);
             return ERR_FAILED;
         }
@@ -289,7 +296,7 @@ static int32_t _test_fork_ff_pool(task_ctx *task) {
     pa.cnt = &cnt;
     int32_t i;
     for (i = 0; i < FF_COUNT; i++) {
-        coro_fork(task, _fpool_worker, &pa);
+        coro_fork(coro_task_co(task), _fpool_worker, &pa);
     }
     coro_sleep(task, 100);// 让出后 fork_pending 中 FF_COUNT 个 fork_item 一次性 drain
     if (FF_COUNT != cnt) {

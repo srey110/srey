@@ -6,10 +6,7 @@ void pgsql_pack_start(binary_ctx *bwriter, int8_t code, size_t lens) {
     binary_set_skip(bwriter, 4); // 预留 4 字节消息体长度字段
 }
 void pgsql_pack_end(binary_ctx *bwriter) {
-    size_t size = bwriter->offset;
-    binary_offset(bwriter, 1); // 跳过类型码，定位到长度字段
-    binary_set_integer(bwriter, size - 1, 4, 0); // 回填消息体长度（不含类型码字节）
-    binary_offset(bwriter, size); // 恢复偏移到消息末尾
+    write_be32(bwriter->data + 1, (uint32_t)(bwriter->offset - 1)); // 回填消息体长度（不含类型码字节）
 }
 size_t pgsql_pack_append_start(binary_ctx *bwriter, int8_t code) {
     binary_set_int8(bwriter, code); // 追加子消息类型码
@@ -18,10 +15,7 @@ size_t pgsql_pack_append_start(binary_ctx *bwriter, int8_t code) {
     return offset;
 }
 void pgsql_pack_append_end(binary_ctx *bwriter, size_t offset) {
-    size_t size = bwriter->offset;
-    binary_offset(bwriter, offset); // 定位到长度字段位置
-    binary_set_integer(bwriter, size - offset, 4, 0); // 回填子消息体长度
-    binary_offset(bwriter, size); // 恢复偏移到消息末尾
+    write_be32(bwriter->data + offset, (uint32_t)(bwriter->offset - offset)); // 回填子消息体长度
 }
 // 写一条协议 String 字段。binary_set_string 对 NULL 是一个字节都不写（连结束 NUL 都没有），
 // 而协议 String 至少要有一个 NUL——缺了它后端读不到终止符，整条消息的后续字段全体错位一字节
@@ -36,6 +30,13 @@ static inline void _pgpack_set_string(binary_ctx *bwriter, const char *str) {
 static inline size_t _pgpack_strsize(const char *str) {
     return NULL == str ? 1 : strlen(str) + 1;
 }
+// 同 _pgpack_set_string，size 是 _pgpack_strsize 已算好的字节数，免得再 strlen 一遍
+static inline void _pgpack_set_string_n(binary_ctx *bwriter, const char *str, size_t size) {
+    if (size > 1) {
+        binary_set_binary(bwriter, str, size - 1);
+    }
+    binary_set_int8(bwriter, 0);
+}
 void *pgsql_pack_terminate(size_t *size) {
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'X', 0); // Terminate：Byte1('X') Int32(4)
@@ -45,21 +46,24 @@ void *pgsql_pack_terminate(size_t *size) {
 }
 void *pgsql_pack_query(const char *sql, size_t *size) {
     binary_ctx bwriter;
-    pgsql_pack_start(&bwriter, 'Q', 5 + _pgpack_strsize(sql)); // Query：Byte1('Q') Int32 String
-    _pgpack_set_string(&bwriter, sql);
+    size_t sqlsize = _pgpack_strsize(sql);
+    pgsql_pack_start(&bwriter, 'Q', 5 + sqlsize); // Query：Byte1('Q') Int32 String
+    _pgpack_set_string_n(&bwriter, sql, sqlsize);
     pgsql_pack_end(&bwriter);
     *size = bwriter.offset;
     return bwriter.data;
 }
 void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size) {
     binary_ctx bwriter;
-    size_t lens = 5 + _pgpack_strsize(name) + _pgpack_strsize(sql) + 2 + 5;
+    size_t namesize = _pgpack_strsize(name);
+    size_t sqlsize = _pgpack_strsize(sql);
+    size_t lens = 5 + namesize + sqlsize + 2 + 5;
     if (nparam > 0 && NULL != oids) {
         lens += (size_t)nparam * 4;
     }
     pgsql_pack_start(&bwriter, 'P', lens); // Parse：Byte1('P') Int32 String String Int16 [Int32]
-    _pgpack_set_string(&bwriter, name); // 目标预处理语句名称（NULL / 空名即匿名预处理语句）
-    _pgpack_set_string(&bwriter, sql); // 要解析的 SQL 查询字符串
+    _pgpack_set_string_n(&bwriter, name, namesize); // 目标预处理语句名称（NULL / 空名即匿名预处理语句）
+    _pgpack_set_string_n(&bwriter, sql, sqlsize); // 要解析的 SQL 查询字符串
     if (nparam > 0 && NULL != oids) {
         binary_set_integer(&bwriter, nparam, 2, 0); // 指定的参数数据类型数量
         for (int16_t i = 0; i < nparam; i++) {
@@ -78,32 +82,31 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
 void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat, size_t *size) {
     if (NULL != bind
         && 0 != bind->nparam
-        && bind->format.offset != (size_t)bind->nparam * 2 + 2) {
+        && bind->count != bind->nparam) {
         *size = 0;
         return NULL;
     }
     binary_ctx bwriter;
     size_t namesize = _pgpack_strsize(name);
-    size_t lens = 5 + 1 + namesize + 4 + (5 + 1 + namesize) + (5 + 1 + 4) + 5;
-    lens += (NULL == bind || 0 == bind->nparam) ? 4 : bind->format.offset + bind->values.offset;
+    size_t lens = 5 + 1 + namesize + 4 + (5 + 1 + 1) + (5 + 1 + 4) + 5;
+    lens += (NULL == bind || 0 == bind->nparam) ? 4 : bind->buf.offset;
     // Bind：Byte1('B') Int32 String String Int16 [Int16] Int16 [Int32 Byten] Int16 [Int16]
     pgsql_pack_start(&bwriter, 'B', lens);
     binary_set_string(&bwriter, ""); // 目标门户名称（空字符串表示未命名门户）
-    _pgpack_set_string(&bwriter, name); // 源预处理语句名称
+    _pgpack_set_string_n(&bwriter, name, namesize); // 源预处理语句名称
     if (NULL == bind || 0 == bind->nparam) {
         binary_set_integer(&bwriter, 0, 2, 0); // 参数格式代码数量为 0
         binary_set_integer(&bwriter, 0, 2, 0); // 参数值数量为 0
     } else {
-        binary_set_binary(&bwriter, bind->format.data, bind->format.offset); // 参数格式码序列
-        binary_set_binary(&bwriter, bind->values.data, bind->values.offset); // 参数值序列
+        binary_set_binary(&bwriter, bind->buf.data, bind->buf.offset); // 格式码序列 + 参数值序列
     }
     binary_set_integer(&bwriter, 1, 2, 0); // 结果列格式代码数量为 1（统一格式）
     binary_set_integer(&bwriter, resultformat, 2, 0); // 结果列格式代码
     pgsql_pack_end(&bwriter);
     // Describe：Byte1('D') Int32 Byte1 String
     size_t offset = pgsql_pack_append_start(&bwriter, 'D');
-    binary_set_int8(&bwriter, 'S'); // 'S' 表示描述预处理语句，'P' 表示描述门户
-    _pgpack_set_string(&bwriter, name);
+    binary_set_int8(&bwriter, 'P'); // 描述刚 Bind 的未命名门户：只回 RowDescription/NoData，不回 ParameterDescription
+    binary_set_string(&bwriter, "");
     pgsql_pack_append_end(&bwriter, offset);
     // Execute：Byte1('E') Int32 String Int32
     offset = pgsql_pack_append_start(&bwriter, 'E');
@@ -149,16 +152,17 @@ void *pgsql_pack_copy_done(size_t *size) {
 void *pgsql_pack_copy_fail(const char *msg, size_t *size) {
     binary_ctx bwriter;
     // CopyFail：Byte1('f') Int32 String
-    pgsql_pack_start(&bwriter, 'f', 5 + _pgpack_strsize(msg));
-    _pgpack_set_string(&bwriter, msg);
+    size_t msgsize = _pgpack_strsize(msg);
+    pgsql_pack_start(&bwriter, 'f', 5 + msgsize);
+    _pgpack_set_string_n(&bwriter, msg, msgsize);
     pgsql_pack_end(&bwriter);
     *size = bwriter.offset;
     return bwriter.data;
 }
 void pgsql_pack_cancel(char buf[16], int32_t pid, uint32_t key) {
     // CancelRequest 无消息类型码：Int32(16) Int32(80877102) Int32(pid) Int32(key)
-    pack_integer(buf, 16, 4, 0); // 消息总长度
-    pack_integer(buf + 4, 80877102, 4, 0); // CancelRequest 魔数
-    pack_integer(buf + 8, pid, 4, 0); // 后端进程 ID
-    pack_integer(buf + 12, key, 4, 0); // 取消密钥
+    write_be32(buf, 16); // 消息总长度
+    write_be32(buf + 4, 80877102); // CancelRequest 魔数
+    write_be32(buf + 8, (uint32_t)pid); // 后端进程 ID
+    write_be32(buf + 12, key); // 取消密钥
 }

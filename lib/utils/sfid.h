@@ -1,7 +1,7 @@
 ﻿#ifndef SFID_H_
 #define SFID_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef struct sfid_ctx {
     int32_t machinebitlen;   //机器 ID 占用的位数
@@ -17,6 +17,7 @@ typedef struct sfid_ctx {
     uint64_t customepoch;    //自定义纪元时间戳（毫秒），ID 中的时间戳相对于此值
     uint64_t lasttimestamp;  //上次生成 ID 时的时间戳（相对于 customepoch 的毫秒数）
 }sfid_ctx;
+
 /// <summary>
 /// snowflake id 初始化
 /// </summary>

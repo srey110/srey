@@ -1,4 +1,4 @@
-﻿#include "protocol/urlparse.h"
+﻿#include "utils/urlparse.h"
 #include "utils/utils.h"
 #include "crypt/urlraw.h"
 
@@ -95,9 +95,11 @@ static inline char *_url_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char
     _url_split(buf1, buf2, cur, pos - cur);
     return pos + 1;
 }
-// 解析路径部分（直到 '?' 或 '#'），返回指向下一段（查询或片段）的指针
-static inline char *_url_path(buf_ctx *path, char *cur, size_t lens) {
+// 解析路径部分（直到 '?' 或 '#'），返回指向下一段（查询或片段）的指针；
+// *phash 交回 [cur, cur + lens) 里的首个 '#'(没有为 NULL)，它也就是锚点的分界
+static inline char *_url_path(buf_ctx *path, char *cur, size_t lens, char **phash) {
     char *hash = memchr(cur, '#', lens);
+    *phash = hash;
     size_t search_lens = (NULL != hash) ? (size_t)(hash - cur) : lens;
     char *pos = memchr(cur, '?', search_lens);
     if (NULL == pos) {
@@ -118,28 +120,6 @@ static inline char *_url_path(buf_ctx *path, char *cur, size_t lens) {
     path->data = cur;
     path->lens = (size_t)(pos - cur);
     return pos + 1;
-}
-// 从当前段中提取锚点（# 之后的部分），返回锚点之前的查询参数段长度
-static inline size_t _url_anchor(buf_ctx *anchor, char *cur, size_t lens) {
-    char *pos = memchr(cur, '#', lens);
-    if (NULL == pos) {
-        return lens;
-    }
-    size_t size;
-    if (pos == cur) {
-        size = lens - 1;
-        if (size > 0) {
-            anchor->data = pos + 1;
-            anchor->lens = size;
-        }
-        return 0;
-    }
-    size = lens - (pos + 1 - cur);
-    if (size > 0) {
-        anchor->data = pos + 1;
-        anchor->lens = size;
-    }
-    return pos - cur;
 }
 // 单个 param 重组所需字节数：paramlens 累加与 url_reorg_param 写入共用本式，分开写必漂移
 static inline size_t _url_param_need(const url_param *p, size_t offset) {
@@ -193,6 +173,9 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
     ctx->sep = sep;
     ctx->decode = decode;
     char *urlbuf;
+    char *hash;
+    int32_t dseg = decode;
+    int32_t dparam;
     if (ctx->decode) {
         if (lens >= sizeof(ctx->buf)) {
             LOG_WARN("url too long.");
@@ -201,6 +184,9 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
         // 上面的 lens >= sizeof(buf) 已挡过，strict 那档失败不会发生
         (void)copy_bounded(url, lens, ctx->buf, sizeof(ctx->buf), 1);
         urlbuf = ctx->buf;
+        if (NULL == memchr(url, '%', lens)) {
+            dseg = 0;
+        }
     } else {
         urlbuf = (char *)url;
     }
@@ -220,22 +206,26 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
         }
     }
     char *auth_end = cur + auth_len;
-    cur = _url_parse_two(&ctx->user, &ctx->psw, cur, '@', auth_len, 1);
-    remain = lens - (size_t)(cur - urlbuf);
-    if (0 == remain) {
-        return ERR_OK;
-    }
-    // host:port 段限定在 authority 内（长度 = auth_end - cur），不可用 remain：
-    // 否则 "http://host?k=v" 会把 "host?k=v" 当 host:port，丢失 query 参数。
-    // authority 段内不含 '/'，_url_parse_two 必走 '/' fallback _url_split + return cur+lens=auth_end
-    cur = _url_parse_two(&ctx->host, &ctx->port, cur, '/', (size_t)(auth_end - cur), 0);
-    remain = lens - (size_t)(cur - urlbuf);
-    if (0 == remain) {
-        return ERR_OK;
+    if (0 == auth_len) {
+        ctx->host.data = cur;
+    } else {
+        cur = _url_parse_two(&ctx->user, &ctx->psw, cur, '@', auth_len, 1);
+        remain = lens - (size_t)(cur - urlbuf);
+        if (0 == remain) {
+            return ERR_OK;
+        }
+        // host:port 段限定在 authority 内（长度 = auth_end - cur），不可用 remain：
+        // 否则 "http://host?k=v" 会把 "host?k=v" 当 host:port，丢失 query 参数。
+        // authority 段内不含 '/'，_url_parse_two 必走 '/' fallback _url_split + return cur+lens=auth_end
+        cur = _url_parse_two(&ctx->host, &ctx->port, cur, '/', (size_t)(auth_end - cur), 0);
+        remain = lens - (size_t)(cur - urlbuf);
+        if (0 == remain) {
+            return ERR_OK;
+        }
     }
     //路径
     buf_ctx path = { 0 };
-    cur = _url_path(&path, cur, remain);
+    cur = _url_path(&path, cur, remain, &hash);
     if (!buf_empty(&path)) {
         // 移除前导
         char *pp = path.data;
@@ -251,7 +241,7 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
         }
         //逐段解码并累计重组后总长(与 url_reorg_path 输出对齐)
         for (int32_t i = 0; i < ctx->npath; i++) {
-            if (ctx->decode && ctx->segs[i].lens > 0) {
+            if (dseg && ctx->segs[i].lens > 0) {
                 ctx->segs[i].lens = url_decode(ctx->segs[i].data, ctx->segs[i].lens, 0);
             }
             ctx->pathlens += (ctx->segs[i].lens + 1);
@@ -261,19 +251,27 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
     if (0 == remain) {
         return ERR_OK;
     }
-    remain = _url_anchor(&ctx->anchor, cur, remain);
+    if (NULL != hash) {
+        size_t alens = remain - (size_t)(hash - cur) - 1;
+        if (alens > 0) {
+            ctx->anchor.data = hash + 1;
+            ctx->anchor.lens = alens;
+        }
+        remain = (size_t)(hash - cur);
+    }
     if (0 == remain) {
         return ERR_OK;
     }
     _url_param(ctx->param, cur, remain, &ctx->nparam);
+    dparam = dseg || (0 != decode && NULL != memchr(cur, '+', remain));
     url_param *p;
     for (int32_t i = 0; i < ctx->nparam; i++) {
         p = &ctx->param[i];
-        if (ctx->decode) {
+        if (dparam) {
             p->key.lens = url_decode(p->key.data, p->key.lens, 1);
         }
         if (!buf_empty(&p->val)) {
-            if (ctx->decode && p->val.lens > 0) {
+            if (dparam && p->val.lens > 0) {
                 p->val.lens = url_decode(p->val.data, p->val.lens, 1);
             }
         }

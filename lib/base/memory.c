@@ -1,5 +1,9 @@
 ﻿#include "base/memory.h"
-#include "base/macro.h"
+#include "base/err.h"
+#include "base/config.h"
+#include "base/macro_util.h"
+#include "base/macro_atomic.h"
+#include "base/macro_log.h"
 
 // 全项目的分配都收在这四个宏,换分配器只动这里。头与库由 tools/deps.py 摆到 lib/ 与 bin/
 #if WITH_MIMALLOC
@@ -16,19 +20,27 @@
     #define _CALLOC  calloc
     #define _REALLOC realloc
     #define _FREE    free
-#endif
+#endif//WITH_MIMALLOC
 
+#define MEM_ARENA_BLOCK 8192 // mem_arena 每个定长块的字节数
+#define MEM_ARENA_HEAD ROUND_UP(sizeof(mem_arena_blk), 8) // 块头按 8 对齐后的字节数
+#if !defined(CC_GNU)
+typedef void *(*memset_func)(void *, int, size_t);// secure_zero 在 MSVC 下经 volatile 指针调 memset 用
+// MSVC 没有空汇编屏障，secure_zero 经它调 memset。指针是 volatile：每次调用都得现读，编译器断定不了它指向 memset，
+// 就不会把清零当成"之后没人读的写"删掉
+static volatile memset_func _memset_vol = memset;
+#endif//CC_GNU
 // 分配追踪要同时满足三个条件,下面所有相关段落统一判这一个
 #if MEMORY_CHECK && MEMORY_TRACE && defined(HAVE_BACKTRACE)
     #define MEM_TRACE_ON 1
 #else
     #define MEM_TRACE_ON 0
-#endif
+#endif//MEMORY_CHECK MEMORY_TRACE HAVE_BACKTRACE
 
 #if MEMORY_CHECK
-/* 分条计数：每线程独占一格、各占一条 cache line，免得每次 malloc/free 都在同一条
- * cache line 上跨核来回。槽位用尽(活过的线程数超过 MEM_SLOTS)的线程共用末尾那一格
- * —— 两条路径的计数都精确。*/
+/* 分条计数：每线程分到一格、各占一条 cache line，免得每次 malloc/free 都在同一条
+ * cache line 上跨核来回。槽位用尽(活过的线程数超过 MEM_SLOTS)的线程共用末尾那一格。
+ * 每格都原子加(理由见 _mem_count)，计数精确。*/
 // 独占槽位数;只增不回收,用尽即共用末尾那格(那一格上每次分配都要跨核争抢,慢一个数量级以上)。
 // 线程数约 nnet + nworker + 4,两者取 0 时按核数算,取 256 够 120 核上下的机器
 #define MEM_SLOTS 256
@@ -39,8 +51,8 @@ typedef struct mem_slot {
 }mem_slot;
 CACHELINE_ALIGN static mem_slot _slots[MEM_SLOTS + 1];// 末一格给槽位用尽的线程共用
 static atomic64_t _slotseq = 0; // 槽位分配游标
-static THREAD_LOCAL mem_slot *_slot = NULL;
-#endif
+static THREAD_LOCAL mem_slot *_slot = NULL;// TLS_RAW_OK：计数一律原子加，协程换线程后读到别的线程的格也不丢计数
+#endif//MEMORY_CHECK
 
 #if MEM_TRACE_ON
 #define MEM_TRK_BUCKET 65536 // 活动分配哈希桶数（2 的幂）
@@ -53,7 +65,7 @@ static THREAD_LOCAL mem_slot *_slot = NULL;
     static pthread_mutex_t _trk_lock = PTHREAD_MUTEX_INITIALIZER;
     #define MEM_TRK_LOCK()   pthread_mutex_lock(&_trk_lock)
     #define MEM_TRK_UNLOCK() pthread_mutex_unlock(&_trk_lock)
-#endif
+#endif//OS_WIN
 // 活动分配记录：ptr -> 调用栈，按 ptr 哈希链式存储
 typedef struct mem_trk_ctx {
     int32_t frames;
@@ -157,20 +169,14 @@ static void _trk_dump(void) {
 #endif//MEM_TRACE_ON
 
 #if MEMORY_CHECK
-// 首次调用给本线程钉一格,此后只自增。独占格只有本线程写,读一次写一次即可;
-// 末尾那格可能被多个线程共用,仍得原子自增才不丢
+// 首次调用给本线程钉一格,此后只自增。格只管分流,不保证只有本线程写:协程在别的线程上恢复后,
+// 编译器复用挂起前的 TLS 地址,会加到原线程那格上。所以一律原子加,读写两步会跟原线程互相吃掉计数
 static inline void _mem_count(int32_t is_alloc) {
     if (NULL == _slot) {
         int64_t seq = ATOMIC64_ADD_RELAXED(&_slotseq, 1);// 返回旧值
         _slot = &_slots[(seq < MEM_SLOTS) ? (size_t)seq : MEM_SLOTS];
     }
-    mem_slot *slot = _slot;
-    atomic64_t *cnt = is_alloc ? &slot->nalloc : &slot->nfree;
-    if (&_slots[MEM_SLOTS] != slot) {
-        ATOMIC64_SET_RELAXED(cnt, ATOMIC64_GET_RELAXED(cnt) + 1);
-    } else {
-        ATOMIC64_ADD_RELAXED(cnt, 1);
-    }
+    ATOMIC64_ADD_RELAXED(is_alloc ? &_slot->nalloc : &_slot->nfree, 1);
 }
 #endif//MEMORY_CHECK
 void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
@@ -193,7 +199,6 @@ void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
     SET_PTR(nfree, 0);
 #endif
 }
-
 void *_malloc(size_t size) {
 #if MEMORY_CHECK
     _mem_count(1);
@@ -269,5 +274,54 @@ int64_t _memcheck(void) {
     return leak;
 #else
     return 0;
+#endif
+}
+void *_mem_arena_alloc_slow(mem_arena *arena, size_t lens) {
+    mem_arena_blk *blk;
+    // 一整块都装不下：按实际大小单开一块，整块只给这一次分配用
+    if (lens > MEM_ARENA_BLOCK - MEM_ARENA_HEAD) {
+        MALLOC(blk, MEM_ARENA_HEAD + lens);
+        if (NULL == arena->cur) {
+            // 空链：它就是当前块，off 与 cap 相等表示已用满，下次分配会再开新块
+            blk->next = NULL;
+            arena->cur = blk;
+            arena->off = arena->cap = MEM_ARENA_HEAD + lens;
+        } else {
+            // 已有当前块：插到它后面而不是链头，当前块没用完的空间后面还能接着切
+            blk->next = arena->cur->next;
+            arena->cur->next = blk;
+        }
+        return (char *)blk + MEM_ARENA_HEAD;
+    }
+    // 当前块剩余不够：开一个定长新块插在链头当作新的当前块，旧块剩下的空间不再用
+    MALLOC(blk, MEM_ARENA_BLOCK);
+    blk->next = arena->cur;
+    arena->cur = blk;
+    arena->off = MEM_ARENA_HEAD + lens;
+    arena->cap = MEM_ARENA_BLOCK;
+    return (char *)blk + MEM_ARENA_HEAD;
+}
+void mem_arena_free(mem_arena *arena) {
+    mem_arena_blk *blk;
+    while (NULL != arena->cur) {
+        blk = arena->cur;
+        arena->cur = blk->next;
+        FREE(blk);
+    }
+    arena->off = 0;
+    arena->cap = 0;
+}
+// 两支各有一道承重的防删手段，去掉任何一道，-O2 -flto 内联进调用方后清零会被当成无用的写整段删掉。
+// GCC/Clang 用空汇编屏障，memset 仍能内联成几条向量写(摘要每个块都擦一次调度表，别换成函数指针)；MSVC 走 _memset_vol
+void secure_zero(void *buf, size_t len) {
+    if (EMPTYPTR(buf, len)) {
+        return;
+    }
+#if defined(CC_GNU)
+    memset(buf, 0, len);
+    // 空汇编：声明它读了 buf、还可能读写任意内存，编译器只好把上面的 memset 真正写出去
+    __asm__ __volatile__("" : : "r"(buf) : "memory");
+#else
+    _memset_vol(buf, 0, len);
 #endif
 }

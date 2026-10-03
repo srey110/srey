@@ -1,7 +1,6 @@
 ﻿#ifndef BINARY_H_
 #define BINARY_H_
 
-#include "base/base.h"
 #include "base/structs.h"
 #include "utils/utils.h"
 
@@ -40,7 +39,8 @@ void binary_free(binary_ctx *ctx);
 void _binary_grow(binary_ctx *ctx, size_t size);
 // 扩展缓冲区，确保有足够空间写入 size 字节（仅内部托管可扩容）。快路径只判一次能不能直接写，
 // 读模式、长度溢出、容量不够都进 _binary_grow。inc==0 必须和容量一起判：只在容量不够时查，
-// 写得下的那些非法写就会静默改掉调用方内存(原因见 _binary_grow)
+// 写得下的那些非法写就会静默改掉调用方内存(原因见 _binary_grow)。
+// 返回后 data[offset + size] 总可写(结尾 NUL 那 1 字节余量)：有调用方预留后在预留区末尾直接写 '\0'，这 1 字节省不得
 static inline void _binary_expand(binary_ctx *ctx, size_t size) {
     if (UNLIKELY(0 == ctx->inc
                  || size > SIZE_MAX - ctx->offset - 1
@@ -97,7 +97,7 @@ static inline void binary_set_uint8(binary_ctx *ctx, uint8_t val) {
 /// <param name="islittle">1 小端序列 0大端序列</param>
 static inline void binary_set_integer(binary_ctx *ctx, int64_t val, size_t lens, int32_t islittle) {
     _binary_expand(ctx, lens);
-    pack_integer(ctx->data + ctx->offset, (uint64_t)val, (int32_t)lens, islittle);
+    write_integer(ctx->data + ctx->offset, (uint64_t)val, lens, islittle);
     ctx->offset += lens;
 }
 /// <summary>
@@ -109,7 +109,7 @@ static inline void binary_set_integer(binary_ctx *ctx, int64_t val, size_t lens,
 /// <param name="islittle">1 小端序列 0大端序列</param>
 static inline void binary_set_uinteger(binary_ctx *ctx, uint64_t val, size_t lens, int32_t islittle) {
     _binary_expand(ctx, lens);
-    pack_integer(ctx->data + ctx->offset, val, (int32_t)lens, islittle);
+    write_integer(ctx->data + ctx->offset, val, lens, islittle);
     ctx->offset += lens;
 }
 /// <summary>
@@ -192,7 +192,20 @@ void binary_set_va(binary_ctx *ctx, const char *fmt, ...);
 /// <param name="ctx">binary_ctx</param>
 /// <param name="val">值</param>
 /// <param name="base">进制，取值 [2, 16]，超界断言</param>
-void binary_set_uint(binary_ctx *ctx, uint64_t val, uint32_t base);
+static inline void binary_set_uint(binary_ctx *ctx, uint64_t val, uint32_t base) {
+    char buf[INT2STR_MAX];
+    binary_set_binary(ctx, buf, u64tostr(buf, val, base));
+}
+/// <summary>
+/// 同 binary_set_uint，写有符号整数，负数前面加 '-'(同 %lld)
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <param name="val">值</param>
+/// <param name="base">进制，取值 [2, 16]，超界断言</param>
+static inline void binary_set_int(binary_ctx *ctx, int64_t val, uint32_t base) {
+    char buf[INT2STR_MAX];
+    binary_set_binary(ctx, buf, i64tostr(buf, val, base));
+}
 // 全部 binary_get_* 越界即 ASSERTAB abort 进程，没有失败回传通道。凡是长度由对端决定的
 // 报文，读之前必须先用下面两个判一遍——判定与读挨着写，漏判在 review 里看得见。
 // binary_get_string 是唯一预判不了的（越界条件是"剩余字节里没有 NUL"，得先扫），
@@ -257,7 +270,7 @@ static inline uint8_t binary_get_uint8(binary_ctx *ctx) {
 static inline int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle) {
     //先减后比，避免攻击者构造极大 lens 让 offset+lens size_t 溢出绕过断言
     ASSERTAB(binary_have(ctx, lens), "out of memory.");
-    int64_t val = unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 1);
+    int64_t val = read_integer(ctx->data + ctx->offset, lens, islittle, 1);
     ctx->offset += lens;
     return val;
 }
@@ -270,7 +283,7 @@ static inline int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t i
 /// <returns>uint64_t</returns>
 static inline uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t islittle) {
     ASSERTAB(binary_have(ctx, lens), "out of memory.");
-    uint64_t val = (uint64_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 0);
+    uint64_t val = (uint64_t)read_integer(ctx->data + ctx->offset, lens, islittle, 0);
     ctx->offset += lens;
     return val;
 }

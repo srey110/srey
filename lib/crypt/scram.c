@@ -1,4 +1,5 @@
 ﻿#include "crypt/scram.h"
+#include "crypt/crypt_pub.h"
 #include "utils/utils.h"
 
 // 最小迭代轮数
@@ -249,7 +250,7 @@ static inline char *_scram_attr_value(char *msg, size_t mlens, const char *attr,
 // 四个校验点共用这一处: 哪一份被改回 memcmp、或漏掉长度先判, 都会重新漏出时序侧信道
 static inline int32_t _scram_ct_eq(const char *nulstr, const void *p, size_t lens) {
     return strlen(nulstr) == lens
-        && 0 == ct_memcmp(p, nulstr, lens);
+        && 0 == crypt_memcmp(p, nulstr, lens);
 }
 // 计算 SaltedPassword = PBKDF2(password, salt, iter)（使用 HMAC 迭代实现）
 static void _scram_salt_password(scram_ctx *scram, const char *password) {
@@ -534,7 +535,7 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
         return ERR_FAILED;
     }
     uint64_t val;
-    if (ERR_OK != str2u64(iter, lens, INT32_MAX, &val)) {
+    if (ERR_OK != strtou64(iter, lens, INT32_MAX, &val)) {
         LOG_WARN("scram iter parse failed: '%.*s'.", (int32_t)lens, iter);
         return ERR_FAILED;
     }

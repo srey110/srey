@@ -1,6 +1,6 @@
 -- coro_sess 契约测试（第一批）：CLOSE 广播期间重新注册、并发 sendto 的等待者配对。
 -- 对应 CLAUDE.md「Architecture Invariants」里 coro_sess 那一行的 ④ 与 ②。
--- 这套调度表与 lib/srey/coro.c 是镜像实现（见 feedback_coro_c_lua_mirror），
+-- 这套调度表与 C 侧是镜像实现（sess 规则在 lib/coro/coro.c，分发表在 lib/srey/coro_task.c；见 feedback_coro_c_lua_mirror），
 -- C 侧同场景在 test/task_coro_extra.c，两边测同一组场景、各自断言。
 --
 -- 单独挑这两条的理由：④ 此前只有静态代码走查确认过，从没被运行时驱动；

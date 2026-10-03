@@ -100,6 +100,15 @@ FILE *fopen_cloexec(const char *file, const char *mode);
 /// <returns>文件内容，需调用方 FREE；失败返回 NULL 并置 errno</returns>
 char *readall(const char *file, size_t *lens);
 /// <summary>
+/// 填充timespec
+/// </summary>
+/// <param name="timeout">struct timespec</param>
+/// <param name="ms">毫秒</param>
+static inline void fill_timespec(struct timespec *timeout, uint32_t ms) {
+    timeout->tv_sec = ms / 1000;
+    timeout->tv_nsec = (long)(ms % 1000) * (1000 * 1000);
+}
+/// <summary>
 /// timeofday。注意 Windows 的 struct timeval.tv_sec 是 32 位 long,2038-01-19 后回绕,
 /// 这是该结构体自身的容量上限;需要不截断的时间戳请用 nowms / nowsec
 /// </summary>
@@ -182,32 +191,6 @@ static inline uint64_t hash_u64(uint64_t x) {
     return x ^ (x >> 31);
 }
 /// <summary>
-/// 判断是否为合法 RFC 7230 token（全部字符为 tchar）。
-/// 头名、WebSocket 子协议名等都按此校验：只挡 NUL/CRLF 不够，
-/// 键里混进 ':' 或 ' ' 同样会被对端拆成两个字段（走私），故按整个 tchar 集合校验
-/// </summary>
-/// <param name="data">源数据(可非 NUL 结尾)</param>
-/// <param name="lens">源数据长度</param>
-/// <returns>是合法 token 返回 1，否则 0（空串不是 token）</returns>
-int32_t is_token(const char *data, size_t lens);
-/// <summary>
-/// 初始化用于 locale 无关数值解析的 C locale 句柄，须在启动期单线程调用一次（strtod_c 依赖）。
-/// 创建失败直接 abort：句柄留空会让 strtod_l 在 glibc 上解引用空句柄崩在 DB 解包路径里，
-/// 而 Darwin 会静默回落到当前 locale，恰好抹掉 strtod_c 存在的意义
-/// </summary>
-void locale_init(void);
-/// <summary>
-/// 释放 locale_init 创建的 C locale 句柄；调用后句柄置空，不可再调 strtod_c
-/// </summary>
-void locale_free(void);
-/// <summary>
-/// 按 C locale 解析 double（小数点恒为 '.'），不受进程 LC_NUMERIC 影响
-/// </summary>
-/// <param name="str">NUL 结尾数值字符串</param>
-/// <param name="endptr">输出：解析停止位置</param>
-/// <returns>解析出的 double</returns>
-double strtod_c(const char *str, char **endptr);
-/// <summary>
 /// 随机[min, max]
 /// </summary>
 /// <param name="min">最小</param>
@@ -243,19 +226,20 @@ char *randstr(char *buf, size_t len);
 int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
               buf_ctx **segs, int32_t cap, int32_t flags);
 /// <summary>
-/// 变参
+/// 把 SNPRINTF 的返回值收敛成实际写入的字节数(不含结尾 NUL)。截断时它返回的是
+/// "本应写入的长度"而非实际写入,凡把返回值直接当长度用的地方都要过本函数,
+/// 否则会越过缓冲末尾把相邻字节一起读走
 /// </summary>
-/// <param name="fmt">格式化</param>
-/// <param name="args">变参</param>
-/// <returns>char * 需要free</returns>
-char *_format_va(const char *fmt, va_list args);
-/// <summary>
-/// 变参
-/// </summary>
-/// <param name="fmt">格式化</param>
-/// <param name="...">变参</param>
-/// <returns>char * 需要free</returns>
-char *format_va(const char *fmt, ...);
+/// <param name="rtn">SNPRINTF 的原始返回值</param>
+/// <param name="bufsize">目标缓冲总字节数</param>
+/// <returns>实际写入字节数;rtn 为负或 bufsize 为 0 返回 0,截断时返回 bufsize - 1</returns>
+static inline size_t snprintf_lens(int32_t rtn, size_t bufsize) {
+    if (rtn < 0
+        || 0 == bufsize) {
+        return 0;
+    }
+    return ((size_t)rtn < bufsize) ? (size_t)rtn : bufsize - 1;
+}
 /// <summary>
 /// 用密码学安全随机数（CSPRNG）填充缓冲区。
 /// 各平台实现：Windows=BCryptGenRandom，Darwin/BSD=arc4random_buf，

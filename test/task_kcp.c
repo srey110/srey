@@ -87,7 +87,8 @@ static uint16_t _cli_sv_udp;
 static int32_t *_cli_ok;
 static atomic_t _cli_success;
 
-static void _cli_worker(task_ctx *task, void *arg) {
+static void _cli_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     int32_t idx = (int32_t)(intptr_t)arg;
     // 1. 建 UDP socket(OS 分配端口)
     sock_ctx usk;
@@ -153,7 +154,7 @@ static void _cli_startup(task_ctx *task) {
     coro_sleep(task, 300);// 等 server TCP listen / UDP 落地
     int32_t i;
     for (i = 0; i < KCP_N_CLIENTS; i++) {
-        coro_fork(task, _cli_worker, (void *)(intptr_t)i);
+        coro_fork(coro_task_co(task), _cli_worker, (void *)(intptr_t)i);
     }
     int32_t poll;
     for (poll = 0; poll < 100; poll++) {
@@ -191,7 +192,8 @@ typedef struct kcp_close_ctx {
 }kcp_close_ctx;
 
 // synsend 阻塞等待 echo;server 永远不会响应,期望被另一协程的 kcp_stop 用 MSG_TYPE_CLOSE 唤醒而非等满超时
-static void _close_waiter(task_ctx *task, void *arg) {
+static void _close_waiter(void *owner, void *arg) {
+    task_ctx *task = owner;
     kcp_close_ctx *ctx = arg;
     const char msg[] = "kcp_close";
     uint64_t bgts = nowms();
@@ -199,7 +201,8 @@ static void _close_waiter(task_ctx *task, void *arg) {
     ctx->elapse = nowms() - bgts;
 }
 // 短暂延迟后停止同一会话,验证 _kcp_stop 发出的 MSG_TYPE_CLOSE 能及时唤醒 _close_waiter
-static void _close_stopper(task_ctx *task, void *arg) {
+static void _close_stopper(void *owner, void *arg) {
+    task_ctx *task = owner;
     kcp_close_ctx *ctx = arg;
     coro_sleep(task, 200);
     kcp_stop(ctx->kcp);
@@ -219,9 +222,9 @@ static void _close_startup(task_ctx *task) {
         return;
     }
     kcp_close_ctx ctx = { &kcp, NULL, 0, 0 };
-    void (*funcs[2])(task_ctx *task, void *arg) = { _close_waiter, _close_stopper };
+    coro_fn funcs[2] = { _close_waiter, _close_stopper };
     void *args[2] = { &ctx, &ctx };
-    int32_t rtn = coro_fork_wait(task, funcs, args, 2);
+    int32_t rtn = coro_fork_wait(coro_task_co(task), funcs, args, 2);
     ev_close(&task->loader->netev, &usk);
     if (ERR_OK != rtn) {
         LOG_ERROR("kcp close test fork_wait error.");
@@ -258,7 +261,8 @@ typedef struct kcp_fifo_ctx {
 }kcp_fifo_ctx;
 
 // 多个协程共享同一 kcp_ctx 并发 synsend,验证各自收到的 echo 精确对应自己发送的内容(不串号)
-static void _fifo_worker(task_ctx *task, void *arg) {
+static void _fifo_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     kcp_fifo_ctx *ctx = arg;
     char msg[32];
     int32_t rtn = SNPRINTF(msg, sizeof(msg), "kcp_fifo_%d", ctx->idx);
@@ -310,7 +314,7 @@ static void _fifo_startup(task_ctx *task) {
         return;
     }
     kcp_fifo_ctx ctxs[KCP_FIFO_N];
-    void (*funcs[KCP_FIFO_N])(task_ctx *task, void *arg);
+    coro_fn funcs[KCP_FIFO_N];
     void *args[KCP_FIFO_N];
     int32_t i;
     for (i = 0; i < KCP_FIFO_N; i++) {
@@ -320,7 +324,7 @@ static void _fifo_startup(task_ctx *task) {
         funcs[i] = _fifo_worker;
         args[i] = &ctxs[i];
     }
-    int32_t rtn = coro_fork_wait(task, funcs, args, KCP_FIFO_N);
+    int32_t rtn = coro_fork_wait(coro_task_co(task), funcs, args, KCP_FIFO_N);
     kcp_stop(&kcp);
     ev_close(&task->loader->netev, &usk);
     if (ERR_OK != rtn) {
@@ -356,7 +360,8 @@ static uint16_t _syn_sv_udp;
 static ev_ctx *_syn_dead_netev;
 static sock_ctx _syn_dead_sk;
 // 子协程：等主协程挂进 kcp_synsend 后关掉 socket，触发 _kcp_udfree 逐会话补 CLOSE
-static void _syn_close_fork(task_ctx *task, void *arg) {
+static void _syn_close_fork(void *owner, void *arg) {
+    task_ctx *task = owner;
     (void)arg;
     coro_sleep(task, 50);
     ev_close(_syn_dead_netev, &_syn_dead_sk);
@@ -439,7 +444,7 @@ static void _syn_startup(task_ctx *task) {
             _syn_dead_sk = dsk;
             // 收窄放在 synstart 成功之后:否则安装步骤自身可能超时,后续断言会以错误理由通过
             task_set_netread_timeout(task, 3000);
-            coro_fork(task, _syn_close_fork, NULL);
+            coro_fork(coro_task_co(task), _syn_close_fork, NULL);
             uint64_t b6 = nowms();
             // 该会话对端是 kcp server,但本次不等 echo——先被 fork 协程关 socket 触发的 CLOSE 唤醒
             void *r6p = kcp_synsend(task, &kcp4, "x", 1, 1, &esize);

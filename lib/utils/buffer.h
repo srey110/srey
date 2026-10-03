@@ -35,6 +35,7 @@ typedef struct buffer_ctx {
     size_t             hint_base_off; //游标节点之前所有节点的累计字节偏移
     uint32_t           pinned_n;      //buffer_get 本次锁定的节点数，buffer_commit_get 按它精确解锁
 }buffer_ctx;
+
 /// <summary>
 /// 释放本线程留存的备用节点。任何调用过 buffer_* 的线程在退出前都要调一次，
 /// 否则那一个节点会以泄漏的形式留到进程结束。可安全重复调用。

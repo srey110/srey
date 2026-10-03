@@ -1,7 +1,7 @@
 ﻿#ifndef SLIST_H_
 #define SLIST_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 双向链表
 // 典型用法：

@@ -34,7 +34,8 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     }
 }
 
-static void _client_worker(task_ctx *task, void *arg) {
+static void _client_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     uint16_t port = *(uint16_t *)arg;
     sock_ctx sk;
     if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", port,
@@ -63,7 +64,7 @@ static void _startup(task_ctx *task) {
     // 起 N 个 client worker (fork-and-forget,他们在自己协程内 coro_connect)
     int32_t i;
     for (i = 0; i < N_CLIENTS; i++) {
-        coro_fork(task, _client_worker, &arg->port);
+        coro_fork(coro_task_co(task), _client_worker, &arg->port);
     }
     // 等所有 client connect + accept 完成：每 50ms 查一次,最多 1s。
     // 上限不能再大——client 侧只挂 3s，后面收包还要留 2s

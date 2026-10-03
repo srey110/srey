@@ -294,8 +294,8 @@ static int32_t _cb_conc(mpack_ctx *mpack, void *udata) {
     // err 不看的话读失败时 got 是垃圾值，正好等于 want 就静默过去了
     return ERR_OK == err ? ERR_OK : ERR_FAILED;
 }
-static void _conc_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _conc_worker(void *owner, void *arg) {
+    (void)owner;
     _conc_arg *a = (_conc_arg *)arg;
     char sql[64];
     // sleep(0) 让服务端把每条查询的响应拉开，放大交错窗口
@@ -312,7 +312,7 @@ static void _conc_worker(task_ctx *task, void *arg) {
 }
 static int32_t _concurrent_query(mysql_ctx *mysql) {
     _conc_arg args[_CONC_N];
-    fork_serial_cb funcs[_CONC_N];
+    coro_fn funcs[_CONC_N];
     void *argp[_CONC_N];
     int32_t i;
     for (i = 0; i < _CONC_N; i++) {
@@ -323,7 +323,7 @@ static int32_t _concurrent_query(mysql_ctx *mysql) {
         funcs[i] = _conc_worker;
         argp[i] = &args[i];
     }
-    if (ERR_OK != coro_fork_wait(mysql->task, funcs, argp, _CONC_N)) {
+    if (ERR_OK != coro_fork_wait(coro_task_co(mysql->task), funcs, argp, _CONC_N)) {
         LOG_ERROR("mysql concurrent: fork_wait error.");
         return ERR_FAILED;
     }

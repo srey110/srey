@@ -38,7 +38,7 @@ int32_t mysql_more(mpack_ctx *mpack);
 /// <param name="user">登录用户名</param>
 /// <param name="password">登录密码</param>
 /// <param name="database">默认数据库名，NULL 或空字符串表示不设置</param>
-/// <param name="charset">字符集名称（如 "utf8mb4"）</param>
+/// <param name="charset">字符集名称（如 "utf8mb4"），不分大小写；不认识的名称打一行警告并按 0 发给服务端</param>
 /// <param name="maxpk">最大数据包大小，0 表示使用默认值 ONEK * ONEK</param>
 /// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,

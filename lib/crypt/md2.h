@@ -1,7 +1,7 @@
 ﻿#ifndef MD2_H_
 #define MD2_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define MD2_BLOCK_SIZE 16 // MD2 摘要输出长度（字节）
 #define MD2_KEY_BLOCK 16 // MD2 压缩分组长度 B（HMAC 的 ipad/opad 长度）

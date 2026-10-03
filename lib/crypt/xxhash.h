@@ -1,7 +1,7 @@
 ﻿#ifndef XXHASH_H_
 #define XXHASH_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 非密码学哈希，不能用作 MAC 或口令派生。
 // canonical 字节 = pack_integer(out, h, N, 0)（大端）；xxh128_t 先写 high 再写 low

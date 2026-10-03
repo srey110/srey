@@ -1,8 +1,5 @@
 ﻿#include "crypt/xxhash.h"
 #include "crypt/crypt_pub.h"
-#if defined(_MSC_VER)
-#include <intrin.h>
-#endif
 
 #define XXH_PRIME32_1 0x9E3779B1U
 #define XXH_PRIME32_2 0x85EBCA77U
@@ -31,13 +28,9 @@
 #define ROTL32(x, r) (((x) << (r)) | ((x) >> (32 - (r))))
 #define ROTL64(x, r) (((x) << (r)) | ((x) >> (64 - (r))))
 #define MUL32TO64(x, y) ((uint64_t)(uint32_t)(x) * (uint64_t)(uint32_t)(y))
-#if defined(__GNUC__) || defined(__clang__)
-#define XXH_OPAQUE(v) __asm__("" : "+r"(v))
-#else
-#define XXH_OPAQUE(v) (void)0
-#endif
+// SSE4.1 / aarch64 上让 XXH32 主循环保持标量写法，用 CRYPT_OPAQUE 实现；承重别删
 #if defined(__SSE4_1__) || defined(__aarch64__)
-#define XXH32_KEEP_SCALAR(v) XXH_OPAQUE(v)
+#define XXH32_KEEP_SCALAR(v) CRYPT_OPAQUE(v)
 #else
 #define XXH32_KEEP_SCALAR(v) (void)0
 #endif
@@ -100,24 +93,7 @@ static inline void _xxh_copy31(uint8_t *dst, const uint8_t *src, size_t lens) {
 // 64x64->128 位乘法
 static inline xxh128_t _xxh_mul128(uint64_t a, uint64_t b) {
     xxh128_t r;
-#if defined(__SIZEOF_INT128__)
-    unsigned __int128 p = (unsigned __int128)a * b;
-    r.low = (uint64_t)p;
-    r.high = (uint64_t)(p >> 64);
-#elif defined(_MSC_VER) && defined(_M_X64) && !defined(_M_ARM64EC)
-    r.low = _umul128(a, b, &r.high);
-#elif defined(_MSC_VER) && (defined(_M_ARM64) || defined(_M_ARM64EC))
-    r.low = a * b;
-    r.high = __umulh(a, b);
-#else
-    uint64_t lolo = MUL32TO64(a, b);
-    uint64_t hilo = MUL32TO64(a >> 32, b);
-    uint64_t lohi = MUL32TO64(a, b >> 32);
-    uint64_t hihi = MUL32TO64(a >> 32, b >> 32);
-    uint64_t cross = (lolo >> 32) + (hilo & 0xFFFFFFFFULL) + lohi;
-    r.high = (hilo >> 32) + (cross >> 32) + hihi;
-    r.low = (cross << 32) | (lolo & 0xFFFFFFFFULL);
-#endif
+    r.low = mul64_128(a, b, &r.high);
     return r;
 }
 static inline uint32_t _xxh32_round(uint32_t acc, uint32_t input) {
@@ -146,10 +122,10 @@ static inline const uint8_t *_xxh32_consume(uint32_t acc[4], const uint8_t *p, s
     uint32_t v0 = acc[0], v1 = acc[1], v2 = acc[2], v3 = acc[3];
     size_t n;
     for (n = lens / 16; n > 0; n--) {
-        v0 = _xxh32_round(v0, _crypt_read32le(p));
-        v1 = _xxh32_round(v1, _crypt_read32le(p + 4));
-        v2 = _xxh32_round(v2, _crypt_read32le(p + 8));
-        v3 = _xxh32_round(v3, _crypt_read32le(p + 12));
+        v0 = _xxh32_round(v0, read_le32(p));
+        v1 = _xxh32_round(v1, read_le32(p + 4));
+        v2 = _xxh32_round(v2, read_le32(p + 8));
+        v3 = _xxh32_round(v3, read_le32(p + 12));
         p += 16;
     }
     acc[0] = v0;
@@ -165,7 +141,7 @@ static inline uint32_t _xxh32_merge(const uint32_t acc[4]) {
 static inline uint32_t _xxh32_finalize(uint32_t h, const uint8_t *p, size_t lens) {
     lens &= 15;
     while (lens >= 4) {
-        h += _crypt_read32le(p) * XXH_PRIME32_3;
+        h += read_le32(p) * XXH_PRIME32_3;
         h = ROTL32(h, 17) * XXH_PRIME32_4;
         p += 4;
         lens -= 4;
@@ -265,10 +241,10 @@ static inline const uint8_t *_xxh64_consume(uint64_t acc[4], const uint8_t *p, s
     uint64_t v0 = acc[0], v1 = acc[1], v2 = acc[2], v3 = acc[3];
     size_t n;
     for (n = lens / 32; n > 0; n--) {
-        v0 = _xxh64_round(v0, _crypt_read64le(p));
-        v1 = _xxh64_round(v1, _crypt_read64le(p + 8));
-        v2 = _xxh64_round(v2, _crypt_read64le(p + 16));
-        v3 = _xxh64_round(v3, _crypt_read64le(p + 24));
+        v0 = _xxh64_round(v0, read_le64(p));
+        v1 = _xxh64_round(v1, read_le64(p + 8));
+        v2 = _xxh64_round(v2, read_le64(p + 16));
+        v3 = _xxh64_round(v3, read_le64(p + 24));
         p += 32;
     }
     acc[0] = v0;
@@ -288,13 +264,13 @@ static inline uint64_t _xxh64_merge(const uint64_t acc[4]) {
 static inline uint64_t _xxh64_finalize(uint64_t h, const uint8_t *p, size_t lens) {
     lens &= 31;
     while (lens >= 8) {
-        h ^= _xxh64_round(0, _crypt_read64le(p));
+        h ^= _xxh64_round(0, read_le64(p));
         h = ROTL64(h, 27) * XXH_PRIME64_1 + XXH_PRIME64_4;
         p += 8;
         lens -= 8;
     }
     if (lens >= 4) {
-        h ^= (uint64_t)_crypt_read32le(p) * XXH_PRIME64_1;
+        h ^= (uint64_t)read_le32(p) * XXH_PRIME64_1;
         h = ROTL64(h, 23) * XXH_PRIME64_2 + XXH_PRIME64_3;
         p += 4;
         lens -= 4;
@@ -384,20 +360,20 @@ static inline uint64_t _xxh3_mul_fold(uint64_t a, uint64_t b) {
     return r.low ^ r.high;
 }
 static FORCE_INLINE uint64_t _xxh3_mix16(const uint8_t *p, const uint8_t *secret, uint64_t seed) {
-    uint64_t lo = _crypt_read64le(p);
-    uint64_t hi = _crypt_read64le(p + 8);
-    return _xxh3_mul_fold(lo ^ (_crypt_read64le(secret) + seed), hi ^ (_crypt_read64le(secret + 8) - seed));
+    uint64_t lo = read_le64(p);
+    uint64_t hi = read_le64(p + 8);
+    return _xxh3_mul_fold(lo ^ (read_le64(secret) + seed), hi ^ (read_le64(secret + 8) - seed));
 }
 // 由 seed 派生 secret，seed 为 0 时结果就是默认 secret
 static void _xxh3_init_secret(uint8_t secret[XXH3_SECRET_SIZE], uint64_t seed) {
     const uint8_t *ksecret = _kSecret;
     size_t i;
 #if defined(__clang__)
-    XXH_OPAQUE(ksecret);
+    CRYPT_OPAQUE(ksecret);
 #endif
     for (i = 0; i < XXH3_SECRET_SIZE; i += 16) {
-        _crypt_write64le(secret + i, _crypt_read64le(ksecret + i) + seed);
-        _crypt_write64le(secret + i + 8, _crypt_read64le(ksecret + i + 8) - seed);
+        write_le64(secret + i, read_le64(ksecret + i) + seed);
+        write_le64(secret + i + 8, read_le64(ksecret + i + 8) - seed);
     }
 }
 // 长输入：累加一条（64 字节）
@@ -405,8 +381,8 @@ static inline void _xxh3_accumulate_512(uint64_t acc[XXH3_ACC_NB], const uint8_t
     size_t i;
     uint64_t val, key;
     for (i = 0; i < XXH3_ACC_NB; i++) {
-        val = _crypt_read64le(p + 8 * i);
-        key = val ^ _crypt_read64le(secret + 8 * i);
+        val = read_le64(p + 8 * i);
+        key = val ^ read_le64(secret + 8 * i);
         acc[i ^ 1] += val;
         acc[i] += MUL32TO64(key, key >> 32);
     }
@@ -427,7 +403,7 @@ static inline void _xxh3_scramble(uint64_t acc[XXH3_ACC_NB], const uint8_t *secr
     for (i = 0; i < XXH3_ACC_NB; i++) {
         a = acc[i];
         a ^= a >> 47;
-        a ^= _crypt_read64le(secret + 8 * i);
+        a ^= read_le64(secret + 8 * i);
         acc[i] = a * XXH_PRIME32_1;
     }
 }
@@ -451,7 +427,7 @@ static uint64_t _xxh3_merge(const uint64_t acc[XXH3_ACC_NB], const uint8_t *secr
     uint64_t h = start;
     size_t i;
     for (i = 0; i < 4; i++) {
-        h += _xxh3_mul_fold(acc[2 * i] ^ _crypt_read64le(secret + 16 * i), acc[2 * i + 1] ^ _crypt_read64le(secret + 16 * i + 8));
+        h += _xxh3_mul_fold(acc[2 * i] ^ read_le64(secret + 16 * i), acc[2 * i + 1] ^ read_le64(secret + 16 * i + 8));
     }
     return _xxh3_avalanche(h);
 }
@@ -518,23 +494,23 @@ NOINLINE static uint64_t _xxh3_long(const uint8_t *p, size_t lens, uint64_t seed
 static inline uint64_t _xxh3_64_1to3(const uint8_t *p, size_t lens, uint64_t seed) {
     uint32_t combined = ((uint32_t)p[0] << 16) | ((uint32_t)p[lens >> 1] << 24)
         | (uint32_t)p[lens - 1] | ((uint32_t)lens << 8);
-    uint64_t bitflip = (_crypt_read32le(_kSecret) ^ _crypt_read32le(_kSecret + 4)) + seed;
+    uint64_t bitflip = (read_le32(_kSecret) ^ read_le32(_kSecret + 4)) + seed;
     return _xxh64_avalanche((uint64_t)combined ^ bitflip);
 }
 static inline uint64_t _xxh3_64_4to8(const uint8_t *p, size_t lens, uint64_t seed) {
     uint64_t bitflip;
     uint64_t input;
-    seed ^= (uint64_t)_crypt_swap32((uint32_t)seed) << 32;
-    bitflip = (_crypt_read64le(_kSecret + 8) ^ _crypt_read64le(_kSecret + 16)) - seed;
-    input = _crypt_read32le(p + lens - 4) + ((uint64_t)_crypt_read32le(p) << 32);
+    seed ^= (uint64_t)byteswap32((uint32_t)seed) << 32;
+    bitflip = (read_le64(_kSecret + 8) ^ read_le64(_kSecret + 16)) - seed;
+    input = read_le32(p + lens - 4) + ((uint64_t)read_le32(p) << 32);
     return _xxh3_rrmxmx(input ^ bitflip, lens);
 }
 static inline uint64_t _xxh3_64_9to16(const uint8_t *p, size_t lens, uint64_t seed) {
-    uint64_t bitflip1 = (_crypt_read64le(_kSecret + 24) ^ _crypt_read64le(_kSecret + 32)) + seed;
-    uint64_t bitflip2 = (_crypt_read64le(_kSecret + 40) ^ _crypt_read64le(_kSecret + 48)) - seed;
-    uint64_t lo = _crypt_read64le(p) ^ bitflip1;
-    uint64_t hi = _crypt_read64le(p + lens - 8) ^ bitflip2;
-    return _xxh3_avalanche(lens + _crypt_swap64(lo) + hi + _xxh3_mul_fold(lo, hi));
+    uint64_t bitflip1 = (read_le64(_kSecret + 24) ^ read_le64(_kSecret + 32)) + seed;
+    uint64_t bitflip2 = (read_le64(_kSecret + 40) ^ read_le64(_kSecret + 48)) - seed;
+    uint64_t lo = read_le64(p) ^ bitflip1;
+    uint64_t hi = read_le64(p + lens - 8) ^ bitflip2;
+    return _xxh3_avalanche(lens + byteswap64(lo) + hi + _xxh3_mul_fold(lo, hi));
 }
 static inline uint64_t _xxh3_64_17to128(const uint8_t *p, size_t lens, uint64_t seed) {
     uint64_t acc = lens * XXH_PRIME64_1;
@@ -560,14 +536,14 @@ NOINLINE static uint64_t _xxh3_64_129to240(const uint8_t *p, size_t lens, uint64
     uint64_t acc_end;
     size_t rounds = lens / 16;
     size_t i;
-    XXH_OPAQUE(secret);
+    CRYPT_OPAQUE(secret);
     for (i = 0; i < 8; i++) {
         acc += _xxh3_mix16(p + 16 * i, secret + 16 * i, seed);
     }
     acc_end = _xxh3_mix16(p + lens - 16, secret + XXH3_SECRET_SIZE_MIN - XXH3_MIDSIZE_LASTOFFSET, seed);
     acc = _xxh3_avalanche(acc);
     for (i = 8; i < rounds; i++) {
-        XXH_OPAQUE(acc);
+        CRYPT_OPAQUE(acc);
         acc_end += _xxh3_mix16(p + 16 * i, secret + 16 * (i - 8) + XXH3_MIDSIZE_STARTOFFSET, seed);
     }
     return _xxh3_avalanche(acc + acc_end);
@@ -583,7 +559,7 @@ static inline uint64_t _xxh3_64_0to16(const uint8_t *p, size_t lens, uint64_t se
     if (lens > 0) {
         return _xxh3_64_1to3(p, lens, seed);
     }
-    return _xxh64_avalanche(seed ^ (_crypt_read64le(_kSecret + 56) ^ _crypt_read64le(_kSecret + 64)));
+    return _xxh64_avalanche(seed ^ (read_le64(_kSecret + 56) ^ read_le64(_kSecret + 64)));
 }
 uint64_t xxh3_64(const void *data, size_t lens, uint64_t seed) {
     const uint8_t *p = (const uint8_t *)data;
@@ -601,9 +577,9 @@ uint64_t xxh3_64(const void *data, size_t lens, uint64_t seed) {
 static inline xxh128_t _xxh3_128_1to3(const uint8_t *p, size_t lens, uint64_t seed) {
     uint32_t combinedl = ((uint32_t)p[0] << 16) | ((uint32_t)p[lens >> 1] << 24)
         | (uint32_t)p[lens - 1] | ((uint32_t)lens << 8);
-    uint32_t combinedh = ROTL32(_crypt_swap32(combinedl), 13);
-    uint64_t bitflipl = (_crypt_read32le(_kSecret) ^ _crypt_read32le(_kSecret + 4)) + seed;
-    uint64_t bitfliph = (_crypt_read32le(_kSecret + 8) ^ _crypt_read32le(_kSecret + 12)) - seed;
+    uint32_t combinedh = ROTL32(byteswap32(combinedl), 13);
+    uint64_t bitflipl = (read_le32(_kSecret) ^ read_le32(_kSecret + 4)) + seed;
+    uint64_t bitfliph = (read_le32(_kSecret + 8) ^ read_le32(_kSecret + 12)) - seed;
     xxh128_t h;
     h.low = _xxh64_avalanche((uint64_t)combinedl ^ bitflipl);
     h.high = _xxh64_avalanche((uint64_t)combinedh ^ bitfliph);
@@ -613,9 +589,9 @@ static inline xxh128_t _xxh3_128_4to8(const uint8_t *p, size_t lens, uint64_t se
     uint64_t bitflip;
     uint64_t input;
     xxh128_t m;
-    seed ^= (uint64_t)_crypt_swap32((uint32_t)seed) << 32;
-    input = _crypt_read32le(p) + ((uint64_t)_crypt_read32le(p + lens - 4) << 32);
-    bitflip = (_crypt_read64le(_kSecret + 16) ^ _crypt_read64le(_kSecret + 24)) + seed;
+    seed ^= (uint64_t)byteswap32((uint32_t)seed) << 32;
+    input = read_le32(p) + ((uint64_t)read_le32(p + lens - 4) << 32);
+    bitflip = (read_le64(_kSecret + 16) ^ read_le64(_kSecret + 24)) + seed;
     m = _xxh_mul128(input ^ bitflip, XXH_PRIME64_1 + ((uint64_t)lens << 2));
     m.high += m.low << 1;
     m.low ^= m.high >> 3;
@@ -626,16 +602,16 @@ static inline xxh128_t _xxh3_128_4to8(const uint8_t *p, size_t lens, uint64_t se
     return m;
 }
 static inline xxh128_t _xxh3_128_9to16(const uint8_t *p, size_t lens, uint64_t seed) {
-    uint64_t bitflipl = (_crypt_read64le(_kSecret + 32) ^ _crypt_read64le(_kSecret + 40)) - seed;
-    uint64_t bitfliph = (_crypt_read64le(_kSecret + 48) ^ _crypt_read64le(_kSecret + 56)) + seed;
-    uint64_t lo = _crypt_read64le(p);
-    uint64_t hi = _crypt_read64le(p + lens - 8);
+    uint64_t bitflipl = (read_le64(_kSecret + 32) ^ read_le64(_kSecret + 40)) - seed;
+    uint64_t bitfliph = (read_le64(_kSecret + 48) ^ read_le64(_kSecret + 56)) + seed;
+    uint64_t lo = read_le64(p);
+    uint64_t hi = read_le64(p + lens - 8);
     xxh128_t m = _xxh_mul128(lo ^ hi ^ bitflipl, XXH_PRIME64_1);
     xxh128_t h;
     m.low += (uint64_t)(lens - 1) << 54;
     hi ^= bitfliph;
     m.high += hi + MUL32TO64(hi, XXH_PRIME32_2 - 1);
-    m.low ^= _crypt_swap64(m.high);
+    m.low ^= byteswap64(m.high);
     h = _xxh_mul128(m.low, XXH_PRIME64_2);
     h.high += m.high * XXH_PRIME64_2;
     h.low = _xxh3_avalanche(h.low);
@@ -644,9 +620,9 @@ static inline xxh128_t _xxh3_128_9to16(const uint8_t *p, size_t lens, uint64_t s
 }
 static FORCE_INLINE xxh128_t _xxh3_128_mix32(xxh128_t acc, const uint8_t *in1, const uint8_t *in2, const uint8_t *secret, uint64_t seed) {
     acc.low += _xxh3_mix16(in1, secret, seed);
-    acc.low ^= _crypt_read64le(in2) + _crypt_read64le(in2 + 8);
+    acc.low ^= read_le64(in2) + read_le64(in2 + 8);
     acc.high += _xxh3_mix16(in2, secret + 16, seed);
-    acc.high ^= _crypt_read64le(in1) + _crypt_read64le(in1 + 8);
+    acc.high ^= read_le64(in1) + read_le64(in1 + 8);
     return acc;
 }
 // 中键两段路径共用的收尾
@@ -676,7 +652,7 @@ NOINLINE static xxh128_t _xxh3_128_129to240(const uint8_t *p, size_t lens, uint6
     const uint8_t *secret = _kSecret;
     xxh128_t acc;
     size_t i;
-    XXH_OPAQUE(secret);
+    CRYPT_OPAQUE(secret);
     acc.low = lens * XXH_PRIME64_1;
     acc.high = 0;
     for (i = 32; i < 160; i += 32) {
@@ -703,8 +679,8 @@ static inline xxh128_t _xxh3_128_0to16(const uint8_t *p, size_t lens, uint64_t s
     if (lens > 0) {
         return _xxh3_128_1to3(p, lens, seed);
     }
-    h.low = _xxh64_avalanche(seed ^ (_crypt_read64le(_kSecret + 64) ^ _crypt_read64le(_kSecret + 72)));
-    h.high = _xxh64_avalanche(seed ^ (_crypt_read64le(_kSecret + 80) ^ _crypt_read64le(_kSecret + 88)));
+    h.low = _xxh64_avalanche(seed ^ (read_le64(_kSecret + 64) ^ read_le64(_kSecret + 72)));
+    h.high = _xxh64_avalanche(seed ^ (read_le64(_kSecret + 80) ^ read_le64(_kSecret + 88)));
     return h;
 }
 xxh128_t xxh3_128(const void *data, size_t lens, uint64_t seed) {

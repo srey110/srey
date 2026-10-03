@@ -31,7 +31,7 @@
     typedef uint64_t atomic64_t; // 64 位原子整数类型
 #endif
 
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(CC_GNU)
     // 防止编译器和 CPU 对前后内存读写进行重排，并保证全局的顺序一致性
     #define ATOMIC_THREAD_FENCE_SEQCST() __atomic_thread_fence(__ATOMIC_SEQ_CST)
     #define ATOMIC_GET(ptr)   __atomic_load_n((ptr), __ATOMIC_ACQUIRE)

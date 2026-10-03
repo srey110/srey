@@ -1,7 +1,7 @@
 ﻿#ifndef HASH_RING_H_
 #define HASH_RING_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 #include "containers/slist.h"
 
 typedef struct hash_ring_node {

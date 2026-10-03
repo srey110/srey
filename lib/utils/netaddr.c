@@ -1,6 +1,6 @@
 ﻿#include "utils/netaddr.h"
 
-// 0~255 的十进制串，每项 4 字节，不足的补 '\0'；_netaddr_ip4 整项拷、按位数前进
+// 0~255 的十进制串，每项 4 字节，不足的补 '\0'；netaddr_ip4_str 整项拷、按位数前进
 static const char _netaddr_dec[256][4] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
     "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
@@ -122,8 +122,8 @@ struct sockaddr *netaddr_addr(netaddr_ctx *ctx) {
 socklen_t netaddr_size(netaddr_ctx *ctx) {
     return AF_INET == ctx->addr.sa_family ? (socklen_t)sizeof(ctx->ipv4) : (socklen_t)sizeof(ctx->ipv6);
 }
-// IPv4 点分十进制，与 inet_ntop 输出一致
-static void _netaddr_ip4(const uint8_t *b, char *p) {
+void netaddr_ip4_str(const uint8_t *b, char ip[IP_LENS]) {
+    char *p = ip;
     for (int32_t i = 0; i < 4; i++) {
         memcpy(p, _netaddr_dec[b[i]], sizeof(_netaddr_dec[0]));
         p += 1 + (b[i] >= 10) + (b[i] >= 100);
@@ -133,7 +133,7 @@ static void _netaddr_ip4(const uint8_t *b, char *p) {
 }
 int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]) {
     if (AF_INET == ctx->addr.sa_family) {
-        _netaddr_ip4((const uint8_t *)&ctx->ipv4.sin_addr, ip);
+        netaddr_ip4_str((const uint8_t *)&ctx->ipv4.sin_addr, ip);
         return ERR_OK;
     }
     if (NULL == inet_ntop(AF_INET6, &ctx->ipv6.sin6_addr, ip, IP_LENS)) {

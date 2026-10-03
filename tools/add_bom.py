@@ -26,7 +26,7 @@ def _skip_dir(name):
 
 
 def iter_sources(roots):
-    # roots 重叠时(如 `add_bom.py lib/base/base.c lib`)同一个文件会被产出多次,
+    # roots 重叠时(如 `add_bom.py lib/base/bytes.c lib`)同一个文件会被产出多次,
     # 补 BOM 那步无条件写,补两次就是双 BOM,编译直接挂。按真实路径去重
     seen = set()
 

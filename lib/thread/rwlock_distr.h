@@ -1,7 +1,7 @@
 ﻿#ifndef RWLOCK_DISTR_H_
 #define RWLOCK_DISTR_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 #include "thread/rwlock.h"
 
 // 分布式读锁:per-thread cache-line slot 消除原子计数器争用,适合读极多写极少

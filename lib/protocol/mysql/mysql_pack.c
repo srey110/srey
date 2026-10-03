@@ -14,6 +14,19 @@ static inline int32_t _mysql_pack_finish(binary_ctx *bwriter, size_t *size) {
     *size = bwriter->offset;
     return ERR_OK;
 }
+// NULL 位图：每 8 个参数共用一字节，第 i 个占 bit (i % 8)；按 type 缓冲现算(每参数 2 字节，低字节是类型)，
+// 类型为 MYSQL_TYPE_NULL 的就是 nil，见 mysql_bind_ctx
+static inline void _mysql_set_bitmap(binary_ctx *bwriter, const mysql_bind_ctx *mbind, size_t count) {
+    size_t nbytes = (count + 7) / 8;
+    const char *types = mbind->type.data;
+    binary_set_fill(bwriter, 0, nbytes);
+    char *bitmap = bwriter->data + bwriter->offset - nbytes;
+    for (size_t i = 0; i < count; i++) {
+        if (MYSQL_TYPE_NULL == (uint8_t)types[i * 2]) {
+            bitmap[i / 8] |= (char)(1 << (i % 8));
+        }
+    }
+}
 void *mysql_pack_quit(size_t *size) {
     binary_ctx bwriter;
     binary_init_write(&bwriter, 0, 0);
@@ -62,7 +75,7 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
     mysql->id = 0;
     size_t hint = 5 + 18 + sqllen;
     if (NULL != mbind) {
-        hint += mbind->bitmap.offset + 1 + mbind->type_name.offset + mbind->value.offset;
+        hint += ((size_t)mbind->count + 7) / 8 + 1 + mbind->type_name.offset + mbind->value.offset;
     }
     binary_ctx bwriter;
     binary_init_write(&bwriter, hint, 0);
@@ -78,7 +91,7 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
         _mysql_set_lenenc(&bwriter, count);//parameter_count
         _mysql_set_lenenc(&bwriter, 1);//parameter_set_count
         if (count > 0) {
-            binary_set_binary(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
+            _mysql_set_bitmap(&bwriter, mbind, count);//null_bitmap
             binary_set_int8(&bwriter, 1);//new_params_bind_flag,类型恒随包重发所以写死 1
             binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset);//param_type_and_flag parameter name
             binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
@@ -117,7 +130,7 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
     stmt->mysql->id = 0;
     size_t hint = 14;
     if (count > 0) {
-        hint += 9 + mbind->bitmap.offset + 1 + mbind->type_name.offset + mbind->type.offset + mbind->value.offset;
+        hint += 9 + (count + 7) / 8 + 1 + mbind->type_name.offset + mbind->type.offset + mbind->value.offset;
     }
     binary_ctx bwriter;
     binary_init_write(&bwriter, hint, 0);
@@ -131,7 +144,7 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
         if (BIT_CHECK(stmt->mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
             _mysql_set_lenenc(&bwriter, count);//parameter_count
         }
-        binary_set_binary(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
+        _mysql_set_bitmap(&bwriter, mbind, count);//null_bitmap
         binary_set_int8(&bwriter, 1);//new_params_bind_flag,类型恒随包重发所以写死 1
         if (BIT_CHECK(stmt->mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
             binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset);//parameter_type parameter_name

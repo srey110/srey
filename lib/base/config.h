@@ -43,7 +43,7 @@
 // 那个管单次读多少，这个管总共攒多少。设值须不小于所启用协议的最大包长，否则合法大包会被
 // 误断：见 prots_pub.h，REDIS_MAX_BULK_LENS 512MB、MONGO_MAX_PACK_LENS 64MB 是其中最大的两个
 #define MAX_RECV_CASH       0 // 0 表示不限制
-#define MAX_RECVFROM_SIZE   (64 * ONEK)// UDP 单次 recvfrom 最大字节数
+#define MAX_RECVFROM_SIZE   (64 * 1024)// UDP 单次 recvfrom 最大字节数
 // 单次发送(一次 writev/WSASend)的字节上限;0 表示不限制,只受 MAX_SEND_NIOV 的条数约束。
 // 判定在填完一条 iov 之后做,所以单条 buf 超过它时那次发送只带这一条 ——
 // 取小值会让排空积压要多打好几次系统调用,而拷贝总量并不因此减少
@@ -51,7 +51,7 @@
 #define MAX_SSL_SEND_SIZE   4096 // 单次 SSL_write 最大字节数；须小到 socket 一次吃得下整条 TLS 记录，调大的后果见 _evpub_sock_send_ssl
 #define MAX_SEND_NIOV       16 // scatter/gather 发送最大 iov 数量
 #define MAX_EXPAND_NIOV     4 // scatter/gather 接收最大 iov 数量
-#define MAX_SENDQ_CNT       ONEK // 单 sock 发送队列上限(buf 数)；超限 TCP 丢数据并断连、UDP 丢包；0 表示不限制
+#define MAX_SENDQ_CNT       1024 // 单 sock 发送队列上限(buf 数)；超限 TCP 丢数据并断连、UDP 丢包；0 表示不限制
 #define SSL_WPEND_MAX_MS    30000 // 挂起的 SSL 写零进展上限（毫秒），超限判死断连；须 > 0，取 0 不是关闭而是所有挂起写立刻判死
 
 //内核 reuseport 对 TCP 监听做不做连接级分发。为 1 时 accept 出的连接直接留在 accept 它的

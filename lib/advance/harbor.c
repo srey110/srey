@@ -31,12 +31,12 @@ static inline void _harbor_set_head(http_header_ctx *hd, const char *key, const 
 // 置 responded)只在 router.c 一处实现，harbor 这里只负责自己的头策略
 static inline void _harbor_respond(router_req *ctx, int32_t code, const int32_t *erro,
                             const char *ctype, void *body, size_t lens) {
-    char ebuf[16];
+    char ebuf[INT2STR_MAX];
     http_header_ctx extra[3];
     int32_t n = 0;
     _harbor_set_head(&extra[n++], "Server", "Srey");
     if (NULL != erro) {
-        SNPRINTF(ebuf, sizeof(ebuf), "%d", *erro);
+        i64tostr(ebuf, *erro, 10);
         _harbor_set_head(&extra[n++], "X-Srey-Erro", ebuf);
     }
     if (NULL != ctype
@@ -52,20 +52,21 @@ static inline void _harbor_respond_text(router_req *ctx, int32_t code) {
     _harbor_respond(ctx, code, NULL, "text/plain; charset=utf-8", (void *)txt, strlen(txt));
 }
 // /call 与 /request 共用：解析 dst/type/body，grab 目标 task，404 兜底；
-// is_call!=0 走 task_call(单向投递不等响应)，否则走 coro_request(请求-响应，本协程内 yield 等待)
+// is_call!=0 走 task_call(单向投递不等响应)，否则走 coro_request(请求-响应，本协程内 yield 等待)。
+// 请求体用 http_take_data 整块交给目标 task(copy=0)，不再拷一份；它与 dup_zero 的副本一样以 '\0' 结尾
 static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     size_t dn = 0;
     size_t tn = 0;
     size_t blen = 0;
     const char *ds = router_req_query(ctx, "dst", &dn);
     const char *tp = router_req_query(ctx, "type", &tn);
-    void *body = http_data(ctx->pack, &blen);
+    void *body;
     uint64_t dv = 0;
     uint64_t tv = 0;
     // 必须按 lens 截断解析：url_parse(decode=1) 就地解码只缩短 lens、不搬移后续字节，
     // 切片尾部残留解码前的旧字节("%310" 解码为 "10" 但缓冲仍读作 "1010")
-    if (ERR_OK != str2u64(ds, dn, UINT64_MAX, &dv)
-        || ERR_OK != str2u64(tp, tn, UINT16_MAX, &tv)) {
+    if (ERR_OK != strtou64(ds, dn, UINT64_MAX, &dv)
+        || ERR_OK != strtou64(tp, tn, UINT16_MAX, &tv)) {
         _harbor_respond_text(ctx, 404);
         return;
     }
@@ -80,15 +81,16 @@ static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
         _harbor_respond_text(ctx, 404);
         return;
     }
+    body = http_take_data(ctx->pack, &blen);
     if (is_call) {
-        task_call(to, type, body, blen, 1);
+        task_call(to, type, body, blen, 0);
         task_ungrab(to);
         _harbor_respond(ctx, 200, NULL, NULL, NULL, 0);
         return;
     }
     int32_t err = ERR_OK;
     size_t rlen = 0;
-    void *rtn = coro_request(to, ctx->task, type, body, blen, 1, &err, &rlen);
+    void *rtn = coro_request(to, ctx->task, type, body, blen, 0, &err, &rlen);
     task_ungrab(to);
     _harbor_respond(ctx, (ERR_OK != err) ? 400 : 200, &err, "application/octet-stream", rtn, rlen);
 }
@@ -121,7 +123,7 @@ static void _harbor_startup(task_ctx *harbor) {
     task_recved(harbor, _net_recv);
     task_closed(harbor, _net_close);
     ctx->router = router_new();
-    // 参数校验不再单设中间件：dst/type 的存在性判定与 _harbor_dispatch 的 str2u64 重复，
+    // 参数校验不再单设中间件：dst/type 的存在性判定与 _harbor_dispatch 的 strtou64 重复，
     // 结果同一类坏请求分两处决定、给出两种行为（缺参数静默关连接 vs 畸形参数回 404）。
     // 统一收到 _harbor_dispatch 一处：一律 404
     router_post(ctx->router, NULL, "/call", _harbor_call, NULL, 0);

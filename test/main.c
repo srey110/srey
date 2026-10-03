@@ -8,6 +8,7 @@
 #include "test_stm.h"
 #include "test_event.h"
 #include "test_minicoro.h"
+#include "test_coro.h"
 #include "test_protocol.h"
 #include "test_bson.h"
 #include "test_mqtt_pack.h"
@@ -178,7 +179,7 @@ int main(int argc, char *argv[]) {
     serviceid(1);/* 取 srey 的内置默认值，让 createid 的高 16 位与生产一致 */
     log_init(NULL, 0);
     bson_globle_init();
-    coro_desc_init(0);
+    coro_task_stack(0);
     dns_set_ip("8.8.8.8");
     const char *local = procpath();
 #if 0
@@ -209,6 +210,7 @@ int main(int argc, char *argv[]) {
     test_stm(suite);/* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
     test_event(suite);/* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
     test_minicoro(suite);/* minicoro 本地补丁：栈底守卫字拦截越过栈底的写 */
+    test_coro(suite);/* 通用协程调度器：sess 五条规则、fork、serial、dump */
     test_protocol(suite);/* HTTP、Redis RESP、URL 解析、custz、DNS、WebSocket */
     test_bson(suite);/* BSON 构建器、迭代器、find */
     test_mqtt_pack(suite);/* MQTT 组包/解包往返 */

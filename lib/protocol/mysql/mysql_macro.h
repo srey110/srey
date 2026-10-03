@@ -44,6 +44,7 @@
 #define CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA (1UL << 21) // 认证数据长度可超过 255 字节
 #define CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS   (1UL << 22) // 不因密码过期而断开连接
 #define CLIENT_SESSION_TRACK                  (1UL << 23) // 服务端可在 OK 包回带 session 状态变更(当前库等)
+#define CLIENT_DEPRECATE_EOF                  (1UL << 24) // 列定义后不发 EOF，结果集以 0xfe 头的 OK 包收尾
 #define CLIENT_QUERY_ATTRIBUTES               (1UL << 27) // 支持 COM_QUERY/COM_STMT_EXECUTE 可选参数
 
 // MySQL 数据包类型枚举

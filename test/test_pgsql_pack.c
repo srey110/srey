@@ -14,6 +14,20 @@ static uint32_t _rd_be32(const char *p) {
          | ((uint32_t)(uint8_t)p[2] << 8)
          |  (uint32_t)(uint8_t)p[3];
 }
+/* bind 的格式码段与参数值段同在 buf 里：格式码段 = Int16 n + 已绑的格式码，
+ * 参数值段从 2 + 2*nparam 起（含 Int16 参数值数量）。下面四个把两段各自的起点与长度取出来 */
+static const uint8_t *_bind_fmt(const pgsql_bind_ctx *b) {
+    return (const uint8_t *)b->buf.data;
+}
+static size_t _bind_fmt_len(const pgsql_bind_ctx *b) {
+    return 2 + 2 * (size_t)b->count;
+}
+static const uint8_t *_bind_val(const pgsql_bind_ctx *b) {
+    return (const uint8_t *)b->buf.data + 2 + 2 * (size_t)b->nparam;
+}
+static size_t _bind_val_len(const pgsql_bind_ctx *b) {
+    return b->buf.offset - 2 - 2 * (size_t)b->nparam;
+}
 
 /* =======================================================================
  * pgsql_pack_query —— 简单查询 'Q'
@@ -203,13 +217,19 @@ static void test_pgsql_stmt_execute(CuTest *tc) {
     CuAssertTrue(tc, 'B' == pack[0]);
     /* 末尾 5 字节是 Sync */
     CuAssertTrue(tc, 'S' == pack[size - 5]);
+    /* Bind 之后是 Describe 未命名门户：'D' + 长度 6 + 'P' + 空门户名，门户描述不回 ParameterDescription */
+    size_t d = 1 + (size_t)_rd_be32(pack + 1);
+    CuAssertTrue(tc, 'D' == pack[d]);
+    CuAssertIntEquals(tc, 6, (int)_rd_be32(pack + d + 1));
+    CuAssertTrue(tc, 'P' == pack[d + 5] && 0 == pack[d + 6]);
+    CuAssertTrue(tc, 'E' == pack[d + 7]);
     FREE(pack);
 
     pgsql_bind_free(&bind);
 }
 
 /* 实际绑定个数与 pgsql_bind_init 声明的 nparam 不符：组包侧直接拒绝。
-   format/values 两个头部的计数在 init 时就按 nparam 写死了，个数不符时服务端会把多出来的
+   格式码段与参数值段两个头部的计数在 init 时就按 nparam 写死了，个数不符时服务端会把多出来的
    格式码当成"参数值数量"、把值长度字段当成值，从计数字段起整条 Bind 错位成另一条语义无关的
    报文，既不报协议错也发不出去正确的查询 */
 static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
@@ -265,14 +285,14 @@ static void test_pgsql_bind_basic(CuTest *tc) {
     pgsql_bind_text(&bind, "abc", 3);
 
     /* init 时已写入 2 字节 nparam 头，再 8 个 int16 格式码 = 2 + 16 = 18 字节 */
-    CuAssertTrue(tc, 18 == (int)bind.format.offset);
+    CuAssertTrue(tc, 18 == (int)_bind_fmt_len(&bind));
     /* values 缓冲含 nparam 头 + 各参数（长度 4 字节 + 数据）*/
-    CuAssertTrue(tc, bind.values.offset > 2);
+    CuAssertTrue(tc, _bind_val_len(&bind) > 2);
 
     /* clear 回退到 nparam 头之后（offset=2）保留头部 */
     pgsql_bind_clear(&bind);
-    CuAssertTrue(tc, 2 == bind.format.offset);
-    CuAssertTrue(tc, 2 == bind.values.offset);
+    CuAssertTrue(tc, 2 == _bind_fmt_len(&bind));
+    CuAssertTrue(tc, 2 == _bind_val_len(&bind));
 
     pgsql_bind_free(&bind);
 }
@@ -293,8 +313,8 @@ static void test_pgsql_bind_extra_types(CuTest *tc) {
     pgsql_bind_uuid(&bind, uuid);
 
     /* init 时 2 字节 nparam，5 个 int16 格式码 = 2 + 10 = 12 字节 */
-    CuAssertTrue(tc, 12 == (int)bind.format.offset);
-    CuAssertTrue(tc, bind.values.offset > 2);
+    CuAssertTrue(tc, 12 == (int)_bind_fmt_len(&bind));
+    CuAssertTrue(tc, _bind_val_len(&bind) > 2);
 
     pgsql_bind_free(&bind);
 }
@@ -347,23 +367,21 @@ static void test_pgsql_bind_free_reuse(CuTest *tc) {
     pgsql_bind_init(&bind, 2);
     pgsql_bind_int32(&bind, 42);
     pgsql_bind_text(&bind, "hello", 5);
-    CuAssertTrue(tc, bind.values.offset > 2);
+    CuAssertTrue(tc, _bind_val_len(&bind) > 2);
 
     pgsql_bind_free(&bind);
     CuAssertIntEquals(tc, 0, bind.nparam);
-    CuAssertPtrEquals(tc, NULL, bind.format.data);
-    CuAssertPtrEquals(tc, NULL, bind.values.data);
+    CuAssertPtrEquals(tc, NULL, bind.buf.data);
 
     /* 重复 free 不炸 */
     pgsql_bind_free(&bind);
-    CuAssertPtrEquals(tc, NULL, bind.values.data);
+    CuAssertPtrEquals(tc, NULL, bind.buf.data);
 
     /* free 后再绑定全部静默无视，缓冲不会被重新写出来 */
     pgsql_bind_int32(&bind, 7);
     pgsql_bind_null(&bind);
     pgsql_bind_text(&bind, "x", 1);
-    CuAssertPtrEquals(tc, NULL, bind.format.data);
-    CuAssertPtrEquals(tc, NULL, bind.values.data);
+    CuAssertPtrEquals(tc, NULL, bind.buf.data);
 
     /* 组包侧同样按 nparam 早退，不会发出半截 Bind 消息。
        Bind 布局：'B' Int32(len) String(portal="") String(stmt) Int16(格式码数)
@@ -405,10 +423,10 @@ static void test_pgsql_bind_wire(CuTest *tc) {
 
     /* nparam 头是大端 int16：写成小端时这两个字节会对调 */
     pgsql_bind_init(&b, 0x0102);
-    CuAssertTrue(tc, 2 == b.format.offset);
-    CuAssertTrue(tc, 2 == b.values.offset);
-    f = (const uint8_t *)b.format.data;
-    v = (const uint8_t *)b.values.data;
+    CuAssertTrue(tc, 2 == _bind_fmt_len(&b));
+    CuAssertTrue(tc, 2 == _bind_val_len(&b));
+    f = _bind_fmt(&b);
+    v = _bind_val(&b);
     CuAssertIntEquals(tc, 0x01, f[0]);
     CuAssertIntEquals(tc, 0x02, f[1]);
     CuAssertIntEquals(tc, 0x01, v[0]);
@@ -418,10 +436,10 @@ static void test_pgsql_bind_wire(CuTest *tc) {
     /* NULL：格式码写 FORMAT_TEXT，长度字段写 -1 即 0xFFFFFFFF，不跟值字节 */
     pgsql_bind_init(&b, 4);
     pgsql_bind_null(&b);
-    CuAssertTrue(tc, 4 == b.format.offset);
-    CuAssertTrue(tc, 6 == b.values.offset);
-    f = (const uint8_t *)b.format.data;
-    v = (const uint8_t *)b.values.data;
+    CuAssertTrue(tc, 4 == _bind_fmt_len(&b));
+    CuAssertTrue(tc, 6 == _bind_val_len(&b));
+    f = _bind_fmt(&b);
+    v = _bind_val(&b);
     CuAssertIntEquals(tc, 0x00, f[2]);
     CuAssertIntEquals(tc, (uint8_t)FORMAT_TEXT, f[3]);
     CuAssertIntEquals(tc, 0xFF, v[2]);
@@ -432,10 +450,10 @@ static void test_pgsql_bind_wire(CuTest *tc) {
     /* int32：格式码 FORMAT_BINARY，长度 4（大端 int32），值本体也是大端 */
     pgsql_bind_clear(&b);
     pgsql_bind_int32(&b, 0x12345678);
-    CuAssertTrue(tc, 4 == b.format.offset);
-    CuAssertTrue(tc, 10 == b.values.offset);
-    f = (const uint8_t *)b.format.data;
-    v = (const uint8_t *)b.values.data;
+    CuAssertTrue(tc, 4 == _bind_fmt_len(&b));
+    CuAssertTrue(tc, 10 == _bind_val_len(&b));
+    f = _bind_fmt(&b);
+    v = _bind_val(&b);
     CuAssertIntEquals(tc, 0x00, f[2]);
     CuAssertIntEquals(tc, (uint8_t)FORMAT_BINARY, f[3]);
     CuAssertIntEquals(tc, 0x00, v[2]);
@@ -451,23 +469,23 @@ static void test_pgsql_bind_wire(CuTest *tc) {
     pgsql_bind_clear(&b);
     pgsql_bind_text(&b, "xy", 2);
     pgsql_bind_bytea(&b, "zw", 2);
-    f = (const uint8_t *)b.format.data;
+    f = _bind_fmt(&b);
     CuAssertIntEquals(tc, (uint8_t)FORMAT_TEXT, f[3]);
     CuAssertIntEquals(tc, (uint8_t)FORMAT_BINARY, f[5]);
     /* 零长值只写长度不写体 */
     pgsql_bind_clear(&b);
     pgsql_bind_text(&b, "", 0);
-    CuAssertTrue(tc, 6 == b.values.offset);
-    v = (const uint8_t *)b.values.data;
+    CuAssertTrue(tc, 6 == _bind_val_len(&b));
+    v = _bind_val(&b);
     CuAssertIntEquals(tc, 0x00, v[2]);
     CuAssertIntEquals(tc, 0x00, v[5]);
 
     /* clear 只回退到 nparam 头之后，头部两字节必须留着 */
     pgsql_bind_clear(&b);
-    CuAssertTrue(tc, 2 == b.format.offset);
-    CuAssertTrue(tc, 2 == b.values.offset);
-    CuAssertIntEquals(tc, 0x00, ((const uint8_t *)b.values.data)[0]);
-    CuAssertIntEquals(tc, 0x04, ((const uint8_t *)b.values.data)[1]);
+    CuAssertTrue(tc, 2 == _bind_fmt_len(&b));
+    CuAssertTrue(tc, 2 == _bind_val_len(&b));
+    CuAssertIntEquals(tc, 0x00, _bind_val(&b)[0]);
+    CuAssertIntEquals(tc, 0x04, _bind_val(&b)[1]);
     pgsql_bind_free(&b);
 }
 

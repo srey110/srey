@@ -1,6 +1,12 @@
 ﻿#include "crypt/base64.h"
-#include "crypt/crypt_pub.h"
 
+#define B64DE_ID(v) v
+// 预移位到 4 字节大端写出的位置，非法字符只占最低字节
+#define B64DE_SH(v, s) ((v) == 0xFF ? 0xFFu : (uint32_t)(v) << (s))
+#define B64DE_S0(v) B64DE_SH(v, 26)
+#define B64DE_S1(v) B64DE_SH(v, 20)
+#define B64DE_S2(v) B64DE_SH(v, 14)
+#define B64DE_S3(v) B64DE_SH(v, 8)
 // 解码表的 256 项取值，按字节值排列：非 base64 字符（含 CR/LF/'='）为 0xFF；X 决定每项怎么展开
 #define B64DE_LIST(X) \
     X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), \
@@ -19,13 +25,6 @@
     X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), \
     X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), \
     X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF), X(0xFF)
-#define B64DE_ID(v) v
-// 预移位到 4 字节大端写出的位置，非法字符只占最低字节
-#define B64DE_SH(v, s) ((v) == 0xFF ? 0xFFu : (uint32_t)(v) << (s))
-#define B64DE_S0(v) B64DE_SH(v, 26)
-#define B64DE_S1(v) B64DE_SH(v, 20)
-#define B64DE_S2(v) B64DE_SH(v, 14)
-#define B64DE_S3(v) B64DE_SH(v, 8)
 // 双字符编码表的一行：首字符固定为 a，次字符依次取完整字母表
 #define B64_ROW(a) \
     { a, 'A' }, { a, 'B' }, { a, 'C' }, { a, 'D' }, { a, 'E' }, { a, 'F' }, { a, 'G' }, { a, 'H' }, \
@@ -36,7 +35,6 @@
     { a, 'o' }, { a, 'p' }, { a, 'q' }, { a, 'r' }, { a, 's' }, { a, 't' }, { a, 'u' }, { a, 'v' }, \
     { a, 'w' }, { a, 'x' }, { a, 'y' }, { a, 'z' }, { a, '0' }, { a, '1' }, { a, '2' }, { a, '3' }, \
     { a, '4' }, { a, '5' }, { a, '6' }, { a, '7' }, { a, '8' }, { a, '9' }, { a, '+' }, { a, '/' }
-
 // Base64 编码字符表
 static const char b64en[] = {
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
@@ -66,6 +64,7 @@ static const char b64en2[4096][2] = {
     B64_ROW('w'), B64_ROW('x'), B64_ROW('y'), B64_ROW('z'), B64_ROW('0'), B64_ROW('1'), B64_ROW('2'), B64_ROW('3'),
     B64_ROW('4'), B64_ROW('5'), B64_ROW('6'), B64_ROW('7'), B64_ROW('8'), B64_ROW('9'), B64_ROW('+'), B64_ROW('/')
 };
+
 size_t bs64_encode(const void *data, const size_t lens, char *out) {
     const unsigned char *p = (const unsigned char *)data;
     uint64_t v, w;
@@ -73,7 +72,7 @@ size_t bs64_encode(const void *data, const size_t lens, char *out) {
     size_t i = 0, j = 0;
     // 快路径：一次读 8 字节只用前 6 字节，查 4 次双字符表，出 8 个字符一次写
     for (; i + 8 <= lens; i += 6, j += 8) {
-        v = _crypt_read64be(p + i);
+        v = read_be64(p + i);
         memcpy(&e0, b64en2[(v >> 52) & 0xFFF], 2);
         memcpy(&e1, b64en2[(v >> 40) & 0xFFF], 2);
         memcpy(&e2, b64en2[(v >> 28) & 0xFFF], 2);
@@ -122,21 +121,21 @@ size_t bs64_decode(const char *data, const size_t lens, char *out) {
         // 每组用 4 字节写出 3 字节，多出的 1 字节落在下一组的起点，之后必被覆盖
         if (0 == n) {
             for (; i + 8 <= lens; i += 8, j += 6) {
-                q = _crypt_read64be(p + i);
+                q = read_be64(p + i);
                 x = b64d0[q >> 56] | b64d1[(q >> 48) & 0xFF] | b64d2[(q >> 40) & 0xFF] | b64d3[(q >> 32) & 0xFF];
                 y = b64d0[(q >> 24) & 0xFF] | b64d1[(q >> 16) & 0xFF] | b64d2[(q >> 8) & 0xFF] | b64d3[q & 0xFF];
                 if (0 != ((x | y) & 0xFF)) {
                     break;
                 }
-                _crypt_write32be(out + j, x);
-                _crypt_write32be(out + j + 3, y);
+                write_be32(out + j, x);
+                write_be32(out + j + 3, y);
             }
             for (; i + 4 <= lens; i += 4, j += 3) {
                 x = b64d0[p[i]] | b64d1[p[i + 1]] | b64d2[p[i + 2]] | b64d3[p[i + 3]];
                 if (0 != (x & 0xFF)) {
                     break;
                 }
-                _crypt_write32be(out + j, x);
+                write_be32(out + j, x);
             }
             if (i == lens) {
                 break;

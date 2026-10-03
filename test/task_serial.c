@@ -10,14 +10,14 @@ typedef struct single_arg {
     int32_t expect_val;
 }single_arg;
 
-static void _single_cs(task_ctx *task, void *arg) {
-    (void)task;
+static void _single_cs(void *owner, void *arg) {
+    (void)owner;
     single_arg *a = (single_arg *)arg;
     a->hit = a->expect_val;
 }
 
 static int32_t _test_single(task_ctx *task) {
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     single_arg a = { .hit = 0, .expect_val = 42 };
     int32_t r = coro_serial_call(s, _single_cs, &a);
     if (ERR_OK != r) {
@@ -41,13 +41,13 @@ typedef struct nested_arg {
     int32_t inner;
 }nested_arg;
 
-static void _nested_inner(task_ctx *task, void *arg) {
-    (void)task;
+static void _nested_inner(void *owner, void *arg) {
+    (void)owner;
     nested_arg *a = (nested_arg *)arg;
     a->inner = 1;
 }
-static void _nested_outer(task_ctx *task, void *arg) {
-    (void)task;
+static void _nested_outer(void *owner, void *arg) {
+    (void)owner;
     nested_arg *a = (nested_arg *)arg;
     a->outer = 1;
     int32_t r = coro_serial_call(a->s, _nested_inner, a);
@@ -57,7 +57,7 @@ static void _nested_outer(task_ctx *task, void *arg) {
 }
 
 static int32_t _test_nested(task_ctx *task) {
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     nested_arg a = { .s = s, .outer = 0, .inner = 0 };
     int32_t r = coro_serial_call(s, _nested_outer, &a);
     if (ERR_OK != r) {
@@ -84,7 +84,8 @@ typedef struct fifo_arg {
     uint32_t hold_ms;  // 0 表示不 sleep
 }fifo_arg;
 
-static void _fifo_cs(task_ctx *task, void *arg) {
+static void _fifo_cs(void *owner, void *arg) {
+    task_ctx *task = owner;
     fifo_arg *a = (fifo_arg *)arg;
     a->order[(*a->cnt)++] = a->label;// 进入标签
     if (0 != a->hold_ms) {
@@ -93,23 +94,23 @@ static void _fifo_cs(task_ctx *task, void *arg) {
     }
 }
 
-static void _fifo_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _fifo_worker(void *owner, void *arg) {
+    (void)owner;
     fifo_arg *a = (fifo_arg *)arg;
     coro_serial_call(a->s, _fifo_cs, a);
 }
 
 static int32_t _test_fifo(task_ctx *task) {
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     int32_t order[8] = { 0 };
     int32_t cnt = 0;
     fifo_arg ja = { .s = s, .order = order, .cnt = &cnt, .label = 1, .hold_ms = 30 }; // A 持锁 sleep
     fifo_arg jb = { .s = s, .order = order, .cnt = &cnt, .label = 2, .hold_ms = 0 };
     fifo_arg jc = { .s = s, .order = order, .cnt = &cnt, .label = 3, .hold_ms = 0 };
-    // 三个协程依次 fork，进入 cs 的先后顺序 = fork 顺序（_drain_fork_queue 顺序起协程）
-    void (*fifo_fns[3])(task_ctx *, void *) = { _fifo_worker, _fifo_worker, _fifo_worker };
+    // 三个协程依次 fork，进入 cs 的先后顺序 = fork 顺序（coro_fork_drain 按 FIFO 起协程）
+    coro_fn fifo_fns[3] = { _fifo_worker, _fifo_worker, _fifo_worker };
     void *fifo_args[3] = { &ja, &jb, &jc };
-    coro_fork_wait(task, fifo_fns, fifo_args, 3);
+    coro_fork_wait(coro_task_co(task), fifo_fns, fifo_args, 3);
     // 期望 order = [1(A 进), 1(A 出), 2(B), 3(C)]：A 完全退出后 B 才能进
     if (4 != cnt || 1 != order[0] || 1 != order[1] || 2 != order[2] || 3 != order[3]) {
         LOG_ERROR("serial fifo: expect [1,1,2,3], got cnt=%d [%d,%d,%d,%d].",
@@ -135,7 +136,8 @@ typedef struct indep_arg {
     uint32_t sleep_ms;
 }indep_arg;
 
-static void _indep_cs(task_ctx *task, void *arg) {
+static void _indep_cs(void *owner, void *arg) {
+    task_ctx *task = owner;
     indep_arg *a = (indep_arg *)arg;
     if (0 != a->sleep_ms) {
         coro_sleep(task, a->sleep_ms);
@@ -143,15 +145,15 @@ static void _indep_cs(task_ctx *task, void *arg) {
     *a->flag = a->set_val;
 }
 
-static void _indep_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _indep_worker(void *owner, void *arg) {
+    (void)owner;
     indep_arg *a = (indep_arg *)arg;
     coro_serial_call(a->s, _indep_cs, a);
 }
 
 static int32_t _test_indep(task_ctx *task) {
-    coro_serial_ctx *s1 = coro_serial_new(task);
-    coro_serial_ctx *s2 = coro_serial_new(task);
+    coro_serial_ctx *s1 = coro_serial_new(coro_task_co(task));
+    coro_serial_ctx *s2 = coro_serial_new(coro_task_co(task));
     // 本用例故意在 10ms 处就判断，此时 a1 的 worker 还在 sleep(30)。失败路径一 return，
     // 栈上的 a1/f1 就没了，而 worker 醒来还要写 *a->flag —— 连同两个标志一起放 static
     static int32_t f1;
@@ -162,8 +164,8 @@ static int32_t _test_indep(task_ctx *task) {
     f2 = 0;
     a1.s = s1; a1.flag = &f1; a1.set_val = 1; a1.sleep_ms = 30;// s1 持锁 30ms
     a2.s = s2; a2.flag = &f2; a2.set_val = 2; a2.sleep_ms = 0;// s2 立即完成
-    coro_fork(task, _indep_worker, &a1);
-    coro_fork(task, _indep_worker, &a2);
+    coro_fork(coro_task_co(task), _indep_worker, &a1);
+    coro_fork(coro_task_co(task), _indep_worker, &a2);
     coro_sleep(task, 10);// 短等：s2 应该已完成，s1 仍在 sleep
     if (2 != f2) {
         LOG_ERROR("serial indep: s2 should finish quickly, f2=%d.", f2);
@@ -193,7 +195,8 @@ typedef struct mutex_arg {
     int32_t *peak;
 }mutex_arg;
 
-static void _mutex_cs(task_ctx *task, void *arg) {
+static void _mutex_cs(void *owner, void *arg) {
+    task_ctx *task = owner;
     mutex_arg *a = (mutex_arg *)arg;
     (*a->in_cs)++;
     if (*a->in_cs > *a->peak) {
@@ -203,19 +206,19 @@ static void _mutex_cs(task_ctx *task, void *arg) {
     (*a->in_cs)--;
 }
 
-static void _mutex_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _mutex_worker(void *owner, void *arg) {
+    (void)owner;
     mutex_arg *a = (mutex_arg *)arg;
     coro_serial_call(a->s, _mutex_cs, a);
 }
 
 static int32_t _test_mutex(task_ctx *task) {
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     int32_t in_cs = 0, peak = 0;
     mutex_arg a = { .s = s, .in_cs = &in_cs, .peak = &peak };
-    void (*mutex_fns[2])(task_ctx *, void *) = { _mutex_worker, _mutex_worker };
+    coro_fn mutex_fns[2] = { _mutex_worker, _mutex_worker };
     void *mutex_args[2] = { &a, &a };
-    coro_fork_wait(task, mutex_fns, mutex_args, 2);
+    coro_fork_wait(coro_task_co(task), mutex_fns, mutex_args, 2);
     if (1 != peak) {
         LOG_ERROR("serial mutex: expect peak=1, got %d.", peak);
         coro_serial_free(s);
@@ -241,13 +244,15 @@ typedef struct curco_arg {
     int32_t *b_done;
 }curco_arg;
 
-static void _curco_cs(task_ctx *task, void *arg) {
+static void _curco_cs(void *owner, void *arg) {
+    task_ctx *task = owner;
     (void)arg;
     coro_sleep(task, 20);// cs 内持锁 yield
 }
 
 // A: cs 出口后必须再调一次 coro_sleep,这是 B05 触发点
-static void _curco_worker_a(task_ctx *task, void *arg) {
+static void _curco_worker_a(void *owner, void *arg) {
+    task_ctx *task = owner;
     curco_arg *a = (curco_arg *)arg;
     coro_serial_call(a->s, _curco_cs, NULL);
     coro_sleep(task, 5);// 修复前 curco stale=B → ABORT
@@ -255,20 +260,20 @@ static void _curco_worker_a(task_ctx *task, void *arg) {
 }
 
 // B: 在 A 持锁 sleep 期间 fork 进入,走跨协程路径 mco_yield 入队
-static void _curco_worker_b(task_ctx *task, void *arg) {
-    (void)task;
+static void _curco_worker_b(void *owner, void *arg) {
+    (void)owner;
     curco_arg *a = (curco_arg *)arg;
     coro_serial_call(a->s, _curco_cs, NULL);
     *a->b_done = 1;
 }
 
 static int32_t _test_curco_restore(task_ctx *task) {
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     int32_t a_done = 0, b_done = 0;
     curco_arg arg = { .s = s, .a_done = &a_done, .b_done = &b_done };
-    void (*curco_fns[2])(task_ctx *, void *) = { _curco_worker_a, _curco_worker_b };
+    coro_fn curco_fns[2] = { _curco_worker_a, _curco_worker_b };
     void *curco_args[2] = { &arg, &arg };
-    coro_fork_wait(task, curco_fns, curco_args, 2);// A 先 fork → 占锁 sleep，B 后 fork → 跨协程路径入队
+    coro_fork_wait(coro_task_co(task), curco_fns, curco_args, 2);// A 先 fork → 占锁 sleep，B 后 fork → 跨协程路径入队
     if (1 != a_done) {
         LOG_ERROR("serial curco_restore: A did not finish post-cs coro_sleep (curco stale?), a_done=%d.", a_done);
         coro_serial_free(s);
@@ -292,7 +297,8 @@ typedef struct spool_arg {
     uint32_t hold_ms;
 }spool_arg;
 
-static void _spool_cs(task_ctx *task, void *arg) {
+static void _spool_cs(void *owner, void *arg) {
+    task_ctx *task = owner;
     spool_arg *a = (spool_arg *)arg;
     if (0 != a->hold_ms) {
         coro_sleep(task, a->hold_ms);
@@ -300,19 +306,19 @@ static void _spool_cs(task_ctx *task, void *arg) {
     ++(*a->cnt);
 }
 
-static void _spool_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _spool_worker(void *owner, void *arg) {
+    (void)owner;
     spool_arg *a = (spool_arg *)arg;
     coro_serial_call(a->s, _spool_cs, a);
 }
 
 static int32_t _test_serial_pool_reuse(task_ctx *task) {
     enum { ROUNDS = 16, CONTEND = 4 };
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     int32_t cnt = 0;
     spool_arg holder = { .s = s, .cnt = &cnt, .hold_ms = 5 };// 队头持锁 5ms 迫使其余排队
     spool_arg rest = { .s = s, .cnt = &cnt, .hold_ms = 0 };
-    fork_serial_cb funcs[CONTEND];
+    coro_fn funcs[CONTEND];
     void *args[CONTEND];
     int32_t i, r;
     funcs[0] = _spool_worker;
@@ -322,7 +328,7 @@ static int32_t _test_serial_pool_reuse(task_ctx *task) {
         args[i] = &rest;
     }
     for (r = 0; r < ROUNDS; r++) {
-        if (ERR_OK != coro_fork_wait(task, funcs, args, CONTEND)) {
+        if (ERR_OK != coro_fork_wait(coro_task_co(task), funcs, args, CONTEND)) {
             LOG_ERROR("serial pool reuse: round %d fork_wait failed.", r);
             coro_serial_free(s);
             return ERR_FAILED;
@@ -348,7 +354,8 @@ typedef struct sfree_arg {
     uint32_t hold_ms;  // 非 0 = 持锁者，进临界区后睡这么久；killer 借它当起手延时
 }sfree_arg;
 
-static void _sfree_worker(task_ctx *task, void *arg) {
+static void _sfree_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     sfree_arg *a = (sfree_arg *)arg;
     if (ERR_OK != coro_serial_enter(a->s)) {
         ++(*a->nfail);
@@ -365,7 +372,8 @@ static void _sfree_worker(task_ctx *task, void *arg) {
     coro_serial_leave(a->s);
 }
 
-static void _sfree_killer(task_ctx *task, void *arg) {
+static void _sfree_killer(void *owner, void *arg) {
+    task_ctx *task = owner;
     sfree_arg *a = (sfree_arg *)arg;
     coro_sleep(task, a->hold_ms);// 等 A 拿到锁、B/C 排进队列
     coro_serial_free(a->s);
@@ -373,15 +381,15 @@ static void _sfree_killer(task_ctx *task, void *arg) {
 
 static int32_t _test_serial_free_busy(task_ctx *task) {
     enum { HOLD_MS = 30, KILL_MS = 5 };
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     int32_t nfail = 0;
     int32_t nhold = 0;
     sfree_arg holder = { .s = s, .nfail = &nfail, .nhold = &nhold, .hold_ms = HOLD_MS };
     sfree_arg waiter = { .s = s, .nfail = &nfail, .nhold = &nhold, .hold_ms = 0 };
     sfree_arg killer = { .s = s, .nfail = &nfail, .nhold = &nhold, .hold_ms = KILL_MS };
-    fork_serial_cb funcs[4] = { _sfree_worker, _sfree_worker, _sfree_worker, _sfree_killer };
+    coro_fn funcs[4] = { _sfree_worker, _sfree_worker, _sfree_worker, _sfree_killer };
     void *args[4] = { &holder, &waiter, &waiter, &killer };
-    if (ERR_OK != coro_fork_wait(task, funcs, args, 4)) {
+    if (ERR_OK != coro_fork_wait(coro_task_co(task), funcs, args, 4)) {
         LOG_ERROR("serial free busy: fork_wait failed.");
         coro_serial_free(s);// 没有协程跑起来，killer 那次 free 也就没发生
         return ERR_FAILED;
@@ -398,7 +406,7 @@ static int32_t _test_serial_free_busy(task_ctx *task) {
 // 结果集回调里调 mysql_quit 就是这个形状：free 只标记不释放，推迟到本次 leave；
 // 标记之后连本协程的嵌套 enter 也一并拒绝
 static int32_t _test_serial_free_self(task_ctx *task) {
-    coro_serial_ctx *s = coro_serial_new(task);
+    coro_serial_ctx *s = coro_serial_new(coro_task_co(task));
     if (ERR_OK != coro_serial_enter(s)) {
         LOG_ERROR("serial free self: enter failed.");
         coro_serial_free(s);
@@ -430,7 +438,8 @@ typedef struct sq_arg {
     uint32_t hold_ms;
 }sq_arg;
 
-static void _sq_holder(task_ctx *task, void *arg) {
+static void _sq_holder(void *owner, void *arg) {
+    task_ctx *task = owner;
     sq_arg *a = (sq_arg *)arg;
     // 进来就把指针捏住:销毁方会在我们 sleep 期间把槽位置空,leave 时再去读槽位
     // 拿到的是 NULL —— 正是 coro_serial_free 文档里那条"加解锁须捏同一个指针"的反面
@@ -445,7 +454,8 @@ static void _sq_holder(task_ctx *task, void *arg) {
 // 与 mysql_quit / smtp_quit 等同一套：摘指针 → 上锁 → 干活 → free → 摘指针 → unlock。
 // 真接口在 NULL 那一档是"不排队直接断连"（无执行器的连接本就不串行），这里的复刻件不做断连动作，
 // 故 NULL 时只记一次 noop——本用例考的是上锁与 free 的交接，不是断连本身
-static void _sq_quit(task_ctx *task, void *arg) {
+static void _sq_quit(void *owner, void *arg) {
+    task_ctx *task = owner;
     sq_arg *a = (sq_arg *)arg;
     coro_sleep(task, a->hold_ms);// 让持锁者先进临界区
     coro_serial_ctx *held = *a->slot;
@@ -468,16 +478,16 @@ static void _sq_quit(task_ctx *task, void *arg) {
 
 static int32_t _test_serial_quit_order(task_ctx *task) {
     enum { HOLD_MS = 30, QUIT_MS = 5, LATE_MS = HOLD_MS + 20 };
-    coro_serial_ctx *slot = coro_serial_new(task);
+    coro_serial_ctx *slot = coro_serial_new(coro_task_co(task));
     int32_t order = 0;
     int32_t ev[4] = { 0 };
     int32_t cnoop = 0;
     sq_arg holder = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = HOLD_MS };
     sq_arg quitter = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = QUIT_MS };
     sq_arg late = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = LATE_MS };
-    fork_serial_cb funcs[4] = { _sq_holder, _sq_quit, _sq_quit, _sq_quit };
+    coro_fn funcs[4] = { _sq_holder, _sq_quit, _sq_quit, _sq_quit };
     void *args[4] = { &holder, &quitter, &quitter, &late };
-    if (ERR_OK != coro_fork_wait(task, funcs, args, 4)) {
+    if (ERR_OK != coro_fork_wait(coro_task_co(task), funcs, args, 4)) {
         LOG_ERROR("serial quit order: fork_wait failed.");
         coro_serial_free(slot);
         return ERR_FAILED;

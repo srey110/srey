@@ -1,28 +1,11 @@
 ﻿#include "crypt/aes.h"
 #include "crypt/padding.h"
-#include "crypt/crypt_pub.h"
 
 // 轮函数是否完全展开：1 展开(快、代码大)，0 用循环(小、慢)，可由构建侧 -DFULL_UNROLL=0 覆盖
 #ifndef FULL_UNROLL
 #define FULL_UNROLL 1
 #endif
 #define KEYLENGTH(keybits) ((keybits) / 8) // 将密钥位数转换为字节数
-#if defined(OS_WIN)
-// Windows 下走公共头的大端读写
-#define GETU32(plaintext) _crypt_read32be(plaintext)
-#define PUTU32(ciphertext, st) _crypt_write32be((ciphertext), (st))
-#else
-// 从字节数组大端读取 uint32
-#define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \
-                            ((uint32_t)(plaintext)[1] << 16) ^ \
-                            ((uint32_t)(plaintext)[2] <<  8) ^ \
-                            ((uint32_t)(plaintext)[3]))
-// 将 uint32 大端写入字节数组
-#define PUTU32(ciphertext, st) { (ciphertext)[0] = (uint8_t)((st) >> 24); \
-                                 (ciphertext)[1] = (uint8_t)((st) >> 16); \
-                                 (ciphertext)[2] = (uint8_t)((st) >>  8); \
-                                 (ciphertext)[3] = (uint8_t)(st); }
-#endif
 
 // AES 加密正向查找表 te0~te3（SubBytes + ShiftRows + MixColumns 组合）
 static const uint32_t te0[256] = {
@@ -649,10 +632,10 @@ static const uint32_t rcon[] = {
 static int32_t _aes_key_setup_encrypt(const uint8_t *key, int32_t keybits, uint32_t *rk) {
     int32_t i = 0;
     uint32_t temp;
-    rk[0] = GETU32(key);
-    rk[1] = GETU32(key + 4);
-    rk[2] = GETU32(key + 8);
-    rk[3] = GETU32(key + 12);
+    rk[0] = read_be32(key);
+    rk[1] = read_be32(key + 4);
+    rk[2] = read_be32(key + 8);
+    rk[3] = read_be32(key + 12);
     if (128 == keybits) {
         for (;;) {
             temp = rk[3];
@@ -671,8 +654,8 @@ static int32_t _aes_key_setup_encrypt(const uint8_t *key, int32_t keybits, uint3
             rk += 4;
         }
     }
-    rk[4] = GETU32(key + 16);
-    rk[5] = GETU32(key + 20);
+    rk[4] = read_be32(key + 16);
+    rk[5] = read_be32(key + 20);
     if (192 == keybits) {
         for (;;) {
             temp = rk[5];
@@ -693,8 +676,8 @@ static int32_t _aes_key_setup_encrypt(const uint8_t *key, int32_t keybits, uint3
             rk += 6;
         }
     }
-    rk[6] = GETU32(key + 24);
-    rk[7] = GETU32(key + 28);
+    rk[6] = read_be32(key + 24);
+    rk[7] = read_be32(key + 28);
     if (256 == keybits) {
         for (;;) {
             temp = rk[7];
@@ -762,10 +745,10 @@ static void _aes_encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *pla
 #if !FULL_UNROLL
     int32_t r;
 #endif
-    s0 = GETU32(plaintext) ^ rk[0];
-    s1 = GETU32(plaintext + 4) ^ rk[1];
-    s2 = GETU32(plaintext + 8) ^ rk[2];
-    s3 = GETU32(plaintext + 12) ^ rk[3];
+    s0 = read_be32(plaintext) ^ rk[0];
+    s1 = read_be32(plaintext + 4) ^ rk[1];
+    s2 = read_be32(plaintext + 8) ^ rk[2];
+    s3 = read_be32(plaintext + 12) ^ rk[3];
 #if FULL_UNROLL
     // 第 1 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[4];
@@ -891,25 +874,25 @@ static void _aes_encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *pla
         (te4[(t2 >> 8) & 0xff] & 0x0000ff00) ^
         (te4[(t3) & 0xff] & 0x000000ff) ^
         rk[0];
-    PUTU32(ciphertext, s0);
+    write_be32(ciphertext, s0);
     s1 = (te4[(t1 >> 24)] & 0xff000000) ^
         (te4[(t2 >> 16) & 0xff] & 0x00ff0000) ^
         (te4[(t3 >> 8) & 0xff] & 0x0000ff00) ^
         (te4[(t0) & 0xff] & 0x000000ff) ^
         rk[1];
-    PUTU32(ciphertext + 4, s1);
+    write_be32(ciphertext + 4, s1);
     s2 = (te4[(t2 >> 24)] & 0xff000000) ^
         (te4[(t3 >> 16) & 0xff] & 0x00ff0000) ^
         (te4[(t0 >> 8) & 0xff] & 0x0000ff00) ^
         (te4[(t1) & 0xff] & 0x000000ff) ^
         rk[2];
-    PUTU32(ciphertext + 8, s2);
+    write_be32(ciphertext + 8, s2);
     s3 = (te4[(t3 >> 24)] & 0xff000000) ^
         (te4[(t0 >> 16) & 0xff] & 0x00ff0000) ^
         (te4[(t1 >> 8) & 0xff] & 0x0000ff00) ^
         (te4[(t2) & 0xff] & 0x000000ff) ^
         rk[3];
-    PUTU32(ciphertext + 12, s3);
+    write_be32(ciphertext + 12, s3);
 }
 // AES 核心解密，将 16 字节密文解密为明文
 static void _aes_decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphertext, uint8_t plaintext[16]) {
@@ -917,10 +900,10 @@ static void _aes_decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *cip
 #if !FULL_UNROLL
     int32_t r;
 #endif
-    s0 = GETU32(ciphertext) ^ rk[0];
-    s1 = GETU32(ciphertext + 4) ^ rk[1];
-    s2 = GETU32(ciphertext + 8) ^ rk[2];
-    s3 = GETU32(ciphertext + 12) ^ rk[3];
+    s0 = read_be32(ciphertext) ^ rk[0];
+    s1 = read_be32(ciphertext + 4) ^ rk[1];
+    s2 = read_be32(ciphertext + 8) ^ rk[2];
+    s3 = read_be32(ciphertext + 12) ^ rk[3];
 #if FULL_UNROLL
     // 第 1 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[4];
@@ -1046,25 +1029,25 @@ static void _aes_decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *cip
         ((uint32_t)td4[(t2 >> 8) & 0xff] << 8) ^
         ((uint32_t)td4[(t1) & 0xff]) ^
         rk[0];
-    PUTU32(plaintext, s0);
+    write_be32(plaintext, s0);
     s1 = ((uint32_t)td4[(t1 >> 24)] << 24) ^
         ((uint32_t)td4[(t0 >> 16) & 0xff] << 16) ^
         ((uint32_t)td4[(t3 >> 8) & 0xff] << 8) ^
         ((uint32_t)td4[(t2) & 0xff]) ^
         rk[1];
-    PUTU32(plaintext + 4, s1);
+    write_be32(plaintext + 4, s1);
     s2 = ((uint32_t)td4[(t2 >> 24)] << 24) ^
         ((uint32_t)td4[(t1 >> 16) & 0xff] << 16) ^
         ((uint32_t)td4[(t0 >> 8) & 0xff] << 8) ^
         ((uint32_t)td4[(t3) & 0xff]) ^
         rk[2];
-    PUTU32(plaintext + 8, s2);
+    write_be32(plaintext + 8, s2);
     s3 = ((uint32_t)td4[(t3 >> 24)] << 24) ^
         ((uint32_t)td4[(t2 >> 16) & 0xff] << 16) ^
         ((uint32_t)td4[(t1 >> 8) & 0xff] << 8) ^
         ((uint32_t)td4[(t0) & 0xff]) ^
         rk[3];
-    PUTU32(plaintext + 12, s3);
+    write_be32(plaintext + 12, s3);
 }
 void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int32_t encrypt) {
     uint8_t *k;

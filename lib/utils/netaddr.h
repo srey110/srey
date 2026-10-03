@@ -1,13 +1,14 @@
 ﻿#ifndef NETADDR_H_
 #define NETADDR_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef union netaddr_ctx {
     struct sockaddr addr;
     struct sockaddr_in ipv4;
     struct sockaddr_in6 ipv6;
 }netaddr_ctx;
+
 /// <summary>
 /// 是否为ipv4 地址
 /// </summary>
@@ -80,6 +81,12 @@ socklen_t netaddr_size(netaddr_ctx *ctx);
 /// <param name="ip">IP</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]);
+/// <summary>
+/// 4 字节网络序 IPv4 地址转点分十进制，输出与 inet_ntop(AF_INET) 逐字节相同
+/// </summary>
+/// <param name="b">地址的 4 个字节(网络序)</param>
+/// <param name="ip">输出缓冲，按段整 4 字节写，故至少要 16 字节(IP_LENS 足够)</param>
+void netaddr_ip4_str(const uint8_t *b, char ip[IP_LENS]);
 /// <summary>
 /// 获取端口
 /// </summary>

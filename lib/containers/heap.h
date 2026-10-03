@@ -1,7 +1,7 @@
 ﻿#ifndef HEAP_H_
 #define HEAP_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 数组式二叉堆(最小堆)。元素由调用方持有，堆里只存指针，故元素地址稳定、可按引用 O(log n) 删除。
 // 元素内需有一个 uint32_t 字段回指自己在堆中的下标，由堆维护，调用方不得改动。

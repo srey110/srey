@@ -26,7 +26,7 @@ typedef enum log_color {
     LOG_COLOR_RED,
     LOG_COLOR_YELLOW
 }log_color;
-// log_abort 的三态选举，并发断言时的分工见 base.h 上的声明
+// log_abort 的三态选举，并发断言时的分工见 macro_log.h 上的声明
 typedef enum log_abort_state {
     LOG_ABORT_IDLE = 0,
     LOG_ABORT_WRITING,
@@ -48,10 +48,10 @@ static atomic_t _aborting = LOG_ABORT_IDLE; /* 取值见 log_abort_state */
 static atomic_t _drained = 0; /* 完成一轮排空自增,log_abort 据此判断落盘 */
 static pthread_t _th;
 // 本线程是不是日志线程本身。断言若发生在它身上，log_abort 据此跳过排空
-static THREAD_LOCAL int32_t _in_logth = 0;
+TLS_DEFINE(int32_t, _in_logth, 1)
 // 业务线程走 _log_sync 兜底时自己的秒级时间串缓存，见 _log_timestr_cached
-static THREAD_LOCAL uint64_t _sync_sec = 0;
-static THREAD_LOCAL char _sync_time[TIME_LENS] = { 0 };
+TLS_DEFINE(uint64_t, _sync_sec, 1)
+TLS_DEFINE(char, _sync_time, TIME_LENS)
 // 日志文件模式下攒的行，只许 _log_write_item 这条串行路径用，口径同 _log_timestr
 static char _batch[LOG_BATCH_BYTES];
 static size_t _nbatch = 0;
@@ -183,7 +183,7 @@ static inline const char *_log_timestr(uint64_t ms) {
 // 用在格式化失败、队列满、以及 log_abort 三条进不了日志线程的路径上。
 // WARN 及以上立刻刷，其余留给日志线程入睡前那次刷
 static inline void _log_sync(FILE *f, const log_item *item, const char *msg) {
-    _log_fprint(f, item, _log_timestr_cached(item->ms, &_sync_sec, _sync_time),
+    _log_fprint(f, item, _log_timestr_cached(item->ms, _sync_sec_tls(), _sync_time_tls()),
                 (int32_t)(item->ms % 1000), msg, "", "");
     if (item->lv <= LOGLV_WARN) {
         fflush(f);
@@ -273,7 +273,7 @@ static void _log_write_exit(void) {
 // 或等到下一条 WARN 才落盘
 static void _log_loop(void *arg) {
     (void)arg;
-    _in_logth = 1;
+    *_in_logth_tls() = 1;
     log_item *items[LOG_POP_BATCH];
     timer_ctx timer;
     timer_init(&timer);
@@ -384,7 +384,7 @@ void log_abort(const char *file, const char *func, int32_t line, const char *msg
         return;
     }
     // 断言发生在日志线程自己身上时没人能推进队列，等也是白等，只把它手里攒的那批写出去
-    if (0 == _in_logth) {
+    if (0 == *_in_logth_tls()) {
         _log_drain_wait();
     } else {
         _log_batch_flush();

@@ -1,7 +1,7 @@
 ﻿#ifndef MONGO_MACRO_H_
 #define MONGO_MACRO_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef enum mongo_flags {
     CHECKSUM = 0x01,          //末尾附带 CRC-32C 校验和;本客户端不支持(mongo_unpack 见 CHECKSUM 即拒绝),server 启用 wire checksum 时不可用

@@ -6,6 +6,12 @@
 #include "srey/loader.h"
 #include "srey/task.h"
 
+// 三种 Content-Type 的整行常量(线格式同 http_pack_head："Key: value" + CRLF)，一次追加写入；ROUTER_CT_LINE 展开成 指针, 长度
+#define ROUTER_CT_TEXT "Content-Type: text/plain; charset=utf-8" FLAG_CRLF
+#define ROUTER_CT_JSON "Content-Type: application/json" FLAG_CRLF
+#define ROUTER_CT_HTML "Content-Type: text/html; charset=utf-8" FLAG_CRLF
+#define ROUTER_CT_LINE(lit) (lit), (sizeof(lit) - 1)
+#define ROUTER_EXTRA_KEY_MAX 128 // extra 头名长度上限(不含)，超了整条丢
 // 非 200 的错误正文。两个派发入口的正文必须一模一样, 只是发送方式不同
 // (dispatch 只回响应, 流式那边还要关连接 + 丢记录), 故正文在这里定死。
 // 匹配失败的码由 _router_code_body 按状态码生成; 下面两条是它生成不出来的
@@ -239,6 +245,16 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
     *out_n = n;
     return ERR_OK;
 }
+// 字面段与请求段逐字节比, 长度已由调用方比过。字面段多是几个字节, 调 memcmp 比比较本身还贵
+static inline int32_t _router_lit_eq(const char *a, const char *b, uint32_t n) {
+    uint32_t k;
+    for (k = 0; k < n; k++) {
+        if (a[k] != b[k]) {
+            return 0;
+        }
+    }
+    return 1;
+}
 // 把请求段 qsegs[*qi] 作为 seg 命名的参数填入 ctx->params, 并推进 *pn / *qi。
 // 成功返 1; 超出 ROUTER_MAX_PARAMS 返 0, 此时不改动任何计数。
 // {name} 与 {name?} 共用本函数, 保证两者填参形状与上限判定始终一致
@@ -277,7 +293,7 @@ static int32_t _router_match_linear(const router_seg *rsegs, int32_t rn,
         }
         if (ROUTER_SEG_LIT == seg->t) {
             if (seg->str_len != (uint32_t)qsegs[qi].lens
-                || 0 != memcmp(seg->str, qsegs[qi].data, qsegs[qi].lens)) {
+                || !_router_lit_eq(seg->str, (const char *)qsegs[qi].data, seg->str_len)) {
                 return 0;
             }
             qi++;
@@ -341,10 +357,10 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn, int32_t n
             } else if (qi >= qn) {
                 ok[ri][s] = 0;
             } else if (ROUTER_SEG_LIT == seg->t) {
-                // 后缀先判: 已不可行就不必再 memcmp(等价于 cond ? x : 0 写成 x && cond)
+                // 后缀先判: 已不可行就不必再比字面(等价于 cond ? x : 0 写成 x && cond)
                 ok[ri][s] = (ok[ri + 1][s]
                     && seg->str_len == (uint32_t)qsegs[qi].lens
-                    && 0 == memcmp(seg->str, qsegs[qi].data, qsegs[qi].lens)) ? 1 : 0;
+                    && _router_lit_eq(seg->str, (const char *)qsegs[qi].data, seg->str_len)) ? 1 : 0;
             } else {
                 ok[ri][s] = ok[ri + 1][s];
             }
@@ -523,7 +539,6 @@ void router_define(router_ctx *r, const char *name, router_cb fn) {
             return;
         }
     }
-
     // strdup 一份, 调用方栈上 / 常量区字符串都能用
     size_t len = strlen(name);
     char *dup = dup_zero(name, len);
@@ -967,32 +982,33 @@ void *router_req_body(router_req *ctx, size_t *lens) {
     }
     return http_data(ctx->pack, lens);
 }
-// 组装完整 HTTP 响应并 ev_send 推出去; 自动写 Content-Length, content_type 非 NULL 时自动写
-// Content-Type, extra 由调用方追加 (不可重复 CL / CT / Transfer-Encoding)。
+// 组装完整 HTTP 响应并 ev_send 推出去; 自动写 Content-Length, ctline 非 NULL 时原样追加这一整行 Content-Type
+// (ROUTER_CT_* 常量, ctlens 为其长度), extra 由调用方追加 (不可重复 CL / CT / Transfer-Encoding)。
 // bw 内部托管, ev_send copy=0 已转移所有权, 返回后无需 binary_free。
 // 不接 router_req, 供无 ctx 的错误路径共用; 有 ctx 的入口走 _router_send_resp 包一层置 responded。
 // head_only 非 0 时只回头不回体, 但 Content-Length 仍写 body 的真实长度 —— RFC 7231 §4.3.2
 // 要求 HEAD 的响应头与同一资源的 GET 一致, 多发的字节会被当成下一条响应而让 keep-alive 错位
 static void _router_send_core(task_ctx *task, sock_ctx *sk, int32_t code,
-                              int32_t head_only, const char *content_type,
+                              int32_t head_only, const char *ctline, size_t ctlens,
                               const http_header_ctx *extra, int32_t extra_n,
                               const char *body, size_t body_len) {
-    const size_t head_reserve = 256;
+    size_t head_reserve = 256;
+    for (int32_t i = 0; i < extra_n; i++) {
+        head_reserve += extra[i].key.lens + extra[i].value.lens + 4;
+    }
     int32_t withbody = !http_code_nobody(code) && 0 == head_only && !EMPTYPTR(body, body_len);
     binary_ctx bw;
-    binary_init_write(&bw, withbody ? body_len + head_reserve : 0, 0);
+    binary_init_write(&bw, (withbody ? body_len : 0) + head_reserve, 0);
     http_pack_resp(&bw, code);
-    if (NULL != content_type) {
-        http_pack_head(&bw, "Content-Type", content_type);
+    if (NULL != ctline) {
+        binary_set_binary(&bw, ctline, ctlens);
     }
-    // 头值按长度直传 http_pack_head2 无长度限制; 头名没有按长度取值的重载, 仍需 \0 结尾副本。
-    // 非法头一律整条丢弃而不截断、更不 abort: 截断头名等于把它改成另一个名字发上线缆, 比不发更糟;
-    // 而 http_pack_head2 对 CR/LF 是断言退进程, 让业务数据能打死服务端不可接受, 故在此先筛掉
-    char k[128];
+    // 非法头一律整条丢弃而不截断、更不 abort: 截断头名等于把它改成另一个名字发上线缆, 比不发更糟。
+    // 筛过的头按长度直写, 线格式同 http_pack_head2(那边对 CR/LF 是断言退进程, 业务数据不能走那条)
     for (int32_t i = 0; i < extra_n; i++) {
         if (NULL == extra[i].key.data
             || 0 == extra[i].key.lens
-            || extra[i].key.lens >= sizeof(k)) {
+            || extra[i].key.lens >= ROUTER_EXTRA_KEY_MAX) {
             LOG_WARN("router: header key length %zu invalid, dropped.", extra[i].key.lens);
             continue;
         }
@@ -1014,9 +1030,10 @@ static void _router_send_core(task_ctx *task, sock_ctx *sk, int32_t code,
             LOG_WARN("router: header value is NULL or contains NUL/CRLF, dropped.");
             continue;
         }
-        // 上面已挡过 key.lens >= sizeof(k)，装得下
-        (void)copy_bounded(extra[i].key.data, extra[i].key.lens, k, sizeof(k), 1);
-        http_pack_head2(&bw, k, (const char *)extra[i].value.data, extra[i].value.lens);
+        binary_set_binary(&bw, extra[i].key.data, extra[i].key.lens);
+        binary_set_binary(&bw, ": ", sizeof(": ") - 1);
+        binary_set_binary(&bw, extra[i].value.data, extra[i].value.lens);
+        binary_set_binary(&bw, FLAG_CRLF, CRLF_SIZE);
     }
     // 1xx/204/304 禁带 Content-Length 与报文体, 只收尾不写 body(给了也丢);
     // 其余走 http_pack_content, 它写 \r\n\r\n + body 完成整包, 空 body 也统一收敛成
@@ -1036,34 +1053,34 @@ static void _router_send_core(task_ctx *task, sock_ctx *sk, int32_t code,
     ev_send(&task->loader->netev, sk, bw.data, bw.offset, 0);
 }
 // _router_send_core 的 router_req 版: 发完置 responded 避免 dispatch 末尾兜底 500 又发一遍
-static void _router_send_resp(router_req *ctx, int32_t code, const char *content_type,
+static void _router_send_resp(router_req *ctx, int32_t code, const char *ctline, size_t ctlens,
                               const http_header_ctx *extra, int32_t extra_n,
                               const char *body, size_t body_len) {
     _router_send_core(ctx->task, &ctx->sk, code,
-                      ROUTER_M_HEAD == ctx->method, content_type,
+                      ROUTER_M_HEAD == ctx->method, ctline, ctlens,
                       extra, extra_n, body, body_len);
     ctx->responded = 1;
 }
 void router_req_text(router_req *ctx, int32_t code, const char *body, size_t lens) {
-    _router_send_resp(ctx, code, "text/plain; charset=utf-8", NULL, 0, body, lens);
+    _router_send_resp(ctx, code, ROUTER_CT_LINE(ROUTER_CT_TEXT), NULL, 0, body, lens);
 }
 void router_req_json(router_req *ctx, int32_t code, const char *json, size_t lens) {
-    _router_send_resp(ctx, code, "application/json", NULL, 0, json, lens);
+    _router_send_resp(ctx, code, ROUTER_CT_LINE(ROUTER_CT_JSON), NULL, 0, json, lens);
 }
 void router_req_html(router_req *ctx, int32_t code, const char *body, size_t lens) {
-    _router_send_resp(ctx, code, "text/html; charset=utf-8", NULL, 0, body, lens);
+    _router_send_resp(ctx, code, ROUTER_CT_LINE(ROUTER_CT_HTML), NULL, 0, body, lens);
 }
 void router_req_respond(router_req *ctx, int32_t code,
                       const http_header_ctx *extra, int32_t extra_n,
                       const char *body, size_t body_len) {
-    _router_send_resp(ctx, code, NULL, extra, extra_n, body, body_len);
+    _router_send_resp(ctx, code, NULL, 0, extra, extra_n, body, body_len);
 }
 // 兜底响应 (404 / 405 / 500); body 走 strlen 的纯文本简写, 适合 dispatch 未匹配 /
 // 未识别方法 / 中间件链溢出等错误路径。部分调用方 (router_reject_chunked) 无 router_req
 // 可用, 故不接 ctx —— 有 ctx 的调用方需自行在调用后置 ctx->responded = 1 防止兜底 500 重发
 static void _router_send_simple(task_ctx *task, sock_ctx *sk, int32_t code,
                                 int32_t head_only, const char *body) {
-    _router_send_core(task, sk, code, head_only, "text/plain; charset=utf-8", NULL, 0,
+    _router_send_core(task, sk, code, head_only, ROUTER_CT_LINE(ROUTER_CT_TEXT), NULL, 0,
                       body, (NULL == body) ? 0 : strlen(body));
 }
 // 拒绝 chunked 请求：回 411 后立即关闭连接

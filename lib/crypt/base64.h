@@ -1,10 +1,11 @@
 ﻿#ifndef BASE64_H_
 #define BASE64_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define B64EN_SIZE(s)   ((((s) + 2) / 3 * 4) + 1)
 #define B64DE_SIZE(s)   ((((s) + 3) / 4 * 3) + 1)
+
 /// <summary>
 /// base64 编码
 /// </summary>

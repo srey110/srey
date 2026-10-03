@@ -181,7 +181,7 @@ static void _h_opt_ambig(router_req *ctx) {
                          NULL == v ? 4 : (int32_t)n, NULL == v ? "none" : v);
     router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
-// GET /bighdr → 回一条 BIGHDR_LEN 字节的 X-Big 头; 覆盖头值改走 http_pack_head2 后不再截断
+// GET /bighdr → 回一条 BIGHDR_LEN 字节的 X-Big 头; 覆盖头值按长度直写、不再截断
 static void _h_bighdr(router_req *ctx) {
     char val[BIGHDR_LEN];
     memset(val, 'a', sizeof(val));

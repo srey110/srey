@@ -16,20 +16,15 @@
 #define F(x, y, z) (((x) & (y)) | ((~x) & (z))) // 轮函数 F：选择函数
 #define H(x, y, z) ((x) ^ (y) ^ (z)) // 轮函数 H：奇偶函数
 #define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n)))) // 循环左移
-#if defined(__GNUC__) || defined(__clang__)
-#define MD4_OPAQUE(v) __asm__("" : "+r"(v))
-#else
-#define MD4_OPAQUE(v) (void)0
-#endif
 // 每步先加与本步新值无关的项，最后才加依赖 b 的那项
 // 第一轮操作
-#define FF(a, b, c, d, x, s) { (a) += (x); MD4_OPAQUE(a); (a) += F ((b), (c), (d)); \
+#define FF(a, b, c, d, x, s) { (a) += (x); CRYPT_OPAQUE(a); (a) += F ((b), (c), (d)); \
                                (a) = ROTATE_LEFT ((a), (s)); }
 // 第二轮操作：多数函数 = (c & d) | (b & (c ^ d))，两半不相交，按加法拆开结果不变
-#define GG(a, b, c, d, x, s) { (a) += (x) + (uint32_t)0x5a827999 + ((c) & (d)); MD4_OPAQUE(a); (a) += (b) & ((c) ^ (d)); \
+#define GG(a, b, c, d, x, s) { (a) += (x) + (uint32_t)0x5a827999 + ((c) & (d)); CRYPT_OPAQUE(a); (a) += (b) & ((c) ^ (d)); \
                                (a) = ROTATE_LEFT ((a), (s)); }
 // 第三轮操作
-#define HH(a, b, c, d, x, s) { (a) += (x) + (uint32_t)0x6ed9eba1; MD4_OPAQUE(a); (a) += H ((b), (c), (d)); \
+#define HH(a, b, c, d, x, s) { (a) += (x) + (uint32_t)0x6ed9eba1; CRYPT_OPAQUE(a); (a) += H ((b), (c), (d)); \
                                (a) = ROTATE_LEFT ((a), (s)); }
 
 // MD4 核心变换：依次压缩 nblk 个 64 字节块并更新状态
@@ -37,7 +32,7 @@ static void _md4_transform(md4_ctx *md4, const uint8_t *data, size_t nblk) {
     uint32_t i, a, b, c, d, x[16];
     for (; nblk > 0; --nblk, data += 64) {
         for (i = 0; i < 16; ++i) {
-            x[i] = _crypt_read32le(data + i * 4);
+            x[i] = read_le32(data + i * 4);
         }
         a = md4->state[0];
         b = md4->state[1];
@@ -147,11 +142,11 @@ void md4_final(md4_ctx *md4, char hash[MD4_BLOCK_SIZE]) {
         i = 0;
     }
     memset(md4->data + i, 0, 56 - i);
-    _crypt_write32le(md4->data + 56, md4->count[0]);
-    _crypt_write32le(md4->data + 60, md4->count[1]);
+    write_le32(md4->data + 56, md4->count[0]);
+    write_le32(md4->data + 60, md4->count[1]);
     _md4_transform(md4, md4->data, 1);
     for (i = 0; i < 4; ++i) {
-        _crypt_write32le((uint8_t *)hash + i * 4, md4->state[i]);
+        write_le32((uint8_t *)hash + i * 4, md4->state[i]);
     }
     secure_zero(md4, sizeof(md4_ctx));
 }

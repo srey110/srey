@@ -1,7 +1,7 @@
 ﻿#ifndef POPEN2_H_
 #define POPEN2_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef struct popen_ctx {
     int32_t closed;   //popen_close 是否被调用过；popen_free 据此决定要不要兜底收尾
@@ -17,6 +17,7 @@ typedef struct popen_ctx {
     pid_t pid;        //子进程 PID
 #endif
 }popen_ctx;
+
 /// <summary>
 /// 执行命令
 /// </summary>

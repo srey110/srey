@@ -1,7 +1,7 @@
 ﻿#ifndef MQTT_MACRO_H_
 #define MQTT_MACRO_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef enum mqtt_protversion {//协议版本
     MQTT_311 = 0x04, //MQTT 3.1.1

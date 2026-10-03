@@ -49,6 +49,7 @@ typedef struct digest_ctx {
         xxh64_ctx xxh64;
     }eng_ctx;               // 各算法上下文联合体
 }digest_ctx;
+
 /// <summary>
 /// 初始化
 /// </summary>

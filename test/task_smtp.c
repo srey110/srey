@@ -209,31 +209,42 @@ static int32_t _fake_tag(const char *line, char prefix) {
     }
     return n;
 }
-// 处理一行命令（line 已去掉 CRLF 并以 '\0' 结尾）
+// 处理一行命令（line 已去掉 CRLF 并以 '\0' 结尾，按前缀比命令时比它短也会在 '\0' 处先对不上）
 static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_conn *fc, char *line) {
     int32_t tag;
-    if (0 == STRNCMP(line, "EHLO", 4)
-        || 0 == STRNCMP(line, "HELO", 4)) {
+    if (0 == memcasecmp(line, "EHLO", 4)
+        || 0 == memcasecmp(line, "HELO", 4)) {
         // 只广告 LOGIN，客户端 _smtp_get_authtype 优先 PLAIN，不给它选择余地
         _fake_reply(task, sk, "250-fake.smtp.local\r\n250-AUTH LOGIN\r\n250 OK\r\n");
         return;
     }
-    if (0 == STRNCMP(line, "AUTH LOGIN", 10)) {
+    if (0 == memcasecmp(line, "AUTH LOGIN", 10)) {
         fc->authstep = 1;
         _fake_reply(task, sk, "334 VXNlcm5hbWU6\r\n");// base64("Username:")
         return;
     }
+    // 凭据行必须正好是 base64("user") / base64("psw")（smtp_init 传的那对），不对就拒，握手随之失败
     if (1 == fc->authstep) {
+        if (0 != strcmp(line, "dXNlcg==")) {
+            fc->authstep = 0;
+            _fake_reply(task, sk, "535 5.7.8 bad username line\r\n");
+            return;
+        }
         fc->authstep = 2;
         _fake_reply(task, sk, "334 UGFzc3dvcmQ6\r\n");// base64("Password:")
         return;
     }
     if (2 == fc->authstep) {
+        if (0 != strcmp(line, "cHN3")) {
+            fc->authstep = 0;
+            _fake_reply(task, sk, "535 5.7.8 bad password line\r\n");
+            return;
+        }
         fc->authstep = 3;
         _fake_reply(task, sk, "235 2.7.0 Authentication successful\r\n");
         return;
     }
-    if (0 == STRNCMP(line, "MAIL FROM:", 10)) {
+    if (0 == memcasecmp(line, "MAIL FROM:", 10)) {
         tag = _fake_tag(line, 'c');
         // 解不出编号也要算一次失败：_fake_tag 的失败值 -1 与"无事务"哨兵 -1 是同一个数，
         // 不在这里拦住的话 sender 会被写成 -1，此后 MAIL FROM 的 -1 != sender 永远为假、
@@ -251,7 +262,7 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
         _fake_reply(task, sk, "250 OK\r\n");
         return;
     }
-    if (0 == STRNCMP(line, "RCPT TO:", 8)) {
+    if (0 == memcasecmp(line, "RCPT TO:", 8)) {
         tag = _fake_tag(line, 'r');
         if (-1 == tag) {// 理由同上
             ctx->interleave++;
@@ -264,17 +275,17 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
         _fake_reply(task, sk, "250 OK\r\n");
         return;
     }
-    if (0 == STRNCMP(line, "DATA", 4)) {
+    if (0 == memcasecmp(line, "DATA", 4)) {
         fc->indata = 1;
         _fake_reply(task, sk, "354 End data with <CR><LF>.<CR><LF>\r\n");
         return;
     }
-    if (0 == STRNCMP(line, "RSET", 4)) {
+    if (0 == memcasecmp(line, "RSET", 4)) {
         fc->sender = -1;
         _fake_reply(task, sk, "250 OK\r\n");
         return;
     }
-    if (0 == STRNCMP(line, "QUIT", 4)) {
+    if (0 == memcasecmp(line, "QUIT", 4)) {
         _fake_reply(task, sk, "221 Bye\r\n");
         return;
     }
@@ -368,8 +379,8 @@ typedef struct fake_conc_arg {
     smtp_ctx *smtp;
 }fake_conc_arg;
 
-static void _fake_conc_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _fake_conc_worker(void *owner, void *arg) {
+    (void)owner;
     fake_conc_arg *a = (fake_conc_arg *)arg;
     char from[32];
     char to[32];
@@ -414,7 +425,7 @@ static void _fake_startup(task_ctx *task) {
         return;
     }
     fake_conc_arg args[FAKE_CONC_N];
-    fork_serial_cb funcs[FAKE_CONC_N];
+    coro_fn funcs[FAKE_CONC_N];
     void *argp[FAKE_CONC_N];
     int32_t i;
     for (i = 0; i < FAKE_CONC_N; i++) {
@@ -424,7 +435,7 @@ static void _fake_startup(task_ctx *task) {
         funcs[i] = _fake_conc_worker;
         argp[i] = &args[i];
     }
-    if (ERR_OK != coro_fork_wait(task, funcs, argp, FAKE_CONC_N)) {
+    if (ERR_OK != coro_fork_wait(coro_task_co(task), funcs, argp, FAKE_CONC_N)) {
         LOG_ERROR("fake smtp: fork_wait error.");
         smtp_quit(&ctx->smtp);
         return;

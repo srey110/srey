@@ -1,9 +1,10 @@
 ﻿#ifndef URLRAW_H_
 #define URLRAW_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define URLEN_SIZE(s) (3 * (s) + 1)
+
 /// <summary>
 /// URL编码
 /// </summary>

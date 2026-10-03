@@ -13,6 +13,7 @@
 //1<<18 时最坏约 17MB（节点约 64B/个），仍是现有 7 万元素用例的 3.7 倍余量；
 //再往上抬只是让恶意 server 能用约 4MB 流量顶出几十 MB，业务侧的大结果集应分页取
 #define REDIS_MAX_NODES     (1 << 18)
+#define REDIS_SOLO_NODES    4 // 一条回复的前几个节点单独分配，其后的从块链切：小聚合开一整块反而比几次小分配贵
 #define REDIS_NUM_CAP       64 // 长度 token 的容量(不含)：最多 63 位
 #define REDIS_HDR_PEEK      (REDIS_NUM_CAP + 2) // 元素头本地副本：类型 1 + 长度最多 63 位 + CRLF 2
 #define FMT_INTEGER_FLAG  "diouxX" // 整型格式字符集
@@ -23,6 +24,19 @@
     memcpy(_fmt, p, lens);\
     _fmt[lens] = '\0';\
     binary_set_va(&fbuf, _fmt, va_arg(args, type))
+// 整数转换：裸 %d %i %u(见 _redis_fmt_bare)直接转十进制，输出与 printf 相同；其余照旧走 FMT_TYPE。
+// stype / utype 为这个长度修饰下 printf 实际按哪个有符号 / 无符号类型取值
+#define FMT_INT(type, stype, utype)\
+    if (_redis_fmt_bare(p, f) && ('d' == *f || 'i' == *f || 'u' == *f)) {\
+        type _iv = va_arg(args, type);\
+        if ('u' == *f) {\
+            binary_set_uint(&fbuf, (uint64_t)(utype)_iv, 10);\
+        } else {\
+            binary_set_int(&fbuf, (int64_t)(stype)_iv, 10);\
+        }\
+    } else {\
+        FMT_TYPE(type);\
+    }
 
 // 解包上下文，保存当前响应的所有节点与未闭合聚合层的帧栈
 // 聚合层帧：一层未闭合的聚合类型
@@ -36,20 +50,29 @@ typedef struct reader_ctx {
     redis_pack_ctx *head;   // 已解析节点按到达顺序串成的链表，回复完整后整条交给调用方
     redis_pack_ctx *tail;   // 链表尾，尾插用
     redis_frame stack[REDIS_MAX_DEPTH];
+    mem_arena arena;        // 当前回复第 REDIS_SOLO_NODES 个之后的节点从这里切，回复完整时挂到首节点 blocks 上
 }reader_ctx;
 
+// 前 REDIS_SOLO_NODES 个节点单独分配(见 _redis_node_new)，逐个放；其余在首节点的块链上，整链放。
+// 有 next 的首节点必是聚合类型，blocks 才有意义(与 dval 共用一格)
 void _redis_pkfree(void *data) {
     redis_pack_ctx *pack = (redis_pack_ctx *)data;
     if (NULL == pack) {
         return;
     }
-    // 遍历链表逐节点释放
+    if (NULL == pack->next) {
+        FREE(pack);
+        return;
+    }
+    mem_arena arena = { pack->blocks, 0, 0 };
     redis_pack_ctx *next;
-    do {
+    int32_t i;
+    for (i = 0; i < REDIS_SOLO_NODES && NULL != pack; i++) {
         next = pack->next;
         FREE(pack);
         pack = next;
-    } while (NULL != pack);
+    }
+    mem_arena_free(&arena);
 }
 void _redis_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
@@ -57,22 +80,43 @@ void _redis_udfree(ud_cxt *ud) {
     }
     reader_ctx *rd = ud->context;
     _redis_pkfree(rd->head);// 未完成回复里已解析的节点
+    mem_arena_free(&rd->arena);
     FREE(rd);
     ud->context = NULL;
+}
+// 把一段数据作为一个 RESP Bulk String 追加到 sdsbuf，n 自增
+static inline void _redis_put_bulk(binary_ctx *sdsbuf, const char *data, size_t lens, size_t *n) {
+    binary_set_binary(sdsbuf, "$", 1);
+    binary_set_uint(sdsbuf, (uint64_t)lens, 10);
+    binary_set_binary(sdsbuf, FLAG_CRLF, CRLF_SIZE);
+    if (lens > 0) {
+        binary_set_binary(sdsbuf, data, lens);
+    }
+    binary_set_binary(sdsbuf, FLAG_CRLF, CRLF_SIZE);
+    (*n)++;
 }
 // pending 非 0（当前位置存在参数，含空串）时将 fbuf 内容作为一个 RESP Bulk String 追加到 sdsbuf（空参数输出 $0）；重置 fbuf 偏移与 pending，n 自增
 static inline void _redis_create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_t *n, int32_t *pending) {
     if (0 == *pending) {
         return;
     }
-    binary_set_binary(sdsbuf, "$", 1);
-    binary_set_uint(sdsbuf, (uint64_t)fbuf->offset, 10);
-    binary_set_binary(sdsbuf, FLAG_CRLF, CRLF_SIZE);
-    binary_set_binary(sdsbuf, fbuf->data, fbuf->offset);
-    binary_set_binary(sdsbuf, FLAG_CRLF, CRLF_SIZE);
+    _redis_put_bulk(sdsbuf, fbuf->data, fbuf->offset, n);
     binary_offset(fbuf, 0);
     *pending = 0;
-    (*n)++;
+}
+// [p, f] 这段转换说明是否只有 '%'、可选的 l / ll / z 长度修饰和转换符，不带标志、宽度、精度
+static inline int32_t _redis_fmt_bare(const char *p, const char *f) {
+    size_t mods = (size_t)(f - p) - 1;
+    return 0 == mods
+        || (1 == mods && ('l' == p[1] || 'z' == p[1]))
+        || (2 == mods && 'l' == p[1] && 'l' == p[2]);
+}
+// p 处的两字符转换(%s / %b)是否单独成一个参数：前面是串首或空格、fbuf 里还没攒东西、后面是空格或串尾。
+// 是的话参数直接写进输出，不经 fbuf 过一手
+static inline int32_t _redis_fmt_alone(const char *fmt, const char *p, binary_ctx *fbuf) {
+    return 0 == fbuf->offset
+        && (p == fmt || ' ' == p[-1])
+        && (' ' == p[2] || '\0' == p[2]);
 }
 // redis_pack 的内部实现，解析格式字符串并将各参数编码为 RESP Bulk String 序列。
 // 裸 %s 直接拷不过 vsnprintf，实参 NULL 照各家 vsnprintf 的做法写 "(null)"
@@ -118,6 +162,12 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             if (NULL == val) {
                 val = "(null)";
             }
+            if (_redis_fmt_alone(fmt, p, &fbuf)) {
+                _redis_put_bulk(&sdsbuf, val, strlen(val), &n);
+                pending = 0;
+                f += ('\0' == f[1]) ? 1 : 2;
+                continue;
+            }
             binary_set_binary(&fbuf, val, strlen(val));
             f++;
             break;
@@ -125,6 +175,12 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         case 'b': {
             val = va_arg(args, char *);
             lens = va_arg(args, size_t);
+            if (_redis_fmt_alone(fmt, p, &fbuf)) {
+                _redis_put_bulk(&sdsbuf, val, lens, &n);
+                pending = 0;
+                f += ('\0' == f[1]) ? 1 : 2;
+                continue;
+            }
             if (lens > 0) {
                 binary_set_binary(&fbuf, val, lens);
             }
@@ -174,7 +230,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             }
             //int
             if (NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                FMT_TYPE(int);
+                FMT_INT(int, int, unsigned int);
                 f++;
                 break;
             }
@@ -201,7 +257,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             if ('l' == *f && 'l' == f[1]) {
                 f += 2;
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_TYPE(long long);
+                    FMT_INT(long long, long long, unsigned long long);
                     f++;
                 } else {// 长度修饰后面不是整数转换
                     fmterr = 1;
@@ -211,7 +267,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             if ('l' == *f) {
                 f++;
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_TYPE(long);
+                    FMT_INT(long, long, unsigned long);
                     f++;
                 } else {// 长度修饰后面不是整数转换
                     fmterr = 1;
@@ -222,7 +278,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             if ('z' == *f) {
                 f++;
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_TYPE(size_t);
+                    FMT_INT(size_t, ptrdiff_t, size_t);
                     f++;
                 } else {// 长度修饰后面不是整数转换
                     fmterr = 1;
@@ -246,13 +302,16 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     /* 格式化 RESP 数组计数头并回填到 sdsbuf 头部预留槽中。
      * memmove 将 Bulk String 主体向左移动以消除填充间隙，
      * 避免额外的输出内存分配。 */
-    int hlen_int = SNPRINTF(_fmt, sizeof(_fmt), "*%zu"FLAG_CRLF, n);
-    size_t hlens = snprintf_lens(hlen_int, sizeof(_fmt));
+    char num[INT2STR_MAX];
+    size_t nlens = u64tostr(num, (uint64_t)n, 10);
+    size_t hlens = 1 + nlens + CRLF_SIZE;
     ASSERTAB(sdsbuf.offset >= MAX_HEADER_RESERVE, "RESP body skip violated.");
     size_t body_size = sdsbuf.offset - MAX_HEADER_RESERVE;
     ASSERTAB(hlens <= MAX_HEADER_RESERVE, "RESP header too long for reserved slot.");
     memmove(sdsbuf.data + hlens, sdsbuf.data + MAX_HEADER_RESERVE, body_size);
-    memcpy(sdsbuf.data, _fmt, hlens);
+    sdsbuf.data[0] = '*';
+    memcpy(sdsbuf.data + 1, num, nlens);
+    memcpy(sdsbuf.data + 1 + nlens, FLAG_CRLF, CRLF_SIZE);
     *size = hlens + body_size;
     /* *size < MAX_HEADER_RESERVE + body_size == sdsbuf.offset <= sdsbuf.size */
     sdsbuf.data[*size] = '\0';
@@ -278,11 +337,30 @@ static inline reader_ctx *_redis_create_reader(ud_cxt *ud) {
         rd->depth = 1; // 顶层虚拟帧，期望 1 个顶层元素
         rd->stack[0].remain = 1;
         rd->stack[0].attr = 0;
+        ZERO(&rd->arena, sizeof(rd->arena));
         ud->context = rd;
     }
     return ud->context;
 }
-// 将已解析节点尾插到链表（节点由 CALLOC 分配，next 已为 NULL），并消费帧栈上的一格。
+// 新节点，只清结构体头(data 由调用方写，含结尾 '\0')。回复的前 REDIS_SOLO_NODES 个节点单独分配，
+// 之后的从 rd 的块链切，不能单独释放
+static inline redis_pack_ctx *_redis_node_new(reader_ctx *rd, size_t lens) {
+    redis_pack_ctx *pk;
+    if (rd->count < REDIS_SOLO_NODES) {
+        MALLOC(pk, lens);
+    } else {
+        pk = mem_arena_alloc(&rd->arena, lens);
+    }
+    ZERO(pk, sizeof(redis_pack_ctx));
+    return pk;
+}
+// 丢弃还没挂上链表的新节点：单独分配的放掉，块链里的随 rd 一起还
+static inline void _redis_node_drop(reader_ctx *rd, redis_pack_ctx *pk) {
+    if (rd->count < REDIS_SOLO_NODES) {
+        FREE(pk);
+    }
+}
+// 将已解析节点尾插到链表（next 已为 NULL），并消费帧栈上的一格。
 // open > 0 为声明了元素的聚合类型：压入新层，父层的这个元素要等它闭合才算完成；
 // 否则为叶子或空聚合：消费栈顶一格，栈顶归零则逐层弹出并级联消费父层（ATTR 层闭合不消费父层）
 static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk, int64_t open) {
@@ -336,6 +414,21 @@ static inline int32_t _redis_local_crlf(const char *hdr, size_t n) {
     }
     return ERR_FAILED;
 }
+// 解析 RESP_INTEGER 的值。收的范围与 strtoll(base 10) + 必须吃完整段 + 不溢出 完全一致：
+// 前导空白与一个可选 '+' 照收("+-5" 照拒)，数字部分交 strtoi64
+static inline int32_t _redis_parse_integer(const char *p, size_t lens, int64_t *out) {
+    const char *end = p + lens;
+    while (p < end && isspace((unsigned char)*p)) {
+        p++;
+    }
+    if (p < end && '+' == *p) {
+        p++;
+        if (p < end && '-' == *p) {
+            return ERR_FAILED;
+        }
+    }
+    return strtoi64(p, (size_t)(end - p), out);
+}
 // 把长度 token 严格按 ['-']1*DIGIT 解析为 >= -1 的整数；容量不够/非纯数字/溢出 int64 时置 PROT_ERROR
 static inline int32_t _redis_parse_num(const char *num, int32_t lens, int32_t *status, int64_t *out) {
     if (lens <= 0 || lens >= REDIS_NUM_CAP) {
@@ -344,7 +437,7 @@ static inline int32_t _redis_parse_num(const char *num, int32_t lens, int32_t *s
     }
     // 前导空白与 '+' 一律拒,免得与对端切出不同的包边界。RESP_INTEGER 的 ':' 本就允许 '+'(见 redis.h),不走这里
     int64_t val;
-    if (ERR_OK != parse_int64_strict(num, (size_t)lens, &val)
+    if (ERR_OK != strtoi64(num, (size_t)lens, &val)
         || val < -1) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -386,8 +479,7 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
             return ERR_FAILED;
         }
     }
-    redis_pack_ctx *pk;
-    CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
+    redis_pack_ctx *pk = _redis_node_new(rd, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
     pk->prot = prot;
     // pos 是 CRLF 的偏移。能进本函数的首字节必是 +-:_#,( 之一(见 redis_unpack 的 switch),
     // 不可能是 '\r',故 pos >= 1、len 不可能为负
@@ -399,16 +491,13 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
             buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         }
     }
+    pk->data[pk->len] = '\0';
     switch (prot) {
     case RESP_INTEGER:
         if (0 == pk->len) {
             BIT_SET(*status, PROT_ERROR);
         } else {
-            char *end;
-            errno = 0;
-            pk->ival = strtoll(pk->data, &end, 10);
-            if (end != pk->data + pk->len
-                || errno == ERANGE) {
+            if (ERR_OK != _redis_parse_integer(pk->data, (size_t)pk->len, &pk->ival)) {
                 BIT_SET(*status, PROT_ERROR);
             }
         }
@@ -462,7 +551,7 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         break;
     }
     if (BIT_CHECK(*status, PROT_ERROR)) {
-        FREE(pk);
+        _redis_node_drop(rd, pk);
         return ERR_FAILED;
     }
     int32_t del = pos + CRLF_SIZE;
@@ -471,7 +560,8 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     return ERR_OK;
 }
 // 解析批量字符串类型（Bulk String/Error/Verbatim）：格式 <type><length>\r\n<data>\r\n，长度为 -1 表示 Null。
-// 数据连同结尾 CRLF 一次拷出再本地校验，故块多留 CRLF 两字节；整段已在 hdr 本地副本里就不再碰 buf
+// 数据连同结尾 CRLF 一次拷出再本地校验，故块多留 CRLF 两字节；整段已在 hdr 本地副本里就不再碰 buf，
+// 尾 CRLF 也在 hdr 里查，不去读刚拷完的目标块
 static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     const char *hdr, size_t n, int32_t *status) {
     int32_t pos;
@@ -481,8 +571,8 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     }
     size_t total;
     if (-1 == blens) {
-        redis_pack_ctx *pk;
-        CALLOC(pk, 1, sizeof(redis_pack_ctx) + 1);
+        redis_pack_ctx *pk = _redis_node_new(rd, sizeof(redis_pack_ctx) + 1);
+        pk->data[0] = '\0';
         pk->prot = prot;
         pk->len = blens;
         total = (size_t)(pos + CRLF_SIZE);
@@ -501,17 +591,18 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     }
     size_t doff = (size_t)(pos + CRLF_SIZE);
     size_t dcopy = (size_t)blens + CRLF_SIZE;
-    redis_pack_ctx *pk;
-    MALLOC(pk, sizeof(redis_pack_ctx) + dcopy);
-    ZERO(pk, sizeof(redis_pack_ctx));
+    redis_pack_ctx *pk = _redis_node_new(rd, sizeof(redis_pack_ctx) + dcopy);
     pk->prot = prot;
+    const char *tail;
     if (total <= n) {
         memcpy(pk->data, hdr + doff, dcopy);
+        tail = hdr + doff + blens;
     } else {
         buffer_copyout(buf, doff, pk->data, dcopy);
+        tail = pk->data + blens;
     }
-    if ('\r' != pk->data[blens]
-        || '\n' != pk->data[blens + 1]) {
+    if ('\r' != tail[0]
+        || '\n' != tail[1]) {
         BIT_SET(*status, PROT_ERROR);
     } else if (RESP_VERB == prot) {
         if (blens < 4
@@ -526,7 +617,7 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         pk->len = blens;
     }
     if (BIT_CHECK(*status, PROT_ERROR)) {
-        FREE(pk);
+        _redis_node_drop(rd, pk);
         return ERR_FAILED;
     }
     pk->data[pk->len] = '\0';
@@ -554,8 +645,8 @@ static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     }
     size_t del = (size_t)(pos + CRLF_SIZE);
     ASSERTAB(del == buffer_drain(buf, del), "drain buffer failed.");
-    redis_pack_ctx *pk;
-    CALLOC(pk, 1, sizeof(redis_pack_ctx) + 1);
+    redis_pack_ctx *pk = _redis_node_new(rd, sizeof(redis_pack_ctx) + 1);
+    pk->data[0] = '\0';
     pk->prot = prot;
     pk->nelem = nelem;
     _redis_add_node(rd, pk, open);
@@ -615,6 +706,10 @@ void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
         }
         if (0 == rd->depth) {
             pk = rd->head;
+            if (NULL != rd->arena.cur) {
+                pk->blocks = rd->arena.cur;// 整条块链从当前块串起
+                ZERO(&rd->arena, sizeof(rd->arena));
+            }
             rd->head = NULL;
             rd->tail = NULL;
             rd->count = 0;

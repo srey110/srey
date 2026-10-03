@@ -1,9 +1,9 @@
 ﻿#include "srey/coro_utils.h"
-#include "srey/coro.h"
+#include "srey/coro_task.h"
 #include "srey/task.h"
 #include "srey/prots_wrap.h"
 #include "protocol/prots.h"
-#include "protocol/urlparse.h"
+#include "utils/urlparse.h"
 #include "protocol/dns.h"
 #include "protocol/http.h"
 #include "protocol/redis.h"
@@ -144,7 +144,7 @@ static int32_t _ws_resolve_addr(task_ctx *task, url_ctx *url, const char *host, 
         // RFC 3986 §3.2.3 的 port 产生式只允许数字
         // port 是切片不带 \0，须按 lens 解析：strtoul 会一路读到缓冲里的下一个非数字
         uint64_t p;
-        if (ERR_OK != str2u64((const char *)url->port.data, url->port.lens, UINT16_MAX, &p)
+        if (ERR_OK != strtou64((const char *)url->port.data, url->port.lens, UINT16_MAX, &p)
             || 0 == p) {
             return ERR_FAILED;
         }
@@ -311,10 +311,11 @@ static void _serial_discard(coro_serial_ctx **slot, coro_serial_ctx *held) {
 static coro_serial_ctx *_serial_acquire(task_ctx *task, coro_serial_ctx **slot, int32_t *owned) {
     *owned = 0;
     if (NULL == *slot) {
-        *slot = coro_serial_new(task);
-        if (NULL == *slot) {
+        coro_ctx *co = coro_task_co(task);
+        if (NULL == co) {
             return NULL;// 非 MCO task, 装不上执行器; 放行等于把受管连接静默降级成不串行
         }
+        *slot = coro_serial_new(co);
         *owned = 1;
     }
     coro_serial_ctx *held = *slot;
@@ -897,7 +898,7 @@ static pgpack_ctx *_pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *da
     if (NULL == pgpack || PGPACK_COPY_IN != pgpack->type) {
         return pgpack;
     }
-    // 第一次 coro_send 的返回值 pgpack 由框架在下次 yield 时经 _message_clean 自动释放，此处无需手动释放
+    // 第一次 coro_send 的返回值 pgpack 由框架在下次 yield 时经 message_clean 自动释放，此处无需手动释放
     // 第二步：将 CopyData + CopyDone 合并为一个缓冲区，一次发送并等待 ReadyForQuery
     // 两段直接拼在同一个缓冲里一次发送，避免两次系统调用
     binary_ctx bwriter;

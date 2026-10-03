@@ -1,7 +1,7 @@
 ﻿#ifndef LOAD_TREND_H_
 #define LOAD_TREND_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 基于"采样值变化趋势"的负载判定：
 // - 记录上次采样值，当前采样 < 上次 * busy_num/busy_den 时判定为忙

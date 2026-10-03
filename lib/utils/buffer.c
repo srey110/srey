@@ -17,6 +17,8 @@
         (ch)->used = 1;\
         index++;\
     } while (0)
+typedef void *(*chr_func)(const void *, int32_t, size_t); //字符查找函数类型（类似 memchr）
+typedef int32_t(*cmp_func)(const void *, const void *, size_t); //内存比较函数类型（类似 memcmp）
 //|              |   misalign   |    off    |           | 
 //|--------------|--------------|-----------|-----------|
 //|node          |buffer                                |
@@ -33,7 +35,7 @@ typedef struct bufnode_ctx {
 // 不留的话每个包都要一次 MALLOC + FREE。单槽不做数组——尺寸对不上就照常走分配器,
 // 不会互相顶掉,生产上稳定停着一个接收节点(_buffer_expand 补的节点也按接收那一档开,
 // 否则零头尺寸停进槽里, 本线程之后的首读就都对不上)。线程退出前必须调 buffer_thread_cleanup
-static THREAD_LOCAL bufnode_ctx *_node_spare = NULL;
+TLS_DEFINE(bufnode_ctx *, _node_spare, 1)
 
 // 外部托管(零拷贝)节点判定:内部节点的 buffer 由 _buffer_node_new 与节点头一次分配、紧随其后,
 // 外部节点的 buffer 指向调用方内存。不用 _free 判定——buffer_external 允许 ext_free 传 NULL
@@ -46,10 +48,11 @@ static bufnode_ctx *_buffer_node_new(const size_t size) {
     ASSERTAB(size <= SIZE_MAX - sizeof(bufnode_ctx) - (align - 1), "buffer node size overflow");
     size_t total = ROUND_UP(size + sizeof(bufnode_ctx), align);
     size_t lens = total - sizeof(bufnode_ctx);
-    bufnode_ctx *node = _node_spare;
+    bufnode_ctx **spare = _node_spare_tls();
+    bufnode_ctx *node = *spare;
     if (NULL != node
         && node->buffer_lens == lens) {
-        _node_spare = NULL;
+        *spare = NULL;
         node->_free = NULL;
         return node;
     }
@@ -65,8 +68,9 @@ static inline void _buffer_node_free(bufnode_ctx *node) {
     if (NULL != node->_free) {
         node->_free(node->buffer);
     }
+    bufnode_ctx **spare = _node_spare_tls();
     // 外部节点的 buffer 是调用方内存,留下来下次当内部节点用就是野指针
-    if (NULL == _node_spare
+    if (NULL == *spare
         && !_buffer_node_external(node)
         && node->buffer_lens <= NODE_CACHE_MAX) {
         node->used = 0;
@@ -74,15 +78,16 @@ static inline void _buffer_node_free(bufnode_ctx *node) {
         node->misalign = 0;
         node->off = 0;
         node->_free = NULL;
-        _node_spare = node;
+        *spare = node;
         return;
     }
     FREE(node);
 }
 void buffer_thread_cleanup(void) {
-    bufnode_ctx *node = _node_spare;
+    bufnode_ctx **spare = _node_spare_tls();
+    bufnode_ctx *node = *spare;
     if (NULL != node) {
-        _node_spare = NULL;
+        *spare = NULL;
         FREE(node);
     }
 }
@@ -719,16 +724,26 @@ NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
     }
     return lens;
 }
-/* 单节点且未被 buffer_get 锁定、没排完：不碰链表，也整段跳过游标的保存-清零-恢复。
- * 此刻游标只可能落在这个节点上，随 misalign 一起前移（基偏移恒 0，不需要改） */
+// 单节点未锁定且正好排空：节点连同游标一起收，终态同 _buffer_drain_slow 的单节点那支。NOINLINE 承重别删
+NOINLINE static size_t _buffer_drain_whole(buffer_ctx *ctx, size_t lens) {
+    _buffer_node_free(ctx->head);
+    buffer_init(ctx);
+    return lens;
+}
+/* 单节点且未被 buffer_get 锁定：没排完的不碰链表，也整段跳过游标的保存-清零-恢复。
+ * 此刻游标只可能落在这个节点上，随 misalign 一起前移（基偏移恒 0，不需要改）；正好排空的交 _buffer_drain_whole */
 size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     bufnode_ctx *head = ctx->head;
     if (NULL != head
         && head == ctx->tail
         && 0 == head->used
-        && lens < head->off
+        && lens <= head->off
         && 0 == ctx->freeze_read
         && 0 == ctx->freeze_write) {
+        if (lens == head->off
+            && 0 != lens) {
+            return _buffer_drain_whole(ctx, lens);
+        }
         head->misalign += lens;
         head->off -= lens;
         ctx->total_lens -= lens;
@@ -823,9 +838,8 @@ NOINLINE static int32_t _buffer_search_slow(buffer_ctx *ctx, const int32_t ncs,
         || wlens > end - start) {
         return ERR_FAILED;
     }
-    chr_func chr;
-    cmp_func cmp;
-    mem_funcs_pick(ncs, &chr, &cmp);
+    chr_func chr = 0 == ncs ? memchr : memichr;
+    cmp_func cmp = 0 == ncs ? memcmp : memcasecmp;
     //查找开始位置所在节点
     size_t totaloff = 0;
     size_t uioff = 0;
@@ -872,13 +886,12 @@ NOINLINE static int32_t _buffer_search_slow(buffer_ctx *ctx, const int32_t ncs,
     }
     return ERR_FAILED;
 }
-/* 查找区间落在首节点内且区分大小写：直调 memchr，省掉 mem_funcs_pick 的函数指针间接调用与整套节点游走。
- * 末字节先比挡掉绝大多数 memcmp；wlens<=2 时首末两字节已覆盖全部，无需再比中间。
+/* 查找区间落在首节点内且区分大小写：直调 memstr，省掉函数指针间接调用与整套节点游走。
  * 不更新 hint 是安全的：hint 只是优化，其余路径照常维护。end 的换算与慢路径相同 */
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens) {
     bufnode_ctx *head = ctx->head;
-    char *base, *last, *cur;
+    char *base, *cur;
     size_t e, found;
     if (0 == ncs
         && NULL != head
@@ -890,21 +903,12 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
             && start < e
             && wlens <= e - start) {
             base = head->buffer + head->misalign;
-            last = base + e - wlens;
-            cur = base + start;
-            while (cur <= last) {
-                cur = (char *)memchr(cur, what[0], (size_t)(last - cur) + 1);
-                if (NULL == cur) {
-                    return ERR_FAILED;
-                }
-                if (what[wlens - 1] == cur[wlens - 1]
-                    && (wlens <= 2 || 0 == memcmp(cur + 1, what + 1, wlens - 2))) {
-                    found = (size_t)(cur - base);
-                    return (found > (size_t)INT32_MAX) ? ERR_FAILED : (int32_t)found;
-                }
-                cur++;
+            cur = (char *)memstr(0, base + start, e - start, what, wlens);
+            if (NULL == cur) {
+                return ERR_FAILED;
             }
-            return ERR_FAILED;
+            found = (size_t)(cur - base);
+            return (found > (size_t)INT32_MAX) ? ERR_FAILED : (int32_t)found;
         }
     }
     return _buffer_search_slow(ctx, ncs, start, end, what, wlens);

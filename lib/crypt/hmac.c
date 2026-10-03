@@ -68,9 +68,11 @@ void hmac_reset(hmac_ctx *hmac) {
 // 长度只写末 8 字节，sha512 的 16 字节长度字段高半恒为 0，由 memset 顺带清掉
 static void _hmac_pad_tail(const dg_attr *attr, char *blk) {
     size_t hs = attr->block_lens, kb = attr->key_block;
+    char *tail = blk + kb - sizeof(uint64_t);
+    uint64_t nbits = (uint64_t)(kb + hs) * 8;
     blk[hs] = (char)0x80;
     memset(blk + hs + 1, 0, kb - hs - 1 - sizeof(uint64_t));
-    pack_integer(blk + kb - sizeof(uint64_t), (uint64_t)(kb + hs) * 8, (int32_t)sizeof(uint64_t), attr->islittle);
+    attr->islittle ? write_le64(tail, nbits) : write_be64(tail, nbits);
 }
 // 从吸收完 ipad/opad 的状态出发压一块 blk，结果写回 blk 的前 hs 字节；绕开 _final 的填充与擦除
 static void _hmac_block(digest_ctx *work, const digest_ctx *init, char *blk) {

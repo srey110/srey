@@ -9,6 +9,7 @@ typedef struct hmac_ctx {
     digest_ctx inside_init;   // 内层摘要初始状态（用于 reset）
     digest_ctx outside_init;  // 外层摘要初始状态（用于 reset）
 }hmac_ctx;
+
 /// <summary>
 /// HMAC 初始化
 /// </summary>

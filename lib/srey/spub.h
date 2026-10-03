@@ -157,8 +157,6 @@ struct task_dispatch_arg {
 static inline int32_t subtype_reserved(subtype_t type) {
     return REQ_DEBUG == type;
 }
-//返回消息字符串
-const char *_message_str(msg_type type);
 // 根据消息类型调用对应处理函数（内部接口）
 void _message_run(task_ctx *task, message_ctx *msg);
 // 返回 task 层实现的网络事件消息汇（注册给 prots_init，内部接口）
@@ -169,11 +167,5 @@ void _task_message_push(task_ctx *task, message_ctx *msg);
 void _task_message_active(task_ctx *task);
 // 入队并触发调度：非网络生产者都走这个（内部接口）
 void _task_message_post(task_ctx *task, message_ctx *msg);
-// 判断消息是否需要清理数据（内部接口）
-int32_t _message_should_clean(message_ctx *msg);
-// 根据消息类型释放消息数据（内部接口）
-void _message_clean(message_ctx *msg);
-// 判断消息对应的coro keep参数
-int32_t _message_may_keep(msg_type type);
 
 #endif//SVPUB_H_

@@ -22,8 +22,9 @@ typedef struct pgpack_ctx {
     uint32_t iter_cursor;           // pgsql_reader_iter 的扫描起点，只前进不回头（占 type 后的对齐空洞）
     void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息或通知）
     void(*_free_pgpack)(void *);    // 释放 pack 的回调函数
-    pgres_arr results;              // 已完成语句的结果数组；CALLOC 全零即合法空数组，首条 CommandComplete 提交时才 pgres_arr_init
+    pgres_arr results;              // 已完成语句的结果数组；CALLOC 全零即合法空数组，首条提交时指向 res_inl，装满才搬到堆上
     char complete[32];              // 最后一条 CommandComplete 命令完成标签，格式示例：INSERT oid rows / UPDATE rows 等
+    pgsql_result res_inl[2];        // 前 2 条语句的结果，单语句查询不另分配结果数组
 }pgpack_ctx;
 
 // 异步通知消息（NotificationResponse）
@@ -49,17 +50,19 @@ typedef struct pgpack_field {
 typedef struct pgpack_row {
     int32_t lens;       // 列值的字节长度，0 表示空字符串，-1 表示 NULL
     char *val;          // 列值数据指针
-    char *payload;      // 完整原始消息（首列持有，用于内存管理）；行数组与它同一块分配，只释放它
 }pgpack_row;
 ARR_DECL(pgrow_arr, pgpack_row *)
 
 // 查询结果读取器上下文
 typedef struct pgsql_reader_ctx {
+    int8_t fields_inl;          // fields 与 reader 同一次分配(随 reader 释放)；0 为单独分配
     uint16_t field_count;       // 字段（列）数量
     pgpack_format format;       // 结果格式（文本或二进制）
     int32_t index;              // 当前读取行的游标位置
     pgpack_field *fields;       // 字段描述数组
-    pgrow_arr arr_rows;         // 数据行指针数组
+    pgrow_arr arr_rows;         // 数据行指针数组；起初指向 rows_inl，装满才搬到堆上
+    mem_arena arena;            // DataRow 连同各自的行数组都从这里切，随 reader 一起释放
+    pgpack_row *rows_inl[8];    // 前 8 行的行指针，小结果集不另分配行指针数组
 }pgsql_reader_ctx;
 
 // pgsql 连接上下文
@@ -103,8 +106,8 @@ typedef struct pgpack_copy_out_ctx {
 // 预处理语句参数绑定上下文
 typedef struct pgsql_bind_ctx {
     uint16_t nparam;        // 参数数量
-    binary_ctx format;      // 各参数格式代码序列化缓冲区
-    binary_ctx values;      // 各参数值序列化缓冲区
+    uint32_t count;         // 已绑定个数；多绑即置 nparam + 1，组包时拒
+    binary_ctx buf;         // Bind 消息参数段原样：Int16 n + n 个格式码 + Int16 n + 各参数值
 }pgsql_bind_ctx;
 
 #endif//PGSQL_STRUCT_H_

@@ -7,6 +7,7 @@
 
 #define SMTP_OK "250"
 #define SMTP_CODE_LENS 3
+#define SMTP_CMD_LIT(cmd) dup_zero(cmd FLAG_CRLF, sizeof(cmd FLAG_CRLF) - 1) // 固定命令行的堆上副本
 
 typedef enum parse_status {
     INIT = 0,  //初始连接，等待服务端 220 响应
@@ -68,31 +69,56 @@ int32_t smtp_check_code(char *pack, const char *code) {
 int32_t smtp_check_ok(char *pack) {
     return smtp_check_code(pack, SMTP_OK);
 }
+// 拼一行命令 pre + arg + suf(suf 自带行尾 CRLF)，返回堆上 '\0' 结尾的串
+static char *_smtp_cmd_line(const char *pre, const char *arg, const char *suf) {
+    size_t plen = strlen(pre);
+    size_t alen = strlen(arg);
+    size_t slen = strlen(suf);
+    char *cmd;
+    MALLOC(cmd, plen + alen + slen + 1);
+    memcpy(cmd, pre, plen);
+    memcpy(cmd + plen, arg, alen);
+    memcpy(cmd + plen + alen, suf, slen + 1);
+    return cmd;
+}
+// 凭据编成 Base64 直接写进命令缓冲再补 CRLF，不留中间的编码副本
+static char *_smtp_b64_line(const void *data, size_t lens) {
+    char *cmd;
+    MALLOC(cmd, B64EN_SIZE(lens) + CRLF_SIZE);
+    size_t n = bs64_encode(data, lens, cmd);
+    memcpy(cmd + n, FLAG_CRLF, CRLF_SIZE + 1);
+    return cmd;
+}
 char *smtp_pack_reset(void) {
-    return format_va("RSET%s", FLAG_CRLF);
+    return SMTP_CMD_LIT("RSET");
 }
 char *smtp_pack_quit(void) {
-    return format_va("QUIT%s", FLAG_CRLF);
+    return SMTP_CMD_LIT("QUIT");
 }
 char *smtp_pack_ping(void) {
-    return format_va("NOOP%s", FLAG_CRLF);
+    return SMTP_CMD_LIT("NOOP");
+}
+// \0 结尾串里有没有 CR / LF
+static inline int32_t _smtp_has_crlf(const char *s) {
+    size_t lens = strlen(s);
+    return lens != memcspn(s, lens, "\r\n", 2);
 }
 char *smtp_pack_from(const char *from) {
     //拒绝 CRLF 注入：邮件地址含 \r 或 \n 时返回 NULL
-    if (NULL == from || NULL != strpbrk(from, "\r\n")) {
+    if (NULL == from || _smtp_has_crlf(from)) {
         return NULL;
     }
-    return format_va("MAIL FROM:<%s>%s", from, FLAG_CRLF);
+    return _smtp_cmd_line("MAIL FROM:<", from, ">" FLAG_CRLF);
 }
 char *smtp_pack_rcpt(const char *rcpt) {
     //拒绝 CRLF 注入：邮件地址含 \r 或 \n 时返回 NULL
-    if (NULL == rcpt || NULL != strpbrk(rcpt, "\r\n")) {
+    if (NULL == rcpt || _smtp_has_crlf(rcpt)) {
         return NULL;
     }
-    return format_va("RCPT TO:<%s>%s", rcpt, FLAG_CRLF);
+    return _smtp_cmd_line("RCPT TO:<", rcpt, ">" FLAG_CRLF);
 }
 char *smtp_pack_data(void) {
-    return format_va("DATA%s", FLAG_CRLF);
+    return SMTP_CMD_LIT("DATA");
 }
 // 在 buffer 中扫描完整 SMTP 多行响应（RFC 5321 §4.2.1）
 // 多行格式：每行 "<code><sep>[text]\r\n"，sep='-' 表示后续仍有行，sep=' ' 或裸行 "<code>\r\n" 表示结束行
@@ -205,7 +231,7 @@ static void _smtp_connected(ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *u
         }
     }
     buffer_drain(buf, (size_t)total);
-    char *cmd = format_va("EHLO %s%s", '\0' != svhost[0] ? svhost : "localhost", FLAG_CRLF);
+    char *cmd = _smtp_cmd_line("EHLO ", '\0' != svhost[0] ? svhost : "localhost", FLAG_CRLF);
     ud->status = EHLO;
     if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
         BIT_SET(*status, PROT_ERROR);
@@ -276,10 +302,10 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
     char *cmd = NULL;
     switch (smtp->authtype) {
     case LOGIN:
-        cmd = format_va("AUTH LOGIN%s", FLAG_CRLF);
+        cmd = SMTP_CMD_LIT("AUTH LOGIN");
         break;
     case PLAIN:
-        cmd = format_va("AUTH PLAIN%s", FLAG_CRLF);
+        cmd = SMTP_CMD_LIT("AUTH PLAIN");
         break;
     default:// authtype 是 int32_t, -Wswitch 盯不住; 漏一档就是 strlen(NULL)。口径同 _smtp_auth
         BIT_SET(*status, PROT_ERROR);
@@ -289,17 +315,6 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
     if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
         BIT_SET(*status, PROT_ERROR);
     }
-}
-// 对字符串进行 Base64 编码并追加 CRLF，构造 AUTH LOGIN 认证命令行
-static char *_smtp_loin_cmd(const char *up) {
-    size_t lens = strlen(up);
-    size_t b64size = B64EN_SIZE(lens);//擦除按分配量算,bs64_encode 的返回值不含结尾 NUL
-    char *b64;
-    CALLOC(b64, 1, b64size);
-    bs64_encode(up, lens, b64);
-    char *cmd = format_va("%s%s", b64, FLAG_CRLF);
-    SECURE_FREE(b64, b64size);
-    return cmd;
 }
 // AUTH LOGIN 认证阶段：解析服务端 334 挑战，按 "Username:"/"Password:" 顺序发送 Base64 凭据
 static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -334,7 +349,7 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
     flag = strlower(flag);
     if (0 == strcmp(flag, "username:")) {
         FREE(flag);
-        char *cmd = _smtp_loin_cmd(smtp->user);
+        char *cmd = _smtp_b64_line(smtp->user, strlen(smtp->user));
         if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
             BIT_SET(*status, PROT_ERROR);
         }
@@ -342,7 +357,7 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
     }
     if (0 == strcmp(flag, "password:")) {
         FREE(flag);
-        char *cmd = _smtp_loin_cmd(smtp->psw);
+        char *cmd = _smtp_b64_line(smtp->psw, strlen(smtp->psw));
         ud->status = AUTH_CHECK;
         if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
             BIT_SET(*status, PROT_ERROR);
@@ -368,13 +383,8 @@ static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *bu
     CALLOC(enbuf, 1, enlens);
     memcpy(enbuf + 1, smtp->user, ulens);
     memcpy(enbuf + 1 + ulens + 1, smtp->psw, plens);
-    char *b64;
-    size_t b64size = B64EN_SIZE(enlens);
-    CALLOC(b64, 1, b64size);
-    bs64_encode(enbuf, enlens, b64);
+    char *cmd = _smtp_b64_line(enbuf, enlens);
     SECURE_FREE(enbuf, enlens);
-    char *cmd = format_va("%s%s", b64, FLAG_CRLF);
-    SECURE_FREE(b64, b64size);
     ud->status = AUTH_CHECK;
     if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
         BIT_SET(*status, PROT_ERROR);

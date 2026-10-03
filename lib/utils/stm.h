@@ -1,7 +1,7 @@
 ﻿#ifndef STM_H_
 #define STM_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 #include "thread/rwlock.h"
 
 // 共享只读快照 (software transactional memory):

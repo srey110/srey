@@ -12,6 +12,16 @@
 #include "protocol/kcp/kcp.h"
 #include "event/event.h"
 
+// 消息 data 的归属方式。"哪些消息类型持有需要释放的堆数据"只在这一个 switch 里定义：
+// message_should_clean 与 message_clean 都问它，新增带数据的消息类型只改这一处，
+// 不会出现"清理加了、判定漏了"这种只在某一条消费路径上泄漏、编译器与测试都不相关的分歧
+typedef enum msgdata_kind {
+    MSGDATA_NONE = 0,   // 不持有堆数据
+    MSGDATA_PROT,       // 协议层收包，prots_pkfree
+    MSGDATA_UDP,        // UDP 收包，prots_udp_pkfree；当前与 MSGDATA_RAW 等效，独立成档留给将来按协议分化
+    MSGDATA_HS,         // 握手数据，prots_hsfree
+    MSGDATA_RAW         // 裸 MALLOC，FREE
+}msgdata_kind;
 // 各协议在 prots 层的挂钩。字段留 NULL 表示走该 hook 的默认动作。
 typedef struct prot_vtbl {
     void (*pkfree)(void *data);// 释放 unpack 解出的包；NULL 表示包就是一块 malloc，走 FREE
@@ -242,16 +252,20 @@ int32_t prots_may_resume(pack_type pktype, void *data) {
     const prot_vtbl *v = _prots_vtbl(pktype);
     return (NULL != v->may_resume) ? v->may_resume(data) : ERR_OK;
 }
-void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
+// 同 prots_unpack，表由调用方已取好的 v 给出
+static inline void *_prots_unpack_v(const prot_vtbl *v, ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
     *status = PROT_INIT;
-    const prot_vtbl *v = _prots_vtbl(ud->pktype);
     if (NULL != v->unpack) {
         return v->unpack(ev, sk, client, buf, ud, size, status);
     }
     // 透传：PACK_NONE 本就不解包，KCP 的分包在 _kcp_unpack 里按 UDP 路径走
     return _prots_unpack_default(buf, size, ud);
+}
+void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+    return _prots_unpack_v(_prots_vtbl(ud->pktype), ev, sk, client, buf, ud, size, status);
 }
 int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
@@ -337,7 +351,7 @@ void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, s
     size_t esize;
     for (;;) {
         size = buffer_size(buf);
-        data = prots_unpack(ev, sk, client, buf, ud, &msg.size, &status);
+        data = _prots_unpack_v(v, ev, sk, client, buf, ud, &msg.size, &status);
         while (NULL != data) {
             msg.data = data;
             msg.sess = ud->sess;
@@ -469,4 +483,94 @@ void prots_net_recvfrom(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netadd
         // 非 KCP 的 UDP 一律把整个 datagram 原样上抛
         _prots_udp_default(ev, sk, buf, size, addr, ud);
     }
+}
+static inline msgdata_kind _message_data_kind(msg_type mtype) {
+    switch (mtype) {
+    case MSG_TYPE_RECV:
+        return MSGDATA_PROT;
+    case MSG_TYPE_RECVFROM:
+        return MSGDATA_UDP;
+    case MSG_TYPE_HANDSHAKED:
+        return MSGDATA_HS;
+    case MSG_TYPE_REQUEST:
+    case MSG_TYPE_RESPONSE:
+        return MSGDATA_RAW;
+    // CLOSE 既不能加 data 也不能加 shared:协程 task 的 _coro_handle_closed 把同一条消息交给全部等待者、自己不清理,close 回调也不清理。
+    // data 由本表挡住;shared 靠"唯一写入点 task_multi_request 把 mtype 写死成 REQUEST"挡住
+    default:
+        return MSGDATA_NONE;
+    }
+}
+int32_t message_should_clean(message_ctx *msg) {
+    // shared 路径：task_multi_call / task_multi_request 广播,无论 data 是否为 NULL 都需 ref-- 防止泄漏
+    if (NULL != msg->shared) {
+        return ERR_OK;
+    }
+    if (MSGDATA_NONE != _message_data_kind(msg->mtype)
+        && NULL != msg->data) {
+        return ERR_OK;
+    }
+    return ERR_FAILED;
+}
+void message_clean(message_ctx *msg) {
+    // task_multi_call / task_multi_request 广播路径：N 个 message 共享同一份 data,各 task ref-- 归 0 才 FREE
+    if (NULL != msg->shared) {
+        shared_data_free(msg->shared, _free);
+        return;
+    }
+    switch (_message_data_kind(msg->mtype)) {
+    case MSGDATA_PROT:
+        prots_pkfree(msg->subtype, msg->data);
+        break;
+    case MSGDATA_UDP:
+        prots_udp_pkfree(msg->subtype, msg->data);
+        break;
+    case MSGDATA_HS:
+        prots_hsfree(msg->subtype, msg->data);
+        break;
+    case MSGDATA_RAW:
+        FREE(msg->data);
+        break;
+    case MSGDATA_NONE:
+        break;
+    }
+}
+int32_t message_may_keep(msg_type type) {
+    switch (type) {
+    case MSG_TYPE_ACCEPT:
+    case MSG_TYPE_CONNECT:
+    case MSG_TYPE_SSLEXCHANGED:
+    case MSG_TYPE_HANDSHAKED:
+    case MSG_TYPE_RECV:
+    case MSG_TYPE_RECVFROM:
+        return 1;
+    default:
+        return 0;
+    }
+}
+// mtype 名字表(日志、dump、stat 用)。用指定初始化器逐项落位而不是按顺序排:
+// msg_type 里新增一项时这里漏补, 那一格是 NULL, 喂给 %s 就是 UB —— 取值一律走 message_str
+static const char *_mtype_names[MSG_TYPE_ALL] = {
+    [MSG_TYPE_NONE] = "NONE",
+    [MSG_TYPE_STARTUP] = "STARTUP",
+    [MSG_TYPE_CLOSING] = "CLOSING",
+    [MSG_TYPE_TIMEOUT] = "TIMEOUT",
+    [MSG_TYPE_ACCEPT] = "ACCEPT",
+    [MSG_TYPE_CONNECT] = "CONNECT",
+    [MSG_TYPE_SSLEXCHANGED] = "SSLEXCHANGED",
+    [MSG_TYPE_HANDSHAKED] = "HANDSHAKED",
+    [MSG_TYPE_RECV] = "RECV",
+    [MSG_TYPE_SEND] = "SEND",
+    [MSG_TYPE_CLOSE] = "CLOSE",
+    [MSG_TYPE_RECVFROM] = "RECVFROM",
+    [MSG_TYPE_REQUEST] = "REQUEST",
+    [MSG_TYPE_RESPONSE] = "RESPONSE"
+};
+const char *message_str(msg_type type) {
+    if (type >= MSG_TYPE_NONE
+        && type < MSG_TYPE_ALL
+        && NULL != _mtype_names[type]) {
+        return _mtype_names[type];
+    }
+    return "";
 }

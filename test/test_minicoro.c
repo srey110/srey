@@ -1,6 +1,6 @@
 ﻿#include "test_minicoro.h"
 #include "lib.h"
-#include "srey/minicoro.h"
+#include "coro/minicoro.h"
 #include <fenv.h>
 
 // fenv 的读写不能被编译器当普通计算折叠掉。三家写法不同：clang 认标准的 STDC 形式，
@@ -123,6 +123,40 @@ static void test_mco_fpu_isolated(CuTest *tc) {
 }
 #endif
 
+// 协程换线程恢复后用到的 TLS 必须是新线程那份。编译器认定 TLS 地址在函数内不变，
+// createid 被内联进协程函数时会把号段地址缓存到挂起之后(只有 -O2 -flto 构建抓得到)：
+// 主线程先领一段号，协程在主线程取号后挂起；新线程先自己取一次号(领到自己的号段)再 resume，
+// 协程醒来再取号必须是新线程号段里的下一个。两段号不重叠，结果是确定的
+static uint64_t g_tlsmig_a;// 协程挂起前(主线程)取的号
+static uint64_t g_tlsmig_b;// 协程在新线程上醒来后取的号
+static uint64_t g_tlsmig_x;// 新线程 resume 前自己取的号
+static void _mco_tlsmig_entry(mco_coro *co) {
+    g_tlsmig_a = createid();
+    mco_yield(co);
+    g_tlsmig_b = createid();
+}
+static void _mco_tlsmig_thread(void *arg) {
+    g_tlsmig_x = createid();
+    mco_resume((mco_coro *)arg);
+    mco_thread_cleanup();// 本线程跑过协程：fibers 后端(Windows 非 x64)要把线程转回非 fiber 态再退出
+}
+static void test_mco_tls_migrate(CuTest *tc) {
+    mco_desc desc = mco_desc_init(_mco_tlsmig_entry, 0);
+    mco_coro *co;
+    CuAssertTrue(tc, MCO_SUCCESS == mco_create(&co, &desc));
+    (void)createid();
+    mco_result r1 = mco_resume(co);
+    pthread_t th = thread_creat(_mco_tlsmig_thread, co);
+    thread_join(th);
+    mco_state st = mco_status(co);
+    mco_result rdes = mco_destroy(co);
+    CuAssertTrue(tc, MCO_SUCCESS == r1);
+    CuAssertTrue(tc, MCO_DEAD == st);
+    CuAssertTrue(tc, MCO_SUCCESS == rdes);
+    CuAssertTrue(tc, g_tlsmig_b != g_tlsmig_a + 1);// 醒来后还在用主线程的号段
+    CuAssertTrue(tc, g_tlsmig_b == g_tlsmig_x + 1);
+}
+
 // 覆盖 minicoro 的本地补丁"先校验后分配"：coro_size 撑爆加法时 mco_desc_init 置 0，
 // mco_create 必须在 alloc 之前就拒掉；校验挪回分配之后（上游写法）时那个 0 字节的块
 // 会被 mco_init 按 sizeof(mco_coro) 清零 → 堆越界。用自带的计数分配器断言它没被调过。
@@ -170,4 +204,5 @@ void test_minicoro(CuSuite *suite) {
 #if defined(MCO_USE_ASM) || defined(MCO_USE_UCONTEXT)
     SUITE_ADD_TEST(suite, test_mco_desc_overflow_rejected);
 #endif
+    SUITE_ADD_TEST(suite, test_mco_tls_migrate);
 }

@@ -1,6 +1,6 @@
 ﻿#include "test_stm.h"
 #include "utils/stm.h"
-#include "base/macro.h"
+#include "base/base.h"
 #include "thread/thread.h"
 
 // 多线程并发读 + 单 writer 持续 update; 验证无 race / 无泄漏 / 数据完整

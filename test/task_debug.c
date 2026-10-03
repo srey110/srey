@@ -313,7 +313,7 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     if (ERR_OK != _http_get(task, arg->port, url, 200, want, 1)) {
         return ERR_FAILED;
     }
-    // 越界的 lv 走 str2u64 的上界检查，回 400 用法说明
+    // 越界的 lv 走 strtou64 的上界检查，回 400 用法说明
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/loglv/%d", (uint64_t)arg->noreq, (int32_t)LOGLV_DEBUG + 1);
     if (ERR_OK != _http_get(task, arg->port, url, 400, "usage: /{handle}/loglv/<0-4>\n", 1)) {
         return ERR_FAILED;

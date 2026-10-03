@@ -342,7 +342,7 @@ void lpub_sock_uncache(lua_State *lua, uint64_t skid);
 /// <returns>压栈的返回值个数，恒为 1</returns>
 int32_t lpub_push_sock_invalid(lua_State *lua);
 /// <summary>
-/// 整数转十进制字符串，写在 buf 尾部并补 NUL；bson 编码的整数 key / 数组下标、json 编码的整数键共用，替代 snprintf
+/// 整数转十进制字符串，写在 buf 开头并补 NUL(即 i64tostr)；bson 编码的整数 key / 数组下标、json 编码的整数键共用，替代 snprintf
 /// </summary>
 /// <param name="buf">输出缓冲，至少 21 字节（lua_Integer 最长 20 个字符含负号，另加 NUL）</param>
 /// <param name="buflen">buf 大小</param>

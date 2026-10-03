@@ -1,6 +1,5 @@
 ﻿#include "crypt/des.h"
 #include "crypt/padding.h"
-#include "crypt/crypt_pub.h"
 
 #define ROTR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 // 把 a 右移 n 位后与 b 在掩码 m 覆盖的位上互换，t 为临时量；IP / FP 都由它拼成
@@ -239,10 +238,11 @@ static const uint32_t _des_skb[8][128] = {
         0x01050000, 0x01050008, 0x01050800, 0x01050808, 0x11050000, 0x11050008, 0x11050800, 0x11050808,
     },
 };
+
 // 密钥扩展：每轮 48 位子密钥按 6 位一组拆成 8 组，奇数组进 k[0]、偶数组进 k[1]，排法与 _des_f 的取位一致
 static void _des_key_setup(const uint8_t *key, int32_t encrypt, uint32_t schedule[16 * 2]) {
     static const uint32_t key_rnd_shift[16] = { 1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1 };
-    uint32_t c = _crypt_read32le(key), d = _crypt_read32le(key + 4), s, t, i;
+    uint32_t c = read_le32(key), d = read_le32(key + 4), s, t, i;
     uint32_t *k;
     // PC-1：做完后 c、d 的第 i 位即标准 C[i]、D[i]
     DES_SWAP(d, c, t, 4, 0x0f0f0f0fu);
@@ -325,7 +325,7 @@ char *des_crypt(des_ctx *des, const void *data) {
     const uint8_t *in = (const uint8_t *)data;
     const uint32_t *k = des->schedule;
     const uint32_t *end = k + (des->des3 ? 3 : 1) * 16 * 2;
-    uint32_t l = _crypt_read32be(in), r = _crypt_read32be(in + 4), t, i;
+    uint32_t l = read_be32(in), r = read_be32(in + 4), t, i;
     // 初始置换 IP
     DES_SWAP(l, r, t, 4, 0x0f0f0f0fu);
     DES_SWAP(l, r, t, 16, 0x0000ffffu);
@@ -348,7 +348,7 @@ char *des_crypt(des_ctx *des, const void *data) {
     DES_SWAP(r, l, t, 2, 0x33333333u);
     DES_SWAP(l, r, t, 16, 0x0000ffffu);
     DES_SWAP(l, r, t, 4, 0x0f0f0f0fu);
-    _crypt_write32be(des->output, l);
-    _crypt_write32be(des->output + 4, r);
+    write_be32(des->output, l);
+    write_be32(des->output + 4, r);
     return (char *)des->output;
 }

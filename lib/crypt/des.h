@@ -1,7 +1,7 @@
 ﻿#ifndef DES_H_
 #define DES_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define DES_BLOCK_SIZE 8 // DES 分组大小（字节）
 typedef struct des_ctx {
@@ -9,6 +9,7 @@ typedef struct des_ctx {
     uint8_t output[DES_BLOCK_SIZE]; // 加解密结果缓冲区
     uint32_t schedule[3 * 16 * 2];  // 轮密钥调度表，每轮两个字（3DES 包含三组）
 }des_ctx;
+
 /// <summary>
 /// des 初始化
 /// </summary>

@@ -16,12 +16,18 @@ void _mpack_stm_free(void *pack);
 // 内部函数：释放结果集读取器中所有行数据和字段数组
 void _mpack_reader_free(void *pack);
 // 内部函数：从接收缓冲区读取并分配一个完整 MySQL payload；数据不足时设置 PROT_MOREDATA，
-// payload 达到 16MB 续传边界(0xffffff，本实现不支持拼接)时设置 PROT_ERROR
+// payload 达到 16MB 续传边界(0xffffff，本实现不支持拼接)时设置 PROT_ERROR。返回值通常由调用方 FREE；
+// 例外是 QUERY/EXECUTE 结果集的列定义阶段与有列的行阶段，返回的在 reader 块链里、随 reader 释放，不能 FREE，见 _mpack_arena
 char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, int32_t *status);
+// 内部函数：同 _mysql_payload，给命令响应首包用。包已到齐、包头连同 payload 放得进 stk(共 cap 字节，cap 须 > 4)时
+// 读进去并返回 stk + 4；其余情况(放不下、没到齐、长度非法)照 _mysql_payload 办。调用方拿返回值与 stk + 4 比，不等才 FREE
+char *_mysql_payload_first(mysql_ctx *mysql, buffer_ctx *buf, char *stk, size_t cap,
+                           size_t *payload_lens, int32_t *status);
 
 // 内部函数：解析 ERROR 响应包，更新 mysql->error_code 和 mysql->error_msg
 void _mpack_err(mysql_ctx *mysql, binary_ctx *breader);
-// 内部函数：根据 mysql->cur_cmd 分发并解析响应包，返回完整解析的 mpack_ctx
+// 内部函数：根据 mysql->cur_cmd 分发并解析响应包，返回完整解析的 mpack_ctx。进来时 parse_status 为 0 的是首包，
+// 它的内存始终归调用方(不挂进返回的 mpack)；续接包的归属见各阶段
 mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status);
 
 #endif//MYSQL_PARSE_H_

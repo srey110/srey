@@ -1,7 +1,7 @@
 ﻿#ifndef DEBUG_CONSOLE_H_
 #define DEBUG_CONSOLE_H_
 
-#include "srey/coro.h"
+#include "srey/coro_task.h"
 
 /// <summary>
 /// 启动 HTTP 调试控制台 task service。浏览器访问 / 打开调试 UI 页面；

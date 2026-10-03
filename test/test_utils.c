@@ -3,6 +3,7 @@
 #include "utils/strptime.h"
 #include "utils/pool.h"
 #include "utils/uuid.h"
+#include "crypt/crypt_pub.h"
 #include <locale.h>
 
 #define FAKE_RV_MAX 3// 场景二是最长的一路: 两轮读满 + 一轮确认
@@ -1851,7 +1852,7 @@ static void test_utils_misc(CuTest *tc) {
     CuAssertPtrNotNull(tc, ct);
     CuAssertTrue(tc, NULL != strstr(ct, "html"));
 
-    /* 查表用的是 STRICMP，扩展名大小写不敏感：三种写法必须给出同一个 content-type。
+    /* 查表用的是 memcasecmp，扩展名大小写不敏感：三种写法必须给出同一个 content-type。
        唯一生产调用方传的是附件后缀，不做大小写规范化 */
     CuAssertStrEquals(tc, ct, contenttype(".HTML"));
     CuAssertStrEquals(tc, ct, contenttype(".Html"));
@@ -2320,17 +2321,20 @@ static void test_mem_helpers(CuTest *tc) {
     CuAssertIntEquals(tc, -1, memcasecmp("\xC1", "\xE1", 1));/* 0x80 以上原样比，不按任何 locale 折 */
     CuAssertIntEquals(tc, 1, memcasecmp("\xE1", "a", 1));/* 按无符号字节比 */
 
-    /* STRICMP / STRNCMP：折叠规则同上，遇 NUL 结束；短串是长串前缀时短串小 */
-    CuAssertIntEquals(tc, 0, STRICMP(".HTML", ".html"));
-    CuAssertIntEquals(tc, -1, STRICMP(".htm", ".html"));
-    CuAssertIntEquals(tc, 1, STRICMP(".json", ".JS"));
-    CuAssertIntEquals(tc, 1, STRICMP("A", "_"));
-    CuAssertIntEquals(tc, 0, STRICMP("", ""));
-    CuAssertIntEquals(tc, 1, STRICMP("\xC1", "a"));
-    CuAssertIntEquals(tc, 0, STRNCMP("Keep-Alive", "keep-alivexx", 10));
-    CuAssertIntEquals(tc, 0, STRNCMP("ab\0x", "AB\0y", 4));/* 第 3 字节两边都是 NUL,到此为止 */
-    CuAssertIntEquals(tc, -1, STRNCMP("ab", "abc", 3));
-    CuAssertIntEquals(tc, 0, STRNCMP("abc", "xyz", 0));
+    /* C 串之间比：lens 取 strlen + 1 连 '\0' 一起比，排序同 strcasecmp，短串是长串前缀时短串小 */
+    CuAssertIntEquals(tc, 0, memcasecmp(".HTML", ".html", 6));
+    CuAssertIntEquals(tc, -1, memcasecmp(".htm", ".html", 5));
+    CuAssertIntEquals(tc, 1, memcasecmp(".json", ".JS", 6));
+    CuAssertIntEquals(tc, 1, memcasecmp("A", "_", 2));
+    CuAssertIntEquals(tc, 0, memcasecmp("", "", 1));
+    CuAssertIntEquals(tc, 1, memcasecmp("\xC1", "a", 2));
+    CuAssertIntEquals(tc, 0, memcasecmp("Keep-Alive", "keep-alivexx", 10));
+    CuAssertIntEquals(tc, -1, memcasecmp("ab", "abc", 3));
+    {
+        /* 遇到第一个不同字节就停：短串 3 字节(含 '\0')，lens 给 9 也不会读到第 4 个字节(ASan 下越界即报) */
+        char shortstr[3] = { 'a', 'b', '\0' };
+        CuAssertIntEquals(tc, -1, memcasecmp(shortstr, "ABCDEFGH", 9));
+    }
     {
         /* 单字节全组合对照 ASCII 折叠规则；memichr 在 0..255 全表里找到的必须是第一个折叠后相等的位置 */
         unsigned char all[256];
@@ -2704,17 +2708,17 @@ static void test_misc_helpers(CuTest *tc) {
 }
 
 /* =======================================================================
- * ct_memcmp / secure_zero / csprng_rand
+ * crypt_memcmp / secure_zero / csprng_rand
  * ======================================================================= */
 static void test_security_helpers(CuTest *tc) {
-    /* ct_memcmp：与 memcmp 同等价于"相等返回 0"，但内容差异不导致提前返回 */
+    /* crypt_memcmp：与 memcmp 同等价于"相等返回 0"，但内容差异不导致提前返回 */
     const char *a = "secretkey_aaa";
     const char *b = "secretkey_aaa";
     const char *c = "secretkey_bbb";
-    CuAssertIntEquals(tc, 0, ct_memcmp(a, b, 13));
-    CuAssertTrue(tc, 0 != ct_memcmp(a, c, 13));
+    CuAssertIntEquals(tc, 0, crypt_memcmp(a, b, 13));
+    CuAssertTrue(tc, 0 != crypt_memcmp(a, c, 13));
     /* len=0 始终相等 */
-    CuAssertIntEquals(tc, 0, ct_memcmp(a, c, 0));
+    CuAssertIntEquals(tc, 0, crypt_memcmp(a, c, 0));
 
     /* secure_zero：内容被清零 */
     char buf[16];
@@ -3894,50 +3898,50 @@ static void test_strtod_c(CuTest *tc) {
     }
 }
 
-// str2u64：按长度解析十进制无符号整数。收敛了原先散在 scram / http / mysql / coro_utils /
+// strtou64：按长度解析十进制无符号整数。收敛了原先散在 scram / http / mysql / coro_utils /
 // debug_console / harbor 六处的 strtoXX 用法，故这里把它们各自依赖的边界一次测全
-static void test_str2u64(CuTest *tc) {
+static void test_strtou64(CuTest *tc) {
     uint64_t v;
 
     // 1) 基本正确性 + 上界恰好命中
     v = 0;
-    CuAssertIntEquals(tc, ERR_OK, str2u64("0", 1, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_OK, strtou64("0", 1, UINT64_MAX, &v));
     CuAssertTrue(tc, 0 == v);
-    CuAssertIntEquals(tc, ERR_OK, str2u64("65535", 5, UINT16_MAX, &v));
+    CuAssertIntEquals(tc, ERR_OK, strtou64("65535", 5, UINT16_MAX, &v));
     CuAssertTrue(tc, UINT16_MAX == v);
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("65536", 5, UINT16_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("65536", 5, UINT16_MAX, &v));
 
     // 2) 只吃 lens 个字节，尾部残留不参与——harbor 的 url_decode 场景
     // ("%310" 解码成 "10" 只缩短 lens，缓冲里仍读得到 "1010")
-    CuAssertIntEquals(tc, ERR_OK, str2u64("1010", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_OK, strtou64("1010", 2, UINT64_MAX, &v));
     CuAssertTrue(tc, 10 == v);
 
     // 3) strtoXX 会静默收下、这里必须拒的几种：前导空白 / 正负号 / 尾随垃圾 / 内嵌非数字
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64(" 5", 2, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("+5", 2, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("-1", 2, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("1x", 2, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("1 2", 3, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("abc", 3, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64(" 5", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("+5", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("-1", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("1x", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("1 2", 3, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("abc", 3, UINT64_MAX, &v));
 
     // 4) 空输入
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("", 0, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64(NULL, 0, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64(NULL, 3, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("", 0, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64(NULL, 0, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64(NULL, 3, UINT64_MAX, &v));
 
     // 5) uint64 边界：恰好 UINT64_MAX 收下，末位再 +1 与多一位都要拒
-    CuAssertIntEquals(tc, ERR_OK, str2u64("18446744073709551615", 20, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_OK, strtou64("18446744073709551615", 20, UINT64_MAX, &v));
     CuAssertTrue(tc, UINT64_MAX == v);
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("18446744073709551616", 20, UINT64_MAX, &v));
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("99999999999999999999", 20, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("18446744073709551616", 20, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("99999999999999999999", 20, UINT64_MAX, &v));
 
     // 6) 前导零不影响判定，也不该被当成溢出
-    CuAssertIntEquals(tc, ERR_OK, str2u64("000000000000000000000042", 24, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_OK, strtou64("000000000000000000000042", 24, UINT64_MAX, &v));
     CuAssertTrue(tc, 42 == v);
 
     // 7) 失败时不得写 out —— debug_console 的 loglv 依赖这一点(失败即整条拒绝)
     v = 0x5a5a5a5a;
-    CuAssertIntEquals(tc, ERR_FAILED, str2u64("9", 1, 4, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtou64("9", 1, 4, &v));
     CuAssertTrue(tc, 0x5a5a5a5a == v);
 }
 
@@ -3968,8 +3972,8 @@ static void test_fromhex_table(CuTest *tc) {
     CuAssertIntEquals(tc, 0, bad);
 }
 
-// str2u64 改 cut/lim 前的判溢出写法
-static int32_t _str2u64_ref(const char *str, size_t lens, uint64_t max, uint64_t *out) {
+// strtou64 改 cut/lim 前的判溢出写法
+static int32_t _strtou64_ref(const char *str, size_t lens, uint64_t max, uint64_t *out) {
     uint64_t v = 0;
     uint64_t d;
     size_t i;
@@ -3993,11 +3997,11 @@ static int32_t _str2u64_ref(const char *str, size_t lens, uint64_t max, uint64_t
     return ERR_OK;
 }
 // 新旧两版对同一输入：返回值一致，写出的值一致（失败时都不写）；*acc 累计新版收下的个数
-static int32_t _str2u64_same(const char *s, size_t lens, uint64_t max, int32_t *acc) {
+static int32_t _strtou64_same(const char *s, size_t lens, uint64_t max, int32_t *acc) {
     uint64_t a = 0x5a5a5a5a;
     uint64_t b = 0x5a5a5a5a;
-    int32_t ra = str2u64(s, lens, max, &a);
-    int32_t rb = _str2u64_ref(s, lens, max, &b);
+    int32_t ra = strtou64(s, lens, max, &a);
+    int32_t rb = _strtou64_ref(s, lens, max, &b);
     if (NULL != acc && ERR_OK == ra) {
         (*acc)++;
     }
@@ -4017,7 +4021,7 @@ static void _dec_inc(char *s) {
     memmove(s + 1, s, strlen(s) + 1);
     s[0] = '1';
 }
-static void test_str2u64_ref(CuTest *tc) {
+static void test_strtou64_ref(CuTest *tc) {
     const uint64_t maxs[] = { 0, 1, 4, 9, 10, 11, 19, 20, 99, 100, 101, 255, 999, 1000, 65535,
         UINT32_MAX, (uint64_t)INT64_MAX, UINT64_MAX / 10, UINT64_MAX / 10 + 1, UINT64_MAX - 1, UINT64_MAX };
     const char junk[] = { '/', ':', 'x', ' ', '-', '+', '\0', (char)0xB0 };// '0'-1、'9'+1、字母、空白、符号、NUL、高位字节
@@ -4039,16 +4043,16 @@ static void test_str2u64_ref(CuTest *tc) {
         for (c = 0; c < cnt; c++, _dec_inc(num)) {
             lens = strlen(num);
             // 原串：只有 <= max 的那几个收下
-            if (!_str2u64_same(num, lens, max, &acc)) {
+            if (!_strtou64_same(num, lens, max, &acc)) {
                 bad++;
             }
             // lens 只取前缀
-            if (lens > 1 && !_str2u64_same(num, lens - 1, max, NULL)) {
+            if (lens > 1 && !_strtou64_same(num, lens - 1, max, NULL)) {
                 bad++;
             }
             // 前导零
             snprintf(buf, sizeof(buf), "000%s", num);
-            if (!_str2u64_same(buf, lens + 3, max, NULL)) {
+            if (!_strtou64_same(buf, lens + 3, max, NULL)) {
                 bad++;
             }
             // 首、中、尾插一个非数字
@@ -4058,7 +4062,7 @@ static void test_str2u64_ref(CuTest *tc) {
                     memcpy(buf, num, pos);
                     buf[pos] = junk[ji];
                     memcpy(buf + pos + 1, num + pos, lens - pos + 1);
-                    if (!_str2u64_same(buf, lens + 1, max, NULL)) {
+                    if (!_strtou64_same(buf, lens + 1, max, NULL)) {
                         bad++;
                     }
                 }
@@ -4070,7 +4074,7 @@ static void test_str2u64_ref(CuTest *tc) {
         }
         // 超长串 / 大量前导零
         for (fi = 0; fi < ARRAY_SIZE(fixed); fi++) {
-            if (!_str2u64_same(fixed[fi], strlen(fixed[fi]), max, NULL)) {
+            if (!_strtou64_same(fixed[fi], strlen(fixed[fi]), max, NULL)) {
                 bad++;
             }
         }
@@ -4179,6 +4183,93 @@ static void test_memstr_ref(CuTest *tc) {
     CuAssertTrue(tc, tail + 3 == memstr(0, tail, 4, "b", 1));
     CuAssertTrue(tc, tail == memstr(1, tail, 4, "AAAB", 4));
     CuAssertTrue(tc, NULL == memstr(0, tail, 4, "aaaa", 4));
+    // 起点数正好 16(一轮向量吃完全部起点)：命中在最后一个起点；没命中时交给 _memstr 的只剩不足 wlen 字节
+    const char *h17 = "aaaaaaaaaaaaaaaab";
+    CuAssertTrue(tc, h17 + 15 == memstr(0, h17, 17, "ab", 2));
+    CuAssertTrue(tc, NULL == memstr(0, h17, 17, "ba", 2));
+    // 起点数 20：向量一轮比完 0~15，剩下 16~19 交给 _memstr，命中在 18、19
+    const char *h21 = "aaaaaaaaaaaaaaaaaaaba";
+    CuAssertTrue(tc, h21 + 18 == memstr(0, h21, 21, "ab", 2));
+    CuAssertTrue(tc, h21 + 19 == memstr(0, h21, 21, "ba", 2));
+}
+// memcspn 的参考：逐字节看在不在 what 里
+static size_t _memcspn_ref(const unsigned char *p, size_t lens, const char *what, size_t wlens) {
+    size_t i, k;
+    for (i = 0; i < lens; i++) {
+        for (k = 0; k < wlens; k++) {
+            if (p[i] == (unsigned char)what[k]) {
+                return i;
+            }
+        }
+    }
+    return lens;
+}
+// 随机比对：长度 0~MEMSTR_HAY 覆盖向量主循环、重叠读的尾巴与不足 16 字节的短路径(_memcspn_short)；wlens 0~6 覆盖向量与查表(_memcspn)两支，
+// what 里可含 '\0'。源缓冲 lens 之后也填随机字节，越窗读会被比出来
+static void test_memcspn_ref(CuTest *tc) {
+    const char set[] = { 'a', 'b', '\r', '\n', '\0', ':', 'x' };
+    unsigned char hay[MEMSTR_HAY + 8];
+    char what[8], buf[24];
+    uint32_t seed = 20260929u;
+    size_t lens, wlens, i, got;
+    int32_t r, bad = 0, nhit = 0, nmiss = 0;
+    for (r = 0; r < MEMSTR_ROUNDS; r++) {
+        lens = _lcg_next(&seed) % (MEMSTR_HAY + 1);
+        wlens = _lcg_next(&seed) % 7;
+        // 大多填 'z'(不在 set 里)，命中稀疏，才能走到长段扫描
+        for (i = 0; i < sizeof(hay); i++) {
+            hay[i] = (unsigned char)(_lcg_next(&seed) % 8 < 6 ? 'z' : set[_lcg_next(&seed) % sizeof(set)]);
+        }
+        for (i = 0; i < wlens; i++) {
+            what[i] = set[_lcg_next(&seed) % sizeof(set)];
+        }
+        got = memcspn(hay, lens, what, wlens);
+        if (got != _memcspn_ref(hay, lens, what, wlens)) {
+            bad++;
+        }
+        if (got < lens) {
+            nhit++;
+        } else {
+            nmiss++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+    CuAssertTrue(tc, nhit > 0 && nmiss > 0);
+    // 确定性边界：命中落在重叠读的尾巴里、窗口外的字节不算、what 含 '\0'、查表分支、wlens 为 0
+    memset(buf, 'a', sizeof(buf));
+    buf[19] = '\r';
+    CuAssertIntEquals(tc, 19, (int)memcspn(buf, 20, "\r\n", 2));
+    CuAssertIntEquals(tc, 19, (int)memcspn(buf, 19, "\r\n", 2));
+    CuAssertIntEquals(tc, 3, (int)memcspn("abc\0de", 6, "\0", 1));
+    CuAssertIntEquals(tc, 2, (int)memcspn("ab:cdefg", 8, "xyz:;,", 6));
+    CuAssertIntEquals(tc, 5, (int)memcspn("hello", 5, "", 0));
+    // 不足 16 字节的短路径：每个长度、每个命中位置逐一试。命中前填与目标差 1 的字节和高位字节(找零字节的借位只往高处误报，
+    // 要证明最低那个命中仍准)，窗口外紧跟一个命中；"\0\r\n" 那组覆盖 1~3 字节拼整数时高位补 0 撞 '\0'
+    {
+        static const char *sets[] = { "\r", "\r\n", "\0\r\n", "\"\\:x" };
+        static const size_t swl[] = { 1, 2, 3, 4 };
+        static const unsigned char fill[] = { 0x0c, 0x0e, 0x80, 0xff, 0x01, 0x09, 0x0b, 'z' };
+        size_t si, pos, j;
+        bad = 0;
+        for (si = 0; si < ARRAY_SIZE(sets); si++) {
+            for (lens = 0; lens <= 16; lens++) {
+                for (pos = 0; pos <= lens; pos++) {
+                    for (j = 0; j < lens; j++) {
+                        buf[j] = (char)fill[(j + pos) % sizeof(fill)];
+                    }
+                    buf[lens] = sets[si][0];
+                    if (pos < lens) {
+                        buf[pos] = sets[si][swl[si] - 1];
+                    }
+                    got = memcspn(buf, lens, sets[si], swl[si]);
+                    if (got != pos || got != _memcspn_ref((const unsigned char *)buf, lens, sets[si], swl[si])) {
+                        bad++;
+                    }
+                }
+            }
+        }
+        CuAssertIntEquals(tc, 0, bad);
+    }
 }
 
 // memichr 的参考：按 (unsigned char)val 折叠后找第一个
@@ -4215,8 +4306,8 @@ static void test_memichr_ref(CuTest *tc) {
     CuAssertIntEquals(tc, 0, bad);
 }
 
-// ct_memcmp：任一位置任一位不同都非 0，差异落在 len 之外不算，全等为 0
-static void test_ct_memcmp_each_byte(CuTest *tc) {
+// crypt_memcmp：任一位置任一位不同都非 0，差异落在 len 之外不算，全等为 0
+static void test_crypt_memcmp_each_byte(CuTest *tc) {
     unsigned char a[64], b[64];
     size_t len, pos;
     int32_t bit, bad = 0;
@@ -4225,16 +4316,16 @@ static void test_ct_memcmp_each_byte(CuTest *tc) {
     }
     memcpy(b, a, sizeof(a));
     for (len = 0; len <= sizeof(a); len++) {
-        if (0 != ct_memcmp(a, b, len)) {
+        if (0 != crypt_memcmp(a, b, len)) {
             bad++;
         }
         for (pos = 0; pos < len; pos++) {
             for (bit = 0; bit < 8; bit++) {
                 b[pos] ^= (unsigned char)(1u << bit);
-                if (0 == ct_memcmp(a, b, len)) {
+                if (0 == crypt_memcmp(a, b, len)) {
                     bad++;
                 }
-                if (0 != ct_memcmp(a, b, pos)) {
+                if (0 != crypt_memcmp(a, b, pos)) {
                     bad++;
                 }
                 b[pos] ^= (unsigned char)(1u << bit);
@@ -5367,6 +5458,93 @@ static void test_popen_pgroup(CuTest *tc) {
     (void)tc;
 #endif
 }
+// token_span 与 is_token 同一张 tchar 表：数到第一个非 token 字节为止，':' SP HT CR LF NUL 高位字节都停
+static void test_token_span(CuTest *tc) {
+    static const char stops[] = { ':', ' ', '\t', '\r', '\n', '\0', '"', '(', '/', '@', (char)0x7f, (char)0x80, (char)0xff };
+    char b[8];
+    size_t i;
+    CuAssertTrue(tc, 0 == token_span(NULL, 0));
+    CuAssertTrue(tc, 0 == token_span("abc", 0));
+    CuAssertTrue(tc, 4 == token_span("Host: x", 7));
+    CuAssertTrue(tc, 14 == token_span("Content-Length:", 15));
+    CuAssertTrue(tc, 3 == token_span("abc", 3));
+    CuAssertTrue(tc, 0 == token_span(":x", 2));
+    CuAssertTrue(tc, 7 == token_span("!#$%&'*+-.^_`|~", 7));
+    for (i = 0; i < sizeof(stops); i++) {
+        memcpy(b, "ab", 2);
+        b[2] = stops[i];
+        b[3] = 'c';
+        CuAssertTrue(tc, 2 == token_span(b, 4));
+        CuAssertTrue(tc, !is_token(b, 4));
+    }
+}
+// strtod_fast 直接测：oks 都走 128 位那层，前四个用到 10^0 以外的表项，最后一个走舍入进位回绕，收下时必须与 strtod_c 逐位相等；
+// fails 分别是判不清的半数(1e23 / 2^53+3)与超出 ±64 表范围，必须不收且不写出参。
+// 32 位 x87 上快路径整段关掉恒不收，用 "1" 探一下，关掉时 oks 只查"不收也不写"
+static void test_strtod_fast(CuTest *tc) {
+    static const char *oks[] = { "1e30", "1.5e-50", "123456789012345678e40", "1e64", "7.2057594037927933e+16" };
+    static const char *fails[] = { "1e23", "9007199254740995", "1e65" };
+    const double sentinel = 12345.0;
+    double v = 0.0;
+    double ref;
+    int32_t on = (ERR_OK == strtod_fast("1", 1, &v));
+    size_t i;
+    CuAssertTrue(tc, !on || 1.0 == v);
+    for (i = 0; i < ARRAY_SIZE(oks); i++) {
+        v = sentinel;
+        if (ERR_OK == strtod_fast(oks[i], strlen(oks[i]), &v)) {
+            ref = strtod_c(oks[i], NULL);
+            CuAssertTrue(tc, 0 == memcmp(&v, &ref, sizeof(v)));
+        } else {
+            CuAssertTrue(tc, !on);
+            CuAssertTrue(tc, 0 == memcmp(&v, &sentinel, sizeof(v)));
+        }
+    }
+    for (i = 0; i < ARRAY_SIZE(fails); i++) {
+        v = sentinel;
+        CuAssertTrue(tc, ERR_FAILED == strtod_fast(fails[i], strlen(fails[i]), &v));
+        CuAssertTrue(tc, 0 == memcmp(&v, &sentinel, sizeof(v)));
+    }
+}
+// mul64_128：写死的边界值各平台都跑(MSVC 的 _umul128/__umulh 与 32 位拼接回退都靠它)；有 __int128 时再加随机对照
+static void test_mul64_128(CuTest *tc) {
+    static const uint64_t cases[][4] = {// a, b, 期望高 64 位, 期望低 64 位
+        { 0, 0, 0, 0 },
+        { 0, 0xFFFFFFFFFFFFFFFFULL, 0, 0 },
+        { 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFEULL, 1 },
+        { 0x100000000ULL, 0x100000000ULL, 1, 0 },
+        { 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0, 0xFFFFFFFE00000001ULL },
+        { 0x100000001ULL, 0x100000001ULL, 1, 0x200000001ULL },
+        { 0xFFFFFFFFFFFFFFFFULL, 2, 1, 0xFFFFFFFFFFFFFFFEULL },
+        { 0xFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFEULL, 0xFFFFFFFF00000001ULL },
+        { 0x8000000000000000ULL, 0x8000000000000000ULL, 0x4000000000000000ULL, 0 },
+        { 0xFFFFFFFF00000000ULL, 0xFFFFFFFF00000000ULL, 0xFFFFFFFE00000001ULL, 0 },
+        { 0x9E3779B97F4A7C15ULL, 0xD1B54A32D192ED03ULL, 0x819B5574F29E4C7CULL, 0x5750DDE65BB8E53FULL },
+    };
+    uint64_t hi, lo;
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        hi = 0x5A5A5A5A5A5A5A5AULL;
+        lo = mul64_128(cases[i][0], cases[i][1], &hi);
+        CuAssertTrue(tc, cases[i][2] == hi && cases[i][3] == lo);
+    }
+#if defined(__SIZEOF_INT128__)
+    uint64_t a = 0x243F6A8885A308D3ULL;
+    uint64_t b = 0x13198A2E03707344ULL;
+    unsigned __int128 p;
+    for (i = 0; i < 10000; i++) {
+        a ^= a << 13;// xorshift64 造两路伪随机数
+        a ^= a >> 7;
+        a ^= a << 17;
+        b ^= b << 13;
+        b ^= b >> 7;
+        b ^= b << 17;
+        lo = mul64_128(a, b, &hi);
+        p = (unsigned __int128)a * b;
+        CuAssertTrue(tc, (uint64_t)(p >> 64) == hi && (uint64_t)p == lo);
+    }
+#endif
+}
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_binary);
@@ -5447,12 +5625,13 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pool_capacity_round);
     SUITE_ADD_TEST(suite, test_tda_overflow);
     SUITE_ADD_TEST(suite, test_strtod_c);
-    SUITE_ADD_TEST(suite, test_str2u64);
-    SUITE_ADD_TEST(suite, test_str2u64_ref);
+    SUITE_ADD_TEST(suite, test_strtou64);
+    SUITE_ADD_TEST(suite, test_strtou64_ref);
     SUITE_ADD_TEST(suite, test_fromhex_table);
     SUITE_ADD_TEST(suite, test_memstr_ref);
+    SUITE_ADD_TEST(suite, test_memcspn_ref);
     SUITE_ADD_TEST(suite, test_memichr_ref);
-    SUITE_ADD_TEST(suite, test_ct_memcmp_each_byte);
+    SUITE_ADD_TEST(suite, test_crypt_memcmp_each_byte);
     SUITE_ADD_TEST(suite, test_pack_float_bytes);
     SUITE_ADD_TEST(suite, test_sfid_init_keeps_ctx);
     SUITE_ADD_TEST(suite, test_mmap_rdwr_roundtrip);
@@ -5483,4 +5662,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_contenttype_rows);
     SUITE_ADD_TEST(suite, test_procscnt_cached);
     SUITE_ADD_TEST(suite, test_popen_pgroup);
+    SUITE_ADD_TEST(suite, test_token_span);
+    SUITE_ADD_TEST(suite, test_strtod_fast);
+    SUITE_ADD_TEST(suite, test_mul64_128);
 }

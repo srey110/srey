@@ -31,12 +31,15 @@ typedef struct redis_pack_ctx {
     int64_t nelem;              // 聚合类型（RESP_ARRAY/SET/PUSHE/MAP/ATTR）的元素数量
     int64_t len;                // data 字段的数据长度（字节数），-1 表示 Null bulk
     int64_t ival;               // 整型值（RESP_INTEGER/RESP_BOOL）
-    double dval;                // 浮点值（RESP_DOUBLE）
+    union {
+        double dval;            // 浮点值（RESP_DOUBLE）
+        struct mem_arena_blk *blocks; // 仅聚合回复的首节点：前几个之后的节点所在的块链(见 redis.c 的 REDIS_SOLO_NODES)，随首节点释放
+    };                          // 共用一格是为了结构体头保持 48 字节：data 与单独分配时同样 16 字节对齐
     struct redis_pack_ctx *next; // 指向下一个节点（聚合类型链式存储）
     char data[];               // 字符串数据（RESP_STRING/RESP_ERROR/RESP_BSTRING/RESP_BERROR/RESP_VERB/RESP_BIGNUM）
 }redis_pack_ctx;
 
-// 释放 redis_pack_ctx 链表（含所有 next 节点）
+// 释放 redis_pack_ctx 链表（含所有 next 节点）。只能传一条回复的首节点：中间节点可能在首节点的块链里，不能单独释放
 void _redis_pkfree(void *data);
 // 释放与 ud_cxt 关联的 Redis 解包上下文
 void _redis_udfree(ud_cxt *ud);

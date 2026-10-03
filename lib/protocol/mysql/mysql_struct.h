@@ -57,11 +57,11 @@ typedef struct mysql_ctx {
     char error_msg[256];     // 最近一次错误信息
 }mysql_ctx;
 
-// 参数绑定上下文（用于 COM_QUERY / COM_STMT_EXECUTE 的参数绑定）
+// 参数绑定上下文（用于 COM_QUERY / COM_STMT_EXECUTE 的参数绑定）。NULL 位图不单存：类型为 MYSQL_TYPE_NULL
+// 的参数就是 nil(只有 mysql_bind_nil 写这个类型)，组包时按 type 缓冲现算
 typedef struct mysql_bind_ctx {
     int32_t count;          // 已绑定参数数量
-    binary_ctx bitmap;      // NULL 位图缓冲区
-    binary_ctx type;        // 参数类型缓冲区（不含名称，用于旧协议）
+    binary_ctx type;        // 参数类型缓冲区（不含名称，用于旧协议；也是组包时现算 NULL 位图的依据）
     binary_ctx type_name;   // 参数类型+名称缓冲区（用于 CLIENT_QUERY_ATTRIBUTES）
     binary_ctx value;       // 参数值缓冲区
 }mysql_bind_ctx;
@@ -70,7 +70,6 @@ typedef struct mysql_bind_ctx {
 typedef struct mpack_ctx {
     int8_t more;            // 1=其后还有结果集（SERVER_MORE_RESULTS_EXISTS，多语句 / CALL 多结果集）
     mpack_type pack_type;   // 数据包类型
-    char *payload;          // 原始 payload 数据（由此结构体持有内存所有权）
     void *pack;             // 实际解析结果（mysql_reader_ctx / mysql_stmt_ctx）；OK 与 ERR 包不带，计数与错误串直接落在 mysql_ctx 上
     void(*_free_mpack)(void *); // pack 字段的释放回调，NULL 表示直接 FREE
 }mpack_ctx;
@@ -82,7 +81,7 @@ typedef struct mpack_field {
     uint16_t flags;         // 列定义标志位
     int16_t character;      // 字符集 ID
     int32_t field_lens;     // 字段最大长度
-    char *payload;          // 列定义包原始数据（由本结构体持有内存所有权，同 mpack_row）
+    char *payload;          // 列定义包原始数据：预处理语句的由本结构体持有，结果集的在 reader 块链里、随 reader 释放
     buf_ctx schema;         // 所属 schema 名
     buf_ctx table;          // 虚拟表名
     buf_ctx org_table;      // 物理表名
@@ -94,7 +93,6 @@ typedef struct mpack_field {
 typedef struct mpack_row {
     int32_t nil;            // 1 表示该字段值为 NULL
     buf_ctx val;            // 字段值数据（nil 为 0 且 val.data==NULL 时表示空字符串）
-    char *payload;          // 行原始 payload 数据（仅第一个字段持有内存所有权）；行数组与它同一块分配，只释放它
 }mpack_row;
 ARR_DECL(mrow_arr, mpack_row *)
 
@@ -103,8 +101,11 @@ typedef struct mysql_reader_ctx {
     mpack_type pack_type;   // 结果集类型（MPACK_QUERY 或 MPACK_STMT_EXECUTE）
     int32_t field_count;    // 列数量
     int32_t index;          // 当前行游标
+    int32_t ntzoff;         // tzoff 已缓存的个数(0~2)
+    int32_t tzoff[2];       // mysql_reader_datetime 快路径缓存的本地时区偏移(本地减 UTC，秒)，最近用到的在前；Windows 不用
     mpack_field *fields;    // 列描述信息数组
     mrow_arr arr_rows;      // 行数据数组
+    mem_arena arena;        // 列定义包与行包(连同各自的行数组)都从这里切，随 reader 一起释放
 }mysql_reader_ctx;
 
 // 预处理语句上下文

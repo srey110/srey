@@ -161,7 +161,7 @@ runner.run(function(t)
     -- ── _drain 的异常安全 ─────────────────────────────────────────────
     -- 两条延迟队列由 message_dispatch 末尾裸调（不在任何 xpcall 里）。act 抛出若冲掉末尾
     -- 那趟清空，已消费的元素会留在队列里被下一条消息再跑一遍：重复 resume 已唤醒的协程、
-    -- 重复执行同一个 fork 任务。C 侧 _coro_drain_forks 靠 list_pop_head 天然免疫
+    -- 重复执行同一个 fork 任务。C 侧 coro_fork_drain 靠 list_pop_head 天然免疫
     do
         local qu, seen = { "a", "b", "c" }, {}
         srey._drain(qu, function(item)

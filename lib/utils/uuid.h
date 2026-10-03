@@ -1,7 +1,7 @@
 ﻿#ifndef UUID_H_
 #define UUID_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // RFC 9562 的 v4（随机）与 v7（按时间排序）。UUID 是 16 字节二进制，比较直接 memcmp(a, b, UUID_LENS)，
 // v7 的字节序就是时间序。Nil / Max 用 ZERO / memset(0xFF) 构造

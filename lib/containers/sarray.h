@@ -1,7 +1,7 @@
 ﻿#ifndef SARRAY_H_
 #define SARRAY_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 动态数组(连续存储、倍增扩容)。元素类型编译期固化，故搬运是结构体赋值而非运行期 memcpy。
 //

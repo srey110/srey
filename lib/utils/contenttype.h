@@ -1,7 +1,7 @@
 ﻿#ifndef CONTENTTYPE_H_
 #define CONTENTTYPE_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 /// <summary>
 /// 按文件扩展名查 MIME 类型。内部是一张按扩展名升序排好的静态表 + bsearch,

@@ -1,7 +1,7 @@
 ﻿#ifndef SHA512_H_
 #define SHA512_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define SHA512_BLOCK_SIZE 64 // SHA-512 摘要输出长度（字节）
 #define SHA512_KEY_BLOCK 128 // SHA-512 压缩分组长度 B（HMAC 的 ipad/opad 长度）

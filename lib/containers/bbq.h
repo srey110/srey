@@ -1,7 +1,7 @@
 ﻿#ifndef BBQ_H_
 #define BBQ_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 无锁多生产者有界队列(分块版)。接口签名与 MPQ_DECL 一致,差别在算法:
 // mpq 是一条全局 enq 计数器上 CAS 抢位,撞输就重试;本实现把容量切成 nblk 个块、

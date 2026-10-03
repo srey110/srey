@@ -37,7 +37,7 @@ static inline char *_seri_reserve(binary_ctx *bw, size_t n) {
 static inline void _seri_put_num(binary_ctx *bw, uint8_t tag, uint64_t v, size_t n) {
     char *p = _seri_reserve(bw, 1 + n);
     p[0] = (char)tag;
-    pack_integer(p + 1, v, (int32_t)n, 1);
+    write_integer(p + 1, v, n, 1);
 }
 void seri_append_int(binary_ctx *bw, int64_t v) {
     if (0 == v) {
@@ -75,7 +75,7 @@ void seri_append_string(binary_ctx *bw, const char *s, size_t len) {
         p[0] = (char)COMBINE_TYPE(SERI_TYPE_SHORT_STRING, (uint8_t)len);
     } else {
         p[0] = (char)COMBINE_TYPE(SERI_TYPE_LONG_STRING, (uint8_t)pre);
-        pack_integer(p + 1, (uint64_t)len, (int32_t)pre, 1);
+        write_integer(p + 1, (uint64_t)len, pre, 1);
     }
     if (len > 0) {
         memmove(p + 1 + pre, inner ? bw->data + soff : s, len);
@@ -127,19 +127,19 @@ static int32_t _seri_read_integer(seri_iter *it, uint8_t cookie, int64_t *out) {
         if (NULL == (p = _seri_rb_read(it, 2))) {
             return -1;
         }
-        *out = unpack_integer(p, 2, 1, 0);// u16 LE
+        *out = (int64_t)read_le16(p);// u16 LE
         return 0;
     case SERI_NUMBER_DWORD:
         if (NULL == (p = _seri_rb_read(it, 4))) {
             return -1;
         }
-        *out = unpack_integer(p, 4, 1, 1);// i32 LE（保留负数符号）
+        *out = (int64_t)(int32_t)read_le32(p);// i32 LE（保留负数符号）
         return 0;
     case SERI_NUMBER_QWORD:
         if (NULL == (p = _seri_rb_read(it, 8))) {
             return -1;
         }
-        *out = unpack_integer(p, 8, 1, 1);// i64 LE
+        *out = (int64_t)read_le64(p);// i64 LE
         return 0;
     default:
         return -1;
@@ -180,7 +180,7 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
         if (NULL == (p = _seri_rb_read(it, sizeof(void *)))) {
             return -1;
         }
-        uint64_t addr = (uint64_t)unpack_integer(p, sizeof(void *), 1, 0);
+        uint64_t addr = (uint64_t)read_integer(p, sizeof(void *), 1, 0);
         out->type = SERI_ITEM_USERDATA;
         out->v.ud = (void *)(uintptr_t)addr;
         return 1;
@@ -203,12 +203,12 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
             if (NULL == (p = _seri_rb_read(it, 2))) {
                 return -1;
             }
-            slen = (size_t)unpack_integer(p, 2, 1, 0);
+            slen = (size_t)read_le16(p);
         } else if (4 == cookie) {
             if (NULL == (p = _seri_rb_read(it, 4))) {
                 return -1;
             }
-            slen = (size_t)unpack_integer(p, 4, 1, 0);
+            slen = (size_t)read_le32(p);
         } else {
             return -1;
         }

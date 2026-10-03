@@ -19,13 +19,6 @@
 #define Sigma1_512(x) (S64(14, (x)) ^ S64(18, (x)) ^ S64(41, (x))) // 大 Σ1 函数
 #define sigma0_512(x) (S64( 1, (x)) ^ S64( 8, (x)) ^ R( 7,   (x))) // 小 σ0 函数
 #define sigma1_512(x) (S64(19, (x)) ^ S64(61, (x)) ^ R( 6,   (x))) // 小 σ1 函数
-// 按大端取 64 位字，不要求对齐
-#if defined(OS_WIN)
-#define LOAD64BE(p) _crypt_read64be(p)// Windows 下走公共头的读函数
-#else
-#define LOAD64BE(p) (((uint64_t)(p)[0] << 56) | ((uint64_t)(p)[1] << 48) | ((uint64_t)(p)[2] << 40) | ((uint64_t)(p)[3] << 32) | \
-    ((uint64_t)(p)[4] << 24) | ((uint64_t)(p)[5] << 16) | ((uint64_t)(p)[6] << 8) | ((uint64_t)(p)[7]))
-#endif
 // 一轮压缩：进来时 t1 已是本轮消息字。a~h 不搬动，靠调用方每轮把名字轮换一位
 #define ROUND512(i,a,b,c,d,e,f,g,h) do { \
     t1 += (h) + Sigma1_512(e) + Ch(e, f, g) + k512[i]; \
@@ -35,7 +28,7 @@
 } while (0)
 // 前 16 轮：消息字直接取自输入
 #define ROUND512_00_15(i,a,b,c,d,e,f,g,h) do { \
-    t1 = w[i] = LOAD64BE(data + (i) * 8); \
+    t1 = w[i] = read_be64(data + (i) * 8); \
     ROUND512(i, a, b, c, d, e, f, g, h); \
 } while (0)
 // 后 64 轮：调度表只留最近 16 个字循环复用
@@ -96,6 +89,7 @@ static const uint64_t ihv[8] = {
     0x1f83d9abfb41bd6bULL,
     0x5be0cd19137e2179ULL
 };
+
 void sha512_init(sha512_ctx *sha512) {
     memcpy(sha512->state, ihv, SHA512_BLOCK_SIZE);
     ZERO(sha512->data, SHA512_BLOCK_LENGTH);
@@ -185,15 +179,15 @@ static void _sha512_last(sha512_ctx *sha512) {
         sha512->data[0] = 0x80;
     }
     // 128 位长度按大端放在末 16 字节：高 64 位在前
-    _crypt_write64be(sha512->data + SHA512_SHORT_BLOCK_LENGTH, sha512->bitlen[1]);
-    _crypt_write64be(sha512->data + SHA512_SHORT_BLOCK_LENGTH + 8, sha512->bitlen[0]);
+    write_be64(sha512->data + SHA512_SHORT_BLOCK_LENGTH, sha512->bitlen[1]);
+    write_be64(sha512->data + SHA512_SHORT_BLOCK_LENGTH + 8, sha512->bitlen[0]);
     _sha512_transform(sha512->state, sha512->data, 1);
 }
 void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]) {
     size_t j;
     _sha512_last(sha512);
     for (j = 0; j < 8; j++) {
-        _crypt_write64be(hash + j * 8, sha512->state[j]);
+        write_be64(hash + j * 8, sha512->state[j]);
     }
     secure_zero(sha512, sizeof(sha512_ctx));
 }

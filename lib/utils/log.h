@@ -1,7 +1,7 @@
 ﻿#ifndef LOG_H_
 #define LOG_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 /// <summary>
 /// 日志初始化

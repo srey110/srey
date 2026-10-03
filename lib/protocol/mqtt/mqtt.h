@@ -20,16 +20,16 @@ int32_t _mqtt_may_resume(void *data);
 void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
-/// 新建 MQTT 连接上下文(只记协议版本)。用在需要调用方注入上下文的承载场景：
+/// 取 MQTT 连接上下文(只记协议版本)。用在需要调用方注入上下文的承载场景：
 /// MQTT over WebSocket 的客户端方向没有别的建立点，注入走 mqtt_ws_bind(它内部就调本函数)；
 /// 服务端方向由 mqtt_unpack 解 CONNECT 时自建，不要再注入
 /// </summary>
 /// <param name="version">mqtt_protversion</param>
-/// <returns>mqtt_ctx；version 不是 MQTT_311 / MQTT_50 返回 NULL。所有权归调用方；
-/// 交给 websock_set_secextra 时连 mqtt_ctx_free 一起当 fcb 传，成败都由它回收，调用方不再持有</returns>
+/// <returns>mqtt_ctx；version 不是 MQTT_311 / MQTT_50 返回 NULL。返回的是每个版本一份的全局只读实例，不能写；
+/// 用法照旧按"所有权归调用方"：交给 websock_set_secextra 时连 mqtt_ctx_free 一起当 fcb 传，调用方不再持有</returns>
 mqtt_ctx *mqtt_ctx_new(mqtt_protversion version);
 /// <summary>
-/// 释放 mqtt_ctx_new 产出的上下文。签名匹配 free_cb，可直接当 websock_set_secextra 的 fcb 传
+/// 释放 mqtt_ctx_new 产出的上下文。实例是全局的，本函数为空操作；签名匹配 free_cb，可直接当 websock_set_secextra 的 fcb 传
 /// </summary>
 /// <param name="ctx">mqtt_ctx；NULL 安全</param>
 void mqtt_ctx_free(void *ctx);

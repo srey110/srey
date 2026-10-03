@@ -1,7 +1,7 @@
 ﻿#ifndef EVSSL_H_
 #define EVSSL_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define EVSSL_NAME_LEN 64
 
@@ -16,6 +16,7 @@
         ssl = NULL; \
     }
 typedef struct evssl_ctx evssl_ctx;
+
 /// <summary>
 /// 环境初始化
 /// </summary>

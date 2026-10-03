@@ -1,10 +1,6 @@
 ﻿#include "utils/utils.h"
 #include "utils/strptime.h"
 #include "base/structs.h"
-#include <locale.h>
-#if defined(OS_DARWIN) || defined(OS_BSD)
-    #include <xlocale.h>
-#endif
 #if defined(OS_LINUX)
     #include <sys/syscall.h>
 #endif
@@ -14,7 +10,6 @@
 #else
     #define CSPRNG_GETRANDOM 0
 #endif
-
 #ifdef OS_WIN
 #pragma comment(lib, "Dbghelp.lib" )
 #pragma comment(lib, "Bcrypt.lib")
@@ -22,9 +17,6 @@
 // WITH_SSL 时它由 OpenSSL 那组 pragma 顺带链上,关掉就缺,故本文件自己声明
 #pragma comment(lib, "advapi32.lib")
 static atomic_t _exindex = 0;
-static _locale_t g_numeric_c;
-#else
-static locale_t g_numeric_c;
 #endif
 
 #if defined(OS_WIN)
@@ -47,34 +39,18 @@ typedef struct dump_arg {
     struct _EXCEPTION_POINTERS *da_excep;
 }dump_arg;
 #endif
-// tchar 集合见 RFC 7230 §3.2.6：ALPHA / DIGIT / "!#$%&'*+-.^_`|~" 为 1，其余一概为 0。
-// 按 16 列排，行首注释是高 4 位
-static const uint8_t TCHAR_TBL[256] = {
-    /* 0x0 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0x1 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0x2 */ 0,1,0,1,1,1,1,1,0,0,1,1,0,1,1,0,
-    /* 0x3 */ 1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,
-    /* 0x4 */ 0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    /* 0x5 */ 1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,
-    /* 0x6 */ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    /* 0x7 */ 1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,
-    /* 0x8 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0x9 */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0xA */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0xB */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0xC */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0xD */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0xE */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0xF */ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-};
-#define _FMT_STACK_SIZE 512
+// createid 每个线程手里的一段号：[next, end)
+typedef struct id_seg {
+    uint64_t next;//下一个要发的号
+    uint64_t end;//这段的末尾(不含)
+}id_seg;
 #define _ID_BLOCK 1024 // createid 每个线程一次领走的号数
 static void *_ud;//信号处理回调的用户数据
 static void(*_sig_cb)(int32_t, void *);//用户注册的信号处理回调函数
 static uint16_t _serviceid = 1;
 static atomic64_t _ids = 1;//发号计数，各线程按 _ID_BLOCK 一段一段领
-static THREAD_LOCAL uint64_t _id_next = 0;//本线程手里这段的下一个号
-static THREAD_LOCAL uint64_t _id_end = 0;//本线程手里这段的末尾(不含)
+TLS_DEFINE(id_seg, _idseg, 1)//本线程手里那段号
+TLS_DEFINE(uint64_t, _rand, 1)//_xorshift64 的状态，0 表示本线程还没播种
 static char _path[PATH_LENS] = { 0 };//程序所在目录路径缓存
 static atomic_t _path_once = 0;//路径初始化状态：0=未初始化 1=初始化中 2=已完成
 
@@ -257,11 +233,12 @@ int32_t serviceid(uint16_t id) {
 // 每个线程一次领一段号，段内自己发，全局计数每 _ID_BLOCK 次才碰一次。
 // 段与段不重叠所以仍全局唯一；同一线程内递增，跨线程不保证先后
 uint64_t createid(void) {
-    if (_id_next == _id_end) {
-        _id_next = (uint64_t)ATOMIC64_ADD_RELAXED(&_ids, _ID_BLOCK);
-        _id_end = _id_next + _ID_BLOCK;
+    id_seg *seg = _idseg_tls();
+    if (seg->next == seg->end) {
+        seg->next = (uint64_t)ATOMIC64_ADD_RELAXED(&_ids, _ID_BLOCK);
+        seg->end = seg->next + _ID_BLOCK;
     }
-    return ((uint64_t)_serviceid << 48) | (_id_next++ & 0xFFFFFFFFFFFFULL);
+    return ((uint64_t)_serviceid << 48) | (seg->next++ & 0xFFFFFFFFFFFFULL);
 }
 uint64_t threadid(void) {
 #if defined(OS_WIN)
@@ -606,65 +583,21 @@ uint64_t strtots(const char *time, const char *fmt) {
     }
     return (uint64_t)ts;
 }
-int32_t is_token(const char *data, size_t lens) {
-    unsigned char c;
-    size_t i;
-    if (0 == lens
-        || NULL == data) {
-        return 0;
-    }
-    for (i = 0; i < lens; i++) {
-        c = (unsigned char)data[i];
-        if (!TCHAR_TBL[c]) {
-            return 0;
-        }
-    }
-    return 1;
-}
-void locale_init(void) {
-#ifdef OS_WIN
-    g_numeric_c = _create_locale(LC_NUMERIC, "C");
-    ASSERTAB(NULL != g_numeric_c, "_create_locale(LC_NUMERIC, \"C\") failed.");
-#else
-    g_numeric_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
-    ASSERTAB((locale_t)0 != g_numeric_c, ERRORSTR(ERRNO));
-#endif
-}
-void locale_free(void) {
-#ifdef OS_WIN
-    if (NULL != g_numeric_c) {
-        _free_locale(g_numeric_c);
-        g_numeric_c = NULL;
-    }
-#else
-    if ((locale_t)0 != g_numeric_c) {
-        freelocale(g_numeric_c);
-        g_numeric_c = (locale_t)0;
-    }
-#endif
-}
-double strtod_c(const char *str, char **endptr) {
-#ifdef OS_WIN
-    return _strtod_l(str, endptr, g_numeric_c);
-#else
-    return strtod_l(str, endptr, g_numeric_c);
-#endif
-}
 // xorshift64* 伪随机数生成器，线程局部状态，首次调用自动用线程ID+时间戳初始化种子
 static uint64_t _xorshift64(void) {
-    static THREAD_LOCAL uint64_t _tls_rand = 0;
-    if (0 == _tls_rand) {
+    uint64_t *st = _rand_tls();
+    if (0 == *st) {
         /* 首次调用：用线程 ID 与时间戳组合初始化种子，避免种子为 0 */
-        _tls_rand = (uint64_t)threadid() ^ (nowms() * 6364136223846793005ULL + 1442695040888963407ULL);
-        if (0 == _tls_rand){
-            _tls_rand = 1;
+        *st = (uint64_t)threadid() ^ (nowms() * 6364136223846793005ULL + 1442695040888963407ULL);
+        if (0 == *st){
+            *st = 1;
         }
     }
-    uint64_t x = _tls_rand;
+    uint64_t x = *st;
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
-    _tls_rand = x;
+    *st = x;
     return x;
 }
 int32_t randrange(int32_t min, int32_t max) {
@@ -764,16 +697,7 @@ int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
     size_t slen;
     size_t lens;
     for (;;) {
-        // sep 为空即整段不切。单字节直接 memchr:memstr 那条要过 mem_funcs_pick 加两次
-        // 间接调用,而 url_parse 每个请求都要切一次路径
-        if (NULL == sep
-            || 0 == seplens) {
-            pos = NULL;
-        } else if (1 == seplens) {
-            pos = memchr(cur, (uint8_t)sep[0], remain);
-        } else {
-            pos = memstr(0, cur, remain, sep, seplens);
-        }
+        pos = memstr(0, cur, remain, sep, seplens);// sep 为空时返回 NULL，即整段不切
         slen = (NULL != pos) ? (size_t)(pos - cur) : remain;
         data = cur;
         lens = slen;
@@ -786,7 +710,7 @@ int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
                 break;// 栈模式截断
             }
         }
-        // 尾随分隔符不用特判:remain 归 0 后再走一轮,memchr/memstr 对长度 0 都返 NULL,
+        // 尾随分隔符不用特判:remain 归 0 后再走一轮,memstr 对长度 0 返 NULL,
         // 自然补出那个空段(段数 = sep 出现次数 + 1)
         if (NULL == pos) {
             break;
@@ -795,40 +719,6 @@ int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
         cur = pos + seplens;
     }
     return n;
-}
-char *_format_va(const char *fmt, va_list args) {
-    /* 先用栈缓冲尝试格式化（绝大多数场景够用），成功则直接复制返回，避免堆分配；
-     * 仅当字符串超过栈缓冲大小时，才按实际长度堆分配并重试。 */
-    char stk[_FMT_STACK_SIZE];
-    va_list args2;
-    va_copy(args2, args);
-    int32_t rtn = vsnprintf(stk, _FMT_STACK_SIZE, fmt, args);
-    if (rtn < 0) {
-        va_end(args2);
-        return NULL;
-    }
-    if (rtn < _FMT_STACK_SIZE) {
-        va_end(args2);
-        return dup_zero(stk, (size_t)rtn);
-    }
-    /* 栈缓冲不足，按实际长度堆分配后重试 */
-    size_t size = (size_t)rtn + 1;
-    char *pbuff;
-    MALLOC(pbuff, size);
-    rtn = vsnprintf(pbuff, size, fmt, args2);
-    va_end(args2);
-    if (rtn < 0) {
-        FREE(pbuff);
-        return NULL;
-    }
-    return pbuff;
-}
-char *format_va(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    char *buf = _format_va(fmt, args);
-    va_end(args);
-    return buf;
 }
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_BSD)
 // 反复取直到填满：一次调用未必给够，EINTR 之类可重试错误继续，其余即失败。

@@ -19,7 +19,8 @@ typedef struct task_unlisten_race_args {
 static atomic_t _race_nconn;
 
 // fork 出的客户端工作协程：连一次后立即关闭，连接失败静默忽略（unlisten 已发生）
-static void _client_worker(task_ctx *task, void *arg) {
+static void _client_worker(void *owner, void *arg) {
+    task_ctx *task = owner;
     uint16_t port = (uint16_t)(uintptr_t)arg;
     sock_ctx sk;
     if (ERR_OK == coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
@@ -43,7 +44,7 @@ static void _startup(task_ctx *task) {
         }
         // 并发投 N 个 client 协程，accept 经 SO_REUSEPORT 内核 hash 分散到各 watcher
         for (c = 0; c < RACE_CLIENTS; c++) {
-            coro_fork(task, _client_worker, (void *)(uintptr_t)arg->port);
+            coro_fork(coro_task_co(task), _client_worker, (void *)(uintptr_t)arg->port);
         }
         // 短 sleep 让部分 connect 进入 accept、跨 watcher 投递落地，但不等全部完成
         coro_sleep(task, 2);

@@ -1,7 +1,7 @@
 ﻿#ifndef XOR_H_
 #define XOR_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 /// <summary>
 /// 异或编码

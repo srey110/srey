@@ -4,6 +4,12 @@
 #include "utils/strptime.h"
 #include "utils/uuid.h"
 
+// 文本 bool 多字节真值表的一项：字面量与它的长度
+typedef struct pgsql_bool_word {
+    const char *s;
+    int32_t n;
+}pgsql_bool_word;
+
 // 取走第 idx 个结果的 reader; 下标须已由调用方确认在范围内。所有权转移给调用方,
 // 槽位置 NULL 以免 _pgpack_free 二次释放
 static inline pgsql_reader_ctx *_pgsql_reader_take(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
@@ -125,12 +131,15 @@ int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *e
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
-        // 文本格式：识别 t/true/y/yes/on/1 为真
-        static const char *_pgsql_true[] = { "t", "true", "y", "yes", "on", "1" };
-        int32_t n = (int32_t)ARRAY_SIZE(_pgsql_true);
-        for (int32_t i = 0; i < n; i++) {
-            if ((int32_t)strlen(_pgsql_true[i]) == row->lens
-                && 0 == memcasecmp(row->val, _pgsql_true[i], row->lens)) {
+        // 文本格式：识别 t/true/y/yes/on/1 为真(不分大小写)。服务端输出恒为单字节 t/f，先走单字节
+        if (1 == row->lens) {
+            char c = (char)(row->val[0] | 0x20);
+            return ('t' == c || 'y' == c || '1' == row->val[0]) ? 1 : 0;
+        }
+        static const pgsql_bool_word _pgsql_true[] = { { "true", 4 }, { "yes", 3 }, { "on", 2 } };
+        for (int32_t i = 0; i < (int32_t)ARRAY_SIZE(_pgsql_true); i++) {
+            if (_pgsql_true[i].n == row->lens
+                && 0 == memcasecmp(row->val, _pgsql_true[i].s, (size_t)row->lens)) {
                 return 1;
             }
         }
@@ -152,9 +161,9 @@ int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
-        // 文本格式：判定与 mysql 侧共用 parse_int64_strict，这里只负责写 err 和打日志
+        // 文本格式：判定与 mysql 侧共用 strtoi64，这里只负责写 err 和打日志
         int64_t val;
-        if (ERR_OK != parse_int64_strict(row->val, (size_t)row->lens, &val)) {
+        if (ERR_OK != strtoi64(row->val, (size_t)row->lens, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
@@ -167,7 +176,7 @@ int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    return unpack_integer(row->val, row->lens, 0, 1);
+    return read_integer(row->val, (size_t)row->lens, 0, 1);
 }
 double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
@@ -178,9 +187,9 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
-        // 文本格式：空串 / 有残留字符 / 上溢的判定与 mysql 侧共用 parse_double_strict
+        // 文本格式：空串 / 有残留字符 / 上溢的判定与 mysql 侧共用 strtod_s
         double val;
-        if (ERR_OK != parse_double_strict(row->val, (size_t)row->lens, &val)) {
+        if (ERR_OK != strtod_s(row->val, (size_t)row->lens, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0.0;
@@ -242,6 +251,59 @@ static inline int32_t _pgsql_date_to_days(int32_t y, int32_t m, int32_t d) {
     julian += 7834 * m / 256 + d;
     return julian - 2451545;
 }
+// s 里 pos 列出的下标全是十进制数字
+static inline int32_t _pgsql_all_digits(const char *s, const uint8_t *pos, int32_t n) {
+    for (int32_t i = 0; i < n; i++) {
+        if ((uint32_t)((uint8_t)s[pos[i]] - '0') > 9) {
+            return 0;
+        }
+    }
+    return 1;
+}
+// 两位十进制数字，调用方已确认是数字
+static inline int32_t _pgsql_dig2(const char *s) {
+    return (s[0] - '0') * 10 + (s[1] - '0');
+}
+// "YYYY-MM-DD" 定宽快路径：s 至少 10 字节。字段量程与 _strptime 的 %Y-%m-%d 相同，
+// 形状不符或越界返回 NULL 交回 _strptime 定夺，所以只会少走一趟 _strptime，不会多收或少收
+static const char *_pgsql_date_fixed(const char *s, struct tm *dt) {
+    static const uint8_t _pos[8] = { 0, 1, 2, 3, 5, 6, 8, 9 };
+    if ('-' != s[4]
+        || '-' != s[7]
+        || !_pgsql_all_digits(s, _pos, (int32_t)ARRAY_SIZE(_pos))) {
+        return NULL;
+    }
+    int32_t mon = _pgsql_dig2(s + 5);
+    int32_t mday = _pgsql_dig2(s + 8);
+    if (mon < 1 || mon > 12 || mday < 1 || mday > 31) {
+        return NULL;
+    }
+    dt->tm_year = _pgsql_dig2(s) * 100 + _pgsql_dig2(s + 2) - 1900;
+    dt->tm_mon = mon - 1;
+    dt->tm_mday = mday;
+    return s + 10;
+}
+// "YYYY-MM-DD HH:MM:SS" 定宽快路径：s 至少 19 字节，其余同 _pgsql_date_fixed
+static const char *_pgsql_ts_fixed(const char *s, struct tm *dt) {
+    static const uint8_t _pos[6] = { 11, 12, 14, 15, 17, 18 };
+    if (' ' != s[10]
+        || ':' != s[13]
+        || ':' != s[16]
+        || !_pgsql_all_digits(s, _pos, (int32_t)ARRAY_SIZE(_pos))
+        || NULL == _pgsql_date_fixed(s, dt)) {
+        return NULL;
+    }
+    int32_t hour = _pgsql_dig2(s + 11);
+    int32_t min = _pgsql_dig2(s + 14);
+    int32_t sec = _pgsql_dig2(s + 17);
+    if (hour > 23 || min > 59 || sec > 61) {
+        return NULL;
+    }
+    dt->tm_hour = hour;
+    dt->tm_min = min;
+    dt->tm_sec = sec;
+    return s + 19;
+}
 // 将文本格式时间戳 "YYYY-MM-DD HH:MM:SS[.ffffff]" 解析为相对 PG 纪元的微秒数。
 // 用 _strptime 而不是 sscanf 是为了逐字段量程校验：%d 什么都收，垃圾年份会算出垃圾天数还报成功。
 // 已知收窄：年份只支持到 9999，而 PG 支持到 294276 AD，5 位及以上的年份解析失败。
@@ -253,7 +315,10 @@ static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) 
         return 0;
     }
     struct tm dt = { 0 };
-    const char *end = _strptime(tmp, "%Y-%m-%d %H:%M:%S", &dt);
+    const char *end = (slen >= 19) ? _pgsql_ts_fixed(tmp, &dt) : NULL;
+    if (NULL == end) {
+        end = _strptime(tmp, "%Y-%m-%d %H:%M:%S", &dt);
+    }
     if (NULL == end) {
         SET_PTR(err, ERR_FAILED);
         return 0;
@@ -298,7 +363,10 @@ static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) 
         return 0;
     }
     struct tm dt = { 0 };
-    const char *end = _strptime(tmp, "%Y-%m-%d", &dt);
+    const char *end = (slen >= 10) ? _pgsql_date_fixed(tmp, &dt) : NULL;
+    if (NULL == end) {
+        end = _strptime(tmp, "%Y-%m-%d", &dt);
+    }
     if (NULL == end) {
         SET_PTR(err, ERR_FAILED);
         return 0;
@@ -325,7 +393,7 @@ int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    return (int64_t)unpack_integer(row->val, row->lens, 0, 1);
+    return (int64_t)read_be64(row->val);
 }
 int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
@@ -343,7 +411,7 @@ int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *e
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    return (int32_t)unpack_integer(row->val, row->lens, 0, 1);
+    return (int32_t)read_be32(row->val);
 }
 int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[16], int32_t *err) {
     SET_PTR(err, ERR_OK);

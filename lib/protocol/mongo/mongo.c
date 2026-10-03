@@ -145,7 +145,7 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
             LOG_WARN("invalid OP_MSG kind=0 section too short.");
             return ERR_FAILED;
         }
-        bson_len = (uint32_t)unpack_integer(breader->data + breader->offset, 4, 1, 0);
+        bson_len = read_le32(breader->data + breader->offset);
         if (bson_len < 5 || !binary_have(breader, (size_t)bson_len)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("invalid OP_MSG kind=0 BSON length %u.", bson_len);
@@ -205,7 +205,7 @@ void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     }
     uint32_t total;
     ASSERTAB(sizeof(total) == buffer_copyout(buf, 0, &total, sizeof(total)), "copy buffer failed.");
-    total = (uint32_t)unpack_integer((const char *)&total, sizeof(total), 1, 0);
+    total = read_le32(&total);
     if (total < 26 || total > MONGO_MAX_PACK_LENS) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;

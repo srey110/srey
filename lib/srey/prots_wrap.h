@@ -41,7 +41,7 @@ int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess);
 /// <returns>ERR_OK 成功，其他失败</returns>
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess);
 /// <summary>
-/// 发起 MQTT 连接：内部创建 mqtt_ctx，绑定 task 并经 task_connect 注册网络事件回调
+/// 发起 MQTT 连接：挂上按协议版本的全局 mqtt_ctx，绑定 task 并经 task_connect 注册网络事件回调
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="evssl">TLS 上下文，NULL 表示不加密</param>

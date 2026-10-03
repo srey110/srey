@@ -1,5 +1,4 @@
 ﻿#include "crypt/sha1.h"
-#include "crypt/crypt_pub.h"
 
 #define ROTLEFT(a, b) (((a) << (b)) | ((a) >> (32 - (b))))
 #define F0(b, c, d) ((((c) ^ (d)) & (b)) ^ (d))
@@ -19,7 +18,7 @@ static void _sha1_transform(sha1_ctx *sha1, const uint8_t *data, size_t nblk) {
     uint32_t a, b, c, d, e, i, m[16];
     for (; nblk > 0; --nblk, data += 64) {
         for (i = 0; i < 16; ++i) {
-            m[i] = _crypt_read32be(data + i * 4);
+            m[i] = read_be32(data + i * 4);
         }
         a = sha1->state[0];
         b = sha1->state[1];
@@ -102,11 +101,11 @@ void sha1_final(sha1_ctx *sha1, char hash[SHA1_BLOCK_SIZE]) {
         memset(sha1->data, 0, 56);
     }
     sha1->bitlen += sha1->datalen * 8;
-    _crypt_write32be(sha1->data + 56, (uint32_t)(sha1->bitlen >> 32));
-    _crypt_write32be(sha1->data + 60, (uint32_t)sha1->bitlen);
+    write_be32(sha1->data + 56, (uint32_t)(sha1->bitlen >> 32));
+    write_be32(sha1->data + 60, (uint32_t)sha1->bitlen);
     _sha1_transform(sha1, sha1->data, 1);
     for (i = 0; i < 5; ++i) {
-        _crypt_write32be((uint8_t *)hash + i * 4, sha1->state[i]);
+        write_be32((uint8_t *)hash + i * 4, sha1->state[i]);
     }
     secure_zero(sha1, sizeof(sha1_ctx));
 }

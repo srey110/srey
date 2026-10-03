@@ -603,7 +603,7 @@ static int32_t _lcore_may_resume(lua_State *lua) {
 /// <returns type="boolean">true=可能保留（TCP/UDP 等 skid 类长连接场景）；false=不保留</returns>
 static int32_t _lcore_message_may_keep(lua_State *lua) {
     msg_type mtype = (msg_type)lpub_check_range(lua, 1, MSG_TYPE_NONE, MSG_TYPE_ALL - 1, MTYPE_OUT_OF_RANGE);
-    return lpub_rtn_bool(lua, _message_may_keep(mtype));
+    return lpub_rtn_bool(lua, message_may_keep(mtype));
 }
 /// <summary>
 /// 取消息类型的名字。给 Lua 侧的 MSG_TYPE 表做钉子用：那张表是按 C 枚举手抄的字面量，
@@ -613,7 +613,7 @@ static int32_t _lcore_message_may_keep(lua_State *lua) {
 /// <returns type="string">类型名（"RECV" / "CLOSE" …）；名字表漏填该成员时为空串</returns>
 static int32_t _lcore_message_str(lua_State *lua) {
     msg_type mtype = (msg_type)lpub_check_range(lua, 1, MSG_TYPE_NONE, MSG_TYPE_ALL - 1, MTYPE_OUT_OF_RANGE);
-    lua_pushstring(lua, _message_str(mtype));
+    lua_pushstring(lua, message_str(mtype));
     return 1;
 }
 // task_list 收集回调：仅存入 C 数组，不调 Lua API，避免 OOM longjmp 绕过 rwlock 解锁。

@@ -1,7 +1,7 @@
 ﻿#ifndef MD5_H_
 #define MD5_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define MD5_BLOCK_SIZE 16 // MD5 摘要输出长度（字节）
 #define MD5_KEY_BLOCK 64 // MD5 压缩分组长度 B（HMAC 的 ipad/opad 长度）

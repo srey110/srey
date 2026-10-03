@@ -1883,7 +1883,7 @@ static void test_bson_init_prefix(CuTest *tc) {
     char big[601];
     bson_ctx b, ref, rd, sub, arr;
     bson_iter iter, siter, aiter;
-    size_t pi, ci, i, dlens, slens;
+    size_t pi, ci, i, dlens, slens = 0;
     int32_t err;
     char *p;
 

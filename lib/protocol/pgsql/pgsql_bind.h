@@ -4,7 +4,7 @@
 #include "protocol/pgsql/pgsql_struct.h"
 
 /// <summary>
-/// 初始化参数绑定上下文，分配格式与值的序列化缓冲区
+/// 初始化参数绑定上下文，分配参数段缓冲区（格式码与参数值同一块，格式码按绑定顺序回填）
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx 指针</param>
 /// <param name="nparam">参数数量</param>

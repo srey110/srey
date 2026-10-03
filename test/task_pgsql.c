@@ -292,8 +292,8 @@ typedef struct {
     pgsql_ctx *pg;
 } _conc_arg;
 
-static void _conc_worker(task_ctx *task, void *arg) {
-    (void)task;
+static void _conc_worker(void *owner, void *arg) {
+    (void)owner;
     _conc_arg *a = (_conc_arg *)arg;
     char sql[96];
     // pg_sleep(0) 让服务端把每条查询的响应拉开，放大交错窗口
@@ -329,7 +329,7 @@ static void _conc_worker(task_ctx *task, void *arg) {
 
 static int32_t _concurrent_query(pgsql_ctx *pg) {
     _conc_arg args[_CONC_N];
-    fork_serial_cb funcs[_CONC_N];
+    coro_fn funcs[_CONC_N];
     void *argp[_CONC_N];
     int32_t i;
     for (i = 0; i < _CONC_N; i++) {
@@ -340,7 +340,7 @@ static int32_t _concurrent_query(pgsql_ctx *pg) {
         funcs[i] = _conc_worker;
         argp[i] = &args[i];
     }
-    if (ERR_OK != coro_fork_wait(pg->task, funcs, argp, _CONC_N)) {
+    if (ERR_OK != coro_fork_wait(coro_task_co(pg->task), funcs, argp, _CONC_N)) {
         LOG_ERROR("pgsql concurrent: fork_wait error.");
         return ERR_FAILED;
     }

@@ -1,7 +1,7 @@
 ﻿#ifndef TDA_H_
 #define TDA_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 翻倍告警状态(threshold-doubling alarm):
 // 业务侧每次观察到当前值(队列长度/字节累计等)时调 tda_check 检测是否跨越新阈值,

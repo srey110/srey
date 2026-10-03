@@ -6,19 +6,9 @@
 // task 消息队列默认条数
 #define TASK_QUEUE_CAP 256
 typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
-// 消息 data 的归属方式。"哪些消息类型持有需要释放的堆数据"只在这一个 switch 里定义：
-// _message_should_clean 与 _message_clean 都问它，新增带数据的消息类型只改这一处，
-// 不会出现"清理加了、判定漏了"这种只在某一条消费路径上泄漏、编译器与测试都不相关的分歧
-typedef enum msgdata_kind {
-    MSGDATA_NONE = 0,   // 不持有堆数据
-    MSGDATA_PROT,       // 协议层收包，prots_pkfree
-    MSGDATA_UDP,        // UDP 收包，prots_udp_pkfree；当前与 MSGDATA_RAW 等效，独立成档留给将来按协议分化
-    MSGDATA_HS,         // 握手数据，prots_hsfree
-    MSGDATA_RAW         // 裸 MALLOC，FREE
-}msgdata_kind;
 // 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=激活+ungrab；经 _task_net_emit 注册给 prots 作为消息汇。
 // 本轮已入队条数，begin/emit/end 三者同在一条 event 线程上配对，故用线程局部变量
-static THREAD_LOCAL int32_t _emit_cnt;
+TLS_DEFINE(int32_t, _emit_cnt, 1)
 
 // 将任务名指针插入任务哈希表（重复时触发断言）
 static inline void _task_map_set(task_map *map, task_ctx *task) {
@@ -101,14 +91,14 @@ static void _task_handle_handshaked(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_handshaked) {
         task->_net_handshaked(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->data, msg->size);
     }
-    _message_clean(msg);
+    message_clean(msg);
 }
 // 处理 TCP 数据接收消息，处理后清理消息数据
 static void _task_handle_recv(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recv) {
         task->_net_recv(task, &msg->sk, msg->subtype, msg->client, msg->slice, msg->data, msg->size);
     }
-    _message_clean(msg);
+    message_clean(msg);
 }
 // 处理数据发送完成消息
 static void _task_handle_send(task_ctx *task, message_ctx *msg) {
@@ -136,7 +126,7 @@ static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
         uint16_t port = netaddr_port(&rfmsg->addr);
         task->_net_recvfrom(task, &msg->sk, msg->subtype, ip, port, rfmsg->data, rfmsg->len);
     }
-    _message_clean(msg);
+    message_clean(msg);
 }
 // 处理任务间请求消息：若未注册请求回调，则返回错误响应
 static void _task_handle_request(task_ctx *task, message_ctx *msg) {
@@ -156,14 +146,14 @@ static void _task_handle_request(task_ctx *task, message_ctx *msg) {
             }
         }
     }
-    _message_clean(msg);
+    message_clean(msg);
 }
 // 处理任务间响应消息，处理后清理消息数据
 static void _task_handle_response(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_response) {
         task->_response(task, msg->subtype, msg->sess, msg->erro, msg->data, msg->size);
     }
-    _message_clean(msg);
+    message_clean(msg);
 }
 // 按消息类型索引的处理函数表（静态分发，无 switch-case 开销）
 static const _msg_handler_t _msg_handlers[MSG_TYPE_ALL] = {
@@ -225,7 +215,7 @@ void task_free(task_ctx *task) {
     // ref 归零进入 task_free，无其他持有者；qumsg 单消费者排空
     message_ctx msg;
     while (ERR_OK == msgq_pop_sc(&task->qumsg, &msg)) {
-        _message_clean(&msg);
+        message_clean(&msg);
     }
     msgq_free(&task->qumsg);
     FREE(task->name);
@@ -324,70 +314,6 @@ void task_ungrab(task_ctx *task) {
         }
     }
 }
-static inline msgdata_kind _message_data_kind(msg_type mtype) {
-    switch (mtype) {
-    case MSG_TYPE_RECV:
-        return MSGDATA_PROT;
-    case MSG_TYPE_RECVFROM:
-        return MSGDATA_UDP;
-    case MSG_TYPE_HANDSHAKED:
-        return MSGDATA_HS;
-    case MSG_TYPE_REQUEST:
-    case MSG_TYPE_RESPONSE:
-        return MSGDATA_RAW;
-    // CLOSE 既不能加 data 也不能加 shared:_coro_handle_closed 按等待者个数重复调 _message_clean。
-    // data 由本表挡住;shared 靠"唯一写入点 task_multi_request 把 mtype 写死成 REQUEST"挡住
-    default:
-        return MSGDATA_NONE;
-    }
-}
-int32_t _message_should_clean(message_ctx *msg) {
-    // shared 路径：task_multi_call / task_multi_request 广播,无论 data 是否为 NULL 都需 ref-- 防止泄漏
-    if (NULL != msg->shared) {
-        return ERR_OK;
-    }
-    if (MSGDATA_NONE != _message_data_kind(msg->mtype)
-        && NULL != msg->data) {
-        return ERR_OK;
-    }
-    return ERR_FAILED;
-}
-void _message_clean(message_ctx *msg) {
-    // task_multi_call / task_multi_request 广播路径：N 个 message 共享同一份 data,各 task ref-- 归 0 才 FREE
-    if (NULL != msg->shared) {
-        shared_data_free(msg->shared, _free);
-        return;
-    }
-    switch (_message_data_kind(msg->mtype)) {
-    case MSGDATA_PROT:
-        prots_pkfree(msg->subtype, msg->data);
-        break;
-    case MSGDATA_UDP:
-        prots_udp_pkfree(msg->subtype, msg->data);
-        break;
-    case MSGDATA_HS:
-        prots_hsfree(msg->subtype, msg->data);
-        break;
-    case MSGDATA_RAW:
-        FREE(msg->data);
-        break;
-    case MSGDATA_NONE:
-        break;
-    }
-}
-int32_t _message_may_keep(msg_type type) {
-    switch (type) {
-    case MSG_TYPE_ACCEPT:
-    case MSG_TYPE_CONNECT:
-    case MSG_TYPE_SSLEXCHANGED:
-    case MSG_TYPE_HANDSHAKED:
-    case MSG_TYPE_RECV:
-    case MSG_TYPE_RECVFROM:
-        return 1;
-    default:
-        return 0;
-    }
-}
 // 时间轮超时回调：将超时消息推入对应任务队列
 static void _task_message_timeout_push(ud_cxt *ud) {
     task_ctx *task = task_grab(ud->loader, ud->handle);
@@ -474,7 +400,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
         shared->data = data;
     }
     ATOMIC_SET_RELAXED(&shared->ref, valid);
-    // 投递 N 条 message：共用 shared，_message_clean 走 shared 分支 ref-- 归 0 才 FREE
+    // 投递 N 条 message：共用 shared，message_clean 走 shared 分支 ref-- 归 0 才 FREE
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_REQUEST;
     msg.subtype = reqtype;
@@ -499,18 +425,18 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
 }
 static void *_task_emit_begin(void *loader, name_t handle) {
-    _emit_cnt = 0;
+    *_emit_cnt_tls() = 0;
     return task_grab(loader, handle);
 }
 static void _task_emit(void *target, message_ctx *msg) {
     _task_message_push((task_ctx *)target, msg);
-    ++_emit_cnt;
+    ++*_emit_cnt_tls();
 }
 // 一次可读事件解出的多个包统一激活一次：每包都激活的话，worker 可能在还没解完时
 // 就排空睡下，同一次事件里唤醒好几回。一条没解出来（半包）就不激活，免得白唤醒
 static void _task_emit_end(void *target) {
     task_ctx *task = (task_ctx *)target;
-    if (_emit_cnt > 0) {
+    if (*_emit_cnt_tls() > 0) {
         _task_message_active(task);
     }
     task_ungrab(task);

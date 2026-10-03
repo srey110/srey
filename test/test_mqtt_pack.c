@@ -2,7 +2,7 @@
 #include "lib.h"
 #include "protocol/mqtt/mqtt_pack.h"
 #include "protocol/mqtt/mqtt_struct.h"
-#include "protocol/varint.h"
+#include "protocol/prots_pub.h"
 #include "crypt/scram.h"
 
 /* MQTT 状态机的 INIT/COMMAND 是 mqtt.c 内部 enum，定义在文件作用域；
@@ -19,8 +19,8 @@ static void *_t_mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     return mqtt_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
 }
 
-// mqtt 解包用的最小上下文：新建 mqtt_ctx 挂进清零的 ud，并摆到指定解析阶段。
-// mqtt_ctx 由 _mqtt_udfree(&ud) 回收，调用方不必自己记指针
+// mqtt 解包用的最小上下文：把按版本的全局 mqtt_ctx 挂进清零的 ud，并摆到指定解析阶段。
+// 收尾调 _mqtt_udfree(&ud) 只把 ud->context 置空，全局实例不释放
 static void _mq_ud_init(ud_cxt *ud, mqtt_protversion ver, int32_t status) {
     ZERO(ud, sizeof(ud_cxt));
     ud->status = status;
@@ -52,7 +52,7 @@ static void test_mqtt_connect_311(CuTest *tc) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = _MQ_INIT;
-    /* CONNECT 在 INIT 状态：unpack 内部会 CALLOC 一个 mqtt_ctx 写入 ud->context */
+    /* CONNECT 在 INIT 状态：unpack 内部会取一个 mqtt_ctx 写入 ud->context */
 
     int32_t status = PROT_INIT;
     mqtt_pack_ctx *p = _t_mqtt_unpack(0 /*server*/, &buf, &ud, NULL, &status);
@@ -154,6 +154,61 @@ static void test_mqtt_connect_50_full(CuTest *tc) {
     _mqtt_pkfree(p);
     _mqtt_udfree(&ud);
     buffer_free(&buf);
+}
+
+// 密码与 clientid / 遗嘱 / 用户名同在载荷块里、排在最后：带 NUL 的二进制密码、长密码、无密码三种都要原样解出、放干净。
+// mqtt_ctx 按版本取全局实例：同版本拿到同一个，mqtt_ctx_free 是空操作，非法版本给 NULL
+static void test_mqtt_connect_password_block(CuTest *tc) {
+    static const char pwbin[] = "p\0w\x01\xff" "d";
+    static char pwlong[3000];
+    size_t lens = 0;
+    int32_t i, status;
+    buffer_ctx buf;
+    ud_cxt ud;
+    mqtt_pack_ctx *p;
+    mqtt_connect_payload *pl;
+    char *pack;
+    memset(pwlong, 'x', sizeof(pwlong));
+    for (i = 0; i < 6; i++) {
+        mqtt_protversion ver = (i & 1) ? MQTT_50 : MQTT_311;
+        const char *pw = i < 2 ? pwbin : pwlong;
+        size_t pwl = i < 2 ? sizeof(pwbin) - 1 : sizeof(pwlong);
+        if (i >= 4) {
+            pw = NULL;
+            pwl = 0;
+        }
+        pack = mqtt_pack_connect(ver, 1, 60, "cid", "user", (char *)pw, pwl,
+            "w/t", "w\0p", 3, 1, 0, NULL, NULL, &lens);
+        CuAssertPtrNotNull(tc, pack);
+        _mq_to_buf(&buf, pack, lens);
+        ZERO(&ud, sizeof(ud));
+        ud.status = _MQ_INIT;
+        status = PROT_INIT;
+        p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+        CuAssertPtrNotNull(tc, p);
+        pl = (mqtt_connect_payload *)p->payload;
+        CuAssertStrEquals(tc, "cid", pl->clientid);
+        CuAssertStrEquals(tc, "w/t", pl->willtopic);
+        CuAssertIntEquals(tc, 3, (int)pl->wplens);
+        CuAssertTrue(tc, 0 == memcmp(pl->willpayload, "w\0p", 3));
+        CuAssertStrEquals(tc, "user", pl->user);
+        if (NULL == pw) {
+            CuAssertPtrEquals(tc, NULL, pl->password);
+        } else {
+            CuAssertIntEquals(tc, (int)pwl, (int)pl->pslens);
+            CuAssertTrue(tc, 0 == memcmp(pl->password, pw, pwl));
+            CuAssertIntEquals(tc, 0, pl->password[pwl]);
+        }
+        _mqtt_pkfree(p);
+        _mqtt_udfree(&ud);
+        buffer_free(&buf);
+    }
+    CuAssertTrue(tc, mqtt_ctx_new(MQTT_311) == mqtt_ctx_new(MQTT_311));
+    CuAssertTrue(tc, mqtt_ctx_new(MQTT_50) != mqtt_ctx_new(MQTT_311));
+    CuAssertIntEquals(tc, MQTT_50, mqtt_ctx_new(MQTT_50)->version);
+    CuAssertPtrEquals(tc, NULL, mqtt_ctx_new((mqtt_protversion)3));
+    mqtt_ctx_free(mqtt_ctx_new(MQTT_50));
+    CuAssertIntEquals(tc, MQTT_50, mqtt_ctx_new(MQTT_50)->version);
 }
 
 /* =======================================================================
@@ -1149,59 +1204,157 @@ static void test_mqtt_struct_null_free(CuTest *tc) {
     _mqtt_connack_varhead_free(NULL);
     _mqtt_pubackrel_varhead_free(NULL);
     _mqtt_subreqresp_varhead_free(NULL);
-    _mqtt_subscribe_payload_free(NULL);
-    _mqtt_unsubscribe_payload_free(NULL);
-    _mqtt_reasonlist_payload_free(NULL);
     _mqtt_reason_varhead_free(NULL);
 }
 
 // mqtt_struct.c 各 _free 函数空 properties + 空字符串字段释放路径
 static void test_mqtt_struct_empty_free(CuTest *tc) {
     (void)tc;
-    // connect varhead：properties 为 NULL，应仅 FREE 自身
+    // connect varhead：properties 为 NULL。varhead 本身在 pack 块里、不归它释放，这里自己放
     mqtt_connect_varhead *cvh;
     CALLOC(cvh, 1, sizeof(*cvh));
     _mqtt_connect_varhead_free(cvh);
+    FREE(cvh);
     // connect payload：clientid/willtopic/willpayload/user/password 都是 NULL，FREE(NULL) 安全
     mqtt_connect_payload *cpl;
     CALLOC(cpl, 1, sizeof(*cpl));
     _mqtt_connect_payload_free(cpl);
-    // publish 没有独立的 varhead/payload free：两者都摆在 mqtt_pack_ctx 那一整块里
-    // subscribe payload：subop 数组为空时也应正常释放
-    mqtt_subscribe_payload *spl;
-    CALLOC(spl, 1, sizeof(*spl));
-    msubop_arr_init(&spl->subop, 0);
-    _mqtt_subscribe_payload_free(spl);
-    // unsubscribe payload：topics 数组为空
-    mqtt_unsubscribe_payload *upl;
-    CALLOC(upl, 1, sizeof(*upl));
-    mtopic_arr_init(&upl->topics, 0);
-    _mqtt_unsubscribe_payload_free(upl);
+    // publish 没有独立的 varhead/payload free：两者都摆在 mqtt_pack_ctx 那一整块里；subscribe/unsubscribe 的载荷也是一整块，直接 FREE
 }
 
-// mqtt_struct.c _mqtt_propertie_free 释放含 sval 与不含 sval 的混合数组
+// mqtt_struct.c _mqtt_propertie_free：块内小区的条目、小区外另开的条目、搬到堆上的指针数组三种都要放对
 static void test_mqtt_struct_propertie_free(CuTest *tc) {
     (void)tc;
-    mprop_arr *props;
-    MALLOC(props, sizeof(*props));
-    mprop_arr_init(props, 0);
-    // 元素 1：用户属性。同解析侧(_mqtt_data_kv)，key 与 value 都在条目块内，sval 指向 key 之后
-    mqtt_propertie *p1;
-    MALLOC(p1, sizeof(*p1) + 2 + 7);
+    mqtt_prop_blk *blk;
+    MALLOC(blk, sizeof(*blk) + MQTT_PROP_ARENA);
+    blk->arr.size = 0;
+    blk->arr.maxsize = MQTT_PROP_SLOTS;
+    blk->arr.ptr = blk->slots;
+    blk->used = 0;
+    blk->cap = MQTT_PROP_ARENA;
+    // 元素 1：用户属性，放在块内小区，sval 指向 key 之后
+    mqtt_propertie *p1 = (mqtt_propertie *)blk->arena;
+    blk->used = (uint32_t)ROUND_UP(sizeof(*p1) + 2 + 7, 8);
     ZERO(p1, sizeof(*p1));
     memcpy(p1->fval, "k", 2);
     p1->flens = 1;
     p1->sval = p1->fval + 2;
     memcpy(p1->sval, "topic1", 7);
     p1->slens = 6;
-    mprop_arr_push_back(props, &p1);
-    // 元素 2：sval 为 NULL（int 类型属性）
-    mqtt_propertie *p2;
-    CALLOC(p2, 1, sizeof(*p2));
-    p2->sval = NULL;
-    mprop_arr_push_back(props, &p2);
-    // 释放后 props/p1/p2 应全部归还(sval 随 p1 一起)，ASan 下应无泄漏
-    _mqtt_propertie_free(props);
+    mprop_arr_push_back(&blk->arr, &p1);
+    // 元素 2..10：小区外单独分配，数量超过 MQTT_PROP_SLOTS，指针数组要先搬到堆上
+    mqtt_propertie **heap;
+    MALLOC(heap, sizeof(mqtt_propertie *) * MQTT_PROP_SLOTS * 2);
+    memcpy(heap, blk->slots, sizeof(blk->slots));
+    blk->arr.ptr = heap;
+    blk->arr.maxsize = MQTT_PROP_SLOTS * 2;
+    mqtt_propertie *px;
+    for (int32_t i = 0; i < 9; i++) {
+        CALLOC(px, 1, sizeof(*px));
+        mprop_arr_push_back(&blk->arr, &px);
+    }
+    // 全部归还(块、另开的 9 个条目、堆上的指针数组)，ASan 下应无泄漏
+    _mqtt_propertie_free(&blk->arr);
+}
+
+// v5 属性段经真实解包：个数超过块内指针槽、字节超过块内小区，两条溢出路径都要解对、放对
+static void test_mqtt_props_overflow(CuTest *tc) {
+    char key[16], val[64];
+    binary_ctx props;
+    binary_init_write(&props, 0, 0);
+    for (int32_t i = 0; i < 12; i++) {
+        snprintf(key, sizeof(key), "k%02d", i);
+        memset(val, 'a' + i, sizeof(val));
+        CuAssertIntEquals(tc, ERR_OK, mqtt_props_kv(&props, USER_PROPERTY, key, 3, val, (size_t)(10 + i * 4)));
+    }
+    CuAssertIntEquals(tc, ERR_OK, mqtt_props_fixnum(&props, TOPIC_ALIAS, 7));
+    CuAssertIntEquals(tc, ERR_OK, mqtt_props_binary(&props, CONTENT_TYPE, "application/json", 16));
+    size_t lens = 0;
+    char *pack = mqtt_pack_publish(MQTT_50, 0, 1, 0, "a/b", 9, "body", 4, &props, &lens);
+    binary_free(&props);
+    CuAssertPtrNotNull(tc, pack);
+    buffer_ctx buf;
+    _mq_to_buf(&buf, pack, lens);
+    ud_cxt ud;
+    _mq_ud_init(&ud, MQTT_50, _MQ_COMMAND);
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mprop_arr *arr = ((mqtt_publish_varhead *)p->varhead)->properties;
+    CuAssertIntEquals(tc, 14, (int)mprop_arr_size(arr));
+    mqtt_propertie *pt;
+    for (int32_t i = 0; i < 12; i++) {
+        pt = *mprop_arr_at(arr, i);
+        snprintf(key, sizeof(key), "k%02d", i);
+        CuAssertIntEquals(tc, USER_PROPERTY, pt->flag);
+        CuAssertStrEquals(tc, key, pt->fval);
+        CuAssertIntEquals(tc, 10 + i * 4, (int)pt->slens);
+        CuAssertTrue(tc, 'a' + i == pt->sval[0] && 'a' + i == pt->sval[pt->slens - 1] && '\0' == pt->sval[pt->slens]);
+    }
+    pt = *mprop_arr_at(arr, 12);
+    CuAssertTrue(tc, TOPIC_ALIAS == pt->flag && 7 == pt->nval);
+    pt = *mprop_arr_at(arr, 13);
+    CuAssertTrue(tc, CONTENT_TYPE == pt->flag && 16 == pt->flens);
+    CuAssertStrEquals(tc, "application/json", pt->fval);
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+}
+
+// 属性小区按属性段长放大：W3C trace 三件套(约 320 字节)原先会溢出 256 字节小区，现在要全在小区里；
+// 属性短的包小区仍是 MQTT_PROP_ARENA
+static void test_mqtt_props_cap(CuTest *tc) {
+    binary_ctx props;
+    size_t lens = 0;
+    int32_t i, status;
+    buffer_ctx buf;
+    ud_cxt ud;
+    mqtt_pack_ctx *p;
+    mprop_arr *arr;
+    mqtt_propertie *pt;
+    char *pack;
+    binary_init_write(&props, 0, 0);
+    mqtt_props_kv(&props, USER_PROPERTY, "traceparent", 11, "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01", 55);
+    mqtt_props_kv(&props, USER_PROPERTY, "tracestate", 10, "rojo=00f067aa0ba902b7,congo=t61rcWkgMzE,vendor=abcdef012345", 58);
+    mqtt_props_kv(&props, USER_PROPERTY, "baggage", 7, "userId=alice,serverNode=DF28,isProduction=false", 47);
+    pack = mqtt_pack_publish(MQTT_50, 0, 0, 0, "t", 0, "x", 1, &props, &lens);
+    binary_free(&props);
+    CuAssertPtrNotNull(tc, pack);
+    _mq_to_buf(&buf, pack, lens);
+    _mq_ud_init(&ud, MQTT_50, _MQ_COMMAND);
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    arr = ((mqtt_publish_varhead *)p->varhead)->properties;
+    CuAssertIntEquals(tc, 3, (int)mprop_arr_size(arr));
+    mqtt_prop_blk *blk = (mqtt_prop_blk *)arr;
+    for (i = 0; i < 3; i++) {
+        pt = *mprop_arr_at(arr, i);
+        CuAssertTrue(tc, (char *)pt >= (char *)blk->arena && (char *)pt < (char *)blk->arena + blk->cap);
+    }
+    CuAssertStrEquals(tc, "baggage", (*mprop_arr_at(arr, 2))->fval);
+    CuAssertIntEquals(tc, 47, (int)(*mprop_arr_at(arr, 2))->slens);
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+    // 属性短：小区保底 MQTT_PROP_ARENA(PUBACK 的属性块单独分配)
+    binary_init_write(&props, 0, 0);
+    mqtt_props_binary(&props, REASON_STR, "why", 3);
+    pack = mqtt_pack_puback(MQTT_50, 3, 0x80, &props, &lens);
+    binary_free(&props);
+    CuAssertPtrNotNull(tc, pack);
+    _mq_to_buf(&buf, pack, lens);
+    _mq_ud_init(&ud, MQTT_50, _MQ_COMMAND);
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    arr = ((mqtt_pubackrel_varhead *)p->varhead)->properties;
+    CuAssertIntEquals(tc, MQTT_PROP_ARENA, (int)((mqtt_prop_blk *)arr)->cap);
+    CuAssertStrEquals(tc, "why", (*mprop_arr_at(arr, 0))->fval);
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
 }
 
 /* =======================================================================
@@ -1261,6 +1414,115 @@ static void test_mqtt_malformed_reject(CuTest *tc) {
     _mq_assert_reject(tc, _MQ_INIT, MQTT_311, conn_willqos3, sizeof(conn_willqos3));
 }
 
+// SUBSCRIBE / UNSUBSCRIBE 载荷与数组、各项、主题串一块，SUBACK / UNSUBACK 原因码表在 pack 块里：
+// 条目数超过原先数组的 8 个初始槽、夹空主题都要解对；某一条结构不完整要整包拒收(块按数到的条目开)
+static void test_mqtt_subscribe_many(CuTest *tc) {
+    char t[64];
+    binary_ctx topics, props;
+    size_t lens = 0;
+    int32_t i, status;
+    buffer_ctx buf;
+    ud_cxt ud;
+    mqtt_pack_ctx *p;
+    subscribe_option *o;
+    char *pack;
+    binary_init_write(&topics, 0, 0);
+    for (i = 0; i < 20; i++) {
+        snprintf(t, sizeof(t), "s/%d/%.*s", i, i, "abcdefghijklmnopqrst");
+        CuAssertIntEquals(tc, ERR_OK, mqtt_topics_subscribe(&topics, MQTT_50, t,
+            (int8_t)(i % 3), (int8_t)(i & 1), (int8_t)((i >> 1) & 1), (int8_t)(i % 3)));
+    }
+    CuAssertIntEquals(tc, ERR_OK, mqtt_topics_subscribe(&topics, MQTT_50, "", 1, 0, 0, 0));
+    binary_init_write(&props, 0, 0);
+    CuAssertIntEquals(tc, ERR_OK, mqtt_props_kv(&props, USER_PROPERTY, "k", 1, "v", 1));
+    pack = mqtt_pack_subscribe(MQTT_50, 7, &topics, &props, &lens);
+    binary_free(&topics);
+    CuAssertPtrNotNull(tc, pack);
+    _mq_to_buf(&buf, pack, lens);
+    _mq_ud_init(&ud, MQTT_50, _MQ_COMMAND);
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    mqtt_subscribe_payload *spl = (mqtt_subscribe_payload *)p->payload;
+    CuAssertIntEquals(tc, 21, (int)msubop_arr_size(&spl->subop));
+    for (i = 0; i < 20; i++) {
+        o = *msubop_arr_at(&spl->subop, i);
+        snprintf(t, sizeof(t), "s/%d/%.*s", i, i, "abcdefghijklmnopqrst");
+        CuAssertStrEquals(tc, t, o->topic);
+        CuAssertIntEquals(tc, i % 3, o->qos);
+        CuAssertIntEquals(tc, i & 1, o->nl);
+        CuAssertIntEquals(tc, (i >> 1) & 1, o->rap);
+        CuAssertIntEquals(tc, i % 3, o->retain);
+    }
+    o = *msubop_arr_at(&spl->subop, 20);
+    CuAssertStrEquals(tc, "", o->topic);
+    CuAssertIntEquals(tc, 1, o->qos);
+    _mqtt_pkfree(p);
+    buffer_free(&buf);
+    // UNSUBSCRIBE：20 条夹一条空主题
+    binary_init_write(&topics, 0, 0);
+    for (i = 0; i < 20; i++) {
+        snprintf(t, sizeof(t), "u/%d/%.*s", i, i, "abcdefghijklmnopqrst");
+        CuAssertIntEquals(tc, ERR_OK, mqtt_topics_unsubscribe(&topics, 10 == i ? "" : t));
+    }
+    pack = mqtt_pack_unsubscribe(MQTT_50, 8, &topics, &props, &lens);
+    binary_free(&topics);
+    CuAssertPtrNotNull(tc, pack);
+    _mq_to_buf(&buf, pack, lens);
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    mqtt_unsubscribe_payload *upl = (mqtt_unsubscribe_payload *)p->payload;
+    CuAssertIntEquals(tc, 20, (int)mtopic_arr_size(&upl->topics));
+    for (i = 0; i < 20; i++) {
+        snprintf(t, sizeof(t), "u/%d/%.*s", i, i, "abcdefghijklmnopqrst");
+        CuAssertStrEquals(tc, 10 == i ? "" : t, *mtopic_arr_at(&upl->topics, i));
+    }
+    _mqtt_pkfree(p);
+    buffer_free(&buf);
+    _mqtt_udfree(&ud);
+    // SUBACK / UNSUBACK：40 个原因码 + 属性
+    uint8_t rs[40];
+    for (i = 0; i < 40; i++) {
+        rs[i] = (uint8_t)(0 == i % 7 ? 0x80 : i % 3);
+    }
+    _mq_ud_init(&ud, MQTT_50, _MQ_COMMAND);
+    pack = mqtt_pack_suback(MQTT_50, 9, rs, sizeof(rs), &props, &lens);
+    CuAssertPtrNotNull(tc, pack);
+    _mq_to_buf(&buf, pack, lens);
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    mqtt_reasonlist_payload *rpl = (mqtt_reasonlist_payload *)p->payload;
+    CuAssertIntEquals(tc, 40, rpl->rlens);
+    CuAssertTrue(tc, 0 == memcmp(rpl->reasons, rs, sizeof(rs)));
+    CuAssertPtrNotNull(tc, ((mqtt_subreqresp_varhead *)p->varhead)->properties);
+    _mqtt_pkfree(p);
+    buffer_free(&buf);
+    pack = mqtt_pack_unsuback(MQTT_50, 10, rs, sizeof(rs), NULL, &lens);
+    CuAssertPtrNotNull(tc, pack);
+    _mq_to_buf(&buf, pack, lens);
+    status = PROT_INIT;
+    p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    rpl = (mqtt_reasonlist_payload *)p->payload;
+    CuAssertIntEquals(tc, 40, rpl->rlens);
+    CuAssertTrue(tc, 0 == memcmp(rpl->reasons, rs, sizeof(rs)));
+    _mqtt_pkfree(p);
+    buffer_free(&buf);
+    _mqtt_udfree(&ud);
+    binary_free(&props);
+    // 第 2 条缺选项字节 / 第 2 条主题长越界 / 第 2 条长度只剩 1 字节：都整包拒收
+    uint8_t sub_noopt[] = { 0x82, 0x09, 0x00, 0x01, 0x00, 0x01, 'a', 0x01, 0x00, 0x01, 'b' };
+    _mq_assert_reject(tc, _MQ_COMMAND, MQTT_311, sub_noopt, sizeof(sub_noopt));
+    uint8_t sub_over[] = { 0x82, 0x09, 0x00, 0x01, 0x00, 0x01, 'a', 0x01, 0x00, 0x05, 'b' };
+    _mq_assert_reject(tc, _MQ_COMMAND, MQTT_311, sub_over, sizeof(sub_over));
+    uint8_t sub_half[] = { 0x82, 0x07, 0x00, 0x01, 0x00, 0x01, 'a', 0x01, 0x00 };
+    _mq_assert_reject(tc, _MQ_COMMAND, MQTT_311, sub_half, sizeof(sub_half));
+    uint8_t unsub_over[] = { 0xa2, 0x08, 0x00, 0x01, 0x00, 0x01, 'a', 0x00, 0x05, 'b' };
+    _mq_assert_reject(tc, _MQ_COMMAND, MQTT_311, unsub_over, sizeof(unsub_over));
+}
+
 /* ======================================================================= */
 
 /* 空 clientid 的 CONNECT —— 旧 binary_set_string 在 lens==0 时曾多写 1 个 NUL，
@@ -1309,6 +1571,55 @@ static void test_mqtt_connect_empty_clientid(CuTest *tc) {
     CuAssertIntEquals(tc, 14, (int32_t)nlens);
     FREE(npack);
 }
+// v5 PUBLISH 的属性块预留在 PUBLISH 那一块里：属性个数超过指针槽、字节超过小区时另开的部分要放对；
+// 属性段中途出错(未知 id)时只放预留块另开的部分
+static void test_mqtt_props_inpack(CuTest *tc) {
+    binary_ctx props;
+    size_t lens = 0;
+    int32_t i, k, status;
+    buffer_ctx buf;
+    ud_cxt ud;
+    mqtt_pack_ctx *p;
+    mprop_arr *arr;
+    mqtt_propertie *pt;
+    char *pack;
+    for (k = 0; k < 2; k++) {
+        binary_init_write(&props, 0, 0);
+        for (i = 0; i < 12; i++) {
+            CuAssertIntEquals(tc, ERR_OK, mqtt_props_fixnum(&props, MSG_EXPIRY, (uint32_t)(1000 + i)));
+        }
+        if (1 == k) {
+            props.data[props.offset - 5] = 0x7f;// 最后一个属性 id 改成未知
+        }
+        pack = mqtt_pack_publish(MQTT_50, 0, 1, 0, "a/b", 9, "body", 4, &props, &lens);
+        binary_free(&props);
+        CuAssertPtrNotNull(tc, pack);
+        _mq_to_buf(&buf, pack, lens);
+        _mq_ud_init(&ud, MQTT_50, _MQ_COMMAND);
+        status = PROT_INIT;
+        p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+        if (1 == k) {
+            CuAssertPtrEquals(tc, NULL, p);
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        } else {
+            CuAssertPtrNotNull(tc, p);
+            arr = ((mqtt_publish_varhead *)p->varhead)->properties;
+            CuAssertIntEquals(tc, 12, (int)mprop_arr_size(arr));
+            for (i = 0; i < 12; i++) {
+                pt = *mprop_arr_at(arr, i);
+                CuAssertIntEquals(tc, MSG_EXPIRY, pt->flag);
+                CuAssertIntEquals(tc, 1000 + i, (int)pt->nval);
+            }
+            CuAssertStrEquals(tc, "a/b", ((mqtt_publish_varhead *)p->varhead)->topic);
+            CuAssertIntEquals(tc, 4, ((mqtt_publish_payload *)p->payload)->lens);
+            CuAssertTrue(tc, 0 == memcmp(((mqtt_publish_payload *)p->payload)->content, "body", 5));
+            _mqtt_pkfree(p);
+        }
+        _mqtt_udfree(&ud);
+        buffer_free(&buf);
+    }
+}
+
 /* =======================================================================
  * varint —— MQTT 7-bit 变长编解码 + off>=blens 边界(回归)
  * ======================================================================= */
@@ -1407,6 +1718,7 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_connect_empty_clientid);
     SUITE_ADD_TEST(suite, test_mqtt_connect_will_null_payload);
     SUITE_ADD_TEST(suite, test_mqtt_connect_50_full);
+    SUITE_ADD_TEST(suite, test_mqtt_connect_password_block);
     SUITE_ADD_TEST(suite, test_mqtt_connack);
     SUITE_ADD_TEST(suite, test_mqtt_acks);
     SUITE_ADD_TEST(suite, test_mqtt_publish);
@@ -1416,6 +1728,7 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_publish_bad_topiclen);
     SUITE_ADD_TEST(suite, test_mqtt_subscribe);
     SUITE_ADD_TEST(suite, test_mqtt_malformed_reject);
+    SUITE_ADD_TEST(suite, test_mqtt_subscribe_many);
     SUITE_ADD_TEST(suite, test_mqtt_ping_pong);
     SUITE_ADD_TEST(suite, test_mqtt_disconnect);
     SUITE_ADD_TEST(suite, test_mqtt_auth);
@@ -1427,5 +1740,8 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_struct_null_free);
     SUITE_ADD_TEST(suite, test_mqtt_struct_empty_free);
     SUITE_ADD_TEST(suite, test_mqtt_struct_propertie_free);
+    SUITE_ADD_TEST(suite, test_mqtt_props_overflow);
+    SUITE_ADD_TEST(suite, test_mqtt_props_inpack);
     SUITE_ADD_TEST(suite, test_varint);
+    SUITE_ADD_TEST(suite, test_mqtt_props_cap);
 }

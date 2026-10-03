@@ -1,13 +1,14 @@
 ﻿#ifndef MUTEX_H_
 #define MUTEX_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #if defined(OS_WIN)
 typedef CRITICAL_SECTION mutex_ctx;
 #else
 typedef pthread_mutex_t mutex_ctx;
 #endif
+
 /// <summary>
 /// 互斥锁初始化。glibc 与 FreeBSD 上用自适应锁：争用时先短暂自旋再睡
 /// </summary>

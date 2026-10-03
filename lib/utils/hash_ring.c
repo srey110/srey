@@ -6,7 +6,6 @@
  * 节点名通常为 host:port 短字符串，512 字节可覆盖绝大多数场景，
  * 超出时每个节点回退为一次堆分配。 */
 #define NAME_STACK_LEN  512
-
 /* 单节点虚拟副本数上限。实际用量在几十到几百，这里留了三个数量级余量。
  * 设上限是因为 nreplicas 来自上层调用方，离谱的值会让 items 数组要几十 GB */
 #define MAX_REPLICAS    65536
@@ -56,36 +55,27 @@ static inline uint64_t _hash_ring_hash(void *data, size_t lens) {
     return xxh64(data, lens, 0);
 }
 // 为节点生成所有虚拟副本（replica）并添加到 items 数组。副本名是"节点名-序号"：节点名只拷一次，
-// 序号手写十进制。产出必须与 "-%u" 逐字节相同——名字一变 digest 就变，环上位置全漂
+// 序号用 u64tostr 写十进制。产出必须与 "-%u" 逐字节相同——名字一变 digest 就变，环上位置全漂
 static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     char name_stack[NAME_STACK_LEN];
-    char digits[12];// '-' 加 uint32 最多 10 位
-    char *name, *d;
+    const size_t sufmax = 12;// 后缀最长：'-' 加 uint32 最多 10 位，再加 u64tostr 补的 '\0'
+    char *name;
     size_t nlen;
-    uint32_t v;
     hash_ring_item *item;
     // 节点名加最长的后缀放不进栈缓冲才上堆，整个节点只分配这一次
-    int32_t heap = node->lens + sizeof(digits) > NAME_STACK_LEN;
+    int32_t heap = node->lens + sufmax > NAME_STACK_LEN;
     // items 一次扩够本节点全部副本，循环里只往尾部填
     REALLOC(ring->items, ring->items, sizeof(hash_ring_item *) * ((size_t)ring->nitems + node->nreplicas));
     if (heap) {
-        MALLOC(name, node->lens + sizeof(digits));
+        MALLOC(name, node->lens + sufmax);
     } else {
         name = name_stack;
     }
-    memcpy(name, node->name, node->lens);// 节点名只拷一次，每轮只改后面的 "-序号"
+    memcpy(name, node->name, node->lens);// 节点名与 '-' 只写一次，每轮只改后面的序号
+    name[node->lens] = '-';
     for (uint32_t i = 0; i < node->nreplicas; i++) {
-        // 序号从低位到高位倒着写进 digits 末尾，再在最前补 '-'，得到与 "-%u" 相同的串
-        d = digits + sizeof(digits);
-        v = i;
-        do {
-            *--d = (char)('0' + v % 10);
-            v /= 10;
-        } while (0 != v);
-        *--d = '-';
-        nlen = (size_t)(digits + sizeof(digits) - d);
-        // 后缀接在节点名后面；序号位数会变，digest 按本轮实际长度算
-        memcpy(name + node->lens, d, nlen);
+        // 序号位数会变，digest 按本轮实际长度算
+        nlen = 1 + u64tostr(name + node->lens + 1, i, 10);
         MALLOC(item, sizeof(hash_ring_item));
         item->node = node;
         item->digest = _hash_ring_hash(name, node->lens + nlen);

@@ -84,5 +84,29 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt
 void prots_net_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud);
 /// <summary>UDP 接收：打包地址+数据并推送 MSG_TYPE_RECVFROM</summary>
 void prots_net_recvfrom(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
+/// <summary>
+/// 消息是否持有要释放的数据：广播共享的(shared 非 NULL)一律算；独占的看消息类型与 data 是否为空
+/// </summary>
+/// <param name="msg">消息</param>
+/// <returns>ERR_OK 需要 message_clean；ERR_FAILED 不需要</returns>
+int32_t message_should_clean(message_ctx *msg);
+/// <summary>
+/// 按消息类型释放 data：协议包走 prots_pkfree，UDP 包走 prots_udp_pkfree，握手数据走 prots_hsfree，
+/// 跨 task 请求/响应直接 FREE；广播共享的只减引用，归 0 才释放。CLOSE 等不带数据的类型什么都不做
+/// </summary>
+/// <param name="msg">消息，释放后 data 不可再用</param>
+void message_clean(message_ctx *msg);
+/// <summary>
+/// 该消息类型的等待条目在等待者摘空后是否保留（连接类与 UDP 类的 sess 是 skid，会反复复用）
+/// </summary>
+/// <param name="type">消息类型</param>
+/// <returns>1 保留；0 摘空即删</returns>
+int32_t message_may_keep(msg_type type);
+/// <summary>
+/// 消息类型的名字，日志与 dump 用
+/// </summary>
+/// <param name="type">消息类型</param>
+/// <returns>名字；越界或名字表漏填时返回空串</returns>
+const char *message_str(msg_type type);
 
 #endif//PROTS_H_

@@ -46,8 +46,8 @@
     <Filter Include="crypt\cipher">
       <UniqueIdentifier>{e480e006-68f9-4290-b6d2-aaf21a931981}</UniqueIdentifier>
     </Filter>
-    <Filter Include="srey\minicoro">
-      <UniqueIdentifier>{cdeff177-3099-41e3-8e26-1fa06cab4c8a}</UniqueIdentifier>
+    <Filter Include="coro">
+      <UniqueIdentifier>{fe04bc48-539c-4f60-a58e-fd933d625457}</UniqueIdentifier>
     </Filter>
     <Filter Include="protocol\mqtt">
       <UniqueIdentifier>{d19d0b55-3181-4773-b35f-3ffaad64b1d1}</UniqueIdentifier>
@@ -130,16 +130,13 @@
     <ClInclude Include="base\config.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="base\macro.h">
-      <Filter>base</Filter>
-    </ClInclude>
     <ClInclude Include="base\macro_atomic.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="base\macro_unix.h">
+    <ClInclude Include="base\macro_log.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="base\macro_win.h">
+    <ClInclude Include="base\macro_util.h">
       <Filter>base</Filter>
     </ClInclude>
     <ClInclude Include="base\base.h">
@@ -149,6 +146,24 @@
       <Filter>base</Filter>
     </ClInclude>
     <ClInclude Include="base\os.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\os_unix.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\os_win.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\sbyteswap.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\bits.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\bytes.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\strconv.h">
       <Filter>base</Filter>
     </ClInclude>
     <ClInclude Include="base\structs.h">
@@ -196,6 +211,9 @@
     <ClInclude Include="utils\tw.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="utils\urlparse.h">
+      <Filter>utils</Filter>
+    </ClInclude>
     <ClInclude Include="utils\utils.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -236,9 +254,6 @@
       <Filter>protocol</Filter>
     </ClInclude>
     <ClInclude Include="protocol\redis.h">
-      <Filter>protocol</Filter>
-    </ClInclude>
-    <ClInclude Include="protocol\urlparse.h">
       <Filter>protocol</Filter>
     </ClInclude>
     <ClInclude Include="protocol\websock.h">
@@ -310,8 +325,11 @@
     <ClInclude Include="srey\loader.h">
       <Filter>srey</Filter>
     </ClInclude>
-    <ClInclude Include="srey\minicoro.h">
-      <Filter>srey\minicoro</Filter>
+    <ClInclude Include="coro\minicoro.h">
+      <Filter>coro</Filter>
+    </ClInclude>
+    <ClInclude Include="coro\coro.h">
+      <Filter>coro</Filter>
     </ClInclude>
     <ClInclude Include="utils\hash_ring.h">
       <Filter>utils</Filter>
@@ -342,9 +360,6 @@
     </ClInclude>
     <ClInclude Include="protocol\mqtt\mqtt_pack.h">
       <Filter>protocol\mqtt</Filter>
-    </ClInclude>
-    <ClInclude Include="protocol\varint.h">
-      <Filter>protocol</Filter>
     </ClInclude>
     <ClInclude Include="protocol\prots_pub.h">
       <Filter>protocol</Filter>
@@ -409,7 +424,7 @@
     <ClInclude Include="srey\prots_wrap.h">
       <Filter>srey</Filter>
     </ClInclude>
-    <ClInclude Include="srey\coro.h">
+    <ClInclude Include="srey\coro_task.h">
       <Filter>srey</Filter>
     </ClInclude>
     <ClInclude Include="advance\router.h">
@@ -489,10 +504,22 @@
     <ClCompile Include="srey\debug_request.c">
       <Filter>srey</Filter>
     </ClCompile>
-    <ClCompile Include="base\base.c">
+    <ClCompile Include="base\bits.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\bytes.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\strconv.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\os_win.c">
       <Filter>base</Filter>
     </ClCompile>
     <ClCompile Include="base\memory.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\sbyteswap.c">
       <Filter>base</Filter>
     </ClCompile>
     <ClCompile Include="utils\buffer.c">
@@ -534,6 +561,9 @@
     <ClCompile Include="utils\tw.c">
       <Filter>utils</Filter>
     </ClCompile>
+    <ClCompile Include="utils\urlparse.c">
+      <Filter>utils</Filter>
+    </ClCompile>
     <ClCompile Include="utils\utils.c">
       <Filter>utils</Filter>
     </ClCompile>
@@ -568,9 +598,6 @@
       <Filter>protocol</Filter>
     </ClCompile>
     <ClCompile Include="protocol\redis.c">
-      <Filter>protocol</Filter>
-    </ClCompile>
-    <ClCompile Include="protocol\urlparse.c">
       <Filter>protocol</Filter>
     </ClCompile>
     <ClCompile Include="protocol\websock.c">
@@ -657,9 +684,6 @@
     <ClCompile Include="protocol\mqtt\mqtt_pack.c">
       <Filter>protocol\mqtt</Filter>
     </ClCompile>
-    <ClCompile Include="protocol\varint.c">
-      <Filter>protocol</Filter>
-    </ClCompile>
     <ClCompile Include="protocol\prots.c">
       <Filter>protocol</Filter>
     </ClCompile>
@@ -711,7 +735,10 @@
     <ClCompile Include="srey\prots_wrap.c">
       <Filter>srey</Filter>
     </ClCompile>
-    <ClCompile Include="srey\coro.c">
+    <ClCompile Include="coro\coro.c">
+      <Filter>coro</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\coro_task.c">
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="advance\router.c">

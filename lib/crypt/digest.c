@@ -9,12 +9,12 @@
     } \
     static void _dg_##nm##_final(void *ctx, char *hash) { nm##_final((nm##_ctx *)ctx, hash); }
 // xxhash 的 init 带 seed、digest 返回整数，套不进 DG_THUNK；seed 与输出字节序的约定见 digest.h
-#define DG_XXH_THUNK(nm, nbytes) \
+#define DG_XXH_THUNK(nm, wr) \
     static void _dg_##nm##_init(void *ctx) { nm##_init((nm##_ctx *)ctx, 0); } \
     static void _dg_##nm##_update(void *ctx, const void *data, size_t lens) { \
         nm##_update((nm##_ctx *)ctx, data, lens); \
     } \
-    static void _dg_##nm##_final(void *ctx, char *hash) { pack_integer(hash, nm##_digest((nm##_ctx *)ctx), nbytes, 0); }
+    static void _dg_##nm##_final(void *ctx, char *hash) { wr(hash, nm##_digest((nm##_ctx *)ctx)); }
 // 状态字与填充长度字段的字节序（1 小端），DG_STATE_THUNK 与下面的表共用这一处
 #define DG_LE_md4 1
 #define DG_LE_md5 1
@@ -22,12 +22,13 @@
 #define DG_LE_sha256 0
 #define DG_LE_sha512 0
 // 只导出 state 字段，所以只适用于"状态即输出"的 MD 结构引擎
-#define DG_STATE_THUNK(nm) \
+#define DG_STATE_THUNK(nm, bits) \
     static void _dg_##nm##_state(void *ctx, char *hash) { \
         nm##_ctx *eng = (nm##_ctx *)ctx; \
         size_t i; \
         for (i = 0; i < ARRAY_SIZE(eng->state); i++) { \
-            pack_integer(hash + i * sizeof(eng->state[0]), eng->state[i], (int32_t)sizeof(eng->state[0]), DG_LE_##nm); \
+            DG_LE_##nm ? write_le##bits(hash + i * sizeof(eng->state[0]), eng->state[i]) \
+                : write_be##bits(hash + i * sizeof(eng->state[0]), eng->state[i]); \
         } \
     }
 
@@ -37,13 +38,13 @@ DG_THUNK(md5)
 DG_THUNK(sha1)
 DG_THUNK(sha256)
 DG_THUNK(sha512)
-DG_XXH_THUNK(xxh32, XXH32_BLOCK_SIZE)
-DG_XXH_THUNK(xxh64, XXH64_BLOCK_SIZE)
-DG_STATE_THUNK(md4)
-DG_STATE_THUNK(md5)
-DG_STATE_THUNK(sha1)
-DG_STATE_THUNK(sha256)
-DG_STATE_THUNK(sha512)
+DG_XXH_THUNK(xxh32, write_be32)
+DG_XXH_THUNK(xxh64, write_be64)
+DG_STATE_THUNK(md4, 32)
+DG_STATE_THUNK(md5, 32)
+DG_STATE_THUNK(sha1, 32)
+DG_STATE_THUNK(sha256, 32)
+DG_STATE_THUNK(sha512, 64)
 // 每种摘要算法的一行参数，下标即 digest_type 的值。新增算法只加一行，放哪都行——
 // 指定了下标，往枚举中间插值也不会整体错位；没填的下标整行为零，由 digest_init 挡下
 static const dg_attr _dg_tbl[] = {

@@ -8,6 +8,8 @@
 //https://www.postgresql.org/docs/18/protocol-flow.html
 //https://pg.center/docs/18/protocol.html
 
+#define PGSQL_STACK_MSG 1024// 命令阶段不超过这么大的非 DataRow 消息放栈上解析
+
 // 连接状态枚举
 typedef enum parse_status {
     INIT = 0,   // 初始状态，等待 SSL 协商响应
@@ -94,8 +96,8 @@ int32_t _pgsql_on_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err) {
         return _pgsql_startup(ev, ud);
     }
     char buf[8];
-    pack_integer(buf, 8, 4, 0); // 消息总长度 = 8
-    pack_integer(buf + 4, 80877103, 4, 0); // SSLRequest 魔数
+    write_be32(buf, 8); // 消息总长度 = 8
+    write_be32(buf + 4, 80877103); // SSLRequest 魔数
     return ev_send(ev, sk, buf, sizeof(buf), 1);
 }
 // 处理服务端 SSL 响应：'S' 升级为 SSL，'N' 直接发送 Startup 消息
@@ -154,12 +156,13 @@ int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
 #endif
     return _pgsql_startup(ev, ud);
 }
-// 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回堆上的数据指针。
+// 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回数据指针，内存去处见末两行。
 // total 输出的是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init_read，别再自己 +1：
 // 协议长度字段是 int32，服务端发 INT32_MAX 时那次加法有符号溢出，回绕成负数再转 size_t
 // 就是个天文数字，binary 的越界断言从此全部失效
-// pg 非 NULL 且是 DataRow 时块尾多分行数组：[payload][补齐到 8][pgpack_row × 列数]
-static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32_t *status) {
+// pg 非 NULL 且是 DataRow 时由 _pgpack_row_alloc 从 reader 的块链分(块尾带行数组)；
+// 给了 stk 且不是 DataRow / NotificationResponse(这两类的内存由解析侧接管)、整包放得下时用 stk，其余单独分配
+static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32_t *status, char *stk, size_t stklens) {
     size_t blens = buffer_size(buf);
     if (5 > blens) {
         // 数据不足一个完整消息头（1字节类型码 + 4字节长度）
@@ -168,7 +171,7 @@ static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32
     }
     char head[5];
     ASSERTAB(sizeof(head) == buffer_copyout(buf, 0, head, sizeof(head)), "copy buffer failed.");
-    int32_t lens = (int32_t)unpack_integer(head + 1, 4, 0, 0);
+    int32_t lens = (int32_t)read_be32(head + 1);
     if (lens < 4) {
         // pgsql 协议规定 length 字段含自身 4 字节，合法值 ≥ 4；非法值会让后续解析下溢/越界
         BIT_SET(*status, PROT_ERROR);
@@ -179,9 +182,17 @@ static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    size_t extra = (NULL != pg && 'D' == head[0]) ? _pgpack_row_extra(pg) : 0;
-    char *pack;
-    MALLOC(pack, 0 == extra ? *total : ROUND_UP(*total, 8) + extra);
+    char *pack = (NULL != pg && 'D' == head[0]) ? _pgpack_row_alloc(pg, *total) : NULL;
+    if (NULL == pack
+        && NULL != stk
+        && 'D' != head[0]
+        && 'A' != head[0]
+        && *total <= stklens) {
+        pack = stk;
+    }
+    if (NULL == pack) {
+        MALLOC(pack, *total);
+    }
     ASSERTAB(*total == buffer_remove(buf, pack, *total), "copy buffer failed.");
     return pack;
 }
@@ -399,7 +410,7 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
 // 处理认证阶段收到的服务端消息（R/S/K/Z/E）
 static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t total;
-    char *pack = _pgsql_payload(NULL, buf, &total, status);
+    char *pack = _pgsql_payload(NULL, buf, &total, status, NULL, 0);
     if (NULL == pack) {
         return;
     }
@@ -459,16 +470,25 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     }
     FREE(pack);
 }
-// 处理命令阶段收到的服务端消息，返回在 ReadyForQuery 时累积完成的 pgpack_ctx
+// 处理命令阶段收到的服务端消息，返回在 ReadyForQuery 时累积完成的 pgpack_ctx。
+// DataRow 以外的小消息放栈上解析，免一次分配；解析侧不接管的那些由这里释放，归属见 _pgpack_parser
 static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t total;
-    char *payload = _pgsql_payload(pg, buf, &total, status);
+    char stk[PGSQL_STACK_MSG];
+    char *payload = _pgsql_payload(pg, buf, &total, status, stk, sizeof(stk));
     if (NULL == payload) {
         return NULL;
     }
+    char code = payload[0];
     binary_ctx breader;
     binary_init_read(&breader, payload, total);
-    return _pgpack_parser(pg, &breader, ud, status);
+    pgpack_ctx *pack = _pgpack_parser(pg, &breader, ud, status);
+    if ('D' != code
+        && 'A' != code
+        && payload != stk) {
+        FREE(payload);
+    }
+    return pack;
 }
 void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {

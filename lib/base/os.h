@@ -1,6 +1,25 @@
 ﻿#ifndef OS_H_
 #define OS_H_
 
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <assert.h>
+#include <time.h>
+#include <fcntl.h>
+#include <wchar.h>
+#include <math.h>
+#include <float.h>
+#include <string.h>
+#include <stdint.h>
+#include <limits.h>
+#include <ctype.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <inttypes.h>
+
 /* 操作系统检测宏，参考 https://sourceforge.net/p/predef/wiki/OperatingSystems/ */
 #if defined(_WIN32) || defined(_WIN64)
     #define OS_WIN
@@ -46,6 +65,10 @@
     #define READV_EINVAL // 某些 AIX 系统上 readv 无数据时会返回 EINVAL(22) 错误
 #else
     #error "Unsupported operating system platform!"
+#endif
+// 编译器认 GNU 扩展(__attribute__ / __builtin_* / GNU 内联汇编)：gcc 与 clang(clang-cl 不定义 __GNUC__，故两个都判)
+#if defined(__GNUC__) || defined(__clang__)
+    #define CC_GNU
 #endif
 // io模型
 #if defined(OS_WIN)
@@ -155,7 +178,7 @@
 //   noinline 同时写 gcc 报 -Wattributes,去掉 inline 又会报 -Wunused-function,两头堵。
 //   写法固定为 NOINLINE static UNUSED;其余头文件函数照旧 static inline,别拿它代替 inline
 // UNLIKELY:标出几乎不走的分支,编译器据此把它排到热路径之外;落 #else 原样求值。同样只在实测有效时加
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(CC_GNU)
     #define CACHELINE_ALIGN __attribute__((aligned(CACHELINE_SIZE)))
     #define ALIGN8 __attribute__((aligned(8)))
     #define FORCE_INLINE inline __attribute__((always_inline))
@@ -212,100 +235,21 @@
 #else
     #define ENABLED_TSAN       0
 #endif
+// 按架构选 16 字节向量指令，全项目只认这一组：x86 有 SSE2 走 SSE2(gcc/clang 看 __SSE2__，MSVC 的 x64 恒有，
+// 32 位 x86 看 _M_IX86_FP >= 2)；ARM 带 NEON 走 NEON(含 MSVC ARM64)，大端 ARM 不走——取掩码的写法按小端排位序。
+// emmintrin.h / arm_neon.h 分别是两家向量指令的头文件
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+    #include <emmintrin.h>
+    #define SIMD_SSE2 1
+#elif (defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)) && !defined(__ARM_BIG_ENDIAN)
+    #include <arm_neon.h>
+    #define SIMD_NEON 1
+#endif
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <stddef.h>
-#include <assert.h>
-#include <time.h>
-#include <fcntl.h>
-#include <wchar.h>
-#include <math.h>
-#include <float.h>
-#include <string.h>
-#include <stdint.h>
-#include <limits.h>
-#include <ctype.h>
-#include <errno.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <inttypes.h>
 #if defined(OS_WIN)
-    #include <winsock2.h>
-    #include <ws2ipdef.h>
-    #include <ws2tcpip.h>
-    #include <io.h>
-    #include <tchar.h>
-    #include <direct.h>
-    #include <process.h>
-    #include <ObjBase.h>
-    #include <minwindef.h>
-    #include <guiddef.h>
-    #include <Windows.h>
-    #include <MSTcpIP.h>
-    #include <mswsock.h>
-    #include <sys/timeb.h>
-    #pragma warning(push)
-    #pragma warning(disable: 4091)
-    #include <DbgHelp.h>
-    #pragma warning(pop)
-    #include <bcrypt.h>
+#include "base/os_win.h"
 #else
-    #include <unistd.h>
-    #include <signal.h>    
-    #include <dirent.h>
-    #include <libgen.h>
-    #include <dlfcn.h>
-    #include <locale.h>
-    #include <netdb.h>
-    #include <semaphore.h>
-    #include <pthread.h>
-    #include <sys/socket.h>
-    #include <sys/mman.h>
-    #include <sys/time.h>
-    #include <sys/wait.h>
-    #include <sys/ioctl.h>
-    #include <sys/poll.h>
-    #include <sched.h>
-    #ifdef HAVE_BACKTRACE
-        #include <execinfo.h>
-        #include <sys/syscall.h>
-    #endif
-    #include <sys/resource.h>
-    #include <sys/uio.h>
-    #include <net/if.h>    
-    #include <net/if_arp.h>
-    #include <netinet/in.h>
-    #include <netinet/tcp.h>
-    #include <arpa/inet.h>    
-    #if defined(OS_LINUX) 
-        #include <sys/epoll.h>
-    #elif defined(OS_DARWIN)
-        #include <mach/mach_time.h>
-        #include <sys/event.h>
-        #include <os/lock.h>
-    #elif defined(OS_SUN)
-        #include <port.h>
-        #include <atomic.h>
-        #if !defined(__GNUC__) && !defined(__clang__)
-            #include <mbarrier.h>
-        #endif
-        #include <sys/filio.h>
-        #include <sys/devpoll.h>
-    #elif defined (OS_BSD)
-        #include <sys/sysctl.h>
-        #include <sys/event.h>
-    #elif defined (OS_AIX)
-        #include <procinfo.h>
-        #include <sys/atomic_op.h>
-        #include <sys/pollset.h>
-    #elif defined (OS_HPUX)
-        #include <sys/param.h>
-        #include <sys/pstat.h>
-        #include <dl.h>
-        #include <sys/devpoll.h>
-    #endif
-#endif // OS_WIN
+#include "base/os_unix.h"
+#endif
 
 #endif//OS_H_

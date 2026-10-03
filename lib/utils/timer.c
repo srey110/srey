@@ -1,7 +1,4 @@
 ﻿#include "utils/timer.h"
-#if defined(OS_WIN)
-#include <intrin.h>
-#endif
 
 #define NANOSEC 1000000000
 #define NS_PER_MS 1000000 // 纳秒到毫秒的换算,不是可调精度
@@ -33,12 +30,12 @@ static void _timer_mult(timer_ctx *ctx, uint64_t numer, uint64_t denom) {
 // ticks * mult >> shift，乘积按 128 位算
 static inline uint64_t _timer_mulshift(uint64_t ticks, uint64_t mult, uint32_t shift) {
 #if defined(__SIZEOF_INT128__)
-    return (uint64_t)(((unsigned __int128)ticks * mult) >> shift);
+    return (uint64_t)(((unsigned __int128)ticks * mult) >> shift);// gcc/clang 的 128 位整数，乘积不溢出
 #elif defined(_M_ARM64)
-    return (__umulh(ticks, mult) << (64 - shift)) | ((ticks * mult) >> shift);
+    return (__umulh(ticks, mult) << (64 - shift)) | ((ticks * mult) >> shift);// __umulh：ARM64 取 64x64 乘积的高 64 位
 #else
     uint64_t hi;
-    uint64_t lo = _umul128(ticks, mult, &hi);
+    uint64_t lo = _umul128(ticks, mult, &hi);// _umul128：x64 一条乘法同时给出乘积的高、低 64 位
     return (hi << (64 - shift)) | (lo >> shift);
 #endif
 }

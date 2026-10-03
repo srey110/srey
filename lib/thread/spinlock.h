@@ -1,7 +1,7 @@
 ﻿#ifndef SPINLOCK_H_
 #define SPINLOCK_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define SPIN_CNT        32 // spin_init 的自旋次数,仅 Windows 生效(临界区退回内核前先试这么多次);Linux/macOS 传了也不用
 #define SPIN_YIELD_CNT  64 // spin_backoff 等对方释放时自旋这么多次仍等不到就 THREAD_YIELD 让出 CPU。
@@ -13,6 +13,7 @@ typedef os_unfair_lock spin_ctx;
 #else
 typedef pthread_spinlock_t spin_ctx;
 #endif
+
 /// <summary>
 /// 自旋锁初始化
 /// </summary>

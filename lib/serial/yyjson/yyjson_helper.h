@@ -1,7 +1,7 @@
 ﻿#ifndef YYJSON_HELPER_H_
 #define YYJSON_HELPER_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 #include "serial/yyjson/yyjson.h"
 
 /// <summary>

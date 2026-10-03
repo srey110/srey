@@ -4,11 +4,107 @@
 #include "protocol/prots_pub.h"
 #include "utils/strptime.h"
 
-// 有符号与无符号整数读取共用同一份类型白名单：签名不同但"哪些列算整数"是同一条规则，
-// 各留一份的话加一种整数类型要改两处，而没有任何东西把它们关联起来
-static const uint8_t _int_types[] = { MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONG, MYSQL_TYPE_INT24,
-                                      MYSQL_TYPE_SHORT, MYSQL_TYPE_YEAR, MYSQL_TYPE_TINY };
+// 各取值接口收哪些列类型：按类型查一次表得到它属于哪组，取值接口只认自己那组。
+// 有符号与无符号整数读取共用 MYSQL_CLS_INT：签名不同但"哪些列算整数"是同一条规则
+#define MYSQL_CLS_INT      0x01
+#define MYSQL_CLS_FLOAT    0x02
+#define MYSQL_CLS_DOUBLE   0x04
+#define MYSQL_CLS_STRING   0x08
+#define MYSQL_CLS_DATETIME 0x10
+#define MYSQL_CLS_TIME     0x20
+static const uint8_t _mysql_type_cls[256] = {
+    [MYSQL_TYPE_LONGLONG] = MYSQL_CLS_INT, [MYSQL_TYPE_LONG] = MYSQL_CLS_INT, [MYSQL_TYPE_INT24] = MYSQL_CLS_INT,
+    [MYSQL_TYPE_SHORT] = MYSQL_CLS_INT, [MYSQL_TYPE_YEAR] = MYSQL_CLS_INT, [MYSQL_TYPE_TINY] = MYSQL_CLS_INT,
+    [MYSQL_TYPE_FLOAT] = MYSQL_CLS_FLOAT,
+    [MYSQL_TYPE_DOUBLE] = MYSQL_CLS_DOUBLE,
+    [MYSQL_TYPE_STRING] = MYSQL_CLS_STRING, [MYSQL_TYPE_VARCHAR] = MYSQL_CLS_STRING, [MYSQL_TYPE_VAR_STRING] = MYSQL_CLS_STRING,
+    [MYSQL_TYPE_ENUM] = MYSQL_CLS_STRING, [MYSQL_TYPE_SET] = MYSQL_CLS_STRING, [MYSQL_TYPE_LONG_BLOB] = MYSQL_CLS_STRING,
+    [MYSQL_TYPE_MEDIUM_BLOB] = MYSQL_CLS_STRING, [MYSQL_TYPE_BLOB] = MYSQL_CLS_STRING, [MYSQL_TYPE_TINY_BLOB] = MYSQL_CLS_STRING,
+    [MYSQL_TYPE_GEOMETRY] = MYSQL_CLS_STRING, [MYSQL_TYPE_BIT] = MYSQL_CLS_STRING, [MYSQL_TYPE_DECIMAL] = MYSQL_CLS_STRING,
+    [MYSQL_TYPE_NEWDECIMAL] = MYSQL_CLS_STRING, [MYSQL_TYPE_JSON] = MYSQL_CLS_STRING,
+    [MYSQL_TYPE_DATE] = MYSQL_CLS_DATETIME, [MYSQL_TYPE_DATETIME] = MYSQL_CLS_DATETIME, [MYSQL_TYPE_DATETIME2] = MYSQL_CLS_DATETIME,
+    [MYSQL_TYPE_TIMESTAMP] = MYSQL_CLS_DATETIME, [MYSQL_TYPE_TIMESTAMP2] = MYSQL_CLS_DATETIME,
+    [MYSQL_TYPE_TIME] = MYSQL_CLS_TIME, [MYSQL_TYPE_TIME2] = MYSQL_CLS_TIME
+};
 
+#if defined(OS_WIN)
+// 同 mktime(dt->tm_isdst 须为 -1)。Windows 直接调 mktime、不走偏移缓存：UCRT 的 mktime 比快路径要做的几次 localtime_s 便宜
+static int32_t _mysql_mktime(mysql_reader_ctx *reader, struct tm *dt, time_t *ts) {
+    (void)reader;
+    errno = 0;
+    time_t t = mktime(dt);
+    if ((time_t)-1 == t && 0 != errno) {
+        return ERR_FAILED;
+    }
+    *ts = t;
+    return ERR_OK;
+}
+#else
+// 公历日期时间按 UTC 算出的秒数(days_from_civil)，字段不查量程
+static inline int64_t _mysql_civil_secs(const struct tm *t) {
+    int64_t y = (int64_t)t->tm_year + 1900;
+    int64_t m = (int64_t)t->tm_mon + 1;
+    y -= (m <= 2) ? 1 : 0;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + t->tm_mday - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (era * 146097 + doe - 719468) * 86400 + (int64_t)t->tm_hour * 3600 + (int64_t)t->tm_min * 60 + t->tm_sec;
+}
+// t 前后 26 小时的本地偏移都是 off 时返 1，探测时刻超出 time_t 的范围返 0。前提是任意两个本地偏移相差不超过 26 小时
+// (UTC-12 ~ UTC+14)、两次跳变相隔超过 2 天：此时 t 的本地时间只对应 t 一个瞬间
+static inline int32_t _mysql_tz_stable(time_t t, int64_t off) {
+    const int64_t win = 26 * 3600;
+    struct tm lt;
+    time_t p;
+    int64_t probe = (int64_t)t - win;
+    for (int32_t i = 0; i < 2; i++, probe += 2 * win) {
+        p = (time_t)probe;
+        if ((int64_t)p != probe
+            || 0 != LOCALTIME(&p, &lt)
+            || _mysql_civil_secs(&lt) - probe != off) {
+            return 0;
+        }
+    }
+    return 1;
+}
+// 同 mktime(dt->tm_isdst 须为 -1)，Windows 以外的平台。先按缓存的本地偏移算候选瞬间、转回本地时间逐字段核对，
+// 对得上且前后 26 小时没有跳变才用；对不上(偏移变了、字段越界要归一、超出 time_t 的范围)或附近有跳变(秋季重叠、空档)
+// 都调 mktime 并缓存它的偏移。结果与 mktime 逐次相同只在 _mysql_tz_stable 的前提下成立。
+// 1900 年以前一律走 mktime：macOS 的 mktime 在那里返回 -1
+static int32_t _mysql_mktime(mysql_reader_ctx *reader, struct tm *dt, time_t *ts) {
+    struct tm lt;
+    time_t t;
+    int64_t cand;
+    int64_t base = _mysql_civil_secs(dt);
+    for (int32_t i = 0; i < reader->ntzoff && dt->tm_year >= 0; i++) {
+        cand = base - reader->tzoff[i];
+        t = (time_t)cand;
+        if ((int64_t)t == cand
+            && 0 == LOCALTIME(&t, &lt)
+            && lt.tm_sec == dt->tm_sec && lt.tm_min == dt->tm_min && lt.tm_hour == dt->tm_hour
+            && lt.tm_mday == dt->tm_mday && lt.tm_mon == dt->tm_mon && lt.tm_year == dt->tm_year) {
+            if (_mysql_tz_stable(t, reader->tzoff[i])) {
+                *ts = t;
+                return ERR_OK;
+            }
+            break;
+        }
+    }
+    errno = 0;
+    t = mktime(dt);
+    if ((time_t)-1 == t && 0 != errno) {
+        return ERR_FAILED;
+    }
+    *ts = t;
+    if (0 == LOCALTIME(&t, &lt)) {
+        reader->tzoff[1] = reader->tzoff[0];
+        reader->tzoff[0] = (int32_t)(_mysql_civil_secs(&lt) - (int64_t)t);
+        reader->ntzoff = (reader->ntzoff < 2) ? reader->ntzoff + 1 : 2;
+    }
+    return ERR_OK;
+}
+#endif
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {
     if ((MPACK_QUERY != mpack->pack_type && MPACK_STMT_EXECUTE != mpack->pack_type)
         || NULL == mpack->pack) {
@@ -53,12 +149,12 @@ static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *na
     return NULL;
 }
 // 每个取值函数开头那三段（定位当前行 → NULL 判定 → 字段类型白名单）收在这里，
-// types/ntype 是调用方允许的 enum_field_types 列表。
+// cls 是调用方收的列类型组(MYSQL_CLS_*，见 _mysql_type_cls)。
 // 返回 NULL 时 err 已写好（1=该字段是 SQL NULL，ERR_FAILED=取不到或类型不符），调用方只管返自己的零值。
 // NULL 判定排在类型判定之前，与 pgsql_reader 相反——那边先判类型；
 // 这里先判 NULL，列值为 NULL 时不再多报一次类型不符
 static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
-                                    const uint8_t *types, int32_t ntype, int32_t *err) {
+                                    uint8_t cls, int32_t *err) {
     if (reader->index >= (int32_t)mrow_arr_size(&reader->arr_rows)) {
         SET_PTR(err, ERR_FAILED);
         return NULL;
@@ -74,13 +170,7 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
         SET_PTR(err, 1); // 1 表示该字段值为 NULL
         return NULL;
     }
-    int32_t i;
-    for (i = 0; i < ntype; i++) {
-        if (types[i] == column->type) {
-            break;
-        }
-    }
-    if (i == ntype) {
+    if (0 == (_mysql_type_cls[column->type] & cls)) {
         SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return NULL;
@@ -89,15 +179,15 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
 }
 int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, _int_types, (int32_t)ARRAY_SIZE(_int_types), err);
+    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_INT, err);
     if (NULL == row) {
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        // 文本协议：空串 / 含非数字 / 超量程的判定与 pgsql 侧共用 parse_int64_strict，
+        // 文本协议：空串 / 含非数字 / 超量程的判定与 pgsql 侧共用 strtoi64，
         // 这里只负责写 err 和打日志
         int64_t val;
-        if (ERR_OK != parse_int64_strict(row->val.data, row->val.lens, &val)) {
+        if (ERR_OK != strtoi64(row->val.data, row->val.lens, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
@@ -108,20 +198,20 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         if (sizeof(int8_t) == row->val.lens) {
             return (int8_t)(((char *)row->val.data)[0]);// 无符号 char 平台须显式转 int8_t 才能保留 TINYINT 负值
         } else {
-            return unpack_integer(row->val.data, (int32_t)row->val.lens, 1, 1);
+            return read_integer(row->val.data, row->val.lens, 1, 1);
         }
     }
 }
 uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, _int_types, (int32_t)ARRAY_SIZE(_int_types), err);
+    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_INT, err);
     if (NULL == row) {
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
         // 文本协议：字段值为字符串，需转换为无符号整数。按 lens 直接解析
         uint64_t val;
-        if (ERR_OK != str2u64((const char *)row->val.data, row->val.lens, UINT64_MAX, &val)) {
+        if (ERR_OK != strtou64((const char *)row->val.data, row->val.lens, UINT64_MAX, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
@@ -132,15 +222,15 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         if (sizeof(uint8_t) == row->val.lens) {
             return (uint8_t)(((char *)row->val.data)[0]);
         } else {
-            return unpack_integer(row->val.data, (int32_t)row->val.lens, 1, 0);
+            return read_integer(row->val.data, row->val.lens, 1, 0);
         }
     }
 }
-// 文本协议浮点解析公共逻辑：空串 / 有残留字符 / 上溢的判定全在 parse_double_strict 里，
+// 文本协议浮点解析公共逻辑：空串 / 有残留字符 / 上溢的判定全在 strtod_s 里，
 // 与 pgsql 侧共用同一份（见 prots_pub.h），这里只负责写 err 和打日志
 static inline double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
     double val;
-    if (ERR_OK != parse_double_strict(row->val.data, row->val.lens, &val)) {
+    if (ERR_OK != strtod_s(row->val.data, row->val.lens, &val)) {
         SET_PTR(err, ERR_FAILED);
         LOG_WARN("parse failed.");
         return 0.0;
@@ -149,8 +239,7 @@ static inline double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err
 }
 float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    static const uint8_t _types[] = { MYSQL_TYPE_FLOAT };
-    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
+    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_FLOAT, err);
     if (NULL == row) {
         return 0.0f;
     }
@@ -166,8 +255,7 @@ float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *er
 }
 double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    static const uint8_t _types[] = { MYSQL_TYPE_DOUBLE };
-    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
+    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_DOUBLE, err);
     if (NULL == row) {
         return 0.0;
     }
@@ -183,11 +271,7 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
 }
 char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    static const uint8_t _types[] = { MYSQL_TYPE_STRING, MYSQL_TYPE_VARCHAR, MYSQL_TYPE_VAR_STRING, MYSQL_TYPE_ENUM,
-                                      MYSQL_TYPE_SET, MYSQL_TYPE_LONG_BLOB, MYSQL_TYPE_MEDIUM_BLOB, MYSQL_TYPE_BLOB,
-                                      MYSQL_TYPE_TINY_BLOB, MYSQL_TYPE_GEOMETRY, MYSQL_TYPE_BIT, MYSQL_TYPE_DECIMAL,
-                                      MYSQL_TYPE_NEWDECIMAL, MYSQL_TYPE_JSON };
-    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
+    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_STRING, err);
     if (NULL == row) {
         return NULL;
     }
@@ -196,9 +280,7 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
 }
 int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    static const uint8_t _types[] = { MYSQL_TYPE_DATE, MYSQL_TYPE_DATETIME, MYSQL_TYPE_DATETIME2, MYSQL_TYPE_TIMESTAMP,
-                                      MYSQL_TYPE_TIMESTAMP2 };
-    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
+    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_DATETIME, err);
     if (NULL == row) {
         return 0;
     }
@@ -233,9 +315,8 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
             }
         }
         uint32_t usec = parse_usec_frac(end);
-        errno = 0;
-        time_t ts = mktime(&dt);
-        if ((time_t)-1 == ts && 0 != errno) {
+        time_t ts;
+        if (ERR_OK != _mysql_mktime(reader, &dt, &ts)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
@@ -261,9 +342,8 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
             dt.tm_min = (int32_t)binary_get_int8(&breader);
             dt.tm_sec = (int32_t)binary_get_int8(&breader);
         }
-        errno = 0;
-        time_t ts = mktime(&dt);
-        if ((time_t)-1 == ts && 0 != errno) {
+        time_t ts;
+        if (ERR_OK != _mysql_mktime(reader, &dt, &ts)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
@@ -273,11 +353,10 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
 }
 int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    static const uint8_t _types[] = { MYSQL_TYPE_TIME, MYSQL_TYPE_TIME2 };
     // 出参先清零再取行:取不到(列为 SQL NULL 或类型不符)时也给确定值,同族的 integer/double 一样
     *time = (struct tm) { 0 };
     *usec = 0;
-    mpack_row *row = _mysql_reader_row(reader, name, _types, (int32_t)ARRAY_SIZE(_types), err);
+    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_TIME, err);
     if (NULL == row) {
         return 0;
     }

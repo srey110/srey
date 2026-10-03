@@ -1,6 +1,6 @@
 ﻿#include "protocol/dns.h"
-#include "base/config.h"
 #include "utils/utils.h"
+#include "utils/netaddr.h"
 
 #define DNS_FLAG1_RD        0x01u // 期望递归（请求时设置）
 #define DNS_FLAG1_TC        0x02u // 响应被截断（响应时可能设置，见 RFC 1035 §4.1.1）
@@ -37,29 +37,31 @@ void dns_set_ip(const char *ip) {
 const char *dns_get_ip(void) {
     return _dns_ip;
 }
-// 将点分格式域名编码为 DNS 报文中的标签格式（长度+内容序列）
+// 将点分格式域名编码为 DNS 报文中的标签格式（长度+内容序列），结尾补根标签 0。
+// 末尾一个 '.'(FQDN 写法)照收；空标签(空串、开头的 '.'、连续的 "..")与超 63 字节的标签拒：
+// 空标签编出来是长度 0，服务端会把它当根标签提前收尾，后面的字节全错位
 static int32_t _dns_encode_domain(char *qname, const char *domain, size_t *lenout) {
     char *qname_start = qname;
-    size_t lock = 0, i, blens;
-    char buf[256] = { 0 };
+    size_t lock = 0, i;
     size_t dlens = strlen(domain);
-    if (dlens >= sizeof(buf) - 1) {
+    if (dlens >= 255) {
         return ERR_FAILED;
     }
-    memcpy(buf, domain, dlens);
-    strcat(buf, ".");
-    blens = strlen(buf);
-    for (i = 0; i < blens; i++) {
-        if (buf[i] == '.') {
-            if (i - lock > 63) {
-                return ERR_FAILED;
-            }
-            *qname++ = (char)(i - lock);
-            for (; lock < i; lock++) {
-                *qname++ = buf[lock];
-            }
-            lock++;
+    if (dlens > 0 && '.' == domain[dlens - 1]) {
+        dlens--;
+    }
+    for (i = 0; i <= dlens; i++) {
+        if (i < dlens && '.' != domain[i]) {
+            continue;
         }
+        if (i == lock
+            || i - lock > 63) {
+            return ERR_FAILED;
+        }
+        *qname++ = (char)(i - lock);
+        memcpy(qname, domain + lock, i - lock);
+        qname += i - lock;
+        lock = i + 1;
     }
     *qname++ = '\0';
     *lenout = (size_t)(qname - qname_start);
@@ -127,29 +129,19 @@ void *dns_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     return pkt;
 }
 // 将 DNS 报文中的标签格式域名解码为点分格式，count 输出已消耗的字节数
-// 返回 ERR_OK 成功，ERR_FAILED 报文格式非法（越界/指针环路/name 溢出）
+// 返回 ERR_OK 成功，ERR_FAILED 报文格式非法（越界/指针环路/name 溢出）。
+// 每个标签(长度字节 + 内容)整段按一次拷贝：须整段落在报文内、装得进 name(末尾留 NUL)，内容里不许有 0 字节(按 C 串取名会被截断)
 static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
                                   unsigned char *reader, unsigned char *buffer, size_t buflen,
                                   int32_t *count, uint32_t *jump_budget) {
-    uint32_t p = 0, jumped = 0, label_remaining = 0;
+    uint32_t p = 0, o = 0, jumped = 0, len;
     uint32_t offset;
     unsigned char *buf_end = buffer + buflen;
     *count = 1;
     name[0] = '\0';
     while (reader < buf_end
-        && !(0 == label_remaining && 0 == *reader)) {
-        if (label_remaining > 0) {
-            // 标签内容字节，直接拷入
-            if (p >= namelen - 1) {
-                return ERR_FAILED;
-            }
-            name[p++] = *reader;
-            reader++;
-            label_remaining--;
-            if (0 == jumped) {
-                (*count)++;
-            }
-        } else if (*reader >= 192) {
+        && 0 != *reader) {
+        if (*reader >= 192) {
             // 指针压缩：高两位为 11，后跟 14 位偏移
             if (reader + 1 >= buf_end) {
                 return ERR_FAILED;
@@ -168,47 +160,33 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
                 (*count)++; // 计入指针第二字节
             }
             reader = buffer + offset;
-            // 跳转后验证 reader 不超出缓冲区
-            if (reader >= buf_end) {
-                return ERR_FAILED;
-            }
             jumped = 1;
-        } else if (*reader <= 63) {
-            // 标签长度字节
-            label_remaining = *reader;
-            if (p >= namelen - 1) {
-                return ERR_FAILED;
-            }
-            name[p++] = *reader;
-            reader++;
-            if (0 == jumped) {
-                (*count)++;
-            }
-        } else {
+            continue;
+        }
+        if (*reader > 63) {
             return ERR_FAILED; // 高两位 01/10 为 RFC 1035 保留标签类型
         }
+        len = *reader;
+        if (p + len >= namelen - 1
+            || (size_t)(buf_end - reader) < 1 + (size_t)len
+            || NULL != memchr(reader + 1, 0, len)) {
+            return ERR_FAILED;
+        }
+        if (0 != o) {
+            name[o++] = '.';
+        }
+        memcpy(name + o, reader + 1, len);
+        o += len;
+        p += 1 + len;
+        if (0 == jumped) {
+            *count += (int32_t)(1 + len);
+        }
+        reader += 1 + len;
     }
     if (reader >= buf_end) {
         return ERR_FAILED;
     }
-    name[p] = '\0';
-    // 将标签格式转换为点分格式
-    int32_t i, j;
-    size_t nlens = strlen((const char*)name);
-    for (i = 0; i < (int32_t)nlens; i++) {
-        p = name[i];
-        if (i + (int32_t)p >= (int32_t)nlens) {
-            return ERR_FAILED;
-        }
-        for (j = 0; j < (int32_t)p; j++) {
-            name[i] = name[i + 1];
-            i++;
-        }
-        name[i] = '.';
-    }
-    if (i > 0) {
-        name[i - 1] = '\0';
-    }
+    name[o] = '\0';
     return ERR_OK;
 }
 // 解析 DNS 响应中的资源记录段（应答/授权/附加），提取 A/AAAA 类型的 IP 地址
@@ -248,12 +226,12 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
         if ((size_t)(buf_end - reader) < rlens) {
             return NULL;
         }
-        //inet_ntop 按地址族固定读 4 字节（IPv4）/ 16 字节（IPv6），
+        //地址转文本按地址族固定读 4 字节（IPv4）/ 16 字节（IPv6），
         //rlens 不严格相等会读到相邻记录或越界栈内存，恶意 DNS 响应可借此泄漏信息或返回伪造 IP
         if (DNS_A == rtype && 4 == rlens) {
             tmp = &dnsips[*index];
             (*index)++;
-            inet_ntop(AF_INET, reader, tmp->ip, sizeof(tmp->ip));
+            netaddr_ip4_str((const uint8_t *)reader, tmp->ip);
         } else if (DNS_AAAA == rtype && 16 == rlens) {
             tmp = &dnsips[*index];
             (*index)++;

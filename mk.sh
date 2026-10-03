@@ -48,7 +48,7 @@ do
     fi
 done < `pwd`/lib/base/config.h
 # 共享库目录（参与 libsrey.a；srey 与 test 二进制共用）
-SHARED_DIR="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/serial lib/serial/yyjson lib/srey lib/thread"
+SHARED_DIR="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/serial lib/serial/yyjson lib/coro lib/srey lib/thread"
 SHARED_DIR=$SHARED_DIR" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp lib/protocol/kcp"
 SHARED_DIR=$SHARED_DIR" lib/advance"
 if [ $LUA -eq 1 ]
@@ -93,6 +93,19 @@ then
     if [ "$HOST_ARCH" != "arm64" ] && [ "$HOST_ARCH" != "aarch64" ]
     then
         echo "Error: 本机是 $HOST_ARCH，不是 ARM64；mk.sh 不做交叉编译"
+        exit 1
+    fi
+fi
+# 线程局部变量只许经 TLS_DEFINE 定义(理由见 lib/base/macro_util.h);确需裸写的在行尾注明 TLS_RAW_OK 与理由
+if [ "$BUILD_TARGET" != "clean" ]
+then
+    RAWTLS=`{ find lib srey lualib/lbind test \( -name '*.c' -o -name '*.h' \) -exec grep -nwE 'THREAD_LOCAL|_Thread_local|__thread|thread_local' /dev/null {} + ; \
+        find lib srey lualib/lbind test \( -name '*.c' -o -name '*.h' \) -exec grep -nE '__declspec *\( *thread *\)' /dev/null {} + ; } \
+        | grep -vE '^lib/(base/(macro_util|os_unix|os_win)\.h|coro/minicoro\.h|openssl/|mimalloc/|serial/yyjson/)' | grep -v 'TLS_RAW_OK'`
+    if [ -n "$RAWTLS" ]
+    then
+        echo "$RAWTLS"
+        echo "Error: 裸写的线程局部变量，改用 TLS_DEFINE（见 lib/base/macro_util.h）"
         exit 1
     fi
 fi
@@ -233,6 +246,13 @@ fi
 if [ "$OSNAME" = "AIX" ]
 then
     CFLAGS=$CFLAGS" -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast"
+fi
+# glibc 给 __errno_location / pthread_self 标了 const,编译器在一个函数里只取一次地址,
+# 协程换线程恢复后读写的就是原线程的 errno。把这个属性换成无副作用的 unused(同 brpc),别删;
+# macOS / FreeBSD 的 __error 没标 const,不用加
+if [ "$OSNAME" = "Linux" ]
+then
+    CFLAGS=$CFLAGS" -D__const__=__unused__"
 fi
 # 根据构建模式确定额外目录列表（all 模式两套都要）
 case "$BUILD_TARGET" in

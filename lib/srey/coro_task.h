@@ -2,30 +2,21 @@
 #define CORO_TASK_H_
 
 #include "srey/task.h"
+#include "coro/coro.h"
 
 // sess 唤醒约定:客户端 connect 默认 setsess=1(ud.sess=skid),coro_ssl_exchange/coro_handshaked/coro_send/coro_slice
 // 等挂起等 skid 消息的 API 会被自动唤醒;服务端 accept 连接 ud.sess=0,须显式 coro_sync 设置,否则这些等待挂到超时。
 // UDP coro_sendto 同此约定:ud.sess 不会自动清零,须在首次调用 coro_sendto 前显式 coro_sync 一次,
 // 之后该 skid 上持续有效,可连续/并发多次调用 coro_sendto,无需每次重新同步。
-
-typedef void (*fork_serial_cb)(task_ctx *task, void *arg);
-typedef struct coro_serial_ctx coro_serial_ctx;
+// 换线程约定:协程挂起后可能在另一个 worker 线程上恢复。协程代码里的线程局部变量一律经 TLS_DEFINE
+// 的访问器取,用法限制见 lib/base/macro_util.h;也不许跨挂起持有 rwlock_distr / 互斥锁(恢复后解锁的是另一个线程)
 
 /// <summary>
-/// 初始化协程描述符，设置协程栈大小
+/// 设定协程 task 的协程栈大小，启动期单线程调用一次，之后注册的协程 task 都用它
 /// </summary>
 /// <param name="stack_size">协程栈大小（字节）。0 取下界；非 0 但越界时打一行 WARN 并夹到对应
-/// 边界，故须在日志开起来之后调。上下界见 coro.c 的 COROSTACK_MIN / COROSTACK_MAX，
-/// ASan 构建下两者一起抬高</param>
-void coro_desc_init(size_t stack_size);
-/// <summary>
-/// 释放协程后端在本线程上占用的资源，须在跑过协程的线程退出前调用。
-/// 只有 Windows 上除 x64 外（32 位与 ARM64）走的 fibers 后端有东西可放（把线程转回非 fiber
-/// 态），其余后端是空操作——但 Win32 是 vcxproj 里配着的平台，不是假想配置。
-/// 本项目只有 worker 线程会 resume 协程（net / acpex / 时间轮线程都不会），故只接进 worker
-/// 的退出钩子；日后新增会跑协程的线程类别，记得一并接上。
-/// </summary>
-void coro_thread_cleanup(void);
+/// 边界(见 coro_stack_fit)，故须在日志开起来之后调</param>
+void coro_task_stack(size_t stack_size);
 /// <summary>
 /// 注册协程任务
 /// </summary>
@@ -46,6 +37,12 @@ task_ctx *coro_task_register(loader_ctx *loader, const char *name, uint32_t quec
 /// <param name="task">task_ctx</param>
 /// <returns>用户参数</returns>
 void *coro_get_arg(task_ctx *task);
+/// <summary>
+/// 取协程 task 的调度器，fork / serial / dump 直接用 coro.h 的接口
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <returns>调度器，owner 是 task 本身；task 不是协程 task(coro_task_register 建的以外)返回 NULL</returns>
+coro_ctx *coro_task_co(task_ctx *task);
 /// <summary>
 /// 当前是否正跑在本 task 的协程内。coro_send / coro_close / coro_sleep 这些会挂起的接口只能
 /// 在协程内调，非协程调用会撞断言；调用路径不确定时(如析构里收尾)先问一次再决定发不发
@@ -190,87 +187,6 @@ void *coro_slice(task_ctx *task, sock_ctx *sk, size_t *size, int32_t *end);
 void *coro_sendto(task_ctx *task, sock_ctx *sk,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy);
-/// <summary>
-/// 在新协程中执行 func(task, arg)，fire-and-forget；当前协程不让出。
-/// 追加到 task 本地 fork 列表，在本条消息 dispatch 末尾统一起新协程，不走时间轮。
-/// 仅可在本 task 协程上下文内调用（非协程内调用会告警并忽略）。
-/// arg 由调用方管理生命周期；func 内部 abort/segfault 终止进程（C 无 xpcall 兜底）。
-/// </summary>
-/// <param name="task">所属 task</param>
-/// <param name="func">协程任务函数：func(task, arg)</param>
-/// <param name="arg">透传给 func 的 user 数据指针</param>
-void coro_fork(task_ctx *task, fork_serial_cb func, void *arg);
-/// <summary>
-/// 并发执行 n 个 funcs[i](task, args[i])，等全部完成后返回（barrier 模式）。
-/// 调用方必须身处协程内（startup/timeout/on_* 回调内部均满足）。
-/// C 无闭包：每个 funcs[i] 的返回值/错误码须由业务自己写入 args[i] 内的 out 字段。
-/// 总耗时 ≈ max(t_i)，而非 sum(t_i)。
-/// </summary>
-/// <param name="task">所属 task</param>
-/// <param name="funcs">长度为 n 的函数指针数组</param>
-/// <param name="args">长度为 n 的参数指针数组，args[i] 与 funcs[i] 配对</param>
-/// <param name="n">并发任务数；n 小于等于 0 立即返回 ERR_OK</param>
-/// <returns>ERR_OK 成功；ERR_FAILED 调用方不在协程内</returns>
-int32_t coro_fork_wait(task_ctx *task, fork_serial_cb funcs[], void *args[], int32_t n);
-/// <summary>
-/// 创建协程串行化执行器（critical section）。同 task 内多协程对同一资源并发访问时
-/// 串行进入，避免穿插；同一协程嵌套调用安全（ref 计数）。
-/// </summary>
-/// <param name="task">所属 task；须为 TASK_MCO（coro_task_register 建的）</param>
-/// <returns>coro_serial_ctx，销毁用 coro_serial_free；task 不是 MCO 类型返回 NULL</returns>
-coro_serial_ctx *coro_serial_new(task_ctx *task);
-/// <summary>
-/// 销毁串行化执行器：排队中的等待者被逐个唤醒并失败返回（锁不交接），此后 enter 一律失败。
-/// 允许在有协程持锁时调用（含持锁者自己）；锁抢不走，内存改由最后一次 coro_serial_leave 释放，
-/// **故本函数返回时对象未必已经释放**。调用方两条义务：
-/// 1) 把自己的 serial 字段置空要排在本函数之后，且置空前先认字段仍是自己那个——
-///    期间可能已销毁重连、装上新执行器，无条件置空会把新的抹掉；
-/// 2) 加锁与解锁必须捏同一个指针配对，解锁时不得重读已被置空的字段——
-///    重读会让持锁者跳过 leave，推迟的释放就永远等不到
-/// </summary>
-/// <param name="serial">coro_serial_ctx</param>
-void coro_serial_free(coro_serial_ctx *serial);
-/// <summary>
-/// 进入临界区。调用方必须身处协程内。
-/// 同协程嵌套安全（ref 计数）；跨协程时按 FIFO 排队挂起，前一个 leave 时唤醒下一个。
-/// 配对由调用方保证：enter 成功后到 leave 之间的任何提前 return 都会把锁永久漏掉，
-/// 所以两者之间不要写早退分支，写不下就改用 coro_serial_call。
-/// </summary>
-/// <param name="serial">coro_serial_ctx</param>
-/// <returns>ERR_OK 已持锁，调用方必须配对调用 coro_serial_leave；
-/// ERR_FAILED 未持锁，不得调用 leave（不在协程内、或该执行器正在 coro_serial_free 销毁）</returns>
-int32_t coro_serial_enter(coro_serial_ctx *serial);
-/// <summary>
-/// 离开临界区，仅在 coro_serial_enter 返回 ERR_OK 后调用。
-/// ref 归 0 时就地唤醒队头等待者（minicoro 切栈，链式唤醒不累积 C 栈）；
-/// 若临界区期间有人调过 coro_serial_free，本次 ref 归 0 即在此释放对象——返回后不得再碰 serial
-/// </summary>
-/// <param name="serial">coro_serial_ctx</param>
-void coro_serial_leave(coro_serial_ctx *serial);
-/// <summary>
-/// coro_serial_enter + func(task, arg) + coro_serial_leave 的回调式写法，语义与分体式一致。
-/// 配对由本函数保证，故 func 内可随意早退。
-/// C 无 xpcall：func 内 abort 终止进程，调用方自行保证 func 不崩。
-/// </summary>
-/// <param name="serial">coro_serial_ctx</param>
-/// <param name="func">临界区回调：func(task, arg)；NULL 则只做一次进出，用于探测能否拿到锁</param>
-/// <param name="arg">透传给 func 的参数（生命周期由调用方管理）</param>
-/// <returns>ERR_OK 成功；ERR_FAILED 调用方不在协程内、或该执行器正在 coro_serial_free 销毁</returns>
-int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg);
-/// <summary>
-/// 转储当前 task 挂起协程为文本 buffer(调试用)。C 协程无栈回溯,能给的只有等待原因与时长。
-/// 三类挂起分别列出:等消息的(sess/mtype/时长)、等 fork_wait 的(未完成子协程数)、
-/// 等 serial 交接的(执行器地址/持锁协程/持锁多久/排队人数与最久那个排了多久)——空闲 serial
-/// 不出行,每个 DB 连接一个,全打出来全是噪声;排队时长只在真有人排队时才给。
-/// 挂起段与 serial 段都带 co=,靠它把"谁占着锁"和"那个协程卡在哪"对上号。
-/// 末行的四个计数满足 suspended + fork_wait + serial == yield total,与 task 关闭时打印的
-/// "yield N" 对得上号——serial 那项按 waiter 计,它们走裸 yield 不进 coro_sess。
-/// 返回 binary 内部 MALLOC 的 buffer,所有权转给调用方,用完 FREE。
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <param name="size">出参:buffer 字节数;NULL 不写</param>
-/// <returns>文本 buffer(调用方 FREE);非协程 task(TASK_MCO 以外)返回 NULL 且 size=0</returns>
-char *coro_dump(task_ctx *task, size_t *size);
 message_ctx *_coro_wait(task_ctx *task, uint64_t sess, msg_type mtype, uint32_t ms);
 
 #endif//CORO_TASK_H_

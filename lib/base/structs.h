@@ -1,7 +1,7 @@
 ﻿#ifndef STRUCTS_H_
 #define STRUCTS_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef uint16_t subtype_t; //子类型
 typedef uint64_t name_t; // 任务名类型（64 位整数 ID）

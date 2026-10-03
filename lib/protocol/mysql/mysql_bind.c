@@ -3,39 +3,25 @@
 
 void mysql_bind_init(mysql_bind_ctx *mbind) {
     mbind->count = 0;
-    binary_init_write(&mbind->bitmap, 0, 0);
     binary_init_write(&mbind->type, 0, 0);
     binary_init_write(&mbind->type_name, 0, 0);
     binary_init_write(&mbind->value, 0, 0);
 }
 void mysql_bind_free(mysql_bind_ctx *mbind) {
     mbind->count = 0;
-    binary_free(&mbind->bitmap);
     binary_free(&mbind->type);
     binary_free(&mbind->type_name);
     binary_free(&mbind->value);
 }
 void mysql_bind_clear(mysql_bind_ctx *mbind) {
     mbind->count = 0;
-    binary_offset(&mbind->bitmap, 0);
     binary_offset(&mbind->type, 0);
     binary_offset(&mbind->type_name, 0);
     binary_offset(&mbind->value, 0);
 }
-// 更新 NULL 位图：每 8 个参数共用一个字节，nil 为 1 时将对应位置 1
-static inline void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
-    int32_t index = mbind->count % 8;
-    if (0 == index) {
-        binary_set_fill(&mbind->bitmap, 0, 1);
-    }
-    char *bitmap = binary_at(&mbind->bitmap, mbind->bitmap.offset - 1);
-    if (nil) {
-        bitmap[0] |= (1 << index);
-    }
-    ++mbind->count;
-}
-// 向类型缓冲区和类型+名称缓冲区中写入字段类型及参数名称
+// 向类型缓冲区和类型+名称缓冲区中写入字段类型及参数名称，参数计数加一。每个 bind 接口恰好调一次
 static inline void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type, const char *name, int32_t is_unsigned) {
+    ++mbind->count;
     // 无符号标志位(第 15 位)超出枚举取值范围(全部 <= 255), 必须用整型承载:
     // 回写进 enum 变量时 -fshort-enums 下兼容类型可为 unsigned char, 该位会被静默截掉
     int32_t typeflag = is_unsigned ? ((int32_t)type | 0x8000) : (int32_t)type;
@@ -52,14 +38,12 @@ static inline void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_type
     }
 }
 void mysql_bind_nil(mysql_bind_ctx *mbind, const char *name) {
-    _mysql_bind_bitmap(mbind, 1);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_NULL, name, 0);
 }
 void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, size_t lens) {
     if (NULL == value) {
         mysql_bind_nil(mbind, name);
     } else {
-        _mysql_bind_bitmap(mbind, 0);
         _mysql_bind_type_name(mbind, MYSQL_TYPE_STRING, name, 0);
         _mysql_set_lenenc(&mbind->value, lens);
         if (lens > 0) {
@@ -68,7 +52,6 @@ void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, siz
     }
 }
 void mysql_bind_integer(mysql_bind_ctx *mbind, const char *name, int64_t value) {
-    _mysql_bind_bitmap(mbind, 0);
     // 根据值范围自动选择最小的整数类型以节省传输空间
     if (value >= SCHAR_MIN && value <= SCHAR_MAX) {
         _mysql_bind_type_name(mbind, MYSQL_TYPE_TINY, name, 0);
@@ -89,7 +72,6 @@ void mysql_bind_integer(mysql_bind_ctx *mbind, const char *name, int64_t value) 
     binary_set_integer(&mbind->value, value, sizeof(int64_t), 1);
 }
 void mysql_bind_uinteger(mysql_bind_ctx *mbind, const char *name, uint64_t value) {
-    _mysql_bind_bitmap(mbind, 0);
     // 根据值范围自动选择最小的无符号整数类型以节省传输空间
     if (value <= UCHAR_MAX) {
         _mysql_bind_type_name(mbind, MYSQL_TYPE_TINY, name, 1);
@@ -110,17 +92,14 @@ void mysql_bind_uinteger(mysql_bind_ctx *mbind, const char *name, uint64_t value
     binary_set_integer(&mbind->value, value, sizeof(uint64_t), 1);
 }
 void mysql_bind_float(mysql_bind_ctx *mbind, const char *name, float value) {
-    _mysql_bind_bitmap(mbind, 0);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_FLOAT, name, 0);
     binary_set_float(&mbind->value, value, 1);
 }
 void mysql_bind_double(mysql_bind_ctx *mbind, const char *name, double value) {
-    _mysql_bind_bitmap(mbind, 0);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_DOUBLE, name, 0);
     binary_set_double(&mbind->value, value, 1);
 }
 void mysql_bind_datetime(mysql_bind_ctx *mbind, const char *name, time_t ts) {
-    _mysql_bind_bitmap(mbind, 0);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_DATETIME, name, 0);
     struct tm dt;
     // 转换失败(ts 超出可表示范围)时 dt 未必被写过,按协议写零长即"零日期",不能拿它继续组包
@@ -146,7 +125,6 @@ void mysql_bind_datetime(mysql_bind_ctx *mbind, const char *name, time_t ts) {
 }
 void mysql_bind_time(mysql_bind_ctx *mbind, const char *name,
     int8_t is_negative, int32_t days, int8_t hour, int8_t minute, int8_t second) {
-    _mysql_bind_bitmap(mbind, 0);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_TIME, name, 0);
     // 全零时写长度 0（零值时间简化编码）
     if (0 == days && 0 == hour && 0 == minute && 0 == second) {

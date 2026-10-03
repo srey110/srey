@@ -7,6 +7,52 @@
 // 头部缓冲区从 cur 起的剩余字节数。形参名避开 head：宏体里 (p)->head 的 head 也会被替换
 #define HEAD_REMAIN(p, cur) ((p)->head.lens - (size_t)((cur) - (char *)(p)->head.data))
 #define HTTP_SET_LIT(bw, lit) binary_set_binary((bw), (lit), sizeof(lit) - 1) // 追加字符串字面量(不含结尾 '\0')
+// 状态码与描述文本只此一份，http_code_status 与 http_pack_resp 的整行常量都从这里展开
+#define HTTP_CODES(X) \
+    X(100, "Continue") \
+    X(101, "Switching Protocols") \
+    X(200, "OK") \
+    X(201, "Created") \
+    X(202, "Accepted") \
+    X(203, "Non-Authoritative Information") \
+    X(204, "No Content") \
+    X(205, "Reset Content") \
+    X(206, "Partial Content") \
+    X(300, "Multiple Choices") \
+    X(301, "Moved Permanently") \
+    X(302, "Found") \
+    X(303, "See Other") \
+    X(304, "Not Modified") \
+    X(305, "Use Proxy") \
+    X(307, "Temporary Redirect") \
+    X(400, "Bad Request") \
+    X(401, "Unauthorized") \
+    X(402, "Payment Required") \
+    X(403, "Forbidden") \
+    X(404, "Not Found") \
+    X(405, "Method Not Allowed") \
+    X(406, "Not Acceptable") \
+    X(407, "Proxy Authentication Required") \
+    X(408, "Request Time-out") \
+    X(409, "Conflict") \
+    X(410, "Gone") \
+    X(411, "Length Required") \
+    X(412, "Precondition Failed") \
+    X(413, "Request Entity Too Large") \
+    X(414, "Request-URI Too Large") \
+    X(415, "Unsupported Media Type") \
+    X(416, "Requested range not satisfiable") \
+    X(417, "Expectation Failed") \
+    X(500, "Internal Server Error") \
+    X(501, "Not Implemented") \
+    X(502, "Bad Gateway") \
+    X(503, "Service Unavailable") \
+    X(504, "Gateway Time-out") \
+    X(505, "HTTP Version not supported")
+// HTTP_CODES 的两种展开：HTTP_CODE_TEXT 给 http_code_status 返回描述文本；
+// HTTP_CODE_LINE 给 http_pack_resp 把整行状态行写进 bwriter，展开处须有名为 bwriter 的 binary_ctx *
+#define HTTP_CODE_TEXT(c, t) case c: return t;
+#define HTTP_CODE_LINE(c, t) case c: HTTP_SET_LIT(bwriter, "HTTP/1.1 " #c " " t FLAG_CRLF); return;
 
 typedef enum parse_status{
     INIT = 0,   // 初始状态，等待头部
@@ -26,16 +72,22 @@ typedef struct http_pack_ctx {
 }http_pack_ctx;
 
 // 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)；全为 OWS 时收成 *start 处的空区间。
-// trim 只读不写，故这里丢弃 const 安全（底层缓冲本就是可写的解析区）
+// 每个头字段都走一次，就地写两个小循环，不调 bytes.c 的 trim
 static inline void _http_trim_ows(const char **start, const char **end) {
-    size_t lens = 0;
-    const char *cur = trim((char *)*start, (size_t)(*end - *start), &lens);
-    if (NULL == cur) {
+    const char *s = *start;
+    const char *e = *end;
+    while (s < e && is_ows(*s)) {
+        s++;
+    }
+    if (s == e) {
         *end = *start;
         return;
     }
-    *start = cur;
-    *end = cur + lens;
+    while (is_ows(*(e - 1))) {
+        e--;
+    }
+    *start = s;
+    *end = e;
 }
 int32_t _http_check_keyval(http_header_ctx *head,
                            const char *key, size_t klen,
@@ -70,7 +122,7 @@ int32_t _http_check_keyval(http_header_ctx *head,
     return ERR_FAILED;
 }
 // 解析 Content-Length 字段的十进制值；拒绝空值与非纯数字（含正负号与空白）。
-// 两侧 OWS 已由 _http_parse_field 的 trim 剥掉，此处 value 即纯字段值
+// 两侧 OWS 已由 _http_parse_field 剥掉(_http_trim_ows)，此处 value 即纯字段值
 static inline int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
     char *vbuf = (char *)field->value.data;
     size_t vlen = field->value.lens;
@@ -78,7 +130,7 @@ static inline int32_t _http_parse_content_length(http_header_ctx *field, size_t 
         return ERR_FAILED;
     }
     uint64_t val;
-    if (ERR_OK != str2u64(vbuf, vlen, (uint64_t)SIZE_MAX, &val)) {
+    if (ERR_OK != strtou64(vbuf, vlen, (uint64_t)SIZE_MAX, &val)) {
         return ERR_FAILED;
     }
     *out = (size_t)val;
@@ -178,7 +230,7 @@ static inline int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
         return 0;
     }
     uint64_t code;
-    if (ERR_OK != str2u64((const char *)pack->status[1].data, pack->status[1].lens, 999, &code)) {
+    if (ERR_OK != strtou64((const char *)pack->status[1].data, pack->status[1].lens, 999, &code)) {
         return 0;
     }
     return code < 200;
@@ -190,46 +242,25 @@ static inline int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
         return 0;
     }
     uint64_t code;
-    if (ERR_OK != str2u64((const char *)pack->status[1].data, pack->status[1].lens, 999, &code)) {
+    if (ERR_OK != strtou64((const char *)pack->status[1].data, pack->status[1].lens, 999, &code)) {
         return 0;
     }
     return http_code_nobody((int32_t)code);
 }
-// 首行与字段行共用的行扫描：扫到行尾 CRLF 为止，顺带记下行内出现的分隔符位置。
-// 只有 CRLF 才算收行，裸 CR、裸 LF 和 NUL 一律拒（RFC 9110 §5.5）：放行裸 LF 会与上游切出
-// 不同的头部边界，四道 TE/CL 走私守卫按字段名精确匹配，看不见折进值里的那条 TE。
-// mark 为要记录的分隔符（首行传 ' '，字段行传 ':'），按出现顺序最多记 nmark 个写入 marks，
-// 实到个数写回 *nout（行内超过 nmark 个时只记前 nmark 个，多出来的归调用方自行处理）。
-// 返回行尾 CRLF 起始位置；未收完整行或撞上非法字节返 NULL，此时 marks 与 *nout 未定义
-static char *_http_scan_line(const char *head, size_t remain, char mark,
-                             char **marks, int32_t nmark, int32_t *nout) {
-    // 用 memchr 而不是一趟逐字节：libc 的是向量化的，而这里是整个解析最热的地方
-    *nout = 0;
-    const char *cr = memchr(head, '\r', remain);
-    if (NULL == cr) {
+// 找 [p, end) 里第一个 \0 / \r / \n，没有返回 end。
+// 头块每个字节都经这里或字段名的 token 表扫过，NUL 因此随行扫描一起拒掉，不用整块另查
+static inline const char *_http_find_eol(const char *p, const char *end) {
+    return p + memcspn(p, (size_t)(end - p), "\0\r\n", 3);
+}
+// 从 head 扫到行尾，返回行尾 CRLF 的起点。只有 CRLF 才算收行，行内先撞上 \0 / 裸 CR / 裸 LF 一律拒(RFC 9110 §5.5)：
+// 放行裸 LF 会与上游切出不同的头部边界，四道 TE/CL 走私守卫按字段名精确匹配，看不见折进值里的那条 TE。
+// 未收完整行或撞上非法字节返 NULL
+static inline char *_http_line_end(const char *head, const char *end) {
+    const char *cr = _http_find_eol(head, end);
+    if (end - cr < CRLF_SIZE
+        || '\r' != cr[0]
+        || '\n' != cr[1]) {
         return NULL;
-    }
-    size_t linelens = (size_t)(cr - head);
-    if (linelens + 1 >= remain
-        || '\n' != *(cr + 1)) {
-        return NULL;
-    }
-    if (NULL != memchr(head, '\n', linelens)
-        || NULL != memchr(head, '\0', linelens)) {
-        return NULL;
-    }
-    const char *cur = head;
-    const char *pos;
-    size_t left = linelens;
-    while (*nout < nmark
-        && left > 0) {
-        pos = memchr(cur, mark, left);
-        if (NULL == pos) {
-            break;
-        }
-        marks[(*nout)++] = (char *)pos;
-        left -= (size_t)(pos - cur) + 1;
-        cur = pos + 1;
     }
     return (char *)cr;
 }
@@ -243,10 +274,16 @@ static inline char *_http_parse_status(http_pack_ctx *pack) {
         return NULL;
     }
     char *sp[2];
-    int32_t nsp;
-    char *pcrlf = _http_scan_line(head, HEAD_REMAIN(pack, head), ' ', sp, 2, &nsp);
-    if (NULL == pcrlf
-        || 2 != nsp) {
+    char *pcrlf = _http_line_end(head, head + pack->head.lens);
+    if (NULL == pcrlf) {
+        return NULL;
+    }
+    sp[0] = memchr(head, ' ', (size_t)(pcrlf - head));
+    if (NULL == sp[0]) {
+        return NULL;
+    }
+    sp[1] = memchr(sp[0] + 1, ' ', (size_t)(pcrlf - sp[0] - 1));
+    if (NULL == sp[1]) {
         return NULL;
     }
     pack->status[0].data = head;
@@ -272,31 +309,33 @@ static inline int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_
     if (is_ows(*head)) {
         return ERR_FAILED;
     }
-    char *pcolon;
-    int32_t ncolon;
-    char *pcrlf = _http_scan_line(head, HEAD_REMAIN(pack, head), ':', &pcolon, 1, &ncolon);
-    if (NULL == pcrlf
-        || 1 != ncolon) {
+    const char *end = head + HEAD_REMAIN(pack, head);
+    // RFC 7230 §3.2.6：字段名只能由 token 字符组成，token 字符走完必须正好停在 ':' 上，且名字非空。
+    // SP/HTAB 不是 token 字符，`Transfer-Encoding :chunked` 带着尾随空格绕过 TE/CL 精确比长匹配的走私因此也被挡掉
+    size_t klens = token_span(head, (size_t)(end - head));
+    char *pcolon = head + klens;
+    if (0 == klens
+        || pcolon >= end
+        || ':' != *pcolon) {
+        return ERR_FAILED;
+    }
+    char *pcrlf = _http_line_end(pcolon + 1, end);
+    if (NULL == pcrlf) {
         return ERR_FAILED;
     }
     field->key.data = head;
-    field->key.lens = (size_t)(pcolon - head);
-    // RFC 7230 §3.2.6：字段名只能由 token 字符组成（长度为 0 时 is_token 也返回假，一并挡掉）。
-    // 这一条同时覆盖了"字段名与冒号之间不许有空白"：SP/HTAB 都不是 token 字符，放行的话
-    // `Transfer-Encoding :chunked` 就带着尾随空格绕过 TE/CL 的精确比长匹配，构成请求走私
-    if (!is_token((const char *)field->key.data, field->key.lens)) {
-        return ERR_FAILED;
-    }
-    head = pcolon + 1;
-    size_t vlens = 0;
-    char *vdata = trim(head, (size_t)(pcrlf - head), &vlens);
-    field->value.data = (NULL != vdata) ? vdata : head;
-    field->value.lens = vlens;
+    field->key.lens = klens;
+    const char *vs = pcolon + 1;
+    const char *ve = pcrlf;
+    _http_trim_ows(&vs, &ve);
+    field->value.data = (char *)vs;
+    field->value.lens = (size_t)(ve - vs);
     head = pcrlf + CRLF_SIZE;
     *phead = head;
     return ERR_OK;
 }
-// 解析全部头部字段，检测 Content-Length/Transfer-Encoding，将字段存入 pack->header
+// 解析全部头部字段，检测 Content-Length/Transfer-Encoding，将字段存入 pack->header。
+// 头块里出现 NUL 即拒，由逐行扫描顺带挡掉(见 _http_find_eol)
 static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     char *head = _http_parse_status(pack);
     if (NULL == head) {
@@ -320,13 +359,15 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     }
     return ERR_OK;
 }
-// 等待并读取 Content-Length 模式下的数据体，数据完整后重置 ud 状态
+// 等待并读取 Content-Length 模式下的数据体，数据完整后重置 ud 状态。
+// 多分配 1 字节补 '\0'：http_take_data 交出去的数据体与 dup_zero 的副本同样以 '\0' 结尾
 static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     http_pack_ctx *pack = ud->context;
     if (buffer_size(buf) >= pack->data.lens) {
         if (pack->data.lens > 0) {
-            MALLOC(pack->data.data, pack->data.lens);
+            MALLOC(pack->data.data, pack->data.lens + 1);
             ASSERTAB(pack->data.lens == buffer_remove(buf, pack->data.data, pack->data.lens), "copy buffer failed.");
+            ((char *)pack->data.data)[pack->data.lens] = '\0';
         }
         ud->status = INIT;
         ud->context = NULL;
@@ -336,13 +377,31 @@ static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t 
         return NULL;
     }
 }
+// 从 start 起找第一个 CRLFCRLF，返回它的起点，没有返 ERR_FAILED。
+// 数据全在首节点时直接 memstr(what 是常量，内联后中间两字节折成一次比较)，否则照旧 buffer_search
+static inline int32_t _http_crlf2_pos(buffer_ctx *buf, size_t start) {
+    IOV_TYPE iov;
+    size_t bsize = buffer_size(buf);
+    const char *data, *hit;
+    if (start < bsize
+        && 0 != buffer_get(buf, bsize, &iov, 1)) {
+        if ((size_t)iov.IOV_LEN_FIELD == bsize) {
+            data = (const char *)iov.IOV_PTR_FIELD;
+            hit = (const char *)memstr(0, data + start, bsize - start, CONCAT2(FLAG_CRLF,FLAG_CRLF), CRLF_SIZE * 2);
+            buffer_commit_get(buf, 0);
+            return (NULL == hit || (size_t)(hit - data) > (size_t)INT32_MAX) ? ERR_FAILED : (int32_t)(hit - data);
+        }
+        buffer_commit_get(buf, 0);
+    }
+    return buffer_search(buf, 0, start, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), CRLF_SIZE * 2);
+}
 // 头块与 trailer 块都搜 CRLFCRLF，且都靠 ud->prot_offset 续扫：半包到达时记下已扫过的字节数，
 // 下次从它减 3 起搜——少 3 才能让跨两次读取的 CRLFCRLF 仍然命中。命中或出错都把它归零。
 // 返回块总长(含结尾 CRLFCRLF)；0 表示没解出来，等更多数据还是超 HTTP_MAX_HEADLENS 看 status
 static inline size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
     size_t start = ud->prot_offset > (flens - 1) ? ud->prot_offset - (flens - 1) : 0;
-    int32_t pos = buffer_search(buf, 0, start, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
+    int32_t pos = _http_crlf2_pos(buf, start);
     if (ERR_FAILED == pos) {
         size_t bsize = buffer_size(buf);
         if (bsize > HTTP_MAX_HEADLENS) {
@@ -434,12 +493,11 @@ static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t c
     }
 }
 // 分配 chunked 数据包结构体，lens>0 时数据紧随其后，chunked 字段固定设为 2。
-// slack 是载荷后面多留、不计入 data.lens 的字节(chunk 连同结尾 CRLF 一次拷出来再校验)。
 // 只清结构体前缀，同 _http_headpack：载荷由 buffer_copyout 整块写满，而这里是每帧一次，
 // 连载荷一起清就等于把整条流的字节数白 memset 一遍
-static inline http_pack_ctx *_http_chunkedpack(size_t lens, size_t slack) {
+static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
     char *pack;
-    MALLOC(pack, sizeof(http_pack_ctx) + lens + slack);
+    MALLOC(pack, sizeof(http_pack_ctx) + lens);
     ZERO(pack, sizeof(http_pack_ctx));
     http_pack_ctx *pctx = (http_pack_ctx *)pack;
     if (lens > 0) {
@@ -449,9 +507,23 @@ static inline http_pack_ctx *_http_chunkedpack(size_t lens, size_t slack) {
     pctx->chunked = 2;
     return pctx;
 }
+// chunk 载荷已到齐：先查载荷后面的 CRLF 再拷载荷，off 为载荷在缓冲里的起点，成功后连同 off 之前的字节一并 drain
+static inline int32_t _http_chunk_take(buffer_ctx *buf, http_pack_ctx *pack, size_t off, int32_t *status) {
+    size_t lens = pack->data.lens;
+    if ('\r' != buffer_at(buf, off + lens)
+        || '\n' != buffer_at(buf, off + lens + 1)) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
+    ASSERTAB(lens == buffer_copyout(buf, off, pack->data.data, lens), "copy buffer failed.");
+    ASSERTAB(off + lens + CRLF_SIZE == buffer_drain(buf, off + lens + CRLF_SIZE), "drain buffer failed.");
+    BIT_SET(*status, PROT_SLICE);
+    return ERR_OK;
+}
 // 解析 chunked 编码的数据块：先读取长度行，再读取对应数据，长度为 0 表示结束。
 // trailer 块与头块共用 _http_search_crlf2（CHUNKED 期间头块已解完，
-// 两者不争用 prot_offset）；长度行只有 1~16 个 hex 字符，重扫可忽略，不续扫
+// 两者不争用 prot_offset）；长度行只有 1~16 个 hex 字符，重扫可忽略，不续扫。
+// 载荷已整块到齐时长度行不先单独 drain，与载荷、结尾 CRLF 最后一次 drain
 static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t drain;
     http_pack_ctx *pack = ud->context;
@@ -509,24 +581,28 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             }
         }
         drain = pos + CRLF_SIZE;
+        pack = _http_chunkedpack(dlens);
+        if (dlens > 0
+            && buffer_size(buf) >= drain + dlens + CRLF_SIZE) {
+            if (ERR_OK != _http_chunk_take(buf, pack, drain, status)) {
+                _http_pkfree(pack);
+                return NULL;
+            }
+            return pack;
+        }
         ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
-        pack = _http_chunkedpack(dlens, CRLF_SIZE);
         ud->context = pack;
     }
     if (pack->data.lens > 0) {
-        drain = pack->data.lens + CRLF_SIZE;
-        if (buffer_size(buf) < drain) {
+        if (buffer_size(buf) < pack->data.lens + CRLF_SIZE) {
             BIT_SET(*status, PROT_MOREDATA);
             return NULL;
         }
-        ASSERTAB(drain == buffer_copyout(buf, 0, pack->data.data, drain), "copy buffer failed.");
-        char *crlf = (char *)pack->data.data + pack->data.lens;
-        if ('\r' != crlf[0]
-            || '\n' != crlf[1]) {
-            BIT_SET(*status, PROT_ERROR);
+        if (ERR_OK != _http_chunk_take(buf, pack, 0, status)) {
             return NULL;
         }
-        BIT_SET(*status, PROT_SLICE);
+        ud->context = NULL;
+        return pack;
     } else {
         // 末尾块：跳过可选 trailer headers + 终止空行（RFC 7230 §4.1）
         // 无 trailer: \r\n
@@ -560,7 +636,7 @@ static inline http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    http_pack_ctx *pack = _http_chunkedpack(lens, 0);
+    http_pack_ctx *pack = _http_chunkedpack(lens);
     ASSERTAB(lens == buffer_remove(buf, pack->data.data, lens), "copy buffer failed.");
     BIT_SET(*status, PROT_SLICE);
     return pack;
@@ -581,7 +657,7 @@ void *_http_on_close(ud_cxt *ud) {
         return NULL;
     }
     ud->status = INIT;
-    return _http_chunkedpack(0, 0);
+    return _http_chunkedpack(0);
 }
 void _http_udfree(ud_cxt *ud) {
     _http_pkfree(ud->context);
@@ -645,11 +721,33 @@ void *http_data(http_pack_ctx *pack, size_t *lens) {
     *lens = pack->data.lens;
     return pack->data.data;
 }
+void *http_take_data(http_pack_ctx *pack, size_t *lens) {
+    void *data = NULL;
+    *lens = 0;
+    if (NULL != pack->head.data) {
+        data = pack->data.data;
+        *lens = (NULL != data) ? pack->data.lens : 0;
+        pack->data.data = NULL;
+        pack->data.lens = 0;
+    }
+    return data;
+}
+// [s, s + lens) 里有没有 CR / LF，\0 不算
+static inline int32_t _http_has_crlf(const char *s, size_t lens) {
+    return lens != memcspn(s, lens, "\r\n", 2);
+}
+// \0 结尾串的长度，\0 之前出现 CR / LF 返 SIZE_MAX：组包侧"不许带 CRLF"的校验顺带取长
+static inline size_t _http_nocrlf_len(const char *s) {
+    size_t lens = strlen(s);
+    return _http_has_crlf(s, lens) ? SIZE_MAX : lens;
+}
 void http_pack_req(binary_ctx *bwriter, const char *method, const char *url) {
-    ASSERTAB(NULL == strpbrk(method, "\r\n") && NULL == strpbrk(url, "\r\n"), "HTTP method/url must not contain CRLF.");
-    binary_set_binary(bwriter, method, strlen(method));
+    size_t mlens = _http_nocrlf_len(method);
+    size_t ulens = _http_nocrlf_len(url);
+    ASSERTAB(SIZE_MAX != mlens && SIZE_MAX != ulens, "HTTP method/url must not contain CRLF.");
+    binary_set_binary(bwriter, method, mlens);
     HTTP_SET_LIT(bwriter, " ");
-    binary_set_binary(bwriter, url, strlen(url));
+    binary_set_binary(bwriter, url, ulens);
     HTTP_SET_LIT(bwriter, " HTTP/1.1"FLAG_CRLF);
 }
 static int32_t _http_set_nobody_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
@@ -681,91 +779,58 @@ int32_t http_set_method(ev_ctx *ev, sock_ctx *sk, const char *method) {
 }
 const char *http_code_status(int32_t code) {
     switch (code) {
-    case 100: return "Continue";
-    case 101: return "Switching Protocols";
-    case 200: return "OK";
-    case 201: return "Created";
-    case 202: return "Accepted";
-    case 203: return "Non-Authoritative Information";
-    case 204: return "No Content";
-    case 205: return "Reset Content";
-    case 206: return "Partial Content";
-    case 300: return "Multiple Choices";
-    case 301: return "Moved Permanently";
-    case 302: return "Found";
-    case 303: return "See Other";
-    case 304: return "Not Modified";
-    case 305: return "Use Proxy";
-    case 307: return "Temporary Redirect";
-    case 400: return "Bad Request";
-    case 401: return "Unauthorized";
-    case 402: return "Payment Required";
-    case 403: return "Forbidden";
-    case 404: return "Not Found";
-    case 405: return "Method Not Allowed";
-    case 406: return "Not Acceptable";
-    case 407: return "Proxy Authentication Required";
-    case 408: return "Request Time-out";
-    case 409: return "Conflict";
-    case 410: return "Gone";
-    case 411: return "Length Required";
-    case 412: return "Precondition Failed";
-    case 413: return "Request Entity Too Large";
-    case 414: return "Request-URI Too Large";
-    case 415: return "Unsupported Media Type";
-    case 416: return "Requested range not satisfiable";
-    case 417: return "Expectation Failed";
-    case 500: return "Internal Server Error";
-    case 501: return "Not Implemented";
-    case 502: return "Bad Gateway";
-    case 503: return "Service Unavailable";
-    case 504: return "Gateway Time-out";
-    case 505: return "HTTP Version not supported";
+    HTTP_CODES(HTTP_CODE_TEXT)
     default:
         return "Unknown";
     }
 }
 void http_pack_resp(binary_ctx *bwriter, int32_t code) {
+    switch (code) {
+    HTTP_CODES(HTTP_CODE_LINE)
+    default:
+        break;
+    }
     const char *status = http_code_status(code);
     HTTP_SET_LIT(bwriter, "HTTP/1.1 ");
-    if (code < 0) {
-        HTTP_SET_LIT(bwriter, "-");
-        binary_set_uint(bwriter, (uint64_t)(-(int64_t)code), 10);
-    } else {
-        binary_set_uint(bwriter, (uint64_t)code, 10);
-    }
+    binary_set_int(bwriter, code, 10);
     HTTP_SET_LIT(bwriter, " ");
     binary_set_binary(bwriter, status, strlen(status));
     HTTP_SET_LIT(bwriter, FLAG_CRLF);
 }
+// 头的线格式："Key: value" + CRLF(router 的 extra 头按长度直写同一格式)。key / val 由调用方校验过
+static inline void _http_pack_head_n(binary_ctx *bwriter, const char *key, size_t klens, const char *val, size_t lens) {
+    binary_set_binary(bwriter, key, klens);
+    HTTP_SET_LIT(bwriter, ": ");
+    binary_set_binary(bwriter, val, lens);
+    binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);
+}
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
-    // 只是 head2 的 \0 结尾入口: 头的线格式与校验规则单点落在 head2, 免得两处各改一半
-    http_pack_head2(bwriter, key, val, strlen(val));
+    size_t klens = _http_nocrlf_len(key);
+    size_t vlens = _http_nocrlf_len(val);
+    ASSERTAB(SIZE_MAX != klens && SIZE_MAX != vlens, "HTTP header key/val must not contain CRLF.");
+    _http_pack_head_n(bwriter, key, klens, val, vlens);
 }
 // 头值有没有 CR / LF。逐字符挡而非只挡 "\r\n" 连对：孤立 LF 也被相当多的解析器当行终止符，
-// 放过它等于给按长度传值的这一路留下头注入口子。空值(lens 为 0)恒合法
+// 放过它等于给按长度传值的这一路留下头注入口子。空值(lens 为 0)恒合法；\0 不归这里挡
 static inline int32_t _http_head_val_nocrlf(const char *val, size_t lens) {
     if (0 == lens) {
         return 1;
     }
     return NULL != val
-        && NULL == memchr(val, '\r', lens)
-        && NULL == memchr(val, '\n', lens);
+        && !_http_has_crlf(val, lens);
 }
 int32_t http_head_val_ok(const char *val, size_t lens) {
     if (0 == lens) {
         return 1;
     }
-    return 0 != _http_head_val_nocrlf(val, lens)
-        && NULL == memchr(val, '\0', lens);
+    return NULL != val
+        && val + lens == _http_find_eol(val, val + lens);
 }
 void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens) {
-    ASSERTAB(NULL == strpbrk(key, FLAG_CRLF) && 0 != _http_head_val_nocrlf(val, lens),
+    size_t klens = _http_nocrlf_len(key);
+    ASSERTAB(SIZE_MAX != klens && 0 != _http_head_val_nocrlf(val, lens),
         "HTTP header key/val must not contain CRLF.");
-    binary_set_binary(bwriter, key, strlen(key));
-    HTTP_SET_LIT(bwriter, ": ");
-    binary_set_binary(bwriter, val, lens);
-    binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);
+    _http_pack_head_n(bwriter, key, klens, val, lens);
 }
 void http_pack_end(binary_ctx *bwriter) {
     binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);

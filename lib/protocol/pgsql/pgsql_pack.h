@@ -17,7 +17,7 @@ void pgsql_pack_start(binary_ctx *bwriter, int8_t code, size_t lens);
 /// <summary>
 /// 结束消息构建并回填消息体长度字段
 /// </summary>
-/// <param name="bwriter">写缓冲区</param>
+/// <param name="bwriter">由 pgsql_pack_start 起头的写缓冲区，长度字段已在其中占好位</param>
 void pgsql_pack_end(binary_ctx *bwriter);
 /// <summary>
 /// 在已有缓冲区末尾追加一个新子消息的起始（写入类型码和长度占位符）

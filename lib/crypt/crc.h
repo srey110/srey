@@ -1,7 +1,7 @@
 ﻿#ifndef CRC_H_
 #define CRC_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 /// <summary>
 /// crc 16 IBM

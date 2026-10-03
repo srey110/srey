@@ -52,14 +52,19 @@
 // 超单包上限在这里就拒：cap 正是那几个大入参的长度，等到 _mongo_pack_msg 判总长时源数据
 // 已经被全量分配并拷贝过，内存不够时分配器是 exit 而不是返 NULL。
 // 文档前预留 MONGO_MSG_HDR 字节，收尾时就地填 OP_MSG 头，正文不再另拷一份
-#define MONGO_PACK_BEGIN(cap) \
+#define MONGO_PACK_BEGIN(cap) MONGO_PACK_BEGIN2(cap, 0)
+// 同 MONGO_PACK_BEGIN，extra 只加进首块容量、不进超限闸门(传 options 与事务 session options 的字节数，免得它们撑出一次整块搬迁)
+#define MONGO_PACK_BEGIN2(cap, extra) \
     bson_ctx bson; \
     size_t _cap = (size_t)(cap); \
     if (0 != _mongo_cap_toolong(_cap)) { \
         *size = 0; \
         return NULL; \
     } \
-    bson_init_prefix(&bson, _cap, MONGO_MSG_HDR)
+    bson_init_prefix(&bson, 0 == _cap ? 0 : _cap + (size_t)(extra), MONGO_MSG_HDR)
+// 命令里除大文档外还会拼进去的两段：调用方 options，与事务内的 session options
+#define MONGO_OPT_EXTRA(optlens) \
+    ((NULL != options ? (optlens) : 0) + ((NULL != mongo->session && NULL != mongo->session->options) ? mongo->session->optionslens : 0))
 // 两个 RETURN 共用的通用收尾：$db + 闭合 + 填 OP_MSG 头，bson 的缓冲就是结果，留在 _data（失败时已释放）
 #define _MONGO_PACK_TAIL(db) \
         bson_append_utf8(&bson, "$db", (db)); \
@@ -70,7 +75,6 @@
         _MONGO_PACK_TAIL(db); \
         return _data; \
     } while (0)
-//事务和操作 https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
 // 事务内 CRUD 用：事务的第一条命令必须带 startTransaction:true，服务端才真正开启事务。
 // 这里只记 _txnstart，started 要等下面那个 RETURN 确认组包成功之后才落——顺序不能颠倒，
 // 组包失败时提前消耗掉标志，这条连接上的事务就再也开不起来
@@ -122,11 +126,11 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, bson_ctx *bson, size_t *size) {
         *size = 0;
         return NULL;
     }
-    pack_integer(p, (uint64_t)*size, 4, 1);
-    pack_integer(p + 4, (uint64_t)mongo->reqid, 4, 1);
-    pack_integer(p + 8, 0, 4, 1);
-    pack_integer(p + 12, OP_MSG, 4, 1);
-    pack_integer(p + MSG_FLAGS_OFF, (uint64_t)mongo->flags, 4, 1);
+    write_le32(p, (uint32_t)*size);
+    write_le32(p + 4, (uint32_t)mongo->reqid);
+    write_le32(p + 8, 0);
+    write_le32(p + 12, OP_MSG);
+    write_le32(p + MSG_FLAGS_OFF, (uint32_t)mongo->flags);
     p[MONGO_MSG_HDR - 1] = 0;
     return p;
 }
@@ -208,7 +212,7 @@ void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t optlens, size_t *s
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t optlens, size_t *size) {
-    MONGO_PACK_BEGIN(dlens + BSON_HEADROOM);
+    MONGO_PACK_BEGIN2(dlens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "insert", mongo->collection);
     MONGO_PACK_ARR("documents", docs, dlens);
     MONGO_PACK_CAT(options, optlens);
@@ -216,7 +220,7 @@ void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *option
     MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens, size_t *size) {
-    MONGO_PACK_BEGIN(ulens + BSON_HEADROOM);
+    MONGO_PACK_BEGIN2(ulens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "update", mongo->collection);
     MONGO_PACK_ARR("updates", updates, ulens);
     MONGO_PACK_CAT(options, optlens);
@@ -224,7 +228,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
     MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens, size_t *size) {
-    MONGO_PACK_BEGIN(dlens + BSON_HEADROOM);
+    MONGO_PACK_BEGIN2(dlens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "delete", mongo->collection);
     MONGO_PACK_ARR("deletes", deletes, dlens);
     MONGO_PACK_CAT(options, optlens);
@@ -232,7 +236,7 @@ void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *opt
     MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t optlens, size_t *size) {
-    MONGO_PACK_BEGIN(olens + nlens + BSON_HEADROOM);
+    MONGO_PACK_BEGIN2(olens + nlens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_int32(&bson, "bulkWrite", 1);
     MONGO_PACK_ARR("ops", ops, olens);
     MONGO_PACK_ARR("nsInfo", nsinfo, nlens);
@@ -241,7 +245,7 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
     MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens, size_t *size) {
-    MONGO_PACK_BEGIN(flens + BSON_HEADROOM);
+    MONGO_PACK_BEGIN2(flens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "find", mongo->collection);
     if (!EMPTYPTR(filter, flens)) {
         bson_append_document(&bson, "filter", filter, flens);
@@ -251,7 +255,7 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
     MONGO_PACK_RETURN_TXN(mongo->db);
 }
 void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options, size_t optlens, size_t *size) {
-    MONGO_PACK_BEGIN(pllens + BSON_HEADROOM);
+    MONGO_PACK_BEGIN2(pllens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "aggregate", mongo->collection);
     MONGO_PACK_ARR("pipeline", pipeline, pllens);
     const char *cursor = bson_empty(size);

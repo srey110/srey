@@ -1,7 +1,7 @@
 ﻿#ifndef MMAP_H_
 #define MMAP_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 通用内存映射：文件、匿名、命名共享内存三种来源，统一成一个 mmap_ctx。
 // 契约（各函数的注释引用这里的编号）：

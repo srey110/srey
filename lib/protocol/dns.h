@@ -8,6 +8,7 @@
 typedef struct dns_ip {
     char ip[IP_LENS];
 }dns_ip;
+
 /// <summary>
 /// dns域名解析请求包
 /// </summary>
@@ -15,7 +16,7 @@ typedef struct dns_ip {
 /// <param name="domain">要解析的域名</param>
 /// <param name="ipv6">1 ipv6 0 ipv4</param>
 /// <param name="id">输出：本次查询的随机事务 ID（主机序），供 dns_parse_pack 回验响应</param>
-/// <returns>请求包长度，0 表示失败（取不到随机事务 ID）</returns>
+/// <returns>请求包长度；0 表示失败：域名为空或含空标签、单个标签超过 63 字节、总长不小于 255，或取不到随机事务 ID</returns>
 size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6, uint16_t *id);
 /// <summary>
 /// dns 域名解析请求包（TCP 传输，前置 2 字节大端长度，RFC 1035 §4.2.2）
@@ -24,7 +25,7 @@ size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6, uint16_t *i
 /// <param name="domain">要解析的域名</param>
 /// <param name="ipv6">1 ipv6 0 ipv4</param>
 /// <param name="id">输出：本次查询的随机事务 ID（主机序），供 dns_parse_pack 回验响应</param>
-/// <returns>含 2 字节长度前缀的请求包总长度，0 表示失败</returns>
+/// <returns>含 2 字节长度前缀的请求包总长度；0 表示失败，情形同 dns_request_pack</returns>
 size_t dns_request_pack_tcp(char *buf, const char *domain, int32_t ipv6, uint16_t *id);
 /// <summary>
 /// PACK_DNS 协议解包：按 2 字节大端长度切分 TCP 流，返回去除长度前缀后的 DNS 报文

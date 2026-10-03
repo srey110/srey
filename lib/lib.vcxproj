@@ -30,12 +30,17 @@
     <ClInclude Include="base\config.h" />
     <ClInclude Include="base\err.h" />
     <ClInclude Include="base\base.h" />
-    <ClInclude Include="base\macro.h" />
+    <ClInclude Include="base\bits.h" />
+    <ClInclude Include="base\bytes.h" />
     <ClInclude Include="base\macro_atomic.h" />
-    <ClInclude Include="base\macro_unix.h" />
-    <ClInclude Include="base\macro_win.h" />
+    <ClInclude Include="base\macro_log.h" />
+    <ClInclude Include="base\macro_util.h" />
     <ClInclude Include="base\memory.h" />
     <ClInclude Include="base\os.h" />
+    <ClInclude Include="base\os_unix.h" />
+    <ClInclude Include="base\os_win.h" />
+    <ClInclude Include="base\sbyteswap.h" />
+    <ClInclude Include="base\strconv.h" />
     <ClInclude Include="base\structs.h" />
     <ClInclude Include="containers\hashmap.h" />
     <ClInclude Include="containers\hashset.h" />
@@ -90,7 +95,6 @@
     <ClInclude Include="protocol\mqtt\mqtt_macro.h" />
     <ClInclude Include="protocol\mqtt\mqtt_pack.h" />
     <ClInclude Include="protocol\mqtt\mqtt_struct.h" />
-    <ClInclude Include="protocol\varint.h" />
     <ClInclude Include="protocol\mysql\mysql.h" />
     <ClInclude Include="protocol\mysql\mysql_bind.h" />
     <ClInclude Include="protocol\mysql\mysql_macro.h" />
@@ -111,17 +115,17 @@
     <ClInclude Include="protocol\redis.h" />
     <ClInclude Include="protocol\smtp\mail.h" />
     <ClInclude Include="protocol\smtp\smtp.h" />
-    <ClInclude Include="protocol\urlparse.h" />
     <ClInclude Include="protocol\websock.h" />
     <ClInclude Include="advance\router.h" />
     <ClInclude Include="advance\harbor.h" />
     <ClInclude Include="advance\debug_console.h" />
-    <ClInclude Include="srey\coro.h" />
+    <ClInclude Include="coro\coro.h" />
+    <ClInclude Include="coro\minicoro.h" />
+    <ClInclude Include="srey\coro_task.h" />
     <ClInclude Include="srey\coro_utils.h" />
     <ClInclude Include="srey\prots_wrap.h" />
     <ClInclude Include="srey\debug_request.h" />
     <ClInclude Include="srey\loader.h" />
-    <ClInclude Include="srey\minicoro.h" />
     <ClInclude Include="srey\spub.h" />
     <ClInclude Include="srey\task.h" />
     <ClInclude Include="thread\cond.h" />
@@ -149,6 +153,7 @@
     <ClInclude Include="utils\strptime.h" />
     <ClInclude Include="utils\timer.h" />
     <ClInclude Include="utils\tw.h" />
+    <ClInclude Include="utils\urlparse.h" />
     <ClInclude Include="utils\utils.h" />
     <ClInclude Include="utils\uuid.h" />
     <ClInclude Include="utils\contenttype.h" />
@@ -158,8 +163,12 @@
     <ClInclude Include="serial\yyjson\yyjson_helper.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="base\base.c" />
+    <ClCompile Include="base\bits.c" />
+    <ClCompile Include="base\bytes.c" />
     <ClCompile Include="base\memory.c" />
+    <ClCompile Include="base\os_win.c" />
+    <ClCompile Include="base\sbyteswap.c" />
+    <ClCompile Include="base\strconv.c" />
     <ClCompile Include="crypt\aes.c" />
     <ClCompile Include="crypt\base64.c" />
     <ClCompile Include="crypt\cipher.c" />
@@ -196,7 +205,6 @@
     <ClCompile Include="protocol\mongo\mongo_parse.c" />
     <ClCompile Include="protocol\mqtt\mqtt.c" />
     <ClCompile Include="protocol\mqtt\mqtt_pack.c" />
-    <ClCompile Include="protocol\varint.c" />
     <ClCompile Include="protocol\mqtt\mqtt_struct.c" />
     <ClCompile Include="protocol\mysql\mysql.c" />
     <ClCompile Include="protocol\mysql\mysql_bind.c" />
@@ -214,12 +222,12 @@
     <ClCompile Include="protocol\redis.c" />
     <ClCompile Include="protocol\smtp\mail.c" />
     <ClCompile Include="protocol\smtp\smtp.c" />
-    <ClCompile Include="protocol\urlparse.c" />
     <ClCompile Include="protocol\websock.c" />
     <ClCompile Include="advance\router.c" />
     <ClCompile Include="advance\harbor.c" />
     <ClCompile Include="advance\debug_console.c" />
-    <ClCompile Include="srey\coro.c" />
+    <ClCompile Include="coro\coro.c" />
+    <ClCompile Include="srey\coro_task.c" />
     <ClCompile Include="srey\coro_utils.c" />
     <ClCompile Include="srey\prots_wrap.c" />
     <ClCompile Include="srey\debug_request.c" />
@@ -244,6 +252,7 @@
     <ClCompile Include="utils\strptime.c" />
     <ClCompile Include="utils\timer.c" />
     <ClCompile Include="utils\tw.c" />
+    <ClCompile Include="utils\urlparse.c" />
     <ClCompile Include="utils\utils.c" />
     <ClCompile Include="utils\uuid.c" />
     <ClCompile Include="utils\contenttype.c" />

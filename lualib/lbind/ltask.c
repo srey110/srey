@@ -92,15 +92,16 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
     }
     return lua;
 }
-// 将脚本名称格式化为完整的 .lua 文件路径，存入 path
-static inline void _ltask_fmtfile(const char *file, char *path) {
+// 将脚本名称格式化为完整的 .lua 文件路径，存入 path；拼出来超过 PATH_LENS 会被截断，返回 ERR_FAILED
+static inline int32_t _ltask_fmtfile(const char *file, char *path) {
     ZERO(path, PATH_LENS);
-    SNPRINTF(path, PATH_LENS, "%s%s.lua", luapath, file);
+    int32_t n = SNPRINTF(path, PATH_LENS, "%s%s.lua", luapath, file);
+    return (n < 0 || n >= PATH_LENS) ? ERR_FAILED : ERR_OK;
 }
 // 搜索脚本文件：先按原名查找，再将 '.' 替换为路径分隔符后重试
 static int32_t _ltask_searchfile(const char *file, char *path) {
-    _ltask_fmtfile(file, path);
-    if (ERR_OK == isfile(path)) {
+    if (ERR_OK == _ltask_fmtfile(file, path)
+        && ERR_OK == isfile(path)) {
         return ERR_OK;
     }
     char tmp[PATH_LENS];
@@ -112,8 +113,8 @@ static int32_t _ltask_searchfile(const char *file, char *path) {
     for (size_t i = 0; i < lens; i++) {
         if ('.' == tmp[i]) {
             tmp[i] = PATH_SEPARATOR;
-            _ltask_fmtfile(tmp, path);
-            if (ERR_OK == isfile(path)) {
+            if (ERR_OK == _ltask_fmtfile(tmp, path)
+                && ERR_OK == isfile(path)) {
                 return ERR_OK;
             }
         }
@@ -266,7 +267,7 @@ static void _ltask_arg_free(void *arg) {
     }
     FREE(ltask);
 }
-// 消息对象的 __gc：payload 就是 message_ctx 本身，直接交给 _message_clean。
+// 消息对象的 __gc：payload 就是 message_ctx 本身，直接交给 message_clean。
 // 字段在 Lua 侧不可写（userdata 无 __newindex），故不存在改 mtype/data 换掉释放契约的问题
 static int32_t _msg_clean(lua_State *lua) {
     message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
@@ -276,7 +277,7 @@ static int32_t _msg_clean(lua_State *lua) {
     // shared 非 NULL 走广播 ref-- 分支；shared 为 NULL 时仅 data 非 NULL 才需清理
     if (NULL != ud->shared
         || NULL != ud->data) {
-        _message_clean(ud);
+        message_clean(ud);
     }
     return 0;
 }
@@ -419,7 +420,7 @@ static inline void _ltask_msg_mt(lua_State *lua, ltask_ctx *ltask, int32_t withg
 static inline void _ltask_push_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
     message_ctx *ud = (message_ctx *)lua_newuserdatauv(lua, sizeof(message_ctx), 0);
     *ud = *msg;
-    _ltask_msg_mt(lua, ltask, ERR_OK == _message_should_clean(msg));
+    _ltask_msg_mt(lua, ltask, ERR_OK == message_should_clean(msg));
     lua_setmetatable(lua, -2);
 }
 // task 消息分发回调：从注册表取消息分发函数，打包消息后调用 Lua

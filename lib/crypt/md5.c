@@ -2,23 +2,18 @@
 #include "crypt/crypt_pub.h"
 
 #define ROTLEFT(a,b) (((a) << (b)) | ((a) >> (32-(b))))
-#if defined(__GNUC__) || defined(__clang__)
-#define MD5_OPAQUE(v) __asm__("" : "+r"(v))
-#else
-#define MD5_OPAQUE(v) (void)0
-#endif
 #define F(x,y,z) ((x & y) | (~x & z))
 #define H(x,y,z) (x ^ y ^ z)
 #define I(x,y,z) (y ^ (x | ~z))
 // 每步先加与本步新值无关的项，最后才加依赖 b 的那项
-#define FF(a,b,c,d,m,s,t) { a += (m) + (t); MD5_OPAQUE(a); a += F(b,c,d); \
+#define FF(a,b,c,d,m,s,t) { a += (m) + (t); CRYPT_OPAQUE(a); a += F(b,c,d); \
                             a = b + ROTLEFT(a,s); }
 // G = (b & d) | (c & ~d)，两半不相交，按加法拆开结果不变
-#define GG(a,b,c,d,m,s,t) { a += (m) + (t) + ((c) & ~(d)); MD5_OPAQUE(a); a += (b) & (d); \
+#define GG(a,b,c,d,m,s,t) { a += (m) + (t) + ((c) & ~(d)); CRYPT_OPAQUE(a); a += (b) & (d); \
                             a = b + ROTLEFT(a,s); }
-#define HH(a,b,c,d,m,s,t) { a += (m) + (t); MD5_OPAQUE(a); a += H(b,c,d); \
+#define HH(a,b,c,d,m,s,t) { a += (m) + (t); CRYPT_OPAQUE(a); a += H(b,c,d); \
                             a = b + ROTLEFT(a,s); }
-#define II(a,b,c,d,m,s,t) { a += (m) + (t); MD5_OPAQUE(a); a += I(b,c,d); \
+#define II(a,b,c,d,m,s,t) { a += (m) + (t); CRYPT_OPAQUE(a); a += I(b,c,d); \
                             a = b + ROTLEFT(a,s); }
 
 // MD5 核心变换：依次压缩 nblk 个 64 字节块并更新状态
@@ -26,7 +21,7 @@ static void _md5_transform(md5_ctx *md5, const uint8_t *data, size_t nblk) {
     uint32_t a, b, c, d, m[16], i;
     for (; nblk > 0; --nblk, data += 64) {
         for (i = 0; i < 16; ++i) {
-            m[i] = _crypt_read32le(data + i * 4);
+            m[i] = read_le32(data + i * 4);
         }
         a = md5->state[0];
         b = md5->state[1];
@@ -148,11 +143,11 @@ void md5_final(md5_ctx *md5, char hash[MD5_BLOCK_SIZE]) {
     }
     memset(md5->data + i, 0, 56 - i);
     md5->bitlen += md5->datalen * 8;
-    _crypt_write32le(md5->data + 56, (uint32_t)md5->bitlen);
-    _crypt_write32le(md5->data + 60, (uint32_t)(md5->bitlen >> 32));
+    write_le32(md5->data + 56, (uint32_t)md5->bitlen);
+    write_le32(md5->data + 60, (uint32_t)(md5->bitlen >> 32));
     _md5_transform(md5, md5->data, 1);
     for (i = 0; i < 4; ++i) {
-        _crypt_write32le((uint8_t *)hash + i * 4, md5->state[i]);
+        write_le32((uint8_t *)hash + i * 4, md5->state[i]);
     }
     secure_zero(md5, sizeof(md5_ctx));
 }

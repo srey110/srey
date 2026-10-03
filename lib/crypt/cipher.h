@@ -36,6 +36,7 @@ typedef struct cipher_ctx {
         des_ctx des;
     }eng_ctx;                           // 引擎上下文联合体
 }cipher_ctx;
+
 /// <summary>
 /// 加解密初始化
 /// </summary>

@@ -1,7 +1,7 @@
 ﻿#ifndef RWLOCK_H_
 #define RWLOCK_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef struct rwlock_ctx {
 #if defined(OS_WIN)
@@ -11,6 +11,7 @@ typedef struct rwlock_ctx {
     pthread_rwlock_t rwlock;
 #endif
 }rwlock_ctx;
+
 /// <summary>
 /// 读写锁初始化
 /// </summary>

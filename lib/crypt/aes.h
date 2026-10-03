@@ -1,7 +1,7 @@
 ﻿#ifndef AES_H_
 #define AES_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define AES_BLOCK_SIZE 16 // AES 分组大小（字节）
 typedef struct aes_ctx {
@@ -10,6 +10,7 @@ typedef struct aes_ctx {
     uint8_t output[AES_BLOCK_SIZE];     // 加解密结果缓冲区
     uint32_t schedule[256 / 8 + 28];   // 轮密钥调度表
 }aes_ctx;
+
 /// <summary>
 /// aes 初始化
 /// </summary>

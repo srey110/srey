@@ -1,5 +1,5 @@
 ﻿#include "protocol/mqtt/mqtt_pack.h"
-#include "protocol/varint.h"
+#include "protocol/prots_pub.h"
 
 // 长度前缀字符串字段：2 字节大端长度 + 体（lens==0 仅写长度）
 static inline void _mqtt_pack_lenstr(binary_ctx *bw, const void *buf, size_t lens) {
@@ -155,7 +155,8 @@ static inline int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *
     return occupy;
 }
 // 所有 mqtt_pack_* 共用的前导：编码剩余长度、开缓冲、写固定报头与剩余长度。
-// 缓冲大小算式 1 + roccupy + total 只此一处，写错就是欠分配。
+// 缓冲大小算式 1 + roccupy + total 只此一处，写错就是欠分配；写入量恰好是这么多、从不扩容，
+// 故 inc 取 16，容量只按 16 取整(默认的 256 会让确认包这类小包也占 256 字节)。
 // 返回 ERR_FAILED 表示 total 超出剩余长度的 4 字节变长上限，此时 bw 未初始化
 static inline int32_t _mqtt_pack_begin(binary_ctx *bw, int8_t fixhead, uint32_t total) {
     char rmain[4];
@@ -163,7 +164,7 @@ static inline int32_t _mqtt_pack_begin(binary_ctx *bw, int8_t fixhead, uint32_t 
     if (0 == roccupy) {
         return ERR_FAILED;
     }
-    binary_init_write(bw, 1 + roccupy + total, 0);
+    binary_init_write(bw, 1 + roccupy + total, 16);
     binary_set_int8(bw, fixhead);//固定报头
     binary_set_binary(bw, rmain, roccupy);//剩余长度
     return ERR_OK;

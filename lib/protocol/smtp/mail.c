@@ -5,7 +5,6 @@
 #include "utils/binary.h"
 
 #define MIME_CHARSET "utf-8"
-#define MIME_B64_LINE 76 // RFC 2045 §6.8：base64 每行不超过 76 字符
 #define MIME_B64_RAW 57 // 编成 base64 恰好 76 字符的原文字节数（76/4*3），即一行的原文用量
 #define MIME_BOUND_RAND 16 // boundary 的随机字节数，转 hex 后即 boundary 主体
 #define MIME_BOUND_LENS (HEX_ENSIZE(MIME_BOUND_RAND) + 8) // hex 主体 + "srey_" 前缀 + 余量
@@ -15,6 +14,7 @@
 // 头字段裸写 ASCII 的长度上限。RFC 5322 §2.1.1 限一行 998 octet，减去字段名与余量；
 // 超过就改走 encoded-word，那条路按 MIME_EW_RAW 切段且自带折行
 #define MIME_HDR_RAW_MAX 900
+#define MAIL_LIT(s) s, sizeof(s) - 1 // 字面量展开成 binary_set_binary 的 (数据, 长度) 两个实参
 
 void mail_init(mail_ctx *mail) {
     ZERO(mail, sizeof(mail_ctx));
@@ -86,9 +86,8 @@ void mail_msg(mail_ctx *mail, const char *msg) {
 }
 void mail_html(mail_ctx *mail, const char *html, size_t lens) {
     FREE(mail->html);
-    size_t b64lens = B64EN_SIZE(lens);
-    MALLOC(mail->html, b64lens);
-    bs64_encode(html, lens, mail->html);
+    mail->html = dup_zero(html, lens);
+    mail->hlens = lens;
 }
 // 填充 mail_addr 结构：设置显示名称和邮箱地址，name 为 NULL 或空时清空 name 字段
 static inline void _mail_addr(mail_addr *addr, const char *name, const char *email) {
@@ -126,10 +125,8 @@ void mail_attach_add(mail_ctx *mail, const char *file) {
         LOG_WARN("mail attach extension exceeds %zu bytes, treated as none: %s.", sizeof(att.extension) - 1, att.file);
         att.extension[0] = '\0';
     }
-    size_t b64lens = B64EN_SIZE(flens);
-    MALLOC(att.content, b64lens);
-    bs64_encode(info, flens, att.content);
-    FREE(info);
+    att.content = info;
+    att.lens = flens;
     mattach_arr_push_back(&mail->attach, &att);
 }
 void mail_attach_clear(mail_ctx *mail) {
@@ -143,14 +140,19 @@ void mail_clear(mail_ctx *mail) {
     if (NULL != mail->msg) {
         mail->msg[0] = '\0';
     }
-    if (NULL != mail->html) {
-        mail->html[0] = '\0';
-    }
+    mail->hlens = 0;
     mail->from.name[0] = '\0';
     mail->from.addr[0] = '\0';
     mail->reply = 1;
     mail_addrs_clear(mail);
     mail_attach_clear(mail);
+}
+// 依次写 前缀 + s + 后缀；前后缀配 MAIL_LIT 传，s 须非 NULL
+static inline void _mail_set_wrap(binary_ctx *bw, const char *pre, size_t plens,
+                                  const char *s, const char *post, size_t tlens) {
+    binary_set_binary(bw, pre, plens);
+    binary_set_binary(bw, s, strlen(s));
+    binary_set_binary(bw, post, tlens);
 }
 // 统计指定类型（TO/CC/BCC）的地址数量
 static uint32_t _mail_addr_count(mail_ctx *mail, mail_addr_type type) {
@@ -187,9 +189,9 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
         }
         index++;
         if (count > 1 && index < count) {
-            binary_set_va(bwriter, "%s,\r\n ", addr->addr);// 逗号后需要加空格
+            _mail_set_wrap(bwriter, MAIL_LIT(""), addr->addr, MAIL_LIT(",\r\n "));// 逗号后需要加空格
         } else {
-            binary_set_va(bwriter, "%s\r\n", addr->addr);
+            _mail_set_wrap(bwriter, MAIL_LIT(""), addr->addr, MAIL_LIT("\r\n"));
         }
         if (index >= count) {
             break;
@@ -243,8 +245,9 @@ static void _mail_set_header_text(binary_ctx *bw, const char *s) {
             && 0x80 == (0xC0 & (unsigned char)s[off + n])) {
             n--;
         }
-        bs64_encode(s + off, n, b64);
-        binary_set_va(bw, "=?" MIME_CHARSET "?B?%s?=", b64);
+        binary_set_binary(bw, MAIL_LIT("=?" MIME_CHARSET "?B?"));
+        binary_set_binary(bw, b64, bs64_encode(s + off, n, b64));
+        binary_set_binary(bw, MAIL_LIT("?="));
         off += n;
         if (off < lens) {
             binary_set_binary(bw, "\r\n ", 3);
@@ -258,14 +261,16 @@ static void _mail_set_header_text(binary_ctx *bw, const char *s) {
 static void _mail_set_header_param(binary_ctx *bw, const char *key, const char *val) {
     size_t lens = strlen(val);
     if (!_mail_has_nonascii(val, lens)
-        && NULL == strpbrk(val, "\"\\")) {
-        binary_set_va(bw, "%s=\"%s\"", key, val);
+        && lens == memcspn(val, lens, "\"\\", 2)) {
+        _mail_set_wrap(bw, MAIL_LIT(""), key, MAIL_LIT("=\""));
+        binary_set_binary(bw, val, lens);
+        binary_set_binary(bw, MAIL_LIT("\""));
         return;
     }
     static const char hexchars[] = "0123456789ABCDEF";
     unsigned char c;
     char pct[3];
-    binary_set_va(bw, "%s*=" MIME_CHARSET "''", key);
+    _mail_set_wrap(bw, MAIL_LIT(""), key, MAIL_LIT("*=" MIME_CHARSET "''"));
     for (size_t i = 0; i < lens; i++) {
         c = (unsigned char)val[i];
         if ((c >= 'A' && c <= 'Z')
@@ -295,12 +300,7 @@ static void _mail_set_display_name(binary_ctx *bw, const char *name) {
         return;
     }
     size_t i;
-    for (i = 0; i < lens; i++) {
-        if (NULL != strchr("()<>[]:;@\\,.\"", name[i])) {
-            break;
-        }
-    }
-    if (i == lens) {
+    if (lens == memcspn(name, lens, MAIL_LIT("()<>[]:;@\\,.\""))) {
         binary_set_binary(bw, name, lens);
         return;
     }
@@ -315,52 +315,44 @@ static void _mail_set_display_name(binary_ctx *bw, const char *name) {
     }
     binary_set_binary(bw, "\"", 1);
 }
-// 按 RFC 2045 §6.8 折行写出 base64 正文（每 MIME_B64_LINE 字符插 CRLF，末行不补）。
-// bs64_encode 不插换行，直接整段写出会让 DATA 单行远超 RFC 5321 §4.5.3.1.6 的 1000 octet 上限
-static void _mail_set_b64(binary_ctx *bw, const char *b64) {
-    size_t lens = strlen(b64);
-    size_t off = 0;
-    size_t n;
-    while (off < lens) {
-        n = (lens - off > MIME_B64_LINE) ? MIME_B64_LINE : (lens - off);
-        binary_set_binary(bw, b64 + off, n);
-        off += n;
-        if (off < lens) {
-            binary_set_binary(bw, FLAG_CRLF, CRLF_SIZE);
-        }
-    }
-}
-// 纯文本正文按 base64 写出，一次一行边编边写：57 字节原文正好编成 76 个 base64 字符（RFC 2045
-// §6.8 的行宽），故按 57 切块天然落在折行位置，栈上一个小缓冲够用。
+// 正文 / html / 附件按 base64 写出：57 字节原文正好编成 76 个 base64 字符（RFC 2045 §6.8 的行宽），
+// 故按 57 切块天然落在折行位置（末行不补 CRLF）。整段输出长度先算好一次预留，逐行直接编进 bw，
+// 每行编码器补的 NUL 被随后的 CRLF 盖掉，末行那个落在预留区外的结尾余量里。
 // 不能 8bit 原样写有两条硬理由：RFC 5321 §4.5.3.1.6 限单行含 CRLF 不超 1000 octet，长正文会被
 // 拒收或强行折行；纯文本单段分支不写 Content-Type，缺省即 us-ascii，UTF-8 正文必乱码。
 // 顺带 dot-stuffing（RFC 5321 §4.5.2）也不需要了：base64 行首出不了 '.'
-static void _mail_set_text_b64(binary_ctx *bw, const char *msg) {
-    size_t lens = strlen(msg);
-    char line[B64EN_SIZE(MIME_B64_RAW)];
+static void _mail_set_b64(binary_ctx *bw, const char *msg, size_t lens) {
     size_t off = 0;
-    size_t n;
+    size_t n, start;
+    char *p;
+    if (0 == lens) {
+        return;
+    }
+    start = bw->offset;
+    binary_set_skip(bw, (lens + 2) / 3 * 4 + (lens - 1) / MIME_B64_RAW * CRLF_SIZE);
+    p = bw->data + start;
     while (off < lens) {
         n = (lens - off > MIME_B64_RAW) ? MIME_B64_RAW : (lens - off);
-        binary_set_binary(bw, line, bs64_encode(msg + off, n, line));
+        p += bs64_encode(msg + off, n, p);
         off += n;
         if (off < lens) {
-            binary_set_binary(bw, FLAG_CRLF, CRLF_SIZE);
+            memcpy(p, FLAG_CRLF, CRLF_SIZE);
+            p += CRLF_SIZE;
         }
     }
 }
 // 把"段头 + 可选正文"写出来。text/plain 段在三条路径上出现（多段无 html、多段有 html 的
 // alternative 内层、单段），三份逐字相同
 static inline void _mail_set_text_part(binary_ctx *bw, const char *msg) {
-    binary_set_va(bw, "%s", "Content-Type: text/plain; charset=" MIME_CHARSET
-        "\r\nContent-Transfer-Encoding: base64\r\n\r\n");
+    binary_set_binary(bw, MAIL_LIT("Content-Type: text/plain; charset=" MIME_CHARSET
+        "\r\nContent-Transfer-Encoding: base64\r\n\r\n"));
     if (!EMPTYSTR(msg)) {
-        _mail_set_text_b64(bw, msg);
+        _mail_set_b64(bw, msg, strlen(msg));
     }
 }
 char *mail_pack(mail_ctx *mail) {
     uint32_t nattach = mattach_arr_size(&mail->attach);
-    int32_t multipart = (!EMPTYSTR(mail->html) || nattach > 0) ? 1 : 0;
+    int32_t multipart = (0 != mail->hlens || nattach > 0) ? 1 : 0;
     // 用不到的分支不生成：innerboundary 只有 multipart/alternative(即有 html)才用得上，
     // 而 csprng_rand 在 Linux 上是裸 getrandom，熵池未就绪时会阻塞。
     // 仍显式清零：两处使用都在 if 里，编译器未必能关联到那一点
@@ -368,7 +360,7 @@ char *mail_pack(mail_ctx *mail) {
     char innerboundary[MIME_BOUND_LENS] = { 0 };
     if (multipart) {
         if (ERR_OK != _mail_gen_boundary(boundary, sizeof(boundary))
-            || (!EMPTYSTR(mail->html)
+            || (0 != mail->hlens
                 && ERR_OK != _mail_gen_boundary(innerboundary, sizeof(innerboundary)))) {
             LOG_ERROR("%s", "mail_pack: cannot get entropy for MIME boundary.");
             return NULL;
@@ -380,14 +372,14 @@ char *mail_pack(mail_ctx *mail) {
     binary_set_binary(&bwriter, "From: ", 6);
     if (0 != strlen(mail->from.name)) {
         _mail_set_display_name(&bwriter, mail->from.name);
-        binary_set_va(&bwriter, " <%s>\r\n", mail->from.addr);
+        _mail_set_wrap(&bwriter, MAIL_LIT(" <"), mail->from.addr, MAIL_LIT(">\r\n"));
     } else {
-        binary_set_va(&bwriter, "%s\r\n", mail->from.addr);
+        _mail_set_wrap(&bwriter, MAIL_LIT(""), mail->from.addr, MAIL_LIT("\r\n"));
     }
     if (mail->reply) {
-        binary_set_va(&bwriter, "Reply-To: %s\r\n", mail->from.addr);
+        _mail_set_wrap(&bwriter, MAIL_LIT("Reply-To: "), mail->from.addr, MAIL_LIT("\r\n"));
     } else {
-        binary_set_va(&bwriter, "No-Reply: %s\r\n", mail->from.addr);
+        _mail_set_wrap(&bwriter, MAIL_LIT("No-Reply: "), mail->from.addr, MAIL_LIT("\r\n"));
     }
     _mail_pack_addr(mail, &bwriter, TO);
     _mail_pack_addr(mail, &bwriter, CC);
@@ -395,15 +387,16 @@ char *mail_pack(mail_ctx *mail) {
     // MIME 头无论单段多段都要写：只有多段时才写的话，最常见的"纯文本一封信"整封没有
     // Content-Type，按 RFC 2045 缺省成 us-ascii，UTF-8 正文到严格客户端上就是乱码
     if (multipart) {
-        binary_set_va(&bwriter, "MIME-Version: 1.0\r\nContent-Type: multipart/mixed;\r\n\tboundary=\"%s\"\r\n", boundary);
+        _mail_set_wrap(&bwriter, MAIL_LIT("MIME-Version: 1.0\r\nContent-Type: multipart/mixed;\r\n\tboundary=\""),
+                       boundary, MAIL_LIT("\"\r\n"));
     } else {
-        binary_set_va(&bwriter, "%s", "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=" MIME_CHARSET
-            "\r\nContent-Transfer-Encoding: base64\r\n");
+        binary_set_binary(&bwriter, MAIL_LIT("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=" MIME_CHARSET
+            "\r\nContent-Transfer-Encoding: base64\r\n"));
     }
     char date[TIME_LENS] = { 0 };
     // sectostr 失败时跳过 Date header（RFC 5322 §3.6.1 推荐但不强制），不写空行避免协议歧义
     if (ERR_OK == sectostr(nowsec(), "Date: %d %b %y %H:%M:%S %z", date)) {
-        binary_set_va(&bwriter, "%s\r\n", date);
+        _mail_set_wrap(&bwriter, MAIL_LIT(""), date, MAIL_LIT("\r\n"));
     }
     binary_set_binary(&bwriter, "Subject: ", 9);
     if (!EMPTYSTR(mail->subject)) {
@@ -412,49 +405,49 @@ char *mail_pack(mail_ctx *mail) {
     // 空行终止头部
     binary_set_binary(&bwriter, CONCAT2(FLAG_CRLF, FLAG_CRLF), CRLF_SIZE * 2);
     if (multipart) {
-        binary_set_va(&bwriter, "This is a MIME encapsulated message\r\n\r\n--%s\r\n", boundary);
-        if (EMPTYSTR(mail->html)) {
+        _mail_set_wrap(&bwriter, MAIL_LIT("This is a MIME encapsulated message\r\n\r\n--"), boundary, MAIL_LIT("\r\n"));
+        if (0 == mail->hlens) {
             _mail_set_text_part(&bwriter, mail->msg);
-            binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", boundary);
+            _mail_set_wrap(&bwriter, MAIL_LIT("\r\n\r\n--"), boundary, MAIL_LIT("\r\n"));
         } else {
             // 含 html 内容，使用 multipart/alternative
-            binary_set_va(&bwriter, "Content-Type: multipart/alternative;\r\n\tboundary=\"%s\"\r\n", innerboundary);
+            _mail_set_wrap(&bwriter, MAIL_LIT("Content-Type: multipart/alternative;\r\n\tboundary=\""),
+                           innerboundary, MAIL_LIT("\"\r\n"));
             // 写内层 boundary 起始标记
-            binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", innerboundary);
+            _mail_set_wrap(&bwriter, MAIL_LIT("\r\n\r\n--"), innerboundary, MAIL_LIT("\r\n"));
             _mail_set_text_part(&bwriter, mail->msg);
-            binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", innerboundary);
+            _mail_set_wrap(&bwriter, MAIL_LIT("\r\n\r\n--"), innerboundary, MAIL_LIT("\r\n"));
             // 写入 html 内容
-            binary_set_va(&bwriter, "%s", "Content-Type: text/html; charset=" MIME_CHARSET "\r\nContent-Transfer-Encoding: base64\r\n\r\n");
-            _mail_set_b64(&bwriter, mail->html);
-            binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", innerboundary);
+            binary_set_binary(&bwriter, MAIL_LIT("Content-Type: text/html; charset=" MIME_CHARSET "\r\nContent-Transfer-Encoding: base64\r\n\r\n"));
+            _mail_set_b64(&bwriter, mail->html, mail->hlens);
+            _mail_set_wrap(&bwriter, MAIL_LIT("\r\n\r\n--"), innerboundary, MAIL_LIT("--\r\n"));
             // 无附件时直接结束边界
             if (0 == nattach) {
-                binary_set_va(&bwriter, "\r\n--%s--\r\n", boundary);
+                _mail_set_wrap(&bwriter, MAIL_LIT("\r\n--"), boundary, MAIL_LIT("--\r\n"));
             } else {
-                binary_set_va(&bwriter, "\r\n--%s\r\n", boundary);
+                _mail_set_wrap(&bwriter, MAIL_LIT("\r\n--"), boundary, MAIL_LIT("\r\n"));
             }
         }
         mail_attach *att;
         for (uint32_t i = 0; i < nattach; i++) {
             att = mattach_arr_at(&mail->attach, (int32_t)i);
-            binary_set_va(&bwriter, "Content-Type: %s;\r\n", contenttype(att->extension));
+            _mail_set_wrap(&bwriter, MAIL_LIT("Content-Type: "), contenttype(att->extension), MAIL_LIT(";\r\n"));
             binary_set_binary(&bwriter, "\t", 1);
             _mail_set_header_param(&bwriter, "name", att->file);
             binary_set_binary(&bwriter, FLAG_CRLF, CRLF_SIZE);
-            binary_set_va(&bwriter, "%s", "Content-Transfer-Encoding: base64\r\n");
-            binary_set_va(&bwriter, "%s", "Content-Disposition: attachment; ");
+            binary_set_binary(&bwriter, MAIL_LIT("Content-Transfer-Encoding: base64\r\nContent-Disposition: attachment; "));
             _mail_set_header_param(&bwriter, "filename", att->file);
             binary_set_binary(&bwriter, CONCAT2(FLAG_CRLF, FLAG_CRLF), CRLF_SIZE * 2);
-            _mail_set_b64(&bwriter, att->content);
+            _mail_set_b64(&bwriter, att->content, att->lens);
             if (i + 1 == nattach) {
-                binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", boundary);
+                _mail_set_wrap(&bwriter, MAIL_LIT("\r\n\r\n--"), boundary, MAIL_LIT("--\r\n"));
             } else {
-                binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", boundary);
+                _mail_set_wrap(&bwriter, MAIL_LIT("\r\n\r\n--"), boundary, MAIL_LIT("\r\n"));
             }
         }
     } else if (!EMPTYSTR(mail->msg)) {
         // 单段：段头已在上面的 MIME 头里写过，这里只写正文
-        _mail_set_text_b64(&bwriter, mail->msg);
+        _mail_set_b64(&bwriter, mail->msg, strlen(mail->msg));
     }
     binary_set_binary(&bwriter, "\r\n.\r\n", 5);
     // 调用方 coro_utils.c / lprot.c 以 strlen() 计算长度；显式追加 NUL 终结避免读未初始化内存 UB

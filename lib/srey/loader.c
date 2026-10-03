@@ -1,7 +1,7 @@
 ﻿#include "srey/loader.h"
 #include "containers/hashmap.h"
 #include "srey/task.h"
-#include "srey/coro.h"
+#include "coro/coro.h"
 #include "utils/utils.h"
 #include "utils/timer.h"
 

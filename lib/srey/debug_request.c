@@ -1,5 +1,5 @@
 ﻿#include "srey/debug_request.h"
-#include "srey/coro.h"
+#include "srey/coro_task.h"
 #include "serial/seri.h"
 #include "utils/binary.h"
 #include "utils/log.h"
@@ -10,34 +10,6 @@
 // 字面量命令比较：同上，免命令名与手数长度分离双写，改名漏改长度即静默失配
 #define _debug_cmd_eq_lit(item, lit) \
     _debug_cmd_eq((item), (lit), sizeof(lit) - 1)
-// stat 输出用的 mtype 名字表。用指定初始化器逐项落位而不是按顺序排:
-// msg_type 里新增一项时这里漏补, 那一格是 NULL, 喂给 %s 就是 UB —— 取值一律走 _message_str
-static const char *_mtype_names[MSG_TYPE_ALL] = {
-    [MSG_TYPE_NONE] = "NONE",
-    [MSG_TYPE_STARTUP] = "STARTUP",
-    [MSG_TYPE_CLOSING] = "CLOSING",
-    [MSG_TYPE_TIMEOUT] = "TIMEOUT",
-    [MSG_TYPE_ACCEPT] = "ACCEPT",
-    [MSG_TYPE_CONNECT] = "CONNECT",
-    [MSG_TYPE_SSLEXCHANGED] = "SSLEXCHANGED",
-    [MSG_TYPE_HANDSHAKED] = "HANDSHAKED",
-    [MSG_TYPE_RECV] = "RECV",
-    [MSG_TYPE_SEND] = "SEND",
-    [MSG_TYPE_CLOSE] = "CLOSE",
-    [MSG_TYPE_RECVFROM] = "RECVFROM",
-    [MSG_TYPE_REQUEST] = "REQUEST",
-    [MSG_TYPE_RESPONSE] = "RESPONSE",
-    [MSG_TYPE_FORK] = "FORK"
-};
-
-const char *_message_str(msg_type type) {
-    if (type >= MSG_TYPE_NONE
-        && type < MSG_TYPE_ALL
-        && NULL != _mtype_names[type]) {
-        return _mtype_names[type];
-    }
-    return "";
-}
 // 比较 seri string item 与字面命令名；seri string 零拷贝、非 NUL 结尾，须按 len 比较
 static int32_t _debug_cmd_eq(const seri_item *item, const char *name, size_t nlen) {
     return nlen == item->v.s.len && 0 == memcmp(item->v.s.p, name, nlen);
@@ -68,7 +40,7 @@ static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {
             continue;
         }
         binary_set_va(&bw, "%-14s %12" PRIu64 " %18" PRIu64 " %14" PRIu64 "\n",
-            _message_str((msg_type)i), nmsg[i], cpu[i], cpu[i] / nmsg[i]);
+            message_str((msg_type)i), nmsg[i], cpu[i], cpu[i] / nmsg[i]);
         tnmsg += nmsg[i];
         tcpu += cpu[i];
     }
@@ -94,9 +66,10 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
         return ERR_OK;
     }
     if (_debug_cmd_eq_lit(&cmd, "coros")) {
-        // coro_dump 返回挂起协程文本(C 协程无栈回溯,仅 sess/mtype/age);非协程 task 返 NULL
+        // coro_dump 返回挂起协程文本(C 协程无栈回溯,仅 sess/mtype/age);非协程 task 没有调度器
         size_t dlen = 0;
-        char *dump = coro_dump(task, &dlen);
+        coro_ctx *co = coro_task_co(task);
+        char *dump = NULL == co ? NULL : coro_dump(co, &dlen);
         if (NULL != dump) {
             _debug_resp(task, msg->src, msg->sess, dump, dlen);
             FREE(dump);

@@ -1,7 +1,7 @@
 ﻿#ifndef MD4_H_
 #define MD4_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 #define MD4_BLOCK_SIZE 16 // MD4 摘要输出长度（字节）
 #define MD4_KEY_BLOCK 64 // MD4 压缩分组长度 B（HMAC 的 ipad/opad 长度）

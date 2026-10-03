@@ -1,7 +1,7 @@
 ﻿#ifndef RBTREE_H_
 #define RBTREE_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 红黑树（侵入式）。rbt_node 嵌入元素，树不分配内存，元素地址即句柄。
 // 上层是 RBT_DECL 生成的带类型树，一般只用它；

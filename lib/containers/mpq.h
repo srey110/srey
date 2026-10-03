@@ -1,7 +1,7 @@
 ﻿#ifndef MPQ_H_
 #define MPQ_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 // 无锁多生产者有界队列(Vyukov 序列号算法)。元素类型编译期固化，故搬运是结构体赋值。
 // 生产者侧固定多线程 CAS 抢 enq；消费者侧由调用方约定：

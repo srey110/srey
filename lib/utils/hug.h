@@ -1,7 +1,7 @@
 ﻿#ifndef HUG_H_
 #define HUG_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 #ifdef OS_WIN
 #include "thread/mutex.h"
 #include "thread/cond.h"

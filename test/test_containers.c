@@ -3824,7 +3824,7 @@ static void test_rbtree_unique(CuTest *tc) {
     _rbe clash, snap;
     _rbi t;
     _rbk tk;
-    rbt_insert_pos pos;
+    rbt_insert_pos pos = { 0 };
     uint32_t i;
     _rbi_init(&t);
     for (i = 0; i < 64; i++) {

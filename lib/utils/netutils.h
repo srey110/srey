@@ -1,7 +1,7 @@
 ﻿#ifndef NETUTILS_H_
 #define NETUTILS_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 /// <summary>
 /// 初始化 socket 环境（Windows 下调用 WSAStartup）

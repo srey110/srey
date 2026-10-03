@@ -10,6 +10,7 @@
 // 须与 ikcp.c 的 IKCP_MTU_DEF / IKCP_WND_RCV 一致(ikcp.h 未导出这两个常量)
 #define KCP_MTU_DEF 1400
 #define KCP_WND_RCV 128
+#define KCP_DROP_WARN_MS 1000 // 丢包告警间隔:期间的丢弃只计数,到点合成一条
 
 typedef struct kcp_element {
     uint8_t warned;
@@ -17,7 +18,7 @@ typedef struct kcp_element {
     uint32_t hidx;       // 在 heap_due 中的下标,由堆维护
 #endif
     uint32_t conv;
-    IUINT32 next_update; // 下次应调用 ikcp_update 的时刻(ms),由 ikcp_check 算出;<=now 才真正 update
+    IUINT32 next_update; // 下次应调用 ikcp_update 的时刻(ms),由 _kcp_next_update 算出;<=now 才真正 update
     struct watcher_ctx *watcher; // 所属 event 线程,_kcp_start 时赋值,_kcp_output 用于取 evsk
     ikcpcb *ikcp;
     name_t handle;
@@ -32,7 +33,7 @@ HEAP_DECL(kcp_heap, kcp_element, hidx, _KCP_DUE_LT)
 #else
 typedef struct kcp_tick_arg {
     IUINT32  now;   // 本轮驱动时刻
-    uint32_t next;  // 所有会话中距下次 ikcp_check 最近的间隔(ms)
+    uint32_t next;  // 所有会话中距下次 update 最近的间隔(ms)
 }kcp_tick_arg;
 #endif
 // kcp_send 发送缓冲：copy=1 时 payload 内联在同一块分配里(1 次 MALLOC，data 指回 payload)；
@@ -55,9 +56,11 @@ HASHMAP_DECL(kcp_map, kcp_element *, _KCP_MAP_HASH, _KCP_MAP_CMP)
 typedef struct kcp_ud_ctx {
     int32_t in_tick;             // 正在 _kcp_tick_update 迭代中:期间 _kcp_udfree 只置 closing 延后,不真正释放
     int32_t closing;             // tick 内被请求关闭的延后标记;tick 循环结束后才真正释放
+    uint32_t ndrop;              // 距上次丢包告警累计丢弃的包数
     ud_cxt *ud;                  // 反指所属 ud(延后释放时取用);ud->context == 本 ctx
-    struct watcher_ctx *watcher; // 所属 event 线程(注销 tick 用)
+    struct watcher_ctx *watcher; // 所属 event 线程(注销 tick、取时钟用)
     kcp_map *mapkcp;             // conv -> kcp_element 会话表
+    uint64_t warn_ms;            // 上次丢包告警的时刻
 #if KCP_TICK_HEAP
     kcp_heap heap_due;           // 按 next_update 排序的最小堆,tick 早退用
 #endif
@@ -152,6 +155,17 @@ void _kcp_udfree(ud_cxt *ud) {
     FREE(ctx);
     ud->context = NULL;
 }
+// conv 查不到/源地址不符的包每 KCP_DROP_WARN_MS 至多告警一条,带上期间累计的丢弃数
+static void _kcp_drop_warn(kcp_ud_ctx *ctx, uint32_t conv, const char *why) {
+    uint64_t now = timer_cur_ms(_evpub_watcher_timer(ctx->watcher));
+    ctx->ndrop++;
+    if (now - ctx->warn_ms < KCP_DROP_WARN_MS) {
+        return;
+    }
+    LOG_WARN("kcp conv %u %s, %u packets dropped since last warning.", conv, why, ctx->ndrop);
+    ctx->ndrop = 0;
+    ctx->warn_ms = now;
+}
 void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     (void)ev;
     if (size < KCP_MIN_OVERHEAD
@@ -162,13 +176,13 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
     uint32_t conv = ikcp_getconv(buf);
     kcp_element *kel = _kcp_map_get(ctx, conv);
     if (NULL == kel) {
-        LOG_WARN("kcp get conv %u error.", conv);
+        _kcp_drop_warn(ctx, conv, "not found");
         return;
     }
     // 源地址校验:防 off-path 猜中 conv 后伪造源地址注入;仅严格绑定建会话时的对端地址(kcp_start 指定),
     // 未处理地址正常变化(NAT 重绑定/客户端漫游),如需地址迁移须另行设计
     if (ERR_OK != netaddr_compare(addr, &kel->addr)) {
-        LOG_WARN("kcp conv %u source addr mismatch, drop.", conv);
+        _kcp_drop_warn(ctx, conv, "source addr mismatch");
         return;
     }
     ikcp_input(kel->ikcp, buf, (long)size);
@@ -269,6 +283,21 @@ static void _kcp_element_free(void *arg) {
     }
     FREE(kel);
 }
+// 下次该调 ikcp_update 的时刻。ikcp_update 只在到了 ts_flush 才 flush(重传也只在 flush 里判)，故直接按 ts_flush 算；
+// 不用 ikcp_check：它把"重传时刻已过、ts_flush 未到"算成立即到期，那段时间每个 tick 都白跑一轮。
+// 与 ts_flush 相差超 10 秒(时钟跳变)视为到期，口径同 ikcp_check
+static inline IUINT32 _kcp_next_update(const ikcpcb *ikcp, IUINT32 now) {
+    IINT32 diff;
+    if (0 == ikcp->updated) {
+        return now;
+    }
+    diff = (IINT32)(ikcp->ts_flush - now);
+    if (diff <= 0
+        || diff > 10000) {
+        return now;
+    }
+    return now + ((IUINT32)diff < ikcp->interval ? (IUINT32)diff : ikcp->interval);
+}
 // hashmap elfree 回调:遍历传入的是指向存储槽的指针(kcp_element **),须解引用取真正的 kel 再释放
 static void _kcp_map_elfree(void *item) {
     _kcp_element_free(*(kcp_element **)item);
@@ -279,7 +308,7 @@ static void _kcp_map_elfree(void *item) {
 // 原地下沉的前提:ikcp_update 期间堆不被改动(关闭一律经 in_tick/closing 延后),kel 始终是堆顶
 static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
     IUINT32 now = (IUINT32)now_ms;
-    uint32_t remain = kcp_heap_size(&ctx->heap_due);// 至多处理本轮已有会话数,防 ikcp_check 异常返回<=now 时死循环
+    uint32_t remain = kcp_heap_size(&ctx->heap_due);// 至多处理本轮已有会话数,防下次时刻算成<=now 时死循环
     kcp_element *kel;
     ctx->in_tick = 1;
     while (remain-- > 0 && NULL != (kel = kcp_heap_min(&ctx->heap_due))) {
@@ -290,7 +319,7 @@ static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
         if (ctx->closing) {// ikcp_update 内发送失败触发了本 socket 关闭:kel/ctx 待释放,勿再触碰
             break;
         }
-        kel->next_update = ikcp_check(kel->ikcp, now);
+        kel->next_update = _kcp_next_update(kel->ikcp, now);
         kcp_heap_sift_down(&ctx->heap_due, kel->hidx);
     }
     ctx->in_tick = 0;
@@ -310,7 +339,7 @@ static int32_t _kcp_tick_iter(kcp_element *const *item, void *udata) {
     kcp_tick_arg *a = udata;
     if ((IINT32)(a->now - kel->next_update) >= 0) {// 到期,防回绕
         ikcp_update(kel->ikcp, a->now);
-        kel->next_update = ikcp_check(kel->ikcp, a->now);
+        kel->next_update = _kcp_next_update(kel->ikcp, a->now);
     }
     uint32_t d = (kel->next_update > a->now) ? (uint32_t)(kel->next_update - a->now) : 0;
     if (d < a->next) {
@@ -318,7 +347,7 @@ static int32_t _kcp_tick_iter(kcp_element *const *item, void *udata) {
     }
     return 1;
 }
-// ev_tick 回调:驱动本 socket 所有会话 ikcp_update,返回距下次最近的 ikcp_check 间隔(ms)
+// ev_tick 回调:驱动本 socket 所有会话 ikcp_update,返回距下次最近的 update 间隔(ms)
 static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
     kcp_tick_arg a = { (IUINT32)now_ms, EVENT_WAIT_TIMEOUT };
     ctx->in_tick = 1;
@@ -384,6 +413,8 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
         ctx->in_tick = 0;
         ctx->closing = 0;
         ctx->ud = ud;
+        ctx->ndrop = 0;
+        ctx->warn_ms = 0;
         // 同 coro.c 的 mapco:cap 兼作缩容地板,每个 UDP socket 一张,客户端通常只有一个 conv
         ctx->mapkcp = kcp_map_new(MAPKCP_INIT_CAP, _kcp_map_elfree);
 #if KCP_TICK_HEAP

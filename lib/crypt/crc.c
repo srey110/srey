@@ -1,5 +1,4 @@
 ﻿#include "crypt/crc.h"
-#include "crypt/crypt_pub.h"
 #if defined(__ARM_FEATURE_CRC32) && !defined(__ARM_BIG_ENDIAN)
 #include <arm_acle.h>
 #define CRC32_HW// 编译目标带 ARMv8 CRC 指令且是小端才走硬件，其余一律查表
@@ -1126,25 +1125,25 @@ uint16_t crc16(const void *data, const size_t lens) {
         c2 = 0;
         c3 = 0;
         for (; n >= 64; n -= 32, p += 32) {
-            c0 = _crc16_word(crc16_btab, _crypt_read64le(p), c0);
-            c1 = _crc16_word(crc16_btab, _crypt_read64le(p + 8), c1);
-            c2 = _crc16_word(crc16_btab, _crypt_read64le(p + 16), c2);
-            c3 = _crc16_word(crc16_btab, _crypt_read64le(p + 24), c3);
+            c0 = _crc16_word(crc16_btab, read_le64(p), c0);
+            c1 = _crc16_word(crc16_btab, read_le64(p + 8), c1);
+            c2 = _crc16_word(crc16_btab, read_le64(p + 16), c2);
+            c3 = _crc16_word(crc16_btab, read_le64(p + 24), c3);
         }
-        c0 = _crc16_word(crc16_tab, _crypt_read64le(p), c0);
-        c0 = _crc16_word(crc16_tab, _crypt_read64le(p + 8), c0 ^ c1);
-        c0 = _crc16_word(crc16_tab, _crypt_read64le(p + 16), c0 ^ c2);
-        crc = (uint16_t)_crc16_word(crc16_tab, _crypt_read64le(p + 24), c0 ^ c3);
+        c0 = _crc16_word(crc16_tab, read_le64(p), c0);
+        c0 = _crc16_word(crc16_tab, read_le64(p + 8), c0 ^ c1);
+        c0 = _crc16_word(crc16_tab, read_le64(p + 16), c0 ^ c2);
+        crc = (uint16_t)_crc16_word(crc16_tab, read_le64(p + 24), c0 ^ c3);
         n -= 32;
         p += 32;
     }
     for (; n >= 8; n -= 8, p += 8) {
-        a = crc ^ (p[0] | ((uint32_t)p[1] << 8));
+        a = crc ^ read_le16(p);
         crc = crc16_tab[7][a & 0xFF] ^ crc16_tab[6][a >> 8] ^ crc16_tab[5][p[2]] ^ crc16_tab[4][p[3]]
             ^ crc16_tab[3][p[4]] ^ crc16_tab[2][p[5]] ^ crc16_tab[1][p[6]] ^ crc16_tab[0][p[7]];
     }
     if (n >= 4) {
-        a = crc ^ (p[0] | ((uint32_t)p[1] << 8));
+        a = crc ^ read_le16(p);
         crc = crc16_tab[3][a & 0xFF] ^ crc16_tab[2][a >> 8] ^ crc16_tab[1][p[2]] ^ crc16_tab[0][p[3]];
         n -= 4;
         p += 4;
@@ -1165,6 +1164,7 @@ uint32_t crc32(const void *data, const size_t lens) {
     uint16_t h;
     for (; n >= 8; n -= 8, p += 8) {
         memcpy(&v, p, sizeof(v));
+        // __crc32d / w / h / b 是 ARMv8 的 CRC32 指令(arm_acle.h)，一条把 8 / 4 / 2 / 1 字节并进 crc
         crc = __crc32d(crc, v);
     }
     if (n & 4) {
@@ -1201,25 +1201,25 @@ uint32_t crc32(const void *data, const size_t lens) {
         c2 = 0;
         c3 = 0;
         for (; n >= 64; n -= 32, p += 32) {
-            c0 = _crc32_word(crc32_btab, _crypt_read64le(p), c0);
-            c1 = _crc32_word(crc32_btab, _crypt_read64le(p + 8), c1);
-            c2 = _crc32_word(crc32_btab, _crypt_read64le(p + 16), c2);
-            c3 = _crc32_word(crc32_btab, _crypt_read64le(p + 24), c3);
+            c0 = _crc32_word(crc32_btab, read_le64(p), c0);
+            c1 = _crc32_word(crc32_btab, read_le64(p + 8), c1);
+            c2 = _crc32_word(crc32_btab, read_le64(p + 16), c2);
+            c3 = _crc32_word(crc32_btab, read_le64(p + 24), c3);
         }
-        c0 = _crc32_word(crc32_tab, _crypt_read64le(p), c0);
-        c0 = _crc32_word(crc32_tab, _crypt_read64le(p + 8), c0 ^ c1);
-        c0 = _crc32_word(crc32_tab, _crypt_read64le(p + 16), c0 ^ c2);
-        crc = _crc32_word(crc32_tab, _crypt_read64le(p + 24), c0 ^ c3);
+        c0 = _crc32_word(crc32_tab, read_le64(p), c0);
+        c0 = _crc32_word(crc32_tab, read_le64(p + 8), c0 ^ c1);
+        c0 = _crc32_word(crc32_tab, read_le64(p + 16), c0 ^ c2);
+        crc = _crc32_word(crc32_tab, read_le64(p + 24), c0 ^ c3);
         n -= 32;
         p += 32;
     }
     for (; n >= 8; n -= 8, p += 8) {
-        a = crc ^ (p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
+        a = crc ^ read_le32(p);
         crc = crc32_tab[7][a & 0xFF] ^ crc32_tab[6][(a >> 8) & 0xFF] ^ crc32_tab[5][(a >> 16) & 0xFF] ^ crc32_tab[4][a >> 24]
             ^ crc32_tab[3][p[4]] ^ crc32_tab[2][p[5]] ^ crc32_tab[1][p[6]] ^ crc32_tab[0][p[7]];
     }
     if (n >= 4) {
-        a = crc ^ (p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
+        a = crc ^ read_le32(p);
         crc = crc32_tab[3][a & 0xFF] ^ crc32_tab[2][(a >> 8) & 0xFF] ^ crc32_tab[1][(a >> 16) & 0xFF] ^ crc32_tab[0][a >> 24];
         n -= 4;
         p += 4;

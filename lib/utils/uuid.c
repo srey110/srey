@@ -17,14 +17,13 @@ int32_t uuid_v7(char uuid[UUID_LENS]) {
     if (ERR_OK != csprng_rand(uuid + 6, 10)) {
         return ERR_FAILED;
     }
-    cand = (nowms() << 12) | ((((uint8_t)uuid[6] << 8) | (uint8_t)uuid[7]) & 0x7FF);
+    cand = (nowms() << 12) | (read_be16(uuid + 6) & 0x7FF);
     do {
         last = (uint64_t)ATOMIC64_GET(&_v7_last);
         next = (cand >> 12) > (last >> 12) ? cand : last + 1;
     } while (!ATOMIC64_CAS(&_v7_last, (atomic64_t)last, (atomic64_t)next));
     pack_integer(uuid, next >> 12, 6, 0);
-    uuid[6] = (char)(0x70 | ((next >> 8) & 0x0F));
-    uuid[7] = (char)(next & 0xFF);
+    write_be16(uuid + 6, (uint16_t)(0x7000 | (next & 0x0FFF)));
     uuid[8] = (char)(((uint8_t)uuid[8] & 0x3F) | 0x80);
     return ERR_OK;
 }

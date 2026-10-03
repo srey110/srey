@@ -2,6 +2,7 @@
 #define PROTS_PUB_H_
 
 #include "base/structs.h"
+#include "utils/buffer.h"
 
 // 以下 10 个上限是可调的:某个判定在当前取值下恒假(如 16 位长度比 65535)不等于死代码,
 // 上限调小它立刻生效,勿删
@@ -15,6 +16,7 @@
 #define REDIS_MAX_LINE_LENS 65535 // Redis 长度行尚未收全时允许累积的字节数
 #define REDIS_MAX_BULK_LENS (512 * 1024 * 1024) // Redis Bulk String，对齐 proto-max-bulk-len 默认值
 #define MONGO_MAX_PACK_LENS (64 * 1024 * 1024) // MongoDB 单包，协议规范值
+#define MQTT_VARINT_MAX 268435455u // 4 字节 7-bit varint 的上界(256MB-1)，线格式定死，不属于上面可调的那 10 个
 
 // mysql pgsql monogo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=上层 handle 持有者数）
 // 建连前 acquire：仅上层持有(ref>0)时 +1，C 借用(ref=0)短路
@@ -50,8 +52,6 @@ typedef enum msg_type {
     MSG_TYPE_RECVFROM,      // UDP 数据接收
     MSG_TYPE_REQUEST,       // 任务间请求
     MSG_TYPE_RESPONSE,      // 任务间响应
-    MSG_TYPE_FORK,          // 内部 mtype 标记：coro_fork/coro_fork_wait 的子任务经 fork_pending 链表，
-                            // 在 dispatch 末尾 drain 起协程，_coro_mco_cb 据此路由到 _coro_fork_run（不入消息队列）
     MSG_TYPE_ALL            // 消息类型总数（边界值）
 }msg_type;
 // 协议包类型枚举
@@ -95,7 +95,7 @@ typedef struct message_ctx {
     name_t src;     // 发送方任务名
     uint64_t sess;  // 会话 ID（用于请求/响应匹配）
     void *data;     // 消息数据指针
-    shared_data *shared; // NULL=独占（默认 _message_clean 走 prots_pkfree/FREE）；非 NULL=task_multi_call / task_multi_request 广播,N 个 task 共享同一 data,各 task 释放时 ATOMIC_ADD(&ref,-1) 归 0 才 FREE
+    shared_data *shared; // NULL=独占（默认 message_clean 走 prots_pkfree/FREE）；非 NULL=task_multi_call / task_multi_request 广播,N 个 task 共享同一 data,各 task 释放时 ATOMIC_ADD(&ref,-1) 归 0 才 FREE
     sock_ctx sk;       // 连接标识
 }message_ctx;
 // 握手完成后的推送回调函数类型
@@ -120,29 +120,6 @@ struct ev_ctx;
 /// <returns>微秒数 [0, 999999]；无小数点或小数点后无数字返回 0</returns>
 uint32_t parse_usec_frac(const char *str);
 /// <summary>
-/// (指针, 长度) 的十进制浮点文本转 double，严格判定：整段必须被消费完、不接受空串、上溢即拒
-/// ——三条都不是 strtod 自带的，上溢只有 errno 认得出来。
-/// 下溢同样置 ERANGE 但返回的是正确的次正规数（DOUBLE 列的常规输出），放行。
-/// strtod 直接认出的 "Infinity"/"-Infinity"/"NaN" 字面量是 PostgreSQL float 列的正常输出，
-/// 不置 ERANGE 因而放行，由业务自行处置（test_pgsql_reader_double_bounds 锁了这条契约）。
-/// mysql / pgsql 两侧的文本协议共用，别再各写一份
-/// </summary>
-/// <param name="data">源字节段(可非 NUL 结尾)</param>
-/// <param name="lens">源字节数；0 视为失败</param>
-/// <param name="val">输出：解析结果；返回 ERR_FAILED 时不写</param>
-/// <returns>ERR_OK 成功；ERR_FAILED 空串/超 128 字节/有残留字符/上溢</returns>
-int32_t parse_double_strict(const void *data, size_t lens, double *val);
-/// <summary>
-/// (指针, 长度) 的十进制整数文本转 int64，按符号拆开走 str2u64。
-/// mysql / pgsql 的文本协议与 redis 的长度行共用，别再各写一份。
-/// 只认 ['-']1*DIGIT：前导空白、'+' 都拒，redis 长度行靠这一点与对端切出同样的包边界
-/// </summary>
-/// <param name="data">源字节段(可非 NUL 结尾)</param>
-/// <param name="lens">源字节数；0 视为失败</param>
-/// <param name="val">输出：解析结果；返回 ERR_FAILED 时不写</param>
-/// <returns>ERR_OK 成功；空串/只有负号/含非数字字符/超出 int64 量程返回 ERR_FAILED</returns>
-int32_t parse_int64_strict(const void *data, size_t lens, int64_t *val);
-/// <summary>
 /// 解析 "A[:B[:C]]" 形式的冒号分隔十进制三段值，各段按 max[i] 卡上界，缺的段填 0。
 /// mysql 的 TIME 与 pgsql 的时区偏移共用，别再各写一份
 /// </summary>
@@ -151,5 +128,21 @@ int32_t parse_int64_strict(const void *data, size_t lens, int64_t *val);
 /// <param name="val">输出：三段值，未出现的段写 0；返回 0 时三段都不写</param>
 /// <returns>成功解析的段数 1~3；首段就不是数字、或任一段超上界返回 0</returns>
 int32_t parse_colon_triple(const char *str, const uint32_t max[3], uint32_t val[3]);
+/// <summary>
+/// 7-bit varint 编码（MQTT 可变长度头，每字节低 7 位为数据、最高位为延续标志）
+/// </summary>
+/// <param name="value">待编码整数；大于 MQTT_VARINT_MAX 视为溢出</param>
+/// <param name="buf">输出缓冲，至少 4 字节</param>
+/// <returns>编码占用字节数（1-4）；溢出返回 0</returns>
+int32_t varint_encode_mqtt(uint32_t value, char buf[4]);
+/// <summary>
+/// 7-bit varint 解码：从 buf 的 off 起读，最多 4 字节，每字节低 7 位累加、最高位为延续标志
+/// </summary>
+/// <param name="buf">输入缓冲</param>
+/// <param name="off">起始偏移</param>
+/// <param name="blens">可读字节上限，须 <= buffer_size(buf)；超了会撞 buffer_at 的断言</param>
+/// <param name="value">输出解码值；仅返回值 > 0 时有效——失败那档可能留着部分累加值</param>
+/// <returns>占用字节数（1-4）；可读字节不足或越 4 字节未结束返回 ERR_FAILED</returns>
+int32_t varint_decode_mqtt(buffer_ctx *buf, size_t off, size_t blens, size_t *value);
 
 #endif// PROTS_PUB_H_

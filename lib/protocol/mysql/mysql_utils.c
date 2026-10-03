@@ -53,7 +53,7 @@ uint64_t _mysql_get_lenenc(binary_ctx *breader, int32_t *err) {
     *err = ERR_OK;
     return binary_get_uinteger(breader, need, 1);
 }
-// 将 bwriter 中偏移 0-2 字节回填为实际 payload 长度（总长度减去 4 字节包头）
+// 将 bwriter 中偏移 0-2 字节回填为实际 payload 长度（3 字节小端，总长度减去 4 字节包头）；包头已由调用方占好、在已写区内，直接写
 // 超 INT3_MAX(16MB-1) 时 LOG_WARN + 返 ERR_FAILED 由调用方释放 bwriter,本实现不支持 mysql 协议拆 packet
 int32_t _mysql_set_payload_lens(binary_ctx *bwriter) {
     size_t size = bwriter->offset;
@@ -62,8 +62,8 @@ int32_t _mysql_set_payload_lens(binary_ctx *bwriter) {
         LOG_WARN("mysql payload exceeds 16MB: %zu bytes.", payload);
         return ERR_FAILED;
     }
-    binary_offset(bwriter, 0);
-    binary_set_integer(bwriter, payload, 3, 1);
-    binary_offset(bwriter, size);
+    bwriter->data[0] = (char)payload;
+    bwriter->data[1] = (char)(payload >> 8);
+    bwriter->data[2] = (char)(payload >> 16);
     return ERR_OK;
 }

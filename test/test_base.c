@@ -256,6 +256,49 @@ static void test_round_up_narrow_modulus(CuTest *tc) {
     CuAssertTrue(tc, (((size_t)1 << 33) + 8) == ROUND_UP(big, align));
 #endif
 }
+// mem_arena 快路径在头文件里内联、慢路径单拆：连续切小块都落在同一块里、首尾相接，切到放不下才开新块
+static void test_mem_arena_fast_slow(CuTest *tc) {
+    mem_arena a;
+    char *p, *prev = NULL;
+    int32_t i, newblk = 0;
+    ZERO(&a, sizeof(a));
+    for (i = 0; i < 2000; i++) {
+        p = mem_arena_alloc(&a, 13);
+        CuAssertTrue(tc, 0 == ((uintptr_t)p & 7));
+        memset(p, 0x5a, 13);
+        if (NULL != prev && p != prev + 16) {
+            newblk++;// 13 取整到 16：同块里必是紧挨着的，不挨着即换了块
+        }
+        prev = p;
+    }
+    CuAssertTrue(tc, newblk >= 2 && newblk <= 5);// 2000 * 16 / (8192 - 8) 约 3.9 块
+    p = mem_arena_alloc(&a, 0);
+    CuAssertPtrNotNull(tc, p);
+    mem_arena_free(&a);
+    CuAssertTrue(tc, NULL == a.cur && 0 == a.off && 0 == a.cap);
+}
+// 一整块装不下的大块：空链时它当当前块并标满(下个小块另开定长块)；已有当前块时插到它后面，当前块接着切
+static void test_mem_arena_big(CuTest *tc) {
+    mem_arena a;
+    char *big, *big2, *s1, *s2, *s3;
+    ZERO(&a, sizeof(a));
+    big = mem_arena_alloc(&a, 10000);
+    CuAssertTrue(tc, 0 == ((uintptr_t)big & 7));
+    memset(big, 0x11, 10000);
+    CuAssertTrue(tc, a.off == a.cap);// 空链上的大块即当前块，且已用满
+    s1 = mem_arena_alloc(&a, 24);
+    memset(s1, 0x22, 24);
+    s2 = mem_arena_alloc(&a, 24);
+    CuAssertTrue(tc, s2 == s1 + 24);// 新开的定长块里首尾相接
+    CuAssertTrue(tc, 0x11 == (uint8_t)big[0] && 0x11 == (uint8_t)big[9999]);// 大块没被后来的小块覆盖
+    big2 = mem_arena_alloc(&a, 9000);
+    memset(big2, 0x33, 9000);
+    s3 = mem_arena_alloc(&a, 24);
+    CuAssertTrue(tc, s3 == s2 + 24);// 大块插在当前块后面，当前块没换，小块接着切
+    CuAssertTrue(tc, 0x22 == (uint8_t)s1[0] && 0x33 == (uint8_t)big2[8999]);
+    mem_arena_free(&a);// 大、定长、大三块都要收，漏收由收尾内存检查报出
+    CuAssertTrue(tc, NULL == a.cur && 0 == a.off && 0 == a.cap);
+}
 
 void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_memory);
@@ -264,4 +307,6 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_atomic64);
     SUITE_ADD_TEST(suite, test_set_ptr_expr_arg);
     SUITE_ADD_TEST(suite, test_round_up_narrow_modulus);
+    SUITE_ADD_TEST(suite, test_mem_arena_fast_slow);
+    SUITE_ADD_TEST(suite, test_mem_arena_big);
 }

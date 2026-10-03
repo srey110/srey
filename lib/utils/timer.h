@@ -1,7 +1,7 @@
 ﻿#ifndef TIMER_H_
 #define TIMER_H_
 
-#include "base/macro.h"
+#include "base/base.h"
 
 typedef struct timer_ctx {
 #if defined(OS_WIN)
@@ -19,6 +19,7 @@ typedef struct timer_ctx {
 #endif
     uint64_t starttick;           //计时起始时刻（纳秒）
 }timer_ctx;
+
 /// <summary>
 /// 初始化计时器，并把计时起点置为当前时刻；
 /// 因此 timer_init 之后可直接调 timer_elapsed，无须先调 timer_start
