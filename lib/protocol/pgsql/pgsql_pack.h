@@ -119,6 +119,16 @@ void *pgsql_pack_copy_done(size_t *size);
 /// <returns>消息数据指针，调用方负责释放</returns>
 void *pgsql_pack_copy_fail(const char *msg, size_t *size);
 /// <summary>
+/// 把 COPY FROM STDIN 的 Query、一条 CopyData、CopyDone 三条消息拼成一个缓冲，供一次发出。
+/// 服务端没进 COPY IN（语句本身失败）时会忽略随后的 CopyData/CopyDone，不产生应答
+/// </summary>
+/// <param name="sql">含 FROM STDIN 的 COPY 语句；按 strlen 取长度，NULL 按空串，同 pgsql_pack_query</param>
+/// <param name="data">COPY 数据</param>
+/// <param name="lens">数据字节数</param>
+/// <param name="size">输出消息总字节数</param>
+/// <returns>消息数据指针，调用方负责释放</returns>
+void *pgsql_pack_copy_in(const char *sql, const void *data, size_t lens, size_t *size);
+/// <summary>
 /// 填充 CancelRequest 消息到调用方提供的 16 字节缓冲区
 /// CancelRequest 不含消息类型码，格式：Int32(16) Int32(80877102) Int32(pid) Int32(key)
 /// </summary>

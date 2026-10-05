@@ -23,9 +23,21 @@ local function _count_rows(reader)
 end
 
 -- 逐行逐列比 reader:get 与单列取值器（text / bytea 走 asstr），并核 asstr 与借用指针拷出来的一致。
--- 返回每行 { 列名 = get 的值 }，供文本 / 二进制两种格式互比
+-- 返回每行 { 列名 = get 的值 }，供文本 / 二进制两种格式互比。
+-- 首行上另核列不存在（含名字带结尾 '\0'，按整串比查不到）时 get 抛错、integer 返回 false
 local function _pg_get_vs_single(t, rd, label)
     local rows = {}
+    if not rd:eof() then
+        local eok, emsg = pcall(rd.get, rd, "nosuch")
+        t:check(not eok and string.find(tostring(emsg), "'nosuch'", 1, true),
+                label .. " get 不存在的列抛错且带列名: " .. tostring(emsg))
+        eok, emsg = pcall(rd.integer, rd, "nosuch")
+        t:check(eok and false == emsg, label .. " integer 不存在的列返回 false、不抛错: " .. tostring(emsg))
+        eok = pcall(rd.get, rd, "i4\0")
+        t:check(not eok, label .. " get 名字带结尾 \\0 按列不存在抛错")
+        eok, emsg = pcall(rd.integer, rd, "i4\0")
+        t:check(eok and false == emsg, label .. " integer 名字带结尾 \\0 返回 false: " .. tostring(emsg))
+    end
     while not rd:eof() do
         local row = {}
         rows[#rows + 1] = row

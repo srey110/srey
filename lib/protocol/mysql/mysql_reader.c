@@ -130,54 +130,51 @@ void mysql_reader_next(mysql_reader_ctx *reader) {
         reader->index++;
     }
 }
-// 根据字段名在列描述数组中查找对应字段，返回字段指针并输出列索引
-static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *name, int32_t *pos) {
-    size_t nlens = strlen(name);
+// 按列下标取列描述，下标不在 [0, 列数) 内(含 mysql_reader_col 找不到时的 -1)返回 NULL
+static inline mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, int32_t col) {
+    return (col < 0 || col >= reader->field_count) ? NULL : &reader->fields[col];
+}
+int32_t mysql_reader_col(mysql_reader_ctx *reader, const char *name, size_t nlens) {
     for (int32_t i = 0; i < reader->field_count; i++) {
         if (buf_compare(&reader->fields[i].name, name, nlens)) {
-            *pos = i;
-            return &reader->fields[i];
+            return i;
         }
     }
-    return NULL;
+    return -1;
 }
-uint8_t mysql_reader_cls(mysql_reader_ctx *reader, const char *name) {
-    int32_t pos;
-    mpack_field *column = _mysql_reader_field(reader, name, &pos);
+uint8_t mysql_reader_cls_at(mysql_reader_ctx *reader, int32_t col) {
+    mpack_field *column = _mysql_reader_field(reader, col);
     return (NULL == column) ? 0 : _mysql_type_cls[column->type];
 }
-int32_t mysql_reader_unsigned(mysql_reader_ctx *reader, const char *name) {
-    int32_t pos;
-    mpack_field *column = _mysql_reader_field(reader, name, &pos);
+int32_t mysql_reader_unsigned_at(mysql_reader_ctx *reader, int32_t col) {
+    mpack_field *column = _mysql_reader_field(reader, col);
     return (NULL != column && 0 != (column->flags & MYSQL_UNSIGNED_FLAG)) ? 1 : 0;
 }
-int32_t mysql_reader_isnull(mysql_reader_ctx *reader, const char *name) {
-    int32_t pos;
+int32_t mysql_reader_isnull_at(mysql_reader_ctx *reader, int32_t col) {
     if (reader->index >= (int32_t)mrow_arr_size(&reader->arr_rows)
-        || NULL == _mysql_reader_field(reader, name, &pos)) {
+        || NULL == _mysql_reader_field(reader, col)) {
         return 0;
     }
-    return (*mrow_arr_at(&reader->arr_rows, reader->index))[pos].nil ? 1 : 0;
+    return (*mrow_arr_at(&reader->arr_rows, reader->index))[col].nil ? 1 : 0;
 }
 // 每个取值函数开头那三段（定位当前行 → NULL 判定 → 字段类型白名单）收在这里，
 // cls 是调用方收的列类型组(MYSQL_CLS_*，见 _mysql_type_cls)。
 // 返回 NULL 时 err 已写好（1=该字段是 SQL NULL，ERR_FAILED=取不到或类型不符），调用方只管返自己的零值。
 // NULL 判定排在类型判定之前，与 pgsql_reader 相反——那边先判类型；
 // 这里先判 NULL，列值为 NULL 时不再多报一次类型不符
-static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
+static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, int32_t col,
                                     uint8_t cls, int32_t *err) {
     if (reader->index >= (int32_t)mrow_arr_size(&reader->arr_rows)) {
         SET_PTR(err, ERR_FAILED);
         return NULL;
     }
-    int32_t pos;
-    mpack_field *column = _mysql_reader_field(reader, name, &pos);
+    mpack_field *column = _mysql_reader_field(reader, col);
     if (NULL == column) {
         SET_PTR(err, ERR_FAILED);
         return NULL;
     }
     mpack_row *row = *mrow_arr_at(&reader->arr_rows, reader->index);
-    if (row[pos].nil) {
+    if (row[col].nil) {
         SET_PTR(err, 1); // 1 表示该字段值为 NULL
         return NULL;
     }
@@ -186,11 +183,11 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name,
         LOG_WARN("does not match required data type.");
         return NULL;
     }
-    return &row[pos];
+    return &row[col];
 }
-int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+int64_t mysql_reader_integer_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_INT, err);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_INT, err);
     if (NULL == row) {
         return 0;
     }
@@ -213,9 +210,9 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         }
     }
 }
-uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+uint64_t mysql_reader_uinteger_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_INT, err);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_INT, err);
     if (NULL == row) {
         return 0;
     }
@@ -248,9 +245,9 @@ static inline double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err
     }
     return val;
 }
-float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+float mysql_reader_float_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_FLOAT, err);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_FLOAT, err);
     if (NULL == row) {
         return 0.0f;
     }
@@ -264,9 +261,9 @@ float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *er
         return unpack_float(row->val.data, 1);
     }
 }
-double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+double mysql_reader_double_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_DOUBLE, err);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_DOUBLE, err);
     if (NULL == row) {
         return 0.0;
     }
@@ -280,18 +277,18 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
         return unpack_double(row->val.data, 1);
     }
 }
-char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err) {
+char *mysql_reader_string_at(mysql_reader_ctx *reader, int32_t col, size_t *lens, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_STRING, err);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_STRING, err);
     if (NULL == row) {
         return NULL;
     }
     *lens = row->val.lens;
     return row->val.data;
 }
-int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_DATETIME, err);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_DATETIME, err);
     if (NULL == row) {
         return 0;
     }
@@ -362,19 +359,19 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
         return (int64_t)ts * 1000000LL + usec;
     }
 }
-int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err) {
+int32_t mysql_reader_time_at(mysql_reader_ctx *reader, int32_t col, struct tm *time, uint32_t *usec, int32_t *err) {
     SET_PTR(err, ERR_OK);
     // 出参先清零再取行:取不到(列为 SQL NULL 或类型不符)时也给确定值,同族的 integer/double 一样
     *time = (struct tm) { 0 };
     *usec = 0;
-    mpack_row *row = _mysql_reader_row(reader, name, MYSQL_CLS_TIME, err);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_TIME, err);
     if (NULL == row) {
         return 0;
     }
     int32_t is_negative = 0;
     if (MPACK_QUERY == reader->pack_type) {
         // TIME 文本是 [-]HHH:MM:SS[.frac],量程 ±838:59:59,三段必须齐。
-        // 不用 sscanf("%d:%d:%d")的理由同上面 mysql_reader_datetime 改用 _strptime 那条
+        // 不用 sscanf("%d:%d:%d")的理由同上面 mysql_reader_datetime_at 改用 _strptime 那条
         static const uint32_t _hms_max[3] = { 838, 59, 59 };
         uint32_t hms[3];
         char tmp[48];
@@ -417,4 +414,35 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
         }
     }
     return is_negative;
+}
+// 以下按列名的接口都是"查一次下标 + 调同名 _at"，找不到列时下标为 -1，由 _at 按没有这一列处理
+uint8_t mysql_reader_cls(mysql_reader_ctx *reader, const char *name) {
+    return mysql_reader_cls_at(reader, mysql_reader_col(reader, name, strlen(name)));
+}
+int32_t mysql_reader_unsigned(mysql_reader_ctx *reader, const char *name) {
+    return mysql_reader_unsigned_at(reader, mysql_reader_col(reader, name, strlen(name)));
+}
+int32_t mysql_reader_isnull(mysql_reader_ctx *reader, const char *name) {
+    return mysql_reader_isnull_at(reader, mysql_reader_col(reader, name, strlen(name)));
+}
+int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+    return mysql_reader_integer_at(reader, mysql_reader_col(reader, name, strlen(name)), err);
+}
+uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+    return mysql_reader_uinteger_at(reader, mysql_reader_col(reader, name, strlen(name)), err);
+}
+float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+    return mysql_reader_float_at(reader, mysql_reader_col(reader, name, strlen(name)), err);
+}
+double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+    return mysql_reader_double_at(reader, mysql_reader_col(reader, name, strlen(name)), err);
+}
+char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err) {
+    return mysql_reader_string_at(reader, mysql_reader_col(reader, name, strlen(name)), lens, err);
+}
+int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+    return mysql_reader_datetime_at(reader, mysql_reader_col(reader, name, strlen(name)), err);
+}
+int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err) {
+    return mysql_reader_time_at(reader, mysql_reader_col(reader, name, strlen(name)), time, usec, err);
 }

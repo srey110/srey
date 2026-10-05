@@ -132,6 +132,47 @@ void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
 /// <param name="copy">1 拷贝 0不拷贝</param>
 void task_call(task_ctx *dst, subtype_t reqtype, void *data, size_t size, int32_t copy);
 /// <summary>
+/// 按句柄投递请求，语义同 task_request，但不用调用方先 grab 目标：查表与投递在同一段读锁内完成，
+/// 省掉对目标 task 引用计数的一加一减。查表前先按 copy 组好消息
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="handle">目标任务句柄；INVALID_TNAME 直接失败</param>
+/// <param name="src">同 task_request</param>
+/// <param name="reqtype">同 task_request</param>
+/// <param name="sess">同 task_request</param>
+/// <param name="data">数据</param>
+/// <param name="size">数据长度</param>
+/// <param name="copy">1 拷贝 0不拷贝</param>
+/// <returns>ERR_OK 已投递，data 按 copy 语义交出；ERR_FAILED 目标不存在：copy=1 时内部副本已释放，
+/// copy=0 时 data 没碰过、仍归调用方（可换句柄重试或自行释放）</returns>
+int32_t task_request_to(loader_ctx *loader, name_t handle, task_ctx *src, subtype_t reqtype, uint64_t sess,
+                        void *data, size_t size, int32_t copy);
+/// <summary>
+/// 按句柄投递响应，语义同 task_response，投递方式同 task_request_to
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="handle">目标任务句柄；INVALID_TNAME 直接失败</param>
+/// <param name="reqtype">请求类型 request_type</param>
+/// <param name="sess">session</param>
+/// <param name="erro">错误码</param>
+/// <param name="data">数据</param>
+/// <param name="size">数据长度</param>
+/// <param name="copy">1 拷贝 0不拷贝</param>
+/// <returns>同 task_request_to</returns>
+int32_t task_response_to(loader_ctx *loader, name_t handle, subtype_t reqtype, uint64_t sess,
+                         int32_t erro, void *data, size_t size, int32_t copy);
+/// <summary>
+/// 按句柄投递单向调用，语义同 task_call，投递方式同 task_request_to
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="handle">目标任务句柄；INVALID_TNAME 直接失败</param>
+/// <param name="reqtype">请求类型 request_type</param>
+/// <param name="data">数据</param>
+/// <param name="size">数据长度</param>
+/// <param name="copy">1 拷贝 0不拷贝</param>
+/// <returns>同 task_request_to</returns>
+int32_t task_call_to(loader_ctx *loader, name_t handle, subtype_t reqtype, void *data, size_t size, int32_t copy);
+/// <summary>
 /// 广播请求：把同一份 data 投递给 N 个 task,各 dst 在 _request 回调中可独立 task_response 回 src(共用同一 sess)。
 /// 与 task_multi_call 区别：携带 src + sess,dst 知道响应该回给谁；src 端 _response 回调将被调用 N 次
 /// （同 sess,用户自行累计/区分,框架不做应答聚合）。src=NULL && sess=0 时退化为 task_multi_call 语义。

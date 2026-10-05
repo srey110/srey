@@ -1290,7 +1290,7 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     buffer_init(&buf);
     _fake_rv_reset();
     _fake_rv_want[0] = 2000;
-    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
     CuAssertTrue(tc, 2000 == nread);
     CuAssertTrue(tc, 2000 == buffer_size(&buf));
 #if defined(TRIGGER_LT) || defined(EV_IOCP)
@@ -1317,7 +1317,7 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     _fake_rv_reset();
     _fake_rv_want[0] = MAX_RECV_SIZE * 4;
     _fake_rv_want[1] = MAX_RECV_SIZE * 4;
-    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
     // 前两轮都被填满故不早退，第三轮吐 0 才停
     CuAssertIntEquals(tc, 3, _fake_rv_calls);
     CuAssertTrue(tc, nread == _fake_rv_offer[0] + _fake_rv_offer[1]);
@@ -1334,7 +1334,7 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     _fake_rv_reset();
     _fake_rv_want[0] = MAX_RECV_SIZE;
     _fake_rv_want[1] = MAX_RECV_SIZE;
-    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
     CuAssertTrue(tc, (2 * MAX_RECV_SIZE) == nread);
     CuAssertTrue(tc, (2 * MAX_RECV_SIZE) == buffer_size(&buf));
     CuAssertIntEquals(tc, 3, _fake_rv_calls);
@@ -1359,7 +1359,7 @@ static void test_buffer_from_sock_readv_fail(CuTest *tc) {
     buffer_init(&buf);
     _fake_rv_reset();
     _fake_rv_fail_at = 1;
-    CuAssertIntEquals(tc, ERR_FAILED, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
     CuAssertIntEquals(tc, 1, _fake_rv_calls);
     CuAssertTrue(tc, 0 == nread);
     CuAssertTrue(tc, 0 == buffer_size(&buf));
@@ -1374,7 +1374,7 @@ static void test_buffer_from_sock_readv_fail(CuTest *tc) {
     _fake_rv_reset();
     _fake_rv_want[0] = 1500;
     _fake_rv_fail_at = 2;
-    CuAssertIntEquals(tc, ERR_FAILED, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
     CuAssertIntEquals(tc, 2, _fake_rv_calls);
     CuAssertTrue(tc, 1500 == nread);
     CuAssertTrue(tc, 1500 == buffer_size(&buf));
@@ -1382,6 +1382,37 @@ static void test_buffer_from_sock_readv_fail(CuTest *tc) {
     CuAssertTrue(tc, 0 == memcmp("RRRRRRRR", readback, sizeof(readback)));
     buffer_free(&buf);
 #endif
+}
+
+// hint 只管首轮要多少空间：大于 MAX_RECV_SIZE 按 hint 要、封顶 RECV_HINT_CAP，不超过时与没有 hint 一样；
+// MAX_RECV_SIZE 不小于封顶时 hint 不起作用，首轮恒按 MAX_RECV_SIZE 要。
+// 只断言首轮 iov 总长：节点按 ROUND_UP 开，会比要的多出不到一个对齐单位(64 位 1K、32 位 512)
+static void _hint_check(CuTest *tc, size_t hint, size_t expect) {
+    buffer_ctx buf;
+    size_t nread;
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = 2000;
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, hint, _fake_readv, NULL));
+    CuAssertTrue(tc, 2000 == nread);
+    CuAssertTrue(tc, _fake_rv_offer[0] >= expect);
+    CuAssertTrue(tc, _fake_rv_offer[0] < expect + ONEK);
+    buffer_free(&buf);
+}
+static void test_buffer_from_sock_hint(CuTest *tc) {
+    static const size_t lows[] = { 0, 100, MAX_RECV_SIZE };
+    size_t i;
+#if RECV_HINT_CAP > MAX_RECV_SIZE
+    const size_t mid = (MAX_RECV_SIZE + RECV_HINT_CAP) / 2;
+    _hint_check(tc, mid, mid);// hint 在 MAX_RECV_SIZE 与封顶之间：首轮一次给够
+    _hint_check(tc, 16 * RECV_HINT_CAP, RECV_HINT_CAP);// hint 远大于封顶：按封顶给
+#else
+    _hint_check(tc, 16 * MAX_RECV_SIZE, MAX_RECV_SIZE);// 封顶不得把首轮压到 MAX_RECV_SIZE 以下
+#endif
+    // hint 不超过 MAX_RECV_SIZE(含 0 即不知道)：照旧按 MAX_RECV_SIZE 要
+    for (i = 0; i < ARRAY_SIZE(lows); i++) {
+        _hint_check(tc, lows[i], MAX_RECV_SIZE);
+    }
 }
 
 /* =======================================================================
@@ -5278,7 +5309,7 @@ static void test_buffer_tail_realign(CuTest *tc) {
     CuAssertTrue(tc, eaten == buffer_remove(&buf, out, eaten));
     _fake_rv_reset();
     _fake_rv_want[0] = 1000;
-    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
     CuAssertTrue(tc, 1000 == nread);
     CuAssertIntEquals(tc, 1, (int32_t)_fake_rv_niov[0]);
     CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
@@ -5387,6 +5418,39 @@ static void test_buffer_split_equiv(CuTest *tc) {
     }
     buffer_free(&one);
     buffer_free(&three);
+}
+// buffer_search 首节点快路径查长行：CRLF 落在 64 字节内外各处，前面夹着落单的 '\r' / '\n' 当干扰，
+// 按起点与 end 窗口和参照实现对拍(整段一个节点，全走快路径)
+static void test_buffer_search_long_line(CuTest *tc) {
+    static const size_t crlf[] = { 4, 63, 64, 65, 100, 255, 1024, 1500 };
+    const char *pats[] = { "\r\n", "\r\n\r\n", "\r", "x\r\n", "\n\r" };
+    char line[1600];
+    buffer_ctx buf;
+    size_t i, j, k, start, end, wl;
+    int32_t ref;
+    for (i = 0; i < ARRAY_SIZE(crlf); i++) {
+        memset(line, 'x', sizeof(line));
+        for (j = 7; j + 2 < crlf[i]; j += 29) {
+            line[j] = '\r';// 后面跟的不是 '\n'
+            line[j + 2] = '\n';
+        }
+        memcpy(line + crlf[i], "\r\n\r\n", 4);
+        buffer_init(&buf);
+        CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, line, sizeof(line)));
+        for (k = 0; k < ARRAY_SIZE(pats); k++) {
+            wl = strlen(pats[k]);
+            for (start = 0; start < sizeof(line); start += 7) {
+                ref = _search_ref(line, sizeof(line), 0, start, 0, pats[k], wl);
+                CuAssertIntEquals(tc, ref, buffer_search(&buf, 0, start, 0, (char *)pats[k], wl));
+            }
+            for (end = crlf[i] - 1; end <= crlf[i] + 4; end++) {
+                ref = _search_ref(line, sizeof(line), 0, 0, end, pats[k], wl);
+                CuAssertIntEquals(tc, ref, buffer_search(&buf, 0, 0, end, (char *)pats[k], wl));
+            }
+        }
+        CuAssertIntEquals(tc, (int32_t)crlf[i], buffer_search(&buf, 0, 0, 0, "\r\n", 2));
+        buffer_free(&buf);
+    }
 }
 // netaddr_set 的 IPv4 快路径与 inet_pton 逐项对照：接受与否、族、地址字节都得一致；
 // 前导零各平台 inet_pton 说法不同，这里只要求与本平台 inet_pton 相同
@@ -5563,6 +5627,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_space);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_space);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_readv_fail);
+    SUITE_ADD_TEST(suite, test_buffer_from_sock_hint);
     SUITE_ADD_TEST(suite, test_buffer_free_resets);
     SUITE_ADD_TEST(suite, test_buffer_hint_after_migrate);
     SUITE_ADD_TEST(suite, test_buffer_node_spare);
@@ -5658,6 +5723,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_popen_waitexit_event);
     SUITE_ADD_TEST(suite, test_binary_init_exact);
     SUITE_ADD_TEST(suite, test_buffer_split_equiv);
+    SUITE_ADD_TEST(suite, test_buffer_search_long_line);
     SUITE_ADD_TEST(suite, test_netaddr_set_pton);
     SUITE_ADD_TEST(suite, test_contenttype_rows);
     SUITE_ADD_TEST(suite, test_procscnt_cached);

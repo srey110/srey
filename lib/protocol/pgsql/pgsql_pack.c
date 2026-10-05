@@ -167,6 +167,21 @@ void *pgsql_pack_copy_fail(const char *msg, size_t *size) {
     *size = bwriter.offset;
     return bwriter.data;
 }
+void *pgsql_pack_copy_in(const char *sql, const void *data, size_t lens, size_t *size) {
+    binary_ctx bwriter;
+    size_t sqlsize = _pgpack_strsize(sql);
+    // Query：Byte1('Q') Int32 String，后接 CopyData('d') 与 CopyDone('c')
+    pgsql_pack_start(&bwriter, 'Q', 5 + sqlsize + 5 + lens + 5);
+    _pgpack_set_string_n(&bwriter, sql, sqlsize);
+    pgsql_pack_end(&bwriter);
+    size_t offset = pgsql_pack_append_start(&bwriter, 'd');
+    binary_set_binary(&bwriter, data, lens);
+    pgsql_pack_append_end(&bwriter, offset);
+    offset = pgsql_pack_append_start(&bwriter, 'c');
+    pgsql_pack_append_end(&bwriter, offset);
+    *size = bwriter.offset;
+    return bwriter.data;
+}
 void pgsql_pack_cancel(char buf[16], int32_t pid, uint32_t key) {
     // CancelRequest 无消息类型码：Int32(16) Int32(80877102) Int32(pid) Int32(key)
     write_be32(buf, 16); // 消息总长度

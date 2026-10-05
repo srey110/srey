@@ -42,6 +42,13 @@ typedef struct http_resp_json {
     http_resp_plan *plan;
     binary_ctx *bw;
 }http_resp_json;
+// redis.unpack 的一层未闭合聚合；这层的表与暂存键在 Lua 栈上（布局见 _lprot_redis_unpack_multi）
+typedef struct redis_unpack_frame {
+    int32_t status; // 0=期望 key，1=期望 val（仅 map/attr）
+    int32_t ismap;  // map / attr：键值交替
+    int32_t isattr; // attr 闭合后不再消费父层
+    int64_t nelem;  // 剩余待处理节点数（map/attr 已 ×2）
+}redis_unpack_frame;
 
 /// <summary>
 /// 打包 harbor 跨节点消息
@@ -983,6 +990,210 @@ static int32_t _lprot_redis_next(lua_State *lua) {
     lua_pushlightuserdata(lua, pk->next);
     return 1;
 }
+// 是否聚合节点（array / set / push / map / attr）
+static inline int32_t _lprot_redis_isagg(int32_t prot) {
+    return RESP_ARRAY == prot || RESP_SET == prot || RESP_PUSHE == prot
+        || RESP_MAP == prot || RESP_ATTR == prot;
+}
+// 聚合节点压值：nelem >= 0 压按 nelem 预分配的空容器（同 redis.node，0 即空表），
+// <0（RESP3 的 nil 聚合）negfalse 非 0 压 false，否则压 nil
+static void _lprot_redis_aggval(lua_State *lua, redis_pack_ctx *pk, int32_t negfalse) {
+    if (pk->nelem >= 0) {
+        _lprot_redis_push(lua, pk, 0);
+    } else if (0 != negfalse) {
+        lua_pushboolean(lua, 0);
+    } else {
+        lua_pushnil(lua);
+    }
+}
+// 压标量值，nil 换成 false：写进表的值不能是 nil
+static void _lprot_redis_scalar(lua_State *lua, redis_pack_ctx *pk) {
+    _lprot_redis_push(lua, pk, 0);
+    if (lua_isnil(lua, -1)) {
+        lua_pop(lua, 1);
+        lua_pushboolean(lua, 0);
+    }
+}
+// 弹出栈顶值追加到 idx 处的表尾，同 t[#t + 1] = v
+static inline void _lprot_redis_append(lua_State *lua, int32_t idx) {
+    lua_rawseti(lua, idx, (lua_Integer)lua_rawlen(lua, idx) + 1);
+}
+// 弹出栈顶值，以 kidx 处暂存的键写进 tidx 处的表；键为 nil 或 NaN（RESP3 的 ,nan）时整对丢弃
+static void _lprot_redis_mapset(lua_State *lua, int32_t tidx, int32_t kidx) {
+    int32_t type = lua_type(lua, kidx);
+    if (LUA_TNIL == type
+        || (LUA_TNUMBER == type && isnan(lua_tonumber(lua, kidx)))) {
+        lua_pop(lua, 1);
+        return;
+    }
+    lua_pushvalue(lua, kidx);
+    lua_insert(lua, -2);
+    lua_rawset(lua, tidx);
+}
+// 栈顶的聚合表开成新的一层：补一格暂存键，记下计数与类型。返回新深度
+static int32_t _lprot_redis_open(lua_State *lua, redis_unpack_frame *stack, int32_t depth,
+    redis_pack_ctx *pk) {
+    ASSERTAB(depth < REDIS_MAX_DEPTH, "redis unpack stack overflow.");
+    redis_unpack_frame *fr = &stack[depth];
+    fr->status = 0;
+    fr->isattr = (RESP_ATTR == pk->prot);
+    fr->ismap = (fr->isattr || RESP_MAP == pk->prot);
+    fr->nelem = fr->ismap ? pk->nelem * 2 : pk->nelem;
+    lua_pushnil(lua);
+    return depth + 1;
+}
+// 栈顶层消费一个节点：计数归零即出栈并级联消费父层，attr 出栈后停（它不占父层的元素数）；
+// 出栈层在 Lua 栈上的表与暂存键一并丢掉。返回新深度
+static int32_t _lprot_redis_consume(lua_State *lua, redis_unpack_frame *stack, int32_t depth) {
+    while (depth > 0) {
+        stack[depth - 1].nelem--;
+        if (stack[depth - 1].nelem > 0) {
+            break;
+        }
+        depth--;
+        if (0 != stack[depth].isattr) {
+            break;
+        }
+    }
+    lua_settop(lua, 2 * depth + 2);
+    return depth;
+}
+// 多节点回复，首节点必须是聚合。Lua 栈布局：1 = pk，2 = 结果，第 i 层（0 起）的表在 3+2i、
+// 暂存键在 4+2i；每处理完一个节点栈顶都回到 2+2*depth
+static int32_t _lprot_redis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
+    redis_unpack_frame stack[REDIS_MAX_DEPTH];
+    redis_unpack_frame *parent;
+    int32_t depth = 0;
+    int32_t tidx;
+    int32_t isattr;
+    int32_t askey;
+    if (!_lprot_redis_isagg(pk->prot)) {
+        LOG_WARN("resp message error.");
+        return lpub_rtn_nil(lua, 1);
+    }
+    lua_settop(lua, 1);
+    luaL_checkstack(lua, 2 * REDIS_MAX_DEPTH + 8, NULL);// 每层占表与暂存键两格，另留几格临时值
+    // 首节点为 attr 时结果多包一层数组：{val} / {{}} / {}，后面的值依次追加
+    isattr = (RESP_ATTR == pk->prot);
+    if (pk->nelem > 0) {
+        if (isattr) {
+            lua_createtable(lua, 1, 0);
+        }
+        _lprot_redis_aggval(lua, pk, 0);
+        lua_pushvalue(lua, -1);
+        if (isattr) {
+            lua_rawseti(lua, 2, 1);
+        }
+        depth = _lprot_redis_open(lua, stack, depth, pk);
+    } else if (0 == pk->nelem) {
+        lua_createtable(lua, isattr, 0);
+        if (isattr) {
+            lua_createtable(lua, 0, 0);
+            lua_rawseti(lua, 2, 1);
+        }
+    } else if (isattr) {
+        lua_createtable(lua, 0, 0);
+    } else {
+        return lpub_rtn_nil(lua, 1);
+    }
+    for (pk = pk->next; NULL != pk; pk = pk->next) {
+        if (0 == depth) {
+            // 顶层多值（attr 之后的数据）：顺序追加进结果
+            if (!_lprot_redis_isagg(pk->prot)) {
+                _lprot_redis_scalar(lua, pk);
+                _lprot_redis_append(lua, 2);
+                continue;
+            }
+            _lprot_redis_aggval(lua, pk, 1);
+            if (pk->nelem > 0) {
+                lua_pushvalue(lua, -1);
+                _lprot_redis_append(lua, 2);
+                depth = _lprot_redis_open(lua, stack, depth, pk);
+            } else {
+                _lprot_redis_append(lua, 2);
+            }
+            continue;
+        }
+        parent = &stack[depth - 1];
+        tidx = 2 * depth + 1;
+        if (!_lprot_redis_isagg(pk->prot)) {
+            if (0 == parent->ismap) {
+                _lprot_redis_scalar(lua, pk);
+                _lprot_redis_append(lua, tidx);
+            } else if (0 == parent->status) {
+                parent->status = 1;
+                _lprot_redis_push(lua, pk, 0);
+                lua_replace(lua, tidx + 1);
+            } else {
+                parent->status = 0;
+                _lprot_redis_scalar(lua, pk);
+                _lprot_redis_mapset(lua, tidx, tidx + 1);
+            }
+            depth = _lprot_redis_consume(lua, stack, depth);
+            continue;
+        }
+        // 父为 map/attr 且自身不是 attr 时键值交替，否则顺序追加。
+        // 当键暂存时 nil 聚合取 nil（随后整对丢弃），其余位置取 false
+        isattr = (RESP_ATTR == pk->prot);
+        askey = (0 != parent->ismap && !isattr && 0 == parent->status);
+        _lprot_redis_aggval(lua, pk, !askey);
+        lua_pushvalue(lua, -1);
+        if (askey) {
+            parent->status = 1;
+            lua_replace(lua, tidx + 1);
+        } else if (0 != parent->ismap && !isattr) {
+            parent->status = 0;
+            _lprot_redis_mapset(lua, tidx, tidx + 1);
+        } else {
+            _lprot_redis_append(lua, tidx);
+        }
+        if (pk->nelem > 0) {
+            depth = _lprot_redis_open(lua, stack, depth, pk);
+        } else if (isattr) {
+            lua_pop(lua, 1);// 空 attr 与 nil attr 不占父层的元素数
+        } else {
+            depth = _lprot_redis_consume(lua, stack, depth);
+        }
+    }
+    lua_settop(lua, 2);
+    return 1;
+}
+/// <summary>
+/// 把一条 RESP 回复（redis_pack_ctx 链表）整段转成 Lua 值。聚合转成表：array/set/push 为数组，
+/// map/attr 为键值表，键为 nil 或 NaN 的整对丢弃；写进表的 nil 一律写成 false（当值的 nil 聚合同样）。
+/// 嵌在聚合里的 attr 按顺序追加进所在的表（父为 map 也是追加到 #t + 1）。回复以 attr 开头时结果多包
+/// 一层数组：首个 attr 的表在前（空 attr 为空表，nil attr 不占位），其后的 attr 与数据依次追加。
+/// 多节点却不以聚合开头、聚合声明了元素却没有后继节点时打 WARN
+/// </summary>
+/// <param name="pk" type="lightuserdata?">回复首节点指针；nil 时返回 nil</param>
+/// <returns type="any">解包后的值：标量原样；空聚合为空表；nil 聚合、坏包与 pk 为 nil 时为 nil</returns>
+static int32_t _lprot_redis_unpack(lua_State *lua) {
+    int32_t type = lua_type(lua, 1);
+    if (LUA_TNIL == type || LUA_TNONE == type) {
+        return lpub_rtn_nil(lua, 1);
+    }
+    LUACHECK_LUDATA_OPT(lua, 1);
+    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    if (NULL == pk) {
+        return lpub_rtn_nil(lua, 1);
+    }
+    if (NULL != pk->next) {
+        return _lprot_redis_unpack_multi(lua, pk);
+    }
+    // 单节点：标量原值，空聚合为空表，nil 聚合为 nil
+    if (!_lprot_redis_isagg(pk->prot)) {
+        _lprot_redis_push(lua, pk, 0);
+        return 1;
+    }
+    if (0 == pk->nelem) {
+        lua_createtable(lua, 0, 0);
+        return 1;
+    }
+    if (-1 != pk->nelem) {
+        LOG_WARN("resp message error.");// 声明了元素却没有后继节点
+    }
+    return lpub_rtn_nil(lua, 1);
+}
 /// <summary>
 /// 将命令及参数编成 RESP 请求（array of bulk string）。参数按 tostring 转串，数字照 num_str 的规则：
 /// 整数值的浮点按整数写，其余浮点同 tostring；nil 编成空 bulk 并打一条告警
@@ -1054,6 +1265,7 @@ LUAMOD_API int luaopen_redis(lua_State *lua) {
         { "value", _lprot_redis_value },
         { "next", _lprot_redis_next },
         { "node", _lprot_redis_node },
+        { "unpack", _lprot_redis_unpack },
         { "pack", _lprot_redis_pack },
         { NULL, NULL },
     };

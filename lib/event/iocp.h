@@ -26,7 +26,7 @@ typedef struct overlap_cmd_ctx {
     evsock_ctx ol_r;          // 完成包回投的 evsock_ctx：ev_cb = _iocp_on_cmd，fd 恒为 INVALID_SOCK
     tda_ctx tda;            // 队列长度告警翻倍状态（init = fsqu 容量 / QUEUE_OVERLOAD_RATIO）
     cmdq qu;            // 命令队列（多生产者，单消费者批量 pop；元素 cmd_ctx）
-    atomic_t wake_pending;  // 唤醒在途标志：1=已投未消费，生产者据此不再重投；消费端抽队列前清 0
+    atomic_t wake_pending;  // 唤醒标志：为 1 时生产者不投唤醒；何时清 0 见 _send_cmd
 }overlap_cmd_ctx;
 // 事件监听器上下文（每个工作线程一个）
 typedef struct watcher_ctx {
@@ -40,6 +40,8 @@ typedef struct watcher_ctx {
     timer_ctx timer;            // 计时器
     overlap_cmd_ctx cmd;        // 命令通道（fsqu 多生产者，单通道足够）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
+    list_ctx flushes;           // 本轮攒下待发的明文连接(STATUS_FLUSHPEND 置位期间在链上)，
+                                // 由 _iocp_flush_pending 统一冲
     list_ctx lingers;           // 延迟关闭中的连接(按进入时刻先后串,队头最旧)
     ev_tick linger_tick;        // 驱动上面那条链的 tick(cb 非 NULL 表示已挂;链空即摘)
 #if WITH_SSL
@@ -78,8 +80,12 @@ void _iocp_add_conn_inloop(watcher_ctx *watcher, struct evsock_ctx *evsk, netadd
 void _iocp_add_fd_inloop(watcher_ctx *watcher, struct evsock_ctx *evsk);
 // 提交WSARecv异步接收请求
 int32_t _iocp_post_recv(evsock_ctx *evsk, DWORD *bytes, DWORD *flag, IOV_TYPE *wsabuf, DWORD niov);
-// 将数据加入TCP发送队列，若当前未发送则立即提交WSASend
-void _iocp_add_bufs_trypost(evsock_ctx *evsk, off_buf_ctx *buf);
+// 将数据加入TCP发送队列。未在发送时：明文挂进 watcher->flushes 攒着不立即发(已在链上且攒满
+// MAX_SEND_NIOV 条就先同步发一批)，SSL 投 0 字节探针
+void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf);
+// 把 watcher->flushes 上攒的连接逐个同步发出，发不完的投 0 字节探针接力。
+// 由事件线程在整轮派发后、以及进等待前抽完命令后调用
+void _iocp_flush_pending(watcher_ctx *watcher);
 // 队列空且无在途 IRP 时同步 WSASendTo 一次，省掉调用方的 MALLOC+memcpy；返回值契约同 _evpub_try_sendto，
 // 但同步失败一律返 1 让调用方排队，不像 uev 侧那样就地断连
 int32_t _iocp_try_sendto(evsock_ctx *evsk, const void *data, size_t len, netaddr_ctx *addr);

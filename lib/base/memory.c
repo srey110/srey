@@ -78,7 +78,7 @@ static mem_trk_ctx *_trk_bucket[MEM_TRK_BUCKET];
 static size_t _trk_hash(void *ptr) {
     return ((uintptr_t)ptr >> 4) & (MEM_TRK_BUCKET - 1);
 }
-// 捕获当前调用栈，跳过本函数与 _malloc 等包装帧
+// 捕获当前调用栈，跳过本函数与 _trk_add 两帧。_trk_add 须由 _malloc 等对外入口直接调，回溯才从入口开始
 static int32_t _trk_capture(void **stack, int32_t max) {
 #if defined(OS_WIN)
     return (int32_t)CaptureStackBackTrace(2, (DWORD)max, stack, NULL);
@@ -171,14 +171,36 @@ static void _trk_dump(void) {
 #if MEMORY_CHECK
 // 首次调用给本线程钉一格,此后只自增。格只管分流,不保证只有本线程写:协程在别的线程上恢复后,
 // 编译器复用挂起前的 TLS 地址,会加到原线程那格上。所以一律原子加,读写两步会跟原线程互相吃掉计数
-static inline void _mem_count(int32_t is_alloc) {
+static inline mem_slot *_mem_slot(void) {
     if (NULL == _slot) {
         int64_t seq = ATOMIC64_ADD_RELAXED(&_slotseq, 1);// 返回旧值
         _slot = &_slots[(seq < MEM_SLOTS) ? (size_t)seq : MEM_SLOTS];
     }
-    ATOMIC64_ADD_RELAXED(is_alloc ? &_slot->nalloc : &_slot->nfree, 1);
+    return _slot;
+}
+static inline void _mem_count(int32_t is_alloc) {
+    mem_slot *slot = _mem_slot();
+    ATOMIC64_ADD_RELAXED(is_alloc ? &slot->nalloc : &slot->nfree, 1);
 }
 #endif//MEMORY_CHECK
+// 下面两个只做分配器调用与 OOM 退出；计数与分配追踪由外层入口做（_trk_add 的位置见 _trk_capture）
+static inline void *_malloc_raw(size_t size) {
+    void *ptr = _MALLOC(size);
+    if (NULL == ptr) {
+        LOG_ERROR("malloc(%zu) failed!", size);
+        exit(ERR_FAILED);
+    }
+    return ptr;
+}
+// 已有块改大小：oldptr 非 NULL、size 非 0
+static inline void *_realloc_raw(void *oldptr, size_t size) {
+    void *ptr = _REALLOC(oldptr, size);
+    if (NULL == ptr) {
+        LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
+        exit(ERR_FAILED);
+    }
+    return ptr;
+}
 void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
 #if MEMORY_CHECK
     uint64_t na = (uint64_t)ATOMIC64_GET_RELAXED(&_slots[MEM_SLOTS].nalloc);
@@ -199,15 +221,25 @@ void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
     SET_PTR(nfree, 0);
 #endif
 }
+void mem_count_add(uint64_t nalloc, uint64_t nfree) {
+#if MEMORY_CHECK
+    mem_slot *slot = _mem_slot();
+    if (0 != nalloc) {
+        ATOMIC64_ADD_RELAXED(&slot->nalloc, nalloc);
+    }
+    if (0 != nfree) {
+        ATOMIC64_ADD_RELAXED(&slot->nfree, nfree);
+    }
+#else
+    (void)nalloc;
+    (void)nfree;
+#endif
+}
 void *_malloc(size_t size) {
 #if MEMORY_CHECK
     _mem_count(1);
 #endif
-    void *ptr = _MALLOC(size);
-    if (NULL == ptr) {
-        LOG_ERROR("malloc(%zu) failed!", size);
-        exit(ERR_FAILED);
-    }
+    void *ptr = _malloc_raw(size);
 #if MEM_TRACE_ON
     _trk_add(ptr);
 #endif
@@ -238,10 +270,28 @@ void *_realloc(void* oldptr, size_t size) {
 #if MEM_TRACE_ON
     _trk_del(oldptr);
 #endif
-    void *ptr = _REALLOC(oldptr, size);
-    if (NULL == ptr) {
-        LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
-        exit(ERR_FAILED);
+    void *ptr = _realloc_raw(oldptr, size);
+#if MEM_TRACE_ON
+    _trk_add(ptr);
+#endif
+    return ptr;
+}
+void *_realloc_nc(void *oldptr, size_t size) {
+    void *ptr;
+    if (NULL == oldptr) {
+        if (0 == size) {
+            return NULL;
+        }
+        ptr = _malloc_raw(size);
+    } else {
+        if (0 == size) {
+            _free_nc(oldptr);
+            return NULL;
+        }
+#if MEM_TRACE_ON
+        _trk_del(oldptr);
+#endif
+        ptr = _realloc_raw(oldptr, size);
     }
 #if MEM_TRACE_ON
     _trk_add(ptr);
@@ -255,6 +305,15 @@ void _free(void* ptr) {
 #if MEMORY_CHECK
     _mem_count(0);
 #endif
+#if MEM_TRACE_ON
+    _trk_del(ptr);
+#endif
+    _FREE(ptr);
+}
+void _free_nc(void *ptr) {
+    if (NULL == ptr) {
+        return;
+    }
 #if MEM_TRACE_ON
     _trk_del(ptr);
 #endif

@@ -481,7 +481,7 @@ static void _uev_loop_event(void *arg) {
                 // _uev_disconnect(它对非 SOCK_STREAM 一律 UPCAST 成 udp_ctx 会越界),只记日志
                 if (SOCK_STREAM == evsk->type
                     || SOCK_DGRAM == evsk->type) {
-                    _uev_disconnect(watcher, evsk);
+                    _uev_disconnect_failed(watcher, evsk);
                 } else if (evsk == &watcher->pipe.skpip) {
                     LOG_FATAL("watcher %d cmd pipe lost its knote, this thread no longer takes commands.",
                               watcher->index);

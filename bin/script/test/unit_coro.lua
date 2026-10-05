@@ -8,7 +8,7 @@
 -- 那个用例一旦被跳过、或两者调用路径分叉，这块就没人看着了。
 --
 -- 末尾一段测消息载荷的释放时机：同步跑完的回调由 C 在分发返回后回收（攒批释放）；中途挂起过的回调
--- 留到回调结束由 _coro_exec 交还；等待者拿到的 msg 只到本协程下次挂起前有效。
+-- 留到回调结束由 _coro_exec 交还（分发返回时补挂带 __gc 的元表兜底）；等待者拿到的 msg 只到本协程下次挂起前有效。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -26,6 +26,7 @@ local RT_NEST       = 0x210 -- 回调里嵌套 serial / fork_wait / fork 后回�
 local RT_THROW      = 0x211 -- 同步回显后抛错
 local RT_THROW_Y    = 0x212 -- 挂起后回显再抛错
 local RT_GATE       = 0x213 -- 等 NPOOL 条到齐后回显
+local RT_HELD       = 0x214 -- 拿着本条 msg 挂起，记下挂起前后的元表与 data 后回显
 local CORO_POOL_MAX = 128 -- 同 lib/srey.lua 的协程池上限
 local NPOOL         = 200 -- 同时挂着的回调数，要超过 CORO_POOL_MAX
 
@@ -61,6 +62,36 @@ local function _upvalue(f, name)
         end
         if name == n then
             return v, i
+        end
+    end
+end
+
+-- 顺 upvalue 摸到 srey.lua 的 _coro_exec：message_dispatch → _dispatchers → REQUEST 分发 → _coro_run → _coro_new
+local function _find_exec()
+    local disp = _upvalue(message_dispatch, "_dispatchers")
+    local run = disp and _upvalue(disp[srey.MSG_TYPE.REQUEST], "_coro_run")
+    local new = run and _upvalue(run, "_coro_new")
+    return new and _upvalue(new, "_coro_exec")
+end
+
+-- 回调拿不到自己那条 msg：在当前协程栈上找 _coro_exec 那一帧，取它的 msg 实参
+local function _exec_msg(exec)
+    for level = 2, 32 do
+        local info = debug.getinfo(level, "f")
+        if nil == info then
+            return nil
+        end
+        if exec == info.func then
+            for i = 1, 16 do
+                local n, v = debug.getlocal(level, i)
+                if nil == n then
+                    return nil
+                end
+                if "msg" == n then
+                    return v
+                end
+            end
+            return nil
         end
     end
 end
@@ -269,7 +300,7 @@ runner.run(function(t)
         t:eq(s0, _sessions(), "等待者全摘空后两个条目都删了")
     end
 
-    -- ── 不可 yield 处走 _coro_wait（srey.sleep）：立即抛错，不登记 ──────
+    -- ── 不可 yield 处调 srey.sleep：立即抛错，不登记 ────────────────────
     -- 以前先登记 coro_sess 再 yield 失败：nyield / nwait 只加不减，到点后旧条目带着旧 sess
     -- 唤醒同一协程后来的无关等待，报 different session 把它打断
     do
@@ -297,6 +328,48 @@ runner.run(function(t)
         end
         srey.sleep(100)
         t:eq(4, hit, "之后的 fork 全部执行")
+    end
+
+    -- ── 不可 yield 处调各挂起接口：报错带接口名，不登记 ────────────────────
+    -- 守卫在各挂起接口入口，报的是业务调的那个接口，不是内部的 _coro_wait。
+    -- 连接类传失效连接：守卫要排在 wait_skid / sock_session 之前，否则直接返回、根本不报错。
+    -- 末尾在裸 coroutine.wrap 里调 sleep：不在框架协程里，走守卫的另一条分支
+    do
+        local sk = srey.sock_invalid()
+        local me = srey.task_handle()
+        local cases = {
+            { "srey.request", function() srey.request(me, 0x100, "x") end },
+            { "srey.syn_send", function() srey.syn_send(sk, "x") end },
+            { "srey.syn_recv", function() srey.syn_recv(sk) end },
+            { "srey.syn_slice", function() srey.syn_slice(sk) end },
+            { "srey.wait_connect", function() srey.wait_connect(sk) end },
+            { "srey.wait_ssl_exchanged", function() srey.wait_ssl_exchanged(sk) end },
+            { "srey.wait_handshaked", function() srey.wait_handshaked(sk) end },
+            { "srey.sync_close", function() srey.sync_close(sk) end },
+            { "srey.syn_sendto", function() srey.syn_sendto(sk, "127.0.0.1", UDP_PORT, "x") end },
+            { "srey.connect", function() srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT) end },
+        }
+        local c0 = _counts()
+        local name, call, ok, err
+        for i = 1, #cases do
+            name, call = cases[i][1], cases[i][2]
+            ok, err = pcall(table.sort, { 2, 1 }, function(a, b)
+                call()
+                return a < b
+            end)
+            t:eq(false, ok, "sort 比较器里 " .. name .. " 抛错")
+            -- 接口名紧跟原因，顺带区分 syn_send 与 syn_sendto
+            t:check(nil ~= string.find(tostring(err), name .. " cannot yield", 1, true),
+                    name .. " 报错带接口名且说明挂不起（实际 " .. tostring(err) .. "）")
+        end
+        ok, err = pcall(coroutine.wrap(function() srey.sleep(10) end))
+        t:eq(false, ok, "裸 coroutine.wrap 里 sleep 抛错")
+        t:check(nil ~= string.find(tostring(err), "srey.sleep must be called from within", 1, true),
+                "报错说明不在框架协程里（实际 " .. tostring(err) .. "）")
+        local c1 = _counts()
+        t:eq(c0.sess, c1.sess, "coro_sess 条目数不变")
+        t:eq(c0.susp, c1.susp, "coro_sess 等待者不残留")
+        t:eq(c0.nyield, c1.nyield, "nyield 不残留")
     end
 
     -- ── 超时合成消息的 msg() 取法 ─────────────────────────────────────
@@ -329,6 +402,8 @@ runner.run(function(t)
     -- 内容是几 KB 到 70000 字节的长串、各条首尾不同，比对用 check 不用 eq，免得失败时把整串打进日志
     local inflight, peak = 0, 0
     local ser = srey.serial()
+    local exec = _find_exec()
+    local held = {}-- RT_HELD 回调记下的观察值
     srey.on_requested(function(reqtype, sess, src, data, size)
         if reqtype >= RT_ECHO and reqtype <= RT_ECHO + 3 then
             for _ = 1, reqtype - RT_ECHO do
@@ -376,6 +451,19 @@ runner.run(function(t)
             end
             inflight = inflight - 1
             srey.response(src, reqtype, sess, ERR_OK, srey.ud_str(data, size))
+        elseif RT_HELD == reqtype then
+            -- debug.getmetatable 绕过 __metatable，看得到挂的是哪张元表
+            local m = exec and _exec_msg(exec)
+            held.msg = m
+            if m then
+                held.mt0 = getmetatable(m)
+                held.gc0 = nil ~= debug.getmetatable(m).__gc
+                srey.sleep(5)
+                held.mt1 = getmetatable(m)
+                held.gc1 = nil ~= debug.getmetatable(m).__gc
+                held.same = nil ~= m.data and data == m.data
+            end
+            srey.response(src, reqtype, sess, ERR_OK, srey.ud_str(data, size))
         end
     end)
     do
@@ -383,6 +471,23 @@ runner.run(function(t)
         t:check(p == _req(RT_ECHO + 1, p), "回调 sleep 一次后读 data，内容不变")
         p = "y3<" .. string.rep("b", 70000) .. ">"
         t:check(p == _req(RT_ECHO + 3, p), "回调 sleep 三次后读 data，内容不变")
+    end
+
+    -- 回调拿着自己那条 msg 挂起：消息先挂不带 __gc 的元表，分发返回时还被拿着才补挂带 __gc 的那张；
+    -- 两张的 __metatable 都是 "msg"。回调结束由 _coro_exec 交还载荷，之后 msg.data 为 nil
+    do
+        local p = "hd<" .. string.rep("j", 70000) .. ">"
+        t:check(p == _req(RT_HELD, p), "拿着 msg 挂起后回显，内容不变")
+        if t:check(nil ~= held.msg, "摸到回调自己那条 msg") then
+            t:eq("msg", held.mt0, "挂起前 getmetatable(msg) 是 msg")
+            t:eq("msg", held.mt1, "挂起后 getmetatable(msg) 仍是 msg")
+            t:eq(false, held.gc0, "首次挂起前挂的是不带 __gc 的元表")
+            t:eq(true, held.gc1, "分发返回时还被拿着，补挂了带 __gc 的元表")
+            t:eq(true, held.same, "挂起后 msg.data 仍是原载荷")
+            t:eq(nil, held.msg.data, "回调结束交还后 msg.data 为 nil")
+            t:eq("msg", getmetatable(held.msg), "交还后元表不变")
+        end
+        held.msg = nil
     end
 
     -- 两条并发：先到的在 serial 里 sleep，后到的在 serial 队列里等；各自再 fork_wait、fork
@@ -459,13 +564,9 @@ runner.run(function(t)
     end
 
     -- ── 同步回调不调 msg_release，挂起过的回调各调一次 ─────────────────────
-    -- 本文件唯一用 debug 的地方：_coro_exec 的 msg_release 是 srey.lua 加载时取的局部别名，
-    -- 换 task.msg_release 换不到它，只能顺 upvalue 摸到 _coro_exec 临时换成计数包装，测完还原
+    -- _coro_exec 的 msg_release 是 srey.lua 加载时取的局部别名，换 task.msg_release 换不到它，
+    -- 只能用前面 _find_exec 摸到的 _coro_exec 临时换成计数包装，测完还原
     do
-        local disp = _upvalue(message_dispatch, "_dispatchers")
-        local run = disp and _upvalue(disp[srey.MSG_TYPE.REQUEST], "_coro_run")
-        local new = run and _upvalue(run, "_coro_new")
-        local exec = new and _upvalue(new, "_coro_exec")
         local orig, idx
         if exec then
             orig, idx = _upvalue(exec, "msg_release")

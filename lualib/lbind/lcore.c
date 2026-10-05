@@ -64,7 +64,7 @@ static void *_lcore_opt_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *
 /// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
-/// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
+/// <returns type="boolean">投递成功 true；目标不存在 false</returns>
 static int32_t _lcore_call(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
@@ -72,14 +72,13 @@ static int32_t _lcore_call(lua_State *lua) {
     size_t size;
     int32_t copy;
     data = _lcore_opt_buf(lua, 3, &size, &copy);
-    task_ctx *dst = lpub_task_grab(lua, 1, handle);
-    if (NULL == dst) {
-        CHECK_COPY_FREE(data, copy);
-        return lpub_rtn_bool(lua, 0);
+    // 句柄投不到就按名字重查换句柄再试一次（缓存的句柄可能已过期）
+    if (ERR_OK == task_call_to(g_loader, handle, reqtype, data, size, copy)
+        || ERR_OK == task_call_to(g_loader, lpub_task_refresh(lua, 1, handle), reqtype, data, size, copy)) {
+        return lpub_rtn_bool(lua, 1);
     }
-    task_call(dst, reqtype, data, size, copy);
-    task_ungrab(dst);
-    return lpub_rtn_bool(lua, 1);
+    CHECK_COPY_FREE(data, copy);
+    return lpub_rtn_bool(lua, 0);
 }
 // 校验 dsts table 类型 + 逐元素类型(string/integer 名或 nil)。成功返回长度(>=0);
 // dsts 非 table 或含非法元素返回 -1。内部的 luaL_len 会走 __len 元方法、也会对非整数结果自行抛错,
@@ -214,7 +213,7 @@ static int32_t _lcore_multi_call(lua_State *lua) {
 /// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
-/// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
+/// <returns type="boolean">投递成功 true；目标不存在 false</returns>
 static int32_t _lcore_request(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
@@ -224,14 +223,13 @@ static int32_t _lcore_request(lua_State *lua) {
     int32_t copy;
     LPUB_CUR_TASK(lua, src);
     data = _lcore_opt_buf(lua, 4, &size, &copy);
-    task_ctx *dst = lpub_task_grab(lua, 1, handle);
-    if (NULL == dst) {
-        CHECK_COPY_FREE(data, copy);
-        return lpub_rtn_bool(lua, 0);
+    // 重试口径同 _lcore_call
+    if (ERR_OK == task_request_to(g_loader, handle, src, reqtype, sess, data, size, copy)
+        || ERR_OK == task_request_to(g_loader, lpub_task_refresh(lua, 1, handle), src, reqtype, sess, data, size, copy)) {
+        return lpub_rtn_bool(lua, 1);
     }
-    task_request(dst, src, reqtype, sess, data, size, copy);
-    task_ungrab(dst);
-    return lpub_rtn_bool(lua, 1);
+    CHECK_COPY_FREE(data, copy);
+    return lpub_rtn_bool(lua, 0);
 }
 /// <summary>
 /// 向请求方 task 回复响应消息，携带错误码及可选数据
@@ -243,7 +241,7 @@ static int32_t _lcore_request(lua_State *lua) {
 /// <param name="data" type="string|lightuserdata|nil">响应数据；nil 表示无数据</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
-/// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
+/// <returns type="boolean">投递成功 true；目标不存在 false</returns>
 static int32_t _lcore_response(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
@@ -253,14 +251,13 @@ static int32_t _lcore_response(lua_State *lua) {
     size_t size;
     int32_t copy;
     data = _lcore_opt_buf(lua, 5, &size, &copy);
-    task_ctx *dst = lpub_task_grab(lua, 1, handle);
-    if (NULL == dst) {
-        CHECK_COPY_FREE(data, copy);
-        return lpub_rtn_bool(lua, 0);
+    // 重试口径同 _lcore_call
+    if (ERR_OK == task_response_to(g_loader, handle, reqtype, sess, erro, data, size, copy)
+        || ERR_OK == task_response_to(g_loader, lpub_task_refresh(lua, 1, handle), reqtype, sess, erro, data, size, copy)) {
+        return lpub_rtn_bool(lua, 1);
     }
-    task_response(dst, reqtype, sess, erro, data, size, copy);
-    task_ungrab(dst);
-    return lpub_rtn_bool(lua, 1);
+    CHECK_COPY_FREE(data, copy);
+    return lpub_rtn_bool(lua, 0);
 }
 /// <summary>
 /// 在当前 task 上监听 TCP/UDP 端口
@@ -696,7 +693,8 @@ static int32_t _lcore_task_list(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 获取全局内存分配/释放统计（MEMORY_CHECK 关闭时全为 0）
+/// 获取全局内存分配/释放统计（MEMORY_CHECK 关闭时全为 0）。
+/// Lua 虚拟机的分配次数按调度轮并入，正在跑的这一轮（含本 task 当前这一轮）不在其中，运行期是近似值（见 memory.h mem_stat）
 /// </summary>
 /// <returns type="MemStat">分配计数快照</returns>
 static int32_t _lcore_mem_stat(lua_State *lua) {

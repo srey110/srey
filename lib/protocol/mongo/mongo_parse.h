@@ -32,5 +32,11 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack);
 /// <param name="timeout">输出会话超时分钟数</param>
 /// <returns>ok 字段值（非零表示成功）</returns>
 int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32_t *timeout);
+/// <summary>
+/// 从 hello 响应取 logicalSessionTimeoutMinutes（服务端回收空闲会话的分钟数）
+/// </summary>
+/// <param name="mgpack">hello 的响应包</param>
+/// <returns>分钟数；字段缺失、不是 int32 或不是正数时返回 0（超时未知）</returns>
+int32_t mongo_parse_sesstimeout(mgopack_ctx *mgpack);
 
 #endif//MONGO_PARSE_H_

@@ -133,7 +133,7 @@ void mysql_stmt_close(mysql_stmt_ctx *stmt);
 /// <param name="mysql">mysql_ctx</param>
 void mysql_quit(mysql_ctx *mysql);
 // 以下 smtp 接口经连接内的串行化执行器串行：一封邮件是 MAIL FROM → N×RCPT TO → DATA →
-// 正文 → RSET 一长串往返，两个协程同时发信会把收件人混到一起。因此 ping / send 多一种失败：
+// 正文一长串往返，两个协程同时发信会把收件人混到一起。因此 ping / send 多一种失败：
 // 调用方不在协程内、或该连接正在 smtp_quit 销毁
 /// <summary>
 /// 电子邮件建立链接
@@ -154,17 +154,18 @@ void smtp_quit(smtp_ctx *smtp);
 /// <returns>ERR_OK 成功</returns>
 int32_t smtp_ping(smtp_ctx *smtp);
 /// <summary>
-/// 邮件发送。锁覆盖整封邮件（含收尾的 RSET），期间其他协程的投递排队等待；
-/// RSET 失败即关闭连接——那说明连接已不干净，留着它下一封信只会被回 503
+/// 邮件发送。锁覆盖整封邮件（含失败时补发的 RSET），期间其他协程的投递排队等待。
+/// 投递成功不发 RSET（正文收到 250 时服务端已清空事务）；投递失败才发 RSET 清掉服务端留下的半截信封，
+/// RSET 也失败即关闭连接——那说明连接已不干净，留着它下一封信只会被回 503
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 /// <param name="mail">mail_ctx</param>
 /// <returns>ERR_OK 邮件已投递。只反映这封邮件的成败，不反映连接状态——
-/// 邮件投递成功而收尾的 RSET 失败时连接已被关掉，仍返 ERR_OK，
+/// 投递失败且补发的 RSET 也失败时连接已被关掉，
 /// 下一次发送要么先 smtp_ping 重连，要么就在已关的连接上失败</returns>
 int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 // 以下 pgsql 命令接口全部经连接内的串行化执行器串行发出：pgsql 一条命令要读到 ReadyForQuery
-// 才算完，copy_in 更是两次往返，多协程共用一条连接时命令交错会让整条连接报错。
+// 才算完，copy_in 更是要收两包，多协程共用一条连接时命令交错会让整条连接报错。
 // 因此每个命令都多一种失败：调用方不在协程内、或该连接正在 pgsql_quit 销毁（失败值同各自的
 // 网络失败，不额外区分）。经 pgsql_try_connect 自行建立的连接不受管，行为与从前一致。
 // 唯一有意不串行化的是 pgsql_cancel——见该函数说明
@@ -236,7 +237,8 @@ pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *
 void pgsql_stmt_close(pgsql_ctx *pg, const char *name);
 /// <summary>
 /// 执行 COPY FROM STDIN（单次批量写入）
-/// 内部流程：发送 COPY SQL 触发 CopyInResponse → 发送 CopyData + CopyDone → 等待 ReadyForQuery
+/// 内部流程：COPY SQL、CopyData、CopyDone 一次发出 → 等 CopyInResponse → 等 ReadyForQuery。
+/// 语句本身失败时数据也已发出（服务端忽略），数据量大时白传一次
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="sql">包含 FROM STDIN 的 COPY SQL 语句</param>
@@ -255,6 +257,7 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
 // 不等响应也不能乱序，后面那条 find 得看得见前面这批 insert）。因此每个命令都多一种失败：
 // 调用方不在协程内、或该连接正在 mongo_quit 销毁（失败值同各自的网络失败，不额外区分）。
 // 经 mongo_try_connect 自行建立的连接不受管，行为与从前一致。
+// 例外：mongo_startsession（本地生成 lsid）与 mongo_begin（只改本地状态）不发命令、不取锁、不挂起。
 // 注意串行化只保证**单条命令**原子，不保证**事务**原子：事务上下文挂在连接上
 // （mongo_ctx.session），别人的命令挤在 mongo_begin 与 commit/rollback 之间时，
 // 组包侧照样会给它附上本事务的 lsid/txnNumber。要事务隔离，须由调用方在
@@ -277,7 +280,7 @@ void mongo_quit(mongo_ctx *mongo);
 /// <summary>
 /// hello 命令 显示该节点在副本集中的角色信息，包括是否为主副本。
 /// mongo_connect 内部已发过一次不带 options 的 hello，此处仅用于需要额外带 options 的场景，
-/// 且不会在 ping 重连时重放
+/// 且不会在 ping 重连时重放。成功时把回包的 logicalSessionTimeoutMinutes 记进连接，供 mongo_startsession 用
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="options">可选 其他参数 document (saslSupportedMechs)</param>
@@ -443,10 +446,13 @@ int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char 
 /// <returns>ERR_OK 成功</returns>
 int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens);
 /// <summary>
-/// startsession 命令 启动新会话。会话按 lsid 记在服务端、与连接无关，连接 quit / 重连后仍可继续用
+/// 启动新会话。lsid 在本地生成（v4 UUID），不发命令、不取锁、不挂起，服务端第一次见到该 lsid 时自动建会话，
+/// 故连接有问题要到第一次使用时才暴露。超时分钟数在开会话时取连接最近一次成功的 mongo_hello
+/// （建连、ping 重连、手动调用都算）回的 logicalSessionTimeoutMinutes，之后的 hello 不影响已开的会话；
+/// 还没成功 hello 过、或回包没给时为 0（超时未知）。会话按 lsid 记在服务端、与连接无关，连接 quit / 重连后仍可继续用
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <returns>NULL 失败 mongo_session</returns>
+/// <returns>NULL 失败（随机源失败） mongo_session</returns>
 mongo_session *mongo_startsession(mongo_ctx *mongo);
 /// <summary>
 /// refreshsession 命令 刷新空闲会话
@@ -456,10 +462,11 @@ mongo_session *mongo_startsession(mongo_ctx *mongo);
 int32_t mongo_refreshsession(mongo_session *session);
 /// <summary>
 /// endsessions 命令 使会话过期,释放mongo_session。
-/// endsessions 一律发送：服务端的会话记录不随连接消失，漏发要挂到会话超时才回收
+/// endsessions 一律发送：服务端的会话记录不随连接消失，漏发要挂到会话超时才回收。
+/// 包恒带 MORETOCOME（见 mongo_pack_endsession）只发不等，结果不看
 /// </summary>
 /// <param name="session">mongo_session；所有权交出，返回后调用方手上的指针失效。
-///   释放排在内部那次会挂起的 endsessions 之后：挂起窗口里 session 仍然有效，在途的
+///   释放排在内部等锁的那次挂起之后：挂起窗口里 session 仍然有效，在途的
 ///   commit/rollback 由 serial 锁排在本函数之前，醒来还要读 session->options。
 ///   调用方不得在此期间另行释放，返回后也不得再碰</param>
 void mongo_freesession(mongo_session *session);

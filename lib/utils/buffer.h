@@ -23,6 +23,8 @@
 // buffer_from_sock 的 _readv 回调除成功/失败外可回的额外码：这次读成功，且回调侧确知自己
 // 那层缓冲(如 SSL)已空、无须再问。收到后按成功处理并停止本轮抽取，不会透传给调用方
 #define BUFFER_READV_DRAINED 3
+// buffer_from_sock 按 hint 加大首轮空间的上限；再大会落进分配器的大块档，macOS/Windows 上反复缺页
+#define RECV_HINT_CAP (64 * 1024)
 
 typedef struct buffer_ctx {
     volatile int32_t freeze_read;  //读暂存态：buffer_get 到 buffer_commit_get 之间置位，期间禁调读接口
@@ -191,6 +193,8 @@ void buffer_commit_get(buffer_ctx *ctx, size_t lens);
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="fd">socket描述符</param>
 /// <param name="nread">读取到的长度</param>
+/// <param name="hint">socket 里可读字节数，0 表示不知道。大于 MAX_RECV_SIZE 时首轮按它要空间，加大最多到
+/// RECV_HINT_CAP，不会因此低于 MAX_RECV_SIZE；kqueue 平台裸 socket 读传 kevent 的 data，其余传 0</param>
 /// <param name="_readv">读取函数。可回 BUFFER_READV_DRAINED 表示自己那层缓冲已空，本函数
 /// 据此停止抽取并把返回值归一成 ERR_OK</param>
 /// <param name="arg">透传给 _readv 的参数。非 NULL 表示这不是裸 socket 读（调用方在 _readv 里
@@ -198,7 +202,7 @@ void buffer_commit_get(buffer_ctx *ctx, size_t lens);
 /// 内核 socket buffer 里、下一次可读事件还会来"成立，看不见那层缓冲</param>
 /// <returns>ERR_OK 成功；其余原样透传 _readv 最后一次的返回码，调用方按自己的约定解读。
 /// BUFFER_READV_DRAINED 不会透传出来，它在内部已被归一成 ERR_OK</returns>
-int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
+int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg);
 
 #endif//BUFFER_H_

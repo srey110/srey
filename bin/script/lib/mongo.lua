@@ -193,7 +193,8 @@ local function _refresh_do(self)
 end
 ---会话距超时还剩多少秒。服务端超过 logicalSessionTimeoutMinutes 未见该会话就会回收它，
 ---据此决定何时调 refresh()。事务中的每条命令都会自动续期，长事务通常不必手动刷
----@return integer secs 剩余秒数；已过期为 0 或负数
+---@return integer secs 剩余秒数；已过期为 0 或负数；超时未知（建连前开的会话、或 hello 没给
+---logicalSessionTimeoutMinutes）时恒为 0，refresh 也不改变它
 function sess_ctx:expires_in()
     return self.session:expires_in()
 end
@@ -204,7 +205,7 @@ function sess_ctx:refresh()
     return srey.serial_ret(false, self.mgoctx.serial(_refresh_do, self))
 end
 
--- 组包与发送同在锁内，理由同 _txn_do
+-- 组包与发送同在锁内，理由同 _txn_do。pack_endsession 的包恒带 MORETOCOME，_wsend 只发不等
 local function _close_do(self)
     local pack, size, more = self.session:pack_endsession()
     _wsend(self.mgoctx, pack, size, more)
@@ -284,6 +285,7 @@ function ctx:_connect()
     local mgopack = _rsend(self, pack, size)
     if not mgopack then return _fail() end
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
+    self.mongo:parse_hello(mgopack)-- 记下会话超时分钟数，startsession 本地开会话时用
     if self.user then
         -- ev_ud_status 只在连接失效时失败,而上面已判过 sk.valid,这支实际不可达;
         -- 留着是为了它哪天新增失败原因时不漏 fd,所以走 _fail() 而不是裸 return
@@ -560,19 +562,12 @@ end
 
 -- ---- 会话 ----
 
----启动服务端逻辑会话（startSession）
----@return any|nil session mongo_session_ctx 实例；失败返回 nil
+---启动逻辑会话：lsid 在本地生成，不发 startSession、不挂起，服务端第一次见到该 lsid 时自动建会话，
+---故连接有问题要到第一次使用时才暴露。超时分钟数取最近一次建连时 hello 回的值，建连前调用为 0（超时未知），
+---要读超时须先建连再开会话
+---@return any|nil session mongo_session_ctx 实例；本地生成 UUID 失败返回 nil
 function ctx:startsession()
-    local pack, size = self.mongo:pack_startsession()
-    local mgopack = _rsend(self, pack, size)
-    if not mgopack then
-        return nil
-    end
-    local uuid, timeout = self.mongo:parse_startsession(mgopack)
-    if not uuid then
-        return nil
-    end
-    local session_ud = mongo_session.new(self.mongo, uuid, timeout)
+    local session_ud = mongo_session.new(self.mongo)
     if not session_ud then
         return nil
     end

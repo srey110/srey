@@ -97,7 +97,7 @@ int32_t strtod_fast(const char *str, size_t lens, double *out);
 /// <param name="data">源字节段(可非 NUL 结尾)</param>
 /// <param name="lens">源字节数；0 视为失败</param>
 /// <param name="val">输出：解析结果；返回 ERR_FAILED 时不写</param>
-/// <returns>ERR_OK 成功；ERR_FAILED 空串/超 128 字节/有残留字符/上溢</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 空串/≥128 字节/有残留字符/上溢</returns>
 int32_t strtod_s(const void *data, size_t lens, double *val);
 
 #endif//STRCONV_H_

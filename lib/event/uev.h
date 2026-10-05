@@ -107,7 +107,8 @@ typedef struct watcher_ctx {
 #endif
 #if defined(EV_KQUEUE)
     intptr_t evdata;            // 正在派发的那条 kevent 的 data：监听 socket 上是待 accept 的连接数，
-                                // UDP socket 上是排队中所有包的负载字节总和(0 字节包不计)；拿不到时为 0
+                                // UDP socket 上是排队中所有包的负载字节总和(0 字节包不计)，
+                                // TCP 读事件上是接收缓冲里的字节数；拿不到时为 0
 #endif
     events_t *events;           // 就绪事件数组
     ev_ctx *ev;                 // 所属ev_ctx
@@ -178,6 +179,9 @@ void _uev_free_udp(evsock_ctx *evsk);
 // 标记连接为错误状态并触发关闭（TCP shutdown/UDP注册写事件）；已置 STATUS_ERROR 时直接返回
 // TCP 关闭前先走 _evpub_close_flush_tcp 冲一次 send queue；UDP 无待发队列不冲
 void _uev_disconnect(watcher_ctx *watcher, evsock_ctx *evsk);
+// 事件注册失败时断开：TCP 先按传输错记一笔(关闭类型报 ABORT、不进延迟关闭，读事件可能永远不来)，
+// 已在关的不改记；其余同 _uev_disconnect
+void _uev_disconnect_failed(watcher_ctx *watcher, evsock_ctx *evsk);
 // 释放listener_ctx（立即释放，用于主线程兜底 / worker 退出后 cleanup 路径）
 void _uev_freelsn(struct listener_ctx *lsn);
 // 递减 listener_ctx 引用计数，归零后立即释放

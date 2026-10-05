@@ -43,6 +43,7 @@ typedef struct pgpack_field {
     int32_t table_oid;      // 所属表的对象 ID
     int32_t type_oid;       // 数据类型的对象 ID
     int32_t type_modifier;  // 类型修饰符
+    uint8_t nlens;          // 字段名称字节数（不含 '\0'），名称装不下时为 0
     char name[64];          // 字段名称
 }pgpack_field;
 

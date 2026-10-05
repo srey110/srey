@@ -4,6 +4,7 @@
 #include "srey/prots_wrap.h"
 #include "protocol/prots.h"
 #include "utils/urlparse.h"
+#include "utils/uuid.h"
 #include "protocol/dns.h"
 #include "protocol/http.h"
 #include "protocol/redis.h"
@@ -719,13 +720,15 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     if (ERR_OK != _serial_lock(smtp->task, held)) {
         return ERR_FAILED;
     }
-    // 锁覆盖 _smtp_send + _smtp_reset 整段:RSET 清的是本次投递在服务端留下的会话状态,
-    // 与发送是同一笔事。分开各包一次的话,别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉
+    // 锁覆盖 _smtp_send + 失败时的 _smtp_reset:RSET 清的是本次投递留下的半截信封,与发送是同一笔事,
+    // 分开各包一次的话,别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉。
+    // 成功不发 RSET:正文收到 250 时服务端已清空事务
     int32_t rtn = _smtp_send(smtp, mail);
     // RSET 失败说明连接已经不干净,下一封信的 DATA 会被回 503,而 NOOP 仍答 250 让
     // smtp_ping 查不出来,只能就地关掉等重连。用 ev_close 不用 coro_close:不复用这条连接
     // 故不必等确认,而 RSET 失败常常正是对端已断,那条 CLOSE 已被取走,等就是持锁空等满超时
-    if (ERR_OK != _smtp_reset(smtp)) {
+    if (ERR_OK != rtn
+        && ERR_OK != _smtp_reset(smtp)) {
         smtp->established = 0;// 明知已关就别留"还连着"的假值
         smtp->generation++;// 就地拆连接同样换了身份,理由同 _serial_quit
         ev_close(&smtp->task->loader->netev, &smtp->sk);
@@ -888,31 +891,21 @@ void pgsql_stmt_close(pgsql_ctx *pg, const char *name) {
     coro_send(pg->task, &pg->sk, close, lens, NULL, 0);
     _serial_unlock(held);
 }
+// Query + CopyData + CopyDone 一次发出，先收 CopyInResponse，再收 CommandComplete + ReadyForQuery
 static pgpack_ctx *_pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {
-    // 第一步：发送 COPY SQL，等待服务端返回 CopyInResponse（PGPACK_COPY_IN）
-    size_t qsize;
-    void *query = pgsql_pack_query(sql, &qsize);
-    pgpack_ctx *pgpack = coro_send(pg->task, &pg->sk, query, qsize, NULL, 0);
-    // 不是 COPY_IN 就确实是服务端没进 COPY IN 模式(通常为 PGPACK_ERR)，直接交回调用方。
+    size_t size;
+    void *pack = pgsql_pack_copy_in(sql, data, lens, &size);
+    pgpack_ctx *pgpack = coro_send(pg->task, &pg->sk, pack, size, NULL, 0);
+    // 不是 COPY_IN 就是服务端没进 COPY IN(通常为 PGPACK_ERR)，后面两条被它忽略、不会有应答。
     // LISTEN 通知不会混进来:_pgsql_may_resume 对它返 ERR_FAILED，框架改走 recv 回调不唤醒等待者
     if (NULL == pgpack || PGPACK_COPY_IN != pgpack->type) {
         return pgpack;
     }
-    // 第一次 coro_send 的返回值 pgpack 由框架在下次 yield 时经 message_clean 自动释放，此处无需手动释放
-    // 第二步：将 CopyData + CopyDone 合并为一个缓冲区，一次发送并等待 ReadyForQuery
-    // 两段直接拼在同一个缓冲里一次发送，避免两次系统调用
-    binary_ctx bwriter;
-    binary_init_write(&bwriter, 5 + lens + 5, 0);
-    size_t offset = pgsql_pack_append_start(&bwriter, 'd');
-    binary_set_binary(&bwriter, data, lens);
-    pgsql_pack_append_end(&bwriter, offset);
-    offset = pgsql_pack_append_start(&bwriter, 'c');
-    pgsql_pack_append_end(&bwriter, offset);
-    return coro_send(pg->task, &pg->sk, bwriter.data, bwriter.offset, NULL, 0);
+    return coro_recv(pg->task, &pg->sk, NULL);
 }
 pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {
-    // 本函数是两次往返:服务端进 COPY IN 模式后,在 CopyDone 之前它只认 CopyData/CopyFail,
-    // 中间插进别人一条普通查询就整条连接报错。锁必须覆盖两次往返,不能各自包一次
+    // 一次发出、两次接收:锁必须盖住整段。在两次接收之间放开的话,别人的等待会排到
+    // 收尾那包前面把它领走
     coro_serial_ctx *held = pg->serial;
     if (ERR_OK != _serial_lock(pg->task, held)) {
         return NULL;
@@ -963,7 +956,7 @@ static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
     return err;
 }
 // 统一"组包判空 + 发送 + 同步等待响应"(不受 MORETOCOME 影响,总是等待),不校验命令级错误:
-// 调用方各有各的用法(count 要 n 值、startsession 要 session、commit/rollback 要凭有无响应)。
+// 调用方各有各的用法(count 要 n 值、commit/rollback 要凭有无响应)。
 // pack 为 NULL(组包被拒)与网络失败同样返回 NULL——两者在全部调用方那里处置相同。
 // 串行化也落在这里(与 _mongo_send 两处覆盖全部命令站点):之后只做纯解析、不再有 I/O,
 // 所以锁到本函数为止与锁整个命令函数等效。mongo_connect / mongo_ping 另有外层锁,靠 ref 嵌套
@@ -1001,7 +994,12 @@ mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options, size_t optlens) {
     size_t lens;
     void *hello = mongo_pack_hello(mongo, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
-    return _mongo_call(mongo, hello, lens);
+    mgopack_ctx *reply = _mongo_call(mongo, hello, lens);
+    if (NULL != reply) {
+        // 会话超时记进连接，本地开会话时用
+        mongo->sesstimeout = mongo_parse_sesstimeout(reply);
+    }
+    return reply;
 }
 // hello + 认证：这两步与 TCP 建连合起来才算"一条可用的连接"，故收在连接入口，
 // 首次建连与 ping 重连共用一份定义。未设用户名即视为免认证部署，只发 hello
@@ -1198,20 +1196,13 @@ int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *o
     return _mongo_send_checked(mongo, dropindexes, lens) < 0 ? ERR_FAILED : ERR_OK;
 }
 mongo_session *mongo_startsession(mongo_ctx *mongo) {
-    int32_t flags = mongo_clear_flag(mongo);
-    size_t lens;
-    void *startsession = mongo_pack_startsession(mongo, &lens);
-    mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = _mongo_sendwait(mongo, startsession, lens);
-    if (NULL == mgpack) {
-        return NULL;
-    }
     mongo_session *session;
     CALLOC(session, 1, sizeof(mongo_session));
-    if (!mongo_parse_startsession(mgpack, session->uuid, &session->timeoutmin)) {
+    if (ERR_OK != uuid_v4(session->uuid)) {
         FREE(session);
         return NULL;
     }
+    session->timeoutmin = mongo->sesstimeout;
     session->mongo = mongo;
     session->txnnumber = 0;
     mongo_session_renew(session);
@@ -1239,6 +1230,7 @@ void mongo_freesession(mongo_session *session) {
     }
     // 不看绑定:endsession 只按 session->uuid 组包,不带连接当前绑定的事务上下文。
     // 也不看连接换没换过:服务端的会话记录不随连接消失,漏发这一包就要挂到会话超时才回收
+    // 包恒带 MORETOCOME（见 mongo_pack_endsession），_mongo_send 发完即返回：endSessions 的结果本来就不看
     size_t lens;
     void *endsession = mongo_pack_endsession(session, &lens);
     // 释放必须排在 _mongo_send 之后:它取的 serial 锁把本函数排在在途 commit/rollback 之后,

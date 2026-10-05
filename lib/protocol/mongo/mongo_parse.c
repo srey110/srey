@@ -144,3 +144,17 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
     }
     return ok;
 }
+int32_t mongo_parse_sesstimeout(mgopack_ctx *mgpack) {
+    bson_ctx bson;
+    bson_init(&bson, mgpack->doc, mgpack->dlens);
+    bson_iter iter;
+    bson_iter_init(&iter, &bson);
+    int32_t minutes;
+    while (bson_iter_next(&iter)) {
+        if (KEY_IS(iter, "logicalSessionTimeoutMinutes")) {
+            minutes = bson_iter_int32(&iter, NULL);// 类型不符返 0
+            return minutes > 0 ? minutes : 0;
+        }
+    }
+    return 0;
+}

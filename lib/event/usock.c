@@ -240,7 +240,7 @@ static void _usk_wpend_link(watcher_ctx *watcher, tcp_ctx *tcp, int32_t progress
     _evpub_tick_attach(watcher, &watcher->wpend_tick, _usk_wpend_tick, watcher);
 }
 #endif
-// 本轮攒发链的挂与摘。位与"在 watcher->flushes 上"一一对应，置清位只在这两处；
+// 本轮攒发链的挂与摘。位与"在 watcher->flushes 上"一一对应，置清位在这两处(轮末冲刷摘链时就地清，见 _uev_flush_pending)；
 // 对象回池前必须先 unlink，口径同上面的 wpend
 static inline void _usk_flush_unlink(watcher_ctx *watcher, tcp_ctx *tcp) {
     if (!BIT_CHECK(tcp->status, STATUS_FLUSHPEND)) {
@@ -382,6 +382,16 @@ void _uev_disconnect(watcher_ctx *watcher, evsock_ctx *evsk) {
         }
     }
 }
+void _uev_disconnect_failed(watcher_ctx *watcher, evsock_ctx *evsk) {
+    if (SOCK_STREAM == evsk->type) {
+        tcp_ctx *tcp = UPCAST(evsk, tcp_ctx, sock);
+        // 已在关的保留原来的关闭类型
+        if (!BIT_CHECK(tcp->status, STATUS_ERROR)) {
+            _evpub_mark_close(&tcp->status, ERR_FAILED);
+        }
+    }
+    _uev_disconnect(watcher, evsk);
+}
 // 调用accept回调，返回值非ERR_OK则拒绝连接
 static inline int32_t _usk_call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.acp_cb) {
@@ -513,7 +523,13 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl_
 static inline int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nread;
     int32_t evrtn = ERR_OK;
-    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.sk.fd, &nread, _evpub_sock_read, TCP_SSL(tcp));
+#if defined(EV_KQUEUE)
+    // 明文时 evdata 是这次读事件报的可读字节数；SSL 读进来的是密文，且有补读不是读事件驱动的
+    size_t hint = (NULL == TCP_SSL(tcp) && watcher->evdata > 0) ? (size_t)watcher->evdata : 0;
+#else
+    size_t hint = 0;
+#endif
+    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.sk.fd, &nread, hint, _evpub_sock_read, TCP_SSL(tcp));
 #if WITH_SSL
     if (ERR_OK == rtn
         && NULL != tcp->ssl
@@ -633,11 +649,12 @@ static int32_t _usk_ssl_do_handshake(watcher_ctx *watcher, tcp_ctx *tcp, int32_t
         if (BIT_CHECK(tcp->sock.events, EVENT_WRITE)) {
             _uev_del_event(watcher, tcp->sock.sk.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
         }
+        // 必须先清位再回调：回调里的 ev_send 在事件线程会当场执行，位没清就被当成握手期发送断连
+        BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
         if (ERR_OK != _usk_call_ssl_exchanged_cb(watcher->ev, tcp)) {
             *err = ERR_FAILED;
             return 1;
         }
-        BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
 #ifdef READV_EINVAL
         return 0;
 #else

@@ -127,5 +127,93 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
 /// <param name="err">ERR_OK 成功  ERR_FAILED 失败 1 nil</param>
 /// <returns>1负 0 正</returns>
 int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err);
+/// <summary>
+/// 按列名取列下标：同一列要连取几次时先取一次下标，之后走 *_at 系列，不再每次按名扫列
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="name">字段名，按 nlens 整段比较，不要求 '\0' 结尾</param>
+/// <param name="nlens">字段名字节数</param>
+/// <returns>列下标；没有这一列为 -1，重名列取第一个</returns>
+int32_t mysql_reader_col(mysql_reader_ctx *reader, const char *name, size_t nlens);
+/// <summary>
+/// 同 mysql_reader_cls，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">列下标（mysql_reader_col 的结果）；不在 [0, 列数) 内（含 -1）按没有这一列处理</param>
+/// <returns>同 mysql_reader_cls</returns>
+uint8_t mysql_reader_cls_at(mysql_reader_ctx *reader, int32_t col);
+/// <summary>
+/// 同 mysql_reader_unsigned，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <returns>同 mysql_reader_unsigned</returns>
+int32_t mysql_reader_unsigned_at(mysql_reader_ctx *reader, int32_t col);
+/// <summary>
+/// 同 mysql_reader_isnull，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <returns>同 mysql_reader_isnull</returns>
+int32_t mysql_reader_isnull_at(mysql_reader_ctx *reader, int32_t col);
+/// <summary>
+/// 同 mysql_reader_integer，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="err">同 mysql_reader_integer</param>
+/// <returns>同 mysql_reader_integer</returns>
+int64_t mysql_reader_integer_at(mysql_reader_ctx *reader, int32_t col, int32_t *err);
+/// <summary>
+/// 同 mysql_reader_uinteger，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="err">同 mysql_reader_uinteger</param>
+/// <returns>同 mysql_reader_uinteger</returns>
+uint64_t mysql_reader_uinteger_at(mysql_reader_ctx *reader, int32_t col, int32_t *err);
+/// <summary>
+/// 同 mysql_reader_float，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="err">同 mysql_reader_float</param>
+/// <returns>同 mysql_reader_float</returns>
+float mysql_reader_float_at(mysql_reader_ctx *reader, int32_t col, int32_t *err);
+/// <summary>
+/// 同 mysql_reader_double，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="err">同 mysql_reader_double</param>
+/// <returns>同 mysql_reader_double</returns>
+double mysql_reader_double_at(mysql_reader_ctx *reader, int32_t col, int32_t *err);
+/// <summary>
+/// 同 mysql_reader_string，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="lens">同 mysql_reader_string</param>
+/// <param name="err">同 mysql_reader_string</param>
+/// <returns>同 mysql_reader_string</returns>
+char *mysql_reader_string_at(mysql_reader_ctx *reader, int32_t col, size_t *lens, int32_t *err);
+/// <summary>
+/// 同 mysql_reader_datetime，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="err">同 mysql_reader_datetime</param>
+/// <returns>同 mysql_reader_datetime</returns>
+int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t *err);
+/// <summary>
+/// 同 mysql_reader_time，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="time">同 mysql_reader_time</param>
+/// <param name="usec">同 mysql_reader_time</param>
+/// <param name="err">同 mysql_reader_time</param>
+/// <returns>同 mysql_reader_time</returns>
+int32_t mysql_reader_time_at(mysql_reader_ctx *reader, int32_t col, struct tm *time, uint32_t *usec, int32_t *err);
 
 #endif//MYSQL_READER_H_

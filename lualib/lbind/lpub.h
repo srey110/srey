@@ -256,10 +256,10 @@ int32_t lpub_rtn_bool(lua_State *lua, int32_t cond);
 /// 取栈位 idx 的 task 标识：string 视为 task 名，先查本 lua_State 的 名字→句柄 缓存，没有再经
 /// task_find_name 换成句柄并记进缓存；其余按 integer 当句柄直取（非整数由 luaL_checkinteger 抛错）。
 /// 各绑定对外都是"名字或句柄二选一"，判定收在这一处。
-/// 缓存条目随 lua_State 常驻：只在同名 grab 失败时由 lpub_task_grab 改写或删除，不主动清理，
+/// 缓存条目随 lua_State 常驻：只在按缓存句柄 grab / 投递失败时由 lpub_task_refresh 改写或删除，不主动清理，
 /// 故 task 名应是有限集合，别按房间 / 玩家拼动态名字。
 /// 缓存的句柄可能已过期：取 task 一律走 lpub_task_grab，之后要用句柄以返回的 task 的 handle 字段为准，
-/// 别直接 task_grab，也别接着用本函数返回的句柄。
+/// 别直接 task_grab，也别接着用本函数返回的句柄；按句柄投递（task_*_to）失败后经 lpub_task_refresh 换句柄重试一次。
 /// 记缓存会分配内存（可能抛内存错误），已接管缓冲或持有引用、不能再 longjmp 的路径改用 lpub_task_peek
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
@@ -274,8 +274,7 @@ name_t lpub_task_handle(lua_State *lua, int32_t idx);
 /// <returns>同 lpub_task_handle</returns>
 name_t lpub_task_peek(lua_State *lua, int32_t idx);
 /// <summary>
-/// 按 lpub_task_handle / lpub_task_peek 取到的句柄持有 task。栈位 idx 是名字且 grab 失败时
-/// 按名字重查一次并改写缓存（缓存里的旧句柄只会 grab 失败、不会投错：句柄不复用，名字与句柄成对增删）。
+/// 按 lpub_task_handle / lpub_task_peek 取到的句柄持有 task。grab 失败时经 lpub_task_refresh 重查一次再 grab。
 /// 不分配内存、不抛错
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
@@ -284,6 +283,17 @@ name_t lpub_task_peek(lua_State *lua, int32_t idx);
 /// <returns>task 指针（引用计数已 +1，用完 task_ungrab）；重查后仍不存在返回 NULL。
 ///   重查可能换成别的句柄，之后要用句柄就取返回值的 handle 字段，别再用入参</returns>
 task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle);
+/// <summary>
+/// 句柄用不上（grab 或按句柄投递失败）后的名字缓存重查：栈位 idx 是名字时按名字重查一次并改写缓存
+/// （缓存里的旧句柄只会查不到、不会投错：句柄不复用，名字与句柄成对增删）。不分配内存、不抛错，
+/// 已接管 copy=0 缓冲的路径也能调
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">取 handle 时用的那个参数的栈位</param>
+/// <param name="handle">刚用失败的句柄（lpub_task_handle / lpub_task_peek 的返回值）</param>
+/// <returns>重查到的新句柄；handle 为 INVALID_TNAME、栈位不是名字、名字已不存在或重查结果与 handle 相同时
+///   返回 INVALID_TNAME，表示不必再试</returns>
+name_t lpub_task_refresh(lua_State *lua, int32_t idx, name_t handle);
 /// <summary>
 /// 取栈位置 1 的子对象在创建时锚进 uservalue 槽 1 的宿主对象指针。
 /// 槽位由 uservalue 锚着，任何时候读都安全。

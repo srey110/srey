@@ -5,7 +5,8 @@
 --    publisher srey.on_responsed 累计响应数 == N,验证 valid 返回值
 -- 4) multi_request 边界: 空表返回 0、sess=0 抛错
 -- 5) 目标数 / 连接数跨过绑定层栈数组上限(multi_* 32、send_multi 64)两侧都投齐，堆档非法元素抛错
--- 6) 名字缓存过期：同名 task 退出后重新注册，按名字投递要到新 task
+-- 6) 名字缓存过期：同名 task 退出后重新注册，按名字投递要到新 task（copy=0 的载荷重查后照样投到）；
+--    名字已不存在时返回 false、载荷不泄漏
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -109,8 +110,8 @@ runner.run(function(t)
     end
 
     -- ── 消息表的共享元表受保护 ──────────────────────────────────────
-    -- 该元表全 task 共用且只挂 __gc，业务若能经 getmetatable 拿到真表并清掉 __gc，
-    -- 此后每条带载荷的消息都不再释放 C 侧 payload
+    -- 消息元表全 task 共用，带 __gc 的那张给挂起时还拿着的载荷兜底释放。业务若能经 getmetatable
+    -- 拿到真表并清掉 __gc，此后这类消息的 C 侧 payload 都不再兜底释放
     do
         local sess = srey.id()
         -- 返回值必须断言：挂在裸 if 上的话，core.request 返 false 时下面 4 条一条都不跑，
@@ -304,9 +305,9 @@ runner.run(function(t)
     -- 必须按名字重查并改写缓存，否则同名 task 重启后按名字再也投不到。
     -- 每一代 sub 的编号不同（ack 载荷是 "<idx>:..."，response 是 "ack<idx>"），据此认出投到的是哪一代
     do
-        -- 关掉当前这一代并等它从 task 表消失，再注册编号为 idx 的新一代。
+        -- 关掉当前这一代并等它从 task 表消失。
         -- 等消失只看 task_list：它不经过名字缓存，不会提前把过期条目修掉
-        local function _regen(idx)
+        local function _close_regen()
             local old = task.grab(REGEN)
             if old then
                 task.close(old)
@@ -320,6 +321,10 @@ runner.run(function(t)
                 end
                 return true
             end)
+        end
+        -- 关掉当前这一代，再注册编号为 idx 的新一代
+        local function _regen(idx)
+            _close_regen()
             t:check(nil ~= task.register("test.multi_call_sub", REGEN, 0, task.name(), idx),
                     "第 " .. idx .. " 代 sub 注册成功")
             srey.sleep(100)-- 等它的 startup 挂上 on_requested
@@ -342,11 +347,36 @@ runner.run(function(t)
         t:check(_wait(function() return 1 == ack_body["regen10"] end) and ack_seen[10],
                 "缓存过期后按名字 multi_call 投到第 10 代")
 
-        local last = task.grab(REGEN)
-        if last then
-            task.close(last)
-            task.ungrab(last)
-        end
+        -- copy=0 的 lightuserdata：投给缓存的旧句柄失败时不能放掉 data，重查后第二次投递还要用它。
+        -- 误放的话第二次带的是悬空指针，ASan 当场报，release 由退出时的内存检查兜
+        _regen(11)
+        local ud5, usz5 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "regen11")
+        local body11 = srey.ud_str(ud5, usz5)-- sub 原样回显整块载荷（含 custz 头）
+        t:eq(true, core.call(REGEN, 100, ud5, usz5, 0), "缓存过期后 copy=0 的 call 仍投递成功")
+        t:check(_wait(function() return 1 == ack_body[body11] end) and ack_seen[11],
+                "copy=0 的 call 投到第 11 代且载荷完好")
+
+        _regen(12)
+        local ud6, usz6 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "regen12")
+        local sess12 = srey.id()
+        t:eq(true, core.request(REGEN, 102, sess12, ud6, usz6, 0), "缓存过期后 copy=0 的 request 仍投递成功")
+        local msg12 = srey._coro_wait(sess12, srey.MSG_TYPE.RESPONSE, 3000)
+        t:eq("ack12", msg12.data and srey.ud_str(msg12.data, msg12.size), "copy=0 的 request 投到第 12 代")
+
+        -- 最后一代关掉、不再重注册：第一条走"缓存句柄投不到 → 按名字重查也没有"并删掉缓存条目，
+        -- 之后的走"名字直接查不到"。都返回 false，copy=0 的载荷由 C 侧释放（漏放由退出时的内存检查报出）
+        _close_regen()
+        local ud1, usz1 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "gone_call")
+        t:eq(false, core.call(REGEN, 100, ud1, usz1, 0), "名字已不存在：call 返回 false")
+        local ud2, usz2 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "gone_req")
+        t:eq(false, core.request(REGEN, 102, srey.id(), ud2, usz2, 0), "名字已不存在：request 返回 false")
+        local ud3, usz3 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "gone_resp")
+        t:eq(false, core.response(REGEN, 102, srey.id(), ERR_OK, ud3, usz3, 0), "名字已不存在：response 返回 false")
+        t:eq(false, core.call(REGEN, 100, "gone_copy"), "名字已不存在：copy=1 的 call 返回 false")
+        local ud4, usz4 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "never_req")
+        t:eq(false, core.request("multi_call_sub_never", 102, srey.id(), ud4, usz4, 0),
+             "从没注册过的名字：request 返回 false")
+        t:eq(nil, srey.request("multi_call_sub_never", 102, "never"), "从没注册过的名字：srey.request 返回 nil")
     end
 end)
 end)

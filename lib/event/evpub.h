@@ -76,12 +76,15 @@ struct timer_ctx;
 // socket 状态标志位
 typedef enum sock_status {
     STATUS_NONE = 0x00,         // 无状态
-    STATUS_SENDING = 0x01,      // 正在发送数据。IOCP 指 WSASend 在途(跨完成回调)；uev 只覆盖 s_cb 执行期,用于挡回调里的同步重入
+    // 正在发送数据。IOCP 指 WSASend 在途(跨完成回调)，攒发链同步发送期间(含 s_cb)也置位；
+    // uev 只覆盖 s_cb 执行期。同步发送期间置位都是为了挡回调里的同步重入
+    STATUS_SENDING = 0x01,
     STATUS_ERROR = 0x02,        // 发生错误
     STATUS_REMOVE = 0x04,       // 待移除
     STATUS_CLIENT = 0x08,       // 作为客户端
-    // 仅 uev：数据已入 buf_s 但故意没发，等本轮派发结束后一次 writev 合并发出。
-    // 置清位都只在 _usk_flush_link / _usk_flush_unlink，位与在 watcher->flushes 上一一对应
+    // 数据已入 buf_s 但故意没发，等本轮派发结束后一次合并发出；两个后端都用，IOCP 只用于明文。
+    // 位与在 watcher->flushes 上一一对应：置清位在各自的 flush_link / flush_unlink，
+    // 唯独 Unix 轮末冲刷(_uev_flush_pending)摘链时就地清，不经 flush_unlink
     STATUS_FLUSHPEND = 0x10,
     STATUS_ESTABLISHED = 0x20,     // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置
     // 本端主动关闭已连通的连接时不关读：先关写发 FIN，之后读到的一律丢掉，等对端 FIN、到 CLOSE_LINGER_MS

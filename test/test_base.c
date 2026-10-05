@@ -126,6 +126,120 @@ static void test_realloc_edges(CuTest *tc) {
 #endif
 }
 
+// _realloc_nc / _free_nc：返回值口径同 _realloc / _free，但四种入参都不计数；
+// mem_count_add 把调用方攒的次数并进全局计数。nalloc 与 nfree 各加 MEMRE_N，存活数不变，
+// 自己分配的也都自己放掉，退出时的内存检查照样为 0。MEMORY_CHECK 关闭时只核返回值
+static void test_memory_nc(CuTest *tc) {
+    void *ps[MEMRE_N];
+    int32_t i, bad = 0;
+#if MEMORY_CHECK
+    uint64_t a0, f0, a1, f1;
+#endif
+
+    // (NULL, n)：返回可写的新块，不计数
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        ps[i] = _realloc_nc(NULL, 16);
+        if (NULL == ps[i]) {
+            bad++;
+        } else {
+            memset(ps[i], i & 0xff, 16);
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
+
+    // (p, n>0)：原内容保留，不计数
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        ps[i] = _realloc_nc(ps[i], 64);
+        if (NULL == ps[i] || (unsigned char)(i & 0xff) != ((unsigned char *)ps[i])[15]) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
+
+    // (p, 0)：释放并返回 NULL，不计数
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        if (NULL != _realloc_nc(ps[i], 0)) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
+
+    // (NULL, 0)：什么都不做，返回 NULL
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        if (NULL != _realloc_nc(NULL, 0)) {
+            bad++;
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
+
+    // _free_nc：释放不计数，NULL 什么都不做
+    for (i = 0; i < MEMRE_N; i++) {
+        ps[i] = _realloc_nc(NULL, 8);
+    }
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    for (i = 0; i < MEMRE_N; i++) {
+        _free_nc(ps[i]);
+        _free_nc(NULL);
+    }
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+#endif
+
+    // mem_count_add：两个参数各自只加自己那一项；两次合起来 nalloc、nfree 各加 MEMRE_N，存活数不变
+#if MEMORY_CHECK
+    mem_stat(&a0, &f0);
+#endif
+    mem_count_add(MEMRE_N, 0);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, _memre_hit(a1 - a0));
+    CuAssertTrue(tc, f1 - f0 < MEMRE_N);
+    mem_stat(&a0, &f0);
+#endif
+    mem_count_add(0, MEMRE_N);
+#if MEMORY_CHECK
+    mem_stat(&a1, &f1);
+    CuAssertTrue(tc, a1 - a0 < MEMRE_N);
+    CuAssertTrue(tc, _memre_hit(f1 - f0));
+#endif
+}
+
 /* -----------------------------------------------------------------------
  * 32 位原子操作：SET / ADD / CAS / GET
  * ----------------------------------------------------------------------- */
@@ -299,14 +413,59 @@ static void test_mem_arena_big(CuTest *tc) {
     mem_arena_free(&a);// 大、定长、大三块都要收，漏收由收尾内存检查报出
     CuAssertTrue(tc, NULL == a.cur && 0 == a.off && 0 == a.cap);
 }
+// u64tostr 十进制与 snprintf("%llu") 逐字节、返回长度都一致；输出缓冲先填满非数字，多写少写都看得出
+static void _u64tostr_eq(CuTest *tc, uint64_t v) {
+    char want[32], got[32];
+    int n = snprintf(want, sizeof(want), "%llu", (unsigned long long)v);
+    memset(got, 'x', sizeof(got));
+    CuAssertTrue(tc, (size_t)n == u64tostr(got, v, 10));
+    CuAssertStrEquals(tc, want, got);
+    CuAssertTrue(tc, 'x' == got[n + 1]);
+}
+// u64tostr 十进制按两位一查表写：0、每个位数的首尾(10^k - 1、10^k)、UINT64_MAX 与一批伪随机值；
+// 16 进制与 i64tostr 的负数顺带核一下
+static void test_u64tostr_dec(CuTest *tc) {
+    uint64_t p = 1, x = 88172645463325252ULL;
+    char want[32], got[32];
+    int32_t k, i;
+    for (i = 0; i < 1000; i++) {
+        _u64tostr_eq(tc, (uint64_t)i);
+    }
+    for (k = 1; k <= 19; k++) {
+        p *= 10;
+        _u64tostr_eq(tc, p - 1);
+        _u64tostr_eq(tc, p);
+        _u64tostr_eq(tc, p + 1);
+    }
+    _u64tostr_eq(tc, UINT64_MAX);
+    _u64tostr_eq(tc, UINT64_MAX - 1);
+    // xorshift64 伪随机，再右移随机位数，各种位数都会出现
+    for (i = 0; i < 100000; i++) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        _u64tostr_eq(tc, x >> (x & 63));
+    }
+    snprintf(want, sizeof(want), "%lld", (long long)INT64_MIN);
+    CuAssertTrue(tc, strlen(want) == i64tostr(got, INT64_MIN, 10));
+    CuAssertStrEquals(tc, want, got);
+    CuAssertTrue(tc, 2 == i64tostr(got, -7, 10));
+    CuAssertStrEquals(tc, "-7", got);
+    CuAssertTrue(tc, 16 == u64tostr(got, UINT64_MAX, 16));
+    CuAssertStrEquals(tc, "ffffffffffffffff", got);
+    CuAssertTrue(tc, 1 == u64tostr(got, 0, 16));
+    CuAssertStrEquals(tc, "0", got);
+}
 
 void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_memory);
     SUITE_ADD_TEST(suite, test_realloc_edges);
+    SUITE_ADD_TEST(suite, test_memory_nc);
     SUITE_ADD_TEST(suite, test_atomic32);
     SUITE_ADD_TEST(suite, test_atomic64);
     SUITE_ADD_TEST(suite, test_set_ptr_expr_arg);
     SUITE_ADD_TEST(suite, test_round_up_narrow_modulus);
     SUITE_ADD_TEST(suite, test_mem_arena_fast_slow);
     SUITE_ADD_TEST(suite, test_mem_arena_big);
+    SUITE_ADD_TEST(suite, test_u64tostr_dec);
 }

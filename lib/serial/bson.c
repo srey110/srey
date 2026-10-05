@@ -60,30 +60,32 @@ static inline uintptr_t _bson_src_mark(bson_ctx *bson, const void *src, int32_t 
     *inner = (NULL != bson->doc.data && off < bson->doc.size);
     return off;
 }
-// 一次扩够 type + key + NUL + vlens 字节并写好 type 与 key,返回值区起点。key 同样可能指向本 ctx 的缓冲
-static inline char *_bson_append_head(bson_ctx *bson, bson_type type, const char *key, size_t vlens) {
-    size_t klens = strlen(key);
+// 一次扩够 type + key + NUL + vlens 字节并写好 type 与 key,返回值区起点。key 同样可能指向本 ctx 的缓冲;
+// 只拷 klens 字节、结尾 NUL 自己补,key 不必以 NUL 结尾
+static inline char *_bson_append_head(bson_ctx *bson, bson_type type, const char *key, size_t klens, size_t vlens) {
     int32_t inner;
     uintptr_t koff = _bson_src_mark(bson, key, &inner);
     size_t start = bson->doc.offset;
     binary_set_skip(&bson->doc, 1 + klens + 1 + vlens);
     char *p = bson->doc.data + start;
     p[0] = (char)type;
-    memmove(p + 1, inner ? bson->doc.data + koff : key, klens + 1);
+    memmove(p + 1, inner ? bson->doc.data + koff : key, klens);
+    p[1 + klens] = '\0';
     return p + 2 + klens;
 }
 // 子文档/数组的开头:key 与 4 字节长度占位一次扩够,并记下长度字段的位置
-static inline void _bson_append_sub(bson_ctx *bson, bson_type type, const char *key) {
-    char *p = _bson_append_head(bson, type, key, 4);
+static inline void _bson_append_sub(bson_ctx *bson, bson_type type, const char *key, size_t klens) {
+    char *p = _bson_append_head(bson, type, key, klens, 4);
     bson->depth++;
     ASSERTAB(bson->depth <= BSON_MAX_DEPTH, "too much depth.");
     bson->offsets[bson->depth - 1] = (size_t)(p - bson->doc.data);
 }
 // 带 int32 长度前缀、结尾补 NUL 的字符串值(utf8 / jscode)
-static inline void _bson_append_str(bson_ctx *bson, bson_type type, const char *key, const char *val, size_t lens) {
+static inline void _bson_append_str(bson_ctx *bson, bson_type type, const char *key, size_t klens,
+                                    const char *val, size_t lens) {
     int32_t inner;
     uintptr_t off = _bson_src_mark(bson, val, &inner);
-    char *p = _bson_append_head(bson, type, key, 4 + lens + 1);
+    char *p = _bson_append_head(bson, type, key, klens, 4 + lens + 1);
     write_le32(p, (uint32_t)(lens + 1));
     if (lens > 0) {
         memmove(p + 4, inner ? bson->doc.data + off : val, lens);
@@ -94,7 +96,7 @@ static inline void _bson_append_str(bson_ctx *bson, bson_type type, const char *
 static inline void _bson_append_raw(bson_ctx *bson, bson_type type, const char *key, const char *doc, size_t lens) {
     int32_t inner;
     uintptr_t off = _bson_src_mark(bson, doc, &inner);
-    char *p = _bson_append_head(bson, type, key, (NULL == doc) ? 0 : lens);
+    char *p = _bson_append_head(bson, type, key, strlen(key), (NULL == doc) ? 0 : lens);
     if (NULL != doc && lens > 0) {
         memmove(p, inner ? bson->doc.data + off : doc, lens);
     }
@@ -153,20 +155,33 @@ int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens) {
     binary_set_binary(&bson->doc, doc + 4, doclens - 5);//4 + 1(eod)
     return ERR_OK;
 }
+// 带 2 的版本由调用方给出 key 的字节数，不再 strlen；不带 2 的转调它们
+void bson_append_document_begain2(bson_ctx *bson, const char *key, size_t klens) {
+    _bson_append_sub(bson, BSON_DOCUMENT, key, klens);
+}
 void bson_append_document_begain(bson_ctx *bson, const char *key) {
-    _bson_append_sub(bson, BSON_DOCUMENT, key);
+    bson_append_document_begain2(bson, key, strlen(key));
+}
+void bson_append_array_begain2(bson_ctx *bson, const char *key, size_t klens) {
+    _bson_append_sub(bson, BSON_ARRAY, key, klens);
 }
 void bson_append_array_begain(bson_ctx *bson, const char *key) {
-    _bson_append_sub(bson, BSON_ARRAY, key);
+    bson_append_array_begain2(bson, key, strlen(key));
 }
 //signed_byte(1) e_name double
+void bson_append_double2(bson_ctx *bson, const char *key, size_t klens, double val) {
+    pack_double(_bson_append_head(bson, BSON_DOUBLE, key, klens, sizeof(double)), val, 1);
+}
 void bson_append_double(bson_ctx *bson, const char *key, double val) {
-    pack_double(_bson_append_head(bson, BSON_DOUBLE, key, sizeof(double)), val, 1);
+    bson_append_double2(bson, key, strlen(key), val);
 }
 //signed_byte(2) e_name string
-void bson_append_utf8_n(bson_ctx *bson, const char *key, const char *val, size_t lens) {
+void bson_append_utf8_n2(bson_ctx *bson, const char *key, size_t klens, const char *val, size_t lens) {
     ASSERTAB(lens <= INT32_MAX - 1, "BSON UTF-8 string length exceeds 2GB limit");
-    _bson_append_str(bson, BSON_UTF8, key, val, lens);
+    _bson_append_str(bson, BSON_UTF8, key, klens, val, lens);
+}
+void bson_append_utf8_n(bson_ctx *bson, const char *key, const char *val, size_t lens) {
+    bson_append_utf8_n2(bson, key, strlen(key), val, lens);
 }
 void bson_append_utf8(bson_ctx *bson, const char *key, const char *val) {
     bson_append_utf8_n(bson, key, val, strlen(val));
@@ -180,35 +195,50 @@ void bson_append_array(bson_ctx *bson, const char *key, char *doc, size_t lens) 
     _bson_append_raw(bson, BSON_ARRAY, key, doc, lens);
 }
 //signed_byte(5) e_name binary
-void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char *val, size_t lens) {
+void bson_append_binary2(bson_ctx *bson, const char *key, size_t klens, bson_subtype type, char *val, size_t lens) {
     ASSERTAB(lens <= INT32_MAX, "BSON binary length exceeds 2GB limit");
     int32_t inner;
     uintptr_t off = _bson_src_mark(bson, val, &inner);
-    char *p = _bson_append_head(bson, BSON_BINARY, key, 4 + 1 + lens);
+    char *p = _bson_append_head(bson, BSON_BINARY, key, klens, 4 + 1 + lens);
     write_le32(p, (uint32_t)lens);
     p[4] = (char)type;
     if (lens > 0) {
         memmove(p + 5, inner ? bson->doc.data + off : val, lens);
     }
 }
+void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char *val, size_t lens) {
+    bson_append_binary2(bson, key, strlen(key), type, val, lens);
+}
 //signed_byte(7) e_name (byte*12)
-void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]) {
+void bson_append_oid2(bson_ctx *bson, const char *key, size_t klens, char oid[BSON_OID_LENS]) {
     int32_t inner;
     uintptr_t off = _bson_src_mark(bson, oid, &inner);
-    char *p = _bson_append_head(bson, BSON_OID, key, BSON_OID_LENS);
+    char *p = _bson_append_head(bson, BSON_OID, key, klens, BSON_OID_LENS);
     memmove(p, inner ? bson->doc.data + off : oid, BSON_OID_LENS);
 }
+void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]) {
+    bson_append_oid2(bson, key, strlen(key), oid);
+}
 //signed_byte(8) e_name unsigned_byte(0/1)
+void bson_append_bool2(bson_ctx *bson, const char *key, size_t klens, int8_t b) {
+    _bson_append_head(bson, BSON_BOOL, key, klens, 1)[0] = b ? 1 : 0;
+}
 void bson_append_bool(bson_ctx *bson, const char *key, int8_t b) {
-    _bson_append_head(bson, BSON_BOOL, key, 1)[0] = b ? 1 : 0;
+    bson_append_bool2(bson, key, strlen(key), b);
 }
 //signed_byte(9) e_name int64
+void bson_append_date2(bson_ctx *bson, const char *key, size_t klens, int64_t date) {
+    write_le64(_bson_append_head(bson, BSON_DATE, key, klens, 8), (uint64_t)date);
+}
 void bson_append_date(bson_ctx *bson, const char *key, int64_t date) {
-    write_le64(_bson_append_head(bson, BSON_DATE, key, 8), (uint64_t)date);
+    bson_append_date2(bson, key, strlen(key), date);
 }
 //signed_byte(10) e_name
+void bson_append_null2(bson_ctx *bson, const char *key, size_t klens) {
+    _bson_append_head(bson, BSON_NULL, key, klens, 0);
+}
 void bson_append_null(bson_ctx *bson, const char *key) {
-    _bson_append_head(bson, BSON_NULL, key, 0);
+    bson_append_null2(bson, key, strlen(key));
 }
 //signed_byte(11) e_name cstring cstring
 void bson_append_regex(bson_ctx *bson, const char *key, const char *pattern, const char *options) {
@@ -218,39 +248,45 @@ void bson_append_regex(bson_ctx *bson, const char *key, const char *pattern, con
     uintptr_t ooff = _bson_src_mark(bson, options, &oinner);
     size_t plens = strlen(pattern);
     size_t olens = strlen(options);
-    char *p = _bson_append_head(bson, BSON_REGEX, key, plens + 1 + olens + 1);
+    char *p = _bson_append_head(bson, BSON_REGEX, key, strlen(key), plens + 1 + olens + 1);
     memmove(p, pinner ? bson->doc.data + poff : pattern, plens + 1);
     memmove(p + plens + 1, oinner ? bson->doc.data + ooff : options, olens + 1);
 }
 void bson_append_jscode_n(bson_ctx *bson, const char *key, const char *jscode, size_t lens) {
     ASSERTAB(lens <= INT32_MAX - 1, "BSON JavaScript code length exceeds 2GB limit");
-    _bson_append_str(bson, BSON_JSCODE, key, jscode, lens);
+    _bson_append_str(bson, BSON_JSCODE, key, strlen(key), jscode, lens);
 }
 //signed_byte(13) e_name string
 void bson_append_jscode(bson_ctx *bson, const char *key, const char *jscode) {
     bson_append_jscode_n(bson, key, jscode, strlen(jscode));
 }
 //signed_byte(16) e_name int32
+void bson_append_int322(bson_ctx *bson, const char *key, size_t klens, int32_t val) {
+    write_le32(_bson_append_head(bson, BSON_INT32, key, klens, 4), (uint32_t)val);
+}
 void bson_append_int32(bson_ctx *bson, const char *key, int32_t val) {
-    write_le32(_bson_append_head(bson, BSON_INT32, key, 4), (uint32_t)val);
+    bson_append_int322(bson, key, strlen(key), val);
 }
 //signed_byte(17) e_name uint64
 void bson_append_timestamp(bson_ctx *bson, const char *key, uint32_t ts, uint32_t inc) {
-    char *p = _bson_append_head(bson, BSON_TIMESTAMP, key, 8);
+    char *p = _bson_append_head(bson, BSON_TIMESTAMP, key, strlen(key), 8);
     write_le32(p, inc);
     write_le32(p + 4, ts);
 }
 //signed_byte(18) e_name int64
+void bson_append_int642(bson_ctx *bson, const char *key, size_t klens, int64_t val) {
+    write_le64(_bson_append_head(bson, BSON_INT64, key, klens, 8), (uint64_t)val);
+}
 void bson_append_int64(bson_ctx *bson, const char *key, int64_t val) {
-    write_le64(_bson_append_head(bson, BSON_INT64, key, 8), (uint64_t)val);
+    bson_append_int642(bson, key, strlen(key), val);
 }
 //signed_byte(-1) e_name
 void bson_append_minkey(bson_ctx *bson, const char *key) {
-    _bson_append_head(bson, BSON_MINKEY, key, 0);
+    _bson_append_head(bson, BSON_MINKEY, key, strlen(key), 0);
 }
 //signed_byte(127) e_name
 void bson_append_maxkey(bson_ctx *bson, const char *key) {
-    _bson_append_head(bson, BSON_MAXKEY, key, 0);
+    _bson_append_head(bson, BSON_MAXKEY, key, strlen(key), 0);
 }
 // 清空迭代器的当前字段信息（类型、长度、key、val 等）
 static inline void _bson_iter_clear(bson_iter *iter) {

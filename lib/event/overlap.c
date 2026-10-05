@@ -50,6 +50,7 @@ typedef struct overlap_tcp_ctx {
     uint64_t wpend_ms;      // STATUS_WPEND_SSL 的零进展起点，仅该位置位期间有效
     list_node wpend_node;   // 挂 watcher->wpends；只在 STATUS_WPEND_SSL 置位期间在链上
 #endif
+    list_node flush_node;   // 挂 watcher->flushes；只在 STATUS_FLUSHPEND 置位期间在链上
     list_node linger_node;  // 挂 watcher->lingers；只在 STATUS_LINGERING 置位期间在链上
     uint64_t linger_until;  // 延迟关闭的截止时刻，仅 STATUS_LINGERING 期间有效
     size_t linger_bytes;    // 延迟关闭期间已读掉的字节数
@@ -183,7 +184,7 @@ void _iocp_disconnect(evsock_ctx *evsk) {
         if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
             return;
         }
-        // ev_send 在本平台只是入队并投 0 字节探针,payload 此刻还在 buf_s,不冲就是整包丢
+        // ev_send 在本平台只入队(明文等轮末发,SSL 等探针完成),payload 此刻还在 buf_s,不冲就是整包丢
         _evpub_close_flush_tcp(tcp->ol_s.sk.fd, &tcp->buf_s, tcp->status, &tcp->wb_size, TCP_SSL(tcp));
         BIT_SET(tcp->status, STATUS_ERROR);
         if (_evpub_linger_want(tcp->status)) {
@@ -317,6 +318,22 @@ static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
     }
     return ERR_OK;
 }
+// 本轮攒发链的挂与摘，只用于明文。位与"在 watcher->flushes 上"一一对应，置清位只在这两处；
+// 对象回池前必须先 unlink(口径同 usock.c 的 _usk_flush_link)
+static inline void _olp_flush_unlink(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    if (!BIT_CHECK(oltcp->status, STATUS_FLUSHPEND)) {
+        return;
+    }
+    BIT_REMOVE(oltcp->status, STATUS_FLUSHPEND);
+    list_remove(&watcher->flushes, &oltcp->flush_node);
+}
+static inline void _olp_flush_link(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    if (BIT_CHECK(oltcp->status, STATUS_FLUSHPEND)) {
+        return;
+    }
+    BIT_SET(oltcp->status, STATUS_FLUSHPEND);
+    list_push_tail(&watcher->flushes, &oltcp->flush_node);
+}
 static inline int32_t _olp_wantwrite(overlap_tcp_ctx *oltcp) {
     if (!BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_SENDING);
@@ -336,11 +353,12 @@ static int32_t _olp_ssl_do_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltc
                   evssl_tryacpt(oltcp->ssl);
     switch (rtn) {
     case ERR_OK://完成
+        // 先清再回调：回调里同线程 ev_send 当场执行，不清会被当成握手期发送
+        BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
         if (ERR_OK != _olp_call_ssl_exchanged_cb(watcher->ev, oltcp)) {
             *err = ERR_FAILED;
             return 1;
         }
-        BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
         return 1;
     case 1://WANT_READ
         if (isrecv) {
@@ -386,7 +404,7 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
         return ERR_OK;
     }
 #endif
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.sk.fd, &nread, _evpub_sock_read, TCP_SSL(oltcp));
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.sk.fd, &nread, 0, _evpub_sock_read, TCP_SSL(oltcp));
 #if WITH_SSL
     if (ERR_OK == rtn
         && NULL != oltcp->ssl
@@ -530,6 +548,8 @@ static int32_t _olp_linger_begin(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
 // 最后一次完成回调里的收尾(ol_r/ol_s 都已没有在途 IO)：调关闭回调，
 // 要延迟关闭的转入 _olp_linger_begin，其余摘表回池
 static void _olp_close_final(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    // 同一轮里先挂了攒发链后才收尾，回池前不摘就是池里的对象挂在链上
+    _olp_flush_unlink(watcher, oltcp);
 #if WITH_SSL
     // 对象回池前必须摘链,否则 watcher->wpends 留悬空节点(口径同 usock.c 的 _usk_close_tcp)
     _olp_wpend_unlink(watcher, oltcp);
@@ -662,7 +682,8 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl
     if (0 == _evpub_ssl_exchange_check(oltcp->ssl, &oltcp->status, client)) {
         return;
     }
-    if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
+    // 还挂在攒发链上也算在发：尾包得先于握手报文出去，由轮末 _olp_tcp_send 排空后接着握手
+    if (BIT_CHECK(oltcp->status, STATUS_SENDING | STATUS_FLUSHPEND)) {
         oltcp->evssl = evssl;
         BIT_SET(oltcp->status, STATUS_SSLEXCHANGE);// 标记发送队列为空则开始ssl握手
     } else {
@@ -762,7 +783,7 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
 // KeyUpdate 写就绪探针完成:重试 SSL_read 冲刷响应;没冲完重投探针,冲完按 NORECV 恢复 ol_r
 static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nread;
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.sk.fd, &nread, _evpub_sock_read, oltcp->ssl);
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.sk.fd, &nread, 0, _evpub_sock_read, oltcp->ssl);
     _olp_call_recv_cb(watcher->ev, oltcp, nread);
     if (ERR_OK != rtn) {
         _evpub_mark_close(&oltcp->status, rtn);
@@ -848,7 +869,16 @@ static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes)
         return;
     }
 }
-void _iocp_add_bufs_trypost(evsock_ctx *evsk, off_buf_ctx *buf) {
+// 攒发链上摘下的明文连接同步发一次。排空会清 SENDING，发不完它自己投探针接力；
+// 失败时 ol_s 上没有在途 IO，交还 SENDING 再断开
+static inline void _olp_flush_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    BIT_SET(oltcp->status, STATUS_SENDING);
+    if (ERR_OK != _olp_tcp_send(watcher, oltcp)) {
+        BIT_REMOVE(oltcp->status, STATUS_SENDING);
+        _iocp_disconnect(&oltcp->ol_r);
+    }
+}
+void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf) {
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
     // 已在关闭流程：拒收新数据
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
@@ -866,13 +896,43 @@ void _iocp_add_bufs_trypost(evsock_ctx *evsk, off_buf_ctx *buf) {
 #if WITH_SSL
     // 方向 B 挂着未完成的 SSL_write，投探针只是空转；数据留队等 _olp_on_recv_cb 那次重试。
     // 对应 usock 的 _uev_add_bufs_send，那边还判 KEYUPDATE_WRITE——本平台方向 A 期 SENDING 必为 1，
-    // 下面 _olp_wantwrite 的 !SENDING 已挡住
+    // 下面的 SENDING 判定已挡住
     if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_READ)) {
         return;
     }
 #endif
+    if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
+        return;
+    }
+    // 已在攒发链上(只挂明文)：堆满一次 iov 就先发一批，免得一轮里的巨量 ev_send 全压到轮末
+    if (BIT_CHECK(oltcp->status, STATUS_FLUSHPEND)) {
+        if (obuf_que_size(&oltcp->buf_s) >= MAX_SEND_NIOV) {
+            _olp_flush_unlink(watcher, oltcp);
+            _olp_flush_send(watcher, oltcp);
+        }
+        return;
+    }
+    // 明文挂进攒发链，等本轮派发完由 _iocp_flush_pending 同步发，同一轮的多条合成一次 WSASend；
+    // SSL 照旧投 0 字节探针，等可写再发
+    if (NULL == TCP_SSL(oltcp)) {
+        _olp_flush_link(watcher, oltcp);
+        return;
+    }
     if (ERR_OK != _olp_wantwrite(oltcp)) {
         _iocp_disconnect(&oltcp->ol_r);
+    }
+}
+void _iocp_flush_pending(watcher_ctx *watcher) {
+    overlap_tcp_ctx *oltcp;
+    while (NULL != watcher->flushes.head) {
+        oltcp = UPCAST(watcher->flushes.head, overlap_tcp_ctx, flush_node);
+        _olp_flush_unlink(watcher, oltcp);
+        // 挂链之后同一轮又被关掉：队列已由关闭路径接管
+        if (BIT_CHECK(oltcp->status, STATUS_ERROR | STATUS_SENDING)
+            || obuf_que_empty(&oltcp->buf_s)) {
+            continue;
+        }
+        _olp_flush_send(watcher, oltcp);
     }
 }
 // 将socket绑定到通配地址（ConnectEx要求socket必须先bind）

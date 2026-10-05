@@ -756,16 +756,15 @@ local function _dispatch_cb(msg, func, ...)
     end
 end
 
----挂起当前协程，等待指定会话的消息。
----不在框架协程里调用直接抛出：拿错的 coro_running 去登记 coro_sess，会让 nyield/nwait 永不归零，
----那个 sess 的消息到了还按错协程 resume。此刻挂不起（require / sort 回调里）同样在登记前抛出。
+---挂起当前协程，等待指定会话的消息。不查守卫：调用方须已在入口调过 _check_wait，
+---两者之间不能再有会改变"当前协程 / 能否挂起"的代码。内部调用一律经模块表取，别改回 local，
+---否则热修它修不到各挂起接口。
 ---唤醒方一律 _coro_resume(coro, msg, sess)：醒来按带回的 sess 校验，不读 msg.sess
 ---@param sess integer 会话 id
 ---@param mtype integer 期望唤醒的消息类型
 ---@param ms integer 超时毫秒数；0 表示永不超时
 ---@return Message msg 触发 resume 的消息对象
-function srey._coro_wait(sess, mtype, ms)
-    _check_wait("srey._coro_wait")
+function srey._coro_wait_nocheck(sess, mtype, ms)
     local now = timer_ms()
     local timeout = 0
     if ms > 0 then
@@ -785,6 +784,17 @@ function srey._coro_wait(sess, mtype, ms)
     end
     return msg
 end
+---挂起当前协程，等待指定会话的消息（带守卫的 _coro_wait_nocheck）。
+---不在框架协程里调用直接抛出：拿错的 coro_running 去登记 coro_sess，会让 nyield/nwait 永不归零，
+---那个 sess 的消息到了还按错协程 resume。此刻挂不起（require / sort 回调里）同样在登记前抛出
+---@param sess integer 会话 id
+---@param mtype integer 期望唤醒的消息类型
+---@param ms integer 超时毫秒数；0 表示永不超时
+---@return Message msg 触发 resume 的消息对象
+function srey._coro_wait(sess, mtype, ms)
+    _check_wait("srey._coro_wait")
+    return srey._coro_wait_nocheck(sess, mtype, ms)
+end
 
 ---阻塞当前协程指定毫秒（底层使用定时器，不阻塞事件线程）
 ---@param ms integer 睡眠毫秒数；非正数直接返回不挂起，超 UINT32_MAX(约 49.7 天)由 C 层钳到该上界
@@ -795,7 +805,7 @@ function srey.sleep(ms)
     _check_wait("srey.sleep")
     local sess = new_id()
     core.timeout(sess, ms)
-    srey._coro_wait(sess, MTYPE_TIMEOUT, 0)
+    srey._coro_wait_nocheck(sess, MTYPE_TIMEOUT, 0)
 end
 
 ---异步定时器：ms 毫秒后在新协程中调用 func(...)，当前协程不挂起
@@ -855,7 +865,7 @@ function srey.request(dst, reqtype, data, size, copy)
         WARN("target task not found: %s.", tostring(dst))
         return nil
     end
-    local msg = srey._coro_wait(sess, MTYPE_RESPONSE, get_request_timeout())
+    local msg = srey._coro_wait_nocheck(sess, MTYPE_RESPONSE, get_request_timeout())
     local mtype, _, _, _, _, erro, _, rdata, rsize = msg()
     if MTYPE_TIMEOUT == mtype then
         WARN("request timeout, session %s.", tostring(sess))
@@ -1108,12 +1118,13 @@ end
 ---@return integer? size 消息的 size
 ---@return integer? slice 消息的 slice
 local function _wait_msg(sk, mtype, ms, tag)
-    -- 连接已 teardown 就别挂上去,理由同 C 侧 _coro_wait_msg;各 wait_* / syn_* 入口都经本函数
+    -- 连接已 teardown 就别挂上去,理由同 C 侧 _coro_wait_msg;各 wait_* / syn_* 入口都经本函数,
+    -- 且都已在入口调过 _check_wait
     local skid = wait_skid(sk)
     if not skid then
         return nil
     end
-    return _wait_check(sk, tag, srey._coro_wait(skid, mtype, ms)())
+    return _wait_check(sk, tag, srey._coro_wait_nocheck(skid, mtype, ms)())
 end
 
 ---同步等待异步 connect 完成（由 task_connect / core.connect 异步发起后调用）；ssl 非 nil 时同时等待 SSL 握手
@@ -1121,6 +1132,7 @@ end
 ---@param ssl any? 非 nil 时表示需要等待 SSL 握手
 ---@return boolean ok 成功 true；超时/失败时已关闭 fd 并返回 false
 function srey.wait_connect(sk, ssl)
+    _check_wait("srey.wait_connect")
     local ok, erro = _wait_msg(sk, MTYPE_CONNECT, get_connect_timeout(), "connect")
     if not ok then
         return false
@@ -1226,6 +1238,7 @@ end
 ---@param sk userdata 连接标识
 ---@return boolean ok 握手成功 true；超时/断开返回 false
 function srey.wait_ssl_exchanged(sk)
+    _check_wait("srey.wait_ssl_exchanged")
     return nil ~= _wait_msg(sk, MTYPE_SSLEXCHANGED, get_netread_timeout(), "ssl exchange")
 end
 
@@ -1249,6 +1262,7 @@ end
 ---@return lightuserdata? data 握手附带数据（可为 nil）；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝
 ---@return integer? size 数据长度
 function srey.wait_handshaked(sk)
+    _check_wait("srey.wait_handshaked")
     local ok, erro, data, size = _wait_msg(sk, MTYPE_HANDSHAKED, get_netread_timeout(), "handshake")
     if not ok then
         return false
@@ -1310,6 +1324,7 @@ end
 ---@return integer? rsize 响应的 size，同 syn_send
 ---@return integer? slice 分片标记，取值同 SLICE_TYPE；0 表示非分片完整消息
 function srey.syn_recv(sk)
+    _check_wait("srey.syn_recv")
     local ok, _, data, size, slice = _wait_msg(sk, MTYPE_RECV, get_netread_timeout(), "netread")
     if not ok then
         return nil
@@ -1324,6 +1339,7 @@ end
 ---@return lightuserdata? data 分片数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝
 ---@return integer? size 本片的 size，口径见 Message.size；只算本片、不累计
 function srey.syn_slice(sk)
+    _check_wait("srey.syn_slice")
     local ok, _, data, size, slice = _wait_msg(sk, MTYPE_RECV, get_netread_timeout(), "netread")
     if not ok then
         return false
@@ -1467,7 +1483,7 @@ function srey.sync_close(sk)
         return
     end
     core.close(sk)
-    srey._coro_wait(skid, MTYPE_CLOSE, get_netread_timeout())
+    srey._coro_wait_nocheck(skid, MTYPE_CLOSE, get_netread_timeout())
 end
 
 ---处理连接关闭消息：进入时探测一次会话表，把该 sess(连接类即 skid)下全部挂起等待者转移到本地数组再消费，
@@ -1579,7 +1595,7 @@ function srey.syn_sendto(sk, ip, port, data, size, copy)
         WARN("sendto error, skid %s.", tostring(sk.skid))
         return nil
     end
-    local msg = srey._coro_wait(sk.skid, MTYPE_RECVFROM, get_netread_timeout())
+    local msg = srey._coro_wait_nocheck(sk.skid, MTYPE_RECVFROM, get_netread_timeout())
     local mtype, _, _, _, _, _, _, _, rsize = msg()
     if MTYPE_TIMEOUT == mtype then
         WARN("sendto timeout, skid %s.", tostring(sk.skid))
@@ -1691,8 +1707,9 @@ end
 ---消息对象：C 侧 message_ctx 的 userdata 视图，字段经 __index 按需取，一律只读
 ---（userdata 没有 __newindex，赋值直接报错，所以改不掉 mtype/data 去换 C 侧的释放契约）。
 ---带载荷的消息（RECV/RECVFROM/HANDSHAKED/REQUEST/RESPONSE）分发返回即释放载荷，交给回调协程而回调中途挂起的
----到回调结束释放（task.msg_release），释放后 data 为 nil；__gc 只兜底，
----无载荷的连 __gc 都不挂，不进 finalizer 链。元表由 __metatable 挡住。
+---到回调结束释放（task.msg_release），释放后 data 为 nil。消息一律先挂不带 __gc 的元表；只有分发返回时
+---仍被挂起回调拿着、且载荷还在的，才补挂带 __gc 的那张兜底，其余（含同步跑完的载荷消息）不进 finalizer 链。
+---元表由 __metatable 挡住。
 ---要读多个字段时用 msg() 一次取齐 mtype, sess, subtype, client, slice, erro, src, data, size
 ---（未携带的整数字段为 0，data 为空是 nil；_timeout_wake 合成的超时消息只返回 mtype, sess 两个）
 ---@class Message
@@ -1745,7 +1762,8 @@ local _dispatchers = {
 ---抛出跳过 drain 就把锁留给一个没在跑的协程。抛出点确实存在——_request_dispatch 里有惰性 require，
 ---模块或其依赖加载失败即抛，而它跑在协程外，没有 _coro_exec 的 xpcall 兜着
 ---@param msg Message 由 C 层 _ltask_push_msg 压栈的消息对象
----@return boolean held 回调协程中途挂起、还拿着 msg 的载荷；为假时 C 在返回后回收载荷（攒批释放，msg.data 立即为 nil）
+---@return boolean held 回调协程中途挂起、还拿着 msg；为真且载荷仍在时 C 给 msg 补挂带 __gc 的元表兜底，回调结束由 _coro_exec 交还；
+---为假时 C 在返回后回收载荷（攒批释放，msg.data 立即为 nil）
 function message_dispatch(msg)
     msg_held = false-- 承重：C 侧 _ltask_run 按返回值决定是否回收载荷，漏了返回会放掉挂起回调手里的载荷
     local dispatcher = _dispatchers[msg.mtype]

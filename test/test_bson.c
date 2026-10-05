@@ -1852,6 +1852,85 @@ static void test_bson_append_self_alias(CuTest *tc) {
     BSON_FREE(&b);
     BSON_FREE(&ref);
 }
+// 带 2 的追加函数：与不带 2 的逐字节相同；key 不以 NUL 结尾也只取前 klens 字节；
+// key 指向本 ctx 自己的缓冲、且这次追加触发扩容时照样写对
+static void test_bson_append_klens(CuTest *tc) {
+    char oid[BSON_OID_LENS];
+    char bin[8];
+    static char big[4096];
+    const char *kbuf = "keyXYZ";// 只取前 3 字节 "key"
+    bson_ctx a, b;
+    size_t i, off;
+
+    for (i = 0; i < BSON_OID_LENS; i++) {
+        oid[i] = (char)(0x41 + i);
+    }
+    for (i = 0; i < sizeof(bin); i++) {
+        bin[i] = (char)(0x80 + i);
+    }
+    for (i = 0; i < sizeof(big); i++) {
+        big[i] = (char)i;
+    }
+    bson_init(&a, NULL, 0);
+    bson_init(&b, NULL, 0);
+    bson_append_null(&a, "key");
+    bson_append_null2(&b, kbuf, 3);
+    bson_append_bool(&a, "key", 1);
+    bson_append_bool2(&b, kbuf, 3, 1);
+    bson_append_int32(&a, "key", -7);
+    bson_append_int322(&b, kbuf, 3, -7);
+    bson_append_int64(&a, "key", INT64_MIN);
+    bson_append_int642(&b, kbuf, 3, INT64_MIN);
+    bson_append_double(&a, "key", 1.5);
+    bson_append_double2(&b, kbuf, 3, 1.5);
+    bson_append_utf8_n(&a, "key", "v\0w", 3);
+    bson_append_utf8_n2(&b, kbuf, 3, "v\0w", 3);
+    bson_append_oid(&a, "key", oid);
+    bson_append_oid2(&b, kbuf, 3, oid);
+    bson_append_date(&a, "key", 1234567890123LL);
+    bson_append_date2(&b, kbuf, 3, 1234567890123LL);
+    bson_append_binary(&a, "key", BSON_SUBTYPE_USER, bin, sizeof(bin));
+    bson_append_binary2(&b, kbuf, 3, BSON_SUBTYPE_USER, bin, sizeof(bin));
+    bson_append_document_begain(&a, "key");
+    bson_append_document_begain2(&b, kbuf, 3);
+    bson_append_int32(&a, "x", 1);
+    bson_append_int322(&b, "xx", 1, 1);
+    bson_append_end(&a);
+    bson_append_end(&b);
+    bson_append_array_begain(&a, "key");
+    bson_append_array_begain2(&b, kbuf, 3);
+    bson_append_int32(&a, "0", 2);
+    bson_append_int322(&b, "0", 1, 2);
+    bson_append_end(&a);
+    bson_append_end(&b);
+    // 空 key
+    bson_append_null(&a, "");
+    bson_append_null2(&b, kbuf, 0);
+    bson_append_end(&a);
+    bson_append_end(&b);
+    CuAssertTrue(tc, BSON_DOC_LENS(&a) == BSON_DOC_LENS(&b));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&a), BSON_DOC(&b), BSON_DOC_LENS(&a)));
+    BSON_FREE(&a);
+    BSON_FREE(&b);
+
+    // key 取自本 ctx 缓冲里 "selfalias" 的前 4 字节（后面没有 NUL），值大到这次追加必然扩容
+    bson_init(&a, NULL, 0);
+    bson_init(&b, NULL, 0);
+    bson_append_utf8(&a, "name", "selfalias");
+    bson_append_utf8(&b, "name", "selfalias");
+    off = b.doc.offset - 10;// "selfalias\0" 的起点
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&b) + off, "selfalias", 9));
+    bson_append_binary(&a, "self", BSON_SUBTYPE_USER, big, sizeof(big));
+    bson_append_binary2(&b, BSON_DOC(&b) + off, 4, BSON_SUBTYPE_USER, big, sizeof(big));
+    bson_append_int32(&a, "elf", 3);
+    bson_append_int322(&b, BSON_DOC(&b) + off + 1, 3, 3);
+    bson_append_end(&a);
+    bson_append_end(&b);
+    CuAssertTrue(tc, BSON_DOC_LENS(&a) == BSON_DOC_LENS(&b));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&a), BSON_DOC(&b), BSON_DOC_LENS(&a)));
+    BSON_FREE(&a);
+    BSON_FREE(&b);
+}
 
 // bson_init_prefix 用例共用的一组字段：600 字节字符串逼扩容，两层嵌套检查各层长度回填
 static void _bson_prefix_fill(bson_ctx *b, const char *big) {
@@ -2095,6 +2174,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_key_no_nul);
     SUITE_ADD_TEST(suite, test_bson_append_self_alias);
     SUITE_ADD_TEST(suite, test_bson_append_regex_self_alias);
+    SUITE_ADD_TEST(suite, test_bson_append_klens);
     SUITE_ADD_TEST(suite, test_bson_init_prefix);
     SUITE_ADD_TEST(suite, test_bson_tostring_hex_exact);
 }

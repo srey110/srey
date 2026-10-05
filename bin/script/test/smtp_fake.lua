@@ -20,6 +20,8 @@ local conns = {} -- skid -> 连接状态
 local interleave = 0 -- 检测到的交错次数
 local mails = 0 -- 服务端确认收下的邮件数
 local fail_rset = false -- 置 true 让下一条 RSET 被回 500(一次性)，压客户端的拆连接收尾
+local fail_rcpt = false -- 置 true 让下一条 RCPT 被回 550(一次性)，造一封失败的信
+local rsets = 0 -- 服务端收到的 RSET 条数：投递成功不该发 RSET
 local ehlo_injected = false -- 客户端把问候里的裸 LF 原样拼进 EHLO 行就置 true
 local hostile = false -- 逐连接轮换：一次发正常应答，一次发合法但刁钻的形态，两边都得走通
 local ehlo_hosts = {} -- 收到过的 EHLO 参数,用来确认正常问候下主机名是照着服务端给的填
@@ -71,11 +73,17 @@ local function _cmd(sk, fc, line)
             interleave = interleave + 1
             ERROR("fake smtp: RCPT r%d under sender c%d.", tag, fc.sender)
         end
-        _reply(sk, "250 OK\r\n")
+        if fail_rcpt then
+            fail_rcpt = false
+            _reply(sk, "550 rcpt rejected\r\n")
+        else
+            _reply(sk, "250 OK\r\n")
+        end
     elseif up:find("^DATA") then
         fc.indata = true
         _reply(sk, "354 End data with <CR><LF>.<CR><LF>\r\n")
     elseif up:find("^RSET") then
+        rsets = rsets + 1
         fc.sender = -1
         if fail_rset then
             fail_rset = false
@@ -180,6 +188,8 @@ runner.run(function(t)
     end
     t:eq(0, interleave, "服务端未检出命令交错")
     t:eq(CONC_N * ROUNDS, mails, "服务端收下的邮件数")
+    -- 正文收到 250 时服务端已清空事务，投递成功不该再补 RSET
+    t:eq(0, rsets, "投递成功不发 RSET")
     -- 问候里的裸 LF 不得被原样拼进 EHLO——那等于往自己的命令行里插了第二条命令。
     -- 16 封信共用一条连接，全程只有这一次 EHLO：这是一次采样，不是 16 次
     t:eq(false, ehlo_injected, "问候里的裸 LF 未被拼进 EHLO 行")
@@ -203,9 +213,33 @@ runner.run(function(t)
     t:eq(true, ctx:_doconnect(stale_gen), "拿过期代次的 connect 返回成功")
     t:check(ctx.conn:sock_id().valid, "且连接是真建起来的，不是短路返回")
 
-    -- RSET 失败：邮件本身已投成功故 send 返 true，但连接要就地拆掉且状态同步落账——
-    -- established 不清的话，之后排队醒来的 connect 会对着这条已关的连接短路报成功
+    -- 信失败、补发的 RSET 成功：连接留用，下一封照常投递。漏发 RSET 的话下一封的
+    -- MAIL FROM 会撞上没收尾的事务被记成交错；RSET 成功也拆连接的话 established / 代次会变
+    local kgen = ctx.generation
+    local krsets = rsets
+    local kmails = mails
+    local kinter = interleave
+    fail_rcpt = true
+    local km = mail.new()
+    km:from("srey", "c8@t")
+    km:addrs_add("r8@t", MAIL_ADDR_TYPE.TO)
+    km:subject("rcpt_fail")
+    km:msg("body")
+    km:reply(0)
+    t:eq(false, ctx:send(km), "RCPT 被拒时 send 返 false(RSET 成功)")
+    t:eq(krsets + 1, rsets, "信失败时补发了一条 RSET(RSET 成功)")
+    t:eq(true, ctx.established, "RSET 成功则连接留用")
+    t:eq(kgen, ctx.generation, "RSET 成功代次不变")
+    t:eq(true, ctx:send(km), "RSET 成功后下一封照常投递")
+    t:eq(kmails + 1, mails, "服务端收下了下一封")
+    t:eq(kinter, interleave, "失败那封已用 RSET 收尾，下一封未检出交错")
+
+    -- 信失败才补 RSET：一次性拒掉 RCPT 让这封信失败，再让补发的 RSET 也失败。
+    -- 连接要就地拆掉且状态同步落账——established 不清的话，之后排队醒来的 connect
+    -- 会对着这条已关的连接短路报成功
     local rgen = ctx.generation
+    local rsets0 = rsets
+    fail_rcpt = true
     fail_rset = true
     local rm = mail.new()
     rm:from("srey", "c9@t")
@@ -213,7 +247,8 @@ runner.run(function(t)
     rm:subject("rset_fail")
     rm:msg("body")
     rm:reply(0)
-    t:eq(true, ctx:send(rm), "RSET 失败不影响邮件本身的成败")
+    t:eq(false, ctx:send(rm), "RCPT 被拒时 send 返 false")
+    t:eq(rsets0 + 1, rsets, "信失败时补发了一条 RSET")
     t:eq(false, ctx.established, "RSET 失败后 established 已清")
     t:check(rgen < ctx.generation, "RSET 失败让代次前进")
     t:check(ctx:ping(), "RSET 失败后 ping 能重连")

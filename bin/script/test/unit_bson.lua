@@ -67,6 +67,8 @@ runner.run(function(t)
 
         -- key 含内嵌 NUL：e_name 是 cstring，装不下就得拒，不能截断成同一个名字
         t:eq(false, pcall(bson.encode, { ["a\0b"] = 1 }), "encode: key 含 NUL 被拒")
+        t:eq(false, pcall(bson.encode, { ["ab\0"] = 1 }), "encode: key 结尾带 NUL 同样被拒")
+        t:eq(false, pcall(bson.encode, { x = { ["\0"] = 1 } }), "encode: 嵌套文档里只有 NUL 的 key 被拒")
         local kb = bson.new()
         t:eq(false, pcall(kb.utf8, kb, "a\0b", "v"), "b:utf8: key 含 NUL 被拒")
 

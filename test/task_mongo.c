@@ -173,11 +173,18 @@ static int32_t _duplicate_key_error(mongo_ctx *mongo) {
     return ERR_OK;
 }
 
-// 简单事务测试：startsession → begin → 在事务内 insert → commit
+// 简单事务测试：startsession(本地生成 lsid) → begin → 在事务内 insert → commit → freesession，
+// 再跟一条普通 insert：endSessions 只发不等，服务端若回了包，这条会读到它而拿不到 n=1
 static int32_t _txn_flow(mongo_ctx *mongo) {
     mongo_session *sess = mongo_startsession(mongo);
     if (NULL == sess) {
         LOG_ERROR("mongo startsession error.");
+        return ERR_FAILED;
+    }
+    // 超时分钟数来自建连时 hello 回的 logicalSessionTimeoutMinutes，取不到就是解析断了
+    if (sess->timeoutmin <= 0 || sess->timeoutmin != mongo->sesstimeout) {
+        LOG_ERROR("mongo session timeout not taken from hello: %d / %d.", sess->timeoutmin, mongo->sesstimeout);
+        mongo_freesession(sess);
         return ERR_FAILED;
     }
     if (ERR_OK != mongo_begin(sess)) {
@@ -209,16 +216,35 @@ static int32_t _txn_flow(mongo_ctx *mongo) {
         return ERR_FAILED;
     }
     mongo_freesession(sess);
+    bson_init(&docs, NULL, 0);
+    bson_append_document_begain(&docs, "0");
+    bson_append_int32(&docs, "id", 102);
+    bson_append_utf8(&docs, "name", "after-endsessions");
+    bson_append_int32(&docs, "score", 1);
+    bson_append_end(&docs);
+    bson_append_end(&docs);
+    inserted = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL, 0);
+    BSON_FREE(&docs);
+    if (1 != inserted) {
+        LOG_ERROR("mongo insert after freesession expected 1, got %d (endSessions replied?).", inserted);
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 
-// 会话不随连接失效：startsession 拿到 lsid → 断连重连 → 拿旧 session 重新 begin/insert/commit。
-// 服务端按 lsid 记账、与连接无关，重连只废掉在途事务。这条钉住的是"不设代次门"这个决定，
-// 真跑一遍服务端才算数——纯内存那半在 test_mongo_session_survives_reconnect
+// 会话不随连接失效：startsession 拿到 lsid → refresh 让服务端在旧连接上登记会话 → 断连重连 →
+// 拿旧 session 重新 begin/insert/commit。服务端按 lsid 记账、与连接无关，重连只废掉在途事务。
+// 这条钉住的是"不设代次门"这个决定，真跑一遍服务端才算数——纯内存那半在 test_mongo_session_survives_reconnect
 static int32_t _txn_reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
     mongo_session *sess = mongo_startsession(mongo);
     if (NULL == sess) {
         LOG_ERROR("mongo startsession(reconnect) error.");
+        return ERR_FAILED;
+    }
+    // lsid 是本地生成的，不先发一条带它的命令，服务端要到新连接上才第一次见到它
+    if (ERR_OK != mongo_refreshsession(sess)) {
+        LOG_ERROR("mongo refreshsession(reconnect) error.");
+        mongo_freesession(sess);
         return ERR_FAILED;
     }
     uint64_t oldskid = mongo->sk.skid;

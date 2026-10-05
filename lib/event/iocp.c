@@ -37,7 +37,7 @@ static int32_t _iocp_disconnect_iter(evsock_ctx *const *item, void *udata) {
 void _iocp_disconnect_all(watcher_ctx *watcher) {
     sockel_map_scan(watcher->element, _iocp_disconnect_iter, NULL);
 }
-// 初始化命令回调函数表，_iocp_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
+// 初始化命令回调函数表，_iocp_cmd_drain 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
 // 如 在_ev_send里面直接发送数据
 static void _iocp_init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
@@ -67,13 +67,12 @@ int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd) {
     SetFileCompletionNotificationModes((HANDLE)fd, FILE_SKIP_SET_EVENT_ON_HANDLE);
     return ERR_OK;
 }
-// 命令通道完成包回调：先清在途标志再抽干队列，两步不能颠倒，颠倒会丢唤醒（见 _send_cmd）
-static void _iocp_on_cmd(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
+// 抽干命令队列并逐条执行，返回条数。抽到命令才喂告警：喂 0 会把告警阈值复位
+static size_t _iocp_cmd_drain(watcher_ctx *watcher) {
     size_t cnt_total = 0;
     int32_t i, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
-    overlap_cmd_ctx *olcmd = UPCAST(evsk, overlap_cmd_ctx, ol_r);
-    ATOMIC_SET(&olcmd->wake_pending, 0);
+    overlap_cmd_ctx *olcmd = &watcher->cmd;
     do {
         cnt = (int32_t)cmdq_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
@@ -81,9 +80,17 @@ static void _iocp_on_cmd(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
         }
         cnt_total += (size_t)cnt;
     } while (cnt > 0);
-    if (tda_check(&olcmd->tda, cnt_total)) {
+    if (0 != cnt_total
+        && tda_check(&olcmd->tda, cnt_total)) {
         LOG_WARN("watcher %d cmd queue overload, count %zu.", watcher->index, cnt_total);
     }
+    return cnt_total;
+}
+// 命令通道完成包回调：只抽队列不清标志，标志由 _iocp_loop_event 进等待前清（见 _send_cmd）
+static void _iocp_on_cmd(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
+    (void)evsk;
+    (void)bytes;
+    (void)_iocp_cmd_drain(watcher);
 }
 // 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)
 static inline uint32_t _iocp_loop_check(watcher_ctx *watcher, uint32_t *shrink_cnt, uint64_t *shrink_start) {
@@ -134,6 +141,7 @@ static void _iocp_loop_event(void *arg) {
     evsock_ctx *evsk;
     uint32_t shrink_cnt = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
+    uint64_t now_ms;
     BOOL ok = FALSE;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY tmp;
@@ -146,12 +154,28 @@ static void _iocp_loop_event(void *arg) {
         if (0 != _iocp_check_stop(watcher, stop, &drain_deadline)) {
             break;
         }
+        // 醒着期间标志拿在 1，生产者 CAS 失败不投 PQCS，命令留到这里抽，丢不了。清 0 必须在抽之前、
+        // 抽完才能进等待，颠倒会丢唤醒。上个命令包可能还排着没取，在途可多于一个，无害(见 _send_cmd)。
+        // 停止后进等待前不再抽，残留由 ev_free 收
+        if (0 == stop) {
+            ATOMIC_SET(&watcher->cmd.wake_pending, 0);
+            if (0 != _iocp_cmd_drain(watcher)) {
+                _iocp_flush_pending(watcher);
+                // 抽到的可能正是 CMD_STOP：回循环顶交给 _iocp_check_stop，别带着旧超时进等待
+                if (0 != ATOMIC_GET(&watcher->stop)) {
+                    continue;
+                }
+                // 这批命令可能新挂了 tick，重算等待超时才能按时叫醒它
+                next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
+            }
+        }
         ok = GetQueuedCompletionStatusEx(watcher->iocp,
                                         overlappeds,
                                         nevent,
                                         &count,
                                         0 != stop ? EVENT_WAIT_TIMEOUT : next_to,
                                         FALSE);
+        ATOMIC_SET_RELAXED(&watcher->cmd.wake_pending, 1);// 只是提示，被看漏无非多投一次 PQCS
         if (ok) {
             for (i = 0; i < count; i++) {
                 overlap = overlappeds[i].lpOverlapped;
@@ -161,6 +185,9 @@ static void _iocp_loop_event(void *arg) {
                 evsk = UPCAST(overlap, evsock_ctx, overlapped);
                 evsk->ev_cb(watcher, evsk, overlappeds[i].dwNumberOfBytesTransferred);
             }
+            // 本轮派发完统一冲。与 uev 不同，IOCP 只在派发后与进等待前抽到命令时冲，超时返回不冲，
+            // 故 tick 回调不得触发明文攒发
+            _iocp_flush_pending(watcher);
             if (count == nevent
                 && 0 == ATOMIC_GET(&watcher->stop)) {
                 MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
@@ -277,6 +304,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);
         list_init(&watcher->ticks);
+        list_init(&watcher->flushes);
         list_init(&watcher->lingers);
         watcher->linger_tick.cb = NULL;
 #if WITH_SSL

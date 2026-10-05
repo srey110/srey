@@ -198,7 +198,7 @@ runner.run(function(t)
         t:eq("function", type(DEBUG), "DEBUG exists")
     end
 
-    -- ── task.msg_release：只认带载荷的消息对象，别的入参什么都不做 ──────────
+    -- ── task.msg_release：收任何消息对象，无载荷的消息或非消息参数什么都不做 ──
     do
         local release = task.msg_release
         t:eq(true, pcall(release), "msg_release 无参不报错")

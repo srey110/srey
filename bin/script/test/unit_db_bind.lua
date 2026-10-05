@@ -273,6 +273,20 @@ runner.run(function(t)
         -- pack_endsession：无需 begin，直接打包 endSessions 命令
         _pack_has(t, "endSessions", "session pack_endsession", sess:pack_endsession())
 
+        -- 不传 uuid / timeout：lsid 本地生成，超时取连接上 parse_hello 记下的值(没建连为 0，超时未知)
+        local lsess = mgsess.new(mg)
+        t:check(lsess ~= nil, "session.new 不传 uuid 时本地生成")
+        t:eq(0, lsess:expires_in(), "没建连时超时未知，expires_in 为 0")
+        -- endSessions 包恒带 MORETOCOME(只发不等)，连接级 flags 不碰：连接没置位、已置位两种都核
+        for _, f in ipairs({ 0, MORETOCOME }) do
+            mg:set_flag(f)
+            local ep, esz, emore = lsess:pack_endsession()
+            t:check(nil ~= ep and esz > 0, "本地会话 pack_endsession 照常组包 flags=" .. f)
+            t:eq(true, emore, "pack_endsession 恒带 MORETOCOME flags=" .. f)
+            t:eq(f, mg:clear_flag(), "组完 pack_endsession 连接级 flags 未被改动 flags=" .. f)
+            utils.ud_free(ep)
+        end
+
         -- pack_refresh
         _pack_has(t, "refreshSessions", "session pack_refresh", sess:pack_refresh())
 

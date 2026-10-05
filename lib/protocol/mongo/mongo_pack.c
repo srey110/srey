@@ -364,7 +364,12 @@ void *mongo_pack_endsession(mongo_session *session, size_t *size) {
     bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
     bson_append_end(&bson);//0
     bson_append_end(&bson);//endSessions
-    MONGO_PACK_RETURN(mongo->db);
+    _MONGO_PACK_TAIL(mongo->db);
+    if (NULL != _data) {
+        // 包头 flags 恒为 MORETOCOME，覆盖掉照抄来的连接级 flags，连接上的值不动
+        write_le32((char *)_data + MSG_FLAGS_OFF, MORETOCOME);
+    }
+    return _data;
 }
 char *mongo_transaction_options(mongo_session *session, size_t *lens) {
     // 只吐 doc 不打包消息，故不走 MONGO_PACK_BEGIN：那个宏的容量闸门要写 *size，本函数的出参叫 lens

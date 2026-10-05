@@ -39,6 +39,11 @@ static const char hex_char_lower[16] = {
     '8', '9', 'a', 'b',
     'c', 'd', 'e', 'f'
 };
+// "00" ~ "99" 依次排开，u64tostr 十进制每次查出两位
+static const char _dec_pairs[] =
+    "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
+    "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
 #ifndef STRTOD_FAST_OFF
 // 10^e(e 在 STRTOD_POW10_MIN~MAX)规格化后的高 128 位，每个 e 两个值(高 64 位、低 64 位)，不向上取整
 static const uint64_t _strtod_pow10[] = {
@@ -188,12 +193,38 @@ static inline size_t _u64_digits(char *out, uint64_t v, uint32_t base) {
     } while (0 != i);
     return n;
 }
+// 十进制专用的 _u64_digits：按 100 一组数位，从末位往前每次从 _dec_pairs 查两位写，最高位剩一位时单写
+static inline size_t _u64_digits10(char *out, uint64_t v) {
+    uint64_t t = v;
+    uint64_t q;
+    size_t n = 1;
+    size_t i;
+    while (t >= 100) {
+        t /= 100;
+        n += 2;
+    }
+    n += (t >= 10) ? 1 : 0;
+    i = n;
+    while (v >= 100) {
+        q = v / 100;
+        i -= 2;
+        memcpy(out + i, _dec_pairs + (v - q * 100) * 2, 2);
+        v = q;
+    }
+    // 循环出来的 v 即数位时剩下的 t，占最高的 1 或 2 位
+    if (v >= 10) {
+        memcpy(out, _dec_pairs + v * 2, 2);
+    } else {
+        out[0] = (char)('0' + v);
+    }
+    return n;
+}
 size_t u64tostr(char *out, uint64_t v, uint32_t base) {
     size_t n;
     ASSERTAB(base >= 2 && base <= 16, ERRSTR_INVPARAM);
-    // 10 与 16 各用常量调一次，内联后除法折成乘法 / 移位；其余进制按变量除
+    // 10 进制两位一查表；16 用常量调一次，内联后除法折成移位；其余进制按变量除
     if (10 == base) {
-        n = _u64_digits(out, v, 10);
+        n = _u64_digits10(out, v);
     } else if (16 == base) {
         n = _u64_digits(out, v, 16);
     } else {
@@ -393,16 +424,20 @@ int32_t strtod_fast(const char *str, size_t lens, double *out) {
     return ERR_OK;
 #endif
 }
-// 先走 strtod_fast 的精确快路径，它不收的写法("+1"、".5"、"Infinity"、十六进制、上溢等)一律退回 strtod_c，判定与原先逐字相同
+// 先在原串上走 strtod_fast 的精确快路径，它不收的写法("+1"、".5"、"Infinity"、十六进制、上溢等)
+// 才拷进 tmp 补 NUL 退回 strtod_c，判定与原先逐字相同
 int32_t strtod_s(const void *data, size_t lens, double *val) {
     char tmp[128];
+    // 长度先挡：快路径不经过 tmp，不先挡的话 ≥128 字节的串会被它收下；也保证下面拷进 tmp 带 NUL 装得下
     if (0 == lens
-        || ERR_OK != copy_bounded(data, lens, tmp, sizeof(tmp), 1)) {
+        || lens >= sizeof(tmp)) {
         return ERR_FAILED;
     }
-    if (ERR_OK == strtod_fast(tmp, lens, val)) {
+    if (ERR_OK == strtod_fast((const char *)data, lens, val)) {
         return ERR_OK;
     }
+    memcpy(tmp, data, lens);
+    tmp[lens] = '\0';
     char *end;
     errno = 0;
     double d = strtod_c(tmp, &end);

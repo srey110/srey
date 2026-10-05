@@ -507,6 +507,121 @@ static void test_mysql_reader_unsigned_null(CuTest *tc) {
     _check_unsigned_null(tc, r);
     mysql_reader_free(r);
 }
+// 同一列按名与按下标各取一遍，值与 err 都得一样；按列的取值分组挑取值接口。返回按名那次的 err
+static int32_t _mysql_col_same(CuTest *tc, mysql_reader_ctx *r, const char *name, int32_t col) {
+    int32_t e1 = ERR_FAILED, e2 = ERR_FAILED;
+    size_t l1 = 0, l2 = 0;
+    struct tm t1, t2;
+    uint32_t us1, us2;
+    CuAssertIntEquals(tc, mysql_reader_cls(r, name), mysql_reader_cls_at(r, col));
+    CuAssertIntEquals(tc, mysql_reader_unsigned(r, name), mysql_reader_unsigned_at(r, col));
+    CuAssertIntEquals(tc, mysql_reader_isnull(r, name), mysql_reader_isnull_at(r, col));
+    switch (mysql_reader_cls_at(r, col)) {
+    case MYSQL_CLS_INT:
+        if (0 != mysql_reader_unsigned_at(r, col)) {
+            CuAssertTrue(tc, mysql_reader_uinteger(r, name, &e1) == mysql_reader_uinteger_at(r, col, &e2));
+        } else {
+            CuAssertTrue(tc, mysql_reader_integer(r, name, &e1) == mysql_reader_integer_at(r, col, &e2));
+        }
+        break;
+    case MYSQL_CLS_FLOAT:
+        CuAssertTrue(tc, mysql_reader_float(r, name, &e1) == mysql_reader_float_at(r, col, &e2));
+        break;
+    case MYSQL_CLS_DOUBLE:
+        CuAssertTrue(tc, mysql_reader_double(r, name, &e1) == mysql_reader_double_at(r, col, &e2));
+        break;
+    case MYSQL_CLS_STRING:
+        CuAssertTrue(tc, mysql_reader_string(r, name, &l1, &e1) == mysql_reader_string_at(r, col, &l2, &e2));
+        CuAssertIntEquals(tc, (int)l1, (int)l2);
+        break;
+    case MYSQL_CLS_DATETIME:
+        CuAssertTrue(tc, mysql_reader_datetime(r, name, &e1) == mysql_reader_datetime_at(r, col, &e2));
+        break;
+    case MYSQL_CLS_TIME:
+        CuAssertIntEquals(tc, mysql_reader_time(r, name, &t1, &us1, &e1), mysql_reader_time_at(r, col, &t2, &us2, &e2));
+        CuAssertIntEquals(tc, t1.tm_mday, t2.tm_mday);
+        CuAssertIntEquals(tc, t1.tm_hour, t2.tm_hour);
+        CuAssertIntEquals(tc, t1.tm_min, t2.tm_min);
+        CuAssertIntEquals(tc, t1.tm_sec, t2.tm_sec);
+        CuAssertIntEquals(tc, (int)us1, (int)us2);
+        break;
+    default:// 不在任何分组的列(字面量 NULL)：整数接口两边同判
+        mysql_reader_integer(r, name, &e1);
+        mysql_reader_integer_at(r, col, &e2);
+        break;
+    }
+    CuAssertIntEquals(tc, e1, e2);
+    return e1;
+}
+// mysql_reader_col + *_at：逐列与按名接口结果一致；列名按 nlens 整段比；重名列按名取第一个、
+// 第二个只能按下标取；不存在的列名为 -1，-1 与越界下标交给 _at 都按没有这一列处理
+static void test_mysql_reader_col_at(CuTest *tc) {
+    char names[9][64] = { "i", "u", "f", "d", "s", "dt", "t", "n", "d" };
+    uint8_t types[9] = { MYSQL_TYPE_LONG, MYSQL_TYPE_LONG, MYSQL_TYPE_FLOAT, MYSQL_TYPE_DOUBLE, MYSQL_TYPE_VARCHAR,
+                         MYSQL_TYPE_DATETIME, MYSQL_TYPE_TIME, MYSQL_TYPE_NULL, MYSQL_TYPE_DOUBLE };
+    static const char *vals[9] = { "-7", "4000000000", "1.5", "2.25", "abc", "2024-05-21 10:20:30",
+                                   "-12:34:56.5", NULL, "9.75" };
+    int32_t nils[9] = { 0, 0, 0, 0, 0, 0, 0, 1, 0 };
+    buf_ctx c[9];
+    char *p;
+    size_t off = 0, lens;
+    int32_t i, col, err;
+    mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 9, names, types);
+    r->fields[1].flags = MYSQL_UNSIGNED_FLAG;
+    MALLOC(p, 128);
+    for (i = 0; i < 9; i++) {
+        c[i].data = NULL;
+        c[i].lens = 0;
+        if (NULL != vals[i]) {
+            lens = strlen(vals[i]);
+            memcpy(p + off, vals[i], lens);
+            c[i].data = p + off;
+            c[i].lens = lens;
+            off += lens;
+        }
+    }
+    _reader_push_row(r, &p, c, nils);
+    // 前 8 个列名互不相同：查到的就是自己的下标，取值除 NULL 列(err=1)外都成功
+    for (i = 0; i < 8; i++) {
+        col = mysql_reader_col(r, names[i], strlen(names[i]));
+        CuAssertIntEquals(tc, i, col);
+        CuAssertIntEquals(tc, (7 == i) ? 1 : ERR_OK, _mysql_col_same(tc, r, names[i], col));
+    }
+    CuAssertTrue(tc, -7 == mysql_reader_integer_at(r, 0, &err));
+    CuAssertTrue(tc, 4000000000ULL == mysql_reader_uinteger_at(r, 1, &err));
+    // 类型不符
+    mysql_reader_integer_at(r, 4, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    // 重名列
+    CuAssertIntEquals(tc, 3, mysql_reader_col(r, "d", 1));
+    CuAssertTrue(tc, 2.25 == mysql_reader_double(r, "d", &err));
+    CuAssertTrue(tc, 9.75 == mysql_reader_double_at(r, 8, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    // 按 nlens 整段比："dt" 的前 1 字节是 "d"，"dtx" 的前 2 字节是 "dt"
+    CuAssertIntEquals(tc, 3, mysql_reader_col(r, "dt", 1));
+    CuAssertIntEquals(tc, 5, mysql_reader_col(r, "dtx", 2));
+    CuAssertIntEquals(tc, -1, mysql_reader_col(r, "dtx", 3));
+    // 不存在的列与越界下标
+    CuAssertIntEquals(tc, -1, mysql_reader_col(r, "nosuch", 6));
+    for (i = 0; i < 2; i++) {
+        col = (0 == i) ? -1 : 9;
+        CuAssertIntEquals(tc, mysql_reader_cls(r, "nosuch"), mysql_reader_cls_at(r, col));
+        CuAssertIntEquals(tc, 0, mysql_reader_unsigned_at(r, col));
+        CuAssertIntEquals(tc, 0, mysql_reader_isnull_at(r, col));
+        CuAssertTrue(tc, 0 == mysql_reader_integer_at(r, col, &err));
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+        CuAssertTrue(tc, NULL == mysql_reader_string_at(r, col, &lens, &err));
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+    }
+    mysql_reader_integer(r, "nosuch", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    // 游标越过最后一行：没有当前行
+    mysql_reader_next(r);
+    CuAssertIntEquals(tc, 0, mysql_reader_isnull_at(r, 7));
+    mysql_reader_integer_at(r, 0, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+}
 
 // mysql_reader_float / double 文本路径
 static void test_mysql_reader_float_double_text(CuTest *tc) {
@@ -2384,6 +2499,7 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_uinteger);
     SUITE_ADD_TEST(suite, test_mysql_reader_cls);
     SUITE_ADD_TEST(suite, test_mysql_reader_unsigned_null);
+    SUITE_ADD_TEST(suite, test_mysql_reader_col_at);
     SUITE_ADD_TEST(suite, test_mysql_reader_float_double_text);
     SUITE_ADD_TEST(suite, test_mysql_reader_float_text_bounds);
     SUITE_ADD_TEST(suite, test_mysql_reader_string);

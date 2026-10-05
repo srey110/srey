@@ -597,11 +597,47 @@ static int32_t _evpub_sock_send_normal(SOCKET fd, obuf_que *buf_s, size_t *nsend
     return rtn;
 }
 #if WITH_SSL
+// 把队头起的前几块拷成一段(不超过 MAX_SSL_SEND_SIZE)一次 SSL_write，发出去多少就从队头消费多少。
+// 撞 WANT_WRITE 时一个字节都不记账：下次拼出的前缀不变、长度只增不减，OpenSSL 才认这次重试；
+// 缓冲在栈上，重试时地址会变，靠 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER 放行
+static int32_t _evpub_sock_send_ssl_merge(SSL *ssl, obuf_que *buf_s, uint32_t nbuf, size_t *sended) {
+    char stage[MAX_SSL_SEND_SIZE];
+    off_buf_ctx *buf;
+    size_t staged = 0, take, sent;
+    for (uint32_t i = 0; i < nbuf && staged < sizeof(stage); i++) {
+        buf = obuf_que_at(buf_s, i);
+        take = buf->lens - buf->offset;
+        if (take > sizeof(stage) - staged) {
+            take = sizeof(stage) - staged;
+        }
+        memcpy(stage + staged, (char *)buf->data + buf->offset, take);
+        staged += take;
+    }
+    int32_t rtn = evssl_send(ssl, stage, staged, sended);
+    if (ERR_OK != rtn) {
+        return rtn;
+    }
+    sent = *sended;
+    while (sent > 0) {
+        buf = obuf_que_peek(buf_s);
+        take = buf->lens - buf->offset;
+        if (sent < take) {
+            buf->offset += sent;
+            break;
+        }
+        sent -= take;
+        obuf_que_pop(buf_s);
+        _evpub_off_buf_release(buf);
+    }
+    return rtn;
+}
 // 通过 SSL 发送队列中的数据。单次上限与抽干循环两条都不能去掉：超过 MAX_SSL_SEND_SIZE
-// 会让 TLS1.3 KeyUpdate 断连，不抽干则边缘触发下发送就此停住
+// 会让 TLS1.3 KeyUpdate 断连，不抽干则边缘触发下发送就此停住。
+// 队头不足 MAX_SSL_SEND_SIZE 且后面还有块时合并成一次写，其余逐块直发
 static int32_t _evpub_sock_send_ssl(SSL *ssl, obuf_que *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t sended, lens;
+    uint32_t nbuf;
     off_buf_ctx *buf;
     for (;;) {
         buf = obuf_que_peek(buf_s);
@@ -609,6 +645,19 @@ static int32_t _evpub_sock_send_ssl(SSL *ssl, obuf_que *buf_s, size_t *nsend) {
             break;
         }
         lens = buf->lens - buf->offset;
+        nbuf = obuf_que_size(buf_s);
+        if (nbuf > 1
+            && lens < MAX_SSL_SEND_SIZE) {
+            rtn = _evpub_sock_send_ssl_merge(ssl, buf_s, nbuf, &sended);
+            if (ERR_OK != rtn) {
+                break;
+            }
+            (*nsend) += sended;
+            if (0 == sended) {
+                break;
+            }
+            continue;
+        }
         if (lens > MAX_SSL_SEND_SIZE) {
             lens = MAX_SSL_SEND_SIZE;
         }

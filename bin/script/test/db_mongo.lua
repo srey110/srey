@@ -123,11 +123,14 @@ runner.run(function(t)
     end
 
     -- 事务：commit 后事务内插入可见，rollback 后不可见。同一 session 连做两个事务，
-    -- 覆盖 txnNumber 递增与 startTransaction 只附加于每个事务首个操作
+    -- 覆盖 txnNumber 递增与 startTransaction 只附加于每个事务首个操作。
+    -- startsession 的 lsid 是本地生成的，下面的 refresh / begin / commit 就是本地会话能用的用例
     local sess = mg:startsession()
     if not sess then
         t:fail("mongo startsession")
     else
+        -- 超时分钟数来自建连时 parse_hello 记下的值，没接上就是 0、expires_in 恒为 0
+        t:check(sess:expires_in() > 0, "本地会话的超时取自 hello 的 logicalSessionTimeoutMinutes")
         t:check(sess:refresh(), "session refresh")
 
         t:check(sess:begin(), "txn begin (commit path)")
@@ -159,6 +162,12 @@ runner.run(function(t)
         -- 绑定已被清掉，sess 手上那个事务已无从提交，直接释放它
 
         sess:close()
+        -- endSessions 只发不等：服务端若回了包，紧跟的这条 insert 会读到它而拿不到 n=1
+        local adoc = bson.encode({ { id = 302, name = "after-endsessions", score = 9 } })
+        local aptr, asz = adoc:data()
+        local aok, an = mg:insert("srey_test", aptr, asz)
+        t:check(aok, "endSessions 之后普通 insert ok")
+        t:eq(1, an, "endSessions 之后普通 insert n=1（没读到 endSessions 的回包）")
     end
 
     -- 并发：多协程在同一条连接上并发命令，锁点在 _wsend/_rsend 两个漏斗上。

@@ -336,43 +336,91 @@ void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeo
     ud.context = (void*)_timeout;
     tw_add(&task->loader->tw, ms, _task_message_timeout_push, NULL, &ud);
 }
-void task_request(task_ctx *dst, task_ctx *src, subtype_t reqtype, uint64_t sess,
-                  void *data, size_t size, int32_t copy) {
+// 组请求消息（msg 须已清零），copy 时载荷先 dup 一份
+static inline void _task_request_msg(message_ctx *msg, task_ctx *src, subtype_t reqtype, uint64_t sess,
+                                     void *data, size_t size, int32_t copy) {
     ASSERTAB((NULL != src && 0 != sess) || (NULL == src && 0 == sess), "parameter error");
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_REQUEST;
-    msg.subtype = reqtype;
+    msg->mtype = MSG_TYPE_REQUEST;
+    msg->subtype = reqtype;
     if (NULL != src) {
-        msg.src = src->handle;
-        msg.sess = sess;
+        msg->src = src->handle;
+        msg->sess = sess;
     } else {
-        msg.src = INVALID_TNAME;
+        msg->src = INVALID_TNAME;
     }
     if (NULL != data && 0 != copy) {
-        msg.data = dup_zero(data, size);
+        msg->data = dup_zero(data, size);
     } else {
-        msg.data = data;
+        msg->data = data;
     }
-    msg.size = size;
+    msg->size = size;
+}
+// 组响应消息（msg 须已清零），copy 时载荷先 dup 一份
+static inline void _task_response_msg(message_ctx *msg, subtype_t reqtype, uint64_t sess,
+                                      int32_t erro, void *data, size_t size, int32_t copy) {
+    msg->mtype = MSG_TYPE_RESPONSE;
+    msg->sess = sess;
+    msg->subtype = reqtype;
+    msg->erro = erro;
+    msg->size = size;
+    if (NULL != data && 0 != copy) {
+        msg->data = dup_zero(data, size);
+    } else {
+        msg->data = data;
+    }
+}
+// 读锁内按句柄查到就投递：读锁期间 task_ungrab 的释放那步要写锁进不来，投递里的 incref 在锁内完成。
+// 查不到时 copy 非 0 就放掉组包时 dup 的副本，copy=0 的载荷不碰、归调用方
+static int32_t _task_post_to(loader_ctx *loader, name_t handle, message_ctx *msg, int32_t copy) {
+    rwlock_distr_rdlock(&loader->lckmaptasks);
+    task_ctx *task = _task_map_get(loader->maptasks, handle);
+    if (NULL != task) {
+        _task_message_post(task, msg);
+    }
+    rwlock_distr_runlock(&loader->lckmaptasks);
+    if (NULL != task) {
+        return ERR_OK;
+    }
+    if (0 != copy) {
+        FREE(msg->data);
+    }
+    return ERR_FAILED;
+}
+void task_request(task_ctx *dst, task_ctx *src, subtype_t reqtype, uint64_t sess,
+                  void *data, size_t size, int32_t copy) {
+    message_ctx msg = { 0 };
+    _task_request_msg(&msg, src, reqtype, sess, data, size, copy);
     _task_message_post(dst, &msg);
 }
 void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
                    int32_t erro, void *data, size_t size, int32_t copy) {
     message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_RESPONSE;
-    msg.sess = sess;
-    msg.subtype = reqtype;
-    msg.erro = erro;
-    msg.size = size;
-    if (NULL != data && 0 != copy) {
-        msg.data = dup_zero(data, size);
-    } else {
-        msg.data = data;
-    }
+    _task_response_msg(&msg, reqtype, sess, erro, data, size, copy);
     _task_message_post(dst, &msg);
 }
 void task_call(task_ctx *dst, subtype_t reqtype, void *data, size_t size, int32_t copy) {
     task_request(dst, NULL, reqtype, 0, data, size, copy);
+}
+int32_t task_request_to(loader_ctx *loader, name_t handle, task_ctx *src, subtype_t reqtype, uint64_t sess,
+                        void *data, size_t size, int32_t copy) {
+    if (INVALID_TNAME == handle) {
+        return ERR_FAILED;
+    }
+    message_ctx msg = { 0 };
+    _task_request_msg(&msg, src, reqtype, sess, data, size, copy);
+    return _task_post_to(loader, handle, &msg, copy);
+}
+int32_t task_response_to(loader_ctx *loader, name_t handle, subtype_t reqtype, uint64_t sess,
+                         int32_t erro, void *data, size_t size, int32_t copy) {
+    if (INVALID_TNAME == handle) {
+        return ERR_FAILED;
+    }
+    message_ctx msg = { 0 };
+    _task_response_msg(&msg, reqtype, sess, erro, data, size, copy);
+    return _task_post_to(loader, handle, &msg, copy);
+}
+int32_t task_call_to(loader_ctx *loader, name_t handle, subtype_t reqtype, void *data, size_t size, int32_t copy) {
+    return task_request_to(loader, handle, NULL, reqtype, 0, data, size, copy);
 }
 int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t reqtype,
                            uint64_t sess, void *data, size_t size, int32_t copy) {

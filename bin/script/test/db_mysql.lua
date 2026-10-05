@@ -16,7 +16,8 @@ end
 
 -- reader:get / reader:integer 的两个边角，query(文本协议)与 stmt(二进制协议)各验一遍：
 -- 字面量 NULL 列(MYSQL_TYPE_NULL，不在任何取值分组)给 nil 不抛错；UNSIGNED 整数列按无符号读，
--- 二进制路上 200 / 3000000000 不能读成负数；超出 int64 的值 get 抛错且错误信息带列名，integer 按读取失败返回 false
+-- 二进制路上 200 / 3000000000 不能读成负数；超出 int64 的值 get 抛错且错误信息带列名，integer 按读取失败返回 false；
+-- 列不存在（含名字带结尾 '\0'，按整串比查不到）时 get 抛错、integer 返回 false
 local function _check_edge(t, label, rd)
     if not t:check(rd and not rd:eof(), label .. " 有一行") then
         return
@@ -42,6 +43,15 @@ local function _check_edge(t, label, rd)
             label .. " get 超 int64 抛错: " .. tostring(emsg))
     eok, emsg = pcall(rd.integer, rd, "bover")
     t:check(eok and false == emsg, label .. " integer 超 int64 返回 false、不抛错: " .. tostring(emsg))
+    eok, emsg = pcall(rd.get, rd, "nosuch")
+    t:check(not eok and string.find(tostring(emsg), "'nosuch'", 1, true),
+            label .. " get 不存在的列抛错且带列名: " .. tostring(emsg))
+    eok, emsg = pcall(rd.integer, rd, "nosuch")
+    t:check(eok and false == emsg, label .. " integer 不存在的列返回 false、不抛错: " .. tostring(emsg))
+    eok = pcall(rd.get, rd, "tiu\0")
+    t:check(not eok, label .. " get 名字带结尾 \\0 按列不存在抛错")
+    eok, emsg = pcall(rd.integer, rd, "tiu\0")
+    t:check(eok and false == emsg, label .. " integer 名字带结尾 \\0 返回 false: " .. tostring(emsg))
 end
 
 srey.startup(function()

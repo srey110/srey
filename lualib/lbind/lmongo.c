@@ -210,6 +210,20 @@ static int32_t _lmongo_parse_startsession(lua_State *lua) {
     lua_pushinteger(lua, timeout);
     return 2;
 }
+/// <summary>
+/// 解析 hello 响应，把 logicalSessionTimeoutMinutes 记进连接；之后 mongo_session.new 不传 timeout 时用它。
+/// 每次建连发完 hello 都要调一次（lib/mongo.lua 的建链钩子已调）
+/// </summary>
+/// <param name="self" type="userdata">mongo 对象</param>
+/// <param name="mgopack" type="lightuserdata">hello 的 mgopack_ctx 响应指针</param>
+/// <returns type="integer">记下的分钟数；回包没给、不是 int32 或不是正数时为 0（超时未知）</returns>
+static int32_t _lmongo_parse_hello(lua_State *lua) {
+    LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
+    LPUB_LUD_ARG(lua, mgopack_ctx, 2, mgopack);
+    (*ud)->sesstimeout = mongo_parse_sesstimeout(mgopack);
+    lua_pushinteger(lua, (*ud)->sesstimeout);
+    return 1;
+}
 // 取标志位参数：先按 lua_Integer 判范围再窄化，再拒掉掩码里没有的位
 static int32_t _lmongo_arg_flag(lua_State *lua, int32_t idx) {
     int32_t flag = (int32_t)lpub_check_range(lua, idx, 0, MONGO_FLAGS_ALL, MONGOFLAG_OUT_OF_RANGE);
@@ -843,6 +857,7 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
         { "user_pwd",             _lmongo_user_pwd },
         { "check_error",          _lmongo_check_error },
         { "parse_startsession",   _lmongo_parse_startsession },
+        { "parse_hello",          _lmongo_parse_hello },
         { "set_flag",             _lmongo_set_flag },
         { "check_flag",           _lmongo_check_flag },
         { "clear_flag",           _lmongo_clear_flag },
@@ -876,19 +891,25 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
 }
 // ---- mongo.session ----
 /// <summary>
-/// 从已解析的 startSession 响应数据创建会话上下文
+/// 创建会话上下文。不传 uuid 时在本地生成 v4 UUID 作 lsid，服务端第一次见到它时自动建会话，不必发 startSession
 /// </summary>
 /// <param name="mongo" type="_mongo_ctx">所属 mongo 连接</param>
-/// <param name="uuid" type="string">16 字节会话 UUID</param>
-/// <param name="timeout" type="integer">超时分钟数</param>
-/// <returns type="_mongo_session_ctx?">session 对象；uuid 长度非 16 时返回 nil</returns>
+/// <param name="uuid" type="string?">16 字节会话 UUID；nil / 不传则本地生成</param>
+/// <param name="timeout" type="integer?">超时分钟数，取值 [0, INT32_MAX]；nil / 不传则取连接上 parse_hello 记下的值，0 为超时未知</param>
+/// <returns type="_mongo_session_ctx?">session 对象；uuid 长度非 16、或本地生成 UUID 失败时返回 nil</returns>
 static int32_t _lmongo_session_new(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     mongo_ctx *mongo = *ud;
     size_t uuid_lens;
-    const char *uuid_str = luaL_checklstring(lua, 2, &uuid_lens);
-    int32_t timeout = (int32_t)lpub_check_range(lua, 3, 0, INT32_MAX, "session timeout minutes out of range");
-    if (UUID_LENS != uuid_lens) {
+    const char *uuid_str = luaL_optlstring(lua, 2, NULL, &uuid_lens);
+    int32_t timeout = (int32_t)lpub_opt_range(lua, 3, mongo->sesstimeout, 0, INT32_MAX, "session timeout minutes out of range");
+    char uuid[UUID_LENS];
+    if (NULL == uuid_str) {
+        if (ERR_OK != uuid_v4(uuid)) {
+            return lpub_rtn_nil(lua, 1);
+        }
+        uuid_str = uuid;
+    } else if (UUID_LENS != uuid_lens) {
         return lpub_rtn_nil(lua, 1);
     }
     mongo_session **psession = (mongo_session **)lpub_push_ud(lua, NULL, MT_MONGO_SESSION);
@@ -989,12 +1010,12 @@ static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
-/// 构造 endSessions 结束会话命令包
+/// 构造 endSessions 结束会话命令包；包里恒带 MORETOCOME（结果不看，只发不等），不碰连接级 flags（见 C 层 mongo_pack_endsession）
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
-/// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
+/// <returns type="boolean?">包里写着 MORETOCOME 时 true，判据同 pack_check_flag；本包恒带，命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
     size_t size;

@@ -10,6 +10,7 @@ typedef struct task_mysql_args {
     char password[64];
     char database[64];
     mysql_ctx mysql;
+    mysql_ctx mysql_ssl;// TLS 那一段另建的连接
 }task_mysql_args;
 
 // query / stmt_execute 改回调式后的三个共用回调
@@ -336,6 +337,43 @@ static int32_t _concurrent_query(mysql_ctx *mysql) {
     }
     return ERR_OK;
 }
+#if WITH_SSL
+// 走 TLS 另连一次并查一条：握手完成回调里当场发认证包，握手位没先清就会被当成握手期发送断连。
+// 取不到客户端 TLS 上下文就跳过
+static int32_t _ssl_query(task_ctx *task, task_mysql_args *arg) {
+    mysql_reader_ctx *reader = NULL;
+    int32_t err = ERR_FAILED;
+    int64_t v = 0;
+    evssl_ctx *evssl = evssl_qury("clientnull");
+    if (NULL == evssl) {
+        LOG_WARN("mysql ssl: no client ssl context, skipped.");
+        return ERR_OK;
+    }
+    if (ERR_OK != mysql_init(&arg->mysql_ssl, arg->host, arg->port, evssl,
+                             arg->user, arg->password, arg->database, "utf8mb4", 0)) {
+        LOG_ERROR("mysql ssl: mysql_init error.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != mysql_connect(task, &arg->mysql_ssl)) {
+        LOG_ERROR("mysql ssl: connect error.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK == mysql_query(&arg->mysql_ssl, "select 1 as v", NULL, _cb_take_reader, &reader)
+        && !mysql_reader_eof(reader)) {
+        v = mysql_reader_integer(reader, "v", &err);
+    }
+    if (NULL != reader) {
+        mysql_reader_free(reader);
+    }
+    mysql_quit(&arg->mysql_ssl);
+    if (ERR_OK != err
+        || 1 != v) {
+        LOG_ERROR("mysql ssl: select error.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+#endif
 
 static void _startup(task_ctx *task) {
     task_mysql_args *arg = (task_mysql_args *)coro_get_arg(task);
@@ -403,6 +441,11 @@ static void _startup(task_ctx *task) {
         return;
     }
     mysql_quit(&arg->mysql);
+#if WITH_SSL
+    if (ERR_OK != _ssl_query(task, arg)) {
+        return;
+    }
+#endif
     *(arg->ok) = 1;
     LOG_INFO("mysql tested.");
 }

@@ -4,6 +4,11 @@
 #include "utils/buffer.h"
 #include "protocol/prots_pub.h"
 
+//最大聚合嵌套层数，防御恶意 server 用 *1\r\n*1\r\n... 嵌套数组导致堆 OOM
+//（每层嵌套都只是再压一帧、永不清空帧栈，故永不触发完整 pack 返回，节点持续累积到 rd 的链表上）
+//含 stack[0] 顶层虚拟帧，故实际可嵌套 REDIS_MAX_DEPTH-1 层；上层沿回复链表建嵌套结构时，层栈按它定长不会溢出
+#define REDIS_MAX_DEPTH     18
+
 // RESP2/RESP3 类型标识字节定义
 #define RESP_STRING  '+' // 简单字符串   RESP2  +OK\r\n
 #define RESP_ERROR   '-' // 简单错误     RESP2  -Error message\r\n

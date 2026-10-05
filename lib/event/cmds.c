@@ -68,9 +68,10 @@ static inline void _cmd_note_trigger(watcher_ctx *watcher, pip_ctx *pip) {
 }
 #endif
 // 唤醒只管叫醒事件线程,命令在无界队列里,消费端抽的是队列到空,故唤醒数与命令数不必对齐。
-// 在途标志保证同时最多一个唤醒:CAS 抢到才投,消费端抽队列前清 0,两步顺序不能颠倒;
-// 标志只能靠 CAS 判——MSVC 没有足序的原子读。
-// 在途最多一个字节,管道填不满,故写失败只可能是 EINTR。
+// 标志为 1 时不投唤醒,CAS 抢到才投;标志只能靠 CAS 判——MSVC 没有足序的原子读。
+// 消费端清 0 必须在抽队列之前,颠倒会丢唤醒。Unix 是命令通道就绪时清 0 再抽,在途最多一个字节,
+// 管道填不满,故写失败只可能是 EINTR;IOCP 是事件线程醒着时把标志拿在 1、进等待前清 0 再抽
+// (见 _iocp_loop_event),满批返回时上个命令包可能还没取出,在途可多于一个,无害:消费端抽到空为止。
 // stop 置位后不再唤醒也不丢命令:watcher 已在退出路径上,队列残留由 ev_free 的 drain 收
 void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
@@ -318,8 +319,7 @@ static inline void *_cmd_cpy_buf(void *data, size_t len, int32_t copy) {
 }
 static inline void _ev_bufs_send(struct watcher_ctx *watcher, struct evsock_ctx *evsk, off_buf_ctx *buf) {
 #ifdef EV_IOCP
-    (void)watcher;
-    _iocp_add_bufs_trypost(evsk, buf);
+    _iocp_add_bufs_trypost(watcher, evsk, buf);
 #else
     _uev_add_bufs_send(watcher, evsk, buf);
 #endif

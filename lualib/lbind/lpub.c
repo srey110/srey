@@ -308,26 +308,29 @@ name_t lpub_task_handle(lua_State *lua, int32_t idx) {
 name_t lpub_task_peek(lua_State *lua, int32_t idx) {
     return _lpub_task_handle(lua, idx, 0);
 }
-task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle) {
-    task_ctx *task;
+name_t lpub_task_refresh(lua_State *lua, int32_t idx, name_t handle) {
     name_t fresh;
-    if (INVALID_TNAME == handle) {
-        return NULL;// 缓存只存查到的句柄，无效值说明刚按名字查过就没有，不必再当过期重查
-    }
-    task = task_grab(g_loader, handle);
-    if (NULL != task
+    // 缓存只存查到的句柄，无效值说明刚按名字查过就没有，不必再当过期重查
+    if (INVALID_TNAME == handle
         || LUA_TSTRING != lua_type(lua, idx)) {
-        return task;
+        return INVALID_TNAME;
     }
     // 缓存的句柄可能已过期(同名 task 退出后又注册了新的),按名字重查一次
     idx = lua_absindex(lua, idx);
     fresh = task_find_name(g_loader, lua_tostring(lua, idx));
     _tname_cache_fix(lua, idx, fresh);
-    if (INVALID_TNAME == fresh
-        || fresh == handle) {
-        return NULL;
+    return fresh == handle ? INVALID_TNAME : fresh;
+}
+task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle) {
+    task_ctx *task;
+    if (INVALID_TNAME == handle) {
+        return NULL;// 理由同 lpub_task_refresh 开头那句
     }
-    return task_grab(g_loader, fresh);
+    task = task_grab(g_loader, handle);
+    if (NULL != task) {
+        return task;
+    }
+    return task_grab(g_loader, lpub_task_refresh(lua, idx, handle));
 }
 int32_t lpub_rtn_bool(lua_State *lua, int32_t cond) {
     lua_pushboolean(lua, 0 != cond ? 1 : 0);

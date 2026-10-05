@@ -33,7 +33,7 @@ function ctx:ctor(ip, port, sslname, user, password)
         error("smtp.new failed: ip / user / password too long", 2)
     end
     self.sslname = sslname
-    -- 一封邮件是 MAIL FROM → N×RCPT TO → DATA → 正文 → RSET 一长串往返，两个协程
+    -- 一封邮件是 MAIL FROM → N×RCPT TO → DATA → 正文一长串往返，两个协程
     -- 同时发信会把收件人混到一起——串行化执行器由 conn_pub 建
     pub.init(self, self.smtp)
 end
@@ -126,21 +126,22 @@ function ctx:_send(mail)
     return true
 end
 
----发送邮件：_send 后无论成败都执行 reset，保证服务端状态干净以便复用连接；
----reset 失败即就地拆掉连接（代次前进、established 清零），下一封信要么先 ping() 重连要么直接失败
+---发送邮件：投递成功不发 reset（正文收到 250 时服务端已清空事务）；投递失败才 reset，
+---清掉服务端留下的半截信封以便复用连接。reset 也失败即就地拆掉连接（代次前进、established 清零），
+---下一封信要么先 ping() 重连要么直接失败
 ---@param mail any mail_ctx 邮件对象
 ---@return boolean ok 邮件投递成功 true。只反映这封邮件的成败，不反映连接状态——
----投递成功而收尾 reset 失败时连接已被拆掉，本次仍返 true
+---投递失败且补发的 reset 也失败时连接已被拆掉
 function ctx:send(mail)
     return srey.serial_ret(false, self.serial(self._sendmail, self, mail))
 end
--- 锁覆盖 _send + reset 整段：RSET 清的是本次投递在服务端留下的会话状态，与发送是同一笔事。
+-- 锁覆盖 _send + 失败时的 reset：RSET 清的是本次投递留下的半截信封，与发送是同一笔事。
 -- 分开各包一次的话，别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉
 function ctx:_sendmail(mail)
     local rtn = self:_send(mail)
     -- 走 _closereset 而不是自己 sync_close：代次与 established 由 conn_pub 统一维护，
     -- 漏掉后者会让排队中的 connect 对着这条已关的连接报成功
-    if not self:_reset() then
+    if not rtn and not self:_reset() then
         self:_closereset()
     end
     return rtn

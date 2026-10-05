@@ -474,33 +474,42 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
 // 处理命令阶段收到的服务端消息，返回在 ReadyForQuery 时累积完成的 pgpack_ctx。
 // DataRow 以外的小消息放栈上解析，免一次分配；解析侧不接管的那些由这里释放，归属见 _pgpack_parser。
 // size 记包持有的线上字节：消息攒在 recvlens，到 'Z' 整笔交出；'A' / 'G' 立即交出，
-// 只记本条、不进累计（'A' 可能夹在 CommandComplete 与 'Z' 之间）
+// 只记本条、不进累计（'A' 可能夹在 CommandComplete 与 'Z' 之间）。
+// 连着的 DataRow 在这里一条接一条解完，不逐条退回外层循环；其余消息仍是一次一条
 static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
     size_t total;
     char stk[PGSQL_STACK_MSG];
-    char *payload = _pgsql_payload(pg, buf, &total, status, stk, sizeof(stk));
-    if (NULL == payload) {
-        return NULL;
-    }
-    char code = payload[0];
+    char *payload;
+    char code;
     binary_ctx breader;
-    binary_init_read(&breader, payload, total);
-    pgpack_ctx *pack = _pgpack_parser(pg, &breader, ud, status);
-    if ('D' != code
-        && 'A' != code
-        && payload != stk) {
-        FREE(payload);
-    }
-    if ('A' == code || 'G' == code) {
-        *size = total;
-    } else {
-        pg->recvlens += total;
-        if ('Z' == code) {
-            *size = pg->recvlens;
-            pg->recvlens = 0;
+    pgpack_ctx *pack;
+    do {
+        payload = _pgsql_payload(pg, buf, &total, status, stk, sizeof(stk));
+        if (NULL == payload) {
+            return NULL;// 接着解的下一条正文没收全时也从这里走，缓冲停在它前面
         }
-    }
+        code = payload[0];
+        binary_init_read(&breader, payload, total);
+        pack = _pgpack_parser(pg, &breader, ud, status);
+        if ('D' != code
+            && 'A' != code
+            && payload != stk) {
+            FREE(payload);
+        }
+        if ('A' == code || 'G' == code) {
+            *size = total;
+        } else {
+            pg->recvlens += total;
+            if ('Z' == code) {
+                *size = pg->recvlens;
+                pg->recvlens = 0;
+            }
+        }
+    } while ('D' == code
+             && PROT_INIT == *status
+             && buffer_size(buf) >= 5
+             && 'D' == buffer_at(buf, 0));// DataRow 不出包，只看状态位与下一条的头
     return pack;
 }
 void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,

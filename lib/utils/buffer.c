@@ -886,7 +886,7 @@ NOINLINE static int32_t _buffer_search_slow(buffer_ctx *ctx, const int32_t ncs,
     }
     return ERR_FAILED;
 }
-/* 查找区间落在首节点内且区分大小写：直调 memstr，省掉函数指针间接调用与整套节点游走。
+/* 查找区间落在首节点内且区分大小写：直调 _memstr，省掉函数指针间接调用与整套节点游走。
  * 不更新 hint 是安全的：hint 只是优化，其余路径照常维护。end 的换算与慢路径相同 */
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens) {
@@ -903,7 +903,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
             && start < e
             && wlens <= e - start) {
             base = head->buffer + head->misalign;
-            cur = (char *)memstr(0, base + start, e - start, what, wlens);
+            cur = (char *)_memstr(base + start, e - start, what, wlens);
             if (NULL == cur) {
                 return ERR_FAILED;
             }
@@ -1005,7 +1005,7 @@ void buffer_commit_get(buffer_ctx *ctx, size_t lens) {
         buffer_drain(ctx, lens);
     }
 }
-int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
+int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {
     *nread = 0;
     size_t nbuf = MAX_RECV_SIZE;
@@ -1016,6 +1016,10 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     uint32_t niov;
     size_t iovlens;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
+    if (hint > nbuf
+        && nbuf < RECV_HINT_CAP) {
+        nbuf = hint > RECV_HINT_CAP ? RECV_HINT_CAP : hint;
+    }
     for (;;) {
         // iovlens 是这轮实际给出的可写空间,由 buffer_expand 登记 iov 时一并带出,下面的早退判据要用
         niov = buffer_expand(ctx, nbuf, iov, MAX_EXPAND_NIOV, &iovlens);

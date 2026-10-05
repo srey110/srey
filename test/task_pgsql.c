@@ -267,6 +267,34 @@ static int32_t _copy_in(pgsql_ctx *pg) {
     return ERR_OK;
 }
 
+// COPY IN 出错路径：语句失败（表不存在）与数据行出错各一次，都要拿回 PGPACK_ERR。
+// Query 与 CopyData/CopyDone 是一次发出的，之后普通查询与正常 COPY 照样成功才说明连接没错位
+static int32_t _copy_in_error(pgsql_ctx *pg) {
+    const char *row = "20\tfrank\t1.0\n";
+    pgpack_ctx *p = pgsql_copy_in(pg, "copy srey_no_such_table from stdin", row, strlen(row));
+    if (NULL == p || PGPACK_ERR != p->type) {
+        LOG_ERROR("pgsql copy_in(no table): expected PGPACK_ERR.");
+        return ERR_FAILED;
+    }
+    const char *bad = "not_a_number\tgary\t1.0\n";
+    p = pgsql_copy_in(pg, "copy srey_test (id, name, score) from stdin", bad, strlen(bad));
+    if (NULL == p || PGPACK_ERR != p->type) {
+        LOG_ERROR("pgsql copy_in(bad row): expected PGPACK_ERR.");
+        return ERR_FAILED;
+    }
+    p = pgsql_query(pg, "select 1");
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql query after copy_in errors: connection out of step.");
+        return ERR_FAILED;
+    }
+    p = pgsql_copy_in(pg, "copy srey_test (id, name, score) from stdin", row, strlen(row));
+    if (NULL == p || PGPACK_OK != p->type || 1 != pgsql_affected_rows(p)) {
+        LOG_ERROR("pgsql copy_in after errors failed.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 // COPY OUT 一次性导出
 static int32_t _copy_out(pgsql_ctx *pg) {
     pgpack_ctx *p = pgsql_copy_out(pg, "copy srey_test to stdout");
@@ -393,6 +421,11 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _select_iterate(&arg->pg, 5)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    // 排在 5 行计数之后：它成功那次多插一行 id=20
+    if (ERR_OK != _copy_in_error(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }

@@ -1,5 +1,5 @@
--- protocol 绑定层单元测试（不走网络）：
--- websock pack_*, smtp pack_*, mail pack, redis.pack/value/next/node, harbor.pack, http.code_status
+-- protocol 绑定层单元测试（除 redis.unpack 差分外不走网络）：
+-- websock pack_*, smtp pack_*, mail pack, redis.pack/value/next/node/unpack, harbor.pack, http.code_status
 
 local srey    = require("lib.srey")
 local runner  = require("test.runner")
@@ -13,6 +13,366 @@ local smtp    = require("srey.smtp")
 local mail    = require("srey.smtp.mail")
 local yyjson  = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 local base64  = require("srey.base64")
+
+local rand  = math.random
+local rnode = sredis.node-- 参照实现逐节点取值用
+-- redis.unpack 差分：本 task 监听 PACK_TYPE.REDIS 再用 PACK_TYPE.NONE 自连，灌进去的线上字节
+-- 经协议层解成链表后，在 RECV 回调里分别交 C 版与参照实现转换
+local REDIS_PORT = 15074
+local REDIS_MAXD = 17-- 协议层最多同时打开 REDIS_MAX_DEPTH-1 层聚合（见 lib/protocol/redis.h），attr 也算一层
+local RESP_DOUBLES = { "nan", "-nan", "inf", "-inf", "1.5", "-0", "0", "2", "1e3" }
+-- map 键位偏向这些：nil / NaN 键整对丢弃，整数键会与 attr 追加的 #t + 1 交叠
+local RESP_KEYS = { ",nan\r\n", "_\r\n", "$-1\r\n", "*-1\r\n", "%-1\r\n", ":1\r\n", ":2\r\n", ",2\r\n", "#f\r\n" }
+local RESP3_AGGS = { "*", "~", ">", "%" }
+
+-- ── redis.unpack 的参照实现：C 版下沉前 lib/redis.lua 里的 Lua 版，原样搬来 ──────
+
+-- 能不能当表键。nil 与 NaN 都不行（t[NaN] 抛错），而 RESP3 的 ,nan 解出来就是 NaN
+local function _key_ok(key)
+    return nil ~= key and key == key
+end
+---是否为 map 或 attr（键值对聚合）
+---@param kind string? rnode 回带的聚合类型名
+---@return boolean ok
+local function _is_map(kind)
+    return "map" == kind or "attr" == kind
+end
+
+---是否为 attr（属性前置聚合，RESP3 特有）
+---@param kind string? rnode 回带的聚合类型名
+---@return boolean ok
+local function _is_attr(kind)
+    return "attr" == kind
+end
+
+---是否为任意聚合类型（array / set / push / map / attr）
+---@param kind string? rnode 回带的聚合类型名
+---@return boolean ok
+local function _is_agg(kind)
+    return "array" == kind or "set" == kind or "push" == kind or
+           "map" == kind or "attr" == kind
+end
+
+---@class RedisParseMark
+---@field status 0|1           0=期望 key，1=期望 val（仅 map/attr 使用）
+---@field nelem  integer       剩余待处理元素个数（map/attr 已 ×2）
+---@field agg    RedisAggPayload 所属聚合节点（只装载荷）
+---@field ismap  boolean       压栈时按 kind 算好的"是否键值对聚合"，替代读表判定
+---@field isattr boolean       压栈时按 kind 算好的"是否 attr"
+---@field key    any?          map/attr 解析到 key 时暂存，读到 val 时配对写进 agg
+
+---更新栈顶计数器；计数归零时弹出并归还对象池；attr 完成后立即 break，
+---因为 attr 之后跟随被修饰的真实数据，需由上层继续处理，不能连续弹出
+---@param mark RedisParseMark[] 解析栈
+local function _update_mark(mark)
+    local mk
+    while true do
+        mk = mark[#mark]
+        if not mk then
+            break
+        end
+        mk.nelem = mk.nelem - 1
+        if mk.nelem > 0 then
+            break
+        end
+        mark[#mark] = nil          -- 弹出栈顶
+        if mk.isattr then
+            break
+        end
+    end
+end
+
+---聚合节点按 nelem 三态取值:>0 取 val,==0 取空表,<0(RESP3 的 nil 聚合)取 neg。
+---neg 由调用点显式给:父为 map 暂存 key 时取 nil(让 _key_ok 拦掉整对),其余三处取 false。
+---@param val any 聚合值
+---@param nelem integer 元素计数
+---@param neg any nelem<0 时的取值
+---@return any
+local function _aggval(val, nelem, neg)
+    if nelem > 0 then
+        return val
+    end
+    if 0 == nelem then
+        return {}
+    end
+    return neg
+end
+
+---将聚合节点压入解析栈；map/attr 的元素个数需乘以 2（每元素占 key+val 两节点）
+---@param mark RedisParseMark[] 解析栈
+---@param val RedisAggPayload 聚合容器表
+---@param kind string 聚合类型名
+---@param nelem integer 元素计数
+local function _add_mark(mark, val, kind, nelem)
+    local ismap = _is_map(kind)
+    mark[#mark + 1] = {
+        status = 0,    -- 0=期望 key，1=期望 val（仅 map/attr 使用）
+        nelem  = ismap and nelem * 2 or nelem,
+        agg    = val,
+        ismap  = ismap,
+        isattr = _is_attr(kind),
+    }
+end
+
+---处理单一节点：标量直接返回；聚合 nelem=0 返回 {}，nelem=-1 返回 nil
+---@param val any rnode 回带的节点值
+---@param kind string? 聚合类型名
+---@param nelem integer? 元素计数
+---@return any value 解包后的值
+local function _single_node(val, kind, nelem)
+    if _is_agg(kind) then
+        if -1 == nelem then
+            return nil
+        elseif 0 == nelem then
+            return {}
+        else
+            WARN("resp message error.")
+            return nil
+        end
+    end
+    return val
+end
+
+---处理多节点响应的第一个节点（必须为聚合类型）；attr 类型用 {val} 包装以区分属性与数据节点
+---@param mark RedisParseMark[] 解析栈
+---@param val any rnode 回带的首节点值
+---@param kind string? 聚合类型名
+---@param nelem integer? 元素计数
+---@return RedisAggPayload|nil rtn 容器表；首节点非聚合或为 nil 聚合返回 nil
+local function _first_nodes(mark, val, kind, nelem)
+    if not _is_agg(kind) then
+        WARN("resp message error.")
+        return nil
+    end
+    if nelem > 0  then
+        _add_mark(mark, val, kind, nelem)
+        if _is_attr(kind) then
+            return {val}
+        else
+            return val
+        end
+    elseif 0 == nelem then
+        if _is_attr(kind) then
+            return {{}}
+        end
+        return {}
+    else
+        if _is_attr(kind) then
+            return {}
+        end
+        return nil
+    end
+end
+
+---将 C 层 RESP3 响应链表解包为 Lua 值；单节点直接返回，多节点用显式栈组装嵌套聚合（array/set/push/map/attr）
+---@param pk lightuserdata redis_pack_ctx 首节点指针
+---@return any value 解包后的 Lua 值
+local function _ref_unpack(pk)
+    local val, kind, nelem, nxt = rnode(pk)
+    -- 单一节点：无嵌套，直接返回
+    if not nxt then
+        return _single_node(val, kind, nelem)
+    end
+    -- 多节点：第一个节点必须是 aggregate data
+    local mark = {}
+    local rtn = _first_nodes(mark, val, kind, nelem)
+    if not rtn then
+        return nil
+    end
+    local parent, agg, isattr
+    pk = nxt
+    while pk do
+        parent = mark[#mark]
+        val, kind, nelem, pk = rnode(pk)
+        -- kind 非 nil 即聚合（C 侧只给聚合节点回带类型名），等价于 _is_agg(kind)。
+        -- 追加一律 t[#t + 1]：与 table.insert 落点相同，少一次 C 调用
+        if not parent then
+            -- 无父节点（顶层多值响应，如 pipeline）
+            if kind then
+                rtn[#rtn + 1] = _aggval(val, nelem, false)
+                if nelem > 0 then
+                    _add_mark(mark, val, kind, nelem)
+                end
+            else
+                rtn[#rtn + 1] = val ~= nil and val or false
+            end
+        elseif kind then
+            -- 有父节点、当前为聚合节点
+            isattr = "attr" == kind
+            if parent.ismap and not isattr then
+                -- 父为 map/attr，当前为非 attr 聚合节点
+                if 0 == parent.status then
+                    -- 作为 key 暂存
+                    parent.status = 1
+                    parent.key = _aggval(val, nelem, nil)
+                else
+                    -- 作为 val 写入父 map
+                    parent.status = 0
+                    if _key_ok(parent.key) then
+                        parent.agg[parent.key] = _aggval(val, nelem, false)
+                    end
+                end
+            else
+                -- 父为 array/set/push 或当前节点为 attr：顺序追加
+                agg = parent.agg
+                agg[#agg + 1] = _aggval(val, nelem, false)
+            end
+            if nelem > 0 then
+                _add_mark(mark, val, kind, nelem)
+            elseif not isattr then
+                _update_mark(mark)
+            end
+        else
+            -- 有父节点、当前为标量节点
+            if parent.ismap then
+                -- 父为 map/attr：交替填充 key/val
+                if 0 == parent.status then
+                    parent.status = 1
+                    parent.key = val
+                else
+                    parent.status = 0
+                    if _key_ok(parent.key) then
+                        parent.agg[parent.key] = val ~= nil and val or false
+                    end
+                end
+            else
+                -- 父为 array/set/push：顺序追加
+                agg = parent.agg
+                agg[#agg + 1] = val ~= nil and val or false
+            end
+            -- 快路径：栈顶计数减一后仍 > 0 就不用进 _update_mark（parent 即栈顶）
+            if parent.nelem > 1 then
+                parent.nelem = parent.nelem - 1
+            else
+                _update_mark(mark)
+            end
+        end
+    end
+    return rtn
+end
+
+-- ── 差分比较与随机 RESP 生成 ───────────────────────────────────────────
+
+-- 解包结果规范成可比较的串：表按 键=值 排序拼接（键也可能是表），数字带 integer/float 标记，NaN 统一成 nan
+local function _canon(v)
+    local tv = type(v)
+    if "table" == tv then
+        local parts = {}
+        for k, x in pairs(v) do
+            parts[#parts + 1] = _canon(k) .. "=" .. _canon(x)
+        end
+        table.sort(parts)
+        return "{" .. table.concat(parts, ",") .. "}"
+    end
+    if "number" == tv then
+        if v ~= v then
+            return "nan"
+        end
+        return math.type(v) .. ":" .. string.format("%.17g", v)
+    end
+    if "string" == tv then
+        return string.format("%q", v)
+    end
+    return tostring(v)
+end
+
+-- 短串取自 a~c 的小字母表，让 map 键经常撞车
+local function _gen_word()
+    local s = ""
+    for _ = 1, rand(0, 4) do
+        s = s .. string.char(rand(97, 99))
+    end
+    return s
+end
+
+-- bulk 类（$ ! =）：偶尔带 NUL 与 CRLF；= 要 3 字节编码名加冒号打头
+local function _gen_bulk(ty)
+    local s = _gen_word()
+    if 1 == rand(1, 6) then
+        s = s .. "\0\r\n"
+    end
+    if "=" == ty then
+        s = "txt:" .. s
+    end
+    return ty .. #s .. "\r\n" .. s .. "\r\n"
+end
+
+-- 随机标量；resp2 时只出 RESP2 的 + - : $ 四类（含 $-1）
+local function _gen_scalar(resp2)
+    local k = rand(1, resp2 and 5 or 12)
+    if 1 == k then
+        return "+" .. _gen_word() .. "\r\n"
+    elseif 2 == k then
+        return "-ERR " .. _gen_word() .. "\r\n"
+    elseif 3 == k then
+        return ":" .. rand(-2, 3) .. "\r\n"
+    elseif 4 == k then
+        return _gen_bulk("$")
+    elseif 5 == k then
+        return "$-1\r\n"
+    elseif 6 == k then
+        return "_\r\n"
+    elseif 7 == k then
+        return 1 == rand(1, 2) and "#t\r\n" or "#f\r\n"
+    elseif 8 == k then
+        return "," .. RESP_DOUBLES[rand(1, #RESP_DOUBLES)] .. "\r\n"
+    elseif 9 == k then
+        return "(12345678901234567890123\r\n"
+    elseif 10 == k then
+        return _gen_bulk("!")
+    elseif 11 == k then
+        return _gen_bulk("=")
+    end
+    return ":" .. math.maxinteger .. "\r\n"
+end
+
+-- st：budget 剩余节点预算（耗尽后只出标量，保证收敛）、pagg 出聚合的概率、maxn 聚合元素数上限。
+-- depth 是外面已打开的聚合层数，聚合（含 attr）声明了元素就多占一层
+local _gen_elem
+local function _gen_agg(ty, depth, st, resp2)
+    st.budget = st.budget - 1
+    local r = rand(1, 8)
+    if 1 == r then
+        return ty .. "-1\r\n"
+    elseif 2 == r then
+        return ty .. "0\r\n"
+    end
+    local n = rand(1, st.maxn)
+    local ismap = "%" == ty or "|" == ty
+    local parts = { ty .. n .. "\r\n" }
+    for i = 1, ismap and n * 2 or n do
+        if ismap and 1 == i % 2 and 1 == rand(1, 3) then
+            parts[#parts + 1] = RESP_KEYS[rand(1, #RESP_KEYS)]
+        else
+            parts[#parts + 1] = _gen_elem(depth + 1, st, resp2)
+        end
+    end
+    return table.concat(parts)
+end
+_gen_elem = function(depth, st, resp2)
+    local pre = ""
+    -- RESP3 的 attr 可挂在任何元素前，不计入父层元素数
+    if not resp2 and st.budget > 0 and depth < REDIS_MAXD and 1 == rand(1, 6) then
+        pre = _gen_agg("|", depth, st, resp2)
+    end
+    if st.budget <= 0 or depth >= REDIS_MAXD or rand() >= st.pagg then
+        st.budget = st.budget - 1
+        return pre .. _gen_scalar(resp2)
+    end
+    return pre .. _gen_agg(resp2 and "*" or RESP3_AGGS[rand(1, #RESP3_AGGS)], depth, st, resp2)
+end
+
+-- 一条完整回复：RESP3 时顶层先挂 0~2 个 attr（解出来是顶层多值），再跟一个元素
+local function _gen_reply(st, resp2)
+    local parts = {}
+    if not resp2 then
+        for _ = 1, math.max(0, rand(-2, 2)) do
+            parts[#parts + 1] = _gen_agg("|", 0, st, resp2)
+        end
+    end
+    parts[#parts + 1] = _gen_elem(0, st, resp2)
+    return table.concat(parts)
+end
 
 srey.startup(function()
 runner.run(function(t)
@@ -88,6 +448,12 @@ runner.run(function(t)
         -- 别的类型仍算误用,照抛
         t:eq(false, pcall(redis.value, 42), "redis.value 收数字仍被拒")
         t:eq(false, pcall(redis.next, {}), "redis.next 收 table 仍被拒")
+        -- unpack 同口径：nil 与 NULL 指针返回 1 个 nil，别的类型照抛
+        t:eq(nil, redis.unpack(nil), "redis.unpack(nil) 返回 nil 而不抛")
+        t:eq(1, select("#", redis.unpack(nil)), "unpack 的 nil 路径只返 1 个值")
+        t:eq(1, select("#", redis.unpack()), "unpack 不带参数同 nil")
+        t:eq(nil, redis.unpack(yyjson.null), "redis.unpack(NULL 指针) 返回 nil")
+        t:eq(false, pcall(redis.unpack, 42), "redis.unpack 收数字被拒")
     end
 
     -- ── harbor.pack ────────────────────────────────────────────────────
@@ -307,6 +673,128 @@ runner.run(function(t)
 
         -- 显式释放后真正的 __gc 仍会跑一遍，必须幂等
         t:eq(true, pcall(function() m:__gc() end), "重复 __gc 安全")
+    end
+
+    -- ── redis.unpack：C 版与参照实现差分 ─────────────────────────────
+    -- 线上字节经协议层解成链表，同一个链表分别交两边转换，规范化后逐条比；
+    -- 固定用例另与手写期望比，确认参照实现与期望本身没搬错
+    do
+        local function _wait(cond)
+            for _ = 1, 60 do
+                if cond() then
+                    return true
+                end
+                srey.sleep(50)
+            end
+            return cond()
+        end
+        local got = {}
+        srey.on_recved(function(pktype, _, client, _, data)
+            if PACK_TYPE.REDIS == pktype and 0 == client then
+                -- 两边都不挂起，回调里转完时载荷还有效
+                got[#got + 1] = { c = _canon(redis.unpack(data)), r = _canon(_ref_unpack(data)) }
+            end
+        end)
+        -- 固定边角：{ 线上字节, 期望值, 名字 }
+        local deep = 1
+        for _ = 1, REDIS_MAXD do
+            deep = { deep }
+        end
+        local mixed = { [1] = { a = "b" }, k = 1 }
+        for _ = 1, REDIS_MAXD - 2 do
+            mixed = { k = mixed }
+        end
+        local fixed = {
+            { "+OK\r\n", "OK", "单节点标量" },
+            { "$-1\r\n", nil, "单节点 null bulk" },
+            { "_\r\n", nil, "单节点 RESP3 nil" },
+            { ",2\r\n", 2.0, "单节点浮点保持 float" },
+            { "*-1\r\n", nil, "单节点 nil 聚合" },
+            { "%-1\r\n", nil, "单节点 nil map" },
+            { "*0\r\n", {}, "单节点空聚合为空表" },
+            { "*3\r\n:1\r\n$-1\r\n#f\r\n", { 1, false, false }, "数组里的 nil 写 false" },
+            { "~2\r\n+a\r\n+a\r\n", { "a", "a" }, "set 解成数组且不去重" },
+            { ">2\r\n+message\r\n+x\r\n", { "message", "x" }, "push 解成数组" },
+            { "%2\r\n,nan\r\n:1\r\n+a\r\n_\r\n", { a = false }, "NaN 键整对丢弃、nil 值写 false" },
+            { "%2\r\n_\r\n:1\r\n*-1\r\n:2\r\n", {}, "nil 键与 nil 聚合键整对丢弃" },
+            { "%1\r\n,2\r\n+v\r\n", { [2] = "v" }, "整数值浮点键归一成整数键" },
+            { "%1\r\n+k\r\n*-1\r\n", { k = false }, "map 值为 nil 聚合写 false" },
+            { "%1\r\n+k\r\n*0\r\n", { k = {} }, "map 值为空聚合写空表" },
+            { "%1\r\n*1\r\n:1\r\n+v\r\n", { [{ 1 }] = "v" }, "聚合当 map 键" },
+            { "*1\r\n,nan\r\n", { 0 / 0 }, "NaN 当值照留" },
+            { "*2\r\n|1\r\n+a\r\n+b\r\n:1\r\n:2\r\n", { { a = "b" }, 1, 2 }, "数组里的 attr 顺序追加" },
+            { "%1\r\n|1\r\n+a\r\n+b\r\n+k\r\n+v\r\n", { [1] = { a = "b" }, k = "v" }, "map 里的 attr 追加到 #t + 1" },
+            { "%1\r\n+k\r\n|1\r\n+a\r\n+b\r\n+v\r\n", { [1] = { a = "b" }, k = "v" }, "attr 夹在键值之间不打断配对" },
+            { "%1\r\n|-1\r\n+k\r\n+v\r\n", { [1] = false, k = "v" }, "map 里的 nil attr 追加 false" },
+            { "|1\r\n+k\r\n+v\r\n+OK\r\n", { { k = "v" }, "OK" }, "首节点 attr 包一层" },
+            { "|0\r\n:5\r\n", { {}, 5 }, "首节点空 attr 占一格空表" },
+            { "|-1\r\n:5\r\n", { 5 }, "首节点 nil attr 不占位" },
+            { "|1\r\n+a\r\n+b\r\n|-1\r\n*-1\r\n", { { a = "b" }, false, false }, "顶层多值里的 nil 写 false" },
+            { "|1\r\n+a\r\n+b\r\n*0\r\n", { { a = "b" }, {} }, "顶层多值里的空聚合" },
+            { "|1\r\n+a\r\n+b\r\n|1\r\n+c\r\n+d\r\n*1\r\n:1\r\n", { { a = "b" }, { c = "d" }, { 1 } },
+              "顶层两个 attr 再跟数组" },
+            { string.rep("*1\r\n", REDIS_MAXD) .. ":1\r\n", deep, "数组嵌满深度上限" },
+            { string.rep("%1\r\n+k\r\n", REDIS_MAXD - 1) .. "|1\r\n+a\r\n+b\r\n:1\r\n", mixed,
+              "map 嵌到上限前一层再挂 attr 顶满" },
+        }
+        -- 随机用例：普通 RESP3、只用 RESP2 类型、贴着深度上限的高聚合率三组
+        local seed = os.time()
+        math.randomseed(seed)
+        local wires = {}
+        for i = 1, 400 do
+            if i <= 250 then
+                wires[i] = _gen_reply({ budget = 60, pagg = 0.35, maxn = 4 }, false)
+            elseif i <= 320 then
+                wires[i] = _gen_reply({ budget = 60, pagg = 0.35, maxn = 4 }, true)
+            else
+                wires[i] = _gen_reply({ budget = 300, pagg = 0.9, maxn = 2 }, false)
+            end
+        end
+        local cases = {}
+        for i, f in ipairs(fixed) do
+            cases[i] = f[1]
+        end
+        for _, w in ipairs(wires) do
+            cases[#cases + 1] = w
+        end
+        local lid = srey.listen(PACK_TYPE.REDIS, SSL_NAME.NONE, "127.0.0.1", REDIS_PORT)
+        local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", REDIS_PORT)
+        if t:check(ERR_FAILED ~= lid and csk.valid, "redis.unpack 差分用例连接建立") then
+            -- 分批灌：一批拼成一次发送（同一连接上的多条回复），收齐再发下一批，免得顶爆本 task 队列
+            local batch = 25
+            local last, chunk
+            for first = 1, #cases, batch do
+                last = math.min(first + batch - 1, #cases)
+                chunk = table.concat(cases, "", first, last)
+                srey.send(csk, chunk, #chunk, 1)
+                _wait(function() return #got >= last end)
+            end
+            t:eq(#cases, #got, "每条线上回复都解出一条消息")
+            for i, f in ipairs(fixed) do
+                if got[i] then
+                    t:eq(_canon(f[2]), got[i].c, "redis.unpack " .. f[3])
+                    t:eq(got[i].r, got[i].c, "redis.unpack 与参照一致：" .. f[3])
+                end
+            end
+            local nbad = 0
+            local g
+            for i, w in ipairs(wires) do
+                g = got[#fixed + i]
+                if g and g.r ~= g.c then
+                    nbad = nbad + 1
+                    if nbad <= 3 then
+                        t:eq(g.r, g.c, string.format("redis.unpack 随机差分 #%d seed=%d wire=%q", i, seed, w))
+                    end
+                end
+            end
+            t:eq(0, nbad, string.format("redis.unpack 随机差分 %d 条全部一致 seed=%d", #wires, seed))
+        end
+        if csk.valid then
+            srey.close(csk)
+        end
+        if ERR_FAILED ~= lid then
+            srey.unlisten(lid)
+        end
     end
 end)
 end)

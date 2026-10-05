@@ -36,7 +36,8 @@
 #define KEEPALIVE_TIME      30 // TCP keepalive 空闲时间（秒）
 #define KEEPALIVE_INTERVAL  2 // TCP keepalive 探测间隔（秒）
 // 单次读向 buffer 要多大空间（字节），不是缓冲上限。读满说明 socket 里还有,
-// 下一轮按它翻倍再要一次、到 2 倍封顶（见 buffer_from_sock），大块接收的读次数因此减半
+// 下一轮按它翻倍再要一次、到 2 倍封顶（见 buffer_from_sock），大块接收的读次数因此减半。
+// kqueue 平台知道可读字节数，首轮直接按它要（封顶 RECV_HINT_CAP，见 buffer.h）
 #define MAX_RECV_SIZE       4096
 // 单 sock 接收缓冲堆积上限（字节）：协议层消费完仍超过它，说明对端在灌凑不成包的数据，
 // 打日志并断连（close_type 为 LOCAL）。0 表示不限制。与上面的 MAX_RECV_SIZE 无关——

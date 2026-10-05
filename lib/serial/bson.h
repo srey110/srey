@@ -155,11 +155,26 @@ int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens);
 /// <param name="key">字段名</param>
 void bson_append_document_begain(bson_ctx *bson, const char *key);
 /// <summary>
+/// 同 bson_append_document_begain，key 的字节数由调用方给出、不再 strlen。
+/// key 的前 klens 字节不得含 NUL，不要求以 NUL 结尾
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+void bson_append_document_begain2(bson_ctx *bson, const char *key, size_t klens);
+/// <summary>
 /// 开始写入一个数组字段，须配对调用 bson_append_end 结束
 /// </summary>
 /// <param name="bson">bson_ctx</param>
 /// <param name="key">字段名</param>
 void bson_append_array_begain(bson_ctx *bson, const char *key);
+/// <summary>
+/// 同 bson_append_array_begain，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+void bson_append_array_begain2(bson_ctx *bson, const char *key, size_t klens);
 /// <summary>
 /// 结束写入当前层级的文档或数组（写入 EOD 并回填长度）
 /// </summary>
@@ -172,6 +187,14 @@ void bson_append_end(bson_ctx *bson);
 /// <param name="key">字段名</param>
 /// <param name="val">double 值</param>
 void bson_append_double(bson_ctx *bson, const char *key, double val);
+/// <summary>
+/// 同 bson_append_double，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="val">double 值</param>
+void bson_append_double2(bson_ctx *bson, const char *key, size_t klens, double val);
 /// <summary>
 /// 追加 UTF-8 字符串类型字段
 /// </summary>
@@ -187,6 +210,15 @@ void bson_append_utf8(bson_ctx *bson, const char *key, const char *val);
 /// <param name="val">字符串值（按字节写入，不依赖 NUL 终止）</param>
 /// <param name="lens">val 字节长度</param>
 void bson_append_utf8_n(bson_ctx *bson, const char *key, const char *val, size_t lens);
+/// <summary>
+/// 同 bson_append_utf8_n，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="val">字符串值（按字节写入，不依赖 NUL 终止）</param>
+/// <param name="lens">val 字节长度</param>
+void bson_append_utf8_n2(bson_ctx *bson, const char *key, size_t klens, const char *val, size_t lens);
 /// <summary>
 /// 追加 JavaScript 代码字段（带长度，二进制安全）
 /// </summary>
@@ -221,12 +253,30 @@ void bson_append_array(bson_ctx *bson, const char *key, char *doc, size_t lens);
 /// <param name="lens">数据长度</param>
 void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char *val, size_t lens);
 /// <summary>
+/// 同 bson_append_binary，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="type">bson_subtype 子类型</param>
+/// <param name="val">二进制数据</param>
+/// <param name="lens">数据长度</param>
+void bson_append_binary2(bson_ctx *bson, const char *key, size_t klens, bson_subtype type, char *val, size_t lens);
+/// <summary>
 /// 追加 ObjectId 类型字段
 /// </summary>
 /// <param name="bson">bson_ctx</param>
 /// <param name="key">字段名</param>
 /// <param name="oid">12 字节 ObjectId 数据</param>
 void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]);
+/// <summary>
+/// 同 bson_append_oid，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="oid">12 字节 ObjectId 数据</param>
+void bson_append_oid2(bson_ctx *bson, const char *key, size_t klens, char oid[BSON_OID_LENS]);
 /// <summary>
 /// 追加布尔类型字段
 /// </summary>
@@ -235,6 +285,14 @@ void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]);
 /// <param name="b">0 为 false，非零为 true</param>
 void bson_append_bool(bson_ctx *bson, const char *key, int8_t b);
 /// <summary>
+/// 同 bson_append_bool，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="b">0 为 false，非零为 true</param>
+void bson_append_bool2(bson_ctx *bson, const char *key, size_t klens, int8_t b);
+/// <summary>
 /// 追加 UTC 时间戳类型字段（int64，毫秒）
 /// </summary>
 /// <param name="bson">bson_ctx</param>
@@ -242,11 +300,26 @@ void bson_append_bool(bson_ctx *bson, const char *key, int8_t b);
 /// <param name="date">UTC 毫秒时间戳</param>
 void bson_append_date(bson_ctx *bson, const char *key, int64_t date);
 /// <summary>
+/// 同 bson_append_date，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="date">UTC 毫秒时间戳</param>
+void bson_append_date2(bson_ctx *bson, const char *key, size_t klens, int64_t date);
+/// <summary>
 /// 追加 null 类型字段
 /// </summary>
 /// <param name="bson">bson_ctx</param>
 /// <param name="key">字段名</param>
 void bson_append_null(bson_ctx *bson, const char *key);
+/// <summary>
+/// 同 bson_append_null，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+void bson_append_null2(bson_ctx *bson, const char *key, size_t klens);
 /// <summary>
 /// 追加正则表达式类型字段
 /// </summary>
@@ -270,6 +343,14 @@ void bson_append_jscode(bson_ctx *bson, const char *key, const char *jscode);
 /// <param name="val">int32 值</param>
 void bson_append_int32(bson_ctx *bson, const char *key, int32_t val);
 /// <summary>
+/// 同 bson_append_int32，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="val">int32 值</param>
+void bson_append_int322(bson_ctx *bson, const char *key, size_t klens, int32_t val);
+/// <summary>
 /// 追加时间戳类型字段（低4字节为自增量，高4字节为秒级时间戳）
 /// </summary>
 /// <param name="bson">bson_ctx</param>
@@ -284,6 +365,14 @@ void bson_append_timestamp(bson_ctx *bson, const char *key, uint32_t ts, uint32_
 /// <param name="key">字段名</param>
 /// <param name="val">int64 值</param>
 void bson_append_int64(bson_ctx *bson, const char *key, int64_t val);
+/// <summary>
+/// 同 bson_append_int64，key 的约定同 bson_append_document_begain2
+/// </summary>
+/// <param name="bson">bson_ctx</param>
+/// <param name="key">字段名</param>
+/// <param name="klens">key 的字节数</param>
+/// <param name="val">int64 值</param>
+void bson_append_int642(bson_ctx *bson, const char *key, size_t klens, int64_t val);
 /// <summary>
 /// 追加 MinKey 类型字段（BSON 中最小值标记）
 /// </summary>

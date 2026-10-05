@@ -7,6 +7,10 @@
 // 头部缓冲区从 cur 起的剩余字节数。形参名避开 head：宏体里 (p)->head 的 head 也会被替换
 #define HEAD_REMAIN(p, cur) ((p)->head.lens - (size_t)((cur) - (char *)(p)->head.data))
 #define HTTP_SET_LIT(bw, lit) binary_set_binary((bw), (lit), sizeof(lit) - 1) // 追加字符串字面量(不含结尾 '\0')
+// 头字段数组内嵌进头包(见 _http_headpack)：16 槽连同头块整块不超过 1008B 才内嵌，不越过常见分配器的小块档
+// (macOS 小块上限 1008B、glibc tcache 1032B)。只内嵌一部分不划算：用满还得搬到堆上，比单独分配更慢
+#define HTTP_EMBED_LIMIT 1008
+#define HTTP_EMBED_SLOTS 16// 内嵌的槽数
 // 状态码与描述文本只此一份，http_code_status 与 http_pack_resp 的整行常量都从这里展开
 #define HTTP_CODES(X) \
     X(100, "Continue") \
@@ -68,7 +72,7 @@ typedef struct http_pack_ctx {
     buf_ctx head;             // 原始头部数据（含第一行和所有字段）
     buf_ctx data;             // 数据体
     buf_ctx status[3];        // 第一行拆分：status[0]=方法/版本，status[1]=状态码/路径，status[2]=描述/版本
-    hdr_arr header;           // 所有头部字段列表
+    hdr_arr header;           // 所有头部字段列表，可能内嵌在本块里(见 _http_headpack)
 }http_pack_ctx;
 
 // 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)；全为 OWS 时收成 *start 处的空区间。
@@ -334,6 +338,23 @@ static inline int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_
     *phead = head;
     return ERR_OK;
 }
+// 头字段数组是否还在 pack 块内(见 _http_headpack)
+static inline int32_t _http_header_embedded(http_pack_ctx *pack) {
+    return (char *)pack->header.ptr == (char *)pack + sizeof(http_pack_ctx);
+}
+// 追加一个头字段。块内的槽不能交给 REALLOC：用满时先搬到堆上(HTTP_EMBED_SLOTS * 2 即 32 槽起)，之后照常倍增
+static inline void _http_header_push(http_pack_ctx *pack, http_header_ctx *field) {
+    hdr_arr *arr = &pack->header;
+    http_header_ctx *heap;
+    if (arr->size == arr->maxsize
+        && _http_header_embedded(pack)) {
+        MALLOC(heap, sizeof(http_header_ctx) * HTTP_EMBED_SLOTS * 2);
+        memcpy(heap, arr->ptr, sizeof(http_header_ctx) * arr->size);
+        arr->ptr = heap;
+        arr->maxsize = HTTP_EMBED_SLOTS * 2;
+    }
+    hdr_arr_push_back(arr, field);
+}
 // 解析全部头部字段，检测 Content-Length/Transfer-Encoding，将字段存入 pack->header。
 // 头块里出现 NUL 即拒，由逐行扫描顺带挡掉(见 _http_find_eol)
 static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
@@ -350,7 +371,7 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
         if (ERR_OK != _http_check_transfer(pack, &field, transfer)) {
             return ERR_FAILED;
         }
-        hdr_arr_push_back(&pack->header, &field);
+        _http_header_push(pack, &field);
     }
     // 全部头部行都见过之后才能确定 chunked 是否为最后一个 transfer-coding
     if (CHUNKED == *transfer && !pack->chunked_last) {
@@ -422,16 +443,29 @@ static inline size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *st
     return blens;
 }
 // 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组。
+// 整块放得下 HTTP_EMBED_SLOTS 个槽时数组也并进来，布局 [结构体][槽 × 16][头块]，槽在头块前面才对得齐；
+// 放不下就照旧首次 push 时单独分配。
 // 只清结构体前缀：那 lens 字节紧接着就被 _http_parsehead 的 buffer_remove 整块写满，
 // 连它一起清等于每请求白 memset 一个头块（上限 HTTP_MAX_HEADLENS）
 static inline http_pack_ctx *_http_headpack(size_t lens) {
     char *pack;
-    MALLOC(pack, sizeof(http_pack_ctx) + lens);
+    http_pack_ctx *pctx;
+    size_t used = sizeof(http_pack_ctx) + lens;
+    size_t n = 0;
+    if (used + HTTP_EMBED_SLOTS * sizeof(http_header_ctx) <= HTTP_EMBED_LIMIT) {
+        n = HTTP_EMBED_SLOTS;
+    }
+    MALLOC(pack, used + n * sizeof(http_header_ctx));
     ZERO(pack, sizeof(http_pack_ctx));
-    ((http_pack_ctx *)pack)->head.data = pack + sizeof(http_pack_ctx);
-    ((http_pack_ctx *)pack)->head.lens = lens;
-    hdr_arr_init(&((http_pack_ctx *)pack)->header, 0);
-    return (http_pack_ctx *)pack;
+    pctx = (http_pack_ctx *)pack;
+    pctx->head.data = pack + sizeof(http_pack_ctx) + n * sizeof(http_header_ctx);
+    pctx->head.lens = lens;
+    hdr_arr_init(&pctx->header, 0);
+    if (n > 0) {
+        pctx->header.ptr = (http_header_ctx *)(pack + sizeof(http_pack_ctx));
+        pctx->header.maxsize = (uint32_t)n;
+    }
+    return pctx;
 }
 http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, int32_t *status) {
     size_t hlens = _http_search_crlf2(buf, ud, status);
@@ -648,7 +682,9 @@ void _http_pkfree(void *data) {
     }
     if (NULL != pack->head.data) {
         FREE(pack->data.data);
-        hdr_arr_free(&pack->header);
+        if (!_http_header_embedded(pack)) {
+            hdr_arr_free(&pack->header);
+        }
     }
     FREE(pack);
 }

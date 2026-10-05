@@ -68,6 +68,28 @@ void *_realloc(void* oldptr, size_t size);
 /// <param name="ptr">要释放的内存指针</param>
 void _free(void* ptr);
 /// <summary>
+/// 同 _realloc，但不计入分配/释放次数（OOM 退出与分配追踪照旧）。
+/// 调用方自己记账：oldptr 为 NULL 且 size 非 0 算一次分配，size 为 0 且 oldptr 非 NULL 算一次释放，
+/// 改已有块大小两者都不算，攒下的次数须经 mem_count_add 并回，否则 _memcheck 对不上账。
+/// MEMORY_CHECK 关闭时与 _realloc 相同
+/// </summary>
+/// <param name="oldptr">同 _realloc</param>
+/// <param name="size">同 _realloc</param>
+/// <returns>同 _realloc</returns>
+void *_realloc_nc(void *oldptr, size_t size);
+/// <summary>
+/// 同 _free，但不计入释放次数；记账口径与并回要求同 _realloc_nc（ptr 非 NULL 算一次释放）
+/// </summary>
+/// <param name="ptr">要释放的内存指针，NULL 什么都不做</param>
+void _free_nc(void *ptr);
+/// <summary>
+/// 把调用方自己攒的分配/释放次数（_realloc_nc / _free_nc 那些）一次并进全局计数。
+/// 本线程那格原子加，可在任意线程调。MEMORY_CHECK 关闭时什么都不做
+/// </summary>
+/// <param name="nalloc">分配次数</param>
+/// <param name="nfree">释放次数</param>
+void mem_count_add(uint64_t nalloc, uint64_t nfree);
+/// <summary>
 /// 打印内存分配/释放统计信息（仅 MEMORY_CHECK 启用时有效）
 /// </summary>
 /// <returns>存活块数 = 累计分配 - 累计释放。0 为收支平衡，负数说明释放多于分配。
@@ -75,7 +97,8 @@ void _free(void* ptr);
 int64_t _memcheck(void);
 /// <summary>
 /// 汇总所有分条槽位，读取累计内存分配/释放次数。运行期拿到的是近似值：别的线程还在自增，
-/// 两个出参也不是同一时刻的快照，nfree 可能读得比 nalloc 大——要算存活数得先比大小再相减。
+/// 两个出参也不是同一时刻的快照，nfree 可能读得比 nalloc 大——要算存活数得先比大小再相减；
+/// 调用方攒着还没经 mem_count_add 并回的次数也不在里面。
 /// _memcheck 在全线程 join 之后调用，那时精确
 /// </summary>
 /// <param name="nalloc">出参：累计分配次数，MEMORY_CHECK 关闭时写 0；可为 NULL 表示不关心</param>

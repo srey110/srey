@@ -32,6 +32,7 @@ static pgsql_reader_ctx *_pg_reader_new(uint16_t field_count, const int32_t *typ
         for (uint16_t i = 0; i < field_count; i++) {
             r->fields[i].type_oid = type_oids[i];
             safe_fill_str(r->fields[i].name, sizeof(r->fields[i].name), names[i]);
+            r->fields[i].nlens = (uint8_t)strlen(r->fields[i].name);
         }
     }
     pgrow_arr_init(&r->arr_rows, 0);
@@ -900,6 +901,119 @@ static void test_pgsql_reader_index(CuTest *tc) {
     pgsql_reader_free(r);
 }
 
+// 同一列按名与按下标各取一遍，值与 err 都得一样；按列类型挑取值接口。返回按名那次的 err
+static int32_t _pg_col_same(CuTest *tc, pgsql_reader_ctx *r, const char *name, int16_t col) {
+    pgpack_field *field = NULL;
+    int32_t e1 = ERR_FAILED, e2 = ERR_FAILED, l1 = 0, l2 = 0;
+    char u1[16], u2[16];
+    CuAssertPtrEquals(tc, pgsql_reader_name(r, name, &field), pgsql_reader_index(r, col, NULL));
+    CuAssertPtrNotNull(tc, field);
+    CuAssertIntEquals(tc, pgsql_reader_isnull(r, name), pgsql_reader_isnull_at(r, col));
+    switch (field->type_oid) {
+    case BOOLOID:
+        CuAssertIntEquals(tc, pgsql_reader_bool(r, name, &e1), pgsql_reader_bool_at(r, col, &e2));
+        break;
+    case INT4OID:
+        CuAssertTrue(tc, pgsql_reader_integer(r, name, &e1) == pgsql_reader_integer_at(r, col, &e2));
+        break;
+    case FLOAT8OID:
+        CuAssertTrue(tc, pgsql_reader_double(r, name, &e1) == pgsql_reader_double_at(r, col, &e2));
+        break;
+    case TEXTOID:
+        CuAssertPtrEquals(tc, (void *)pgsql_reader_text(r, name, &l1, &e1), (void *)pgsql_reader_text_at(r, col, &l2, &e2));
+        CuAssertIntEquals(tc, l1, l2);
+        break;
+    case BYTEAOID:
+        CuAssertPtrEquals(tc, (void *)pgsql_reader_bytea(r, name, &l1, &e1), (void *)pgsql_reader_bytea_at(r, col, &l2, &e2));
+        CuAssertIntEquals(tc, l1, l2);
+        break;
+    case TIMESTAMPOID:
+        CuAssertTrue(tc, pgsql_reader_timestamp(r, name, &e1) == pgsql_reader_timestamp_at(r, col, &e2));
+        break;
+    case DATEOID:
+        CuAssertIntEquals(tc, pgsql_reader_date(r, name, &e1), pgsql_reader_date_at(r, col, &e2));
+        break;
+    case UUIDOID:
+        CuAssertIntEquals(tc, pgsql_reader_uuid(r, name, u1, &e1), pgsql_reader_uuid_at(r, col, u2, &e2));
+        if (ERR_OK == e1) {
+            CuAssertTrue(tc, 0 == memcmp(u1, u2, sizeof(u1)));
+        }
+        break;
+    default:
+        break;
+    }
+    CuAssertIntEquals(tc, e1, e2);
+    return e1;
+}
+// pgsql_reader_col + *_at：逐列与按名接口结果一致；列名按 nlens 整段比；重名列按名取第一个、
+// 第二个只能按下标取；不存在的列名为 -1，-1 与越界下标交给 _at 都按列不存在处理；没有字段描述时一律查不到
+static void test_pgsql_reader_col_at(CuTest *tc) {
+    int32_t oids[10] = { BOOLOID, INT4OID, FLOAT8OID, TEXTOID, BYTEAOID, TIMESTAMPOID, DATEOID, UUIDOID,
+                         INT4OID, INT4OID };
+    char names[10][64] = { "b", "i", "f", "s", "y", "ts", "d", "u", "n", "i" };
+    static const char *vals[10] = { "t", "42", "1.5", "abc", "\\x00ff", "2000-01-02 03:04:05", "2000-01-02",
+                                    "123e4567-e89b-12d3-a456-426614174000", NULL, "99" };
+    pgpack_row cols[10];
+    char *p;
+    size_t off = 0;
+    int32_t i, err, lens;
+    int16_t col;
+    pgsql_reader_ctx *r = _pg_reader_new(10, oids, names);
+    r->format = FORMAT_TEXT;
+    MALLOC(p, 256);
+    for (i = 0; i < 10; i++) {
+        cols[i].lens = -1;
+        cols[i].val = NULL;
+        if (NULL != vals[i]) {
+            cols[i].lens = (int32_t)strlen(vals[i]);
+            memcpy(p + off, vals[i], (size_t)cols[i].lens);
+            cols[i].val = p + off;
+            off += (size_t)cols[i].lens;
+        }
+    }
+    _pg_reader_push_row(r, &p, cols);
+    // 前 9 个列名互不相同：查到的就是自己的下标，取值除 NULL 列(err=1)外都成功
+    for (i = 0; i < 9; i++) {
+        col = pgsql_reader_col(r, names[i], strlen(names[i]));
+        CuAssertIntEquals(tc, i, col);
+        CuAssertIntEquals(tc, (8 == i) ? 1 : ERR_OK, _pg_col_same(tc, r, names[i], col));
+    }
+    // 类型不符
+    pgsql_reader_integer_at(r, 3, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    // 重名列
+    CuAssertIntEquals(tc, 1, pgsql_reader_col(r, "i", 1));
+    CuAssertTrue(tc, 42 == pgsql_reader_integer(r, "i", &err));
+    CuAssertTrue(tc, 99 == pgsql_reader_integer_at(r, 9, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    // 按 nlens 整段比："dx" 的前 1 字节是 "d"，"tsx" 的前 2 字节是 "ts"，"ts" 的前 1 字节 "t" 不存在
+    CuAssertIntEquals(tc, 6, pgsql_reader_col(r, "dx", 1));
+    CuAssertIntEquals(tc, 5, pgsql_reader_col(r, "tsx", 2));
+    CuAssertIntEquals(tc, -1, pgsql_reader_col(r, "ts", 1));
+    // 不存在的列与越界下标
+    CuAssertIntEquals(tc, -1, pgsql_reader_col(r, "nosuch", 6));
+    for (i = 0; i < 2; i++) {
+        col = (0 == i) ? -1 : 10;
+        CuAssertTrue(tc, NULL == pgsql_reader_index(r, col, NULL));
+        CuAssertIntEquals(tc, 0, pgsql_reader_isnull_at(r, col));
+        CuAssertTrue(tc, 0 == pgsql_reader_integer_at(r, col, &err));
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+        CuAssertTrue(tc, NULL == pgsql_reader_text_at(r, col, &lens, &err));
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+        CuAssertIntEquals(tc, 0, lens);
+    }
+    pgsql_reader_integer(r, "nosuch", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    pgsql_reader_free(r);
+    // 没有字段描述(没收到 RowDescription)
+    r = _pg_reader_new(0, oids, names);
+    CuAssertIntEquals(tc, -1, pgsql_reader_col(r, "b", 1));
+    pgsql_reader_bool_at(r, 0, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertIntEquals(tc, 0, pgsql_reader_isnull_at(r, 0));
+    pgsql_reader_free(r);
+}
+
 // _pgpack_error_notice：将 'S'/'M'/'C' 等字段拼接为多行字符串
 static void test_pgpack_error_notice(CuTest *tc) {
     // 构造一个 ErrorResponse 风格的字节流：S:ERROR\0M:bad command\0C:42601\0\0
@@ -1433,6 +1547,143 @@ static void test_pgsql_unpack_rows_spill(CuTest *tc) {
     pgsql_reader_free(reader);
     _pgpack_free((pgpack_ctx *)pack);
 }
+// 追加 T → D×5 → C → Z 里的第 m 条(0 是 T，1~5 是 D，6 是 C，7 是 Z)，返回它的整包字节数
+static size_t _pg_batch_msg(buffer_ctx *buf, int32_t m) {
+    char body[128];
+    size_t blens;
+    if (0 == m) {
+        blens = _pg_rowdesc(body, 2);
+        _pg_push_msg(buf, 'T', body, blens);
+    } else if (m <= 5) {
+        blens = _pg_datarow(body, 2, m - 1);
+        _pg_push_msg(buf, 'D', body, blens);
+    } else if (6 == m) {
+        blens = 9;
+        _pg_push_msg(buf, 'C', "SELECT 5", blens);
+    } else {
+        blens = 1;
+        _pg_push_msg(buf, 'Z', "I", blens);
+    }
+    return 5 + blens;
+}
+// 逐行核 _pg_batch_msg 那组 DataRow 的值(第 i 行是 i*10、i*10+1)，然后释放 pack
+static void _pg_batch_check(CuTest *tc, pgpack_ctx *pack, int32_t nrows) {
+    pgsql_reader_ctx *reader = pgsql_reader_iter(pack, FORMAT_TEXT);
+    int32_t i, err;
+    CuAssertPtrNotNull(tc, reader);
+    CuAssertIntEquals(tc, nrows, (int)pgsql_reader_size(reader));
+    for (i = 0; i < nrows; i++) {
+        CuAssertTrue(tc, i * 10 == pgsql_reader_integer(reader, "c0", &err));
+        CuAssertIntEquals(tc, ERR_OK, err);
+        CuAssertTrue(tc, i * 10 + 1 == pgsql_reader_integer(reader, "c1", &err));
+        CuAssertIntEquals(tc, ERR_OK, err);
+        pgsql_reader_next(reader);
+    }
+    pgsql_reader_free(reader);
+    _pgpack_free(pack);
+}
+// 连着的 DataRow 在一次 pgsql_unpack 里解完：一次喂入整条流与逐条喂入，行值与 size 记账一致；
+// 下一条 DataRow 的头或正文没收全时停在它前面，补齐后接着解
+static void test_pgsql_unpack_rows_batch(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    pgpack_ctx *pack;
+    pgsql_reader_ctx *reader;
+    char tbody[128], dbody[64], last[80];
+    size_t sum, size[2], tl, dl, lastlens, cut;
+    int32_t status, m, calls, k;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND
+    // 1) 一次喂入：T、D×5、C、Z 只要 4 次调用(五条 DataRow 一次解完)
+    ZERO(&pg, sizeof(pg));
+    ud.context = &pg;
+    buffer_init(&buf);
+    sum = 0;
+    for (m = 0; m < 8; m++) {
+        sum += _pg_batch_msg(&buf, m);
+    }
+    pack = NULL;
+    calls = 0;
+    while (NULL == pack && buffer_size(&buf) > 0) {
+        size[0] = 0;
+        status = PROT_INIT;
+        pack = _t_pgsql_unpack(0, &buf, &ud, &size[0], &status);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        calls++;
+    }
+    CuAssertIntEquals(tc, 4, calls);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    CuAssertIntEquals(tc, (int)sum, (int)size[0]);
+    CuAssertIntEquals(tc, 0, (int)pg.recvlens);
+    buffer_free(&buf);
+    _pg_batch_check(tc, pack, 5);
+    // 2) 逐条喂入：每追加一条调一次，只有 Z 出包
+    ZERO(&pg, sizeof(pg));
+    ud.context = &pg;
+    buffer_init(&buf);
+    pack = NULL;
+    for (m = 0; m < 8; m++) {
+        _pg_batch_msg(&buf, m);
+        size[1] = 0;
+        status = PROT_INIT;
+        pack = _t_pgsql_unpack(0, &buf, &ud, &size[1], &status);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+        CuAssertTrue(tc, (7 == m) == (NULL != pack));
+    }
+    CuAssertIntEquals(tc, (int)size[0], (int)size[1]);
+    buffer_free(&buf);
+    _pg_batch_check(tc, pack, 5);
+    // 3) 最后一条 DataRow 只到了一部分：k=0 头都不全(3 字节)，k=1 头齐正文短 3 字节
+    tl = _pg_rowdesc(tbody, 2);
+    dl = _pg_datarow(dbody, 2, 3);
+    last[0] = 'D';
+    pack_integer(last + 1, (uint64_t)(4 + dl), 4, 0);
+    memcpy(last + 5, dbody, dl);
+    lastlens = 5 + dl;
+    for (k = 0; k < 2; k++) {
+        cut = (0 == k) ? 3 : lastlens - 3;
+        ZERO(&pg, sizeof(pg));
+        ud.context = &pg;
+        buffer_init(&buf);
+        _pg_push_msg(&buf, 'T', tbody, tl);
+        status = PROT_INIT;
+        CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+        for (m = 1; m <= 3; m++) {
+            _pg_batch_msg(&buf, m);
+        }
+        buffer_append(&buf, last, cut);
+        // 一次吃掉三条完整的 DataRow，停在残条前；再调就是 MOREDATA、一字节不动
+        status = PROT_INIT;
+        CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertIntEquals(tc, (int)cut, (int)buffer_size(&buf));
+        reader = pg.pack->pack;
+        CuAssertIntEquals(tc, 3, (int)pgsql_reader_size(reader));
+        status = PROT_INIT;
+        CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA) && !BIT_CHECK(status, PROT_ERROR));
+        CuAssertIntEquals(tc, (int)cut, (int)buffer_size(&buf));
+        // 补齐后接着解到 Z
+        buffer_append(&buf, last + cut, lastlens - cut);
+        _pg_push_msg(&buf, 'C', "SELECT 4", 9);
+        _pg_push_msg(&buf, 'Z', "I", 1);
+        pack = NULL;
+        calls = 0;
+        while (NULL == pack && buffer_size(&buf) > 0 && calls < 8) {
+            status = PROT_INIT;
+            pack = _t_pgsql_unpack(0, &buf, &ud, NULL, &status);
+            CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+            calls++;
+        }
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+        buffer_free(&buf);
+        _pg_batch_check(tc, pack, 4);
+    }
+}
 // 结果数组前 2 槽内嵌在 pgpack 里：5 条语句跨过内嵌槽(搬到堆上)后，下标、标签、有无结果集都得对得上
 static void test_pgsql_unpack_results_spill(CuTest *tc) {
     pgsql_ctx pg;
@@ -1836,6 +2087,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_temporal_binary);
     SUITE_ADD_TEST(suite, test_pgsql_reader_uuid);
     SUITE_ADD_TEST(suite, test_pgsql_reader_index);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_col_at);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_empty);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_unterminated);
@@ -1846,6 +2098,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows);
     SUITE_ADD_TEST(suite, test_pgsql_fields_separate_alloc);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_spill);
+    SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_batch);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_results_spill);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_notification);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_size);

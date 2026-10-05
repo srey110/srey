@@ -675,7 +675,7 @@ static int32_t _table_is_array(lua_State *lua, int32_t idx, lua_Integer *n) {
     // key 全在 [1, len] 内且个数正好 len,按鸽巢即 1..len 无重无洞
     return count == len;
 }
-static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson, const char *key);
+static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson, const char *key, size_t klens);
 static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bson) {
     luaL_checkstack(lua, 4, "bson encode");
     const char *key;
@@ -685,18 +685,19 @@ static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bs
     while (lua_next(lua, idx)) {
         key = NULL;
         if (LUA_TSTRING == lua_type(lua, -2)) {
-            // 已判过是 string,lua_tolstring 不会就地转换,不破坏 lua_next 的遍历
+            // 已判过是 string,lua_tolstring 不会就地转换,不破坏 lua_next 的遍历。
+            // Lua 串结尾恒有 NUL,strlen 不等于长度即含内嵌 NUL;算出的长度随后直接交给追加函数
             key = lua_tolstring(lua, -2, &klens);
-            if (NULL != memchr(key, '\0', klens)) {
+            if (strlen(key) != klens) {
                 luaL_error(lua, "bson encode: key must not contain NUL");
             }
         } else if (lua_isinteger(lua, -2)) {
-            key = lpub_int_str(keybuf, sizeof(keybuf), lua_tointeger(lua, -2), NULL);
+            key = lpub_int_str(keybuf, sizeof(keybuf), lua_tointeger(lua, -2), &klens);
         } else {
             // 与下方 value 类型不支持时的处理一致：报错，不静默丢弃该键值对
             luaL_error(lua, "bson encode unsupported key type '%s'", lua_typename(lua, lua_type(lua, -2)));
         }
-        _lbson_encode_value(lua, lua_gettop(lua), bson, key);
+        _lbson_encode_value(lua, lua_gettop(lua), bson, key, klens);
         lua_pop(lua, 1);
     }
 }
@@ -704,48 +705,49 @@ static void _lbson_encode_table_as_arr(lua_State *lua, int32_t idx, bson_ctx *bs
     lua_Integer i;
     char keybuf[24];
     const char *key;
+    size_t klens;
     for (i = 1; i <= n; i++) {
-        key = lpub_int_str(keybuf, sizeof(keybuf), i - 1, NULL);
+        key = lpub_int_str(keybuf, sizeof(keybuf), i - 1, &klens);
         lua_rawgeti(lua, idx, i);
-        _lbson_encode_value(lua, lua_gettop(lua), bson, key);
+        _lbson_encode_value(lua, lua_gettop(lua), bson, key, klens);
         lua_pop(lua, 1);
     }
 }
-static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson, const char *key) {
+static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson, const char *key, size_t klens) {
     switch (lua_type(lua, val_idx)) {
     case LUA_TNIL:
-        bson_append_null(bson, key);
+        bson_append_null2(bson, key, klens);
         break;
     case LUA_TBOOLEAN:
-        bson_append_bool(bson, key, (int8_t)lua_toboolean(lua, val_idx));
+        bson_append_bool2(bson, key, klens, (int8_t)lua_toboolean(lua, val_idx));
         break;
     case LUA_TNUMBER:
         if (lua_isinteger(lua, val_idx)) {
             lua_Integer iv = lua_tointeger(lua, val_idx);
             if (iv >= INT32_MIN && iv <= INT32_MAX) {
-                bson_append_int32(bson, key, (int32_t)iv);
+                bson_append_int322(bson, key, klens, (int32_t)iv);
             } else {
-                bson_append_int64(bson, key, (int64_t)iv);
+                bson_append_int642(bson, key, klens, (int64_t)iv);
             }
         } else {
-            bson_append_double(bson, key, lua_tonumber(lua, val_idx));
+            bson_append_double2(bson, key, klens, lua_tonumber(lua, val_idx));
         }
         break;
     case LUA_TSTRING: {
         size_t lens;
         const char *s = lua_tolstring(lua, val_idx, &lens);
-        bson_append_utf8_n(bson, key, s, lens);
+        bson_append_utf8_n2(bson, key, klens, s, lens);
         break;
     }
     case LUA_TTABLE: {
         luaL_checkstack(lua, 4, "bson encode");
         lua_Integer n;
         if (_table_is_array(lua, val_idx, &n)) {
-            bson_append_array_begain(bson, key);
+            bson_append_array_begain2(bson, key, klens);
             _lbson_encode_table_as_arr(lua, val_idx, bson, n);
             bson_append_end(bson);
         } else {
-            bson_append_document_begain(bson, key);
+            bson_append_document_begain2(bson, key, klens);
             _lbson_encode_table_as_doc(lua, val_idx, bson);
             bson_append_end(bson);
         }
@@ -755,7 +757,7 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
         if (NULL != lua_touserdata(lua, val_idx)) {
             luaL_error(lua, "bson encode unsupported light userdata, key '%s'", key);
         }
-        bson_append_null(bson, key);
+        bson_append_null2(bson, key, klens);
         break;
     case LUA_TUSERDATA:
         // 值的元表只取一次，再逐个跟包装元表比。
@@ -765,16 +767,16 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
         }
         if (lpub_is_mtable(lua, MT_BSON_OID)) {
             lbson_oid_t *ud = lua_touserdata(lua, val_idx);
-            bson_append_oid(bson, key, ud->data);
+            bson_append_oid2(bson, key, klens, ud->data);
         } else if (lpub_is_mtable(lua, MT_BSON_INT64)) {
             lbson_int64_t *ud = lua_touserdata(lua, val_idx);
-            bson_append_int64(bson, key, ud->val);
+            bson_append_int642(bson, key, klens, ud->val);
         } else if (lpub_is_mtable(lua, MT_BSON_DATE)) {
             lbson_date_t *ud = lua_touserdata(lua, val_idx);
-            bson_append_date(bson, key, ud->ms);
+            bson_append_date2(bson, key, klens, ud->ms);
         } else if (lpub_is_mtable(lua, MT_BSON_BINARY)) {
             lbson_binary_t *ud = lua_touserdata(lua, val_idx);
-            bson_append_binary(bson, key, ud->subtype, (char *)(ud + 1), ud->lens);
+            bson_append_binary2(bson, key, klens, ud->subtype, (char *)(ud + 1), ud->lens);
         } else {
             luaL_error(lua, "bson encode unsupported userdata, key '%s'", key);
         }

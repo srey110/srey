@@ -597,6 +597,41 @@ static void test_mongo_pack_startsession(CuTest *tc) {
     FREE(pack);
 }
 
+// mongo_parse_sesstimeout：hello 回包里的 logicalSessionTimeoutMinutes；缺失、类型不对、非正数都按 0(超时未知)
+static void test_mongo_parse_sesstimeout(CuTest *tc) {
+    bson_ctx b;
+    mgopack_ctx mg;
+    // 正常 int32
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "logicalSessionTimeoutMinutes", 30);
+    bson_append_end(&b);
+    _mgopack_of(&mg, &b);
+    CuAssertIntEquals(tc, 30, mongo_parse_sesstimeout(&mg));
+    BSON_FREE(&b);
+    // 字段缺失
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_end(&b);
+    _mgopack_of(&mg, &b);
+    CuAssertIntEquals(tc, 0, mongo_parse_sesstimeout(&mg));
+    BSON_FREE(&b);
+    // 类型不对
+    bson_init(&b, NULL, 0);
+    bson_append_utf8(&b, "logicalSessionTimeoutMinutes", "30");
+    bson_append_end(&b);
+    _mgopack_of(&mg, &b);
+    CuAssertIntEquals(tc, 0, mongo_parse_sesstimeout(&mg));
+    BSON_FREE(&b);
+    // 负数
+    bson_init(&b, NULL, 0);
+    bson_append_int32(&b, "logicalSessionTimeoutMinutes", -5);
+    bson_append_end(&b);
+    _mgopack_of(&mg, &b);
+    CuAssertIntEquals(tc, 0, mongo_parse_sesstimeout(&mg));
+    BSON_FREE(&b);
+}
+
 // 测试 session 相关包：refresh/end/committransaction/aborttransaction + transaction_options
 static void test_mongo_pack_session(CuTest *tc) {
     mongo_ctx mongo;
@@ -646,11 +681,19 @@ static void test_mongo_pack_session(CuTest *tc) {
     CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "refreshSessions"));
     FREE(pack);
 
-    // endsession
-    pack = mongo_pack_endsession(&session, &size);
-    bson = _assert_msg_head(tc, pack, size);
-    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "endSessions"));
-    FREE(pack);
+    // endsession：包恒带 MORETOCOME(只发不等回包)，连接级 flags 置没置都不动它
+    int32_t fl;
+    int32_t flset[2] = { 0, MORETOCOME };
+    for (fl = 0; fl < 2; fl++) {
+        mongo_clear_flag(&mongo);
+        mongo_set_flag(&mongo, flset[fl]);
+        pack = mongo_pack_endsession(&session, &size);
+        bson = _assert_msg_head(tc, pack, size);
+        CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, size - _MSG_HEAD_LENS, "endSessions"));
+        CuAssertTrue(tc, mongo_pack_check_flag(pack, MORETOCOME));
+        CuAssertIntEquals(tc, flset[fl], mongo_clear_flag(&mongo));
+        FREE(pack);
+    }
 
     // commit/abort transaction：两个 packer 会比对入参 session 与连接当前绑定的那个，
     // 先建立绑定；不绑定的情形在下面单独验。
@@ -1461,6 +1504,7 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_findandmodify);
     SUITE_ADD_TEST(suite, test_mongo_pack_indexes);
     SUITE_ADD_TEST(suite, test_mongo_pack_startsession);
+    SUITE_ADD_TEST(suite, test_mongo_parse_sesstimeout);
     SUITE_ADD_TEST(suite, test_mongo_pack_session);
     SUITE_ADD_TEST(suite, test_mongo_pack_scram_first);
     SUITE_ADD_TEST(suite, test_mongo_pack_scram_final);

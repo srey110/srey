@@ -10,12 +10,13 @@
     if (NULL == lpub_owner_ptr((lua), MT_MYSQL)) { \
         return luaL_error((lua), "mysql stmt: owner mysql already freed"); \
     }
-// 六个按列名取值的 reader 入口共用的开场白：取 reader + 取列名 + 备好 err。
+// 六个按列名取值的 reader 入口共用的开场白：取 reader + 取列名并查一次列下标 + 备好 err。
 // err 是三态(ERR_OK 有值 / 1 字段是 SQL NULL / 其余读取失败)，由 mysql_reader、pgsql_reader 两侧
 // 共同产出：有值那支自己压 true 加值，另两态一律 lpub_rtn_bool(lua, 1 == err) 收尾（NULL 也算成功）
-#define LMYSQL_READER_GET(lua, rvar, nvar, evar) \
+#define LMYSQL_READER_GET(lua, rvar, nvar, cvar, evar) \
     LPUB_UD_ARG((lua), mysql_reader_ctx, MT_MYSQL_READER, rvar, "reader freed") \
-    const char *nvar = luaL_checkstring((lua), 2); \
+    const char *nvar; \
+    int32_t cvar = _lmysql_reader_col((lua), *rvar, 2, &nvar); \
     int32_t evar
 // 七个 bind 入口共用的开场白: 取 bind 对象 + 取可选具名参数(栈位 2 非字符串即按位置绑定)。
 // 具名参数的取法散在七处的话, 将来要换取法(如改用 luaL_optlstring 拿长度)得挨个找齐,
@@ -280,14 +281,20 @@ static int32_t _lmysql_reader_next(lua_State *lua) {
     mysql_reader_next(*reader);
     return 0;
 }
-// 整数列按 UNSIGNED 标志选有无符号读，err 同 mysql_reader_integer。无符号值超出 int64 时：
+// 取栈位 idx 的列名，按 Lua 串自带长度查一次列下标；name 回出列名给报错用
+static inline int32_t _lmysql_reader_col(lua_State *lua, mysql_reader_ctx *reader, int32_t idx, const char **name) {
+    size_t nlens;
+    *name = luaL_checklstring(lua, idx, &nlens);
+    return mysql_reader_col(reader, *name, nlens);
+}
+// 整数列按 UNSIGNED 标志选有无符号读，err 同 mysql_reader_integer，col 是 name 那一列的下标。无符号值超出 int64 时：
 // raise 非 0 抛错（reader:get，它的其余失败也抛），否则打 WARN 并按读取失败返回（reader:integer，其余失败返回 false）
-static int64_t _lmysql_reader_int(lua_State *lua, mysql_reader_ctx *reader, const char *name,
+static int64_t _lmysql_reader_int(lua_State *lua, mysql_reader_ctx *reader, int32_t col, const char *name,
                                   int32_t raise, int32_t *err) {
-    if (0 == mysql_reader_unsigned(reader, name)) {
-        return mysql_reader_integer(reader, name, err);
+    if (0 == mysql_reader_unsigned_at(reader, col)) {
+        return mysql_reader_integer_at(reader, col, err);
     }
-    uint64_t val = mysql_reader_uinteger(reader, name, err);
+    uint64_t val = mysql_reader_uinteger_at(reader, col, err);
     if (ERR_OK == *err && val > (uint64_t)INT64_MAX) {
         if (0 != raise) {
             luaL_error(lua, "reader:get column '%s' unsigned value exceeds int64", name);
@@ -306,8 +313,8 @@ static int64_t _lmysql_reader_int(lua_State *lua, mysql_reader_ctx *reader, cons
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败（含无符号值超出 int64）</returns>
 /// <returns type="integer?">字段整数值；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_integer(lua_State *lua) {
-    LMYSQL_READER_GET(lua, reader, name, err);
-    int64_t val = _lmysql_reader_int(lua, *reader, name, 0, &err);
+    LMYSQL_READER_GET(lua, reader, name, col, err);
+    int64_t val = _lmysql_reader_int(lua, *reader, col, name, 0, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushinteger(lua, val);
@@ -323,8 +330,8 @@ static int32_t _lmysql_reader_integer(lua_State *lua) {
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
 /// <returns type="number?">字段单精度浮点值；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_float(lua_State *lua) {
-    LMYSQL_READER_GET(lua, reader, name, err);
-    float val = mysql_reader_float(*reader, name, &err);
+    LMYSQL_READER_GET(lua, reader, name, col, err);
+    float val = mysql_reader_float_at(*reader, col, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushnumber(lua, (double)val);
@@ -340,8 +347,8 @@ static int32_t _lmysql_reader_float(lua_State *lua) {
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
 /// <returns type="number?">字段双精度浮点值；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_double(lua_State *lua) {
-    LMYSQL_READER_GET(lua, reader, name, err);
-    double val = mysql_reader_double(*reader, name, &err);
+    LMYSQL_READER_GET(lua, reader, name, col, err);
+    double val = mysql_reader_double_at(*reader, col, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushnumber(lua, val);
@@ -362,9 +369,9 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
 /// <returns type="integer?">字段字节数；asstr 或字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_string(lua_State *lua) {
     int32_t asstr;
-    LMYSQL_READER_GET(lua, reader, name, err);
+    LMYSQL_READER_GET(lua, reader, name, col, err);
     size_t lens = 0;
-    char *val = mysql_reader_string(*reader, name, &lens, &err);
+    char *val = mysql_reader_string_at(*reader, col, &lens, &err);
     if (ERR_OK == err) {
         asstr = lua_toboolean(lua, 3);// 必须在压栈前读：压了 true 之后栈位 3 就是它
         lua_pushboolean(lua, 1);
@@ -386,8 +393,8 @@ static int32_t _lmysql_reader_string(lua_State *lua) {
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
 /// <returns type="integer?">微秒精度 Unix 时间戳；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_datetime(lua_State *lua) {
-    LMYSQL_READER_GET(lua, reader, name, err);
-    int64_t val = mysql_reader_datetime(*reader, name, &err);
+    LMYSQL_READER_GET(lua, reader, name, col, err);
+    int64_t val = mysql_reader_datetime_at(*reader, col, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushinteger(lua, val);
@@ -408,10 +415,10 @@ static int32_t _lmysql_reader_datetime(lua_State *lua) {
 /// <returns type="integer?">second；字段为 NULL 时不返回</returns>
 /// <returns type="integer?">usec（0~999999）；字段为 NULL 时不返回</returns>
 static int32_t _lmysql_reader_time(lua_State *lua) {
-    LMYSQL_READER_GET(lua, reader, name, err);
+    LMYSQL_READER_GET(lua, reader, name, col, err);
     struct tm dt = { 0 };
     uint32_t usec;
-    int32_t is_negative = mysql_reader_time(*reader, name, &dt, &usec, &err);
+    int32_t is_negative = mysql_reader_time_at(*reader, col, &dt, &usec, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushboolean(lua, is_negative);
@@ -440,47 +447,48 @@ static int32_t _lmysql_reader_get(lua_State *lua) {
     luaL_argcheck(lua, n >= 2, 2, "column name expected");
     luaL_checkstack(lua, n, "too many columns");
     const char *name;
+    int32_t col;
     int32_t err;
     int64_t ival;
     double dval;
     size_t lens = 0;
     char *sval;
     for (int32_t i = 2; i <= n; i++) {
-        name = luaL_checkstring(lua, i);
+        col = _lmysql_reader_col(lua, *reader, i, &name);
         err = ERR_FAILED;
-        switch (mysql_reader_cls(*reader, name)) {
+        switch (mysql_reader_cls_at(*reader, col)) {
         case MYSQL_CLS_INT:
-            ival = _lmysql_reader_int(lua, *reader, name, 1, &err);
+            ival = _lmysql_reader_int(lua, *reader, col, name, 1, &err);
             if (ERR_OK == err) {
                 lua_pushinteger(lua, ival);
             }
             break;
         case MYSQL_CLS_FLOAT:
-            dval = (double)mysql_reader_float(*reader, name, &err);
+            dval = (double)mysql_reader_float_at(*reader, col, &err);
             if (ERR_OK == err) {
                 lua_pushnumber(lua, dval);
             }
             break;
         case MYSQL_CLS_DOUBLE:
-            dval = mysql_reader_double(*reader, name, &err);
+            dval = mysql_reader_double_at(*reader, col, &err);
             if (ERR_OK == err) {
                 lua_pushnumber(lua, dval);
             }
             break;
         case MYSQL_CLS_STRING:
-            sval = mysql_reader_string(*reader, name, &lens, &err);
+            sval = mysql_reader_string_at(*reader, col, &lens, &err);
             if (ERR_OK == err) {
                 lua_pushlstring(lua, sval, lens);
             }
             break;
         case MYSQL_CLS_DATETIME:
-            ival = mysql_reader_datetime(*reader, name, &err);
+            ival = mysql_reader_datetime_at(*reader, col, &err);
             if (ERR_OK == err) {
                 lua_pushinteger(lua, ival);
             }
             break;
         default:
-            if (0 != mysql_reader_isnull(*reader, name)) {
+            if (0 != mysql_reader_isnull_at(*reader, col)) {
                 err = 1;
             }
             break;

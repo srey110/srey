@@ -5786,6 +5786,77 @@ static void test_http_header_at(CuTest *tc) {
     _http_udfree(&ud);
     buffer_free(&buf);
 }
+// 拼一条请求解出来逐个核头字段：首个头 P 的值是 pad 个 'a'，其后 H1..H(nh-1) 依次为 v1..v(nh-1)。
+// 核 http_nheader、按序的 http_header_at 与 http_header 按名查找，收尾由内存检查兜住漏释放 / 错释放
+static void _http_hdr_embed_check(CuTest *tc, size_t pad, uint32_t nh) {
+    char raw[4096];
+    char key[16], val[16];
+    size_t off = 0, hlen = 0;
+    uint32_t i;
+    int32_t status = PROT_INIT;
+    buffer_ctx buf;
+    ud_cxt ud;
+    http_header_ctx *h;
+    struct http_pack_ctx *pack;
+    char *v;
+    off += (size_t)snprintf(raw, sizeof(raw), "GET / HTTP/1.1\r\nP: ");
+    memset(raw + off, 'a', pad);
+    off += pad;
+    off += (size_t)snprintf(raw + off, sizeof(raw) - off, "\r\n");
+    for (i = 1; i < nh; i++) {
+        off += (size_t)snprintf(raw + off, sizeof(raw) - off, "H%u: v%u\r\n", (unsigned)i, (unsigned)i);
+    }
+    off += (size_t)snprintf(raw + off, sizeof(raw) - off, "\r\n");
+    CuAssertTrue(tc, off < sizeof(raw));
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, raw, off));
+    ZERO(&ud, sizeof(ud));
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, nh == http_nheader(pack));
+    h = http_header_at(pack, 0);
+    CuAssertTrue(tc, buf_compare(&h->key, "P", 1));
+    CuAssertTrue(tc, pad == h->value.lens);
+    CuAssertTrue(tc, 'a' == ((char *)h->value.data)[0] && 'a' == ((char *)h->value.data)[pad - 1]);
+    for (i = 1; i < nh; i++) {
+        snprintf(key, sizeof(key), "H%u", (unsigned)i);
+        snprintf(val, sizeof(val), "v%u", (unsigned)i);
+        h = http_header_at(pack, i);
+        CuAssertTrue(tc, buf_compare(&h->key, key, strlen(key)));
+        CuAssertTrue(tc, buf_compare(&h->value, val, strlen(val)));
+        v = http_header(pack, key, &hlen);
+        CuAssertPtrNotNull(tc, v);
+        CuAssertTrue(tc, hlen == strlen(val) && 0 == memcmp(v, val, hlen));
+    }
+    v = http_header(pack, "p", &hlen);
+    CuAssertPtrNotNull(tc, v);
+    CuAssertTrue(tc, pad == hlen);
+    CuAssertTrue(tc, NULL == http_header(pack, "missing", &hlen));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+// 头字段数组内嵌进头包：16 槽连同头块整块不超过 1008B 才内嵌，用满搬到堆上(32 槽起)再照常倍增；
+// 放不下 16 槽就不内嵌、照旧单独分配
+static void test_http_header_embed(CuTest *tc) {
+    size_t pad;
+    uint32_t nh;
+    _http_hdr_embed_check(tc, 1, 1);
+    _http_hdr_embed_check(tc, 1, 16);// 内嵌槽正好用满
+    _http_hdr_embed_check(tc, 1, 17);// 第 17 个搬到堆上
+    _http_hdr_embed_check(tc, 1, 40);// 搬过去之后 32 -> 64 照常倍增
+    _http_hdr_embed_check(tc, 2000, 3);// 头块大到不内嵌
+    _http_hdr_embed_check(tc, 2000, 40);
+    // 结构体大小是 http.c 私有的，算不出确切边界：头块长逐字节扫过一遍，跨过内嵌与不内嵌的分界；
+    // 每个长度都试少量头、正好 16 个(内嵌槽用满)与 17 个(搬到堆上)
+    static const uint32_t nhs[] = { 3, 16, 17 };
+    for (pad = 1; pad <= 1000; pad++) {
+        for (nh = 0; nh < sizeof(nhs) / sizeof(nhs[0]); nh++) {
+            _http_hdr_embed_check(tc, pad, nhs[nh]);
+        }
+    }
+}
 
 /* =======================================================================
  * websock 解包：mask=1 但 mask key 全 0 的合法边界
@@ -6785,6 +6856,53 @@ static void test_strtod_s_paths(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, strtod_s("2.5xyz", 3, &d));// 只看 lens 个字节
     CuAssertTrue(tc, 2.5 == d);
 }
+// strtod_s 的长度边界与内嵌 NUL：快路径直接读原串，≥128 字节仍要拒(快路径本身收得下前导零很长的串)，
+// 含 NUL 的串两条路都不收
+static void test_strtod_s_bounds(CuTest *tc) {
+    char s[160];
+    double d;
+    // "1" 后跟 126 / 127 个 0：127 字节收，128 字节拒
+    memset(s, '0', sizeof(s));
+    s[0] = '1';
+    d = 7;
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 127, &d));
+    CuAssertTrue(tc, 1e126 == d);
+    d = 7;
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, 128, &d));
+    CuAssertTrue(tc, 7 == d);
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, sizeof(s), &d));
+    // 前导零 + "1.5"：快路径收的写法，正好 127 字节收、128 字节拒
+    memset(s, '0', sizeof(s));
+    memcpy(s + 124, "1.5", 3);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 127, &d));
+    CuAssertTrue(tc, 1.5 == d);
+    s[124] = '0';
+    memcpy(s + 125, "1.5", 3);
+    d = 7;
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, 128, &d));
+    CuAssertTrue(tc, 7 == d);
+    // '+' 开头快路径不收、退回 strtod_c：127 字节照收
+    memset(s, '0', sizeof(s));
+    s[0] = '+';
+    memcpy(s + 124, "2.5", 3);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 127, &d));
+    CuAssertTrue(tc, 2.5 == d);
+    // 内嵌 NUL：快路径停在 NUL 上不收，strtod_c 也只解到 NUL 前，有残留即拒
+    d = 7;
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s("1\0", 2, &d));
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s("1.5\0", 4, &d));
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s("12\0" "3", 4, &d));
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s("\0", 1, &d));
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s("+1\0", 3, &d));
+    CuAssertTrue(tc, 7 == d);
+    // 常见写法结果不变
+    _dbl_ok(tc, "3.14159", 3.14159);
+    _dbl_ok(tc, "-0.001", -0.001);
+    _dbl_ok(tc, "100", 100.0);
+    _dbl_ok(tc, "6.02e23", 6.02e23);
+    _dbl_ok(tc, "1E-5", 1e-5);
+    _dbl_ok(tc, "123456.789", 123456.789);
+}
 // websock 带掩码帧从接收缓冲各节点直接解掩码：帧(含帧头、掩码键)切成 1 / 3 / 7 字节的外部节点，
 // 帧头、掩码键、载荷都会跨节点；1 字节切法下大帧超过 16 个节点，走退回路径。另有整帧两段到(先帧头+半载荷)
 static void _t_ws_ext_free(void *p) {
@@ -7319,6 +7437,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_code_status);
     SUITE_ADD_TEST(suite, test_http_pack_chunked);
     SUITE_ADD_TEST(suite, test_http_header_at);
+    SUITE_ADD_TEST(suite, test_http_header_embed);
     SUITE_ADD_TEST(suite, test_http_take_data);
     SUITE_ADD_TEST(suite, test_redis_simple);
     SUITE_ADD_TEST(suite, test_redis_bulk);
@@ -7441,6 +7560,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mail_attach_name_rfc2231);
     SUITE_ADD_TEST(suite, test_mail_attach_long_name);
     SUITE_ADD_TEST(suite, test_strtod_s_paths);
+    SUITE_ADD_TEST(suite, test_strtod_s_bounds);
     SUITE_ADD_TEST(suite, test_websock_unpack_masked_nodes);
     SUITE_ADD_TEST(suite, test_kcp_seg_pool);
     SUITE_ADD_TEST(suite, test_smtp_b64_line_boundary);

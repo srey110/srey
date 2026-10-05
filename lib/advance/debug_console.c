@@ -251,7 +251,8 @@ static void _debug_alive(router_req *ctx) {
     binary_free(&bw);
     _debug_tasklist_free(&tl);
 }
-// GET /__cmem：C 层全局内存分配统计（MEMORY_CHECK 关闭时全为 0）
+// GET /__cmem：C 层全局内存分配统计（MEMORY_CHECK 关闭时全为 0）。
+// Lua 虚拟机的分配次数按调度轮并入，各 Lua task 正在跑的这一轮不在其中，运行期是近似值
 static void _debug_cmem(router_req *ctx) {
     uint64_t nalloc = 0;
     uint64_t nfree = 0;

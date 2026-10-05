@@ -261,10 +261,12 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
             return ERR_FAILED;
         }
         nlens = (size_t)(breader->data + breader->offset - fname) - 1;
-        if (ERR_OK != copy_bounded(fname, nlens, field->name, sizeof(field->name), 1)) {
-            // fields 是 MALLOC 出来的，而 copy_bounded 装不下时一个字节都不写：留着就是
-            // 未初始化内存被 _pgsql_reader_index 的 strcmp 读，还未必有 NUL。置空串，
-            // 效果是这一列按名查不到（按下标仍可取）
+        if (ERR_OK == copy_bounded(fname, nlens, field->name, sizeof(field->name), 1)) {
+            field->nlens = (uint8_t)nlens;// 严格模式成功即 nlens < sizeof(name)，装得进 uint8_t
+        } else {
+            // fields 是 MALLOC 出来的，copy_bounded 装不下时一个字节都不写：长度置 0、名称置空串，
+            // 这一列按名查不到（按下标仍可取）
+            field->nlens = 0;
             field->name[0] = '\0';
             LOG_ERROR("pgsql field name exceeds %zu bytes: %zu, column dropped from name lookup; "
                       "stock servers truncate at NAMEDATALEN-1 = 63, this one was built with a larger one.",

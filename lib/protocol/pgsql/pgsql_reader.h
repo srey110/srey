@@ -69,6 +69,14 @@ pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_f
 /// <returns>pgpack_row 指针，列名不存在时返回 NULL</returns>
 pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack_field **field);
 /// <summary>
+/// 按列名取列下标：同一列要连取几次时先取一次下标，之后走 pgsql_reader_index 或 *_at 系列，不再每次按名扫列
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="name">列名，按 nlens 整段比较，不要求 '\0' 结尾</param>
+/// <param name="nlens">列名字节数</param>
+/// <returns>列下标；没有这一列或没有字段描述为 -1，重名列取第一个</returns>
+int16_t pgsql_reader_col(pgsql_reader_ctx *reader, const char *name, size_t nlens);
+/// <summary>
 /// 按列名读取当前行中布尔类型字段的值
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx 指针</param>
@@ -147,5 +155,79 @@ int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *e
 /// <param name="err">输出错误码：ERR_OK 成功，1 为 NULL 值，ERR_FAILED 失败</param>
 /// <returns>ERR_OK 成功，ERR_FAILED 失败（uuid 内容无效）</returns>
 int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[16], int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_bool，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">列下标（pgsql_reader_col 的结果）；不在 [0, 列数) 内（含 -1）按列不存在处理</param>
+/// <param name="err">同 pgsql_reader_bool</param>
+/// <returns>同 pgsql_reader_bool</returns>
+int32_t pgsql_reader_bool_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_integer，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <param name="err">同 pgsql_reader_integer</param>
+/// <returns>同 pgsql_reader_integer</returns>
+int64_t pgsql_reader_integer_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_double，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <param name="err">同 pgsql_reader_double</param>
+/// <returns>同 pgsql_reader_double</returns>
+double pgsql_reader_double_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_isnull，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <returns>同 pgsql_reader_isnull</returns>
+int32_t pgsql_reader_isnull_at(pgsql_reader_ctx *reader, int16_t col);
+/// <summary>
+/// 同 pgsql_reader_text，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <param name="lens">同 pgsql_reader_text</param>
+/// <param name="err">同 pgsql_reader_text</param>
+/// <returns>同 pgsql_reader_text</returns>
+const char *pgsql_reader_text_at(pgsql_reader_ctx *reader, int16_t col, int32_t *lens, int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_bytea，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <param name="lens">同 pgsql_reader_bytea</param>
+/// <param name="err">同 pgsql_reader_bytea</param>
+/// <returns>同 pgsql_reader_bytea</returns>
+const char *pgsql_reader_bytea_at(pgsql_reader_ctx *reader, int16_t col, int32_t *lens, int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_timestamp，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <param name="err">同 pgsql_reader_timestamp</param>
+/// <returns>同 pgsql_reader_timestamp</returns>
+int64_t pgsql_reader_timestamp_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_date，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <param name="err">同 pgsql_reader_date</param>
+/// <returns>同 pgsql_reader_date</returns>
+int32_t pgsql_reader_date_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err);
+/// <summary>
+/// 同 pgsql_reader_uuid，按列下标取
+/// </summary>
+/// <param name="reader">pgsql_reader_ctx 指针</param>
+/// <param name="col">同 pgsql_reader_bool_at</param>
+/// <param name="uuid">同 pgsql_reader_uuid</param>
+/// <param name="err">同 pgsql_reader_uuid</param>
+/// <returns>同 pgsql_reader_uuid</returns>
+int32_t pgsql_reader_uuid_at(pgsql_reader_ctx *reader, int16_t col, char uuid[16], int32_t *err);
 
 #endif//PGSQL_READER_H_

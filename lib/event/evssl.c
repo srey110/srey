@@ -42,6 +42,7 @@ static atomic_t _init_once = 0;// 保证证书池只初始化一次
 // 不设 SSL_MODE_AUTO_RETRY：该模式在非阻塞 socket 上会使 SSL_read/write 内部自旋，
 // 阻塞 watcher 线程。WANT_READ/WANT_WRITE 由事件循环驱动重试。
 // 设 SSL_MODE_RELEASE_BUFFERS：空闲连接交还读写缓冲(每条约 34KB)，代价是再收发时重新分配
+// 设 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER：合并写的缓冲在栈上，WANT_WRITE 后重试时地址会变，不开 OpenSSL 会判重试非法
 // 写分片跟着 MAX_SSL_SEND_SIZE 收窄：_evpub_sock_send_ssl 本就把每次 SSL_write 卡在那个值上，
 // 默认 16KB 的写缓冲永远填不满，收窄后每条连接省约 12.5KB 而行为不变。
 // 超出 OpenSSL 允许的 512~16384 时该调用返 0，写缓冲退回默认值，只是省不到内存，不影响收发
@@ -49,7 +50,7 @@ static void _evssl_options(evssl_ctx *evssl) {
 #ifdef SSL_OP_NO_RENEGOTIATION
     SSL_CTX_set_options(evssl->ssl, SSL_OP_NO_RENEGOTIATION);
 #endif
-    SSL_CTX_set_mode(evssl->ssl, SSL_MODE_RELEASE_BUFFERS);
+    SSL_CTX_set_mode(evssl->ssl, SSL_MODE_RELEASE_BUFFERS | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     SSL_CTX_set_max_send_fragment(evssl->ssl, MAX_SSL_SEND_SIZE);
     SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_NONE, NULL);
 }

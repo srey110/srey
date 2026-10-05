@@ -164,6 +164,8 @@ typedef struct fake_smtp_ctx {
     uint16_t port;
     int32_t interleave;     // 检测到的交错次数
     int32_t mails;          // 服务端确认收下的邮件数
+    int32_t rsets;          // 服务端收到的 RSET 条数
+    int32_t fail_rcpt;      // 1 = 下一条 RCPT 回 550（一次性），造一封失败的信
     int32_t *ok;
     smtp_ctx smtp;
     fake_conn conns[FAKE_MAXCONN];
@@ -272,6 +274,11 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
             ctx->interleave++;
             LOG_ERROR("fake smtp: RCPT r%d under sender c%d.", tag, fc->sender);
         }
+        if (0 != ctx->fail_rcpt) {
+            ctx->fail_rcpt = 0;
+            _fake_reply(task, sk, "550 rcpt rejected\r\n");
+            return;
+        }
         _fake_reply(task, sk, "250 OK\r\n");
         return;
     }
@@ -281,6 +288,7 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
         return;
     }
     if (0 == memcasecmp(line, "RSET", 4)) {
+        ctx->rsets++;
         fc->sender = -1;
         _fake_reply(task, sk, "250 OK\r\n");
         return;
@@ -379,26 +387,29 @@ typedef struct fake_conc_arg {
     smtp_ctx *smtp;
 }fake_conc_arg;
 
+// 发一封 from → to 的信，返回 smtp_send 的结果
+static int32_t _fake_send(smtp_ctx *smtp, const char *from, const char *to) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, "srey", from);
+    mail_addrs_add(&mail, to, TO);
+    mail_subject(&mail, "concurrency");
+    mail_msg(&mail, "body");
+    mail_reply(&mail, 0);
+    int32_t rtn = smtp_send(smtp, &mail);
+    mail_free(&mail);
+    return rtn;
+}
 static void _fake_conc_worker(void *owner, void *arg) {
     (void)owner;
     fake_conc_arg *a = (fake_conc_arg *)arg;
     char from[32];
     char to[32];
-    mail_ctx mail;
-    int32_t rtn;
     int32_t i;
     SNPRINTF(from, sizeof(from), "c%d@t", a->idx);
     SNPRINTF(to, sizeof(to), "r%d@t", a->idx);
     for (i = 0; i < FAKE_ROUNDS; i++) {
-        mail_init(&mail);
-        mail_from(&mail, "srey", from);
-        mail_addrs_add(&mail, to, TO);
-        mail_subject(&mail, "concurrency");
-        mail_msg(&mail, "body");
-        mail_reply(&mail, 0);
-        rtn = smtp_send(a->smtp, &mail);
-        mail_free(&mail);
-        if (ERR_OK != rtn) {
+        if (ERR_OK != _fake_send(a->smtp, from, to)) {
             a->done = -1;
             return;
         }
@@ -447,14 +458,31 @@ static void _fake_startup(task_ctx *task) {
             return;
         }
     }
+    // 正文收到 250 时服务端已清空事务，投递成功不该再补 RSET
+    if (0 != ctx->rsets) {
+        LOG_ERROR("fake smtp: %d RSET after successful mails, want 0.", ctx->rsets);
+        smtp_quit(&ctx->smtp);
+        return;
+    }
+    // 信失败（RCPT 被拒）才补一条 RSET；RSET 成功则连接留用，下一封照样能发
+    ctx->fail_rcpt = 1;
+    if (ERR_OK == _fake_send(&ctx->smtp, "c9@t", "r9@t")
+        || 1 != ctx->rsets
+        || ERR_OK != _fake_send(&ctx->smtp, "c9@t", "r9@t")) {
+        LOG_ERROR("fake smtp: failed mail should send exactly one RSET and keep the connection, rsets %d.",
+                  ctx->rsets);
+        smtp_quit(&ctx->smtp);
+        return;
+    }
     smtp_quit(&ctx->smtp);
     if (0 != ctx->interleave) {
         LOG_ERROR("fake smtp: %d interleavings detected.", ctx->interleave);
         return;
     }
-    if (FAKE_CONC_N * FAKE_ROUNDS != ctx->mails) {
+    // +1 是失败用例之后补发成功的那封
+    if (FAKE_CONC_N * FAKE_ROUNDS + 1 != ctx->mails) {
         LOG_ERROR("fake smtp: server took %d mails, want %d.",
-                  ctx->mails, FAKE_CONC_N * FAKE_ROUNDS);
+                  ctx->mails, FAKE_CONC_N * FAKE_ROUNDS + 1);
         return;
     }
     LOG_INFO("smtp fake tested: %d mails, no interleaving.", ctx->mails);

@@ -221,7 +221,8 @@ void *mongo_pack_startsession(mongo_ctx *mongo, size_t *size);
 /// <returns>数据包指针，需调用者释放</returns>
 void *mongo_pack_refreshsession(mongo_session *session, size_t *size);
 /// <summary>
-/// 构造 endSessions 命令请求包（结束会话）
+/// 构造 endSessions 命令请求包（结束会话）。包头 flags 恒为 MORETOCOME，只发不等回包；
+/// 与连接级 flags 无关，也不改它
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="size">输出数据包长度</param>

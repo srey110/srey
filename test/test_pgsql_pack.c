@@ -94,6 +94,33 @@ static void test_pgsql_copy(CuTest *tc) {
     CuAssertTrue(tc, mlen == 4 + strlen("bad data") + 1);
     CuAssertTrue(tc, 0 == memcmp(pack + 5, "bad data", 8));
     FREE(pack);
+
+    /* copy_in ：'Q' + len + sql\0，紧跟 'd' + len + data，再跟 'c' + len(4)=4 */
+    const char *sql = "copy t from stdin";
+    size_t qlen = strlen(sql) + 1;
+    pack = pgsql_pack_copy_in(sql, data, 3, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, (1 + 4 + qlen) + (1 + 4 + 3) + (1 + 4) == size);
+    CuAssertTrue(tc, 'Q' == pack[0]);
+    CuAssertTrue(tc, 4 + qlen == _rd_be32(pack + 1));
+    CuAssertTrue(tc, 0 == memcmp(pack + 5, sql, qlen));
+    char *d = pack + 1 + 4 + qlen;
+    CuAssertTrue(tc, 'd' == d[0]);
+    CuAssertTrue(tc, 4 + 3 == _rd_be32(d + 1));
+    CuAssertTrue(tc, 0 == memcmp(d + 5, data, 3));
+    char *c = d + 1 + 4 + 3;
+    CuAssertTrue(tc, 'c' == c[0]);
+    CuAssertTrue(tc, 4 == _rd_be32(c + 1));
+    FREE(pack);
+
+    /* copy_in 的 sql 为 NULL：按空串写一个 NUL，后面两条照常 */
+    pack = pgsql_pack_copy_in(NULL, data, 3, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, (1 + 4 + 1) + (1 + 4 + 3) + (1 + 4) == size);
+    CuAssertTrue(tc, 5 == _rd_be32(pack + 1));
+    CuAssertTrue(tc, 0 == pack[5]);
+    CuAssertTrue(tc, 'd' == pack[6]);
+    FREE(pack);
 }
 
 /* =======================================================================

@@ -8,6 +8,10 @@
 // accept 选项用例的端口，紧跟延迟关闭那组(15090~15095)之后
 #define ACP_OPTS_PORT 15096
 #define UDP_CLOSE_PORT 15097
+// SSL 合并写用例：端口、服务端一共发的字节数、每批入队的小块数(须低于 MAX_SENDQ_CNT，否则入队即断连)
+#define SSL_MERGE_PORT 15098
+#define SSL_MERGE_TOTAL (256 * 1024)
+#define SSL_MERGE_BATCH 512
 // 读保活空闲时长的选项名，取法同 sock_keepalive
 #if defined(TCP_KEEPIDLE)
     #define ACP_IDLE_OPT TCP_KEEPIDLE
@@ -265,8 +269,8 @@ static int32_t _ssl_read_until(SSL *cli, char *buf, size_t cap, size_t *readed) 
     }
     return rtn;
 }
-// 建一对握完手的 SSL。返回 1 成功；0 表示证书没生成（用例跳过）；-1 是真失败
-static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evssl_ctx **cc) {
+// 建服务端与客户端两个 evssl_ctx。返回 1 成功；0 表示证书没生成（用例跳过）；-1 是真失败
+static int32_t _ssl_ctxs(evssl_ctx **sc, evssl_ctx **cc) {
     const char *local = procpath();
     char ca[PATH_LENS], crt[PATH_LENS], key[PATH_LENS];
     SNPRINTF(ca, sizeof(ca), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
@@ -287,6 +291,14 @@ static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evs
     if (NULL == *cc) {
         evssl_free(*sc);
         return -1;
+    }
+    return 1;
+}
+// 建一对握完手的 SSL。返回值同 _ssl_ctxs
+static int32_t _ssl_pair(SOCKET sk[2], SSL **cli, SSL **srv, evssl_ctx **sc, evssl_ctx **cc) {
+    int32_t rtn = _ssl_ctxs(sc, cc);
+    if (1 != rtn) {
+        return rtn;
     }
     if (ERR_OK != sock_pair(sk, 1)) {
         evssl_free(*sc);
@@ -916,6 +928,150 @@ static void test_evpub_linger_want(CuTest *tc) {
 #endif
 }
 #endif
+#if WITH_SSL
+// SSL 合并写用例的服务端状态，只在事件线程里读写：已入队的块数与字节数、s_cb 报的已发字节数、正在批量入队
+static size_t _g_mrg_nchunk;
+static size_t _g_mrg_queued;
+static size_t _g_mrg_sent;
+static int32_t _g_mrg_pushing;
+// 流里第 p 个字节与第 i 块的长度(1~300)，收发两端按同一规律生成与校验
+static char _mrg_byte(size_t p) {
+    return (char)((p * 7) ^ (p >> 8));
+}
+static size_t _mrg_chunk_len(size_t i) {
+    return 1 + (i * 131) % 300;
+}
+// 在事件线程同一次回调里成批入队小块，让它们攒在发送队列里走合并写。
+// 一批在入队途中就全发完的话不会再有 s_cb 来接力，接着补下一批
+static void _mrg_push(ev_ctx *ev, sock_ctx *sk) {
+    char blk[300];
+    size_t n, i, lens;
+    _g_mrg_pushing = 1;
+    while (_g_mrg_queued < SSL_MERGE_TOTAL) {
+        for (n = 0; n < SSL_MERGE_BATCH && _g_mrg_queued < SSL_MERGE_TOTAL; n++) {
+            lens = _mrg_chunk_len(_g_mrg_nchunk++);
+            if (lens > SSL_MERGE_TOTAL - _g_mrg_queued) {
+                lens = SSL_MERGE_TOTAL - _g_mrg_queued;
+            }
+            for (i = 0; i < lens; i++) {
+                blk[i] = _mrg_byte(_g_mrg_queued + i);
+            }
+            _g_mrg_queued += lens;
+            (void)ev_send(ev, sk, blk, lens, 1);
+        }
+        if (_g_mrg_sent != _g_mrg_queued) {
+            break;
+        }
+    }
+    _g_mrg_pushing = 0;
+}
+// 握手一完成就把发送缓冲调小(合并写才会频繁写不动)，然后开始成批入队；
+// 这里能当场 ev_send 也顺带钉住"先清握手位再回调"
+static int32_t _mrg_on_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl) {
+    int32_t sndbuf = 4096;
+    (void)client;
+    (void)ud;
+    (void)ssl;
+    (void)setsockopt(sk->fd, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, (socklen_t)sizeof(sndbuf));
+    _mrg_push(ev, sk);
+    return ERR_OK;
+}
+// 队列发空了就补下一批
+static void _mrg_on_sent(ev_ctx *ev, sock_ctx *sk, int32_t client, size_t size, ud_cxt *ud) {
+    (void)client;
+    (void)ud;
+    _g_mrg_sent += size;
+    if (0 == _g_mrg_pushing
+        && _g_mrg_sent == _g_mrg_queued) {
+        _mrg_push(ev, sk);
+    }
+}
+static void _mrg_on_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+}
+// SSL 合并写撞 WANT_WRITE 后的重试：服务端在事件线程里成批连发 1~300 字节的小块、发送缓冲调小；
+// 客户端接收缓冲也调小、握手后先停一会儿再读，逼合并写写不动、等写事件来了按同一前缀重试。
+// 客户端逐字节校验内容与总量
+static void test_ev_ssl_merge_send(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    netaddr_ctx addr;
+    evssl_ctx *sc = NULL, *cc = NULL;
+    SSL *cli = NULL;
+    SOCKET fd = INVALID_SOCK;
+    char buf[8192];
+    uint64_t id, t0;
+    size_t got = 0, n, i, bad = SIZE_MAX;
+    int32_t rtn, shake = ERR_FAILED, rcvbuf = 16 * 1024;
+    rtn = _ssl_ctxs(&sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_ev_ssl_merge_send, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    ZERO(&cbs, sizeof(cbs));
+    cbs.exch_cb = _mrg_on_exchanged;
+    cbs.s_cb = _mrg_on_sent;
+    cbs.r_cb = _mrg_on_recv;
+    _g_mrg_nchunk = 0;
+    _g_mrg_queued = 0;
+    _g_mrg_sent = 0;
+    _g_mrg_pushing = 0;
+    ev_init(&ev, 1, NULL);
+    rtn = ev_listen(&ev, sc, "127.0.0.1", SSL_MERGE_PORT, &cbs, NULL, &id);
+    MSLEEP(50);// listen 落地是异步的
+    if (ERR_OK == rtn
+        && ERR_OK == netaddr_set(&addr, "127.0.0.1", SSL_MERGE_PORT)) {
+        fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    }
+    if (INVALID_SOCK != fd) {
+        // 连接前设才管得到通告窗口
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf, (socklen_t)sizeof(rcvbuf));
+        if (0 == connect(fd, netaddr_addr(&addr), netaddr_size(&addr))
+            && ERR_OK == sock_nonblock(fd)) {
+            cli = evssl_setfd(cc, fd);
+        }
+    }
+    for (i = 0; NULL != cli && i < 2000 && ERR_OK != shake; i++) {
+        shake = evssl_tryconn(cli);
+        if (ERR_FAILED == shake) {
+            break;
+        }
+        if (ERR_OK != shake) {
+            MSLEEP(1);
+        }
+    }
+    if (ERR_OK == shake) {
+        MSLEEP(50);// 先不读，让服务端把两端缓冲塞满
+        t0 = nowms();
+        while (got < SSL_MERGE_TOTAL && SIZE_MAX == bad && nowms() - t0 < 10000) {
+            if (ERR_OK != evssl_read(cli, buf, sizeof(buf), &n)) {
+                break;
+            }
+            if (0 == n) {
+                MSLEEP(1);
+                continue;
+            }
+            for (i = 0; i < n && SIZE_MAX == bad; i++) {
+                if (buf[i] != _mrg_byte(got + i)) {
+                    bad = got + i;
+                }
+            }
+            got += n;
+        }
+    }
+    // 先收拾再断言(同 _ssl_pair)
+    FREE_SSL(cli);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    evssl_free(sc);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, shake);
+    CuAssertTrue(tc, SIZE_MAX == bad);
+    CuAssertTrue(tc, SSL_MERGE_TOTAL == got);
+}
+#endif
 void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_close_flush);
     SUITE_ADD_TEST(suite, test_evpub_read_fin);
@@ -934,5 +1090,6 @@ void test_event(CuSuite *suite) {
 #if WITH_SSL
     SUITE_ADD_TEST(suite, test_evssl_read_close_notify);
     SUITE_ADD_TEST(suite, test_ssl_write_wants_read);
+    SUITE_ADD_TEST(suite, test_ev_ssl_merge_send);
 #endif
 }

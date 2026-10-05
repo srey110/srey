@@ -75,33 +75,30 @@ pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_f
     }
     return &row[index];
 }
-// 按字段名查找列索引，未找到返回 ERR_FAILED
-static int32_t _pgsql_reader_index(pgsql_reader_ctx *reader, const char *name) {
+int16_t pgsql_reader_col(pgsql_reader_ctx *reader, const char *name, size_t nlens) {
+    if (NULL == reader->fields) {
+        return -1; // 无字段描述（未收到 RowDescription 消息）
+    }
+    // 先比长度：只读列名的有效字节，不碰它后面没初始化的部分
     for (int32_t i = 0; i < reader->field_count; i++) {
-        if (0 == strcmp(reader->fields[i].name, name)) {
-            return i;
+        if (nlens == reader->fields[i].nlens
+            && 0 == memcmp(reader->fields[i].name, name, nlens)) {
+            return (int16_t)i;
         }
     }
-    return ERR_FAILED;
+    return -1;
 }
 pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack_field **field) {
-    if (NULL == reader->fields) {
-        return NULL; // 无字段描述（未收到 RowDescription 消息）
-    }
-    int32_t index = _pgsql_reader_index(reader, name);
-    if (ERR_FAILED == index) {
-        return NULL;
-    }
-    return pgsql_reader_index(reader, index, field);
+    return pgsql_reader_index(reader, pgsql_reader_col(reader, name, strlen(name)), field);
 }
 // 8 个取值函数开头那三段（取行 → 类型 OID 白名单 → NULL 判定）收在这一处。
 // 与 mysql_reader.c 的 _mysql_reader_row 同形，唯一差别是那边 NULL 判定排在类型判定之前。
-// "row 非 NULL 就直接解引用 field" 靠 pgsql_reader_name 挡掉 fields == NULL，只在这里成立。
+// "row 非 NULL 就直接解引用 field" 靠开头挡掉 fields == NULL 才成立（此时 pgsql_reader_index 不写 field）。
 // 返回 NULL 时 err 已写好（ERR_FAILED=取不到/类型不符，1=字段是 NULL），调用方只管返自己的零值
-static pgpack_row *_pgsql_reader_row(pgsql_reader_ctx *reader, const char *name,
+static pgpack_row *_pgsql_reader_row(pgsql_reader_ctx *reader, int16_t col,
                                      const int32_t *oids, int32_t noid,
                                      pgpack_field **field, int32_t *err) {
-    pgpack_row *row = pgsql_reader_name(reader, name, field);
+    pgpack_row *row = (NULL == reader->fields) ? NULL : pgsql_reader_index(reader, col, field);
     if (NULL == row) {
         SET_PTR(err, ERR_FAILED);
         return NULL;
@@ -122,11 +119,11 @@ static pgpack_row *_pgsql_reader_row(pgsql_reader_ctx *reader, const char *name,
     }
     return row;
 }
-int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+int32_t pgsql_reader_bool_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { BOOLOID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return 0;
     }
@@ -152,11 +149,11 @@ int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *e
     }
     return row->val[0];
 }
-int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+int64_t pgsql_reader_integer_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { INT2OID, INT4OID, INT8OID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return 0;
     }
@@ -178,11 +175,11 @@ int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t
     }
     return read_integer(row->val, (size_t)row->lens, 0, 1);
 }
-double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+double pgsql_reader_double_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { FLOAT4OID, FLOAT8OID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return 0;
     }
@@ -204,19 +201,19 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
     }
     return (4 == expect) ? unpack_float(row->val, 0) : unpack_double(row->val, 0);
 }
-int32_t pgsql_reader_isnull(pgsql_reader_ctx *reader, const char *name) {
-    pgpack_row *row = pgsql_reader_name(reader, name, NULL);
+int32_t pgsql_reader_isnull_at(pgsql_reader_ctx *reader, int16_t col) {
+    pgpack_row *row = pgsql_reader_index(reader, col, NULL);
     if (NULL == row) {
         return 0; // 字段不存在，非 NULL
     }
     return (-1 == row->lens) ? 1 : 0;
 }
-const char *pgsql_reader_text(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err) {
+const char *pgsql_reader_text_at(pgsql_reader_ctx *reader, int16_t col, int32_t *lens, int32_t *err) {
     SET_PTR(lens, 0);
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { TEXTOID, VARCHAROID, BPCHAROID, NAMEOID, UNKNOWNOID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return NULL;
     }
@@ -224,12 +221,12 @@ const char *pgsql_reader_text(pgsql_reader_ctx *reader, const char *name, int32_
     SET_PTR(lens, row->lens);
     return row->val;
 }
-const char *pgsql_reader_bytea(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err) {
+const char *pgsql_reader_bytea_at(pgsql_reader_ctx *reader, int16_t col, int32_t *lens, int32_t *err) {
     SET_PTR(lens, 0);
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { BYTEAOID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return NULL;
     }
@@ -377,11 +374,11 @@ static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) 
     }
     return _pgsql_date_to_days(y, dt.tm_mon + 1, dt.tm_mday);
 }
-int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+int64_t pgsql_reader_timestamp_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { TIMESTAMPOID, TIMESTAMPTZOID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return 0;
     }
@@ -395,11 +392,11 @@ int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32
     }
     return (int64_t)read_be64(row->val);
 }
-int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+int32_t pgsql_reader_date_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { DATEOID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return 0;
     }
@@ -413,11 +410,11 @@ int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *e
     }
     return (int32_t)read_be32(row->val);
 }
-int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[16], int32_t *err) {
+int32_t pgsql_reader_uuid_at(pgsql_reader_ctx *reader, int16_t col, char uuid[16], int32_t *err) {
     SET_PTR(err, ERR_OK);
     static const int32_t _oids[] = { UUIDOID };
     pgpack_field *field;
-    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
         return ERR_FAILED;
     }
@@ -435,4 +432,32 @@ int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[
         return ERR_FAILED;
     }
     return ERR_OK;
+}
+// 以下按列名的接口都是"查一次下标 + 调同名 _at"，找不到列时下标为 -1，由 _at 按没有这一列处理
+int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+    return pgsql_reader_bool_at(reader, pgsql_reader_col(reader, name, strlen(name)), err);
+}
+int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+    return pgsql_reader_integer_at(reader, pgsql_reader_col(reader, name, strlen(name)), err);
+}
+double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+    return pgsql_reader_double_at(reader, pgsql_reader_col(reader, name, strlen(name)), err);
+}
+int32_t pgsql_reader_isnull(pgsql_reader_ctx *reader, const char *name) {
+    return pgsql_reader_isnull_at(reader, pgsql_reader_col(reader, name, strlen(name)));
+}
+const char *pgsql_reader_text(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err) {
+    return pgsql_reader_text_at(reader, pgsql_reader_col(reader, name, strlen(name)), lens, err);
+}
+const char *pgsql_reader_bytea(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err) {
+    return pgsql_reader_bytea_at(reader, pgsql_reader_col(reader, name, strlen(name)), lens, err);
+}
+int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+    return pgsql_reader_timestamp_at(reader, pgsql_reader_col(reader, name, strlen(name)), err);
+}
+int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+    return pgsql_reader_date_at(reader, pgsql_reader_col(reader, name, strlen(name)), err);
+}
+int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[16], int32_t *err) {
+    return pgsql_reader_uuid_at(reader, pgsql_reader_col(reader, name, strlen(name)), uuid, err);
 }
