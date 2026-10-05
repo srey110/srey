@@ -72,11 +72,9 @@ static int32_t _lrouter_add(lua_State *lua) {
     _lrouter_push_segs(lua, *pr, idx);
     return 3;
 }
-// dispatch 只用 path 与 param 两个字段（见 router.lua 的 _make_ctx），这里就只压这两个
-static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
-    lua_createtable(lua, 0, 2);
-    // "/" 与 "//" 的段全是空段，被 router_match_index 剔光后 npath 归零，
-    // 此时 url_reorg_path 只会吐出空串，直接给 "/"，别让 path 字段缺席
+// 压规范化后的 path。"/" 与 "//" 的段全是空段，被 router_match_index 剔光后 npath 归零，
+// 此时 url_reorg_path 只会吐出空串，直接给 "/"，别让 path 缺席
+static void _lrouter_push_path(lua_State *lua, url_ctx *url) {
     if (url->npath > 0) {
         luaL_Buffer pbuf;
         size_t pcap = url->pathlens + 1;
@@ -85,9 +83,23 @@ static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
     } else {
         lua_pushliteral(lua, "/");
     }
+}
+// match 的 url 表只压 path 与 param 两个字段
+static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
+    lua_createtable(lua, 0, 2);
+    _lrouter_push_path(lua, url);
     lua_setfield(lua, -2, "path");
     lpub_push_url_param(lua, url);
     lua_setfield(lua, -2, "param");
+}
+// 压路径参数表 { 名字 = 取值 }
+static void _lrouter_push_params(lua_State *lua, router_req *ctx) {
+    lua_createtable(lua, 0, ctx->params_n);
+    for (int32_t i = 0; i < ctx->params_n; i++) {
+        lua_pushlstring(lua, ctx->params[i].key, ctx->params[i].key_len);
+        lua_pushlstring(lua, ctx->params[i].val, ctx->params[i].val_len);
+        lua_rawset(lua, -3);
+    }
 }
 /// <summary>
 /// 匹配请求路径（不执行 handler/中间件）
@@ -114,19 +126,61 @@ static int32_t _lrouter_match(lua_State *lua) {
     int32_t code = router_match_code(idx);
     lua_pushboolean(lua, idx >= 0);
     lua_pushinteger(lua, code);
-    // 未命中(400/405/404)时不建 url 表：dispatch 那边 if not ok 就直接回响应了，建了也没人看
+    // 未命中(400/405/404)时不建 url 表：调用方 if not ok 就直接回响应了，建了也没人看
     if (idx < 0) {
         return 2;
     }
     _lrouter_push_url(lua, ctx.url);
     lua_pushinteger(lua, idx);
-    lua_createtable(lua, 0, ctx.params_n);
-    for (int32_t i = 0; i < ctx.params_n; i++) {
-        lua_pushlstring(lua, ctx.params[i].key, ctx.params[i].key_len);
-        lua_pushlstring(lua, ctx.params[i].val, ctx.params[i].val_len);
-        lua_rawset(lua, -3);
-    }
+    _lrouter_push_params(lua, &ctx);
     return 5;
+}
+/// <summary>
+/// 同 match，但方法与 URI 直接取自请求包的请求行，返回值摊平、不建中间表
+/// </summary>
+/// <param name="self" type="userdata">router_ctx 对象</param>
+/// <param name="pack" type="lightuserdata">http_pack_ctx 指针</param>
+/// <returns type="boolean?">true=命中；false=失败；不带请求行的包（分块中间包）为 nil，且只此一个返回值</returns>
+/// <returns type="integer">HTTP 状态码，取值同 match</returns>
+/// <returns type="string">请求方法</returns>
+/// <returns type="string">请求行第三段（HTTP 版本）</returns>
+/// <returns type="string?">规范化后的 path —— 仅命中时返回；未命中一律只返前四个值</returns>
+/// <returns type="table&lt;string,string&gt;?">查询参数表；仅命中时返回，没有查询参数时为 nil（不建空表）</returns>
+/// <returns type="integer?">路由索引（≥0）；仅命中时返回</returns>
+/// <returns type="table&lt;string,string&gt;?">路径参数表；仅命中时返回，没有路径参数时为 nil（不建空表）</returns>
+static int32_t _lrouter_match_pack(lua_State *lua) {
+    LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
+    LPUB_LUD_ARG(lua, struct http_pack_ctx, 2, pack);
+    buf_ctx *status = http_status(pack);
+    if (NULL == status) {
+        return lpub_rtn_nil(lua, 1);
+    }
+    url_ctx urlstorage;
+    router_req ctx;
+    ZERO(&ctx, offsetof(router_req, chain));
+    ctx.url = &urlstorage;
+    int32_t idx = router_match_index(*pr, status[0].data, status[0].lens,
+                                     status[1].data, status[1].lens, &ctx);
+    lua_pushboolean(lua, idx >= 0);
+    lua_pushinteger(lua, router_match_code(idx));
+    lua_pushlstring(lua, status[0].data, status[0].lens);
+    lua_pushlstring(lua, status[2].data, status[2].lens);
+    if (idx < 0) {
+        return 4;
+    }
+    _lrouter_push_path(lua, ctx.url);
+    if (0 == ctx.url->nparam) {
+        lua_pushnil(lua);
+    } else {
+        lpub_push_url_param(lua, ctx.url);
+    }
+    lua_pushinteger(lua, idx);
+    if (0 == ctx.params_n) {
+        lua_pushnil(lua);
+    } else {
+        _lrouter_push_params(lua, &ctx);
+    }
+    return 8;
 }
 //srey.router
 LUAMOD_API int luaopen_router(lua_State *lua) {
@@ -137,6 +191,7 @@ LUAMOD_API int luaopen_router(lua_State *lua) {
     luaL_Reg reg_func[] = {
         { "add", _lrouter_add },
         { "match", _lrouter_match },
+        { "match_pack", _lrouter_match_pack },
         { "__gc", _lrouter_free },
         { NULL, NULL }
     };

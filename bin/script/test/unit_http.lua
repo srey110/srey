@@ -1,8 +1,10 @@
 -- lib.http 客户端 chunked 违约路径:生产者返回非 string 时,http.post 须先把对端必回的响应收掉再返回 nil。
--- 漏收则残留响应会被同一连接上的下一次请求错认——_wait_net_recv 按 skid 匹配,不区分是哪次请求。
+-- 漏收则残留响应会被同一连接上的下一次请求错认——srey.lua 的 _wait_msg 按 skid 匹配,不区分是哪次请求。
 -- 同一 task 内起 server(PACK_HTTP 监听)与 client(连回本机):server 对分片请求回固定串,非分片请求回显 body。
 -- 另覆盖客户端 chunked 接收段(lib/http.lua 的 srey.syn_slice 循环):server 回真 chunked 响应,
 -- client 分传 / 不传 ckfunc 两种走法。
+-- 不走网络的两段：C 组包 srey.http.pack_resp 与 Lua 原路 _response_lua 逐字节对拍；
+-- 请求侧带头表时帧长头的取舍（抓 srey.syn_send 的入参看线缆字节）。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -38,7 +40,7 @@ local CK2 = "chunk-two-longer"
 
 -- WARN 打桩，用来断言"响应带了不支持的 body 类型时确实告警"。
 -- 每个 unit 模块是独立 task（各有各的 lua_State），改全局波及不到别的模块。
--- 代价是本模块日志里的文件/行号会偏一层——_log 用 debug.getinfo(3) 取调用位置，这里多垫了一帧
+-- 代价是本模块日志里的文件/行号会偏一层——log.lua 让 C 侧按固定栈层(3)取调用位置，这里多垫了一帧
 local warn_log = {}
 local _warn_raw = WARN
 WARN = function(fmt, ...)
@@ -319,6 +321,113 @@ runner.run(function(t)
     t:check(not srey_http.is_token(1), "is_token 拒非字符串(数字当不了头名)")
     t:eq(4096, srey_http.max_headlens, "max_headlens 取自 prots_pub.h 的 HTTP_MAX_HEADLENS")
     -- 组包侧不按它判(见上面 X-Big 那条)，这里只确认常量值没与 C 分叉
+
+    -- C 组包与 Lua 原路逐字节对拍：同一形状走 C(srey.http.respond)还是走 _response_lua，
+    -- 取决于头值类型、码、body 类型，两边发出的字节必须一样。pack_resp 是 respond 的不发送版；
+    -- Lua 原路把 srey.send 临时换成抓包（整段同步执行，换回之前没有别的协程插进来）
+    do
+        local PLAIN = "Content-Type: text/plain; charset=utf-8\r\n"
+        local function lua_bytes(headonly, code, block, headers, body)
+            local cap = {}
+            local send = srey.send
+            srey.send = function(_, data)
+                cap[#cap + 1] = data
+                return true
+            end
+            local ok = pcall(http._response_lua, headonly, "SK", code, block, headers, body)
+            srey.send = send
+            return ok and table.concat(cap) or nil
+        end
+        -- { 码, 头表, 报文体, 头部块 }，每种再分 GET / HEAD 两次
+        local cases = {
+            { 200, nil, "hello" },
+            { 200, nil, "" },
+            { 200, nil, nil },
+            { 200, { ["X-A"] = "1", ["Content-Type"] = "text/plain" }, "body" },
+            { 200, { ["X-A"] = "1" }, nil },
+            { 200, {}, "empty-headers" },
+            { 200, nil, { a = 1, b = { 1, 2, 3 }, c = "x/y\"\\\n中", d = 1.5, e = true, g = 3.0 } },
+            { 200, nil, {} },
+            { 200, nil, { 1, 2, 3 } },
+            { 200, nil, "body", PLAIN },
+            { 200, nil, nil, PLAIN },
+            { 200, nil, { k = "v" }, PLAIN },
+            { 200, { ["X-B"] = "2" }, "body", PLAIN },
+            { 201, nil, string.rep("p", 100000) },
+            { 100, nil, "x" },
+            { 101, { Upgrade = "websocket" }, nil },
+            { 204, nil, "x" },
+            { 204, { ["X-C"] = "3" }, { a = 1 } },
+            { 304, nil, nil },
+            { 304, nil, "abc", PLAIN },
+            { 404, nil, "Not Found\n", PLAIN },
+            { 599, nil, "u" },
+        }
+        local nmis = 0
+        local cb, lb
+        for i, c in ipairs(cases) do
+            for _, headonly in ipairs({ false, true }) do
+                cb = srey_http.pack_resp(c[1], c[2], c[3], headonly, c[4])
+                lb = lua_bytes(headonly, c[1], c[4], c[2], c[3])
+                if nil == cb or cb ~= lb then
+                    nmis = nmis + 1
+                    t:fail(string.format("pack_resp 对拍 #%d headonly=%s: C=%q Lua=%q",
+                                         i, tostring(headonly), tostring(cb), tostring(lb)))
+                end
+            end
+        end
+        t:eq(0, nmis, "上面每种形状 C 都接手，且与 _response_lua 逐字节一致")
+        -- C 不接的形状返回 nil，交回 Lua 原路（告警、丢头、报错都在那边）
+        t:eq(nil, srey_http.pack_resp(200, { ["X-N"] = 5 }, "b"), "数字头值 C 不接")
+        t:eq(nil, srey_http.pack_resp(200, { ["X-N"] = "5" }, { a = 1 }), "带头表的 table 体 C 不接")
+        t:eq(nil, srey_http.pack_resp(200.0, nil, "b"), "浮点码 C 不接")
+        t:eq(nil, srey_http.pack_resp(99, nil, "b"), "码 < 100 C 不接")
+        t:eq(nil, srey_http.pack_resp(200, setmetatable({}, {}), "b"), "带元表的头表 C 不接")
+        t:eq(nil, srey_http.pack_resp(200, nil, { f = print }), "编不成 JSON 的 table 体 C 不接")
+        t:eq(nil, srey_http.pack_resp(200, { ["Content-Length"] = "3" }, "b"), "帧长头 C 不接")
+        t:eq(nil, srey_http.pack_resp(200, { ["X"] = "a\r\nb" }, "b"), "头值含 CRLF C 不接")
+        t:eq(nil, srey_http.pack_resp(200, nil, 5), "数字体 C 不接")
+        t:eq(nil, srey_http.pack_resp(200, nil, "x", false, 5), "非字符串头部块 C 不接")
+    end
+
+    -- 请求侧带头表：有 body 时帧长头由本模块写、调用方给的丢掉；无 body 时放行调用方给的，
+    -- 一刀切会让 post(..., {Content-Length="0"}) 发出既无 CL 也无 TE 的请求。
+    -- srey.syn_send 临时换成抓包并返回 nil，请求当失败返回，不碰网络
+    do
+        local function req_bytes(fn, ...)
+            local cap
+            local syn = srey.syn_send
+            srey.syn_send = function(_, data)
+                cap = data
+                return nil
+            end
+            local ok = pcall(fn, ...)
+            srey.syn_send = syn
+            return ok and cap or ""
+        end
+        local function count(s, pat)
+            return select(2, string.gsub(string.lower(s), pat, ""))
+        end
+        local w = req_bytes(http.post, "SK", "/", { ["Content-Length"] = "0", ["X-A"] = "1" })
+        t:eq(1, count(w, "content%-length: 0\r\n"), "无 body 的请求放行调用方的 Content-Length")
+        t:check(nil ~= w:find("X-A: 1\r\n", 1, true), "无 body 的请求普通头照发")
+        t:check("\r\n\r\n" == w:sub(-4), "无 body 的请求到空行为止")
+        w = req_bytes(http.post, "SK", "/",
+                      { ["Content-Length"] = "999", ["transfer-ENCODING"] = "chunked", ["X-K"] = "1" }, nil, BODY)
+        t:eq(1, count(w, "content%-length:"), "带 body 的请求只有本模块那条 Content-Length")
+        local tail = "Content-Length: " .. #BODY .. "\r\n\r\n" .. BODY
+        t:eq(tail, w:sub(-#tail), "长度按 body 算，body 紧随空行")
+        t:eq(0, count(w, "transfer%-encoding"), "带 body 的请求丢掉调用方的 Transfer-Encoding")
+        t:check(nil ~= w:find("X-K: 1\r\n", 1, true), "同批普通头未受牵连")
+        w = req_bytes(http.post, "SK", "/", { ["Content-Type"] = "text/plain" }, nil, { a = 1 })
+        t:eq(1, count(w, "content%-type:"), "table 体的请求只有本模块那条 Content-Type")
+        t:check(nil ~= w:find("Content-Type: application/json\r\n", 1, true), "table 体的请求写 JSON 的 Content-Type")
+        w = req_bytes(http.post, "SK", "/", { ["Transfer-Encoding"] = "gzip" }, nil, function() return nil end)
+        t:eq(1, count(w, "transfer%-encoding:"), "生产者体的请求只有本模块那条 Transfer-Encoding")
+        t:check(nil == w:find("gzip", 1, true), "生产者体的请求丢掉调用方的 Transfer-Encoding")
+        w = req_bytes(http.get, "SK", "/", { ["X-N"] = 3600000 / 1000 })
+        t:check(nil ~= w:find("X-N: 3600\r\n", 1, true), "请求头的整数值浮点按整数写")
+    end
 
     -- HEAD：响应带 Content-Length 却无报文体，解包侧靠 core.http_set_method 才认得出。
     -- 漏登记的话这里会挂在等 1234 字节报文体上直到 netread 超时，拿到 nil

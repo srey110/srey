@@ -1,4 +1,4 @@
--- mqtt 绑定层单元测试：pack_* 系列 wire format 首字节验证 + props/topics 写入
+-- mqtt 绑定层单元测试：pack_* 系列 wire format 首字节验证 + props/topics 写入 + 解包侧 props / publish
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -284,12 +284,25 @@ runner.run(function(t)
 
     -- ── 解包侧属性读取：pack_props / connect_will_props / prop_at ─────────
     -- 这三个只认解包出来的报文：同一 task 起 MQTT 监听，连回本机发一条带属性和遗嘱属性的
-    -- 5.0 CONNECT，在服务端收包回调里读（报文指针只在回调期间有效）。服务端不回 CONNACK
+    -- 5.0 CONNECT，在服务端收包回调里读（报文指针只在回调期间有效）。服务端不回 CONNACK。
+    -- 随后再发两条 PUBLISH（带载荷 / 空载荷），比 mqtt.publish 的默认形态与 raw 形态
     do
         local PORT = 15051
         local got
+        local pubs = {}
         srey.on_recved(function(_, _, client, _, data, _)
-            if 0 ~= client or mqtt.PROT.CONNECT ~= mqtt.prot(data) then
+            if 0 ~= client then
+                return
+            end
+            if mqtt.PROT.PUBLISH == mqtt.prot(data) then
+                -- raw 形态的载荷是借用指针，只在本回调内有效，当场转成串
+                local p = { str = table.pack(mqtt.publish(data)), raw = table.pack(mqtt.publish(data, 1)) }
+                p.rawtype = type(p.raw[6])
+                p.rawstr = p.raw[6] and srey.ud_str(p.raw[6], p.raw[7]) or nil
+                pubs[#pubs + 1] = p
+                return
+            end
+            if mqtt.PROT.CONNECT ~= mqtt.prot(data) then
                 return
             end
             local r = {}
@@ -326,8 +339,13 @@ runner.run(function(t)
                 cp:free()
                 wp:free()
                 srey.send(sk, pack, size, 0)
+                -- 参数序是 retain, qos, dup；三个取不同值，publish 交回的顺序错了能看出来
+                pack, size = mqtt.pack_publish(mqtt.VERSION.V50, 1, 2, 0, "/pub", 7, "pub payload")
+                srey.send(sk, pack, size, 0)
+                pack, size = mqtt.pack_publish(mqtt.VERSION.V50, 0, 0, 0, "/empty", 0, "")
+                srey.send(sk, pack, size, 0)
                 for _ = 1, 60 do
-                    if got then break end
+                    if got and #pubs >= 2 then break end
                     srey.sleep(50)
                 end
                 srey.close(sk)
@@ -351,6 +369,24 @@ runner.run(function(t)
             t:eq(30, got.w1 and got.w1[2], "遗嘱属性 1: 数字值")
             t:eq(mqtt.PROP.CONTENT_TYPE, got.w2 and got.w2[1], "遗嘱属性 2: flag")
             t:eq("text/plain", got.w2 and got.w2[3], "遗嘱属性 2: 字符串值")
+        end
+        t:eq(2, #pubs, "服务端收到两条 PUBLISH")
+        local p = pubs[1]
+        if p then
+            t:eq(7, p.str.n, "publish 返回 7 个值")
+            t:eq(7, p.raw.n, "publish raw 同样返回 7 个值")
+            t:eq("0,2,1,7,/pub", table.concat(p.str, ",", 1, 5), "publish dup/qos/retain/packid/topic")
+            t:eq(table.concat(p.str, ",", 1, 5), table.concat(p.raw, ",", 1, 5), "raw 形态前 5 个值不变")
+            t:eq("pub payload", p.str[6], "默认形态载荷是字符串")
+            t:eq("userdata", p.rawtype, "raw 形态载荷是指针")
+            t:eq("pub payload", p.rawstr, "raw 指针指向同一份载荷")
+            t:eq(#"pub payload", p.str[7], "载荷长度")
+            t:eq(p.str[7], p.raw[7], "raw 形态载荷长度一致")
+        end
+        p = pubs[2]
+        if p then
+            t:check(nil == p.str[6] and 0 == p.str[7], "空载荷：nil, 0")
+            t:check(nil == p.raw[6] and 0 == p.raw[7], "空载荷 raw 形态同样 nil, 0")
         end
     end
 end)

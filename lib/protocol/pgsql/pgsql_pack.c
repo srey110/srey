@@ -30,7 +30,8 @@ static inline void _pgpack_set_string(binary_ctx *bwriter, const char *str) {
 static inline size_t _pgpack_strsize(const char *str) {
     return NULL == str ? 1 : strlen(str) + 1;
 }
-// 同 _pgpack_set_string，size 是 _pgpack_strsize 已算好的字节数，免得再 strlen 一遍
+// 写 str 的前 size - 1 字节再补结尾 NUL（size 含结尾 NUL）。不在 NUL 处截断：str 里夹带的 NUL
+// 原样写出，调用方须保证不含 NUL；size > 1 时 str 不得为 NULL
 static inline void _pgpack_set_string_n(binary_ctx *bwriter, const char *str, size_t size) {
     if (size > 1) {
         binary_set_binary(bwriter, str, size - 1);
@@ -45,8 +46,11 @@ void *pgsql_pack_terminate(size_t *size) {
     return bwriter.data;
 }
 void *pgsql_pack_query(const char *sql, size_t *size) {
+    return pgsql_pack_query2(sql, _pgpack_strsize(sql) - 1, size);
+}
+void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size) {
     binary_ctx bwriter;
-    size_t sqlsize = _pgpack_strsize(sql);
+    size_t sqlsize = sqllen + 1;
     pgsql_pack_start(&bwriter, 'Q', 5 + sqlsize); // Query：Byte1('Q') Int32 String
     _pgpack_set_string_n(&bwriter, sql, sqlsize);
     pgsql_pack_end(&bwriter);
@@ -54,9 +58,13 @@ void *pgsql_pack_query(const char *sql, size_t *size) {
     return bwriter.data;
 }
 void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size) {
+    return pgsql_pack_stmt_prepare2(name, _pgpack_strsize(name) - 1, sql, _pgpack_strsize(sql) - 1, nparam, oids, size);
+}
+void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql, size_t sqllen,
+                                int16_t nparam, uint32_t *oids, size_t *size) {
     binary_ctx bwriter;
-    size_t namesize = _pgpack_strsize(name);
-    size_t sqlsize = _pgpack_strsize(sql);
+    size_t namesize = namelen + 1;
+    size_t sqlsize = sqllen + 1;
     size_t lens = 5 + namesize + sqlsize + 2 + 5;
     if (nparam > 0 && NULL != oids) {
         lens += (size_t)nparam * 4;

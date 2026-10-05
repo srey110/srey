@@ -23,7 +23,7 @@ static binary_ctx *_lmqtt_get_props(lua_State *lua, int idx) {
     if (lua_isnoneornil(lua, idx)) {
         return NULL;
     }
-    return luaL_checkudata(lua, idx, MT_MQTT_PROPS);
+    return lpub_check_udata(lua, idx, MT_MQTT_PROPS);
 }
 // 从 Lua 栈 idx 读取 payload：string 自动取长度；lightuserdata 则取 idx+1 为长度，长度上界与空指针
 // 两道判定都与 lpub_check_buf 同口径——报文的剩余长度按 *lens 算，放空指针进去会发出一条声明了
@@ -65,7 +65,7 @@ static int32_t _lmqtt_props_new(lua_State *lua) {
 /// <param name="self" type="userdata">props 对象</param>
 /// <returns>无</returns>
 static int32_t _lmqtt_props_free(lua_State *lua) {
-    binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     binary_free(props);
     return 0;
 }
@@ -77,7 +77,7 @@ static int32_t _lmqtt_props_free(lua_State *lua) {
 /// <param name="val" type="integer">属性数值</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非固定长度数字属性）</returns>
 static int32_t _lmqtt_props_fixnum(lua_State *lua) {
-    binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     uint32_t val = lpub_check_u32(lua, 3, PROPVAL_OUT_OF_RANGE);
     return lpub_rtn_bool(lua, ERR_OK == mqtt_props_fixnum(props, flag, val));
@@ -90,7 +90,7 @@ static int32_t _lmqtt_props_fixnum(lua_State *lua) {
 /// <param name="val" type="integer">属性数值</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非可变长度数字属性）</returns>
 static int32_t _lmqtt_props_varnum(lua_State *lua) {
-    binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     uint32_t val = lpub_check_u32(lua, 3, PROPVAL_OUT_OF_RANGE);
     return lpub_rtn_bool(lua, ERR_OK == mqtt_props_varnum(props, flag, val));
@@ -104,7 +104,7 @@ static int32_t _lmqtt_props_varnum(lua_State *lua) {
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非二进制属性）或数据超长</returns>
 static int32_t _lmqtt_props_binary(lua_State *lua) {
-    binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     char *data;
     size_t lens = 0;
@@ -120,7 +120,7 @@ static int32_t _lmqtt_props_binary(lua_State *lua) {
 /// <param name="val" type="string">值</param>
 /// <returns type="boolean">true 成功；false flag 类型不匹配（非键值对属性）或数据超长</returns>
 static int32_t _lmqtt_props_kv(lua_State *lua) {
-    binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
     size_t klens, vlens;
     const char *key = luaL_checklstring(lua, 3, &klens);
@@ -139,7 +139,7 @@ static int32_t _lmqtt_props_kv(lua_State *lua) {
 /// <param name="retain" type="integer?">Retain Handling（MQTT 5.0），3.1.1 传 0；默认 0</param>
 /// <returns type="boolean">true 成功；false topic 长度超过 65535 字节</returns>
 static int32_t _lmqtt_props_subscribe(lua_State *lua) {
-    binary_ctx *topics = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *topics = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_protversion version = _lmqtt_check_version(lua, 2);
     const char *topic = luaL_checkstring(lua, 3);
     int8_t qos = (int8_t)lpub_check_range(lua, 4, 0, 2, QOS_OUT_OF_RANGE);
@@ -155,7 +155,7 @@ static int32_t _lmqtt_props_subscribe(lua_State *lua) {
 /// <param name="topic" type="string">主题</param>
 /// <returns type="boolean">true 成功；false topic 长度超过 65535 字节</returns>
 static int32_t _lmqtt_props_unsubscribe(lua_State *lua) {
-    binary_ctx *topics = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *topics = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     const char *topic = luaL_checkstring(lua, 2);
     return lpub_rtn_bool(lua, ERR_OK == mqtt_topics_unsubscribe(topics, topic));
 }
@@ -169,7 +169,7 @@ static int32_t _lmqtt_props_unsubscribe(lua_State *lua) {
 /// utils.ud_free，更不能 srey.send(..., copy=0) 把所有权交出去——props 析构时会再释放一次</returns>
 /// <returns type="integer">字节数；空时为 0</returns>
 static int32_t _lmqtt_props_data(lua_State *lua) {
-    binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     if (EMPTYPTR(props->data, props->offset)) {
         lua_pushnil(lua);
         lua_pushinteger(lua, 0);
@@ -183,7 +183,7 @@ static int32_t _lmqtt_props_data(lua_State *lua) {
 /// <param name="self" type="userdata">props 对象</param>
 /// <returns>无</returns>
 static int32_t _lmqtt_props_reset(lua_State *lua) {
-    binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
+    binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     binary_offset(props, 0);
     return 0;
 }
@@ -425,7 +425,7 @@ static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
 static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
     uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
-    binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
+    binary_ctx *topics = lpub_check_udata(lua, 3, MT_MQTT_PROPS);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_subscribe(version, packid, topics, props, &lens);
@@ -463,7 +463,7 @@ static int32_t _lmqtt_pack_suback(lua_State *lua) {
 static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
     uint16_t packid = lpub_check_u16(lua, 2, PACKID_OUT_OF_RANGE);
-    binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
+    binary_ctx *topics = lpub_check_udata(lua, 3, MT_MQTT_PROPS);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_unsubscribe(version, packid, topics, props, &lens);
@@ -736,14 +736,17 @@ static int32_t _lmqtt_connack(lua_State *lua) {
 /// 解析 PUBLISH 可变报头和载荷
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
+/// <param name="raw" type="integer?">只收 0/1，默认 0。1 时载荷不拷成字符串，返回借用的 lightuserdata：
+/// 有效期同 msg.data，只到本协程下次挂起前，不能 ud_free，也不能 copy=0 交出去</param>
 /// <returns type="integer?">dup 标志；非 PUBLISH 报文时 7 个返回值全是 nil，个数恒为 7</returns>
 /// <returns type="integer?">qos 等级</returns>
 /// <returns type="integer?">retain 标志</returns>
 /// <returns type="integer?">报文 id</returns>
 /// <returns type="string?">主题</returns>
-/// <returns type="string?">载荷内容；空时返回 nil</returns>
+/// <returns type="string|lightuserdata?">载荷内容（raw=1 时为借用指针）；空时返回 nil</returns>
 /// <returns type="integer?">载荷字节数；空时为 0</returns>
 static int32_t _lmqtt_publish(lua_State *lua) {
+    int32_t raw = lpub_opt_flag(lua, 2, 0);
     mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_PUBLISH);
     if (NULL == pack) {
         return lpub_rtn_nil(lua, 7);
@@ -756,7 +759,11 @@ static int32_t _lmqtt_publish(lua_State *lua) {
     lua_pushinteger(lua, vh->packid);
     lua_pushstring(lua, vh->topic);
     if (NULL != pl && pl->lens > 0) {
-        lua_pushlstring(lua, pl->content, (size_t)pl->lens);
+        if (0 != raw) {
+            lua_pushlightuserdata(lua, pl->content);
+        } else {
+            lua_pushlstring(lua, pl->content, (size_t)pl->lens);
+        }
         lua_pushinteger(lua, pl->lens);
     } else {
         lua_pushnil(lua);
@@ -945,7 +952,7 @@ LUAMOD_API int luaopen_mqtt(lua_State *lua) {
         { "__gc", _lmqtt_props_free },
         { NULL, NULL }
     };
-    luaL_newmetatable(lua, MT_MQTT_PROPS);
+    lpub_new_mtable(lua, MT_MQTT_PROPS);
     lua_pushvalue(lua, -1);
     lua_setfield(lua, -2, "__index");
     luaL_setfuncs(lua, props_reg_func, 0);

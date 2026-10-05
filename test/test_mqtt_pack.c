@@ -16,7 +16,8 @@ static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
 // 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
 static void *_t_mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mqtt_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;// mqtt_unpack 解出包时裸写 *size，调用点传 NULL 就换成它
+    return mqtt_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 
 // mqtt 解包用的最小上下文：把按版本的全局 mqtt_ctx 挂进清零的 ud，并摆到指定解析阶段。
@@ -334,10 +335,13 @@ static void test_mqtt_publish(CuTest *tc) {
     ud.context = mq;
 
     int32_t status = PROT_INIT;
-    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    size_t size = 0;
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MQTT_PUBLISH, p->fixhead.prot);
+    // size 回填为报文总长(固定头 + 剩余长度)，即组包出来的整包长
+    CuAssertIntEquals(tc, (int)lens, (int)size);
 
     mqtt_publish_varhead *vh = (mqtt_publish_varhead *)p->varhead;
     CuAssertIntEquals(tc, 0, vh->qos);
@@ -442,7 +446,7 @@ static void _mq_split_case(CuTest *tc, mqtt_protversion version, int8_t qos, siz
     char body[300];
     const char *tbody = "tail";
     binary_ctx props;
-    size_t lens = 0, tlens = 0;
+    size_t lens = 0, tlens = 0, size;
     buffer_ctx buf;
     ud_cxt ud;
     int32_t status;
@@ -470,10 +474,12 @@ static void _mq_split_case(CuTest *tc, mqtt_protversion version, int8_t qos, siz
     _mq_ext_push(&buf, pack + cut, lens - cut);
     _mq_ext_push(&buf, tail, tlens);
     status = PROT_INIT;
-    p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    size = 0;
+    p = _t_mqtt_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, (int32_t)tlens, (int32_t)buffer_size(&buf));
+    CuAssertIntEquals(tc, (int32_t)lens, (int32_t)size);// 跨节点只拷头部那条路同样回填整包长
     mqtt_publish_varhead *vh = (mqtt_publish_varhead *)p->varhead;
     mqtt_publish_payload *pl = (mqtt_publish_payload *)p->payload;
     CuAssertStrEquals(tc, "split/topic", vh->topic);

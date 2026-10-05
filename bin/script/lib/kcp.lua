@@ -7,6 +7,10 @@
 local srey = require("lib.srey")
 local ckcp = require("srey.kcp")
 local ctx = class("kcp_ctx")
+local MTYPE_TIMEOUT = srey.MSG_TYPE.TIMEOUT
+local MTYPE_HANDSHAKED = srey.MSG_TYPE.HANDSHAKED
+local MTYPE_CLOSE = srey.MSG_TYPE.CLOSE
+local MTYPE_RECVFROM = srey.MSG_TYPE.RECVFROM
 
 -- 下面各字段的取值域由绑定层校验,越界即报错并点出字段名。落在域内的值仍可能被库调整,见各字段
 ---@class kcp_config
@@ -50,18 +54,19 @@ function ctx:start(ip, port, config)
         return false
     end
     self.sess = sess
-    local msg = srey._coro_wait(sess, srey.MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
+    local msg = srey._coro_wait(sess, MTYPE_HANDSHAKED, srey.get_netread_timeout())
+    local mtype, _, _, _, _, erro = msg()
     -- 失败分支 stop 之前先认一次 sess:挂起期间别的协程可能 stop + 重启换上新会话(它那次 stop
     -- 把 self.sess 清成 0,正好放开上面那道守卫),认不上就说明现在这条是别人的,停它就是误伤。
     -- 自己那条旧会话此时已无法再定位,只能等 socket 关闭时回收——总好过抹掉别人刚建好的
-    if srey.MSG_TYPE.TIMEOUT == msg.mtype then
+    if MTYPE_TIMEOUT == mtype then
         if sess == self.sess then
             self:stop()
         end
         return false
     end
-    if srey.MSG_TYPE.CLOSE == msg.mtype
-        or ERR_OK ~= msg.erro then
+    if MTYPE_CLOSE == mtype
+        or ERR_OK ~= erro then
         -- 走 stop 而不是只清 sess:C 侧 kcp_start 已把 stopped 置 0,留在 0 则 handle/send 绕过守卫
         -- 投到不存在的会话,被静默丢弃却返成功。占位条目由 _kcp_start 补发的那条合成 CLOSE 清
         -- (NEVERCONN,不触发 on_closed 观察者),kcp_stop 解析不到会话不会再补一条
@@ -108,14 +113,16 @@ function ctx:send(data, size, copy)
     if not self.kcp:send(data, size, copy) then
         return nil
     end
-    local msg = srey._coro_wait(sess, srey.MSG_TYPE.RECVFROM, srey.get_netread_timeout())
-    if srey.MSG_TYPE.TIMEOUT == msg.mtype then
+    local msg = srey._coro_wait(sess, MTYPE_RECVFROM, srey.get_netread_timeout())
+    -- TIMEOUT 合成消息的 msg() 只给 mtype、sess,rsize 为 nil,但那条分支先返回
+    local mtype, _, _, _, _, _, _, _, rsize = msg()
+    if MTYPE_TIMEOUT == mtype then
         if sess == self.sess then
             self:stop()
         end
         return nil
     end
-    if srey.MSG_TYPE.CLOSE == msg.mtype then
+    if MTYPE_CLOSE == mtype then
         -- 会话已在 C 层拆除,coro_sess 条目也已由 _net_close_dispatch 清掉(waiters 摘空后 del_empty);
         -- 但 self.sess 仍是旧值,不清则下次 send 会通过守卫、投到已消失的会话被 _kcp_resolve 静默丢弃,
         -- 而 kcp_send 返 ERR_OK 让 Lua 以为发送成功,继而空等满一个 netread 超时
@@ -124,7 +131,7 @@ function ctx:send(data, size, copy)
         end
         return nil
     end
-    return msg.udata, msg.size
+    return msg.udata, rsize
 end
 
 return ctx

@@ -26,25 +26,24 @@ local function _dump_coros()
     local total = 0
     local nsess = 0 -- coro_sess 的条目数，与 total(挂起协程数)不是一回事，理由见汇总行
     local clusters = {} -- traceback → { count, samples = {sess,...}, mtype, maxage }
+    -- 条目数组每 4 格一个等待者：协程、mtype、到期时刻、挂起起始时刻（布局见 lib/srey 的 CoroSession）
     for sess, corosess in pairs(_coro_sess) do
         nsess = nsess + 1
-        for _, info in ipairs(corosess.waiters) do
-            if info.coro then -- 跳过 func 模式（无挂起协程）
-                total = total + 1
-                local age = info.since and (now - info.since) or 0
-                local trace = debug.traceback(info.coro, nil, 0)
-                local c = clusters[trace]
-                if c then
-                    c.count = c.count + 1
-                    if age > c.maxage then
-                        c.maxage = age
-                    end
-                    if #c.samples < 5 then
-                        c.samples[#c.samples + 1] = sess
-                    end
-                else
-                    clusters[trace] = { count = 1, samples = { sess }, mtype = info.mtype, maxage = age }
+        for i = 1, #corosess, 4 do
+            total = total + 1
+            local age = now - corosess[i + 3]
+            local trace = debug.traceback(corosess[i], nil, 0)
+            local c = clusters[trace]
+            if c then
+                c.count = c.count + 1
+                if age > c.maxage then
+                    c.maxage = age
                 end
+                if #c.samples < 5 then
+                    c.samples[#c.samples + 1] = sess
+                end
+            else
+                clusters[trace] = { count = 1, samples = { sess }, mtype = corosess[i + 1], maxage = age }
             end
         end
     end

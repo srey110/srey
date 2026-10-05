@@ -10,23 +10,33 @@
         lua_setfield(lua, -2, key);\
     } while (0)
 
-// Lua task 上下文：保存 Lua 虚拟机、消息分发函数引用、计时器、内存统计
+// Lua task 上下文：保存 Lua 虚拟机、消息分发函数引用、内存统计
 #define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
 #define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
+#define MT_TASK_MSG "_task_msg_ctx" // 带载荷消息的元表名，task.msg_release 按它判型
+// 用完的载荷先攒着再一起释放：条数在入队时判，字节与时间在一轮调度结束时判（_ltask_round_end），任一到了就全放
+#define LMSG_PEND_MAX 32 // 条数
+#define LMSG_PEND_BYTES (1024 * 1024) // 字节（按 msg->size 累加）
+#define LMSG_PEND_MS 100 // 最早那条攒了多久（毫秒）
 
 typedef struct ltask_ctx {
     int32_t    ref;       // message_dispatch 函数在 Lua 注册表中的引用 id
     int32_t    msg_mtref;    // 无载荷消息的元表 ref（只有 __index）；0=尚未创建，luaL_ref 恒不返回 0
     int32_t    msg_mtref_gc; // 带载荷消息的元表 ref（__index + __gc）；同上
+    uint32_t   npend;     // pend 里攒着的条数
     size_t     mem;       // 当前 Lua 累计内存（字节，单 worker 串行操作，无需 atomic）
     task_ctx  *task;      // 回指 task_ctx，供 allocator 日志取 name
     lua_State *lua;       // 当前 task 独占的 Lua 虚拟机（主 thread）
-    timer_ctx  timer;     // 任务内部计时器，用于获取当前毫秒时间戳
     tda_ctx    mem_tda;   // 内存翻倍告警：默认 0 禁用，task.memlimit(N) 设阈值后 mem 超阈值仅 LOG_WARN（不拒绝分配）
+    size_t     pend_bytes; // pend 里攒着的字节
+    uint64_t   pend_since; // pend 里第一条进来的时刻（_ltimer 毫秒）
+    message_ctx pend[LMSG_PEND_MAX]; // 待释放的载荷
 }ltask_ctx;
 
 // Lua 脚本根路径（含末尾分隔符），由 ltask_startup 初始化
 static char luapath[PATH_LENS] = { 0 };
+// task.timer_ms 读的单调时钟，进程内只要一份；ltask_startup 里初始化，之后只读
+static timer_ctx _ltimer;
 
 // 自定义 Lua 分配器：累计内存到 ltask_ctx，mem 越过 tda 告警阈值时 LOG_WARN 并翻倍阈值。
 // 同一 task 的 lua_State 操作天然串行（loader 一次只允许一个 worker 处理同一 task），
@@ -76,6 +86,11 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
         return NULL;
     }
     luaL_openlibs(lua);
+    if (NULL != task) {
+        // 用分代 GC，别改回增量：每条消息的 msg 带 __gc，增量模式下待终结对象会把下一轮回收阈值
+        // 越撑越大，压力下内存疯长、不回落
+        lua_gc(lua, LUA_GCGEN);
+    }
     _ltask_setpath(lua, "cpath", DLL_EXNAME);
     _ltask_setpath(lua, "path", "lua");
     lua_pushstring(lua, procpath());
@@ -92,16 +107,23 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
     }
     return lua;
 }
-// 将脚本名称格式化为完整的 .lua 文件路径，存入 path；拼出来超过 PATH_LENS 会被截断，返回 ERR_FAILED
-static inline int32_t _ltask_fmtfile(const char *file, char *path) {
-    ZERO(path, PATH_LENS);
+// 将脚本名称格式化为完整的 .lua 文件路径存入 path，并确认是普通文件；拼出来超过 PATH_LENS 返回 ERR_FAILED。
+// 带字节码缓存时顺手取 mtime，加载时不再 stat 第二次
+static int32_t _ltask_tryfile(const char *file, char *path, uint64_t *mt) {
     int32_t n = SNPRINTF(path, PATH_LENS, "%s%s.lua", luapath, file);
-    return (n < 0 || n >= PATH_LENS) ? ERR_FAILED : ERR_OK;
+    if (n < 0 || n >= PATH_LENS) {
+        return ERR_FAILED;
+    }
+#if ENABLE_LUA_BYTECACHE
+    return lbc_stat(path, mt);
+#else
+    *mt = 0;
+    return isfile(path);
+#endif
 }
-// 搜索脚本文件：先按原名查找，再将 '.' 替换为路径分隔符后重试
-static int32_t _ltask_searchfile(const char *file, char *path) {
-    if (ERR_OK == _ltask_fmtfile(file, path)
-        && ERR_OK == isfile(path)) {
+// 搜索脚本文件：先按原名查找，再将 '.' 替换为路径分隔符后重试；命中时 mt 带回 mtime
+static int32_t _ltask_searchfile(const char *file, char *path, uint64_t *mt) {
+    if (ERR_OK == _ltask_tryfile(file, path, mt)) {
         return ERR_OK;
     }
     char tmp[PATH_LENS];
@@ -113,8 +135,7 @@ static int32_t _ltask_searchfile(const char *file, char *path) {
     for (size_t i = 0; i < lens; i++) {
         if ('.' == tmp[i]) {
             tmp[i] = PATH_SEPARATOR;
-            if (ERR_OK == _ltask_fmtfile(tmp, path)
-                && ERR_OK == isfile(path)) {
+            if (ERR_OK == _ltask_tryfile(tmp, path, mt)) {
                 return ERR_OK;
             }
         }
@@ -135,7 +156,8 @@ static void _ltask_log_err(lua_State *lua) {
 // 搜索并执行指定 Lua 脚本文件，执行失败时记录错误日志
 static int32_t _ltask_dofile(lua_State *lua, const char *file) {
     char path[PATH_LENS];
-    if (ERR_OK != _ltask_searchfile(file, path)) {
+    uint64_t mt;
+    if (ERR_OK != _ltask_searchfile(file, path, &mt)) {
         LOG_ERROR("cannot find %s:, no such file.", file);
         return ERR_FAILED;
     }
@@ -178,13 +200,14 @@ static void _ltask_copy_arg(lua_State *from, int32_t idx, lua_State *to) {
 static int32_t _ltask_dofile_args(lua_State *lua, const char *file,
                                   lua_State *from, int32_t arg_start, int32_t arg_top) {
     char path[PATH_LENS];
-    if (ERR_OK != _ltask_searchfile(file, path)) {
+    uint64_t mt;
+    if (ERR_OK != _ltask_searchfile(file, path, &mt)) {
         LOG_ERROR("cannot find %s:, no such file.", file);
         return ERR_FAILED;
     }
     int32_t rtn;
 #if ENABLE_LUA_BYTECACHE
-    rtn = lbc_loadfile(lua, path);
+    rtn = lbc_loadfile(lua, path, mt);
 #else
     rtn = luaL_loadfile(lua, path);
 #endif
@@ -220,6 +243,7 @@ int32_t ltask_startup(const char *script) {
 #endif
     SNPRINTF(luapath, sizeof(luapath), "%s%s%s%s",
              procpath(), PATH_SEPARATORSTR, script, PATH_SEPARATORSTR);
+    timer_init(&_ltimer);
     lua_State *lua = _ltask_luainit(NULL, NULL);
     if (NULL == lua) {
         return ERR_FAILED;
@@ -259,25 +283,61 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
     ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
     return ERR_OK;
 }
+// 攒着的载荷全部释放
+static inline void _ltask_pend_flush(ltask_ctx *ltask) {
+    for (uint32_t i = 0; i < ltask->npend; i++) {
+        message_clean(&ltask->pend[i]);
+    }
+    ltask->npend = 0;
+    ltask->pend_bytes = 0;
+}
+// 把载荷挪进 pend 攒着，msg 的 data/shared 置空（msg.data 读到 nil，__gc 与 msg_release 不再重复释放）；
+// 攒满当场全放
+static inline void _ltask_pend_push(ltask_ctx *ltask, message_ctx *msg) {
+    if (NULL == msg->shared
+        && NULL == msg->data) {
+        return;
+    }
+    if (0 == ltask->npend) {
+        ltask->pend_since = timer_cur_ms(&_ltimer);
+    }
+    ltask->pend[ltask->npend++] = *msg;
+    ltask->pend_bytes += msg->size;
+    msg->data = NULL;
+    msg->shared = NULL;
+    if (LMSG_PEND_MAX == ltask->npend) {
+        _ltask_pend_flush(ltask);
+    }
+}
+// 一轮调度结束回调：字节或时间阈值到了就全放（条数在 _ltask_pend_push 里已兜底）。
+// 每个 Lua task 都有每秒一次的 _coro_timeout 定时器，流量停后约 1 秒内总会再跑到这里
+static void _ltask_round_end(task_ctx *task) {
+    ltask_ctx *ltask = task->arg;
+    if (0 != ltask->npend
+        && (ltask->pend_bytes >= LMSG_PEND_BYTES
+            || timer_cur_ms(&_ltimer) - ltask->pend_since >= LMSG_PEND_MS)) {
+        _ltask_pend_flush(ltask);
+    }
+}
 // task 参数释放回调：关闭 Lua 虚拟机并释放 ltask_ctx 内存
 static void _ltask_arg_free(void *arg) {
     ltask_ctx *ltask = arg;
     if (NULL != ltask->lua) {
         lua_close(ltask->lua);
     }
+    _ltask_pend_flush(ltask);
     FREE(ltask);
 }
-// 消息对象的 __gc：payload 就是 message_ctx 本身，直接交给 message_clean。
+// 消息对象的 __gc：兜底释放分发返回时没放掉的载荷（回调协程没跑完就被丢弃、task 关闭等）。
 // 字段在 Lua 侧不可写（userdata 无 __newindex），故不存在改 mtype/data 换掉释放契约的问题
 static int32_t _msg_clean(lua_State *lua) {
     message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
-    if (NULL == ud) {
-        return 0;
-    }
-    // shared 非 NULL 走广播 ref-- 分支；shared 为 NULL 时仅 data 非 NULL 才需清理
-    if (NULL != ud->shared
-        || NULL != ud->data) {
+    // shared 非 NULL 走广播 ref-- 分支，否则仅 data 非 NULL 才需清理；已交还过的两者都是 NULL
+    if (NULL != ud
+        && (NULL != ud->shared || NULL != ud->data)) {
         message_clean(ud);
+        ud->data = NULL;
+        ud->shared = NULL;
     }
     return 0;
 }
@@ -393,22 +453,50 @@ static int32_t _msg_index(lua_State *lua) {
     lua_pushnil(lua);
     return 1;
 }
+// 消息对象的 __call：msg() 按固定顺序一次压出全部标量字段，省掉逐个 __index。
+// 顺序 mtype, sess, subtype, client, slice, erro, src, data, size，值与 __index 相同（data 为空压 nil）；
+// sk 要查缓存、ip/port/udata 只有 RECVFROM 有，这几个仍走 msg.xxx
+static int32_t _msg_unpack(lua_State *lua) {
+    message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
+    if (NULL == ud) {
+        return 0;
+    }
+    lua_pushinteger(lua, ud->mtype);
+    lua_pushinteger(lua, (lua_Integer)ud->sess);
+    lua_pushinteger(lua, ud->subtype);
+    lua_pushinteger(lua, ud->client);
+    lua_pushinteger(lua, ud->slice);
+    lua_pushinteger(lua, ud->erro);
+    lua_pushinteger(lua, (lua_Integer)ud->src);
+    if (NULL == ud->data) {
+        lua_pushnil(lua);
+    } else {
+        lua_pushlightuserdata(lua, ud->data);
+    }
+    lua_pushinteger(lua, (lua_Integer)ud->size);
+    return 9;
+}
 // 取消息对象的元表压栈。分两张：带载荷的才挂 __gc，无载荷的不挂——挂了 __gc 的对象
 // 回收时要多走一遍 finalizer 链，没东西可释放的消息不该付这笔。
-// 元表 ref 缓存在 ltask_ctx，按整数下标直取，省掉 registry 的字符串查找
+// 元表 ref 缓存在 ltask_ctx，按整数下标直取，省掉 registry 的字符串查找；
+// 带载荷的那张另按 MT_TASK_MSG 注册，task.msg_release 靠它判型
 static inline void _ltask_msg_mt(lua_State *lua, ltask_ctx *ltask, int32_t withgc) {
     int32_t *ref = (0 != withgc) ? &ltask->msg_mtref_gc : &ltask->msg_mtref;
     if (0 != *ref) {
         lua_rawgeti(lua, LUA_REGISTRYINDEX, *ref);
         return;
     }
-    lua_newtable(lua);
     if (0 != withgc) {
+        lpub_new_mtable(lua, MT_TASK_MSG);
         lua_pushcfunction(lua, _msg_clean);
         lua_setfield(lua, -2, "__gc");
+    } else {
+        lua_newtable(lua);
     }
     lua_pushcfunction(lua, _msg_index);
     lua_setfield(lua, -2, "__index");
+    lua_pushcfunction(lua, _msg_unpack);
+    lua_setfield(lua, -2, "__call");
     lua_pushstring(lua, "msg");
     lua_setfield(lua, -2, "__metatable");
     lua_pushvalue(lua, -1);
@@ -417,20 +505,35 @@ static inline void _ltask_msg_mt(lua_State *lua, ltask_ctx *ltask, int32_t withg
 // 把 message_ctx 整个拷进 userdata 交给 Lua，字段经 __index 按需取。
 // 不建表是因为表要为每条消息付一次 hash 部分的分配（16 槽）和逐字段 setfield，
 // 而 Lua 侧多数时候只读其中几个
-static inline void _ltask_push_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
+static inline message_ctx *_ltask_push_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg, int32_t withgc) {
     message_ctx *ud = (message_ctx *)lua_newuserdatauv(lua, sizeof(message_ctx), 0);
     *ud = *msg;
-    _ltask_msg_mt(lua, ltask, ERR_OK == message_should_clean(msg));
+    _ltask_msg_mt(lua, ltask, withgc);
     lua_setmetatable(lua, -2);
+    return ud;
 }
 // task 消息分发回调：从注册表取消息分发函数，打包消息后调用 Lua
 static void _ltask_run(task_dispatch_arg *arg) {
     ltask_ctx *ltask = arg->task->arg;
+    int32_t withgc = (ERR_OK == message_should_clean(arg->msg));
+    int32_t held = 1;// 分发出错时不知道有没有回调协程拿着它，留给 msg_release / __gc
+    // 消息对象在栈上多留一份，分发返回后才释放载荷
+    message_ctx *ud = _ltask_push_msg(ltask->lua, ltask, arg->msg, withgc);
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
-    _ltask_push_msg(ltask->lua, ltask, arg->msg);
-    if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
+    lua_pushvalue(ltask->lua, -2);
+    if (LUA_OK == lua_pcall(ltask->lua, 1, 1, 0)) {
+        held = lua_toboolean(ltask->lua, -1);
+        lua_pop(ltask->lua, 1);
+    } else {
         _ltask_log_err(ltask->lua);
     }
+    // message_dispatch 返回真 = 回调协程挂起时还拿着它，回调结束由 msg_release 释放（__gc 兜底）；
+    // 否则交给 pend 攒批释放：等待者只能用到它下次挂起前，丢弃的消息没人再用。不能留给 __gc，晋升老年代后要等大回收
+    if (withgc
+        && 0 == held) {
+        _ltask_pend_push(ltask, ud);
+    }
+    lua_pop(ltask->lua, 1);
     // 连接关了才摘缓存,且必须排在分发之后——业务回调里还要用这条 sk
     if (MSG_TYPE_CLOSE == arg->msg->mtype) {
         lpub_sock_uncache(ltask->lua, arg->msg->sk.skid);
@@ -462,9 +565,9 @@ static int32_t _ltask_register(lua_State *lua) {
     int32_t arg_top = lua_gettop(lua);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
-    timer_init(&ltask->timer);
     task_ctx *task = task_new(g_loader, name, quecap, _ltask_run, _ltask_arg_free, ltask);
     task->type = TASK_LUA;
+    task_round_ended(task, _ltask_round_end);
     if (ERR_OK != _ltask_init(task, ltask, file, lua, 4, arg_top)) {
         task_free(task);
         return lpub_rtn_nil(lua, 1);
@@ -497,7 +600,7 @@ static int32_t _ltask_close(lua_State *lua) {
 /// <returns type="lightuserdata?">task 指针；未找到返回 nil</returns>
 static int32_t _ltask_grab(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
-    task_ctx *task = task_grab(g_loader, handle);
+    task_ctx *task = lpub_task_grab(lua, 1, handle);
     if (NULL == task) {
         lua_pushnil(lua);
     } else {
@@ -579,14 +682,12 @@ static int32_t _ltask_handle(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回当前 task 计时器已运行的毫秒数
+/// 返回单调时钟的毫秒数；各 task 读的是同一个时钟，只用来算时间差
 /// </summary>
 /// <param>无</param>
-/// <returns type="integer">已运行毫秒数</returns>
+/// <returns type="integer">单调时钟毫秒数</returns>
 static int32_t _ltask_timer_ms(lua_State *lua) {
-    LPUB_CUR_TASK(lua, task);
-    ltask_ctx *ltask = task->arg;
-    lua_pushinteger(lua, timer_cur_ms(&ltask->timer));
+    lua_pushinteger(lua, (lua_Integer)timer_cur_ms(&_ltimer));
     return 1;
 }
 /// <summary>
@@ -755,6 +856,19 @@ static int32_t _ltask_get_priority(lua_State *lua) {
     lua_pushinteger(lua, task_get_priority(task));
     return 1;
 }
+/// <summary>
+/// 交还消息载荷（交给 C 侧攒批释放），之后 msg.data 立即为 nil。可重复调；无载荷消息与非消息对象什么都不做
+/// </summary>
+/// <param name="msg" type="Message?">消息对象</param>
+/// <returns>无</returns>
+static int32_t _ltask_msg_release(lua_State *lua) {
+    message_ctx *ud = (message_ctx *)lpub_test_udata(lua, 1, MT_TASK_MSG);
+    if (NULL != ud) {
+        LPUB_CUR_TASK(lua, task);
+        _ltask_pend_push(task->arg, ud);
+    }
+    return 0;
+}
 //srey.task
 LUAMOD_API int luaopen_task(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -780,6 +894,7 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { "get_netread_timeout", _ltask_get_netread_timeout },
         { "set_priority", _ltask_set_priority },
         { "get_priority", _ltask_get_priority },
+        { "msg_release", _ltask_msg_release },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

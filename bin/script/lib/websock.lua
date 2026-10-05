@@ -46,6 +46,10 @@ end
 ---@type fun(pack:lightuserdata):WebSocketFrame
 wbsk.unpack = websock.unpack
 
+---解包 WebSocket 帧，按多返回值给出、不建表：fin, prot, secprot, secpack, data, size
+---@type fun(pack:lightuserdata):integer, integer, integer?, lightuserdata?, lightuserdata, integer
+wbsk.frame = websock.frame
+
 ---解析 ws:// / wss:// URL 并校验 scheme 与 SSL 配套
 ---@param ws string WebSocket URL
 ---@param sslname SSL_NAME wss 时必须为有效 SSL 上下文名

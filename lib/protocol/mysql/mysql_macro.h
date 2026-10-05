@@ -20,6 +20,7 @@
 #define SERVER_MORE_RESULTS_EXISTS 8                // 服务器状态标志：还有更多结果集
 #define SERVER_SESSION_STATE_CHANGED 16384          // 服务器状态标志：OK 包尾部带 session 状态变更信息
 #define SESSION_TRACK_SCHEMA       0x01             // session 状态变更类型：当前库已变更
+#define MYSQL_UNSIGNED_FLAG        0x20             // 列定义标志位：无符号数值列（协议里叫 UNSIGNED_FLAG）
 #define MYSQL_AUTH_SWITCH          0xfe             // 认证插件切换标志
 #define MYSQL_CACHING_SHA2         0x01             // caching_sha2_password 认证状态标志
 #define MYSQL_CACHING_SHA2_FAST    0x03             // caching_sha2 快速认证（密码已在缓存中）

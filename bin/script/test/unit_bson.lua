@@ -935,5 +935,148 @@ runner.run(function(t)
         end
         t:check(allok, "100 个字段的文档 decode 字段数与值全对")
     end
+
+    -- iter:value 是 decode 逐字段解码的手工镜像（为了快没共用代码），两边一旦漂移只能靠这里发现：
+    -- 一份覆盖全部类型与多层嵌套的文档，逐键深比较 iter:value 与 decode 的结果
+    do
+        -- 深比较：包装对象按元表名比内容，NaN 视为相等
+        local function deq(a, b, path, out)
+            if rawequal(a, b) then
+                return
+            end
+            local ta = type(a)
+            if ta ~= type(b) then
+                out[#out + 1] = path .. ": type " .. ta .. " vs " .. type(b)
+            elseif "table" == ta then
+                for k, v in pairs(a) do
+                    deq(v, b[k], path .. "." .. tostring(k), out)
+                end
+                for k in pairs(b) do
+                    if nil == a[k] then
+                        out[#out + 1] = path .. "." .. tostring(k) .. ": missing in left"
+                    end
+                end
+            elseif "userdata" == ta then
+                local ma = getmetatable(a)
+                local same
+                if ma ~= getmetatable(b) then
+                    same = false
+                elseif "_bson_oid" == ma then
+                    same = a:data() == b:data()
+                elseif "_bson_date" == ma then
+                    same = a:ms() == b:ms()
+                elseif "_bson_int64" == ma then
+                    same = a:val() == b:val()
+                elseif "_bson_binary" == ma then
+                    same = a:subtype() == b:subtype() and a:data() == b:data()
+                end
+                if not same then
+                    out[#out + 1] = path .. ": userdata " .. tostring(ma)
+                end
+            elseif not ("number" == ta and a ~= a and b ~= b)
+                and (a ~= b or math.type(a) ~= math.type(b)) then
+                out[#out + 1] = path .. ": " .. tostring(a) .. " vs " .. tostring(b)
+            end
+        end
+        local b = bson.new()
+        b:double("d", 1.5)
+        b:double("dnan", 0 / 0)
+        b:double("dint", 3.0)
+        b:utf8("s", "hello")
+        b:utf8("s0", "")
+        b:doc_begin("doc")
+        b:int32("x", 1)
+        b:utf8("y", "z")
+        b:doc_begin("deep")
+        b:bool("t", true)
+        b:timestamp("ts", 1, 2)
+        b:int64("big", 9000000000)
+        b["end"](b)
+        b["end"](b)
+        b:arr_begin("arr")
+        b:int32("0", 1)
+        b:utf8("1", "two")
+        b:regex("2", "x", "i")
+        b:doc_begin("3")
+        b:int64("n", 5)
+        b["end"](b)
+        b:arr_begin("4")
+        b:double("0", 2.5)
+        b:null("1")
+        b["end"](b)
+        b["end"](b)
+        b:binary("bin", 0, "\0\1\2")
+        b:binary("bin0", 0x80, "")
+        b:oid("oid", string.rep("\1", 12))
+        b:bool("bf", false)
+        b:date("dt", 1700000000123)
+        b:date("dtneg", -5)
+        b:null("nul")
+        b:regex("re", "^a", "i")
+        b:jscode("js", "function(){}")
+        b:int32("i32", -42)
+        b:timestamp("ts", 100, 2)
+        b:int64("i64", 9000000000)
+        b:int64("i64min", math.mininteger)
+        b:minkey("mn")
+        b:maxkey("mx")
+        b:doc_begin("empty")
+        b["end"](b)
+        b:arr_begin("emptyarr")
+        b["end"](b)
+        b["end"](b)
+        local dec = bson.decode(b)
+        local it = bson.iter.new(b)
+        local nkey = 0
+        local out = {}
+        local k, ok, v
+        while it:next() do
+            nkey = nkey + 1
+            k = it:key()
+            ok, v = pcall(it.value, it)
+            if ok then
+                deq(dec[k], v, k, out)
+            else
+                out[#out + 1] = k .. ": value threw " .. tostring(v)
+            end
+        end
+        t:eq(0, #out, "iter:value 与 decode 逐键一致: " .. table.concat(out, "; "))
+        t:eq(24, nkey, "iter 走完全部 24 个键")
+        t:eq(nil, it:value(), "遍历结束后 value 为 nil")
+        t:eq(1, select("#", it:value()), "value 只返回 1 个值")
+
+        -- 内层残缺：外层结构合法、内层带不认识的类型字节 0x20。decode 与 iter:value 都抛错；
+        -- 定型取值器 document 不解内层，原样交回；抛错之后还能走到下一个键
+        local inner = string.pack("<i4", 15) .. "\x10a\0" .. string.pack("<i4", 1) .. "\x20b\0" .. "\0"
+        local bad = bson.new()
+        bad:append_doc("d", inner)
+        bad:int32("k", 7)
+        bad["end"](bad)
+        t:eq(false, (pcall(bson.decode, bad)), "内层残缺：decode 抛错")
+        local itb = bson.iter.new(bad)
+        t:check(itb:next() and "d" == itb:key(), "内层残缺：外层第一个键可走到")
+        t:eq(false, (pcall(itb.value, itb)), "内层残缺：iter:value 抛错")
+        t:eq(15, select(2, itb:document()), "内层残缺：document 原样交回")
+        t:check(itb:next(), "内层残缺：抛错后还能走到下一个键")
+        t:eq(7, itb:value(), "内层残缺：下一个键的值")
+
+        -- 嵌套深度上限两边一致：decode 整篇与 iter:value 取外层那个键，成败相同。
+        -- decode 要排在建 iter 之前：iter 会推进底层 offset（见 12）
+        local raw, body, wrap, itw, okd
+        for lv = 15, 20 do
+            raw = "\5\0\0\0\0"
+            for _ = 1, lv do
+                body = "\3a\0" .. raw .. "\0"
+                raw = string.pack("<i4", 4 + #body) .. body
+            end
+            wrap = bson.new()
+            wrap:append_doc("a", raw)
+            wrap["end"](wrap)
+            okd = pcall(bson.decode, wrap)
+            itw = bson.iter.new(wrap)
+            itw:next()
+            t:eq(okd, (pcall(itw.value, itw)), "嵌套 " .. lv .. " 层：decode 与 iter:value 成败一致")
+        end
+    end
 end)
 end)

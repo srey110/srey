@@ -366,6 +366,7 @@ void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, s
             }
             next = (NULL != v->next_pack) ? v->next_pack(data) : NULL;// 提前取出，防止消息(data)emit后在worker线程被释放.
             g_emit.emit(target, &msg);
+            msg.size = 0;// 单帧多包的总量只记在链头，后继节点再带一份就重复记账了
             data = next;
         }
         if (BIT_CHECK(status, PROT_ERROR)) {

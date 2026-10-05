@@ -8,6 +8,40 @@
 // Redis 聚合表一次预分配的槽位上限。不是协议上限,只是"预分配到此为止":元素个数由对端声明,
 // 超出的部分照常按需增长
 #define REDIS_PREALLOC_MAX 4096
+// http head_check 的 autoflags 位：组包函数自己会写哪些头，调用方再传一份就要丢
+#define HTTP_AUTO_CT    0x01 // Content-Type
+#define HTTP_AUTO_FRAME 0x02 // Content-Length 与 Transfer-Encoding
+// http 响应组包除头部块、头表与报文体外的预留：状态行 + JSON 的 Content-Type + 帧长头 + 空行
+#define HTTP_RESP_RESERVE 128
+#define HTTP_JSON_CT "Content-Type: application/json\r\n" // table 报文体自动带的头，同 lib/http
+
+// http head_check 的结果码，按判定先后排
+typedef enum http_head_rc {
+    HTTP_HEAD_OK = 0,
+    HTTP_HEAD_BADKEY,  // 头名不是 token
+    HTTP_HEAD_BADTYPE, // 值不是 string / number
+    HTTP_HEAD_AUTO,    // 组包函数自己生成的头
+    HTTP_HEAD_BADVAL   // 值含 NUL / CR / LF
+}http_head_rc;
+// http.respond / pack_resp 预检的结果：预检全在分配之前做完，组包阶段只照着写、不会再抛错
+typedef struct http_resp_plan {
+    int32_t code;
+    int32_t nobody;    // 1xx/204/304：不写帧长头也不写报文体
+    int32_t headonly;  // 回 HEAD：Content-Length 写真实长度，不写报文体
+    int32_t hidx;      // 头表的栈位，没有头表为 0
+    int32_t json;      // 报文体是 table：组包时才编成 JSON，body 指向编码输出
+    const char *block; // 预渲染好的头部块，没有为 NULL
+    const char *body;  // 报文体，没有为 NULL
+    size_t bklens;
+    size_t blens;
+    size_t hlens;      // 头表写出的总字节
+}http_resp_plan;
+// table 报文体编成 JSON 后交给组包的上下文
+typedef struct http_resp_json {
+    lua_State *lua;
+    http_resp_plan *plan;
+    binary_ctx *bw;
+}http_resp_json;
 
 /// <summary>
 /// 打包 harbor 跨节点消息
@@ -200,6 +234,37 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 解包 WebSocket 帧，同 unpack 但按多返回值给出、不建表
+/// </summary>
+/// <param name="pack" type="lightuserdata">websock_pack_ctx 指针</param>
+/// <returns type="integer">fin：是否为最终分片</returns>
+/// <returns type="integer">prot：帧操作码</returns>
+/// <returns type="integer?">secprot：子协议类型；没有子协议时为 nil</returns>
+/// <returns type="lightuserdata?">secpack：子协议数据包指针；没有时为 nil</returns>
+/// <returns type="lightuserdata">data：载荷指针，恒非 nil，理由同 unpack</returns>
+/// <returns type="integer">size：载荷字节数</returns>
+static int32_t _lprot_websock_frame(lua_State *lua) {
+    LPUB_LUD_ARG(lua, struct websock_pack_ctx, 1, pack);
+    lua_pushinteger(lua, websock_fin(pack));
+    lua_pushinteger(lua, websock_prot(pack));
+    int32_t secprot = websock_secprot(pack);
+    if (PACK_NONE != secprot) {
+        lua_pushinteger(lua, secprot);
+    } else {
+        lua_pushnil(lua);
+    }
+    void *secpack = websock_secpack(pack);
+    if (NULL != secpack) {
+        lua_pushlightuserdata(lua, secpack);
+    } else {
+        lua_pushnil(lua);
+    }
+    size_t lens;
+    lua_pushlightuserdata(lua, websock_data(pack, &lens));
+    lua_pushinteger(lua, lens);
+    return 6;
+}
+/// <summary>
 /// 构造 WebSocket 握手请求包（HTTP Upgrade）
 /// </summary>
 /// <param name="host" type="string?">Host 头字段；nil 表示省略</param>
@@ -354,6 +419,7 @@ static int32_t _lprot_websock_secprots(lua_State *lua) {
 LUAMOD_API int luaopen_websock(lua_State *lua) {
     luaL_Reg reg[] = {
         { "unpack", _lprot_websock_unpack },
+        { "frame", _lprot_websock_frame },
         { "pack_handshake", _lprot_websock_pack_handshake },
         { "pack_ping", _lprot_websock_pack_ping },
         { "pack_pong", _lprot_websock_pack_pong },
@@ -510,6 +576,252 @@ static int32_t _lprot_http_head_val_ok(lua_State *lua) {
     const char *s = _lprot_str_arg(lua, 1, &lens);
     return lpub_rtn_bool(lua, NULL != s && 0 != http_head_val_ok(s, lens));
 }
+// 头名是否等于 name(name 为小写字面量)，大小写无关
+static int32_t _lprot_key_is(const char *key, size_t klens, const char *name, size_t nlens) {
+    return klens == nlens && 0 == memcasecmp(key, name, nlens);
+}
+static int32_t _lprot_head_fail(lua_State *lua, http_head_rc rc) {
+    lua_pushnil(lua);
+    lua_pushinteger(lua, rc);
+    return 2;
+}
+/// <summary>
+/// 一次判完一条附加头能否进报文，依次判：头名是 token、值是 string 或 number、不是组包函数
+/// 自己生成的头、值不含 NUL/CRLF，第一条不过即停。number 值的写法同 num_str（整数值的浮点按整数写）
+/// </summary>
+/// <param name="key" type="any">头名；非字符串按头名不合法算</param>
+/// <param name="val" type="any">头值</param>
+/// <param name="autoflags" type="integer">组包函数自己写的头：0x01 Content-Type，0x02 Content-Length 与 Transfer-Encoding</param>
+/// <returns type="string?">可直接写进报文的头值；没通过时为 nil</returns>
+/// <returns type="integer">0 通过；1 头名不是 token；2 值不是 string/number；3 是组包函数自己生成的头；4 值含 NUL/CRLF</returns>
+static int32_t _lprot_http_head_check(lua_State *lua) {
+    int32_t flags = (int32_t)luaL_checkinteger(lua, 3);
+    size_t klens;
+    const char *key = _lprot_str_arg(lua, 1, &klens);
+    if (NULL == key || 0 == is_token(key, klens)) {
+        return _lprot_head_fail(lua, HTTP_HEAD_BADKEY);
+    }
+    int32_t vt = lua_type(lua, 2);
+    if (LUA_TSTRING != vt && LUA_TNUMBER != vt) {
+        return _lprot_head_fail(lua, HTTP_HEAD_BADTYPE);
+    }
+    if (((HTTP_AUTO_CT & flags) && _lprot_key_is(key, klens, "content-type", sizeof("content-type") - 1))
+        || ((HTTP_AUTO_FRAME & flags)
+            && (_lprot_key_is(key, klens, "content-length", sizeof("content-length") - 1)
+                || _lprot_key_is(key, klens, "transfer-encoding", sizeof("transfer-encoding") - 1)))) {
+        return _lprot_head_fail(lua, HTTP_HEAD_AUTO);
+    }
+    int32_t isint;
+    lua_Integer iv;
+    if (LUA_TNUMBER == vt) {
+        iv = lua_tointegerx(lua, 2, &isint);
+        if (isint) {
+            lua_pushinteger(lua, iv);
+            lua_replace(lua, 2);
+        }
+    }
+    size_t vlens;
+    const char *val = luaL_tolstring(lua, 2, &vlens);
+    if (0 == http_head_val_ok(val, vlens)) {
+        return _lprot_head_fail(lua, HTTP_HEAD_BADVAL);
+    }
+    lua_pushinteger(lua, HTTP_HEAD_OK);
+    return 2;
+}
+// 头表预检：每条都得是 token 名 + 合法 string 值、且不是帧长头，顺带累计写出长度。
+// 有一条不过就整体退回脚本侧原路（告警与丢弃在那边做），这里不做半截处理
+static int32_t _lprot_resp_heads_check(lua_State *lua, int32_t idx, size_t *hlens) {
+    size_t klens, vlens;
+    const char *key;
+    const char *val;
+    lua_pushnil(lua);
+    while (0 != lua_next(lua, idx)) {
+        if (LUA_TSTRING != lua_type(lua, -2)
+            || LUA_TSTRING != lua_type(lua, -1)) {
+            lua_pop(lua, 2);
+            return ERR_FAILED;
+        }
+        key = lua_tolstring(lua, -2, &klens);
+        val = lua_tolstring(lua, -1, &vlens);
+        if (0 == is_token(key, klens)
+            || _lprot_key_is(key, klens, "content-length", sizeof("content-length") - 1)
+            || _lprot_key_is(key, klens, "transfer-encoding", sizeof("transfer-encoding") - 1)
+            || 0 == http_head_val_ok(val, vlens)) {
+            lua_pop(lua, 2);
+            return ERR_FAILED;
+        }
+        *hlens += klens + vlens + 4;
+        lua_pop(lua, 1);
+    }
+    return ERR_OK;
+}
+// 栈位 idx..idx+4 依次是 code、headers、body、headonly、block。只接常见形状：[100, 999] 的整数码、
+// nil 或 string 报文体、没有头表时的 table 报文体（1xx/204/304 不看报文体）、无元表的头表、nil 或 string 头部块；
+// 其余返回 ERR_FAILED 交回脚本侧原路。带头表的 table 体不接：业务传的 Content-Type 要在原路被丢掉
+static int32_t _lprot_resp_check(lua_State *lua, int32_t idx, http_resp_plan *plan) {
+    if (!lua_isinteger(lua, idx)) {
+        return ERR_FAILED;
+    }
+    lua_Integer code = lua_tointeger(lua, idx);
+    if (code < 100 || code > 999) {
+        return ERR_FAILED;
+    }
+    plan->code = (int32_t)code;
+    plan->nobody = http_code_nobody(plan->code);
+    plan->headonly = lua_toboolean(lua, idx + 3);
+    plan->body = NULL;
+    plan->blens = 0;
+    plan->json = 0;
+    if (!plan->nobody) {
+        int32_t bt = lua_type(lua, idx + 2);
+        if (LUA_TSTRING == bt) {
+            plan->body = lua_tolstring(lua, idx + 2, &plan->blens);
+        } else if (LUA_TTABLE == bt
+                   && lua_isnoneornil(lua, idx + 1)) {
+            plan->json = 1;
+        } else if (LUA_TNIL != bt && LUA_TNONE != bt) {
+            return ERR_FAILED;
+        }
+    }
+    plan->block = NULL;
+    plan->bklens = 0;
+    int32_t kt = lua_type(lua, idx + 4);
+    if (LUA_TSTRING == kt) {
+        plan->block = lua_tolstring(lua, idx + 4, &plan->bklens);
+    } else if (LUA_TNIL != kt && LUA_TNONE != kt) {
+        return ERR_FAILED;
+    }
+    plan->hidx = 0;
+    plan->hlens = 0;
+    int32_t ht = lua_type(lua, idx + 1);
+    if (LUA_TTABLE == ht) {
+        // 带元表的表 pairs 可能走 __pairs，遍历顺序与内容都不归这里管
+        if (lua_getmetatable(lua, idx + 1)) {
+            lua_pop(lua, 1);
+            return ERR_FAILED;
+        }
+        if (ERR_OK != _lprot_resp_heads_check(lua, idx + 1, &plan->hlens)) {
+            return ERR_FAILED;
+        }
+        plan->hidx = idx + 1;
+    } else if (LUA_TNIL != ht && LUA_TNONE != ht) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 照预检结果组包。遍历顺序与预检、与脚本侧 pairs 都相同；这里不再抛错
+static void _lprot_resp_write(lua_State *lua, http_resp_plan *plan, binary_ctx *bw) {
+    size_t klens, vlens;
+    const char *key;
+    const char *val;
+    binary_init_write(bw, HTTP_RESP_RESERVE + plan->bklens + plan->hlens + (plan->headonly ? 0 : plan->blens), 0);
+    http_pack_resp(bw, plan->code);
+    if (NULL != plan->block) {
+        binary_set_binary(bw, plan->block, plan->bklens);
+    }
+    if (0 != plan->hidx) {
+        lua_pushnil(lua);
+        while (0 != lua_next(lua, plan->hidx)) {
+            key = lua_tolstring(lua, -2, &klens);
+            val = lua_tolstring(lua, -1, &vlens);
+            binary_set_binary(bw, key, klens);
+            binary_set_binary(bw, ": ", sizeof(": ") - 1);
+            binary_set_binary(bw, val, vlens);
+            binary_set_binary(bw, FLAG_CRLF, CRLF_SIZE);
+            lua_pop(lua, 1);
+        }
+    }
+    if (plan->json) {
+        binary_set_binary(bw, HTTP_JSON_CT, sizeof(HTTP_JSON_CT) - 1);
+    }
+    if (plan->nobody) {
+        http_pack_end(bw);
+    } else if (plan->headonly) {
+        binary_set_binary(bw, "Content-Length: ", sizeof("Content-Length: ") - 1);
+        binary_set_uint(bw, (uint64_t)plan->blens, 10);
+        binary_set_binary(bw, FLAG_CRLF, CRLF_SIZE);
+        http_pack_end(bw);
+    } else {
+        http_pack_content(bw, (void *)plan->body, plan->blens);
+    }
+}
+// lyyjson_encode_sink 的回调：拿到 JSON 后照预检结果组包
+static void _lprot_resp_json_sink(void *ud, const char *json, size_t lens) {
+    http_resp_json *arg = ud;
+    arg->plan->body = json;
+    arg->plan->blens = lens;
+    _lprot_resp_write(arg->lua, arg->plan, arg->bw);
+}
+// 照预检结果组包；table 报文体先编成 JSON，编不出来返回 ERR_FAILED（bw 未分配），交回脚本侧原路去报错
+static int32_t _lprot_resp_pack(lua_State *lua, int32_t idx, http_resp_plan *plan, binary_ctx *bw) {
+    if (!plan->json) {
+        _lprot_resp_write(lua, plan, bw);
+        return ERR_OK;
+    }
+    http_resp_json arg;
+    arg.lua = lua;
+    arg.plan = plan;
+    arg.bw = bw;
+    return lyyjson_encode_sink(lua, idx + 2, _lprot_resp_json_sink, &arg);
+}
+/// <summary>
+/// 服务端 HTTP 响应整条在 C 里组包并直接发出，字节与 lib/http 的 http.response / response_head 一致。
+/// 只接常见形状：[100, 999] 的整数码、nil 或 string 报文体、没有头表时的 table 报文体（编成 JSON 并带
+/// Content-Type: application/json，同 lib/http；1xx/204/304 不看报文体）、
+/// 无元表且每条都合法（token 名、string 值、无 NUL/CRLF、不是 Content-Length / Transfer-Encoding）的头表；
+/// 其余一律不碰，交给调用方走原来的组包路径（告警与丢弃都在那边）
+/// </summary>
+/// <param name="sk" type="userdata">连接标识</param>
+/// <param name="code" type="integer">状态码</param>
+/// <param name="headers" type="table&lt;string,string&gt;?">附加头部</param>
+/// <param name="body" type="string|table&lt;any,any&gt;?">报文体</param>
+/// <param name="headonly" type="boolean?">回 HEAD 请求：Content-Length 写真实长度，不发报文体</param>
+/// <param name="block" type="string?">预渲染好的头部块（每行已含 \r\n），原样写在状态行后、不做校验</param>
+/// <returns type="boolean">true 已组包并投递（发送失败不回报，同 http.response）；
+/// false 形状不归它管、sk 不是连接标识或 table 报文体编不成 JSON，什么都没做</returns>
+static int32_t _lprot_http_respond(lua_State *lua) {
+    http_resp_plan plan;
+    sock_ctx *sk = lpub_is_sock(lua, 1);
+    if (NULL == sk
+        || ERR_OK != _lprot_resp_check(lua, 2, &plan)) {
+        return lpub_rtn_bool(lua, 0);
+    }
+    binary_ctx bw;
+    if (ERR_OK != _lprot_resp_pack(lua, 2, &plan, &bw)) {
+        return lpub_rtn_bool(lua, 0);
+    }
+    ev_send(&g_loader->netev, sk, bw.data, bw.offset, 0);
+    return lpub_rtn_bool(lua, 1);
+}
+// 外部字符串的释放回调：缓冲来自 binary_init_write
+static void *_lprot_ext_free(void *ud, void *ptr, size_t osize, size_t nsize) {
+    (void)ud;
+    (void)osize;
+    (void)nsize;
+    FREE(ptr);
+    return NULL;
+}
+/// <summary>
+/// 同 respond 的组包，但不发送，把整条报文作为字符串返回；单测断言组包字节用
+/// </summary>
+/// <param name="code" type="integer">状态码</param>
+/// <param name="headers" type="table&lt;string,string&gt;?">附加头部</param>
+/// <param name="body" type="string|table&lt;any,any&gt;?">报文体，同 respond</param>
+/// <param name="headonly" type="boolean?">同 respond</param>
+/// <param name="block" type="string?">同 respond</param>
+/// <returns type="string?">整条报文；形状不归它管（同 respond 返回 false 的情形）时为 nil</returns>
+static int32_t _lprot_http_pack_resp(lua_State *lua) {
+    http_resp_plan plan;
+    binary_ctx bw;
+    if (ERR_OK != _lprot_resp_check(lua, 1, &plan)
+        || ERR_OK != _lprot_resp_pack(lua, 1, &plan, &bw)) {
+        return lpub_rtn_nil(lua, 1);
+    }
+    // 直接把缓冲交给 Lua 当字符串：失败时由 Lua 调回调释放，不会漏
+    bw.data[bw.offset] = '\0';
+    lua_pushexternalstring(lua, bw.data, bw.offset, _lprot_ext_free, NULL);
+    return 1;
+}
 //srey.http
 LUAMOD_API int luaopen_http(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -522,6 +834,9 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
         { "datastr", _lprot_http_datastr },
         { "is_token", _lprot_http_is_token },
         { "head_val_ok", _lprot_http_head_val_ok },
+        { "head_check", _lprot_http_head_check },
+        { "respond", _lprot_http_respond },
+        { "pack_resp", _lprot_http_pack_resp },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
@@ -531,20 +846,65 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
     lua_setfield(lua, -2, "max_headlens");
     return 1;
 }
-// 内部辅助：构造 Redis 聚合类型（array/set/map/push/attr）的 table，含 resp_type 和 resp_nelem 字段。
+// 内部辅助：构造 Redis 聚合类型（array/set/map/push/attr）的空容器表。
 // 元素随后由上层追加进这张表：array/set/push 落数组部分，map/attr 按 key 落哈希部分，
-// 故按 ismap 分开预分配，省掉从 0 起逐次翻倍的 rehash。
+// 故按 ismap 分开预分配，省掉从 0 起逐次翻倍的 rehash。extra 是额外留给哨兵字段的哈希槽。
 // 预分配量卡 REDIS_PREALLOC_MAX：nelem 是对端声明的数字，超出的部分照常增长
-static void _lprot_redis_agg(lua_State *lua, const char *type, int64_t nelem, int32_t ismap) {
+static void _lprot_redis_agg(lua_State *lua, int64_t nelem, int32_t ismap, int32_t extra) {
     int32_t pre = 0;
     if (nelem > 0) {
         pre = (int32_t)(nelem > REDIS_PREALLOC_MAX ? REDIS_PREALLOC_MAX : nelem);
     }
-    lua_createtable(lua, 0 != ismap ? 0 : pre, (0 != ismap ? pre : 0) + 2);
-    lua_pushstring(lua, type);
-    lua_setfield(lua, -2, "resp_type");
-    lua_pushinteger(lua, nelem);
-    lua_setfield(lua, -2, "resp_nelem");
+    lua_createtable(lua, 0 != ismap ? 0 : pre, (0 != ismap ? pre : 0) + extra);
+}
+// 压一个节点的值：标量原样压，聚合压空容器（见 _lprot_redis_agg）。返回聚合类型名，标量返回 NULL
+static const char *_lprot_redis_push(lua_State *lua, redis_pack_ctx *pk, int32_t extra) {
+    switch (pk->prot) {
+    case RESP_STRING:// 简单字符串
+    case RESP_ERROR:// 错误字符串
+    case RESP_BSTRING:// 批量字符串
+    case RESP_BERROR:// 批量错误
+    case RESP_VERB:// 带类型的字符串
+        if (pk->len < 0) {
+            lua_pushnil(lua);
+        } else if (0 == pk->len) {
+            lua_pushstring(lua, "");
+        } else {
+            lua_pushlstring(lua, pk->data, (size_t)pk->len);
+        }
+        return NULL;
+    case RESP_INTEGER:// 整数
+        lua_pushinteger(lua, pk->ival);
+        return NULL;
+    case RESP_BIGNUM:// 大整数(任意精度,以字符串返回)
+        lua_pushlstring(lua, pk->data, (size_t)pk->len);
+        return NULL;
+    case RESP_BOOL:// 布尔值
+        lua_pushboolean(lua, (int32_t)pk->ival);
+        return NULL;
+    case RESP_DOUBLE:// 浮点数
+        lua_pushnumber(lua, pk->dval);
+        return NULL;
+    case RESP_ARRAY:// 数组
+        _lprot_redis_agg(lua, pk->nelem, 0, extra);
+        return "array";
+    case RESP_SET:// 集合
+        _lprot_redis_agg(lua, pk->nelem, 0, extra);
+        return "set";
+    case RESP_PUSHE:// 推送消息
+        _lprot_redis_agg(lua, pk->nelem, 0, extra);
+        return "push";
+    case RESP_MAP:// 映射
+        _lprot_redis_agg(lua, pk->nelem, 1, extra);
+        return "map";
+    case RESP_ATTR:// 属性
+        _lprot_redis_agg(lua, pk->nelem, 1, extra);
+        return "attr";
+    case RESP_NIL:// Null 值
+    default:
+        lua_pushnil(lua);
+        return NULL;
+    }
 }
 /// <summary>
 /// 解析一个 Redis RESP 节点的值
@@ -561,55 +921,48 @@ static int32_t _lprot_redis_value(lua_State *lua) {
     if (NULL == pk) {
         return lpub_rtn_nil(lua, 1);
     }
-    switch (pk->prot) {
-    case RESP_STRING:// 简单字符串
-    case RESP_ERROR:// 错误字符串
-    case RESP_BSTRING:// 批量字符串
-    case RESP_BERROR:// 批量错误
-    case RESP_VERB:// 带类型的字符串
-        if (pk->len < 0) {
-            lua_pushnil(lua);
-        } else if (0 == pk->len) {
-            lua_pushstring(lua, "");
-        } else {
-            lua_pushlstring(lua, pk->data, (size_t)pk->len);
-        }
-        break;
-    case RESP_INTEGER:// 整数
-        lua_pushinteger(lua, pk->ival);
-        break;
-    case RESP_BIGNUM:// 大整数(任意精度,以字符串返回)
-        lua_pushlstring(lua, pk->data, (size_t)pk->len);
-        break;
-    case RESP_NIL:// Null 值
-        lua_pushnil(lua);
-        break;
-    case RESP_BOOL:// 布尔值
-        lua_pushboolean(lua, (int32_t)pk->ival);
-        break;
-    case RESP_DOUBLE:// 浮点数
-        lua_pushnumber(lua, pk->dval);
-        break;
-    case RESP_ARRAY:// 数组
-        _lprot_redis_agg(lua, "array", pk->nelem, 0);
-        break;
-    case RESP_SET:// 集合
-        _lprot_redis_agg(lua, "set", pk->nelem, 0);
-        break;
-    case RESP_PUSHE:// 推送消息
-        _lprot_redis_agg(lua, "push", pk->nelem, 0);
-        break;
-    case RESP_MAP:// 映射
-        _lprot_redis_agg(lua, "map", pk->nelem, 1);
-        break;
-    case RESP_ATTR:// 属性
-        _lprot_redis_agg(lua, "attr", pk->nelem, 1);
-        break;
-    default:
-        lua_pushnil(lua);
-        break;
+    const char *kind = _lprot_redis_push(lua, pk, 2);
+    if (NULL != kind) {
+        lua_pushstring(lua, kind);
+        lua_setfield(lua, -2, "resp_type");
+        lua_pushinteger(lua, pk->nelem);
+        lua_setfield(lua, -2, "resp_nelem");
     }
     return 1;
+}
+/// <summary>
+/// 一次取齐一个 Redis RESP 节点：值、聚合类型、元素计数、下一节点。聚合返回的是不带
+/// resp_type / resp_nelem 哨兵的空容器，类型与计数从第 2、3 个返回值拿
+/// </summary>
+/// <param name="pk" type="lightuserdata?">redis_pack_ctx 节点指针；nil 时 4 个返回值全是 nil</param>
+/// <returns type="string|integer|number|boolean|RedisAggPayload|nil">节点值；聚合为按 nelem 预分配的空表</returns>
+/// <returns type="string?">聚合类型名 array/set/push/map/attr；标量为 nil</returns>
+/// <returns type="integer?">聚合元素计数（-1 为 RESP3 的 nil 聚合）；标量为 nil</returns>
+/// <returns type="lightuserdata?">下一个节点指针；没有后续节点为 nil</returns>
+static int32_t _lprot_redis_node(lua_State *lua) {
+    int32_t type = lua_type(lua, 1);
+    if (LUA_TNIL == type || LUA_TNONE == type) {
+        return lpub_rtn_nil(lua, 4);
+    }
+    LUACHECK_LUDATA_OPT(lua, 1);
+    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    if (NULL == pk) {
+        return lpub_rtn_nil(lua, 4);
+    }
+    const char *kind = _lprot_redis_push(lua, pk, 0);
+    if (NULL == kind) {
+        lua_pushnil(lua);
+        lua_pushnil(lua);
+    } else {
+        lua_pushstring(lua, kind);
+        lua_pushinteger(lua, pk->nelem);
+    }
+    if (NULL == pk->next) {
+        lua_pushnil(lua);
+    } else {
+        lua_pushlightuserdata(lua, pk->next);
+    }
+    return 4;
 }
 /// <summary>
 /// 获取 Redis RESP 链表中下一个节点指针
@@ -630,11 +983,78 @@ static int32_t _lprot_redis_next(lua_State *lua) {
     lua_pushlightuserdata(lua, pk->next);
     return 1;
 }
+/// <summary>
+/// 将命令及参数编成 RESP 请求（array of bulk string）。参数按 tostring 转串，数字照 num_str 的规则：
+/// 整数值的浮点按整数写，其余浮点同 tostring；nil 编成空 bulk 并打一条告警
+/// </summary>
+/// <param name="..." type="any">命令名及参数，如 redis.pack("SET", "key", "value")</param>
+/// <returns type="string">RESP 编码后的请求字符串</returns>
+static int32_t _lprot_redis_pack(lua_State *lua) {
+    int32_t n = lua_gettop(lua);
+    int32_t i;
+    int32_t type;
+    int32_t isint;
+    lua_Integer iv;
+    size_t lens;
+    size_t k;
+    const char *s;
+    char *p;
+    char nbuf[LUA_N2SBUFFSZ];
+    luaL_Buffer lbuf;
+    // 数字、字符串、nil 之外的参数先就地换成 tostring 的结果：luaL_tolstring 要压栈，不能夹在缓冲写入中间
+    for (i = 1; i <= n; i++) {
+        type = lua_type(lua, i);
+        if (LUA_TNIL != type && LUA_TNUMBER != type && LUA_TSTRING != type) {
+            luaL_tolstring(lua, i, NULL);
+            lua_replace(lua, i);
+        }
+    }
+    luaL_buffinit(lua, &lbuf);
+    p = luaL_prepbuffsize(&lbuf, 24);
+    p[0] = '*';
+    k = 1 + u64tostr(p + 1, (uint64_t)n, 10);
+    p[k++] = '\r';
+    p[k++] = '\n';
+    luaL_addsize(&lbuf, k);
+    for (i = 1; i <= n; i++) {
+        if (lua_isnil(lua, i)) {
+            LOG_WARN("redis.pack: nil argument #%d, encoded as empty bulk string", i);
+            luaL_addlstring(&lbuf, "$0\r\n\r\n", 6);
+            continue;
+        }
+        if (LUA_TNUMBER == lua_type(lua, i)) {
+            iv = lua_tointegerx(lua, i, &isint);
+            if (isint) {
+                lens = i64tostr(nbuf, (int64_t)iv, 10);
+            } else {
+                lens = (size_t)lua_numbertocstring(lua, i, nbuf) - 1;
+            }
+            s = nbuf;
+        } else {
+            s = lua_tolstring(lua, i, &lens);
+        }
+        // "$" + 最多 20 位长度 + 两个 CRLF
+        p = luaL_prepbuffsize(&lbuf, lens + 25);
+        p[0] = '$';
+        k = 1 + u64tostr(p + 1, (uint64_t)lens, 10);
+        p[k++] = '\r';
+        p[k++] = '\n';
+        memcpy(p + k, s, lens);
+        k += lens;
+        p[k++] = '\r';
+        p[k++] = '\n';
+        luaL_addsize(&lbuf, k);
+    }
+    luaL_pushresult(&lbuf);
+    return 1;
+}
 //srey.redis
 LUAMOD_API int luaopen_redis(lua_State *lua) {
     luaL_Reg reg[] = {
         { "value", _lprot_redis_value },
         { "next", _lprot_redis_next },
+        { "node", _lprot_redis_node },
+        { "pack", _lprot_redis_pack },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
@@ -699,7 +1119,7 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
 static int32_t _lprot_smtp_sock_id(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     smtp_ctx *smtp = *ud;
-    lpub_push_sock(lua, &smtp->sk);
+    lpub_push_sock_slot(lua, 1, &smtp->sk);
     return 1;
 }
 /// <summary>

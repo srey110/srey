@@ -14,6 +14,36 @@ local function _count_rows(reader)
     return cnt
 end
 
+-- reader:get / reader:integer 的两个边角，query(文本协议)与 stmt(二进制协议)各验一遍：
+-- 字面量 NULL 列(MYSQL_TYPE_NULL，不在任何取值分组)给 nil 不抛错；UNSIGNED 整数列按无符号读，
+-- 二进制路上 200 / 3000000000 不能读成负数；超出 int64 的值 get 抛错且错误信息带列名，integer 按读取失败返回 false
+local function _check_edge(t, label, rd)
+    if not t:check(rd and not rd:eof(), label .. " 有一行") then
+        return
+    end
+    local gok, tiu, iu, bmax, cu, lit, n = pcall(rd.get, rd, "tiu", "iu", "bmax", "cu", "lit", "n")
+    t:check(gok, label .. " get 不抛错: " .. tostring(tiu))
+    if gok then
+        t:eq(200, tiu, label .. " get TINYINT UNSIGNED 200")
+        t:eq(3000000000, iu, label .. " get INT UNSIGNED 3000000000")
+        t:eq(math.maxinteger, bmax, label .. " get BIGINT UNSIGNED INT64_MAX")
+        t:eq(200, cu, label .. " get CAST(200 AS UNSIGNED)")
+        t:eq(nil, lit, label .. " get 字面量 NULL 列是 nil")
+        t:eq(nil, n, label .. " get INT NULL 是 nil")
+    end
+    local ok, v = rd:integer("tiu")
+    t:check(ok and 200 == v, label .. " integer TINYINT UNSIGNED: " .. tostring(v))
+    ok, v = rd:integer("iu")
+    t:check(ok and 3000000000 == v, label .. " integer INT UNSIGNED: " .. tostring(v))
+    ok, v = rd:integer("lit")
+    t:check(ok and nil == v, label .. " integer 字面量 NULL 列是成功 + 无值")
+    local eok, emsg = pcall(rd.get, rd, "bover")
+    t:check(not eok and string.find(tostring(emsg), "'bover' unsigned value exceeds int64", 1, true),
+            label .. " get 超 int64 抛错: " .. tostring(emsg))
+    eok, emsg = pcall(rd.integer, rd, "bover")
+    t:check(eok and false == emsg, label .. " integer 超 int64 返回 false、不抛错: " .. tostring(emsg))
+end
+
 srey.startup(function()
 runner.run(function(t)
     local mctx = mysql.new("127.0.0.1", 3306, SSL_NAME.NONE,
@@ -144,6 +174,37 @@ runner.run(function(t)
         t:eq(false, stmt:close(), "stmt close 幂等（已关闭返回 false）")
     else
         t:fail("mysql prepare nil")
+    end
+
+    -- UNSIGNED 列与字面量 NULL 列：临时表只活在这条连接上，须放在下面的 quit 之前
+    mctx:query("DROP TEMPORARY TABLE IF EXISTS srey_unsigned")
+    local rtmp = mctx:query("CREATE TEMPORARY TABLE srey_unsigned (tiu TINYINT UNSIGNED, iu INT UNSIGNED,"
+        .. " bmax BIGINT UNSIGNED, bover BIGINT UNSIGNED, n INT)")
+    t:check(rtmp and true == rtmp[1], "create temp table srey_unsigned")
+    rtmp = mctx:query("INSERT INTO srey_unsigned VALUES (200, 3000000000, 9223372036854775807, 9223372036854775808, NULL)")
+    t:check(rtmp and true == rtmp[1], "insert srey_unsigned")
+    local esql = "SELECT tiu, iu, bmax, bover, CAST(200 AS UNSIGNED) AS cu, NULL AS lit, n FROM srey_unsigned"
+    local requery = mctx:query(esql)
+    _check_edge(t, "query", requery and requery[1])
+    local estmt = mctx:prepare(esql)
+    if t:check(estmt, "prepare edge select") then
+        local rexe = estmt:execute()
+        _check_edge(t, "stmt", rexe and rexe[1])
+        estmt:close()
+    end
+    -- 不带表的 SELECT NULL，query 与 stmt 各验一遍
+    local function _check_select_null(label, rs)
+        local nrd = rs and rs[1]
+        if t:check(nrd, label .. " SELECT NULL 有结果集") then
+            local nok, nv, one = pcall(nrd.get, nrd, "n", "one")
+            t:check(nok and nil == nv and 1 == one, label .. " SELECT NULL get: " .. tostring(nv))
+        end
+    end
+    _check_select_null("query", mctx:query("SELECT NULL AS n, 1 AS one"))
+    local nst = mctx:prepare("SELECT NULL AS n, 1 AS one")
+    if t:check(nst, "prepare SELECT NULL") then
+        _check_select_null("stmt", nst:execute())
+        nst:close()
     end
 
     -- ping 自动重连：quit 关闭连接后 ping 应检测到死连接并重连

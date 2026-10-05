@@ -121,28 +121,23 @@ static int32_t _lstm_read(lua_State *lua) {
         return lpub_rtn_bool(lua, 0);
     }
     if (NULL != snap) {
-        lua_pushvalue(lua, 1);// pcall 期间借 registry 保活 reader，防回调内清引用+GC 致 box 悬空 UAF
-        int32_t ref = luaL_ref(lua, LUA_REGISTRYINDEX);
-        // 栈布局技巧 : 入栈 [box, func, ud?]
-        // settop=3 补 nil ud; replace(1) 把 ud 移到 idx=1; settop=2 截为 [ud, func]
-        // 然后 push (lud, sz, ud) 调 func; 最后用 boolean(true) 替 idx=1 作为首返回值
+        // box 一直留在槽 1：本帧的栈槽就是 GC 根，回调里清掉 reader 引用也回收不了它。
+        // 栈 [box, func, ud] 上再压 (func, lud, sz, ud) 调用，结果接在 ud 之后，最后 true 顶替 ud
         lua_settop(lua, 3);
-        lua_replace(lua, 1);
-        lua_settop(lua, 2);
+        lua_pushvalue(lua, 2);
         lua_pushlightuserdata(lua, snap->data);
         lua_pushinteger(lua, (lua_Integer)snap->sz);
-        lua_pushvalue(lua, 1);
+        lua_pushvalue(lua, 3);
         // pcall 而非 call 且交接延后到此:重入读不释放本次 snap(防 UAF),抛错也走交接(防 snap 引用泄漏)
         int32_t st = lua_pcall(lua, 3, LUA_MULTRET, 0);
         stm_ungrab_data(box->lastcopy);
         box->lastcopy = snap;
-        luaL_unref(lua, LUA_REGISTRYINDEX, ref);
         if (LUA_OK != st) {
             return lua_error(lua);
         }
         lua_pushboolean(lua, 1);
-        lua_replace(lua, 1);
-        return lua_gettop(lua);
+        lua_replace(lua, 3);
+        return lua_gettop(lua) - 2;
     }
     // writer 已释放, ctx->data=NULL
     stm_ungrab_data(box->lastcopy);

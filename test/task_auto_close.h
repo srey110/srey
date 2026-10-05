@@ -9,5 +9,7 @@ void task_auto_close_start(loader_ctx *loader, const char *name, int32_t pt);
 
 // 返回自进程启动以来 task_auto_close 任务被关闭的累计次数
 uint32_t get_close_count(void);
+// 返回自进程启动以来 task_auto_close 任务的"一轮调度结束"回调累计次数
+uint32_t get_round_end_count(void);
 
 #endif//TASK_AUTO_CLOSE_H_

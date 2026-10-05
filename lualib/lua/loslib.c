@@ -102,9 +102,7 @@
 */
 #if !defined(lua_tmpnam)	/* { */
 
-/* srey 本地补丁：非 Windows 一律走下面的 mkstemp 版。ISO C 的 tmpnam 有 TOCTOU 竞态，
-** glibc 还会在链接期报 .gnu.warning。只取这一项，不开 LUA_USE_POSIX 的 popen / dlopen */
-#if defined(LUA_USE_POSIX) || !defined(_WIN32)	/* { */
+#if defined(LUA_USE_POSIX)	/* { */
 
 #include <unistd.h>
 

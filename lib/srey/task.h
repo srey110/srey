@@ -322,5 +322,12 @@ void task_requested(task_ctx *task, _request_cb _request);
 /// <param name="task">task_ctx</param>
 /// <param name="_response">_response_cb 回调函数</param>
 void task_responsed(task_ctx *task, _response_cb _response);
+/// <summary>
+/// 注册一轮调度结束回调：worker 处理完一轮消息、交还调度权之前调用，调用时独占该 task。
+/// 只能在 task 开始接收消息前设置
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_round_end">_task_round_end_cb 回调函数；NULL 不回调（默认）</param>
+void task_round_ended(task_ctx *task, _task_round_end_cb _round_end);
 
 #endif//TASK_H_

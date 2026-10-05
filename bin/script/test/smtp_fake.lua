@@ -153,7 +153,7 @@ runner.run(function(t)
     t:check(true, "fake smtp connected")
 
     -- 并发：每个协程发自己编号的邮件，服务端按事务状态机校验没有交错
-    -- 用 srey.fork_wait 而不是手写 done 计数 + 有界轮询:srey.fork 的错被 _coro_cb 的 xpcall
+    -- 用 srey.fork_wait 而不是手写 done 计数 + 有界轮询:srey.fork 的错被 _coro_exec 的 xpcall
     -- 吞掉不传播,协程体任一处抛错手写版就再也不会 done+1;fork_wait 照样收敛,错误原文进 r[i][1]
     local fns = {}
     for i = 1, CONC_N do

@@ -6,6 +6,9 @@
 -- 单独挑这两条的理由：④ 此前只有静态代码走查确认过，从没被运行时驱动；
 -- ② 的并发面只靠 test/task_kcp.c 的 fifo 用例间接覆盖（kcp_synsend 复用同一套底层），
 -- 那个用例一旦被跳过、或两者调用路径分叉，这块就没人看着了。
+--
+-- 末尾一段测消息载荷的释放时机：同步跑完的回调由 C 在分发返回后回收（攒批释放）；中途挂起过的回调
+-- 留到回调结束由 _coro_exec 交还；等待者拿到的 msg 只到本协程下次挂起前有效。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -17,15 +20,49 @@ local NSEND    = 4
 -- 等超时唤醒要多给的富余：超时监控每 1s 才扫一次到期表(lib/srey 的 _coro_timeout)，
 -- 所以 N 毫秒的等待最坏 N+1000 才被观察到。凡断言超时的地方一律等 N + 本值
 local SETTLE   = 1300
+-- 载荷释放时机那段的请求类型（避开 REQUEST_TYPE 保留值）。RT_ECHO + n：回显前先 sleep n 次（n=0..3）
+local RT_ECHO       = 0x200
+local RT_NEST       = 0x210 -- 回调里嵌套 serial / fork_wait / fork 后回显
+local RT_THROW      = 0x211 -- 同步回显后抛错
+local RT_THROW_Y    = 0x212 -- 挂起后回显再抛错
+local RT_GATE       = 0x213 -- 等 NPOOL 条到齐后回显
+local CORO_POOL_MAX = 128 -- 同 lib/srey.lua 的协程池上限
+local NPOOL         = 200 -- 同时挂着的回调数，要超过 CORO_POOL_MAX
 
--- 取 coro_sess 的条目数：向自己发 coros 调试命令，从汇总行里抠出来。
--- 发起请求的协程自己也占着一个条目（等 RESPONSE），所以这个值恒含一个常量 +1；
+-- 取 coros 汇总行的计数：suspended(coro_sess 里的等待者) / sessions / fork_wait / serial(排队数) / yield total。
+-- 发起请求的协程自己也占着一个条目（等 RESPONSE），所以这些值恒含一个常量 +1；
 -- 下面一律比较前后差值，不看绝对值
-local function _sessions()
+local function _counts()
     local ptr, sz = seri.pack("coros")
     local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
     local txt = rdata and srey.ud_str(rdata, rsize) or ""
-    return tonumber(txt:match("(%d+) sessions")) or -1
+    local c = { txt:match("(%d+) suspended, (%d+) sessions, (%d+) fork_wait, (%d+) serial, (%d+) yield total") }
+    assert(c[1], "coros summary not matched: " .. txt)-- 不挡的话各字段全 nil，计数断言变成 nil == nil 恒过
+    return { susp = tonumber(c[1]), sess = tonumber(c[2]), fork = tonumber(c[3]), serial = tonumber(c[4]), nyield = tonumber(c[5]) }
+end
+
+-- coro_sess 的条目数
+local function _sessions()
+    return _counts().sess or -1
+end
+
+-- 向本 task 发请求并取回响应串；rdata 只到本协程下次挂起前有效，当场拷出
+local function _req(rt, body)
+    local rd, rs = srey.request(srey.task_handle(), rt, body)
+    return rd and srey.ud_str(rd, rs) or nil
+end
+
+-- 按名字取函数的 upvalue，返回值与序号
+local function _upvalue(f, name)
+    for i = 1, 255 do
+        local n, v = debug.getupvalue(f, i)
+        if nil == n then
+            return nil
+        end
+        if name == n then
+            return v, i
+        end
+    end
 end
 
 srey.startup(function()
@@ -230,6 +267,249 @@ runner.run(function(t)
         t:eq(srey.MSG_TYPE.RESPONSE, woke[1], "sessA 剩下的等待者被 RESPONSE 叫醒")
         t:eq(srey.MSG_TYPE.RESPONSE, woke[4], "sessB 剩下的等待者被 RESPONSE 叫醒")
         t:eq(s0, _sessions(), "等待者全摘空后两个条目都删了")
+    end
+
+    -- ── 不可 yield 处走 _coro_wait（srey.sleep）：立即抛错，不登记 ──────
+    -- 以前先登记 coro_sess 再 yield 失败：nyield / nwait 只加不减，到点后旧条目带着旧 sess
+    -- 唤醒同一协程后来的无关等待，报 different session 把它打断
+    do
+        local c0 = _counts()
+        local ok, err, after
+        srey.fork(function()
+            ok, err = pcall(table.sort, { 2, 1 }, function(a, b)
+                srey.sleep(50)
+                return a < b
+            end)
+            srey.sleep(200)-- 同一协程随后的正常等待；旧行为下 50ms 时被旧条目打断
+            after = true
+        end)
+        srey.sleep(400)
+        t:eq(false, ok, "sort 比较器里 sleep 抛错")
+        t:check(nil ~= string.find(tostring(err), "cannot yield", 1, true),
+                "登记前就报 cannot yield（实际 " .. tostring(err) .. "）")
+        t:eq(true, after, "随后的 sleep 正常走完，没被旧唤醒打断")
+        local c1 = _counts()
+        t:eq(c0.susp, c1.susp, "coro_sess 等待者不残留")
+        t:eq(c0.nyield, c1.nyield, "nyield 不残留")
+        local hit = 0
+        for _ = 1, 4 do
+            srey.fork(function() srey.sleep(20); hit = hit + 1 end)
+        end
+        srey.sleep(100)
+        t:eq(4, hit, "之后的 fork 全部执行")
+    end
+
+    -- ── 超时合成消息的 msg() 取法 ─────────────────────────────────────
+    -- _timeout_wake 合成的 TIMEOUT 消息是普通表，msg() 靠 TIMEOUT_MSG_MT.__call；
+    -- srey.request / syn_sendto / 各 wait_* 的超时分支都经过它
+    do
+        local sess = srey.id()
+        local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 100)
+        local mtype, msess = msg()
+        t:eq(srey.MSG_TYPE.TIMEOUT, mtype, "合成消息 msg() 第一个值是 TIMEOUT")
+        t:eq(sess, msess, "合成消息 msg() 第二个值是 sess")
+        t:eq(2, select("#", msg()), "合成消息 msg() 只返回 mtype、sess 两个值")
+
+        -- srey.request 的超时分支：收到请求不回
+        srey.on_requested(function() end)
+        local old = srey.get_request_timeout()
+        srey.set_request_timeout(100)
+        local t0 = srey.timer_ms()
+        local rok, rdata, rsize = pcall(srey.request, srey.task_handle(), 0x100, "x")
+        srey.set_request_timeout(old)
+        t:eq(true, rok, "request 超时分支不抛错（实际 " .. tostring(rdata) .. "）")
+        t:eq(nil, rdata, "request 超时 rdata 为 nil")
+        t:eq(nil, rsize, "request 超时 rsize 为 nil")
+        t:check(srey.timer_ms() - t0 >= 100, "等满请求超时才返回")
+    end
+
+    -- ── 回调载荷活到回调结束：挂起之后再读 data ──────────────────────────
+    -- 处理端都在挂起之后才读 data 并原样回给请求端比对。挂起期间载荷若被提前放掉，
+    -- ASan 构建当场报 heap-use-after-free，release 构建多半读到被别的分配覆盖的内容。
+    -- 内容是几 KB 到 70000 字节的长串、各条首尾不同，比对用 check 不用 eq，免得失败时把整串打进日志
+    local inflight, peak = 0, 0
+    local ser = srey.serial()
+    srey.on_requested(function(reqtype, sess, src, data, size)
+        if reqtype >= RT_ECHO and reqtype <= RT_ECHO + 3 then
+            for _ = 1, reqtype - RT_ECHO do
+                srey.sleep(5)
+            end
+            srey.response(src, reqtype, sess, ERR_OK, srey.ud_str(data, size))
+        elseif RT_NEST == reqtype then
+            local s0 = srey.ud_str(data, size)
+            -- serial 里挂起：并发的第二条在队列里裸 yield，由 serial_wakes 叫醒
+            local ok, s1 = ser(function()
+                srey.sleep(10)
+                return srey.ud_str(data, size)
+            end)
+            -- fork_wait：一个子协程同步读，一个 sleep 过后（已是别的消息在分发）再读父回调的 data
+            local res = srey.fork_wait({
+                function() return srey.ud_str(data, size) end,
+                function()
+                    srey.sleep(5)
+                    return srey.ud_str(data, size)
+                end,
+            })
+            -- fork 的子协程在本次分发末尾起跑，此时本回调正挂在下面的 sleep 上
+            local s2
+            srey.fork(function() s2 = srey.ud_str(data, size) end)
+            srey.sleep(5)
+            local good = ok and s1 == s0 and res[1].ok and res[1].val == s0 and res[2].ok and res[2].val == s0
+                and s2 == s0 and srey.ud_str(data, size) == s0
+            srey.response(src, reqtype, sess, ERR_OK, good and s0 or "BAD")
+        elseif RT_THROW == reqtype then
+            srey.response(src, reqtype, sess, ERR_OK, srey.ud_str(data, size))
+            error("unit_coro: sync handler throws on purpose")
+        elseif RT_THROW_Y == reqtype then
+            srey.sleep(5)
+            srey.response(src, reqtype, sess, ERR_OK, srey.ud_str(data, size))
+            error("unit_coro: handler throws after yield on purpose")
+        elseif RT_GATE == reqtype then
+            -- 到齐 NPOOL 条才往下走，同一时刻挂着的回调数就是 NPOOL；2s 只是失败时的兜底
+            inflight = inflight + 1
+            if inflight > peak then
+                peak = inflight
+            end
+            local deadline = srey.timer_ms() + 2000
+            while peak < NPOOL and srey.timer_ms() < deadline do
+                srey.sleep(10)
+            end
+            inflight = inflight - 1
+            srey.response(src, reqtype, sess, ERR_OK, srey.ud_str(data, size))
+        end
+    end)
+    do
+        local p = "y1<" .. string.rep("a", 70000) .. ">"
+        t:check(p == _req(RT_ECHO + 1, p), "回调 sleep 一次后读 data，内容不变")
+        p = "y3<" .. string.rep("b", 70000) .. ">"
+        t:check(p == _req(RT_ECHO + 3, p), "回调 sleep 三次后读 data，内容不变")
+    end
+
+    -- 两条并发：先到的在 serial 里 sleep，后到的在 serial 队列里等；各自再 fork_wait、fork
+    do
+        local pa = "na<" .. string.rep("c", 70000) .. ">"
+        local pb = "nb<" .. string.rep("d", 70000) .. ">"
+        local res = srey.fork_wait({
+            function() return _req(RT_NEST, pa) end,
+            function() return _req(RT_NEST, pb) end,
+        })
+        t:check(pa == res[1].val, "嵌套 serial / fork_wait / fork：先进锁那条的 data 一直有效")
+        t:check(pb == res[2].val, "嵌套 serial / fork_wait / fork：排过 serial 队那条的 data 一直有效")
+    end
+
+    -- 回调抛错：同步抛、挂起后抛，之后的请求照常
+    do
+        local p = "ts<" .. string.rep("e", 70000) .. ">"
+        t:check(p == _req(RT_THROW, p), "同步回调回显后抛错，响应已发出")
+        p = "ty<" .. string.rep("f", 70000) .. ">"
+        t:check(p == _req(RT_THROW_Y, p), "挂起后读 data 回显再抛错，内容不变")
+        p = "a1<" .. string.rep("g", 70000) .. ">"
+        t:check(p == _req(RT_ECHO + 1, p), "抛错之后挂起型回调照常")
+        p = "a0<" .. string.rep("h", 70000) .. ">"
+        t:check(p == _req(RT_ECHO, p), "抛错之后同步回调照常")
+    end
+
+    -- 池满：NPOOL 条请求的回调同时挂着，跑完回池时超出 CORO_POOL_MAX 的协程直接退出
+    do
+        local funcs = {}
+        for i = 1, NPOOL do
+            local p = string.format("pool%03d<", i) .. string.rep(string.char(97 + i % 26), 4096) .. ">"
+            funcs[i] = function() return p == _req(RT_GATE, p) end
+        end
+        local res = srey.fork_wait(funcs)
+        local nok = 0
+        for i = 1, NPOOL do
+            if res[i].ok and res[i].val then
+                nok = nok + 1
+            end
+        end
+        t:check(peak > CORO_POOL_MAX, "同时挂着的回调超过协程池上限（实际 " .. peak .. "）")
+        t:eq(NPOOL, nok, "池满时每条回调读到的 data 都对、都响应了")
+        t:eq(0, inflight, "回调全部跑完")
+    end
+
+    -- ── 等待者拿到的 msg：下次挂起前 data 可读，之后为 nil ────────────────
+    -- 等待者被唤醒那次分发里没有回调协程留着它，分发一返回 C 就释放载荷
+    do
+        local me = srey.task_handle()
+        local sess = srey.id()
+        local p = "w<" .. string.rep("w", 70000) .. ">"
+        srey.response(me, 0, sess, ERR_OK, p)
+        local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 2000)
+        t:eq(srey.MSG_TYPE.RESPONSE, msg.mtype, "等到 RESPONSE")
+        t:check(p == (msg.data and srey.ud_str(msg.data, msg.size)), "RESPONSE：下次挂起前 msg.data 可读、内容对")
+        srey.sleep(1)
+        t:eq(nil, msg.data, "RESPONSE：下次挂起之后 msg.data 为 nil")
+    end
+    do
+        local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT, NET_EV.ACCEPT)
+        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
+        if t:check(sk and sk.valid, "connect 回自己的监听口") then
+            -- 发完不挂起就登记等待，回显的 RECV 不会先落到 on_recved 去
+            local p = "recv-waiter"
+            srey.send(sk, p, #p, 1)
+            local msg = srey._coro_wait(sk.skid, srey.MSG_TYPE.RECV, 3000)
+            t:eq(srey.MSG_TYPE.RECV, msg.mtype, "等到 RECV")
+            t:eq(p, msg.data and srey.ud_str(msg.data, msg.size), "RECV：下次挂起前 msg.data 可读、内容对")
+            srey.sleep(1)
+            t:eq(nil, msg.data, "RECV：下次挂起之后 msg.data 为 nil")
+            srey.close(sk)
+        end
+        srey.unlisten(lid)
+    end
+
+    -- ── 同步回调不调 msg_release，挂起过的回调各调一次 ─────────────────────
+    -- 本文件唯一用 debug 的地方：_coro_exec 的 msg_release 是 srey.lua 加载时取的局部别名，
+    -- 换 task.msg_release 换不到它，只能顺 upvalue 摸到 _coro_exec 临时换成计数包装，测完还原
+    do
+        local disp = _upvalue(message_dispatch, "_dispatchers")
+        local run = disp and _upvalue(disp[srey.MSG_TYPE.REQUEST], "_coro_run")
+        local new = run and _upvalue(run, "_coro_new")
+        local exec = new and _upvalue(new, "_coro_exec")
+        local orig, idx
+        if exec then
+            orig, idx = _upvalue(exec, "msg_release")
+        end
+        if t:check(nil ~= idx, "摸到 _coro_exec 的 msg_release") then
+            local calls, live = 0, 0
+            debug.setupvalue(exec, idx, function(m)
+                calls = calls + 1
+                if nil ~= m.data then
+                    live = live + 1
+                end
+                return orig(m)
+            end)
+            local p = "c<" .. string.rep("i", 70000) .. ">"
+            local good = 0
+            for _ = 1, 20 do
+                if p == _req(RT_ECHO, p) then
+                    good = good + 1
+                end
+            end
+            if p == _req(RT_THROW, p) then
+                good = good + 1
+            end
+            local sync_calls = calls
+            -- 挂起过的：sleep 一次、三次、挂起后抛错、两条并发的嵌套，共 5 条
+            calls, live = 0, 0
+            for _, rt in ipairs({ RT_ECHO + 1, RT_ECHO + 3, RT_THROW_Y }) do
+                if p == _req(rt, p) then
+                    good = good + 1
+                end
+            end
+            local res = srey.fork_wait({
+                function() return _req(RT_NEST, p) end,
+                function() return _req(RT_NEST, p) end,
+            })
+            debug.setupvalue(exec, idx, orig)
+            if p == res[1].val and p == res[2].val then
+                good = good + 2
+            end
+            t:eq(26, good, "计数期间的请求全部回显正确")
+            t:eq(0, sync_calls, "同步回调（含同步抛错）一次 msg_release 都不调")
+            t:eq(5, calls, "挂起过的回调每条调一次 msg_release")
+            t:eq(5, live, "每次调用时载荷都还在（没被提前放掉，也没重复放）")
+        end
     end
 end)
 end)

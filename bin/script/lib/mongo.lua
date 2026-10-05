@@ -24,12 +24,12 @@ ctx.FLAGS = {
 -- fd/skid 必须在锁内才读:排队期间前一个协程可能已经 ping 重连、换掉了这一对,
 -- 锁外读的是退休的那个 skid。往退休 skid 上发,MORETOCOME 路径会被静默丢弃却报成功,
 -- 同步路径则空等满一个 netread 超时。组包不受此影响——集合名/库名在组包时已写进包体,
--- 而"设集合名→组包"之间没有让出点。
--- MORETOCOME 问包不问 mgo:check_flag，理由见 C 层 mongo_pack_check_flag
-local function _wdo(mgoctx, pack, size)
+-- 而集合名就在组包那次 C 调用里设，中间没有让出点。
+-- more 是写类 pack_* 读包头带回的 MORETOCOME，问包不问 mgo:check_flag，理由见 C 层 mongo_pack_check_flag
+local function _wdo(mgoctx, pack, size, more)
     local mgo = mgoctx.mongo
     local sk = mgo:sock_id()
-    if mongo.pack_check_flag(pack, ctx.FLAGS.MORETOCOME) then
+    if more then
         return srey.send(sk, pack, size, 0), nil
     end
     local mgopack, _ = srey.syn_send(sk, pack, size, 0)
@@ -46,11 +46,12 @@ end
 -- MORETOCOME 的只发不等也进锁——不等响应也不能乱序，后面那条 find 得看得见前面这批 insert。
 -- connect / ping 另有外层锁，它们走多次往返或绕开漏斗，靠 ref 计数嵌套
 ---@param mgoctx any 所属 mongo_ctx（提供 serial 执行器与 C 层 mongo 句柄）
-local function _wsend(mgoctx, pack, size)
+---@param more boolean? 包里写着 MORETOCOME（写类 pack_* 的第 3 个返回值），真则只发不等
+local function _wsend(mgoctx, pack, size, more)
     if not pack then
         return false, nil
     end
-    local ok, mgopack = srey.serial_ret(nil, mgoctx.serial(_wdo, mgoctx, pack, size))
+    local ok, mgopack = srey.serial_ret(nil, mgoctx.serial(_wdo, mgoctx, pack, size, more))
     if nil == ok then
         return false, nil
     end
@@ -61,8 +62,8 @@ end
 -- 会把那几个命令的公开返回值从 boolean 变成计数。bulkwrite 的尾块第三种形状，不走这里
 ---@return boolean ok
 ---@return integer? n 受影响文档数；MORETOCOME 只发不等时不返
-local function _wsend_n(mgoctx, pack, size)
-    local ok, mgopack = _wsend(mgoctx, pack, size)
+local function _wsend_n(mgoctx, pack, size, more)
+    local ok, mgopack = _wsend(mgoctx, pack, size, more)
     if not ok then
         return false
     end
@@ -76,8 +77,8 @@ local function _wsend_n(mgoctx, pack, size)
     return true, n
 end
 ---@return boolean ok
-local function _wsend_ok(mgoctx, pack, size)
-    local ok, mgopack = _wsend(mgoctx, pack, size)
+local function _wsend_ok(mgoctx, pack, size, more)
+    local ok, mgopack = _wsend(mgoctx, pack, size, more)
     if not ok then
         return false
     end
@@ -106,24 +107,6 @@ local function _rsend(mgoctx, pack, size)
     return srey.serial_ret(nil, mgoctx.serial(_rdo, mgoctx, pack, size))
 end
 
--- 组包期间把连接级 flags 清零、组完再恢复：要等响应的命令不能带 MORETOCOME。
--- 套 pcall 是因为 Lua 没有 RAII 而 pack_* 会抛((指针,长度) 入口的长度校验)，抛点正在清零与恢复
--- 之间，不兜住就把 MORETOCOME 永久摘掉、clear_flag() 也查不出来。C 侧没有异常，无此问题
----@param mgo any 连接级 flags 的持有者（C 层 mongo 句柄）；清零与恢复都作用于它
----@param obj any 组包方法所在的对象：多数命令就是 mgo 自己，事务收尾是 session
----@param name string 组包方法名
----@return lightuserdata|nil pack 命令数据指针；组包被拒时为 nil
----@return integer? size 数据长度
-local function _pack_noflag(mgo, obj, name, ...)
-    local flags = mgo:clear_flag()
-    local ok, pack, size = pcall(obj[name], obj, ...)
-    mgo:set_flag(flags)
-    if not ok then
-        error(pack, 0)
-    end
-    return pack, size
-end
-
 -- mongo_session_ctx：会话事务上下文，由 mongo_ctx:startsession() 创建。
 local sess_ctx = class("mongo_session_ctx")
 
@@ -147,7 +130,8 @@ end
 -- 内层 _rsend 再上一次锁，同协程按 ref 嵌套
 local function _txn_do(self, opts, optslens, packname, what)
     local mgo = self.mgoctx.mongo
-    local pack, size = _pack_noflag(mgo, self.session, packname, opts, optslens)
+    local sess = self.session
+    local pack, size = sess[packname](sess, opts, optslens)-- 读类组包，不带 MORETOCOME
     if not pack then
         WARN("mongo %s packing rejected, transaction state kept.", what)
         return false
@@ -168,7 +152,7 @@ end
 ---@param self any mongo_session_ctx 实例
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
----@param packname string session 上的组包方法名（"pack_commit" / "pack_abort"）；由 _pack_noflag 取用
+---@param packname string session 上的组包方法名（"pack_commit" / "pack_abort"）
 ---@param what string 动作名，仅用于组包被拒时的日志
 ---@return boolean ok 服务端确认且未报错 true
 local function _txn_finish(self, opts, optslens, packname, what)
@@ -194,7 +178,7 @@ end
 -- 组包与发送同在锁内，理由同 _txn_do
 local function _refresh_do(self)
     local mgo = self.mgoctx.mongo
-    local pack, size = _pack_noflag(mgo, self.session, "pack_refresh")
+    local pack, size = self.session:pack_refresh()
     local mgopack = _rsend(self.mgoctx, pack, size)
     if not mgopack then
         return false
@@ -222,8 +206,8 @@ end
 
 -- 组包与发送同在锁内，理由同 _txn_do
 local function _close_do(self)
-    local pack, size = self.session:pack_endsession()
-    _wsend(self.mgoctx, pack, size)
+    local pack, size, more = self.session:pack_endsession()
+    _wsend(self.mgoctx, pack, size, more)
 end
 ---结束会话（endSessions，fire-and-forget）并释放 C 层会话内存。
 ---session:free() 留在锁外：它不碰连接，且无论有没有发出 endSessions 都要释放
@@ -296,7 +280,7 @@ function ctx:_connect()
     -- 解绑上一代事务会话，否则 pack_hello 及后续命令会带上旧的 lsid/txnNumber。
     -- Lua 侧走 try_connect 不经 C 的 mongo_connect，那边同一句在 coro_utils.c 的 mongo_connect 里
     self.mongo:clear_session()
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_hello")
+    local pack, size = self.mongo:pack_hello()-- 读类组包在 C 里清/复原 flags，不带 MORETOCOME
     local mgopack = _rsend(self, pack, size)
     if not mgopack then return _fail() end
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
@@ -306,7 +290,7 @@ function ctx:_connect()
         if not self.mongo:set_auth_status(sk) then
             return _fail()
         end
-        -- 不走 _pack_noflag：清零要盖住"组包+发送+等握手"整段(SCRAM 多次往返)，不是只盖组包。
+        -- 自己清零：要盖住"组包+发送+等握手"整段(SCRAM 多次往返)，不是只盖组包。
         -- 不套 pcall：这段只在调度器自身出错时抛，那时连接已废，保 MORETOCOME 无意义
         local aflags = self.mongo:clear_flag()
         local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
@@ -323,7 +307,7 @@ end
 ---内部 ping（isMaster / ping 命令），不自动重连
 ---@return boolean ok 服务端响应成功 true（仅供 ping() 内部调用，不要直接调用；调用方须已持锁）
 function ctx:_ping()
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_ping")
+    local pack, size = self.mongo:pack_ping()
     local mgopack = _rsend(self, pack, size)
     if not mgopack then
         return false
@@ -350,8 +334,7 @@ end
 ---服务端的失败（重复键、校验不过）因为没有响应可解析而一律报成功；读命令内部会临时清掉再恢复。
 ---标志挂在连接上而不是命令上，多协程共用一条连接时别人的写也会跟着变成 fire-and-forget，
 ---批量写完请及时清掉
----@param flag integer ctx.FLAGS 枚举值的按位或；0 表示清空（读命令的"存档-还原"惯用法
---- `local old = ctx:clear_flag() ... ctx:set_flag(old)` 里 old 可能就是 0）
+---@param flag integer ctx.FLAGS 枚举值的按位或；0 表示清空（clear_flag 返回的旧值可能就是 0，原样传回即可）
 function ctx:set_flag(flag)
     local known = ctx.FLAGS.CHECKSUM | ctx.FLAGS.MORETOCOME | ctx.FLAGS.EXHAUSTALLOWED
     if 0 ~= (flag & ~known) then
@@ -381,11 +364,8 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为 nInserted
 function ctx:insert(col, docs, dlens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = self.mongo:pack_insert(docs, dlens, opts, optslens)
-    return _wsend_n(self, pack, size)
+    local pack, size, more = self.mongo:pack_insert(col, docs, dlens, opts, optslens)
+    return _wsend_n(self, pack, size, more)
 end
 
 ---更新文档
@@ -397,11 +377,8 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为应答里的 n，即匹配到的文档数（matched，不是 nModified——值未变化的 $set 同样计入）
 function ctx:update(col, updates, ulens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = self.mongo:pack_update(updates, ulens, opts, optslens)
-    return _wsend_n(self, pack, size)
+    local pack, size, more = self.mongo:pack_update(col, updates, ulens, opts, optslens)
+    return _wsend_n(self, pack, size, more)
 end
 
 ---删除文档
@@ -413,11 +390,8 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为 nDeleted
 function ctx:delete(col, deletes, dlens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = self.mongo:pack_delete(deletes, dlens, opts, optslens)
-    return _wsend_n(self, pack, size)
+    local pack, size, more = self.mongo:pack_delete(col, deletes, dlens, opts, optslens)
+    return _wsend_n(self, pack, size, more)
 end
 
 ---删除集合（drop）
@@ -426,11 +400,8 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
 function ctx:drop(col, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = self.mongo:pack_drop(opts, optslens)
-    return _wsend_ok(self, pack, size)
+    local pack, size, more = self.mongo:pack_drop(col, opts, optslens)
+    return _wsend_ok(self, pack, size, more)
 end
 
 ---批量写操作（bulkWrite，MongoDB 8.0+）。全库唯一不收 col 的集合类命令：
@@ -444,8 +415,8 @@ end
 ---@return lightuserdata|true|nil mgopack 普通模式返回响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；MORETOCOME fire-and-forget 成功返回 true；发送失败返回 nil
 function ctx:bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
-    local pack, size = self.mongo:pack_bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size)
+    local pack, size, more = self.mongo:pack_bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
+    local ok, mgopack = _wsend(self, pack, size, more)
     if not ok then
         return nil
     end
@@ -463,11 +434,8 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
 function ctx:createindexes(col, indexes, ilens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = self.mongo:pack_createindexes(indexes, ilens, opts, optslens)
-    return _wsend_ok(self, pack, size)
+    local pack, size, more = self.mongo:pack_createindexes(col, indexes, ilens, opts, optslens)
+    return _wsend_ok(self, pack, size, more)
 end
 
 ---删除索引
@@ -478,11 +446,8 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
 function ctx:dropindexes(col, indexes, ilens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = self.mongo:pack_dropindexes(indexes, ilens, opts, optslens)
-    return _wsend_ok(self, pack, size)
+    local pack, size, more = self.mongo:pack_dropindexes(col, indexes, ilens, opts, optslens)
+    return _wsend_ok(self, pack, size, more)
 end
 
 -- ---- 读操作（返回 mgopack lightuserdata 或 nil）----
@@ -496,10 +461,7 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:find(col, filter, flens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return nil
-    end
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_find", filter, flens, opts, optslens)
+    local pack, size = self.mongo:pack_find(col, filter, flens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -513,10 +475,7 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:aggregate(col, pipeline, pllens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return nil
-    end
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_aggregate", pipeline, pllens, opts, optslens)
+    local pack, size = self.mongo:pack_aggregate(col, pipeline, pllens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -529,10 +488,7 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:getmore(col, cursorid, opts, optslens)
-    if not self.mongo:collection(col) then
-        return nil
-    end
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_getmore", cursorid, opts, optslens)
+    local pack, size = self.mongo:pack_getmore(col, cursorid, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -545,11 +501,8 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
 function ctx:killcursors(col, cursorids, cslens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = self.mongo:pack_killcursors(cursorids, cslens, opts, optslens)
-    return _wsend_ok(self, pack, size)
+    local pack, size, more = self.mongo:pack_killcursors(col, cursorids, cslens, opts, optslens)
+    return _wsend_ok(self, pack, size, more)
 end
 
 ---去重查询（distinct）
@@ -562,10 +515,7 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:distinct(col, key, query, qlens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return nil
-    end
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_distinct", key, query, qlens, opts, optslens)
+    local pack, size = self.mongo:pack_distinct(col, key, query, qlens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -583,10 +533,7 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return nil
-    end
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_findandmodify", query, qlens, remove, pipeline, update, ulens, opts, optslens)
+    local pack, size = self.mongo:pack_findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     return mgopack
 end
@@ -599,10 +546,7 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return integer|false n 计数整数；失败返回 false
 function ctx:count(col, query, qlens, opts, optslens)
-    if not self.mongo:collection(col) then
-        return false
-    end
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_count", query, qlens, opts, optslens)
+    local pack, size = self.mongo:pack_count(col, query, qlens, opts, optslens)
     local mgopack = _rsend(self, pack, size)
     if not mgopack then
         return false
@@ -619,7 +563,7 @@ end
 ---启动服务端逻辑会话（startSession）
 ---@return any|nil session mongo_session_ctx 实例；失败返回 nil
 function ctx:startsession()
-    local pack, size = _pack_noflag(self.mongo, self.mongo, "pack_startsession")
+    local pack, size = self.mongo:pack_startsession()
     local mgopack = _rsend(self, pack, size)
     if not mgopack then
         return nil

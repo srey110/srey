@@ -27,7 +27,7 @@ typedef struct websock_pack_ctx {
     int8_t prot;         // 操作码（ws_prot 枚举值）
     int8_t mask;         // 是否使用掩码（客户端发送时为 1）
     pack_type secprot;   // 子协议类型（如 PACK_MQTT）
-    size_t remain;       // 帧数据段在缓冲区中的剩余待读字节数
+    size_t remain;       // 帧数据段在缓冲区中的剩余待读字节数；单帧多包的链头上改记整条链的子协议字节数
     size_t dlens;        // 数据体长度（不含掩码键）
     void *secpack;       // 子协议解包结果
     struct websock_pack_ctx *next; // 单帧多子协议包时链接后续包，仅 _websock_sec_mqtt 构造、prots_net_recv 消费
@@ -511,7 +511,7 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
     buffer_external(ws->buf, pack->data, pack->dlens, _websock_mqtt_buffree);
     websock_pack_ctx *head = NULL, *tail = NULL, *node;
     struct mqtt_pack_ctx *mpack;
-    size_t seclens = 0;// 同族 unpack 一律裸写 *size、没人判 NULL；mqtt_unpack 眼下不碰
+    size_t seclens = 0, total = 0;// mqtt_unpack 裸写 *size，必须给个真地址
     sock_ctx nosk = { INVALID_SOCK, INVALID_INDEX, 0 };// 子协议解包不认连接,给个无效标识而非 NULL——同族 unpack 有裸解引用的
     // ws->buf 一次性吐空,一帧内含多个完整 MQTT 包时串成链表,避免余包积压到无新数据触发才被拾起
     while (NULL != (mpack = mqtt_unpack(NULL, &nosk, client, ws->buf, ws->ud, &seclens, status))) {
@@ -521,12 +521,16 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
         node->prot = WS_BINARY;
         node->secprot = ws->secprot;
         node->secpack = mpack;
+        total += seclens;
         if (NULL == head) {
             head = node;
         } else {
             tail->next = node;
         }
         tail = node;
+    }
+    if (NULL != head) {
+        head->remain = total;
     }
     return head;
 }
@@ -749,7 +753,6 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
 }
 void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)size;
     websock_pack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:
@@ -763,6 +766,10 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         break;
     default:
         break;
+    }
+    // 链节点只有结构体没有 data，绝不能借 dlens 记数；secpack 非空即链头(裸帧在 parse_head 置了 NULL)
+    if (NULL != pack) {
+        *size = (NULL != pack->secpack) ? pack->remain : pack->dlens;
     }
     return pack;
 }

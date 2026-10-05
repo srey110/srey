@@ -58,12 +58,12 @@
 ---@field param  table<string,string> 查询字符串键值对；语义随 decode 参数；无查询字符串时为空表
 
 ---聚合节点的原始值：C 层直接吐出的表，带两个哨兵字段。只有 redis.value() 返回这个形态；
----redis.unpack 链路上的表都已被 _node 摘净哨兵，那个形态见 RedisAggPayload
+---redis.node() 与 redis.unpack 链路上的表从一开始就不写哨兵，那个形态见 RedisAggPayload
 ---@class RedisAggValue
 ---@field resp_type  "array"|"set"|"map"|"push"|"attr"  聚合类型名
 ---@field resp_nelem integer  元素计数；map/attr 实际字段数为此值 × 2；-1 表示 null 聚合
 
----摘掉哨兵后的载荷表：array/set/push 是数组，map/attr 是键值对，元素即 Redis 数据本身，无固定字段。
+---不带哨兵的载荷表：array/set/push 是数组，map/attr 是键值对，元素即 Redis 数据本身，无固定字段。
 ---与 RedisAggValue 分开命名,是因为这个形态下 resp_type / resp_nelem 必然不存在
 ---@class RedisAggPayload
 

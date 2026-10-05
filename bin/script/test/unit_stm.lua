@@ -156,6 +156,27 @@ runner.run(function(t)
     end
     collectgarbage("collect")
 
+    -- ── 11) 回调里丢掉 reader 唯一的引用并强制 GC:reader 靠 C 帧栈槽 1 保活,回调返回后
+    -- 还要把本次快照记进 reader。栈布局一改(比如把槽 1 顶掉)就会在这里提前 __gc,
+    -- 回调返回后写进已释放的 reader(ASan 报 UAF,或快照引用丢失、退出期 _memcheck 报未释放)
+    do
+        local w = stm.new(string.rep("S", 4096))
+        local r = stm.newcopy(stm.copy(w))
+        local seen
+        local ok, a, b = r(function(lud, sz, ud)
+            r = nil
+            collectgarbage("collect")
+            collectgarbage("collect")
+            seen = utils.ud_str(lud, sz)
+            return ud, "ret2"
+        end, "UD")
+        t:eq(true, ok, "drop-in-callback: 读到新快照返回 true")
+        t:eq("UD", a, "drop-in-callback: 透传回调返回值 1")
+        t:eq("ret2", b, "drop-in-callback: 透传回调返回值 2")
+        t:eq(4096, seen and #seen, "drop-in-callback: GC 之后快照仍可读完")
+    end
+    collectgarbage("collect")
+
     do
         local w = stm.new("guard")
         local r = stm.newcopy(stm.copy(w))

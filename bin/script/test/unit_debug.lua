@@ -36,13 +36,13 @@ runner.run(function(t)
 
     -- ── coros：输入全可控，逐项对账 ────────────────────────────────
     local now = task.timer_ms()
-    local co1, co2, co3 = _spawn(_park_a), _spawn(_park_a), _spawn(_park_b)
+    local co1, co2, co3, co4 = _spawn(_park_a), _spawn(_park_a), _spawn(_park_b), _spawn(_park_a)
+    -- 条目布局同 lib/srey 的 CoroSession：每个等待者 4 格 { 协程, mtype, 到期时刻, 挂起起始时刻 }；
+    -- 13 号条目挂两个等待者，钉住按 4 格步长遍历
     dbg._set_coro_sess({
-        [11] = { waiters = { { coro = co1, mtype = 3, since = now - 100 } } },
-        [12] = { waiters = { { coro = co2, mtype = 3, since = now - 200 } } },
-        -- 同一条目里再挂一个 func 模式的等待者：它没有 coro，不该计进 suspended
-        [13] = { waiters = { { coro = co3, mtype = 5, since = now - 9000 },
-                             { func = function() end, mtype = 5 } } },
+        [11] = { co1, 3, 0, now - 100 },
+        [12] = { co2, 3, 0, now - 200 },
+        [13] = { co3, 5, 0, now - 9000, co4, 3, 0, now - 50 },
     })
     local barrier = { pending = 2, since = now - 300 }
     local sexec = { current = co1, since = now - 400,
@@ -60,19 +60,19 @@ runner.run(function(t)
     end
 
     local txt = send("coros")
-    t:check(txt and txt:find("=== 3 suspended coros in 2 stacks ===", 1, true) ~= nil,
-            "coros 头行：3 个挂起(func 模式不计) 聚成 2 类")
-    t:check(txt and txt:find("[2x] mtype=3", 1, true) ~= nil, "coros 同栈两个聚成 [2x]")
+    t:check(txt and txt:find("=== 4 suspended coros in 2 stacks ===", 1, true) ~= nil,
+            "coros 头行：4 个挂起聚成 2 类")
+    t:check(txt and txt:find("[3x] mtype=3", 1, true) ~= nil, "coros 同栈三个聚成 [3x]")
     t:check(txt and txt:find("[1x] mtype=5", 1, true) ~= nil, "coros 另一栈 [1x]")
-    -- maxage 降序：9000ms 那个（[1x]）必须排在 [2x] 前面
+    -- maxage 降序：9000ms 那个（[1x]）必须排在 [3x] 前面
     local p1 = txt and txt:find("[1x]", 1, true)
-    local p2 = txt and txt:find("[2x]", 1, true)
+    local p2 = txt and txt:find("[3x]", 1, true)
     t:check(p1 and p2 and p1 < p2, "coros 按 maxage 降序，最久的排最前")
     t:check(txt and txt:match("fork_wait pending=2 age=%d+ms") ~= nil, "coros fork_wait 行")
     t:check(txt and txt:match("held=1 hold=%d+ms waiters=2 age=%d+ms") ~= nil,
             "coros serial 行：持锁 + 2 个排队")
-    -- 汇总行五个数：suspended=3 sessions=3 fork_wait=1 serial=2(排队人数) yield=注入的 7
-    t:check(txt and txt:find("3 suspended, 3 sessions, 1 fork_wait, 2 serial, 7 yield total.",
+    -- 汇总行五个数：suspended=4 sessions=3 fork_wait=1 serial=2(排队人数) yield=注入的 7
+    t:check(txt and txt:find("4 suspended, 3 sessions, 1 fork_wait, 2 serial, 7 yield total.",
             1, true) ~= nil, "coros 汇总行五个数")
 
     -- 三张表全空时汇总行仍须打印（nyield 非零正是要靠它对账）

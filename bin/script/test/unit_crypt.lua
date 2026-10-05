@@ -1,4 +1,4 @@
--- crypt 绑定层单元测试：url/base64/crc/digest/hmac/cipher
+-- crypt 绑定层单元测试：url/base64/crc/digest/hmac(含一次算完的 sum)/cipher
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -9,6 +9,7 @@ local digest = require("srey.digest")
 local hmac   = require("srey.hmac")
 local cipher = require("srey.cipher")
 local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
+local bson   = require("lib.bson")-- 借它的 data() 拿一块 (指针, 长度) 缓冲
 
 srey.startup(function()
 runner.run(function(t)
@@ -190,6 +191,46 @@ runner.run(function(t)
         local again = d:final()
         t:eq("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
              srey.hex(again, true), "digest final 后无需 reset")
+    end
+    do
+        -- 一次算完的 digest.sum / hmac.sum 与 new + update + final 逐字节一致：各算法、块边界两侧的长度，
+        -- 密钥取空、短、恰一块、超一块(要先哈希)几种；(指针, 长度) 形态与字符串形态一致
+        local lens = { 0, 1, 63, 64, 65, 127, 128, 129, 1000 }
+        local keys = { "", "k", string.rep("K", 64), string.rep("K", 65), string.rep("K", 200) }
+        local nmis = 0
+        local s, d, h
+        for alg = DIGEST_TYPE.MD2, DIGEST_TYPE.XXH64 do
+            for _, n in ipairs(lens) do
+                s = string.rep("\x5a", n)
+                d = digest.new(alg)
+                d:update(s)
+                if d:final() ~= digest.sum(alg, s) then
+                    nmis = nmis + 1
+                    t:fail(string.format("digest.sum alg=%d len=%d", alg, n))
+                end
+                if alg <= DIGEST_TYPE.SHA512 then
+                    for _, k in ipairs(keys) do
+                        h = hmac.new(alg, k)
+                        h:update(s)
+                        if h:final() ~= hmac.sum(alg, k, s) then
+                            nmis = nmis + 1
+                            t:fail(string.format("hmac.sum alg=%d klen=%d len=%d", alg, #k, n))
+                        end
+                    end
+                end
+            end
+        end
+        t:eq(0, nmis, "digest.sum / hmac.sum 与 new + update + final 全部一致")
+        local bdoc = bson.encode({ x = string.rep("p", 1000) })-- 留着引用：指针指向它的缓冲
+        local ptr, sz = bdoc:data()
+        local raw = srey.ud_str(ptr, sz)
+        t:eq(digest.sum(DIGEST_TYPE.SHA256, raw), digest.sum(DIGEST_TYPE.SHA256, ptr, sz), "digest.sum 指针形态")
+        t:eq(hmac.sum(DIGEST_TYPE.SHA1, "kk", raw), hmac.sum(DIGEST_TYPE.SHA1, "kk", ptr, sz), "hmac.sum 指针形态")
+        -- hmac.sum 必须挡住 XXH：放过去就打到 hmac_init 的 ASSERTAB，整个进程中止
+        t:eq(false, (pcall(hmac.sum, DIGEST_TYPE.XXH32, "k", "x")), "hmac.sum 拒绝 XXH32")
+        t:eq(false, (pcall(hmac.sum, DIGEST_TYPE.XXH64, "k", "x")), "hmac.sum 拒绝 XXH64")
+        t:eq(false, (pcall(digest.sum, DIGEST_TYPE.MD2 - 1, "x")), "digest.sum 拒绝下界之外")
+        t:eq(false, (pcall(digest.sum, DIGEST_TYPE.XXH64 + 1, "x")), "digest.sum 拒绝上界之外")
     end
     do
         -- (指针, 长度) 入口在长度非 0 时拒收空指针：md5_update / hmac_update 只对 lens==0

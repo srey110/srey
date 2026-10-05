@@ -490,7 +490,7 @@ void router_closed(router_ctx *r, sock_ctx *sk);
 /// <param name="client">是否客户端连接 (未使用)</param>
 /// <param name="slice">分片标志; 0 表示完整消息</param>
 /// <param name="data">http_pack_ctx 指针</param>
-/// <param name="size">数据字节数 (未使用)</param>
+/// <param name="size">HTTP 包的记账字节数, 口径见 prots_unpack (未使用)</param>
 void router_net_recv(router_ctx *r, task_ctx *task, sock_ctx *sk,
                      subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size);
 /// <summary>

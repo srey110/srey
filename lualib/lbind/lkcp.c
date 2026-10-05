@@ -22,7 +22,7 @@ static int32_t _lkcp_new(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
 static int32_t _lkcp_stop(lua_State *lua) {
-    kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
+    kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     kcp_stop(kcp);
     return 0;
 }
@@ -59,7 +59,7 @@ static int32_t _lkcp_cfgint(lua_State *lua, int32_t tidx, const char *key,
 ///   字段与取值域见 lib/kcp.lua 的 kcp_config</param>
 /// <returns type="boolean">成功 true,失败 false</returns>
 static int32_t _lkcp_start(lua_State *lua) {
-    kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
+    kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     LPUB_CUR_TASK(lua, task);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *ip = luaL_checkstring(lua, 3);
@@ -87,12 +87,13 @@ static int32_t _lkcp_start(lua_State *lua) {
 /// <returns type="boolean">成功 true；目标不存在（名字未注册 / 数字句柄对应 task 已退出）或会话已 stop 时 false。
 /// 仅保证调用时目标存在：目标若在此之后退出，该会话的消息会被静默丢弃。探测口径同 core.bind_task</returns>
 static int32_t _lkcp_handle(lua_State *lua) {
-    kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
+    kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     name_t handle = lpub_task_handle(lua, 2);
-    task_ctx *dst = task_grab(g_loader, handle);
+    task_ctx *dst = lpub_task_grab(lua, 2, handle);
     if (NULL == dst) {
         return lpub_rtn_bool(lua, 0);
     }
+    handle = dst->handle;// 理由同 core.bind_task
     task_ungrab(dst);
     return lpub_rtn_bool(lua, ERR_OK == kcp_handle(kcp, handle));
 }
@@ -105,7 +106,7 @@ static int32_t _lkcp_handle(lua_State *lua) {
 /// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1(复制)</param>
 /// <returns type="boolean">成功 true,失败 false</returns>
 static int32_t _lkcp_send(lua_State *lua) {
-    kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
+    kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     size_t size;
     int32_t copy;
     void *data = lpub_check_buf(lua, 2, &size, &copy);

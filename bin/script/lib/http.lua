@@ -12,12 +12,17 @@ local SLICE_TYPE = SLICE_TYPE
 local table = table
 local string = string
 local type = type
+local pairs = pairs
 local HTTP_VERSION = "1.1" -- 固定使用 HTTP/1.1
--- 头名 / 头值校验取自 C，不在这里重抄：is_token 取 utils.h、head_val_ok 取 http.h
---（都是 router.c 组头用的那份）。校验不过按 router.c 的做法整条丢弃 + 告警，不 abort。
--- 头部块总长不卡：HTTP_MAX_HEADLENS 只作用于接收侧
-local is_token = srey_http.is_token
-local head_val_ok = srey_http.head_val_ok
+local REQ_TAIL = " HTTP/" .. HTTP_VERSION .. "\r\n" -- 请求行 url 之后的固定部分
+-- 头名 / 头值校验在 C 里一次判完（head_check，判据同 router.c 组头那份）。校验不过按 router.c 的
+-- 做法整条丢弃 + 告警，不 abort。头部块总长不卡：HTTP_MAX_HEADLENS 只作用于接收侧
+local head_check = srey_http.head_check
+local AUTO_CT = 0x01 -- head_check 的 autoflags：Content-Type 由本模块自己写
+local AUTO_FRAME = 0x02 -- 同上：Content-Length / Transfer-Encoding 由本模块自己写
+local http_respond = srey_http.respond
+-- 状态行按状态码缓存。只缓存 [100, 999] 的整数码：业务传的怪码不进表，表就撑不大
+local _status_lines = {}
 local http = {}
 
 -- ── 响应解包 ──────────────────────────────────────────────────────────────
@@ -56,16 +61,20 @@ http.datastr = srey_http.datastr
 ---@field data    string?                 报文体内容；空时为 nil
 ---@field cksize  integer?                chunked 模式下累计接收字节数；非 chunked 时不存在
 
+-- http.unpack 的本体：状态行由调用方给（客户端判 1xx 时已取过一次），构造器一次建好四个字段
+local function _unpack(pack, st)
+    return {
+        status  = st,
+        chunked = srey_http.chunked(pack),
+        heads   = srey_http.heads(pack),
+        data    = srey_http.datastr(pack),
+    }
+end
 ---将整个 HTTP 包解包为 Lua 表
 ---@param pack lightuserdata http_pack_ctx 指针
 ---@return HttpPack tb 解包结果
 function http.unpack(pack)
-    local tb = {}
-    tb.status  = srey_http.status(pack)
-    tb.chunked = srey_http.chunked(pack)
-    tb.heads   = srey_http.heads(pack)
-    tb.data    = srey_http.datastr(pack)
-    return tb
+    return _unpack(pack, srey_http.status(pack))
 end
 ---将数字状态码转换为对应文本描述（如 200 → "OK"）
 ---@type fun(code:integer):string
@@ -73,24 +82,24 @@ http.code_status = srey_http.code_status
 
 -- ── 内部发送/接收 ─────────────────────────────────────────────────────────
 
----状态行是不是 1xx 中间响应。RFC 7231 §6.2：最终响应还在后面，客户端必须容忍任意条
+---取状态行，并判它是不是 1xx 中间响应。RFC 7231 §6.2：最终响应还在后面，客户端必须容忍任意条
 ---@param pack lightuserdata http_pack_ctx 指针
+---@return string[]|nil st 状态行三元组，同 http.status
 ---@return boolean interim
 local function _http_interim(pack)
     local st = srey_http.status(pack)
     local code = st and tonumber(st[2])
-    return nil ~= code and code >= 100 and code < 200
+    return st, nil ~= code and code >= 100 and code < 200
 end
 
 ---内部发送函数：rsp=true 单向发送（服务端响应），rsp=false 同步发送并接收回包；
 ---chunked 响应时循环读取分片并通过 ckfunc(fin,data,size) 回调，直到 fin=true
 ---@param rsp boolean 是否为响应（单向）
 ---@param sk userdata 连接标识
----@param msg string[] 待拼接的消息片段数组
+---@param smsg string 整条待发报文
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片回调
 ---@return HttpPack|nil pack 解包后的响应表；失败返回 nil
-local function _http_send(rsp, sk, msg, ckfunc)
-    local smsg = table.concat(msg)
+local function _http_send(rsp, sk, smsg, ckfunc)
     if rsp then
         srey.send(sk, smsg, #smsg, 1)
         return
@@ -98,19 +107,24 @@ local function _http_send(rsp, sk, msg, ckfunc)
     local pack, _, slice = srey.syn_send(sk, smsg, #smsg, 1)
     -- 1xx 是中间响应，C 侧当独立完整消息投出(slice=0)：不跳过就会把它当结果返回，
     -- 真正的响应留在连接上被下一次请求取走。HEAD 的 INIT_NOBODY 登记 C 侧跨 1xx 保留
-    while pack and _http_interim(pack) do
+    local st, interim
+    while pack do
+        st, interim = _http_interim(pack)
+        if not interim then
+            break
+        end
         pack, _, slice = srey.syn_recv(sk)
     end
     if not pack then
         return
     end
-    pack = http.unpack(pack)
+    pack = _unpack(pack, st)
     -- 按协议层给的分片标记决定要不要接着收，不只认 chunked：响应既无 Content-Length 又无
     -- Transfer-Encoding 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7)，C 侧同样按分片投、
     -- 末片由关闭事件补。判定留在 C 一处，这里重抄一遍必然分叉(1xx/204/304 也没有 CL/TE)
     if SLICE_TYPE.START == slice then
-        pack.cksize = 0
-        local ok, data, hdata, hsize, fin
+        local ok, data, hdata, hsize, hstr, fin
+        local cksize, nchunk = 0, 0
         local chunks
         if not ckfunc then
             chunks = {}
@@ -120,56 +134,60 @@ local function _http_send(rsp, sk, msg, ckfunc)
             if not ok then
                 return nil
             end
-            hdata, hsize = http.data(data)
-            if hsize and hsize > 0 then
-                pack.cksize = pack.cksize + hsize
-                if ckfunc then
+            if ckfunc then
+                hdata, hsize = http.data(data)
+                if hsize and hsize > 0 then
+                    cksize = cksize + hsize
                     ckfunc(fin, hdata, hsize)
                 else
-                    chunks[#chunks + 1] = srey.ud_str(hdata, hsize)
+                    ckfunc(fin, nil, 0)
                 end
-            elseif ckfunc then
-                ckfunc(fin, nil, 0)
+            else
+                -- 不回调就直接取成串收着，省一次 C 调用；空片 datastr 返回 nil
+                hstr = srey_http.datastr(data)
+                if nil ~= hstr then
+                    cksize = cksize + #hstr
+                    nchunk = nchunk + 1
+                    chunks[nchunk] = hstr
+                end
             end
             if fin then
                 break
             end
         end
-        if chunks and #chunks > 0 then
+        pack.cksize = cksize
+        if nchunk > 0 then
             pack.data = table.concat(chunks)
         end
     end
     return pack
 end
 
--- 头值转上线的字节,只收 string 与 number。别的类型要过 __tostring,抛出来就越过了
--- 下面整条校验链,而这一族的契约是丢头加告警、从不抛。数字的写法见 num_str
-local function _head_val(val)
-    local vt = type(val)
-    if "string" == vt then
-        return val
-    end
-    if "number" ~= vt then
-        return nil
-    end
-    return num_str(val)
-end
 -- 本函数按 info 类型自己生成的头，调用方不能再传一份：两条 Content-Length（或 TE 叠 CL）
 -- 会被 srey 自己的解析器判为请求走私、整包丢弃并断连。命中即整条丢弃 + 告警，
--- 与 C 侧 _router_send_core 同一处置，两个 HTTP 面对同一攻击面给出同一结论。
--- Content-Type 只在 table 分支自动生成，其余分支得靠调用方传，故按 msgtype 分别判
-local function _is_auto_head(lk, msgtype, rsp)
-    if "content-type" == lk then
-        -- 只有 table 分支自己写 Content-Type；其余分支要靠调用方传，不能拦
-        return "table" == msgtype
+-- 与 C 侧 _router_send_core 同一处置。Content-Type 只有 table 分支自己写；帧长头三个 body
+-- 分支都自己写，无 body 的响应也补 Content-Length: 0，唯独"请求 + 无 body"什么都不写、放行
+local function _auto_flags(msgtype, rsp)
+    if "table" == msgtype then
+        return AUTO_CT | AUTO_FRAME
     end
-    if "content-length" ~= lk and "transfer-encoding" ~= lk then
-        return false
+    if "string" == msgtype or "function" == msgtype or rsp then
+        return AUTO_FRAME
     end
-    -- 三个 body 分支都自己写帧长头，无 body 的响应下面补 Content-Length: 0，
-    -- 调用方再传一条就是重复或 TE 叠 CL。唯独"请求 + 无 body"本函数什么都不写，
-    -- 调用方那条是这条请求仅有的帧长头，放行
-    return "string" == msgtype or "table" == msgtype or "function" == msgtype or rsp
+    return 0
+end
+-- head_check 没通过时按结果码告警。头值只收 string 与 number：别的类型要过 __tostring,
+-- 抛出来就越过了整条校验链，而这一族的契约是丢头加告警、从不抛
+local function _head_warn(rc, key)
+    if 1 == rc then
+        WARN("http header key is not a valid token, dropped.")
+    elseif 2 == rc then
+        WARN("http header %s value must be a string or number, dropped.", key)
+    elseif 3 == rc then
+        WARN("http header %s is generated by this function, dropped.", key)
+    else
+        WARN("http header %s value contains NUL or CRLF, dropped.", key)
+    end
 end
 ---构造并发送 HTTP 消息的核心函数。info 支持 string（带 Content-Length）、
 ---table（自动 JSON 编码）、function（chunked 流式分块发送，返回 nil 或空串终止流）三种类型
@@ -183,6 +201,7 @@ end
 ---       且不去跑那个生产者（HEAD 响应到空行即终止，带着 chunked 也不会让对端接着等块）
 ---@param sk userdata 连接标识
 ---@param status string 请求行或状态行（已含 \r\n）
+---@param block string? 预渲染好的头部块（每行已含 \r\n），原样拼在状态行后、不做校验，见 _response_lua
 ---@param headers table<string,string|number>? 附加头部 key→value 表；本函数按 info 类型自动生成的头
 ---       （Content-Length、Transfer-Encoding，以及 info 为 table 时的 Content-Type）
 ---       不得传入，传了整条丢弃并告警——留着会造出两条 Content-Length 或 TE 叠 CL，
@@ -195,52 +214,72 @@ end
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；rsp=true 或失败时返回 nil
-local function _http_msg(rsp, nocl, headonly, sk, status, headers, ckfunc, info, ...)
-    local msg = {}
-    table.insert(msg, status)
+local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc, info, ...)
     local msgtype = type(info)
+    -- 有附加头才建表按段拼；没有（最常见）各分支直接 .. 成整条，不建表也不再多拼一次帧长头
+    local msg, n
     if nil ~= headers then
+        -- 预留 8 个数组槽（状态行 + 头部块 / 一个头 4 段 + 帧长头 + body），免得边写边扩。
+        -- 槽里预置的是 nil，# 不可靠，全程用 n 计数，拼接时按 1..n 取
+        msg = { status, block, nil, nil, nil, nil, nil, nil }
+        n = (nil == block) and 1 or 2
+        local autoflags = _auto_flags(msgtype, rsp)
+        local sval, rc
         for key, val in pairs(headers) do
-            local sval = _head_val(val)
-            if not is_token(key) then
-                WARN("http header key is not a valid token, dropped.")
-            elseif nil == sval then
-                WARN("http header %s value must be a string or number, dropped.", key)
-            elseif _is_auto_head(string.lower(key), msgtype, rsp) then
-                WARN("http header %s is generated by this function, dropped.", key)
-            elseif not head_val_ok(sval) then
-                WARN("http header %s value contains NUL or CRLF, dropped.", key)
+            sval, rc = head_check(key, val, autoflags)
+            if nil == sval then
+                _head_warn(rc, key)
             else
-                local n = #msg
                 msg[n + 1] = key
                 msg[n + 2] = ": "
                 msg[n + 3] = sval
                 msg[n + 4] = "\r\n"
+                n = n + 4
             end
         end
     end
     if "string" == msgtype then
-        table.insert(msg, string.format("Content-Length: %d\r\n\r\n", #info))
-        if not headonly then
-            table.insert(msg, info)
+        if nil == msg then
+            return _http_send(rsp, sk, status .. (block or "") .. "Content-Length: " .. #info .. "\r\n\r\n"
+                                       .. (headonly and "" or info), ckfunc)
         end
-        return _http_send(rsp, sk, msg, ckfunc)
+        n = n + 1
+        msg[n] = "Content-Length: " .. #info .. "\r\n\r\n"
+        if not headonly then
+            n = n + 1
+            msg[n] = info
+        end
+        return _http_send(rsp, sk, table.concat(msg, "", 1, n), ckfunc)
     elseif "table" == msgtype then
         local jmsg = json.encode(info)
-        table.insert(msg, string.format("Content-Type: application/json\r\nContent-Length: %d\r\n\r\n", #jmsg))
-        if not headonly then
-            table.insert(msg, jmsg)
+        if nil == msg then
+            return _http_send(rsp, sk, status .. (block or "") .. "Content-Type: application/json\r\nContent-Length: "
+                                       .. #jmsg .. "\r\n\r\n" .. (headonly and "" or jmsg), ckfunc)
         end
-        return _http_send(rsp, sk, msg, ckfunc)
+        n = n + 1
+        msg[n] = "Content-Type: application/json\r\nContent-Length: " .. #jmsg .. "\r\n\r\n"
+        if not headonly then
+            n = n + 1
+            msg[n] = jmsg
+        end
+        return _http_send(rsp, sk, table.concat(msg, "", 1, n), ckfunc)
     elseif "function" == msgtype then
         -- 流式分块发送：每次调用 info(...) 取一块数据，拼成 chunked 格式后发送，
-        -- info 返回 nil 或空串时结束流并补发终止块。
-        table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
+        -- info 返回 nil 或空串时结束流并补发终止块。头部先拼成串，随首块一起发；之后每块只发块本身
+        local prefix
+        if nil == msg then
+            prefix = status .. (block or "") .. "Transfer-Encoding: chunked\r\n\r\n"
+        else
+            n = n + 1
+            msg[n] = "Transfer-Encoding: chunked\r\n\r\n"
+            prefix = table.concat(msg, "", 1, n)
+        end
         if headonly then
             -- 生产者要跑完才知道长度, HEAD 本就不该真去跑它: 头到此为止, CL 省掉
             WARN("http: HEAD response body type 'function' has no known length, Content-Length omitted.")
-            return _http_send(rsp, sk, msg, ckfunc)
+            return _http_send(rsp, sk, prefix, ckfunc)
         end
+        -- 每块一次 .. 拼接，不再过表
         local smsg, rtn
         while true do
             rtn = info(...)
@@ -251,33 +290,26 @@ local function _http_msg(rsp, nocl, headonly, sk, status, headers, ckfunc, info,
                 ERROR("chunked function must return string, got %s.", type(rtn))
                 -- 生产者违约,body 已截断:补终止块让对端退出 chunked 累积状态,但按失败返回,
                 -- 不把截断的 body 当成一次完整请求交回调用方。
-                -- msg 未发送时(首次迭代)一并带上头部,避免对端收到孤立的终止块
-                table.insert(msg, "0\r\n\r\n")
+                -- 头部未发送时(首次迭代)由 prefix 一并带上,避免对端收到孤立的终止块
                 -- 补了终止块后这仍是一条语法完整的 chunked 请求,对端必回响应,故走正常发送路径把它收完再丢弃:
-                -- 响应自身也可能是 chunked(只 syn_send 收不干净),而 _wait_net_recv 按 skid 匹配、不区分请求,
+                -- 响应自身也可能是 chunked(只 syn_send 收不干净),而 _wait_msg 按 skid 匹配、不区分请求,
                 -- 漏收就会落到下一次请求注册的等待者上,连接从此错位一格。ckfunc 传 nil:不拿要丢弃的数据回调业务
-                _http_send(rsp, sk, msg, nil)
+                _http_send(rsp, sk, prefix .. "0\r\n\r\n", nil)
                 return
             end
             -- 空串按结束处理：既是 chunked 终止块的语义，也避免此处零状态推进死循环
             if 0 == #rtn then
                 break
             end
-            table.insert(msg, string.format("%x\r\n", #rtn))
-            table.insert(msg, rtn)
-            table.insert(msg, "\r\n")
-            smsg = table.concat(msg)
+            smsg = prefix .. string.format("%x\r\n", #rtn) .. rtn .. "\r\n"
             if not srey.send(sk, smsg, #smsg, 1) then
                 -- 中间帧失败仍尝试补发终止块,让对端退出 chunked 累积状态
                 srey.send(sk, "0\r\n\r\n", 5, 1)
                 return
             end
-            for i = #msg, 1, -1 do
-                msg[i] = nil
-            end
+            prefix = ""
         end
-        table.insert(msg, "0\r\n\r\n")
-        return _http_send(rsp, sk, msg, ckfunc)
+        return _http_send(rsp, sk, prefix .. "0\r\n\r\n", ckfunc)
     else
         -- info 给了却不是 string/table/function：三个 body 分支一个都不命中，会被当成"无 body"
         -- 悄悄发走。数字、布尔、userdata 都落在这里，调用方从返回值上看不出 body 没发出去。
@@ -285,16 +317,22 @@ local function _http_msg(rsp, nocl, headonly, sk, status, headers, ckfunc, info,
         if nil ~= info then
             WARN("http: unsupported body type '%s', sent without body.", msgtype)
         end
+        local tail
         if rsp and not nocl then
             -- 响应无 body 必须显式 Content-Length: 0（RFC 7230 §3.3.3 规则 7：响应缺 CL/TE 时
             -- body 由连接关闭界定，keep-alive 下合规客户端会一直读到关闭才认为响应结束）。
             -- C 侧 http_pack_content 对空 body 也是统一写 Content-Length: 0
-            table.insert(msg, "Content-Length: 0\r\n\r\n")
+            tail = "Content-Length: 0\r\n\r\n"
         else
             -- 请求无 body 不带 CL/TE 即可（同规则 6）；1xx/204/304 响应则是禁止带（见 http.response）
-            table.insert(msg, "\r\n")
+            tail = "\r\n"
         end
-        return _http_send(rsp, sk, msg, ckfunc)
+        if nil == msg then
+            return _http_send(rsp, sk, status .. (block or "") .. tail, ckfunc)
+        end
+        n = n + 1
+        msg[n] = tail
+        return _http_send(rsp, sk, table.concat(msg, "", 1, n), ckfunc)
     end
 end
 
@@ -308,7 +346,7 @@ local function _req_status(method, url)
         WARN("http url contains NUL or CRLF, request dropped.")
         return nil
     end
-    return string.format("%s %s HTTP/%s\r\n", method, url, HTTP_VERSION)
+    return method .. " " .. url .. REQ_TAIL
 end
 
 -- ── 公共 API ──────────────────────────────────────────────────────────────
@@ -330,7 +368,7 @@ function http.get(sk, url, headers, ckfunc)
     if not status then
         return nil
     end
-    return _http_msg(false, false, false, sk, status, headers, ckfunc)
+    return _http_msg(false, false, false, sk, status, nil, headers, ckfunc)
 end
 
 ---同步 HEAD 请求：只要响应头，服务端不回报文体。
@@ -358,7 +396,7 @@ function http.head_req(sk, url, headers)
         WARN("http head: set method failed, skid %s.", tostring(sk.skid))
         return nil
     end
-    return _http_msg(false, false, false, sk, status, headers, nil)
+    return _http_msg(false, false, false, sk, status, nil, headers, nil)
 end
 
 ---同步 POST 请求；info 为报文体（string/table/function），用法同 _http_msg
@@ -381,19 +419,32 @@ function http.post(sk, url, headers, ckfunc, info, ...)
     if not status then
         return nil
     end
-    return _http_msg(false, false, false, sk, status, headers, ckfunc, info, ...)
+    return _http_msg(false, false, false, sk, status, nil, headers, ckfunc, info, ...)
 end
 
----http.response 与 http.response_head 的共同实现。headonly 由那两个入口各自写死,
+local function _status_line_new(code)
+    local status = string.format("HTTP/%s %03d %s\r\n", HTTP_VERSION, code, http.code_status(code))
+    if "integer" == math.type(code) and code >= 100 and code <= 999 then
+        _status_lines[code] = status
+    end
+    return status
+end
+---http.response 与 http.response_head 在 C 组包不接时走的 Lua 组包原路，也以 http._response_lua 导出给
+---router（router 先自己调 http._respond，返回 false 才调它，省一层转发）。
 ---业务不直接调本函数;fd 之后各参数的完整约束见 http.response
 ---@param headonly boolean 回 HEAD 请求：头与同一资源的 GET 逐字节一致，但不发报文体
 ---@param sk userdata 连接标识
 ---@param code integer 状态码（如 200、404）
+---@param block string? 预渲染好的头部块（每行已含 \r\n），原样拼在状态行后、不做校验：只给模块常量用，
+---       且不得含本模块按 info 自动生成的头（帧长头；info 为 table 时还有 Content-Type）
 ---@param headers table<string,string|number>? 附加头部
 ---@param info string|table<any,any>|fun(...):string?|nil 报文体，约束见 http.response
 ---@param ... any 传给 info 函数的额外参数
-local function _response(headonly, sk, code, headers, info, ...)
-    local status = string.format("HTTP/%s %03d %s\r\n", HTTP_VERSION, code, http.code_status(code))
+local function _response_lua(headonly, sk, code, block, headers, info, ...)
+    local status = _status_lines[code]
+    if nil == status then
+        status = _status_line_new(code)
+    end
     -- RFC 7230 §3.3.2：1xx 与 204 一律禁止带 Content-Length；304 允许带，但那个值应当反映
     -- 实体的真实长度，这里根本没有实体，补 Content-Length: 0 等于谎报资源为空，故一并跳过。
     -- 严格代理会因此丢弃或重置这类响应，所以不能对所有无 body 响应无差别补 CL
@@ -401,8 +452,20 @@ local function _response(headonly, sk, code, headers, info, ...)
     if nocl then
         info = nil-- 这三类响应同样禁带报文体：给了也丢，与 C 侧 _router_send_core 同口径
     end
-    _http_msg(true, nocl, headonly, sk, status, headers, nil, info, ...)
+    _http_msg(true, nocl, headonly, sk, status, block, headers, nil, info, ...)
 end
+-- http.response 与 http.response_head 的共同实现，参数同 _response_lua
+local function _response(headonly, sk, code, block, headers, info, ...)
+    -- 常见形状（string / nil 报文体、没有头表时的 table 报文体、合法头表）整条在 C 里组包直发，字节同 _response_lua 的原路；
+    -- 返回 false 才往下走（带头表的 table、function 报文体、要告警丢头、怪码、编不成 JSON 等）
+    if http_respond(sk, code, headers, info, headonly, block) then
+        return
+    end
+    _response_lua(headonly, sk, code, block, headers, info, ...)
+end
+-- 给 router 的两半：先 _respond（C 组包直发，参数见 srey.http.respond），返回 false 再 _response_lua
+http._respond = http_respond
+http._response_lua = _response_lua
 ---向客户端发送 HTTP 响应（单向，不等待回包）
 ---@param sk userdata 连接标识
 ---@param code integer 状态码（如 200、404）
@@ -413,7 +476,7 @@ end
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
 function http.response(sk, code, headers, info, ...)
-    _response(false, sk, code, headers, info, ...)
+    _response(false, sk, code, nil, headers, info, ...)
 end
 
 ---回 HEAD 请求：头与同一资源的 GET 完全一致（含按 info 算出的真实 Content-Length），但不发
@@ -427,7 +490,7 @@ end
 ---       长度，只发头且省略 Content-Length
 ---@param ... any 传给 info 函数的额外参数
 function http.response_head(sk, code, headers, info, ...)
-    _response(true, sk, code, headers, info, ...)
+    _response(true, sk, code, nil, headers, info, ...)
 end
 
 return http

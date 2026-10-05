@@ -21,6 +21,9 @@ int32_t _pgsql_may_resume(void *data);
 /// <param name="ev">事件上下文</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护解析状态</param>
+/// <param name="size">输出：结果包为上一个 ReadyForQuery 之后到本次 ReadyForQuery 的命令阶段消息字节之和，
+///   通知（NotificationResponse）与 CopyInResponse 包为该条消息自身的字节数；只用于内存记账，不是 data 处可读的长度。
+///   没返回包时也可能写入（如收到 ReadyForQuery 但没有累积包）。必须非 NULL</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>命令阶段返回 pgpack_ctx，认证阶段内部消费返回 NULL；数据不足或出错返回 NULL</returns>
 void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,

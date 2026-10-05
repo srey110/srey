@@ -2,6 +2,18 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
+local seri   = require("srey.seri")
+
+-- 取 coros 汇总行的计数：suspended(coro_sess 里的等待者) / sessions / fork_wait / serial(排队数) / yield total。
+-- 发请求的协程自己也挂着一个，只比前后差值
+local function _counts()
+    local ptr, sz = seri.pack("coros")
+    local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
+    local txt = rdata and srey.ud_str(rdata, rsize) or ""
+    local c = { txt:match("(%d+) suspended, (%d+) sessions, (%d+) fork_wait, (%d+) serial, (%d+) yield total") }
+    assert(c[1], "coros summary not matched: " .. txt)-- 不挡的话各字段全 nil，计数断言变成 nil == nil 恒过
+    return { susp = tonumber(c[1]), sess = tonumber(c[2]), fork = tonumber(c[3]), serial = tonumber(c[4]), nyield = tonumber(c[5]) }
+end
 
 srey.startup(function()
 runner.run(function(t)
@@ -185,5 +197,57 @@ runner.run(function(t)
         t:eq(0, #qu2, "_drain: 追加的元素也被清空")
     end
 
+    -- ── 不可 yield 处调 fork_wait：立即抛错，屏障与计数都不留 ──────────
+    -- table.sort 比较器（require 的加载器、gsub 的替换函数同理）经 C 调用进来，协程身份守卫照样放行。
+    -- 以前先登记屏障、起子任务，到 yield 才失败：fork_barriers / nyield 只加不减，
+    -- 最后一个子任务完成时无实参唤醒已回池的父协程，它死在池里，下一个取到它的 fork 被吞
+    do
+        local c0 = _counts()
+        local ok, err
+        local child = 0
+        srey.fork(function()
+            ok, err = pcall(table.sort, { 2, 1 }, function(a, b)
+                srey.fork_wait({
+                    function() srey.sleep(10); child = child + 1 end,
+                    function() srey.sleep(60); child = child + 1 end,
+                })
+                return a < b
+            end)
+        end)
+        srey.sleep(120)-- 旧行为下两个子任务在此期间跑完，第二个完成时误唤醒已回池的父协程
+        t:eq(false, ok, "sort 比较器里调 fork_wait 抛错")
+        t:check(nil ~= string.find(tostring(err), "cannot yield", 1, true),
+                "登记前就报 cannot yield（实际 " .. tostring(err) .. "）")
+        t:eq(0, child, "子任务没被起")
+        local c1 = _counts()
+        t:eq(c0.fork, c1.fork, "fork_wait 屏障不残留")
+        t:eq(c0.nyield, c1.nyield, "nyield 不残留")
+        -- 每个 fork 都先挂起占住自己的协程，才会轮到池里更深处的那个（死协程就在那）
+        local hit = 0
+        for _ = 1, 4 do
+            srey.fork(function() srey.sleep(20); hit = hit + 1 end)
+        end
+        srey.sleep(100)
+        t:eq(4, hit, "之后的 fork 全部执行，没有被死协程吞掉")
+    end
+
+    -- ── 池里协程被无实参误唤醒：自己出池退出，不留死协程 ───────────────
+    -- 收缩用专用退出哨兵，nil 不再当收缩。这里直接模拟一次无实参误唤醒
+    -- （业务里的来源是 fork_wait / serial 的直接句柄唤醒落到已回池的协程上）
+    do
+        local co
+        srey.fork(function() co = coroutine.running() end)
+        srey.sleep(10)-- 跑完回池，挂在池循环的 yield 上
+        if t:check(nil ~= co and "suspended" == coroutine.status(co), "fork 跑完的协程挂在池里") then
+            coroutine.resume(co)-- 测试专用的裸 resume；日志里会留一条 coroutine pool 的 ERROR，属预期
+            t:eq("dead", coroutine.status(co), "误唤醒后协程退出")
+        end
+        local hit = 0
+        for _ = 1, 4 do
+            srey.fork(function() srey.sleep(20); hit = hit + 1 end)
+        end
+        srey.sleep(100)
+        t:eq(4, hit, "被误唤醒的协程已出池，之后的 fork 全部执行")
+    end
 end)
 end)

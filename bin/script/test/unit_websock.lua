@@ -3,14 +3,20 @@
 --      且默认端口不能因大小写落错分支;
 --   2) text_continua 的生产者返回非 string / userdata 缺 size 是违约,须记 ERROR 并返回 false,
 --      不可当成正常流结束——那会把截断的消息以 fin=1 收尾,对端当成一条完整消息。
--- 同一 task 内起 WEBSOCK 监听(C 层自动完成升级握手)再连回本机,server 侧不回任何数据。
+-- 同一 task 内起 WEBSOCK 监听(C 层自动完成升级握手)再连回本机,server 侧只在第 3) 段原样回帧,其余不回。
 -- 末尾另有 MQTT over WS 一段:连 test.server_ws(15003) 走完 bind + CONNECT/CONNACK。
+-- 3) websock.frame(多返回值)与 websock.unpack(表)是两份平行实现:收到的每一帧两边逐字段比，
+--    覆盖 0/125/126 长度、分片、ping/pong/close、mask 0/1，以及带子协议的帧。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local wbsk   = require("lib.websock")
 local utils  = require("srey.utils")
 local websock = require("srey.websock")
+
+-- frame 与 unpack 逐字段比的计数与不一致记录
+local ws_ncmp = 0
+local ws_mis = {}
 
 -- 组帧参数的截断回归：mask/fin 曾用裸 (int32_t) 转换，2^32 静默变 0 —— 掩码位被清掉的帧
 -- 违反 RFC 6455 §5.1，对端必须断连；fin 被清掉则把终帧变成非终帧，卡死对端的分片重组
@@ -32,6 +38,19 @@ end
 
 local PORT = 15048
 
+-- 同一帧分别过 frame 与 unpack：返回值恒为 6 个、零长帧 data 也不为 nil、各字段与 unpack 的表一致
+local function _ws_compare(pack, label)
+    local nret = select("#", websock.frame(pack))
+    local fin, prot, secprot, secpack, data, size = websock.frame(pack)
+    local u = websock.unpack(pack)
+    ws_ncmp = ws_ncmp + 1
+    if 6 ~= nret or nil == data or fin ~= u.fin or prot ~= u.prot or secprot ~= u.secprot
+        or secpack ~= u.secpack or data ~= u.data or size ~= u.size then
+        ws_mis[#ws_mis + 1] = label
+    end
+    return fin, prot, data, size
+end
+
 -- 第 1 块正常(先发出首帧,让对端进入 continuation 累积状态),第 2 块返回 number 触发违约
 local function _bad_producer(state)
     state.n = state.n + 1
@@ -43,8 +62,39 @@ end
 
 srey.startup(function()
 runner.run(function(t)
-    srey.on_recved(function()
-        -- server 侧收到什么都不回:本用例只关心客户端 API 的返回值,不需要响应
+    -- 收到的每一帧都过一遍 _ws_compare。只有 frame 那段把 echo 打开:服务端不带掩码原样回一帧
+    -- (close 不回)，客户端那头再比一次；其余用例只关心客户端 API 的返回值，server 侧不回
+    local echo = false
+    local srv_got, cli_got = {}, {}
+    srey.on_recved(function(pktype, sk, client, slice, data)
+        if PACK_TYPE.WEBSOCK ~= pktype then
+            return
+        end
+        local fin, prot, d, sz = _ws_compare(data, (0 == client and "srv#" or "cli#") .. ws_ncmp)
+        if not echo then
+            return
+        end
+        local rec = { fin = fin, prot = prot, slice = slice, body = srey.ud_str(d, sz) or "" }
+        if 0 ~= client then
+            cli_got[#cli_got + 1] = rec
+            return
+        end
+        srv_got[#srv_got + 1] = rec
+        local f, fs
+        if WEBSOCK_PROT.PING == prot then
+            f, fs = websock.pack_ping(0)
+        elseif WEBSOCK_PROT.PONG == prot then
+            f, fs = websock.pack_pong(0)
+        elseif WEBSOCK_PROT.CONTINUA == prot then
+            f, fs = websock.pack_continua(0, fin, rec.body)
+        elseif WEBSOCK_PROT.TEXT == prot then
+            f, fs = websock.pack_text(0, fin, rec.body)
+        elseif WEBSOCK_PROT.BINARY == prot then
+            f, fs = websock.pack_binary(0, fin, rec.body)
+        end
+        if f then
+            srey.send(sk, f, fs, 0)
+        end
     end)
 
     local lid = srey.listen(PACK_TYPE.WEBSOCK, SSL_NAME.NONE, "0.0.0.0", PORT)
@@ -105,6 +155,64 @@ runner.run(function(t)
         -- srey.connect 那一刻才转交框架，没走到 connect 时它归调用方，释放途径是有的
     end
 
+    -- ── frame 与 unpack 逐字段一致 ──────────────────────────────────────
+    -- 客户端发 mask=1 的帧、服务端回 mask=0 的帧，两头收到的都比一次
+    local wsk = wbsk.connect("ws://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE)
+    if t:check(wsk and wsk.valid, "frame 用例连上") then
+        echo = true
+        -- { 组帧函数, fin, 载荷, 期望的 slice }；控制帧没有载荷参数
+        local frames = {}
+        for _, n in ipairs({ 0, 125, 126 }) do
+            frames[#frames + 1] = { websock.pack_text, 1, string.rep("t", n), 0 }
+            frames[#frames + 1] = { websock.pack_binary, 1, string.rep("b", n), 0 }
+        end
+        frames[#frames + 1] = { websock.pack_text, 0, "aa", SLICE_TYPE.START }
+        frames[#frames + 1] = { websock.pack_continua, 0, "", SLICE_TYPE.SLICE }
+        frames[#frames + 1] = { websock.pack_continua, 0, string.rep("c", 126), SLICE_TYPE.SLICE }
+        frames[#frames + 1] = { websock.pack_continua, 1, "zz", SLICE_TYPE.END }
+        frames[#frames + 1] = { websock.pack_ping }
+        frames[#frames + 1] = { websock.pack_pong }
+        frames[#frames + 1] = { websock.pack_close }
+        local function wait(nsrv, ncli)
+            for _ = 1, 150 do
+                if #srv_got >= nsrv and #cli_got >= ncli then
+                    break
+                end
+                srey.sleep(20)
+            end
+        end
+        local f, fs
+        for _, e in ipairs(frames) do
+            if e[2] then
+                f, fs = e[1](1, e[2], e[3])
+            else
+                f, fs = e[1](1)
+            end
+            -- close 等前面的回帧都到了再发：服务端收到 close 就断连，排在后面的回帧发不出去
+            if e[1] == websock.pack_close then
+                wait(#frames - 1, #frames - 1)
+            end
+            srey.send(wsk, f, fs, 0)
+        end
+        wait(#frames, #frames - 1)
+        echo = false
+        t:eq(#frames, #srv_got, "服务端收齐全部帧")
+        t:eq(#frames - 1, #cli_got, "客户端收齐回帧(close 不回)")
+        for i, e in ipairs(frames) do
+            if e[2] then
+                t:eq(e[3], srv_got[i] and srv_got[i].body, "服务端载荷 #" .. i)
+                t:eq(e[4], srv_got[i] and srv_got[i].slice, "服务端 slice #" .. i)
+                t:eq(e[3], cli_got[i] and cli_got[i].body, "客户端载荷 #" .. i)
+            end
+        end
+        t:eq(WEBSOCK_PROT.PING, srv_got[#frames - 2] and srv_got[#frames - 2].prot, "ping 帧")
+        t:eq(WEBSOCK_PROT.PONG, srv_got[#frames - 1] and srv_got[#frames - 1].prot, "pong 帧")
+        t:eq(WEBSOCK_PROT.CLOSE, srv_got[#frames] and srv_got[#frames].prot, "close 帧")
+        srey.close(wsk)
+    end
+    t:check(ws_ncmp >= 25, "frame 与 unpack 比过的帧数 " .. ws_ncmp)
+    t:eq(0, #ws_mis, "frame 与 unpack 逐字段一致: " .. table.concat(ws_mis, ","))
+
     srey.unlisten(lid)-- 释放端口给后续测试
     _test_frame_flag_range(t)
 
@@ -139,6 +247,11 @@ runner.run(function(t)
                         local rdata = srey.syn_send(skm, frame, fsize, 0)
                         t:check(rdata ~= nil, "收到 server_ws 的响应")
                         if rdata then
+                            -- 带子协议的帧：frame 的 secprot / secpack 走非 nil 那一支
+                            local nmis = #ws_mis
+                            _ws_compare(rdata, "mqtt")
+                            t:eq(nmis, #ws_mis, "带子协议的帧 frame 与 unpack 一致")
+                            t:eq(PACK_TYPE.MQTT, select(3, wbsk.frame(rdata)), "frame 的 secprot 为 MQTT")
                             local pack = wbsk.unpack(rdata)
                             t:eq(PACK_TYPE.MQTT, pack and pack.secprot, "响应帧 secprot 为 MQTT")
                             t:check(pack and pack.secpack ~= nil, "响应帧带 secpack")

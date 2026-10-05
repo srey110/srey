@@ -34,13 +34,14 @@ FSQU_DECL(msgq, message_ctx)
 typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);// 消息分发回调
 typedef void(*_task_startup_cb)(task_ctx *task);// 任务启动回调
 typedef void(*_task_closing_cb)(task_ctx *task);// 任务关闭回调
+typedef void(*_task_round_end_cb)(task_ctx *task);// 一轮调度结束回调
 typedef void(*_timeout_cb)(task_ctx *task, uint64_t sess);// 超时回调
 typedef void(*_request_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                            name_t src, void *data, size_t size);// 任务请求回调
 typedef void(*_response_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                             int32_t error, void *data, size_t size);// 任务响应回调
 typedef void(*_net_accept_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype);// 新连接接受回调
-// 数据接收回调。size 仅对部分协议有效，恒为 0 的那几个见 prots_unpack 的 size 契约
+// 数据接收回调。size 口径见 prots_unpack 的 size 契约：结构化协议的 data 是 pack 对象，不能拿 size 直接读
 typedef void(*_net_recv_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                             uint8_t slice, void *data, size_t size);
 typedef void(*_net_send_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
@@ -72,6 +73,7 @@ typedef struct worker_ctx {
     int32_t weight;        // 权重
     atomic_t waiting;      // 当前是否在休眠等待（原子维护，快速路径无锁读）
     atomic_t spinning;     // 非 0 表示正空转等活：生产者直投即可，不必发唤醒
+    uint64_t wake_at;      // 首个还没被领走的唤醒信号的发出时刻（纳秒），0=无；受 mutex 保护
     loader_ctx *loader;    // 所属 loader
     pthread_t thread_worker; // 工作线程句柄
     taskq qutasks;      // 待调度任务队列，按值存 task_ctx*；入队时已 incref，由队列持有到 worker 跑完
@@ -109,6 +111,7 @@ struct loader_ctx {
     // 关闭期等 maptasks 排空。
     mutex_ctx closing_mutex;   // 与 closing_cond 配对；同时保护"查计数→wait"这一步不丢唤醒
     cond_ctx closing_cond;     // 最后一个 task 摘除时唤醒 _loader_task_closing
+    timer_ctx timer;           // loader_init 里初始化一次之后只读，worker 与投递方共用的时钟
     tw_ctx tw;                 // 时间轮（超时调度）
     ev_ctx netev;              // 网络事件驱动上下文
 };
@@ -130,6 +133,7 @@ struct task_ctx {
     _task_dispatch_cb _task_dispatch;    // 消息分发函数
     _task_startup_cb _task_startup;      // 启动回调
     _task_closing_cb _task_closing;      // 关闭回调
+    _task_round_end_cb _round_end;       // 一轮调度结束回调，可为 NULL
     _net_accept_cb _net_accept;          // 新连接接受回调
     _net_recv_cb _net_recv;              // 数据接收回调
     _net_send_cb _net_send;              // 数据发送完成回调

@@ -17,10 +17,12 @@
 // 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
 static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
 // 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
-// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
+// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点。
+// 解包侧直接写 *size，调用点传 NULL 时换成局部变量
 static void *_t_mongo_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mongo_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;
+    return mongo_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 
 // 从 wire 包指定偏移读取小端 int32
@@ -1078,12 +1080,14 @@ static void test_mongo_unpack_kind0_ok(CuTest *tc) {
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
 
-    /* 补齐最后一个字节后必须解出来，且 doc/dlens 换算正确 */
+    /* 补齐最后一个字节后必须解出来，且 doc/dlens 换算正确；size 是整条 OP_MSG 的线上字节 */
     buffer_append(&buf, pkt + total - 1, 1);
     status = 0;
-    mgopack = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
+    size_t size = 0;
+    mgopack = _t_mongo_unpack(0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, mgopack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, (int)total, (int)size);
     CuAssertIntEquals(tc, 3, mongo_parse_check_error((mgopack_ctx *)mgopack));
     _mongo_pkfree(mgopack);
 

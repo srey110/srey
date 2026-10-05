@@ -26,18 +26,22 @@ static void _bput(buffer_ctx *b, const char *s) {
 // 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
 static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
 // 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
-// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
+// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点。
+// http / redis / websock / mqtt 解出包时裸写 *size，调用点传 NULL 就换成桩里的局部变量
 static void *_t_http_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return http_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;
+    return http_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 static void *_t_redis_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return redis_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;
+    return redis_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 static void *_t_websock_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return websock_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;
+    return websock_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 
 // websock 解包用的最小上下文：ws 清零 + 无子协议，ud 摆到握手已完成的 START 状态并挂上 ws。
@@ -78,7 +82,8 @@ static void *_t_prots_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
 }
 static void *_t_mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mqtt_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;
+    return mqtt_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 
 /* =======================================================================
@@ -6967,6 +6972,331 @@ static void test_smtp_b64_line_boundary(CuTest *tc) {
         mail_free(&mail);
     }
 }
+/* =======================================================================
+ * 解包 size 回填 —— 结构化协议的 size 记包持有的协议字节数(内存记账用)，不是 data 处可读的长度
+ * ======================================================================= */
+
+// HTTP：无体头包 = 头长；带 CL 体 = 头 + 体(一次到齐、体后到两条路)；chunked 首片 = 头长、
+// 数据块 = 块长(一次到齐、载荷后到两条路)、末块 = 0；读到关闭的首片 = 头长、后续分片 = 片长
+static void test_size_http(CuTest *tc) {
+    const char *req = "GET /x HTTP/1.1\r\nHost: h\r\n\r\n";
+    const char *post = "POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\n";
+    const char *chk = "POST /c HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n";
+    const char *resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n";
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    size_t size;
+    struct http_pack_ctx *pack;
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud));
+
+    // 1) 无体请求：只有头
+    _bput(&buf, req);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_http_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)strlen(req), (int)size);
+    _http_pkfree(pack);
+
+    // 2) CL 体与头一次到齐
+    _bput(&buf, post);
+    _bput(&buf, "hello");
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_http_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(strlen(post) + 5), (int)size);
+    _http_pkfree(pack);
+
+    // 3) CL 体后到：头先到只报 MOREDATA，体到齐那次回填头 + 体
+    _bput(&buf, post);
+    _bput(&buf, "he");
+    status = PROT_INIT;
+    size = 0;
+    CuAssertTrue(tc, NULL == _t_http_unpack(0, &buf, &ud, &size, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    _bput(&buf, "llo");
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(strlen(post) + 5), (int)size);
+    _http_pkfree(pack);
+
+    // 4) chunked 首片：只有头
+    _bput(&buf, chk);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_http_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_START));
+    CuAssertIntEquals(tc, (int)strlen(chk), (int)size);
+    _http_pkfree(pack);
+    // 数据块一次到齐：只记载荷，不含长度行与 CRLF
+    _bput(&buf, "5\r\nhello\r\n");
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_http_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE));
+    CuAssertIntEquals(tc, 5, (int)size);
+    _http_pkfree(pack);
+    // 载荷后到
+    _bput(&buf, "3\r\nab");
+    status = PROT_INIT;
+    size = 0;
+    CuAssertTrue(tc, NULL == _t_http_unpack(0, &buf, &ud, &size, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    _bput(&buf, "c\r\n");
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 3, (int)size);
+    _http_pkfree(pack);
+    // 末块：先放个非 0 值，确认是回填成 0 而不是没写
+    _bput(&buf, "0\r\n\r\n");
+    status = PROT_INIT;
+    size = 999;
+    pack = _t_http_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_END));
+    CuAssertIntEquals(tc, 0, (int)size);
+    _http_pkfree(pack);
+
+    // 5) 读到关闭：首片只有头，之后每片记本片字节数
+    _bput(&buf, resp);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_http_unpack(1, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_START));
+    CuAssertIntEquals(tc, (int)strlen(resp), (int)size);
+    _http_pkfree(pack);
+    _bput(&buf, "line1\r\n");
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_http_unpack(1, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE));
+    CuAssertIntEquals(tc, 7, (int)size);
+    _http_pkfree(pack);
+    // 关闭补的末片不经 unpack(size 由 prots 留 0)，这里只收尾
+    pack = _http_on_close(&ud);
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+// WebSocket 裸帧：size = 本帧载荷长(dlens)；分片各帧只记自己那段，空载荷帧为 0
+static void test_size_websock(CuTest *tc) {
+    char data[] = "abcdef";
+    websock_ctx ws;
+    ud_cxt ud;
+    buffer_ctx buf;
+    int32_t status;
+    size_t size, fsize;
+    void *frame;
+    struct websock_pack_ctx *pack;
+    _ws_ctx_init(&ws, &ud);
+    buffer_init(&buf);
+
+    // 1) 不分片的整帧
+    frame = websock_pack_binary(1, 1, data, 6, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 6, (int)size);
+    _websock_pkfree(pack);
+
+    // 2) 分片：起始帧 3 字节、中间帧 2 字节、结束帧 1 字节，三帧一起到也各算各的
+    frame = websock_pack_text(1, 0, data, 3, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    frame = websock_pack_continua(1, 0, data + 3, 2, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    frame = websock_pack_continua(1, 1, data + 5, 1, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_START));
+    CuAssertIntEquals(tc, 3, (int)size);
+    _websock_pkfree(pack);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE));
+    CuAssertIntEquals(tc, 2, (int)size);
+    _websock_pkfree(pack);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_END));
+    CuAssertIntEquals(tc, 1, (int)size);
+    _websock_pkfree(pack);
+
+    // 3) 空载荷的 PING：先放个非 0 值，确认是回填成 0 而不是没写
+    frame = websock_pack_ping(1, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    status = PROT_INIT;
+    size = 999;
+    pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 0, (int)size);
+    _websock_pkfree(pack);
+
+    buffer_free(&buf);
+}
+// WS 承载 MQTT、一帧两个包(PUBLISH + PINGREQ，两包长度不同)：直接解时 *size = 两包报文总长之和；
+// 经 prots_net_recv 投出两条消息时，总量只记在链头那条，后继那条为 0，不重复记账
+static void test_size_ws_mqtt_chain(CuTest *tc) {
+    char body[] = "xyz";
+    char payload[64];
+    size_t l1, l2, plens, fsize, size;
+    char *p1 = mqtt_pack_publish(MQTT_311, 0, 0, 0, "t/a", 0, body, 3, NULL, &l1);
+    char *p2 = mqtt_pack_ping(&l2);
+    CuAssertPtrNotNull(tc, p1);
+    CuAssertPtrNotNull(tc, p2);
+    CuAssertTrue(tc, l1 + l2 <= sizeof(payload) && l1 != l2);
+    memcpy(payload, p1, l1);
+    memcpy(payload + l1, p2, l2);
+    plens = l1 + l2;
+    FREE(p1);
+    FREE(p2);
+
+    mqtt_ctx mctx = { MQTT_311 };
+    ud_cxt mqtt_ud;
+    ZERO(&mqtt_ud, sizeof(mqtt_ud));
+    mqtt_ud.status = 1;// mqtt 内部 COMMAND 状态
+    mqtt_ud.context = &mctx;
+    buffer_ctx subbuf;
+    buffer_init(&subbuf);
+    websock_ctx ws;
+    ZERO(&ws, sizeof(ws));
+    ws.secprot = PACK_MQTT;
+    ws.ud = &mqtt_ud;
+    ws.buf = &subbuf;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_WEBSOCK;
+    ud.status = 1;// websock 内部 START 状态
+    ud.context = &ws;
+    buffer_ctx buf;
+    buffer_init(&buf);
+
+    // 1) 直接解：链头上的 *size 是两包之和，后继节点由 _websock_pack_next 取
+    void *frame = websock_pack_binary(1, 1, payload, plens, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    int32_t status = PROT_INIT;
+    size = 0;
+    struct websock_pack_ctx *head = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, head);
+    CuAssertIntEquals(tc, (int)plens, (int)size);
+    struct websock_pack_ctx *next = _websock_pack_next(head);
+    CuAssertPtrNotNull(tc, next);
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(next));
+    _websock_pkfree(head);
+    _websock_pkfree(next);
+
+    // 2) 经 prots_net_recv：两条消息，第一条带两包之和、第二条 0
+    frame = websock_pack_binary(1, 1, payload, plens, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    prots_init(&g_stub_emit);
+    g_stub_emit_calls = 0;
+    prots_net_recv(NULL, &_t_nosk, 0, &buf, buffer_size(&buf), &ud);
+    CuAssertIntEquals(tc, 2, g_stub_emit_calls);
+    CuAssertIntEquals(tc, (int)plens, (int)g_stub_first_msg.size);
+    CuAssertIntEquals(tc, 0, (int)g_stub_last_msg.size);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    // stub 不做 message_clean，两条消息的节点由用例自己收
+    _websock_pkfree(g_stub_first_msg.data);
+    _websock_pkfree(g_stub_last_msg.data);
+
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+// redis：size = 这条回复各节点的分配长度之和(节点头 + 数据)，与 _redis_node_new 的入参逐项对得上：
+// 单行类型 头 + CRLF 偏移，bulk 头 + 长度 + 2(连结尾 CRLF 一起拷)，聚合 头 + 1。
+// 回复交出后清零：背靠背的下一条、跨两次收齐的都只记自己这条
+static void test_size_redis(CuTest *tc) {
+    const size_t hs = sizeof(redis_pack_ctx);
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    size_t size;
+    redis_pack_ctx *pack;
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud));
+
+    // 1) 小回复 "+OK"
+    _bput(&buf, "+OK\r\n");
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_redis_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(hs + 3), (int)size);
+    _redis_pkfree(pack);
+
+    // 2) 数组回复：聚合节点 + 两个 bulk
+    _bput(&buf, "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_redis_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(3 * hs + 1 + 5 + 5), (int)size);
+    _redis_pkfree(pack);
+
+    // 3) 6 个节点(第 5、6 个从块链切)，后面背靠背跟一条 "+OK"
+    _bput(&buf, "*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n:5\r\n+OK\r\n");
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_redis_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(6 * hs + 1 + 5 * 2), (int)size);
+    _redis_pkfree(pack);
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_redis_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(hs + 3), (int)size);
+    _redis_pkfree(pack);
+
+    // 4) 跨两次收齐：第一次只报 MOREDATA，收齐那次记整条
+    _bput(&buf, "*2\r\n$3\r\nfoo\r\n");
+    status = PROT_INIT;
+    size = 0;
+    CuAssertTrue(tc, NULL == _t_redis_unpack(0, &buf, &ud, &size, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    _bput(&buf, "$3\r\nbar\r\n");
+    status = PROT_INIT;
+    pack = _t_redis_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)(3 * hs + 1 + 5 + 5), (int)size);
+    _redis_pkfree(pack);
+
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
 void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_head_nobody);
     SUITE_ADD_TEST(suite, test_http_tillclose);
@@ -7114,4 +7444,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_unpack_masked_nodes);
     SUITE_ADD_TEST(suite, test_kcp_seg_pool);
     SUITE_ADD_TEST(suite, test_smtp_b64_line_boundary);
+    SUITE_ADD_TEST(suite, test_size_http);
+    SUITE_ADD_TEST(suite, test_size_websock);
+    SUITE_ADD_TEST(suite, test_size_ws_mqtt_chain);
+    SUITE_ADD_TEST(suite, test_size_redis);
 }

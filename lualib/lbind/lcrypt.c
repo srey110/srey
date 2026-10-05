@@ -246,10 +246,33 @@ static int32_t _lcrypt_digest_gc(lua_State *lua) {
     digest_free(digest);
     return 0;
 }
+/// <summary>
+/// 一次性摘要：上下文在栈上，算完当场擦除，等价于 new + update + final
+/// </summary>
+/// <param name="dtype" type="integer">算法类型，取值同 digest.new</param>
+/// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <returns type="string">原始二进制摘要</returns>
+static int32_t _lcrypt_digest_sum(lua_State *lua) {
+    lua_Integer dtype = luaL_checkinteger(lua, 1);
+    luaL_argcheck(lua, dtype >= DG_MD2 && dtype <= DG_XXH64, 1, "invalid digest type");
+    size_t size;
+    void *data = lpub_check_buf(lua, 2, &size, NULL);
+    digest_ctx digest;
+    char out[DG_BLOCK_SIZE];
+    digest_init(&digest, (digest_type)dtype);
+    digest_update(&digest, data, size);
+    size_t lens = digest_final(&digest, out);
+    digest_free(&digest);
+    lua_pushlstring(lua, out, lens);
+    secure_zero(out, sizeof(out));
+    return 1;
+}
 //srey.digest
 LUAMOD_API int luaopen_digest(lua_State *lua) {
     luaL_Reg reg_new[] = {
         { "new", _lcrypt_digest_new },
+        { "sum", _lcrypt_digest_sum },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
@@ -341,10 +364,36 @@ static int32_t _lcrypt_hmac_gc(lua_State *lua) {
     hmac_free(hmac);
     return 0;
 }
+/// <summary>
+/// 一次性 HMAC：上下文在栈上，算完当场擦除，等价于 new + update + final
+/// </summary>
+/// <param name="dtype" type="integer">底层 Hash 算法类型，取值同 hmac.new（XXH32 / XXH64 不支持）</param>
+/// <param name="key" type="string">密钥</param>
+/// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <returns type="string">原始二进制 HMAC 结果</returns>
+static int32_t _lcrypt_hmac_sum(lua_State *lua) {
+    size_t klens;
+    size_t size;
+    lua_Integer dtype = luaL_checkinteger(lua, 1);
+    luaL_argcheck(lua, dtype >= DG_MD2 && dtype <= DG_SHA512, 1, "invalid digest type");
+    const char *key = luaL_checklstring(lua, 2, &klens);
+    void *data = lpub_check_buf(lua, 3, &size, NULL);
+    hmac_ctx hmac;
+    char out[DG_BLOCK_SIZE];
+    hmac_init(&hmac, (digest_type)dtype, key, klens);
+    hmac_update(&hmac, data, size);
+    size_t lens = hmac_final(&hmac, out);
+    hmac_free(&hmac);
+    lua_pushlstring(lua, out, lens);
+    secure_zero(out, sizeof(out));
+    return 1;
+}
 //srey.hmac
 LUAMOD_API int luaopen_hmac(lua_State *lua) {
     luaL_Reg reg_new[] = {
         { "new", _lcrypt_hmac_new },
+        { "sum", _lcrypt_hmac_sum },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {

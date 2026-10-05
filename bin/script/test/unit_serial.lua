@@ -6,6 +6,17 @@ local runner = require("test.runner")
 local seri   = require("srey.seri")
 local task   = require("srey.task")-- 起一个安静的 helper task，测"三张登记表全空"那条路径
 
+-- 取 coros 汇总行的计数：suspended(coro_sess 里的等待者) / sessions / fork_wait / serial(排队数) / yield total。
+-- 发请求的协程自己也挂着一个，只比前后差值
+local function _counts()
+    local ptr, sz = seri.pack("coros")
+    local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
+    local txt = rdata and srey.ud_str(rdata, rsize) or ""
+    local c = { txt:match("(%d+) suspended, (%d+) sessions, (%d+) fork_wait, (%d+) serial, (%d+) yield total") }
+    assert(c[1], "coros summary not matched: " .. txt)-- 不挡的话各字段全 nil，计数断言变成 nil == nil 恒过
+    return { susp = tonumber(c[1]), sess = tonumber(c[2]), fork = tonumber(c[3]), serial = tonumber(c[4]), nyield = tonumber(c[5]) }
+end
+
 srey.startup(function()
 runner.run(function(t)
     -- ── 基础：单协程进入，返回 (ok, ret) ─────────────────────────────
@@ -229,6 +240,41 @@ runner.run(function(t)
             task.close(h)
             task.ungrab(h)
         end
+    end
+
+    -- ── 锁被占时在不可 yield 处调执行器：立即抛错、不入队，锁不交给死协程 ──
+    -- 以前先入队再 yield 失败：持锁者释放时把锁交给这个已回池的协程并无实参唤醒它，
+    -- 它死掉、锁永不释放，后来者全部挂起，task 关闭也卡住
+    do
+        local c0 = _counts()
+        local cs = srey.serial()
+        local ok, err, c_in
+        srey.fork(function() cs(function() srey.sleep(100) end) end)-- 甲持锁；留足余量，乙醒来时锁必须还被占着
+        srey.fork(function()
+            srey.sleep(10)
+            ok, err = pcall(table.sort, { 3, 1, 2 }, function(a, b)
+                cs(function() end)-- 乙：锁被甲占着，必须排队，而这里挂不起
+                return a < b
+            end)
+        end)
+        srey.fork(function()
+            srey.sleep(20)
+            cs(function() c_in = true end)-- 丙：正常排队
+        end)
+        srey.sleep(250)
+        t:eq(false, ok, "排队分支里挂不起时抛错")
+        t:check(nil ~= string.find(tostring(err), "cannot yield", 1, true),
+                "入队前就报 cannot yield（实际 " .. tostring(err) .. "）")
+        t:eq(true, c_in, "甲释放后丙拿到锁，锁没交给死协程")
+        local c1 = _counts()
+        t:eq(c0.serial, c1.serial, "serial 排队数不残留")
+        t:eq(c0.nyield, c1.nyield, "nyield 不残留")
+        local hit = 0
+        for _ = 1, 4 do
+            srey.fork(function() srey.sleep(20); hit = hit + 1 end)
+        end
+        srey.sleep(100)
+        t:eq(4, hit, "之后的 fork 全部执行，没有被死协程吞掉")
     end
 end)
 end)

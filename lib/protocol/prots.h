@@ -57,10 +57,14 @@ int32_t prots_may_resume(pack_type pktype, void *data);
 /// <param name="client">1=客户端 0=服务端</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">ud_cxt 指针</param>
-/// <param name="size">输出：数据包长度。只有 DNS / SMTP / CUSTZ / NONE / UDP_KCP 会写；
-///   HTTP / WEBSOCK / MQTT / REDIS / MYSQL / PGSQL / MONGO 的返回值是协议自己的 pack 对象，
-///   长度恒为入口置的 0，要真实长度得走该协议的访问器（http_data / websock_data / ...）。
-///   这个 0 会原样传到 _net_recv_cb 的 size 形参</param>
+/// <param name="size">输出：入口先置 0 再由协议回填，传到 _net_recv_cb 的 size 形参。口径分两种：
+///   NONE / CUSTZ / DNS / SMTP 返回裸字节，size 是 data 处可读的字节数；
+///   HTTP / WEBSOCK / MQTT / REDIS / MYSQL / PGSQL / MONGO 返回协议自己的 pack 对象，size 是这个包的记账字节数，
+///   用于内存记账；data 是 pack 对象，不能拿 size 直接读，取载荷走该协议的访问器（http_data / websock_data / ...）。
+///   各协议算法见各自 xxx_unpack 的 size 说明：WS 裸帧与 HTTP chunk / tillclose 片恰好等于载荷长度，
+///   其余（HTTP 头包、MQTT、REDIS、MYSQL、PGSQL、MONGO、WS 承载子协议）都不是载荷长度。
+///   分片每片只算本片、不累计，没有载荷的末片（如 HTTP 的 SLICE_END）为 0；
+///   WS 一帧解出多个子协议包时总量只记在链头，后继消息为 0</param>
 /// <param name="status">输出：解包状态标志</param>
 /// <returns>解包后的数据指针，NULL 表示数据不足或出错</returns>
 void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,

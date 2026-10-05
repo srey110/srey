@@ -100,6 +100,17 @@ runner.run(function(t)
         t:eq(false, pcall(yyjson.encode, nest(19)), "超过 LYYJSON_MAX_DEPTH 层报错")
         t:eq(false, pcall(yyjson.decode, string.rep("[", 1200) .. string.rep("]", 1200)),
              "解码超深嵌套报错")
+        -- 解码同 encode 只数容器层：最内层表带标量叶子，编得出就得解得回；再包一层容器才拒
+        local leaf = nest(17)
+        local cur = leaf
+        while cur.x do
+            cur = cur.x
+        end
+        cur.v = 1
+        local okenc, s17 = pcall(yyjson.encode, leaf)
+        t:eq(true, okenc, "18 层容器带标量叶子可编码")
+        t:eq(true, (pcall(yyjson.decode, s17)), "18 层容器带标量叶子可解码")
+        t:eq(false, (pcall(yyjson.decode, '{"y":' .. tostring(s17) .. '}')), "19 层容器解码报错")
     end
     -- ── 错误路径 ────────────────────────────────────────────────
     do

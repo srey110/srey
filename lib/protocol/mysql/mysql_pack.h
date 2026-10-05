@@ -36,6 +36,16 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);
 /// 且 size 置 0，一律不组包</returns>
 void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind, size_t *size);
 /// <summary>
+/// 同 mysql_pack_query，SQL 长度由调用方给出，不再 strlen；sql 里的 NUL 字节原样发出
+/// </summary>
+/// <param name="mysql">mysql_ctx</param>
+/// <param name="sql">SQL 语句</param>
+/// <param name="sqllen">sql 字节数</param>
+/// <param name="mbind">同 mysql_pack_query</param>
+/// <param name="size">输出包大小（字节）</param>
+/// <returns>同 mysql_pack_query</returns>
+void *mysql_pack_query2(mysql_ctx *mysql, const char *sql, size_t sqllen, mysql_bind_ctx *mbind, size_t *size);
+/// <summary>
 /// 构造 COM_STMT_PREPARE 请求包（预处理语句准备）
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
@@ -43,6 +53,15 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size);
+/// <summary>
+/// 同 mysql_pack_stmt_prepare，SQL 长度由调用方给出，不再 strlen
+/// </summary>
+/// <param name="mysql">mysql_ctx</param>
+/// <param name="sql">SQL 语句</param>
+/// <param name="sqllen">sql 字节数</param>
+/// <param name="size">输出包大小（字节）</param>
+/// <returns>同 mysql_pack_stmt_prepare</returns>
+void *mysql_pack_stmt_prepare2(mysql_ctx *mysql, const char *sql, size_t sqllen, size_t *size);
 /// <summary>
 /// 构造 COM_STMT_EXECUTE 请求包（预处理语句执行）
 /// </summary>

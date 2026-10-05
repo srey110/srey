@@ -81,6 +81,7 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql->mpack = NULL;
     mysql->parse_status = 0;
     mysql->cur_cmd = 0;
+    mysql->recvlens = 0;
     sock_set_invalid(&mysql->client.sk);
     ud->context = NULL;
     PROT_REF_RELEASE(mysql);
@@ -651,11 +652,13 @@ static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *s
 }
 void *mysql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)sk; (void)client; (void)size;
+    (void)sk; (void)client;
     if (NULL == ud->context) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
+    mysql_ctx *mysql = ud->context;
+    size_t lens;
     mpack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:
@@ -665,7 +668,14 @@ void *mysql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         _mysql_auth_process(ev, buf, ud, status);
         break;
     case COMMAND:
+        // 一个响应可能跨多次收包才交出：已收字节攒在 recvlens，交出时整笔记给这个包
+        lens = buffer_size(buf);
         pack = _mysql_command_process(buf, ud, status);
+        mysql->recvlens += lens - buffer_size(buf);
+        if (NULL != pack) {
+            *size = mysql->recvlens;
+            mysql->recvlens = 0;
+        }
         break;
     default:
         BIT_SET(*status, PROT_ERROR);

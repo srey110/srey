@@ -3,6 +3,15 @@
 
 #include "protocol/mysql/mysql.h"
 
+// 各取值接口收哪些列类型：按类型查一次表得到它属于哪组，取值接口只认自己那组。
+// 有符号与无符号整数读取共用 MYSQL_CLS_INT，该用哪个看列的 UNSIGNED 标志(mysql_reader_unsigned)
+#define MYSQL_CLS_INT      0x01
+#define MYSQL_CLS_FLOAT    0x02
+#define MYSQL_CLS_DOUBLE   0x04
+#define MYSQL_CLS_STRING   0x08
+#define MYSQL_CLS_DATETIME 0x10
+#define MYSQL_CLS_TIME     0x20
+
 /// <summary>
 /// 取出结果集读取器
 /// </summary>
@@ -38,6 +47,27 @@ int32_t mysql_reader_eof(mysql_reader_ctx *reader);
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 void mysql_reader_next(mysql_reader_ctx *reader);
+/// <summary>
+/// 按列名取该列属于哪个取值分组，给按列类型自动选取值接口的调用方用
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="name">字段名</param>
+/// <returns>MYSQL_CLS_* 之一；没有这一列或列类型不在任何分组时为 0</returns>
+uint8_t mysql_reader_cls(mysql_reader_ctx *reader, const char *name);
+/// <summary>
+/// 按列名取该列是否带 UNSIGNED 标志，给在 mysql_reader_integer / mysql_reader_uinteger 之间选的调用方用
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="name">字段名</param>
+/// <returns>1 带 UNSIGNED 标志；0 不带或没有这一列</returns>
+int32_t mysql_reader_unsigned(mysql_reader_ctx *reader, const char *name);
+/// <summary>
+/// 当前行指定列是否为 SQL NULL，不看列类型（不在任何取值分组的列也能判）
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="name">字段名</param>
+/// <returns>1 为 NULL；0 为非 NULL、没有这一列或没有当前行</returns>
+int32_t mysql_reader_isnull(mysql_reader_ctx *reader, const char *name);
 /// <summary>
 /// 根据名称获取字段整数值
 /// </summary>

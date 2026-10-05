@@ -185,6 +185,14 @@ static inline int32_t name##_empty(name *fsqu) {                                
     }                                                                           \
     return 0 == ATOMIC_GET(&fsqu->novf);                                        \
 }                                                                               \
+/* 同 FSQU_SPIN_DECL 的 empty_fast;本后端 empty 本来就不拿锁 */                 \
+static inline int32_t name##_empty_fast(name *fsqu) {                           \
+    return name##_empty(fsqu);                                                  \
+}                                                                               \
+/* 同 FSQU_SPIN_DECL 的 size_fast;本后端 size 本来就不拿锁 */                  \
+static inline uint32_t name##_size_fast(name *fsqu) {                           \
+    return name##_size(fsqu);                                                   \
+}                                                                               \
 /* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *fsqu) { (void)fsqu; return (uint32_t)sizeof(T); }\
 /* 快路径固定容量(降级阈值,不含无界的溢出层) */                                    \
@@ -194,12 +202,14 @@ static inline uint32_t name##_capacity(name *fsqu) {                            
 #define FSQU_SPIN_DECL(name, T)                                                \
 QUE_DECL(name##_ovf, T)                                                         \
 typedef struct {                                                                \
+    atomic_t nhint;     /* 元素数镜像,锁内每次改完照 qu 写一份、锁外只读,读到的可能稍旧 */\
     spin_ctx lck;       /* 保护 qu */                                            \
     name##_ovf qu;      /* 主队列 */                                             \
 } name;                                                                         \
 /* capacity 为那一条队列的初始容量,0 取 FSQU_DEFAULT_CAP */                     \
 static inline void name##_init(name *fsqu, uint32_t capacity) {                 \
     capacity = (0 == capacity) ? FSQU_DEFAULT_CAP : capacity;                    \
+    ATOMIC_SET_RELAXED(&fsqu->nhint, 0);                                        \
     spin_init(&fsqu->lck, SPIN_CNT);                                            \
     name##_ovf_init(&fsqu->qu, capacity);                                       \
 }                                                                               \
@@ -213,6 +223,7 @@ static inline int32_t name##_trypush(name *fsqu, T const *data) {               
     int32_t rtn;                                                                \
     spin_lock(&fsqu->lck);                                                      \
     rtn = name##_ovf_trypush(&fsqu->qu, data);                                 \
+    ATOMIC_SET_RELAXED(&fsqu->nhint, (atomic_t)name##_ovf_size(&fsqu->qu));     \
     spin_unlock(&fsqu->lck);                                                    \
     return rtn;                                                                 \
 }                                                                               \
@@ -220,6 +231,7 @@ static inline int32_t name##_trypush(name *fsqu, T const *data) {               
 static inline void name##_push(name *fsqu, T const *data) {                     \
     spin_lock(&fsqu->lck);                                                      \
     name##_ovf_push(&fsqu->qu, data);                                          \
+    ATOMIC_SET_RELAXED(&fsqu->nhint, (atomic_t)name##_ovf_size(&fsqu->qu));     \
     spin_unlock(&fsqu->lck);                                                    \
 }                                                                               \
 /* 批量入队,语义同 push */                                                      \
@@ -229,6 +241,7 @@ static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) 
     for (i = 0; i < count; i++) {                                               \
         name##_ovf_push(&fsqu->qu, &data[i]);                                  \
     }                                                                           \
+    ATOMIC_SET_RELAXED(&fsqu->nhint, (atomic_t)name##_ovf_size(&fsqu->qu));     \
     spin_unlock(&fsqu->lck);                                                    \
 }                                                                               \
 /* 三态里的 1 只有无锁环后端(mpq / bbq)会产生,这里只返 ERR_OK / ERR_FAILED */       \
@@ -241,6 +254,7 @@ static inline int32_t name##_pop(name *fsqu, T *out) {                          
         return ERR_FAILED;                                                      \
     }                                                                           \
     *out = *elem;                                                               \
+    ATOMIC_SET_RELAXED(&fsqu->nhint, (atomic_t)name##_ovf_size(&fsqu->qu));     \
     spin_unlock(&fsqu->lck);                                                    \
     return ERR_OK;                                                              \
 }                                                                               \
@@ -249,6 +263,9 @@ static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     
     uint32_t n;                                                                 \
     spin_lock(&fsqu->lck);                                                      \
     n = name##_ovf_pop_batch(&fsqu->qu, out, max);                              \
+    if (0 != n) {                                                               \
+        ATOMIC_SET_RELAXED(&fsqu->nhint, (atomic_t)name##_ovf_size(&fsqu->qu)); \
+    }                                                                           \
     spin_unlock(&fsqu->lck);                                                    \
     return n;                                                                   \
 }                                                                               \
@@ -275,6 +292,15 @@ static inline int32_t name##_empty(name *fsqu) {                                
     rtn = name##_ovf_empty(&fsqu->qu);                                          \
     spin_unlock(&fsqu->lck);                                                    \
     return rtn;                                                                 \
+}                                                                               \
+/* 不拿锁的近似判空,读到的计数可能稍旧。只给空转轮询用,                         \
+   决定睡不睡的那次复查仍要用 empty */                                          \
+static inline int32_t name##_empty_fast(name *fsqu) {                           \
+    return 0 == ATOMIC_GET(&fsqu->nhint);                                       \
+}                                                                               \
+/* 不拿锁的近似元素数,读到的可能稍旧,口径同 empty_fast */                       \
+static inline uint32_t name##_size_fast(name *fsqu) {                           \
+    return (uint32_t)ATOMIC_GET(&fsqu->nhint);                                  \
 }                                                                               \
 /* 元素字节数 sizeof(T) */                                                      \
 static inline uint32_t name##_elsize(const name *fsqu) { (void)fsqu; return (uint32_t)sizeof(T); }\

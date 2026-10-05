@@ -4,14 +4,17 @@
 #define MTYPE_OUT_OF_RANGE "message type out of range"
 #define SECLEVEL_OUT_OF_RANGE "ssl security level out of range"
 #define TLSVER_OUT_OF_RANGE "tls version out of range"
+#define SEND_MULTI_STACK 64 // send_multi 连接数不超过它时用栈数组，免一次 MALLOC
+#define MULTI_STACK_DSTS 32 // multi_* 目标数不超过它时 dsts 用 _multi_args 里的定长数组，免一次 MALLOC
 
 // multi_request / multi_call 投递一次所需的全部东西。两个 int32 挨着放在 8 字节字段之前,不留 padding
 typedef struct {
     int32_t    count; // grab 成功数;0 表示无处可投
     int32_t    copy;  // 载荷 copy 语义,透传给 task_multi_*
     size_t     size;  // 载荷字节数
-    task_ctx **dsts;  // grab 到的目标数组
+    task_ctx **dsts;  // grab 到的目标数组,指向 stk 或堆
     void      *data;  // 载荷,可为 NULL
+    task_ctx  *stk[MULTI_STACK_DSTS]; // 目标数不超过 MULTI_STACK_DSTS 时 dsts 就用它
 }_multi_args;
 typedef struct _task_entry {
     char  *name; // strdup 的任务名，匿名 task 为 NULL；押进 Lua 表后即 FREE
@@ -69,7 +72,7 @@ static int32_t _lcore_call(lua_State *lua) {
     size_t size;
     int32_t copy;
     data = _lcore_opt_buf(lua, 3, &size, &copy);
-    task_ctx *dst = task_grab(g_loader, handle);
+    task_ctx *dst = lpub_task_grab(lua, 1, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
         return lpub_rtn_bool(lua, 0);
@@ -100,17 +103,20 @@ static int32_t _check_multi_names(lua_State *lua, int32_t idx) {
     return n;
 }
 // 按 _check_multi_names 已校验的长度 n(>0) 从 dsts table(栈位置 idx)逐元素 grab,填充 task_ctx*[n],
-// *cnt 出参为实际 grab 成功数(跳过 nil/NONE/不存在)。调用方 FREE 返回值并对前 *cnt 个 ungrab。
-// 元素类型已校验,循环内 lpub_task_handle/task_grab 不 longjmp,可在其它资源就绪后安全调用。
-static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int32_t *cnt) {
-    task_ctx **dsts;
-    MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
+// *cnt 出参为实际 grab 成功数(跳过 nil/NONE/不存在)。返回值是 stk 或新分配的数组,调用方经
+// _multi_free_dsts 释放并对前 *cnt 个 ungrab。
+// 元素类型已校验,循环内 lpub_task_peek/lpub_task_grab 不 longjmp,可在其它资源就绪后安全调用。
+static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int32_t *cnt, task_ctx **stk) {
+    task_ctx **dsts = stk;
+    if (n > MULTI_STACK_DSTS) {
+        MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
+    }
     int32_t count = 0;
     task_ctx *t;
     for (int32_t i = 0; i < n; i++) {
         lua_rawgeti(lua, idx, i + 1);
         if (LUA_TNIL != lua_type(lua, -1)) {
-            t = task_grab(g_loader, lpub_task_handle(lua, -1));
+            t = lpub_task_grab(lua, -1, lpub_task_peek(lua, -1));
             if (NULL != t) {
                 dsts[count++] = t;
             }
@@ -120,8 +126,14 @@ static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int3
     *cnt = count;
     return dsts;
 }
+// dsts 不是 stk 才是堆上分配的,才释放
+static void _multi_free_dsts(_multi_args *ma) {
+    if (ma->dsts != ma->stk) {
+        FREE(ma->dsts);
+    }
+}
 // multi_request / multi_call 的共同前半段:校验 dsts、取载荷、逐个 grab。
-// 返回 grab 成功数;返回 0 表示无处可投,此时载荷已按 copy 释放、数组已 FREE,调用方直接返回即可,
+// 返回 grab 成功数;返回 0 表示无处可投,此时载荷已按 copy 释放、数组已释放,调用方直接返回即可,
 // 非 0 时调用方投递完必须调 _multi_done。
 // 校验必须排在取载荷之前,理由见 _check_multi_names
 static int32_t _multi_prepare(lua_State *lua, int32_t bufidx, _multi_args *ma) {
@@ -133,11 +145,11 @@ static int32_t _multi_prepare(lua_State *lua, int32_t bufidx, _multi_args *ma) {
     ma->dsts = NULL;
     ma->data = _lcore_opt_buf(lua, bufidx, &ma->size, &ma->copy);
     if (n > 0) {
-        ma->dsts = _grab_multi_names(lua, 1, n, &ma->count);
+        ma->dsts = _grab_multi_names(lua, 1, n, &ma->count, ma->stk);
     }
     if (0 == ma->count) {
         CHECK_COPY_FREE(ma->data, ma->copy);
-        FREE(ma->dsts);
+        _multi_free_dsts(ma);
     }
     return ma->count;
 }
@@ -146,7 +158,7 @@ static void _multi_done(_multi_args *ma) {
     for (int32_t i = 0; i < ma->count; i++) {
         task_ungrab(ma->dsts[i]);
     }
-    FREE(ma->dsts);
+    _multi_free_dsts(ma);
 }
 /// <summary>
 /// 广播请求：把同一份 data 投递给多个 task,各 dst 在 _request 回调中独立 task_response 回 src(共用 sess)。
@@ -212,7 +224,7 @@ static int32_t _lcore_request(lua_State *lua) {
     int32_t copy;
     LPUB_CUR_TASK(lua, src);
     data = _lcore_opt_buf(lua, 4, &size, &copy);
-    task_ctx *dst = task_grab(g_loader, handle);
+    task_ctx *dst = lpub_task_grab(lua, 1, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
         return lpub_rtn_bool(lua, 0);
@@ -241,7 +253,7 @@ static int32_t _lcore_response(lua_State *lua) {
     size_t size;
     int32_t copy;
     data = _lcore_opt_buf(lua, 5, &size, &copy);
-    task_ctx *dst = task_grab(g_loader, handle);
+    task_ctx *dst = lpub_task_grab(lua, 1, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
         return lpub_rtn_bool(lua, 0);
@@ -383,16 +395,27 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     luaL_checktype(lua, 1, LUA_TTABLE);
     lua_Integer n = luaL_len(lua, 1);
     // 校验必须整趟走完再取载荷：n 来自 luaL_len，会走 __len 元方法，是业务可控的。
-    // 撒谎的 __len 在这里撞上首个非法元素就报错退出，接管那步根本到不了
+    // 撒谎的 __len 在这里撞上首个非法元素就报错退出，接管那步根本到不了。
+    // 栈数组不怕中途 longjmp，所以小 n 校验时顺手拷进去，省掉第二趟
+    sock_ctx stk[SEND_MULTI_STACK];
+    sock_ctx *sks = stk;
     lua_Integer i;
+    int32_t mtidx;
+    // 元表循环外取一次；校验完必须先弹掉，否则它会占住后面 copy 参数的栈位
+    lpub_push_sock_mt(lua);
+    mtidx = lua_gettop(lua);
     for (i = 0; i < n; i++) {
         lua_rawgeti(lua, 1, i + 1);
-        if (!lpub_is_sock(lua, -1)) {
+        if (!lpub_is_sock_mt(lua, -1, mtidx)) {
             return luaL_error(lua, "sks[%d] must be a sock, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
+        if (n <= SEND_MULTI_STACK) {
+            stk[i] = *(sock_ctx *)lua_touserdata(lua, -1);
+        }
         lua_pop(lua, 1);
     }
+    lua_pop(lua, 1);
     size_t size;
     int32_t copy;
     void *data = lpub_check_buf(lua, 2, &size, &copy);
@@ -400,15 +423,18 @@ static int32_t _lcore_send_multi(lua_State *lua) {
         CHECK_COPY_FREE(data, copy);
         return lpub_rtn_bool(lua, 0);
     }
-    sock_ctx *sks;
-    MALLOC(sks, sizeof(sock_ctx) * (size_t)n);
-    for (i = 0; i < n; i++) {
-        lua_rawgeti(lua, 1, i + 1);
-        sks[i] = *(sock_ctx *)lua_touserdata(lua, -1);
-        lua_pop(lua, 1);
+    if (n > SEND_MULTI_STACK) {
+        MALLOC(sks, sizeof(sock_ctx) * (size_t)n);
+        for (i = 0; i < n; i++) {
+            lua_rawgeti(lua, 1, i + 1);
+            sks[i] = *(sock_ctx *)lua_touserdata(lua, -1);
+            lua_pop(lua, 1);
+        }
     }
     int32_t r = ev_send_multi(&g_loader->netev, sks, (int32_t)n, data, size, copy);
-    FREE(sks);
+    if (sks != stk) {
+        FREE(sks);
+    }
     return lpub_rtn_bool(lua, ERR_OK == r);
 }
 /// <summary>
@@ -493,6 +519,20 @@ static int32_t _lcore_sock_invalid(lua_State *lua) {
     return lpub_push_sock_invalid(lua);
 }
 /// <summary>
+/// 挂起等待前取连接的会话键，一次调用顶 sk.valid 加 sk.skid 两次取字段
+/// </summary>
+/// <param name="sk" type="userdata">连接标识；传别的类型报错</param>
+/// <returns type="integer?">有效连接的 skid；连接已失效为 nil</returns>
+static int32_t _lcore_wait_skid(lua_State *lua) {
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    if (sock_is_invalid(sk)) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushinteger(lua, (lua_Integer)sk->skid);
+    return 1;
+}
+/// <summary>
 /// 主动关闭指定 fd/skid 的网络连接；未发数据的丢弃契约同 ev_close
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
@@ -537,10 +577,11 @@ static int32_t _lcore_bind_task(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 2);
     // 用 grab 探存在性:lpub_task_handle 对数字句柄原样返回,业务缓存的旧句柄在目标退出后
     // 照样非 INVALID_TNAME、单查该值会放行;task_grab 首行已挡 INVALID_TNAME,一次覆盖两种
-    task_ctx *dst = task_grab(g_loader, handle);
+    task_ctx *dst = lpub_task_grab(lua, 2, handle);
     if (NULL == dst) {
         return lpub_rtn_bool(lua, 0);
     }
+    handle = dst->handle;// 名字的缓存句柄过期时 grab 内部会换成新的
     task_ungrab(dst);
     return lpub_rtn_bool(lua, ERR_OK == ev_ud_handle(&g_loader->netev, sk, handle));
 }
@@ -636,12 +677,12 @@ static int32_t _lcore_task_list(lua_State *lua) {
     tentry_arr arr;
     tentry_arr_init(&arr, 128);
     loader_task_each(g_loader, _lcore_task_list_collect, &arr);
-    lua_newtable(lua);
     _task_entry *entry;
     uint32_t n = tentry_arr_size(&arr);
+    lua_createtable(lua, (int32_t)n, 0);
     for (uint32_t i = 0; i < n; i++) {
         entry = tentry_arr_at(&arr, (int32_t)i);
-        lua_newtable(lua);
+        lua_createtable(lua, 0, 2);
         if (NULL != entry->name) {
             lua_pushstring(lua, entry->name);
             lua_setfield(lua, -2, "name");
@@ -661,7 +702,7 @@ static int32_t _lcore_task_list(lua_State *lua) {
 static int32_t _lcore_mem_stat(lua_State *lua) {
     uint64_t nalloc = 0, nfree = 0;
     mem_stat(&nalloc, &nfree);
-    lua_newtable(lua);
+    lua_createtable(lua, 0, 3);
     lua_pushinteger(lua, (lua_Integer)nalloc);
     lua_setfield(lua, -2, "nalloc");
     lua_pushinteger(lua, (lua_Integer)nfree);
@@ -859,6 +900,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "udp_loop", _lcore_udp_loop },
         { "close", _lcore_close },
         { "sock_invalid", _lcore_sock_invalid },
+        { "wait_skid", _lcore_wait_skid },
 
         { "pack_type", _lcore_pack_type },
         { "status", _lcore_status },

@@ -15,6 +15,8 @@ int32_t _mqtt_may_resume(void *data);
 /// <param name="client">1 表示当前端为客户端，0 表示服务端</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部存储协议版本和解析状态</param>
+/// <param name="size">输出：返回包时写入该报文总长（固定头 + 剩余长度），用于内存记账，不是 data 处可读的长度；
+/// 没返回包时不写。必须非 NULL</param>
 /// <param name="status">解析结果标志位（PROT_MOREDATA / PROT_ERROR / PROT_CLOSE）</param>
 /// <returns>解析成功返回 mqtt_pack_ctx*，数据不足或出错返回 NULL</returns>
 void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,

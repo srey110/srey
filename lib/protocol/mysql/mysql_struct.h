@@ -40,6 +40,7 @@ typedef struct mysql_ctx {
     int16_t error_code;     // 最近一次错误码
     int64_t last_id;        // 最近一次 INSERT 的自增 ID
     int64_t affected_rows;  // 最近一次操作影响的行数
+    size_t recvlens;        // 当前响应已收的线上字节（含包头），交出包时记给 size 后清零
     struct mpack_ctx *mpack; // 正在积累的数据包上下文（多包场景）
     struct task_ctx *task;   // 所属任务上下文
     struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队

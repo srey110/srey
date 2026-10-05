@@ -25,23 +25,27 @@ static int32_t _lutils_log_getlv(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 输出一条日志，自动附带调用文件名、行号、task 名称（若存在）
+/// 输出一条日志，自动附带调用位置（文件名、行号）、task 名称（若存在）。
+/// 调用位置由本函数按栈层号自己取，不经 debug.getinfo 建表
 /// </summary>
 /// <param name="lv" type="integer">日志等级，取值 [0, 4]（LOGLV_FATAL..LOGLV_DEBUG），越界报错</param>
-/// <param name="file" type="string">调用方文件名</param>
-/// <param name="line" type="integer">调用方行号</param>
+/// <param name="level" type="integer">调用位置所在的栈层，含义同 debug.getinfo 的层号（0 为 utils.log 自身）；该层不存在时不输出</param>
 /// <param name="log" type="string">日志正文</param>
 /// <returns>无</returns>
 static int32_t _lutils_log(lua_State *lua) {
     log_level lv = (log_level)lpub_check_range(lua, 1, LOGLV_FATAL, LOGLV_DEBUG, LOGLV_OUT_OF_RANGE);
-    const char *file = luaL_checkstring(lua, 2);
-    int32_t line = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t level = (int32_t)luaL_checkinteger(lua, 2);
     size_t mlen, nlen;
-    const char *log = luaL_checklstring(lua, 4, &mlen);
+    const char *log = luaL_checklstring(lua, 3, &mlen);
+    lua_Debug ar;
+    if (0 == lua_getstack(lua, level, &ar)
+        || 0 == lua_getinfo(lua, "Sl", &ar)) {
+        return 0;
+    }
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    const char *fname = _filename(file);
+    const char *fname = _filename(ar.short_src);
     char num[24];
-    const char *nstr = lpub_int_str(num, sizeof(num), line, &nlen);
+    const char *nstr = lpub_int_str(num, sizeof(num), ar.currentline, &nlen);
     if (NULL == task) {
         const char *parts[] = { "[", fname, " ", nstr, "] ", log };
         size_t lens[] = { 1, strlen(fname), 1, nlen, 2, mlen };
@@ -386,23 +390,23 @@ static int32_t _lpopen_read(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
     // 可选参数，lpub_check_lens 没有 opt 形态，故缺省分支单列；给了就按它校验上下界
     size_t cap = lua_isnoneornil(lua, 2) ? 65536 : lpub_check_lens(lua, 2, INT32_MAX);
+    const size_t chunk = 4096;
     luaL_Buffer lbuf;
     luaL_buffinit(lua, &lbuf);
-    char tmp[4096];
     size_t total = 0;
     size_t want;
     int32_t nread;
     int32_t eof = 0;
     while (total < cap) {
-        want = sizeof(tmp);
+        want = chunk;
         if (want > cap - total) {
             want = cap - total;
         }
-        nread = popen_read(ctx, tmp, want, &eof);
+        nread = popen_read(ctx, luaL_prepbuffsize(&lbuf, want), want, &eof);
         if (nread <= 0) {
             break;
         }
-        luaL_addlstring(&lbuf, tmp, (size_t)nread);
+        luaL_addsize(&lbuf, (size_t)nread);
         total += (size_t)nread;
     }
     luaL_pushresult(&lbuf);

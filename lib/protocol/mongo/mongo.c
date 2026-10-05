@@ -197,7 +197,7 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
 }
 void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)sk; (void)client; (void)size;
+    (void)sk; (void)client;
     size_t blens = buffer_size(buf);
     if (blens < 4) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -249,6 +249,7 @@ void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     mgopack->doc = breader.data + breader.offset;
     switch (ud->status) {
     case COMMAND:
+        *size = total;
         return mgopack;
     case AUTH:
         // 仅 AUTH 阶段 _mongo_scram_auth 解引用 ud->context；COMMAND 只 return mgopack 不碰 context

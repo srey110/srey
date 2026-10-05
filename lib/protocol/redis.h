@@ -60,6 +60,8 @@ char *redis_pack(size_t *size, const char *fmt, ...);
 /// </summary>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">ud_cxt 指针，内部维护解包中间状态</param>
+/// <param name="size">输出：返回包时写入这条回复所有节点的分配长度之和（含节点头），用于内存记账，
+/// 不是 data 处可读的长度；没返回包时不写。必须非 NULL</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 redis_pack_ctx 链表头，数据不足或出错返回 NULL</returns>
 void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,

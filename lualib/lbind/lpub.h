@@ -23,14 +23,14 @@
     luaL_argcheck(lua, lua_islightuserdata(lua, idx), idx, "light userdata expected")
 // 将已存在的元表关联到栈顶 userdata 对象上
 #define ASSOC_MTABLE(lua, name) \
-    luaL_getmetatable(lua, name);\
+    lpub_get_mtable(lua, name);\
     lua_setmetatable(lua, -2)
 // 注册元表并创建对应的 new 函数库；name 为元表名，regnew 为构造函数列表，regfunc 为成员方法列表。
 // __metatable 置为元表名：普通 getmetatable 只拿到该字符串，故业务无法经它篡改共享元表
 // （如覆写某个方法或 __index，会影响该类型的全部实例）。注意这挡不住 debug.setmetatable 的
 // 类型混淆——debug.getmetatable 无视 __metatable，而挂元表到 userdata 本就只能靠 debug 库
 #define REG_MTABLE(lua, name, regnew, regfunc)\
-    luaL_newmetatable(lua, name);\
+    lpub_new_mtable(lua, name);\
     lua_pushvalue(lua, -1);\
     lua_setfield(lua, -2, "__index");\
     luaL_setfuncs(lua, regfunc, 0);\
@@ -63,10 +63,52 @@
 // 声明 type **var 并从栈位 1 按 mt 校验取值(双重指针，对应可被 __gc 提前置 NULL 的 reader/stmt 型 userdata)；
 // *var 为 NULL(已被显式释放)时直接 luaL_error(longjmp，不返回)
 #define LPUB_UD_ARG(lua, type, mt, var, errmsg) \
-    type **var = luaL_checkudata((lua), 1, (mt)); \
+    type **var = lpub_check_udata((lua), 1, (mt)); \
     if (NULL == *(var)) { \
         return luaL_error((lua), (errmsg)); \
     }
+// lyyjson_encode_sink 的输出回调：json 只在回调期间有效
+typedef void (*lyyjson_sink)(void *ud, const char *json, size_t lens);
+
+/// <summary>
+/// 建（或取已有的）名为 name 的元表压栈，同 luaL_newmetatable；另在注册表里以 name 的地址为键再存一份，
+/// 之后按地址取只是一次指针哈希，不再按名字查串。按名字的那份照留，luaL_checkudata 等旧写法照样能用。
+/// name 必须是静态存储的常量（MT_ 系列宏）：地址就是键，栈上或堆上的缓冲地址会被别的内容重用
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="name">元表名</param>
+void lpub_new_mtable(lua_State *lua, const char *name);
+/// <summary>
+/// 取名为 name 的元表压栈，结果同 luaL_getmetatable。先按地址取，地址没登记过（如同名字面量在别的
+/// 编译单元没被合并）再按名字取，故传哪个指针都对，只是快慢不同
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="name">元表名</param>
+/// <returns>压栈值的类型；没有这张元表时为 LUA_TNIL</returns>
+int32_t lpub_get_mtable(lua_State *lua, const char *name);
+/// <summary>
+/// 栈顶的值是不是名为 name 的元表，栈不变。一个值要跟几张元表逐个比时，先 lua_getmetatable 一次再逐个调它
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="name">元表名</param>
+/// <returns>是返回 1，否返回 0</returns>
+int32_t lpub_is_mtable(lua_State *lua, const char *name);
+/// <summary>
+/// 同 luaL_testudata，元表按 lpub_get_mtable 取
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">栈位置</param>
+/// <param name="name">元表名</param>
+/// <returns>userdata 载荷指针；不是挂着该元表的 userdata 返回 NULL</returns>
+void *lpub_test_udata(lua_State *lua, int32_t idx, const char *name);
+/// <summary>
+/// 同 luaL_checkudata，元表按 lpub_get_mtable 取
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">栈位置</param>
+/// <param name="name">元表名</param>
+/// <returns>userdata 载荷指针；类型不符经 luaL_typeerror 抛出(longjmp，不返回)，报错文案同 luaL_checkudata</returns>
+void *lpub_check_udata(lua_State *lua, int32_t idx, const char *name);
 /// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）
 /// </summary>
@@ -211,14 +253,37 @@ void *lpub_opt_buf(lua_State *lua, int32_t idx, size_t *size);
 /// <returns>返回值个数,恒为 1</returns>
 int32_t lpub_rtn_bool(lua_State *lua, int32_t cond);
 /// <summary>
-/// 取栈位 idx 的 task 标识：string 视为 task 名，经 task_find_name 换成句柄（查不到得 INVALID_TNAME，
-/// 由调用方后续的 task_grab 判空）；其余按 integer 当句柄直取（非整数由 luaL_checkinteger 抛错）。
-/// 各绑定对外都是"名字或句柄二选一"，判定收在这一处
+/// 取栈位 idx 的 task 标识：string 视为 task 名，先查本 lua_State 的 名字→句柄 缓存，没有再经
+/// task_find_name 换成句柄并记进缓存；其余按 integer 当句柄直取（非整数由 luaL_checkinteger 抛错）。
+/// 各绑定对外都是"名字或句柄二选一"，判定收在这一处。
+/// 缓存条目随 lua_State 常驻：只在同名 grab 失败时由 lpub_task_grab 改写或删除，不主动清理，
+/// 故 task 名应是有限集合，别按房间 / 玩家拼动态名字。
+/// 缓存的句柄可能已过期：取 task 一律走 lpub_task_grab，之后要用句柄以返回的 task 的 handle 字段为准，
+/// 别直接 task_grab，也别接着用本函数返回的句柄。
+/// 记缓存会分配内存（可能抛内存错误），已接管缓冲或持有引用、不能再 longjmp 的路径改用 lpub_task_peek
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="idx">参数在栈中的位置</param>
 /// <returns>task 句柄；名字查不到时为 INVALID_TNAME</returns>
 name_t lpub_task_handle(lua_State *lua, int32_t idx);
+/// <summary>
+/// 同 lpub_task_handle（缓存生命周期与取 task 的约束相同），但只读缓存、不往里加，不分配内存
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">参数在栈中的位置；不是 string 时必须已确认是整数，否则同样抛错</param>
+/// <returns>同 lpub_task_handle</returns>
+name_t lpub_task_peek(lua_State *lua, int32_t idx);
+/// <summary>
+/// 按 lpub_task_handle / lpub_task_peek 取到的句柄持有 task。栈位 idx 是名字且 grab 失败时
+/// 按名字重查一次并改写缓存（缓存里的旧句柄只会 grab 失败、不会投错：句柄不复用，名字与句柄成对增删）。
+/// 不分配内存、不抛错
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">取 handle 时用的那个参数的栈位</param>
+/// <param name="handle">lpub_task_handle / lpub_task_peek 的返回值</param>
+/// <returns>task 指针（引用计数已 +1，用完 task_ungrab）；重查后仍不存在返回 NULL。
+///   重查可能换成别的句柄，之后要用句柄就取返回值的 handle 字段，别再用入参</returns>
+task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle);
 /// <summary>
 /// 取栈位置 1 的子对象在创建时锚进 uservalue 槽 1 的宿主对象指针。
 /// 槽位由 uservalue 锚着，任何时候读都安全。
@@ -314,6 +379,15 @@ void lpub_push_sock(lua_State *lua, sock_ctx *sk);
 /// <param name="sk">连接标识，按值拷贝</param>
 void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk);
 /// <summary>
+/// 同 lpub_push_sock，但把推出去的对象缓存在栈位 idx 那个 userdata 的 uservalue 槽 1 里：
+/// fd / index / skid 都没变就返回上次那个对象，变了才新建并替换槽位。不原地改旧对象，
+/// 手里还拿着旧对象的人看到的仍是旧值。槽 1 必须没有别的用途（连接句柄的 sock_id 用）
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">缓存宿主（连接句柄 userdata）在栈中的位置</param>
+/// <param name="sk">连接标识，按值拷贝</param>
+void lpub_push_sock_slot(lua_State *lua, int32_t idx, sock_ctx *sk);
+/// <summary>
 /// 从栈位 idx 取连接标识
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
@@ -326,8 +400,21 @@ sock_ctx *lpub_check_sock(lua_State *lua, int32_t idx);
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="idx">栈位置</param>
+/// <returns>是返回指向 userdata 内部的 sock_ctx（有效期同 lpub_check_sock），否返回 NULL</returns>
+sock_ctx *lpub_is_sock(lua_State *lua, int32_t idx);
+/// <summary>
+/// 把连接标识的元表压栈。批量判类型时在循环外取一次，循环内配 lpub_is_sock_mt 用
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+void lpub_push_sock_mt(lua_State *lua);
+/// <summary>
+/// 同 lpub_is_sock，但拿栈位 mtidx 上那张元表（lpub_push_sock_mt 压的）比，不再每次查注册表
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">待判断的值在栈中的位置</param>
+/// <param name="mtidx">元表所在栈位，须为正数（绝对位置）</param>
 /// <returns>是返回 1，否返回 0</returns>
-int32_t lpub_is_sock(lua_State *lua, int32_t idx);
+int32_t lpub_is_sock_mt(lua_State *lua, int32_t idx, int32_t mtidx);
 /// <summary>
 /// 从缓存里摘掉一条连接标识。连接关闭时调，否则该 skid 的 userdata 随 lua_State 常驻
 /// </summary>
@@ -350,5 +437,15 @@ int32_t lpub_push_sock_invalid(lua_State *lua);
 /// <param name="lens">出参：字符数（不含 NUL）；不需要可传 NULL</param>
 /// <returns>结果的起点，位于 buf 内</returns>
 const char *lpub_int_str(char *buf, size_t buflen, lua_Integer i, size_t *lens);
+/// <summary>
+/// 把栈位 idx 的值编成 JSON 交给 sink，编码规则同 yyjson.encode（实现在 lyyjson.c）。不抛错：
+/// 要错误文案的调用方退回 yyjson.encode 再编一次。sink 被调时编码用的中间结构已释放，回调里可以做 Lua 分配
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">要编码的值的栈位</param>
+/// <param name="sink">输出回调</param>
+/// <param name="ud">原样传给 sink</param>
+/// <returns>ERR_OK 已编码并调过 sink；ERR_FAILED 编码失败（类型不支持、嵌套过深、内存不足等），sink 没被调</returns>
+int32_t lyyjson_encode_sink(lua_State *lua, int32_t idx, lyyjson_sink sink, void *ud);
 
 #endif//LPUB_H_

@@ -1197,7 +1197,7 @@ static size_t _mqtt_publish_hlens(buffer_ctx *buf, ud_cxt *ud, size_t fhlens, si
 }
 void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)sk; (void)size;
+    (void)ev; (void)sk;
     size_t blens = buffer_size(buf);
     if (blens < 2) {//固定头至少2字节
         BIT_SET(*status, PROT_MOREDATA);
@@ -1272,6 +1272,9 @@ void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
             FREE(tmp);
         }
         ASSERTAB(br.offset == buffer_drain(buf, br.offset), "drain buffer failed.");
+    }
+    if (NULL != pack) {
+        *size = total;
     }
     return pack;
 }

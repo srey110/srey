@@ -7,10 +7,11 @@
 // 非 0/1 的值会让 reader 各取值器走错解码分支：文本行 "f" 被二进制分支当成非零字节，
 // 数据库里的 FALSE 到 Lua 侧变成 true，而 err 仍是 ERR_OK
 #define FORMAT_OUT_OF_RANGE "format must be 0(text) or 1(binary)"
+#define PG_STACK_OIDS 64 // pack_stmt_prepare 的 oids 不超过这个数就用栈缓冲，免一次 MALLOC/FREE
 // 十五个 bind 入口共用的开场白：取 bind 对象。散在各处的话将来换取法得挨个找齐，
 // 漏一个不会有编译期信号
 #define LPGSQL_BIND_ARG(lua, var) \
-    pgsql_bind_ctx *var = luaL_checkudata((lua), 1, MT_PGSQL_BIND)
+    pgsql_bind_ctx *var = lpub_check_udata((lua), 1, MT_PGSQL_BIND)
 // 数值型 bind 的开场白：pgsql 只有位置绑定，栈位 2 不是数字就按 SQL NULL 绑上直接返回
 #define LPGSQL_BIND_NUM(lua, var) \
     LPGSQL_BIND_ARG((lua), var); \
@@ -288,14 +289,46 @@ static int32_t _lpgsql_reader_push(lua_State *lua, pgsql_reader_ctx *reader) {
 /// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
 /// <param name="format" type="integer">期望格式（0 = 文本，1 = 二进制）；其余值报错</param>
 /// <returns type="_pgsql_reader_ctx?">reader 对象；取完或失败返回 nil</returns>
+/// <returns type="integer">受影响行数（同 pgsql.affected_rows），没有结果集的语句靠它取行数；pgpack 为空时为 0</returns>
 static int32_t _lpgsql_reader_iter(lua_State *lua) {
     LUACHECK_LUDATA_OPT(lua, 1);
     pgpack_ctx *pgpack = lua_touserdata(lua, 1);
     pgpack_format format = (pgpack_format)lpub_check_range(lua, 2, FORMAT_TEXT, FORMAT_BINARY, FORMAT_OUT_OF_RANGE);
     if (NULL == pgpack) {
-        return _lpgsql_reader_push(lua, NULL);
+        _lpgsql_reader_push(lua, NULL);
+        lua_pushinteger(lua, 0);
+        return 2;
     }
-    return _lpgsql_reader_push(lua, pgsql_reader_iter(pgpack, format));
+    _lpgsql_reader_push(lua, pgsql_reader_iter(pgpack, format));
+    lua_pushinteger(lua, pgsql_affected_rows(pgpack));
+    return 2;
+}
+/// <summary>
+/// 一次取齐 simple query 的全部结果，每条语句一个元素：有结果集给 reader，没有给该条的影响行数。
+/// 等价于按下标逐个 reader.at(pgpack, i, format) or pgsql.affected_at(pgpack, i)，取走的 reader 不能再取
+/// </summary>
+/// <param name="pgpack" type="lightuserdata">pgpack_ctx 指针</param>
+/// <param name="format" type="integer">期望格式（0 = 文本，1 = 二进制）；其余值报错</param>
+/// <returns type="(_pgsql_reader_ctx|integer)[]">结果数组；pgpack 为空或结果数为 0 时是空表</returns>
+/// <returns type="integer">受影响行数（同 pgsql.affected_rows）；pgpack 为空时为 0</returns>
+static int32_t _lpgsql_reader_results(lua_State *lua) {
+    LUACHECK_LUDATA_OPT(lua, 1);
+    pgpack_ctx *pgpack = lua_touserdata(lua, 1);
+    pgpack_format format = (pgpack_format)lpub_check_range(lua, 2, FORMAT_TEXT, FORMAT_BINARY, FORMAT_OUT_OF_RANGE);
+    uint32_t n = (NULL != pgpack) ? pgsql_result_count(pgpack) : 0;
+    pgsql_reader_ctx *reader;
+    lua_createtable(lua, (int32_t)n, 0);
+    for (uint32_t i = 0; i < n; i++) {
+        reader = pgsql_reader_at(pgpack, i, format);
+        if (NULL == reader) {
+            lua_pushinteger(lua, pgsql_affected_at(pgpack, i));
+        } else {
+            lpub_push_ud(lua, reader, MT_PGSQL_READER);
+        }
+        lua_rawseti(lua, -2, (lua_Integer)i + 1);
+    }
+    lua_pushinteger(lua, (NULL != pgpack) ? pgsql_affected_rows(pgpack) : 0);
+    return 2;
 }
 /// <summary>
 /// 从 pgpack_ctx 数据包中创建第 idx 个查询结果的读取器；
@@ -323,7 +356,7 @@ static int32_t _lpgsql_reader_at(lua_State *lua) {
 /// <param name="self" type="userdata">reader 对象</param>
 /// <returns>无</returns>
 static int32_t _lpgsql_reader_free(lua_State *lua) {
-    pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    pgsql_reader_ctx **reader = lpub_check_udata(lua, 1, MT_PGSQL_READER);
     if (NULL != *reader) {
         pgsql_reader_free(*reader);
         *reader = NULL;
@@ -421,47 +454,52 @@ static int32_t _lpgsql_reader_double(lua_State *lua) {
     }
     return lpub_rtn_bool(lua, 1 == err);
 }
+// text / bytea 取到值之后的共同收尾：栈位 3 为真值时压 Lua 字符串，否则压借用指针 + 长度
+static int32_t _lpgsql_reader_bytes(lua_State *lua, const char *val, int32_t lens, int32_t err) {
+    int32_t asstr = lua_toboolean(lua, 3);// 必须在压栈前读：压了 true 之后栈位 3 就是它
+    if (ERR_OK != err) {
+        return lpub_rtn_bool(lua, 1 == err);
+    }
+    lua_pushboolean(lua, 1);
+    if (0 != asstr) {
+        lua_pushlstring(lua, val, (size_t)lens);
+        return 2;
+    }
+    lua_pushlightuserdata(lua, (void *)val);
+    lua_pushinteger(lua, lens);
+    return 3;
+}
 /// <summary>
 /// 读取当前行指定字段的文本值
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
+/// <param name="asstr" type="boolean?">真值时第 2 个返回值改为拷贝出来的 Lua 字符串，不再有第 3 个</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="lightuserdata?">数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
-/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；字段为 NULL 时不返回</returns>
-/// <returns type="integer?">字节数；字段为 NULL 时不返回</returns>
+/// <returns type="lightuserdata|string?">数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
+/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；asstr 时为 Lua 字符串；
+/// 字段为 NULL 时不返回</returns>
+/// <returns type="integer?">字节数；asstr 或字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_text(lua_State *lua) {
     LPGSQL_READER_GET(lua, reader, name, err);
     int32_t lens = 0;
     const char *val = pgsql_reader_text(*reader, name, &lens, &err);
-    if (ERR_OK == err) {
-        lua_pushboolean(lua, 1);
-        lua_pushlightuserdata(lua, (void *)val);
-        lua_pushinteger(lua, lens);
-        return 3;
-    }
-    return lpub_rtn_bool(lua, 1 == err);
+    return _lpgsql_reader_bytes(lua, val, lens, err);
 }
 /// <summary>
-/// 读取当前行指定字段的 BYTEA 值
+/// 读取当前行指定字段的 BYTEA 值，返回形状同 text
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
+/// <param name="asstr" type="boolean?">同 text</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="lightuserdata?">数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
-/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；字段为 NULL 时不返回</returns>
-/// <returns type="integer?">字节数；字段为 NULL 时不返回</returns>
+/// <returns type="lightuserdata|string?">同 text</returns>
+/// <returns type="integer?">同 text</returns>
 static int32_t _lpgsql_reader_bytea(lua_State *lua) {
     LPGSQL_READER_GET(lua, reader, name, err);
     int32_t lens = 0;
     const char *val = pgsql_reader_bytea(*reader, name, &lens, &err);
-    if (ERR_OK == err) {
-        lua_pushboolean(lua, 1);
-        lua_pushlightuserdata(lua, (void *)val);
-        lua_pushinteger(lua, lens);
-        return 3;
-    }
-    return lpub_rtn_bool(lua, 1 == err);
+    return _lpgsql_reader_bytes(lua, val, lens, err);
 }
 /// <summary>
 /// 读取当前行指定字段的 TIMESTAMP / TIMESTAMPTZ 值（相对 PG 纪元的微秒数）
@@ -528,11 +566,108 @@ static int32_t _lpgsql_reader_isnull(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 2);
     return lpub_rtn_bool(lua, pgsql_reader_isnull(*reader, name));
 }
+/// <summary>
+/// 按列名一次取多个字段，按列类型自动选取值方式：bool 给 boolean，int2/4/8 给 integer，float4/8 给 number，
+/// 文本类与 bytea 给 Lua 字符串（拷贝），timestamp / timestamptz 给微秒数，date 给天数，uuid 给 16 字节串；
+/// 换算口径与同名的单列取值方法一致
+/// </summary>
+/// <param name="self" type="userdata">reader 对象</param>
+/// <param name="..." type="string">字段名，至少一个</param>
+/// <returns type="any">每个字段名一个值，SQL NULL 为 nil；任一字段读取失败（无此列、类型不支持、
+/// 解析失败）直接抛错，错误信息带列名</returns>
+static int32_t _lpgsql_reader_get(lua_State *lua) {
+    LPUB_UD_ARG(lua, pgsql_reader_ctx, MT_PGSQL_READER, reader, "reader freed");
+    int32_t n = lua_gettop(lua);
+    luaL_argcheck(lua, n >= 2, 2, "column name expected");
+    luaL_checkstack(lua, n, "too many columns");
+    const char *name;
+    pgpack_field *field;
+    int32_t err;
+    int64_t ival;
+    double dval;
+    int32_t lens;
+    const char *sval;
+    char uuid[16];
+    for (int32_t i = 2; i <= n; i++) {
+        name = luaL_checkstring(lua, i);
+        err = ERR_FAILED;
+        if (NULL == pgsql_reader_name(*reader, name, &field)) {
+            return luaL_error(lua, "reader:get column '%s' read failed", name);
+        }
+        switch (field->type_oid) {
+        case BOOLOID:
+            ival = pgsql_reader_bool(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushboolean(lua, (int32_t)ival);
+            }
+            break;
+        case INT2OID:
+        case INT4OID:
+        case INT8OID:
+            ival = pgsql_reader_integer(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushinteger(lua, ival);
+            }
+            break;
+        case FLOAT4OID:
+        case FLOAT8OID:
+            dval = pgsql_reader_double(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushnumber(lua, dval);
+            }
+            break;
+        case TEXTOID:
+        case VARCHAROID:
+        case BPCHAROID:
+        case NAMEOID:
+        case UNKNOWNOID:
+            sval = pgsql_reader_text(*reader, name, &lens, &err);
+            if (ERR_OK == err) {
+                lua_pushlstring(lua, sval, (size_t)lens);
+            }
+            break;
+        case BYTEAOID:
+            sval = pgsql_reader_bytea(*reader, name, &lens, &err);
+            if (ERR_OK == err) {
+                lua_pushlstring(lua, sval, (size_t)lens);
+            }
+            break;
+        case TIMESTAMPOID:
+        case TIMESTAMPTZOID:
+            ival = pgsql_reader_timestamp(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushinteger(lua, ival);
+            }
+            break;
+        case DATEOID:
+            ival = pgsql_reader_date(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushinteger(lua, ival);
+            }
+            break;
+        case UUIDOID:
+            (void)pgsql_reader_uuid(*reader, name, uuid, &err);// 判 err 就够，理由见 _lpgsql_reader_uuid
+            if (ERR_OK == err) {
+                lua_pushlstring(lua, uuid, sizeof(uuid));
+            }
+            break;
+        default:
+            break;
+        }
+        if (1 == err) {
+            lua_pushnil(lua);// SQL NULL
+        } else if (ERR_OK != err) {
+            return luaL_error(lua, "reader:get column '%s' read failed", name);
+        }
+    }
+    return n - 1;
+}
 //pgsql.reader
 LUAMOD_API int luaopen_pgsql_reader(lua_State *lua) {
     luaL_Reg reg_new[] = {
         { "iter",  _lpgsql_reader_iter },
         { "at",  _lpgsql_reader_at },
+        { "results", _lpgsql_reader_results },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
@@ -549,6 +684,7 @@ LUAMOD_API int luaopen_pgsql_reader(lua_State *lua) {
         { "date",      _lpgsql_reader_date },
         { "uuid",      _lpgsql_reader_uuid },
         { "isnull",    _lpgsql_reader_isnull },
+        { "get",       _lpgsql_reader_get },
         { "__gc",      _lpgsql_reader_free },
         { NULL, NULL }
     };
@@ -693,13 +829,14 @@ static int32_t _lpgsql_copy_out_data(lua_State *lua) {
 /// <summary>
 /// 打包简单查询消息（Query）
 /// </summary>
-/// <param name="sql" type="string">SQL 语句</param>
+/// <param name="sql" type="string">SQL 语句；不得含 NUL，含了服务端回 ErrorResponse（约束见 pgsql_pack_query2）</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lpgsql_pack_query(lua_State *lua) {
-    const char *sql = luaL_checkstring(lua, 1);
+    size_t sqllen;
+    const char *sql = luaL_checklstring(lua, 1, &sqllen);
     size_t size;
-    void *pack = pgsql_pack_query(sql, &size);
+    void *pack = pgsql_pack_query2(sql, sqllen, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -717,20 +854,27 @@ static int32_t _lpgsql_pack_terminate(lua_State *lua) {
 /// <summary>
 /// 打包预处理语句 Parse + Sync 消息
 /// </summary>
-/// <param name="name" type="string">语句名（""= 未命名）</param>
-/// <param name="sql" type="string">SQL 语句</param>
+/// <param name="name" type="string">语句名（""= 未命名）；不得含 NUL，同 pack_query 的 sql</param>
+/// <param name="sql" type="string">SQL 语句；不得含 NUL，同 pack_query</param>
 /// <param name="nparam" type="integer">参数数量，取值 [0, INT16_MAX]，越界报错</param>
 /// <param name="oids" type="integer[]?">OID 整数数组（按参数顺序），元素数须不少于 nparam、取值 [0, UINT32_MAX]，非整数或越界报错（多余的忽略）；整个参数为 nil 表示全部由服务端推断，只想让某一个推断就把那格写 0</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
-    const char *name = luaL_checkstring(lua, 1);
-    const char *sql = luaL_checkstring(lua, 2);
+    size_t namelen;
+    size_t sqllen;
+    const char *name = luaL_checklstring(lua, 1, &namelen);
+    const char *sql = luaL_checklstring(lua, 2, &sqllen);
     int16_t nparam = _lpgsql_check_nparam(lua, 3);
+    uint32_t stackoids[PG_STACK_OIDS];
     uint32_t *oids = NULL;
     int16_t i;
     if (LUA_TTABLE == lua_type(lua, 4) && nparam > 0) {
-        MALLOC(oids, sizeof(uint32_t) * nparam);
+        if (nparam <= PG_STACK_OIDS) {
+            oids = stackoids;
+        } else {
+            MALLOC(oids, sizeof(uint32_t) * nparam);
+        }
         int32_t isnum;
         lua_Integer oid;
         for (i = 0; i < nparam; i++) {
@@ -740,15 +884,19 @@ static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
             if (0 == isnum
                 || oid < 0
                 || oid > UINT32_MAX) {
-                FREE(oids);
+                if (oids != stackoids) {
+                    FREE(oids);
+                }
                 return luaL_error(lua, "oids[%d] must be an integer in [0, UINT32_MAX]", (int32_t)i + 1);
             }
             oids[i] = (uint32_t)oid;
         }
     }
     size_t size;
-    void *pack = pgsql_pack_stmt_prepare(name, sql, nparam, oids, &size);
-    FREE(oids);
+    void *pack = pgsql_pack_stmt_prepare2(name, namelen, sql, sqllen, nparam, oids, &size);
+    if (oids != stackoids) {
+        FREE(oids);
+    }
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -764,7 +912,7 @@ static int32_t _lpgsql_pack_stmt_execute(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 1);
     pgsql_bind_ctx *bind = NULL;
     if (LUA_TUSERDATA == lua_type(lua, 2)) {
-        bind = luaL_checkudata(lua, 2, MT_PGSQL_BIND);
+        bind = lpub_check_udata(lua, 2, MT_PGSQL_BIND);
     }
     pgpack_format fmt = FORMAT_TEXT;
     if (LUA_TNUMBER == lua_type(lua, 3)) {
@@ -866,7 +1014,7 @@ static int32_t _lpgsql_new(lua_State *lua) {
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <returns>无</returns>
 static int32_t _lpgsql_free(lua_State *lua) {
-    pgsql_ctx **ud = luaL_checkudata(lua, 1, MT_PGSQL);
+    pgsql_ctx **ud = lpub_check_udata(lua, 1, MT_PGSQL);
     pgsql_ctx *pg = *ud;
     if (NULL == pg) {
         return 0;
@@ -936,7 +1084,7 @@ static int32_t _lpgsql_get_db(lua_State *lua) {
 static int32_t _lpgsql_sock_id(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     pgsql_ctx *pg = *ud;
-    lpub_push_sock(lua, &pg->sk);
+    lpub_push_sock_slot(lua, 1, &pg->sk);
     return 1;
 }
 /// <summary>

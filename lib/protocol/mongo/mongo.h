@@ -17,6 +17,8 @@ void _mongo_udfree(ud_cxt *ud);
 /// <param name="ev">事件上下文</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文（含 mongo_ctx 和解析状态）</param>
+/// <param name="size">输出：COMMAND 状态下为该 OP_MSG 的线上字节数，只用于内存记账，不是 data 处可读的长度。
+/// 没返回包时不写。必须非 NULL</param>
 /// <param name="status">解析结果标志位（PROT_MOREDATA / PROT_ERROR）</param>
 /// <returns>COMMAND 状态下返回 mgopack_ctx*，AUTH 状态下内部消费返回 NULL</returns>
 void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,

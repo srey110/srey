@@ -53,9 +53,9 @@ function ctx:_connect()
     return ok
 end
 
--- conn_pub 的探活钩子：发 "SELECT 1" 简单查询，不自动重连
+-- conn_pub 的探活钩子：发空语句 ";"（服务端只回 EmptyQueryResponse，也归 OK），不自动重连
 function ctx:_ping()
-    local pack, size = pgsql.pack_query("SELECT 1")
+    local pack, size = pgsql.pack_query(";")
     return ppub.request_ok(self, pack, size, PGPACK_TYPE.OK)
 end
 
@@ -85,12 +85,9 @@ function ctx:_query(sql)
     if not pgpack then
         return false
     end
-    self.affected = pgsql.affected_rows(pgpack)-- 连接级"最近一次"，多语句时是最后一条
-    local rs = {}
-    -- affected 为 0 在 Lua 里仍是真值，不会被 or 吞掉
-    for i = 1, pgsql.result_count(pgpack) do
-        rs[i] = reader.at(pgpack, i, PG_FORMAT.TEXT) or pgsql.affected_at(pgpack, i)
-    end
+    local rs
+    -- affected 是连接级"最近一次"，多语句时是最后一条
+    rs, self.affected = reader.results(pgpack, PG_FORMAT.TEXT)
     return rs
 end
 

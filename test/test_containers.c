@@ -3415,6 +3415,8 @@ static void test_queue_empty_apis(CuTest *tc) {
     i32_mpq mq;
     i32_fsqu fq;
     int32_t v, out, i;
+    int32_t batch[3] = { 1, 2, 3 };
+    int32_t outs[3];
     i32_mpq_init(&mq, 4);
     CuAssertTrue(tc, i32_mpq_empty(&mq));
     v = 1;
@@ -3426,17 +3428,35 @@ static void test_queue_empty_apis(CuTest *tc) {
 
     i32_fsqu_init(&fq, 2);
     CuAssertTrue(tc, i32_fsqu_empty(&fq));
+    CuAssertTrue(tc, i32_fsqu_empty_fast(&fq));
     /* 灌到超出快路径容量,逼出溢出层:i32_fsqu_empty 必须把溢出层也算上 */
     for (i = 0; i < 16; i++) {
         i32_fsqu_push(&fq, &i);
     }
     CuAssertTrue(tc, !i32_fsqu_empty(&fq));
+    CuAssertTrue(tc, !i32_fsqu_empty_fast(&fq));
     CuAssertTrue(tc, 16 == (int32_t)i32_fsqu_size(&fq));
+    CuAssertTrue(tc, 16 == (int32_t)i32_fsqu_size_fast(&fq));
     for (i = 0; i < 16; i++) {
         CuAssertTrue(tc, ERR_OK == i32_fsqu_pop(&fq, &out));
         CuAssertTrue(tc, i == out);
     }
     CuAssertTrue(tc, i32_fsqu_empty(&fq));
+    /* 计数随出队减回 0,不残留(残留会让 worker 空转永远不睡) */
+    CuAssertTrue(tc, i32_fsqu_empty_fast(&fq));
+    /* trypush / push_batch / pop_batch 同样要维护 empty_fast 看的计数;批量 3 条超过容量 2,溢出层也走一遍 */
+    v = 7;
+    CuAssertTrue(tc, ERR_OK == i32_fsqu_trypush(&fq, &v));
+    CuAssertTrue(tc, !i32_fsqu_empty_fast(&fq));
+    CuAssertTrue(tc, ERR_OK == i32_fsqu_pop(&fq, &out));
+    CuAssertTrue(tc, 7 == out);
+    CuAssertTrue(tc, i32_fsqu_empty_fast(&fq));
+    i32_fsqu_push_batch(&fq, batch, 3);
+    CuAssertTrue(tc, !i32_fsqu_empty_fast(&fq));
+    CuAssertTrue(tc, 3 == i32_fsqu_pop_batch(&fq, outs, 3));
+    CuAssertTrue(tc, 1 == outs[0] && 2 == outs[1] && 3 == outs[2]);
+    CuAssertTrue(tc, i32_fsqu_empty_fast(&fq));
+    CuAssertTrue(tc, 0 == i32_fsqu_size_fast(&fq));
     i32_fsqu_free(&fq);
 }
 

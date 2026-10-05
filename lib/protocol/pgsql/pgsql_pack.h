@@ -47,6 +47,15 @@ void *pgsql_pack_terminate(size_t *size);
 /// <returns>消息数据指针，调用方负责释放</returns>
 void *pgsql_pack_query(const char *sql, size_t *size);
 /// <summary>
+/// 同 pgsql_pack_query，SQL 长度由调用方给出，不再 strlen
+/// </summary>
+/// <param name="sql">SQL 语句；NULL 时 sqllen 须为 0。不得含 NUL：协议 String 以 NUL 结尾，
+/// 夹带的 NUL 会让服务端按消息格式错误回 ErrorResponse（旧接口是在 NUL 处静默截断）</param>
+/// <param name="sqllen">sql 字节数</param>
+/// <param name="size">输出消息字节数</param>
+/// <returns>消息数据指针，调用方负责释放</returns>
+void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size);
+/// <summary>
 /// 打包预处理语句的 Parse + Sync 消息
 /// </summary>
 /// <param name="name">预处理语句名称，空字符串表示匿名语句</param>
@@ -56,6 +65,19 @@ void *pgsql_pack_query(const char *sql, size_t *size);
 /// <param name="size">输出消息字节数</param>
 /// <returns>消息数据指针，调用方负责释放</returns>
 void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size);
+/// <summary>
+/// 同 pgsql_pack_stmt_prepare，name / sql 的长度由调用方给出，不再 strlen；NUL 的约束同 pgsql_pack_query2
+/// </summary>
+/// <param name="name">预处理语句名称；NULL 时 namelen 须为 0</param>
+/// <param name="namelen">name 字节数</param>
+/// <param name="sql">SQL 语句；NULL 时 sqllen 须为 0</param>
+/// <param name="sqllen">sql 字节数</param>
+/// <param name="nparam">参数数量</param>
+/// <param name="oids">各参数的类型 OID 数组，可为 NULL</param>
+/// <param name="size">输出消息字节数</param>
+/// <returns>消息数据指针，调用方负责释放</returns>
+void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql, size_t sqllen,
+                                int16_t nparam, uint32_t *oids, size_t *size);
 /// <summary>
 /// 打包 Bind + Describe + Execute + Sync 消息，用于执行预处理语句
 /// </summary>

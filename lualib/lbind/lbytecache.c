@@ -83,8 +83,7 @@ static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) 
     ne.mtime = mtime;
     bc_map_set(_bc_map, &ne);
 }
-// 同 lbc_loadfile，mtime 由调用方给(LBC_CHECK_MTIME=0 时传 0)
-static int32_t _lbc_load(lua_State *lua, const char *path, uint64_t mt) {
+int32_t lbc_loadfile(lua_State *lua, const char *path, uint64_t mt) {
     bc_entry key;
     key.path = (char *)path;
     rwlock_distr_rdlock(_bc_lock);
@@ -113,15 +112,7 @@ static int32_t _lbc_load(lua_State *lua, const char *path, uint64_t mt) {
     rwlock_distr_wrunlock(_bc_lock);
     return LUA_OK;
 }
-int32_t lbc_loadfile(lua_State *lua, const char *path) {
-    uint64_t mt = 0;
-#if LBC_CHECK_MTIME
-    mt = file_mtime(path);
-#endif
-    return _lbc_load(lua, path, mt);
-}
-// 是普通文件才算命中，顺手取 mtime
-static int32_t _lbc_stat(const char *file, uint64_t *mt) {
+int32_t lbc_stat(const char *file, uint64_t *mt) {
     struct FSTAT st;
     if (ERR_OK != FSTAT(file, &st)) {
         return ERR_FAILED;
@@ -135,7 +126,11 @@ static int32_t _lbc_stat(const char *file, uint64_t *mt) {
         return ERR_FAILED;
     }
 #endif
+#if LBC_CHECK_MTIME
     *mt = (uint64_t)st.st_mtime;
+#else
+    *mt = 0;
+#endif
     return ERR_OK;
 }
 // 同 loadlib.c 的 getnextfilename：从 ';' 分隔的串里切出下一个文件名
@@ -179,13 +174,10 @@ static int _lbc_searcher(lua_State *lua) {
     const char *file;
     uint64_t mt = 0;
     while (NULL != (file = _lbc_nextfile(&pathname, end))) {
-        if (ERR_OK != _lbc_stat(file, &mt)) {
+        if (ERR_OK != lbc_stat(file, &mt)) {
             continue;
         }
-#if !LBC_CHECK_MTIME
-        mt = 0;
-#endif
-        if (LUA_OK != _lbc_load(lua, file, mt)) {
+        if (LUA_OK != lbc_loadfile(lua, file, mt)) {
             return lua_error(lua);
         }
         lua_pushstring(lua, file);

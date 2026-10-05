@@ -1,8 +1,12 @@
 -- advance/router.lua 单元测试。
--- lib.http 在加载路由器前注入 mock，让所有断言在纯 Lua 中同步执行，无需网络。
+-- lib.http 在加载路由器前注入 mock，让断言在纯 Lua 中同步执行、无需网络；
+-- 只有第 10 节起真监听收真包，验真实的 C match_pack。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
+
+-- 第 10 节真监听的端口。测试模块并发跑，端口必须全仓唯一，新端口先 grep 再定
+local ROUTER_PORT = 15061
 
 -- ── mock lib.http（必须在 require advance.router 之前） ────────────────────
 local last_resp
@@ -43,11 +47,31 @@ local mock_http = {
                       clen = ("string" == type(body)) and #body or 0 }
     end,
 }
+-- router 先调 _respond(C 组包直发)，返回 false 才走 _response_lua：这里前者恒返 false，全落到后者。
+-- 固定 Content-Type 走预渲染头部块：拆回 headers 表再转给上面两个出口，断言照旧按表取；
+-- 出口按名字现查，用例临时换掉 response 也照样生效
+mock_http._respond = function()
+    return false
+end
+mock_http._response_lua = function(headonly, sk, code, block, headers, body)
+    if nil ~= block then
+        headers = {}
+        for k, v in block:gmatch("([^:\r\n]+): ([^\r\n]*)\r\n") do
+            headers[k] = v
+        end
+    end
+    if headonly then
+        mock_http.response_head(sk, code, headers, body)
+    else
+        mock_http.response(sk, code, headers, body)
+    end
+end
 package.loaded["lib.http"] = mock_http
 
 -- srey.close 一并换掉：这里的 fd/skid 是假的，真去关会打到 C 层的事件线程。
 -- 每个 unit 模块是独立 task（各有各的 lua_State），改这里波及不到别的模块
 local closed_log = {}
+local _real_close = srey.close-- 第 10 节的真连接要真关
 srey.close = function(sk)
     closed_log[#closed_log + 1] = { sk = sk }
 end
@@ -60,6 +84,24 @@ srey.watch_closed = function(_)
 end
 
 local Route = require("advance.router")
+-- router 的 match_pack 直接读 C 的 http_pack_ctx，这里的假包是 Lua 表：给 C 路由器的方法表
+-- 换一个按假包走 match 的同形版本（返回值形状见 lrouter.c 的 match_pack：空的查询 / 路径参数给 nil）。
+-- 真实现留一份给第 10 节：起真监听收真包，验 C 侧返回值与 router 按位置解构对得上
+local _c_router_mt = debug.getmetatable(Route._c_router)
+local _real_match_pack = _c_router_mt.match_pack
+local function _shim_match_pack(self, pack)
+    local st = pack._status
+    if not st then
+        return nil
+    end
+    local ok, code, parsed, idx, params = self:match(st[1], st[2] or "")
+    if not ok then
+        return false, code, st[1], st[3]
+    end
+    local query = parsed.param
+    return true, code, st[1], st[3], parsed.path, next(query) and query or nil, idx, next(params) and params or nil
+end
+_c_router_mt.match_pack = _shim_match_pack
 local SLICE_TYPE   = SLICE_TYPE
 local STREAM_ABORT = Route.STREAM_ABORT
 
@@ -315,6 +357,31 @@ runner.run(function(t)
         t:eq("asc", got_q and got_q.sort, "ctx.query.sort")
     end
 
+    -- 没有查询串 / 路径参数：match_pack 给 nil，ctx.query / ctx.params 读到时才给空表，
+    -- 两次读到同一张，出了 dispatch 也照样是表；只有一边为空时那一边同样惰性给
+    do
+        local r = Route.new()
+        local got = {}
+        r:get("/plain", function(ctx)
+            got.q1, got.q2 = ctx.query, ctx.query
+            got.p1, got.p2 = ctx.params, ctx.params
+            got.ctx = ctx
+            ctx:text(200, "ok")
+        end)
+        r:get("/one/{id}", function(ctx)
+            got.id = ctx.params.id
+            got.oq = ctx.query
+            ctx:text(200, "ok")
+        end)
+        r:dispatch(sk_a, make_pack("GET", "/plain"), nil)
+        t:check("table" == type(got.q1) and nil == next(got.q1) and got.q1 == got.q2, "无查询串 ctx.query 为同一张空表")
+        t:check("table" == type(got.p1) and nil == next(got.p1) and got.p1 == got.p2, "无占位符 ctx.params 为同一张空表")
+        t:check("table" == type(got.ctx.params) and "table" == type(got.ctx.query), "出了 dispatch query / params 仍是表")
+        r:dispatch(sk_a, make_pack("GET", "/one/7"), nil)
+        t:eq("7", got.id, "有路径参数无查询串 ctx.params.id")
+        t:check("table" == type(got.oq) and nil == next(got.oq), "有路径参数无查询串 ctx.query 为空表")
+    end
+
     -- ── 3. 响应辅助方法 ─────────────────────────────────────────────────────
 
     -- ctx:text
@@ -541,6 +608,18 @@ runner.run(function(t)
         t:eq("r1", order[3], "full chain order: r1")
         t:eq("r2", order[4], "full chain order: r2")
         t:eq("h",  order[5], "full chain order: handler")
+    end
+
+    -- 4.4a 先 dispatch 让链缓存上，再 use() 追加中间件：dispatch 里内联的缓存判定得比版本号，
+    -- 只判 route._step 非空的话，后注册的全局中间件(比如鉴权)对已经跑过的路由永远不生效
+    do
+        local order = {}
+        local r = Route.new()
+        r:get("/x", function(ctx) order[#order + 1] = "h"; ctx:text(200, "ok") end)
+        dispatch(r, "GET", "/x")
+        r:use(function(ctx, next) order[#order + 1] = "late"; next() end)
+        dispatch(r, "GET", "/x")
+        t:eq("h,late,h", table.concat(order, ","), "dispatch 之后 use() 的中间件对已缓存的路由生效")
     end
 
     -- 4.5 中间件不调 next → 截断链路，handler 不执行
@@ -1161,6 +1240,23 @@ runner.run(function(t)
         t:eq(2, #log, "只有 START 与 END 两次回调")
     end
 
+    -- 9.2a 流式首帧(_st_begin)也内联了链缓存判定，同 4.4a：缓存之后 use() 的中间件要生效
+    do
+        local order = {}
+        local r = Route.new()
+        r:post_stream("/st", function(ctx, slice)
+            if SLICE_TYPE.START == slice then
+                order[#order + 1] = "s"
+            elseif SLICE_TYPE.END == slice then
+                ctx:text(200, "ok")
+            end
+        end)
+        feed_stream(r, "/st", { "a" })
+        r:use(function(ctx, next) order[#order + 1] = "late"; next() end)
+        feed_stream(r, "/st", { "a" })
+        t:eq("s,late,s", table.concat(order, ","), "流式首帧：缓存之后 use() 的中间件生效")
+    end
+
     -- 9.3 chunked 打到普通路由 → 411 并关连接，后续分片静默丢
     do
         local r = Route.new()
@@ -1220,8 +1316,8 @@ runner.run(function(t)
         t:eq("/user/42?a=1&b=2&c=3", r:url("user.show", { id = 42, a = 1, b = 2, c = 3 }),
              "多个剩余键按整串排序，同一组参数每次给出同一个 URL")
         -- Lua 的 / 恒出浮点,tostring(84/2) 是 "42.0"：生成出 /user/42.0 再打回来,
-        -- ctx.params.id 就是字符串 "42.0",业务 tonumber 后查库查不到。口径同 lib/redis.lua
-        -- 的 _arg_str 与 lib/http.lua 的 _head_val
+        -- ctx.params.id 就是字符串 "42.0",业务 tonumber 后查库查不到。口径同 utils.lua 的 num_str
+        -- (redis.pack 与 http 头值在 C 侧 lprot.c 的 _lprot_redis_pack / _lprot_http_head_check 同样处理)
         t:eq("/user/42", r:url("user.show", { id = 84 / 2 }), "整数值浮点按整数回填")
         t:eq("/user/42?page=2", r:url("user.show", { id = 42, page = 10 / 5 }),
              "查询串同样按整数编码")
@@ -1401,6 +1497,121 @@ runner.run(function(t)
             collectgarbage("collect")
         end
         t:check(nil == probe[1], "丢掉的流式 router 可被回收，没被 CLOSE 观察者钉住")
+    end
+
+    -- ── 10. 真包走真实的 C match_pack ───────────────────────────────────────
+    -- 前面全走模块头的 shim。这里起真监听收真包：C 的 match_pack 与 match 逐项比（命中 8 个返回值、
+    -- 未命中 4 个、空的查询 / 路径参数给 nil、chunked 后续包只给 1 个 nil），再让 dispatch 用真实现
+    -- 跑一遍，钉住 _match_ctx 按位置解构出来的 ctx 字段
+    do
+        local function same(a, b)
+            if nil == a or nil == b then
+                return a == b
+            end
+            for k, v in pairs(a) do
+                if b[k] ~= v then
+                    return false
+                end
+            end
+            for k in pairs(b) do
+                if nil == a[k] then
+                    return false
+                end
+            end
+            return true
+        end
+        local r = Route.new()
+        local seen
+        local function rec(ctx)
+            seen = { method = ctx.method, version = ctx.version, path = ctx.path, query = ctx.query, params = ctx.params }
+            ctx:text(200, "ok")
+        end
+        r:get("/q", rec)
+        r:get("/u/{id}", rec)
+        r:get("/opt/{a?}", rec)
+        r:get("/w/*", rec)
+        r:get("/m/{a}/x/{b}", rec)
+        local got = {}-- 每条一次到齐的请求一项
+        local mids = {}-- chunked 首帧之后各包上 match_pack 的返回
+        srey.on_recved(function(pktype, sk, client, slice, data)
+            if PACK_TYPE.HTTP ~= pktype or 0 ~= client then
+                return
+            end
+            if 0 ~= slice then
+                if SLICE_TYPE.START ~= slice then
+                    mids[#mids + 1] = { slice = slice, rtn = table.pack(_real_match_pack(r._c_router, data)) }
+                end
+                return
+            end
+            local g = { rtn = table.pack(_real_match_pack(r._c_router, data)) }
+            seen, last_resp = nil, nil
+            _c_router_mt.match_pack = _real_match_pack
+            g.ok = pcall(r.dispatch, r, sk, data, client)
+            _c_router_mt.match_pack = _shim_match_pack
+            g.ctx, g.code = seen, (last_resp or {}).code
+            got[#got + 1] = g
+            srey.send(sk, "x", 1, 1)-- 响应走的是 mock，另回一个字节让客户端的 syn_send 返回
+        end)
+        local lid = srey.listen(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", ROUTER_PORT)
+        local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", ROUTER_PORT)
+        if t:check(ERR_FAILED ~= lid and csk and csk.valid, "真监听连上 " .. ROUTER_PORT) then
+            local reqs = {
+                { "GET", "/q" }, { "GET", "/q?a=1&b=2" }, { "GET", "/q?x=%E4%B8%AD&y=a%20b" },
+                { "GET", "/u/42?z=9" }, { "GET", "/u/%41%42" }, { "GET", "/opt" }, { "GET", "/opt/v" },
+                { "GET", "/w/a/b/c" }, { "GET", "/m/1/x/2" },
+                { "GET", "/nope" }, { "POST", "/q" }, { "BREW", "/q" }, { "get", "/q" },
+            }
+            local raw, g, ok, code, purl, idx, params, label
+            for i, rq in ipairs(reqs) do
+                label = rq[1] .. " " .. rq[2]
+                raw = rq[1] .. " " .. rq[2] .. " HTTP/1.1\r\nHost: x\r\n\r\n"
+                srey.syn_send(csk, raw, #raw, 1)
+                g = got[i]
+                if not t:check(nil ~= g and g.ok, "收到并派发 " .. label) then
+                    break
+                end
+                ok, code, purl, idx, params = r._c_router:match(rq[1], rq[2])
+                t:eq(ok and 8 or 4, g.rtn.n, "match_pack 返回值个数 " .. label)
+                t:eq(ok, g.rtn[1], "match_pack 命中与否 " .. label)
+                t:eq(code, g.rtn[2], "match_pack 状态码 " .. label)
+                t:eq(rq[1], g.rtn[3], "match_pack 方法 " .. label)
+                t:eq("HTTP/1.1", g.rtn[4], "match_pack 版本 " .. label)
+                if ok then
+                    t:eq(purl.path, g.rtn[5], "match_pack path " .. label)
+                    t:check(same(next(purl.param) and purl.param or nil, g.rtn[6]), "match_pack query(空给 nil) " .. label)
+                    t:eq(idx, g.rtn[7], "match_pack 路由索引 " .. label)
+                    t:check(same(next(params) and params or nil, g.rtn[8]), "match_pack params(空给 nil) " .. label)
+                    t:eq(rq[1], g.ctx and g.ctx.method, "ctx.method " .. label)
+                    t:eq("HTTP/1.1", g.ctx and g.ctx.version, "ctx.version " .. label)
+                    t:eq(purl.path, g.ctx and g.ctx.path, "ctx.path " .. label)
+                    t:check(g.ctx and same(purl.param, g.ctx.query), "ctx.query " .. label)
+                    t:check(g.ctx and same(params, g.ctx.params), "ctx.params " .. label)
+                else
+                    t:eq(code, g.code, "未命中按 match 的码回 " .. label)
+                    t:eq(nil, g.ctx, "未命中不进 handler " .. label)
+                end
+            end
+            t:eq(405, got[12] and got[12].code, "未知方法 405")
+            raw = "POST /q HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"
+            srey.send(csk, raw, #raw, 1)
+            for _ = 1, 100 do
+                if #mids > 0 and SLICE_TYPE.END == mids[#mids].slice then
+                    break
+                end
+                srey.sleep(20)
+            end
+            t:check(#mids > 0 and SLICE_TYPE.END == mids[#mids].slice, "chunked 请求收到末包")
+            for i, m in ipairs(mids) do
+                t:eq(1, m.rtn.n, "chunked 后续包 match_pack 只返回 1 个值 #" .. i)
+                t:eq(nil, m.rtn[1], "chunked 后续包 match_pack 返回 nil #" .. i)
+            end
+        end
+        if csk and csk.valid then
+            _real_close(csk)
+        end
+        if ERR_FAILED ~= lid then
+            srey.unlisten(lid)
+        end
     end
 
     srey.close(sk_a)

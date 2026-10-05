@@ -665,7 +665,7 @@ void _http_udfree(ud_cxt *ud) {
 }
 void *http_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)sk; (void)size;
+    (void)ev; (void)sk;
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
@@ -685,6 +685,10 @@ void *http_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
         pack = NULL;
         BIT_SET(*status, PROT_ERROR);
         break;
+    }
+    // 记包持有的协议字节 = 头 + 体：无体的头包体为 0，chunk/tillclose 片没有头、只有载荷
+    if (NULL != pack) {
+        *size = pack->head.lens + pack->data.lens;
     }
     return pack;
 }

@@ -1,11 +1,16 @@
 -- Lua 层单元测试：lib/utils.lua（split/host_type/table_size/randstr/class/dump 等）
 --                  + lib/log.lua（级别短路现读 C 层 / log_setlv round-trip）
 --                  + srey.MSG_TYPE 与 C 侧 msg_type 枚举对齐
+--                  + core.wait_skid 的入参类型检查（经 wait_connect / sync_close / syn_recv）
+--                  + task.msg_release 对各种入参的处理
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local utils  = require("srey.utils")
 local core   = require("srey.core")
+local task   = require("srey.task")
+
+local UDP_PORT = 15073 -- msg_release 用例 UDP 自发自收
 
 srey.startup(function()
 runner.run(function(t)
@@ -24,6 +29,20 @@ runner.run(function(t)
         -- 紧邻最大值的那个必须越界。C 侧往末尾追加新 mtype 时这条会红，
         -- 提醒把新成员补进 Lua 表（追加不移动既有取值，逐项对名字那圈查不出来）
         t:eq(false, pcall(core.message_str, 14), "C 侧未追加新 mtype")
+    end
+
+    -- ── wait_skid：传的不是连接标识当场报错，失效连接仍按"已断"返回 ──────
+    -- 各 wait_* / syn_* 与 sync_close 都经它取 skid；类型错若也当已断处理，
+    -- 误用看起来就像网络故障
+    do
+        t:eq(false, pcall(srey.wait_connect, {}), "wait_connect 传表立即报错")
+        t:eq(false, pcall(srey.wait_connect, nil), "wait_connect 传 nil 立即报错")
+        t:eq(false, pcall(srey.sync_close, nil), "sync_close 传 nil 立即报错")
+        t:eq(false, pcall(core.wait_skid, 1), "wait_skid 传整数立即报错")
+        local bad = srey.sock_invalid()
+        t:eq(nil, core.wait_skid(bad), "失效连接 wait_skid 返回 nil")
+        t:eq(false, srey.wait_connect(bad), "失效连接 wait_connect 返回 false")
+        t:eq(nil, srey.syn_recv(bad), "失效连接 syn_recv 返回 nil")
     end
 
     -- ── host_type ──────────────────────────────────────────────────────
@@ -177,6 +196,44 @@ runner.run(function(t)
         t:eq("function", type(WARN),  "WARN exists")
         t:eq("function", type(INFO),  "INFO exists")
         t:eq("function", type(DEBUG), "DEBUG exists")
+    end
+
+    -- ── task.msg_release：只认带载荷的消息对象，别的入参什么都不做 ──────────
+    do
+        local release = task.msg_release
+        t:eq(true, pcall(release), "msg_release 无参不报错")
+        t:eq(true, pcall(release, nil), "msg_release(nil) 不报错")
+        t:eq(true, pcall(release, {}), "msg_release(表) 不报错")
+        t:eq(true, pcall(release, 42), "msg_release(数字) 不报错")
+        -- 带载荷的用 UDP 自发自收的 RECVFROM：它的释放函数不顺手把 msg.data 置空，重复调全靠 msg_release 自己挡
+        local sk = srey.udp(PACK_TYPE.NONE, "127.0.0.1", UDP_PORT)
+        if t:check(sk and sk.valid and srey.sock_session(sk), "udp 建 socket 并设会话") then
+            local p = "release-me"
+            srey.sendto(sk, "127.0.0.1", UDP_PORT, p, #p, 1)
+            local msg = srey._coro_wait(sk.skid, srey.MSG_TYPE.RECVFROM, 2000)
+            t:eq(srey.MSG_TYPE.RECVFROM, msg.mtype, "等到 RECVFROM")
+            local lud = msg.data
+            if t:check(nil ~= lud, "RECVFROM 带载荷") then
+                -- msg.data 是 light userdata：没有消息元表，不当消息对象
+                t:eq(true, pcall(release, lud), "msg_release(light userdata) 不报错")
+                t:eq(p, srey.ud_str(msg.udata, msg.size), "传 light userdata 不释放载荷")
+                -- 下次挂起、分发返回时 C 侧还会再放一次，已放过的必须是空操作（否则 ASan 报双重释放）
+                release(msg)
+                t:eq(nil, msg.data, "释放后 msg.data 为 nil")
+                t:eq(true, pcall(release, msg), "同一消息再释放一次不报错")
+                t:eq(nil, msg.data, "重复释放后 msg.data 仍为 nil")
+                t:eq(sk.skid, msg.sess, "释放后其余字段照读")
+            end
+            srey.close(sk)
+        end
+        -- 无载荷消息：data 本就为空，调了也不动它
+        local sess = srey.id()
+        srey.response(srey.task_handle(), 0, sess, ERR_OK)
+        local m0 = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 2000)
+        t:eq(srey.MSG_TYPE.RESPONSE, m0.mtype, "等到无载荷的 RESPONSE")
+        t:eq(true, pcall(release, m0), "msg_release(无载荷消息) 不报错")
+        t:eq(nil, m0.data, "无载荷消息 data 仍为 nil")
+        t:eq(sess, m0.sess, "无载荷消息其余字段不变")
     end
 end)
 end)

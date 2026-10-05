@@ -140,7 +140,8 @@ void coro_close(task_ctx *task, sock_ctx *sk);
 /// <param name="sk">连接标识</param>
 /// <param name="data">数据</param>
 /// <param name="len">数据长度</param>
-/// <param name="size">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
+/// <param name="size">返回响应的 size；可传 NULL; 只在返回非 NULL 时写入。
+///   口径见 prots_unpack 的 size 契约：结构化协议返回的是 pack 对象，不能拿 size 直接读</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝</param>
 /// <returns>响应数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝。
@@ -151,7 +152,7 @@ void *coro_send(task_ctx *task, sock_ctx *sk, void *data, size_t len, size_t *si
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
-/// <param name="size">输出:数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
+/// <param name="size">输出:响应的 size，同 coro_send</param>
 /// <returns>响应数据指针,仅在本协程下次挂起前有效(同 coro_send);超时/断开返回 NULL。
 ///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL——连接已 teardown 时挂上去等不到唤醒</returns>
 void *coro_recv(task_ctx *task, sock_ctx *sk, size_t *size);
@@ -162,7 +163,7 @@ void *coro_recv(task_ctx *task, sock_ctx *sk, size_t *size);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
-/// <param name="size">数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
+/// <param name="size">本片的 size，同 coro_send；分片只算本片、不累计</param>
 /// <param name="end">1 分片结束 0未结束；必须非 NULL，函数内裸解引用；
 ///   返回 NULL 时保证已写 0</param>
 /// <returns>分片数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，

@@ -5,6 +5,14 @@ local runner = require("test.runner")
 local pgsql  = require("lib.pgsql")
 local pbind  = require("srey.pgsql.bind")
 
+-- reader:get 对拍用的列：{ 列名, 对应的单列取值方法 }；numeric 没有单列方法，get 对它必须抛错
+local PG_COLS = {
+    { "b", "bool" }, { "i2", "integer" }, { "i4", "integer" }, { "i8", "integer" },
+    { "f4", "double" }, { "f8", "double" }, { "tx", "text" }, { "vc", "text" }, { "bc", "text" },
+    { "nm", "text" }, { "by", "bytea" }, { "ts", "timestamp" }, { "tz", "timestamp" },
+    { "dt", "date" }, { "u", "uuid" }, { "nu" },
+}
+
 local function _count_rows(reader)
     local cnt = 0
     while not reader:eof() do
@@ -12,6 +20,37 @@ local function _count_rows(reader)
         reader:next()
     end
     return cnt
+end
+
+-- 逐行逐列比 reader:get 与单列取值器（text / bytea 走 asstr），并核 asstr 与借用指针拷出来的一致。
+-- 返回每行 { 列名 = get 的值 }，供文本 / 二进制两种格式互比
+local function _pg_get_vs_single(t, rd, label)
+    local rows = {}
+    while not rd:eof() do
+        local row = {}
+        rows[#rows + 1] = row
+        local tag = label .. " row" .. #rows .. " "
+        for _, c in ipairs(PG_COLS) do
+            local col, m = c[1], c[2]
+            local gok, gv = pcall(rd.get, rd, col)
+            if nil == m then
+                t:eq(false, gok, tag .. col .. " 不支持的类型 get 抛错")
+            else
+                local sok, sv = rd[m](rd, col, true)
+                if t:check(sok and gok, tag .. col .. " get 与 " .. m .. " 都读得出: " .. tostring(gv)) then
+                    t:check(gv == sv and math.type(gv) == math.type(sv),
+                            string.format("%s%s get=%s 与 %s=%s 一致", tag, col, tostring(gv), m, tostring(sv)))
+                    row[col] = gv
+                end
+                if "text" == m or "bytea" == m then
+                    local _, p, l = rd[m](rd, col)
+                    t:eq(sv, p and srey.ud_str(p, l), tag .. col .. " asstr 与借用指针拷出的一致")
+                end
+            end
+        end
+        rd:next()
+    end
+    return rows
 end
 
 srey.startup(function()
@@ -100,6 +139,54 @@ runner.run(function(t)
         stmt:close()
     else
         t:fail("pgsql prepare nil")
+    end
+
+    -- reader:get 按列类型分派，换算必须与单列取值器一致：simple query 是文本格式，
+    -- prepare 出的 stmt 默认二进制格式，两种各跑一遍；三行依次是上界、下界、全 NULL
+    t:check(pg:query([[create temp table srey_types (ord int, b bool, i2 int2, i4 int4, i8 int8,
+        f4 float4, f8 float8, tx text, vc varchar(10), bc char(5), nm name, by bytea, ts timestamp,
+        tz timestamptz, dt date, u uuid, nu numeric(10,3))]]), "create temp srey_types")
+    t:check(pg:query([[insert into srey_types values
+        (1, true, 32767, 2147483647, 9223372036854775807, 3.14, 2.718281828459045, 'h' || chr(233) || 'llo', 'vc',
+         'ab', 'nm', '\x00ff10', '2024-05-21 12:34:56.123456', '2024-05-21 12:34:56.789+08', '2024-02-29',
+         'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 1234567.125),
+        (2, false, -32768, -2147483648, -9223372036854775808, -1.5, -1e300, '', '', '', '', '',
+         '1970-01-01 00:00:00', '1999-12-31 23:59:59.999999+00', '1999-12-31',
+         '00000000-0000-0000-0000-000000000000', -0.001),
+        (3, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)]]),
+        "insert srey_types: " .. tostring(pg:erro()))
+    local trs = pg:query("select * from srey_types order by ord")
+    local trows = {}
+    if t:check(trs and "userdata" == type(trs[1]), "srey_types 文本格式查询") then
+        trows = _pg_get_vs_single(t, trs[1], "text")
+    end
+    local brows = {}
+    local tst = pg:prepare("srey_types_sel", "select * from srey_types order by ord", 0, nil)
+    if t:check(tst, "srey_types prepare") then
+        local brd = tst:execute(nil)
+        if t:check("userdata" == type(brd), "srey_types 二进制格式执行") then
+            brows = _pg_get_vs_single(t, brd, "binary")
+        end
+        tst:close()
+    end
+    if t:eq(3, #trows, "文本格式 3 行") and t:eq(3, #brows, "二进制格式 3 行") then
+        t:eq(math.maxinteger, trows[1].i8, "int8 上界原样")
+        t:eq(math.mininteger, trows[2].i8, "int8 下界原样")
+        t:eq("h\195\169llo", trows[1].tx, "text 原样（含多字节）")
+        t:eq("ab   ", trows[1].bc, "char(5) 带补齐空格")
+        t:eq(nil, next(trows[3]), "全 NULL 行 get 全为 nil")
+        -- 两种格式除 float4 精度与 bytea 编码外必须相同
+        for r = 1, 3 do
+            for _, c in ipairs(PG_COLS) do
+                if nil ~= c[2] and "f4" ~= c[1] and "by" ~= c[1] then
+                    t:eq(trows[r][c[1]], brows[r][c[1]], "row" .. r .. " " .. c[1] .. " 文本与二进制一致")
+                end
+            end
+        end
+        -- bytea：文本格式给 '\x' 加十六进制原文，二进制格式给原始字节（C 层口径，不替调用方解码）
+        t:eq("\\x00ff10", trows[1].by, "bytea 文本格式是十六进制原文")
+        t:eq("\0\255\16", brows[1].by, "bytea 二进制格式是原始字节")
+        t:check(math.abs(trows[1].f4 - brows[1].f4) < 1e-6, "float4 两种格式只差 float 精度")
     end
 
     -- COPY IN

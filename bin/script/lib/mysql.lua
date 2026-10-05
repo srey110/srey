@@ -77,8 +77,7 @@ function ctx:_read_results(sk, mpack)
     local results = {}
     local failed = false
     while true do
-        local more = mysql.has_more(mpack)-- has_more 须在 reader.new 前读
-        local pktype = mysql.pack_type(mpack)
+        local pktype, more = mysql.pack_type(mpack)-- more 须在 reader.new 前读
         if MYSQL_PACK_TYPE.MPACK_OK == pktype then
             results[#results + 1] = true
         elseif MYSQL_PACK_TYPE.MPACK_ERR == pktype then

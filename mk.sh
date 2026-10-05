@@ -187,6 +187,12 @@ CFLAGS="-Wall -Wextra -Wshadow -Wstrict-prototypes -Wold-style-definition"
 CFLAGS=$CFLAGS" -Wpointer-arith -Werror=implicit-function-declaration"
 # 暴露 glibc GNU 扩展（epoll_create1 / F_GETPIPE_SZ 等），对非 glibc 平台无副作用
 CFLAGS=$CFLAGS" -D_GNU_SOURCE"
+# Lua 按 POSIX 配置编译：pcall/resume/yield 用 _setjmp/_longjmp(ISO 版在 macOS、FreeBSD 上每次多两次信号掩码系统调用)，
+# os.date 用 gmtime_r/localtime_r(各 task 的 lua_State 在不同线程上跑)；顺带打开 io.popen
+if [ $LUA -eq 1 ]
+then
+    CFLAGS=$CFLAGS" -DLUA_USE_POSIX"
+fi
 # 决定优化级别和调试符号
 if [ $WITH_DEBUG -eq 1 ]
 then

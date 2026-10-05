@@ -14,10 +14,12 @@
 // 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
 static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
 // 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
-// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
+// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点。
+// 解包侧直接写 *size，调用点传 NULL 时换成局部变量
 static void *_t_mysql_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return mysql_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;
+    return mysql_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 
 // 构造一个最小可用的 mysql_reader_ctx：指定 pack_type、field 列表，便于后续 push 行数据。
@@ -394,6 +396,116 @@ static void test_mysql_reader_uinteger(CuTest *tc) {
         CuAssertTrue(tc, 0 == v);
     }
     mysql_reader_free(r3);
+}
+// mysql_reader_cls：表里每种类型逐个对分组；MYSQL_TYPE_NULL 等不在表里的类型、不存在的列都是 0
+static void test_mysql_reader_cls(CuTest *tc) {
+    static const struct {
+        uint8_t type;
+        uint8_t cls;
+    } cases[] = {
+        { MYSQL_TYPE_TINY, MYSQL_CLS_INT }, { MYSQL_TYPE_SHORT, MYSQL_CLS_INT }, { MYSQL_TYPE_INT24, MYSQL_CLS_INT },
+        { MYSQL_TYPE_LONG, MYSQL_CLS_INT }, { MYSQL_TYPE_LONGLONG, MYSQL_CLS_INT }, { MYSQL_TYPE_YEAR, MYSQL_CLS_INT },
+        { MYSQL_TYPE_FLOAT, MYSQL_CLS_FLOAT }, { MYSQL_TYPE_DOUBLE, MYSQL_CLS_DOUBLE },
+        { MYSQL_TYPE_STRING, MYSQL_CLS_STRING }, { MYSQL_TYPE_VARCHAR, MYSQL_CLS_STRING },
+        { MYSQL_TYPE_VAR_STRING, MYSQL_CLS_STRING }, { MYSQL_TYPE_ENUM, MYSQL_CLS_STRING },
+        { MYSQL_TYPE_SET, MYSQL_CLS_STRING }, { MYSQL_TYPE_LONG_BLOB, MYSQL_CLS_STRING },
+        { MYSQL_TYPE_MEDIUM_BLOB, MYSQL_CLS_STRING }, { MYSQL_TYPE_BLOB, MYSQL_CLS_STRING },
+        { MYSQL_TYPE_TINY_BLOB, MYSQL_CLS_STRING }, { MYSQL_TYPE_GEOMETRY, MYSQL_CLS_STRING },
+        { MYSQL_TYPE_BIT, MYSQL_CLS_STRING }, { MYSQL_TYPE_DECIMAL, MYSQL_CLS_STRING },
+        { MYSQL_TYPE_NEWDECIMAL, MYSQL_CLS_STRING }, { MYSQL_TYPE_JSON, MYSQL_CLS_STRING },
+        { MYSQL_TYPE_DATE, MYSQL_CLS_DATETIME }, { MYSQL_TYPE_DATETIME, MYSQL_CLS_DATETIME },
+        { MYSQL_TYPE_DATETIME2, MYSQL_CLS_DATETIME }, { MYSQL_TYPE_TIMESTAMP, MYSQL_CLS_DATETIME },
+        { MYSQL_TYPE_TIMESTAMP2, MYSQL_CLS_DATETIME },
+        { MYSQL_TYPE_TIME, MYSQL_CLS_TIME }, { MYSQL_TYPE_TIME2, MYSQL_CLS_TIME },
+        { MYSQL_TYPE_NULL, 0 }, { MYSQL_TYPE_NEWDATE, 0 }, { MYSQL_TYPE_TYPED_ARRAY, 0 },
+        { MYSQL_TYPE_INVALID, 0 }, { MYSQL_TYPE_BOOL, 0 },
+    };
+    char names[1][64] = { "c" };
+    uint8_t types[1] = { MYSQL_TYPE_NULL };
+    mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, types);
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        r->fields[0].type = cases[i].type;
+        CuAssertIntEquals(tc, cases[i].cls, mysql_reader_cls(r, "c"));
+    }
+    CuAssertIntEquals(tc, 0, mysql_reader_cls(r, "nosuch"));
+    mysql_reader_free(r);
+}
+// 带 UNSIGNED 标志的整数列 + 字面量 NULL 列(MYSQL_TYPE_NULL)。r 的列依次是
+// tiu/iu/bmax/bover(UNSIGNED：200、3000000000、INT64_MAX、INT64_MAX+1)、si(有符号 -5)、n(NULL 列)
+static void _check_unsigned_null(CuTest *tc, mysql_reader_ctx *r) {
+    static const char *unames[4] = { "tiu", "iu", "bmax", "bover" };
+    static const uint64_t want[4] = { 200, 3000000000ULL, (uint64_t)INT64_MAX, (uint64_t)INT64_MAX + 1 };
+    int32_t err;
+    for (int32_t i = 0; i < 4; i++) {
+        CuAssertIntEquals(tc, 1, mysql_reader_unsigned(r, unames[i]));
+        CuAssertTrue(tc, want[i] == mysql_reader_uinteger(r, unames[i], &err));
+        CuAssertIntEquals(tc, ERR_OK, err);
+        CuAssertIntEquals(tc, 0, mysql_reader_isnull(r, unames[i]));
+    }
+    CuAssertIntEquals(tc, 0, mysql_reader_unsigned(r, "si"));
+    CuAssertTrue(tc, -5 == mysql_reader_integer(r, "si", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, 0, mysql_reader_unsigned(r, "nosuch"));
+    // NULL 列不在任何取值分组，isnull 照样判出来；单列取值器也是 NULL 先于类型
+    CuAssertIntEquals(tc, 0, mysql_reader_cls(r, "n"));
+    CuAssertIntEquals(tc, 1, mysql_reader_isnull(r, "n"));
+    CuAssertIntEquals(tc, 0, mysql_reader_isnull(r, "si"));
+    CuAssertIntEquals(tc, 0, mysql_reader_isnull(r, "nosuch"));
+    mysql_reader_integer(r, "n", &err);
+    CuAssertIntEquals(tc, 1, err);
+    // 游标越过最后一行：没有当前行，不算 NULL
+    mysql_reader_next(r);
+    CuAssertIntEquals(tc, 0, mysql_reader_isnull(r, "n"));
+}
+// 文本与二进制两条路各造一行同样的值，断言同一套结果。二进制路上有符号读会把 200 / 3000000000 读成负数
+static void test_mysql_reader_unsigned_null(CuTest *tc) {
+    char names[6][64] = { "tiu", "iu", "bmax", "bover", "si", "n" };
+    uint8_t types[6] = { MYSQL_TYPE_TINY, MYSQL_TYPE_LONG, MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG,
+                         MYSQL_TYPE_LONG, MYSQL_TYPE_NULL };
+    int32_t nils[6] = { 0, 0, 0, 0, 0, 1 };
+    int32_t i;
+    // 文本协议
+    mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 6, names, types);
+    for (i = 0; i < 4; i++) {
+        r->fields[i].flags = MYSQL_UNSIGNED_FLAG;
+    }
+    const char *src = "200" "3000000000" "9223372036854775807" "9223372036854775808" "-5";
+    char *p;
+    MALLOC(p, 64);
+    memcpy(p, src, strlen(src));
+    buf_ctx c[6] = {
+        { .data = p,      .lens = 3  },
+        { .data = p + 3,  .lens = 10 },
+        { .data = p + 13, .lens = 19 },
+        { .data = p + 32, .lens = 19 },
+        { .data = p + 51, .lens = 2  },
+        { .data = NULL,   .lens = 0  },
+    };
+    _reader_push_row(r, &p, c, nils);
+    _check_unsigned_null(tc, r);
+    mysql_reader_free(r);
+    // 二进制协议：TINY 1 字节、LONG 4 字节、LONGLONG 8 字节，小端
+    r = _reader_new(MPACK_STMT_EXECUTE, 6, names, types);
+    for (i = 0; i < 4; i++) {
+        r->fields[i].flags = MYSQL_UNSIGNED_FLAG;
+    }
+    MALLOC(p, 32);
+    p[0] = (char)200;
+    pack_integer(p + 1, 3000000000ULL, 4, 1);
+    pack_integer(p + 5, (uint64_t)INT64_MAX, 8, 1);
+    pack_integer(p + 13, (uint64_t)INT64_MAX + 1, 8, 1);
+    pack_integer(p + 21, (uint64_t)(int64_t)-5, 4, 1);
+    buf_ctx b[6] = {
+        { .data = p,      .lens = 1 },
+        { .data = p + 1,  .lens = 4 },
+        { .data = p + 5,  .lens = 8 },
+        { .data = p + 13, .lens = 8 },
+        { .data = p + 21, .lens = 4 },
+        { .data = NULL,   .lens = 0 },
+    };
+    _reader_push_row(r, &p, b, nils);
+    _check_unsigned_null(tc, r);
+    mysql_reader_free(r);
 }
 
 // mysql_reader_float / double 文本路径
@@ -1916,6 +2028,7 @@ static void test_mysql_udfree_reset(CuTest *tc) {
     mysql.client.sk.fd = (SOCKET)7;
     mysql.parse_status = 3;// 任意非 0:代表结果集读到一半
     mysql.cur_cmd = MYSQL_QUERY;
+    mysql.recvlens = 1234;// 响应收到一半就断：残留字节不能记进重连后的第一个响应
 
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -1927,6 +2040,7 @@ static void test_mysql_udfree_reset(CuTest *tc) {
     CuAssertTrue(tc, NULL == mysql.mpack);
     CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
+    CuAssertTrue(tc, 0 == mysql.recvlens);
     // 重复调用安全(context 已置空直接返回)
     _mysql_udfree(&ud);
 }
@@ -2049,6 +2163,64 @@ static void test_mysql_unpack_rows_many(CuTest *tc) {
         CuAssertTrue(tc, 2 == lens && 0 == memcmp(val, "r3", 2));
         mysql_reader_free(reader);
     }
+}
+// size 是一个响应从首包起累计的线上字节(含每包 4 字节包头)：结果集拆两次喂，第一次只攒进 recvlens
+// 不交出，第二次交出时 size 等于两次之和、recvlens 清零；同一连接的下一个响应只算它自己
+static void test_mysql_unpack_size(CuTest *tc) {
+    const char first[1] = { 1 };
+    const char eof[5] = { (char)MYSQL_EOF, 0, 0, 0, 0 };
+    const char row[3] = { 2, 'r', '0' };
+    const char ok[7] = { MYSQL_OK, 0, 0, 2, 0, 0, 0 };
+    binary_ctx fw;
+    buffer_ctx buf;
+    mysql_ctx mysql;
+    ud_cxt ud;
+    mpack_ctx *mpack;
+    size_t size = 0, part1, part2;
+    int32_t status;
+    buffer_init(&buf);
+    _push_packet(&buf, first, sizeof(first), 1);
+    _build_field_packet(&fw);
+    _push_packet(&buf, fw.data, fw.offset, 2);
+    binary_free(&fw);
+    _push_packet(&buf, eof, sizeof(eof), 3);
+    _push_packet(&buf, row, sizeof(row), 4);
+    part1 = buffer_size(&buf);
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_QUERY;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 3;// COMMAND
+    ud.context = &mysql;
+    // 1) 行阶段还没等到 EOF：包全吃掉但不交出，size 不写
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_mysql_unpack(0, &buf, &ud, &size, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    CuAssertIntEquals(tc, 0, (int)size);
+    CuAssertIntEquals(tc, (int)part1, (int)mysql.recvlens);
+    // 2) 补第二行与行阶段 EOF：交出整个结果集，size = 两次线上字节之和
+    _push_packet(&buf, row, sizeof(row), 5);
+    _push_packet(&buf, eof, sizeof(eof), 6);
+    part2 = buffer_size(&buf);
+    status = PROT_INIT;
+    mpack = _t_mysql_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, mpack);
+    CuAssertIntEquals(tc, MPACK_QUERY, (int)mpack->pack_type);
+    CuAssertIntEquals(tc, (int)(part1 + part2), (int)size);
+    CuAssertIntEquals(tc, 0, (int)mysql.recvlens);
+    _mysql_pkfree(mpack);
+    // 3) 同一连接的下一个响应(单个 OK 包)：只算它自己的 4 + 7 字节
+    _push_packet(&buf, ok, sizeof(ok), 1);
+    mysql.cur_cmd = MYSQL_PING;
+    size = 0;
+    status = PROT_INIT;
+    mpack = _t_mysql_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, mpack);
+    CuAssertIntEquals(tc, MPACK_OK, (int)mpack->pack_type);
+    CuAssertIntEquals(tc, 4 + (int)sizeof(ok), (int)size);
+    CuAssertIntEquals(tc, 0, (int)mysql.recvlens);
+    _mysql_pkfree(mpack);
+    buffer_free(&buf);
 }
 // 命令首包的栈缓冲是 260 字节(含 4 字节包头)：ERR 消息 247 字节时 payload 256 放栈，248 字节时 257 走堆。
 // 两边都得解对；栈缓冲写穿由 ASan 构建抓，漏释放交给收尾的内存检查
@@ -2210,6 +2382,8 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_integer_text_bounds);
     SUITE_ADD_TEST(suite, test_mysql_reader_integer_binary);
     SUITE_ADD_TEST(suite, test_mysql_reader_uinteger);
+    SUITE_ADD_TEST(suite, test_mysql_reader_cls);
+    SUITE_ADD_TEST(suite, test_mysql_reader_unsigned_null);
     SUITE_ADD_TEST(suite, test_mysql_reader_float_double_text);
     SUITE_ADD_TEST(suite, test_mysql_reader_float_text_bounds);
     SUITE_ADD_TEST(suite, test_mysql_reader_string);
@@ -2247,6 +2421,7 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpack_row_eof_truncated);
     SUITE_ADD_TEST(suite, test_mpack_lenenc_no_narrow_first);
     SUITE_ADD_TEST(suite, test_mysql_unpack_rows_many);
+    SUITE_ADD_TEST(suite, test_mysql_unpack_size);
     SUITE_ADD_TEST(suite, test_mysql_first_packet_stack_edge);
 #if !defined(OS_WIN)
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_tzcache);

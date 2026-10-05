@@ -22,7 +22,7 @@
 // 改漏一个不会有编译期信号 —— 那个 bind 会静默退化成按位置绑定, 参数错位写进 MySQL。
 // 名字传错类型是同一个后果, 故在宏里卡死类型: 只收字符串或不传, 别的当场报错
 #define LMYSQL_BIND_ARG(lua, bindvar, namevar) \
-    mysql_bind_ctx *bindvar = luaL_checkudata((lua), 1, MT_MYSQL_BIND); \
+    mysql_bind_ctx *bindvar = lpub_check_udata((lua), 1, MT_MYSQL_BIND); \
     char *namevar = NULL; \
     luaL_argcheck((lua), lua_isnoneornil((lua), 2) || LUA_TSTRING == lua_type((lua), 2), 2, \
                   "name must be a string"); \
@@ -48,7 +48,7 @@ static int32_t _lmysql_bind_new(lua_State *lua) {
 /// <param name="self" type="userdata">bind 对象</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_free(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
+    mysql_bind_ctx *mbind = lpub_check_udata(lua, 1, MT_MYSQL_BIND);
     mysql_bind_free(mbind);
     return 0;
 }
@@ -58,7 +58,7 @@ static int32_t _lmysql_bind_free(lua_State *lua) {
 /// <param name="self" type="userdata">bind 对象</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_clear(lua_State *lua) {
-    mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
+    mysql_bind_ctx *mbind = lpub_check_udata(lua, 1, MT_MYSQL_BIND);
     mysql_bind_clear(mbind);
     return 0;
 }
@@ -232,7 +232,7 @@ static int32_t _lmysql_reader_new(lua_State *lua) {
 /// <param name="self" type="userdata">reader 对象</param>
 /// <returns>无</returns>
 static int32_t _lmysql_reader_free(lua_State *lua) {
-    mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    mysql_reader_ctx **reader = lpub_check_udata(lua, 1, MT_MYSQL_READER);
     if (NULL != *reader) {
         mysql_reader_free(*reader);
         *reader = NULL;
@@ -280,16 +280,34 @@ static int32_t _lmysql_reader_next(lua_State *lua) {
     mysql_reader_next(*reader);
     return 0;
 }
+// 整数列按 UNSIGNED 标志选有无符号读，err 同 mysql_reader_integer。无符号值超出 int64 时：
+// raise 非 0 抛错（reader:get，它的其余失败也抛），否则打 WARN 并按读取失败返回（reader:integer，其余失败返回 false）
+static int64_t _lmysql_reader_int(lua_State *lua, mysql_reader_ctx *reader, const char *name,
+                                  int32_t raise, int32_t *err) {
+    if (0 == mysql_reader_unsigned(reader, name)) {
+        return mysql_reader_integer(reader, name, err);
+    }
+    uint64_t val = mysql_reader_uinteger(reader, name, err);
+    if (ERR_OK == *err && val > (uint64_t)INT64_MAX) {
+        if (0 != raise) {
+            luaL_error(lua, "reader:get column '%s' unsigned value exceeds int64", name);
+        }
+        LOG_WARN("reader:integer column '%s' unsigned value exceeds int64.", name);
+        *err = ERR_FAILED;
+        return 0;
+    }
+    return (int64_t)val;
+}
 /// <summary>
-/// 读取当前行指定字段的整数值
+/// 读取当前行指定字段的整数值；带 UNSIGNED 标志的列按无符号读，值超出 int64 时按读取失败处理并打 WARN（日志带列名）
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
-/// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
+/// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败（含无符号值超出 int64）</returns>
 /// <returns type="integer?">字段整数值；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_integer(lua_State *lua) {
     LMYSQL_READER_GET(lua, reader, name, err);
-    int64_t val = mysql_reader_integer(*reader, name, &err);
+    int64_t val = _lmysql_reader_int(lua, *reader, name, 0, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushinteger(lua, val);
@@ -332,20 +350,28 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
     return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
-/// 读取当前行指定字段的字符串值（返回 lightuserdata + 长度）
+/// 读取当前行指定字段的字符串值
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
+/// <param name="asstr" type="boolean?">真值时第 2 个返回值改为拷贝出来的 Lua 字符串，不再有第 3 个</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="lightuserdata?">字段数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
-/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；字段为 NULL 时不返回此值</returns>
-/// <returns type="integer?">字段字节数；字段为 NULL 时不返回此值</returns>
+/// <returns type="lightuserdata|string?">字段数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
+/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；asstr 时为 Lua 字符串；
+/// 字段为 NULL 时不返回此值</returns>
+/// <returns type="integer?">字段字节数；asstr 或字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_string(lua_State *lua) {
+    int32_t asstr;
     LMYSQL_READER_GET(lua, reader, name, err);
     size_t lens = 0;
     char *val = mysql_reader_string(*reader, name, &lens, &err);
     if (ERR_OK == err) {
+        asstr = lua_toboolean(lua, 3);// 必须在压栈前读：压了 true 之后栈位 3 就是它
         lua_pushboolean(lua, 1);
+        if (0 != asstr) {
+            lua_pushlstring(lua, val, lens);
+            return 2;
+        }
         lua_pushlightuserdata(lua, val);
         lua_pushinteger(lua, lens);
         return 3;
@@ -398,6 +424,75 @@ static int32_t _lmysql_reader_time(lua_State *lua) {
     }
     return lpub_rtn_bool(lua, 1 == err);
 }
+/// <summary>
+/// 按列名一次取多个字段，按列类型自动选取值方式：整数列给 integer（UNSIGNED 列同 reader:integer），
+/// FLOAT / DOUBLE 给 number，字符串类列给 Lua 字符串（拷贝），DATE / DATETIME / TIMESTAMP 给微秒时间戳；
+/// TIME 列返回的是多个值，不在此列，用 time
+/// </summary>
+/// <param name="self" type="userdata">reader 对象</param>
+/// <param name="..." type="string">字段名，至少一个</param>
+/// <returns type="any">每个字段名一个值，SQL NULL 为 nil（先判 NULL 再看类型，TIME、字面量 NULL 等不在上述分组的列
+/// 值为 NULL 时也是 nil）；任一字段读取失败（无此列、类型不支持、解析失败、无符号值超出 int64）直接抛错，
+/// 错误信息带列名</returns>
+static int32_t _lmysql_reader_get(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_reader_ctx, MT_MYSQL_READER, reader, "reader freed");
+    int32_t n = lua_gettop(lua);
+    luaL_argcheck(lua, n >= 2, 2, "column name expected");
+    luaL_checkstack(lua, n, "too many columns");
+    const char *name;
+    int32_t err;
+    int64_t ival;
+    double dval;
+    size_t lens = 0;
+    char *sval;
+    for (int32_t i = 2; i <= n; i++) {
+        name = luaL_checkstring(lua, i);
+        err = ERR_FAILED;
+        switch (mysql_reader_cls(*reader, name)) {
+        case MYSQL_CLS_INT:
+            ival = _lmysql_reader_int(lua, *reader, name, 1, &err);
+            if (ERR_OK == err) {
+                lua_pushinteger(lua, ival);
+            }
+            break;
+        case MYSQL_CLS_FLOAT:
+            dval = (double)mysql_reader_float(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushnumber(lua, dval);
+            }
+            break;
+        case MYSQL_CLS_DOUBLE:
+            dval = mysql_reader_double(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushnumber(lua, dval);
+            }
+            break;
+        case MYSQL_CLS_STRING:
+            sval = mysql_reader_string(*reader, name, &lens, &err);
+            if (ERR_OK == err) {
+                lua_pushlstring(lua, sval, lens);
+            }
+            break;
+        case MYSQL_CLS_DATETIME:
+            ival = mysql_reader_datetime(*reader, name, &err);
+            if (ERR_OK == err) {
+                lua_pushinteger(lua, ival);
+            }
+            break;
+        default:
+            if (0 != mysql_reader_isnull(*reader, name)) {
+                err = 1;
+            }
+            break;
+        }
+        if (1 == err) {
+            lua_pushnil(lua);// SQL NULL
+        } else if (ERR_OK != err) {
+            return luaL_error(lua, "reader:get column '%s' read failed", name);
+        }
+    }
+    return n - 1;
+}
 //mysql.reader
 LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -415,6 +510,7 @@ LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
         { "string", _lmysql_reader_string },
         { "datetime", _lmysql_reader_datetime },
         { "time", _lmysql_reader_time },
+        { "get", _lmysql_reader_get },
         { "__gc", _lmysql_reader_free },
         { NULL, NULL }
     };
@@ -448,7 +544,7 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
 /// <param name="self" type="userdata">stmt 对象</param>
 /// <returns>无</returns>
 static int32_t _lmysql_stmt_free(lua_State *lua) {
-    mysql_stmt_ctx **stmt = luaL_checkudata(lua, 1, MT_MYSQL_STMT);
+    mysql_stmt_ctx **stmt = lpub_check_udata(lua, 1, MT_MYSQL_STMT);
     if (NULL != *stmt) {
         // mysql_stmt_free 只碰 stmt 自己的 params / fields，不读 stmt->mysql——
         // 宿主先被 m:__gc() 释放过也无妨。走 mysql_stmt_close 则会读 mysql->serial
@@ -470,7 +566,7 @@ static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     LMYSQL_STMT_ARG(lua, stmt);
     mysql_bind_ctx *mbind = NULL;
     if (LUA_TUSERDATA == lua_type(lua, 2)) {
-        mbind = luaL_checkudata(lua, 2, MT_MYSQL_BIND);
+        mbind = lpub_check_udata(lua, 2, MT_MYSQL_BIND);
     }
     size_t size;
     void *pack = mysql_pack_stmt_execute(*stmt, mbind, &size);
@@ -512,7 +608,8 @@ static int32_t _lmysql_pack_stmt_close(lua_State *lua) {
 /// <returns type="userdata">连接标识；失败时其 valid 字段为 false</returns>
 static int32_t _lmysql_stmt_sock_id(lua_State *lua) {
     LMYSQL_STMT_ARG(lua, stmt);
-    lpub_push_sock(lua, &(*stmt)->mysql->client.sk);
+    lua_getiuservalue(lua, 1, 1);// 借宿主 mysql 句柄的缓存槽，槽 1 是 stmt 自己锚宿主用的
+    lpub_push_sock_slot(lua, -1, &(*stmt)->mysql->client.sk);
     return 1;
 }
 //mysql.stmt
@@ -568,13 +665,14 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
 /// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_query(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
-    const char *sql = luaL_checkstring(lua, 2);
+    size_t sqllen;
+    const char *sql = luaL_checklstring(lua, 2, &sqllen);
     mysql_bind_ctx *mbind = NULL;
     if (LUA_TUSERDATA == lua_type(lua, 3)){
-        mbind = luaL_checkudata(lua, 3, MT_MYSQL_BIND);
+        mbind = lpub_check_udata(lua, 3, MT_MYSQL_BIND);
     }
     size_t size;
-    void *pack = mysql_pack_query(*ud, sql, mbind, &size);
+    void *pack = mysql_pack_query2(*ud, sql, sqllen, mbind, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -598,9 +696,10 @@ static int32_t _lmysql_pack_quit(lua_State *lua) {
 /// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
-    const char *sql = luaL_checkstring(lua, 2);
+    size_t sqllen;
+    const char *sql = luaL_checklstring(lua, 2, &sqllen);
     size_t size;
-    void *pack = mysql_pack_stmt_prepare(*ud, sql, &size);
+    void *pack = mysql_pack_stmt_prepare2(*ud, sql, sqllen, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -639,14 +738,16 @@ static int32_t _lmysql_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 获取 mpack 数据包的封包类型
+/// 获取 mpack 数据包的封包类型，收多结果集时省一次 has_more
 /// </summary>
 /// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
 /// <returns type="integer">封包类型枚举值</returns>
+/// <returns type="boolean">同 has_more：true=其后还有结果集需继续接收；false=已是最后一个</returns>
 static int32_t _lmysql_pack_type(lua_State *lua) {
     LPUB_LUD_ARG(lua, mpack_ctx, 1, mpack);
     lua_pushinteger(lua, mpack->pack_type);
-    return 1;
+    lua_pushboolean(lua, mysql_more(mpack));
+    return 2;
 }
 /// <summary>
 /// 查询该响应包之后是否还有更多结果集（多语句 / 存储过程 CALL 多结果集）
@@ -663,7 +764,7 @@ static int32_t _lmysql_has_more(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns>无</returns>
 static int32_t _lmysql_free(lua_State *lua) {
-    mysql_ctx **ud = luaL_checkudata(lua, 1, MT_MYSQL);
+    mysql_ctx **ud = lpub_check_udata(lua, 1, MT_MYSQL);
     mysql_ctx *mysql = *ud;
     if (NULL == mysql) {
         return 0;
@@ -727,7 +828,7 @@ static int32_t _lmysql_erro(lua_State *lua) {
 static int32_t _lmysql_sock_id(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     mysql_ctx *mysql = *ud;
-    lpub_push_sock(lua, &mysql->client.sk);
+    lpub_push_sock_slot(lua, 1, &mysql->client.sk);
     return 1;
 }
 /// <summary>

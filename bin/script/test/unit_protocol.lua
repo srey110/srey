@@ -1,5 +1,5 @@
 -- protocol 绑定层单元测试（不走网络）：
--- websock pack_*, smtp pack_*, mail pack, redis.pack/value/next, harbor.pack, http.code_status
+-- websock pack_*, smtp pack_*, mail pack, redis.pack/value/next/node, harbor.pack, http.code_status
 
 local srey    = require("lib.srey")
 local runner  = require("test.runner")
@@ -7,6 +7,7 @@ local utils   = require("srey.utils")
 local websock = require("srey.websock")
 local http    = require("srey.http")
 local redis   = require("lib.redis")
+local sredis  = require("srey.redis")-- node 只在 C 绑定层，lib.redis 不导出
 local harbor  = require("srey.harbor")
 local smtp    = require("srey.smtp")
 local mail    = require("srey.smtp.mail")
@@ -45,6 +46,34 @@ runner.run(function(t)
                 "大整数值浮点不退化成科学计数法")
         -- 真正的小数原样保留
         t:check(nil ~= redis.pack("SET", "k", 3.25):find("3.25", 1, true), "小数原样编码")
+    end
+    do
+        -- nil 编成空 bulk(并告警)，末尾的 nil 也算一个参数：个数按栈顶算，不按 # 算
+        t:eq("*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$0\r\n\r\n", redis.pack("SET", "k", nil), "末尾 nil 编成空 bulk")
+        t:eq("*3\r\n$1\r\nA\r\n$0\r\n\r\n$1\r\nb\r\n", redis.pack("A", nil, "b"), "中间 nil 编成空 bulk")
+        t:eq("*1\r\n$0\r\n\r\n", redis.pack(nil), "只有一个 nil")
+        t:eq("*0\r\n", redis.pack(), "零参数")
+        -- 字符串与数字之外的参数按 tostring 转：boolean、带 __tostring 的表
+        local ts = setmetatable({}, { __tostring = function() return "TS-OBJ" end })
+        t:eq("*4\r\n$1\r\nA\r\n$4\r\ntrue\r\n$5\r\nfalse\r\n$6\r\nTS-OBJ\r\n", redis.pack("A", true, false, ts),
+             "boolean 与 __tostring 按 tostring 编码")
+        t:eq(false, pcall(redis.pack, "A", setmetatable({}, { __tostring = function() return {} end })),
+             "__tostring 返回非字符串抛错")
+        -- 整数值浮点各种取值：2^53、-0.0 都按整数写，2^63 超出整数范围按 tostring
+        local f63 = tostring(2 ^ 63)
+        t:eq("*5\r\n$1\r\nA\r\n$1\r\n3\r\n$16\r\n9007199254740992\r\n$1\r\n0\r\n$" .. #f63 .. "\r\n" .. f63 .. "\r\n",
+             redis.pack("A", 3.0, 2 ^ 53, -0.0, 2 ^ 63), "整数值浮点按整数写，超范围按 tostring")
+        t:eq("*3\r\n$1\r\nA\r\n$20\r\n-9223372036854775808\r\n$2\r\n-1\r\n", redis.pack("A", math.mininteger, -1),
+             "整数原样")
+        -- 转换要在缓冲写入之前做完：长参数把缓冲撑到栈上之后再遇到要转换的参数，字节不能错位
+        local big = string.rep("r", 70000)
+        t:eq("*4\r\n$1\r\nA\r\n$70000\r\n" .. big .. "\r\n$4\r\ntrue\r\n$6\r\nTS-OBJ\r\n", redis.pack("A", big, true, ts),
+             "长参数之后的 boolean / __tostring 不错位")
+        -- node(nil) 恒返回 4 个 nil：解析循环按 4 个值多重赋值
+        t:eq(4, select("#", sredis.node(nil)), "redis.node(nil) 返回 4 个值")
+        t:eq(4, select("#", sredis.node()), "redis.node() 返回 4 个值")
+        local v, kind, nelem, nxt = sredis.node(nil)
+        t:check(nil == v and nil == kind and nil == nelem and nil == nxt, "redis.node(nil) 4 个都是 nil")
     end
 
     -- ── redis.value / redis.next 的 nil 语义 ───────────────────────────

@@ -7,9 +7,39 @@ local math = math
 local table = table
 local debug = debug
 local string = string
+local tcreate = table.create
 local utils = require("srey.utils")
 local pathsep = _pathsep -- 由 C 层注入的路径分隔符（Linux："/"，Windows："\"）
 local PRINT_DEBUG = true -- 控制 printd 是否输出；可在运行时置 false 关闭调试打印
+-- 随机字符串字符集（0-9、a-z、A-Z），共 62 个字符。
+local _RANDSTR_CHARS = {
+    "0","1","2","3","4","5","6","7","8","9",
+    "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
+    "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"
+}
+local _RANDSTR_LEN = #_RANDSTR_CHARS
+-- 拒绝采样上界(4*62=248):丢弃 >= 此值的 CSPRNG 字节,使 0..247 均匀映射,消除 %62 模偏差
+local _RANDSTR_MAX = 256 - (256 % _RANDSTR_LEN)
+-- dump 的字符串转义表：这五个有惯用写法，其余控制符补 \ddd。
+-- 必须把 "[%c\\\"]" 能匹配到的字节全部填满：表里查不到时 gsub 原样保留，
+-- NUL / ESC 就直接落进引号里，输出既 load 不回来也能往日志注入终端转义序列。
+-- 填满之后 gsub 收表参数即可全程走 C，不必每个字节回一次 Lua。
+-- %c 就是 iscntrl，项目从不调 setlocale，故取值集恒为 0-31 与 127(DEL)
+local _DUMP_ESCAPES = {
+    ["\t"] = "\\t",
+    ["\r"] = "\\r",
+    ["\n"] = "\\n",
+    ["\""] = "\\\"",
+    ["\\"] = "\\\\",
+}
+for i = 0, 127 do
+    if i < 32 or 127 == i then
+        local c = string.char(i)
+        if not _DUMP_ESCAPES[c] then
+            _DUMP_ESCAPES[c] = string.format("\\%03d", i)
+        end
+    end
+end
 
 ---判断 host 字符串的地址类型
 ---@param host string 主机地址（IPv4 / IPv6 / 域名）
@@ -31,7 +61,7 @@ function printd(fmt, ...)
     if not PRINT_DEBUG then
         return
     end
-    local info = debug.getinfo(2, "Sl")-- 只用 short_src 与 currentline，理由同 log.lua 的 _log
+    local info = debug.getinfo(2, "Sl")-- 只要 short_src 与 currentline，默认选项还要多算调用名等项
     if not info then
         return
     end
@@ -101,16 +131,6 @@ function table_nullorempty(tb)
     return true
 end
 
--- 随机字符串字符集（0-9、a-z、A-Z），共 62 个字符。
-local _RANDSTR_CHARS = {
-    "0","1","2","3","4","5","6","7","8","9",
-    "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
-    "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"
-}
-local _RANDSTR_LEN = #_RANDSTR_CHARS
--- 拒绝采样上界(4*62=248):丢弃 >= 此值的 CSPRNG 字节,使 0..247 均匀映射,消除 %62 模偏差
-local _RANDSTR_MAX = 256 - (256 % _RANDSTR_LEN)
-
 ---生成指定长度的随机字母数字字符串（字符集 0-9 / a-z / A-Z），由 srey.utils.csprng_rand 提供 CSPRNG
 ---@param cnt integer 字符串长度
 ---@return string? str 随机字符串；CSPRNG 失败（熵未就绪等）返回 nil
@@ -134,27 +154,6 @@ function randstr(cnt)
         end
     end
     return table.concat(rtn)
-end
-
--- dump 的字符串转义表：这五个有惯用写法，其余控制符补 \ddd。
--- 必须把 "[%c\\\"]" 能匹配到的字节全部填满：表里查不到时 gsub 原样保留，
--- NUL / ESC 就直接落进引号里，输出既 load 不回来也能往日志注入终端转义序列。
--- 填满之后 gsub 收表参数即可全程走 C，不必每个字节回一次 Lua。
--- %c 就是 iscntrl，项目从不调 setlocale，故取值集恒为 0-31 与 127(DEL)
-local _DUMP_ESCAPES = {
-    ["\t"] = "\\t",
-    ["\r"] = "\\r",
-    ["\n"] = "\\n",
-    ["\""] = "\\\"",
-    ["\\"] = "\\\\",
-}
-for i = 0, 127 do
-    if i < 32 or 127 == i then
-        local c = string.char(i)
-        if not _DUMP_ESCAPES[c] then
-            _DUMP_ESCAPES[c] = string.format("\\%03d", i)
-        end
-    end
 end
 
 ---将任意 Lua 值格式化为可读字符串（类似 Python repr）；表递归展开，数组与普通表分别格式化
@@ -282,11 +281,18 @@ function class(classname, ...)
     end
     -- new：直接把 cls 当实例元表(上面已设 cls.__index = cls)，省掉每个实例一张中间表；
     -- 查找链不变:实例未命中查 cls，查 cls 又会触发 cls 自己的元表接着找父类
+    -- 第一个实例 ctor 跑完后数一次字段，之后的实例按这个数预分配哈希部，省掉逐个写字段时的扩容
+    local nrec = 0
     cls.new = function(...)
-        local instance = {}
+        local instance = tcreate(0, nrec)
         setmetatable(instance, cls)
         instance.class = cls
         instance:ctor(...)
+        if 0 == nrec then
+            for _ in pairs(instance) do
+                nrec = nrec + 1
+            end
+        end
         return instance
     end
     return cls

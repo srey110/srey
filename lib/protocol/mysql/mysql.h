@@ -18,6 +18,8 @@ int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl);
 /// <param name="ev">事件上下文</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护解析状态</param>
+/// <param name="size">输出：交出包时为这个响应从首包起累计的线上字节（含每包 4 字节包头），
+///   只用于内存记账，不是 data 处可读的长度；认证阶段不计。没返回包时不写。必须非 NULL</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 mpack_ctx，数据不足或出错返回 NULL</returns>
 void *mysql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,

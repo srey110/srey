@@ -81,6 +81,9 @@ int32_t websock_set_secextra(ev_ctx *ev, sock_ctx *sk, void *val, free_cb fcb);
 /// <param name="client">非0 客户端解析，0 服务端解析</param>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护握手/解析状态</param>
+/// <param name="size">输出：返回包时写入记账字节数，口径见 prots_unpack。裸帧（含每个分片帧）就是本帧载荷长，
+/// 与 websock_data 取出的长度相同；承载子协议时为这一帧解出的各子协议包总长之和，只记在链头上。
+/// 没返回包时不写。必须非 NULL</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 websock_pack_ctx，数据不足或握手未完成返回 NULL</returns>
 void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,

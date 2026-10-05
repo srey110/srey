@@ -49,6 +49,7 @@ typedef struct reader_ctx {
     uint32_t count;         // 当前回复已解析的节点数，REDIS_MAX_NODES 兜底用
     redis_pack_ctx *head;   // 已解析节点按到达顺序串成的链表，回复完整后整条交给调用方
     redis_pack_ctx *tail;   // 链表尾，尾插用
+    size_t bytes;           // 当前回复各节点的分配长度之和，回复完整时交给 *size 并清零
     redis_frame stack[REDIS_MAX_DEPTH];
     mem_arena arena;        // 当前回复第 REDIS_SOLO_NODES 个之后的节点从这里切，回复完整时挂到首节点 blocks 上
 }reader_ctx;
@@ -334,6 +335,7 @@ static inline reader_ctx *_redis_create_reader(ud_cxt *ud) {
         rd->count = 0;
         rd->head = NULL;
         rd->tail = NULL;
+        rd->bytes = 0;
         rd->depth = 1; // 顶层虚拟帧，期望 1 个顶层元素
         rd->stack[0].remain = 1;
         rd->stack[0].attr = 0;
@@ -351,6 +353,7 @@ static inline redis_pack_ctx *_redis_node_new(reader_ctx *rd, size_t lens) {
     } else {
         pk = mem_arena_alloc(&rd->arena, lens);
     }
+    rd->bytes += lens;
     ZERO(pk, sizeof(redis_pack_ctx));
     return pk;
 }
@@ -654,7 +657,7 @@ static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
 }
 void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)sk; (void)client; (void)size;
+    (void)ev; (void)sk; (void)client;
     int32_t rtn, prot;
     size_t n;
     char hdr[REDIS_HDR_PEEK];
@@ -710,8 +713,10 @@ void *redis_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
                 pk->blocks = rd->arena.cur;// 整条块链从当前块串起
                 ZERO(&rd->arena, sizeof(rd->arena));
             }
+            *size = rd->bytes;
             rd->head = NULL;
             rd->tail = NULL;
+            rd->bytes = 0;
             rd->count = 0;
             rd->depth = 1;
             rd->stack[0].remain = 1;

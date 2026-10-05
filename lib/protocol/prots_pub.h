@@ -91,7 +91,7 @@ typedef struct message_ctx {
     subtype_t subtype; // 数据包解包类型（pack_type）或 请求类型（request_type）
     msg_type mtype;  // 消息类型
     int32_t erro;   // 错误码；CLOSE 上取 close_type（见 base/err.h）
-    size_t size;    // 数据长度
+    size_t size;    // 数据长度；结构化协议的 RECV 上 data 是 pack 对象，size 只作记账，口径见 prots_unpack
     name_t src;     // 发送方任务名
     uint64_t sess;  // 会话 ID（用于请求/响应匹配）
     void *data;     // 消息数据指针

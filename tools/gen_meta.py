@@ -217,10 +217,10 @@ def classify_module(body: str, mt_map: dict) -> dict:
             reg_tables.get(fid, [])
         )
 
-    # luaL_newmetatable(lua, MT_X); ... luaL_setfuncs(lua, REG_ID, 0);
-    # 简化处理：找 newmetatable 后紧跟的 setfuncs
+    # luaL_newmetatable / lpub_new_mtable(lua, MT_X); ... luaL_setfuncs(lua, REG_ID, 0);
+    # 简化处理：找建元表后紧跟的 setfuncs
     for m in re.finditer(
-        r"luaL_newmetatable\s*\(\s*lua\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        r"(?:luaL_newmetatable|lpub_new_mtable)\s*\(\s*lua\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
         body,
     ):
         mt_tok = m.group(1)
@@ -236,7 +236,7 @@ def classify_module(body: str, mt_map: dict) -> dict:
             )
 
     # <helper>(lua, MT_X, reg_x);——注册动作藏在文件自己的 helper 里（如 lbson 的包装元表），
-    # body 内看不到 luaL_newmetatable。按"第 2 参是已知 MT 宏、第 3 参是已知 reg 表"认，
+    # body 内看不到建元表的调用。按"第 2 参是已知 MT 宏、第 3 参是已知 reg 表"认，
     # 两条都命中才算，认不出就当没有
     for m in re.finditer(
         r"\b_[A-Za-z0-9_]+\s*\(\s*lua\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*,"

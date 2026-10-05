@@ -67,11 +67,11 @@ function ctx:_execute(bind)
     if not pgpack then
         return false
     end
-    local rd = reader.iter(pgpack, self.format)
+    local rd, affected = reader.iter(pgpack, self.format)
     if rd then
         return rd
     end
-    self.affected = pgsql.affected_rows(pgpack)
+    self.affected = affected
     return true
 end
 

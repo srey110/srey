@@ -13,10 +13,12 @@
 // 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
 static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
 // 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
-// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点
+// 三个恒定实参收进薄封装，签名再变时只改这里，不必逐个改调用点。
+// 解包侧直接写 *size，调用点传 NULL 时换成局部变量
 static void *_t_pgsql_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
-    return pgsql_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
+    size_t sink;
+    return pgsql_unpack(NULL, &_t_nosk, client, buf, ud, (NULL != size) ? size : &sink, status);
 }
 
 // 构造一个 pgsql_reader_ctx：fields 数量 + 类型 + 名称
@@ -1527,6 +1529,95 @@ static void test_pgsql_unpack_notification(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int)pgsql_result_count(pk));
     _pgsql_pkfree(pk);
 }
+// size 记包持有的线上字节(每条消息 = 类型码 1 + 长度 4 + 消息体)：T / D / C / Z 攒到 'Z' 整笔交出；
+// 通知 'A'（可夹在 C 与 Z 之间）与 CopyInResponse 'G' 立即交出、只记它自己，不进累计；断连清累计
+static void test_pgsql_unpack_size(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    pgpack_ctx *pk;
+    char tbody[128], dbody[64], abody[32];
+    char gbody[5] = { 0, 0, 1, 0, 0 };// CopyInResponse 正文：format 0, 1 列, 列格式 0
+    char *p = abody;
+    size_t tl, dl, al, size, sum;
+    int32_t status, i;
+    ZERO(&pg, sizeof(pg));
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND
+    ud.context = &pg;
+    tl = _pg_rowdesc(tbody, 2);
+    dl = _pg_datarow(dbody, 2, 0);
+    pack_integer(p, 7, 4, 0); p += 4;
+    memcpy(p, "ch", 3); p += 3;
+    memcpy(p, "x", 2); p += 2;
+    al = (size_t)(p - abody);
+    buffer_init(&buf);
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    _pg_push_msg(&buf, 'D', dbody, dl);
+    _pg_push_msg(&buf, 'C', "SELECT 1", 9);
+    _pg_push_msg(&buf, 'A', abody, al);
+    _pg_push_msg(&buf, 'Z', "I", 1);
+    sum = (5 + tl) + (5 + dl) + (5 + 9) + (5 + 1);
+    // 1) T / D / C：只攒不交出，size 不写
+    for (i = 0; i < 3; i++) {
+        size = 0;
+        status = PROT_INIT;
+        CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, &size, &status));
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertIntEquals(tc, 0, (int)size);
+    }
+    CuAssertIntEquals(tc, (int)(sum - 6), (int)pg.recvlens);
+    // 2) 通知：size 是它自己的长度，累计不动
+    size = 0;
+    status = PROT_INIT;
+    pk = _t_pgsql_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pk);
+    CuAssertIntEquals(tc, PGPACK_NOTIFICATION, (int)pk->type);
+    CuAssertIntEquals(tc, (int)(5 + al), (int)size);
+    CuAssertIntEquals(tc, (int)(sum - 6), (int)pg.recvlens);
+    _pgsql_pkfree(pk);
+    // 3) 'Z' 交出结果：size = T + D + C + Z，累计清零
+    size = 0;
+    status = PROT_INIT;
+    pk = _t_pgsql_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pk);
+    CuAssertIntEquals(tc, PGPACK_OK, (int)pk->type);
+    CuAssertIntEquals(tc, (int)sum, (int)size);
+    CuAssertIntEquals(tc, 0, (int)pg.recvlens);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    _pgsql_pkfree(pk);
+    // 4) CopyInResponse 'G'：立即交出、size 只记它自己，不进累计；后面 C + Z 的 size 也不含它
+    _pg_push_msg(&buf, 'G', gbody, sizeof(gbody));
+    _pg_push_msg(&buf, 'C', "COPY 2", 7);
+    _pg_push_msg(&buf, 'Z', "I", 1);
+    size = 0;
+    status = PROT_INIT;
+    pk = _t_pgsql_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pk);
+    CuAssertIntEquals(tc, PGPACK_COPY_IN, (int)pk->type);
+    CuAssertIntEquals(tc, (int)(5 + sizeof(gbody)), (int)size);
+    CuAssertIntEquals(tc, 0, (int)pg.recvlens);
+    _pgsql_pkfree(pk);
+    size = 0;
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, &size, &status));
+    status = PROT_INIT;
+    pk = _t_pgsql_unpack(0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pk);
+    CuAssertIntEquals(tc, (int)((5 + 7) + (5 + 1)), (int)size);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    _pgsql_pkfree(pk);
+    // 5) 响应收到一半就断连：_pgsql_udfree 清掉累计，不能记到重连后的第一个响应上
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, &size, &status));
+    CuAssertIntEquals(tc, (int)(5 + tl), (int)pg.recvlens);
+    _pgsql_udfree(&ud);// ref=0 是 C 借用，不会去释放栈上的 pg
+    CuAssertPtrEquals(tc, NULL, ud.context);
+    CuAssertPtrEquals(tc, NULL, pg.pack);
+    CuAssertIntEquals(tc, 0, (int)pg.recvlens);
+    buffer_free(&buf);
+}
 // 时间文本的定宽快路径与 _strptime 落回路径得出同一个值：规范写法走快路径，
 // 不补零 / 两个空白 / 没有空白这些非规范写法形状不符、落回 _strptime，两边都得收且值一样
 static void test_pgsql_reader_temporal_fastpath(CuTest *tc) {
@@ -1757,6 +1848,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_spill);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_results_spill);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_notification);
+    SUITE_ADD_TEST(suite, test_pgsql_unpack_size);
     SUITE_ADD_TEST(suite, test_pgsql_reader_temporal_fastpath);
     SUITE_ADD_TEST(suite, test_pgpack_row_description_overlong_name);
     SUITE_ADD_TEST(suite, test_pgsql_affected_rows);

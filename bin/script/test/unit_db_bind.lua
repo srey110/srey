@@ -16,6 +16,8 @@ local pgsql  = require("srey.pgsql")
 local bson   = require("lib.bson")
 local yyjson = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 
+local MORETOCOME = mgolib.FLAGS.MORETOCOME
+
 -- 组包 + 查 wire 的四行模板：组出来非空、长度正数、载荷里含指定字段名，最后释放。
 -- pack 是所有权转移的 lightuserdata，漏 ud_free 会在退出时报 not free
 -- 组包调用放最后一个实参：Lua 只有末位的多值调用才会全部展开，
@@ -347,6 +349,17 @@ runner.run(function(t)
         _pack_has(t, "abortTransaction", "session pack_abort (after begin)", sess:pack_abort())
         sess:done()
 
+        -- session 的读类组包同样清零-还原宿主连接的 flags，口径见 mongo packer 段的 _check_noflag
+        t:check(sess:begin(), "session begin (MORETOCOME 用例)")
+        for _, e in ipairs({ { "pack_refresh", sess.pack_refresh }, { "pack_commit", sess.pack_commit }, { "pack_abort", sess.pack_abort } }) do
+            mg:set_flag(MORETOCOME)
+            local p = e[2](sess)
+            t:eq(false, nil == p or mongo.pack_check_flag(p, MORETOCOME), "session " .. e[1] .. " 读包不带 MORETOCOME")
+            utils.ud_free(p)
+            t:eq(MORETOCOME, mg:clear_flag(), "session " .. e[1] .. " 组完宿主 MORETOCOME 已还原")
+        end
+        sess:done()
+
         -- free + 重复 free 幂等
         sess:free()
         sess:free()
@@ -418,6 +431,17 @@ runner.run(function(t)
         t:check(pack ~= nil and size > 0, "mysql pack_query non-empty")
         t:check(srey.ud_str(pack, size):find("SELECT 1", 1, true) ~= nil, "query wire 含 SQL")
         utils.ud_free(pack)
+
+        -- SQL 连同长度下传：中段含 NUL 时组包比去掉 NUL 的长 1，NUL 后的字节原样在线缆上。
+        -- 按 strlen 取长的话截在 NUL 处，半截 SQL 照样发出去
+        for _, fn in ipairs({ "pack_query", "pack_stmt_prepare" }) do
+            local p1, s1 = m[fn](m, "SELECT 'ab'")
+            local p2, s2 = m[fn](m, "SELECT 'a\0b'")
+            t:eq(s1 + 1, s2, fn .. " SQL 含 NUL 时长度多 1（不截断）")
+            t:check(nil ~= srey.ud_str(p2, s2):find("SELECT 'a\0b'", 1, true), fn .. " 含 NUL 的 SQL 原样在线缆上")
+            utils.ud_free(p1)
+            utils.ud_free(p2)
+        end
 
         -- 带 bind 的 query
         local b = mbind.new()
@@ -521,8 +545,9 @@ runner.run(function(t)
         t:check(mg ~= nil, "mongo.new (无连接) for packer")
         mg:collection("coll1")
 
-        -- clear_flag 的返回值原样回灌是 lib/mongo.lua 读命令的还原手法，0 必须收得下：
-        -- 这里卡死它，免得日后把 set_flag 收紧成"只认 MORETOCOME"再把认证路径打断
+        -- clear_flag 的返回值原样回灌是 lib/mongo.lua 认证段（_connect）的还原手法，0 必须收得下：
+        -- 这里卡死它，免得日后把 set_flag 收紧成"只认 MORETOCOME"再把认证路径打断。
+        -- 读命令的清零与还原不经过这里，在 C 绑定的 LMONGO_PACK_NOFLAG 里，见下方 MORETOCOME 那段
         t:eq(true, pcall(function() mg:set_flag(0) end), "set_flag(0) 合法（还原空标志）")
         t:eq(true, pcall(function() mg:set_flag(mgolib.FLAGS.MORETOCOME) end), "set_flag(MORETOCOME)")
         t:eq(mgolib.FLAGS.MORETOCOME, mg:clear_flag(), "clear_flag 回收前一步置上的位")
@@ -538,7 +563,7 @@ runner.run(function(t)
         t:check(srey.ud_str(pack, size):find("ping", 1, true) ~= nil, "ping wire 含 ping")
         utils.ud_free(pack)
 
-        pack, size = mg:pack_drop()
+        pack, size = mg:pack_drop("coll1")
         t:check(pack ~= nil and size > 0, "mongo pack_drop non-empty")
         t:check(srey.ud_str(pack, size):find("drop", 1, true) ~= nil, "drop wire 含 drop")
         utils.ud_free(pack)
@@ -547,7 +572,7 @@ runner.run(function(t)
         local docs = bson.encode({ { a = 1 } })
         local docs_ptr, docs_sz = docs:data()
 
-        pack, size = mg:pack_insert(docs_ptr, docs_sz)
+        pack, size = mg:pack_insert("coll1", docs_ptr, docs_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_insert non-empty")
         t:check(srey.ud_str(pack, size):find("insert", 1, true) ~= nil, "insert wire 含 insert")
         utils.ud_free(pack)
@@ -555,7 +580,7 @@ runner.run(function(t)
         -- updates 数组：含 q (filter) + u (update doc)
         local updates = bson.encode({ { q = { a = 1 }, u = { ["$set"] = { b = 2 } } } })
         local upd_ptr, upd_sz = updates:data()
-        pack, size = mg:pack_update(upd_ptr, upd_sz)
+        pack, size = mg:pack_update("coll1", upd_ptr, upd_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_update non-empty")
         t:check(srey.ud_str(pack, size):find("update", 1, true) ~= nil, "update wire 含 update")
         utils.ud_free(pack)
@@ -563,13 +588,13 @@ runner.run(function(t)
         -- deletes 数组：含 q (filter) + limit
         local deletes = bson.encode({ { q = { a = 1 }, limit = 0 } })
         local del_ptr, del_sz = deletes:data()
-        pack, size = mg:pack_delete(del_ptr, del_sz)
+        pack, size = mg:pack_delete("coll1", del_ptr, del_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_delete non-empty")
         t:check(srey.ud_str(pack, size):find("delete", 1, true) ~= nil, "delete wire 含 delete")
         utils.ud_free(pack)
 
         -- find 无 filter
-        pack, size = mg:pack_find()
+        pack, size = mg:pack_find("coll1")
         t:check(pack ~= nil and size > 0, "mongo pack_find (no filter) non-empty")
         t:check(srey.ud_str(pack, size):find("find", 1, true) ~= nil, "find wire 含 find")
         utils.ud_free(pack)
@@ -577,19 +602,19 @@ runner.run(function(t)
         -- find 带 filter
         local filter = bson.encode({ a = 1 })
         local f_ptr, f_sz = filter:data()
-        pack, size = mg:pack_find(f_ptr, f_sz)
+        pack, size = mg:pack_find("coll1", f_ptr, f_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_find with filter non-empty")
         utils.ud_free(pack)
 
         -- aggregate pipeline
         local pipeline = bson.encode({ { ["$match"] = { a = 1 } }, { ["$count"] = "n" } })
         local pl_ptr, pl_sz = pipeline:data()
-        pack, size = mg:pack_aggregate(pl_ptr, pl_sz)
+        pack, size = mg:pack_aggregate("coll1", pl_ptr, pl_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_aggregate non-empty")
         t:check(srey.ud_str(pack, size):find("aggregate", 1, true) ~= nil, "aggregate wire 含 aggregate")
         utils.ud_free(pack)
 
-        pack, size = mg:pack_getmore(123456789)
+        pack, size = mg:pack_getmore("coll1", 123456789)
         t:check(pack ~= nil and size > 0, "mongo pack_getmore non-empty")
         t:check(srey.ud_str(pack, size):find("getMore", 1, true) ~= nil, "getmore wire 含 getMore")
         utils.ud_free(pack)
@@ -597,19 +622,19 @@ runner.run(function(t)
         -- killcursors 数组
         local cursorids = bson.encode({ bson.mkint64(123), bson.mkint64(456) })
         local c_ptr, c_sz = cursorids:data()
-        pack, size = mg:pack_killcursors(c_ptr, c_sz)
+        pack, size = mg:pack_killcursors("coll1", c_ptr, c_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_killcursors non-empty")
         t:check(srey.ud_str(pack, size):find("killCursors", 1, true) ~= nil, "killcursors wire 含 killCursors")
         utils.ud_free(pack)
 
         -- distinct 无 query
-        pack, size = mg:pack_distinct("fieldA")
+        pack, size = mg:pack_distinct("coll1", "fieldA")
         t:check(pack ~= nil and size > 0, "mongo pack_distinct (no query) non-empty")
         t:check(srey.ud_str(pack, size):find("distinct", 1, true) ~= nil, "distinct wire 含 distinct")
         utils.ud_free(pack)
 
         -- findandmodify (remove=1)
-        pack, size = mg:pack_findandmodify(f_ptr, f_sz, 1, 0, nil, 0)
+        pack, size = mg:pack_findandmodify("coll1", f_ptr, f_sz, 1, 0, nil, 0)
         t:check(pack ~= nil and size > 0, "mongo pack_findandmodify (remove) non-empty")
         t:check(srey.ud_str(pack, size):find("findAndModify", 1, true) ~= nil, "findandmodify wire 含 findAndModify")
         utils.ud_free(pack)
@@ -617,27 +642,27 @@ runner.run(function(t)
         -- findandmodify (update doc)
         local update_doc = bson.encode({ ["$set"] = { b = 99 } })
         local u_ptr, u_sz = update_doc:data()
-        pack, size = mg:pack_findandmodify(f_ptr, f_sz, 0, 0, u_ptr, u_sz)
+        pack, size = mg:pack_findandmodify("coll1", f_ptr, f_sz, 0, 0, u_ptr, u_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_findandmodify (update) non-empty")
         utils.ud_free(pack)
 
         -- remove=0 时 update 必填：漏传的话 mongo_pack_findandmodify 会写出一个声明了
         -- ulens 字节却一字节没有的 update 元素，整条命令从这里错位发上线且无报错
-        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, nil, 0),
+        t:eq(false, pcall(mg.pack_findandmodify, mg, "coll1", f_ptr, f_sz, 0, 0, nil, 0),
              "findandmodify: remove=0 缺 update 报错")
-        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, yyjson.null, 16),
+        t:eq(false, pcall(mg.pack_findandmodify, mg, "coll1", f_ptr, f_sz, 0, 0, yyjson.null, 16),
              "findandmodify: remove=0 传 NULL 指针报错")
         -- 空缓冲与 NULL 同罪：非空指针 + 长度 0 一样会写出有键无体的 update 元素。
         -- 只判指针非空的守卫在这里会放行，必须连长度一起判
-        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, "", 0),
+        t:eq(false, pcall(mg.pack_findandmodify, mg, "coll1", f_ptr, f_sz, 0, 0, "", 0),
              "findandmodify: remove=0 传空字符串报错")
-        t:eq(false, pcall(mg.pack_findandmodify, mg, f_ptr, f_sz, 0, 0, u_ptr, 0),
+        t:eq(false, pcall(mg.pack_findandmodify, mg, "coll1", f_ptr, f_sz, 0, 0, u_ptr, 0),
              "findandmodify: remove=0 传零长度报错")
 
         -- 可选文档收到空缓冲时应当"当没给"，而不是写下键再跳过文档体：
         -- 后者产出的元素声明了子文档却零字节，服务端会把下一个元素的头 4 字节当成它的长度
-        local nofilter, nf_sz = mg:pack_find()
-        local emptyfilter, ef_sz = mg:pack_find("", 0)
+        local nofilter, nf_sz = mg:pack_find("coll1")
+        local emptyfilter, ef_sz = mg:pack_find("coll1", "", 0)
         t:eq(nf_sz, ef_sz, "pack_find 空 filter 与不传 filter 组出同样长度")
         t:check(nil == srey.ud_str(emptyfilter, ef_sz):find("filter", 1, true),
                 "pack_find 空 filter 不写 filter 键")
@@ -645,7 +670,7 @@ runner.run(function(t)
         utils.ud_free(emptyfilter)
 
         -- count 无 query
-        pack, size = mg:pack_count()
+        pack, size = mg:pack_count("coll1")
         t:check(pack ~= nil and size > 0, "mongo pack_count (no query) non-empty")
         t:check(srey.ud_str(pack, size):find("count", 1, true) ~= nil, "count wire 含 count")
         utils.ud_free(pack)
@@ -653,7 +678,7 @@ runner.run(function(t)
         -- createindexes 数组：{ key={a=1}, name="a_1" }
         local indexes = bson.encode({ { key = { a = 1 }, name = "a_1" } })
         local i_ptr, i_sz = indexes:data()
-        pack, size = mg:pack_createindexes(i_ptr, i_sz)
+        pack, size = mg:pack_createindexes("coll1", i_ptr, i_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_createindexes non-empty")
         t:check(srey.ud_str(pack, size):find("createIndexes", 1, true) ~= nil, "createindexes wire 含 createIndexes")
         utils.ud_free(pack)
@@ -661,7 +686,7 @@ runner.run(function(t)
         -- dropindexes：index 名数组
         local dropidx = bson.encode({ "a_1" })
         local d_ptr, d_sz = dropidx:data()
-        pack, size = mg:pack_dropindexes(d_ptr, d_sz)
+        pack, size = mg:pack_dropindexes("coll1", d_ptr, d_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_dropindexes non-empty")
         t:check(srey.ud_str(pack, size):find("dropIndexes", 1, true) ~= nil, "dropindexes wire 含 dropIndexes")
         utils.ud_free(pack)
@@ -685,15 +710,80 @@ runner.run(function(t)
         -- bson_append_array 只写 type+key 不写数组体，整篇 BSON 从这个元素起就解不开，
         -- 而这种包发出去服务端多半照收，错位要到后面某个字段才暴露。
         -- 断言的是"返 nil"而非"报错"：与 opts 畸形时的既有行为同口径
-        t:eq(nil, mg:pack_insert(docs_ptr, 0), "pack_insert 空 documents 返 nil")
-        t:eq(nil, mg:pack_update(upd_ptr, 0), "pack_update 空 updates 返 nil")
-        t:eq(nil, mg:pack_delete(del_ptr, 0), "pack_delete 空 deletes 返 nil")
-        t:eq(nil, mg:pack_aggregate(pl_ptr, 0), "pack_aggregate 空 pipeline 返 nil")
-        t:eq(nil, mg:pack_killcursors(c_ptr, 0), "pack_killcursors 空 cursors 返 nil")
-        t:eq(nil, mg:pack_createindexes(i_ptr, 0), "pack_createindexes 空 indexes 返 nil")
-        t:eq(nil, mg:pack_dropindexes(d_ptr, 0), "pack_dropindexes 空 index 返 nil")
+        t:eq(nil, mg:pack_insert("coll1", docs_ptr, 0), "pack_insert 空 documents 返 nil")
+        t:eq(nil, mg:pack_update("coll1", upd_ptr, 0), "pack_update 空 updates 返 nil")
+        t:eq(nil, mg:pack_delete("coll1", del_ptr, 0), "pack_delete 空 deletes 返 nil")
+        t:eq(nil, mg:pack_aggregate("coll1", pl_ptr, 0), "pack_aggregate 空 pipeline 返 nil")
+        t:eq(nil, mg:pack_killcursors("coll1", c_ptr, 0), "pack_killcursors 空 cursors 返 nil")
+        t:eq(nil, mg:pack_createindexes("coll1", i_ptr, 0), "pack_createindexes 空 indexes 返 nil")
+        t:eq(nil, mg:pack_dropindexes("coll1", d_ptr, 0), "pack_dropindexes 空 index 返 nil")
         t:eq(nil, mg:pack_bulkwrite(op_ptr, 0, n_ptr, n_sz), "pack_bulkwrite 空 ops 返 nil")
         t:eq(nil, mg:pack_bulkwrite(op_ptr, op_sz, n_ptr, 0), "pack_bulkwrite 空 nsInfo 返 nil")
+
+        -- 带集合名的 pack_*：{ 名字, 返回值个数(读类 2、写类 3), 组包函数 }
+        local COL_PACKS = {
+            { "find", 2, function(col) return mg:pack_find(col) end },
+            { "aggregate", 2, function(col) return mg:pack_aggregate(col, pl_ptr, pl_sz) end },
+            { "getmore", 2, function(col) return mg:pack_getmore(col, 1) end },
+            { "distinct", 2, function(col) return mg:pack_distinct(col, "k") end },
+            { "findandmodify", 2, function(col) return mg:pack_findandmodify(col, f_ptr, f_sz, 1, 0, nil, 0) end },
+            { "count", 2, function(col) return mg:pack_count(col) end },
+            { "drop", 3, function(col) return mg:pack_drop(col) end },
+            { "insert", 3, function(col) return mg:pack_insert(col, docs_ptr, docs_sz) end },
+            { "update", 3, function(col) return mg:pack_update(col, upd_ptr, upd_sz) end },
+            { "delete", 3, function(col) return mg:pack_delete(col, del_ptr, del_sz) end },
+            { "killcursors", 3, function(col) return mg:pack_killcursors(col, c_ptr, c_sz) end },
+            { "createindexes", 3, function(col) return mg:pack_createindexes(col, i_ptr, i_sz) end },
+            { "dropindexes", 3, function(col) return mg:pack_dropindexes(col, d_ptr, d_sz) end },
+        }
+
+        -- 集合名超过 63 字节（字段是 char[64]）返回 nil，个数与成功时一致；63 字节照常组包。
+        -- 不拦的话会沿用上一次的集合名组包发出，故 63 字节那次还要核线缆上确实是新名字
+        local C63 = string.rep("c", 63)
+        for _, e in ipairs(COL_PACKS) do
+            local name, nret, fn = "pack_" .. e[1], e[2], e[3]
+            local r = table.pack(fn(C63 .. "c"))
+            t:eq(nret, r.n, name .. " 集合名超长仍返 " .. nret .. " 个值")
+            t:eq(nil, r[1], name .. " 集合名超长返 nil")
+            if nil ~= r[1] then
+                utils.ud_free(r[1])
+            end
+            local p, s = fn(C63)
+            if t:check(nil ~= p and s > 0, name .. " 63 字节集合名照常组包") then
+                t:check(nil ~= srey.ud_str(p, s):find(C63, 1, true), name .. " 线缆上是新集合名")
+                utils.ud_free(p)
+            end
+        end
+
+        -- 读类要等回包：组包期间连接级 MORETOCOME 临时清零、组完原样还原（C 绑定的 LMONGO_PACK_NOFLAG）。
+        -- 读包带着它发出去服务端不回包，调用方白等到超时；还原漏了则此后的写命令悄悄变成等回包
+        local function _check_noflag(name, fn)
+            mg:set_flag(MORETOCOME)
+            local p, s = fn("coll1")
+            if t:check(nil ~= p and s > 0, name .. " 置 MORETOCOME 时照常组包") then
+                t:eq(false, mongo.pack_check_flag(p, MORETOCOME), name .. " 读包不带 MORETOCOME")
+                utils.ud_free(p)
+            end
+            t:eq(MORETOCOME, mg:clear_flag(), name .. " 组完连接级 MORETOCOME 已还原")
+        end
+        for _, e in ipairs(COL_PACKS) do
+            if 2 == e[2] then
+                _check_noflag("pack_" .. e[1], e[3])
+            end
+        end
+        _check_noflag("pack_hello", function() return mg:pack_hello() end)
+        _check_noflag("pack_ping", function() return mg:pack_ping() end)
+        _check_noflag("pack_startsession", function() return mg:pack_startsession() end)
+        -- 写类反过来：包里照抄连接级 MORETOCOME，第 3 个返回值 more 按包判定
+        mg:set_flag(MORETOCOME)
+        local wp, _, wmore = mg:pack_insert("coll1", docs_ptr, docs_sz)
+        t:eq(true, wmore, "置 MORETOCOME 时写包 more 为 true")
+        t:eq(true, nil ~= wp and mongo.pack_check_flag(wp, MORETOCOME), "写包里写着 MORETOCOME")
+        utils.ud_free(wp)
+        t:eq(MORETOCOME, mg:clear_flag(), "写类组包不动连接级 flags")
+        wp, _, wmore = mg:pack_insert("coll1", docs_ptr, docs_sz)
+        t:eq(false, wmore, "未置 MORETOCOME 时写包 more 为 false")
+        utils.ud_free(wp)
 
         mg = nil
         collectgarbage()
@@ -710,32 +800,32 @@ runner.run(function(t)
         local o_ptr, o_sz = opts:data()
 
         -- 合法三形态：nil / (指针,长度) / string
-        local pack, size = mg:pack_find()
+        local pack, size = mg:pack_find("coll1")
         t:check(pack ~= nil and size > 0, "opts 省略：组包正常")
         utils.ud_free(pack)
-        pack, size = mg:pack_find(nil, nil, o_ptr, o_sz)
+        pack, size = mg:pack_find("coll1", nil, nil, o_ptr, o_sz)
         t:check(pack ~= nil and size > 0, "opts 为 (指针,长度)：组包正常")
         t:check(srey.ud_str(pack, size):find("comment", 1, true) ~= nil, "opts 内容确实拼进了 wire")
         utils.ud_free(pack)
-        pack, size = mg:pack_find(nil, nil, srey.ud_str(o_ptr, o_sz))
+        pack, size = mg:pack_find("coll1", nil, nil, srey.ud_str(o_ptr, o_sz))
         t:check(pack ~= nil and size > 0, "opts 为 string：组包正常")
         utils.ud_free(pack)
 
         -- 长度本身非法在绑定层就报 Lua 错：缺长度、负长度
-        t:eq(false, pcall(function() return mg:pack_find(nil, nil, o_ptr) end), "opts 为 lightuserdata 却不给长度被拒")
-        t:eq(false, pcall(function() return mg:pack_find(nil, nil, o_ptr, -1) end), "opts 负长度被拒")
+        t:eq(false, pcall(function() return mg:pack_find("coll1", nil, nil, o_ptr) end), "opts 为 lightuserdata 却不给长度被拒")
+        t:eq(false, pcall(function() return mg:pack_find("coll1", nil, nil, o_ptr, -1) end), "opts 负长度被拒")
 
         -- 关键用例：缓冲比文档头声明的长度短。旧实现会照着头里的长度往后读，
         -- 把相邻堆内存拼进随后发出的 OP_MSG。这道判定在组包侧的 bson_cat，
         -- 故不抛错而是整条命令作废返 nil（*size 一并置 0）
-        t:eq(nil, mg:pack_find(nil, nil, o_ptr, 5), "opts 文档头声明长度超出缓冲：组包返 nil")
-        t:eq(nil, mg:pack_find(nil, nil, srey.ud_str(o_ptr, o_sz):sub(1, 8)), "string 形态的截断 opts 同样返 nil")
+        t:eq(nil, mg:pack_find("coll1", nil, nil, o_ptr, 5), "opts 文档头声明长度超出缓冲：组包返 nil")
+        t:eq(nil, mg:pack_find("coll1", nil, nil, srey.ud_str(o_ptr, o_sz):sub(1, 8)), "string 形态的截断 opts 同样返 nil")
         -- 不足最小文档（4 字节长度头 + EOD）
-        t:eq(nil, mg:pack_find(nil, nil, "abc"), "opts 不足 5 字节：组包返 nil")
+        t:eq(nil, mg:pack_find("coll1", nil, nil, "abc"), "opts 不足 5 字节：组包返 nil")
 
         -- opts 位置在各 pack_* 上不同，抽样确认走的是同一条组包路径
-        t:eq(nil, mg:pack_drop(o_ptr, 5), "pack_drop 的 opts 同样返 nil")
-        t:eq(nil, mg:pack_count(nil, nil, o_ptr, 5), "pack_count 的 opts 同样返 nil")
+        t:eq(nil, mg:pack_drop("coll1", o_ptr, 5), "pack_drop 的 opts 同样返 nil")
+        t:eq(nil, mg:pack_count("coll1", nil, nil, o_ptr, 5), "pack_count 的 opts 同样返 nil")
 
         mg = nil
         collectgarbage()

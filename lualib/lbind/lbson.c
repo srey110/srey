@@ -30,9 +30,9 @@ typedef struct { bson_ctx *owner; char *data; bson_iter iter; } lbson_iter_t;
 // (data / tostring / __gc / iter.new / decode)校验第 1 个参数;complete 是写入方是否配平
 // doc_begin/end 的概念,只读元表上不提供,故仍只认可写元表
 static bson_ctx *_lbson_check(lua_State *lua) {
-    void *ud = luaL_testudata(lua, 1, MT_BSON);
+    void *ud = lpub_test_udata(lua, 1, MT_BSON);
     if (NULL == ud) {
-        ud = luaL_checkudata(lua, 1, MT_BSON_READER);
+        ud = lpub_check_udata(lua, 1, MT_BSON_READER);
     }
     return (bson_ctx *)ud;
 }
@@ -57,7 +57,7 @@ static bson_ctx *_lbson_check_complete(lua_State *lua) {
 // 与结尾的 EOD 都没有,:data() 那两道守卫(非空 + depth==0)又恰好都能过,最后交出去的是一份
 // 结构非法的文档,对端解析失败才暴露,原有字段也随旧缓冲一起没了
 static bson_ctx *_lbson_check_writable(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = lpub_check_udata(lua, 1, MT_BSON);
     if (NULL == BSON_DOC(bson)) {
         luaL_error(lua, "bson: document already freed");
     }
@@ -444,7 +444,7 @@ static int32_t _lbson_cat(lua_State *lua) {
 static int32_t _lbson_complete(lua_State *lua) {
     // 纯查询不该抛错，所以不走 _lbson_check_writable：bson_complete 只读 depth 与 doc.offset，
     // 不碰 doc.data，而 :free() 走的 binary_free 把 offset 清成 0，free 后求值天然得到 false
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = lpub_check_udata(lua, 1, MT_BSON);
     return lpub_rtn_bool(lua, bson_complete(bson));
 }
 /// <summary>
@@ -553,7 +553,7 @@ static int32_t _lbson_mkoid(lua_State *lua) {
 /// <param name="self" type="userdata">_bson_oid 对象</param>
 /// <returns type="string">12 字节原始 OID</returns>
 static int32_t _lbson_mkoid_data(lua_State *lua) {
-    lbson_oid_t *ud = luaL_checkudata(lua, 1, MT_BSON_OID);
+    lbson_oid_t *ud = lpub_check_udata(lua, 1, MT_BSON_OID);
     lua_pushlstring(lua, ud->data, BSON_OID_LENS);
     return 1;
 }
@@ -576,7 +576,7 @@ static int32_t _lbson_mkdate(lua_State *lua) {
 /// <param name="self" type="userdata">_bson_date 对象</param>
 /// <returns type="integer">UTC 毫秒时间戳</returns>
 static int32_t _lbson_mkdate_ms(lua_State *lua) {
-    lbson_date_t *ud = luaL_checkudata(lua, 1, MT_BSON_DATE);
+    lbson_date_t *ud = lpub_check_udata(lua, 1, MT_BSON_DATE);
     lua_pushinteger(lua, ud->ms);
     return 1;
 }
@@ -607,7 +607,7 @@ static int32_t _lbson_mkbinary(lua_State *lua) {
 /// <param name="self" type="userdata">_bson_binary 对象</param>
 /// <returns type="integer">bson_subtype 枚举值</returns>
 static int32_t _lbson_mkbinary_subtype(lua_State *lua) {
-    lbson_binary_t *ud = luaL_checkudata(lua, 1, MT_BSON_BINARY);
+    lbson_binary_t *ud = lpub_check_udata(lua, 1, MT_BSON_BINARY);
     lua_pushinteger(lua, ud->subtype);
     return 1;
 }
@@ -617,7 +617,7 @@ static int32_t _lbson_mkbinary_subtype(lua_State *lua) {
 /// <param name="self" type="userdata">_bson_binary 对象</param>
 /// <returns type="string">二进制内容</returns>
 static int32_t _lbson_mkbinary_data(lua_State *lua) {
-    lbson_binary_t *ud = luaL_checkudata(lua, 1, MT_BSON_BINARY);
+    lbson_binary_t *ud = lpub_check_udata(lua, 1, MT_BSON_BINARY);
     lua_pushlstring(lua, (const char *)(ud + 1), ud->lens);
     return 1;
 }
@@ -640,7 +640,7 @@ static int32_t _lbson_mkint64(lua_State *lua) {
 /// <param name="self" type="userdata">_bson_int64 对象</param>
 /// <returns type="integer">int64 整数值</returns>
 static int32_t _lbson_mkint64_val(lua_State *lua) {
-    lbson_int64_t *ud = luaL_checkudata(lua, 1, MT_BSON_INT64);
+    lbson_int64_t *ud = lpub_check_udata(lua, 1, MT_BSON_INT64);
     lua_pushinteger(lua, ud->val);
     return 1;
 }
@@ -758,21 +758,27 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
         bson_append_null(bson, key);
         break;
     case LUA_TUSERDATA:
-        if (NULL != luaL_testudata(lua, val_idx, MT_BSON_OID)) {
+        // 值的元表只取一次，再逐个跟包装元表比。
+        // 按常见程度排：OID 每篇文档的 _id 都有，INT64 是 decode 回写时最多的
+        if (!lua_getmetatable(lua, val_idx)) {
+            luaL_error(lua, "bson encode unsupported userdata, key '%s'", key);
+        }
+        if (lpub_is_mtable(lua, MT_BSON_OID)) {
             lbson_oid_t *ud = lua_touserdata(lua, val_idx);
             bson_append_oid(bson, key, ud->data);
-        } else if (NULL != luaL_testudata(lua, val_idx, MT_BSON_DATE)) {
-            lbson_date_t *ud = lua_touserdata(lua, val_idx);
-            bson_append_date(bson, key, ud->ms);
-        } else if (NULL != luaL_testudata(lua, val_idx, MT_BSON_BINARY)) {
-            lbson_binary_t *ud = lua_touserdata(lua, val_idx);
-            bson_append_binary(bson, key, ud->subtype, (char *)(ud + 1), ud->lens);
-        } else if (NULL != luaL_testudata(lua, val_idx, MT_BSON_INT64)) {
+        } else if (lpub_is_mtable(lua, MT_BSON_INT64)) {
             lbson_int64_t *ud = lua_touserdata(lua, val_idx);
             bson_append_int64(bson, key, ud->val);
+        } else if (lpub_is_mtable(lua, MT_BSON_DATE)) {
+            lbson_date_t *ud = lua_touserdata(lua, val_idx);
+            bson_append_date(bson, key, ud->ms);
+        } else if (lpub_is_mtable(lua, MT_BSON_BINARY)) {
+            lbson_binary_t *ud = lua_touserdata(lua, val_idx);
+            bson_append_binary(bson, key, ud->subtype, (char *)(ud + 1), ud->lens);
         } else {
             luaL_error(lua, "bson encode unsupported userdata, key '%s'", key);
         }
+        lua_pop(lua, 1);
         break;
     default:
         luaL_error(lua, "bson encode unsupported type '%s', key '%s'", lua_typename(lua, lua_type(lua, val_idx)), key);
@@ -1009,7 +1015,7 @@ static int32_t _lbson_decode(lua_State *lua) {
 }
 // 注册无对外库的 wrapper 元表
 static void _lbson_reg_wrapper_mt(lua_State *lua, const char *name, luaL_Reg *methods) {
-    luaL_newmetatable(lua, name);
+    lpub_new_mtable(lua, name);
     lua_pushvalue(lua, -1);
     lua_setfield(lua, -2, "__index");
     luaL_setfuncs(lua, methods, 0);
@@ -1125,7 +1131,7 @@ LUAMOD_API int luaopen_bson(lua_State *lua) {
 // bson_iter_find 会把 doc 指向 nested_doc,那是源缓冲的别名视图,源缓冲释放后
 // 它仍是个非 NULL 的悬垂指针,只有源对象自己的 doc.data 会被 binary_free 置空
 static bson_iter *_lbson_iter_check(lua_State *lua) {
-    lbson_iter_t *wrap = luaL_checkudata(lua, 1, MT_BSON_ITER);
+    lbson_iter_t *wrap = lpub_check_udata(lua, 1, MT_BSON_ITER);
     if (NULL == BSON_DOC(wrap->owner)) {
         luaL_error(lua, "bson_iter: source bson already freed");
     }
@@ -1165,7 +1171,7 @@ static int32_t _lbson_iter_new(lua_State *lua) {
 /// <param name="self" type="userdata">iter 对象</param>
 /// <returns>无</returns>
 static int32_t _lbson_iter_gc(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_BSON_ITER);
+    lpub_check_udata(lua, 1, MT_BSON_ITER);
     return 0;
 }
 /// <summary>
@@ -1229,6 +1235,111 @@ static int32_t _lbson_iter_key(lua_State *lua) {
     }
     lua_pushlstring(lua, iter->key, iter->keylens);
     return 1;
+}
+/// <summary>
+/// 按当前字段的类型取值，口径同 bson.decode：OID / DATE / INT64 / BINARY 返回包装对象，
+/// DOCUMENT / ARRAY 递归解成 table，null 返回 bson.null。注意与定型取值器不同，:oid() 返回 12 字节串
+/// </summary>
+/// <param name="self" type="userdata">iter 对象</param>
+/// <returns type="any">字段值；无当前元素、取值失败或类型在 Lua 侧没有表示（REGEX / TIMESTAMP 等）返回 nil。
+///   DOCUMENT / ARRAY 的内层残缺或嵌套超过 BSON_MAX_DEPTH 时报错，同 bson.decode</returns>
+static int32_t _lbson_iter_value(lua_State *lua) {
+    bson_iter *iter = _lbson_iter_check(lua);
+    int32_t err = ERR_FAILED;
+    size_t lens;
+    char *data;
+    if (NULL == iter->key) {
+        return lpub_rtn_nil(lua, 1);
+    }
+    // 取值规则同 _lbson_decode_field，但不与它共用 switch：那边是解码热循环，多一个调用点就不再内联进循环
+    switch (iter->type) {
+    case BSON_DOUBLE: {
+        double val = bson_iter_double(iter, &err);
+        if (ERR_OK == err) {
+            lua_pushnumber(lua, val);
+        }
+        break;
+    }
+    case BSON_UTF8:
+        data = (char *)bson_iter_utf8(iter, &err);
+        if (ERR_OK == err) {
+            lua_pushlstring(lua, data, iter->lens);
+        }
+        break;
+    case BSON_JSCODE:
+        data = (char *)bson_iter_jscode(iter, &err);
+        if (ERR_OK == err) {
+            lua_pushlstring(lua, data, iter->lens);
+        }
+        break;
+    case BSON_DOCUMENT:
+    case BSON_ARRAY:
+        data = (BSON_ARRAY == iter->type) ? bson_iter_array(iter, &lens, &err) : bson_iter_document(iter, &lens, &err);
+        if (ERR_OK == err) {
+            _lbson_decode_document(lua, data, lens, BSON_ARRAY == iter->type, 1);
+        }
+        break;
+    case BSON_BINARY: {
+        bson_subtype subtype;
+        data = bson_iter_binary(iter, &subtype, &lens, &err);
+        if (ERR_OK == err) {
+            lbson_binary_t *ud = lua_newuserdata(lua, sizeof(lbson_binary_t) + lens);
+            ud->subtype = subtype;
+            ud->lens = lens;
+            if (lens > 0) {
+                memcpy(ud + 1, data, lens);
+            }
+            ASSOC_MTABLE(lua, MT_BSON_BINARY);
+        }
+        break;
+    }
+    case BSON_OID:
+        data = bson_iter_oid(iter, &err);
+        if (ERR_OK == err) {
+            lbson_oid_t *ud = lua_newuserdata(lua, sizeof(lbson_oid_t));
+            memcpy(ud->data, data, BSON_OID_LENS);
+            ASSOC_MTABLE(lua, MT_BSON_OID);
+        }
+        break;
+    case BSON_BOOL: {
+        int32_t val = bson_iter_bool(iter, &err);
+        if (ERR_OK == err) {
+            lua_pushboolean(lua, val);
+        }
+        break;
+    }
+    case BSON_DATE: {
+        int64_t ms = bson_iter_date(iter, &err);
+        if (ERR_OK == err) {
+            lbson_date_t *ud = lua_newuserdata(lua, sizeof(lbson_date_t));
+            ud->ms = ms;
+            ASSOC_MTABLE(lua, MT_BSON_DATE);
+        }
+        break;
+    }
+    case BSON_NULL:
+        lua_pushlightuserdata(lua, NULL);
+        return 1;
+    case BSON_INT32: {
+        int32_t val = bson_iter_int32(iter, &err);
+        if (ERR_OK == err) {
+            lua_pushinteger(lua, val);
+        }
+        break;
+    }
+    case BSON_INT64: {
+        int64_t val = bson_iter_int64(iter, &err);
+        if (ERR_OK == err) {
+            lbson_int64_t *ud = lua_newuserdata(lua, sizeof(lbson_int64_t));
+            ud->val = val;
+            ASSOC_MTABLE(lua, MT_BSON_INT64);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return (ERR_OK == err) ? 1 : lpub_rtn_nil(lua, 1);
 }
 /// <summary>
 /// 读取当前字段的 double 值
@@ -1472,6 +1583,7 @@ LUAMOD_API int luaopen_bson_iter(lua_State *lua) {
         { "find",      _lbson_iter_find },
         { "type",      _lbson_iter_type },
         { "key",       _lbson_iter_key },
+        { "value",     _lbson_iter_value },
         { "double",    _lbson_iter_double },
         { "utf8",      _lbson_iter_utf8 },
         { "document",  _lbson_iter_document },

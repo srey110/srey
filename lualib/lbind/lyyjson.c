@@ -5,6 +5,12 @@
 #define LYYJSON_MAX_DEPTH    18
 #define LYYJSON_SPARSE_RATIO 2
 #define LYYJSON_SPARSE_SAFE  10
+// 编解码的栈上缓冲：yyjson 的全部分配（doc、节点池、输出、解析时的输入拷贝）先从这里顺序切，
+// 切不下才上堆。块按 16 字节对齐
+#define LYYJSON_STACK_BUF    4096
+#define LYYJSON_ARENA_ALIGN  16
+#define LYYJSON_READ_FLAG    YYJSON_READ_ALLOW_INVALID_UNICODE
+#define LYYJSON_WRITE_FLAG   YYJSON_WRITE_ALLOW_INVALID_UNICODE
 
 // 编解码上下文。出错只记文案不当场抛：在递归里 luaL_error 会 longjmp 跳过
 // yyjson_doc_free，内存账立刻不平，所以一律返回 NULL/ERR_FAILED 逐层退到入口再报。
@@ -15,8 +21,73 @@ typedef struct lyyjson_ctx {
     yyjson_mut_doc *doc;
     const char *erro;
 }lyyjson_ctx;
+// 栈上顺序分配器，接到 yyjson_alc 上。落在 [buf, buf + size) 里的块随函数返回作废，不在的是
+// 切不下时退回框架分配器的堆块，free / realloc 按地址分两路；只有最近切出的那块能就地伸缩或回退
+typedef struct lyyjson_arena {
+    char *buf;
+    char *last;  // 最近一次切出的块
+    size_t size;
+    size_t used;
+}lyyjson_arena;
 
 static yyjson_mut_val *_lyyjson_pack(lyyjson_ctx *ctx, int32_t depth);
+
+// 块是否在栈缓冲里。按整数差比：块在堆上时两个指针不属同一对象，直接比大小是未定义行为
+static int32_t _lyyjson_arena_has(lyyjson_arena *arena, void *ptr) {
+    return (uintptr_t)ptr - (uintptr_t)arena->buf < arena->size;
+}
+static void *_lyyjson_arena_malloc(void *ctx, size_t size) {
+    lyyjson_arena *arena = ctx;
+    size_t need = ROUND_UP(size, LYYJSON_ARENA_ALIGN);
+    if (need < size
+        || need > arena->size - arena->used) {
+        return _malloc(size);
+    }
+    arena->last = arena->buf + arena->used;
+    arena->used += need;
+    return arena->last;
+}
+static void *_lyyjson_arena_realloc(void *ctx, void *ptr, size_t osize, size_t size) {
+    lyyjson_arena *arena = ctx;
+    if (!_lyyjson_arena_has(arena, ptr)) {
+        return _realloc(ptr, size);
+    }
+    size_t off = (size_t)((char *)ptr - arena->buf);
+    size_t need = ROUND_UP(size, LYYJSON_ARENA_ALIGN);
+    if (ptr == arena->last
+        && need >= size
+        && need <= arena->size - off) {
+        arena->used = off + need;
+        return ptr;
+    }
+    void *nptr = _lyyjson_arena_malloc(ctx, size);
+    if (NULL != nptr) {
+        memcpy(nptr, ptr, osize < size ? osize : size);
+    }
+    return nptr;
+}
+static void _lyyjson_arena_free(void *ctx, void *ptr) {
+    lyyjson_arena *arena = ctx;
+    if (!_lyyjson_arena_has(arena, ptr)) {
+        _free(ptr);
+        return;
+    }
+    if (ptr == arena->last) {
+        arena->used = (size_t)((char *)ptr - arena->buf);
+        arena->last = NULL;
+    }
+}
+static void _lyyjson_arena_init(lyyjson_arena *arena, yyjson_alc *alc, char *buf, size_t size) {
+    size_t pad = ROUND_UP((uintptr_t)buf, LYYJSON_ARENA_ALIGN) - (uintptr_t)buf;
+    arena->buf = buf + pad;
+    arena->last = NULL;
+    arena->size = size - pad;
+    arena->used = 0;
+    alc->malloc = _lyyjson_arena_malloc;
+    alc->realloc = _lyyjson_arena_realloc;
+    alc->free = _lyyjson_arena_free;
+    alc->ctx = arena;
+}
 
 // 数组判定：键全是 >= 1 的整数才算数组，返回最大键；
 // 出现其它键返回 -1 当对象编；过度稀疏返回 -2 报错，不静默转对象
@@ -169,20 +240,25 @@ static yyjson_mut_val *_lyyjson_pack(lyyjson_ctx *ctx, int32_t depth) {
     ctx->erro = "type not supported by json";
     return NULL;
 }
-// 把 yyjson 节点压成 Lua 值，成功后栈上恰好多一个值
+// 容器进一层前的检查：层数只数容器（同 encode），栈留 4 格够放表、键和一个子值
+static int32_t _lyyjson_push_check(lyyjson_ctx *ctx, int32_t depth) {
+    if (depth >= LYYJSON_MAX_DEPTH) {
+        ctx->erro = "json nested too deep";
+        return ERR_FAILED;
+    }
+    if (0 == lua_checkstack(ctx->lua, 4)) {
+        ctx->erro = "lua stack overflow";
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 把 yyjson 节点压成 Lua 值，成功后栈上恰好多一个值。标量不查栈：根是标量时 LUA_MINSTACK 够用，
+// 其余标量的位置由所在容器预留
 static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
     lua_State *lua = ctx->lua;
     size_t idx, max;
     yyjson_val *key;
     yyjson_val *sub;
-    if (depth >= LYYJSON_MAX_DEPTH) {
-        ctx->erro = "json nested too deep";
-        return ERR_FAILED;
-    }
-    if (0 == lua_checkstack(lua, 4)) {
-        ctx->erro = "lua stack overflow";
-        return ERR_FAILED;
-    }
     switch (yyjson_get_type(val)) {
     case YYJSON_TYPE_NULL:
         lua_pushlightuserdata(lua, NULL);
@@ -208,6 +284,9 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
         lua_pushlstring(lua, yyjson_get_str(val), yyjson_get_len(val));
         return ERR_OK;
     case YYJSON_TYPE_ARR:
+        if (ERR_OK != _lyyjson_push_check(ctx, depth)) {
+            return ERR_FAILED;
+        }
         lua_createtable(lua, (int32_t)yyjson_arr_size(val), 0);
         yyjson_arr_foreach(val, idx, max, sub) {
             if (ERR_OK != _lyyjson_push(ctx, sub, depth + 1)) {
@@ -217,6 +296,9 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
         }
         return ERR_OK;
     case YYJSON_TYPE_OBJ:
+        if (ERR_OK != _lyyjson_push_check(ctx, depth)) {
+            return ERR_FAILED;
+        }
         lua_createtable(lua, 0, (int32_t)yyjson_obj_size(val));
         yyjson_obj_foreach(val, idx, max, key, sub) {
             lua_pushlstring(lua, yyjson_get_str(key), yyjson_get_len(key));
@@ -246,10 +328,14 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
 static int32_t _lyyjson_encode(lua_State *lua) {
     luaL_checkany(lua, 1);
     lua_settop(lua, 1);
+    char abuf[LYYJSON_STACK_BUF];
+    lyyjson_arena arena;
+    yyjson_alc alc;
+    _lyyjson_arena_init(&arena, &alc, abuf, sizeof(abuf));
     lyyjson_ctx ctx;
     ctx.lua = lua;
     ctx.erro = NULL;
-    ctx.doc = yyjson_mut_doc_new(NULL);
+    ctx.doc = yyjson_mut_doc_new(&alc);
     if (NULL == ctx.doc) {
         return luaL_error(lua, "json doc create failed");
     }
@@ -260,14 +346,44 @@ static int32_t _lyyjson_encode(lua_State *lua) {
     }
     yyjson_mut_doc_set_root(ctx.doc, root);
     size_t lens = 0;
-    char *out = yyjson_mut_write(ctx.doc, YYJSON_WRITE_ALLOW_INVALID_UNICODE, &lens);
+    char *out = yyjson_mut_write_opts(ctx.doc, LYYJSON_WRITE_FLAG, &alc, &lens, NULL);
     yyjson_mut_doc_free(ctx.doc);
     if (NULL == out) {
         return luaL_error(lua, "json encode failed");
     }
     lua_pushlstring(lua, out, lens);
-    FREE(out);
+    alc.free(alc.ctx, out);
     return 1;
+}
+int32_t lyyjson_encode_sink(lua_State *lua, int32_t idx, lyyjson_sink sink, void *ud) {
+    char abuf[LYYJSON_STACK_BUF];
+    lyyjson_arena arena;
+    yyjson_alc alc;
+    _lyyjson_arena_init(&arena, &alc, abuf, sizeof(abuf));
+    lyyjson_ctx ctx;
+    ctx.lua = lua;
+    ctx.erro = NULL;
+    ctx.doc = yyjson_mut_doc_new(&alc);
+    if (NULL == ctx.doc) {
+        return ERR_FAILED;
+    }
+    lua_pushvalue(lua, idx);// _lyyjson_pack 只认栈顶；原值仍在 idx，弹掉不影响字符串存活
+    yyjson_mut_val *root = _lyyjson_pack(&ctx, 0);
+    lua_pop(lua, 1);
+    if (NULL == root) {
+        yyjson_mut_doc_free(ctx.doc);
+        return ERR_FAILED;
+    }
+    yyjson_mut_doc_set_root(ctx.doc, root);
+    size_t lens = 0;
+    char *out = yyjson_mut_write_opts(ctx.doc, LYYJSON_WRITE_FLAG, &alc, &lens, NULL);
+    yyjson_mut_doc_free(ctx.doc);
+    if (NULL == out) {
+        return ERR_FAILED;
+    }
+    sink(ud, out, lens);
+    alc.free(alc.ctx, out);
+    return ERR_OK;
 }
 /// <summary>
 /// 解析 JSON 文本。JSON null 解成 yyjson.null（NULL light userdata）；
@@ -281,8 +397,12 @@ static int32_t _lyyjson_encode(lua_State *lua) {
 static int32_t _lyyjson_decode(lua_State *lua) {
     size_t lens = 0;
     char *data = lpub_check_buf(lua, 1, &lens, NULL);
+    char abuf[LYYJSON_STACK_BUF];
+    lyyjson_arena arena;
+    yyjson_alc alc;
+    _lyyjson_arena_init(&arena, &alc, abuf, sizeof(abuf));
     yyjson_read_err rerr;
-    yyjson_doc *doc = yyjson_read_opts(data, lens, YYJSON_READ_ALLOW_INVALID_UNICODE, NULL, &rerr);
+    yyjson_doc *doc = yyjson_read_opts(data, lens, LYYJSON_READ_FLAG, &alc, &rerr);
     if (NULL == doc) {
         return luaL_error(lua, "json decode error at byte %I: %s",
                           (lua_Integer)rerr.pos, rerr.msg);

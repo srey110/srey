@@ -579,3 +579,6 @@ void task_requested(task_ctx *task, _request_cb _request) {
 void task_responsed(task_ctx *task, _response_cb _response) {
     task->_response = _response;
 }
+void task_round_ended(task_ctx *task, _task_round_end_cb _round_end) {
+    task->_round_end = _round_end;
+}

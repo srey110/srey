@@ -4,14 +4,7 @@
 #include "protocol/prots_pub.h"
 #include "utils/strptime.h"
 
-// 各取值接口收哪些列类型：按类型查一次表得到它属于哪组，取值接口只认自己那组。
-// 有符号与无符号整数读取共用 MYSQL_CLS_INT：签名不同但"哪些列算整数"是同一条规则
-#define MYSQL_CLS_INT      0x01
-#define MYSQL_CLS_FLOAT    0x02
-#define MYSQL_CLS_DOUBLE   0x04
-#define MYSQL_CLS_STRING   0x08
-#define MYSQL_CLS_DATETIME 0x10
-#define MYSQL_CLS_TIME     0x20
+// 列类型 → 取值分组(MYSQL_CLS_*，定义见 mysql_reader.h)
 static const uint8_t _mysql_type_cls[256] = {
     [MYSQL_TYPE_LONGLONG] = MYSQL_CLS_INT, [MYSQL_TYPE_LONG] = MYSQL_CLS_INT, [MYSQL_TYPE_INT24] = MYSQL_CLS_INT,
     [MYSQL_TYPE_SHORT] = MYSQL_CLS_INT, [MYSQL_TYPE_YEAR] = MYSQL_CLS_INT, [MYSQL_TYPE_TINY] = MYSQL_CLS_INT,
@@ -147,6 +140,24 @@ static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *na
         }
     }
     return NULL;
+}
+uint8_t mysql_reader_cls(mysql_reader_ctx *reader, const char *name) {
+    int32_t pos;
+    mpack_field *column = _mysql_reader_field(reader, name, &pos);
+    return (NULL == column) ? 0 : _mysql_type_cls[column->type];
+}
+int32_t mysql_reader_unsigned(mysql_reader_ctx *reader, const char *name) {
+    int32_t pos;
+    mpack_field *column = _mysql_reader_field(reader, name, &pos);
+    return (NULL != column && 0 != (column->flags & MYSQL_UNSIGNED_FLAG)) ? 1 : 0;
+}
+int32_t mysql_reader_isnull(mysql_reader_ctx *reader, const char *name) {
+    int32_t pos;
+    if (reader->index >= (int32_t)mrow_arr_size(&reader->arr_rows)
+        || NULL == _mysql_reader_field(reader, name, &pos)) {
+        return 0;
+    }
+    return (*mrow_arr_at(&reader->arr_rows, reader->index))[pos].nil ? 1 : 0;
 }
 // 每个取值函数开头那三段（定位当前行 → NULL 判定 → 字段类型白名单）收在这里，
 // cls 是调用方收的列类型组(MYSQL_CLS_*，见 _mysql_type_cls)。

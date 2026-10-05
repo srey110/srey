@@ -585,6 +585,12 @@ int main(int argc, char *argv[]) {
     if (nclose < 2) {
         unit_failed++;
     }
+    // 每次关闭都要分发 CLOSING，分发完必有一轮结束，所以回调次数不会少于关闭次数
+    uint32_t nround = get_round_end_count();
+    PRINT("round end count: %u", nround);
+    if (nround < nclose) {
+        unit_failed++;
+    }
     int32_t optional;
     for (int32_t i = 0; ; i++) {
         if (NULL == testlist[i].name) {

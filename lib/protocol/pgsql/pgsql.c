@@ -41,6 +41,7 @@ void _pgsql_udfree(ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     _pgsql_pkfree(pg->pack);
     pg->pack = NULL;
+    pg->recvlens = 0;
     scram_free(pg->scram);
     pg->scram = NULL;
     sock_set_invalid(&pg->sk);
@@ -471,8 +472,11 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     FREE(pack);
 }
 // 处理命令阶段收到的服务端消息，返回在 ReadyForQuery 时累积完成的 pgpack_ctx。
-// DataRow 以外的小消息放栈上解析，免一次分配；解析侧不接管的那些由这里释放，归属见 _pgpack_parser
-static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+// DataRow 以外的小消息放栈上解析，免一次分配；解析侧不接管的那些由这里释放，归属见 _pgpack_parser。
+// size 记包持有的线上字节：消息攒在 recvlens，到 'Z' 整笔交出；'A' / 'G' 立即交出，
+// 只记本条、不进累计（'A' 可能夹在 CommandComplete 与 'Z' 之间）
+static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud,
+    size_t *size, int32_t *status) {
     size_t total;
     char stk[PGSQL_STACK_MSG];
     char *payload = _pgsql_payload(pg, buf, &total, status, stk, sizeof(stk));
@@ -488,11 +492,20 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
         && payload != stk) {
         FREE(payload);
     }
+    if ('A' == code || 'G' == code) {
+        *size = total;
+    } else {
+        pg->recvlens += total;
+        if ('Z' == code) {
+            *size = pg->recvlens;
+            pg->recvlens = 0;
+        }
+    }
     return pack;
 }
 void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)sk; (void)client; (void)size;
+    (void)sk; (void)client;
     if (NULL == ud->context) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
@@ -507,7 +520,7 @@ void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         _pgsql_auth_response(pg, ev, buf, ud, status);
         break;
     case COMMAND: // 命令阶段消息处理
-        pack = _pgsql_command_response(pg, buf, ud, status);
+        pack = _pgsql_command_response(pg, buf, ud, size, status);
         break;
     default:
         break;

@@ -30,6 +30,8 @@ void *_http_on_close(ud_cxt *ud);
 /// 规则 7 那档按分片投递：头部包带 PROT_SLICE_START，body 逐段带 PROT_SLICE，
 /// 末片由 _http_on_close 在连接关闭时补 PROT_SLICE_END——业务须按分片循环收，同 chunked。
 /// 规则 1 的 HEAD 那半靠发起方登记：本接口拿不到请求方法，须由 http_set_method 登记</param>
+/// <param name="size">输出：返回包时写入记账字节数，口径见 prots_unpack。头包为头 + 体，不是载荷长度；
+/// chunk / tillclose 片就是本片载荷长，末片为 0。没返回包时不写。必须非 NULL</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
 /// <returns>解析完成的 http_pack_ctx，数据不足或出错返回 NULL</returns>
 void *http_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,

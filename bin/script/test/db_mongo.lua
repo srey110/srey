@@ -107,13 +107,14 @@ runner.run(function(t)
     local fptr, fsz = fdoc:data()
     t:check(mg:insert("srey_test", fptr, fsz), "mongo MORETOCOME insert fire-forget")
     cnt = mg:count("srey_test", eptr, esz)
-    mg:clear_flag()
+    -- 读命令组包时临时清掉的连接级 flags 必须原样还原，否则后续写命令悄悄从只发不等变成等回包
+    t:eq(mg.FLAGS.MORETOCOME, mg:clear_flag(), "count(读命令)之后 MORETOCOME 仍在")
     t:eq(3, cnt, "mongo count after MORETOCOME insert")
 
     do
-        -- 组包抛出时连接级 flags 必须恢复：读命令要等响应，所以组包期间 MORETOCOME 被临时清零，
-        -- 而 pack_* 的 (指针,长度) 入口对负数长度是 luaL_argcheck 当场抛，抛点正落在清零与恢复
-        -- 之间。Lua 没有 RAII，不兜一层就把 MORETOCOME 永久摘掉，且 clear_flag() 查不出它已经丢了
+        -- 读命令组包期间连接级 flags 临时清零、组完还原，这一步在 C 绑定的 LMONGO_PACK_NOFLAG 里，
+        -- 绑定先取完并校验全部参数才清零，负数长度在清零之前就抛了。这条钉住"先校验再清零"的顺序：
+        -- 取参挪进清零区间的话，抛出后 MORETOCOME 被永久摘掉，clear_flag() 也查不出
         mg:set_flag(mg.FLAGS.MORETOCOME)
         local pok = pcall(mg.find, mg, "srey_test", eptr, -1)
         t:eq(false, pok, "find 传负数长度按契约抛出")

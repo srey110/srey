@@ -8,7 +8,48 @@
 // 注册表里那张连接标识缓存表的键(只取地址用)。一个 lua_State 一张,按 skid 存,
 // 免得每条消息取 sk 都造一个新 userdata
 static const char _sk_cache_key = 0;
+// 注册表里那张 名字→句柄 缓存表的键(只取地址用)。一个 lua_State 一张,只记查到了的名字
+static const char _tname_cache_key = 0;
 
+void lpub_new_mtable(lua_State *lua, const char *name) {
+    luaL_newmetatable(lua, name);
+    lua_pushvalue(lua, -1);
+    lua_rawsetp(lua, LUA_REGISTRYINDEX, name);
+}
+int32_t lpub_get_mtable(lua_State *lua, const char *name) {
+    if (LUA_TTABLE == lua_rawgetp(lua, LUA_REGISTRYINDEX, name)) {
+        return LUA_TTABLE;
+    }
+    lua_pop(lua, 1);
+    return luaL_getmetatable(lua, name);
+}
+int32_t lpub_is_mtable(lua_State *lua, const char *name) {
+    int32_t same;
+    lpub_get_mtable(lua, name);
+    same = lua_rawequal(lua, -1, -2);
+    lua_pop(lua, 1);
+    return same;
+}
+// 判据同 luaL_testudata：有载荷指针且挂着同一张元表
+void *lpub_test_udata(lua_State *lua, int32_t idx, const char *name) {
+    void *p = lua_touserdata(lua, idx);
+    if (NULL == p
+        || !lua_getmetatable(lua, idx)) {
+        return NULL;
+    }
+    if (!lpub_is_mtable(lua, name)) {
+        p = NULL;
+    }
+    lua_pop(lua, 1);
+    return p;
+}
+void *lpub_check_udata(lua_State *lua, int32_t idx, const char *name) {
+    void *p = lpub_test_udata(lua, idx, name);
+    if (NULL == p) {
+        luaL_typeerror(lua, idx, name);
+    }
+    return p;
+}
 // 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
 void *global_userdata(lua_State *lua, const char *name) {
     if (LUA_TLIGHTUSERDATA != lua_getglobal(lua, name)) {
@@ -91,7 +132,7 @@ uint8_t lpub_opt_u8(lua_State *lua, int32_t idx, uint8_t dft, const char *what) 
 }
 void *lpub_owner_ptr(lua_State *lua, const char *omt) {
     lua_getiuservalue(lua, 1, 1);
-    void **owner = luaL_testudata(lua, -1, omt);
+    void **owner = lpub_test_udata(lua, -1, omt);
     lua_pop(lua, 1);
     return (NULL != owner) ? *owner : NULL;
 }
@@ -200,10 +241,93 @@ void *lpub_opt_buf(lua_State *lua, int32_t idx, size_t *size) {
     luaL_argerror(lua, idx, "nil, string or light userdata expected");
     return NULL;// 到不了: luaL_argerror 会 longjmp
 }
+// 查栈位 idx(绝对位置)那个名字的缓存句柄,没有返回 INVALID_TNAME。只读,不分配内存
+static name_t _tname_cache_get(lua_State *lua, int32_t idx) {
+    name_t handle = INVALID_TNAME;
+    if (LUA_TTABLE == lua_rawgetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key)) {
+        lua_pushvalue(lua, idx);
+        if (LUA_TNUMBER == lua_rawget(lua, -2)) {
+            handle = (name_t)lua_tointeger(lua, -1);
+        }
+        lua_pop(lua, 1);
+    }
+    lua_pop(lua, 1);
+    return handle;
+}
+// 记一条缓存,表不存在就建。会分配内存
+static void _tname_cache_set(lua_State *lua, int32_t idx, name_t handle) {
+    if (LUA_TTABLE != lua_rawgetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key)) {
+        lua_pop(lua, 1);
+        lua_newtable(lua);
+        lua_pushvalue(lua, -1);
+        lua_rawsetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key);
+    }
+    lua_pushvalue(lua, idx);
+    lua_pushinteger(lua, (lua_Integer)handle);
+    lua_rawset(lua, -3);
+    lua_pop(lua, 1);
+}
+// 改写已有条目,没有就不动;handle 为 INVALID_TNAME 即删掉。只改不增,不分配内存
+static void _tname_cache_fix(lua_State *lua, int32_t idx, name_t handle) {
+    if (LUA_TTABLE == lua_rawgetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key)) {
+        lua_pushvalue(lua, idx);
+        if (LUA_TNIL != lua_rawget(lua, -2)) {
+            lua_pushvalue(lua, idx);
+            if (INVALID_TNAME == handle) {
+                lua_pushnil(lua);
+            } else {
+                lua_pushinteger(lua, (lua_Integer)handle);
+            }
+            lua_rawset(lua, -4);
+        }
+        lua_pop(lua, 1);
+    }
+    lua_pop(lua, 1);
+}
+// cache 非 0 时把查到的名字记进缓存
+static name_t _lpub_task_handle(lua_State *lua, int32_t idx, int32_t cache) {
+    name_t handle;
+    if (LUA_TSTRING != lua_type(lua, idx)) {
+        return (name_t)luaL_checkinteger(lua, idx);
+    }
+    idx = lua_absindex(lua, idx);
+    handle = _tname_cache_get(lua, idx);
+    if (INVALID_TNAME != handle) {
+        return handle;
+    }
+    handle = task_find_name(g_loader, lua_tostring(lua, idx));
+    if (0 != cache
+        && INVALID_TNAME != handle) {
+        _tname_cache_set(lua, idx, handle);
+    }
+    return handle;
+}
 name_t lpub_task_handle(lua_State *lua, int32_t idx) {
-    return (LUA_TSTRING == lua_type(lua, idx))
-        ? task_find_name(g_loader, lua_tostring(lua, idx))
-        : (name_t)luaL_checkinteger(lua, idx);
+    return _lpub_task_handle(lua, idx, 1);
+}
+name_t lpub_task_peek(lua_State *lua, int32_t idx) {
+    return _lpub_task_handle(lua, idx, 0);
+}
+task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle) {
+    task_ctx *task;
+    name_t fresh;
+    if (INVALID_TNAME == handle) {
+        return NULL;// 缓存只存查到的句柄，无效值说明刚按名字查过就没有，不必再当过期重查
+    }
+    task = task_grab(g_loader, handle);
+    if (NULL != task
+        || LUA_TSTRING != lua_type(lua, idx)) {
+        return task;
+    }
+    // 缓存的句柄可能已过期(同名 task 退出后又注册了新的),按名字重查一次
+    idx = lua_absindex(lua, idx);
+    fresh = task_find_name(g_loader, lua_tostring(lua, idx));
+    _tname_cache_fix(lua, idx, fresh);
+    if (INVALID_TNAME == fresh
+        || fresh == handle) {
+        return NULL;
+    }
+    return task_grab(g_loader, fresh);
 }
 int32_t lpub_rtn_bool(lua_State *lua, int32_t cond) {
     lua_pushboolean(lua, 0 != cond ? 1 : 0);
@@ -290,17 +414,19 @@ void lpub_push_url_table(lua_State *lua, url_ctx *url) {
 // valid 让"连接是否失效"只有一处判据，业务不必自己比 INVALID_SOCK，口径同 C 侧 sock_is_invalid
 static int32_t _sock_index(lua_State *lua) {
     sock_ctx *sk = lua_touserdata(lua, 1);
-    const char *k = lua_tostring(lua, 2);
+    size_t len;
+    const char *k = lua_tolstring(lua, 2, &len);
     if (NULL == sk || NULL == k) {
         lua_pushnil(lua);
         return 1;
     }
-    if (0 == strcmp(k, "fd")) {
-        lua_pushinteger(lua, (lua_Integer)sk->fd);
-    } else if (0 == strcmp(k, "skid")) {
+    // 三个键长度各不相同，先按长度分，再整串比一次
+    if (4 == len && 0 == memcmp(k, "skid", 4)) {
         lua_pushinteger(lua, (lua_Integer)sk->skid);
-    } else if (0 == strcmp(k, "valid")) {
+    } else if (5 == len && 0 == memcmp(k, "valid", 5)) {
         lua_pushboolean(lua, !sock_is_invalid(sk));
+    } else if (2 == len && 0 == memcmp(k, "fd", 2)) {
+        lua_pushinteger(lua, (lua_Integer)sk->fd);
     } else {
         lua_pushnil(lua);
     }
@@ -309,19 +435,19 @@ static int32_t _sock_index(lua_State *lua) {
 // 按值比较两个连接标识。两侧都要 testudata 而非 checkudata：两个 full userdata 相比时
 // Lua 不看元表是否相同,只要一侧挂了 __eq 就派发到这里,拿 sock 比别的 userdata 会抛参数错
 static int32_t _sock_eq(lua_State *lua) {
-    sock_ctx *a = luaL_testudata(lua, 1, MT_SOCK);
-    sock_ctx *b = luaL_testudata(lua, 2, MT_SOCK);
+    sock_ctx *a = lpub_test_udata(lua, 1, MT_SOCK);
+    sock_ctx *b = lpub_test_udata(lua, 2, MT_SOCK);
     lua_pushboolean(lua, NULL != a && NULL != b
                          && a->fd == b->fd && a->skid == b->skid);
     return 1;
 }
 static int32_t _sock_tostring(lua_State *lua) {
-    sock_ctx *sk = luaL_checkudata(lua, 1, MT_SOCK);
+    sock_ctx *sk = lpub_check_udata(lua, 1, MT_SOCK);
     lua_pushfstring(lua, "sock(%d,%I)", (int)sk->fd, (lua_Integer)sk->skid);
     return 1;
 }
 void lpub_reg_sock(lua_State *lua) {
-    luaL_newmetatable(lua, MT_SOCK);
+    lpub_new_mtable(lua, MT_SOCK);
     lua_pushcfunction(lua, _sock_index);
     lua_setfield(lua, -2, "__index");
     lua_pushcfunction(lua, _sock_eq);
@@ -354,7 +480,7 @@ void lpub_push_sock(lua_State *lua, sock_ctx *sk) {
 }
 // 消息分发专用:按 skid 复用同一个 userdata,免得每条消息都造一个。
 // 命中必须刷新值——teardown 会先把 fd 复位再发 CLOSE,拿旧快照会让 valid 恒真。
-// 只给这条路用:别处(sock_id / connect / udp)走上面那个不入缓存的,否则连接关掉之后
+// 只给这条路用:别处(sock_id / connect / udp)不进这张表,否则连接关掉之后
 // 再取一次就会把死 skid 写回表里,而 uncache 只在 CLOSE 分发后触发一次,再没人摘得掉
 void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk) {
     if (0 == sk->skid) {
@@ -375,6 +501,24 @@ void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk) {
     lua_rawseti(lua, -3, (lua_Integer)sk->skid);
     lua_remove(lua, -2);
 }
+void lpub_push_sock_slot(lua_State *lua, int32_t idx, sock_ctx *sk) {
+    sock_ctx *old;
+    idx = lua_absindex(lua, idx);
+    // 槽只由本函数写入；判长度只防 debug 库塞进别的 userdata 时越界读
+    if (LUA_TUSERDATA == lua_getiuservalue(lua, idx, 1)
+        && sizeof(sock_ctx) == lua_rawlen(lua, -1)) {
+        old = lua_touserdata(lua, -1);
+        if (old->fd == sk->fd
+            && old->index == sk->index
+            && old->skid == sk->skid) {
+            return;
+        }
+    }
+    lua_pop(lua, 1);
+    lpub_push_sock(lua, sk);
+    lua_pushvalue(lua, -1);
+    lua_setiuservalue(lua, idx, 1);
+}
 void lpub_sock_uncache(lua_State *lua, uint64_t skid) {
     if (0 == skid) {
         return;
@@ -385,7 +529,7 @@ void lpub_sock_uncache(lua_State *lua, uint64_t skid) {
     lua_pop(lua, 1);
 }
 sock_ctx *lpub_check_sock(lua_State *lua, int32_t idx) {
-    return (sock_ctx *)luaL_checkudata(lua, idx, MT_SOCK);
+    return (sock_ctx *)lpub_check_udata(lua, idx, MT_SOCK);
 }
 int32_t lpub_push_sock_invalid(lua_State *lua) {
     sock_ctx sk;
@@ -394,8 +538,22 @@ int32_t lpub_push_sock_invalid(lua_State *lua) {
     lpub_push_sock(lua, &sk);
     return 1;
 }
-int32_t lpub_is_sock(lua_State *lua, int32_t idx) {
-    return NULL != luaL_testudata(lua, idx, MT_SOCK);
+sock_ctx *lpub_is_sock(lua_State *lua, int32_t idx) {
+    return (sock_ctx *)lpub_test_udata(lua, idx, MT_SOCK);
+}
+void lpub_push_sock_mt(lua_State *lua) {
+    lpub_get_mtable(lua, MT_SOCK);
+}
+// 判据同 lpub_test_udata，只是元表已在栈上
+int32_t lpub_is_sock_mt(lua_State *lua, int32_t idx, int32_t mtidx) {
+    int32_t same;
+    if (NULL == lua_touserdata(lua, idx)
+        || !lua_getmetatable(lua, idx)) {
+        return 0;
+    }
+    same = lua_rawequal(lua, -1, mtidx);
+    lua_pop(lua, 1);
+    return same;
 }
 const char *lpub_int_str(char *buf, size_t buflen, lua_Integer i, size_t *lens) {
     size_t n;
