@@ -966,6 +966,7 @@ static int32_t _olp_post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
     return ERR_OK;
 }
 static void _olp_on_connect_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    BIT_REMOVE(oltcp->status, STATUS_ESTABLISHED);// 理由同 _usk_on_connect_cb_err
     _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
     _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
     pool_push(&watcher->pool, &oltcp->ol_r, 0);
@@ -1031,7 +1032,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD byt
 #endif
 }
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
-    int32_t setsess, sock_ctx *sk) {
+    int32_t setsess, int32_t index, sock_ctx *sk) {
     netaddr_ctx addr;
     if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 0, &addr)) {
         return ERR_FAILED;
@@ -1053,7 +1054,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    skpool_args skargs = { .sk = { .fd = sk->fd, .index = (int32_t)CALC_WATCHER_INDEX(sk->fd, ctx->nthreads) },
+    skpool_args skargs = { .sk = { .fd = sk->fd, .index = _evpub_launch_index(ctx, sk->fd, index) },
                            .cbs = cbs, .ud = ud };
     evsock_ctx *evsk = (evsock_ctx *)_evpub_sk_new(&skargs);
     evsk->ev_cb = _olp_on_connect_cb;
@@ -1735,7 +1736,7 @@ void _iocp_free_udp(evsock_ctx *evsk) {
     FREE(oludp);
 }
 int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
-    sock_ctx *sk) {
+    int32_t index, sock_ctx *sk) {
     netaddr_ctx addr;
     if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 1, &addr)) {
         return ERR_FAILED;
@@ -1746,7 +1747,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    skpool_args skargs = { .sk = { .fd = sk->fd, .index = (int32_t)CALC_WATCHER_INDEX(sk->fd, ctx->nthreads) },
+    skpool_args skargs = { .sk = { .fd = sk->fd, .index = _evpub_launch_index(ctx, sk->fd, index) },
                            .cbs = cbs, .ud = ud };
     evsock_ctx *evsk = _olp_new_udp(&skargs);
     *sk = evsk->sk;

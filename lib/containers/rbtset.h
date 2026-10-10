@@ -25,7 +25,7 @@
 //   3. insert_or_assign 覆盖与 erase / extract / pop_first 交出的副本放在 s->spare，下一次覆盖或删除前有效；
 //      它们都不调 elfree，只有 free 会。副本可以再当 item 传回来，唯独不能传给 erase。
 //   4. erase 不校验 e 是否属于 s。遍历中删当前元素用 rbt_foreach_safe，其余元素指针不受影响。
-//   5. _malloc 失败直接 exit，插入不会失败。非线程安全。
+//   5. _malloc 失败直接终止进程，插入不会失败。非线程安全。
 //   6. 开了池，池里的节点 ASan / PageHeap 看不见：删除后继续用旧指针报不出来；池里的内存到 free 或调低上限才归还。
 
 // 入参写 T const * 而不是 const T *：理由同 hashmap.h。

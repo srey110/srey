@@ -43,20 +43,20 @@ typedef struct mem_arena {
 }mem_arena;
 
 /// <summary>
-/// 分配内存，失败时打印日志并终止程序
+/// 分配内存，失败时按 ASSERTAB 打印原因与调用栈并终止程序
 /// </summary>
 /// <param name="size">分配字节数</param>
 /// <returns>分配到的内存指针，永不返回 NULL</returns>
 void *_malloc(size_t size);
 /// <summary>
-/// 分配并清零内存，失败时打印日志并终止程序
+/// 分配并清零内存，失败处理同 _malloc
 /// </summary>
 /// <param name="count">元素个数</param>
 /// <param name="size">单个元素字节数</param>
 /// <returns>分配到的内存指针，永不返回 NULL</returns>
 void *_calloc(size_t count, size_t size);
 /// <summary>
-/// 重新分配内存，失败时打印日志并终止程序
+/// 重新分配内存，失败处理同 _malloc
 /// </summary>
 /// <param name="oldptr">原内存指针，NULL 等同于 malloc</param>
 /// <param name="size">新大小字节数，0 等同于 free</param>
@@ -104,7 +104,7 @@ int64_t _memcheck(void);
 /// <param name="nalloc">出参：累计分配次数，MEMORY_CHECK 关闭时写 0；可为 NULL 表示不关心</param>
 /// <param name="nfree">出参：累计释放次数，MEMORY_CHECK 关闭时写 0；可为 NULL 表示不关心</param>
 void mem_stat(uint64_t *nalloc, uint64_t *nfree);
-// mem_arena_alloc 当前块放不下时的慢路径(开新块 / 单开大块)，lens 已按 8 取整，只由它调用
+// mem_arena_alloc 当前块放不下或取整回绕时的慢路径(开新块 / 单开大块)，lens 是没取整的原值，只由它调用
 void *_mem_arena_alloc_slow(mem_arena *arena, size_t lens);
 /// <summary>
 /// 从块链里切一段内存，按 8 字节对齐。使用方见 mem_arena
@@ -114,11 +114,13 @@ void *_mem_arena_alloc_slow(mem_arena *arena, size_t lens);
 /// <returns>内存起点，随 mem_arena_free 一起释放，不能单独释放</returns>
 static inline void *mem_arena_alloc(mem_arena *arena, size_t lens) {
     char *blk;
-    lens = ROUND_UP(lens, 8);
+    size_t rlens = ROUND_UP(lens, 8);
+    // rlens < lens 是 lens 接近 SIZE_MAX、取整回绕了：不能按回绕后的小数切，交给慢路径报错
     if (NULL != arena->cur
-        && lens <= arena->cap - arena->off) {
+        && rlens >= lens
+        && rlens <= arena->cap - arena->off) {
         blk = (char *)arena->cur + arena->off;
-        arena->off += lens;
+        arena->off += rlens;
         return blk;
     }
     return _mem_arena_alloc_slow(arena, lens);
@@ -135,5 +137,12 @@ void mem_arena_free(mem_arena *arena);
 /// <param name="buf">目标缓冲区（NULL 时直接返回）</param>
 /// <param name="len">字节数（0 时直接返回）</param>
 void secure_zero(void *buf, size_t len);
+/// <summary>
+/// 把当前调用栈逐帧写到 fp，能解析出符号的带函数名，最多 32 帧，最上面一帧是 stack_print 自己。
+/// Linux 上 mk.sh 没开 RDYNAMIC(默认不开)时只有 "可执行文件(+偏移)"，用 addr2line 换函数名；Windows 要 exe 旁有 pdb。
+/// 内联掉的函数不单独成帧。没有回溯能力的平台(未定义 HAVE_BACKTRACE)什么也不写
+/// </summary>
+/// <param name="fp">输出流；返回时写的内容都已出了 stdio 缓冲，fp 里原先攒着的也一并刷出</param>
+void stack_print(FILE *fp);
 
 #endif//MEMORY_H_

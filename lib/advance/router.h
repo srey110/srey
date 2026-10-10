@@ -463,11 +463,12 @@ void router_dispatch(router_ctx *r, task_ctx *task, sock_ctx *sk, struct http_pa
 /// <summary>
 /// 拒绝 chunked 请求 —— 回 HTTP 411 后立即关闭连接。router_net_recv 命中非流式路由时
 /// 内部即调本函数; 自己写 _net_recv 而不打算支持 chunked 的, 在 slice == PROT_SLICE_START
-/// 分支调它
+/// 分支调它。HEAD 请求也可能带着 chunked 请求体来，回应它时只能发头
 /// </summary>
 /// <param name="task">task</param>
 /// <param name="sk">连接标识</param>
-void router_reject_chunked(task_ctx *task, sock_ctx *sk);
+/// <param name="head_only">非 0 只回头不带正文：请求方法是 HEAD 时传 1</param>
+void router_reject_chunked(task_ctx *task, sock_ctx *sk, int32_t head_only);
 /// <summary>
 /// 连接关闭时清理该连接尚未收齐的流式请求 —— 在 _net_close_cb 中调用。
 /// 用 router_net_recv 且注册了流式路由就**必须**接上本函数(task_closed 注册):

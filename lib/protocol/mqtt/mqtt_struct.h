@@ -9,6 +9,8 @@ typedef struct mqtt_fixhead {//固定头
     mqtt_prot prot;          //控制报文的类型
     size_t remaining_lens;   //剩余长度（不含固定头）
 }mqtt_fixhead;
+// 收到的属性只按 id 读出值，未校验：属性是否适用于这类报文、不该重复的属性是否重复了(规范里两者都算协议错误)。
+// 同一 id 可能出现多个元素，业务在乎的话自行校验
 typedef struct mqtt_propertie {//属性
     mqtt_prop_flag flag;//标识符
     int64_t nval;//数字值

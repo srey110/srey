@@ -18,6 +18,7 @@
 #define ROUTER_CODE_BODY_LENS 64
 #define ROUTER_BODY_500 "Internal Server Error\n"
 #define ROUTER_BODY_CHAIN "Chain too long\n"
+#define ROUTER_BODY_411 "chunked request not supported\n"
 // 按 method 生成 router_get / router_post / ... 等便捷包装, 内部一律转发到 router_add;
 // 展开点在 router_add 之后(宏体里的类型只在展开处才需要可见)
 #define DEF_ROUTE_FN(name, mask)  \
@@ -1084,9 +1085,8 @@ static void _router_send_simple(task_ctx *task, sock_ctx *sk, int32_t code,
                       body, (NULL == body) ? 0 : strlen(body));
 }
 // 拒绝 chunked 请求：回 411 后立即关闭连接
-void router_reject_chunked(task_ctx *task, sock_ctx *sk) {
-    // HEAD 请求没有报文体, 不可能是 chunked, 故这里恒非 HEAD
-    _router_send_simple(task, sk, 411, 0, "chunked request not supported\n");
+void router_reject_chunked(task_ctx *task, sock_ctx *sk, int32_t head_only) {
+    _router_send_simple(task, sk, 411, head_only, ROUTER_BODY_411);
     ev_close(&task->loader->netev, sk);
 }
 // 流式路由的链尾哨兵: 跑到这里说明每个中间件都调了 router_next。不能拿 chain_i == chain_n 判,
@@ -1270,8 +1270,7 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sock_ctx *sk, struct
     }
     // 命中的不是流式路由: 请求体正一块块往这边来, 普通 handler 接不住
     if (NULL == matched->on_chunk) {
-        FREE(st);
-        router_reject_chunked(task, sk);
+        _router_st_reject(st, task, 411, ROUTER_BODY_411);
         return;
     }
     st->on_chunk = matched->on_chunk;
@@ -1355,7 +1354,7 @@ static void _router_chunked_nostream(router_ctx *r, task_ctx *task, sock_ctx *sk
     int32_t code = _router_match_entry(r, &ctx, status, &idx);
     if (200 == code
         && 0 == _router_entry_misconfigured(&_R_ROUTES(r)[idx], idx)) {
-        router_reject_chunked(task, sk);// 命中普通路由, 请求体接不住
+        router_reject_chunked(task, sk, ROUTER_M_HEAD == ctx.method);// 命中普通路由, 请求体接不住
         return;
     }
     if (200 == code) {

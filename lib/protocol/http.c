@@ -179,6 +179,7 @@ static int32_t _http_check_transfer(http_pack_ctx *pack, http_header_ctx *field,
             LOG_WARN("HTTP smuggling: Transfer-Encoding after Content-Length.");
             return ERR_FAILED;
         }
+        // 只要求 chunked 在最后，前面的编码不解(口径见 http.h 的 http_unpack)
         pack->chunked_last = (ERR_OK == _http_check_lastval(field, "chunked", sizeof("chunked") - 1));
         if (CHUNKED != *transfer) {
             *transfer = CHUNKED;

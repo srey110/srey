@@ -39,6 +39,11 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("udp_multicast: ev_udp_loop post failed.");
         return;
     }
+    // 单播地址当组地址：要在调用时就同步失败，不能先回成功再让 setsockopt 在事件线程里失败
+    if (ERR_FAILED != ev_udp_join(ev, &sk, "127.0.0.1", NULL)) {
+        LOG_ERROR("udp_multicast: ev_udp_join must reject a unicast group.");
+        return;
+    }
     if (ERR_OK != ev_udp_join(ev, &sk, MCAST_GROUP, NULL)) {
         LOG_ERROR("udp_multicast: ev_udp_join post failed.");
         return;

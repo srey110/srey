@@ -21,6 +21,10 @@
 #             macOS ARM64 须与 debug 同用，否则协程切栈时 ASan 可能产生误报
 #     tsan    ThreadSanitizer 检测（-fsanitize=thread），与 asan 互斥
 #***********************************************
+# Linux 链接时加 -rdynamic：把可执行文件里的全局函数导出到动态符号表，stack_print 打出的栈才带函数名
+# (static 函数仍只有偏移，用 addr2line -e bin/srey 换)。代价是 LTO 不能再把这些函数收成内部函数，可能变慢，默认关，置 1 打开。
+# FreeBSD 不用加：它的 backtrace 自己读可执行文件的符号表，static 函数也有名字
+RDYNAMIC=0
 LUA=0
 EXTRALIB=""
 WK="awk"
@@ -151,13 +155,17 @@ fi
 if [ "$OSNAME" = "Linux" ]
 then
     INCLUDELIB=$INCLUDELIB" -ldl"
+    if [ "$RDYNAMIC" = "1" ]
+    then
+        INCLUDELIB=$INCLUDELIB" -rdynamic"
+    fi
 fi
 if [ "$OSNAME" = "SunOS" ]
 then
 	INCLUDELIB=$INCLUDELIB" -lsocket -lnsl"
 fi
 # backtrace 系列在 FreeBSD 是独立的 libexecinfo,glibc 与 macOS 都在 libc 里自带;
-# MEMORY_TRACE=1 时 memory.c 会引用它们
+# memory.c 的 stack_print 与分配追踪引用它们
 if [ "$OSNAME" = "FreeBSD" ]
 then
     INCLUDELIB=$INCLUDELIB" -lexecinfo"

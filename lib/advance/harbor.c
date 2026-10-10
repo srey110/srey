@@ -177,9 +177,10 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
             return ERR_FAILED;
         }
 #if WITH_SSL
-        // 有证书只说明链路加密，不代表验了对端。这里判 FAIL_IF_NO_PEER_CERT 而不是 PEER：
-        // 服务端只设 PEER 时客户端不交证书照样握手成功，等于没验
-        if (0 == (SSL_VERIFY_FAIL_IF_NO_PEER_CERT & SSL_CTX_get_verify_mode(evssl_sslctx(evssl)))) {
+        // 有证书只说明链路加密，不代表验了对端。两位都得有：只设 PEER 时客户端不交证书照样握手成功；
+        // 只设 FAIL_IF_NO_PEER_CERT 时服务端根本不向客户端要证书，这一位不起作用
+        int32_t need = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+        if (need != (need & SSL_CTX_get_verify_mode(evssl_sslctx(evssl)))) {
             LOG_WARN("harbor: evssl '%s' does not require a peer certificate - "
                      "the link is encrypted but anyone who can reach %s:%u still passes the "
                      "handshake and may inject messages into any task. Register it with "

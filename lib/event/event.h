@@ -43,10 +43,11 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 /// <param name="cbs">回调函数; 前置条件同 ev_listen</param>
 /// <param name="ud">用户数据; 失败时的释放同 ev_listen</param>
 /// <param name="setsess">是否设置sess</param>
+/// <param name="index">连接落在哪个 event 线程：INVALID_INDEX 按 fd 分配，否则 [0, nthreads)，越界断言</param>
 /// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 成功; 失败情形同 ev_listen</returns>
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
-    int32_t setsess, sock_ctx *sk);
+    int32_t setsess, int32_t index, sock_ctx *sk);
 /// <summary>
 /// 切换为SSL链接。启用 SSL 时 业务须等 ssl握手完成回调后才能 ev_send
 /// </summary>
@@ -93,9 +94,11 @@ int32_t ev_keyupdate(ev_ctx *ctx, sock_ctx *sk, int32_t updatetype);
 /// <param name="port">端口</param>
 /// <param name="cbs">回调函数; 前置条件同 ev_listen, 但 UDP 认的是 rf_cb</param>
 /// <param name="ud">用户数据; 失败时的释放同 ev_listen</param>
+/// <param name="index">socket 落在哪个 event 线程，口径同 ev_connect</param>
 /// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 成功; 失败情形同 ev_listen</returns>
-int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, sock_ctx *sk);
+int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
+    int32_t index, sock_ctx *sk);
 /// <summary>
 /// TCP发送数据
 /// </summary>
@@ -155,7 +158,7 @@ int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, netaddr_ctx *addr,
 ///   (IPv6 socket 强制 v6only 后收不到 IPv4 流量)。IPv4 须在 224.0.0.0/4 段(例 "239.0.0.1"); IPv6 须 ff00::/8 段(例 "ff02::1")</param>
 /// <param name="iface_str">接收网卡。IPv4 走网卡 IP 字符串(例 "192.168.1.100"); IPv6 走接口名(例 "en0"); NULL 走系统默认</param>
 /// <returns>ERR_OK 只表示参数合法且命令已入队。调用方契约违反同步返 ERR_FAILED:fd 无效、group_ip 为
-///   NULL / 过长 / 不是合法 IP / 与 socket 不同族。setsockopt 本身在事件线程执行,成败不回传——
+///   NULL / 过长 / 不是合法 IP / 与 socket 不同族 / 不是多播地址。setsockopt 本身在事件线程执行,成败不回传——
 ///   失败只有一条 LOG_ERROR。下面 leave / ttl / loop 同此契约</returns>
 int32_t ev_udp_join(ev_ctx *ctx, sock_ctx *sk, const char *group_ip, const char *iface_str);
 /// <summary>
@@ -260,5 +263,23 @@ int32_t ev_ud_handle(ev_ctx *ctx, sock_ctx *sk, name_t handle);
 /// <returns>ERR_OK 命令已入队;fd 为 INVALID_SOCK 时返回 ERR_FAILED 并已用 fcb 回收 extra，
 /// 调用方不可再释放。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_context(ev_ctx *ctx, sock_ctx *sk, void *extra, free_cb fcb);
+/// <summary>
+/// 投一个回调到第 index 个 event 线程上执行：在该线程本轮事件派发完之后跑，回调里 ev_send 的数据随后冲出。
+/// 在该线程上调用也只排队不当场执行，回调永远不嵌在 socket 回调里；回调里再投的留到下一轮。
+/// 不检查 ev_free 是否已开始，ev_free 返回之后再调是释放后使用
+/// </summary>
+/// <param name="ctx">ev_ctx</param>
+/// <param name="index">event 线程下标 [0, nthreads)，越界断言</param>
+/// <param name="cb">回调，必须非 NULL</param>
+/// <param name="fcb">cb 没机会跑(ev_free 时还在队里)就用它释放 arg：在 ev_free 的调用线程上调，
+///   那时 event 线程已停，里面不得再调 ev_*；可为 NULL，arg 为 NULL 时也不调</param>
+/// <param name="arg">透传给 cb / fcb</param>
+void ev_defer_exec(ev_ctx *ctx, int32_t index, defer_exec_cb cb, free_cb fcb, void *arg);
+/// <summary>
+/// 当前线程是 ctx 的第几个 event 线程，每次现读
+/// </summary>
+/// <param name="ctx">ev_ctx</param>
+/// <returns>event 线程下标；不在 ctx 的 event 线程上(含别的 ev_ctx 的线程)返回 INVALID_INDEX</returns>
+int32_t ev_cur_index(ev_ctx *ctx);
 
 #endif//EVENT_H_

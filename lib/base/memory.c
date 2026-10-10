@@ -1,5 +1,4 @@
 ﻿#include "base/memory.h"
-#include "base/err.h"
 #include "base/config.h"
 #include "base/macro_util.h"
 #include "base/macro_atomic.h"
@@ -24,6 +23,11 @@
 
 #define MEM_ARENA_BLOCK 8192 // mem_arena 每个定长块的字节数
 #define MEM_ARENA_HEAD ROUND_UP(sizeof(mem_arena_blk), 8) // 块头按 8 对齐后的字节数
+#define MEM_STACK_FRAMES 32 // stack_print 与分配追踪每次最多取的栈帧数
+#if defined(OS_WIN)
+#pragma comment(lib, "Dbghelp.lib")
+static SRWLOCK _sym_lock = SRWLOCK_INIT;// DbgHelp 的函数只能单线程调，解析符号全程持它
+#endif
 #if !defined(CC_GNU)
 typedef void *(*memset_func)(void *, int, size_t);// secure_zero 在 MSVC 下经 volatile 指针调 memset 用
 // MSVC 没有空汇编屏障，secure_zero 经它调 memset。指针是 volatile：每次调用都得现读，编译器断定不了它指向 memset，
@@ -56,7 +60,6 @@ static THREAD_LOCAL mem_slot *_slot = NULL;// TLS_RAW_OK：计数一律原子加
 
 #if MEM_TRACE_ON
 #define MEM_TRK_BUCKET 65536 // 活动分配哈希桶数（2 的幂）
-#define MEM_TRK_FRAMES 32 // 单条记录最大栈帧数
 #if defined(OS_WIN)
     static SRWLOCK _trk_lock = SRWLOCK_INIT;
     #define MEM_TRK_LOCK()   AcquireSRWLockExclusive(&_trk_lock)
@@ -71,9 +74,53 @@ typedef struct mem_trk_ctx {
     int32_t frames;
     void *ptr;
     struct mem_trk_ctx *next;
-    void *stack[MEM_TRK_FRAMES];
+    void *stack[MEM_STACK_FRAMES];
 }mem_trk_ctx;
 static mem_trk_ctx *_trk_bucket[MEM_TRK_BUCKET];
+#endif//MEM_TRACE_ON
+
+#ifdef HAVE_BACKTRACE
+#if defined(OS_WIN)
+// 解析符号前的初始化，与 _sym_end 成对调用，中间持 _sym_lock
+static BOOL _sym_begin(void) {
+    AcquireSRWLockExclusive(&_sym_lock);
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    return SymInitialize(GetCurrentProcess(), NULL, TRUE);
+}
+static void _sym_end(BOOL inited) {
+    if (inited) {
+        SymCleanup(GetCurrentProcess());
+    }
+    ReleaseSRWLockExclusive(&_sym_lock);
+}
+#endif
+// 逐帧写出符号，Windows 上须夹在 _sym_begin / _sym_end 之间调
+static void _stack_symbols(FILE *fp, void *const *stack, int32_t frames) {
+#if defined(OS_WIN)
+    char buf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
+    HANDLE proc = GetCurrentProcess();
+    DWORD64 disp;
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen = 255;
+    for (int32_t i = 0; i < frames; i++) {
+        disp = 0;
+        if (SymFromAddr(proc, (DWORD64)(uintptr_t)stack[i], &disp, sym)) {
+            fprintf(fp, "  %2d %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
+        } else {
+            fprintf(fp, "  %2d %p\n", i, stack[i]);
+        }
+    }
+    fflush(fp);
+#else
+    // 绕过 stdio 直接写 fd，先把 fp 里攒的刷出去，前后顺序才对
+    fflush(fp);
+    backtrace_symbols_fd(stack, frames, fileno(fp));
+#endif
+}
+#endif//HAVE_BACKTRACE
+
+#if MEM_TRACE_ON
 // ptr 哈希到桶下标（低位通常为对齐 0，右移消除）
 static size_t _trk_hash(void *ptr) {
     return ((uintptr_t)ptr >> 4) & (MEM_TRK_BUCKET - 1);
@@ -83,7 +130,7 @@ static int32_t _trk_capture(void **stack, int32_t max) {
 #if defined(OS_WIN)
     return (int32_t)CaptureStackBackTrace(2, (DWORD)max, stack, NULL);
 #else
-    void *tmp[MEM_TRK_FRAMES + 2];
+    void *tmp[MEM_STACK_FRAMES + 2];
     int32_t n = backtrace(tmp, max + 2);
     n = n > 2 ? n - 2 : 0;
     memcpy(stack, tmp + 2, (size_t)n * sizeof(void *));
@@ -100,7 +147,7 @@ static void _trk_add(void *ptr) {
         return;
     }
     node->ptr = ptr;
-    node->frames = _trk_capture(node->stack, MEM_TRK_FRAMES);
+    node->frames = _trk_capture(node->stack, MEM_STACK_FRAMES);
     MEM_TRK_LOCK();
     size_t slot = _trk_hash(ptr);
     node->next = _trk_bucket[slot];
@@ -129,31 +176,13 @@ static void _trk_del(void *ptr) {
 // 符号化打印一条未释放块的调用栈
 static void _trk_print(const mem_trk_ctx *node) {
     fprintf(stderr, "[memory leak] %p:\n", node->ptr);
-#if defined(OS_WIN)
-    char buf[sizeof(SYMBOL_INFO) + 256];
-    SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
-    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-    sym->MaxNameLen = 255;
-    HANDLE proc = GetCurrentProcess();
-    DWORD64 disp;
-    for (int32_t i = 0; i < node->frames; i++) {
-        disp = 0;
-        if (SymFromAddr(proc, (DWORD64)(uintptr_t)node->stack[i], &disp, sym)) {
-            fprintf(stderr, "  %2d %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
-        } else {
-            fprintf(stderr, "  %2d %p\n", i, node->stack[i]);
-        }
-    }
-#else
-    backtrace_symbols_fd(node->stack, node->frames, 2);
-#endif
+    _stack_symbols(stderr, node->stack, node->frames);
 }
 // 遍历所有桶，dump 仍存活（未释放）的分配
 static void _trk_dump(void) {
     MEM_TRK_LOCK();
 #if defined(OS_WIN)
-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-    SymInitialize(GetCurrentProcess(), NULL, TRUE);
+    BOOL inited = _sym_begin();
 #endif
     mem_trk_ctx *node;
     for (size_t slot = 0; slot < MEM_TRK_BUCKET; slot++) {
@@ -162,7 +191,7 @@ static void _trk_dump(void) {
         }
     }
 #if defined(OS_WIN)
-    SymCleanup(GetCurrentProcess());
+    _sym_end(inited);
 #endif
     MEM_TRK_UNLOCK();
 }
@@ -187,8 +216,9 @@ static inline void _mem_count(int32_t is_alloc) {
 static inline void *_malloc_raw(size_t size) {
     void *ptr = _MALLOC(size);
     if (NULL == ptr) {
-        LOG_ERROR("malloc(%zu) failed!", size);
-        exit(ERR_FAILED);
+        char errstr[64];
+        SNPRINTF(errstr, sizeof(errstr), "malloc(%zu) failed", size);
+        ASSERTAB(0, errstr);
     }
     return ptr;
 }
@@ -196,8 +226,9 @@ static inline void *_malloc_raw(size_t size) {
 static inline void *_realloc_raw(void *oldptr, size_t size) {
     void *ptr = _REALLOC(oldptr, size);
     if (NULL == ptr) {
-        LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
-        exit(ERR_FAILED);
+        char errstr[64];
+        SNPRINTF(errstr, sizeof(errstr), "realloc(%p, %zu) failed", oldptr, size);
+        ASSERTAB(0, errstr);
     }
     return ptr;
 }
@@ -251,8 +282,9 @@ void *_calloc(size_t count, size_t size) {
 #endif
     void *ptr = _CALLOC(count, size);
     if (NULL == ptr) {
-        LOG_ERROR("calloc(%zu, %zu) failed!", count, size);
-        exit(ERR_FAILED);
+        char errstr[64];
+        SNPRINTF(errstr, sizeof(errstr), "calloc(%zu, %zu) failed", count, size);
+        ASSERTAB(0, errstr);
     }
 #if MEM_TRACE_ON
     _trk_add(ptr);
@@ -337,6 +369,9 @@ int64_t _memcheck(void) {
 }
 void *_mem_arena_alloc_slow(mem_arena *arena, size_t lens) {
     mem_arena_blk *blk;
+    // 这么大本来也分配不出来；放过去的话取整与加块头都会回绕，按回绕后的小数分配
+    ASSERTAB(lens <= SIZE_MAX / 2, "mem_arena_alloc size overflow.");
+    lens = ROUND_UP(lens, 8);
     // 一整块都装不下：按实际大小单开一块，整块只给这一次分配用
     if (lens > MEM_ARENA_BLOCK - MEM_ARENA_HEAD) {
         MALLOC(blk, MEM_ARENA_HEAD + lens);
@@ -382,5 +417,20 @@ void secure_zero(void *buf, size_t len) {
     __asm__ __volatile__("" : : "r"(buf) : "memory");
 #else
     _memset_vol(buf, 0, len);
+#endif
+}
+void stack_print(FILE *fp) {
+#ifdef HAVE_BACKTRACE
+    void *stack[MEM_STACK_FRAMES];
+#if defined(OS_WIN)
+    int32_t n = (int32_t)CaptureStackBackTrace(0, MEM_STACK_FRAMES, stack, NULL);
+    BOOL inited = _sym_begin();
+    _stack_symbols(fp, stack, n);
+    _sym_end(inited);
+#else
+    _stack_symbols(fp, stack, (int32_t)backtrace(stack, MEM_STACK_FRAMES));
+#endif
+#else
+    (void)fp;
 #endif
 }

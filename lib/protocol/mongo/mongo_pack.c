@@ -50,7 +50,7 @@
 // 函数开头：声明并初始化局部 bson_ctx bson（必须置于函数体顶部）。要求函数有名为 size 的出参。
 // cap：BSON 预估容量，0=默认；大消息传 dlens + BSON_HEADROOM 消除 doubling 重分配。宏内只求值一次。
 // 超单包上限在这里就拒：cap 正是那几个大入参的长度，等到 _mongo_pack_msg 判总长时源数据
-// 已经被全量分配并拷贝过，内存不够时分配器是 exit 而不是返 NULL。
+// 已经被全量分配并拷贝过，内存不够时分配器直接终止进程而不是返 NULL。
 // 文档前预留 MONGO_MSG_HDR 字节，收尾时就地填 OP_MSG 头，正文不再另拷一份
 #define MONGO_PACK_BEGIN(cap) MONGO_PACK_BEGIN2(cap, 0)
 // 同 MONGO_PACK_BEGIN，extra 只加进首块容量、不进超限闸门(传 options 与事务 session options 的字节数，免得它们撑出一次整块搬迁)

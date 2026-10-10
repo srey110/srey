@@ -15,6 +15,10 @@ void _evpub_set_cur_watcher(struct watcher_ctx *watcher) {
 int32_t _evpub_inloop(struct watcher_ctx *watcher) {
     return watcher == *_cur_watcher_tls();
 }
+int32_t ev_cur_index(ev_ctx *ctx) {
+    watcher_ctx *cur = *_cur_watcher_tls();
+    return (NULL != cur && cur->ev == ctx) ? cur->index : INVALID_INDEX;// 比 ev：别的 ev_ctx 的线程别认成自己的
+}
 evsock_ctx *_evpub_sockel_get(watcher_ctx *watcher, SOCKET fd) {
     evsock_ctx key;
     key.sk.fd = fd;
@@ -75,6 +79,26 @@ uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now
         }
     }
     return next_to;
+}
+uint32_t _evpub_defer_exec_drain(watcher_ctx *watcher) {
+    uint32_t n = defer_exec_que_size(&watcher->defer_execs);// 只跑进来时已有的，回调里新投的留到下一轮，免得饿死 IO
+    uint32_t i;
+    defer_exec_item it;
+    for (i = 0; i < n; i++) {
+        it = *defer_exec_que_pop(&watcher->defer_execs);// 先拷出：回调里再投会 push，pop 出的指针随之失效
+        it.cb(it.arg);
+    }
+    return n;
+}
+int32_t _evpub_defer_exec_pending(watcher_ctx *watcher) {
+    return !defer_exec_que_empty(&watcher->defer_execs);
+}
+void _evpub_defer_exec_free(watcher_ctx *watcher) {
+    defer_exec_item *it;
+    while (NULL != (it = defer_exec_que_pop(&watcher->defer_execs))) {
+        UD_FREE(it->fcb, it->arg);
+    }
+    defer_exec_que_free(&watcher->defer_execs);
 }
 int32_t _evpub_sock_type(evsock_ctx *evsk) {
     return evsk->type;

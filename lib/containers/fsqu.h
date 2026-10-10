@@ -293,8 +293,8 @@ static inline int32_t name##_empty(name *fsqu) {                                
     spin_unlock(&fsqu->lck);                                                    \
     return rtn;                                                                 \
 }                                                                               \
-/* 不拿锁的近似判空,读到的计数可能稍旧。只给空转轮询用,                         \
-   决定睡不睡的那次复查仍要用 empty */                                          \
+/* 不拿锁的近似判空,读到的计数可能稍旧,但本线程自己 push 的总能看见。           \
+   给空转轮询与"只在乎本线程推过没有"的判定用;决定睡不睡的那次复查仍要用 empty */  \
 static inline int32_t name##_empty_fast(name *fsqu) {                           \
     return 0 == ATOMIC_GET(&fsqu->nhint);                                       \
 }                                                                               \

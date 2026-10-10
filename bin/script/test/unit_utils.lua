@@ -67,7 +67,7 @@ runner.run(function(t)
         -- 重复添加：当前实现下重复名称应失败
         t:eq(false, ring:add(64, "node1"), "hashring add dup")
 
-        -- nreplicas 无上限时能让 C 层去要几十 GB，而 _realloc 分配失败是直接 exit 整个进程。
+        -- nreplicas 无上限时能让 C 层去要几十 GB，而 _realloc 分配失败是直接终止整个进程。
         -- 负数与超 uint32 由绑定层报错拒掉（先前靠 (uint32_t) 转换恰好落在上限之外才返 false，
         -- 换个数就能穿过去）；落在 uint32 内的超限值与 0 仍由 C 层返 false
         t:eq(true, not pcall(ring.add, ring, -1, "toobig"), "hashring add 负 nreplicas 报错")

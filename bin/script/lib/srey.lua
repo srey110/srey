@@ -608,6 +608,24 @@ srey.set_priority = task.set_priority
 ---@type fun():integer
 srey.get_priority = task.get_priority
 
+---把 task 绑到第 index 个 net 线程上执行(-1 解绑回 worker)，下一次调度起生效；回调里禁止阻塞与长计算。
+---先绑再 connect / udp；listen 不看绑定，新连接要落到组员所在线程用 srey.task_accept_group
+---@type fun(taskctx:lightuserdata?, index:integer):boolean
+srey.task_bind_net = task.bind_net
+
+---获取 task 绑定的 net 线程下标；未绑定返回 -1
+---@type fun(taskctx:lightuserdata?):integer
+srey.task_net_index = task.net_index
+
+---net 线程数，即 task_bind_net 的下标上界(不含)
+---@type fun():integer
+srey.task_nnet = task.nnet
+
+---多核监听：每个 net 线程放一个组员 task，由 taskctx(组头)来 listen，之后新连接交给连接所在 net 线程的组员。
+---handles 每项是组员的 task 名或句柄，handles[i] 须已绑到第 i-1 个 net 线程，个数等于 task_nnet()；只对之后的 listen 生效，只能设一次
+---@type fun(taskctx:lightuserdata?, handles:(string|integer)[]):boolean
+srey.task_accept_group = task.accept_group
+
 ---注册 task 启动回调；task 进入事件循环后首先触发一次
 ---@param func fun() 启动回调
 function srey.startup(func)

@@ -68,6 +68,7 @@ static void _uev_init_callback(void) {
     cmd_cbs[CMD_UNLSN] = _on_cmd_unlsn;
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
+    cmd_cbs[CMD_DEFER_EXEC] = _on_cmd_defer_exec;
 }
 // 将命令唤醒源注册到事件循环（触发_uev_cmd_loop）
 static void _uev_init_cmd(watcher_ctx *watcher) {
@@ -500,6 +501,11 @@ static void _uev_loop_event(void *arg) {
 #endif
             evsk->ev_cb(watcher, evsk, ev);
         }
+        // 投来的回调排在派发之后、冲刷之前，它们 ev_send 的数据随本轮一起写出。
+        // 停了就不跑，留给 ev_free 走 fcb
+        if (0 == ATOMIC_GET(&watcher->stop)) {
+            (void)_evpub_defer_exec_drain(watcher);
+        }
         // 本轮派发完统一冲:命令回调与读回调攒下的发送都在这里发出,
         // 合并窗口是整轮派发,同一 fd 的多条 ev_send 仍合成一次 writev
         _uev_flush_pending(watcher);
@@ -514,6 +520,9 @@ static void _uev_loop_event(void *arg) {
 #endif
         }
         next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
+        if (0 != _evpub_defer_exec_pending(watcher)) {
+            next_to = 0;// 回调里新投的下一轮立刻跑；tick 的返回值最小也有 EVENT_TICK_MIN
+        }
         loop_cnt++;
         if (loop_cnt < EVENT_CHECK_INTERVAL) {
             continue;
@@ -613,6 +622,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
         qtn_que_init(&watcher->qtn, ONEK);
         list_init(&watcher->ticks);
+        defer_exec_que_init(&watcher->defer_execs, 0);
         list_init(&watcher->flushes);
         list_init(&watcher->lingers);
         watcher->linger_tick.cb = NULL;
@@ -679,6 +689,7 @@ static void _uev_free_watcher(ev_ctx *ctx) {
         sockel_map_free(watcher->element);
         pool_free(&watcher->pool);
         _uev_free_pipe(watcher);
+        _evpub_defer_exec_free(watcher);
         // worker 已退出 _uev_loop_event, 兜底 flush 隔离队列剩余对象
         _uev_qtn_flush(watcher);
 #ifdef EV_POLLSET

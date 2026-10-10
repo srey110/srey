@@ -31,6 +31,7 @@ void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree) {
 }
 void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
                uint32_t nkeep, int32_t flags, pool_cbs *elcbs) {
+    ASSERTAB(elsize <= UINT32_MAX, "pool elsize overflow.");
     ZERO(pool, sizeof(pool_ctx));
     capacity = (0 == capacity ? POOL_DEFAULT_CAP : capacity);
     pool->elsize = (uint32_t)elsize;

@@ -503,6 +503,8 @@ static void _idx_startup(task_ctx *task) {
     router_ctx *r = (router_ctx *)task->arg;
     task_recved(task, _server_net_recv);
     REG(router_post(r, NULL, "/idx-plain", _h_idx_plain, NULL, 0));
+    // GET 路由连带接 HEAD: 给 HEAD + chunked 一条能命中的普通路由
+    REG(router_get(r, NULL, "/idx-get", _h_idx_plain, NULL, 0));
     REGI(router_add_index(r, "POST", 4, "/idx-only", 9));
     uint64_t id;
     if (ERR_OK != task_listen(task, PACK_HTTP, NULL, "0.0.0.0", _g_idx_port, &id, 0)) {
@@ -1358,7 +1360,63 @@ static int32_t _do_chunked_dangling(task_ctx *task, uint16_t port) {
     binary_free(&bw);
     return ERR_OK;// 有意不 ev_close
 }
-// 流式路由相关的九条断言
+// chunked 打到接不住它的路由 → 411 + 关连接。裸读到服务端关闭为止, 数头部空行之后还剩几字节:
+// HEAD 只许发头(0 字节), 其余方法要带正文。不走 PACK_HTTP: 它照 Content-Length 等正文, 多发少发都看不出。
+// 调用方对同一路由 HEAD / GET 各打一次, 成对才能证明 "0 字节" 不是读早了
+static int32_t _do_chunked_411_raw(task_ctx *task, uint16_t port, const char *method, const char *path) {
+    sock_ctx sk;
+    binary_ctx bw;
+    char acc[512];
+    size_t used = 0;
+    size_t rsize = 0;
+    size_t tail;
+    int32_t poll;
+    int32_t rtn = ERR_FAILED;
+    int32_t head_only = (0 == strcmp(method, "HEAD"));
+    const char *hdrend;
+    void *seg;
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
+        LOG_WARN("router test: connect to %d failed for raw chunked %s %s.", port, method, path);
+        return ERR_FAILED;
+    }
+    binary_init_write(&bw, 0, 0);
+    http_pack_req(&bw, method, path);
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    // 发法同 _do_chunked: 首块 copy=1 后退回游标, 终止块 copy=0 交出所有权
+    http_pack_chunked(&bw, (void *)"x", 1);
+    ev_send(&task->loader->netev, &sk, bw.data, bw.offset, 1);
+    binary_offset(&bw, 0);
+    http_pack_chunked(&bw, NULL, 0);
+    seg = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
+    // 服务端回完 411 就关, 关闭后 coro_recv 返 NULL
+    for (poll = 0; poll < 64 && NULL != seg; poll++) {
+        if (rsize > sizeof(acc) - 1 - used) {
+            LOG_WARN("router test: raw chunked %s %s response over %zu bytes.", method, path, sizeof(acc));
+            goto done;
+        }
+        memcpy(acc + used, seg, rsize);
+        used += rsize;
+        seg = coro_recv(task, &sk, &rsize);
+    }
+    acc[used] = '\0';
+    hdrend = strstr(acc, "\r\n\r\n");
+    if (used < sizeof("HTTP/1.1 411") - 1
+        || 0 != memcmp(acc, "HTTP/1.1 411", sizeof("HTTP/1.1 411") - 1)
+        || NULL == hdrend) {
+        LOG_WARN("router test: raw chunked %s %s expected a 411 head, got %zu bytes.", method, path, used);
+        goto done;
+    }
+    tail = used - (size_t)(hdrend + 4 - acc);
+    if (head_only ? 0 != tail : 0 == tail) {
+        LOG_WARN("router test: raw chunked %s %s got %zu bytes after the head.", method, path, tail);
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, &sk);
+    return rtn;
+}
+// 流式路由相关的断言
 static int32_t _run_stream(task_ctx *task, uint16_t port) {
     int32_t bad = 0;
     // 与 _run_all 的 _g_post_count 同理：全局静态量，多次跑要先清零隔离
@@ -1451,6 +1509,15 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
     if (ERR_OK != _do_stream_plain_echo(task, port)) {
         bad |= (1 << 10);
     }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [11] HEAD + chunked 打到 router_get 注册的 / (连带接 HEAD) → _router_st_reject 回 411 只发头;
+    //      同路由 GET 那面照常带正文
+    if (ERR_OK != _do_chunked_411_raw(task, port, "HEAD", "/")
+        || ERR_OK != _do_chunked_411_raw(task, port, "GET", "/")) {
+        bad |= (1 << 11);
+    }
     if (0 != bad) {
         LOG_WARN("router test: stream route assertions failed, bad=0x%x.", bad);
     }
@@ -1500,6 +1567,14 @@ static int32_t _run_index(task_ctx *task, uint16_t port) {
     // [5] 一次到齐的请求打同一条 index 条目也是 500, 与 [0] 同码
     if (ERR_OK != _do_req(task, port, "POST", "/idx-only", NULL, NULL, 500, NULL)) {
         bad |= (1 << 5);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [6] 同 _run_stream [11], 走无流式路由那条 router_reject_chunked
+    if (ERR_OK != _do_chunked_411_raw(task, port, "HEAD", "/idx-get")
+        || ERR_OK != _do_chunked_411_raw(task, port, "GET", "/idx-get")) {
+        bad |= (1 << 6);
     }
     if (0 != bad) {
         LOG_WARN("router test: nostream chunked assertions failed, bad=0x%x.", bad);

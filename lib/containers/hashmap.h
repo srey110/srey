@@ -35,7 +35,7 @@
 //   2. get / get_set / probe / iter 给的是桶内元素的指针,下一次插入或删除后就可能失效
 //      (插入会挪动别的元素,删除会把后面的元素前移,两者都可能触发扩缩容);原位覆盖不挪位置。
 //   3. scan / iter 期间增删会被检出并中止、记一条日志;32 位下游标放不下版本号,iter 期间增删是未定义行为。
-//   4. 分配一律走项目的 MALLOC/CALLOC/FREE,_malloc 失败直接 exit,故 oom 与 new 返回 NULL 都只剩
+//   4. 分配一律走项目的 MALLOC/CALLOC/FREE,_malloc 失败直接终止进程,故 oom 与 new 返回 NULL 都只剩
 //      "容量算出来溢出"这一种成因。set / get_set 插不进去时返回 NULL,要靠 oom 与"键不存在"区分。
 //   5. HASHFN / CMPFN 是宏不是函数指针,形参直接就是 T const *(写法同 HEAP_DECL 的 LT),都不接受 NULL;
 //      CMPFN 只看是否为 0。遍历回调收 T const *、返 int32_t。
@@ -62,7 +62,7 @@
 typedef struct name##_bucket {                                                 \
     /* hash 与 dib 平铺放,别压成位域 */                                         \
     uint32_t hash;  /* 哈希的低 32 位,够用(桶数 < 2^32),扩容重排时不必再调 HASHFN */      \
-    uint16_t dib;   /* 离理想桶的距离加一,0 表示空桶 */                             \
+    uint32_t dib;   /* 离理想桶的距离加一,0 表示空桶;与 hash 同宽才不会回绕成 0 */  \
     T item;                                                                    \
 } name##_bucket;                                                               \
 typedef struct name {                                                          \
@@ -210,7 +210,7 @@ static inline T *name##_insert_impl(name *m, T const *item, uint64_t hash,     \
     T titem;                                                                   \
     name##_bucket *bucket;                                                     \
     uint32_t chash;                                                            \
-    uint16_t cdib;                                                             \
+    uint32_t cdib;                                                             \
     size_t i, new_cap;                                                         \
     size_t imask;                                                              \
     name##_bucket *ib;                                                         \

@@ -27,7 +27,7 @@ set "TARGET=srey"
 set "CONFIG=Release"
 set "PLATFORM=x64"
 set "MSTARGET=srey"
-rem 记录 config/platform 是否被显式指定:clean 不指定时清全部四组,与 mk.sh 的"无条件清干净"对齐
+rem 记录 config/platform 是否被显式指定:clean 不指定时清全部六组,与 mk.sh 的"无条件清干净"对齐
 set "CFGSET="
 set "PLATSET="
 

@@ -251,6 +251,25 @@ void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd) {
         cmd->args.props.ppcb, cmd->args.props.fcb,
         cmd->args.props.data, cmd->args.props.number);
 }
+void ev_defer_exec(ev_ctx *ctx, int32_t index, defer_exec_cb cb, free_cb fcb, void *arg) {
+    ASSERTAB(index >= 0 && index < (int32_t)ctx->nthreads && NULL != cb, "ev_defer_exec param error.");
+    watcher_ctx *watcher = &ctx->watcher[index];
+    defer_exec_item it;
+    it.cb = cb;
+    it.fcb = fcb;
+    it.arg = arg;
+    if (_evpub_inloop(watcher)) {
+        defer_exec_que_push(&watcher->defer_execs, &it);// 同线程不走命令通道，省一次写管道加一轮空等
+        return;
+    }
+    cmd_ctx cmd = { 0 };
+    cmd.cmd = CMD_DEFER_EXEC;
+    cmd.args.defer_exec = it;
+    _send_cmd(watcher, &cmd);
+}
+void _on_cmd_defer_exec(struct watcher_ctx *watcher, cmd_ctx *cmd) {
+    defer_exec_que_push(&watcher->defer_execs, &cmd->args.defer_exec);
+}
 static int32_t _ev_close(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)data;
@@ -628,8 +647,8 @@ static int32_t _ev_udp_group(ev_ctx *ctx, sock_ctx *sk, udp_opt_type op,
     if (sock_is_invalid(sk) || NULL == group_ip) {
         return ERR_FAILED;
     }
-    // 组地址可解析、且与 socket 同族,两项都是调用方契约,放这儿判才能把失败真的回传;
-    // 事件线程那侧同样的判定只作兜底——两处之间 fd 有可能被关掉并复用成另一族
+    // 组地址可解析、与 socket 同族、是多播地址,三项都是调用方契约,放这儿判才能把失败真的回传;
+    // 事件线程那侧前两项的同样判定只作兜底——两处之间 fd 有可能被关掉并复用成另一族
     if (ERR_OK != is_ipaddr(group_ip)) {
         LOG_ERROR("udp group %s is not a valid ip.", group_ip);
         return ERR_FAILED;
@@ -639,6 +658,13 @@ static int32_t _ev_udp_group(ev_ctx *ctx, sock_ctx *sk, udp_opt_type op,
     if ((0 != grpv6 && AF_INET6 != family)
         || (0 == grpv6 && AF_INET != family)) {
         LOG_ERROR("udp group %s family mismatch with fd %d.", group_ip, (int32_t)sk->fd);
+        return ERR_FAILED;
+    }
+    // 多播段：IPv4 224.0.0.0/4，IPv6 ff00::/8
+    uint8_t gaddr[16];
+    if (1 != inet_pton(0 != grpv6 ? AF_INET6 : AF_INET, group_ip, gaddr)
+        || (0 != grpv6 ? 0xff != gaddr[0] : 0xe0 != (gaddr[0] & 0xf0))) {
+        LOG_ERROR("udp group %s is not a multicast address.", group_ip);
         return ERR_FAILED;
     }
     udp_opt_arg *arg;
@@ -729,6 +755,9 @@ void _cmd_drain_free(cmd_ctx *cmd) {
         break;
     case CMD_PROPS:
         UD_FREE(cmd->args.props.fcb, cmd->args.props.data);
+        break;
+    case CMD_DEFER_EXEC:
+        UD_FREE(cmd->args.defer_exec.fcb, cmd->args.defer_exec.arg);
         break;
 #ifndef EV_IOCP
     case CMD_UNLSN:

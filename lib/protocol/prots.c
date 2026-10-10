@@ -336,23 +336,40 @@ static inline void _prots_recv_msg_init(message_ctx *msg, sock_ctx *sk, int32_t 
     msg->client = client;
 }
 void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
-    void *target = g_emit.begin(ud->loader, ud->handle);
+    name_t handle = ud->handle;
+    void *target = g_emit.begin(ud->loader, handle);
     if (NULL == target) {
         ev_close(ev, sk);
         return;
     }
     message_ctx msg;
     _prots_recv_msg_init(&msg, sk, client, ud);
-    // 单帧多包只有 websock 承载子协议时才有，其余协议这里恒 NULL。pktype 在本次调用内不变
-    // (msg.subtype 已按它快照)，故入口取一次，别每包查一遍表
+    // 单帧多包只有 websock 承载子协议时才有，其余协议这里恒 NULL。入口取一次协议表，别每包查一遍；
+    // 消息汇可能当场处理了上一个包并经 ev_ud_pktype 切了协议，故每轮先比一下 pktype
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     void *data, *next;
     int32_t status;
     size_t esize;
     for (;;) {
+        if (ud->pktype != msg.subtype) {
+            v = _prots_vtbl(ud->pktype);
+            msg.subtype = ud->pktype;
+        }
         size = buffer_size(buf);
         data = _prots_unpack_v(v, ev, sk, client, buf, ud, &msg.size, &status);
         while (NULL != data) {
+            // 当场处理的上一个包可能经 ev_ud_handle 把连接转给了别的 task，之后的包投给新的。
+            // 新的已不在就同入口那样关连接；这个包还没拆链，连同单帧多包的后继一起放
+            if (ud->handle != handle) {
+                g_emit.end(target);
+                handle = ud->handle;
+                target = g_emit.begin(ud->loader, handle);
+                if (NULL == target) {
+                    prots_pkfree(msg.subtype, data);
+                    ev_close(ev, sk);
+                    return;
+                }
+            }
             msg.data = data;
             msg.sess = ud->sess;
             if (BIT_CHECK(status, PROT_SLICE_START)) {

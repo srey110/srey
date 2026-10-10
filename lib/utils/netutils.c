@@ -184,9 +184,12 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
     struct tcp_keepalive kpa;
     struct tcp_keepalive out;
     DWORD ret = 0;
+    // 秒换毫秒：两个字段是 ULONG，按 64 位乘再封顶，秒数大时 int32 乘法会溢出
+    uint64_t ms = (uint64_t)delay * MSEC;
     kpa.onoff = 1;
-    kpa.keepalivetime = delay * MSEC;
-    kpa.keepaliveinterval = intvl * MSEC;
+    kpa.keepalivetime = (ULONG)(ms > ULONG_MAX ? ULONG_MAX : ms);
+    ms = (uint64_t)intvl * MSEC;
+    kpa.keepaliveinterval = (ULONG)(ms > ULONG_MAX ? ULONG_MAX : ms);
     if (WSAIoctl(fd, SIO_KEEPALIVE_VALS, (LPVOID)&kpa, sizeof(struct tcp_keepalive),
         (LPVOID)&out, sizeof(struct tcp_keepalive), &ret, NULL, NULL) < ERR_OK) {
         return ERR_FAILED;

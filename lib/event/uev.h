@@ -119,6 +119,7 @@ typedef struct watcher_ctx {
     qtn_que qtn;                // 隔离队列 FIFO
     pip_ctx pipe;               // 命令通道（fsqu 存命令 + 单管道传唤醒信号）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
+    defer_exec_que defer_execs; // ev_defer_exec 投来待跑的回调，每轮派发后、冲刷前排空
 #ifdef FLUSH_WATERMARK
     size_t flush_bytes;         // 本轮攒下的待发字节合计，超水位就地冲；由 _uev_flush_pending 清零
 #endif

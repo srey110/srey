@@ -80,7 +80,7 @@ runner.run(function(t)
         server_sks[accepted] = sk
     end)
     srey.on_recved(function(pktype, sk, client, slice, data, size)
-        -- client 字段含 STATUS_CLIENT (0x08) 标志位,非 0 即 outgoing 连接
+        -- client 非 0 即 outgoing 连接(收到 server 广播)
         if 0 ~= client and size == #MSG then
             local s = srey.ud_str(data, size)
             if s == MSG then

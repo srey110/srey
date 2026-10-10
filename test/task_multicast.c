@@ -28,7 +28,7 @@ static void _net_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
 static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                       uint8_t slice, void *data, size_t size) {
     (void)task; (void)sk; (void)pktype; (void)slice;
-    // client 字段含 STATUS_CLIENT (0x08) 标志位,非 0 即 outgoing 连接(收到 server 广播)
+    // client 非 0 即 outgoing 连接(收到 server 广播)
     if (0 != client && MSG_LEN == size && 0 == memcmp(data, MSG_BROADCAST, MSG_LEN)) {
         ATOMIC_ADD(&_received_count, 1);
     }

@@ -1,5 +1,9 @@
 ﻿#include "test_event.h"
 #include "lib.h"
+#if defined(EV_EPOLL)
+#include <sys/syscall.h>
+#include "event/uev.h"// 连接失败后发送的用例要看 watcher 的攒发链
+#endif
 
 // 延迟关闭用例：服务端收到第一段就回这条响应并 ev_close
 #define LINGER_RESP "HTTP/1.1 411 Length Required\r\nContent-Length: 0\r\n\r\n"
@@ -10,6 +14,17 @@
 #define UDP_CLOSE_PORT 15097
 // SSL 合并写用例：端口、服务端一共发的字节数、每批入队的小块数(须低于 MAX_SENDQ_CNT，否则入队即断连)
 #define SSL_MERGE_PORT 15098
+#define CLOSE_IN_CB_PORT 15099
+// accept / connect 回调里关连接的用例
+#define CLOSE_IN_ACP_PORT 15028
+#define CLOSE_IN_CONN_PORT 15029
+// 连接失败回调里关连接的用例：连一个没人监听的端口
+#define CONN_FAIL_PORT 15030
+// 连通后注册读事件失败、回调里还发数据的用例
+#define CONN_FAIL_SEND_PORT 15032
+// 指定 watcher 的用例：TCP 监听端口与 UDP 端口
+#define LAUNCH_IDX_PORT 15022
+#define LAUNCH_UDP_PORT 15023
 #define SSL_MERGE_TOTAL (256 * 1024)
 #define SSL_MERGE_BATCH 512
 // 读保活空闲时长的选项名，取法同 sock_keepalive
@@ -561,7 +576,7 @@ static void test_ev_udp_close_in_recv(CuTest *tc) {
     ATOMIC_SET(&_g_udp_nrecv, 0);
     ATOMIC_SET(&_g_udp_nclose, 0);
     ev_init(&ev, 1, NULL);
-    CuAssertIntEquals(tc, ERR_OK, ev_udp(&ev, "127.0.0.1", UDP_CLOSE_PORT, &cbs, NULL, &sk));
+    CuAssertIntEquals(tc, ERR_OK, ev_udp(&ev, "127.0.0.1", UDP_CLOSE_PORT, &cbs, NULL, INVALID_INDEX, &sk));
     MSLEEP(50);
     CuAssertIntEquals(tc, ERR_OK, netaddr_set(&addr, "127.0.0.1", UDP_CLOSE_PORT));
     fd = sock_create_cloexec(netaddr_family(&addr), SOCK_DGRAM, 0, 0);
@@ -577,6 +592,444 @@ static void test_ev_udp_close_in_recv(CuTest *tc) {
     ev_free(&ev);
     CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&_g_udp_nrecv));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_udp_nclose));
+}
+// 回调里关连接的用例：关闭回调次数，以及 r_cb 发完那串数据后看到的状态(1 连接仍在、关闭回调没来，2 已被当场关掉)
+static atomic_t _g_incb_closed;
+static atomic_t _g_incb_state;
+// 回调里关写再连发一串：攒满那次当场发、失败要关连接，回调里看到的连接仍得有效
+static void _incb_burst(ev_ctx *ev, sock_ctx *sk) {
+    int32_t i;
+    shutdown(sk->fd, SHUT_WR);// 之后每次写都必失败
+    // 攒满 MAX_SEND_NIOV 条那次会当场发(Unix writev / IOCP 同步发一批)，失败要关这条连接
+    for (i = 0; i <= MAX_SEND_NIOV; i++) {
+        ev_send(ev, sk, "x", 1, 1);
+    }
+    ATOMIC_SET(&_g_incb_state, (0 == ATOMIC_GET(&_g_incb_closed)
+                                && !sock_is_invalid(sk) && 0 != sk->skid) ? 1 : 2);
+}
+static void _incb_on_recv(ev_ctx *ev, sock_ctx *sk,
+                          int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)client; (void)size; (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+    _incb_burst(ev, sk);
+}
+static int32_t _incb_on_acp(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ud;
+    _incb_burst(ev, sk);
+    return ERR_OK;
+}
+static int32_t _incb_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
+    (void)ud;
+    if (ERR_OK == erro) {
+        _incb_burst(ev, sk);
+    }
+    return ERR_OK;
+}
+static void _incb_drain(ev_ctx *ev, sock_ctx *sk,
+                        int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+}
+static void _incb_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)erro; (void)ud;
+    ATOMIC_ADD(&_g_incb_closed, 1);
+}
+// 收包回调里同线程发送失败：关连接要推迟到回调返回之后，回调里看到的连接始终有效，
+// 关闭回调(推出 CLOSE)只来一次且排在回调之后。协议层在解包里发认证包、握手响应就是这个形状
+static void test_ev_close_in_recv_deferred(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    netaddr_ctx addr;
+    uint64_t id;
+    SOCKET fd;
+    int32_t i;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.r_cb = _incb_on_recv;
+    cbs.c_cb = _incb_on_close;
+    ATOMIC_SET(&_g_incb_closed, 0);
+    ATOMIC_SET(&_g_incb_state, 0);
+    ev_init(&ev, 1, NULL);
+    CuAssertIntEquals(tc, ERR_OK, ev_listen(&ev, NULL, "127.0.0.1", CLOSE_IN_CB_PORT, &cbs, NULL, &id));
+    MSLEEP(50);// listen 落地是异步的
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&addr, "127.0.0.1", CLOSE_IN_CB_PORT));
+    fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    CuAssertTrue(tc, INVALID_SOCK != fd);
+    CuAssertIntEquals(tc, 0, connect(fd, netaddr_addr(&addr), netaddr_size(&addr)));
+    CuAssertIntEquals(tc, 1, (int32_t)send(fd, "a", 1, 0));
+    for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_incb_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_state));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_closed));
+}
+// accept / connect 回调里同线程发送失败：同收包回调，关连接推迟到回调返回之后、关闭回调只来一次
+static void test_ev_close_in_acp_conn_deferred(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs, lcbs;
+    netaddr_ctx addr;
+    uint64_t id, id2;
+    sock_ctx sk;
+    SOCKET fd;
+    int32_t i, acp_state, acp_closed;
+    ev_init(&ev, 1, NULL);
+    // accept 回调
+    ZERO(&cbs, sizeof(cbs));
+    cbs.acp_cb = _incb_on_acp;
+    cbs.r_cb = _incb_drain;
+    cbs.c_cb = _incb_on_close;
+    ATOMIC_SET(&_g_incb_closed, 0);
+    ATOMIC_SET(&_g_incb_state, 0);
+    CuAssertIntEquals(tc, ERR_OK, ev_listen(&ev, NULL, "127.0.0.1", CLOSE_IN_ACP_PORT, &cbs, NULL, &id));
+    MSLEEP(50);// listen 落地是异步的
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&addr, "127.0.0.1", CLOSE_IN_ACP_PORT));
+    fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
+    CuAssertTrue(tc, INVALID_SOCK != fd);
+    CuAssertIntEquals(tc, 0, connect(fd, netaddr_addr(&addr), netaddr_size(&addr)));
+    for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_incb_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    CLOSE_SOCK(fd);
+    // 先记下，ev_free 之后再断言：断言失败会直接跳出用例，event 线程还在跑着用栈上的 ev
+    acp_state = (int32_t)ATOMIC_GET(&_g_incb_state);
+    acp_closed = (int32_t)ATOMIC_GET(&_g_incb_closed);
+    // connect 回调：对端只收不发，关闭回调不计数
+    ZERO(&lcbs, sizeof(lcbs));
+    lcbs.r_cb = _incb_drain;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.conn_cb = _incb_on_conn;
+    cbs.r_cb = _incb_drain;
+    cbs.c_cb = _incb_on_close;
+    ATOMIC_SET(&_g_incb_closed, 0);
+    ATOMIC_SET(&_g_incb_state, 0);
+    CuAssertIntEquals(tc, ERR_OK, ev_listen(&ev, NULL, "127.0.0.1", CLOSE_IN_CONN_PORT, &lcbs, NULL, &id2));
+    MSLEEP(50);
+    CuAssertIntEquals(tc, ERR_OK, ev_connect(&ev, NULL, "127.0.0.1", CLOSE_IN_CONN_PORT, &cbs, NULL, 0,
+                                             INVALID_INDEX, &sk));
+    for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_incb_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, acp_state);
+    CuAssertIntEquals(tc, 1, acp_closed);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_state));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_closed));
+}
+#if defined(EV_EPOLL)
+// 连接失败回调里关连接（只有 epoll 能造）：回调里重新注册事件失败才会真的关掉，kqueue 的注册攒到下一轮才提交、
+// 不会当场失败。这里替换整个 test 程序的 epoll_ctl：平时原样转发，置了 fd 后让它的下一次 MOD 失败；
+// 另可指定一个 fd 记下对它第一次成功的 DEL
+static atomic_t _g_cfail_armfd;// 要让下一次 MOD 失败的 fd + 1，0 表示不注入
+static atomic_t _g_cfail_injected;// 注入生效的次数
+static atomic_t _g_cfail_delfd;// 要记 DEL 的 fd + 1，记到一次即清 0
+static atomic_t _g_cfail_ndel;// 记到的成功 DEL 次数
+static atomic_t _g_cfail_conn;// 连接失败回调次数
+static atomic_t _g_cfail_closed;// 关闭回调次数
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
+    int rc;
+    if (EPOLL_CTL_MOD == op
+        && ATOMIC_CAS(&_g_cfail_armfd, (atomic_t)(fd + 1), 0)) {
+        ATOMIC_ADD(&_g_cfail_injected, 1);
+        errno = ENOMEM;
+        return -1;
+    }
+    rc = (int)syscall(SYS_epoll_ctl, epfd, op, fd, event);
+    // 只记成功的 DEL：失败(ENOENT)说明登记本来就不在，证明不了撤过
+    if (0 == rc
+        && EPOLL_CTL_DEL == op
+        && ATOMIC_CAS(&_g_cfail_delfd, (atomic_t)(fd + 1), 0)) {
+        ATOMIC_ADD(&_g_cfail_ndel, 1);
+    }
+    return rc;
+}
+static int32_t _cfail_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
+    (void)ud;
+    if (ERR_OK != erro) {
+        ATOMIC_ADD(&_g_cfail_conn, 1);
+        // _uev_disconnect 补注册读事件(epoll 下是 MOD)失败，关闭推迟到回调返回时做。
+        // 只在 ev_close 期间注入：没生效的话 fd 号被别的线程复用，会误伤别的用例
+        ATOMIC_SET(&_g_cfail_armfd, (atomic_t)(sk->fd + 1));
+        ev_close(ev, sk);
+        ATOMIC_SET(&_g_cfail_armfd, 0);
+    }
+    return ERR_OK;
+}
+static void _cfail_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)erro; (void)ud;
+    ATOMIC_ADD(&_g_cfail_closed, 1);
+}
+// 连接失败回调里把连接关掉了：调用方不能再摘除回收。否则同一个对象既在隔离队列里又回了池，
+// ev_free 时释放两次（glibc 直接报 double free）；关闭回调也只能来一次
+static void test_ev_close_in_conn_fail(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    sock_ctx sk;
+    int32_t i;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.conn_cb = _cfail_on_conn;
+    cbs.r_cb = _incb_drain;// TCP 必须有 r_cb，否则 ev_connect 当场拒绝
+    cbs.c_cb = _cfail_on_close;
+    ATOMIC_SET(&_g_cfail_armfd, 0);
+    ATOMIC_SET(&_g_cfail_injected, 0);
+    ATOMIC_SET(&_g_cfail_conn, 0);
+    ATOMIC_SET(&_g_cfail_closed, 0);
+    ev_init(&ev, 1, NULL);
+    // 回环上连没人监听的端口：connect 先回 EINPROGRESS，被拒由事件报回来，走连接失败那条路
+    CuAssertIntEquals(tc, ERR_OK, ev_connect(&ev, NULL, "127.0.0.1", CONN_FAIL_PORT, &cbs, NULL, 0,
+                                             INVALID_INDEX, &sk));
+    for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_cfail_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_conn));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_injected));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_closed));
+}
+static int32_t _cdel_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)ud;
+    if (ERR_OK != erro) {
+        ATOMIC_ADD(&_g_cfail_conn, 1);
+        ATOMIC_SET(&_g_cfail_delfd, (atomic_t)(sk->fd + 1));// 回调返回后的收尾该对它发 DEL
+    }
+    return ERR_OK;
+}
+// 连接失败不经隔离直接回池：回池前必须把 epoll 登记撤掉。只靠 close 的话，socket 被 fork 出、
+// 还没 exec 的子进程共享时登记还在，之后的事件会带着已回池的对象回来
+static void test_ev_conn_fail_epoll_del(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    sock_ctx sk;
+    int32_t i;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.conn_cb = _cdel_on_conn;
+    cbs.r_cb = _incb_drain;
+    cbs.c_cb = _cfail_on_close;
+    ATOMIC_SET(&_g_cfail_delfd, 0);
+    ATOMIC_SET(&_g_cfail_ndel, 0);
+    ATOMIC_SET(&_g_cfail_conn, 0);
+    ATOMIC_SET(&_g_cfail_closed, 0);
+    ev_init(&ev, 1, NULL);
+    CuAssertIntEquals(tc, ERR_OK, ev_connect(&ev, NULL, "127.0.0.1", CONN_FAIL_PORT, &cbs, NULL, 0,
+                                             INVALID_INDEX, &sk));
+    for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_cfail_ndel); i++) {
+        MSLEEP(1);
+    }
+    ev_free(&ev);
+    ATOMIC_SET(&_g_cfail_delfd, 0);// 没记到的话别留着误记别的用例
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_conn));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_ndel));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cfail_closed));// 连接失败不走关闭回调
+}
+static atomic_t _g_cfsend_gate;// 置 1 放行卡在 event 线程上的 _cfsend_block
+static atomic_t _g_cfsend_linked;// 收尾之后、本轮冲刷之前攒发链上还挂着几个，-1 表示还没查
+static void _cfsend_block(void *arg) {
+    (void)arg;
+    while (0 == ATOMIC_GET(&_g_cfsend_gate)) {
+        MSLEEP(1);
+    }
+}
+// 投递回调在本轮派发之后、冲刷之前跑，正好看得见回池前没摘掉的攒发链节点
+static void _cfsend_check(void *arg) {
+    ev_ctx *ev = arg;
+    ATOMIC_SET(&_g_cfsend_linked, (atomic_t)ev->watcher[0].flushes.size);
+}
+static int32_t _cfsend_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
+    (void)ud;
+    if (ERR_OK != erro) {
+        ATOMIC_ADD(&_g_cfail_conn, 1);
+        ev_send(ev, sk, (void *)"x", 1, 1);// 同线程当场执行：连接已作废，得拒收
+        ev_defer_exec(ev, 0, _cfsend_check, NULL, ev);
+    }
+    return ERR_OK;
+}
+// TCP 已连通、注册读事件失败走连接失败收尾，回调里还发了数据：不能挂上攒发链随对象回池，
+// 否则本轮冲刷时摘的是池里(池满时已释放)的对象，对象被同轮复用时链表直接坏掉
+static void test_ev_conn_fail_send(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs, lcbs;
+    sock_ctx sk;
+    uint64_t id;
+    int32_t i;
+    ZERO(&lcbs, sizeof(lcbs));
+    lcbs.r_cb = _incb_drain;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.conn_cb = _cfsend_on_conn;
+    cbs.r_cb = _incb_drain;
+    cbs.c_cb = _cfail_on_close;
+    ATOMIC_SET(&_g_cfail_armfd, 0);
+    ATOMIC_SET(&_g_cfail_injected, 0);
+    ATOMIC_SET(&_g_cfail_conn, 0);
+    ATOMIC_SET(&_g_cfail_closed, 0);
+    ATOMIC_SET(&_g_cfsend_gate, 0);
+    ATOMIC_SET(&_g_cfsend_linked, -1);
+    ev_init(&ev, 1, NULL);
+    CuAssertIntEquals(tc, ERR_OK, ev_listen(&ev, NULL, "127.0.0.1", CONN_FAIL_SEND_PORT, &lcbs, NULL, &id));
+    MSLEEP(50);// listen 落地是异步的
+    // 先把 event 线程卡住：注入就位之前它处理不到这条连接的连通事件
+    ev_defer_exec(&ev, 0, _cfsend_block, NULL, NULL);
+    CuAssertIntEquals(tc, ERR_OK, ev_connect(&ev, NULL, "127.0.0.1", CONN_FAIL_SEND_PORT, &cbs, NULL, 0,
+                                             INVALID_INDEX, &sk));
+    ATOMIC_SET(&_g_cfail_armfd, (atomic_t)(sk.fd + 1));// 连通后把写事件改成读事件的那次 MOD 失败
+    ATOMIC_SET(&_g_cfsend_gate, 1);
+    for (i = 0; i < 1000 && -1 == (int32_t)ATOMIC_GET(&_g_cfsend_linked); i++) {
+        MSLEEP(1);
+    }
+    ATOMIC_SET(&_g_cfail_armfd, 0);// 没生效的话别留着误伤别的用例
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_injected));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cfail_conn));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cfsend_linked));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cfail_closed));// 连接失败不走关闭回调
+}
+#endif
+// ev_defer_exec 用例：投出去的回调在哪个 event 线程上跑、同线程再投何时跑、停机时没跑成的走 fcb
+static ev_ctx *_g_defer_exec_ev;
+static ev_ctx *_g_defer_exec_ev2;
+static atomic_t _g_defer_exec_idx;// 回调里读到的 ev_cur_index
+static atomic_t _g_defer_exec_other;// 回调里对另一个 ev_ctx 调 ev_cur_index 的结果
+static atomic_t _g_defer_exec_early;// 同线程再投之后当场看那个回调跑了没有
+static atomic_t _g_defer_exec_nested;// 同线程再投的那个回调跑了没有
+static atomic_t _g_defer_exec_hold;// 占住线程的回调已开始
+static atomic_t _g_defer_exec_go;// 主线程放行
+static atomic_t _g_defer_exec_never;// 本该留到停机的回调却跑了的次数
+static atomic_t _g_defer_exec_freed;// fcb 被调次数
+static void _defer_exec_nested_cb(void *arg) {
+    (void)arg;
+    ATOMIC_SET(&_g_defer_exec_nested, 1);
+}
+static void _defer_exec_first_cb(void *arg) {
+    int32_t idx = ev_cur_index(_g_defer_exec_ev);
+    (void)arg;
+    ATOMIC_SET(&_g_defer_exec_idx, (atomic_t)idx);
+    ATOMIC_SET(&_g_defer_exec_other, (atomic_t)ev_cur_index(_g_defer_exec_ev2));
+    ev_defer_exec(_g_defer_exec_ev, idx, _defer_exec_nested_cb, NULL, NULL);
+    ATOMIC_SET(&_g_defer_exec_early, ATOMIC_GET(&_g_defer_exec_nested));
+}
+// 跨线程投到第 2 个 event 线程：在那条线程上跑，ev_cur_index 只认自己的 ev_ctx；
+// 回调里给本线程再投的只排队，留到下一轮才跑
+static void test_ev_defer_exec_run(CuTest *tc) {
+    ev_ctx ev, ev2;
+    int32_t i, outside;
+    ATOMIC_SET(&_g_defer_exec_idx, -2);
+    ATOMIC_SET(&_g_defer_exec_other, -2);
+    ATOMIC_SET(&_g_defer_exec_early, -1);
+    ATOMIC_SET(&_g_defer_exec_nested, 0);
+    ev_init(&ev, 2, NULL);
+    ev_init(&ev2, 1, NULL);
+    _g_defer_exec_ev = &ev;
+    _g_defer_exec_ev2 = &ev2;
+    outside = ev_cur_index(&ev);// 断言放 ev_free 之后，理由同 test_ev_close_in_acp_conn_deferred
+    ev_defer_exec(&ev, 1, _defer_exec_first_cb, NULL, NULL);
+    for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_defer_exec_nested); i++) {
+        MSLEEP(1);
+    }
+    ev_free(&ev2);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, INVALID_INDEX, outside);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_defer_exec_idx));
+    CuAssertIntEquals(tc, INVALID_INDEX, (int32_t)ATOMIC_GET(&_g_defer_exec_other));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_defer_exec_early));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_defer_exec_nested));
+}
+static void _defer_exec_never_cb(void *arg) {
+    (void)arg;
+    ATOMIC_ADD(&_g_defer_exec_never, 1);
+}
+static void _defer_exec_fcb(void *arg) {
+    ATOMIC_ADD((atomic_t *)arg, 1);
+}
+// 给本线程再投一个，然后占住线程直到主线程已调 ev_free(停止命令已入队)
+static void _defer_exec_hold_cb(void *arg) {
+    int32_t i;
+    (void)arg;
+    ev_defer_exec(_g_defer_exec_ev, 0, _defer_exec_never_cb, _defer_exec_fcb, (void *)&_g_defer_exec_freed);// arg 为 NULL 时不调 fcb
+    ATOMIC_SET(&_g_defer_exec_hold, 1);
+    for (i = 0; i < 2000 && 0 == (int32_t)ATOMIC_GET(&_g_defer_exec_go); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(200);// IOCP 的 ev_free 先停 AcceptEx 线程才投停止命令，多等一会儿
+}
+// 停机时还在投递队列里的回调不再跑，arg 交给 fcb 释放，且只放一次
+static void test_ev_defer_exec_free(CuTest *tc) {
+    ev_ctx ev;
+    int32_t i;
+    ATOMIC_SET(&_g_defer_exec_hold, 0);
+    ATOMIC_SET(&_g_defer_exec_go, 0);
+    ATOMIC_SET(&_g_defer_exec_never, 0);
+    ATOMIC_SET(&_g_defer_exec_freed, 0);
+    ev_init(&ev, 1, NULL);
+    _g_defer_exec_ev = &ev;
+    ev_defer_exec(&ev, 0, _defer_exec_hold_cb, NULL, NULL);
+    for (i = 0; i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_defer_exec_hold); i++) {
+        MSLEEP(1);
+    }
+    ATOMIC_SET(&_g_defer_exec_go, 1);
+    ev_free(&ev);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_defer_exec_hold));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_defer_exec_never));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_defer_exec_freed));
+}
+// 指定 watcher 用例：各下标那条连接的 conn_cb 跑在哪个 event 线程上(+1，0 表示还没跑)
+static atomic_t _g_launch_conn[2];
+static int32_t _launch_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud) {
+    (void)err; (void)ud;
+    if (sk->index >= 0 && sk->index < 2) {
+        ATOMIC_SET(&_g_launch_conn[sk->index], (atomic_t)(ev_cur_index(ev) + 1));
+    }
+    return ERR_OK;
+}
+static void _launch_on_recv(ev_ctx *ev, sock_ctx *sk,
+                            int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+}
+static void _launch_on_recvfrom(ev_ctx *ev, sock_ctx *sk,
+                                char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)buf; (void)size; (void)addr; (void)ud;
+}
+// ev_connect / ev_udp 指定 watcher：连接落在指定的 event 线程上，回调也在那条线程上跑
+static void test_ev_launch_index(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx lcbs, ccbs, ucbs;
+    sock_ctx sk[2], usk;
+    uint64_t id;
+    int32_t i, k;
+    ZERO(&lcbs, sizeof(lcbs));
+    lcbs.r_cb = _launch_on_recv;
+    ZERO(&ccbs, sizeof(ccbs));
+    ccbs.conn_cb = _launch_on_conn;
+    ccbs.r_cb = _launch_on_recv;
+    ZERO(&ucbs, sizeof(ucbs));
+    ucbs.rf_cb = _launch_on_recvfrom;
+    ATOMIC_SET(&_g_launch_conn[0], 0);
+    ATOMIC_SET(&_g_launch_conn[1], 0);
+    ev_init(&ev, 2, NULL);
+    CuAssertIntEquals(tc, ERR_OK, ev_listen(&ev, NULL, "127.0.0.1", LAUNCH_IDX_PORT, &lcbs, NULL, &id));
+    MSLEEP(50);// listen 落地是异步的
+    for (k = 0; k < 2; k++) {
+        CuAssertIntEquals(tc, ERR_OK, ev_connect(&ev, NULL, "127.0.0.1", LAUNCH_IDX_PORT, &ccbs, NULL, 0, k, &sk[k]));
+    }
+    CuAssertIntEquals(tc, ERR_OK, ev_udp(&ev, "127.0.0.1", LAUNCH_UDP_PORT, &ucbs, NULL, 1, &usk));
+    for (i = 0; i < 1000
+         && (0 == ATOMIC_GET(&_g_launch_conn[0]) || 0 == ATOMIC_GET(&_g_launch_conn[1])); i++) {
+        MSLEEP(1);
+    }
+    ev_close(&ev, &sk[0]);
+    ev_close(&ev, &sk[1]);
+    ev_close(&ev, &usk);
+    MSLEEP(50);
+    ev_free(&ev);
+    // 下标断言放 ev_free 之后，理由同 test_ev_close_in_acp_conn_deferred
+    CuAssertIntEquals(tc, 0, sk[0].index);
+    CuAssertIntEquals(tc, 1, sk[1].index);
+    CuAssertIntEquals(tc, 1, usk.index);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_launch_conn[0]));
+    CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&_g_launch_conn[1]));
 }
 #if 0 != CLOSE_LINGER_MS
 // 服务端关闭回调次数：用来确认"本端关闭"确实走完了，没有卡在等对端动
@@ -1078,6 +1531,16 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_close_type);
     SUITE_ADD_TEST(suite, test_ev_accept_opts);
     SUITE_ADD_TEST(suite, test_ev_udp_close_in_recv);
+    SUITE_ADD_TEST(suite, test_ev_close_in_recv_deferred);
+    SUITE_ADD_TEST(suite, test_ev_close_in_acp_conn_deferred);
+#if defined(EV_EPOLL)
+    SUITE_ADD_TEST(suite, test_ev_close_in_conn_fail);
+    SUITE_ADD_TEST(suite, test_ev_conn_fail_epoll_del);
+    SUITE_ADD_TEST(suite, test_ev_conn_fail_send);
+#endif
+    SUITE_ADD_TEST(suite, test_ev_defer_exec_run);
+    SUITE_ADD_TEST(suite, test_ev_defer_exec_free);
+    SUITE_ADD_TEST(suite, test_ev_launch_index);
 #if 0 != CLOSE_LINGER_MS
     SUITE_ADD_TEST(suite, test_ev_linger_late_data);
     SUITE_ADD_TEST(suite, test_ev_linger_timeout);

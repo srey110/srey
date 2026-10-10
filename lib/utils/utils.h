@@ -36,7 +36,7 @@ static inline uint16_t parse_svid(uint64_t id) {
 /// <returns>线程ID</returns>
 uint64_t threadid(void);
 /// <summary>
-/// 启coredump socket链接数限制
+/// 启coredump socket链接数限制；Windows 上注册崩溃时写 MiniDump，其余平台预先调一次 backtrace(理由见实现)
 /// </summary>
 void unlimit(void);
 /// <summary>

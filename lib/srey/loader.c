@@ -18,6 +18,9 @@ typedef struct _task_each_arg {
 }_task_each_arg;
 
 loader_ctx *g_loader; // 全局 loader 单例，由 loader_init 创建
+// 前向声明：绑定 task 在 net 线程上跑一轮也走它，而它末尾的重调度又要用到 _loader_task_schedule
+static void _loader_task_run(loader_ctx *loader, int32_t weight,
+    worker_version *version, task_dispatch_arg *runarg, message_ctx *msgbatch);
 
 // 哈希表元素析构回调：通过任务名指针反推 task_ctx 并释放
 static void _loader_task_free(void *item) {
@@ -32,17 +35,19 @@ static void _loader_slot_reg(rwlock_distr_ctx *lck, const char *which) {
 }
 // 线程 init / exit 钩子,thread_creat_hooks 在业务回调前后各调一次。
 // 只管 loader 自己的线程级状态(slot、coro 缓存);与 loader 无关的线程级缓存(如 buffer 备用节点)
-// 挂 main 注册的 thread_global_hooks,对所有线程生效。base 供 net / acpex / tw 用,不跑 Lua 故不要 lckcache slot
+// 挂 main 注册的 thread_global_hooks,对所有线程生效。base 只给时间轮线程用,
+// 不跑 Lua 故不要 lckcache slot
 static void _loader_hook_init_base(void *udata, void *assist) {
     (void)udata;
     _loader_slot_reg(&((loader_ctx *)assist)->lckmaptasks, "maptasks");
 }
 static void _loader_hook_exit_base(void *udata, void *assist) {
     (void)udata;
+    coro_thread_cleanup();
     rwlock_distr_unregister(&((loader_ctx *)assist)->lckmaptasks);
 }
-// worker 钩子:base 之外多一把 lckcache slot(只有 worker 加载脚本与 require 访问字节码缓存)
-// 与 coro 的线程级缓存;退出顺序与进入相反
+// worker 钩子:base 之外多一把 lckcache slot(加载脚本与 require 访问字节码缓存);退出顺序与进入相反。
+// net 线程也挂它：上面可能跑绑定的 Lua task 与协程。ev_init 给 Windows 的 AcceptEx 线程的也是这一组
 static void _loader_hook_init_worker(void *udata, void *assist) {
     _loader_hook_init_base(udata, assist);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
@@ -53,7 +58,6 @@ static void _loader_hook_exit_worker(void *udata, void *assist) {
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
     rwlock_distr_unregister(&((loader_ctx *)assist)->lckcache);
 #endif
-    coro_thread_cleanup();
     _loader_hook_exit_base(udata, assist);
 }
 // 唤醒所有处于等待状态的工作线程（用于 loader_free 时通知退出）
@@ -118,17 +122,62 @@ static inline void _loader_worker_wakeup(loader_ctx *loader, task_ctx *task) {
         cond_signal(&worker->cond);
     }
 }
+static void _loader_evtask_free(void *arg) {
+    task_ungrab((task_ctx *)arg);
+}
+#if 0 != EVTASK_SLOW_MS
+// 绑定 task 在第 idx 个 net 线程上从 t0(timer_cur_ms)跑到现在，超阈值告警。整轮与收包当场处理共用
+static inline void _loader_evslow_check(loader_ctx *loader, task_ctx *task, int32_t idx, uint64_t t0) {
+    uint64_t cost = timer_cur_ms(&loader->timer) - t0;
+    if (tda_check(&loader->evslow[idx], (size_t)cost)) {
+        LOG_WARN("task %s ran %" PRIu64 "ms in one round on net thread %d, every connection there waited.",
+                 _NAME_OR(task->name), cost, idx);
+    }
+}
+#endif
+// 绑定 task 在它的 net 线程上跑一轮：weight 取 0 吃掉当时全部积压，跑时新进的由 _loader_task_run 末尾重投到下一轮
+static void _loader_evtask_run(void *arg) {
+    task_ctx *task = (task_ctx *)arg;
+    loader_ctx *loader = task->loader;
+    int32_t idx = ev_cur_index(&loader->netev);
+    task_dispatch_arg runarg;
+    message_ctx msgbatch[TASK_MSG_BATCH];
+#if 0 != EVTASK_SLOW_MS
+    uint64_t t0;
+#endif
+    ASSERTAB(idx >= 0, "evtask must run on a net thread.");// 否则会写到某个 worker 的 monitor 槽
+    runarg.task = task;
+#if 0 != EVTASK_SLOW_MS
+    t0 = timer_cur_ms(&loader->timer);
+#endif
+    _loader_task_run(loader, 0, &loader->monitor.version[loader->nworker + idx], &runarg, msgbatch);
+#if 0 != EVTASK_SLOW_MS
+    _loader_evslow_check(loader, task, idx, t0);
+#endif
+    task_ungrab(task);
+}
+// 调度一个刚抢到 global 的 task：绑了 net 线程就投给那条线程，否则照旧给 worker。
+// evbind 只在抢到 global 之后读，改绑随时可调，最多影响下一轮
+static inline void _loader_task_schedule(loader_ctx *loader, task_ctx *task) {
+    int32_t bind = (int32_t)ATOMIC_GET_RELAXED(&task->evbind);
+    if (0 != bind) {
+        task_incref(task);// 在途引用由投递持有，与 _loader_evtask_run / _loader_evtask_free 配对
+        ev_defer_exec(&loader->netev, bind - 1, _loader_evtask_run, _loader_evtask_free, task);
+        return;
+    }
+    _loader_worker_wakeup(loader, task);
+}
 // 只入队，不触发调度；一次解出多个包时由调用方在末尾统一 _task_message_active 一次。
 // 队列按值存 message_ctx：存指针要另配一个所有线程共抢的对象池（每条消息一取一还），
 // 消费侧还得解引用一次生产者线程写的堆对象，白吃一次跨核 cache miss
 void _task_message_push(task_ctx *task, message_ctx *msg) {
     msgq_push(&task->qumsg, msg);
 }
-// 触发调度：队列非空而尚未被调度时唤醒一个 worker
+// 触发调度：队列非空而尚未被调度时交给 worker(绑定的交给它的 net 线程)
 void _task_message_active(task_ctx *task) {
     // CAS 0→1：只有首个生产者负责调度，避免重复唤醒
     if (ATOMIC_CAS(&task->global, 0, 1)) {
-        _loader_worker_wakeup(task->loader, task);
+        _loader_task_schedule(task->loader, task);
     }
 }
 // 入队并触发调度；非网络生产者（超时、请求、响应、广播）都走这个
@@ -181,11 +230,11 @@ static inline task_ctx *_loader_task_get(loader_ctx *loader, worker_ctx *worker,
     }
     return NULL;
 }
-// 本轮该消费几条：worker.weight 定基数（lens >> weight，-1 固定 1 条），
+// 本轮该消费几条：weight 定基数（lens >> weight，-1 固定 1 条；worker 取自己的 weight，net 线程取 0），
 // task.priority 再以基数的 1/8 为单位加成（每 +8 翻倍，每 +1 约 +12.5%，
 // 0 走快路径），结果夹在 [1, lens]
-static inline uint32_t _loader_msg_quota(worker_ctx *worker, task_ctx *task, uint32_t lens) {
-    uint32_t n_base = worker->weight >= 0 ? (lens >> worker->weight) : 1;
+static inline uint32_t _loader_msg_quota(int32_t weight, task_ctx *task, uint32_t lens) {
+    uint32_t n_base = weight >= 0 ? (lens >> weight) : 1;
     atomic_t prio = ATOMIC_GET(&task->priority);
     uint32_t n = (0 == prio) ? n_base : n_base + (uint32_t)(((uint64_t)n_base * prio) >> 3);
     if (n > lens) {
@@ -193,22 +242,64 @@ static inline uint32_t _loader_msg_quota(worker_ctx *worker, task_ctx *task, uin
     }
     return (0 == n) ? 1 : n;
 }
+// 一轮跑完交出调度权：round_end、清 msgtype、global 1→0 后队列里还有就重投。worker、net 线程与内联直调共用
+static inline void _loader_task_release(loader_ctx *loader, task_ctx *task, worker_version *version) {
+    // 必须在 CAS global 1→0 之前：交出调度权后别的线程可能同时进来
+    if (NULL != task->_round_end) {
+        task->_round_end(task);
+    }
+    // 退出 dispatch 进入空闲，清 msgtype 让 monitor 区分"卡死"与"空闲"
+    ATOMIC_SET_RELAXED(&version->msgtype, MSG_TYPE_NONE);
+    // 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
+    // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
+    // 两步均为 seq_cst 原子操作，保证不丢消息。
+    ATOMIC_CAS(&task->global, 1, 0);
+    if (!msgq_empty(&task->qumsg)) {
+        if (ATOMIC_CAS(&task->global, 0, 1)) {
+            _loader_task_schedule(loader, task);
+        }
+    }
+}
+// 分发统计的计时起点；没开统计恒为 0
+static inline uint64_t _loader_stat_now(void) {
+#if ENABLE_DISPATCH_STAT
+    return timer_thread_cpu_ns();
+#else
+    return 0;
+#endif
+}
+// 分发 runarg->msg 这一条：先记 monitor 的版本号与消息类型，再调分发函数。
+// t0 是本条的计时起点，返回结束时刻给同批下一条当起点(省一次取时钟)；没开统计时恒为 0
+static inline uint64_t _loader_dispatch_one(task_ctx *task, worker_version *version,
+    task_dispatch_arg *runarg, uint64_t t0) {
+    msg_type mtype = runarg->msg->mtype;
+    ATOMIC_ADD_RELAXED(&version->ver, 1);
+    ATOMIC_SET_RELAXED(&version->msgtype, mtype);
+    task->_task_dispatch(runarg);
+#if ENABLE_DISPATCH_STAT
+    uint64_t t1 = _loader_stat_now();
+    task->dispatch_cpu_ns[mtype] += t1 - t0;
+    ++task->nmsg[mtype];
+    return t1;
+#else
+    (void)t0;
+    return 0;
+#endif
+}
 // 从任务消息队列批量取出消息并依次分发，处理完成后重调度或清除调度标志
-static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
+static void _loader_task_run(loader_ctx *loader, int32_t weight,
     worker_version *version, task_dispatch_arg *runarg, message_ctx *msgbatch) {
     task_ctx *task = runarg->task;
     uint32_t lens = msgq_size(&task->qumsg);
     if (tda_check(&task->tda, lens)) {
         LOG_WARN("task %s overload, message queue length %u.", _NAME_OR(task->name), lens);
     }
-    uint32_t n = _loader_msg_quota(worker, task, lens);
+    uint32_t n = _loader_msg_quota(weight, task, lens);
     uint32_t want, got, k, processed = 0;
-#if ENABLE_DISPATCH_STAT
-    uint64_t t0, t1;
-#endif
-    // version 是每 worker 独占的单写者字段, monitor 每 5s 才读一次, 用 RELAXED 换掉不必要的 seq_cst 屏障
+    uint64_t t0;
+    // version 是每个线程独占的单写者字段, monitor 每 5s 才读一次, 用 RELAXED 换掉不必要的 seq_cst 屏障
     ATOMIC64_SET_RELAXED(&version->handle, task->handle);
-    // task->global CAS 保证同 task 同一时刻仅一个 worker 调度，qumsg 是单消费者，走 pop_sc_batch
+    // task->global CAS 保证同 task 同一时刻仅一个线程调度，qumsg 是单消费者，走 pop_sc_batch
     while (processed < n) {
         want = n - processed;
         if (want > TASK_MSG_BATCH) {
@@ -218,40 +309,44 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
         if (0 == got) {
             break;
         }
-#if ENABLE_DISPATCH_STAT
-        t0 = timer_thread_cpu_ns();
-#endif
+        t0 = _loader_stat_now();
         for (k = 0; k < got; k++) {
             runarg->msg = &msgbatch[k];
-            ATOMIC_ADD_RELAXED(&version->ver, 1);
-            ATOMIC_SET_RELAXED(&version->msgtype, runarg->msg->mtype);
-#if ENABLE_DISPATCH_STAT
-            task->_task_dispatch(runarg);
-            t1 = timer_thread_cpu_ns();
-            task->dispatch_cpu_ns[runarg->msg->mtype] += t1 - t0;
-            t0 = t1;
-            ++task->nmsg[runarg->msg->mtype];
-#else
-            task->_task_dispatch(runarg);
-#endif
+            t0 = _loader_dispatch_one(task, version, runarg, t0);
         }
         processed += got;
     }
-    // 必须在 CAS global 1→0 之前：交出调度权后别的 worker 可能同时进来
-    if (NULL != task->_round_end) {
-        task->_round_end(task);
+    _loader_task_release(loader, task, version);
+}
+int32_t _loader_task_try_run(task_ctx *task, message_ctx *msg) {
+    loader_ctx *loader = task->loader;
+    int32_t idx = ev_cur_index(&loader->netev);
+    worker_version *version;
+    task_dispatch_arg runarg;
+#if 0 != EVTASK_SLOW_MS
+    uint64_t t0;
+#endif
+    // 它在本线程上还有没跑完的消息(含同一连接先推的)就得排在后面。判空只需看见本线程自己推的，
+    // 别的线程推的与这条谁先谁后本来就不保证，故用不拿锁的 empty_fast
+    if (idx < 0
+        || ATOMIC_GET_RELAXED(&task->evbind) != (atomic_t)(idx + 1)
+        || !msgq_empty_fast(&task->qumsg)
+        || !ATOMIC_CAS(&task->global, 0, 1)) {
+        return ERR_FAILED;
     }
-    // worker 退出 dispatch 进入空闲，清 msgtype 让 monitor 区分"卡死"与"空闲"
-    ATOMIC_SET_RELAXED(&version->msgtype, MSG_TYPE_NONE);
-    // 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
-    // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
-    // 两步均为 seq_cst 原子操作，保证不丢消息。
-    ATOMIC_CAS(&task->global, 1, 0);
-    if (!msgq_empty(&task->qumsg)) {
-        if (ATOMIC_CAS(&task->global, 0, 1)) {
-            _loader_worker_wakeup(loader, task);
-        }
-    }
+    version = &loader->monitor.version[loader->nworker + idx];
+    ATOMIC64_SET_RELAXED(&version->handle, task->handle);
+    runarg.task = task;
+    runarg.msg = msg;
+#if 0 != EVTASK_SLOW_MS
+    t0 = timer_cur_ms(&loader->timer);
+#endif
+    (void)_loader_dispatch_one(task, version, &runarg, _loader_stat_now());
+    _loader_task_release(loader, task, version);
+#if 0 != EVTASK_SLOW_MS
+    _loader_evslow_check(loader, task, idx, t0);
+#endif
+    return ERR_OK;
 }
 // 按本次"进入空闲到活真正到来"的间隔 gap(纳秒)更新间隔估计：每次挪 1/4。
 // gap 先截到 2 倍上限：再长也一样是转不过去,免得一次长空闲后要几十次才缓回来
@@ -356,7 +451,7 @@ static void _loader_worker_loop(void *arg) {
             }
             runarg.task = task;
             // 执行
-            _loader_task_run(loader, worker, version, &runarg, msgbatch);
+            _loader_task_run(loader, worker->weight, version, &runarg, msgbatch);
             task_ungrab(task);
             continue;
         }
@@ -383,13 +478,15 @@ static void _loader_worker_loop(void *arg) {
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
-// 检查各工作线程是否卡死（消息版本号未变化且仍有消息在处理）
+// 检查各工作线程与 net 线程是否卡死（消息版本号未变化且仍有消息在处理）。
+// 版本槽前 nworker 个归 worker，其后 nnet 个归跑绑定 task 的 net 线程
 static void _loader_monitor_check(loader_ctx *loader) {
     int32_t ver;
     worker_version *version;
     name_t handle;
     task_ctx *task;
-    for (uint16_t i = 0; i < loader->nworker; i++) {
+    uint32_t n = (uint32_t)loader->nworker + loader->nnet;
+    for (uint32_t i = 0; i < n; i++) {
         version = &loader->monitor.version[i];
         ver = (int32_t)ATOMIC_GET(&version->ver);
         if (version->ckver == ver
@@ -434,20 +531,21 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     evssl_pool_init();
 #endif
     loader->nworker = 0 == nworker ? procscnt() : nworker;
+    loader->nnet = 0 == nnet ? (uint16_t)procscnt() : nnet;
     timer_init(&loader->timer);
     CALLOC(loader->worker, 1, sizeof(worker_ctx) * loader->nworker);
-    CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
+    CALLOC(loader->monitor.version, 1, sizeof(worker_version) * ((size_t)loader->nworker + loader->nnet));
     mutex_init(&loader->monitor.mutex);
     cond_init(&loader->monitor.cond);
     mutex_init(&loader->closing_mutex);
     cond_init(&loader->closing_cond);
     // 槽位要覆盖全部注册方而不只是 worker：net 线程 nnet 个、时间轮 1 个、Windows 的 AcceptEx
-    // 线程最多 2 个(iocp.c 的 nacpex)，它们都挂 hooks_base 注册这把锁。少算了就有线程 register
+    // 线程最多 2 个(iocp.c 的 nacpex)，它们挂的 hooks_worker / hooks_base 都注册这把锁。少算了就有线程 register
     // 失败、此后每次 task_grab 都退化去抢 fallback 那把共享读写锁，分布式读锁白建
-    uint32_t nreg = (uint32_t)loader->nworker + (0 == nnet ? procscnt() : (uint32_t)nnet) + 3;
+    uint32_t nreg = (uint32_t)loader->nworker + loader->nnet + 3;
     rwlock_distr_init(&loader->lckmaptasks, nreg);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
-    rwlock_distr_init(&loader->lckcache, (uint32_t)loader->nworker + 3);
+    rwlock_distr_init(&loader->lckcache, (uint32_t)loader->nworker + loader->nnet + 3);
 #endif
     const thread_hooks hooks_worker = {
         _loader_hook_init_worker, _loader_hook_exit_worker, loader
@@ -455,20 +553,20 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     const thread_hooks hooks_base = {
         _loader_hook_init_base, _loader_hook_exit_base, loader
     };
+    CALLOC(loader->evslow, loader->nnet, sizeof(tda_ctx));
+    for (uint16_t k = 0; k < loader->nnet; k++) {
+        tda_init(&loader->evslow[k], EVTASK_SLOW_MS);
+    }
     loader->maptasks = task_map_new(ONEK, _loader_task_free);
     loader->mapnames = tname_map_new(ONEK, NULL);
     loader->monitor.thread_monitor = thread_creat(_loader_monitor_loop, loader);
     // 每轮处理消息数 = lens >> weight（-1 是特例，固定 1 条），故 weight 越大越保守：
     //   -1: 1 条    0: 全量    1: lens/2    2: lens/4    3: lens/8
     int32_t weights[] = {
-        3, 1, 2, -1,
-        0, 0, 0, 0,
-        1, 1, 1, 1,
-        2, 2, 2, 2,
-        3, 3, 3, 3,
-        1, 1, 1, 1,
-        2, 2, 2, 2,
-        3, 3, 3, 3,
+        3, 1, 2, -1, 0, 0, 0, 0,
+        1, 1, 1, 1, 2, 2, 2, 2,
+        3, 3, 3, 3, 1, 1, 1, 1,
+        2, 2, 2, 2, 3, 3, 3, 3
     };
     worker_ctx *worker;
     uint16_t i, wn = ARRAY_SIZE(weights);
@@ -490,8 +588,11 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
         worker->thread_worker = thread_creat_hooks(_loader_worker_loop, hooks_worker.init, hooks_worker.exit, worker, hooks_worker.assist);
     }
     tw_init(&loader->tw, twcap, &hooks_base);
-    ev_init(&loader->netev, nnet, &hooks_base);
+    ev_init(&loader->netev, loader->nnet, &hooks_worker);
     return loader;
+}
+uint32_t loader_nnet(loader_ctx *loader) {
+    return loader->nnet;
 }
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
 rwlock_distr_ctx *loader_lckcache(loader_ctx *loader) {
@@ -601,5 +702,6 @@ void loader_free(loader_ctx *loader) {
 #endif
     FREE(loader->worker);
     FREE(loader->monitor.version);
+    FREE(loader->evslow);
     FREE(loader);
 }

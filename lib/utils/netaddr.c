@@ -158,7 +158,12 @@ int32_t netaddr_compare(netaddr_ctx *a, netaddr_ctx *b) {
             return ERR_FAILED;
         }
     } else {
+        // scope_id 区分链路本地地址在哪块网卡上。只在两边都给了时才比：netaddr_set 解析不了 "%网卡"
+        // 后缀、恒为 0，拿它跟内核收包带回的网卡号比就永远对不上
         if (a->ipv6.sin6_port != b->ipv6.sin6_port
+            || (0 != a->ipv6.sin6_scope_id
+                && 0 != b->ipv6.sin6_scope_id
+                && a->ipv6.sin6_scope_id != b->ipv6.sin6_scope_id)
             || 0 != memcmp(&a->ipv6.sin6_addr, &b->ipv6.sin6_addr, sizeof(a->ipv6.sin6_addr))) {
             return ERR_FAILED;
         }

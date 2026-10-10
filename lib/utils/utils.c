@@ -11,7 +11,6 @@
     #define CSPRNG_GETRANDOM 0
 #endif
 #ifdef OS_WIN
-#pragma comment(lib, "Dbghelp.lib" )
 #pragma comment(lib, "Bcrypt.lib")
 // MiniDump 提权用的 OpenProcessToken / AdjustTokenPrivileges 等出自这里。
 // WITH_SSL 时它由 OpenSSL 那组 pragma 顺带链上,关掉就缺,故本文件自己声明
@@ -170,6 +169,11 @@ void unlimit(void) {
     SetUnhandledExceptionFilter(_MiniDump);
 #else
     struct rlimit stnew;
+#ifdef HAVE_BACKTRACE
+    void *frame;
+    // glibc 首次调 backtrace 要加载 libgcc_s，会分配内存。先调一次，OOM 时 stack_print 才打得出栈
+    (void)backtrace(&frame, 1);
+#endif
     stnew.rlim_cur = stnew.rlim_max = RLIM_INFINITY;
     if (ERR_OK != setrlimit(RLIMIT_CORE, &stnew)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -776,10 +780,17 @@ static int32_t _rand_urandom(void *buf, size_t len) {
 #endif
 int32_t csprng_rand(void *buf, size_t len) {
 #if defined(OS_WIN)
-    /* Windows：BCryptGenRandom 使用系统首选 CSPRNG，不依赖进程安全句柄。*/
-    if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)len,
-                                        BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
-        return ERR_FAILED;
+    /* Windows：BCryptGenRandom 使用系统首选 CSPRNG，不依赖进程安全句柄。
+     * 长度参数是 ULONG，超过的分段取，直接强转会截断、剩下的字节没填却报成功 */
+    PUCHAR p = (PUCHAR)buf;
+    ULONG n;
+    while (len > 0) {
+        n = len > ULONG_MAX ? ULONG_MAX : (ULONG)len;
+        if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, p, n, BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+            return ERR_FAILED;
+        }
+        p += n;
+        len -= n;
     }
     return ERR_OK;
 #elif defined(OS_DARWIN) || defined(OS_BSD)

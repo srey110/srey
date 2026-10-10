@@ -91,6 +91,43 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
     pipe[1] = client;
     return ERR_OK;
 }
+#else
+// posix_spawn 起 "sh -c cmd"，r / w 时把标准流接到 fd。自成进程组(pgid == 子进程 pid)，popen_close 才能用
+// kill(-pgid) 连 sh 派生的孙进程一起杀，只杀 sh 的话 "a | b" 会把 a/b 留成孤儿。
+// 每一步都查返回值，哪步失败都不起子进程，免得带着没设好的重定向跑起来；返回 0 或错误码
+static int32_t _popen_spawn(pid_t *pid, const char *cmd, int32_t r, int32_t w, SOCKET fd) {
+    posix_spawn_file_actions_t acts;
+    posix_spawnattr_t attr;
+    char *argv[] = { "sh", "-c", (char *)cmd, NULL };
+    int32_t err = posix_spawn_file_actions_init(&acts);
+    if (0 != err) {
+        return err;
+    }
+    err = posix_spawnattr_init(&attr);
+    if (0 != err) {
+        posix_spawn_file_actions_destroy(&acts);
+        return err;
+    }
+    err = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    if (0 == err) {
+        err = posix_spawnattr_setpgroup(&attr, 0);
+    }
+    if (0 == err && w) {
+        err = posix_spawn_file_actions_adddup2(&acts, fd, STDIN_FILENO);
+    }
+    if (0 == err && r) {
+        err = posix_spawn_file_actions_adddup2(&acts, fd, STDOUT_FILENO);
+    }
+    if (0 == err && r) {
+        err = posix_spawn_file_actions_adddup2(&acts, fd, STDERR_FILENO);
+    }
+    if (0 == err) {
+        err = posix_spawn(pid, "/bin/sh", &acts, &attr, argv, environ);
+    }
+    posix_spawn_file_actions_destroy(&acts);
+    posix_spawnattr_destroy(&attr);
+    return err;
+}
 #endif
 int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     // 必须在所有失败路径之前 ZERO,失败时调用方走 popen_free/popen_close 兜底能读到 NULL/INVALID 终止
@@ -116,13 +153,11 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     startup.cb = sizeof(STARTUPINFO);
     startup.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
     startup.wShowWindow = SW_HIDE;
-    if (w) {
-        startup.hStdInput = ctx->pipe[0];//子进程标准输入重定向到管道
-    }
-    if (r) {
-        startup.hStdError = ctx->pipe[0];//子进程标准错误重定向到管道
-        startup.hStdOutput = ctx->pipe[0];//子进程标准输出重定向到管道
-    }
+    // 设了 STARTF_USESTDHANDLES 三个句柄就都按这里给的来：没重定向的那几个沿用本进程的，同 POSIX 侧继承；
+    // 留 NULL 的话那一路不跟随本进程的重定向
+    startup.hStdInput = w ? ctx->pipe[0] : GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = r ? ctx->pipe[0] : GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = r ? ctx->pipe[0] : GetStdHandle(STD_ERROR_HANDLE);
     ctx->job = CreateJobObject(NULL, NULL);
     if (!CreateProcess(NULL,
                       TEXT((char *)cmd),
@@ -151,7 +186,7 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     }
     CLOSE_HANDLE(ctx->pipe[0]);
 #else
-    SOCKET sock[2];
+    SOCKET sock[2] = { INVALID_SOCK, INVALID_SOCK };
     if (r || w) {
         // AF_UNIX socketpair：进程私有、不耗端口，close 带未读数据是干净 EOF（TCP 环回会发 RST 破坏 popen_read 的 eof 语义）。
         // 建好后由下面那句 sock_nonblock 转为非阻塞——阻塞的话子进程不读就会把派发线程挂住
@@ -169,26 +204,8 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
             return ERR_FAILED;
         }
     }
-    //自成进程组(pgid == 子进程 pid),popen_close 才能用 kill(-pgid) 连 sh 派生的孙进程一起杀。
-    //只杀 sh 的话 "a | b" 这种复合命令会把 a/b 留成孤儿。进程组与标准流都由 posix_spawn 在 exec 前设好
-    posix_spawn_file_actions_t acts;
-    posix_spawnattr_t attr;
-    char *argv[] = { "sh", "-c", (char *)cmd, NULL };
     pid_t pid;
-    posix_spawn_file_actions_init(&acts);
-    posix_spawnattr_init(&attr);
-    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
-    posix_spawnattr_setpgroup(&attr, 0);
-    if (w) {
-        posix_spawn_file_actions_adddup2(&acts, sock[0], STDIN_FILENO);
-    }
-    if (r) {
-        posix_spawn_file_actions_adddup2(&acts, sock[0], STDOUT_FILENO);
-        posix_spawn_file_actions_adddup2(&acts, sock[0], STDERR_FILENO);
-    }
-    int32_t err = posix_spawn(&pid, "/bin/sh", &acts, &attr, argv, environ);
-    posix_spawn_file_actions_destroy(&acts);
-    posix_spawnattr_destroy(&attr);
+    int32_t err = _popen_spawn(&pid, cmd, r, w, sock[0]);
     if (0 != err) {
         LOG_ERROR("%s", ERRORSTR(err));
         if (r || w) {
@@ -379,7 +396,8 @@ int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
     if (NULL == ctx->process.hProcess) {
         return ERR_OK;
     }
-    if (WAIT_TIMEOUT == WaitForSingleObject(ctx->process.hProcess, (DWORD)ms)) {
+    // 超时与 WAIT_FAILED 都不算退出
+    if (WAIT_OBJECT_0 != WaitForSingleObject(ctx->process.hProcess, (DWORD)ms)) {
         return ERR_FAILED;
     }
     return ERR_OK;

@@ -46,6 +46,7 @@ static void _iocp_init_callback(void) {
     cmd_cbs[CMD_ADD] = _on_cmd_add;
     cmd_cbs[CMD_SENDTO] = _on_cmd_sendto;
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
+    cmd_cbs[CMD_DEFER_EXEC] = _on_cmd_defer_exec;
 }
 // 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
 static void _iocp_init_funcs(void) {
@@ -125,7 +126,8 @@ static inline int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint6
     if (0 == *drain_deadline) {
         *drain_deadline = now + IOCP_STOP_DRAIN_TIMEOUT;
     } else if (now >= *drain_deadline) {
-        // 超时兜底:仍有 socket 未从 map 摘除,说明有 close 后未被完成回调移除的 socket(程序 bug),告警后退出防挂死
+        // 超时兜底:仍有 socket 未从 map 摘除,说明有 close 后未被完成回调移除的 socket(程序 bug),告警后退出防挂死；
+        // 剩下的 socket 不释放，见 _iocp_free_watcher
         LOG_ERROR("watcher %d stop drain timeout, %u socket(s) still in map (possible leak/bug).",
             watcher->index, sockel_map_size(watcher->element));
         return 1;
@@ -139,6 +141,7 @@ static void _iocp_loop_event(void *arg) {
     int32_t err, stop;
     ULONG i, count, nevent = INIT_EVENTS_CNT;
     evsock_ctx *evsk;
+    size_t ndone;
     uint32_t shrink_cnt = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
     uint64_t now_ms;
@@ -159,7 +162,12 @@ static void _iocp_loop_event(void *arg) {
         // 停止后进等待前不再抽，残留由 ev_free 收
         if (0 == stop) {
             ATOMIC_SET(&watcher->cmd.wake_pending, 0);
-            if (0 != _iocp_cmd_drain(watcher)) {
+            ndone = _iocp_cmd_drain(watcher);
+            // 投来的回调跟命令一起在这里跑：派发完与超时返回都会回到这里。抽到 CMD_STOP 就不跑，留给 ev_free 走 fcb
+            if (0 == ATOMIC_GET(&watcher->stop)) {
+                ndone += _evpub_defer_exec_drain(watcher);
+            }
+            if (0 != ndone) {
                 _iocp_flush_pending(watcher);
                 // 抽到的可能正是 CMD_STOP：回循环顶交给 _iocp_check_stop，别带着旧超时进等待
                 if (0 != ATOMIC_GET(&watcher->stop)) {
@@ -167,6 +175,9 @@ static void _iocp_loop_event(void *arg) {
                 }
                 // 这批命令可能新挂了 tick，重算等待超时才能按时叫醒它
                 next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
+            }
+            if (0 != _evpub_defer_exec_pending(watcher)) {
+                next_to = 0;// 回调里新投的下一轮立刻跑
             }
         }
         ok = GetQueuedCompletionStatusEx(watcher->iocp,
@@ -185,7 +196,7 @@ static void _iocp_loop_event(void *arg) {
                 evsk = UPCAST(overlap, evsock_ctx, overlapped);
                 evsk->ev_cb(watcher, evsk, overlappeds[i].dwNumberOfBytesTransferred);
             }
-            // 本轮派发完统一冲。与 uev 不同，IOCP 只在派发后与进等待前抽到命令时冲，超时返回不冲，
+            // 本轮派发完统一冲。与 uev 不同，IOCP 只在派发后与进等待前抽到命令、跑过投递时冲，超时返回不冲，
             // 故 tick 回调不得触发明文攒发
             _iocp_flush_pending(watcher);
             if (count == nevent
@@ -304,6 +315,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);
         list_init(&watcher->ticks);
+        defer_exec_que_init(&watcher->defer_execs, 0);
         list_init(&watcher->flushes);
         list_init(&watcher->lingers);
         watcher->linger_tick.cb = NULL;
@@ -378,6 +390,12 @@ static void _iocp_free_watcher(ev_ctx *ctx) {
         watcher = &ctx->watcher[i];
         (void)CloseHandle(watcher->iocp);
         _iocp_free_cmd(watcher);
+        _evpub_defer_exec_free(watcher);
+        // map 没排空说明是排空超时退出的：剩下的 socket 可能还有没完成的 IRP，内核之后还会写它的 OVERLAPPED。
+        // 宁可泄漏也不释放(同监听对象的处理)，内存检查会把这份泄漏报出来
+        if (0 != sockel_map_size(watcher->element)) {
+            watcher->element->elfree = NULL;
+        }
         sockel_map_free(watcher->element);
         pool_free(&watcher->pool);
     }

@@ -100,7 +100,7 @@ uint16_t netaddr_port(netaddr_ctx *ctx);
 /// <returns>AF_INET 或 AF_INET6</returns>
 int32_t netaddr_family(netaddr_ctx *ctx);
 /// <summary>
-/// 比较两个网络地址（family+IP+端口）是否相同
+/// 比较两个网络地址（family+IP+端口）是否相同。IPv6 两边的 scope_id 都非 0 时另比 scope_id，有一边是 0(没指定网卡)就不比
 /// </summary>
 /// <param name="a">netaddr_ctx</param>
 /// <param name="b">netaddr_ctx</param>

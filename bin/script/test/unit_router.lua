@@ -7,6 +7,8 @@ local runner = require("test.runner")
 
 -- 第 10 节真监听的端口。测试模块并发跑，端口必须全仓唯一，新端口先 grep 再定
 local ROUTER_PORT = 15061
+-- 10.1 节 HEAD 带 chunked 收 411 的监听端口，同上须全仓唯一
+local ROUTER_HEAD_PORT = 15062
 
 -- ── mock lib.http（必须在 require advance.router 之前） ────────────────────
 local last_resp
@@ -84,6 +86,10 @@ srey.watch_closed = function(_)
 end
 
 local Route = require("advance.router")
+-- 10.1 节要看线缆上的真字节：摘掉 mock 再加载一份接真 lib.http 的 router，加载完两份都放回原样
+package.loaded["lib.http"], package.loaded["advance.router"] = nil, nil
+local RealRoute = require("advance.router")
+package.loaded["lib.http"], package.loaded["advance.router"] = mock_http, Route
 -- router 的 match_pack 直接读 C 的 http_pack_ctx，这里的假包是 Lua 表：给 C 路由器的方法表
 -- 换一个按假包走 match 的同形版本（返回值形状见 lrouter.c 的 match_pack：空的查询 / 路径参数给 nil）。
 -- 真实现留一份给第 10 节：起真监听收真包，验 C 侧返回值与 router 按位置解构对得上
@@ -1608,6 +1614,63 @@ runner.run(function(t)
         end
         if csk and csk.valid then
             _real_close(csk)
+        end
+        if ERR_FAILED ~= lid then
+            srey.unlisten(lid)
+        end
+    end
+
+    -- 10.1 HEAD 带 chunked 打普通路由 → 411 只发头、发完关连接（同 9.3，这里看真字节）。
+    -- 客户端用裸连接收到关闭为止：HTTP 解包会按 Content-Length 一直等报文体
+    do
+        local hr = RealRoute.new()
+        hr:get("/plain", function(ctx) ctx:text(200, "ok") end)
+        local mock_close = srey.close
+        local hsk, cerro, herr
+        srey.on_recved(function(pktype, sk, client, slice, data, size)
+            if PACK_TYPE.HTTP ~= pktype or 0 ~= client then
+                return
+            end
+            -- 模块头把 C 路由器的 match_pack 与 srey.close 都换成了假的，派发期间换回真的
+            srey.close, _c_router_mt.match_pack = _real_close, _real_match_pack
+            local ok, err = pcall(hr.net_recv, hr, pktype, sk, client, slice, data, size)
+            srey.close, _c_router_mt.match_pack = mock_close, _shim_match_pack
+            if not ok and nil == herr then
+                herr = tostring(err)-- 留第一处报错，回到主流程再断言
+            end
+        end)
+        srey.on_closed(function(_, sk, _, erro)
+            if hsk == sk then
+                cerro = erro
+            end
+        end)
+        local lid = srey.listen(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", ROUTER_HEAD_PORT)
+        hsk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", ROUTER_HEAD_PORT)
+        if t:check(ERR_FAILED ~= lid and hsk and hsk.valid, "真监听连上 " .. ROUTER_HEAD_PORT) then
+            local raw = "HEAD /plain HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"
+            local txt = ""
+            local rsp, rlen = srey.syn_send(hsk, raw, #raw, 1)
+            while rsp do
+                txt = txt .. srey.ud_str(rsp, rlen)
+                rsp, rlen = srey.syn_recv(hsk)
+            end
+            t:check(nil == herr, "HEAD 带 chunked 派发不抛错: " .. tostring(herr))
+            t:eq("HTTP/1.1 411", txt:sub(1, 12), "HEAD 带 chunked 打普通路由 → 411")
+            local hend = string.find(txt, "\r\n\r\n", 1, true)
+            if t:check(nil ~= hend, "HEAD 的 411 响应头收齐") then
+                t:eq(hend + 3, #txt, "HEAD 的 411 头后没有报文体")
+            end
+            -- syn_recv 返 nil 也可能是读超时：等到客户端这侧的 CLOSE 才算服务端关了
+            for _ = 1, 100 do
+                if nil ~= cerro then
+                    break
+                end
+                srey.sleep(20)
+            end
+            t:check(nil ~= cerro, "HEAD 的 411 后服务端关连接")
+        end
+        if hsk and hsk.valid then
+            _real_close(hsk)
         end
         if ERR_FAILED ~= lid then
             srey.unlisten(lid)

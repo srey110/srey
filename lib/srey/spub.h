@@ -52,17 +52,17 @@ typedef void(*_net_handshake_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype,
 typedef void(*_net_close_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro);// 连接关闭回调
 typedef void(*_net_recvfrom_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, char ip[IP_LENS], uint16_t port,
                                 void *data, size_t size);// UDP 数据接收回调
-// 工作线程版本快照，供监控线程检测卡死
+// 跑 task 的线程(worker 与跑绑定 task 的 net 线程)的版本快照，供监控线程检测卡死；每个线程一份，只由它自己写
 typedef struct worker_version {
     int32_t ckver;     // 上次检查时记录的版本号（仅monitor读写，无竞态）
-    atomic_t msgtype;  // 当前正在处理的消息类型（worker写/monitor读）
-    atomic_t ver;      // 当前处理消息计数版本号（worker写/monitor读）
-    atomic64_t handle; // 当前正在处理的任务句柄（worker写/monitor读）
+    atomic_t msgtype;  // 当前正在处理的消息类型（本线程写/monitor读）
+    atomic_t ver;      // 当前处理消息计数版本号（本线程写/monitor读）
+    atomic64_t handle; // 当前正在处理的任务句柄（本线程写/monitor读）
 }worker_version;
 // 监控线程上下文
 typedef struct monitor_ctx {
     atomic_t stop;              // 非 0 表示监控线程应退出
-    worker_version *version;    // 各工作线程的版本快照数组
+    worker_version *version;    // 版本快照数组：前 nworker 个归 worker，其后 nnet 个归 net 线程
     mutex_ctx mutex;            // 配合条件变量的互斥锁
     cond_ctx cond;              // 监控线程休眠/唤醒条件变量
     pthread_t thread_monitor;   // 监控线程句柄
@@ -97,10 +97,12 @@ HASHMAP_DECL(tname_map, name_handle_entry, _TNAME_MAP_HASH, _TNAME_MAP_CMP)
 // 任务调度器全局上下文
 struct loader_ctx {
     uint16_t nworker;          // 工作线程数量
+    uint16_t nnet;             // net 线程数量，与 netev.nthreads 相同；monitor 线程启动前就要用，故单独存
     atomic_t stop;             // 非 0 表示调度器应停止
     atomic_t closing;          // 非 0 表示正在广播关闭消息，新注册 task 须立即关闭
     atomic64_t index;          // 轮询工作线程的原子计数器
     worker_ctx *worker;        // 工作线程数组
+    tda_ctx *evslow;           // 每个 net 线程一份：绑定 task 单轮慢告警的翻倍阈值，只由该线程读写
     task_map *maptasks;        // 句柄 → task_ctx 的哈希映射
     tname_map *mapnames;       // 字符串名 → 句柄 的本地索引（与 maptasks 共用 lckmaptasks）
     rwlock_distr_ctx lckmaptasks; // 保护 maptasks 与 mapnames 的分布式读写锁
@@ -125,9 +127,11 @@ struct task_ctx {
     atomic_t timeout_request;  // task_request 超时时间（毫秒）
     atomic_t timeout_connect;  // task_connect 超时时间（毫秒）
     atomic_t timeout_netread;  // 网络读取超时时间（毫秒）
+    atomic_t evbind;           // 绑定的 net 线程：0 不绑(交给 worker)，i+1 绑第 i 个；见 task_bind_net
     name_t handle;             // 任务唯一句柄（createid 生成的数字 ID）
     char *name;             // 注册时的字符串名；匿名 task 为 NULL，task 持有，task_free 时释放
     void *arg;                 // 用户自定义数据
+    name_t *acp_group;         // 组员表：下标为 net 线程，值为绑在该线程上的组员句柄；见 task_accept_group
     loader_ctx *loader;        // 所属 loader
     free_cb _arg_free;         // 用户数据释放回调
     _task_dispatch_cb _task_dispatch;    // 消息分发函数
@@ -167,9 +171,12 @@ void _message_run(task_ctx *task, message_ctx *msg);
 prot_emit *_task_net_emit(void);
 // 只入队不触发调度；一次可读事件解出多个包时用它，末尾再 _task_message_active 一次（内部接口）
 void _task_message_push(task_ctx *task, message_ctx *msg);
-// 触发调度：队列非空而尚未被调度时唤醒一个 worker（内部接口）
+// 触发调度：队列非空而尚未被调度时交给 worker，绑了 net 线程的交给它的 net 线程（内部接口）
 void _task_message_active(task_ctx *task);
 // 入队并触发调度：非网络生产者都走这个（内部接口）
 void _task_message_post(task_ctx *task, message_ctx *msg);
+// 绑在当前 net 线程上、空闲且本线程没给它留着消息的 task，当场分发这一条，不入队（内部接口）。
+// 返回 ERR_OK 已处理；ERR_FAILED 没处理，调用方照常入队
+int32_t _loader_task_try_run(task_ctx *task, message_ctx *msg);
 
 #endif//SVPUB_H_

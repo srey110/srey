@@ -881,6 +881,87 @@ static int32_t _ltask_get_priority(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 把 task 绑到第 index 个 net 线程上执行，-1 解绑回 worker；从下一次调度起生效，绑定时已排进当前这一轮的消息仍在原线程上跑。
+/// 回调里禁止阻塞与长计算：会卡住该线程上所有连接。已有连接不跟着迁，先绑再 connect / udp；
+/// listen 不看绑定，新连接要落到组员所在线程用 task.accept_group
+/// </summary>
+/// <param name="task" type="lightuserdata?">task 指针；nil 时绑当前 task</param>
+/// <param name="index" type="integer">net 线程下标 [0, task.nnet())；-1 解绑</param>
+/// <returns type="boolean">成功 true；下标越界时 false，绑定不变</returns>
+static int32_t _ltask_bind_net(lua_State *lua) {
+    LPUB_TASK_ARG(lua, task);
+    lua_Integer index = luaL_checkinteger(lua, 2);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
+    if (index < INT32_MIN || index > INT32_MAX) {
+        return lpub_rtn_bool(lua, 0);
+    }
+    return lpub_rtn_bool(lua, ERR_OK == task_bind_net(task, (int32_t)index));
+}
+/// <summary>
+/// 获取 task 绑定的 net 线程
+/// </summary>
+/// <param name="task" type="lightuserdata?">task 指针；nil 时取当前 task</param>
+/// <returns type="integer">绑定的 net 线程下标；未绑定返回 -1</returns>
+static int32_t _ltask_net_index(lua_State *lua) {
+    LPUB_TASK_ARG(lua, task);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
+    lua_pushinteger(lua, task_net_index(task));
+    return 1;
+}
+/// <summary>
+/// 多核监听：每个 net 线程放一个组员 task，由 task(组头)来 listen，之后新连接交给连接所在 net 线程的组员。
+/// 只对之后的 listen 生效，只能设一次
+/// </summary>
+/// <param name="task" type="lightuserdata?">组头 task 指针；nil 时取当前 task</param>
+/// <param name="handles" type="(string|integer)[]">组员，每项是 task 名或句柄(二选一，同其它绑定)；handles[i] 须已绑到第 i-1 个 net 线程，个数等于 task.nnet()</param>
+/// <returns type="boolean">成功 true；个数不对、某个组员不在或没绑对线程、已经设过，返回 false</returns>
+static int32_t _ltask_accept_group(lua_State *lua) {
+    LPUB_TASK_ARG(lua, task);
+    lua_Integer n, i;
+    name_t *hs;
+    task_ctx *member;
+    int32_t vtype;
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
+    luaL_checktype(lua, 2, LUA_TTABLE);
+    n = (lua_Integer)lua_rawlen(lua, 2);
+    if (n <= 0
+        || n != (lua_Integer)loader_nnet(g_loader)) {
+        return lpub_rtn_bool(lua, 0);
+    }
+    // 句柄表交给 GC：按名字查句柄会记缓存、可能抛内存错误，MALLOC 的来不及释放
+    hs = (name_t *)lua_newuserdatauv(lua, sizeof(name_t) * (size_t)n, 0);
+    for (i = 1; i <= n; i++) {
+        vtype = lua_rawgeti(lua, 2, i);
+        if (LUA_TSTRING != vtype
+            && !lua_isinteger(lua, -1)) {
+            return luaL_argerror(lua, 2, "members must be task names or handles");
+        }
+        member = lpub_task_grab(lua, -1, lpub_task_handle(lua, -1));
+        if (NULL == member) {
+            return lpub_rtn_bool(lua, 0);
+        }
+        hs[i - 1] = member->handle;// 名字缓存可能过期，以 grab 到的为准
+        task_ungrab(member);
+        lua_pop(lua, 1);
+    }
+    return lpub_rtn_bool(lua, ERR_OK == task_accept_group(task, hs, (uint16_t)n));
+}
+/// <summary>
+/// net 线程数
+/// </summary>
+/// <param>无</param>
+/// <returns type="integer">即 task.bind_net 的下标上界(不含)</returns>
+static int32_t _ltask_nnet(lua_State *lua) {
+    lua_pushinteger(lua, (lua_Integer)loader_nnet(g_loader));
+    return 1;
+}
+/// <summary>
 /// 交还消息载荷（交给 C 侧攒批释放），之后 msg.data 立即为 nil。可重复调；无载荷消息与非消息对象什么都不做。
 /// 两张消息元表都认：同一次分发内跑完的回调交还时，C 侧还没给它补挂带 __gc 的那张
 /// </summary>
@@ -924,6 +1005,10 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { "get_netread_timeout", _ltask_get_netread_timeout },
         { "set_priority", _ltask_set_priority },
         { "get_priority", _ltask_get_priority },
+        { "bind_net", _ltask_bind_net },
+        { "net_index", _ltask_net_index },
+        { "nnet", _ltask_nnet },
+        { "accept_group", _ltask_accept_group },
         { "msg_release", _ltask_msg_release },
         { NULL, NULL },
     };

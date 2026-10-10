@@ -20,7 +20,9 @@ void _http_udfree(ud_cxt *ud);
 // 末片包，调用方须把它当 PROT_SLICE_END 投给业务并负责释放；其余情形返 NULL
 void *_http_on_close(ud_cxt *ud);
 /// <summary>
-/// HTTP 解包：从缓冲区解析完整 HTTP 报文（头部 + 内容 / chunked）
+/// HTTP 解包：从缓冲区解析完整 HTTP 报文（头部 + 内容 / chunked）。
+/// Transfer-Encoding 只解 chunked 分帧：只要 chunked 是最后一层就接受，排在它前面的编码(如 "gzip, chunked" 的 gzip)不解，
+/// 报文体原样交上去，原始的 Transfer-Encoding 头留在头部里，业务需要的话自己看头解码
 /// </summary>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">连接上下文，内部维护解析状态</param>

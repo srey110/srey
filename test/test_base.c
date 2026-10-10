@@ -239,6 +239,24 @@ static void test_memory_nc(CuTest *tc) {
     CuAssertTrue(tc, _memre_hit(f1 - f0));
 #endif
 }
+// stack_print：有回溯能力的平台至少写出一帧，没有的什么也不写。写进文件再量长度
+static void test_stack_print(CuTest *tc) {
+    char path[PATH_LENS];
+    SNPRINTF(path, sizeof(path), "%s%stest_stack_print.txt", procpath(), PATH_SEPARATORSTR);
+    FILE *fp = fopen(path, "w+");
+    CuAssertPtrNotNull(tc, fp);
+    stack_print(fp);
+    // POSIX 那支绕过 stdio 直接写 fd，fseek 到末尾才量得到真实长度
+    fseek(fp, 0, SEEK_END);
+    long lens = ftell(fp);
+    fclose(fp);
+    remove(path);
+#ifdef HAVE_BACKTRACE
+    CuAssertTrue(tc, lens > 0);
+#else
+    CuAssertTrue(tc, 0 == lens);
+#endif
+}
 
 /* -----------------------------------------------------------------------
  * 32 位原子操作：SET / ADD / CAS / GET
@@ -461,6 +479,7 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_memory);
     SUITE_ADD_TEST(suite, test_realloc_edges);
     SUITE_ADD_TEST(suite, test_memory_nc);
+    SUITE_ADD_TEST(suite, test_stack_print);
     SUITE_ADD_TEST(suite, test_atomic32);
     SUITE_ADD_TEST(suite, test_atomic64);
     SUITE_ADD_TEST(suite, test_set_ptr_expr_arg);

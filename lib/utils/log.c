@@ -369,6 +369,7 @@ void log_free(void) {
     cond_free(&_cond);
 }
 void log_abort(const char *file, const char *func, int32_t line, const char *msg) {
+    stack_print(stderr);// 放最前：下面几条早退的路径也要有栈
     // 日志线程未起或已停，队列和锁都不能碰，只能靠 ASSERTAB 那行裸 fprintf
     if (0 == ATOMIC_GET(&_running)) {
         return;
@@ -398,6 +399,7 @@ void log_abort(const char *file, const char *func, int32_t line, const char *msg
             CONCAT2(LOG_PREFIX_FMT, "[ABORT] %s"), file, func, line, msg);
         item.msg = item.inline_buf;
         _log_sync(_handle, &item, item.msg);
+        stack_print(_handle);
     } else {
         fflush(stdout);
     }

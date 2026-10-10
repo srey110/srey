@@ -7,8 +7,8 @@
 #define TASK_QUEUE_CAP 256
 typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
 // 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=激活+ungrab；经 _task_net_emit 注册给 prots 作为消息汇。
-// 本轮已入队条数，begin/emit/end 三者同在一条 event 线程上配对，故用线程局部变量
-TLS_DEFINE(int32_t, _emit_cnt, 1)
+// [0] 本窗口已入队条数，[1] 窗口嵌套层数；begin/emit/end 三者同在一条线程上配对，故用线程局部变量
+TLS_DEFINE(int32_t, _emit_win, 2)
 
 // 将任务名指针插入任务哈希表（重复时触发断言）
 static inline void _task_map_set(task_map *map, task_ctx *task) {
@@ -218,6 +218,7 @@ void task_free(task_ctx *task) {
         message_clean(&msg);
     }
     msgq_free(&task->qumsg);
+    FREE(task->acp_group);
     FREE(task->name);
     FREE(task);
 }
@@ -313,6 +314,18 @@ void task_ungrab(task_ctx *task) {
             mutex_unlock(&loader->closing_mutex);
         }
     }
+}
+int32_t task_bind_net(task_ctx *task, int32_t index) {
+    if (index < INVALID_INDEX
+        || index >= (int32_t)task->loader->nnet) {
+        return ERR_FAILED;
+    }
+    ATOMIC_SET_RELAXED(&task->evbind, (atomic_t)(INVALID_INDEX == index ? 0 : index + 1));
+    return ERR_OK;
+}
+int32_t task_net_index(task_ctx *task) {
+    int32_t bind = (int32_t)ATOMIC_GET_RELAXED(&task->evbind);
+    return 0 == bind ? INVALID_INDEX : bind - 1;
 }
 // 时间轮超时回调：将超时消息推入对应任务队列
 static void _task_message_timeout_push(ud_cxt *ud) {
@@ -472,26 +485,90 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy) {
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
 }
+// 窗口会嵌套(解包时同线程关掉别的连接、推握手结果都会再开一层)：只有最外层清零，内层推的也记在
+// 外层账上，开窗失败不算一层。否则内层把外层已推的条数抹掉，外层关窗时漏激活
 static void *_task_emit_begin(void *loader, name_t handle) {
-    *_emit_cnt_tls() = 0;
-    return task_grab(loader, handle);
+    task_ctx *task = task_grab(loader, handle);
+    if (NULL != task) {
+        int32_t *win = _emit_win_tls();
+        if (0 == win[1]++) {
+            win[0] = 0;
+        }
+    }
+    return task;
 }
 static void _task_emit(void *target, message_ctx *msg) {
+    int32_t *win = _emit_win_tls();
+    // 只收最外层窗口里的不分片 RECV：嵌套窗口(握手结果、关掉别的连接)还在协议状态机中途，
+    // 分片与关闭时补的末片交给队列保序。没绑 net 线程的先在这里挡掉，别为它去取线程下标
+    if (MSG_TYPE_RECV == msg->mtype
+        && 0 == msg->slice
+        && 1 == win[1]
+        && 0 != ATOMIC_GET_RELAXED(&((task_ctx *)target)->evbind)
+        && ERR_OK == _loader_task_try_run((task_ctx *)target, msg)) {
+        return;
+    }
     _task_message_push((task_ctx *)target, msg);
-    ++*_emit_cnt_tls();
+    ++win[0];
 }
 // 一次可读事件解出的多个包统一激活一次：每包都激活的话，worker 可能在还没解完时
 // 就排空睡下，同一次事件里唤醒好几回。一条没解出来（半包）就不激活，免得白唤醒
 static void _task_emit_end(void *target) {
     task_ctx *task = (task_ctx *)target;
-    if (*_emit_cnt_tls() > 0) {
+    int32_t *win = _emit_win_tls();
+    if (win[0] > 0) {
         _task_message_active(task);
     }
+    --win[1];
     task_ungrab(task);
 }
 static prot_emit g_task_emit = { _task_emit_begin, _task_emit, _task_emit_end };
 prot_emit *_task_net_emit(void) {
     return &g_task_emit;
+}
+int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n) {
+    task_ctx *member;
+    uint16_t i;
+    int32_t bound;
+    if (NULL != head->acp_group
+        || n != head->loader->nnet) {
+        return ERR_FAILED;
+    }
+    for (i = 0; i < n; i++) {
+        member = task_grab(head->loader, handles[i]);
+        if (NULL == member) {
+            return ERR_FAILED;
+        }
+        bound = task_net_index(member);
+        task_ungrab(member);
+        if ((int32_t)i != bound) {
+            return ERR_FAILED;
+        }
+    }
+    MALLOC(head->acp_group, sizeof(name_t) * n);
+    memcpy(head->acp_group, handles, sizeof(name_t) * n);
+    return ERR_OK;
+}
+// 组头监听到新连接：交给连接所在 net 线程的组员；组头已退出就拒收
+static int32_t _task_acp_pick(sock_ctx *sk, ud_cxt *ud) {
+    task_ctx *head = task_grab(ud->loader, ud->handle);
+    if (NULL == head) {
+        return ERR_FAILED;
+    }
+    ud->handle = head->acp_group[sk->index];
+    task_ungrab(head);
+    return ERR_OK;
+}
+static int32_t _task_acp_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ev;
+    return _task_acp_pick(sk, ud);
+}
+// 同上，listen 时要了 NETEV_ACCEPT 的那种：换完目标再照常推 ACCEPT
+static int32_t _task_acp_accept_emit(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    if (ERR_OK != _task_acp_pick(sk, ud)) {
+        return ERR_FAILED;
+    }
+    return prots_net_accept(ev, sk, ud);
 }
 int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, uint64_t *id, int32_t netev) {
@@ -502,6 +579,9 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs_ctx cbs = { 0 };
     if (BIT_CHECK(netev, NETEV_ACCEPT)) {
         cbs.acp_cb = prots_net_accept;
+    }
+    if (NULL != task->acp_group) {
+        cbs.acp_cb = BIT_CHECK(netev, NETEV_ACCEPT) ? _task_acp_accept_emit : _task_acp_accept;
     }
     if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = prots_net_send;
@@ -535,7 +615,8 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs.r_cb = prots_net_recv;
     cbs.c_cb = prots_net_close;
     cbs.ud_free = prots_udfree;
-    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, setsess, sk);
+    // 绑了 net 线程的，连接落在同一条上，收发不再跨线程；没绑的是 INVALID_INDEX，照旧按 fd 分配
+    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, setsess, task_net_index(task), sk);
 }
 int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, sock_ctx *sk) {
     ud_cxt ud = { 0 };
@@ -546,7 +627,7 @@ int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port
     cbs.c_cb = prots_net_close;
     cbs.rf_cb = prots_net_recvfrom;
     cbs.ud_free = prots_udfree;
-    return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, sk);
+    return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, task_net_index(task), sk);// 落线程同 task_connect
 }
 void task_set_priority(task_ctx *task, int32_t priority) {
     int32_t p = priority;

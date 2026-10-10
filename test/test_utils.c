@@ -838,6 +838,21 @@ static void test_netaddr_extra(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, netaddr_ip(&addr, ipbuf));
     CuAssertStrEquals(tc, "::1", ipbuf);
 
+    // IPv6 比较带 scope_id：同一个链路本地地址在不同网卡上不算同一个地址
+    netaddr_ctx ll1, ll2;
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&ll1, "fe80::1", 4000));
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&ll2, "fe80::1", 4000));
+    CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&ll1, &ll2));
+    ll1.ipv6.sin6_scope_id = 1;
+    ll2.ipv6.sin6_scope_id = 2;
+    CuAssertIntEquals(tc, ERR_FAILED, netaddr_compare(&ll1, &ll2));
+    ll2.ipv6.sin6_scope_id = 1;
+    CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&ll1, &ll2));
+    // 一边没指定网卡(netaddr_set 出来的恒为 0)：不比 scope_id，KCP 按配置地址校验收包来源靠这个
+    ll2.ipv6.sin6_scope_id = 0;
+    CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&ll1, &ll2));
+    CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&ll2, &ll1));
+
     // sock_pair 实测：netaddr_local / netaddr_remote
     // sock_pair 内部用 AF_INET TCP loopback 对，两端互为对端
     SOCKET fds[2];

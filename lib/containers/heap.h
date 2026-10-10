@@ -30,6 +30,7 @@ static inline void name##_init(name *h, uint32_t maxsize) {                     
     h->maxsize = maxsize;                                                       \
     h->p = NULL;                                                                \
     if (0 != maxsize) {                                                         \
+        ASSERTAB(sizeof(T *) <= SIZE_MAX / (size_t)maxsize, "byte size overflow.");\
         MALLOC(h->p, sizeof(T *) * maxsize);                                    \
     }                                                                           \
 }                                                                               \
@@ -92,6 +93,7 @@ static inline void name##_insert(name *h, T *elem) {                            
     if (h->size == h->maxsize) {                                                \
         ASSERTAB(h->maxsize <= UINT32_MAX / 2, "heap maxsize overflow.");       \
         h->maxsize = (0 == h->maxsize) ? HEAP_INIT_SIZE : h->maxsize * 2;       \
+        ASSERTAB(sizeof(T *) <= SIZE_MAX / (size_t)h->maxsize, "byte size overflow.");\
         REALLOC(h->p, h->p, sizeof(T *) * h->maxsize);                          \
     }                                                                           \
     h->p[h->size] = elem;                                                       \

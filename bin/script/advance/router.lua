@@ -180,9 +180,9 @@ local function _send(method, sk, code, block, headers, body)
 end
 
 -- 拒绝 chunked：回 411 后关连接。对齐 C 侧 router_reject_chunked。
--- 不分流 HEAD（method 给 nil）：HEAD 请求没有报文体，不可能是 chunked
-local function _reject_chunked(sk)
-    _send(nil, sk, 411, _PLAIN_BLOCK, nil, "chunked request not supported\n")
+-- HEAD 请求也可能带着 chunked 请求体来，method 照传，由 _send 分流成只发头
+local function _reject_chunked(sk, method)
+    _send(method, sk, 411, _PLAIN_BLOCK, nil, "chunked request not supported\n")
     srey.close(sk)
 end
 
@@ -830,7 +830,7 @@ function Router:_st_begin(sk, pack, client)
     end
     -- 命中的不是流式路由：请求体正一块块往这边来，普通 handler 接不住，回 411 让客户端改用定长
     if not route.on_chunk then
-        _reject_chunked(sk)
+        _reject_chunked(sk, ctx.method)
         return
     end
     local step = (route._chain_ver == self._mw_version) and route._step or _chain_of(self, route)

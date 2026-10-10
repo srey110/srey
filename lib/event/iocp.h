@@ -40,6 +40,7 @@ typedef struct watcher_ctx {
     timer_ctx timer;            // 计时器
     overlap_cmd_ctx cmd;        // 命令通道（fsqu 多生产者，单通道足够）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
+    defer_exec_que defer_execs; // ev_defer_exec 投来待跑的回调，与命令一起在进等待前排空
     list_ctx flushes;           // 本轮攒下待发的明文连接(STATUS_FLUSHPEND 置位期间在链上)，
                                 // 由 _iocp_flush_pending 统一冲
     list_ctx lingers;           // 延迟关闭中的连接(按进入时刻先后串,队头最旧)

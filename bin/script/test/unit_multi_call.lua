@@ -26,6 +26,10 @@ local MSG = "MULTI_LUA_HELLO"
 local SEND_PORT = 15067
 -- 名字缓存过期用例里反复关掉又重新注册的 task 名
 local REGEN = "multi_call_sub_regen"
+-- 绑到 net 线程上的那个 sub 的名字
+local BOUND = "multi_call_sub_bound"
+-- 接收组用例的端口
+local ACP_GROUP_PORT = 15068
 
 srey.startup(function()
 runner.run(function(t)
@@ -377,6 +381,84 @@ runner.run(function(t)
         t:eq(false, core.request("multi_call_sub_never", 102, srey.id(), ud4, usz4, 0),
              "从没注册过的名字：request 返回 false")
         t:eq(nil, srey.request("multi_call_sub_never", 102, "never"), "从没注册过的名字：srey.request 返回 nil")
+    end
+
+    -- ── 绑到 net 线程上的 sub：照常收请求、回响应、单向 ack ──────────
+    do
+        t:eq(true, task.bind_net(nil, -1), "nil 指当前 task：解绑本来就没绑的 task 照样成功")
+        t:eq(-1, task.net_index(), "当前 task 没绑定")
+        t:check(task.nnet() >= 1, "net 线程数至少 1")
+        local bt = task.register("test.multi_call_sub", BOUND, 0, task.name(), 20)
+        t:check(nil ~= bt, "要绑定的 sub 注册成功")
+        t:eq(false, task.bind_net(bt, task.nnet()), "越界下标绑定失败")
+        t:eq(false, task.bind_net(bt, -2), "小于 -1 的下标绑定失败")
+        t:eq(false, task.bind_net(bt, 4294967296), "超出 int32 的下标绑定失败，不能截断成 0")
+        t:eq(-1, task.net_index(bt), "绑定失败不改原状")
+        t:eq(true, srey.task_bind_net(bt, 0), "绑到 net 线程 0")
+        t:eq(0, srey.task_net_index(bt), "绑定后下标为 0")
+        srey.sleep(100)-- 等它的 startup 挂上 on_requested
+        local rd, rs = srey.request(BOUND, 102, "bound")
+        t:eq("ack20", rd and srey.ud_str(rd, rs), "绑定的 sub 回响应")
+        srey.call(BOUND, 100, "bound_call")
+        t:check(_wait(function() return 1 == ack_body["bound_call"] end) and ack_seen[20],
+                "绑定的 sub 单向 ack 回来")
+        t:eq(true, task.bind_net(bt, -1), "解绑")
+        t:eq(-1, task.net_index(bt), "解绑后下标为 -1")
+        rd, rs = srey.request(BOUND, 102, "unbound")
+        t:eq("ack20", rd and srey.ud_str(rd, rs), "解绑回 worker 后照样回响应")
+        local old = task.grab(BOUND)
+        if old then
+            task.close(old)
+            task.ungrab(old)
+        end
+
+        -- 接收组：每个 net 线程一个绑在本线程的回显组员，本 task 当组头监听，
+        -- accept 时按连接所在线程交给同线程的组员。设过组员表后本 task 之后的 listen 都按组员走，故放在最后
+        local nnet = task.nnet()
+        local hs = {}
+        for i = 0, nnet - 1 do
+            local st = task.register("test.group_echo", "group_echo_" .. i, 0, i)
+            t:check(nil ~= st and task.bind_net(st, i), "组员 " .. i .. " 注册并绑定")
+            hs[#hs + 1] = st and task.handle(st) or 0
+        end
+        srey.sleep(100)-- 等组员的 startup 挂上 on_recved
+        local more = { table.unpack(hs) }
+        more[#more + 1] = task.handle()
+        t:eq(false, task.accept_group(nil, more), "组员数不等于 net 线程数被拒")
+        local bad = { table.unpack(hs) }
+        bad[1] = "group_echo_nobody"
+        t:eq(false, task.accept_group(nil, bad), "组员名字不存在被拒")
+        bad[1] = {}
+        t:check(not pcall(task.accept_group, nil, bad), "组员既不是名字也不是句柄抛错")
+        -- 名字与句柄混着给：奇数位给名字
+        local mix = { table.unpack(hs) }
+        for i = 1, #mix, 2 do
+            mix[i] = "group_echo_" .. (i - 1)
+        end
+        t:eq(true, srey.task_accept_group(nil, mix), "设置组员表")
+        t:eq(false, task.accept_group(nil, hs), "组员表只能设一次")
+        local slid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", ACP_GROUP_PORT)
+        local okn = 0
+        for _ = 1, 2 * nnet do
+            local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", ACP_GROUP_PORT)
+            if csk.valid then
+                local rd, rs = srey.syn_send(csk, "hi")
+                local idx = rd and srey.ud_str(rd, rs):match("^(%d+):hi$")
+                if idx and tonumber(idx) < nnet then
+                    okn = okn + 1
+                end
+                srey.close(csk)
+            end
+        end
+        t:eq(2 * nnet, okn, "每条连接都由某个组员回显")
+        srey.unlisten(slid)
+        for i = 0, nnet - 1 do
+            local st = task.grab("group_echo_" .. i)
+            if st then
+                task.close(st)
+                task.ungrab(st)
+            end
+        end
     end
 end)
 end)

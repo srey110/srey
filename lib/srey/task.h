@@ -87,6 +87,36 @@ void task_incref(task_ctx *task);
 /// <param name="task">task_ctx</param>
 void task_ungrab(task_ctx *task);
 /// <summary>
+/// 把 task 绑到第 index 个 net 线程上执行：此后它的全部消息(网络、超时、请求、响应、启动、关闭)
+/// 都在该线程本轮事件派发完之后跑，不再进 worker。任何时候可调，从下一次调度起生效。
+/// 要让 startup 也在 net 线程上跑须在 task_register 之前调；由注册函数代为注册的 task(如协程 task)
+/// 只能注册后再绑，startup 那一轮(连同绑定时已排进这一轮的消息)仍在 worker 上。已有连接不跟着迁：先绑再 connect / udp。
+/// listen 不看绑定，accept 出的连接按 fd 分到各 net 线程；要让新连接落在处理它的 task 所在线程，用 task_accept_group。
+/// 空闲时本线程上连接收到的完整包会在收包当场处理、不入队，回调里关连接推迟到收包回调返回后生效。
+/// 回调里禁止阻塞与长计算：会卡住该线程上所有连接的收发，含别的 task 的连接
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="index">net 线程下标 [0, loader_nnet)；INVALID_INDEX 解绑、回到 worker</param>
+/// <returns>ERR_OK 成功；index 越界返回 ERR_FAILED，绑定不变</returns>
+int32_t task_bind_net(task_ctx *task, int32_t index);
+/// <summary>
+/// 获取 task 绑定的 net 线程
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <returns>绑定的 net 线程下标；未绑定返回 INVALID_INDEX</returns>
+int32_t task_net_index(task_ctx *task);
+/// <summary>
+/// 多核监听：每个 net 线程放一个处理连接的 task(组员)，由 head 来 listen。
+/// 设好后 head 监听到的新连接，落在哪个 net 线程就交给那个线程的组员，head 自己不再收。
+/// 只对之后的 listen 生效，只能设一次；head 退出后新连接一律拒收。
+/// 每个组员的 arg 要各给一份(共用一份会被重复释放)；组员间共享的数据用原子量，或交给一个不绑线程的 task 汇总
+/// </summary>
+/// <param name="head">发起 listen 的 task，可以是组员之一，也可以是别的 task</param>
+/// <param name="handles">组员句柄，handles[i] 须已用 task_bind_net 绑到第 i 个 net 线程；函数内会拷一份</param>
+/// <param name="n">组员个数，须等于 loader_nnet</param>
+/// <returns>ERR_OK 成功；个数不对、某个组员不在或没绑对线程、已经设过，返回 ERR_FAILED</returns>
+int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n);
+/// <summary>
 /// 超时：ms 毫秒后触发。sess 与 _timeout 互斥,须恰好一个有效(违反将 ASSERTAB abort)：
 /// _timeout≠NULL 且 sess=0 → 到期回调 _timeout(task, 0)；
 /// _timeout=NULL 且 sess≠0 → 到期投递 TIMEOUT 消息,按 sess 唤醒等待协程(无等待者则无操作)
@@ -203,7 +233,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
 void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy);
 /// <summary>
-/// 监听
+/// 监听。task 设过 task_accept_group 的，新连接交给连接所在 net 线程的组员
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pktype">包类型</param>
@@ -216,7 +246,7 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
 int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, uint64_t *id, int32_t netev);
 /// <summary>
-/// 链接
+/// 链接。task 绑了 net 线程(task_bind_net)的，连接落在同一条线程上，之后改绑不跟着迁
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pktype">包类型</param>
@@ -231,7 +261,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t netev, void *extra, int32_t setsess, sock_ctx *sk);
 /// <summary>
-/// UDP
+/// UDP。落在哪个 net 线程同 task_connect
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pktype">包类型</param>
@@ -295,6 +325,7 @@ uint32_t task_get_netread_timeout(task_ctx *task);
 /// 获取任务自启动以来按消息类型分桶的累计消息条数与 dispatch 占用的线程 CPU 时间。
 /// 用于排查"哪类消息消耗 CPU"：IO 等待 / coro_sleep / 被抢占的时间不计入；
 /// 由 mtype 索引（MSG_TYPE_NONE 槽未使用），可据此估算单消息平均 CPU 耗时。
+/// 只能在该 task 自己的消息回调里调（含它的协程）：统计由正在分发它的线程不加锁地累加，别的线程读是数据竞争
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="nmsg">出参数组（长度须为 MSG_TYPE_ALL），按 mtype 索引累计消息条数（仅编译期开启 ENABLE_DISPATCH_STAT 时累加，否则恒为 0）</param>
