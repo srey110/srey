@@ -433,7 +433,7 @@ static int32_t _timeout_ws(task_ctx *task) {
             ev_close(&task->loader->netev, &sk);
             return ERR_FAILED;
         }
-        pack = websock_pack_ping(1, &psize);
+        pack = websock_pack_ping(1, NULL, 0, &psize);
         if (NULL == pack) {
             LOG_WARN("ws mqtt rebind pack ping error.");
             ev_close(&task->loader->netev, &sk);
@@ -503,11 +503,16 @@ static int32_t _timeout_ws(task_ctx *task) {
         LOG_WARN("ws binary echo data error.");
         goto erro;
     }
-    // 发送 ping 帧，验证服务端回 pong
-    pack = websock_pack_ping(1, &psize);
+    // 发送带载荷的 ping 帧，验证服务端回 pong 且原样带回载荷
+    pack = websock_pack_ping(1, "hb", 2, &psize);
     resp = coro_send(task, &sk, pack, psize, &rsize, 0);
     if (NULL == resp || WS_PONG != websock_prot(resp)) {
         LOG_WARN("ws ping/pong error.");
+        goto erro;
+    }
+    wdata = websock_data(resp, &wlen);
+    if (2 != wlen || 0 != memcmp("hb", wdata, wlen)) {
+        LOG_WARN("ws pong payload error.");
         goto erro;
     }
     // 发送三帧分片消息（start + middle + end），验证服务端收齐后回复分片消息
@@ -541,6 +546,18 @@ static int32_t _timeout_ws(task_ctx *task) {
     } while (0 == slend);
     if (3 != nslice) {
         LOG_WARN("ws fragment count %d, expect 3.", nslice);
+        goto erro;
+    }
+    // 主动发 CLOSE(1000)：对端协议层当场回一个 CLOSE，只回显状态码
+    pack = websock_pack_close(1, 1000, "bye", 3, &psize);
+    resp = coro_send(task, &sk, pack, psize, &rsize, 0);
+    if (NULL == resp || WS_CLOSE != websock_prot(resp)) {
+        LOG_WARN("ws close reply error.");
+        goto erro;
+    }
+    wdata = websock_data(resp, &wlen);
+    if (2 != wlen || 0x03 != (uint8_t)wdata[0] || 0xe8 != (uint8_t)wdata[1]) {
+        LOG_WARN("ws close reply code error.");
         goto erro;
     }
     ev_close(&task->loader->netev, &sk);

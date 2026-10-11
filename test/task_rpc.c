@@ -9,6 +9,7 @@
 #define EVTASK_SW_PORT 15026// 组员收包当场切协议的端口，末尾组头退出后再连应被拒
 #define EVTASK_UDP_PORT 15027// 绑定协程 task 建 UDP 用的端口
 #define EVTASK_HO_PORT 15031// 组员收包当场把连接转给别的 task 的端口
+#define ACP_PART_PORT 15035// 只在一个线程上放组员的接收组端口
 
 static int32_t _prt = 0;
 static atomic_t _emit_recved;// 消息汇嵌套用例里目标 task 收到的条数
@@ -21,6 +22,8 @@ static atomic_t _sw_rest;// 切协议用例：同一次读到的后续字节按 
 static atomic_t _sw_bad;// 切协议用例：收到意料之外的包的次数
 static atomic_t _member_accepted;// 组员收到的 ACCEPT 数
 static atomic_t _member_bad;// 组员收到不归自己线程的连接、或回调跑错线程的次数
+static atomic_t _part_accepted;// 部分组员用例：唯一的组员收到的 ACCEPT 数
+static atomic_t _part_bad;// 部分组员用例：连接或回调不在组员绑的线程上的次数
 static atomic_t _ws_handshaked;// 绑定 ws task 收到成功握手的次数
 static atomic_t _ws_recved;// 绑定 ws task 收到数据帧的次数
 static atomic_t _ws_disorder;// 数据帧乱序到达(抢在握手结果或先到的分片前面)的次数
@@ -76,6 +79,7 @@ static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t 
 static void _check_post_to(task_ctx *task) {
     int32_t pair[2];
     name_t gone = createid();// 从没注册过的句柄
+    name_t hs[3];
     void *buf;
     pair[0] = (int32_t)htonl(1);
     pair[1] = (int32_t)htonl(2);
@@ -89,6 +93,23 @@ static void _check_post_to(task_ctx *task) {
     FREE(buf);// copy=0 投递失败，载荷仍归调用方
     ASSERTAB(ERR_OK == task_call_to(task->loader, task->handle, 100, pair, sizeof(pair), 1),
              "task_call_to self must succeed");
+    // 按句柄广播：严格模式有查不到的一条不投、载荷不碰(同一块接着给非严格模式用)；非严格跳过查不到的
+    hs[0] = gone;
+    hs[1] = task->handle;
+    hs[2] = INVALID_TNAME;
+    buf = dup_zero(pair, sizeof(pair));
+    ASSERTAB(-1 == task_multi_request2(task->loader, hs, 3, NULL, 100, 0, buf, sizeof(pair), 0, 1),
+             "strict multi_request2 with a missing handle must post nothing");
+    ASSERTAB(1 == task_multi_request2(task->loader, hs, 3, NULL, 100, 0, buf, sizeof(pair), 0, 0),
+             "non-strict multi_request2 skips the missing handle");// copy=0 投出去了，buf 已交出
+    hs[0] = INVALID_TNAME;
+    hs[1] = INVALID_TNAME;
+    ASSERTAB(0 == task_multi_request2(task->loader, hs, 3, NULL, 100, 0, pair, sizeof(pair), 1, 1),
+             "multi_request2 with only empty slots posts nothing");
+    hs[0] = task->handle;
+    hs[2] = task->handle;
+    ASSERTAB(2 == task_multi_request2(task->loader, hs, 3, NULL, 100, 0, pair, sizeof(pair), 1, 1),
+             "multi_request2 posts to every found handle");
 }
 // 消息汇嵌套用例的目标 task：收到即记一笔
 static void _emit_target_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
@@ -309,6 +330,65 @@ static void _check_accept_group(task_ctx *task) {
     ev_unlisten(&task->loader->netev, id);
     ASSERTAB(2 * nnet == (uint32_t)ATOMIC_GET(&_member_accepted), "every accepted connection reaches a member");
     ASSERTAB(0 == ATOMIC_GET(&_member_bad), "member got a connection of another thread");
+}
+static void _part_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
+    (void)pktype;
+    if (sk->index != task_net_index(task)
+        || ev_cur_index(&task->loader->netev) != sk->index) {
+        ATOMIC_ADD(&_part_bad, 1);
+    }
+    ATOMIC_ADD(&_part_accepted, 1);
+}
+static void _part_startup(task_ctx *task) {
+    task_accepted(task, _part_accept);
+    task_recved(task, _member_recv);
+}
+// 组员表留空位：只在最后一个 net 线程放组员(它自己当组头)，listen 只在那条线程上收，所有连接都交给它；
+// 全是空位、组员放错下标都拒绝
+static void _check_group_partial(task_ctx *task) {
+    uint32_t nnet = loader_nnet(task->loader);
+    uint32_t i;
+    name_t *hs;
+    task_ctx *member;
+    sock_ctx sk;
+    uint64_t id;
+    size_t rlens;
+    void *rt;
+    name_t mh;
+    member = task_new(task->loader, "rpc_part", 0, NULL, NULL, NULL);
+    ASSERTAB(ERR_OK == task_bind_net(member, (int32_t)nnet - 1), "bind partial member failed");
+    mh = member->handle;
+    if (ERR_OK != task_register(member, _part_startup, NULL)) {
+        task_free(member);
+        ASSERTAB(0, "register partial member failed");
+    }
+    coro_sleep(task, 100);// 等组员跑完 STARTUP
+    member = task_grab(task->loader, mh);
+    ASSERTAB(NULL != member, "grab partial member failed");
+    CALLOC(hs, nnet, sizeof(name_t));// 全是 INVALID_TNAME
+    ASSERTAB(ERR_FAILED == task_accept_group(member, hs, (uint16_t)nnet), "group without any member must fail");
+    if (nnet > 1) {
+        hs[0] = mh;
+        ASSERTAB(ERR_FAILED == task_accept_group(member, hs, (uint16_t)nnet), "member on a wrong slot must fail");
+        hs[0] = INVALID_TNAME;
+    }
+    hs[nnet - 1] = mh;
+    ASSERTAB(ERR_OK == task_accept_group(member, hs, (uint16_t)nnet), "set partial accept group failed");
+    ASSERTAB(ERR_OK == task_listen(member, PACK_NONE, NULL, "127.0.0.1", ACP_PART_PORT, &id, NETEV_ACCEPT),
+             "partial group listen failed");
+    task_ungrab(member);
+    FREE(hs);
+    coro_sleep(task, 50);// listen 落地是异步的
+    for (i = 0; i < 2 * nnet; i++) {
+        ASSERTAB(ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", ACP_PART_PORT, 0, NULL, &sk),
+                 "connect partial group listener failed");
+        rt = coro_send(task, &sk, "part", 4, &rlens, 1);
+        ASSERTAB(NULL != rt && 4 == rlens && 0 == memcmp(rt, "part", 4), "partial group echo failed");
+        ev_close(&task->loader->netev, &sk);
+    }
+    ev_unlisten(&task->loader->netev, id);
+    ASSERTAB(2 * nnet == (uint32_t)ATOMIC_GET(&_part_accepted), "every connection reaches the only member");
+    ASSERTAB(0 == ATOMIC_GET(&_part_bad), "partial group connection landed off the member's thread");
 }
 static void _sw_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                      uint8_t slice, void *data, size_t size) {
@@ -620,6 +700,7 @@ static void _check_evtask(void *owner, void *arg) {
              "connection of a bound task must land on its net thread");
     ASSERTAB(0 == ATOMIC_GET(&_evt_bad), "evtask callback ran off its net thread");
     _check_accept_group(task);
+    _check_group_partial(task);
     _check_inline_order(task);
     _check_group_switch(task);
     _check_group_handoff(task);

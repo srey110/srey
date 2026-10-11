@@ -276,5 +276,37 @@ runner.run(function(t)
         srey.sleep(100)
         t:eq(4, hit, "之后的 fork 全部执行，没有被死协程吞掉")
     end
+
+    -- ── 排队很长、一直排不空：队头走远后整体前移(SERIAL_COMPACT)，顺序仍严格 FIFO ───
+    do
+        local cs = srey.serial()
+        local order = {}
+        local NQ = 100
+        srey.fork(function()
+            cs(function() srey.sleep(30) end)-- 先占住锁，让后面的全部排队
+        end)
+        srey.sleep(5)
+        for i = 1, NQ do
+            srey.fork(function()
+                cs(function()
+                    order[#order + 1] = i
+                    if 0 == i % 7 then
+                        srey.sleep(1)-- 持锁期间让出，交接时队里还有人
+                    end
+                end)
+            end)
+        end
+        for _ = 1, 100 do
+            if #order >= NQ then
+                break
+            end
+            srey.sleep(20)
+        end
+        local fifo = (NQ == #order)
+        for i = 1, #order do
+            fifo = fifo and order[i] == i
+        end
+        t:check(fifo, NQ .. " 个排队者按入队顺序拿到锁（实际 " .. #order .. " 个）")
+    end
 end)
 end)

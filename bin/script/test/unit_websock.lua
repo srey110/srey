@@ -63,7 +63,7 @@ end
 srey.startup(function()
 runner.run(function(t)
     -- 收到的每一帧都过一遍 _ws_compare。只有 frame 那段把 echo 打开:服务端不带掩码原样回一帧
-    -- (close 不回)，客户端那头再比一次；其余用例只关心客户端 API 的返回值，server 侧不回
+    -- (close 不由业务回，协议层当场回一个)，客户端那头再比一次；其余用例只关心客户端 API 的返回值，server 侧不回
     local echo = false
     local srv_got, cli_got = {}, {}
     srey.on_recved(function(pktype, sk, client, slice, data)
@@ -194,10 +194,11 @@ runner.run(function(t)
             end
             srey.send(wsk, f, fs, 0)
         end
-        wait(#frames, #frames - 1)
+        wait(#frames, #frames)
         echo = false
         t:eq(#frames, #srv_got, "服务端收齐全部帧")
-        t:eq(#frames - 1, #cli_got, "客户端收齐回帧(close 不回)")
+        t:eq(#frames, #cli_got, "客户端收齐回帧(close 由服务端协议层当场回)")
+        t:eq(WEBSOCK_PROT.CLOSE, cli_got[#frames] and cli_got[#frames].prot, "回来的最后一帧是 close")
         for i, e in ipairs(frames) do
             if e[2] then
                 t:eq(e[3], srv_got[i] and srv_got[i].body, "服务端载荷 #" .. i)

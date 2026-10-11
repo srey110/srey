@@ -1,11 +1,26 @@
 ﻿#include "lbind/lpub.h"
 
 #define SERI_PACK_MAX_DEPTH 32
+#define SERI_UNPACK_STACK_PAIRS 64 // 纯记录表先压栈数字段数，超过这么多对就建表转回逐个插
 
 static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth);
 static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *item, int32_t depth);
 
-// 递归 pack 一个 table：先数组段，再 hash 段（跳过已在数组段的整数 key），尾随 array_end
+// 按下标把数组段从 *nexti 补写到 alen(数组元素落在 hash 部、或表遍历完时)
+static int32_t _lseri_pack_array_rest(lua_State *lua, binary_ctx *bw, int32_t idx,
+                                      lua_Integer *nexti, lua_Integer alen, int32_t depth) {
+    for (; *nexti <= alen; (*nexti)++) {
+        lua_rawgeti(lua, idx, *nexti);
+        if (ERR_OK != _lseri_pack_one(lua, bw, -1, depth)) {
+            return ERR_FAILED;
+        }
+        lua_pop(lua, 1);
+    }
+    return ERR_OK;
+}
+// 递归 pack 一个 table：先数组段，再 hash 段（跳过已在数组段的整数 key），尾随 array_end。
+// 只遍历一趟：lua_next 先按 1..n 吐出数组部，顺着写；遇到第一个对不上的键(数组元素落在 hash 部)
+// 先按下标把数组段补完，之后的键照常判断。输出与"先按下标写满数组段、再整表遍历"逐字节相同
 static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth) {
     if (depth > SERI_PACK_MAX_DEPTH) {
         lua_pushfstring(lua, "seri pack: table nested too deep (>%d)", SERI_PACK_MAX_DEPTH);
@@ -20,17 +35,24 @@ static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, in
     }
     lua_Integer alen = (lua_Integer)lua_rawlen(lua, idx);
     seri_append_array_start(bw, (uint32_t)alen);
-    lua_Integer i;
-    for (i = 1; i <= alen; i++) {
-        lua_rawgeti(lua, idx, i);
-        if (ERR_OK != _lseri_pack_one(lua, bw, -1, depth)) {
-            return ERR_FAILED;
-        }
-        lua_pop(lua, 1);
-    }
+    lua_Integer nexti = 1;// 数组段下一个该写的下标
     lua_Integer ik;
     lua_pushnil(lua);
     while (0 != lua_next(lua, idx)) {
+        if (nexti <= alen) {
+            if (LUA_TNUMBER == lua_type(lua, -2) && lua_isinteger(lua, -2)
+                && lua_tointeger(lua, -2) == nexti) {
+                if (ERR_OK != _lseri_pack_one(lua, bw, -1, depth)) {
+                    return ERR_FAILED;
+                }
+                nexti++;
+                lua_pop(lua, 1);
+                continue;
+            }
+            if (ERR_OK != _lseri_pack_array_rest(lua, bw, idx, &nexti, alen, depth)) {
+                return ERR_FAILED;
+            }
+        }
         if (LUA_TNUMBER == lua_type(lua, -2) && lua_isinteger(lua, -2)) {
             ik = lua_tointeger(lua, -2);
             if (ik > 0 && ik <= alen) {
@@ -45,6 +67,9 @@ static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, in
             return ERR_FAILED;
         }
         lua_pop(lua, 1);
+    }
+    if (ERR_OK != _lseri_pack_array_rest(lua, bw, idx, &nexti, alen, depth)) {
+        return ERR_FAILED;
     }
     seri_append_array_end(bw);
     return ERR_OK;
@@ -123,6 +148,43 @@ static void _lseri_unpack_one(lua_State *lua, seri_iter *iter, int32_t depth) {
     }
     _lseri_push_item(lua, iter, &item, depth);
 }
+// 纯记录表(无数组段)：hash 段没有计数，边建边插会一路 rehash，故先把键值对压栈数清对数再按对数建表。
+// 读到结尾返回 ERR_OK；压满 SERI_UNPACK_STACK_PAIRS 对还没完就建好表把已读的灌进去，返回 ERR_FAILED 由调用方接着逐个插。
+// 两种出口栈顶都是这张表
+static int32_t _lseri_unpack_record(lua_State *lua, seri_iter *iter, int32_t depth) {
+    int32_t base = lua_gettop(lua);
+    int32_t np = 0;
+    int32_t k;
+    int32_t rc;
+    seri_item item;
+    for (;;) {
+        rc = seri_iter_next(iter, &item);
+        if (1 != rc) {
+            luaL_error(lua, "seri unpack: malformed stream in hash section");
+        }
+        if (SERI_ITEM_NIL == item.type) {
+            break;
+        }
+        luaL_checkstack(lua, 2, NULL);
+        _lseri_push_item(lua, iter, &item, depth);
+        _lseri_unpack_one(lua, iter, depth);
+        if (++np == SERI_UNPACK_STACK_PAIRS) {
+            break;
+        }
+    }
+    luaL_checkstack(lua, 3, NULL);// 新表 + 一对键值副本
+    lua_createtable(lua, 0, np);
+    if (np > 0) {// 空表时新表本身就在 base + 1，不能再挪
+        for (k = 0; k < np; k++) {
+            lua_pushvalue(lua, base + 1 + 2 * k);
+            lua_pushvalue(lua, base + 2 + 2 * k);
+            lua_rawset(lua, -3);
+        }
+        lua_replace(lua, base + 1);
+        lua_settop(lua, base + 1);
+    }
+    return np < SERI_UNPACK_STACK_PAIRS ? ERR_OK : ERR_FAILED;
+}
 // 递归 unpack 一个 table：先数组段，再 hash 段直到 SERI_ITEM_NIL 终止
 static void _lseri_unpack_table(lua_State *lua, seri_iter *iter, uint32_t array_n, int32_t depth) {
     if (depth > SERI_PACK_MAX_DEPTH) {
@@ -132,14 +194,20 @@ static void _lseri_unpack_table(lua_State *lua, seri_iter *iter, uint32_t array_
     // array_n 来自不可信流,预分配上限卡在剩余字节数(每元素 ≥1 字节 tag),防恶意流以极小数据撑爆预分配
     size_t remain = iter->len - iter->offset;
     uint32_t prealloc = ((size_t)array_n <= remain) ? array_n : (uint32_t)remain;
-    lua_createtable(lua, (int32_t)prealloc, 0);
+    seri_item item;
+    int32_t rc;
+    if (0 == array_n) {
+        if (ERR_OK == _lseri_unpack_record(lua, iter, depth)) {
+            return;
+        }
+    } else {
+        lua_createtable(lua, (int32_t)prealloc, 0);
+    }
     uint32_t i;
     for (i = 1; i <= array_n; i++) {
         _lseri_unpack_one(lua, iter, depth);
         lua_rawseti(lua, -2, (lua_Integer)i);
     }
-    seri_item item;
-    int32_t rc;
     for (;;) {
         rc = seri_iter_next(iter, &item);
         if (1 != rc) {

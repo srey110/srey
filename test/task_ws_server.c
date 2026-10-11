@@ -55,7 +55,8 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
         }
         ev_send(&task->loader->netev, sk, frame, fsize, 0);
     } else if (WS_PING == prot) {
-        frame = websock_pack_pong(0, &fsize);
+        wdata = websock_data(pack, &dlens);// PONG 要原样带回 PING 的载荷
+        frame = websock_pack_pong(0, wdata, dlens, &fsize);
         ev_send(&task->loader->netev, sk, frame, fsize, 0);
     } else if (WS_CLOSE == prot) {
         ev_close(&task->loader->netev, sk);

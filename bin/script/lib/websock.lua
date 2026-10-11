@@ -182,18 +182,21 @@ end
 
 -- ── 控制帧构造 ────────────────────────────────────────────────────────────
 -- 本节与下节的构造函数都可能返回 nil, nil，调用方一律须判（下面 _continua /
--- _send_end_frame 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key
+-- _send_end_frame 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key；
+-- 控制帧的载荷超过 125 字节（close 含 2 字节状态码）同样返回 nil
 
----构造 ping 控制帧（client=1 加掩码）
----@type fun(client:integer):lightuserdata?, integer?
+---构造 ping 控制帧（client=1 加掩码），data 为可选载荷。
+---对端发来的 PING 不会唤醒正在等收包的协程，一律走 srey.on_recved，由业务回 pong
+---@type fun(client:integer, data?:string|lightuserdata, size?:integer):lightuserdata?, integer?
 wbsk.ping = websock.pack_ping
 
----构造 pong 控制帧（client=1 加掩码）
----@type fun(client:integer):lightuserdata?, integer?
+---构造 pong 控制帧（client=1 加掩码）；回应 ping 时须原样带上 ping 的载荷
+---@type fun(client:integer, data?:string|lightuserdata, size?:integer):lightuserdata?, integer?
 wbsk.pong = websock.pack_pong
 
----构造 close 控制帧（触发对端关闭握手）
----@type fun(client:integer):lightuserdata?, integer?
+---构造 close 控制帧，本端发起关闭时用；对端发来的 close 由协议层当场回应。
+---code 为状态码（如 1000），省略即不带；带 reason 时 code 必填
+---@type fun(client:integer, code?:integer, reason?:string):lightuserdata?, integer?
 wbsk.close = websock.pack_close
 
 -- ── 数据帧构造 ────────────────────────────────────────────────────────────

@@ -56,7 +56,7 @@ srey.startup(function()
             local frame, fsize = websock.pack_binary(0, 1, pack.data, pack.size)
             srey.send(sk, frame, fsize, 0)
         elseif WS_PING == pack.prot then
-            local frame, fsize = websock.pack_pong(0)
+            local frame, fsize = websock.pack_pong(0, pack.data, pack.size)-- pong 要原样带回 ping 的载荷
             srey.send(sk, frame, fsize, 0)
         elseif WS_CLOSE == pack.prot then
             srey.close(sk)

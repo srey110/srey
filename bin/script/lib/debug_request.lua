@@ -57,9 +57,10 @@ local function _dump_coros()
     end
     for st in pairs(_serial_execs) do
         local nwait, oldest = 0, now
-        for _, w in ipairs(st.waiters) do
-            if w.since < oldest then
-                oldest = w.since
+        local w = st.waiters
+        for i = st.head, st.tail, 2 do-- 每个等待者 2 格 { 协程, 入队时刻 }，布局见 srey.lua 的 SerialState
+            if w[i + 1] < oldest then
+                oldest = w[i + 1]
             end
             nwait = nwait + 1
         end

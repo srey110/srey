@@ -883,7 +883,7 @@ static int32_t _ltask_get_priority(lua_State *lua) {
 /// <summary>
 /// 把 task 绑到第 index 个 net 线程上执行，-1 解绑回 worker；从下一次调度起生效，绑定时已排进当前这一轮的消息仍在原线程上跑。
 /// 回调里禁止阻塞与长计算：会卡住该线程上所有连接。已有连接不跟着迁，先绑再 connect / udp；
-/// listen 不看绑定，新连接要落到组员所在线程用 task.accept_group
+/// listen 不看绑定，新连接要落到组员所在线程用 task.accept_group(只用这一个线程就只给它放组员)
 /// </summary>
 /// <param name="task" type="lightuserdata?">task 指针；nil 时绑当前 task</param>
 /// <param name="index" type="integer">net 线程下标 [0, task.nnet())；-1 解绑</param>
@@ -913,17 +913,17 @@ static int32_t _ltask_net_index(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 多核监听：每个 net 线程放一个组员 task，由 task(组头)来 listen，之后新连接交给连接所在 net 线程的组员。
-/// 只对之后的 listen 生效，只能设一次
+/// 按 net 线程分组监听：给 net 线程放组员 task，由 task(组头)来 listen，之后只在有组员的线程上收，
+/// 新连接交给所在线程的组员。只对之后的 listen 生效，只能设一次
 /// </summary>
 /// <param name="task" type="lightuserdata?">组头 task 指针；nil 时取当前 task</param>
-/// <param name="handles" type="(string|integer)[]">组员，每项是 task 名或句柄(二选一，同其它绑定)；handles[i] 须已绑到第 i-1 个 net 线程，个数等于 task.nnet()</param>
-/// <returns type="boolean">成功 true；个数不对、某个组员不在或没绑对线程、已经设过，返回 false</returns>
+/// <param name="handles" type="(string|integer)[]">按线程排的组员，每项是 task 名或句柄(二选一，同其它绑定)；handles[i] 须已绑到第 i-1 个 net 线程，
+/// 填 INVALID_TNAME 表示那个线程不收；个数等于 task.nnet()</param>
+/// <returns type="boolean">成功 true；个数不对、一个组员都没有、某个组员不在或没绑对线程、已经设过，返回 false</returns>
 static int32_t _ltask_accept_group(lua_State *lua) {
     LPUB_TASK_ARG(lua, task);
     lua_Integer n, i;
     name_t *hs;
-    task_ctx *member;
     int32_t vtype;
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
@@ -942,12 +942,16 @@ static int32_t _ltask_accept_group(lua_State *lua) {
             && !lua_isinteger(lua, -1)) {
             return luaL_argerror(lua, 2, "members must be task names or handles");
         }
-        member = lpub_task_grab(lua, -1, lpub_task_handle(lua, -1));
-        if (NULL == member) {
+        if (LUA_TSTRING != vtype
+            && INVALID_TNAME == lua_tointeger(lua, -1)) {
+            hs[i - 1] = INVALID_TNAME;// 空位
+            lua_pop(lua, 1);
+            continue;
+        }
+        hs[i - 1] = lpub_task_live(lua, -1, lpub_task_handle(lua, -1));// 名字缓存可能过期，以重查后的为准
+        if (INVALID_TNAME == hs[i - 1]) {
             return lpub_rtn_bool(lua, 0);
         }
-        hs[i - 1] = member->handle;// 名字缓存可能过期，以 grab 到的为准
-        task_ungrab(member);
         lua_pop(lua, 1);
     }
     return lpub_rtn_bool(lua, ERR_OK == task_accept_group(task, hs, (uint16_t)n));

@@ -3249,7 +3249,7 @@ static void test_smtp_clear_reply(CuTest *tc) {
     mail_subject(&mail, "first");
     mail_msg(&mail, "body");
     mail_reply(&mail, 0);
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     CuAssert(tc, "reply=0 must emit No-Reply", NULL != strstr(out, "No-Reply: alice@example.com"));
     FREE(out);
@@ -3259,7 +3259,7 @@ static void test_smtp_clear_reply(CuTest *tc) {
     mail_addrs_add(&mail, "dave@example.com", TO);
     mail_subject(&mail, "second");
     mail_msg(&mail, "body2");
-    out = mail_pack(&mail);
+    out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     CuAssert(tc, "after clear the default Reply-To must be restored", NULL != strstr(out, "Reply-To: carol@example.com"));
     CuAssert(tc, "after clear the previous mail's No-Reply must not persist", NULL == strstr(out, "No-Reply:"));
@@ -3330,7 +3330,7 @@ static void test_smtp_b64_fold(CuTest *tc) {
     mail_addrs_add(&mail, "bob@example.com", TO);
     mail_subject(&mail, "test");
     mail_html(&mail, html, sizeof(html));
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     size_t maxline = _max_line_lens(out);
     CuAssert(tc, "no DATA line may exceed 998 octets (RFC 5321 counts CRLF, 1000 total)", maxline <= 998);
@@ -3349,7 +3349,7 @@ static void _smtp_body_check(CuTest *tc, const char *msg, const char *expect) {
     mail_addrs_add(&mail, "bob@example.com", TO);
     mail_subject(&mail, "test");
     mail_msg(&mail, msg);
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
 
     // 1) DATA 终止符全文只此一处，且正好在末尾
@@ -3409,7 +3409,7 @@ static void test_smtp_plain_mime_headers(CuTest *tc) {
     mail_addrs_add(&mail, "bob@example.com", TO);
     mail_subject(&mail, "test");
     mail_msg(&mail, "\xe4\xb8\xad\xe6\x96\x87");// UTF-8 "中文"
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     CuAssertTrue(tc, NULL != strstr(out, "MIME-Version: 1.0"));
     CuAssertTrue(tc, NULL != strstr(out, "Content-Type: text/plain; charset=utf-8"));
@@ -3431,7 +3431,7 @@ static void test_smtp_plain_line_fold(CuTest *tc) {
     mail_addrs_add(&mail, "bob@example.com", TO);
     mail_subject(&mail, "test");
     mail_msg(&mail, msg);
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     size_t maxline = _max_line_lens(out);
     CuAssert(tc, "plain-text body must be folded too, not just base64 attachments", maxline <= 998);
@@ -3455,7 +3455,7 @@ static void test_smtp_subject_line_fold(CuTest *tc) {
     mail_addrs_add(&mail, "bob@example.com", TO);
     mail_subject(&mail, subject);
     mail_msg(&mail, "body");
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     size_t maxline = _max_line_lens(out);
     CuAssert(tc, "long ASCII subject must be encoded-word folded, not written raw", maxline <= 998);
@@ -3463,7 +3463,7 @@ static void test_smtp_subject_line_fold(CuTest *tc) {
     // 短主题不受影响，仍旧裸写
     FREE(out);
     mail_subject(&mail, "plain short");
-    out = mail_pack(&mail);
+    out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     CuAssertPtrNotNull(tc, strstr(out, "Subject: plain short\r\n"));
     FREE(out);
@@ -3487,7 +3487,7 @@ static void test_smtp_boundary_random(CuTest *tc) {
         mail_addrs_add(&mail, "bob@example.com", TO);
         mail_subject(&mail, "test");
         mail_html(&mail, html, strlen(html));
-        out = mail_pack(&mail);
+        out = mail_pack(&mail, NULL);
         CuAssertPtrNotNull(tc, out);
         tag = strstr(out, "boundary=\"");
         CuAssertPtrNotNull(tc, tag);
@@ -3512,7 +3512,7 @@ static void _smtp_from_check(CuTest *tc, const char *name, const char *expect) {
     mail_addrs_add(&mail, "bob@example.com", TO);
     mail_subject(&mail, "test");
     mail_msg(&mail, "body");
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     CuAssert(tc, expect, NULL != strstr(out, expect));
     FREE(out);
@@ -3544,7 +3544,7 @@ static void test_smtp_header_encoded_word(CuTest *tc) {
         strcat(subject, "\xe4\xb8\xad\xe6\x96\x87\xe4\xb8\xbb\xe9\xa2\x98");
     }
     mail_subject(&mail, subject);
-    char *out = mail_pack(&mail);
+    char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
     // 裸 UTF-8 不得出现在头部
     const char *hdrend = strstr(out, "\r\n\r\n");
@@ -4267,7 +4267,7 @@ static void test_custz_head_wire(CuTest *tc) {
 static void test_websock_pack_frames(CuTest *tc) {
     size_t size = 0;
     /* PING 无掩码：byte0 = FIN|opcode(0x9) = 0x89，byte1 = 0x00（无 payload）*/
-    void *p = websock_pack_ping(0, &size);
+    void *p = websock_pack_ping(0, NULL, 0, &size);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, 2 == (int)size);
     CuAssertTrue(tc, 0x89 == ((uint8_t *)p)[0]);
@@ -4275,19 +4275,19 @@ static void test_websock_pack_frames(CuTest *tc) {
     FREE(p);
 
     /* PONG 无掩码：byte0=0x8a */
-    p = websock_pack_pong(0, &size);
+    p = websock_pack_pong(0, NULL, 0, &size);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, 0x8a == ((uint8_t *)p)[0]);
     FREE(p);
 
     /* CLOSE 无掩码：byte0=0x88 */
-    p = websock_pack_close(0, &size);
+    p = websock_pack_close(0, 0, NULL, 0, &size);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, 0x88 == ((uint8_t *)p)[0]);
     FREE(p);
 
     /* PING 带掩码：byte1 高位置位 0x80，长度 4 字节掩码键 */
-    p = websock_pack_ping(1, &size);
+    p = websock_pack_ping(1, NULL, 0, &size);
     CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, 2 + 4 == (int)size);
     CuAssertTrue(tc, 0x89 == ((uint8_t *)p)[0]);
@@ -4336,6 +4336,63 @@ static void test_websock_pack_frames(CuTest *tc) {
     CuAssertTrue(tc, 126 == ((uint8_t *)p)[1]);
     /* 大端长度 0x007e */
     CuAssertTrue(tc, 0x00 == ((uint8_t *)p)[2] && 0x7e == ((uint8_t *)p)[3]);
+    FREE(p);
+}
+
+// 控制帧带载荷：PING/PONG 原样带载荷(回应 PING 的 PONG 必须带回同样的载荷)，CLOSE 是 2 字节大端状态码 + 原因；
+// 载荷按协议卡 125 字节，超了返回 NULL 且 size 置 0
+static void test_websock_pack_ctrl(CuTest *tc) {
+    size_t size = 0;
+    char big[WS_CTRL_MAX_LENS + 1];
+    uint8_t *b;
+    void *p;
+    int32_t i;
+    memset(big, 'r', sizeof(big));
+    p = websock_pack_ping(0, "abc", 3, &size);
+    CuAssertPtrNotNull(tc, p);
+    b = p;
+    CuAssertIntEquals(tc, 5, (int)size);
+    CuAssertTrue(tc, 0x89 == b[0] && 0x03 == b[1] && 0 == memcmp(b + 2, "abc", 3));
+    FREE(p);
+    // 带掩码的 PONG：载荷按 4 字节 key 异或，解回来应是原文
+    p = websock_pack_pong(1, "abc", 3, &size);
+    CuAssertPtrNotNull(tc, p);
+    b = p;
+    CuAssertIntEquals(tc, 2 + 4 + 3, (int)size);
+    CuAssertTrue(tc, 0x8a == b[0] && 0x83 == b[1]);
+    for (i = 0; i < 3; i++) {
+        CuAssertTrue(tc, (uint8_t)"abc"[i] == (uint8_t)(b[6 + i] ^ b[2 + i % 4]));
+    }
+    FREE(p);
+    // 恰好 125 字节合法，126 拒绝
+    p = websock_pack_ping(0, big, WS_CTRL_MAX_LENS, &size);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertIntEquals(tc, 2 + WS_CTRL_MAX_LENS, (int)size);
+    FREE(p);
+    size = 1;
+    CuAssertPtrEquals(tc, NULL, websock_pack_pong(0, big, WS_CTRL_MAX_LENS + 1, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    // CLOSE 1000 + "bye"
+    p = websock_pack_close(0, 1000, "bye", 3, &size);
+    CuAssertPtrNotNull(tc, p);
+    b = p;
+    CuAssertIntEquals(tc, 7, (int)size);
+    CuAssertTrue(tc, 0x88 == b[0] && 0x05 == b[1] && 0x03 == b[2] && 0xe8 == b[3] && 0 == memcmp(b + 4, "bye", 3));
+    FREE(p);
+    // 只带状态码
+    p = websock_pack_close(0, 1001, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, p);
+    b = p;
+    CuAssertTrue(tc, 4 == size && 0x02 == b[1] && 0x03 == b[2] && 0xe9 == b[3]);
+    FREE(p);
+    // 没有状态码却带原因、原因加状态码超 125：都拒绝；恰好 125 合法
+    size = 1;
+    CuAssertPtrEquals(tc, NULL, websock_pack_close(0, 0, "x", 1, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    CuAssertPtrEquals(tc, NULL, websock_pack_close(0, 1000, big, WS_CTRL_MAX_LENS - 1, &size));
+    p = websock_pack_close(0, 1000, big, WS_CTRL_MAX_LENS - 2, &size);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertIntEquals(tc, 2 + WS_CTRL_MAX_LENS, (int)size);
     FREE(p);
 }
 
@@ -4780,7 +4837,7 @@ static void test_websock_unpack_interleaved_data(CuTest *tc) {
 
 static void test_websock_unpack_close(CuTest *tc) {
     size_t size = 0;
-    void *frame = websock_pack_close(0, &size);
+    void *frame = websock_pack_close(0, 0, NULL, 0, &size);
     CuAssertPtrNotNull(tc, frame);
 
     buffer_ctx buf;
@@ -5302,6 +5359,199 @@ static void test_prots_may_resume_default(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_WEBSOCK, NULL));
 }
 
+// 头已解出、正文还没收齐：协议要把"本条还差多少"记进接收缓冲(buffer_want)，读路径据此首轮一次要够空间
+static void test_prots_want(CuTest *tc) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    websock_ctx ws;
+    int32_t status;
+    size_t out = 0;
+    char fill[1000];
+    memset(fill, 'x', sizeof(fill));
+    // custz FIXED：声明 10000 字节，只到 100
+    uint8_t head[4] = { 0x00, 0x00, 0x27, 0x10 };
+    buffer_init(&buf);
+    buffer_append(&buf, head, sizeof(head));
+    buffer_append(&buf, fill, 100);
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_CUSTZ_FIXED;
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_custz_unpack(0, &buf, &ud, &out, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertIntEquals(tc, 10000 - 100, (int)buf.want);
+    buffer_free(&buf);
+    // HTTP：Content-Length 20000，body 只到 500
+    buffer_init(&buf);
+    _bput(&buf, "POST / HTTP/1.1\r\nContent-Length: 20000\r\n\r\n");
+    buffer_append(&buf, fill, 500);
+    ZERO(&ud, sizeof(ud));
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_http_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertIntEquals(tc, 20000 - 500, (int)buf.want);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+    // WebSocket：服务端发来的二进制帧声明 60000 字节(2 字节扩展长度；单帧上限 WS_MAX_PAYLOAD_LENS 65535)，载荷只到 1000
+    uint8_t wshead[4] = { 0x82, 126, 0xea, 0x60 };
+    buffer_init(&buf);
+    buffer_append(&buf, wshead, sizeof(wshead));
+    buffer_append(&buf, fill, sizeof(fill));
+    _ws_ctx_init(&ws, &ud);
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_websock_unpack(1, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertIntEquals(tc, 60000 - 1000, (int)buf.want);
+    if (NULL != ws.pack) {
+        _websock_pkfree(ws.pack);
+    }
+    buffer_free(&buf);
+}
+// 同 test_prots_want，补其余 8 个出口。期望值都按各出口的公式算，故意选能区分漏加尾 CRLF / 类型码 / 掩码键的数
+static void test_prots_want2(CuTest *tc) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    websock_ctx ws;
+    mysql_ctx mysql;
+    pgsql_ctx pg;
+    int32_t status;
+    size_t out = 0;
+    void *pack;
+    char fill[1000];
+    uint8_t pghead[5] = { 'C', 0x00, 0x00, 0x75, 0x30 };// 长度字段 30000(含自身 4 字节)
+    uint8_t myhead[4] = { 0x30, 0x75, 0x00, 0x00 };// 3 字节小端 payload 长 30000 + 序号 0
+    uint8_t mghead[4] = { 0x40, 0x9c, 0x00, 0x00 };// 小端整包长 40000
+    uint8_t mqhead[4] = { 0x30, 0xd0, 0x86, 0x03 };// PUBLISH，剩余长度 50000 占 3 字节
+    uint8_t dnshead[2] = { 0x0f, 0xa0 };// 大端报文长 4000
+    uint8_t wshead[8] = { 0x82, 0xfe, 0xc3, 0x50, 0x11, 0x22, 0x33, 0x44 };// 带掩码二进制帧，扩展长度 50000 + 掩码键
+    memset(fill, 'x', sizeof(fill));
+    // HTTP chunked：长度行 0x9c40=40000 后载荷只到 600。长度行已 drain，差 载荷 + 尾 CRLF - 已到 = 40000 + 2 - 600
+    buffer_init(&buf);
+    _bput(&buf, "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+    ZERO(&ud, sizeof(ud));
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 头块单独出包
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+    _bput(&buf, "9c40\r\n");
+    buffer_append(&buf, fill, 600);
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_http_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 40000 + 2 - 600, (int)buf.want);
+    _http_udfree(&ud);// 挂在 ud->context 上的 chunk 包
+    buffer_free(&buf);
+    // Redis bulk：pos 为 CR 下标 6，total = 30000 + 6 + 4；已到 8 + 400
+    buffer_init(&buf);
+    _bput(&buf, "$30000\r\n");
+    buffer_append(&buf, fill, 400);
+    ZERO(&ud, sizeof(ud));
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_redis_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 30010 - 408, (int)buf.want);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+    // pgsql COMMAND：整包 = 类型码 1 + 长度字段 30000；已到 5 + 700
+    buffer_init(&buf);
+    buffer_append(&buf, pghead, sizeof(pghead));
+    buffer_append(&buf, fill, 700);
+    ZERO(&pg, sizeof(pg));
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_PGSQL;
+    ud.status = 2;// COMMAND，枚举在 pgsql.c 内不可见
+    ud.context = &pg;
+    CuAssertPtrEquals(tc, NULL, _t_prots_unpack(1, &buf, &ud, &out, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 30001 - 705, (int)buf.want);
+    buffer_free(&buf);
+    // mysql COMMAND 首包：放不进栈缓冲，转 _mysql_payload → _mysql_head，差 payload + 包头 4 - 已到(4 + 300)
+    buffer_init(&buf);
+    buffer_append(&buf, myhead, sizeof(myhead));
+    buffer_append(&buf, fill, 300);
+    ZERO(&mysql, sizeof(mysql));
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_MYSQL;
+    ud.status = 3;// COMMAND，枚举在 mysql.c 内不可见
+    ud.context = &mysql;
+    CuAssertPtrEquals(tc, NULL, _t_prots_unpack(1, &buf, &ud, &out, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 30000 + 4 - 304, (int)buf.want);
+    buffer_free(&buf);
+    // mongo：头里的整包长 40000 含长度字段自身；已到 4 + 600。此出口在碰 ud 之前
+    buffer_init(&buf);
+    buffer_append(&buf, mghead, sizeof(mghead));
+    buffer_append(&buf, fill, 600);
+    ZERO(&ud, sizeof(ud));
+    ud.pktype = PACK_MONGO;
+    CuAssertPtrEquals(tc, NULL, _t_prots_unpack(1, &buf, &ud, &out, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 40000 - 604, (int)buf.want);
+    buffer_free(&buf);
+    // MQTT 服务端收 PUBLISH：0xd0 0x86 0x03 = 80 + 6*128 + 3*16384 = 50000，total = 1 + 3 + 50000；已到 4 + 800
+    buffer_init(&buf);
+    buffer_append(&buf, mqhead, sizeof(mqhead));
+    buffer_append(&buf, fill, 800);
+    ZERO(&ud, sizeof(ud));
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_mqtt_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 50004 - 804, (int)buf.want);
+    buffer_free(&buf);
+    // DNS over TCP：2 字节长度 + 报文 4000；已到 2 + 100
+    buffer_init(&buf);
+    buffer_append(&buf, dnshead, sizeof(dnshead));
+    buffer_append(&buf, fill, 100);
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_dns_unpack(1, &buf, NULL, &out, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 2 + 4000 - 102, (int)buf.want);
+    buffer_free(&buf);
+    // WebSocket 服务端收客户端帧：4 字节头已 drain，remain = 掩码键 4 + 50000；缓冲剩 掩码键 4 + 900
+    buffer_init(&buf);
+    buffer_append(&buf, wshead, sizeof(wshead));
+    buffer_append(&buf, fill, 900);
+    _ws_ctx_init(&ws, &ud);
+    status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_websock_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertIntEquals(tc, PROT_MOREDATA, status);
+    CuAssertIntEquals(tc, 50004 - 904, (int)buf.want);
+    if (NULL != ws.pack) {
+        _websock_pkfree(ws.pack);
+    }
+    buffer_free(&buf);
+}
+// 纯 WS 连接(无子协议)：对端主动发的 PING 不能唤醒正等响应的协程；PONG 是发 PING 等的回应，与数据帧一样可唤醒
+static void test_prots_may_resume_websock_ping(CuTest *tc) {
+    websock_ctx ws;
+    ud_cxt ud;
+    buffer_ctx buf;
+    struct websock_pack_ctx *pack;
+    void *frames[3];
+    size_t flens[3];
+    int32_t expect[3] = { ERR_FAILED, ERR_OK, ERR_OK };
+    int32_t got[3];
+    int32_t status;
+    int32_t i;
+    frames[0] = websock_pack_ping(0, "x", 1, &flens[0]);
+    frames[1] = websock_pack_pong(0, "x", 1, &flens[1]);
+    frames[2] = websock_pack_binary(0, 1, "x", 1, &flens[2]);
+    for (i = 0; i < 3; i++) {
+        _ws_ctx_init(&ws, &ud);
+        buffer_init(&buf);
+        buffer_append(&buf, frames[i], flens[i]);
+        FREE(frames[i]);
+        status = PROT_INIT;
+        pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
+        got[i] = (NULL == pack) ? -2 : prots_may_resume(PACK_WEBSOCK, pack);
+        if (NULL != pack) {
+            _websock_pkfree(pack);
+        }
+        buffer_free(&buf);
+    }
+    for (i = 0; i < 3; i++) {
+        CuAssertIntEquals(tc, expect[i], got[i]);
+    }
+}
 // WS 承载 MQTT 时 prots_may_resume 必须按内层包判定：broker 主动推的 PUBLISH 不得唤醒
 // 等待者，SUBACK 可以。直连 PACK_MQTT 与 WS 承载两条路径的结论必须一致
 static void test_prots_may_resume_websock_mqtt(CuTest *tc) {
@@ -5393,7 +5643,7 @@ static void test_mail_html_and_clear(CuTest *tc) {
     mail_html(&mail, html, strlen(html));
     CuAssertTrue(tc, strlen(html) == mail.hlens && 0 == memcmp(mail.html, html, mail.hlens));
 
-    char *pkt = mail_pack(&mail);
+    char *pkt = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, pkt);
     /* 含 HTML Content-Type 标记，正文是 html 原文的 base64 */
     CuAssertTrue(tc, NULL != strstr(pkt, "text/html"));
@@ -6193,7 +6443,7 @@ static void test_mail_attach_pack(CuTest *tc) {
     bs64_encode(payload, plen, b64);
 
     // 4. mail_pack：含 multipart/mixed boundary + 附件 header + base64 内容
-    char *pkt = mail_pack(&mail);
+    char *pkt = mail_pack(&mail, NULL);
     int32_t pkt_ok = (NULL != pkt);
     int32_t mime_ok = 0, mixed_ok = 0, ctype_ok = 0, cte_ok = 0;
     int32_t cdisp_ok = 0, fname_ok = 0, b64_ok = 0, term_ok = 0;
@@ -6220,15 +6470,19 @@ static void test_mail_attach_pack(CuTest *tc) {
     mail_attach_add(&mail, tmpfile);
     mail_attach_add(&mail, tmpfile);
     int32_t natt3 = (int32_t)mattach_arr_size(&mail.attach);
-    char *pkt2 = mail_pack(&mail);
+    size_t psz2 = 0;
+    char *pkt2 = mail_pack(&mail, &psz2);
     int32_t pkt2_ok = (NULL != pkt2);
     // 两个附件的同名 filename 至少出现 2 次（Content-Disposition 各一次）
     int32_t filename_hits = 0;
     const char *p;
+    // 带出的长度就是整封信(不含结尾 NUL)，末尾正好是 DATA 终止符
+    int32_t psz_ok = 0;
     if (pkt2_ok) {
         for (p = pkt2; NULL != (p = strstr(p, "test_mail_attach.txt")); p++) {
             filename_hits++;
         }
+        psz_ok = (psz2 == strlen(pkt2) && psz2 >= 5 && 0 == memcmp(pkt2 + psz2 - 5, "\r\n.\r\n", 5));
     }
     FREE(pkt2);
     mail_free(&mail);
@@ -6251,6 +6505,7 @@ static void test_mail_attach_pack(CuTest *tc) {
     CuAssertIntEquals(tc, 2, natt3);
     CuAssertTrue(tc, 0 != pkt2_ok);
     CuAssertTrue(tc, filename_hits >= 2);
+    CuAssertTrue(tc, 0 != psz_ok);
 }
 
 // 附件名含非 ASCII：RFC 5322 §2.2 只许头字段体是 US-ASCII，而 smtp.c 从不协商 SMTPUTF8，
@@ -6280,7 +6535,7 @@ static void test_mail_attach_name_rfc2231(CuTest *tc) {
     if (NULL != att) {
         SNPRINTF(att->file, sizeof(att->file), "%s", "\xe6\x8a\xa5\xe8\xa1\xa8.pdf");
     }
-    char *pkt = mail_pack(&mail);
+    char *pkt = mail_pack(&mail, NULL);
     int32_t pkt_ok = (NULL != pkt);
     int32_t ext_ok = 0, raw_ok = 0, ascii_ok = 1;
     const char *q;
@@ -6304,7 +6559,7 @@ static void test_mail_attach_name_rfc2231(CuTest *tc) {
     if (NULL != att) {
         SNPRINTF(att->file, sizeof(att->file), "%s", "plain.pdf");
     }
-    pkt = mail_pack(&mail);
+    pkt = mail_pack(&mail, NULL);
     int32_t quoted_ok = (NULL != pkt
         && NULL != strstr(pkt, "Content-Disposition: attachment; filename=\"plain.pdf\"")
         && NULL == strstr(pkt, "filename*="));
@@ -7062,7 +7317,7 @@ static void test_smtp_b64_line_boundary(CuTest *tc) {
         mail_subject(&mail, "t");
         mail_msg(&mail, "x");
         mail_html(&mail, html, lens[i]);
-        out = mail_pack(&mail);
+        out = mail_pack(&mail, NULL);
         CuAssertPtrNotNull(tc, out);
         b = strstr(out, "Content-Type: text/html");
         CuAssertPtrNotNull(tc, b);
@@ -7268,7 +7523,7 @@ static void test_size_websock(CuTest *tc) {
     _websock_pkfree(pack);
 
     // 3) 空载荷的 PING：先放个非 0 值，确认是回填成 0 而不是没写
-    frame = websock_pack_ping(1, &fsize);
+    frame = websock_pack_ping(1, NULL, 0, &fsize);
     CuAssertPtrNotNull(tc, frame);
     buffer_append(&buf, frame, fsize);
     FREE(frame);
@@ -7516,6 +7771,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_custz_head_variable);
     SUITE_ADD_TEST(suite, test_custz_head_wire);
     SUITE_ADD_TEST(suite, test_websock_pack_frames);
+    SUITE_ADD_TEST(suite, test_websock_pack_ctrl);
     SUITE_ADD_TEST(suite, test_websock_maxpack);
     SUITE_ADD_TEST(suite, test_websock_pack_handshake);
     SUITE_ADD_TEST(suite, test_websock_handshake_server_reject);
@@ -7555,6 +7811,9 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_parse_colon_triple);
     SUITE_ADD_TEST(suite, test_prots_may_resume_default);
     SUITE_ADD_TEST(suite, test_prots_may_resume_websock_mqtt);
+    SUITE_ADD_TEST(suite, test_prots_may_resume_websock_ping);
+    SUITE_ADD_TEST(suite, test_prots_want);
+    SUITE_ADD_TEST(suite, test_prots_want2);
     SUITE_ADD_TEST(suite, test_mail_html_and_clear);
     SUITE_ADD_TEST(suite, test_mail_attach_pack);
     SUITE_ADD_TEST(suite, test_mail_attach_name_rfc2231);

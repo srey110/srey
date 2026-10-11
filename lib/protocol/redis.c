@@ -586,6 +586,7 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     total = (size_t)(blens + pos + CRLF_SIZE * 2);
     if (buffer_size(buf) < total) {
         BIT_SET(*status, PROT_MOREDATA);
+        buffer_want(buf, total - buffer_size(buf));
         return ERR_FAILED;
     }
     size_t doff = (size_t)(pos + CRLF_SIZE);

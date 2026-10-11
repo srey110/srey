@@ -4,17 +4,16 @@
 #define MTYPE_OUT_OF_RANGE "message type out of range"
 #define SECLEVEL_OUT_OF_RANGE "ssl security level out of range"
 #define TLSVER_OUT_OF_RANGE "tls version out of range"
-#define SEND_MULTI_STACK 64 // send_multi 连接数不超过它时用栈数组，免一次 MALLOC
-#define MULTI_STACK_DSTS 32 // multi_* 目标数不超过它时 dsts 用 _multi_args 里的定长数组，免一次 MALLOC
+#define SEND_MULTI_STACK 128 // send_multi 连接数不超过它时用栈数组，免一次 MALLOC
 
 // multi_request / multi_call 投递一次所需的全部东西。两个 int32 挨着放在 8 字节字段之前,不留 padding
 typedef struct {
-    int32_t    count; // grab 成功数;0 表示无处可投
-    int32_t    copy;  // 载荷 copy 语义,透传给 task_multi_*
-    size_t     size;  // 载荷字节数
-    task_ctx **dsts;  // grab 到的目标数组,指向 stk 或堆
-    void      *data;  // 载荷,可为 NULL
-    task_ctx  *stk[MULTI_STACK_DSTS]; // 目标数不超过 MULTI_STACK_DSTS 时 dsts 就用它
+    int32_t count; // 目标数(含 nil 占位);0 表示无处可投
+    int32_t copy;  // 载荷 copy 语义,透传给 task_multi_request2
+    size_t  size;  // 载荷字节数
+    name_t *hs;    // 目标句柄数组,nil 占位为 INVALID_TNAME,指向 stk 或压在栈上的 Lua userdata
+    void   *data;  // 载荷,可为 NULL
+    name_t  stk[MULTI_REQUEST2_STACK]; // 目标数不超过 MULTI_REQUEST2_STACK 时 hs 就用它
 }_multi_args;
 typedef struct _task_entry {
     char  *name; // strdup 的任务名，匿名 task 为 NULL；押进 Lua 表后即 FREE
@@ -80,84 +79,74 @@ static int32_t _lcore_call(lua_State *lua) {
     CHECK_COPY_FREE(data, copy);
     return lpub_rtn_bool(lua, 0);
 }
-// 校验 dsts table 类型 + 逐元素类型(string/integer 名或 nil)。成功返回长度(>=0);
-// dsts 非 table 或含非法元素返回 -1。内部的 luaL_len 会走 __len 元方法、也会对非整数结果自行抛错,
-// 所以调用方必须在接管 copy=0 缓冲之前调它——抛出时那块内存还没有主人。
-static int32_t _check_multi_names(lua_State *lua, int32_t idx) {
+// 校验 dsts(table，元素是 string/integer 名或 nil)并逐个换成句柄(nil 为 INVALID_TNAME，名字记进缓存)。
+// 成功返回长度(>=0)；dsts 非 table 或含非法元素返回 -1。luaL_len 会走 __len 元方法、记缓存会分配，都可能抛错，
+// 所以调用方必须在接管 copy=0 缓冲之前调它——抛出时那块内存还没有主人。句柄数组超出 stk 时放 Lua userdata，抛错也不漏
+static int32_t _multi_handles(lua_State *lua, int32_t idx, _multi_args *ma) {
     if (LUA_TTABLE != lua_type(lua, idx)) {
         return -1;
     }
     int32_t n = (int32_t)luaL_len(lua, idx);
     int32_t vtype;
-    int32_t isint;
+    ma->hs = ma->stk;
+    if (n > MULTI_REQUEST2_STACK) {
+        ma->hs = (name_t *)lua_newuserdatauv(lua, sizeof(name_t) * (size_t)n, 0);
+    }
     for (int32_t i = 0; i < n; i++) {
         lua_rawgeti(lua, idx, i + 1);
         vtype = lua_type(lua, -1);
-        isint = lua_isinteger(lua, -1);
-        lua_pop(lua, 1);
-        if (LUA_TNIL != vtype && LUA_TSTRING != vtype && !isint) {
+        if (LUA_TNIL == vtype) {
+            ma->hs[i] = INVALID_TNAME;
+        } else if (LUA_TSTRING == vtype || lua_isinteger(lua, -1)) {
+            ma->hs[i] = lpub_task_handle(lua, -1);
+        } else {
             return -1;
         }
+        lua_pop(lua, 1);
     }
     return n;
 }
-// 按 _check_multi_names 已校验的长度 n(>0) 从 dsts table(栈位置 idx)逐元素 grab,填充 task_ctx*[n],
-// *cnt 出参为实际 grab 成功数(跳过 nil/NONE/不存在)。返回值是 stk 或新分配的数组,调用方经
-// _multi_free_dsts 释放并对前 *cnt 个 ungrab。
-// 元素类型已校验,循环内 lpub_task_peek/lpub_task_grab 不 longjmp,可在其它资源就绪后安全调用。
-static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int32_t *cnt, task_ctx **stk) {
-    task_ctx **dsts = stk;
-    if (n > MULTI_STACK_DSTS) {
-        MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
-    }
-    int32_t count = 0;
-    task_ctx *t;
-    for (int32_t i = 0; i < n; i++) {
-        lua_rawgeti(lua, idx, i + 1);
-        if (LUA_TNIL != lua_type(lua, -1)) {
-            t = lpub_task_grab(lua, -1, lpub_task_peek(lua, -1));
-            if (NULL != t) {
-                dsts[count++] = t;
-            }
-        }
-        lua_pop(lua, 1);
-    }
-    *cnt = count;
-    return dsts;
-}
-// dsts 不是 stk 才是堆上分配的,才释放
-static void _multi_free_dsts(_multi_args *ma) {
-    if (ma->dsts != ma->stk) {
-        FREE(ma->dsts);
-    }
-}
-// multi_request / multi_call 的共同前半段:校验 dsts、取载荷、逐个 grab。
-// 返回 grab 成功数;返回 0 表示无处可投,此时载荷已按 copy 释放、数组已释放,调用方直接返回即可,
-// 非 0 时调用方投递完必须调 _multi_done。
-// 校验必须排在取载荷之前,理由见 _check_multi_names
+// multi_request / multi_call 的共同前半段:校验 dsts 并换成句柄、取载荷。
+// 返回目标数;0 表示无处可投,此时载荷已按 copy 释放,调用方直接返回即可,非 0 时接着调 _multi_post
 static int32_t _multi_prepare(lua_State *lua, int32_t bufidx, _multi_args *ma) {
-    int32_t n = _check_multi_names(lua, 1);
+    // 句柄数组超出 stk 时会压一个 userdata：先把载荷的可选参数位(data/size/copy)补成 nil 占住，免得它落进去
+    lua_settop(lua, bufidx + 2);
+    int32_t n = _multi_handles(lua, 1, ma);
     if (n < 0) {
         return luaL_error(lua, "dsts must be a table of task name(string/integer) or nil");
     }
-    ma->count = 0;
-    ma->dsts = NULL;
+    ma->count = n;
     ma->data = _lcore_opt_buf(lua, bufidx, &ma->size, &ma->copy);
-    if (n > 0) {
-        ma->dsts = _grab_multi_names(lua, 1, n, &ma->count, ma->stk);
-    }
-    if (0 == ma->count) {
+    if (0 == n) {
         CHECK_COPY_FREE(ma->data, ma->copy);
-        _multi_free_dsts(ma);
+        return 0;
     }
-    return ma->count;
+    return n;
 }
-// 投递之后的收尾:逐个 ungrab 并释放数组
-static void _multi_done(_multi_args *ma) {
-    for (int32_t i = 0; i < ma->count; i++) {
-        task_ungrab(ma->dsts[i]);
+// 读锁内按句柄一次投完，不逐个 grab/ungrab。有句柄投不到(名字的缓存句柄可能已过期)就按名字重查一遍再投，
+// 仍查不到的跳过；一个都没投出去时按 copy 释放载荷。返回投递数
+static int32_t _multi_post(lua_State *lua, _multi_args *ma, task_ctx *src, subtype_t reqtype, uint64_t sess) {
+    int32_t i;
+    name_t fresh;
+    int32_t posted = task_multi_request2(g_loader, ma->hs, ma->count, src, reqtype, sess,
+                                           ma->data, ma->size, ma->copy, 1);
+    if (posted < 0) {
+        for (i = 0; i < ma->count; i++) {
+            lua_rawgeti(lua, 1, i + 1);
+            fresh = lpub_task_refresh(lua, -1, ma->hs[i]);
+            if (INVALID_TNAME != fresh) {
+                ma->hs[i] = fresh;
+            }
+            lua_pop(lua, 1);
+        }
+        posted = task_multi_request2(g_loader, ma->hs, ma->count, src, reqtype, sess,
+                                       ma->data, ma->size, ma->copy, 0);
     }
-    _multi_free_dsts(ma);
+    if (posted <= 0) {
+        CHECK_COPY_FREE(ma->data, ma->copy);
+        posted = 0;
+    }
+    return posted;
 }
 /// <summary>
 /// 广播请求：把同一份 data 投递给多个 task,各 dst 在 _request 回调中独立 task_response 回 src(共用 sess)。
@@ -169,7 +158,7 @@ static void _multi_done(_multi_args *ma) {
 /// <param name="data" type="string|lightuserdata|nil">数据(nil 表示无载荷)；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
 /// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1（复制）;0 时直接转移所有权</param>
-/// <returns type="integer">实际成功投递的 dst 数（非 NULL 元素个数,0 表示全部跳过未投递）</returns>
+/// <returns type="integer">实际投递的 dst 数（跳过的不计,0 表示一个也没投）</returns>
 static int32_t _lcore_multi_request(lua_State *lua) {
     LPUB_CUR_TASK(lua, src);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
@@ -179,10 +168,7 @@ static int32_t _lcore_multi_request(lua_State *lua) {
         lua_pushinteger(lua, 0);
         return 1;
     }
-    int32_t valid = task_multi_request(ma.dsts, ma.count, src, reqtype, sess,
-                                       ma.data, ma.size, ma.copy);
-    _multi_done(&ma);
-    lua_pushinteger(lua, valid);
+    lua_pushinteger(lua, _multi_post(lua, &ma, src, reqtype, sess));
     return 1;
 }
 /// <summary>
@@ -200,8 +186,7 @@ static int32_t _lcore_multi_call(lua_State *lua) {
     if (0 == _multi_prepare(lua, 3, &ma)) {
         return 0;
     }
-    task_multi_call(ma.dsts, ma.count, reqtype, ma.data, ma.size, ma.copy);
-    _multi_done(&ma);
+    (void)_multi_post(lua, &ma, NULL, reqtype, 0);
     return 0;
 }
 /// <summary>
@@ -571,15 +556,12 @@ static int32_t _lcore_status(lua_State *lua) {
 ///   仅保证调用时目标存在——若目标在绑定之后才退出,该连接下一条消息仍会被静默关闭</returns>
 static int32_t _lcore_bind_task(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    name_t handle = lpub_task_handle(lua, 2);
-    // 用 grab 探存在性:lpub_task_handle 对数字句柄原样返回,业务缓存的旧句柄在目标退出后
-    // 照样非 INVALID_TNAME、单查该值会放行;task_grab 首行已挡 INVALID_TNAME,一次覆盖两种
-    task_ctx *dst = lpub_task_grab(lua, 2, handle);
-    if (NULL == dst) {
+    // 查表探存在性:lpub_task_handle 对数字句柄原样返回,业务缓存的旧句柄在目标退出后
+    // 照样非 INVALID_TNAME、单看该值会放行;名字的缓存句柄过期时 lpub_task_live 会换成新的
+    name_t handle = lpub_task_live(lua, 2, lpub_task_handle(lua, 2));
+    if (INVALID_TNAME == handle) {
         return lpub_rtn_bool(lua, 0);
     }
-    handle = dst->handle;// 名字的缓存句柄过期时 grab 内部会换成新的
-    task_ungrab(dst);
     return lpub_rtn_bool(lua, ERR_OK == ev_ud_handle(&g_loader->netev, sk, handle));
 }
 // session / session_clear 共用：取连接标识,把会话键设成 use_skid 非 0 时的 skid、否则 0

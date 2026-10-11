@@ -23,8 +23,12 @@
 // buffer_from_sock 的 _readv 回调除成功/失败外可回的额外码：这次读成功，且回调侧确知自己
 // 那层缓冲(如 SSL)已空、无须再问。收到后按成功处理并停止本轮抽取，不会透传给调用方
 #define BUFFER_READV_DRAINED 3
-// buffer_from_sock 按 hint 加大首轮空间的上限；再大会落进分配器的大块档，macOS/Windows 上反复缺页
+// buffer_from_sock 按 hint(内核报的已到达字节数)加大首轮空间的上限：数据已在内核里，开了不会空着；
+// 再大会落进分配器的大块档，macOS/Windows 上反复缺页
 #define RECV_HINT_CAP (64 * 1024)
+// 读满后翻倍、以及 buffer_want(对端声称的长度，数据未必已到)的上限：这两样开出来的节点可能空着，
+// 取大了同时收大块的连接多时峰值内存跟着涨
+#define RECV_GROW_CAP (32 * 1024)
 
 typedef struct buffer_ctx {
     volatile int32_t freeze_read;  //读暂存态：buffer_get 到 buffer_commit_get 之间置位，期间禁调读接口
@@ -36,6 +40,7 @@ typedef struct buffer_ctx {
     struct bufnode_ctx *hint_node;    //搜索游标：上次命中的节点
     size_t             hint_base_off; //游标节点之前所有节点的累计字节偏移
     uint32_t           pinned_n;      //buffer_get 本次锁定的节点数，buffer_commit_get 按它精确解锁
+    uint32_t           want;          //消费方声明的本条消息还差多少字节，见 buffer_want
 }buffer_ctx;
 
 /// <summary>
@@ -184,6 +189,15 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
 /// <param name="lens">要删除的长度，0 表示只解除暂存不删除数据</param>
 void buffer_commit_get(buffer_ctx *ctx, size_t lens);
 /// <summary>
+/// 记下"本条消息还差多少字节才收齐"，下一次裸 socket 读（buffer_from_sock 的 arg 为 NULL）首轮按它要空间，
+/// 加大最多到 RECV_GROW_CAP，用一次即清。只在已解出长度、正等正文的数据不够出口调；多报只是首轮多要点空间
+/// </summary>
+/// <param name="ctx">buffer_ctx</param>
+/// <param name="lack">还差的字节数</param>
+static inline void buffer_want(buffer_ctx *ctx, size_t lack) {
+    ctx->want = lack > UINT32_MAX ? UINT32_MAX : (uint32_t)lack;
+}
+/// <summary>
 /// 从socket中读数据，循环到读不出为止。未读满即认定 socket 已空直接停，剩余数据由下次
 /// 可读事件领走；只有 epoll 边缘触发（TRIGGER_ET=1）例外，它必须读到 EAGAIN，那一轮只用
 /// buffer_space 报出的现成空间去读，不为它再分配节点。
@@ -193,8 +207,8 @@ void buffer_commit_get(buffer_ctx *ctx, size_t lens);
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="fd">socket描述符</param>
 /// <param name="nread">读取到的长度</param>
-/// <param name="hint">socket 里可读字节数，0 表示不知道。大于 MAX_RECV_SIZE 时首轮按它要空间，加大最多到
-/// RECV_HINT_CAP，不会因此低于 MAX_RECV_SIZE；kqueue 平台裸 socket 读传 kevent 的 data，其余传 0</param>
+/// <param name="hint">socket 里可读字节数，0 表示不知道。裸 socket 读时与 buffer_want 记下的(按 RECV_GROW_CAP 截过)取大的，
+/// 大于 MAX_RECV_SIZE 时首轮按它要空间，加大最多到 RECV_HINT_CAP，不会因此低于 MAX_RECV_SIZE；kqueue 平台裸 socket 读传 kevent 的 data，其余传 0</param>
 /// <param name="_readv">读取函数。可回 BUFFER_READV_DRAINED 表示自己那层缓冲已空，本函数
 /// 据此停止抽取并把返回值归一成 ERR_OK</param>
 /// <param name="arg">透传给 _readv 的参数。非 NULL 表示这不是裸 socket 读（调用方在 _readv 里

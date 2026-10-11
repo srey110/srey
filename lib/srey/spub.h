@@ -131,7 +131,7 @@ struct task_ctx {
     name_t handle;             // 任务唯一句柄（createid 生成的数字 ID）
     char *name;             // 注册时的字符串名；匿名 task 为 NULL，task 持有，task_free 时释放
     void *arg;                 // 用户自定义数据
-    name_t *acp_group;         // 组员表：下标为 net 线程，值为绑在该线程上的组员句柄；见 task_accept_group
+    name_t *acp_group;         // 组员表：下标为 net 线程，值为绑在该线程上的组员句柄，INVALID_TNAME 为空位；见 task_accept_group
     loader_ctx *loader;        // 所属 loader
     free_cb _arg_free;         // 用户数据释放回调
     _task_dispatch_cb _task_dispatch;    // 消息分发函数

@@ -135,7 +135,8 @@ static inline void _loader_evslow_check(loader_ctx *loader, task_ctx *task, int3
     }
 }
 #endif
-// 绑定 task 在它的 net 线程上跑一轮：weight 取 0 吃掉当时全部积压，跑时新进的由 _loader_task_run 末尾重投到下一轮
+// 绑定 task 在它的 net 线程上跑一轮：weight 取 0 吃掉当时全部积压，跑时新进的由 _loader_task_run 末尾经 ev_defer_exec 重投，
+// 何时再跑按它的规则(本轮最多再跑一趟)
 static void _loader_evtask_run(void *arg) {
     task_ctx *task = (task_ctx *)arg;
     loader_ctx *loader = task->loader;

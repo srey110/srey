@@ -57,9 +57,6 @@
 #else
 #define TCP_SSL(t) NULL
 #endif// WITH_SSL
-// 只在手上还没有 sock_ctx(刚 accept 出裸 fd)时用来定归属;已有 sock_ctx 的一律读 sk->index,
-// 别再按 fd 重算——listener 与 pipe 的 index 本来就不等于 CALC_WATCHER_INDEX(fd)
-#define CALC_WATCHER(p, n, fd) (1 == (n) ? (p) : &(p)[CALC_WATCHER_INDEX((fd), (n))])
 // 回调与消息里的 client 形参恒取 0/1。BIT_CHECK 拿到的是 STATUS_CLIENT 的原值、不是 1，必须在这里归一化——
 // 上层文档都按 1 写，透传原值会让 == 1 的判定永远不成立
 #define SOCK_IS_CLIENT(status) (BIT_CHECK((status), STATUS_CLIENT) ? 1 : 0)
@@ -234,6 +231,17 @@ static inline int32_t _evpub_launch_index(ev_ctx *ctx, SOCKET fd, int32_t index)
     ASSERTAB(index >= 0 && index < (int32_t)ctx->nthreads, "watcher index out of range.");
     return index;
 }
+// 内核不按连接分发的平台 accept 后挑 watcher：listener 有线程表(thrs 非 NULL)就只在表里按 fd 挑。
+// 只给刚 accept 出、还没有 sock_ctx 的裸 fd 定归属；已有 sock_ctx 的一律读 sk->index，别按 fd 重算
+// (listener 与 pipe 的 index 本来就不等于 CALC_WATCHER_INDEX(fd))
+static inline int32_t _evpub_acp_index(ev_ctx *ctx, const int32_t *thrs, uint32_t nthrs, SOCKET fd) {
+    if (NULL == thrs) {
+        return (int32_t)CALC_WATCHER_INDEX(fd, ctx->nthreads);
+    }
+    return thrs[CALC_WATCHER_INDEX(fd, nthrs)];
+}
+// ev_listen 的线程表拷一份给 listener：下标须在 [0, nthreads) 且不重复，违反断言；thrs 为 NULL 或 nthrs 为 0 返回 NULL(全部线程)
+int32_t *_evpub_listen_thrs(ev_ctx *ctx, const int32_t *thrs, uint32_t nthrs);
 // 登记/注销本线程正在跑的 watcher 事件循环，须在循环入口与出口各调一次
 void _evpub_set_cur_watcher(struct watcher_ctx *watcher);
 // 调用方是否就在该 watcher 的事件线程上；是则命令可就地执行，不必入队
@@ -259,7 +267,7 @@ void _evpub_tick_detach(struct watcher_ctx *watcher, ev_tick *tk);
 // 驱动 watcher->ticks 全部节点:逐个调用 tick 回调,返回下轮 wait 超时(ms,clamp 到 [EVENT_TICK_MIN, EVENT_WAIT_TIMEOUT]);
 // *now_ms 回填本轮时钟,无 tick 时置 0(供调用方 drain/shrink 复用,省一次 timer_cur_ms)
 uint32_t _evpub_tick_drive(struct watcher_ctx *watcher, struct timer_ctx *timer, uint64_t *now_ms);
-// 跑投递队列里进来时已有的项，回调里新投的留到下一轮；返回跑了几项。只在该 watcher 的 event 线程上调
+// 跑投递队列，最多两趟(规则见 evpub.c)；返回跑了几项。只在该 watcher 的 event 线程上调
 uint32_t _evpub_defer_exec_drain(struct watcher_ctx *watcher);
 // 投递队列里还有没跑的项
 int32_t _evpub_defer_exec_pending(struct watcher_ctx *watcher);

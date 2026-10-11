@@ -233,10 +233,13 @@ static inline void *_prots_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt 
     *size = lens;
     return unpack;
 }
-// WS 承载子协议:只有真带出子协议包的帧才可能是响应。控制帧(PING/PONG/CLOSE)与零长数据帧
-// 的 secpack 为 NULL,放过去会撞上 prots_may_resume 入口的 NULL 短路变成"恒可唤醒",
-// 一个保活 PING 就能唤醒正等响应的协程,请求-响应从此错开一格
+// PING 不会是响应:放过去的话对端一个保活 PING 就能唤醒正等响应的协程,请求-响应从此错开一格;
+// PONG 照旧可唤醒,发 PING 等的就是它。WS 承载子协议时只有真带出子协议包的帧才可能是响应——控制帧
+// 与零长数据帧的 secpack 为 NULL,放过去会撞上 prots_may_resume 入口的 NULL 短路变成"恒可唤醒"
 static int32_t _prots_ws_may_resume(void *data) {
+    if (WS_PING == websock_prot(data)) {
+        return ERR_FAILED;
+    }
     pack_type secprot = (pack_type)websock_secprot(data);
     void *secpack = websock_secpack(data);
     if (PACK_NONE != secprot
@@ -391,8 +394,8 @@ void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, s
             break;
         }
         if (BIT_CHECK(status, PROT_CLOSE)) {
-            // 协议层正常关闭信号(如 WebSocket close frame):业务应答的那一帧可能还在 buf_s,
-            // ev_close 关闭前会冲一次,小控制帧一次就写进内核了
+            // 协议层正常关闭信号(如 WebSocket close frame):解包时协议层已回过的那一帧可能还在 buf_s,
+            // ev_close 关闭前会冲一次,小控制帧一次就写进内核了;业务此后再回的发不出去
             ev_close(ev, sk);
             break;
         }

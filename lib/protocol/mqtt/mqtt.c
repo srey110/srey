@@ -1241,7 +1241,12 @@ void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         if (frozen) {
             buffer_commit_get(buf, 0);
         }
-        BIT_SET(*status, total > MQTT_MAX_PACK_LENS ? PROT_ERROR : PROT_MOREDATA);
+        if (total > MQTT_MAX_PACK_LENS) {
+            BIT_SET(*status, PROT_ERROR);
+        } else {
+            BIT_SET(*status, PROT_MOREDATA);
+            buffer_want(buf, total - blens);
+        }
         return NULL;
     }
     if (frozen

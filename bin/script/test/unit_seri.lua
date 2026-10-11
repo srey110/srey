@@ -182,5 +182,49 @@ runner.run(function(t)
         t:eq(false, pok, "33 层嵌套 pack 报错(超深度上限)")
         t:check(type(perr) == "string" and nil ~= perr:find("deep"), "err 含 'deep'")
     end
+
+    -- 16. 打表一趟 / 纯记录表先数字段再建表：空表、跨过压栈上限(64 对)的记录、数组元素落在 hash 部
+    do
+        local function roundtrip(v)
+            local b, sz = seri.pack(v)
+            local r = seri.unpack(b, sz)
+            utils.ud_free(b)
+            return r
+        end
+        local function bytes(v)
+            local b, sz = seri.pack(v)
+            local str = utils.ud_str(b, sz)
+            utils.ud_free(b)
+            return str
+        end
+        local e = roundtrip({})
+        t:check(type(e) == "table" and nil == next(e), "空表往返仍是空表")
+        local ne = roundtrip({ a = {}, b = 1 })
+        t:check(type(ne) == "table" and type(ne.a) == "table" and nil == next(ne.a) and 1 == ne.b, "嵌套空表往返")
+        for _, nf in ipairs({ 1, 63, 64, 65, 200 }) do
+            local rec = {}
+            for i = 1, nf do
+                rec["k" .. i] = i
+            end
+            local r = roundtrip(rec)
+            local ok, cnt = true, 0
+            for k, v in pairs(r) do
+                cnt = cnt + 1
+                ok = ok and rec[k] == v
+            end
+            t:check(ok and cnt == nf, nf .. " 个字段的记录往返")
+        end
+        -- 倒着插让 1..100 大多落进 hash 部，打出来应与正常构造的数组逐字节相同
+        local rev, norm = {}, {}
+        for i = 100, 1, -1 do
+            rev[i] = i
+        end
+        for i = 1, 100 do
+            norm[i] = i
+        end
+        t:eq(bytes(norm), bytes(rev), "数组元素落在 hash 部时输出与正常数组相同")
+        local mixed = roundtrip({ 1, 2, 3, x = "y", [10] = 5 })
+        t:check(1 == mixed[1] and 3 == mixed[3] and "y" == mixed.x and 5 == mixed[10] and nil == mixed[4], "混合表往返")
+    end
 end)
 end)

@@ -44,7 +44,7 @@ typedef struct http_resp_json {
 }http_resp_json;
 // redis.unpack 的一层未闭合聚合；这层的表与暂存键在 Lua 栈上（布局见 _lprot_redis_unpack_multi）
 typedef struct redis_unpack_frame {
-    int32_t status; // 0=期望 key，1=期望 val（仅 map/attr）
+    int32_t status; // map/attr：0=期望 key，1=期望 val；数组类：已追加的元素个数（下一个下标减 1）
     int32_t ismap;  // map / attr：键值交替
     int32_t isattr; // attr 闭合后不再消费父层
     int64_t nelem;  // 剩余待处理节点数（map/attr 已 ×2）
@@ -313,36 +313,46 @@ static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
 /// 构造 WebSocket Ping 控制帧
 /// </summary>
 /// <param name="mask" type="integer">是否启用掩码（客户端发送 1，服务端 0）；只收 0/1，其余报错</param>
-/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
+/// <param name="data" type="string|lightuserdata?">载荷，可省；不超过 125 字节</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <returns type="lightuserdata?">数据指针；载荷超过 125 字节，或 mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_ping(lua_State *lua) {
     int32_t mask = (int32_t)lpub_check_flag(lua, 1);
-    size_t lens;
-    void *pack = websock_pack_ping(mask, &lens);
+    size_t dlens, lens;
+    void *data = lpub_opt_buf(lua, 2, &dlens);
+    void *pack = websock_pack_ping(mask, data, dlens, &lens);
     return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
-/// 构造 WebSocket Pong 控制帧
+/// 构造 WebSocket Pong 控制帧；回应 PING 时须原样带上那个 PING 的载荷
 /// </summary>
 /// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）；只收 0/1，其余报错</param>
-/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
+/// <param name="data" type="string|lightuserdata?">载荷，可省；不超过 125 字节</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <returns type="lightuserdata?">数据指针；返回 nil 的情形同 pack_ping</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_pong(lua_State *lua) {
     int32_t mask = (int32_t)lpub_check_flag(lua, 1);
-    size_t lens;
-    void *pack = websock_pack_pong(mask, &lens);
+    size_t dlens, lens;
+    void *data = lpub_opt_buf(lua, 2, &dlens);
+    void *pack = websock_pack_pong(mask, data, dlens, &lens);
     return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
-/// 构造 WebSocket Close 控制帧
+/// 构造 WebSocket Close 控制帧。对端发来的 CLOSE 由协议层当场回应，只在本端发起关闭时用它
 /// </summary>
 /// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）；只收 0/1，其余报错</param>
-/// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
+/// <param name="code" type="integer?">状态码（如 1000 正常关闭）；省略或 0 表示不带，取值 0~65535</param>
+/// <param name="reason" type="string?">关闭原因（UTF-8），带原因时 code 不能为 0；加上 2 字节状态码不超过 125 字节</param>
+/// <returns type="lightuserdata?">数据指针；code 为 0 却带了原因、长度超限，或取不到掩码熵时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_close(lua_State *lua) {
     int32_t mask = (int32_t)lpub_check_flag(lua, 1);
-    size_t lens;
-    void *pack = websock_pack_close(mask, &lens);
+    uint16_t code = (uint16_t)lpub_opt_range(lua, 2, 0, 0, UINT16_MAX, "close code out of range");
+    size_t rlens, lens;
+    const char *reason = luaL_optlstring(lua, 3, NULL, &rlens);
+    void *pack = websock_pack_close(mask, code, reason, rlens, &lens);
     return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
@@ -1014,7 +1024,8 @@ static void _lprot_redis_scalar(lua_State *lua, redis_pack_ctx *pk) {
         lua_pushboolean(lua, 0);
     }
 }
-// 弹出栈顶值追加到 idx 处的表尾，同 t[#t + 1] = v
+// 弹出栈顶值追加到 idx 处的表尾，同 t[#t + 1] = v。只给 map/attr 父层与顶层多值用：
+// 数组类父层的表只由顺序追加建成，下标直接取帧里的计数，省掉每次求表长
 static inline void _lprot_redis_append(lua_State *lua, int32_t idx) {
     lua_rawseti(lua, idx, (lua_Integer)lua_rawlen(lua, idx) + 1);
 }
@@ -1119,7 +1130,7 @@ static int32_t _lprot_redis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
         if (!_lprot_redis_isagg(pk->prot)) {
             if (0 == parent->ismap) {
                 _lprot_redis_scalar(lua, pk);
-                _lprot_redis_append(lua, tidx);
+                lua_rawseti(lua, tidx, ++parent->status);
             } else if (0 == parent->status) {
                 parent->status = 1;
                 _lprot_redis_push(lua, pk, 0);
@@ -1144,8 +1155,10 @@ static int32_t _lprot_redis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
         } else if (0 != parent->ismap && !isattr) {
             parent->status = 0;
             _lprot_redis_mapset(lua, tidx, tidx + 1);
+        } else if (0 == parent->ismap) {
+            lua_rawseti(lua, tidx, ++parent->status);
         } else {
-            _lprot_redis_append(lua, tidx);
+            _lprot_redis_append(lua, tidx);// map 里的 attr 追加到 #t + 1
         }
         if (pk->nelem > 0) {
             depth = _lprot_redis_open(lua, stack, depth, pk);
@@ -1681,11 +1694,12 @@ static int32_t _lprot_mail_clear(lua_State *lua) {
 /// <returns type="integer?">字符串长度；失败时两个返回值都是 nil，个数恒为 2</returns>
 static int32_t _lprot_mail_pack(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    char *content = mail_pack(*ud);
+    size_t lens;
+    char *content = mail_pack(*ud, &lens);
     if (NULL == content) {
         return lpub_rtn_lud(lua, NULL, 0);
     }
-    return lpub_rtn_lud(lua, content, strlen(content));
+    return lpub_rtn_lud(lua, content, lens);
 }
 LUAMOD_API int luaopen_mail(lua_State *lua) {
     luaL_Reg reg_new[] = {

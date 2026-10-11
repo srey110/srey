@@ -396,6 +396,7 @@ static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t 
         return pack;
     } else {
         BIT_SET(*status, PROT_MOREDATA);
+        buffer_want(buf, pack->data.lens - buffer_size(buf));
         return NULL;
     }
 }
@@ -631,6 +632,7 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     if (pack->data.lens > 0) {
         if (buffer_size(buf) < pack->data.lens + CRLF_SIZE) {
             BIT_SET(*status, PROT_MOREDATA);
+            buffer_want(buf, pack->data.lens + CRLF_SIZE - buffer_size(buf));
             return NULL;
         }
         if (ERR_OK != _http_chunk_take(buf, pack, 0, status)) {

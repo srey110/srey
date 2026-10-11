@@ -10,6 +10,7 @@ struct websock_pack_ctx;
 
 #define WS_SIGN_KEY_LENS B64EN_SIZE(SHA1_BLOCK_SIZE)
 #define WS_MAXCNT_SECPROT 8
+#define WS_CTRL_MAX_LENS 125 // 控制帧(PING/PONG/CLOSE)载荷上限，RFC 6455 §5.5
 
 typedef enum ws_prot {
     WS_CONTINUE = 0x00,
@@ -74,9 +75,11 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
 /// 且就地断开该连接，已注入过的那个旧值留给拆连接时回收</returns>
 int32_t websock_set_secextra(ev_ctx *ev, sock_ctx *sk, void *val, free_cb fcb);
 /// <summary>
-/// WebSocket 解包：握手阶段完成 HTTP 升级，数据阶段从缓冲区解析一个完整帧（含分片）
+/// WebSocket 解包：握手阶段完成 HTTP 升级，数据阶段从缓冲区解析一个完整帧（含分片）。
+/// 解出对端的 CLOSE 时当场在本连接上回一个 CLOSE（只回显状态码），业务不必再回
 /// </summary>
-/// <param name="ev">事件上下文</param>
+/// <param name="ev">事件上下文。服务端握手要回应答，不能为 NULL；握手完成后可传 NULL 只解包、不在连接上收发，
+/// 此时收到 CLOSE 也不回帧</param>
 /// <param name="sk">连接标识</param>
 /// <param name="client">非0 客户端解析，0 服务端解析</param>
 /// <param name="buf">接收缓冲区</param>
@@ -99,26 +102,34 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 /// 返回 NULL(此时 *hsctx 不写入)</returns>
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx);
 /// <summary>
-/// ping包
+/// ping包。对端发来的 PING 不会唤醒正在等响应的协程，一律走收包回调，由业务回 PONG；
+/// 不承载子协议时对端回的 PONG 照常可唤醒，发 PING 后可直接等它
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
+/// <param name="data">载荷，可为 NULL（此时 dlens 须为 0）</param>
+/// <param name="dlens">载荷长度，不超过 WS_CTRL_MAX_LENS</param>
 /// <param name="size">包长度</param>
-/// <returns>ping包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
-void *websock_pack_ping(int32_t mask, size_t *size);
+/// <returns>ping包；dlens 超过 WS_CTRL_MAX_LENS，或 mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
+void *websock_pack_ping(int32_t mask, void *data, size_t dlens, size_t *size);
 /// <summary>
-/// pong包
+/// pong包。回应 PING 时须原样带上那个 PING 的载荷（RFC 6455 §5.5.3）
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
+/// <param name="data">载荷，可为 NULL（此时 dlens 须为 0）</param>
+/// <param name="dlens">载荷长度，不超过 WS_CTRL_MAX_LENS</param>
 /// <param name="size">包长度</param>
 /// <returns>pong包；返回 NULL 的情形同 websock_pack_ping</returns>
-void *websock_pack_pong(int32_t mask, size_t *size);
+void *websock_pack_pong(int32_t mask, void *data, size_t dlens, size_t *size);
 /// <summary>
-/// close包
+/// close包。对端发来的 CLOSE 由协议层当场回应，业务只在自己发起关闭时用它
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
+/// <param name="code">状态码（如 1000 正常关闭）；0 表示不带状态码，此时也不能带原因</param>
+/// <param name="reason">关闭原因（UTF-8），可为 NULL（此时 rlens 须为 0）</param>
+/// <param name="rlens">原因长度，加上 2 字节状态码不超过 WS_CTRL_MAX_LENS</param>
 /// <param name="size">包长度</param>
-/// <returns>close包；返回 NULL 的情形同 websock_pack_ping</returns>
-void *websock_pack_close(int32_t mask, size_t *size);
+/// <returns>close包；code 为 0 却带了原因、长度超限，或取不到掩码熵时返回 NULL(*size 置 0)</returns>
+void *websock_pack_close(int32_t mask, uint16_t code, const char *reason, size_t rlens, size_t *size);
 /// <summary>
 /// 文本消息包
 /// </summary>
@@ -127,7 +138,7 @@ void *websock_pack_close(int32_t mask, size_t *size);
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>文本消息包；除 websock_pack_ping 的情形外，dlens 大到使帧长回绕时同样返回 NULL(*size 置 0)</returns>
+/// <returns>文本消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key，或 dlens 大到使帧长回绕时返回 NULL(*size 置 0)</returns>
 void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 二进制消息包
@@ -137,7 +148,7 @@ void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, siz
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>二进制消息包；除 websock_pack_ping 的情形外，dlens 大到使帧长回绕时同样返回 NULL(*size 置 0)</returns>
+/// <returns>二进制消息包；返回 NULL 的情形同 websock_pack_text</returns>
 void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 分片消息包
@@ -147,7 +158,7 @@ void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, s
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>分片消息包；除 websock_pack_ping 的情形外，dlens 大到使帧长回绕时同样返回 NULL(*size 置 0)</returns>
+/// <returns>分片消息包；返回 NULL 的情形同 websock_pack_text</returns>
 void *websock_pack_continua(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 获取fin值

@@ -281,6 +281,44 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
     }
     return ERR_OK;
 }
+// reader 已就绪、列数已核对过：把一条 DataRow 的各列填进块尾的行数组并入表，返回 ERR_FAILED 表示列长度非法或被截断。
+// 游标放局部变量走并强制内联：通用路径与 _pgpack_rows_run 两处调用，不内联时经 breader 指针逐列读写，列多时反而变慢
+static FORCE_INLINE int32_t _pgpack_row_fill(pgsql_reader_ctx *reader, binary_ctx *breader, uint16_t ncolumn) {
+    pgpack_row *rows = (pgpack_row *)(breader->data + ROUND_UP(breader->size, 8));
+    char *cur = breader->data + breader->offset;
+    size_t left = breader->size - breader->offset;
+    int32_t lens;
+    for (uint16_t i = 0; i < ncolumn; i++) {
+        if (left < 4) {// 列长度字段本身也可能被截断
+            return ERR_FAILED;
+        }
+        lens = (int32_t)read_be32(cur);
+        cur += 4;
+        left -= 4;
+        rows[i].lens = lens;
+        if (lens > 0) {
+            if ((size_t)lens > left) {
+                return ERR_FAILED;
+            }
+            rows[i].val = cur;
+            cur += lens;
+            left -= (size_t)lens;
+        } else if (0 == lens) {
+            rows[i].val = cur; // 空字符串：有效地址，长度为 0
+        } else if (-1 == lens) {
+            rows[i].val = NULL; // SQL NULL
+        } else {
+            // 非法 column length（PostgreSQL 协议仅 -1 表 NULL，其他负数协议非法）
+            return ERR_FAILED;
+        }
+    }
+    if (reader->arr_rows.ptr == reader->rows_inl
+        && pgrow_arr_size(&reader->arr_rows) == pgrow_arr_capacity(&reader->arr_rows)) {
+        _pgpack_rows_spill(reader);
+    }
+    pgrow_arr_push_back(&reader->arr_rows, &rows);
+    return ERR_OK;
+}
 // 解析 DataRow（'D'），将列值追加到 reader 的行数组中。
 // 有建好字段描述的 reader 时，消息连同块尾的行数组都在它的块链里(见 _pgpack_row_alloc)，出错也不单独释放；
 // 否则消息是单独分配的，本函数就地释放。无论返回什么调用方都不得再触碰 breader->data。返回 ERR_FAILED 表示协议异常。
@@ -308,36 +346,49 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
         }
         return ERR_FAILED;
     }
-    pgpack_row *row;
-    pgpack_row *rows = (pgpack_row *)(breader->data + ROUND_UP(breader->size, 8));
-    for (uint16_t i = 0; i < ncolumn; i++) {
-        row = &rows[i];
-        if (!binary_have(breader, 4)) {// 列长度字段本身也可能被截断
-            return ERR_FAILED;
+    return _pgpack_row_fill(reader, breader, ncolumn);
+}
+size_t _pgpack_rows_run(pgsql_ctx *pg, buffer_ctx *buf, int32_t *status) {
+    pgsql_reader_ctx *reader = _pgpack_rows_reader(pg->pack);
+    size_t done = 0;
+    size_t blens, total;
+    char head[7];// 类型码 1 + 长度 4 + 列数 2
+    int32_t lens;
+    uint16_t ncolumn;
+    char *blk;
+    binary_ctx breader;
+    if (NULL == reader) {
+        return 0;
+    }
+    for (;;) {
+        blens = buffer_size(buf);
+        if (blens < sizeof(head)
+            || sizeof(head) != buffer_copyout(buf, 0, head, sizeof(head))
+            || 'D' != head[0]) {
+            break;
         }
-        row->lens = (int32_t)read_be32(breader->data + breader->offset);
-        binary_get_skip(breader, 4);
-        if (row->lens > 0) {
-            if (!binary_have(breader, (size_t)row->lens)) {
-                return ERR_FAILED;
-            }
-            row->val = breader->data + breader->offset;
-            binary_get_skip(breader, row->lens);
-        } else if (0 == row->lens) {
-            row->val = breader->data + breader->offset; // 空字符串：有效地址，长度为 0
-        } else if (-1 == row->lens) {
-            row->val = NULL; // SQL NULL
-        } else {
-            // 非法 column length（PostgreSQL 协议仅 -1 表 NULL，其他负数协议非法）
-            return ERR_FAILED;
+        lens = (int32_t)read_be32(head + 1);
+        total = (size_t)(uint32_t)lens + 1;
+        if (lens < 6
+            || total > blens) {
+            break;
+        }
+        ncolumn = read_be16(head + 5);
+        if (0 == ncolumn
+            || ncolumn != reader->field_count) {
+            break;
+        }
+        blk = mem_arena_alloc(&reader->arena, ROUND_UP(total, 8) + sizeof(pgpack_row) * (size_t)ncolumn);
+        ASSERTAB(total == buffer_remove(buf, blk, total), "copy buffer failed.");
+        binary_init_read(&breader, blk, total);
+        binary_get_skip(&breader, sizeof(head));
+        done += total;
+        if (ERR_OK != _pgpack_row_fill(reader, &breader, ncolumn)) {
+            BIT_SET(*status, PROT_ERROR);
+            break;
         }
     }
-    if (reader->arr_rows.ptr == reader->rows_inl
-        && pgrow_arr_size(&reader->arr_rows) == pgrow_arr_capacity(&reader->arr_rows)) {
-        _pgpack_rows_spill(reader);
-    }
-    pgrow_arr_push_back(&reader->arr_rows, &rows);
-    return ERR_OK;
+    return done;
 }
 // 解析 CopyInResponse（'G'），返回新分配的 pgpack_ctx（PGPACK_COPY_IN 类型，立即返回给调用方）；
 // 报文残缺返回 NULL

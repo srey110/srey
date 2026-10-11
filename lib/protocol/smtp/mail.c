@@ -315,6 +315,10 @@ static void _mail_set_display_name(binary_ctx *bw, const char *name) {
     }
     binary_set_binary(bw, "\"", 1);
 }
+// lens 字节原文按每行 MIME_B64_RAW 折行编成 base64 后的字节数(行间 CRLF，末行不带)
+static inline size_t _mail_b64_size(size_t lens) {
+    return 0 == lens ? 0 : (lens + 2) / 3 * 4 + (lens - 1) / MIME_B64_RAW * CRLF_SIZE;
+}
 // 正文 / html / 附件按 base64 写出：57 字节原文正好编成 76 个 base64 字符（RFC 2045 §6.8 的行宽），
 // 故按 57 切块天然落在折行位置（末行不补 CRLF）。整段输出长度先算好一次预留，逐行直接编进 bw，
 // 每行编码器补的 NUL 被随后的 CRLF 盖掉，末行那个落在预留区外的结尾余量里。
@@ -329,7 +333,7 @@ static void _mail_set_b64(binary_ctx *bw, const char *msg, size_t lens) {
         return;
     }
     start = bw->offset;
-    binary_set_skip(bw, (lens + 2) / 3 * 4 + (lens - 1) / MIME_B64_RAW * CRLF_SIZE);
+    binary_set_skip(bw, _mail_b64_size(lens));
     p = bw->data + start;
     while (off < lens) {
         n = (lens - off > MIME_B64_RAW) ? MIME_B64_RAW : (lens - off);
@@ -350,7 +354,15 @@ static inline void _mail_set_text_part(binary_ctx *bw, const char *msg) {
         _mail_set_b64(bw, msg, strlen(msg));
     }
 }
-char *mail_pack(mail_ctx *mail) {
+// 整封信的容量估算：头部与各段段头按定额，正文、html、附件按 base64 后的长度。多估无害，少估只是多扩几次容
+static size_t _mail_pack_estimate(mail_ctx *mail, uint32_t nattach) {
+    size_t est = ONEK * 2 + _mail_b64_size(EMPTYSTR(mail->msg) ? 0 : strlen(mail->msg)) + _mail_b64_size(mail->hlens);
+    for (uint32_t i = 0; i < nattach; i++) {
+        est += ONEK * 2 + _mail_b64_size(mattach_arr_at(&mail->attach, (int32_t)i)->lens);
+    }
+    return est;
+}
+char *mail_pack(mail_ctx *mail, size_t *size) {
     uint32_t nattach = mattach_arr_size(&mail->attach);
     int32_t multipart = (0 != mail->hlens || nattach > 0) ? 1 : 0;
     // 用不到的分支不生成：innerboundary 只有 multipart/alternative(即有 html)才用得上，
@@ -367,7 +379,7 @@ char *mail_pack(mail_ctx *mail) {
         }
     }
     binary_ctx bwriter;
-    binary_init_write(&bwriter, ONEK, ONEK);
+    binary_init_write(&bwriter, _mail_pack_estimate(mail, nattach), ONEK);
     // RFC 5322 §3.4 的 name-addr 形式：display-name <addr-spec>
     binary_set_binary(&bwriter, "From: ", 6);
     if (0 != strlen(mail->from.name)) {
@@ -450,7 +462,7 @@ char *mail_pack(mail_ctx *mail) {
         _mail_set_b64(&bwriter, mail->msg, strlen(mail->msg));
     }
     binary_set_binary(&bwriter, "\r\n.\r\n", 5);
-    // 调用方 coro_utils.c / lprot.c 以 strlen() 计算长度；显式追加 NUL 终结避免读未初始化内存 UB
-    binary_set_uint8(&bwriter, 0);
+    SET_PTR(size, bwriter.offset);
+    binary_set_uint8(&bwriter, 0);// NUL 不计入长度，留着给当串用的调用方
     return bwriter.data;
 }

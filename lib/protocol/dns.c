@@ -119,6 +119,7 @@ void *dns_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     }
     if (avail < (size_t)sizeof(nlen) + plen) {
         BIT_SET(*status, PROT_MOREDATA);
+        buffer_want(buf, (size_t)sizeof(nlen) + plen - avail);
         return NULL;
     }
     ASSERTAB(sizeof(nlen) == buffer_drain(buf, sizeof(nlen)), "drain buffer error.");

@@ -281,6 +281,16 @@ name_t task_find_name(loader_ctx *loader, const char *name) {
     rwlock_distr_runlock(&loader->lckmaptasks);
     return handle;
 }
+int32_t task_exists(loader_ctx *loader, name_t handle) {
+    int32_t alive;
+    if (INVALID_TNAME == handle) {
+        return 0;
+    }
+    rwlock_distr_rdlock(&loader->lckmaptasks);
+    alive = (NULL != _task_map_get(loader->maptasks, handle));
+    rwlock_distr_runlock(&loader->lckmaptasks);
+    return alive;
+}
 void task_incref(task_ctx *task) {
     ATOMIC_ADD_RELAXED(&task->ref, 1);
 }
@@ -481,6 +491,41 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
     }
     return valid;
 }
+// 读锁挡住 task 释放那一步(要写锁)，锁内查到的指针投递完之前都有效，口径同 _task_post_to
+int32_t task_multi_request2(loader_ctx *loader, const name_t *handles, int32_t n, task_ctx *src,
+                            subtype_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy,
+                            int32_t strict) {
+    task_ctx *stk[MULTI_REQUEST2_STACK];
+    task_ctx **dsts = stk;
+    int32_t i;
+    int32_t nfound = 0;
+    int32_t nmiss = 0;
+    int32_t rtn;
+    if (n > MULTI_REQUEST2_STACK) {
+        MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
+    }
+    rwlock_distr_rdlock(&loader->lckmaptasks);
+    for (i = 0; i < n; i++) {
+        dsts[i] = (INVALID_TNAME == handles[i]) ? NULL : _task_map_get(loader->maptasks, handles[i]);
+        if (NULL != dsts[i]) {
+            nfound++;
+        } else if (INVALID_TNAME != handles[i]) {
+            nmiss++;
+        }
+    }
+    if (0 != strict && 0 != nmiss) {
+        rtn = -1;
+    } else if (0 == nfound) {
+        rtn = 0;
+    } else {
+        rtn = task_multi_request(dsts, n, src, reqtype, sess, data, size, copy);
+    }
+    rwlock_distr_runlock(&loader->lckmaptasks);
+    if (dsts != stk) {
+        FREE(dsts);
+    }
+    return rtn;
+}
 void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy) {
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
@@ -529,12 +574,16 @@ prot_emit *_task_net_emit(void) {
 int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n) {
     task_ctx *member;
     uint16_t i;
+    uint16_t nmember = 0;
     int32_t bound;
     if (NULL != head->acp_group
         || n != head->loader->nnet) {
         return ERR_FAILED;
     }
     for (i = 0; i < n; i++) {
+        if (INVALID_TNAME == handles[i]) {
+            continue;// 空位：这个线程不收这一组的连接
+        }
         member = task_grab(head->loader, handles[i]);
         if (NULL == member) {
             return ERR_FAILED;
@@ -544,12 +593,17 @@ int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n) {
         if ((int32_t)i != bound) {
             return ERR_FAILED;
         }
+        nmember++;
+    }
+    if (0 == nmember) {
+        return ERR_FAILED;
     }
     MALLOC(head->acp_group, sizeof(name_t) * n);
     memcpy(head->acp_group, handles, sizeof(name_t) * n);
     return ERR_OK;
 }
-// 组头监听到新连接：交给连接所在 net 线程的组员；组头已退出就拒收
+// 组头监听到新连接：交给连接所在 net 线程的组员；组头已退出就拒收。
+// listen 只在有组员的线程上收，落到空位只会是误用，同样拒收
 static int32_t _task_acp_pick(sock_ctx *sk, ud_cxt *ud) {
     task_ctx *head = task_grab(ud->loader, ud->handle);
     if (NULL == head) {
@@ -557,7 +611,31 @@ static int32_t _task_acp_pick(sock_ctx *sk, ud_cxt *ud) {
     }
     ud->handle = head->acp_group[sk->index];
     task_ungrab(head);
-    return ERR_OK;
+    return INVALID_TNAME == ud->handle ? ERR_FAILED : ERR_OK;
+}
+// 组员表里有组员的线程下标，给 ev_listen 只在这些线程上收；满员返回 NULL(全部线程)。非 NULL 时调用方 FREE
+static int32_t *_task_acp_thrs(task_ctx *head, uint32_t *nthrs) {
+    uint16_t nnet = head->loader->nnet;
+    uint16_t i;
+    int32_t *thrs;
+    *nthrs = 0;
+    for (i = 0; i < nnet; i++) {
+        if (INVALID_TNAME != head->acp_group[i]) {
+            (*nthrs)++;
+        }
+    }
+    if (nnet == *nthrs) {
+        *nthrs = 0;
+        return NULL;
+    }
+    MALLOC(thrs, sizeof(int32_t) * (*nthrs));
+    *nthrs = 0;
+    for (i = 0; i < nnet; i++) {
+        if (INVALID_TNAME != head->acp_group[i]) {
+            thrs[(*nthrs)++] = (int32_t)i;
+        }
+    }
+    return thrs;
 }
 static int32_t _task_acp_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
     (void)ev;
@@ -573,6 +651,9 @@ static int32_t _task_acp_accept_emit(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
 int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, uint64_t *id, int32_t netev) {
     ud_cxt ud = { 0 };
+    int32_t *thrs = NULL;
+    uint32_t nthrs = 0;
+    int32_t rtn;
     ud.pktype = pktype;
     ud.handle = task->handle;
     ud.loader = task->loader;
@@ -582,6 +663,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     }
     if (NULL != task->acp_group) {
         cbs.acp_cb = BIT_CHECK(netev, NETEV_ACCEPT) ? _task_acp_accept_emit : _task_acp_accept;
+        thrs = _task_acp_thrs(task, &nthrs);
     }
     if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = prots_net_send;
@@ -593,7 +675,9 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs.r_cb = prots_net_recv;
     cbs.c_cb = prots_net_close;
     cbs.ud_free = prots_udfree;
-    return ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, id);
+    rtn = ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, thrs, nthrs, id);
+    FREE(thrs);
+    return rtn;
 }
 int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t netev, void *extra,

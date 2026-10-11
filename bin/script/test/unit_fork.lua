@@ -249,5 +249,33 @@ runner.run(function(t)
         srey.sleep(100)
         t:eq(4, hit, "被误唤醒的协程已出池，之后的 fork 全部执行")
     end
+
+    -- ── 不带实参的 fork / timeout 直接存函数，带实参的照旧打包(含 nil 洞) ───
+    do
+        local n0, got, tn = 0, nil, 0
+        srey.fork(function(...) n0 = select("#", ...) end)
+        srey.fork(function(...) got = table.pack(...) end, nil, 2, nil)
+        srey.timeout(0, function(...) tn = tn + 1 + select("#", ...) end)
+        srey.timeout(0, function(a, b) tn = tn + (a or 0) + (b or 0) end, 10, 20)
+        srey.sleep(50)
+        t:eq(0, n0, "fork 不带实参，回调收到 0 个参数")
+        t:check(got and 3 == got.n and nil == got[1] and 2 == got[2] and nil == got[3], "fork 带 nil 洞的实参原样传")
+        t:eq(31, tn, "timeout 不带实参与带实参两种都跑了")
+    end
+
+    -- ── 不带实参时传带 __call 的可调用表：不是函数，照旧打包，照样被调用 ───
+    -- 直接存表的话 _run_fork 会把它当打包项取 [1]，拿到 nil 去跑
+    do
+        local fself, fn, tself, tn = nil, -1, nil, -1
+        local fobj = setmetatable({}, { __call = function(self, ...) fself = self; fn = select("#", ...) end })
+        local tobj = setmetatable({}, { __call = function(self, ...) tself = self; tn = select("#", ...) end })
+        srey.fork(fobj)
+        srey.timeout(10, tobj)
+        srey.sleep(200)-- 与 timeout 同走时间轮，200ms 足够 10ms 的定时器先到
+        t:eq(fobj, fself, "fork 可调用表被调用，__call 收到 self")
+        t:eq(0, fn, "fork 可调用表不带实参，self 之后 0 个参数")
+        t:eq(tobj, tself, "timeout 可调用表被调用，__call 收到 self")
+        t:eq(0, tn, "timeout 可调用表不带实参，self 之后 0 个参数")
+    end
 end)
 end)

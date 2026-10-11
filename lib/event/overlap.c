@@ -26,6 +26,7 @@ typedef struct listener_ctx {
     atomic_t remove;                                // 标记为待移除（ev_unlisten后设置）
     atomic_t ref;                                   // 引用计数（等于挂起的AcceptEx数量）
     atomic_t ndead;                                 // 当前dead槽位数,==0时_olp_try_revive_slot跳过整个扫描
+    uint32_t nthrs;                                 // thrs 个数
     SOCKET fd;                                      // 监听socket句柄
 #if WITH_SSL
     evssl_ctx *evssl;                               // SSL上下文（NULL表示不使用SSL）
@@ -34,6 +35,7 @@ typedef struct listener_ctx {
     ud_cxt ud;                                      // 用户数据模板（每个accept连接复制一份）
     uint64_t id;                                    // 监听器唯一ID（ev_unlisten使用）
     struct ev_ctx *ev;                              // 所属ev_ctx（_iocp_freelsn递减存活计数nlsn）
+    int32_t *thrs;                                  // accept 出的连接只交给这几个 watcher；NULL 为全部
     overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT]; // 预挂起的AcceptEx数组
 }listener_ctx;
 // IOCP TCP连接上下文（读写各用一个evsock_ctx / OVERLAPPED）
@@ -1056,7 +1058,10 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     }
     skpool_args skargs = { .sk = { .fd = sk->fd, .index = _evpub_launch_index(ctx, sk->fd, index) },
                            .cbs = cbs, .ud = ud };
-    evsock_ctx *evsk = (evsock_ctx *)_evpub_sk_new(&skargs);
+    watcher_ctx *to = &ctx->watcher[skargs.sk.index];
+    // 同 Unix 的 ev_connect：已在目标线程上就从它的私有池里取
+    evsock_ctx *evsk = _evpub_inloop(to) ? (evsock_ctx *)pool_pop(&to->pool, &skargs, 0)
+                                         : (evsock_ctx *)_evpub_sk_new(&skargs);
     evsk->ev_cb = _olp_on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
     if (setsess) {
@@ -1233,7 +1238,7 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, evsock_ctx *evsk, DWORD byte
         return;
     }
     // iocp lsn 是独立线程，不会有同线程免投递
-    _cmd_add_acpfd(CALC_WATCHER(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn);
+    _cmd_add_acpfd(&acpctx->ev->watcher[_evpub_acp_index(acpctx->ev, lsn->thrs, lsn->nthrs, fd)], fd, lsn);
 }
 static void _iocp_add_acpfd_inloop_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
@@ -1305,15 +1310,18 @@ static int32_t _olp_acceptex(ev_ctx *ev, listener_ctx *lsn) {
     return ERR_OK;
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
+    cbs_ctx *cbs, ud_cxt *ud, const int32_t *thrs, uint32_t nthrs, uint64_t *id) {
     netaddr_ctx addr;
+    int32_t *cthrs = _evpub_listen_thrs(ctx, thrs, nthrs);
     if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 0, &addr)) {
+        FREE(cthrs);
         return ERR_FAILED;
     }
     SOCKET fd = _evpub_listen(&addr);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("listen %s:%d error.", ip, port);
         UD_FREE(cbs->ud_free, ud);
+        FREE(cthrs);
         return ERR_FAILED;
     }
     listener_ctx *lsn;
@@ -1324,6 +1332,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         lsn->overlap_acpt[i].overlap.sk.fd = INVALID_SOCK;
     }
     lsn->ev = ctx;
+    lsn->thrs = cthrs;
+    lsn->nthrs = (NULL == cthrs) ? 0 : nthrs;
     // 存活计数+1，须在任何走_iocp_freelsn的失败路径之前；_iocp_freelsn统一-1
     ATOMIC_ADD_RELAXED(&ctx->nlsn, 1);
     lsn->family = netaddr_family(&addr);
@@ -1361,6 +1371,7 @@ void _iocp_freelsn(listener_ctx *lsn) {
         ATOMIC_ADD_RELAXED(&lsn->ev->ndead_total, -ndead);
     }
     ATOMIC_ADD_RELAXED(&lsn->ev->nlsn, -1);
+    FREE(lsn->thrs);
     FREE(lsn);
 }
 // 递减 lsn 引用计数；归零时释放 listener_ctx。listener_ctx 完整定义仅在本文件可见，

@@ -284,6 +284,14 @@ name_t lpub_task_peek(lua_State *lua, int32_t idx);
 ///   重查可能换成别的句柄，之后要用句柄就取返回值的 handle 字段，别再用入参</returns>
 task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle);
 /// <summary>
+/// 同 lpub_task_grab，但只确认目标在、不持有它：句柄查不到时经 lpub_task_refresh 重查一次。不分配内存、不抛错
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">取 handle 时用的那个参数的栈位</param>
+/// <param name="handle">lpub_task_handle / lpub_task_peek 的返回值</param>
+/// <returns>此刻在的那个句柄（重查可能换成新句柄）；重查后仍不在返回 INVALID_TNAME</returns>
+name_t lpub_task_live(lua_State *lua, int32_t idx, name_t handle);
+/// <summary>
 /// 句柄用不上（grab 或按句柄投递失败）后的名字缓存重查：栈位 idx 是名字时按名字重查一次并改写缓存
 /// （缓存里的旧句柄只会查不到、不会投错：句柄不复用，名字与句柄成对增删）。不分配内存、不抛错，
 /// 已接管 copy=0 缓冲的路径也能调

@@ -36,8 +36,8 @@
 #define KEEPALIVE_TIME      30 // TCP keepalive 空闲时间（秒）
 #define KEEPALIVE_INTERVAL  2 // TCP keepalive 探测间隔（秒）
 // 单次读向 buffer 要多大空间（字节），不是缓冲上限。读满说明 socket 里还有,
-// 下一轮按它翻倍再要一次、到 2 倍封顶（见 buffer_from_sock），大块接收的读次数因此减半。
-// kqueue 平台知道可读字节数，首轮直接按它要（封顶 RECV_HINT_CAP，见 buffer.h）
+// 下一轮按它翻倍再要、到 RECV_GROW_CAP 封顶（见 buffer.h），大块接收的读次数因此少很多。
+// kqueue 平台知道可读字节数，首轮直接按它要（封顶 RECV_HINT_CAP）；协议层知道本条消息还差多少（buffer_want），也按它要（封顶 RECV_GROW_CAP）
 #define MAX_RECV_SIZE       4096
 // 单 sock 接收缓冲堆积上限（字节）：协议层消费完仍超过它，说明对端在灌凑不成包的数据，
 // 打日志并断连（close_type 为 LOCAL）。0 表示不限制。与上面的 MAX_RECV_SIZE 无关——
@@ -50,7 +50,13 @@
 // 取小值会让排空积压要多打好几次系统调用,而拷贝总量并不因此减少
 #define MAX_SEND_SIZE       0 // 0 表示不限制
 #define MAX_SSL_SEND_SIZE   4096 // 单次 SSL_write 最大字节数；须小到 socket 一次吃得下整条 TLS 记录，调大的后果见 _evpub_sock_send_ssl
-#define MAX_SEND_NIOV       16 // scatter/gather 发送最大 iov 数量
+// scatter/gather 发送最大 iov 数量；单连接一轮回包攒满这么多条就先发一批，是少发几次与让对端早拿到回包的折中。
+// 不能超过系统的 IOV_MAX(AIX / Solaris / HP-UX 只有 16)，超了 writev 直接报错断连
+#if defined(IOV_MAX) && IOV_MAX < 32
+    #define MAX_SEND_NIOV   IOV_MAX
+#else
+    #define MAX_SEND_NIOV   32
+#endif
 #define MAX_EXPAND_NIOV     4 // scatter/gather 接收最大 iov 数量
 #define MAX_SENDQ_CNT       1024 // 单 sock 发送队列上限(buf 数)；超限 TCP 丢数据并断连、UDP 丢包；0 表示不限制
 #define SSL_WPEND_MAX_MS    30000 // 挂起的 SSL 写零进展上限（毫秒），超限判死断连；须 > 0，取 0 不是关闭而是所有挂起写立刻判死
@@ -61,7 +67,7 @@
 //macOS 与其余 BSD 的裸 SO_REUSEPORT 只允许重复绑定,连接全落最后 bind 的那个,就地挂会退化成单线程。
 //Solaris/AIX 有 SO_REUSEPORT 但分发语义未验证,按不分发处理
 #ifndef REUSEPORT_BALANCED
-    //必须带上 SO_REUSEPORT：ev_listen 正是按它决定建 nthreads 个 listen fd 还是只建 1 个,
+    //必须带上 SO_REUSEPORT：ev_listen 正是按它决定每个收连接的线程各建一个 listen fd(没给线程表就是 nthreads 个)还是只建 1 个,
     //少了它 nlsn 会是 1、所有连接都从同一个线程 accept,就地挂立刻退化成单线程
     #if defined(SO_REUSEPORT) && (defined(SO_REUSEPORT_LB) || defined(OS_LINUX))
         #define REUSEPORT_BALANCED 1

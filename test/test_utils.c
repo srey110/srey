@@ -6,7 +6,7 @@
 #include "crypt/crypt_pub.h"
 #include <locale.h>
 
-#define FAKE_RV_MAX 3// 场景二是最长的一路: 两轮读满 + 一轮确认
+#define FAKE_RV_MAX 8// 最长的是读满翻倍那一路: 7 轮读满 + 1 轮吐 0
 // 8u 而非 8：下面多处与 size_t / uint64_t 比较，无符号常量免掉 -Wsign-compare
 #define TW_LAT_N 8u
 // 带标记的测试对象:_elfree 收到真实对象时 magic 必为 POOL_T_MAGIC;
@@ -1414,6 +1414,68 @@ static void _hint_check(CuTest *tc, size_t hint, size_t expect) {
     CuAssertTrue(tc, _fake_rv_offer[0] < expect + ONEK);
     buffer_free(&buf);
 }
+// 读满就把下轮要的空间翻倍，到 RECV_GROW_CAP 封顶：大块接收的读次数靠它压下来，翻不上去或越过封顶都算错
+static void test_buffer_from_sock_grow(CuTest *tc) {
+#if defined(READV_EINVAL) || RECV_GROW_CAP <= MAX_RECV_SIZE
+    (void)tc;
+#else
+    buffer_ctx buf;
+    size_t nread;
+    int32_t i;
+    buffer_init(&buf);
+    _fake_rv_reset();
+    for (i = 0; i < FAKE_RV_MAX - 1; i++) {
+        _fake_rv_want[i] = RECV_GROW_CAP * 4;// 每轮都给不完，逼它读满
+    }
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
+    CuAssertIntEquals(tc, FAKE_RV_MAX, _fake_rv_calls);// 最后一轮吐 0 才停
+    CuAssertTrue(tc, nread == buffer_size(&buf));
+    // 4K 起步翻三次就到 32K 封顶；之后每轮都在封顶上，不再翻
+    CuAssertTrue(tc, _fake_rv_offer[3] >= RECV_GROW_CAP);
+    for (i = 4; i < FAKE_RV_MAX - 1; i++) {
+        CuAssertTrue(tc, _fake_rv_offer[i] >= RECV_GROW_CAP && _fake_rv_offer[i] < RECV_GROW_CAP * 2);
+    }
+    buffer_free(&buf);
+#endif
+}
+
+// 消费方用 buffer_want 报的"本条还差多少"：裸 socket 读首轮按它要空间(封顶 RECV_GROW_CAP，不是 RECV_HINT_CAP)；
+// SSL 那类带缓冲的读(arg 非 NULL)不用它；用一次即清，下一次读回到默认
+static void test_buffer_from_sock_want(CuTest *tc) {
+#if RECV_GROW_CAP > MAX_RECV_SIZE
+    buffer_ctx buf;
+    size_t nread;
+    int32_t dummy = 0;
+    const size_t want = (MAX_RECV_SIZE + RECV_GROW_CAP) / 2;
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = 2000;
+    buffer_want(&buf, want);
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
+    CuAssertTrue(tc, _fake_rv_offer[0] >= want && _fake_rv_offer[0] < want + ONEK);
+    CuAssertIntEquals(tc, 0, (int)buf.want);
+    buffer_free(&buf);
+    // 报得再大也只按 RECV_GROW_CAP 要：对端声称的长度不一定已经到了
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = 2000;
+    buffer_want(&buf, RECV_HINT_CAP * 4);
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
+    CuAssertTrue(tc, _fake_rv_offer[0] >= RECV_GROW_CAP && _fake_rv_offer[0] < RECV_GROW_CAP + ONEK);
+    buffer_free(&buf);
+    // 带缓冲的读不用它，但同样清掉
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = 2000;
+    buffer_want(&buf, want);
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, &dummy));
+    CuAssertTrue(tc, _fake_rv_offer[0] < want);
+    CuAssertIntEquals(tc, 0, (int)buf.want);
+    buffer_free(&buf);
+#else
+    (void)tc;
+#endif
+}
 static void test_buffer_from_sock_hint(CuTest *tc) {
     static const size_t lows[] = { 0, 100, MAX_RECV_SIZE };
     size_t i;
@@ -1460,6 +1522,51 @@ static void test_buffer_free_resets(CuTest *tc) {
     CuAssertTrue(tc, 5 == buffer_size(&buf));
     CuAssertTrue(tc, 5 == buffer_copyout(&buf, 0, readback, 5));
     CuAssertTrue(tc, 0 == memcmp("again", readback, 5));
+    buffer_free(&buf);
+}
+
+// 多节点时只取走首节点一部分：缓存在后面节点上的搜索游标基偏移要跟着减，否则下次带 start 的读取会错位。
+// drain、remove 部分取、整段排空首节点三种都走一遍
+static void test_buffer_drain_multi_hint(CuTest *tc) {
+    buffer_ctx buf;
+    char src[16000];
+    char out[16];
+    IOV_TYPE iov[1];
+    size_t i, headlen, used;
+    for (i = 0; i < sizeof(src); i++) {
+        src[i] = (char)(i % 251);
+    }
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, src, 3000));
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, src + 3000, 9000));
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, src + 12000, 4000));
+    CuAssertTrue(tc, buf.head != buf.tail);// 确实是多节点
+    // 带 start 的 copyout 把游标缓存到第二个节点
+    CuAssertTrue(tc, sizeof(out) == buffer_copyout(&buf, 5000, out, sizeof(out)));
+    CuAssertTrue(tc, 0 == memcmp(out, src + 5000, sizeof(out)));
+    // 只 drain 首节点的一部分
+    CuAssertTrue(tc, 1000 == buffer_drain(&buf, 1000));
+    CuAssertTrue(tc, sizeof(src) - 1000 == buffer_size(&buf));
+    CuAssertTrue(tc, sizeof(out) == buffer_copyout(&buf, 4000, out, sizeof(out)));
+    CuAssertTrue(tc, 0 == memcmp(out, src + 5000, sizeof(out)));
+    // remove 只取首节点的一部分
+    CuAssertTrue(tc, sizeof(out) == buffer_remove(&buf, out, sizeof(out)));
+    CuAssertTrue(tc, 0 == memcmp(out, src + 1000, sizeof(out)));
+    CuAssertTrue(tc, sizeof(out) == buffer_copyout(&buf, 4000 - sizeof(out), out, sizeof(out)));
+    CuAssertTrue(tc, 0 == memcmp(out, src + 5000, sizeof(out)));
+    // 正好排空首节点(走原慢路径摘节点)，之后读取仍然对得上。
+    // 追加时会先填满首节点的余量，它现在还剩多少以 buffer_get 拿到的第一段为准
+    CuAssertTrue(tc, 1 == buffer_get(&buf, buffer_size(&buf), iov, 1));
+    headlen = (size_t)iov[0].IOV_LEN_FIELD;
+    buffer_commit_get(&buf, 0);
+    CuAssertTrue(tc, headlen == buffer_drain(&buf, headlen));
+    used = 1000 + sizeof(out) + headlen;
+    CuAssertTrue(tc, sizeof(src) - used == buffer_size(&buf));
+    CuAssertTrue(tc, used <= 14000);
+    CuAssertTrue(tc, sizeof(out) == buffer_copyout(&buf, 14000 - used, out, sizeof(out)));
+    CuAssertTrue(tc, 0 == memcmp(out, src + 14000, sizeof(out)));
+    CuAssertTrue(tc, sizeof(out) == buffer_copyout(&buf, 0, out, sizeof(out)));
+    CuAssertTrue(tc, 0 == memcmp(out, src + used, sizeof(out)));
     buffer_free(&buf);
 }
 
@@ -5643,6 +5750,9 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_from_sock_space);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_readv_fail);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_hint);
+    SUITE_ADD_TEST(suite, test_buffer_from_sock_want);
+    SUITE_ADD_TEST(suite, test_buffer_from_sock_grow);
+    SUITE_ADD_TEST(suite, test_buffer_drain_multi_hint);
     SUITE_ADD_TEST(suite, test_buffer_free_resets);
     SUITE_ADD_TEST(suite, test_buffer_hint_after_migrate);
     SUITE_ADD_TEST(suite, test_buffer_node_spare);

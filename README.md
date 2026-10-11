@@ -8,7 +8,7 @@
 ## 特性
 
 - **事件模型**：IOCP（Windows）、epoll（Linux）、kqueue（macOS / BSD）、evport（Solaris）、pollset（AIX）、/dev/poll（HP-UX）
-- **调度**：task 消息驱动，默认跑在 worker 线程池；task 也可绑到 net 线程上执行，多核监听可按线程分组
+- **调度**：task 消息驱动，默认跑在 worker 线程池；task 也可绑到 net 线程上执行，监听可按线程分组（用满全部 net 线程，或只用其中几个）
 - **协程**：同步风格编写异步逻辑（C 侧基于 minicoro，Lua 侧用原生协程）
 - **多协议**：HTTP、WebSocket、MQTT 3.1.1 / 5.0、DNS、Redis、MySQL、PostgreSQL、MongoDB、SMTP、KCP、自定义协议
 - **SSL/TLS**：基于 OpenSSL，支持 PEM / ASN1 / PKCS12 证书，支持 TLS 1.3 KeyUpdate
@@ -246,8 +246,9 @@ void *resp = coro_request(dst, task, reqtype, data, size, copy, &erro, &resp_siz
 // 回调里不能阻塞或做长计算：会卡住该线程上的所有连接
 task_bind_net(task, 0);
 
-// 多核监听：每个 net 线程放一个绑在本线程上的组员，由 head 来 listen，
-// 新连接落在哪个 net 线程就交给那个线程的组员（handles 个数等于 loader_nnet(loader)）
+// 按 net 线程分组监听：handles 按线程排（个数等于 loader_nnet(loader)），handles[i] 是绑在第 i 个线程上的组员，
+// 填 INVALID_TNAME 表示那个线程不收。head 来 listen，只在有组员的线程上收，新连接交给所在线程的组员；
+// 只给一个线程放组员就是这个服务只用这一个线程
 task_accept_group(head, handles, n);
 ```
 
@@ -384,8 +385,8 @@ srey.startup(function()
         if 0x01 == frame.prot then       -- TEXT，回显
             local pack, psize = websock.pack_text(0, 1, frame.data, frame.size)
             srey.send(sk, pack, psize, 0)
-        elseif 0x09 == frame.prot then   -- PING → PONG
-            local pack, psize = websock.pack_pong(0)
+        elseif 0x09 == frame.prot then   -- PING → PONG，原样带回 PING 的载荷
+            local pack, psize = websock.pack_pong(0, frame.data, frame.size)
             srey.send(sk, pack, psize, 0)
         end
     end)

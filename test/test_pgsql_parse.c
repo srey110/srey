@@ -1337,8 +1337,8 @@ static void test_pgsql_copy_out_framing(CuTest *tc) {
     _pgpack_free(pg.pack);
 }
 
-// RowDescription 正文：n 列 INT4 文本列，列名依次 "c0" "c1" ...
-static size_t _pg_rowdesc(char *body, uint16_t n) {
+// RowDescription 正文：n 列类型为 oid 的文本格式列，列名依次 "c0" "c1" ...
+static size_t _pg_rowdesc_oid(char *body, uint16_t n, uint32_t oid) {
     char *p = body;
     uint16_t i;
     pack_integer(p, n, 2, 0); p += 2;
@@ -1346,12 +1346,16 @@ static size_t _pg_rowdesc(char *body, uint16_t n) {
         *p++ = 'c'; *p++ = (char)('0' + i); *p++ = '\0';
         pack_integer(p, 0, 4, 0); p += 4;// table_oid
         pack_integer(p, i + 1, 2, 0); p += 2;// index
-        pack_integer(p, INT4OID, 4, 0); p += 4;
+        pack_integer(p, oid, 4, 0); p += 4;
         pack_integer(p, 4, 2, 0); p += 2;// lens
         pack_integer(p, (uint64_t)-1, 4, 0); p += 4;// type_modifier
         pack_integer(p, FORMAT_TEXT, 2, 0); p += 2;
     }
     return (size_t)(p - body);
+}
+// RowDescription 正文：n 列 INT4 文本列
+static size_t _pg_rowdesc(char *body, uint16_t n) {
+    return _pg_rowdesc_oid(body, n, INT4OID);
 }
 // DataRow 正文：n 列，第 j 列的文本值是 row * 10 + j
 static size_t _pg_datarow(char *body, uint16_t n, int32_t row) {
@@ -1636,15 +1640,16 @@ static void test_pgsql_unpack_rows_batch(CuTest *tc) {
     CuAssertIntEquals(tc, (int)size[0], (int)size[1]);
     buffer_free(&buf);
     _pg_batch_check(tc, pack, 5);
-    // 3) 最后一条 DataRow 只到了一部分：k=0 头都不全(3 字节)，k=1 头齐正文短 3 字节
+    // 3) 最后一条 DataRow 只到了一部分：k=0 头都不全(3 字节)，k=1 类型码与长度齐、列数没到(6 字节，
+    // 专用循环要偷看 7 字节)，k=2 头齐正文短 3 字节
     tl = _pg_rowdesc(tbody, 2);
     dl = _pg_datarow(dbody, 2, 3);
     last[0] = 'D';
     pack_integer(last + 1, (uint64_t)(4 + dl), 4, 0);
     memcpy(last + 5, dbody, dl);
     lastlens = 5 + dl;
-    for (k = 0; k < 2; k++) {
-        cut = (0 == k) ? 3 : lastlens - 3;
+    for (k = 0; k < 3; k++) {
+        cut = (0 == k) ? 3 : ((1 == k) ? 6 : lastlens - 3);
         ZERO(&pg, sizeof(pg));
         ud.context = &pg;
         buffer_init(&buf);
@@ -1682,6 +1687,93 @@ static void test_pgsql_unpack_rows_batch(CuTest *tc) {
         CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
         buffer_free(&buf);
         _pg_batch_check(tc, pack, 4);
+    }
+}
+// 头一条之后相邻的 DataRow 走专用循环(_pgpack_rows_run)：NULL、空串、0 列行与通用路径同口径；
+// 列数不符(退回通用路径判)、列长度超出消息、-1 以外的负长度都判协议错
+static void test_pgsql_unpack_rows_fast(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    pgpack_ctx *pack = NULL;
+    pgsql_reader_ctx *reader;
+    char tbody[128], dbody[64];
+    char *p;
+    const char *txt;
+    size_t tl, dl;
+    int32_t status, err, lens, i, k;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND
+    ZERO(&pg, sizeof(pg));
+    ud.context = &pg;
+    tl = _pg_rowdesc_oid(tbody, 2, TEXTOID);
+    buffer_init(&buf);
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    dl = _pg_datarow(dbody, 2, 0);// 头一条走通用路径
+    _pg_push_msg(&buf, 'D', dbody, dl);
+    p = dbody;// NULL + 空串
+    pack_integer(p, 2, 2, 0); p += 2;
+    pack_integer(p, (uint64_t)-1, 4, 0); p += 4;
+    pack_integer(p, 0, 4, 0); p += 4;
+    _pg_push_msg(&buf, 'D', dbody, (size_t)(p - dbody));
+    pack_integer(dbody, 0, 2, 0);// 0 列：合法，不建行
+    _pg_push_msg(&buf, 'D', dbody, 2);
+    dl = _pg_datarow(dbody, 2, 3);
+    _pg_push_msg(&buf, 'D', dbody, dl);
+    _pg_push_msg(&buf, 'C', "SELECT 3", 9);
+    _pg_push_msg(&buf, 'Z', "I", 1);
+    for (i = 0; i < 8 && NULL == pack; i++) {
+        status = PROT_INIT;
+        pack = _t_pgsql_unpack(0, &buf, &ud, NULL, &status);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    }
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    buffer_free(&buf);
+    reader = pgsql_reader_iter(pack, FORMAT_TEXT);
+    CuAssertPtrNotNull(tc, reader);
+    CuAssertIntEquals(tc, 3, (int)pgsql_reader_size(reader));
+    txt = pgsql_reader_text(reader, "c1", &lens, &err);
+    CuAssertTrue(tc, ERR_OK == err && 1 == lens && '1' == txt[0]);
+    pgsql_reader_next(reader);
+    CuAssertIntEquals(tc, 1, pgsql_reader_isnull(reader, "c0"));
+    CuAssertIntEquals(tc, 0, pgsql_reader_isnull(reader, "c1"));
+    txt = pgsql_reader_text(reader, "c1", &lens, &err);
+    CuAssertTrue(tc, ERR_OK == err && 0 == lens && NULL != txt);
+    pgsql_reader_next(reader);
+    txt = pgsql_reader_text(reader, "c1", &lens, &err);
+    CuAssertTrue(tc, ERR_OK == err && 2 == lens && 0 == memcmp(txt, "31", 2));
+    pgsql_reader_free(reader);
+    _pgpack_free(pack);
+    // 坏行跟在一条好行后面：k=0 列数不符，k=1 第 2 列声明 100 字节只带 2 字节，k=2 第 2 列长度 -2
+    for (k = 0; k < 3; k++) {
+        ZERO(&pg, sizeof(pg));
+        ud.context = &pg;
+        buffer_init(&buf);
+        _pg_push_msg(&buf, 'T', tbody, tl);
+        dl = _pg_datarow(dbody, 2, 0);
+        _pg_push_msg(&buf, 'D', dbody, dl);
+        if (0 == k) {
+            dl = _pg_datarow(dbody, 3, 1);
+        } else {
+            p = dbody;
+            pack_integer(p, 2, 2, 0); p += 2;
+            pack_integer(p, 1, 4, 0); p += 4;
+            *p++ = 'a';
+            pack_integer(p, (1 == k) ? 100 : (uint64_t)-2, 4, 0); p += 4;
+            *p++ = 'b';
+            *p++ = 'c';
+            dl = (size_t)(p - dbody);
+        }
+        _pg_push_msg(&buf, 'D', dbody, dl);
+        status = PROT_INIT;
+        CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, NULL, &status));// T
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        status = PROT_INIT;
+        CuAssertPtrEquals(tc, NULL, _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        buffer_free(&buf);
+        _pgpack_free(pg.pack);
     }
 }
 // 结果数组前 2 槽内嵌在 pgpack 里：5 条语句跨过内嵌槽(搬到堆上)后，下标、标签、有无结果集都得对得上
@@ -2099,6 +2191,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_fields_separate_alloc);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_spill);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_batch);
+    SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_fast);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_results_spill);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_notification);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_size);

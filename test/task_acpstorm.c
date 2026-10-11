@@ -82,7 +82,7 @@ static void _startup(task_ctx *task) {
         // 每轮换端口：Windows 监听口带 SO_EXCLUSIVEADDRUSE，立即重绑同端口必撞 EADDRINUSE
         port = (uint16_t)(arg->port + i);
         ev_init(&ev, STORM_NTH, NULL);
-        if (ERR_OK != ev_listen(&ev, NULL, "127.0.0.1", port, &cbs, NULL, &lsnid)) {
+        if (ERR_OK != ev_listen(&ev, NULL, "127.0.0.1", port, &cbs, NULL, NULL, 0, &lsnid)) {
             LOG_ERROR("acpstorm iter %d: ev_listen %u failed.", i, (uint32_t)port);
             ev_free(&ev);
             return;

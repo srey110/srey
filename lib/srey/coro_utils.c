@@ -654,16 +654,20 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
 }
 // 统一 SMTP 的"组包 → 同步发送 → 校验应答码"三步:cmd 为 NULL(组包拒绝,如地址含 CRLF)
 // 或没收到应答都返 ERR_FAILED。codes 传上面那几张表之一。
-// cmd 是 format_va 的堆串,copy=0 把所有权交给 ev_send,成败都不用调用方释放
-static int32_t _smtp_cmd(smtp_ctx *smtp, char *cmd, const char *const *codes, size_t ncode) {
+// cmd 是 lens 字节的堆串,copy=0 把所有权交给 ev_send,成败都不用调用方释放
+static int32_t _smtp_cmd2(smtp_ctx *smtp, char *cmd, size_t lens, const char *const *codes, size_t ncode) {
     if (NULL == cmd) {
         return ERR_FAILED;
     }
-    char *pack = coro_send(smtp->task, &smtp->sk, cmd, strlen(cmd), NULL, 0);
+    char *pack = coro_send(smtp->task, &smtp->sk, cmd, lens, NULL, 0);
     if (NULL == pack) {
         return ERR_FAILED;
     }
     return smtp_check_codes(pack, codes, ncode);
+}
+// 同 _smtp_cmd2，cmd 是 smtp_pack_* 返回的 '\0' 结尾堆串，长度按 strlen 取
+static int32_t _smtp_cmd(smtp_ctx *smtp, char *cmd, const char *const *codes, size_t ncode) {
+    return _smtp_cmd2(smtp, cmd, NULL == cmd ? 0 : strlen(cmd), codes, ncode);
 }
 // 发送 SMTP QUIT 命令并等待响应（不关闭 socket）
 static void _smtp_quit(smtp_ctx *smtp) {
@@ -709,7 +713,9 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     if (ERR_OK != _smtp_cmd(smtp, smtp_pack_data(), SMTP_CODE_DATA, ARRAY_SIZE(SMTP_CODE_DATA))) {
         return ERR_FAILED;
     }
-    return _smtp_cmd(smtp, mail_pack(mail), SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK));
+    size_t mlens = 0;
+    char *content = mail_pack(mail, &mlens);
+    return _smtp_cmd2(smtp, content, mlens, SMTP_CODE_OK, ARRAY_SIZE(SMTP_CODE_OK));
 }
 // 发送 SMTP RSET 命令重置会话状态（不关闭连接）
 static int32_t _smtp_reset(smtp_ctx *smtp) {

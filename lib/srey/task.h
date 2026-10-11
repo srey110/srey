@@ -7,6 +7,8 @@
 #define TASK_PRIORITY_MAX  16
 // 最大超时时间
 #define TASK_TIMEOUT_MAX   (60 * 60 * 1000)
+// task_multi_request2 的目标数不超过它时查到的指针放栈上，免一次 MALLOC；调用方组句柄数组时按同一个值开栈数组
+#define MULTI_REQUEST2_STACK 128
 // 网络事件标志位（可按位组合）
 typedef enum task_netev {
     NETEV_NONE   = 0x00, // 无额外事件
@@ -77,6 +79,13 @@ task_ctx *task_grab(loader_ctx *loader, name_t handle);
 /// <returns>name_t 句柄；未找到返回 INVALID_TNAME</returns>
 name_t task_find_name(loader_ctx *loader, const char *name);
 /// <summary>
+/// 句柄对应的任务是否还在（只在读锁内查表，不动引用计数；用于"先确认目标在，再把句柄交出去"）
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="handle">任务句柄；INVALID_TNAME 视为不在</param>
+/// <returns>非 0：在；0：不在。只代表查询那一刻，之后目标随时可能退出</returns>
+int32_t task_exists(loader_ctx *loader, name_t handle);
+/// <summary>
 /// 任务引用加一
 /// </summary>
 /// <param name="task">task_ctx</param>
@@ -91,7 +100,7 @@ void task_ungrab(task_ctx *task);
 /// 都在该线程本轮事件派发完之后跑，不再进 worker。任何时候可调，从下一次调度起生效。
 /// 要让 startup 也在 net 线程上跑须在 task_register 之前调；由注册函数代为注册的 task(如协程 task)
 /// 只能注册后再绑，startup 那一轮(连同绑定时已排进这一轮的消息)仍在 worker 上。已有连接不跟着迁：先绑再 connect / udp。
-/// listen 不看绑定，accept 出的连接按 fd 分到各 net 线程；要让新连接落在处理它的 task 所在线程，用 task_accept_group。
+/// listen 不看绑定，accept 出的连接分到各 net 线程；要让新连接落在处理它的 task 所在线程，用 task_accept_group(只用这一个线程就只给它放组员)。
 /// 空闲时本线程上连接收到的完整包会在收包当场处理、不入队，回调里关连接推迟到收包回调返回后生效。
 /// 回调里禁止阻塞与长计算：会卡住该线程上所有连接的收发，含别的 task 的连接
 /// </summary>
@@ -106,15 +115,17 @@ int32_t task_bind_net(task_ctx *task, int32_t index);
 /// <returns>绑定的 net 线程下标；未绑定返回 INVALID_INDEX</returns>
 int32_t task_net_index(task_ctx *task);
 /// <summary>
-/// 多核监听：每个 net 线程放一个处理连接的 task(组员)，由 head 来 listen。
-/// 设好后 head 监听到的新连接，落在哪个 net 线程就交给那个线程的组员，head 自己不再收。
+/// 按 net 线程分组监听：给 net 线程放处理连接的 task(组员)，由 head 来 listen。
+/// 设好后 head 只在有组员的线程上收连接，新连接落在哪个线程就交给那个线程的组员，head 自己不再收。
+/// 只给一个线程放组员就是这个服务只用这一个线程，全放满就是用满全部线程。
 /// 只对之后的 listen 生效，只能设一次；head 退出后新连接一律拒收。
 /// 每个组员的 arg 要各给一份(共用一份会被重复释放)；组员间共享的数据用原子量，或交给一个不绑线程的 task 汇总
 /// </summary>
 /// <param name="head">发起 listen 的 task，可以是组员之一，也可以是别的 task</param>
-/// <param name="handles">组员句柄，handles[i] 须已用 task_bind_net 绑到第 i 个 net 线程；函数内会拷一份</param>
-/// <param name="n">组员个数，须等于 loader_nnet</param>
-/// <returns>ERR_OK 成功；个数不对、某个组员不在或没绑对线程、已经设过，返回 ERR_FAILED</returns>
+/// <param name="handles">按 net 线程下标排的组员句柄：handles[i] 须已用 task_bind_net 绑到第 i 个 net 线程，
+/// 填 INVALID_TNAME 表示第 i 个线程不收这一组的连接；函数内会拷一份</param>
+/// <param name="n">handles 个数，须等于 loader_nnet</param>
+/// <returns>ERR_OK 成功；个数不对、一个组员都没有、某个组员不在或没绑对线程、已经设过，返回 ERR_FAILED</returns>
 int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n);
 /// <summary>
 /// 超时：ms 毫秒后触发。sess 与 _timeout 互斥,须恰好一个有效(违反将 ASSERTAB abort)：
@@ -220,6 +231,26 @@ int32_t task_call_to(loader_ctx *loader, name_t handle, subtype_t reqtype, void 
 int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t reqtype,
                            uint64_t sess, void *data, size_t size, int32_t copy);
 /// <summary>
+/// 按句柄广播请求，投递语义同 task_multi_request，但不用调用方先逐个 grab 目标：查表与投递在同一段读锁内完成，
+/// 省掉每个目标引用计数的一加一减。src=NULL && sess=0 时即单向广播(同 task_multi_call)。
+/// 与 task_multi_request 不同：一个都没投出去时不替调用方清理 data，见返回值
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="handles">目标句柄数组；INVALID_TNAME 占位跳过</param>
+/// <param name="n">数组长度</param>
+/// <param name="src">同 task_multi_request</param>
+/// <param name="reqtype">同 task_multi_request</param>
+/// <param name="sess">同 task_multi_request</param>
+/// <param name="data">数据</param>
+/// <param name="size">数据长度</param>
+/// <param name="copy">1 拷贝 0 不拷贝</param>
+/// <param name="strict">非 0 时，只要有一个不是 INVALID_TNAME 的句柄查不到，就一条都不投(调用方可换句柄重试)</param>
+/// <returns>实际投递的目标数；strict 且有查不到的返回 -1。返回 0 或 -1 时 data 没碰过、仍归调用方
+/// （copy=0 时须自行释放），投出去了才按 copy 语义交出</returns>
+int32_t task_multi_request2(loader_ctx *loader, const name_t *handles, int32_t n, task_ctx *src,
+                            subtype_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy,
+                            int32_t strict);
+/// <summary>
 /// 单向投递同一份数据给 N 个 task(fire-and-forget pub/sub,publisher 不等响应)。
 /// data 由内部引用计数共享,最后一个消费者释放,比 N 次 task_call 省 N-1 份拷贝。
 /// dsts[i]=NULL 占位跳过;有效 dst 数为 0 时按 copy 语义清理 data。
@@ -233,7 +264,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
 void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy);
 /// <summary>
-/// 监听。task 设过 task_accept_group 的，新连接交给连接所在 net 线程的组员
+/// 监听。task 设过 task_accept_group 的，只在有组员的 net 线程上收，新连接交给所在线程的组员
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pktype">包类型</param>

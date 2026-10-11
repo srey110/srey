@@ -80,15 +80,43 @@ uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now
     }
     return next_to;
 }
-uint32_t _evpub_defer_exec_drain(watcher_ctx *watcher) {
-    uint32_t n = defer_exec_que_size(&watcher->defer_execs);// 只跑进来时已有的，回调里新投的留到下一轮，免得饿死 IO
-    uint32_t i;
-    defer_exec_item it;
-    for (i = 0; i < n; i++) {
-        it = *defer_exec_que_pop(&watcher->defer_execs);// 先拷出：回调里再投会 push，pop 出的指针随之失效
-        it.cb(it.arg);
+int32_t *_evpub_listen_thrs(ev_ctx *ctx, const int32_t *thrs, uint32_t nthrs) {
+    if (NULL == thrs
+        || 0 == nthrs) {
+        return NULL;
     }
-    return n;
+    int32_t *copy;
+    uint32_t i, j;
+    MALLOC(copy, sizeof(int32_t) * nthrs);
+    for (i = 0; i < nthrs; i++) {
+        ASSERTAB(thrs[i] >= 0 && thrs[i] < (int32_t)ctx->nthreads, "listen thread index out of range.");
+        for (j = 0; j < i; j++) {
+            ASSERTAB(thrs[i] != thrs[j], "listen thread index repeated.");
+        }
+        copy[i] = thrs[i];
+    }
+    return copy;
+}
+// 最多跑两趟：第一趟里新投到本线程的(同线程绑定 task 一来一回的回程)本轮接着跑，第二趟里再投的留到下一轮，
+// 免得互投饿死 IO。ev_free 已开始就不跑第二趟，留给它走 fcb
+uint32_t _evpub_defer_exec_drain(watcher_ctx *watcher) {
+    const uint32_t npass = 2;
+    uint32_t n, i, pass;
+    uint32_t total = 0;
+    defer_exec_item it;
+    for (pass = 0; pass < npass; pass++) {
+        n = defer_exec_que_size(&watcher->defer_execs);// 只跑这一趟进来时已有的
+        if (0 == n
+            || (0 != pass && 0 != ATOMIC_GET(&watcher->ev->stopping))) {
+            break;
+        }
+        for (i = 0; i < n; i++) {
+            it = *defer_exec_que_pop(&watcher->defer_execs);// 先拷出：回调里再投会 push，pop 出的指针随之失效
+            it.cb(it.arg);
+        }
+        total += n;
+    }
+    return total;
 }
 int32_t _evpub_defer_exec_pending(watcher_ctx *watcher) {
     return !defer_exec_que_empty(&watcher->defer_execs);

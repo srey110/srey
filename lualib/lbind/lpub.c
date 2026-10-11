@@ -332,6 +332,13 @@ task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle) {
     }
     return task_grab(g_loader, lpub_task_refresh(lua, idx, handle));
 }
+name_t lpub_task_live(lua_State *lua, int32_t idx, name_t handle) {
+    if (task_exists(g_loader, handle)) {
+        return handle;
+    }
+    handle = lpub_task_refresh(lua, idx, handle);
+    return task_exists(g_loader, handle) ? handle : INVALID_TNAME;
+}
 int32_t lpub_rtn_bool(lua_State *lua, int32_t cond) {
     lua_pushboolean(lua, 0 != cond ? 1 : 0);
     return 1;

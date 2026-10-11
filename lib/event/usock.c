@@ -18,10 +18,12 @@ typedef struct lsnsock_ctx {
 }lsnsock_ctx;
 // Unix平台监听器上下文
 typedef struct listener_ctx {
-    int32_t nlsn;           // 监听socket数量（等于nthreads，SO_REUSEPORT时每线程一个）
+    int32_t nlsn;           // 监听socket数量（SO_REUSEPORT时收连接的每个线程一个，否则 1）
     atomic_t remove;        // 标记为待移除（ev_unlisten后设置）
     atomic_t ref;           // 引用计数（等于nlsn，每个_uev_remove_lsn减1）
-    lsnsock_ctx *lsnsock;   // 监听socket数组
+    uint32_t nthrs;         // thrs 个数
+    lsnsock_ctx *lsnsock;   // 监听socket数组；第 i 个挂在 watcher[lsnsock[i].sock.sk.index] 上
+    int32_t *thrs;          // 只在这几个 watcher 上收连接；NULL 为全部
 #if WITH_SSL
     evssl_ctx *evssl;       // SSL上下文（NULL表示不使用SSL）
 #endif
@@ -1009,7 +1011,10 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     }
     skpool_args skargs = { .sk = { .fd = sk->fd, .index = _evpub_launch_index(ctx, sk->fd, index) },
                            .cbs = cbs, .ud = ud };
-    evsock_ctx *evsk = (evsock_ctx *)_evpub_sk_new(&skargs);
+    watcher_ctx *to = &ctx->watcher[skargs.sk.index];
+    // 池是 watcher 私有的：已在目标线程上(如绑定 task 发起)就从它的池里取，关闭后回的也是这个池
+    evsock_ctx *evsk = _evpub_inloop(to) ? (evsock_ctx *)pool_pop(&to->pool, &skargs, 0)
+                                         : (evsock_ctx *)_evpub_sk_new(&skargs);
     evsk->ev_cb = _usk_on_connect_cb;
     tcp_ctx *tcp = UPCAST(evsk, tcp_ctx, sock);
     if (setsess) {
@@ -1087,8 +1092,8 @@ static inline int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt)
 }
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher。
 // 末尾重挂 READ 失败时这条监听 socket 从此收不到事件，只能弃掉：cbs_ctx 里没有"监听失效"
-// 这类回调，通知不到业务，故把后果写进日志——SO_REUSEPORT 下每个 watcher 一条，掉一条只是
-// 少一份 accept 容量，端口照常可连，不打出来没人会发现。清 ev_cb 的理由见 _usk_detach。
+// 这类回调，通知不到业务，故把后果写进日志——SO_REUSEPORT 下每个收连接的线程一条，有多条时掉一条
+// 只是少一份 accept 容量、端口照常可连，不打出来没人会发现；只有一条时端口从此收不到新连接。清 ev_cb 的理由见 _usk_detach。
 // kqueue 报了待接连接数(kevent.data)就只 accept 这么多次，省掉最后那次必然 EAGAIN 的；之后新到的留给下次事件
 static void _usk_on_accept_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
     (void)ev;
@@ -1117,10 +1122,10 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev
             continue;
         }
 #if REUSEPORT_BALANCED
-        // 内核已按连接散到各 listen fd,accept 落在哪个线程就留在哪个,省掉跨线程投递那一跳
+        // 内核已按连接散到各 listen fd(只建在收连接的线程上),accept 落在哪个线程就留在哪个,省掉跨线程投递那一跳
         to = watcher;
 #else
-        to = CALC_WATCHER(watcher->ev->watcher, watcher->ev->nthreads, fd);
+        to = &watcher->ev->watcher[_evpub_acp_index(watcher->ev, acpt->lsn->thrs, acpt->lsn->nthrs, fd)];
 #endif
         if (_evpub_inloop(to)) {
             _uev_add_acpfd_inloop(to, fd, acpt->lsn);
@@ -1183,9 +1188,11 @@ static void _usk_close_lsnsock(listener_ctx *lsn, int32_t cnt) {
 #endif
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
+    cbs_ctx *cbs, ud_cxt *ud, const int32_t *thrs, uint32_t nthrs, uint64_t *id) {
     netaddr_ctx addr;
+    int32_t *cthrs = _evpub_listen_thrs(ctx, thrs, nthrs);
     if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 0, &addr)) {
+        FREE(cthrs);
         return ERR_FAILED;
     }
 #ifndef SO_REUSEPORT
@@ -1193,15 +1200,18 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     if (INVALID_SOCK == fd) {
         LOG_ERROR("listen %s:%d error.", ip, port);
         UD_FREE(cbs->ud_free, ud);
+        FREE(cthrs);
         return ERR_FAILED;
     }
 #endif
     listener_ctx *lsn;
     MALLOC(lsn, sizeof(listener_ctx));
+    lsn->thrs = cthrs;
+    lsn->nthrs = (NULL == cthrs) ? 0 : nthrs;
 #ifndef SO_REUSEPORT
     lsn->nlsn = 1;
 #else
-    lsn->nlsn = ctx->nthreads;
+    lsn->nlsn = (NULL == cthrs) ? (int32_t)ctx->nthreads : (int32_t)nthrs;
 #endif
     ATOMIC_SET_RELAXED(&lsn->ref, 0);
     ATOMIC_SET_RELAXED(&lsn->remove, 0);
@@ -1219,7 +1229,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         lsnsock = &lsn->lsnsock[i];
         lsnsock->lsn = lsn;
         lsnsock->sock.ev_cb = _usk_on_accept_cb;
-        lsnsock->sock.sk.index = i;// 监听 socket 按数组下标挂 watcher[i],与 CALC_WATCHER_INDEX(fd) 无关
+        // 监听 socket 挂在收连接的第 i 个线程上(没有线程表就是 watcher[i])，与 CALC_WATCHER_INDEX(fd) 无关
+        lsnsock->sock.sk.index = (NULL == cthrs) ? i : cthrs[i];
 #ifndef SO_REUSEPORT
         lsnsock->sock.sk.fd = fd;
 #else
@@ -1235,7 +1246,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     ATOMIC_SET_RELAXED(&lsn->ref, lsn->nlsn);
     lsn->id = createid();
     for (i = 0; i < lsn->nlsn; i++) {
-        _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock);
+        _cmd_listen(&ctx->watcher[lsn->lsnsock[i].sock.sk.index], &lsn->lsnsock[i].sock);
     }
     spin_lock(&ctx->spin);
     lsn_arr_push_back(&ctx->arrlsn, &lsn);
@@ -1255,6 +1266,7 @@ void _uev_freelsn(listener_ctx *lsn) {
     _usk_close_lsnsock(lsn, lsn->nlsn);
     UD_FREE(lsn->cbs.ud_free, &lsn->ud);
     FREE(lsn->lsnsock);
+    FREE(lsn->thrs);
     FREE(lsn);
 }
 // 递减 lsn 引用计数；归零时立即释放 listener_ctx。
@@ -1340,7 +1352,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     ATOMIC_ADD_RELAXED(&lsn->ref, 1);
     ATOMIC_SET_RELEASE(&lsn->remove, 1);
     for (int32_t i = 0; i < lsn->nlsn; i++) {
-        _cmd_unlisten(&ctx->watcher[i], lsn);
+        _cmd_unlisten(&ctx->watcher[lsn->lsnsock[i].sock.sk.index], lsn);
     }
     // 占位减必须发 CMD 给 worker[0] 执行,不能主线程直接 FREE：worker 的 events[] 里可能还有
     // 指向 lsnsock 的项没遍历完,同步 FREE 就是跨线程 UAF；走 worker 则 FREE 跨过 QTN_MS 隔离期
@@ -1351,7 +1363,15 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
 // 占用的旧值——那样只按"在不在元素表里"判就会误关那条无辜连接,而它既不入池也不入隔离队列、
 // close 回调也不触发。在本线程读就没有这个时间差
 void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
-    lsnsock_ctx *curlsn = &lsn->lsnsock[watcher->index];
+    lsnsock_ctx *curlsn = NULL;
+    int32_t i;
+    for (i = 0; i < lsn->nlsn; i++) {// 有线程表时数组下标不等于线程下标，按 index 找挂在本线程上的那个
+        if (lsn->lsnsock[i].sock.sk.index == watcher->index) {
+            curlsn = &lsn->lsnsock[i];
+            break;
+        }
+    }
+    ASSERTAB(NULL != curlsn, "listener socket not on this watcher.");
     SOCKET fd = curlsn->sock.sk.fd;
     if (INVALID_SOCK != fd) {
         _evpub_sockel_remove(watcher, fd);

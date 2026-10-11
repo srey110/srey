@@ -33,6 +33,7 @@ void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     // 缓冲区数据不足，等待更多数据
     if (pklens > buffer_size(buf)) {
         BIT_SET(*status, PROT_MOREDATA);
+        buffer_want(buf, pklens - buffer_size(buf));
         return NULL;
     }
     // 数据体为空，仅消耗头部后返回 NULL

@@ -88,13 +88,10 @@ static int32_t _lkcp_start(lua_State *lua) {
 /// 仅保证调用时目标存在：目标若在此之后退出，该会话的消息会被静默丢弃。探测口径同 core.bind_task</returns>
 static int32_t _lkcp_handle(lua_State *lua) {
     kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
-    name_t handle = lpub_task_handle(lua, 2);
-    task_ctx *dst = lpub_task_grab(lua, 2, handle);
-    if (NULL == dst) {
+    name_t handle = lpub_task_live(lua, 2, lpub_task_handle(lua, 2));// 理由同 core.bind_task
+    if (INVALID_TNAME == handle) {
         return lpub_rtn_bool(lua, 0);
     }
-    handle = dst->handle;// 理由同 core.bind_task
-    task_ungrab(dst);
     return lpub_rtn_bool(lua, ERR_OK == kcp_handle(kcp, handle));
 }
 /// <summary>

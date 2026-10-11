@@ -118,6 +118,7 @@ DIGEST_TYPE = {
 }
 
 INVALID_SOCK = -1 -- 无效 socket fd
+INVALID_TNAME = 0 -- 无效 task 句柄(同 C 层 INVALID_TNAME)，task_accept_group 组员表里表示空位
 ERR_OK     = 0 -- 操作成功
 ERR_FAILED = -1 -- 操作失败
 

@@ -513,6 +513,23 @@ runner.run(function(t)
         t:check(pack ~= nil and size >= 2, "websock.pack_close")
         t:eq(0x88, pack and _head(pack, size, 1)[1], "close 首字节 FIN|WS_CLOSE")
         utils.ud_free(pack)
+        -- 控制帧带载荷：ping/pong 原样带，close 是 2 字节大端状态码 + 原因；载荷卡 125 字节
+        pack, size = websock.pack_ping(0, "abc")
+        t:eq("\x89\x03abc", pack and srey.ud_str(pack, size), "ping 带载荷")
+        utils.ud_free(pack)
+        pack, size = websock.pack_pong(0, "abc")
+        t:eq("\x8A\x03abc", pack and srey.ud_str(pack, size), "pong 带载荷")
+        utils.ud_free(pack)
+        pack, size = websock.pack_close(0, 1000, "bye")
+        t:eq("\x88\x05\x03\xE8bye", pack and srey.ud_str(pack, size), "close 带状态码与原因")
+        utils.ud_free(pack)
+        pack, size = websock.pack_close(0, 1001)
+        t:eq("\x88\x02\x03\xE9", pack and srey.ud_str(pack, size), "close 只带状态码")
+        utils.ud_free(pack)
+        t:eq(nil, (websock.pack_pong(0, string.rep("x", 126))), "pong 载荷超 125 返回 nil")
+        t:eq(nil, (websock.pack_close(0, 0, "x")), "close 无状态码却带原因返回 nil")
+        t:eq(nil, (websock.pack_close(0, 1000, string.rep("r", 124))), "close 状态码加原因超 125 返回 nil")
+        t:eq(false, (pcall(websock.pack_close, 0, 70000)), "close 状态码超 65535 报错")
 
         -- text/binary 服务端帧（mask=0），fin=1：payload "hi" → 2+2 字节。
         -- text 与 binary 同样只差 opcode，长度还各不相同，于是长度对了更容易让人以为测过了
@@ -723,6 +740,8 @@ runner.run(function(t)
             { "%1\r\n*1\r\n:1\r\n+v\r\n", { [{ 1 }] = "v" }, "聚合当 map 键" },
             { "*1\r\n,nan\r\n", { 0 / 0 }, "NaN 当值照留" },
             { "*2\r\n|1\r\n+a\r\n+b\r\n:1\r\n:2\r\n", { { a = "b" }, 1, 2 }, "数组里的 attr 顺序追加" },
+            { "*3\r\n*2\r\n:1\r\n:2\r\n:3\r\n*0\r\n", { { 1, 2 }, 3, {} }, "数组里嵌数组，后面的元素接着排" },
+            { "*2\r\n|-1\r\n:1\r\n:2\r\n", { false, 1, 2 }, "数组里的 nil attr 占一格 false，后面的元素接着排" },
             { "%1\r\n|1\r\n+a\r\n+b\r\n+k\r\n+v\r\n", { [1] = { a = "b" }, k = "v" }, "map 里的 attr 追加到 #t + 1" },
             { "%1\r\n+k\r\n|1\r\n+a\r\n+b\r\n+v\r\n", { [1] = { a = "b" }, k = "v" }, "attr 夹在键值之间不打断配对" },
             { "%1\r\n|-1\r\n+k\r\n+v\r\n", { [1] = false, k = "v" }, "map 里的 nil attr 追加 false" },

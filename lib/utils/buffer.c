@@ -661,6 +661,21 @@ NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
+    /* 多节点、只取走首节点一部分：省掉下面游标的保存恢复与逐节点循环，游标在后面节点上时基偏移减 lens。
+     * off 与 misalign 隔开写：两个写挨着会被并成一条 stp，紧接着读其中一个时 M2 上慢一截 */
+    node = ctx->head;
+    if (NULL != node
+        && 0 == node->used
+        && lens < node->off) {
+        if (NULL != ctx->hint_node
+            && node != ctx->hint_node) {
+            ctx->hint_base_off -= lens;
+        }
+        node->off -= lens;
+        ctx->total_lens -= lens;
+        node->misalign += lens;
+        return lens;
+    }
     oldlen = ctx->total_lens;
     if (0 == oldlen) {
         return 0;
@@ -1009,13 +1024,19 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {
     *nread = 0;
     size_t nbuf = MAX_RECV_SIZE;
-    const size_t growcap = MAX_RECV_SIZE * 2;
     size_t readed;
     size_t space;
     int32_t rtn;
     uint32_t niov;
     size_t iovlens;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
+    // 消费方报的"本条还差多少"只给裸 socket 读用(SSL 读进来的是密文)，按 RECV_GROW_CAP 截，用一次即清
+    size_t want = ctx->want > RECV_GROW_CAP ? RECV_GROW_CAP : ctx->want;
+    if (NULL == arg
+        && want > hint) {
+        hint = want;
+    }
+    ctx->want = 0;
     if (hint > nbuf
         && nbuf < RECV_HINT_CAP) {
         nbuf = hint > RECV_HINT_CAP ? RECV_HINT_CAP : hint;
@@ -1063,12 +1084,12 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
             // 反而要多付一次 readv 系统调用(~1-2us), 买卖倒挂
             space = buffer_space(ctx, MAX_EXPAND_NIOV);
             nbuf = (space >= MAX_RECV_SIZE / 4) ? space : MAX_RECV_SIZE;
-        } else if (nbuf < growcap) {
-            // 读满说明 socket 里还有,下轮请求量翻倍、到 growcap 封顶,大块接收的读次数减半;
+        } else if (nbuf < RECV_GROW_CAP) {
+            // 读满说明 socket 里还有,下轮请求量翻倍、到 RECV_GROW_CAP 封顶,大块接收的读次数随之大降;
             // 小包一次就读完、走上面那支,行为与加这段之前逐字相同
             nbuf *= 2;
-            if (nbuf > growcap) {
-                nbuf = growcap;
+            if (nbuf > RECV_GROW_CAP) {
+                nbuf = RECV_GROW_CAP;
             }
         }
     }

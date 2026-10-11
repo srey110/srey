@@ -28,11 +28,14 @@ void ev_free(ev_ctx *ctx);
 /// <param name="cbs">回调函数; 必须非 NULL 且 r_cb 非 NULL(UDP 那面是 rf_cb)</param>
 /// <param name="ud">用户数据; 失败时由本函数经 cbs->ud_free 释放, 调用方不必再管。
 ///   cbs 为 NULL 时取不到 ud_free, 这一档 ud 仍归调用方</param>
+/// <param name="thrs">只在这几个 event 线程上收连接(accept 出的连接也只挂到它们上面)；NULL 为全部线程。
+///   下标须在 [0, nthreads) 且不重复，违反断言；函数内拷一份</param>
+/// <param name="nthrs">thrs 个数，0 同 NULL</param>
 /// <param name="id">监听ID</param>
-/// <returns>ERR_OK 成功; cbs / r_cb 为空、ev_free 已开始、地址解析失败都返 ERR_FAILED,
-///   其中只有地址解析那档会落日志</returns>
+/// <returns>ERR_OK 成功; cbs / r_cb 为空、ev_free 已开始、地址解析失败、建监听 socket 失败(如端口被占;
+///   IOCP 上含挂完成端口与投 AcceptEx 失败)都返 ERR_FAILED, 其中地址解析与建 socket 两档会落日志</returns>
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *id);
+    cbs_ctx *cbs, ud_cxt *ud, const int32_t *thrs, uint32_t nthrs, uint64_t *id);
 /// <summary>
 /// 链接。业务须等连接回调(conn_cb)后才能 ev_send;启用 SSL 时（evssl != NULL）还须等 ssl握手完成回调后才能 ev_send
 /// </summary>
@@ -265,7 +268,8 @@ int32_t ev_ud_handle(ev_ctx *ctx, sock_ctx *sk, name_t handle);
 int32_t ev_ud_context(ev_ctx *ctx, sock_ctx *sk, void *extra, free_cb fcb);
 /// <summary>
 /// 投一个回调到第 index 个 event 线程上执行：在该线程本轮事件派发完之后跑，回调里 ev_send 的数据随后冲出。
-/// 在该线程上调用也只排队不当场执行，回调永远不嵌在 socket 回调里；回调里再投的留到下一轮。
+/// 在该线程上调用也只排队不当场执行，回调永远不嵌在 socket 回调里；回调里再投到本线程的本轮再跑一趟，
+/// 那一趟里再投的留到下一轮。
 /// 不检查 ev_free 是否已开始，ev_free 返回之后再调是释放后使用
 /// </summary>
 /// <param name="ctx">ev_ctx</param>

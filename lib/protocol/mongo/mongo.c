@@ -212,6 +212,7 @@ void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     }
     if (blens < (size_t)total) {
         BIT_SET(*status, PROT_MOREDATA);
+        buffer_want(buf, (size_t)total - blens);
         return NULL;
     }
     mgopack_ctx *mgopack;

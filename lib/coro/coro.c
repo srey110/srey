@@ -37,6 +37,7 @@
     #define COROSTACK_MAX (1024 * 1024)
 #endif
 #define NODEPOOL_CAP ONEK
+#define NODEPOOL_QUE_CAP 64 // fork_item / serial_node 只在排队期间存在，同时排着的远到不了 NODEPOOL_CAP
 #define MAPCO_INIT_CAP 32 // mapco 建表容量,同时是缩容地板,见 coro_new
 #define COROPOOL_MIN_KEEP 4
 
@@ -117,8 +118,8 @@ struct coro_ctx {
                                  // 正常由使用方释放，coro_free 兜底
     pool_ctx copool;             // 空闲协程对象池（元素 mco_coro *，含负载趋势）
     pool_ctx coinfo_pool;        // 空闲 coro_info 节点池，容量 NODEPOOL_CAP，不参与周期性收缩
-    pool_ctx fork_item_pool;     // 空闲 fork_item 节点池，容量 NODEPOOL_CAP，不参与周期性收缩
-    pool_ctx serial_node_pool;   // 空闲 serial_node 节点池，容量 NODEPOOL_CAP，不参与周期性收缩
+    pool_ctx fork_item_pool;     // 空闲 fork_item 节点池，容量 NODEPOOL_QUE_CAP，不参与周期性收缩
+    pool_ctx serial_node_pool;   // 空闲 serial_node 节点池，容量 NODEPOOL_QUE_CAP，不参与周期性收缩
     timer_ctx timer;             // 用于获取当前毫秒时间戳
     coro_heap timeout_heap;      // 按到期时间排序的最小堆,O(1) 检查最早超时
     mco_desc desc;               // 本调度器的协程描述：入口、栈大小；user_data 指回本调度器
@@ -266,8 +267,8 @@ coro_ctx *coro_new(const coro_hooks *hooks, void *owner, size_t stack_size) {
     co->desc.user_data = co;// 协程经 mco_get_user_data 找回所属调度器
     pool_init(&co->copool, 0, COROPOOL_CAP, COROPOOL_MIN_KEEP, 0, &cbs);
     pool_init(&co->coinfo_pool, sizeof(coro_info), NODEPOOL_CAP, 0, 0, NULL);
-    pool_init(&co->fork_item_pool, sizeof(fork_item), NODEPOOL_CAP, 0, 0, NULL);
-    pool_init(&co->serial_node_pool, sizeof(serial_node), NODEPOOL_CAP, 0, 0, NULL);
+    pool_init(&co->fork_item_pool, sizeof(fork_item), NODEPOOL_QUE_CAP, 0, 0, NULL);
+    pool_init(&co->serial_node_pool, sizeof(serial_node), NODEPOOL_QUE_CAP, 0, 0, NULL);
     timer_init(&co->timer);
     co->shrink_ms = timer_cur_ms(&co->timer);
     // 建表容量取小:cap 同时是缩容地板,给大了永不回缩

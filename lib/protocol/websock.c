@@ -58,6 +58,7 @@ TLS_DEFINE(ws_keypool, _keypool, 1)
 // _vtbl_websock 的 closed / connected / ssl_exchanged / close_tail / recvfrom 五个仍是 NULL,
 // 留 NULL 编译器不报——往这张表里加带关闭副作用的协议(mysql/pgsql/mongo/smtp 那类)时必须同步补上
 static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqtt") - 1, "mqtt"} };
+static void _websock_close_reply(ev_ctx *ev, sock_ctx *sk, int32_t client, struct websock_pack_ctx *pack);
 
 // 用 4 字节掩码对 src 做 XOR 写进 dst，按平台选择 SIMD 路径；尾部 < 块大小 字节走 8 字节标量。
 // dst 与 src 可以是同一块（原地解掩码），部分重叠不行
@@ -603,6 +604,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     websock_pack_ctx *pack = ws->pack;
     if (pack->remain > buffer_size(buf)) {
         BIT_SET(*status, PROT_MOREDATA);
+        buffer_want(buf, pack->remain - buffer_size(buf));
         return NULL;
     }
     if (0 != pack->mask) {
@@ -721,7 +723,7 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
     websock_ctx *ws = (websock_ctx *)ud->context;
     if (prot >= 0x8) {
         // RFC 6455 §5.5：控制帧不可分片（FIN 必须为 1）且 payload ≤125
-        if (0 == fin || payloadlen > 125) {
+        if (0 == fin || payloadlen > WS_CTRL_MAX_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
@@ -770,6 +772,12 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     // 链节点只有结构体没有 data，绝不能借 dlens 记数；secpack 非空即链头(裸帧在 parse_head 置了 NULL)
     if (NULL != pack) {
         *size = (NULL != pack->secpack) ? pack->remain : pack->dlens;
+        // 对端发来 CLOSE：协议要求回一个(回显状态码)。业务回的那帧排在随后的关闭之后发不出去，只能在这里当场回。
+        // ev 为 NULL 是只解包、不在连接上收发的调用
+        if (WS_CLOSE == pack->prot
+            && NULL != ev) {
+            _websock_close_reply(ev, sk, client, pack);
+        }
     }
     return pack;
 }
@@ -861,14 +869,48 @@ static inline void *_websock_pack_frame(int32_t mask, uint8_t fin, uint8_t prot,
     }
     return _websock_create_pack(fin, prot, key, data, dlens, size);
 }
-void *websock_pack_ping(int32_t mask, size_t *size) {
-    return _websock_pack_frame(mask, 1, WS_PING, NULL, 0, size);
+// 控制帧：载荷按协议卡 WS_CTRL_MAX_LENS，不可分片
+static inline void *_websock_pack_ctrl(int32_t mask, uint8_t prot, void *data, size_t dlens, size_t *size) {
+    if (dlens > WS_CTRL_MAX_LENS) {
+        *size = 0;
+        return NULL;
+    }
+    return _websock_pack_frame(mask, 1, prot, data, dlens, size);
 }
-void *websock_pack_pong(int32_t mask, size_t *size) {
-    return _websock_pack_frame(mask, 1, WS_PONG, NULL, 0, size);
+void *websock_pack_ping(int32_t mask, void *data, size_t dlens, size_t *size) {
+    return _websock_pack_ctrl(mask, WS_PING, data, dlens, size);
 }
-void *websock_pack_close(int32_t mask, size_t *size) {
-    return _websock_pack_frame(mask, 1, WS_CLOSE, NULL, 0, size);
+void *websock_pack_pong(int32_t mask, void *data, size_t dlens, size_t *size) {
+    return _websock_pack_ctrl(mask, WS_PONG, data, dlens, size);
+}
+void *websock_pack_close(int32_t mask, uint16_t code, const char *reason, size_t rlens, size_t *size) {
+    char body[WS_CTRL_MAX_LENS];
+    if (0 == code) {
+        if (0 != rlens) {
+            *size = 0;
+            return NULL;
+        }
+        return _websock_pack_ctrl(mask, WS_CLOSE, NULL, 0, size);
+    }
+    if (rlens > WS_CTRL_MAX_LENS - sizeof(uint16_t)) {
+        *size = 0;
+        return NULL;
+    }
+    write_be16(body, code);
+    if (0 != rlens) {
+        memcpy(body + sizeof(uint16_t), reason, rlens);
+    }
+    return _websock_pack_ctrl(mask, WS_CLOSE, body, sizeof(uint16_t) + rlens, size);
+}
+// 回应对端的 CLOSE：载荷只回显状态码(前 2 字节)，不带原因。协议层看不到业务发过什么，本端先发起关闭时
+// 收到对端的回应也会再回一个，此时对端已在收尾，多一帧无害
+static void _websock_close_reply(ev_ctx *ev, sock_ctx *sk, int32_t client, websock_pack_ctx *pack) {
+    size_t size;
+    void *frame = _websock_pack_ctrl(client, WS_CLOSE, pack->data,
+                                     pack->dlens >= sizeof(uint16_t) ? sizeof(uint16_t) : 0, &size);
+    if (NULL != frame) {
+        (void)ev_send(ev, sk, frame, size, 0);
+    }
 }
 void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     return _websock_pack_frame(mask, fin, WS_TEXT, data, dlens, size);

@@ -44,6 +44,7 @@ static inline int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *pay
     ASSERTAB(sizeof(head) == buffer_copyout(buf, 0, head, sizeof(head)), "copy buffer failed.");
     *payload_lens = (size_t)unpack_integer(head, 3, 1, 0);
     if (size < *payload_lens + sizeof(head)) {
+        buffer_want(buf, *payload_lens + sizeof(head) - size);
         return ERR_FAILED;
     }
     mysql->id = (uint8_t)head[3];

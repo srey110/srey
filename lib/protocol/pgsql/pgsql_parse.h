@@ -9,6 +9,9 @@ char *_pgpack_error_notice(binary_ctx *breader);
 // 给 DataRow 分内存：pg 当前有建好字段描述的 reader 时从它的块链切 total 字节并在块尾多分行数组
 // [消息][补齐到 8][pgpack_row × 列数]，随 reader 释放；否则返回 NULL，由调用方单独分配
 char *_pgpack_row_alloc(pgsql_ctx *pg, size_t total);
+// reader 已就绪时连解缓冲里相邻的 DataRow，返回解掉的线上字节数，口径同通用路径。碰到不是 'D'、没收全、
+// 0 列或列数不符、长度字段非法就停，留给通用路径按原样处理；列长度非法或被截断置 PROT_ERROR
+size_t _pgpack_rows_run(pgsql_ctx *pg, buffer_ctx *buf, int32_t *status);
 // 释放 pgpack_ctx 及其持有的内部数据
 void _pgpack_free(pgpack_ctx *pgpack);
 // 释放 pgsql_reader_ctx 内部数据（行数组与字段数组），不释放结构体本身

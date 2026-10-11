@@ -4,9 +4,9 @@
 -- 3) multi_request: 广播给 N 个 sub + 共用 sess,sub task_response 回 src,
 --    publisher srey.on_responsed 累计响应数 == N,验证 valid 返回值
 -- 4) multi_request 边界: 空表返回 0、sess=0 抛错
--- 5) 目标数 / 连接数跨过绑定层栈数组上限(multi_* 32、send_multi 64)两侧都投齐，堆档非法元素抛错
--- 6) 名字缓存过期：同名 task 退出后重新注册，按名字投递要到新 task（copy=0 的载荷重查后照样投到）；
---    名字已不存在时返回 false、载荷不泄漏
+-- 5) 目标数 / 连接数跨过绑定层栈数组上限(multi_* 与 send_multi 都是 128)两侧都投齐，大档非法元素抛错
+-- 6) 名字缓存过期：同名 task 退出后重新注册，按名字投递要到新 task（copy=0 的载荷重查后照样投到，multi_request 同）；
+--    名字已不存在时返回 false（multi_request 返回 0）、载荷不泄漏
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -30,6 +30,9 @@ local REGEN = "multi_call_sub_regen"
 local BOUND = "multi_call_sub_bound"
 -- 接收组用例的端口
 local ACP_GROUP_PORT = 15068
+-- 只在一个线程上放组员的接收组用例的端口与组员名
+local ACP_PART_PORT = 15069
+local GROUP_PART = "group_part"
 
 srey.startup(function()
 runner.run(function(t)
@@ -146,9 +149,12 @@ runner.run(function(t)
     local rpc_sess = srey.id()
     local resp_count = 0
     local resp_by_sess = {}
+    local resp_body = {}-- 应答载荷("ack<idx>") → 收到次数，据此认出应答来自哪个 sub
     srey.on_responsed(function(reqtype, sess, _, data, size)
         if data and size > 0 then
             resp_by_sess[sess] = (resp_by_sess[sess] or 0) + 1
+            local body = srey.ud_str(data, size)
+            resp_body[body] = (resp_body[body] or 0) + 1
             if sess == rpc_sess then
                 resp_count = resp_count + 1
             end
@@ -227,10 +233,11 @@ runner.run(function(t)
         return cond()
     end
 
-    -- ── multi_call / multi_request 目标数跨过栈档上限(32) ─────────────
-    -- 不超过上限时 dsts 用定长数组，超过改堆上分配，两侧都要投齐；按 SUBS 轮转填满 n 格。
-    -- 两种广播分开等：回包一起涌回来会顶过本 task 队列的积压告警线
-    for _, n in ipairs({ 31, 32, 33, 64 }) do
+    -- ── multi_call / multi_request 目标数跨过栈档上限(128) ────────────
+    -- 不超过上限时句柄用定长数组，超过改放 Lua userdata，两侧都要投齐；按 SUBS 轮转填满 n 格。
+    -- 两种广播分开等：回包一起涌回来会顶过本 task 队列的积压告警线(容量/3)；这几档单种回包也可能
+    -- 越线打一条积压告警，属预期，不是失败
+    for _, n in ipairs({ 127, 128, 129, 160 }) do
         local dsts = {}
         for i = 1, n do
             dsts[i] = SUBS[(i - 1) % N + 1]
@@ -244,8 +251,24 @@ runner.run(function(t)
         _wait(function() return (resp_by_sess[sess] or 0) >= n end)
         t:eq(n, resp_by_sess[sess], "multi_request n=" .. n .. " 全部响应")
     end
-    -- 非法元素在取载荷之前就抛，栈档与堆档同口径，copy=0 的载荷仍归调用方
-    for _, n in ipairs({ 10, 40 }) do
+    -- 大档省略尾部可选参数：句柄数组 userdata 不能占进 data/size/copy 的参数位
+    do
+        local n = 129
+        local dsts = {}
+        for i = 1, n do
+            dsts[i] = SUBS[(i - 1) % N + 1]
+        end
+        -- sub 收到空载荷直接丢弃、不回应答（见 multi_call_sub.lua），不带载荷这条只断言投递数
+        t:eq(n, srey.multi_request(dsts, 102, srey.id()), "n=129 不带载荷 multi_request 投递数")
+        local ud, usz = custz.pack(PACK_TYPE.CUSTZ_FIXED, "omit_copy")
+        local sess = srey.id()
+        t:eq(n, srey.multi_request(dsts, 102, sess, ud, usz), "n=129 lightuserdata 省略 copy 投递数")
+        _wait(function() return (resp_by_sess[sess] or 0) >= n end)
+        t:eq(n, resp_by_sess[sess], "n=129 lightuserdata 省略 copy 全部响应")
+        utils.ud_free(ud)-- copy 缺省为 1，载荷仍归调用方
+    end
+    -- 非法元素在取载荷之前就抛，栈档与大档同口径，copy=0 的载荷仍归调用方
+    for _, n in ipairs({ 10, 140 }) do
         local bad = {}
         for i = 1, n do
             bad[i] = SUBS[1]
@@ -258,7 +281,7 @@ runner.run(function(t)
         utils.ud_free(ud)
     end
 
-    -- ── send_multi 连接数跨过栈档上限(64) ─────────────────────────────
+    -- ── send_multi 连接数跨过栈档上限(128) ────────────────────────────
     -- 不超过上限时校验那趟顺手拷进栈数组，超过则校验完再拷一趟到堆上；同一连接重复 n 次，
     -- 客户端收到的字节数就是各档 n 之和
     do
@@ -277,7 +300,7 @@ runner.run(function(t)
         _wait(function() return nil ~= server_sk end)
         if t:check(csk.valid and nil ~= server_sk, "send_multi 用例连接建立") then
             local expect = 0
-            for _, n in ipairs({ 1, 63, 64, 65, 300 }) do
+            for _, n in ipairs({ 1, 127, 128, 129, 300 }) do
                 local sks = {}
                 for i = 1, n do
                     sks[i] = server_sk
@@ -287,12 +310,12 @@ runner.run(function(t)
             end
             _wait(function() return got >= expect end)
             t:eq(expect, got, "客户端收齐各档 send_multi 的字节")
-            -- 堆档第 70 个元素非法：校验整趟走完才取载荷，抛错时 copy=0 的载荷仍归调用方
+            -- 堆档第 170 个元素非法：校验整趟走完才取载荷，抛错时 copy=0 的载荷仍归调用方
             local bad = {}
-            for i = 1, 100 do
+            for i = 1, 200 do
                 bad[i] = server_sk
             end
-            bad[70] = 1
+            bad[170] = 1
             local ud, usz = custz.pack(PACK_TYPE.CUSTZ_FIXED, "bad_sk")
             t:eq(false, pcall(srey.send_multi, bad, ud, usz, 0), "堆档含非法元素 send_multi 抛错")
             utils.ud_free(ud)
@@ -367,7 +390,19 @@ runner.run(function(t)
         local msg12 = srey._coro_wait(sess12, srey.MSG_TYPE.RESPONSE, 3000)
         t:eq("ack12", msg12.data and srey.ud_str(msg12.data, msg12.size), "copy=0 的 request 投到第 12 代")
 
-        -- 最后一代关掉、不再重注册：第一条走"缓存句柄投不到 → 按名字重查也没有"并删掉缓存条目，
+        -- multi_request + copy=0：REGEN 的缓存句柄还指向已退出的第 12 代，严格投递一条不投(-1)，逐个按名字重查
+        -- （REGEN 换成第 13 代，SUBS 查到的还是原句柄不动，NONE 跳过）后非严格重投。两次投递之间载荷不能被放掉；
+        -- 投出去后归广播共享块，这里不 ud_free
+        _regen(13)
+        local ud7, usz7 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "regen13")
+        local sess13 = srey.id()
+        t:eq(3, srey.multi_request({ SUBS[1], REGEN, TASK_NAME.NONE, SUBS[2] }, 102, sess13, ud7, usz7, 0),
+             "缓存过期后 copy=0 的 multi_request 重查后投递数")
+        _wait(function() return (resp_by_sess[sess13] or 0) >= 3 end)
+        t:eq(3, resp_by_sess[sess13], "缓存过期后 copy=0 的 multi_request 全部响应")
+        t:eq(1, resp_body["ack13"], "copy=0 的 multi_request 投到第 13 代")
+
+        -- 关掉第 13 代、先不重注册：第一条走"缓存句柄投不到 → 按名字重查也没有"并删掉缓存条目，
         -- 之后的走"名字直接查不到"。都返回 false，copy=0 的载荷由 C 侧释放（漏放由退出时的内存检查报出）
         _close_regen()
         local ud1, usz1 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "gone_call")
@@ -381,6 +416,21 @@ runner.run(function(t)
         t:eq(false, core.request("multi_call_sub_never", 102, srey.id(), ud4, usz4, 0),
              "从没注册过的名字：request 返回 false")
         t:eq(nil, srey.request("multi_call_sub_never", 102, "never"), "从没注册过的名字：srey.request 返回 nil")
+
+        -- multi_request + copy=0，目标全投不到：缓存句柄指向已退出第 14 代的 REGEN、该代的数字句柄、从没注册过的名字。
+        -- 严格投递 -1 → 重查（名字没了删缓存条目，数字句柄重查不了）→ 非严格仍一个没投，返回 0，
+        -- 载荷由 C 释放、这里不 ud_free（漏放或二次释放由退出时的内存检查报出）
+        _regen(14)
+        local g14 = task.grab(REGEN)-- 顺带把第 14 代的句柄记进名字缓存
+        t:check(nil ~= g14, "拿到第 14 代")
+        local h14 = g14 and task.handle(g14) or INVALID_TNAME
+        if g14 then
+            task.ungrab(g14)
+        end
+        _close_regen()
+        local ud8, usz8 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "gone_multi")
+        t:eq(0, srey.multi_request({ REGEN, h14, "multi_call_sub_never" }, 102, srey.id(), ud8, usz8, 0),
+             "目标全投不到：copy=0 的 multi_request 返回 0")
     end
 
     -- ── 绑到 net 线程上的 sub：照常收请求、回响应、单向 ack ──────────
@@ -458,6 +508,39 @@ runner.run(function(t)
                 task.close(st)
                 task.ungrab(st)
             end
+        end
+
+        -- 部分组员：只在最后一个 net 线程放组员，它自己当组头监听，其余线程填 INVALID_TNAME，
+        -- 连进来的都由它在那条线程上回显；全是 INVALID_TNAME 的组员表被拒
+        local last = nnet - 1
+        local pt = task.register("test.group_part", GROUP_PART, 0, ACP_PART_PORT)
+        t:check(nil ~= pt and task.bind_net(pt, last), "部分组员注册并绑到最后一个线程")
+        local allinv = {}
+        for i = 1, nnet do
+            allinv[i] = INVALID_TNAME
+        end
+        t:eq(false, task.accept_group(pt, allinv), "组员表全是 INVALID_TNAME 被拒")
+        srey.sleep(100)-- 等组员的 startup 挂上回调
+        local prd, prs = srey.request(GROUP_PART, 110, "go")
+        t:eq("ok", prd and srey.ud_str(prd, prs), "部分组员设组员表并监听")
+        local pokn = 0
+        for _ = 1, 2 * nnet do
+            local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", ACP_PART_PORT)
+            if csk.valid then
+                local rd, rs = srey.syn_send(csk, "hi")
+                if rd and tostring(last) .. ":hi" == srey.ud_str(rd, rs) then
+                    pokn = pokn + 1
+                end
+                srey.close(csk)
+            end
+        end
+        t:eq(2 * nnet, pokn, "每条连接都由唯一的组员在它绑的线程上回显")
+        prd, prs = srey.request(GROUP_PART, 111, "stop")
+        t:eq("ok", prd and srey.ud_str(prd, prs), "部分组员撤掉监听")
+        local old_pt = task.grab(GROUP_PART)
+        if old_pt then
+            task.close(old_pt)
+            task.ungrab(old_pt)
         end
     end
 end)

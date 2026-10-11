@@ -23,6 +23,19 @@ local function _spawn(fn)
     coroutine.resume(co)
     return co
 end
+-- 按名字取函数的 upvalue（同 unit_coro.lua），用来拿 srey.serial 执行器闭包里的 SerialState
+local function _upvalue(f, name)
+    local n, v
+    for i = 1, 255 do
+        n, v = debug.getupvalue(f, i)
+        if nil == n then
+            return nil
+        end
+        if name == n then
+            return v
+        end
+    end
+end
 
 srey.startup(function()
 runner.run(function(t)
@@ -45,8 +58,9 @@ runner.run(function(t)
         [13] = { co3, 5, 0, now - 9000, co4, 3, 0, now - 50 },
     })
     local barrier = { pending = 2, since = now - 300 }
+    -- 布局同 lib/srey 的 SerialState：每个等待者 2 格 { 协程, 入队时刻 }，[head, tail] 是还在排队的
     local sexec = { current = co1, since = now - 400,
-                    waiters = { { since = now - 500 }, { since = now - 50 } } }
+                    waiters = { co2, now - 500, co3, now - 50 }, head = 1, tail = 4 }
     dbg._set_suspend_registries({ [barrier] = true }, { [sexec] = true },
                                 function() return 7 end)
 
@@ -82,6 +96,74 @@ runner.run(function(t)
     t:check(txt and txt:find("(no suspended coros)", 1, true) ~= nil, "coros 空表提示")
     t:check(txt and txt:find("0 suspended, 0 sessions, 0 fork_wait, 0 serial, 4 yield total.",
             1, true) ~= nil, "coros 空表也打印汇总行")
+
+    -- ── coros 遍历真实 serial 队列：队头已走过 1 ──────────────────────
+    -- H 先拿锁，W1~W4 依次排队（W3/W4 晚 30ms）；H 放锁后 W1 拿锁即放、W2 拿锁不放，
+    -- _serial_pop 两次后 head=5、tail=8，还在排的只剩 W3、W4。
+    -- coros 必须从 head 走到 tail：报 2 个排队、最久那个是 W3，已出队的 W1/W2 不得计入
+    do
+        local cs = srey.serial()
+        local st = _upvalue(cs, "st")
+        local cos, hold = {}, { [0] = true, [2] = true }-- hold[k] 为真时第 k 个拿到锁后不放
+        local done = 0
+        local function _hold(k)
+            for _ = 1, 2000 do-- 2000 x 5ms = 10s 上限，出意外也不把模块挂死
+                if not hold[k] then
+                    return
+                end
+                srey.sleep(5)
+            end
+        end
+        local function _waiter(k)
+            srey.fork(function()
+                cos[k] = coroutine.running()
+                cs(_hold, k)
+                done = done + 1
+            end)
+        end
+        _waiter(0)
+        srey.sleep(10)-- H 拿到锁
+        _waiter(1)
+        _waiter(2)
+        srey.sleep(30)-- W1/W2 已排队，与 W3/W4 的入队时刻拉开 30ms
+        _waiter(3)
+        _waiter(4)
+        srey.sleep(10)
+        if t:check(type(st) == "table" and cos[0] == st.current and 1 == st.head and 8 == st.tail,
+                   "H 持锁、4 个排队者占 [1, 8]") then
+            local t1 = st.waiters[2]-- W1 的入队时刻，出队后格子被清掉，先留下
+            hold[0] = nil
+            srey.sleep(30)-- H 放锁 → W1 拿锁即放 → W2 拿锁不放
+            t:eq(2, done, "H 与 W1 已走完")
+            t:eq(5, st.head, "两次出队后 head 走到 5")
+            t:eq(8, st.tail, "tail 不动")
+            t:eq(cos[2], st.current, "W2 持锁")
+            t:eq(cos[3], st.waiters[5], "队头是 W3")
+            t:eq(cos[4], st.waiters[7], "其后是 W4")
+            local t3 = st.waiters[6]-- W3 的入队时刻，即还在排的最久那个
+            dbg._set_coro_sess({})
+            dbg._set_suspend_registries({}, { [st] = true }, function() return 3 end)-- nyield 注入值原样回显
+            local b = task.timer_ms()
+            txt = send("coros")
+            local a = task.timer_ms()
+            local pre = "serial=" .. tostring(st) .. " co=" .. tostring(cos[2]) .. " held=1 hold="
+            local p = txt and txt:find(pre, 1, true)
+            local nw, age
+            if p then
+                nw, age = txt:match("^%d+ms waiters=(%d+) age=(%d+)ms", p + #pre)
+            end
+            t:check(p ~= nil, "serial 行带执行器与持锁的 W2 (" .. tostring(txt) .. ")")
+            t:eq(2, tonumber(nw), "排队数只算 W3、W4")
+            age = tonumber(age)
+            t:check(age and age >= b - t3 and age <= a - t3, "最久排队时长取自 W3 的入队时刻")
+            t:check(age and age < b - t1, "已出队的 W1/W2 不计入时长")
+            t:check(txt and txt:find("0 suspended, 0 sessions, 0 fork_wait, 2 serial, 3 yield total.",
+                    1, true) ~= nil, "汇总行 serial 只计 2 个")
+        end
+        hold[0], hold[2] = nil, nil
+        srey.sleep(30)-- W2 放锁 → W3、W4 依次拿锁即放
+        t:eq(5, done, "五个协程全部走完 serial")
+    end
 
     -- ── mem / gc ───────────────────────────────────────────────────
     txt = send("mem")

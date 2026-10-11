@@ -181,6 +181,7 @@ static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32
     *total = (size_t)(uint32_t)lens + 1; // 消息总长度 = 类型码(1) + 消息体(lens)
     if (*total > blens) {
         BIT_SET(*status, PROT_MOREDATA);
+        buffer_want(buf, *total - blens);
         return NULL;
     }
     char *pack = (NULL != pg && 'D' == head[0]) ? _pgpack_row_alloc(pg, *total) : NULL;
@@ -475,7 +476,8 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
 // DataRow 以外的小消息放栈上解析，免一次分配；解析侧不接管的那些由这里释放，归属见 _pgpack_parser。
 // size 记包持有的线上字节：消息攒在 recvlens，到 'Z' 整笔交出；'A' / 'G' 立即交出，
 // 只记本条、不进累计（'A' 可能夹在 CommandComplete 与 'Z' 之间）。
-// 连着的 DataRow 在这里一条接一条解完，不逐条退回外层循环；其余消息仍是一次一条
+// 连着的 DataRow 在这里一条接一条解完，不逐条退回外层循环：头一条走通用路径建好 reader，其后的走专用循环；
+// 其余消息仍是一次一条
 static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
     size_t total;
@@ -505,6 +507,10 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
                 *size = pg->recvlens;
                 pg->recvlens = 0;
             }
+        }
+        if ('D' == code
+            && PROT_INIT == *status) {
+            pg->recvlens += _pgpack_rows_run(pg, buf, status);
         }
     } while ('D' == code
              && PROT_INIT == *status
