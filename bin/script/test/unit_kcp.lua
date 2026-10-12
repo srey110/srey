@@ -116,7 +116,8 @@ runner.run(function(t)
     t:check(cli_kcp.sess ~= 0, "被拒后 self.sess 未被清零")
 
     -- CLOSE 分支:send 挂起期间 socket 被关(_kcp_udfree 逐会话补 CLOSE),唤醒后须清 self.sess,
-    -- 否则下次 send 会通过 sess 守卫投到已消失的会话被静默丢弃,再空等满一个 netread 超时
+    -- 否则下次 send 会通过 sess 守卫投到已消失的会话被静默丢弃,再空等满一个 netread 超时;
+    -- C 句柄也须已 stop,否则 handle 绕过 stopped 守卫照样返 true
     do
         local dead_sk = srey.udp(PACK_TYPE.UDP_KCP, "0.0.0.0", DEAD_PORT)
         t:check(dead_sk and dead_sk.valid, "dead udp 创建")
@@ -139,6 +140,7 @@ runner.run(function(t)
                 -- 下面那条断言就形同虚设,故先用耗时把路径钉死
                 t:check(srey.timer_ms() - bgts < 300, "由 CLOSE 唤醒而非 TIMEOUT")
                 t:eq(0, dead_kcp.sess, "CLOSE 后 self.sess 已清")
+                t:eq(false, dead_kcp:handle(srey.task_handle()), "CLOSE 后 handle 被 stopped 守卫拒绝")
                 srey.set_netread_timeout(saved_net)
             else
                 srey.close(dead_sk)-- start 失败:后续断言前提不成立,直接收尾免 socket 泄漏

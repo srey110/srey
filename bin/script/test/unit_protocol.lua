@@ -1,5 +1,5 @@
 -- protocol 绑定层单元测试（除 redis.unpack 差分外不走网络）：
--- websock pack_*, smtp pack_*, mail pack, redis.pack/value/next/node/unpack, harbor.pack, http.code_status
+-- websock pack_*, smtp pack_*, mail pack, redis.pack/pack_ud/value/next/node/unpack, harbor.pack, http.code_status
 
 local srey    = require("lib.srey")
 local runner  = require("test.runner")
@@ -434,6 +434,36 @@ runner.run(function(t)
         t:eq(4, select("#", sredis.node()), "redis.node() 返回 4 个值")
         local v, kind, nelem, nxt = sredis.node(nil)
         t:check(nil == v and nil == kind and nil == nelem and nil == nxt, "redis.node(nil) 4 个都是 nil")
+    end
+
+    -- ── redis.pack_ud：与 pack 逐字节一致，只是落在 C 内存里 ──────────────
+    -- 上面的 pack 断言守住"提公共函数后 pack 字节不变"，这里拿 pack 当基准逐条对拍
+    do
+        local ts = setmetatable({}, { __tostring = function() return "TS-OBJ" end })
+        local big = string.rep("r", 70000)
+        local argss = {
+            { "SET", "key", "hello", n = 3 },
+            { "SETEX", "k", 3600000 / 1000, "v", n = 4 },
+            { "ZADD", "k", 1e17, "m", n = 4 },
+            { "SET", "k", 3.25, n = 3 },
+            { "SET", "k", nil, n = 3 },
+            { "A", nil, "b", n = 3 },
+            { nil, n = 1 },
+            { n = 0 },
+            { "A", true, false, ts, n = 4 },
+            { "A", 3.0, 2 ^ 53, -0.0, 2 ^ 63, n = 5 },
+            { "A", math.mininteger, -1, n = 3 },
+            { "A", big, true, ts, n = 4 },
+            { "MSET", 1, 2, 3, 4, 5, 6, 7, 8, 0.1, -2.5e-300, n = 11 },-- 数字多：估长按类型取，分配不爆也不短
+        }
+        local ud, size
+        for i, a in ipairs(argss) do
+            ud, size = redis.pack_ud(table.unpack(a, 1, a.n))
+            t:eq(redis.pack(table.unpack(a, 1, a.n)), utils.ud_str(ud, size), "pack_ud 对拍 #" .. i)
+            utils.ud_free(ud)
+        end
+        t:eq(false, pcall(redis.pack_ud, "A", setmetatable({}, { __tostring = function() return {} end })),
+             "__tostring 返回非字符串抛错(在分配之前，不漏)")
     end
 
     -- ── redis.value / redis.next 的 nil 语义 ───────────────────────────

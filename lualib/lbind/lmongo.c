@@ -79,7 +79,7 @@ static int32_t _lmongo_new(lua_State *lua) {
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <returns>无</returns>
 static int32_t _lmongo_free(lua_State *lua) {
-    mongo_ctx **ud = luaL_checkudata(lua, 1, MT_MONGO);
+    mongo_ctx **ud = lpub_check_udata(lua, 1, MT_MONGO);
     mongo_ctx *mongo = *ud;
     if (NULL == mongo) {
         return 0;
@@ -961,7 +961,7 @@ static void _lmongo_session_unbind(lua_State *lua, mongo_session *session) {
 /// <param name="self" type="userdata">mongo 会话对象</param>
 /// <returns>无</returns>
 static int32_t _lmongo_session_free(lua_State *lua) {
-    mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
+    mongo_session **psession = lpub_check_udata(lua, 1, MT_MONGO_SESSION);
     if (NULL != *psession) {
         mongo_session *session = *psession;
         _lmongo_session_unbind(lua, session);
@@ -986,7 +986,7 @@ static int32_t _lmongo_session_begin(lua_State *lua) {
 /// <param name="self" type="userdata">session 对象</param>
 /// <returns>无</returns>
 static int32_t _lmongo_session_done(lua_State *lua) {
-    mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
+    mongo_session **psession = lpub_check_udata(lua, 1, MT_MONGO_SESSION);
     mongo_session *session = *psession;
     if (NULL == session) {
         return 0;

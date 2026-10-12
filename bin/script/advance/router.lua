@@ -40,7 +40,7 @@
 --       elseif SLICE_TYPE.END == slice then ctx:text(200, table.concat(ctx.buf))
 --       else ctx.buf = nil end                                              -- STREAM_ABORT，只清理
 --   end)
---   srey.on_recved(function(...) Route:net_recv(...) end)
+--   srey.on_recved(Route:recv_cb())   -- 等同 function(...) Route:net_recv(...) end，少一层变参闭包
 --   -- 不必接 on_closed：流式路由的 CLOSE 清理已由 Route 自己经 srey.watch_closed 订阅，
 --   -- 而 on_closed 是单槽、后注册者静默覆盖前者，接了反而会顶掉业务自己的回调
 -- ctx 字段:
@@ -91,12 +91,16 @@ local select   = select
 local pairs    = pairs
 local getmetatable = getmetatable
 local rawget   = rawget
+local rawset   = rawset
 local setmetatable = setmetatable
 -- 固定的 Content-Type 预渲染成头部块，原样拼进报文，不再每次过一遍头校验
 local _PLAIN_BLOCK = "Content-Type: text/plain; charset=utf-8\r\n"
 local _HTML_BLOCK  = "Content-Type: text/html; charset=utf-8\r\n"
 local _http_respond = http._respond
 local _http_response_lua = http._response_lua
+local _http_head = http.head
+local _http_heads = http.heads
+local _http_datastr = http.datastr
 -- 匹配失败（400/404/405）与条目缺失（500）的响应正文，按码预先拼好
 local _CODE_BODY = {}
 for _, c in ipairs({ 400, 404, 405, 500 }) do
@@ -267,7 +271,7 @@ end
 -- 按名字取单个请求头，大小写无关：比较走 C 的 buf_icompare，不物化头表也不分配。
 -- 口径同 C 侧 router_req_header——流式过了首帧 _pack 已摘，那之后恒返 nil，改读 ctx.headers
 function CtxMethods:header(name)
-    return self._pack and http.head(self._pack, name)
+    return self._pack and _http_head(self._pack, name)
 end
 -- 下面 query / params 的惰性构造：给一张空表
 local function _new_tbl()
@@ -279,10 +283,10 @@ end
 -- 末尾会把 _pack 置 nil：延迟到 fork/timer 里再读，拿到的是 nil 而不是悬空指针
 local _ctx_lazy = {
     headers = function(ctx)
-        return ctx._pack and http.heads(ctx._pack) or {}
+        return ctx._pack and _http_heads(ctx._pack) or {}
     end,
     body = function(ctx)
-        return ctx._pack and http.datastr(ctx._pack) or nil
+        return ctx._pack and _http_datastr(ctx._pack) or nil
     end,
     -- match_pack 对空的查询串 / 路径参数给 nil 不建表，读到时才给空表；不依赖 _pack
     query = _new_tbl,
@@ -317,11 +321,15 @@ local function _wrap_step(f, after)
         end)
     end
 end
--- 把执行链从末位往前编成一个 step(ctx)，调它即从第一层跑起；异常向上抛出由 dispatch 统一捕获。
+-- 把执行链从末位往前编成一个 step，按 step(ctx, _nop) 调它即从第一层跑起（链长 1 时 step 就是 handler 本身）；
+-- 异常向上抛出由 dispatch 统一捕获。
 -- 不调 next 即在此截断，next 返回后仍可做后置处理
 local function _compile_chain(chain)
     local n = #chain
     local last = chain[n]
+    if 1 == n then
+        return last-- 调用方一律按 step(ctx, _nop) 起跑，链长 1 时省掉只为补 _nop 的那层
+    end
     local step = function(ctx)
         last(ctx, _nop)
     end
@@ -358,6 +366,7 @@ function Router.new()
         _mw_version = 0,    -- 全局中间件版本号，use() 追加时自增，route chain 缓存据此失效重建
         -- 正在接收的流式请求：[skid] = {sk, route, ctx}。skid 进程内唯一且不复用，见 _st_drop
         _streams   = {},
+        _recv_cb   = nil,   -- recv_cb() 首次调用时建的接收回调，之后复用
     }, Router)
     return r
 end
@@ -428,7 +437,7 @@ end
 ---                                               同 handler，注册后只读
 ---@field _segs   (string|RouterSeg)[]             注册时 C 侧解析好的段序列，Router:url 回填占位符用
 ---@field _name   string?                         命名路由键，由 :name("key") 写入
----@field _step   fun(ctx:Ctx)?                    dispatch 缓存的执行链（全局中间件+路由级+handler），已编成从第一层跑起的 step
+---@field _step   fun(ctx:Ctx, nxt:fun())?          dispatch 缓存的执行链（全局中间件+路由级+handler），已编成从第一层跑起的 step，按 step(ctx, _nop) 调
 ---@field _chain_ver integer?                     _step 对应的全局中间件版本号，与 Router._mw_version 不等即重建
 ---@field name    fun(self:RouteEntry,n:string):RouteEntry  链式命名方法
 
@@ -778,7 +787,7 @@ function Router:dispatch(sk, pack, client)
     -- 链内任意位置抛出异常均由 srey.xpcall 兜底（自动 ERROR + traceback），避免 handler/中间件崩溃丢失响应。
     -- 缓存命中（绝大多数请求）就不进 _chain_of
     local step = (route._chain_ver == self._mw_version) and route._step or _chain_of(self, route)
-    local run_ok = srey.xpcall(step, ctx)
+    local run_ok = srey.xpcall(step, ctx, _nop)
     -- 流式路由命中一次到齐的请求：准入通过才把请求体按 slice == 0 一次交出去
     if run_ok and route.on_chunk and ctx._admitted then
         srey.xpcall(route.on_chunk, ctx, 0, ctx.body)
@@ -834,7 +843,7 @@ function Router:_st_begin(sk, pack, client)
         return
     end
     local step = (route._chain_ver == self._mw_version) and route._step or _chain_of(self, route)
-    local run_ok = srey.xpcall(step, ctx)
+    local run_ok = srey.xpcall(step, ctx, _nop)
     -- 链尾是准入哨兵而非 handler；中间件截断即拒绝，它没写响应就兜底 500
     if not run_ok or not ctx._admitted then
         _fallback_500(ctx)
@@ -862,7 +871,7 @@ function Router:_st_feed(sk, pack, slice)
         return
     end
     if SLICE_TYPE.END ~= slice then
-        self:_st_call(rec, slice, http.datastr(pack))
+        self:_st_call(rec, slice, _http_datastr(pack))
         return
     end
     -- 结束帧：先摘记录再回调，这样它抛异常也不会再补一次 ABORT —— END 本身就是收尾信号
@@ -890,6 +899,21 @@ function Router:net_recv(pktype, sk, client, slice, data, size)
         return self:_st_begin(sk, data, client)
     end
     return self:_st_feed(sk, data, slice)
+end
+
+---返回本实例的接收回调，直接交给 srey.on_recved：`srey.on_recved(Route:recv_cb())`。
+---首次调用时建好缓存在实例上，之后返回同一个；定参转发给 self:net_recv，比手写
+---function(...) Route:net_recv(...) end 每个请求少一次变参调用，热修 Router.net_recv 照样生效
+---@return fun(pktype:integer?, sk:userdata, client:integer, slice:integer, data:lightuserdata?, size:integer?) cb 接收回调
+function Router:recv_cb()
+    local cb = self._recv_cb
+    if not cb then
+        cb = function(pktype, sk, client, slice, data, size)
+            return self:net_recv(pktype, sk, client, slice, data, size)
+        end
+        self._recv_cb = cb
+    end
+    return cb
 end
 
 ---连接关闭时清掉该连接尚未收齐的流式请求。本模块注册第一条流式路由时已经经 srey.watch_closed

@@ -3,13 +3,16 @@
 -- 同一 task 内起 server(PACK_HTTP 监听)与 client(连回本机):server 对分片请求回固定串,非分片请求回显 body。
 -- 另覆盖客户端 chunked 接收段(lib/http.lua 的 srey.syn_slice 循环):server 回真 chunked 响应,
 -- client 分传 / 不传 ckfunc 两种走法。
--- 不走网络的两段：C 组包 srey.http.pack_resp 与 Lua 原路 _response_lua 逐字节对拍；
+-- 不走网络的三段：C 组包 srey.http.pack_resp 与 Lua 原路 _response_lua 逐字节对拍；
+-- 请求侧 http.get / post 走 C 组包（srey.http.pack_req，copy=0）与 _http_msg 原路逐字节对拍；
 -- 请求侧带头表时帧长头的取舍（抓 srey.syn_send 的入参看线缆字节）。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local http   = require("lib.http")
 local srey_http = require("srey.http")-- C 绑定层,直接断言 is_token / max_headlens
+local utils  = require("srey.utils")
+local json   = require("yyjson")
 
 local PORT = 15047
 -- HEAD 用例的裸监听端口。测试模块并发跑,端口必须全仓唯一——15048 是 unit_websock 的,
@@ -204,6 +207,13 @@ runner.run(function(t)
     if after then
         t:eq(PROBE2, after.data, "拒绝的请求未在连接上留下任何残留")
     end
+    -- 请求走 C 组包的两种体：table 编成 JSON（带头表）、接近 Content-Length 上限的 string 体（服务端回显 body）
+    local jbody = { a = 1, s = "x" }
+    local jp = http.post(cli_sk, "/", { ["X-T"] = "1" }, nil, jbody)
+    t:eq(json.encode(jbody), jp and jp.data, "table 体经 C 组包发出，服务端收到同一份 JSON")
+    local big = string.rep("q", 60000)-- HTTP_MAX_CONTENT_LENS 是 65535，64KB 会被服务端拒
+    local bp = http.post(cli_sk, "/", nil, nil, big)
+    t:eq(big, bp and bp.data, "60000 字节 string 体经 C 组包整条发出")
 
     -- lib.http 的 chunked 接收段:不传 ckfunc 时逐块累积再拼进 pack.data
     local ckp = http.post(cli_sk, "/", nil, nil, CKBODY)
@@ -388,6 +398,92 @@ runner.run(function(t)
         t:eq(nil, srey_http.pack_resp(200, { ["X"] = "a\r\nb" }, "b"), "头值含 CRLF C 不接")
         t:eq(nil, srey_http.pack_resp(200, nil, 5), "数字体 C 不接")
         t:eq(nil, srey_http.pack_resp(200, nil, "x", false, 5), "非字符串头部块 C 不接")
+    end
+
+    -- 请求侧 C 组包与原路对拍：http.get / post 先试 srey.http.pack_req，接手的形状以 copy=0 交给 syn_send，
+    -- 字节必须与 _http_msg 原路一样。srey.syn_send 临时换成抓包（整段同步执行）；sk 传字符串 "SK" 时
+    -- pack_req 认不出连接标识，请求交回原路，以此取原路字节
+    do
+        local SOCK = srey.sock_invalid()-- 连接标识类型对就行，抓包不发送
+        -- 调 fn(sk, ...)，返回交给 syn_send 的字节与 copy；copy=0 的缓冲当场释放
+        local function api_bytes(sk, fn, ...)
+            local cap, ccopy
+            local syn = srey.syn_send
+            srey.syn_send = function(_, data, size, copy)
+                ccopy = copy
+                if 0 == copy then
+                    cap = srey.ud_str(data, size)
+                    utils.ud_free(data)
+                else
+                    cap = data
+                end
+                return nil
+            end
+            local ok = pcall(fn, sk, ...)
+            srey.syn_send = syn
+            return ok and cap or nil, ccopy
+        end
+        local jt = { a = 1, b = { 1, 2, 3 }, c = "x/y\"\\\n中", d = 1.5, e = true, g = 3.0 }
+        -- { 方法, url, 头表, 报文体 }；GET 走 http.get，POST 走 http.post
+        local cases = {
+            { "GET", "/", nil, nil },
+            { "GET", "/a?b=c&d=%20", { ["X-A"] = "1" }, nil },
+            { "GET", "/", {}, nil },
+            { "GET", "/", { Host = "127.0.0.1:8080", ["Content-Type"] = "text/plain" }, nil },
+            { "POST", "/", nil, nil },
+            { "POST", "/", nil, "hello" },
+            { "POST", "/", nil, "" },
+            { "POST", "/", { ["X-A"] = "1", ["Content-Type"] = "text/plain" }, "body" },
+            { "POST", "/p", nil, string.rep("p", 100000) },
+            { "POST", "/", nil, jt },
+            { "POST", "/", nil, {} },
+            { "POST", "/", nil, { 1, 2, 3 } },
+            { "POST", "/", { Authorization = "Bearer t", ["X-B"] = "2" }, { k = "v" } },
+        }
+        local nmis = 0
+        local cb, cc, lb
+        for i, c in ipairs(cases) do
+            if "GET" == c[1] then
+                cb, cc = api_bytes(SOCK, http.get, c[2], c[3])
+                lb = api_bytes("SK", http.get, c[2], c[3])
+            else
+                cb, cc = api_bytes(SOCK, http.post, c[2], c[3], nil, c[4])
+                lb = api_bytes("SK", http.post, c[2], c[3], nil, c[4])
+            end
+            if 0 ~= cc or nil == cb or cb ~= lb then
+                nmis = nmis + 1
+                t:fail(string.format("pack_req 对拍 #%d: copy=%s C=%q Lua=%q", i, tostring(cc), tostring(cb), tostring(lb)))
+            end
+        end
+        t:eq(0, nmis, "上面每种形状 http.get / post 都走 C 组包(copy=0)，且与 _http_msg 原路逐字节一致")
+        -- 回落形状：数字头值 C 不接，http.post 照旧走原路(copy=1)，字节同原路
+        local fb, fc = api_bytes(SOCK, http.post, "/", { ["X-N"] = 5 }, nil, "b")
+        t:eq(1, fc, "C 不接的形状回落原路，copy=1")
+        t:check(nil ~= fb and fb == api_bytes("SK", http.post, "/", { ["X-N"] = 5 }, nil, "b"), "回落的字节同原路")
+        -- C 不接的形状返回 nil，交回原路（告警、丢头、放行帧长头、报错都在那边）
+        local L = "POST / HTTP/1.1\r\n"
+        t:eq(nil, srey_http.pack_req("SK", L, nil, "b"), "sk 不是连接标识 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, nil, nil, "b"), "请求行不是字符串 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, { ["X-N"] = 5 }, "b"), "数字头值 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, setmetatable({}, {}), "b"), "带元表的头表 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, "x", "b"), "头表不是表 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, { ["Content-Length"] = "0" }, nil), "无体带 CL C 不接(原路放行)")
+        t:eq(nil, srey_http.pack_req(SOCK, L, { ["transfer-ENCODING"] = "chunked" }, "b"), "帧长头 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, { ["content-TYPE"] = "text/plain" }, { a = 1 }), "table 体带 CT C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, { X = "a\r\nb" }, "b"), "头值含 CRLF C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, { ["Bad Key"] = "x" }, "b"), "头名非 token C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, nil, { f = print }), "编不成 JSON 的 table 体 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, nil, function() return nil end), "生产者函数体 C 不接")
+        t:eq(nil, srey_http.pack_req(SOCK, L, nil, 5), "数字体 C 不接")
+        -- 所有权：C 组好的缓冲交给真 syn_send(copy=0) 后，发送失败、挂不起抛错两条路都由框架释放
+        -- （漏了退出时 _memcheck 报 not free，srey -d 退出码非 0）
+        t:eq(nil, http.get(SOCK, "/"), "无效连接：缓冲由 ev_send 失败路径释放")
+        local ok = true
+        table.sort({ 2, 1 }, function(a, b)
+            ok = pcall(http.get, SOCK, "/")
+            return a < b
+        end)
+        t:eq(false, ok, "挂不起时 syn_send 先释放缓冲再抛")
     end
 
     -- 请求侧带头表：有 body 时帧长头由本模块写、调用方给的丢掉；无 body 时放行调用方给的，

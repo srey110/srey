@@ -20,16 +20,19 @@ typedef enum ev_cmds {
 #endif
     CMD_PROPS,        // 执行命令 同线程免投递
     CMD_DEFER_EXEC,   // [ev_defer_exec → _on_cmd_defer_exec] 投一个回调到该线程的推迟执行队列 同线程免投递
+    CMD_MULTI,        // [ev_send_multi → _on_cmd_multi] 多播：一条命令带本线程的一组连接，按调用方原序逐个入发送队列 同线程免投递
 
     CMD_TOTAL        // 命令总数（用于数组大小）
 }ev_cmds;
+struct multi_grp;
 // 命令上下文
 typedef struct cmd_ctx {
     int32_t cmd;// 命令类型 ev_cmds
-    sock_ctx sk;// 目标连接 fd+skid（STOP/ADD/CONN/LSN/UNLSN/LSN_UNREF/DEFER_EXEC 不用 fd,恒为 0 而非 INVALID_SOCK;skid 仅 SENDTO/PROPS 用）
+    sock_ctx sk;// 目标连接 fd+skid（STOP/ADD/CONN/LSN/UNLSN/LSN_UNREF/DEFER_EXEC/MULTI 不用 fd,恒为 0 而非 INVALID_SOCK;skid 仅 SENDTO/PROPS 用）
     union {
         struct evsock_ctx *evsk;// CMD_ADD / CMD_LSN：待加入事件循环的 socket
         struct listener_ctx *lsn;// CMD_ADDACP / CMD_UNLSN / CMD_LSN_UNREF：监听对象
+        struct multi_grp *multi;// CMD_MULTI：本线程那一组(布局见 cmds.c)
         struct { struct evsock_ctx *evsk; netaddr_ctx addr; } conn; // CMD_CONN：连接中 socket + 目标地址(仅 IOCP 用)
         struct { props_cb ppcb; free_cb fcb; void *data; uint64_t number; } props;// CMD_PROPS
         sendto_ctx sendto;// CMD_SENDTO
@@ -75,6 +78,8 @@ void _on_cmd_sendto(struct watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // ev_defer_exec CMD_DEFER_EXEC：放进推迟执行队列，不在命令回调里跑
 void _on_cmd_defer_exec(struct watcher_ctx *watcher, cmd_ctx *cmd);
+// ev_send_multi CMD_MULTI：本组连接逐个查表入发送队列
+void _on_cmd_multi(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // 释放一条未被消费的命令所持有的资源（ev_free 排空队列时逐条调用）。
 // "哪条命令持有什么"只在这一个 switch 里定义：两个平台各有各的排空函数
 // （_uev_free_pipe / _iocp_free_cmd），而每台机器只编译其中一个——各写一份的话，

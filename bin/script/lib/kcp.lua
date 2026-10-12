@@ -1,5 +1,7 @@
 -- KCP 会话封装:class 包住 C 层 userdata 句柄(lkcp.c),new 时 kcp_init 一次,后续方法复用同一句柄。
 -- 数据到达以创建时所在 task 为目标推送(MSG_TYPE.RECVFROM);ikcp_update 由 event 线程 tick 自动驱动。
+-- 对端失联(某段重传到 dead_link 次,库默认 20)时 C 层拆掉会话并推 MSG_TYPE.CLOSE(erro 为 CLOSE_TYPE.ABORT):被它唤醒的
+-- sync send 已经 stop,可直接重新 start;其余情形(异步模式,或当时没有 send 在等)须先 stop 再 start。
 -- socket 用 srey.udp(PACK_TYPE.UDP_KCP) 创建,数据接收复用 srey.on_recvedfrom。
 -- 使用方:local kcp = require("lib.kcp"); local k = kcp.new(sk, conv); k:start(ip, port)
 --        第 4 参数是 sync(boolean),传 true 则 start/send 同步等响应;缺省只走异步。
@@ -123,11 +125,10 @@ function ctx:send(data, size, copy)
         return nil
     end
     if MTYPE_CLOSE == mtype then
-        -- 会话已在 C 层拆除,coro_sess 条目也已由 _net_close_dispatch 清掉(waiters 摘空后 del_empty);
-        -- 但 self.sess 仍是旧值,不清则下次 send 会通过守卫、投到已消失的会话被 _kcp_resolve 静默丢弃,
-        -- 而 kcp_send 返 ERR_OK 让 Lua 以为发送成功,继而空等满一个 netread 超时
+        -- 会话已在 C 层拆除,走 stop 把 C 句柄也置 stopped(会话已不在,stop 只是静默空操作);
+        -- 留着旧 self.sess 则下次 send 通过守卫、投到已消失的会话被静默丢弃,再空等满一个 netread 超时
         if sess == self.sess then
-            self.sess = 0
+            self:stop()
         end
         return nil
     end

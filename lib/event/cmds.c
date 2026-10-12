@@ -16,6 +16,17 @@ typedef struct sendssl_ctx {
     struct evssl_ctx *evssl;
 }sendssl_ctx;
 #endif
+// ev_send_multi 的分组：每个有连接的事件线程一组，与整次广播的父计数(块头那个 shared_data)同在一次分配里，
+// 父计数归 0 整块释放。sh 是组内计数，off_buf_ctx.shared 指向它：初值为本组 sk 数，只由本组所在线程减，
+// data 指向父计数。各组的 sk 数组接在所有组之后，同在这块里，随它留到最慢的接收者发完
+typedef struct multi_grp {
+    uint32_t n;         // 本组 sk 数
+    size_t len;         // 载荷长度
+    sock_ctx *sks;      // 本组 sk，保持调用方原序，同属一个线程
+    shared_data sh;     // 组内计数
+}multi_grp;
+// 组间步长：各组计数被不同线程改，相隔不小于一条 cache line 就不会挤在同一条上
+#define MULTI_GRP_STRIDE ROUND_UP(sizeof(multi_grp), CACHELINE_SIZE)
 // ev_ud_* 四个 setter 只差字段名与 cast: 展开成"props 回调 + 对外入口"一对。
 // 值走 number 而非 data,故不需要 fcb
 #define DEF_UD_SETTER(field, type)  \
@@ -419,63 +430,124 @@ int32_t ev_send_ssl(ev_ctx *ctx, sock_ctx *sk, void *data, size_t len,
     return ERR_FAILED;
 #endif
 }
-static int32_t _ev_send_multi(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
-    void *data, uint64_t number) {
-    if (SOCK_STREAM != evsk->type) {
-        LOG_ERROR("ev_send_multi called on non-TCP fd %d, drop.", (int32_t)evsk->sk.fd);
-        return 1;
+// 本组 sk 逐个查表入发送队列，每个 sk 恰好交出一份组内计数(入队、拒收、查不到都算)。
+// sk 数组也在块里，交出最后一份后整块可能已被释放：每个 sk 读完才交出它那份，循环只用局部量
+static inline void _ev_send_multi(watcher_ctx *watcher, multi_grp *grp) {
+    sock_ctx *sks = grp->sks;
+    uint32_t n = grp->n;
+    uint32_t i;
+    evsock_ctx *evsk;
+    off_buf_ctx buf;
+    off_buf_ctx tpl = { 0 };
+    tpl.data = ((shared_data *)grp->sh.data)->data;
+    tpl.lens = grp->len;
+    tpl.shared = &grp->sh;
+    for (i = 0; i < n; i++) {
+        buf = tpl;// 拒收路径会把 buf 清空，每个 sk 重拷一份
+        evsk = _evpub_sockel_get(watcher, sks[i].fd);
+        if (NULL == evsk
+            || ERR_OK != _evpub_checkid(evsk, sks[i].skid)) {
+            _evpub_off_buf_release(&buf);
+            continue;
+        }
+        if (SOCK_STREAM != evsk->type) {
+            LOG_ERROR("ev_send_multi called on non-TCP fd %d, drop.", (int32_t)evsk->sk.fd);
+            _evpub_off_buf_release(&buf);
+            continue;
+        }
+        _ev_bufs_send(watcher, evsk, &buf);
     }
-    shared_data *pack = data;
-    off_buf_ctx buf = { 0 };
-    buf.data = pack->data;
-    buf.lens = (size_t)number;
-    buf.shared = pack;
-    _ev_bufs_send(watcher, evsk, &buf);
-    return 0;
+}
+void _on_cmd_multi(struct watcher_ctx *watcher, cmd_ctx *cmd) {
+    _ev_send_multi(watcher, cmd->args.multi);
+}
+// 第 k 组的位置：紧跟块头的父计数，按 MULTI_GRP_STRIDE 排
+static inline multi_grp *_multi_grp_at(shared_data *pack, uint32_t k) {
+    return (multi_grp *)((char *)(pack + 1) + (size_t)k * MULTI_GRP_STRIDE);
 }
 int32_t ev_send_multi(ev_ctx *ctx, sock_ctx sks[], int32_t n,
                       void *data, size_t len, int32_t copy) {
-    if (EMPTYPTR(data, len)) {
+    if (n <= 0 || EMPTYPTR(data, len)) {
         CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
-    // 先扫一遍有效 fd 数,决定 pack->ref 初值
-    int32_t valid = 0;
-    int32_t i;
-    for (i = 0; i < n; i++) {
-        if (!sock_is_invalid(&sks[i])) {
-            valid++;
-        }
-    }
-    if (0 == valid) {
-        CHECK_COPY_FREE(data, copy);
-        return ERR_FAILED;
-    }
+    uint32_t stk[64];// slot 的栈上存储，线程多于 64 才另行分配
+    uint32_t *slot = stk;// 先记各线程分到的 sk 数，建组后改记该线程的组号
     shared_data *pack;
-    MALLOC(pack, sizeof(shared_data));
-    pack->data = _cmd_cpy_buf(data, len, copy);
-    ATOMIC_SET_RELAXED(&pack->ref, valid);
-    cmd_ctx cmd = { 0 };
-    cmd.cmd = CMD_PROPS;
-    cmd.args.props.ppcb = _ev_send_multi;
-    cmd.args.props.fcb = _evpub_share_data_free;
-    cmd.args.props.data = pack;
-    cmd.args.props.number = len;
+    multi_grp *grp;
+    multi_grp *ingrp = NULL;
+    sock_ctx *next;// 下一组的 sk 数组起点
     watcher_ctx *watcher;
-    // 每个有效 fd 投递一次,与 pack->ref 初值 valid 配平：每条命令最终经 _on_cmd_props
-    // 或 ev_free 的 drain(case CMD_PROPS)各减一次 ref,归零时释放 pack
+    watcher_ctx *inw = NULL;
+    cmd_ctx cmd = { 0 };
+    uint32_t w, k, nw = 0, nsk = 0;
+    int32_t i;
+    if (ctx->nthreads > ARRAY_SIZE(stk)) {
+        MALLOC(slot, sizeof(uint32_t) * ctx->nthreads);
+    }
+    ZERO(slot, sizeof(uint32_t) * ctx->nthreads);
     for (i = 0; i < n; i++) {
         if (sock_is_invalid(&sks[i])) {
             continue;
         }
-        cmd.sk = sks[i];
-        watcher = _cmd_get_watcher(ctx, &sks[i]);
-        if (_evpub_inloop(watcher)) {
-            _on_cmd_props(watcher, &cmd);
-        } else {
-            _send_cmd(watcher, &cmd);
+        w = (uint32_t)_cmd_get_watcher(ctx, &sks[i])->index;
+        if (0 == slot[w]++) {
+            nw++;
+        }
+        nsk++;
+    }
+    if (0 == nw) {
+        if (slot != stk) {
+            FREE(slot);
+        }
+        CHECK_COPY_FREE(data, copy);
+        return ERR_FAILED;
+    }
+    // 一次分配：父计数、有连接的那几组、各组的 sk 数组依次排开，整块常驻到最慢的接收者发完
+    MALLOC(pack, sizeof(shared_data) + (size_t)nw * MULTI_GRP_STRIDE + sizeof(sock_ctx) * nsk);
+    next = (sock_ctx *)_multi_grp_at(pack, nw);
+    k = 0;
+    for (w = 0; w < ctx->nthreads; w++) {
+        if (0 == slot[w]) {
+            continue;
+        }
+        grp = _multi_grp_at(pack, k);
+        grp->n = 0;// 下一趟当填充游标，填完正好回到本组 sk 数
+        grp->len = len;
+        grp->sh.ref = slot[w];// 组内计数不用原子，理由见 _evpub_off_buf_release
+        grp->sh.data = pack;
+        grp->sks = next;
+        next += slot[w];
+        slot[w] = k++;
+    }
+    pack->data = _cmd_cpy_buf(data, len, copy);
+    // 每组一份，另加本函数一份持到投完：投到一半，先投出去的组就可能把整块放掉
+    ATOMIC_SET_RELAXED(&pack->ref, nw + 1);
+    for (i = 0; i < n; i++) {
+        if (!sock_is_invalid(&sks[i])) {
+            grp = _multi_grp_at(pack, slot[sks[i].index]);
+            grp->sks[grp->n++] = sks[i];
         }
     }
+    if (slot != stk) {
+        FREE(slot);
+    }
+    cmd.cmd = CMD_MULTI;
+    for (k = 0; k < nw; k++) {
+        grp = _multi_grp_at(pack, k);
+        watcher = &ctx->watcher[grp->sks[0].index];
+        if (_evpub_inloop(watcher)) {
+            inw = watcher;// 同线程那组留到最后跑，免得挡住别的组投递
+            ingrp = grp;
+            continue;
+        }
+        cmd.args.multi = grp;
+        _send_cmd(watcher, &cmd);
+    }
+    if (NULL != ingrp) {
+        _ev_send_multi(inw, ingrp);// 必须当场跑：之后同线程对同一连接的 ev_send 也是当场入队
+    }
+    shared_data_free(pack, _free);
     return ERR_OK;
 }
 int32_t ev_sendto(ev_ctx *ctx, sock_ctx *sk, const char *ip, const uint16_t port,
@@ -721,6 +793,7 @@ int32_t ev_ud_context(ev_ctx *ctx, sock_ctx *sk, void *extra, free_cb fcb) {
 }
 void _cmd_drain_free(cmd_ctx *cmd) {
     evsock_ctx *evsk;
+    multi_grp *grp;
     void *data;
     switch ((ev_cmds)cmd->cmd) {
     case CMD_SENDTO:
@@ -758,6 +831,11 @@ void _cmd_drain_free(cmd_ctx *cmd) {
         break;
     case CMD_DEFER_EXEC:
         UD_FREE(cmd->args.defer_exec.fcb, cmd->args.defer_exec.arg);
+        break;
+    case CMD_MULTI:
+        // 这组一份组内计数都没交出：替它减一份父计数(sk 数组在块里，随块释放)
+        grp = cmd->args.multi;
+        shared_data_free(grp->sh.data, _free);
         break;
 #ifndef EV_IOCP
     case CMD_UNLSN:

@@ -355,6 +355,10 @@ int main(int argc, char *argv[]) {
         {"kcp_test2", 0},
         {"kcp_test3", 0},
         {"kcp_test4", 0},
+        {"kcp_test5", 0},
+#if KCP_TICK_HEAP
+        {"kcp_test6", 0},
+#endif
         {"python_http", 0},
         {"python_ws", 0},
         {"python_mqtt", 0},
@@ -494,7 +498,8 @@ int main(int argc, char *argv[]) {
         (uint16_t)*_get_name_val(portlist, "router_sv"),
         (uint16_t)*_get_name_val(portlist, "router_idx_sv"),
         _get_name_val(testlist, "router_test"));
-    //kcp: server 一个 task,client 侧四组场景(happy path/close 唤醒/同 session 并发 FIFO/kcp_synstart)各一个 task,update 业务层协程驱动
+    //kcp: server 一个 task,client 侧六组场景(happy path/close 唤醒/同 session 并发 FIFO/kcp_synstart/空闲停表唤醒/死链拆会话)各一个 task,update 由 event 线程 tick 驱动;
+    //死链只在 KCP_TICK_HEAP 为 1 时判,那组只在这时跑
     task_kcp_server_start(g_loader, "kcp_server",
         (uint16_t)*_get_name_val(portlist, "kcp_tcp"),
         (uint16_t)*_get_name_val(portlist, "kcp_udp"));
@@ -512,6 +517,14 @@ int main(int argc, char *argv[]) {
     task_kcp_synstart_start(g_loader, "kcp_synstart",
         (uint16_t)*_get_name_val(portlist, "kcp_udp"),
         _get_name_val(testlist, "kcp_test4"));
+    task_kcp_idle_start(g_loader, "kcp_idle",
+        (uint16_t)*_get_name_val(portlist, "kcp_tcp"),
+        (uint16_t)*_get_name_val(portlist, "kcp_udp"),
+        _get_name_val(testlist, "kcp_test5"));
+#if KCP_TICK_HEAP
+    task_kcp_dead_start(g_loader, "kcp_dead",
+        _get_name_val(testlist, "kcp_test6"));
+#endif
 
     //等各 server task 的 _startup 都派发完再以子进程跑 Python 协议模糊
     MSLEEP(1000);

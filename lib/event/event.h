@@ -116,8 +116,7 @@ int32_t ev_send(ev_ctx *ctx, sock_ctx *sk, void *data, size_t len, int32_t copy)
 /// 多播发送：将同一份 data 零拷贝广播给 N 个 TCP fd
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
-/// <param name="fds">SOCKET 数组，长度 n</param>
-/// <param name="skids">连接 ID 数组，长度 n，与 fds 一一配对</param>
+/// <param name="sks">连接标识数组，长度 n；失效项跳过</param>
 /// <param name="n">数组长度</param>
 /// <param name="data">要发送的数据</param>
 /// <param name="len">数据长度,须 > 0(为 0 时返 ERR_FAILED)</param>

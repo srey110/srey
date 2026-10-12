@@ -54,24 +54,24 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
         *size = (size_t)read_be16(buf16);
     } else if (0xfe == flag) {
         // 后跟 4 字节长度
-        char buf32[sizeof(uint32_t)];
-        *hlens += sizeof(buf32);
+        uint32_t be32;// 写法同下面的 be64
+        *hlens += sizeof(be32);
         if (*hlens > buffer_size(buf)) {
             BIT_SET(*status, PROT_MOREDATA);
             return ERR_FAILED;
         }
-        ASSERTAB(sizeof(buf32) == buffer_copyout(buf, sizeof(flag), buf32, sizeof(buf32)), "copy buffer error.");
-        *size = (size_t)read_be32(buf32);
+        ASSERTAB(sizeof(be32) == buffer_copyout(buf, sizeof(flag), &be32, sizeof(be32)), "copy buffer error.");
+        *size = (size_t)read_be32(&be32);
     } else {
         // 0xff：后跟 8 字节长度
-        char buf64[sizeof(uint64_t)];
-        *hlens += sizeof(buf64);
+        uint64_t be64;// 用标量不用 char[8]：8 字节的字符数组会让内联进去的 custz_unpack 每包都背上栈保护检查
+        *hlens += sizeof(be64);
         if (*hlens > buffer_size(buf)) {
             BIT_SET(*status, PROT_MOREDATA);
             return ERR_FAILED;
         }
-        ASSERTAB(sizeof(buf64) == buffer_copyout(buf, sizeof(flag), buf64, sizeof(buf64)), "copy buffer error.");
-        uint64_t val64 = read_be64(buf64);
+        ASSERTAB(sizeof(be64) == buffer_copyout(buf, sizeof(flag), &be64, sizeof(be64)), "copy buffer error.");
+        uint64_t val64 = read_be64(&be64);
 #if SIZE_MAX < UINT64_MAX// 仅在 32 位平台
         if (val64 > (uint64_t)SIZE_MAX) {
             BIT_SET(*status, PROT_ERROR);

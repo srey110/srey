@@ -21,6 +21,7 @@ local head_check = srey_http.head_check
 local AUTO_CT = 0x01 -- head_check 的 autoflags：Content-Type 由本模块自己写
 local AUTO_FRAME = 0x02 -- 同上：Content-Length / Transfer-Encoding 由本模块自己写
 local http_respond = srey_http.respond
+local pack_req = srey_http.pack_req -- 客户端请求的 C 组包，不接的形状返回 nil，见 http.get
 -- 状态行按状态码缓存。只缓存 [100, 999] 的整数码：业务传的怪码不进表，表就撑不大
 local _status_lines = {}
 local http = {}
@@ -92,19 +93,15 @@ local function _http_interim(pack)
     return st, nil ~= code and code >= 100 and code < 200
 end
 
----内部发送函数：rsp=true 单向发送（服务端响应），rsp=false 同步发送并接收回包；
----chunked 响应时循环读取分片并通过 ckfunc(fin,data,size) 回调，直到 fin=true
----@param rsp boolean 是否为响应（单向）
+---请求发出后的收包：跳过 1xx 中间响应，按协议层的分片标记把后续分片收齐；
+---chunked 响应时循环读取分片并通过 ckfunc(fin,data,size) 回调，直到 fin=true。后三个参数直接接 srey.syn_send 的返回值
 ---@param sk userdata 连接标识
----@param smsg string 整条待发报文
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片回调
----@return HttpPack|nil pack 解包后的响应表；失败返回 nil
-local function _http_send(rsp, sk, smsg, ckfunc)
-    if rsp then
-        srey.send(sk, smsg, #smsg, 1)
-        return
-    end
-    local pack, _, slice = srey.syn_send(sk, smsg, #smsg, 1)
+---@param pack lightuserdata? syn_send 返回的回包；nil 为发送失败、超时或已断开
+---@param _ integer? 回包 size，不用
+---@param slice integer? 分片类型（SLICE_TYPE.*）
+---@return HttpPack|nil resp 解包后的响应表；失败返回 nil
+local function _http_reply(sk, ckfunc, pack, _, slice)
     -- 1xx 是中间响应，C 侧当独立完整消息投出(slice=0)：不跳过就会把它当结果返回，
     -- 真正的响应留在连接上被下一次请求取走。HEAD 的 INIT_NOBODY 登记 C 侧跨 1xx 保留
     local st, interim
@@ -118,7 +115,7 @@ local function _http_send(rsp, sk, smsg, ckfunc)
     if not pack then
         return
     end
-    pack = _unpack(pack, st)
+    local resp = _unpack(pack, st)
     -- 按协议层给的分片标记决定要不要接着收，不只认 chunked：响应既无 Content-Length 又无
     -- Transfer-Encoding 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7)，C 侧同样按分片投、
     -- 末片由关闭事件补。判定留在 C 一处，这里重抄一遍必然分叉(1xx/204/304 也没有 CL/TE)
@@ -155,12 +152,26 @@ local function _http_send(rsp, sk, smsg, ckfunc)
                 break
             end
         end
-        pack.cksize = cksize
+        resp.cksize = cksize
         if nchunk > 0 then
-            pack.data = table.concat(chunks)
+            resp.data = table.concat(chunks)
         end
     end
-    return pack
+    return resp
+end
+
+---内部发送函数：rsp=true 单向发送（服务端响应），rsp=false 同步发送并收回包（收包见 _http_reply）
+---@param rsp boolean 是否为响应（单向）
+---@param sk userdata 连接标识
+---@param smsg string 整条待发报文
+---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片回调
+---@return HttpPack|nil pack 解包后的响应表；rsp=true 或失败返回 nil
+local function _http_send(rsp, sk, smsg, ckfunc)
+    if rsp then
+        srey.send(sk, smsg, #smsg, 1)
+        return
+    end
+    return _http_reply(sk, ckfunc, srey.syn_send(sk, smsg, #smsg, 1))
 end
 
 -- 本函数按 info 类型自己生成的头，调用方不能再传一份：两条 Content-Length（或 TE 叠 CL）
@@ -339,7 +350,8 @@ end
 -- 拼请求行前校验 url。不校验就是 HTTP 请求拆分：url 里塞一段 CRLF 能在同一条连接上
 -- 再拼出一个完整请求，多出来的那条响应会被下一次请求的等待者取走，此后整条连接错开一位。
 -- 头名头值那边是丢弃单条继续发，请求目标坏了整条请求都不能发，故返回 nil 让调用方失败返回。
--- C 侧 http_pack_req 把这视为硬契约违约直接 ASSERTAB，Lua 这条路径此前是静默放行
+-- lib/protocol 的 http_pack_req 把这视为硬契约违约直接 ASSERTAB；客户端 C 组包 srey.http.pack_req
+-- 原样写请求行、不校验，故 url 只在这里挡
 local function _req_status(method, url)
     url = url or "/"
     if string.find(url, "[\0\r\n]") then
@@ -353,9 +365,9 @@ end
 
 ---同步 GET 请求
 ---
----与同一连接上的其他请求并发时，须用 srey.serial 把整个调用圈进临界区：分片响应
----（chunked / 1xx / 既无 Content-Length 又无 Transfer-Encoding）的后续分片会被排在前面的协程
----拿走，双方各得半截；非分片响应不受影响。口径同 C 侧 coro_slice
+---与同一连接上的其他请求并发时，须用 srey.serial 把整个调用圈进临界区（理由同 srey.syn_send）；
+---分片响应（chunked / 1xx / 既无 Content-Length 又无 Transfer-Encoding）不圈的话，后续分片还会被
+---排在前面的协程拿走，双方各得半截
 ---@param sk userdata 连接标识
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,string|number>? 附加头部
@@ -367,6 +379,12 @@ function http.get(sk, url, headers, ckfunc)
     local status = _req_status("GET", url)
     if not status then
         return nil
+    end
+    -- 常见形状整条在 C 里组成一块、零拷贝交给 syn_send，字节同 _http_msg 原路；返回 nil 才走原路
+    -- （function 报文体、要告警丢的头、数字头值、sk 不是连接标识等，规则见 srey.http.pack_req）
+    local data, size = pack_req(sk, status, headers, nil)
+    if data then
+        return _http_reply(sk, ckfunc, srey.syn_send(sk, data, size, 0))
     end
     return _http_msg(false, false, false, sk, status, nil, headers, ckfunc)
 end
@@ -396,6 +414,10 @@ function http.head_req(sk, url, headers)
         WARN("http head: set method failed, skid %s.", tostring(sk.skid))
         return nil
     end
+    local data, size = pack_req(sk, status, headers, nil)-- 同 http.get
+    if data then
+        return _http_reply(sk, nil, srey.syn_send(sk, data, size, 0))
+    end
     return _http_msg(false, false, false, sk, status, nil, headers, nil)
 end
 
@@ -418,6 +440,10 @@ function http.post(sk, url, headers, ckfunc, info, ...)
     local status = _req_status("POST", url)
     if not status then
         return nil
+    end
+    local data, size = pack_req(sk, status, headers, info)-- 同 http.get
+    if data then
+        return _http_reply(sk, ckfunc, srey.syn_send(sk, data, size, 0))
     end
     return _http_msg(false, false, false, sk, status, nil, headers, ckfunc, info, ...)
 end
@@ -454,15 +480,6 @@ local function _response_lua(headonly, sk, code, block, headers, info, ...)
     end
     _http_msg(true, nocl, headonly, sk, status, block, headers, nil, info, ...)
 end
--- http.response 与 http.response_head 的共同实现，参数同 _response_lua
-local function _response(headonly, sk, code, block, headers, info, ...)
-    -- 常见形状（string / nil 报文体、没有头表时的 table 报文体、合法头表）整条在 C 里组包直发，字节同 _response_lua 的原路；
-    -- 返回 false 才往下走（带头表的 table、function 报文体、要告警丢头、怪码、编不成 JSON 等）
-    if http_respond(sk, code, headers, info, headonly, block) then
-        return
-    end
-    _response_lua(headonly, sk, code, block, headers, info, ...)
-end
 -- 给 router 的两半：先 _respond（C 组包直发，参数见 srey.http.respond），返回 false 再 _response_lua
 http._respond = http_respond
 http._response_lua = _response_lua
@@ -476,7 +493,13 @@ http._response_lua = _response_lua
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
 function http.response(sk, code, headers, info, ...)
-    _response(false, sk, code, nil, headers, info, ...)
+    -- 常见形状（string / nil 报文体、没有头表时的 table 报文体、合法头表）整条在 C 里组包直发，字节同 _response_lua 的原路；
+    -- 返回 false 才往下走（带头表的 table、function 报文体、要告警丢头、怪码、编不成 JSON 等）。
+    -- 两个公开函数各自直调这两半，不经共用的变参中转（那会让每个响应多一次变参调用）
+    if http_respond(sk, code, headers, info, false, nil) then
+        return
+    end
+    _response_lua(false, sk, code, nil, headers, info, ...)
 end
 
 ---回 HEAD 请求：头与同一资源的 GET 完全一致（含按 info 算出的真实 Content-Length），但不发
@@ -490,7 +513,10 @@ end
 ---       长度，只发头且省略 Content-Length
 ---@param ... any 传给 info 函数的额外参数
 function http.response_head(sk, code, headers, info, ...)
-    _response(true, sk, code, nil, headers, info, ...)
+    if http_respond(sk, code, headers, info, true, nil) then-- 同 http.response
+        return
+    end
+    _response_lua(true, sk, code, nil, headers, info, ...)
 end
 
 return http

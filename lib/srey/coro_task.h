@@ -134,7 +134,8 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
 /// <param name="sk">连接标识</param>
 void coro_close(task_ctx *task, sock_ctx *sk);
 /// <summary>
-/// TCP发送
+/// TCP发送并等待响应。同一连接上多个协程并发收发时，须用 coro_serial 把整个"发请求→收完响应"圈住：
+/// 等待者按连接排队、只认队头，回包按到达顺序交给先挂起的协程，而服务端不保证按请求顺序回包，不圈就会对错号
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
@@ -148,7 +149,8 @@ void coro_close(task_ctx *task, sock_ctx *sk);
 ///   发送失败 / 超时 / 连接已关返回 NULL</returns>
 void *coro_send(task_ctx *task, sock_ctx *sk, void *data, size_t len, size_t *size, int32_t copy);
 /// <summary>
-/// 同步接收下一个响应包(不发送):用于一次请求产生多个响应的场景,如 MySQL 多结果集续读
+/// 同步接收下一个响应包(不发送):用于一次请求产生多个响应的场景,如 MySQL 多结果集续读。
+/// 同一连接上多协程并发的约束同 coro_send
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>

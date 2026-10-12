@@ -242,11 +242,19 @@
     <ClInclude Include="lbind\lpub.h">
       <Filter>lbind</Filter>
     </ClInclude>
+    <ClInclude Include="lbind\luauser.h">
+      <Filter>lbind</Filter>
+    </ClInclude>
     <ClInclude Include="lbind\ltask.h">
       <Filter>lbind</Filter>
     </ClInclude>
     <ClInclude Include="lbind\lbytecache.h">
       <Filter>lbind</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <MARMASM Include="lbind\luajmp_arm64.asm">
+      <Filter>lbind</Filter>
+    </MARMASM>
   </ItemGroup>
 </Project>

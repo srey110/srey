@@ -36,6 +36,20 @@
 // 在目标线程上 ev_connect 复用池中对象的用例：端口与客户端发、服务端回显的那条消息
 #define CONN_POOL_PORT 15039
 #define CONN_POOL_MSG "abc"
+// send_multi 用例：客户端按下标轮流落在两条 event 线程上，按轮广播再单发，服务端攒齐后逐字比对
+#define SMULTI_PORT 15036
+#define SMULTI_INLOOP_PORT 15037
+#define SMULTI_FREE_PORT 15038
+#define SMULTI_NCLI 6
+#define SMULTI_ROUNDS 40
+#define SMULTI_REPEAT (MAX_SEND_NIOV + 8)// 末轮同一连接在列表里重复的次数：组还没跑完就会攒满一批冲出去
+#define SMULTI_MAXLEN (2 + SMULTI_ROUNDS * 6 + SMULTI_REPEAT)
+// 线程数多于 64(ev_send_multi 栈上计数表的格数)的用例：一个 UDP 与一个 TCP 客户端都落在最后一条线程上
+#define SMULTI_WIDE_PORT 15052
+#define SMULTI_WIDE_UDP_PORT 15053
+#define SMULTI_WIDE_NTHS 65
+#define SMULTI_WIDE_MSG "wide-multi"
+#define SMULTI_WIDE_LEN (sizeof(SMULTI_WIDE_MSG) - 1)
 #define SSL_MERGE_TOTAL (256 * 1024)
 #define SSL_MERGE_BATCH 512
 // 读保活空闲时长的选项名，取法同 sock_keepalive
@@ -1309,6 +1323,309 @@ static void test_ev_connect_inloop_pool(CuTest *tc) {
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cpool_echo));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cpool_closed));
 }
+// send_multi 用例的共用状态
+static ev_ctx *_g_smulti_ev;
+static cbs_ctx _g_smulti_ccbs;// 客户端回调：只计连通，收到的丢掉
+static sock_ctx _g_smulti_sk[SMULTI_NCLI];// 第 k 个客户端落在线程 k % 2
+static atomic_t _g_smulti_conn;// 连通的客户端数
+static atomic_t _g_smulti_res[SMULTI_NCLI];// 0 未收齐，1 内容对，2 内容错
+static atomic_t _g_smulti_bad;// 返回值不符预期、或收到认不出的数据的次数
+static atomic_t _g_smulti_hold;// 停机用例：1 回调已开始，2 广播已发出
+static atomic_t _g_smulti_nrecv;// 宽线程用例：服务端累计收到的字节数
+// 客户端 k 应收到的字节流：编号 "I"k；每轮 "M"r(sk[0] 在列表里出现两次，收两份)，轮到它时再收 "S"r；
+// sk[0]、sk[1] 最后各收 SMULTI_REPEAT 个 'Z'
+static size_t _smulti_expect(int32_t k, char *out) {
+    size_t n = 0;
+    int32_t r, i;
+    out[n++] = 'I';
+    out[n++] = (char)('0' + k);
+    for (r = 0; r < SMULTI_ROUNDS; r++) {
+        for (i = 0; i < (0 == k ? 2 : 1); i++) {
+            out[n++] = 'M';
+            out[n++] = (char)r;
+        }
+        if (r % SMULTI_NCLI == k) {
+            out[n++] = 'S';
+            out[n++] = (char)r;
+        }
+    }
+    if (k < 2) {
+        memset(out + n, 'Z', SMULTI_REPEAT);
+        n += SMULTI_REPEAT;
+    }
+    return n;
+}
+// 服务端：首两字节定是哪个客户端，攒够期望长度就逐字比对、记结果；缓冲不清，编号一直可读，
+// 记过结果后这条连接再来任何数据(哪怕 1 字节)都算多收
+static void _smulti_on_recv(ev_ctx *ev, sock_ctx *sk,
+                            int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    char want[SMULTI_MAXLEN];
+    char got[SMULTI_MAXLEN];
+    size_t n;
+    int32_t k;
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    if (buffer_size(buf) < 2) {
+        return;
+    }
+    buffer_copyout(buf, 0, got, 2);
+    k = got[1] - '0';
+    if ('I' != got[0] || k < 0 || k >= SMULTI_NCLI) {
+        ATOMIC_ADD(&_g_smulti_bad, 1);
+        buffer_drain(buf, buffer_size(buf));
+        return;
+    }
+    if (0 != ATOMIC_GET(&_g_smulti_res[k])) {
+        ATOMIC_ADD(&_g_smulti_bad, 1);
+        return;
+    }
+    n = _smulti_expect(k, want);
+    if (buffer_size(buf) < n) {
+        return;
+    }
+    buffer_copyout(buf, 0, got, n);
+    ATOMIC_SET(&_g_smulti_res[k], (buffer_size(buf) == n && 0 == memcmp(got, want, n)) ? 1 : 2);
+}
+static int32_t _smulti_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)ud;
+    if (ERR_OK == err) {
+        ATOMIC_ADD(&_g_smulti_conn, 1);
+    }
+    return ERR_OK;
+}
+static void _smulti_want(int32_t rtn, int32_t want) {
+    if (rtn != want) {
+        ATOMIC_ADD(&_g_smulti_bad, 1);
+    }
+}
+// 发送序列：先各发编号；再验两条失败返回(全失效列表 + copy=0 载荷、n=0)；然后每轮广播一次再单发一个客户端；
+// 最后 sk[0]、sk[1] 各重复 SMULTI_REPEAT 次广播 1 字节
+static void _smulti_rounds(void) {
+    ev_ctx *ev = _g_smulti_ev;
+    sock_ctx list[SMULTI_NCLI + 3];
+    sock_ctx heavy[2 * SMULTI_REPEAT];
+    char msg[2];
+    char *own;
+    int32_t i, r;
+    ZERO(list, sizeof(list));
+    for (i = 0; i < SMULTI_NCLI; i++) {
+        msg[0] = 'I';
+        msg[1] = (char)('0' + i);
+        _smulti_want(ev_send(ev, &_g_smulti_sk[i], msg, 2, 1), ERR_OK);
+    }
+    sock_set_invalid(&list[0]);
+    sock_set_invalid(&list[1]);
+    MALLOC(own, 1);
+    own[0] = 'X';
+    _smulti_want(ev_send_multi(ev, list, 2, own, 1, 0), ERR_FAILED);// 载荷当场放掉，漏放由内存检查抓
+    _smulti_want(ev_send_multi(ev, list, 0, msg, 2, 1), ERR_FAILED);
+    // 列表：sk[1] 改了 skid(查表失败)排第一，组 1 第 0 步就交回一份计数；全部客户端；sk[0] 重复一次；一个失效项
+    list[0] = _g_smulti_sk[1];
+    list[0].skid++;
+    for (i = 0; i < SMULTI_NCLI; i++) {
+        list[1 + i] = _g_smulti_sk[i];
+    }
+    list[SMULTI_NCLI + 1] = _g_smulti_sk[0];
+    sock_set_invalid(&list[SMULTI_NCLI + 2]);
+    for (r = 0; r < SMULTI_ROUNDS; r++) {
+        msg[0] = 'M';
+        msg[1] = (char)r;
+        _smulti_want(ev_send_multi(ev, list, SMULTI_NCLI + 3, msg, 2, 1), ERR_OK);
+        msg[0] = 'S';
+        _smulti_want(ev_send(ev, &_g_smulti_sk[r % SMULTI_NCLI], msg, 2, 1), ERR_OK);
+    }
+    // 一组里攒满 MAX_SEND_NIOV 条就当场冲刷，组循环中途就有计数交回，不能提前归 0
+    for (i = 0; i < 2 * SMULTI_REPEAT; i++) {
+        heavy[i] = _g_smulti_sk[i % 2];
+    }
+    msg[0] = 'Z';
+    _smulti_want(ev_send_multi(ev, heavy, 2 * SMULTI_REPEAT, msg, 1, 1), ERR_OK);
+}
+static void _smulti_rounds_cb(void *arg) {
+    (void)arg;
+    _smulti_rounds();
+}
+// 建 2 线程 ev、监听 port、第 k 个客户端连到线程 k % 2，等全部连通。返回连通数
+static int32_t _smulti_setup(ev_ctx *ev, uint16_t port, cbs_ctx *lcbs) {
+    uint64_t id;
+    int32_t i;
+    ATOMIC_SET(&_g_smulti_conn, 0);
+    ATOMIC_SET(&_g_smulti_bad, 0);
+    ATOMIC_SET(&_g_smulti_hold, 0);
+    for (i = 0; i < SMULTI_NCLI; i++) {
+        ATOMIC_SET(&_g_smulti_res[i], 0);
+        ZERO(&_g_smulti_sk[i], sizeof(sock_ctx));
+        sock_set_invalid(&_g_smulti_sk[i]);
+    }
+    ZERO(&_g_smulti_ccbs, sizeof(_g_smulti_ccbs));
+    _g_smulti_ccbs.conn_cb = _smulti_on_conn;
+    _g_smulti_ccbs.r_cb = _launch_on_recv;
+    ev_init(ev, 2, NULL);
+    _g_smulti_ev = ev;
+    if (ERR_OK != ev_listen(ev, NULL, "127.0.0.1", port, lcbs, NULL, NULL, 0, &id)) {
+        return 0;
+    }
+    MSLEEP(50);// listen 落地是异步的
+    for (i = 0; i < SMULTI_NCLI; i++) {
+        ev_connect(ev, NULL, "127.0.0.1", port, &_g_smulti_ccbs, NULL, 0, i % 2, &_g_smulti_sk[i]);
+    }
+    for (i = 0; i < 1000 && (int32_t)ATOMIC_GET(&_g_smulti_conn) < SMULTI_NCLI; i++) {
+        MSLEEP(1);
+    }
+    return (int32_t)ATOMIC_GET(&_g_smulti_conn);
+}
+// 用例 1、2 共用：建连、发、有界等 6 个结果到齐、停机后断言。inloop 为 1 时整套发送投到线程 1 上跑：
+// 线程 1 那组当场跑、线程 0 那组投递，单发同理
+static void _smulti_check(CuTest *tc, uint16_t port, int32_t inloop) {
+    ev_ctx ev;
+    cbs_ctx lcbs;
+    int32_t i, k, conn, done;
+    int32_t res[SMULTI_NCLI];
+    ZERO(&lcbs, sizeof(lcbs));
+    lcbs.r_cb = _smulti_on_recv;
+    conn = _smulti_setup(&ev, port, &lcbs);
+    if (SMULTI_NCLI == conn) {
+        if (inloop) {
+            ev_defer_exec(&ev, 1, _smulti_rounds_cb, NULL, NULL);
+        } else {
+            _smulti_rounds();
+        }
+    }
+    done = 0;
+    for (i = 0; i < 2000 && !done; i++) {
+        done = 1;
+        for (k = 0; k < SMULTI_NCLI; k++) {
+            if (0 == ATOMIC_GET(&_g_smulti_res[k])) {
+                done = 0;
+            }
+        }
+        if (!done) {
+            MSLEEP(1);
+        }
+    }
+    MSLEEP(50);// 多收的话会紧跟着来
+    for (k = 0; k < SMULTI_NCLI; k++) {
+        res[k] = (int32_t)ATOMIC_GET(&_g_smulti_res[k]);
+    }
+    ev_free(&ev);
+    // 断言放 ev_free 之后，理由同 test_ev_close_in_acp_conn_deferred
+    CuAssertIntEquals(tc, SMULTI_NCLI, conn);
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_smulti_bad));
+    for (k = 0; k < SMULTI_NCLI; k++) {
+        CuAssertIntEquals(tc, 1, res[k]);
+    }
+}
+// ev_send_multi 按线程合批：主线程发，两条线程的组都走投递。同一调用方"广播→单发"在每条连接上按序到达，
+// 组内按原序、重复项各发一份，查表失败与失效项不影响别人
+static void test_ev_send_multi_order(CuTest *tc) {
+    _smulti_check(tc, SMULTI_PORT, 0);
+}
+// 同上，在线程 1 上发：同线程那组必须当场跑，否则单发的 "S"r 会跑到广播的 "M"r 前面
+static void test_ev_send_multi_inloop(CuTest *tc) {
+    _smulti_check(tc, SMULTI_INLOOP_PORT, 1);
+}
+// 占住线程 0 直到 ev_free 已开始，再对全部连接广播一个 copy=0 载荷
+static void _smulti_free_cb(void *arg) {
+    char *own;
+    int32_t i;
+    (void)arg;
+    ATOMIC_SET(&_g_smulti_hold, 1);
+    for (i = 0; i < 2000 && 0 == ATOMIC_GET(&_g_smulti_ev->stopping); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(200);// IOCP 的 ev_free 先停 AcceptEx 线程才投停止命令，多等一会儿
+    MALLOC(own, 1);
+    own[0] = 'F';
+    _smulti_want(ev_send_multi(_g_smulti_ev, _g_smulti_sk, SMULTI_NCLI, own, 1, 0), ERR_OK);
+    ATOMIC_SET(&_g_smulti_hold, 2);
+}
+// 停机回收：线程 1 已处理停止命令退出，它那组排在停止命令之后，由 ev_free 的排空收走(替它减父计数)；
+// 线程 0 那组当场入队，随 ev_free 关连接清掉。块与载荷只放一次靠进程末尾的内存检查与 ASan 抓。
+// 线程 1 万一 200ms 内没退出，那组照常执行，用例仍过、只是没走到排空那支
+static void test_ev_send_multi_free(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx lcbs;
+    int32_t i, conn;
+    ZERO(&lcbs, sizeof(lcbs));
+    lcbs.r_cb = _launch_on_recv;
+    conn = _smulti_setup(&ev, SMULTI_FREE_PORT, &lcbs);
+    ev_defer_exec(&ev, 0, _smulti_free_cb, NULL, NULL);
+    for (i = 0; i < 1000 && 0 == ATOMIC_GET(&_g_smulti_hold); i++) {
+        MSLEEP(1);
+    }
+    ev_free(&ev);
+    CuAssertIntEquals(tc, SMULTI_NCLI, conn);
+    CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&_g_smulti_hold));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_smulti_bad));
+}
+// 宽线程用例的服务端：缓冲不清，记下累计收到的字节数，正好攒够载荷长度时逐字比对，结果记在 _g_smulti_res[0]
+static void _smulti_wide_on_recv(ev_ctx *ev, sock_ctx *sk,
+                                 int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    char got[SMULTI_WIDE_LEN];
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    ATOMIC_SET(&_g_smulti_nrecv, (atomic_t)buffer_size(buf));
+    if (SMULTI_WIDE_LEN == buffer_size(buf)) {
+        buffer_copyout(buf, 0, got, SMULTI_WIDE_LEN);
+        ATOMIC_SET(&_g_smulti_res[0], 0 == memcmp(got, SMULTI_WIDE_MSG, SMULTI_WIDE_LEN) ? 1 : 2);
+    }
+}
+// 65 条线程：ev_send_multi 的计数表改走堆上分配，下标 64 那格必须落在表内(越界由 ASan 抓)；
+// 列表先放同线程的 UDP，按非 TCP 丢掉并交回一份组内计数，同组的 TCP 照常发出 copy=0 载荷，服务端一字不多不少收到。
+// 块与载荷各放一次靠进程末尾的内存检查与 ASan 抓
+static void test_ev_send_multi_wide(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx lcbs, ccbs, ucbs;
+    sock_ctx list[2];
+    uint64_t id;
+    char *own;
+    const int32_t only0[] = { 0 };// 只在线程 0 上收连接，免得 65 条线程各开一个监听
+    int32_t i, conn, nrecv, res;
+    int32_t rtn[4];
+    ZERO(&lcbs, sizeof(lcbs));
+    lcbs.r_cb = _smulti_wide_on_recv;
+    ZERO(&ccbs, sizeof(ccbs));
+    ccbs.conn_cb = _smulti_on_conn;
+    ccbs.r_cb = _launch_on_recv;
+    ZERO(&ucbs, sizeof(ucbs));
+    ucbs.rf_cb = _launch_on_recvfrom;
+    ZERO(list, sizeof(list));
+    sock_set_invalid(&list[0]);
+    sock_set_invalid(&list[1]);
+    ATOMIC_SET(&_g_smulti_conn, 0);
+    ATOMIC_SET(&_g_smulti_nrecv, 0);
+    ATOMIC_SET(&_g_smulti_res[0], 0);
+    ev_init(&ev, SMULTI_WIDE_NTHS, NULL);
+    rtn[0] = ev_listen(&ev, NULL, "127.0.0.1", SMULTI_WIDE_PORT, &lcbs, NULL, only0, 1, &id);
+    MSLEEP(50);// listen 落地是异步的
+    // 两个都在最后一条线程上：UDP 的注册命令排在广播之前，广播到时它已在表里
+    rtn[1] = ev_udp(&ev, "127.0.0.1", SMULTI_WIDE_UDP_PORT, &ucbs, NULL, SMULTI_WIDE_NTHS - 1, &list[0]);
+    rtn[2] = ev_connect(&ev, NULL, "127.0.0.1", SMULTI_WIDE_PORT, &ccbs, NULL, 0, SMULTI_WIDE_NTHS - 1, &list[1]);
+    for (i = 0; i < 1000 && 0 == ATOMIC_GET(&_g_smulti_conn); i++) {
+        MSLEEP(1);
+    }
+    conn = (int32_t)ATOMIC_GET(&_g_smulti_conn);
+    rtn[3] = ERR_FAILED;
+    if (1 == conn) {
+        MALLOC(own, SMULTI_WIDE_LEN);
+        memcpy(own, SMULTI_WIDE_MSG, SMULTI_WIDE_LEN);
+        rtn[3] = ev_send_multi(&ev, list, 2, own, SMULTI_WIDE_LEN, 0);
+    }
+    for (i = 0; i < 2000 && 0 == ATOMIC_GET(&_g_smulti_res[0]); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 多收的话会紧跟着来
+    nrecv = (int32_t)ATOMIC_GET(&_g_smulti_nrecv);
+    res = (int32_t)ATOMIC_GET(&_g_smulti_res[0]);
+    ev_free(&ev);
+    // 断言放 ev_free 之后，理由同 test_ev_close_in_acp_conn_deferred
+    for (i = 0; i < 4; i++) {
+        CuAssertIntEquals(tc, ERR_OK, rtn[i]);
+    }
+    CuAssertIntEquals(tc, SMULTI_WIDE_NTHS - 1, list[0].index);
+    CuAssertIntEquals(tc, SMULTI_WIDE_NTHS - 1, list[1].index);
+    CuAssertIntEquals(tc, 1, conn);
+    CuAssertIntEquals(tc, (int32_t)SMULTI_WIDE_LEN, nrecv);
+    CuAssertIntEquals(tc, 1, res);
+}
 #if 0 != CLOSE_LINGER_MS
 // 服务端关闭回调次数：用来确认"本端关闭"确实走完了，没有卡在等对端动
 static atomic_t _g_linger_closed;
@@ -1822,6 +2139,10 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ev_launch_index);
     SUITE_ADD_TEST(suite, test_ev_listen_thrs);
     SUITE_ADD_TEST(suite, test_ev_connect_inloop_pool);
+    SUITE_ADD_TEST(suite, test_ev_send_multi_order);
+    SUITE_ADD_TEST(suite, test_ev_send_multi_inloop);
+    SUITE_ADD_TEST(suite, test_ev_send_multi_free);
+    SUITE_ADD_TEST(suite, test_ev_send_multi_wide);
 #if 0 != CLOSE_LINGER_MS
     SUITE_ADD_TEST(suite, test_ev_linger_late_data);
     SUITE_ADD_TEST(suite, test_ev_linger_timeout);

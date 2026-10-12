@@ -3,9 +3,9 @@
 
 #include "lib.h"
 
-// KCP 集成测试:conv 握手走 TCP,ikcp_update 由 event 线程 tick 自动驱动,server 一个 task,client 侧三组场景各一个 task。
+// KCP 集成测试:conv 握手走 TCP,ikcp_update 由 event 线程 tick 自动驱动,server 一个 task,client 侧六组场景各一个 task。
 //   1) server: TCP listen 收 client 上报的 UDP 端口 -> 分配唯一 conv -> server 侧 kcp_start
-//      -> TCP 回 conv;UDP 侧 kcp 数据在 on_recvfrom 内按来源端口找到会话 echo 回。
+//      -> TCP 回 conv;UDP 侧 kcp 数据在 on_recvfrom 内按来源端口找到会话 echo 回(noecho 开头的只收不回)。
 //   2) client(x3,同一 client task 内 coro_fork): task_udp(0) 由 OS 分配端口 + netaddr_local 取回
 //      -> TCP 握手拿 conv -> client 侧 kcp_start -> kcp_synsend 发送并校验 echo(收发由 event tick 驱动)。
 //      client 0 额外传非法 mtu=24 覆盖回归:验证 maxpack 不会归零导致该会话永久发送失败。
@@ -21,11 +21,17 @@
 //      kcp_stop 后立即 kcp_synstart 重启,验证新 sess 不被上一会话在途的 CLOSE 击穿;
 //      再 stop 并让另一句柄占走同 conv,重启必被拒,验证失败路径把 stopped/maxpack 与 sess 一并还原
 //      (stopped 未还原则句柄从"已停"变回"在跑",随后的 synsend 会空等满超时而非立即失败);
-//      最后另开一个 socket,synsend 挂起期间关掉它,验证 CLOSE 唤醒后 kcp->sess 被清零。
+//      最后另开一个 socket,synsend 挂起期间关掉它,验证 CLOSE 唤醒后 kcp->sess 清零、stopped 置 1。
+//   6) idle: 两端停表后先发单向消息再 synsend(收包唤醒),再闲 1.5 秒后 synsend(发送唤醒),最后 stop 已停表的会话。
+//   7) dead(仅 KCP_TICK_HEAP 为 1 时跑): 本 task 内两个 socket 互为对端,热身 echo 后停掉对端会话,验证在途数据
+//      重传到 dead_link 次后会话被拆除,synsend 被 CLOSE(CLOSE_TYPE_ABORT)唤醒而非等满超时,句柄置为 stopped;
+//      同一 socket 上另有一个对端未建、一直重传的 conv 2,拆掉 conv 1 后再建它的对端,验证 conv 2 仍被 tick 驱动、拿得到回显。
 void task_kcp_server_start(loader_ctx *loader, const char *name, uint16_t tcp_port, uint16_t udp_port);
 void task_kcp_client_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_port, uint16_t sv_udp_port, int32_t *ok);
 void task_kcp_close_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok);
 void task_kcp_fifo_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_port, uint16_t sv_udp_port, int32_t *ok);
 void task_kcp_synstart_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok);
+void task_kcp_idle_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_port, uint16_t sv_udp_port, int32_t *ok);
+void task_kcp_dead_start(loader_ctx *loader, const char *name, int32_t *ok);
 
 #endif//TASK_KCP_H_

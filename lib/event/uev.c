@@ -77,6 +77,7 @@ static void _uev_init_callback(void) {
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
     cmd_cbs[CMD_DEFER_EXEC] = _on_cmd_defer_exec;
+    cmd_cbs[CMD_MULTI] = _on_cmd_multi;
     once_end(&_init_once);
 }
 // 将命令唤醒源注册到事件循环（触发_uev_cmd_loop）

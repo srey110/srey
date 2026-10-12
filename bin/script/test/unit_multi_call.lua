@@ -7,6 +7,7 @@
 -- 5) 目标数 / 连接数跨过绑定层栈数组上限(multi_* 与 send_multi 都是 128)两侧都投齐，大档非法元素抛错
 -- 6) 名字缓存过期：同名 task 退出后重新注册，按名字投递要到新 task（copy=0 的载荷重查后照样投到，multi_request 同）；
 --    名字已不存在时返回 false（multi_request 返回 0）、载荷不泄漏
+-- 7) 名字缓存记满整表换新：multi_request 循环中途换表，后面的名字仍按旧表查，目标照样投齐、新表只记一次数
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -123,7 +124,7 @@ runner.run(function(t)
         local sess = srey.id()
         -- 返回值必须断言：挂在裸 if 上的话，core.request 返 false 时下面 4 条一条都不跑，
         -- 模块仍报全绿
-        t:check(core.request(SUBS[1], 102, sess, MSG), "core.request 投递成功")
+        t:eq(task.get_request_timeout(), core.request(SUBS[1], 102, sess, MSG), "core.request 投递成功并带回请求超时")
         local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 3000)
         t:eq(srey.MSG_TYPE.RESPONSE, msg.mtype, "拿到 RESPONSE 消息表")
         t:eq("msg", getmetatable(msg), "消息元表被 __metatable 挡住")
@@ -386,7 +387,7 @@ runner.run(function(t)
         _regen(12)
         local ud6, usz6 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "regen12")
         local sess12 = srey.id()
-        t:eq(true, core.request(REGEN, 102, sess12, ud6, usz6, 0), "缓存过期后 copy=0 的 request 仍投递成功")
+        t:check(core.request(REGEN, 102, sess12, ud6, usz6, 0), "缓存过期后 copy=0 的 request 仍投递成功")
         local msg12 = srey._coro_wait(sess12, srey.MSG_TYPE.RESPONSE, 3000)
         t:eq("ack12", msg12.data and srey.ud_str(msg12.data, msg12.size), "copy=0 的 request 投到第 12 代")
 
@@ -431,6 +432,44 @@ runner.run(function(t)
         local ud8, usz8 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "gone_multi")
         t:eq(0, srey.multi_request({ REGEN, h14, "multi_call_sub_never" }, 102, srey.id(), ud8, usz8, 0),
              "目标全投不到：copy=0 的 multi_request 返回 0")
+    end
+
+    -- ── 名字缓存记满整表换新 ─────────────────────────────────────────
+    -- 缓存表挂在注册表的 lightuserdata 键下：名字→句柄，记过的条数在整数键 0，记满 4096 条换新表。
+    -- 从旧表删掉三个 sub、把计数拨到上限：第一个名字记缓存时换表，后两个仍在旧表上查（不命中）再记进新表
+    do
+        srey.call(SUBS[1], 100, "cache_warm")-- 按名字投一次，确保它在缓存里
+        _wait(function() return 1 == ack_body["cache_warm"] end)
+        local reg = debug.getregistry()
+        local key, old
+        for k, v in pairs(reg) do
+            if "userdata" == type(k) and "table" == type(v)
+                and "integer" == math.type(rawget(v, 0)) and "number" == type(rawget(v, SUBS[1])) then
+                key, old = k, v
+            end
+        end
+        if t:check(nil ~= old, "在注册表里找到名字缓存表") then
+            for i = 1, N do
+                rawset(old, SUBS[i], nil)
+            end
+            rawset(old, 0, 4096)
+            local before = {}
+            for i = 1, N do
+                before[i] = resp_body["ack" .. i] or 0
+            end
+            local sess = srey.id()
+            t:eq(N, core.multi_request(SUBS, 102, sess, "cache_swap"), "缓存记满时 multi_request 投递数")
+            _wait(function() return (resp_by_sess[sess] or 0) >= N end)
+            for i = 1, N do
+                t:eq(before[i] + 1, resp_body["ack" .. i], "缓存换表时 sub" .. i .. " 照样收到")
+            end
+            local new = reg[key]
+            t:check("table" == type(new) and old ~= new, "记满后整表换新")
+            t:eq(N, new and rawget(new, 0), "新表计数等于记进去的名字数（只换了一次表）")
+            for i = 1, N do
+                t:eq("number", new and type(rawget(new, SUBS[i])), SUBS[i] .. " 记进了新表")
+            end
+        end
     end
 
     -- ── 绑到 net 线程上的 sub：照常收请求、回响应、单向 ack ──────────

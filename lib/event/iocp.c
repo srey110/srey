@@ -47,6 +47,7 @@ static void _iocp_init_callback(void) {
     cmd_cbs[CMD_SENDTO] = _on_cmd_sendto;
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
     cmd_cbs[CMD_DEFER_EXEC] = _on_cmd_defer_exec;
+    cmd_cbs[CMD_MULTI] = _on_cmd_multi;
 }
 // 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）。两个 ev_init 同时首次进来时，
 // 没抢到的要等这边取完才能往下走，否则会拿着空函数指针投 AcceptEx

@@ -5,7 +5,8 @@
 #include "protocol/prots_pub.h"
 #include "protocol/kcp/ikcp.h"
 
-// tick 调度方式:1=最小堆早退(会话多且同时到期少时占优) 0=kcp_map_scan 全量扫描(同时到期会话占多数时占优)
+// tick 调度方式:1=最小堆早退(会话多且同时到期少时占优;空闲会话摘出堆停表,send / input 时挂回;死链会话拆掉投 CLOSE);
+// 0=kcp_map_scan 全量扫描(同时到期会话占多数时占优;不停表、不判死链,仅作对照)
 #define KCP_TICK_HEAP 1
 // kcp 会话句柄(值类型,业务持有):仅标识一个会话,不持有会话对象本身。
 // 会话对象(含 ikcpcb)由框架在 event 线程内建/查/释放,业务只通过此句柄操作,不会悬空。
@@ -36,6 +37,28 @@ void _kcp_init(prot_emit *emit);
 void _kcp_udfree(ud_cxt *ud);
 // UDP 数据解包:ikcp_input 喂入后 ikcp_recv 取完整消息上抛(由 prots_net_recvfrom 调用)。
 void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
+// 到期这趟 ikcp_update 的 flush 是否无事可做(成立即停表;放头文件是让单元测试调同一份):已 flush 过
+// (cwnd 不再是 0)、无待回 ACK 与探窗应答、发送队列与在途段都空、对端窗口非 0 且探窗计时已清零、
+// 没挂拥塞控制;成立时只有 send / input 能打破它。ikcp_flush 新增发包条件(保活等)时须同步这里
+static inline int32_t _kcp_idle(const ikcpcb *ikcp) {
+    return 0 == ikcp->nsnd_buf
+        && 0 == ikcp->nsnd_que
+        && 0 == ikcp->ackcount
+        && 0 == ikcp->probe
+        && 0 != ikcp->rmt_wnd
+        && 0 == ikcp->probe_wait
+        && 0 != ikcp->updated
+        && NULL == ikcp->ccops;
+}
+// 以 ts_flush 为原点、interval 为步长的格点(可往前推)上第一个不早于 now 的点,结果落在 [now, now+interval)。
+// 停表会话挂回时用;放头文件同 _kcp_idle。interval 库内钳到 >=10,不会除零
+static inline IUINT32 _kcp_regrid(IUINT32 ts_flush, IUINT32 now, IUINT32 interval) {
+    IUINT32 lag = now - ts_flush;
+    if ((IINT32)lag >= 0) {
+        return now + (interval - lag % interval) % interval;
+    }
+    return now + (ts_flush - now) % interval;
+}
 /// <summary>
 /// 初始化 kcp 句柄:绑定底层 UDP socket 与会话号,不建立会话(需再调 kcp_start)
 /// </summary>
@@ -45,11 +68,10 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
 /// <param name="conv">会话号(两端须一致)</param>
 void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv);
 /// <summary>
-/// 建立 kcp 会话(异步,发起后立即返回):在 event 线程创建会话对象并加入该 socket 的会话表;
-/// 此后该会话收到的数据以 MSG_TYPE_RECVFROM 推送给 handle 所属 task。
-/// event 线程上的实际结果(成功,或因 conv 冲突失败)以 MSG_TYPE_HANDSHAKED 异步推给 handle 所属 task
-/// (msg.subtype 为 PACK_UDP_KCP,msg.sess 为本次传入的 sess,msg.erro 为 ERR_OK/ERR_FAILED);
-/// 需要同步拿到该结果请用 kcp_synstart。
+/// 建立 kcp 会话(异步,发起后立即返回):建好后收到的数据以 MSG_TYPE_RECVFROM 推给 handle 所属 task。
+/// 建立结果以 MSG_TYPE_HANDSHAKED 推回(sess 为本次 sess,erro 为 ERR_OK / conv 冲突时 ERR_FAILED),要同步等用 kcp_synstart。
+/// 对端失联(某段重传到 dead_link 次,库默认 20;仅 KCP_TICK_HEAP 为 1)时会话被拆除并推 MSG_TYPE_CLOSE
+/// (erro 为 CLOSE_TYPE_ABORT),重启前须先 kcp_stop;被它唤醒的 kcp_synsend 已把句柄置停。
 /// 约束:同一 socket 上 conv 须唯一(由上层协商保证)。
 /// </summary>
 /// <param name="kcp">已 kcp_init 的句柄</param>
@@ -59,10 +81,8 @@ void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv);
 /// <param name="ip">对端 IP</param>
 /// <param name="port">对端端口</param>
 /// <param name="cfg">KCP 可调参数;NULL 用库默认(见 kcp_config)</param>
-/// <returns>ERR_OK 请求已发起;ERR_FAILED 本地校验失败或请求未能发起(不代表 event 线程上的会话建立结果)。
-///   同一句柄 stopped 为 0 时先隐式 kcp_stop 再起新会话:旧会话按正规流程拆除并投 CLOSE,
-///   不会留下无法 stop 的孤儿;会话已不存在时该隐式 stop 是静默空操作。
-///   返 ERR_FAILED 时不改动 sess / maxpack;stopped 若已被隐式 stop 置 1 则保持 1</returns>
+/// <returns>ERR_OK 请求已发起,不代表会话已建好;ERR_FAILED 本地校验失败或未能发起,sess / maxpack 不变。
+///   句柄 stopped 为 0 时先隐式 kcp_stop 旧会话再起新的,失败时 stopped 保持被它置的 1</returns>
 int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
                   const char *ip, uint16_t port, const kcp_config *cfg);
 /// <summary>

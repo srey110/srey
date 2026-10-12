@@ -11,7 +11,7 @@ static int32_t _lrouter_new(lua_State *lua) {
     return 1;
 }
 static int32_t _lrouter_free(lua_State *lua) {
-    router_ctx **pr = luaL_checkudata(lua, 1, MT_ROUTER);
+    router_ctx **pr = lpub_check_udata(lua, 1, MT_ROUTER);
     if (NULL != *pr) {
         router_free(*pr);
         *pr = NULL;

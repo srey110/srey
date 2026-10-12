@@ -285,8 +285,7 @@ void _evpub_sk_reset(void *sk, void *args);
 // 定期收缩对象池（调用方按周期节流触发；now_ms 距上次不足 SHRINK_TIME 则跳过）
 void _evpub_pool_shrink(struct watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms);
 
-void _evpub_share_data_free(void *arg);
-// 统一释放一个 off_buf_ctx：shared==NULL 走独占 FREE(data)；非 NULL 走多播 ref-- 路径
+// 统一释放一个 off_buf_ctx：shared==NULL 走独占 FREE(data)；非 NULL 是 ev_send_multi 的组内计数，减到 0 再减父计数(见 cmds.c 的 multi_grp)
 void _evpub_off_buf_release(off_buf_ctx *buf);
 // 以下为模块内部公共函数
 // 清空发送缓冲队列并释放数据

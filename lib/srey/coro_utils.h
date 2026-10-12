@@ -516,7 +516,7 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
 /// kcp 同步发送并等待响应:发送后挂起当前协程,收到对端响应后返回;须在协程内调用。
 /// sess 取 kcp_start 时传入的值,同一会话上的多次 synsend 按 FIFO 排队唤醒;
 /// 以 kcp_start(sess=0) 异步建立的会话不能用本函数。
-/// 超时会 kcp_stop 销毁该会话,之后需重新 kcp_start 才能再用
+/// 超时会 kcp_stop 销毁该会话;被 CLOSE 唤醒(socket 关闭、对端失联)时句柄也已置停。两种情形都要重新 kcp_start 才能再用
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="kcp">已 kcp_start 的 kcp_ctx</param>

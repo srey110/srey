@@ -1415,6 +1415,21 @@ runner.run(function(t)
         t:eq(0, log[1], "slice 为 0")
     end
 
+    -- 9.5b recv_cb：同一实例返回同一个回调，经它转发与直接调 net_recv 结果一致
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        local cb = r:recv_cb()
+        t:eq(cb, r:recv_cb(), "recv_cb 缓存在实例上，两次返回同一个")
+        t:check(cb ~= Route.new():recv_cb(), "不同实例各有各的回调")
+        last_resp = nil
+        cb(nil, sk_a, 0, 0, make_pack("POST", "/st", "whole"), nil)
+        t:eq(200, (last_resp or {}).code, "经 recv_cb 一次到齐 → 200")
+        t:eq("whole", (last_resp or {}).body, "经 recv_cb 转发 body 不变")
+        t:eq(1, #log, "经 recv_cb 只调一次")
+    end
+
     -- 9.6 连接中途断开 → 投 STREAM_ABORT；记录随之摘掉，skid 对不上的不投
     do
         local r = Route.new()

@@ -41,8 +41,28 @@ runner.run(function(t)
         t:eq(false, pcall(core.wait_skid, 1), "wait_skid 传整数立即报错")
         local bad = srey.sock_invalid()
         t:eq(nil, core.wait_skid(bad), "失效连接 wait_skid 返回 nil")
+        t:eq(1, select("#", core.wait_skid(bad, 2)), "失效连接带 kind 也只返回一个 nil，不带超时")
+        -- kind 只收 0/1/2，先于连接有效性判，失效连接也报错
+        t:eq(false, pcall(core.wait_skid, bad, 3), "wait_skid kind=3 报错")
+        t:eq(false, pcall(core.wait_skid, bad, -1), "wait_skid kind=-1 报错")
+        t:eq(1, core.wait_connect, "core.wait_connect 导出值")
+        t:eq(2, core.wait_netread, "core.wait_netread 导出值")
         t:eq(false, srey.wait_connect(bad), "失效连接 wait_connect 返回 false")
         t:eq(nil, srey.syn_recv(bad), "失效连接 syn_recv 返回 nil")
+    end
+
+    -- ── can_wait：挂起守卫一次判完"是不是给定的框架协程"与"此刻能否挂起" ──
+    do
+        local co = coroutine.running()
+        t:eq(0, core.can_wait(co), "本协程、可挂起时为 0")
+        t:eq(1, core.can_wait(nil), "不是给定的协程时为 1")
+        t:eq(1, core.can_wait(), "不传参数按 nil 算，为 1")
+        local in_sort
+        table.sort({ 2, 1 }, function(a, b)
+            in_sort = core.can_wait(co)
+            return a < b
+        end)
+        t:eq(2, in_sort, "table.sort 回调里挂不起时为 2")
     end
 
     -- ── host_type ──────────────────────────────────────────────────────

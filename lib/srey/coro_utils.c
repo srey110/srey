@@ -1360,11 +1360,11 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
-        // 会话已在 event 线程拆除(CLOSE 由 _kcp_notify_closed 发出)而 stopped 仍为 0,故须自行清 sess:
-        // 否则下次 kcp_synsend 通过 0 == kcp->sess 守卫、kcp_send 投到已消失的会话被静默丢弃却返
-        // ERR_OK,继而空等满一个 netread 超时
+        // 会话已在 event 线程拆除(socket 关闭或对端死链),句柄置回"无会话",不用再发 stop:
+        // 下次 kcp_send 首行即快速失败,之后 kcp_start 也不会被当成重启存活会话
         if (sess == kcp->sess) {
             kcp->sess = 0;
+            kcp->stopped = 1;
         }
         return NULL;
     }

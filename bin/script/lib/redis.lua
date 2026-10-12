@@ -1,5 +1,5 @@
 -- Redis 客户端工具库。
--- 提供：连接（含 AUTH）、RESP 协议序列化（pack）、
+-- 提供：连接（含 AUTH）、RESP 协议序列化（pack / pack_ud）、
 -- 以及完整的 RESP3 多节点响应解包（unpack，整段在 C 绑定层做）。
 
 local srey       = require("lib.srey")
@@ -22,8 +22,8 @@ function redis.connect(ip, port, sslname, psw, netev)
         return sk
     end
     -- 发送 AUTH 命令验证密码
-    local auth = redis.pack("AUTH", psw)
-    local rtn, _ = srey.syn_send(sk, auth, #auth, 1)
+    local auth, size = redis.pack_ud("AUTH", psw)
+    local rtn, _ = srey.syn_send(sk, auth, size, 0)
     local result = rtn and redis.unpack(rtn)
     if "OK" ~= result then
         srey.close(sk)
@@ -36,6 +36,11 @@ end
 ---整数值的浮点按整数写（同 num_str），nil 编成空 bulk 并告警
 ---@type fun(...:any):string
 redis.pack = srey_redis.pack
+
+---同 redis.pack，但整条编进一块 C 内存，返回 (lightuserdata, size)：交给 srey.syn_send(sk, data, size, 0)
+---零拷贝发出，比 pack + copy=1 少建一个 Lua 串、少拷一遍。copy=0 交出后由框架释放；不发要自己 utils.ud_free
+---@type fun(...:any):lightuserdata, integer
+redis.pack_ud = srey_redis.pack_ud
 
 ---读取当前响应节点的值
 ---@type fun(pk:lightuserdata?):string|integer|number|boolean|nil|RedisAggValue

@@ -7342,6 +7342,94 @@ static void test_kcp_seg_pool(CuTest *tc) {
     mem_stat(&a1, &f1);
     CuAssertTrue(tc, a1 - a0 == f1 - f0);
 }
+// 锁住 kcp.c 停表的前提(本地维护的 ikcp_flush 改了要在这里报出来):
+// _kcp_idle 成立时 ikcp_update 跑多少趟都不发包、判据保持成立;没 update 过 / 有待发 / 在途 / 待回 ACK 时不成立。
+// 再锁死链的前提:在途段重传到 dead_link 次 flush 置 state=-1(kcp.c 据此拆会话),其间 snd_buf 非空不会停表
+static void test_kcp_idle(CuTest *tc) {
+    _t_kq *qab, *qba;
+    ikcpcb *a, *b;
+    char out[16];
+    int32_t i;
+    uint32_t t = 0;
+    CALLOC(qab, 1, sizeof(_t_kq));
+    CALLOC(qba, 1, sizeof(_t_kq));
+    a = ikcp_create(9, qab);
+    b = ikcp_create(9, qba);
+    ikcp_setoutput(a, _t_kq_out);
+    ikcp_setoutput(b, _t_kq_out);
+    CuAssertTrue(tc, !_kcp_idle(a));// 没 update 过,cwnd 还是 0
+    ikcp_update(a, t);
+    ikcp_update(b, t);
+    CuAssertTrue(tc, _kcp_idle(a) && _kcp_idle(b));
+    CuAssertTrue(tc, ikcp_send(a, "hello", 5) >= 0);
+    CuAssertTrue(tc, !_kcp_idle(a));// 发送队列非空
+    t += 100;
+    ikcp_update(a, t);
+    CuAssertTrue(tc, qab->n > 0);
+    CuAssertTrue(tc, !_kcp_idle(a));// 在途
+    _t_kq_pump(qab, b);
+    CuAssertTrue(tc, !_kcp_idle(b));// 待回 ACK
+    CuAssertIntEquals(tc, 5, ikcp_recv(b, out, sizeof(out)));
+    ikcp_update(b, t);
+    _t_kq_pump(qba, a);
+    CuAssertTrue(tc, _kcp_idle(a) && _kcp_idle(b));
+    for (i = 0; i < 50; i++) {
+        t += 100;
+        ikcp_update(a, t);
+        ikcp_update(b, t);
+    }
+    CuAssertIntEquals(tc, 0, qab->n);
+    CuAssertIntEquals(tc, 0, qba->n);
+    CuAssertTrue(tc, _kcp_idle(a) && _kcp_idle(b));
+    // 死链:b 不再收,a 的段一直重传
+    a->dead_link = 3;
+    CuAssertTrue(tc, ikcp_send(a, "x", 1) >= 0);
+    for (i = 0; i < 200 && (IUINT32)-1 != a->state; i++) {
+        t += 100;
+        ikcp_update(a, t);
+        qab->n = 0;
+        CuAssertTrue(tc, !_kcp_idle(a));
+    }
+    CuAssertTrue(tc, (IUINT32)-1 == a->state);
+    ikcp_release(a);
+    ikcp_release(b);
+    FREE(qab);
+    FREE(qba);
+}
+// 停表会话挂回时 ts_flush 落回原 interval 格点:恰在格点上不动、格点之间进到下一个、ts_flush 在 now 之后
+// 往前推到第一个不早于 now 的格点、32 位回绕;结果恒在 [now, now+interval)
+static void test_kcp_regrid(CuTest *tc) {
+    static const IUINT32 ivs[] = { 10, 100, 5000 };
+    static const IUINT32 bases[] = { 0, 1000, 0x7FFFFFF0, 0xFFFFFFF0 };
+    IUINT32 r, d;
+    size_t i, k;
+    int32_t off;
+    CuAssertTrue(tc, 1000 == _kcp_regrid(1000, 1000, 100));
+    CuAssertTrue(tc, 1100 == _kcp_regrid(1000, 1001, 100));
+    CuAssertTrue(tc, 1300 == _kcp_regrid(1000, 1250, 100));
+    CuAssertTrue(tc, 1300 == _kcp_regrid(1000, 1300, 100));
+    // ts_flush 在 now 之后
+    CuAssertTrue(tc, 1000 == _kcp_regrid(1000, 950, 100));
+    CuAssertTrue(tc, 900 == _kcp_regrid(1000, 870, 100));
+    // 32 位回绕:0xFFFFFFF0 + 100 = 0x54
+    CuAssertTrue(tc, 0x54 == _kcp_regrid(0xFFFFFFF0, 0x30, 100));
+    CuAssertTrue(tc, 0xFFFFFFF0 == _kcp_regrid(0x54, 0xFFFFFFEF, 100));
+    // interval 10
+    CuAssertTrue(tc, 1240 == _kcp_regrid(1000, 1234, 10));
+    CuAssertTrue(tc, 990 == _kcp_regrid(1000, 987, 10));
+    // 区间与格点:落在 [now, now+interval),且与 ts_flush 相差整数个 interval
+    for (i = 0; i < ARRAY_SIZE(ivs); i++) {
+        for (k = 0; k < ARRAY_SIZE(bases); k++) {
+            for (off = -30000; off <= 30000; off += 7) {
+                r = _kcp_regrid(bases[k], bases[k] + (IUINT32)off, ivs[i]);
+                d = r - (bases[k] + (IUINT32)off);
+                CuAssertTrue(tc, d < ivs[i]);
+                CuAssertTrue(tc, 0 == (IUINT32)(r - bases[k]) % ivs[i]
+                    || 0 == (IUINT32)(bases[k] - r) % ivs[i]);
+            }
+        }
+    }
+}
 // 邮件 base64 正文直接编进输出缓冲：长度落在 57 字节一行的边界两侧，逐行都是 76 字符(末行可短)、
 // 行间只有 CRLF、解码回来与原文一致
 static void test_smtp_b64_line_boundary(CuTest *tc) {
@@ -7866,6 +7954,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_strtod_s_bounds);
     SUITE_ADD_TEST(suite, test_websock_unpack_masked_nodes);
     SUITE_ADD_TEST(suite, test_kcp_seg_pool);
+    SUITE_ADD_TEST(suite, test_kcp_idle);
+    SUITE_ADD_TEST(suite, test_kcp_regrid);
     SUITE_ADD_TEST(suite, test_smtp_b64_line_boundary);
     SUITE_ADD_TEST(suite, test_size_http);
     SUITE_ADD_TEST(suite, test_size_websock);

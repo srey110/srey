@@ -4,10 +4,10 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local redis  = require("lib.redis")
 
--- 同步发送一条命令并解包响应
+-- 同步发送一条命令并解包响应；命令用 pack_ud 编进 C 内存，copy=0 交给 syn_send（走真 redis 一圈）
 local function _exec(sk, ...)
-    local cmd = redis.pack(...)
-    local rtn = srey.syn_send(sk, cmd, #cmd, 1)
+    local cmd, size = redis.pack_ud(...)
+    local rtn = srey.syn_send(sk, cmd, size, 0)
     if not rtn then
         return nil
     end

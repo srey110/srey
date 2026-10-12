@@ -300,6 +300,33 @@ runner.run(function(t)
         t:eq(s0, _sessions(), "等待者全摘空后两个条目都删了")
     end
 
+    -- ── ⑤b 同一 sess 上隔一个超时一个：到期的摘走，剩下的仍按原 FIFO 顺序被叫醒 ─────
+    -- 超时摘除先把未到期的原地压紧再统一唤醒，这里盯住压紧后的顺序与条目去留
+    do
+        local s0 = _sessions()
+        local sess = srey.id()
+        local woke, order = {}, {}
+        local plan = { 3000, 200, 3000, 200, 3000 }
+        for i = 1, #plan do
+            srey.fork(function()
+                woke[i] = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, plan[i]).mtype
+                order[#order + 1] = i
+            end)
+        end
+        srey.sleep(200 + SETTLE)
+        t:eq(srey.MSG_TYPE.TIMEOUT, woke[2], "第 2 个到期被摘走")
+        t:eq(srey.MSG_TYPE.TIMEOUT, woke[4], "第 4 个到期被摘走")
+        t:eq(nil, woke[1] or woke[3] or woke[5], "未到期的三个仍在等")
+        t:eq(s0 + 1, _sessions(), "还剩等待者，条目不删")
+        local me = srey.task_handle()
+        for _ = 1, 3 do
+            srey.response(me, 0, sess, 0, "x")
+        end
+        srey.sleep(150)
+        t:eq("2,4,1,3,5", table.concat(order, ","), "超时的先醒，剩下三个按 FIFO 顺序被 RESPONSE 叫醒")
+        t:eq(s0, _sessions(), "等待者全摘空后条目删了")
+    end
+
     -- ── 不可 yield 处调 srey.sleep：立即抛错，不登记 ────────────────────
     -- 以前先登记 coro_sess 再 yield 失败：nyield / nwait 只加不减，到点后旧条目带着旧 sess
     -- 唤醒同一协程后来的无关等待，报 different session 把它打断

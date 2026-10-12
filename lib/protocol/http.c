@@ -558,8 +558,9 @@ static inline int32_t _http_chunk_take(buffer_ctx *buf, http_pack_ctx *pack, siz
 // 解析 chunked 编码的数据块：先读取长度行，再读取对应数据，长度为 0 表示结束。
 // trailer 块与头块共用 _http_search_crlf2（CHUNKED 期间头块已解完，
 // 两者不争用 prot_offset）；长度行只有 1~16 个 hex 字符，重扫可忽略，不续扫。
-// 载荷已整块到齐时长度行不先单独 drain，与载荷、结尾 CRLF 最后一次 drain
-static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+// 载荷已整块到齐时长度行不先单独 drain，与载荷、结尾 CRLF 最后一次 drain。
+// NOINLINE：长度行的栈数组会让内联进去的 http_unpack 每包都背上栈保护（Darwin / MSVC 默认开），非 chunked 请求也付
+NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t drain;
     http_pack_ctx *pack = ud->context;
     if (NULL == pack) {

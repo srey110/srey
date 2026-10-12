@@ -6,6 +6,13 @@
 #define TLSVER_OUT_OF_RANGE "tls version out of range"
 #define SEND_MULTI_STACK 128 // send_multi 连接数不超过它时用栈数组，免一次 MALLOC
 
+// core.wait_skid 第 2 参：取 skid 时顺带带回哪种超时
+typedef enum _wait_tmo {
+    WAIT_TMO_NONE = 0,
+    WAIT_TMO_CONNECT = 1,
+    WAIT_TMO_NETREAD = 2
+}_wait_tmo;
+
 // multi_request / multi_call 投递一次所需的全部东西。两个 int32 挨着放在 8 字节字段之前,不留 padding
 typedef struct {
     int32_t count; // 目标数(含 nil 占位);0 表示无处可投
@@ -87,22 +94,12 @@ static int32_t _multi_handles(lua_State *lua, int32_t idx, _multi_args *ma) {
         return -1;
     }
     int32_t n = (int32_t)luaL_len(lua, idx);
-    int32_t vtype;
     ma->hs = ma->stk;
     if (n > MULTI_REQUEST2_STACK) {
         ma->hs = (name_t *)lua_newuserdatauv(lua, sizeof(name_t) * (size_t)n, 0);
     }
-    for (int32_t i = 0; i < n; i++) {
-        lua_rawgeti(lua, idx, i + 1);
-        vtype = lua_type(lua, -1);
-        if (LUA_TNIL == vtype) {
-            ma->hs[i] = INVALID_TNAME;
-        } else if (LUA_TSTRING == vtype || lua_isinteger(lua, -1)) {
-            ma->hs[i] = lpub_task_handle(lua, -1);
-        } else {
-            return -1;
-        }
-        lua_pop(lua, 1);
+    if (ERR_OK != lpub_task_handles(lua, idx, n, ma->hs)) {
+        return -1;
     }
     return n;
 }
@@ -198,7 +195,8 @@ static int32_t _lcore_multi_call(lua_State *lua) {
 /// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
-/// <returns type="boolean">投递成功 true；目标不存在 false</returns>
+/// <returns type="integer|false">投递成功返回当前 task 的请求超时毫秒（恒 > 0，可直接当真值判），
+///   调用方等响应时直接用，不必再取一次；目标不存在 false</returns>
 static int32_t _lcore_request(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
@@ -211,7 +209,8 @@ static int32_t _lcore_request(lua_State *lua) {
     // 重试口径同 _lcore_call
     if (ERR_OK == task_request_to(g_loader, handle, src, reqtype, sess, data, size, copy)
         || ERR_OK == task_request_to(g_loader, lpub_task_refresh(lua, 1, handle), src, reqtype, sess, data, size, copy)) {
-        return lpub_rtn_bool(lua, 1);
+        lua_pushinteger(lua, (lua_Integer)task_get_request_timeout(src));
+        return 1;
     }
     CHECK_COPY_FREE(data, copy);
     return lpub_rtn_bool(lua, 0);
@@ -501,17 +500,43 @@ static int32_t _lcore_sock_invalid(lua_State *lua) {
     return lpub_push_sock_invalid(lua);
 }
 /// <summary>
-/// 挂起等待前取连接的会话键，一次调用顶 sk.valid 加 sk.skid 两次取字段
+/// 挂起等待前取连接的会话键，一次调用顶 sk.valid 加 sk.skid 两次取字段，
+/// 并按需带回当前 task 的连接或读超时，省调用方等待前再取一次
 /// </summary>
 /// <param name="sk" type="userdata">连接标识；传别的类型报错</param>
-/// <returns type="integer?">有效连接的 skid；连接已失效为 nil</returns>
+/// <param name="kind" type="integer?">0 或不传只取 skid；1 带回连接超时；2 带回读超时；只收 0/1/2，其余报错</param>
+/// <returns type="integer?">有效连接的 skid；连接已失效为 nil，此时不再有第 2 个返回值</returns>
+/// <returns type="integer?">kind 为 1/2 时的超时毫秒（恒 > 0）；kind 为 0 或连接已失效时没有这个返回值</returns>
 static int32_t _lcore_wait_skid(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
+    lua_Integer kind = luaL_optinteger(lua, 2, WAIT_TMO_NONE);
+    luaL_argcheck(lua, kind >= WAIT_TMO_NONE && kind <= WAIT_TMO_NETREAD, 2, "kind out of range");
     if (sock_is_invalid(sk)) {
         lua_pushnil(lua);
         return 1;
     }
     lua_pushinteger(lua, (lua_Integer)sk->skid);
+    if (WAIT_TMO_NONE == kind) {
+        return 1;
+    }
+    LPUB_CUR_TASK(lua, task);
+    lua_pushinteger(lua, (lua_Integer)(WAIT_TMO_CONNECT == kind
+        ? task_get_connect_timeout(task) : task_get_netread_timeout(task)));
+    return 2;
+}
+/// <summary>
+/// 挂起类接口的入口守卫：一次判完"是不是在给定的框架协程里"与"此刻能否挂起"
+/// </summary>
+/// <param name="co" type="thread?">框架当前登记的协程；不在框架协程里时为 nil，不传按 nil 算</param>
+/// <returns type="integer">0 可以挂起；1 当前协程不是 co；2 此刻挂不起（require、table.sort / gsub 回调里）</returns>
+static int32_t _lcore_can_wait(lua_State *lua) {
+    lua_settop(lua, 1);
+    lua_pushthread(lua);
+    if (!lua_rawequal(lua, 1, -1)) {
+        lua_pushinteger(lua, 1);
+        return 1;
+    }
+    lua_pushinteger(lua, lua_isyieldable(lua) ? 0 : 2);
     return 1;
 }
 /// <summary>
@@ -881,6 +906,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "close", _lcore_close },
         { "sock_invalid", _lcore_sock_invalid },
         { "wait_skid", _lcore_wait_skid },
+        { "can_wait", _lcore_can_wait },
 
         { "pack_type", _lcore_pack_type },
         { "status", _lcore_status },
@@ -907,5 +933,11 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
+    /// <field name="wait_connect" type="integer">wait_skid 第 2 参：带回连接超时</field>
+    lua_pushinteger(lua, (lua_Integer)WAIT_TMO_CONNECT);
+    lua_setfield(lua, -2, "wait_connect");
+    /// <field name="wait_netread" type="integer">wait_skid 第 2 参：带回读超时</field>
+    lua_pushinteger(lua, (lua_Integer)WAIT_TMO_NETREAD);
+    lua_setfield(lua, -2, "wait_netread");
     return 1;
 }

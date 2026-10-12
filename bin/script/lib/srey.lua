@@ -24,35 +24,44 @@ local coroutine_create = coroutine.create
 local coroutine_yield  = coroutine.yield
 local coroutine_resume = coroutine.resume
 local coroutine_status = coroutine.status
--- 判"是否在框架协程里"一律比 coroutine.running() 与 coro_running，不用 coroutine.isyieldable()：
--- 业务在框架协程内再套一个裸 coroutine.create/wrap 时 isyieldable 照样为真，而 coro_running
--- 仍指着外层那个——据此把"自己"登记进等待队列，登记的就是外层协程，醒来 resume 的也是它。
--- isyieldable 只另判"此刻能否挂起"（require / table.sort / gsub 回调里不能），判在登记等待之前
-local coroutine_running = coroutine.running
-local coroutine_isyieldable = coroutine.isyieldable
 local may_resume       = core.may_resume
 local wait_skid = core.wait_skid
 -- 只提 C 绑定的直通别名:hotfix 不支持 C function,热更新碰不到它们。
 -- srey.xpcall 是 Lua 函数、能被热修,绝不能提
+-- can_wait 是挂起类接口的入口守卫：在不在框架协程里比的是当前协程与 coro_running（框架协程里
+-- 再套的裸协程照样能挂起，不能只看 isyieldable），此刻能否挂起另判
+local can_wait = core.can_wait
+local core_request = core.request
+local core_response = core.response
+local core_call = core.call
+local core_timeout = core.timeout
+local core_close = core.close
+local core_multi_call = core.multi_call
 local task_incref      = task.incref
 local task_ungrab      = task.ungrab
 local msg_release      = task.msg_release
 local timer_ms         = task.timer_ms
 local new_id           = utils.id
-local get_request_timeout = task.get_request_timeout
-local get_connect_timeout = task.get_connect_timeout
 local get_netread_timeout = task.get_netread_timeout
 local cur_task  = _curtask -- 当前 task 的 C 层指针，由 loader 注入
 local SSL_NAME  = SSL_NAME
-local ERR_OK = ERR_OK
--- 热路径上每次都要比的枚举值单独提一份，免得每次 upvalue + 字段查找
-local TASK_NAME_NONE = TASK_NAME.NONE
-local REQ_DEBUG = REQUEST_TYPE.REQ_DEBUG
-local SLICE_END = SLICE_TYPE.END
-local CLOSE_NEVERCONN = CLOSE_TYPE.NEVERCONN
-local CORO_POOL_MAX      = 128 -- 协程池上限；超出后空闲协程自然退出由 GC 回收
-local CORO_POOL_MIN_KEEP = 4 -- 协程池收缩底线
-local CORO_SHRINK_TICKS  = 10 -- 收缩门控：_coro_timeout 每 1s 触发，累计 10 次(≈SHRINK_TIME 10s)收缩一次，与 C 侧统一
+-- 热路径上每次都要比的枚举值写成 <const> 字面量，是 define.lua 同名全局或 core 导出值（都是 C 枚举的镜像）的副本，
+-- 改那边要跟着改，下面加载时的 assert 会核。它们不是任何闭包的 upvalue，热修补丁要用就自己写一份同值的 <const>
+local ERR_OK <const> = 0
+local TASK_NAME_NONE <const> = 0
+local REQ_DEBUG <const> = 0x01
+local SLICE_END <const> = 0x04
+local CLOSE_NEVERCONN <const> = 4
+local WAIT_CONNECT <const> = 1 -- core.wait_skid 第 2 参：顺带带回连接超时
+local WAIT_NETREAD <const> = 2 -- 同上，带回读超时
+-- 对不上就在加载时报错，免得悄悄比错
+assert(ERR_OK == _G.ERR_OK and TASK_NAME_NONE == TASK_NAME.NONE and REQ_DEBUG == REQUEST_TYPE.REQ_DEBUG
+    and SLICE_END == SLICE_TYPE.END and CLOSE_NEVERCONN == CLOSE_TYPE.NEVERCONN
+    and WAIT_CONNECT == core.wait_connect and WAIT_NETREAD == core.wait_netread,
+    "srey.lua: constants out of sync with define.lua / srey.core")
+local CORO_POOL_MAX <const> = 128 -- 协程池上限；超出后空闲协程自然退出由 GC 回收
+local CORO_POOL_MIN_KEEP <const> = 4 -- 协程池收缩底线
+local CORO_SHRINK_TICKS <const> = 10 -- 收缩门控：_coro_timeout 每 1s 触发，累计 10 次(≈SHRINK_TIME 10s)收缩一次，与 C 侧统一
 -- 池里协程只认带 POOL_TAG 的 resume 去跑任务；池收缩带 POOL_EXIT 让已摘出池的协程退出。
 -- 其余唤醒（陈旧 coro_sess 条目带的 msg、fork_wait / serial 的无实参唤醒）都是误唤醒
 local POOL_TAG = {}
@@ -82,7 +91,7 @@ local coro_pool_trend = trend.new()-- 协程池负载趋势
 local coro_shrink_tick = 0 -- _coro_pool_shrink 距上次实际收缩的累计触发次数（每次 = 一轮 _coro_timeout = 1s）
 local fork_queue      = {}-- srey.fork 待执行任务队列：func(不带实参时)或 table.pack(func, ...)，在 message_dispatch 末尾批量起协程
 local serial_wakes    = {}-- srey.serial 待唤醒的队头等待者，同样在 message_dispatch 末尾摊平唤醒
-local SERIAL_COMPACT = 64 -- serial 一直排不空时队头走出这么多格就把剩下的整体前移
+local SERIAL_COMPACT <const> = 64 -- serial 一直排不空时队头走出这么多格就把剩下的整体前移
 ---@class ForkBarrier
 ---@field results ForkResult[]  与 funcs 同序的结果数组，子协程各自回填
 ---@field pending integer       未完成的子协程数；归零时唤醒 waiter
@@ -105,35 +114,37 @@ local SERIAL_COMPACT = 64 -- serial 一直排不空时队头走出这么多格�
 local fork_barriers   = {}
 local serial_execs    = setmetatable({}, { __mode = "k" })
 
--- 消息类型枚举，与 C 层 MSG_TYPE 一一对应。
+-- 消息类型枚举，与 C 层 MSG_TYPE 一一对应。各值先写成 <const>（理由见上面 ERR_OK 那段），表由它们构造
+local MTYPE_STARTUP <const> = 0x01
+local MTYPE_CLOSING <const> = 0x02
+local MTYPE_TIMEOUT <const> = 0x03
+local MTYPE_ACCEPT <const> = 0x04
+local MTYPE_CONNECT <const> = 0x05
+local MTYPE_SSLEXCHANGED <const> = 0x06
+local MTYPE_HANDSHAKED <const> = 0x07
+local MTYPE_RECV <const> = 0x08
+local MTYPE_SEND <const> = 0x09
+local MTYPE_CLOSE <const> = 0x0a
+local MTYPE_RECVFROM <const> = 0x0b
+local MTYPE_REQUEST <const> = 0x0c
+local MTYPE_RESPONSE <const> = 0x0d
 ---@enum MSG_TYPE
 local MSG_TYPE = {
-    STARTUP      = 0x01,   -- task 启动
-    CLOSING      = 0x02,   -- task 即将关闭
-    TIMEOUT      = 0x03,   -- 定时器超时
-    ACCEPT       = 0x04,   -- 新连接到来（服务端）
-    CONNECT      = 0x05,   -- 连接建立完成（客户端）
-    SSLEXCHANGED = 0x06,   -- TLS 握手完成
-    HANDSHAKED   = 0x07,   -- 应用层握手完成（MySQL/SMTP/WebSocket）
-    RECV         = 0x08,   -- 收到数据包
-    SEND         = 0x09,   -- 数据发送完成
-    CLOSE        = 0x0a,   -- 连接关闭
-    RECVFROM     = 0x0b,   -- UDP 收到数据
-    REQUEST      = 0x0c,   -- 收到跨 task 请求
-    RESPONSE     = 0x0d    -- 收到跨 task 响应
+    STARTUP      = MTYPE_STARTUP,   -- task 启动
+    CLOSING      = MTYPE_CLOSING,   -- task 即将关闭
+    TIMEOUT      = MTYPE_TIMEOUT,   -- 定时器超时
+    ACCEPT       = MTYPE_ACCEPT,   -- 新连接到来（服务端）
+    CONNECT      = MTYPE_CONNECT,   -- 连接建立完成（客户端）
+    SSLEXCHANGED = MTYPE_SSLEXCHANGED,   -- TLS 握手完成
+    HANDSHAKED   = MTYPE_HANDSHAKED,   -- 应用层握手完成（MySQL/SMTP/WebSocket）
+    RECV         = MTYPE_RECV,   -- 收到数据包
+    SEND         = MTYPE_SEND,   -- 数据发送完成
+    CLOSE        = MTYPE_CLOSE,   -- 连接关闭
+    RECVFROM     = MTYPE_RECVFROM,   -- UDP 收到数据
+    REQUEST      = MTYPE_REQUEST,   -- 收到跨 task 请求
+    RESPONSE     = MTYPE_RESPONSE    -- 收到跨 task 响应
 }
 srey.MSG_TYPE = MSG_TYPE
-local MTYPE_RECV = MSG_TYPE.RECV-- 每包分发都要取,单独提一份
-local MTYPE_TIMEOUT = MSG_TYPE.TIMEOUT
-local MTYPE_ACCEPT = MSG_TYPE.ACCEPT
-local MTYPE_CONNECT = MSG_TYPE.CONNECT
-local MTYPE_SSLEXCHANGED = MSG_TYPE.SSLEXCHANGED
-local MTYPE_HANDSHAKED = MSG_TYPE.HANDSHAKED
-local MTYPE_SEND = MSG_TYPE.SEND
-local MTYPE_CLOSE = MSG_TYPE.CLOSE
-local MTYPE_RECVFROM = MSG_TYPE.RECVFROM
-local MTYPE_REQUEST = MSG_TYPE.REQUEST
-local MTYPE_RESPONSE = MSG_TYPE.RESPONSE
 -- message_may_keep 是纯函数，加载时按类型算一遍存表；策略仍只来自这个 C 函数
 local MAY_KEEP = {}
 for _, mtype in pairs(MSG_TYPE) do
@@ -308,15 +319,13 @@ end
 ---@param data string|lightuserdata|nil 接口收下的载荷
 ---@param copy integer? 同 _ud_free_copy
 local function _check_wait(api, data, copy)
-    local why
-    if coroutine_running() ~= coro_running then
-        why = " must be called from within a srey coroutine"
-    elseif not coroutine_isyieldable() then
-        why = " cannot yield here (e.g. inside require or a table.sort/gsub callback)"
-    end
-    if why then
+    local cw = can_wait(coro_running)
+    if 0 ~= cw then
         _ud_free_copy(data, copy)
-        error(api .. why, 3)
+        if 1 == cw then
+            error(api .. " must be called from within a srey coroutine", 3)
+        end
+        error(api .. " cannot yield here (e.g. inside require or a table.sort/gsub callback)", 3)
     end
 end
 
@@ -466,12 +475,13 @@ function srey.serial()
         return ...
     end
     return function(f, ...)
-        if coroutine_running() ~= coro_running then
+        local cw = can_wait(coro_running)
+        if 1 == cw then
             error("srey.serial executor must be called from within a srey coroutine", 2)
         end
         local self = coro_running
         if st.current and st.current ~= self then
-            if not coroutine_isyieldable() then
+            if 2 == cw then
                 error("srey.serial executor cannot yield here (e.g. inside require or a table.sort/gsub callback)", 2)
             end
             local tl = st.tail
@@ -667,11 +677,11 @@ srey.task_accept_group = task.accept_group
 ---注册 task 启动回调；task 进入事件循环后首先触发一次
 ---@param func fun() 启动回调
 function srey.startup(func)
-    func_cbs[MSG_TYPE.STARTUP] = func
+    func_cbs[MTYPE_STARTUP] = func
 end
 
 local function _startup_dispatch()
-    local func = func_cbs[MSG_TYPE.STARTUP]
+    local func = func_cbs[MTYPE_STARTUP]
     if func then
         _coro_run(func)
     end
@@ -680,12 +690,12 @@ end
 ---注册 task 关闭回调；在收到 CLOSING 消息时调用，用于清理资源
 ---@param func fun() 关闭回调
 function srey.closing(func)
-    func_cbs[MSG_TYPE.CLOSING] = func
+    func_cbs[MTYPE_CLOSING] = func
 end
 
 ---内部关闭处理：调用用户注册的 closing 回调，结束后 ungrab cur_task 允许 loader 销毁
 local function _closing()
-    local func = func_cbs[MSG_TYPE.CLOSING]
+    local func = func_cbs[MTYPE_CLOSING]
     if func then
         srey.xpcall(func)
     end
@@ -860,7 +870,7 @@ function srey.sleep(ms)
     end
     _check_wait("srey.sleep")
     local sess = new_id()
-    core.timeout(sess, ms)
+    core_timeout(sess, ms)
     srey._coro_wait_nocheck(sess, MTYPE_TIMEOUT, 0)
 end
 
@@ -872,7 +882,7 @@ function srey.timeout(ms, func, ...)
     local sess = new_id()
     -- 必须先 core.timeout 再登记:它的 ms 校验会 longjmp,先登记就在 timer_cbs 里留一条孤儿
     -- (只有定时器到点的 _timeout_dispatch 会清它)。换序无副作用——ms<=0 时定时器只往消息队列 push,不重入当前 Lua 栈
-    core.timeout(sess, ms)
+    core_timeout(sess, ms)
     if 0 == select("#", ...) and "function" == type(func) then -- 同 srey.fork
         timer_cbs[sess] = func
     else
@@ -921,11 +931,12 @@ function srey.request(dst, reqtype, data, size, copy)
         return nil
     end
     local sess = new_id()
-    if not core.request(dst, reqtype, sess, data, size, copy) then
+    local ms = core_request(dst, reqtype, sess, data, size, copy)-- 成功时带回请求超时
+    if not ms then
         WARN("target task not found: %s.", tostring(dst))
         return nil
     end
-    local msg = srey._coro_wait_nocheck(sess, MTYPE_RESPONSE, get_request_timeout())
+    local msg = srey._coro_wait_nocheck(sess, MTYPE_RESPONSE, ms)
     local mtype, _, _, _, _, erro, _, rdata, rsize = msg()
     if MTYPE_TIMEOUT == mtype then
         WARN("request timeout, session %s.", tostring(sess))
@@ -954,7 +965,7 @@ function srey.call(dst, reqtype, data, size, copy)
         _ud_free_copy(data, copy)
         return
     end
-    if not core.call(dst, reqtype, data, size, copy) then
+    if not core_call(dst, reqtype, data, size, copy) then
         WARN("target task not found: %s.", tostring(dst))
     end
 end
@@ -976,7 +987,7 @@ srey.multi_request = core.multi_request
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer? 是否复制数据，默认 1
 function srey.multi_call(dsts, reqtype, data, size, copy)
-    core.multi_call(dsts, reqtype, data, size, copy)
+    core_multi_call(dsts, reqtype, data, size, copy)
 end
 
 ---回应"目标 task 没注册 on_requested"。srey.call 走 task_call，src 恒为 INVALID_TNAME、
@@ -1041,7 +1052,7 @@ function srey.response(dst, reqtype, sess, erro, data, size, copy)
         _ud_free_copy(data, copy)
         return
     end
-    if not core.response(dst, reqtype, sess, erro, data, size, copy) then
+    if not core_response(dst, reqtype, sess, erro, data, size, copy) then
         WARN("target task not found: %s.", tostring(dst))
     end
 end
@@ -1165,22 +1176,22 @@ local function _wait_check(sk, tag, mtype, _, _, _, slice, erro, _, data, size)
 end
 
 ---内部辅助：等一条指定类型的消息。超时则关连接并告警，连接已关也告警，两种都返 nil。
----四个等待点(connect / ssl exchange / handshake / recv)只差 mtype、超时值与告警里的动作名。
+---四个等待点(connect / ssl exchange / handshake / recv)只差 mtype、超时种类与告警里的动作名。
 ---C 侧 coro_task.c 的 _coro_wait_msg 结构同一套，但它的 CLOSE 分支不告警（那边调用方是每命令
 ---一轮的循环，一条连接断掉能刷几十条）。改任一端的结构要同步改另一端
 ---@param sk userdata 连接标识
 ---@param mtype integer MSG_TYPE.* 期望的消息类型
----@param ms integer 超时毫秒
+---@param kind integer WAIT_CONNECT / WAIT_NETREAD：等哪种超时，取 skid 时由 C 一并带回
 ---@param tag string 告警文案里的动作名
 ---@return true|nil ok 收到期望的消息为 true；超时/断开返回 nil，此时其余返回值都没有
 ---@return integer? erro 消息的 erro
 ---@return lightuserdata? data 消息的 data
 ---@return integer? size 消息的 size
 ---@return integer? slice 消息的 slice
-local function _wait_msg(sk, mtype, ms, tag)
+local function _wait_msg(sk, mtype, kind, tag)
     -- 连接已 teardown 就别挂上去,理由同 C 侧 _coro_wait_msg;各 wait_* / syn_* 入口都经本函数,
     -- 且都已在入口调过 _check_wait
-    local skid = wait_skid(sk)
+    local skid, ms = wait_skid(sk, kind)
     if not skid then
         return nil
     end
@@ -1193,7 +1204,7 @@ end
 ---@return boolean ok 成功 true；超时/失败时已关闭 fd 并返回 false
 function srey.wait_connect(sk, ssl)
     _check_wait("srey.wait_connect")
-    local ok, erro = _wait_msg(sk, MTYPE_CONNECT, get_connect_timeout(), "connect")
+    local ok, erro = _wait_msg(sk, MTYPE_CONNECT, WAIT_CONNECT, "connect")
     if not ok then
         return false
     end
@@ -1299,7 +1310,7 @@ end
 ---@return boolean ok 握手成功 true；超时/断开返回 false
 function srey.wait_ssl_exchanged(sk)
     _check_wait("srey.wait_ssl_exchanged")
-    return nil ~= _wait_msg(sk, MTYPE_SSLEXCHANGED, get_netread_timeout(), "ssl exchange")
+    return nil ~= _wait_msg(sk, MTYPE_SSLEXCHANGED, WAIT_NETREAD, "ssl exchange")
 end
 
 ---@param msg Message
@@ -1323,7 +1334,7 @@ end
 ---@return integer? size 数据长度
 function srey.wait_handshaked(sk)
     _check_wait("srey.wait_handshaked")
-    local ok, erro, data, size = _wait_msg(sk, MTYPE_HANDSHAKED, get_netread_timeout(), "handshake")
+    local ok, erro, data, size = _wait_msg(sk, MTYPE_HANDSHAKED, WAIT_NETREAD, "handshake")
     if not ok then
         return false
     end
@@ -1357,7 +1368,9 @@ srey.send = core.send
 ---@type fun(sks:userdata[], data:string|lightuserdata, size:integer?, copy:integer?):boolean
 srey.send_multi = core.send_multi
 
----同步发送并等待响应：发送后挂起协程，收到回包后返回数据；适用于请求-响应模式
+---同步发送并等待响应：发送后挂起协程，收到回包后返回数据；适用于请求-响应模式。
+---同一连接上多个协程并发收发时，须用 srey.serial 把整个"发请求→收完响应"圈住：等待者按连接排队、只认队头，
+---回包按到达顺序交给先挂起的协程，而服务端不保证按请求顺序回包，不圈就会对错号
 ---@param sk userdata 连接标识
 ---@param data string|lightuserdata 数据
 ---@param size integer? data 为 lightuserdata 时必填
@@ -1371,13 +1384,14 @@ function srey.syn_send(sk, data, size, copy)
     if not srey.send(sk, data, size, copy) then
         return nil
     end
-    local ok, _, rdata, rsize, rslice = _wait_msg(sk, MTYPE_RECV, get_netread_timeout(), "netread")
+    local ok, _, rdata, rsize, rslice = _wait_msg(sk, MTYPE_RECV, WAIT_NETREAD, "netread")
     if not ok then
         return nil
     end
     return rdata, rsize, rslice
 end
----同步接收下一个响应包（不发送）：用于一次请求产生多个响应的场景（如 MySQL 多结果集续接）
+---同步接收下一个响应包（不发送）：用于一次请求产生多个响应的场景（如 MySQL 多结果集续接）。
+---同一连接上多协程并发的约束同 srey.syn_send
 ---@param sk userdata 连接标识
 ---@return lightuserdata|nil rdata 响应数据指针；同 syn_send 语义，仅本协程下次 yield 前有效；
 ---超时/断开返回 nil；连接已失效(sk.valid 为 false)时不挂起直接返回 nil
@@ -1385,7 +1399,7 @@ end
 ---@return integer? slice 分片标记，取值同 SLICE_TYPE；0 表示非分片完整消息
 function srey.syn_recv(sk)
     _check_wait("srey.syn_recv")
-    local ok, _, data, size, slice = _wait_msg(sk, MTYPE_RECV, get_netread_timeout(), "netread")
+    local ok, _, data, size, slice = _wait_msg(sk, MTYPE_RECV, WAIT_NETREAD, "netread")
     if not ok then
         return nil
     end
@@ -1400,7 +1414,7 @@ end
 ---@return integer? size 本片的 size，口径见 Message.size；只算本片、不累计
 function srey.syn_slice(sk)
     _check_wait("srey.syn_slice")
-    local ok, _, data, size, slice = _wait_msg(sk, MTYPE_RECV, get_netread_timeout(), "netread")
+    local ok, _, data, size, slice = _wait_msg(sk, MTYPE_RECV, WAIT_NETREAD, "netread")
     if not ok then
         return false
     end
@@ -1432,7 +1446,8 @@ local function _net_rpc(sk, dst, oneway, reqtype, data, size, name)
     return status, respdata
 end
 
----通过 harbor 协议向目标 task 发起单向 call（HTTP 封装，不等待返回数据）
+---通过 harbor 协议向目标 task 发起单向 call（HTTP 封装，不等待返回数据）。
+---仍要等对端的 HTTP 状态行，同一连接上多协程并发的约束同 srey.syn_send
 ---@param sk userdata 连接标识
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
 ---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（由对端上报）；
@@ -1449,7 +1464,7 @@ function srey.net_call(sk, dst, reqtype, data, size)
     return "200" == status[2]
 end
 
----通过 harbor 协议向目标 task 发起同步请求，等待返回数据
+---通过 harbor 协议向目标 task 发起同步请求，等待返回数据。同一连接上多协程并发的约束同 srey.syn_send
 ---@param sk userdata 连接标识
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
 ---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（由对端上报）；
@@ -1529,7 +1544,7 @@ end
 ---连接一起丢弃。没有"等发完再关"的模式——要保证大块数据送达，须自行确认对端已收齐再关
 ---@param sk userdata 连接标识
 function srey.close(sk)
-    core.close(sk)
+    core_close(sk)
 end
 
 ---同步关闭：发起关闭后挂起协程等 CLOSE，保证协议层 close 回调（含 ctx->fd 复位）已执行；
@@ -1538,12 +1553,12 @@ end
 ---@param sk userdata 连接标识
 function srey.sync_close(sk)
     _check_wait("srey.sync_close")
-    local skid = wait_skid(sk)
+    local skid, ms = wait_skid(sk, WAIT_NETREAD)
     if not skid then
         return
     end
-    core.close(sk)
-    srey._coro_wait_nocheck(skid, MTYPE_CLOSE, get_netread_timeout())
+    core_close(sk)
+    srey._coro_wait_nocheck(skid, MTYPE_CLOSE, ms)
 end
 
 ---处理连接关闭消息：进入时探测一次会话表，把该 sess(连接类即 skid)下全部挂起等待者转移到本地数组再消费，
@@ -1676,27 +1691,39 @@ local function _net_recvfrom_dispatch(msg)
     end
 end
 
--- 唤醒一个会话里所有已到期的等待者。单独提出来是为了让调用方逐条 xpcall：游标已经按
--- "这些都会被摘掉"算过了，一条抛出(memlimit 下建 msg 表 OOM)就把
--- 后面几条一起跳过的话，它们再也等不到下一次扫描
+-- 唤醒一个会话里所有已到期的等待者：先把它们全部摘掉，再逐个带 TIMEOUT 消息唤醒；摘完队列空了就删条目
 local function _timeout_wake(sess, now)
     local corosess = coro_sess[sess]
     if not corosess then
         return
     end
-    local msg = setmetatable({mtype = MTYPE_TIMEOUT, sess = sess}, TIMEOUT_MSG_MT)
-    local coro
+    -- 两趟：先把未到期的原地前移压紧、到期的协程收进 expired，再逐个唤醒（仍是先摘后唤醒）。
+    -- 边摘边唤醒的话每摘一个都要整体前移一次，同一 sess 上 k 个一起到期就是 O(k²)
+    local n = #corosess
+    local w = 1
+    local expired
     local dl
-    local j = 1
-    while j <= #corosess do
-        dl = corosess[j + 2]
+    for r = 1, n, 4 do
+        dl = corosess[r + 2]
         if dl > 0 and now >= dl then
-            coro = corosess[j]
-            _sess_remove(corosess, j)
-            _coro_resume(coro, msg, sess)
-            WARN("resume timeout session %s.", tostring(sess))
+            expired = expired or {}
+            expired[#expired + 1] = corosess[r]
         else
-            j = j + 4
+            if w ~= r then
+                corosess[w], corosess[w + 1], corosess[w + 2], corosess[w + 3] =
+                    corosess[r], corosess[r + 1], corosess[r + 2], corosess[r + 3]
+            end
+            w = w + 4
+        end
+    end
+    for i = n, w, -1 do
+        corosess[i] = nil
+    end
+    if expired then
+        local msg = setmetatable({mtype = MTYPE_TIMEOUT, sess = sess}, TIMEOUT_MSG_MT)
+        for i = 1, #expired do
+            _coro_resume(expired[i], msg, sess)
+            WARN("resume timeout session %s.", tostring(sess))
         end
     end
     -- 超时路径无视 keep：理由同 C 侧 lib/coro/coro.c 的 coro_expire
@@ -1801,8 +1828,8 @@ local function _startup_msg_dispatch(msg)
 end
 
 local _dispatchers = {
-    [MSG_TYPE.STARTUP] = _startup_msg_dispatch,
-    [MSG_TYPE.CLOSING] = _closing_dispatch,
+    [MTYPE_STARTUP] = _startup_msg_dispatch,
+    [MTYPE_CLOSING] = _closing_dispatch,
     [MTYPE_TIMEOUT] = _timeout_dispatch,
     [MTYPE_ACCEPT] = _net_accept_dispatch,
     [MTYPE_CONNECT] = _net_connect_dispatch,
@@ -1832,7 +1859,7 @@ function message_dispatch(msg)
     end
     -- 两个队列互相喂：被唤醒的 serial 等待者可能 srey.fork，新起的协程也可能进 serial 排队并
     -- 触发交接，故循环到两者都空为止
-    while 0 ~= #fork_queue or 0 ~= #serial_wakes do
+    while fork_queue[1] or serial_wakes[1] do-- 两队列只尾部追加、_drain 整段清空，看队头即可判空
         _drain(fork_queue, _run_fork)-- srey.fork 在此起新协程
         _drain(serial_wakes, _coro_resume)-- srey.serial 交接后的队头等待者在此起跑
     end

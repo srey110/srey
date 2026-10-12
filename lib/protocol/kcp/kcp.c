@@ -14,6 +14,7 @@
 typedef struct kcp_element {
     uint8_t warned;
 #if KCP_TICK_HEAP
+    uint8_t parked;      // 1=空闲停表,不在 heap_due 里;send / input 经 _kcp_unpark 挂回
     uint32_t hidx;       // 在 heap_due 中的下标,由堆维护
 #endif
     uint32_t conv;
@@ -92,9 +93,28 @@ static inline void _kcp_map_remove(kcp_ud_ctx *ctx, kcp_element *kel) {
     kcp_element *pkey = kel;
     kcp_map_delete(ctx->mapkcp, &pkey);
 #if KCP_TICK_HEAP
-    kcp_heap_remove(&ctx->heap_due, kel);
+    if (!kel->parked) {// 停表的不在堆里,heap remove 不校验成员关系,删了会弄坏堆
+        kcp_heap_remove(&ctx->heap_due, kel);
+    }
 #endif
 }
+#if KCP_TICK_HEAP
+// 停表的会话挂回到期堆,没停表的不动。current 拨到现在(ikcp_input 拿它采 RTT,须在 input 之前调);
+// 下次 flush 落回原 interval 格点,与一直挂在堆上一样:收包唤醒时 ACK 能和随后的回包合成一个包
+static void _kcp_unpark(kcp_ud_ctx *ctx, kcp_element *kel) {
+    ikcpcb *ikcp = kel->ikcp;
+    IUINT32 now;
+    if (!kel->parked) {
+        return;
+    }
+    now = (IUINT32)timer_cur_ms(_evpub_watcher_timer(ctx->watcher));
+    ikcp->current = now;
+    ikcp->ts_flush = _kcp_regrid(ikcp->ts_flush, now, ikcp->interval);
+    kel->next_update = ikcp->ts_flush;
+    kel->parked = 0;
+    kcp_heap_insert(&ctx->heap_due, kel);
+}
+#endif
 void _kcp_init(prot_emit *emit) {
     g_emit = emit;
 }
@@ -184,6 +204,9 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
         _kcp_drop_warn(ctx, conv, "source addr mismatch");
         return;
     }
+#if KCP_TICK_HEAP
+    _kcp_unpark(ctx, kel);// 须在 ikcp_input 之前:input 拿 current 采 RTT;放在校验之后,丢掉的包不唤醒
+#endif
     ikcp_input(kel->ikcp, buf, (long)size);
     // peek==0 是"队头存在一条 0 长度消息",必须 ikcp_recv 消费出队,不能与 peek<0(无消息)一样早退,
     // 否则空消息永久堵住 rcv_queue 队头,其后所有消息投递不出去
@@ -282,6 +305,12 @@ static void _kcp_element_free(void *arg) {
     }
     FREE(kel);
 }
+// 拆一个会话:向 task 投 CLOSE(erro 为 close_type)、出表出堆、释放。kcp_stop 与死链共用
+static void _kcp_teardown(ud_cxt *ud, kcp_element *kel, int32_t erro) {
+    _kcp_notify_closed(ud, kel, erro);
+    _kcp_map_remove((kcp_ud_ctx *)ud->context, kel);
+    _kcp_element_free(kel);
+}
 // 下次该调 ikcp_update 的时刻。ikcp_update 只在到了 ts_flush 才 flush(重传也只在 flush 里判)，故直接按 ts_flush 算；
 // 不用 ikcp_check：它把"重传时刻已过、ts_flush 未到"算成立即到期，那段时间每个 tick 都白跑一轮。
 // 与 ts_flush 相差超 10 秒(时钟跳变)视为到期，口径同 ikcp_check
@@ -302,8 +331,8 @@ static void _kcp_map_elfree(void *item) {
     _kcp_element_free(*(kcp_element **)item);
 }
 #if KCP_TICK_HEAP
-// ev_tick 回调:堆顶到期(<=now)才 update,更新后按新 next_update 原地下沉;
-// 堆为空或堆顶未到期直接返回,避免每轮对全部会话做 kcp_map_scan。
+// ev_tick 回调:堆顶到期(<=now)才处理:空闲的摘出堆停表(不 update,见 _kcp_idle / _kcp_unpark),
+// 死链的拆掉,其余 update 后按新 next_update 原地下沉;堆为空或堆顶未到期直接返回。
 // 原地下沉的前提:ikcp_update 期间堆不被改动(关闭一律经 in_tick/closing 延后),kel 始终是堆顶
 static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
     IUINT32 now = (IUINT32)now_ms;
@@ -314,9 +343,18 @@ static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
         if ((IINT32)(now - kel->next_update) < 0) {// 堆顶未到期,防回绕
             break;
         }
+        if (_kcp_idle(kel->ikcp)) {
+            kel->parked = 1;
+            kcp_heap_dequeue(&ctx->heap_due);
+            continue;
+        }
         ikcp_update(kel->ikcp, now);
         if (ctx->closing) {// ikcp_update 内发送失败触发了本 socket 关闭:kel/ctx 待释放,勿再触碰
             break;
+        }
+        if ((IUINT32)-1 == kel->ikcp->state) {// 有段重传到 dead_link 次,对端已失联
+            _kcp_teardown(ctx->ud, kel, CLOSE_TYPE_ABORT);
+            continue;
         }
         kel->next_update = _kcp_next_update(kel->ikcp, now);
         kcp_heap_sift_down(&ctx->heap_due, kel->hidx);
@@ -487,9 +525,7 @@ static int32_t _kcp_stop(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     if (NULL == kel) {
         return 0;
     }
-    _kcp_notify_closed(ud, kel, CLOSE_TYPE_LOCAL);
-    _kcp_map_remove((kcp_ud_ctx *)ud->context, kel);
-    _kcp_element_free(kel);
+    _kcp_teardown(ud, kel, CLOSE_TYPE_LOCAL);
     return 0;
 }
 void kcp_stop(kcp_ctx *kcp) {
@@ -541,6 +577,9 @@ static int32_t _kcp_send(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     kcp_send_buf *buf = data;
     kcp_element *kel = _kcp_resolve(evsk, ud, buf->conv, number, 0);
     if (NULL != kel) {
+#if KCP_TICK_HEAP
+        _kcp_unpark((kcp_ud_ctx *)ud->context, kel);
+#endif
         ikcp_send(kel->ikcp, buf->data, (int32_t)buf->lens);
     }
     return 1;

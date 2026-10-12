@@ -138,18 +138,19 @@ void _evpub_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t n
     }
     pool_shrink_to(&watcher->pool, shrink_nkeep(sockel_map_size(watcher->element)));
 }
-void _evpub_share_data_free(void *arg) {
-    shared_data_free(arg, _free);
-}
 void _evpub_off_buf_release(off_buf_ctx *buf) {
-    if (NULL == buf->shared) {
+    shared_data *cnt = buf->shared;
+    if (NULL == cnt) {
         FREE(buf->data);
         return;
     }
-    // 多播路径：N 个 buf 共享 shared->data，最后一个释放方才 FREE
-    _evpub_share_data_free(buf->shared);
     buf->data = NULL;
     buf->shared = NULL;
+    // ev_send_multi 的组内计数：同 buf_s 本身，只在所属事件线程上改(停机回收时线程已 join)，不用原子；
+    // 减到 0 才去减整次广播的父计数
+    if (0 == --cnt->ref) {
+        shared_data_free(cnt->data, _free);
+    }
 }
 void _evpub_off_buf_clear(obuf_que *bufs) {
     off_buf_ctx *buf;
@@ -650,8 +651,9 @@ static int32_t _evpub_sock_send_normal(SOCKET fd, obuf_que *buf_s, size_t *nsend
 #if WITH_SSL
 // 把队头起的前几块拷成一段(不超过 MAX_SSL_SEND_SIZE)一次 SSL_write，发出去多少就从队头消费多少。
 // 撞 WANT_WRITE 时一个字节都不记账：下次拼出的前缀不变、长度只增不减，OpenSSL 才认这次重试；
-// 缓冲在栈上，重试时地址会变，靠 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER 放行
-static int32_t _evpub_sock_send_ssl_merge(SSL *ssl, obuf_que *buf_s, uint32_t nbuf, size_t *sended) {
+// 缓冲在栈上，重试时地址会变，靠 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER 放行。
+// NOINLINE：4KB 缓冲内联进 _evpub_sock_send 后，明文连接的每次冲发也要过一次栈探测（Darwin / MSVC 默认开）
+NOINLINE static int32_t _evpub_sock_send_ssl_merge(SSL *ssl, obuf_que *buf_s, uint32_t nbuf, size_t *sended) {
     char stage[MAX_SSL_SEND_SIZE];
     off_buf_ctx *buf;
     size_t staged = 0, take, sent;

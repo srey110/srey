@@ -216,7 +216,7 @@ static int32_t _lhash_ring_new(lua_State *lua) {
 /// <param name="self" type="userdata">哈希环对象</param>
 /// <returns>无</returns>
 static int32_t _lhash_ring_free(lua_State *lua) {
-    hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
+    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
     hash_ring_free(ring);
     return 0;
 }
@@ -229,7 +229,7 @@ static int32_t _lhash_ring_free(lua_State *lua) {
 /// <param name="lens" type="integer?">name 为 lightuserdata 时必填，表示名称字节数</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lhash_ring_add(lua_State *lua) {
-    hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
+    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
     uint32_t nreplicas = lpub_check_u32(lua, 2, "nreplicas out of range");
     size_t lens;
     void *name = lpub_check_buf(lua, 3, &lens, NULL);
@@ -243,7 +243,7 @@ static int32_t _lhash_ring_add(lua_State *lua) {
 /// <param name="lens" type="integer?">name 为 lightuserdata 时必填，表示名称字节数</param>
 /// <returns>无</returns>
 static int32_t _lhash_ring_remove(lua_State *lua) {
-    hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
+    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
     size_t lens;
     void *name = lpub_check_buf(lua, 2, &lens, NULL);
     hash_ring_remove(ring, name, lens);
@@ -257,7 +257,7 @@ static int32_t _lhash_ring_remove(lua_State *lua) {
 /// <param name="lens" type="integer?">key 为 lightuserdata 时必填，表示 key 字节数</param>
 /// <returns type="string?">命中节点名称；环为空时返回 nil</returns>
 static int32_t _lhash_ring_find(lua_State *lua) {
-    hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
+    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
     size_t lens;
     void *key = lpub_check_buf(lua, 2, &lens, NULL);
     hash_ring_node *node = hash_ring_find(ring, key, lens);
@@ -274,7 +274,7 @@ static int32_t _lhash_ring_find(lua_State *lua) {
 /// <param name="self" type="userdata">哈希环对象</param>
 /// <returns>无</returns>
 static int32_t _lhash_ring_print(lua_State *lua) {
-    hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
+    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
     hash_ring_print(ring);
     return 0;
 }
@@ -315,7 +315,7 @@ static int32_t _ltrend_new(lua_State *lua) {
 /// <param name="busy_den" type="integer?">繁忙阈值分母</param>
 /// <returns type="boolean">繁忙 true；不忙 false</returns>
 static int32_t _ltrend_busy(lua_State *lua) {
-    load_trend_ctx *trend = luaL_checkudata(lua, 1, MT_LOAD_TREND);
+    load_trend_ctx *trend = lpub_check_udata(lua, 1, MT_LOAD_TREND);
     // 采样值不是长度，不走 lpub_check_lens（那句报的是 "length out of range"）；
     // 负数与超 uint32 都会让忙闲判定给出垃圾结论，两头都挡
     size_t cur = (size_t)lpub_check_range(lua, 2, 0, UINT32_MAX, "sample out of range");
@@ -364,7 +364,7 @@ static int32_t _lpopen_new(lua_State *lua) {
 /// <param name="ms" type="integer">超时毫秒数</param>
 /// <returns type="boolean">true 表示已退出，false 表示超时仍在运行</returns>
 static int32_t _lpopen_waitexit(lua_State *lua) {
-    popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
+    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     uint32_t ms = lpub_check_u32(lua, 2, "ms out of range");
     return lpub_rtn_bool(lua, ERR_OK == popen_waitexit(ctx, ms));
 }
@@ -374,7 +374,7 @@ static int32_t _lpopen_waitexit(lua_State *lua) {
 /// <param name="self" type="userdata">popen 对象</param>
 /// <returns type="integer">退出码；非 Windows 平台可能取不到</returns>
 static int32_t _lpopen_exitcode(lua_State *lua) {
-    popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
+    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     lua_pushinteger(lua, popen_exitcode(ctx));
     return 1;
 }
@@ -387,7 +387,7 @@ static int32_t _lpopen_exitcode(lua_State *lua) {
 /// <returns type="string">读到的内容（可为空字符串；当前无数据即返回，不阻塞等待）</returns>
 /// <returns type="boolean">是否已读到流末尾：true=写端全关、输出已完整；false=读满 max_lens/暂无数据/出错即停，可能不完整</returns>
 static int32_t _lpopen_read(lua_State *lua) {
-    popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
+    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     // 可选参数，lpub_check_lens 没有 opt 形态，故缺省分支单列；给了就按它校验上下界
     size_t cap = lua_isnoneornil(lua, 2) ? 65536 : lpub_check_lens(lua, 2, INT32_MAX);
     const size_t chunk = 4096;
@@ -421,7 +421,7 @@ static int32_t _lpopen_read(lua_State *lua) {
 /// <returns type="integer">实际写入的字节数，**可能少于 data 长度**——写端非阻塞，
 /// 对端缓冲写满即返回，剩余部分由调用方决定重试还是放弃；一个字节都没写进去且出错时返回 -1</returns>
 static int32_t _lpopen_write(lua_State *lua) {
-    popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
+    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     size_t lens;
     const char *data = luaL_checklstring(lua, 2, &lens);
     lua_pushinteger(lua, popen_write(ctx, data, lens));
@@ -433,13 +433,13 @@ static int32_t _lpopen_write(lua_State *lua) {
 /// <param name="self" type="userdata">popen 对象</param>
 /// <returns>无</returns>
 static int32_t _lpopen_close(lua_State *lua) {
-    popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
+    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     popen_close(ctx);
     return 0;
 }
 // __gc：popen_free 内部对没 close 过的 ctx 会自己收尾，这里不必再显式 close
 static int32_t _lpopen_gc(lua_State *lua) {
-    popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
+    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     popen_free(ctx);
     return 0;
 }

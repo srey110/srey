@@ -72,7 +72,7 @@ typedef void (*lyyjson_sink)(void *ud, const char *json, size_t lens);
 
 /// <summary>
 /// 建（或取已有的）名为 name 的元表压栈，同 luaL_newmetatable；另在注册表里以 name 的地址为键再存一份，
-/// 之后按地址取只是一次指针哈希，不再按名字查串。按名字的那份照留，luaL_checkudata 等旧写法照样能用。
+/// 之后按地址取只是一次指针哈希，不再按名字查串。按名字的那份照留：lpub_get_mtable 按地址取不到时靠它回落。
 /// name 必须是静态存储的常量（MT_ 系列宏）：地址就是键，栈上或堆上的缓冲地址会被别的内容重用
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
@@ -256,8 +256,8 @@ int32_t lpub_rtn_bool(lua_State *lua, int32_t cond);
 /// 取栈位 idx 的 task 标识：string 视为 task 名，先查本 lua_State 的 名字→句柄 缓存，没有再经
 /// task_find_name 换成句柄并记进缓存；其余按 integer 当句柄直取（非整数由 luaL_checkinteger 抛错）。
 /// 各绑定对外都是"名字或句柄二选一"，判定收在这一处。
-/// 缓存条目随 lua_State 常驻：只在按缓存句柄 grab / 投递失败时由 lpub_task_refresh 改写或删除，不主动清理，
-/// 故 task 名应是有限集合，别按房间 / 玩家拼动态名字。
+/// 缓存条目随 lua_State 常驻：只在按缓存句柄 grab / 投递失败时由 lpub_task_refresh 改写或删除；
+/// 记满上限（lpub.c 的 TNAME_CACHE_MAX）整表换新，按房间 / 玩家拼动态名字也不会无限涨，代价是换表后各名字再查一次。
 /// 缓存的句柄可能已过期：取 task 一律走 lpub_task_grab，之后要用句柄以返回的 task 的 handle 字段为准，
 /// 别直接 task_grab，也别接着用本函数返回的句柄；按句柄投递（task_*_to）失败后经 lpub_task_refresh 换句柄重试一次。
 /// 记缓存会分配内存（可能抛内存错误），已接管缓冲或持有引用、不能再 longjmp 的路径改用 lpub_task_peek
@@ -266,6 +266,16 @@ int32_t lpub_rtn_bool(lua_State *lua, int32_t cond);
 /// <param name="idx">参数在栈中的位置</param>
 /// <returns>task 句柄；名字查不到时为 INVALID_TNAME</returns>
 name_t lpub_task_handle(lua_State *lua, int32_t idx);
+/// <summary>
+/// 把表 idx 的 [1..n] 逐个换成任务句柄：nil 记 INVALID_TNAME，字符串同 lpub_task_handle（经名字缓存、查到即记），
+/// 整数原样当句柄。名字缓存表在循环外只取一次，给按名字批量投递的接口用
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">目标表的栈位置</param>
+/// <param name="n">取前 n 个元素</param>
+/// <param name="hs">输出：n 个句柄；必须非 NULL 且至少 n 格</param>
+/// <returns>ERR_OK；有元素既不是 nil、字符串也不是整数时 ERR_FAILED，此时 hs 只填了前面一部分</returns>
+int32_t lpub_task_handles(lua_State *lua, int32_t idx, int32_t n, name_t *hs);
 /// <summary>
 /// 同 lpub_task_handle（缓存生命周期与取 task 的约束相同），但只读缓存、不往里加，不分配内存
 /// </summary>

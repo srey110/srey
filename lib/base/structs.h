@@ -26,18 +26,18 @@ typedef struct sock_ctx {
     int32_t  index; // 所属 watcher 在 ctx->watcher 中的下标,取值 [0, nthreads) 或 INVALID_INDEX
     uint64_t skid;  // 连接 ID（防 fd 复用误操作）
 }sock_ctx;
-// 多播共享 pack：ev_send_multi 一次广播给 N 个 fd 时,N 个 off_buf_ctx.shared 指向同一份;
-// 每个 buf 释放走 _evpub_off_buf_release → ATOMIC_ADD(&ref,-1),归 0 时 FREE(data)+FREE(pack)
+// 广播共享载荷：多个持有者共用一份 data,shared_data_free 减到 0 时释放 data 与自身。
+// ev_send_multi 的父计数与组内计数、task_multi_call 的消息都用它
 typedef struct shared_data {
-    atomic_t ref;   // 剩余未释放 buf 数；初始 = ev_send_multi 有效 fd 数
-    void *data;     // 业务负载,所有 buf 引用同一份
+    atomic_t ref;   // 剩余持有者数
+    void *data;     // 共用的那份数据(组内计数里是父计数)
 }shared_data;
 // 带偏移量的数据缓冲区（用于流式读取）
 typedef struct off_buf_ctx {
     size_t  lens;   // 数据总长度（字节）
     size_t  offset; // 当前读取偏移量
     void   *data;   // 数据指针
-    shared_data *shared; // NULL=独占（默认 FREE(data)）；非 NULL=多播共享（ev_send_multi 投递），buf 释放时 ATOMIC_ADD(&shared->ref,-1) 归 0 才 FREE pack->data + pack 自身
+    shared_data *shared; // NULL=独占（释放即 FREE(data)）；非 NULL=ev_send_multi 的组内计数，其 data 指向父计数，释放见 _evpub_off_buf_release
 }off_buf_ctx;
 
 // 将 src 的内容复制到 dst；src 为 NULL 时将 dst 清零

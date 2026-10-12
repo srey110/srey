@@ -186,7 +186,7 @@ static int32_t _lcrypt_digest_new(lua_State *lua) {
 // digest / hmac 的对象按值存在 userdata 里,没有可置 NULL 的指针,故已释放的判据是 attr 归零。
 // __gc 经 __index 也是个普通方法,业务一行 d:__gc() 就能提前释放,此后每个入口都得报可捕获的错
 static digest_ctx *_lcrypt_check_digest(lua_State *lua) {
-    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    digest_ctx *digest = lpub_check_udata(lua, 1, MT_DIGEST);
     if (NULL == digest->attr) {
         luaL_error(lua, "digest already freed");
     }
@@ -241,7 +241,7 @@ static int32_t _lcrypt_digest_final(lua_State *lua) {
     return 1;
 }
 static int32_t _lcrypt_digest_gc(lua_State *lua) {
-    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    digest_ctx *digest = lpub_check_udata(lua, 1, MT_DIGEST);
     digest_free(digest);
     return 0;
 }
@@ -304,7 +304,7 @@ static int32_t _lcrypt_hmac_new(lua_State *lua) {
 }
 // 判据同 _lcrypt_check_digest:hmac_free 整块 secure_zero,4 个内嵌 digest 的 attr 一起归零
 static hmac_ctx *_lcrypt_check_hmac(lua_State *lua) {
-    hmac_ctx *hmac = luaL_checkudata(lua, 1, MT_HMAC);
+    hmac_ctx *hmac = lpub_check_udata(lua, 1, MT_HMAC);
     if (NULL == hmac->inside.attr) {
         luaL_error(lua, "hmac already freed");
     }
@@ -359,7 +359,7 @@ static int32_t _lcrypt_hmac_final(lua_State *lua) {
     return 1;
 }
 static int32_t _lcrypt_hmac_gc(lua_State *lua) {
-    hmac_ctx *hmac = luaL_checkudata(lua, 1, MT_HMAC);
+    hmac_ctx *hmac = lpub_check_udata(lua, 1, MT_HMAC);
     hmac_free(hmac);
     return 0;
 }
@@ -437,7 +437,7 @@ static int32_t _lcrypt_cipher_new(lua_State *lua) {
 /// <param name="self" type="userdata">cipher 对象</param>
 /// <returns type="integer">分块字节数</returns>
 static int32_t _lcrypt_cipher_size(lua_State *lua) {
-    cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
+    cipher_ctx *cipher = lpub_check_udata(lua, 1, MT_CIPHER);
     lua_pushinteger(lua, cipher_size(cipher));
     return 1;
 }
@@ -448,7 +448,7 @@ static int32_t _lcrypt_cipher_size(lua_State *lua) {
 /// <param name="padding" type="integer">填充模式（PKCS7 / ANSIX923 / ISO10126 / NOPAD 等）</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_cipher_padding(lua_State *lua) {
-    cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
+    cipher_ctx *cipher = lpub_check_udata(lua, 1, MT_CIPHER);
     lua_Integer padding = luaL_checkinteger(lua, 2);
     luaL_argcheck(lua, padding >= NoPadding && padding <= ANSIX923, 2, "invalid padding model");
     cipher_padding(cipher, (padding_model)padding);
@@ -461,7 +461,7 @@ static int32_t _lcrypt_cipher_padding(lua_State *lua) {
 /// <param name="iv" type="string">初始化向量</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_cipher_iv(lua_State *lua) {
-    cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
+    cipher_ctx *cipher = lpub_check_udata(lua, 1, MT_CIPHER);
     size_t lens;
     const char *iv = luaL_checklstring(lua, 2, &lens);
     cipher_iv(cipher, iv, lens);
@@ -473,7 +473,7 @@ static int32_t _lcrypt_cipher_iv(lua_State *lua) {
 /// <param name="self" type="userdata">cipher 对象</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_cipher_reset(lua_State *lua) {
-    cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
+    cipher_ctx *cipher = lpub_check_udata(lua, 1, MT_CIPHER);
     cipher_reset(cipher);
     return 0;
 }
@@ -485,7 +485,7 @@ static int32_t _lcrypt_cipher_reset(lua_State *lua) {
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="string?">加解密结果；长度不匹配 / 模式约束不满足时返回 nil</returns>
 static int32_t _lcrypt_cipher_block(lua_State *lua) {
-    cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
+    cipher_ctx *cipher = lpub_check_udata(lua, 1, MT_CIPHER);
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 2, &size, NULL);
@@ -506,7 +506,7 @@ static int32_t _lcrypt_cipher_block(lua_State *lua) {
 /// <returns type="string?">加解密最终结果；输入非对齐 / 长度不足一个分组 / 填充校验不通过时返回 nil。
 /// 不能拿空串当失败判据——加密空明文再解回来本就是空串</returns>
 static int32_t _lcrypt_cipher_dofinal(lua_State *lua) {
-    cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
+    cipher_ctx *cipher = lpub_check_udata(lua, 1, MT_CIPHER);
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 2, &size, NULL);
@@ -523,7 +523,7 @@ static int32_t _lcrypt_cipher_dofinal(lua_State *lua) {
     return 1;
 }
 static int32_t _lcrypt_cipher_gc(lua_State *lua) {
-    cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
+    cipher_ctx *cipher = lpub_check_udata(lua, 1, MT_CIPHER);
     cipher_free(cipher);
     return 0;
 }

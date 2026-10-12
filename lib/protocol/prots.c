@@ -91,26 +91,28 @@ static const prot_vtbl _vtbl_kcp = {
     .udfree = _kcp_udfree, .closed = _kcp_udfree,
     .recvfrom = _kcp_unpack,
 };
-// 唯一的按 pktype 分派点。不写 default：新增 pack_type 时这里编译报错，逼着给它挂一张表
-static const prot_vtbl *_prots_vtbl(pack_type pktype) {
-    switch (pktype) {
-    case PACK_NONE: return &_vtbl_none;
-    case PACK_DNS: return &_vtbl_dns;
-    case PACK_HTTP: return &_vtbl_http;
-    case PACK_WEBSOCK: return &_vtbl_websock;
-    case PACK_MQTT: return &_vtbl_mqtt;
-    case PACK_SMTP: return &_vtbl_smtp;
+// 唯一的按 pktype 分派点。用下标表而不是 switch：取值稀疏（0..8、0x20..0x23、0x40），clang 会把 switch
+// 编成不内联的跳转表函数，每包多两次真调用。新增 pack_type 要在表里加一行，漏加的按 PACK_NONE 处理
+static const prot_vtbl *const _vtbls[PACK_UDP_KCP + 1] = {
+    [PACK_NONE] = &_vtbl_none,
+    [PACK_DNS] = &_vtbl_dns,
+    [PACK_HTTP] = &_vtbl_http,
+    [PACK_WEBSOCK] = &_vtbl_websock,
+    [PACK_MQTT] = &_vtbl_mqtt,
+    [PACK_SMTP] = &_vtbl_smtp,
     // 三个 custz 共一张表：custz_unpack 内部再按 pktype 选头部编码
-    case PACK_CUSTZ_FIXED:
-    case PACK_CUSTZ_FLAG:
-    case PACK_CUSTZ_VAR: return &_vtbl_custz;
-    case PACK_REDIS: return &_vtbl_redis;
-    case PACK_MYSQL: return &_vtbl_mysql;
-    case PACK_PGSQL: return &_vtbl_pgsql;
-    case PACK_MONGO: return &_vtbl_mongo;
-    case PACK_UDP_KCP: return &_vtbl_kcp;
-    }
-    return &_vtbl_none;// 到不了：上面已穷举 pack_type，这句只为消 -Wreturn-type
+    [PACK_CUSTZ_FIXED] = &_vtbl_custz,
+    [PACK_CUSTZ_FLAG] = &_vtbl_custz,
+    [PACK_CUSTZ_VAR] = &_vtbl_custz,
+    [PACK_REDIS] = &_vtbl_redis,
+    [PACK_MYSQL] = &_vtbl_mysql,
+    [PACK_PGSQL] = &_vtbl_pgsql,
+    [PACK_MONGO] = &_vtbl_mongo,
+    [PACK_UDP_KCP] = &_vtbl_kcp,
+};
+static inline const prot_vtbl *_prots_vtbl(pack_type pktype) {
+    const prot_vtbl *vtbl = ((uint32_t)pktype < ARRAY_SIZE(_vtbls)) ? _vtbls[pktype] : NULL;
+    return NULL != vtbl ? vtbl : &_vtbl_none;
 }
 // 应用层握手完成推送：各协议握手完成时回调（注册见 prots_init），经消息汇推 MSG_TYPE_HANDSHAKED
 static int32_t _prots_handshaked(sock_ctx *sk, int32_t client,

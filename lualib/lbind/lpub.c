@@ -4,6 +4,8 @@
 
 // 0/1 开关越界文案，只由 lpub_check_flag / lpub_opt_flag 用
 #define FLAG_OUT_OF_RANGE "flag must be 0 or 1"
+// 名字→句柄 缓存最多记这么多条，记满整表换新：条目只在"同名再用且旧句柄失效"时删，按动态名字起 task 会一直涨
+#define TNAME_CACHE_MAX 4096
 
 // 注册表里那张连接标识缓存表的键(只取地址用)。一个 lua_State 一张,按 skid 存,
 // 免得每条消息取 sk 都造一个新 userdata
@@ -151,7 +153,7 @@ int64_t lpub_check_index0(lua_State *lua, int32_t idx, uint64_t count) {
     return (int64_t)(i - 1);
 }
 // 不写 default：新增 pack_type 时 -Wswitch 报在这里，逼着表态它能不能从 Lua 传进来。
-// 只管本函数这一件事；协议分派那边的绊线在 prots.c 的 _prots_vtbl 身上
+// 只管本函数这一件事；协议分派表 prots.c 的 _vtbls 没有编译期提醒，漏加的按 PACK_NONE，要另去补
 pack_type lpub_check_pktype(lua_State *lua, int32_t idx) {
     lua_Integer val = luaL_checkinteger(lua, idx);
     // 先按 lua_Integer 卡范围再收窄：pack_type 是 4 字节，先转再判的话 2^32+2 会截成 2 混成 PACK_HTTP
@@ -254,17 +256,27 @@ static name_t _tname_cache_get(lua_State *lua, int32_t idx) {
     lua_pop(lua, 1);
     return handle;
 }
-// 记一条缓存,表不存在就建。会分配内存
+// 记一条缓存,表不存在或已记满 TNAME_CACHE_MAX 条就换一张新表。会分配内存。
+// 记过的条数存在表里整数键 0(名字都是字符串,撞不上);删条目不扣数,只会让换表早一点
 static void _tname_cache_set(lua_State *lua, int32_t idx, name_t handle) {
-    if (LUA_TTABLE != lua_rawgetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key)) {
+    lua_Integer n = TNAME_CACHE_MAX;
+    if (LUA_TTABLE == lua_rawgetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key)) {
+        lua_rawgeti(lua, -1, 0);
+        n = lua_tointeger(lua, -1);
+        lua_pop(lua, 1);
+    }
+    if (n >= TNAME_CACHE_MAX) {
         lua_pop(lua, 1);
         lua_newtable(lua);
         lua_pushvalue(lua, -1);
         lua_rawsetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key);
+        n = 0;
     }
     lua_pushvalue(lua, idx);
     lua_pushinteger(lua, (lua_Integer)handle);
     lua_rawset(lua, -3);
+    lua_pushinteger(lua, n + 1);
+    lua_rawseti(lua, -2, 0);
     lua_pop(lua, 1);
 }
 // 改写已有条目,没有就不动;handle 为 INVALID_TNAME 即删掉。只改不增,不分配内存
@@ -304,6 +316,52 @@ static name_t _lpub_task_handle(lua_State *lua, int32_t idx, int32_t cache) {
 }
 name_t lpub_task_handle(lua_State *lua, int32_t idx) {
     return _lpub_task_handle(lua, idx, 1);
+}
+int32_t lpub_task_handles(lua_State *lua, int32_t idx, int32_t n, name_t *hs) {
+    int32_t i;
+    int32_t top;
+    int32_t cidx = 0;// 名字缓存表的栈位,0 表示还没建
+    name_t handle;
+    idx = lua_absindex(lua, idx);
+    if (LUA_TTABLE == lua_rawgetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key)) {
+        cidx = lua_gettop(lua);
+    }
+    for (i = 0; i < n; i++) {
+        switch (lua_rawgeti(lua, idx, i + 1)) {
+        case LUA_TNIL:
+            hs[i] = INVALID_TNAME;
+            break;
+        case LUA_TSTRING:
+            // 循环中途记缓存可能换了新表(见 _tname_cache_set),cidx 仍指旧表:只是后面的名字少命中,不会查错
+            top = lua_gettop(lua);
+            handle = INVALID_TNAME;
+            if (0 != cidx) {
+                lua_pushvalue(lua, top);
+                if (LUA_TNUMBER == lua_rawget(lua, cidx)) {
+                    handle = (name_t)lua_tointeger(lua, -1);
+                }
+                lua_pop(lua, 1);
+            }
+            if (INVALID_TNAME == handle) {
+                handle = task_find_name(g_loader, lua_tostring(lua, top));
+                if (INVALID_TNAME != handle) {
+                    _tname_cache_set(lua, top, handle);
+                }
+            }
+            hs[i] = handle;
+            break;
+        default:
+            if (!lua_isinteger(lua, -1)) {
+                lua_pop(lua, 2);
+                return ERR_FAILED;
+            }
+            hs[i] = (name_t)lua_tointeger(lua, -1);
+            break;
+        }
+        lua_pop(lua, 1);
+    }
+    lua_pop(lua, 1);
+    return ERR_OK;
 }
 name_t lpub_task_peek(lua_State *lua, int32_t idx) {
     return _lpub_task_handle(lua, idx, 0);

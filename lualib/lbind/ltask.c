@@ -10,20 +10,22 @@
         lua_setfield(lua, -2, key);\
     } while (0)
 
-// Lua task 上下文：保存 Lua 虚拟机、消息分发函数引用、内存统计
+// Lua task 上下文：保存 Lua 虚拟机、待释放的载荷、内存统计
 #define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
 #define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
 #define MT_TASK_MSG "_task_msg_ctx" // 带 __gc 的消息元表名；task.msg_release 认它与 MT_TASK_MSG_NG 两张
 #define MT_TASK_MSG_NG "_task_msg_ng" // 不带 __gc 的消息元表名
+// 主线程栈底常驻的三格，_ltask_init 放好后每条消息只 lua_pushvalue 取，不查注册表。
+// 主线程栈只有本文件碰、_ltask_run 进出平衡；不得对主线程 lua_settop(L, 0)，否则三格就没了
+#define LSLOT_DISPATCH 1 // message_dispatch
+#define LSLOT_MSG_MT 2 // 不带 __gc 的消息元表（MT_TASK_MSG_NG）
+#define LSLOT_MSG_MT_GC 3 // 带 __gc 的消息元表（MT_TASK_MSG）
 // 用完的载荷先攒着再一起释放：条数在入队时判，字节与时间在一轮调度结束时判（_ltask_round_end），任一到了就全放
 #define LMSG_PEND_MAX 32 // 条数
 #define LMSG_PEND_BYTES (1024 * 1024) // 字节（按 msg->size 累加）
 #define LMSG_PEND_MS 100 // 最早那条攒了多久（毫秒）
 
 typedef struct ltask_ctx {
-    int32_t    ref;       // message_dispatch 函数在 Lua 注册表中的引用 id
-    int32_t    msg_mtref;    // 不带 __gc 的消息元表 ref（MT_TASK_MSG_NG）；0=尚未创建，luaL_ref 恒不返回 0
-    int32_t    msg_mtref_gc; // 带 __gc 的消息元表 ref（MT_TASK_MSG），只补挂给分发返回时还被拿着的载荷消息；同上
     uint32_t   npend;     // pend 里攒着的条数
     size_t     mem;       // 当前 Lua 累计内存（字节，单 worker 串行操作，无需 atomic）
     uint64_t   nalloc;    // 还没并进全局计数的 Lua 分配次数（同 mem 无需 atomic），见 _ltask_mem_flush
@@ -259,37 +261,6 @@ int32_t ltask_startup(const char *script) {
     lua_close(lua);
     return rtn;
 }
-// 初始化 ltask_ctx：创建 Lua 虚拟机、执行脚本、引用消息分发函数。
-// 若 from != NULL，将 from 栈 [arg_start..arg_top] 区间的基本类型值作为变参
-// 传给脚本 chunk，脚本顶层用 `local a, b, ... = ...` 接收。
-static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
-                           lua_State *from, int32_t arg_start, int32_t arg_top) {
-    // mem 与 tda 告警阈值在 lua_newstate（会触发首批 alloc）之前初始化；默认 0 禁用，由 task.memlimit 启用
-    ltask->mem = 0;
-    tda_init(&ltask->mem_tda, 0);
-    ltask->task = task;
-    lua_State *lua = _ltask_luainit(task, ltask);
-    if (NULL == lua) {
-        return ERR_FAILED;
-    }
-    // 在跑 chunk 之前落定：脚本顶层就能调各绑定，它们直接解引用。
-    // 失败路径要把 lua 一并清空——它兼作 _ltask_arg_free 的"已初始化"标志，留着就是二次 lua_close
-    ltask->lua = lua;
-    if (ERR_OK != _ltask_dofile_args(lua, file, from, arg_start, arg_top)) {
-        lua_close(lua);
-        ltask->lua = NULL;
-        return ERR_FAILED;
-    }
-    lua_getglobal(lua, MSG_DISP_FUNC);
-    if (LUA_TFUNCTION != lua_type(lua, -1)) {
-        lua_close(lua);
-        ltask->lua = NULL;
-        LOG_ERROR("not find function %s.", MSG_DISP_FUNC);
-        return ERR_FAILED;
-    }
-    ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
-    return ERR_OK;
-}
 // 把 Lua 分配器自己记的次数并进全局计数后清零。一轮调度结束与 lua_close 之后各调一次
 static inline void _ltask_mem_flush(ltask_ctx *ltask) {
     if (0 != ltask->nalloc
@@ -361,6 +332,12 @@ static int32_t _msg_clean(lua_State *lua) {
     }
     return 0;
 }
+// _msg_index 的 RECVFROM 取 ip：栈上的地址串放进冷函数，免得每次取字段都背着它的栈保护
+NOINLINE static void _msg_push_ip(lua_State *lua, message_ctx *ud) {
+    char ip[IP_LENS];
+    netaddr_ip(&((recvfrom_ctx *)ud->data)->addr, ip);
+    lua_pushstring(lua, ip);
+}
 // 消息对象的 __index：按字段名取 message_ctx 里的值。按长度 + 首字符分发，不做全量串比。
 // data/shared 为空时返回 nil 而不是 0，调用方有 if msg.data then 这类真值判断；
 // ip/port/udata 只有 RECVFROM 才从 recvfrom_ctx 里取，别的类型 data 不是那个结构
@@ -386,9 +363,7 @@ static int32_t _msg_index(lua_State *lua) {
                 || NULL == ud->data) {
                 break;
             }
-            char ip[IP_LENS];
-            netaddr_ip(&((recvfrom_ctx *)ud->data)->addr, ip);
-            lua_pushstring(lua, ip);
+            _msg_push_ip(lua, ud);
             return 1;
         }
         break;
@@ -496,16 +471,10 @@ static int32_t _msg_unpack(lua_State *lua) {
     lua_pushinteger(lua, (lua_Integer)ud->size);
     return 9;
 }
-// 取消息对象的元表压栈。分两张，除 __gc 外完全相同：消息一律先挂不带 __gc 的那张，
+// 建一张消息对象的元表压栈。分两张，除 __gc 外完全相同：消息一律先挂不带 __gc 的那张，
 // 只有分发返回时还被拿着的载荷消息才换成带 __gc 的——挂了 __gc 的对象回收时要多走一遍 finalizer 链。
-// 元表 ref 缓存在 ltask_ctx，按整数下标直取，省掉 registry 的字符串查找；
-// 两张另按名字注册，task.msg_release 靠它们判型
-static inline void _ltask_msg_mt(lua_State *lua, ltask_ctx *ltask, int32_t withgc) {
-    int32_t *ref = (0 != withgc) ? &ltask->msg_mtref_gc : &ltask->msg_mtref;
-    if (0 != *ref) {
-        lua_rawgeti(lua, LUA_REGISTRYINDEX, *ref);
-        return;
-    }
+// 两张另按名字注册，task.msg_release 靠它们判型；建好后常驻主线程栈底（LSLOT_MSG_MT / LSLOT_MSG_MT_GC）
+static void _ltask_msg_mt_new(lua_State *lua, int32_t withgc) {
     if (0 != withgc) {
         lpub_new_mtable(lua, MT_TASK_MSG);
         lua_pushcfunction(lua, _msg_clean);
@@ -519,26 +488,24 @@ static inline void _ltask_msg_mt(lua_State *lua, ltask_ctx *ltask, int32_t withg
     lua_setfield(lua, -2, "__call");
     lua_pushstring(lua, "msg");
     lua_setfield(lua, -2, "__metatable");
-    lua_pushvalue(lua, -1);
-    *ref = luaL_ref(lua, LUA_REGISTRYINDEX);
 }
 // 把 message_ctx 整个拷进 userdata 交给 Lua，字段经 __index 按需取，先挂不带 __gc 的元表。
 // 不建表是因为表要为每条消息付一次 hash 部分的分配（16 槽）和逐字段 setfield，
 // 而 Lua 侧多数时候只读其中几个
-static inline message_ctx *_ltask_push_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
+static inline message_ctx *_ltask_push_msg(lua_State *lua, message_ctx *msg) {
     message_ctx *ud = (message_ctx *)lua_newuserdatauv(lua, sizeof(message_ctx), 0);
     *ud = *msg;
-    _ltask_msg_mt(lua, ltask, 0);
+    lua_pushvalue(lua, LSLOT_MSG_MT);
     lua_setmetatable(lua, -2);
     return ud;
 }
-// task 消息分发回调：从注册表取消息分发函数，打包消息后调用 Lua
+// task 消息分发回调：从主线程栈底 LSLOT_DISPATCH 取消息分发函数，打包消息后调用 Lua
 static void _ltask_run(task_dispatch_arg *arg) {
     ltask_ctx *ltask = arg->task->arg;
     int32_t held = 1;// 分发出错时不知道有没有回调协程拿着它，留给 msg_release / __gc
     // 消息对象在栈上多留一份，分发返回后才释放载荷
-    message_ctx *ud = _ltask_push_msg(ltask->lua, ltask, arg->msg);
-    lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
+    message_ctx *ud = _ltask_push_msg(ltask->lua, arg->msg);
+    lua_pushvalue(ltask->lua, LSLOT_DISPATCH);
     lua_pushvalue(ltask->lua, -2);
     if (LUA_OK == lua_pcall(ltask->lua, 1, 1, 0)) {
         held = lua_toboolean(ltask->lua, -1);
@@ -553,7 +520,7 @@ static void _ltask_run(task_dispatch_arg *arg) {
         if (0 == held) {
             _ltask_pend_push(ltask, ud);
         } else {
-            _ltask_msg_mt(ltask->lua, ltask, 1);
+            lua_pushvalue(ltask->lua, LSLOT_MSG_MT_GC);
             lua_setmetatable(ltask->lua, -2);
         }
     }
@@ -562,6 +529,39 @@ static void _ltask_run(task_dispatch_arg *arg) {
     if (MSG_TYPE_CLOSE == arg->msg->mtype) {
         lpub_sock_uncache(ltask->lua, arg->msg->sk.skid);
     }
+}
+// 初始化 ltask_ctx：创建 Lua 虚拟机、执行脚本，把消息分发函数与两张消息元表放进主线程栈底（见 LSLOT_*）。
+// 若 from != NULL，将 from 栈 [arg_start..arg_top] 区间的基本类型值作为变参
+// 传给脚本 chunk，脚本顶层用 `local a, b, ... = ...` 接收。
+static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
+                           lua_State *from, int32_t arg_start, int32_t arg_top) {
+    // mem 与 tda 告警阈值在 lua_newstate（会触发首批 alloc）之前初始化；默认 0 禁用，由 task.memlimit 启用
+    ltask->mem = 0;
+    tda_init(&ltask->mem_tda, 0);
+    ltask->task = task;
+    lua_State *lua = _ltask_luainit(task, ltask);
+    if (NULL == lua) {
+        return ERR_FAILED;
+    }
+    // 在跑 chunk 之前落定：脚本顶层就能调各绑定，它们直接解引用。
+    // 失败路径要把 lua 一并清空——它兼作 _ltask_arg_free 的"已初始化"标志，留着就是二次 lua_close
+    ltask->lua = lua;
+    if (ERR_OK != _ltask_dofile_args(lua, file, from, arg_start, arg_top)) {
+        lua_close(lua);
+        ltask->lua = NULL;
+        return ERR_FAILED;
+    }
+    lua_settop(lua, 0);
+    lua_getglobal(lua, MSG_DISP_FUNC);// LSLOT_DISPATCH
+    if (LUA_TFUNCTION != lua_type(lua, -1)) {
+        lua_close(lua);
+        ltask->lua = NULL;
+        LOG_ERROR("not find function %s.", MSG_DISP_FUNC);
+        return ERR_FAILED;
+    }
+    _ltask_msg_mt_new(lua, 0);// LSLOT_MSG_MT
+    _ltask_msg_mt_new(lua, 1);// LSLOT_MSG_MT_GC
+    return ERR_OK;
 }
 /// <summary>
 /// 注册一个新 task。第 4 起的变参会作为参数传给脚本 chunk，
