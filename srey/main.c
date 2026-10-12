@@ -8,6 +8,9 @@
     #if WITH_MIMALLOC
         #pragma comment(lib, "mimalloc" DEPS_LIB_SUFFIX ".lib")
     #endif
+    #if WITH_FUTEX
+        #pragma comment(lib, "Synchronization.lib")// WaitOnAddress / WakeByAddress*，见 thread/futex.h
+    #endif
     // 库名后缀由 os.h 的 DEPS_LIB_SUFFIX 拼,对应 tools/deps.py 落在 bin/ 的那个变体。
     // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
     // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
@@ -41,6 +44,7 @@
 static int32_t _log_use_file = 1; //是否将日志写文件
 static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准输出
 static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
+static atomic_t _exit_code = -1; // loader_exit 请求的退出码，只记第一次；-1 表示没人请求(信号或服务控制退出)
 
 // 读一个配置字段：取到就写进去，取不到且字段确实存在才告警（可选字段缺席是正常的）。
 // 键名在整条语句里只出现一次：取值与告警共用同一个 keystr，不会读一个键报另一个键
@@ -204,7 +208,7 @@ static void _free_globle(void) {
     timeEndPeriod(1);
 #endif
 }
-// 释放所有资源并退出服务（loader、日志、socket）
+// 释放所有资源并退出服务（loader、日志、socket）；内存检查对不上账返回 ERR_FAILED
 static int32_t service_exit(void) {
     loader_free(g_loader);
     task_cleanup();
@@ -220,8 +224,7 @@ static int32_t service_exit(void) {
     // OpenSSL 线程级状态。放在最后，之后再碰 OpenSSL 会重新分配；前台模式下是主线程，提前收一次也无害
     OPENSSL_thread_stop();
 #endif
-    _memcheck();
-    return ERR_OK;
+    return 0 == _memcheck() ? ERR_OK : ERR_FAILED;
 }
 // 初始化配置为内置默认值
 static void _config_init(config_ctx *config) {
@@ -236,6 +239,11 @@ static void _config_init(config_ctx *config) {
     safe_fill_str(config->debug.ip, sizeof(config->debug.ip), "127.0.0.1");
     safe_fill_str(config->dns, sizeof(config->dns), "8.8.8.8");
     safe_fill_str(config->script, sizeof(config->script), "script");
+}
+// loader_exit 的回调(任意线程)：记下第一次请求的退出码，再同信号一样唤醒主线程
+static void _on_exit(int32_t code, void *arg) {
+    (void)ATOMIC_CAS(&_exit_code, -1, code);
+    hug_wakeup((hug_ctx *)arg);
 }
 // 完整初始化服务：加载配置、初始化协程、日志、loader、启动业务任务。
 // test/main.c 的 main 另有一套等价的全局初始化，加减项要两处同步
@@ -257,6 +265,7 @@ static int32_t service_init(void) {
     coro_task_stack(config.stacksize);
     unlimit();
     g_loader = loader_init(config.nnet, config.nworker, config.twqueuelens);
+    loader_on_exit(g_loader, _on_exit, &_hug);
     if (ERR_OK != task_startup(g_loader, &config)) {
         service_exit();
         return ERR_FAILED;
@@ -313,7 +322,12 @@ static int32_t service_hug(int32_t ready_fd, int32_t devnull) {
 #endif
     if (ERR_OK == rtn) {
         hug_wait(&_hug);
-        service_exit();
+        int32_t memok = service_exit();
+        // 信号退出照旧返回 ERR_OK；loader_exit 请求的退出按请求的退出码返回，请求 0 而内存检查不过算失败
+        int32_t code = (int32_t)ATOMIC_GET(&_exit_code);
+        if (-1 != code) {
+            rtn = (0 == code && ERR_OK != memok) ? 1 : code;
+        }
     }
     hug_free(&_hug);
     return rtn;

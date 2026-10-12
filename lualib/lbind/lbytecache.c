@@ -3,7 +3,6 @@
 #include "lua/lauxlib.h"
 #include "containers/hashmap.h"
 #include "thread/rwlock_distr.h"
-#include "utils/utils.h"
 #include "base/base.h"
 
 // 缓存条目:path 作 key(strdup),code 为编译后字节码(MALLOC);进程级常驻
@@ -61,27 +60,27 @@ static int _lbc_writer(lua_State *lua, const void *p, size_t sz, void *ud) {
 }
 // 写锁内调用:存/替换 path 字节码;已存在同版本则释放本次 code,mtime 变则替换
 static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) {
-    bc_entry key;
-    key.path = (char *)path;
-    bc_entry *found = bc_map_get(_bc_map, &key);
-    if (NULL != found) {
-        if (found->mtime == mtime) {
-            FREE(code);
-            return;
-        }
-        FREE(found->code);
-        found->code = code;
-        found->size = size;
-        found->mtime = mtime;
-        return;
-    }
+    int32_t hit;
     bc_entry ne;
-    size_t plen = strlen(path);
-    ne.path = dup_zero(path, plen);
+    bc_entry *found;
+    // 先 dup 再探测一次:未命中时这份直接进表,命中时释放掉
+    ne.path = dup_zero(path, strlen(path));
     ne.code = code;
     ne.size = size;
     ne.mtime = mtime;
-    bc_map_set(_bc_map, &ne);
+    found = bc_map_get_set(_bc_map, &ne, &hit);
+    if (!hit) {
+        return;
+    }
+    FREE(ne.path);
+    if (found->mtime == mtime) {
+        FREE(code);
+        return;
+    }
+    FREE(found->code);
+    found->code = code;
+    found->size = size;
+    found->mtime = mtime;
 }
 int32_t lbc_loadfile(lua_State *lua, const char *path, uint64_t mt) {
     bc_entry key;

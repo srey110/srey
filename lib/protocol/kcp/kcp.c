@@ -1,6 +1,5 @@
 ﻿#include "protocol/kcp/kcp.h"
 #include "containers/hashmap.h"
-#include "utils/timer.h"
 #if KCP_TICK_HEAP
 #include "containers/heap.h"
 #endif

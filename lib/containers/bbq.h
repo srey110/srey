@@ -138,16 +138,19 @@ static inline uint32_t name##_size(name *q) {                                   
     return (n > (int64_t)q->capacity) ? q->capacity : (uint32_t)n;              \
 }                                                                               \
 /* 两头不等时两次原子读就够,直接报非空:生产头领先时中间必有整块没消费完,消费头     \
-   暂时领先一块(推块途中)时报非空只是高估。相等才去读块游标。方向同 size */          \
+   暂时领先一块(推块途中)时报非空只是高估。相等才去读块游标。方向同 size。          \
+   开头的 fence 给丢唤醒握手用:调用方读改写完标志直接判空,要能看见生产者抢槽的 FAA */ \
 static inline int32_t name##_empty(name *q) {                                   \
-    uint64_t chd = (uint64_t)ATOMIC64_GET(&q->chead);                           \
+    uint64_t chd;                                                               \
+    ATOMIC_THREAD_FENCE_SEQCST();                                               \
+    chd = (uint64_t)ATOMIC64_GET(&q->chead);                                    \
     if ((uint64_t)ATOMIC64_GET(&q->phead) != chd) {                             \
         return 0;                                                               \
     }                                                                           \
     return 0 == name##_size(q);                                                 \
 }                                                                               \
 /* 入队:在当前块 FAA 抢一个槽,抢到就写数据再 FAA 发布,不会失败也不重试。            \
-   队满立即 ERR_FAILED,不等待。抢槽那次 FAA 是全屏障,也是入队的定序点,             \
+   队满立即 ERR_FAILED,不等待。抢槽那次 FAA 是 seq_cst,也是入队的定序点,           \
    调用方的丢唤醒握手靠它,不要降级。                                              \
    元素按指针传(同 MPQ_DECL) */                                                  \
 static inline int32_t name##_trypush(name *q, T const *data) {                  \

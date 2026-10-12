@@ -91,6 +91,12 @@
     <ClInclude Include="thread\cond.h">
       <Filter>thread</Filter>
     </ClInclude>
+    <ClInclude Include="thread\futex.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\waiter.h">
+      <Filter>thread</Filter>
+    </ClInclude>
     <ClInclude Include="thread\mutex.h">
       <Filter>thread</Filter>
     </ClInclude>
@@ -166,6 +172,27 @@
     <ClInclude Include="base\strconv.h">
       <Filter>base</Filter>
     </ClInclude>
+    <ClInclude Include="base\sfile.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\stime.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\timer.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\strptime.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\srand.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\once.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\sys.h">
+      <Filter>base</Filter>
+    </ClInclude>
     <ClInclude Include="base\structs.h">
       <Filter>base</Filter>
     </ClInclude>
@@ -202,19 +229,13 @@
     <ClInclude Include="utils\uuid.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="utils\strptime.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="utils\timer.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="utils\tw.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\urlparse.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="utils\utils.h">
+    <ClInclude Include="utils\idgen.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\contenttype.h">
@@ -513,6 +534,24 @@
     <ClCompile Include="base\strconv.c">
       <Filter>base</Filter>
     </ClCompile>
+    <ClCompile Include="base\sfile.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\stime.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\timer.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\strptime.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\srand.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="base\sys.c">
+      <Filter>base</Filter>
+    </ClCompile>
     <ClCompile Include="base\os_win.c">
       <Filter>base</Filter>
     </ClCompile>
@@ -552,19 +591,13 @@
     <ClCompile Include="utils\uuid.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="utils\strptime.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="utils\timer.c">
-      <Filter>utils</Filter>
-    </ClCompile>
     <ClCompile Include="utils\tw.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\urlparse.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="utils\utils.c">
+    <ClCompile Include="utils\idgen.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\contenttype.c">

@@ -3,7 +3,6 @@
 #include "protocol/http.h"
 #include "protocol/mqtt/mqtt.h"
 #include "event/event.h"
-#include "utils/utils.h"
 
 #define MASK_KEY_LENS 4 // 掩码密钥长度
 #define SIGN_KEY_LENS 16 // 握手签名（RFC 6455：16 字节随机 nonce，base64 后 24 字符）

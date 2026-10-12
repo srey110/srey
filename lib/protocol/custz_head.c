@@ -1,6 +1,5 @@
 ﻿#include "protocol/custz_head.h"
 #include "protocol/prots_pub.h"
-#include "utils/utils.h"
 
 #define CUSTZ_FIXED_LENS 4 // 固定头长度（字节数）
 

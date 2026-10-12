@@ -966,6 +966,16 @@ static int32_t _ltask_nnet(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 请求进程退出，本调用立即返回；收尾(loader_free、内存检查、带退出码退出)由程序入口完成，见 loader_exit。
+/// 测试汇总收齐结果后用它自行收尾
+/// </summary>
+/// <param name="code" type="integer?">退出码，缺省 0</param>
+/// <returns>无</returns>
+static int32_t _ltask_exit(lua_State *lua) {
+    loader_exit(g_loader, (int32_t)luaL_optinteger(lua, 1, 0));
+    return 0;
+}
+/// <summary>
 /// 交还消息载荷（交给 C 侧攒批释放），之后 msg.data 立即为 nil。可重复调；无载荷消息与非消息对象什么都不做。
 /// 两张消息元表都认：同一次分发内跑完的回调交还时，C 侧还没给它补挂带 __gc 的那张
 /// </summary>
@@ -1012,6 +1022,7 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { "bind_net", _ltask_bind_net },
         { "net_index", _ltask_net_index },
         { "nnet", _ltask_nnet },
+        { "exit", _ltask_exit },
         { "accept_group", _ltask_accept_group },
         { "msg_release", _ltask_msg_release },
         { NULL, NULL },

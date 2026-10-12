@@ -1,6 +1,5 @@
 ﻿#include "protocol/mongo/mongo_pack.h"
 #include "serial/bson.h"
-#include "utils/utils.h"
 #include "utils/binary.h"
 #include "crypt/scram.h"
 #include "protocol/prots_pub.h"

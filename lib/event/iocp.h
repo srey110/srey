@@ -7,7 +7,6 @@
 #include "event/cmds.h"
 #include "thread/thread.h"
 #include "utils/tda.h"
-#include "utils/timer.h"
 
 #ifdef EV_IOCP
 

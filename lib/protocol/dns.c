@@ -1,5 +1,4 @@
 ﻿#include "protocol/dns.h"
-#include "utils/utils.h"
 #include "utils/netaddr.h"
 
 #define DNS_FLAG1_RD        0x01u // 期望递归（请求时设置）

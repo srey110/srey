@@ -3,7 +3,7 @@
 
 #include "CuTest.h"
 
-// 注册线程原语测试套件：mutex、spinlock、rwlock、cond、thread
+// 注册线程原语测试套件：mutex、spinlock、rwlock、cond、thread、futex、waiter / spinner
 void test_thread(CuSuite *suite);
 
 #endif//TEST_THREAD_H_

@@ -1,7 +1,6 @@
 ﻿#ifndef EVPUB_H_
 #define EVPUB_H_
 
-#include "utils/utils.h"
 #include "containers/queue.h"
 #include "containers/sarray.h"
 #include "thread/spinlock.h"
@@ -15,7 +14,7 @@
 #define EVENT_CHANGES_CNT    128 // 事件变更队列初始容量
 #define EVENT_CHECK_INTERVAL 5 // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
 #define INIT_EVENTS_CNT      256 // 初始事件槽位数量
-#define INIT_SENDBUF_LEN     32 // 发送缓冲区初始长度
+#define INIT_SENDBUF_LEN     4 // 发送队列初始槽数，深流水按需倍增
 #define QUEUE_OVERLOAD_RATIO 3 // 队列积压告警初始阈值 = 容量 / RATIO，触发后翻倍，空队列重置
 #define WB_WARN_INIT_SIZE   (1024 * 1024) // 单 sock 发送缓冲字节告警首阈值；触发后翻倍（1MB→2MB→4MB...），队列清空后复位；0 表示禁用
 #define EVENT_TICK_MIN       10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询

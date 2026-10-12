@@ -63,7 +63,7 @@ static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu) {
 #endif
 };
 // cond_timedwait 的错误上报只能写 stderr，不能走 LOG_*：它是持调用方互斥量返回的，
-// 而当那个互斥量正是 log.c 的 _mtx 时，slog 在消费者 _sleeping 置位期间会去锁同一个
+// 而当那个互斥量正是 log.c 里 _waiter 的那把锁时(waiter 用 mutex + cond 实现)，slog 在日志线程睡着期间会去锁同一个
 // 互斥量，同线程重锁即自死锁(glibc 与 macOS 永久阻塞并连带堵住所有写日志的线程，
 // FreeBSD 的自适应锁返 EDEADLK 触发 mutex_lock 的断言，Windows 因 CRITICAL_SECTION 可重入而无事)。
 // 与 log.c 自身队列满/格式化失败时改写 stderr 的兜底同一策略

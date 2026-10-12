@@ -24,7 +24,7 @@
 srey/
 ├── lib/
 │   ├── advance/            上层组件：HTTP 路由器、Harbor 跨服通信、调试控制台
-│   ├── base/               OS 抽象、通用宏、内存分配、字节序与数字转换、编译期配置
+│   ├── base/               OS 抽象、通用宏、内存分配、字节序与数字转换、文件与时间工具、编译期配置
 │   ├── containers/         纯头文件宏容器：数组、队列、堆、哈希表、红黑树、无锁队列
 │   ├── coro/               通用协程调度器（基于 minicoro）
 │   ├── crypt/              AES、DES、MD5、SHA、HMAC、SCRAM、Base64、CRC、xxHash…
@@ -38,8 +38,8 @@ srey/
 │   │   └── smtp/           SMTP
 │   ├── serial/             序列化：BSON、seri、JSON（yyjson）
 │   ├── srey/               task 系统、调度器、协程 task 与常用协程封装
-│   ├── thread/             互斥锁、读写锁、自旋锁、条件变量
-│   └── utils/              日志、定时器、时间轮、Buffer、雪花 ID、UUID…
+│   ├── thread/             互斥锁、读写锁、自旋锁、条件变量、按地址等待、消费线程的睡眠握手
+│   └── utils/              日志、时间轮、Buffer、雪花 ID、UUID…
 ├── lualib/                 Lua 5.5 运行时 + C 绑定（lbind）
 ├── srey/                   主程序入口（main.c）与服务装配（startup.c）
 ├── test/                   C 单元测试（CuTest）+ 集成测试
@@ -184,7 +184,7 @@ mk.bat m32        :: 32 位
 | 字段 | 说明 |
 |------|------|
 | `serviceid` | 服务编号 |
-| `nnet` / `nworker` | net 线程数 / worker 线程数，0 = CPU 核数 |
+| `nnet` / `nworker` | net 线程数 / worker 线程数，0 = 本进程可用核数（Linux 认 taskset / cpuset 亲和与 cgroup v2 cpu.max 配额，FreeBSD 认 cpuset 亲和，macOS / Windows 为整机核数） |
 | `loglv` | 日志级别：0 FATAL … 4 DEBUG |
 | `stacksize` | 协程栈字节数，0 用默认 |
 | `twqueuelens` / `logqueuelens` | 时间轮与日志队列长度 |
@@ -460,7 +460,7 @@ Lua 测试（`bin/script/test` 下全部模块，含用 python3 跑 `bin/py_assi
 
 ```sh
 sh mk.sh
-./bin/srey -d   # -d 为前台模式，必带；跑完打印汇总后不退出，Ctrl+C 结束
+./bin/srey -d   # -d 为前台模式，必带；跑完打印汇总后自己退出，全过退出码 0
 ```
 
 两套都要跑时用 `sh mk.sh all` 一次编出来。只跑某个 C 模块：在 `test/main.c` 注释掉不需要的 `test_*()` 调用后重编。

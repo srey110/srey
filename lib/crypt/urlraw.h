@@ -10,10 +10,10 @@
 /// </summary>
 /// <param name="data">要编码的数据</param>
 /// <param name="lens">数据长度</param>
-/// <param name="out">编码后的数据, 长度:URLEN_SIZE(lens)</param>
+/// <param name="out">编码后的数据，'\0' 结尾, 长度:URLEN_SIZE(lens)</param>
 /// <param name="space2plus">非 0:空格编码为 '+'(application/x-www-form-urlencoded)；0:空格编码为 %20(RFC 3986)</param>
-/// <returns>编码后的数据</returns>
-char *url_encode(const char *data, const size_t lens, char *out, int32_t space2plus);
+/// <returns>写进 out 的字节数，不含结尾 '\0'</returns>
+size_t url_encode(const char *data, const size_t lens, char *out, int32_t space2plus);
 /// <summary>
 /// URL解码
 /// </summary>

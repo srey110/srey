@@ -77,13 +77,15 @@ static inline uint32_t name##_size(name *q) {                                   
     uint32_t n = enq - deq;                                                     \
     return (n > q->capacity) ? q->capacity : n;                                 \
 }                                                                               \
-/* 是否为空,口径同 size */                                                      \
+/* 是否为空,口径同 size。enq 按 seq_cst 读:调用方读改写完标志直接判空,才能和      \
+   生产者抢 enq 的那次 CAS 互相看见(丢唤醒握手,见 trypush) */                    \
 static inline int32_t name##_empty(name *q) {                                   \
     uint32_t deq = (uint32_t)ATOMIC_GET(&q->deq);                               \
-    return (uint32_t)ATOMIC_GET(&q->enq) == deq;                                \
+    return (uint32_t)ATOMIC_GET_SEQCST(&q->enq) == deq;                         \
 }                                                                               \
 /* 入队:CAS 抢 enq 独占槽位后写数据并 release 发布。队满立即失败,不等待。          \
-   那次 CAS 是全屏障,调用方的丢唤醒握手靠它,不要降级。                            \
+   那次 CAS 是 seq_cst,调用方的丢唤醒握手靠它,不要降级。槽位 sequence 只是 release   \
+   写,不进握手,单靠 pop 可能看漏刚发布的:对方清完标志要用 empty(读 enq)复查。      \
    元素按指针传(同 ARR_DECL/QUE_DECL) */                                          \
 static inline int32_t name##_trypush(name *q, T const *data) {                  \
     name##_cell *cell;                                                          \

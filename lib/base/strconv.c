@@ -15,6 +15,7 @@
 #endif
 #define STRTOD_POW10_MIN (-64)
 #define STRTOD_POW10_MAX 64
+#define STRTOD_S_BUF 128 // strtod_s 回落用的栈缓冲字节数，能收的串最长比它少 1(留 NUL)
 // 生成 _hex_val 表用：逐项算出一个字节的十六进制值，非法为 -1
 #define _HEX1(c)  (int8_t)(((c) >= '0' && (c) <= '9') ? (c) - '0' : ((c) >= 'a' && (c) <= 'f') ? (c) - 'a' + 10 \
                             : ((c) >= 'A' && (c) <= 'F') ? (c) - 'A' + 10 : -1)
@@ -424,18 +425,10 @@ int32_t strtod_fast(const char *str, size_t lens, double *out) {
     return ERR_OK;
 #endif
 }
-// 先在原串上走 strtod_fast 的精确快路径，它不收的写法("+1"、".5"、"Infinity"、十六进制、上溢等)
-// 才拷进 tmp 补 NUL 退回 strtod_c，判定与原先逐字相同
-int32_t strtod_s(const void *data, size_t lens, double *val) {
-    char tmp[128];
-    // 长度先挡：快路径不经过 tmp，不先挡的话 ≥128 字节的串会被它收下；也保证下面拷进 tmp 带 NUL 装得下
-    if (0 == lens
-        || lens >= sizeof(tmp)) {
-        return ERR_FAILED;
-    }
-    if (ERR_OK == strtod_fast((const char *)data, lens, val)) {
-        return ERR_OK;
-    }
+// strtod_s 的回落：拷进栈缓冲补 NUL 后走 strtod_c，lens 已由调用方挡在缓冲之内。
+// NOINLINE 承重别删：单调用点，内联回去会把数组带进 strtod_s 的帧，快路径也得过栈保护检查
+NOINLINE static int32_t _strtod_s_slow(const void *data, size_t lens, double *val) {
+    char tmp[STRTOD_S_BUF];
     memcpy(tmp, data, lens);
     tmp[lens] = '\0';
     char *end;
@@ -447,4 +440,17 @@ int32_t strtod_s(const void *data, size_t lens, double *val) {
     }
     *val = d;
     return ERR_OK;
+}
+// 先在原串上走 strtod_fast 的精确快路径，它不收的写法("+1"、".5"、"Infinity"、十六进制、上溢等)
+// 才走 _strtod_s_slow 退回 strtod_c，判定与原先逐字相同
+int32_t strtod_s(const void *data, size_t lens, double *val) {
+    // 长度先挡：快路径不经过栈缓冲，不先挡的话超长串会被它收下；也保证回落时拷进缓冲带 NUL 装得下
+    if (0 == lens
+        || lens >= STRTOD_S_BUF) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK == strtod_fast((const char *)data, lens, val)) {
+        return ERR_OK;
+    }
+    return _strtod_s_slow(data, lens, val);
 }

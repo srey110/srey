@@ -19,8 +19,7 @@ static int32_t _lcrypt_url_encode(lua_State *lua) {
     int32_t space2plus = (int32_t)luaL_optinteger(lua, idx, 1);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, URLEN_SIZE(size));
-    url_encode(data, size, out, space2plus);
-    luaL_pushresultsize(&lbuf, strlen(out));
+    luaL_pushresultsize(&lbuf, url_encode(data, size, out, space2plus));
     return 1;
 }
 /// <summary>

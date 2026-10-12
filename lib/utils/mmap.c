@@ -30,7 +30,7 @@ static atomic_t _mmap_gran;// 分配粒度缓存，0 表示还没取
 static _nt_create_section _mmap_nt_create;
 static _nt_map_view _mmap_nt_map;
 static _nt_status2dos _mmap_nt_todos;
-static atomic_t _mmap_nt_once;// ntdll 函数取址状态：0=未取 1=取中 2=已取
+static once_ctx _mmap_nt_once;// ntdll 的三个函数只取一次，见 once.h
 #endif
 
 // 自己做的参数检查失败：错误码不来自系统调用，得自己补
@@ -272,22 +272,15 @@ static char *_mmap_win_view(mmap_ctx *ctx, uint64_t aoff, size_t len, uint64_t e
     SetLastError(err);
     return p;
 }
-// ntdll 的三个函数只取一次：CAS 赢的一方取址，其余等它把状态置成 2
+// ntdll 的三个函数只取一次：抢到的一方取址，其余等它取完
 static void _mmap_nt_load(void) {
     HMODULE nt;
-    if (2 == ATOMIC_GET(&_mmap_nt_once)) {
-        return;
-    }
-    if (ATOMIC_CAS(&_mmap_nt_once, 0, 1)) {
+    if (once_begin(&_mmap_nt_once)) {
         nt = GetModuleHandleW(L"ntdll.dll");
         _mmap_nt_create = (_nt_create_section)GetProcAddress(nt, "NtCreateSection");
         _mmap_nt_map = (_nt_map_view)GetProcAddress(nt, "NtMapViewOfSection");
         _mmap_nt_todos = (_nt_status2dos)GetProcAddress(nt, "RtlNtStatusToDosError");
-        ATOMIC_CAS(&_mmap_nt_once, 1, 2);
-        return;
-    }
-    while (2 != ATOMIC_GET(&_mmap_nt_once)) {
-        CPU_PAUSE();
+        once_end(&_mmap_nt_once);
     }
 }
 // 可扩展视图：预留 len 字节地址，之后提交页时文件跟着变长。区段必须按 PAGE_READWRITE 建

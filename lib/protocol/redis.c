@@ -537,7 +537,8 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         } else if ((3 == pk->len && 0 == memcasecmp(pk->data, "nan", (size_t)pk->len))
                    ||(4 == pk->len && 0 == memcasecmp(pk->data, "-nan", (size_t)pk->len))) {
             pk->dval = NAN;
-        } else {
+        } else if (ERR_OK != strtod_fast(pk->data, (size_t)pk->len, &pk->dval)) {
+            // 快路径不收的写法回落 strtod_c；不用 strtod_s，它有长度上限，会拒掉合法的长串
             char *end;
             pk->dval = strtod_c(pk->data, &end);
             if (end != pk->data + pk->len

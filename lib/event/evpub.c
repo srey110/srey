@@ -1,6 +1,5 @@
 ﻿#include "containers/hashmap.h"
 #include "utils/netutils.h"
-#include "utils/timer.h"
 #ifdef EV_IOCP
 #include "event/iocp.h"
 #else

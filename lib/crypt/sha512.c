@@ -92,7 +92,6 @@ static const uint64_t ihv[8] = {
 
 void sha512_init(sha512_ctx *sha512) {
     memcpy(sha512->state, ihv, SHA512_BLOCK_SIZE);
-    ZERO(sha512->data, SHA512_BLOCK_LENGTH);
     sha512->bitlen[0] = sha512->bitlen[1] = 0;
 }
 // SHA-512 核心变换：连续处理 blocks 个 128 字节块

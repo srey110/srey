@@ -1,6 +1,5 @@
 ﻿#include "protocol/pgsql/pgsql_parse.h"
 #include "protocol/pgsql/pgsql_reader.h"
-#include "utils/utils.h"
 
 // 解析 ErrorResponse / NoticeResponse，将各字段拼接为可读字符串返回（调用方负责释放）
 char *_pgpack_error_notice(binary_ctx *breader) {

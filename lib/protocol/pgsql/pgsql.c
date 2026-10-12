@@ -3,7 +3,6 @@
 #include "crypt/scram.h"
 #include "crypt/md5.h"
 #include "event/event.h"
-#include "utils/utils.h"
 
 //https://www.postgresql.org/docs/18/protocol-flow.html
 //https://pg.center/docs/18/protocol.html

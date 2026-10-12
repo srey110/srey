@@ -1,9 +1,7 @@
 ﻿#include "utils/log.h"
-#include "utils/utils.h"
-#include "thread/cond.h"
+#include "thread/waiter.h"
 #include "thread/thread.h"
 #include "utils/pool.h"
-#include "utils/timer.h"
 
 #define LOG_FMT "[%s %03d][%s]%s" // 行首时间、级别与正文，换行由 _log_fprint 补
 #define LOG_LINE_STACK 512 // _log_fprint 栈上拼行的缓冲，装不下的长行退回 fprintf
@@ -11,6 +9,7 @@
 #define LOG_TIME_FMT "%Y-%m-%d %H:%M:%S" // 秒级部分;毫秒由调用方另拼
 #define LOG_INLINE_SIZE 256
 #define LOG_POP_BATCH   128
+#define LOG_LINGER_MS   10 // 日志线程写过行之后浅睡的毫秒数，浅睡时谁来叫醒见 _log_commit
 #define LOG_FLUSH_WAIT  200 // log_abort 的等待上限(毫秒)
 #define LOG_FLUSH_STEP  10 // log_abort 每次让出的毫秒数
 #define LOG_ABORT_SLACK 3 // log_abort 输家比赢家多等的步数,覆盖赢家排空之后写那一行的时间
@@ -43,7 +42,6 @@ FSQU_DECL(logq, log_item *)
 static FILE *_handle = NULL;
 static atomic_t _log_lv = LOGLV_DEBUG;
 static atomic_t _running = 0; /* atomic 保证跨平台内存可见 */
-static atomic_t _sleeping = 0; /* 日志线程睡前置 1；生产者 CAS 抢到 1→0 的那个负责唤醒，其余不再重复 signal */
 static atomic_t _aborting = LOG_ABORT_IDLE; /* 取值见 log_abort_state */
 static atomic_t _drained = 0; /* 完成一轮排空自增,log_abort 据此判断落盘 */
 static pthread_t _th;
@@ -57,8 +55,8 @@ static char _batch[LOG_BATCH_BYTES];
 static size_t _nbatch = 0;
 static logq _que;
 static pool_ctx _itempool;
-static mutex_ctx _mtx;
-static cond_ctx _cond;
+static waiter_ctx _waiter;// 日志线程的睡眠握手，深睡 WAITER_SLEEP、浅睡 WAITER_LINGER
+static uint32_t _linger_full = LOG_POP_BATCH;// 浅睡时攒到这么多条就叫醒，log_init 按队列容量定
 #ifdef OS_WIN
 static HANDLE _console = NULL;
 static CONSOLE_SCREEN_BUFFER_INFO _def_console;
@@ -270,7 +268,7 @@ static void _log_write_exit(void) {
     _log_batch_flush();
 }
 // 日志线程主循环。排空后准备睡之前刷一次输出流：日志文件是全缓冲，不刷的话低频日志要攒满缓冲、
-// 或等到下一条 WARN 才落盘
+// 或等到下一条 WARN 才落盘。上次入睡以来写过行就浅睡 LOG_LINGER_MS，否则深睡；浅睡时谁来叫醒见 _log_commit
 static void _log_loop(void *arg) {
     (void)arg;
     *_in_logth_tls() = 1;
@@ -279,6 +277,7 @@ static void _log_loop(void *arg) {
     timer_init(&timer);
     uint64_t now, shrink_start = timer_cur_ms(&timer);
     uint32_t spins = 0, nwrote;
+    int32_t wrote = 0;
     while (ATOMIC_GET(&_running)) {
         nwrote = _log_write_all(items);
         if (0 == nwrote
@@ -286,6 +285,7 @@ static void _log_loop(void *arg) {
             spin_backoff(&spins);
             continue;
         }
+        wrote |= (0 != nwrote);
         ATOMIC_ADD(&_drained, 1);
         spins = 0;
         // 空闲时按 SHRINK_TIME 门控回落 log_item 池（锁外执行）
@@ -296,37 +296,24 @@ static void _log_loop(void *arg) {
         if (logq_empty(&_que)) {
             fflush(_log_out());
         }
-        mutex_lock(&_mtx);
-        // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩
-        if (logq_empty(&_que) && ATOMIC_GET(&_running)) {
-            ATOMIC_SET_SEQCST(&_sleeping, 1);
-            // 防丢失唤醒：置 _sleeping 后再查一次队列，仍空才等。中间那道 fence 不能省:
-            // logq_empty 是 acquire 读, 在部分 ARM 上会跑到置位之前, 于是这边看不到刚入队的
-            // 元素、生产者又还没看到 _sleeping, 两边同时看漏就是漏唤醒
-            ATOMIC_THREAD_FENCE_SEQCST();
-            if (logq_empty(&_que)) {
-                cond_timedwait(&_cond, &_mtx, SHRINK_TIME);
-            }
-            ATOMIC_SET_RELAXED(&_sleeping, 0);
+        // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩。握手见 waiter.h
+        waiter_prepare(&_waiter, wrote ? WAITER_LINGER : WAITER_SLEEP);
+        if (!logq_empty(&_que)
+            || 0 == ATOMIC_GET(&_running)) {
+            waiter_cancel(&_waiter);
+        } else {
+            (void)waiter_commit(&_waiter, wrote ? LOG_LINGER_MS : SHRINK_TIME);
+            wrote = 0;
         }
-        mutex_unlock(&_mtx);
     }
 }
-// 日志线程是否正睡着、需要唤醒。必须是足序读，与上面置 _sleeping 前那道 fence 对称：
-// 换成普通读，弱序平台上两边会同时看漏（消费者没看到新元素、生产者没看到 _sleeping）。
-// 只有 slog 用它；_log_drain_wait 不看它：_sleeping 可能已被别的生产者清零、signal 却还没发出
-static inline int32_t _log_need_wake(void) {
-    return ATOMIC_GET_SEQCST(&_sleeping);
-}
-// 唤醒日志线程并等它把队列排空，上限 LOG_FLUSH_WAIT。崩溃路径上只 trylock，宁可不唤醒也不卡住。
+// 唤醒日志线程并等它把队列排空，上限 LOG_FLUSH_WAIT。崩溃路径上用 waiter_trywake，宁可不唤醒也不卡住；
+// 不看睡眠态直接叫：睡眠态可能已被别的生产者抢成 WAKING、叫醒却还没发出。
 // 只有在业务线程上调用才有意义：断言若发生在日志线程自己身上，唯一能推进队列的就是它，
 // 等下去必然空转满整个上限，故调用方须先判 _in_logth
 static void _log_drain_wait(void) {
     atomic_t gen = ATOMIC_GET(&_drained);
-    if (ERR_OK == mutex_trylock(&_mtx)) {
-        cond_signal(&_cond);
-        mutex_unlock(&_mtx);
-    }
+    waiter_trywake(&_waiter);
     int32_t nstep = LOG_FLUSH_WAIT / LOG_FLUSH_STEP;
     while ((!logq_empty(&_que) || gen == ATOMIC_GET(&_drained))
         && nstep-- > 0) {
@@ -343,10 +330,14 @@ void log_init(FILE *file, uint32_t capacity) {
 #endif
     uint32_t cap = 0 == capacity ? 4 * ONEK : capacity;
     logq_init(&_que, cap);
+    // 队列配得小时攒满一批就够不着了，改取容量一半，留出余量不溢出
+    _linger_full = logq_capacity(&_que) / 2;
+    if (_linger_full > LOG_POP_BATCH) {
+        _linger_full = LOG_POP_BATCH;
+    }
     pool_cbs _logitem_cbs = { NULL, NULL, NULL, _log_item_clear };
     pool_init(&_itempool, sizeof(log_item), cap, LOG_POP_BATCH, POOL_THSAFE, &_logitem_cbs);
-    mutex_init(&_mtx);
-    cond_init(&_cond);
+    waiter_init(&_waiter);
     ATOMIC_SET_RELEASE(&_running, 1); 
     _th = thread_creat(_log_loop, NULL);
 }
@@ -355,18 +346,15 @@ void log_init(FILE *file, uint32_t capacity) {
  * 之后、logq_trypush 之前被抢占，等到 logq_free 执行后再恢复则会 UAF。
  * 正确关闭顺序：先 join 所有业务线程 → 再调用 log_free。*/
 void log_free(void) {
-    mutex_lock(&_mtx);
     ATOMIC_SET_RELAXED(&_running, 0);
-    mutex_unlock(&_mtx);
-    cond_signal(&_cond);
+    waiter_wake(&_waiter, NULL);// 先置 0 再叫(握手见 waiter.h)：日志线程要么复查时看到 0，要么已睡下被叫醒
     thread_join(_th);
     log_item *items[LOG_POP_BATCH];
     _log_write_all(items);
     _log_write_exit();
     logq_free(&_que);
     pool_free(&_itempool);
-    mutex_free(&_mtx);
-    cond_free(&_cond);
+    waiter_free(&_waiter);
 }
 void log_abort(const char *file, const char *func, int32_t line, const char *msg) {
     stack_print(stderr);// 放最前：下面几条早退的路径也要有栈
@@ -427,17 +415,21 @@ static void _log_drop(log_item *item, const char *msg) {
     _log_sync(_log_out(), item, msg);
     pool_push(&_itempool, item, 0);
 }
-// slog 一族的收尾：入队并按需唤醒日志线程；队列满不阻塞业务线程，同步写出兜底
+// slog 一族的收尾：入队并按需唤醒日志线程；队列满不阻塞业务线程，同步写出兜底。
+// 浅睡时只有 WARN 及以上或攒到 _linger_full 条才叫醒，攒满就叫是给突发留出队列余量；队列长度用的是不拿锁的近似值，
+// 看漏了也只是晚一个 LOG_LINGER_MS 才写，不丢行
 static inline void _log_commit(log_item *item) {
+    int32_t lv = item->lv;// 入队后 item 归日志线程，不能再读
+    waiter_state st;
     if (ERR_OK != logq_trypush(&_que, &item)) {
         _log_drop(item, item->msg);
         return;
     }
-    if (_log_need_wake()
-        && ATOMIC_CAS(&_sleeping, 1, 0)) {
-        mutex_lock(&_mtx);
-        cond_signal(&_cond);
-        mutex_unlock(&_mtx);
+    st = waiter_state_get(&_waiter);
+    if ((WAITER_SLEEP == st
+         || (WAITER_LINGER == st && (lv <= LOGLV_WARN || logq_size_fast(&_que) >= _linger_full)))
+        && waiter_mark_waking(&_waiter, st)) {
+        waiter_wake_held(&_waiter);// 打日志的可能是不被 join 的线程，所以用 wake_held
     }
 }
 void slog(int32_t lv, const char *fmt, ...) {

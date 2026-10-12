@@ -1,5 +1,4 @@
 ﻿#include "protocol/mqtt/mqtt.h"
-#include "utils/utils.h"
 #include "protocol/prots_pub.h"
 
 //https://mqtt.p2hp.com/mqtt311

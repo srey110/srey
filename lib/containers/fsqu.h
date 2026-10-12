@@ -177,13 +177,14 @@ static inline uint32_t name##_pop_sc_batch(name *fsqu, T *out, uint32_t max) {  
 static inline uint32_t name##_size(name *fsqu) {                                \
     return name##_fast_size(&fsqu->fast) + (uint32_t)ATOMIC_GET(&fsqu->novf);   \
 }                                                                               \
-/* 是否为空,含溢出层,口径同 size */                                             \
+/* 是否为空,含溢出层,口径同 size。快路径的 empty 与这里读 novf 都是足序的,        \
+   调用方读改写完标志直接判空,就能和入队那次读改写互相看见 */                       \
 static inline int32_t name##_empty(name *fsqu) {                                \
     /* 读序与 size 一致(先快路径后 novf),短路排在常见的"有活"那一侧 */            \
     if (!name##_fast_empty(&fsqu->fast)) {                                      \
         return 0;                                                               \
     }                                                                           \
-    return 0 == ATOMIC_GET(&fsqu->novf);                                        \
+    return 0 == ATOMIC_GET_SEQCST(&fsqu->novf);                                 \
 }                                                                               \
 /* 同 FSQU_SPIN_DECL 的 empty_fast;本后端 empty 本来就不拿锁 */                 \
 static inline int32_t name##_empty_fast(name *fsqu) {                           \
@@ -298,7 +299,8 @@ static inline int32_t name##_empty(name *fsqu) {                                
 static inline int32_t name##_empty_fast(name *fsqu) {                           \
     return 0 == ATOMIC_GET(&fsqu->nhint);                                       \
 }                                                                               \
-/* 不拿锁的近似元素数,读到的可能稍旧,口径同 empty_fast */                       \
+/* 不拿锁的近似元素数,读到的可能稍旧。只给要个大概的判定用(挑队列偷任务、        \
+   日志线程浅睡时看攒没攒满) */                                                 \
 static inline uint32_t name##_size_fast(name *fsqu) {                           \
     return (uint32_t)ATOMIC_GET(&fsqu->nhint);                                  \
 }                                                                               \

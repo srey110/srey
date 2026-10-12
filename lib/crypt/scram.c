@@ -1,13 +1,14 @@
 ﻿#include "crypt/scram.h"
 #include "crypt/crypt_pub.h"
-#include "utils/utils.h"
 
 // 最小迭代轮数
 #define SCRAM_MIN_ITER  4096
 // 最大迭代轮数：仅用于挡住荒谬取值(解析器本身接受到 INT32_MAX，约 20 分钟 CPU)，不是安全阈值。
-// 取 256 倍下限即约 100 万轮，最坏约 1 秒 worker 线程 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
-// 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过
+// 取 256 倍下限即约 100 万轮，最坏约 1 秒 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
+// 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过。
+// 这段计算在协议解包里，跑在 net 线程上，期间该线程上的连接都在等
 #define SCRAM_MAX_ITER  (256 * SCRAM_MIN_ITER)
+#define SCRAM_SLOW_MS   20 // 算一次 SaltedPassword 超过这么多毫秒就打 WARN，取值同 EVTASK_SLOW_MS
 #define SCRAM_PLUS_SUFFIX "-PLUS" // 通道绑定变体的机制名后缀
 /* GS2 头三态（RFC 5802 §5.1）：本端不支持绑定发 "n"；支持但对端未通告 -PLUS 发 "y"，
  * 让真支持 PLUS 的对端能发现通告被剥；PLUS 变体发 "p=" 加绑定类型。*/
@@ -255,9 +256,17 @@ static inline int32_t _scram_ct_eq(const char *nulstr, const void *p, size_t len
 // 计算 SaltedPassword = PBKDF2(password, salt, iter)（使用 HMAC 迭代实现）
 static void _scram_salt_password(scram_ctx *scram, const char *password) {
     hmac_ctx hmac;
+    timer_ctx timer;
+    uint64_t cost;
+    timer_init(&timer);
     hmac_init(&hmac, scram->dtype, password, strlen(password));
     scram->hslens = (int32_t)hmac_pbkdf2(&hmac, scram->salt, (size_t)scram->saltlen, scram->iter, scram->saltedpwd);
     hmac_free(&hmac);
+    cost = timer_elapsed_ms(&timer);
+    if (cost > SCRAM_SLOW_MS) {
+        LOG_WARN("scram pbkdf2 with %d iterations took %" PRIu64 " ms, the calling thread was blocked meanwhile.",
+                 scram->iter, cost);
+    }
 }
 // 计算 HMAC(SaltedPassword, key)，用于派生 ClientKey 或 ServerKey
 static void _scram_key(scram_ctx *scram, const char *key, char result[DG_BLOCK_SIZE]) {

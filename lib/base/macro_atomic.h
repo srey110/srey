@@ -7,12 +7,15 @@
 // MinGW/clang-cl），MSVC 用 Interlocked，Sun Studio 用 libc atomic，xlC 用 AIX 原子服务。
 // 后两家的原语本身不带内存序，靠前后各夹一道 ATOMIC_THREAD_FENCE_SEQCST 凑出来。
 // 该用哪个：
-//   ATOMIC_GET / ATOMIC_SET / ATOMIC_ADD / ATOMIC_CAS  默认用这四个，够强，不会错
+//   ATOMIC_GET / ATOMIC_SET / ATOMIC_ADD / ATOMIC_CAS  默认用这四个。SET / ADD / CAS 是足序（seq_cst）读改写，
+//                        GET 是 acquire 读
 //   ATOMIC_SET_RELEASE   发布：写完一段数据再置标志位，对方 ATOMIC_GET 到标志就能看到数据。
 //                        比 ATOMIC_SET 便宜，但它不挡后面的读上浮，握手场景别用
 //   ATOMIC_*_RELAXED     只有一个线程写、读方也不在乎它与别的读写谁先谁后时用，最省
-//   ATOMIC_GET_SEQCST    握手：双方"我先置标志，再看对方"这类互相试探的场景（log.c、loader.c
-//   ATOMIC_THREAD_FENCE_SEQCST   的丢唤醒防护）。两边都得用足序版本，否则会同时看漏
+//   ATOMIC_GET_SEQCST    握手：双方"我先置标志，再看对方"这类互相试探的场景（thread/waiter.h
+//   ATOMIC_THREAD_FENCE_SEQCST   的睡眠握手）。两边都得用足序版本，否则会同时看漏。
+//                        置标志用 SET / ADD / CAS 也一样：它们本身足序，但不是全屏障，挡不住后面的
+//                        ATOMIC_GET 提前，"再看对方"那次照样得用这两个
 //   ATOMIC_SET_SEQCST    握手里"置标志"那一步，配 ATOMIC_GET_SEQCST 用。比 ATOMIC_SET 便宜，但不返回旧值
 // 内存序参数（GCC/Clang 内建里的 __ATOMIC_*）：
 //   __ATOMIC_ACQUIRE     用在读上：读到对方用 RELEASE 写进去的值，就一定能看到对方在那次写之前写的数据
@@ -34,14 +37,21 @@
 #if defined(CC_GNU)
     // 防止编译器和 CPU 对前后内存读写进行重排，并保证全局的顺序一致性
     #define ATOMIC_THREAD_FENCE_SEQCST() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+    // 内建 CAS 的期望值按地址传、失败时会被改写成当前值，包一层不让它动调用方的 oldval。成功返回 1，失败 0
+    static inline int32_t _gnu_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval) {
+        return __atomic_compare_exchange_n(ptr, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    }
+    static inline int32_t _gnu_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval) {
+        return __atomic_compare_exchange_n(ptr, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    }
     #define ATOMIC_GET(ptr)   __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
     #define ATOMIC_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
-    #define ATOMIC_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
-    #define ATOMIC_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
+    #define ATOMIC_ADD(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_SEQ_CST)
+    #define ATOMIC_CAS(ptr, oldval, newval) _gnu_cas(ptr, oldval, newval)
     #define ATOMIC64_GET(ptr) __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
     #define ATOMIC64_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
-    #define ATOMIC64_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
-    #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
+    #define ATOMIC64_ADD(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_SEQ_CST)
+    #define ATOMIC64_CAS(ptr, oldval, newval) _gnu_cas64(ptr, oldval, newval)
     // ARMv8.3+ 上普通 acquire 读可能编成 LDAPR, 挡不住握手要的那种顺序, 得是 seq_cst 才编成 LDAR
     #define ATOMIC_GET_SEQCST(ptr)   __atomic_load_n((ptr), __ATOMIC_SEQ_CST)
     #define ATOMIC64_GET_SEQCST(ptr) __atomic_load_n((ptr), __ATOMIC_SEQ_CST)
@@ -156,6 +166,15 @@
         ATOMIC_THREAD_FENCE_SEQCST();
         return v;
     }
+    // 足序读：读之前再补一道屏障，此前的写都落定了才读。不用加 0 的理由同 _sun_load(32 位 ABI 的 64 位读除外)
+    static inline atomic_t _sun_load_seqcst(atomic_t *ptr) {
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return _sun_load(ptr);
+    }
+    static inline atomic64_t _sun_load64_seqcst(atomic64_t *ptr) {
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return _sun_load64(ptr);
+    }
     static inline atomic_t _sun_swap(atomic_t *ptr, atomic_t val) {
         ATOMIC_THREAD_FENCE_SEQCST();
         atomic_t old = atomic_swap_32((volatile atomic_t *)ptr, val);
@@ -188,8 +207,8 @@
     #define ATOMIC64_SET(ptr, val) _sun_swap64((atomic64_t *)(ptr), val)
     #define ATOMIC64_ADD(ptr, val) _fetchandadd64((atomic64_t *)(ptr), val)
     #define ATOMIC64_CAS(ptr, oldval, newval) _sun_cas64((atomic64_t *)(ptr), oldval, newval)
-    #define ATOMIC_GET_SEQCST(ptr)   _fetchandadd((atomic_t *)(ptr), 0)
-    #define ATOMIC64_GET_SEQCST(ptr) _fetchandadd64((atomic64_t *)(ptr), 0)
+    #define ATOMIC_GET_SEQCST(ptr)   _sun_load_seqcst((atomic_t *)(ptr))
+    #define ATOMIC64_GET_SEQCST(ptr) _sun_load64_seqcst((atomic64_t *)(ptr))
 #elif defined(OS_AIX)
     // xlC：AIX 原子服务同样不带内存序，用 __sync()（PowerPC 全屏障）前后夹住凑成 seq_cst。
     // AIX 没有原子交换服务，ATOMIC_SET 只能用 compare_and_swap 循环拼
@@ -248,6 +267,15 @@
         ATOMIC_THREAD_FENCE_SEQCST();
         return v;
     }
+    // 足序读：同 _sun_load_seqcst
+    static inline atomic_t _aix_load_seqcst(atomic_t *ptr) {
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return _aix_load(ptr);
+    }
+    static inline atomic64_t _aix_load64_seqcst(atomic64_t *ptr) {
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return _aix_load64(ptr);
+    }
     #define ATOMIC_GET(ptr)   _aix_load((atomic_t *)(ptr))
     #define ATOMIC_SET(ptr, val) _aix_swap(ptr, val)
     #define ATOMIC_ADD(ptr, val) _aix_fetchandadd((atomic_t *)(ptr), val)
@@ -256,8 +284,8 @@
     #define ATOMIC64_SET(ptr, val) _aix_swap64(ptr, val)
     #define ATOMIC64_ADD(ptr, val) _aix_fetchandadd64((atomic64_t *)(ptr), val)
     #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
-    #define ATOMIC_GET_SEQCST(ptr)   _aix_fetchandadd((atomic_t *)(ptr), 0)
-    #define ATOMIC64_GET_SEQCST(ptr) _aix_fetchandadd64((atomic64_t *)(ptr), 0)
+    #define ATOMIC_GET_SEQCST(ptr)   _aix_load_seqcst((atomic_t *)(ptr))
+    #define ATOMIC64_GET_SEQCST(ptr) _aix_load64_seqcst((atomic64_t *)(ptr))
 #else
     #error "atomic ops: unsupported compiler (need GCC/Clang, MSVC, Sun Studio on Solaris, or xlC on AIX)"
 #endif

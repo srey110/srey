@@ -1,7 +1,6 @@
 ﻿#include "bench_recvmmsg.h"
 #include "lib.h"
 #include "thread/thread.h"
-#include "utils/timer.h"
 
 // 逐个收(recvmsg)对批量收(recvmmsg，每次最多 RB_BATCH 个)。每个读事件里的收法照 srey 事件层：
 // kqueue 平台按 kevent.data(排队负载字节)读够即停，其余平台(epoll/evport/devpoll/pollset)读到 EAGAIN 为止；

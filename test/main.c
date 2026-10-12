@@ -64,6 +64,9 @@
     #if WITH_MIMALLOC
         #pragma comment(lib, "mimalloc" DEPS_LIB_SUFFIX ".lib")
     #endif
+    #if WITH_FUTEX
+        #pragma comment(lib, "Synchronization.lib")// WaitOnAddress / WakeByAddress*，见 thread/futex.h
+    #endif
     // 库名后缀由 os.h 的 DEPS_LIB_SUFFIX 拼,对应 tools/deps.py 落在 bin/ 的那个变体。
     // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
     // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
@@ -80,11 +83,23 @@
     #endif
 #endif
 
+// 汇总 task 的参数：结果槽在 main 的栈上，主线程等到退出请求后才 loader_free，task 先于它失效
+typedef struct test_reporter_arg {
+    name_val_ctx *list;
+    uint64_t start;// 开始等集成结果的时刻(nowms)
+}test_reporter_arg;
+
 static hug_ctx _hug;// 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
+static atomic_t _exit_code = -1;// loader_exit 请求的退出码，只记第一次；-1 表示没人请求(信号退出)
 
 // 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程
 static void _on_sigcb(int32_t sig, void *arg) {
     (void)sig;
+    hug_wakeup((hug_ctx *)arg);
+}
+// loader_exit 的回调(任意线程)：记下第一次请求的退出码，再同信号一样唤醒主线程。与 srey/main.c 同一套
+static void _on_exit(int32_t code, void *arg) {
+    (void)ATOMIC_CAS(&_exit_code, -1, code);
     hug_wakeup((hug_ctx *)arg);
 }
 // thread_global_hooks 的全局 exit:与具体模块无关的线程级缓存在这里收,与 srey/main.c 同步(含 OpenSSL 那条的理由)
@@ -135,27 +150,39 @@ static int32_t _test_pending(name_val_ctx *list, int32_t print) {
     }
     return n;
 }
-// 集成用例全部出结果就自己收尾，不必再手动发 SIGINT；有用例卡住就等到上限，列出未完成项照样收尾。
-// SIGINT 仍可随时打断
-static void _test_wait(hug_ctx *hug, name_val_ctx *list) {
+// 汇总 task 每 200ms 查一遍结果槽：全部到终态、或等满 300s(列出未完成项)就请求退出，主线程随即收尾。
+// 退出码由 main 收尾时按结果槽统一算，这里给的只是个大概。SIGINT 仍可随时打断
+static void _test_reporter_tick(task_ctx *task, uint64_t sess) {
     const uint64_t maxms = 300000;
     const uint32_t stepms = 200;
-    uint64_t start = nowms();
-    for (;;) {
-        if (0 != ATOMIC_GET(&hug->exitflag)) {
-            PRINT("%s", "exit signaled, shutting down.");
-            return;
-        }
-        if (0 == _test_pending(list, 0)) {
-            PRINT("%s", "all integration items finished, shutting down.");
-            return;
-        }
-        if (nowms() - start >= maxms) {
-            PRINT("integration wait timed out after %u s, shutting down with:", (uint32_t)(maxms / 1000));
-            _test_pending(list, 1);
-            return;
-        }
-        MSLEEP(stepms);
+    test_reporter_arg *arg = (test_reporter_arg *)task->arg;
+    (void)sess;
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (0 == _test_pending(arg->list, 0)) {
+        PRINT("%s", "all integration items finished, shutting down.");
+        loader_exit(task->loader, 0);
+        return;
+    }
+    if (nowms() - arg->start >= maxms) {
+        PRINT("integration wait timed out after %u s, shutting down with:", (uint32_t)(maxms / 1000));
+        (void)_test_pending(arg->list, 1);
+        loader_exit(task->loader, 1);
+        return;
+    }
+    task_timeout(task, 0, stepms, _test_reporter_tick);
+}
+static void _test_reporter_startup(task_ctx *task) {
+    _test_reporter_tick(task, 0);
+}
+// 起汇总 task 接着等集成结果；起不来就直接请求退出，免得主线程等不到人叫
+static void _test_reporter_start(loader_ctx *loader, test_reporter_arg *arg) {
+    task_ctx *task = task_new(loader, "test_reporter", 0, NULL, NULL, arg);
+    if (ERR_OK != task_register(task, _test_reporter_startup, NULL)) {
+        task_free(task);
+        PRINT("%s", "test_reporter register failed, shutting down.");
+        loader_exit(loader, 1);
     }
 }
 
@@ -200,13 +227,13 @@ int main(int argc, char *argv[]) {
     /* ── 层 1：纯内存单元测试套件 ── */
     CuSuite *suite = CuSuiteNew();
 
-    test_base(suite);/* 内存宏、原子操作 */
+    test_base(suite);/* 内存宏、原子操作、字节序 pack/unpack、bytes / strconv、文件 / 时间 / strptime / 随机 / 进程、timer、once */
     test_containers(suite);/* mpq、bbq、spsc、fsqu、chan、hashmap、heap、queue、sarray、slist、rbtree */
     test_hashset(suite);/* hashset(hashmap 包装) */
-    test_crypt(suite);/* base64、crc、digest、hmac、urlraw、xor、xxhash */
-    test_utils(suite);/* pack/unpack、binary、buffer、sfid、uuid、hash_ring、netaddr */
+    test_crypt(suite);/* base64、crc、digest、hmac、urlraw、xor、xxhash、crypt_memcmp */
+    test_utils(suite);/* binary、buffer、sfid、uuid、hash_ring、netaddr、log、popen、tw */
     test_seri(suite);/* seri 二进制序列化：基本类型 / int 各档 / 字符串 / 嵌套 table；yyjson_helper */
-    test_thread(suite);/* mutex、spinlock、rwlock、cond、thread */
+    test_thread(suite);/* mutex、spinlock、rwlock、cond、thread、futex、waiter / spinner */
     test_stm(suite);/* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
     test_event(suite);/* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
     test_minicoro(suite);/* minicoro 本地补丁：栈底守卫字拦截越过栈底的写 */
@@ -226,6 +253,7 @@ int main(int argc, char *argv[]) {
     // 就地打结果的话中间隔着几百行集成日志，翻不回来
 
     g_loader = loader_init(0, 0, 0);
+    loader_on_exit(g_loader, _on_exit, &_hug);
     char pandan[PATH_LENS];
     SNPRINTF(pandan, sizeof(pandan), "%s%s%s", local, PATH_SEPARATORSTR, "panda.png");
     void *evssl_server = NULL;
@@ -549,7 +577,12 @@ int main(int argc, char *argv[]) {
             break;
         }
     }
-    _test_wait(&_hug, testlist);
+    test_reporter_arg reparg = { testlist, nowms() };
+    _test_reporter_start(g_loader, &reparg);
+    hug_wait(&_hug);
+    if (-1 == (int32_t)ATOMIC_GET(&_exit_code)) {
+        PRINT("%s", "exit signaled, shutting down.");
+    }
     loader_free(g_loader);
 
     /* ── 会用光全局槽位的用例：排在集成阶段之后，别把分条计数提前关掉 ── */

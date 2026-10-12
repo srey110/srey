@@ -75,6 +75,15 @@
         #define REUSEPORT_BALANCED 0
     #endif
 #endif
+// waiter 的睡眠用哪种实现(见 thread/futex.h)：1 按地址等待，0 mutex + cond，要回退就改成 0。
+// 默认 Linux / FreeBSD / Windows(8 起)为 1；macOS 要 14.4 起的系统与 SDK，SDK 里没有 os_sync 时默认 0；其余平台只能 0
+#ifndef WITH_FUTEX
+    #if defined(OS_LINUX) || defined(OS_FBSD) || defined(OS_WIN) || (defined(OS_DARWIN) && defined(HAVE_OS_SYNC))
+        #define WITH_FUTEX 1
+    #else
+        #define WITH_FUTEX 0
+    #endif
+#endif
 // fsqu 的快路径用哪个,根据 test 里的 benchmark(bench_mpq)决定。
 // 非 0 都是"无锁环 + 满了降级到无界溢出层",0 是整条队列一把自旋锁
 #if defined(OS_DARWIN) || defined(OS_BSD)

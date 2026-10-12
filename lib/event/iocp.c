@@ -7,7 +7,7 @@
 
 #define IOCP_STOP_DRAIN_TIMEOUT 3000// 停止排空整体截止(ms);超时说明有 socket close 后未从 map 摘除(bug)
 exfuncs_ctx _exfuncs;// 全局扩展函数指针（AcceptEx/ConnectEx）
-static atomic_t _init_once = 0;// 保证扩展函数只初始化一次
+static once_ctx _init_once = 0;// 扩展函数与命令回调表只初始化一次，见 once.h
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);// 命令回调函数表
 
 // 通过WSAIoctl获取指定GUID的Windows扩展函数指针
@@ -48,9 +48,10 @@ static void _iocp_init_callback(void) {
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
     cmd_cbs[CMD_DEFER_EXEC] = _on_cmd_defer_exec;
 }
-// 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
+// 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）。两个 ev_init 同时首次进来时，
+// 没抢到的要等这边取完才能往下走，否则会拿着空函数指针投 AcceptEx
 static void _iocp_init_funcs(void) {
-    if (ATOMIC_CAS(&_init_once, 0, 1)) {
+    if (once_begin(&_init_once)) {
         SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0, 0);
         ASSERTAB(INVALID_SOCK != fd, ERRORSTR(ERRNO));
         GUID accept_uid = WSAID_ACCEPTEX;
@@ -59,6 +60,7 @@ static void _iocp_init_funcs(void) {
         _exfuncs.connectex = _iocp_exfunc(fd, &connect_uid);
         CLOSE_SOCK(fd);
         _iocp_init_callback();
+        once_end(&_init_once);
     }
 }
 int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd) {
@@ -176,8 +178,10 @@ static void _iocp_loop_event(void *arg) {
                 // 这批命令可能新挂了 tick，重算等待超时才能按时叫醒它
                 next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
             }
-            if (0 != _evpub_defer_exec_pending(watcher)) {
-                next_to = 0;// 回调里新投的下一轮立刻跑
+            // 回调里新投的、命令抽完复查仍不空的(单靠抽会看漏刚发布的，见 mpq trypush)，下一轮立刻跑
+            if (0 != _evpub_defer_exec_pending(watcher)
+                || !cmdq_empty(&watcher->cmd.qu)) {
+                next_to = 0;
             }
         }
         ok = GetQueuedCompletionStatusEx(watcher->iocp,
@@ -293,7 +297,7 @@ static void _iocp_init_cmd(watcher_ctx *watcher) {
     tda_init(&olcmd->tda, (size_t)(cmdq_capacity(&olcmd->qu) / QUEUE_OVERLOAD_RATIO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
-    ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
+    ctx->nthreads = (0 == nthreads ? procscnt_avail() : nthreads);
     ATOMIC_SET_RELAXED(&ctx->stopping, 0);
     ctx->nacpex = ctx->nthreads > 3 ? 2 : 1;
     ATOMIC_SET_RELAXED(&ctx->nlsn, 0);

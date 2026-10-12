@@ -7,11 +7,10 @@
 #include "containers/hashmap.h"
 #include "thread/rwlock_distr.h"
 #include "thread/spinlock.h"
-#include "thread/mutex.h"
-#include "thread/cond.h"
 #include "utils/tw.h"
 #include "utils/tda.h"
 #include "utils/pool.h"
+#include "thread/waiter.h"
 
 #define INVALID_TNAME 0// 无效任务名（空值）
 #define _NAME_OR(s) ((s) ? (s) : "?")// 日志打印任务名；匿名(NULL)回退 "?"
@@ -36,6 +35,7 @@ typedef void(*_task_startup_cb)(task_ctx *task);// 任务启动回调
 typedef void(*_task_closing_cb)(task_ctx *task);// 任务关闭回调
 typedef void(*_task_round_end_cb)(task_ctx *task);// 一轮调度结束回调
 typedef void(*_timeout_cb)(task_ctx *task, uint64_t sess);// 超时回调
+typedef void(*loader_exit_cb)(int32_t code, void *arg);// 进程退出请求回调，见 loader_on_exit
 typedef void(*_request_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                            name_t src, void *data, size_t size);// 任务请求回调
 typedef void(*_response_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
@@ -63,22 +63,18 @@ typedef struct worker_version {
 typedef struct monitor_ctx {
     atomic_t stop;              // 非 0 表示监控线程应退出
     worker_version *version;    // 版本快照数组：前 nworker 个归 worker，其后 nnet 个归 net 线程
-    mutex_ctx mutex;            // 配合条件变量的互斥锁
-    cond_ctx cond;              // 监控线程休眠/唤醒条件变量
+    waiter_ctx waiter;          // 监控线程定时睡，loader_free 置 stop 后叫醒
     pthread_t thread_monitor;   // 监控线程句柄
 }monitor_ctx;
 // 工作线程上下文
 typedef struct worker_ctx {
     uint16_t index;        // 工作线程索引
     int32_t weight;        // 权重
-    atomic_t waiting;      // 当前是否在休眠等待（原子维护，快速路径无锁读）
     atomic_t spinning;     // 非 0 表示正空转等活：生产者直投即可，不必发唤醒
-    uint64_t wake_at;      // 首个还没被领走的唤醒信号的发出时刻（纳秒），0=无；受 mutex 保护
+    waiter_ctx waiter;     // 休眠与唤醒；挑 worker 时与 spinning 一起读它的睡眠态
     loader_ctx *loader;    // 所属 loader
     pthread_t thread_worker; // 工作线程句柄
     taskq qutasks;      // 待调度任务队列，按值存 task_ctx*；入队时已 incref，由队列持有到 worker 跑完
-    mutex_ctx mutex;       // 配合条件变量使用的互斥锁
-    cond_ctx cond;         // 工作线程休眠/唤醒条件变量
 }worker_ctx;
 // 字符串名 → name_t 句柄 索引项；name 借用 task_ctx.name（不另持有），handle 为 createid 句柄
 typedef struct name_handle_entry {
@@ -110,10 +106,10 @@ struct loader_ctx {
     rwlock_distr_ctx lckcache; //lua bytecache 锁
 #endif
     monitor_ctx monitor;       // 监控线程上下文
-    // 关闭期等 maptasks 排空。
-    mutex_ctx closing_mutex;   // 与 closing_cond 配对；同时保护"查计数→wait"这一步不丢唤醒
-    cond_ctx closing_cond;     // 最后一个 task 摘除时唤醒 _loader_task_closing
+    waiter_ctx closing_waiter; // _loader_task_closing 等 task 退光，task_ungrab 摘除后叫醒
     timer_ctx timer;           // loader_init 里初始化一次之后只读，worker 与投递方共用的时钟
+    loader_exit_cb exit_cb;    // 进程退出请求的回调，入口在 task 启动前经 loader_on_exit 设一次，之后只读
+    void *exit_arg;            // 透传给 exit_cb
     tw_ctx tw;                 // 时间轮（超时调度）
     ev_ctx netev;              // 网络事件驱动上下文
 };

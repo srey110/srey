@@ -1,5 +1,6 @@
 ﻿#include "srey/coro_task.h"
 #include "protocol/prots.h"
+#include "utils/idgen.h"
 
 typedef void (*_coro_msg_handler_t)(task_dispatch_arg *arg);
 // 协程 task 的 task->arg：调度器加上注册时传入的业务参数

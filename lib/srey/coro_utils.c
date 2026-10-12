@@ -12,7 +12,7 @@
 #include "protocol/mysql/mysql_pack.h"
 #include "serial/bson.h"
 #include "utils/buffer.h"
-#include "utils/utils.h"
+#include "utils/idgen.h"
 
 // 四家(mysql/pgsql/mongo/smtp)建链与断开骨架的回调:除 slot 与协议动作外四份代码逐字相同。
 // 回调收 void* 而非强类型转:通过与原型不匹配的函数指针调用是 UB

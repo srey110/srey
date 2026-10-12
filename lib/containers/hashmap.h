@@ -298,17 +298,16 @@ static inline T *name##_get_set(name *m, T const *item, int32_t *found) {      \
 }                                                                              \
 static inline T *name##_get_with_hash(const name *m, T const *key, uint64_t hash) { \
     name##_bucket *bucket;                                                     \
-    uint64_t dib = 1;                                                          \
-    size_t i;                                                                  \
-    hash = _hashmap_clip(hash);                                                \
-    i = (size_t)hash & m->mask;                                                \
+    uint32_t h32 = (uint32_t)_hashmap_clip(hash);/* 与桶里的 hash/dib 同宽,同 insert */ \
+    uint32_t dib = 1;                                                          \
+    size_t i = h32 & m->mask;                                                  \
     for (;;) {                                                                 \
         bucket = &m->buckets[i];                                               \
         /* 桶空,或桶主离理想桶比要找的还近:要找的键若在表里早该排在这之前,可以断定不存在 */ \
         if (bucket->dib < dib) {                                               \
             return NULL;                                                       \
         }                                                                      \
-        if (bucket->hash == hash && 0 == CMPFN(key, &bucket->item)) { \
+        if (bucket->hash == h32 && 0 == CMPFN(key, &bucket->item)) {           \
             return &bucket->item;                                              \
         }                                                                      \
         i = (i + 1) & m->mask;                                                 \
@@ -328,17 +327,16 @@ static inline T *name##_probe(name *m, uint64_t position) {                    \
 static inline T *name##_delete_with_hash(name *m, T const *key, uint64_t hash) { \
     name##_bucket *bucket, *prev, *bks;                                        \
     size_t msk;                                                                \
-    uint64_t dib = 1;                                                          \
-    size_t i;                                                                  \
-    hash = _hashmap_clip(hash);                                                \
+    uint32_t h32 = (uint32_t)_hashmap_clip(hash);                              \
+    uint32_t dib = 1;                                                          \
+    size_t i = h32 & m->mask;                                                  \
     m->oom = 0;                                                                \
-    i = (size_t)hash & m->mask;                                                \
     for (;;) {                                                                 \
         bucket = &m->buckets[i];                                               \
         if (bucket->dib < dib) {/* 同 get_with_hash:可以断定不存在 */            \
             return NULL;                                                       \
         }                                                                      \
-        if (bucket->hash == hash && 0 == CMPFN(key, &bucket->item)) { \
+        if (bucket->hash == h32 && 0 == CMPFN(key, &bucket->item)) {           \
             m->spare = bucket->item;                                           \
             bucket->dib = 0;                                                   \
             msk = m->mask;                                                     \

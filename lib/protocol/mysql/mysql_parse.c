@@ -3,7 +3,6 @@
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/prots_pub.h"
 #include "event/evpub.h"
-#include "utils/utils.h"
 
 // 结果集解析状态：字段描述阶段 / 行数据阶段
 typedef enum rst_status {

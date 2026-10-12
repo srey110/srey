@@ -1,5 +1,4 @@
 ﻿#include "utils/buffer.h"
-#include "utils/utils.h"
 
 #define MAX_COPY_IN_EXPAND       4096 //节点数据量超过此值时不做数据迁移，直接新建节点
 #define MAX_REALIGN_IN_EXPAND    2048 //节点 off 不超过此值时允许通过对齐操作复用空间
@@ -430,6 +429,12 @@ void buffer_free(buffer_ctx *ctx) {
     // 必须复位, 否则各游标全指向已释放节点
     buffer_init(ctx);
 }
+// 唯一的节点已释放(整段排空)后复位成空 buffer。want 是"下次首读开多大"，与刚排掉的数据无关，留着
+static inline void _buffer_reset_keep_want(buffer_ctx *ctx) {
+    uint32_t want = ctx->want;
+    buffer_init(ctx);
+    ctx->want = want;
+}
 size_t buffer_size(buffer_ctx *ctx) {
     return ctx->total_lens;
 }
@@ -684,11 +689,11 @@ NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
         lens = oldlen;
     }
     /* 单节点且未被 buffer_get 锁定：没排完的那种 buffer_drain 已接走，到这里必是整段排空，
-     * 节点连同游标一起没，buffer_init 会把它清掉 */
+     * 节点连同游标一起没，复位会把它清掉 */
     if (ctx->head == ctx->tail
         && 0 == ctx->head->used) {
         _buffer_node_free(ctx->head);
-        buffer_init(ctx);
+        _buffer_reset_keep_want(ctx);
         return lens;
     }
     /* 在 drain 循环释放节点前保存游标，drain 后再恢复（节点存活）或清零（节点已释放）。 */
@@ -742,7 +747,7 @@ NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
 // 单节点未锁定且正好排空：节点连同游标一起收，终态同 _buffer_drain_slow 的单节点那支。NOINLINE 承重别删
 NOINLINE static size_t _buffer_drain_whole(buffer_ctx *ctx, size_t lens) {
     _buffer_node_free(ctx->head);
-    buffer_init(ctx);
+    _buffer_reset_keep_want(ctx);
     return lens;
 }
 /* 单节点且未被 buffer_get 锁定：没排完的不碰链表，也整段跳过游标的保存-清零-恢复。
@@ -782,7 +787,7 @@ size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens) {
             lens = head->off;
             memcpy(out, head->buffer + head->misalign, lens);
             _buffer_node_free(head);
-            buffer_init(ctx);
+            _buffer_reset_keep_want(ctx);
             return lens;
         }
         memcpy(out, head->buffer + head->misalign, lens);
@@ -1030,6 +1035,7 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
     uint32_t niov;
     size_t iovlens;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
+    size_t khint = hint;// 调用方给的内核读量提示，下面 hint 会被 want 改写
     // 消费方报的"本条还差多少"只给裸 socket 读用(SSL 读进来的是密文)，按 RECV_GROW_CAP 截，用一次即清
     size_t want = ctx->want > RECV_GROW_CAP ? RECV_GROW_CAP : ctx->want;
     if (NULL == arg
@@ -1092,6 +1098,12 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
                 nbuf = RECV_GROW_CAP;
             }
         }
+    }
+    // 裸 socket 又没有内核读量提示时，这次读得多就记下来当下次首读大小；协议解包时调 buffer_want 会覆盖它
+    if (NULL == arg
+        && 0 == khint
+        && *nread > MAX_RECV_SIZE) {
+        ctx->want = (uint32_t)(*nread > RECV_GROW_CAP ? RECV_GROW_CAP : *nread);
     }
     return rtn;
 }

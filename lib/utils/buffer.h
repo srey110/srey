@@ -26,8 +26,8 @@
 // buffer_from_sock 按 hint(内核报的已到达字节数)加大首轮空间的上限：数据已在内核里，开了不会空着；
 // 再大会落进分配器的大块档，macOS/Windows 上反复缺页
 #define RECV_HINT_CAP (64 * 1024)
-// 读满后翻倍、以及 buffer_want(对端声称的长度，数据未必已到)的上限：这两样开出来的节点可能空着，
-// 取大了同时收大块的连接多时峰值内存跟着涨
+// 读满后翻倍、buffer_want(对端声称的长度，数据未必已到)以及无 hint 时记下的上次读量的上限：
+// 这几样开出来的节点可能空着，取大了同时收大块的连接多时峰值内存跟着涨
 #define RECV_GROW_CAP (32 * 1024)
 
 typedef struct buffer_ctx {
@@ -40,7 +40,7 @@ typedef struct buffer_ctx {
     struct bufnode_ctx *hint_node;    //搜索游标：上次命中的节点
     size_t             hint_base_off; //游标节点之前所有节点的累计字节偏移
     uint32_t           pinned_n;      //buffer_get 本次锁定的节点数，buffer_commit_get 按它精确解锁
-    uint32_t           want;          //消费方声明的本条消息还差多少字节，见 buffer_want
+    uint32_t           want;          //下次裸 socket 读的首轮空间：buffer_want 报的本条还差多少，或 buffer_from_sock 记下的上次读量
 }buffer_ctx;
 
 /// <summary>
@@ -202,12 +202,14 @@ static inline void buffer_want(buffer_ctx *ctx, size_t lack) {
 /// 可读事件领走；只有 epoll 边缘触发（TRIGGER_ET=1）例外，它必须读到 EAGAIN，那一轮只用
 /// buffer_space 报出的现成空间去读，不为它再分配节点。
 /// 本函数自己的早退只对裸 socket 生效；带缓冲的 _readv（arg 非 NULL）由回调侧自行判断，
-/// 判定已空时回 BUFFER_READV_DRAINED
+/// 判定已空时回 BUFFER_READV_DRAINED。
+/// 裸 socket 读且 hint 为 0 时，本次总读量超过 MAX_RECV_SIZE 就记进 want（封顶 RECV_GROW_CAP）当下次首读大小，
+/// 之后解包调 buffer_want 会覆盖它；数据排空不清它，下次读用掉即清
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="fd">socket描述符</param>
 /// <param name="nread">读取到的长度</param>
-/// <param name="hint">socket 里可读字节数，0 表示不知道。裸 socket 读时与 buffer_want 记下的(按 RECV_GROW_CAP 截过)取大的，
+/// <param name="hint">socket 里可读字节数，0 表示不知道。裸 socket 读时与 ctx->want(见上，按 RECV_GROW_CAP 截过)取大的，
 /// 大于 MAX_RECV_SIZE 时首轮按它要空间，加大最多到 RECV_HINT_CAP，不会因此低于 MAX_RECV_SIZE；kqueue 平台裸 socket 读传 kevent 的 data，其余传 0</param>
 /// <param name="_readv">读取函数。可回 BUFFER_READV_DRAINED 表示自己那层缓冲已空，本函数
 /// 据此停止抽取并把返回值归一成 ERR_OK</param>

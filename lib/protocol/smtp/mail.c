@@ -1,6 +1,5 @@
 ﻿#include "protocol/smtp/mail.h"
 #include "crypt/base64.h"
-#include "utils/utils.h"
 #include "utils/contenttype.h"
 #include "utils/binary.h"
 

@@ -654,6 +654,10 @@ srey.task_net_index = task.net_index
 ---@type fun():integer
 srey.task_nnet = task.nnet
 
+---请求进程退出，立即返回；收尾(关掉全部 task、内存检查、带退出码退出)由程序入口完成。测试汇总收齐后用它自行收尾
+---@type fun(code:integer?)
+srey.exit = task.exit
+
 ---按 net 线程分组监听：给 net 线程放组员 task，由 taskctx(组头)来 listen，之后只在有组员的线程上收，新连接交给所在线程的组员。
 ---handles 按线程排，每项是组员的 task 名或句柄，handles[i] 须已绑到第 i-1 个 net 线程，填 INVALID_TNAME 表示那个线程不收；
 ---个数等于 task_nnet()、至少一个组员；只对之后的 listen 生效，只能设一次

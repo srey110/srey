@@ -1,12 +1,12 @@
--- 测试结果汇总 task：等收齐全部模块上报后输出总报告
+-- 测试结果汇总 task：等收齐全部模块上报后输出总报告，然后请求进程退出(同 ./bin/test 跑完自己收尾)
 -- 注册参数：task.register("test.reporter", "reporter", 0, name1, name2, ...)，
 -- 变参为期望上报的模块名（由 test.lua 的 TESTS 表推出）
 
 local srey = require("lib.srey")
 local json = require("yyjson")
 
--- 收不齐就一直等的话，./bin/srey 本来就阻塞等 SIGINT，操作者看到的是一次
--- "没有 FAIL 行"的正常运行——一个崩在 done 之前的模块会被读成通过。到点先出一份残缺报告。
+-- 收不齐就一直等的话进程永远不退，一个崩在 done 之前的模块也看不出来。到点出一份残缺报告，
+-- 没上报的计失败，照样收尾退出。
 -- 这个值必须大于最慢单模块的自有预算，否则一次只是偏慢的运行会被判成 FAILED：
 -- e2e_runner 串行跑 5 个 python 脚本、每个自带 60s 上限（见该文件的 _SCRIPTS 与 _PY_TIMEOUT_MS），
 -- 单它最坏就要 300s 出头。改那边的脚本数或超时的话，这里要跟着抬
@@ -23,7 +23,9 @@ local _results = {}
 local _total_pass = 0
 local _total_fail = 0
 local _fail_modules = 0
+local _exiting = false -- 已请求退出：超时收尾之后到的上报不再出汇总
 
+---@return boolean ok 全部模块都上报且没有失败
 local function _print_summary()
     printd("================ test summary ================")
     for _, r in ipairs(_results) do
@@ -41,7 +43,8 @@ local function _print_summary()
         table.sort(missing)
         WARN("  [MISS] %d modules never reported: %s", #missing, table.concat(missing, ", "))
     end
-    if 0 == _total_fail and 0 == #missing then
+    local ok = 0 == _total_fail and 0 == #missing
+    if ok then
         printd("[runner] all %d modules passed, %d assertions ok.",
                _expected, _total_pass)
     else
@@ -49,6 +52,18 @@ local function _print_summary()
              _fail_modules, _expected, #missing, _total_pass, _total_fail)
     end
     printd("===============================================")
+    return ok
+end
+
+-- 出汇总并请求退出，全过退出码 0，否则 1。收齐与超时两条路都走这里，只做一次
+local function _finish()
+    if _exiting then
+        return
+    end
+    _exiting = true
+    local ok = _print_summary()
+    printd("[runner] shutting down.")
+    srey.exit(ok and 0 or 1)
 end
 
 srey.startup(function()
@@ -86,22 +101,20 @@ srey.startup(function()
         if r.nfail > 0 then
             _fail_modules = _fail_modules + 1
         end
-        -- 判"欠账清零"而不是"收到够多条"：后者被一条重复上报就能骗过去。
-        -- _npending 只减不增，天然只会归零一次，不需要额外的已打印标志
+        -- 判"欠账清零"而不是"收到够多条"：后者被一条重复上报就能骗过去
         if _expected > 0 and 0 == _npending then
-            _print_summary()
+            _finish()
         end
     end)
     srey.timeout(REPORT_TIMEOUT, function()
-        -- 与上面的收齐判定同条件：已收齐打印过就不补了。没传期望名单时（_expected 为 0）
-        -- 无从判断收没收齐，那就一律由这里兜底打印
-        if _expected > 0 and 0 == _npending then
+        -- 已收齐的话 _finish 早做过了。没传期望名单时（_expected 为 0）无从判断收没收齐，由这里收尾
+        if _exiting then
             return
         end
-        -- 只是先出一份残缺的，不设标志挡住后续：欠账最终清零时还会再打一份完整汇总，
-        -- 否则一次超时就把真实结果永久吞掉了
-        WARN("[reporter] timeout after %dms, only %d/%d modules reported.",
-             REPORT_TIMEOUT, #_results, _expected)
-        _print_summary()
+        if _expected > 0 then
+            WARN("[reporter] timeout after %dms, only %d/%d modules reported.",
+                 REPORT_TIMEOUT, #_results, _expected)
+        end
+        _finish()
     end)
 end)

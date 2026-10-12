@@ -34,10 +34,20 @@
 #include <arpa/inet.h>
 #if defined(OS_LINUX)
     #include <sys/epoll.h>
+    #include <linux/futex.h>
+    #include <sys/syscall.h>
 #elif defined(OS_DARWIN)
     #include <mach/mach_time.h>
     #include <sys/event.h>
     #include <os/lock.h>
+    // 按地址等待的 os_sync 只有 14.4 起的 SDK 才有，没有就不引，config.h 的 WITH_FUTEX 据此默认关
+    #if defined(__has_include)
+        #if __has_include(<os/os_sync_wait_on_address.h>)
+            #include <os/os_sync_wait_on_address.h>
+            #include <os/clock.h>
+            #define HAVE_OS_SYNC
+        #endif
+    #endif
 #elif defined(OS_SUN)
     #include <port.h>
     #include <atomic.h>
@@ -49,6 +59,9 @@
 #elif defined (OS_BSD)
     #include <sys/sysctl.h>
     #include <sys/event.h>
+    #if defined(OS_FBSD)
+        #include <sys/umtx.h>
+    #endif
 #elif defined (OS_AIX)
     #include <procinfo.h>
     #include <sys/atomic_op.h>

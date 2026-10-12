@@ -1,5 +1,6 @@
 ﻿#include "test_crypt.h"
 #include "lib.h"
+#include "crypt/crypt_pub.h"
 
 // SCRAM 用例共用的盐：全文件十来处用同一组值，散着写会让"改一处忘一处"看起来像算法坏了
 static const char _SALT16[16] = {
@@ -370,10 +371,12 @@ static void test_urlraw(CuTest *tc) {
     char enc[512];
     char dec[512];
     size_t dlen;
+    size_t elen;
 
     /* 编码：空格 → %20，特殊字符均被转义 */
     const char *plain = "hello world! foo=bar&a=1";
-    url_encode(plain, strlen(plain), enc, 0);
+    elen = url_encode(plain, strlen(plain), enc, 0);
+    CuAssertTrue(tc, elen == strlen(enc));
     CuAssertTrue(tc, NULL == strchr(enc, ' '));
     CuAssertTrue(tc, NULL == strchr(enc, '!'));
 
@@ -385,11 +388,12 @@ static void test_urlraw(CuTest *tc) {
 
     /* 纯 ASCII 字母数字不被转义，往返后相同 */
     const char *alpha = "abcABC012";
-    url_encode(alpha, strlen(alpha), enc, 0);
+    elen = url_encode(alpha, strlen(alpha), enc, 0);
+    CuAssertTrue(tc, elen == strlen(enc));
     CuAssertStrEquals(tc, alpha, enc);
 
     /* 空字符串 */
-    url_encode("", 0, enc, 0);
+    CuAssertTrue(tc, 0 == url_encode("", 0, enc, 0));
     CuAssertTrue(tc, '\0' == enc[0]);
 }
 
@@ -401,11 +405,13 @@ static void test_url_encode_charset(CuTest *tc) {
     char in[2];
     char out[8];
     char expect[8];
+    size_t olen;
     int32_t c;
     in[1] = '\0';
     for (c = 0x00; c <= 0xFF; c++) {
         in[0] = (char)c;
-        url_encode(in, 1, out, 0);
+        olen = url_encode(in, 1, out, 0);
+        CuAssertTrue(tc, olen == strlen(out));
         if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
             || '-' == c || '.' == c || '_' == c) {
             expect[0] = (char)c;
@@ -417,12 +423,12 @@ static void test_url_encode_charset(CuTest *tc) {
     }
     /* space2plus 只改空格这一个字符的去向 */
     in[0] = ' ';
-    url_encode(in, 1, out, 1);
+    CuAssertTrue(tc, 1 == url_encode(in, 1, out, 1));
     CuAssertStrEquals(tc, "+", out);
-    url_encode(in, 1, out, 0);
+    CuAssertTrue(tc, 3 == url_encode(in, 1, out, 0));
     CuAssertStrEquals(tc, "%20", out);
     in[0] = '!';
-    url_encode(in, 1, out, 1);
+    CuAssertTrue(tc, 3 == url_encode(in, 1, out, 1));
     CuAssertStrEquals(tc, "%21", out);
 }
 
@@ -3399,6 +3405,49 @@ static void test_xxh_misc(CuTest *tc) {
     digest_free(&d);
 }
 
+/* =======================================================================
+ * crypt_memcmp —— 恒定时间比较
+ * ======================================================================= */
+static void test_crypt_memcmp(CuTest *tc) {
+    /* crypt_memcmp：与 memcmp 同等价于"相等返回 0"，但内容差异不导致提前返回 */
+    const char *a = "secretkey_aaa";
+    const char *b = "secretkey_aaa";
+    const char *c = "secretkey_bbb";
+    CuAssertIntEquals(tc, 0, crypt_memcmp(a, b, 13));
+    CuAssertTrue(tc, 0 != crypt_memcmp(a, c, 13));
+    /* len=0 始终相等 */
+    CuAssertIntEquals(tc, 0, crypt_memcmp(a, c, 0));
+}
+
+// crypt_memcmp：任一位置任一位不同都非 0，差异落在 len 之外不算，全等为 0
+static void test_crypt_memcmp_each_byte(CuTest *tc) {
+    unsigned char a[64], b[64];
+    size_t len, pos;
+    int32_t bit, bad = 0;
+    for (pos = 0; pos < sizeof(a); pos++) {
+        a[pos] = (unsigned char)(pos * 37 + 11);
+    }
+    memcpy(b, a, sizeof(a));
+    for (len = 0; len <= sizeof(a); len++) {
+        if (0 != crypt_memcmp(a, b, len)) {
+            bad++;
+        }
+        for (pos = 0; pos < len; pos++) {
+            for (bit = 0; bit < 8; bit++) {
+                b[pos] ^= (unsigned char)(1u << bit);
+                if (0 == crypt_memcmp(a, b, len)) {
+                    bad++;
+                }
+                if (0 != crypt_memcmp(a, b, pos)) {
+                    bad++;
+                }
+                b[pos] ^= (unsigned char)(1u << bit);
+            }
+        }
+    }
+    CuAssertIntEquals(tc, 0, bad);
+}
+
 void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_base64);
     SUITE_ADD_TEST(suite, test_base64_invalid);
@@ -3462,4 +3511,6 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_cipher_dofinal_empty_vs_fail);
     SUITE_ADD_TEST(suite, test_scram_empty_user);
     SUITE_ADD_TEST(suite, test_des3_null_key);
+    SUITE_ADD_TEST(suite, test_crypt_memcmp);
+    SUITE_ADD_TEST(suite, test_crypt_memcmp_each_byte);
 }

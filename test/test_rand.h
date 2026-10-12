@@ -3,8 +3,8 @@
 
 #include "lib.h"
 
-// 测试专用确定性 PRNG(xorshift64)。不复用 utils.h 的 randrange：那个是线程局部状态、
-// 由 threadid 与时间戳自动播种，失败无法照日志复现；这里种子由调用方显式给定。
+// 测试专用确定性 PRNG(xorshift64)。不复用 base/srand.h 的 randrange：那个是线程局部状态、
+// 由状态槽地址与时间戳自动播种，失败无法照日志复现；这里种子由调用方显式给定。
 // 状态显式随参数传递，各测试文件各持一份，互不干扰
 typedef struct test_rng {
     uint64_t s;

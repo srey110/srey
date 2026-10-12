@@ -2,7 +2,6 @@
 #include "event/event.h"
 #include "crypt/urlraw.h"
 #include "containers/sarray.h"
-#include "utils/utils.h"
 
 // 头部缓冲区从 cur 起的剩余字节数。形参名避开 head：宏体里 (p)->head 的 head 也会被替换
 #define HEAD_REMAIN(p, cur) ((p)->head.lens - (size_t)((cur) - (char *)(p)->head.data))

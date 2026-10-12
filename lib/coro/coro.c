@@ -2,8 +2,6 @@
 #include "containers/hashmap.h"
 #include "containers/heap.h"
 #include "containers/slist.h"
-#include "utils/utils.h"
-#include "utils/timer.h"
 #include "utils/binary.h"
 #include "utils/pool.h"
 #if defined(MCO_USE_VMEM_ALLOCATOR)

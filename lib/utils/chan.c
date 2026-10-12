@@ -1,5 +1,4 @@
 ﻿#include "utils/chan.h"
-#include "utils/utils.h"
 
 QUE_DECL(cbuf_que, buf_ctx)
 struct chan_ctx {

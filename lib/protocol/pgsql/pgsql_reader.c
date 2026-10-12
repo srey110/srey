@@ -1,7 +1,6 @@
 ﻿#include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql_parse.h"
 #include "protocol/pgsql/pgsql.h"// pgsql_result_count
-#include "utils/strptime.h"
 #include "utils/uuid.h"
 
 // 文本 bool 多字节真值表的一项：字面量与它的长度

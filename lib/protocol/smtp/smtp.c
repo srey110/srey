@@ -1,5 +1,4 @@
 ﻿#include "protocol/smtp/smtp.h"
-#include "utils/utils.h"
 #include "utils/binary.h"
 #include "event/event.h"
 #include "crypt/base64.h"

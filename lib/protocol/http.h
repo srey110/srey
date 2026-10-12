@@ -3,7 +3,6 @@
 
 #include "utils/buffer.h"
 #include "utils/binary.h"
-#include "utils/utils.h"
 #include "protocol/prots_pub.h"
 
 typedef struct http_header_ctx {

@@ -2,6 +2,7 @@
 #include "utils/buffer.h"
 #include "utils/netutils.h"
 #include "utils/tda.h"
+#include "utils/idgen.h"
 #include "containers/hashmap.h"
 
 #ifndef EV_IOCP

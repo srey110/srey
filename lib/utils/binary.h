@@ -2,7 +2,6 @@
 #define BINARY_H_
 
 #include "base/structs.h"
-#include "utils/utils.h"
 
 typedef struct binary_ctx {
     char *data;

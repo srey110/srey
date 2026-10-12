@@ -1,5 +1,4 @@
 ﻿#include "hash_ring.h"
-#include "utils/utils.h"
 #include "crypt/xxhash.h"
 
 /* 栈上分配的最大名称长度，避免堆分配。

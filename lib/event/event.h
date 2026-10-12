@@ -9,7 +9,7 @@
 /// 网络初始化
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
-/// <param name="nthreads">网络线程数；0 表示按 CPU 核心数.KQUEUE 多线程会恶化</param>
+/// <param name="nthreads">网络线程数；0 表示按本进程可用核数(见 procscnt_avail).KQUEUE 多线程会恶化</param>
 /// <param name="hooks">网络线程的 init/exit 钩子,NULL 表示不挂钩子</param>
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks);
 /// <summary>

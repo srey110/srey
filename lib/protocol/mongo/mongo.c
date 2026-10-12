@@ -1,7 +1,6 @@
 ﻿#include "protocol/mongo/mongo.h"
 #include "event/event.h"
 #include "utils/binary.h"
-#include "utils/utils.h"
 #include "crypt/scram.h"
 #include "protocol/prots_pub.h"
 

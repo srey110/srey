@@ -5,7 +5,7 @@
 
 // 任务调度：把 task 的消息交给线程去跑。
 // 线程：nnet 个 net 线程(事件循环，收发网络数据)、nworker 个 worker、一个时间轮线程(到期投超时消息)、
-// 一个 monitor(每 5 秒查一次有没有 task 卡在一条消息上，worker 与 net 线程都查)。
+// 一个 monitor(每 MONITOR_INTERVAL_MS 查一次有没有 task 卡在一条消息上，worker 与 net 线程都查)。
 //
 // 一条消息的流程：
 //   1. 入队：net 线程解出的包、到期的超时、别的 task 的请求与响应，推进目标 task 的消息队列。
@@ -24,8 +24,8 @@
 /// <summary>
 /// 任务调度初始化
 /// </summary>
-/// <param name="nnet">网络线程数, 0 cpu核心数</param>
-/// <param name="nworker">工作线程数, 0 cpu核心数</param>
+/// <param name="nnet">网络线程数, 0 本进程可用核数(见 procscnt_avail)</param>
+/// <param name="nworker">工作线程数, 0 本进程可用核数(见 procscnt_avail)</param>
 /// <param name="twcap">时间轮队列大小, 0 4096</param>
 /// <returns>loader_ctx</returns>
 loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap);
@@ -64,5 +64,20 @@ typedef void(*task_each_cb)(const char *name, name_t handle, void *arg);
 /// <param name="cb">每个 task 触发一次的回调</param>
 /// <param name="arg">透传给 cb 的用户参数</param>
 void loader_task_each(loader_ctx *loader, task_each_cb cb, void *arg);
+/// <summary>
+/// 注册进程退出请求的回调：程序入口在启动任何 task 之前调一次，回调里通常记下退出码并叫醒等退出的主线程。
+/// 回调可能在任意 worker / net 线程上被调用，只能做跨线程安全的轻量动作，不能在里面 loader_free
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="cb">回调，收到 loader_exit 的退出码与 arg</param>
+/// <param name="arg">透传给 cb</param>
+void loader_on_exit(loader_ctx *loader, loader_exit_cb cb, void *arg);
+/// <summary>
+/// 请求进程退出(例如测试汇总收齐后自行收尾)：只把退出码交给 loader_on_exit 注册的回调，真正的收尾由入口完成。
+/// 没注册回调时只打一行 WARN；多次请求由回调决定取哪一次
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="code">退出码，0 表示正常</param>
+void loader_exit(loader_ctx *loader, int32_t code);
 
 #endif//LOADER_H_

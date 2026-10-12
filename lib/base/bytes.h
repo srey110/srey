@@ -3,10 +3,37 @@
 
 #include "base/os.h"
 #include "base/err.h"
+#include "base/macro_util.h"
 #include "base/bits.h"
 
-// 字节串，内存的查找、比较、裁剪、复制与格式化
+// 字节串，内存的查找、比较、裁剪、复制、格式化、按分隔符切段与哈希
 
+// split 的切分标志,按位或。trim 恒在判空之前:" " 这种全空白段原始长度是 1,
+// 先判空就漏过去了(RFC 7230 §7 的 list 语义正是要求先 trim 再忽略空元素)
+#define SPLIT_TRIM      0x01 //每段剔除两端空字节(SP/HTAB)
+#define SPLIT_SKIPEMPTY 0x02 //丢弃空段(与 SPLIT_TRIM 同用时按 trim 后的长度判)
+#define SPLIT_TRUNCATE  0x04 //仅栈模式:段数超 cap 时截断到 cap 正常返回,而不是 ERR_FAILED
+// 通用数据缓冲区（仅持有指针，不管理内存所有权）
+typedef struct buf_ctx {
+    size_t  lens; // 数据长度（字节）
+    void   *data; // 数据指针
+}buf_ctx;
+
+/// <summary>
+/// 把 SNPRINTF 的返回值收敛成实际写入的字节数(不含结尾 NUL)。截断时它返回的是
+/// "本应写入的长度"而非实际写入,凡把返回值直接当长度用的地方都要过本函数,
+/// 否则会越过缓冲末尾把相邻字节一起读走
+/// </summary>
+/// <param name="rtn">SNPRINTF 的原始返回值</param>
+/// <param name="bufsize">目标缓冲总字节数</param>
+/// <returns>实际写入字节数;rtn 为负或 bufsize 为 0 返回 0,截断时返回 bufsize - 1</returns>
+static inline size_t snprintf_lens(int32_t rtn, size_t bufsize) {
+    if (rtn < 0
+        || 0 == bufsize) {
+        return 0;
+    }
+    return ((size_t)rtn < bufsize) ? (size_t)rtn : bufsize - 1;
+}
 /// <summary>
 /// 查找字符，不区分大小写。大小写只按 ASCII 折叠('A'..'Z')，0x80 以上的字节原样比，不随 locale 变
 /// </summary>
@@ -377,5 +404,89 @@ char *_format_va(const char *fmt, va_list args);
 /// <param name="...">变参</param>
 /// <returns>char * 需要free</returns>
 char *format_va(const char *fmt, ...);
+/// <summary>
+/// hash
+/// </summary>
+/// <param name="buf">要计算的数据</param>
+/// <param name="len">数据长度</param>
+/// <returns>hash</returns>
+static inline uint64_t hash(const char *buf, size_t len) {
+    uint64_t rtn = 0;
+    for (; len > 0; --len) {
+        rtn = (rtn * 131) + (unsigned char)*buf++;
+    }
+    return rtn;
+}
+/// <summary>
+/// '\0' 结尾字符串的 hash，结果与 hash(str, strlen(str)) 相同，只扫一遍
+/// </summary>
+/// <param name="str">要计算的字符串</param>
+/// <returns>hash</returns>
+static inline uint64_t hash_str(const char *str) {
+    uint64_t rtn = 0;
+    for (; '\0' != *str; ++str) {
+        rtn = (rtn * 131) + (unsigned char)*str;
+    }
+    return rtn;
+}
+/// <summary>
+/// 64 位整数专用哈希（splitmix64）
+/// </summary>
+/// <param name="x">整型 key</param>
+/// <returns>hash</returns>
+static inline uint64_t hash_u64(uint64_t x) {
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+/// <summary>
+/// 按 sep 拆分,仅记录段 (data,lens) 不复制,data 指向 ptr 内部。
+/// cap 决定内存模型:cap 为 0 走堆(函数分配,segs 是纯出参,不读它的旧值),
+/// cap 大于 0 走调用方的栈数组
+/// </summary>
+/// <param name="ptr">待拆分缓冲(只读取,不修改)</param>
+/// <param name="plens">ptr 字节长度</param>
+/// <param name="sep">分隔符;NULL 或 seplens 为 0 时整段不切,只出一段</param>
+/// <param name="seplens">分隔符字节数</param>
+/// <param name="segs">cap 为 0 时输出新分配的段数组(调用方 FREE);cap 大于 0 时传入调用方数组,须非 NULL</param>
+/// <param name="cap">0 走堆(上限 INT32_MAX 段,即返回值本身的上限);大于 0 即栈数组容量</param>
+/// <param name="flags">SPLIT_* 按位或,0 为标准切分</param>
+/// <returns>段数量;plens 为 0 时出一个空段(仍是"sep 出现次数 + 1")。
+///   ERR_FAILED 表示参数非法(ptr/segs 为空、cap 为负、栈模式 *segs 为空),
+///   栈模式超 cap 且未开 SPLIT_TRUNCATE(segs 内容未定义),
+///   或堆模式段数达 INT32_MAX(*segs 已分配,仍须 FREE)。
+///   cap 判定排在过滤之后,被 SPLIT_SKIPEMPTY 丢掉的段不占名额;
+///   堆模式开 SPLIT_SKIPEMPTY 后可能返回 0,但 *segs 已分配,仍须 FREE。
+///   空段记录原指针与 lens 为 0(不是 NULL)</returns>
+int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
+              buf_ctx **segs, int32_t cap, int32_t flags);
+/// <summary>
+/// 判断 buf_ctx 是否为空：buf 为 NULL、数据指针为 NULL 或长度为 0 都算空
+/// </summary>
+/// <param name="buf">buf_ctx，可为 NULL</param>
+/// <returns>非 0 为空</returns>
+static inline int32_t buf_empty(buf_ctx *buf) {
+    return NULL == buf || EMPTYPTR(buf->data, buf->lens);
+}
+/// <summary>
+/// 区分大小写地比较 buf_ctx 与指定数据是否相等：长度相同且逐字节相同
+/// </summary>
+/// <param name="buf">buf_ctx，须非 NULL</param>
+/// <param name="data">要比较的数据</param>
+/// <param name="lens">data 的字节数</param>
+/// <returns>非 0 相等</returns>
+static inline int32_t buf_compare(buf_ctx *buf, const char *data, size_t lens) {
+    return buf->lens == lens && 0 == memcmp(buf->data, data, lens);
+}
+/// <summary>
+/// 同 buf_compare，但不区分大小写，折叠规则同 memcasecmp
+/// </summary>
+/// <param name="buf">buf_ctx，须非 NULL</param>
+/// <param name="data">要比较的数据</param>
+/// <param name="lens">data 的字节数</param>
+/// <returns>非 0 相等</returns>
+static inline int32_t buf_icompare(buf_ctx *buf, const char *data, size_t lens) {
+    return buf->lens == lens && 0 == memcasecmp(buf->data, data, lens);
+}
 
 #endif//BYTES_H_

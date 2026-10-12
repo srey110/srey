@@ -2,7 +2,6 @@
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/prots_pub.h"
-#include "utils/strptime.h"
 
 // 列类型 → 取值分组(MYSQL_CLS_*，定义见 mysql_reader.h)
 static const uint8_t _mysql_type_cls[256] = {

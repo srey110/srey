@@ -1,7 +1,7 @@
 ﻿#include "srey/task.h"
 #include "srey/debug_request.h"
 #include "containers/hashmap.h"
-#include "utils/utils.h"
+#include "utils/idgen.h"
 
 // task 消息队列默认条数
 #define TASK_QUEUE_CAP 256
@@ -14,11 +14,6 @@ TLS_DEFINE(int32_t, _emit_win, 2)
 static inline void _task_map_set(task_map *map, task_ctx *task) {
     name_t *key = &task->handle;
     ASSERTAB(NULL == task_map_set(map, &key), "task name repeat.");
-}
-// 从任务哈希表中删除指定任务名，返回被删除的元素指针
-static inline void *_task_map_del(task_map *map, name_t handle) {
-    name_t *key = &handle;
-    return (void *)task_map_delete(map, &key);
 }
 // 按任务名从哈希表中查找并返回 task_ctx，未找到返回 NULL
 static inline task_ctx *_task_map_get(task_map *map, name_t handle) {
@@ -295,8 +290,8 @@ void task_incref(task_ctx *task) {
     ATOMIC_ADD_RELAXED(&task->ref, 1);
 }
 // 摘除后唤醒 _loader_task_closing：这是全仓唯一从 maptasks 摘 task 的地方，
-// 也就是"计数可能归零"的唯一发布点。signal 必须排在 wrunlock 之后——
-// 等待方的锁序是 closing_mutex → lckmaptasks，放进写锁内就反过来了。
+// 也就是"计数可能归零"的唯一发布点。叫醒必须排在 wrunlock 之后——
+// waiter 用 mutex + cond 实现时，等待方是持着 closing_waiter 的锁去拿 lckmaptasks，放进写锁内锁序就反过来了。
 // closing 为 0 时（正常运行期）没有等待者，一条 atomic load 就短路掉
 void task_ungrab(task_ctx *task) {
     loader_ctx *loader = task->loader;
@@ -305,12 +300,16 @@ void task_ungrab(task_ctx *task) {
         return;
     }
     void *ptr = NULL;
+    name_t *key = &handle;
+    name_t **found;
+    uint64_t hash = _TASK_MAP_HASH(&key);// 查与删共用这一次哈希
     // 反查一次，防止当前线程执行rwlock_distr_wrlock前被其他线程抢占
     // 并执行task_grab->task_ungrab完成了释放，造成task->ref崩溃
     rwlock_distr_wrlock(&loader->lckmaptasks);
-    if (task == _task_map_get(loader->maptasks, handle)
+    found = task_map_get_with_hash(loader->maptasks, &key, hash);
+    if (NULL != found && &task->handle == *found
         && 0 == ATOMIC_GET(&task->ref)) {
-        ptr = _task_map_del(loader->maptasks, handle);
+        ptr = task_map_delete_with_hash(loader->maptasks, &key, hash);
         if (NULL != task->name) {
             _task_name_map_del(loader->mapnames, task->name);
         }
@@ -319,9 +318,7 @@ void task_ungrab(task_ctx *task) {
     if (NULL != ptr) {
         task_free(task);
         if (0 != ATOMIC_GET(&loader->closing)) {
-            mutex_lock(&loader->closing_mutex);
-            cond_signal(&loader->closing_cond);
-            mutex_unlock(&loader->closing_mutex);
+            waiter_wake_held(&loader->closing_waiter);// 关停期冷路径不看睡眠态；摘的可能是 loader 不 join 的线程，所以用 wake_held
         }
     }
 }

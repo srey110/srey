@@ -2,9 +2,7 @@
 #define TW_H_
 
 #include "thread/thread.h"
-#include "thread/mutex.h"
-#include "thread/cond.h"
-#include "utils/timer.h"
+#include "thread/waiter.h"
 #include "base/structs.h"
 #include "utils/pool.h"
 #include "containers/slist.h"
@@ -27,12 +25,10 @@ typedef struct tw_node_ctx {
 FSQU_DECL(twq, tw_node_ctx *)
 typedef struct tw_ctx {
     atomic_t exit;          //退出标志，非零时轮线程退出
-    atomic_t reqadd_pending;  //入队脏标志：0 已感知，1 有待处理节点；仅在 0→1 时才唤醒轮线程
     uint64_t jiffies;       //当前时间轮逻辑时钟（毫秒）
     pthread_t thtw;         //时间轮工作线程
     timer_ctx timer;        //高精度计时器
-    mutex_ctx mu;
-    cond_ctx cond;
+    waiter_ctx waiter;      //轮线程睡到下一个到期，tw_add / tw_free 提前叫醒
     twq reqadd;          //外部新增请求暂存队列（平台自适应 fsqu，容量 capacity）
     pool_ctx node_pool;       //空闲节点复用池（utils/pool，容量 TW_NODE_POOL_MAX）
     list_ctx tv1[TVR_SIZE];   //最低精度轮（精度 1ms，范围 256ms），槽即 slist（元素 tw_node_ctx）

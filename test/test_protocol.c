@@ -64,6 +64,20 @@ static redis_pack_ctx *_t_redis_one(buffer_ctx *buf, ud_cxt *ud,
     *status = PROT_INIT;
     return _t_redis_unpack(0, buf, ud, NULL, status);
 }
+// 解一条 RESP DOUBLE，断言收下且值与 expect 相等，-0 还要符号一致
+static void _t_redis_dbl_ok(CuTest *tc, const char *wire, double expect) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    redis_pack_ctx *pack = _t_redis_one(&buf, &ud, wire, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, RESP_DOUBLE == pack->prot);
+    CuAssertTrue(tc, expect == pack->dval);
+    CuAssertTrue(tc, !signbit(expect) == !signbit(pack->dval));
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
 static void *_t_smtp_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
     size_t *size, int32_t *status) {
     return smtp_unpack(NULL, &_t_nosk, client, buf, ud, size, status);
@@ -2192,6 +2206,36 @@ static void test_redis_resp3_scalar(CuTest *tc) {
         CuAssertTrue(tc, RESP_DOUBLE == pack->prot);
         CuAssertDblEquals(tc, 3.14, pack->dval, 1e-9);
         _redis_pkfree(pack);
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+    // DOUBLE 快路径(strtod_fast)收的写法与回落 strtod_c 的写法，结果都与 strtod 一致：
+    // 20 位有效数字与带 '+' 的快路径不收、走回落
+    _t_redis_dbl_ok(tc, ",-0\r\n", -0.0);
+    _t_redis_dbl_ok(tc, ",1e22\r\n", 1e22);
+    _t_redis_dbl_ok(tc, ",0.1\r\n", 0.1);
+    _t_redis_dbl_ok(tc, ",3.1415926535897931\r\n", 3.1415926535897931);
+    _t_redis_dbl_ok(tc, ",12345678901234567890\r\n", 12345678901234567890.0);
+    _t_redis_dbl_ok(tc, ",+1\r\n", 1.0);
+    // 128 字节以上、快路径不收的长串也要收下：回落用 strtod_c，换成有长度上限的 strtod_s 就会被拒
+    {
+        char wire[160];
+        char *end;
+        wire[0] = ',';
+        wire[1] = '0';
+        wire[2] = '.';
+        memset(wire + 3, '1', 140);
+        memcpy(wire + 143, "\r\n", 3);
+        _t_redis_dbl_ok(tc, wire, strtod_c(wire + 1, &end));
+    }
+    // DOUBLE 上溢: ",1e400\r\n" → PROT_ERROR
+    {
+        buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status;
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, ",1e400\r\n", &status);
+        CuAssertTrue(tc, NULL == pack);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
         _redis_udfree(&ud);
         buffer_free(&buf);
     }

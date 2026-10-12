@@ -1,5 +1,4 @@
 ﻿#include "utils/urlparse.h"
-#include "utils/utils.h"
 #include "crypt/urlraw.h"
 
 // 解析协议类型（scheme）：只认首个 '/' '?' '#' 之前的 "://"，未找到则原样返回。

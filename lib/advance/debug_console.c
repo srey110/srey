@@ -7,7 +7,6 @@
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/netaddr.h"
-#include "utils/utils.h"
 #include "utils/log.h"
 
 // Lua VM 专属命令打到非 Lua task 时的应答；由发起方（各路由 handler 传的 needlua）判定

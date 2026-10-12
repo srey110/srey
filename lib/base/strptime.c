@@ -1,4 +1,5 @@
-﻿#include "utils/strptime.h"
+﻿#include "base/strptime.h"
+#include "base/bytes.h"
 //https://github.com/res2001/strptime.git
 #define ALT_E 0x01
 #define ALT_O 0x02

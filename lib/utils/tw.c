@@ -19,9 +19,7 @@ static void _tw_free_slot(list_ctx *slot, const size_t len) {
 void tw_free(tw_ctx *ctx) {
     ATOMIC_SET_RELAXED(&ctx->exit, 1);
     /* 唤醒轮线程，让它检查 exit 标志并退出 */
-    mutex_lock(&ctx->mu);
-    mutex_unlock(&ctx->mu);
-    cond_signal(&ctx->cond);
+    waiter_wake(&ctx->waiter, NULL);
     thread_join(ctx->thtw);
     _tw_free_slot(ctx->tv1, TVR_SIZE);
     _tw_free_slot(ctx->tv2, TVN_SIZE);
@@ -42,11 +40,10 @@ void tw_free(tw_ctx *ctx) {
     twq_free(&ctx->reqadd);
     /* 释放节点池 */
     pool_free(&ctx->node_pool);
-    cond_free(&ctx->cond);
-    mutex_free(&ctx->mu);
+    waiter_free(&ctx->waiter);
 }
 /*  注意：reqadd 容量 4096，常规负载下不会触底 —— 排空是信号驱动而非 tick 驱动：
- *  pending 由 0→1 的那次 push 立刻唤醒轮线程，队列不会随轮线程睡得久而积压。
+ *  轮线程睡着时 push 当场叫醒它，队列不会随轮线程睡得久而积压。
  *  极端突发或时间轮主线程被严重抢占时触底，twq_push 降级到无界溢出层，不阻塞调用方。*/
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud) {
     if (0 == timeout) {
@@ -59,11 +56,10 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     node->_cb = _cb;
     node->_freecb = _freecb;
     twq_push(&ctx->reqadd, &node);
-    /* 仅当标志由 0→1 时（首批新任务）才唤醒轮线程，批量入队后续节点不重复 signal */
-    if (ATOMIC_CAS(&ctx->reqadd_pending, 0, 1)) {
-        mutex_lock(&ctx->mu);
-        mutex_unlock(&ctx->mu);
-        cond_signal(&ctx->cond);
+    /* 先入队再看轮线程睡没睡(规则见 waiter.h)；只有它在睡时才叫，同时到的几个只让抢到的那个叫 */
+    if (WAITER_SLEEP == waiter_state_get(&ctx->waiter)
+        && waiter_mark_waking(&ctx->waiter, WAITER_SLEEP)) {
+        waiter_wake(&ctx->waiter, NULL);
     }
 }
 // 根据节点的到期时间计算应放入 tv1～tv5 中的哪个槽位
@@ -133,13 +129,15 @@ static void _tw_run(tw_ctx *ctx) {
     list_init(&ctx->tv1[ulidx]);
 }
 // 批量排空 reqadd 队列，将节点分发到对应时间轮槽位
-static void _tw_insert_all(tw_ctx *ctx, tw_node_ctx **nodes) {
-    uint32_t n, i;
+static uint32_t _tw_insert_all(tw_ctx *ctx, tw_node_ctx **nodes) {
+    uint32_t n, i, total = 0;
     while ((n = twq_pop_sc_batch(&ctx->reqadd, nodes, TW_REQADD_BATCH)) > 0) {
         for (i = 0; i < n; i++) {
             list_push_tail(_tw_getslot(ctx, nodes[i]), &nodes[i]->node);
         }
+        total += n;
     }
+    return total;
 }
 // 距下一次必须醒来的 jiffy 有多少毫秒，取值 [0, TVR_MASK]。
 // tv1 的 256 个槽恰好覆盖 [jiffies, jiffies+255]（_tw_getslot 对 expires-jiffies < 256 的
@@ -161,6 +159,7 @@ static void _tw_loop(void *arg) {
     uint64_t curtick;
     uint64_t wake_at;
     uint32_t sleep_ms;
+    uint32_t spins = 0;
     int32_t ran;
     tw_ctx *ctx = (tw_ctx *)arg;
     tw_node_ctx *nodes[TW_REQADD_BATCH];
@@ -168,11 +167,10 @@ static void _tw_loop(void *arg) {
     uint64_t shrink_start = ctx->jiffies;
     while (0 == ATOMIC_GET(&ctx->exit)) {
         /*  将外部通过 tw_add 提交的节点分发到对应槽位（reqadd 仅 tw 主线程独占消费，走 pop_sc_batch）。
-         *  节点链接由 list_push_tail 设置，无需 tw_add 预置。
-         *  先排空，再清标志，再二次排空：避免清标志与生产者入队之间的竞态导致漏唤醒 */
-        _tw_insert_all(ctx, nodes);
-        ATOMIC_SET(&ctx->reqadd_pending, 0);
-        _tw_insert_all(ctx, nodes);
+         *  节点链接由 list_push_tail 设置，无需 tw_add 预置。之后新到的由睡前复查兜住 */
+        if (0 != _tw_insert_all(ctx, nodes)) {
+            spins = 0;
+        }
         /* 2. 处理所有已到期的 jiffies */
         curtick = timer_cur_ms(&ctx->timer);
         ran = ctx->jiffies <= curtick;
@@ -186,7 +184,7 @@ static void _tw_loop(void *arg) {
         }
         /* 睡到下一个必须醒的 jiffy: 最近的 tv1 到期或下一个 cascade 边界, 上界由
          * _tw_next_delta 保证不超过 256ms, 不用钳位。wake_at 已过说明本轮耗时超过了
-         * 下一到期, 不睡直接回追赶循环; tw_add / tw_free 会提前 cond_signal 唤醒。*/
+         * 下一到期, 不睡直接回追赶循环; tw_add / tw_free 会提前叫醒。*/
         if (ran) {
             curtick = timer_cur_ms(&ctx->timer);
         }
@@ -195,24 +193,23 @@ static void _tw_loop(void *arg) {
             continue;
         }
         sleep_ms = (uint32_t)(wake_at - curtick);
-        mutex_lock(&ctx->mu);
-        /*  必须在锁内复查 reqadd_pending：生产者 CAS 置位后要拿 ctx->mu 才能 signal，
-         *  若它落在本线程加锁之前，signal 打空 —— 睡 1ms 时最多晚 1ms 无害，
-         *  睡到 256ms 就是定时器迟到。查到已置位就跳过等待，回去排空即可 */
-        if (0 == ATOMIC_GET(&ctx->exit)
-            && 0 == ATOMIC_GET(&ctx->reqadd_pending)) {
-            cond_timedwait(&ctx->cond, &ctx->mu, sleep_ms);
+        /*  睡前复查(握手见 waiter.h)：已要退出，或队列里有新节点(排空会看漏刚发布的，见 mpq trypush)
+         *  就不睡，回去排空，否则新定时器要晚到这一觉睡完 */
+        waiter_prepare(&ctx->waiter, WAITER_SLEEP);
+        if (0 != ATOMIC_GET(&ctx->exit)
+            || !twq_empty(&ctx->reqadd)) {
+            waiter_cancel(&ctx->waiter);
+            spin_backoff(&spins);// 一直取不到的是还没发布完的节点，退避着等它
+        } else {
+            (void)waiter_commit(&ctx->waiter, sleep_ms);
         }
-        mutex_unlock(&ctx->mu);
     }
     LOG_INFO("%s", "timewheel thread exited.");
 }
 void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks) {
     ATOMIC_SET_RELAXED(&ctx->exit, 0);
     ctx->jiffies = 0;
-    ATOMIC_SET_RELAXED(&ctx->reqadd_pending, 0);
-    mutex_init(&ctx->mu);
-    cond_init(&ctx->cond);
+    waiter_init(&ctx->waiter);
     timer_init(&ctx->timer);
     twq_init(&ctx->reqadd, 0 == capacity ? 4 * ONEK : capacity);
     pool_init(&ctx->node_pool, sizeof(tw_node_ctx), TW_NODE_POOL_MAX, TW_REQADD_BATCH, POOL_THSAFE, NULL);

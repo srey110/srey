@@ -1,5 +1,4 @@
 ﻿#include "utils/sfid.h"
-#include "utils/utils.h"
 
 #define DefMachineBitLen 10 //机器 ID 默认位数
 #define DefSequenceBitLen 12 //自增序列默认位数

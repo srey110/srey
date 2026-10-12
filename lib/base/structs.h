@@ -26,11 +26,6 @@ typedef struct sock_ctx {
     int32_t  index; // 所属 watcher 在 ctx->watcher 中的下标,取值 [0, nthreads) 或 INVALID_INDEX
     uint64_t skid;  // 连接 ID（防 fd 复用误操作）
 }sock_ctx;
-// 通用数据缓冲区（仅持有指针，不管理内存所有权）
-typedef struct buf_ctx {
-    size_t  lens; // 数据长度（字节）
-    void   *data; // 数据指针
-}buf_ctx;
 // 多播共享 pack：ev_send_multi 一次广播给 N 个 fd 时,N 个 off_buf_ctx.shared 指向同一份;
 // 每个 buf 释放走 _evpub_off_buf_release → ATOMIC_ADD(&ref,-1),归 0 时 FREE(data)+FREE(pack)
 typedef struct shared_data {
@@ -72,18 +67,6 @@ static inline void sock_set_invalid(sock_ctx *sk) {
     sk->fd = INVALID_SOCK;
     sk->index = INVALID_INDEX;
 }
-// 判断 buf_ctx 是否为空（指针或数据为 NULL 或长度为 0）
-static inline int32_t buf_empty(buf_ctx *buf) {
-    return NULL == buf || EMPTYPTR(buf->data, buf->lens);
-};
-// 区分大小写地比较 buf_ctx 与指定数据是否相等
-static inline int32_t buf_compare(buf_ctx *buf, const char *data, size_t lens) {
-    return buf->lens == lens && 0 == memcmp(buf->data, data, lens);
-};
-// 不区分大小写地比较 buf_ctx 与指定数据是否相等
-static inline int32_t buf_icompare(buf_ctx *buf, const char *data, size_t lens) {
-    return buf->lens == lens && 0 == memcasecmp(buf->data, data, lens);
-};
 static inline void shared_data_free(void *sdate, free_cb fcb) {
     shared_data *date = sdate;
     if (1 == ATOMIC_ADD(&date->ref, -1)) {

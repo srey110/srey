@@ -36,7 +36,7 @@ static void _hasreq_startup(task_ctx *task) {
 static int32_t _eq_text(const void *data, size_t len, const char *want) {
     return NULL != data && len == strlen(want) && 0 == memcmp(data, want, len);
 }
-// memstr 已覆盖 NULL / 长度不足 / want 为空各档，见 utils.h
+// memstr 已覆盖 NULL / 长度不足 / want 为空各档，见 bytes.h
 static int32_t _has_text(const void *data, size_t len, const char *want) {
     return NULL != memstr(0, data, len, want, strlen(want));
 }

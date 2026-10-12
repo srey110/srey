@@ -34,7 +34,7 @@ typedef struct certs_ctx {
 ARR_DECL(certs_arr, certs_ctx)
 static certs_arr *_arr_certs = NULL;// 全局证书注册池
 static rwlock_ctx *_rwlck_certs = NULL;// 保护证书池的读写锁
-static atomic_t _init_once = 0;// 保证证书池只初始化一次
+static once_ctx _init_once = 0;// 证书池只初始化一次，evssl_pool_free 后可再来一次
 
 // 设置SSL_CTX的通用选项：禁止重协商、不验证对端
 // 不设 SSL_OP_IGNORE_UNEXPECTED_EOF：它把无 close_notify 的 EOF 伪装成 ZERO_RETURN，
@@ -171,11 +171,12 @@ void evssl_free(evssl_ctx *evssl) {
     FREE(evssl);
 }
 void evssl_pool_init(void) {
-    if (ATOMIC_CAS(&_init_once, 0, 1)) {
+    if (once_begin(&_init_once)) {
         MALLOC(_rwlck_certs, sizeof(rwlock_ctx));
         MALLOC(_arr_certs, sizeof(certs_arr));
         rwlock_init(_rwlck_certs);
         certs_arr_init(_arr_certs, 0);
+        once_end(&_init_once);
     }
 }
 void evssl_pool_free(void) {
@@ -191,8 +192,8 @@ void evssl_pool_free(void) {
     rwlock_free(_rwlck_certs);
     FREE(_arr_certs);
     FREE(_rwlck_certs);
-    // 重置 _init_once，允许 evssl_pool_init 二次调用（嵌入式 loader_init/free 循环）
-    ATOMIC_SET_RELEASE(&_init_once, 0);
+    // 允许 evssl_pool_init 二次调用（嵌入式 loader_init/free 循环）
+    once_reset(&_init_once);
 }
 // 在证书池中按名称查找certs_ctx（调用前须持有读锁）
 static certs_ctx *_evssl_get(const char *name) {

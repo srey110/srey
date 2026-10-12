@@ -1,7 +1,7 @@
 ﻿#ifndef TIMER_H_
 #define TIMER_H_
 
-#include "base/base.h"
+#include "base/os.h"
 
 typedef struct timer_ctx {
 #if defined(OS_WIN)

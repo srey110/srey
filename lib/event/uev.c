@@ -1,16 +1,16 @@
 ﻿#include "event/uev.h"
 #include "containers/hashmap.h"
 #include "utils/netutils.h"
-#include "utils/utils.h"
 
 #ifndef EV_IOCP
 
-static atomic_t _init_once = 0;// 保证命令回调表只初始化一次，口径同 IOCP 侧 _iocp_init_funcs
+static once_ctx _init_once = 0;// 命令回调表只填一次，口径同 IOCP 侧 _iocp_init_funcs
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd); // 命令回调函数表
 
 //触发器只负责唤醒，命令在qu里面获取
 static size_t _uev_cmd_run(watcher_ctx *watcher, evsock_ctx *evsk, pip_ctx *pip) {
     size_t cnt_total = 0;
+    uint32_t spins = 0;
     int32_t i, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
 #ifdef NO_CMD_PIPE
@@ -27,13 +27,20 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, evsock_ctx *evsk, pip_ctx *pip)
     } while (ERR_FAILED == rd && EINTR == ERRNO);
 #endif
     ATOMIC_SET(&pip->wake_pending, 0);
-    do {
+    for (;;) {
         cnt = (int32_t)cmdq_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
             cmd_cbs[cmds[i].cmd](watcher, &cmds[i]);
         }
         cnt_total += (size_t)cnt;
-    } while (cnt > 0);
+        if (0 == cnt) {
+            // 抽空后按 empty 复查，单靠抽会看漏刚发布的(见 mpq trypush)；还有在途的就退避着等它发布
+            if (cmdq_empty(&pip->qu)) {
+                break;
+            }
+            spin_backoff(&spins);
+        }
+    }
     return cnt_total;
 }
 // 命令管道可读事件回调：批量读取并处理所有待处理命令
@@ -54,9 +61,10 @@ static void _uev_cmd_loop(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
 // 初始化命令回调函数表，_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
 // 如 在_ev_send里面直接发送数据。
 // cmd_cbs 是进程全局、且事件线程在派发热路径上裸读它，所以只许写一次：ev_init 是公开接口，
-// 已有 ev_ctx 在跑时再建一个(见 test/task_acpstorm.c)就会与那些线程并发写同一批槽位
+// 已有 ev_ctx 在跑时再建一个(见 test/task_acpstorm.c)就会与那些线程并发写同一批槽位。
+// 两个 ev_init 同时首次进来时，没抢到的要等表填完才能往下走
 static void _uev_init_callback(void) {
-    if (!ATOMIC_CAS(&_init_once, 0, 1)) {
+    if (!once_begin(&_init_once)) {
         return;
     }
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
@@ -69,6 +77,7 @@ static void _uev_init_callback(void) {
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
     cmd_cbs[CMD_DEFER_EXEC] = _on_cmd_defer_exec;
+    once_end(&_init_once);
 }
 // 将命令唤醒源注册到事件循环（触发_uev_cmd_loop）
 static void _uev_init_cmd(watcher_ctx *watcher) {
@@ -591,7 +600,7 @@ static void _uev_new_pipe(pip_ctx *pip) {
     tda_init(&pip->tda, (size_t)(cmdq_capacity(&pip->qu) / QUEUE_OVERLOAD_RATIO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
-    ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
+    ctx->nthreads = (0 == nthreads ? procscnt_avail() : nthreads);
 #if defined(EV_KQUEUE)
     // kqueue 上多线程反而更慢,epoll/IOCP 无此问题
     if (ctx->nthreads > 1) {

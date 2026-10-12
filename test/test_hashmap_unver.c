@@ -5,7 +5,6 @@
 #define HASHMAP_ITER_VERSIONED 0
 #include "test_containers.h"
 #include "containers/hashmap.h"
-#include "utils/utils.h"
 
 #define _UV_N 64
 #define _UV_HASH(e) hash_u64((uint64_t)*(e))

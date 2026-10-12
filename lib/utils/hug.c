@@ -1,5 +1,4 @@
 ﻿#include "utils/hug.h"
-#include "utils/utils.h"
 
 int32_t hug_init(hug_ctx *ctx) {
     ATOMIC_SET_RELAXED(&ctx->exitflag, 0);

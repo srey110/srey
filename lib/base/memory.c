@@ -46,7 +46,7 @@ static volatile memset_func _memset_vol = memset;
  * cache line 上跨核来回。槽位用尽(活过的线程数超过 MEM_SLOTS)的线程共用末尾那一格。
  * 每格都原子加(理由见 _mem_count)，计数精确。*/
 // 独占槽位数;只增不回收,用尽即共用末尾那格(那一格上每次分配都要跨核争抢,慢一个数量级以上)。
-// 线程数约 nnet + nworker + 4,两者取 0 时按核数算,取 256 够 120 核上下的机器
+// 线程数约 nnet + nworker + 4,两者取 0 时按本进程可用核数算,取 256 够 120 核上下的机器
 #define MEM_SLOTS 256
 typedef struct mem_slot {
     atomic64_t nalloc; // 本槽位累计分配次数
@@ -212,13 +212,29 @@ static inline void _mem_count(int32_t is_alloc) {
     ATOMIC64_ADD_RELAXED(is_alloc ? &slot->nalloc : &slot->nfree, 1);
 }
 #endif//MEMORY_CHECK
+// 分配失败时拼报错串并退出。kind：0 malloc(a)、1 realloc(oldptr, a)、2 calloc(a, b)。
+// 字符数组放在这个冷函数里，分配函数的帧里没有数组，栈保护就不会给每次分配插检查；
+// NOINLINE 承重别删：调用点少，不加会被内联回去把数组带回来
+NOINLINE static void _mem_oom(int32_t kind, const void *oldptr, size_t a, size_t b) {
+    char errstr[64];
+    switch (kind) {
+    case 0:
+        SNPRINTF(errstr, sizeof(errstr), "malloc(%zu) failed", a);
+        break;
+    case 1:
+        SNPRINTF(errstr, sizeof(errstr), "realloc(%p, %zu) failed", oldptr, a);
+        break;
+    default:
+        SNPRINTF(errstr, sizeof(errstr), "calloc(%zu, %zu) failed", a, b);
+        break;
+    }
+    ASSERTAB(0, errstr);
+}
 // 下面两个只做分配器调用与 OOM 退出；计数与分配追踪由外层入口做（_trk_add 的位置见 _trk_capture）
 static inline void *_malloc_raw(size_t size) {
     void *ptr = _MALLOC(size);
     if (NULL == ptr) {
-        char errstr[64];
-        SNPRINTF(errstr, sizeof(errstr), "malloc(%zu) failed", size);
-        ASSERTAB(0, errstr);
+        _mem_oom(0, NULL, size, 0);
     }
     return ptr;
 }
@@ -226,9 +242,7 @@ static inline void *_malloc_raw(size_t size) {
 static inline void *_realloc_raw(void *oldptr, size_t size) {
     void *ptr = _REALLOC(oldptr, size);
     if (NULL == ptr) {
-        char errstr[64];
-        SNPRINTF(errstr, sizeof(errstr), "realloc(%p, %zu) failed", oldptr, size);
-        ASSERTAB(0, errstr);
+        _mem_oom(1, oldptr, size, 0);
     }
     return ptr;
 }
@@ -282,9 +296,7 @@ void *_calloc(size_t count, size_t size) {
 #endif
     void *ptr = _CALLOC(count, size);
     if (NULL == ptr) {
-        char errstr[64];
-        SNPRINTF(errstr, sizeof(errstr), "calloc(%zu, %zu) failed", count, size);
-        ASSERTAB(0, errstr);
+        _mem_oom(2, NULL, count, size);
     }
 #if MEM_TRACE_ON
     _trk_add(ptr);
@@ -372,8 +384,8 @@ void *_mem_arena_alloc_slow(mem_arena *arena, size_t lens) {
     // 这么大本来也分配不出来；放过去的话取整与加块头都会回绕，按回绕后的小数分配
     ASSERTAB(lens <= SIZE_MAX / 2, "mem_arena_alloc size overflow.");
     lens = ROUND_UP(lens, 8);
-    // 一整块都装不下：按实际大小单开一块，整块只给这一次分配用
-    if (lens > MEM_ARENA_BLOCK - MEM_ARENA_HEAD) {
+    // 超过半块：按实际大小单开一块，整块只给这一次分配用。换定长新块的话当前块剩余作废、新块也剩不到一半
+    if (lens > (MEM_ARENA_BLOCK - MEM_ARENA_HEAD) / 2) {
         MALLOC(blk, MEM_ARENA_HEAD + lens);
         if (NULL == arena->cur) {
             // 空链：它就是当前块，off 与 cap 相等表示已用满，下次分配会再开新块

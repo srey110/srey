@@ -2,15 +2,13 @@
 #include "containers/hashmap.h"
 #include "srey/task.h"
 #include "coro/coro.h"
-#include "utils/utils.h"
-#include "utils/timer.h"
 
 #define TASK_MSG_BATCH   32 // 单次批量 pop 消息的最大条数,也是 worker 栈上那个数组的长度
                             // (按值存,一条 72 字节);调大摊薄出队开销,代价是栈占用等比涨
 #define CLOSING_WARN_MS  15000// 关闭期每隔这么久把还没退的 task 打一遍
-#define WORKER_IDLE_SPIN_MIN_US 1 // worker 睡前空转时长的下限(微秒);到活间隔长于唤醒代价时只转这么久,规则见 _loader_idle_budget
-#define WORKER_IDLE_SPIN_MAX_US 50 // 空转时长的上限(微秒);按时长不按圈数,CPU_PAUSE 在各架构上耗时差上百倍
-#define WORKER_IDLE_CHECK (CPU_PAUSE_CYCLES >= 64 ? 1 : 64) // 空转每这么多圈读一次时钟,须是 2 的幂;CPU_PAUSE 贵的平台每圈都读,否则读到时早过了下限
+#define MONITOR_INTERVAL_MS 5000// 监控线程每隔这么久查一次有没有 task 卡在一条消息上
+#define WORKER_IDLE_SPIN_MIN_US 1 // worker 睡前空转时长的下限(微秒);到活间隔长于唤醒代价时只转这么久,规则见 waiter.h 的 spinner_ctx
+#define WORKER_IDLE_SPIN_MAX_US 50 // 空转时长的上限(微秒)
 
 typedef struct _task_each_arg {
     task_each_cb cb;
@@ -65,10 +63,8 @@ static void _loader_worker_wakeup_all(loader_ctx *loader) {
     worker_ctx *worker;
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
-        if (ATOMIC_GET_SEQCST(&worker->waiting) > 0) {
-            mutex_lock(&worker->mutex);
-            mutex_unlock(&worker->mutex);
-            cond_broadcast(&worker->cond);
+        if (WAITER_AWAKE != waiter_state_get(&worker->waiter)) {
+            waiter_wake(&worker->waiter, NULL);
         }
     }
 }
@@ -95,7 +91,7 @@ static inline uint16_t _loader_pick_worker(loader_ctx *loader) {
             return idx;
         }
         if (loader->nworker == hit
-            && ATOMIC_GET_RELAXED(&loader->worker[idx].waiting) > 0) {
+            && WAITER_AWAKE != waiter_state_hint(&loader->worker[idx].waiter)) {
             hit = idx;
         }
     }
@@ -107,19 +103,11 @@ static inline void _loader_worker_wakeup(loader_ctx *loader, task_ctx *task) {
     worker_ctx *worker = &loader->worker[_loader_pick_worker(loader)];
     task_incref(task);
     taskq_push(&worker->qutasks, &task);
-    // 必须先入队再读 waiting，与消费者"先写 waiting 再检查队列"形成对称屏障，
-    // 确保两者至少有一方能观察到对方的写入，从而消除丢失唤醒窗口。
-    // waiting == 0 时 worker 正在运行，无需 signal；仅在 > 0 时才获取 mutex 发信号。
-    // 取锁是为跨过消费者"复查队列→cond_wait"那段临界区（顺带护 wake_at），signal 必须放到解锁之后：
-    // 条件变量没有 requeue，持锁 signal 会让被唤醒者醒来撞上这把锁再睡一次
-    if (ATOMIC_GET_SEQCST(&worker->waiting) > 0) {
-        uint64_t now = timer_cur(&loader->timer);// 锁外读时钟,锁内只赋值
-        mutex_lock(&worker->mutex);
-        if (0 == worker->wake_at) {
-            worker->wake_at = now;// 只留最早那次,worker 醒来据此量唤醒代价
-        }
-        mutex_unlock(&worker->mutex);
-        cond_signal(&worker->cond);
+    // 先入队再读睡眠态(规则见 waiter.h)，同时投来的只让抢到的那个叫。
+    // 带上信号时刻，worker 醒来据此量唤醒代价
+    if (WAITER_SLEEP == waiter_state_get(&worker->waiter)
+        && waiter_mark_waking(&worker->waiter, WAITER_SLEEP)) {
+        waiter_wake(&worker->waiter, &loader->timer);
     }
 }
 static void _loader_evtask_free(void *arg) {
@@ -253,7 +241,7 @@ static inline void _loader_task_release(loader_ctx *loader, task_ctx *task, work
     ATOMIC_SET_RELAXED(&version->msgtype, MSG_TYPE_NONE);
     // 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
     // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
-    // 两步均为 seq_cst 原子操作，保证不丢消息。
+    // CAS 之后的判空也得是足序的(环形后端按 seq_cst 读、自旋后端拿锁，见 fsqu 的 empty)，和生产者"入队 → CAS global"才不会同时看漏。
     ATOMIC_CAS(&task->global, 1, 0);
     if (!msgq_empty(&task->qumsg)) {
         if (ATOMIC_CAS(&task->global, 0, 1)) {
@@ -349,79 +337,21 @@ int32_t _loader_task_try_run(task_ctx *task, message_ctx *msg) {
 #endif
     return ERR_OK;
 }
-// 按本次"进入空闲到活真正到来"的间隔 gap(纳秒)更新间隔估计：每次挪 1/4。
-// gap 先截到 2 倍上限：再长也一样是转不过去,免得一次长空闲后要几十次才缓回来
-static inline int64_t _loader_idle_gap(int64_t gap_ns, uint64_t gap) {
-    const int64_t cap = 2 * (int64_t)WORKER_IDLE_SPIN_MAX_US * 1000;
-    int64_t g = gap > (uint64_t)cap ? cap : (int64_t)gap;
-    return gap_ns + (g - gap_ns) / 4;
+// 空转时判活：挂上 spinning 后生产者会把 task 直接投给我，不必再发 futex 唤醒——那笔唤醒开销是
+// task 层相对裸 event 层的大头。只看自己的队列，扫别人的会抢他们的锁
+static int32_t _loader_worker_ready(void *arg) {
+    return !taskq_empty_fast(&((worker_ctx *)arg)->qutasks);
 }
-// 空转预算(纳秒)：间隔估计不超过唤醒代价时转 2 倍间隔(夹在上下限内),否则只转下限就睡。
-// 等多久大致已知时,短于唤醒代价才值得转
-static inline int64_t _loader_idle_budget(int64_t gap_ns, int64_t wake_ns) {
-    const int64_t lo = (int64_t)WORKER_IDLE_SPIN_MIN_US * 1000;
-    const int64_t hi = (int64_t)WORKER_IDLE_SPIN_MAX_US * 1000;
-    int64_t budget = 2 * gap_ns;
-    if (gap_ns > wake_ns || budget < lo) {
-        return lo;
-    }
-    return budget > hi ? hi : budget;
-}
-// 按测到的唤醒延迟 lat(信号发出到醒来,纳秒)更新唤醒代价估计：每次挪 1/8。
-// 上限也要夹：间隔超过上限时转满也接不住,不能因为唤醒更贵就去转
-static inline int64_t _loader_wake_cost(int64_t wake_ns, uint64_t lat) {
-    const int64_t lo = (int64_t)WORKER_IDLE_SPIN_MIN_US * 1000;
-    const int64_t hi = (int64_t)WORKER_IDLE_SPIN_MAX_US * 1000;
-    wake_ns += ((int64_t)lat - wake_ns) / 8;
-    if (wake_ns < lo) {
-        return lo;
-    }
-    return wake_ns > hi ? hi : wake_ns;
-}
-// 睡前先空转到 deadline(timer_cur 的纳秒)：挂上 spinning 后生产者会把 task 直接投给我，不必再发 futex
-// 唤醒——那笔唤醒开销是 task 层相对裸 event 层的大头。
-// 只轮询自己的队列，扫别人的会抢他们的锁；判空用不拿锁的 empty_fast，免得和投递方撞锁。
-// 返回非 0 表示空转期间等到了活，调用方别睡了
-static inline int32_t _loader_worker_idle_spin(worker_ctx *worker, timer_ctx *timer, uint64_t deadline) {
-    uint32_t idle = 0;
-    int32_t got = 0;
-    ATOMIC_SET_RELAXED(&worker->spinning, 1);
-    for (;;) {
-        if (!taskq_empty_fast(&worker->qutasks)) {
-            got = 1;
-            break;
-        }
-        CPU_PAUSE();
-        if (0 == (++idle & (WORKER_IDLE_CHECK - 1))
-            && timer_cur(timer) >= deadline) {
-            break;
-        }
-    }
-    ATOMIC_SET_RELAXED(&worker->spinning, 0);
-    return got;
-}
-// 挂起等唤醒：先写 waiting 再复查队列，与 _loader_worker_wakeup 那侧的"先入队再读
-// waiting"配成对称屏障，两边至少有一方看得见对方的写入，丢不掉唤醒。
-// 复查到已有活或已停就不睡了。
-// 返回叫醒这次睡眠的首个信号的发出时刻(纳秒),即活真正到来的时刻;0 表示没测到(没睡或虚假唤醒)
+// 挂起等唤醒，握手见 waiter.h。复查到已有活或已停就不睡了。
+// 返回叫醒这次睡眠的首个信号的发出时刻(纳秒),近似活真正到来的时刻;0 表示没测到(没睡、虚假唤醒或关停时的叫醒)
 static inline uint64_t _loader_worker_sleep(loader_ctx *loader, worker_ctx *worker) {
-    uint64_t sig_at;
-    mutex_lock(&worker->mutex);
-    worker->wake_at = 0;// 此前记下的信号发出时没人在等,作废
-    ATOMIC_SET_RELAXED(&worker->waiting, 1);
-    ATOMIC_THREAD_FENCE_SEQCST();
+    waiter_prepare(&worker->waiter, WAITER_SLEEP);
     if (!taskq_empty(&worker->qutasks)
         || 0 != ATOMIC_GET(&loader->stop)) {
-        ATOMIC_SET_RELAXED(&worker->waiting, 0);
-        mutex_unlock(&worker->mutex);
+        waiter_cancel(&worker->waiter);
         return 0;
     }
-    cond_wait(&worker->cond, &worker->mutex);
-    ATOMIC_SET_RELAXED(&worker->waiting, 0);
-    sig_at = worker->wake_at;
-    worker->wake_at = 0;
-    mutex_unlock(&worker->mutex);
-    return sig_at;
+    return waiter_commit(&worker->waiter, 0);
 }
 // 工作线程主循环：持续从队列取任务并分发消息，队列空时阻塞等待唤醒
 static void _loader_worker_loop(void *arg) {
@@ -433,23 +363,14 @@ static void _loader_worker_loop(void *arg) {
     message_ctx msgbatch[TASK_MSG_BATCH];
     int32_t inflight = 0;
     uint32_t spins = 0;
-    int64_t gap_ns = 0;// 空闲间隔估计(纳秒)
-    int64_t wake_ns = (int64_t)WORKER_IDLE_SPIN_MIN_US * 1000;// 唤醒代价估计(纳秒)
-    uint64_t idle_since = 0;// 进入空闲的时刻,0 表示不在空闲
-    uint64_t sig_at = 0;// 最近一次睡醒带回的信号发出时刻,0 表示最近一次不是被信号叫醒
-    uint64_t now;
+    spinner_ctx spinner;
+    spinner_init(&spinner, &loader->timer, WORKER_IDLE_SPIN_MIN_US, WORKER_IDLE_SPIN_MAX_US);
     while (0 == ATOMIC_GET_RELAXED(&loader->stop)) {
         // 从队列取一任务
         task = _loader_task_get(loader, worker, &inflight);
         if (NULL != task) {
             spins = 0;
-            if (0 != idle_since) {
-                if (sig_at < idle_since) {// 没睡过或没测到信号,按拿到任务的时刻算
-                    sig_at = timer_cur(&loader->timer);
-                }
-                gap_ns = _loader_idle_gap(gap_ns, sig_at - idle_since);
-                idle_since = 0;
-            }
+            spinner_busy(&spinner);
             runarg.task = task;
             // 执行
             _loader_task_run(loader, worker->weight, version, &runarg, msgbatch);
@@ -462,20 +383,12 @@ static void _loader_worker_loop(void *arg) {
             continue;
         }
         spins = 0;
-        now = timer_cur(&loader->timer);
-        if (0 == idle_since) {
-            idle_since = now;
-        }
-        sig_at = 0;// 上一觉醒来活被偷走时,别拿那次的信号时刻算这轮
-        // 睡前先空转等一会儿
-        if (0 != _loader_worker_idle_spin(worker, &loader->timer, now + (uint64_t)_loader_idle_budget(gap_ns, wake_ns))) {
+        // 睡前先空转等一会儿，转多久见 spinner_ctx
+        if (0 != spinner_spin(&spinner, &worker->spinning, _loader_worker_ready, worker)) {
             continue;
         }
         // 挂起等唤醒
-        sig_at = _loader_worker_sleep(loader, worker);
-        if (0 != sig_at) {
-            wake_ns = _loader_wake_cost(wake_ns, timer_cur(&loader->timer) - sig_at);
-        }
+        spinner_wake(&spinner, _loader_worker_sleep(loader, worker));
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
@@ -504,22 +417,26 @@ static void _loader_monitor_check(loader_ctx *loader) {
         }
     }
 }
-// 监控线程主循环：每 5 秒调用 _loader_monitor_check 检测卡死的工作线程
+// 监控线程主循环：每 MONITOR_INTERVAL_MS 调用 _loader_monitor_check 检测卡死的工作线程
 static void _loader_monitor_loop(void *arg) {
     loader_ctx *loader = (loader_ctx *)arg;
-    while (0 == ATOMIC_GET(&loader->monitor.stop)) {
-        mutex_lock(&loader->monitor.mutex);
-        // 必须在锁内重查 stop 再等：外层那次判定与这里加锁之间有窗口（中间还夹着
-        // _loader_monitor_check），loader_free 若在窗口内置位并 signal，
-        // 此刻没有等待者，signal 是空操作，这里会白等满 5 秒，loader_free 卡在 thread_join
-        if (0 == ATOMIC_GET(&loader->monitor.stop)) {
-            cond_timedwait(&loader->monitor.cond, &loader->monitor.mutex, 5000);
+    uint64_t next = timer_cur_ms(&loader->timer) + MONITOR_INTERVAL_MS;
+    for (;;) {
+        // 睡前复查 stop(握手见 waiter.h)，loader_free 置位后叫醒，不会白等满间隔
+        waiter_prepare(&loader->monitor.waiter, WAITER_SLEEP);
+        if (0 != ATOMIC_GET(&loader->monitor.stop)) {
+            waiter_cancel(&loader->monitor.waiter);
+            break;
         }
-        mutex_unlock(&loader->monitor.mutex);
+        // 必须等满间隔再查：提前醒会缩短判定窗口，把正常在跑的消息误报成卡死。被叫醒只会是要停，回去复查
+        if (ERR_OK == waiter_commit_until(&loader->monitor.waiter, &loader->timer, next)) {
+            continue;
+        }
         if (0 != ATOMIC_GET(&loader->monitor.stop)) {
             break;
         }
         _loader_monitor_check(loader);
+        next = timer_cur_ms(&loader->timer) + MONITOR_INTERVAL_MS;
     }
     LOG_INFO("%s", "worker monitor thread exited.");
 }
@@ -531,15 +448,13 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     evssl_init();
     evssl_pool_init();
 #endif
-    loader->nworker = 0 == nworker ? procscnt() : nworker;
-    loader->nnet = 0 == nnet ? (uint16_t)procscnt() : nnet;
+    loader->nworker = 0 == nworker ? procscnt_avail() : nworker;
+    loader->nnet = 0 == nnet ? (uint16_t)procscnt_avail() : nnet;
     timer_init(&loader->timer);
     CALLOC(loader->worker, 1, sizeof(worker_ctx) * loader->nworker);
     CALLOC(loader->monitor.version, 1, sizeof(worker_version) * ((size_t)loader->nworker + loader->nnet));
-    mutex_init(&loader->monitor.mutex);
-    cond_init(&loader->monitor.cond);
-    mutex_init(&loader->closing_mutex);
-    cond_init(&loader->closing_cond);
+    waiter_init(&loader->monitor.waiter);
+    waiter_init(&loader->closing_waiter);
     // 槽位要覆盖全部注册方而不只是 worker：net 线程 nnet 个、时间轮 1 个、Windows 的 AcceptEx
     // 线程最多 2 个(iocp.c 的 nacpex)，它们挂的 hooks_worker / hooks_base 都注册这把锁。少算了就有线程 register
     // 失败、此后每次 task_grab 都退化去抢 fallback 那把共享读写锁，分布式读锁白建
@@ -571,7 +486,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     };
     worker_ctx *worker;
     uint16_t i, wn = ARRAY_SIZE(weights);
-    // 先把所有 worker 的字段初始化完(taskq_init/mutex_init/cond_init)
+    // 先把所有 worker 的字段初始化完(taskq_init/waiter_init)
     // 再启动 worker 线程;否则 worker[0] 启动后会跨 worker 遍历 worker[1..N-1].qutasks
     // 而后者的 taskq_init 还在主线程进行中(TSan 报 taskq_size 的 race)
     for (i = 0; i < loader->nworker; i++) {
@@ -580,8 +495,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
         worker->weight = weights[i % wn];
         worker->loader = loader;
         taskq_init(&worker->qutasks, ONEK);
-        mutex_init(&worker->mutex);
-        cond_init(&worker->cond);
+        waiter_init(&worker->waiter);
     }
     // pthread_create 的 release barrier 保证 worker 线程能看到第一轮循环的所有写入
     for (i = 0; i < loader->nworker; i++) {
@@ -625,33 +539,29 @@ static void _loader_task_closing(loader_ctx *loader) {
     ATOMIC_SET_RELAXED(&loader->closing, 1);
     task_map_scan(loader->maptasks, _loader_closing_push, &closing);
     rwlock_distr_runlock(&loader->lckmaptasks);
-    // 全程持 closing_mutex：查计数与 cond_timedwait 必须在同一临界区内，否则
-    // "查到非 0 → 发布方摘掉最后一个并 signal → 本线程才开始 wait" 会永久睡死。
-    // 发布方见 task_ungrab
+    // 查计数夹在 waiter_prepare 与 cancel / commit_until 之间(握手见 waiter.h)，发布方摘掉最后一个再叫醒
+    // 不会落在"查到非 0"与"开始等"之间。发布方见 task_ungrab
     timer_ctx timer;
     timer_init(&timer);
     uint64_t next_warn = timer_cur_ms(&timer) + CLOSING_WARN_MS;
     size_t n;
-    uint64_t now;
-    mutex_lock(&loader->closing_mutex);
     for (;;) {
+        waiter_prepare(&loader->closing_waiter, WAITER_SLEEP);
         rwlock_distr_rdlock(&loader->lckmaptasks);
         n = task_map_size(loader->maptasks);
         rwlock_distr_runlock(&loader->lckmaptasks);
         if (0 == n) {
+            waiter_cancel(&loader->closing_waiter);
             break;
         }
-        now = timer_cur_ms(&timer);
-        if (now >= next_warn) {
-            next_warn = now + CLOSING_WARN_MS;
+        // 被叫醒就回去重查计数；到点(已过点则不睡)把还没退的 task 打一遍
+        if (1 == waiter_commit_until(&loader->closing_waiter, &timer, next_warn)) {
+            next_warn = timer_cur_ms(&timer) + CLOSING_WARN_MS;
             rwlock_distr_rdlock(&loader->lckmaptasks);
             task_map_scan(loader->maptasks, _loader_closing_timeout, NULL);
             rwlock_distr_runlock(&loader->lckmaptasks);
-            continue;
         }
-        cond_timedwait(&loader->closing_cond, &loader->closing_mutex, (uint32_t)(next_warn - now));
     }
-    mutex_unlock(&loader->closing_mutex);
 }
 static int32_t _loader_task_each_scan(name_t *const *item, void *udata) {
     _task_each_arg *w = (_task_each_arg *)udata;
@@ -674,22 +584,17 @@ void loader_free(loader_ctx *loader) {
         worker = &loader->worker[i];
         thread_join(worker->thread_worker);
     }
-    mutex_lock(&loader->monitor.mutex);
     ATOMIC_SET_RELAXED(&loader->monitor.stop, 1);
-    mutex_unlock(&loader->monitor.mutex);
-    cond_signal(&loader->monitor.cond);
+    waiter_wake(&loader->monitor.waiter, NULL);
     thread_join(loader->monitor.thread_monitor);
-    mutex_free(&loader->monitor.mutex);
-    cond_free(&loader->monitor.cond);
+    waiter_free(&loader->monitor.waiter);
     ev_free(&loader->netev);
     tw_free(&loader->tw);
-    mutex_free(&loader->closing_mutex);
-    cond_free(&loader->closing_cond);
+    waiter_free(&loader->closing_waiter);
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         taskq_free(&worker->qutasks);
-        mutex_free(&worker->mutex);
-        cond_free(&worker->cond);
+        waiter_free(&worker->waiter);
     }
     task_map_free(loader->maptasks);
     tname_map_free(loader->mapnames);
@@ -705,4 +610,15 @@ void loader_free(loader_ctx *loader) {
     FREE(loader->monitor.version);
     FREE(loader->evslow);
     FREE(loader);
+}
+void loader_on_exit(loader_ctx *loader, loader_exit_cb cb, void *arg) {
+    loader->exit_arg = arg;
+    loader->exit_cb = cb;
+}
+void loader_exit(loader_ctx *loader, int32_t code) {
+    if (NULL == loader->exit_cb) {
+        LOG_WARN("exit requested with code %d, but no exit hook registered.", code);
+        return;
+    }
+    loader->exit_cb(code, loader->exit_arg);
 }

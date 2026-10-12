@@ -3,7 +3,6 @@
 #include "advance/router.h"
 #include "event/event.h"
 #include "utils/binary.h"
-#include "utils/utils.h"
 
 // harbor_pack 请求行在 type 之后的部分与两条固定头，线格式同 http_pack_req + http_pack_head
 #define HARBOR_REQ_TAIL " HTTP/1.1"FLAG_CRLF"Connection: Keep-Alive"FLAG_CRLF"Content-Type: application/octet-stream"FLAG_CRLF

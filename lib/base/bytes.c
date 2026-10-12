@@ -1,6 +1,7 @@
 ﻿#include "base/bytes.h"
 #include "base/macro_util.h"
 #include "base/memory.h"
+#include "base/macro_log.h"
 
 #define _FMT_STACK_SIZE 512 // _format_va 先在栈上试格式化的缓冲字节数，放不下才上堆
 // 生成 _ascii_lower 表用:逐项算出一个字节的 ASCII 小写
@@ -343,4 +344,88 @@ char *format_va(const char *fmt, ...) {
     char *buf = _format_va(fmt, args);
     va_end(args);
     return buf;
+}
+// 按 flags 预处理一段:SPLIT_TRIM 剔两端 OWS,SPLIT_SKIPEMPTY 丢空段。
+// trim 必须排在判空之前——" " 这种全空白段原始长度是 1 不是 0,先判空就漏过去了。
+// 返回 0 表示本段应跳过;返回非 0 时 *data / *lens 已是处理后的值
+static int32_t _split_filter(char **data, size_t *lens, int32_t flags) {
+    if (BIT_CHECK(flags, SPLIT_TRIM)) {
+        size_t tlens = 0;
+        char *tdata = trim(*data, *lens, &tlens);
+        if (NULL != tdata) {
+            *data = tdata;
+        }
+        *lens = tlens;
+    }
+    return !(BIT_CHECK(flags, SPLIT_SKIPEMPTY) && 0 == *lens);
+}
+// 写一段到 (*segs)[*n]。堆模式(heap 非 0)容量不够就翻倍并回写 *segs;
+// 栈模式满了看 SPLIT_TRUNCATE:开了返 1 让调用方就此收尾,没开返 ERR_FAILED
+static int32_t _split_store(buf_ctx **segs, int32_t *n, size_t *total, int32_t heap,
+                            int32_t flags, char *data, size_t lens) {
+    if ((size_t)*n >= *total) {
+        if (0 == heap) {
+            if (BIT_CHECK(flags, SPLIT_TRUNCATE)) {
+                return 1;
+            }
+            LOG_WARN("split segments exceed cap.");
+            return ERR_FAILED;
+        }
+        *total *= 2;// 无符号翻倍;段数上限由下面的 INT32_MAX 判定负责,这里不会先回绕
+        REALLOC(*segs, *segs, sizeof(buf_ctx) * (*total));
+    }
+    if (INT32_MAX == *n) {
+        LOG_WARN("split segments exceed INT32_MAX.");
+        return ERR_FAILED;
+    }
+    (*segs)[*n].data = data;
+    (*segs)[*n].lens = lens;
+    (*n)++;
+    return ERR_OK;
+}
+int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
+              buf_ctx **segs, int32_t cap, int32_t flags) {
+    // plens 为 0 不算错:按"段数 = sep 出现次数 + 1"该出一个空段,url_parse 解 "/" 时正靠这个
+    if (NULL == ptr
+        || NULL == segs
+        || cap < 0
+        || (cap > 0 && NULL == *segs)) {
+        return ERR_FAILED;
+    }
+    int32_t heap = (0 == cap);
+    size_t total = heap ? 32 : (size_t)cap;
+    if (0 != heap) {
+        MALLOC(*segs, sizeof(buf_ctx) * total);
+    }
+    int32_t n = 0;
+    int32_t rtn;
+    char *cur = ptr;
+    char *pos;
+    char *data;
+    size_t remain = plens;
+    size_t slen;
+    size_t lens;
+    for (;;) {
+        pos = memstr(0, cur, remain, sep, seplens);// sep 为空时返回 NULL，即整段不切
+        slen = (NULL != pos) ? (size_t)(pos - cur) : remain;
+        data = cur;
+        lens = slen;
+        if (0 != _split_filter(&data, &lens, flags)) {
+            rtn = _split_store(segs, &n, &total, heap, flags, data, lens);
+            if (ERR_FAILED == rtn) {
+                return ERR_FAILED;
+            }
+            if (ERR_OK != rtn) {
+                break;// 栈模式截断
+            }
+        }
+        // 尾随分隔符不用特判:remain 归 0 后再走一轮,memstr 对长度 0 返 NULL,
+        // 自然补出那个空段(段数 = sep 出现次数 + 1)
+        if (NULL == pos) {
+            break;
+        }
+        remain -= (slen + seplens);
+        cur = pos + seplens;
+    }
+    return n;
 }
