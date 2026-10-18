@@ -55,33 +55,16 @@
 #include "task_sendbuf_warn.h"
 #include "task_priority.h"
 #include "task_selfpost.h"
+#include "task_watch_closed.h"
 #include "lib.h"
 
 #ifdef OS_WIN
-    #pragma comment(lib, "ws2_32.lib")
-    #pragma comment(lib, "winmm.lib")
+    // 各系统库由真正调用它的 lib 模块自己声明(同 srey/main.c)；test 不用 lualib 里的任何符号，不链它
     #pragma comment(lib, "lib.lib")
-    #if WITH_MIMALLOC
-        #pragma comment(lib, "mimalloc" DEPS_LIB_SUFFIX ".lib")
-    #endif
-    #if WITH_FUTEX
-        #pragma comment(lib, "Synchronization.lib")// WaitOnAddress / WakeByAddress*，见 thread/futex.h
-    #endif
-    // 库名后缀由 os.h 的 DEPS_LIB_SUFFIX 拼,对应 tools/deps.py 落在 bin/ 的那个变体。
-    // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
-    // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
-    #if WITH_SSL
-        #pragma comment(lib, "libcrypto" DEPS_LIB_SUFFIX ".lib")
-        #pragma comment(lib, "libssl" DEPS_LIB_SUFFIX ".lib")
-        #pragma comment(lib, "crypt32.lib")
-        #pragma comment(lib, "advapi32.lib")
-        #pragma comment(lib, "user32.lib")
-        #pragma comment(lib, "gdi32.lib")
-    #endif
-    #if WITH_LUA && ENABLE_LUA_BYTECACHE
-        #pragma comment(lib, "lualib.lib")
-    #endif
+    #pragma comment(lib, "winmm.lib")// timeBeginPeriod
 #endif
+
+#define TEST_EXT_IP "127.0.0.1" // docker 起的外部服务（数据库、1884 的 MQTT broker）地址：VM 上跑时改成宿主机 IP，只改这一处
 
 // 汇总 task 的参数：结果槽在 main 的栈上，主线程等到退出请求后才 loader_free，task 先于它失效
 typedef struct test_reporter_arg {
@@ -91,13 +74,21 @@ typedef struct test_reporter_arg {
 
 static hug_ctx _hug;// 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
 static atomic_t _exit_code = -1;// loader_exit 请求的退出码，只记第一次；-1 表示没人请求(信号退出)
+static atomic_t _forcexit = 0;// 已请求过退出(信号或 loader_exit)后又来退出信号时置 1，看门狗见到就强退
+static atomic_t _wdstate = 0;// 看门狗阶段：0 测试中，1 主线程已进 loader_free(开始计时)，2 loader_free 已返回
 
-// 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程
+// 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程。
+// 已唤醒过说明这是再一次的退出请求，只记标志，强退交给看门狗线程(这里只做信号上下文里安全的事)
 static void _on_sigcb(int32_t sig, void *arg) {
+    hug_ctx *hug = (hug_ctx *)arg;
     (void)sig;
-    hug_wakeup((hug_ctx *)arg);
+    if (0 != ATOMIC_GET(&hug->exitflag)) {
+        ATOMIC_SET(&_forcexit, 1);
+    }
+    hug_wakeup(hug);
 }
-// loader_exit 的回调(任意线程)：记下第一次请求的退出码，再同信号一样唤醒主线程。与 srey/main.c 同一套
+// loader_exit 的回调(任意线程)：记下第一次请求的退出码，再同信号一样唤醒主线程。
+// 这里只请求 0/1，-1 当"没人请求"的哨兵够用(srey/main.c 改用独立标志)
 static void _on_exit(int32_t code, void *arg) {
     (void)ATOMIC_CAS(&_exit_code, -1, code);
     hug_wakeup((hug_ctx *)arg);
@@ -133,12 +124,12 @@ static int32_t _test_optional(const char *name) {
         || 0 == strcmp(name, "mongo_test");
 }
 // 还没到终态的结果槽个数。1 是通过；可选用例停在 0 说明压根没连上，也算终态；
-// 其余（0 没走完、-1 连上后没走完或断言失败）都算未完成。print 非 0 时顺带逐个列出
+// 其余（0 没走完、-2 正在连、-1 连上后没走完或断言失败）都算未完成。print 非 0 时顺带逐个列出
 static int32_t _test_pending(name_val_ctx *list, int32_t print) {
     int32_t n = 0;
     int32_t val;
     for (int32_t i = 0; NULL != list[i].name; i++) {
-        val = *(volatile int32_t *)&list[i].val;// 各 task 在自己的线程里写，这里只要最终看得到
+        val = (int32_t)ATOMIC_GET((atomic_t *)&list[i].val);// 各 task 在自己的线程里用 ATOMIC_SET 写
         if (1 == val
             || (0 == val && _test_optional(list[i].name))) {
             continue;
@@ -185,6 +176,34 @@ static void _test_reporter_start(loader_ctx *loader, test_reporter_arg *arg) {
         loader_exit(loader, 1);
     }
 }
+// 看门狗线程，CuTest 阶段起常驻、每 100ms 查一次：已请求退出后又来退出信号，或 loader_free 60 秒还没回来，
+// 就列出未完成的用例后 _exit(1)，不出汇总。退不掉的 task 由 loader 关闭期按 CLOSING_WARN_MS 打的 close timeout 告警列出
+static void _test_watchdog(void *arg) {
+    const uint64_t freems = 60000;
+    uint64_t deadline = 0;
+    atomic_t state;
+    for (;;) {
+        state = ATOMIC_GET(&_wdstate);
+        if (2 == state) {
+            return;
+        }
+        if (0 != ATOMIC_GET(&_forcexit)) {
+            PRINT("%s", "exit signaled again, force exit with:");
+            break;
+        }
+        if (1 == state && 0 == deadline) {
+            deadline = nowms() + freems;
+        } else if (0 != deadline && nowms() >= deadline) {
+            PRINT("loader_free not returned after %u s (stuck tasks: see 'close timeout' warnings), force exit with:",
+                  (uint32_t)(freems / 1000));
+            break;
+        }
+        MSLEEP(100);
+    }
+    (void)_test_pending((name_val_ctx *)arg, 1);
+    fflush(stdout);// _exit 不冲 stdio 缓冲，输出重定向到文件或管道时不冲就丢
+    _exit(1);
+}
 
 int main(int argc, char *argv[]) {
     (void)argc;
@@ -201,10 +220,10 @@ int main(int argc, char *argv[]) {
 #endif
     locale_init();
     sock_init();
-    unlimit();
-    srand((uint32_t)(time(NULL) ^ nowms() ^ GETPID()));
+    srand((uint32_t)(time(NULL) ^ nowms() ^ GETPID()));// 只给 task_timeout 的 rand() 播种，srey 侧没有这项
     serviceid(1);/* 取 srey 的内置默认值，让 createid 的高 16 位与生产一致 */
     log_init(NULL, 0);
+    unlimit();/* 须在 log_init 之后：NOFILE 上限不够的告警才打得出来，同 srey/main.c */
     bson_globle_init();
     coro_task_stack(0);
     dns_set_ip("8.8.8.8");
@@ -224,6 +243,75 @@ int main(int argc, char *argv[]) {
     log_free();
     return 0;
 #endif
+    name_val_ctx testlist[] = {
+        {"mqtt_test1", 0},
+        {"mqtt_test2", 0},
+        {"mqtt_test3", 0},
+        {"mqtt_test4", 0},
+        //{"smtp_test", 0},
+        {"smtp_fake", 0},
+        {"mysql_test", 0},
+        {"pgsql_test", 0},
+        {"redis_test", 0},
+        {"mongo_test", 0},
+        {"db_refcount", 0},
+        {"timeout_test1", 0},
+        {"timeout_test2", 0},
+        {"timeout_test3", 0},
+        {"coro_extra", 0},
+        {"fork_test", 0},
+        {"serial_test", 0},
+        {"multicast_test", 0},
+        {"udp_multicast_test", 0},
+        {"multi_call_test", 0},
+        {"debug_test", 0},
+        {"listen_churn", 0},
+        {"acpstorm", 0},
+        {"v6only_test", 0},
+        {"unlisten_race", 0},
+        {"close_flush", 0},
+#if WITH_SSL
+        {"ssl_deadlock", 0},
+        {"ssl_keyupdate", 0},
+#endif
+        {"sendbuf_warn", 0},
+        {"priority_test", 0},
+        {"selfpost_test", 0},
+        {"watch_closed", 0},
+        {"watch_closed_coro", 0},
+        {"router_test", 0},
+        {"kcp_test", 0},
+        {"kcp_test2", 0},
+        {"kcp_test3", 0},
+        {"kcp_test4", 0},
+        {"kcp_test5", 0},
+#if KCP_TICK_HEAP
+        {"kcp_test6", 0},
+#endif
+        {"python_http", 0},
+        {"python_ws", 0},
+        {"python_mqtt", 0},
+        {"python_mixed", 0},
+
+        {NULL, 0}
+    };
+    name_val_ctx portlist[] = {
+        {"tcp_sv", 15000},
+        {"udp_echo", 15001},
+        {"http_sv", 15002},
+        {"ws_sv", 15003},
+        {"harbor", 15004},
+        {"router_sv", 15005},
+        {"router_idx_sv", 15006},
+        {"debug_console", 15017},
+        {"acpstorm", 15100},// 每轮 +1,占到 15129
+        {"kcp_tcp", 15040},
+        {"kcp_udp", 15041},
+
+        {NULL, 0}
+    };
+    // 再次退出信号与 loader_free 卡住的兜底，见 _test_watchdog；loader_free 返回后 join
+    pthread_t watchdog = thread_creat(_test_watchdog, testlist);
     /* ── 层 1：纯内存单元测试套件 ── */
     CuSuite *suite = CuSuiteNew();
 
@@ -308,79 +396,18 @@ int main(int argc, char *argv[]) {
     }
     evssl_register("hbclient", evssl_hbcli);
     // ssl_keyupdate 专用:KeyUpdate 是 TLS1.3 独有的，钉死下限，
-    // 否则协商到 1.2 时 evssl_keyupdate 直接失败，用例退化成普通大流量测试还报绿
+    // 否则协商到 1.2 时 evssl_keyupdate 直接失败，用例退化成普通大流量测试还报绿。
+    // 钉不上就不起这个用例(evssl_ku 为 NULL 时 start 直接返回)，留在 pending 里报出来
     evssl_ku = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM);
-    if (NULL != evssl_ku) {
-        evssl_min_proto(evssl_ku, TLS1_3_VERSION);
+    if (NULL != evssl_ku
+        && ERR_OK != evssl_min_proto(evssl_ku, TLS1_3_VERSION)) {
+        PRINT("evssl_min_proto(TLS1_3_VERSION) failed, ssl_keyupdate will not run.");
+        evssl_free(evssl_ku);
+        evssl_ku = NULL;
     }
     evssl_register("tls13", evssl_ku);
 #endif
 
-    name_val_ctx testlist[] = {
-        {"mqtt_test1", 0},
-        {"mqtt_test2", 0},
-        {"mqtt_test3", 0},
-        {"mqtt_test4", 0},
-        //{"smtp_test", 0},
-        {"smtp_fake", 0},
-        {"mysql_test", 0},
-        {"pgsql_test", 0},
-        {"redis_test", 0},
-        {"mongo_test", 0},
-        {"db_refcount", 0},
-        {"timeout_test1", 0},
-        {"timeout_test2", 0},
-        {"timeout_test3", 0},
-        {"coro_extra", 0},
-        {"fork_test", 0},
-        {"serial_test", 0},
-        {"multicast_test", 0},
-        {"udp_multicast_test", 0},
-        {"multi_call_test", 0},
-        {"debug_test", 0},
-        {"listen_churn", 0},
-        {"acpstorm", 0},
-        {"v6only_test", 0},
-        {"unlisten_race", 0},
-        {"close_flush", 0},
-#if WITH_SSL
-        {"ssl_deadlock", 0},
-        {"ssl_keyupdate", 0},
-#endif
-        {"sendbuf_warn", 0},
-        {"priority_test", 0},
-        {"selfpost_test", 0},
-        {"router_test", 0},
-        {"kcp_test", 0},
-        {"kcp_test2", 0},
-        {"kcp_test3", 0},
-        {"kcp_test4", 0},
-        {"kcp_test5", 0},
-#if KCP_TICK_HEAP
-        {"kcp_test6", 0},
-#endif
-        {"python_http", 0},
-        {"python_ws", 0},
-        {"python_mqtt", 0},
-        {"python_mixed", 0},
-
-        {NULL, 0}
-    };
-    name_val_ctx portlist[] = {
-        {"tcp_sv", 15000},
-        {"udp_echo", 15001},
-        {"http_sv", 15002},
-        {"ws_sv", 15003},
-        {"harbor", 15004},
-        {"router_sv", 15005},
-        {"router_idx_sv", 15006},
-        {"debug_console", 15017},
-        {"acpstorm", 15100},// 每轮 +1,占到 15129
-        {"kcp_tcp", 15040},
-        {"kcp_udp", 15041},
-
-        {NULL, 0}
-    };
     //time out 任务间通信 udp tcp 回显
     const char *rpcname = "task_rpc";
     task_rpc_start(g_loader, rpcname, 0);
@@ -395,9 +422,9 @@ int main(int argc, char *argv[]) {
     //mqtt 测试
     task_mqtt_server_start(g_loader, "task_mqtt_server", 1883, 0);
     // mqtt_test1/2：连接 docker EMQX（端口 1884）
-    task_mqtt_client_start(g_loader, "mqtt_test1", MQTT_311, "127.0.0.1", 1884,
+    task_mqtt_client_start(g_loader, "mqtt_test1", MQTT_311, TEST_EXT_IP, 1884,
         0, 0, _get_name_val(testlist, "mqtt_test1"));
-    task_mqtt_client_start(g_loader, "mqtt_test2", MQTT_50, "127.0.0.1", 1884,
+    task_mqtt_client_start(g_loader, "mqtt_test2", MQTT_50, TEST_EXT_IP, 1884,
         0, 0, _get_name_val(testlist, "mqtt_test2"));
     // mqtt_test3/4 连的是上面这个进程内 broker，故各自在协程里先等一会再连（见头文件说明）；
     // 1884 的 test1/test2 连的是外部 EMQX，不受本进程 task 启动顺序影响，故不等
@@ -417,13 +444,13 @@ int main(int argc, char *argv[]) {
          "test@163.com", "test@qq.com", pandan,
          1, _get_name_val(testlist, "smtp_test"));
     //数据库测试（依赖 docker-compose 启动的服务）
-    task_mysql_start(g_loader, "mysql_test", "127.0.0.1", 3306,
+    task_mysql_start(g_loader, "mysql_test", TEST_EXT_IP, 3306,
          "admin", "12345678", "test", _get_name_val(testlist, "mysql_test"));
-    task_pgsql_start(g_loader, "pgsql_test", "127.0.0.1", 5432,
+    task_pgsql_start(g_loader, "pgsql_test", TEST_EXT_IP, 5432,
          "admin", "12345678", "test", _get_name_val(testlist, "pgsql_test"));
-    task_redis_start(g_loader, "redis_test", "127.0.0.1", 6379,
+    task_redis_start(g_loader, "redis_test", TEST_EXT_IP, 6379,
          NULL, _get_name_val(testlist, "redis_test"));
-    task_mongo_start(g_loader, "mongo_test", "127.0.0.1", 27017,
+    task_mongo_start(g_loader, "mongo_test", TEST_EXT_IP, 27017,
          "admin", "12345678", "test", "admin", _get_name_val(testlist, "mongo_test"));
     //DB 绑定引用计数配对回归（连非法地址触发 ev_connect 同步失败，验证 acquire/udfree 配对不误 free）
     task_dbrefcnt_start(g_loader, "db_refcount", _get_name_val(testlist, "db_refcount"));
@@ -489,6 +516,9 @@ int main(int argc, char *argv[]) {
     //自投递不死锁: 自身 dispatch 内连续 task_call 自己, 条数远超 qumsg 容量
     task_selfpost_start(g_loader, "selfpost_test",
         _get_name_val(testlist, "selfpost_test"));
+    //task_watch_closed: 两个观察者按登记顺序、先于业务关闭回调，NEVERCONN 不投(普通 task 与协程 task 各一)
+    task_watch_closed_start(g_loader, (uint16_t)*(_get_name_val(portlist, "http_sv")),
+        _get_name_val(testlist, "watch_closed"), _get_name_val(testlist, "watch_closed_coro"));
     //router: server + client 双 task 联调; 另起一个无流式路由的 server 压 chunked 无流式那条分支
     task_router_server_start(g_loader, "task_router_server",
         (uint16_t)*_get_name_val(portlist, "router_sv"));
@@ -544,6 +574,7 @@ int main(int argc, char *argv[]) {
     int32_t pyeof;
     int32_t *pyslot;
     uint64_t pydl;
+    uint64_t pynow;
     popen_ctx pctx;
     size_t pyi;
     for (pyi = 0; pyi < sizeof(pyitems) / sizeof(pyitems[0]); pyi++) {
@@ -555,14 +586,10 @@ int main(int argc, char *argv[]) {
             LOG_WARN("popen %s failed.", pycmd);
             continue;
         }
-        // 返回值不能丢: 脚本挂满 60 秒与正常跑完 3 秒, 日志里本来长得一模一样
-        if (ERR_OK != popen_waitexit(&pctx, 60000)) {
-            LOG_WARN("popen %s exceeded 60s budget.", pycmd);
-        }
-        // 必须看 eof 出参：返回 0 是"此刻没数据"，不是流末尾，按 EOF 处理会把输出截一半。
-        // 上面的 60s 预算耗尽时子进程可能还活着，故这里另设排空上限
+        // 边读边等：先等退出再读的话，输出超过管道缓冲时子进程卡在写上退不了，白等满 60 秒。
+        // 必须看 eof 出参：返回 0 是"此刻没数据"，不是流末尾，按 EOF 处理会把输出截一半
         pyeof = 0;
-        pydl = nowms() + 5000;
+        pydl = nowms() + 60000;
         while (0 == pyeof && nowms() < pydl) {
             nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1, &pyeof);
             if (ERR_FAILED == nread) {
@@ -575,11 +602,16 @@ int main(int argc, char *argv[]) {
                 MSLEEP(1);
             }
         }
+        // 输出读完再等退出，预算是读和等合起来的 60 秒。返回值不能丢: 脚本挂满 60 秒与正常跑完 3 秒, 日志里本来长得一模一样
+        pynow = nowms();
+        if (ERR_OK != popen_waitexit(&pctx, pynow < pydl ? (uint32_t)(pydl - pynow) : 0)) {
+            LOG_WARN("popen %s exceeded 60s budget.", pycmd);
+        }
         pycode = popen_exitcode(&pctx);
         popen_free(&pctx);
         pyslot = _get_name_val(testlist, pyitems[pyi].name);
         if (NULL != pyslot && 0 == pycode) {
-            *pyslot = 1;
+            ATOMIC_SET((atomic_t *)pyslot, 1);
         } else {
             LOG_WARN("%s exit code %d.", pyitems[pyi].name, pycode);
         }
@@ -594,9 +626,12 @@ int main(int argc, char *argv[]) {
     _test_reporter_start(g_loader, &reparg);
     hug_wait(&_hug);
     if (-1 == (int32_t)ATOMIC_GET(&_exit_code)) {
-        PRINT("%s", "exit signaled, shutting down.");
+        PRINT("%s", "exit signaled, shutting down (signal again to force exit).");
     }
+    ATOMIC_SET(&_wdstate, 1);
     loader_free(g_loader);
+    ATOMIC_SET(&_wdstate, 2);
+    thread_join(watchdog);
 
     /* ── 会用光全局槽位的用例：排在集成阶段之后，别把分条计数提前关掉 ── */
     CuSuite *slotsuite = CuSuiteNew();
@@ -642,8 +677,8 @@ int main(int argc, char *argv[]) {
         if (NULL == testlist[i].name) {
             break;
         }
-        // 可选用例只放行 val == 0（压根没连上），val == -1 是连上之后断言失败，一律计失败——
-        // 两者以前都是 0，于是这六条在 docker 起着的标准环境下永久不 gate 任何东西
+        // 可选用例只放行 val == 0（压根没连上），val == -1 是连上之后断言失败、-2 是收尾时还在连，一律计失败——
+        // 前两者以前都是 0，于是这六条在 docker 起着的标准环境下永久不 gate 任何东西
         optional = _test_optional(testlist[i].name);
         if (1 == testlist[i].val) {
             PRINT("%s: ok", testlist[i].name);
@@ -652,7 +687,8 @@ int main(int argc, char *argv[]) {
         } else {
             unit_failed++;
             PRINT("%s: x%s", testlist[i].name,
-                  (-1 == testlist[i].val) ? " (connected, assertion failed)" : "");
+                  (-1 == testlist[i].val) ? " (connected, assertion failed)"
+                  : ((-2 == testlist[i].val) ? " (still connecting)" : ""));
         }
     }
     // 归一成 0/1：退出码只取低 8 位，而失败数上限约 515，恰为 256 的倍数时会得 0；

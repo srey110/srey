@@ -144,7 +144,7 @@ local function _handshake(sslname, ip, port, netev, host_hdr, uri, secprot)
         error(sk, 0)
     end
     if not sk.valid then
-        utils.ud_free(hspack)   -- TCP 连接失败，释放 C 层分配的握手包内存
+        utils.ud_free(hspack)-- TCP 连接失败，释放 C 层分配的握手包内存
         return srey.sock_invalid(), nil
     end
     if not srey.send(sk, hspack, size, 0) then
@@ -255,26 +255,17 @@ local function _blk_state(data, size)
     return (0 == size) and "end" or "data"
 end
 
----内部流式发送：将 func(...) 产生的数据按 WebSocket 分片协议逐帧发送；
----发送 fin=1 空 continuation 帧标记消息结束
+---内部流式发送：首帧 text_fin/binary_fin(fin=0)，之后每块一帧 continua，func 返回 nil 或空块时发 fin=1 空延续帧收尾。
+---失败处置见 text_continua
 -- websock_pack_* 返 nil 有两种原因（C 侧已打日志，这里不复述）：客户端帧取不到掩码 key 的熵；
 -- 载荷长度大到使帧长回绕。不判空的话 nil 一路走到 srey.send 里的 lpub_check_buf，撞
 -- "string or light userdata expected" 把整条协程打断
-local function _send_end_frame(sk, client)
-    local data, size = wbsk.continua(client, 1, "", 0)
-    if nil == data then
-        ERROR("websock pack end frame failed.")
-        return false
-    end
-    return srey.send(sk, data, size, 0)
-end
-
----首帧 text_fin/binary_fin(fin=0)，中间/最后帧用 continua；func 返回 nil 或空块时发 fin=1 终止帧
 ---@param sk userdata 连接标识
 ---@param prot WEBSOCK_PROT.TEXT | WEBSOCK_PROT.BINARY
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止
 ---@param ... any 传给 func 的额外参数
+---@return boolean ok
 local function _continua(sk, prot, client, func, ...)
     local data, size = func(...)
     local state = _blk_state(data, size)
@@ -305,28 +296,27 @@ local function _continua(sk, prot, client, func, ...)
         data, size = func(...)
         state = _blk_state(data, size)
         if "bad" == state then
-            -- 违约:消息已发出部分帧,仍补终止帧让对端退出 continuation 累积状态,但按失败返回,
-            -- 不能沿用 "end" 分支的成功语义——那等于把截断的消息当完整消息交付
             ERROR("websock continua func must return string or (lightuserdata, size), got %s.", type(data))
-            _send_end_frame(sk, client)
+            srey.close(sk)
             return false
         end
-        -- 空块(含 nil)即结束：发 fin=1 空延续帧标记消息结束。
-        -- 不可仅跳过空块继续循环——零状态推进会无限发 fin=0 空帧
+        -- 空块(含 nil)即结束。不可仅跳过空块继续循环——零状态推进会无限发 fin=0 空帧
         if "end" == state then
-            return _send_end_frame(sk, client)
+            data, size = wbsk.continua(client, 1, "", 0)
+        else
+            data, size = wbsk.continua(client, 0, data, size)
         end
-        data, size = wbsk.continua(client, 0, data, size)
         if nil == data then
-            -- 已发出部分帧，仍补终止帧让对端退出累积状态，再按失败返回
             ERROR("websock pack continuation frame failed.")
-            _send_end_frame(sk, client)
+            srey.close(sk)
             return false
         end
         if not srey.send(sk, data, size, 0) then
-            -- 中间帧失败仍尝试发终止帧让 server 退出 continuation 累积状态
-            _send_end_frame(sk, client)
+            srey.close(sk)
             return false
+        end
+        if "end" == state then
+            return true
         end
     end
 end
@@ -335,12 +325,13 @@ end
 ---@param sk userdata 连接标识
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
----lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回（消息已截断）
+---lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回。
+---首帧发出后再失败（违约、组帧或发送失败）连接随即被关闭，对端收不到 fin=1，不会把截断的消息当完整的收
 ---**func 内不得挂起**（不要 syn_send / sleep / 等任何消息）：分片是一整条消息，两帧之间让出
 ---控制权，别的协程往同一 fd 上发的帧就插进这条消息中间，对端按 RFC 6455 §5.4 会直接断连。
 ---这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 func 的额外参数
----@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约时为 false
+---@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约或首帧之后失败时为 false
 function wbsk.text_continua(sk, client, func, ...)
     return _continua(sk, WEBSOCK_PROT.TEXT, client, func, ...)
 end
@@ -349,12 +340,12 @@ end
 ---@param sk userdata 连接标识
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
----lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回（消息已截断）
+---lightuserdata 必须同时给出 size；违约与失败的处置同 text_continua
 ---**func 内不得挂起**（不要 syn_send / sleep / 等任何消息）：分片是一整条消息，两帧之间让出
 ---控制权，别的协程往同一 fd 上发的帧就插进这条消息中间，对端按 RFC 6455 §5.4 会直接断连。
 ---这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 func 的额外参数
----@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约时为 false
+---@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约或首帧之后失败时为 false
 function wbsk.binary_continua(sk, client, func, ...)
     return _continua(sk, WEBSOCK_PROT.BINARY, client, func, ...)
 end

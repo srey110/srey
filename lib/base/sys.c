@@ -18,13 +18,10 @@ static atomic_t _exindex = 0;
 #endif
 
 #if defined(OS_WIN)
-// _MiniDump 传给 _dump_thread 的参数。da_err 必须由 dump 线程自己填:GetLastError 是
-// 线程局部的,回到崩溃线程再读拿到的是别的值
+// _MiniDump 传给 _dump_thread 的参数
 typedef struct dump_arg {
-    BOOL da_ok;
-    DWORD da_err;
+    LONG da_ret;//过滤器的返回值:dump 文件建成后由 dump 线程改成 EXCEPTION_EXECUTE_HANDLER
     DWORD da_tid;//崩溃线程 id, 决定 dump 打开后停在哪个线程
-    HANDLE da_file;
     struct _EXCEPTION_POINTERS *da_excep;
 }dump_arg;
 #endif
@@ -72,36 +69,18 @@ static void _dump_err(const char *what, DWORD code) {
     fputs(buf, stderr);
     fflush(stderr);
 }
-// dump 必须换个线程写。Windows x64 下 minicoro 走 MCO_USE_ASM, 切进协程时会把 TIB 里的栈边界
-// 换成那 56KB 协程栈, 崩溃线程可能正跑在上面, 也可能本来就是栈溢出崩的;两种情况
-// MiniDumpWriteDump 都没有足够栈可用, 只会返回 FALSE 留下个 0 字节文件。新线程拿的是完整线程栈
+// 写 dump 的全部步骤(拼路径、取令牌、建文件、提权、写)都在这个新线程里做,它拿的是完整线程栈。
+// 崩溃线程的栈可能所剩无几:Windows x64 下 minicoro 切进协程时把 TIB 的栈边界换成 56KB 协程栈,
+// 或本来就是栈溢出崩的。令牌取本线程的:写 dump 与建文件都按本线程的身份做
 static DWORD WINAPI _dump_thread(LPVOID arg) {
     dump_arg *da = (dump_arg *)arg;
-    MINIDUMP_EXCEPTION_INFORMATION exinfo;
-    exinfo.ThreadId = da->da_tid;
-    exinfo.ExceptionPointers = da->da_excep;
-    exinfo.ClientPointers = FALSE;
-    da->da_ok = MiniDumpWriteDump(GetCurrentProcess(),
-                                  GetCurrentProcessId(),
-                                  da->da_file,
-                                  (MINIDUMP_TYPE)(MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory),
-                                  &exinfo,
-                                  NULL,
-                                  NULL);
-    if (!da->da_ok) {
-        da->da_err = ERRNO;
-    }
-    return 0;
-}
-// Windows 结构化异常处理函数，捕获崩溃时生成 MiniDump 文件
-static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acdmp[PATH_LENS];
     SNPRINTF(acdmp, sizeof(acdmp), "%s%s%"PRIu64"_%d.dmp",
         procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD_RELAXED(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
         _dump_err("OpenThreadToken", ERRNO);
-        return EXCEPTION_CONTINUE_SEARCH;
+        return 0;
     }
     HANDLE pdmpfile = CreateFile(acdmp,
                                  GENERIC_WRITE,
@@ -112,36 +91,48 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
                                  NULL);
     if (INVALID_HANDLE_VALUE == pdmpfile) {
         _dump_err("CreateFile", ERRNO);
-        return EXCEPTION_CONTINUE_SEARCH;
+        return 0;
     }
-
-    LONG lrtn = EXCEPTION_CONTINUE_SEARCH;
+    da->da_ret = EXCEPTION_EXECUTE_HANDLER;
     TOKEN_PRIVILEGES tprivold;
-    dump_arg da;
-    da.da_ok = FALSE;
-    da.da_err = ERROR_SUCCESS;
-    da.da_tid = GetCurrentThreadId();
-    da.da_file = pdmpfile;
-    da.da_excep = excep;
     BOOL bprienabled = _EnablePrivilege(SE_DEBUG_NAME, ptoken, &tprivold);
-    HANDLE hdump = CreateThread(NULL, 0, _dump_thread, &da, 0, NULL);
-    if (NULL == hdump) {
-        _dump_err("CreateThread", ERRNO);
-    } else {
-        WaitForSingleObject(hdump, INFINITE);
-        CloseHandle(hdump);
-        if (da.da_ok) {
-            lrtn = EXCEPTION_EXECUTE_HANDLER;
-        } else {
-            _dump_err("MiniDumpWriteDump", da.da_err);
-        }
+    MINIDUMP_EXCEPTION_INFORMATION exinfo;
+    exinfo.ThreadId = da->da_tid;
+    exinfo.ExceptionPointers = da->da_excep;
+    exinfo.ClientPointers = FALSE;
+    if (!MiniDumpWriteDump(GetCurrentProcess(),
+                           GetCurrentProcessId(),
+                           pdmpfile,
+                           (MINIDUMP_TYPE)(MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory),
+                           &exinfo,
+                           NULL,
+                           NULL)) {
+        _dump_err("MiniDumpWriteDump", ERRNO);
     }
     if (bprienabled) {
         (void)AdjustTokenPrivileges(ptoken, FALSE, &tprivold, 0, NULL, NULL);
     }
     CloseHandle(pdmpfile);
-    TerminateProcess(GetCurrentProcess(), 0);
-    return lrtn;
+    return 0;
+}
+// Windows 结构化异常处理函数，崩溃时生成 MiniDump 文件。本线程只交出异常与线程 id，其余全在 _dump_thread
+static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
+    dump_arg da;
+    da.da_ret = EXCEPTION_CONTINUE_SEARCH;
+    da.da_tid = GetCurrentThreadId();
+    da.da_excep = excep;
+    HANDLE hdump = CreateThread(NULL, 0, _dump_thread, &da, 0, NULL);
+    if (NULL == hdump) {
+        _dump_err("CreateThread", ERRNO);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    WaitForSingleObject(hdump, INFINITE);
+    CloseHandle(hdump);
+    if (EXCEPTION_EXECUTE_HANDLER == da.da_ret) {
+        // 退出码用异常码，与没建成文件、交给系统处理时一致；TerminateProcess 结束本进程不返回
+        TerminateProcess(GetCurrentProcess(), (UINT)excep->ExceptionRecord->ExceptionCode);
+    }
+    return da.da_ret;
 }
 #else
 // 软上限抬到 want，硬上限比 want 低就只抬到硬上限；软上限已经够了不动，硬上限从不改。
@@ -192,15 +183,19 @@ void unlimit(void) {
 #endif
 }
 #ifdef OS_WIN
-// Windows 控制台事件处理回调，将控制台信号转发给用户注册的处理函数
+// Windows 控制台事件处理回调，将控制台信号转发给用户注册的处理函数。
+// 关窗 / 注销 / 关机这三种处理函数一返回系统就结束进程，故转发后不返回，让主线程收尾后正常退出(系统超时到了照样强杀)
 static BOOL WINAPI _sighandler(DWORD dsig) {
     switch (dsig) {
     case CTRL_C_EVENT:
-    case CTRL_CLOSE_EVENT:
     case CTRL_BREAK_EVENT:
+        _sig_cb((int32_t)dsig, _ud);
+        break;
+    case CTRL_CLOSE_EVENT:
     case CTRL_LOGOFF_EVENT:
     case CTRL_SHUTDOWN_EVENT:
         _sig_cb((int32_t)dsig, _ud);
+        Sleep(INFINITE);
         break;
     }
     return TRUE;
@@ -249,17 +244,12 @@ uint32_t _cgroup_cpu_quota(const char *text) {
 // n 与 cgroup v2 的 CPU 配额(cpu.max 折成核数，向上取整)取小。从本进程所在组逐级往上读，取最紧的一级；
 // 只认挂在 /sys/fs/cgroup 的 v2，文件读不到、"max"(不限)或解析不了的那级一律当不限
 static uint32_t _cgroup_cpus(uint32_t n) {
-    char line[PATH_LENS];
-    char file[PATH_LENS];
-    char val[64];
-    char *path = NULL;
-    char *slash;
-    FILE *fp;
-    uint32_t quota;
-    fp = fopen_cloexec("/proc/self/cgroup", "r");
+    FILE *fp = fopen_cloexec("/proc/self/cgroup", "r");
     if (NULL == fp) {
         return n;
     }
+    char line[PATH_LENS];
+    char *path = NULL;
     while (NULL != fgets(line, sizeof(line), fp)) {
         if (0 == strncmp(line, "0::/", 4)) {// v2 那行形如 "0::/system.slice/x.service"
             path = line + 3;
@@ -271,6 +261,10 @@ static uint32_t _cgroup_cpus(uint32_t n) {
         return n;
     }
     path[strcspn(path, "\n")] = '\0';
+    char file[PATH_LENS];
+    char val[64];
+    char *slash;
+    uint32_t quota;
     do {
         if (SNPRINTF(file, sizeof(file), "/sys/fs/cgroup%s/cpu.max", path) < (int)sizeof(file)
             && NULL != (fp = fopen_cloexec(file, "r"))) {
@@ -298,9 +292,7 @@ uint32_t procscnt(void) {
         return n;
     }
 #if defined(OS_WIN)
-    SYSTEM_INFO stinfo;
-    GetSystemInfo(&stinfo);
-    n = (uint32_t)stinfo.dwNumberOfProcessors;
+    n = (uint32_t)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);// GetSystemInfo 只给当前处理器组的(至多 64)
 #else
     n = (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
@@ -354,6 +346,23 @@ static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
     }
     return ERR_FAILED;
 }
+// AIX 平台：argv[0] 不带 '/' 时按 PATH 逐项拼接(空项即当前目录)，取第一个可执行的常规文件再 realpath，同 shell 的查找
+static int32_t _path_search(const char *name, char path[PATH_LENS]) {
+    char file[PATH_LENS];
+    const char *end = NULL;
+    int32_t lens;
+    for (const char *dir = getenv("PATH"); NULL != dir; dir = (NULL == end) ? NULL : end + 1) {
+        end = strchr(dir, ':');
+        lens = (int32_t)(NULL == end ? strlen(dir) : (size_t)(end - dir));
+        if (SNPRINTF(file, sizeof(file), "%.*s%s%s", lens, dir, 0 == lens ? "" : "/", name) < (int)sizeof(file)
+            && ERR_OK == isfile(file)
+            && 0 == access(file, X_OK)
+            && NULL != realpath(file, path)) {
+            return ERR_OK;
+        }
+    }
+    return ERR_FAILED;
+}
 // AIX 平台：获取指定 pid 进程的可执行文件完整路径
 static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     struct procsinfo pinfo;
@@ -366,6 +375,11 @@ static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     if (ERR_OK != getargs(&pinfo, sizeof(struct procsinfo), args, sizeof(args))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
+    }
+    // 不带 '/' 的先按 PATH 找，找不到再按当前目录解析(启动方 chdir 后 exec 相对名的情形)
+    if (NULL == strchr(args, '/')
+        && ERR_OK == _path_search(args, path)) {
+        return ERR_OK;
     }
     if (NULL == realpath(args, path)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));

@@ -4,29 +4,31 @@
 --
 -- 子类须做两件事：
 --   1) ctor 里建好 C 层句柄之后调 conn_pub.init(self, handle)；
---   2) 实现三个钩子（都在锁内被调用，不要自己再进 self.serial，虽然可重入但没必要）：
---      _connect()  建链 + 协议握手，成功返 true；代次与 established 由本模块统一维护，钩子内不要动
+--   2) 实现三个钩子（都在锁内被调用；经子类自己的加锁收发漏斗再进一次 self.serial 可以，同协程按 ref 嵌套，
+--      但别在钩子里另建执行器）：
+--      _connect()  建链 + 协议握手，成功返 true；代次与 established 由本模块统一维护，钩子内不要动；
+--                  失败时的关连接也由本模块在锁内做
 --      _ping()     探活，服务端有正常响应返 true；不要在里面重连
 --      _doquit()   发协议的断开命令并关 socket；连接已关（sk.valid 为 false）时自行早退
 --
--- 为什么句柄要在 init 里另存一份 self.conn：基类只在重连前取一次 sock_id，
+-- 为什么句柄要在 init 里另存一份 self.conn：基类要经它取连接标识 sock_id，
 -- 而四家各自的字段名不同（self.mysql / self.pg / self.smtp / self.mongo），
 -- 统一改名要动上百处调用点，存个别名便宜得多。
+--
+-- 子类的连接级状态（erro / affected_rows / last_id 之类）每连接一份，各自在哪类应答上更新见子类文档：
+-- 须在命令返回后、本协程下次挂起之前读取，一旦让出，别的协程可能已在同一连接上把它改掉。
 
 local srey = require("lib.srey")
 local pub = class("conn_pub")
 
 ---按名取 SSL 上下文；四家 ctor 开头逐字相同的一步，取不到即 ctor 失败直接抛。
----level 3 而不是 2：本函数被子类 ctor 调，多垫了一层，3 才能落回原先写在 ctor 里的
----error(msg, 2) 落到的同一帧。注意那一帧是 utils.lua 的 cls.new（class() 生成的 new 会
----调 instance:ctor(...)，自成一帧），不是业务调用点——要指到业务得用 4，四家 ctor 里其余的
----error(..., 2) 也都落在 cls.new 上，改就得一起改
+---level 4 指回业务调用点：本函数 → 子类 ctor → class() 生成的 new → 业务；ctor 里自己的 error 同理用 3
 ---@param sslname string SSL 名；SSL_NAME.NONE 表示明文
 ---@return any ssl SSL 上下文，明文时为 nil
 function pub.ssl(sslname)
     local ok, ssl = srey.ssl_qury(sslname)
     if not ok then
-        error(string.format("ssl_qury not find ssl name %s", sslname), 3)
+        error(string.format("ssl_qury not find ssl name %s", sslname), 4)
     end
     return ssl
 end
@@ -66,8 +68,17 @@ function pub:_doconnect(gen)
         and self.established then
         return true
     end
-    local ok = self:_connect()
-    -- 代次与 established 都无条件落：_connect 里的 try_connect 已经无条件覆写过 sk.fd，成败与否
+    -- 旧连接还没关完（如命令超时后紧接着重连）先关并等确认，同 C 侧 _serial_connect：
+    -- 它晚到的关闭会把新连接的 sk 置成失效。已关时 sync_close 直接返回，等不到确认本轮就不建
+    local ok = srey.sync_close(self.conn:sock_id())
+    if ok then
+        ok = self:_connect()
+        if not ok then
+            -- 握手半途失败（含等握手超时）时网络线程可能还在认证、读账号字段，锁内关完再放
+            srey.sync_close(self.conn:sock_id())
+        end
+    end
+    -- 代次与 established 都无条件落：旧连接已发起关闭，_connect 里的 try_connect 还会无条件覆写 sk.fd，成败与否
     -- 原来那条连接都不在了。只在成功时前进代次的话，拿旧代次比对的 stmt 守卫在失败重连后会失灵
     self.generation = self.generation + 1
     self.established = ok
@@ -79,13 +90,11 @@ end
 function pub:ping()
     return srey.serial_ret(false, self.serial(self._pingreconn, self))
 end
--- 重连整段也在锁内：连接正在重建时别人不该往上发命令，而 fd/skid 换掉之后
+-- 重连整段也在锁内：连接正在重建时别人不该往上发命令，而连接标识换掉之后
 -- 排队者醒来拿到的自然是新连接
 function pub:_pingreconn()
     if not self:_ping() then
-        local sk = self.conn:sock_id()
-        srey.sync_close(sk)
-        return self:connect()
+        return self:connect()-- 关旧连接在 _doconnect 里
     end
     return true
 end
@@ -113,6 +122,34 @@ function pub:_closereset()
     end
     self.generation = self.generation + 1
     self.established = false
+end
+
+---锁内发请求并等应答，mysql / pgsql / mongo 要等应答的收发一律经此或 _recv_wait（调用方须已持 self.serial）。
+---连接标识在这里现取：排队期间前一位可能已重连换掉了它。
+---没等到应答（发送失败 / 超时 / 断连）就在锁内经 _closereset 关掉连接、等确认再返回：
+---超时那里只发了异步关闭，不等关完就放锁的话，下一位进锁组包时网络线程可能还在解析旧连接
+---@param pack lightuserdata 已组好的请求包，交给本函数即归它：此刻挂不起时先释放再抛错
+---@param size integer 包字节数
+---@return lightuserdata|nil reply 首个应答包；没等到为 nil
+---@return userdata sk 本次所用的连接标识，同一请求的后续应答要用它经 _recv_wait 收
+function pub:_send_wait(pack, size)
+    srey._check_wait("srey.syn_send", pack)
+    local sk = self.conn:sock_id()
+    local reply = srey._syn_send_nocheck(sk, pack, size, 0)
+    if not reply then
+        self:_closereset()
+    end
+    return reply, sk
+end
+---锁内收同一请求的下一个应答（多结果集续读），没等到的处置同 _send_wait
+---@param sk userdata _send_wait 带出的连接标识
+---@return lightuserdata|nil reply 应答包；没等到为 nil
+function pub:_recv_wait(sk)
+    local reply = srey.syn_recv(sk)
+    if not reply then
+        self:_closereset()
+    end
+    return reply
 end
 
 return pub

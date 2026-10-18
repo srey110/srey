@@ -36,11 +36,12 @@ typedef struct config_ctx {
 }config_ctx;
 
 /// <summary>
-/// 启动业务任务（harbor 及可选的 Lua 任务）
+/// 依次初始化字节码缓存（WITH_LUA 且 ENABLE_LUA_BYTECACHE）、启动 debug_console、Lua 任务（WITH_LUA）与 harbor；
+/// 顺序不能换，理由见 startup.c
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="config">服务配置</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；失败时原样返回出错那一步的错误码，之前已启动的部分不回滚，由调用方 loader_free 后再 task_cleanup 收拾</returns>
 int32_t task_startup(loader_ctx *loader, config_ctx *config);
 /// <summary>
 /// 回收 task_startup 建起的进程级资源。须排在 loader_free 之后:任务还在跑的时候不能拆

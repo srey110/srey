@@ -9,12 +9,15 @@
 /// help / loglv 由本服务就地处理不转发；stat / coros 转给目标 task 自身的 REQ_DEBUG handler
 /// （C task 走 lib/srey/debug_request.c，Lua task 走 lib.debug_request）；
 /// mem / gc / inject / hotfix 要 Lua VM，只转给 TASK_LUA，其余类型由本服务就地回不支持。
+/// 防跨站与 DNS rebinding，以下任一不满足即回 403：Host 须是 IP 字面量或 localhost(可带端口)，
+/// 用主机名访问会被拒；带 Origin 须等于 "http://" + Host；带 Sec-Fetch-Site 须是 same-origin 或 none，
+/// 故从别的网页点链接进来也会被拒，须在地址栏直接打开
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示不启动</param>
-/// <param name="ip">监听 IP；NULL 返回失败</param>
+/// <param name="ip">监听 IP；NULL 或空串返回失败</param>
 /// <param name="port">监听端口；0 表示不启动</param>
-/// <returns>ERR_OK 成功（name/port 为空时跳过也返回 ERR_OK）；ERR_FAILED 启动失败</returns>
+/// <returns>ERR_OK 成功（name/port 为空时跳过也返回 ERR_OK）；ERR_FAILED 启动失败，含监听失败(此时已注册的 task 已被关闭)</returns>
 int32_t debug_console_start(loader_ctx *loader, const char *name, const char *ip, uint16_t port);
 
 #endif//DEBUG_CONSOLE_H_

@@ -11,24 +11,27 @@ local reader = require("srey.pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 失败原因与 err 契约，见该模块头部
 local pub    = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 local PGPACK_TYPE = ppub.PACK_TYPE
-local PG_FORMAT = ppub.FORMAT
 
 -- pgsql_ctx：PostgreSQL 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
 local ctx = class("pgsql_ctx", pub)
+-- _fail / _reset 两个类逐字相同，实现落在 ppub 一处（说明见那边）
+ctx._fail = ppub.fail
+ctx._reset = ppub.reset
 
 ---构造函数
 ---@param ip string 服务器 IP
 ---@param port integer 服务器端口
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
 ---@param user string 用户名
----@param password string 密码
+---@param password string 密码，按原样参与认证（SCRAM 前不做 SASLprep）：含需 NFKC 规范化字符的
+---非 ASCII 密码须由调用方先规范化，否则认证失败
 ---@param database string 数据库名
 function ctx:ctor(ip, port, sslname, user, password, database)
     local ssl = pub.ssl(sslname)
     self.pg = pgsql.new(ip, port, ssl, user, password, database)
     if not self.pg then
-        error(string.format("pgsql.new failed: %s:%d db=%s", ip, port, tostring(database)), 2)
+        error(string.format("pgsql.new failed: %s:%d db=%s", ip, port, tostring(database)), 3)
     end
     self.affected = 0
     self.err = ""
@@ -59,24 +62,22 @@ function ctx:_ping()
     return ppub.request_ok(self, pack, size, PGPACK_TYPE.OK)
 end
 
--- _fail / _reset 两个类逐字相同，实现落在 ppub 一处（说明见那边）
-ctx._fail = ppub.fail
-ctx._reset = ppub.reset
-
 ---执行简单查询（Query 协议）。
 ---一条 SQL 里用 `;` 分隔多条语句时，服务端按语句逐条应答，返回数组每条语句一个元素。
----多语句是隐式单事务：任一条出错则整体回滚，本函数返回 false，前面成功的结果一并作废。
----结果恒按文本格式解析：简单查询协议服务端只以文本应答，要二进制结果走 prepare() / execute()
+---串里没有显式事务控制时多语句是隐式单事务：任一条出错则整体回滚，本函数返回 false，前面成功的结果一并作废。
+---串内含 COMMIT 等显式事务控制时，出错前已提交的语句不回滚，结果却同样拿不到（照样只返回 false），
+---不能据 false 判定"全部回滚"；事务控制别和可能失败的语句拼在一条 query 里
+---结果按服务端给的格式码解析（简单查询一般是文本），要二进制结果走 prepare() / execute()
 ---@param sql string SQL 语句
 ---@return (_pgsql_reader_ctx|integer)[]|false results 每条语句一个元素：有结果集给 reader，
 ---无结果集（INSERT/UPDATE 等）给该条的影响行数；失败返回 false，原因走 erro()。
 ---空 SQL / 纯注释这类服务端不回 CommandComplete 的语句拿到空表，取元素前先判 #results。
 ---所有结果攒齐才返回，峰值内存是各结果集之和，别拿它跑几百条语句拼成的脚本。
 ---别把 COPY TO STDOUT 和别的语句拼在一条 query 里：包类型会被换掉，前面已提交的结果
----连同行一起丢。COPY FROM STDIN 走独立包，不影响下标。
+---连同行一起丢。COPY FROM STDIN 只能走 copy_in，交给 query 会被中止、整条按失败返回。
 ---注意与 pgsql_stmt_ctx:execute 形状不同：那边一次只有一条语句，直接给 reader 不套数组
 function ctx:query(sql)
-    return srey.serial_ret(false, self.serial(self._query, self, sql))
+    return ppub.call(self, self._query, sql)
 end
 function ctx:_query(sql)
     self:_reset()
@@ -87,19 +88,20 @@ function ctx:_query(sql)
     end
     local rs
     -- affected 是连接级"最近一次"，多语句时是最后一条
-    rs, self.affected = reader.results(pgpack, PG_FORMAT.TEXT)
+    rs, self.affected = reader.results(pgpack)
     return rs
 end
 
 ---准备预处理语句（Parse + Sync）
----@param name string 服务端语句名（"" 表示匿名）
+---@param name string 服务端语句名；"" 表示匿名，匿名语句会被这条连接上的任何 simple query 销毁
+---（含 ping、query），要多次 execute 或中间可能有别的命令时用具名语句
 ---@param sql string SQL 文本
 ---@param nparam integer? 参数数量，默认 0
 ---@param oids integer[]? 各参数类型 OID 数组
 ---@param format PG_FORMAT? execute 时结果列格式，默认 BINARY
 ---@return any|false stmt pgsql_stmt_ctx 实例；失败返回 false
 function ctx:prepare(name, sql, nparam, oids, format)
-    return srey.serial_ret(false, self.serial(self._prepare, self, name, sql, nparam, oids, format))
+    return ppub.call(self, self._prepare, name, sql, nparam, oids, format)
 end
 function ctx:_prepare(name, sql, nparam, oids, format)
     self:_reset()
@@ -112,13 +114,11 @@ end
 
 -- COPY IN --
 
----执行 COPY FROM STDIN 全过程：发起 → 逐块写 → 收尾。整段在锁内独占连接。
----服务端一进 COPY IN 模式就只认 CopyData/CopyFail，别的协程的普通查询挤进来会让整条
----连接报错，所以三步不再拆成三个公开方法（那样锁得跨用户调用，用户忘了收尾连接就永久卡死）。
----producer 抛错或某块发送失败时，本函数会替你发 CopyFail 把服务端拉出 COPY IN 模式，
----连接仍可继续使用。
----producer 内不要再碰这条连接：锁对同协程是可重入的，那条命令会真的发出去，
----而服务端此刻只认 CopyData/CopyFail。
+---执行 COPY FROM STDIN 全过程：发起 → 逐块写 → 收尾。整段在锁内独占连接：服务端一进 COPY IN 模式
+---就只认 CopyData/CopyFail，三步拆成公开方法的话锁得跨用户调用，忘了收尾连接就永久卡死。
+---producer 抛错或某块发送失败时，本函数会替你发 CopyFail 把服务端拉出 COPY IN 模式，连接仍可继续使用。
+---producer 内不要再碰这条连接（锁对同协程可重入，那条命令会真的发出去），也不得挂起：
+---挂起期间服务端的中途报错没人接，之后要空等满读超时再断连，服务端的错误原文也丢了
 ---@param sql string COPY ... FROM STDIN 语句
 ---@param producer fun(format:integer, ncol:integer):(string|lightuserdata|boolean|nil), (integer|string|nil)
 ---       数据块生成器，反复调用，每次都带上服务端 CopyInResponse 里的格式与列数（不关心可忽略）：
@@ -127,7 +127,7 @@ end
 ---@return boolean ok 服务端已按请求收尾（正常完成或按请求中止）true；失败 false，原因走 erro()
 ---@return string? aborted 走了中止路径时为服务端 ErrorResponse 文本；正常完成时为 nil
 function ctx:copy_in(sql, producer)
-    return srey.serial_ret(false, self.serial(self._copy_in, self, sql, producer))
+    return ppub.call(self, self._copy_in, sql, producer)
 end
 -- producer 抛出或返回的值由业务代码决定，可能是个带 __tostring 的对象，而那个元方法自己
 -- 也会抛（返回非字符串同样抛）。_copy_fail 与它的调用方是把服务端拉出 COPY IN 模式的唯一
@@ -169,6 +169,9 @@ function ctx:_copy_stream(sk, producer, format, ncol)
             return false, extra
         end
         pack, psize = pgsql.pack_copy_data(data, extra)
+        if not pack then
+            error(ppub.PACK, 0)
+        end
         if not srey.send(sk, pack, psize, 0) then
             error(ppub.SEND, 0)
         end
@@ -184,7 +187,7 @@ function ctx:_copy_in(sql, producer)
     if not pgpack then
         return false
     end
-    -- fd/skid 下面串流还要用，单独取一次；ppub.request 内部那次只服务它自己
+    -- 连接标识下面串流还要用，单独取一次；ppub.request 内部那次只服务它自己
     local sk = self.pg:sock_id()
     -- 服务端期望的格式与列数透给 producer：折叠成一个方法之后，调用方再没有别的途径拿到它
     local cfmt, cncol = pgsql.copy_in_info(pgpack)
@@ -219,7 +222,7 @@ end
 ---@return lightuserdata|false data 数据指针（借用，勿释放）；失败返回 false
 ---@return integer? size 成功时为字节数
 function ctx:copy_out(sql)
-    return srey.serial_ret(false, self.serial(self._copy_out, self, sql))
+    return ppub.call(self, self._copy_out, sql)
 end
 function ctx:_copy_out(sql)
     self:_reset()
@@ -249,7 +252,7 @@ end
 ---@return boolean ok 切换并重连成功 true（库名超 63 字节时不断连直接返 false，
 ---原连接与原库名均保持不变）
 function ctx:selectdb(database)
-    return srey.serial_ret(false, self.serial(self._selectdb, self, database))
+    return ppub.call(self, self._selectdb, database)
 end
 -- 换库整段在锁内（含 set_db）：它改的库名是连接级状态，搁在锁外的话拿不到锁那次
 -- 会留下"库名已换、连接还在旧库上"，之后随便哪次 ping 重连就悄悄换了库
@@ -297,19 +300,20 @@ function ctx:cancel()
     return true
 end
 
----更新连接认证信息（下次重连时生效）
+---更新连接认证信息（下次重连时生效）。与 connect / 命令同在 self.serial 里排队：重连握手要读这两个字段；
+---故须在 srey 协程里调
 ---@param user string 新用户名
----@param password string 新密码
----@return boolean ok 成功 true；用户名或密码超 63 字节时 false，两者均保持原值
+---@param password string 新密码，约束同 ctor
+---@return boolean ok 成功 true；用户名或密码超 63 字节时 false，两者均保持原值；含 NUL 时 false 并打 ERROR
 function ctx:set_userpwd(user, password)
-    return self.pg:set_userpwd(user, password)
+    return srey.serial_ret(false, self.serial(self.pg.set_userpwd, self.pg, user, password))
 end
 
----更新目标数据库名（下次重连时生效）
+---更新目标数据库名（下次重连时生效）。排队理由同 set_userpwd
 ---@param database string 新数据库名
----@return boolean ok 成功 true；库名超 63 字节时 false，库名保持原值
+---@return boolean ok 成功 true；库名超 63 字节时 false，库名保持原值；含 NUL 时 false 并打 ERROR
 function ctx:set_db(database)
-    return self.pg:set_db(database)
+    return srey.serial_ret(false, self.serial(self.pg.set_db, self.pg, database))
 end
 
 ---获取当前配置的数据库名
@@ -324,25 +328,20 @@ function ctx:readyforquery()
     return self.pg:readyforquery()
 end
 
----返回当前连接的 fd 和 skid
----@return integer fd socket fd
----@return integer skid 连接 skid
+---返回当前连接的连接标识
+---@return userdata sk 连接标识；未连接时 sk.valid 为 false
 function ctx:sock_id()
     return self.pg:sock_id()
 end
 
----返回最近一次错误信息
----**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
----命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
+---返回最近一次错误信息；读取时机见 conn_pub 文件头
 ---@return string err 错误描述
 function ctx:erro()
     return self.err
 end
 
 ---返回最近一次受影响行数。SELECT 也会刷新它（值为该 SELECT 返回的行数），
----要按语句取写操作的行数请读 query 返回数组里的整数元素
----**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
----命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
+---要按语句取写操作的行数请读 query 返回数组里的整数元素；读取时机见 conn_pub 文件头
 ---@return integer rows affected rows
 function ctx:affected_rows()
     return self.affected

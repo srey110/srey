@@ -15,8 +15,8 @@ local type = type
 local pairs = pairs
 local HTTP_VERSION = "1.1" -- 固定使用 HTTP/1.1
 local REQ_TAIL = " HTTP/" .. HTTP_VERSION .. "\r\n" -- 请求行 url 之后的固定部分
--- 头名 / 头值校验在 C 里一次判完（head_check，判据同 router.c 组头那份）。校验不过按 router.c 的
--- 做法整条丢弃 + 告警，不 abort。头部块总长不卡：HTTP_MAX_HEADLENS 只作用于接收侧
+-- 头名 / 头值校验在 C 里一次判完（head_check，判据同 router.c 组头那份，含头名短于 HTTP_HEAD_KEY_MAX 即 128 字节）。
+-- 校验不过按 router.c 的做法整条丢弃 + 告警，不 abort。头部块总长不卡：HTTP_MAX_HEADLENS 只作用于接收侧
 local head_check = srey_http.head_check
 local AUTO_CT = 0x01 -- head_check 的 autoflags：Content-Type 由本模块自己写
 local AUTO_FRAME = 0x02 -- 同上：Content-Length / Transfer-Encoding 由本模块自己写
@@ -32,9 +32,9 @@ local http = {}
 ---@type fun(pack:lightuserdata):string[]|nil
 http.status = srey_http.status
 
----返回报文的 Transfer-Encoding: chunked 状态：0=非分块；1=首包；2+ 分块中间/结束块。
----只认 Transfer-Encoding：响应既无 Content-Length 又无 TE 时（RFC 7230 §3.3.3 规则 7，
----body 由连接关闭界定）本值仍是 0，而 body 确实是按分片投的。判"还有没有后续"要看
+---返回报文的分帧类别：0=非 chunked 整包或由连接关闭界定 body 的头包；1=chunked 头包；2=数据片。
+---响应既无 Content-Length 又无 TE、或 TE 最后一层不是 chunked 时（RFC 7230 §3.3.3 规则 7 / 规则 3，
+---body 由连接关闭界定）头包本值是 0，而 body 确实是按分片投的。判"还有没有后续"要看
 ---on_recved 的 slice 形参或 syn_send / syn_recv 的第三返回值，别用本值
 ---@type fun(pack:lightuserdata):integer
 http.chunked = srey_http.chunked
@@ -60,7 +60,7 @@ http.datastr = srey_http.datastr
 ---@field chunked integer                 Transfer-Encoding: chunked 状态，取值与判定注意事项同 http.chunked
 ---@field heads   table<string,string>?   响应头 key→value 表；分块中间包为 nil
 ---@field data    string?                 报文体内容；空时为 nil
----@field cksize  integer?                chunked 模式下累计接收字节数；非 chunked 时不存在
+---@field cksize  integer?                分片响应（chunked 或由连接关闭界定）累计收到的报文体字节数；非分片响应为 nil
 
 -- http.unpack 的本体：状态行由调用方给（客户端判 1xx 时已取过一次），构造器一次建好四个字段
 local function _unpack(pack, st)
@@ -94,9 +94,9 @@ local function _http_interim(pack)
 end
 
 ---请求发出后的收包：跳过 1xx 中间响应，按协议层的分片标记把后续分片收齐；
----chunked 响应时循环读取分片并通过 ckfunc(fin,data,size) 回调，直到 fin=true。后三个参数直接接 srey.syn_send 的返回值
+---分片响应时循环读取分片并通过 ckfunc(fin,data,size) 回调，直到 fin=true。后三个参数直接接 srey.syn_send 的返回值
 ---@param sk userdata 连接标识
----@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片回调
+---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片回调，约束见 http.get
 ---@param pack lightuserdata? syn_send 返回的回包；nil 为发送失败、超时或已断开
 ---@param _ integer? 回包 size，不用
 ---@param slice integer? 分片类型（SLICE_TYPE.*）
@@ -117,7 +117,7 @@ local function _http_reply(sk, ckfunc, pack, _, slice)
     end
     local resp = _unpack(pack, st)
     -- 按协议层给的分片标记决定要不要接着收，不只认 chunked：响应既无 Content-Length 又无
-    -- Transfer-Encoding 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7)，C 侧同样按分片投、
+    -- Transfer-Encoding、或 TE 最后一层不是 chunked 时 body 由连接关闭界定(RFC 7230 §3.3.3 规则 7 / 3)，C 侧同样按分片投、
     -- 末片由关闭事件补。判定留在 C 一处，这里重抄一遍必然分叉(1xx/204/304 也没有 CL/TE)
     if SLICE_TYPE.START == slice then
         local ok, data, hdata, hsize, hstr, fin
@@ -191,7 +191,7 @@ end
 -- 抛出来就越过了整条校验链，而这一族的契约是丢头加告警、从不抛
 local function _head_warn(rc, key)
     if 1 == rc then
-        WARN("http header key is not a valid token, dropped.")
+        WARN("http header key is not a valid token or is too long, dropped.")
     elseif 2 == rc then
         WARN("http header %s value must be a string or number, dropped.", key)
     elseif 3 == rc then
@@ -218,11 +218,11 @@ end
 ---       不得传入，传了整条丢弃并告警——留着会造出两条 Content-Length 或 TE 叠 CL，
 ---       严格实现与 smuggling 防御代理会拒收。info 非 table 时 Content-Type 正是经此传入。
 ---       值只收 string 与 number（整数值的浮点按整数写），其余类型同样整条丢弃并告警
----@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
+---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片接收回调，约束见 http.get
 ---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
----       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
+---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。违约处置见 http.post
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；rsp=true 或失败时返回 nil
 local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc, info, ...)
@@ -299,13 +299,10 @@ local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc
             end
             if "string" ~= type(rtn) then
                 ERROR("chunked function must return string, got %s.", type(rtn))
-                -- 生产者违约,body 已截断:补终止块让对端退出 chunked 累积状态,但按失败返回,
-                -- 不把截断的 body 当成一次完整请求交回调用方。
-                -- 头部未发送时(首次迭代)由 prefix 一并带上,避免对端收到孤立的终止块
-                -- 补了终止块后这仍是一条语法完整的 chunked 请求,对端必回响应,故走正常发送路径把它收完再丢弃:
-                -- 响应自身也可能是 chunked(只 syn_send 收不干净),而 _wait_msg 按 skid 匹配、不区分请求,
-                -- 漏收就会落到下一次请求注册的等待者上,连接从此错位一格。ckfunc 传 nil:不拿要丢弃的数据回调业务
-                _http_send(rsp, sk, prefix .. "0\r\n\r\n", nil)
+                -- 不补终止块，理由见 http.post。请求侧一个字节都没发时连接还干净，不关
+                if rsp or "" == prefix then
+                    srey.close(sk)
+                end
                 return
             end
             -- 空串按结束处理：既是 chunked 终止块的语义，也避免此处零状态推进死循环
@@ -314,8 +311,7 @@ local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc
             end
             smsg = prefix .. string.format("%x\r\n", #rtn) .. rtn .. "\r\n"
             if not srey.send(sk, smsg, #smsg, 1) then
-                -- 中间帧失败仍尝试补发终止块,让对端退出 chunked 累积状态
-                srey.send(sk, "0\r\n\r\n", 5, 1)
+                srey.close(sk)
                 return
             end
             prefix = ""
@@ -366,16 +362,20 @@ end
 ---同步 GET 请求
 ---
 ---与同一连接上的其他请求并发时，须用 srey.serial 把整个调用圈进临界区（理由同 srey.syn_send）；
----分片响应（chunked / 1xx / 既无 Content-Length 又无 Transfer-Encoding）不圈的话，后续分片还会被
+---分片响应（chunked / 1xx / 既无 Content-Length 又无 Transfer-Encoding / TE 不以 chunked 结尾）不圈的话，后续分片还会被
 ---排在前面的协程拿走，双方各得半截
 ---@param sk userdata 连接标识
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,string|number>? 附加头部
----@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
+---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片响应（chunked 或由连接关闭界定）的逐片回调，
+---       每收到一片同步调一次，data 只在本次回调内有效。回调**不得挂起、不得抛错**：挂起期间到达的后续分片
+---       没有等待者，被交给 on_recved 或丢弃，本次请求等到超时关连接、返回 nil；抛错则直接穿出，剩余分片
+---       留在连接上，此连接只能关闭。不传时分片收齐拼进 data
 ---@return HttpPack|nil pack 解包后的响应表；失败返回 nil（超时/分片中断时响应可能未收完，
 ---此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）。
 ---url 非法时同样返回 nil，但一个字节都没发出，连接可继续复用
 function http.get(sk, url, headers, ckfunc)
+    srey._check_wait("http.get")-- 先查再组包、发头：syn_send 的守卫抛错时不替调用方放包
     local status = _req_status("GET", url)
     if not status then
         return nil
@@ -390,20 +390,16 @@ function http.get(sk, url, headers, ckfunc)
 end
 
 ---同步 HEAD 请求：只要响应头，服务端不回报文体。
----解包侧拿不到请求方法，故发送前须先把 "HEAD" 登记到连接上（本函数已代劳）；漏登记的后果是
----带 Content-Length 的 HEAD 响应被当成有报文体，keep-alive 上会把下一条响应吃掉。
----
----登记挂在连接上而不是这一次请求上，故并发时同样须 srey.serial 圈住（理由见 http.get），
----否则那个登记会落到别人的响应上，把它的 body 当作不存在
+---解包侧拿不到请求方法，本函数发送前先把 "HEAD" 登记到连接上，否则带 Content-Length 的 HEAD 响应
+---会被当成有报文体。登记挂在连接上，并发时同样须 srey.serial 圈住（理由见 http.get）。
+---名字不叫 head：本模块已把 srey_http.head（按 key 取单个响应头）导出为 http.head，同名会把它覆盖
 ---@param sk userdata 连接标识
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,string|number>? 附加头部
 ---@return HttpPack|nil pack 解包后的响应表（无报文体，data 为空）；失败返回 nil。
 ---url 非法或登记失败时一个字节都没发出，连接可继续复用
----
----名字不叫 head：本模块 40 行已把 srey_http.head（按 key 取单个响应头）导出为 http.head，
----同名会静默把那个访问器覆盖掉
 function http.head_req(sk, url, headers)
+    srey._check_wait("http.head_req")-- 理由同 http.get
     local status = _req_status("HEAD", url)
     if not status then
         return nil
@@ -427,16 +423,19 @@ end
 ---@param sk userdata 连接标识
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,string|number>? 附加头部
----@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
+---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片接收回调，约束同 http.get
 ---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
----       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
+---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。
+---       返回非 string 是违约：报文体已发出一部分时关连接、不补终止块（补了对端会把截断的报文体当完整的收），
+---       一个字节都没发出时只返回 nil，连接可继续复用；分块发送失败一律关连接
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；失败返回 nil（超时/分片中断时响应可能未收完，
 ---此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）。
 ---url 非法时同样返回 nil，但一个字节都没发出，连接可继续复用
 function http.post(sk, url, headers, ckfunc, info, ...)
+    srey._check_wait("http.post")-- 理由同 http.get
     local status = _req_status("POST", url)
     if not status then
         return nil
@@ -490,7 +489,8 @@ http._response_lua = _response_lua
 ---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
----       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
+---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。
+---       违约处置同 http.post，只是一个字节都没发出时也关连接：不关的话对端一直等这条响应
 ---@param ... any 传给 info 函数的额外参数
 function http.response(sk, code, headers, info, ...)
     -- 常见形状（string / nil 报文体、没有头表时的 table 报文体、合法头表）整条在 C 里组包直发，字节同 _response_lua 的原路；

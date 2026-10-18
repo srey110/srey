@@ -1,11 +1,22 @@
 ﻿#ifndef SCRAM_H_
 #define SCRAM_H_
 
-#include "utils/binary.h"
 #include "crypt/hmac.h"
 #include "crypt/base64.h"
 
 #define SCRAM_NONCE_LEN 18 // 随机 nonce 原始字节长度
+// 最小迭代轮数
+#define SCRAM_MIN_ITER  4096
+// 最大迭代轮数：仅用于挡住荒谬取值(解析器本身接受到 INT32_MAX，约 20 分钟 CPU)，不是安全阈值。
+// 取 256 倍下限即约 100 万轮，最坏约 1 秒 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
+// 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过。
+// 这段计算在协议解包里，跑在 net 线程上，期间该线程上的连接都在等
+#define SCRAM_MAX_ITER  (256 * SCRAM_MIN_ITER)
+/* GS2 头三态（RFC 5802 §5.1）：本端不支持绑定发 "n"；支持但对端未通告 -PLUS 发 "y"，
+ * 让真支持 PLUS 的对端能发现通告被剥；PLUS 变体发 "p=" 加绑定类型。*/
+#define SCRAM_GS2_STD     "n,,"
+#define SCRAM_GS2_CAPABLE "y,,"
+#define SCRAM_GS2_PLUS    "p=tls-server-end-point,,"
 
 typedef enum scram_status {
     SCRAM_INIT = 0x00,    // 初始状态
@@ -40,8 +51,8 @@ typedef struct scram_ctx {
     char *cbind_data;                       // channel binding 原始数据（tls-server-end-point 时为证书哈希）
     char *user;                             // 用户名（dup_zero 分配，scram_free 释放）
     char *pwd;                              // 密码（dup_zero 分配，scram_free 释放）
-    char local_nonce[B64EN_SIZE(SCRAM_NONCE_LEN) + 1]; // 本端 nonce（base64 编码）
-    char gs2_header[25];                    // 计算 c= 所用的 GS2 头（最长 "p=tls-server-end-point,," 24 字节）。
+    char local_nonce[B64EN_SIZE(SCRAM_NONCE_LEN)]; // 本端 nonce（base64 编码，B64EN_SIZE 已含 '\0'）
+    char gs2_header[sizeof(SCRAM_GS2_PLUS)];// 计算 c= 所用的 GS2 头（三种头里 SCRAM_GS2_PLUS 最长）。
                                             // 客户端填本端选定的那个；服务端必须填对端实际发来的——
                                             // RFC 5802 §5 允许非 PLUS 端收到 "y,,"，若仍按 "n,," 重算则 c= 永不匹配
     char saltedpwd[DG_BLOCK_SIZE];          // SaltedPassword（PBKDF 输出）
@@ -58,7 +69,7 @@ SCRAM_REMOTE_FIRST->SCRAM_LOCAL_FINAL       SCRAM_LOCAL_FIRST->SCRAM_REMOTE_FINA
 scram_final_message                     ->  scram_check_final_message                 c=<cbind_b64>,r=,p=
 
 SCRAM_LOCAL_FINAL->SCRAM_REMOTE_FINAL       SCRAM_REMOTE_FINAL->SCRAM_LOCAL_FINAL
-scram_check_final_message               <-  scram_final_message                       [e=] v=
+scram_check_final_message               <-  scram_final_message                       v=（本端服务端不产出 e=）
 */
 
 /// <summary>
@@ -100,12 +111,12 @@ int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
 /// <param name="salt">salt 数据</param>
 /// <param name="lens">salt 长度</param>
 /// <returns>ERR_OK 已生效；ERR_FAILED 未生效（客户端角色调用，或 salt 为空）</returns>
-int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
+int32_t scram_set_salt(scram_ctx *scram, const char *salt, size_t lens);
 /// <summary>
 /// 设置迭代轮数（仅服务端调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <param name="iter">迭代轮数，低于 SCRAM_MIN_ITER 提升到该下限，高于 SCRAM_MAX_ITER 夹到该上限
+/// <param name="iter">迭代轮数，低于 SCRAM_MIN_ITER（4096）提升到该下限，高于 SCRAM_MAX_ITER（1048576）夹到该上限
 ///     （与客户端解析服务端 i= 时的上限同值，故夹过的值对端照样接受）</param>
 /// <returns>ERR_OK 已生效；ERR_FAILED 未生效（客户端角色调用）</returns>
 int32_t scram_set_iter(scram_ctx *scram, int32_t iter);
@@ -127,37 +138,43 @@ int32_t scram_set_cbind(scram_ctx *scram, const char *data, size_t lens);
 /// 获取客户端用户名（仅服务端调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <returns>用户名字符串</returns>
+/// <returns>用户名，'\0' 结尾，归 scram 所有：再次 scram_set_user / 解析 client-first 或 scram_free 后失效；
+/// 还没拿到用户名（未解析，或解析在 n= 之前就失败）时为 NULL</returns>
 const char *scram_get_user(scram_ctx *scram);
 /// <summary>
 /// 生成第一条消息（客户端: [GS2]n=,r=  服务端: r=,s=,i=）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <returns>消息字符串（调用方负责释放）</returns>
+/// <returns>消息字符串（调用方负责释放）；状态不符（客户端不在初始态、服务端不在刚解析完对端首条的状态）、
+/// 取随机 nonce 失败、服务端没设 salt 或 iter 时为 NULL</returns>
 char *scram_first_message(scram_ctx *scram);
 /// <summary>
-/// 解析对端第一条消息（客户端解析 r=,s=,i=  服务端解析 [GS2]n=,r=）
+/// 解析对端第一条消息（客户端解析 r=,s=,i=  服务端解析 [GS2]n=,r=）。
+/// 两端都不实现强制扩展，消息带 m= 即失败（RFC 5802 §5.1）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="msg">消息数据</param>
 /// <param name="mlens">消息长度</param>
 /// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
-int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens);
+int32_t scram_parse_first_message(scram_ctx *scram, const char *msg, size_t mlens);
 /// <summary>
-/// 生成最终消息（客户端: c=<cbind_b64>,r=,p=  服务端: [e=] v=）
+/// 生成最终消息（客户端: c=<cbind_b64>,r=,p=  服务端: v=）。
+/// 服务端只产出 v=，不产出 RFC 5802 的 e=；要回错误消息由调用方自己组
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <returns>消息字符串；状态不符、未设置密码、PLUS 变体未设置 channel binding 数据均返回 NULL。
-/// 客户端侧返回值含 ClientProof（配上线上抓到的 AuthMessage 即可还原 ClientKey），
+/// <returns>消息字符串；状态不符（含服务端校验对端最终消息失败之后）、未设置密码、
+/// PLUS 变体未设置 channel binding 数据均返回 NULL。
+/// 客户端侧返回值含 ClientProof（与 StoredKey、AuthMessage 合起来即可还原 ClientKey），
 /// 调用方须用 SECURE_FREE(msg, strlen(msg) + 1) 释放，不可裸 FREE</returns>
 char *scram_final_message(scram_ctx *scram);
 /// <summary>
-/// 验证对端最终消息（客户端验证 [e=] v=  服务端验证 c=<cbind_b64>,r=,p=）
+/// 验证对端最终消息（客户端验证 [e=] v=，带 e= 即失败  服务端验证 c=<cbind_b64>,r=,p=）。
+/// 服务端按 c=,r= 重建 AuthMessage，不支持 client-final 里的扩展属性
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="msg">消息数据</param>
 /// <param name="mlens">消息长度</param>
 /// <returns>ERR_OK 验证通过，ERR_FAILED 验证失败</returns>
-int32_t scram_check_final_message(scram_ctx *scram, char *msg, size_t mlens);
+int32_t scram_check_final_message(scram_ctx *scram, const char *msg, size_t mlens);
 
 #endif//SCRAM_H_

@@ -49,10 +49,10 @@ static inline void mutex_lock(mutex_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// 尝试锁定
+/// 尝试锁定。Windows 上(CRITICAL_SECTION)可重入：已持锁的线程再 trylock 也成功，须再配对 unlock 一次；POSIX 上失败
 /// </summary>
 /// <param name="ctx">mutex_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 锁被占用</returns>
 static inline int32_t mutex_trylock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     return TRUE == TryEnterCriticalSection(ctx) ? ERR_OK : ERR_FAILED;

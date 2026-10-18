@@ -14,7 +14,8 @@
 //   my_elem *p = my_que_pop(&q);              // 空队返 NULL
 //   my_que_free(&q);
 //
-// 元素按指针传入(同 ARR_DECL)，取出一律返回指针——指针在下次 push/resize 前有效。
+// 元素按指针传入(同 ARR_DECL)，取出一律返回指针——指针在下次 push/resize 前有效，del_at 会把后面的元素前移，
+// 之前取到的指针随之改指别的元素。push 的入参不得指向本队列的元素：满了先扩容，旧缓冲随即释放。
 
 #define QUEUE_INIT_SIZE 32 // 默认初始容量
 
@@ -129,11 +130,10 @@ static inline int32_t name##_trypush(name *qu, T const *elem) {                \
 }                                                                               \
 /* 弹出队头,空队返回 NULL */                                                    \
 static inline T *name##_pop(name *qu) {                                         \
-    T *elem;                                                                    \
     if (0 == qu->size) {                                                        \
         return NULL;                                                            \
     }                                                                           \
-    elem = qu->ptr + qu->offset;                                                \
+    T *elem = qu->ptr + qu->offset;                                             \
     qu->offset = name##_wrap(qu, qu->offset + 1);                               \
     qu->size--;                                                                 \
     return elem;                                                                \
@@ -150,11 +150,10 @@ static inline T *name##_pop_back(name *qu) {                                    
    两次拷贝就够——调用方是在自旋锁内取的，逐个 pop 会把锁持有时间按元素个数拉长 */ \
 static inline uint32_t name##_pop_batch(name *qu, T *out, uint32_t max) {        \
     uint32_t n = (max < qu->size) ? max : qu->size;                             \
-    uint32_t first;                                                             \
     if (0 == n) {                                                               \
         return 0;                                                               \
     }                                                                           \
-    first = qu->maxsize - qu->offset;                                           \
+    uint32_t first = qu->maxsize - qu->offset;                                  \
     if (first > n) {                                                            \
         first = n;                                                              \
     }                                                                           \
@@ -168,7 +167,6 @@ static inline uint32_t name##_pop_batch(name *qu, T *out, uint32_t max) {       
 }                                                                               \
 /* 删除指定位置元素(保持顺序,后续元素整体前移) */                                 \
 static inline void name##_del_at(name *qu, uint32_t pos) {                      \
-    uint32_t src, dst, seg, rest;                                               \
     if (pos >= qu->size) {                                                      \
         return;                                                                 \
     }                                                                           \
@@ -177,9 +175,10 @@ static inline void name##_del_at(name *qu, uint32_t pos) {                      
         qu->size--;                                                             \
         return;                                                                 \
     }                                                                           \
-    dst = name##_wrap(qu, qu->offset + pos);                                    \
-    src = name##_wrap(qu, qu->offset + pos + 1);                                \
-    rest = qu->size - pos - 1;                                                  \
+    uint32_t dst = name##_wrap(qu, qu->offset + pos);                           \
+    uint32_t src = name##_wrap(qu, qu->offset + pos + 1);                       \
+    uint32_t rest = qu->size - pos - 1;                                         \
+    uint32_t seg;                                                               \
     while (0 != rest) {                                                         \
         /* 一次搬到缓冲末尾或搬完为止,跨回绕时再绕回头部继续 */                   \
         seg = qu->maxsize - (src > dst ? src : dst);                            \

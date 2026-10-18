@@ -38,8 +38,6 @@ typedef struct {                                                                
 } name;                                                                         \
 /* 容量取不小于 capacity 的 2 的幂(至少 2),0 取 MPQ_DEFAULT_CAP;一次分配,之后不扩容 */ \
 static inline void name##_init(name *q, uint32_t capacity) {                    \
-    uint32_t i, cap;                                                            \
-    name##_cell *cells;                                                         \
     ASSERTAB(NULL != q, ERRSTR_NULLP);                                          \
     q->capacity = (0 == capacity) ? MPQ_DEFAULT_CAP                             \
                                   : pow2_ceil(capacity < 2 ? 2 : capacity);     \
@@ -50,9 +48,9 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
     ATOMIC_SET_RELAXED(&q->deq, 0);                                                     \
     /* 每槽序列号初始化为其下标，表示"可入队"。init 期间队列对别的线程不可见，        \
        普通写即可：发布时的建线程 / 加锁已保证对方看得到 */                        \
-    cells = q->cells;                                                           \
-    cap = q->capacity;                                                          \
-    for (i = 0; i < cap; i++) {                                                 \
+    name##_cell *cells = q->cells;                                              \
+    uint32_t cap = q->capacity;                                                 \
+    for (uint32_t i = 0; i < cap; i++) {                                        \
         ATOMIC_SET_RELAXED(&cells[i].sequence, (atomic_t)i);                    \
     }                                                                           \
 }                                                                               \
@@ -139,8 +137,9 @@ static inline int32_t name##_pop(name *q, T *out) {                             
     ATOMIC_SET_RELEASE(&cell->sequence, (atomic_t)(pos + q->capacity));         \
     return ERR_OK;                                                              \
 }                                                                               \
-/* 出队(单消费者):独占 deq 无需 CAS。顺序不可颠倒——先推进 deq,再释放槽位。          \
-   读 deq 别换成 ATOMIC_GET_RELAXED */                                           \
+/* 出队(单消费者):独占 deq 无需 CAS。先推 deq 再放槽:放槽在先的话生产者可立即占用该槽,   \
+   那一刻 size 会算出超过容量的数,靠 size 的钳顶兜住(pop_sc_batch 就是放槽在先),两种顺序   \
+   都只多报不少报。读 deq 别换成 ATOMIC_GET_RELAXED */                            \
 static inline int32_t name##_pop_sc(name *q, T *out) {                          \
     name##_cell *cell;                                                          \
     uint32_t pos;                                                               \
@@ -161,9 +160,9 @@ static inline int32_t name##_pop_sc(name *q, T *out) {                          
     return ERR_OK;                                                              \
 }                                                                               \
 /* 批量出队(单消费者):连着取到停不下来为止,deq 只推一次,返回取到的条数。          \
-   与 pop_sc 的顺序差别:整批拷完才统一放槽,deq 留到最后。单消费者下中间没人来读    \
-   deq,外部看到的 deq 只会偏小,即只多报不少报;放槽前这些槽对生产者仍算占用,       \
-   近满时生产者会早一批降级。                                                    \
+   与 pop_sc 的顺序差别:整批拷完才统一放槽,deq 留到最后推一次。这段窗口里外部读到的   \
+   deq 偏小,size / empty 只多报不少报(超出容量的部分由 size 钳顶);放槽前这些槽对     \
+   生产者仍算占用,近满时生产者会早一批降级。                                     \
    rtn 只有两态:ERR_OK 取满了 max,ERR_FAILED 没取满,不分真空与在途;             \
    需要区分时自己补一次 name##_pop_sc */                                          \
 static inline uint32_t name##_pop_sc_batch(name *q, T *out, uint32_t max, int32_t *rtn) {\
@@ -171,9 +170,9 @@ static inline uint32_t name##_pop_sc_batch(name *q, T *out, uint32_t max, int32_
     name##_cell *cell;                                                          \
     uint32_t mask = q->mask;                                                    \
     uint32_t cap = q->capacity;                                                 \
-    uint32_t pos, k, i;                                                         \
     ASSERTAB(NULL != out, ERRSTR_NULLP);                                        \
-    pos = (uint32_t)ATOMIC_GET(&q->deq);                                        \
+    uint32_t pos = (uint32_t)ATOMIC_GET(&q->deq);                               \
+    uint32_t k;                                                                 \
     for (k = 0; k < max; k++) {                                                 \
         cell = &cells[(pos + k) & mask];                                        \
         if (0 != (int32_t)((uint32_t)ATOMIC_GET(&cell->sequence)                \
@@ -182,7 +181,7 @@ static inline uint32_t name##_pop_sc_batch(name *q, T *out, uint32_t max, int32_
         }                                                                       \
         out[k] = cell->data;                                                    \
     }                                                                           \
-    for (i = 0; i < k; i++) {                                                   \
+    for (uint32_t i = 0; i < k; i++) {                                          \
         ATOMIC_SET_RELEASE(&cells[(pos + i) & mask].sequence,                   \
                            (atomic_t)(pos + i + cap));                          \
     }                                                                           \
@@ -199,13 +198,12 @@ static inline void _mpq_backoff(uint32_t *state) {
     if (0 == MPQ_BACKOFF_CYCLES) {
         return;
     }
-    uint32_t i;
     uint32_t n = *state;
     if (0 == n) {
         *state = 1;
         return;
     }
-    for (i = 0; i < n; i++) {
+    for (uint32_t i = 0; i < n; i++) {
         CPU_PAUSE();
     }
     *state = ((n << 1) < MPQ_BACKOFF_CAP) ? (n << 1) : MPQ_BACKOFF_CAP;

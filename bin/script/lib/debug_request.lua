@@ -1,21 +1,21 @@
 -- task 调试请求处理：解析 REQ_DEBUG seri 序列化命令并在当前 task 的 Lua 虚拟机内执行。
 -- 支持命令：mem / gc / stat / coros / loglv / inject / hotfix。
--- 使用契约：首次 _dispatch 之前必须把全部 _set_* 注入器调一遍——_set_coro_sess、_set_response、
--- _set_mtype_names、_set_suspend_registries、_set_fallback，缺一个就会在 dump 时撞 nil 索引。
+-- 使用契约：首次 _dispatch 之前调一次 init，把所需状态与回调一并交进来。
 
 local seri   = require("srey.seri")
 local inject = require("lib.inject")
 local task   = require("srey.task")
 local M = {}
 
-local _coro_sess -- 由 _set_coro_sess 注入的 coro_sess 只读引用（不要写）
-local _response -- 由 _set_response 注入的响应函数：(dst, reqtype, sess, erro, data) → void
-local _mtype_names -- 由 _set_mtype_names 注入：mtype 整数 → 名字字符串（MSG_TYPE 反转表）
-local _mtype_max = 0 -- 同上注入：反转表里的最大 mtype，stat 按下标遍历到此为止
-local _fallback -- 由 _set_fallback 注入：未知 debug 命令时透传给业务 on_requested：(reqtype,sess,src,data,size) → void
-local _fork_barriers -- 由 _set_suspend_registries 注入：fork_wait 屏障集合（只读）
-local _serial_execs -- 同上：serial 执行器状态集合（只读）
-local _nyield -- 同上：取 nyield 的函数，用于与 _closing_dispatch 报的数对账
+-- 以下均由 init 注入，各项含义见 init 的参数说明
+local _coro_sess
+local _response
+local _mtype_names -- mtype 整数 → 名字字符串（MSG_TYPE 反转表）
+local _mtype_max = 0 -- 反转表里的最大 mtype，stat 按下标遍历到此为止
+local _fallback
+local _fork_barriers
+local _serial_execs
+local _nyield
 
 -- 遍历 coro_sess，按 coroutine stack traceback 聚类去重；返回可读字符串
 -- 每个聚类记录最长挂起时长 maxage（毫秒），并按 maxage 降序输出，便于定位卡死协程。
@@ -166,22 +166,20 @@ local function _debug_handle(cmd, a1, a2)
     end
 end
 
----注入 srey 挂起会话表 coro_sess 的只读引用；仅初始化阶段调用一次
----@param corosess table<integer, CoroSession> 由 lib/srey 持有的 coro_sess 表
-function M._set_coro_sess(corosess)
+---初始化：把 lib/srey 持有的状态与回调一并交进来；首次 _dispatch 之前调一次。
+---fork_wait 与 serial 的等待者走裸 yield、不进 coro_sess，不交登记表的话 coros 只能看见 _coro_wait 那一类，
+---而 task 关闭时 _closing_dispatch 报的 nyield 恰恰把它们算在内，两个数对不上
+---@param corosess table<integer, CoroSession> 由 lib/srey 持有的 coro_sess 表（只读）
+---@param respfunc fun(dst:integer, reqtype:integer, sess:integer, erro:integer, data:string) 响应函数（通常是 srey.response）
+---@param msgtype MSG_TYPE MSG_TYPE 枚举（name → int），内部反转为 int → name 供 stat 渲染
+---@param barriers table<ForkBarrier,boolean> fork_wait 屏障集合（srey.lua 的 fork_barriers，只读）
+---@param execs table<SerialState,boolean> serial 执行器状态集合（srey.lua 的 serial_execs，弱键，只读）
+---@param nyieldfn fun():integer 取当前挂起协程总数
+---@param fallback? fun(reqtype:integer, sess:integer, src:integer, data:lightuserdata, size:integer) 未知命令透传给业务
+---on_requested 的函数；nil 时回 "unknown command"
+function M.init(corosess, respfunc, msgtype, barriers, execs, nyieldfn, fallback)
     _coro_sess = corosess
-end
-
----注入响应函数（通常是 srey.response）；仅初始化阶段调用一次
----@param respfunc fun(dst:integer, reqtype:integer, sess:integer, erro:integer, data:string) 响应回调
-function M._set_response(respfunc)
     _response = respfunc
-end
-
----注入 srey.lua 的 MSG_TYPE 枚举（name → int），内部反转为 int → name 表供 stat 渲染使用；
----仅初始化阶段调用一次
----@param msgtype MSG_TYPE MSG_TYPE 枚举表
-function M._set_mtype_names(msgtype)
     _mtype_names = {}
     _mtype_max = 0
     for name, val in pairs(msgtype) do
@@ -190,27 +188,13 @@ function M._set_mtype_names(msgtype)
             _mtype_max = val
         end
     end
-end
-
----注入 fork_wait 屏障与 serial 执行器的活跃登记表，以及取 nyield 的函数；仅初始化阶段调用一次。
----这两类等待者走裸 yield、不进 coro_sess，不注入的话 coros 只能看见 _coro_wait 那一类，
----而 task 关闭时 _closing_dispatch 报的 nyield 恰恰把它们算在内，两个数对不上
----@param barriers table<ForkBarrier,boolean> fork_wait 屏障集合（srey.lua 的 fork_barriers，只读）
----@param execs table<SerialState,boolean> serial 执行器状态集合（srey.lua 的 serial_execs，弱键，只读）
----@param nyieldfn fun():integer 取当前挂起协程总数
-function M._set_suspend_registries(barriers, execs, nyieldfn)
     _fork_barriers = barriers
     _serial_execs = execs
     _nyield = nyieldfn
-end
-
----注入未知命令透传函数；收到非内置 debug 命令时调用，交业务 on_requested 处理；仅初始化阶段调用一次
----@param fallback fun(reqtype:integer, sess:integer, src:integer, data:lightuserdata, size:integer) 透传回调
-function M._set_fallback(fallback)
     _fallback = fallback
 end
 
----REQUEST_TYPE.REQ_DEBUG 请求入口：解析 JSON 命令，执行后回复结果
+---REQUEST_TYPE.REQ_DEBUG 请求入口：seri 位置化解包出命令与参数，执行后回复结果
 ---@param reqtype integer 请求类型（REQ_DEBUG）
 ---@param sess integer 会话 id
 ---@param src integer 请求方 task name

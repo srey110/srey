@@ -8,6 +8,7 @@ typedef enum mail_addr_type {
     CC,        //抄送
     BCC        //密送
 }mail_addr_type;
+
 typedef struct mail_addr {
     mail_addr_type addr_type; //地址类型（收件/抄送/密送）
     char name[64];            //显示名称
@@ -22,7 +23,7 @@ typedef struct mail_attach {
 ARR_DECL(maddr_arr, mail_addr)
 ARR_DECL(mattach_arr, mail_attach)
 typedef struct mail_ctx {
-    int32_t reply;            //是否要求回复：1 回复（默认），0 不回复
+    int32_t reply;            //非 0（默认 1）写 Reply-To: <发件人>，0 不写回复头
     char *subject;            //邮件主题
     char *msg;                //纯文本正文
     char *html;               //HTML 正文原文，mail_pack 时才编成 base64
@@ -43,10 +44,11 @@ void mail_init(mail_ctx *mail);
 /// <param name="mail">mail_ctx</param>
 void mail_free(mail_ctx *mail);
 /// <summary>
-/// 是否回复
+/// 设置组包时写不写 Reply-To 头。只决定这一行头，挡不住收件人回复：
+/// 不写时 MUA 照样回到 From 地址，要拒收回信须让发件地址本身不收信
 /// </summary>
 /// <param name="mail">mail_ctx</param>
-/// <param name="reply">1回复(默认) 0不回复</param>
+/// <param name="reply">非 0（默认 1）写 Reply-To: &lt;发件人地址&gt;；0 不写</param>
 void mail_reply(mail_ctx *mail, int32_t reply);
 /// <summary>
 /// 邮件主题
@@ -73,14 +75,14 @@ void mail_html(mail_ctx *mail, const char *html, size_t lens);
 /// encoded-word，调用方按原文传即可
 /// </summary>
 /// <param name="mail">mail_ctx</param>
-/// <param name="name">发件人显示名，可为 NULL</param>
-/// <param name="email">邮箱</param>
+/// <param name="name">发件人显示名，可为 NULL；最长 63 字节，超出按 UTF-8 字符边界截断</param>
+/// <param name="email">邮箱，最长 255 字节；超出则整个调用不生效(name 也不设)并打 WARN——截断会变成另一个地址</param>
 void mail_from(mail_ctx *mail, const char *name, const char *email);
 /// <summary>
 /// 收件、抄送、秘送 邮箱设置
 /// </summary>
 /// <param name="mail">mail_ctx</param>
-/// <param name="email">邮箱</param>
+/// <param name="email">邮箱，最长 255 字节；超出不加入并打 WARN，理由同 mail_from</param>
 /// <param name="type">mail_addr_type</param>
 void mail_addrs_add(mail_ctx *mail, const char *email, mail_addr_type type);
 /// <summary>
@@ -89,11 +91,12 @@ void mail_addrs_add(mail_ctx *mail, const char *email, mail_addr_type type);
 /// <param name="mail">mail_ctx</param>
 void mail_addrs_clear(mail_ctx *mail);
 /// <summary>
-/// 附件
+/// 附件：当场读入整个文件，0 字节文件按空附件加入
 /// </summary>
 /// <param name="mail">mail_ctx</param>
 /// <param name="file">文件</param>
-void mail_attach_add(mail_ctx *mail, const char *file);
+/// <returns>ERR_OK 成功；不存在、不是常规文件或读失败返回 ERR_FAILED（打 WARN，附件不加入）</returns>
+int32_t mail_attach_add(mail_ctx *mail, const char *file);
 /// <summary>
 /// 清空
 /// </summary>
@@ -107,7 +110,9 @@ void mail_clear(mail_ctx *mail);
 /// <summary>
 /// 邮件内容数据包（含 DATA 终止符）。
 /// 正文一律按 base64 编码写出：RFC 5321 限单行 1000 octet，base64 折行满足限长、
-/// 顺带免掉 dot-stuffing。多段邮件的 MIME boundary 每封随机生成
+/// 顺带免掉 dot-stuffing。多段邮件的 MIME boundary 每封随机生成。
+/// 头部带 Date（四位年份）与 Message-ID（随机串 @ 发件地址的域，取不到域用 srey.local）；
+/// 含 encoded-word 的头行不超过 76 字符，长附件名按 RFC 2231 分段续行
 /// </summary>
 /// <param name="mail">mail_ctx</param>
 /// <param name="size">out 数据包长度（不含结尾的 NUL），可为 NULL；返回 NULL 时不写</param>

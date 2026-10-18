@@ -11,8 +11,8 @@
 /// <param name="ud">连接上下文；子类型取自 ud->pktype，须是三个 PACK_CUSTZ_* 之一，否则断言中止进程</param>
 /// <param name="size">输出：解包后数据体长度</param>
 /// <param name="status">输出：解包状态标志，见 prot_status</param>
-/// <returns>数据体指针，*size 为其长度，调用方负责释放；NULL 须结合 status 区分：
-/// 置 PROT_ERROR 为协议错误、置 PROT_MOREDATA 为数据不足待续、无标志则为零长合法包（头部已消耗、数据体为空）</returns>
+/// <returns>数据体指针，*size 为其长度(恒大于 0)，调用方负责释放；NULL 须结合 status 区分：
+/// 置 PROT_ERROR 为协议错误(含长度为 0 的包、超 CUSTZ_MAX_PACK_LENS 的包)、置 PROT_MOREDATA 为数据不足待续</returns>
 void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
@@ -20,9 +20,9 @@ void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
 /// </summary>
 /// <param name="pktype">包类型，取值见 pack_type（PACK_CUSTZ_FIXED / PACK_CUSTZ_FLAG / PACK_CUSTZ_VAR）</param>
 /// <param name="data">待打包的数据</param>
-/// <param name="lens">数据长度</param>
+/// <param name="lens">数据长度，须大于 0：接收侧把零长包当协议错误断开</param>
 /// <param name="size">输出：组包后总长度（头部 + 数据）；返回 NULL 时置 0</param>
-/// <returns>组好的包（调用方负责释放）；lens 超出所选头部能表达的范围、或头长加 lens 回绕时返回 NULL</returns>
+/// <returns>组好的包（调用方负责释放）；lens 为 0、超出所选头部能表达的范围、或头长加 lens 回绕时返回 NULL</returns>
 void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size);
 
 #endif//CUSTOMIZE_H_

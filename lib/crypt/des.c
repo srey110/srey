@@ -242,8 +242,7 @@ static const uint32_t _des_skb[8][128] = {
 // 密钥扩展：每轮 48 位子密钥按 6 位一组拆成 8 组，奇数组进 k[0]、偶数组进 k[1]，排法与 _des_f 的取位一致
 static void _des_key_setup(const uint8_t *key, int32_t encrypt, uint32_t schedule[16 * 2]) {
     static const uint32_t key_rnd_shift[16] = { 1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1 };
-    uint32_t c = read_le32(key), d = read_le32(key + 4), s, t, i;
-    uint32_t *k;
+    uint32_t c = read_le32(key), d = read_le32(key + 4), t;
     // PC-1：做完后 c、d 的第 i 位即标准 C[i]、D[i]
     DES_SWAP(d, c, t, 4, 0x0f0f0f0fu);
     DES_HSWAP(c, t, 0xcccc0000u);
@@ -253,7 +252,9 @@ static void _des_key_setup(const uint8_t *key, int32_t encrypt, uint32_t schedul
     DES_SWAP(d, c, t, 1, 0x55555555u);
     d = ((d & 0xffu) << 16) | (d & 0xff00u) | ((d & 0xff0000u) >> 16) | ((c & 0xf0000000u) >> 4);
     c &= 0x0fffffffu;
-    for (i = 0; i < 16; ++i) {
+    uint32_t s;
+    uint32_t *k;
+    for (uint32_t i = 0; i < 16; ++i) {
         // 标准里的循环左移在这种位序下是 28 位内循环右移
         c = ((c >> key_rnd_shift[i]) | (c << (28 - key_rnd_shift[i]))) & 0x0fffffffu;
         d = ((d >> key_rnd_shift[i]) | (d << (28 - key_rnd_shift[i]))) & 0x0fffffffu;
@@ -264,10 +265,8 @@ static void _des_key_setup(const uint8_t *key, int32_t encrypt, uint32_t schedul
         k[1] = (s << 16) | (t & 0xffffu);
     }
 }
-// 3DES 的密钥是三段独立的 8 字节子密钥，短密钥不能像单密钥算法那样整体补零：
-// K2、K3 同时为零时 E_0(D_0(x)) 是恒等变换，3DES 会塌回单重 DES；K3 单独为零虽不减弱强度，
-// 但密文与所有合规实现都对不上。按 NIST SP 800-67 的三种取法补齐——24 字节三段独立，
-// 16 字节 K3 取 K1，8 字节三段相同（该取法本身即等价于单重 DES）。非标准长度按低一档补零
+// 按 NIST SP 800-67 的三种取法补齐：24 字节三段独立，16 字节 K3 取 K1，8 字节三段相同；
+// 非标准长度先补零到上一档再套该档取法。不能一律补零到 24：16 字节密钥按标准 K3 取 K1，补成 K3=0 密文与其他实现对不上
 static void _des3_padding_key(const char *key, size_t klens, uint8_t pdkey[24]) {
     if (klens >= 24) {
         memcpy(pdkey, key, 24);
@@ -325,7 +324,7 @@ char *des_crypt(des_ctx *des, const void *data) {
     const uint8_t *in = (const uint8_t *)data;
     const uint32_t *k = des->schedule;
     const uint32_t *end = k + (des->des3 ? 3 : 1) * 16 * 2;
-    uint32_t l = read_be32(in), r = read_be32(in + 4), t, i;
+    uint32_t l = read_be32(in), r = read_be32(in + 4), t;
     // 初始置换 IP
     DES_SWAP(l, r, t, 4, 0x0f0f0f0fu);
     DES_SWAP(l, r, t, 16, 0x0000ffffu);
@@ -333,6 +332,7 @@ char *des_crypt(des_ctx *des, const void *data) {
     DES_SWAP(r, l, t, 8, 0x00ff00ffu);
     DES_SWAP(l, r, t, 1, 0x55555555u);
     // 每段 16 轮，段末左右互换；3DES 段与段之间的 FP、IP 互逆，直接省掉
+    uint32_t i;
     for (; k < end; k += 16 * 2) {
         for (i = 0; i < 16 * 2; i += 4) {
             l ^= _des_f(r, k + i);

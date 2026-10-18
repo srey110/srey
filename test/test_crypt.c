@@ -164,15 +164,17 @@ static void test_base64(CuTest *tc) {
         const char *expect = cases[i][1];
         size_t plen = strlen(plain);
 
-        /* 编码 */
+        /* 编码：缓冲先填非 0，结尾 '\0' 必须由 bs64_encode 自己写 */
+        memset(enc, 'x', sizeof(enc));
         elen = bs64_encode(plain, plen, enc);
-        enc[elen] = '\0';
+        CuAssertTrue(tc, '\0' == enc[elen]);
         CuAssertStrEquals(tc, expect, enc);
 
-        /* 解码还原 */
+        /* 解码还原，结尾 '\0' 同样由 bs64_decode 自己写 */
+        memset(dec, 0x5a, sizeof(dec));
         dlen = bs64_decode(enc, elen, dec);
-        dec[dlen] = '\0';
         CuAssertTrue(tc, plen == dlen);
+        CuAssertTrue(tc, '\0' == dec[dlen]);
         CuAssertTrue(tc, 0 == memcmp(plain, dec, plen));
     }
 
@@ -943,6 +945,111 @@ static void test_scram_client_first_attrs(CuTest *tc) {
     }
 }
 
+// 客户端发完首条后解析伪造的 server-first：pre + 客户端 nonce + post（nonce 原样带上以过前缀校验），
+// 消息里的 '#' 换成 '\0'（长度不变）
+static int32_t _scram_cli_parse_first(CuTest *tc, const char *pre, const char *post) {
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    CuAssertPtrNotNull(tc, cli);
+    scram_set_pwd(cli, "pass", 4);
+    char *first = scram_first_message(cli);
+    CuAssertPtrNotNull(tc, first);
+    FREE(first);
+    char msg[256];
+    SNPRINTF(msg, sizeof(msg), "%s%s%s", pre, cli->local_nonce, post);
+    size_t mlens = strlen(msg);
+    char *mark = strchr(msg, '#');
+    if (NULL != mark) {
+        *mark = '\0';
+    }
+    int32_t rtn = scram_parse_first_message(cli, msg, mlens);
+    scram_free(cli);
+    return rtn;
+}
+
+// server-first 的拒绝分支。首条是对照组，其余每条只坏一处：
+// m= 是 RFC 5802 §5.1 的强制扩展（客户端同样必须失败）；内嵌 NUL 放在 nonce 尾部，
+// 不靠 NUL 检查的话前缀校验、salt、i= 都能过；s= 非法 / 为空、缺 s= / i=、i= 带换行
+static void test_scram_server_first_attrs(CuTest *tc) {
+    CuAssertIntEquals(tc, ERR_OK, _scram_cli_parse_first(tc, "r=", "XYZ,s=QSXCR+Q6sek8bf92,i=4096"));
+    CuAssertIntEquals(tc, ERR_OK, _scram_cli_parse_first(tc, "r=", "XYZ,s=QSXCR+Q6sek8bf92,i=4096,x=ext"));
+    CuAssertIntEquals(tc, ERR_FAILED, _scram_cli_parse_first(tc, "m=ext,r=", "XYZ,s=QSXCR+Q6sek8bf92,i=4096"));
+    CuAssertIntEquals(tc, ERR_FAILED, _scram_cli_parse_first(tc, "r=", "XY#Z,s=QSXCR+Q6sek8bf92,i=4096"));
+    CuAssertIntEquals(tc, ERR_FAILED, _scram_cli_parse_first(tc, "r=", "XYZ,s=!!!!,i=4096"));
+    CuAssertIntEquals(tc, ERR_FAILED, _scram_cli_parse_first(tc, "r=", "XYZ,s=,i=4096"));
+    CuAssertIntEquals(tc, ERR_FAILED, _scram_cli_parse_first(tc, "r=", "XYZ,i=4096"));
+    CuAssertIntEquals(tc, ERR_FAILED, _scram_cli_parse_first(tc, "r=", "XYZ,s=QSXCR+Q6sek8bf92"));
+    CuAssertIntEquals(tc, ERR_FAILED, _scram_cli_parse_first(tc, "r=", "XYZ,s=QSXCR+Q6sek8bf92,i=1\nforged"));
+}
+
+// 跑到客户端产出 client-final 为止：srv 停在等 client-final 的状态，cli 停在等 server-final 的状态；
+// nonce 填完整的 r= 值，proof 填 client-final 里 p= 的值。调用方负责两个 scram_free
+static void _scram_run_to_client_final(CuTest *tc, scram_ctx **pcli, scram_ctx **psrv,
+    char *nonce, size_t nsize, char *proof, size_t psize) {
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, cli);
+    CuAssertPtrNotNull(tc, srv);
+    scram_set_user(cli, "user", 4);
+    scram_set_pwd(cli, "pass", 4);
+    scram_set_pwd(srv, "pass", 4);
+    scram_set_salt(srv, _SALT8, sizeof(_SALT8));
+    scram_set_iter(srv, 4096);
+    char *cf = scram_first_message(cli);
+    CuAssertPtrNotNull(tc, cf);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(srv, cf, strlen(cf)));
+    FREE(cf);
+    char *sf = scram_first_message(srv);
+    CuAssertPtrNotNull(tc, sf);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(cli, sf, strlen(sf)));
+    FREE(sf);
+    char *clf = scram_final_message(cli);
+    CuAssertPtrNotNull(tc, clf);
+    char *p = strstr(clf, ",p=");
+    CuAssertPtrNotNull(tc, p);
+    SNPRINTF(proof, psize, "%s", p + 3);
+    SNPRINTF(nonce, nsize, "%s%s", srv->remote_nonce, srv->local_nonce);
+    _scram_free_msg(&clf);
+    *pcli = cli;
+    *psrv = srv;
+}
+
+// client-final / server-final 的拒绝分支。服务端：对照组原样拼回能过；r= 少一个字符、缺 c=、缺 p= 都失败
+// （证明是真的，r= 那条不靠 nonce 比对就会放行）。客户端：server-final 带 e= 即失败，哪怕后面跟着正确的 v=
+static void test_scram_final_attrs(CuTest *tc) {
+    scram_ctx *cli, *srv;
+    char nonce[128], proof[B64EN_SIZE(DG_BLOCK_SIZE)], msg[256];
+
+    _scram_run_to_client_final(tc, &cli, &srv, nonce, sizeof(nonce), proof, sizeof(proof));
+    SNPRINTF(msg, sizeof(msg), "c=biws,r=%s,p=%s", nonce, proof);
+    CuAssertIntEquals(tc, ERR_OK, scram_check_final_message(srv, msg, strlen(msg)));
+    char *svf = scram_final_message(srv);
+    CuAssertPtrNotNull(tc, svf);
+    SNPRINTF(msg, sizeof(msg), "e=other-error,%s", svf);
+    _scram_free_msg(&svf);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_check_final_message(cli, msg, strlen(msg)));
+    scram_free(cli);
+    scram_free(srv);
+
+    _scram_run_to_client_final(tc, &cli, &srv, nonce, sizeof(nonce), proof, sizeof(proof));
+    nonce[strlen(nonce) - 1] = '\0';
+    SNPRINTF(msg, sizeof(msg), "c=biws,r=%s,p=%s", nonce, proof);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_check_final_message(srv, msg, strlen(msg)));
+    scram_free(cli);
+    scram_free(srv);
+
+    _scram_run_to_client_final(tc, &cli, &srv, nonce, sizeof(nonce), proof, sizeof(proof));
+    SNPRINTF(msg, sizeof(msg), "r=%s,p=%s", nonce, proof);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_check_final_message(srv, msg, strlen(msg)));
+    scram_free(cli);
+    scram_free(srv);
+
+    _scram_run_to_client_final(tc, &cli, &srv, nonce, sizeof(nonce), proof, sizeof(proof));
+    SNPRINTF(msg, sizeof(msg), "c=biws,r=%s", nonce);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_check_final_message(srv, msg, strlen(msg)));
+    scram_free(cli);
+    scram_free(srv);
+}
+
 static void test_scram_failures(CuTest *tc) {
     /* 不支持的方法 → NULL */
     CuAssertTrue(tc, NULL == scram_init("SCRAM-MD5", 1));
@@ -1068,7 +1175,7 @@ static void test_scram_failures(CuTest *tc) {
 }
 
 // scram setter 角色拒绝路径 + scram_set_pwd 动态分配验证 + scram_free(NULL) NULL safety。
-// 五个 setter 改返 int32_t 后每个拒绝分支都断言返回码；末段 set_cbind 覆盖非 PLUS 变体被拒、
+// 五个 setter 改返 int32_t 后每个拒绝分支都断言返回码；末段 set_cbind 覆盖非 PLUS 变体转 CAPABLE、
 // PLUS 变体空数据被拒、PLUS 变体正常数据生效三态
 static void test_scram_setters(CuTest *tc) {
     // scram_free(NULL) 不崩
@@ -1400,7 +1507,7 @@ static void test_cipher_padding_zeroed(CuTest *tc) {
     cipher_free(&dec);
 }
 
-/* 解密遇非法 padding 应拒绝:返回 0 且 output 清零(常数时间校验路径,与成功剥离对称) */
+/* 解密遇非法 padding 应拒绝:返回 ERR_FAILED、outlens 为 0 且 output 清零(常数时间校验路径,与成功剥离对称) */
 static void test_cipher_decrypt_bad_padding(CuTest *tc) {
     const char *key16 = "0123456789abcdef";
     const char *plain = "Hello, Cipher!!!"; /* 16 字节,末字节 '!'=0x21=33 */
@@ -1418,7 +1525,7 @@ static void test_cipher_decrypt_bad_padding(CuTest *tc) {
     CuAssertTrue(tc, 32 == (int)enc_len); /* 16 数据块 + 16 PKCS7 整填充块 */
 
     /* 只取首个密文块(16B 数据块)解密:还原 "Hello, Cipher!!!",
-     * 末字节当 pad=0x21=33 > 块长 16 → padding 非法 → 拒绝,返回 0 且 output 清零 */
+     * 末字节当 pad=0x21=33 > 块长 16 → padding 非法 → 拒绝,返回 ERR_FAILED、outlens 为 0 且 output 清零 */
     memset(dec_buf, 0x5a, sizeof(dec_buf));
     CuAssertIntEquals(tc, ERR_FAILED, cipher_dofinal(&dec, enc_buf, 16, dec_buf, &dec_len));
     CuAssertTrue(tc, 0 == (int)dec_len);
@@ -1941,6 +2048,8 @@ static void _cipher_kat(CuTest *tc, cipher_model model, const char *ivhex,
     out = cipher_block(&dec, c2, 16, &olen);
     CuAssertPtrNotNull(tc, out);
     CuAssertTrue(tc, 0 == memcmp(out, p2, 16));
+    cipher_free(&enc);
+    cipher_free(&dec);
 }
 static void test_cipher_nist_modes(CuTest *tc) {
     /* F.1.1 ECB-AES128.Encrypt（ECB 无 IV，helper 跳过 cipher_iv）。
@@ -2159,6 +2268,24 @@ static void test_des_direct(CuTest *tc) {
         memcpy(ct_a, des_crypt(&des, pt), DES_BLOCK_SIZE);
         des_init(&des, (char *)key24, 24, 1, 1);
         CuAssertTrue(tc, 0 == memcmp(ct_a, des_crypt(&des, pt), DES_BLOCK_SIZE));
+    }
+
+    // ── 3DES 非标准长度：20 字节补零到 24，三段独立（K3 = 后 4 字节 + 4 个 0），不是截成 16 再 K3 取 K1 ──
+    {
+        const char *key20 = "0123456789abcdefghij";
+        uint8_t key24[24], pt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+        memset(key24, 0, sizeof(key24));
+        memcpy(key24, key20, 20);
+        des_init(&des, key20, 20, 1, 1);
+        char ct_a[DES_BLOCK_SIZE];
+        memcpy(ct_a, des_crypt(&des, pt), DES_BLOCK_SIZE);
+        des_init(&des, (char *)key24, 24, 1, 1);
+        CuAssertTrue(tc, 0 == memcmp(ct_a, des_crypt(&des, pt), DES_BLOCK_SIZE));
+        des_init(&des, key20, 16, 1, 1);
+        CuAssertTrue(tc, 0 != memcmp(ct_a, des_crypt(&des, pt), DES_BLOCK_SIZE));
+        // 解密方向同样按补零到 24 取
+        des_init(&des, key20, 20, 1, 0);
+        CuAssertTrue(tc, 0 == memcmp(des_crypt(&des, ct_a), pt, DES_BLOCK_SIZE));
     }
 
     // ── 短密钥自动零填充：klens < 8 时填充 ──
@@ -2451,6 +2578,7 @@ static void test_cipher_block_reset(CuTest *tc) {
     memcpy(c2, p, 16);
     /* CTR 计数器已递增，相同 blk_a 第二次加密结果应不同 */
     p = cipher_block(&enc, blk_a, 16, &s3);
+    CuAssertPtrNotNull(tc, p);
     memcpy(c3, p, 16);
     CuAssertTrue(tc, 0 != memcmp(c1, c3, 16));
 
@@ -2472,6 +2600,7 @@ static void test_cipher_block_reset(CuTest *tc) {
     cipher_init(&cfb, AES, CFB, key16, 16, 128, 1);
     cipher_iv(&cfb, iv16, 16);
     p = cipher_block(&cfb, blk_a, 16, &s1);
+    CuAssertPtrNotNull(tc, p);
     memcpy(c1, p, 16);
     /* CFB 加密后 cur_iv 应更新为密文 */
     CuAssertTrue(tc, 0 != memcmp(cfb.cur_iv, cfb.iv, 16));
@@ -2485,11 +2614,13 @@ static void test_cipher_block_reset(CuTest *tc) {
     cipher_init(&ofb, AES, OFB, key16, 16, 128, 1);
     cipher_iv(&ofb, iv16, 16);
     p = cipher_block(&ofb, blk_a, 16, &s1);
+    CuAssertPtrNotNull(tc, p);
     memcpy(c1, p, 16);
     p = cipher_block(&ofb, blk_b, 16, &s2);
     CuAssertPtrNotNull(tc, p);
     cipher_reset(&ofb);
     p = cipher_block(&ofb, blk_a, 16, &s1);
+    CuAssertPtrNotNull(tc, p);
     CuAssertTrue(tc, 0 == memcmp(c1, p, 16));
     cipher_free(&ofb);
 }
@@ -2654,6 +2785,308 @@ static void test_cipher_stream_modes(CuTest *tc) {
             cipher_free(&enc);
             cipher_free(&dec);
         }
+    }
+}
+
+// 流模式按字节续用密钥流：任意切段逐次 cipher_block 与一次 cipher_dofinal 逐字节相同，加解密两个方向、
+// AES 与 DES（8 字节分组）各跑一遍。切法含 1 / 3 / 15 / 16、先短后长、跨组边界的整组段与零长段，
+// 超过分组长度的切段截到分组长度；分组长度 + 1 字节（AES 为 17）一段要被拒且不动状态。每轮前交替用
+// cipher_reset / cipher_iv 清零续用位置，最后停在组中间再 dofinal 也得从头算
+static void test_cipher_stream_segments(CuTest *tc) {
+    static const struct {
+        engine_type eng;
+        const char *key;
+        size_t klen;
+        int32_t bits;
+    } ev[] = {
+        { AES, "0123456789abcdef", 16, 128 },
+        { DES, "8bytekey", 8, 0 },
+    };
+    // 每种切法按 4 个一轮循环取
+    static const size_t cuts[][4] = {
+        { 1, 1, 1, 1 },
+        { 3, 3, 3, 3 },
+        { 15, 15, 15, 15 },
+        { 16, 16, 16, 16 },
+        { 0, 16, 0, 1 },// 组边界上的零长段不能消耗密钥流
+        { 5, 15, 0, 3 },// 先短后长：CFB 不能复用同一组密钥流
+        { 1, 0, 16, 7 },// 整组段跨组边界
+    };
+    const cipher_model modes[] = { CFB, OFB, CTR };
+    const char *iv16 = "abcdef0123456789";
+    char data[64], whole[64], seg[64];
+    cipher_ctx c;
+    size_t m, ci, k, blk, total, off, n, olen;
+    int32_t enc;
+    void *p;
+    for (size_t i = 0; i < sizeof(data); i++) {
+        data[i] = (char)(i * 13 + 1);
+    }
+    for (size_t e = 0; e < ARRAY_SIZE(ev); e++) {
+        for (m = 0; m < ARRAY_SIZE(modes); m++) {
+            for (enc = 1; enc >= 0; enc--) {
+                cipher_init(&c, ev[e].eng, modes[m], ev[e].key, ev[e].klen, ev[e].bits, enc);
+                blk = cipher_size(&c);
+                cipher_iv(&c, iv16, blk);
+                total = 3 * blk + 5;
+                CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&c, data, total, whole, &olen));
+                CuAssertTrue(tc, total == olen);
+                for (ci = 0; ci < ARRAY_SIZE(cuts); ci++) {
+                    if (ci & 1) {
+                        cipher_iv(&c, iv16, blk);
+                    } else {
+                        cipher_reset(&c);
+                    }
+                    CuAssertTrue(tc, NULL == cipher_block(&c, data, blk + 1, &olen));
+                    for (off = 0, k = 0; off < total; off += n, k++) {
+                        n = cuts[ci][k % 4];
+                        if (n > blk) {
+                            n = blk;
+                        }
+                        if (n > total - off) {
+                            n = total - off;
+                        }
+                        p = cipher_block(&c, data + off, n, &olen);
+                        CuAssertPtrNotNull(tc, p);
+                        CuAssertTrue(tc, n == olen);
+                        memcpy(seg + off, p, n);
+                    }
+                    CuAssertTrue(tc, 0 == memcmp(whole, seg, total));
+                }
+                CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&c, data, total, seg, &olen));
+                CuAssertTrue(tc, total == olen && 0 == memcmp(whole, seg, total));
+                cipher_free(&c);
+            }
+        }
+    }
+}
+
+// 解密校验填充：手工构造末块（NoPadding 加密得密文）再按各填充模式解密。pad 合法但填充区某字节不对、
+// pad 为 0、pad 大于块长都要拒；ANSI X.923 前置字节非零（含 PKCS#7 形状）要拒；ISO 10126 只看长度字节
+static void test_cipher_padding_reject(CuTest *tc) {
+    static const struct {
+        padding_model pm;
+        const char *tail;// 末块尾部，前面补 'A'
+        size_t tlen;
+        int32_t rtn;
+        size_t olen;// 剥离后的长度，失败为 0
+    } pv[] = {
+        { PKCS57, "\x05\x05\x05\x05\x05", 5, ERR_OK, 11 },
+        { PKCS57, "\x07\x05\x05\x05\x05\x05", 6, ERR_OK, 11 },// 填充区之前的字节不看
+        { PKCS57, "\x04\x05\x05\x05\x05", 5, ERR_FAILED, 0 },// 填充区最前那个字节不对
+        { PKCS57, "\x05\x05\x03", 3, ERR_FAILED, 0 },
+        { PKCS57, "\x00", 1, ERR_FAILED, 0 },
+        { PKCS57, "\x11", 1, ERR_FAILED, 0 },
+        { ANSIX923, "\x00\x00\x00\x04", 4, ERR_OK, 12 },
+        { ANSIX923, "\x00\x01\x00\x04", 4, ERR_FAILED, 0 },
+        { ANSIX923, "\x04\x04\x04\x04", 4, ERR_FAILED, 0 },
+        { ANSIX923, "\x00", 1, ERR_FAILED, 0 },
+        { ISO10126, "\x9a\x3c\x77\x04", 4, ERR_OK, 12 },
+        { ISO10126, "\x00", 1, ERR_FAILED, 0 },
+        { ISO10126, "\x11", 1, ERR_FAILED, 0 },
+    };
+    const char *key16 = "0123456789abcdef";
+    const char zero[AES_BLOCK_SIZE] = { 0 };
+    uint8_t blk[AES_BLOCK_SIZE];
+    char ct[2 * AES_BLOCK_SIZE], out[2 * AES_BLOCK_SIZE];
+    size_t clen, olen;
+    int32_t rtn;
+    cipher_ctx c;
+    for (size_t i = 0; i < ARRAY_SIZE(pv); i++) {
+        memset(blk, 'A', sizeof(blk));
+        memcpy(blk + sizeof(blk) - pv[i].tlen, pv[i].tail, pv[i].tlen);
+        cipher_init(&c, AES, ECB, key16, 16, 128, 1);
+        rtn = cipher_dofinal(&c, blk, sizeof(blk), ct, &clen);
+        cipher_free(&c);
+        CuAssertIntEquals(tc, ERR_OK, rtn);
+        CuAssertTrue(tc, sizeof(blk) == clen);
+        cipher_init(&c, AES, ECB, key16, 16, 128, 0);
+        cipher_padding(&c, pv[i].pm);
+        memset(out, 0x5a, sizeof(out));
+        rtn = cipher_dofinal(&c, ct, clen, out, &olen);
+        cipher_free(&c);
+        CuAssertIntEquals(tc, pv[i].rtn, rtn);
+        CuAssertTrue(tc, pv[i].olen == olen);
+        CuAssertTrue(tc, 0 == memcmp(out, blk, olen));
+        // 成功时剥离掉的填充、失败时整块都已清零
+        CuAssertTrue(tc, 0 == memcmp(out + olen, zero, sizeof(blk) - olen));
+    }
+}
+
+// ANSI X.923 / ISO 10126 / ZeroPadding 经 cipher_dofinal 的 CBC 往返，AES 与 DES 各一遍，
+// 明文取不足一组与恰好一组。ZeroPadding 整组时不补、解密不剥离，返回含补零的整组长度；
+// 末尾再测流模式设了填充：照样补齐与剥离，解密输入不是整组即失败
+static void test_cipher_padding_roundtrip(CuTest *tc) {
+    static const struct {
+        engine_type eng;
+        const char *key;
+        size_t klen;
+        int32_t bits;
+    } ev[] = {
+        { AES, "0123456789abcdef", 16, 128 },
+        { DES, "8bytekey", 8, 0 },
+    };
+    const padding_model pms[] = { ANSIX923, ISO10126, ZeroPadding };
+    const char *iv16 = "abcdef0123456789";
+    const char *plain = "Hello, Cipher!!!";
+    const char zero[CIPHER_BLOCK_SIZE] = { 0 };
+    char ct[64], pt[64];
+    size_t lens[2], blk, clen, plen, want;
+    size_t p, l;
+    cipher_ctx enc, dec;
+    for (size_t e = 0; e < ARRAY_SIZE(ev); e++) {
+        for (p = 0; p < ARRAY_SIZE(pms); p++) {
+            cipher_init(&enc, ev[e].eng, CBC, ev[e].key, ev[e].klen, ev[e].bits, 1);
+            cipher_init(&dec, ev[e].eng, CBC, ev[e].key, ev[e].klen, ev[e].bits, 0);
+            blk = cipher_size(&enc);
+            cipher_padding(&enc, pms[p]);
+            cipher_padding(&dec, pms[p]);
+            cipher_iv(&enc, iv16, blk);
+            cipher_iv(&dec, iv16, blk);
+            lens[0] = 5;
+            lens[1] = blk;
+            for (l = 0; l < ARRAY_SIZE(lens); l++) {
+                CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, lens[l], ct, &clen));
+                want = (ZeroPadding == pms[p] && blk == lens[l]) ? blk : (lens[l] / blk + 1) * blk;
+                CuAssertTrue(tc, want == clen);
+                CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, ct, clen, pt, &plen));
+                if (ZeroPadding == pms[p]) {
+                    CuAssertTrue(tc, clen == plen);
+                    CuAssertTrue(tc, 0 == memcmp(pt + lens[l], zero, plen - lens[l]));
+                } else {
+                    CuAssertTrue(tc, lens[l] == plen);
+                }
+                CuAssertTrue(tc, 0 == memcmp(pt, plain, lens[l]));
+            }
+            cipher_free(&enc);
+            cipher_free(&dec);
+        }
+    }
+
+    cipher_init(&enc, AES, CTR, "0123456789abcdef", 16, 128, 1);
+    cipher_init(&dec, AES, CTR, "0123456789abcdef", 16, 128, 0);
+    cipher_padding(&enc, PKCS57);
+    cipher_padding(&dec, PKCS57);
+    cipher_iv(&enc, iv16, 16);
+    cipher_iv(&dec, iv16, 16);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 5, ct, &clen));
+    CuAssertTrue(tc, 16 == clen);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, ct, clen, pt, &plen));
+    CuAssertTrue(tc, 5 == plen);
+    CuAssertTrue(tc, 0 == memcmp(pt, plain, 5));
+    CuAssertIntEquals(tc, ERR_FAILED, cipher_dofinal(&dec, ct, clen - 1, pt, &plen));
+    CuAssertTrue(tc, 0 == plen);
+    cipher_free(&enc);
+    cipher_free(&dec);
+}
+
+// DES 经 cipher 层（逐组走 cipher_block）的已知答案：ECB / CBC / CFB / OFB 取自 FIPS PUB 81 附录
+// （CFB、OFB 为 64 位反馈）。DES-CTR 没有公开向量：期望值用 des_crypt 直调（FIPS 46 向量已钉住）
+// 对逐个写明的计数器算出，初值末两字节 fffe，第三块要往前进位两字节
+static void test_cipher_des_modes_kat(CuTest *tc) {
+    static const struct {
+        cipher_model m;
+        const char *ct;
+    } vec[] = {
+        { ECB, "3fa40e8a984d48156a271787ab8883f9893d51ec4b563b53" },
+        { CBC, "e5c7cdde872bf27c43e934008c389c0f683788499a7c05f6" },
+        { CFB, "f3096249c7f46e51a69e839b1a92f78403467133898ea622" },
+        { OFB, "f3096249c7f46e5135f24a242eeb3d3f3d6d5be3255af8c3" },
+    };
+    static const char *ctrs[] = { "1234567890abfffe", "1234567890abffff", "1234567890ac0000" };
+    const uint8_t *pt = (const uint8_t *)"Now is the time for all ";// 24 字节
+    const uint8_t *from, *want, *ks;
+    uint8_t key[8], iv[8], ct[24], buf[24];
+    size_t olen, j;
+    int32_t enc;
+    cipher_ctx c;
+    des_ctx des;
+    _hex_to_bytes("0123456789abcdef", key, 8);
+    _hex_to_bytes("1234567890abcdef", iv, 8);
+    for (size_t i = 0; i < ARRAY_SIZE(vec); i++) {
+        _hex_to_bytes(vec[i].ct, ct, 24);
+        for (enc = 1; enc >= 0; enc--) {
+            from = enc ? pt : ct;
+            want = enc ? ct : pt;
+            cipher_init(&c, DES, vec[i].m, (const char *)key, 8, 0, enc);
+            cipher_iv(&c, (const char *)iv, 8);
+            CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&c, from, 24, (char *)buf, &olen));
+            CuAssertTrue(tc, 24 == olen);
+            CuAssertTrue(tc, 0 == memcmp(buf, want, 24));
+            cipher_free(&c);
+        }
+    }
+
+    des_init(&des, (const char *)key, 8, 0, 1);
+    for (size_t i = 0; i < ARRAY_SIZE(ctrs); i++) {
+        _hex_to_bytes(ctrs[i], iv, 8);
+        ks = (const uint8_t *)des_crypt(&des, iv);
+        for (j = 0; j < DES_BLOCK_SIZE; j++) {
+            ct[i * DES_BLOCK_SIZE + j] = pt[i * DES_BLOCK_SIZE + j] ^ ks[j];
+        }
+    }
+    _hex_to_bytes(ctrs[0], iv, 8);
+    for (enc = 1; enc >= 0; enc--) {
+        from = enc ? pt : ct;
+        want = enc ? ct : pt;
+        cipher_init(&c, DES, CTR, (const char *)key, 8, 0, enc);
+        cipher_iv(&c, (const char *)iv, 8);
+        CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&c, from, 24, (char *)buf, &olen));
+        CuAssertTrue(tc, 24 == olen);
+        CuAssertTrue(tc, 0 == memcmp(buf, want, 24));
+        cipher_free(&c);
+    }
+}
+
+// cipher_iv 非整长：短于分组补 0、长于分组只取前缀。iv 与 cur_iv 都要对，
+// 首块密文与手工补齐 / 截断后的整组 IV 相同。AES 与 DES 各一遍
+static void test_cipher_iv_lens(CuTest *tc) {
+    static const struct {
+        engine_type eng;
+        const char *key;
+        size_t klen;
+        int32_t bits;
+        size_t shortlen;
+    } ev[] = {
+        { AES, "0123456789abcdef", 16, 128, 12 },
+        { DES, "8bytekey", 8, 0, 5 },
+    };
+    const char *iv32 = "0123456789abcdefghijklmnopqrstuv";
+    const char *plain = "Hello, Cipher!!!";
+    char padded[CIPHER_BLOCK_SIZE], want[CIPHER_BLOCK_SIZE];
+    cipher_ctx c, ref;
+    size_t blk, olen;
+    void *p;
+    for (size_t i = 0; i < ARRAY_SIZE(ev); i++) {
+        cipher_init(&c, ev[i].eng, CBC, ev[i].key, ev[i].klen, ev[i].bits, 1);
+        cipher_init(&ref, ev[i].eng, CBC, ev[i].key, ev[i].klen, ev[i].bits, 1);
+        blk = cipher_size(&c);
+        // 短 IV 等价于手工补 0 到整组
+        memset(padded, 0, sizeof(padded));
+        memcpy(padded, iv32, ev[i].shortlen);
+        cipher_iv(&c, iv32, ev[i].shortlen);
+        cipher_iv(&ref, padded, blk);
+        CuAssertTrue(tc, 0 == memcmp(c.iv, padded, blk));
+        CuAssertTrue(tc, 0 == memcmp(c.cur_iv, padded, blk));
+        p = cipher_block(&ref, plain, blk, &olen);
+        CuAssertPtrNotNull(tc, p);
+        memcpy(want, p, blk);
+        p = cipher_block(&c, plain, blk, &olen);
+        CuAssertPtrNotNull(tc, p);
+        CuAssertTrue(tc, 0 == memcmp(want, p, blk));
+        // 长 IV 只取前 blk 字节
+        cipher_iv(&c, iv32, 32);
+        cipher_iv(&ref, iv32, blk);
+        CuAssertTrue(tc, 0 == memcmp(c.iv, iv32, blk));
+        CuAssertTrue(tc, 0 == memcmp(c.cur_iv, iv32, blk));
+        p = cipher_block(&ref, plain, blk, &olen);
+        CuAssertPtrNotNull(tc, p);
+        memcpy(want, p, blk);
+        p = cipher_block(&c, plain, blk, &olen);
+        CuAssertPtrNotNull(tc, p);
+        CuAssertTrue(tc, 0 == memcmp(want, p, blk));
+        cipher_free(&c);
+        cipher_free(&ref);
     }
 }
 
@@ -2828,6 +3261,43 @@ static void test_hmac_pbkdf2(CuTest *tc) {
     hmac_free(&h);
 }
 
+/* 密钥恰等于分组长度 B：既不先摘要也不补 pad，现有向量的密钥长度都不落在这一档。
+ * 对照值按 RFC 2104 的定义 H((K ^ opad) || H((K ^ ipad) || msg)) 用 digest 接口直接算；
+ * hmac_init 若把等长密钥也先摘要（> 写成 >=），两边就对不上 */
+static void test_hmac_key_eq_block(CuTest *tc) {
+    static const digest_type types[] = { DG_MD2, DG_MD4, DG_MD5, DG_SHA1, DG_SHA256, DG_SHA512 };
+    const char *msg = "The quick brown fox jumps over the lazy dog";
+    char key[SHA512_KEY_BLOCK], pad[SHA512_KEY_BLOCK];
+    char inner[DG_BLOCK_SIZE], want[DG_BLOCK_SIZE], got[DG_BLOCK_SIZE];
+    digest_ctx d;
+    hmac_ctx hm;
+    size_t k, b, hs;
+    for (size_t i = 0; i < ARRAY_SIZE(types); i++) {
+        digest_init(&d, types[i]);
+        b = d.attr->key_block;
+        CuAssertTrue(tc, b <= sizeof(key));
+        for (k = 0; k < b; k++) {
+            key[k] = (char)(k * 7 + 1);
+            pad[k] = (char)(key[k] ^ 0x36);
+        }
+        digest_update(&d, pad, b);
+        digest_update(&d, msg, strlen(msg));
+        hs = digest_final(&d, inner);
+        for (k = 0; k < b; k++) {
+            pad[k] = (char)(key[k] ^ 0x5c);
+        }
+        digest_update(&d, pad, b);
+        digest_update(&d, inner, hs);
+        digest_final(&d, want);
+        digest_free(&d);
+        hmac_init(&hm, types[i], key, b);
+        hmac_update(&hm, msg, strlen(msg));
+        CuAssertTrue(tc, hs == hmac_final(&hm, got));
+        hmac_free(&hm);
+        CuAssertTrue(tc, 0 == memcmp(want, got, hs));
+    }
+}
+
 /* digest_free / cipher_free 的整段清零，写法同 test_hmac_free（ctx 在栈上所以读得到）。
  * 注意这只能覆盖"调用方自己的 ctx"这一层；CLAUDE.md 要求清零的那一串**函数局部栈缓冲**
  * （hmac 的 key_temp/block_ipad/block_opad、scram 的 proof/clientkey/storedkey 等）
@@ -2882,14 +3352,14 @@ static void test_base64_invalid(CuTest *tc) {
     CuAssertTrue(tc, 0 == bs64_decode("",  0, out));
     CuAssertTrue(tc, 0 == bs64_decode("A", 1, out));
 
-    /* 含非法字符（< '+' 或 > 'z'） */
-    CuAssertTrue(tc, 0 == bs64_decode("A!BC", 4, out));/* '!' < '+' */
-    CuAssertTrue(tc, 0 == bs64_decode("AB{C", 4, out));/* '{' > 'z' */
-    CuAssertTrue(tc, 0 == bs64_decode("AB C", 4, out));/* ' ' < '+' */
+    /* 含非法字符：b64de 表 256 项，非 base64 字符一律为 0xFF，走同一次查表 */
+    CuAssertTrue(tc, 0 == bs64_decode("A!BC", 4, out));/* '!' */
+    CuAssertTrue(tc, 0 == bs64_decode("AB{C", 4, out));/* '{' */
+    CuAssertTrue(tc, 0 == bs64_decode("AB C", 4, out));/* ' ' */
 
-    /* '+' 至 'z' 区间内的非 base64 字符（查表 -1） */
-    CuAssertTrue(tc, 0 == bs64_decode("A,BC", 4, out));/* ',' 在表中为 -1 */
-    CuAssertTrue(tc, 0 == bs64_decode("AB.C", 4, out));/* '.' 在表中为 -1 */
+    /* 夹在合法字符编码之间的非 base64 字符 */
+    CuAssertTrue(tc, 0 == bs64_decode("A,BC", 4, out));/* ',' 在表中为 0xFF */
+    CuAssertTrue(tc, 0 == bs64_decode("AB.C", 4, out));/* '.' 在表中为 0xFF */
 
     /* '=' 后接非 '='/CR/LF 字符：伪造截断防御 */
     CuAssertTrue(tc, 0 == bs64_decode("AB=A", 4, out));
@@ -2931,6 +3401,54 @@ static void test_base64_invalid(CuTest *tc) {
     memset(out, 0x5a, sizeof(out));
     CuAssertTrue(tc, 0 == bs64_decode("TWFuTWFuT", 9, out));/* 尾组只剩 1 个字符 */
     CuAssertTrue(tc, '\0' == out[0]);
+
+    /* 只含 CR/LF/'=' 的输入解出的是空内容，同样返回 0、out[0] 置 '\0'（base64.h 的 <returns>） */
+    memset(out, 0x5a, sizeof(out));
+    CuAssertTrue(tc, 0 == bs64_decode("\r\n", 2, out));
+    CuAssertTrue(tc, '\0' == out[0]);
+    memset(out, 0x5a, sizeof(out));
+    CuAssertTrue(tc, 0 == bs64_decode("==", 2, out));
+    CuAssertTrue(tc, '\0' == out[0]);
+    memset(out, 0x5a, sizeof(out));
+    CuAssertTrue(tc, 0 == bs64_decode("=\r\n=", 4, out));
+    CuAssertTrue(tc, '\0' == out[0]);
+}
+
+/* 多行 base64：跳过 CR/LF 后要重新进 8 字符快路径。76 列折行（MIME）时 CRLF 落在组边界，
+ * 7 列折行时落在 4 字符组中间。解码写进恰好 B64DE_SIZE 大的区域，其后的哨兵一个都不许被碰 */
+static void test_base64_crlf_long(CuTest *tc) {
+    static const size_t cols[] = { 76, 7 };
+    uint8_t in[120];
+    char enc[B64EN_SIZE(sizeof(in))];
+    for (size_t i = 0; i < sizeof(in); i++) {
+        in[i] = (uint8_t)(i * 37 + 11);
+    }
+    size_t elen = bs64_encode(in, sizeof(in), enc);
+    CuAssertTrue(tc, 160 == elen);
+    char wrapped[B64EN_SIZE(sizeof(in)) * 2];
+    char dec[B64DE_SIZE(sizeof(wrapped)) + 8];
+    size_t i, k, wlen, dlen, cap;
+    for (size_t c = 0; c < ARRAY_SIZE(cols); c++) {
+        wlen = 0;
+        for (i = 0; i < elen; i++) {
+            if (i > 0 && 0 == i % cols[c]) {
+                wrapped[wlen++] = '\r';
+                wrapped[wlen++] = '\n';
+            }
+            wrapped[wlen++] = enc[i];
+        }
+        wrapped[wlen++] = '\r';
+        wrapped[wlen++] = '\n';
+        cap = B64DE_SIZE(wlen);
+        memset(dec, 0xA5, sizeof(dec));
+        dlen = bs64_decode(wrapped, wlen, dec);
+        CuAssertTrue(tc, sizeof(in) == dlen);
+        CuAssertTrue(tc, 0 == memcmp(dec, in, dlen));
+        CuAssertTrue(tc, '\0' == dec[dlen]);
+        for (k = cap; k < sizeof(dec); k++) {
+            CuAssertTrue(tc, (char)0xA5 == dec[k]);
+        }
+    }
 }
 
 /* 长输入（期望值由 Python base64 算出）：编码 >= 8 字节才走成组快路径，解码 8 字符成组，
@@ -2954,14 +3472,16 @@ static void test_base64_long(CuTest *tc) {
     size_t i, k, elen, dlen, cap;
     for (i = 0; i < ARRAY_SIZE(vec); i++) {
         _hex_to_bytes(vec[i].hex, in, vec[i].n);
+        memset(enc, 'x', sizeof(enc));// 结尾 '\0' 须由 bs64_encode 自己写
         elen = bs64_encode(in, vec[i].n, enc);
-        enc[elen] = '\0';
+        CuAssertTrue(tc, '\0' == enc[elen]);
         CuAssertStrEquals(tc, vec[i].b64, enc);
         cap = B64DE_SIZE(elen);
         memset(dec, 0xA5, sizeof(dec));
         dlen = bs64_decode(enc, elen, dec);
         CuAssertTrue(tc, vec[i].n == dlen);
         CuAssertTrue(tc, 0 == memcmp(dec, in, dlen));
+        CuAssertTrue(tc, '\0' == dec[dlen]);
         for (k = cap; k < sizeof(dec); k++) {
             CuAssertTrue(tc, (char)0xA5 == dec[k]);
         }
@@ -3131,7 +3651,7 @@ static void test_urlraw_invalid(CuTest *tc) {
     CuAssertTrue(tc, 5 == dlen);
     CuAssertTrue(tc, 0 == memcmp(buf, "a b c", dlen));
 
-    /* % 后跟高位字节（≥0x80）：非 hex，整段原样保留（isxdigit 入参须按 unsigned char 处理）*/
+    /* % 后跟高位字节（≥0x80）：非 hex，整段原样保留（高位字节在 hexval 表里是 0xFF）*/
     buf[0] = '%'; buf[1] = (char)0x80; buf[2] = (char)0x81; buf[3] = 'z';
     dlen = url_decode(buf, 4, 0);
     CuAssertTrue(tc, 4 == dlen);
@@ -3188,11 +3708,15 @@ static void test_des3_null_key(CuTest *tc) {
     char in[8] = { 0 };
     char out[16];
     size_t olens = 0;
+    char hex[HEX_ENSIZE(DES_BLOCK_SIZE)];
     cipher_init(&c, DES3, ECB, NULL, 0, 0, 1);
     cipher_padding(&c, NoPadding);
     CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&c, in, sizeof(in), out, &olens));
-    CuAssertTrue(tc, sizeof(in) == olens);
     cipher_free(&c);
+    CuAssertTrue(tc, sizeof(in) == olens);
+    // 全零密钥三段相同即单重 DES；DES 不看每字节最低位，等同 test_des_direct 里 0101010101010101 那条向量
+    tohex(out, DES_BLOCK_SIZE, hex, 1);
+    CuAssertStrEquals(tc, "8ca64de9c1b123a7", hex);
 }
 
 /* =======================================================================
@@ -3451,6 +3975,7 @@ static void test_crypt_memcmp_each_byte(CuTest *tc) {
 void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_base64);
     SUITE_ADD_TEST(suite, test_base64_invalid);
+    SUITE_ADD_TEST(suite, test_base64_crlf_long);
     SUITE_ADD_TEST(suite, test_base64_long);
     SUITE_ADD_TEST(suite, test_crc);
     SUITE_ADD_TEST(suite, test_crc_lengths);
@@ -3463,6 +3988,7 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hmac_variants);
     SUITE_ADD_TEST(suite, test_hmac_free);
     SUITE_ADD_TEST(suite, test_hmac_pbkdf2);
+    SUITE_ADD_TEST(suite, test_hmac_key_eq_block);
     SUITE_ADD_TEST(suite, test_digest_cipher_free_zeroed);
     SUITE_ADD_TEST(suite, test_urlraw);
     SUITE_ADD_TEST(suite, test_url_encode_charset);
@@ -3477,6 +4003,11 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_cipher_init_iv_zeroed);
     SUITE_ADD_TEST(suite, test_cipher_stream_modes);
     SUITE_ADD_TEST(suite, test_cipher_stream_decrypt);
+    SUITE_ADD_TEST(suite, test_cipher_stream_segments);
+    SUITE_ADD_TEST(suite, test_cipher_padding_reject);
+    SUITE_ADD_TEST(suite, test_cipher_padding_roundtrip);
+    SUITE_ADD_TEST(suite, test_cipher_des_modes_kat);
+    SUITE_ADD_TEST(suite, test_cipher_iv_lens);
     SUITE_ADD_TEST(suite, test_padding);
     SUITE_ADD_TEST(suite, test_padding_extra);
     SUITE_ADD_TEST(suite, test_md5_nist);
@@ -3498,6 +4029,8 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_scram_plus_requires_cbind);
     SUITE_ADD_TEST(suite, test_scram_gs2_header);
     SUITE_ADD_TEST(suite, test_scram_client_first_attrs);
+    SUITE_ADD_TEST(suite, test_scram_server_first_attrs);
+    SUITE_ADD_TEST(suite, test_scram_final_attrs);
     SUITE_ADD_TEST(suite, test_scram_gs2_y_handshake);
     SUITE_ADD_TEST(suite, test_scram_cbind_modes);
     SUITE_ADD_TEST(suite, test_scram_server_reject_downgrade);

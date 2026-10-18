@@ -17,18 +17,19 @@ void unlimit(void);
 /// 信号处理。cb 在信号处理上下文中被调用，内部只能用 async-signal-safe 函数
 /// （LOG_INFO / mutex_lock / malloc 都不行）；安全做法是 cb 里只置
 /// volatile sig_atomic_t 标志，主循环轮询后再处理。
+/// Windows 上关窗 / 注销 / 关机时 cb 返回后处理线程不再返回，进程须由主线程收尾后自己退出(系统超时到了照样强杀)
 /// </summary>
 /// <param name="cb">处理函数（必须 async-signal-safe）</param>
 /// <param name="data">参数</param>
 void sighandle(void(*cb)(int32_t, void *), void *data);
 /// <summary>
-/// cpu核心数。首次取到后缓存，运行期 CPU 热插拔不再反映；各线程同时首调只是各算一遍同一个值
+/// 整机在线的逻辑核数，Windows 上跨全部处理器组计。首次取到后缓存，运行期 CPU 热插拔不再反映；各线程同时首调只是各算一遍同一个值
 /// </summary>
-/// <returns>核心数</returns>
+/// <returns>逻辑核数</returns>
 uint32_t procscnt(void);
 /// <summary>
 /// 本进程可用的 CPU 核数：Linux 取 CPU 亲和(taskset / cpuset)与 cgroup v2 cpu.max 配额(向上取整)的较小值，
-/// FreeBSD 取 CPU 亲和，其余平台同 procscnt。亲和取的是首次调用所在线程的，先把这个线程钉核再调会算少；
+/// FreeBSD 取 CPU 亲和，其余平台同 procscnt(Windows 不看亲和掩码)。亲和取的是首次调用所在线程的，先把这个线程钉核再调会算少；
 /// 缓存口径同 procscnt，运行期改亲和或配额也不再反映
 /// </summary>
 /// <returns>可用核数，至少 1</returns>
@@ -37,9 +38,9 @@ uint32_t procscnt_avail(void);
 // "max"(不限)、配额或周期为 0、解析不了时返回 0 表示不限。procscnt_avail 内部用，放出来给测试
 uint32_t _cgroup_cpu_quota(const char *text);
 /// <summary>
-/// 当前程序所在路径
+/// 当前可执行文件所在的目录。首次调用时取一次后缓存，取不到即 ASSERTAB 中止
 /// </summary>
-/// <returns>路径</returns>
+/// <returns>目录路径，不带末尾分隔符(拼文件名时自己加 PATH_SEPARATORSTR)；指向进程内静态缓冲，勿改勿释放</returns>
 const char *procpath(void);
 
 #endif//SYS_H_

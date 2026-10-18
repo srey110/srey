@@ -69,8 +69,6 @@ size_t _memcspn_short(const void *p, size_t lens, const char *what, size_t wlens
 /// <param name="wlens">what 的字节数</param>
 /// <returns>第一个落在 what 里的字节的下标；一个都不在(含 wlens 为 0)返回 lens</returns>
 static inline size_t memcspn(const void *p, size_t lens, const char *what, size_t wlens) {
-    const unsigned char *start = (const unsigned char *)p;
-    size_t k;
     if (0 == wlens) {
         return lens;
     }
@@ -82,33 +80,27 @@ static inline size_t memcspn(const void *p, size_t lens, const char *what, size_
         return _memcspn_short(p, lens, what, wlens);
     }
 #endif
+    const unsigned char *start = (const unsigned char *)p;
 #if defined(SIMD_SSE2)
     const unsigned char *s = start;
     const unsigned char *end = start + lens;
     __m128i v, m;
     uint32_t bits;
-    // 每轮看 16 个字节。例：what 为 "\0\r\n"、p 指向 "Host: x\r\n..." 时，下标 7 的 \r 与下标 8 的 \n 都命中，
-    // 第 3 步得到 bits = 0x180，最低的 1 在第 7 位，返回 7
+    size_t k;
+    // 每轮比 16 字节：落在 what 里的字节在 bits 中对应位为 1，最低那个 1 就是答案
     while (end - s >= 16) {
-        // 第 1 步：一次读 16 字节进向量寄存器(loadu 的 u 表示地址不必 16 字节对齐)
         v = _mm_loadu_si128((const __m128i *)s);
-        // 第 2 步：what 里每个字符造一个 16 格全是它的模板(set1_epi8)，拿这 16 字节和它逐格比(cmpeq_epi8)，相等那格置 0xFF、否则 0x00；
-        // 各份结果按位或(or_si128)合成一份：某格是 what 里任意一个字符，那格就是 0xFF
         m = _mm_cmpeq_epi8(v, _mm_set1_epi8(what[0]));
         for (k = 1; k < wlens; k++) {
             m = _mm_or_si128(m, _mm_cmpeq_epi8(v, _mm_set1_epi8(what[k])));
         }
-        // 第 3 步：16 格各取最高位拼成 16 位整数(movemask_epi8)，第 i 位为 1 表示第 i 个字节命中
         bits = (uint32_t)_mm_movemask_epi8(m);
-        // 第 4 步：有命中就返回最靠前的那个(最低那个 1 的位置)；一个都没有就往后挪 16 字节接着找
         if (0 != bits) {
             return (size_t)(s + ctz32(bits) - start);
         }
         s += 16;
     }
-    // 第 5 步：剩下不足 16 字节时，从 end-16 再读一整块，照第 1~3 步比一遍。这块前 16 - r 个字节(r 为剩下的字节数)
-    // 主循环已经比过，把位掩码右移 16 - r 位丢掉它们，剩下的第 0 位正好对应 s。
-    // 例：lens 为 20，主循环比完下标 0~15、剩 4 个，这次读下标 4~19，右移 12 位后只看下标 16~19
+    // 不足 16 字节的尾巴：从 end-16 重叠再读一整块，右移 16 - r 位(r 为剩余字节数)丢掉主循环已比过的部分
     if (s < end) {
         v = _mm_loadu_si128((const __m128i *)(end - 16));
         m = _mm_cmpeq_epi8(v, _mm_set1_epi8(what[0]));
@@ -124,29 +116,21 @@ static inline size_t memcspn(const void *p, size_t lens, const char *what, size_
     const unsigned char *end = start + lens;
     uint8x16_t v, m;
     uint64_t bits;
-    // 每轮看 16 个字节。例：what 为 "\0\r\n"、p 指向 "Host: x\r\n..." 时，下标 7 的 \r 与下标 8 的 \n 都命中，
-    // 第 3 步得到 bits = 0xFF0000000，最低的 1 在第 28 位、除以 4 得 7，返回 7
+    size_t k;
+    // 同 SSE2 那支。没有 movemask，比较结果压成 64 位整数，第 i 个字节占第 4i~4i+3 位，下标 = 最低那个 1 的位置 / 4
     while (end - s >= 16) {
-        // 第 1 步：一次读 16 字节进向量寄存器(vld1q_u8，不要求对齐)
         v = vld1q_u8(s);
-        // 第 2 步：what 里每个字符造一个 16 格全是它的模板(vdupq_n_u8)，拿这 16 字节和它逐格比(vceqq_u8)，相等那格置 0xFF、否则 0x00；
-        // 各份结果按位或(vorrq_u8)合成一份：某格是 what 里任意一个字符，那格就是 0xFF
         m = vceqq_u8(v, vdupq_n_u8((uint8_t)what[0]));
         for (k = 1; k < wlens; k++) {
             m = vorrq_u8(m, vceqq_u8(v, vdupq_n_u8((uint8_t)what[k])));
         }
-        // 第 3 步：NEON 没有 movemask，换个办法压成整数：16 格两两看成 8 个 16 位数，各右移 4 位只留低 8 位(vshrn_n_u16)，
-        // 每格的 0xFF / 0x00 就缩成 4 位的 F / 0，16 格正好拼成一个 64 位整数(vget_lane_u64 取出)，第 i 个字节占第 4i~4i+3 位；
-        // vreinterpretq_u16_u8 / vreinterpret_u64_u8 只是换个类型看同一份数据，不产生指令
         bits = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(m), 4)), 0);
-        // 第 4 步：有命中就返回最靠前的那个(最低那个 1 的位置除以 4)；一个都没有就往后挪 16 字节接着找
         if (0 != bits) {
             return (size_t)(s + (ctz64(bits) >> 2) - start);
         }
         s += 16;
     }
-    // 第 5 步：同 SSE2 那支，剩下不足 16 字节时从 end-16 重叠再读一整块；这里每个字节占 4 位，
-    // 所以右移 4 * (16 - r) 位丢掉主循环已经比过的那部分，剩下的最低 4 位正好对应 s
+    // 尾巴同 SSE2 那支，每个字节占 4 位，故右移 4 * (16 - r) 位
     if (s < end) {
         v = vld1q_u8(end - 16);
         m = vceqq_u8(v, vdupq_n_u8((uint8_t)what[0]));
@@ -160,7 +144,7 @@ static inline size_t memcspn(const void *p, size_t lens, const char *what, size_
 #else
     // 没有向量指令的平台：每个字符 memchr 一次，后一次只查到前面已找到的最靠前位置为止
     const unsigned char *q;
-    for (k = 0; k < wlens; k++) {
+    for (size_t k = 0; k < wlens; k++) {
         q = (const unsigned char *)memchr(start, what[k], lens);
         if (NULL != q) {
             lens = (size_t)(q - start);
@@ -186,42 +170,33 @@ void *_memistr(const void *ptr, size_t plens, const void *what, size_t wlen);
 /// <param name="wlen">what 长度</param>
 /// <returns>第一次出现处的指针；没找到，或任一指针为 NULL、任一长度为 0、wlen 大于 plens，返回 NULL</returns>
 static inline void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen) {
-    const char *p = (const char *)ptr;
-    const char *w = (const char *)what;
-    size_t i = 0;
-    if (NULL == ptr
-        || NULL == what
-        || 0 == plens
-        || 0 == wlen
-        || wlen > plens) {
+    if (NULL == ptr || NULL == what || 0 == plens || 0 == wlen || wlen > plens) {
         return NULL;
     }
     //不区分大小写
     if (0 != ncs) {
         return _memistr(ptr, plens, what, wlen);
     }
+    const char *w = (const char *)what;
     //区分大小写，并且目标1字节
     if (1 == wlen) {
         return (void *)memchr(ptr, w[0], plens);
     }
+    size_t i = 0;
+    const char *p = (const char *)ptr;
 #if defined(SIMD_SSE2)
     size_t nstart = plens - wlen + 1;// 可能的起点个数
     __m128i vf, vl, m;
     uint32_t bits, k;
-    // 两个模板：16 格全是 what 首字节、全是 what 末字节(set1_epi8，同 memcspn)
     vf = _mm_set1_epi8(w[0]);
     vl = _mm_set1_epi8(w[wlen - 1]);
-    // 每轮看 i ~ i+15 这 16 个起点；第二份要读到 p[i + 15 + wlen - 1]，所以要求 i + 16 <= 起点个数。
-    // 例：找 "\r\n\r\n"、p 为 "k: v\r\nx: y\r\n\r\nbody..." 时 \r 在下标 4、10、12，往后第 3 字节是 \n 的只有 10，bits = 0x400
+    // 每轮筛 i ~ i+15 这 16 个起点，首末两字节都对上的才是候选(bits 第 j 位对应起点 i+j)。
+    // 末字节那份要读到 p[i + 15 + wlen - 1]，所以要求 i + 16 <= 起点个数
     for (; i + 16 <= nstart; i += 16) {
-        // 第 1 步：读两份 16 字节，一份从 p+i 起，一份从 p+i+wlen-1 起(正好是每个起点的末字节)，前一份和首字节比、后一份和末字节比
-        // (loadu / cmpeq_epi8 同 memcspn)，两个结果按位与(and_si128)：第 j 格为 0xFF 表示从 i+j 起首末两字节都对上
         m = _mm_and_si128(_mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(p + i)), vf),
                           _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(p + i + wlen - 1)), vl));
-        // 第 2 步：16 格各取最高位拼成 16 位整数(movemask_epi8，同 memcspn)，第 j 位为 1 表示 i+j 是候选
         bits = (uint32_t)_mm_movemask_epi8(m);
-        // 第 3 步：从最靠前的候选起比中间那段(wlen 为 2 时没有中间)，对上就是答案；
-        // 对不上就用 bits &= bits - 1 只清掉最低那个 1，接着看下一个候选
+        // 从最靠前的候选起比中间那段，对不上就清掉最低那个 1 看下一个
         while (0 != bits) {
             k = ctz32(bits);
             if (wlen <= 2
@@ -236,19 +211,14 @@ static inline void *memstr(int32_t ncs, const void *ptr, size_t plens, const voi
     uint8x16_t vf, vl, m;
     uint64_t bits;
     uint32_t k;
-    // 两个模板：16 格全是 what 首字节、全是 what 末字节(vdupq_n_u8，同 memcspn)
     vf = vdupq_n_u8((uint8_t)w[0]);
     vl = vdupq_n_u8((uint8_t)w[wlen - 1]);
-    // 每轮看 i ~ i+15 这 16 个起点，读法与例子同 SSE2 那支(那里 bits = 0x400，这里是第 43 位)
+    // 筛法同 SSE2 那支
     for (; i + 16 <= nstart; i += 16) {
-        // 第 1 步：读两份 16 字节分别和首、末字节比(vld1q_u8 / vceqq_u8 同 memcspn)，两个结果按位与(vandq_u8)：
-        // 第 j 格为 0xFF 表示从 i+j 起首末两字节都对上
         m = vandq_u8(vceqq_u8(vld1q_u8((const uint8_t *)p + i), vf),
                      vceqq_u8(vld1q_u8((const uint8_t *)p + i + wlen - 1), vl));
-        // 第 2 步：压成 64 位整数，第 j 个起点占第 4j~4j+3 位(vshrn_n_u16 那套，同 memcspn)；
-        // 再和 0x8888... 与一下，每个起点只留最高那 1 位，第 3 步就能像 SSE2 那样一次清一个
+        // 压成 64 位后每个起点占 4 位，与上 0x8888... 只留一位，才能像 SSE2 那样一次清一个候选
         bits = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(m), 4)), 0) & 0x8888888888888888ull;
-        // 第 3 步：从最靠前的候选起(最低那个 1 的位置除以 4)比中间那段，对上就是答案；对不上 bits &= bits - 1 清掉它接着看
         while (0 != bits) {
             k = ctz64(bits) >> 2;
             if (wlen <= 2
@@ -340,25 +310,26 @@ char *trim_right(char *data, size_t dlens, size_t *lens);
 /// <returns>指向剔除后首字节(仍在 data 内)，全为空字节则返回 NULL</returns>
 char *trim(char *data, size_t dlens, size_t *lens);
 /// <summary>
-/// 转大写
+/// 原地转大写，只折 ASCII 'a'..'z'
 /// </summary>
-/// <param name="str">源字符</param>
-/// <returns>char *</returns>
+/// <param name="str">'\0' 结尾的字符串，可为 NULL</param>
+/// <returns>str 本身；str 为 NULL 时返回 NULL</returns>
 char *strupper(char *str);
 /// <summary>
-/// 转小写
+/// 原地转小写，只折 ASCII 'A'..'Z'
 /// </summary>
-/// <param name="str">源字符</param>
-/// <returns>char *</returns>
+/// <param name="str">'\0' 结尾的字符串，可为 NULL</param>
+/// <returns>str 本身；str 为 NULL 时返回 NULL</returns>
 char *strlower(char *str);
 /// <summary>
-/// 反转
+/// 原地按字节反转，多字节字符(如 UTF-8)会被拆乱
 /// </summary>
-/// <param name="str">源字符</param>
-/// <returns>char *</returns>
+/// <param name="str">'\0' 结尾的字符串，可为 NULL 或空串</param>
+/// <returns>str 本身；str 为 NULL 时返回 NULL</returns>
 char* strreverse(char* str);
 /// <summary>
-/// 从路径中提取文件名，按平台的 PATH_SEPARATOR 切
+/// 从路径中提取文件名，按平台的 PATH_SEPARATOR 切；Windows 上 '/' 与 '\\' 都算分隔符。
+/// 故意不做 inline：MSVC 没有 __FILE_NAME__，每个 LOG / ASSERTAB 展开点都调它，内联会在每处各展开一份（被过滤的 LOG 也照付）
 /// </summary>
 /// <param name="file">路径，须非 NULL</param>
 /// <returns>指向 file 内部最后一个分隔符之后的位置；没有分隔符时即 file 本身</returns>
@@ -391,21 +362,21 @@ int32_t is_token(const char *data, size_t lens);
 /// <returns>开头 token 字符的个数，0 表示首字节就不是 token 字符</returns>
 size_t token_span(const char *data, size_t lens);
 /// <summary>
-/// 变参
+/// 同 format_va，变参以 va_list 传入；args 用完即失效，调用方要再用须自己 va_copy
 /// </summary>
-/// <param name="fmt">格式化</param>
+/// <param name="fmt">printf 格式串</param>
 /// <param name="args">变参</param>
-/// <returns>char * 需要free</returns>
+/// <returns>同 format_va</returns>
 char *_format_va(const char *fmt, va_list args);
 /// <summary>
-/// 变参
+/// 按 printf 格式化成新分配的字符串。中间会在栈上留一份格式化结果、不擦除，别拿它拼密码等敏感内容
 /// </summary>
-/// <param name="fmt">格式化</param>
+/// <param name="fmt">printf 格式串</param>
 /// <param name="...">变参</param>
-/// <returns>char * 需要free</returns>
+/// <returns>新分配的 '\0' 结尾字符串，调用方 FREE；格式化出错(vsnprintf 返回负数)返回 NULL</returns>
 char *format_va(const char *fmt, ...);
 /// <summary>
-/// hash
+/// 字节串哈希(BKDR：逐字节乘 131 累加)，非加密哈希
 /// </summary>
 /// <param name="buf">要计算的数据</param>
 /// <param name="len">数据长度</param>

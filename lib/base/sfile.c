@@ -58,6 +58,15 @@ FILE *fopen_cloexec(const char *file, const char *mode) {
     return fp;
 }
 char *readall(const char *file, size_t *lens) {
+    // 只读常规文件：目录在部分文件系统上能 fopen 成功，ftell 给的是哨兵值不是长度。
+    // 不是常规文件时 errno 补 EINVAL(同空文件)，stat 失败则留它自己的 errno
+    errno = 0;
+    if (ERR_OK != isfile(file)) {
+        if (0 == errno) {
+            errno = EINVAL;
+        }
+        return NULL;
+    }
     FILE *fp = fopen_cloexec(file, "rb");
     if (NULL == fp) {
         return NULL;

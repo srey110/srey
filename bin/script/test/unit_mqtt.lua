@@ -35,6 +35,9 @@ runner.run(function(t)
         t:eq(false, pcall(function() p:fixnum(0x100000001, 1) end), "属性标识 2^32+1 被拒")
         t:eq(false, pcall(function() p:varnum(0x2B, 1) end), "属性标识超 0x2A 被拒")
         t:eq(false, pcall(function() p:fixnum(0, 1) end), "属性标识 0 被拒")
+        -- binary 的数据是必填：nil / 数字不能当空属性静默写进去
+        t:eq(false, pcall(function() p:binary(mqtt.PROP.AUTH_DATA, nil) end), "binary 属性数据为 nil 报错")
+        t:eq(false, pcall(function() p:binary(mqtt.PROP.AUTH_DATA, 1) end), "binary 属性数据为数字报错")
         -- 只量 AUTH_DATA 这一段的增量：binary 属性 = 标识(1) + 长度前缀(2) + 3 字节载荷 = 6。
         -- 只判 size > 0 的话，漏写载荷或漏写长度前缀都发现不了
         local _, before = p:data()
@@ -49,6 +52,20 @@ runner.run(function(t)
         p:reset()
         data, size = p:data()
         t:check(data == nil and size == 0, "props after reset empty")
+        p:free()
+    end
+    -- ── fixnum 按属性线宽卡值 ─────────────────────────────────────────
+    -- 1 / 2 字节宽的属性写超宽值会被截成另一个合法值，须返回 false 且不留半截标识
+    do
+        local p = mqtt.props()
+        t:eq(true, p:fixnum(mqtt.PROP.MAXIMUM_QOS, 0xFF), "1 字节属性收 0xFF")
+        t:eq(false, p:fixnum(mqtt.PROP.MAXIMUM_QOS, 0x100), "1 字节属性拒 0x100")
+        t:eq(true, p:fixnum(mqtt.PROP.TOPIC_ALIAS, 0xFFFF), "2 字节属性收 0xFFFF")
+        t:eq(false, p:fixnum(mqtt.PROP.TOPIC_ALIAS, 0x10000), "2 字节属性拒 0x10000")
+        t:eq(true, p:fixnum(mqtt.PROP.MSG_EXPIRY, 0xFFFFFFFF), "4 字节属性收 0xFFFFFFFF")
+        t:eq(false, p:fixnum(mqtt.PROP.CONTENT_TYPE, 1), "非定长数值属性返回 false")
+        local _, size = p:data()
+        t:eq(2 + 3 + 5, size, "被拒的写入不留半截，只剩三段成功写入")
         p:free()
     end
     do
@@ -74,6 +91,16 @@ runner.run(function(t)
         t:check(pack ~= nil and size > 0, "pack_connect v311")
         t:eq(mqtt.PROT.CONNECT, _ptype(pack, size), "pack_connect type byte")
         utils.ud_free(pack)
+    end
+    do
+        -- user / password 只有 nil 才不带：v3.1.1 空用户名配密码(只认 token 的 broker)要组得出包，
+        -- 连接标志(第 10 字节)的用户名位 0x80、密码位 0x40 都置上
+        local pack, size = mqtt.pack_connect(mqtt.VERSION.V311, 1, 60, "cid", "", "tok")
+        t:check(pack ~= nil and size > 0, "pack_connect v311 空用户名配密码")
+        if pack then
+            t:eq(0xC0, string.byte(srey.ud_str(pack, size), 10) & 0xC0, "空用户名与密码都带标志")
+            utils.ud_free(pack)
+        end
     end
     do
         -- v5.0 with properties
@@ -112,12 +139,38 @@ runner.run(function(t)
     -- ── 16 位 wire 字段越界必须报错，不能静默截断 ──────────────────────
     do
         -- 65536 截成 0，而 0 是 QoS>0 PUBLISH / SUBSCRIBE / UNSUBSCRIBE 禁用的保留 packid
+        -- 主题按 C 串组包，内含 \0 静默截断就是发到另一个主题
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t\0x", 1, "x"),
+             "pack_publish 主题内含 \\0 报错")
         t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 65536, "x"),
              "pack_publish packid 65536 报错")
         t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", -1, "x"),
              "pack_publish packid -1 报错")
         t:eq(false, pcall(mqtt.pack_puback, mqtt.VERSION.V311, 65536),
              "pack_puback packid 65536 报错")
+        -- 本端发起的 QoS>0 PUBLISH 与订阅类报文拒 0；QoS 0 的 PUBLISH 不带 id，照收
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 0, "x"),
+             "pack_publish qos1 packid 0 报错")
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 2, 0, "/t", 0, "x"),
+             "pack_publish qos2 packid 0 报错")
+        local okq0, packq0 = pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 0, 0, "/t", 0, "x")
+        t:check(okq0 and packq0 ~= nil, "pack_publish qos0 packid 0 照收")
+        if okq0 and packq0 then
+            utils.ud_free(packq0)
+        end
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 0, 1, "/t", 0, "x"),
+             "pack_publish qos0 dup 1 报错")
+        -- 确认包回填对端给的 id，组包侧不卡 0（id 为 0 的来包在解析侧就按协议错误断开了）
+        for _, fn in ipairs({ mqtt.pack_puback, mqtt.pack_pubrec, mqtt.pack_pubrel, mqtt.pack_pubcomp }) do
+            local okack, ack = pcall(fn, mqtt.VERSION.V311, 0)
+            t:check(okack and ack ~= nil, "确认包 packid 0 照收")
+            if okack and ack then
+                utils.ud_free(ack)
+            end
+        end
+        -- 对端地址按 C 串交给连接层，内含 \0 会截成另一个地址；报错在发起连接之前
+        t:eq(false, pcall(mqtt.try_connect, mqtt.VERSION.V311, "", "127.0.0.1\0x", 1),
+             "try_connect ip 内含 \\0 报错")
         -- payload 走 _lmqtt_get_payload 自己那套 (指针, 长度) 读法，不经 lpub_check_buf，
         -- 空指针判定要单独加：剩余长度按 8 算却只写 0 字节，对端会吃掉下一条报文的头 8 字节
         t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 1, yyjson.null, 8),
@@ -132,6 +185,10 @@ runner.run(function(t)
         subtopics:subscribe(mqtt.VERSION.V311, "/t", 0, 0, 0, 0)
         t:eq(false, pcall(mqtt.pack_subscribe, mqtt.VERSION.V311, 65536, subtopics, nil),
              "pack_subscribe packid 65536 报错")
+        t:eq(false, pcall(mqtt.pack_subscribe, mqtt.VERSION.V311, 0, subtopics, nil),
+             "pack_subscribe packid 0 报错")
+        t:eq(false, pcall(mqtt.pack_unsubscribe, mqtt.VERSION.V311, 0, subtopics, nil),
+             "pack_unsubscribe packid 0 报错")
         local oksub, packsub = pcall(mqtt.pack_subscribe, mqtt.VERSION.V311, 7, subtopics, nil)
         t:check(oksub and packsub ~= nil, "pack_subscribe 合法 packid 仍可用")
         if oksub and packsub then
@@ -258,9 +315,19 @@ runner.run(function(t)
     -- ── mqtt.reason 转字符串 ───────────────────────────────────────────
     do
         -- 钉具体文案：只判"非空字符串"的话，返回码表整个查错行也照样过
-        t:eq("Success", mqtt.reason(mqtt.PROT.CONNACK, 0), "CONNACK 0 → Success")
-        t:eq("Unspecified error", mqtt.reason(mqtt.PROT.CONNACK, 0x80),
+        local V50, V311 = mqtt.VERSION.V50, mqtt.VERSION.V311
+        t:eq("Success", mqtt.reason(V50, mqtt.PROT.CONNACK, 0), "CONNACK 0 → Success")
+        t:eq("Unspecified error", mqtt.reason(V50, mqtt.PROT.CONNACK, 0x80),
              "CONNACK 0x80 → Unspecified error")
+        -- 3.1.1 的 CONNACK 返回码 1~5 是自己的一张表，5.0 下同样的码没有定义
+        t:eq("Bad user name or password", mqtt.reason(V311, mqtt.PROT.CONNACK, 4), "3.1.1 CONNACK 4")
+        t:eq("Not authorized", mqtt.reason(V311, mqtt.PROT.CONNACK, 5), "3.1.1 CONNACK 5")
+        t:eq("Unknown", mqtt.reason(V50, mqtt.PROT.CONNACK, 4), "5.0 CONNACK 4 → Unknown")
+        t:eq("Unknown", mqtt.reason(V311, mqtt.PROT.CONNACK, 0x80), "3.1.1 CONNACK 0x80 → Unknown")
+        -- 截断的话 256 变 0、2^32+CONNACK 变 CONNACK，各自查出一条不相干的文案
+        t:eq(false, pcall(mqtt.reason, V50, mqtt.PROT.CONNACK, 256), "reason 原因码 256 报错")
+        t:eq(false, pcall(mqtt.reason, V50, (1 << 32) + mqtt.PROT.CONNACK, 0), "reason 报文类型超 int32 报错")
+        t:eq(false, pcall(mqtt.reason, 3, mqtt.PROT.CONNACK, 0), "reason 未知协议版本报错")
     end
 
     -- ── 协议版本的截断回归 ────────────────────────────────────────────

@@ -97,12 +97,12 @@ void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb ext
 /// <returns>ERR_OK 成功</returns>
 int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens);
 /// <summary>
-/// 写入数据
+/// 按 printf 格式追加文本（不含结尾 NUL）
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="fmt">格式化</param>
 /// <param name="...">参数</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 格式化失败（vsnprintf 报错），已有数据不变</returns>
 int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...);
 /// <summary>
 /// 读取数据
@@ -138,11 +138,12 @@ size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens);
 ///   末字节压在 end 上算命中，起点压在 end 上(what 超过 1 字节时)不算。0 表示直到数据结束</param>
 /// <param name="what">要搜索的数据，NULL 直接返回 ERR_FAILED</param>
 /// <param name="wlens">搜索数据长度，0 直接返回 ERR_FAILED（不按空串恒匹配处理）</param>
-/// <returns>ERR_FAILED 失败 否则返回搜索的起始位置</returns>
+/// <returns>命中处的起始位置；ERR_FAILED 没找到，以下情形同样按没找到返回：
+/// start 越界或 [start, end] 放不下整个 what、命中位置超过 INT32_MAX</returns>
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens);
 /// <summary>
-/// 获取指定位置值
+/// 获取指定位置值。pos 不小于 buffer_size 即 ASSERTAB abort
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="pos">位置</param>
@@ -199,8 +200,8 @@ static inline void buffer_want(buffer_ctx *ctx, size_t lack) {
 }
 /// <summary>
 /// 从socket中读数据，循环到读不出为止。未读满即认定 socket 已空直接停，剩余数据由下次
-/// 可读事件领走；只有 epoll 边缘触发（TRIGGER_ET=1）例外，它必须读到 EAGAIN，那一轮只用
-/// buffer_space 报出的现成空间去读，不为它再分配节点。
+/// 可读事件领走；只有 epoll 边缘触发（TRIGGER_ET=1）例外，它必须读到 EAGAIN，那一轮用
+/// buffer_space 报出的现成空间去读，不为它再分配节点——除非余量不足 MAX_RECV_SIZE/4，那时仍按 MAX_RECV_SIZE 要。
 /// 本函数自己的早退只对裸 socket 生效；带缓冲的 _readv（arg 非 NULL）由回调侧自行判断，
 /// 判定已空时回 BUFFER_READV_DRAINED。
 /// 裸 socket 读且 hint 为 0 时，本次总读量超过 MAX_RECV_SIZE 就记进 want（封顶 RECV_GROW_CAP）当下次首读大小，
@@ -208,7 +209,7 @@ static inline void buffer_want(buffer_ctx *ctx, size_t lack) {
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="fd">socket描述符</param>
-/// <param name="nread">读取到的长度</param>
+/// <param name="nread">出参，本次读到的总字节数。必须非 NULL，函数内裸解引用</param>
 /// <param name="hint">socket 里可读字节数，0 表示不知道。裸 socket 读时与 ctx->want(见上，按 RECV_GROW_CAP 截过)取大的，
 /// 大于 MAX_RECV_SIZE 时首轮按它要空间，加大最多到 RECV_HINT_CAP，不会因此低于 MAX_RECV_SIZE；kqueue 平台裸 socket 读传 kevent 的 data，其余传 0</param>
 /// <param name="_readv">读取函数。可回 BUFFER_READV_DRAINED 表示自己那层缓冲已空，本函数

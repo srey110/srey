@@ -118,7 +118,7 @@ static void _pub_startup(task_ctx *task) {
         LOG_ERROR("multi_request: pub got %d/%d responses.", resp, N_SUBS);
         goto ungrab;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("multi_call/multi_request tested: call %d/%d, rpc recv %d/%d, resp %d/%d.",
              recvcnt, N_SUBS, rpc_recv, N_SUBS, resp, N_SUBS);
 ungrab:

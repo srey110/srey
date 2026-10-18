@@ -1,4 +1,5 @@
 ﻿#include "test_hashset.h"
+#include "test_base.h"
 #include "lib.h"
 
 // 整数元素的 hash / compare
@@ -183,6 +184,7 @@ static void test_hs_clear_elfree(CuTest *tc) {
 // bag_set_free(NULL) 的 NULL 安全承诺:漏判会段错误终止整个 ./bin/test
 static void test_hs_free_null(CuTest *tc) {
     uint64_t a0, f0, a1, f1;
+    test_mem_settle();
     mem_stat(&a0, &f0);
     bag_set_free(NULL);
     mem_stat(&a1, &f1);
@@ -211,6 +213,25 @@ static void test_hs_replace_elfree(CuTest *tc) {
     CuAssertTrue(tc, 1 == bag_set_size(s));
     bag_set_free(s);
     CuAssertTrue(tc, 1 == g_bag_free_cnt);
+}
+// add 交出的旧值副本原样传回 add(撤销那次覆盖):表里换回旧值,返回刚被顶掉的那个
+static void test_hs_add_spare_back(CuTest *tc) {
+    bag_set *s = bag_set_new(0, NULL);
+    char first[] = "first";
+    char second[] = "second";
+    _bag b;
+    _bag *old;
+    b.key = 1;
+    b.name = first;
+    CuAssertPtrEquals(tc, NULL, (void *)bag_set_add(s, &b));
+    b.name = second;
+    old = bag_set_add(s, &b);
+    CuAssertTrue(tc, NULL != old && first == old->name);
+    old = bag_set_add(s, old);
+    CuAssertTrue(tc, NULL != old && second == old->name);
+    CuAssertTrue(tc, first == bag_set_hm_get(s, &b)->name);
+    CuAssertTrue(tc, 1 == bag_set_size(s));
+    bag_set_free(s);
 }
 // remove 返回被删元素副本,同样不自动 elfree(name##_remove 直通 name##_hm_delete):
 // 元素内部的 strdup / MALLOC 字段全靠调用方拿返回值自己释放
@@ -288,6 +309,7 @@ void test_hashset(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hs_iter);
     SUITE_ADD_TEST(suite, test_hs_elfree);
     SUITE_ADD_TEST(suite, test_hs_replace_elfree);
+    SUITE_ADD_TEST(suite, test_hs_add_spare_back);
     SUITE_ADD_TEST(suite, test_hs_remove_elfree);
     SUITE_ADD_TEST(suite, test_hs_stress);
     SUITE_ADD_TEST(suite, test_hs_clear_refill);

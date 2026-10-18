@@ -5,6 +5,7 @@
 #include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql_struct.h"
 #include "protocol/pgsql/pgsql_macro.h"
+#include "crypt/scram.h"
 
 #ifdef _WIN32
 #pragma warning(disable:4312)
@@ -118,20 +119,19 @@ static void test_pgsql_reader_iter(CuTest *tc) {
     // 类型不符：即使结果数组里有 reader 也不给
     _pg_result_push(&pg, _pg_reader_new(1, oids, names), "SELECT 0");
     pg.type = PGPACK_ERR;
-    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg));
     pg.type = PGPACK_NOTIFICATION;
-    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg));
     CuAssertIntEquals(tc, 0, (int)pgsql_result_count(&pg)); // 类型不符时结果数恒为 0
     // 正常路径：所有权转给调用方，槽位随之置空。这一点由下面的 reader_at 直接钉住,
     // 不靠 _free_pgpack 毒值 —— iter / at 全程不读那个字段, 毒值永远触发不了
     pg.type = PGPACK_OK;
     CuAssertIntEquals(tc, 1, (int)pgsql_result_count(&pg));
-    pgsql_reader_ctx *out = pgsql_reader_iter(&pg, FORMAT_TEXT);
+    pgsql_reader_ctx *out = pgsql_reader_iter(&pg);
     CuAssertTrue(tc, NULL != out);
-    CuAssertIntEquals(tc, FORMAT_TEXT, (int)out->format);
     // 同一下标只能取走一次；取走后结果个数不变（占位仍在，只是 reader 已交出）
-    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 0, FORMAT_TEXT));
-    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg, FORMAT_TEXT));
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 0));
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&pg));
     CuAssertIntEquals(tc, 1, (int)pgsql_result_count(&pg));
     pgsql_reader_free(out);
     _pg_results_clear(&pg);
@@ -140,7 +140,7 @@ static void test_pgsql_reader_iter(CuTest *tc) {
     pgpack_ctx empty;
     ZERO(&empty, sizeof(empty));
     empty.type = PGPACK_OK;
-    CuAssertTrue(tc, NULL == pgsql_reader_iter(&empty, FORMAT_TEXT));
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&empty));
     CuAssertIntEquals(tc, 0, (int)pgsql_result_count(&empty));
     CuAssertTrue(tc, 0 == pgsql_affected_at(&empty, 0));
 }
@@ -167,16 +167,14 @@ static void test_pgsql_result_multi(CuTest *tc) {
     CuAssertTrue(tc, 2 == pgsql_affected_rows(&pg)); // 单结果 API 仍是最后一条
     CuAssertTrue(tc, 0 == pgsql_affected_at(&pg, 3)); // 越界
     // 按下标取 reader：下标 1 无结果集给 NULL，下标 3 越界给 NULL
-    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 1, FORMAT_TEXT));
-    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 3, FORMAT_TEXT));
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 1));
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 3));
     // 乱序取走不串扰
-    pgsql_reader_ctx *o2 = pgsql_reader_at(&pg, 2, FORMAT_BINARY);
+    pgsql_reader_ctx *o2 = pgsql_reader_at(&pg, 2);
     CuAssertTrue(tc, o2 == r2);
-    CuAssertIntEquals(tc, FORMAT_BINARY, (int)o2->format);
-    pgsql_reader_ctx *o0 = pgsql_reader_at(&pg, 0, FORMAT_TEXT);
+    pgsql_reader_ctx *o0 = pgsql_reader_at(&pg, 0);
     CuAssertTrue(tc, o0 == r0);
-    CuAssertIntEquals(tc, FORMAT_TEXT, (int)o0->format);
-    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 2, FORMAT_TEXT)); // 已取走
+    CuAssertTrue(tc, NULL == pgsql_reader_at(&pg, 2)); // 已取走
     pgsql_reader_free(o0);
     pgsql_reader_free(o2);
     _pg_results_clear(&pg);
@@ -190,11 +188,11 @@ static void test_pgsql_result_multi(CuTest *tc) {
     _pg_result_push(&it, ia, "SELECT 1");
     _pg_result_push(&it, NULL, "INSERT 0 1");// 中间夹一条无结果集的，须被跳过
     _pg_result_push(&it, ib, "SELECT 2");
-    pgsql_reader_ctx *first = pgsql_reader_iter(&it, FORMAT_TEXT);
-    pgsql_reader_ctx *second = pgsql_reader_iter(&it, FORMAT_TEXT);
+    pgsql_reader_ctx *first = pgsql_reader_iter(&it);
+    pgsql_reader_ctx *second = pgsql_reader_iter(&it);
     CuAssertTrue(tc, first == ia);
     CuAssertTrue(tc, second == ib);
-    CuAssertTrue(tc, NULL == pgsql_reader_iter(&it, FORMAT_TEXT));
+    CuAssertTrue(tc, NULL == pgsql_reader_iter(&it));
     pgsql_reader_free(first);
     pgsql_reader_free(second);
     _pg_results_clear(&it);
@@ -221,7 +219,7 @@ static void test_pgsql_result_multi(CuTest *tc) {
     pgsql_reader_ctx *rsel = _pg_reader_new(1, oids, names);
     _pg_result_push(&lead, NULL, "BEGIN");
     _pg_result_push(&lead, rsel, "SELECT 1");
-    pgsql_reader_ctx *lout = pgsql_reader_iter(&lead, FORMAT_TEXT);
+    pgsql_reader_ctx *lout = pgsql_reader_iter(&lead);
     CuAssertTrue(tc, lout == rsel);
     pgsql_reader_free(lout);
     _pg_results_clear(&lead);
@@ -1067,8 +1065,8 @@ static void test_pgpack_error_notice_unterminated(CuTest *tc) {
 }
 
 // 拼一条服务端消息喂给 _pgpack_parser：code + 4 字节大端长度(含自身) + body。
-// 同 _pgsql_command_response：只有 'D' / 'A' 由解析器接管 raw，其余类型这里释放
-static void *_pg_feed(pgsql_ctx *pg, ud_cxt *ud, char code,
+// 同 _pgsql_command_response：_pgpack_takes_buf 认的类型由解析器接管 raw，其余类型这里释放
+static void *_pg_feed(pgsql_ctx *pg, char code,
     const char *body, size_t blens, int32_t *status) {
     char *raw;
     void *pack;
@@ -1085,8 +1083,8 @@ static void *_pg_feed(pgsql_ctx *pg, ud_cxt *ud, char code,
     }
     binary_init_read(&br, raw, 5 + blens);
     *status = PROT_INIT;
-    pack = _pgpack_parser(pg, &br, ud, status);
-    if ('D' != code && 'A' != code) {
+    pack = _pgpack_parser(pg, &br, status);
+    if (!_pgpack_takes_buf(code)) {
         FREE(raw);
     }
     return pack;
@@ -1102,14 +1100,12 @@ static void *_pg_feed(pgsql_ctx *pg, ud_cxt *ud, char code,
  *   4) `-1 == row->lens` 与 `0 == row->lens` 两支对调 → NULL 与空串互换 */
 static void test_pgpack_parser_full_flow(CuTest *tc) {
     pgsql_ctx pg;
-    ud_cxt ud;
     int32_t status;
     int32_t err;
     void *pack;
     char body[64];
     char *p;
     ZERO(&pg, sizeof(pg));
-    ZERO(&ud, sizeof(ud));
 
     /* T：1 列，列名 "n"，INT4OID，format=FORMAT_TEXT */
     p = body;
@@ -1121,7 +1117,7 @@ static void test_pgpack_parser_full_flow(CuTest *tc) {
     pack_integer(p, 4, 2, 0); p += 2;// lens
     pack_integer(p, (uint64_t)-1, 4, 0); p += 4;// type_modifier
     pack_integer(p, FORMAT_TEXT, 2, 0); p += 2;// format
-    CuAssertTrue(tc, NULL == _pg_feed(&pg, &ud, 'T', body, (size_t)(p - body), &status));
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'T', body, (size_t)(p - body), &status));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
 
     /* D：1 列，文本 "12345" */
@@ -1129,21 +1125,56 @@ static void test_pgpack_parser_full_flow(CuTest *tc) {
     pack_integer(p, 1, 2, 0); p += 2;// ncolumn
     pack_integer(p, 5, 4, 0); p += 4;// 列长度
     memcpy(p, "12345", 5); p += 5;
-    CuAssertTrue(tc, NULL == _pg_feed(&pg, &ud, 'D', body, (size_t)(p - body), &status));
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'D', body, (size_t)(p - body), &status));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
 
     /* C：CommandComplete 触发 _pgpack_complete，把 reader 提交进结果数组 */
-    CuAssertTrue(tc, NULL == _pg_feed(&pg, &ud, 'C', "SELECT 1", 9, &status));
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'C', "SELECT 1", 9, &status));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
 
     /* Z：ReadyForQuery 才把攒好的 pgpack 交出来 */
-    pack = _pg_feed(&pg, &ud, 'Z', "I", 1, &status);
+    pack = _pg_feed(&pg, 'Z', "I", 1, &status);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
 
     CuAssertIntEquals(tc, 1, (int)pgsql_result_count((pgpack_ctx *)pack));
-    pgsql_reader_ctx *reader = pgsql_reader_iter((pgpack_ctx *)pack, FORMAT_TEXT);
+    pgsql_reader_ctx *reader = pgsql_reader_iter((pgpack_ctx *)pack);
     CuAssertPtrNotNull(tc, reader);
+    CuAssertTrue(tc, 12345 == pgsql_reader_integer(reader, "n", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    pgsql_reader_free(reader);
+    _pgpack_free((pgpack_ctx *)pack);
+}
+// RowDescription 带二进制格式码时 reader 按二进制解析，不靠调用方报格式
+static void test_pgpack_parser_binary_format(CuTest *tc) {
+    pgsql_ctx pg;
+    int32_t status;
+    int32_t err;
+    void *pack;
+    char body[64];
+    char *p;
+    ZERO(&pg, sizeof(pg));
+    p = body;
+    pack_integer(p, 1, 2, 0); p += 2;// field_count
+    *p++ = 'n'; *p++ = '\0';
+    pack_integer(p, 0, 4, 0); p += 4;// table_oid
+    pack_integer(p, 1, 2, 0); p += 2;// index
+    pack_integer(p, INT4OID, 4, 0); p += 4;// type_oid
+    pack_integer(p, 4, 2, 0); p += 2;// lens
+    pack_integer(p, (uint64_t)-1, 4, 0); p += 4;// type_modifier
+    pack_integer(p, FORMAT_BINARY, 2, 0); p += 2;// format
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'T', body, (size_t)(p - body), &status));
+    p = body;
+    pack_integer(p, 1, 2, 0); p += 2;// ncolumn
+    pack_integer(p, 4, 4, 0); p += 4;// 列长度
+    pack_integer(p, 12345, 4, 0); p += 4;// 大端 int4
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'D', body, (size_t)(p - body), &status));
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'C', "SELECT 1", 9, &status));
+    pack = _pg_feed(&pg, 'Z', "I", 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    pgsql_reader_ctx *reader = pgsql_reader_iter((pgpack_ctx *)pack);
+    CuAssertPtrNotNull(tc, reader);
+    CuAssertIntEquals(tc, FORMAT_BINARY, (int)reader->format);
     CuAssertTrue(tc, 12345 == pgsql_reader_integer(reader, "n", &err));
     CuAssertIntEquals(tc, ERR_OK, err);
     pgsql_reader_free(reader);
@@ -1156,21 +1187,19 @@ static void test_pgpack_parser_full_flow(CuTest *tc) {
 static void test_pgpack_parser_empty_body(CuTest *tc) {
     static const char codes[] = { 'A', 'T', 'D', 'G', 'H', 'C', 'Z' };
     pgsql_ctx pg;
-    ud_cxt ud;
     binary_ctx br;
     char *raw;
     void *pack;
     int32_t status;
     for (size_t i = 0; i < sizeof(codes); i++) {
         ZERO(&pg, sizeof(pg));
-        ZERO(&ud, sizeof(ud));
         MALLOC(raw, 5);
         raw[0] = codes[i];
         pack_integer(raw + 1, 4, 4, 0); // 长度字段含自身，4 即消息体为空
         binary_init_read(&br, raw, 5);
         status = PROT_INIT;
-        pack = _pgpack_parser(&pg, &br, &ud, &status);
-        if ('D' != codes[i] && 'A' != codes[i]) {// 同 _pgsql_command_response：其余类型由调用方释放
+        pack = _pgpack_parser(&pg, &br, &status);
+        if (!_pgpack_takes_buf(codes[i])) {// 同 _pgsql_command_response：其余类型由调用方释放
             FREE(raw);
         }
         CuAssertTrue(tc, NULL == pack);
@@ -1404,7 +1433,7 @@ static void test_pgsql_unpack_rows(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
     buffer_free(&buf);
-    reader = pgsql_reader_iter((pgpack_ctx *)pack, FORMAT_TEXT);
+    reader = pgsql_reader_iter((pgpack_ctx *)pack);
     CuAssertPtrNotNull(tc, reader);
     CuAssertIntEquals(tc, 3, (int)pgsql_reader_size(reader));
     for (i = 0; i < 3; i++) {
@@ -1445,7 +1474,8 @@ static void test_pgsql_unpack_rows(CuTest *tc) {
 }
 // 回归：字段描述数组的归属记在 fields_inl 上。常态 T 与 reader 同一次分配(fields_inl=1)；
 // 0 列 T 之后不经 C 又来 2 列 T(违规流)时第二个 T 的数组单独分配(fields_inl=0)。以前拿 fields == reader + 1 判，
-// 分配器恰好把单独分配的那块紧挨着 reader 放时就当成内嵌、漏释放，收尾的内存检查会报 not free
+// 分配器恰好把单独分配的那块紧挨着 reader 放时就当成内嵌、漏释放，收尾的内存检查会报 not free；
+// 已落了零列行之后再来 T 则拒收
 static void test_pgsql_fields_separate_alloc(CuTest *tc) {
     pgsql_ctx pg;
     ud_cxt ud;
@@ -1498,12 +1528,30 @@ static void test_pgsql_fields_separate_alloc(CuTest *tc) {
     }
     buffer_free(&buf);
     CuAssertPtrNotNull(tc, pack);
-    reader = pgsql_reader_iter((pgpack_ctx *)pack, FORMAT_TEXT);
+    reader = pgsql_reader_iter((pgpack_ctx *)pack);
     CuAssertPtrNotNull(tc, reader);
     CuAssertTrue(tc, 71 == pgsql_reader_integer(reader, "c1", &err));
     CuAssertIntEquals(tc, ERR_OK, err);
     pgsql_reader_free(reader);
     _pgpack_free((pgpack_ctx *)pack);
+
+    // 0 列 T 后已落了零列行再来 2 列 T：零列行按 2 列取值会越界，拒收
+    buffer_init(&buf);
+    tl = _pg_rowdesc(tbody, 0);
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    dl = _pg_datarow(dbody, 0, 0);
+    _pg_push_msg(&buf, 'D', dbody, dl);
+    tl = _pg_rowdesc(tbody, 2);
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    status = PROT_INIT;
+    for (i = 0; i < 3 && !BIT_CHECK(status, PROT_ERROR); i++) {
+        status = PROT_INIT;
+        CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
+    }
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+    _pgpack_free(pg.pack);
+    pg.pack = NULL;
 }
 // 行指针数组前 8 槽内嵌在 reader 里：跨过 8(搬到堆上)与 32(之后照常倍增)两个边界，逐行取值都得对
 static void test_pgsql_unpack_rows_spill(CuTest *tc) {
@@ -1536,7 +1584,7 @@ static void test_pgsql_unpack_rows_spill(CuTest *tc) {
     }
     buffer_free(&buf);
     CuAssertPtrNotNull(tc, pack);
-    reader = pgsql_reader_iter((pgpack_ctx *)pack, FORMAT_TEXT);
+    reader = pgsql_reader_iter((pgpack_ctx *)pack);
     CuAssertPtrNotNull(tc, reader);
     CuAssertIntEquals(tc, nrows, (int)pgsql_reader_size(reader));
     for (i = 0; i < nrows; i++) {
@@ -1572,7 +1620,7 @@ static size_t _pg_batch_msg(buffer_ctx *buf, int32_t m) {
 }
 // 逐行核 _pg_batch_msg 那组 DataRow 的值(第 i 行是 i*10、i*10+1)，然后释放 pack
 static void _pg_batch_check(CuTest *tc, pgpack_ctx *pack, int32_t nrows) {
-    pgsql_reader_ctx *reader = pgsql_reader_iter(pack, FORMAT_TEXT);
+    pgsql_reader_ctx *reader = pgsql_reader_iter(pack);
     int32_t i, err;
     CuAssertPtrNotNull(tc, reader);
     CuAssertIntEquals(tc, nrows, (int)pgsql_reader_size(reader));
@@ -1730,7 +1778,7 @@ static void test_pgsql_unpack_rows_fast(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
     buffer_free(&buf);
-    reader = pgsql_reader_iter(pack, FORMAT_TEXT);
+    reader = pgsql_reader_iter(pack);
     CuAssertPtrNotNull(tc, reader);
     CuAssertIntEquals(tc, 3, (int)pgsql_reader_size(reader));
     txt = pgsql_reader_text(reader, "c1", &lens, &err);
@@ -1825,14 +1873,14 @@ static void test_pgsql_unpack_results_spill(CuTest *tc) {
     CuAssertTrue(tc, 2 == pgsql_affected_at(pk, 2));
     CuAssertTrue(tc, 5 == pgsql_affected_at(pk, 3));
     CuAssertTrue(tc, 1 == pgsql_affected_at(pk, 4));
-    CuAssertTrue(tc, NULL == pgsql_reader_at(pk, 1, FORMAT_TEXT));
-    CuAssertTrue(tc, NULL == pgsql_reader_at(pk, 3, FORMAT_TEXT));
-    reader = pgsql_reader_at(pk, 2, FORMAT_TEXT);
+    CuAssertTrue(tc, NULL == pgsql_reader_at(pk, 1));
+    CuAssertTrue(tc, NULL == pgsql_reader_at(pk, 3));
+    reader = pgsql_reader_at(pk, 2);
     CuAssertPtrNotNull(tc, reader);
     CuAssertIntEquals(tc, 2, (int)pgsql_reader_size(reader));
     CuAssertTrue(tc, 20 == pgsql_reader_integer(reader, "c0", &err));
     pgsql_reader_free(reader);
-    reader = pgsql_reader_at(pk, 4, FORMAT_TEXT);
+    reader = pgsql_reader_at(pk, 4);
     CuAssertPtrNotNull(tc, reader);
     CuAssertTrue(tc, 91 == pgsql_reader_integer(reader, "c1", &err));
     pgsql_reader_free(reader);
@@ -2006,8 +2054,6 @@ static void test_pgpack_row_description_overlong_name(CuTest *tc) {
     }
     pgsql_ctx pg;
     ZERO(&pg, sizeof(pg));
-    ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
     char *raw;
     MALLOC(raw, 5 + bw.offset);
     raw[0] = 'T';
@@ -2016,7 +2062,7 @@ static void test_pgpack_row_description_overlong_name(CuTest *tc) {
     binary_ctx br;
     binary_init_read(&br, raw, 5 + bw.offset);
     int32_t status = PROT_INIT;
-    void *pack = _pgpack_parser(&pg, &br, &ud, &status);
+    void *pack = _pgpack_parser(&pg, &br, &status);
     FREE(raw);// 同 _pgsql_command_response：'T' 由调用方释放
     CuAssertTrue(tc, NULL == pack);
     CuAssert(tc, "a field name that crowds out later columns must fail",
@@ -2088,7 +2134,7 @@ static void test_pgsql_setter_atomic(CuTest *tc) {
 static void test_pgsql_ssl_downgrade_refused(CuTest *tc) {
     pgsql_ctx pg;
     ZERO(&pg, sizeof(pg));
-    // 'N' 分支只判非空不解引用，随便给个非 NULL 顶上
+    // INIT 态只在配了 evssl 时出现，置个非 NULL 贴近真实状态；'N' / 未知字节分支都不碰 evssl
     pg.evssl = (struct evssl_ctx *)&pg;
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -2160,6 +2206,342 @@ static void test_pgsql_error_stack_edge(CuTest *tc) {
         _pgpack_free(pack);
     }
 }
+// 零列查询（SELECT FROM t）：T 与 D 都是 0 列，行数照样按 DataRow 计，与 CommandComplete 的行数一致。
+// 10 行跨过内嵌的 8 个行指针槽，搬到堆上那条路也走一遍
+static void test_pgsql_unpack_zero_col(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    pgpack_ctx *pack = NULL;
+    pgsql_reader_ctx *reader;
+    char tbody[8], dbody[8];
+    size_t tl;
+    int32_t status, i;
+    const int32_t nrows = 10;
+    ZERO(&pg, sizeof(pg));
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND
+    ud.context = &pg;
+    tl = _pg_rowdesc(tbody, 0);
+    pack_integer(dbody, 0, 2, 0);
+    buffer_init(&buf);
+    _pg_push_msg(&buf, 'T', tbody, tl);
+    for (i = 0; i < nrows; i++) {
+        _pg_push_msg(&buf, 'D', dbody, 2);
+    }
+    _pg_push_msg(&buf, 'C', "SELECT 10", 10);
+    _pg_push_msg(&buf, 'Z', "I", 1);
+    for (i = 0; i < 16 && NULL == pack; i++) {
+        status = PROT_INIT;
+        pack = _t_pgsql_unpack(0, &buf, &ud, NULL, &status);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    }
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    buffer_free(&buf);
+    CuAssertTrue(tc, nrows == pgsql_affected_rows(pack));
+    reader = pgsql_reader_iter(pack);
+    CuAssertPtrNotNull(tc, reader);
+    CuAssertIntEquals(tc, nrows, (int)pgsql_reader_size(reader));
+    CuAssertIntEquals(tc, 0, pgsql_reader_eof(reader));
+    CuAssertPtrEquals(tc, NULL, pgsql_reader_index(reader, 0, NULL));// 没有列可取
+    for (i = 0; i < nrows; i++) {
+        pgsql_reader_next(reader);
+    }
+    CuAssertIntEquals(tc, 1, pgsql_reader_eof(reader));
+    pgsql_reader_free(reader);
+    _pgpack_free(pack);
+}
+// 32 字节的标准命令标签（CREATE TEXT SEARCH CONFIGURATION）整段留住，包与结果两处都不丢
+static void test_pgsql_complete_tag_long(CuTest *tc) {
+    static const char tag[] = "CREATE TEXT SEARCH CONFIGURATION";
+    pgsql_ctx pg;
+    int32_t status;
+    pgpack_ctx *pack;
+    ZERO(&pg, sizeof(pg));
+    CuAssertIntEquals(tc, 32, (int)strlen(tag));
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'C', tag, sizeof(tag), &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    pack = _pg_feed(&pg, 'Z', "I", 1, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertStrEquals(tc, tag, pack->complete);
+    CuAssertIntEquals(tc, 1, (int)pgsql_result_count(pack));
+    CuAssertStrEquals(tc, tag, pgres_arr_at(&pack->results, 0)->complete);
+    _pgpack_free(pack);
+}
+// 列名超长被丢弃的列：空名查不到它，按下标仍能取；正常列照常按名命中
+static void test_pgsql_reader_col_dropped(CuTest *tc) {
+    char body[256], dbody[64], name[71];
+    const char *cols[2];
+    char *p = body;
+    pgsql_ctx pg;
+    pgsql_reader_ctx *reader;
+    int32_t status, err;
+    ZERO(&pg, sizeof(pg));
+    memset(name, 'a', sizeof(name) - 1);
+    name[sizeof(name) - 1] = '\0';
+    cols[0] = name;
+    cols[1] = "b";
+    pack_integer(p, 2, 2, 0); p += 2;
+    for (int32_t i = 0; i < 2; i++) {
+        memcpy(p, cols[i], strlen(cols[i]) + 1); p += strlen(cols[i]) + 1;
+        pack_integer(p, 0, 4, 0); p += 4;// table_oid
+        pack_integer(p, (uint64_t)(i + 1), 2, 0); p += 2;// index
+        pack_integer(p, INT4OID, 4, 0); p += 4;
+        pack_integer(p, 4, 2, 0); p += 2;// lens
+        pack_integer(p, (uint64_t)-1, 4, 0); p += 4;// type_modifier
+        pack_integer(p, FORMAT_TEXT, 2, 0); p += 2;
+    }
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'T', body, (size_t)(p - body), &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, NULL == _pg_feed(&pg, 'D', dbody, _pg_datarow(dbody, 2, 7), &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    reader = pg.pack->pack;
+    CuAssertIntEquals(tc, 0, (int)reader->fields[0].nlens);
+    CuAssertIntEquals(tc, -1, (int)pgsql_reader_col(reader, "", 0));
+    CuAssertIntEquals(tc, 1, (int)pgsql_reader_col(reader, "b", 1));
+    CuAssertTrue(tc, 70 == pgsql_reader_integer_at(reader, 0, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    _pgpack_free(pg.pack);
+}
+// bool 其余写法：文本 1 / y / yes / on / true（不分大小写）为真，其余为假；二进制取首字节，长度不是 1 判失败
+static void test_pgsql_reader_bool_forms(CuTest *tc) {
+    static const char *const truthy[] = { "1", "y", "Y", "yes", "ON", "True" };
+    static const char *const falsy[] = { "0", "n", "f", "off", "no" };
+    int32_t oids[1] = { BOOLOID };
+    char names[1][64] = { "b" };
+    pgsql_reader_ctx *r;
+    int32_t v, err;
+    for (size_t i = 0; i < ARRAY_SIZE(truthy); i++) {
+        r = _pg_reader_one(oids, names, FORMAT_TEXT, truthy[i], (int32_t)strlen(truthy[i]));
+        v = pgsql_reader_bool_at(r, 0, &err);
+        pgsql_reader_free(r);
+        CuAssertIntEquals(tc, 1, v);
+        CuAssertIntEquals(tc, ERR_OK, err);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(falsy); i++) {
+        r = _pg_reader_one(oids, names, FORMAT_TEXT, falsy[i], (int32_t)strlen(falsy[i]));
+        v = pgsql_reader_bool_at(r, 0, &err);
+        pgsql_reader_free(r);
+        CuAssertIntEquals(tc, 0, v);
+        CuAssertIntEquals(tc, ERR_OK, err);
+    }
+    r = _pg_reader_one(oids, names, FORMAT_BINARY, "\x01", 1);
+    v = pgsql_reader_bool_at(r, 0, &err);
+    pgsql_reader_free(r);
+    CuAssertIntEquals(tc, 1, v);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    r = _pg_reader_one(oids, names, FORMAT_BINARY, "\x00", 1);
+    v = pgsql_reader_bool_at(r, 0, &err);
+    pgsql_reader_free(r);
+    CuAssertIntEquals(tc, 0, v);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    r = _pg_reader_one(oids, names, FORMAT_BINARY, "\x01\x00", 2);
+    (void)pgsql_reader_bool_at(r, 0, &err);
+    pgsql_reader_free(r);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+}
+// 喂一串消息直到出包或喂完，出错立即停；返回出的包，*status 带回最后一次的状态
+static pgpack_ctx *_pg_unpack_all(ud_cxt *ud, buffer_ctx *buf, int32_t *status) {
+    pgpack_ctx *pack = NULL;
+    while (NULL == pack && buffer_size(buf) > 0) {
+        *status = PROT_INIT;
+        pack = _t_pgsql_unpack(0, buf, ud, NULL, status);
+        if (BIT_CHECK(*status, PROT_ERROR) || BIT_CHECK(*status, PROT_MOREDATA)) {
+            break;
+        }
+    }
+    return pack;
+}
+// 结果已提交（行走快路径、行指针搬到堆上；结果数组分别停在内嵌槽与堆上）之后再来 ErrorResponse：
+// 整包换成 ERR、已提交的结果全部丢弃。漏释放或重复释放交给 ASan 与收尾的内存检查
+static void test_pgsql_error_after_commit(CuTest *tc) {
+    static const int32_t nstmts[] = { 1, 3 };
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    pgpack_ctx *pack;
+    char tbody[128], dbody[64];
+    size_t tl = _pg_rowdesc(tbody, 2);
+    int32_t status;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND
+    for (size_t k = 0; k < ARRAY_SIZE(nstmts); k++) {
+        ZERO(&pg, sizeof(pg));
+        ud.context = &pg;
+        buffer_init(&buf);
+        for (int32_t s = 0; s < nstmts[k]; s++) {
+            _pg_push_msg(&buf, 'T', tbody, tl);
+            for (int32_t r = 0; r < 12; r++) {
+                _pg_push_msg(&buf, 'D', dbody, _pg_datarow(dbody, 2, r));
+            }
+            _pg_push_msg(&buf, 'C', "SELECT 12", 10);
+        }
+        _pg_push_msg(&buf, 'E', "SERROR\0Mboom\0", 14);
+        _pg_push_msg(&buf, 'Z', "I", 1);
+        pack = _pg_unpack_all(&ud, &buf, &status);
+        CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+        buffer_free(&buf);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertIntEquals(tc, PGPACK_ERR, (int)pack->type);
+        CuAssertIntEquals(tc, 0, (int)pgsql_result_count(pack));
+        CuAssertStrEquals(tc, "S: ERROR\r\nM: boom", (const char *)pack->pack);
+        _pgpack_free(pack);
+    }
+}
+// 包类型中途切换（SELECT 之后接 COPY TO STDOUT）：已提交的结果整批丢弃，结果数组复位到"还没建"。
+// 1) T D C H d c C Z：最终是 COPY_OUT 包，不带结果；2) 再接 T D C：切回普通查询后结果数组从内嵌槽重新用起
+static void test_pgsql_pack_type_switch(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    buffer_ctx buf;
+    pgpack_ctx *pack;
+    pgsql_reader_ctx *reader;
+    pgpack_copy_out_ctx *co;
+    char tbody[128], dbody[64];
+    char hbody[5] = { 0, 0, 1, 0, 0 };// format 0, 1 列, 列格式 0
+    size_t tl = _pg_rowdesc(tbody, 2);
+    int32_t status, err;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 2;// COMMAND
+    for (int32_t k = 0; k < 2; k++) {
+        ZERO(&pg, sizeof(pg));
+        ud.context = &pg;
+        buffer_init(&buf);
+        _pg_push_msg(&buf, 'T', tbody, tl);
+        _pg_push_msg(&buf, 'D', dbody, _pg_datarow(dbody, 2, 1));
+        _pg_push_msg(&buf, 'C', "SELECT 1", 9);
+        _pg_push_msg(&buf, 'H', hbody, sizeof(hbody));
+        _pg_push_msg(&buf, 'd', "a\n", 2);
+        _pg_push_msg(&buf, 'c', NULL, 0);
+        _pg_push_msg(&buf, 'C', "COPY 1", 7);
+        if (1 == k) {
+            _pg_push_msg(&buf, 'T', tbody, tl);
+            _pg_push_msg(&buf, 'D', dbody, _pg_datarow(dbody, 2, 4));
+            _pg_push_msg(&buf, 'C', "SELECT 1", 9);
+        }
+        _pg_push_msg(&buf, 'Z', "I", 1);
+        pack = _pg_unpack_all(&ud, &buf, &status);
+        CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+        buffer_free(&buf);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertPtrNotNull(tc, pack);
+        if (0 == k) {
+            CuAssertIntEquals(tc, PGPACK_COPY_OUT, (int)pack->type);
+            CuAssertIntEquals(tc, 0, (int)pgsql_result_count(pack));
+            CuAssertPtrEquals(tc, NULL, pack->results.ptr);
+            CuAssertTrue(tc, 1 == pgsql_affected_rows(pack));
+            co = pack->pack;
+            CuAssertIntEquals(tc, 2, (int)co->data.offset);
+            CuAssertTrue(tc, 0 == memcmp(co->data.data, "a\n", 2));
+        } else {
+            CuAssertIntEquals(tc, PGPACK_OK, (int)pack->type);
+            CuAssertIntEquals(tc, 1, (int)pgsql_result_count(pack));
+            CuAssertTrue(tc, pack->res_inl == pack->results.ptr);
+            reader = pgsql_reader_iter(pack);
+            CuAssertPtrNotNull(tc, reader);
+            CuAssertTrue(tc, 41 == pgsql_reader_integer(reader, "c1", &err));
+            CuAssertIntEquals(tc, ERR_OK, err);
+            pgsql_reader_free(reader);
+        }
+        _pgpack_free(pack);
+    }
+}
+// AUTH 态喂一条消息，返回解包状态（AUTH 态从不出包）
+static int32_t _pg_auth_feed(ud_cxt *ud, char code, const char *body, size_t blens) {
+    buffer_ctx buf;
+    int32_t status = PROT_INIT;
+    buffer_init(&buf);
+    _pg_push_msg(&buf, code, body, blens);
+    (void)_t_pgsql_unpack(1, &buf, ud, NULL, &status);
+    buffer_free(&buf);
+    return status;
+}
+// AuthenticationSASL(0x0a) 正文：认证码 + 方法名列表，空串收尾
+static size_t _pg_sasl_body(char *body, const char *const *mods, size_t n) {
+    char *p = body;
+    pack_integer(p, 0x0a, 4, 0); p += 4;
+    for (size_t i = 0; i < n; i++) {
+        memcpy(p, mods[i], strlen(mods[i]) + 1);
+        p += strlen(mods[i]) + 1;
+    }
+    *p++ = '\0';
+    return (size_t)(p - body);
+}
+// 认证阶段（AUTH）的守卫。pg 由 pgsql_init 建、连接标识无效：要发包的分支发送失败置 PROT_ERROR，
+// 但发送之前的状态（选了哪个机制、scram 建没建、通道绑定姿态）照样看得到
+static void test_pgsql_auth_guards(CuTest *tc) {
+    static const char *const only_sha1[] = { "SCRAM-SHA-1" };
+    static const char *const only_plus[] = { "SCRAM-SHA-256-PLUS" };
+    static const char *const both[] = { "SCRAM-SHA-256-PLUS", "SCRAM-SHA-256" };
+    pgsql_ctx pg;
+    ud_cxt ud;
+    char body[128];
+    size_t bl;
+    int32_t status;
+    CuAssertIntEquals(tc, ERR_OK, pgsql_init(&pg, "127.0.0.1", 5432, NULL, "u1", "p1", "db1"));
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1;// AUTH，枚举定义在 pgsql.c 内不可见
+    ud.context = &pg;
+
+    // 认证码不足 4 字节、不支持的认证码（7 = GSS）
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', "\0\0", 2), PROT_ERROR));
+    pack_integer(body, 7, 4, 0);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', body, 4), PROT_ERROR));
+    // MD5 的 salt 不足 4 字节
+    pack_integer(body, 5, 4, 0);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', body, 6), PROT_ERROR));
+    // 没有 0x0a 就来 SASLContinue / SASLFinal：拒收，不碰空的 scram
+    pack_integer(body, 0x0b, 4, 0);
+    memcpy(body + 4, "r=x,s=eA==,i=4096", 17);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', body, 21), PROT_ERROR));
+    pack_integer(body, 0x0c, 4, 0);
+    memcpy(body + 4, "v=eA==", 6);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', body, 10), PROT_ERROR));
+    CuAssertPtrEquals(tc, NULL, pg.scram);
+    // BackendKeyData：不足 8 字节报错，够了才记下 pid / key
+    pack_integer(body, 0x01020304, 4, 0);
+    pack_integer(body + 4, 0x05060708, 4, 0);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 6), PROT_ERROR));
+    status = _pg_auth_feed(&ud, 'K', body, 8);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0x01020304, pg.pid);
+    CuAssertTrue(tc, 0x05060708u == pg.key);
+
+    // SASL 方法一个都不支持；没有通道绑定材料时不选 PLUS，只给 PLUS 也是一个都不支持
+    bl = _pg_sasl_body(body, only_sha1, ARRAY_SIZE(only_sha1));
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', body, bl), PROT_ERROR));
+    bl = _pg_sasl_body(body, only_plus, ARRAY_SIZE(only_plus));
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', body, bl), PROT_ERROR));
+    CuAssertPtrEquals(tc, NULL, pg.scram);
+    // 两个都给：选 SCRAM-SHA-256、发 "n,,"，scram 建起来（随后发包因连接无效失败）
+    bl = _pg_sasl_body(body, both, ARRAY_SIZE(both));
+    (void)_pg_auth_feed(&ud, 'R', body, bl);
+    CuAssertPtrNotNull(tc, pg.scram);
+    CuAssertIntEquals(tc, SCRAM_CB_NONE, (int)pg.scram->cbind);
+    // 服务端签名还没验：AuthenticationOk 不报错，ReadyForQuery 必须拒收，不推进到命令阶段
+    pack_integer(body, 0, 4, 0);
+    CuAssertTrue(tc, !BIT_CHECK(_pg_auth_feed(&ud, 'R', body, 4), PROT_ERROR));
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'Z', "I", 1), PROT_ERROR));
+    CuAssertPtrNotNull(tc, pg.scram);
+    CuAssertIntEquals(tc, 1, (int)ud.status);
+#if WITH_SSL
+    // 有通道绑定材料：两个都给选 PLUS；只给非 PLUS 则报"有能力未用"（"y,,"）
+    static const char *const plain[] = { "SCRAM-SHA-256" };
+    memset(pg.tls_cbind, 0x5a, 32);
+    pg.tls_cbind_len = 32;
+    bl = _pg_sasl_body(body, both, ARRAY_SIZE(both));
+    (void)_pg_auth_feed(&ud, 'R', body, bl);
+    CuAssertPtrNotNull(tc, pg.scram);
+    CuAssertIntEquals(tc, SCRAM_CB_PLUS, (int)pg.scram->cbind);
+    bl = _pg_sasl_body(body, plain, ARRAY_SIZE(plain));
+    (void)_pg_auth_feed(&ud, 'R', body, bl);
+    CuAssertPtrNotNull(tc, pg.scram);
+    CuAssertIntEquals(tc, SCRAM_CB_CAPABLE, (int)pg.scram->cbind);
+#endif
+    scram_free(pg.scram);
+}
 void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_iter);
     SUITE_ADD_TEST(suite, test_pgsql_result_multi);
@@ -2184,6 +2566,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_empty);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_unterminated);
     SUITE_ADD_TEST(suite, test_pgpack_parser_full_flow);
+    SUITE_ADD_TEST(suite, test_pgpack_parser_binary_format);
     SUITE_ADD_TEST(suite, test_pgpack_parser_empty_body);
     SUITE_ADD_TEST(suite, test_pgsql_payload_framing);
     SUITE_ADD_TEST(suite, test_pgsql_copy_out_framing);
@@ -2201,4 +2584,11 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_setter_atomic);
     SUITE_ADD_TEST(suite, test_pgsql_ssl_downgrade_refused);
     SUITE_ADD_TEST(suite, test_pgsql_error_stack_edge);
+    SUITE_ADD_TEST(suite, test_pgsql_unpack_zero_col);
+    SUITE_ADD_TEST(suite, test_pgsql_complete_tag_long);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_col_dropped);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_bool_forms);
+    SUITE_ADD_TEST(suite, test_pgsql_error_after_commit);
+    SUITE_ADD_TEST(suite, test_pgsql_pack_type_switch);
+    SUITE_ADD_TEST(suite, test_pgsql_auth_guards);
 }

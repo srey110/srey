@@ -1,5 +1,6 @@
 ; 不逐帧展开的 setjmp / longjmp（Windows ARM64），给 luauser.h 的 LUAI_TRY / LUAI_THROW 用。
-; 只存取被调用方保存的寄存器：x19~x30、sp、d8~d15，共 168 字节，放得进 jmp_buf(192)；不碰平台保留的 x18
+; 只存取被调用方保存的寄存器：x19~x30、sp、d8~d15，外加浮点控制寄存器 FPCR(同 CRT 的 longjmp)，
+; 共 176 字节，放得进 jmp_buf(192)；不碰平台保留的 x18
     AREA |.text|, CODE, READONLY, ALIGN=4
 
     EXPORT luajmp_save
@@ -16,6 +17,8 @@ luajmp_save PROC
     stp d10, d11, [x0, #120]
     stp d12, d13, [x0, #136]
     stp d14, d15, [x0, #152]
+    mrs x2, fpcr
+    str x2, [x0, #168]
     mov w0, #0
     ret
     ENDP
@@ -34,6 +37,8 @@ luajmp_restore PROC
     ldp d10, d11, [x0, #120]
     ldp d12, d13, [x0, #136]
     ldp d14, d15, [x0, #152]
+    ldr x2, [x0, #168]
+    msr fpcr, x2
     cmp w1, #0
     csinc w0, w1, wzr, ne ; v 为 0 时返回 1，同 longjmp
     ret

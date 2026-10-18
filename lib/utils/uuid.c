@@ -12,11 +12,11 @@ int32_t uuid_v4(char uuid[UUID_LENS]) {
 }
 // 进入新毫秒时计数器取随机低 11 位（最高位留 0 防回绕）；同毫秒、回拨、计数器用满一律 last + 1
 int32_t uuid_v7(char uuid[UUID_LENS]) {
-    uint64_t cand, last, next;
     if (ERR_OK != csprng_rand(uuid + 6, 10)) {
         return ERR_FAILED;
     }
-    cand = (nowms() << 12) | (read_be16(uuid + 6) & 0x7FF);
+    uint64_t cand = (nowms() << 12) | (read_be16(uuid + 6) & 0x7FF);
+    uint64_t last, next;
     do {
         last = (uint64_t)ATOMIC64_GET(&_v7_last);
         next = (cand >> 12) > (last >> 12) ? cand : last + 1;
@@ -54,12 +54,12 @@ void uuid_tostr(const char uuid[UUID_LENS], char out[UUID_STR_LENS]) {
 // 各字节的结果按位或起来最后只判一次(失败时 uuid 内容无定义，契约允许)
 int32_t uuid_fromstr(const char *str, size_t lens, char uuid[UUID_LENS]) {
     static const uint8_t pos[UUID_LENS] = { 0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34 };
-    int32_t i, hi, lo, bad = 0;
     if (UUID_STR_LENS - 1 != lens
         || '-' != str[8] || '-' != str[13] || '-' != str[18] || '-' != str[23]) {
         return ERR_FAILED;
     }
-    for (i = 0; i < UUID_LENS; i++) {
+    int32_t hi, lo, bad = 0;
+    for (int32_t i = 0; i < UUID_LENS; i++) {
         hi = fromhex(str[pos[i]]);
         lo = fromhex(str[pos[i] + 1]);
         bad |= hi | lo;

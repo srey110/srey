@@ -55,8 +55,7 @@ int32_t memcasecmp(const void *ptr1, const void *ptr2, size_t lens) {
     const unsigned char *buf1 = (const unsigned char *)ptr1;
     const unsigned char *buf2 = (const unsigned char *)ptr2;
     int32_t c1, c2;
-    size_t i;
-    for (i = 0; i < lens; i++) {
+    for (size_t i = 0; i < lens; i++) {
         c1 = _ascii_lower[buf1[i]];
         c2 = _ascii_lower[buf2[i]];
         if (c1 != c2) {
@@ -70,10 +69,9 @@ size_t _memcspn(const void *p, size_t lens, const char *what, size_t wlens) {
     const unsigned char *s = start;
     const unsigned char *end = start + lens;
     uint8_t map[32] = { 0 };
-    size_t k;
     // 第 1 步：建一张 256 位(32 字节)的表，每个字节值占一位：c 在 what 里就把第 c 位置 1，即 map[c >> 3] 的第 c & 7 位。
     // 例：':' 是 0x3a(58)，落在 map[7] 的第 2 位。what 里有重复字符就重复置位，不影响结果；'\0' 也照样占第 0 位
-    for (k = 0; k < wlens; k++) {
+    for (size_t k = 0; k < wlens; k++) {
         map[(unsigned char)what[k] >> 3] |= (uint8_t)(1u << ((unsigned char)what[k] & 7));
     }
     // 第 2 步：逐字节查表，每个字节只看表里对应的那一位，与 what 有多长无关。第一个查到 1 的就是答案；
@@ -91,8 +89,7 @@ size_t _memcspn(const void *p, size_t lens, const char *what, size_t wlens) {
 static inline uint64_t _memcspn_swar(uint64_t x, const char *what, size_t wlens) {
     const uint64_t ones = 0x0101010101010101ull;
     uint64_t y, m = 0;
-    size_t k;
-    for (k = 0; k < wlens; k++) {
+    for (size_t k = 0; k < wlens; k++) {
         // 第 1 步：what[k] 乘 0x0101..01 得到 8 个字节全是它的整数，与 x 异或：和 what[k] 相同的字节变成 0，其余不为 0。
         // 例：x 的 8 个字节为 "ab\rcdefg"、what[k] 为 '\r'(0x0d)，异或后第 2 个字节为 0
         y = x ^ (ones * (unsigned char)what[k]);
@@ -267,6 +264,9 @@ char* strreverse(char* str) {
     if (NULL == str) {
         return NULL;
     }
+    if ('\0' == *str) {
+        return str;// 空串下面的 --e 会指到 str 之前
+    }
     char* b = str;
     char* e = str;
     while (*e) {
@@ -285,16 +285,22 @@ char* strreverse(char* str) {
 }
 const char *_filename(const char *file) {
     const char *sep = strrchr(file, PATH_SEPARATOR);
+#ifdef OS_WIN
+    // Windows API 也收 '/'，两种分隔符取靠后的那个
+    const char *alt = strrchr(NULL != sep ? sep : file, '/');
+    if (NULL != alt) {
+        sep = alt;
+    }
+#endif
     return NULL != sep ? sep + 1 : file;
 }
 int32_t is_token(const char *data, size_t lens) {
-    unsigned char c;
-    size_t i;
     if (0 == lens
         || NULL == data) {
         return 0;
     }
-    for (i = 0; i < lens; i++) {
+    unsigned char c;
+    for (size_t i = 0; i < lens; i++) {
         c = (unsigned char)data[i];
         if (!TCHAR_TBL[c]) {
             return 0;

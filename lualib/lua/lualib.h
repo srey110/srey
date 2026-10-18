@@ -54,16 +54,16 @@ LUAMOD_API int (luaopen_table) (lua_State *L);
 #define LUA_UTF8LIBK	(LUA_TABLIBK << 1)
 LUAMOD_API int (luaopen_utf8) (lua_State *L);
 
+
 /* open selected libraries */
 LUALIB_API void (luaL_openselectedlibs) (lua_State *L, int load, int preload);
 
 /* open all libraries */
 #define luaL_openlibs(L)	luaL_openselectedlibs(L, ~0, 0)
 
-//额外库
+/* srey补丁：srey 扩展库的模块名与 luaopen 声明(linit.c 的 extlibs 照此注册) */
 #define LUA_YYJSONLIBNAME "yyjson"
 LUAMOD_API int (luaopen_yyjson)(lua_State *L);
-
 #define LUA_SREY_TASK "srey.task"
 LUAMOD_API int (luaopen_task)(lua_State *L);
 #define LUA_SREY_CORE "srey.core"

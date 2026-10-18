@@ -64,11 +64,12 @@ void mysql_bind_float(mysql_bind_ctx *mbind, const char *name, float value);
 /// <param name="value">值</param>
 void mysql_bind_double(mysql_bind_ctx *mbind, const char *name, double value);
 /// <summary>
-/// MYSQL_TYPE_DATE MYSQL_TYPE_DATETIME MYSQL_TYPE_TIMESTAMP
+/// MYSQL_TYPE_DATE MYSQL_TYPE_DATETIME MYSQL_TYPE_TIMESTAMP。按本地时区换成日期时间，本地时间正好 0 点整时
+/// 只发日期(4 字节)；本地时间换算失败(如 Windows 上 1970 年前或 3000 年后)按零日期发，不报错
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <param name="name">名称</param>
-/// <param name="ts">时间戳</param>
+/// <param name="ts">Unix 时间戳（秒）</param>
 void mysql_bind_datetime(mysql_bind_ctx *mbind, const char *name, time_t ts);
 /// <summary>
 /// MYSQL_TYPE_TIME

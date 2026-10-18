@@ -25,8 +25,7 @@
 #define DG_STATE_THUNK(nm, bits) \
     static void _dg_##nm##_state(void *ctx, char *hash) { \
         nm##_ctx *eng = (nm##_ctx *)ctx; \
-        size_t i; \
-        for (i = 0; i < ARRAY_SIZE(eng->state); i++) { \
+        for (size_t i = 0; i < ARRAY_SIZE(eng->state); i++) { \
             DG_LE_##nm ? write_le##bits(hash + i * sizeof(eng->state[0]), eng->state[i]) \
                 : write_be##bits(hash + i * sizeof(eng->state[0]), eng->state[i]); \
         } \
@@ -61,6 +60,8 @@ static const dg_attr _dg_tbl[] = {
 void digest_init(digest_ctx *digest, digest_type dtype) {
     ASSERTAB((size_t)dtype < ARRAY_SIZE(_dg_tbl)
         && NULL != _dg_tbl[dtype]._init, "unknow digest type.");
+    // 新算法加了表行却没加进 eng_ctx 联合体时在这里拦下；hmac_reset 按 eng_lens 拷也靠它
+    ASSERTAB(_dg_tbl[dtype].eng_lens <= sizeof(digest->eng_ctx), "engine ctx larger than digest_ctx.eng_ctx.");
     digest->attr = &_dg_tbl[dtype];
     digest_reset(digest);
 }

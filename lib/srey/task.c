@@ -63,10 +63,10 @@ static void _task_handle_timeout(task_ctx *task, message_ctx *msg) {
         ((_timeout_cb)msg->data)(task, msg->sess);
     }
 }
-// 处理新连接接受消息
+// 处理新连接接受消息(订阅了 NETEV_PEERADDR 时 data 是对端地址)
 static void _task_handle_accept(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_accept) {
-        task->_net_accept(task, &msg->sk, msg->subtype);
+        task->_net_accept(task, &msg->sk, msg->subtype, (const netaddr_ctx *)msg->data);
     }
 }
 // 处理连接建立消息
@@ -81,19 +81,17 @@ static void _task_handle_ssl_exchanged(task_ctx *task, message_ctx *msg) {
         task->_ssl_exchanged(task, &msg->sk, msg->subtype, msg->client);
     }
 }
-// 处理应用层握手完成消息，处理后清理消息数据
+// 处理应用层握手完成消息
 static void _task_handle_handshaked(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_handshaked) {
         task->_net_handshaked(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->data, msg->size);
     }
-    message_clean(msg);
 }
-// 处理 TCP 数据接收消息，处理后清理消息数据
+// 处理 TCP 数据接收消息
 static void _task_handle_recv(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recv) {
         task->_net_recv(task, &msg->sk, msg->subtype, msg->client, msg->slice, msg->data, msg->size);
     }
-    message_clean(msg);
 }
 // 处理数据发送完成消息
 static void _task_handle_send(task_ctx *task, message_ctx *msg) {
@@ -101,18 +99,24 @@ static void _task_handle_send(task_ctx *task, message_ctx *msg) {
         task->_net_send(task, &msg->sk, msg->subtype, msg->client, msg->size);
     }
 }
-// 处理连接关闭消息
+// 处理连接关闭消息：先按注册顺序调观察者，再调业务回调。协程 task 经它的关闭协程走到这里
 static void _task_handle_close(task_ctx *task, message_ctx *msg) {
     // NEVERCONN 的合成 CLOSE 只为唤醒等待方。连接从未建立,没有"关闭"可通知,故不投给业务;
     // 失败本身已由 CONNECT(TCP)或 HANDSHAKED(KCP)的 erro 交出去了
     if (CLOSE_TYPE_NEVERCONN == msg->erro) {
         return;
     }
+    close_watch *w;
+    uint32_t n = cwatch_arr_size(&task->watchers);// 观察者里新注册的不进本轮
+    for (uint32_t i = 0; i < n; i++) {
+        w = cwatch_arr_at(&task->watchers, (int32_t)i);
+        w->cb(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->sess, w->arg);
+    }
     if (NULL != task->_net_close) {
-        task->_net_close(task, &msg->sk, msg->subtype, msg->client, msg->erro);
+        task->_net_close(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->sess);
     }
 }
-// 处理 UDP 数据接收消息：从消息数据中解析出地址和载荷，处理后清理
+// 处理 UDP 数据接收消息：从消息数据中解析出地址和载荷
 static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recvfrom) {
         recvfrom_ctx *rfmsg = msg->data;
@@ -121,7 +125,6 @@ static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
         uint16_t port = netaddr_port(&rfmsg->addr);
         task->_net_recvfrom(task, &msg->sk, msg->subtype, ip, port, rfmsg->data, rfmsg->len);
     }
-    message_clean(msg);
 }
 // 处理任务间请求消息：若未注册请求回调，则返回错误响应
 static void _task_handle_request(task_ctx *task, message_ctx *msg) {
@@ -133,22 +136,17 @@ static void _task_handle_request(task_ctx *task, message_ctx *msg) {
         if (NULL != task->_request) {
             task->_request(task, msg->subtype, msg->sess, msg->src, msg->data, msg->size);
         } else {
-            task_ctx *dtask = task_grab(task->loader, msg->src);
-            if (NULL != dtask) {
-                const char *erro = "not register request callback function.";
-                task_response(dtask, msg->subtype, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
-                task_ungrab(dtask);
-            }
+            const char *erro = "not register request callback function.";
+            (void)task_response_to(task->loader, msg->src, msg->subtype, msg->sess, ERR_FAILED,
+                                   (void *)erro, strlen(erro), 1);
         }
     }
-    message_clean(msg);
 }
-// 处理任务间响应消息，处理后清理消息数据
+// 处理任务间响应消息
 static void _task_handle_response(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_response) {
         task->_response(task, msg->subtype, msg->sess, msg->erro, msg->data, msg->size);
     }
-    message_clean(msg);
 }
 // 按消息类型索引的处理函数表（静态分发，无 switch-case 开销）
 static const _msg_handler_t _msg_handlers[MSG_TYPE_ALL] = {
@@ -166,12 +164,15 @@ static const _msg_handler_t _msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_REQUEST]      = _task_handle_request,
     [MSG_TYPE_RESPONSE]     = _task_handle_response,
 };
+// 消息数据在这里统一清理，处理函数自己不清：哪种消息带数据只看 _message_data_kind，
+// 新带上数据的消息类型不会因为某个处理函数漏写而泄漏。没有数据的消息清理是空操作
 void _message_run(task_ctx *task, message_ctx *msg) {
     if (msg->mtype > MSG_TYPE_NONE
         && msg->mtype < MSG_TYPE_ALL
         && NULL != _msg_handlers[msg->mtype]) {
         _msg_handlers[msg->mtype](task, msg);
     }
+    message_clean(msg);
 }
 // 默认消息分发函数（直接调用 _message_run）
 static void _task_message_dispatch(task_dispatch_arg *arg) {
@@ -213,9 +214,16 @@ void task_free(task_ctx *task) {
         message_clean(&msg);
     }
     msgq_free(&task->qumsg);
+    cwatch_arr_free(&task->watchers);
     FREE(task->acp_group);
     FREE(task->name);
     FREE(task);
+}
+// 投递 CLOSING（调用方已把 closing 置位）
+static void _task_post_closing(task_ctx *task) {
+    message_ctx closing = { 0 };
+    closing.mtype = MSG_TYPE_CLOSING;
+    _task_message_post(task, &closing);
 }
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing) {
     task->_task_startup = _startup;
@@ -230,26 +238,29 @@ int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_c
         LOG_ERROR("task name %s repeat.", task->name);
         return ERR_FAILED;
     }
+    task->registered = 1;
     _task_map_set(task->loader->maptasks, task);
+    // 注册前就关过的只记了标志，在这里补发；须在投 STARTUP 之前读，之后 startup 自己也可能关
+    atomic_t closed = ATOMIC_GET(&task->closing);
     _task_message_post(task, &startup);
-    // loader 正在广播关闭时（closing=1），此 task 晚于广播注册，
-    // 不会收到全局 CLOSING，须在此立即补发，确保 task 能正常退出
-    if (ATOMIC_GET(&task->loader->closing)) {
-        task_close(task);
+    if (closed) {
+        _task_post_closing(task);
+    } else if (ATOMIC_GET(&task->loader->closing)) {
+        task_close(task);// 晚于 loader 的关闭广播注册，收不到全局 CLOSING，在此补发
     }
     rwlock_distr_wrunlock(&task->loader->lckmaptasks);
     return ERR_OK;
 }
+// 注册前关只记标志、不投递：那时投出去，worker 会与还在初始化它的注册线程同时动它
 void task_close(task_ctx *task) {
-    if (ATOMIC_CAS(&task->closing, 0, 1)) {
-        message_ctx closing = { 0 };
-        closing.mtype = MSG_TYPE_CLOSING;
-        _task_message_post(task, &closing);
+    if (ATOMIC_CAS(&task->closing, 0, 1)
+        && task->registered) {
+        _task_post_closing(task);
     }
 }
 int32_t task_isclosing(task_ctx *task) {
     // loader->closing：全局关闭广播已发出（_task_closing 置位）
-    // task->closing ：本任务已收到 CLOSING 消息（task_close 或关闭广播触发）
+    // task->closing ：本任务已被要求关闭（task_close 或关闭广播触发）
     return ATOMIC_GET(&task->loader->closing) || ATOMIC_GET(&task->closing);
 }
 task_type task_get_type(task_ctx *task) {
@@ -289,16 +300,30 @@ int32_t task_exists(loader_ctx *loader, name_t handle) {
 void task_incref(task_ctx *task) {
     ATOMIC_ADD_RELAXED(&task->ref, 1);
 }
-// 摘除后唤醒 _loader_task_closing：这是全仓唯一从 maptasks 摘 task 的地方，
-// 也就是"计数可能归零"的唯一发布点。叫醒必须排在 wrunlock 之后——
+// task_ungrab 推到 net 线程本轮派发之后的释放，放完 nfreeing 减一。ev_free 时还在队里的也走它(作 fcb)，
+// 那时在 ev_free 的线程上、里面不得再调 ev_*；正常关停 _loader_task_closing 要等 nfreeing 归零，走不到那一步。
+// 叫醒的握手：这边先减计数再查 closing，关停那边先置 closing 再查计数，两边都是足序，至少一方看得见对方
+static void _task_free_deferred(void *arg) {
+    task_ctx *task = arg;
+    loader_ctx *loader = task->loader;
+    task_free(task);
+    if (1 == ATOMIC_ADD(&loader->nfreeing, -1)
+        && 0 != ATOMIC_GET_SEQCST(&loader->closing)) {
+        waiter_wake_held(&loader->closing_waiter);
+    }
+}
+// 摘除后唤醒 _loader_task_closing：这是全仓唯一从 maptasks 摘 task 的地方。叫醒必须排在 wrunlock 之后——
 // waiter 用 mutex + cond 实现时，等待方是持着 closing_waiter 的锁去拿 lckmaptasks，放进写锁内锁序就反过来了。
-// closing 为 0 时（正常运行期）没有等待者，一条 atomic load 就短路掉
+// closing 为 0 时（正常运行期）没有等待者，一条 atomic load 就短路掉。
+// net 线程上归零的不当场释放：_arg_free 会析构上层句柄，此刻多半还嵌在协议回调或 tick 里，句柄析构经 ev_props
+// 同线程当场执行会重入正在用的连接状态。推到本线程本轮派发之后再放，nfreeing 记着没放完的
 void task_ungrab(task_ctx *task) {
     loader_ctx *loader = task->loader;
     name_t handle = task->handle;
     if (1 != ATOMIC_ADD(&task->ref, -1)) {
         return;
     }
+    int32_t idx = ev_cur_index(&loader->netev);
     void *ptr = NULL;
     name_t *key = &handle;
     name_t **found;
@@ -313,13 +338,21 @@ void task_ungrab(task_ctx *task) {
         if (NULL != task->name) {
             _task_name_map_del(loader->mapnames, task->name);
         }
+        if (INVALID_INDEX != idx) {
+            ATOMIC_ADD(&loader->nfreeing, 1);// 与摘表同在写锁里：关停那边不会看到表里没了、计数却还没记上
+        }
     }
     rwlock_distr_wrunlock(&loader->lckmaptasks);
-    if (NULL != ptr) {
-        task_free(task);
-        if (0 != ATOMIC_GET(&loader->closing)) {
-            waiter_wake_held(&loader->closing_waiter);// 关停期冷路径不看睡眠态；摘的可能是 loader 不 join 的线程，所以用 wake_held
-        }
+    if (NULL == ptr) {
+        return;
+    }
+    if (INVALID_INDEX != idx) {
+        ev_defer_exec(&loader->netev, idx, _task_free_deferred, _task_free_deferred, task);
+        return;
+    }
+    task_free(task);
+    if (0 != ATOMIC_GET(&loader->closing)) {
+        waiter_wake_held(&loader->closing_waiter);// 关停期冷路径不看睡眠态；摘的可能是 loader 不 join 的线程，所以用 wake_held
     }
 }
 int32_t task_bind_net(task_ctx *task, int32_t index) {
@@ -550,7 +583,7 @@ static void _task_emit(void *target, message_ctx *msg) {
         && ERR_OK == _loader_task_try_run((task_ctx *)target, msg)) {
         return;
     }
-    _task_message_push((task_ctx *)target, msg);
+    msgq_push(&((task_ctx *)target)->qumsg, msg);
     ++win[0];
 }
 // 一次可读事件解出的多个包统一激活一次：每包都激活的话，worker 可能在还没解完时
@@ -658,6 +691,9 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     if (BIT_CHECK(netev, NETEV_ACCEPT)) {
         cbs.acp_cb = prots_net_accept;
     }
+    if (BIT_CHECK(netev, NETEV_PEERADDR)) {
+        BIT_SET(ud.flags, UD_PEERADDR);
+    }
     if (NULL != task->acp_group) {
         cbs.acp_cb = BIT_CHECK(netev, NETEV_ACCEPT) ? _task_acp_accept_emit : _task_acp_accept;
         thrs = _task_acp_thrs(task, &nthrs);
@@ -699,11 +735,14 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     // 绑了 net 线程的，连接落在同一条上，收发不再跨线程；没绑的是 INVALID_INDEX，照旧按 fd 分配
     return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, setsess, task_net_index(task), sk);
 }
-int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, sock_ctx *sk) {
+int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, int32_t reuse, sock_ctx *sk) {
     ud_cxt ud = { 0 };
     ud.pktype = pktype;
     ud.handle = task->handle;
     ud.loader = task->loader;
+    if (0 != reuse) {
+        BIT_SET(ud.flags, UD_REUSEADDR);
+    }
     cbs_ctx cbs = { 0 };
     cbs.c_cb = prots_net_close;
     cbs.rf_cb = prots_net_recvfrom;
@@ -779,6 +818,10 @@ void task_handshaked(task_ctx *task, _net_handshake_cb _handshake) {
 }
 void task_closed(task_ctx *task, _net_close_cb _close) {
     task->_net_close = _close;
+}
+void task_watch_closed(task_ctx *task, _net_close_watch_cb cb, void *arg) {
+    close_watch w = { cb, arg };
+    cwatch_arr_push_back(&task->watchers, &w);
 }
 void task_recvedfrom(task_ctx *task, _net_recvfrom_cb _recvfrom) {
     task->_net_recvfrom = _recvfrom;

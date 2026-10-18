@@ -37,8 +37,7 @@ static int32_t _iocp_disconnect_iter(evsock_ctx *const *item, void *udata) {
 void _iocp_disconnect_all(watcher_ctx *watcher) {
     sockel_map_scan(watcher->element, _iocp_disconnect_iter, NULL);
 }
-// 初始化命令回调函数表，_iocp_cmd_drain 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
-// 如 在_ev_send里面直接发送数据
+// 初始化命令回调函数表。回调尽量轻：ev_send 只入队，攒满一批或 ev_close 冲刷时才同步发
 static void _iocp_init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
@@ -294,7 +293,7 @@ static void _iocp_init_cmd(watcher_ctx *watcher) {
     olcmd->ol_r.ev_cb = _iocp_on_cmd;
     olcmd->ol_r.sk.fd = INVALID_SOCK;
     olcmd->ol_r.sk.index = watcher->index;// 命令通道恒属本 watcher,口径同 unix 侧 _uev_init_cmd
-    cmdq_init(&olcmd->qu, 4 * ONEK);
+    cmdq_init(&olcmd->qu, CMD_QUEUE_CAP);
     tda_init(&olcmd->tda, (size_t)(cmdq_capacity(&olcmd->qu) / QUEUE_OVERLOAD_RATIO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
@@ -315,8 +314,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);// 1线程 对同一socket操作是线程安全
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
-        watcher->element = sockel_map_new(ONEK, _iocp_sockel_free);
-        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
+        watcher->element = sockel_map_new(SOCKEL_INIT_CAP, _iocp_sockel_free);
+        pool_init(&watcher->pool, 0, SK_POOL_MAX, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
         timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);
         list_init(&watcher->ticks);
@@ -386,7 +385,7 @@ static void _iocp_free_watcher(ev_ctx *ctx) {
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
-        (void)_send_cmd(watcher, &cmd);
+        _send_cmd(watcher, &cmd);
     }
     for (i = 0; i < ctx->nthreads; i++) {
         thread_join(ctx->watcher[i].thevent);
@@ -446,7 +445,7 @@ void ev_free(ev_ctx *ctx) {
     // 3. 停止并释放所有 watcher：_iocp_free_cmd 内 CMD_ADDACP 的 _iocp_try_freelsn 此时 lsn 仍活，正确
     _iocp_free_watcher(ctx);
     // 4. 本线程独占排空 acpex IOCP 的 AcceptEx 取消完成（acpex/watcher 均已停，无并发）：
-    //    _olp_on_accept_cb 见 remove==1 走释放分支只减 ref，ref 归零 → _iocp_freelsn 安全释放（内核已写完 OVERLAPPED）。
+    //    取到的每个完成经 _iocp_acpex_release 直接减 ref(各槽已 remove=1 并取走 fd)，ref 归零 → _iocp_freelsn 安全释放（内核已写完 OVERLAPPED）。
     //    排空到 nlsn 归零；连续 IOCP_STOP_DRAIN_TIMEOUT 无完成仍未清零 → LOG_ERROR（取消完成缺失=bug，宁可残留泄漏也不强释造成 UAF）。
     _iocp_free_acpex(ctx);
     lsn_arr_free(&ctx->arrlsn);

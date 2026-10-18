@@ -11,23 +11,22 @@ typedef struct pgsql_bool_word {
 
 // 取走第 idx 个结果的 reader; 下标须已由调用方确认在范围内。所有权转移给调用方,
 // 槽位置 NULL 以免 _pgpack_free 二次释放
-static inline pgsql_reader_ctx *_pgsql_reader_take(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
+static inline pgsql_reader_ctx *_pgsql_reader_take(pgpack_ctx *pgpack, uint32_t idx) {
     pgsql_result *res = pgres_arr_at(&pgpack->results, (int32_t)idx);
     if (NULL == res->reader) {
         return NULL; // 该语句无结果集（INSERT/UPDATE 无 RETURNING）
     }
     pgsql_reader_ctx *reader = res->reader;
-    reader->format = format;
     res->reader = NULL;
     return reader;
 }
-pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format) {
+pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack) {
     // 从上次停下的位置接着扫：槽位一旦取空就再不会变回非空，所以游标只前进不回头，
     // 遍历整个响应是 O(n) 而不是每次都从 0 重扫。BEGIN / SET 这类无结果集的槽位一并跳过
     uint32_t total = pgsql_result_count(pgpack);// 类型不符时返 0, 循环不进
     pgsql_reader_ctx *reader;
     while (pgpack->iter_cursor < total) {
-        reader = _pgsql_reader_take(pgpack, pgpack->iter_cursor, format);
+        reader = _pgsql_reader_take(pgpack, pgpack->iter_cursor);
         pgpack->iter_cursor++;
         if (NULL != reader) {
             return reader;
@@ -35,11 +34,11 @@ pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format) {
     }
     return NULL;
 }
-pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format) {
+pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx) {
     if (idx >= pgsql_result_count(pgpack)) {
         return NULL;// 类型不符时 count 为 0, 任何下标都被这条挡住
     }
-    return _pgsql_reader_take(pgpack, idx, format);
+    return _pgsql_reader_take(pgpack, idx);
 }
 void pgsql_reader_free(pgsql_reader_ctx *reader) {
     _pgpack_reader_free(reader); // 释放行数组与字段数组
@@ -68,15 +67,14 @@ pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_f
         return NULL;
     }
     pgpack_row *row = *pgrow_arr_at(&reader->arr_rows, reader->index);
-    if (NULL != field
-        && NULL != reader->fields) {
+    if (NULL != field) {
         *field = &reader->fields[index]; // 同时输出字段描述指针
     }
     return &row[index];
 }
 int16_t pgsql_reader_col(pgsql_reader_ctx *reader, const char *name, size_t nlens) {
-    if (NULL == reader->fields) {
-        return -1; // 无字段描述（未收到 RowDescription 消息）
+    if (0 == nlens) {
+        return -1; // PG 不允许零长列名；列名超长被丢弃的列 nlens 也是 0，不能让空名命中它
     }
     // 先比长度：只读列名的有效字节，不碰它后面没初始化的部分
     for (int32_t i = 0; i < reader->field_count; i++) {
@@ -92,12 +90,12 @@ pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack
 }
 // 8 个取值函数开头那三段（取行 → 类型 OID 白名单 → NULL 判定）收在这一处。
 // 与 mysql_reader.c 的 _mysql_reader_row 同形，唯一差别是那边 NULL 判定排在类型判定之前。
-// "row 非 NULL 就直接解引用 field" 靠开头挡掉 fields == NULL 才成立（此时 pgsql_reader_index 不写 field）。
+// row 非 NULL 时 *field 必已写好（fields 为 NULL 时 field_count 为 0，pgsql_reader_index 返回 NULL）。
 // 返回 NULL 时 err 已写好（ERR_FAILED=取不到/类型不符，1=字段是 NULL），调用方只管返自己的零值
 static pgpack_row *_pgsql_reader_row(pgsql_reader_ctx *reader, int16_t col,
                                      const int32_t *oids, int32_t noid,
                                      pgpack_field **field, int32_t *err) {
-    pgpack_row *row = (NULL == reader->fields) ? NULL : pgsql_reader_index(reader, col, field);
+    pgpack_row *row = pgsql_reader_index(reader, col, field);
     if (NULL == row) {
         SET_PTR(err, ERR_FAILED);
         return NULL;
@@ -235,14 +233,13 @@ const char *pgsql_reader_bytea_at(pgsql_reader_ctx *reader, int16_t col, int32_t
 }
 // JDN 计算（与 PostgreSQL date2j 逻辑一致）：返回相对 PG 纪元（2000-01-01）的天数
 static inline int32_t _pgsql_date_to_days(int32_t y, int32_t m, int32_t d) {
-    int32_t century, julian;
     if (m > 2) { 
         m++; y += 4800; 
     } else {
         m += 13; y += 4799;
     }
-    century = y / 100;
-    julian = y * 365 - 32167;
+    int32_t century = y / 100;
+    int32_t julian = y * 365 - 32167;
     julian += y / 4 - century + century / 4;
     julian += 7834 * m / 256 + d;
     return julian - 2451545;
@@ -300,8 +297,7 @@ static const char *_pgsql_ts_fixed(const char *s, struct tm *dt) {
     dt->tm_sec = sec;
     return s + 19;
 }
-// 将文本格式时间戳 "YYYY-MM-DD HH:MM:SS[.ffffff]" 解析为相对 PG 纪元的微秒数。
-// 用 _strptime 而不是 sscanf 是为了逐字段量程校验：%d 什么都收，垃圾年份会算出垃圾天数还报成功。
+// 将文本格式时间戳 "YYYY-MM-DD HH:MM:SS[.ffffff]" 解析为相对 PG 纪元的微秒数，_strptime 逐字段卡量程。
 // 已知收窄：年份只支持到 9999，而 PG 支持到 294276 AD，5 位及以上的年份解析失败。
 // 由 test_pgsql_parse.c 的 test_pgsql_reader_temporal_text_range 钉住；_pgsql_days_from_text 同此
 static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) {
@@ -332,12 +328,11 @@ static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) 
          + (int64_t)dt.tm_min * 60000000LL
          + (int64_t)dt.tm_sec * 1000000LL
          + usec;
-    // 偏移是 ±HH[:MM[:SS]]。上界只为挡住装不下 int 的位数,不代 PG 卡它自己的语义范围;
-    // 不用 sscanf("%d:%d:%d")的理由同上面改用 _strptime 那条
+    // 偏移是 ±HH[:MM[:SS]]，上界只挡装不下 int 的位数，不代 PG 卡它自己的语义范围
     static const uint32_t _tz_max[3] = { 23, 59, 59 };
     uint32_t tz[3];
     int64_t offset;
-    // 从日期时间之后起扫，不再按固定下标 11 跳过 "YYYY-MM-DD" 的两个减号——年份不是 4 位就跳错位
+    // 从日期时间之后起扫：年份不一定是 4 位，不能按固定下标跳过日期里的减号
     for (const char *p = end; '\0' != *p; p++) {
         if ('+' == *p || '-' == *p) {
             if (0 == parse_colon_triple(p + 1, _tz_max, tz)) {

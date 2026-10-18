@@ -39,20 +39,25 @@ void pgsql_bind_clear(pgsql_bind_ctx *bind) {
 }
 // 占下一个参数的格式码槽。多绑时把 count 顶到 nparam + 1 让组包拒，本次不写
 static inline int32_t _pgsql_bind_format(pgsql_bind_ctx *bind, pgpack_format format) {
-    char *p;
     if (bind->count >= bind->nparam) {
         bind->count = (uint32_t)bind->nparam + 1;
         return ERR_FAILED;
     }
-    p = bind->buf.data + 2 + (size_t)bind->count * 2;
-    write_be16(p, (uint16_t)format);// 格式码 2 字节
+    write_be16(bind->buf.data + 2 + (size_t)bind->count * 2, (uint16_t)format);// 格式码 2 字节
     bind->count++;
     return ERR_OK;
 }
-// 同 pgsql_bind，本文件的各 pgsql_bind_xxx 都走它
+// 同 pgsql_bind，本文件的各 pgsql_bind_xxx 都走它。值长度字段是 Int32，超 INT32_MAX 按多绑处理、组包时拒
 static inline void _pgsql_bind_put(pgsql_bind_ctx *bind, const char *value, size_t lens, pgpack_format format) {
-    if (0 == bind->nparam
-        || ERR_OK != _pgsql_bind_format(bind, format)) {
+    if (0 == bind->nparam) {
+        return;
+    }
+    if (lens > INT32_MAX) {
+        LOG_ERROR("pgsql bind value exceeds INT32_MAX: %zu.", lens);
+        bind->count = (uint32_t)bind->nparam + 1;
+        return;
+    }
+    if (ERR_OK != _pgsql_bind_format(bind, format)) {
         return;
     }
     binary_set_integer(&bind->buf, lens, 4, 0); // 追加该参数值的字节长度
@@ -60,7 +65,7 @@ static inline void _pgsql_bind_put(pgsql_bind_ctx *bind, const char *value, size
         binary_set_binary(&bind->buf, value, lens); // 追加参数值数据
     }
 }
-void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format format) {
+void pgsql_bind(pgsql_bind_ctx *bind, const char *value, size_t lens, pgpack_format format) {
     _pgsql_bind_put(bind, value, lens, format);
 }
 void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value) {

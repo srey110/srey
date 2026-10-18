@@ -4,10 +4,14 @@
 #include "utils/buffer.h"
 #include "protocol/prots_pub.h"
 
-//最大聚合嵌套层数，防御恶意 server 用 *1\r\n*1\r\n... 嵌套数组导致堆 OOM
-//（每层嵌套都只是再压一帧、永不清空帧栈，故永不触发完整 pack 返回，节点持续累积到 rd 的链表上）
+//最大聚合嵌套层数：解包的帧栈按它定长，嵌套超限即 PROT_ERROR，保的是帧栈不溢出(内存兜底见 REDIS_MAX_NODES)。
 //含 stack[0] 顶层虚拟帧，故实际可嵌套 REDIS_MAX_DEPTH-1 层；上层沿回复链表建嵌套结构时，层栈按它定长不会溢出
 #define REDIS_MAX_DEPTH     18
+//单次 RESP 解包最大节点数，纯内存兜底(嵌套深度另由 REDIS_MAX_DEPTH 卡，那道保的是帧栈不溢出)，
+//此值只决定为一个未完成回复最多垫多少内存，不应低到误伤合法的扁平大结果集。
+//1<<18 时最坏约 17MB（节点约 64B/个），仍是现有 7 万元素用例的 3.7 倍余量；
+//再往上抬只是让恶意 server 能用约 4MB 流量顶出几十 MB，业务侧的大结果集应分页取
+#define REDIS_MAX_NODES     (1 << 18)
 
 // RESP2/RESP3 类型标识字节定义
 #define RESP_STRING  '+' // 简单字符串   RESP2  +OK\r\n
@@ -48,20 +52,21 @@ typedef struct redis_pack_ctx {
 void _redis_pkfree(void *data);
 // 释放与 ud_cxt 关联的 Redis 解包上下文
 void _redis_udfree(ud_cxt *ud);
+// 判断当前回复能否唤醒等待者：RESP3 推送除订阅类确认外都不能(名单见实现)
+int32_t _redis_may_resume(void *data);
 /// <summary>
 /// 构造 Redis RESP 请求包
 /// </summary>
 /// <param name="size">输出：请求包长度</param>
 /// <param name="fmt">格式字符串，参数以空格分隔；%b 表示二进制（需跟 size_t 长度参数），%% 表示 %。
 /// 其余支持 %s、%c、%p、diouxX（含 hh/h/l/ll/z 长度修饰）、eEfFgGaA，语义同 C printf。
-/// 不在此列的转换（如 %j、%t、%L，以及只有标志没有转换符的末尾 %）一律整条拒绝并返回 NULL：
-/// 认不出的转换既取不走对应的可变参数、也无法跳过转换符，继续走下去后面每个转换都会读到
-/// 错位一格的参数（%s 拿到整数当指针即段错误），没有能安全继续的解释</param>
+/// 不在此列的转换（如 %j、%t、%L，以及只有标志没有转换符的末尾 %）不支持，单个转换说明超过 63 字节也不支持</param>
 /// <param name="...">可变参数</param>
-/// <returns>请求包数据（调用方负责释放）；格式串含不支持的转换时返回 NULL 且 *size 置 0</returns>
+/// <returns>请求包数据（调用方负责释放）；格式串含不支持的转换时整条拒绝，返回 NULL 且 *size 置 0</returns>
 char *redis_pack(size_t *size, const char *fmt, ...);
 /// <summary>
-/// Redis RESP 解包：从缓冲区解析一条完整响应（含嵌套聚合类型）
+/// Redis RESP 解包：从缓冲区解析一条完整响应（含嵌套聚合类型）。只解 RESP 回复，PACK_REDIS 只能用在客户端连接上：
+/// 监听侧收到的内联命令(如纯文本 "PING\r\n")首字节不是类型字节，直接判协议错误
 /// </summary>
 /// <param name="buf">接收缓冲区</param>
 /// <param name="ud">ud_cxt 指针，内部维护解包中间状态</param>

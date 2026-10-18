@@ -20,7 +20,7 @@
  SOFTWARE.
  *============================================================================*/
 
-// srey 改动:把 yyjson 的默认分配器指向框架的 _malloc / _realloc / _free（定义在 yyjson_helper.c），
+// srey补丁:把 yyjson 的默认分配器指向框架的 _malloc / _realloc / _free（定义在 yyjson_helper.c），
 // 使其分配计入 MEMORY_CHECK。这是 yyjson 官方的扩展点，见 doc/BuildAndTest.md
 #define YYJSON_CUSTOM_ALC g_yyjson_alc
 #include "serial/yyjson/yyjson.h"

@@ -6,7 +6,7 @@
 #   docker compose down                  # 停止（保留数据卷）
 #   docker compose down -v               # 停止并删除数据卷
 #
-# 凭据/端口与 bin/script/test/mysql.lua、test/task_mqtt_client.c 等测试代码一致。
+# 凭据/端口与 bin/script/test/db_mysql.lua、test/task_mqtt_client.c 等测试代码一致。
 
 services:
   mysql:
@@ -39,6 +39,21 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: "12345678"
       POSTGRES_DB: test
+    # 开 TLS：明文连接照常可用，带 SSL 上下文的客户端走 SSLRequest 后可用 SCRAM-SHA-256-PLUS。
+    # 证书每次启动现生成(自签、ECDSA P-384 / SHA-384 签名)，签名哈希不是 SHA-256，正好覆盖
+    # tls-server-end-point 按证书签名算法选哈希那一支；放在 PGDATA 之外，私钥属主与权限按 postgres 的要求设
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        mkdir -p /var/lib/postgresql/tls
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -sha384 -nodes -days 3650 \
+            -subj /CN=localhost -keyout /var/lib/postgresql/tls/server.key -out /var/lib/postgresql/tls/server.crt 2>/dev/null
+        chown -R postgres:postgres /var/lib/postgresql/tls
+        chmod 600 /var/lib/postgresql/tls/server.key
+        exec docker-entrypoint.sh postgres -c ssl=on \
+            -c ssl_cert_file=/var/lib/postgresql/tls/server.crt -c ssl_key_file=/var/lib/postgresql/tls/server.key
     volumes:
       - pgsql_data:/var/lib/postgresql/data
     healthcheck:

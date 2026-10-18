@@ -72,8 +72,9 @@ static void _timeout_auto_close(task_ctx *task) {
 static int32_t _timeout_rpc(task_ctx *task) {
     task_timeout_ctx *ctx = coro_get_arg(task);
     task_ctx *dest = task_grab(task->loader, ctx->_rpcname);
-    if (NULL == dest) {
-        return ERR_OK;
+    if (NULL == dest) {// 目标缺失按失败记(收尾期间由 _timeout_failed 忽略)，否则整段 rpc 用例静默跳过
+        LOG_WARN("rpc task %"PRIu64" not found.", (uint64_t)ctx->_rpcname);
+        return ERR_FAILED;
     }
     int32_t rtn = ERR_FAILED;
     // type 1: 整数加法，task_call 先做 fire-and-forget 覆盖无回复路径
@@ -127,7 +128,7 @@ static int32_t _timeout_udp(task_ctx *task) {
     size_t rlens;
     void *resp;
     size_t rlen;
-    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, &sk)) {
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, 0, &sk)) {
         LOG_WARN("task_udp error.");
         return ERR_FAILED;
     }
@@ -424,7 +425,7 @@ static int32_t _timeout_ws(task_ctx *task) {
         ev_close(&task->loader->netev, &sk);
         return ERR_FAILED;
     }
-    // 重复注入：_websock_secextra 判误用并就地断连，随后的收发必然失败。放在正常流程验完之后，
+    // 重复注入：_websock_set_secextra_cb 判误用并就地断连，随后的收发必然失败。放在正常流程验完之后，
     // 且只验一次——_timeout 每秒自我重挂，每轮都绑两次会把那条告警刷几十条
     if (0 == ctx->_rebind_done) {
         ctx->_rebind_done = 1;
@@ -567,22 +568,25 @@ erro:
     return ERR_FAILED;
 }
 // 用调用方给定的原始 URL 组 harbor POST 请求：harbor_pack 只会生成规范查询串，
-// 百分号编码 / 非法数值等畸形 URL 须在这里自行组包
-static void *_harbor_pack_url(const char *url, void *data, size_t size, size_t *lens) {
+// 百分号编码 / 非法数值等畸形 URL 须在这里自行组包。origin 非 NULL 时带上 Origin 头
+static void *_harbor_pack_url(const char *url, const char *origin, void *data, size_t size, size_t *lens) {
     binary_ctx bwriter;
     binary_init_write(&bwriter, 0, 0);
     http_pack_req(&bwriter, "POST", url);
     http_pack_head(&bwriter, "Connection", "Keep-Alive");
     http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
+    if (NULL != origin) {
+        http_pack_head(&bwriter, "Origin", origin);
+    }
     http_pack_content(&bwriter, data, size);
     *lens = bwriter.offset;
     return bwriter.data;
 }
 // 发一个 harbor 请求并断言响应状态码（code 为状态码字符串，如 "404"），不校验 body
-static int32_t _harbor_expect_code(task_ctx *task, sock_ctx *sk, const char *url,
+static int32_t _harbor_expect_code(task_ctx *task, sock_ctx *sk, const char *url, const char *origin,
                                    void *data, size_t size, const char *code) {
     size_t rsize = 0;
-    void *pack = _harbor_pack_url(url, data, size, &rsize);
+    void *pack = _harbor_pack_url(url, origin, data, size, &rsize);
     struct http_pack_ctx *rpack = coro_send(task, sk, pack, rsize, NULL, 0);
     if (NULL == rpack) {
         LOG_WARN("coro_send error.");
@@ -674,7 +678,7 @@ static int32_t _timeout_habor(task_ctx *task) {
     SNPRINTF(qurl, sizeof(qurl), "/request?dst=%%3%c%s&type=%%3101", dstr[0], dstr + 1);
     dlen = randrange(1, 256);
     randstr(data, (size_t)dlen);
-    pack = _harbor_pack_url(qurl, data, (size_t)dlen, &rsize);
+    pack = _harbor_pack_url(qurl, NULL, data, (size_t)dlen, &rsize);
     rpack = coro_send(task, &sk, pack, rsize, NULL, 0);
     if (NULL == rpack) {
         LOG_WARN("coro_send error.");
@@ -690,23 +694,29 @@ static int32_t _timeout_habor(task_ctx *task) {
         goto erro;
     }
     // 畸形查询值一律 404：非数字 dst
-    if (ERR_OK != _harbor_expect_code(task, &sk, "/request?dst=abc&type=101",
+    if (ERR_OK != _harbor_expect_code(task, &sk, "/request?dst=abc&type=101", NULL,
                                       data, (size_t)dlen, "404")) {
         goto erro;
     }
     // '+' 按 plus2space 解码成前导空格，strtoull 会跳过空白把它当合法数值
     SNPRINTF(qurl, sizeof(qurl), "/request?dst=+%s&type=101", dstr);
-    if (ERR_OK != _harbor_expect_code(task, &sk, qurl, data, (size_t)dlen, "404")) {
+    if (ERR_OK != _harbor_expect_code(task, &sk, qurl, NULL, data, (size_t)dlen, "404")) {
         goto erro;
     }
     // type 超 uint16：截断后会变成另一个合法 subtype（65537 -> 1）投给目标
     SNPRINTF(qurl, sizeof(qurl), "/request?dst=%s&type=65537", dstr);
-    if (ERR_OK != _harbor_expect_code(task, &sk, qurl, data, (size_t)dlen, "404")) {
+    if (ERR_OK != _harbor_expect_code(task, &sk, qurl, NULL, data, (size_t)dlen, "404")) {
         goto erro;
     }
     // 尾随垃圾字符
     SNPRINTF(qurl, sizeof(qurl), "/request?dst=%s&type=1x", dstr);
-    if (ERR_OK != _harbor_expect_code(task, &sk, qurl, data, (size_t)dlen, "404")) {
+    if (ERR_OK != _harbor_expect_code(task, &sk, qurl, NULL, data, (size_t)dlen, "404")) {
+        goto erro;
+    }
+    // 带 Origin(浏览器跨站投递)一律 403，dst/type 合法也不投；沙箱页发的 Origin: null 同样拒
+    SNPRINTF(qurl, sizeof(qurl), "/request?dst=%s&type=101", dstr);
+    if (ERR_OK != _harbor_expect_code(task, &sk, qurl, "http://evil.example", data, (size_t)dlen, "403")
+        || ERR_OK != _harbor_expect_code(task, &sk, qurl, "null", data, (size_t)dlen, "403")) {
         goto erro;
     }
     ev_close(&task->loader->netev, &sk);
@@ -744,7 +754,7 @@ static inline void _timeout_failed(task_ctx *task, task_timeout_ctx *ctx) {
         return;
     }
     ctx->_failed = 1;
-    *ctx->_ok = 0;
+    ATOMIC_SET((atomic_t *)ctx->_ok, 0);
 }
 static void _timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
@@ -810,7 +820,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
             LOG_WARN("habor reject test error.");
         }
     }
-    *ctx->_ok = ctx->_failed ? 0 : 1;
+    ATOMIC_SET((atomic_t *)ctx->_ok, ctx->_failed ? 0 : 1);
     task_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {

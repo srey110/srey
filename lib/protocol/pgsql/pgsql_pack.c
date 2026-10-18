@@ -5,8 +5,8 @@ void pgsql_pack_start(binary_ctx *bwriter, int8_t code, size_t lens) {
     binary_set_int8(bwriter, code); // 写入消息类型码
     binary_set_skip(bwriter, 4); // 预留 4 字节消息体长度字段
 }
-void pgsql_pack_end(binary_ctx *bwriter) {
-    write_be32(bwriter->data + 1, (uint32_t)(bwriter->offset - 1)); // 回填消息体长度（不含类型码字节）
+int32_t pgsql_pack_end(binary_ctx *bwriter) {
+    return pgsql_pack_append_end(bwriter, 1);// 长度字段紧跟类型码
 }
 size_t pgsql_pack_append_start(binary_ctx *bwriter, int8_t code) {
     binary_set_int8(bwriter, code); // 追加子消息类型码
@@ -14,8 +14,20 @@ size_t pgsql_pack_append_start(binary_ctx *bwriter, int8_t code) {
     binary_set_skip(bwriter, 4); // 预留 4 字节长度字段
     return offset;
 }
-void pgsql_pack_append_end(binary_ctx *bwriter, size_t offset) {
-    write_be32(bwriter->data + offset, (uint32_t)(bwriter->offset - offset)); // 回填子消息体长度
+int32_t pgsql_pack_append_end(binary_ctx *bwriter, size_t offset) {
+    size_t lens = bwriter->offset - offset;
+    if (lens > INT32_MAX) {// 长度字段是 Int32，截断会让服务端把余下的数据当成后续消息
+        LOG_ERROR("pgsql message length exceeds INT32_MAX: %zu.", lens);
+        return ERR_FAILED;
+    }
+    write_be32(bwriter->data + offset, (uint32_t)lens); // 回填消息体长度（含长度字段自身，不含类型码）
+    return ERR_OK;
+}
+// 组包失败：放掉缓冲、size 置 0
+static void *_pgpack_fail(binary_ctx *bwriter, size_t *size) {
+    binary_free(bwriter);
+    *size = 0;
+    return NULL;
 }
 // 写一条协议 String 字段。binary_set_string 对 NULL 是一个字节都不写（连结束 NUL 都没有），
 // 而协议 String 至少要有一个 NUL——缺了它后端读不到终止符，整条消息的后续字段全体错位一字节
@@ -38,6 +50,30 @@ static inline void _pgpack_set_string_n(binary_ctx *bwriter, const char *str, si
     }
     binary_set_int8(bwriter, 0);
 }
+void *pgsql_pack_startup(const char *user, const char *database, size_t *size) {
+    // StartupMessage 无类型码：Int32(总长) Int16(主版本 3) Int16(次版本 0) 若干 String 键值对，一个 NUL 收尾
+    static const char *const _params[] = {
+        "client_encoding", "UTF8",
+        "DateStyle", "ISO",
+        "application_name", "srey",
+    };
+    binary_ctx bwriter;
+    binary_init_write(&bwriter, 0, 0);
+    binary_set_skip(&bwriter, 4); // 预留长度字段
+    binary_set_integer(&bwriter, 3, 2, 0); // 协议主版本号 3
+    binary_set_integer(&bwriter, 0, 2, 0); // 协议次版本号 0
+    binary_set_string(&bwriter, "user");
+    _pgpack_set_string(&bwriter, user);
+    binary_set_string(&bwriter, "database");
+    _pgpack_set_string(&bwriter, database);
+    for (size_t i = 0; i < ARRAY_SIZE(_params); i++) {
+        binary_set_string(&bwriter, _params[i]);
+    }
+    binary_set_int8(&bwriter, 0); // 参数列表结束标志
+    write_be32(bwriter.data, (uint32_t)bwriter.offset); // 回填消息总长度
+    *size = bwriter.offset;
+    return bwriter.data;
+}
 void *pgsql_pack_terminate(size_t *size) {
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'X', 0); // Terminate：Byte1('X') Int32(4)
@@ -53,7 +89,9 @@ void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size) {
     size_t sqlsize = sqllen + 1;
     pgsql_pack_start(&bwriter, 'Q', 5 + sqlsize); // Query：Byte1('Q') Int32 String
     _pgpack_set_string_n(&bwriter, sql, sqlsize);
-    pgsql_pack_end(&bwriter);
+    if (ERR_OK != pgsql_pack_end(&bwriter)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     *size = bwriter.offset;
     return bwriter.data;
 }
@@ -80,7 +118,9 @@ void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql
     } else {
         binary_set_integer(&bwriter, 0, 2, 0); // 无参数类型约束
     }
-    pgsql_pack_end(&bwriter);
+    if (ERR_OK != pgsql_pack_end(&bwriter)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     // 追加 Sync 消息：Byte1('S') Int32(4)
     size_t offset = pgsql_pack_append_start(&bwriter, 'S');
     pgsql_pack_append_end(&bwriter, offset);
@@ -110,7 +150,9 @@ void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_for
     }
     binary_set_integer(&bwriter, 1, 2, 0); // 结果列格式代码数量为 1（统一格式）
     binary_set_integer(&bwriter, resultformat, 2, 0); // 结果列格式代码
-    pgsql_pack_end(&bwriter);
+    if (ERR_OK != pgsql_pack_end(&bwriter)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     // Describe：Byte1('D') Int32 Byte1 String
     size_t offset = pgsql_pack_append_start(&bwriter, 'D');
     binary_set_int8(&bwriter, 'P'); // 描述刚 Bind 的未命名门户：只回 RowDescription/NoData，不回 ParameterDescription
@@ -133,7 +175,9 @@ void *pgsql_pack_stmt_close(const char *name, size_t *size) {
     pgsql_pack_start(&bwriter, 'C', 0);
     binary_set_int8(&bwriter, 'S'); // 'S' 关闭预处理语句，'P' 关闭门户
     _pgpack_set_string(&bwriter, name);
-    pgsql_pack_end(&bwriter);
+    if (ERR_OK != pgsql_pack_end(&bwriter)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     // Sync：Byte1('S') Int32(4)
     size_t offset = pgsql_pack_append_start(&bwriter, 'S');
     pgsql_pack_append_end(&bwriter, offset);
@@ -145,7 +189,9 @@ void *pgsql_pack_copy_data(const void *data, size_t lens, size_t *size) {
     // CopyData：Byte1('d') Int32(4+lens) ByteN(data)
     pgsql_pack_start(&bwriter, 'd', 5 + lens);
     binary_set_binary(&bwriter, data, lens);
-    pgsql_pack_end(&bwriter);
+    if (ERR_OK != pgsql_pack_end(&bwriter)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     *size = bwriter.offset;
     return bwriter.data;
 }
@@ -163,7 +209,9 @@ void *pgsql_pack_copy_fail(const char *msg, size_t *size) {
     size_t msgsize = _pgpack_strsize(msg);
     pgsql_pack_start(&bwriter, 'f', 5 + msgsize);
     _pgpack_set_string_n(&bwriter, msg, msgsize);
-    pgsql_pack_end(&bwriter);
+    if (ERR_OK != pgsql_pack_end(&bwriter)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     *size = bwriter.offset;
     return bwriter.data;
 }
@@ -173,10 +221,14 @@ void *pgsql_pack_copy_in(const char *sql, const void *data, size_t lens, size_t 
     // Query：Byte1('Q') Int32 String，后接 CopyData('d') 与 CopyDone('c')
     pgsql_pack_start(&bwriter, 'Q', 5 + sqlsize + 5 + lens + 5);
     _pgpack_set_string_n(&bwriter, sql, sqlsize);
-    pgsql_pack_end(&bwriter);
+    if (ERR_OK != pgsql_pack_end(&bwriter)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     size_t offset = pgsql_pack_append_start(&bwriter, 'd');
     binary_set_binary(&bwriter, data, lens);
-    pgsql_pack_append_end(&bwriter, offset);
+    if (ERR_OK != pgsql_pack_append_end(&bwriter, offset)) {
+        return _pgpack_fail(&bwriter, size);
+    }
     offset = pgsql_pack_append_start(&bwriter, 'c');
     pgsql_pack_append_end(&bwriter, offset);
     *size = bwriter.offset;

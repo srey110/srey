@@ -8,7 +8,7 @@ local stmt  = require("lib.mysql_stmt")
 local mysql = require("srey.mysql")
 local reader = require("srey.mysql.reader")
 local pub   = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
-local mpub  = require("lib.mysql_pub")-- 与 mysql_stmt.lua 共用的请求收尾，见该模块头部
+local mpub  = require("lib.mysql_pub")-- 与 mysql_stmt.lua 共用的包类型与判型，见该模块头部
 local MYSQL_PACK_TYPE = mpub.PACK_TYPE
 
 -- mysql_ctx：MySQL 连接上下文，每实例对应一条持久连接。
@@ -19,16 +19,17 @@ local ctx = class("mysql_ctx", pub)
 ---@param ip string 服务器 IP
 ---@param port integer 服务器端口
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
----@param user string 用户名
----@param password string 密码
----@param database string 初始数据库
+---@param user string 用户名，最长 128 字节
+---@param password string 密码，最长 256 字节。caching_sha2_password 账号在明文连接上遇到服务端缓存未命中（如服务端重启后首连）
+---认证失败：明文下不做 RSA 公钥交换。出路：配 SSL、先经 SSL 登录一次让服务端缓存口令，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)
+---@param database string 初始数据库，最长 256 字节
 ---@param charset string 字符集（如 "utf8mb4"）
 ---@param maxpk integer? 单包最大字节数，0 使用默认
 function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
     local ssl = pub.ssl(sslname)
     self.mysql = mysql.new(ip, port, ssl, user, password, database, charset, maxpk)
     if not self.mysql then
-        error(string.format("mysql.new failed: %s:%d db=%s", ip, port, tostring(database)), 2)
+        error(string.format("mysql.new failed: %s:%d db=%s", ip, port, tostring(database)), 3)
     end
     self.sslname = sslname
     -- MySQL 半双工，一条命令的响应没收完就发下一条会串包，而 mysql_ctx 的解析状态
@@ -45,13 +46,17 @@ function ctx:_connect()
     if not srey.wait_connect(sk, SSL_NAME.NONE ~= self.sslname or nil) then
         return false
     end
-    local ok,_,_ = srey.wait_handshaked(sk)
+    -- 握手失败的 ERR 包体记到连接上(之后 erro() 取得到错误号)，同时打出来；同 C 侧 _mysql_do_connect
+    local ok, err, elens = srey.wait_handshaked(sk)
+    if not ok and err then
+        WARN("%s", self.mysql:record_handshake(err, elens))
+    end
     return ok
 end
 
 ---切换当前数据库（COM_INIT_DB）
 ---@param database string 目标数据库名
----@return boolean ok 切换成功 true（库名超 63 字节时不发包直接返 false）
+---@return boolean ok 切换成功 true（库名超 256 字节时不发包直接返 false）
 function ctx:selectdb(database)
     return srey.serial_ret(false, self.serial(self._selectdb, self, database))
 end
@@ -60,23 +65,24 @@ function ctx:_selectdb(database)
     if nil == pack then
         return false
     end
-    return mpub.request_ok(self.mysql, pack, size)
+    return mpub.request_ok(self, pack, size)
 end
 
 -- conn_pub 的探活钩子：COM_PING，不自动重连。为什么必须正向判型见 mysql_pub.request_ok
 function ctx:_ping()
     local pack, size = self.mysql:pack_ping()
-    return mpub.request_ok(self.mysql, pack, size)
+    return mpub.request_ok(self, pack, size)
 end
 
 ---收齐一次请求的全部响应包（多语句 / CALL 会产生多个结果集），query 与 stmt:execute 共用
----@param sk userdata 连接标识
+---@param sk userdata 发出请求那条连接的标识（_send_wait 带出），续读须用同一条
 ---@param mpack lightuserdata 首个响应包
 ---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；中途断连或结果集异常返回 nil
 function ctx:_read_results(sk, mpack)
     local results = {}
     local failed = false
     while true do
+        self.mysql:record(mpack)-- 连接级 erro / last_id / affectd_rows 只在锁内由收应答的一方落
         local pktype, more = mysql.pack_type(mpack)-- more 须在 reader.new 前读
         if MYSQL_PACK_TYPE.MPACK_OK == pktype then
             results[#results + 1] = true
@@ -93,7 +99,7 @@ function ctx:_read_results(sk, mpack)
         if not more then
             break
         end
-        mpack = srey.syn_recv(sk)
+        mpack = self:_recv_wait(sk)
         if not mpack then
             return nil
         end
@@ -107,7 +113,8 @@ end
 ---执行 SQL 查询（COM_QUERY）。
 ---服务端支持 CLIENT_SESSION_TRACK（MySQL 5.7+）时 query("USE xxx") 会被 OK 包的
 ---session-state-change 跟踪，重连握手用切换后的库；老服务端不带该信息，那时切库须用 selectdb，
----否则 ping 失败自动重连会按旧库名握手，之后未限定库名的语句全部打到原库上
+---否则 ping 失败自动重连会按旧库名握手，之后未限定库名的语句全部打到原库上。
+---接收侧不拼 16MB 续传包：单个包载荷达 16MB-1（如超大的行）即按协议错误断连，返回 nil
 ---@param sql string SQL 语句
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
 ---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败或多结果集中途断连返回 nil
@@ -122,7 +129,7 @@ function ctx:_query(sql, mbind)
         WARN("mysql query payload exceeds 16MB.")
         return nil
     end
-    local mpack, sk = mpub.request(self.mysql, pack, size)
+    local mpack, sk = self:_send_wait(pack, size)
     if not mpack then
         return nil
     end
@@ -143,13 +150,13 @@ function ctx:_prepare(sql)
         WARN("mysql stmt_prepare payload exceeds 16MB.")
         return false
     end
-    local mpack = mpub.request(self.mysql, pack, size)
+    local mpack = self:_send_wait(pack, size)
     if not mpack then
         return false
     end
-    -- 必须正向判 MPACK_STMT_PREPARE 而不是"非 ERR 即成功"：连接因前一次多结果集没收干净而
-    -- 错位时,这里收到的可能是残留的 OK 包,mysql_stmt_init 对它返 NULL → stmt.new 返 nil →
-    -- mysql_stmt 的 ctor 直接 error 抛出、穿透本函数,调用方按注解写的 `if not stmt` 完全失效
+    self.mysql:record(mpack)-- prepare 失败时的 ERR 包
+    -- 必须正向判 MPACK_STMT_PREPARE 而不是"非 ERR 即成功"：连接错位时收到的可能是残留的 OK 包，
+    -- 拿它建 stmt 会在 ctor 里抛错，被 serial 记一条 ERROR 后才按失败返回
     if MYSQL_PACK_TYPE.MPACK_STMT_PREPARE ~= mysql.pack_type(mpack) then
         return false
     end
@@ -173,10 +180,8 @@ function ctx:version()
     return self.mysql:version()
 end
 
----返回最近一次错误信息并清除错误状态
----**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
----命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
----（读取即清除，更要紧挨着命令读——别的协程先读一次就把它清空了）
+---返回本连接的命令最近收到的 ERR 包带的错误信息并清除错误状态，成功的命令不清它，握手失败的 ERR 也记；
+---读取时机见 conn_pub 文件头（读取即清除，更要紧挨着命令读——别的协程先读一次就把它清空了）
 ---@return string err 错误描述（服务端文案，随版本与 locale 变）
 ---@return integer code MySQL 错误号；无错误时为 0。要区分可重试（1213 死锁 / 1205 锁等待超时）
 ---与不可重试（1062 重复键）只能靠它，别去匹配文案
@@ -184,18 +189,16 @@ function ctx:erro()
     return self.mysql:erro()
 end
 
----返回最近一次 INSERT 操作产生的自增 ID
----**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
----命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
----@return integer id last insert id
+---返回最近一个命令 OK 包带的自增 ID（非 INSERT 语句为 0，ERR 包与结果集不改它）；读取时机见 conn_pub 文件头。
+---多语句时是最后一个 OK 包的
+---@return integer|false id last insert id；超出 int64 时为 false 并打 WARN（同 reader:integer）
 function ctx:last_id()
     return self.mysql:last_id()
 end
 
----返回最近一次 UPDATE/DELETE/INSERT 影响的行数
----**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
----命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
----@return integer rows affected rows
+---返回最近一个命令 OK 包带的影响行数（ERR 包与结果集不改它）；读取时机见 conn_pub 文件头。
+---多语句时是最后一个 OK 包的
+---@return integer|false rows affected rows；超出 int64 时为 false 并打 WARN
 function ctx:affectd_rows()
     return self.mysql:affectd_rows()
 end

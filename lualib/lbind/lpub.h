@@ -5,7 +5,7 @@
 #include "lua/lualib.h"
 #include "lua/lauxlib.h"
 
-#define CUR_TASK_NAME "_curtask" // Lua 全局变量名：当前 task 指针
+#define CUR_TASK_NAME "_curtask" // Lua 全局变量名：当前 task 指针，给脚本读；绑定取的是注册表里那份(lpub_cur_task)，脚本改它不影响绑定
 #define PATH_NAME "_propath" // Lua 全局变量名：程序根路径
 #define PORT_OUT_OF_RANGE "port out of range" // 端口越界文案，各 connect / listen 绑定共用
 #define REQTYPE_OUT_OF_RANGE "reqtype out of range" // 请求类型越界文案，core 与 harbor 绑定共用
@@ -37,19 +37,19 @@
     lua_pushstring(lua, name);\
     lua_setfield(lua, -2, "__metatable");\
     luaL_newlib(lua, regnew)
-// 声明 task_ctx *var 并从当前 Lua 全局变量取值；取不到直接 luaL_error(longjmp，不返回)
+// 声明 task_ctx *var 并取当前 task(lpub_cur_task)；取不到直接 luaL_error(longjmp，不返回)
 #define LPUB_CUR_TASK(lua, var) \
-    task_ctx *var = global_userdata((lua), CUR_TASK_NAME); \
+    task_ctx *var = lpub_cur_task(lua); \
     if (NULL == (var)) { \
         return luaL_error((lua), "task is nil"); \
     }
-// 声明 task_ctx *var 并从栈位 1 取值：nil/none 取当前 task(_curtask 全局)，否则按 lightuserdata 校验取值；
+// 声明 task_ctx *var 并从栈位 1 取值：nil/none 取当前 task(lpub_cur_task)，否则按 lightuserdata 校验取值；
 // 不做 NULL 校验，调用方按各自语义处理(luaL_error 报错或 pushnil 等)
 #define LPUB_TASK_ARG(lua, var) \
     task_ctx *var; \
     int32_t _lpta_type_##var = lua_type((lua), 1); \
     if (LUA_TNIL == _lpta_type_##var || LUA_TNONE == _lpta_type_##var) { \
-        (var) = global_userdata((lua), CUR_TASK_NAME); \
+        (var) = lpub_cur_task(lua); \
     } else { \
         LUACHECK_LUDATA((lua), 1); \
         (var) = lua_touserdata((lua), 1); \
@@ -67,6 +67,15 @@
     if (NULL == *(var)) { \
         return luaL_error((lua), (errmsg)); \
     }
+// DB reader 单值入口的收尾：err 为 ERR_OK 压 true 加值返 2，否则 lpub_rtn_bool(lua, 1 == err)（1 即 SQL NULL，也算成功）。
+// push 是压值的 lua_push* 函数，其后是它除 lua 外的实参
+#define LPUB_READER_RTN(lua, err, push, ...) \
+    if (ERR_OK == (err)) { \
+        lua_pushboolean((lua), 1); \
+        push((lua), __VA_ARGS__); \
+        return 2; \
+    } \
+    return lpub_rtn_bool((lua), 1 == (err))
 // lyyjson_encode_sink 的输出回调：json 只在回调期间有效
 typedef void (*lyyjson_sink)(void *ud, const char *json, size_t lens);
 
@@ -110,6 +119,19 @@ void *lpub_test_udata(lua_State *lua, int32_t idx, const char *name);
 /// <returns>userdata 载荷指针；类型不符经 luaL_typeerror 抛出(longjmp，不返回)，报错文案同 luaL_checkudata</returns>
 void *lpub_check_udata(lua_State *lua, int32_t idx, const char *name);
 /// <summary>
+/// 登记当前 task：注册表里按固定地址存一份给绑定取，另设 _curtask 全局给脚本读。
+/// 同一 task 的协程共用注册表，在哪个协程里取都一样。不许改成存进 lua_getextraspace（理由见 CLAUDE.md 不变式）
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="task">当前 task</param>
+void lpub_set_cur_task(lua_State *lua, task_ctx *task);
+/// <summary>
+/// 取 lpub_set_cur_task 登记的当前 task
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <returns>当前 task；没登记过（不属于任何 task 的临时 state）返回 NULL</returns>
+task_ctx *lpub_cur_task(lua_State *lua);
+/// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
@@ -129,11 +151,11 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// 校验跟 lightuserdata 一起传进来的字节数。凡是 (指针, 长度) 形状的入口都从这里取长度,
 /// 别再各写一句 (size_t)luaL_checkinteger。下界恒为 0：负数转成 size_t 是天文数字,
 /// 会击穿下游所有"剩余长度 &lt; 需要长度"式的边界判定。
-/// 上界由调用方按自己的线格式给:BSON 传 INT32_MAX;没有协议上界的传 0,只校验下界
+/// 上界由调用方按自己的线格式给:BSON 传 INT32_MAX;没有协议上界的传 0,只卡 size_t 放得下
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">长度在栈中的位置</param>
-/// <param name="max">允许的最大字节数;传 0 表示不校验上界</param>
+/// <param name="max">允许的最大字节数;传 0 表示以 SIZE_MAX 为上界(32 位上超出的报错,不截断)</param>
 /// <returns>字节数;越界走 luaL_argerror(longjmp,不返回)</returns>
 size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max);
 /// <summary>
@@ -152,6 +174,10 @@ size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max);
 uint8_t lpub_check_u8(lua_State *lua, int32_t idx, const char *what);
 uint16_t lpub_check_u16(lua_State *lua, int32_t idx, const char *what);
 uint32_t lpub_check_u32(lua_State *lua, int32_t idx, const char *what);
+int8_t lpub_check_i8(lua_State *lua, int32_t idx, const char *what);
+int16_t lpub_check_i16(lua_State *lua, int32_t idx, const char *what);
+int32_t lpub_check_i32(lua_State *lua, int32_t idx, const char *what);
+uint8_t lpub_opt_u8(lua_State *lua, int32_t idx, uint8_t dft, const char *what);
 /// <summary>
 /// 取会话 id 参数,为 0 即报错。三个消费方(task_timeout / task_request / task_multi_request)
 /// 都以 ASSERTAB 硬要求非 0;校验放 C 层而非脚本 wrapper 的理由同 _lcore_timeout 的 ms
@@ -176,10 +202,6 @@ int32_t lpub_check_flag(lua_State *lua, int32_t idx);
 /// <param name="dft">缺省值</param>
 /// <returns>0 或 1；给了但不是这两个值走 luaL_argerror(longjmp,不返回)</returns>
 int32_t lpub_opt_flag(lua_State *lua, int32_t idx, int32_t dft);
-int8_t lpub_check_i8(lua_State *lua, int32_t idx, const char *what);
-int16_t lpub_check_i16(lua_State *lua, int32_t idx, const char *what);
-int32_t lpub_check_i32(lua_State *lua, int32_t idx, const char *what);
-uint8_t lpub_opt_u8(lua_State *lua, int32_t idx, uint8_t dft, const char *what);
 /// <summary>
 /// 校验整数并收窄到 [lo, hi]。理由同上面那组按类型宽度收窄的函数：截断出来的是另一个合法值，
 /// 写进报文或数据库都无从分辨。上下界不是某个 C 类型的边界时用它，是则用那一组
@@ -191,6 +213,22 @@ uint8_t lpub_opt_u8(lua_State *lua, int32_t idx, uint8_t dft, const char *what);
 /// <param name="what">越界时报给调用方的完整消息</param>
 /// <returns>该值；不在 [lo, hi] 内走 luaL_argerror(longjmp,不返回)</returns>
 int64_t lpub_check_range(lua_State *lua, int32_t idx, int64_t lo, int64_t hi, const char *what);
+/// <summary>
+/// 取要按 C 串('\0' 结尾)交给下游的字符串参数。内含 '\0' 直接报错：下游按 strlen 取长度，
+/// 会静默截成另一个串发出去(另一个主题、另一个域名、另一个收件人)
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">参数在栈中的位置</param>
+/// <returns>字符串；不是字符串(数字照 luaL_checkstring 转串)或内含 '\0' 走 luaL_argerror(longjmp,不返回)</returns>
+const char *lpub_check_cstr(lua_State *lua, int32_t idx);
+/// <summary>
+/// 同 lpub_check_cstr，另把字节数交给调用方，下游有带长度的接口时不必再 strlen
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">参数在栈中的位置</param>
+/// <param name="lens">出参，字符串字节数；必须非 NULL</param>
+/// <returns>同 lpub_check_cstr</returns>
+const char *lpub_check_cstr_lens(lua_State *lua, int32_t idx, size_t *lens);
 /// <summary>
 /// 校验封包协议类型。凡是要交给框架/协议层的 pktype 都从这里取，别再各写一句
 /// (pack_type)luaL_checkinteger——枚举外的值必须报错，不能存进 ud->pktype
@@ -236,7 +274,7 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
 /// 取可空的数据缓冲参数:string 自带长度;lightuserdata 从 idx+1 读长度,
 /// 指针为 NULL 且长度非 0 时报错(口径同 lpub_check_buf)。
 /// 其余类型一律报错——full userdata 是各类句柄对象,取它的载荷首址当字节缓冲会越界读。
-/// 两条分支都卡 INT32_MAX,理由同 lpub_check_buf。缓冲必填的场合用它
+/// 两条分支都卡 INT32_MAX,理由同 lpub_check_buf。缓冲可缺省的场合用它，必填用 lpub_check_buf
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">data 在栈中的位置;为 lightuserdata 时 idx+1 必须是长度</param>
@@ -264,7 +302,7 @@ int32_t lpub_rtn_bool(lua_State *lua, int32_t cond);
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="idx">参数在栈中的位置</param>
-/// <returns>task 句柄；名字查不到时为 INVALID_TNAME</returns>
+/// <returns>task 句柄；名字查不到或内含 '\0' 时为 INVALID_TNAME</returns>
 name_t lpub_task_handle(lua_State *lua, int32_t idx);
 /// <summary>
 /// 把表 idx 的 [1..n] 逐个换成任务句柄：nil 记 INVALID_TNAME，字符串同 lpub_task_handle（经名字缓存、查到即记），
@@ -315,13 +353,13 @@ name_t lpub_task_refresh(lua_State *lua, int32_t idx, name_t handle);
 /// <summary>
 /// 取栈位置 1 的子对象在创建时锚进 uservalue 槽 1 的宿主对象指针。
 /// 槽位由 uservalue 锚着，任何时候读都安全。
-/// 子对象（session / stmt）存的是宿主裸指针，宿主被 obj:__gc() 提前释放后读它即
-/// use-after-free，所以子对象的每个入口都得先用本函数确认宿主还活着；
+/// 子对象（session / stmt）持宿主 C 块的一份引用，块不会先于它释放；本函数守的是语义：
+/// 宿主被 obj:__gc() 关掉后，子对象的入口一律报错，不在已关的连接上接着用。
 /// 两处的成套写法见 LMONGO_SESSION_ARG / LMYSQL_STMT_ARG
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="omt">宿主的元表名</param>
-/// <returns>宿主 C 对象指针；宿主已被 __gc 释放、槽位为空或类型不符时返回 NULL</returns>
+/// <returns>宿主 C 对象指针；宿主句柄已被 __gc 置空、槽位为空或类型不符时返回 NULL</returns>
 void *lpub_owner_ptr(lua_State *lua, const char *omt);
 /// <summary>
 /// 压一个"载荷是单个裸指针"的 userdata 并挂上元表，栈顶即该 userdata（可紧接着

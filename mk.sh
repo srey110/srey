@@ -34,10 +34,10 @@ if [ "$OSNAME" = "SunOS" ]
 then
 	WK="nawk"
 fi
-#读取config.h的配置
+#读取config.h的配置：只认 `#define WITH_X 数字` 这种行(同 CMakeLists.txt)
 while read line
 do
-    val=`echo $line|$WK -F ' ' '{print $2}'`
+    val=`echo $line|$WK -F ' ' '$1 == "#define" && $3 ~ /^[0-9]+$/ {print $2}'`
     if [ "$val" = "WITH_LUA" ]
     then
         LUA=`echo $line|$WK -F ' ' '{print int($3)}'`
@@ -85,6 +85,12 @@ if [ $WITH_ASAN -eq 1 ] && [ $WITH_TSAN -eq 1 ]
 then
     echo "Error: asan 与 tsan 不能同时启用"
     exit 1
+fi
+# mimalloc 与 ASan / TSan 都要接管分配器(见 memory.c)：开检测时不论 config.h 怎么写都关掉 mimalloc,
+# 编译传 -DWITH_MIMALLOC=0(config.h 是 #ifndef 让步写法)、链接不带 -lmimalloc
+if [ $WITH_ASAN -eq 1 ] || [ $WITH_TSAN -eq 1 ]
+then
+    MIMALLOC=0
 fi
 if [ "$OSNAME" = "Darwin" ] && [ "$ARCH_OPT" = "m32" ]
 then
@@ -164,11 +170,16 @@ if [ "$OSNAME" = "SunOS" ]
 then
 	INCLUDELIB=$INCLUDELIB" -lsocket -lnsl"
 fi
-# backtrace 系列在 FreeBSD 是独立的 libexecinfo,glibc 与 macOS 都在 libc 里自带;
-# memory.c 的 stack_print 与分配追踪引用它们
-if [ "$OSNAME" = "FreeBSD" ]
+# backtrace 系列在 BSD 各家是独立的 libexecinfo,glibc 与 macOS 都在 libc 里自带;
+# memory.c 的 stack_print 与分配追踪引用它们。musl 也要 libexecinfo,os.h 不分 libc,没处理
+if [ "$OSNAME" = "FreeBSD" ] || [ "$OSNAME" = "NetBSD" ] || [ "$OSNAME" = "OpenBSD" ] || [ "$OSNAME" = "DragonFly" ]
 then
     INCLUDELIB=$INCLUDELIB" -lexecinfo"
+fi
+# FreeBSD / DragonFly 上 mimalloc 取进程内存映射用 libutil 的 kinfo_getvmmap,静态库不会把它带进来
+if [ "$MIMALLOC" = "1" ] && { [ "$OSNAME" = "FreeBSD" ] || [ "$OSNAME" = "DragonFly" ]; }
+then
+    INCLUDELIB=$INCLUDELIB" -lutil"
 fi
 #结果存放路径
 RSTPATH="bin"
@@ -207,11 +218,11 @@ then
     CFLAGS=$CFLAGS" -O0 -g3"
 else
     CFLAGS=$CFLAGS" -O2"
-    # LTO：GCC 需要 gcc-ar；Clang（macOS/Darwin）直接用 ar，
-    # 链接时透明处理 bitcode。SunOS/AIX 不启用 LTO。
+    # LTO 按编译器选：gcc 用 -flto=N 配 gcc-ar；clang 只认 -flto、也不配 gcc-ar(macOS 的 gcc 就是 clang)。
+    # SunOS/AIX 不启用 LTO。
     if [ "$OSNAME" != "SunOS" ] && [ "$OSNAME" != "AIX" ]
     then
-        if [ "$OSNAME" != "Darwin" ] && command -v gcc-ar >/dev/null 2>&1
+        if ! $CC -dM -E - </dev/null 2>/dev/null | grep -q __clang__ && command -v gcc-ar >/dev/null 2>&1
         then
             CFLAGS=$CFLAGS" -flto=$(nproc 2>/dev/null || echo 4)"
             ARCH="gcc-ar rcsD"
@@ -223,16 +234,16 @@ else
             fi
         fi
     fi
-    # _FORTIFY_SOURCE=2 需要 -O2 以上才生效
-    CFLAGS=$CFLAGS" -D_FORTIFY_SOURCE=2"
+    # _FORTIFY_SOURCE=2 需要 -O2 以上才生效；先 -U，工具链预定义了别的值时不报重定义
+    CFLAGS=$CFLAGS" -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2"
 fi
 if [ $WITH_ASAN -eq 1 ]
 then
-    CFLAGS=$CFLAGS" -fsanitize=address,undefined -fno-omit-frame-pointer"
+    CFLAGS=$CFLAGS" -fsanitize=address,undefined -fno-omit-frame-pointer -DWITH_MIMALLOC=0"
 fi
 if [ $WITH_TSAN -eq 1 ]
 then
-    CFLAGS=$CFLAGS" -fsanitize=thread -fno-omit-frame-pointer -DBUILD_TSAN=1"
+    CFLAGS=$CFLAGS" -fsanitize=thread -fno-omit-frame-pointer -DBUILD_TSAN=1 -DWITH_MIMALLOC=0"
 fi
 if [ -n "$ARCH_OPT" ]
 then
@@ -249,6 +260,16 @@ else
     if [ "$MACHINE_ARCH" = "x86_64" ] || [ "$MACHINE_ARCH" = "amd64" ]
     then
         CFLAGS=$CFLAGS" -m64"
+    fi
+fi
+# 32 位 Linux 的 glibc 默认 time_t / off_t 32 位:2038 年后取时间出错,stat 遇到超 32 位的 inode、大小或时间报 EOVERFLOW。
+# _TIME_BITS 要 glibc 2.34+(更老的忽略)且须与 _FILE_OFFSET_BITS=64 同开。deps.py 编的库没开,
+# 别让 time_t / off_t / struct stat 穿过 openssl、mimalloc 的接口(现在一处都没有)
+if [ "$OSNAME" = "Linux" ]
+then
+    if [ "$ARCH_OPT" = "m32" ] || { [ -z "$ARCH_OPT" ] && [ "`getconf LONG_BIT 2>/dev/null`" = "32" ]; }
+    then
+        CFLAGS=$CFLAGS" -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64"
     fi
 fi
 # clang 会把 .c 里没用到的 static inline 也算 unused-function,而 XXX_DECL 一次就生成整套
@@ -280,7 +301,6 @@ for EachSub in $SHARED_DIR $EXTRA_DIRS_ALL
 do
     INCLUDEPATH=$INCLUDEPATH" -I$MAKEFILEPATH/$EachSub"
 done
-INCLUDEPATH=`echo $INCLUDEPATH|$WK '{gsub(/^\s+|\s+$/, "");print}'`
 #先 clean（清理共享目录 + 所有额外目录 + 顶层 *.o + 产物）
 rm -rf *.o
 for EachSub in $SHARED_DIR $SREY_EXTRA_DIR $TEST_EXTRA_DIR
@@ -359,8 +379,9 @@ BuildBinary()
     # 2) 编译主文件并链接
     cd $MAKEFILEPATH/$_maindir || exit 1
     echo ---------------------Make $_proname---------------------------
-    echo "$CC $CFLAGS $_mainfile $EXTRA_OBJS $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $_proname $EXTRALIB"
-    $CC $CFLAGS $_mainfile $EXTRA_OBJS $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $_proname $EXTRALIB \
+    # 系统库放最后：默认开 --as-needed 的工具链只给此前已有引用的库记依赖，libsrey.a 里 Lua 要的 libm 会被丢
+    echo "$CC $CFLAGS $_mainfile $EXTRA_OBJS $INCLUDEPATH $LIBPATH -l$LIBNAME -o $_proname $EXTRALIB $INCLUDELIB"
+    $CC $CFLAGS $_mainfile $EXTRA_OBJS $INCLUDEPATH $LIBPATH -l$LIBNAME -o $_proname $EXTRALIB $INCLUDELIB \
         || { echo "---------Error---------"; exit 1; }
     mv $_proname $MAKEFILEPATH/$RSTPATH
     cd $MAKEFILEPATH

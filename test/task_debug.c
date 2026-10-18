@@ -4,12 +4,15 @@
 static const char *_NOTLUA = "command not supported in C task.";// debug_console.c 的 _DBG_NOTLUA
 static const char *_NOREQ = "not register request callback function.";// task.c 的 _task_handle_request
 static const char *_HASREQ = "hasreq: rejected.";// 本文件靶子 task 自己的错误文案
+static const char *const _HOST_OK[] = { "Host", "127.0.0.1", NULL };// 能过 console 来源校验的最小请求头
+static const char *_FORBID = "forbidden\n";// debug_console.c 来源校验不过时的应答
 
 typedef struct task_debug_args {
     uint16_t port;    // debug_console 监听端口
     int32_t *ok;      // main.c testlist 槽
     name_t noreq;     // 靶子 1：未注册 on_requested
     name_t hasreq;    // 靶子 2：注册了 on_requested，一律回 ERR_FAILED
+    name_t plain;     // 靶子 3：普通 task(非协程)，没有协程调度器
 }task_debug_args;
 
 // ── 靶子 task ─────────────────────────────────────────────────────────────
@@ -118,6 +121,25 @@ static int32_t _test_builtin(task_ctx *task, name_t noreq) {
     return ERR_OK;
 }
 
+// coros 打到普通 task：它没有协程调度器，回固定文案而不是空或崩
+static int32_t _test_coros_plain(task_ctx *task, name_t plain) {
+    binary_ctx bw;
+    int32_t err;
+    size_t len;
+    void *rtn;
+    char snip[160];
+    binary_init_write(&bw, 0, 0);
+    seri_append_string(&bw, "coros", strlen("coros"));
+    rtn = _dbg_send(task, plain, &bw, &err, &len);
+    binary_free(&bw);
+    if (ERR_OK != err || !_eq_text(rtn, len, "coros: not a coroutine task.")) {
+        _snip(rtn, len, snip, sizeof(snip));
+        LOG_ERROR("debug test: coros on plain task err %d body '%s'.", err, snip);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 // ── 测试 2：loglv 三档 ────────────────────────────────────────────────────
 // 合法值用当前级别，设回同一个值，不污染其余用例的日志输出
 static int32_t _test_loglv(task_ctx *task, name_t noreq) {
@@ -220,23 +242,54 @@ static int32_t _test_passthrough(task_ctx *task, name_t noreq, name_t hasreq) {
 }
 
 // ── 测试 4：debug_console 的 HTTP 面 ──────────────────────────────────────
-// exact 非 0 比全串，否则只查子串（广播响应里还夹着各 task 名与分隔行）
-static int32_t _http_get(task_ctx *task, uint16_t port, const char *url,
-                         int32_t code, const char *want, int32_t exact) {
+// 广播正文由 "name:\n<应答>\n" 逐段拼成：每段应答都须恰为 want，且至少一段。
+// (unavailable) 或丢段都对不上，只查子串的话这些都能混过去
+static int32_t _bcast_all(const char *body, size_t len, const char *want) {
+    size_t wl = strlen(want);
+    size_t pos = 0;
+    int32_t nsec = 0;
+    const char *nl;
+    while (pos < len) {
+        nl = memchr(body + pos, '\n', len - pos);// 名字行
+        if (NULL == nl) {
+            return 0;
+        }
+        pos = (size_t)(nl - body) + 1;
+        if (len - pos < wl + 1
+            || 0 != memcmp(body + pos, want, wl)
+            || '\n' != body[pos + wl]) {
+            return 0;
+        }
+        pos += wl + 1;
+        nsec++;
+    }
+    return nsec > 0;
+}
+// heads 为 {名, 值, ..., NULL}；match 0 查子串、1 比全串、2 广播正文每段都是 want(见 _bcast_all)
+static int32_t _http_get(task_ctx *task, uint16_t port, const char *url, const char *const *heads,
+                         int32_t code, const char *want, int32_t match) {
     sock_ctx sk;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
-        LOG_ERROR("debug test: connect console %d failed for %s.", (int32_t)port, url);
-        return ERR_FAILED;
+    int32_t i;
+    // console 在 debug_console_start 里同步监听，有界重试只是兜底
+    for (i = 0; ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk); i++) {
+        if (i >= 20 || task_isclosing(task)) {
+            LOG_ERROR("debug test: connect console %d failed for %s.", (int32_t)port, url);
+            return ERR_FAILED;
+        }
+        coro_sleep(task, 50);
     }
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
     http_pack_req(&bw, "GET", url);
-    http_pack_head(&bw, "Host", "127.0.0.1");
+    for (i = 0; NULL != heads[i]; i += 2) {
+        http_pack_head(&bw, heads[i], heads[i + 1]);
+    }
     http_pack_end(&bw);
     size_t rsize = 0;// coro_send 的必填出参；HTTP 走的是 pack 语义，长度信息看 http_data
     // copy=0：缓冲所有权交给 ev_send，不再 binary_free
     struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
     int32_t rtn = ERR_FAILED;
+    int32_t hit;
     char snip[256];
     char codestr[8];
     size_t dlen = 0;
@@ -253,7 +306,12 @@ static int32_t _http_get(task_ctx *task, uint16_t port, const char *url,
         goto done;
     }
     body = http_data(resp, &dlen);
-    if (0 == (exact ? _eq_text(body, dlen, want) : _has_text(body, dlen, want))) {
+    if (2 == match) {
+        hit = NULL != body && _bcast_all(body, dlen, want);
+    } else {
+        hit = match ? _eq_text(body, dlen, want) : _has_text(body, dlen, want);
+    }
+    if (!hit) {
         _snip(body, dlen, snip, sizeof(snip));
         LOG_ERROR("debug test: %s body expected '%s', got '%s'.", url, want, snip);
         goto done;
@@ -269,53 +327,53 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     // 回 503 不回 200:与"目标未注册 request 回调"同属"目标执行不了",状态码必须一致,
     // 否则 UI 把这一条渲染成绿色成功、脚本客户端(curl -f)也检测不到
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/mem", (uint64_t)arg->noreq);
-    if (ERR_OK != _http_get(task, arg->port, url, 503, _NOTLUA, 1)) {
+    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 503, _NOTLUA, 1)) {
         return ERR_FAILED;
     }
     // needlua=0 的命令照旧透传到目标
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/stat", (uint64_t)arg->noreq);
-    if (ERR_OK != _http_get(task, arg->port, url, 200, "MTYPE", 0)) {
+    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 200, "MTYPE", 0)) {
         return ERR_FAILED;
     }
-    // 广播：本二进制里全是 C task，逐个都该是同一句不支持。
+    // 广播：本二进制里全是 C task，逐段都该是同一句不支持。
     // 广播是聚合响应，整体恒 200(单个目标的成败写在正文里)，不跟单目标那条一起改
-    if (ERR_OK != _http_get(task, arg->port, "/0/mem", 200, _NOTLUA, 0)) {
+    if (ERR_OK != _http_get(task, arg->port, "/0/mem", _HOST_OK, 200, _NOTLUA, 2)) {
         return ERR_FAILED;
     }
     // GET /：UI 页面。procpath() 是可执行文件所在目录，故 bin/html/debug_console.html 必然读到，
     // 读不到会回 503，这里不接受
-    if (ERR_OK != _http_get(task, arg->port, "/", 200, "<title>Srey Debug Console</title>", 0)) {
+    if (ERR_OK != _http_get(task, arg->port, "/", _HOST_OK, 200, "<title>Srey Debug Console</title>", 0)) {
         return ERR_FAILED;
     }
     // GET /__alive：钉住 handle 与 name 同行配对，只查一个 name 的话把两列错位也看不出来
     char want[64];
     SNPRINTF(want, sizeof(want), "%"PRIu64"\tdebug_noreq", (uint64_t)arg->noreq);
-    if (ERR_OK != _http_get(task, arg->port, "/__alive", 200, want, 0)) {
+    if (ERR_OK != _http_get(task, arg->port, "/__alive", _HOST_OK, 200, want, 0)) {
         return ERR_FAILED;
     }
     // GET /__cmem：三行统计
-    if (ERR_OK != _http_get(task, arg->port, "/__cmem", 200, "inuse:", 0)) {
+    if (ERR_OK != _http_get(task, arg->port, "/__cmem", _HOST_OK, 200, "inuse:", 0)) {
         return ERR_FAILED;
     }
     // GET /{h}/help：查最后一行，帮助文本被截断时能发现
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/help", (uint64_t)arg->noreq);
-    if (ERR_OK != _http_get(task, arg->port, url, 200, "POST /{handle}/hotfix/{module}", 0)) {
+    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 200, "POST /{handle}/hotfix/{module}", 0)) {
         return ERR_FAILED;
     }
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/coros", (uint64_t)arg->noreq);
-    if (ERR_OK != _http_get(task, arg->port, url, 200, "yield total", 0)) {
+    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 200, "yield total", 0)) {
         return ERR_FAILED;
     }
     // GET /{h}/loglv/{lv}：设回当前级别，不污染其余用例的日志输出
     log_level lv0 = log_getlv();
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/loglv/%d", (uint64_t)arg->noreq, (int32_t)lv0);
     SNPRINTF(want, sizeof(want), "log level => %d\n", (int32_t)lv0);
-    if (ERR_OK != _http_get(task, arg->port, url, 200, want, 1)) {
+    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 200, want, 1)) {
         return ERR_FAILED;
     }
     // 越界的 lv 走 strtou64 的上界检查，回 400 用法说明
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/loglv/%d", (uint64_t)arg->noreq, (int32_t)LOGLV_DEBUG + 1);
-    if (ERR_OK != _http_get(task, arg->port, url, 400, "usage: /{handle}/loglv/<0-4>\n", 1)) {
+    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 400, "usage: /{handle}/loglv/<0-4>\n", 1)) {
         return ERR_FAILED;
     }
     if (lv0 != log_getlv()) {
@@ -325,9 +383,40 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     return ERR_OK;
 }
 
+// ── 测试 5：debug_console 的来源校验 ──────────────────────────────────────
+// Host 只认 IP 字面量或 localhost；带 Origin 须与 Host 同源；带 Sec-Fetch-Site 须是 same-origin / none
+static int32_t _test_console_guard(task_ctx *task, task_debug_args *arg) {
+    char host[32];
+    char origin[48];
+    SNPRINTF(host, sizeof(host), "127.0.0.1:%d", (int32_t)arg->port);
+    SNPRINTF(origin, sizeof(origin), "http://%s", host);
+    const char *nohost[] = { NULL };
+    const char *named[] = { "Host", "evil.example", NULL };
+    const char *local[] = { "Host", "localhost", NULL };
+    const char *v6[] = { "Host", "[::1]", NULL };
+    const char *same[] = { "Host", host, "Origin", origin, NULL };
+    const char *cross[] = { "Host", host, "Origin", "http://evil.example", NULL };
+    const char *portless[] = { "Host", host, "Origin", "http://127.0.0.1", NULL };
+    const char *sitex[] = { "Host", host, "Sec-Fetch-Site", "cross-site", NULL };
+    const char *siteok[] = { "Host", host, "Sec-Fetch-Site", "same-origin", NULL };
+    if (ERR_OK != _http_get(task, arg->port, "/__cmem", nohost, 403, _FORBID, 1)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", named, 403, _FORBID, 1)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", local, 200, "inuse:", 0)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", v6, 200, "inuse:", 0)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", same, 200, "inuse:", 0)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", cross, 403, _FORBID, 1)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", portless, 403, _FORBID, 1)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", sitex, 403, _FORBID, 1)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", siteok, 200, "inuse:", 0)) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_debug_args *arg = (task_debug_args *)coro_get_arg(task);
-    if (ERR_OK != _test_builtin(task, arg->noreq)) {
+    if (ERR_OK != _test_builtin(task, arg->noreq)
+        || ERR_OK != _test_coros_plain(task, arg->plain)) {
         return;
     }
     if (task_isclosing(task)) {
@@ -345,15 +434,16 @@ static void _startup(task_ctx *task) {
     if (task_isclosing(task)) {
         return;
     }
-    // console 的 task_listen 异步落地，同 mqtt_test3/4 的处理：先等一会儿再连
-    coro_sleep(task, 300);
-    if (task_isclosing(task)) {
-        return;
-    }
     if (ERR_OK != _test_console(task, arg)) {
         return;
     }
-    *(arg->ok) = 1;
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_console_guard(task, arg)) {
+        return;
+    }
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("debug tested.");
 }
 
@@ -363,7 +453,12 @@ void task_debug_start(loader_ctx *loader, const char *name, uint16_t port, int32
     }
     task_ctx *noreq = coro_task_register(loader, "debug_noreq", 0, _noreq_startup, NULL, NULL, NULL);
     task_ctx *hasreq = coro_task_register(loader, "debug_hasreq", 0, _hasreq_startup, NULL, NULL, NULL);
-    if (NULL == noreq || NULL == hasreq) {
+    task_ctx *plain = task_new(loader, "debug_plain", 0, NULL, NULL, NULL);
+    if (ERR_OK != task_register(plain, NULL, NULL)) {
+        task_free(plain);
+        plain = NULL;
+    }
+    if (NULL == noreq || NULL == hasreq || NULL == plain) {
         LOG_ERROR("debug test: target task register failed.");
         return;
     }
@@ -373,5 +468,6 @@ void task_debug_start(loader_ctx *loader, const char *name, uint16_t port, int32
     arg->ok = ok;
     arg->noreq = noreq->handle;
     arg->hasreq = hasreq->handle;
+    arg->plain = plain->handle;
     coro_task_register(loader, name, 0, _startup, NULL, _free, arg);
 }

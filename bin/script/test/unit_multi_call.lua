@@ -117,18 +117,17 @@ runner.run(function(t)
              "__len 自身抛错时 multi_call 抛错")
     end
 
-    -- ── 消息表的共享元表受保护 ──────────────────────────────────────
-    -- 消息元表全 task 共用，带 __gc 的那张给挂起时还拿着的载荷兜底释放。业务若能经 getmetatable
+    -- ── 消息对象的共享元表受保护 ────────────────────────────────────
+    -- 每个 task 的消息对象共用元表，带 __gc 的那张给挂起时还拿着的载荷兜底释放。业务若能经 getmetatable
     -- 拿到真表并清掉 __gc，此后这类消息的 C 侧 payload 都不再兜底释放
     do
         local sess = srey.id()
-        -- 返回值必须断言：挂在裸 if 上的话，core.request 返 false 时下面 4 条一条都不跑，
+        -- 返回值必须断言：挂在裸 if 上的话，core.request 返 false 时下面 3 条一条都不跑，
         -- 模块仍报全绿
         t:eq(task.get_request_timeout(), core.request(SUBS[1], 102, sess, MSG), "core.request 投递成功并带回请求超时")
         local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 3000)
         t:eq(srey.MSG_TYPE.RESPONSE, msg.mtype, "拿到 RESPONSE 消息表")
         t:eq("msg", getmetatable(msg), "消息元表被 __metatable 挡住")
-        t:eq(false, pcall(function() setmetatable(msg, {}) end), "消息表不可被换元表")
         t:check(msg.data ~= nil and msg.size > 0, "RESPONSE 载荷字段齐全")
         -- sub 把自己的编号编进了应答（multi_call_sub.lua 回的是 "ack"..idx），
         -- 只判"有载荷"的话，服务端把响应投到别的协程上不会被发现
@@ -196,7 +195,7 @@ runner.run(function(t)
     end
 
     -- ── 回归: core 侧 longjmp(非法 reqtype)时错误须透传,且不泄漏 task 引用 ──
-    -- 全部 grab-in-C:reqtype/data 校验在 grab 前,longjmp 时未 grab → 错误透传(下面断言)+ 无引用泄漏(退出无死锁,ASan 验证)
+    -- reqtype/data 都在取载荷之前校验,longjmp 时载荷还没被接管 → 错误透传(下面断言)+ 无泄漏(退出无死锁,ASan 验证)
     do
         local ok = pcall(function()
             srey.multi_request(SUBS, {}, srey.id(), "x") -- reqtype 非整数 → C 侧 longjmp
@@ -208,7 +207,7 @@ runner.run(function(t)
         end)
         t:eq(false, ok, "multi_call: core longjmp 错误仍透传")
 
-        -- 单目标 request/call/response(grab-in-C):非法 reqtype 在 task_grab 前 longjmp,错误透传且未 grab 无泄漏
+        -- 单目标 request/call/response:非法 reqtype 在取载荷之前 longjmp,错误透传且载荷未被接管、无泄漏
         ok = pcall(function()
             srey.request(SUBS[1], {}, "x") -- 非法 reqtype → core.request longjmp
         end)
@@ -288,8 +287,10 @@ runner.run(function(t)
     do
         local server_sk
         local got = 0
-        srey.on_accepted(function(_, sk)
+        local peer_given
+        srey.on_accepted(function(_, sk, addr)
             server_sk = sk
+            peer_given = addr-- 这条 listen 只订阅 ACCEPT，不该带对端地址
         end)
         srey.on_recved(function(_, _, client, _, _, size)
             if 0 ~= client then
@@ -299,6 +300,7 @@ runner.run(function(t)
         local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", SEND_PORT, NET_EV.ACCEPT)
         local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", SEND_PORT)
         _wait(function() return nil ~= server_sk end)
+        t:eq(nil, peer_given, "listen 没订阅 PEERADDR 时 on_accepted 的 addr 为 nil")
         if t:check(csk.valid and nil ~= server_sk, "send_multi 用例连接建立") then
             local expect = 0
             for _, n in ipairs({ 1, 127, 128, 129, 300 }) do

@@ -5,7 +5,7 @@ static uint16_t _port = 0;
 // 收到 WebSocket 帧：
 //   分片帧 - 收齐完整消息（PROT_SLICE_END）后回复三帧分片消息（text_fin0 + continua_fin0 + continua_fin1）
 //   MQTT 子协议帧 - 收到 CONNECT 回 CONNACK
-//   非分片帧 - 回显 text/binary，ping 回 pong，close 关闭连接
+//   非分片帧 - 回显 text/binary，ping 回 pong；close 由协议层当场回应并关连接，这里不用管
 static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
@@ -58,8 +58,6 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
         wdata = websock_data(pack, &dlens);// PONG 要原样带回 PING 的载荷
         frame = websock_pack_pong(0, wdata, dlens, &fsize);
         ev_send(&task->loader->netev, sk, frame, fsize, 0);
-    } else if (WS_CLOSE == prot) {
-        ev_close(&task->loader->netev, sk);
     }
 }
 static void _startup(task_ctx *task) {

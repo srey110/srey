@@ -19,7 +19,10 @@
 // 捷径：绑在当前 net 线程上、正闲着的 task，收包时当场分发这一条、不入队(_loader_task_try_run)。
 // 同一个 task 任一时刻只在一个线程上跑，靠的就是 global。
 //
-// 退出(loader_free)：先给所有 task 发 CLOSING 并等它们全部注销，再停 worker 与 monitor，最后停 net 线程和时间轮。
+// 释放：task 引用在 net 线程上归零的，摘表当场做，释放推迟到该线程本轮事件派发完之后(见 task_ungrab)。
+//
+// 退出(loader_free)：先给所有 task 发 CLOSING 并等它们全部注销、推迟的释放做完，再停 worker 与 monitor，
+// 最后停 net 线程和时间轮。
 
 /// <summary>
 /// 任务调度初始化
@@ -37,7 +40,7 @@ void loader_free(loader_ctx *loader);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
 /// <summary>
 /// 取 loader 内的 Lua 字节码缓存读写锁（供 lbc_init 使用）。
-/// 锁随 loader 创建与释放，调用方只借用；slot 仅 worker 线程注册，其余线程走内部 fallback 锁。
+/// 锁随 loader 创建与释放，调用方只借用；worker 与 net 线程(Windows 另有 AcceptEx 线程)注册了 slot，其余线程走内部 fallback 锁。
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <returns>rwlock_distr_ctx</returns>
@@ -77,7 +80,8 @@ void loader_on_exit(loader_ctx *loader, loader_exit_cb cb, void *arg);
 /// 没注册回调时只打一行 WARN；多次请求由回调决定取哪一次
 /// </summary>
 /// <param name="loader">loader_ctx</param>
-/// <param name="code">退出码，0 表示正常</param>
+/// <param name="code">退出码，0 表示正常。srey 入口只认第一次请求：请求 0 而内存检查不过、或不在 0..255 时进程以 1 退出，其余原样；
+/// 没人请求的退出(信号、服务控制)恒为 0</param>
 void loader_exit(loader_ctx *loader, int32_t code);
 
 #endif//LOADER_H_

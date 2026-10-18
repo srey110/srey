@@ -67,8 +67,6 @@ typedef struct {                                                                
 } name;                                                                         \
 /* 容量按文件头的规则取整后一次分配,之后不扩容;取整后超过 2^20 ASSERTAB 中止 */ \
 static inline void name##_init(name *q, uint32_t capacity) {                    \
-    uint32_t i;                                                                 \
-    uint64_t cur;                                                               \
     ASSERTAB(NULL != q, ERRSTR_NULLP);                                          \
     capacity = (0 == capacity) ? BBQ_DEFAULT_CAP : capacity;                    \
     q->capacity = pow2_ceil(capacity < BBQ_MIN_CAP ? BBQ_MIN_CAP : capacity);   \
@@ -83,7 +81,8 @@ static inline void name##_init(name *q, uint32_t capacity) {                    
     ATOMIC64_SET_RELAXED(&q->chead, (atomic64_t)q->nblk);                               \
     /* 0 号块是起点(本代全空),其余块装成"上一代已跑完",于是接管任何一块都是同一个    \
        判据,没有 0 号块特例。两个头从 nblk 而不是 0 起步也是为了这个 */             \
-    for (i = 0; i < q->nblk; i++) {                                             \
+    uint64_t cur;                                                               \
+    for (uint32_t i = 0; i < q->nblk; i++) {                                    \
         cur = (0 == i) ? BBQ_CUR(q->nblk, 0) : BBQ_CUR(i, q->blksz);            \
         ATOMIC64_SET_RELAXED(&q->blocks[i].allocated, (atomic64_t)cur);                 \
         ATOMIC64_SET_RELAXED(&q->blocks[i].committed, (atomic64_t)cur);                 \

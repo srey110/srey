@@ -3,7 +3,7 @@
 
 #include "base/structs.h"
 #include "utils/load_trend.h"
-#include "containers/fsqu.h"
+#include "containers/queue.h"
 
 #define SHRINK_TIME  10000 // 缓冲区收缩检测周期（毫秒）
 #define SHRINK_BUSY  4, 5 // pool_shrink 的 load_trend busy 判定比例 num/den:空闲骤降至上次的 4/5 以下视为忙,跳过本次收缩
@@ -15,15 +15,13 @@ typedef enum pool_ops {
     POOL_OP_NORESET= 0x04// 不执行 _pool_elreset
 }pool_ops;
 typedef enum pool_flags {
-    POOL_THSAFE = 0x01,// 线程安全(fsqu 底层),本来就是先进先出
-    POOL_FIFO = 0x02// 只对非线程安全池有效:从队头取(先进先出);不给则从队尾取(后进先出)
+    POOL_FIFO = 0x01// 从队头取(先进先出);不给则从队尾取(后进先出)
 }pool_flags;
 
 typedef void *(*_el_new)(void *args);// 新建
 typedef void (*_el_reset)(void *data, void *args);// 重置
 typedef void (*_el_clear)(void *data);// 清理
-QUE_DECL(pptr_que, void *)// 对象池的非线程安全队列
-FSQU_DECL(pfsq, void *)// 对象池的线程安全队列
+QUE_DECL(pptr_que, void *)// 对象池的空闲队列
 // 对象回调;_elnew 与 _elfree 须成对:要么都为 NULL(默认 CALLOC/FREE),要么都自定义(同一分配器),否则分配/释放器不匹配
 typedef struct pool_cbs {
     _el_new _elnew;
@@ -35,12 +33,9 @@ typedef struct pool_cbs {
 typedef struct pool_ctx {
     uint32_t elsize;// 对象大小
     uint32_t nkeep;
-    int32_t flags;// pool_flags 按位或,POOL_THSAFE 用 qu.safe_qu、否则 qu.normal_qu; pool_init 时定死，之后只读
+    int32_t flags;// pool_flags 按位或; pool_init 时定死，之后只读
     pool_cbs elcbs;
-    union {
-        pptr_que normal_qu;// 非线程安全
-        pfsq safe_qu;// 线程安全
-    }qu;
+    pptr_que qu;// 空闲对象队列
     load_trend_ctx trend;
 }pool_ctx;
 
@@ -70,46 +65,34 @@ static inline void _pool_elclear(pool_ctx *pool, void *data) {
         pool->elcbs._elclear(data);
     }
 }
-// 取一个空闲对象。安全池下 pfsq_pop 的三态在这里压成两态：元素被生产者抢占尚未发布(返回 1)
-// 与真的没有一样当没取到,pool_pop 会改走新建。想区分的调用方得自己去用 pfsq_pop
-// 非安全池默认取队尾(后进先出,拿到刚归还的那个);POOL_FIFO 改取队头,
-// 拉长对象归还后到再被复用的空窗。安全池底下是环形队列,只能先进先出
+// 取一个空闲对象。默认取队尾(后进先出,拿到刚归还的那个);POOL_FIFO 改取队头,
+// 拉长对象归还后到再被复用的空窗
 static inline int32_t _pool_qu_pop(pool_ctx *pool, void **out) {
-    if (BIT_CHECK(pool->flags, POOL_THSAFE)) {
-        return pfsq_pop(&pool->qu.safe_qu, out);
-    }
-    void **elem = (void **)(BIT_CHECK(pool->flags, POOL_FIFO) ? pptr_que_pop(&pool->qu.normal_qu)
-                                                              : pptr_que_pop_back(&pool->qu.normal_qu));
+    void **elem = (void **)(BIT_CHECK(pool->flags, POOL_FIFO) ? pptr_que_pop(&pool->qu)
+                                                              : pptr_que_pop_back(&pool->qu));
     if (NULL == elem) {
         return ERR_FAILED;
     }
     *out = *elem;
     return ERR_OK;
 }
-static inline uint32_t _pool_qu_size(pool_ctx *pool) {
-    return BIT_CHECK(pool->flags, POOL_THSAFE) ? pfsq_size(&pool->qu.safe_qu) : pptr_que_size(&pool->qu.normal_qu);
-}
-// 释放 nfree 个空闲对象。安全池按批出队摊薄原子操作，普通池逐个取。
-// nkeep 下限由调用方保证；安全池那条循环额外复查是因为并发 push/pop 下只能尽力而为
-// 不做 inline:批量出队的落地数组有 1KB，内联进来会把每个 pool_shrink 调用方的栈帧撑大
+// 释放 nfree 个空闲对象，逐个取；nkeep 下限由调用方保证。收缩是冷路径，定义放在 pool.c
 void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree);
 /// <summary>
-/// 初始化对象池
+/// 初始化对象池。对象池非线程安全:同一时刻只能有一个线程调用 push/pop/shrink/free;
+/// 换线程接着用时由调用方保证前后两段有先后(如 task 的互斥)
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 /// <param name="elsize">对象大小(字节);未设 _elnew 时按此大小 CALLOC 新建对象</param>
-/// <param name="capacity">底层队列容量,0 用默认值。实际容量会向上取整(线程安全池走 fsqu 取到
-///   2 的幂,否则 queue 也取到 2 的幂),pool_capacity 返回的是取整后的值</param>
+/// <param name="capacity">底层队列容量,0 用默认值。实际容量向上取到 2 的幂,pool_capacity 返回取整后的值</param>
 /// <param name="nkeep">收缩时保留的最小空闲对象数</param>
-/// <param name="flags">pool_flags 按位或:POOL_THSAFE 启用线程安全(fsqu 底层),否则用普通 queue;
-///   POOL_FIFO 让非安全池先进先出取对象,默认后进先出。0 即非安全、后进先出</param>
+/// <param name="flags">pool_flags 按位或:POOL_FIFO 从队头取对象(先进先出),默认从队尾取(后进先出)</param>
 /// <param name="elcbs">对象回调(new/free/reset/clear),NULL 走默认 CALLOC/FREE</param>
 void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
                uint32_t nkeep, int32_t flags, pool_cbs *elcbs);
 /// <summary>
 /// 释放池内所有空闲对象(只经 _elfree,不补 _elclear——正常入池的对象在 push 时已 clear 过)
 /// 并销毁底层队列;不释放 pool 本身。
-/// 须在没有并发 push/pop 时调用:安全池下有生产者正在写入会让出队提前报空,剩下的对象漏释放
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 void pool_free(pool_ctx *pool);
@@ -124,8 +107,7 @@ static inline int32_t pool_push(pool_ctx *pool, void *data, int32_t ops) {
     if (!BIT_CHECK(ops, POOL_OP_NOCLEAR)) {
         _pool_elclear(pool, data);
     }
-    if (ERR_OK == (BIT_CHECK(pool->flags, POOL_THSAFE) ? pfsq_trypush(&pool->qu.safe_qu, &data)
-                                                       : pptr_que_trypush(&pool->qu.normal_qu, &data))) {
+    if (ERR_OK == pptr_que_trypush(&pool->qu, &data)) {
         return ERR_OK;
     }
     if (!BIT_CHECK(ops, POOL_OP_NOFREE)) {
@@ -152,12 +134,12 @@ static inline void *pool_pop(pool_ctx *pool, void *args, int32_t ops) {
     return data;
 }
 /// <summary>
-/// 当前空闲对象数(线程安全池下为近似值)
+/// 当前空闲对象数
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 /// <returns>空闲对象数</returns>
 static inline uint32_t pool_size(pool_ctx *pool) {
-    return _pool_qu_size(pool);
+    return pptr_que_size(&pool->qu);
 }
 /// <summary>
 /// 底层队列容量
@@ -165,7 +147,7 @@ static inline uint32_t pool_size(pool_ctx *pool) {
 /// <param name="pool">pool_ctx</param>
 /// <returns>容量</returns>
 static inline uint32_t pool_capacity(pool_ctx *pool) {
-    return BIT_CHECK(pool->flags, POOL_THSAFE) ? pfsq_capacity(&pool->qu.safe_qu) : pptr_que_capacity(&pool->qu.normal_qu);
+    return pptr_que_capacity(&pool->qu);
 }
 /// <summary>
 /// 计算 pool_shrink 的保留量
@@ -191,7 +173,7 @@ static inline void _pool_shrink_sized(pool_ctx *pool, uint32_t keep, uint32_t pl
 /// <summary>
 /// 收缩空闲对象至 max(keep, nkeep);load_trend 按 SHRINK_BUSY 判 busy 时跳过本次。
 /// 保留量由池外计数决定时用本函数,否则用 pool_shrink。
-/// push/pop 多线程安全,但 shrink 须由单一线程调用(内部更新 trend 无锁);并发 push/pop 下收缩量为尽力而为
+/// 线程约束同 push/pop(内部更新 trend 无锁),见 pool_init
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 /// <param name="keep">期望保留的空闲对象数(实际下限取 max(keep, nkeep))</param>

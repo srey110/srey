@@ -29,12 +29,12 @@ static int32_t _lutils_log_getlv(lua_State *lua) {
 /// 调用位置由本函数按栈层号自己取，不经 debug.getinfo 建表
 /// </summary>
 /// <param name="lv" type="integer">日志等级，取值 [0, 4]（LOGLV_FATAL..LOGLV_DEBUG），越界报错</param>
-/// <param name="level" type="integer">调用位置所在的栈层，含义同 debug.getinfo 的层号（0 为 utils.log 自身）；该层不存在时不输出</param>
+/// <param name="level" type="integer">调用位置所在的栈层，含义同 debug.getinfo 的层号（0 为 utils.log 自身）；该层不存在时不输出，超出 int32 范围报错</param>
 /// <param name="log" type="string">日志正文</param>
 /// <returns>无</returns>
 static int32_t _lutils_log(lua_State *lua) {
     log_level lv = (log_level)lpub_check_range(lua, 1, LOGLV_FATAL, LOGLV_DEBUG, LOGLV_OUT_OF_RANGE);
-    int32_t level = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t level = lpub_check_i32(lua, 2, "level out of range");
     size_t mlen, nlen;
     const char *log = luaL_checklstring(lua, 3, &mlen);
     lua_Debug ar;
@@ -42,7 +42,7 @@ static int32_t _lutils_log(lua_State *lua) {
         || 0 == lua_getinfo(lua, "Sl", &ar)) {
         return 0;
     }
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    task_ctx *task = lpub_cur_task(lua);
     const char *fname = _filename(ar.short_src);
     char num[24];
     const char *nstr = lpub_int_str(num, sizeof(num), ar.currentline, &nlen);
@@ -158,25 +158,23 @@ static int32_t _lutils_csprng_rand(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 获取指定连接对端的 IP 地址和端口号
+/// 把 on_accepted 交出的对端地址转成 IP 与端口。地址是网络线程在 accept 当场取的，不会因 fd 复用张冠李戴；
+/// 只在 on_accepted 回调期间有效，要留就当场转好、按 sk.skid 自己存
 /// </summary>
-/// <param name="sk" type="userdata">连接标识</param>
-/// <returns type="string?">对端 IP；连接无效或获取失败时返回 nil</returns>
+/// <param name="addr" type="lightuserdata?">on_accepted 的第 3 个参数；listen 没订阅 NET_EV.PEERADDR 或取失败时为 nil</param>
+/// <returns type="string?">对端 IP，IPv6 链路本地地址带 "%网卡号"；addr 为 nil 时返回 nil</returns>
 /// <returns type="integer?">对端端口；仅在第一个返回值非 nil 时有效</returns>
 static int32_t _lutils_remote_addr(lua_State *lua) {
-    netaddr_ctx addr;
-    sock_ctx *sk = lpub_check_sock(lua, 1);
-    if (sock_is_invalid(sk)) {
+    if (lua_isnoneornil(lua, 1)) {
         return lpub_rtn_nil(lua, 2);
     }
-    if (ERR_OK != netaddr_remote(&addr, sk->fd)) {
-        return lpub_rtn_nil(lua, 2);
-    }
+    LUACHECK_LUDATA(lua, 1);
+    netaddr_ctx *addr = lua_touserdata(lua, 1);
     char ip[IP_LENS];
-    if (ERR_OK != netaddr_ip(&addr, ip)) {
+    if (ERR_OK != netaddr_ip(addr, ip)) {
         return lpub_rtn_nil(lua, 2);
     }
-    uint16_t port = netaddr_port(&addr);
+    uint16_t port = netaddr_port(addr);
     lua_pushstring(lua, ip);
     lua_pushinteger(lua, port);
     return 2;
@@ -337,17 +335,22 @@ LUAMOD_API int luaopen_trend(lua_State *lua) {
         { NULL, NULL }
     };
     REG_MTABLE(lua, MT_LOAD_TREND, reg_new, reg_func);
+    /// <field name="shrink_time" type="integer">池收缩检测周期（毫秒），即 utils/pool.h 的 SHRINK_TIME</field>
+    lua_pushinteger(lua, (lua_Integer)SHRINK_TIME);
+    lua_setfield(lua, -2, "shrink_time");
     return 1;
 }
 /// <summary>
-/// 启动子进程；mode="r" 读子进程 stdout，mode="w" 写子进程 stdin
+/// 启动子进程；mode 含 "r" 读子进程 stdout（stderr 并入同一通道），含 "w" 写子进程 stdin，"rw" 两者都要。
+/// POSIX 经 /bin/sh -c 执行，Windows 直接起可执行文件、不经 cmd.exe；POSIX 上子进程的 SIGPIPE 为默认处置，
+/// 不接管的 stdin 是 /dev/null
 /// </summary>
 /// <param name="cmd" type="string">命令行字符串</param>
-/// <param name="mode" type="string">"r" 或 "w"</param>
+/// <param name="mode" type="string">"r"、"w" 或 "rw"</param>
 /// <returns type="_popen_ctx?">popen 对象；启动失败返回 nil</returns>
 static int32_t _lpopen_new(lua_State *lua) {
-    const char *cmd = luaL_checkstring(lua, 1);
-    const char *mode = luaL_checkstring(lua, 2);
+    const char *cmd = lpub_check_cstr(lua, 1);
+    const char *mode = lpub_check_cstr(lua, 2);
     popen_ctx *ctx = lua_newuserdata(lua, sizeof(popen_ctx));
     // 提前绑 metatable,失败时 lua_pop 弹引用后 GC 走 _lpopen_gc → popen_free 兜底
     ASSOC_MTABLE(lua, MT_POPEN);
@@ -358,7 +361,7 @@ static int32_t _lpopen_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 阻塞等待子进程退出（最多 ms 毫秒）
+/// 阻塞等待子进程退出（最多 ms 毫秒）。POSIX 上只记退出码、不收尸，用完调 close，否则僵尸留到对象回收
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <param name="ms" type="integer">超时毫秒数</param>
@@ -369,10 +372,10 @@ static int32_t _lpopen_waitexit(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == popen_waitexit(ctx, ms));
 }
 /// <summary>
-/// 获取子进程退出码（须在 waitexit 之后调用）
+/// 获取子进程退出码（须在 waitexit 返回 true 或 close 之后调用）
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
-/// <returns type="integer">退出码；非 Windows 平台可能取不到</returns>
+/// <returns type="integer">退出码；被信号终止、被 close 结束、还没退出或出错时 -1</returns>
 static int32_t _lpopen_exitcode(lua_State *lua) {
     popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     lua_pushinteger(lua, popen_exitcode(ctx));
@@ -380,7 +383,8 @@ static int32_t _lpopen_exitcode(lua_State *lua) {
 }
 /// <summary>
 /// 非阻塞读取子进程 stdout 当前已缓冲的数据，最多 max_lens 字节；底层 popen_read 一旦探测到当前无数据即返回，
-/// 故本函数不等待、不保证读到 EOF：子进程尚未产出的输出读不到，需完整输出应先 waitexit 再读
+/// 故本函数不等待、不保证读到 EOF：子进程尚未产出的输出读不到。输出可能超过管道缓冲时要边读边等：
+/// 循环 read 到第二个返回值为 true 再 waitexit，先 waitexit 再读子进程会卡在写上退不了
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <param name="max_lens" type="integer?">最大读取字节数，取值 [0, INT32_MAX]，默认 65536</param>
@@ -414,12 +418,13 @@ static int32_t _lpopen_read(lua_State *lua) {
     return 2;
 }
 /// <summary>
-/// 向子进程 stdin 写入数据；popen2.c 契约：以 '\n' 结尾才会真正执行写入
+/// 向子进程 stdin 写入数据，当场写进管道；子进程按行读的话换行要自己带
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <param name="data" type="string">待写入数据</param>
 /// <returns type="integer">实际写入的字节数，**可能少于 data 长度**——写端非阻塞，
-/// 对端缓冲写满即返回，剩余部分由调用方决定重试还是放弃；一个字节都没写进去且出错时返回 -1</returns>
+/// 对端缓冲写满即返回，单次最多写 INT32_MAX 字节，剩余部分由调用方决定重试还是放弃；
+/// mode 不含 "w"、已 close_stdin，或一个字节都没写进去且出错时返回 -1</returns>
 static int32_t _lpopen_write(lua_State *lua) {
     popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
     size_t lens;
@@ -428,7 +433,19 @@ static int32_t _lpopen_write(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 主动终止子进程并关闭句柄（不释放结构体本身，可继续调用 exitcode）
+/// 只关子进程的 stdin、让它读到 EOF，子进程照常运行、输出照常可读；
+/// sort、wc 这类读 stdin 到 EOF 才出结果的程序靠它收尾。之后 write 返回 -1
+/// </summary>
+/// <param name="self" type="userdata">popen 对象</param>
+/// <returns type="boolean">true 已送出 EOF；mode 不含 "w"、已调过一次或出错时 false</returns>
+static int32_t _lpopen_close_stdin(lua_State *lua) {
+    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
+    return lpub_rtn_bool(lua, ERR_OK == popen_close_stdin(ctx));
+}
+/// <summary>
+/// 主动终止子进程连同它派生的孙进程并收尸；子进程已自行退出时也照样清理剩下的孙进程
+/// （Windows 只发起终止不等它结束，取 exitcode 前先 waitexit）。
+/// 读写句柄要到对象回收时才关：close 之后仍可 read 剩下的输出、可取 exitcode
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <returns>无</returns>
@@ -454,6 +471,7 @@ LUAMOD_API int luaopen_popen(lua_State *lua) {
         { "exitcode", _lpopen_exitcode },
         { "read",     _lpopen_read },
         { "write",    _lpopen_write },
+        { "close_stdin", _lpopen_close_stdin },
         { "close",    _lpopen_close },
         { "__gc",     _lpopen_gc },
         { NULL, NULL }

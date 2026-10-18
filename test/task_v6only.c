@@ -14,14 +14,14 @@ static void _startup(task_ctx *task) {
     }
     if (ERR_OK != task_listen(task, PACK_NONE, NULL, "::", arg->port, &lsnid, 0)) {
         LOG_INFO("v6only: listen :: %u failed, no IPv6 on this host, skip.", arg->port);
-        *(arg->ok) = 1;// 环境缺失记通过:只有"IPv4 连进 :: 监听"才是本用例要抓的回归
+        ATOMIC_SET((atomic_t *)arg->ok, 1);// 环境缺失记通过:只有"IPv4 连进 :: 监听"才是本用例要抓的回归
         return;
     }
     // 先确认 IPv6 回环本身是通的，否则下面 IPv4 连不上就分不清是 v6only 生效还是监听坏了
     if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "::1", arg->port, 0, NULL, &csk)) {
         LOG_INFO("v6only: connect ::1 failed, no IPv6 loopback, skip.");
         ev_unlisten(&task->loader->netev, lsnid);
-        *(arg->ok) = 1;
+        ATOMIC_SET((atomic_t *)arg->ok, 1);
         return;
     }
     ev_close(&task->loader->netev, &csk);
@@ -33,7 +33,7 @@ static void _startup(task_ctx *task) {
         return;
     }
     ev_unlisten(&task->loader->netev, lsnid);
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("v6only tested.");
 }
 

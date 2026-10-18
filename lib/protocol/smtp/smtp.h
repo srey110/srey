@@ -32,14 +32,17 @@ void _smtp_init(void *hspush);
 void _smtp_udfree(ud_cxt *ud);
 /// <summary>
 /// 简单邮件传输协议smtp初始化。字段超长不做截断——
-/// 截断后的密码拿去认证只会换回服务端一句 535，调用方看不出是自己传长了
+/// 截断后的密码拿去认证只会换回服务端一句 535，调用方看不出是自己传长了。
+/// 只支持隐式 TLS（如 465 端口，连上即握手），不支持 STARTTLS：要求先 STARTTLS 的端口（如 587）连不上；
+/// 明文连接上认证会把凭据明文发出
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 /// <param name="ip">smtp服务器，最长 IP_LENS-1</param>
 /// <param name="port">smtp端口</param>
-/// <param name="evssl">evssl_ctx</param>
-/// <param name="user">用户名，最长 63 字节</param>
-/// <param name="psw">密码，最长 63 字节</param>
+/// <param name="evssl">evssl_ctx；NULL 为明文</param>
+/// <param name="user">用户名，最长 63 字节；NULL 或空串为免认证投递：握手跳过 AUTH，
+/// 服务端不通告 AUTH 也能连上</param>
+/// <param name="psw">密码，最长 63 字节；user 为空时不用</param>
 /// <returns>ERR_OK 成功；ERR_FAILED 某个字段超长，此时 smtp 已被清零且可能填了前几个字段，
 /// 按 init 失败处理（丢弃或 FREE），不得继续用</returns>
 int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw);
@@ -99,8 +102,10 @@ char *smtp_pack_rcpt(const char *rcpt);
 /// <returns>数据包</returns>
 char *smtp_pack_data(void);
 /// <summary>
-/// SMTP 协议解包入口：根据当前握手状态（INIT/EHLO/AUTH/AUTH_CHECK/COMMAND）分发处理，
-/// COMMAND 状态下返回响应数据包，其余状态内部驱动握手流程
+/// SMTP 协议解包入口：根据当前握手状态（INIT/EHLO/AUTH/AUTH_CHECK/COMMAND，AUTH LOGIN 另有等第二个挑战的
+/// AUTH_PSW）分发处理，COMMAND 状态下返回响应数据包，其余状态内部驱动握手流程。
+/// AUTH LOGIN 按第几个 334 配对用户名与密码，不看提示文本；没设用户名时 EHLO 成功即进 COMMAND。
+/// 握手期被拒时首行(或整段)原文交给等待方
 /// </summary>
 /// <param name="ev">事件上下文</param>
 /// <param name="sk">连接标识</param>

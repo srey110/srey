@@ -4,7 +4,7 @@
 #define MT_MYSQL_READER "_mysql_reader_ctx"
 #define MT_MYSQL_STMT   "_mysql_stmt_ctx"
 #define MT_MYSQL        "_mysql_ctx"
-// stmt 的四个入口共用: 自身非空 + 宿主还活着。后一半的理由见 lpub_owner_ptr
+// stmt 的四个入口共用: 自身非空 + 宿主没被 __gc 关掉(宿主关了 stmt 就拒绝，理由见 lpub_owner_ptr)
 #define LMYSQL_STMT_ARG(lua, var) \
     LPUB_UD_ARG((lua), mysql_stmt_ctx, MT_MYSQL_STMT, var, "stmt freed") \
     if (NULL == lpub_owner_ptr((lua), MT_MYSQL)) { \
@@ -12,23 +12,21 @@
     }
 // 六个按列名取值的 reader 入口共用的开场白：取 reader + 取列名并查一次列下标 + 备好 err。
 // err 是三态(ERR_OK 有值 / 1 字段是 SQL NULL / 其余读取失败)，由 mysql_reader、pgsql_reader 两侧
-// 共同产出：有值那支自己压 true 加值，另两态一律 lpub_rtn_bool(lua, 1 == err) 收尾（NULL 也算成功）
+// 共同产出，单值入口用 lpub.h 的 LPUB_READER_RTN 收尾
 #define LMYSQL_READER_GET(lua, rvar, nvar, cvar, evar) \
     LPUB_UD_ARG((lua), mysql_reader_ctx, MT_MYSQL_READER, rvar, "reader freed") \
     const char *nvar; \
     int32_t cvar = _lmysql_reader_col((lua), *rvar, 2, &nvar); \
     int32_t evar
-// 七个 bind 入口共用的开场白: 取 bind 对象 + 取可选具名参数(栈位 2 非字符串即按位置绑定)。
-// 具名参数的取法散在七处的话, 将来要换取法(如改用 luaL_optlstring 拿长度)得挨个找齐,
-// 改漏一个不会有编译期信号 —— 那个 bind 会静默退化成按位置绑定, 参数错位写进 MySQL。
-// 名字传错类型是同一个后果, 故在宏里卡死类型: 只收字符串或不传, 别的当场报错
+// 七个 bind 入口共用的开场白: 取 bind 对象 + 取可选具名参数(nil 即按位置绑定)，取法只此一处。
+// 名字只收字符串或不传，传错类型当场报错，免得静默退化成按位置绑定
 #define LMYSQL_BIND_ARG(lua, bindvar, namevar) \
     mysql_bind_ctx *bindvar = lpub_check_udata((lua), 1, MT_MYSQL_BIND); \
-    char *namevar = NULL; \
+    const char *namevar = NULL; \
     luaL_argcheck((lua), lua_isnoneornil((lua), 2) || LUA_TSTRING == lua_type((lua), 2), 2, \
                   "name must be a string"); \
     if (LUA_TSTRING == lua_type((lua), 2)) { \
-        namevar = (char *)luaL_checkstring((lua), 2); \
+        namevar = lpub_check_cstr((lua), 2); \
     }
 
 /// <summary>
@@ -67,7 +65,7 @@ static int32_t _lmysql_bind_clear(lua_State *lua) {
 /// 绑定一个 NULL 参数（注册为 bind:null）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
-/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
+/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_nil(lua_State *lua) {
     LMYSQL_BIND_ARG(lua, mbind, name);
@@ -78,7 +76,7 @@ static int32_t _lmysql_bind_nil(lua_State *lua) {
 /// 绑定字符串参数（data 为 nil 时自动转为 NULL 绑定）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
-/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
+/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
 /// <param name="data" type="string|lightuserdata|nil">字符串值；nil 绑定 NULL，其余类型报错，取值规则见 lpub_opt_buf</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数，取值 [0, INT32_MAX]</param>
 /// <returns>无</returns>
@@ -97,7 +95,7 @@ static int32_t _lmysql_bind_string(lua_State *lua) {
 /// 绑定整数参数（非 number/boolean 类型时自动转为 NULL 绑定）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
-/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
+/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
 /// <param name="val" type="integer|boolean|nil">整数值；非 number/boolean 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_integer(lua_State *lua) {
@@ -119,7 +117,7 @@ static int32_t _lmysql_bind_integer(lua_State *lua) {
 /// 绑定浮点数参数（非 number 类型时自动转为 NULL 绑定）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
-/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
+/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
 /// <param name="val" type="number|nil">单精度浮点值；非 number 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_float(lua_State *lua) {
@@ -137,7 +135,7 @@ static int32_t _lmysql_bind_float(lua_State *lua) {
 /// 绑定双精度浮点参数（非 number 类型时自动转为 NULL 绑定）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
-/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
+/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
 /// <param name="val" type="number|nil">双精度浮点值；非 number 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_double(lua_State *lua) {
@@ -155,8 +153,10 @@ static int32_t _lmysql_bind_double(lua_State *lua) {
 /// 绑定 DATETIME 参数（非 number 类型时自动转为 NULL 绑定）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
-/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
-/// <param name="ts" type="integer|nil">Unix 时间戳（秒）；非 number 视为 NULL</param>
+/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
+/// <param name="ts" type="integer|nil">Unix 时间戳（秒，按本地时区换成日期时间；reader:datetime 给的是微秒，回绑先除以 1000000）。
+/// 取值为 MySQL DATETIME 范围 1000-01-01 00:00:00 ~ 9999-12-31 23:59:59（UTC）对应的秒数，越界或超出本平台 time_t 报错；
+/// Windows 上 1970 年前或 3000 年后本地时间换算失败，按零日期绑定。非 number 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_datetime(lua_State *lua) {
     LMYSQL_BIND_ARG(lua, mbind, name);
@@ -165,15 +165,17 @@ static int32_t _lmysql_bind_datetime(lua_State *lua) {
         mysql_bind_nil(mbind, name);
         return 0;
     }
-    time_t ts = (time_t)luaL_checkinteger(lua, 3);
-    mysql_bind_datetime(mbind, name, ts);
+    // 卡在 MySQL DATETIME 的范围内；time_t 为 32 位时再判一次，免得截成另一个时间
+    int64_t sec = lpub_check_range(lua, 3, -30610224000, 253402300799, "datetime out of range");
+    luaL_argcheck(lua, (int64_t)(time_t)sec == sec, 3, "datetime exceeds time_t");
+    mysql_bind_datetime(mbind, name, (time_t)sec);
     return 0;
 }
 /// <summary>
 /// 绑定 TIME 参数（支持负值时间段）
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
-/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
+/// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
 /// <param name="is_negative" type="integer">1 表示负值时间段，0 正值</param>
 /// <param name="days" type="integer">天数，须 大于等于 0（符号只由 is_negative 表示）；线格式里是 4 字节无符号字段，负数写出去就是四十亿天</param>
 /// <param name="hour" type="integer">小时，须 大于等于 0（符号只由 is_negative 表示）</param>
@@ -254,7 +256,7 @@ static int32_t _lmysql_reader_size(lua_State *lua) {
 /// 定位到指定行位置
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
-/// <param name="pos" type="integer">目标行下标，取值 [0, INT32_MAX]，越界报错</param>
+/// <param name="pos" type="integer">目标行下标（0 基），取值 [0, INT32_MAX]，超出报错；不小于行数时游标不动</param>
 /// <returns>无</returns>
 static int32_t _lmysql_reader_seek(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_reader_ctx, MT_MYSQL_READER, reader, "reader freed");
@@ -306,7 +308,7 @@ static int64_t _lmysql_reader_int(lua_State *lua, mysql_reader_ctx *reader, int3
     return (int64_t)val;
 }
 /// <summary>
-/// 读取当前行指定字段的整数值；带 UNSIGNED 标志的列按无符号读，值超出 int64 时按读取失败处理并打 WARN（日志带列名）
+/// 读取当前行指定字段的整数值；带 UNSIGNED 标志的列按无符号读，值超出 int64 时打 WARN（日志带列名）
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
@@ -315,12 +317,7 @@ static int64_t _lmysql_reader_int(lua_State *lua, mysql_reader_ctx *reader, int3
 static int32_t _lmysql_reader_integer(lua_State *lua) {
     LMYSQL_READER_GET(lua, reader, name, col, err);
     int64_t val = _lmysql_reader_int(lua, *reader, col, name, 0, &err);
-    if (ERR_OK == err) {
-        lua_pushboolean(lua, 1);
-        lua_pushinteger(lua, val);
-        return 2;
-    }
-    return lpub_rtn_bool(lua, 1 == err);
+    LPUB_READER_RTN(lua, err, lua_pushinteger, val);
 }
 /// <summary>
 /// 读取当前行指定字段的单精度浮点值
@@ -332,12 +329,7 @@ static int32_t _lmysql_reader_integer(lua_State *lua) {
 static int32_t _lmysql_reader_float(lua_State *lua) {
     LMYSQL_READER_GET(lua, reader, name, col, err);
     float val = mysql_reader_float_at(*reader, col, &err);
-    if (ERR_OK == err) {
-        lua_pushboolean(lua, 1);
-        lua_pushnumber(lua, (double)val);
-        return 2;
-    }
-    return lpub_rtn_bool(lua, 1 == err);
+    LPUB_READER_RTN(lua, err, lua_pushnumber, (double)val);
 }
 /// <summary>
 /// 读取当前行指定字段的双精度浮点值
@@ -349,12 +341,7 @@ static int32_t _lmysql_reader_float(lua_State *lua) {
 static int32_t _lmysql_reader_double(lua_State *lua) {
     LMYSQL_READER_GET(lua, reader, name, col, err);
     double val = mysql_reader_double_at(*reader, col, &err);
-    if (ERR_OK == err) {
-        lua_pushboolean(lua, 1);
-        lua_pushnumber(lua, val);
-        return 2;
-    }
-    return lpub_rtn_bool(lua, 1 == err);
+    LPUB_READER_RTN(lua, err, lua_pushnumber, val);
 }
 /// <summary>
 /// 读取当前行指定字段的字符串值
@@ -364,43 +351,39 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
 /// <param name="asstr" type="boolean?">真值时第 2 个返回值改为拷贝出来的 Lua 字符串，不再有第 3 个</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
 /// <returns type="lightuserdata|string?">字段数据指针（reader 内部行缓冲的**借用**指针，随 reader 释放而失效，
-/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send）；asstr 时为 Lua 字符串；
-/// 字段为 NULL 时不返回此值</returns>
+/// 调用方既不拥有它、也不能对它调 utils.ud_free 或以 copy=0 交给 srey.send；空串也给非 NULL 指针，
+/// 回绑时不会被当成 SQL NULL）；asstr 时为 Lua 字符串；字段为 NULL 时不返回此值</returns>
 /// <returns type="integer?">字段字节数；asstr 或字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_string(lua_State *lua) {
-    int32_t asstr;
     LMYSQL_READER_GET(lua, reader, name, col, err);
     size_t lens = 0;
     char *val = mysql_reader_string_at(*reader, col, &lens, &err);
     if (ERR_OK == err) {
-        asstr = lua_toboolean(lua, 3);// 必须在压栈前读：压了 true 之后栈位 3 就是它
+        int32_t asstr = lua_toboolean(lua, 3);// 必须在压栈前读：压了 true 之后栈位 3 就是它
         lua_pushboolean(lua, 1);
         if (0 != asstr) {
             lua_pushlstring(lua, val, lens);
             return 2;
         }
-        lua_pushlightuserdata(lua, val);
+        // 空串的行缓冲指针是 NULL，给个非 NULL 地址：NULL 回灌 lpub_opt_buf 会被当成 nil 绑成 SQL NULL
+        lua_pushlightuserdata(lua, NULL != val ? val : (void *)"");
         lua_pushinteger(lua, lens);
         return 3;
     }
     return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
-/// 读取当前行指定字段的 DATETIME 值（微秒精度）
+/// 读取当前行指定字段的 DATETIME 值（微秒精度），按本地时区换算；Windows 上 1970 年前与 3000 年后、
+/// macOS 上 1900 年前的值读取失败
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
-/// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="integer?">微秒精度 Unix 时间戳；字段为 NULL 时不返回此值</returns>
+/// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败（含字段量程越界）</returns>
+/// <returns type="integer?">微秒精度 Unix 时间戳，零日期为 0；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_datetime(lua_State *lua) {
     LMYSQL_READER_GET(lua, reader, name, col, err);
     int64_t val = mysql_reader_datetime_at(*reader, col, &err);
-    if (ERR_OK == err) {
-        lua_pushboolean(lua, 1);
-        lua_pushinteger(lua, val);
-        return 2;
-    }
-    return lpub_rtn_bool(lua, 1 == err);
+    LPUB_READER_RTN(lua, err, lua_pushinteger, val);
 }
 /// <summary>
 /// 读取当前行指定字段的 TIME 值
@@ -526,9 +509,10 @@ LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 从 mpack 数据包中创建预处理语句上下文，并把 mysql 对象锚定为 uservalue 防其先于 stmt 被 GC
+/// 从 mpack 数据包中创建预处理语句上下文，并把 mysql 对象锚定为 uservalue 防其先于 stmt 被 GC。
+/// stmt 另持宿主 C 块的一份引用，__gc 时交还
 /// </summary>
-/// <param name="mysql" type="userdata">所属 mysql 对象（锚定为 uservalue 保活）</param>
+/// <param name="mysql" type="userdata">所属 mysql 对象（锚定为 uservalue 保活），须是收到 mpack 的那条连接，否则报错</param>
 /// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
 /// <returns type="_mysql_stmt_ctx?">stmt 对象；失败返回 nil</returns>
 static int32_t _lmysql_stmt_new(lua_State *lua) {
@@ -538,7 +522,12 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
     if (NULL == stmt) {
         return lpub_rtn_nil(lua, 1);
     }
+    if (stmt->mysql != *ud) {
+        mysql_stmt_free(stmt);
+        return luaL_argerror(lua, 1, "stmt belongs to another mysql");
+    }
     lpub_push_ud(lua, stmt, MT_MYSQL_STMT);
+    PROT_REF_ACQUIRE(stmt->mysql);// 排在所有会报错的步骤之后，__gc 的 release 才与它成对
     lua_pushvalue(lua, 1);
     lua_setiuservalue(lua, -2, 1);
     return 1;
@@ -554,10 +543,10 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
 static int32_t _lmysql_stmt_free(lua_State *lua) {
     mysql_stmt_ctx **stmt = lpub_check_udata(lua, 1, MT_MYSQL_STMT);
     if (NULL != *stmt) {
-        // mysql_stmt_free 只碰 stmt 自己的 params / fields，不读 stmt->mysql——
-        // 宿主先被 m:__gc() 释放过也无妨。走 mysql_stmt_close 则会读 mysql->serial
+        mysql_ctx *mysql = (*stmt)->mysql;
         mysql_stmt_free(*stmt);
         *stmt = NULL;
+        PROT_REF_RELEASE(mysql);
     }
     return 0;
 }
@@ -565,22 +554,20 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
 /// 打包预处理语句执行请求
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
-/// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数</param>
-/// <returns type="lightuserdata">命令数据指针；组包失败直接抛出，不返回 nil（调用方契约违反，运行期无从降级，
-/// 判定依据见 lpub_rtn_lud 的说明）。两种失败 C 层都只给 NULL+size 0，无从区分，故文案并列：
-/// 参数个数对不上（含声明了参数而 bind 为 nil），或组完的载荷超 16MB（这条 C 层另有一条 LOG_WARN）</returns>
-/// <returns type="integer">数据长度</returns>
+/// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数，其余类型报错。
+/// 绑定个数须等于 prepare 时声明的参数个数（含声明了参数而 bind 为 nil），不符报错</param>
+/// <returns type="lightuserdata?">命令数据指针；载荷超 16MB 时返回 nil</returns>
+/// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     LMYSQL_STMT_ARG(lua, stmt);
-    mysql_bind_ctx *mbind = NULL;
-    if (LUA_TUSERDATA == lua_type(lua, 2)) {
-        mbind = lpub_check_udata(lua, 2, MT_MYSQL_BIND);
+    mysql_bind_ctx *mbind = lua_isnoneornil(lua, 2) ? NULL : lpub_check_udata(lua, 2, MT_MYSQL_BIND);
+    int32_t count = (NULL == mbind) ? 0 : mbind->count;
+    if (count != (int32_t)(*stmt)->params_count) {
+        return luaL_error(lua, "stmt_execute bind count mismatch: expect %d, got %d.",
+                          (int32_t)(*stmt)->params_count, count);
     }
     size_t size;
     void *pack = mysql_pack_stmt_execute(*stmt, mbind, &size);
-    if (NULL == pack) {
-        return luaL_error(lua, "stmt_execute pack failed: bind count mismatch, or payload exceeds 16MB (see log).");
-    }
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -597,8 +584,7 @@ static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
 }
 /// <summary>
 /// 打包预处理语句关闭请求（COM_STMT_CLOSE，服务端不回响应）。
-/// 不发这条则服务端那份语句句柄要留到连接关闭才回收，长连接上逐次累积会撞
-/// max_prepared_stmt_count（默认 16382），此后每次 prepare 都失败
+/// 不发则服务端句柄留到连接关闭才回收，长连接上会累积到 max_prepared_stmt_count 上限
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
@@ -642,11 +628,11 @@ LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="db" type="string">数据库名</param>
-/// <returns type="lightuserdata?">命令数据指针；库名超 63 字节时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；库名超 256 字节时返回 nil</returns>
 /// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_selectdb(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
-    const char *db = luaL_checkstring(lua, 2);
+    const char *db = lpub_check_cstr(lua, 2);
     size_t size;
     void *pack = mysql_pack_selectdb(*ud, db, &size);
     return lpub_rtn_lud(lua, pack, size);
@@ -668,17 +654,14 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="sql" type="string">SQL 语句</param>
-/// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数</param>
+/// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数，其余类型报错</param>
 /// <returns type="lightuserdata?">命令数据指针；载荷超 16MB 时返回 nil</returns>
 /// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_query(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     size_t sqllen;
     const char *sql = luaL_checklstring(lua, 2, &sqllen);
-    mysql_bind_ctx *mbind = NULL;
-    if (LUA_TUSERDATA == lua_type(lua, 3)){
-        mbind = lpub_check_udata(lua, 3, MT_MYSQL_BIND);
-    }
+    mysql_bind_ctx *mbind = lua_isnoneornil(lua, 3) ? NULL : lpub_check_udata(lua, 3, MT_MYSQL_BIND);
     size_t size;
     void *pack = mysql_pack_query2(*ud, sql, sqllen, mbind, &size);
     return lpub_rtn_lud(lua, pack, size);
@@ -716,20 +699,21 @@ static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
 /// <param name="ip" type="string">服务器 IP</param>
 /// <param name="port" type="integer">服务器端口</param>
 /// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
-/// <param name="user" type="string">用户名</param>
-/// <param name="password" type="string">密码</param>
-/// <param name="database" type="string">初始数据库</param>
+/// <param name="user" type="string">用户名，最长 128 字节</param>
+/// <param name="password" type="string">密码，最长 256 字节。caching_sha2_password 账号在明文连接上遇到服务端缓存未命中(如服务端重启后首连)
+/// 认证失败：本实现明文下不做 RSA 公钥交换。出路：配 SSL、先经 SSL 登录一次让服务端缓存口令，或换 mysql_native_password 账号(MySQL 8.4 默认关、9.0 已移除该插件)</param>
+/// <param name="database" type="string">初始数据库，最长 256 字节</param>
 /// <param name="charset" type="string">字符集（如 "utf8mb4"）</param>
 /// <param name="maxpk" type="integer?">最大包大小（字节）；省略或非数字时使用默认</param>
-/// <returns type="_mysql_ctx?">mysql 对象；初始化失败返回 nil</returns>
+/// <returns type="_mysql_ctx?">mysql 对象；ip / user / password / database 超长时返回 nil</returns>
 static int32_t _lmysql_new(lua_State *lua) {
-    const char *ip = luaL_checkstring(lua, 1);
+    const char *ip = lpub_check_cstr(lua, 1);
     uint16_t port = lpub_check_u16(lua, 2, PORT_OUT_OF_RANGE);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
-    const char *user = luaL_checkstring(lua, 4);
-    const char *password = luaL_checkstring(lua, 5);
-    const char *database = luaL_checkstring(lua, 6);
-    const char *charset = luaL_checkstring(lua, 7);
+    const char *user = lpub_check_cstr(lua, 4);
+    const char *password = lpub_check_cstr(lua, 5);
+    const char *database = lpub_check_cstr(lua, 6);
+    const char *charset = lpub_check_cstr(lua, 7);
     uint32_t maxpk = 0;
     if (LUA_TNUMBER == lua_type(lua, 8)) {
         maxpk = lpub_check_u32(lua, 8, "maxpack out of range");
@@ -813,11 +797,12 @@ static int32_t _lmysql_version(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回最近一次错误信息并清除错误状态
+/// 返回最近一个经 record / record_handshake 记下的 ERR 包错误并清除错误状态；成功的命令不清它。
+/// 多协程共用连接时须在命令返回后、本协程下次挂起之前读
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="string">错误信息（服务端文案，随版本与 locale 变）</returns>
-/// <returns type="integer">MySQL 错误号；无错误时为 0。要区分可重试（1213 死锁 / 1205 锁等待
+/// <returns type="integer">MySQL 错误号(0~65535)；无错误时为 0。要区分可重试（1213 死锁 / 1205 锁等待
 /// 超时）与不可重试（1062 重复键）只能靠它，文案不可依赖</returns>
 static int32_t _lmysql_erro(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
@@ -839,25 +824,92 @@ static int32_t _lmysql_sock_id(lua_State *lua) {
     lpub_push_sock_slot(lua, 1, &mysql->client.sk);
     return 1;
 }
-/// <summary>
-/// 返回最后一次 INSERT 操作生成的自增 id
-/// </summary>
-/// <param name="self" type="userdata">mysql 对象</param>
-/// <returns type="integer">last insert id</returns>
-static int32_t _lmysql_last_id(lua_State *lua) {
-    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
-    lua_pushinteger(lua, mysql_last_id(*ud));
+// last_id / affectd_rows 的收尾：值超出 int64 时打 WARN（带 what）并返回 false，同 reader:integer
+static int32_t _lmysql_rtn_count(lua_State *lua, uint64_t val, const char *what) {
+    if (val > (uint64_t)INT64_MAX) {
+        LOG_WARN("mysql %s exceeds int64.", what);
+        return lpub_rtn_bool(lua, 0);
+    }
+    lua_pushinteger(lua, (lua_Integer)val);
     return 1;
 }
 /// <summary>
-/// 返回最后一次 UPDATE / DELETE / INSERT 操作影响的行数
+/// 返回最近一个经 record 记下的 OK 包自增 id（非 INSERT 语句为 0，ERR 包与结果集不改它）；值超出 int64 时打 WARN。
+/// 读取时机同 erro
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
-/// <returns type="integer">affected rows</returns>
+/// <returns type="integer|false">last insert id；超出 int64 时为 false</returns>
+static int32_t _lmysql_last_id(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    return _lmysql_rtn_count(lua, mysql_last_id(*ud), "last_id");
+}
+/// <summary>
+/// 返回最近一个经 record 记下的 OK 包影响行数（ERR 包与结果集不改它）；值超出 int64 时打 WARN。读取时机同 erro
+/// </summary>
+/// <param name="self" type="userdata">mysql 对象</param>
+/// <returns type="integer|false">affected rows；超出 int64 时为 false</returns>
 static int32_t _lmysql_affectd_rows(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
-    lua_pushinteger(lua, mysql_affected_rows(*ud));
+    return _lmysql_rtn_count(lua, mysql_affected_rows(*ud), "affected_rows");
+}
+/// <summary>
+/// 把 OK 包的影响行数与自增 id、或 ERR 包的错误记到本连接上，供 last_id / affectd_rows / erro 读；其余类型的包不改它们。
+/// 只在持本连接串行化执行权、刚收到该包的协程里调
+/// </summary>
+/// <param name="self" type="userdata">mysql 对象</param>
+/// <param name="mpack" type="lightuserdata">本连接收到的 mpack_ctx 数据包指针</param>
+/// <returns>无</returns>
+static int32_t _lmysql_record(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    LPUB_LUD_ARG(lua, mpack_ctx, 2, mpack);
+    mysql_record(*ud, mpack);
+    return 0;
+}
+/// <summary>
+/// 把握手失败时 wait_handshaked 交出的 ERR 包体解析后记到本连接上，之后 erro 能取到错误号与文案。
+/// 只在持本连接串行化执行权的建连协程里调
+/// </summary>
+/// <param name="self" type="userdata">mysql 对象</param>
+/// <param name="body" type="lightuserdata?">握手失败载荷；nil 时什么都不做</param>
+/// <param name="size" type="integer?">载荷字节数</param>
+/// <returns type="string">记下的错误串；没有载荷时为空串</returns>
+static int32_t _lmysql_record_handshake(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    const char *body = lua_touserdata(lua, 2);
+    size_t lens = (size_t)luaL_optinteger(lua, 3, 0);
+    lua_pushstring(lua, mysql_record_handshake(*ud, body, lens));
     return 1;
+}
+/// <summary>
+/// 取 OK 包带的影响行数，多结果集时每条语句各自一份；值超出 int64 时打 WARN
+/// </summary>
+/// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
+/// <returns type="integer|false">affected rows，不是 OK 包时为 0；超出 int64 时为 false</returns>
+static int32_t _lmysql_pack_affected_rows(lua_State *lua) {
+    LPUB_LUD_ARG(lua, mpack_ctx, 1, mpack);
+    return _lmysql_rtn_count(lua, mysql_pack_affected_rows(mpack), "affected_rows");
+}
+/// <summary>
+/// 取 OK 包带的自增 id，多结果集时每条语句各自一份；值超出 int64 时打 WARN
+/// </summary>
+/// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
+/// <returns type="integer|false">last insert id，非 INSERT 或不是 OK 包时为 0；超出 int64 时为 false</returns>
+static int32_t _lmysql_pack_last_id(lua_State *lua) {
+    LPUB_LUD_ARG(lua, mpack_ctx, 1, mpack);
+    return _lmysql_rtn_count(lua, mysql_pack_last_id(mpack), "last_id");
+}
+/// <summary>
+/// 取 ERR 包带的错误
+/// </summary>
+/// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
+/// <returns type="string">错误信息，没有时(含不是 ERR 包)为空串</returns>
+/// <returns type="integer">MySQL 错误号(0~65535)；不是 ERR 包时为 0</returns>
+static int32_t _lmysql_pack_erro(lua_State *lua) {
+    LPUB_LUD_ARG(lua, mpack_ctx, 1, mpack);
+    int32_t code = 0;
+    lua_pushstring(lua, mysql_pack_erro(mpack, &code));
+    lua_pushinteger(lua, code);
+    return 2;
 }
 //mysql
 LUAMOD_API int luaopen_mysql(lua_State *lua) {
@@ -865,9 +917,14 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
         { "new", _lmysql_new },
         { "pack_type", _lmysql_pack_type },
         { "has_more", _lmysql_has_more },
+        { "pack_affected_rows", _lmysql_pack_affected_rows },
+        { "pack_last_id", _lmysql_pack_last_id },
+        { "pack_erro", _lmysql_pack_erro },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
+        { "record", _lmysql_record },
+        { "record_handshake", _lmysql_record_handshake },
         { "pack_selectdb", _lmysql_pack_selectdb },
         { "pack_ping", _lmysql_pack_ping },
         { "pack_query", _lmysql_pack_query },

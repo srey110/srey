@@ -12,16 +12,17 @@ typedef struct dns_ip {
 /// <summary>
 /// dns域名解析请求包
 /// </summary>
-/// <param name="buf">请求包，须预留 sizeof(dns_head)+域名+sizeof(dns_question) 字节，无需调用方置零</param>
+/// <param name="buf">请求包，须至少 271 字节(报头 12 + 编码后的名字至多 255 + 问题段 4)，无需调用方置零</param>
 /// <param name="domain">要解析的域名</param>
 /// <param name="ipv6">1 ipv6 0 ipv4</param>
 /// <param name="id">输出：本次查询的随机事务 ID（主机序），供 dns_parse_pack 回验响应</param>
-/// <returns>请求包长度；0 表示失败：域名为空或含空标签、单个标签超过 63 字节、总长不小于 255，或取不到随机事务 ID</returns>
+/// <returns>请求包长度；0 表示失败：域名为空或含空标签、单个标签超过 63 字节、编码后超过 255 字节
+/// (去掉结尾 '.' 后超过 253 字节)，或取不到随机事务 ID</returns>
 size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6, uint16_t *id);
 /// <summary>
 /// dns 域名解析请求包（TCP 传输，前置 2 字节大端长度，RFC 1035 §4.2.2）
 /// </summary>
-/// <param name="buf">请求包，须预留 2+sizeof(dns_head)+域名+sizeof(dns_question) 字节，无需调用方置零</param>
+/// <param name="buf">请求包，须至少 273 字节(长度前缀 2 + dns_request_pack 那 271)，无需调用方置零</param>
 /// <param name="domain">要解析的域名</param>
 /// <param name="ipv6">1 ipv6 0 ipv4</param>
 /// <param name="id">输出：本次查询的随机事务 ID（主机序），供 dns_parse_pack 回验响应</param>
@@ -37,17 +38,19 @@ size_t dns_request_pack_tcp(char *buf, const char *domain, int32_t ipv6, uint16_
 void *dns_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
-/// 解析dns返回数据
+/// 解析dns返回数据。只取应答段里的 A/AAAA（CNAME 链目标的照收），授权段与附加段里的地址
+/// 是名字服务器的（转介、glue），不算结果
 /// </summary>
 /// <param name="buf">dns 返回数据包</param>
 /// <param name="buflen">数据包长度</param>
 /// <param name="cnt">解析到的 IP 数量</param>
 /// <param name="id">期望的事务 ID（dns_request_pack 输出）；响应事务 ID 不匹配即视为错配/伪造返回 NULL</param>
-/// <param name="nodata">输出，不需要可传 NULL：1 表示响应本身完整有效、只是没有任何 A/AAAA 记录
-/// （NOERROR/NODATA），换传输方式重查也是同一结果，调用方不必再试 TCP；
-/// 0 表示响应缺失/事务 ID 不符/被截断/解析失败，值得换 TCP 重试</param>
+/// <param name="nodata">输出，不需要可传 NULL：1 表示服务端已给出完整答复——应答段里没有 A/AAAA 记录
+/// （NOERROR/NODATA，只给转介与 glue 的应答也算）或名字不存在（NXDOMAIN），换传输方式重查也是同一结果，
+/// 调用方不必再试 TCP；0 表示响应缺失/事务 ID 不符/被截断/解析失败/其余 RCODE（SERVFAIL 等可能是暂时故障），
+/// 值得换 TCP 重试</param>
 /// <returns>dns_ip 需要FREE，返回非 NULL 时 cnt 恒 &gt;= 1；事务 ID 不匹配、响应被截断(TC 位置位)、
-/// 解析失败，或报文合法但没有任何 A/AAAA 记录(NOERROR/NODATA)均返回 NULL 并置 cnt 为 0</returns>
+/// 解析失败、RCODE 非 0，或报文合法但应答段里没有 A/AAAA 记录(NOERROR/NODATA)均返回 NULL 并置 cnt 为 0</returns>
 dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32_t *nodata);
 /// <summary>
 /// 设置dns服务器IP

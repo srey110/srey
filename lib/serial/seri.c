@@ -153,6 +153,10 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
     uint8_t tag = (uint8_t)*p;
     uint8_t type = tag & 0x7;
     uint8_t cookie = tag >> 3;
+    // 各 case 的取值变量提到 switch 前, case 后面不套花括号
+    size_t slen;
+    uint8_t ntag;
+    int64_t n;
     switch (type) {
     case SERI_TYPE_NIL:
         // 既用作"显式 nil 值"也用作"array hash 段结束"，由调用方按上下文区分
@@ -176,15 +180,13 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
             return -1;
         }
         return 1;
-    case SERI_TYPE_USERDATA: {
+    case SERI_TYPE_USERDATA:
         if (NULL == (p = _seri_rb_read(it, sizeof(void *)))) {
             return -1;
         }
-        uint64_t addr = (uint64_t)read_integer(p, sizeof(void *), 1, 0);
         out->type = SERI_ITEM_USERDATA;
-        out->v.ud = (void *)(uintptr_t)addr;
+        out->v.ud = (void *)(uintptr_t)(uint64_t)read_integer(p, sizeof(void *), 1, 0);
         return 1;
-    }
     case SERI_TYPE_SHORT_STRING:
         if (cookie > 0) {
             if (NULL == (p = _seri_rb_read(it, cookie))) {
@@ -197,8 +199,7 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
         out->v.s.p = p;
         out->v.s.len = cookie;
         return 1;
-    case SERI_TYPE_LONG_STRING: {
-        size_t slen;
+    case SERI_TYPE_LONG_STRING:
         if (2 == cookie) {
             if (NULL == (p = _seri_rb_read(it, 2))) {
                 return -1;
@@ -219,33 +220,25 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
         out->v.s.p = p;
         out->v.s.len = slen;
         return 1;
-    }
-    case SERI_TYPE_ARRAY: {
-        uint32_t array_n;
+    case SERI_TYPE_ARRAY:
         if (cookie < SERI_MAX_COOKIE - 1) {
-            array_n = cookie;
+            out->v.array_n = cookie;
         } else {
             // 长 array 转义：后跟一个完整 INT
-            const char *q = _seri_rb_read(it, 1);
-            if (NULL == q) {
+            if (NULL == (p = _seri_rb_read(it, 1))) {
                 return -1;
             }
-            uint8_t ntag = (uint8_t)*q;
-            uint8_t ntype = ntag & 0x7;
-            uint8_t ncookie = ntag >> 3;
-            if (SERI_TYPE_NUMBER != ntype || SERI_NUMBER_REAL == ncookie) {
+            ntag = (uint8_t)*p;
+            if (SERI_TYPE_NUMBER != (ntag & 0x7) || SERI_NUMBER_REAL == (ntag >> 3)) {
                 return -1;
             }
-            int64_t v;
-            if (0 != _seri_read_integer(it, ncookie, &v) || v < 0 || v > UINT32_MAX) {
+            if (0 != _seri_read_integer(it, ntag >> 3, &n) || n < 0 || n > UINT32_MAX) {
                 return -1;
             }
-            array_n = (uint32_t)v;
+            out->v.array_n = (uint32_t)n;
         }
         out->type = SERI_ITEM_ARRAY_BEGIN;
-        out->v.array_n = array_n;
         return 1;
-    }
     default:
         return -1;
     }

@@ -1,25 +1,22 @@
 ﻿#include "protocol/redis.h"
 #include "utils/binary.h"
 
-/* RESP 数组计数头 "*n\r\n" 所需的最大字节数。
- * 即使 "*999999\r\n" 也只有 10 字节；32 字节预留足够裕量。 */
+/* RESP 数组计数头 "*n\r\n" 所需的最大字节数：'*' + u64 最多 20 位 + CRLF 共 23 字节，32 足够。 */
 #define MAX_HEADER_RESERVE  32
-//单次 RESP 解包最大节点数，纯内存兜底；正确性由 REDIS_MAX_DEPTH 保证，
-//此值只决定为一个未完成回复最多垫多少内存，不应低到误伤合法的扁平大结果集。
-//1<<18 时最坏约 17MB（节点约 64B/个），仍是现有 7 万元素用例的 3.7 倍余量；
-//再往上抬只是让恶意 server 能用约 4MB 流量顶出几十 MB，业务侧的大结果集应分页取
-#define REDIS_MAX_NODES     (1 << 18)
 #define REDIS_SOLO_NODES    4 // 一条回复的前几个节点单独分配，其后的从块链切：小聚合开一整块反而比几次小分配贵
 #define REDIS_NUM_CAP       64 // 长度 token 的容量(不含)：最多 63 位
 #define REDIS_HDR_PEEK      (REDIS_NUM_CAP + 2) // 元素头本地副本：类型 1 + 长度最多 63 位 + CRLF 2
 #define FMT_INTEGER_FLAG  "diouxX" // 整型格式字符集
-// 提取 [p, f] 范围的格式说明符，格式化并追加到 fbuf
+// 提取 [p, f] 范围的格式说明符，格式化并追加到 fbuf；说明符装不进 _fmt 置 fmterr，同不支持的转换整条拒
 #define FMT_TYPE(type)\
     lens = (size_t)(f - p) + 1;\
-    ASSERTAB(lens < sizeof(_fmt), "redis format specifier too long");\
-    memcpy(_fmt, p, lens);\
-    _fmt[lens] = '\0';\
-    binary_set_va(&fbuf, _fmt, va_arg(args, type))
+    if (lens >= sizeof(_fmt)) {\
+        fmterr = 1;\
+    } else {\
+        memcpy(_fmt, p, lens);\
+        _fmt[lens] = '\0';\
+        binary_set_va(&fbuf, _fmt, va_arg(args, type));\
+    }
 // 整数转换：裸 %d %i %u(见 _redis_fmt_bare)直接转十进制，输出与 printf 相同；其余照旧走 FMT_TYPE。
 // stype / utype 为这个长度修饰下 printf 实际按哪个有符号 / 无符号类型取值
 #define FMT_INT(type, stype, utype)\
@@ -34,12 +31,12 @@
         FMT_TYPE(type);\
     }
 
-// 解包上下文，保存当前响应的所有节点与未闭合聚合层的帧栈
 // 聚合层帧：一层未闭合的聚合类型
 typedef struct redis_frame {
     int32_t attr;     // 1 = RESP_ATTR 层：RESP 规定属性不计入父层元素数，故本层闭合时不消费父层一格
     int64_t remain;   // 本层还差多少元素才闭合
 }redis_frame;
+// 解包上下文，保存当前响应的所有节点与未闭合聚合层的帧栈
 typedef struct reader_ctx {
     int32_t depth;          // 当前未闭合聚合层数，stack[0] 为顶层虚拟帧；归零即一条完整回复解析完毕
     uint32_t count;         // 当前回复已解析的节点数，REDIS_MAX_NODES 兜底用
@@ -63,8 +60,7 @@ void _redis_pkfree(void *data) {
     }
     mem_arena arena = { pack->blocks, 0, 0 };
     redis_pack_ctx *next;
-    int32_t i;
-    for (i = 0; i < REDIS_SOLO_NODES && NULL != pack; i++) {
+    for (int32_t i = 0; i < REDIS_SOLO_NODES && NULL != pack; i++) {
         next = pack->next;
         FREE(pack);
         pack = next;
@@ -80,6 +76,28 @@ void _redis_udfree(ud_cxt *ud) {
     mem_arena_free(&rd->arena);
     FREE(rd);
     ud->context = NULL;
+}
+// RESP3 的带外推送(顶层 '>'：invalidate、message、pmessage、smessage 等)不是任何命令的回复，不能唤醒等待者；
+// 订阅类命令的确认例外，RESP3 下它们本身就走推送。RESP2 的 '*' 不判：普通命令的数组回复首元素也可能是这些串
+int32_t _redis_may_resume(void *data) {
+    static const char *const acks[] = { "subscribe", "psubscribe", "ssubscribe",
+                                        "unsubscribe", "punsubscribe", "sunsubscribe" };
+    redis_pack_ctx *pk = (redis_pack_ctx *)data;
+    if (RESP_PUSHE != pk->prot) {
+        return ERR_OK;
+    }
+    redis_pack_ctx *kind = pk->next;// 推送的首元素是种类名
+    if (NULL == kind
+        || (RESP_BSTRING != kind->prot && RESP_STRING != kind->prot)) {
+        return ERR_FAILED;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(acks); i++) {
+        if ((int64_t)strlen(acks[i]) == kind->len
+            && 0 == memcmp(kind->data, acks[i], (size_t)kind->len)) {
+            return ERR_OK;
+        }
+    }
+    return ERR_FAILED;
 }
 // 把一段数据作为一个 RESP Bulk String 追加到 sdsbuf，n 自增
 static inline void _redis_put_bulk(binary_ctx *sdsbuf, const char *data, size_t lens, size_t *n) {
@@ -154,7 +172,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         f++;
         pending = 1;
         switch (*f) {
-        case 's': {
+        case 's':
             val = va_arg(args, char *);
             if (NULL == val) {
                 val = "(null)";
@@ -168,8 +186,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             binary_set_binary(&fbuf, val, strlen(val));
             f++;
             break;
-        }
-        case 'b': {
+        case 'b':
             val = va_arg(args, char *);
             lens = va_arg(args, size_t);
             if (_redis_fmt_alone(fmt, p, &fbuf)) {
@@ -183,25 +200,21 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             }
             f++;
             break;
-        }
-        case 'c': {
+        case 'c':
             FMT_TYPE(int);
             f++;
             break;
-        }
-        case 'p': {
+        case 'p':
             // 必须取 void *：调用方按 %p 压进来的就是它，取成 uintptr_t 两次都不合类型
             // （va_arg 一次，转手喂给 vsnprintf 的 %p 又一次）
             FMT_TYPE(void *);
             f++;
             break;
-        }
-        case '%': {
+        case '%':
             binary_set_binary(&fbuf, "%", 1);
             f++;
             break;
-        }
-        default: {
+        default:
             // 跳过格式标志位（#、0、-、+、空格）
             while ('\0' != *f && NULL != strchr("#0-+ ", *f)) {
                 f++;
@@ -284,7 +297,6 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             }
             fmterr = 1;
             break;
-        }
         }
         if (0 != fmterr) {
             LOG_ERROR("redis_pack: unsupported conversion at offset %zu of format \"%s\".",
@@ -391,11 +403,12 @@ static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk, int64_t o
         }
     }
 }
-// 定位下一个 CRLF；未找到时按已累积字节数区分"数据不足"与"行首长度已超限"，置 status 并返回 ERR_FAILED
+// 定位单行回复的 CRLF；未找到时按已累积字节数区分"数据不足"与"行长已超限"，置 status 并返回 ERR_FAILED。
+// 多容 1 字节给行尾先到的 CR：恰等于上限的行合法，判据同 _redis_reader_line 找到 CRLF 那支
 static inline int32_t _redis_find_crlf(buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
-        if (buffer_size(buf) > REDIS_MAX_LINE_LENS) {
+        if (buffer_size(buf) > REDIS_MAX_LINE_LENS + 1) {
             BIT_SET(*status, PROT_ERROR);
         } else {
             BIT_SET(*status, PROT_MOREDATA);
@@ -405,8 +418,7 @@ static inline int32_t _redis_find_crlf(buffer_ctx *buf, int32_t *status) {
 }
 // 在元素头的本地副本里找首个 CRLF 对；首字节是类型字节不会是 '\r'，从 1 起找
 static inline int32_t _redis_local_crlf(const char *hdr, size_t n) {
-    size_t i;
-    for (i = 1; i + 1 < n; i++) {
+    for (size_t i = 1; i + 1 < n; i++) {
         if ('\r' == hdr[i] && '\n' == hdr[i + 1]) {
             return (int32_t)i;
         }
@@ -444,27 +456,15 @@ static inline int32_t _redis_parse_num(const char *num, int32_t lens, int32_t *s
     *out = val;
     return ERR_OK;
 }
-// 解析长度行(CRLF 位于 pos)紧邻的数值 token
-static inline int32_t _redis_parse_len(buffer_ctx *buf, int32_t pos, int32_t *status, int64_t *out) {
-    char num[REDIS_NUM_CAP];
-    int32_t lens = pos - 1;
-    if (lens > 0 && lens < (int32_t)sizeof(num)) {
-        buffer_copyout(buf, 1, num, lens);
-    }
-    return _redis_parse_num(num, lens, status, out);
-}
-// bulk / 聚合的长度行：本地副本里找到 CRLF 就地解析，找不到走整缓冲查找（结果与之前逐字相同）
-static inline int32_t _redis_head_len(buffer_ctx *buf, const char *hdr, size_t n,
-    int32_t *status, int32_t *pos, int64_t *out) {
+// bulk / 聚合的长度行：只在本地副本里找 CRLF。副本装满(REDIS_HDR_PEEK)还没有，长度 token 必超 REDIS_NUM_CAP，拒；
+// 没装满就是整个缓冲都在副本里，等更多数据
+static inline int32_t _redis_head_len(const char *hdr, size_t n, int32_t *status, int32_t *pos, int64_t *out) {
     *pos = _redis_local_crlf(hdr, n);
-    if (ERR_FAILED != *pos) {
-        return _redis_parse_num(hdr + 1, *pos - 1, status, out);
-    }
-    *pos = _redis_find_crlf(buf, status);
     if (ERR_FAILED == *pos) {
+        BIT_SET(*status, n < REDIS_HDR_PEEK ? PROT_MOREDATA : PROT_ERROR);
         return ERR_FAILED;
     }
-    return _redis_parse_len(buf, *pos, status, out);
+    return _redis_parse_num(hdr + 1, *pos - 1, status, out);
 }
 // 解析单行类型（简单字符串/错误/整数/空值/布尔/浮点/大整数）：格式 <type><data>\r\n。
 // 数据段先统一拷出再按类型校验，STRING / ERROR 就是原样保留；行在 hdr 本地副本里就不再碰 buf
@@ -477,6 +477,11 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         if (ERR_FAILED == pos) {
             return ERR_FAILED;
         }
+    }
+    // 行长(类型字节 + 数据)上限不论一次到齐还是分段到达都一样卡
+    if (pos > REDIS_MAX_LINE_LENS) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
     }
     redis_pack_ctx *pk = _redis_node_new(rd, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
     pk->prot = prot;
@@ -537,14 +542,10 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         } else if ((3 == pk->len && 0 == memcasecmp(pk->data, "nan", (size_t)pk->len))
                    ||(4 == pk->len && 0 == memcasecmp(pk->data, "-nan", (size_t)pk->len))) {
             pk->dval = NAN;
-        } else if (ERR_OK != strtod_fast(pk->data, (size_t)pk->len, &pk->dval)) {
-            // 快路径不收的写法回落 strtod_c；不用 strtod_s，它有长度上限，会拒掉合法的长串
-            char *end;
-            pk->dval = strtod_c(pk->data, &end);
-            if (end != pk->data + pk->len
-                || !isfinite(pk->dval)) {
-                BIT_SET(*status, PROT_ERROR);
-            }
+        } else if (ERR_OK != strtod_s(pk->data, (size_t)pk->len, &pk->dval)
+                   || !isfinite(pk->dval)) {
+            // 无穷与 NaN 只认上面几种写法，strtod 认得的 "Infinity"、"+inf" 等拒
+            BIT_SET(*status, PROT_ERROR);
         }
         break;
     default:
@@ -566,7 +567,7 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     const char *hdr, size_t n, int32_t *status) {
     int32_t pos;
     int64_t blens;
-    if (ERR_OK != _redis_head_len(buf, hdr, n, status, &pos, &blens)) {
+    if (ERR_OK != _redis_head_len(hdr, n, status, &pos, &blens)) {
         return ERR_FAILED;
     }
     size_t total;
@@ -631,7 +632,7 @@ static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     const char *hdr, size_t n, int32_t *status) {
     int32_t pos;
     int64_t nelem;
-    if (ERR_OK != _redis_head_len(buf, hdr, n, status, &pos, &nelem)) {
+    if (ERR_OK != _redis_head_len(hdr, n, status, &pos, &nelem)) {
         return ERR_FAILED;
     }
     if (nelem > (int64_t)INT32_MAX) {

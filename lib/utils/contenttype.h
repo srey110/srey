@@ -8,7 +8,7 @@
 /// 新增条目必须插到正确位置, 顺序乱掉查找就会漏
 /// </summary>
 /// <param name="extension">扩展名字.xx</param>
-/// <returns>Content-Type;查不到返回 "application/X-other-1"</returns>
+/// <returns>Content-Type;查不到返回 "application/octet-stream"</returns>
 const char *contenttype(const char *extension);
 
 #endif//CONTENTTYPE_H_

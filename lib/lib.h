@@ -31,7 +31,7 @@
 #include "crypt/cipher.h"
 #include "crypt/scram.h"
 #include "utils/chan.h"
-#include "utils/dl.h"
+#include "utils/dynlib.h"
 #include "utils/popen2.h"
 #include "utils/mmap.h"
 #include "utils/log.h"

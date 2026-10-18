@@ -62,6 +62,7 @@ typedef enum qtn_type {
     QTN_UDP,    // 出队 → _uev_free_udp
     QTN_LSN,    // 出队 → _uev_freelsn
 }qtn_type;
+
 // 事件回调函数类型
 typedef void(*event_cb)(struct watcher_ctx *watcher, struct evsock_ctx *evsk, int32_t ev);
 // Unix平台的socket上下文基础结构
@@ -98,6 +99,7 @@ typedef struct watcher_ctx {
     atomic_t stop;              // 停止标志
     int32_t evfd;               // epoll/kqueue/evport等的事件fd
     int32_t nevents;            // events数组容量
+    int32_t ticking;            // 非 0：正在驱动 ticks，期间要关的 UDP 挂 tick_closes，见 _uev_tick_drive
 #ifdef COMMIT_NCHANGES
     int32_t nsize;              // changes数组容量
     int32_t nchanges;           // 待提交的变更数量
@@ -118,6 +120,7 @@ typedef struct watcher_ctx {
     qtn_que qtn;                // 隔离队列 FIFO
     pip_ctx pipe;               // 命令通道（fsqu 存命令 + 单管道传唤醒信号）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
+    list_ctx tick_closes;       // tick 期间要关的 UDP(STATUS_REMOVE 置位期间在链上)，本轮 tick 全跑完再关
     defer_exec_que defer_execs; // ev_defer_exec 投来待跑的回调，每轮派发后、冲刷前排空
 #ifdef FLUSH_WATERMARK
     size_t flush_bytes;         // 本轮攒下的待发字节合计，超水位就地冲；由 _uev_flush_pending 清零
@@ -158,10 +161,11 @@ void _uev_keyupdate(watcher_ctx *watcher, evsock_ctx *evsk, int32_t updatetype);
 void _uev_add_conn_inloop(watcher_ctx *watcher, evsock_ctx *evsk);
 // 在事件循环内将accept到的fd完成初始化并注册读事件
 void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
-// 将 TCP 数据加入发送队列；从空队列开始的那条挂进 watcher->flushes 攒着，不立即发
+// 将 TCP 数据加入发送队列；从空队列开始的那条挂进 watcher->flushes 攒着等轮末冲。
+// 例外是当场发：已在攒发链上的攒满 MAX_SEND_NIOV 条就先发这一条；kqueue 下本线程本轮攒够 FLUSH_WATERMARK 字节就冲整条链
 void _uev_add_bufs_send(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf);
-// 把 watcher->flushes 上攒的连接逐个发出去，每条一次 writev 合并本轮攒下的全部 buf。
-// 由事件线程在整轮派发后调用：攒的意义就是让同一 fd 的多条 ev_send 合成一次 syscall
+// 把 watcher->flushes 上攒的连接逐个发出去，每条一次 writev 合并攒下的全部 buf。
+// 事件线程整轮派发后调一次；kqueue 下攒到水位时也在轮中调，可能嵌在别的连接的回调里
 void _uev_flush_pending(watcher_ctx *watcher);
 // 将 UDP datagram(sendto_ctx) 加入发送队列，并确保注册写事件；
 // tried 非 0 表示调用方入队前已尝试过一次发送（如 _uev_try_sendto 遇到 EAGAIN），跳过重复尝试
@@ -171,18 +175,20 @@ void _uev_add_bufs_sendto(watcher_ctx *watcher, evsock_ctx *evsk, sendto_ctx *bu
 int32_t _uev_try_sendto(watcher_ctx *watcher, evsock_ctx *evsk, const void *data, size_t len, netaddr_ctx *addr);
 // 在事件循环内将socket注册读事件（TCP/UDP通用）
 void _uev_add_fd_inloop(watcher_ctx *watcher, evsock_ctx *evsk);
+// 驱动本线程全部 tick(同 _evpub_tick_drive)，期间要关的 UDP 只记下，全部 tick 跑完再关(见 STATUS_INCB)
+uint32_t _uev_tick_drive(watcher_ctx *watcher, uint64_t *now_ms);
 
 // 关闭流程里的 shutdown：how 取 SHUT_RD 或 SHUT_WR，有 SSL 先发 close_notify
 void _uev_sk_shutdown(evsock_ctx *evsk, int32_t how);
 // 释放UDP socket上下文
 void _uev_free_udp(evsock_ctx *evsk);
 // 标记连接为错误状态并触发关闭（TCP shutdown/UDP注册写事件）；已置 STATUS_ERROR 时直接返回
-// TCP 关闭前先走 _evpub_close_flush_tcp 冲一次 send queue；UDP 无待发队列不冲
+// TCP 关闭前先走 _evpub_close_flush_tcp 冲一次 send queue；UDP 不冲，积压的 datagram 直接丢弃
 void _uev_disconnect(watcher_ctx *watcher, evsock_ctx *evsk);
 // 事件注册失败时断开：TCP 先按传输错记一笔(关闭类型报 ABORT、不进延迟关闭，读事件可能永远不来)，
 // 已在关的不改记；其余同 _uev_disconnect
 void _uev_disconnect_failed(watcher_ctx *watcher, evsock_ctx *evsk);
-// 释放listener_ctx（立即释放，用于主线程兜底 / worker 退出后 cleanup 路径）
+// 释放listener_ctx（立即释放，用于主线程兜底 / 事件线程退出后 cleanup 路径）
 void _uev_freelsn(struct listener_ctx *lsn);
 // 递减 listener_ctx 引用计数，归零后立即释放
 // 主线程 / drain 残留路径用 (无 _uev_loop_event 在迭代，立即 FREE 安全)
@@ -200,6 +206,8 @@ void _uev_qtn_drain(watcher_ctx *watcher, uint64_t now_ms);
 void _uev_qtn_flush(watcher_ctx *watcher);
 // 获取evsock_ctx对应的ud_cxt指针
 ud_cxt *_uev_get_ud(evsock_ctx *evsk);
+// 获取evsock_ctx对应的回调集合(TCP/UDP，口径同 _uev_get_ud)
+cbs_ctx *_uev_get_cbs(evsock_ctx *evsk);
 // 校验skid是否与当前连接匹配（防止fd复用误操作）
 int32_t _uev_check_skid(evsock_ctx *evsk, const uint64_t skid);
 

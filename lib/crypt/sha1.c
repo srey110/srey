@@ -61,11 +61,10 @@ void sha1_init(sha1_ctx *sha1) {
 }
 void sha1_update(sha1_ctx *sha1, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
-    size_t left;
     if (0 == lens) {
         return;
     }
-    left = 64 - sha1->datalen;
+    size_t left = 64 - sha1->datalen;
     if (sha1->datalen > 0 && lens >= left) {
         memcpy(sha1->data + sha1->datalen, p, left);
         _sha1_transform(sha1, sha1->data, 1);
@@ -101,8 +100,7 @@ void sha1_final(sha1_ctx *sha1, char hash[SHA1_BLOCK_SIZE]) {
         memset(sha1->data, 0, 56);
     }
     sha1->bitlen += sha1->datalen * 8;
-    write_be32(sha1->data + 56, (uint32_t)(sha1->bitlen >> 32));
-    write_be32(sha1->data + 60, (uint32_t)sha1->bitlen);
+    write_be64(sha1->data + 56, sha1->bitlen);
     _sha1_transform(sha1, sha1->data, 1);
     for (i = 0; i < 5; ++i) {
         write_be32((uint8_t *)hash + i * 4, sha1->state[i]);

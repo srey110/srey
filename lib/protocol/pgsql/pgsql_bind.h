@@ -21,13 +21,14 @@ void pgsql_bind_free(pgsql_bind_ctx *bind);
 /// <param name="bind">pgsql_bind_ctx 指针</param>
 void pgsql_bind_clear(pgsql_bind_ctx *bind);
 /// <summary>
-/// 绑定一个原始字节参数
+/// 绑定一个原始字节参数。本文件各 pgsql_bind_xxx 多绑或值超 INT32_MAX 时都不写入，
+/// 并让随后的 pgsql_pack_stmt_execute 拒绝组包
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx 指针</param>
 /// <param name="value">参数值数据指针</param>
-/// <param name="lens">参数值字节长度</param>
+/// <param name="lens">参数值字节长度，上限 INT32_MAX</param>
 /// <param name="format">参数格式（文本或二进制）</param>
-void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format format);
+void pgsql_bind(pgsql_bind_ctx *bind, const char *value, size_t lens, pgpack_format format);
 /// <summary>
 /// 绑定 bool 类型参数（二进制格式）
 /// </summary>

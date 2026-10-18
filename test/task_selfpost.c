@@ -29,7 +29,7 @@ static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t 
         return;
     }
     task_selfpost_args *arg = (task_selfpost_args *)coro_get_arg(task);
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
 #if FSQU_FAST_MODEL
     LOG_INFO("selfpost tested, %d messages received.", SELFPOST_CNT);
 #else

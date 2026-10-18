@@ -91,16 +91,16 @@ srey.startup(function()
         r.nfail = r.nfail or 0
         _results[#_results + 1] = r
         -- 只对"确实还欠着的名字"销账：重复上报或不在 TESTS 里的名字都不能让它减，
-        -- 否则收齐判定会提前一格
+        -- 否则收齐判定会提前一格。失败模块数同理，只在销账时计
         if _pending[name] then
             _pending[name] = nil
             _npending = _npending - 1
+            if r.nfail > 0 then
+                _fail_modules = _fail_modules + 1
+            end
         end
         _total_pass = _total_pass + r.npass
         _total_fail = _total_fail + r.nfail
-        if r.nfail > 0 then
-            _fail_modules = _fail_modules + 1
-        end
         -- 判"欠账清零"而不是"收到够多条"：后者被一条重复上报就能骗过去
         if _expected > 0 and 0 == _npending then
             _finish()
@@ -113,7 +113,7 @@ srey.startup(function()
         end
         if _expected > 0 then
             WARN("[reporter] timeout after %dms, only %d/%d modules reported.",
-                 REPORT_TIMEOUT, #_results, _expected)
+                 REPORT_TIMEOUT, _expected - _npending, _expected)
         end
         _finish()
     end)

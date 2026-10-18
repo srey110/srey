@@ -52,7 +52,11 @@ uint64_t nowsec(void) {
 }
 void timeofday(struct timeval *tv) {
     uint64_t us = _now_usec();
+#if defined(OS_WIN)
     tv->tv_sec = (long)(us / 1000000);
+#else
+    tv->tv_sec = (time_t)(us / 1000000);
+#endif
     tv->tv_usec = (long)(us % 1000000);
 }
 // 秒级格式化, 成功时回填写入长度供调用方接着写后缀; 两处失败都把 time 置空串
@@ -91,6 +95,7 @@ int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
 }
 uint64_t strtots(const char *time, const char *fmt) {
     struct tm dttm = { 0 };
+    dttm.tm_isdst = -1;// 交给 mktime 自己判夏令时，留 0 会把夏令时期间的时刻当标准时间；%z / %Z 认出部分时区写法时会改写它
     if (NULL == _strptime(time, fmt, &dttm)) {
         return 0;
     }

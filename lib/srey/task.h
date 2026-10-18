@@ -14,7 +14,8 @@ typedef enum task_netev {
     NETEV_NONE   = 0x00, // 无额外事件
     NETEV_ACCEPT = 0x01, // 触发新连接接受回调
     NETEV_AUTHSSL= 0x02, // 触发 SSL 交换完成回调
-    NETEV_SEND   = 0x04  // 触发数据发送完成回调
+    NETEV_SEND   = 0x04, // 触发数据发送完成回调
+    NETEV_PEERADDR = 0x08 // ACCEPT 消息带上对端地址；只在同时订阅 NETEV_ACCEPT 时有用，不订阅不多花一次 getpeername
 }task_netev;
 
 /// <summary>
@@ -46,13 +47,13 @@ void task_free(task_ctx *task);
 /// 须自行 task_free；此时调 task_ungrab 不会释放它，也不会有任何提示</returns>
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing);
 /// <summary>
-/// 任务关闭 MSG_TYPE_CLOSING
+/// 任务关闭 MSG_TYPE_CLOSING，重复调用只投一次。
+/// 注册前调用只记关闭标志，task_register 投完 STARTUP 后补发 CLOSING
 /// </summary>
 /// <param name="task">task_ctx</param>
 void task_close(task_ctx *task);
 /// <summary>
-/// 检查任务是否正在关闭。
-/// loader 全局关闭（loader->closing）或任务已被单独关闭（task->closing）均返回非 0。
+/// 检查任务是否正在关闭：loader 在全局关停（loader->closing），或本任务已被单独关闭（task->closing）。
 /// 协程在发起耗时操作前可调用此函数提前终止，避免关闭流程中执行无意义操作。
 /// </summary>
 /// <param name="task">task_ctx</param>
@@ -91,7 +92,9 @@ int32_t task_exists(loader_ctx *loader, name_t handle);
 /// <param name="task">task_ctx</param>
 void task_incref(task_ctx *task);
 /// <summary>
-/// 释放task_grab获取的任务,并使引用减一. 与 task_grab task_incref 配对
+/// 释放task_grab获取的任务,并使引用减一. 与 task_grab task_incref 配对。
+/// 引用归零时从表里摘掉并 task_free；在 net 线程上归零的，摘表当场做，task_free(含 _argfree)推迟到该线程
+/// 本轮事件派发完之后，不嵌在协议回调或 tick 里；loader_free 等这些释放做完才停 net 线程
 /// </summary>
 /// <param name="task">task_ctx</param>
 void task_ungrab(task_ctx *task);
@@ -298,14 +301,16 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 /// <param name="pktype">包类型</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
+/// <param name="reuse">非 0 允许多个 socket 共用 addr:port(多播要)；0 独占，单播服务用它，别的 socket 绑不上同一端口</param>
 /// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, sock_ctx *sk);
+int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, int32_t reuse, sock_ctx *sk);
 /// <summary>
 /// 设置 task 调度优先级。priority 越大,worker 单次消费消息越多:
 /// n = n_base * (1 + priority/8),cap 到当前队列长度,n_base 由 worker.weight 推导。
 /// 默认 0;可在任意线程随时调整,下一轮调度生效。
 /// work-stealing 偷过去后 priority 跟随 task,但 stealer 的 weight 决定 n_base。
+/// 绑在 net 线程上(task_bind_net)的 task 每轮处理当时的全部积压,不看 priority。
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="priority">建议 0..TASK_PRIORITY_MAX (16);负值 clamp 到 0,超过 clamp 到 TASK_PRIORITY_MAX</param>
@@ -402,11 +407,26 @@ void task_handshaked(task_ctx *task, _net_handshake_cb _handshake);
 /// 注册连接关闭回调函数。回调的 erro 是 close_type，说明连接是怎么断的：TLS 少发 close_notify
 /// 的 CLOSE_TYPE_TRUNCATED 下，"由连接关闭界定 body"的那类协议末片照给但可能被截断，
 /// 收不收由本回调按 erro 自行判（判据见 prots_net_close）。CLOSE_TYPE_NEVERCONN 不会投到
-/// 本回调——连接从未建立，失败已由 CONNECT（TCP）或 HANDSHAKED（KCP）的 erro 交出
+/// 本回调——连接从未建立，失败已由 CONNECT（TCP）或 HANDSHAKED（KCP）的 erro 交出。
+/// 调用排在 task_watch_closed 登记的观察者之后。本 task 上框架内部建的连接(DNS 查询、pgsql_cancel、
+/// wbsock 握手失败的连接)关闭时也会投到这里，按连接记账的业务须忽略自己不认识的连接。
+/// 回调的 sess 分清是谁关了：连接本身关闭时等于 sk->skid；kcp 会话关闭(kcp_stop、死链、UDP socket
+/// 关闭时逐会话补发)时是该会话 kcp_start 给的 sess，sk 仍是承载它的 UDP socket。
+/// 按连接记账的业务用 sess == sk->skid 判连接级关闭
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_close">_net_close_cb 回调函数</param>
 void task_closed(task_ctx *task, _net_close_cb _close);
+/// <summary>
+/// 登记连接关闭观察者：可登记多个，每条 CLOSE 先按登记顺序同步调完观察者，再调 task_closed 的业务回调。
+/// 业务回调只有一个槽，库要收关闭事件(如回收按连接存的状态)就登记观察者，不必让业务代为转接。
+/// 观察者里不得挂起，也不得阻塞；只能在本 task 的上下文里登记(startup 或消息回调中)；没有反登记。
+/// 投递范围同 task_closed：CLOSE_TYPE_NEVERCONN 不投，框架内部连接的关闭照投
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="cb">观察者，前六个参数同 _net_close_cb(含 sess)</param>
+/// <param name="arg">原样交给 cb；须活到 task 释放，本函数不负责释放</param>
+void task_watch_closed(task_ctx *task, _net_close_watch_cb cb, void *arg);
 /// <summary>
 /// 注册 UDP 数据接收回调函数
 /// </summary>
@@ -426,8 +446,8 @@ void task_requested(task_ctx *task, _request_cb _request);
 /// <param name="_response">_response_cb 回调函数</param>
 void task_responsed(task_ctx *task, _response_cb _response);
 /// <summary>
-/// 注册一轮调度结束回调：worker 处理完一轮消息、交还调度权之前调用，调用时独占该 task。
-/// 只能在 task 开始接收消息前设置
+/// 注册一轮调度结束回调：worker 或绑定的 net 线程处理完一轮消息、交还调度权之前调用，调用时独占该 task。
+/// 绑定 task 收包当场处理的那一条也算一轮，每条调一次。只能在 task 开始接收消息前设置
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_round_end">_task_round_end_cb 回调函数；NULL 不回调（默认）</param>

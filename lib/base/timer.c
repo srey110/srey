@@ -1,4 +1,5 @@
 ﻿#include "base/timer.h"
+#include "base/bits.h"
 #include "base/macro_log.h"
 
 #define NANOSEC 1000000000
@@ -28,17 +29,11 @@ static void _timer_mult(timer_ctx *ctx, uint64_t numer, uint64_t denom) {
     ctx->shift = shift;
 }
 #ifdef TIMER_MULSHIFT
-// ticks * mult >> shift，乘积按 128 位算
+// ticks * mult >> shift，乘积按 128 位算；shift 恒在 1~63(见 _timer_mult)，左移 64 - shift 不越界
 static inline uint64_t _timer_mulshift(uint64_t ticks, uint64_t mult, uint32_t shift) {
-#if defined(__SIZEOF_INT128__)
-    return (uint64_t)(((unsigned __int128)ticks * mult) >> shift);// gcc/clang 的 128 位整数，乘积不溢出
-#elif defined(_M_ARM64)
-    return (__umulh(ticks, mult) << (64 - shift)) | ((ticks * mult) >> shift);// __umulh：ARM64 取 64x64 乘积的高 64 位
-#else
     uint64_t hi;
-    uint64_t lo = _umul128(ticks, mult, &hi);// _umul128：x64 一条乘法同时给出乘积的高、低 64 位
+    uint64_t lo = mul64_128(ticks, mult, &hi);
     return (hi << (64 - shift)) | (lo >> shift);
-#endif
 }
 #endif
 #endif

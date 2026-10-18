@@ -108,7 +108,7 @@ typedef unsigned long long IUINT64;
 #endif
 
 
-// 上游自带的 INLINE 兼容层已删:它的 #define inline INLINE 会把本 TU 里后续所有
+// srey补丁：上游自带的 INLINE 兼容层已删:它的 #define inline INLINE 会把本 TU 里后续所有
 // inline 改写成 always_inline(含变参函数,GCC 报硬错误)。按上游重新同步时勿恢复
 
 //=====================================================================
@@ -134,6 +134,7 @@ typedef struct IQUEUEHEAD iqueue_head;
 #define IQUEUE_INIT(ptr) ( \
 	(ptr)->next = (ptr), (ptr)->prev = (ptr))
 
+// srey补丁：改用标准 offsetof，上游的空指针取成员写法是未定义行为
 #define IOFFSETOF(TYPE, MEMBER) offsetof(TYPE, MEMBER)
 
 #define ICONTAINEROF(ptr, type, member) ( \
@@ -269,7 +270,7 @@ struct IKCPSEG
 	IUINT32 rto;
 	IUINT32 fastack;
 	IUINT32 xmit;
-	IUINT32 cap;			// 按 mss 容量分配的满段记 mss，删除时可回空闲链；其余为 0
+	IUINT32 cap;			// srey补丁：按 mss 容量分配的满段记 mss，删除时可回空闲链；其余为 0
 	char data[1];
 };
 
@@ -319,12 +320,12 @@ struct IKCPCB
 	struct IQUEUEHEAD rcv_queue;
 	struct IQUEUEHEAD snd_buf;
 	struct IQUEUEHEAD rcv_buf;
-	struct IQUEUEHEAD seg_pool;	// 空闲满段链，最多 IKCP_SEG_POOL_MAX 个，setmtu 时清空
+	struct IQUEUEHEAD seg_pool;	// srey补丁：空闲满段链，最多 IKCP_SEG_POOL_MAX 个，setmtu 时清空
 	IUINT32 *acklist;
 	IUINT32 ackcount;
 	IUINT32 ackblock;
 	IUINT32 ackedlen;
-	IUINT32 nseg_pool;		// seg_pool 里的段数(补在 ackedlen 与 user 之间的空洞里)
+	IUINT32 nseg_pool;		// srey补丁：seg_pool 里的段数(补在 ackedlen 与 user 之间的空洞里)
 	void *user;
 	char *buffer;
 	int fastresend;

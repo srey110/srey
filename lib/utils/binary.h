@@ -3,6 +3,8 @@
 
 #include "base/structs.h"
 
+#define ERRSTR_BINARY_OOB "binary read out of bounds." // binary_get_* / binary_at 读越界的断言文案
+
 typedef struct binary_ctx {
     char *data;
     size_t inc;//增加基数
@@ -39,7 +41,8 @@ void _binary_grow(binary_ctx *ctx, size_t size);
 // 扩展缓冲区，确保有足够空间写入 size 字节（仅内部托管可扩容）。快路径只判一次能不能直接写，
 // 读模式、长度溢出、容量不够都进 _binary_grow。inc==0 必须和容量一起判：只在容量不够时查，
 // 写得下的那些非法写就会静默改掉调用方内存(原因见 _binary_grow)。
-// 返回后 data[offset + size] 总可写(结尾 NUL 那 1 字节余量)：有调用方预留后在预留区末尾直接写 '\0'，这 1 字节省不得
+// 返回后 data[offset + size] 总可写(结尾 NUL 那 1 字节余量)：有调用方预留后在预留区末尾直接写 '\0'，这 1 字节省不得。
+// UNLIKELY 承重别删：去掉后 gcc 把慢路径排进热路径，所有组包整体变慢
 static inline void _binary_expand(binary_ctx *ctx, size_t size) {
     if (UNLIKELY(0 == ctx->inc
                  || size > SIZE_MAX - ctx->offset - 1
@@ -59,7 +62,7 @@ static inline void _binary_append(binary_ctx *ctx, const char *buf, size_t lens,
     ctx->offset += lens;
 }
 /// <summary>
-/// 设置偏移值
+/// 设置偏移值。off 超过 size 即 ASSERTAB abort
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="off">偏移</param>
@@ -179,7 +182,8 @@ static inline void binary_set_skip(binary_ctx *ctx, size_t lens) {
     ctx->offset += lens;
 }
 /// <summary>
-/// 写入变参数据，按需扩容。外部托管的缓冲不支持，传进来即断言
+/// 写入变参数据，按需扩容。外部托管的缓冲不支持，传进来即断言。
+/// 格式化失败（vsnprintf 报错，或输出达 INT32_MAX 字节）时什么都不写，没有失败回传
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="fmt">格式化</param>
@@ -228,13 +232,13 @@ static inline int32_t binary_have(binary_ctx *ctx, uint64_t lens) {
     return lens <= (uint64_t)(ctx->size - ctx->offset);
 }
 /// <summary>
-/// 获取指定位置的指针
+/// 获取指定位置的指针。pos 不小于 size 即 ASSERTAB abort
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="pos">位置</param>
 /// <returns>char *</returns>
 static inline char *binary_at(binary_ctx *ctx, size_t pos) {
-    ASSERTAB(pos < ctx->size, "out of memory.");
+    ASSERTAB(pos < ctx->size, ERRSTR_BINARY_OOB);
     return ctx->data + pos;
 }
 /// <summary>
@@ -243,7 +247,7 @@ static inline char *binary_at(binary_ctx *ctx, size_t pos) {
 /// <param name="ctx">binary_ctx</param>
 /// <returns>int8_t</returns>
 static inline int8_t binary_get_int8(binary_ctx *ctx) {
-    ASSERTAB(binary_have(ctx, sizeof(int8_t)), "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(int8_t)), ERRSTR_BINARY_OOB);
     int8_t val = (ctx->data + ctx->offset)[0];
     ctx->offset += sizeof(val);
     return val;
@@ -254,7 +258,7 @@ static inline int8_t binary_get_int8(binary_ctx *ctx) {
 /// <param name="ctx">binary_ctx</param>
 /// <returns>uint8_t</returns>
 static inline uint8_t binary_get_uint8(binary_ctx *ctx) {
-    ASSERTAB(binary_have(ctx, sizeof(uint8_t)), "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(uint8_t)), ERRSTR_BINARY_OOB);
     uint8_t val = (uint8_t)(ctx->data + ctx->offset)[0];
     ctx->offset += sizeof(val);
     return val;
@@ -268,7 +272,7 @@ static inline uint8_t binary_get_uint8(binary_ctx *ctx) {
 /// <returns>int64_t</returns>
 static inline int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle) {
     //先减后比，避免攻击者构造极大 lens 让 offset+lens size_t 溢出绕过断言
-    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), ERRSTR_BINARY_OOB);
     int64_t val = read_integer(ctx->data + ctx->offset, lens, islittle, 1);
     ctx->offset += lens;
     return val;
@@ -281,7 +285,7 @@ static inline int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t i
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>uint64_t</returns>
 static inline uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t islittle) {
-    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), ERRSTR_BINARY_OOB);
     uint64_t val = (uint64_t)read_integer(ctx->data + ctx->offset, lens, islittle, 0);
     ctx->offset += lens;
     return val;
@@ -293,7 +297,7 @@ static inline uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>float</returns>
 static inline float binary_get_float(binary_ctx *ctx, int32_t islittle) {
-    ASSERTAB(binary_have(ctx, sizeof(float)), "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(float)), ERRSTR_BINARY_OOB);
     float val = unpack_float(ctx->data + ctx->offset, islittle);
     ctx->offset += sizeof(val);
     return val;
@@ -305,7 +309,7 @@ static inline float binary_get_float(binary_ctx *ctx, int32_t islittle) {
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>double</returns>
 static inline double binary_get_double(binary_ctx *ctx, int32_t islittle) {
-    ASSERTAB(binary_have(ctx, sizeof(double)), "out of memory.");
+    ASSERTAB(binary_have(ctx, sizeof(double)), ERRSTR_BINARY_OOB);
     double val = unpack_double(ctx->data + ctx->offset, islittle);
     ctx->offset += sizeof(val);
     return val;
@@ -334,7 +338,7 @@ static inline char *binary_try_get_string(binary_ctx *ctx) {
 /// <returns>char *</returns>
 static inline char *binary_get_string(binary_ctx *ctx) {
     char *val = binary_try_get_string(ctx);
-    ASSERTAB(NULL != val, "out of memory.");
+    ASSERTAB(NULL != val, ERRSTR_BINARY_OOB);
     return val;
 }
 /// <summary>
@@ -344,7 +348,7 @@ static inline char *binary_get_string(binary_ctx *ctx) {
 /// <param name="lens">长度</param>
 /// <returns>char *;lens 为 0 时返回 NULL</returns>
 static inline char *binary_get_binary(binary_ctx *ctx, size_t lens) {
-    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), ERRSTR_BINARY_OOB);
     if (0 == lens) {
         return NULL;
     }
@@ -358,7 +362,7 @@ static inline char *binary_get_binary(binary_ctx *ctx, size_t lens) {
 /// <param name="ctx">binary_ctx</param>
 /// <param name="lens">长度</param>
 static inline void binary_get_skip(binary_ctx *ctx, size_t lens) {
-    ASSERTAB(binary_have(ctx, lens), "out of memory.");
+    ASSERTAB(binary_have(ctx, lens), ERRSTR_BINARY_OOB);
     ctx->offset += lens;
 }
 

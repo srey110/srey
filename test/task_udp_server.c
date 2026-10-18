@@ -12,7 +12,7 @@ static void _net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype,
 static void _startup(task_ctx *task) {
     task_recvedfrom(task, _net_recvfrom);
     sock_ctx sk;
-    if (ERR_OK != task_udp(task, _pktype, "0.0.0.0", _port, &sk)) {
+    if (ERR_OK != task_udp(task, _pktype, "0.0.0.0", _port, 0, &sk)) {
         LOG_WARN("start udp server error.");
     }
 }

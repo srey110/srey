@@ -6,10 +6,11 @@
 // 头部缓冲区从 cur 起的剩余字节数。形参名避开 head：宏体里 (p)->head 的 head 也会被替换
 #define HEAD_REMAIN(p, cur) ((p)->head.lens - (size_t)((cur) - (char *)(p)->head.data))
 #define HTTP_SET_LIT(bw, lit) binary_set_binary((bw), (lit), sizeof(lit) - 1) // 追加字符串字面量(不含结尾 '\0')
-// 头字段数组内嵌进头包(见 _http_headpack)：16 槽连同头块整块不超过 1008B 才内嵌，不越过常见分配器的小块档
-// (macOS 小块上限 1008B、glibc tcache 1032B)。只内嵌一部分不划算：用满还得搬到堆上，比单独分配更慢
-#define HTTP_EMBED_LIMIT 1008
-#define HTTP_EMBED_SLOTS 16// 内嵌的槽数
+#define HTTP_EMBED_SLOTS 16// 头字段数组内嵌进头包的槽数(见 _http_headpack)，用满搬到堆上
+// http_pack_ctx.hflags 的位：解头时记下(见 _http_note_hflags)，http_expect_continue / http_want_close 直接读
+#define HTTP_HF_EXPECT100 0x01// Expect 列表含 100-continue
+#define HTTP_HF_CLOSE 0x02// Connection 列表含 close
+#define HTTP_HF_KEEPALIVE 0x04// Connection 列表含 keep-alive
 // 状态码与描述文本只此一份，http_code_status 与 http_pack_resp 的整行常量都从这里展开
 #define HTTP_CODES(X) \
     X(100, "Continue") \
@@ -61,17 +62,18 @@ typedef enum parse_status{
     INIT = 0,   // 初始状态，等待头部
     CONTENT,    // 已解析头部，等待 Content-Length 指定的数据体
     CHUNKED,    // 分块传输模式
-    TILLCLOSE,  // 响应无 CL/TE，body 由连接关闭界定（RFC 7230 §3.3.3 规则 7）
+    TILLCLOSE,  // 响应无 CL/TE(规则 7)或 TE 最后一层不是 chunked(规则 3)，body 由连接关闭界定（RFC 7230 §3.3.3）
     INIT_NOBODY // 同 INIT，但紧随的那一条响应按"无报文体"处理（HEAD 用，见 http_set_method）
 }parse_status;
 ARR_DECL(hdr_arr, http_header_ctx)
 typedef struct http_pack_ctx {
     int32_t chunked;          // 0=非 chunked，1=chunked 起始包，2=chunked 数据包
     int32_t chunked_last;     // 最近一次见到的 Transfer-Encoding 行，其末尾 token 是否为 chunked
+    int32_t hflags;           // HTTP_HF_* 的组合，数据片恒为 0
     buf_ctx head;             // 原始头部数据（含第一行和所有字段）
     buf_ctx data;             // 数据体
     buf_ctx status[3];        // 第一行拆分：status[0]=方法/版本，status[1]=状态码/路径，status[2]=描述/版本
-    hdr_arr header;           // 所有头部字段列表，可能内嵌在本块里(见 _http_headpack)
+    hdr_arr header;           // 所有头部字段列表，起初内嵌在本块里、用满搬到堆上(见 _http_headpack)
 }http_pack_ctx;
 
 // 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)；全为 OWS 时收成 *start 处的空区间。
@@ -92,17 +94,10 @@ static inline void _http_trim_ows(const char **start, const char **end) {
     *start = s;
     *end = e;
 }
-int32_t _http_check_keyval(http_header_ctx *head,
-                           const char *key, size_t klen,
-                           const char *val, size_t vlen) {
-    if (!buf_icompare(&head->key, key, klen)) {
-        return ERR_FAILED;
-    }
-    if (NULL == val) {
-        return ERR_OK;
-    }
-    const char *p = (const char *)head->value.data;
-    const char *end = (const char *)head->value.data + head->value.lens;
+// 值按 ',' 分隔、去 OWS 后，是否有一项与 val 大小写不敏感全等
+static inline int32_t _http_list_has(buf_ctx *value, const char *val, size_t vlen) {
+    const char *p = (const char *)value->data;
+    const char *end = (const char *)value->data + value->lens;
     const char *tstart;
     const char *tend;
     while (p < end) {
@@ -123,6 +118,17 @@ int32_t _http_check_keyval(http_header_ctx *head,
         }
     }
     return ERR_FAILED;
+}
+int32_t _http_check_keyval(http_header_ctx *head,
+                           const char *key, size_t klen,
+                           const char *val, size_t vlen) {
+    if (!buf_icompare(&head->key, key, klen)) {
+        return ERR_FAILED;
+    }
+    if (NULL == val) {
+        return ERR_OK;
+    }
+    return _http_list_has(&head->value, val, vlen);
 }
 // 解析 Content-Length 字段的十进制值；拒绝空值与非纯数字（含正负号与空白）。
 // 两侧 OWS 已由 _http_parse_field 剥掉(_http_trim_ows)，此处 value 即纯字段值
@@ -211,6 +217,24 @@ static int32_t _http_check_transfer(http_pack_ctx *pack, http_header_ctx *field,
     }
     return ERR_OK;
 }
+// 记下 Expect / Connection 两个头的事实，与 TE/CL 判定同一趟走头；重复的头各自累加，任一字段命中即置位
+static inline void _http_note_hflags(http_pack_ctx *pack, http_header_ctx *field) {
+    if (buf_icompare(&field->key, "expect", sizeof("expect") - 1)) {
+        if (ERR_OK == _http_list_has(&field->value, "100-continue", sizeof("100-continue") - 1)) {
+            BIT_SET(pack->hflags, HTTP_HF_EXPECT100);
+        }
+        return;
+    }
+    if (!buf_icompare(&field->key, "connection", sizeof("connection") - 1)) {
+        return;
+    }
+    if (ERR_OK == _http_list_has(&field->value, "close", sizeof("close") - 1)) {
+        BIT_SET(pack->hflags, HTTP_HF_CLOSE);
+    }
+    if (ERR_OK == _http_list_has(&field->value, "keep-alive", sizeof("keep-alive") - 1)) {
+        BIT_SET(pack->hflags, HTTP_HF_KEEPALIVE);
+    }
+}
 // 是否为 RFC 7230 §2.6 的 HTTP-version（HTTP/DIGIT.DIGIT，恰 8 字节）
 static inline int32_t _http_is_version(buf_ctx *seg) {
     const char *ver = (const char *)seg->data;
@@ -223,9 +247,6 @@ static inline int32_t _http_is_version(buf_ctx *seg) {
 int32_t http_code_nobody(int32_t code) {
     return code < 200 || 204 == code || 304 == code;
 }
-// 收到的这个包是否 RFC 7230 §3.3.3 规则 1 里"一律无报文体"的响应。
-// client 为 0 时收到的是请求，一律返 0：本端解析不出方向——_http_parse_status 只要求首段或末段
-// 是 HTTP-version，"HTTP/1.1 204 z" 这种伪请求行照样能过，在服务端按响应处理就是一次请求走私
 // 是否 1xx 中间响应:首行校验与 _http_nobody_resp 同一套,只是判的区间不同
 static inline int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
     if (0 == client
@@ -239,6 +260,9 @@ static inline int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
     }
     return code < 200;
 }
+// 收到的这个包是否 RFC 7230 §3.3.3 规则 1 里"一律无报文体"的响应。
+// client 为 0 时收到的是请求，一律返 0：本端解析不出方向——_http_parse_status 只要求首段或末段
+// 是 HTTP-version，"HTTP/1.1 204 z" 这种伪请求行照样能过，在服务端按响应处理就是一次请求走私
 static inline int32_t _http_nobody_resp(http_pack_ctx *pack, int32_t client) {
     if (0 == client
         || !_http_is_version(&pack->status[0])
@@ -356,8 +380,9 @@ static inline void _http_header_push(http_pack_ctx *pack, http_header_ctx *field
     hdr_arr_push_back(arr, field);
 }
 // 解析全部头部字段，检测 Content-Length/Transfer-Encoding，将字段存入 pack->header。
-// 头块里出现 NUL 即拒，由逐行扫描顺带挡掉(见 _http_find_eol)
-static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
+// 头块里出现 NUL 即拒，由逐行扫描顺带挡掉(见 _http_find_eol)。
+// 响应的 TE 最后一层不是 chunked 时 *transfer 改记 TILLCLOSE(RFC 7230 §3.3.3 规则 3)，请求的则拒
+static int32_t _http_parse_head(http_pack_ctx *pack, int32_t client, int32_t *transfer) {
     char *head = _http_parse_status(pack);
     if (NULL == head) {
         return ERR_FAILED;
@@ -371,12 +396,24 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
         if (ERR_OK != _http_check_transfer(pack, &field, transfer)) {
             return ERR_FAILED;
         }
+        _http_note_hflags(pack, &field);
         _http_header_push(pack, &field);
     }
-    // 全部头部行都见过之后才能确定 chunked 是否为最后一个 transfer-coding
-    if (CHUNKED == *transfer && !pack->chunked_last) {
-        LOG_WARN("HTTP smuggling: chunked is not the final transfer-coding.");
+    if (CHUNKED != *transfer) {
+        return ERR_OK;
+    }
+    // HTTP/1.0 报文带 TE 按分帧有误处理(RFC 9112 §6.1)。版本段：响应在首段，请求在末段
+    if (buf_compare(0 != client ? &pack->status[0] : &pack->status[2], "HTTP/1.0", 8)) {
+        LOG_WARN("HTTP smuggling: Transfer-Encoding in an HTTP/1.0 message.");
         return ERR_FAILED;
+    }
+    // 全部头部行都见过之后才能确定 chunked 是否为最后一个 transfer-coding
+    if (!pack->chunked_last) {
+        if (0 == client) {
+            LOG_WARN("HTTP smuggling: chunked is not the final transfer-coding.");
+            return ERR_FAILED;
+        }
+        *transfer = TILLCLOSE;
     }
     return ERR_OK;
 }
@@ -419,11 +456,12 @@ static inline int32_t _http_crlf2_pos(buffer_ctx *buf, size_t start) {
 }
 // 头块与 trailer 块都搜 CRLFCRLF，且都靠 ud->prot_offset 续扫：半包到达时记下已扫过的字节数，
 // 下次从它减 3 起搜——少 3 才能让跨两次读取的 CRLFCRLF 仍然命中。命中或出错都把它归零。
-// 返回块总长(含结尾 CRLFCRLF)；0 表示没解出来，等更多数据还是超 HTTP_MAX_HEADLENS 看 status
-static inline size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+// skip 是块前要跳过的空行字节数(见 _http_lead_crlf)：从它起搜，但照样计入 HTTP_MAX_HEADLENS。
+// 返回块总长(含 skip 与结尾 CRLFCRLF)；0 表示没解出来，等更多数据还是超 HTTP_MAX_HEADLENS 看 status
+static inline size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, size_t skip, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
     size_t start = ud->prot_offset > (flens - 1) ? ud->prot_offset - (flens - 1) : 0;
-    int32_t pos = _http_crlf2_pos(buf, start);
+    int32_t pos = _http_crlf2_pos(buf, start > skip ? start : skip);
     if (ERR_FAILED == pos) {
         size_t bsize = buffer_size(buf);
         if (bsize > HTTP_MAX_HEADLENS) {
@@ -443,40 +481,48 @@ static inline size_t _http_search_crlf2(buffer_ctx *buf, ud_cxt *ud, int32_t *st
     }
     return blens;
 }
-// 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组。
-// 整块放得下 HTTP_EMBED_SLOTS 个槽时数组也并进来，布局 [结构体][槽 × 16][头块]，槽在头块前面才对得齐；
-// 放不下就照旧首次 push 时单独分配。
+// 分配 http_pack_ctx 结构体，头字段数组的 HTTP_EMBED_SLOTS 个槽与头部数据紧随其后（连续内存），
+// 布局 [结构体][槽 × 16][头块]，槽在头块前面才对得齐。
 // 只清结构体前缀：那 lens 字节紧接着就被 _http_parsehead 的 buffer_remove 整块写满，
 // 连它一起清等于每请求白 memset 一个头块（上限 HTTP_MAX_HEADLENS）
 static inline http_pack_ctx *_http_headpack(size_t lens) {
+    const size_t slots = HTTP_EMBED_SLOTS * sizeof(http_header_ctx);
     char *pack;
-    http_pack_ctx *pctx;
-    size_t used = sizeof(http_pack_ctx) + lens;
-    size_t n = 0;
-    if (used + HTTP_EMBED_SLOTS * sizeof(http_header_ctx) <= HTTP_EMBED_LIMIT) {
-        n = HTTP_EMBED_SLOTS;
-    }
-    MALLOC(pack, used + n * sizeof(http_header_ctx));
+    MALLOC(pack, sizeof(http_pack_ctx) + slots + lens);
     ZERO(pack, sizeof(http_pack_ctx));
-    pctx = (http_pack_ctx *)pack;
-    pctx->head.data = pack + sizeof(http_pack_ctx) + n * sizeof(http_header_ctx);
+    http_pack_ctx *pctx = (http_pack_ctx *)pack;
+    pctx->head.data = pack + sizeof(http_pack_ctx) + slots;
     pctx->head.lens = lens;
     hdr_arr_init(&pctx->header, 0);
-    if (n > 0) {
-        pctx->header.ptr = (http_header_ctx *)(pack + sizeof(http_pack_ctx));
-        pctx->header.maxsize = (uint32_t)n;
-    }
+    pctx->header.ptr = (http_header_ctx *)(pack + sizeof(http_pack_ctx));
+    pctx->header.maxsize = HTTP_EMBED_SLOTS;
     return pctx;
 }
-http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, int32_t *status) {
-    size_t hlens = _http_search_crlf2(buf, ud, status);
+// 请求行前有几个空行(CRLF)，返回其字节数；RFC 9112 §2.2 要服务端忽略它们。只认 CRLF，
+// 数到 HTTP_MAX_HEADLENS 即停：跳过的字节计入头块上限，由 _http_search_crlf2 判超
+static inline size_t _http_lead_crlf(buffer_ctx *buf) {
+    size_t bsize = buffer_size(buf);
+    size_t n = 0;
+    while (n < HTTP_MAX_HEADLENS
+           && n + 1 < bsize
+           && '\r' == buffer_at(buf, n)
+           && '\n' == buffer_at(buf, n + 1)) {
+        n += CRLF_SIZE;
+    }
+    return n;
+}
+http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *transfer, int32_t *status) {
+    size_t skip = (0 == client) ? _http_lead_crlf(buf) : 0;
+    size_t hlens = _http_search_crlf2(buf, ud, skip, status);
     if (0 == hlens) {
         return NULL;
     }
+    ASSERTAB(skip == buffer_drain(buf, skip), "drain buffer failed.");
+    hlens -= skip;
     *transfer = INIT;
     http_pack_ctx *pack = _http_headpack(hlens);
     ASSERTAB(hlens == buffer_remove(buf, pack->head.data, hlens), "copy buffer failed.");
-    if (ERR_OK != _http_parse_head(pack, transfer)) {
+    if (ERR_OK != _http_parse_head(pack, client, transfer)) {
         BIT_SET(*status, PROT_ERROR);
         _http_pkfree(pack);
         return NULL;
@@ -485,10 +531,11 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t *transfer, i
 }
 // 解析 HTTP 头部后根据传输方式决定：直接返回（无数据体/chunked）或进入数据体读取。
 // nobody 只由 ud->status 决定，故在此就地取——由调用方另传一个形参就是同一事实记两处
-static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *status) {
+static inline http_pack_ctx *_http_header(ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud,
+    int32_t client, int32_t *status) {
     int32_t nobody = (INIT_NOBODY == ud->status) ? 1 : 0;
     int32_t transfer;
-    http_pack_ctx *pack = _http_parsehead(buf, ud, &transfer, status);
+    http_pack_ctx *pack = _http_parsehead(buf, ud, client, &transfer, status);
     if (NULL == pack) {
         return NULL;
     }
@@ -511,15 +558,22 @@ static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t c
         } else {
             ud->context = pack;
             ud->status = transfer;
+            // 对端在等 100 才发体；体已先到也照回，1xx 客户端都得容忍
+            if (0 == client
+                && pack->data.lens > 0
+                && http_expect_continue(pack)) {
+                (void)ev_send(ev, sk, (void *)HTTP_CONTINUE_RESP, sizeof(HTTP_CONTINUE_RESP) - 1, 1);
+            }
             return _http_content(buf, ud, status);
         }
     } else {
-        if (1 == pack->chunked) {
+        if (CHUNKED == transfer) {
             BIT_SET(*status, PROT_SLICE_START);
         } else if (0 != client) {
-            // 响应既无 Content-Length 又无 Transfer-Encoding：body 由连接关闭界定
-            // (RFC 7230 §3.3.3 规则 7)。按分片投：本包是首片，body 逐段跟上，末片由
-            // 关闭事件补(见 _http_on_close)。请求侧无此规则，无 CL/TE 即无 body
+            // 响应无 CL/TE(RFC 7230 §3.3.3 规则 7)或 TE 最后一层不是 chunked(规则 3)：body 由连接关闭界定。
+            // 按分片投：本包是首片(不算 chunked)，body 逐段跟上，末片由关闭事件补(见 _http_on_close)。
+            // 请求侧无此规则，无 CL/TE 即无 body
+            pack->chunked = 0;
             BIT_SET(*status, PROT_SLICE_START);
             transfer = TILLCLOSE;
         }
@@ -555,9 +609,24 @@ static inline int32_t _http_chunk_take(buffer_ctx *buf, http_pack_ctx *pack, siz
     BIT_SET(*status, PROT_SLICE);
     return ERR_OK;
 }
+// 缓冲开头 lens 字节按头块的行口径逐行查(_http_line_end)：只认 CRLF 收行，\0 / 裸 CR / 裸 LF 一律拒。
+// lens 须正好收在某行的 CRLF 之后。只有带 chunk-ext 的长度行与 trailer 块才走，按需拷一份
+static int32_t _http_lines_ok(buffer_ctx *buf, size_t lens) {
+    char *blk;
+    MALLOC(blk, lens);
+    ASSERTAB(lens == buffer_copyout(buf, 0, blk, lens), "copy buffer failed.");
+    const char *end = blk + lens;
+    const char *p = blk;
+    while (p < end
+           && NULL != (p = _http_line_end(p, end))) {
+        p += CRLF_SIZE;
+    }
+    FREE(blk);
+    return NULL != p ? ERR_OK : ERR_FAILED;
+}
 // 解析 chunked 编码的数据块：先读取长度行，再读取对应数据，长度为 0 表示结束。
-// trailer 块与头块共用 _http_search_crlf2（CHUNKED 期间头块已解完，
-// 两者不争用 prot_offset）；长度行只有 1~16 个 hex 字符，重扫可忽略，不续扫。
+// trailer 块与头块共用 _http_search_crlf2（CHUNKED 期间头块已解完，两者不争用 prot_offset）；
+// 长度行(含 chunk-ext)最长 HTTP_MAX_HEADLENS，没收全时每次从头重扫，不续扫。
 // 载荷已整块到齐时长度行不先单独 drain，与载荷、结尾 CRLF 最后一次 drain。
 // NOINLINE：长度行的栈数组会让内联进去的 http_unpack 每包都背上栈保护（Darwin / MSVC 默认开），非 chunked 请求也付
 NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -566,10 +635,9 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
     if (NULL == pack) {
         int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
         if (pos < 0) {
-            // 长度行还没收全时，缓冲里的字节全都属于这一行。没有上限的话，对端只要一直发
-            // 不带 CRLF 的数据就能让接收缓冲无限涨，一条连接即可耗尽内存；头块与 trailer
-            // 块都是按 HTTP_MAX_HEADLENS 这么挡的
-            if (buffer_size(buf) > HTTP_MAX_HEADLENS) {
+            // 长度行还没收全时缓冲里的字节全属于这一行，按 HTTP_MAX_HEADLENS 挡住无限累积(同头块与 trailer 块)。
+            // 多容 1 字节给行尾先到的 CR：恰等于上限的行合法，判据同下面找到 CRLF 那支
+            if (buffer_size(buf) > HTTP_MAX_HEADLENS + 1) {
                 BIT_SET(*status, PROT_ERROR);
             } else {
                 BIT_SET(*status, PROT_MOREDATA);
@@ -602,8 +670,8 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
         // RFC 7230 §4.1：chunk-size 严格按 1*HEXDIG，前导空白/符号/"0x" 一律拒，免得与上下游切出不同的 chunk 边界(请求走私)。
         // 移位前先卡上限的 1/16、累加后再卡上限，不论上限调多大都不会溢出
         size_t dlens = 0;
-        int32_t h, i;
-        for (i = 0; i < hexlens; i++) {
+        int32_t h;
+        for (int32_t i = 0; i < hexlens; i++) {
             h = fromhex(lensbuf[i]);
             if (h < 0
                 || dlens > (HTTP_MAX_CHUNK_LENS >> 4)) {
@@ -615,6 +683,12 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
                 BIT_SET(*status, PROT_ERROR);
                 return NULL;
             }
+        }
+        // ext 里的 \0 / 裸 CR / 裸 LF 与头块同样拒，免得与按裸 LF 收行的上游切出不同的 chunk 边界
+        if (NULL != semi
+            && ERR_OK != _http_lines_ok(buf, (size_t)pos + CRLF_SIZE)) {
+            BIT_SET(*status, PROT_ERROR);
+            return NULL;
         }
         drain = pos + CRLF_SIZE;
         pack = _http_chunkedpack(dlens);
@@ -651,10 +725,14 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
         if ('\r' == buffer_at(buf, 0) && '\n' == buffer_at(buf, 1)) {
             drain = CRLF_SIZE;
         } else {
-            // RFC 7230 §4.1.2 trailer headers 受 HTTP_MAX_HEADLENS=4KB 上限保护，
-            // 防恶意 server 无限发 trailer 数据触发 buf 持续累积
-            drain = _http_search_crlf2(buf, ud, status);
+            // RFC 7230 §4.1.2 trailer 块受 HTTP_MAX_HEADLENS 上限保护，防对端无限发 trailer 让 buf 持续累积；
+            // 块内的行口径同头块
+            drain = _http_search_crlf2(buf, ud, 0, status);
             if (0 == drain) {
+                return NULL;
+            }
+            if (ERR_OK != _http_lines_ok(buf, drain)) {
+                BIT_SET(*status, PROT_ERROR);
                 return NULL;
             }
         }
@@ -665,7 +743,7 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
     ud->context = NULL;
     return pack;
 }
-// 由连接关闭界定 body(RFC 7230 §3.3.3 规则 7)：缓冲里现有的字节全都是 body，原样切一片投出去。
+// 由连接关闭界定 body(RFC 7230 §3.3.3 规则 7 / 规则 3)：缓冲里现有的字节全都是 body，原样切一片投出去。
 // 不在解析器里攒完整 body——那要无界累积并另配一个总长上限，而分片投递业务本来就在用(chunked)
 static inline http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
     size_t lens = buffer_size(buf);
@@ -704,12 +782,11 @@ void _http_udfree(ud_cxt *ud) {
 }
 void *http_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    (void)ev; (void)sk;
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
     case INIT_NOBODY:
-        pack = _http_header(buf, ud, client, status);
+        pack = _http_header(ev, sk, buf, ud, client, status);
         break;
     case CONTENT:
         pack = _http_content(buf, ud, status);
@@ -731,7 +808,7 @@ void *http_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     }
     return pack;
 }
-// chunked 的中间块与结束块只有数据、没有首行和头部（_http_chunkedpack 不设 head.data），
+// 数据片(chunk 块与 tillclose 片)只有数据、没有首行和头部（_http_chunkedpack 不设 head.data），
 // 首行/头部四个访问器统一按这个判据返回空，别让调用方各自记得判一遍
 buf_ctx *http_status(http_pack_ctx *pack) {
     return (NULL != pack->head.data) ? pack->status : NULL;
@@ -774,6 +851,18 @@ void *http_take_data(http_pack_ctx *pack, size_t *lens) {
         pack->data.lens = 0;
     }
     return data;
+}
+// 请求行的版本在第三段。数据片的 status 与 hflags 全空，下面两个判断都落 0
+int32_t http_expect_continue(http_pack_ctx *pack) {
+    return BIT_CHECK(pack->hflags, HTTP_HF_EXPECT100)
+        && buf_compare(&pack->status[2], "HTTP/1.1", 8);
+}
+int32_t http_want_close(http_pack_ctx *pack) {
+    if (BIT_CHECK(pack->hflags, HTTP_HF_CLOSE)) {
+        return 1;
+    }
+    return !BIT_CHECK(pack->hflags, HTTP_HF_KEEPALIVE)
+        && buf_compare(&pack->status[2], "HTTP/1.0", 8);
 }
 // [s, s + lens) 里有没有 CR / LF，\0 不算
 static inline int32_t _http_has_crlf(const char *s, size_t lens) {
@@ -868,6 +957,24 @@ int32_t http_head_val_ok(const char *val, size_t lens) {
     }
     return NULL != val
         && val + lens == _http_find_eol(val, val + lens);
+}
+// 头名是否等于 name(name 为小写字面量)，大小写无关
+static inline int32_t _http_key_is(const char *key, size_t klens, const char *name, size_t nlens) {
+    return klens == nlens && 0 == memcasecmp(key, name, nlens);
+}
+http_key_rc http_head_key_check(const char *key, size_t klens, int32_t autoflags) {
+    if (klens >= HTTP_HEAD_KEY_MAX
+        || 0 == is_token(key, klens)) {
+        return HTTP_KEY_BAD;
+    }
+    if ((BIT_CHECK(autoflags, HTTP_AUTO_CT)
+            && _http_key_is(key, klens, "content-type", sizeof("content-type") - 1))
+        || (BIT_CHECK(autoflags, HTTP_AUTO_FRAME)
+            && (_http_key_is(key, klens, "content-length", sizeof("content-length") - 1)
+                || _http_key_is(key, klens, "transfer-encoding", sizeof("transfer-encoding") - 1)))) {
+        return HTTP_KEY_AUTO;
+    }
+    return HTTP_KEY_OK;
 }
 void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens) {
     size_t klens = _http_nocrlf_len(key);

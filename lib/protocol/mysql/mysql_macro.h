@@ -24,9 +24,13 @@
 #define MYSQL_AUTH_SWITCH          0xfe             // 认证插件切换标志
 #define MYSQL_CACHING_SHA2         0x01             // caching_sha2_password 认证状态标志
 #define MYSQL_CACHING_SHA2_FAST    0x03             // caching_sha2 快速认证（密码已在缓存中）
-#define MYSQL_CACHING_SHA2_FULL    0x04             // caching_sha2 完整认证（需要 RSA 加密）
-#define CACHING_SHA2_PASSWORLD     "caching_sha2_password"  // caching_sha2_password 插件名
-#define MYSQL_NATIVE_PASSWORLD     "mysql_native_password"  // mysql_native_password 插件名
+#define MYSQL_CACHING_SHA2_FULL    0x04             // caching_sha2 完整认证（本实现只在 TLS 上做）
+#define CACHING_SHA2_PASSWORD      "caching_sha2_password"  // caching_sha2_password 插件名
+#define MYSQL_NATIVE_PASSWORD      "mysql_native_password"  // mysql_native_password 插件名
+// 登录参数的字节上限（不含结尾 NUL），mysql_ctx 里的缓冲各多 1 字节
+#define MYSQL_USER_LENS            128              // 用户名：32 字符 × utf8mb4 每字符 4 字节
+#define MYSQL_DB_LENS              256              // 库名：64 字符 × 4 字节
+#define MYSQL_PASSWORD_LENS        256              // 密码：caching_sha2_password 明文上限
 
 //Capabilities Flags（客户端能力标志位）
 #define CLIENT_LONG_PASSWORD                  1           // 使用新密码插件
@@ -80,6 +84,7 @@ typedef enum mysql_field_types {
     MYSQL_TYPE_DATETIME2,     // DATETIME2 类型（精度扩展）
     MYSQL_TYPE_TIME2,         // TIME2 类型（精度扩展）
     MYSQL_TYPE_TYPED_ARRAY,   // 类型化数组（JSON 路径使用）
+    MYSQL_TYPE_VECTOR = 242,  // VECTOR 类型（MySQL 9），线上同 BLOB 按长度前缀编码
     MYSQL_TYPE_INVALID = 243, // 无效类型
     MYSQL_TYPE_BOOL = 244,    // BOOL 类型
     MYSQL_TYPE_JSON = 245,    // JSON 类型

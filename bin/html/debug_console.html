@@ -155,9 +155,10 @@ function log(ok,req,body){
     +'<pre class="ebody">'+esc((body||'').trimEnd())+'</pre>';
   o.appendChild(d);o.scrollTop=o.scrollHeight;
 }
+// 结果打进输出区；成功时把正文交回，失败为 null
 async function get(p){
-  try{var r=await fetch(p);log(r.ok,'GET '+p,await r.text())}
-  catch(e){log(false,'GET '+p,e.message)}
+  try{var r=await fetch(p),t=await r.text();log(r.ok,'GET '+p,t);return r.ok?t:null}
+  catch(e){log(false,'GET '+p,e.message);return null}
 }
 async function post(p,b){
   try{var r=await fetch(p,{method:'POST',body:b});log(r.ok,'POST '+p,await r.text())}
@@ -168,7 +169,7 @@ function M(){var t=tk();if(t!==null)get('/'+t+'/mem')}
 function C(){var t=tk();if(t!==null)get('/'+t+'/gc')}
 function S(){var t=tk();if(t!==null)get('/'+t+'/stat')}
 function Y(){var t=tk();if(t!==null)get('/'+t+'/coros')}
-function A(){get('/__alive')}
+async function A(){var t=await get('/__alive');if(t!==null)fill(t)}
 function W(){get('/__cmem')}
 function L(lv){
   // loglv 是进程级设置,与任务选择框无关,固定走 handle=0(后端忽略这一段)
@@ -189,7 +190,8 @@ document.getElementById('cd').addEventListener('keydown',function(e){
 });
 document.getElementById('adr').textContent=location.host;
 var h=location.hostname;
-if(h!==''&&h!=='127.0.0.1'&&h!=='localhost'&&h!=='::1')
+// IPv6 字面量的 hostname 带方括号；127.0.0.0/8 整段都是回环
+if(h!==''&&h!=='localhost'&&h!=='[::1]'&&!/^127\./.test(h))
   document.getElementById('wb').style.display='block';
 var tkEl=document.getElementById('tk');
 tkEl.addEventListener('input',function(){
@@ -202,20 +204,23 @@ document.getElementById('tksel').addEventListener('change',function(){
   tkEl.classList.add('typed');
   this.selectedIndex=0;
 });
-// All 选项前端固定加在最前（广播 handle=0）；再拉 /__alive（每行 "handle\tname"）填入下拉，建 name→handle 映射
+// All 选项前端固定加在最前（广播 handle=0）；/__alive（每行 "handle\tname"）填入下拉，建 name→handle 映射
 var sel=document.getElementById('tksel');
-NTH['All']='0';
 var allOpt=document.createElement('option');allOpt.value='All';allOpt.textContent='All';sel.appendChild(allOpt);
-fetch('/__alive').then(function(r){return r.ok?r.text():''}).then(function(txt){
+// 页面加载与点 Alive 都走这里重建：下拉只留 "▾" 与 All 两项再填
+function fill(txt){
+  NTH={All:'0'};
+  sel.length=2;
   txt.split('\n').forEach(function(line){
-    if(!line)return;
     var i=line.indexOf('\t');if(i<0)return;
     var handle=line.slice(0,i),name=line.slice(i+1);
-    if(name==='')return;  // 匿名 task 无名，不进下拉
+    if(name===''||name==='All')return;  // 匿名 task 无名；与 All 同名的会顶掉广播项，都不进下拉
     NTH[name]=handle;
     var o=document.createElement('option');o.value=name;o.textContent=name;sel.appendChild(o);
   });
-}).catch(function(){});
+}
+fill('');
+fetch('/__alive').then(function(r){return r.ok?r.text():''}).then(fill).catch(function(){});
 </script>
 </body>
 </html>

@@ -120,8 +120,7 @@ static inline void _xxh32_init_acc(uint32_t acc[4], uint32_t seed) {
 // 按 16 字节一条累加 lens / 16 条，返回剩余部分的起点
 static inline const uint8_t *_xxh32_consume(uint32_t acc[4], const uint8_t *p, size_t lens) {
     uint32_t v0 = acc[0], v1 = acc[1], v2 = acc[2], v3 = acc[3];
-    size_t n;
-    for (n = lens / 16; n > 0; n--) {
+    for (size_t n = lens / 16; n > 0; n--) {
         v0 = _xxh32_round(v0, read_le32(p));
         v1 = _xxh32_round(v1, read_le32(p + 4));
         v2 = _xxh32_round(v2, read_le32(p + 8));
@@ -174,7 +173,6 @@ void xxh32_init(xxh32_ctx *ctx, uint32_t seed) {
 }
 void xxh32_update(xxh32_ctx *ctx, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
-    size_t fill;
     if (0 == lens) {
         return;
     }
@@ -186,7 +184,7 @@ void xxh32_update(xxh32_ctx *ctx, const void *data, size_t lens) {
         return;
     }
     if (0 != ctx->bufsize) {
-        fill = sizeof(ctx->buf) - ctx->bufsize;
+        size_t fill = sizeof(ctx->buf) - ctx->bufsize;
         _xxh_copy15(ctx->buf + ctx->bufsize, p, fill);
         _xxh32_consume(ctx->acc, ctx->buf, sizeof(ctx->buf));
         ctx->bufsize = 0;
@@ -239,8 +237,7 @@ static inline void _xxh64_init_acc(uint64_t acc[4], uint64_t seed) {
 // 按 32 字节一条累加 lens / 32 条，返回剩余部分的起点
 static inline const uint8_t *_xxh64_consume(uint64_t acc[4], const uint8_t *p, size_t lens) {
     uint64_t v0 = acc[0], v1 = acc[1], v2 = acc[2], v3 = acc[3];
-    size_t n;
-    for (n = lens / 32; n > 0; n--) {
+    for (size_t n = lens / 32; n > 0; n--) {
         v0 = _xxh64_round(v0, read_le64(p));
         v1 = _xxh64_round(v1, read_le64(p + 8));
         v2 = _xxh64_round(v2, read_le64(p + 16));
@@ -303,7 +300,6 @@ void xxh64_init(xxh64_ctx *ctx, uint64_t seed) {
 }
 void xxh64_update(xxh64_ctx *ctx, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
-    size_t fill;
     if (0 == lens) {
         return;
     }
@@ -314,7 +310,7 @@ void xxh64_update(xxh64_ctx *ctx, const void *data, size_t lens) {
         return;
     }
     if (0 != ctx->bufsize) {
-        fill = sizeof(ctx->buf) - ctx->bufsize;
+        size_t fill = sizeof(ctx->buf) - ctx->bufsize;
         _xxh_copy31(ctx->buf + ctx->bufsize, p, fill);
         _xxh64_consume(ctx->acc, ctx->buf, sizeof(ctx->buf));
         ctx->bufsize = 0;
@@ -367,20 +363,18 @@ static FORCE_INLINE uint64_t _xxh3_mix16(const uint8_t *p, const uint8_t *secret
 // 由 seed 派生 secret，seed 为 0 时结果就是默认 secret
 static void _xxh3_init_secret(uint8_t secret[XXH3_SECRET_SIZE], uint64_t seed) {
     const uint8_t *ksecret = _kSecret;
-    size_t i;
 #if defined(__clang__)
     CRYPT_OPAQUE(ksecret);
 #endif
-    for (i = 0; i < XXH3_SECRET_SIZE; i += 16) {
+    for (size_t i = 0; i < XXH3_SECRET_SIZE; i += 16) {
         write_le64(secret + i, read_le64(ksecret + i) + seed);
         write_le64(secret + i + 8, read_le64(ksecret + i + 8) - seed);
     }
 }
 // 长输入：累加一条（64 字节）
 static inline void _xxh3_accumulate_512(uint64_t acc[XXH3_ACC_NB], const uint8_t *p, const uint8_t *secret) {
-    size_t i;
     uint64_t val, key;
-    for (i = 0; i < XXH3_ACC_NB; i++) {
+    for (size_t i = 0; i < XXH3_ACC_NB; i++) {
         val = read_le64(p + 8 * i);
         key = val ^ read_le64(secret + 8 * i);
         acc[i ^ 1] += val;
@@ -389,18 +383,16 @@ static inline void _xxh3_accumulate_512(uint64_t acc[XXH3_ACC_NB], const uint8_t
 }
 static inline void _xxh3_accumulate(uint64_t acc[XXH3_ACC_NB], const uint8_t *p, const uint8_t *secret, size_t nstripes) {
     uint64_t local[XXH3_ACC_NB];
-    size_t n;
     memcpy(local, acc, sizeof(local));
-    for (n = 0; n < nstripes; n++) {
+    for (size_t n = 0; n < nstripes; n++) {
         _xxh3_accumulate_512(local, p + n * XXH3_STRIPE_LEN, secret + n * XXH3_SECRET_CONSUME_RATE);
     }
     memcpy(acc, local, sizeof(local));
 }
 // 长输入：每块结束时打散累加器
 static inline void _xxh3_scramble(uint64_t acc[XXH3_ACC_NB], const uint8_t *secret) {
-    size_t i;
     uint64_t a;
-    for (i = 0; i < XXH3_ACC_NB; i++) {
+    for (size_t i = 0; i < XXH3_ACC_NB; i++) {
         a = acc[i];
         a ^= a >> 47;
         a ^= read_le64(secret + 8 * i);
@@ -411,9 +403,8 @@ static inline void _xxh3_scramble(uint64_t acc[XXH3_ACC_NB], const uint8_t *secr
 static void _xxh3_hash_long(uint64_t acc[XXH3_ACC_NB], const uint8_t *p, size_t lens, const uint8_t *secret) {
     uint64_t local[XXH3_ACC_NB];
     size_t nstripes = (lens - 1) / XXH3_STRIPE_LEN;
-    size_t n, s;
     memcpy(local, acc, sizeof(local));
-    for (n = 0, s = 0; n < nstripes; n++) {
+    for (size_t n = 0, s = 0; n < nstripes; n++) {
         _xxh3_accumulate_512(local, p + n * XXH3_STRIPE_LEN, secret + s * XXH3_SECRET_CONSUME_RATE);
         if (++s == XXH3_STRIPES_PER_BLOCK) {
             _xxh3_scramble(local, secret + XXH3_SECRET_LIMIT);
@@ -425,8 +416,7 @@ static void _xxh3_hash_long(uint64_t acc[XXH3_ACC_NB], const uint8_t *p, size_t 
 }
 static uint64_t _xxh3_merge(const uint64_t acc[XXH3_ACC_NB], const uint8_t *secret, uint64_t start) {
     uint64_t h = start;
-    size_t i;
-    for (i = 0; i < 4; i++) {
+    for (size_t i = 0; i < 4; i++) {
         h += _xxh3_mul_fold(acc[2 * i] ^ read_le64(secret + 16 * i), acc[2 * i + 1] ^ read_le64(secret + 16 * i + 8));
     }
     return _xxh3_avalanche(h);
@@ -708,8 +698,6 @@ void xxh3_init(xxh3_ctx *ctx, uint64_t seed) {
 }
 void xxh3_update(xxh3_ctx *ctx, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
-    size_t fill;
-    size_t n;
     if (0 == lens) {
         return;
     }
@@ -720,7 +708,7 @@ void xxh3_update(xxh3_ctx *ctx, const void *data, size_t lens) {
         return;
     }
     if (0 != ctx->bufsize) {
-        fill = XXH3_BUFFER_SIZE - ctx->bufsize;
+        size_t fill = XXH3_BUFFER_SIZE - ctx->bufsize;
         memcpy(ctx->buf + ctx->bufsize, p, fill);
         _xxh3_consume(ctx->acc, &ctx->nstripes, ctx->buf, XXH3_BUFFER_STRIPES, ctx->secret);
         ctx->bufsize = 0;
@@ -728,7 +716,7 @@ void xxh3_update(xxh3_ctx *ctx, const void *data, size_t lens) {
         lens -= fill;
     }
     if (lens > XXH3_BUFFER_SIZE) {
-        n = (lens - 1) / XXH3_STRIPE_LEN;
+        size_t n = (lens - 1) / XXH3_STRIPE_LEN;
         _xxh3_consume(ctx->acc, &ctx->nstripes, p, n, ctx->secret);
         p += n * XXH3_STRIPE_LEN;
         lens -= n * XXH3_STRIPE_LEN;

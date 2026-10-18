@@ -10,7 +10,7 @@
 /// <param name="done">输出认证是否完成标志（非零表示完成）</param>
 /// <param name="payload">输出认证 payload 数据指针（指向 mgopack 内部，无需释放）</param>
 /// <param name="plens">输出 payload 长度</param>
-/// <returns>ok 字段值（非零表示服务端返回成功）</returns>
+/// <returns>ok 字段值（非零表示服务端返回成功）；ok 为真但缺 payload 也返回 0</returns>
 int32_t mongo_parse_auth_response(mgopack_ctx *mgopack, int32_t *convid, int32_t *done, char **payload, size_t *plens);
 /// <summary>
 /// 从响应包中提取游标 ID
@@ -22,7 +22,8 @@ int64_t mongo_cursorid(mgopack_ctx *mgpack);
 /// 检查响应包中是否包含错误（ok 为 0 或含 writeErrors/errmsg 等字段）
 /// </summary>
 /// <param name="mgpack">服务端返回的消息包</param>
-/// <returns>成功返回影响文档数（n 字段值），失败返回 ERR_FAILED</returns>
+/// <returns>成功返回 n 字段值（影响文档数 / count 的计数，没有 n 字段为 0）；失败返回 ERR_FAILED。
+/// n 与 nErrors 认 int32 / int64 / double 三种编码，非数值、负数或超出 int32 的 n 也按失败</returns>
 int32_t mongo_parse_check_error(mgopack_ctx *mgpack);
 /// <summary>
 /// 解析 startSession 响应，提取会话 UUID 和超时时间

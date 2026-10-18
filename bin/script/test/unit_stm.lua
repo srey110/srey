@@ -222,5 +222,42 @@ runner.run(function(t)
         t:eq(true, pcall(mtr.__gc, r), "released: 重复 __gc 幂等不报错")
     end
     collectgarbage("collect")
+
+    -- ── lightuserdata + copy=0：stm 接管调用方的缓冲，之后不再 ud_free；漏放或重放靠退出时的内存检查发现
+    do
+        local seri = require("srey.seri")
+        local p1, n1 = seri.pack("first")
+        local w = stm.new(p1, n1, 0)
+        local r = stm.newcopy(stm.copy(w))
+        local got
+        r(function(lud, sz) got = seri.unpack(lud, sz) end)
+        t:eq("first", got, "copy=0 接管的初始数据读得回")
+        local p2, n2 = seri.pack("second")
+        w(p2, n2, 0)
+        r(function(lud, sz) got = seri.unpack(lud, sz) end)
+        t:eq("second", got, "copy=0 更新的数据读得回")
+    end
+    collectgarbage("collect")
+
+    -- ── 回调里先更新再重入读：内层已交付的新快照，外层返回后不能再算一次更新(外层不许把 lastcopy 换回旧快照)
+    do
+        local w = stm.new("n1")
+        local r = stm.newcopy(stm.copy(w))
+        local inner
+        r(function()
+            w("n2")
+            r(function(lud, sz) inner = utils.ud_str(lud, sz) end)
+        end)
+        t:eq("n2", inner, "reentry-newer: 内层读到 n2")
+        local count = 0
+        local upd = r(function() count = count + 1 end)
+        t:eq(false, upd, "reentry-newer: 外层返回后 n2 不再算更新")
+        t:eq(0, count, "reentry-newer: 回调不再被调")
+        w("n3")
+        local got
+        r(function(lud, sz) got = utils.ud_str(lud, sz) end)
+        t:eq("n3", got, "reentry-newer: 之后的更新照常读到")
+    end
+    collectgarbage("collect")
 end)
 end)

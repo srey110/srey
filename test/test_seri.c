@@ -25,23 +25,28 @@ static void test_seri_basic_nil_bool(CuTest *tc) {
 
     binary_free(&bw);
 }
-// 整数各档边界：0 / byte / word / dword(u32) / dword(neg i32) / qword
+// 整数各档边界：0 / byte / word / dword(u32) / dword(neg i32) / qword。
+// 逐值核 tag 与编码字节数：seri 是对外线格式，选档变了读写两侧照样自洽、只靠往返测不出
 static void test_seri_int_buckets(CuTest *tc) {
-    int64_t vals[] = {
-        0,
-        1, 0xFF,// BYTE 边界
-        0x100, 0xFFFF,// WORD 边界
-        0x10000, 0xFFFFFFFF,// DWORD(u32) 边界
-        -1, INT32_MIN,// DWORD(i32) 负数
-        ((int64_t)INT32_MAX) + 1,// QWORD 正越界
-        INT64_MIN, INT64_MAX// QWORD 端点
+    // tag = NUMBER(2) | cookie << 3：ZERO 0x02 / BYTE 0x0A / WORD 0x12 / DWORD 0x22 / QWORD 0x32
+    const struct { int64_t v; size_t bytes; uint8_t tag; } vals[] = {
+        { 0, 1, 0x02 },
+        { 1, 2, 0x0A }, { 0xFF, 2, 0x0A },// BYTE 边界
+        { 0x100, 3, 0x12 }, { 0xFFFF, 3, 0x12 },// WORD 边界
+        { 0x10000, 5, 0x22 }, { INT32_MAX, 5, 0x22 },// DWORD(u32) 边界
+        { -1, 5, 0x22 }, { INT32_MIN, 5, 0x22 },// DWORD(i32) 负数
+        { ((int64_t)INT32_MAX) + 1, 9, 0x32 }, { 0xFFFFFFFF, 9, 0x32 },// 越出 int32 即 QWORD
+        { INT64_MIN, 9, 0x32 }, { INT64_MAX, 9, 0x32 }// QWORD 端点
     };
     size_t n = sizeof(vals) / sizeof(vals[0]);
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
-    size_t i;
+    size_t i, start;
     for (i = 0; i < n; i++) {
-        seri_append_int(&bw, vals[i]);
+        start = bw.offset;
+        seri_append_int(&bw, vals[i].v);
+        CuAssertTrue(tc, vals[i].bytes == bw.offset - start);
+        CuAssertIntEquals(tc, vals[i].tag, (uint8_t)bw.data[start]);
     }
 
     seri_iter iter;
@@ -50,7 +55,7 @@ static void test_seri_int_buckets(CuTest *tc) {
     for (i = 0; i < n; i++) {
         CuAssertIntEquals(tc, 1, seri_iter_next(&iter, &item));
         CuAssertIntEquals(tc, SERI_ITEM_INT, item.type);
-        CuAssertTrue(tc, vals[i] == item.v.i);
+        CuAssertTrue(tc, vals[i].v == item.v.i);
     }
     CuAssertIntEquals(tc, 0, seri_iter_next(&iter, &item));
 
@@ -259,6 +264,25 @@ static void test_seri_invalid_stream(CuTest *tc) {
     char bad = 0x07;
     seri_iter_init(&iter, &bad, 1);
     CuAssertIntEquals(tc, -1, seri_iter_next(&iter, &item));
+
+    // 其余格式错分支逐条手拼(tag = type | cookie << 3)，都应返 -1
+    const struct { const char *s; size_t n; } cases[] = {
+        { "\x1D", 1 },// 长串 cookie 非 2/4(=3)
+        { "\x15\x10", 2 },// 长串 u16 长度前缀被截断
+        { "\x15\x05\x00" "ab", 5 },// 长串声明 5 字节只给 2
+        { "\x1A", 1 },// NUMBER 非法 cookie 3
+        { "\x2A\x00", 2 },// NUMBER 非法 cookie 5
+        { "\x3A\x00", 2 },// NUMBER 非法 cookie 7
+        { "\xFE\x01", 2 },// 长 array 转义后跟的不是 NUMBER(bool)
+        { "\xFE\x42\x00\x00\x00\x00\x00\x00\x00\x00", 10 },// 长 array 转义后跟的是 REAL
+        { "\xFE\x22\xFF\xFF\xFF\xFF", 6 },// 转义长度为负(-1)
+        { "\xFE\x32\x00\x00\x00\x00\x01\x00\x00\x00", 10 },// 转义长度超 UINT32_MAX(2^32)
+        { "\xFE", 1 },// 长 array 转义后什么都没有
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        seri_iter_init(&iter, cases[i].s, cases[i].n);
+        CuAssertIntEquals(tc, -1, seri_iter_next(&iter, &item));
+    }
 }
 
 // json_get_string：长度按 yyjson 记的真实字节数算,不是 strlen;内嵌 NUL 一律拒收。
@@ -292,7 +316,8 @@ static void test_json_helper_string(CuTest *tc) {
 }
 // json_get_number 过滤 NaN/Inf、json_get_num_range 卡上下界：配置里的数字最终都要 cast 成
 // uint16_t/uint8_t 这类窄整型，而 C99 §6.3.1.4 规定 NaN/Inf 与超范围值转整型均为 UB。
-// 两个函数是 srey/main.c 的 CFG_NUM 的唯一依赖，失败时一律不得动 *val
+// 两个函数只是 json_val_number / json_val_num_range 外加按名查找，CFG_NUM 直接用的是后者(见 test_json_helper_val)；
+// 失败时一律不得动 *val
 static void test_json_helper_number(CuTest *tc) {
     const char *src = "{\"i\":7,\"f\":2.5,\"big\":70000,\"neg\":-1,\"s\":\"x\"}";
     yyjson_doc *doc = yyjson_read(src, strlen(src), 0);

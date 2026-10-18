@@ -4,12 +4,13 @@
 #include "task_pub.h"
 
 // 启动 lib/advance/router 路由 server task
-// 路由表 / 中间件覆盖: 字面量、{param}、{?}、*、query、嵌套 group、命名中间件、
-// 中间件截断、next 后置统计、漏写响应兜底 500、方法位掩码
+// 路由表 / 中间件覆盖: 字面量、{param}、{?}、* 与参数 "*"、query、嵌套 group(前缀补 '/'、中间件去重)、
+// 命名中间件、中间件截断、next 后置统计、漏写响应兜底 500、方法位掩码与 405 + Allow / OPTIONS、
+// 回完关连接、100-continue; 流式中断只靠 task_watch_closed 登记的 router_closed_watch 回收
 void task_router_server_start(loader_ctx *loader, const char *name, uint16_t port);
 
 // 启动第二个 router server task: 只注册一条 router_add_index 条目 + 一条普通路由,
-// 一条流式路由都没有 —— chunked 首帧因此只能落到 _router_chunked_probe 的三种拒绝结局
+// 一条流式路由都没有 —— chunked 首帧因此只能落到 _router_chunked_nostream 的三种拒绝结局
 void task_router_index_server_start(loader_ctx *loader, const char *name, uint16_t port);
 
 // 启动客户端 task: 顺序发请求, 全部断言通过后将 result_slot 写为 1

@@ -18,10 +18,8 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, evsock_ctx *evsk, pip_ctx *pip)
 #else
     int32_t rd;
     char ntrigger[8];
-    // 触发字节仅作唤醒信号，读一次即清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）。
-    // 敢只读一次是因为写侧有门控：_send_cmd 把 wake_pending 从 0 CAS 成 1 才写那个字节，
-    // 而清零在下面、晚于本次读，读期间别人 CAS 必失败，故在途恒不超过 1 个字节（8 是余量）。
-    // EINTR 必须续读，否则这次唤醒一个字节都没读到，可读态不清
+    // 触发字节只作唤醒信号，读一次即清可读态：写侧门控(见 _send_cmd)保证在途恒不超过 1 个字节，
+    // 8 是余量；清 wake_pending 必须在这次读之后。EINTR 必须续读，否则可读态不清
     do {
         rd = (int32_t)read(evsk->sk.fd, ntrigger, sizeof(ntrigger));
     } while (ERR_FAILED == rd && EINTR == ERRNO);
@@ -529,7 +527,7 @@ static void _uev_loop_event(void *arg) {
             dvp.dp_nfds = watcher->nevents;
 #endif
         }
-        next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
+        next_to = _uev_tick_drive(watcher, &now_ms);
         if (0 != _evpub_defer_exec_pending(watcher)) {
             next_to = 0;// 回调里新投的下一轮立刻跑；tick 的返回值最小也有 EVENT_TICK_MIN
         }
@@ -597,7 +595,7 @@ static void _uev_new_pipe(pip_ctx *pip) {
     ASSERTAB(ERR_OK == sock_nonblock(pip->pipes[1]), ERRORSTR(ERRNO));
 #endif//NO_CMD_PIPE
     // 命令存 fsqu、触发器只负责唤醒，告警阈值按 fsqu 容量算
-    cmdq_init(&pip->qu, 4 * ONEK);
+    cmdq_init(&pip->qu, CMD_QUEUE_CAP);
     tda_init(&pip->tda, (size_t)(cmdq_capacity(&pip->qu) / QUEUE_OVERLOAD_RATIO));
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
@@ -628,10 +626,11 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _uev_init_evfd();
         _uev_new_pipe(&watcher->pipe);
-        watcher->element = sockel_map_new(ONEK, _uev_free_element);
-        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
+        watcher->element = sockel_map_new(SOCKEL_INIT_CAP, _uev_free_element);
+        pool_init(&watcher->pool, 0, SK_POOL_MAX, INIT_EVENTS_CNT, POOL_FIFO, &skcbs);
         qtn_que_init(&watcher->qtn, ONEK);
         list_init(&watcher->ticks);
+        list_init(&watcher->tick_closes);
         defer_exec_que_init(&watcher->defer_execs, 0);
         list_init(&watcher->flushes);
         list_init(&watcher->lingers);
@@ -700,7 +699,7 @@ static void _uev_free_watcher(ev_ctx *ctx) {
         pool_free(&watcher->pool);
         _uev_free_pipe(watcher);
         _evpub_defer_exec_free(watcher);
-        // worker 已退出 _uev_loop_event, 兜底 flush 隔离队列剩余对象
+        // 事件线程已退出 _uev_loop_event, 兜底 flush 隔离队列剩余对象
         _uev_qtn_flush(watcher);
 #ifdef EV_POLLSET
         pollset_destroy(watcher->evfd);

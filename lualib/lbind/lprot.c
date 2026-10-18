@@ -8,21 +8,27 @@
 // Redis 聚合表一次预分配的槽位上限。不是协议上限,只是"预分配到此为止":元素个数由对端声明,
 // 超出的部分照常按需增长
 #define REDIS_PREALLOC_MAX 4096
-// http head_check 的 autoflags 位：组包函数自己会写哪些头，调用方再传一份就要丢
-#define HTTP_AUTO_CT    0x01 // Content-Type
-#define HTTP_AUTO_FRAME 0x02 // Content-Length 与 Transfer-Encoding
 // http 响应组包除头部块、头表与报文体外的预留：状态行（请求时为 0）+ JSON 的 Content-Type + 帧长头 + 空行
 #define HTTP_RESP_RESERVE 128
 #define HTTP_JSON_CT "Content-Type: application/json\r\n" // table 报文体自动带的头，同 lib/http
+// http 头表预检时最多记下几条，组包照着写；多出的组包时从记下的最后一条接着遍历头表
+#define HTTP_HEAD_CACHE 16
 
 // http head_check 的结果码，按判定先后排
 typedef enum http_head_rc {
     HTTP_HEAD_OK = 0,
-    HTTP_HEAD_BADKEY,  // 头名不是 token
+    HTTP_HEAD_BADKEY,  // 头名不是 token，或长度达到 HTTP_HEAD_KEY_MAX
     HTTP_HEAD_BADTYPE, // 值不是 string / number
     HTTP_HEAD_AUTO,    // 组包函数自己生成的头
     HTTP_HEAD_BADVAL   // 值含 NUL / CR / LF
 }http_head_rc;
+// 预检记下的一条附加头。字符串由头表引用着，预检到组包之间不跑 Lua 代码、不改头表，指针一直有效
+typedef struct http_head_ref {
+    const char *key;
+    const char *val;
+    size_t klens;
+    size_t vlens;
+}http_head_ref;
 // http.respond / pack_resp / pack_req 预检的结果：预检全在分配之前做完，组包阶段只照着写、不会再抛错
 typedef struct http_resp_plan {
     int32_t code;      // 状态码；0 为请求：不写状态行，请求行放在 block
@@ -30,11 +36,14 @@ typedef struct http_resp_plan {
     int32_t headonly;  // 回 HEAD：Content-Length 写真实长度，不写报文体
     int32_t hidx;      // 头表的栈位，没有头表为 0
     int32_t json;      // 报文体是 table：组包时才编成 JSON，body 指向编码输出
+    int32_t kidx;      // 头表多于 HTTP_HEAD_CACHE 条时，栈上留的第 HTTP_HEAD_CACHE 条的键的栈位
     const char *block; // 原样写在状态行后的字节（响应是预渲染头部块，请求是请求行），没有为 NULL
     const char *body;  // 报文体，没有为 NULL
     size_t bklens;
     size_t blens;
     size_t hlens;      // 头表写出的总字节
+    size_t hcnt;       // 头表条数，前 HTTP_HEAD_CACHE 条记在 heads
+    http_head_ref heads[HTTP_HEAD_CACHE];
 }http_resp_plan;
 // table 报文体编成 JSON 后交给组包的上下文
 typedef struct http_resp_json {
@@ -62,7 +71,7 @@ typedef struct redis_unpack_frame {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_harbor_pack(lua_State *lua) {
     name_t task = (name_t)luaL_checkinteger(lua, 1);
-    int32_t call = (int32_t)luaL_checkinteger(lua, 2);// 非0=call，0=request
+    int32_t call = 0 != luaL_checkinteger(lua, 2);// 非0=call，0=request；按 64 位判，别截成 int32 再判
     subtype_t reqtype = lpub_check_u16(lua, 3, REQTYPE_OUT_OF_RANGE);
     size_t size;
     void *data = lpub_opt_buf(lua, 4, &size);
@@ -95,7 +104,7 @@ static int32_t _lprot_dns_ip(lua_State *lua) {
 /// <returns type="string?">DNS 查询二进制字符串；构造失败返回 nil</returns>
 /// <returns type="integer?">本次查询的事务 ID，传给 dns.unpack 回验响应；失败时同为 nil，返回值个数恒为 2</returns>
 static int32_t _lprot_dns_pack(lua_State *lua) {
-    const char *domain = luaL_checkstring(lua, 1);
+    const char *domain = lpub_check_cstr(lua, 1);
     int32_t ipv6 = lpub_check_flag(lua, 2);
     char buf[ONEK];
     uint16_t id;
@@ -115,7 +124,7 @@ static int32_t _lprot_dns_pack(lua_State *lua) {
 /// <returns type="string?">含长度前缀的 DNS 查询二进制字符串；构造失败返回 nil</returns>
 /// <returns type="integer?">本次查询的事务 ID，传给 dns.unpack 回验响应；失败时同为 nil，返回值个数恒为 2</returns>
 static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
-    const char *domain = luaL_checkstring(lua, 1);
+    const char *domain = lpub_check_cstr(lua, 1);
     int32_t ipv6 = lpub_check_flag(lua, 2);
     char buf[ONEK];
     uint16_t id;
@@ -127,6 +136,18 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
     lua_pushinteger(lua, id);
     return 2;
 }
+// dns.unpack 的结果表：1 为 dns_ip 数组(lightuserdata)、2 为个数，压一张 IP 串数组
+static int32_t _lprot_dns_ips_table(lua_State *lua) {
+    dns_ip *ips = lua_touserdata(lua, 1);
+    size_t n = (size_t)lua_tointeger(lua, 2);
+    lua_createtable(lua, (int32_t)n, 0);
+    for (size_t i = 0; i < n; i++) {
+        ips[i].ip[IP_LENS - 1] = '\0';
+        lua_pushstring(lua, ips[i].ip);
+        lua_rawseti(lua, -2, (lua_Integer)(i + 1));
+    }
+    return 1;
+}
 /// <summary>
 /// 解析 DNS 响应包，提取 IP 地址列表
 /// </summary>
@@ -134,8 +155,8 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
 /// <param name="packlen" type="integer">响应包字节数，取值 [0, INT32_MAX]</param>
 /// <param name="id" type="integer">期望的事务 ID（dns.pack/dns.pack_tcp 返回）；响应事务 ID 不匹配即视为错配/伪造返回 nil</param>
 /// <returns type="string[]?">IP 字符串数组；事务 ID 不匹配、解析失败、RCODE 非 0 或响应被截断(TC 位置位)时均返回 nil</returns>
-/// <returns type="boolean">第二返回值 nodata：true 表示响应本身完整有效、只是没有任何 A/AAAA 记录
-/// （NOERROR/NODATA），换 TCP 重查也是同一结果，调用方不必再试；解析成功时恒为 false</returns>
+/// <returns type="boolean">第二返回值 nodata：true 表示服务端已给出完整答复——没有任何 A/AAAA 记录
+/// （NOERROR/NODATA）或名字不存在（NXDOMAIN），换 TCP 重查也是同一结果，调用方不必再试；解析成功时恒为 false</returns>
 static int32_t _lprot_dns_unpack(lua_State *lua) {
     LPUB_LUD_ARG(lua, void, 1, pack);
     size_t packlen = lpub_check_lens(lua, 2, INT32_MAX);
@@ -148,13 +169,15 @@ static int32_t _lprot_dns_unpack(lua_State *lua) {
         lua_pushboolean(lua, 0 != nodata ? 1 : 0);
         return 2;
     }
-    lua_createtable(lua, (int32_t)n, 0);
-    for (size_t i = 0; i < n; i++) {
-        ips[i].ip[IP_LENS - 1] = '\0';
-        lua_pushstring(lua, ips[i].ip);
-        lua_rawseti(lua, -2, (lua_Integer)(i + 1));
-    }
+    // 建表压串放进保护调用：撞 task.memlimit 抛内存错误时也能先把 ips 放掉再报错
+    lua_pushcfunction(lua, _lprot_dns_ips_table);
+    lua_pushlightuserdata(lua, ips);
+    lua_pushinteger(lua, (lua_Integer)n);
+    int32_t st = lua_pcall(lua, 2, 1, 0);
     FREE(ips);
+    if (LUA_OK != st) {
+        return lua_error(lua);
+    }
     lua_pushboolean(lua, 0);
     return 2;
 }
@@ -174,8 +197,8 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
 /// 打包自定义协议（custz）数据
 /// </summary>
 /// <param name="pktype" type="integer">协议子类型，只接受 PACK_CUSTZ_FIXED / FLAG / VAR，其余报错</param>
-/// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
-/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得。空载荷报错：接收侧把零长包当协议错误断开</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数，须大于 0</param>
 /// <returns type="lightuserdata?">打包后的数据指针；载荷超出所选头部能表达的范围时返回 nil</returns>
 /// <returns type="integer">数据长度；返回 nil 时为 0</returns>
 static int32_t _lprot_custz_pack(lua_State *lua) {
@@ -188,6 +211,7 @@ static int32_t _lprot_custz_pack(lua_State *lua) {
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 2, &size, NULL);
+    luaL_argcheck(lua, 0 != size, 2, "empty payload");
     data = custz_pack(pktype, data, size, &size);
     if (NULL == data) {
         lua_pushnil(lua);
@@ -287,18 +311,9 @@ static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
     luaL_argcheck(lua, lua_isnoneornil(lua, 1) || LUA_TSTRING == lua_type(lua, 1), 1, "host must be a string");
     luaL_argcheck(lua, lua_isnoneornil(lua, 2) || LUA_TSTRING == lua_type(lua, 2), 2, "uri must be a string");
     luaL_argcheck(lua, lua_isnoneornil(lua, 3) || LUA_TSTRING == lua_type(lua, 3), 3, "secprot must be a string");
-    char *host = NULL;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        host = (char *)luaL_checkstring(lua, 1);
-    }
-    char *uri = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        uri = (char *)luaL_checkstring(lua, 2);
-    }
-    char *secprot = NULL;
-    if (LUA_TSTRING == lua_type(lua, 3)) {
-        secprot = (char *)luaL_checkstring(lua, 3);
-    }
+    const char *host = lua_isnoneornil(lua, 1) ? NULL : lpub_check_cstr(lua, 1);
+    const char *uri = lua_isnoneornil(lua, 2) ? NULL : lpub_check_cstr(lua, 2);
+    const char *secprot = lua_isnoneornil(lua, 3) ? NULL : lpub_check_cstr(lua, 3);
     ws_hs_ctx *hsctx;
     char *hspack = websock_pack_handshake(host, uri, secprot, &hsctx);
     if (NULL == hspack) {
@@ -453,20 +468,21 @@ LUAMOD_API int luaopen_websock(lua_State *lua) {
 /// <summary>
 /// 将 HTTP 状态码转换为对应的文本描述（如 200 → "OK"）
 /// </summary>
-/// <param name="code" type="integer">HTTP 状态码</param>
+/// <param name="code" type="integer">HTTP 状态码，超出 int32 报错</param>
 /// <returns type="string">文本描述</returns>
 static int32_t _lprot_http_code_status(lua_State *lua) {
-    int32_t err = (int32_t)luaL_checkinteger(lua, 1);
+    int32_t err = lpub_check_i32(lua, 1, "status code out of range");
     lua_pushstring(lua, http_code_status(err));
     return 1;
 }
 /// <summary>
-/// 返回 HTTP 包的 Transfer-Encoding: chunked 状态。只认 Transfer-Encoding——响应既无
-/// Content-Length 又无 TE 时(RFC 7230 §3.3.3 规则 7，body 由连接关闭界定)本值仍是 0，
-/// 而 body 确实按分片投；判"还有没有后续"要看消息自带的 slice 标记，不能用本值
+/// 返回包的分帧类别，同 C 层 http_chunked。响应既无 Content-Length 又无 TE、或 TE 最后一层不是 chunked 时
+/// (RFC 7230 §3.3.3 规则 7 / 规则 3)body 由连接关闭界定，头包本值是 0 而 body 确实按分片投；
+/// 判"还有没有后续"要看消息自带的 slice 标记，不能用本值
 /// </summary>
 /// <param name="pack" type="lightuserdata">http_pack_ctx 指针</param>
-/// <returns type="integer">0=非分块；1=首包（含 header）；2+ 分块中间/结束块</returns>
+/// <returns type="integer">0=非 chunked 整包或由连接关闭界定 body 的头包；1=chunked 头包；
+/// 2=数据片(chunked 的数据块与结束块、连接关闭界定的 body 片与末片)</returns>
 static int32_t _lprot_http_chunked(lua_State *lua) {
     LPUB_LUD_ARG(lua, struct http_pack_ctx, 1, pack);
     lua_pushinteger(lua, http_chunked(pack));
@@ -499,7 +515,7 @@ static int32_t _lprot_http_status(lua_State *lua) {
 /// <returns type="string?">header 值；分块中间包或字段不存在时返回 nil</returns>
 static int32_t _lprot_http_head(lua_State *lua) {
     LPUB_LUD_ARG(lua, struct http_pack_ctx, 1, pack);
-    const char *key = luaL_checkstring(lua, 2);
+    const char *key = lpub_check_cstr(lua, 2);
     size_t vlens;
     char *val = http_header(pack, key, &vlens);
     if (NULL == val) {
@@ -509,7 +525,8 @@ static int32_t _lprot_http_head(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回所有 HTTP 头部字段
+/// 返回所有 HTTP 头部字段。键是报文里的原样头名(不转大小写)；同名头只留最后一个，
+/// 要按序取第一个用 http.head
 /// </summary>
 /// <param name="pack" type="lightuserdata">http_pack_ctx 指针</param>
 /// <returns type="table&lt;string,string&gt;?">key→value 表；分块中间包返回 nil</returns>
@@ -533,11 +550,10 @@ static int32_t _lprot_http_heads(lua_State *lua) {
 }
 /// <summary>
 /// 返回 HTTP body 数据指针和长度。
-/// 注意与本文件各 pack_* 的返回值形状相同但语义相反：这里返回的是 pack 内部的**借用**指针，
-/// 随 pack 一起失效，调用方既不拥有它、也不能对它调 utils.ud_free
 /// </summary>
 /// <param name="pack" type="lightuserdata">http_pack_ctx 指针</param>
-/// <returns type="lightuserdata?">body 数据指针（借用，勿释放）；空时返回 nil</returns>
+/// <returns type="lightuserdata?">body 数据指针；空时返回 nil。与本文件各 pack_* 的返回值形状相同但语义相反：
+/// 这是 pack 内部的借用指针，随 pack 一起失效，调用方既不拥有它、也不能对它调 utils.ud_free</returns>
 /// <returns type="integer">body 字节数；空时为 0</returns>
 static int32_t _lprot_http_data(lua_State *lua) {
     LPUB_LUD_ARG(lua, struct http_pack_ctx, 1, pack);
@@ -593,39 +609,34 @@ static int32_t _lprot_http_head_val_ok(lua_State *lua) {
     const char *s = _lprot_str_arg(lua, 1, &lens);
     return lpub_rtn_bool(lua, NULL != s && 0 != http_head_val_ok(s, lens));
 }
-// 头名是否等于 name(name 为小写字面量)，大小写无关
-static int32_t _lprot_key_is(const char *key, size_t klens, const char *name, size_t nlens) {
-    return klens == nlens && 0 == memcasecmp(key, name, nlens);
-}
 static int32_t _lprot_head_fail(lua_State *lua, http_head_rc rc) {
     lua_pushnil(lua);
     lua_pushinteger(lua, rc);
     return 2;
 }
 /// <summary>
-/// 一次判完一条附加头能否进报文，依次判：头名是 token、值是 string 或 number、不是组包函数
-/// 自己生成的头、值不含 NUL/CRLF，第一条不过即停。number 值的写法同 num_str（整数值的浮点按整数写）
+/// 一次判完一条附加头能否进报文，依次判：头名是 token 且短于 HTTP_HEAD_KEY_MAX（判据同 router_req_respond，见 http_head_key_check）、
+/// 值是 string 或 number、不是组包函数自己生成的头、值不含 NUL/CRLF，第一条不过即停。
+/// number 值的写法同 num_str（整数值的浮点按整数写）
 /// </summary>
 /// <param name="key" type="any">头名；非字符串按头名不合法算</param>
 /// <param name="val" type="any">头值</param>
 /// <param name="autoflags" type="integer">组包函数自己写的头：0x01 Content-Type，0x02 Content-Length 与 Transfer-Encoding</param>
 /// <returns type="string?">可直接写进报文的头值；没通过时为 nil</returns>
-/// <returns type="integer">0 通过；1 头名不是 token；2 值不是 string/number；3 是组包函数自己生成的头；4 值含 NUL/CRLF</returns>
+/// <returns type="integer">0 通过；1 头名不是 token 或过长；2 值不是 string/number；3 是组包函数自己生成的头；4 值含 NUL/CRLF</returns>
 static int32_t _lprot_http_head_check(lua_State *lua) {
-    int32_t flags = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t flags = lpub_check_i32(lua, 3, "autoflags out of range");
     size_t klens;
     const char *key = _lprot_str_arg(lua, 1, &klens);
-    if (NULL == key || 0 == is_token(key, klens)) {
+    http_key_rc krc = http_head_key_check(key, klens, flags);
+    if (HTTP_KEY_BAD == krc) {
         return _lprot_head_fail(lua, HTTP_HEAD_BADKEY);
     }
     int32_t vt = lua_type(lua, 2);
     if (LUA_TSTRING != vt && LUA_TNUMBER != vt) {
         return _lprot_head_fail(lua, HTTP_HEAD_BADTYPE);
     }
-    if (((HTTP_AUTO_CT & flags) && _lprot_key_is(key, klens, "content-type", sizeof("content-type") - 1))
-        || ((HTTP_AUTO_FRAME & flags)
-            && (_lprot_key_is(key, klens, "content-length", sizeof("content-length") - 1)
-                || _lprot_key_is(key, klens, "transfer-encoding", sizeof("transfer-encoding") - 1)))) {
+    if (HTTP_KEY_AUTO == krc) {
         return _lprot_head_fail(lua, HTTP_HEAD_AUTO);
     }
     int32_t isint;
@@ -645,9 +656,11 @@ static int32_t _lprot_http_head_check(lua_State *lua) {
     lua_pushinteger(lua, HTTP_HEAD_OK);
     return 2;
 }
-// 头表预检：每条都得是 token 名 + 合法 string 值、且不是帧长头（table 体时也不能是 Content-Type），顺带累计写出长度。
-// 有一条不过就整体退回脚本侧原路（告警与丢弃在那边做），这里不做半截处理
-static int32_t _lprot_resp_heads_check(lua_State *lua, int32_t idx, int32_t json, size_t *hlens) {
+// 头表预检：每条都得是合法头名（见 http_head_key_check，帧长头不收，table 体时 Content-Type 也不收）+ 合法 string 值，顺带累计写出长度。
+// 有一条不过就整体退回脚本侧原路（告警与丢弃在那边做），这里不做半截处理。
+// 前 HTTP_HEAD_CACHE 条记进 plan->heads；记满时在栈上多留一份那条的键（到函数返回都不弹），头表还有剩下的组包就从它接着遍历
+static int32_t _lprot_resp_heads_check(lua_State *lua, int32_t idx, http_resp_plan *plan) {
+    int32_t autoflags = HTTP_AUTO_FRAME | (plan->json ? HTTP_AUTO_CT : 0);
     size_t klens, vlens;
     const char *key;
     const char *val;
@@ -660,16 +673,21 @@ static int32_t _lprot_resp_heads_check(lua_State *lua, int32_t idx, int32_t json
         }
         key = lua_tolstring(lua, -2, &klens);
         val = lua_tolstring(lua, -1, &vlens);
-        if (0 == is_token(key, klens)
-            || _lprot_key_is(key, klens, "content-length", sizeof("content-length") - 1)
-            || _lprot_key_is(key, klens, "transfer-encoding", sizeof("transfer-encoding") - 1)
-            || (json && _lprot_key_is(key, klens, "content-type", sizeof("content-type") - 1))
+        if (HTTP_KEY_OK != http_head_key_check(key, klens, autoflags)
             || 0 == http_head_val_ok(val, vlens)) {
             lua_pop(lua, 2);
             return ERR_FAILED;
         }
-        *hlens += klens + vlens + 4;
+        plan->hlens += klens + vlens + 4;
+        if (plan->hcnt < HTTP_HEAD_CACHE) {
+            plan->heads[plan->hcnt] = (http_head_ref){ key, val, klens, vlens };
+        }
+        plan->hcnt++;
         lua_pop(lua, 1);
+        if (HTTP_HEAD_CACHE == plan->hcnt) {
+            lua_pushvalue(lua, -1);// lua_next 只取走栈顶这份
+            plan->kidx = lua_gettop(lua) - 1;
+        }
     }
     return ERR_OK;
 }
@@ -677,6 +695,7 @@ static int32_t _lprot_resp_heads_check(lua_State *lua, int32_t idx, int32_t json
 static int32_t _lprot_heads_plan(lua_State *lua, int32_t hidx, http_resp_plan *plan) {
     plan->hidx = 0;
     plan->hlens = 0;
+    plan->hcnt = 0;
     int32_t ht = lua_type(lua, hidx);
     if (LUA_TTABLE == ht) {
         // 带元表的表 pairs 可能走 __pairs，遍历顺序与内容都不归这里管
@@ -684,7 +703,7 @@ static int32_t _lprot_heads_plan(lua_State *lua, int32_t hidx, http_resp_plan *p
             lua_pop(lua, 1);
             return ERR_FAILED;
         }
-        if (ERR_OK != _lprot_resp_heads_check(lua, hidx, plan->json, &plan->hlens)) {
+        if (ERR_OK != _lprot_resp_heads_check(lua, hidx, plan)) {
             return ERR_FAILED;
         }
         plan->hidx = hidx;
@@ -757,11 +776,8 @@ static int32_t _lprot_req_check(lua_State *lua, int32_t idx, http_resp_plan *pla
     }
     return _lprot_heads_plan(lua, idx + 1, plan);
 }
-// 照预检结果组包。遍历顺序与预检、与脚本侧 pairs 都相同；这里不再抛错
+// 照预检结果组包：先写记下的头，多出的从预检留在栈上的键接着遍历头表，顺序与预检、与脚本侧 pairs 都相同；这里不再抛错
 static void _lprot_resp_write(lua_State *lua, http_resp_plan *plan, binary_ctx *bw) {
-    size_t klens, vlens;
-    const char *key;
-    const char *val;
     binary_init_write(bw, HTTP_RESP_RESERVE + plan->bklens + plan->hlens + (plan->headonly ? 0 : plan->blens), 0);
     if (0 != plan->code) {
         http_pack_resp(bw, plan->code);
@@ -769,8 +785,19 @@ static void _lprot_resp_write(lua_State *lua, http_resp_plan *plan, binary_ctx *
     if (NULL != plan->block) {
         binary_set_binary(bw, plan->block, plan->bklens);
     }
-    if (0 != plan->hidx) {
-        lua_pushnil(lua);
+    const http_head_ref *ref;
+    for (size_t i = 0; i < plan->hcnt && i < HTTP_HEAD_CACHE; i++) {
+        ref = &plan->heads[i];
+        binary_set_binary(bw, ref->key, ref->klens);
+        binary_set_binary(bw, ": ", sizeof(": ") - 1);
+        binary_set_binary(bw, ref->val, ref->vlens);
+        binary_set_binary(bw, FLAG_CRLF, CRLF_SIZE);
+    }
+    if (plan->hcnt > HTTP_HEAD_CACHE) {
+        size_t klens, vlens;
+        const char *key;
+        const char *val;
+        lua_pushvalue(lua, plan->kidx);
         while (0 != lua_next(lua, plan->hidx)) {
             key = lua_tolstring(lua, -2, &klens);
             val = lua_tolstring(lua, -1, &vlens);
@@ -818,7 +845,7 @@ static int32_t _lprot_resp_pack(lua_State *lua, int32_t idx, http_resp_plan *pla
 /// 服务端 HTTP 响应整条在 C 里组包并直接发出，字节与 lib/http 的 http.response / response_head 一致。
 /// 只接常见形状：[100, 999] 的整数码、nil 或 string 报文体、没有头表时的 table 报文体（编成 JSON 并带
 /// Content-Type: application/json，同 lib/http；1xx/204/304 不看报文体）、
-/// 无元表且每条都合法（token 名、string 值、无 NUL/CRLF、不是 Content-Length / Transfer-Encoding）的头表；
+/// 无元表且每条都合法（短于 HTTP_HEAD_KEY_MAX 的 token 名、string 值、无 NUL/CRLF、不是 Content-Length / Transfer-Encoding）的头表；
 /// 其余一律不碰，交给调用方走原来的组包路径（告警与丢弃都在那边）
 /// </summary>
 /// <param name="sk" type="userdata">连接标识</param>
@@ -876,7 +903,7 @@ static int32_t _lprot_http_pack_resp(lua_State *lua) {
 /// 客户端 HTTP 请求整条在 C 里组成一块，字节与 lib/http 的 http.get / head_req / post 原路一致，
 /// 供 srey.syn_send(sk, data, size, 0) 零拷贝发出。只接常见形状：nil、string 或 table 报文体（table 编成
 /// JSON 并带 Content-Type: application/json，此时头表里不得有 Content-Type）、无元表且每条都合法
-/// （token 名、string 值、无 NUL/CRLF、不是 Content-Length / Transfer-Encoding）的头表；其余一律不碰，
+/// （短于 HTTP_HEAD_KEY_MAX 的 token 名、string 值、无 NUL/CRLF、不是 Content-Length / Transfer-Encoding）的头表；其余一律不碰，
 /// 交给调用方走原来的组包路径（告警、丢头、报错都在那边）。不自动加任何头（含 Host）
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，只认类型、不发送：不是连接标识时不组包，免得组好的缓冲在 send 报参数错时没人释放</param>
@@ -987,18 +1014,21 @@ static const char *_lprot_redis_push(lua_State *lua, redis_pack_ctx *pk, int32_t
         return NULL;
     }
 }
+// value / node / next / unpack 共用：nil / none 与 NULL 指针都返回 NULL(调用方按各自个数压 nil)，其余非 light userdata 报错
+static redis_pack_ctx *_lprot_redis_opt(lua_State *lua) {
+    if (lua_isnoneornil(lua, 1)) {
+        return NULL;
+    }
+    LUACHECK_LUDATA_OPT(lua, 1);
+    return lua_touserdata(lua, 1);
+}
 /// <summary>
 /// 解析一个 Redis RESP 节点的值
 /// </summary>
 /// <param name="pk" type="lightuserdata?">redis_pack_ctx 节点指针；nil 时返回 nil</param>
 /// <returns type="string|integer|number|boolean|nil|RedisAggValue">标量直接返回；聚合类型（array/set/map/push/attr）返回 RedisAggValue</returns>
 static int32_t _lprot_redis_value(lua_State *lua) {
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type || LUA_TNONE == type) {
-        return lpub_rtn_nil(lua, 1);
-    }
-    LUACHECK_LUDATA_OPT(lua, 1);
-    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    redis_pack_ctx *pk = _lprot_redis_opt(lua);
     if (NULL == pk) {
         return lpub_rtn_nil(lua, 1);
     }
@@ -1021,12 +1051,7 @@ static int32_t _lprot_redis_value(lua_State *lua) {
 /// <returns type="integer?">聚合元素计数（-1 为 RESP3 的 nil 聚合）；标量为 nil</returns>
 /// <returns type="lightuserdata?">下一个节点指针；没有后续节点为 nil</returns>
 static int32_t _lprot_redis_node(lua_State *lua) {
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type || LUA_TNONE == type) {
-        return lpub_rtn_nil(lua, 4);
-    }
-    LUACHECK_LUDATA_OPT(lua, 1);
-    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    redis_pack_ctx *pk = _lprot_redis_opt(lua);
     if (NULL == pk) {
         return lpub_rtn_nil(lua, 4);
     }
@@ -1051,12 +1076,7 @@ static int32_t _lprot_redis_node(lua_State *lua) {
 /// <param name="pk" type="lightuserdata?">redis_pack_ctx 节点指针；nil 时返回 nil</param>
 /// <returns type="lightuserdata?">下一个节点指针；无后续节点返回 nil</returns>
 static int32_t _lprot_redis_next(lua_State *lua) {
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type || LUA_TNONE == type) {
-        return lpub_rtn_nil(lua, 1);
-    }
-    LUACHECK_LUDATA_OPT(lua, 1);
-    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    redis_pack_ctx *pk = _lprot_redis_opt(lua);
     if (NULL == pk
         || NULL == pk->next) {
         return lpub_rtn_nil(lua, 1);
@@ -1136,20 +1156,16 @@ static int32_t _lprot_redis_consume(lua_State *lua, redis_unpack_frame *stack, i
 // 多节点回复，首节点必须是聚合。Lua 栈布局：1 = pk，2 = 结果，第 i 层（0 起）的表在 3+2i、
 // 暂存键在 4+2i；每处理完一个节点栈顶都回到 2+2*depth
 static int32_t _lprot_redis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
-    redis_unpack_frame stack[REDIS_MAX_DEPTH];
-    redis_unpack_frame *parent;
-    int32_t depth = 0;
-    int32_t tidx;
-    int32_t isattr;
-    int32_t askey;
     if (!_lprot_redis_isagg(pk->prot)) {
         LOG_WARN("resp message error.");
         return lpub_rtn_nil(lua, 1);
     }
     lua_settop(lua, 1);
     luaL_checkstack(lua, 2 * REDIS_MAX_DEPTH + 8, NULL);// 每层占表与暂存键两格，另留几格临时值
+    redis_unpack_frame stack[REDIS_MAX_DEPTH];
+    int32_t depth = 0;
     // 首节点为 attr 时结果多包一层数组：{val} / {{}} / {}，后面的值依次追加
-    isattr = (RESP_ATTR == pk->prot);
+    int32_t isattr = (RESP_ATTR == pk->prot);
     if (pk->nelem > 0) {
         if (isattr) {
             lua_createtable(lua, 1, 0);
@@ -1171,6 +1187,9 @@ static int32_t _lprot_redis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
     } else {
         return lpub_rtn_nil(lua, 1);
     }
+    redis_unpack_frame *parent;
+    int32_t tidx;
+    int32_t askey;
     for (pk = pk->next; NULL != pk; pk = pk->next) {
         if (0 == depth) {
             // 顶层多值（attr 之后的数据）：顺序追加进结果
@@ -1245,12 +1264,7 @@ static int32_t _lprot_redis_unpack_multi(lua_State *lua, redis_pack_ctx *pk) {
 /// <param name="pk" type="lightuserdata?">回复首节点指针；nil 时返回 nil</param>
 /// <returns type="any">解包后的值：标量原样；空聚合为空表；nil 聚合、坏包与 pk 为 nil 时为 nil</returns>
 static int32_t _lprot_redis_unpack(lua_State *lua) {
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type || LUA_TNONE == type) {
-        return lpub_rtn_nil(lua, 1);
-    }
-    LUACHECK_LUDATA_OPT(lua, 1);
-    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    redis_pack_ctx *pk = _lprot_redis_opt(lua);
     if (NULL == pk) {
         return lpub_rtn_nil(lua, 1);
     }
@@ -1275,9 +1289,8 @@ static int32_t _lprot_redis_unpack(lua_State *lua) {
 // luaL_tolstring 要压栈、还可能抛错，必须在开缓冲或分配之前做完
 static int32_t _lprot_redis_args(lua_State *lua) {
     int32_t n = lua_gettop(lua);
-    int32_t i;
     int32_t type;
-    for (i = 1; i <= n; i++) {
+    for (int32_t i = 1; i <= n; i++) {
         type = lua_type(lua, i);
         if (LUA_TNIL != type && LUA_TNUMBER != type && LUA_TSTRING != type) {
             luaL_tolstring(lua, i, NULL);
@@ -1309,7 +1322,6 @@ static const char *_lprot_redis_str(lua_State *lua, int32_t i, char *nbuf, size_
 /// <returns type="string">RESP 编码后的请求字符串</returns>
 static int32_t _lprot_redis_pack(lua_State *lua) {
     int32_t n = _lprot_redis_args(lua);
-    int32_t i;
     size_t lens;
     size_t k;
     const char *s;
@@ -1323,7 +1335,7 @@ static int32_t _lprot_redis_pack(lua_State *lua) {
     p[k++] = '\r';
     p[k++] = '\n';
     luaL_addsize(&lbuf, k);
-    for (i = 1; i <= n; i++) {
+    for (int32_t i = 1; i <= n; i++) {
         if (lua_isnil(lua, i)) {
             LOG_WARN("redis.pack: nil argument #%d, encoded as empty bulk string", i);
             luaL_addlstring(&lbuf, "$0\r\n\r\n", 6);
@@ -1354,7 +1366,6 @@ static int32_t _lprot_redis_pack(lua_State *lua) {
 /// <returns type="integer">字节数</returns>
 static int32_t _lprot_redis_pack_ud(lua_State *lua) {
     int32_t n = _lprot_redis_args(lua);
-    int32_t i;
     int32_t type;
     size_t lens;
     size_t total = 24;// "*" + 个数 + CRLF
@@ -1363,6 +1374,7 @@ static int32_t _lprot_redis_pack_ud(lua_State *lua) {
     binary_ctx bw;
     // 按类型估上界一次分配到位：每个参数 "$" + 长度 + 两个 CRLF 至多 25 字节（nil 的 6 字节含在内），
     // 整数至多 20 位、浮点按 nbuf 长度估。每加一个就判上限，免得多个大参数在 32 位上累加回绕
+    int32_t i;
     for (i = 1; i <= n; i++) {
         type = lua_type(lua, i);
         if (LUA_TSTRING == type) {
@@ -1411,21 +1423,21 @@ LUAMOD_API int luaopen_redis(lua_State *lua) {
 }
 //srey.smtp
 /// <summary>
-/// 创建 SMTP 客户端上下文（不立即建立连接）
+/// 创建 SMTP 客户端上下文（不立即建立连接）。只支持隐式 TLS、不支持 STARTTLS，见 C 层 smtp_init
 /// </summary>
 /// <param name="ip" type="string">SMTP 服务器 IP</param>
 /// <param name="port" type="integer">SMTP 服务器端口</param>
-/// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
-/// <param name="user" type="string">认证用户名，最长 63 字节</param>
-/// <param name="psw" type="string">认证密码，最长 63 字节</param>
+/// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文（明文下凭据也明文发出）</param>
+/// <param name="user" type="string">认证用户名，最长 63 字节；空串为免认证投递：握手跳过 AUTH，服务端不通告 AUTH 也能连上</param>
+/// <param name="psw" type="string">认证密码，最长 63 字节；user 为空串时不用</param>
 /// <returns type="_smtp_ctx?">SMTP 对象；ip / user / psw 任一超长返回 nil
 /// （同 mysql.new / pgsql.new / mongo.new，不静默截断）</returns>
 static int32_t _lprot_smtp_new(lua_State *lua) {
-    const char *ip = luaL_checkstring(lua, 1);
+    const char *ip = lpub_check_cstr(lua, 1);
     uint16_t port = lpub_check_u16(lua, 2, PORT_OUT_OF_RANGE);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
-    const char *user = luaL_checkstring(lua, 4);
-    const char *psw = luaL_checkstring(lua, 5);
+    const char *user = lpub_check_cstr(lua, 4);
+    const char *psw = lpub_check_cstr(lua, 5);
     smtp_ctx **ud = (smtp_ctx **)lpub_push_ud(lua, NULL, MT_SMTP);
     smtp_ctx *smtp;
     MALLOC(smtp, sizeof(smtp_ctx));
@@ -1552,7 +1564,7 @@ static int32_t _lprot_smtp_pack_reset(lua_State *lua) {
 /// <returns type="integer">数据长度；地址含 CRLF 时为 0</returns>
 static int32_t _lprot_smtp_pack_from(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
-    const char *from = luaL_checkstring(lua, 2);
+    const char *from = lpub_check_cstr(lua, 2);
     char *cmd = smtp_pack_from(from);
     if (NULL == cmd) {
         lua_pushnil(lua);
@@ -1570,7 +1582,7 @@ static int32_t _lprot_smtp_pack_from(lua_State *lua) {
 /// <returns type="integer">数据长度；地址含 CRLF 时为 0</returns>
 static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
-    const char *rcpt = luaL_checkstring(lua, 2);
+    const char *rcpt = lpub_check_cstr(lua, 2);
     char *cmd = smtp_pack_rcpt(rcpt);
     if (NULL == cmd) {
         lua_pushnil(lua);
@@ -1664,14 +1676,14 @@ static int32_t _lprot_mail_free(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 设置邮件是否需要回执
+/// 设置组包时写不写 Reply-To 头(值是发件人地址)；只决定这一行头，挡不住收件人回复，见 C 层 mail_reply
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
-/// <param name="reply" type="integer?">0 不需要，其他值请求回执；nil 视为 0</param>
+/// <param name="reply" type="integer?">非 0 写 Reply-To 头；0 或 nil 不写回复头</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_reply(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    // 判 isnoneornil 而不是只判 LUA_TNIL:文档写的是"nil 视为 0",而 mail:reply() 不带参数时
+    // 判 isnoneornil 而不是只判 LUA_TNIL:文档写的是"0 或 nil 不写回复头",而 mail:reply() 不带参数时
     // 类型是 LUA_TNONE,只判 TNIL 会落到 luaL_checkinteger 上报"number expected, got no value"
     int32_t reply = lua_isnoneornil(lua, 2) ? 0 : (0 != luaL_checkinteger(lua, 2));
     mail_reply(*ud, reply);
@@ -1685,7 +1697,7 @@ static int32_t _lprot_mail_reply(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lprot_mail_subject(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    const char *subject = luaL_checkstring(lua, 2);
+    const char *subject = lpub_check_cstr(lua, 2);
     mail_subject(*ud, subject);
     return 0;
 }
@@ -1697,7 +1709,7 @@ static int32_t _lprot_mail_subject(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lprot_mail_msg(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    const char *msg = luaL_checkstring(lua, 2);
+    const char *msg = lpub_check_cstr(lua, 2);
     mail_msg(*ud, msg);
     return 0;
 }
@@ -1709,21 +1721,22 @@ static int32_t _lprot_mail_msg(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lprot_mail_html(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    const char *html = luaL_checkstring(lua, 2);
-    mail_html(*ud, html, strlen(html));
+    size_t lens;
+    const char *html = luaL_checklstring(lua, 2, &lens);
+    mail_html(*ud, html, lens);
     return 0;
 }
 /// <summary>
 /// 设置发件人姓名和邮箱地址
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
-/// <param name="name" type="string">发件人显示名</param>
-/// <param name="email" type="string">发件人邮箱地址</param>
+/// <param name="name" type="string">发件人显示名；最长 63 字节，超出按 UTF-8 字符边界截断</param>
+/// <param name="email" type="string">发件人邮箱地址，最长 255 字节；超出则整个调用不生效(打 WARN)</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_from(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    const char *name = luaL_checkstring(lua, 2);
-    const char *email = luaL_checkstring(lua, 3);
+    const char *name = lpub_check_cstr(lua, 2);
+    const char *email = lpub_check_cstr(lua, 3);
     mail_from(*ud, name, email);
     return 0;
 }
@@ -1731,8 +1744,8 @@ static int32_t _lprot_mail_from(lua_State *lua) {
 /// 取发件人邮箱地址
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
-/// <returns type="string">发件人邮箱；没设过发件人时为空串。交出的是存量值——CRLF 已被剔除、
-///   超出 mail_addr.addr 容量的部分已被截掉，与调 from 时传进来的原串可能不同</returns>
+/// <returns type="string">发件人邮箱；没设过发件人时为空串。交出的是存量值——CRLF 已被剔除，
+///   与调 from 时传进来的原串可能不同；超长地址根本不会被收下</returns>
 static int32_t _lprot_mail_from_get(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     lua_pushstring(lua, (*ud)->from.addr);
@@ -1742,12 +1755,12 @@ static int32_t _lprot_mail_from_get(lua_State *lua) {
 /// 添加收件人地址
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
-/// <param name="email" type="string">收件人邮箱</param>
+/// <param name="email" type="string">收件人邮箱，最长 255 字节；超出不加入(打 WARN)</param>
 /// <param name="type" type="integer">收件人类型，取值 [TO, BCC]（1/2/3），越界报错</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_addrs_add(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    const char *email = luaL_checkstring(lua, 2);
+    const char *email = lpub_check_cstr(lua, 2);
     mail_addr_type type = (mail_addr_type)lpub_check_range(lua, 3, TO, BCC, "mail address type out of range (TO/CC/BCC)");
     mail_addrs_add(*ud, email, type);
     return 0;
@@ -1778,16 +1791,15 @@ static int32_t _lprot_mail_addrs_clear(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 添加附件文件
+/// 添加附件文件：当场读入，0 字节文件按空附件加入
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
 /// <param name="file" type="string">附件文件路径</param>
-/// <returns>无</returns>
+/// <returns type="boolean">true 成功；不存在、不是常规文件或读失败返回 false（打 WARN，附件不加入）</returns>
 static int32_t _lprot_mail_attach_add(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
-    const char *file = luaL_checkstring(lua, 2);
-    mail_attach_add(*ud, file);
-    return 0;
+    const char *file = lpub_check_cstr(lua, 2);
+    return lpub_rtn_bool(lua, ERR_OK == mail_attach_add(*ud, file));
 }
 /// <summary>
 /// 清空所有附件列表
@@ -1801,7 +1813,7 @@ static int32_t _lprot_mail_attach_clear(lua_State *lua) {
 }
 /// <summary>
 /// 清空邮件上下文：内容（主题 / 正文 / 收件人 / 附件）与 reply 标志一并还原到 mail_init 后的状态。
-/// 注意 reply 会被复位为 1，同一对象复用时若需 No-Reply 须在每次 clear 后重新调 reply(0)
+/// 注意 reply 会被复位为 1，同一对象复用时若不要 Reply-To 须在每次 clear 后重新调 reply(0)
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
 /// <returns>无</returns>
@@ -1820,10 +1832,7 @@ static int32_t _lprot_mail_pack(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     size_t lens;
     char *content = mail_pack(*ud, &lens);
-    if (NULL == content) {
-        return lpub_rtn_lud(lua, NULL, 0);
-    }
-    return lpub_rtn_lud(lua, content, lens);
+    return lpub_rtn_lud(lua, content, lens);// NULL 时压两个 nil
 }
 LUAMOD_API int luaopen_mail(lua_State *lua) {
     luaL_Reg reg_new[] = {

@@ -5,7 +5,7 @@
 // 协程里不许 CuAssert：失败走 longjmp 会跳出协程栈。结果一律记进参数，跑完、清理完再断言；
 // 每个用例结束前把挂起的协程全部唤醒，否则 coro_free 收不回它们的栈
 
-#define CO_OVERFLOW_N 130 // 比协程池容量(coro.c 的 COROPOOL_CAP=128)多，逼出回池失败
+#define CO_OVERFLOW_N (COROPOOL_CAP + 2) // 比协程池容量多，逼出回池失败
 
 // 在新协程里跑的一段测试动作
 typedef void (*co_step)(coro_ctx *co, void *arg);
@@ -63,6 +63,15 @@ typedef struct co_serial {
     coro_serial_ctx *s;
     co_waiter w;
 }co_serial;
+// 排空中持锁者出锁用例的参数
+typedef struct co_sdrain {
+    int32_t hold;      // 持锁者 enter 的结果
+    int32_t fw;        // 持锁者 coro_fork_wait 的结果
+    int32_t done;      // 持锁者已出锁
+    coro_serial_ctx *s;
+    co_serial child;   // fork 出来去排同一把锁的子协程
+    co_serial late;    // 排在子协程后面的第二个排队者
+}co_sdrain;
 
 static int32_t _seq;// 醒来次序
 
@@ -354,6 +363,23 @@ static void _step_queue(coro_ctx *co, void *arg) {
         coro_serial_leave(x->s);
     }
 }
+// fork 出来的排队者：同 _step_queue
+static void _fn_queue(void *owner, void *arg) {
+    _step_queue(((co_owner *)owner)->co, arg);
+}
+// 持锁后 fork_wait 一个去排同一把锁的子协程，等它回来再出锁
+static void _step_hold_fork(coro_ctx *co, void *arg) {
+    co_sdrain *x = arg;
+    x->hold = coro_serial_enter(x->s);
+    if (ERR_OK != x->hold) {
+        return;
+    }
+    coro_fn fns[1] = { _fn_queue };
+    void *args[1] = { &x->child };
+    x->fw = coro_fork_wait(co, fns, args, 1);
+    coro_serial_leave(x->s);
+    x->done = 1;
+}
 // 交接：持锁者出锁时把锁交给队头；中途关闭：排队者失败返回，释放推迟到持锁者出锁
 static void test_coro_serial(CuTest *tc) {
     co_owner o;
@@ -389,6 +415,33 @@ static void test_coro_serial(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, y.rtn);
     CuAssertIntEquals(tc, 1, y.n);
     CuAssertIntEquals(tc, 0, susp4);
+}
+// 关闭排空途中持锁者被同步唤醒并出锁：H 持锁 fork_wait 子协程 W，W 与 late 先后排在锁上；
+// free 唤醒 W → W 失败返回 → fork_wait 完成、H 当场出锁。此刻 late 还没唤醒，锁不得交给它，
+// 对象也只能在排空后释放一次(释放后使用、重复释放由 ASan 与收尾的 MEMORY_CHECK 兜)
+static void test_coro_serial_free_drain(CuTest *tc) {
+    co_owner o;
+    coro_ctx *co = _co_new(&o, 0);
+    co_sdrain x;
+    ZERO(&x, sizeof(x));
+    x.s = coro_serial_new(co);
+    x.child.s = x.s;
+    x.late.s = x.s;
+    _co_spawn(co, _step_hold_fork, &x);
+    coro_fork_drain(co);// W 排到锁上
+    _co_spawn(co, _step_queue, &x.late);// late 排在 W 后面
+    int32_t susp = coro_suspended(co);
+    coro_serial_free(x.s);
+    int32_t susp_end = coro_suspended(co);
+    coro_free(co);
+    CuAssertIntEquals(tc, 3, susp);
+    CuAssertIntEquals(tc, ERR_OK, x.hold);
+    CuAssertIntEquals(tc, ERR_OK, x.fw);
+    CuAssertIntEquals(tc, 1, x.done);
+    CuAssertIntEquals(tc, ERR_FAILED, x.child.rtn);
+    CuAssertIntEquals(tc, ERR_FAILED, x.late.rtn);
+    CuAssertIntEquals(tc, 0, x.late.n);
+    CuAssertIntEquals(tc, 0, susp_end);
 }
 // dump 格式与 Lua 侧 debug_request.lua 同格式，字段名 mtype 不许改
 static void test_coro_dump(CuTest *tc) {
@@ -588,8 +641,7 @@ static void test_coro_misc(CuTest *tc) {
     CuAssertIntEquals(tc, 0, gone);
     CuAssertIntEquals(tc, 0, out_fork);
     CuAssertIntEquals(tc, 0, cnt);
-    CuAssertIntEquals(tc, 0, o.before);
-    CuAssertIntEquals(tc, 0, o.after);
+    CuAssertIntEquals(tc, 1, k.woke);// NULL 钩子下协程照常跑完、被唤醒(没补成空函数的话这之前已崩)
 }
 // 栈大小：0 与过小取下界，过大取上界，上下界之间原样
 static void test_coro_stack_fit(CuTest *tc) {
@@ -610,6 +662,7 @@ void test_coro(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_coro_expire);
     SUITE_ADD_TEST(suite, test_coro_fork);
     SUITE_ADD_TEST(suite, test_coro_serial);
+    SUITE_ADD_TEST(suite, test_coro_serial_free_drain);
     SUITE_ADD_TEST(suite, test_coro_nested_spawn);
     SUITE_ADD_TEST(suite, test_coro_pool_full);
     SUITE_ADD_TEST(suite, test_coro_expire_shared);

@@ -66,7 +66,7 @@ static void _startup(task_ctx *task) {
                   RACE_ITERS, RACE_CLIENTS);
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("listen_unlisten_race tested (%d iters x %d clients, %d connected).",
              RACE_ITERS, RACE_CLIENTS, nconn);
 }

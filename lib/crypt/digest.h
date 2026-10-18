@@ -9,7 +9,7 @@
 #include "crypt/sha512.h"
 #include "crypt/xxhash.h"
 
-#define DG_BLOCK_SIZE SHA512_BLOCK_SIZE
+#define DG_BLOCK_SIZE SHA512_BLOCK_SIZE // 所有算法里最长的摘要输出长度；各 *_BLOCK_SIZE 都指输出长度，分组长度是 *_KEY_BLOCK
 typedef void(*_init_cb)(void *);
 typedef void(*_update_cb)(void *, const void *, size_t);
 typedef void(*_final_cb)(void *, char *);

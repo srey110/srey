@@ -52,6 +52,19 @@ local function _setup_localfn_module()
     return mod
 end
 
+-- 按名字取函数的 upvalue，返回值与序号（同 unit_coro.lua）
+local function _upvalue(f, name)
+    for i = 1, 255 do
+        local n, v = debug.getupvalue(f, i)
+        if nil == n then
+            return nil
+        end
+        if name == n then
+            return v, i
+        end
+    end
+end
+
 srey.startup(function()
 runner.run(function(t)
     -- ── 子段 1:函数替换 + 行为变更 ─────────────────────────────────
@@ -583,6 +596,125 @@ runner.run(function(t)
         local ok3, msg3 = hotfix.apply("hotfix_unit_mod", "function M.handle() return tostring(1) end")
         t:eq(true, ok3, "apply ok(无遮蔽名)")
         t:eq(nil, msg3:find("shadowed upvalue", 1, true), "模块无遮蔽名时不加提示")
+    end
+
+    -- ── 子段 25:补丁函数运行期读写换上去的名字都落到模块上 ─────────────────
+    -- 运行期写 M.xxx 要落到 mod 上,不能困在只供执行期收函数的代理里;
+    -- 一组互相调用的函数换上去之后,再单独热修被调的那个,经上一代调用拿到的也得是新的
+    do
+        local mod = _setup_module()
+        local ok = hotfix.apply("hotfix_unit_mod", [[
+            function M.handle()
+                M.flag = "set"
+                return "v3"
+            end
+            function M.use_helper(x)
+                return M._helper(x) + 1
+            end
+            function M._helper(x)
+                return x * 3
+            end
+        ]])
+        t:eq(true, ok, "apply ok")
+        t:eq("v3", mod.handle(), "handle 已替换")
+        t:eq("set", mod.flag, "补丁运行期写 M.flag 落到模块上")
+        t:eq(16, mod.use_helper(5), "use_helper 走新 _helper:5 * 3 + 1")
+        ok = hotfix.apply("hotfix_unit_mod", "function M._helper(x) return x * 5 end")
+        t:eq(true, ok, "单独热修 _helper ok")
+        t:eq(26, mod.use_helper(5), "上一代 use_helper 调到的是新 _helper:5 * 5 + 1")
+    end
+
+    -- ── 子段 26:apply 成功后丢掉回滚记录 ──────────────────────────────────
+    -- 回滚只在失败时用;成功后还留着的话,补丁函数运行期第一次裸写某个名字就把原值记进去、永久钉住
+    do
+        local mod = _setup_module()
+        local ok = hotfix.apply("hotfix_unit_mod", [[
+            function M.bump()
+                counter = counter + 1
+                return counter
+            end
+        ]])
+        t:eq(true, ok, "apply ok")
+        t:eq(1, mod.bump(), "运行期裸写 counter 照常落到原 cell")
+        local env = _upvalue(mod.bump, "_ENV")
+        local ni = env and getmetatable(env).__newindex
+        if t:check("function" == type(ni), "摸到补丁 env 的 __newindex") then
+            local d, di = _upvalue(ni, "dirty")
+            local g, gi = _upvalue(ni, "dirty_g")
+            t:check(nil ~= di and nil == d and nil ~= gi and nil == g, "成功后 dirty / dirty_g 已置空")
+        end
+    end
+
+    -- ── 子段 27:补丁把别的模块的函数转挂到 M 上,那个函数的 upvalue 不动 ─────
+    -- 只有补丁自己编译的函数才嫁接;转挂来的也按名嫁接的话,B 的 secret 会被接到 A 的同名 cell 上
+    do
+        package.loaded.hotfix_rex_a = nil
+        package.loaded.hotfix_rex_b = nil
+        package.loaded.hotfix_rex_b = assert(load(
+            "local M = {} local secret = 'B' function M.peek() return secret end return M", "=hotfix_rex_b"))()
+        package.loaded.hotfix_rex_a = assert(load(
+            "local M = {} local secret = 'A' function M.own() return secret end function M.f() return 0 end return M",
+            "=hotfix_rex_a"))()
+        local ok = hotfix.apply("hotfix_rex_a", "M.f = package.loaded.hotfix_rex_b.peek")
+        t:eq(true, ok, "转挂别的模块的函数照常替换")
+        t:eq("B", package.loaded.hotfix_rex_b.peek(), "被转挂的函数仍读自己模块的 secret")
+        t:eq("B", package.loaded.hotfix_rex_a.f(), "A.f 已换成 B 的 peek")
+        t:eq("A", package.loaded.hotfix_rex_a.own(), "A 自己的 secret 不受影响")
+        package.loaded.hotfix_rex_a = nil
+        package.loaded.hotfix_rex_b = nil
+    end
+
+    -- ── 子段 28:从文件 require 来的模块按路径尾巴认出自家 chunk ──────────────
+    -- 前面的模块都是 load(src, "=名字") 造的,走的是全等那支。这里往脚本目录写临时模块再 require 两次:
+    -- 第一次从文件加载,第二次(开了字节码缓存时)命中缓存,两种 source 都得认出。认不出时 apply 报
+    -- cannot locate module chunk。做法同 unit_bytecache,收尾排在断言之前
+    do
+        local name = "test.unit_hotfix_tmp"
+        local tmpl = package.path:match("^[^;]+")
+        local path = tmpl and tmpl:gsub("%?", (name:gsub("%.", _pathsep)))
+        local f = path and io.open(path, "wb")
+        if f then
+            f:write("local M = {} local n = 0 function M.step() n = n + 1 return n end return M")
+            f:close()
+            local res = {}
+            for i = 1, 2 do
+                package.loaded[name] = nil
+                local ok, mod = pcall(require, name)
+                if ok then
+                    mod.step()-- n = 1
+                    local hok, msg = hotfix.apply(name, "local n function M.step() n = n + 1 return n + 100 end")
+                    if hok then
+                        local sok, v = pcall(mod.step)-- 嫁接没接上时 n 为 nil 会抛,别让它跳过下面删文件
+                        res[i] = sok and v or tostring(v)
+                    else
+                        res[i] = tostring(msg)
+                    end
+                else
+                    res[i] = tostring(mod)
+                end
+            end
+            os.remove(path)
+            package.loaded[name] = nil
+            t:eq(102, res[1], "文件加载的模块认出自家 chunk,路径 A 嫁接生效")
+            t:eq(102, res[2], "再 require 一次(可能命中字节码缓存)同样认得出")
+        else
+            printd("[%s] script dir not writable, file module case skipped", t.name)
+        end
+    end
+
+    -- ── 子段 29:补丁自己定义的 M 字段,补丁运行期照样读得到 ───────────────────
+    -- 常量只留在补丁的代理表里,模块上没有;运行期读 M.K 不能穿到模块去拿 nil
+    do
+        local mod = _setup_module()
+        local ok = hotfix.apply("hotfix_unit_mod", [[
+            M.K = 7
+            function M.handle()
+                return M.K
+            end
+        ]])
+        t:eq(true, ok, "apply ok")
+        t:eq(7, mod.handle(), "补丁运行期读到补丁里定义的 M.K")
+        t:eq(nil, mod.K, "补丁的常量不进模块")
     end
 end)
 end)

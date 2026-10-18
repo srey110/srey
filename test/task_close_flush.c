@@ -26,8 +26,8 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     }
     ATOMIC_ADD(&g_recv_bytes, (atomic_t)size);
 }
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)task; (void)sk;
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
+    (void)task; (void)sk; (void)sess;
     // 第三段(PACK_HTTP)只记 server 端的档位;client 端是被对端关的,档位不定
     if (PACK_HTTP == pktype) {
         if (!client) {
@@ -155,7 +155,7 @@ static void _startup(task_ctx *task) {
                   (int32_t)ATOMIC_GET(&g_perr_srv_erro), CLOSE_TYPE_LOCAL + 1);
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("close_flush tested (%d x %dKB intact, %dMB truncated but closed, parse error closes as LOCAL).",
              ROUNDS, SMALL_BYTES / 1024, BIG_BYTES / 1024 / 1024);
 }

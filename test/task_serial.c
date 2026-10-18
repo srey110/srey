@@ -565,7 +565,7 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_serial_quit_order(task)) {
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("serial tested.");
 }
 

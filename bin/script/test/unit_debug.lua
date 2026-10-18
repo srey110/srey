@@ -1,8 +1,8 @@
 -- debug_request 单元测试：7 条内置命令的输出格式 + 未知命令透传 + 处理内抛错转文本。
--- 不走网络：直接注入 _set_* 注入器再调 _dispatch，_response 换成捕获函数，
+-- 不走网络：直接调 init 注入再调 _dispatch，响应函数换成捕获函数，
 -- 于是 coros 的输入（coro_sess / fork 屏障 / serial 执行器 / nyield）全部可控，
--- 聚类条数与汇总行的五个数字都能钉死。注入器的"仅初始化阶段调一次"契约在这里
--- 是故意越过的：本 task 不对外提供 debug 服务，模块又是每 VM 一份，越不出这个 task
+-- 聚类条数与汇总行的五个数字都能钉死。init 的"首次 _dispatch 之前调一次"契约在这里
+-- 是故意越过的（按用例反复重设）：本 task 不对外提供 debug 服务，模块又是每 VM 一份，越不出这个 task
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -41,28 +41,30 @@ srey.startup(function()
 runner.run(function(t)
     local captured
     local nresp = 0
-    dbg._set_response(function(dst, reqtype, sess, erro, data)
+    local function resp(dst, reqtype, sess, erro, data)
         nresp = nresp + 1
         captured = data
-    end)
-    dbg._set_mtype_names(srey.MSG_TYPE)
+    end
+    -- 每次重设都交齐全部注入项：响应捕获与 MSG_TYPE 固定，其余按用例给，ny 是注入的 nyield
+    local function init(cs, barriers, execs, ny, fallback)
+        dbg.init(cs, resp, srey.MSG_TYPE, barriers, execs, function() return ny end, fallback)
+    end
 
     -- ── coros：输入全可控，逐项对账 ────────────────────────────────
     local now = task.timer_ms()
     local co1, co2, co3, co4 = _spawn(_park_a), _spawn(_park_a), _spawn(_park_b), _spawn(_park_a)
     -- 条目布局同 lib/srey 的 CoroSession：每个等待者 4 格 { 协程, mtype, 到期时刻, 挂起起始时刻 }；
     -- 13 号条目挂两个等待者，钉住按 4 格步长遍历
-    dbg._set_coro_sess({
+    local cs = {
         [11] = { co1, 3, 0, now - 100 },
         [12] = { co2, 3, 0, now - 200 },
         [13] = { co3, 5, 0, now - 9000, co4, 3, 0, now - 50 },
-    })
+    }
     local barrier = { pending = 2, since = now - 300 }
     -- 布局同 lib/srey 的 SerialState：每个等待者 2 格 { 协程, 入队时刻 }，[head, tail] 是还在排队的
     local sexec = { current = co1, since = now - 400,
                     waiters = { co2, now - 500, co3, now - 50 }, head = 1, tail = 4 }
-    dbg._set_suspend_registries({ [barrier] = true }, { [sexec] = true },
-                                function() return 7 end)
+    init(cs, { [barrier] = true }, { [sexec] = true }, 7)
 
     -- buf 得自己释放：真实路径上载荷由框架持有，_dispatch 只读不接管
     local function send(...)
@@ -90,8 +92,7 @@ runner.run(function(t)
             1, true) ~= nil, "coros 汇总行五个数")
 
     -- 三张表全空时汇总行仍须打印（nyield 非零正是要靠它对账）
-    dbg._set_coro_sess({})
-    dbg._set_suspend_registries({}, {}, function() return 4 end)
+    init({}, {}, {}, 4)
     txt = send("coros")
     t:check(txt and txt:find("(no suspended coros)", 1, true) ~= nil, "coros 空表提示")
     t:check(txt and txt:find("0 suspended, 0 sessions, 0 fork_wait, 0 serial, 4 yield total.",
@@ -141,8 +142,7 @@ runner.run(function(t)
             t:eq(cos[3], st.waiters[5], "队头是 W3")
             t:eq(cos[4], st.waiters[7], "其后是 W4")
             local t3 = st.waiters[6]-- W3 的入队时刻，即还在排的最久那个
-            dbg._set_coro_sess({})
-            dbg._set_suspend_registries({}, { [st] = true }, function() return 3 end)-- nyield 注入值原样回显
+            init({}, {}, { [st] = true }, 3)-- nyield 注入值原样回显
             local b = task.timer_ms()
             txt = send("coros")
             local a = task.timer_ms()
@@ -210,10 +210,10 @@ runner.run(function(t)
     t:eq(before + 1, nresp, "抛错路径同样回了一次响应")
 
     -- ── 未知命令：无 fallback 时回提示，有 fallback 时透传 ──────────
-    dbg._set_fallback(nil)
+    init({}, {}, {}, 0)
     t:eq("unknown command: nosuchcmd", send("nosuchcmd"), "未知命令无 fallback 回提示")
     local fbcmd
-    dbg._set_fallback(function(reqtype, sess, src, data, size)
+    init({}, {}, {}, 0, function(reqtype, sess, src, data, size)
         fbcmd = seri.unpack(data, size)
     end)
     before = nresp
@@ -224,5 +224,6 @@ runner.run(function(t)
     coroutine.resume(co1)
     coroutine.resume(co2)
     coroutine.resume(co3)
+    coroutine.resume(co4)
 end)
 end)

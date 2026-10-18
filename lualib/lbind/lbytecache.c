@@ -9,7 +9,7 @@
 typedef struct bc_entry {
     size_t size;      // 字节码字节数
     uint64_t mtime;   // 文件修改时间;LBC_CHECK_MTIME=0 时恒 0
-    char *path;       // 规范化路径,hashmap key
+    char *path;       // 脚本路径(调用方原串),hashmap key
     char *code;       // 字节码 buffer
 }bc_entry;
 // lua_dump 输出累积缓冲
@@ -24,7 +24,7 @@ typedef struct dump_buf {
 #define _BC_MAP_CMP(a, b) strcmp((a)->path, (b)->path)
 HASHMAP_DECL(bc_map, bc_entry, _BC_MAP_HASH, _BC_MAP_CMP)
 
-static bc_map *_bc_map;         // path -> bc_entry
+static bc_map *_bc_map;// path -> bc_entry
 static rwlock_distr_ctx *_bc_lock;// 复用 loader->lckcache,不自建锁
 
 static void _lbc_entry_free(void *item) {
@@ -42,9 +42,12 @@ void lbc_free(void) {
         _bc_map = NULL;
     }
 }
-// lua_dump writer:把字节码分片追加到 dump_buf
+// lua_dump writer:把字节码分片追加到 dump_buf。lua_dump 最后以 (NULL, 0) 调一次表示写完,直接返回
 static int _lbc_writer(lua_State *lua, const void *p, size_t sz, void *ud) {
     (void)lua;
+    if (0 == sz) {
+        return 0;
+    }
     dump_buf *db = (dump_buf *)ud;
     if (db->len + sz > db->cap) {
         size_t ncap = (0 == db->cap) ? 4096 : db->cap;
@@ -60,15 +63,14 @@ static int _lbc_writer(lua_State *lua, const void *p, size_t sz, void *ud) {
 }
 // 写锁内调用:存/替换 path 字节码;已存在同版本则释放本次 code,mtime 变则替换
 static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) {
-    int32_t hit;
-    bc_entry ne;
-    bc_entry *found;
     // 先 dup 再探测一次:未命中时这份直接进表,命中时释放掉
+    bc_entry ne;
     ne.path = dup_zero(path, strlen(path));
     ne.code = code;
     ne.size = size;
     ne.mtime = mtime;
-    found = bc_map_get_set(_bc_map, &ne, &hit);
+    int32_t hit;
+    bc_entry *found = bc_map_get_set(_bc_map, &ne, &hit);
     if (!hit) {
         return;
     }
@@ -85,20 +87,26 @@ static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) 
 int32_t lbc_loadfile(lua_State *lua, const char *path, uint64_t mt) {
     bc_entry key;
     key.path = (char *)path;
+    char *code = NULL;
+    size_t size = 0;
     rwlock_distr_rdlock(_bc_lock);
     const bc_entry *e = bc_map_get(_bc_map, &key);
-    int32_t hit = (NULL != e);
 #if LBC_CHECK_MTIME
-    if (0 != hit && e->mtime != mt) {
-        hit = 0;
+    if (NULL != e && e->mtime != mt) {
+        e = NULL;
     }
 #endif
-    int32_t st = LUA_OK;
-    if (0 != hit) {
-        st = luaL_loadbufferx(lua, e->code, e->size, path, "b");
+    // 锁内只拷出、解锁后再加载：加载时 GC 可能跑 __gc，里面 require 未缓存的模块会持着读锁去取写锁
+    if (NULL != e) {
+        size = e->size;
+        MALLOC(code, size);
+        memcpy(code, e->code, size);
     }
     rwlock_distr_runlock(_bc_lock);
-    if (0 != hit) {
+    int32_t st;
+    if (NULL != code) {
+        st = luaL_loadbufferx(lua, code, size, path, "b");
+        FREE(code);
         return st;
     }
     if (LUA_OK != (st = luaL_loadfilex(lua, path, NULL))) {
@@ -126,7 +134,8 @@ int32_t lbc_stat(const char *file, uint64_t *mt) {
     }
 #endif
 #if LBC_CHECK_MTIME
-    *mt = (uint64_t)st.st_mtime;
+    // mtime 只到秒，同一秒内改两次分不出，拼上文件长度：同秒的改动多半也改了长度
+    *mt = ((uint64_t)st.st_mtime << 32) ^ (uint64_t)st.st_size;
 #else
     *mt = 0;
 #endif
@@ -134,7 +143,6 @@ int32_t lbc_stat(const char *file, uint64_t *mt) {
 }
 // 同 loadlib.c 的 getnextfilename：从 ';' 分隔的串里切出下一个文件名
 static const char *_lbc_nextfile(char **path, char *end) {
-    char *sep;
     char *name = *path;
     if (name == end) {
         return NULL;
@@ -143,7 +151,7 @@ static const char *_lbc_nextfile(char **path, char *end) {
         *name = *LUA_PATH_SEP;
         name++;
     }
-    sep = strchr(name, *LUA_PATH_SEP);
+    char *sep = strchr(name, *LUA_PATH_SEP);
     if (NULL == sep) {
         sep = end;
     }
@@ -152,11 +160,12 @@ static const char *_lbc_nextfile(char **path, char *end) {
     return name;
 }
 // require 缓存版 Lua searcher：按 package.path 逐模板 stat 定位，命中即带 mtime 加载。
-// 名字替换与未命中的报错串照抄 package.searchpath，两边必须一致
+// 名字替换与报错串照抄 package.searchpath / loadlib.c 的 checkload，两边必须一致。
+// 与标准 searchpath 的差别：判文件只 stat 不试 fopen，不可读的普通文件直接报错，不再试下一个模板。
+// package 表取装入时存的上值，同标准 searcher：脚本换掉全局 package 也不受影响
 static int _lbc_searcher(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 1);
-    lua_getglobal(lua, "package");
-    lua_getfield(lua, -1, "path");
+    lua_getfield(lua, lua_upvalueindex(1), "path");
     const char *path = lua_tostring(lua, -1);
     if (NULL == path) {
         return luaL_error(lua, "'package.path' must be a string");
@@ -177,7 +186,8 @@ static int _lbc_searcher(lua_State *lua) {
             continue;
         }
         if (LUA_OK != lbc_loadfile(lua, file, mt)) {
-            return lua_error(lua);
+            return luaL_error(lua, "error loading module '%s' from file '%s':\n\t%s",
+                lua_tostring(lua, 1), file, lua_tostring(lua, -1));
         }
         lua_pushstring(lua, file);
         return 2;
@@ -195,7 +205,8 @@ static int _lbc_searcher(lua_State *lua) {
 void lbc_install_searcher(lua_State *lua) {
     lua_getglobal(lua, "package");
     lua_getfield(lua, -1, "searchers");
-    lua_pushcfunction(lua, _lbc_searcher);
+    lua_pushvalue(lua, -2);
+    lua_pushcclosure(lua, _lbc_searcher, 1);
     lua_rawseti(lua, -2, 2);
     lua_pop(lua, 2);
 }

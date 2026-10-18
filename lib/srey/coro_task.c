@@ -2,6 +2,8 @@
 #include "protocol/prots.h"
 #include "utils/idgen.h"
 
+#define CORO_TIMEOUT_SCAN_MS 1000 // 挂起等待的超时每隔这么久扫一次，到期最多晚这么久才醒
+
 typedef void (*_coro_msg_handler_t)(task_dispatch_arg *arg);
 // 协程 task 的 task->arg：调度器加上注册时传入的业务参数
 typedef struct coro_task_ctx {
@@ -79,8 +81,9 @@ static void _coro_handle_recved(task_dispatch_arg *arg) {
     }
     _coro_dispatch(arg, 1, 0);
 }
-// 处理连接关闭消息：sess(连接类即 skid)下全部等待者不看 mtype 一律唤醒，再新建协程跑关闭回调。
-// NEVERCONN 的合成 CLOSE 只为唤醒等待方，不触发 on_close 观察者（见 close_type）。
+// 处理连接关闭消息：sess(连接类即 skid)下全部等待者不看 mtype 一律唤醒，再新建协程先调观察者、后调关闭回调。
+// 新协程当场跑到第一次挂起，故观察者排在等待者之后、在本条消息内同步调完。
+// NEVERCONN 的合成 CLOSE 只为唤醒等待方，不起协程（见 close_type）。
 // CLOSE 不带数据，唤醒后不必清理（见 protocol/prots.c 的 _message_data_kind）
 static void _coro_handle_closed(task_dispatch_arg *arg) {
     coro_wake_all(_coro_co(arg->task), arg->msg->sess, arg->msg,
@@ -94,8 +97,8 @@ static void *_coro_timeout_msg(void *ud, uint64_t sess, int32_t tag) {
     tmo->msg.sess = sess;
     return &tmo->msg;
 }
-// 定期（每 1 秒）唤醒已到期的挂起协程并注入超时消息。超时绝大多数等不到触发就被正常响应摘走，
-// 全进程的时间轮上只占这一个节点；要准的定时（coro_sleep）才各挂一个时间轮节点
+// 每 CORO_TIMEOUT_SCAN_MS 唤醒已到期的挂起协程并注入超时消息。超时绝大多数等不到触发就被正常响应摘走，
+// 每个协程 task 在时间轮上只占这一个节点；要准的定时（coro_sleep）才各挂一个时间轮节点
 static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
     (void)sess;
     coro_task_timeout tmo;
@@ -103,10 +106,10 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
     tmo.task = task;
     tmo.msg.mtype = MSG_TYPE_TIMEOUT;
     coro_expire(_coro_co(task), _coro_timeout_msg, &tmo);
-    task_timeout(task, 0, 1 * 1000, _coro_timeout_monitor);
+    task_timeout(task, 0, CORO_TIMEOUT_SCAN_MS, _coro_timeout_monitor);
 }
 static void _coro_handle_startup(task_dispatch_arg *arg) {
-    task_timeout(arg->task, 0, 1 * 1000, _coro_timeout_monitor);
+    task_timeout(arg->task, 0, CORO_TIMEOUT_SCAN_MS, _coro_timeout_monitor);
     _coro_handle_spawn(arg);
 }
 static void _coro_handle_closing(task_dispatch_arg *arg) {
@@ -126,7 +129,7 @@ static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_HANDSHAKED]   = _coro_handle_miss_create, // 应用层握手；未找到静默新建
     [MSG_TYPE_RECV]         = _coro_handle_recved,// sess==0 或协议不允许 创建；未找到新建，否则唤醒
     [MSG_TYPE_SEND]         = _coro_handle_spawn,// 新建
-    [MSG_TYPE_CLOSE]        = _coro_handle_closed,// sess直接赋值skid,尝试唤醒所有
+    [MSG_TYPE_CLOSE]        = _coro_handle_closed,// 唤醒 sess(连接即 skid，kcp 会话即其 sess)下全部等待者
     [MSG_TYPE_RECVFROM]     = _coro_handle_miss_create,// sess 0新建；未找到静默新建，不告警(UDP 不保证顺序与送达，迟到/孤儿包是常态)
     [MSG_TYPE_REQUEST]      = _coro_handle_spawn,// 新建
     [MSG_TYPE_RESPONSE]     = _coro_handle_miss_create,// 未找到静默新建，不告警(task_multi_request 广播的 N 个响应本就没有等待者；
@@ -152,12 +155,11 @@ static void _coro_task_free(void *arg) {
     coro_free(ct->co);
     FREE(ct);
 }
-// 判型：TASK_LUA 的 task->arg 是 ltask_ctx *、带 arg 的 TASK_NORMAL 是业务自己的指针，按 coro_task_ctx * 解引用就是读错偏移。
+// 判型：只有协程 task 的 task->arg 是 coro_task_ctx，别的类型按它解引用就是读错偏移。
 // 收 NULL 是有意的：调用方常在"连接还没建起来"的清理路径上问，那时手里的 task 可能还没填
 static inline coro_task_ctx *_coro_task_get(task_ctx *task) {
     if (NULL == task
-        || TASK_MCO != task_get_type(task)
-        || NULL == task->arg) {
+        || TASK_MCO != task_get_type(task)) {
         return NULL;
     }
     return (coro_task_ctx *)task->arg;
@@ -307,12 +309,17 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
     }
     return coro_wait_connect(task, sk, evssl);
 }
-void coro_close(task_ctx *task, sock_ctx *sk) {
+int32_t coro_close(task_ctx *task, sock_ctx *sk) {
     if (sock_is_invalid(sk)) {
-        return;
+        return ERR_OK;
     }
     ev_close(&task->loader->netev, sk);
-    _coro_wait(task, sk->skid, MSG_TYPE_CLOSE, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, sk->skid, MSG_TYPE_CLOSE, task_get_netread_timeout(task));
+    if (MSG_TYPE_CLOSE != msg->mtype) {
+        LOG_WARN("task %s, close timeout, skid %"PRIu64".", _NAME_OR(task->name), sk->skid);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 // 等待指定连接的下一条接收消息，失败的处理与指针有效期见 _coro_wait_msg
 static inline message_ctx *_coro_wait_recved(task_ctx *task, sock_ctx *sk) {
@@ -350,9 +357,6 @@ void *coro_slice(task_ctx *task, sock_ctx *sk, size_t *size, int32_t *end) {
     SET_PTR(size, msg->size);
     return msg->data;
 }
-// 同步收发前须由调用方显式 coro_sync 一次(与 TCP 服务端 accept 连接同约定,见文件头注释)；
-// 之后同一 skid 上可连续多次调用；并发多次调用（不等上一次响应返回）时两次响应按到达顺序 FIFO
-// 匹配给两次调用，若网络乱序仍可能与发送顺序不一致——UDP 协议本身无法避免的限制
 void *coro_sendto(task_ctx *task, sock_ctx *sk,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy) {

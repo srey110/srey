@@ -6,18 +6,16 @@
 #include "mysql_bind.h"
 #include "crypt/digest.h"
 #include "event/event.h"
-#if WITH_SSL
-#include <openssl/evp.h>
-#include <openssl/rsa.h>
-#endif
 
 //https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html
-#define MYSQL_FIRST_STK 260 // 命令响应首包的栈缓冲(含 4 字节包头)：OK / ERR / 列数这类首包几乎都放得下
-// 客户端能力标志位组合：涵盖协议 4.1、多结果集、插件认证、连接属性等必要能力
+// 客户端能力标志位组合：涵盖协议 4.1、多结果集、插件认证、连接属性等必要能力。
+// 不带 CLIENT_INTERACTIVE：带了服务端按 interactive_timeout 而不是 wait_timeout 回收空闲连接
 #define CLIENT_CAPS\
-    (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 | CLIENT_INTERACTIVE | CLIENT_RESERVED2 |\
+    (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 | CLIENT_RESERVED2 |\
     CLIENT_MULTI_STATEMENTS | CLIENT_MULTI_RESULTS | CLIENT_PS_MULTI_RESULTS | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_ATTRS |\
     CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_QUERY_ATTRIBUTES | CLIENT_SESSION_TRACK | CLIENT_DEPRECATE_EOF)
+#define MYSQL_CHARSET_UTF8MB4 45// utf8mb4_general_ci：5.7 与 MariaDB 的 utf8mb4 默认排序规则
+#define MYSQL_CHARSET_UTF8MB4_0900 255// utf8mb4_0900_ai_ci：MySQL 8.0 起的 utf8mb4 默认排序规则
 
 // 连接解析状态枚举
 typedef enum parse_status {
@@ -44,13 +42,14 @@ typedef struct mysql_charset {
 
 // 握手完成后的推送回调函数指针
 static _handshaked_push _hs_push;
-// 字符集名称 → MySQL 协议里的字符集 ID(取各字符集的默认排序规则)
+// 字符集名称 → MySQL 协议里的字符集 ID，取 5.7 / MariaDB 下各字符集的默认排序规则；
+// utf8mb4 连 MySQL 8.0+ 时发出前换成 255，见 _mysql_wire_charset
 static const mysql_charset _mysql_charsets[] = {
     { 1, "big5" }, { 3, "dec8" }, { 4, "cp850" }, { 6, "hp8" }, { 7, "koi8r" }, { 8, "latin1" }, { 9, "latin2" },
     { 10, "swe7" }, { 11, "ascii" }, { 12, "ujis" }, { 13, "sjis" }, { 16, "hebrew" }, { 18, "tis620" },
     { 19, "euckr" }, { 22, "koi8u" }, { 24, "gb2312" }, { 25, "greek" }, { 26, "cp1250" }, { 28, "gbk" },
     { 30, "latin5" }, { 32, "armscii8" }, { 33, "utf8" }, { 36, "cp866" }, { 37, "keybcs2" }, { 38, "macce" },
-    { 39, "macroman" }, { 40, "cp852" }, { 41, "latin7" }, { 45, "utf8mb4" }, { 51, "cp1251" },
+    { 39, "macroman" }, { 40, "cp852" }, { 41, "latin7" }, { MYSQL_CHARSET_UTF8MB4, "utf8mb4" }, { 51, "cp1251" },
     { 56, "utf16le" }, { 57, "cp1256" }, { 59, "cp1257" }, { 63, "binary" }, { 92, "geostd8" }, { 95, "cp932" },
     { 97, "eucjpms" }, { 248, "gb18030" }
 };
@@ -82,7 +81,7 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql->parse_status = 0;
     mysql->cur_cmd = 0;
     mysql->recvlens = 0;
-    sock_set_invalid(&mysql->client.sk);
+    sock_mark_closed(&mysql->client.sk);// 网络线程上写，理由见 sock_mark_closed
     ud->context = NULL;
     PROT_REF_RELEASE(mysql);
 }
@@ -96,6 +95,19 @@ static inline uint8_t _mysql_charset(const char *charset) {
     }
     LOG_WARN("unknown mysql charset: %s, send 0 to server.", charset);
     return 0;
+}
+uint8_t _mysql_wire_charset(const mysql_ctx *mysql) {
+    if (MYSQL_CHARSET_UTF8MB4 != mysql->client.charset
+        || NULL != strstr(mysql->version, "MariaDB")) {
+        return mysql->client.charset;
+    }
+    // 版本串开头的主版本号，如 "8.4.9"、"8.0.36-0ubuntu0.22.04.1"
+    uint64_t major;
+    if (ERR_OK != strtou64(mysql->version, strspn(mysql->version, "0123456789"), UINT64_MAX, &major)
+        || major < 8) {
+        return mysql->client.charset;
+    }
+    return MYSQL_CHARSET_UTF8MB4_0900;
 }
 // 使用 mysql_native_password 算法计算认证签名（SHA1 双重哈希后与盐值异或）
 static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
@@ -143,11 +155,13 @@ static void _mysql_connect_attrs(binary_ctx *bwriter) {
         { "application", "srey" },
         { "os", OS_NAME }
     };
-    size_t i, lens, total = 0;
+    size_t total = 0;
+    size_t i;
     for (i = 0; i < ARRAY_SIZE(attrs); i++) {
         total += 2 + strlen(attrs[i].key) + strlen(attrs[i].val);
     }
     _mysql_set_lenenc(bwriter, total);
+    size_t lens;
     for (i = 0; i < ARRAY_SIZE(attrs); i++) {
         lens = strlen(attrs[i].key);
         _mysql_set_lenenc(bwriter, lens);
@@ -158,7 +172,7 @@ static void _mysql_connect_attrs(binary_ctx *bwriter) {
     }
 }
 // 组包收尾：回填 3 字节长度头 → 失败即释放缓冲 → 成功把缓冲交给 ev_send(copy=0，所有权转移)。
-// 认证阶段五处发包共用，别在调用点再各写一遍那个 binary_free
+// 认证阶段各处发包共用(前导见 _mysql_pack_begin)，别在调用点再各写一遍那个 binary_free
 static inline int32_t _mysql_send_pack(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *bwriter) {
     if (ERR_OK != _mysql_set_payload_lens(bwriter)) {
         binary_free(bwriter);
@@ -168,14 +182,11 @@ static inline int32_t _mysql_send_pack(mysql_ctx *mysql, ev_ctx *ev, binary_ctx 
 }
 // 发送客户端认证响应包（HandshakeResponse），包含用户名、密码签名、连接属性等
 static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
-    mysql->id++;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, mysql->id);
+    _mysql_pack_begin(mysql, &bwriter, 0, 0);
     binary_set_integer(&bwriter, mysql->client.caps, 4, 1);//client_flag
     binary_set_integer(&bwriter, mysql->client.maxpack, 4, 1);//max_packet_size
-    binary_set_uint8(&bwriter, mysql->client.charset);//character_set
+    binary_set_uint8(&bwriter, _mysql_wire_charset(mysql));//character_set
     binary_set_fill(&bwriter, 0, 23);//filler
     binary_set_string(&bwriter, mysql->client.user);//username
     if (EMPTYSTR(mysql->client.password)) {
@@ -185,7 +196,7 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         } else {
             binary_set_uint8(&bwriter, 0);
         }
-    } else if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
+    } else if (0 == strcmp(CACHING_SHA2_PASSWORD, mysql->server.plugin)) {
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
@@ -211,9 +222,7 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_WITH_DB)) {
         binary_set_string(&bwriter, mysql->client.database);//database
     }
-    if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)) {
-        binary_set_string(&bwriter, mysql->server.plugin);//client_plugin_name
-    }
+    binary_set_string(&bwriter, mysql->server.plugin);//client_plugin_name；不带 CLIENT_PLUGIN_AUTH 的服务端握手时已拒收
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_ATTRS)) {
         _mysql_connect_attrs(&bwriter);
     }
@@ -222,14 +231,11 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
 }
 // 发送 SSL 握手请求包（SSLRequest），触发后续 SSL 升级
 static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
-    mysql->id++;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, mysql->id);
+    _mysql_pack_begin(mysql, &bwriter, 0, 0);
     binary_set_integer(&bwriter, mysql->client.caps, 4, 1);//client_flag
     binary_set_integer(&bwriter, mysql->client.maxpack, 4, 1);//max_packet_size
-    binary_set_uint8(&bwriter, mysql->client.charset);//character_set
+    binary_set_uint8(&bwriter, _mysql_wire_charset(mysql));//character_set
     binary_set_fill(&bwriter, 0, 23);//filler
     ud->status = SSL_EXCHANGE;
     if (ERR_OK != _mysql_send_pack(mysql, ev, &bwriter)
@@ -242,15 +248,13 @@ int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
     (void)ssl;// mysql 不做通道绑定，形参只为与 pgsql 同签名、共用 prots 的挂钩
     return _mysql_auth_response(ud->context, ev, ud);
 }
-// 认证失败：解析错误包，并把服务端给的原因交给等待者。
-// 只置 PROT_ERROR 的话，调用方要等随后的 ev_close 唤醒，拿到的是一次无区分度的失败（同 pgsql 的 case 'E'）
+// 认证失败：把 ERR 包体(error_code + [#sql_state] + 错误串)原样交给等待者，所有权随之交出；
+// 连接级错误只在持串行化执行权的一侧写，由它经 mysql_record_handshake 落到连接上
 static void _mysql_auth_err(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, int32_t *status) {
-    _mpack_err(mysql, breader);
     BIT_SET(*status, PROT_ERROR);
-    // 载荷所有权交给 _hs_push；空串仍传 NULL，不给上层一个长度为 0 的非空指针
-    size_t lens = strlen(mysql->error_msg);
-    char *msg = (lens > 0) ? dup_zero(mysql->error_msg, lens) : NULL;
-    _hs_push(&mysql->client.sk, 1, ud, ERR_FAILED, msg, lens);
+    size_t lens = binary_remain(breader);
+    char *body = 0 == lens ? NULL : dup_zero(binary_at(breader, breader->offset), lens);
+    _hs_push(&mysql->client.sk, 1, ud, ERR_FAILED, body, lens);
 }
 // 认证成功：通知上层握手完成，切换到命令阶段
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
@@ -260,7 +264,69 @@ static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
     }
     ud->status = COMMAND;
 }
-// 解析服务器初始握手包（Initial Handshake Packet），提取版本、盐值、能力标志等，并发送认证响应
+// 解析初始握手包（Initial Handshake Packet），记下版本、盐值、能力标志与认证插件，定好本端能力位。
+// 成功返回 NULL，失败返回日志文案。包长由对端决定，每段读之前都先比剩余字节：binary_get_* 越界会 ASSERTAB abort 整个进程
+static const char *_mysql_handshake_parse(mysql_ctx *mysql, binary_ctx *breader) {
+    if (0x0a != binary_get_uint8(breader)) {//protocol version
+        return "mysql protocol version not 0x0a.";
+    }
+    char *val = binary_try_get_string(breader);//server version
+    if (NULL == val) {
+        return "mysql handshake truncated at server version.";
+    }
+    if (ERR_OK != safe_fill_str(mysql->version, sizeof(mysql->version), val)) {
+        return "server version string too long.";
+    }
+    // thread_id(4) salt1(8) filler(1) caps1(2) charset(1) status(2) caps2(2)
+    if (!binary_have(breader, 20)) {
+        return "mysql handshake truncated at capability flags.";
+    }
+    binary_get_skip(breader, 4);//thread id
+    val = binary_get_binary(breader, 8);//auth-plugin-data-part-1
+    memcpy(mysql->server.salt, val, 8);
+    binary_get_skip(breader, 1);//filler
+    mysql->server.caps = (uint32_t)binary_get_uinteger(breader, 2, 1);//capability_flags_1
+    binary_get_skip(breader, 1);
+    binary_get_skip(breader, 2);//status_flags 无人消费，只推进读位置；要用换回下面这行
+    //mysql->server.status_flags = (uint16_t)binary_get_uinteger(breader, 2, 1);
+    mysql->server.caps |= ((uint32_t)binary_get_uinteger(breader, 2, 1) << 16);//capability_flags_2
+    if (!BIT_CHECK(mysql->server.caps, CLIENT_PROTOCOL_41)
+        || !BIT_CHECK(mysql->server.caps, CLIENT_PLUGIN_AUTH)) {
+        return "CLIENT_PROTOCOL_41 or CLIENT_PLUGIN_AUTH is required.";
+    }
+    // auth_plugin_data_len(1) reserved(10) salt2(13)
+    if (!binary_have(breader, 24)) {
+        return "mysql handshake truncated at auth plugin data.";
+    }
+    if ((size_t)binary_get_uint8(breader) != sizeof(mysql->server.salt) + 1) {//auth_plugin_data_len
+        return "auth_plugin_data_len error.";
+    }
+    binary_get_skip(breader, 10);//reserved
+    val = binary_get_binary(breader, 13);//auth-plugin-data-part-2
+    memcpy(mysql->server.salt + 8, val, 12);
+    val = binary_try_get_string(breader);//auth_plugin_name
+    if (NULL == val) {
+        return "mysql handshake truncated at auth plugin name.";
+    }
+    // 服务端默认插件不认识(sha256_password、client_ed25519 等)就按 caching_sha2_password 作答，
+    // 账号用的插件不同时服务端会发 AuthSwitch，切换目标仍不认识再失败
+    safe_fill_str(mysql->server.plugin, sizeof(mysql->server.plugin),
+                  0 == strcmp(val, MYSQL_NATIVE_PASSWORD) ? MYSQL_NATIVE_PASSWORD : CACHING_SHA2_PASSWORD);
+    mysql->client.caps = CLIENT_CAPS & mysql->server.caps;
+    if (0 != strlen(mysql->client.database)) {
+        BIT_SET(mysql->client.caps, CLIENT_CONNECT_WITH_DB);
+    }
+    // 配置 evssl 即视为强制 SSL；服务端不广播 CLIENT_SSL 时必须拒收，
+    // 杜绝 MITM 在明文 Initial Handshake Packet 中清除 CLIENT_SSL 位强制降级到明文认证
+    if (NULL != mysql->client.evssl) {
+        if (!BIT_CHECK(mysql->server.caps, CLIENT_SSL)) {
+            return "server does not advertise CLIENT_SSL but client requires SSL.";
+        }
+        BIT_SET(mysql->client.caps, CLIENT_SSL);
+    }
+    return NULL;
+}
+// 收服务器初始握手包，解析通过后发 SSLRequest（配了 SSL）或认证响应
 static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
     mysql_ctx *mysql = ud->context;
@@ -270,254 +336,48 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     binary_ctx breader;
     binary_init_read(&breader, payload, payload_lens);
-    uint8_t protover = binary_get_uint8(&breader);
     // 服务端可以不发握手包而直接回 ERR：1040 Too many connections、1129 Host is blocked、
     // 1130 Host is not privileged
-    if (MYSQL_ERR == protover) {
+    if (MYSQL_ERR == (uint8_t)payload[0]) {
+        binary_get_skip(&breader, 1);
         _mysql_auth_err(mysql, ud, &breader, status);
         FREE(payload);
         return;
     }
-    if (0x0a != protover) {//protocol version
+    const char *err = _mysql_handshake_parse(mysql, &breader);
+    FREE(payload);// 用到的字段解析时都已拷进 mysql
+    if (NULL != err) {
         BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("mysql protocol version not 0x0a.");
+        LOG_ERROR("%s", err);
         return;
     }
-    // 握手包长度由对端决定，下面每段读之前都得比一遍剩余字节：binary_get_* 越界只会
-    // ASSERTAB abort 整个进程，一个 2 字节的畸形应答就能远程掐死客户端
-    char *val = binary_try_get_string(&breader);//server version
-    if (NULL == val) {
+    int32_t rtn = BIT_CHECK(mysql->client.caps, CLIENT_SSL)
+        ? _mysql_ssl_exchange(mysql, ev, ud) : _mysql_auth_response(mysql, ev, ud);
+    if (ERR_OK != rtn) {
         BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("mysql handshake truncated at server version.");
-        return;
     }
-    if (ERR_OK != safe_fill_str(mysql->version, sizeof(mysql->version), val)) {
-        BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("server version string too long.");
-        return;
-    }
-    // thread_id(4) salt1(8) filler(1) caps1(2) charset(1) status(2) caps2(2)
-    if (!binary_have(&breader, 20)) {
-        BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("mysql handshake truncated at capability flags.");
-        return;
-    }
-    binary_get_skip(&breader, 4);//thread id
-    val = binary_get_binary(&breader, 8);//auth-plugin-data-part-1
-    memcpy(mysql->server.salt, val, 8);
-    binary_get_skip(&breader, 1);//filler
-    mysql->server.caps = (uint32_t)binary_get_uinteger(&breader, 2, 1);//capability_flags_1
-    binary_get_skip(&breader, 1);
-    binary_get_skip(&breader, 2);//status_flags 无人消费，只推进读位置；要用换回下面这行
-    //mysql->server.status_flags = (uint16_t)binary_get_uinteger(&breader, 2, 1);
-    mysql->server.caps |= ((uint32_t)binary_get_uinteger(&breader, 2, 1) << 16);//capability_flags_2
-    if (!BIT_CHECK(mysql->server.caps, CLIENT_PROTOCOL_41)
-        || !BIT_CHECK(mysql->server.caps, CLIENT_PLUGIN_AUTH)) {
-        BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("CLIENT_PROTOCOL_41 or CLIENT_PLUGIN_AUTH is requred.");
-        return;
-    }
-    // auth_plugin_data_len(1) reserved(10) salt2(13)
-    if (!binary_have(&breader, 24)) {
-        BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("mysql handshake truncated at auth plugin data.");
-        return;
-    }
-    if ((size_t)binary_get_uint8(&breader) != sizeof(mysql->server.salt) + 1) {//auth_plugin_data_len
-        BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("auth_plugin_data_len error.");
-        return;
-    }
-    binary_get_skip(&breader, 10);//reserved
-    val = binary_get_binary(&breader, 13);//auth-plugin-data-part-2
-    memcpy(mysql->server.salt + 8, val, 12);
-    val = binary_try_get_string(&breader);//auth_plugin_name
-    if (NULL == val) {
-        BIT_SET(*status, PROT_ERROR);
-        FREE(payload);
-        LOG_ERROR("mysql handshake truncated at auth plugin name.");
-        return;
-    }
-    if (0 != strcmp(val, CACHING_SHA2_PASSWORLD)
-        && 0 != strcmp(val, MYSQL_NATIVE_PASSWORLD)) {
-        BIT_SET(*status, PROT_ERROR);
-        LOG_ERROR("unknow auth plugin %s.", val);
-        FREE(payload);
-        return;
-    }
-    safe_fill_str(mysql->server.plugin, sizeof(mysql->server.plugin), val);
-    mysql->client.caps = CLIENT_CAPS;
-    mysql->client.caps &= mysql->server.caps;
-    if (0 != strlen(mysql->client.database)) {
-        BIT_SET(mysql->client.caps, CLIENT_CONNECT_WITH_DB);
-    }
-    // 配置 evssl 即视为强制 SSL；服务端不广播 CLIENT_SSL 时必须拒收，
-    // 杜绝 MITM 在明文 Initial Handshake Packet 中清除 CLIENT_SSL 位强制降级到明文认证
-    if (NULL != mysql->client.evssl) {
-        if (!BIT_CHECK(mysql->server.caps, CLIENT_SSL)) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("server does not advertise CLIENT_SSL but client requires SSL.");
-            FREE(payload);
-            return;
-        }
-        BIT_SET(mysql->client.caps, CLIENT_SSL);
-        if (ERR_OK != _mysql_ssl_exchange(mysql, ev, ud)) {
-            BIT_SET(*status, PROT_ERROR);
-        }
-    } else {
-        if (ERR_OK != _mysql_auth_response(mysql, ev, ud)) {
-            BIT_SET(*status, PROT_ERROR);
-        }
-    }
-    FREE(payload);
-}
-// 向服务器请求公钥（用于 caching_sha2 完整认证流程中的 RSA 加密）
-static int32_t _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
-    mysql->id++;
-    binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_integer(&bwriter, 1, 3, 1);
-    binary_set_uint8(&bwriter, mysql->id);
-    binary_set_uint8(&bwriter, 0x02);
-    return ev_send(ev, &mysql->client.sk, bwriter.data, bwriter.offset, 0);
-}
-// 将密码与服务器盐值进行逐字节异或，返回异或后的数据（调用方负责释放）
-static char *_mysql_password_xor_salt(mysql_ctx *mysql, size_t *lens) {
-    size_t plens = strlen(mysql->client.password);
-    *lens = plens + 1;
-    char *xorpsw;
-    MALLOC(xorpsw, *lens);
-    memcpy(xorpsw, mysql->client.password, plens);
-    xorpsw[plens] = '\0';
-    for (size_t i = 0; i < *lens; i++) {
-        xorpsw[i] ^= mysql->server.salt[i % sizeof(mysql->server.salt)];
-    }
-    return xorpsw;
-}
-#if WITH_SSL
-// 初始化 RSA 公钥加密上下文（OAEP 填充模式），返回 EVP_PKEY_CTX，失败返回 NULL
-static EVP_PKEY_CTX *_mysql_encrypt_init(char *pubkey, size_t klens) {
-    BIO *bio = BIO_new(BIO_s_mem());
-    if (NULL == bio) {
-        return NULL;
-    }
-    BIO_write(bio, pubkey, (int32_t)klens);
-    EVP_PKEY *evpkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
-    BIO_free(bio);
-    if (NULL == evpkey) {
-        return NULL;
-    }
-    EVP_PKEY_CTX *evpctx = EVP_PKEY_CTX_new(evpkey, NULL);
-    EVP_PKEY_free(evpkey);
-    if (NULL == evpctx) {
-        return NULL;
-    }
-    if (0 >= EVP_PKEY_encrypt_init(evpctx)) {
-        EVP_PKEY_CTX_free(evpctx);
-        return NULL;
-    }
-    if (0 >= EVP_PKEY_CTX_set_rsa_padding(evpctx, RSA_PKCS1_OAEP_PADDING)) {
-        EVP_PKEY_CTX_free(evpctx);
-        return NULL;
-    }
-    return evpctx;
-}
-#endif
-// 使用服务器公钥对异或后的密码进行 RSA-OAEP 分块加密，将密文写入 bwriter
-static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, char *xorpsw, size_t xlens) {
-#if WITH_SSL
-    EVP_PKEY_CTX *evpctx = _mysql_encrypt_init(pubkey, klens);
-    if (NULL == evpctx) {
-        return ERR_FAILED;
-    }
-    //取得加密后长度
-    size_t enlens;
-    if (0 >= EVP_PKEY_encrypt(evpctx, NULL, &enlens, NULL, 0)) {
-        EVP_PKEY_CTX_free(evpctx);
-        return ERR_FAILED;
-    }
-    //RSA_size(rsa) - 11 for the PKCS #1  RSA_size(rsa) - 42 for RSA_PKCS1_OAEP_PADDING
-    // enlens 由对端单方面决定，42 是 OAEP 填充开销：正好 42 时 block_size 为 0，下面的
-    // i += block_size 原地打转并每轮往 bwriter 多塞 enlens 字节，拖着整条网络线程 OOM
-    if (enlens <= 42) {
-        EVP_PKEY_CTX_free(evpctx);
-        return ERR_FAILED;
-    }
-    size_t offset, outlens, block_size = enlens - 42;
-    for (size_t i = 0; i < xlens; i += block_size) {
-        offset = bwriter->offset;
-        binary_set_skip(bwriter, enlens);
-        // outlens 是 EVP_PKEY_encrypt 的 IN/OUT 参数,每轮调用前重置为 out buffer 大小
-        outlens = enlens;
-        if (0 >= EVP_PKEY_encrypt(evpctx, (unsigned char *)(bwriter->data + offset), &outlens,
-            (unsigned char *)(xorpsw + i), ((i + block_size > xlens) ? (xlens - i) : block_size))) {
-            EVP_PKEY_CTX_free(evpctx);
-            return ERR_FAILED;
-        }
-    }
-    EVP_PKEY_CTX_free(evpctx);
-    return ERR_OK;
-#else
-    (void)bwriter;
-    (void)pubkey;
-    (void)klens;
-    (void)xorpsw;
-    (void)xlens;
-    return ERR_FAILED;
-#endif
-}
-// 执行 caching_sha2 完整认证：将 RSA 加密后的密码包发送给服务器
-static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size_t klens) {
-    mysql->id++;
-    binary_ctx bwriter;
-    binary_init_write(&bwriter, 300, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, mysql->id);
-    size_t lens;
-    char *xorpsw = _mysql_password_xor_salt(mysql, &lens);
-    if (ERR_OK != _mysql_sha2_rsa(&bwriter, pubkey, klens, xorpsw, lens)) {
-        SECURE_FREE(xorpsw, lens);
-        binary_free(&bwriter);
-        LOG_ERROR("_mysql_sha2_rsa error.");
-        return ERR_FAILED;
-    }
-    SECURE_FREE(xorpsw, lens);
-    return _mysql_send_pack(mysql, ev, &bwriter);
 }
 // 在 SSL 已建立的情况下，直接明文发送密码给服务器（caching_sha2 完整认证 SSL 路径）
 static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
-    mysql->id++;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, mysql->id);
+    _mysql_pack_begin(mysql, &bwriter, 0, 0);
     binary_set_string(&bwriter, mysql->client.password);
     return _mysql_send_pack(mysql, ev, &bwriter);
 }
 // 处理服务器发起的认证插件切换请求，重新计算签名并发送响应
 static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_auth_switch *auswitch) {
     if (auswitch->provided.lens < sizeof(mysql->server.salt)
-        || (0 != strcmp(auswitch->plugin, CACHING_SHA2_PASSWORLD)
-            && 0 != strcmp(auswitch->plugin, MYSQL_NATIVE_PASSWORLD))) {
+        || (0 != strcmp(auswitch->plugin, CACHING_SHA2_PASSWORD)
+            && 0 != strcmp(auswitch->plugin, MYSQL_NATIVE_PASSWORD))) {
         return ERR_FAILED;
     }
     safe_fill_str(mysql->server.plugin, sizeof(mysql->server.plugin), auswitch->plugin);
-    mysql->id++;
     memcpy(mysql->server.salt, auswitch->provided.data, sizeof(mysql->server.salt));
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, mysql->id);
+    _mysql_pack_begin(mysql, &bwriter, 0, 0);
     if (EMPTYSTR(mysql->client.password)) {
         // 空密码：AuthSwitchResponse 发送空 auth data，不写签名
-    } else if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
+    } else if (0 == strcmp(CACHING_SHA2_PASSWORD, mysql->server.plugin)) {
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         binary_set_binary(&bwriter, sign, sizeof(sign));
@@ -530,67 +390,55 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     }
     return _mysql_send_pack(mysql, ev, &bwriter);
 }
-// 处理服务器发来的认证插件切换包（Auth Switch Request）
+// 处理服务器发来的认证插件切换包（Auth Switch Request）。CLIENT_PLUGIN_AUTH 握手时已确保协商上
 static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
-    if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)) {
-        mpack_auth_switch auswitch;
-        // 插件名的长度由对端决定，取不到 NUL 就判失败而不是撞 binary_get_string 的断言
-        auswitch.plugin = binary_try_get_string(breader);
-        if (NULL == auswitch.plugin) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("mysql auth switch plugin name truncated.");
-            return;
-        }
-        auswitch.provided.lens = binary_remain(breader);
-        if (0 == auswitch.provided.lens) {
-            BIT_SET(*status, PROT_ERROR);
-            return;
-        }
-        auswitch.provided.data = binary_get_binary(breader, auswitch.provided.lens);
-        if (ERR_OK != _mysql_auth_switch_response(mysql, ev, &auswitch)) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("mysql auth switch failed.");
-        }
+    mpack_auth_switch auswitch;
+    // 插件名的长度由对端决定，取不到 NUL 就判失败而不是撞 binary_get_string 的断言
+    auswitch.plugin = binary_try_get_string(breader);
+    if (NULL == auswitch.plugin) {
+        BIT_SET(*status, PROT_ERROR);
+        LOG_ERROR("mysql auth switch plugin name truncated.");
         return;
     }
-    BIT_SET(*status, PROT_ERROR);
-    LOG_ERROR("mysql auth failed.");
+    auswitch.provided.lens = binary_remain(breader);
+    if (0 == auswitch.provided.lens) {
+        BIT_SET(*status, PROT_ERROR);
+        return;
+    }
+    auswitch.provided.data = binary_get_binary(breader, auswitch.provided.lens);
+    if (ERR_OK != _mysql_auth_switch_response(mysql, ev, &auswitch)) {
+        BIT_SET(*status, PROT_ERROR);
+        LOG_ERROR("mysql auth switch to %s failed.", auswitch.plugin);
+    }
 }
-// 处理 caching_sha2_password 认证的中间响应（快速认证、完整认证或公钥响应）
+// 处理 caching_sha2_password 认证的中间响应：01 03 快速认证通过，01 04 要完整认证。
+// 完整认证只在 TLS 上明文发口令；明文连接不做 RSA 公钥交换(公钥无从核实，中间人换掉它就能拿到明文口令)，直接判失败
 static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
-    if (2 == breader->size) {
-        switch (binary_get_uint8(breader)) {
-        case MYSQL_CACHING_SHA2_FAST://fast auth
-            break;
-        case MYSQL_CACHING_SHA2_FULL://full auth
-            if (BIT_CHECK(mysql->client.caps, CLIENT_SSL)) {
-                if (ERR_OK != _mysql_password_send(mysql, ev)) {
-                    BIT_SET(*status, PROT_ERROR);
-                }
-            } else {
-                if (ERR_OK != _mysql_public_key(mysql, ev)) {
-                    BIT_SET(*status, PROT_ERROR);
-                }
-            }
-            break;
-        default:
-            BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("unknow command.");
-            break;
-        }
+    if (2 != breader->size) {
+        BIT_SET(*status, PROT_ERROR);
+        LOG_ERROR("mysql caching_sha2 response size %zu, want 2.", breader->size);
         return;
     }
-    if (breader->size > 2) {
-        size_t klens = breader->size - 1;
-        char *pubkey = binary_get_binary(breader, klens);
-        if (ERR_OK != _mysql_full_auth(mysql, ev, pubkey, klens)) {
+    uint8_t st = binary_get_uint8(breader);
+    switch (st) {
+    case MYSQL_CACHING_SHA2_FAST://fast auth
+        break;
+    case MYSQL_CACHING_SHA2_FULL://full auth
+        if (!BIT_CHECK(mysql->client.caps, CLIENT_SSL)) {
             BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("_mysql_full_auth error.");
+            LOG_ERROR("mysql caching_sha2_password full authentication needs SSL: enable SSL, log in once "
+                      "over SSL so the server caches the password, or use a mysql_native_password account.");
+            break;
         }
-        return;
+        if (ERR_OK != _mysql_password_send(mysql, ev)) {
+            BIT_SET(*status, PROT_ERROR);
+        }
+        break;
+    default:
+        BIT_SET(*status, PROT_ERROR);
+        LOG_ERROR("mysql caching_sha2 unknown auth status %d.", (int32_t)st);
+        break;
     }
-    BIT_SET(*status, PROT_ERROR);
-    LOG_ERROR("unknow command.");
 }
 // 认证阶段数据处理：根据服务器响应类型分发到 OK/ERR/认证切换/SHA2 处理函数
 static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -602,7 +450,8 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     binary_ctx breader;
     binary_init_read(&breader, payload, payload_lens);
-    switch (binary_get_uint8(&breader)) {
+    uint8_t first = binary_get_uint8(&breader);
+    switch (first) {
     case MYSQL_OK:
         _mysql_auth_ok(mysql, ud, status);
         break;
@@ -617,7 +466,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         break;
     default:
         BIT_SET(*status, PROT_ERROR);
-        LOG_ERROR("unknow command.");
+        LOG_ERROR("mysql auth response unknown packet type %d.", (int32_t)first);
         break;
     }
     FREE(payload);
@@ -627,9 +476,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
 static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
     char *payload;
-    mpack_ctx *mpack;
     binary_ctx breader;
-    char stk[MYSQL_FIRST_STK];
     mysql_ctx *mysql = ud->context;
     if (0 != mysql->parse_status) {
         payload = _mysql_payload(mysql, buf, &payload_lens, status);
@@ -639,12 +486,13 @@ static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *s
         binary_init_read(&breader, payload, payload_lens);
         return _mpack_parser(mysql, buf, &breader, status);
     }
+    char stk[MYSQL_FIRST_STK];
     payload = _mysql_payload_first(mysql, buf, stk, sizeof(stk), &payload_lens, status);
     if (NULL == payload) {
         return NULL;
     }
     binary_init_read(&breader, payload, payload_lens);
-    mpack = _mpack_parser(mysql, buf, &breader, status);
+    mpack_ctx *mpack = _mpack_parser(mysql, buf, &breader, status);
     if (payload != stk + MYSQL_HEAD_LENS) {
         FREE(payload);
     }
@@ -686,8 +534,7 @@ void *mysql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk) {
     ZERO(mysql, sizeof(mysql_ctx));
-    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED，超长字段在这里当场报出来。
-    // 失败时 mysql 已被 ZERO 且可能填了前几个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    // 字段装不下即失败返回，失败后的处置见 mysql.h 的 mysql_init
     if (ERR_OK != safe_fill_str(mysql->client.ip, sizeof(mysql->client.ip), ip)) {
         LOG_ERROR("mysql ip exceeds %zu bytes: %zu.", sizeof(mysql->client.ip) - 1, strlen(ip));
         return ERR_FAILED;
@@ -722,9 +569,53 @@ void mysql_erro_clear(mysql_ctx *mysql) {
     mysql->error_code = ERR_OK;
     mysql->error_msg[0] = '\0';
 }
-int64_t mysql_last_id(mysql_ctx *mysql) {
+uint64_t mysql_last_id(mysql_ctx *mysql) {
     return mysql->last_id;
 }
-int64_t mysql_affected_rows(mysql_ctx *mysql) {
+uint64_t mysql_affected_rows(mysql_ctx *mysql) {
     return mysql->affected_rows;
+}
+uint64_t mysql_pack_affected_rows(mpack_ctx *mpack) {
+    return mpack->affected_rows;
+}
+uint64_t mysql_pack_last_id(mpack_ctx *mpack) {
+    return mpack->last_id;
+}
+const char *mysql_pack_erro(mpack_ctx *mpack, int32_t *code) {
+    SET_PTR(code, mpack->error_code);
+    // 别的类型的 pack 是 reader / stmt，不能当串读
+    if (MPACK_ERR != mpack->pack_type
+        || NULL == mpack->pack) {
+        return "";
+    }
+    return mpack->pack;
+}
+const char *mysql_record_handshake(mysql_ctx *mysql, const char *body, size_t lens) {
+    if (NULL == body
+        || 0 == lens) {
+        return "";
+    }
+    mpack_ctx err;
+    ZERO(&err, sizeof(err));
+    err.pack_type = MPACK_ERR;
+    binary_ctx breader;
+    binary_init_read(&breader, (char *)body, lens);
+    _mpack_err(&err, &breader);
+    mysql_record(mysql, &err);
+    FREE(err.pack);
+    return mysql->error_msg;
+}
+void mysql_record(mysql_ctx *mysql, mpack_ctx *mpack) {
+    if (NULL == mpack) {
+        return;
+    }
+    if (MPACK_OK == mpack->pack_type) {
+        mysql->affected_rows = mpack->affected_rows;
+        mysql->last_id = mpack->last_id;
+    } else if (MPACK_ERR == mpack->pack_type) {
+        const char *msg = mysql_pack_erro(mpack, NULL);
+        mysql->error_code = mpack->error_code;
+        // 错误串只给人看，装不下就截断
+        (void)copy_bounded(msg, strlen(msg), mysql->error_msg, sizeof(mysql->error_msg), 0);
+    }
 }

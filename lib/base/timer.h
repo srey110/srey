@@ -28,6 +28,8 @@ typedef struct timer_ctx {
 void timer_init(timer_ctx *ctx);
 /// <summary>
 /// 当前时刻。单调 wall clock（区别于 timer_thread_cpu_ns 的 CPU 时间）；
+/// 系统睡眠期间是否计时随平台：macOS(mach_continuous_time) 计入，Linux(CLOCK_MONOTONIC) 不计，
+/// Windows(QueryPerformanceCounter) 与其余 Unix 随系统实现。睡眠唤醒后已设的超时，计入的平台一起到期、不计的顺延；
 /// 无 CLOCK_MONOTONIC 的平台退回 CLOCK_REALTIME，会随 NTP 跳变而非单调，
 /// 时间轮 jiffies 与各处超时判定的时基精度随之下降
 /// </summary>
@@ -43,6 +45,7 @@ uint64_t timer_cur_ms(timer_ctx *ctx);
 /// <summary>
 /// 当前线程累计 CPU 时间（用户态 + 内核态），不含 IO 等待 / 被抢占；
 /// 用于 dispatch 占用统计，区别于 timer_cur 的单调 wall clock。
+/// Windows(GetThreadTimes) 按时钟中断记账，精度是一个 tick(约 1~15.6ms)：短操作前后求差多为 0 或整 tick，只宜大量累加后看总数
 /// </summary>
 /// <returns>纳秒</returns>
 uint64_t timer_thread_cpu_ns(void);

@@ -1,5 +1,5 @@
 -- 全局常量定义：任务ID、协议类型、加密算法枚举及错误码。
--- 本文件在 main.c 启动前由 loader 加载，供所有 task 脚本共享。
+-- 每个 lua_State 经 lib.srey 或启动脚本各自 require 一份，定义的全局只在本 VM 内可见，不跨 task 共享。
 
 -- 任务名常量表：值为字符串任务名（task.register/grab/call 据此寻址）；NONE(0) 为无效任务哨兵。
 -- 句柄由 createid 运行期生成，业务按字符串名寻址；系统服务名须与 C / config.json 一致。
@@ -22,8 +22,8 @@ TASK_TYPE = {
 REQUEST_TYPE = {
     REQ_DEBUG             = 0x01, -- 调试命令
 }
--- SSL 上下文名称；与 C 层 ssl_name 枚举对应。
--- NONE 表示不启用 TLS，SERVER/CLIENT 分别对应服务端和客户端证书上下文。
+-- 按名字注册的 SSL 上下文（cert_register / p12_register 时给的名字，可以是任意字符串）。
+-- NONE 表示不启用 TLS；SERVER/CLIENT 是启动脚本注册的服务端、客户端证书上下文。
 ---@enum SSL_NAME
 SSL_NAME = {
     NONE =   "",
@@ -50,8 +50,9 @@ SSLFILE_TYPE = {
 NET_EV = {
     NONE    = 0x00,
     ACCEPT  = 0x01,   -- 监听接受新连接
-    AUTHSSL = 0x02,   -- 自动触发 SSL 握手
-    SEND    = 0x04    -- 关注发送完成事件
+    AUTHSSL = 0x02,   -- 投递 SSL 握手结果(SSLEXCHANGED)；明文连接之后要 syn_ssl_exchange / wait_ssl_exchanged 升级时必须带
+    SEND    = 0x04,   -- 关注发送完成事件
+    PEERADDR = 0x08   -- ACCEPT 带上对端地址(on_accepted 的 addr)，须与 ACCEPT 同用；不订阅不多花一次 getpeername
 }
 -- Socket 协议类型，标识该 socket 所使用的应用层协议；与 C 层 pack_type 枚举对应。
 ---@enum PACK_TYPE

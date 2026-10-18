@@ -7,23 +7,22 @@
 /// 逐条取出带结果集的语句的读取器：每调一次给下一个。
 /// 每个结果只能被取走一次，所以反复调用即可遍历整个响应；内部游标只前进不回退，与
 /// pgsql_reader_at 混用也不会重复吐出同一个；BEGIN / SET 这类没有结果集的
-/// 语句自动跳过。要按语句序号定位某一条用 pgsql_reader_at
+/// 语句自动跳过。要按语句序号定位某一条用 pgsql_reader_at。
+/// 字段按服务端 RowDescription 给的格式码（文本 / 二进制）解析，见 pgsql_reader_ctx.format
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针，类型必须为 PGPACK_OK</param>
-/// <param name="format">期望的数据格式（文本或二进制），用于后续字段解析</param>
 /// <returns>pgsql_reader_ctx 指针（所有权归调用方，用 pgsql_reader_free 释放）；
 /// 类型不符或已无未取走的结果集时返回 NULL</returns>
-pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack, pgpack_format format);
+pgsql_reader_ctx *pgsql_reader_iter(pgpack_ctx *pgpack);
 /// <summary>
 /// 从 pgpack_ctx 中取出第 idx 个查询结果的读取器；
-/// 多语句 simple query 每条语句一个结果，下标按语句顺序，结果总数见 pgsql_result_count
+/// 多语句 simple query 每条语句一个结果，下标按语句顺序，结果总数见 pgsql_result_count；格式同 pgsql_reader_iter
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针，类型必须为 PGPACK_OK</param>
 /// <param name="idx">结果下标，从 0 开始</param>
-/// <param name="format">期望的数据格式（文本或二进制），用于后续字段解析</param>
 /// <returns>pgsql_reader_ctx 指针（所有权归调用方，用 pgsql_reader_free 释放，同一下标只能取走一次）；
 /// 类型不符、下标越界、该语句无结果集（INSERT/UPDATE 无 RETURNING）或已被取走时返回 NULL</returns>
-pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx, pgpack_format format);
+pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx);
 /// <summary>
 /// 释放查询结果读取器及其持有的所有行数据
 /// </summary>
@@ -74,7 +73,7 @@ pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名，按 nlens 整段比较，不要求 '\0' 结尾</param>
 /// <param name="nlens">列名字节数</param>
-/// <returns>列下标；没有这一列或没有字段描述为 -1，重名列取第一个</returns>
+/// <returns>列下标；没有这一列、name 为空或没有字段描述为 -1（列名超长被丢弃的列按名查不到），重名列取第一个</returns>
 int16_t pgsql_reader_col(pgsql_reader_ctx *reader, const char *name, size_t nlens);
 /// <summary>
 /// 按列名读取当前行中布尔类型字段的值

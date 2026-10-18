@@ -27,13 +27,16 @@
 //   name##_iter(m, &i, &item):游标遍历,i 从 0 开始;取到返回 1,走完或表被增删过返回 0
 //   name##_probe(m, pos):按桶下标直接取(pos 先与掩码),空桶返回 NULL
 //   name##_size / name##_elsize / name##_oom:元素数 / sizeof(T) / 最近一次增删是否因容量溢出失败(只有插入会失败)
-//   name##_set_load_factor(m, f) / name##_set_grow_by_power(m, p):负载因子夹到 [0.50, 0.95];扩容倍数 2^p,p 夹到 [1, 16]
+//   name##_set_load_factor(m, f) / name##_set_grow_by_power(m, p):负载因子夹到 [0.50, 0.95]、四舍五入到百分点,
+//       NaN 不改;扩容倍数 2^p,p 夹到 [1, 16];缩容按同一倍数回退,一次退回扩容前的桶数(不低于 cap)
 //
 // 契约:
 //   1. set / delete 返回的副本放在表内的备用槽里,下一次 set 覆盖或 delete 前有效;它们都不调 elfree,
 //      元素持有堆内存时调用方要自己对返回值调 elfree。只有 free / clear 会逐个调 elfree。
+//      副本可以再当 item / key 传回来。
 //   2. get / get_set / probe / iter 给的是桶内元素的指针,下一次插入或删除后就可能失效
-//      (插入会挪动别的元素,删除会把后面的元素前移,两者都可能触发扩缩容);原位覆盖不挪位置。
+//      (插入会挪动别的元素,删除会把后面的元素前移,两者都可能触发扩缩容);set 覆盖已有键、get_set 命中
+//      已有键也算插入,count 到了扩容水位同样先扩容。这些指针不得当 item 传给 set / get_set:插入可能先扩容释放旧桶。
 //   3. scan / iter 期间增删会被检出并中止、记一条日志;32 位下游标放不下版本号,iter 期间增删是未定义行为。
 //   4. 分配一律走项目的 MALLOC/CALLOC/FREE,_malloc 失败直接终止进程,故 oom 与 new 返回 NULL 都只剩
 //      "容量算出来溢出"这一种成因。set / get_set 插不进去时返回 NULL,要靠 oom 与"键不存在"区分。
@@ -72,25 +75,35 @@ typedef struct name {                                                          \
     size_t count;                 /* 元素数 */                                  \
     size_t mask;                  /* nbuckets - 1,桶下标 = hash & mask */       \
     size_t growat;                /* 插入前 count 到此值就先扩容 */             \
-    size_t shrinkat;              /* 删除后 count 不高于此值且桶数大于 cap 就减半 */ \
+    size_t shrinkat;              /* 删除后 count 不高于此值且桶数大于 cap 就缩容 */ \
     uint8_t loadfactor;           /* 负载因子的百分数 */                        \
-    uint8_t growpower;            /* 扩容倍数为 2^growpower */                  \
+    uint8_t growpower;            /* 扩缩容倍数为 2^growpower */                \
     uint8_t oom;                  /* 最近一次增删因容量溢出失败,每次增删先清零 */ \
     uint32_t version;             /* 结构变化(增删、扩缩容、clear)时加一,遍历靠它检出改动 */ \
     name##_bucket *buckets;                                                    \
     T spare;                      /* set 覆盖 / delete 返回的副本放这里 */      \
 } name;                                                                        \
-/* 按负载因子重算水位;缩容水位与扩容水位保持 SHRINK_AT : GROW_AT 的比例 */      \
+/* 缩容目标:扩容前的桶数(nbuckets >> growpower),不低于建表容量 */            \
+static inline size_t name##_shrink_to(const name *m) {                         \
+    size_t to = m->nbuckets >> m->growpower;                                   \
+    return to > m->cap ? to : m->cap;                                          \
+}                                                                              \
+/* 按负载因子重算水位。缩容水位取扩容水位的 SHRINK_AT / GROW_AT,缩容目标比     \
+   nbuckets / 2 每小一级,水位再减半:缩完的负载与倍数 2 时相同,扩完紧接着删不会缩回去 */ \
 static inline void name##_set_thresholds(name *m) {                            \
     m->growat = (m->nbuckets * m->loadfactor) / 100;                           \
     m->shrinkat = (m->growat * (size_t)(HASHMAP_SHRINK_AT * 100)) / (size_t)(HASHMAP_GROW_AT * 100); \
+    size_t to = name##_shrink_to(m);                                           \
+    for (size_t half = m->nbuckets >> 1; half > to; half >>= 1) {              \
+        m->shrinkat >>= 1;                                                     \
+    }                                                                          \
 }                                                                              \
 static inline void name##_set_grow_by_power(name *m, size_t power) {           \
     m->growpower = (uint8_t)(power < 1 ? 1 : power > 16 ? 16 : power);         \
+    name##_set_thresholds(m);/* 缩容水位随倍数变,当即重算 */                    \
 }                                                                              \
 static inline void name##_set_load_factor(name *m, double factor) {            \
-    factor = _hashmap_clamp_lf(factor, m->loadfactor / 100.0);                 \
-    m->loadfactor = (uint8_t)(factor * 100);                                   \
+    m->loadfactor = _hashmap_lf_pct(factor, m->loadfactor);                    \
     name##_set_thresholds(m);                                                  \
 }                                                                              \
 static inline name *name##_new(size_t cap, void (*elfree)(void *item)) {       \
@@ -115,18 +128,17 @@ static inline name *name##_new(size_t cap, void (*elfree)(void *item)) {       \
     m->mask = m->nbuckets - 1;                                                 \
     CALLOC(m->buckets, m->nbuckets, sizeof(name##_bucket));                    \
     m->growpower = 1;                                                          \
-    m->loadfactor = (uint8_t)(_hashmap_clamp_lf(HASHMAP_LOAD_FACTOR, HASHMAP_GROW_AT) * 100); \
-    name##_set_thresholds(m);                                                  \
+    m->loadfactor = _hashmap_lf_pct(HASHMAP_GROW_AT, 0);/* HASHMAP_LOAD_FACTOR 为 NaN 时留这个 */ \
+    name##_set_load_factor(m, HASHMAP_LOAD_FACTOR);                            \
     return m;                                                                  \
 }                                                                              \
 /* 对每个元素调 elfree,不动桶;数到 count 个就停,稀疏的大表不必扫完 */         \
 static inline void name##_free_elements(name *m) {                             \
-    size_t i, remain;                                                          \
     if (NULL == m->elfree) {                                                   \
         return;                                                                \
     }                                                                          \
-    remain = m->count;                                                         \
-    for (i = 0; 0 != remain && i < m->nbuckets; i++) {                         \
+    size_t remain = m->count;                                                  \
+    for (size_t i = 0; 0 != remain && i < m->nbuckets; i++) {                  \
         if (m->buckets[i].dib) {                                               \
             m->elfree(&m->buckets[i].item);                                    \
             remain--;                                                          \
@@ -142,12 +154,12 @@ static inline void name##_free(name *m) {                                      \
     FREE(m);                                                                   \
 }                                                                              \
 static inline void name##_clear(name *m, int32_t update_cap) {                 \
-    name##_bucket *newb;                                                       \
     name##_free_elements(m);                                                   \
     m->count = 0;                                                              \
     if (update_cap) {                                                          \
         m->cap = m->nbuckets;/* 保留已长到的桶数,之后缩容也不低于它 */             \
     } else if (m->nbuckets != m->cap) {/* 扩过容:换回建表大小的桶数组 */          \
+        name##_bucket *newb;                                                   \
         MALLOC(newb, sizeof(name##_bucket) * m->cap);                          \
         FREE(m->buckets);                                                      \
         m->buckets = newb;                                                     \
@@ -158,19 +170,23 @@ static inline void name##_clear(name *m, int32_t update_cap) {                 \
     name##_set_thresholds(m);                                                  \
     m->version++;                                                              \
 }                                                                              \
-/* 与其余容器统一成 uint32_t。桶数到 2^32 时光桶数组就要 32G 以上,截断不可能发生 */ \
+/* 返回 uint32_t(同 ARR / QUE / HEAP,rbtree / rbtset 返回 size_t)。count 到 2^32 时光桶数组就要 32G 以上,截断不可能发生 */ \
 static inline uint32_t name##_size(const name *m) { return (uint32_t)m->count; } \
 static inline uint32_t name##_elsize(const name *m) { (void)m; return (uint32_t)sizeof(T); } \
 static inline int32_t name##_oom(const name *m) { return (int32_t)m->oom; }    \
 /* 换成 new_cap(2 的幂)个桶并把元素重新落位;桶数组字节数会溢出返回 0,原表不动 */                            \
 NOINLINE static UNUSED int32_t name##_resize(name *m, size_t new_cap) {        \
-    name##_bucket *nb, *ob = m->buckets, *entry, *bucket, tmp;                 \
-    size_t i, j, on = m->nbuckets, nmask = new_cap - 1;                        \
     if (sizeof(name##_bucket) > SIZE_MAX / new_cap) {                          \
         return 0;                                                              \
     }                                                                          \
+    name##_bucket *nb;                                                         \
     CALLOC(nb, new_cap, sizeof(name##_bucket));                                \
-    for (i = 0; i < on; i++) {                                                 \
+    name##_bucket *ob = m->buckets;                                            \
+    size_t on = m->nbuckets;                                                   \
+    size_t nmask = new_cap - 1;                                                \
+    name##_bucket *entry, *bucket, tmp;                                        \
+    size_t j;                                                                  \
+    for (size_t i = 0; i < on; i++) {                                          \
         entry = &ob[i];                                                        \
         if (!entry->dib) {                                                     \
             continue;                                                          \
@@ -204,16 +220,6 @@ NOINLINE static UNUSED int32_t name##_resize(name *m, size_t new_cap) {        \
 /* 插入主体。getorset 为 0 即 set(已有则覆盖),为 1 即 get_set(已有则原样返回) */ \
 static inline T *name##_insert_impl(name *m, T const *item, uint64_t hash,     \
                                     int32_t getorset, int32_t *found) {        \
-    name##_bucket carry;/* 换位后接住被挤出来的那个,cur 随即指向它 */                           \
-    T const *cur = item;/* 待落位的元素;首次换位前指向调用方的 item */                         \
-    T *slot = NULL;                                                            \
-    T titem;                                                                   \
-    name##_bucket *bucket;                                                     \
-    uint32_t chash;                                                            \
-    uint32_t cdib;                                                             \
-    size_t i, new_cap;                                                         \
-    size_t imask;                                                              \
-    name##_bucket *ib;                                                         \
     m->oom = 0;                                                                \
     if (NULL != found) {                                                       \
         *found = 0;                                                            \
@@ -224,7 +230,7 @@ static inline T *name##_insert_impl(name *m, T const *item, uint64_t hash,     \
             m->oom = 1;                                                        \
             return NULL;                                                       \
         }                                                                      \
-        new_cap = m->nbuckets << m->growpower;                                 \
+        size_t new_cap = m->nbuckets << m->growpower;                          \
         if (new_cap <= m->nbuckets) {                                          \
             m->oom = 1;                                                        \
             return NULL;                                                       \
@@ -234,11 +240,16 @@ static inline T *name##_insert_impl(name *m, T const *item, uint64_t hash,     \
             return NULL;                                                       \
         }                                                                      \
     }                                                                          \
-    chash = (uint32_t)_hashmap_clip(hash);                                     \
-    cdib = 1;                                                                  \
-    imask = m->mask;                                                           \
-    ib = m->buckets;                                                           \
-    i = chash & imask;                                                         \
+    uint32_t chash = (uint32_t)hash;/* 桶里只存低 32 位 */                       \
+    uint32_t cdib = 1;                                                         \
+    size_t imask = m->mask;                                                    \
+    name##_bucket *ib = m->buckets;                                            \
+    size_t i = chash & imask;                                                  \
+    T const *cur = item;/* 待落位的元素;首次换位前指向调用方的 item */                         \
+    T *slot = NULL;                                                            \
+    name##_bucket carry;/* 换位后接住被挤出来的那个,cur 随即指向它 */                           \
+    name##_bucket *bucket;                                                     \
+    T titem;                                                                   \
     /* 从理想桶起线性探测,cdib 随步数加一 */                                       \
     for (;;) {                                                                 \
         bucket = &ib[i];                                                       \
@@ -261,8 +272,10 @@ static inline T *name##_insert_impl(name *m, T const *item, uint64_t hash,     \
             if (getorset) {                                                    \
                 return &bucket->item;                                          \
             }                                                                  \
-            m->spare = bucket->item;/* 原位覆盖,不挪位置,所以不涨 version */        \
+            /* 原位覆盖不挪位置,不涨 version。旧值先暂存:cur 可能就是 &m->spare */  \
+            titem = bucket->item;                                              \
             bucket->item = *cur;                                               \
+            m->spare = titem;                                                  \
             return &m->spare;                                                  \
         }                                                                      \
         /* robin-hood:手上的离理想桶比桶主更远就抢这个桶,被挤出来的接着往后找 */       \
@@ -298,7 +311,7 @@ static inline T *name##_get_set(name *m, T const *item, int32_t *found) {      \
 }                                                                              \
 static inline T *name##_get_with_hash(const name *m, T const *key, uint64_t hash) { \
     name##_bucket *bucket;                                                     \
-    uint32_t h32 = (uint32_t)_hashmap_clip(hash);/* 与桶里的 hash/dib 同宽,同 insert */ \
+    uint32_t h32 = (uint32_t)hash;/* 与桶里的 hash/dib 同宽,同 insert */      \
     uint32_t dib = 1;                                                          \
     size_t i = h32 & m->mask;                                                  \
     for (;;) {                                                                 \
@@ -327,7 +340,7 @@ static inline T *name##_probe(name *m, uint64_t position) {                    \
 static inline T *name##_delete_with_hash(name *m, T const *key, uint64_t hash) { \
     name##_bucket *bucket, *prev, *bks;                                        \
     size_t msk;                                                                \
-    uint32_t h32 = (uint32_t)_hashmap_clip(hash);                              \
+    uint32_t h32 = (uint32_t)hash;                                             \
     uint32_t dib = 1;                                                          \
     size_t i = h32 & m->mask;                                                  \
     m->oom = 0;                                                                \
@@ -356,9 +369,9 @@ static inline T *name##_delete_with_hash(name *m, T const *key, uint64_t hash) {
             }                                                                  \
             m->count--;                                                        \
             m->version++;                                                      \
-            /* 删到缩容水位且桶数大于建表容量就减半;缩容失败不影响本次删除 */     \
+            /* 删到缩容水位且桶数大于建表容量就缩容;缩容失败不影响本次删除 */     \
             if (m->nbuckets > m->cap && m->count <= m->shrinkat) {             \
-                name##_resize(m, m->nbuckets / 2);                             \
+                name##_resize(m, name##_shrink_to(m));                         \
             }                                                                  \
             return &m->spare;                                                  \
         }                                                                      \
@@ -371,9 +384,9 @@ static inline T *name##_delete(name *m, T const *key) {                        \
 }                                                                              \
 static inline int32_t name##_scan(name *m, int32_t (*iter)(T const *item, void *udata), void *udata) { \
     uint32_t ver = m->version;                                                 \
-    size_t i, remain = m->count;                                               \
+    size_t remain = m->count;                                                  \
     int32_t go;                                                                \
-    for (i = 0; 0 != remain && i < m->nbuckets; i++) {/* 数到 count 个就停 */  \
+    for (size_t i = 0; 0 != remain && i < m->nbuckets; i++) {/* 数到 count 个就停 */ \
         if (m->buckets[i].dib) {                                               \
             go = iter(&m->buckets[i].item, udata);                             \
             if (ver != m->version) {/* 回调里增删过表:桶已挪动甚至换了数组,不能接着扫 */ \
@@ -417,15 +430,13 @@ static inline void _hashmap_warn_modified(int32_t is_scan) {
 }
 // 以下是 HASHMAP_DECL 展开后要用的辅助,与元素类型无关故不随实例复制。
 // 宏惰性展开,定义排在宏之后不影响使用(展开点在调用方,那时它们都已可见)
-// 负载因子夹到 [0.50, 0.95];NaN 回落到 deflt
-static inline double _hashmap_clamp_lf(double factor, double deflt) {
-    return factor != factor ? deflt :
-           factor < 0.50 ? 0.50 :
-           factor > 0.95 ? 0.95 : factor;
-}
-// 桶里的 hash 只有 32 位,存进去之前先裁掉高位
-static inline uint64_t _hashmap_clip(uint64_t hash) {
-    return hash & 0xFFFFFFFFull;
+// 负载因子夹到 [0.50, 0.95] 后四舍五入成百分数;NaN 原样返回 old
+static inline uint8_t _hashmap_lf_pct(double factor, uint8_t old) {
+    if (factor != factor) {
+        return old;
+    }
+    factor = factor < 0.50 ? 0.50 : factor > 0.95 ? 0.95 : factor;
+    return (uint8_t)(factor * 100 + 0.5);
 }
 #if HASHMAP_ITER_VERSIONED
 // 版本号塞在游标高 32 位,用来检出"遍历中增删"

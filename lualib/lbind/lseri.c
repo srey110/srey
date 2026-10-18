@@ -23,6 +23,7 @@ static int32_t _lseri_pack_array_rest(lua_State *lua, binary_ctx *bw, int32_t id
 // 先按下标把数组段补完，之后的键照常判断。输出与"先按下标写满数组段、再整表遍历"逐字节相同
 static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth) {
     if (depth > SERI_PACK_MAX_DEPTH) {
+        binary_free(bw);// 先放缓冲再压报错串，理由见 _lseri_pack
         lua_pushfstring(lua, "seri pack: table nested too deep (>%d)", SERI_PACK_MAX_DEPTH);
         return ERR_FAILED;
     }
@@ -30,6 +31,7 @@ static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, in
         idx = lua_gettop(lua) + idx + 1;
     }
     if (0 == lua_checkstack(lua, LUA_MINSTACK)) {
+        binary_free(bw);
         lua_pushliteral(lua, "seri pack: stack overflow");
         return ERR_FAILED;
     }
@@ -76,6 +78,8 @@ static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, in
 }
 static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth) {
     int32_t type = lua_type(lua, idx);
+    size_t len;
+    const char *s;
     switch (type) {
     case LUA_TNIL:
         seri_append_nil(bw);
@@ -90,12 +94,10 @@ static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int3
             seri_append_real(bw, (double)lua_tonumber(lua, idx));
         }
         break;
-    case LUA_TSTRING: {
-        size_t len;
-        const char *s = lua_tolstring(lua, idx, &len);
+    case LUA_TSTRING:
+        s = lua_tolstring(lua, idx, &len);
         seri_append_string(bw, s, len);
         break;
-    }
     case LUA_TLIGHTUSERDATA:
         seri_append_userdata(bw, lua_touserdata(lua, idx));
         break;
@@ -105,6 +107,7 @@ static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int3
         }
         return _lseri_pack_table(lua, bw, idx, depth + 1);
     default:
+        binary_free(bw);
         lua_pushfstring(lua, "seri pack: unsupported type %s", lua_typename(lua, type));
         return ERR_FAILED;
     }
@@ -115,30 +118,22 @@ static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int3
 /// 支持 nil/boolean/integer/number/string/table/lightuserdata；
 /// 不支持 function/thread/userdata（重型），遇到会 raise error。
 /// table 嵌套深度上限 32。
-/// 返回的 lightuserdata 由调用方负责释放：可用 utils.ud_free，
-/// 也可直接作为 srey.request/call/response 的 data 参数并传 copy=0 转移所有权。
 /// </summary>
 /// <param name="..." type="any">任意多个待序列化的值</param>
-/// <returns type="lightuserdata">序列化后的 buffer 指针；一个值都没传时也是一块有效缓冲，仍需释放</returns>
+/// <returns type="lightuserdata">序列化后的 buffer 指针，由调用方负责释放：可用 utils.ud_free，
+/// 也可直接作为 srey.request/call/response 的 data 参数并传 copy=0 转移所有权；一个值都没传时也是一块有效缓冲，仍需释放</returns>
 /// <returns type="integer">buffer 字节数；一个值都没传时为 0</returns>
 static int32_t _lseri_pack(lua_State *lua) {
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
     int32_t top = lua_gettop(lua);
-    int32_t i;
-    for (i = 1; i <= top; i++) {
+    for (int32_t i = 1; i <= top; i++) {
+        // 出错处已先 binary_free 再压报错串：压串可能撞 task.memlimit 抛内存错误直接跳出，走不到这里
         if (ERR_OK != _lseri_pack_one(lua, &bw, i, 0)) {
-            binary_free(&bw);
             return lua_error(lua);
         }
     }
-    void *buf = bw.data;
-    size_t size = bw.offset;
-    bw.data = NULL;
-    bw.size = 0;
-    bw.offset = 0;
-    binary_free(&bw);
-    return lpub_rtn_lud(lua, buf, size);
+    return lpub_rtn_lud(lua, bw.data, bw.offset);
 }
 static void _lseri_unpack_one(lua_State *lua, seri_iter *iter, int32_t depth) {
     seri_item item;
@@ -154,7 +149,6 @@ static void _lseri_unpack_one(lua_State *lua, seri_iter *iter, int32_t depth) {
 static int32_t _lseri_unpack_record(lua_State *lua, seri_iter *iter, int32_t depth) {
     int32_t base = lua_gettop(lua);
     int32_t np = 0;
-    int32_t k;
     int32_t rc;
     seri_item item;
     for (;;) {
@@ -175,7 +169,7 @@ static int32_t _lseri_unpack_record(lua_State *lua, seri_iter *iter, int32_t dep
     luaL_checkstack(lua, 3, NULL);// 新表 + 一对键值副本
     lua_createtable(lua, 0, np);
     if (np > 0) {// 空表时新表本身就在 base + 1，不能再挪
-        for (k = 0; k < np; k++) {
+        for (int32_t k = 0; k < np; k++) {
             lua_pushvalue(lua, base + 1 + 2 * k);
             lua_pushvalue(lua, base + 2 + 2 * k);
             lua_rawset(lua, -3);
@@ -203,8 +197,7 @@ static void _lseri_unpack_table(lua_State *lua, seri_iter *iter, uint32_t array_
     } else {
         lua_createtable(lua, (int32_t)prealloc, 0);
     }
-    uint32_t i;
-    for (i = 1; i <= array_n; i++) {
+    for (uint32_t i = 1; i <= array_n; i++) {
         _lseri_unpack_one(lua, iter, depth);
         lua_rawseti(lua, -2, (lua_Integer)i);
     }

@@ -99,7 +99,7 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("acpstorm: only %d conns fired in %d iters.", fired, STORM_ITERS);
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("acpstorm tested (%d iters x %d conns, %d fired).",
              STORM_ITERS, STORM_CONNS, fired);
 }

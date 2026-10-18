@@ -16,6 +16,31 @@ static inline int32_t _mongo_iter_ok(bson_iter *iter) {
     }
     return (int32_t)val;
 }
+// 取计数字段(n / nErrors)：服务端按数值大小编成 int32 / int64 / double 都有。
+// 认不出的类型、NaN/Inf、负数或超出 int32 一律返回 ERR_FAILED
+static inline int32_t _mongo_iter_count(bson_iter *iter) {
+    int64_t val;
+    double dval;
+    switch (iter->type) {
+    case BSON_INT32:
+        val = bson_iter_int32(iter, NULL);
+        break;
+    case BSON_INT64:
+        val = bson_iter_int64(iter, NULL);
+        break;
+    case BSON_DOUBLE:
+        dval = bson_iter_double(iter, NULL);
+        // 先判范围再转整：NaN 两个比较都不成立，超范围的 double 转整型是未定义行为
+        if (!(dval >= 0 && dval <= (double)INT32_MAX)) {
+            return ERR_FAILED;
+        }
+        val = (int64_t)dval;
+        break;
+    default:
+        return ERR_FAILED;
+    }
+    return (val < 0 || val > INT32_MAX) ? ERR_FAILED : (int32_t)val;
+}
 int32_t mongo_parse_auth_response(mgopack_ctx *mgopack, int32_t *convid, int32_t *done, char **payload, size_t *plens) {
     int32_t ok = 0;
     *convid = 0;
@@ -74,7 +99,7 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack) {
             }
         } else if (KEY_IS(iter, "n")) {
             count++;
-            n = bson_iter_int32(&iter, NULL);
+            n = _mongo_iter_count(&iter);
         } else if (KEY_IS(iter, "writeErrors")) {
             count++;
             writeerrors = 1;
@@ -86,13 +111,13 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack) {
             errmsg = 1;
         } else if (KEY_IS(iter, "nErrors")) {
             count++;
-            nerrors = bson_iter_int32(&iter, NULL);
+            nerrors = _mongo_iter_count(&iter);// 取不到合法值即 ERR_FAILED，同样按有错处理
         }
         if (count >= 6) {
             break;
         }
     }
-    if (ok && !writeerrors && !writeconcernerror && !errmsg && !nerrors) {
+    if (ok && n >= 0 && !writeerrors && !writeconcernerror && !errmsg && !nerrors) {
         return n;
     }
     char *errbson = bson_tostring(&bson);

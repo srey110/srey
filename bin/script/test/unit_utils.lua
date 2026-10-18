@@ -11,6 +11,7 @@ local seri    = require("srey.seri")
 local dns     = require("srey.dns")
 local websock = require("srey.websock")
 local custz   = require("srey.custz")
+local popen   = require("srey.popen")
 
 srey.startup(function()
 runner.run(function(t)
@@ -50,6 +51,81 @@ runner.run(function(t)
         t:eq(false, pcall(function() utils.log_setlv(-1) end), "log_setlv(-1) 报错")
         t:eq(false, pcall(function() utils.log_setlv(5) end), "log_setlv(5) 报错")
         t:eq(lv, utils.log_getlv(), "越界调用后等级不变")
+        -- 栈层号截成 int32 的话 2^32 变 0，打出来的是 utils.log 自己的位置
+        t:eq(false, pcall(utils.log, lv, 1 << 32, "x"), "log 栈层号超 int32 报错")
+    end
+    do
+        -- 命令行按 C 串交给子进程，内含 \0 会截成另一条命令执行；报错在起子进程之前
+        t:eq(false, pcall(popen.new, "echo a\0b", "r"), "popen.new 命令内含 \\0 报错")
+    end
+    do
+        -- popen 的 read / write / close / exitcode，借 C 侧 test_popen2 同一份辅助脚本 bin/popen_echo.*
+        local win = "\\" == _pathsep
+        local script = _propath .. _pathsep .. (win and "popen_echo.bat" or "popen_echo.sh")
+        local function cmd(arg)
+            if win then
+                return string.format('cmd /c ""%s" %s"', script, arg)
+            end
+            return string.format('sh "%s" %s', script, arg)
+        end
+        local p = popen.new(cmd("r"), "r")
+        if t:check(nil ~= p, "popen.new r 启动") then
+            t:eq(true, p:waitexit(3000), "popen r 子进程退出")
+            t:eq(0, p:exitcode(), "popen r 退出码 0")
+            local out = p:read()
+            t:check(nil ~= out:find("hello popen", 1, true), "popen:read 读到子进程输出")
+        end
+        local msg = "srey test\n"
+        p = popen.new(cmd("rw"), "rw")
+        if t:check(nil ~= p, "popen.new rw 启动") then
+            t:eq(#msg, p:write(msg), "popen:write 整行写入")
+            t:eq(true, p:waitexit(3000), "popen rw 子进程退出")
+            local out = p:read()
+            t:check(nil ~= out:find("srey test", 1, true), "popen:read 读到回显")
+        end
+        -- 不喂 stdin 的话子进程一直等着，close 把它杀掉收尸：退出码按被终止算 -1
+        p = popen.new(cmd("rw"), "rw")
+        if t:check(nil ~= p, "popen.new rw(close) 启动") then
+            t:eq(false, p:waitexit(0), "未写 stdin 时子进程还在跑")
+            p:close()
+            t:eq(true, p:waitexit(3000), "close 后子进程已退出")
+            t:eq(-1, p:exitcode(), "被 close 终止的退出码为 -1")
+        end
+        -- close_stdin：sort 读 stdin 到 EOF 才输出，关掉 stdin 后读到排好序的完整输出、它自己正常退出
+        p = popen.new("sort", "rw")
+        if t:check(nil ~= p, "popen.new sort rw 启动") then
+            local input = win and "b\r\na\r\n" or "b\na\n"
+            t:eq(#input, p:write(input), "popen:write 写给 sort")
+            t:eq(true, p:close_stdin(), "close_stdin 送出 EOF")
+            t:eq(false, p:close_stdin(), "close_stdin 再调返回 false")
+            t:eq(-1, p:write("c\n"), "close_stdin 之后 write 返回 -1")
+            local chunks = {}
+            local deadline = srey.timer_ms() + 5000
+            local eof = false
+            local chunk
+            while not eof and srey.timer_ms() < deadline do
+                chunk, eof = p:read()
+                chunks[#chunks + 1] = chunk
+                if not eof then
+                    srey.sleep(10)
+                end
+            end
+            local out = table.concat(chunks)
+            local pa = out:find("a", 1, true)
+            local pb = out:find("b", 1, true)
+            t:eq(true, eof, "close_stdin 后读到 EOF")
+            t:check(nil ~= pa and nil ~= pb and pa < pb, "sort 输出已排好序")
+            t:eq(true, p:waitexit(3000), "sort 自己退出")
+            t:eq(0, p:exitcode(), "sort 退出码 0")
+            p:close()
+        end
+        -- 'r' 模式没接管 stdin：无可关，也写不了
+        p = popen.new(cmd("r"), "r")
+        if t:check(nil ~= p, "popen.new r(close_stdin) 启动") then
+            t:eq(false, p:close_stdin(), "r 模式 close_stdin 返回 false")
+            t:eq(-1, p:write("x"), "r 模式 write 返回 -1")
+            p:close()
+        end
     end
     do
         -- ud_str：nil 与 NULL light userdata(yyjson.null) 均优雅返回 nil，不解引用崩溃
@@ -113,7 +189,7 @@ runner.run(function(t)
     -- 于是照着缓冲后面的堆内存一路读下去（hashring:find 更是直接喂进 xxh64 的裸读循环，
     -- 沿途没有任何分配失败或上限判断可以兜底）。这些入口现在统一走 lpub_check_lens /
     -- lpub_check_buf，一律报可被 pcall 捕获的 Lua 错。
-    -- 这些都是收发缓冲，没有协议上界，故 max 传 0 只校验下界；BSON 那边传 INT32_MAX
+    -- 这些都是收发缓冲，没有协议上界，一律卡在 [0, INT32_MAX]，与 BSON 那边同口径
     do
         local function rejects(fn, ...)
             return not pcall(fn, ...)
@@ -126,6 +202,8 @@ runner.run(function(t)
         t:check(type(err) == "string" and nil ~= err:find("out of range"),
                 "通用入口与 BSON 入口共用同一句越界报错")
         t:eq(true, rejects(dns.unpack, ptr, -1, 0), "dns.unpack 负长度被拒")
+        -- 域名按 C 串组包，内含 \0 静默截断就是去查另一个域名
+        t:eq(false, pcall(dns.pack, "a.com\0evil", 0), "dns.pack 域名内含 \\0 报错")
         -- 唯一能写出界的那个：长度回绕后 MALLOC 只要到 13 字节，紧接着的 memcpy 却按
         -- SIZE_MAX 拷，从这个小堆块起一路覆写相邻内存
         t:eq(true, rejects(websock.pack_continua, 1, 0, ptr, -1), "websock.pack_continua 负长度被拒")

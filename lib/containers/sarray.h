@@ -14,6 +14,8 @@
 //   my_arr_free(&arr);
 //
 // 元素一律按指针传入，取出一律返回指针；pos 为 int32_t，负数从尾部反向索引。
+// push_back / add / resize 可能搬动缓冲，add / del / del_nomove 会挪动元素，之前取得的指针随之失效。
+// push_back / add 的入参不得指向本数组的元素：它们先扩容、挪位，再读入参。
 
 #define ARRAY_INIT_SIZE 32 // 默认初始容量
 
@@ -137,11 +139,10 @@ static inline void name##_del_nomove(name *arr, int32_t pos) {                  
 static inline void name##_swap(name *arr, int32_t pos1, int32_t pos2) {         \
     uint32_t p1 = name##_norm_pos(arr, pos1, 0);                                \
     uint32_t p2 = name##_norm_pos(arr, pos2, 0);                                \
-    T tmp;                                                                      \
     if (p1 == p2) {                                                             \
         return;                                                                 \
     }                                                                           \
-    tmp = arr->ptr[p1];                                                         \
+    T tmp = arr->ptr[p1];                                                       \
     arr->ptr[p1] = arr->ptr[p2];                                                \
     arr->ptr[p2] = tmp;                                                         \
 }

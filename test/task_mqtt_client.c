@@ -18,10 +18,11 @@ static void _net_connect(task_ctx *task, sock_ctx *sk, subtype_t pktype, int32_t
     mqtt_client_args *arg = coro_get_arg(task);
     if (ERR_OK != erro) {
         LOG_ERROR("mqtt connect %s:%u error, clientid %s.", arg->host, arg->port, arg->clientid);
+        ATOMIC_SET((atomic_t *)arg->ok, 0);
         return;
     }
     // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
-    *(arg->ok) = -1;
+    ATOMIC_SET((atomic_t *)arg->ok, -1);
     binary_ctx connprop;
     binary_init_write(&connprop, 0, 0);
     mqtt_props_fixnum(&connprop, SESSION_EXPIRY, 120);
@@ -52,7 +53,7 @@ static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, sock_ctx *sk, int
     binary_init_write(&props, 0, 0);
     mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
     size_t lens;
-    char *pk = mqtt_pack_publish(pack->version, 1, qos, 1, "srey/will", (uint16_t)randrange(100, 20000), "publish payload", strlen("publish payload"), &props, &lens);
+    char *pk = mqtt_pack_publish(pack->version, 1, qos, 0, "srey/will", (uint16_t)randrange(100, 20000), "publish payload", strlen("publish payload"), &props, &lens);
     binary_free(&props);
     if (NULL != pk) {
         ev_send(&task->loader->netev, sk, pk, lens, 0);
@@ -75,7 +76,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         // 连接成功后依次发送 QoS0（无 ACK）和 QoS1，覆盖三种 QoS 路径
         mqtt_connack_varhead *vh = pack->varhead;
         if (arg->prt) {
-            LOG_INFO("CONNACK<-S %d (%s)", vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
+            LOG_INFO("CONNACK<-S %d (%s)", vh->reason, mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, vh->reason));
         }
         if (0x00 != vh->reason) {
             break;
@@ -103,7 +104,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         // 收到 PUBACK 后继续发送 QoS2 PUBLISH
         mqtt_pubackrel_varhead *vh = pack->varhead;
         if (arg->prt) {
-            LOG_INFO("PUBACK<-S %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
+            LOG_INFO("PUBACK<-S %d (%s)", (int32_t)vh->reason, mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, vh->reason));
         }
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             _send_publish(pack, task, sk, 2);
@@ -114,7 +115,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         // QoS2 第二步：回复 PUBREL
         mqtt_pubackrel_varhead *vh = pack->varhead;
         if (arg->prt) {
-            LOG_INFO("PUBREC<-S %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
+            LOG_INFO("PUBREC<-S %d (%s)", (int32_t)vh->reason, mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, vh->reason));
         }
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             size_t lens;
@@ -132,7 +133,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         // QoS2 完成后发起 SUBSCRIBE，验证订阅流程
         mqtt_pubackrel_varhead *vh = pack->varhead;
         if (arg->prt) {
-            LOG_INFO("PUBCOMP<-S %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
+            LOG_INFO("PUBCOMP<-S %d (%s)", (int32_t)vh->reason, mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, vh->reason));
         }
         binary_ctx topics;
         binary_init_write(&topics, 0, 0);
@@ -155,7 +156,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         // 订阅成功后立即发起 UNSUBSCRIBE，覆盖取消订阅路径
         mqtt_reasonlist_payload *pl = pack->payload;
         if (arg->prt) {
-            LOG_INFO("SUBACK<-S %d (%s)", (int32_t)pl->reasons[0], mqtt_reason(pack->fixhead.prot, pl->reasons[0]));
+            LOG_INFO("SUBACK<-S %d (%s)", (int32_t)pl->reasons[0], mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, pl->reasons[0]));
         }
         if (0x00 == pl->reasons[0] || 0x01 == pl->reasons[0] || 0x02 == pl->reasons[0]) {
             binary_ctx topics;
@@ -181,7 +182,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         mqtt_reasonlist_payload *pl = pack->payload;
         if (arg->prt) {
             if (NULL != pl) {
-                LOG_INFO("UNSUBACK<-S %d (%s)", (int32_t)pl->reasons[0], mqtt_reason(pack->fixhead.prot, pl->reasons[0]));
+                LOG_INFO("UNSUBACK<-S %d (%s)", (int32_t)pl->reasons[0], mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, pl->reasons[0]));
             } else {
                 LOG_INFO("UNSUBACK<-S");
             }
@@ -208,7 +209,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
             if (arg->prt) {
                 LOG_INFO("C->DISCONNECT");
             }
-            *(arg->ok) = 1;
+            ATOMIC_SET((atomic_t *)arg->ok, 1);
             LOG_INFO("mqtt client tested.");
         }
         break;
@@ -227,12 +228,14 @@ static void _startup(task_ctx *task) {
     if (0 != arg->delay) {
         coro_sleep(task, arg->delay);// 等进程内 broker 的 _startup 被派发, 见头文件
     }
+    ATOMIC_SET((atomic_t *)arg->ok, -2);// 正在连：汇总 task 不把它当终态，连不上(含 _net_connect 报错)再回 0
     // 域名需先 DNS 解析，IP 直连
     if (ERR_OK != is_ipaddr(arg->host)) {
         size_t n;
         dns_ip *ips = dns_lookup(task, arg->host, 0, 1, &n);
         if (NULL == ips) {
             LOG_ERROR("dns_lookup error.");
+            ATOMIC_SET((atomic_t *)arg->ok, 0);
             return;
         }
         rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, 1, &sk);
@@ -242,6 +245,7 @@ static void _startup(task_ctx *task) {
     }
     if (ERR_OK != rtn) {
         LOG_WARN("task_connect %s error.", arg->host);
+        ATOMIC_SET((atomic_t *)arg->ok, 0);
     }
 }
 void task_mqtt_client_start(loader_ctx *loader, const char *name,

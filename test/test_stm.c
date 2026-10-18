@@ -66,7 +66,7 @@ static void test_stm_update(CuTest *tc) {
     stm_ctx *ctx = stm_new(d1, sz1, 0);
     stm_data *old = stm_grab_data(ctx);
     stm_update(ctx, d2, sz2, 0);
-    // 旧快照仍可读 (reader 持有自己的引用, 不会被 update 中的 _stm_free_data 释放)
+    // 旧快照仍可读 (reader 持有自己的引用, update 只减 writer 那一票)
     CuAssertTrue(tc, 0 == memcmp(old->data, "ver1", sz1));
     // 新快照指针不同
     stm_data *cur = stm_grab_data(ctx);
@@ -220,7 +220,7 @@ static void test_stm_concurrent_read(CuTest *tc) {
 }
 
 /* sz=0 且 data 为 NULL：上层放行这种入参，构造快照时不能拿 NULL 当 memcpy 源。
- * 同上，只在 Linux 的 UBSan 构建下变红；这里主要是把"(NULL, 0) 合法"钉进用例 */
+ * 只在 Linux 的 UBSan 构建下变红；这里主要是把"(NULL, 0) 合法"钉进用例 */
 static void test_stm_empty(CuTest *tc) {
     stm_ctx *ctx = stm_new(NULL, 0, 1);
     stm_data *snap = stm_grab_data(ctx);

@@ -1,7 +1,9 @@
 -- 函数级热更新模块:替换 package.loaded[module] 表上的 function,通过 upvaluejoin 嫁接同名 upvalue 状态。
 -- 约束:
 --   1. 仅替换 module 表上的 M.xxx = function() end 形式;不支持新增/删除函数、不支持 metatable / C function
---   2. patch 必须用 `function M.xxx() end` 写法,patch_env 中 M 是代理表(__index = mod)
+--   2. patch 必须用 `function M.xxx() end` 写法。M 是补丁自己的代理表,自己没有的字段读 mod;
+--      apply 成功后换上去的函数从代理里摘掉、写也转到 mod,补丁运行期读写这些名字都落到模块上。
+--      补丁里定义的其余字段(常量、模块没有的函数)只留在代理里:补丁看得见、模块看不到,同名的遮住模块那个
 --   3. patch 想读/写原 module 顶层 local,两种用法(反复热修时不等价,见末两行):
 --      - 路径 A:patch 用 `local name = ...` 重新声明同名 local,debug.upvaluejoin 在替换时嫁接
 --        patch fn 的 name upvalue 槽到原 fn 同名 upvalue UpVal,两个 closure 共享同一份内存
@@ -64,11 +66,13 @@ end
 
 -- 遍历 patch 侧一个 closure 的"状态型"upvalue 槽,对每个调 visit(fn, idx, name)。
 -- _find_ambiguous 与 _join_upvalues 共用,取槽口径必须一致:预校验漏看的名字嫁接时照样会碰到。
--- _ENV 不算(两侧沙箱不同);函数型槽不 visit 但要递归进去,否则 patch 的 helper 与被替换的 M.xxx
--- 共用 chunk local 时,那个名字会在补丁内部裂成两份 cell(约束 4)。
--- src 判定只递归 patch chunk 自己编译的函数,免得把别人模块的 local 名混进来;函数型只按 patch
--- 侧的值判(原模块那边可能是"值恰好为函数"的回调槽,那是状态);seen 防 helper 互引打转
+-- _ENV 不算(两侧沙箱不同);函数型槽不 visit 但要递归进去,否则 helper 与 M.xxx 共用的 chunk local 会裂成两份(约束 4)。
+-- 只认 patch chunk 自己编译的函数:起点不是(补丁把别的模块的函数转挂到 M 上)就整个不动,递归也只进它编译的,
+-- 免得把别的模块的状态按名接到本模块的 cell 上。函数型只按 patch 侧的值判(原模块那边可能是回调槽,那是状态)
 local function _walk_patch_slots(fn, src, seen, visit)
+    if src ~= debug.getinfo(fn, "S").source then
+        return
+    end
     _walk_upvalues(fn, src, seen, function(f, i, name, val)
         if "_ENV" ~= name and "function" ~= type(val) then
             visit(f, i, name)
@@ -180,8 +184,8 @@ function M.apply(module_name, patch_source)
     if "string" ~= type(patch_source) then
         return false, "patch source not a string"
     end
-    -- patch_M 代理表:patch 写 `function M.xxx() end` 落到 patch_M(__newindex 走 rawset);
-    -- patch 读 `M._helper` 透传 mod(__index = mod),让 patch 内部能引用原 module 未替换字段
+    -- patch_M 代理表:执行期 patch 写 `function M.xxx() end` 落到 patch_M(rawset);
+    -- 读 `M._helper` 透传 mod(__index = mod)。成功后的处理见约束 2
     local patch_M = setmetatable({}, {__index = mod})
     -- 收集 mod 所有 closure 的 upvalue 索引,供 patch_env metatable 转发(路径 B)
     local upmap, nfn, nself = _collect_upvalues(mod, module_name)
@@ -224,7 +228,7 @@ function M.apply(module_name, patch_source)
                 if entry.ambiguous then
                     error(_AMBIGUOUS .. k, 2)
                 end
-                if nil == dirty[k] then
+                if dirty and nil == dirty[k] then
                     -- 首次写入前记录原值供失败回滚(orig 可能为 nil,包一层 table 以区分"未记录")
                     local _, orig = debug.getupvalue(entry.fn, entry.idx)
                     dirty[k] = {entry = entry, orig = orig}
@@ -233,7 +237,7 @@ function M.apply(module_name, patch_source)
                 return
             end
             -- 未命中 upmap：与 __index 的 _G[k] 回退对称，写真正全局，而非困在一次性 env 沙箱里出不来
-            if nil == dirty_g[k] then
+            if dirty_g and nil == dirty_g[k] then
                 -- 同 dirty:orig 可能为 nil(该全局原本不存在),包一层 table 以区分"未记录"
                 dirty_g[k] = {orig = _G[k]}
             end
@@ -272,6 +276,7 @@ function M.apply(module_name, patch_source)
                 envrisk = true
             end
             mod[name] = patch_fn
+            rawset(patch_M, name, nil)-- 摘掉后补丁再读它就拿 mod 上的,单独热修它也跟得上(遍历中清已有键是允许的)
             replaced = replaced + 1
         elseif "function" == type(patch_fn) then
             -- 名字对不上就跳过,只报总数的话"写了 2 个替换了 1 个"看不出漏了哪个,
@@ -289,6 +294,9 @@ function M.apply(module_name, patch_source)
         _rollback_dirty()
         return false, "no matching function replaced"
     end
+    -- 回滚记录只在失败时有用,成功后丢掉,补丁函数运行期的写不再记原值、不再钉住它们
+    dirty, dirty_g = nil, nil
+    setmetatable(patch_M, {__index = mod, __newindex = mod})-- 见约束 2
     -- 重指到 mod 上现装着的那批,否则每代 closure 串成链,反复热修一代都回收不掉。
     -- fresh 里没有的名字保留原 entry(新版不再引用它,UpVal 只剩旧 closure 拿着)。
     -- ambiguous 只增不减:清掉会让本该报错的 path-B 访问悄悄落到剩下那个 cell 上

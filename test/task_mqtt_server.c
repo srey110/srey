@@ -13,7 +13,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     switch (pack->fixhead.prot) {
     case MQTT_CONNECT: {
         // 应答 CONNACK，MQTT 5.0 时携带扩展属性（session expiry、receive maximum、
-        // maximum qos、client id 回显、user property）
+        // client id 回显、user property）。不声明 maximum qos：缺省即 2，客户端要走 QoS2 流程
         if (_prt) {
             LOG_INFO("CONNECT<-C");
         }
@@ -25,7 +25,6 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
             binary_init_write(&props, 0, 0);
             mqtt_props_fixnum(&props, SESSION_EXPIRY, 120);
             mqtt_props_fixnum(&props, RECEIVE_MAXIMUM, 15000);
-            mqtt_props_fixnum(&props, MAXIMUM_QOS, 1);
             mqtt_props_binary(&props, CLIENT_ID, pl->clientid, (int32_t)strlen(pl->clientid));
             mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
             mqtt_props_kv(&props, USER_PROPERTY, "key2", 4, "val2", 4);
@@ -46,8 +45,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     }
     case MQTT_PUBLISH: {
         // QoS0 不回复；收到 "bye" 时主动发 DISCONNECT 结束会话；
-        // QoS1 轮流覆盖三种 PUBACK：(1) reason=0x00 含属性、(2) reason=0x10、(3) reason=0x00 无属性；
-        // QoS2 回复 PUBREC，首次携带属性，后续不带
+        // QoS1 回带属性的 PUBACK、QoS2 回不带属性的 PUBREC，reason 恒 0(理由见下)
         if (_prt) {
             LOG_INFO("PUBLISH<-C");
         }

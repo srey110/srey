@@ -55,11 +55,10 @@ void md2_init(md2_ctx *md2) {
 }
 void md2_update(md2_ctx *md2, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
-    size_t left;
     if (0 == lens) {
         return;
     }
-    left = MD2_BLOCK_SIZE - md2->lens;
+    size_t left = MD2_KEY_BLOCK - md2->lens;
     if (md2->lens > 0 && lens >= left) {
         memcpy(md2->data + md2->lens, p, left);
         _md2_transform(md2, md2->data);
@@ -67,10 +66,10 @@ void md2_update(md2_ctx *md2, const void *data, size_t lens) {
         p += left;
         lens -= left;
     }
-    while (lens >= MD2_BLOCK_SIZE) {
+    while (lens >= MD2_KEY_BLOCK) {
         _md2_transform(md2, p);
-        p += MD2_BLOCK_SIZE;
-        lens -= MD2_BLOCK_SIZE;
+        p += MD2_KEY_BLOCK;
+        lens -= MD2_KEY_BLOCK;
     }
     if (lens > 0) {
         memcpy(md2->data + md2->lens, p, lens);
@@ -78,8 +77,8 @@ void md2_update(md2_ctx *md2, const void *data, size_t lens) {
     }
 }
 void md2_final(md2_ctx *md2, char hash[MD2_BLOCK_SIZE]) {
-    int32_t to_pad = MD2_BLOCK_SIZE - md2->lens;
-    while (md2->lens < MD2_BLOCK_SIZE) {
+    int32_t to_pad = MD2_KEY_BLOCK - md2->lens;
+    while (md2->lens < MD2_KEY_BLOCK) {
         md2->data[md2->lens++] = to_pad;
     }
     _md2_transform(md2, md2->data);

@@ -173,7 +173,8 @@
 // ALIGN8:按 8 字节对齐,给"序列号 + 定长元素"这类槽位用;落 #else 只影响寻址是否规整,不影响正确性
 // FORCE_INLINE:强制内联,只给实测有效的热路径小函数用;必须与 static 配对,否则链接失败
 // NOINLINE:禁止内联。给"热函数里那条几乎不走的慢路径"用——慢路径可内联时会把热函数的
-//   内联成本顶过编译器阈值,于是热函数整个进不了内联,反而更慢。同样只在实测有效时加
+//   内联成本顶过编译器阈值,于是热函数整个进不了内联,反而更慢。同样只在实测有效时加;
+//   例外是为保住回溯的固定帧结构而加(见 memory.c 的 _trk_capture),与性能无关
 // UNUSED:允许这个 static 函数没人调。只给"必须去掉 inline"的头文件函数用:inline 与
 //   noinline 同时写 gcc 报 -Wattributes,去掉 inline 又会报 -Wunused-function,两头堵。
 //   写法固定为 NOINLINE static UNUSED;其余头文件函数照旧 static inline,别拿它代替 inline
@@ -205,8 +206,8 @@
     #define HAVE_ACCEPT4
     #define HAVE_PIPE2
 #endif
-// backtrace / <execinfo.h> 能力：AIX 没有（新增不支持的平台在此一处维护）
-#ifndef OS_AIX
+// backtrace / <execinfo.h> 能力：AIX、HP-UX 没有（新增不支持的平台在此一处维护）
+#if !defined(OS_AIX) && !defined(OS_HPUX)
     #define HAVE_BACKTRACE
 #endif
 // 是否启用了 AddressSanitizer：gcc 看 __SANITIZE_ADDRESS__，clang 看 __has_feature

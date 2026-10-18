@@ -4,7 +4,7 @@
 #include "base/os.h"
 
 //是否启用内存检测，开发环境监测是否有内存泄漏，可与MEMORY_TRACE配合使用。
-//计数走分条计数器(见 memory.c)，多线程下与关掉几乎同价，正常无需关
+//计数走分条计数器(见 memory.c)，每次分配/释放多一次原子加；aarch64 Linux 上 gcc 把它编成外联调用，开销比别的平台明显
 #ifndef MEMORY_CHECK
     #define MEMORY_CHECK 1
 #endif
@@ -12,9 +12,12 @@
 #ifndef MEMORY_TRACE
     #define MEMORY_TRACE 0
 #endif
+// 下面 WITH_MIMALLOC / WITH_SSL / WITH_LUA 三个还被 mk.sh / CMakeLists.txt / tools/deps.py 按文本读，
+// 只认 `#define WITH_X 0|1` 这一行、不认 #if，据此决定链哪些库、编哪些依赖。
+// 要按平台关掉某个，得在这三个脚本里同步处理；只在这里加平台条件，脚本与编译器取到的值会不一致
 //是否启用mimalloc
 #ifndef WITH_MIMALLOC
-    #define WITH_MIMALLOC 0
+    #define WITH_MIMALLOC 1
 #endif
 //是否启用SSL
 #ifndef WITH_SSL

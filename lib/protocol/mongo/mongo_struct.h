@@ -10,7 +10,6 @@ typedef struct mgopack_ctx {
     int8_t kind;     //消息 Section 类型：0 正文，1 文档序列
     uint32_t total;  //整个消息的总字节数（含消息头）
     int32_t reqid;   //当前消息的请求 ID
-    int32_t respto;  //对应原始请求的 requestID（响应中使用）
     int32_t prot;    //协议操作码（mongo_prot）
     uint32_t klens;  //文档序列段总长度（kind == 1 时有效）
     int32_t flags;   //消息标志位（mongo_flags 的掩码）
@@ -26,6 +25,7 @@ typedef struct mongo_session {
     int32_t started;    //本次事务的首个操作是否已发出（决定是否附带 startTransaction）
     size_t optionslens; //options 字节数（bson_cat 要求随指针给出缓冲长度；options 为 NULL 时该值无意义）
     uint64_t timeout;   //会话超时时刻（秒）；0 = 服务端没给出 timeoutmin，超时未知
+    uint64_t skid;      //begin 时连接的 skid；与连接当前的不同即本次事务已随重连作废
     struct mongo_ctx *mongo; //所属连接上下文
     char *options;      //事务选项 BSON 数据（含 lsid/txnNumber/autocommit）
     char uuid[UUID_LENS]; //会话 UUID
@@ -33,7 +33,7 @@ typedef struct mongo_session {
 
 typedef struct mongo_ctx {
     uint16_t port;              //服务器端口
-    int32_t reqid;              //当前请求 ID（自增）
+    atomic_t reqid;             //当前请求 ID（自增）；认证组包在网络线程、其余在 worker 上，可能并发，取号与读取走原子操作
     int32_t flags;              //消息标志位（mongo_flags 的掩码）
     int32_t sesstimeout;        //hello 回的 logicalSessionTimeoutMinutes，本地开会话用；0 = 未知
     atomic_t ref;               //上层 handle 引用计数：0=C 借用(事件层不 free 块)，>0=持有者数

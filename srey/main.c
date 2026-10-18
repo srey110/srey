@@ -2,34 +2,16 @@
 
 #ifdef OS_WIN
     //#include "vld.h"
-    #pragma comment(lib, "ws2_32.lib")
-    #pragma comment(lib, "winmm.lib")
+    // 各系统库由真正调用它的 lib 模块自己声明(如 netutils.c 的 ws2_32、evssl.c 的 OpenSSL)，这里只列本文件直接用到的
     #pragma comment(lib, "lib.lib")
-    #if WITH_MIMALLOC
-        #pragma comment(lib, "mimalloc" DEPS_LIB_SUFFIX ".lib")
-    #endif
-    #if WITH_FUTEX
-        #pragma comment(lib, "Synchronization.lib")// WaitOnAddress / WakeByAddress*，见 thread/futex.h
-    #endif
-    // 库名后缀由 os.h 的 DEPS_LIB_SUFFIX 拼,对应 tools/deps.py 落在 bin/ 的那个变体。
-    // 后四个是静态 OpenSSL 自己声明的 Windows 依赖(见其 Configurations/10-main.conf 的
-    // ex_libs),链动态库时由 DLL 自带,链静态库就得调用方补上
-    #if WITH_SSL
-        #pragma comment(lib, "libcrypto" DEPS_LIB_SUFFIX ".lib")
-        #pragma comment(lib, "libssl" DEPS_LIB_SUFFIX ".lib")
-        #pragma comment(lib, "crypt32.lib")
-        #pragma comment(lib, "advapi32.lib")
-        #pragma comment(lib, "user32.lib")
-        #pragma comment(lib, "gdi32.lib")
-    #endif
+    #pragma comment(lib, "winmm.lib")// timeBeginPeriod
+    #pragma comment(lib, "advapi32.lib")// OpenSCManager 等服务接口
     #if WITH_LUA
         #pragma comment(lib, "lualib.lib")
     #endif
-    // 下面两个 typedef 用到的 SC_HANDLE / WINADVAPI 出自 winsvc.h, 由 os.h 的 <Windows.h> 带入
     #define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
     #define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
-    #define WINSV_INIT_FAILED 1 // service_init 失败报给 SCM 的 service-specific 码；具体原因只在日志里
-    typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID); // ChangeServiceConfig2A 函数指针类型
+    #define WINSV_INIT_FAILED 1 // service_init 失败报给 SCM 的 service-specific 码(loader_exit 请求的退出也可能报 1)；具体原因只在日志里
     typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型
 
     // 三个都定义在本文件下方; 两张回调表挪到文件头后必须先声明, 否则是引用未声明标识符
@@ -44,15 +26,18 @@
 static int32_t _log_use_file = 1; //是否将日志写文件
 static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准输出
 static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
-static atomic_t _exit_code = -1; // loader_exit 请求的退出码，只记第一次；-1 表示没人请求(信号或服务控制退出)
+static atomic_t _exit_req = 0; // 有人经 loader_exit 请求退出时置 1，信号或服务控制退出不置
+static atomic_t _exit_code = 0; // 第一次请求的退出码，_exit_req 为 1 时才有意义
 
 // 读一个配置字段：取到就写进去，取不到且字段确实存在才告警（可选字段缺席是正常的）。
 // 键名在整条语句里只出现一次：取值与告警共用同一个 keystr，不会读一个键报另一个键
 // it 是该对象的 yyjson_obj_iter：从上次命中处往后找，到末尾绕回开头，按文件键序查询时每次只比一个键
+// CFG_NUM 带小数的值也按非法处理：截断会静默改义(nworker 0.5 变成 0 即用满核)
 #define CFG_NUM(it, prefix, keystr, max, field, type) do { \
         double _v; \
         yyjson_val *_jv = yyjson_obj_iter_get((it), (keystr)); \
-        if (ERR_OK == json_val_num_range(_jv, 0, (max), &_v)) { \
+        if (ERR_OK == json_val_num_range(_jv, 0, (max), &_v) \
+            && _v == (double)(type)_v) { \
             (field) = (type)_v; \
         } else if (NULL != _jv) { \
             PRINT("%s%s invalid, use default.", (prefix), (keystr)); \
@@ -78,12 +63,12 @@ static char *_config_read(size_t *lens) {
     int32_t plen = SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
         procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
     if (!_path_ok(plen, sizeof(config))) {
-        PRINT("config path too long under %s.", procpath());
+        PRINT("config path too long under %s, use default.", procpath());
         return NULL;
     }
     char *info = readall(config, lens);
     if (NULL == info) {
-        PRINT("%s", strerror(errno));
+        PRINT("read %s failed: %s, use default.", config, strerror(errno));
         return NULL;
     }
     return info;
@@ -105,6 +90,7 @@ static void _parse_config(config_ctx *cnf) {
     yyjson_obj_iter it;
     yyjson_obj_iter sub;
     if (!yyjson_obj_iter_init(yyjson_doc_get_root(doc), &it)) {
+        PRINT("config root is not an object, use default.");
         yyjson_doc_free(doc);
         return;
     }
@@ -117,22 +103,28 @@ static void _parse_config(config_ctx *cnf) {
     CFG_NUM(&it, "", "logqueuelens", UINT32_MAX, cnf->logqueuelens, uint32_t);
     CFG_STR(&it, "", "dns", cnf->dns);
     CFG_STR(&it, "", "script", cnf->script);
-    // debug / harbor 各为嵌套对象
-    if (yyjson_obj_iter_init(yyjson_obj_iter_get(&it, "debug"), &sub)) {
+    // debug / harbor 各为嵌套对象，在但不是对象时同字段非法一样提示
+    yyjson_val *jv = yyjson_obj_iter_get(&it, "debug");
+    if (yyjson_obj_iter_init(jv, &sub)) {
         CFG_STR(&sub, "debug.", "name", cnf->debug.name);
         CFG_STR(&sub, "debug.", "ip", cnf->debug.ip);
         CFG_NUM(&sub, "debug.", "port", UINT16_MAX, cnf->debug.port, uint16_t);
+    } else if (NULL != jv) {
+        PRINT("debug invalid, use default.");
     }
-    if (yyjson_obj_iter_init(yyjson_obj_iter_get(&it, "harbor"), &sub)) {
+    jv = yyjson_obj_iter_get(&it, "harbor");
+    if (yyjson_obj_iter_init(jv, &sub)) {
         CFG_STR(&sub, "harbor.", "name", cnf->harbor.name);
         CFG_STR(&sub, "harbor.", "ssl", cnf->harbor.ssl);
         CFG_STR(&sub, "harbor.", "ip", cnf->harbor.ip);
         CFG_NUM(&sub, "harbor.", "port", UINT16_MAX, cnf->harbor.port, uint16_t);
+    } else if (NULL != jv) {
+        PRINT("harbor invalid, use default.");
     }
     yyjson_doc_free(doc);
 }
 // 在进程目录下创建 logs 目录并打开以当前时间命名的日志文件。
-// 文件缓冲开到 64KB(须在首次读写前设)
+// 文件缓冲开到 64KB(须在首次读写前设)；glibc 在 buf 为 NULL 时不认 size，按文件系统块大小分配
 static void _open_log(uint32_t capacity) {
     if (!_log_use_file) {
         log_init(NULL, capacity);
@@ -149,6 +141,7 @@ static void _open_log(uint32_t capacity) {
     }
     if (ERR_OK != ACCESS(logfile, 0)) {
         if (ERR_OK != MKDIR(logfile)) {
+            fprintf(stderr, "create log dir %s failed: %s, log to terminal.\n", logfile, strerror(errno));
             log_init(NULL, capacity);
             return;
         }
@@ -188,7 +181,7 @@ static void _thread_exit_hook(void *udata, void *assist) {
     OPENSSL_thread_stop();
 #endif
 }
-// 初始化全局基础设施（线程全局钩子、socket、随机数种子、BSON 库）。线程钩子须早于任何线程创建
+// 初始化全局基础设施（线程全局钩子、socket、BSON 库）。线程钩子须早于任何线程创建
 static void _init_globle(void) {
     thread_global_hooks(NULL, _thread_exit_hook);
 #if defined(OS_WIN)
@@ -197,7 +190,6 @@ static void _init_globle(void) {
 #endif
     locale_init();
     sock_init();
-    srand((uint32_t)(time(NULL) ^ nowms() ^ GETPID()));
     bson_globle_init();
 }
 // 与 _init_globle 成对
@@ -240,10 +232,24 @@ static void _config_init(config_ctx *config) {
     safe_fill_str(config->dns, sizeof(config->dns), "8.8.8.8");
     safe_fill_str(config->script, sizeof(config->script), "script");
 }
-// loader_exit 的回调(任意线程)：记下第一次请求的退出码，再同信号一样唤醒主线程
+// loader_exit 的回调(任意线程)：只记第一次请求的退出码，再同信号一样唤醒主线程
 static void _on_exit(int32_t code, void *arg) {
-    (void)ATOMIC_CAS(&_exit_code, -1, code);
+    if (ATOMIC_CAS(&_exit_req, 0, 1)) {
+        ATOMIC_SET(&_exit_code, (atomic_t)code);
+    }
     hug_wakeup((hug_ctx *)arg);
+}
+// 进程退出码，须在 service_exit 之后调(发请求的线程已全部退出)。memok 为 service_exit 的结果。
+// 没人请求(信号或服务控制退出)恒为 0；请求 0 而内存检查不过、或请求码不在 0..255 为 1；其余原样
+static int32_t _exit_rtn(int32_t memok) {
+    if (0 == ATOMIC_GET(&_exit_req)) {
+        return ERR_OK;
+    }
+    int32_t code = (int32_t)ATOMIC_GET(&_exit_code);
+    if (code < 0 || code > 255 || (0 == code && ERR_OK != memok)) {
+        return 1;
+    }
+    return code;
 }
 // 完整初始化服务：加载配置、初始化协程、日志、loader、启动业务任务。
 // test/main.c 的 main 另有一套等价的全局初始化，加减项要两处同步
@@ -277,12 +283,32 @@ static void _on_sigcb(int32_t sig, void *arg) {
     (void)sig;
     hug_wakeup((hug_ctx *)arg);
 }
-// 注册信号处理、启动服务并阻塞等待退出信号
+#ifndef OS_WIN
+// 生成停止脚本：确认 PID 上还是 srey 才发 SIGUSR1(崩溃后脚本留着、PID 可能已被别的进程复用)。
+// comm 在 macOS 上是启动时的路径、其余平台是文件名，有的 ps 还补尾随空格，故认 srey、*/srey 并容许尾随空格；
+// HP-UX 的 ps 要 UNIX95 才认 -o；改了可执行文件名须同步这里
+static void _stop_sh(const char *sh) {
+    FILE *file = fopen_cloexec(sh, "w");
+    if (NULL == file) {
+        return;
+    }
+    int32_t pid = (int32_t)GETPID();
+    fprintf(file, "#!/bin/sh\n"
+        "case `UNIX95= ps -p %d -o comm= 2>/dev/null` in\n"
+        "srey|*/srey|srey\\ *|*/srey\\ *) kill -%d %d ;;\n"
+        "*) echo \"pid %d is not a running srey, not signaled.\"; exit 1 ;;\n"
+        "esac\n", pid, SIGUSR1, pid, pid);
+    fclose(file);
+    chmod(sh, 0755);
+}
+#endif
+// 注册信号处理、启动服务并阻塞等待退出信号，返回进程退出码
 // ready_fd：daemon 化父子同步 pipe 写端，-1 表示无需通知（Windows / -d 前台模式）；
 // service_init 成功时写 'R' 通知父进程；失败时仅 close 让父进程 read 返 0 (EOF) 即知失败
 // devnull >= 0 时把标准 IO 接到它上面，但只在 service_init 成功之后——配置诊断全走 PRINT
 // 且排在 _open_log 之前，提前接过去的话配置错的 daemon 既不打终端也不进日志文件地静默起来
-static int32_t service_hug(int32_t ready_fd, int32_t devnull) {
+// sh 非 NULL 时 service_init 成功才写停止脚本、退出时删；失败不碰它，免得顶掉同目录在跑的实例的
+static int32_t service_hug(int32_t ready_fd, int32_t devnull, const char *sh) {
     if (ERR_OK != hug_init(&_hug)) {
 #ifndef OS_WIN
         if (ready_fd >= 0) {
@@ -300,6 +326,9 @@ static int32_t service_hug(int32_t ready_fd, int32_t devnull) {
     sighandle(_on_sigcb, &_hug);
     int32_t rtn = service_init();
 #ifndef OS_WIN
+    if (ERR_OK == rtn && NULL != sh) {
+        _stop_sh(sh);// 排在写 'R' 之前：父进程返回时脚本已就位
+    }
     if (devnull >= 0) {
         if (ERR_OK == rtn) {
             dup2(devnull, STDIN_FILENO);
@@ -319,32 +348,27 @@ static int32_t service_hug(int32_t ready_fd, int32_t devnull) {
     }
 #else
     (void)devnull;
+    (void)sh;
 #endif
     if (ERR_OK == rtn) {
         hug_wait(&_hug);
-        int32_t memok = service_exit();
-        // 信号退出照旧返回 ERR_OK；loader_exit 请求的退出按请求的退出码返回，请求 0 而内存检查不过算失败
-        int32_t code = (int32_t)ATOMIC_GET(&_exit_code);
-        if (-1 != code) {
-            rtn = (0 == code && ERR_OK != memok) ? 1 : code;
+        rtn = _exit_rtn(service_exit());
+#ifndef OS_WIN
+        if (NULL != sh) {
+            remove(sh);
         }
+#endif
     }
     hug_free(&_hug);
     return rtn;
 }
 #ifdef OS_WIN
 
-// 全局异常过滤器：捕获未处理异常，避免系统弹出崩溃对话框
-static long _wsv_exception(struct _EXCEPTION_POINTERS *exp) {
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-// 设置进程/线程优先级为最高，并注册全局异常过滤器
+// 设置进程/线程优先级为最高。未处理异常的过滤器由 service_init 里的 unlimit 注册
 static int32_t _wsv_initbasic(void) {
     HANDLE curproc = GetCurrentProcess();
     SetPriorityClass(curproc, HIGH_PRIORITY_CLASS);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-    SetUnhandledExceptionFilter((LPTOP_LEVEL_EXCEPTION_FILTER)_wsv_exception);
     return ERR_OK;
 }
 // 向 SCM 上报服务的终态(RUNNING / STOPPED)。win32err 非 NO_ERROR 即异常停止。
@@ -410,8 +434,11 @@ static void WINAPI _wsv_service(DWORD argc, LPTSTR *argv) {
     if (ERR_OK == _wsv_runfuncs(initcbs)) {
         _wsv_setstatus(SERVICE_RUNNING, NO_ERROR);
         hug_wait(&_hug);
-        _wsv_runfuncs(exitcbs);
-        win32err = NO_ERROR;
+        // loader_exit 发起的退出 SCM 还不知道，先报停止中；SCM 发起的已在 _wsv_event 报过，重报无害
+        _wsv_pending(SERVICE_STOP_PENDING, WINSV_STOP_TIMEOUT);
+        int32_t code = _exit_rtn(_wsv_runfuncs(exitcbs));// exitcbs 只有 service_exit，结果即内存检查
+        svstatus.dwServiceSpecificExitCode = (DWORD)code;
+        win32err = 0 == code ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR;
     }
     _wsv_setstatus(SERVICE_STOPPED, win32err);
     hug_free(&_hug);
@@ -424,39 +451,25 @@ static BOOL wsv_startservice(LPCTSTR name) {
     };
     return StartServiceCtrlDispatcher(st);
 }
-// 检查指定名称的 Windows 服务是否已安装
-static BOOL wsv_isinstalled(LPCTSTR name) {
+// 检查指定名称的 Windows 服务是否已安装：1 已安装，0 未安装；
+// 打不开服务管理器(多为没用管理员权限)时打出原因并返回 ERR_FAILED
+static int32_t wsv_isinstalled(LPCTSTR name) {
     SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (!scm) {
-        return TRUE;
+        PRINT("open service manager failed: %s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
     }
     SC_HANDLE service = OpenService(scm, name, SERVICE_QUERY_CONFIG);
     if (!service) {
         CloseServiceHandle(scm);
-        return FALSE;
+        return 0;
     }
     CloseServiceHandle(service);
     CloseServiceHandle(scm);
-    return TRUE;
-}
-// 动态加载 ADVAPI32.DLL 并获取 ChangeServiceConfig2A 函数指针
-static _csd_t _wsv_csd(void) {
-    HMODULE advapi32;
-    if (!(advapi32 = GetModuleHandle("ADVAPI32.DLL"))) {
-        return NULL;
-    }
-    _csd_t csd;
-    if (!(csd = (_csd_t)GetProcAddress(advapi32, "ChangeServiceConfig2A"))) {
-        return NULL;
-    }
-    return csd;
+    return 1;
 }
 // 安装 Windows 服务（自动启动，设置服务描述为 "srey"）
 static BOOL wsv_install(LPCTSTR name) {
-    _csd_t csd = _wsv_csd();
-    if (NULL == csd) {
-        return FALSE;
-    }
     SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (!scm) {
         return FALSE;
@@ -502,7 +515,7 @@ static BOOL wsv_install(LPCTSTR name) {
     const char *svdesp = "srey";
     SERVICE_DESCRIPTION desp;
     desp.lpDescription = (LPSTR)svdesp;
-    csd(service, SERVICE_CONFIG_DESCRIPTION, &desp);
+    ChangeServiceConfig2A(service, SERVICE_CONFIG_DESCRIPTION, &desp);
     CloseServiceHandle(service);
     CloseServiceHandle(scm);
     return TRUE;
@@ -518,39 +531,39 @@ static BOOL wsv_unInstall(LPCTSTR name) {
         CloseServiceHandle(scm);
         return FALSE;
     }
-    DeleteService(service);
+    BOOL ok = DeleteService(service);
+    if (!ok) {
+        PRINT("delete service failed: %s", ERRORSTR(ERRNO));
+    }
     CloseServiceHandle(service);
     CloseServiceHandle(scm);
-    return TRUE;
+    return ok;
 }
 // 打印 Windows 下的命令行使用说明
 static void _useage(void) {
-    PRINT("UseAge:srey front-end mode;");
+    PRINT("UseAge:srey or srey -d front-end mode;");
     PRINT("srey -i \"service name\" install service;");
     PRINT("srey -u \"service name\" uninstall service;");
     PRINT("srey -r \"service name\" run service.");
 }
 #else
-// 在进程目录下生成 stop.sh 脚本，内容为向自身发送 SIGUSR1 信号
-static void _stop_sh(const char *sh) {
-    char cmd[128];
-    SNPRINTF(cmd, sizeof(cmd), "kill -%d %d\n", SIGUSR1, (int32_t)GETPID());
-    FILE *file = fopen_cloexec(sh, "w");
-    if (NULL == file) {
-        return;
+// 标准流被关着启动时先拿 /dev/null 占上 0~2：否则同步管道会落到 0~2 上，
+// 子进程的输出混进管道、就绪字节被 service_hug 的 dup2 顶掉
+static void _hold_std_fds(void) {
+    int32_t fd = open("/dev/null", O_RDWR);
+    while (fd >= 0 && fd <= STDERR_FILENO) {
+        fd = open("/dev/null", O_RDWR);
     }
-    const char *fline = "#!/bin/sh\n";
-    fwrite(fline, 1, strlen(fline), file);
-    fwrite(cmd, 1, strlen(cmd), file);
-    fclose(file);
-    chmod(sh, 0755);
+    if (fd > STDERR_FILENO) {
+        close(fd);
+    }
 }
 #endif
 int main(int argc, char *argv[]) {
 #ifdef OS_WIN
-    if (1 == argc) {
+    if (1 == argc || (2 == argc && 0 == strcmp("-d", argv[1]))) {
         _log_use_file = 0;
-        return service_hug(-1, -1);
+        return service_hug(-1, -1, NULL);
     }
     if (3 != argc) {
         _useage();
@@ -558,7 +571,11 @@ int main(int argc, char *argv[]) {
     }
     // 以下操作需要管理员权限
     if (0 == strcmp("-i", argv[1])) {
-        if (wsv_isinstalled(argv[2])) {
+        int32_t installed = wsv_isinstalled(argv[2]);
+        if (ERR_FAILED == installed) {
+            return ERR_FAILED;
+        }
+        if (installed) {
             PRINT("service %s exited!", argv[2]);
             return ERR_FAILED;
         }
@@ -570,7 +587,11 @@ int main(int argc, char *argv[]) {
             return ERR_FAILED;
         }
     } else if (0 == strcmp("-u", argv[1])) {
-        if (!wsv_isinstalled(argv[2])) {
+        int32_t installed = wsv_isinstalled(argv[2]);
+        if (ERR_FAILED == installed) {
+            return ERR_FAILED;
+        }
+        if (!installed) {
             PRINT("uninstall service error.service %s not exited!", argv[2]);
             return ERR_FAILED;
         }
@@ -594,13 +615,14 @@ int main(int argc, char *argv[]) {
 #else
     if (argc > 1 && 0 == strcmp("-d", argv[1])) {
         _log_use_file = 0;
-        return service_hug(-1, -1);
+        return service_hug(-1, -1, NULL);
     }
     if (argc > 1 && 0 != strcmp("-b", argv[1])) {
         PRINT("UseAge:\"./srey\" or \"./srey -d\" or \"./srey -b\".");
         return ERR_FAILED;
     }
     int32_t is_daemon = (argc > 1);
+    _hold_std_fds();
     // 无参与 -b 都要 fork，两条都用 pipe 同步：子进程 service_init 成功写 'R'，失败 close
     // 让父端读 EOF。少了它父进程只能恒返 ERR_OK，配置错、端口占用一律报成功，
     // `./srey && echo ok` 在服务根本没起来时照样打 ok
@@ -609,6 +631,9 @@ int main(int argc, char *argv[]) {
         PRINT("pipe error: %s", ERRORSTR(errno));
         return ERR_FAILED;
     }
+    // 不让 init 期间派生的子进程继承：此刻还没起线程，pipe 后再补不会漏
+    SET_CLOEXEC(sync_pipe[0]);
+    SET_CLOEXEC(sync_pipe[1]);
     pid_t pid = fork();
     if (0 == pid) {
         // 子进程：关 pipe 读端，daemon 化途中任一失败先 close 写端再 exit，让父端 read EOF
@@ -627,7 +652,7 @@ int main(int argc, char *argv[]) {
                 close(sync_pipe[1]);
                 return ERR_FAILED;
             }
-            devnull = open("/dev/null", O_RDWR);
+            devnull = open("/dev/null", O_RDWR | O_CLOEXEC);// dup2 出的 0~2 不带 CLOEXEC
             if (-1 == devnull) {
                 PRINT("open /dev/null error: %s", ERRORSTR(errno));
                 close(sync_pipe[1]);
@@ -639,16 +664,10 @@ int main(int argc, char *argv[]) {
         // 装不下就整个跳过——不给这个便利脚本，也好过写错地方再删错地方
         int32_t has_sh = _path_ok(SNPRINTF(sh, sizeof(sh), "%s%s%s",
                                            procpath(), PATH_SEPARATORSTR, "stop.sh"), sizeof(sh));
-        if (has_sh) {
-            _stop_sh(sh);
-        } else {
+        if (!has_sh) {
             PRINT("stop.sh path too long, skipped.");
         }
-        int32_t rtn = service_hug(sync_pipe[1], devnull);
-        if (has_sh) {
-            remove(sh);//服务退出，移除stop.sh
-        }
-        return rtn;
+        return service_hug(sync_pipe[1], devnull, has_sh ? sh : NULL);
     } else if (pid > 0) {
         close(sync_pipe[1]);
         char r = 0;

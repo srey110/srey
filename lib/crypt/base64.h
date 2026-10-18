@@ -22,7 +22,8 @@ size_t bs64_encode(const void *data, const size_t lens, char *out);
 /// <param name="out">解码后的数据,预估长度:B64DE_SIZE(lens)；末尾补 '\0'，
 /// 故须能装下 解码长度 + 1 字节（B64DE_SIZE 里那个 +1 就是给它的）</param>
 /// <returns>解码后的数据长度；输入非法（'=' 后有正文、非 base64 字符、尾组只剩 1 个字符）返回 0，
-/// 此时 out[0] 已置 '\0'</returns>
+/// 此时 out[0] 已置 '\0'。空输入与只含 CR/LF/'=' 的输入同样返回 0（解出的就是空内容），
+/// 光凭返回 0 分不出它和非法</returns>
 size_t bs64_decode(const char *data, const size_t lens, char *out);
 
 #endif//BASE64_H_

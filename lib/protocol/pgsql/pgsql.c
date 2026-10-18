@@ -43,7 +43,7 @@ void _pgsql_udfree(ud_cxt *ud) {
     pg->recvlens = 0;
     scram_free(pg->scram);
     pg->scram = NULL;
-    sock_set_invalid(&pg->sk);
+    sock_mark_closed(&pg->sk);// 网络线程上写，理由见 sock_mark_closed
     pg->readyforquery = 0;
     pg->pid = 0;
     pg->key = 0;
@@ -67,26 +67,13 @@ int32_t _pgsql_may_resume(void *data) {
 // 发送 Startup 消息，包含用户名、数据库名等启动参数
 static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
-    binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_skip(&bwriter, 4); // 预留长度字段
-    binary_set_integer(&bwriter, 3, 2, 0); // 协议主版本号 3
-    binary_set_integer(&bwriter, 0, 2, 0); // 协议次版本号 0
-    binary_set_string(&bwriter, "user");
-    binary_set_string(&bwriter, pg->user);
-    binary_set_string(&bwriter, "database");
-    binary_set_string(&bwriter, pg->database);
-    binary_set_string(&bwriter, "application_name");
-    binary_set_string(&bwriter, "srey");
-    binary_set_int8(&bwriter, 0); // 参数列表结束标志
-    size_t size = bwriter.offset;
-    binary_offset(&bwriter, 0);
-    binary_set_integer(&bwriter, size, 4, 0); // 回填消息总长度
+    size_t size;
+    void *startup = pgsql_pack_startup(pg->user, pg->database, &size);
     ud->status = AUTH;
-    return ev_send(ev, &pg->sk, bwriter.data, size, 0);
+    return ev_send(ev, &pg->sk, startup, size, 0);
 }
-// 连接建立后请求是否启用 SSL 加密；evssl 未配置(明文模式)时跳过 SSLRequest 协商直接进入 Startup，
-// 否则服务端应答 'S' 时无 evssl 可升级只能拒收(见 _pgsql_ssl_response case 'S')，明文连接必然失败
+// 连接建立后请求是否启用 SSL 加密；evssl 未配置(明文模式)时跳过 SSLRequest 直接进入 Startup，
+// 所以 INIT 态只在配了 evssl 时出现
 int32_t _pgsql_on_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err) {
     if (ERR_OK != err) {
         return err;
@@ -100,8 +87,8 @@ int32_t _pgsql_on_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err) {
     write_be32(buf + 4, 80877103); // SSLRequest 魔数
     return ev_send(ev, sk, buf, sizeof(buf), 1);
 }
-// 处理服务端 SSL 响应：'S' 升级为 SSL，'N' 直接发送 Startup 消息
-static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+// 处理服务端 SSL 响应（只有配了 evssl 才会走到这里）：'S' 升级为 SSL，其余拒收
+static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, int32_t *status) {
     if (1 > buffer_size(buf)) {
         BIT_SET(*status, PROT_MOREDATA);
         return;
@@ -110,44 +97,43 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
     ASSERTAB(sizeof(ssl) == buffer_remove(buf, ssl, sizeof(ssl)), "copy buffer failed.");
     switch (ssl[0]) {
     case 'S':
-        // 服务端支持 SSL；若客户端未配置 evssl 则状态不一致（已发 SSLRequest 却无 evssl 上下文可升级），拒收
-        if (NULL != pg->evssl) {
-            if (ERR_OK != ev_ssl(ev, &pg->sk, 1, pg->evssl)) {
-                BIT_SET(*status, PROT_ERROR);
-            }
-        } else {
+        if (ERR_OK != ev_ssl(ev, &pg->sk, 1, pg->evssl)) {
             BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("server agreed to SSL but client evssl is not configured.");
         }
         break;
     case 'N':
-        // 服务端不支持 SSL；若客户端配置 evssl 即视为强制 SSL，必须拒收，
-        // 杜绝 MITM 在明文 SSLRequest 响应中把 'S' 改写为 'N' 强制降级到明文 Startup（含 AuthCleartextPassword 直发明文密码）
-        if (NULL != pg->evssl) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("server refused SSL but client requires SSL.");
-            break;
-        }
-        if (ERR_OK != _pgsql_startup(ev, ud)) {
-            BIT_SET(*status, PROT_ERROR);
-        }
+        // 配了 evssl 即强制 SSL：防 MITM 把 'S' 改写成 'N'，降级到明文 Startup 骗走口令
+        BIT_SET(*status, PROT_ERROR);
+        LOG_ERROR("server refused SSL but client requires SSL.");
         break;
     default:
         BIT_SET(*status, PROT_ERROR);
         break;
     }
 }
-// SSL 握手完成后提取服务端证书 SHA-256 摘要（用于 SCRAM-PLUS 通道绑定），然后发送 Startup 消息
+#if WITH_SSL
+// tls-server-end-point（RFC 5929 §4.1）：按证书签名的摘要算法取哈希，MD5 / SHA-1 升 SHA-256；
+// 取不到签名摘要（如 Ed25519）就不做通道绑定，tls_cbind_len 留 0
+static void _pgsql_cbind_fill(pgsql_ctx *pg, X509 *cert) {
+    int mdnid = NID_undef;
+    if (1 != X509_get_signature_info(cert, &mdnid, NULL, NULL, NULL)) {
+        return;
+    }
+    const EVP_MD *md = (NID_md5 == mdnid || NID_sha1 == mdnid) ? EVP_sha256() : EVP_get_digestbynid(mdnid);
+    unsigned int len = 0;
+    if (NULL != md
+        && 1 == X509_digest(cert, md, (unsigned char *)pg->tls_cbind, &len)) {
+        pg->tls_cbind_len = (int32_t)len;
+    }
+}
+#endif
+// SSL 握手完成后取服务端证书哈希（用于 SCRAM-PLUS 通道绑定），然后发送 Startup 消息
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
 #if WITH_SSL
     if (NULL != ssl) {
-        pgsql_ctx *pg = (pgsql_ctx *)ud->context;
         X509 *cert = SSL_get_peer_certificate((SSL *)ssl);
         if (NULL != cert) {
-            unsigned int len = 0;
-            // tls-server-end-point 定义为服务端证书的 SHA-256 摘要（RFC 5929）
-            X509_digest(cert, EVP_sha256(), (unsigned char *)pg->tls_cbind, &len);
-            pg->tls_cbind_len = (int32_t)len;
+            _pgsql_cbind_fill((pgsql_ctx *)ud->context, cert);
             X509_free(cert);
         }
     }
@@ -157,11 +143,9 @@ int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
     return _pgsql_startup(ev, ud);
 }
 // 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回数据指针，内存去处见末两行。
-// total 输出的是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init_read，别再自己 +1：
-// 协议长度字段是 int32，服务端发 INT32_MAX 时那次加法有符号溢出，回绕成负数再转 size_t
-// 就是个天文数字，binary 的越界断言从此全部失效
+// total 是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init_read，别再 +1（int32 加 1 会溢出）。
 // pg 非 NULL 且是 DataRow 时由 _pgpack_row_alloc 从 reader 的块链分(块尾带行数组)；
-// 给了 stk 且不是 DataRow / NotificationResponse(这两类的内存由解析侧接管)、整包放得下时用 stk，其余单独分配
+// 给了 stk、不归解析器接管(见 _pgpack_takes_buf)且整包放得下时用 stk，其余单独分配
 static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32_t *status, char *stk, size_t stklens) {
     size_t blens = buffer_size(buf);
     if (5 > blens) {
@@ -186,8 +170,7 @@ static char *_pgsql_payload(pgsql_ctx *pg, buffer_ctx *buf, size_t *total, int32
     char *pack = (NULL != pg && 'D' == head[0]) ? _pgpack_row_alloc(pg, *total) : NULL;
     if (NULL == pack
         && NULL != stk
-        && 'D' != head[0]
-        && 'A' != head[0]
+        && !_pgpack_takes_buf(head[0])
         && *total <= stklens) {
         pack = stk;
     }
@@ -221,10 +204,8 @@ static const char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     }
     // 按优先级遍历本端支持的方法列表，找到服务端也支持的第一个
     size_t n = ARRAY_SIZE(_pgsql_scram_mod);
+    size_t j;
     for (size_t i = 0; i < n; i++) {
-        if (NULL == _pgsql_scram_mod[i]) {
-            continue;
-        }
 #if WITH_SSL
         // PLUS 变体须有通道绑定数据，否则跳过
         if (pg->tls_cbind_len <= 0
@@ -232,7 +213,7 @@ static const char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
             continue;
         }
 #endif
-        for (size_t j = 0; j < server_count; j++) {
+        for (j = 0; j < server_count; j++) {
             if (0 == strcmp(_pgsql_scram_mod[i], server_mods[j])) {
                 return _pgsql_scram_mod[i];
             }
@@ -240,7 +221,7 @@ static const char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     }
     return NULL;
 }
-// 明文密码认证（AuthenticationCleartextPassword / GSSResponse）
+// 明文密码认证（AuthenticationCleartextPassword）
 static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p', 0);
@@ -272,9 +253,7 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     md5_update(&md5, inner_hex, MD5_BLOCK_SIZE * 2);
     md5_update(&md5, salt, 4);
     md5_final(&md5, hash);
-    // 这里不是"填一个字符串字段"，而是按 "md5" + hex 拼一个定长应答：前 3 字节是固定前缀，
-    // 剩下的由 tohex 从 response+3 起写满并补 NUL。用 safe_fill_str 反而会先写一个
-    // 随即被 tohex 覆盖掉的 NUL，读起来像是在填字符串
+    // 定长应答："md5" 前缀 3 字节，其余由 tohex 从 response+3 写满并补 NUL
     memcpy(response, "md5", 3);
     tohex(hash, MD5_BLOCK_SIZE, response + 3, 1);
     secure_zero(hash, sizeof(hash));
@@ -477,8 +456,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
 // 只记本条、不进累计（'A' 可能夹在 CommandComplete 与 'Z' 之间）。
 // 连着的 DataRow 在这里一条接一条解完，不逐条退回外层循环：头一条走通用路径建好 reader，其后的走专用循环；
 // 其余消息仍是一次一条
-static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud,
-    size_t *size, int32_t *status) {
+static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, size_t *size, int32_t *status) {
     size_t total;
     char stk[PGSQL_STACK_MSG];
     char *payload;
@@ -492,9 +470,8 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
         }
         code = payload[0];
         binary_init_read(&breader, payload, total);
-        pack = _pgpack_parser(pg, &breader, ud, status);
-        if ('D' != code
-            && 'A' != code
+        pack = _pgpack_parser(pg, &breader, status);
+        if (!_pgpack_takes_buf(code)
             && payload != stk) {
             FREE(payload);
         }
@@ -528,13 +505,13 @@ void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     pgpack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT: // 等待 SSL 协商响应
-        _pgsql_ssl_response(pg, ev, buf, ud, status);
+        _pgsql_ssl_response(pg, ev, buf, status);
         break;
     case AUTH: // 认证阶段消息处理
         _pgsql_auth_response(pg, ev, buf, ud, status);
         break;
     case COMMAND: // 命令阶段消息处理
-        pack = _pgsql_command_response(pg, buf, ud, size, status);
+        pack = _pgsql_command_response(pg, buf, size, status);
         break;
     default:
         break;
@@ -567,9 +544,7 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
     pg->evssl = evssl;
     return ERR_OK;
 }
-// 两个字段要么一起换掉、要么都不动：只换成一半会拿新用户名配旧密码去认证。
-// 所以这里必须自己先把两个长度都验过，不能靠 safe_fill_str 边填边判——那样第一个填成功、
-// 第二个失败就已经改了一半
+// 两个字段要么一起换掉、要么都不动（只换一半会拿新用户名配旧密码去认证），所以先验完两个长度再写
 int32_t pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
     if (!EMPTYSTR(user) && strlen(user) > sizeof(pg->user) - 1) {
         LOG_ERROR("pgsql user name exceeds %zu bytes: %zu, keep the old one.",

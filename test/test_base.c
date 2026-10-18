@@ -9,12 +9,26 @@
 #define MEMSTR_HAY 48// memstr 随机比对用例的最大源长度
 #define MEMSTR_ROUNDS 6000// memstr 随机比对每种 ncs 的轮数
 
+// 隔 20ms(长于日志线程浅睡的 10ms)两次读数相同即算静止，最多等约 1 秒
+void test_mem_settle(void) {
+    uint64_t a0, f0, a1, f1;
+    mem_stat(&a1, &f1);
+    for (int32_t i = 0; i < 50; i++) {
+        MSLEEP(20);
+        a0 = a1;
+        f0 = f1;
+        mem_stat(&a1, &f1);
+        if (a0 == a1 && f0 == f1) {
+            break;
+        }
+    }
+}
 /* -----------------------------------------------------------------------
  * 内存宏：MALLOC / CALLOC / REALLOC / FREE
  * ----------------------------------------------------------------------- */
 static void test_memory(CuTest *tc) {
     /* MALLOC 分配，FREE 释放 */
-    /* 分配器失败即 exit（memory.c），返回值不可能是 NULL，判空是恒真断言 */
+    /* 分配器失败即 ASSERTAB 打调用栈后 abort（memory.c），返回值不可能是 NULL，判空是恒真断言 */
     int *pi;
     MALLOC(pi, sizeof(int));
     *pi = 42;
@@ -62,6 +76,7 @@ static void test_realloc_edges(CuTest *tc) {
 
     /* (NULL, n)：等同 malloc，返回可写的新块 */
 #if MEMORY_CHECK
+    test_mem_settle();
     mem_stat(&a0, &f0);
 #endif
     for (i = 0; i < MEMRE_N; i++) {
@@ -141,6 +156,7 @@ static void test_memory_nc(CuTest *tc) {
 
     // (NULL, n)：返回可写的新块，不计数
 #if MEMORY_CHECK
+    test_mem_settle();
     mem_stat(&a0, &f0);
 #endif
     for (i = 0; i < MEMRE_N; i++) {
@@ -356,12 +372,105 @@ static void test_set_ptr_expr_arg(CuTest *tc) {
     CuAssertTrue(tc, NULL == nil);
 }
 
+// 弱序与足序变体的单线程取值：64 位版的值跨过 32 位，宽度或强转写错就会截断；ADD 系列返回旧值。
+// MSVC ARM64 的 __stlr / _nf 与 32 位 Windows 退回 Interlocked64 的几支都靠它
+static void test_atomic_order_variants(CuTest *tc) {
+    atomic_t v = 0;
+    atomic64_t v64 = 0;
+    const atomic64_t big = 0x100000001LL;// 高低 32 位各有一个 1
+
+    ATOMIC_SET_RELAXED(&v, 7);
+    CuAssertTrue(tc, 7 == ATOMIC_GET_RELAXED(&v));
+    CuAssertTrue(tc, 7 == ATOMIC_ADD_RELAXED(&v, 3));
+    CuAssertTrue(tc, 10 == ATOMIC_GET(&v));
+    ATOMIC_SET_RELEASE(&v, (atomic_t)0x80000001u);
+    CuAssertTrue(tc, (atomic_t)0x80000001u == ATOMIC_GET(&v));
+    ATOMIC_SET_SEQCST(&v, 21);
+    ATOMIC_THREAD_FENCE_SEQCST();
+    CuAssertTrue(tc, 21 == ATOMIC_GET_SEQCST(&v));
+
+    ATOMIC64_SET_RELAXED(&v64, big);
+    CuAssertTrue(tc, big == ATOMIC64_GET_RELAXED(&v64));
+    CuAssertTrue(tc, big == ATOMIC64_ADD_RELAXED(&v64, big));
+    CuAssertTrue(tc, 2 * big == ATOMIC64_GET(&v64));
+    ATOMIC64_SET_RELEASE(&v64, big + 1);
+    CuAssertTrue(tc, big + 1 == ATOMIC64_GET(&v64));
+    ATOMIC64_SET_SEQCST(&v64, 3 * big);
+    CuAssertTrue(tc, 3 * big == ATOMIC64_GET_SEQCST(&v64));
+}
+
+// sock_mark_closed 只写 fd，index 与 skid 原样；sock_set_invalid 另把 index 置 INVALID_INDEX，skid 仍不动
+static void test_sock_ctx_helpers(CuTest *tc) {
+    sock_ctx sk = { (SOCKET)5, 3, 77 };
+    CuAssertTrue(tc, !sock_is_invalid(&sk));
+    sock_mark_closed(&sk);
+    CuAssertTrue(tc, sock_is_invalid(&sk));
+    CuAssertIntEquals(tc, 3, sk.index);
+    CuAssertTrue(tc, 77 == sk.skid);
+
+    sk.fd = (SOCKET)5;
+    sock_set_invalid(&sk);
+    CuAssertTrue(tc, sock_is_invalid(&sk));
+    CuAssertIntEquals(tc, INVALID_INDEX, sk.index);
+    CuAssertTrue(tc, 77 == sk.skid);
+}
+
+// shared_data_free 的 fcb：data 指向计数器，被调一次加一
+static void _sd_count(void *data) {
+    (*(int32_t *)data)++;
+}
+// shared_data_free：每个持有者调一次，只有减到 0 的那次调 fcb 并释放自身；fcb 为 NULL 时只释放自身
+// (漏释放或多释放在 MEMORY_CHECK 下退出时对不上账)
+static void test_shared_data_free(CuTest *tc) {
+    int32_t called = 0;
+    shared_data *sd;
+    MALLOC(sd, sizeof(shared_data));
+    sd->ref = 2;
+    sd->data = &called;
+    shared_data_free(sd, _sd_count);
+    CuAssertIntEquals(tc, 0, called);
+    CuAssertTrue(tc, 1 == ATOMIC_GET(&sd->ref));
+    shared_data_free(sd, _sd_count);
+    CuAssertIntEquals(tc, 1, called);
+
+    MALLOC(sd, sizeof(shared_data));
+    sd->ref = 1;
+    sd->data = &called;
+    shared_data_free(sd, NULL);
+    CuAssertIntEquals(tc, 1, called);
+}
+
+// COPY_UD：src 非 NULL 时整体复制，为 NULL 时把 dst 清零
+static void test_copy_ud(CuTest *tc) {
+    ud_cxt src;
+    ud_cxt dst;
+    memset(&src, 0, sizeof(src));
+    src.status = 1;
+    src.flags = UD_PEERADDR;
+    src.pktype = 9;
+    src.prot_offset = 11;
+    src.handle = 123;
+    src.sess = 456;
+    src.loader = &src;
+    src.context = &dst;
+    memset(&dst, 0xAB, sizeof(dst));
+    COPY_UD(dst, &src);
+    CuAssertTrue(tc, 1 == dst.status && UD_PEERADDR == dst.flags && 9 == dst.pktype && 11 == dst.prot_offset);
+    CuAssertTrue(tc, 123 == dst.handle && 456 == dst.sess && &src == dst.loader && &dst == dst.context);
+
+    ud_cxt *nil = NULL;
+    ud_cxt zero;
+    memset(&zero, 0, sizeof(zero));
+    COPY_UD(dst, nil);
+    CuAssertTrue(tc, 0 == memcmp(&dst, &zero, sizeof(ud_cxt)));
+}
+
 /* -----------------------------------------------------------------------
  * mem_stat 的分条计数：288 个线程分 9 批、每批 32 个并发 malloc/free，一个计数都不许丢。
- * 总数超过 MEM_SLOTS，前面的线程落独占格(本线程读写自增)，后面的落共享兜底格(原子自增)，
- * 两条路径都走到，断言对两者都成立。分批是为了并发线程数有界(32 位进程的地址空间放不下几百个栈)。
+ * 总数超过 MEM_SLOTS，前面的线程各占一格，后面的挤进共享兜底格；每格都是原子加，
+ * 验证的是兜底格被多个线程同时加时计数也不丢。分批是为了并发线程数有界(32 位进程的地址空间放不下几百个栈)。
  * 断言用 >= 而不是 ==：本进程还有别的线程(日志线程等)也在分配，增量只会偏大；
- * 而要防的回归恰好是"少算"——共享格用裸自增就会丢
+ * 而要防的回归恰好是"少算"——计数改成先读再写就会丢。协程换线程后的丢计数由 test_mco_tls_migrate 守
  * MEMORY_CHECK 关掉时 mem_stat 恒写 0，增量必为 0，断言必挂，所以整块随开关编译
  * ----------------------------------------------------------------------- */
 #if MEMORY_CHECK
@@ -378,6 +487,7 @@ static void test_mem_stat_striped(CuTest *tc) {
     uint64_t a0, f0, a1, f1;
     pthread_t th[MEMCNT_BATCH];
     int32_t i, r;
+    test_mem_settle();
     mem_stat(&a0, &f0);
     for (r = 0; r < MEMCNT_ROUNDS; r++) {
         for (i = 0; i < MEMCNT_BATCH; i++) {
@@ -525,6 +635,52 @@ static void test_u64tostr_dec(CuTest *tc) {
     CuAssertTrue(tc, 1 == u64tostr(got, 0, 16));
     CuAssertStrEquals(tc, "0", got);
 }
+// u64tostr / i64tostr 的通用进制分支(按变量除)：8 进制对 %llo；2 进制 INT64_MIN 是负号 + 64 位 + '\0'，
+// 正好写满 INT2STR_MAX，后面的哨兵字节不能被碰；10 以上的数位用小写字母
+static void test_u64tostr_bases(CuTest *tc) {
+    char want[32], got[32];
+    char wide[INT2STR_MAX + 1];
+    uint64_t x = 88172645463325252ULL;
+    for (int32_t i = 0; i < 10000; i++) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        snprintf(want, sizeof(want), "%llo", (unsigned long long)(x >> (x & 63)));
+        CuAssertTrue(tc, strlen(want) == u64tostr(got, x >> (x & 63), 8));
+        CuAssertStrEquals(tc, want, got);
+    }
+    snprintf(want, sizeof(want), "%llo", (unsigned long long)UINT64_MAX);
+    CuAssertTrue(tc, strlen(want) == u64tostr(got, UINT64_MAX, 8));
+    CuAssertStrEquals(tc, want, got);
+
+    memset(wide, 'Z', sizeof(wide));
+    CuAssertTrue(tc, 64 == u64tostr(wide, UINT64_MAX, 2));
+    for (int32_t i = 0; i < 64; i++) {
+        CuAssertTrue(tc, '1' == wide[i]);
+    }
+    CuAssertTrue(tc, '\0' == wide[64]);
+    memset(wide, 'Z', sizeof(wide));
+    CuAssertTrue(tc, INT2STR_MAX - 1 == i64tostr(wide, INT64_MIN, 2));
+    CuAssertTrue(tc, '-' == wide[0] && '1' == wide[1]);
+    for (int32_t i = 2; i < INT2STR_MAX - 1; i++) {
+        CuAssertTrue(tc, '0' == wide[i]);
+    }
+    CuAssertTrue(tc, '\0' == wide[INT2STR_MAX - 1]);
+    CuAssertTrue(tc, 'Z' == wide[INT2STR_MAX]);
+
+    CuAssertTrue(tc, 3 == u64tostr(got, 5, 2));
+    CuAssertStrEquals(tc, "101", got);
+    CuAssertTrue(tc, 1 == u64tostr(got, 0, 2));
+    CuAssertStrEquals(tc, "0", got);
+    CuAssertTrue(tc, 3 == u64tostr(got, 100, 7));
+    CuAssertStrEquals(tc, "202", got);
+    CuAssertTrue(tc, 1 == u64tostr(got, 12, 13));
+    CuAssertStrEquals(tc, "c", got);
+    CuAssertTrue(tc, 3 == i64tostr(got, -255, 16));
+    CuAssertStrEquals(tc, "-ff", got);
+    CuAssertTrue(tc, 3 == i64tostr(got, -8, 8));
+    CuAssertStrEquals(tc, "-10", got);
+}
 
 /* =======================================================================
  * timer —— 初始化、当前时刻、计时。
@@ -669,7 +825,7 @@ static void test_base_misc(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, mstostr(ms, "%Y-%m-%d %H:%M:%S", timebuf));
     CuAssertTrue(tc, strlen(timebuf) > 0);
 
-    /* strtots：不断言绝对值(依赖进程时区/DST)，仅验证解析成功、畸形返 0、相邻秒差恒为 1(DST 偏移相减抵消) */
+    /* strtots：不断言绝对值(依赖进程时区/DST，绝对值见 test_strtots_dst)，仅验证解析成功、畸形返 0、相邻秒差恒为 1(DST 偏移相减抵消) */
     uint64_t t0 = strtots("2026-06-15 12:00:00", "%Y-%m-%d %H:%M:%S");
     uint64_t t1 = strtots("2026-06-15 12:00:01", "%Y-%m-%d %H:%M:%S");
     CuAssertTrue(tc, t0 > 0 && t1 > 0);
@@ -683,8 +839,51 @@ static void test_base_misc(CuTest *tc) {
     uint64_t z8 = strtots("2026-06-15 12:00:00+0800", "%Y-%m-%d %H:%M:%S%z");
     CuAssertTrue(tc, z0 > 0 && z8 > 0);
     CuAssertTrue(tc, z0 == z8);
-    CuAssertTrue(tc, z0 == t0);
+    /* %z 还把夏令时标志定成标准时间，不带时区的 t0 交给 mktime 判：本机那一刻不在夏令时两者才相同 */
+    time_t tt0 = (time_t)t0;
+    struct tm lt0;
+    if (0 == LOCALTIME(&tt0, &lt0)
+        && 0 == lt0.tm_isdst) {
+        CuAssertTrue(tc, z0 == t0);
+    }
 }
+
+#ifndef OS_WIN
+/* strtots 在有夏令时的时区：夏令时期间按夏令时解释，冬令时照旧，与 sectostr 往返一致。
+ * 时区用 POSIX 规则串(美东)，不依赖系统装没装时区库；Windows 没有 setenv、CRT 也不认这种规则串，整例不编。
+ * TZ 用完还原，断言都放在还原之后：CuAssert 失败会 longjmp */
+static void test_strtots_dst(CuTest *tc) {
+    const char *fmt = "%Y-%m-%d %H:%M:%S";
+    char saved[256];
+    const char *env = getenv("TZ");
+    int32_t had = (NULL != env);
+    if (had) {
+        SNPRINTF(saved, sizeof(saved), "%s", env);
+    }
+    // 先等前面用例排进日志线程的条目写完：有的 libc 的 localtime_r 每次都读 TZ，与 setenv 同时跑不安全
+    MSLEEP(20);
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
+    uint64_t summer = strtots("2026-06-15 12:00:00", fmt);
+    uint64_t winter = strtots("2026-01-15 12:00:00", fmt);
+    char sbuf[TIME_LENS];
+    char wbuf[TIME_LENS];
+    int32_t src = sectostr(summer, fmt, sbuf);
+    int32_t wrc = sectostr(winter, fmt, wbuf);
+    if (had) {
+        setenv("TZ", saved, 1);
+    } else {
+        unsetenv("TZ");
+    }
+    tzset();
+    CuAssertTrue(tc, 1781539200ULL == summer);// 12:00 EDT 即 16:00 UTC；按标准时间算会晚一小时
+    CuAssertTrue(tc, 1768496400ULL == winter);// 12:00 EST 即 17:00 UTC
+    CuAssertIntEquals(tc, ERR_OK, src);
+    CuAssertStrEquals(tc, "2026-06-15 12:00:00", sbuf);
+    CuAssertIntEquals(tc, ERR_OK, wrc);
+    CuAssertStrEquals(tc, "2026-01-15 12:00:00", wbuf);
+}
+#endif
 
 /*
  * once —— 一次性初始化
@@ -850,6 +1049,17 @@ static void test_misc_helpers(CuTest *tc) {
     }
     /* min==max */
     CuAssertIntEquals(tc, 5, randrange(5, 5));
+    /* 全量程 [INT32_MIN, INT32_MAX]：区间长度 2^32 在 uint32 里回绕成 0，走单独那支；
+       不 abort，1000 次里正负都出现(全同号的概率 2^-999) */
+    int32_t nneg = 0, npos = 0;
+    for (int i = 0; i < 1000; i++) {
+        if (randrange(INT32_MIN, INT32_MAX) < 0) {
+            nneg++;
+        } else {
+            npos++;
+        }
+    }
+    CuAssertTrue(tc, nneg > 0 && npos > 0);
 
     /* randstr：写入 len 个字符 + 末尾 '\0' */
     char buf[33];
@@ -871,8 +1081,11 @@ static void test_misc_helpers(CuTest *tc) {
     }
     CuAssertIntEquals(tc, 62, nseen);
 
-    /* IS_LITTLE：当前平台（macOS/Linux x86/ARM）均小端 */
-    CuAssertIntEquals(tc, 1, IS_LITTLE);
+    /* IS_LITTLE：与运行时探测的字节序一致（uint16_t 1 的首字节为 1 即小端），大端平台上为 0 */
+    uint16_t probe = 1;
+    unsigned char first;
+    memcpy(&first, &probe, 1);
+    CuAssertIntEquals(tc, 1 == first ? 1 : 0, IS_LITTLE ? 1 : 0);
 
     /* timeoffset：分钟数，绝对值不超 24*60 */
     int32_t off = timeoffset();
@@ -902,16 +1115,18 @@ static void test_misc_helpers(CuTest *tc) {
  * 用进程自身路径（procpath() 返回的目录，及其下已知存在的可执行文件）来构造测试输入
  * ======================================================================= */
 static void test_base_filesystem(CuTest *tc) {
-    // procpath 应返回非空字符串（含末尾分隔符的目录路径）
+    // procpath 应返回非空字符串（目录路径，不含末尾分隔符，下面拼文件名时自己加）
     const char *dir = procpath();
     CuAssertPtrNotNull(tc, dir);
     CuAssertTrue(tc, strlen(dir) > 0);
+    CuAssertTrue(tc, PATH_SEPARATOR != dir[strlen(dir) - 1]);
 
     // procpath 指向的目录本身应被 isdir 识别为目录、不被 isfile 识别为文件
     CuAssertIntEquals(tc, ERR_OK, isdir(dir));
     CuAssertTrue(tc, ERR_OK != isfile(dir));
 
-    // 临时文件：用 popen 创建，验证 isfile / filesize / readall
+    // 临时文件：用 fopen_cloexec 创建，验证 isfile / filesize / readall。
+    // 从建文件到 remove 之间只取结果不断言：CuAssert 失败走 longjmp，会把临时文件留在 bin/ 下
     char tmpfile[PATH_LENS];
     SNPRINTF(tmpfile, sizeof(tmpfile), "%s%stest_utils_fs.tmp", dir, PATH_SEPARATORSTR);
 
@@ -920,8 +1135,7 @@ static void test_base_filesystem(CuTest *tc) {
     FILE *fp = fopen_cloexec(tmpfile, "wb");
     CuAssertPtrNotNull(tc, fp);
     size_t nwrite = fwrite(content, 1, clen, fp);
-    // 底层描述符必须带"子进程不可继承"标记，否则 popen 起的 /bin/sh 能拿到它。
-    // 判定要 fp 还活着，故先取到局部量，fclose 之后再断言（断言失败会 longjmp 跳过 fclose）
+    // 底层描述符必须带"子进程不可继承"标记，否则 popen 起的 /bin/sh 能拿到它。判定要 fp 还活着，故先取到局部量
 #ifdef OS_WIN
     DWORD hflag = 0;
     int32_t hok = (0 != GetHandleInformation((HANDLE)_get_osfhandle(_fileno(fp)), &hflag));
@@ -929,6 +1143,32 @@ static void test_base_filesystem(CuTest *tc) {
     int32_t fdflag = fcntl(fileno(fp), F_GETFD);
 #endif
     fclose(fp);
+
+    int32_t isfile_ok = (ERR_OK == isfile(tmpfile));
+    int32_t notdir_ok = (ERR_OK != isdir(tmpfile));
+    int32_t size_ok = ((int64_t)clen == filesize(tmpfile));
+    size_t got = 0;
+    char *data = readall(tmpfile, &got);
+    int32_t data_ok = (NULL != data);
+    int32_t len_ok = (clen == got);
+    int32_t cmp_ok = (data_ok && 0 == memcmp(content, data, clen));
+    FREE(data);
+
+    // 空文件：readall 返 NULL,且自己补上 errno——这条不来自失败的系统调用,
+    // 不补的话调用方的 strerror(errno) 打的是上一次调用的陈旧值
+    fp = fopen(tmpfile, "wb");
+    int32_t reopen_ok = (NULL != fp);
+    if (NULL != fp) {
+        fclose(fp);
+    }
+    errno = 0;
+    got = 0;
+    char *rdempty = readall(tmpfile, &got);
+    int32_t empty_ok = (NULL == rdempty);
+    int32_t errno_ok = (0 != errno);
+    FREE(rdempty);// 回归成"空文件也返缓冲"时不漏，否则真失败之外还多报一笔 not free
+    remove(tmpfile);
+
     CuAssertTrue(tc, clen == nwrite);
 #ifdef OS_WIN
     CuAssertTrue(tc, hok);
@@ -937,21 +1177,15 @@ static void test_base_filesystem(CuTest *tc) {
     CuAssertTrue(tc, -1 != fdflag);
     CuAssertTrue(tc, 0 != (fdflag & FD_CLOEXEC));
 #endif
-
-    CuAssertIntEquals(tc, ERR_OK, isfile(tmpfile));
-    CuAssertTrue(tc, ERR_OK != isdir(tmpfile));
-    CuAssertTrue(tc, (int64_t)clen == filesize(tmpfile));
-
-    // 先收拾再断言：CuAssert 失败走 longjmp，夹在中间会漏掉 data
-    size_t got = 0;
-    char *data = readall(tmpfile, &got);
-    int32_t data_ok = (NULL != data);
-    int32_t len_ok = (clen == got);
-    int32_t cmp_ok = (data_ok && 0 == memcmp(content, data, clen));
-    FREE(data);
+    CuAssertTrue(tc, 0 != isfile_ok);
+    CuAssertTrue(tc, 0 != notdir_ok);
+    CuAssertTrue(tc, 0 != size_ok);
     CuAssertTrue(tc, 0 != data_ok);
     CuAssertTrue(tc, 0 != len_ok);
     CuAssertTrue(tc, 0 != cmp_ok);
+    CuAssertTrue(tc, 0 != reopen_ok);
+    CuAssertTrue(tc, 0 != empty_ok);
+    CuAssertTrue(tc, 0 != errno_ok);
 
     // 不存在的路径：isfile / isdir 返回非 ERR_OK，filesize 返回负值，readall 返回 NULL
     const char *bogus = "/nonexistent/path/to/nowhere_xyzzy";
@@ -960,22 +1194,11 @@ static void test_base_filesystem(CuTest *tc) {
     CuAssertTrue(tc, filesize(bogus) < 0);
     got = 0;
     CuAssertTrue(tc, NULL == readall(bogus, &got));
-
-    // 空文件：readall 返 NULL,且自己补上 errno——这条不来自失败的系统调用,
-    // 不补的话调用方的 strerror(errno) 打的是上一次调用的陈旧值
-    fp = fopen(tmpfile, "wb");
-    CuAssertPtrNotNull(tc, fp);
-    fclose(fp);
+    // 目录不是常规文件：直接返回 NULL、errno 为 EINVAL，不去 fopen / ftell
     errno = 0;
     got = 0;
-    char *rdempty = readall(tmpfile, &got);
-    int32_t empty_ok = (NULL == rdempty);
-    int32_t errno_ok = (0 != errno);
-    FREE(rdempty);// 回归成"空文件也返缓冲"时不漏，否则真失败之外还多报一笔 not free
-    // 临时文件先删掉：断言排在后面，中途 longjmp 会把它留在 bin/ 下
-    remove(tmpfile);
-    CuAssertTrue(tc, 0 != empty_ok);
-    CuAssertTrue(tc, 0 != errno_ok);
+    CuAssertTrue(tc, NULL == readall(procpath(), &got));
+    CuAssertIntEquals(tc, EINVAL, errno);
 }
 // file_mtime：刚写的文件取到的是近一分钟内的秒数；文件不存在返回 0
 static void test_file_mtime(CuTest *tc) {
@@ -1200,6 +1423,27 @@ static void test_strptime_ampm_overflow(CuTest *tc) {
     CuAssertPtrNotNull(tc, end);
     CuAssertIntEquals(tc, 13, tm.tm_hour);
 }
+// %s 的上限随 time_t 宽度：超出即失败，不截断成别的时刻。32 位 time_t 下 2^31 起就超，
+// "3000000000" 还会在读到第 9 位时停住、剩下一位，同样算超出而不是读成 300000000。
+// 用到的时刻离年界都超过一天，任何时区下年份不变
+static void test_strptime_epoch_range(CuTest *tc) {
+    struct tm tm;
+    ZERO(&tm, sizeof(tm));
+    CuAssertPtrNotNull(tc, _strptime("2147483647", "%s", &tm));
+    CuAssertIntEquals(tc, 138, tm.tm_year);// 2038-01-19
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("99999999999999999999", "%s", &tm));
+    if (4 == sizeof(time_t)) {
+        ZERO(&tm, sizeof(tm));
+        CuAssertTrue(tc, NULL == _strptime("2147483648", "%s", &tm));
+        ZERO(&tm, sizeof(tm));
+        CuAssertTrue(tc, NULL == _strptime("3000000000", "%s", &tm));
+    } else {
+        ZERO(&tm, sizeof(tm));
+        CuAssertPtrNotNull(tc, _strptime("3000000000", "%s", &tm));
+        CuAssertIntEquals(tc, 165, tm.tm_year);// 2065-01-24
+    }
+}
 
 /* sectostr 忽略 LOCALTIME 失败的话，未初始化的 struct tm 会交给 strftime，
  * fmt 含 %a/%b 时 libc 拿不定的 tm_wday/tm_mon 去索引静态名字表即越界读。
@@ -1357,6 +1601,35 @@ static void test_pack_unpack(CuTest *tc) {
     CuAssertTrue(tc, 0 == unpack_integer(buf, -1, 0, 1));
 }
 
+// read_integer / write_integer：2/4/8 走定长读写，1/3/5 回落 pack/unpack_integer，大小端两边都往返；
+// 值的每个低字节都 >= 0x80，有符号读必须把高位补 1、无符号读必须补 0
+static void test_rw_integer(CuTest *tc) {
+    static const size_t sizes[] = { 1, 2, 3, 4, 5, 8 };
+    const uint64_t val = 0xF1E2D3C4B5A69788ULL;
+    unsigned char b[8];
+    size_t n;
+    uint64_t mask, low;
+    int64_t sval;
+    int32_t little;
+    for (size_t i = 0; i < ARRAY_SIZE(sizes); i++) {
+        n = sizes[i];
+        mask = 8 == n ? UINT64_MAX : (((uint64_t)1 << (n * 8)) - 1);
+        low = val & mask;
+        sval = (int64_t)(8 == n ? low : (low | ~mask));
+        for (little = 0; little < 2; little++) {
+            memset(b, 0, sizeof(b));
+            write_integer(b, val, n, little);
+            // 小端最低字节在前，大端最高字节在前
+            CuAssertIntEquals(tc, 0x88, little ? b[0] : b[n - 1]);
+            CuAssertIntEquals(tc, (int32_t)((low >> ((n - 1) * 8)) & 0xFF), little ? b[n - 1] : b[0]);
+            CuAssertTrue(tc, low == (uint64_t)read_integer(b, n, little, 0));
+            CuAssertTrue(tc, sval == read_integer(b, n, little, 1));
+        }
+    }
+    // 0 字节按 unpack_integer 的约定读出 0
+    CuAssertTrue(tc, 0 == read_integer(b, 0, 1, 1));
+}
+
 /* =======================================================================
  * memichr / memstr / trim —— 字符/子串查找与两端剔除
  * ======================================================================= */
@@ -1512,9 +1785,9 @@ static void test_str_helpers(CuTest *tc) {
     strreverse(s3);
     CuAssertStrEquals(tc, "x", s3);
 
-    /* 空字符串安全 */
+    /* 空字符串安全：直接返回原指针 */
     char s4[2] = "";
-    strreverse(s4);
+    CuAssertTrue(tc, s4 == strreverse(s4));
     CuAssertStrEquals(tc, "", s4);
 
     /* tohex：二进制转 16 进制（大写）。缓冲先填非零，结束符由 tohex 自己写——
@@ -1668,6 +1941,25 @@ static void test_str_helpers(CuTest *tc) {
     CuAssertIntEquals(tc, 0, n);
     CuAssertPtrNotNull(tc, parts);
     FREE(parts);
+
+    /* 堆模式超过初始 32 段：两次翻倍扩容(32 → 64 → 128)后 100 段逐个对得上，*segs 换过地址仍可 FREE。
+       先比完再 FREE，最后断言，免得失败时漏掉 parts */
+    char many[200];
+    size_t mlen = 0;
+    for (int32_t mi = 0; mi < 100; mi++) {
+        many[mlen++] = (char)('a' + mi % 26);
+        many[mlen++] = ',';
+    }
+    many[mlen - 1] = '\0';/* 去掉末尾逗号：100 段、99 个分隔符 */
+    parts = NULL;
+    n = split(many, strlen(many), ",", 1, &parts, 0, 0);
+    int32_t segs_ok = (100 == n);
+    for (int32_t mi = 0; segs_ok && mi < n; mi++) {
+        segs_ok = (1 == parts[mi].lens && (char)('a' + mi % 26) == *(char *)parts[mi].data);
+    }
+    FREE(parts);
+    CuAssertIntEquals(tc, 100, n);
+    CuAssertTrue(tc, 0 != segs_ok);
 }
 
 /* =======================================================================
@@ -1712,8 +2004,8 @@ static void test_security_helpers(CuTest *tc) {
     secure_zero(NULL, 0);
     secure_zero(NULL, 16);
     secure_zero(buf, 0);
-    /* 起点偏移 0~8、长度 0~40：MSVC 分支先逐字节写到 8 字节对齐、中间按 8 字节写、余下逐字节，
-       三段都要走到；范围内全清零，范围外一个字节都不能碰 */
+    /* 起点偏移 0~8、长度 0~40：各种对齐与长度都过一遍，范围内全清零，范围外一个字节都不能碰
+       （两个分支底下都是 memset，这里守的是起点与长度没算错） */
     uint64_t al[12];
     unsigned char *zb = (unsigned char *)al;
     size_t off, zl, k;
@@ -1798,6 +2090,25 @@ static void test_strtod_c(CuTest *tc) {
         // 没被验证。打一行让人看出来,口径同 test_event.c 的证书缺失
         PRINT("skip strtod_c locale check, no comma-decimal locale available.");
     }
+}
+// strtod_s 的现行取舍：快路径不收的前导空白、'+' 与十六进制浮点由回落的 strtod_c 收下；
+// 尾随空白与只有空白都不收(整段必须被消费完)
+static void test_strtod_s_lenient(CuTest *tc) {
+    double v = 0;
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(" 1.5", 4, &v));
+    CuAssertTrue(tc, 1.5 == v);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s("\t-2", 3, &v));
+    CuAssertTrue(tc, -2.0 == v);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s("+3", 2, &v));
+    CuAssertTrue(tc, 3.0 == v);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s("0x1p3", 5, &v));
+    CuAssertTrue(tc, 8.0 == v);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s("0x10", 4, &v));
+    CuAssertTrue(tc, 16.0 == v);
+    v = 7.0;
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s("1.5 ", 4, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s("  ", 2, &v));
+    CuAssertTrue(tc, 7.0 == v);// 失败不写
 }
 
 // strtou64：按长度解析十进制无符号整数。收敛了原先散在 scram / http / mysql / coro_utils /
@@ -2188,7 +2499,7 @@ static void test_pack_float_bytes(CuTest *tc) {
         bad++;
     }
     CuAssertIntEquals(tc, 0, bad);
-#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX) && !defined(OS_SUN)
     // 这些平台用 sbyteswap.c 自己的 ntohll/htonll：每个字节都不对称，换错一段就比得出来
     const uint64_t hv = 0xF1E2D3C4B5A69788ULL;
     const unsigned char hbe[8] = { 0xF1, 0xE2, 0xD3, 0xC4, 0xB5, 0xA6, 0x97, 0x88 };
@@ -2249,6 +2560,62 @@ static void test_strtod_fast(CuTest *tc) {
     }
 }
 
+// clz32 对各置位位置及常见边界值的结果
+static void test_clz32(CuTest *tc) {
+    uint32_t v;
+    for (uint32_t i = 0; i < 32; i++) {
+        v = (uint32_t)1 << i;
+        CuAssertIntEquals(tc, (int32_t)(31 - i), (int32_t)clz32(v));
+    }
+    CuAssertIntEquals(tc, 0, (int32_t)clz32(UINT32_MAX));
+    CuAssertIntEquals(tc, 1, (int32_t)clz32(0x7FFFFFFFU));
+    CuAssertIntEquals(tc, 31, (int32_t)clz32(1));
+}
+
+// ctz32 / ctz64 / clz64 逐位置与边界值：64 位版跨过第 32 位，32 位 Windows 拆半那支与 MSVC 的 63 - i 都靠它；
+// 另一侧的位全置 1 也不能影响结果
+static void test_bits_scan(CuTest *tc) {
+    uint32_t i;
+    for (i = 0; i < 32; i++) {
+        CuAssertIntEquals(tc, (int32_t)i, (int32_t)ctz32((uint32_t)1 << i));
+        CuAssertIntEquals(tc, (int32_t)i, (int32_t)ctz32(UINT32_MAX << i));
+    }
+    for (i = 0; i < 64; i++) {
+        CuAssertIntEquals(tc, (int32_t)i, (int32_t)ctz64((uint64_t)1 << i));
+        CuAssertIntEquals(tc, (int32_t)i, (int32_t)ctz64(UINT64_MAX << i));
+        CuAssertIntEquals(tc, (int32_t)(63 - i), (int32_t)clz64((uint64_t)1 << i));
+        CuAssertIntEquals(tc, (int32_t)(63 - i), (int32_t)clz64(UINT64_MAX >> (63 - i)));
+    }
+    CuAssertIntEquals(tc, 32, (int32_t)ctz64(0xFFFFFFFF00000000ULL));
+    CuAssertIntEquals(tc, 32, (int32_t)clz64(0xFFFFFFFFULL));
+}
+// pow2_ceil：0 与 2 的幂原样返回，其余取上一个 2 的幂；0x80000000 是能表示的最大值(更大的 ASSERTAB 中止，不测)
+static void test_pow2_ceil(CuTest *tc) {
+    CuAssertTrue(tc, 0 == pow2_ceil(0));
+    CuAssertTrue(tc, 1 == pow2_ceil(1));
+    CuAssertTrue(tc, 2 == pow2_ceil(2));
+    CuAssertTrue(tc, 4 == pow2_ceil(3));
+    CuAssertTrue(tc, 1024 == pow2_ceil(1000));
+    CuAssertTrue(tc, 1024 == pow2_ceil(1024));
+    CuAssertTrue(tc, 2048 == pow2_ceil(1025));
+    CuAssertTrue(tc, 0x80000000u == pow2_ceil(0x40000001u));
+    CuAssertTrue(tc, 0x80000000u == pow2_ceil(0x7FFFFFFFu));
+    CuAssertTrue(tc, 0x80000000u == pow2_ceil(0x80000000u));
+}
+
+// _filename：按平台分隔符取最后一段；Windows 上 '/' 与 '\\' 混用时取靠后的那个
+static void test_filename(CuTest *tc) {
+    CuAssertStrEquals(tc, "a.txt", _filename("a.txt"));
+    CuAssertStrEquals(tc, "", _filename("dir" PATH_SEPARATORSTR));
+#ifdef OS_WIN
+    CuAssertStrEquals(tc, "report.pdf", _filename("C:/data/report.pdf"));
+    CuAssertStrEquals(tc, "c.txt", _filename("a\\b/c.txt"));
+    CuAssertStrEquals(tc, "c.txt", _filename("a/b\\c.txt"));
+#else
+    CuAssertStrEquals(tc, "c.txt", _filename("a/b/c.txt"));
+    CuAssertStrEquals(tc, "b\\c.txt", _filename("a/b\\c.txt"));
+#endif
+}
 // mul64_128：写死的边界值各平台都跑(MSVC 的 _umul128/__umulh 与 32 位拼接回退都靠它)；有 __int128 时再加随机对照
 static void test_mul64_128(CuTest *tc) {
     static const uint64_t cases[][4] = {// a, b, 期望高 64 位, 期望低 64 位
@@ -2298,16 +2665,24 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_atomic64);
     SUITE_ADD_TEST(suite, test_atomic_cas_contract);
     SUITE_ADD_TEST(suite, test_set_ptr_expr_arg);
+    SUITE_ADD_TEST(suite, test_atomic_order_variants);
+    SUITE_ADD_TEST(suite, test_sock_ctx_helpers);
+    SUITE_ADD_TEST(suite, test_shared_data_free);
+    SUITE_ADD_TEST(suite, test_copy_ud);
     SUITE_ADD_TEST(suite, test_round_up_narrow_modulus);
     SUITE_ADD_TEST(suite, test_mem_arena_fast_slow);
     SUITE_ADD_TEST(suite, test_mem_arena_big);
     SUITE_ADD_TEST(suite, test_mem_arena_half);
     SUITE_ADD_TEST(suite, test_u64tostr_dec);
+    SUITE_ADD_TEST(suite, test_u64tostr_bases);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_timer_extra);
     SUITE_ADD_TEST(suite, test_timer_ratio);
     SUITE_ADD_TEST(suite, test_timeofday_consistent);
     SUITE_ADD_TEST(suite, test_base_misc);
+#ifndef OS_WIN
+    SUITE_ADD_TEST(suite, test_strtots_dst);
+#endif
     SUITE_ADD_TEST(suite, test_once);
     SUITE_ADD_TEST(suite, test_strptime);
     SUITE_ADD_TEST(suite, test_strptime_invalid);
@@ -2315,6 +2690,7 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_strptime_week_neg_yday);
     SUITE_ADD_TEST(suite, test_strptime_neg_yday_with_mon);
     SUITE_ADD_TEST(suite, test_strptime_ampm_overflow);
+    SUITE_ADD_TEST(suite, test_strptime_epoch_range);
     SUITE_ADD_TEST(suite, test_timestr_out_of_range);
     SUITE_ADD_TEST(suite, test_misc_helpers);
     SUITE_ADD_TEST(suite, test_base_filesystem);
@@ -2325,12 +2701,14 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_procscnt_avail);
     SUITE_ADD_TEST(suite, test_cgroup_cpu_quota);
     SUITE_ADD_TEST(suite, test_pack_unpack);
+    SUITE_ADD_TEST(suite, test_rw_integer);
     SUITE_ADD_TEST(suite, test_mem_helpers);
     SUITE_ADD_TEST(suite, test_safe_fill_str);
     SUITE_ADD_TEST(suite, test_str_helpers);
     SUITE_ADD_TEST(suite, test_format_va);
     SUITE_ADD_TEST(suite, test_security_helpers);
     SUITE_ADD_TEST(suite, test_strtod_c);
+    SUITE_ADD_TEST(suite, test_strtod_s_lenient);
     SUITE_ADD_TEST(suite, test_strtou64);
     SUITE_ADD_TEST(suite, test_fromhex_table);
     SUITE_ADD_TEST(suite, test_memstr_ref);
@@ -2339,5 +2717,9 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_float_bytes);
     SUITE_ADD_TEST(suite, test_token_span);
     SUITE_ADD_TEST(suite, test_strtod_fast);
+    SUITE_ADD_TEST(suite, test_clz32);
+    SUITE_ADD_TEST(suite, test_bits_scan);
+    SUITE_ADD_TEST(suite, test_pow2_ceil);
     SUITE_ADD_TEST(suite, test_mul64_128);
+    SUITE_ADD_TEST(suite, test_filename);
 }

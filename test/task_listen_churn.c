@@ -43,7 +43,7 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("listen_churn: only %d/%d iters connected.", nconn, CHURN_ITERS);
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("listen_churn tested (%d iters, %d connected).", CHURN_ITERS, nconn);
 }
 

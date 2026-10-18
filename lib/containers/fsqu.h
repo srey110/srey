@@ -87,7 +87,6 @@ static inline void name##_push(name *fsqu, T const *data) {                     
 /* 批量入队,语义同 push */                                                      \
 static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) {\
     uint32_t i = 0;                                                             \
-    uint32_t nleft;                                                             \
     /* 粘滞降级:溢出层非空时整批直落溢出,不与更早的溢出元素交错 */                   \
     if (0 == ATOMIC_GET(&fsqu->novf)) {                                         \
         while (i < count                                                        \
@@ -98,7 +97,7 @@ static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) 
     if (i >= count) {                                                           \
         return;                                                                 \
     }                                                                           \
-    nleft = count - i;                                                          \
+    uint32_t nleft = count - i;                                                 \
     spin_lock(&fsqu->lck);                                                      \
     ATOMIC_ADD(&fsqu->novf, (atomic_t)nleft);/* 同 push:先置位再入队 */           \
     for (; i < count; i++) {                                                    \
@@ -111,7 +110,6 @@ static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) 
    凭锁外那次"快路径空"直接排溢出层会乱序。快路径在途(1)就不碰溢出层 */               \
 static inline void name##_ovf_drain(name *fsqu, T *out, uint32_t max,           \
                                     uint32_t *n, int32_t *fastrtn, int32_t sc) { \
-    int32_t k;                                                                  \
     if (*n >= max || 1 == *fastrtn || 0 == ATOMIC_GET(&fsqu->novf)) {           \
         return;                                                                 \
     }                                                                           \
@@ -123,7 +121,7 @@ static inline void name##_ovf_drain(name *fsqu, T *out, uint32_t max,           
     }                                                                           \
     if (*n < max                                                                \
         && 1 != *fastrtn) {                                                     \
-        k = (int32_t)name##_ovf_pop_batch(&fsqu->qu, out + *n, max - *n);       \
+        int32_t k = (int32_t)name##_ovf_pop_batch(&fsqu->qu, out + *n, max - *n); \
         if (0 != k) {                                                           \
             *n += (uint32_t)k;                                                  \
             ATOMIC_ADD_RELAXED(&fsqu->novf, -k);/* 批量一次扣减,省 k-1 次原子操作 */       \
@@ -237,9 +235,8 @@ static inline void name##_push(name *fsqu, T const *data) {                     
 }                                                                               \
 /* 批量入队,语义同 push */                                                      \
 static inline void name##_push_batch(name *fsqu, T const *data, uint32_t count) {\
-    uint32_t i;                                                                 \
     spin_lock(&fsqu->lck);                                                      \
-    for (i = 0; i < count; i++) {                                               \
+    for (uint32_t i = 0; i < count; i++) {                                      \
         name##_ovf_push(&fsqu->qu, &data[i]);                                  \
     }                                                                           \
     ATOMIC_SET_RELAXED(&fsqu->nhint, (atomic_t)name##_ovf_size(&fsqu->qu));     \

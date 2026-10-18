@@ -10,6 +10,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local smtp   = require("lib.smtp")
 local mail   = require("lib.mail")
+local utils  = require("srey.utils")
 
 local _PORT = ... or 12526
 local CONC_N = 4
@@ -25,6 +26,7 @@ local rsets = 0 -- 服务端收到的 RSET 条数：投递成功不该发 RSET
 local ehlo_injected = false -- 客户端把问候里的裸 LF 原样拼进 EHLO 行就置 true
 local hostile = false -- 逐连接轮换：一次发正常应答，一次发合法但刁钻的形态，两边都得走通
 local ehlo_hosts = {} -- 收到过的 EHLO 参数,用来确认正常问候下主机名是照着服务端给的填
+local noauth_next = false -- 置 true 后接受的连接 EHLO 不通告 AUTH
 
 local function _reply(sk, resp)
     srey.send(sk, resp, #resp, 1)
@@ -42,6 +44,10 @@ local function _cmd(sk, fc, line)
             ehlo_injected = true
         end
         ehlo_hosts[line:match("^%a+%s+(%S+)") or ""] = true
+        if fc.noauth then
+            _reply(sk, "250-fake.smtp.local\r\n250 OK\r\n")
+            return
+        end
         -- 只广告 LOGIN：客户端的 _smtp_get_authtype 优先 PLAIN，不给它选择余地
         _reply(sk, "250-fake.smtp.local\r\n250-AUTH LOGIN\r\n250 OK\r\n")
     elseif up:find("^AUTH LOGIN") then
@@ -101,7 +107,7 @@ end
 srey.startup(function()
     srey.on_accepted(function(pktype, sk)
         hostile = not hostile
-        conns[sk.skid] = { buf = "", authstep = 0, indata = false, sender = -1, hostile = hostile }
+        conns[sk.skid] = { buf = "", authstep = 0, indata = false, sender = -1, hostile = hostile, noauth = noauth_next }
         if hostile then
             -- 裸 LF 不是 CRLF，客户端的多行响应扫描认不出它，会一路活到 EHLO 参数里
             _reply(sk, "220 fake.smtp.local\nRSET injected\r\n")
@@ -280,6 +286,52 @@ runner.run(function(t)
         t:eq(1, #em:addrs_get(), "抛错后收件人列表不变")
         t:eq(false, pcall(em.from, em, "x", nil), "from 非法入参被拒")
         t:eq("c10@t", em:from_get(), "抛错后发件人不变")
+    end
+
+    -- 服务端不通告 AUTH 的连接(同 C 侧第三条连接)：用户名为空即免认证投递，握手跳过 AUTH，信照常收下
+    noauth_next = true
+    local nmails = mails
+    local nctx = smtp.new("127.0.0.1", _PORT, SSL_NAME.NONE, "", "")
+    t:check(nctx:connect(), "免认证: 服务端不通告 AUTH 也能连上")
+    local nm = mail.new()
+    nm:from("srey", "c11@t")
+    nm:addrs_add("r11@t", MAIL_ADDR_TYPE.TO)
+    nm:subject("noauth")
+    nm:msg("body")
+    t:check(nctx:send(nm), "免认证: 投递成功")
+    t:eq(nmails + 1, mails, "免认证: 服务端收下了这封")
+    nctx:quit()
+    noauth_next = false
+
+    -- 服务端照常通告 AUTH(同 C 侧第四条连接)：用户名为空同样跳过认证，信照常收下
+    local amails = mails
+    local actx = smtp.new("127.0.0.1", _PORT, SSL_NAME.NONE, "", "")
+    t:check(actx:connect(), "免认证: 服务端通告了 AUTH、用户名为空也能连上")
+    local am = mail.new()
+    am:from("srey", "c13@t")
+    am:addrs_add("r13@t", MAIL_ADDR_TYPE.TO)
+    am:subject("noauth2")
+    am:msg("body")
+    t:check(actx:send(am), "免认证: 通告了 AUTH 时投递成功")
+    t:eq(amails + 1, mails, "免认证: 通告了 AUTH 时服务端收下了这封")
+    actx:quit()
+
+    -- reply(0) 不写任何回复头，reply(1) 写 Reply-To（同 C 侧 mail_reply）
+    do
+        local hm = mail.new()
+        hm:from("srey", "c12@t")
+        hm:addrs_add("r12@t", MAIL_ADDR_TYPE.TO)
+        hm:reply(0)
+        local hp, hn = hm:pack()
+        local hs = hp and srey.ud_str(hp, hn) or ""
+        utils.ud_free(hp)
+        t:check(nil ~= hp and not hs:find("Reply-To:", 1, true) and not hs:find("No-Reply:", 1, true),
+                "reply(0) 不写回复头")
+        hm:reply(1)
+        hp, hn = hm:pack()
+        hs = hp and srey.ud_str(hp, hn) or ""
+        utils.ud_free(hp)
+        t:check(nil ~= hs:find("Reply-To: c12@t\r\n", 1, true), "reply(1) 写 Reply-To")
     end
 
     -- 两种问候形态都得走通：正常那半边照服务端给的主机名填 EHLO，刁钻那半边退回 localhost。

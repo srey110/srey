@@ -11,7 +11,8 @@
 //                        GET 是 acquire 读
 //   ATOMIC_SET_RELEASE   发布：写完一段数据再置标志位，对方 ATOMIC_GET 到标志就能看到数据。
 //                        比 ATOMIC_SET 便宜，但它不挡后面的读上浮，握手场景别用
-//   ATOMIC_*_RELAXED     只有一个线程写、读方也不在乎它与别的读写谁先谁后时用，最省
+//   ATOMIC_*_RELAXED     只要原子、不要求和别的读写排顺序时用，最省。ADD_RELAXED 是原子读改写，多个线程同时加也不丢；
+//                        别拿 GET_RELAXED 加 SET_RELAXED 拼自增，多个线程写时会互相吃掉
 //   ATOMIC_GET_SEQCST    握手：双方"我先置标志，再看对方"这类互相试探的场景（thread/waiter.h
 //   ATOMIC_THREAD_FENCE_SEQCST   的睡眠握手）。两边都得用足序版本，否则会同时看漏。
 //                        置标志用 SET / ADD / CAS 也一样：它们本身足序，但不是全屏障，挡不住后面的
@@ -37,13 +38,6 @@
 #if defined(CC_GNU)
     // 防止编译器和 CPU 对前后内存读写进行重排，并保证全局的顺序一致性
     #define ATOMIC_THREAD_FENCE_SEQCST() __atomic_thread_fence(__ATOMIC_SEQ_CST)
-    // 内建 CAS 的期望值按地址传、失败时会被改写成当前值，包一层不让它动调用方的 oldval。成功返回 1，失败 0
-    static inline int32_t _gnu_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval) {
-        return __atomic_compare_exchange_n(ptr, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-    }
-    static inline int32_t _gnu_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval) {
-        return __atomic_compare_exchange_n(ptr, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-    }
     #define ATOMIC_GET(ptr)   __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
     #define ATOMIC_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC_ADD(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_SEQ_CST)
@@ -66,6 +60,13 @@
     #define ATOMIC64_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
     #define ATOMIC_GET_RELAXED(ptr)   __atomic_load_n((ptr), __ATOMIC_RELAXED)
     #define ATOMIC64_GET_RELAXED(ptr) __atomic_load_n((ptr), __ATOMIC_RELAXED)
+    // 内建 CAS 的期望值按地址传、失败时会被改写成当前值，包一层不让它动调用方的 oldval。成功返回 1，失败 0
+    static inline int32_t _gnu_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval) {
+        return __atomic_compare_exchange_n(ptr, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    }
+    static inline int32_t _gnu_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval) {
+        return __atomic_compare_exchange_n(ptr, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    }
 #elif defined(OS_WIN)
     #define ATOMIC_THREAD_FENCE_SEQCST() MemoryBarrier()
     #if defined(ARCH_ARM64)
@@ -136,6 +137,16 @@
 #elif defined(OS_SUN)
     // Sun Studio：atomic_ops(3C) 的原语不带内存序，前后各夹一道屏障凑成 seq_cst
     #define ATOMIC_THREAD_FENCE_SEQCST() __machine_rw_barrier()
+    #define ATOMIC_GET(ptr)   _sun_load((atomic_t *)(ptr))
+    #define ATOMIC_SET(ptr, val) _sun_swap((atomic_t *)(ptr), val)
+    #define ATOMIC_ADD(ptr, val) _fetchandadd((atomic_t *)(ptr), val)
+    #define ATOMIC_CAS(ptr, oldval, newval) _sun_cas((atomic_t *)(ptr), oldval, newval)
+    #define ATOMIC64_GET(ptr) _sun_load64((atomic64_t *)(ptr))
+    #define ATOMIC64_SET(ptr, val) _sun_swap64((atomic64_t *)(ptr), val)
+    #define ATOMIC64_ADD(ptr, val) _fetchandadd64((atomic64_t *)(ptr), val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) _sun_cas64((atomic64_t *)(ptr), oldval, newval)
+    #define ATOMIC_GET_SEQCST(ptr)   _sun_load_seqcst((atomic_t *)(ptr))
+    #define ATOMIC64_GET_SEQCST(ptr) _sun_load64_seqcst((atomic64_t *)(ptr))
     static inline atomic_t _fetchandadd(atomic_t *ptr, atomic_t val) {
         ATOMIC_THREAD_FENCE_SEQCST();
         atomic_t old = atomic_add_32_nv((volatile atomic_t *)ptr, val) - val;
@@ -199,20 +210,20 @@
         ATOMIC_THREAD_FENCE_SEQCST();
         return ok;
     }
-    #define ATOMIC_GET(ptr)   _sun_load((atomic_t *)(ptr))
-    #define ATOMIC_SET(ptr, val) _sun_swap((atomic_t *)(ptr), val)
-    #define ATOMIC_ADD(ptr, val) _fetchandadd((atomic_t *)(ptr), val)
-    #define ATOMIC_CAS(ptr, oldval, newval) _sun_cas((atomic_t *)(ptr), oldval, newval)
-    #define ATOMIC64_GET(ptr) _sun_load64((atomic64_t *)(ptr))
-    #define ATOMIC64_SET(ptr, val) _sun_swap64((atomic64_t *)(ptr), val)
-    #define ATOMIC64_ADD(ptr, val) _fetchandadd64((atomic64_t *)(ptr), val)
-    #define ATOMIC64_CAS(ptr, oldval, newval) _sun_cas64((atomic64_t *)(ptr), oldval, newval)
-    #define ATOMIC_GET_SEQCST(ptr)   _sun_load_seqcst((atomic_t *)(ptr))
-    #define ATOMIC64_GET_SEQCST(ptr) _sun_load64_seqcst((atomic64_t *)(ptr))
 #elif defined(OS_AIX)
     // xlC：AIX 原子服务同样不带内存序，用 __sync()（PowerPC 全屏障）前后夹住凑成 seq_cst。
     // AIX 没有原子交换服务，ATOMIC_SET 只能用 compare_and_swap 循环拼
     #define ATOMIC_THREAD_FENCE_SEQCST() __sync()
+    #define ATOMIC_GET(ptr)   _aix_load((atomic_t *)(ptr))
+    #define ATOMIC_SET(ptr, val) _aix_swap(ptr, val)
+    #define ATOMIC_ADD(ptr, val) _aix_fetchandadd((atomic_t *)(ptr), val)
+    #define ATOMIC_CAS(ptr, oldval, newval) _aix_cas(ptr, oldval, newval)
+    #define ATOMIC64_GET(ptr) _aix_load64((atomic64_t *)(ptr))
+    #define ATOMIC64_SET(ptr, val) _aix_swap64(ptr, val)
+    #define ATOMIC64_ADD(ptr, val) _aix_fetchandadd64((atomic64_t *)(ptr), val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
+    #define ATOMIC_GET_SEQCST(ptr)   _aix_load_seqcst((atomic_t *)(ptr))
+    #define ATOMIC64_GET_SEQCST(ptr) _aix_load64_seqcst((atomic64_t *)(ptr))
     static inline atomic_t _aix_swap(atomic_t *ptr, atomic_t val) {
         atomic_t old;
         ATOMIC_THREAD_FENCE_SEQCST();
@@ -276,16 +287,6 @@
         ATOMIC_THREAD_FENCE_SEQCST();
         return _aix_load64(ptr);
     }
-    #define ATOMIC_GET(ptr)   _aix_load((atomic_t *)(ptr))
-    #define ATOMIC_SET(ptr, val) _aix_swap(ptr, val)
-    #define ATOMIC_ADD(ptr, val) _aix_fetchandadd((atomic_t *)(ptr), val)
-    #define ATOMIC_CAS(ptr, oldval, newval) _aix_cas(ptr, oldval, newval)
-    #define ATOMIC64_GET(ptr) _aix_load64((atomic64_t *)(ptr))
-    #define ATOMIC64_SET(ptr, val) _aix_swap64(ptr, val)
-    #define ATOMIC64_ADD(ptr, val) _aix_fetchandadd64((atomic64_t *)(ptr), val)
-    #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
-    #define ATOMIC_GET_SEQCST(ptr)   _aix_load_seqcst((atomic_t *)(ptr))
-    #define ATOMIC64_GET_SEQCST(ptr) _aix_load64_seqcst((atomic64_t *)(ptr))
 #else
     #error "atomic ops: unsupported compiler (need GCC/Clang, MSVC, Sun Studio on Solaris, or xlC on AIX)"
 #endif

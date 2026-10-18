@@ -19,25 +19,31 @@ int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val) 
     case WILDCARD_SUBSCRIPTION://0x28 通配符订阅可用性	字节	CONNACK
     case SUBSCRIPTIONID_AVAILABLE://0x29 订阅标识符可用性	字节	CONNACK
     case SHARED_SUBSCRIPTION://0x2A 共享订阅可用性	字节	CONNACK
-        binary_set_uint8(props, (uint8_t)val);
+        if (val <= UINT8_MAX) {
+            binary_set_uint8(props, (uint8_t)val);
+            return ERR_OK;
+        }
         break;
     case SERVER_KEEPALIVE://0x13 服务端保活时间	双字节整数	CONNACK
     case RECEIVE_MAXIMUM://0x21 接收最大数量	双字节整数	CONNECT, CONNACK
     case TOPICALIAS_MAXIMUM://0x22 主题别名最大长度	双字节整数	CONNECT, CONNACK
     case TOPIC_ALIAS://0x23 主题别名	双字节整数	PUBLISH
-        binary_set_uinteger(props, val, 2, 0);
+        if (val <= UINT16_MAX) {
+            binary_set_uinteger(props, val, 2, 0);
+            return ERR_OK;
+        }
         break;
     case MSG_EXPIRY://0x02 消息过期时间	四字节整数	PUBLISH, Will Properties
     case SESSION_EXPIRY://0x11 会话过期间隔	四字节整数	CONNECT, CONNACK, DISCONNECT
     case WILLDELAY_INTERVAL://0x18 遗嘱延时间隔	四字节整数	Will Properties
     case MAXIMUM_PACKETSIZE://0x27 最大报文长度	四字节整数	CONNECT, CONNACK
         binary_set_uinteger(props, val, 4, 0);
-        break;
+        return ERR_OK;
     default:
-        binary_offset(props, saved_offset);
-        return ERR_FAILED;
+        break;
     }
-    return ERR_OK;
+    binary_offset(props, saved_offset);// 不是定长数值属性或值超出线宽，回退已写入的 flag 字节
+    return ERR_FAILED;
 }
 // 将可变长度整数属性值写入属性缓冲区
 static inline int32_t _mqtt_props_varnum(binary_ctx *props, uint32_t val) {
@@ -108,6 +114,9 @@ int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t 
 }
 int32_t mqtt_topics_subscribe(binary_ctx *topics, mqtt_protversion version, const char *topic,
     int8_t qos, int8_t nl, int8_t rap, int8_t retain) {
+    if (qos < 0 || qos > 2 || (version >= MQTT_50 && (retain < 0 || retain > 2))) {//取 3 解析侧判协议错
+        return ERR_FAILED;
+    }
     int8_t subop = 0;
     BIT_SETN(subop, 0, (BIT_GETN(qos, 0)));
     BIT_SETN(subop, 1, (BIT_GETN(qos, 1)));//QoS
@@ -154,6 +163,14 @@ static inline int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *
     (*off) += occupy;
     return occupy;
 }
+// 写属性长度(_mqtt_props_varlens 编好的)与属性体；props 为 NULL 或空时只写长度。版本判断留在调用点
+static inline void _mqtt_pack_props(binary_ctx *bw, const char vlens[4], int32_t occupy, binary_ctx *props) {
+    binary_set_binary(bw, vlens, (size_t)occupy);//属性长度
+    if (NULL != props
+        && 0 != props->offset) {
+        binary_set_binary(bw, props->data, props->offset);//属性
+    }
+}
 // 所有 mqtt_pack_* 共用的前导：编码剩余长度、开缓冲、写固定报头与剩余长度。
 // 缓冲大小算式 1 + roccupy + total 只此一处，写错就是欠分配；写入量恰好是这么多、从不扩容，
 // 故 inc 取 16，容量只按 16 取整(默认的 256 会让确认包这类小包也占 256 字节)。
@@ -180,13 +197,10 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
         return NULL;
     }
     int8_t fixhead = (MQTT_CONNECT << 4);//固定报头
-    //连接标志
-    size_t ulens = 0;
-    if (NULL != user) {
-        ulens = strlen(user);
-    }
-    int8_t userflag = 0 == ulens ? 0 : 1;
-    int8_t passwordflag = EMPTYPTR(password, pwlens) ? 0 : 1;
+    //连接标志：用户名 / 密码以 NULL 表示不带，长度 0 照样带
+    int8_t userflag = NULL == user ? 0 : 1;
+    size_t ulens = userflag ? strlen(user) : 0;
+    int8_t passwordflag = NULL == password ? 0 : 1;
     if (MQTT_311 == version && 0 == userflag && 0 != passwordflag) {
         LOG_ERROR("%s", "mqtt 3.1.1 password requires username");
         return NULL;
@@ -196,6 +210,9 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
         wtlens = strlen(willtopic);
     }
     int8_t willflag = 0 == wtlens ? 0 : 1;
+    if (willflag && (willqos < 0 || willqos > 2)) {
+        return NULL;
+    }
     if (NULL == willpayload) {
         wplens = 0;
     }
@@ -257,20 +274,12 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
     binary_set_int8(&bwriter, connflags);//连接标志
     binary_set_integer(&bwriter, keepalive, 2, 0);//保持连接
     if (version >= MQTT_50) {
-        binary_set_binary(&bwriter, cpvlens, cpoccupy);//属性长度
-        if (NULL != connprops
-            && 0 != connprops->offset) {
-            binary_set_binary(&bwriter, connprops->data, connprops->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, cpvlens, cpoccupy, connprops);
     }
     _mqtt_pack_lenstr(&bwriter, clientid, cidlens);//客户标识符
     if (willflag) {
         if (version >= MQTT_50) {
-            binary_set_binary(&bwriter, wpvlens, wpoccupy);//属性长度
-            if (NULL != willprops
-                && 0 != willprops->offset) {
-                binary_set_binary(&bwriter, willprops->data, willprops->offset);//属性
-            }
+            _mqtt_pack_props(&bwriter, wpvlens, wpoccupy, willprops);
         }
         _mqtt_pack_lenstr(&bwriter, willtopic, wtlens);//遗嘱主题
         _mqtt_pack_lenstr(&bwriter, willpayload, wplens);//遗嘱载荷
@@ -305,11 +314,7 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
     binary_set_int8(&bwriter, caflag);//连接确认标志
     binary_set_uint8(&bwriter, reason);//连接原因码
     if (version >= MQTT_50) {//属性
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props
-            && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     *lens = bwriter.offset;
     return bwriter.data;
@@ -317,6 +322,9 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
 char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int8_t dup,
     const char *topic, uint16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens) {
     *lens = 0;
+    if (qos < 0 || qos > 2 || (0 != qos && 0 == packid) || (0 == qos && 0 != dup)) {//报文标识符 0 是保留值；QoS0 的 DUP 须为 0
+        return NULL;
+    }
     int8_t fixhead = (MQTT_PUBLISH << 4);//固定报头
     //固定报头标志
     BIT_SETN(fixhead, 0, retain);//保留标志
@@ -353,11 +361,7 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
         binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     }
     if (version >= MQTT_50) {//属性
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props
-            && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     if (NULL != payload && 0 != pllens) {
         binary_set_binary(&bwriter, payload, pllens);//载荷
@@ -375,9 +379,7 @@ static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, uint16_t pack
     if (version < MQTT_50) {
         total = 2;//报文标识符(2)
     } else {
-        //MQTT v5.0 §3.4.2.2.1：剩余长度<4 时不输出 Property Length 字段，对端默认按 0 处理。
-        //因此 reason!=0 但 props 为空的情形仅写 packid+reason（total=3），属于规范允许的简化形式。
-        //PUBREC/PUBREL/PUBCOMP/DISCONNECT 均沿用此规则（§3.5/3.6/3.7/3.14.2.2.1）。
+        //reason 非 0 而无属性时只写 packid + reason(total=3)，规则见 mqtt.c 的 _mqtt_pubackrel_common
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
             total = 2;//报文标识符(2)
@@ -401,14 +403,9 @@ static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, uint16_t pack
         *lens = bwriter.offset;
         return bwriter.data;
     }
-    if (total >= 3) {
-        binary_set_uint8(&bwriter, reason);//原因码
-    }
+    binary_set_uint8(&bwriter, reason);//原因码
     if (total >= 4) {
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     *lens = bwriter.offset;
     return bwriter.data;
@@ -429,6 +426,9 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, uint16_t packid, uint8_t reaso
 }
 char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
     *lens = 0;
+    if (0 == packid) {
+        return NULL;
+    }
     int8_t fixhead = (int8_t)(MQTT_SUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
@@ -448,10 +448,7 @@ char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx 
     }
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     binary_set_binary(&bwriter, topics->data, topics->offset);
     *lens = bwriter.offset;
@@ -477,10 +474,7 @@ char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reaso
     }
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     binary_set_binary(&bwriter, (const char *)reasons, rslens);
     *lens = bwriter.offset;
@@ -488,6 +482,9 @@ char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reaso
 }
 char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
     *lens = 0;
+    if (0 == packid) {
+        return NULL;
+    }
     int8_t fixhead = (int8_t)(MQTT_UNSUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
@@ -507,10 +504,7 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ct
     }
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     binary_set_binary(&bwriter, topics->data, topics->offset);
     *lens = bwriter.offset;
@@ -538,10 +532,7 @@ char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *rea
     }
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
         binary_set_binary(&bwriter, (const char *)reasons, rslens);
     }
     *lens = bwriter.offset;
@@ -601,10 +592,7 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
     // total >= 1：reason 始终写；total >= 2 时附加 property length + properties
     binary_set_uint8(&bwriter, reason);//原因码
     if (total >= 2) {
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     *lens = bwriter.offset;
     return bwriter.data;
@@ -636,10 +624,7 @@ char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props
     }
     if (0 != total) {
         binary_set_uint8(&bwriter, reason);//原因码
-        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
-        if (NULL != props && 0 != props->offset) {
-            binary_set_binary(&bwriter, props->data, props->offset);//属性
-        }
+        _mqtt_pack_props(&bwriter, pvlens, pvoccupy, props);
     }
     *lens = bwriter.offset;
     return bwriter.data;

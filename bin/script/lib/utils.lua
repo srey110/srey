@@ -10,7 +10,7 @@ local string = string
 local tcreate = table.create
 local utils = require("srey.utils")
 local pathsep = _pathsep -- 由 C 层注入的路径分隔符（Linux："/"，Windows："\"）
-local PRINT_DEBUG = true -- 控制 printd 是否输出；可在运行时置 false 关闭调试打印
+local PRINT_DEBUG = true -- 控制 printd 是否输出；文件内常量，没有运行期开关，要关就改这里
 -- 随机字符串字符集（0-9、a-z、A-Z），共 62 个字符。
 local _RANDSTR_CHARS = {
     "0","1","2","3","4","5","6","7","8","9",
@@ -66,8 +66,9 @@ function printd(fmt, ...)
         return
     end
     local file = string.match(info.short_src, string.format("^.+%s(.+)$", pathsep)) or info.short_src
+    -- 前缀单独格式化再拼，文件名里的 % 不能进格式串
     local tag = string.format("[%s][%s %d] ", os.date("%H:%M:%S", os.time()), file, info.currentline)
-    print(string.format(tag..fmt, ...))
+    print(tag .. string.format(fmt, ...))
 end
 
 ---按 delimiter 分割字符串
@@ -122,13 +123,7 @@ end
 ---@param tb table<any,any>|nil 待检测的表
 ---@return boolean is_empty nil 或无任何键值对时返回 true
 function table_nullorempty(tb)
-    if not tb then
-        return true
-    end
-    for _, _ in pairs(tb) do
-        return false
-    end
-    return true
+    return not tb or nil == next(tb)
 end
 
 ---生成指定长度的随机字母数字字符串（字符集 0-9 / a-z / A-Z），由 srey.utils.csprng_rand 提供 CSPRNG
@@ -219,10 +214,8 @@ function dump(obj, offset)
             return "<circular>"
         end
         visited[obj] = true
-        --level = level + 1
         local tokens = {}
         tokens[#tokens + 1] = "\n"..getIndent(level).."{"
-        --tokens[#tokens + 1] = "{"
         local ret, count = isArray(obj)
         if ret then
             for i = 1, count do

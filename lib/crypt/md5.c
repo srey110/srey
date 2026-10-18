@@ -109,11 +109,10 @@ void md5_init(md5_ctx *md5) {
 }
 void md5_update(md5_ctx *md5, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
-    size_t left;
     if (0 == lens) {
         return;
     }
-    left = 64 - md5->datalen;
+    size_t left = 64 - md5->datalen;
     if (md5->datalen > 0 && lens >= left) {
         memcpy(md5->data + md5->datalen, p, left);
         _md5_transform(md5, md5->data, 1);
@@ -143,8 +142,7 @@ void md5_final(md5_ctx *md5, char hash[MD5_BLOCK_SIZE]) {
     }
     memset(md5->data + i, 0, 56 - i);
     md5->bitlen += md5->datalen * 8;
-    write_le32(md5->data + 56, (uint32_t)md5->bitlen);
-    write_le32(md5->data + 60, (uint32_t)(md5->bitlen >> 32));
+    write_le64(md5->data + 56, md5->bitlen);
     _md5_transform(md5, md5->data, 1);
     for (i = 0; i < 4; ++i) {
         write_le32((uint8_t *)hash + i * 4, md5->state[i]);

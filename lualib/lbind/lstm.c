@@ -40,7 +40,8 @@ static lua_stm_data *_lstm_checkreader(lua_State *lua) {
 /// writer grab 一次 ctx, 交出 ctx 指针的 lightuserdata, 用于跨 task 传递
 /// </summary>
 /// <param name="w" type="userdata">writer 对象 (stm.new 返回)</param>
-/// <returns type="lightuserdata">stm_ctx 指针; 业务通过任务消息发给 reader task, 对端用 stm.newcopy 包装</returns>
+/// <returns type="lightuserdata">stm_ctx 指针，带一份引用; 业务通过任务消息发给 reader task, 对端用 stm.newcopy 包装。
+/// 每个句柄恰好包装一次：不包装这份引用就一直挂着，包装两次会多放一次引用</returns>
 static int32_t _lstm_copy(lua_State *lua) {
     lua_stm_ctx *box = _lstm_checkwriter(lua);
     stm_grab(box->ctx);
@@ -53,12 +54,15 @@ static int32_t _lstm_copy(lua_State *lua) {
 /// <param name="data" type="string|lightuserdata">初始数据; 字符串自动取长; lightuserdata 时 sz 必填</param>
 /// <param name="sz" type="integer?">数据字节数 (data 为 lightuserdata 时必填)</param>
 /// <param name="copy" type="integer?">data 为 lightuserdata 时: 1=内部拷贝 (默认), 0=转移所有权</param>
-/// <returns type="userdata">writer 对象; 调用它自身即更新数据, 出作用域自动 release</returns>
+/// <returns type="userdata">writer 对象; 调用它自身即更新数据 w(data, sz?, copy?), 参数同本函数; 出作用域自动 release</returns>
 static int32_t _lstm_newwriter(lua_State *lua) {
+    // userdata 先建再取载荷：copy=0 时 data 一取出所有权就离开了 Lua，之后再分配抛错它就漏了。
+    // 参数先补齐到 3 格，新 userdata 落在第 4 格，不会被当成 sz / copy 读
+    lua_settop(lua, 3);
+    lua_stm_ctx *box = lua_newuserdatauv(lua, sizeof(lua_stm_ctx), 0);
     size_t sz;
     int32_t copy;
     void *data = lpub_check_buf(lua, 1, &sz, &copy);
-    lua_stm_ctx *box = lua_newuserdatauv(lua, sizeof(lua_stm_ctx), 0);
     box->ctx = stm_new(data, sz, copy);
     // writer metatable 作为 luaL_setfuncs 的 upvalue 传入, 此处取出关联到 box
     lua_pushvalue(lua, lua_upvalueindex(1));
@@ -88,7 +92,9 @@ static int32_t _lstm_update(lua_State *lua) {
 /// 把 stm.copy 交出的 ctx lightuserdata 包装为 reader
 /// </summary>
 /// <param name="handle" type="lightuserdata">stm_ctx 指针 (跨 task 传递; 调用方已 stm_grab)</param>
-/// <returns type="userdata">reader 对象; 调用它自身即读快照, 出作用域自动 release</returns>
+/// <returns type="userdata">reader 对象; 出作用域自动 release。调用 r(func, ud?) 读快照：没更新返回 false、不调 func；
+/// 否则调 func(lud, sz, ud) 并返回 true 加 func 的返回值。lud 只在下次读或 reader 回收前有效，不要存下来；
+/// func 经 pcall 调用，里面不能挂起(srey.sleep / syn_* 之类)</returns>
 static int32_t _lstm_newreader(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     lua_stm_data *box = lua_newuserdatauv(lua, sizeof(lua_stm_data), 0);
@@ -128,13 +134,20 @@ static int32_t _lstm_read(lua_State *lua) {
         lua_pushlightuserdata(lua, snap->data);
         lua_pushinteger(lua, (lua_Integer)snap->sz);
         lua_pushvalue(lua, 3);
-        // pcall 而非 call 且交接延后到此:重入读不释放本次 snap(防 UAF),抛错也走交接(防 snap 引用泄漏)
+        // pcall 而非 call 且交接延后到此:重入读不释放本次 snap(防 UAF),抛错也走交接(防 snap 引用泄漏)。
+        // 回调里重入读换过 lastcopy 的,内层拿到的不比本次旧,以它为准、本次 snap 只放引用
+        stm_data *prev = box->lastcopy;
         int32_t st = lua_pcall(lua, 3, LUA_MULTRET, 0);
-        stm_ungrab_data(box->lastcopy);
-        box->lastcopy = snap;
+        if (box->lastcopy == prev) {
+            stm_ungrab_data(prev);
+            box->lastcopy = snap;
+        } else {
+            stm_ungrab_data(snap);
+        }
         if (LUA_OK != st) {
             return lua_error(lua);
         }
+        luaL_checkstack(lua, 1, NULL);// MULTRET 的结果可能已把本帧栈位用满
         lua_pushboolean(lua, 1);
         lua_replace(lua, 3);
         return lua_gettop(lua) - 2;

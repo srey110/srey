@@ -7,9 +7,15 @@ typedef uint16_t subtype_t; //子类型
 typedef uint64_t name_t; // 任务名类型（64 位整数 ID）
 typedef void(*free_cb)(void *arg); // 通用资源释放回调函数类型
 
+// ud_cxt.flags 的位，按位组合；accept 出的连接从监听继承
+typedef enum ud_flag {
+    UD_PEERADDR = 0x01, // ACCEPT 消息带对端地址
+    UD_REUSEADDR = 0x02 // UDP 绑定前设 SO_REUSEADDR，允许多个 socket 共用 addr:port(多播要)；不设则独占
+}ud_flag;
 // 连接用户自定义上下文，挂载在每个网络连接上
 typedef struct ud_cxt {
     uint8_t  status;  // 解包状态（协议解析状态机）
+    uint8_t  flags;   // 连接级开关位，见 ud_flag；占的是 status 与 pktype 之间的空档，不增大结构体
     subtype_t pktype;  // 数据包类型（由上层协议定义）
     size_t   prot_offset; // 协议解析私有偏移（如 HTTP 头扫描位置缓存），由各协议自行管理
     name_t   handle;  // 所属任务句柄（task 的标识 ID）
@@ -57,23 +63,43 @@ typedef struct off_buf_ctx {
         } \
     } while (0)
 
-// 连接标识是否失效。只看 fd——skid 要留着判"中途是否重连过"
+/// <summary>
+/// 连接标识是否失效。只看 fd：skid 要留着判"中途是否重连过"
+/// </summary>
+/// <param name="sk">连接标识</param>
+/// <returns>非 0 已失效（fd 为 INVALID_SOCK），0 有效</returns>
 static inline int32_t sock_is_invalid(sock_ctx *sk) {
     return INVALID_SOCK == sk->fd;
 }
-// 把连接标识置为失效。不动 skid，理由同 sock_is_invalid；index 置 INVALID_INDEX——
-// 0 是合法下标,表达不了"未设置",拿它去索引会静默投到 watcher[0] 上
-static inline void sock_set_invalid(sock_ctx *sk) {
+/// <summary>
+/// 网络线程关连接时置失效用，只写 fd，index 与 skid 都不动：别的线程可能正经 ev_* 先判 fd 再取 index，
+/// index 留旧值才不会读到"fd 有效、index 为 -1"的半截而撞断言，投到原 watcher 的命令按 skid 丢弃
+/// </summary>
+/// <param name="sk">连接标识</param>
+static inline void sock_mark_closed(sock_ctx *sk) {
     sk->fd = INVALID_SOCK;
+}
+/// <summary>
+/// 把连接标识置为失效。不动 skid，理由同 sock_is_invalid；index 置 INVALID_INDEX：
+/// 0 是合法下标，表达不了"未设置"，拿它去索引会静默投到 watcher[0] 上
+/// </summary>
+/// <param name="sk">连接标识</param>
+static inline void sock_set_invalid(sock_ctx *sk) {
+    sock_mark_closed(sk);
     sk->index = INVALID_INDEX;
 }
-static inline void shared_data_free(void *sdate, free_cb fcb) {
-    shared_data *date = sdate;
-    if (1 == ATOMIC_ADD(&date->ref, -1)) {
+/// <summary>
+/// 一个持有者放手：ref 减 1，减到 0 的那一个调 fcb(data) 并释放 shared_data 自身。每个持有者调且只调一次
+/// </summary>
+/// <param name="sdata">shared_data 指针，须经 MALLOC 分配（减到 0 时 FREE）</param>
+/// <param name="fcb">释放 data 的回调；NULL 表示 data 不用释放</param>
+static inline void shared_data_free(void *sdata, free_cb fcb) {
+    shared_data *sd = sdata;
+    if (1 == ATOMIC_ADD(&sd->ref, -1)) {
         if (NULL != fcb) {
-            fcb(date->data);
+            fcb(sd->data);
         }
-        FREE(date);
+        FREE(sd);
     }
 }
 

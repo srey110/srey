@@ -65,11 +65,11 @@ double unpack_double(const char *buf, int32_t islittle) {
     memcpy(&rtn, &u, sizeof(rtn));
     return rtn;
 }
-#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX) && !defined(OS_SUN)
 uint64_t ntohll(uint64_t val) {
     return IS_LITTLE ? byteswap64(val) : val;
 }
 uint64_t htonll(uint64_t val) {
     return ntohll(val);
 }
-#endif//OS_WIN OS_DARWIN OS_AIX
+#endif//OS_WIN OS_DARWIN OS_AIX OS_SUN

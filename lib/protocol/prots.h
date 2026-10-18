@@ -42,7 +42,8 @@ void prots_udfree(void *arg);
 /// <summary>
 /// 询问已解包的封包能否唤醒等待该 session 的协程。
 /// 服务端主动推来的包不属于任何命令的响应,返非 OK 让框架改新建协程走 recv 回调,而不是按队头
-/// 匹配挤掉真正的等待者:pgsql 的 PGPACK_NOTIFICATION、mqtt 的 PUBLISH/PUBREL/DISCONNECT。
+/// 匹配挤掉真正的等待者:pgsql 的 PGPACK_NOTIFICATION、mqtt 的 PUBLISH/PUBREL/DISCONNECT 及只由客户端发起的
+/// CONNECT/SUBSCRIBE/UNSUBSCRIBE/PINGREQ、redis 的 RESP3 推送(订阅类确认除外)。
 /// WS 承载子协议时按其子协议判定
 /// </summary>
 /// <param name="pktype">协议包类型</param>
@@ -72,7 +73,8 @@ void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 // 以下 7 个为网络事件回调，由 task_listen/connect/udp 装入 cbs_ctx、event 层触发；
 // 各自经 prots_init 注册的消息汇 begin→emit→end 把事件转成 message_ctx 推给上层；
 // 签名与 cbs_ctx 对应回调（accept_cb/connect_cb/recv_cb/...）一致。
-/// <summary>接受新连接：完成协议初始化并推送 MSG_TYPE_ACCEPT</summary>
+/// <summary>接受新连接：完成协议初始化并推送 MSG_TYPE_ACCEPT。listen 订了对端地址(UD_PEERADDR)时，
+/// 消息的 data 是 MALLOC 的 netaddr_ctx(取不到地址则为 NULL)，由 message_clean 释放</summary>
 int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud);
 /// <summary>主动连接建立：完成协议初始化并推送 MSG_TYPE_CONNECT</summary>
 int32_t prots_net_connect(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud);
@@ -96,7 +98,8 @@ void prots_net_recvfrom(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netadd
 int32_t message_should_clean(message_ctx *msg);
 /// <summary>
 /// 按消息类型释放 data：协议包走 prots_pkfree，UDP 包走 prots_udp_pkfree，握手数据走 prots_hsfree，
-/// 跨 task 请求/响应直接 FREE；广播共享的只减引用，归 0 才释放。CLOSE 等不带数据的类型什么都不做
+/// 跨 task 请求/响应与 ACCEPT 带的对端地址(见 prots_net_accept)直接 FREE；广播共享的只减引用，归 0 才释放。
+/// CLOSE 等不带数据的类型什么都不做
 /// </summary>
 /// <param name="msg">消息，释放后 data 不可再用</param>
 void message_clean(message_ctx *msg);

@@ -65,6 +65,16 @@ runner.run(function(t)
         local u2 = url.parse("wss://h/" .. seg, false)
         t:eq("/" .. seg, u2.path, "decode=0 长 path 不再被截断为空串")
     end
+    do
+        -- 开关参数"非 0 即真"，不能先截成 32 位：2^32 截断后是 0，语义整个反过来
+        local big = 4294967296
+        t:eq("a+b", url.encode("a b", big), "url.encode 超 32 位的非 0 开关仍为真")
+        t:eq("a%20b", url.encode("a b", 0), "url.encode 开关 0：空格编成 %20")
+        t:eq("a b", url.decode("a+b", big), "url.decode 超 32 位的非 0 开关仍为真")
+        t:eq("a+b", url.decode("a+b", 0), "url.decode 开关 0：'+' 保持字面")
+        t:eq("x y", url.parse("/p?a=x%20y", big).param.a, "url.parse 超 32 位的非 0 decode 仍解码")
+        t:eq("x%20y", url.parse("/p?a=x%20y", 0).param.a, "url.parse decode=0 不解码")
+    end
 
     -- ── base64 ─────────────────────────────────────────────────────────
     do
@@ -82,6 +92,8 @@ runner.run(function(t)
         t:eq(nil, base64.decode("dXNlcm5hbWU6!!!"), "base64 非法字符返 nil")
         t:eq(nil, base64.decode("SGVs=bG8="), "base64 填充后仍有数据返 nil")
         t:eq("", base64.decode(""), "base64 空输入仍解出空串")
+        t:eq("", base64.decode("\r\n"), "base64 只含换行也解出空串")
+        t:eq(nil, base64.decode("=="), "base64 只有填充返 nil")
     end
 
     -- ── crc ────────────────────────────────────────────────────────────
@@ -236,9 +248,9 @@ runner.run(function(t)
         -- (指针, 长度) 入口在长度非 0 时拒收空指针：md5_update / hmac_update 只对 lens==0
         -- 早退，放进去就是从 NULL memcpy
         local d = digest.new(DIGEST_TYPE.MD5)
-        t:eq(false, pcall(d.update, d, yyjson.null, 100), "digest:update NULL 指针被拒")
+        t:eq(false, (pcall(d.update, d, yyjson.null, 100)), "digest:update NULL 指针被拒")
         local h = hmac.new(DIGEST_TYPE.SHA256, string.rep("\x0b", 20))
-        t:eq(false, pcall(h.update, h, yyjson.null, 100), "hmac:update NULL 指针被拒")
+        t:eq(false, (pcall(h.update, h, yyjson.null, 100)), "hmac:update NULL 指针被拒")
         -- 长度 0 等价空缓冲，仍然放行
         local okempty = pcall(d.update, d, yyjson.null, 0)
         t:eq(true, okempty, "digest:update NULL 指针 + 0 长度放行")
@@ -246,27 +258,40 @@ runner.run(function(t)
 
     do
         -- REG_MTABLE 令 __gc 经 __index 也是个普通方法,业务一行 d:__gc() 就能提前释放。
-        -- digest/hmac 按值存进 userdata,没有可置 NULL 的指针,判据是 attr 归零；
+        -- digest/hmac/cipher 按值存进 userdata,没有可置 NULL 的指针,判据是 attr / 引擎回调归零；
         -- 少这道守卫时每个入口都是 NULL 解引用或 NULL 函数指针调用,直接 SEGV 而不是可捕获的错
         local d = digest.new(DIGEST_TYPE.MD5)
         d:__gc()
-        t:eq(false, pcall(d.size, d), "digest 释放后 size 被拒")
-        t:eq(false, pcall(d.reset, d), "digest 释放后 reset 被拒")
-        t:eq(false, pcall(d.update, d, "x"), "digest 释放后 update 被拒")
-        t:eq(false, pcall(d.final, d), "digest 释放后 final 被拒")
-        t:eq(true, pcall(d.__gc, d), "digest 重复 __gc 不崩")
+        t:eq(false, (pcall(d.size, d)), "digest 释放后 size 被拒")
+        t:eq(false, (pcall(d.reset, d)), "digest 释放后 reset 被拒")
+        t:eq(false, (pcall(d.update, d, "x")), "digest 释放后 update 被拒")
+        t:eq(false, (pcall(d.final, d)), "digest 释放后 final 被拒")
+        t:eq(true, (pcall(d.__gc, d)), "digest 重复 __gc 不崩")
         local h = hmac.new(DIGEST_TYPE.SHA256, string.rep("\x0b", 20))
         h:__gc()
-        t:eq(false, pcall(h.size, h), "hmac 释放后 size 被拒")
-        t:eq(false, pcall(h.reset, h), "hmac 释放后 reset 被拒")
-        t:eq(false, pcall(h.update, h, "x"), "hmac 释放后 update 被拒")
-        t:eq(false, pcall(h.final, h), "hmac 释放后 final 被拒")
-        t:eq(true, pcall(h.__gc, h), "hmac 重复 __gc 不崩")
+        t:eq(false, (pcall(h.size, h)), "hmac 释放后 size 被拒")
+        t:eq(false, (pcall(h.reset, h)), "hmac 释放后 reset 被拒")
+        t:eq(false, (pcall(h.update, h, "x")), "hmac 释放后 update 被拒")
+        t:eq(false, (pcall(h.final, h)), "hmac 释放后 final 被拒")
+        t:eq(true, (pcall(h.__gc, h)), "hmac 重复 __gc 不崩")
+        -- cipher 释放后 dofinal 原先静默返回空串当成功，带填充解密还会读 output[-1]
+        local c = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.CBC, "0123456789abcdef", 128, 0)
+        c:padding(PADDING_MODEL.PKCS57)
+        c:__gc()
+        t:eq(false, (pcall(c.size, c)), "cipher 释放后 size 被拒")
+        t:eq(false, (pcall(c.padding, c, PADDING_MODEL.PKCS57)), "cipher 释放后 padding 被拒")
+        t:eq(false, (pcall(c.iv, c, "fedcba9876543210")), "cipher 释放后 iv 被拒")
+        t:eq(false, (pcall(c.reset, c)), "cipher 释放后 reset 被拒")
+        t:eq(false, (pcall(c.block, c, string.rep("x", 16))), "cipher 释放后 block 被拒")
+        local ok, err = pcall(c.dofinal, c, string.rep("x", 16))
+        t:eq(false, ok, "cipher 释放后 dofinal 被拒")
+        t:check(type(err) == "string" and nil ~= err:find("freed", 1, true), "错误信息点明已释放")
+        t:eq(true, (pcall(c.__gc, c)), "cipher 重复 __gc 不崩")
     end
 
     -- ── cipher ─────────────────────────────────────────────────────────
     do
-        -- AES-128 ECB round-trip（dofinal 自动 PKCS7 padding）
+        -- AES-128 ECB round-trip（cipher.new 缺省不填充，这里显式设 PKCS57 即 PKCS#7）
         local key = "0123456789abcdef"
         local plain = "srey cipher test."
         local enc = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 1)
@@ -387,6 +412,30 @@ runner.run(function(t)
         local dec = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.CTR, key, 128, 0)
         dec:iv(iv)
         t:eq(plain, dec:dofinal(ct), "AES-128 CTR round-trip")
+    end
+    do
+        -- 流模式按字节续用密钥流：任意切段逐次 :block 与一次 :dofinal 逐字节相同，空串不消耗密钥流；
+        -- 先 5 字节再整组那一下，CFB 不能复用同一组密钥流
+        local key = "0123456789abcdef"
+        local iv = "fedcba9876543210"
+        local plain = string.rep("0123456789", 6)
+        local cuts = { 5, 16, 0, 3, 15, 0, 1, 16 }
+        local models = { { CIPHER_MODEL.CFB, "CFB" }, { CIPHER_MODEL.OFB, "OFB" }, { CIPHER_MODEL.CTR, "CTR" } }
+        for _, md in ipairs(models) do
+            for enc = 1, 0, -1 do
+                local c = cipher.new(CIPHER_TYPE.AES, md[1], key, 128, enc)
+                c:iv(iv)
+                local whole = c:dofinal(plain)
+                c:reset()
+                local parts, off, i = {}, 1, 0
+                while off <= #plain do
+                    i = i % #cuts + 1
+                    parts[#parts + 1] = c:block(plain:sub(off, off + cuts[i] - 1))
+                    off = off + cuts[i]
+                end
+                t:eq(whole, table.concat(parts), md[2] .. (1 == enc and " 加密" or " 解密") .. " 任意切段 == dofinal")
+            end
+        end
     end
     do
         -- DES round-trip

@@ -7,9 +7,13 @@
 // 全项目的分配都收在这四个宏,换分配器只动这里。头与库由 tools/deps.py 摆到 lib/ 与 bin/
 #if WITH_MIMALLOC
     #if ENABLED_ASAN || ENABLED_TSAN
-        #error "WITH_MIMALLOC conflicts with ASan/TSan: both hook the allocator. Turn it off in config.h"
+        #error "WITH_MIMALLOC conflicts with ASan/TSan: both hook the allocator. Build with -DWITH_MIMALLOC=0 (mk.sh asan/tsan and CMake SREY_ASAN/SREY_TSAN do)"
     #endif
     #include "mimalloc/mimalloc.h"
+    #if defined(OS_WIN)
+        #pragma comment(lib, "mimalloc" DEPS_LIB_SUFFIX ".lib")// 库名后缀见 os.h 的 DEPS_LIB_SUFFIX
+        #pragma comment(lib, "advapi32.lib")// mimalloc 静态库自己要它
+    #endif
     #define _MALLOC  mi_malloc
     #define _CALLOC  mi_calloc
     #define _REALLOC mi_realloc
@@ -44,7 +48,7 @@ static volatile memset_func _memset_vol = memset;
 #if MEMORY_CHECK
 /* 分条计数：每线程分到一格、各占一条 cache line，免得每次 malloc/free 都在同一条
  * cache line 上跨核来回。槽位用尽(活过的线程数超过 MEM_SLOTS)的线程共用末尾那一格。
- * 每格都原子加(理由见 _mem_count)，计数精确。*/
+ * 每格都原子加(理由见 _mem_slot)，计数精确。*/
 // 独占槽位数;只增不回收,用尽即共用末尾那格(那一格上每次分配都要跨核争抢,慢一个数量级以上)。
 // 线程数约 nnet + nworker + 4,两者取 0 时按本进程可用核数算,取 256 够 120 核上下的机器
 #define MEM_SLOTS 256
@@ -125,20 +129,21 @@ static void _stack_symbols(FILE *fp, void *const *stack, int32_t frames) {
 static size_t _trk_hash(void *ptr) {
     return ((uintptr_t)ptr >> 4) & (MEM_TRK_BUCKET - 1);
 }
-// 捕获当前调用栈，跳过本函数与 _trk_add 两帧。_trk_add 须由 _malloc 等对外入口直接调，回溯才从入口开始
-static int32_t _trk_capture(void **stack, int32_t max) {
+// 捕获当前调用栈到 stack(须有 MEM_STACK_FRAMES 格)，固定跳过本函数与 _trk_add 两帧。_trk_add 须由 _malloc 等对外入口直接调，回溯才从入口开始。
+// 两者的 NOINLINE 承重别删：被内联后固定跳的两帧会吃掉真正的调用方
+NOINLINE static int32_t _trk_capture(void **stack) {
 #if defined(OS_WIN)
-    return (int32_t)CaptureStackBackTrace(2, (DWORD)max, stack, NULL);
+    return (int32_t)CaptureStackBackTrace(2, MEM_STACK_FRAMES, stack, NULL);
 #else
     void *tmp[MEM_STACK_FRAMES + 2];
-    int32_t n = backtrace(tmp, max + 2);
+    int32_t n = backtrace(tmp, MEM_STACK_FRAMES + 2);
     n = n > 2 ? n - 2 : 0;
     memcpy(stack, tmp + 2, (size_t)n * sizeof(void *));
     return n;
 #endif
 }
-// 记录一次分配（节点用系统 malloc，不计入 _nalloc/_nfree）
-static void _trk_add(void *ptr) {
+// 记录一次分配（节点用系统 malloc，不计入 _nalloc/_nfree）。NOINLINE 理由见 _trk_capture
+NOINLINE static void _trk_add(void *ptr) {
     if (NULL == ptr) {
         return;
     }
@@ -147,7 +152,7 @@ static void _trk_add(void *ptr) {
         return;
     }
     node->ptr = ptr;
-    node->frames = _trk_capture(node->stack, MEM_STACK_FRAMES);
+    node->frames = _trk_capture(node->stack);
     MEM_TRK_LOCK();
     size_t slot = _trk_hash(ptr);
     node->next = _trk_bucket[slot];
@@ -251,11 +256,10 @@ void mem_stat(uint64_t *nalloc, uint64_t *nfree) {
     uint64_t na = (uint64_t)ATOMIC64_GET_RELAXED(&_slots[MEM_SLOTS].nalloc);
     uint64_t nf = (uint64_t)ATOMIC64_GET_RELAXED(&_slots[MEM_SLOTS].nfree);
     uint64_t n = (uint64_t)ATOMIC64_GET_RELAXED(&_slotseq);
-    uint64_t i;
     if (n > MEM_SLOTS) {
         n = MEM_SLOTS;
     }
-    for (i = 0; i < n; i++) {
+    for (uint64_t i = 0; i < n; i++) {
         na += (uint64_t)ATOMIC64_GET_RELAXED(&_slots[i].nalloc);
         nf += (uint64_t)ATOMIC64_GET_RELAXED(&_slots[i].nfree);
     }

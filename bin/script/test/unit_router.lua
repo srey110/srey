@@ -44,6 +44,7 @@ local mock_http = {
     -- HEAD 出口：真实现只发头不发体，这里同样把 body 记成 nil，
     -- 但留下 headonly 与算出的长度，好让用例断言"头与 GET 一致、体没发"
     response_head = function(sk, code, headers, body)
+        nresp = nresp + 1
         last_resp = { sk = sk, code = code, headers = headers,
                       body = nil, headonly = true,
                       clen = ("string" == type(body)) and #body or 0 }
@@ -57,10 +58,15 @@ mock_http._respond = function()
 end
 mock_http._response_lua = function(headonly, sk, code, block, headers, body)
     if nil ~= block then
-        headers = {}
+        -- 真实现是头部块在前、附加头在后一起发出(405 的 Allow 就走附加头)，这里合进同一张表
+        local hs = {}
         for k, v in block:gmatch("([^:\r\n]+): ([^\r\n]*)\r\n") do
-            headers[k] = v
+            hs[k] = v
         end
+        for k, v in pairs(headers or {}) do
+            hs[k] = v
+        end
+        headers = hs
     end
     if headonly then
         mock_http.response_head(sk, code, headers, body)
@@ -79,13 +85,24 @@ srey.close = function(sk)
 end
 
 -- watch_closed 同样换掉：它往 task 级观察者表里塞的闭包没有反注册，真跑会在测试 task 上留一个。
--- 顺带拿计数断言"没有流式路由就不订阅"与"整个模块只订一次"
+-- 顺带拿计数断言"没有流式路由就不订阅"与"整个模块只订一次"，并留下观察者本身给 9.11 直接调
 local watch_n = 0
-srey.watch_closed = function(_)
+local watch_fn
+srey.watch_closed = function(fn)
     watch_n = watch_n + 1
+    watch_fn = fn
 end
 
+-- router 加载时就把 C 的 expect_continue 取进局部，流式准入放行后调它回 100。假包是 Lua 表，
+-- C 那边按 lightuserdata 校验会抛错：加载 mock 版前换成记账的假函数，加载完换回真的给 RealRoute
+local srey_router = require("srey.router")
+local _real_expect_continue = srey_router.expect_continue
+local expect_log = {}
+srey_router.expect_continue = function(sk, pack)
+    expect_log[#expect_log + 1] = { sk = sk, pack = pack }
+end
 local Route = require("advance.router")
+srey_router.expect_continue = _real_expect_continue
 -- 10.1 节要看线缆上的真字节：摘掉 mock 再加载一份接真 lib.http 的 router，加载完两份都放回原样
 package.loaded["lib.http"], package.loaded["advance.router"] = nil, nil
 local RealRoute = require("advance.router")
@@ -95,17 +112,35 @@ package.loaded["lib.http"], package.loaded["advance.router"] = mock_http, Route
 -- 真实现留一份给第 10 节：起真监听收真包，验 C 侧返回值与 router 按位置解构对得上
 local _c_router_mt = debug.getmetatable(Route._c_router)
 local _real_match_pack = _c_router_mt.match_pack
+-- 同 C 的 http_want_close：Connection 的逗号列表里有 close，或 HTTP/1.0 没带 keep-alive
+local function _conn_has(conn, tok)
+    for v in conn:gmatch("[^,]+") do
+        if tok == v:match("^%s*(.-)%s*$"):lower() then
+            return true
+        end
+    end
+    return false
+end
+local function _want_close(pack)
+    local conn = mock_http.head(pack, "Connection") or ""
+    if _conn_has(conn, "close") then
+        return true
+    end
+    return "HTTP/1.0" == pack._status[3] and not _conn_has(conn, "keep-alive")
+end
 local function _shim_match_pack(self, pack)
     local st = pack._status
     if not st then
         return nil
     end
+    local close = _want_close(pack)
     local ok, code, parsed, idx, params = self:match(st[1], st[2] or "")
     if not ok then
-        return false, code, st[1], st[3]
+        return false, code, st[1], st[3], close, parsed-- 未命中时 match 的第三个返回值是 Allow
     end
     local query = parsed.param
-    return true, code, st[1], st[3], parsed.path, next(query) and query or nil, idx, next(params) and params or nil
+    return true, code, st[1], st[3], close, parsed.path, next(query) and query or nil, idx,
+           next(params) and params or nil
 end
 _c_router_mt.match_pack = _shim_match_pack
 local SLICE_TYPE   = SLICE_TYPE
@@ -149,11 +184,14 @@ runner.run(function(t)
         t:eq(404, (dispatch(r, "GET", "/user")  or {}).code,  "partial path /user → 404")
     end
 
-    -- 1.2 方法不匹配 → 404
+    -- 1.2 路径在而方法不对 → 405 带 Allow(该路径上注册过的方法，同 Laravel)
     do
         local r = Route.new()
         r:get("/x", function(ctx) ctx:text(200, "ok") end)
-        t:eq(404, (dispatch(r, "POST", "/x") or {}).code, "method mismatch → 404")
+        local resp = dispatch(r, "POST", "/x") or {}
+        t:eq(405, resp.code, "method mismatch → 405")
+        t:eq("GET, HEAD", resp.headers and resp.headers.Allow, "405 带 Allow")
+        t:check(nil ~= resp.body, "405 带正文")
     end
 
     -- 1.3 单个路径参数
@@ -309,6 +347,60 @@ runner.run(function(t)
         t:eq(404, (dispatch(r, "GET", "/litq/xyz") or {}).code, "{a?b} 当字面量, /litq/xyz 不命中参数 → 404")
     end
 
+    -- 1.16 OPTIONS 自动回 200 带 Allow、不带正文(同 Laravel)；注册了 OPTIONS 路由的照常走它
+    do
+        local r = Route.new()
+        r:post("/o", function(ctx) ctx:text(200, "post") end)
+        r:put("/o", function(ctx) ctx:text(200, "put") end)
+        local resp = dispatch(r, "OPTIONS", "/o") or {}
+        t:eq(200, resp.code, "OPTIONS 自动 200")
+        t:eq("POST, PUT", resp.headers and resp.headers.Allow, "OPTIONS 带 Allow，按方法表排序")
+        t:eq(nil, resp.body, "OPTIONS 自动应答不带正文")
+        t:eq(404, (dispatch(r, "OPTIONS", "/none") or {}).code, "路径不在的 OPTIONS 仍 404")
+        r:options("/p", function(ctx) ctx:text(200, "opt") end)
+        t:eq("opt", (dispatch(r, "OPTIONS", "/p") or {}).body, "注册了 OPTIONS 的走自己的 handler")
+    end
+
+    -- 1.17 末尾通配吃下的段(已解码、空段已丢)按 '/' 拼成 params["*"]；一段没吃下就没有这个键
+    do
+        local r = Route.new()
+        local got
+        r:get("/w/*", function(ctx) got = ctx.params["*"]; ctx:text(200, "ok") end)
+        dispatch(r, "GET", "/w/a//b%20c/d")
+        t:eq("a/b c/d", got, "params[\"*\"] 是吃下的段")
+        got = "x"
+        dispatch(r, "GET", "/w")
+        t:eq(nil, got, "一段没吃下时没有 params[\"*\"]")
+    end
+
+    -- 1.18 请求目标不以 '/' 开头 → 400(否则首段被当成 host 吃掉)；绝对形式照常命中
+    do
+        local r = Route.new()
+        r:get("/a/b", function(ctx) ctx:text(200, "ab") end)
+        t:eq(400, (dispatch(r, "GET", "x/a/b") or {}).code, "x/a/b → 400")
+        t:eq("ab", (dispatch(r, "GET", "http://h/a/b") or {}).body, "绝对形式命中")
+    end
+
+    -- 1.19 Connection: close、或 HTTP/1.0 没带 keep-alive → 回完即关连接(错误码与兜底 500 那几条路也关)；其余不关
+    do
+        local r = Route.new()
+        r:get("/c", function(ctx) ctx:text(200, "c") end)
+        r:get("/silent", function() end)
+        local function closes(method, path, headers, version)
+            closed_log = {}
+            dispatch(r, method, path, nil, headers, version)
+            return #closed_log
+        end
+        t:eq(1, closes("GET", "/c", { Connection = "close" }, "HTTP/1.1"), "Connection: close 回完即关")
+        t:eq(1, closes("GET", "/c", { connection = "TE, CLOSE" }, "HTTP/1.1"), "记号列表里的 close 也认")
+        t:eq(1, closes("GET", "/c", nil, "HTTP/1.0"), "HTTP/1.0 没带 keep-alive 回完即关")
+        t:eq(0, closes("GET", "/c", { Connection = "keep-alive" }, "HTTP/1.0"), "HTTP/1.0 带 keep-alive 不关")
+        t:eq(0, closes("GET", "/c", nil, "HTTP/1.1"), "HTTP/1.1 默认不关")
+        t:eq(1, closes("GET", "/none", { Connection = "close" }, "HTTP/1.1"), "404 那条路同样关")
+        t:eq(1, closes("POST", "/c", { Connection = "close" }, "HTTP/1.1"), "405 那条路同样关")
+        t:eq(1, closes("GET", "/silent", { Connection = "close" }, "HTTP/1.1"), "兜底 500 之后同样关")
+    end
+
     -- ── 2. ctx 字段 ────────────────────────────────────────────────────────
 
     do
@@ -330,7 +422,7 @@ runner.run(function(t)
         t:eq("/items/5",  got.path,   "ctx.path")
         t:eq("5",         got.id,     "ctx.params.id")
         t:eq("hello",     got.body,   "ctx.body")
-        -- client 是连接方向标志(1=客户端 0=服务端)，不是地址；取对端 IP 走 utils.remote_addr(sk)
+        -- client 是连接方向标志(1=客户端 0=服务端)，不是地址；对端 IP 见 srey.on_accepted
         t:eq(0,           got.client, "ctx.client")
         t:eq(sk_a,        got.sk,     "ctx.sk")
     end
@@ -431,7 +523,7 @@ runner.run(function(t)
     end
 
     -- HEAD 的失败路径同样不能带体：多发的字节会被对端当成下一条响应的开头。
-    -- C 侧 _router_send_code / _router_send_simple 都带 head_only，Lua 侧三个出口要对齐
+    -- C 侧 _router_send_fail / _router_send_simple 都带 head_only，Lua 侧三个出口要对齐
     do
         local r = Route.new()
         r:get("/ok", function(ctx) ctx:text(200, "x") end)
@@ -839,6 +931,22 @@ runner.run(function(t)
         t:eq(500, (resp or {}).code, "中间件全程拒绝 → 兜底 500")
     end
 
+    -- 4.18 分组与路由级重复的中间件只留第一次出现的位置(同 Laravel)：同一个函数只跑一次，顺序按首次
+    do
+        local order = {}
+        local r = Route.new()
+        local function ma(_, nxt) order[#order + 1] = "a"; nxt() end
+        local function mb(_, nxt) order[#order + 1] = "b"; nxt() end
+        r:define("mb", mb)
+        r:middleware(ma, "mb"):group(function()
+            r:middleware(ma):group(function()
+                r:get("/d", function(ctx) order[#order + 1] = "h"; ctx:text(200, "ok") end, { mb, "mb", ma })
+            end)
+        end)
+        dispatch(r, "GET", "/d")
+        t:eq("a,b,h", table.concat(order, ","), "重复的中间件只跑一次")
+    end
+
     -- ── 5. GroupBuilder（prefix / middleware / group） ──────────────────────
 
     -- 5.1 prefix：组内路由加前缀，组外不受影响
@@ -947,6 +1055,16 @@ runner.run(function(t)
         end)
         dispatch(r, "GET", "/g/y")
         t:eq(true, ran, "named mw in group by name")
+    end
+
+    -- 5.9 前缀与路径之间自动补 '/'(同 Laravel)："/api" + "v1" + "users" 即 /api/v1/users
+    do
+        local r = Route.new()
+        r:prefix("/api"):prefix("v1"):group(function()
+            r:get("users", function(ctx) ctx:text(200, "u") end)
+        end)
+        t:eq("u", (dispatch(r, "GET", "/api/v1/users") or {}).body, "前缀与路径之间补 '/'")
+        t:eq(404, (dispatch(r, "GET", "/apiv1users") or {}).code, "不会直接拼成 /apiv1users")
     end
 
     -- ── 6. 命名路由 ─────────────────────────────────────────────────────────
@@ -1279,7 +1397,7 @@ runner.run(function(t)
     end
 
     -- 9.3b chunked 匹配不上 → 404/405 而非 411：411 只表示"路由在但接不住 chunked"。
-    -- 与 C 侧 _router_chunked_probe 同形；改前无流式路由时会被短路成一律 411
+    -- 与 C 侧 _router_chunked_nostream 同形；改前无流式路由时会被短路成一律 411
     do
         local r = Route.new()
         r:post("/plain", function(ctx) ctx:text(200, "ok") end)
@@ -1288,14 +1406,16 @@ runner.run(function(t)
         feed(r, SLICE_TYPE.START, make_pack("POST", "/nope"))
         t:eq(404, (last_resp or {}).code, "chunked 打未注册路径 → 404")
         t:eq(1, #closed_log, "404 后关连接")
-        -- 路径对上但方法掩码不交也是 404，不是 405
+        -- 路径对上但方法掩码不交 → 405 带 Allow，同一次到齐的请求
         last_resp = nil
         feed(r, SLICE_TYPE.START, make_pack("PUT", "/plain"))
-        t:eq(404, (last_resp or {}).code, "chunked 方法不匹配 → 404")
-        -- 405 只由方法名不认识产生
+        t:eq(405, (last_resp or {}).code, "chunked 方法不匹配 → 405")
+        t:eq("POST", (last_resp or {}).headers and last_resp.headers.Allow, "chunked 方法不匹配带 Allow")
+        -- 方法名不认识同样 405，但不带 Allow
         last_resp = nil
         feed(r, SLICE_TYPE.START, make_pack("FROB", "/plain"))
         t:eq(405, (last_resp or {}).code, "chunked 未知方法 → 405")
+        t:eq(nil, (last_resp or {}).headers and last_resp.headers.Allow, "未知方法不带 Allow")
     end
 
     -- 9.3a 命名路由反查：Route:url 拿注册时的完整路径回填占位符
@@ -1317,8 +1437,8 @@ runner.run(function(t)
              "通配值原样保留空段与尾斜杠，拆开重拼会改掉调用方给的值")
         t:eq("/static/a%20b/c", r:url("static.any", { ["*"] = "a b/c" }),
              "通配段内空格照编，作分隔的 '/' 不动")
-        t:eq("/static/", r:url("static.any", { ["*"] = "" }),
-             "通配值为空串留尾斜杠，与缺参丢整段区分开")
+        t:eq("/static", r:url("static.any", { ["*"] = "" }),
+             "通配值为空串等同缺参，整段丢弃(同 Laravel)")
         t:eq("/user/42?a=1&b=2&c=3", r:url("user.show", { id = 42, a = 1, b = 2, c = 3 }),
              "多个剩余键按整串排序，同一组参数每次给出同一个 URL")
         -- Lua 的 / 恒出浮点,tostring(84/2) 是 "42.0"：生成出 /user/42.0 再打回来,
@@ -1331,6 +1451,18 @@ runner.run(function(t)
         t:eq("/user/42.0", r:url("user.show", { id = "42.0" }), "字符串原样交出不被改")
         t:eq("/user/3.5", r:url("user.show", { id = 3.5 }), "真小数原样保留")
         t:eq(false, pcall(r.url, r, "user.show", {}), "必填占位符缺参报错")
+        t:eq(false, pcall(r.url, r, "user.show", { id = "" }), "必填占位符传空串同样报错")
+        -- 跳过一个可选段后再给后面的可选段 / 通配取值报错：打回来那个值会被前面的可选段拿走
+        r:get("/opt2/{a?}/{b?}", function(ctx) ctx:text(200, "o") end):name("opt.two")
+        r:get("/optw/{a?}/*", function(ctx) ctx:text(200, "o") end):name("opt.wild")
+        t:eq("/opt2/1/2", r:url("opt.two", { a = 1, b = 2 }), "两个可选段都给")
+        t:eq("/opt2/1", r:url("opt.two", { a = 1 }), "只给前一个可选段")
+        t:eq(false, pcall(r.url, r, "opt.two", { b = 2 }), "跳过前一个可选段再给后一个报错")
+        t:eq(false, pcall(r.url, r, "opt.two", { a = "", b = 2 }), "前一个给空串同样算跳过")
+        t:eq(false, pcall(r.url, r, "opt.wild", { ["*"] = "x" }), "跳过可选段再给通配报错")
+        -- 字面量段同样编码(同 rawurlencode)
+        r:get("/my file/{id}", function(ctx) ctx:text(200, "m") end):name("lit.space")
+        t:eq("/my%20file/1", r:url("lit.space", { id = 1 }), "字面量段里的空格编成 %20")
         t:eq(false, pcall(r.url, r, "nosuch", {}), "未登记的名字报错")
 
         -- 生成与匹配共用 C 侧那一份段解析（Route:url 走注册时交回的 entry._segs），这里把生成的
@@ -1358,6 +1490,12 @@ runner.run(function(t)
         t:eq("static.any", nm, "末尾通配缺参生成的路径落回同一条路由")
         _, nm = back(r:url("static.any", { ["*"] = "a/b" }))
         t:eq("static.any", nm, "末尾通配有参生成的路径落回同一条路由")
+        _, nm, ps = back(r:url("lit.space", { id = 1 }))
+        t:eq("lit.space", nm, "编码过的字面量段往返后落回同一条路由")
+        t:eq("1", ps.id, "字面量段编码不影响占位符取值")
+        _, nm, ps = back(r:url("opt.two", { a = 1 }))
+        t:eq("opt.two", nm, "只给前一个可选段生成的路径落回同一条路由")
+        t:eq("1", ps.a, "取值落在前一个可选段上")
     end
 
     -- 9.3c 占位符名字只认 \w，{*} 与 {a-b} 都落字面量。{*} 尤其不能当占位符——它与末尾
@@ -1367,8 +1505,9 @@ runner.run(function(t)
         local r = Route.new()
         r:get("/a/{*}", function(ctx) ctx:text(200, "ok") end):name("brace.wild")
         r:get("/b/{a-b}", function(ctx) ctx:text(200, "ok") end):name("brace.dash")
-        t:eq("/a/{*}", r:url("brace.wild", {}), "{*} 是字面量，不吃 params[\"*\"]")
-        t:eq("/b/{a-b}", r:url("brace.dash", {}), "{a-b} 是字面量，不当占位符")
+        t:eq("/a/%7B%2A%7D", r:url("brace.wild", {}), "{*} 是字面量，不吃 params[\"*\"]，按字面量编码")
+        t:eq("/b/%7Ba-b%7D", r:url("brace.dash", {}), "{a-b} 是字面量，不当占位符")
+        t:check(r._c_router:match("GET", r:url("brace.wild", {})), "编码过的 {*} 打回来仍命中这条字面量路由")
 
         local rt = Route.new()._c_router
         t:eq(3, select("#", rt:add("NOPE", "/arity")), "add 失败也返 3 个值")
@@ -1400,6 +1539,37 @@ runner.run(function(t)
         feed_stream(r, "/st", { "ok" }, { ["x-token"] = "secret" })
         t:eq(200, (last_resp or {}).code, "带对 token 收齐 → 200")
         t:eq("ok", (last_resp or {}).body, "放行后 body 正确")
+    end
+
+    -- 9.4a 准入放行才调 expect_continue 回 100(请求带没带 Expect 由 C 那边判)，且排在 START 回调之前；
+    -- 准入被拒不调，客户端直接收到最终响应
+    do
+        local r = Route.new()
+        local at_start
+        r:define("auth", function(ctx, next)
+            if "secret" ~= ctx:header("x-token") then
+                ctx:text(401, "no")
+                return
+            end
+            next()
+        end)
+        r:post_stream("/st", function(ctx, slice)
+            if SLICE_TYPE.START == slice then
+                at_start = #expect_log
+            elseif SLICE_TYPE.END == slice then
+                ctx:text(200, "ok")
+            end
+        end, { "auth" })
+        expect_log = {}
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        t:eq(0, #expect_log, "准入被拒不回 100")
+        local pk = make_pack("POST", "/st", nil, { ["x-token"] = "secret" })
+        feed(r, SLICE_TYPE.START, pk)
+        t:eq(1, #expect_log, "准入放行回 100")
+        t:check(nil ~= expect_log[1] and pk == expect_log[1].pack and sk_a == expect_log[1].sk,
+                "回 100 用的是本连接与首帧")
+        t:eq(1, at_start, "回 100 排在 START 回调之前")
+        feed(r, SLICE_TYPE.END, {})
     end
 
     -- 9.5 一次到齐的请求打到流式路由 → 单次回调，slice 为 0，data 是完整 body
@@ -1520,9 +1690,27 @@ runner.run(function(t)
         t:check(nil == probe[1], "丢掉的流式 router 可被回收，没被 CLOSE 观察者钉住")
     end
 
+    -- 9.11 真实的关闭清理路径：模块唯一的那个 CLOSE 观察者收到关闭就当场摘表并投 ABORT，
+    -- 不另起协程——要排在业务 on_closed 之前，与 C 侧 router_closed_watch 同序
+    do
+        local r = Route.new()
+        local log = {}
+        r:post_stream("/st", echo_stream(log))
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st"))
+        feed(r, SLICE_TYPE.SLICE, { _body = "half" })
+        if t:check("function" == type(watch_fn), "模块订过 CLOSE 观察者") then
+            watch_fn(PACK_TYPE.HTTP, sk_a)
+            t:eq(3, #log, "START + SLICE + ABORT 共 3 次")
+            t:eq(STREAM_ABORT, log[3], "观察者返回时 ABORT 已投到")
+            t:eq(nil, r._streams[sk_a.skid], "记录已摘")
+            watch_fn(PACK_TYPE.HTTP, sk_b)
+            t:eq(3, #log, "别的连接关闭不投")
+        end
+    end
+
     -- ── 10. 真包走真实的 C match_pack ───────────────────────────────────────
-    -- 前面全走模块头的 shim。这里起真监听收真包：C 的 match_pack 与 match 逐项比（命中 8 个返回值、
-    -- 未命中 4 个、空的查询 / 路径参数给 nil、chunked 后续包只给 1 个 nil），再让 dispatch 用真实现
+    -- 前面全走模块头的 shim。这里起真监听收真包：C 的 match_pack 与 match 逐项比（命中 9 个返回值、
+    -- 未命中 6 个、空的查询 / 路径参数给 nil、chunked 后续包只给 1 个 nil），再让 dispatch 用真实现
     -- 跑一遍，钉住 _match_ctx 按位置解构出来的 ctx 字段
     do
         local function same(a, b)
@@ -1591,28 +1779,39 @@ runner.run(function(t)
                 if not t:check(nil ~= g and g.ok, "收到并派发 " .. label) then
                     break
                 end
+                -- 未命中时 match 的第三个返回值是 Allow
                 ok, code, purl, idx, params = r._c_router:match(rq[1], rq[2])
-                t:eq(ok and 8 or 4, g.rtn.n, "match_pack 返回值个数 " .. label)
+                t:eq(ok and 9 or 6, g.rtn.n, "match_pack 返回值个数 " .. label)
                 t:eq(ok, g.rtn[1], "match_pack 命中与否 " .. label)
                 t:eq(code, g.rtn[2], "match_pack 状态码 " .. label)
                 t:eq(rq[1], g.rtn[3], "match_pack 方法 " .. label)
                 t:eq("HTTP/1.1", g.rtn[4], "match_pack 版本 " .. label)
+                t:eq(false, g.rtn[5], "match_pack 不关连接 " .. label)
                 if ok then
-                    t:eq(purl.path, g.rtn[5], "match_pack path " .. label)
-                    t:check(same(next(purl.param) and purl.param or nil, g.rtn[6]), "match_pack query(空给 nil) " .. label)
-                    t:eq(idx, g.rtn[7], "match_pack 路由索引 " .. label)
-                    t:check(same(next(params) and params or nil, g.rtn[8]), "match_pack params(空给 nil) " .. label)
+                    t:eq(purl.path, g.rtn[6], "match_pack path " .. label)
+                    t:check(same(next(purl.param) and purl.param or nil, g.rtn[7]), "match_pack query(空给 nil) " .. label)
+                    t:eq(idx, g.rtn[8], "match_pack 路由索引 " .. label)
+                    t:check(same(next(params) and params or nil, g.rtn[9]), "match_pack params(空给 nil) " .. label)
                     t:eq(rq[1], g.ctx and g.ctx.method, "ctx.method " .. label)
                     t:eq("HTTP/1.1", g.ctx and g.ctx.version, "ctx.version " .. label)
                     t:eq(purl.path, g.ctx and g.ctx.path, "ctx.path " .. label)
                     t:check(g.ctx and same(purl.param, g.ctx.query), "ctx.query " .. label)
                     t:check(g.ctx and same(params, g.ctx.params), "ctx.params " .. label)
                 else
+                    t:eq(purl, g.rtn[6], "match_pack Allow " .. label)
                     t:eq(code, g.code, "未命中按 match 的码回 " .. label)
                     t:eq(nil, g.ctx, "未命中不进 handler " .. label)
                 end
             end
+            t:eq(405, got[11] and got[11].code, "路径在方法不对 405")
+            t:eq("GET, HEAD", got[11] and got[11].rtn[6], "405 的 Allow")
             t:eq(405, got[12] and got[12].code, "未知方法 405")
+            -- HTTP/1.0 没带 keep-alive：match_pack 第 5 个返回值为 true(真关连接走的是 mock 的 srey.close)
+            local nreq = #got
+            raw = "GET /q HTTP/1.0\r\nHost: x\r\n\r\n"
+            srey.syn_send(csk, raw, #raw, 1)
+            g = got[nreq + 1]
+            t:check(nil ~= g and true == g.rtn[5], "HTTP/1.0 的 match_pack 要求关连接")
             raw = "POST /q HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"
             srey.send(csk, raw, #raw, 1)
             for _ = 1, 100 do
@@ -1692,7 +1891,8 @@ runner.run(function(t)
         end
     end
 
-    srey.close(sk_a)
-    srey.close(sk_b)
+    -- 模块头换掉的 srey.close 只记账，开头真开的两个 UDP 要走真的关
+    _real_close(sk_a)
+    _real_close(sk_b)
 end)
 end)

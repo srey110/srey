@@ -125,8 +125,8 @@ char *_mysql_payload_first(mysql_ctx *mysql, buffer_ctx *buf, char *stk, size_t 
 // OK 包尾部的 session-state-change：服务端切换当前库（USE / COM_INIT_DB / 存储过程内切库）都经此回带，
 // 是 client.database 的权威来源。SERVER_SESSION_STATE_CHANGED 只会由接受了 CLIENT_SESSION_TRACK 的
 // 服务端置位，故该位本身即可判定尾部是 lenenc 布局，不必再看协商结果；老服务端不置位,尾部整段跳过。
-// 本段只是可选信息，任何不自洽都当"没带"静默放弃而不是拖垮进程：读长度一律走
-// _mysql_get_lenenc（缓冲不够它返 ERR_FAILED），读出来的长度再与剩余字节比过才用
+// 本段只是可选信息，任何不自洽都当"没带"放弃（只有 lenenc 前缀非法时 _mysql_get_lenenc 打一条日志）：
+// 读长度一律走 _mysql_get_lenenc（缓冲不够它返 ERR_FAILED），读出来的长度再与剩余字节比过才用
 static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
     int32_t rtn;
     uint64_t lens = _mysql_get_lenenc(breader, &rtn);
@@ -171,7 +171,7 @@ static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
         binary_offset(breader, next);
     }
 }
-// 读 OK 包体：两个计数与 status_flags 经出参回带(不要的传 NULL)，不落 ctx；带 session track 时顺带更新当前库
+// 读 OK 包体：两个计数与 status_flags 经出参回带(不要的传 NULL)，截断时一个都不写；带 session track 时顺带更新当前库
 static int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
     uint64_t *affected_rows, uint64_t *last_id, int16_t *status_flags) {
     int32_t _rtn;
@@ -197,19 +197,6 @@ static int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
     SET_PTR(status_flags, flags);
     return ERR_OK;
 }
-// 解析 OK 响应包，更新 mysql->last_id 和 mysql->affected_rows。
-// status_flags 回带给调用方，只关心多结果集的那条路要它，其余传 NULL。
-// 两个计数落到 ctx 之前先攒在局部量里：中途截断时不留下半套值
-static int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, int16_t *status_flags) {
-    uint64_t affected;
-    uint64_t lastid;
-    if (ERR_OK != _mpack_ok_parse(mysql, breader, &affected, &lastid, status_flags)) {
-        return ERR_FAILED;
-    }
-    mysql->last_id = (int64_t)lastid;
-    mysql->affected_rows = (int64_t)affected;
-    return ERR_OK;
-}
 // 解析 EOF 响应包，读取警告数和状态标志
 // warnings(2) + status_flags(2)，读之前先比剩余字节；截断的包判失败而不是撞断言
 static int32_t _mpack_eof(binary_ctx *breader, int16_t *status_flags) {
@@ -221,14 +208,12 @@ static int32_t _mpack_eof(binary_ctx *breader, int16_t *status_flags) {
     return ERR_OK;
 }
 // ERR 包体：error_code(2) + '#' + sql_state(5) + 错误串。各段读之前都要比剩余字节——
-// 报文长度由对端决定，截断的包只该当"没带"而不是撞上 binary_get_* 的断言把进程 abort
-void _mpack_err(mysql_ctx *mysql, binary_ctx *breader) {
+// 报文长度由对端决定，截断的包只该当"没带"(码与文案留 0 / NULL)而不是撞上 binary_get_* 的断言把进程 abort
+void _mpack_err(mpack_ctx *mpack, binary_ctx *breader) {
     if (!binary_have(breader, 2)) {
-        mysql->error_code = 0;
-        mysql->error_msg[0] = '\0';
         return;
     }
-    mysql->error_code = (int16_t)binary_get_integer(breader, 2, 1);
+    mpack->error_code = (uint16_t)binary_get_uinteger(breader, 2, 1);
     // sql_state 段只在 CLIENT_PROTOCOL_41 协商之后才有，握手前的 ERR(1040/1129/1130)不带它，
     // 故按 '#' 标记判定而不是无条件跳 6 字节——跳错了就从错误正文里啃掉六个字符
     if (binary_have(breader, 6)
@@ -237,10 +222,7 @@ void _mpack_err(mysql_ctx *mysql, binary_ctx *breader) {
     }
     size_t mlens = binary_remain(breader);
     if (mlens > 0) {
-        copy_bounded(binary_get_binary(breader, mlens), mlens,
-                     mysql->error_msg, sizeof(mysql->error_msg), 0);
-    } else {
-        mysql->error_msg[0] = '\0';
+        mpack->pack = dup_zero(binary_get_binary(breader, mlens), mlens);
     }
 }
 // 分配并初始化一个新的 mpack_ctx
@@ -255,14 +237,14 @@ static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, 
     if (MYSQL_OK == binary_get_uint8(breader)) {
         mpack->pack_type = MPACK_OK;
         // COM_INIT_DB / COM_PING / COM_STMT_RESET 不会有后续结果集，status_flags 无人问
-        if (ERR_OK != _mpack_ok(mysql, breader, NULL)) {
+        if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, NULL)) {
             BIT_SET(*status, PROT_ERROR);
             _mysql_pkfree(mpack);
             return NULL;
         }
     } else {
         mpack->pack_type = MPACK_ERR;
-        _mpack_err(mysql, breader);
+        _mpack_err(mpack, breader);
     }
     mysql->cur_cmd = 0;
     return mpack;
@@ -314,7 +296,7 @@ static inline int32_t _mpack_more_data(mysql_ctx *mysql, buffer_ctx *buf, binary
 }
 // 检查 EOF 包中的状态标志。进来时调用方已保证至少剩 1 字节（判过 offset < size 且 peek 过）。
 // 协商了 CLIENT_DEPRECATE_EOF 时终止包按 OK 包读，只取 status_flags 与 session track，
-// 计数不落 ctx：同老式 EOF，结果集不改 affected_rows / last_id
+// 计数不要：同老式 EOF，结果集包不带影响行数与自增 ID
 static inline eof_final _mpack_check_final(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
     binary_get_skip(breader, 1);
     int16_t status_flags;
@@ -362,7 +344,7 @@ static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *bread
             return ERR_FAILED;
         }
         if (0xfb == (uint8_t)data[off]) {
-            row[i].nil = 1; // 0xfb 表示 NULL 值
+            row[i].nil = 1;// 0xfb 表示 NULL 值
             row[i].val.lens = 0;
             row[i].val.data = NULL;
             off++;
@@ -385,10 +367,6 @@ static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *bread
 }
 // 解析二进制协议（COM_STMT_EXECUTE）结果集中的一行数据，字段值按类型固定或 lenenc 长度读取
 static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
-    int32_t bit;
-    int32_t _rtn;
-    uint64_t vlens;
-    size_t lens;
     const int32_t nf = reader->field_count;
     const mpack_field *fields = reader->fields;
     char *data = breader->data;
@@ -404,6 +382,10 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
     }
     const char *bitmap = data + off;
     off += bmlens;
+    int32_t bit;
+    int32_t _rtn;
+    uint64_t vlens;
+    size_t lens;
     for (int32_t i = 0; i < nf; i++) {
         bit = i + 2;
         if (BIT_CHECK(bitmap[(bit / 8)], (1 << (bit % 8)))) {
@@ -471,6 +453,7 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
         case MYSQL_TYPE_DECIMAL:
         case MYSQL_TYPE_NEWDECIMAL:
         case MYSQL_TYPE_JSON:
+        case MYSQL_TYPE_VECTOR:
             // 字符串/BLOB 类型以 lenenc 长度编码。比过再收窄，理由同 _mpack_parse_text_row
             vlens = _mpack_row_lenenc(breader, data, size, &off, &_rtn);
             if (ERR_OK != _rtn
@@ -480,7 +463,7 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
             lens = (size_t)vlens;
             break;
         default:
-            LOG_WARN("unknow data type %d.", (int32_t)fields[i].type);
+            LOG_WARN("unknown data type %d.", (int32_t)fields[i].type);
             return ERR_FAILED;
         }
         // 定长分支的长度虽是常量，截断的报文照样读不出来，故与 lenenc 分支共用这道判定
@@ -497,15 +480,15 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
     return ERR_OK;
 }
 // 结果集字段/行阶段遇 ERR(0xff) 包：MySQL 协议允许 ERR 提前终止结果集(KILL QUERY / max_execution_time 等)，
-// 须解析错误并以 MPACK_ERR 完成本 mpack 而非当协议错误断连；释放已积累的 reader，返回不带 payload 的错误结果。
-// 本包在 reader 的块链里，必须先由 _mpack_err 把错误码与错误串拷进 mysql，再释放 reader
+// 须解析错误并以 MPACK_ERR 完成本 mpack 而非当协议错误断连；释放已积累的 reader，另交一个 ERR 包。
+// 本包在 reader 的块链里，必须先由 _mpack_err 把错误码与错误串拷进新包，再释放 reader
 static mpack_ctx *_mpack_reader_err(mysql_ctx *mysql, binary_ctx *breader) {
     binary_get_skip(breader, 1);
-    _mpack_err(mysql, breader);
-    _mysql_pkfree(mysql->mpack);
-    mysql->mpack = NULL;
     mpack_ctx *mpack = _mpack_new();
     mpack->pack_type = MPACK_ERR;
+    _mpack_err(mpack, breader);
+    _mysql_pkfree(mysql->mpack);
+    mysql->mpack = NULL;
     mysql->parse_status = 0;
     mysql->cur_cmd = 0;
     return mpack;
@@ -513,15 +496,15 @@ static mpack_ctx *_mpack_reader_err(mysql_ctx *mysql, binary_ctx *breader) {
 // 循环读取并解析结果集行数据，直到遇到 EOF 包结束。这一阶段的包都在 reader 的块链里(见 _mpack_arena)，
 // 不单独释放；例外是没有列时包是单独分配的
 static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
-    uint8_t first;
-    eof_final fin;
-    mpack_ctx *mpack;
     mysql_reader_ctx *reader = mysql->mpack->pack;
     if (reader->field_count <= 0) {
         BIT_SET(*status, PROT_ERROR);
         FREE(breader->data);
         return NULL;
     }
+    uint8_t first;
+    eof_final fin;
+    mpack_ctx *mpack;
     for (;;) {
         if (!binary_have(breader, 1)) {
             BIT_SET(*status, PROT_ERROR);
@@ -545,7 +528,7 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
                 mysql->parse_status = 0;
                 return mpack;
             }
-            mpack = mysql->mpack; // 行解析完成，返回完整结果集
+            mpack = mysql->mpack;// 行解析完成，返回完整结果集
             mysql->mpack = NULL;
             mysql->cur_cmd = 0;
             mysql->parse_status = 0;
@@ -630,7 +613,7 @@ static int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
 }
 // 循环读取并解析结果集列字段描述，字段解析完毕后继续解析行数据。
 // 协商了 CLIENT_DEPRECATE_EOF 时列定义后没有 EOF，收满 field_count 个即转入行阶段
-static mpack_ctx *_mpack_reader_fileds(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
+static mpack_ctx *_mpack_reader_fields(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
     uint8_t first;
     mysql_reader_ctx *reader = mysql->mpack->pack;
     for (;;) {
@@ -652,7 +635,7 @@ static mpack_ctx *_mpack_reader_fileds(mysql_ctx *mysql, buffer_ctx *buf, binary
                 return NULL;
             }
             reader->index = 0;
-            mysql->parse_status = RST_ROW; // 字段解析完成，切换到行解析阶段
+            mysql->parse_status = RST_ROW;// 字段解析完成，切换到行解析阶段
             break;
         }
         if (reader->index >= reader->field_count) {
@@ -684,7 +667,7 @@ static mpack_ctx *_mpack_reader(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *b
     mpack_ctx *mpack = NULL;
     switch (mysql->parse_status) {
     case RST_FIELD:
-        mpack = _mpack_reader_fileds(mysql, buf, breader, status);
+        mpack = _mpack_reader_fields(mysql, buf, breader, status);
         break;
     case RST_ROW:
         mpack = _mpack_reader_rows(mysql, buf, breader, status);
@@ -706,7 +689,7 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
             mpack = _mpack_new();
             mpack->pack_type = MPACK_OK;
             int16_t status_flags;
-            if (ERR_OK != _mpack_ok(mysql, breader, &status_flags)) {
+            if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, &status_flags)) {
                 BIT_SET(*status, PROT_ERROR);
                 _mysql_pkfree(mpack);
                 return NULL;
@@ -722,7 +705,7 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
             binary_get_skip(breader, 1);
             mpack = _mpack_new();
             mpack->pack_type = MPACK_ERR;
-            _mpack_err(mysql, breader);
+            _mpack_err(mpack, breader);
             mysql->cur_cmd = 0;
         } else if (MPACK_QUERY == restype && MYSQL_LOCAL_INFILE == first) {
             // 不支持 LOCAL INFILE，直接报错
@@ -752,8 +735,7 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
     mpack_field *defs;
     mysql_stmt_ctx *stmt = mysql->mpack->pack;
     for (;;) {
-        // 与 _mpack_reader_fileds / _mpack_reader_rows 风格一致：恶意/受损服务端发空
-        // packet (payload_lens=0) 时 breader->size=0，binary_at 触发 ASSERTAB → abort
+        // 零长包已由 _mysql_payload 拒收，这里只是保底
         if (!binary_have(breader, 1)) {
             BIT_SET(*status, PROT_ERROR);
             FREE(breader->data);
@@ -773,7 +755,7 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
                 FREE(breader->data);
                 return NULL;
             }
-            // 同 _mpack_reader_fileds：本阶段收到的定义条数必须正好等于声明数，
+            // 同 _mpack_reader_fields：本阶段收到的定义条数必须正好等于声明数，
             // 少了就会留下全零的假元数据被后续按合法字段用
             if (stmt->index != declared) {
                 BIT_SET(*status, PROT_ERROR);
@@ -873,7 +855,7 @@ static mpack_ctx *_mpack_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, bin
             binary_get_skip(breader, 1);
             mpack_ctx * mpack = _mpack_new();
             mpack->pack_type = MPACK_ERR;
-            _mpack_err(mysql, breader);
+            _mpack_err(mpack, breader);
             mysql->cur_cmd = 0;
             return mpack;
         }
@@ -900,11 +882,7 @@ static mpack_ctx *_mpack_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, bin
         return _mpack_stmt(mysql, buf, breader, status);
     }
 }
-// 这里没有 MYSQL_QUIT 分支，也不该加：mysql_pack_quit 是唯一的 COM_QUIT 组包入口，而它
-// 刻意不接 mysql_ctx、不写 cur_cmd —— 上层 handle 的析构路径会在工作线程调它，网络线程同时正拿
-// id / cur_cmd 解析来包，写一下就是无同步的跨线程写（test_mysql_pack 有用例钉着这条）。
-// 所以 cur_cmd 永远不会是 MYSQL_QUIT，写了也是死代码。
-// 真实情况也用不上：服务端收到 COM_QUIT 直接断连不回包，走不到解析
+// 不加 MYSQL_QUIT 分支：COM_QUIT 组包不收 mysql_ctx、不写 cur_cmd(析构时在别的线程调)，服务端也不回包
 mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
     mpack_ctx *mpack = NULL;
     switch (mysql->cur_cmd) {

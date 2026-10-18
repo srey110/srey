@@ -103,9 +103,7 @@ void hash_ring_sort(hash_ring_ctx *ring) {
     qsort((void **)ring->items, ring->nitems, sizeof(hash_ring_item *), _hash_ring_sort);
 }
 // 容量判定放在这里而不是 _hash_ring_add_items：那里已经 MALLOC 过 node 并挂进链表,再失败就得回滚。
-// 两道顺序不能颠倒——先挡住元素总数溢出 uint32,才能保证下面那个加法在 32 位 size_t 下不回绕;
-// 第二道判的是字节数,32 位下 sizeof(指针) * 元素数 会悄悄回绕,4 * 2^30 正好是 0,
-// 而 _realloc(ptr, 0) 按契约是释放并返回 NULL,循环随即往 NULL 上写
+// 两道判断顺序不能颠倒：先挡元素数溢出 uint32，再挡字节数溢出 size_t
 int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
     if (NULL == ring
         || NULL == name
@@ -186,36 +184,22 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
     FREE(cur);
     ring->nnodes--;
 }
-// 二分查找大于 digest 的第一个节点；超出末尾则环绕返回第一个节点
+// 二分查找 digest 大于 key 的第一个副本(左闭右开，下标与 nitems 同宽)；超出末尾则环绕返回第一个
 static hash_ring_item *_hash_ring_find_next_highest_item(hash_ring_ctx *ring, uint64_t digest) {
     if (0 == ring->nitems) {
         return NULL;
     }
-    int32_t min = 0;
-    int32_t max = (int32_t)ring->nitems - 1;
-    int32_t midpointindex;
-    hash_ring_item *item = NULL;
-    while (1) {
-        if (min > max) {
-            if (min == (int32_t)ring->nitems) {
-                // 超出环末尾，环绕返回第一个节点
-                return ring->items[0];
-            } else {
-                // 返回下一个最大哈希值对应的节点
-                return ring->items[min];
-            }
-        }
-        midpointindex = min + (max - min) / 2;
-        item = ring->items[midpointindex];
-        if (item->digest > digest) {
-            // key 在左半区间
-            max = midpointindex - 1;// int32_t 可降至 -1，不再下溢
+    uint32_t lo = 0, hi = ring->nitems;
+    uint32_t mid;
+    while (lo < hi) {
+        mid = lo + (hi - lo) / 2;
+        if (ring->items[mid]->digest > digest) {
+            hi = mid;
         } else {
-            // key 在右半区间
-            min = midpointindex + 1;
+            lo = mid + 1;
         }
     }
-    return NULL;
+    return ring->items[lo == ring->nitems ? 0 : lo];
 }
 hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
     if (NULL == ring
@@ -232,14 +216,12 @@ hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
     }
 }
 void hash_ring_print(hash_ring_ctx *ring) {
-    uint32_t x;
     printf("----------------------------------------\n");
     printf("hash_ring\n\n");
     printf("Nodes: \n\n");
     hash_ring_list *cur;
-    x = 0;
     uint8_t *name;
-    hash_ring_item *item;
+    uint32_t x = 0;
     list_foreach(&ring->nodes, ln) {
         cur = UPCAST(ln, hash_ring_list, lnode);
         printf("%u: ", x);
@@ -250,6 +232,7 @@ void hash_ring_print(hash_ring_ctx *ring) {
     }
     printf("\n");
     printf("Items (%u): \n\n", ring->nitems);
+    hash_ring_item *item;
     for (x = 0; x < ring->nitems; x++) {
         item = ring->items[x];
         printf("%" PRIu64 " : ", item->digest);

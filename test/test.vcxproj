@@ -97,27 +97,32 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <LinkIncremental>true</LinkIncremental>
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <LinkIncremental>false</LinkIncremental>
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
+  </PropertyGroup>
+  <!-- 产物分目录与拷回 bin/ 的理由同 srey.vcxproj -->
+  <PropertyGroup>
+    <LocalDebuggerCommand>$(MSBuildProjectDirectory)\..\bin\test.exe</LocalDebuggerCommand>
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -131,7 +136,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>../bin/$(Platform)/$(Configuration)/;../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>
@@ -150,7 +155,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>../bin/$(Platform)/$(Configuration)/;../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>
@@ -169,7 +174,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>../bin/$(Platform)/$(Configuration)/;../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>
@@ -192,7 +197,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>../bin/$(Platform)/$(Configuration)/;../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>
@@ -215,7 +220,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>../bin/$(Platform)/$(Configuration)/;../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>
@@ -238,7 +243,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>../bin/$(Platform)/$(Configuration)/;../bin/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>
@@ -283,6 +288,7 @@
     <ClCompile Include="task_udp_multicast.c" />
     <ClCompile Include="task_udp_server.c" />
     <ClCompile Include="task_v6only.c" />
+    <ClCompile Include="task_watch_closed.c" />
     <ClCompile Include="task_ws_server.c" />
     <ClCompile Include="task_kcp.c" />
     <ClCompile Include="test_base.c" />
@@ -346,6 +352,7 @@
     <ClInclude Include="task_udp_multicast.h" />
     <ClInclude Include="task_udp_server.h" />
     <ClInclude Include="task_v6only.h" />
+    <ClInclude Include="task_watch_closed.h" />
     <ClInclude Include="task_ws_server.h" />
     <ClInclude Include="task_kcp.h" />
     <ClInclude Include="test_base.h" />
@@ -372,4 +379,10 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <Target Name="CopyToBin" AfterTargets="Build">
+    <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).pdb" DestinationFolder="$(MSBuildProjectDirectory)\..\bin\" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CleanBinCopy" AfterTargets="Clean">
+    <Delete Files="$(MSBuildProjectDirectory)\..\bin\$(TargetName)$(TargetExt);$(MSBuildProjectDirectory)\..\bin\$(TargetName).pdb" />
+  </Target>
 </Project>

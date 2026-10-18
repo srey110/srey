@@ -145,14 +145,15 @@ int32_t csprng_rand(void *buf, size_t len) {
     return ERR_OK;
 #else
 #if CSPRNG_GETRANDOM
-    /* Linux：getrandom(2)（内核 3.17+），阻塞直至熵池就绪。老内核首次调用就报 ENOSYS（此时一个字节都没填），
-     * 记下后改读 /dev/urandom */
+    /* Linux：getrandom(2)（内核 3.17+），阻塞直至熵池就绪。老内核报 ENOSYS、seccomp 拦掉时报 EPERM
+     * （此时一个字节都没填），记下后改读 /dev/urandom */
     static atomic_t _getrandom_nosys = 0;
     if (0 == ATOMIC_GET(&_getrandom_nosys)) {
         if (ERR_OK == _rand_drain(buf, len, -1)) {
             return ERR_OK;
         }
-        if (ENOSYS != ERRNO) {
+        if (ENOSYS != ERRNO
+            && EPERM != ERRNO) {
             return ERR_FAILED;
         }
         ATOMIC_SET_RELAXED(&_getrandom_nosys, 1);

@@ -27,7 +27,6 @@ local function _handle(_, sk, _, _, data, _)
             props = mqtt.props()
             props:fixnum(mqtt.PROP.SESSION_EXPIRY, 120)
             props:fixnum(mqtt.PROP.RECEIVE_MAXIMUM, 15000)
-            props:fixnum(mqtt.PROP.MAXIMUM_QOS, 1)
             props:kv(mqtt.PROP.USER_PROPERTY, "key1", "val1")
             props:kv(mqtt.PROP.USER_PROPERTY, "key2", "val2")
         end

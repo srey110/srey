@@ -4,15 +4,17 @@
 #include "srey/coro_task.h"
 
 /// <summary>
-/// 启动harbor,服务器间通信
+/// 启动harbor,服务器间通信。
+/// 带 Origin 头的请求一律回 403：srey 对端从不发，浏览器发 POST 一定带，借此挡网页跨站投递
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="tname">字符串任务名；NULL 或空串表示不启动 harbor</param>
 /// <param name="ssl">evssl_ctx 名称；配双向证书(mTLS)则跨节点鉴权由 TLS 层保证，该证书须用 evssl_verify 设
 /// SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT，少一位启动时打 WARN；NULL 或 "" 为明文无鉴权(仅限受信内网，启动时打 WARN)</param>
-/// <param name="ip">IP</param>
-/// <param name="port">端口</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="ip">监听 IP；NULL 或空串返回 ERR_FAILED</param>
+/// <param name="port">监听端口；0 表示不启动 harbor</param>
+/// <returns>ERR_OK 成功（tname / port 为空时跳过也返回 ERR_OK）；ERR_FAILED 启动失败：ip 为空、配了 ssl 却取不到证书
+/// (含未编进 SSL)、注册失败，或监听失败(此时已注册的 task 已被关闭)</returns>
 int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, const char *ip, uint16_t port);
 /// <summary>
 /// 服务器间通信请求包
@@ -25,8 +27,8 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
 /// <param name="lens">请求包长度</param>
 /// <returns>请求包</returns>
 /// <remarks>对端响应格式：
-///   200 目标已处理(call 为投递成功)；400 目标返回非 ERR_OK；404 目标 task 不存在或 reqtype 落在
-///   spub.h 的框架保留区间(REQ_DEBUG，不经 harbor 转发)。
+///   200 目标已处理(call 为投递成功)；400 目标返回非 ERR_OK；404 dst / type 缺失或不是范围内的十进制数、
+///   目标 task 不存在，或 reqtype 落在 spub.h 的框架保留区间(REQ_DEBUG，不经 harbor 转发)。
 ///   body 即目标响应负载原文，目标未回负载时为零长(不会以状态文本充当负载)，Content-Type
 ///   仅在负载非空时出现。X-Srey-Erro 头(十进制，目标真实错误码)只出现在 request 的 200/400 上：
 ///   call 是单向投递、不存在"目标错误码"，其 200 不带该头；404 由 harbor 自身产生，也不带。

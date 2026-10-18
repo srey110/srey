@@ -61,7 +61,7 @@ static void _startup(task_ctx *task) {
         || ERR_OK != _refcnt_smtp(task)) {
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("db refcount paired.");
 }
 void task_dbrefcnt_start(loader_ctx *loader, const char *name, int32_t *ok) {

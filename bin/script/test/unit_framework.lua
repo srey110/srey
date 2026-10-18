@@ -27,6 +27,12 @@ runner.run(function(t)
         t:eq(ssl, q, "ssl_qury 返回与 register 同一指针")
         -- 未注册的 name 返回 nil
         t:eq(nil, core.ssl_qury("unregistered"), "ssl_qury 未注册 name 返回 nil")
+        -- 名字内含 '\0'：查询按查不到算(不截成前半段的 unit_pem、也不抛)，注册直接报错
+        t:eq(nil, core.ssl_qury(NAME_PEM .. "\0x"), "ssl_qury 名字内含 \\0 返回 nil")
+        local qok, qret = pcall(srey.ssl_qury, NAME_PEM .. "\0x")
+        t:check(qok and false == qret, "srey.ssl_qury 名字内含 \\0 返回 false 而不抛")
+        t:eq(false, pcall(core.cert_register, "unit_pem_z\0x", "ca.crt", "server.crt", "server.key"),
+             "cert_register 名字内含 \\0 报错")
         -- 重复 register 同一 name 返回 nil（evssl_register 已占用）
         local dup = core.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
         t:eq(nil, dup, "重复 register 同 name 拒绝")
@@ -61,6 +67,30 @@ runner.run(function(t)
              "listen netev 非数字报错")
         t:eq(false, pcall(core.connect, PACK_TYPE.CUSTZ_FIXED, nil, "127.0.0.1", 0, 1.5),
              "connect netev 同口径")
+    end
+
+    -- ── 内含 '\0' 的串：按 C 串交给下游的参数报错，按名字查 task 一律查不到 ──
+    -- 按 C 串处理会截成前半段：ip 变成另一个地址，"framework\0x" 投给本 task 自己。
+    -- reqtype 用 201：真投出去也不撞框架保留的 REQ_DEBUG 与下面 closing 用例的 200
+    do
+        t:eq(false, pcall(core.listen, PACK_TYPE.CUSTZ_FIXED, nil, "127.0.0.1\0x", 0),
+             "listen ip 内含 \\0 报错")
+        t:eq(false, pcall(core.connect, PACK_TYPE.CUSTZ_FIXED, nil, "127.0.0.1\0x", 0),
+             "connect ip 内含 \\0 报错")
+        local BAD = task.name() .. "\0x"
+        t:eq(false, core.call(BAD, 201, "x"), "call 名字内含 \\0 投不到，不落到前半段同名的 task")
+        t:eq(false, core.request(BAD, 201, srey.id(), "x"), "request 名字内含 \\0 投不到")
+        t:eq(0, core.multi_request({ BAD }, 201, srey.id(), "x"), "multi_request 名字内含 \\0 投不到")
+        local g = task.grab(BAD)
+        if g then
+            task.ungrab(g)
+        end
+        t:eq(nil, g, "grab 名字内含 \\0 返回 nil")
+        t:eq(false, pcall(task.register, "test.toplevel_bind", "bad\0name", 0), "register 的 name 内含 \\0 报错")
+        t:eq(false, pcall(task.register, "test.toplevel_bind\0x", nil, 0), "register 的 file 内含 \\0 报错")
+        -- dsts 的长度走 __len：超出 int32 的不能截成另一个长度(2^40 截成 0 就静默什么都不投)
+        local liar = setmetatable({}, { __len = function() return 1 << 40 end })
+        t:eq(false, pcall(core.multi_call, liar, 201, "x"), "multi_call dsts 长度越界报错")
     end
 
     -- ── core.task_list: 任意长度的名字都原样交出 ───────────────────────
@@ -213,7 +243,7 @@ runner.run(function(t)
 
     -- ── 崩溃向量：绑定层不该让脚本把整个进程打死 ──────────────────────
     do
-        -- 顶层调 C 绑定：绑定层依赖的东西（ltask->lua、_curtask 全局）曾拖到 chunk
+        -- 顶层调 C 绑定：绑定层依赖的东西（ltask->lua、当前 task 登记 lpub_set_cur_task）曾拖到 chunk
         -- 跑完才赋值，期间顶层这一句就是空指针解引用（进程 exit 139，本用例根本跑不到）
         local itop = task.register("test.toplevel_bind", "itop", 0)
         t:check(itop ~= nil, "顶层调 C 绑定不崩且注册成功")
@@ -314,6 +344,29 @@ runner.run(function(t)
         end
     end
 
+    -- ── 注册前(chunk 顶层)调 task.close：注册时补发 CLOSING，startup 先跑、closing 后跑 ──
+    -- 注册前就投 CLOSING 的话，worker 会与还在跑 chunk 的注册线程同时动同一个 lua_State
+    do
+        local got = {}
+        srey.on_requested(function(reqtype, _, _, data, size)
+            if 202 == reqtype and data then
+                got[#got + 1] = srey.ud_str(data, size)
+            end
+        end)
+        local NAME = "close_before_reg"
+        t:check(nil ~= task.register("test.close_before_reg", NAME, 0, "framework"),
+                "顶层 task.close 后仍注册成功")
+        srey.sleep(300)-- 等 STARTUP、CLOSING 派发 + ungrab + free 走完
+        t:eq(2, #got, "startup 与 closing 各回报一次 (" .. #got .. ")")
+        t:eq("startup", got[1], "先跑 startup")
+        t:eq("closing", got[2], "再跑 closing")
+        local tk = task.grab(NAME)
+        t:eq(nil, tk, "task 已退出")
+        if tk then
+            task.ungrab(tk)
+        end
+    end
+
     -- ── srey.core: sock_session 的会话键写死 skid，与 C 侧 coro_sync 对齐 ────
     -- CLOSE 恒以 skid 为 sess 发出，挂在别的键上的等待者断连时一个都唤不到（ms>0 白等满
     -- 超时、ms==0 永久挂起），故不再开放自定义。传无效连接标识：ev_props 对它直接早退
@@ -339,6 +392,26 @@ runner.run(function(t)
         t:eq(0, task.get_priority(), "超下界 clamp 到 0")
         task.set_priority(saved)
         t:eq(saved, task.get_priority(), "优先级已还原")
+    end
+
+    -- ── srey.dostring：正常执行、语法错、运行期抛错 ──────────────────
+    -- 后两种只打 ERROR 日志并返回 false，不向调用方抛
+    do
+        _G.fw_dostring_probe = nil
+        t:eq(true, srey.dostring("fw_dostring_probe = 42"), "dostring 正常执行返回 true")
+        t:eq(42, _G.fw_dostring_probe, "dostring 的代码确实跑了")
+        _G.fw_dostring_probe = nil
+        local ok, ret = pcall(srey.dostring, "syntax ((")
+        t:check(ok and false == ret, "dostring 语法错返回 false 而不抛")
+        ok, ret = pcall(srey.dostring, "error('unit_framework: dostring throws on purpose')")
+        t:check(ok and false == ret, "dostring 运行期抛错返回 false 而不抛")
+    end
+
+    -- ── printd：调用方文件名里的 % 不能当格式指令 ──────────────────────
+    -- 文件名拼进格式串的话，"%s" 会吃掉业务参数，后面的 %d 取不到值而抛错
+    do
+        local f = load("printd('unit_framework printd probe %d', 1)", "=unit%sframework")
+        t:eq(true, (pcall(f)), "printd 在文件名含 % 的 chunk 里照常打印")
     end
 
     -- ── srey.task: mem / memlimit (per-task lua_State 内存监控) ──

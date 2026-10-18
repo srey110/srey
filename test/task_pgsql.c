@@ -10,6 +10,7 @@ typedef struct task_pgsql_args {
     char password[64];
     char database[64];
     pgsql_ctx pg;
+    pgsql_ctx pg_ssl;// TLS 那一段另建的连接
 }task_pgsql_args;
 
 // 重建测试表，使每次运行从干净状态开始
@@ -50,7 +51,7 @@ static int32_t _select_iterate(pgsql_ctx *pg, int32_t expect_rows) {
         LOG_ERROR("pgsql select error.");
         return ERR_FAILED;
     }
-    pgsql_reader_ctx *reader = pgsql_reader_iter(p, FORMAT_TEXT);
+    pgsql_reader_ctx *reader = pgsql_reader_iter(p);
     if (NULL == reader) {
         LOG_ERROR("pgsql reader_iter error.");
         return ERR_FAILED;
@@ -71,6 +72,53 @@ static int32_t _select_iterate(pgsql_ctx *pg, int32_t expect_rows) {
     pgsql_reader_free(reader);
     if (cnt != expect_rows) {
         LOG_ERROR("pgsql select expected %d rows, got %d.", expect_rows, cnt);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// Startup 带的会话参数生效：client_encoding 为 UTF8，DateStyle 输出格式为 ISO（值形如 "ISO, MDY"，只比前缀）
+static int32_t _session_settings(pgsql_ctx *pg) {
+    static const char *const want[2] = { "UTF8", "ISO" };
+    pgpack_ctx *p = pgsql_query(pg, "show client_encoding; show datestyle");
+    if (NULL == p || PGPACK_OK != p->type || 2 != pgsql_result_count(p)) {
+        LOG_ERROR("pgsql show settings error.");
+        return ERR_FAILED;
+    }
+    pgsql_reader_ctx *rd;
+    const char *val;
+    int32_t err, lens, good;
+    for (uint32_t i = 0; i < 2; i++) {
+        rd = pgsql_reader_at(p, i);
+        if (NULL == rd) {
+            LOG_ERROR("pgsql show settings: result %u reader missing.", i);
+            return ERR_FAILED;
+        }
+        val = pgsql_reader_text_at(rd, 0, &lens, &err);
+        good = ERR_OK == err
+            && (size_t)lens >= strlen(want[i])
+            && 0 == memcmp(val, want[i], strlen(want[i]));
+        pgsql_reader_free(rd);
+        if (!good) {
+            LOG_ERROR("pgsql startup parameter %u not applied, want %s.", i, want[i]);
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}
+
+// 零列查询（SELECT FROM t）：行数照样按 DataRow 计，与 CommandComplete 的行数一致
+static int32_t _zero_col_select(pgsql_ctx *pg, size_t expect_rows) {
+    pgpack_ctx *p = pgsql_query(pg, "select from srey_test");
+    pgsql_reader_ctx *rd = (NULL != p && PGPACK_OK == p->type) ? pgsql_reader_iter(p) : NULL;
+    if (NULL == rd) {
+        LOG_ERROR("pgsql zero-column select error.");
+        return ERR_FAILED;
+    }
+    size_t n = pgsql_reader_size(rd);
+    pgsql_reader_free(rd);
+    if (expect_rows != n || (int64_t)expect_rows != pgsql_affected_rows(p)) {
+        LOG_ERROR("pgsql zero-column select expected %zu rows, got %zu.", expect_rows, n);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -113,7 +161,7 @@ static int32_t _multi_statement(pgsql_ctx *pg) {
         return ERR_FAILED;
     }
     for (i = 0; i < 2; i++) {
-        rd = pgsql_reader_at(p, i, FORMAT_TEXT);
+        rd = pgsql_reader_at(p, i);
         if (NULL == rd) {
             LOG_ERROR("pgsql multi: result %u reader missing.", i);
             return ERR_FAILED;
@@ -126,7 +174,7 @@ static int32_t _multi_statement(pgsql_ctx *pg) {
         }
     }
     // 同一下标的 reader 只能取走一次。取到即断言失败，但所有权已转过来，得先释放再退
-    rd = pgsql_reader_at(p, 0, FORMAT_TEXT);
+    rd = pgsql_reader_at(p, 0);
     if (NULL != rd) {
         LOG_ERROR("pgsql multi: result 0 taken twice.");
         pgsql_reader_free(rd);
@@ -140,7 +188,7 @@ static int32_t _multi_statement(pgsql_ctx *pg) {
         LOG_ERROR("pgsql multi: insert+select error.");
         return ERR_FAILED;
     }
-    rd = pgsql_reader_at(p, 0, FORMAT_TEXT);
+    rd = pgsql_reader_at(p, 0);
     if (NULL != rd) {
         LOG_ERROR("pgsql multi: insert unexpectedly has a result set.");
         pgsql_reader_free(rd);
@@ -151,7 +199,7 @@ static int32_t _multi_statement(pgsql_ctx *pg) {
                   pgsql_affected_at(p, 0));
         return ERR_FAILED;
     }
-    rd = pgsql_reader_at(p, 1, FORMAT_TEXT);
+    rd = pgsql_reader_at(p, 1);
     if (NULL == rd) {
         LOG_ERROR("pgsql multi: select result reader missing.");
         return ERR_FAILED;
@@ -199,7 +247,7 @@ static int32_t _multi_statement(pgsql_ctx *pg) {
         LOG_ERROR("pgsql multi: rollback check query error.");
         return ERR_FAILED;
     }
-    rd = pgsql_reader_iter(p, FORMAT_TEXT);
+    rd = pgsql_reader_iter(p);
     if (NULL == rd) {
         LOG_ERROR("pgsql multi: rollback check reader missing.");
         return ERR_FAILED;
@@ -232,7 +280,7 @@ static int32_t _prepare_execute(pgsql_ctx *pg) {
         pgsql_stmt_close(pg, "stmt_select_id");
         return ERR_FAILED;
     }
-    pgsql_reader_ctx *reader = pgsql_reader_iter(p, FORMAT_TEXT);
+    pgsql_reader_ctx *reader = pgsql_reader_iter(p);
     int32_t found = 0;
     if (NULL != reader) {
         int32_t err;
@@ -246,6 +294,40 @@ static int32_t _prepare_execute(pgsql_ctx *pg) {
     pgsql_stmt_close(pg, "stmt_select_id");
     if (!found) {
         LOG_ERROR("pgsql stmt expected name='alice' for id=1.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// 以二进制结果格式执行：Describe 'P' 回的格式码是二进制，int4 / text / float8 三列都得按二进制读对
+static int32_t _execute_binary(pgsql_ctx *pg) {
+    uint32_t oids[1] = { 23 };// INT4OID
+    if (ERR_OK != pgsql_stmt_prepare(pg, "stmt_bin",
+        "select id, name, score from srey_test where id = $1", 1, oids)) {
+        LOG_ERROR("pgsql stmt_prepare(binary) error.");
+        return ERR_FAILED;
+    }
+    pgsql_bind_ctx bind;
+    pgsql_bind_init(&bind, 1);
+    pgsql_bind_int32(&bind, 1);
+    pgpack_ctx *p = pgsql_stmt_execute(pg, "stmt_bin", &bind, FORMAT_BINARY);
+    pgsql_bind_free(&bind);
+    pgsql_reader_ctx *reader = (NULL != p && PGPACK_OK == p->type) ? pgsql_reader_iter(p) : NULL;
+    int32_t good = 0;
+    if (NULL != reader) {
+        int32_t e1, e2, e3, lens;
+        int64_t id = pgsql_reader_integer(reader, "id", &e1);
+        const char *name = pgsql_reader_text(reader, "name", &lens, &e2);
+        double score = pgsql_reader_double(reader, "score", &e3);
+        good = FORMAT_BINARY == reader->format
+            && ERR_OK == e1 && 1 == id
+            && ERR_OK == e2 && 5 == lens && 0 == memcmp(name, "alice", 5)
+            && ERR_OK == e3 && 90.5 == score;
+        pgsql_reader_free(reader);
+    }
+    pgsql_stmt_close(pg, "stmt_bin");
+    if (!good) {
+        LOG_ERROR("pgsql binary execute: expected id=1 name='alice' score=90.5 in binary format.");
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -336,7 +418,7 @@ static void _conc_worker(void *owner, void *arg) {
             a->done = -1;
             return;
         }
-        rd = pgsql_reader_iter(p, FORMAT_TEXT);
+        rd = pgsql_reader_iter(p);
         if (NULL == rd) {
             a->done = -1;
             return;
@@ -381,6 +463,77 @@ static int32_t _concurrent_query(pgsql_ctx *pg) {
     }
     return ERR_OK;
 }
+#if WITH_SSL
+// 走 TLS 另连一次查一条：SSLRequest → 握手回调里发 Startup → SCRAM。服务端开 TLS 时必列 PLUS，
+// 客户端有通道绑定数据（tls_cbind_len > 0）就选它；再用 system_user 确认这次走的是 SCRAM（pg_hba 若是
+// md5 / trust 就根本没走通道绑定），两条都成立才说明按证书签名摘要算的绑定数据对得上。
+// 服务端没开 TLS（show ssl 为 off，SSLRequest 会回 'N'）或取不到客户端 TLS 上下文就跳过；探测用主连接
+static int32_t _ssl_query(task_ctx *task, task_pgsql_args *arg) {
+    evssl_ctx *evssl = evssl_qury("clientnull");
+    if (NULL == evssl) {
+        LOG_WARN("pgsql ssl: no client ssl context, skipped.");
+        return ERR_OK;
+    }
+    pgpack_ctx *p = pgsql_query(&arg->pg, "show ssl");
+    pgsql_reader_ctx *rd = (NULL != p && PGPACK_OK == p->type) ? pgsql_reader_iter(p) : NULL;
+    if (NULL == rd) {
+        LOG_ERROR("pgsql ssl: show ssl error.");
+        return ERR_FAILED;
+    }
+    int32_t err = ERR_FAILED;
+    int32_t lens = 0;
+    const char *val = pgsql_reader_eof(rd) ? NULL : pgsql_reader_text_at(rd, 0, &lens, &err);
+    int32_t on = ERR_OK == err && 2 == lens && 0 == memcmp(val, "on", 2);
+    pgsql_reader_free(rd);
+    if (ERR_OK != err) {
+        LOG_ERROR("pgsql ssl: read show ssl error.");
+        return ERR_FAILED;
+    }
+    if (!on) {
+        LOG_WARN("pgsql ssl: server ssl is off, skipped.");
+        return ERR_OK;
+    }
+    if (ERR_OK != pgsql_init(&arg->pg_ssl, arg->host, arg->port, evssl,
+                             arg->user, arg->password, arg->database)) {
+        LOG_ERROR("pgsql ssl: pgsql_init error.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != pgsql_connect(task, &arg->pg_ssl)) {
+        LOG_ERROR("pgsql ssl: connect error.");
+        return ERR_FAILED;
+    }
+    int32_t cbind = arg->pg_ssl.tls_cbind_len;// quit 后被清零，先取
+    int32_t sslon = 0;
+    int32_t scram = 0;
+    err = ERR_FAILED;
+    p = pgsql_query(&arg->pg_ssl, "select ssl, system_user from pg_stat_ssl where pid = pg_backend_pid()");
+    rd = (NULL != p && PGPACK_OK == p->type) ? pgsql_reader_iter(p) : NULL;
+    if (NULL != rd) {
+        if (!pgsql_reader_eof(rd)) {
+            sslon = pgsql_reader_bool(rd, "ssl", &err);
+            int32_t uerr = ERR_FAILED;
+            const char *su = pgsql_reader_text_at(rd, 1, &lens, &uerr);
+            scram = ERR_OK == uerr && NULL != su && lens > 14 && 0 == memcmp(su, "scram-sha-256:", 14);
+        }
+        pgsql_reader_free(rd);
+    }
+    pgsql_quit(&arg->pg_ssl);
+    if (cbind <= 0) {
+        LOG_ERROR("pgsql ssl: no tls-server-end-point data, SCRAM-SHA-256-PLUS not chosen.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != err || 1 != sslon) {
+        LOG_ERROR("pgsql ssl: server does not see the session as ssl.");
+        return ERR_FAILED;
+    }
+    if (!scram) {
+        LOG_ERROR("pgsql ssl: the session did not authenticate with SCRAM, channel binding not exercised.");
+        return ERR_FAILED;
+    }
+    LOG_INFO("pgsql ssl: SCRAM-SHA-256-PLUS ok, channel binding %d bytes.", cbind);
+    return ERR_OK;
+}
+#endif
 
 static void _startup(task_ctx *task) {
     task_pgsql_args *arg = (task_pgsql_args *)coro_get_arg(task);
@@ -389,64 +542,101 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("pgsql_init error.");
         return;
     }
+    ATOMIC_SET((atomic_t *)arg->ok, -2);// 正在连：汇总 task 不把它当终态，连不上再回 0
     if (ERR_OK != pgsql_connect(task, &arg->pg)) {
         LOG_ERROR("pgsql connect error.");
+        ATOMIC_SET((atomic_t *)arg->ok, 0);
         return;
     }
     // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
-    *(arg->ok) = -1;
-    if (ERR_OK != pgsql_ping(&arg->pg)) {
+    ATOMIC_SET((atomic_t *)arg->ok, -1);
+    if (task_isclosing(task)
+        || ERR_OK != pgsql_ping(&arg->pg)) {
         LOG_ERROR("pgsql ping error.");
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _setup_table(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _session_settings(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _simple_insert(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _setup_table(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _select_iterate(&arg->pg, 2)) {
+    if (task_isclosing(task)
+        || ERR_OK != _simple_insert(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _prepare_execute(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _select_iterate(&arg->pg, 2)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _copy_in(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _zero_col_select(&arg->pg, 2)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _select_iterate(&arg->pg, 5)) {
+    if (task_isclosing(task)
+        || ERR_OK != _prepare_execute(&arg->pg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _execute_binary(&arg->pg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _copy_in(&arg->pg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _select_iterate(&arg->pg, 5)) {
         pgsql_quit(&arg->pg);
         return;
     }
     // 排在 5 行计数之后：它成功那次多插一行 id=20
-    if (ERR_OK != _copy_in_error(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _copy_in_error(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _copy_out(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _copy_out(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _query_syntax_error(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _query_syntax_error(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _multi_statement(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _multi_statement(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
-    if (ERR_OK != _concurrent_query(&arg->pg)) {
+    if (task_isclosing(task)
+        || ERR_OK != _concurrent_query(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }
+#if WITH_SSL
+    // 要拿主连接探服务端开没开 TLS，排在它 quit 之前
+    if (task_isclosing(task)
+        || ERR_OK != _ssl_query(task, arg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+#endif
     pgsql_quit(&arg->pg);
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("pgsql tested.");
 }
 

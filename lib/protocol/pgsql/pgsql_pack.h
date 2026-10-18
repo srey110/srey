@@ -18,7 +18,9 @@ void pgsql_pack_start(binary_ctx *bwriter, int8_t code, size_t lens);
 /// 结束消息构建并回填消息体长度字段
 /// </summary>
 /// <param name="bwriter">由 pgsql_pack_start 起头的写缓冲区，长度字段已在其中占好位</param>
-void pgsql_pack_end(binary_ctx *bwriter);
+/// <returns>ERR_OK 成功；消息体超过 INT32_MAX（长度字段装不下）时 ERR_FAILED，长度字段不写，
+/// 缓冲仍归调用方释放</returns>
+int32_t pgsql_pack_end(binary_ctx *bwriter);
 /// <summary>
 /// 在已有缓冲区末尾追加一个新子消息的起始（写入类型码和长度占位符）
 /// </summary>
@@ -31,8 +33,18 @@ size_t pgsql_pack_append_start(binary_ctx *bwriter, int8_t code);
 /// </summary>
 /// <param name="bwriter">写缓冲区</param>
 /// <param name="offset">pgsql_pack_append_start 返回的长度字段偏移量</param>
-void pgsql_pack_append_end(binary_ctx *bwriter, size_t offset);
+/// <returns>同 pgsql_pack_end</returns>
+int32_t pgsql_pack_append_end(binary_ctx *bwriter, size_t offset);
 // 命令打包
+/// <summary>
+/// 打包 StartupMessage：协议 3.0，带 user / database，并固定 client_encoding=UTF8、DateStyle=ISO
+/// （读写接口按 UTF-8 收发，文本时间只认 ISO 格式）
+/// </summary>
+/// <param name="user">登录用户名</param>
+/// <param name="database">目标数据库名</param>
+/// <param name="size">输出消息字节数</param>
+/// <returns>消息数据指针，调用方负责释放</returns>
+void *pgsql_pack_startup(const char *user, const char *database, size_t *size);
 /// <summary>
 /// 打包 Terminate 消息（通知服务端关闭连接）
 /// </summary>
@@ -44,16 +56,16 @@ void *pgsql_pack_terminate(size_t *size);
 /// </summary>
 /// <param name="sql">SQL 语句字符串</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>消息数据指针，调用方负责释放；消息体超过 INT32_MAX 时返回 NULL 并把 size 置 0</returns>
 void *pgsql_pack_query(const char *sql, size_t *size);
 /// <summary>
 /// 同 pgsql_pack_query，SQL 长度由调用方给出，不再 strlen
 /// </summary>
 /// <param name="sql">SQL 语句；NULL 时 sqllen 须为 0。不得含 NUL：协议 String 以 NUL 结尾，
-/// 夹带的 NUL 会让服务端按消息格式错误回 ErrorResponse（旧接口是在 NUL 处静默截断）</param>
+/// 夹带的 NUL 会让服务端按消息格式错误回 ErrorResponse</param>
 /// <param name="sqllen">sql 字节数</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size);
 /// <summary>
 /// 打包预处理语句的 Parse + Sync 消息
@@ -63,7 +75,7 @@ void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size);
 /// <param name="nparam">参数数量</param>
 /// <param name="oids">各参数的类型 OID 数组，可为 NULL</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size);
 /// <summary>
 /// 同 pgsql_pack_stmt_prepare，name / sql 的长度由调用方给出，不再 strlen；NUL 的约束同 pgsql_pack_query2
@@ -75,7 +87,7 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
 /// <param name="nparam">参数数量</param>
 /// <param name="oids">各参数的类型 OID 数组，可为 NULL</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql, size_t sqllen,
                                 int16_t nparam, uint32_t *oids, size_t *size);
 /// <summary>
@@ -85,7 +97,8 @@ void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql
 /// <param name="bind">参数绑定上下文，无参数时可为 NULL；实际绑定个数必须等于 pgsql_bind_init 声明的 nparam</param>
 /// <param name="resultformat">结果列的格式（文本或二进制）</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放；与 pgsql_bind_init 声明的 nparam 不符时返回 NULL 并把 size 置 0。
+/// <returns>消息数据指针，调用方负责释放；与 pgsql_bind_init 声明的 nparam 不符（含绑过超 INT32_MAX 的值）、
+/// 或 Bind 消息体超过 INT32_MAX 时返回 NULL 并把 size 置 0。
 /// 只查绑定上下文自身自洽：预处理语句声明了几个参数本地无从得知（Parse 无响应体，要另发 Describe 问服务端），
 /// 个数与语句不符由服务端回执行错误，包尾 Sync 保证连接随后恢复。这点与 mysql_pack_stmt_execute 不同，
 /// 那边的 params_count 是 COM_STMT_PREPARE 响应带回来的</returns>
@@ -95,15 +108,15 @@ void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_for
 /// </summary>
 /// <param name="name">预处理语句名称</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_stmt_close(const char *name, size_t *size);
 /// <summary>
-/// 打包一条或多条 CopyData 消息（'d'），用于 COPY FROM STDIN 数据传输
+/// 打包一条 CopyData 消息（'d'），用于 COPY FROM STDIN 数据传输；不分块，大数据由调用方切成多条
 /// </summary>
 /// <param name="data">要发送的原始数据</param>
-/// <param name="lens">数据字节数</param>
+/// <param name="lens">数据字节数；服务端单条消息上限约 1GB，超过 INT32_MAX - 4 组包失败</param>
 /// <param name="size">输出消息总字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_copy_data(const void *data, size_t lens, size_t *size);
 /// <summary>
 /// 打包 CopyDone 消息（'c'），通知服务端 COPY FROM STDIN 数据发送完毕
@@ -116,7 +129,7 @@ void *pgsql_pack_copy_done(size_t *size);
 /// </summary>
 /// <param name="msg">错误原因描述字符串</param>
 /// <param name="size">输出消息字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_copy_fail(const char *msg, size_t *size);
 /// <summary>
 /// 把 COPY FROM STDIN 的 Query、一条 CopyData、CopyDone 三条消息拼成一个缓冲，供一次发出。
@@ -124,9 +137,9 @@ void *pgsql_pack_copy_fail(const char *msg, size_t *size);
 /// </summary>
 /// <param name="sql">含 FROM STDIN 的 COPY 语句；按 strlen 取长度，NULL 按空串，同 pgsql_pack_query</param>
 /// <param name="data">COPY 数据</param>
-/// <param name="lens">数据字节数</param>
+/// <param name="lens">数据字节数，上限同 pgsql_pack_copy_data</param>
 /// <param name="size">输出消息总字节数</param>
-/// <returns>消息数据指针，调用方负责释放</returns>
+/// <returns>消息数据指针，调用方负责释放；Query 或 CopyData 的消息体超过 INT32_MAX 时返回 NULL 并把 size 置 0</returns>
 void *pgsql_pack_copy_in(const char *sql, const void *data, size_t lens, size_t *size);
 /// <summary>
 /// 填充 CancelRequest 消息到调用方提供的 16 字节缓冲区

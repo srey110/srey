@@ -5,7 +5,7 @@
 #include "containers/slist.h"
 
 typedef struct hash_ring_node {
-    uint32_t nreplicas;//节点数
+    uint32_t nreplicas;//该节点的虚拟副本数
     void *name;//节点名
     size_t lens;//name 长度
 } hash_ring_node;
@@ -65,7 +65,8 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens);
 /// <param name="ring">hash_ring_ctx</param>
 /// <param name="key">key名</param>
 /// <param name="lens">key长度</param>
-/// <returns>hash_ring_node</returns>
+/// <returns>key 所属的节点，归 ring 所有，该节点被 hash_ring_remove 或 ring 被 hash_ring_free 后失效；
+/// 空环、key 为 NULL 或 lens 为 0 返回 NULL</returns>
 hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens);
 /// <summary>
 /// 打印

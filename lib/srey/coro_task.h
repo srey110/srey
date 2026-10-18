@@ -18,7 +18,7 @@
 /// 边界(见 coro_stack_fit)，故须在日志开起来之后调</param>
 void coro_task_stack(size_t stack_size);
 /// <summary>
-/// 注册协程任务
+/// 注册协程任务。本 task 里 coro_utils 内部建的连接关闭时，也会投到 task_closed 注册的关闭回调(见 task_closed)
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示匿名</param>
@@ -27,7 +27,8 @@ void coro_task_stack(size_t stack_size);
 /// <param name="_closing">任务关闭回调函数,做业务相关收尾工作._closing执行后，不代表该任务已经无引用</param>
 /// <param name="_argfree">用户参数释放函数</param>
 /// <param name="arg">用户参数</param>
-/// <returns>task_ctx，失败返回 NULL</returns>
+/// <returns>task_ctx；失败(名字重名)返回 NULL，此时 _argfree 非 NULL 就已用它释放了 arg，
+///   与 task_register 失败时所有权留在调用方不同</returns>
 task_ctx *coro_task_register(loader_ctx *loader, const char *name, uint32_t quecap,
                              _task_startup_cb _startup, _task_closing_cb _closing,
                              free_cb _argfree, void *arg);
@@ -51,7 +52,8 @@ coro_ctx *coro_task_co(task_ctx *task);
 /// <returns>1 在协程内；0 不在，或该 task 不是协程类型</returns>
 int32_t coro_incoro(task_ctx *task);
 /// <summary>
-/// 将 UDP socket 的 session 与 skid 绑定，使收到的数据包能路由到当前协程
+/// 把连接的会话键设为 skid，使收到的消息能唤醒在它上面挂起的协程。
+/// 服务端 accept 的 TCP 连接与 UDP 须先调一次(客户端 connect 默认已设)，见文件头约定
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
@@ -62,7 +64,7 @@ int32_t coro_sync(task_ctx *task, sock_ctx *sk);
 /// 休眠
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="ms">毫秒</param>
+/// <param name="ms">毫秒；0 直接返回、不挂起，也就不会让出给本 task 的其他协程</param>
 void coro_sleep(task_ctx *task, uint32_t ms);
 /// <summary>
 /// 任务间通信 请求
@@ -74,9 +76,9 @@ void coro_sleep(task_ctx *task, uint32_t ms);
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝数据</param>
 /// <param name="erro">错误码；必须非 NULL，函数内裸解引用</param>
-/// <param name="lens">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
+/// <param name="lens">返回数据长度；可传 NULL; 等到响应就写入(无载荷的响应返回 NULL 也写)，超时不写</param>
 /// <returns>响应数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
+///   本协程下次挂起或结束时由框架释放，需要保留请自行拷贝</returns>
 void *coro_request(task_ctx *dst, task_ctx *src,
                    subtype_t rtype, void *data, size_t size, int32_t copy,
                    int32_t *erro, size_t *lens);
@@ -95,9 +97,9 @@ int32_t coro_ssl_exchange(task_ctx *task, sock_ctx *sk, int32_t client, struct e
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
 /// <param name="err">错误码；必须非 NULL，函数内裸解引用</param>
-/// <param name="size">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
+/// <param name="size">返回数据长度；可传 NULL; 等到握手结果就写入(无数据返回 NULL 也写)，超时或连接已关不写</param>
 /// <returns>握手数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝。
+///   本协程下次挂起或结束时由框架释放，需要保留请自行拷贝。
 ///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL(同 coro_recv)</returns>
 void *coro_handshaked(task_ctx *task, sock_ctx *sk, int32_t *err, size_t *size);
 /// <summary>
@@ -127,12 +129,14 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
                      sock_ctx *sk);
 /// <summary>
 /// 同步关闭连接：发起关闭后挂起协程等 CLOSE 消息，确保协议层 close 回调执行完毕再返回。
-/// 重连前调用,避免旧连接异步 teardown 与新连接共享 ctx 时清掉新 fd;须在协程内调用,连接已失效时调用方自行跳过。
+/// 重连前调用,避免旧连接异步 teardown 与新连接共享 ctx 时清掉新 fd;须在协程内调用。
 /// 未发数据的丢弃契约同 ev_close：等的是"关完了",不是"发完了"。
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
-void coro_close(task_ctx *task, sock_ctx *sk);
+/// <returns>ERR_OK 已收到 CLOSE 或连接本已失效；ERR_FAILED 等满 netread 超时仍没收到 CLOSE（网络线程或本 task 队列积压，超时前没处理到这次关闭），
+/// 此时旧连接的 close 回调还会晚到，与它共用 ctx 的新连接不能建</returns>
+int32_t coro_close(task_ctx *task, sock_ctx *sk);
 /// <summary>
 /// TCP发送并等待响应。同一连接上多个协程并发收发时，须用 coro_serial 把整个"发请求→收完响应"圈住：
 /// 等待者按连接排队、只认队头，回包按到达顺序交给先挂起的协程，而服务端不保证按请求顺序回包，不圈就会对错号
@@ -145,7 +149,7 @@ void coro_close(task_ctx *task, sock_ctx *sk);
 ///   口径见 prots_unpack 的 size 契约：结构化协议返回的是 pack 对象，不能拿 size 直接读</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝</param>
 /// <returns>响应数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝。
+///   本协程下次挂起或结束时由框架释放，需要保留请自行拷贝。
 ///   发送失败 / 超时 / 连接已关返回 NULL</returns>
 void *coro_send(task_ctx *task, sock_ctx *sk, void *data, size_t len, size_t *size, int32_t copy);
 /// <summary>
@@ -169,7 +173,7 @@ void *coro_recv(task_ctx *task, sock_ctx *sk, size_t *size);
 /// <param name="end">1 分片结束 0未结束；必须非 NULL，函数内裸解引用；
 ///   返回 NULL 时保证已写 0</param>
 /// <returns>分片数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
+///   本协程下次挂起或结束时由框架释放，需要保留请自行拷贝</returns>
 void *coro_slice(task_ctx *task, sock_ctx *sk, size_t *size, int32_t *end);
 /// <summary>
 /// UDP发送并等待响应；调用前须显式 coro_sync 一次（同 TCP 服务端 accept 连接的约定，见文件头注释）
@@ -185,7 +189,7 @@ void *coro_slice(task_ctx *task, sock_ctx *sk, size_t *size, int32_t *end);
 /// <param name="size">返回数据长度；可传 NULL; 只在返回非 NULL 时写入</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝(转移所有权)</param>
 /// <returns>响应数据（已去除 netaddr_ctx 前缀）；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝。
+///   本协程下次挂起或结束时由框架释放，需要保留请自行拷贝。
 ///   发送失败 / 超时 / 连接已关返回 NULL</returns>
 void *coro_sendto(task_ctx *task, sock_ctx *sk,
                   const char *ip, const uint16_t port,

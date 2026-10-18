@@ -1,7 +1,7 @@
 ﻿#include "test_advance.h"
 #include "lib.h"
 
-/* router_match_index 会就地压掉 ctx->url 的空段。npath 收了而 pathlens 没收的话，
+/* router_match_index 带 URL_SKIP_EMPTY 解析，空段在 url_parse 里就丢掉。npath 少了而 pathlens 没跟着少的话，
  * url_ctx 声明的 pathlens == Σ(segs[i].lens + 1) 就不成立，下游按它预分配的缓冲会偏大；
  * "/" 这种全空段的请求压完 npath 归零，也要一并盯住 */
 static void test_router_url_normalize(CuTest *tc) {
@@ -212,6 +212,199 @@ static void test_router_seg_index(CuTest *tc) {
     router_free(r);
 }
 
+/* router_next 的游标进入时推进、返回时恢复：同一层调两次 next 是把下游从下一层起重跑一遍，
+ * 不会越过下游里截断的那层。共用一个游标时，第二次会直接跳到 handler，鉴权类中间件就被绕过 */
+static int32_t _next_gate_n;
+static int32_t _next_handler_n;
+static void _next_twice(router_req *ctx) {
+    router_next(ctx);
+    router_next(ctx);
+}
+static void _next_gate(router_req *ctx) {
+    (void)ctx;
+    _next_gate_n++;// 恒截断：不调 router_next
+}
+static void _next_pass(router_req *ctx) {
+    router_next(ctx);
+}
+static void _next_handler(router_req *ctx) {
+    (void)ctx;
+    _next_handler_n++;
+}
+static void test_router_next_twice(CuTest *tc) {
+    router_req ctx;
+    ZERO(&ctx, sizeof(ctx));
+    ctx.chain[0] = _next_twice;
+    ctx.chain[1] = _next_gate;
+    ctx.chain[2] = _next_handler;
+    ctx.chain_n = 3;
+    _next_gate_n = 0;
+    _next_handler_n = 0;
+    router_next(&ctx);
+    CuAssertIntEquals(tc, 2, _next_gate_n);
+    CuAssertIntEquals(tc, 0, _next_handler_n);
+    CuAssertIntEquals(tc, 0, ctx.chain_i);
+    /* 换成放行的一层：两次 next 各把下游完整跑一遍 */
+    ctx.chain[1] = _next_pass;
+    router_next(&ctx);
+    CuAssertIntEquals(tc, 2, _next_handler_n);
+    CuAssertIntEquals(tc, 0, ctx.chain_i);
+}
+
+/* 路径在而方法不对回 405 并带 Allow，OPTIONS 自动 200(同 Laravel)；路径不在照旧 404，
+ * 方法名不认识照旧 405 不带 Allow。Allow 的方法先后按方法表，不按注册顺序 */
+static void test_router_allow(CuTest *tc) {
+    router_ctx *r = router_new();
+    url_ctx url;
+    router_req ctx;
+    char allow[ROUTER_ALLOW_LENS];
+    size_t n;
+
+    CuAssertPtrNotNull(tc, r);
+    CuAssertTrue(tc, router_add_index(r, "POST", 4, "/u/{id}", 7) >= 0);
+    CuAssertTrue(tc, router_add_index(r, "GET|HEAD", 8, "/u/{id}", 7) >= 0);
+    CuAssertTrue(tc, router_add_index(r, "DELETE", 6, "/other", 6) >= 0);
+
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -4, router_match_index(r, "PUT", 3, "/u/7", 4, &ctx));
+    CuAssertIntEquals(tc, 405, router_match_code(-4));
+    CuAssertIntEquals(tc, 0, ctx.params_n);
+    n = router_allow_value(ctx.allow, allow);
+    CuAssertTrue(tc, sizeof("GET, HEAD, POST") - 1 == n);
+    CuAssertTrue(tc, 0 == memcmp(allow, "GET, HEAD, POST", n));
+
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -5, router_match_index(r, "OPTIONS", 7, "/u/7", 4, &ctx));
+    CuAssertIntEquals(tc, 200, router_match_code(-5));
+    CuAssertTrue(tc, (ROUTER_M_GET | ROUTER_M_HEAD | ROUTER_M_POST) == ctx.allow);
+
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -1, router_match_index(r, "PUT", 3, "/none", 5, &ctx));
+    CuAssertTrue(tc, 0 == ctx.allow);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -3, router_match_index(r, "FROB", 4, "/u/7", 4, &ctx));
+    CuAssertTrue(tc, 0 == ctx.allow);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "POST", 4, "/u/7", 4, &ctx) >= 0);
+    CuAssertTrue(tc, 0 == ctx.allow);
+    router_free(r);
+}
+
+/* 请求目标只收 "/..." 与绝对形式 "http://host/..."：别的形状第一段会被当成 host 吃掉，
+ * "x/a/b" 就命中了 /a/b。方法串非法(空段、首尾竖线、不认识的名字)注册一律 -1 */
+static void test_router_target_form(CuTest *tc) {
+    router_ctx *r = router_new();
+    url_ctx url;
+    router_req ctx;
+
+    CuAssertPtrNotNull(tc, r);
+    CuAssertTrue(tc, router_add_index(r, "GET", 3, "/a/b", 4) >= 0);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -2, router_match_index(r, "GET", 3, "x/a/b", 5, &ctx));
+    CuAssertIntEquals(tc, 400, router_match_code(-2));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -2, router_match_index(r, "GET", 3, "a/b", 3, &ctx));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -2, router_match_index(r, "OPTIONS", 7, "*", 1, &ctx));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "http://h/a/b", 12, &ctx) >= 0);
+
+    CuAssertIntEquals(tc, -1, router_add_index(r, "GET||HEAD", 9, "/m", 2));
+    CuAssertIntEquals(tc, -1, router_add_index(r, "|GET", 4, "/m", 2));
+    CuAssertIntEquals(tc, -1, router_add_index(r, "GET|", 4, "/m", 2));
+    CuAssertIntEquals(tc, -1, router_add_index(r, "FROB", 4, "/m", 2));
+    CuAssertIntEquals(tc, -1, router_add_index(r, "get", 3, "/m", 2));
+    router_free(r);
+}
+
+/* 末尾通配吃下的段(已解码、空段已丢)按 '/' 拼成参数 "*"；一段没吃下就没有这个参数，
+ * 通配前的占位符照常可取 */
+static void test_router_wild_param(CuTest *tc) {
+    router_ctx *r = router_new();
+    url_ctx url;
+    router_req ctx;
+    const char *v;
+    size_t n = 0;
+
+    CuAssertPtrNotNull(tc, r);
+    CuAssertTrue(tc, router_add_index(r, "GET", 3, "/static/*", 9) >= 0);
+    CuAssertTrue(tc, router_add_index(r, "GET", 3, "/asset/{id}/*", 13) >= 0);
+
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/static/a//b%2Fc/d", 18, &ctx) >= 0);
+    v = router_req_param(&ctx, "*", &n);
+    CuAssertPtrNotNull(tc, v);
+    CuAssertTrue(tc, 7 == n && 0 == memcmp(v, "a/b/c/d", 7));
+
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/static", 7, &ctx) >= 0);
+    CuAssertPtrEquals(tc, NULL, (void *)router_req_param(&ctx, "*", &n));
+
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/asset/42/x/y", 13, &ctx) >= 0);
+    v = router_req_param(&ctx, "id", &n);
+    CuAssertTrue(tc, NULL != v && 2 == n && 0 == memcmp(v, "42", 2));
+    v = router_req_param(&ctx, "*", &n);
+    CuAssertTrue(tc, NULL != v && 3 == n && 0 == memcmp(v, "x/y", 3));
+    router_free(r);
+}
+
+/* 中间件登记的误用当场失败：NULL 回调、引用没 define 的名字(全局 / 路由级 / 分组)都拒，
+ * 被拒的路由不进表。分组前缀与路径之间自动补 '/'("/api" + "users" 即 /api/users) */
+static void test_router_register(CuTest *tc) {
+    router_ctx *r = router_new();
+    url_ctx url;
+    router_req ctx;
+    router_group g;
+    router_group sub;
+    const char *undef[] = { "nosuch" };
+
+    CuAssertPtrNotNull(tc, r);
+    CuAssertIntEquals(tc, ERR_FAILED, router_define(r, "x", NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, router_use_fn(r, NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, router_use(r, "x"));
+    CuAssertIntEquals(tc, ERR_OK, router_define(r, "x", _next_pass));
+    CuAssertIntEquals(tc, ERR_OK, router_use(r, "x"));
+    CuAssertIntEquals(tc, ERR_OK, router_use_fn(r, _next_pass));
+
+    CuAssertPtrEquals(tc, NULL, (void *)router_get(r, NULL, "/undef", _next_handler, undef, 1));
+    router_group_root(&g, "/gu", undef, 1);
+    CuAssertPtrEquals(tc, NULL, (void *)router_get(r, &g, "/undef", _next_handler, NULL, 0));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -1, router_match_index(r, "GET", 3, "/undef", 6, &ctx));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -1, router_match_index(r, "GET", 3, "/gu/undef", 9, &ctx));
+
+    router_group_root(&g, "/api", NULL, 0);
+    CuAssertPtrNotNull(tc, router_get(r, &g, "users", _next_handler, NULL, 0));
+    router_group_nest(&g, &sub, "v1", NULL, 0);
+    CuAssertPtrNotNull(tc, router_get(r, &sub, "items", _next_handler, NULL, 0));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/api/users", 10, &ctx) >= 0);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/api/v1/items", 13, &ctx) >= 0);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -1, router_match_index(r, "GET", 3, "/apiusers", 9, &ctx));
+    router_free(r);
+}
+
 // harbor_pack 直接写线格式，必须与原先 snprintf + http_pack_req/http_pack_head 拼出来的逐字节相同
 static void test_harbor_pack_wire(CuTest *tc) {
     static const char want_call[] = "POST /call?dst=18446744073709551615&type=65535 HTTP/1.1\r\n"
@@ -233,4 +426,9 @@ void test_advance(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_harbor_pack_wire);
     SUITE_ADD_TEST(suite, test_router_shadow_mask);
     SUITE_ADD_TEST(suite, test_router_seg_index);
+    SUITE_ADD_TEST(suite, test_router_next_twice);
+    SUITE_ADD_TEST(suite, test_router_allow);
+    SUITE_ADD_TEST(suite, test_router_target_form);
+    SUITE_ADD_TEST(suite, test_router_wild_param);
+    SUITE_ADD_TEST(suite, test_router_register);
 }

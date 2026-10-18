@@ -170,7 +170,7 @@ mk.bat m32        :: 32 位
 |----|------|------|
 | `WITH_SSL` | `1` | 启用 OpenSSL |
 | `WITH_LUA` | `1` | 启用 Lua |
-| `WITH_MIMALLOC` | `0` | 分配器换成 mimalloc（与 ASan / TSan 互斥） |
+| `WITH_MIMALLOC` | `1` | 分配器换成 mimalloc（与 ASan / TSan 互斥，`mk.sh asan/tsan` 与 CMake 的 `SREY_ASAN/SREY_TSAN` 会自动关掉它） |
 | `MEMORY_CHECK` | `1` | 退出时检查未释放的内存 |
 | `MEMORY_TRACE` | `0` | 记录每次分配的调用栈，退出时打印泄漏位置（需 `MEMORY_CHECK=1`，有性能开销） |
 | `KEEPALIVE_TIME` | `30` | TCP keepalive 空闲时间（秒） |
@@ -320,7 +320,7 @@ ev_send(&task->loader->netev, sk, bwriter.data, bwriter.offset, 0);// copy=0，�
 ```c
 // mysql：参数 mysql, ip, port, evssl, user, password, database, charset, maxpk
 mysql_ctx mysql;
-mysql_init(&mysql, "127.0.0.1", 3306, NULL, "root", "password", "mydb", "utf8mb4", 0);
+mysql_init(&mysql, "127.0.0.1", 3306, NULL, "root", "password", "mydb", "utf8mb4", 0);// 明文：caching_sha2 账号要服务端缓存过口令(先经 TLS 登录过一次)
 mysql_connect(task, &mysql);
 mysql_query(&mysql, "SELECT 1", NULL, _on_result, udata);// 结果集逐个交给回调
 

@@ -1,9 +1,10 @@
 ﻿#include "crypt/hmac.h"
 
 /* RFC 2104：ipad/opad 长度等于压缩函数输入块大小 B，不是摘要输出长度。B 由 digest_init
- * 一并写进 digest_ctx.attr->key_block —— 算法属性只留一张表，新增算法漏填会被 digest_init 的 ASSERTAB 挡住。
- * HMAC_MAX_KEY_LENS 取所有支持算法中最大的 B，用于栈缓冲区声明。 */
-#define HMAC_MAX_KEY_LENS 128
+ * 一并写进 digest_ctx.attr->key_block —— 算法属性只留一张表。整行漏填由 digest_init 的 ASSERTAB 挡，
+ * key_block 漏填（或 xxhash 这类不适用 HMAC 的算法填 0）由 hmac_init 的 ASSERTAB 挡。
+ * HMAC_MAX_KEY_LENS 取所有支持算法中最大的 B（SHA-512），用于栈缓冲区声明。 */
+#define HMAC_MAX_KEY_LENS SHA512_KEY_BLOCK
 
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens) {
     digest_init(&hmac->inside, dtype);
@@ -12,9 +13,8 @@ void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens)
     digest_init(&hmac->outside_init, dtype);
     size_t key_block = hmac->inside.attr->key_block;
     ASSERTAB(0 < key_block && key_block <= HMAC_MAX_KEY_LENS, "digest type not usable for hmac or key block exceeds stack buffer.");
-    char *key_used;
+    const char *key_used = key;
     char key_temp[DG_BLOCK_SIZE], block_ipad[HMAC_MAX_KEY_LENS], block_opad[HMAC_MAX_KEY_LENS];
-    key_used = (char *)key;
     if (klens > key_block) {
         // 超块长的 key 先摘要成 digest 长度再用
         digest_update(&hmac->outside, key, klens);
@@ -56,11 +56,9 @@ size_t hmac_final(hmac_ctx *hmac, char *hash) {
     hmac_reset(hmac);
     return attr->block_lens;
 }
-// 按当前引擎的实际 ctx 大小拷，不按联合体整份：PBKDF2 每轮要拷两次，多拷的部分随迭代次数放大
+// 按当前引擎的实际 ctx 大小拷，不按联合体整份：PBKDF2 每轮要拷两次，多拷的部分随迭代次数放大。
+// eng_lens 不超过联合体由 digest_init 保证
 void hmac_reset(hmac_ctx *hmac) {
-    ASSERTAB(hmac->inside_init.attr->eng_lens <= sizeof(hmac->inside_init.eng_ctx)
-             && hmac->outside_init.attr->eng_lens <= sizeof(hmac->outside_init.eng_ctx),
-             "engine ctx larger than hmac buffer.");
     memcpy(&hmac->inside.eng_ctx, &hmac->inside_init.eng_ctx, hmac->inside_init.attr->eng_lens);
     memcpy(&hmac->outside.eng_ctx, &hmac->outside_init.eng_ctx, hmac->outside_init.attr->eng_lens);
 }
@@ -84,9 +82,8 @@ static void _hmac_block(digest_ctx *work, const digest_ctx *init, char *blk) {
 size_t hmac_pbkdf2(hmac_ctx *hmac, const void *salt, size_t slens, int32_t iter, char *out) {
     static const char one[4] = { 0, 0, 0, 1 };
     const dg_attr *attr = hmac->inside.attr;
-    size_t hs = attr->block_lens, j;
+    size_t hs = attr->block_lens;
     char u[HMAC_MAX_KEY_LENS];
-    int32_t i;
     hmac_update(hmac, salt, slens);
     hmac_update(hmac, one, sizeof(one));
     hmac_final(hmac, u);
@@ -94,7 +91,8 @@ size_t hmac_pbkdf2(hmac_ctx *hmac, const void *salt, size_t slens, int32_t iter,
     if (NULL != attr->_state) {
         _hmac_pad_tail(attr, u);
     }
-    for (i = 1; i < iter; i++) {
+    size_t j;
+    for (int32_t i = 1; i < iter; i++) {
         if (NULL != attr->_state) {
             _hmac_block(&hmac->inside, &hmac->inside_init, u);
             _hmac_block(&hmac->outside, &hmac->outside_init, u);

@@ -4,6 +4,7 @@
 #define DNS_FLAG1_RD        0x01u // 期望递归（请求时设置）
 #define DNS_FLAG1_TC        0x02u // 响应被截断（响应时可能设置，见 RFC 1035 §4.1.1）
 #define DNS_FLAG2_RCODE(f)  ((f) & 0x0Fu) // 提取响应码
+#define DNS_RCODE_NXDOMAIN 3 // 名字不存在
 #define DNS_A    1 // IPv4 地址记录类型
 #define DNS_AAAA 28 // IPv6 地址记录类型
 
@@ -38,18 +39,19 @@ const char *dns_get_ip(void) {
 }
 // 将点分格式域名编码为 DNS 报文中的标签格式（长度+内容序列），结尾补根标签 0。
 // 末尾一个 '.'(FQDN 写法)照收；空标签(空串、开头的 '.'、连续的 "..")与超 63 字节的标签拒：
-// 空标签编出来是长度 0，服务端会把它当根标签提前收尾，后面的字节全错位
+// 空标签编出来是长度 0，服务端会把它当根标签提前收尾，后面的字节全错位。
+// 编出来是去掉结尾 '.' 后的长度 + 2(首个长度字节与根标签)，RFC 1035 §2.3.4 限 255 字节，故去点后最多 253
 static int32_t _dns_encode_domain(char *qname, const char *domain, size_t *lenout) {
     char *qname_start = qname;
-    size_t lock = 0, i;
+    size_t lock = 0;
     size_t dlens = strlen(domain);
-    if (dlens >= 255) {
-        return ERR_FAILED;
-    }
     if (dlens > 0 && '.' == domain[dlens - 1]) {
         dlens--;
     }
-    for (i = 0; i <= dlens; i++) {
+    if (dlens > 253) {
+        return ERR_FAILED;
+    }
+    for (size_t i = 0; i <= dlens; i++) {
         if (i < dlens && '.' != domain[i]) {
             continue;
         }
@@ -97,9 +99,8 @@ size_t dns_request_pack_tcp(char *buf, const char *domain, int32_t ipv6, uint16_
     if (0 == dlens) {
         return 0;
     }
-    uint16_t nlen = htons((uint16_t)dlens);
-    memcpy(buf, &nlen, sizeof(nlen));
-    return dlens + sizeof(nlen);
+    write_be16(buf, (uint16_t)dlens);
+    return dlens + sizeof(uint16_t);
 }
 void *dns_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
@@ -111,7 +112,7 @@ void *dns_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     }
     uint16_t nlen;
     ASSERTAB(sizeof(nlen) == buffer_copyout(buf, 0, &nlen, sizeof(nlen)), "copyout buffer error.");
-    uint16_t plen = ntohs(nlen);
+    uint16_t plen = read_be16(&nlen);
     if (0 == plen) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
@@ -189,24 +190,21 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
     name[o] = '\0';
     return ERR_OK;
 }
-// 解析 DNS 响应中的资源记录段（应答/授权/附加），提取 A/AAAA 类型的 IP 地址
-// 返回下一个 reader 位置，出错返回 NULL
-static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n, dns_ip *dnsips, int32_t *index, uint32_t *jump_budget) {
-    if (0 == n) {
-        return reader;
-    }
+// 解析应答段的 n 条资源记录，A/AAAA 的地址依次写进 dnsips，*cnt 输出写了几个(只在成功时写)。
+// 返回应答段之后的 reader 位置，出错返回 NULL
+static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n, dns_ip *dnsips, size_t *cnt) {
     char *buf_end = buf + buflen;
-    int32_t cnt;
-    dns_ip *tmp;
+    uint32_t jump_budget = (uint32_t)buflen;// 全报文共享，见 _dns_decode_domain
+    size_t index = 0;
+    int32_t used;
     uint16_t rtype, rlens;
-    uint16_t _u16;
     char domain[256];
     for (uint16_t i = 0; i < n; i++) {
         if (ERR_OK != _dns_decode_domain((unsigned char *)domain, sizeof(domain),
-                                     (unsigned char *)reader, (unsigned char *)buf, buflen, &cnt, jump_budget)) {
+                                     (unsigned char *)reader, (unsigned char *)buf, buflen, &used, &jump_budget)) {
             return NULL;
         }
-        reader += cnt;
+        reader += used;
         // 严格校验：reader 必须在 [buf, buf_end] 内（允许 one-past-end），再用 buf_end-reader
         // 计算剩余字节，避免 reader + N 超越 one-past-end 的指针算术 UB（C11 §6.5.6）
         if (reader < buf || reader > buf_end) {
@@ -216,11 +214,9 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
         if ((size_t)(buf_end - reader) < 2 * sizeof(uint16_t) + sizeof(uint32_t) + sizeof(uint16_t)) {
             return NULL;
         }
-        memcpy(&_u16, reader, sizeof(_u16));//直接转型解引用在 ARM、SPARC 等严格对齐平台上是未定义行为
-        rtype = ntohs(_u16);
+        rtype = read_be16(reader);
         reader += 2 * sizeof(uint16_t) + sizeof(uint32_t); // 跳过 type/class/ttl
-        memcpy(&_u16, reader, sizeof(_u16));
-        rlens = ntohs(_u16);
+        rlens = read_be16(reader);
         reader += sizeof(uint16_t);
         // reader 已推进 10 字节，由前面 buf_end-reader >= 10 保证 reader <= buf_end，减法安全
         if ((size_t)(buf_end - reader) < rlens) {
@@ -229,22 +225,19 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
         //地址转文本按地址族固定读 4 字节（IPv4）/ 16 字节（IPv6），
         //rlens 不严格相等会读到相邻记录或越界栈内存，恶意 DNS 响应可借此泄漏信息或返回伪造 IP
         if (DNS_A == rtype && 4 == rlens) {
-            tmp = &dnsips[*index];
-            (*index)++;
-            netaddr_ip4_str((const uint8_t *)reader, tmp->ip);
+            netaddr_ip4_str((const uint8_t *)reader, dnsips[index++].ip);
         } else if (DNS_AAAA == rtype && 16 == rlens) {
-            tmp = &dnsips[*index];
-            (*index)++;
-            inet_ntop(AF_INET6, reader, tmp->ip, sizeof(tmp->ip));
+            inet_ntop(AF_INET6, reader, dnsips[index++].ip, sizeof(dnsips[0].ip));
         }
         reader += rlens;
     }
+    *cnt = index;
     return reader;
 }
 dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32_t *nodata) {
     // 入口统一归零：往下所有失败路径都不再单独写 cnt(写了也是无操作),
     // "返回 NULL 时 cnt 恒为 0"这条对外契约由这一句独家保证；
-    // 唯一的非零写入是函数末尾成功路径的 *cnt = index
+    // 唯一的非零写入是函数末尾成功路径的 *cnt = nip
     *cnt = 0;
     SET_PTR(nodata, 0);
     if (buflen < sizeof(dns_head)) {
@@ -261,17 +254,18 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
     }
     uint8_t rcode = DNS_FLAG2_RCODE(head.flags2);
     if (0 != rcode) {
-        LOG_WARN("qurey domain error: %d.", rcode);
+        // NXDOMAIN 是服务端对"名字不存在"的明确答复，换 TCP 重查还是同一结果；SERVFAIL 等可能是暂时故障，仍值得重试
+        if (DNS_RCODE_NXDOMAIN == rcode) {
+            SET_PTR(nodata, 1);
+        }
+        LOG_WARN("query domain error: %d.", rcode);
         return NULL;
     }
+    // 只认应答段：授权段与附加段里的 A/AAAA 是名字服务器的地址(转介、glue)，不是这个名字的。
+    // TC 与 rcode 都已查过，应答段空即 NOERROR/NODATA；下面那个 0 == total 是 maxrec 钳零，
+    // 属"声称有记录却没字节"的畸形，不能当 NODATA
     uint16_t nans = ntohs(head.ans_count);
-    uint16_t nauth = ntohs(head.auth_count);
-    uint16_t nadd = ntohs(head.add_count);
-    uint32_t total = (uint32_t)nans + nauth + nadd;
-    if (0 == total) {
-        // TC 与 rcode 都已查过,三段计数全零即 NOERROR/NODATA(AUTHORITY 那条 SOA 是 SHOULD
-        // 不是 MUST,转发器普遍不带),不置 nodata 会白跑一次 TCP 重查。
-        // 下面那个 0 == total 是 maxrec 钳零,属"声称有记录却没字节"的畸形,不能当 NODATA
+    if (0 == nans) {
         SET_PTR(nodata, 1);
         return NULL;
     }
@@ -312,39 +306,31 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
     }
     char *reader = p;
     // 按报文剩余字节推导记录数上界（每条 RR 最小 = NAME 1 字节 + 固定字段 10 字节），
-    // 与头部计数取小，防用极小报文 + 巨大计数字段放大分配
+    // 与应答段计数取小，防用极小报文 + 巨大计数字段放大分配
     size_t maxrec = (size_t)(end - reader) / 11;
+    size_t total = nans;
     if (total > maxrec) {
-        total = (uint32_t)maxrec;
+        total = maxrec;
     }
     if (0 == total) {
         return NULL;
     }
     dns_ip *dnsips;
     MALLOC(dnsips, sizeof(dns_ip) * total);
-    int32_t index = 0;
-    uint32_t jump_budget = (uint32_t)buflen;
-    // 解析应答段
-    reader = _dns_parse_data(buf, buflen, reader, nans, dnsips, &index, &jump_budget);
-    // 解析授权段
-    if (NULL != reader) {
-        reader = _dns_parse_data(buf, buflen, reader, nauth, dnsips, &index, &jump_budget);
-    }
-    // 解析附加段
-    if (NULL != reader) {
-        reader = _dns_parse_data(buf, buflen, reader, nadd, dnsips, &index, &jump_budget);
-    }
-    // index==0 是报文合法但一条 A/AAAA 都没解出来。dnsips 是 MALLOC 的、一个字节都没写过，
+    size_t nip = 0;
+    // CNAME 链目标的 A/AAAA 属主名与查询名不同，故不按属主名过滤
+    reader = _dns_parse_data(buf, buflen, reader, nans, dnsips, &nip);
+    // nip==0 是报文合法但一条 A/AAAA 都没解出来。dnsips 是 MALLOC 的、一个字节都没写过，
     // 连同解析失败一起返 NULL，免得调用方按"非 NULL 即成功"读到未初始化内存。
     // 两者意义不同，用 nodata 区分：那是服务端的完整答复，换传输方式重查还是同一结果
     if (NULL == reader
-        || 0 == index) {
+        || 0 == nip) {
         if (NULL != reader) {
             SET_PTR(nodata, 1);
         }
         FREE(dnsips);
         return NULL;
     }
-    *cnt = (size_t)index;
+    *cnt = nip;
     return dnsips;
 }

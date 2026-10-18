@@ -49,7 +49,11 @@ typedef struct websock_ctx {
 
 void _websock_pkfree(void *data);
 void *_websock_pack_next(void *pack);
+// 判断当前帧能否唤醒等待者：PING 与承载子协议却没带出子协议包的帧不能，其余按子协议判
+int32_t _websock_may_resume(void *data);
 void _websock_udfree(ud_cxt *ud);
+// 回应对端 CLOSE 时带的状态码：载荷为空返回 0(回空 CLOSE)；合法码(RFC 6455 §7.4)原样回显，1 字节载荷或非法码回 1002
+uint16_t _websock_close_code(struct websock_pack_ctx *pack);
 /// <summary>
 /// 按子协议名匹配内建承载协议类型(当前仅 "mqtt"->PACK_MQTT，区分大小写)
 /// </summary>
@@ -76,7 +80,7 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
 int32_t websock_set_secextra(ev_ctx *ev, sock_ctx *sk, void *val, free_cb fcb);
 /// <summary>
 /// WebSocket 解包：握手阶段完成 HTTP 升级，数据阶段从缓冲区解析一个完整帧（含分片）。
-/// 解出对端的 CLOSE 时当场在本连接上回一个 CLOSE（只回显状态码），业务不必再回
+/// 解出对端的 CLOSE 时当场在本连接上回一个 CLOSE（只带状态码，取法见 _websock_close_code），业务不必再回
 /// </summary>
 /// <param name="ev">事件上下文。服务端握手要回应答，不能为 NULL；握手完成后可传 NULL 只解包、不在连接上收发，
 /// 此时收到 CLOSE 也不回帧</param>
@@ -188,7 +192,7 @@ void *websock_secpack(struct websock_pack_ctx *pack);
 /// 获取数据
 /// </summary>
 /// <param name="pack">websock_pack_ctx</param>
-/// <param name="pack">数据长度</param>
+/// <param name="lens">输出：载荷长度，必须非 NULL</param>
 /// <returns>数据</returns>
 char *websock_data(struct websock_pack_ctx *pack, size_t *lens);
 void _websock_init(void *hspush);

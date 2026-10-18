@@ -71,18 +71,33 @@ static void _mmap_init(mmap_ctx *ctx) {
     ZERO(ctx, sizeof(mmap_ctx));
     ctx->fd = MMAP_INVALID_FD;
 }
-// 失败收尾：关掉已打开的句柄并复位，保住触发失败的那个错误码
-static int32_t _mmap_fail(mmap_ctx *ctx) {
+// 失败收尾：关掉已打开的句柄并复位，保住触发失败的那个错误码。
+// rm 非 NULL 时再删掉这个本次以 EXCL 新建的文件 / 共享内存名字：调用方分不出它是不是自己建的，留着它 EXCL 重试永远失败
+static int32_t _mmap_fail_rm(mmap_ctx *ctx, const char *rm) {
+    int32_t kind = ctx->kind;
 #ifdef OS_WIN
     DWORD err = GetLastError();
     mmap_close(ctx);
+    if (NULL != rm && _MMAP_FILE == kind) {
+        (void)DeleteFileA(rm);
+    }
     SetLastError(err);
 #else
     int32_t err = errno;
     mmap_close(ctx);
+    if (NULL != rm) {
+        if (_MMAP_SHM == kind) {
+            (void)shm_unlink(rm);
+        } else {
+            (void)unlink(rm);
+        }
+    }
     errno = err;
 #endif
     return ERR_FAILED;
+}
+static int32_t _mmap_fail(mmap_ctx *ctx) {
+    return _mmap_fail_rm(ctx, NULL);
 }
 static int32_t _mmap_mode_ok(int32_t mode) {
     return MMAP_RDONLY == mode || MMAP_RDWR == mode || MMAP_COPY == mode;
@@ -90,8 +105,6 @@ static int32_t _mmap_mode_ok(int32_t mode) {
 // 对相对 addr 的 [off, off + lens) 做 op：lens 为 0 表示到 size 末尾，区间按页对齐后交给 op，空区间直接成功。
 // resize 失败后 addr 可能为 NULL 而 size 仍是旧值（留着给 close 截回用），越界判断见 mmap_in_range
 static int32_t _mmap_apply(mmap_ctx *ctx, size_t off, size_t lens, _mmap_op op, int32_t arg) {
-    size_t head;
-    char *a;
     if (0 == lens && off <= ctx->size) {
         lens = ctx->size - off;
     }
@@ -101,8 +114,8 @@ static int32_t _mmap_apply(mmap_ctx *ctx, size_t off, size_t lens, _mmap_op op, 
     if (0 == lens) {
         return ERR_OK;
     }
-    a = ctx->addr + off;
-    head = (size_t)((uintptr_t)a & (_mmap_pagesize() - 1));
+    char *a = ctx->addr + off;
+    size_t head = (size_t)((uintptr_t)a & (_mmap_pagesize() - 1));
     return op(ctx, a - head, lens + head, arg);
 }
 static int32_t _mmap_flen(mmap_ctx *ctx, uint64_t *len) {
@@ -467,7 +480,7 @@ static int32_t _mmap_file_map(mmap_ctx *ctx, size_t size, size_t cap) {
 // 按 opts 算出窗口并建映射；ctx 已持有文件句柄
 static int32_t _mmap_file_setup(mmap_ctx *ctx, const mmap_opts *opts) {
     uint64_t flen;
-    size_t size = opts->size, cap, gran = mmap_granularity();
+    size_t size = opts->size;
     ctx->mode = opts->mode;
     ctx->flags = opts->flags;
     ctx->off = opts->off;
@@ -482,21 +495,20 @@ static int32_t _mmap_file_setup(mmap_ctx *ctx, const mmap_opts *opts) {
         }
         size = (size_t)(flen - opts->off);
     }
-    cap = opts->cap < size ? size : opts->cap;
+    size_t cap = opts->cap < size ? size : opts->cap;
     if (MMAP_RDWR != ctx->mode && cap > size) {
         return _mmap_inval();
     }
     if (UINT64_MAX - opts->off < size || (MMAP_RDWR != ctx->mode && opts->off + size > flen)) {
         return _mmap_inval();
     }
-    ctx->delta = (size_t)(opts->off & (gran - 1));
+    ctx->delta = (size_t)(opts->off & (mmap_granularity() - 1));
     if (cap > SIZE_MAX - ctx->delta) {
         return _mmap_inval();
     }
     return _mmap_file_map(ctx, size, cap);
 }
 int32_t mmap_open(mmap_ctx *ctx, const char *path, const mmap_opts *opts) {
-    int32_t flags;
     _mmap_init(ctx);
     if (NULL == opts) {
         opts = &_mmap_zero_opts;
@@ -504,7 +516,9 @@ int32_t mmap_open(mmap_ctx *ctx, const char *path, const mmap_opts *opts) {
     if (!_mmap_mode_ok(opts->mode)) {
         return _mmap_inval();
     }
-    flags = opts->flags;
+    int32_t flags = opts->flags;
+    // CREATE|EXCL 打开成功即确知文件是本次建的，后面失败连文件一起删
+    const char *rm = (0 != (flags & MMAP_CREATE) && 0 != (flags & MMAP_EXCL)) ? path : NULL;
 #ifdef OS_WIN
     DWORD access = GENERIC_READ | (MMAP_RDWR == opts->mode ? GENERIC_WRITE : 0);
     DWORD disp = OPEN_EXISTING;
@@ -531,7 +545,7 @@ int32_t mmap_open(mmap_ctx *ctx, const char *path, const mmap_opts *opts) {
 #endif
     ctx->kind = _MMAP_FILE;
     if (ERR_OK != _mmap_file_setup(ctx, opts)) {
-        return _mmap_fail(ctx);
+        return _mmap_fail_rm(ctx, rm);
     }
     return ERR_OK;
 }
@@ -711,11 +725,10 @@ static int32_t _mmap_file_resize(mmap_ctx *ctx, size_t size) {
     return ERR_OK;
 }
 int32_t mmap_resize(mmap_ctx *ctx, size_t size, size_t cap) {
-    size_t newcap;
     if (_MMAP_FILE != ctx->kind && _MMAP_ANON != ctx->kind) {
         return _mmap_inval();
     }
-    newcap = cap > ctx->cap ? cap : ctx->cap;
+    size_t newcap = cap > ctx->cap ? cap : ctx->cap;
     if (newcap < size) {
         newcap = size;
     }
@@ -759,14 +772,12 @@ static int32_t _mmap_shm_name_ok(const char *name) {
     return lens >= 2 && lens <= MMAP_SHM_NAMEMAX && NULL == strchr(name + 1, '/');
 }
 int32_t mmap_shm(mmap_ctx *ctx, const char *name, const mmap_opts *opts) {
-    size_t size;
-    int32_t create;
     _mmap_init(ctx);
     if (NULL == opts) {
         opts = &_mmap_zero_opts;
     }
-    size = opts->size;
-    create = 0 != (opts->flags & MMAP_CREATE);
+    size_t size = opts->size;
+    int32_t create = 0 != (opts->flags & MMAP_CREATE);
     if ((MMAP_RDONLY != opts->mode && MMAP_RDWR != opts->mode) || !_mmap_shm_name_ok(name) || 0 != opts->off
         || (0 != opts->cap && opts->cap != size) || (create && 0 == size)) {
         return _mmap_inval();
@@ -809,40 +820,42 @@ int32_t mmap_shm(mmap_ctx *ctx, const char *name, const mmap_opts *opts) {
         return _mmap_fail(ctx);
     }
 #else
-    uint64_t flen;
-    void *p;
-    int32_t of = (MMAP_RDWR == opts->mode || create ? O_RDWR : O_RDONLY) | (create ? O_CREAT : 0);
-    if (create && 0 != (opts->flags & MMAP_EXCL)) {
-        of |= O_EXCL;
-    }
+    int32_t excl = create && 0 != (opts->flags & MMAP_EXCL);
+    int32_t of = (MMAP_RDWR == opts->mode || create ? O_RDWR : O_RDONLY) | (create ? O_CREAT : 0) | (excl ? O_EXCL : 0);
     ctx->fd = shm_open(name, of, (mode_t)(0 == opts->perm ? MMAP_SHM_PERM : opts->perm));
-    if (MMAP_INVALID_FD == ctx->fd || ERR_OK != _mmap_flen(ctx, &flen)) {
+    if (MMAP_INVALID_FD == ctx->fd) {
         return _mmap_fail(ctx);
+    }
+    // EXCL 建成即确知名字是本次建的，后面失败连名字一起删
+    const char *rm = excl ? name : NULL;
+    uint64_t flen;
+    if (ERR_OK != _mmap_flen(ctx, &flen)) {
+        return _mmap_fail_rm(ctx, rm);
     }
     if (0 == flen) {
         if (!create || !_mmap_off_ok(size)) {
             _mmap_inval();
-            return _mmap_fail(ctx);
+            return _mmap_fail_rm(ctx, rm);
         }
         if (0 != ftruncate(ctx->fd, (off_t)size) && (EINVAL != errno || ERR_OK != _mmap_flen(ctx, &flen) || flen < size)) {
-            return _mmap_fail(ctx);
+            return _mmap_fail_rm(ctx, rm);
         }
         flen = size;
     }
     if (0 == size) {
         if ((uint64_t)(size_t)flen != flen) {
             _mmap_inval();
-            return _mmap_fail(ctx);
+            return _mmap_fail_rm(ctx, rm);
         }
         size = (size_t)flen;
     }
     if (size > flen) {
         _mmap_inval();
-        return _mmap_fail(ctx);
+        return _mmap_fail_rm(ctx, rm);
     }
-    p = mmap(NULL, size, _mmap_prot(opts->mode), MAP_SHARED, ctx->fd, 0);
+    void *p = mmap(NULL, size, _mmap_prot(opts->mode), MAP_SHARED, ctx->fd, 0);
     if (MAP_FAILED == p) {
-        return _mmap_fail(ctx);
+        return _mmap_fail_rm(ctx, rm);
     }
     ctx->addr = (char *)p;
 #endif

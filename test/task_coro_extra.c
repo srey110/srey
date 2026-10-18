@@ -41,6 +41,10 @@ typedef struct sendto_arg {
     int32_t *seen;
 }sendto_arg;
 
+// 注册前 task_close 的探针：startup 跑的次数，与排在 startup 之后的 closing 跑的次数
+static atomic_t _cbr_nstartup;
+static atomic_t _cbr_nclosing;
+
 // coro_sleep 1500ms：跨过 tv1（256ms）触发 tv2 cascade 路径
 static int32_t _test_sleep_cascade(task_ctx *task) {
     uint64_t t0 = nowms();
@@ -89,7 +93,7 @@ static int32_t _test_send_after_close(task_ctx *task, uint16_t httpport) {
     return ERR_OK;
 }
 
-// dns_lookup 走 PACK_DNS 协议 + coro_sendto/coro_send，覆盖 DNS 协程路径
+// dns_lookup 先走 UDP(ev_sendto_addr + _coro_wait，核对应答来源)，失败回退 PACK_DNS TCP(coro_send)，覆盖 DNS 协程路径
 static int32_t _test_dns_lookup(task_ctx *task) {
     size_t cnt = 0;
     // 走 UDP（udp=1），dns_set_ip("8.8.8.8") 已在 main.c 配置；example.com 是 IANA 保留稳定域名
@@ -189,7 +193,7 @@ static void _sendto_one(void *owner, void *arg) {
 // 取队头那步若越过队头找、或摘空后把条目删早了，后面的协程就再也醒不过来——表现为 nok < N
 static int32_t _test_concurrent_sendto(task_ctx *task, uint16_t udpport) {
     sock_ctx sk;
-    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, &sk)) {
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, 0, &sk)) {
         LOG_ERROR("concurrent sendto: task_udp failed.");
         return ERR_FAILED;
     }
@@ -440,8 +444,14 @@ static int32_t _test_timeout_non_head(task_ctx *task) {
     return ERR_OK;
 }
 
-// 同名 task 第二次注册必须被拒,且已注册那个的名字索引不受影响
+// 重名注册万一被接受时它会被派发 STARTUP，给个空的
+static void _noop_startup(task_ctx *task) {
+    (void)task;
+}
+// 同名 task 第二次注册必须被拒,且已注册那个的名字索引不受影响。
+// coro_task_register 重名同样拒,且返回前已用 _argfree 放掉 arg(漏放 / 重放由收尾 _memcheck 兜住)
 static int32_t _test_register_dup_name(task_ctx *task) {
+    void *carg;
     task_ctx *dup = task_new(task->loader, task->name, 0, NULL, NULL, NULL);
     if (ERR_OK == task_register(dup, NULL, NULL)) {
         // 被错误接受时它已归 loader 管,不能再 task_free
@@ -449,16 +459,91 @@ static int32_t _test_register_dup_name(task_ctx *task) {
         return ERR_FAILED;
     }
     task_free(dup);// 注册失败的 task 仍归调用方
+    MALLOC(carg, 16);
+    if (NULL != coro_task_register(task->loader, task->name, 0, _noop_startup, NULL, _free, carg)) {
+        LOG_ERROR("register dup name: coro_task_register accepted a second %s.", task->name);
+        return ERR_FAILED;
+    }
     if (task->handle != task_find_name(task->loader, task->name)) {
         LOG_ERROR("register dup name: %s no longer maps to the first task.", task->name);
         return ERR_FAILED;
     }
     return ERR_OK;
 }
+static void _cbr_startup(task_ctx *task) {
+    (void)task;
+    ATOMIC_ADD(&_cbr_nstartup, 1);
+}
+// 只数排在 startup 之后的那次
+static void _cbr_closing(task_ctx *task) {
+    (void)task;
+    if (1 == ATOMIC_GET(&_cbr_nstartup)) {
+        ATOMIC_ADD(&_cbr_nclosing, 1);
+    }
+}
+// task_close 先于 task_register：注册前只记标志不投递，注册时在 STARTUP 之后补发 CLOSING，
+// 两个回调各跑一次，task 随后照常退出
+static int32_t _test_close_before_register(task_ctx *task) {
+    task_ctx *probe = task_new(task->loader, NULL, 0, NULL, NULL, NULL);
+    name_t handle = probe->handle;
+    task_close(probe);
+    if (ERR_OK != task_register(probe, _cbr_startup, _cbr_closing)) {
+        task_free(probe);
+        LOG_ERROR("close before register: register failed.");
+        return ERR_FAILED;
+    }
+    coro_sleep(task, 200);
+    if (1 != ATOMIC_GET(&_cbr_nstartup)
+        || 1 != ATOMIC_GET(&_cbr_nclosing)
+        || task_exists(task->loader, handle)) {
+        LOG_ERROR("close before register: startup %d closing %d exists %d, expected 1, 1 then exited.",
+                  (int32_t)ATOMIC_GET(&_cbr_nstartup), (int32_t)ATOMIC_GET(&_cbr_nclosing),
+                  task_exists(task->loader, handle));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 三个超时 setter：传 0 忽略(超时恒大于 0，挂起的协程才一定等得到头)，超上界钳到 TASK_TIMEOUT_MAX。
+// 不挂起，测完原样设回
+static int32_t _test_timeout_setters(task_ctx *task) {
+    uint32_t req = task_get_request_timeout(task);
+    uint32_t conn = task_get_connect_timeout(task);
+    uint32_t nread = task_get_netread_timeout(task);
+    int32_t rtn = ERR_OK;
+    task_set_request_timeout(task, 0);
+    task_set_connect_timeout(task, 0);
+    task_set_netread_timeout(task, 0);
+    if (req != task_get_request_timeout(task)
+        || conn != task_get_connect_timeout(task)
+        || nread != task_get_netread_timeout(task)) {
+        LOG_ERROR("timeout setters: 0 must be ignored.");
+        rtn = ERR_FAILED;
+    }
+    task_set_request_timeout(task, UINT32_MAX);
+    task_set_connect_timeout(task, UINT32_MAX);
+    task_set_netread_timeout(task, UINT32_MAX);
+    if (TASK_TIMEOUT_MAX != task_get_request_timeout(task)
+        || TASK_TIMEOUT_MAX != task_get_connect_timeout(task)
+        || TASK_TIMEOUT_MAX != task_get_netread_timeout(task)) {
+        LOG_ERROR("timeout setters: values over TASK_TIMEOUT_MAX must be clamped.");
+        rtn = ERR_FAILED;
+    }
+    task_set_request_timeout(task, req);
+    task_set_connect_timeout(task, conn);
+    task_set_netread_timeout(task, nread);
+    return rtn;
+}
 
 static void _startup(task_ctx *task) {
     task_coro_extra_args *arg = (task_coro_extra_args *)coro_get_arg(task);
-    if (ERR_OK != _test_register_dup_name(task)) {
+    if (ERR_OK != _test_register_dup_name(task)
+        || ERR_OK != _test_timeout_setters(task)) {
+        return;
+    }
+    if (ERR_OK != _test_close_before_register(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
         return;
     }
     if (ERR_OK != _test_sleep_cascade(task)) {
@@ -534,7 +619,7 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_dns_lookup(task)) {
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("coro_extra tested.");
 }
 

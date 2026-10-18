@@ -74,24 +74,16 @@ static char *_url_rchr(char *cur, char what, size_t lens) {
     }
     return NULL;
 }
-// 以 what 字符为界解析两段字段（buf1:buf2），返回指向 what 之后的指针。
-// last 非 0 时以最后一个 what 为界：userinfo 按 RFC 3986 §3.2 就该取最后一个 '@'，
-// 取第一个会把 "user@host@evil.com" 的 host 认成 "host@evil.com"
-static inline char *_url_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size_t lens, int32_t last) {
-    char *pos = (0 != last) ? _url_rchr(cur, what, lens) : memchr(cur, what, lens);
+// 解析 authority 里的 userinfo（user:psw@），返回 '@' 之后的指针，没有 '@' 原样返回 cur。
+// 按 RFC 3986 §3.2 以最后一个 '@' 为界：取第一个会把 "user@host@evil.com" 的 host 认成 "host@evil.com"
+static inline char *_url_userinfo(buf_ctx *user, buf_ctx *psw, char *cur, size_t lens) {
+    char *pos = _url_rchr(cur, '@', lens);
     if (NULL == pos) {
-        if ('/' == what) {
-            // 未找到 '/'，整段作为 host:port
-            _url_split(buf1, buf2, cur, lens);
-            return cur + lens;
-        } else {
-            return cur;
-        }
+        return cur;
     }
-    if (pos == cur) {
-        return pos + 1;
+    if (pos != cur) {
+        _url_split(user, psw, cur, (size_t)(pos - cur));
     }
-    _url_split(buf1, buf2, cur, pos - cur);
     return pos + 1;
 }
 // 解析路径部分（直到 '?' 或 '#'），返回指向下一段（查询或片段）的指针；
@@ -126,11 +118,10 @@ static inline size_t _url_param_need(const url_param *p, size_t offset) {
         + (NULL != p->val.data ? 1 : 0) + p->val.lens;
 }
 // 解析查询字符串：先按 '&' 切段，段内首个 '=' 之前为 key、之后为 val；
-// 段内无 '=' 为无值参数(val 空)，最多解析 URL_MAX_PARAM 个，个数写回 *nparam。
+// 段内无 '=' 为无值参数(val 空)，个数写回 *nparam；超过 URL_MAX_PARAM 个返回 ERR_FAILED（不静默截断）。
 // 空段与空名段(如 "=v")都不入表，故"已记录的 param 必有 key.lens > 0"是本函数保证的不变式，
-// 四个消费方(url_parse 累加 / url_reorg_param / url_get_param / lpub 建表)无须各自跳过空名。
-// param[] 不预清零，每条的 key 与 val 都在这里写满
-static void _url_param(url_param *param, char *cur, size_t lens, int32_t *nparam) {
+// 下游消费方无须各自跳过空名。param[] 不预清零，每条的 key 与 val 都在这里写满
+static int32_t _url_param(url_param *param, char *cur, size_t lens, int32_t *nparam) {
     char *end = cur + lens;
     char *amp;
     char *eq;
@@ -138,14 +129,16 @@ static void _url_param(url_param *param, char *cur, size_t lens, int32_t *nparam
     url_param *tmp;
     size_t seglens;
     int32_t i = 0;
-    while (cur < end
-        && i < URL_MAX_PARAM) {
+    while (cur < end) {
         amp = memchr(cur, '&', (size_t)(end - cur));
         segend = (NULL == amp) ? end : amp;
         seglens = (size_t)(segend - cur);
         eq = (seglens > 0) ? memchr(cur, '=', seglens) : NULL;
         if (seglens > 0
             && cur != eq) {
+            if (URL_MAX_PARAM == i) {
+                return ERR_FAILED;
+            }
             tmp = &param[i++];
             tmp->key.data = cur;
             if (NULL == eq) {
@@ -164,18 +157,17 @@ static void _url_param(url_param *param, char *cur, size_t lens, int32_t *nparam
         cur = amp + 1;
     }
     *nparam = i;
+    return ERR_OK;
 }
-int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_t decode) {
+int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_t flags) {
     // 只清头部标量与各 buf_ctx 字段（128 字节）。param / segs / buf 三个大数组共约 4KB，
     // 有效范围由 nparam / npath / lens 划定，越界部分谁都不读——整体清是每个 HTTP 请求白付一次
     ZERO(ctx, offsetof(url_ctx, param));
     ctx->sep = sep;
-    ctx->decode = decode;
-    char *urlbuf;
-    char *hash;
+    int32_t decode = BIT_CHECK(flags, URL_DECODE) ? 1 : 0;
     int32_t dseg = decode;
-    int32_t dparam;
-    if (ctx->decode) {
+    char *urlbuf;
+    if (decode) {
         if (lens >= sizeof(ctx->buf)) {
             LOG_WARN("url too long.");
             return ERR_FAILED;
@@ -204,19 +196,17 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
             break;
         }
     }
-    char *auth_end = cur + auth_len;
-    if (0 == auth_len) {
-        ctx->host.data = cur;
-    } else {
-        cur = _url_parse_two(&ctx->user, &ctx->psw, cur, '@', auth_len, 1);
+    if (0 != auth_len) {
+        char *auth_end = cur + auth_len;
+        cur = _url_userinfo(&ctx->user, &ctx->psw, cur, auth_len);
         remain = lens - (size_t)(cur - urlbuf);
         if (0 == remain) {
             return ERR_OK;
         }
         // host:port 段限定在 authority 内（长度 = auth_end - cur），不可用 remain：
-        // 否则 "http://host?k=v" 会把 "host?k=v" 当 host:port，丢失 query 参数。
-        // authority 段内不含 '/'，_url_parse_two 必走 '/' fallback _url_split + return cur+lens=auth_end
-        cur = _url_parse_two(&ctx->host, &ctx->port, cur, '/', (size_t)(auth_end - cur), 0);
+        // 否则 "http://host?k=v" 会把 "host?k=v" 当 host:port，丢失 query 参数
+        _url_split(&ctx->host, &ctx->port, cur, (size_t)(auth_end - cur));
+        cur = auth_end;
         remain = lens - (size_t)(cur - urlbuf);
         if (0 == remain) {
             return ERR_OK;
@@ -224,6 +214,7 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
     }
     //路径
     buf_ctx path = { 0 };
+    char *hash;
     cur = _url_path(&path, cur, remain, &hash);
     if (!buf_empty(&path)) {
         // 移除前导
@@ -234,7 +225,8 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
             plen--;
         }
         buf_ctx *psegs = ctx->segs;
-        ctx->npath = split(pp, plen, (const char *)&ctx->sep, 1, &psegs, URL_MAX_PATH_DEPTH, 0);
+        ctx->npath = split(pp, plen, (const char *)&ctx->sep, 1, &psegs, URL_MAX_PATH_DEPTH,
+                           BIT_CHECK(flags, URL_SKIP_EMPTY) ? SPLIT_SKIPEMPTY : 0);
         if (ERR_FAILED == ctx->npath) {
             return ERR_FAILED;
         }
@@ -261,8 +253,10 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
     if (0 == remain) {
         return ERR_OK;
     }
-    _url_param(ctx->param, cur, remain, &ctx->nparam);
-    dparam = dseg || (0 != decode && NULL != memchr(cur, '+', remain));
+    if (ERR_OK != _url_param(ctx->param, cur, remain, &ctx->nparam)) {
+        return ERR_FAILED;
+    }
+    int32_t dparam = dseg || (decode && NULL != memchr(cur, '+', remain));
     url_param *p;
     for (int32_t i = 0; i < ctx->nparam; i++) {
         p = &ctx->param[i];

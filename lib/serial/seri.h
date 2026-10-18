@@ -38,7 +38,7 @@ void seri_append_nil(binary_ctx *bw);
 /// <summary>
 /// 追加 bool 值（1 字节 tag，bool 状态编码在高 5 位 cookie 中）
 /// </summary>
-/// <param name="bw">binary_ctx</param>
+/// <param name="bw">同 seri_append_nil</param>
 /// <param name="b">非 0 为 true</param>
 void seri_append_bool(binary_ctx *bw, int32_t b);
 /// <summary>
@@ -47,22 +47,28 @@ void seri_append_bool(binary_ctx *bw, int32_t b);
 /// v 小于 0x100 → BYTE(2 byte)；v 小于 0x10000 → WORD(3 byte)；[0x10000, INT32_MAX] → DWORD(5 byte u32)。
 /// 多字节均小端。
 /// </summary>
+/// <param name="bw">同 seri_append_nil</param>
+/// <param name="v">整数值</param>
 void seri_append_int(binary_ctx *bw, int64_t v);
 /// <summary>
 /// 追加实数（1 byte tag + 8 byte double 小端）
 /// </summary>
+/// <param name="bw">同 seri_append_nil</param>
+/// <param name="v">实数值</param>
 void seri_append_real(binary_ctx *bw, double v);
 /// <summary>
 /// 追加字符串（二进制安全）；len 小于 32 → 短字符串内联 cookie 长度；
 /// len 小于 65536 → 长字符串 + u16 长度前缀；其余 → + u32 长度前缀。
 /// </summary>
-/// <param name="bw">binary_ctx</param>
+/// <param name="bw">同 seri_append_nil</param>
 /// <param name="s">payload；len==0 时可为 NULL；允许指向 bw 自己的缓冲，规则同 binary_set_binary</param>
 /// <param name="len">字节数</param>
 void seri_append_string(binary_ctx *bw, const char *s, size_t len);
 /// <summary>
 /// 追加裸指针（lightuserdata），sizeof(void*) 字节小端。跨进程禁用（指针在另一进程无效）。
 /// </summary>
+/// <param name="bw">同 seri_append_nil</param>
+/// <param name="ud">指针值，只写地址、不管它指向的对象</param>
 void seri_append_userdata(binary_ctx *bw, void *ud);
 /// <summary>
 /// 开始 array 段；array_n 为数组段元素数。
@@ -70,10 +76,13 @@ void seri_append_userdata(binary_ctx *bw, void *ud);
 /// 调用契约：随后必须连续追加恰好 array_n 个值（任意类型），
 /// 然后写入 hash 段（key/value 对，key 不可为 nil），最后调 seri_append_array_end 结束。
 /// </summary>
+/// <param name="bw">同 seri_append_nil</param>
+/// <param name="array_n">数组段元素数</param>
 void seri_append_array_start(binary_ctx *bw, uint32_t array_n);
 /// <summary>
 /// 结束 array（写 NIL 标记 hash 段结束）；与 seri_append_array_start 配对使用。
 /// </summary>
+/// <param name="bw">同 seri_append_nil</param>
 void seri_append_array_end(binary_ctx *bw);
 /// <summary>
 /// 初始化 iter 视图（零拷贝）；buf 生命周期需 ≥ iter 使用期间（item 中字符串指针依赖此）。

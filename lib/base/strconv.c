@@ -2,6 +2,7 @@
 #include "base/err.h"
 #include "base/bits.h"
 #include "base/bytes.h"
+#include "base/memory.h"
 #include "base/macro_log.h"
 #include <locale.h>
 #if defined(OS_DARWIN) || defined(OS_BSD)
@@ -15,7 +16,7 @@
 #endif
 #define STRTOD_POW10_MIN (-64)
 #define STRTOD_POW10_MAX 64
-#define STRTOD_S_BUF 128 // strtod_s 回落用的栈缓冲字节数，能收的串最长比它少 1(留 NUL)
+#define STRTOD_S_BUF 128 // strtod_s 回落用的栈缓冲字节数(含 NUL)，装不下的串临时上堆
 // 生成 _hex_val 表用：逐项算出一个字节的十六进制值，非法为 -1
 #define _HEX1(c)  (int8_t)(((c) >= '0' && (c) <= '9') ? (c) - '0' : ((c) >= 'a' && (c) <= 'f') ? (c) - 'a' + 10 \
                             : ((c) >= 'A' && (c) <= 'F') ? (c) - 'A' + 10 : -1)
@@ -123,16 +124,14 @@ static locale_t g_numeric_c;
 
 // 19 位以内累加不会溢出 uint64，逐位只判是不是数字，上界留到最后比一次；更长的才走逐位先判后乘
 int32_t strtou64(const char *str, size_t lens, uint64_t max, uint64_t *out) {
-    uint64_t cut, lim;
-    uint64_t v = 0;
-    uint64_t d;
-    size_t i;
     if (0 == lens
         || NULL == str) {
         return ERR_FAILED;
     }
+    uint64_t v = 0;
+    uint64_t d;
     if (lens <= 19) {
-        for (i = 0; i < lens; i++) {
+        for (size_t i = 0; i < lens; i++) {
             d = (uint64_t)(uint8_t)str[i] - '0';
             if (d > 9) {
                 return ERR_FAILED;
@@ -145,9 +144,9 @@ int32_t strtou64(const char *str, size_t lens, uint64_t max, uint64_t *out) {
         *out = v;
         return ERR_OK;
     }
-    cut = max / 10;
-    lim = max % 10;
-    for (i = 0; i < lens; i++) {
+    uint64_t cut = max / 10;
+    uint64_t lim = max % 10;
+    for (size_t i = 0; i < lens; i++) {
         if (str[i] < '0'
             || str[i] > '9') {
             return ERR_FAILED;
@@ -330,26 +329,18 @@ int32_t strtod_fast(const char *str, size_t lens, double *out) {
     };
     const char *p = str;
     const char *end = str + lens;
-    const char *mark;
-    const char *lead;
-    uint64_t sig = 0;
-    uint64_t raw;
-    uint32_t c;
-    size_t ndig;
-    int32_t exp10 = 0;
-    int32_t eval = 0;
-    int32_t eneg = 0;
     int32_t neg = 0;
-    double d;
     if (p < end && '-' == *p) {
         neg = 1;
         p++;
     }
-    mark = p;
+    const char *mark = p;
     while (p < end && '0' == *p) {
         p++;
     }
-    lead = p;
+    const char *lead = p;
+    uint64_t sig = 0;
+    uint32_t c;
     while (p < end && (c = (uint32_t)((uint8_t)*p - '0')) <= 9) {
         sig = sig * 10 + c;
         p++;
@@ -357,7 +348,8 @@ int32_t strtod_fast(const char *str, size_t lens, double *out) {
     if (p == mark) {
         return ERR_FAILED;
     }
-    ndig = (size_t)(p - lead);
+    size_t ndig = (size_t)(p - lead);
+    int32_t exp10 = 0;
     if (p < end && '.' == *p) {
         mark = ++p;
         if (0 == ndig) {
@@ -382,6 +374,8 @@ int32_t strtod_fast(const char *str, size_t lens, double *out) {
     if (ndig > 19) {
         return ERR_FAILED;
     }
+    int32_t eval = 0;
+    int32_t eneg = 0;
     if (p < end && ('e' == *p || 'E' == *p)) {
         p++;
         if (p < end && ('+' == *p || '-' == *p)) {
@@ -410,11 +404,12 @@ int32_t strtod_fast(const char *str, size_t lens, double *out) {
     if (sig <= ((uint64_t)1 << 53)
         && exp10 >= -22
         && exp10 <= 22) {
-        d = (double)sig;
+        double d = (double)sig;
         d = (exp10 < 0) ? d / pow10[-exp10] : d * pow10[exp10];
         *out = neg ? -d : d;
         return ERR_OK;
     }
+    uint64_t raw;
     if (exp10 < STRTOD_POW10_MIN
         || exp10 > STRTOD_POW10_MAX
         || ERR_OK != _strtod_mul_pow10(sig, exp10, &raw)) {
@@ -425,28 +420,36 @@ int32_t strtod_fast(const char *str, size_t lens, double *out) {
     return ERR_OK;
 #endif
 }
-// strtod_s 的回落：拷进栈缓冲补 NUL 后走 strtod_c，lens 已由调用方挡在缓冲之内。
+// strtod_s 的回落：补 NUL 后走 strtod_c，短串拷进栈缓冲，装不下的临时 MALLOC 一份。
 // NOINLINE 承重别删：单调用点，内联回去会把数组带进 strtod_s 的帧，快路径也得过栈保护检查
 NOINLINE static int32_t _strtod_s_slow(const void *data, size_t lens, double *val) {
-    char tmp[STRTOD_S_BUF];
+    char stk[STRTOD_S_BUF];
+    char *tmp = stk;
+    if (lens >= sizeof(stk)) {
+        MALLOC(tmp, lens + 1);
+    }
     memcpy(tmp, data, lens);
     tmp[lens] = '\0';
     char *end;
     errno = 0;
     double d = strtod_c(tmp, &end);
-    if ((size_t)(end - tmp) != lens
-        || (ERANGE == errno && (HUGE_VAL == d || -HUGE_VAL == d))) {
+    // 先判完再释放：FREE 可能改 errno
+    int32_t bad = (size_t)(end - tmp) != lens
+        || (ERANGE == errno && (HUGE_VAL == d || -HUGE_VAL == d));
+    if (tmp != stk) {
+        FREE(tmp);
+    }
+    if (bad) {
         return ERR_FAILED;
     }
     *val = d;
     return ERR_OK;
 }
 // 先在原串上走 strtod_fast 的精确快路径，它不收的写法("+1"、".5"、"Infinity"、十六进制、上溢等)
-// 才走 _strtod_s_slow 退回 strtod_c，判定与原先逐字相同
+// 才走 _strtod_s_slow 退回 strtod_c
 int32_t strtod_s(const void *data, size_t lens, double *val) {
-    // 长度先挡：快路径不经过栈缓冲，不先挡的话超长串会被它收下；也保证回落时拷进缓冲带 NUL 装得下
-    if (0 == lens
-        || lens >= STRTOD_S_BUF) {
+    // 空串先挡：回落的 strtod_c 一个字节不吃也会被当成"整段消费完"
+    if (0 == lens) {
         return ERR_FAILED;
     }
     if (ERR_OK == strtod_fast((const char *)data, lens, val)) {

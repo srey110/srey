@@ -11,6 +11,8 @@
 // sess 条目的五条规则分别落在：keep 只在新建条目时定(coro_wait)；只看队头、摘空且 !keep 才删(coro_wake)；
 // 广播先清 keep、全部唤醒、重新查询再删(coro_wake_all)；超时无视 keep(coro_expire)
 
+#define COROPOOL_CAP 128 // 每个调度器的空闲协程池容量，须是 2 的幂(池容量按 2 的幂取整)；池满时回池的协程跑完即销毁
+
 typedef struct coro_ctx coro_ctx;
 typedef struct coro_serial_ctx coro_serial_ctx;
 // fork / serial 的用户函数，owner 即 coro_new 传入的那个
@@ -153,9 +155,10 @@ void coro_fork_drain(coro_ctx *co);
 /// <returns>coro_serial_ctx，销毁用 coro_serial_free</returns>
 coro_serial_ctx *coro_serial_new(coro_ctx *co);
 /// <summary>
-/// 销毁串行化执行器：排队中的等待者被逐个唤醒并失败返回(锁不交接)，此后 enter 一律失败。
-/// 允许在有协程持锁时调用(含持锁者自己)；锁抢不走，内存改由最后一次 coro_serial_leave 释放，
-/// **故本函数返回时对象未必已经释放**。调用方两条义务：
+/// 销毁串行化执行器：排队中的等待者先全部标为失败、再逐个唤醒，它们一律失败返回，锁不交接给任何一个
+/// (唤醒途中持锁者出锁也不交接)；此后 enter 一律失败。
+/// 允许在有协程持锁时调用(含持锁者自己)；锁抢不走，持锁者到本函数排空完仍没出锁的，内存改由它最后一次
+/// coro_serial_leave 释放，**故本函数返回时对象未必已经释放**。调用方两条义务：
 /// 1) 把自己的 serial 字段置空要排在本函数之后，且置空前先认字段仍是自己那个——
 ///    期间可能已销毁重连、装上新执行器，无条件置空会把新的抹掉；
 /// 2) 加锁与解锁必须捏同一个指针配对，解锁时不得重读已被置空的字段——
@@ -176,7 +179,7 @@ int32_t coro_serial_enter(coro_serial_ctx *serial);
 /// <summary>
 /// 离开临界区，仅在 coro_serial_enter 返回 ERR_OK 后调用。
 /// ref 归 0 时就地唤醒队头等待者(minicoro 切栈，链式唤醒不累积 C 栈)；
-/// 若临界区期间有人调过 coro_serial_free，本次 ref 归 0 即在此释放对象——返回后不得再碰 serial
+/// 若临界区期间有人调过 coro_serial_free，本次 ref 归 0 即在此释放对象(那次 free 还在唤醒排队者时由它释放)——返回后不得再碰 serial
 /// </summary>
 /// <param name="serial">coro_serial_ctx</param>
 void coro_serial_leave(coro_serial_ctx *serial);

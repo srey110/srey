@@ -52,13 +52,16 @@ int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
 ///     " 000" 毫秒后缀在 TIME_LENS 内装不下——不截断，整体失败）</returns>
 int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 /// <summary>
-/// 字符串转时间戳。
-/// fmt 里的 %z / %Z 只吃掉时区文本，偏移量不生效，一律按本地时间 mktime：
+/// 字符串转时间戳，一律按本地时间 mktime，是否夏令时由 mktime 按本地规则判定。
+/// fmt 里的 %z / %Z 只吃掉时区文本，偏移量不生效；认出的时区写法可能改写夏令时标志（数字偏移与 Z / UT / GMT
+/// 定为标准时间，EDT 一类定为夏令时，EST 一类与单字母军用时区不改、仍由 mktime 判定）。
 /// 带时区的串解析结果会差"串里的偏移 − 本地偏移"秒，要换算的调用方自己补回去
 /// </summary>
 /// <param name="time">时间字符串</param>
 /// <param name="fmt">格式化</param>
-/// <returns>时间戳</returns>
+/// <returns>秒级时间戳。解析或换算失败返回 0，与 1970-01-01 00:00:00 UTC 这个合法值分不开；
+///     1970 年以前的时刻：mktime 收负值的平台返回负数按 uint64 回绕后的值(恰为 -1 那一秒算失败返回 0)，
+///     Windows 的 mktime 不收，返回 0</returns>
 uint64_t strtots(const char *time, const char *fmt);
 
 #endif//STIME_H_

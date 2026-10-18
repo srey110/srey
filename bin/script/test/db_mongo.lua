@@ -6,9 +6,12 @@ local mongo  = require("lib.mongo")
 local bson   = require("lib.bson")
 local mgmod  = require("srey.mongo")
 
+-- 数据库地址：在 VM 上跑时改成宿主机 IP，只改这一处
+local DB_HOST = "127.0.0.1"
+
 srey.startup(function()
 runner.run(function(t)
-    local mg = mongo.new("127.0.0.1", 27017, SSL_NAME.NONE,
+    local mg = mongo.new(DB_HOST, 27017, SSL_NAME.NONE,
                          "test", "admin", "12345678", "admin", "SCRAM-SHA-256")
     if not mg:connect() then
         t:fail("mongo connect failed")
@@ -101,20 +104,19 @@ runner.run(function(t)
     t:eq(2, cnt, "mongo count after reconnect")
 
     -- MORETOCOME fire-and-forget：set 后 insert 不等响应(返 true 无 n)；
-    -- 标志仍置位下 count(读内部 clear/restore)应正常并反映 fire-forget 写
+    -- 标志仍置位下 count(读命令组包不带它)应正常等回包并反映 fire-forget 写
     mg:set_flag(mg.FLAGS.MORETOCOME)
     local fdoc = bson.encode({ { id = 200, name = "fire", score = 1 } })
     local fptr, fsz = fdoc:data()
     t:check(mg:insert("srey_test", fptr, fsz), "mongo MORETOCOME insert fire-forget")
     cnt = mg:count("srey_test", eptr, esz)
-    -- 读命令组包时临时清掉的连接级 flags 必须原样还原，否则后续写命令悄悄从只发不等变成等回包
+    -- 读命令不碰连接级 flags，否则后续写命令悄悄从只发不等变成等回包
     t:eq(mg.FLAGS.MORETOCOME, mg:clear_flag(), "count(读命令)之后 MORETOCOME 仍在")
     t:eq(3, cnt, "mongo count after MORETOCOME insert")
 
     do
-        -- 读命令组包期间连接级 flags 临时清零、组完还原，这一步在 C 绑定的 LMONGO_PACK_NOFLAG 里，
-        -- 绑定先取完并校验全部参数才清零，负数长度在清零之前就抛了。这条钉住"先校验再清零"的顺序：
-        -- 取参挪进清零区间的话，抛出后 MORETOCOME 被永久摘掉，clear_flag() 也查不出
+        -- 读命令的参数校验抛错时，连接级 MORETOCOME 必须原样留着：抛出路径上谁动了连接标志，
+        -- 后续写命令就悄悄从只发不等变成等回包
         mg:set_flag(mg.FLAGS.MORETOCOME)
         local pok = pcall(mg.find, mg, "srey_test", eptr, -1)
         t:eq(false, pok, "find 传负数长度按契约抛出")
@@ -139,6 +141,11 @@ runner.run(function(t)
         local tok, tn = mg:insert("srey_test", tptr, tsz)
         t:check(tok, "txn insert ok")
         t:eq(1, tn, "txn insert n=1")
+        -- count 不进事务(同 C 侧 mongo_pack_count)：绑着事务照样能发、看不到还没提交的这条，也不把事务弄废。
+        -- 按 id 过滤才真去扫数据：空过滤走集合元数据的记录数，那里会算上事务里还没提交的插入
+        local tq = bson.encode({ id = 300 })
+        local tqptr, tqsz = tq:data()
+        t:eq(0, mg:count("srey_test", tqptr, tqsz), "绑着事务时 count 按事务外执行")
         t:check(sess:commit(), "txn commit")
         cnt = mg:count("srey_test", eptr, esz)
         t:eq(4, cnt, "commit 后事务内插入可见")
@@ -153,13 +160,103 @@ runner.run(function(t)
 
         -- 连接不再绑定该 session 时，pack_commit / pack_abort 须返回 nil：组包取的是
         -- 连接当前绑定的 session，分叉时会把本次提交挂到别人的事务上。
-        -- 直接调 clear_session 造出分叉——真实来源是重连：_connect 入口会解绑，
-        -- 而调用方手上那个 sess 对象还在，gen 校验也仍会通过
+        -- 直接调 clear_session 造出分叉：重连不再解绑(只让事务作废)，分叉只剩手动清绑定这一个来源，
+        -- 而调用方手上那个 sess 对象还在
         t:check(sess:begin(), "txn begin (unbound path)")
         mg.mongo:clear_session()
         t:eq(nil, sess.session:pack_commit(), "绑定分叉后 pack_commit 返回 nil")
         t:eq(nil, sess.session:pack_abort(), "绑定分叉后 pack_abort 返回 nil")
         -- 绑定已被清掉，sess 手上那个事务已无从提交，直接释放它
+
+        -- 事务中途重连即作废(同 C 侧 _txn_stale_flow)：之后的写失败、不脱离事务自动提交；commit 返回 false，
+        -- 但库已改发 abortTransaction 了结，服务端当场放锁，收尾的 drop 才不会被挡住。
+        -- 用单独的集合：万一锁没放，也不拖累后面用 srey_test 的用例
+        local SCOL = "srey_test_stale_lua"
+        mg:drop(SCOL)-- 集合本就可能不存在，返回值不判
+        t:check(sess:begin(), "txn begin (stale path)")
+        local sdoc1 = bson.encode({ { id = 400, name = "stale-before" } })
+        local s1ptr, s1sz = sdoc1:data()
+        t:check(mg:insert(SCOL, s1ptr, s1sz), "stale: 事务内首条 insert ok")
+        mg:quit()
+        t:check(mg:ping(), "stale: ping 重连")
+        t:check(sess.session:stale(), "stale: 重连后事务已作废")
+        t:check(not mg:insert(SCOL, s1ptr, s1sz), "stale: 作废事务里的写失败")
+        t:eq(false, sess:commit(), "stale: commit 返回 false")
+        -- 解绑后普通写照常自动提交，也让集合实际存在(事务里隐式建的随中止撤掉了，drop 会报 ns not found)
+        local sdoc2 = bson.encode({ { id = 401, name = "stale-after" } })
+        local s2ptr, s2sz = sdoc2:data()
+        t:check(mg:insert(SCOL, s2ptr, s2sz), "stale: 解绑后普通 insert ok")
+        t:eq(1, mg:count(SCOL, eptr, esz), "stale: 只剩解绑后那条，事务里那条不可见")
+        t:check(mg:drop(SCOL), "stale: commit 改发 abort 后锁已放，drop 成功")
+
+        -- commit 挂起等回包期间另一个协程对同一 session 重新 begin(同 C 侧 _txn_rebegin_flow)：
+        -- 收尾醒来不能 done 掉新事务。fork 的协程排到本条消息分发结束才起，commit 挂起时它正好跑 begin
+        local RCOL = "srey_test_rebegin_lua"
+        mg:drop(RCOL)-- 集合本就可能不存在，返回值不判
+        t:check(sess:begin(), "rebegin: txn begin")
+        local rdoc1 = bson.encode({ { id = 500, name = "rebegin-first" } })
+        local r1ptr, r1sz = rdoc1:data()
+        t:check(mg:insert(RCOL, r1ptr, r1sz), "rebegin: 第一个事务 insert ok")
+        local rebegun
+        srey.fork(function() rebegun = sess:begin() end)
+        t:check(sess:commit(), "rebegin: 第一个事务 commit")
+        t:eq(true, rebegun, "rebegin: commit 挂起期间同一 session 重新 begin 成功")
+        local rdoc2 = bson.encode({ { id = 501, name = "rebegin-second" } })
+        local r2ptr, r2sz = rdoc2:data()
+        t:check(mg:insert(RCOL, r2ptr, r2sz), "rebegin: 新事务 insert ok")
+        t:check(sess:commit(), "rebegin: 新事务 commit(绑定与 options 没被清掉)")
+        t:eq(2, mg:count(RCOL, eptr, esz), "rebegin: 两个事务的写都可见")
+        t:check(mg:drop(RCOL), "rebegin: drop")
+
+        -- 组包之后、拿到锁之前连接换过(同 C 侧 _txn_moved_flow)：排队那条事务写带的是旧事务的上下文，
+        -- 必须在拿到锁后判出来、不发、返回 false——漏判时它会被收进已作废的事务、回 n=1。
+        -- fork_wait 按顺序起：先起的占锁睡一会儿，让后起的组好包排上队，再断连重连换掉 skid 后放锁
+        local MCOL = "srey_test_moved_lua"
+        mg:drop(MCOL)-- 集合本就可能不存在，返回值不判
+        t:check(sess:begin(), "moved: txn begin")
+        local mdoc1 = bson.encode({ { id = 600, name = "moved-first" } })
+        local m1ptr, m1sz = mdoc1:data()
+        t:check(mg:insert(MCOL, m1ptr, m1sz), "moved: 事务内首条 insert ok")
+        local oldskid = mg.mongo:sock_id().skid
+        local mk = mg.mongo:txn_mark()
+        t:eq(oldskid, mk, "moved: 绑着事务时 txn_mark 记下当前 skid")
+        t:eq(false, mg.mongo:txn_moved(mk), "moved: 没重连时 txn_moved 为 false")
+        local mdoc2 = bson.encode({ { id = 601, name = "moved-queued" } })
+        local m2ptr, m2sz = mdoc2:data()
+        local mres = srey.fork_wait({
+            function()
+                return srey.serial_ret(false, mg.serial(function()
+                    srey.sleep(50)
+                    mg:quit()
+                    return mg:ping()
+                end))
+            end,
+            function()
+                return (mg:insert(MCOL, m2ptr, m2sz))
+            end,
+        })
+        t:check(mres[1].ok and true == mres[1].val, "moved: 占锁协程重连成功")
+        t:check(oldskid ~= mg.mongo:sock_id().skid, "moved: skid 已换")
+        t:check(mg.mongo:txn_moved(mk), "moved: 重连后 txn_moved 为 true")
+        t:check(mres[2].ok and false == mres[2].val, "moved: 排队的事务写不发、返回 false")
+        t:check(sess.session:stale(), "moved: 事务已作废")
+        sess:rollback()-- 结果不判，同 C 侧：服务端还留着旧事务时这一下把它中止、放锁
+        t:eq(0, mg:count(MCOL, eptr, esz), "moved: 两条都不可见")
+
+        -- 空事务(同 C 侧 _txn_empty_flow)：begin 后一条命令都没发就收尾，不发包、本地解绑并返回 true；
+        -- 真发出去服务端不认识这个 txnNumber，必回失败。重连作废后的空事务 commit 同样本地收尾
+        t:check(sess:begin(), "empty: txn begin")
+        t:check(sess.session:empty(), "empty: begin 后是空事务")
+        t:check(sess:commit(), "empty: 空事务 commit 返回 true")
+        t:check(sess:begin(), "empty: 解绑后可再 begin")
+        t:check(sess:rollback(), "empty: 空事务 rollback 返回 true")
+        t:check(sess:begin(), "empty: txn begin (stale)")
+        mg:quit()
+        t:check(mg:ping(), "empty: ping 重连")
+        t:check(sess.session:stale(), "empty: 重连后事务已作废")
+        t:check(sess:commit(), "empty: 作废的空事务 commit 也本地收尾返回 true")
+        t:check(sess:begin(), "empty: 收尾后已解绑，可再 begin")
+        t:check(sess:rollback(), "empty: 收尾")
 
         sess:close()
         -- endSessions 只发不等：服务端若回了包，紧跟的这条 insert 会读到它而拿不到 n=1
@@ -216,6 +313,127 @@ runner.run(function(t)
     for i = 1, N do
         t:check(res[i].ok and true == res[i].val,
                 "mongo 并发协程 " .. i .. ": " .. tostring(res[i].ok and res[i].val or res[i][1]))
+    end
+
+    -- 其余命令各一个正向用例，用单独的集合，结尾 drop。响应包只到本协程下次挂起前有效，取完就解码
+    local CCOL = "srey_cmds_lua"
+    local function _resp(mp)
+        if not mp then
+            return nil
+        end
+        return bson.decode(mgmod.doc(mp))
+    end
+    mg:drop(CCOL)-- 集合本就可能不存在，返回值不判
+    local c1 = bson.encode({ { id = 1, grp = "a", v = 1 } })
+    local c1ptr, c1sz = c1:data()
+    t:check(mg:insert(CCOL, c1ptr, c1sz), "cmds: 首条文档插入 ok")
+
+    -- 命令没等到应答（_rdo）：锁内就地关连接（established 清零、代次前进），之后 ping 能重连。
+    -- 集合里只有一条，$where 只睡一次；读超时有 1s 粒度（最坏多等 1s），睡足 2 秒
+    local oldnr = srey.get_netread_timeout()
+    srey.set_netread_timeout(300)
+    local g = mg.generation
+    local wq = bson.encode({ ["$where"] = "sleep(2000) || true" })
+    local wqptr, wqsz = wq:data()
+    local slow = mg:find(CCOL, wqptr, wqsz)
+    srey.set_netread_timeout(oldnr)
+    t:eq(nil, slow, "没等到应答 find 返回 nil")
+    t:eq(false, mg.established, "没等到应答即锁内关连接")
+    t:check(mg.generation ~= g, "没等到应答代次前进")
+    t:check(mg:ping(), "无应答关连接后 ping 重连")
+
+    local c2 = bson.encode({ { id = 2, grp = "a", v = 2 }, { id = 3, grp = "b", v = 3 } })
+    local c2ptr, c2sz = c2:data()
+    t:check(mg:insert(CCOL, c2ptr, c2sz), "cmds: 其余文档插入 ok")
+    -- aggregate
+    local pl = bson.encode({ { ["$match"] = { grp = "a" } }, { ["$count"] = "n" } })
+    local plptr, plsz = pl:data()
+    local ar = _resp(mg:aggregate(CCOL, plptr, plsz))
+    local ab = ar and ar.cursor and ar.cursor.firstBatch
+    t:eq(2, ab and ab[1] and ab[1].n, "aggregate $match + $count")
+    -- distinct
+    local dr = _resp(mg:distinct(CCOL, "grp"))
+    local dv = dr and dr.values or {}
+    table.sort(dv)
+    t:check(2 == #dv and "a" == dv[1] and "b" == dv[2], "distinct grp 为 a / b")
+    -- findandmodify：new=true 回的是改后的文档
+    local fq = bson.encode({ id = 1 })
+    local fqptr, fqsz = fq:data()
+    local fu = bson.encode({ ["$set"] = { v = 10 } })
+    local fuptr, fusz = fu:data()
+    local fo = bson.encode({ new = true })
+    local foptr, fosz = fo:data()
+    local fr = _resp(mg:findandmodify(CCOL, fqptr, fqsz, 0, 0, fuptr, fusz, foptr, fosz))
+    t:eq(10, fr and fr.value and fr.value.v, "findandmodify 回改后的文档")
+    -- find 开游标（每批 1 条）→ getmore 取完剩下的
+    local bo = bson.encode({ batchSize = 1 })
+    local boptr, bosz = bo:data()
+    local gr = _resp(mg:find(CCOL, nil, nil, boptr, bosz))
+    -- cursor.id 是 int64，bson.decode 解成 _bson_int64 包装对象，:val() 取整数
+    local cw = gr and gr.cursor and gr.cursor.id
+    local cid = cw and cw:val() or 0
+    t:check(0 ~= cid and 1 == #gr.cursor.firstBatch, "find batchSize=1 开出游标")
+    local mr = _resp(mg:getmore(CCOL, cid))
+    local nb = mr and mr.cursor and mr.cursor.nextBatch
+    t:eq(2, nb and #nb, "getmore 取回剩下 2 条")
+    -- killcursors：再开一个游标，关掉它
+    local kr = _resp(mg:find(CCOL, nil, nil, boptr, bosz))
+    local kw = kr and kr.cursor and kr.cursor.id
+    if t:check(kw and 0 ~= kw:val(), "killcursors 用的游标开出来了") then
+        local kc = bson.encode({ kw })-- 包装对象原样按 int64 编回去
+        local kcptr, kcsz = kc:data()
+        t:check(mg:killcursors(CCOL, kcptr, kcsz), "killcursors ok")
+    end
+    -- createindexes / dropindexes
+    local ix = bson.encode({ { key = { grp = 1 }, name = "srey_grp_idx" } })
+    local ixptr, ixsz = ix:data()
+    t:check(mg:createindexes(CCOL, ixptr, ixsz), "createindexes ok")
+    local dx = bson.encode({ "srey_grp_idx" })
+    local dxptr, dxsz = dx:data()
+    t:check(mg:dropindexes(CCOL, dxptr, dxsz), "dropindexes ok")
+    -- bulkwrite（MongoDB 8.0+，须在 admin 库上发）。op 文档靠首字段名区分种类，Lua 表键序不定，用构建器保序
+    local ob = bson.new()
+    ob:doc_begin("0")
+    ob:int32("insert", 0)
+    ob:doc_begin("document")
+    ob:int32("id", 9)
+    ob:utf8("grp", "bw")
+    ob["end"](ob)
+    ob["end"](ob)
+    ob["end"](ob)
+    local obptr, obsz = ob:data()
+    local ns = bson.encode({ { ns = "test." .. CCOL } })
+    local nsptr, nssz = ns:data()
+    mg:db("admin")
+    local br = _resp(mg:bulkwrite(obptr, obsz, nsptr, nssz))
+    mg:db("test")
+    -- 7.0 以前回 59(CommandNotFound)；7.x 命令在但关在 feature flag 后面，回 115(CommandNotSupported)
+    if br and (59 == br.code or 115 == br.code) then
+        printd("[%s] bulkWrite needs MongoDB 8.0+, case skipped (code %d)", t.name, br.code)
+    else
+        t:check(br and 1 == br.ok and 1 == br.nInserted, "bulkwrite 插入 1 条: " .. tostring(br and br.errmsg))
+    end
+    t:check(mg:drop(CCOL), "cmds: drop")
+
+    do
+        -- 活连接上丢掉整个对象再 GC：__gc 关连接、放手 Lua 份额，最后一份由网络线程 udfree 释放。
+        -- 弱表确认句柄真被回收；留着的 sk 只是快照，不自己发关闭、只等 CLOSE，证明是 __gc 关的
+        local gmg = mongo.new(DB_HOST, 27017, SSL_NAME.NONE,
+                              "test", "admin", "12345678", "admin", "SCRAM-SHA-256")
+        if not gmg:connect() then
+            t:fail("gc: mongo connect failed")
+        else
+            local gsk = gmg.mongo:sock_id()
+            local weak = setmetatable({ gmg.mongo }, { __mode = "v" })
+            gmg = nil
+            collectgarbage()
+            collectgarbage()
+            t:eq(nil, weak[1], "gc: 活连接上的 mongo 句柄已被回收")
+            -- collectgarbage 到这里之间不让出，CLOSE 不会在登记等待前就被派发掉
+            local cm = srey._coro_wait(gsk.skid, srey.MSG_TYPE.CLOSE, 3000)
+            t:eq(srey.MSG_TYPE.CLOSE, cm and cm.mtype, "gc: __gc 自己关掉了连接")
+            t:check(mg:ping(), "gc: 回收别的句柄后主连接照常可用")
+        end
     end
 
     mg:quit()

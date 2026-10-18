@@ -23,9 +23,12 @@ typedef struct task_smtp_ctx {
     char mail_attach[PATH_LENS];
 }task_smtp_ctx;
 
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess);
 static void _startup(task_ctx *task) {
     void *ssl = NULL;
     task_smtp_ctx *ctx = (task_smtp_ctx *)coro_get_arg(task);
+    // 在本 task 上下文里登记：注册返回后再从外面写回调指针，与已开跑的 startup 之间没有同步
+    task_closed(task, _net_close);
 #if WITH_SSL
     if (!EMPTYSTR(ctx->sslname)) {
         ssl = evssl_qury(ctx->sslname);
@@ -49,7 +52,8 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("smtp_init error.");
         return;
     }
-    if (ERR_OK != smtp_connect(task, &ctx->smtp)) {
+    if (task_isclosing(task)
+        || ERR_OK != smtp_connect(task, &ctx->smtp)) {
         LOG_WARN("smtp_connect error.");
         return;
     }
@@ -65,7 +69,8 @@ static void _startup(task_ctx *task) {
     mail_subject(&ctx->mail, "srey smtp test");
     mail_msg(&ctx->mail, "this is text message");
     mail_reply(&ctx->mail, 0);
-    if (ERR_OK != smtp_send(&ctx->smtp, &ctx->mail)) {
+    if (task_isclosing(task)
+        || ERR_OK != smtp_send(&ctx->smtp, &ctx->mail)) {
         smtp_quit(&ctx->smtp);
         LOG_WARN("smtp_send error.");
         return;
@@ -76,11 +81,15 @@ static void _startup(task_ctx *task) {
     // 第二封：纯文本 + HTML 正文，带附件，含 Reply-To 头，覆盖多种邮件组合路径
     const char *html = "<!DOCTYPE html><html><title>HTML Tutorial</title><body><h1>This is a heading</h1><p>This is a paragraph.</p></body></html>";
     mail_html(&ctx->mail, html, strlen(html));
-    if (!EMPTYSTR(ctx->mail_attach)) {
-        mail_attach_add(&ctx->mail, ctx->mail_attach);
+    if (!EMPTYSTR(ctx->mail_attach)
+        && ERR_OK != mail_attach_add(&ctx->mail, ctx->mail_attach)) {
+        smtp_quit(&ctx->smtp);
+        LOG_WARN("mail_attach_add error.");
+        return;
     }
     mail_reply(&ctx->mail, 1);
-    if (ERR_OK != smtp_send(&ctx->smtp, &ctx->mail)) {
+    if (task_isclosing(task)
+        || ERR_OK != smtp_send(&ctx->smtp, &ctx->mail)) {
         smtp_quit(&ctx->smtp);
         LOG_WARN("smtp_send error.");
         return;
@@ -90,14 +99,15 @@ static void _startup(task_ctx *task) {
     }
     smtp_quit(&ctx->smtp);
     LOG_INFO("smtp tested.");
-    *(ctx->ok) = 1;
+    ATOMIC_SET((atomic_t *)ctx->ok, 1);
 }
 // 连接断开：若两封邮件未全部发送完则说明服务端提前关闭连接
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
     (void)sk;
     (void)pktype;
     (void)client;
     (void)erro;
+    (void)sess;
     task_smtp_ctx *ctx = (task_smtp_ctx *)coro_get_arg(task);
     if (!(*(ctx->ok))) {
         LOG_WARN("disconnect by remote,befor test complete.");
@@ -141,8 +151,9 @@ void task_smtp_start(loader_ctx *loader, const char *name, const char *sslname,
     if (NULL != mail_att) {
         safe_fill_str(ctx->mail_attach, sizeof(ctx->mail_attach), mail_att);
     }
-    task_ctx *task = coro_task_register(loader, name, 0, _startup, NULL, _free, ctx);
-    task_closed(task, _net_close);
+    if (NULL == coro_task_register(loader, name, 0, _startup, NULL, _free, ctx)) {
+        LOG_ERROR("task %s register failed.", name);// ctx 已由 _free 释放
+    }
 }
 
 // ── 假 SMTP 服务端 + 并发投递用例 ────────────────────────────────────────
@@ -155,6 +166,7 @@ typedef struct fake_conn {
     uint64_t skid;      // 0 = 空槽
     int32_t authstep;   // 0 未认证 1 已发 Username 挑战 2 已发 Password 挑战 3 已认证
     int32_t indata;     // 1 = 正在收信体
+    int32_t noauth;     // 1 = EHLO 不通告 AUTH(接受连接时取 fake_smtp_ctx::noauth)
     int32_t sender;     // 当前事务的发件人编号；-1 = 无事务
     size_t used;
     char buf[FAKE_BUF_LENS];
@@ -166,8 +178,15 @@ typedef struct fake_smtp_ctx {
     int32_t mails;          // 服务端确认收下的邮件数
     int32_t rsets;          // 服务端收到的 RSET 条数
     int32_t fail_rcpt;      // 1 = 下一条 RCPT 回 550（一次性），造一封失败的信
+    int32_t naccept;        // 已接受的连接数；第 2 条连接发带裸 LF 的问候
+    int32_t ehlo_local;     // 收到 "EHLO localhost" 的次数
+    int32_t ehlo_bad;       // EHLO 行里混进 CR / LF 的次数
+    int32_t noauth;         // 1 = 此后接受的连接 EHLO 不通告 AUTH
     int32_t *ok;
     smtp_ctx smtp;
+    smtp_ctx smtp2;         // 第二条连接，验问候里的裸 LF；放堆上，关连接时网络线程还会碰它
+    smtp_ctx smtp3;         // 第三条连接，验用户名为空时免认证投递
+    smtp_ctx smtp4;         // 第四条连接，验服务端通告了 AUTH 时用户名为空也不认证
     fake_conn conns[FAKE_MAXCONN];
 }fake_smtp_ctx;
 
@@ -216,13 +235,25 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
     int32_t tag;
     if (0 == memcasecmp(line, "EHLO", 4)
         || 0 == memcasecmp(line, "HELO", 4)) {
-        // 只广告 LOGIN，客户端 _smtp_get_authtype 优先 PLAIN，不给它选择余地
-        _fake_reply(task, sk, "250-fake.smtp.local\r\n250-AUTH LOGIN\r\n250 OK\r\n");
+        if (NULL != strpbrk(line, "\r\n")) {
+            ctx->ehlo_bad++;
+        }
+        if (0 == strcmp(line + 4, " localhost")) {
+            ctx->ehlo_local++;
+        }
+        if (0 != fc->noauth) {
+            _fake_reply(task, sk, "250-fake.smtp.local\r\n250 OK\r\n");
+            return;
+        }
+        // 只广告 LOGIN 与一个名字里带 PLAIN 的近似机制：客户端按子串认就会误选 PLAIN，
+        // 这里不认 AUTH PLAIN，握手随之失败
+        _fake_reply(task, sk, "250-fake.smtp.local\r\n250-AUTH LOGIN PLAIN-CLIENTTOKEN\r\n250 OK\r\n");
         return;
     }
     if (0 == memcasecmp(line, "AUTH LOGIN", 10)) {
         fc->authstep = 1;
-        _fake_reply(task, sk, "334 VXNlcm5hbWU6\r\n");// base64("Username:")
+        // 提示文本故意不是 "Username:"：客户端只能按第几个 334 配对用户名与密码
+        _fake_reply(task, sk, "334 VXNlciBOYW1lAA==\r\n");// base64("User Name\0")
         return;
     }
     // 凭据行必须正好是 base64("user") / base64("psw")（smtp_init 传的那对），不对就拒，握手随之失败
@@ -233,7 +264,7 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
             return;
         }
         fc->authstep = 2;
-        _fake_reply(task, sk, "334 UGFzc3dvcmQ6\r\n");// base64("Password:")
+        _fake_reply(task, sk, "334 UGFzc3dvcmQA\r\n");// base64("Password\0")
         return;
     }
     if (2 == fc->authstep) {
@@ -299,14 +330,19 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
     }
     _fake_reply(task, sk, "250 OK\r\n");// NOOP 及其余一律 250
 }
-static void _fake_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
+static void _fake_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *peer) {
     (void)pktype;
+    (void)peer;
     fake_smtp_ctx *ctx = (fake_smtp_ctx *)coro_get_arg(task);
-    if (NULL == _fake_conn_get(ctx, sk->skid, 1)) {
+    fake_conn *fc = _fake_conn_get(ctx, sk->skid, 1);
+    if (NULL == fc) {
         LOG_ERROR("fake smtp: too many connections.");
         return;
     }
-    _fake_reply(task, sk, "220 fake.smtp.local ESMTP\r\n");
+    fc->noauth = ctx->noauth;
+    ctx->naccept++;
+    // 第 2 条连接的问候主机名里混一个裸 LF：客户端原样拼进 EHLO 就是往命令行里插了第二条命令，须退回 localhost
+    _fake_reply(task, sk, 2 == ctx->naccept ? "220 fake.smtp.local\nRSET injected\r\n" : "220 fake.smtp.local ESMTP\r\n");
 }
 static void _fake_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {
@@ -368,9 +404,10 @@ static void _fake_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t c
         _fake_cmd(task, sk, ctx, fc, line);
     }
 }
-static void _fake_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _fake_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
     (void)pktype;
     (void)erro;
+    (void)sess;
     if (client) {
         return;
     }
@@ -379,6 +416,23 @@ static void _fake_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t 
     if (NULL != fc) {
         fc->skid = 0;
     }
+}
+// mail_reply(0) 组出的信里既没有 Reply-To 也没有 No-Reply，mail_reply(1) 才有 Reply-To
+static int32_t _mail_reply_hdr_ok(void) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, "srey", "c1@t");
+    mail_addrs_add(&mail, "r1@t", TO);
+    mail_reply(&mail, 0);
+    char *pack = mail_pack(&mail, NULL);
+    int32_t ok = NULL != pack && NULL == strstr(pack, "Reply-To:") && NULL == strstr(pack, "No-Reply:");
+    FREE(pack);
+    mail_reply(&mail, 1);
+    pack = mail_pack(&mail, NULL);
+    ok = ok && NULL != pack && NULL != strstr(pack, "Reply-To: c1@t\r\n");
+    FREE(pack);
+    mail_free(&mail);
+    return ok;
 }
 // 并发投递：每个协程发自己编号的邮件，服务端按事务状态机校验没有交错
 typedef struct fake_conc_arg {
@@ -485,8 +539,56 @@ static void _fake_startup(task_ctx *task) {
                   ctx->mails, FAKE_CONC_N * FAKE_ROUNDS + 1);
         return;
     }
+    // 第二条连接：问候里混了裸 LF，EHLO 须退回 localhost，握手照常走完
+    if (ERR_OK != smtp_init(&ctx->smtp2, "127.0.0.1", ctx->port, NULL, "user", "psw")
+        || ERR_OK != smtp_connect(task, &ctx->smtp2)) {
+        LOG_ERROR("fake smtp: connect with a bare-LF greeting failed.");
+        return;
+    }
+    smtp_quit(&ctx->smtp2);
+    if (0 != ctx->ehlo_bad
+        || 1 != ctx->ehlo_local) {
+        LOG_ERROR("fake smtp: bare LF reached EHLO (bad %d, localhost %d).", ctx->ehlo_bad, ctx->ehlo_local);
+        return;
+    }
+    // 第三条连接：服务端不通告 AUTH，用户名为空即免认证投递，握手跳过 AUTH，信照常收下
+    ctx->noauth = 1;
+    int32_t mails = ctx->mails;
+    if (ERR_OK != smtp_init(&ctx->smtp3, "127.0.0.1", ctx->port, NULL, NULL, NULL)
+        || ERR_OK != smtp_connect(task, &ctx->smtp3)
+        || ERR_OK != _fake_send(&ctx->smtp3, "c7@t", "r7@t")) {
+        LOG_ERROR("fake smtp: delivery without AUTH failed.");
+        smtp_quit(&ctx->smtp3);
+        return;
+    }
+    smtp_quit(&ctx->smtp3);
+    if (mails + 1 != ctx->mails
+        || 0 != ctx->interleave) {
+        LOG_ERROR("fake smtp: delivery without AUTH, server took %d mails (want %d), %d interleavings.",
+                  ctx->mails, mails + 1, ctx->interleave);
+        return;
+    }
+    // 第四条连接：服务端照常通告 AUTH，用户名为空同样跳过认证(旧实现会发空用户名被 535 拒掉)
+    ctx->noauth = 0;
+    mails = ctx->mails;
+    if (ERR_OK != smtp_init(&ctx->smtp4, "127.0.0.1", ctx->port, NULL, NULL, NULL)
+        || ERR_OK != smtp_connect(task, &ctx->smtp4)
+        || ERR_OK != _fake_send(&ctx->smtp4, "c8@t", "r8@t")) {
+        LOG_ERROR("fake smtp: empty user must skip the advertised AUTH.");
+        smtp_quit(&ctx->smtp4);
+        return;
+    }
+    smtp_quit(&ctx->smtp4);
+    if (mails + 1 != ctx->mails) {
+        LOG_ERROR("fake smtp: empty user with AUTH advertised, server took %d mails (want %d).", ctx->mails, mails + 1);
+        return;
+    }
+    if (!_mail_reply_hdr_ok()) {
+        LOG_ERROR("fake smtp: mail_reply(0) must write no reply header, mail_reply(1) writes Reply-To.");
+        return;
+    }
     LOG_INFO("smtp fake tested: %d mails, no interleaving.", ctx->mails);
-    *(ctx->ok) = 1;
+    ATOMIC_SET((atomic_t *)ctx->ok, 1);
 }
 void task_smtp_fake_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {
     if (NULL == ok) {

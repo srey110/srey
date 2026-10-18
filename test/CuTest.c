@@ -92,7 +92,7 @@ void CuStringAppendFormat(CuString* str, const char* format, ...)
 	va_list argp;
 	char buf[HUGE_STRING_LEN];
 	va_start(argp, format);
-	vsprintf(buf, format, argp);
+	vsnprintf(buf, sizeof(buf), format, argp);	/* srey补丁：sprintf 族改带长度的版本，macOS 新 SDK 报弃用（下同） */
 	va_end(argp);
 	CuStringAppend(str, buf);
 }
@@ -154,7 +154,7 @@ static void CuFailInternal(CuTest* tc, const char* file, int line, CuString* str
 {
 	char buf[HUGE_STRING_LEN];
 
-	sprintf(buf, "%s:%d: ", file, line);
+	snprintf(buf, sizeof(buf), "%s:%d: ", file, line);	/* srey补丁 */
 	CuStringInsert(string, buf, 0);
 
 	tc->failed = 1;
@@ -212,7 +212,7 @@ void CuAssertIntEquals_LineMsg(CuTest* tc, const char* file, int line, const cha
 {
 	char buf[STRING_MAX];
 	if (expected == actual) return;
-	sprintf(buf, "expected <%d> but was <%d>", expected, actual);
+	snprintf(buf, sizeof(buf), "expected <%d> but was <%d>", expected, actual);	/* srey补丁 */
 	CuFail_Line(tc, file, line, message, buf);
 }
 
@@ -221,7 +221,7 @@ void CuAssertDblEquals_LineMsg(CuTest* tc, const char* file, int line, const cha
 {
 	char buf[STRING_MAX];
 	if (fabs(expected - actual) <= delta) return;
-	sprintf(buf, "expected <%f> but was <%f>", expected, actual); 
+	snprintf(buf, sizeof(buf), "expected <%f> but was <%f>", expected, actual);	/* srey补丁 */
 
 	CuFail_Line(tc, file, line, message, buf);
 }
@@ -231,7 +231,7 @@ void CuAssertPtrEquals_LineMsg(CuTest* tc, const char* file, int line, const cha
 {
 	char buf[STRING_MAX];
 	if (expected == actual) return;
-	sprintf(buf, "expected pointer <0x%p> but was <0x%p>", expected, actual);
+	snprintf(buf, sizeof(buf), "expected pointer <0x%p> but was <0x%p>", expected, actual);	/* srey补丁 */
 	CuFail_Line(tc, file, line, message, buf);
 }
 
@@ -270,7 +270,12 @@ void CuSuiteDelete(CuSuite *testSuite)
 
 void CuSuiteAdd(CuSuite* testSuite, CuTest *testCase)
 {
-	assert(testSuite->count < MAX_TEST_CASES);
+	/* srey补丁：越界改成硬检查，原 assert 在定义 NDEBUG 的构建里被编掉，会写坏堆 */
+	if (testSuite->count >= MAX_TEST_CASES)
+	{
+		fprintf(stderr, "CuSuiteAdd: more than %d test cases, raise MAX_TEST_CASES.\n", MAX_TEST_CASES);
+		abort();
+	}
 	testSuite->list[testSuite->count] = testCase;
 	testSuite->count++;
 }

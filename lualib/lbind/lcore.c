@@ -74,10 +74,9 @@ static void *_lcore_opt_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *
 static int32_t _lcore_call(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
-    void *data;
     size_t size;
     int32_t copy;
-    data = _lcore_opt_buf(lua, 3, &size, &copy);
+    void *data = _lcore_opt_buf(lua, 3, &size, &copy);
     // 句柄投不到就按名字重查换句柄再试一次（缓存的句柄可能已过期）
     if (ERR_OK == task_call_to(g_loader, handle, reqtype, data, size, copy)
         || ERR_OK == task_call_to(g_loader, lpub_task_refresh(lua, 1, handle), reqtype, data, size, copy)) {
@@ -87,13 +86,19 @@ static int32_t _lcore_call(lua_State *lua) {
     return lpub_rtn_bool(lua, 0);
 }
 // 校验 dsts(table，元素是 string/integer 名或 nil)并逐个换成句柄(nil 为 INVALID_TNAME，名字记进缓存)。
-// 成功返回长度(>=0)；dsts 非 table 或含非法元素返回 -1。luaL_len 会走 __len 元方法、记缓存会分配，都可能抛错，
+// 成功返回长度(>=0)；dsts 非 table、长度越界或含非法元素返回 -1。luaL_len 会走 __len 元方法、记缓存会分配，都可能抛错，
 // 所以调用方必须在接管 copy=0 缓冲之前调它——抛出时那块内存还没有主人。句柄数组超出 stk 时放 Lua userdata，抛错也不漏
 static int32_t _multi_handles(lua_State *lua, int32_t idx, _multi_args *ma) {
     if (LUA_TTABLE != lua_type(lua, idx)) {
         return -1;
     }
-    int32_t n = (int32_t)luaL_len(lua, idx);
+    lua_Integer len = luaL_len(lua, idx);
+    // 先卡范围再收窄：__len 可给任意值，截断会变成另一个长度，32 位上句柄数组的字节数还会回绕
+    if (len < 0
+        || len > (lua_Integer)(INT32_MAX / sizeof(name_t))) {
+        return -1;
+    }
+    int32_t n = (int32_t)len;
     ma->hs = ma->stk;
     if (n > MULTI_REQUEST2_STACK) {
         ma->hs = (name_t *)lua_newuserdatauv(lua, sizeof(name_t) * (size_t)n, 0);
@@ -123,12 +128,11 @@ static int32_t _multi_prepare(lua_State *lua, int32_t bufidx, _multi_args *ma) {
 // 读锁内按句柄一次投完，不逐个 grab/ungrab。有句柄投不到(名字的缓存句柄可能已过期)就按名字重查一遍再投，
 // 仍查不到的跳过；一个都没投出去时按 copy 释放载荷。返回投递数
 static int32_t _multi_post(lua_State *lua, _multi_args *ma, task_ctx *src, subtype_t reqtype, uint64_t sess) {
-    int32_t i;
-    name_t fresh;
     int32_t posted = task_multi_request2(g_loader, ma->hs, ma->count, src, reqtype, sess,
                                            ma->data, ma->size, ma->copy, 1);
     if (posted < 0) {
-        for (i = 0; i < ma->count; i++) {
+        name_t fresh;
+        for (int32_t i = 0; i < ma->count; i++) {
             lua_rawgeti(lua, 1, i + 1);
             fresh = lpub_task_refresh(lua, -1, ma->hs[i]);
             if (INVALID_TNAME != fresh) {
@@ -201,11 +205,10 @@ static int32_t _lcore_request(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
     uint64_t sess = lpub_check_sess(lua, 3);
-    void *data;
     size_t size;
     int32_t copy;
     LPUB_CUR_TASK(lua, src);
-    data = _lcore_opt_buf(lua, 4, &size, &copy);
+    void *data = _lcore_opt_buf(lua, 4, &size, &copy);
     // 重试口径同 _lcore_call
     if (ERR_OK == task_request_to(g_loader, handle, src, reqtype, sess, data, size, copy)
         || ERR_OK == task_request_to(g_loader, lpub_task_refresh(lua, 1, handle), src, reqtype, sess, data, size, copy)) {
@@ -230,11 +233,10 @@ static int32_t _lcore_response(lua_State *lua) {
     name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = lpub_check_u16(lua, 2, REQTYPE_OUT_OF_RANGE);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
-    int32_t erro = (int32_t)luaL_checkinteger(lua, 4);
-    void *data;
+    int32_t erro = lpub_check_i32(lua, 4, "erro out of range");
     size_t size;
     int32_t copy;
-    data = _lcore_opt_buf(lua, 5, &size, &copy);
+    void *data = _lcore_opt_buf(lua, 5, &size, &copy);
     // 重试口径同 _lcore_call
     if (ERR_OK == task_response_to(g_loader, handle, reqtype, sess, erro, data, size, copy)
         || ERR_OK == task_response_to(g_loader, lpub_task_refresh(lua, 1, handle), reqtype, sess, erro, data, size, copy)) {
@@ -250,14 +252,14 @@ static int32_t _lcore_response(lua_State *lua) {
 /// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
 /// <param name="ip" type="string">监听 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)，要同时收两种就 "0.0.0.0" 与 "::" 各监听一次</param>
 /// <param name="port" type="integer">监听端口</param>
-/// <param name="netev" type="integer?">事件订阅掩码，默认 NETEV_NONE</param>
+/// <param name="netev" type="integer?">事件订阅掩码(NET_EV.*)，默认 NONE；PEERADDR 让 ACCEPT 带上对端地址，须与 ACCEPT 同用</param>
 /// <returns type="integer">监听 id，失败返回 -1</returns>
 static int32_t _lcore_listen(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
-    const char *ip = luaL_checkstring(lua, 3);
+    const char *ip = lpub_check_cstr(lua, 3);
     uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
-    int32_t netev = (int32_t)luaL_optinteger(lua, 5, NETEV_NONE);
+    int32_t netev = (int32_t)lpub_opt_range(lua, 5, NETEV_NONE, 0, INT32_MAX, "netev out of range");
     uint64_t id;
     LPUB_CUR_TASK(lua, task);
     if (ERR_OK != task_listen(task, pktype, evssl, ip, port, &id, netev)) {
@@ -291,12 +293,12 @@ static int32_t _lcore_unlisten(lua_State *lua) {
 static int32_t _lcore_connect(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 2);
-    const char *ip = luaL_checkstring(lua, 3);
+    const char *ip = lpub_check_cstr(lua, 3);
     uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
-    int32_t netev = (int32_t)luaL_optinteger(lua, 5, NETEV_NONE);
+    int32_t netev = (int32_t)lpub_opt_range(lua, 5, NETEV_NONE, 0, INT32_MAX, "netev out of range");
     // extra 的所有权在 lua_touserdata 那一刻就离开了 Lua，之后到 task_connect 接管为止不能再有
     // 任何会 longjmp 的调用，否则它既没进框架也没人 ud_free。setsess 与取 task 因此排在前面
-    int32_t setsess = (int32_t)luaL_optinteger(lua, 7, 1);
+    int32_t setsess = lpub_opt_flag(lua, 7, 1);
     LPUB_CUR_TASK(lua, task);
     void *extra = NULL;
     if (!lua_isnoneornil(lua, 6)) {
@@ -316,14 +318,15 @@ static int32_t _lcore_connect(lua_State *lua) {
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错</param>
-/// <param name="evssl" type="lightuserdata">SSL 上下文；为 nil 或非 userdata 时直接失败</param>
+/// <param name="evssl" type="lightuserdata">SSL 上下文；为 nil 时直接失败，传了别的类型报错</param>
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_ssl_exchange(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
     int32_t client = lpub_check_flag(lua, 2);
-    if (!lua_islightuserdata(lua, 3)) {
+    if (lua_isnoneornil(lua, 3)) {
         return lpub_rtn_bool(lua, 0);
     }
+    LUACHECK_LUDATA(lua, 3);// 传错类型(如把证书名当句柄)当场报错，别看着像握手失败
     struct evssl_ctx *evssl = lua_touserdata(lua, 3);
     LPUB_CUR_TASK(lua, task);
     return lpub_rtn_bool(lua, ERR_OK == ev_ssl(&task->loader->netev, sk, client, evssl));
@@ -334,14 +337,16 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
 /// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
 /// <param name="ip" type="string">绑定 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)；多播时组地址须与此同族</param>
 /// <param name="port" type="integer">绑定端口</param>
+/// <param name="reuse" type="integer?">1 允许多个 socket 共用 addr:port(多播要)；默认 0 独占，别的 socket 绑不上同一端口</param>
 /// <returns type="userdata">连接标识；失败时其 valid 字段为 false，返回值个数恒为 1</returns>
 static int32_t _lcore_udp(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
-    const char *ip = luaL_checkstring(lua, 2);
+    const char *ip = lpub_check_cstr(lua, 2);
     uint16_t port = lpub_check_u16(lua, 3, PORT_OUT_OF_RANGE);
+    int32_t reuse = lpub_opt_flag(lua, 4, 0);
     sock_ctx sk;
     LPUB_CUR_TASK(lua, task);
-    if (ERR_OK != task_udp(task, pktype, ip, port, &sk)) {
+    if (ERR_OK != task_udp(task, pktype, ip, port, reuse, &sk)) {
         // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
         return lpub_push_sock_invalid(lua);
     }
@@ -358,10 +363,9 @@ static int32_t _lcore_udp(lua_State *lua) {
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_send(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 2, &size, &copy);
+    void *data = lpub_check_buf(lua, 2, &size, &copy);
     return lpub_rtn_bool(lua, ERR_OK == ev_send(&g_loader->netev, sk, data, size, copy));
 }
 /// <summary>
@@ -380,12 +384,10 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     // 栈数组不怕中途 longjmp，所以小 n 校验时顺手拷进去，省掉第二趟
     sock_ctx stk[SEND_MULTI_STACK];
     sock_ctx *sks = stk;
-    lua_Integer i;
-    int32_t mtidx;
     // 元表循环外取一次；校验完必须先弹掉，否则它会占住后面 copy 参数的栈位
     lpub_push_sock_mt(lua);
-    mtidx = lua_gettop(lua);
-    for (i = 0; i < n; i++) {
+    int32_t mtidx = lua_gettop(lua);
+    for (lua_Integer i = 0; i < n; i++) {
         lua_rawgeti(lua, 1, i + 1);
         if (!lpub_is_sock_mt(lua, -1, mtidx)) {
             return luaL_error(lua, "sks[%d] must be a sock, got %s",
@@ -406,7 +408,7 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     }
     if (n > SEND_MULTI_STACK) {
         MALLOC(sks, sizeof(sock_ctx) * (size_t)n);
-        for (i = 0; i < n; i++) {
+        for (lua_Integer i = 0; i < n; i++) {
             lua_rawgeti(lua, 1, i + 1);
             sks[i] = *(sock_ctx *)lua_touserdata(lua, -1);
             lua_pop(lua, 1);
@@ -430,12 +432,11 @@ static int32_t _lcore_send_multi(lua_State *lua) {
 /// <returns type="boolean">成功 true，失败 false</returns>
 static int32_t _lcore_sendto(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    const char *ip = luaL_checkstring(lua, 2);
+    const char *ip = lpub_check_cstr(lua, 2);
     uint16_t port = lpub_check_u16(lua, 3, PORT_OUT_OF_RANGE);
-    void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 4, &size, &copy);
+    void *data = lpub_check_buf(lua, 4, &size, &copy);
     return lpub_rtn_bool(lua, ERR_OK == ev_sendto(&g_loader->netev, sk, ip, port, data, size, copy));
 }
 /// <summary>
@@ -447,9 +448,9 @@ static int32_t _lcore_sendto(lua_State *lua) {
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_join(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    const char *group_ip = luaL_checkstring(lua, 2);
+    const char *group_ip = lpub_check_cstr(lua, 2);
     luaL_argcheck(lua, lua_isnoneornil(lua, 3) || LUA_TSTRING == lua_type(lua, 3), 3, "iface must be a string");
-    const char *iface_str = (LUA_TSTRING == lua_type(lua, 3)) ? luaL_checkstring(lua, 3) : NULL;
+    const char *iface_str = (LUA_TSTRING == lua_type(lua, 3)) ? lpub_check_cstr(lua, 3) : NULL;
     return lpub_rtn_bool(lua, ERR_OK == ev_udp_join(&g_loader->netev, sk, group_ip, iface_str));
 }
 /// <summary>
@@ -461,9 +462,9 @@ static int32_t _lcore_udp_join(lua_State *lua) {
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_leave(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    const char *group_ip = luaL_checkstring(lua, 2);
+    const char *group_ip = lpub_check_cstr(lua, 2);
     luaL_argcheck(lua, lua_isnoneornil(lua, 3) || LUA_TSTRING == lua_type(lua, 3), 3, "iface must be a string");
-    const char *iface_str = (LUA_TSTRING == lua_type(lua, 3)) ? luaL_checkstring(lua, 3) : NULL;
+    const char *iface_str = (LUA_TSTRING == lua_type(lua, 3)) ? lpub_check_cstr(lua, 3) : NULL;
     return lpub_rtn_bool(lua, ERR_OK == ev_udp_leave(&g_loader->netev, sk, group_ip, iface_str));
 }
 /// <summary>
@@ -476,9 +477,8 @@ static int32_t _lcore_udp_leave(lua_State *lua) {
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_ttl(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    lua_Integer val = luaL_checkinteger(lua, 2);
-    luaL_argcheck(lua, val >= 0 && val <= 255, 3, "ttl out of range [0, 255]");
-    return lpub_rtn_bool(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, sk, (uint8_t)val));
+    uint8_t val = lpub_check_u8(lua, 2, "ttl out of range [0, 255]");
+    return lpub_rtn_bool(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, sk, val));
 }
 /// <summary>
 /// 设置 UDP 多播本机回环,默认 1(发出去自己也能收到),0=不收
@@ -550,11 +550,12 @@ static int32_t _lcore_close(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 动态修改指定连接的封包协议类型
+/// 动态修改指定连接的封包协议类型。切换会丢弃旧协议的连接状态(如 UDP_KCP 上的全部 kcp 会话，各会话收到 CLOSE)，
+/// 新协议从空状态起，契约同 ev_ud_pktype
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="pktype" type="integer">新封包协议类型，参考 PACK_TYPE</param>
-/// <returns type="boolean">成功 true，stop 非0失败</returns>
+/// <returns type="boolean">命令已投递 true；sk 无效 false</returns>
 static int32_t _lcore_pack_type(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
     // ud->pktype 是 uint16_t，比 pack_type 还窄；不校验的话 65538 截成 2 就成了 PACK_HTTP
@@ -623,7 +624,7 @@ static int32_t _lcore_session_clear(lua_State *lua) {
 /// <returns type="boolean">成功 true（含"该方法无需登记"这一档）；fd 为 INVALID_SOCK 时 false</returns>
 static int32_t _lcore_http_set_method(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    const char *method = luaL_checkstring(lua, 2);
+    const char *method = lpub_check_cstr(lua, 2);
     return lpub_rtn_bool(lua, ERR_OK == http_set_method(&g_loader->netev, sk, method));
 }
 /// <summary>
@@ -681,9 +682,9 @@ static int32_t _lcore_task_list(lua_State *lua) {
     tentry_arr arr;
     tentry_arr_init(&arr, 128);
     loader_task_each(g_loader, _lcore_task_list_collect, &arr);
-    _task_entry *entry;
     uint32_t n = tentry_arr_size(&arr);
     lua_createtable(lua, (int32_t)n, 0);
+    _task_entry *entry;
     for (uint32_t i = 0; i < n; i++) {
         entry = tentry_arr_at(&arr, (int32_t)i);
         lua_createtable(lua, 0, 2);
@@ -727,10 +728,10 @@ static int32_t _lcore_with_ssl(lua_State *lua) {
 }
 #if WITH_SSL
 // name 非空时把 cert 目录下的完整路径写进 out；为空则 out 保持调用方给的空串(表示不加载)
-static void _cert_path(const char *propath, const char *name, char *out, size_t outlen) {
+static void _cert_path(const char *name, char *out, size_t outlen) {
     if (0 != strlen(name)) {
         SNPRINTF(out, outlen, "%s%s%s%s%s",
-            propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, name);
+            procpath(), PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, name);
     }
 }
 // 注册结果压栈:成功压 ssl 指针,ssl 没建出来或注册失败一律压 nil。
@@ -756,27 +757,17 @@ static int32_t _push_registered_ssl(lua_State *lua, const char *name, evssl_ctx 
 /// <returns type="lightuserdata?">SSL 上下文指针；失败或未启用 SSL 时返回 nil</returns>
 static int32_t _lcore_cert_register(lua_State *lua) {
 #if WITH_SSL
-    const char *name = luaL_checkstring(lua, 1);
-    const char *ca = luaL_checkstring(lua, 2);
-    const char *cert = luaL_checkstring(lua, 3);
-    const char *key = luaL_checkstring(lua, 4);
-    int32_t keytype;
-    int32_t type = (int32_t)lua_type(lua, 5);
-    if (LUA_TNUMBER == type) {
-        keytype = (int32_t)luaL_checkinteger(lua, 5);
-    } else {
-        keytype = SSL_FILETYPE_PEM; // 默认使用 PEM 格式
-    }
+    const char *name = lpub_check_cstr(lua, 1);
+    const char *ca = lpub_check_cstr(lua, 2);
+    const char *cert = lpub_check_cstr(lua, 3);
+    const char *key = lpub_check_cstr(lua, 4);
+    int32_t keytype = (int32_t)lpub_opt_range(lua, 5, SSL_FILETYPE_PEM, INT32_MIN, INT32_MAX, "keytype out of range");
     char capath[PATH_LENS] = { 0 };
     char certpath[PATH_LENS] = { 0 };
     char keypath[PATH_LENS] = { 0 };
-    char propath[PATH_LENS] = { 0 };
-    if (ERR_OK != global_string(lua, PATH_NAME, propath, sizeof(propath))) {
-        return lpub_rtn_nil(lua, 1);
-    }
-    _cert_path(propath, ca, capath, sizeof(capath));
-    _cert_path(propath, cert, certpath, sizeof(certpath));
-    _cert_path(propath, key, keypath, sizeof(keypath));
+    _cert_path(ca, capath, sizeof(capath));
+    _cert_path(cert, certpath, sizeof(certpath));
+    _cert_path(key, keypath, sizeof(keypath));
     return _push_registered_ssl(lua, name, evssl_new(capath, certpath, keypath, keytype));
 #else
     return lpub_rtn_nil(lua, 1);
@@ -791,15 +782,11 @@ static int32_t _lcore_cert_register(lua_State *lua) {
 /// <returns type="lightuserdata?">SSL 上下文指针；失败或未启用 SSL 时返回 nil</returns>
 static int32_t _lcore_p12_register(lua_State *lua) {
 #if WITH_SSL
-    const char *name = luaL_checkstring(lua, 1);
-    const char *p12 = luaL_checkstring(lua, 2);
-    const char *pwd = luaL_checkstring(lua, 3);
+    const char *name = lpub_check_cstr(lua, 1);
+    const char *p12 = lpub_check_cstr(lua, 2);
+    const char *pwd = lpub_check_cstr(lua, 3);
     char p12path[PATH_LENS] = { 0 };
-    char propath[PATH_LENS] = { 0 };
-    if (ERR_OK != global_string(lua, PATH_NAME, propath, sizeof(propath))) {
-        return lpub_rtn_nil(lua, 1);
-    }
-    _cert_path(propath, p12, p12path, sizeof(p12path));
+    _cert_path(p12, p12path, sizeof(p12path));
     return _push_registered_ssl(lua, name, evssl_p12_new(p12path, pwd));
 #else
     return lpub_rtn_nil(lua, 1);
@@ -809,11 +796,13 @@ static int32_t _lcore_p12_register(lua_State *lua) {
 /// 按 name 查询已注册的 SSL 上下文
 /// </summary>
 /// <param name="name" type="string">SSL 上下文注册名</param>
-/// <returns type="lightuserdata?">SSL 上下文指针；未找到或未启用 SSL 时返回 nil</returns>
+/// <returns type="lightuserdata?">SSL 上下文指针；未找到（含名字内含 '\0'）或未启用 SSL 时返回 nil</returns>
 static int32_t _lcore_ssl_qury(lua_State *lua) {
 #if WITH_SSL
-    const char *name = luaL_checkstring(lua, 1);
-    struct evssl_ctx *ssl = evssl_qury(name);
+    size_t lens;
+    const char *name = luaL_checklstring(lua, 1, &lens);
+    // 内含 '\0' 的名字注册不进来，按查不到算而不抛：srey.ssl_qury 承诺查询不抛
+    struct evssl_ctx *ssl = strlen(name) == lens ? evssl_qury(name) : NULL;
     if (NULL != ssl) {
         lua_pushlightuserdata(lua, ssl);
     } else {
@@ -829,6 +818,7 @@ static int32_t _lcore_ssl_qury(lua_State *lua) {
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
 /// <param name="level" type="integer">安全级别 0-5；越界报错</param>
+/// <returns>无</returns>
 static int32_t _lcore_ssl_seclevel(lua_State *lua) {
 #if WITH_SSL
     LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
@@ -871,10 +861,11 @@ static int32_t _lcore_ssl_min_proto(lua_State *lua) {
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
 /// <param name="mod" type="integer">SSL_VERIFY_* 掩码：0 不验证 / SSL_VERIFY_PEER 验对端 / 叠加 SSL_VERIFY_FAIL_IF_NO_PEER_CERT 强制对端出证书(mTLS)</param>
+/// <returns>无</returns>
 static int32_t _lcore_ssl_verify(lua_State *lua) {
 #if WITH_SSL
     LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
-    int32_t mod = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t mod = lpub_check_i32(lua, 2, "verify mode out of range");
     evssl_verify(ssl, mod, NULL);
 #else
     (void)lua;

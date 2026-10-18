@@ -29,14 +29,14 @@ void _evpub_sockel_add(watcher_ctx *watcher, evsock_ctx *evsk) {
     ASSERTAB(NULL == sockel_map_set(watcher->element, &evsk), "socket repeat.");
     ASSERTAB(!sockel_map_oom(watcher->element), "hashmap oom.");
 }
-void *_evpub_sockel_remove(watcher_ctx *watcher, SOCKET fd) {
+void _evpub_sockel_remove(watcher_ctx *watcher, SOCKET fd) {
     if (INVALID_SOCK == fd) {
-        return NULL;
+        return;
     }
     evsock_ctx key;
     key.sk.fd = fd;
     evsock_ctx *pkey = &key;
-    return (void *)sockel_map_delete(watcher->element, &pkey);
+    (void)sockel_map_delete(watcher->element, &pkey);
 }
 void _evpub_tick_add(watcher_ctx *watcher, ev_tick *tk) {
     list_push_tail(&watcher->ticks, &tk->node);
@@ -131,7 +131,8 @@ int32_t _evpub_sock_type(evsock_ctx *evsk) {
     return evsk->type;
 }
 // 定期收缩对象池（调用方按 EVENT_CHECK_INTERVAL 节流触发，避免频繁 syscall）。
-// sockel_map_size 作收缩基数：IOCP 下 cmd sock 不入 hashmap（精确），Unix 下含 1 个 cmd 管道 sock（偏差可忽略）。
+// 收缩基数取元素表的大小，只当估数：表里不只有活跃 TCP 连接，还有 UDP，Unix 上另有监听 socket、
+// 延迟关闭中的连接与命令管道(走管道时)
 void _evpub_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms) {
     if (!pool_shrink_due(shrink_start, now_ms)) {
         return;
@@ -255,6 +256,10 @@ void _evpub_disconnect(watcher_ctx *watcher, evsock_ctx *evsk) {
 #endif
 }
 void _evpub_mark_close(int32_t *status, int32_t rtn) {
+    // 本端已在关就不再改记：之后的收发失败(含回调里关掉后才读到的 FIN)都不算对端断的
+    if (BIT_CHECK(*status, STATUS_ERROR)) {
+        return;
+    }
     switch (rtn) {
     case 1:
         BIT_SET(*status, STATUS_PEER_FIN);
@@ -410,7 +415,7 @@ SOCKET _evpub_listen(netaddr_ctx *addr) {
     }
     return fd;
 }
-SOCKET _evpub_udp(netaddr_ctx *addr) {
+SOCKET _evpub_udp(netaddr_ctx *addr, ud_cxt *ud) {
     SOCKET fd = sock_create_cloexec(netaddr_family(addr), SOCK_DGRAM, 0, 1);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -433,7 +438,8 @@ SOCKET _evpub_udp(netaddr_ctx *addr) {
         return INVALID_SOCK;
     }
 #endif
-    if (ERR_OK != sock_reuseaddr(fd, 0)
+    int32_t share = NULL != ud && BIT_CHECK(ud->flags, UD_REUSEADDR);
+    if (ERR_OK != (share ? sock_reuseaddr(fd, 0) : sock_exclusiveaddr(fd))
         || ERR_OK != sock_v6only(fd, netaddr_family(addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
@@ -451,10 +457,9 @@ SOCKET _evpub_udp(netaddr_ctx *addr) {
 static inline int32_t _evpub_sock_read_ssl(SSL *ssl, IOV_TYPE *iov, size_t *nread) {
     int32_t rtn = evssl_read(ssl, iov[0].IOV_PTR_FIELD, (size_t)iov[0].IOV_LEN_FIELD, nread);
 #if defined(TRIGGER_LT)
-    // 水平触发下没必要读到 WANT_READ：OpenSSL 那层已空、这次又没填满给出的空间，
-    // 剩下的（若有）还在内核里，下次可读事件会再报。省掉那轮必然 EAGAIN 的 recv。
-    // 必须判 *nread > 0：WANT_READ/WANT_WRITE 时 evssl_read 也返 ERR_OK，只是没读到东西，
-    // 那种情形交给 buffer_from_sock 的零长早退，别在这里冒充"抽干"
+    // 水平触发下 OpenSSL 那层已空、这次又没填满给出的空间就算读空，剩下的等下次可读事件，省掉必然 EAGAIN 的 recv。
+    // 必须判 *nread > 0：WANT_READ/WANT_WRITE 时 evssl_read 也返 ERR_OK 但没读到东西，
+    // 那种交给 buffer_from_sock 的零长早退，别在这里冒充"抽干"
     if (ERR_OK == rtn
         && *nread > 0
         && *nread < (size_t)iov[0].IOV_LEN_FIELD

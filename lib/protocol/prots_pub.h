@@ -13,13 +13,13 @@
 #define MQTT_MAX_PACK_LENS 65535 // MQTT 单条报文，含固定头
 #define CUSTZ_MAX_PACK_LENS 65535 // 自定义协议数据体
 #define SMTP_MAX_PACK_LENS 65535 // SMTP 单条响应(可多行)总字节，也管未见 CRLF 前的累积与 AUTH 挑战体
-#define REDIS_MAX_LINE_LENS 65535 // Redis 长度行尚未收全时允许累积的字节数
+#define REDIS_MAX_LINE_LENS 65535 // Redis 单行回复(+ - : 等)的行长，含类型字节、不含 CRLF
 #define REDIS_MAX_BULK_LENS (512 * 1024 * 1024) // Redis Bulk String，对齐 proto-max-bulk-len 默认值
 #define MONGO_MAX_PACK_LENS (64 * 1024 * 1024) // MongoDB 单包，协议规范值
 #define MQTT_VARINT_MAX 268435455u // 4 字节 7-bit varint 的上界(256MB-1)，线格式定死，不属于上面可调的那 10 个
 
-// mysql pgsql monogo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=上层 handle 持有者数）
-// 建连前 acquire：仅上层持有(ref>0)时 +1，C 借用(ref=0)短路
+// mysql pgsql mongo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=上层 handle 持有者数）
+// 建连前、上层子对象(会话 / 预处理语句)创建时 acquire：仅上层持有(ref>0)时 +1，C 借用(ref=0)短路
 #define PROT_REF_ACQUIRE(ptr) \
     do { \
         if (0 != ATOMIC_GET(&(ptr)->ref)) { \
@@ -84,6 +84,7 @@ typedef enum prot_status {
     PROT_CLOSE = 0x20          // 连接关闭信号
 }prot_status;
 
+struct ev_ctx;
 // 任务间传递的消息体
 typedef struct message_ctx {
     uint8_t slice;  // 分片类型（slice_type）
@@ -99,8 +100,7 @@ typedef struct message_ctx {
     sock_ctx sk;       // 连接标识
 }message_ctx;
 // 握手完成后的推送回调函数类型
-typedef int32_t(*_handshaked_push)(sock_ctx *sk, int32_t client,
-    ud_cxt *ud, int32_t erro, void *data, size_t lens);
+typedef int32_t(*_handshaked_push)(sock_ctx *sk, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
 // 消息汇：网络事件回调向上推消息的接口，由 task 层注册实现
 typedef void*(*prots_emit_begin_cb)(void *loader, name_t handle);// 开窗：grab 目标，返回不透明句柄，NULL=目标不存在
 typedef void(*prots_emit_cb)(void *target, message_ctx *msg);// 推一条消息给已开窗的目标
@@ -110,7 +110,6 @@ typedef struct prot_emit {
     prots_emit_cb emit;
     prots_emit_end_cb end;
 }prot_emit;
-struct ev_ctx;
 
 /// <summary>
 /// 解析时间串里的小数秒 ".ffffff" 为微秒：从首个 '.' 起最多取 6 位，遇非数字即停，按补零对齐到 6 位。

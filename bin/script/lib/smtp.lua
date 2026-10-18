@@ -1,10 +1,12 @@
 -- SMTP 客户端（smtp_ctx 类）。
 -- 封装 C 层 srey.smtp，实现完整的 SMTP 对话流程：
 --   connect → [AUTH] → MAIL FROM → RCPT TO × N → DATA → 邮件正文 → QUIT
--- 支持隐式 TLS（SMTPS，连接即握手；协议层无 STARTTLS 升级），keepalive 通过 ping/reset 维护长连接。
+-- 只支持隐式 TLS（SMTPS，如 465 端口，连接即握手），协议层无 STARTTLS 升级：要求先 STARTTLS 的端口（如 587）连不上，
+-- 明文连接上认证会把凭据明文发出（同 C 侧 smtp_init）。keepalive 通过 ping/reset 维护长连接。
 
 local srey = require("lib.srey")
 local smtp = require("srey.smtp")
+local utils = require("srey.utils")
 local pub  = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 
 -- RCPT TO 的合法应答：250 已接受、251 已接受但将转发（RFC 5321 §4.3.2）。
@@ -22,15 +24,15 @@ local ctx = class("smtp_ctx", pub)
 ---@param ip string 服务器 IP
 ---@param port integer 服务器端口
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
----@param user string AUTH 用户名（空时跳过认证）
----@param password string AUTH 密码
+---@param user string AUTH 用户名；空串为免认证投递：握手跳过 AUTH，服务端不通告 AUTH 也能连上
+---@param password string AUTH 密码；user 为空串时不用
 function ctx:ctor(ip, port, sslname, user, password)
     local ssl = pub.ssl(sslname)
     self.smtp = smtp.new(ip, port, ssl, user, password)
     -- ip / user / password 任一超出 C 侧字段容量时 smtp.new 返回 nil（不静默截断——
     -- 截断后的密码拿去认证只换回服务端一句 535，调用方看不出是自己传长了）
     if not self.smtp then
-        error("smtp.new failed: ip / user / password too long", 2)
+        error("smtp.new failed: ip / user / password too long", 3)
     end
     self.sslname = sslname
     -- 一封邮件是 MAIL FROM → N×RCPT TO → DATA → 正文一长串往返，两个协程
@@ -64,6 +66,7 @@ end
 ---@param packer fun(smtp:userdata):lightuserdata,integer 组包方法，如 smtp.pack_reset
 ---@return boolean ok 应答为 250 时 true
 function ctx:_cmd_ok(packer)
+    srey._check_wait("srey.syn_send")-- 先查再组包：syn_send 的守卫抛错时不替调用方放包
     local sk = self.smtp:sock_id()
     local cmd, csize = packer(self.smtp)
     local pack = srey.syn_send(sk, cmd, csize, 0)
@@ -84,17 +87,17 @@ function ctx:_ping()
     return self:_cmd_ok(self.smtp.pack_ping)
 end
 
----内部邮件发送流程（不含 reset）：MAIL FROM → RCPT TO × N → DATA(354) → MIME 正文；任一步失败即返回
+---信封：MAIL FROM → RCPT TO × N → DATA，拿到 354 返回 true，正文由调用方接着发
+---@param sk userdata 连接标识
 ---@param mail any mail_ctx 邮件对象
----@return boolean ok 每步应答码都符合预期时 true（MAIL/RCPT/正文判 250，DATA 判 354）
-function ctx:_send(mail)
-    local sk = self.smtp:sock_id()
+---@return boolean ok 每步应答码都符合预期时 true（MAIL/RCPT 判 250/251，DATA 判 354）
+function ctx:_envelope(sk, mail)
     local cmd, csize = self.smtp:pack_from(mail:from_get())
     if not cmd then
         return false
     end
     local pack = srey.syn_send(sk, cmd, csize, 0)
-    if nil == pack or not self.smtp:check_ok(pack)  then
+    if nil == pack or not self.smtp:check_ok(pack) then
         return false
     end
     for _, addr in ipairs(mail:addrs_get()) do
@@ -109,21 +112,26 @@ function ctx:_send(mail)
     end
     cmd, csize = self.smtp:pack_data()
     pack = srey.syn_send(sk, cmd, csize, 0)
-    if nil == pack or not self.smtp:check_code(pack, "354") then
+    return nil ~= pack and self.smtp:check_code(pack, "354")
+end
+---内部邮件发送流程（不含 reset）：先组正文，再走信封与正文；任一步失败即返回
+---@param mail any mail_ctx 邮件对象
+---@return boolean ok 信封各步与正文的 250 都符合预期时 true
+function ctx:_send(mail)
+    srey._check_wait("srey.syn_send")-- 理由同 _cmd_ok
+    -- 先组正文再开信封(同 C 侧 smtp_send)：取不到熵生成 MIME boundary 时 pack 返 nil，此时还没进事务，
+    -- 不会出现进了 DATA 却无信可发、补发的 RSET 被当成正文空等到超时
+    local body, bsize = mail:pack()
+    if nil == body then
         return false
     end
-    cmd, csize = mail:pack()
-    -- 取不到熵生成 MIME boundary 时 pack 返 nil。这里已经收过 354、连接处于 DATA 态，
-    -- 后续 _reset 的 RSET 会被当成正文行、等不到响应而超时断连——与 C 侧 _smtp_send 同样处理，
-    -- 系统随机源坏掉时丢一条连接是可接受的降级
-    if nil == cmd then
+    local sk = self.smtp:sock_id()
+    if not self:_envelope(sk, mail) then
+        utils.ud_free(body)
         return false
     end
-    pack = srey.syn_send(sk, cmd, csize, 0)
-    if nil == pack or not self.smtp:check_ok(pack) then
-        return false
-    end
-    return true
+    local pack = srey.syn_send(sk, body, bsize, 0)
+    return nil ~= pack and self.smtp:check_ok(pack)
 end
 
 ---发送邮件：投递成功不发 reset（正文收到 250 时服务端已清空事务）；投递失败才 reset，
@@ -150,6 +158,7 @@ end
 ---内部 QUIT 命令（不关闭 socket，供 quit 调用）
 ---@param sk userdata 连接标识
 function ctx:_quit(sk)
+    srey._check_wait("srey.syn_send")-- 理由同 _cmd_ok
     local cmd, csize = self.smtp:pack_quit()
     srey.syn_send(sk, cmd, csize, 0)
 end

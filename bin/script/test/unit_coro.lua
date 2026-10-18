@@ -7,15 +7,26 @@
 -- ② 的并发面只靠 test/task_kcp.c 的 fifo 用例间接覆盖（kcp_synsend 复用同一套底层），
 -- 那个用例一旦被跳过、或两者调用路径分叉，这块就没人看着了。
 --
--- 末尾一段测消息载荷的释放时机：同步跑完的回调由 C 在分发返回后回收（攒批释放）；中途挂起过的回调
+-- 后半测消息载荷的释放时机：同步跑完的回调由 C 在分发返回后当场释放；中途挂起过的回调
 -- 留到回调结束由 _coro_exec 交还（分发返回时补挂带 __gc 的元表兜底）；等待者拿到的 msg 只到本协程下次挂起前有效。
+-- 池满之后接着测协程池收缩（要等一个收缩周期，本模块因此多跑十来秒）。
+-- 再往后是连接类的其余路径：sync_close 的返回值、客户端 TLS 与明文升级、没有协程在等时落到 on_connected /
+-- on_sended / on_handshaked。最后一段测 NEVERCONN 的合成 CLOSE 不触发 on_closed 与观察者（假消息与真实连接失败各一）。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local seri   = require("srey.seri")
+local core = require("srey.core")
+local utils = require("srey.utils")
 
 local TCP_PORT = 15071
 local UDP_PORT = 15072
+-- ⑤ 段另用一个口：unlisten 是异步的，紧接着在同一端口重新 listen 时新旧监听可能并存，connect 落进旧的会被 RST
+local TCP_PORT_TMO = 15077
+-- 连接类其余路径那几段：明文监听（sync_close / 明文升级 TLS / 落回调共用）、TLS 监听、WebSocket 监听
+local PLAIN_PORT = 15131
+local TLS_PORT = 15132
+local WS_PORT = 15133
 local NSEND    = 4
 -- 等超时唤醒要多给的富余：超时监控每 1s 才扫一次到期表(lib/srey 的 _coro_timeout)，
 -- 所以 N 毫秒的等待最坏 N+1000 才被观察到。凡断言超时的地方一律等 N + 本值
@@ -27,8 +38,7 @@ local RT_THROW      = 0x211 -- 同步回显后抛错
 local RT_THROW_Y    = 0x212 -- 挂起后回显再抛错
 local RT_GATE       = 0x213 -- 等 NPOOL 条到齐后回显
 local RT_HELD       = 0x214 -- 拿着本条 msg 挂起，记下挂起前后的元表与 data 后回显
-local CORO_POOL_MAX = 128 -- 同 lib/srey.lua 的协程池上限
-local NPOOL         = 200 -- 同时挂着的回调数，要超过 CORO_POOL_MAX
+local NPOOL         = 200 -- 同时挂着的回调数，要超过协程池上限（池满那段按 srey.lua 的真实池断言）
 
 -- 取 coros 汇总行的计数：suspended(coro_sess 里的等待者) / sessions / fork_wait / serial(排队数) / yield total。
 -- 发起请求的协程自己也占着一个条目（等 RESPONSE），所以这些值恒含一个常量 +1；
@@ -72,6 +82,14 @@ local function _find_exec()
     local run = disp and _upvalue(disp[srey.MSG_TYPE.REQUEST], "_coro_run")
     local new = run and _upvalue(run, "_coro_new")
     return new and _upvalue(new, "_coro_exec")
+end
+
+-- 顺 upvalue 摸到 srey.lua 的 _coro_pool_shrink：STARTUP 分发 → _coro_timeout → _coro_pool_shrink；
+-- 协程池 coro_pool 与收缩拍数 CORO_SHRINK_TICKS 都是它的 upvalue
+local function _find_shrink()
+    local disp = _upvalue(message_dispatch, "_dispatchers")
+    local tmo = disp and _upvalue(disp[srey.MSG_TYPE.STARTUP], "_coro_timeout")
+    return tmo and _upvalue(tmo, "_coro_pool_shrink")
 end
 
 -- 回调拿不到自己那条 msg：在当前协程栈上找 _coro_exec 那一帧，取它的 msg 实参
@@ -252,8 +270,9 @@ runner.run(function(t)
     -- 留着的话该 skid 的 CLOSE 已被消费过，条目再没有任何路径能删掉
     do
         local s0 = _sessions()
-        local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT, NET_EV.ACCEPT)
-        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT)
+        local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT_TMO, NET_EV.ACCEPT)
+        t:check(ERR_FAILED ~= lid, "listen " .. TCP_PORT_TMO)
+        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT_TMO)
         t:check(sk and sk.valid, "connect 回自己的监听口")
         if sk and sk.valid then
             t:eq(s0 + 1, _sessions(), "connect 之后条目已在（keep=true）")
@@ -359,7 +378,8 @@ runner.run(function(t)
 
     -- ── 不可 yield 处调各挂起接口：报错带接口名，不登记 ────────────────────
     -- 守卫在各挂起接口入口，报的是业务调的那个接口，不是内部的 _coro_wait。
-    -- 连接类传失效连接：守卫要排在 wait_skid / sock_session 之前，否则直接返回、根本不报错。
+    -- 连接类传失效连接：守卫要排在 wait_skid / sock_session 之前，否则直接返回、根本不报错；
+    -- syn_ssl_exchange 要排在发起握手之前，net_call / net_request 要排在 harbor 组包与内部 syn_send 之前。
     -- 末尾在裸 coroutine.wrap 里调 sleep：不在框架协程里，走守卫的另一条分支
     do
         local sk = srey.sock_invalid()
@@ -375,6 +395,10 @@ runner.run(function(t)
             { "srey.sync_close", function() srey.sync_close(sk) end },
             { "srey.syn_sendto", function() srey.syn_sendto(sk, "127.0.0.1", UDP_PORT, "x") end },
             { "srey.connect", function() srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT) end },
+            { "srey.syn_ssl_exchange", function() srey.syn_ssl_exchange(sk, 1, SSL_NAME.CLIENT) end },
+            { "srey.net_call", function() srey.net_call(sk, 1, 0x100, "x") end },
+            { "srey.net_request", function() srey.net_request(sk, 1, 0x100, "x") end },
+            { "srey._coro_wait", function() srey._coro_wait(srey.id(), srey.MSG_TYPE.RESPONSE, 10) end },
         }
         local c0 = _counts()
         local name, call, ok, err
@@ -388,6 +412,22 @@ runner.run(function(t)
             -- 接口名紧跟原因，顺带区分 syn_send 与 syn_sendto
             t:check(nil ~= string.find(tostring(err), name .. " cannot yield", 1, true),
                     name .. " 报错带接口名且说明挂不起（实际 " .. tostring(err) .. "）")
+        end
+        -- 守卫抛错时 copy=0 的载荷仍归调用方：抛完还在、由这里释放（守卫若代为释放，这里就读到已释放的内存、再重复释放）
+        local owned = {
+            { "srey.request", function(p, n) srey.request(me, 0x100, p, n, 0) end },
+            { "srey.syn_send", function(p, n) srey.syn_send(sk, p, n, 0) end },
+            { "srey.syn_sendto", function(p, n) srey.syn_sendto(sk, "127.0.0.1", UDP_PORT, p, n, 0) end },
+        }
+        for i = 1, #owned do
+            local ptr, sz = seri.pack("own")
+            ok = pcall(table.sort, { 2, 1 }, function(a, b)
+                owned[i][2](ptr, sz)
+                return a < b
+            end)
+            t:eq(false, ok, owned[i][1] .. " 带 copy=0 载荷时守卫照样抛错")
+            t:eq("own", seri.unpack(ptr, sz), owned[i][1] .. " 抛错后载荷仍归调用方、内容不变")
+            utils.ud_free(ptr)
         end
         ok, err = pcall(coroutine.wrap(function() srey.sleep(10) end))
         t:eq(false, ok, "裸 coroutine.wrap 里 sleep 抛错")
@@ -430,6 +470,7 @@ runner.run(function(t)
     local inflight, peak = 0, 0
     local ser = srey.serial()
     local exec = _find_exec()
+    local shrink = _find_shrink()
     local held = {}-- RT_HELD 回调记下的观察值
     srey.on_requested(function(reqtype, sess, src, data, size)
         if reqtype >= RT_ECHO and reqtype <= RT_ECHO + 3 then
@@ -541,8 +582,9 @@ runner.run(function(t)
         t:check(p == _req(RT_ECHO, p), "抛错之后同步回调照常")
     end
 
-    -- 池满：NPOOL 条请求的回调同时挂着，跑完回池时超出 CORO_POOL_MAX 的协程直接退出
+    -- 池满：NPOOL 条请求的回调同时挂着，跑完回池时超出协程池上限的协程直接退出
     do
+        local pool = shrink and _upvalue(shrink, "coro_pool")
         local funcs = {}
         for i = 1, NPOOL do
             local p = string.format("pool%03d<", i) .. string.rep(string.char(97 + i % 26), 4096) .. ">"
@@ -555,9 +597,58 @@ runner.run(function(t)
                 nok = nok + 1
             end
         end
-        t:check(peak > CORO_POOL_MAX, "同时挂着的回调超过协程池上限（实际 " .. peak .. "）")
+        -- 这时回调协程都已跑完试过回池（比 peak 还多），池却比 peak 小：多出的那些走了池满退出。
+        -- 上限若调到不小于 NPOOL，这条就不成立，得把 NPOOL 跟着调大
+        t:check(pool and #pool < peak, string.format("同时挂着的回调超过协程池上限（池 %s，同时挂着 %d）",
+                tostring(pool and #pool), peak))
         t:eq(NPOOL, nok, "池满时每条回调读到的 data 都对、都响应了")
         t:eq(0, inflight, "回调全部跑完")
+    end
+
+    -- ── 协程池收缩：空闲满一个收缩周期按 1/5 缩小，被摘下的协程已退出；一直缩会停在一个正的底线上 ──
+    -- 紧接池满那段，池是满的。先干等一次真实的收缩（_coro_timeout 每秒一拍，攒够拍数才缩），
+    -- 再直接调收缩函数把池缩到底：每调满拍数次真缩一次
+    do
+        local pool = shrink and _upvalue(shrink, "coro_pool")
+        local ticks = shrink and _upvalue(shrink, "CORO_SHRINK_TICKS")
+        if t:check(pool and ticks, "摸到协程池与收缩拍数") then
+            local before = table.move(pool, 1, #pool, 1, {})
+            local n0 = #before
+            local deadline = srey.timer_ms() + (ticks + 2) * 1000
+            while #pool >= n0 and srey.timer_ms() < deadline do
+                srey.sleep(200)
+            end
+            local n1 = #pool
+            -- 收缩那一拍自己从池顶借了一个协程跑，缩的是 n0 - 1 的 1/5，差一个在所难免
+            t:check(n1 < n0 and n0 - n1 >= n0 // 5 - 1 and n0 - n1 <= n0 // 5 + 1,
+                    string.format("空闲满一个周期池按 1/5 缩小（%d -> %d）", n0, n1))
+            local floor, stable = n1, false
+            for _ = 1, 64 do
+                for _ = 1, ticks do
+                    shrink()
+                end
+                if #pool == floor then
+                    stable = true
+                    break
+                end
+                floor = #pool
+            end
+            t:check(stable and floor > 0 and floor < n1, "一直缩会停在一个正的底线上（" .. floor .. "）")
+            local live = {}
+            for i = 1, #pool do
+                live[pool[i]] = true
+            end
+            local gone, dead = 0, 0
+            for i = 1, n0 do
+                if not live[before[i]] then
+                    gone = gone + 1
+                    if "dead" == coroutine.status(before[i]) then
+                        dead = dead + 1
+                    end
+                end
+            end
+            t:check(gone > 0 and gone == dead, string.format("被摘下的 %d 个协程都已退出（%d）", gone, dead))
+        end
     end
 
     -- ── 等待者拿到的 msg：下次挂起前 data 可读，之后为 nil ────────────────
@@ -637,6 +728,194 @@ runner.run(function(t)
             t:eq(0, sync_calls, "同步回调（含同步抛错）一次 msg_release 都不调")
             t:eq(5, calls, "挂起过的回调每条调一次 msg_release")
             t:eq(5, live, "每次调用时载荷都还在（没被提前放掉，也没重复放）")
+        end
+    end
+
+    -- ── 连接类其余路径 ─────────────────────────────────────────────────────
+    -- 明文监听 PLAIN_PORT 几小段共用；它订阅 ACCEPT，明文升级那小段要在服务端 accept 时就切 SSL
+    do
+        local upgrade, accepted = false, 0
+        srey.on_accepted(function(_, ask)
+            accepted = accepted + 1
+            if upgrade then
+                srey.ssl_exchange(ask, 0, SSL_NAME.SERVER)
+            end
+        end)
+        local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT, NET_EV.ACCEPT)
+        t:check(ERR_FAILED ~= lid, "listen " .. PLAIN_PORT)
+
+        -- sync_close：已失效的连接直接返回 true；收到 CLOSE 返回 true；等满读超时没等到返回 false。
+        -- 等不到的那条把连接转交给 reporter task：CLOSE 落到那边，本 task 的等待只能超时
+        t:eq(true, srey.sync_close(srey.sock_invalid()), "sync_close 已失效的连接直接返回 true")
+        local s0 = _sessions()
+        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT)
+        if t:check(sk.valid, "connect " .. PLAIN_PORT) then
+            t:eq(true, srey.sync_close(sk), "sync_close 收到 CLOSE 返回 true")
+            t:eq(s0, _sessions(), "sync_close 之后条目已删")
+        end
+        sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT)
+        if t:check(sk.valid and srey.sock_bind_task(sk, "reporter"), "连上后转交给 reporter") then
+            local old = srey.get_netread_timeout()
+            srey.set_netread_timeout(200)
+            local t0 = srey.timer_ms()
+            local ok = srey.sync_close(sk)
+            srey.set_netread_timeout(old)
+            t:eq(false, ok, "sync_close 等满读超时没等到 CLOSE 返回 false")
+            t:check(srey.timer_ms() - t0 >= 200, "等满读超时才返回")
+            t:eq(s0, _sessions(), "超时摘掉等待者后条目已删")
+        end
+
+        -- 本段连接一律 sync_close：connect 留下的 keep 条目要等 CLOSE 才删，异步关会让后面按条目数取基线的用例偶发对不上
+        -- 客户端 TLS：带 SSL_NAME.CLIENT 连 TLS 监听，srey.connect 连同握手一起等完；
+        -- 再测明文连上后 syn_ssl_exchange 升级。证书没生成或没编 SSL 时这两小段跳过
+        if srey.ssl_qury(SSL_NAME.SERVER) and srey.ssl_qury(SSL_NAME.CLIENT) then
+            local tlid = srey.listen(PACK_TYPE.NONE, SSL_NAME.SERVER, "127.0.0.1", TLS_PORT)
+            t:check(ERR_FAILED ~= tlid, "listen " .. TLS_PORT)
+            sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.CLIENT, "127.0.0.1", TLS_PORT)
+            if t:check(sk.valid, "带 SSL_NAME.CLIENT 连上 TLS 监听并握手完成") then
+                local rd, rs = srey.syn_send(sk, "tls-echo", 8, 1)
+                t:eq("tls-echo", rd and srey.ud_str(rd, rs), "TLS 连接上收发正常")
+                srey.sync_close(sk)
+            end
+            srey.unlisten(tlid)
+            -- 客户端带 NET_EV.AUTHSSL 才收得到握手结果。服务端在 accept 时切 SSL，客户端等它切完
+            -- 再发 ClientHello：抢在前面的话 ClientHello 会被服务端当明文回显回来
+            upgrade = true
+            local nacc = accepted
+            sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT, NET_EV.AUTHSSL)
+            if t:check(sk.valid, "明文连上") then
+                local deadline = srey.timer_ms() + 1000
+                while accepted == nacc and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                srey.sleep(20)
+                t:eq(true, srey.syn_ssl_exchange(sk, 1, SSL_NAME.CLIENT), "syn_ssl_exchange 升级成功")
+                local rd, rs = srey.syn_send(sk, "upgraded", 8, 1)
+                t:eq("upgraded", rd and srey.ud_str(rd, rs), "升级后收发正常")
+                srey.sync_close(sk)
+            end
+            upgrade = false
+        else
+            printd("[%s] ssl context not registered, client tls cases skipped", t.name)
+        end
+
+        -- 没有协程在等时落回调：core.connect 发起、不等的连接结果落 on_connected；订阅了 NET_EV.SEND 的
+        -- 发送完成落 on_sended；WebSocket 服务端收到升级请求（accept 来的连接会话键为 0）落 on_handshaked
+        local conn, sent, hs = {}, {}, {}
+        srey.on_connected(function(_, csk, err)
+            conn[#conn + 1] = { sk = csk, err = err }
+        end)
+        srey.on_sended(function(_, ssk, client, size)
+            sent[#sent + 1] = { sk = ssk, client = client, size = size }
+        end)
+        srey.on_handshaked(function(pktype, _, client, erro)
+            hs[#hs + 1] = { pktype = pktype, client = client, erro = erro }
+        end)
+        sk = core.connect(PACK_TYPE.NONE, nil, "127.0.0.1", PLAIN_PORT)
+        srey.sleep(100)
+        t:eq(1, #conn, "core.connect 发起、没人等的连接结果落到 on_connected")
+        t:check(conn[1] and sk == conn[1].sk and ERR_OK == conn[1].err, "on_connected 拿到的是这条连接、连接成功")
+        srey.sync_close(sk)
+        sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT, NET_EV.SEND)
+        if t:check(sk.valid, "带 NET_EV.SEND 连上") then
+            srey.send(sk, "sended", 6, 1)
+            srey.sleep(100)
+            local total, mine = 0, true
+            for i = 1, #sent do
+                total = total + sent[i].size
+                mine = mine and sk == sent[i].sk and 1 == sent[i].client
+            end
+            t:check(#sent > 0 and mine and 6 == total, "发送完成落到 on_sended，字节数对得上（" .. total .. "）")
+            srey.sync_close(sk)
+        end
+        local wlid = srey.listen(PACK_TYPE.WEBSOCK, SSL_NAME.NONE, "127.0.0.1", WS_PORT)
+        t:check(ERR_FAILED ~= wlid, "listen " .. WS_PORT)
+        sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", WS_PORT)
+        if t:check(sk.valid, "裸 TCP 连 WebSocket 监听") then
+            local req = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                .. "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            local rd, rs = srey.syn_send(sk, req, #req, 1)
+            t:check(rd and srey.ud_str(rd, rs):find(" 101 ", 1, true), "收到 101 升级响应")
+            srey.sleep(50)
+            t:eq(1, #hs, "服务端握手完成落到 on_handshaked")
+            t:check(hs[1] and PACK_TYPE.WEBSOCK == hs[1].pktype and 0 == hs[1].client and ERR_OK == hs[1].erro,
+                    "on_handshaked 是服务端那头、握手成功")
+            srey.sync_close(sk)
+        end
+        srey.unlisten(wlid)
+        srey.unlisten(lid)
+    end
+
+    -- ── NEVERCONN 的合成 CLOSE 只唤醒等待方，不触发 on_closed 与观察者 ───────
+    -- 先拿 CLOSE 分发函数喂假消息：它只读 msg() 与 msg.sk，等待者醒来读 mtype，假消息备齐这三样即可。
+    -- 再走真实路径：连 127.0.0.1:1（必拒），连接失败补发的合成 CLOSE 带 NEVERCONN；有的平台 connect
+    -- 当场失败、不发合成 CLOSE，那时真实路径那两条跳过。观察者与 on_closed 登记后撤不掉，
+    -- 只数 sk 是本段那个标记的、或 erro 是 NEVERCONN 的
+    do
+        local disp = _upvalue(message_dispatch, "_dispatchers")
+        local close_dispatch = disp and disp[srey.MSG_TYPE.CLOSE]
+        if t:check(nil ~= close_dispatch, "摸到 CLOSE 分发函数") then
+            local mark = srey.sock_invalid()
+            local function _fake(sess, erro)
+                return setmetatable({ mtype = srey.MSG_TYPE.CLOSE, sk = mark }, {
+                    __call = function()
+                        return srey.MSG_TYPE.CLOSE, sess, PACK_TYPE.NONE, 1, 0, erro
+                    end,
+                })
+            end
+            local nwatch, ncb, nnever = 0, 0, 0
+            srey.watch_closed(function(_, sk, _, erro)
+                if mark == sk then
+                    nwatch = nwatch + 1
+                end
+                if CLOSE_TYPE.NEVERCONN == erro then
+                    nnever = nnever + 1
+                end
+            end)
+            srey.on_closed(function(_, sk, _, erro)
+                if mark == sk then
+                    ncb = ncb + 1
+                end
+                if CLOSE_TYPE.NEVERCONN == erro then
+                    nnever = nnever + 1
+                end
+            end)
+            local s0 = _sessions()
+            local sess = srey.id()
+            local woke
+            srey.fork(function()
+                woke = srey._coro_wait(sess, srey.MSG_TYPE.RECV, 3000).mtype
+            end)
+            srey.sleep(10)
+            close_dispatch(_fake(sess, CLOSE_TYPE.NEVERCONN))
+            t:eq(srey.MSG_TYPE.CLOSE, woke, "NEVERCONN 照样唤醒该 sess 上的等待者")
+            t:eq(0, nwatch, "NEVERCONN 不调观察者")
+            t:eq(0, ncb, "NEVERCONN 不调 on_closed")
+            t:eq(s0, _sessions(), "等待者摘空后条目已删")
+            -- 对照：换成普通关闭，观察者与 on_closed 各调一次（都在分发函数里同步跑完）
+            close_dispatch(_fake(srey.id(), CLOSE_TYPE.LOCAL))
+            t:eq(1, nwatch, "普通关闭调观察者")
+            t:eq(1, ncb, "普通关闭调 on_closed")
+            -- 真实路径：分发函数临时换成计数包装，确实来过 NEVERCONN 才断言
+            local saw = 0
+            disp[srey.MSG_TYPE.CLOSE] = function(msg)
+                local _, _, _, _, _, erro = msg()
+                if CLOSE_TYPE.NEVERCONN == erro then
+                    saw = saw + 1
+                end
+                return close_dispatch(msg)
+            end
+            local s1 = _sessions()
+            local bad = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", 1)
+            srey.sleep(100)
+            disp[srey.MSG_TYPE.CLOSE] = close_dispatch
+            t:eq(false, bad.valid, "连没人听的口失败")
+            if saw > 0 then
+                t:eq(0, nnever, "真实连接失败补发的 NEVERCONN 也不投观察者与 on_closed")
+                t:eq(s1, _sessions(), "合成 CLOSE 清掉了 connect 等待时留下的条目")
+            else
+                printd("[%s] connect 127.0.0.1:1 failed without a NEVERCONN close, real path skipped", t.name)
+            end
         end
     end
 end)

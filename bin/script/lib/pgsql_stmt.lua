@@ -13,9 +13,8 @@ local PG_FORMAT = ppub.FORMAT
 ---预处理语句执行上下文
 ---@class pgsql_stmt_ctx
 ---@field name string 服务端语句名称（Parse 时传入）
----@field owner any pgsql_ctx Lua 包装实例，守卫读其实时 generation
----@field pg any C 层 pgsql 对象引用（= owner.pg），每次操作动态读 fd/skid 以感知重连
----@field format PG_FORMAT 结果集期望格式（二进制 / 文本），prepare 时确定
+---@field owner any pgsql_ctx Lua 包装实例，守卫读其实时 generation；收发借它的连接（每次现取连接标识以感知重连）
+---@field format PG_FORMAT execute 时向服务端请求的结果列格式（二进制 / 文本），prepare 时确定
 ---@field affected integer 最近一次执行影响的行数
 ---@field closed boolean close() 已发出 Close，此后 execute 一律拒绝（口径同 mysql_stmt）
 ---@field err string 最近一次错误信息
@@ -33,7 +32,6 @@ function ctx:ctor(owner, name, format)
     self.name   = name
     self.format = format or PG_FORMAT.BINARY
     self.owner  = owner
-    self.pg     = owner.pg
     self.affected = 0
     self.err = ""
     -- 记录创建时的连接代次；pgsql ping 失败重连后 owner.generation +1，旧 statement name 已失效
@@ -42,13 +40,14 @@ end
 
 ---执行预处理语句（Bind + Describe + Execute + Sync）。
 ---与 pgsql_ctx:query 不同，这里不返回数组：扩展协议一次 Execute 只有一条语句、一个结果，
----没有"第几条"可言
+---没有"第几条"可言。
+---COPY FROM STDIN 只能走 pgsql_ctx:copy_in，交给 execute 会断开这条连接，连接上的预处理语句随之失效
 ---@param bind any? pgsql_bind_ctx 参数绑定上下文
----@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK（行数走 affected_rows）；
----false=失败或语句失效
+---@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；行数都走 affected_rows
+---（有结果集时为返回的行数，同 pgsql_ctx:query）；false=失败或语句失效
 function ctx:execute(bind)
     -- 借宿主连接的执行器：语句和普通查询走的是同一条连接，两者之间也不能交错
-    return srey.serial_ret(false, self.owner.serial(self._execute, self, bind))
+    return ppub.call(self, self._execute, bind)
 end
 function ctx:_execute(bind)
     self:_reset()
@@ -67,12 +66,9 @@ function ctx:_execute(bind)
     if not pgpack then
         return false
     end
-    local rd, affected = reader.iter(pgpack, self.format)
-    if rd then
-        return rd
-    end
-    self.affected = affected
-    return true
+    local rd
+    rd, self.affected = reader.iter(pgpack)
+    return rd or true
 end
 
 ---发送 Close + Sync，通知服务端释放该预处理语句

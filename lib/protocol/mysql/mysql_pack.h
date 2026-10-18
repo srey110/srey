@@ -3,8 +3,12 @@
 
 #include "protocol/mysql/mysql_bind.h"
 
+// 除 mysql_pack_quit 外，组包会改连接的包序号与当前命令(id / cur_cmd 等)，网络线程按它们解析应答，
+// 故只能在持有该连接串行化执行权、且上一条命令的应答已收完时调用。
+// 载荷(命令字节起算)达到 INT3_MAX(0xFFFFFF)即拒绝组包：这是续传标记，本实现不拆包
+
 /// <summary>
-/// 构造 COM_QUIT 请求包（断开连接）。
+/// 构造 COM_QUIT 请求包（断开连接）。不收 mysql_ctx，不碰连接状态
 /// </summary>
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
@@ -15,7 +19,7 @@ void *mysql_pack_quit(size_t *size);
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="database">目标数据库名</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放；库名超过 pending_db 容量(63 字节)时返回 NULL 且 size 置 0，
+/// <returns>请求包数据，调用方负责释放；库名超过 MYSQL_DB_LENS(256 字节)时返回 NULL 且 size 置 0，
 /// 一律不组包——发了包服务端会切库成功而 client.database 无从跟踪，后续 get_db 与重连握手都会用错库名</returns>
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size);
 /// <summary>
@@ -32,8 +36,8 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);
 /// <param name="sql">SQL 语句字符串</param>
 /// <param name="mbind">查询属性参数绑定，NULL 表示无参数</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放；SQL 长度达 INT3_MAX(16MB，MySQL 单包上限)时返回 NULL
-/// 且 size 置 0，一律不组包</returns>
+/// <returns>请求包数据，调用方负责释放；整个载荷(命令字节 + 查询属性段 + SQL)达到 INT3_MAX 时
+/// 返回 NULL 且 size 置 0，一律不组包。SQL 略短于 16MB 也可能因查询属性段超限</returns>
 void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind, size_t *size);
 /// <summary>
 /// 同 mysql_pack_query，SQL 长度由调用方给出，不再 strlen；sql 里的 NUL 字节原样发出
@@ -51,7 +55,7 @@ void *mysql_pack_query2(mysql_ctx *mysql, const char *sql, size_t sqllen, mysql_
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL 语句字符串</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放</returns>
+/// <returns>请求包数据，调用方负责释放；载荷达到 INT3_MAX 时返回 NULL 并把 size 置 0</returns>
 void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size);
 /// <summary>
 /// 同 mysql_pack_stmt_prepare，SQL 长度由调用方给出，不再 strlen
@@ -68,7 +72,7 @@ void *mysql_pack_stmt_prepare2(mysql_ctx *mysql, const char *sql, size_t sqllen,
 /// <param name="stmt">mysql_stmt_ctx</param>
 /// <param name="mbind">绑定参数上下文，无参数时可为 NULL；实际绑定个数必须等于 prepare 得到的 params_count</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放；绑定个数与 params_count 不符时返回 NULL 并把 size 置 0</returns>
+/// <returns>请求包数据，调用方负责释放；绑定个数与 params_count 不符、或载荷达到 INT3_MAX 时返回 NULL 并把 size 置 0</returns>
 void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_t *size);
 /// <summary>
 /// 构造 COM_STMT_RESET 请求包（重置预处理语句状态）
@@ -85,7 +89,7 @@ void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size);
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_stmt_close(mysql_stmt_ctx *stmt, size_t *size);
 /// <summary>
-/// 只释放语句的本地资源，不组包、不发送、不触碰连接状态（尤其是包序号 id）。
+/// 只释放语句的本地资源，不组包、不发送、不触碰连接状态（尤其是包序号 id），不受文件头的调用约束。
 /// 用于"拿不到连接的串行化执行权"的场合：服务端那份语句会随连接关闭一并回收
 /// </summary>
 /// <param name="stmt">mysql_stmt_ctx，调用后失效</param>

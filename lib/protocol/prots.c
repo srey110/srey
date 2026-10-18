@@ -42,7 +42,6 @@ typedef struct prot_vtbl {
 }prot_vtbl;
 
 static prot_emit g_emit;
-static int32_t _prots_ws_may_resume(void *data);
 static const prot_vtbl _vtbl_none = { 0 };
 static const prot_vtbl _vtbl_dns = {
     .unpack = dns_unpack,
@@ -54,7 +53,7 @@ static const prot_vtbl _vtbl_http = {
 static const prot_vtbl _vtbl_websock = {
     .pkfree = _websock_pkfree, .udfree = _websock_udfree,
     .unpack = websock_unpack, .next_pack = _websock_pack_next,
-    .may_resume = _prots_ws_may_resume,
+    .may_resume = _websock_may_resume,
 };
 static const prot_vtbl _vtbl_mqtt = {
     .pkfree = _mqtt_pkfree, .udfree = _mqtt_udfree,
@@ -69,7 +68,7 @@ static const prot_vtbl _vtbl_custz = {
 };
 static const prot_vtbl _vtbl_redis = {
     .pkfree = _redis_pkfree, .udfree = _redis_udfree,
-    .unpack = redis_unpack,
+    .unpack = redis_unpack, .may_resume = _redis_may_resume,
 };
 static const prot_vtbl _vtbl_mysql = {
     .pkfree = _mysql_pkfree, .udfree = _mysql_udfree,
@@ -197,9 +196,6 @@ void prots_udfree(void *arg) {
 // （DB / smtp / kcp）才挂，图的是"先清理后唤醒"——emit CLOSE 之前状态已置断开；纯解析状态
 // 的那几个（http / websock / mqtt / redis）等 ud_free 兜底就够
 static inline void prots_closed(ud_cxt *ud) {
-    if (NULL == ud) {
-        return;
-    }
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     if (NULL != v->closed) {
         v->closed(ud);
@@ -216,15 +212,12 @@ static inline int32_t prots_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int3
     return (NULL != v->connected) ? v->connected(ev, sk, ud, err) : err;
 }
 // SSL 握手完成后的回调，部分协议需在 SSL 建立后发送认证包（pgsql 用于 SCRAM-SHA-256-PLUS 通道绑定）
-static inline int32_t prots_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl) {
-    (void)sk;
-    (void)client;
+static inline int32_t prots_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
     const prot_vtbl *v = _prots_vtbl(ud->pktype);
     return (NULL != v->ssl_exchanged) ? v->ssl_exchanged(ev, ud, ssl) : ERR_OK;
 }
 // 默认解包：将缓冲区所有数据一次性取出，适用于 PACK_NONE（透传）场景
-static inline void *_prots_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
-    (void)ud;
+static inline void *_prots_unpack_default(buffer_ctx *buf, size_t *size) {
     size_t lens = buffer_size(buf);
     if (0 == lens) {
         return NULL;
@@ -234,21 +227,6 @@ static inline void *_prots_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt 
     ASSERTAB(lens == buffer_remove(buf, unpack, lens), "copy buffer error.");
     *size = lens;
     return unpack;
-}
-// PING 不会是响应:放过去的话对端一个保活 PING 就能唤醒正等响应的协程,请求-响应从此错开一格;
-// PONG 照旧可唤醒,发 PING 等的就是它。WS 承载子协议时只有真带出子协议包的帧才可能是响应——控制帧
-// 与零长数据帧的 secpack 为 NULL,放过去会撞上 prots_may_resume 入口的 NULL 短路变成"恒可唤醒"
-static int32_t _prots_ws_may_resume(void *data) {
-    if (WS_PING == websock_prot(data)) {
-        return ERR_FAILED;
-    }
-    pack_type secprot = (pack_type)websock_secprot(data);
-    void *secpack = websock_secpack(data);
-    if (PACK_NONE != secprot
-        && NULL == secpack) {
-        return ERR_FAILED;
-    }
-    return prots_may_resume(secprot, secpack);
 }
 int32_t prots_may_resume(pack_type pktype, void *data) {
     if (NULL == data) {
@@ -266,7 +244,7 @@ static inline void *_prots_unpack_v(const prot_vtbl *v, ev_ctx *ev, sock_ctx *sk
         return v->unpack(ev, sk, client, buf, ud, size, status);
     }
     // 透传：PACK_NONE 本就不解包，KCP 的分包在 _kcp_unpack 里按 UDP 路径走
-    return _prots_unpack_default(buf, size, ud);
+    return _prots_unpack_default(buf, size);
 }
 void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
@@ -284,6 +262,17 @@ int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
         msg.mtype = MSG_TYPE_ACCEPT;
         msg.subtype = ud->pktype;
         msg.sk = *sk;
+        // 对端地址只能在这里取：此刻在网络线程上、连接刚接受，fd 必是这条连接；交给 task 之后 fd 可能已被复用
+        if (BIT_CHECK(ud->flags, UD_PEERADDR)) {
+            netaddr_ctx *peer;
+            MALLOC(peer, sizeof(netaddr_ctx));
+            if (ERR_OK == netaddr_remote(peer, sk->fd)) {
+                msg.data = peer;
+                msg.size = sizeof(netaddr_ctx);
+            } else {
+                FREE(peer);
+            }
+        }
         g_emit.emit(target, &msg);
     }
     g_emit.end(target);
@@ -430,7 +419,7 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt
     if (NULL == target) {
         return ERR_FAILED;
     }
-    int32_t rtn = prots_ssl_exchanged(ev, sk, client, ud, ssl);
+    int32_t rtn = prots_ssl_exchanged(ev, ud, ssl);
     if (ERR_OK == rtn) {
         message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_SSLEXCHANGED;
@@ -515,6 +504,7 @@ static inline msgdata_kind _message_data_kind(msg_type mtype) {
         return MSGDATA_UDP;
     case MSG_TYPE_HANDSHAKED:
         return MSGDATA_HS;
+    case MSG_TYPE_ACCEPT:// 带对端地址时(UD_PEERADDR)
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
         return MSGDATA_RAW;

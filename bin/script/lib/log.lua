@@ -33,7 +33,7 @@ local function _log(lv, fmt, ...)
 end
 
 ---动态调整运行时日志级别（进程级，全部 task 立即生效）；非法级别（非整数或越界）返回 false 不改状态
----@param lv integer 新日志级别（LOG_LV.* FATAL..DEBUG）
+---@param lv integer 新日志级别，整数 0(FATAL)..4(DEBUG)
 ---@return boolean ok 合法并已设置返回 true，否则 false
 function log_setlv(lv)
     if math.type(lv) ~= "integer" or lv < LOG_LV.FATAL or lv > LOG_LV.DEBUG then

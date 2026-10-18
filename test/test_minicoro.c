@@ -157,6 +157,55 @@ static void test_mco_tls_migrate(CuTest *tc) {
     CuAssertTrue(tc, g_tlsmig_b == g_tlsmig_x + 1);
 }
 
+static void _mco_noop_entry(mco_coro *co) {
+    (void)co;
+}
+// 覆盖 minicoro 的本地补丁：push 的边界改成减法判定。加法判定在已存了字节时，
+// len 接近 SIZE_MAX 会回绕通过、memcpy 越界
+static void test_mco_push_bounds(CuTest *tc) {
+    mco_desc desc = mco_desc_init(_mco_noop_entry, 0);
+    mco_coro *co;
+    unsigned char in = 0x5A, out = 0;
+    CuAssertTrue(tc, MCO_SUCCESS == mco_create(&co, &desc));
+    size_t cap = mco_get_storage_size(co);
+    mco_result r_over = mco_push(co, &in, cap + 1);// 超一字节：判定在读 src 之前就拒掉
+    mco_result r_one = mco_push(co, &in, 1);
+    // 已存 1 字节，加法判定下 1 + SIZE_MAX 回绕成 0。经 volatile 传：gcc LTO 把常量传进 memcpy 后会误报越界
+    volatile size_t wrap = (size_t)-1;
+    mco_result r_wrap = mco_push(co, &in, wrap);
+    size_t stored = mco_get_bytes_stored(co);
+    mco_result r_pop = mco_pop(co, &out, 1);
+    mco_result rdes = mco_destroy(co);
+    CuAssertTrue(tc, cap > 1);
+    CuAssertTrue(tc, MCO_NOT_ENOUGH_SPACE == r_over);
+    CuAssertTrue(tc, MCO_SUCCESS == r_one);
+    CuAssertTrue(tc, MCO_NOT_ENOUGH_SPACE == r_wrap);
+    CuAssertTrue(tc, 1 == stored);
+    CuAssertTrue(tc, MCO_SUCCESS == r_pop);
+    CuAssertIntEquals(tc, 0x5A, out);
+    CuAssertTrue(tc, MCO_SUCCESS == rdes);
+}
+// 覆盖 minicoro 的本地补丁：destroy 先查 dealloc_cb 再 uninit。顺序反了的话没有回调时
+// 协程先被置 DEAD，既跑不了也回收不掉；补丁后它仍是 SUSPENDED，装回回调能照常跑完、销毁
+static void test_mco_destroy_no_dealloc(CuTest *tc) {
+    mco_desc desc = mco_desc_init(_mco_noop_entry, 0);
+    mco_coro *co;
+    CuAssertTrue(tc, MCO_SUCCESS == mco_create(&co, &desc));
+    void (*dealloc)(void *ptr, size_t size, void *allocator_data) = co->dealloc_cb;
+    co->dealloc_cb = NULL;
+    mco_result r_none = mco_destroy(co);
+    mco_state st = mco_status(co);
+    co->dealloc_cb = dealloc;
+    mco_result r_run = mco_resume(co);
+    mco_state st_end = mco_status(co);
+    mco_result rdes = mco_destroy(co);
+    CuAssertTrue(tc, MCO_INVALID_POINTER == r_none);
+    CuAssertTrue(tc, MCO_SUSPENDED == st);
+    CuAssertTrue(tc, MCO_SUCCESS == r_run);
+    CuAssertTrue(tc, MCO_DEAD == st_end);
+    CuAssertTrue(tc, MCO_SUCCESS == rdes);
+}
+
 // 覆盖 minicoro 的本地补丁"先校验后分配"：coro_size 撑爆加法时 mco_desc_init 置 0，
 // mco_create 必须在 alloc 之前就拒掉；校验挪回分配之后（上游写法）时那个 0 字节的块
 // 会被 mco_init 按 sizeof(mco_coro) 清零 → 堆越界。用自带的计数分配器断言它没被调过。
@@ -164,9 +213,6 @@ static void test_mco_tls_migrate(CuTest *tc) {
 // （栈由 CreateFiberEx 自己管），撑不爆，也就没有这个守卫
 #if defined(MCO_USE_ASM) || defined(MCO_USE_UCONTEXT)
 static int32_t g_mco_allocs;
-static void _mco_noop_entry(mco_coro *co) {
-    (void)co;
-}
 static void *_mco_count_alloc(size_t size, void *ud) {
     (void)ud;
     g_mco_allocs++;
@@ -205,4 +251,6 @@ void test_minicoro(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mco_desc_overflow_rejected);
 #endif
     SUITE_ADD_TEST(suite, test_mco_tls_migrate);
+    SUITE_ADD_TEST(suite, test_mco_push_bounds);
+    SUITE_ADD_TEST(suite, test_mco_destroy_no_dealloc);
 }

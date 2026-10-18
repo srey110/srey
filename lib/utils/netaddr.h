@@ -44,9 +44,10 @@ void netaddr_empty(netaddr_ctx *ctx);
 /// 设置sockaddr
 /// </summary>
 /// <param name="ctx">netaddr_ctx</param>
-/// <param name="ip">IP</param>
+/// <param name="ip">IP。IPv6 可带 "%网卡" 后缀(链路本地地址要靠它指定网卡)，写进 scope_id：
+///   数字直接当网卡号，否则按网卡名查；Windows 只认数字。不带后缀时 scope_id 为 0</param>
 /// <param name="port">端口</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；不是合法 IP、后缀为空或网卡名查不到返回 ERR_FAILED</returns>
 int32_t netaddr_set(netaddr_ctx *ctx, const char *ip, const uint16_t port);
 /// <summary>
 /// 获取远端sockaddr信息
@@ -75,7 +76,8 @@ struct sockaddr *netaddr_addr(netaddr_ctx *ctx);
 /// <returns>长度</returns>
 socklen_t netaddr_size(netaddr_ctx *ctx);
 /// <summary>
-/// 获取ip
+/// 获取ip。IPv6 的 scope_id 非 0 时(链路本地地址)在末尾补 "%网卡号"，一律写数字不写网卡名，
+/// 原样交给 netaddr_set 能还原出同一块网卡；其余地址的输出不带后缀
 /// </summary>
 /// <param name="ctx">netaddr_ctx</param>
 /// <param name="ip">IP</param>

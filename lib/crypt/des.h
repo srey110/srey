@@ -17,7 +17,8 @@ typedef struct des_ctx {
 /// <param name="key">密码</param>
 /// <param name="klens">密码长度。
 /// 单重 DES 不足 8 字节补零；
-/// 3DES 按 NIST SP 800-67 的三种取法补齐：满 24 字节三段子密钥独立，9 ~ 16 字节 K3 取 K1，不超过 8 字节时三段相同——该取法等价于单重 DES，强度只有 56 位。
+/// 3DES 按 NIST SP 800-67 的三种取法补齐：满 24 字节三段子密钥独立，9 ~ 16 字节 K3 取 K1，不超过 8 字节时三段相同——该取法等价于单重 DES，强度只有 56 位；
+/// 非标准长度先补零到上一档再套该档取法：9 ~ 15 字节补到 16，17 ~ 23 字节补到 24（K3 尾部为 0、三段独立）。
 /// 超长一律只取前缀（单重 DES 前 8 字节、3DES 前 24 字节），多出来的部分静默丢弃</param>
 /// <param name="des3">1 3des, 0 des</param>
 /// <param name="encrypt">1 加密 0 解密</param>
@@ -27,7 +28,8 @@ void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t
 /// </summary>
 /// <param name="des">des_ctx</param>
 /// <param name="data">待加解密数据,长度:DES_BLOCK_SIZE</param>
-/// <returns>加解密后的数据,长度:DES_BLOCK_SIZE</returns>
+/// <returns>加解密后的数据,长度:DES_BLOCK_SIZE。指向 des_ctx 内部缓冲,调用方不得释放,
+///   下次 des_crypt / des_init 前有效</returns>
 char *des_crypt(des_ctx *des, const void *data);
 
 #endif//DES_H_

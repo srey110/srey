@@ -28,6 +28,8 @@ typedef struct loader_ctx loader_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct task_dispatch_arg task_dispatch_arg;
 FSQU_DECL(taskq, task_ctx *)
+// task 消息队列按值存 message_ctx：存指针要另配一个所有线程共抢的对象池(每条消息一取一还)，
+// 消费侧还得解引用一次生产者线程写的堆对象。只入队用 msgq_push，入队并调度用 _task_message_post
 FSQU_DECL(msgq, message_ctx)
 
 typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);// 消息分发回调
@@ -40,7 +42,9 @@ typedef void(*_request_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                            name_t src, void *data, size_t size);// 任务请求回调
 typedef void(*_response_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                             int32_t error, void *data, size_t size);// 任务响应回调
-typedef void(*_net_accept_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype);// 新连接接受回调
+// 新连接接受回调。peer 是对端地址：listen 订阅了 NETEV_PEERADDR 才有，否则或取失败为 NULL；
+// 回调返回即释放(协程 task 里中途挂起也有效到返回)，要留就拷走
+typedef void(*_net_accept_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *peer);
 // 数据接收回调。size 口径见 prots_unpack 的 size 契约：结构化协议的 data 是 pack 对象，不能拿 size 直接读
 typedef void(*_net_recv_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                             uint8_t slice, void *data, size_t size);
@@ -49,9 +53,19 @@ typedef void(*_net_connect_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, i
 typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client);// SSL 交换完成回调
 typedef void(*_net_handshake_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                                  int32_t erro, void *data, size_t lens);// 应用层握手完成回调
-typedef void(*_net_close_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro);// 连接关闭回调
+// 连接关闭回调。sess 是这条 CLOSE 的会话：连接本身关闭时等于 sk->skid，kcp 会话关闭时是该会话 kcp_start 给的 sess
+typedef void(*_net_close_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess);
+// 连接关闭观察者，见 task_watch_closed；前六个参数同 _net_close_cb
+typedef void(*_net_close_watch_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro,
+                                   uint64_t sess, void *arg);
 typedef void(*_net_recvfrom_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, char ip[IP_LENS], uint16_t port,
                                 void *data, size_t size);// UDP 数据接收回调
+// task_watch_closed 登记的一项
+typedef struct close_watch {
+    _net_close_watch_cb cb;
+    void *arg;
+}close_watch;
+ARR_DECL(cwatch_arr, close_watch)
 // 跑 task 的线程(worker 与跑绑定 task 的 net 线程)的版本快照，供监控线程检测卡死；每个线程一份，只由它自己写
 typedef struct worker_version {
     int32_t ckver;     // 上次检查时记录的版本号（仅monitor读写，无竞态）
@@ -96,6 +110,7 @@ struct loader_ctx {
     uint16_t nnet;             // net 线程数量，与 netev.nthreads 相同；monitor 线程启动前就要用，故单独存
     atomic_t stop;             // 非 0 表示调度器应停止
     atomic_t closing;          // 非 0 表示正在广播关闭消息，新注册 task 须立即关闭
+    atomic_t nfreeing;         // 已从 maptasks 摘掉、释放推迟到 net 线程本轮派发之后还没做完的 task 数，见 task_ungrab
     atomic64_t index;          // 轮询工作线程的原子计数器
     worker_ctx *worker;        // 工作线程数组
     tda_ctx *evslow;           // 每个 net 线程一份：绑定 task 单轮慢告警的翻倍阈值，只由该线程读写
@@ -106,7 +121,7 @@ struct loader_ctx {
     rwlock_distr_ctx lckcache; //lua bytecache 锁
 #endif
     monitor_ctx monitor;       // 监控线程上下文
-    waiter_ctx closing_waiter; // _loader_task_closing 等 task 退光，task_ungrab 摘除后叫醒
+    waiter_ctx closing_waiter; // _loader_task_closing 等 task 退光，task_ungrab 摘除或推迟的释放做完后叫醒
     timer_ctx timer;           // loader_init 里初始化一次之后只读，worker 与投递方共用的时钟
     loader_exit_cb exit_cb;    // 进程退出请求的回调，入口在 task 启动前经 loader_on_exit 设一次，之后只读
     void *exit_arg;            // 透传给 exit_cb
@@ -117,7 +132,8 @@ struct loader_ctx {
 struct task_ctx {
     task_type type;
     atomic_t global;           // 0=未调度 1=已调度/运行中（无锁调度标志）
-    atomic_t closing;          // 是否已发送关闭消息（防重复）
+    atomic_t closing;          // 是否已要求关闭（防重复投 CLOSING）；注册前关只记这个，见 task_close
+    int32_t registered;        // 已注册：task_register 在发布前置位，之后只读
     atomic_t ref;              // 引用计数
     atomic_t priority;         // 调度优先级：值越大单轮消费消息越多，0=默认；详见 task_set_priority
     atomic_t timeout_request;  // task_request 超时时间（毫秒）
@@ -144,8 +160,9 @@ struct task_ctx {
     _request_cb _request;                // 任务请求回调
     _response_cb _response;              // 任务响应回调
     _net_ssl_exchanged_cb _ssl_exchanged; // SSL 交换完成回调
+    cwatch_arr watchers;           // 连接关闭观察者，按注册顺序；只在本 task 的上下文里读写
     tda_ctx tda;                   // 队列长度告警翻倍状态（init = fsqu 容量 / QUEUE_OVERLOAD_RATIO）
-    msgq qumsg;              // 消息队列（平台自适应 fsqu，替代原 spinlock + qu_message）
+    msgq qumsg;              // 消息队列（平台自适应 fsqu）
 #if ENABLE_DISPATCH_STAT
     uint64_t dispatch_cpu_ns[MSG_TYPE_ALL]; // 按 mtype 分桶累计 dispatch 占用的线程 CPU 纳秒（task->global=1 保证单写，无需原子）
     uint64_t nmsg[MSG_TYPE_ALL];        // 按 mtype 分桶累计已处理消息条数（同上）
@@ -161,12 +178,10 @@ struct task_dispatch_arg {
 static inline int32_t subtype_reserved(subtype_t type) {
     return REQ_DEBUG == type;
 }
-// 根据消息类型调用对应处理函数（内部接口）
+// 根据消息类型调用对应处理函数，返回前统一清理消息数据，调用方不要再清（内部接口）
 void _message_run(task_ctx *task, message_ctx *msg);
 // 返回 task 层实现的网络事件消息汇（注册给 prots_init，内部接口）
 prot_emit *_task_net_emit(void);
-// 只入队不触发调度；一次可读事件解出多个包时用它，末尾再 _task_message_active 一次（内部接口）
-void _task_message_push(task_ctx *task, message_ctx *msg);
 // 触发调度：队列非空而尚未被调度时交给 worker，绑了 net 线程的交给它的 net 线程（内部接口）
 void _task_message_active(task_ctx *task);
 // 入队并触发调度：非网络生产者都走这个（内部接口）

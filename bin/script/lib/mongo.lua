@@ -2,11 +2,13 @@
 -- 封装 C 层 mongo / mongo.session 模块，提供：连接管理、SCRAM 认证、
 -- CRUD 操作（find/insert/update/delete/aggregate/count 等）及会话事务支持。
 -- 连接生命周期完全由 Lua 端管理：mongo:try_connect 发起、srey.wait_connect 等待、
--- srey.close 关闭；C 层 mongo 模块只做命令组包/解包。
+-- srey.sync_close 关闭；C 层 mongo 模块只做命令组包/解包。
+-- 服务端最低 4.4：SCRAM 认证依赖 saslStart 的 skipEmptyExchange，更早的版本认证必败（同 C 侧 mongo_init）。
 
 local srey = require("lib.srey")
 local mongo = require("srey.mongo")
 local mongo_session = require("srey.mongo.session")
+local utils = require("srey.utils")
 local pub = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 -- mongo_ctx：MongoDB 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
@@ -21,18 +23,35 @@ ctx.FLAGS = {
     EXHAUSTALLOWED = 1 << 16,
 }
 
--- fd/skid 必须在锁内才读:排队期间前一个协程可能已经 ping 重连、换掉了这一对,
--- 锁外读的是退休的那个 skid。往退休 skid 上发,MORETOCOME 路径会被静默丢弃却报成功,
+-- 拿到锁后、发送前复查(同 C 侧 _mongo_lock)：组包之后连接换过，包里带的是已作废事务的上下文，
+-- 发到新连接上会被收进那个事务。命中即放掉包、按组包失败处理。mark 为 nil 是包不带事务上下文，不查
+---@param mgo any C 层 mongo 句柄
+---@param pack lightuserdata 已组好的包，命中时由本函数释放
+---@param mark integer? 组包前的 mgo:txn_mark()
+---@return boolean moved 连接已换过、包已释放时 true
+local function _txn_moved(mgo, pack, mark)
+    if nil == mark
+        or not mgo:txn_moved(mark) then
+        return false
+    end
+    utils.ud_free(pack)
+    WARN("mongo transaction invalidated by reconnect, rollback or begin again.")
+    return true
+end
+-- 连接标识 sk 必须在锁内才读（等应答那支由 _send_wait 现取）:排队期间前一个协程可能已经 ping 重连、换掉了它,
+-- 锁外读的是已退休的连接。往退休连接上发,MORETOCOME 路径会被静默丢弃却报成功,
 -- 同步路径则空等满一个 netread 超时。组包不受此影响——集合名/库名在组包时已写进包体,
 -- 而集合名就在组包那次 C 调用里设，中间没有让出点。
 -- more 是写类 pack_* 读包头带回的 MORETOCOME，问包不问 mgo:check_flag，理由见 C 层 mongo_pack_check_flag
-local function _wdo(mgoctx, pack, size, more)
+local function _wdo(mgoctx, pack, size, more, mark)
     local mgo = mgoctx.mongo
-    local sk = mgo:sock_id()
-    if more then
-        return srey.send(sk, pack, size, 0), nil
+    if _txn_moved(mgo, pack, mark) then
+        return false, nil
     end
-    local mgopack, _ = srey.syn_send(sk, pack, size, 0)
+    if more then
+        return srey.send(mgo:sock_id(), pack, size, 0), nil
+    end
+    local mgopack = mgoctx:_send_wait(pack, size)
     if mgopack then
         -- 写命令同样带 lsid，续期口径与 _rdo 一致；MORETOCOME 那支没有应答，不续
         mgo:session_touch()
@@ -47,11 +66,14 @@ end
 -- connect / ping 另有外层锁，它们走多次往返或绕开漏斗，靠 ref 计数嵌套
 ---@param mgoctx any 所属 mongo_ctx（提供 serial 执行器与 C 层 mongo 句柄）
 ---@param more boolean? 包里写着 MORETOCOME（写类 pack_* 的第 3 个返回值），真则只发不等
-local function _wsend(mgoctx, pack, size, more)
+---@param mark integer? 组包前的 mgo:txn_mark()；包不带事务上下文时不传，理由见 _txn_moved
+local function _wsend(mgoctx, pack, size, more, mark)
     if not pack then
         return false, nil
     end
-    local ok, mgopack = srey.serial_ret(nil, mgoctx.serial(_wdo, mgoctx, pack, size, more))
+    -- 包在锁外组好，执行器挂不起时会在入锁前抛、没人放包：先用同一判据查，挂不起就放掉包再抛
+    srey._check_wait("srey.serial executor", pack)
+    local ok, mgopack = srey.serial_ret(nil, mgoctx.serial(_wdo, mgoctx, pack, size, more, mark))
     if nil == ok then
         return false, nil
     end
@@ -62,8 +84,8 @@ end
 -- 会把那几个命令的公开返回值从 boolean 变成计数。bulkwrite 的尾块第三种形状，不走这里
 ---@return boolean ok
 ---@return integer? n 受影响文档数；MORETOCOME 只发不等时不返
-local function _wsend_n(mgoctx, pack, size, more)
-    local ok, mgopack = _wsend(mgoctx, pack, size, more)
+local function _wsend_n(mgoctx, pack, size, more, mark)
+    local ok, mgopack = _wsend(mgoctx, pack, size, more, mark)
     if not ok then
         return false
     end
@@ -77,8 +99,8 @@ local function _wsend_n(mgoctx, pack, size, more)
     return true, n
 end
 ---@return boolean ok
-local function _wsend_ok(mgoctx, pack, size, more)
-    local ok, mgopack = _wsend(mgoctx, pack, size, more)
+local function _wsend_ok(mgoctx, pack, size, more, mark)
+    local ok, mgopack = _wsend(mgoctx, pack, size, more, mark)
     if not ok then
         return false
     end
@@ -89,9 +111,11 @@ local function _wsend_ok(mgoctx, pack, size, more)
 end
 -- 统一"发送 + 同步等待响应"(不受 MORETOCOME 影响)。组包被拒与网络失败都返回 nil,调用方判一次即可;
 -- 错误码校验留给调用方——有的直接把 mgopack 交给上层解析。镜像 C 层 _mongo_call 去掉 check_error 的部分
-local function _rdo(mgoctx, pack, size)
-    local sk = mgoctx.mongo:sock_id()-- 锁内读,理由同 _wdo
-    local mgopack, _ = srey.syn_send(sk, pack, size, 0)
+local function _rdo(mgoctx, pack, size, mark)
+    if _txn_moved(mgoctx.mongo, pack, mark) then
+        return nil
+    end
+    local mgopack = mgoctx:_send_wait(pack, size)
     if mgopack then
         -- 应答回来了就说明服务端处理过这条命令；事务中每条命令都带着 lsid,
         -- 服务端那边的会话寿命已被延长,本地跟着记一次 expires_in 才准
@@ -100,11 +124,13 @@ local function _rdo(mgoctx, pack, size)
     return mgopack
 end
 ---@param mgoctx any 所属 mongo_ctx（提供 serial 执行器与 C 层 mongo 句柄）
-local function _rsend(mgoctx, pack, size)
+---@param mark integer? 同 _wsend
+local function _rsend(mgoctx, pack, size, mark)
     if not pack then
         return nil
     end
-    return srey.serial_ret(nil, mgoctx.serial(_rdo, mgoctx, pack, size))
+    srey._check_wait("srey.serial executor", pack)-- 理由同 _wsend
+    return srey.serial_ret(nil, mgoctx.serial(_rdo, mgoctx, pack, size, mark))
 end
 
 -- mongo_session_ctx：会话事务上下文，由 mongo_ctx:startsession() 创建。
@@ -119,7 +145,9 @@ function sess_ctx:ctor(mgoctx, session_ud)
 end
 
 ---开始事务：递增 txnNumber，构建 lsid + txnNumber 事务选项 BSON，挂载到 mongo->session
----一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false
+---一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false。
+---事务进行中连接重连过即作废：之后带事务上下文的命令一律失败，commit/rollback 都发 abortTransaction
+---让服务端当场中止、放锁（commit 返回 false）；要继续须重新 begin（同 C 侧 mongo_begin）
 ---@return boolean ok 成功 true（该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
     return self.session:begin()
@@ -131,24 +159,38 @@ end
 local function _txn_do(self, opts, optslens, packname, what)
     local mgo = self.mgoctx.mongo
     local sess = self.session
-    local pack, size = sess[packname](sess, opts, optslens)-- 读类组包，不带 MORETOCOME
-    if not pack then
-        WARN("mongo %s packing rejected, transaction state kept.", what)
+    -- 空事务没发过命令：不发包，本地收尾按成功返回，作废与否都一样(同 C 侧 _mongo_txn_end)
+    if sess:empty() then
+        sess:done()
+        return true
+    end
+    -- 事务已随重连作废就不能提交：改发 abortTransaction 让服务端当场中止、放锁，本次按失败返回(同 C 侧 _mongo_commit)
+    if "pack_commit" == packname
+        and sess:stale() then
+        _txn_do(self, nil, nil, "pack_abort", "abort(stale)")
         return false
     end
+    local pack, size = sess[packname](sess, opts, optslens)-- 读类组包，不带 MORETOCOME
+    if not pack then
+        WARN("mongo %s packing rejected.", what)
+        return false
+    end
+    local txn = sess:txn()
     local mgopack = _rsend(self.mgoctx, pack, size)
     if not mgopack then
         return false
     end
-    self.session:done()
+    -- 等回包期间同一 session 又 begin 过就不 done：绑定与 options 已归新事务(同 C 侧 _mongo_txn_end)
+    if txn == sess:txn() then
+        sess:done()
+    end
     return mgo:check_error(mgopack) >= 0
 end
----commit / rollback 的共同流程，两者只差组包用哪个 C 接口和日志里的动作名。
----事务状态一路保留到服务端真的回了包为止：组包被拒（options 畸形或超单包上限、或连接已不再
----绑定该 session）和网络失败都可能只是这一次不成，状态还在就能重试或改走另一条收尾路径。
----这里若提前 done() 会解绑并 FREE options，之后另一条撞上绑定守卫也只能放弃，
----服务端那个事务就一直持锁到超时。
----流程主体见 _txn_do，本函数只负责套锁
+---commit / rollback 的共同流程，两者只差组包用哪个 C 接口和日志里的动作名；主体见 _txn_do，本函数只负责套锁。
+---事务状态一路保留到服务端真的回了包为止：组包被拒与网络失败都可能只是这一次不成，留着状态才能重试
+---或改走另一条收尾路径，同 C 侧 mongo_commit。
+---begin 后还没发过命令的空事务不发包、本地收尾返回 true；
+---事务已随重连作废时 commit 改发 abortTransaction 了结并返回 false，rollback 照常发
 ---@param self any mongo_session_ctx 实例
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
@@ -224,7 +266,8 @@ end
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
 ---@param db string 初始数据库名
 ---@param user string? 认证用户名；nil 表示不认证
----@param password string 认证密码；user 非 nil 时必填（C 层 user_pwd 对它是 luaL_checkstring）
+---@param password string 认证密码；user 非 nil 时必填（C 层 user_pwd 对它是 lpub_check_cstr，nil 或含 NUL 报错）。
+---按原样参与认证、不做 SASLprep：含需 NFKC 规范化字符的非 ASCII 密码须由调用方先规范化，否则认证失败
 ---@param authdb string? 认证数据库；nil 时使用 db
 ---@param authmod string? SCRAM 算法，默认 "SCRAM-SHA-256"
 function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
@@ -232,28 +275,27 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
     self.sslname = sslname
     self.mongo = mongo.new(ip, port, ssl, db)
     if not self.mongo then
-        error(string.format("mongo.new failed: %s:%d db=%s", ip, port, tostring(db)), 2)
+        error(string.format("mongo.new failed: %s:%d db=%s", ip, port, tostring(db)), 3)
     end
     self.user = user
     -- 同 password 那道自查：authmod 不在这里挡的话，非字符串要到第一次 _connect 的
-    -- pack_auth_first 才抛，而那一抛正落在 clear_flag 与 set_flag 之间——MORETOCOME 被
-    -- 永久摘掉、fd 也没人 close，还把 conn_pub 的 established 留成陈旧的 true
+    -- pack_auth_first 才抛，那一抛连接没人关，还把 conn_pub 的 established 留成陈旧的 true
     if nil ~= authmod
         and "string" ~= type(authmod) then
-        error("mongo ctor: authmod must be a string", 2)
+        error("mongo ctor: authmod must be a string", 3)
     end
     self.authmod = authmod or "SCRAM-SHA-256"
     if user then
-        -- 先自查再下发：user_pwd 的第 3 参在 C 层是 luaL_checkstring，password 为 nil 会先抛
+        -- 先自查再下发：user_pwd 的第 3 参在 C 层是 lpub_check_cstr，password 为 nil 会先抛
         -- "bad argument #3 ... (string expected, got nil)",压根走不到下面那句带解释的 error
         if "string" ~= type(password) then
-            error("mongo ctor: password is required when user is given", 2)
+            error("mongo ctor: password is required when user is given", 3)
         end
         if not self.mongo:user_pwd(user, password) then
-            error("mongo user_pwd failed: user or password too long", 2)
+            error("mongo user_pwd failed: user or password too long", 3)
         end
         if not self.mongo:authdb(authdb or db) then
-            error(string.format("mongo authdb failed: %s too long", tostring(authdb or db)), 2)
+            error(string.format("mongo authdb failed: %s too long", tostring(authdb or db)), 3)
         end
     end
     -- 串行化执行器由 conn_pub 建，锁点在 _wsend / _rsend 两个漏斗上。它只保证单条命令
@@ -269,39 +311,31 @@ function ctx:_connect()
     if not sk.valid then
         return false
     end
+    -- 以下各处失败只管返 false，关连接由 conn_pub 在锁内做
     if not srey.wait_connect(sk, SSL_NAME.NONE ~= self.sslname or nil) then
-        return false -- wait_connect 内已 close
-    end
-    -- 从此处往后失败需 close fd；用 sync_close 等复位完成再返回，避免旧连接异步 teardown 追上后清掉下一次 connect() 的新 fd
-    local function _fail()
-        local csk = self.mongo:sock_id()-- 现取:对端已断时 sk.fd 已被 teardown 复位为 INVALID,sync_close 内 guard 直接返回不空等
-        srey.sync_close(csk)
         return false
     end
-    -- 解绑上一代事务会话，否则 pack_hello 及后续命令会带上旧的 lsid/txnNumber。
-    -- Lua 侧走 try_connect 不经 C 的 mongo_connect，那边同一句在 coro_utils.c 的 mongo_connect 里
-    self.mongo:clear_session()
-    local pack, size = self.mongo:pack_hello()-- 读类组包在 C 里清/复原 flags，不带 MORETOCOME
+    -- 不解绑上一条连接上开的事务（解绑后的写会脱离事务自动提交）：try_connect 换了 skid，
+    -- C 层组包据此判它已作废，同 C 侧 _mongo_do_connect。hello 恒不带事务上下文（见 C 层 mongo_pack_hello）
+    local pack, size = self.mongo:pack_hello()-- 包头恒不带 MORETOCOME
     local mgopack = _rsend(self, pack, size)
-    if not mgopack then return _fail() end
-    if self.mongo:check_error(mgopack) < 0 then return _fail() end
+    if not mgopack then
+        return false
+    end
+    if self.mongo:check_error(mgopack) < 0 then
+        return false
+    end
     self.mongo:parse_hello(mgopack)-- 记下会话超时分钟数，startsession 本地开会话时用
     if self.user then
-        -- ev_ud_status 只在连接失效时失败,而上面已判过 sk.valid,这支实际不可达;
-        -- 留着是为了它哪天新增失败原因时不漏 fd,所以走 _fail() 而不是裸 return
-        if not self.mongo:set_auth_status(sk) then
-            return _fail()
-        end
-        -- 自己清零：要盖住"组包+发送+等握手"整段(SCRAM 多次往返)，不是只盖组包。
-        -- 不套 pcall：这段只在调度器自身出错时抛，那时连接已废，保 MORETOCOME 无意义
-        local aflags = self.mongo:clear_flag()
-        local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
+        -- pack_auth_first 先把 scram 交给网络线程装上(连同切 AUTH 态)再交出包，故包必须在它之后发
+        local authpack, authsize = self.mongo:pack_auth_first(sk, self.authmod)
         local ok = false
         if authpack and srey.send(sk, authpack, authsize, 0) then
             ok = srey.wait_handshaked(sk)
         end
-        self.mongo:set_flag(aflags)
-        if not ok then return _fail() end
+        if not ok then
+            return false
+        end
     end
     return true
 end
@@ -317,7 +351,7 @@ function ctx:_ping()
     return self.mongo:check_error(mgopack) >= 0
 end
 
----切换当前数据库
+---切换当前数据库。成功时 C 层顺带清空当前集合名；本模块的命令都显式带集合参数，不受影响
 ---@param name string 数据库名
 ---@return boolean ok 成功 true；库名超 63 字节返 false 且当前库不变
 function ctx:db(name)
@@ -333,10 +367,11 @@ end
 
 ---置上消息标志位（C 层当前仅实现 MORETOCOME；CHECKSUM/EXHAUSTALLOWED 未实现，设置无效果）。
 ---置上就一直有效，直到自己调 clear_flag——不是只管下一条命令：此后每条写命令都只发不等，
----服务端的失败（重复键、校验不过）因为没有响应可解析而一律报成功；读命令内部会临时清掉再恢复。
+---服务端的失败（重复键、校验不过）因为没有响应可解析而一律报成功；要等回包的读命令组包时包头恒不带。
 ---标志挂在连接上而不是命令上，多协程共用一条连接时别人的写也会跟着变成 fire-and-forget，
 ---批量写完请及时清掉
----@param flag integer ctx.FLAGS 枚举值的按位或；0 表示清空（clear_flag 返回的旧值可能就是 0，原样传回即可）
+---@param flag integer ctx.FLAGS 枚举值的按位或，按位置上、不清已有的位；清除只能用 clear_flag。
+---0 合法但什么都不置（还原惯用法 set_flag(clear_flag()) 传回的旧值可能就是 0）
 function ctx:set_flag(flag)
     local known = ctx.FLAGS.CHECKSUM | ctx.FLAGS.MORETOCOME | ctx.FLAGS.EXHAUSTALLOWED
     if 0 ~= (flag & ~known) then
@@ -366,8 +401,9 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为 nInserted
 function ctx:insert(col, docs, dlens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size, more = self.mongo:pack_insert(col, docs, dlens, opts, optslens)
-    return _wsend_n(self, pack, size, more)
+    return _wsend_n(self, pack, size, more, mark)
 end
 
 ---更新文档
@@ -379,8 +415,9 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为应答里的 n，即匹配到的文档数（matched，不是 nModified——值未变化的 $set 同样计入）
 function ctx:update(col, updates, ulens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size, more = self.mongo:pack_update(col, updates, ulens, opts, optslens)
-    return _wsend_n(self, pack, size, more)
+    return _wsend_n(self, pack, size, more, mark)
 end
 
 ---删除文档
@@ -392,8 +429,9 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为 nDeleted
 function ctx:delete(col, deletes, dlens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size, more = self.mongo:pack_delete(col, deletes, dlens, opts, optslens)
-    return _wsend_n(self, pack, size, more)
+    return _wsend_n(self, pack, size, more, mark)
 end
 
 ---删除集合（drop）
@@ -417,8 +455,9 @@ end
 ---@return lightuserdata|true|nil mgopack 普通模式返回响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；MORETOCOME fire-and-forget 成功返回 true；发送失败返回 nil
 function ctx:bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size, more = self.mongo:pack_bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
-    local ok, mgopack = _wsend(self, pack, size, more)
+    local ok, mgopack = _wsend(self, pack, size, more, mark)
     if not ok then
         return nil
     end
@@ -436,8 +475,9 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
 function ctx:createindexes(col, indexes, ilens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size, more = self.mongo:pack_createindexes(col, indexes, ilens, opts, optslens)
-    return _wsend_ok(self, pack, size, more)
+    return _wsend_ok(self, pack, size, more, mark)
 end
 
 ---删除索引
@@ -463,8 +503,9 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:find(col, filter, flens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_find(col, filter, flens, opts, optslens)
-    local mgopack = _rsend(self, pack, size)
+    local mgopack = _rsend(self, pack, size, mark)
     return mgopack
 end
 
@@ -477,21 +518,23 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:aggregate(col, pipeline, pllens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_aggregate(col, pipeline, pllens, opts, optslens)
-    local mgopack = _rsend(self, pack, size)
+    local mgopack = _rsend(self, pack, size, mark)
     return mgopack
 end
 
 ---获取游标后续批次（getMore）
 ---@param col string 集合名；必须与开游标那条命令用的一致，组包时写进包体
 ---@param cursorid integer 上次 find / aggregate 返回的游标 ID
----@param opts string|lightuserdata|nil 附加 BSON 选项
+---@param opts string|lightuserdata|nil 附加 BSON 选项(batchSize maxTimeMS comment)；集合取 col，别再带 collection
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:getmore(col, cursorid, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_getmore(col, cursorid, opts, optslens)
-    local mgopack = _rsend(self, pack, size)
+    local mgopack = _rsend(self, pack, size, mark)
     return mgopack
 end
 
@@ -503,8 +546,9 @@ end
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 成功 true
 function ctx:killcursors(col, cursorids, cslens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size, more = self.mongo:pack_killcursors(col, cursorids, cslens, opts, optslens)
-    return _wsend_ok(self, pack, size, more)
+    return _wsend_ok(self, pack, size, more, mark)
 end
 
 ---去重查询（distinct）
@@ -517,8 +561,9 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:distinct(col, key, query, qlens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_distinct(col, key, query, qlens, opts, optslens)
-    local mgopack = _rsend(self, pack, size)
+    local mgopack = _rsend(self, pack, size, mark)
     return mgopack
 end
 
@@ -535,12 +580,14 @@ end
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
 ---需保留请自行拷贝；失败返回 nil
 function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts, optslens)
+    local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts, optslens)
-    local mgopack = _rsend(self, pack, size)
+    local mgopack = _rsend(self, pack, size, mark)
     return mgopack
 end
 
----文档计数（count）
+---文档计数（count）。不参与事务：连接绑着事务时也按事务外执行、看不到事务里未提交的写，
+---事务内计数用 aggregate 的 $count 阶段（同 C 侧 mongo_count）
 ---@param col string 集合名
 ---@param query lightuserdata? BSON 过滤条件；nil 表示全部计数
 ---@param qlens integer? query 字节数

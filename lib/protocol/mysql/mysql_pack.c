@@ -43,25 +43,21 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) 
         *size = 0;
         return NULL;
     }
-    mysql->id = 0;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_integer(&bwriter, lens + 1, 3, 1);
-    binary_set_uint8(&bwriter, mysql->id);
-    binary_set_uint8(&bwriter, MYSQL_INIT_DB);
+    _mysql_pack_begin(mysql, &bwriter, 0, MYSQL_INIT_DB);
     binary_set_binary(&bwriter, database, lens);
-    *size = bwriter.offset;
+    if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
+        return NULL;
+    }
     mysql->cur_cmd = MYSQL_INIT_DB;
     return bwriter.data;
 }
 void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
-    mysql->id = 0;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_integer(&bwriter, 1, 3, 1);
-    binary_set_uint8(&bwriter, mysql->id);
-    binary_set_uint8(&bwriter, MYSQL_PING);
-    *size = bwriter.offset;
+    _mysql_pack_begin(mysql, &bwriter, 0, MYSQL_PING);
+    if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
+        return NULL;
+    }
     mysql->cur_cmd = MYSQL_PING;
     return bwriter.data;
 }
@@ -74,16 +70,12 @@ void *mysql_pack_query2(mysql_ctx *mysql, const char *sql, size_t sqllen, mysql_
         *size = 0;
         return NULL;
     }
-    mysql->id = 0;
     size_t hint = 5 + 18 + sqllen;
     if (NULL != mbind) {
         hint += ((size_t)mbind->count + 7) / 8 + 1 + mbind->type_name.offset + mbind->value.offset;
     }
     binary_ctx bwriter;
-    binary_init_write(&bwriter, hint, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, mysql->id);
-    binary_set_uint8(&bwriter, MYSQL_QUERY);//command
+    _mysql_pack_begin(mysql, &bwriter, hint, MYSQL_QUERY);
     if (BIT_CHECK(mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
         size_t count = 0;
         if (NULL != mbind
@@ -104,25 +96,19 @@ void *mysql_pack_query2(mysql_ctx *mysql, const char *sql, size_t sqllen, mysql_
         return NULL;
     }
     mysql->cur_cmd = MYSQL_QUERY;
-    mysql->parse_status = 0;
     return bwriter.data;
 }
 void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     return mysql_pack_stmt_prepare2(mysql, sql, strlen(sql), size);
 }
 void *mysql_pack_stmt_prepare2(mysql_ctx *mysql, const char *sql, size_t sqllen, size_t *size) {
-    mysql->id = 0;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 5 + sqllen, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, mysql->id);
-    binary_set_uint8(&bwriter, MYSQL_PREPARE);
+    _mysql_pack_begin(mysql, &bwriter, 5 + sqllen, MYSQL_PREPARE);
     binary_set_binary(&bwriter, sql, sqllen);
     if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
         return NULL;
     }
     mysql->cur_cmd = MYSQL_PREPARE;
-    mysql->parse_status = 0;
     return bwriter.data;
 }
 void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_t *size) {
@@ -131,16 +117,12 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
         *size = 0;
         return NULL;
     }
-    stmt->mysql->id = 0;
     size_t hint = 14;
     if (count > 0) {
         hint += 9 + (count + 7) / 8 + 1 + mbind->type_name.offset + mbind->type.offset + mbind->value.offset;
     }
     binary_ctx bwriter;
-    binary_init_write(&bwriter, hint, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_uint8(&bwriter, stmt->mysql->id);
-    binary_set_uint8(&bwriter, MYSQL_EXECUTE);//status
+    _mysql_pack_begin(stmt->mysql, &bwriter, hint, MYSQL_EXECUTE);
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);//statement_id
     binary_set_int8(&bwriter, 0);//flags
     binary_set_integer(&bwriter, 1, 4, 1);//iteration_count
@@ -161,30 +143,25 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
         return NULL;
     }
     stmt->mysql->cur_cmd = MYSQL_EXECUTE;
-    stmt->mysql->parse_status = 0;
     return bwriter.data;
 }
 void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size) {
-    stmt->mysql->id = 0;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_integer(&bwriter, 5, 3, 1);
-    binary_set_uint8(&bwriter, stmt->mysql->id);
-    binary_set_uint8(&bwriter, MYSQL_STMT_RESET);
+    _mysql_pack_begin(stmt->mysql, &bwriter, 0, MYSQL_STMT_RESET);
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);
-    *size = bwriter.offset;
+    if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
+        return NULL;
+    }
     stmt->mysql->cur_cmd = MYSQL_STMT_RESET;
     return bwriter.data;
 }
 void *mysql_pack_stmt_close(mysql_stmt_ctx *stmt, size_t *size) {
-    stmt->mysql->id = 0;
     binary_ctx bwriter;
-    binary_init_write(&bwriter, 0, 0);
-    binary_set_integer(&bwriter, 5, 3, 1);
-    binary_set_uint8(&bwriter, stmt->mysql->id);
-    binary_set_uint8(&bwriter, MYSQL_STMT_CLOSE);
+    _mysql_pack_begin(stmt->mysql, &bwriter, 0, MYSQL_STMT_CLOSE);
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);
-    *size = bwriter.offset;
+    if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
+        return NULL;
+    }
     return bwriter.data;
 }
 void mysql_stmt_free(mysql_stmt_ctx *stmt) {

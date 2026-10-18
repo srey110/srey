@@ -32,13 +32,13 @@ static inline void spin_backoff(uint32_t *spins) {
 /// <param name="once">once_ctx</param>
 /// <returns>非 0 表示抢到了，调用方做完初始化后必须调 once_end；0 表示已经做完，初始化的结果可直接用</returns>
 static inline int32_t once_begin(once_ctx *once) {
-    uint32_t spins = 0;
     if (2 == ATOMIC_GET(once)) {
         return 0;
     }
     if (ATOMIC_CAS(once, 0, 1)) {
         return 1;
     }
+    uint32_t spins = 0;
     while (2 != ATOMIC_GET(once)) {
         spin_backoff(&spins);
     }

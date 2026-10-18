@@ -64,7 +64,6 @@ int32_t chan_is_closed(chan_ctx *chan) {
 // 缓存模式下发送数据，队列满时阻塞等待，chan 关闭时返回失败。
 // 唤醒放到解锁之后：持锁 signal 的话对方一醒就撞上还没放的锁，得再睡一次
 static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
-    int32_t wake;
     mutex_lock(&chan->m_mu);
     while (cbuf_que_full(&chan->qudata)) {
         if (ATOMIC_GET(&chan->closed)) {
@@ -81,7 +80,7 @@ static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
         return ERR_FAILED;
     }
     cbuf_que_push(&chan->qudata, buf);
-    wake = ATOMIC_GET(&chan->r_waiting) > 0;
+    int32_t wake = ATOMIC_GET(&chan->r_waiting) > 0;
     mutex_unlock(&chan->m_mu);
     if (wake) {
         //唤醒等待接收的线程
@@ -91,7 +90,6 @@ static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
 }
 // 缓存模式下接收数据，队列空时阻塞等待，chan 关闭时返回 NULL。唤醒在解锁后，理由同 _buffered_chan_send
 static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
-    int32_t wake;
     mutex_lock(&chan->m_mu);
     while (cbuf_que_empty(&chan->qudata)) {
         if (ATOMIC_GET(&chan->closed)) {
@@ -106,7 +104,7 @@ static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
     buf_ctx *msg = cbuf_que_pop(&chan->qudata);
     void *data = msg->data;
     *lens = msg->lens;
-    wake = ATOMIC_GET(&chan->w_waiting) > 0;
+    int32_t wake = ATOMIC_GET(&chan->w_waiting) > 0;
     mutex_unlock(&chan->m_mu);
     if (wake) {
         //唤醒等待发送的线程
@@ -180,6 +178,7 @@ int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy) {
         ASSERTAB(NULL != data || 0 == lens, "chan_send: data is NULL but lens > 0");
         buf.data = dup_zero(data, lens);
     } else {
+        ASSERTAB(NULL != data, "chan_send: data is NULL with copy=0");
         buf.data = data;
     }
     int32_t rtn = chan->buffered ? _buffered_chan_send(chan, &buf) : _unbuffered_chan_send(chan, &buf);
@@ -212,9 +211,8 @@ int32_t chan_can_recv(chan_ctx *chan) {
 int32_t chan_can_send(chan_ctx *chan) {
     if (chan->buffered) {
         /* 缓存队列大小需要持锁才能一致读 */
-        int32_t send;
         mutex_lock(&chan->m_mu);
-        send = !cbuf_que_full(&chan->qudata);
+        int32_t send = !cbuf_que_full(&chan->qudata);
         mutex_unlock(&chan->m_mu);
         return send;
     }

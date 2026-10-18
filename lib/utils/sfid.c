@@ -57,8 +57,8 @@ static int32_t _sfid_clockback_wait(sfid_ctx *ctx, uint64_t curms, uint64_t *dea
     return ERR_OK;
 }
 uint64_t sfid_id(sfid_ctx *ctx) {
-    uint64_t id, curms, now;
     uint64_t deadline = 0;
+    uint64_t now, curms;
     for (;;) {
         now = nowms();
         // 墙钟退到 customepoch 之前:无符号减法会下溢成天文数字并永久写进 lasttimestamp,
@@ -86,10 +86,9 @@ uint64_t sfid_id(sfid_ctx *ctx) {
     }
     // 时钟回拨 统一清零标志
     ctx->clockback_warned = 0;
-    id = (ctx->lasttimestamp << ctx->timestampshift) |
+    return (ctx->lasttimestamp << ctx->timestampshift) |
         ((uint64_t)ctx->machineid << ctx->sequencebitlen) |
         (ctx->sequence & ctx->sequencemask);
-    return id;
 }
 void sfid_decode(sfid_ctx *ctx, uint64_t id, uint64_t *timestamp, int32_t *machineid, int32_t *sequence) {
     uint64_t timestampmask = (1llu << (63 - ctx->timestampshift)) - 1;

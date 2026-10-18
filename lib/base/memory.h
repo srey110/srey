@@ -4,9 +4,9 @@
 #include "base/os.h"
 #include "base/macro_util.h"
 
-#define MALLOC(ptr, size) *(void**)&(ptr) = _malloc(size) // 分配内存并赋值给指针
-#define CALLOC(ptr, count, size) *(void**)&(ptr) = _calloc(count, size) // 分配并清零内存
-#define REALLOC(ptr, oldptr, size) *(void**)&(ptr) = _realloc(oldptr, size) // 重新分配内存
+#define MALLOC(ptr, size) (ptr) = _malloc(size) // 分配内存并赋值给指针
+#define CALLOC(ptr, count, size) (ptr) = _calloc(count, size) // 分配并清零内存
+#define REALLOC(ptr, oldptr, size) (ptr) = _realloc(oldptr, size) // 重新分配内存
 // 释放内存并将指针置为 NULL，避免悬空指针
 #define FREE(ptr)\
     do {\
@@ -113,13 +113,12 @@ void *_mem_arena_alloc_slow(mem_arena *arena, size_t lens);
 /// <param name="lens">字节数</param>
 /// <returns>内存起点，随 mem_arena_free 一起释放，不能单独释放</returns>
 static inline void *mem_arena_alloc(mem_arena *arena, size_t lens) {
-    char *blk;
     size_t rlens = ROUND_UP(lens, 8);
     // rlens < lens 是 lens 接近 SIZE_MAX、取整回绕了：不能按回绕后的小数切，交给慢路径报错
     if (NULL != arena->cur
         && rlens >= lens
         && rlens <= arena->cap - arena->off) {
-        blk = (char *)arena->cur + arena->off;
+        char *blk = (char *)arena->cur + arena->off;
         arena->off += rlens;
         return blk;
     }

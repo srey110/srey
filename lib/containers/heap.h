@@ -17,6 +17,8 @@
 //
 // 契约：一个元素同时只属于一个堆；remove 不校验成员关系，由调用方保证元素确实在该堆内
 //       （同 list_remove）；元素在 insert 与 remove 之间不得移动地址。
+//       在堆里原地改键后用 sift_up / sift_down(h, e->IDXFIELD) 重新定位：变得更优先（LT 意义上变小）调 sift_up，
+//       变得更不优先调 sift_down；两者只往一个方向挪，调反了堆序静默损坏，方向不确定就 remove 再 insert。
 
 #define HEAP_INIT_SIZE 16 // 延迟分配时首次 insert 的容量
 

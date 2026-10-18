@@ -28,7 +28,7 @@ int32_t hug_init(hug_ctx *ctx) {
 void hug_wait(hug_ctx *ctx) {
 #ifdef OS_WIN
     mutex_lock(&ctx->muexit);
-    while (0 == ATOMIC_GET(&ctx->exitflag)) {
+    while (1 != ATOMIC_GET(&ctx->exitflag)) {
         cond_wait(&ctx->condexit, &ctx->muexit);
     }
     mutex_unlock(&ctx->muexit);
@@ -42,7 +42,11 @@ void hug_wait(hug_ctx *ctx) {
 }
 void hug_wakeup(hug_ctx *ctx) {
 #ifdef OS_WIN
-    // 置位必须在 mutex 内, 否则会漏唤醒
+    // 先在锁外抢到 2 再进锁置 1: 只有首个唤醒者碰锁, hug_free 之后迟到的控制台事件不会对已删除的锁加锁;
+    // hug_wait 只认 1, 置 1 必须在 mutex 内, 否则会漏唤醒
+    if (!ATOMIC_CAS(&ctx->exitflag, 0, 2)) {
+        return;
+    }
     mutex_lock(&ctx->muexit);
     ATOMIC_SET_RELAXED(&ctx->exitflag, 1);
     mutex_unlock(&ctx->muexit);
@@ -57,6 +61,7 @@ void hug_wakeup(hug_ctx *ctx) {
 #endif
 }
 void hug_free(hug_ctx *ctx) {
+    ATOMIC_SET(&ctx->exitflag, 1);// 此后迟到的 hug_wakeup 直接返回，不碰已释放的管道与锁
 #ifdef OS_WIN
     mutex_free(&ctx->muexit);
     cond_free(&ctx->condexit);

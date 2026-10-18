@@ -12,6 +12,14 @@ typedef struct task_mysql_args {
     mysql_ctx mysql;
     mysql_ctx mysql_ssl;// TLS 那一段另建的连接
 }task_mysql_args;
+// 多语句逐条计数用例的记录：各包按包取的计数，以及回调里连接级 getter 与本包一致的次数
+typedef struct {
+    int32_t n;
+    int32_t synced;
+    uint64_t affected[2];
+    uint64_t last_id[2];
+    mysql_ctx *mysql;
+}_counts_rec;
 
 // query / stmt_execute 改回调式后的三个共用回调
 // 只认 OK 包（INSERT/UPDATE/DELETE/USE 这类）
@@ -242,6 +250,52 @@ static int32_t _multi_result(mysql_ctx *mysql) {
     return ERR_OK;
 }
 
+// 每个 OK 包按包取计数；交给回调前库已经 mysql_record 过，连接级 getter 此刻应与本包一致
+static int32_t _cb_counts(mpack_ctx *mpack, void *udata) {
+    _counts_rec *r = (_counts_rec *)udata;
+    if (MPACK_OK != mpack->pack_type
+        || r->n >= (int32_t)ARRAY_SIZE(r->affected)) {
+        return ERR_FAILED;
+    }
+    r->affected[r->n] = mysql_pack_affected_rows(mpack);
+    r->last_id[r->n] = mysql_pack_last_id(mpack);
+    if (mysql_affected_rows(r->mysql) == r->affected[r->n]
+        && mysql_last_id(r->mysql) == r->last_id[r->n]) {
+        r->synced++;
+    }
+    r->n++;
+    return ERR_OK;
+}
+// 多语句两条 INSERT：每条的影响行数与自增 ID 从各自的包取到(多行 INSERT 的自增 ID 是这批的第一个)，
+// 命令返回后连接级 getter 读到的是最后一条的。临时表只活在这条连接上，自增从 1 起
+static int32_t _multi_counts(mysql_ctx *mysql) {
+    if (ERR_OK != mysql_query(mysql, "DROP TEMPORARY TABLE IF EXISTS srey_counts", NULL, NULL, NULL)
+        || ERR_OK != mysql_query(mysql, "CREATE TEMPORARY TABLE srey_counts (id INT AUTO_INCREMENT PRIMARY KEY, v INT)",
+                                 NULL, NULL, NULL)) {
+        LOG_ERROR("mysql multi counts: create temp table error.");
+        return ERR_FAILED;
+    }
+    _counts_rec r = { 0, 0, { 0 }, { 0 }, mysql };
+    if (ERR_OK != mysql_query(mysql, "insert into srey_counts(v) values(1),(2);insert into srey_counts(v) values(3)",
+                              NULL, _cb_counts, &r)) {
+        LOG_ERROR("mysql multi counts: insert error.");
+        return ERR_FAILED;
+    }
+    if (2 != r.n || 2 != r.synced
+        || 2 != r.affected[0] || 1 != r.last_id[0]
+        || 1 != r.affected[1] || 3 != r.last_id[1]) {
+        LOG_ERROR("mysql multi counts: n=%d synced=%d (%" PRIu64 ",%" PRIu64 ") (%" PRIu64 ",%" PRIu64 "), want 2 2 (2,1) (1,3).",
+                  r.n, r.synced, r.affected[0], r.last_id[0], r.affected[1], r.last_id[1]);
+        return ERR_FAILED;
+    }
+    if (1 != mysql_affected_rows(mysql)
+        || 3 != mysql_last_id(mysql)) {
+        LOG_ERROR("mysql multi counts: connection getters (%" PRIu64 ",%" PRIu64 "), want last statement (1,3).",
+                  mysql_affected_rows(mysql), mysql_last_id(mysql));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 // 会话跟踪：query("USE x") 改的是服务端当前库，client.database 须由 OK 包尾部的
 // session-state-change 跟上，否则重连按旧库名握手会静默落到原库
 static int32_t _session_track(mysql_ctx *mysql, const char *back) {
@@ -339,7 +393,8 @@ static int32_t _concurrent_query(mysql_ctx *mysql) {
 }
 #if WITH_SSL
 // 走 TLS 另连一次并查一条：握手完成回调里当场发认证包，握手位没先清就会被当成握手期发送断连。
-// 取不到客户端 TLS 上下文就跳过
+// 排在明文连接之前：caching_sha2_password 账号在服务端缓存未命中(如容器刚起)时只在 TLS 上做完整认证，
+// TLS 上认证成功后服务端缓存住，明文连接才能走快速认证。取不到客户端 TLS 上下文就跳过
 static int32_t _ssl_query(task_ctx *task, task_mysql_args *arg) {
     mysql_reader_ctx *reader = NULL;
     int32_t err = ERR_FAILED;
@@ -377,76 +432,103 @@ static int32_t _ssl_query(task_ctx *task, task_mysql_args *arg) {
 
 static void _startup(task_ctx *task) {
     task_mysql_args *arg = (task_mysql_args *)coro_get_arg(task);
+    ATOMIC_SET((atomic_t *)arg->ok, -2);// 正在连：汇总 task 不把它当终态，连不上再回 0
+#if WITH_SSL
+    // 成败等明文连上之后再算：docker 没起时两条都连不上，得按"没连上"收场
+    int32_t sslrtn = _ssl_query(task, arg);
+    if (task_isclosing(task)) {
+        return;
+    }
+#endif
     if (ERR_OK != mysql_init(&arg->mysql, arg->host, arg->port, NULL,
                              arg->user, arg->password, arg->database, "utf8mb4", 0)) {
         LOG_ERROR("mysql_init error.");
+        ATOMIC_SET((atomic_t *)arg->ok, 0);
         return;
     }
     if (ERR_OK != mysql_connect(task, &arg->mysql)) {
         LOG_ERROR("mysql connect error.");
+        ATOMIC_SET((atomic_t *)arg->ok, 0);
         return;
     }
     LOG_INFO("mysql connected, version=%s", mysql_version(&arg->mysql));
     // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
-    *(arg->ok) = -1;
-    if (ERR_OK != mysql_selectdb(&arg->mysql, arg->database)) {
+    ATOMIC_SET((atomic_t *)arg->ok, -1);
+#if WITH_SSL
+    if (task_isclosing(task)
+        || ERR_OK != sslrtn) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+#endif
+    if (task_isclosing(task)
+        || ERR_OK != mysql_selectdb(&arg->mysql, arg->database)) {
         int32_t code = 0;
         const char *msg = mysql_erro(&arg->mysql, &code);
         LOG_ERROR("mysql selectdb error: %s (code=%d)", msg, code);
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != mysql_ping(&arg->mysql)) {
+    if (task_isclosing(task)
+        || ERR_OK != mysql_ping(&arg->mysql)) {
         LOG_ERROR("mysql ping error.");
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _clear_table(&arg->mysql)) {
+    if (task_isclosing(task)
+        || ERR_OK != _clear_table(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _insert_rows(&arg->mysql)) {
+    if (task_isclosing(task)
+        || ERR_OK != _insert_rows(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }
     // _insert_rows 是 3 条独立的单行 INSERT，故最后一条的 affected_rows 必须是 1
     if (1 != mysql_affected_rows(&arg->mysql)) {
-        LOG_ERROR("mysql affected_rows: expect 1, got %" PRId64,
+        LOG_ERROR("mysql affected_rows: expect 1, got %" PRIu64,
                   mysql_affected_rows(&arg->mysql));
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _select_iterate(&arg->mysql, 3)) {
+    if (task_isclosing(task)
+        || ERR_OK != _select_iterate(&arg->mysql, 3)) {
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _prepare_execute(&arg->mysql)) {
+    if (task_isclosing(task)
+        || ERR_OK != _prepare_execute(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _query_syntax_error(&arg->mysql)) {
+    if (task_isclosing(task)
+        || ERR_OK != _query_syntax_error(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _multi_result(&arg->mysql)) {
+    if (task_isclosing(task)
+        || ERR_OK != _multi_result(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _session_track(&arg->mysql, arg->database)) {
+    if (task_isclosing(task)
+        || ERR_OK != _multi_counts(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }
-    if (ERR_OK != _concurrent_query(&arg->mysql)) {
+    if (task_isclosing(task)
+        || ERR_OK != _session_track(&arg->mysql, arg->database)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _concurrent_query(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }
     mysql_quit(&arg->mysql);
-#if WITH_SSL
-    if (ERR_OK != _ssl_query(task, arg)) {
-        return;
-    }
-#endif
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("mysql tested.");
 }
 

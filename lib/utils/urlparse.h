@@ -3,9 +3,12 @@
 
 #include "base/structs.h"
 
-#define URL_MAX_PARAM       64 // 参数上限
+#define URL_MAX_PARAM       64 // 参数上限，超过 url_parse 即失败
 #define URL_MAX_PATH_DEPTH  64 // 路径上限
 #define URL_BUF_LENS   ONEK // url_parse 内部工作缓冲区大小
+// url_parse 的 flags，可按位或
+#define URL_DECODE     0x01 // 对 path 段与 query 做 url 解码（host/port/scheme 不解码）
+#define URL_SKIP_EMPTY 0x02 // 丢掉空路径段（"/a//b" 只出 a、b），丢掉的不占 URL_MAX_PATH_DEPTH 名额
 
 typedef struct url_param {
     buf_ctx key; // 参数名
@@ -13,7 +16,6 @@ typedef struct url_param {
 }url_param;
 typedef struct url_ctx {
     int8_t sep;               // 路径拆分标记
-    int32_t decode;           // 是否解码
     int32_t npath;            // 拆分后的路径数量
     int32_t nparam;           // 查询参数个数（param 的有效长度）
     size_t pathlens;          // 重组后路径总长（含各段分隔符）；可据此预分配缓冲（>= pathlens+1）
@@ -35,12 +37,13 @@ typedef struct url_ctx {
 /// 不支持嵌套 [协议类型]://[访问资源需要的凭证信息]@[服务器地址]:[端口号]/[资源层级UNIX文件路径][文件名]?[查询]#[片段ID]
 /// </summary>
 /// <param name="ctx">url_ctx</param>
-/// <param name="url">待解析 url；decode 时复制进 ctx->buf 处理（原串不改、超长返 ERR_FAILED），不 decode 时就地解析、各字段与 segs 指向 url 本身（调用方须保证其生命周期）</param>
+/// <param name="url">待解析 url；URL_DECODE 时复制进 ctx->buf 处理（原串不改），不解码时就地解析、各字段与 segs 指向 url 本身（调用方须保证其生命周期）</param>
 /// <param name="lens">url长度</param>
 /// <param name="sep">路径段分隔符（拆分写入 ctx->segs）</param>
-/// <param name="decode">非 0 时对 path 段与 query 做 url 解码（host/port/scheme 不解码）</param>
-/// <returns>ERR_OK成功</returns>
-int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_t decode);
+/// <param name="flags">URL_DECODE / URL_SKIP_EMPTY 按位或，0 为不解码、保留空段</param>
+/// <returns>ERR_OK 成功；ERR_FAILED：URL_DECODE 下 lens >= URL_BUF_LENS、路径段数超过 URL_MAX_PATH_DEPTH、
+/// 或查询参数超过 URL_MAX_PARAM 个（不截断）；失败时 ctx 内容不可用</returns>
+int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_t flags);
 /// <summary>
 /// 把 url_parse 拆分后的 segs 重组为完整路径写入 path（每段前补 sep，形如 /a/b），并写结尾 '\0'。
 /// 容量不足时截断到放得下的整段为止

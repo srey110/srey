@@ -15,6 +15,7 @@
         SSL_free(ssl); \
         ssl = NULL; \
     }
+
 typedef struct evssl_ctx evssl_ctx;
 
 /// <summary>
@@ -157,7 +158,7 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed);
 /// <returns>ERR_OK 表示"没出错"，含 WANT_READ / WANT_WRITE 两种要重试的情形。
 ///   本层已开 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER，重试可换 buf 地址，但**内容前缀须与上次相同、
 ///   len 不得小于上次**；
-///   要写事件时调用方须自行 SSL_want_read() 探测，本函数不回传这个诉求。
+///   SSL_write 也可能要求先读，调用方须自行 SSL_want_read() 探测并注册读事件，本函数不回传这个诉求。
 ///   返回 1 / 2 的含义同 evssl_read——发送方向也可能先读到对端的 close_notify 或断开</returns>
 int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 /// <summary>

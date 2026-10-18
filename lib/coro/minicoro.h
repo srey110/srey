@@ -222,7 +222,7 @@ The following can be defined to change the library behavior:
 - `MCO_DEALLOC`               - Default deallocation function. Default is `free`.
 - `MCO_USE_VMEM_ALLOCATOR`    - Use virtual memory backed allocator, improving memory footprint per coroutine.
 - `MCO_NO_DEFAULT_ALLOCATOR`  - Disable the default allocator using `MCO_ALLOC` and `MCO_DEALLOC`.
-- `MCO_ZERO_MEMORY`           - Zero the discarded storage bytes when popping, intended for garbage collected environments (the stack itself is not zeroed).
+- `MCO_ZERO_MEMORY`           - Zero the discarded storage bytes when popping, intended for garbage collected environments (the stack itself is not zeroed). srey补丁：文档按实现改,只清 storage 不清栈
 - `MCO_DEBUG`                 - Enable debug mode, logging any runtime error to stdout. Defined automatically unless `NDEBUG` or `MCO_NO_DEBUG` is defined.
 - `MCO_NO_DEBUG`              - Disable debug mode.
 - `MCO_NO_MULTITHREAD`        - Disable multithread usage. Multithread is supported when `thread_local` is supported.
@@ -328,6 +328,7 @@ MCO_API mco_result mco_create(mco_coro** out_co, mco_desc* desc);               
 MCO_API mco_result mco_destroy(mco_coro* co);                                   /* Uninitialize and deallocate the coroutine, may fail if it's not dead or suspended. */
 MCO_API mco_result mco_resume(mco_coro* co);                                    /* Starts or continues the execution of the coroutine. */
 MCO_API mco_result mco_yield(mco_coro* co);                                     /* Suspends the execution of a coroutine. */
+/* srey补丁：mco_status 改成头文件里的 static inline,每次 resume 都要查死活,不值一趟跨 TU 调用 */
 static inline mco_state mco_status(mco_coro* co) {                              /* Returns the status of the coroutine. */
   return NULL != co ? co->state : MCO_DEAD;
 }
@@ -342,6 +343,7 @@ MCO_API size_t mco_get_storage_size(mco_coro* co);                      /* Get t
 
 /* Misc functions. */
 MCO_API mco_coro* mco_running(void);                        /* Returns the running coroutine for the current thread. */
+/* srey补丁：新增 mco_thread_cleanup,fibers 后端线程退出前把线程转回来,见定义处 */
 MCO_API void mco_thread_cleanup(void);                      /* Release per-thread resources taken by the fibers backend; call at thread exit. No-op on other backends. */
 MCO_API const char* mco_result_description(mco_result res); /* Get the description of a result. */
 
@@ -349,7 +351,7 @@ MCO_API const char* mco_result_description(mco_result res); /* Get the descripti
 }
 #endif
 
-/* 本地补丁:后端选择与栈底守卫提到公开段。栈底守卫是否存在、FP 控制寄存器是否保存都随后端变,
+/* srey补丁:后端选择与栈底守卫提到公开段。栈底守卫是否存在、FP 控制寄存器是否保存都随后端变,
    只包头文件不带 MINICORO_IMPL 的调用方(test_minicoro.c)得能看见,否则只能照抄一份平台表 */
 /* Detect implementation based on OS, arch and compiler. */
 #if !defined(MCO_USE_UCONTEXT) && !defined(MCO_USE_FIBERS) && !defined(MCO_USE_ASM) && !defined(MCO_USE_ASYNCIFY)
@@ -381,7 +383,7 @@ MCO_API const char* mco_result_description(mco_result res); /* Get the descripti
   #endif
 #endif
 
-/* 栈底守卫字大小(字节)。必须是 16 的倍数,否则破坏栈的 16 字节对齐。
+/* srey补丁：栈底守卫字大小(字节)。必须是 16 的倍数,否则破坏栈的 16 字节对齐。
    守卫下方紧邻 storage 和 back_ctx,越过守卫的稀疏写会直接砸上下文,故带宽不能只留一个字 */
 #define MCO_STACK_GUARD_SIZE 64
 /* 栈与协程结构同在一块分配里的后端才设守卫;fibers / asyncify 的栈由 OS 给,自带保护页 */
@@ -389,6 +391,7 @@ MCO_API const char* mco_result_description(mco_result res); /* Get the descripti
   #define MCO_HAS_STACK_GUARD
 #endif
 
+/* srey补丁：公开段到此结束,上面的后端选择与守卫常量是从实现段挪上来的 */
 #endif /* MINICORO_H */
 
 #ifdef MINICORO_IMPL
@@ -415,11 +418,11 @@ extern "C" {
 #endif
 
 /* Number used only to assist checking for stack overflows. */
-/* 写满整个 size_t:只填低半宽的话每个守卫字另一半恒为 0,越界写零就探不出来。
+/* srey补丁：写满整个 size_t:只填低半宽的话每个守卫字另一半恒为 0,越界写零就探不出来。
    移位拼而不是写 64 位字面量:后者在 32 位构建上是截断转换,MSVC 报 C4310 */
 #define MCO_MAGIC_NUMBER (((size_t)0x7E3CB1A9u << (sizeof(size_t) * 4)) | (size_t)0x7E3CB1A9u)
 
-/* 守卫字数。字节数与后端选择都在公开段,见 MCO_STACK_GUARD_SIZE */
+/* srey补丁：守卫字数。字节数与后端选择都在公开段,见 MCO_STACK_GUARD_SIZE */
 #define MCO_STACK_GUARD_WORDS (MCO_STACK_GUARD_SIZE / sizeof(size_t))
 
 #define _MCO_UNUSED(x) (void)(x)
@@ -547,7 +550,7 @@ extern "C" {
   #endif /* MCO_USE_VMEM_ALLOCATOR */
 #endif /* MCO_NO_DEFAULT_ALLOCATOR */
 
-/* 本地补丁:sanitizer 判据统一取 base/os.h,不自带一份同义探测。ASan 那份一旦与协程栈大小的
+/* srey补丁:sanitizer 判据统一取 base/os.h,不自带一份同义探测。ASan 那份一旦与协程栈大小的
    判据分叉,结果正好是"56KB 栈配全量插桩"。本文件不自带 include,故要求先包到 os.h */
 #if !defined(ENABLED_ASAN) || !defined(ENABLED_TSAN)
   #error "minicoro needs ENABLED_ASAN / ENABLED_TSAN from base/os.h, include it before MINICORO_IMPL"
@@ -578,14 +581,14 @@ static MCO_FORCE_INLINE size_t _mco_align_forward(size_t addr, size_t align) {
 
 /* Variable holding the current running coroutine per thread. */
 static MCO_THREAD_LOCAL mco_coro* mco_current_co = NULL;
-// 本地补丁:写侧必须和读侧(_mco_running)一样挡住优化。上游只挡了读,裸写在 clang+LTO 下
+// srey补丁:写侧必须和读侧(_mco_running)一样挡住优化。上游只挡了读,裸写在 clang+LTO 下
 // 会被缓存或重排,协程换栈后 jumpin 读回陈旧值,prev_co 指向自己、state 变 NORMAL,
 // 下一次 mco_yield 即 MCO_NOT_RUNNING abort。gcc+LTO 不复现,别据此以为是平台问题
 static MCO_NO_INLINE void _mco_set_current(mco_coro* co) {
   mco_current_co = co;
 }
 #ifdef _MCO_USE_ASAN
-/* 线程栈边界。ASan 只在 finish 时吐出来,首次拿到就存住,退回线程栈时原样交回去。
+/* srey补丁：线程栈边界。ASan 只在 finish 时吐出来,首次拿到就存住,退回线程栈时原样交回去。
    不能拿 finish 当场的 bottom_old 当去向:那是"最近一次切进来的栈",嵌套唤醒下并非要回去的那个 */
 static MCO_THREAD_LOCAL const void* _mco_asan_thread_bottom = NULL;
 static MCO_THREAD_LOCAL size_t _mco_asan_thread_size = 0;
@@ -597,7 +600,7 @@ static MCO_FORCE_INLINE void _mco_asan_keep_thread(int from_thread, const void* 
   }
 }
 #endif
-/* 只有 Windows 的 fibers 后端有 ConvertThreadToFiber;emscripten 也选 fibers,但那边没有 */
+/* srey补丁：只有 Windows 的 fibers 后端有 ConvertThreadToFiber;emscripten 也选 fibers,但那边没有 */
 #if defined(MCO_USE_FIBERS) && defined(_WIN32)
 /* 本线程的 fiber 是不是 _mco_jumpin 转出来的:只有我们转的才轮到我们转回去 */
 static MCO_THREAD_LOCAL int _mco_thread_fiber = 0;
@@ -612,14 +615,14 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpin(mco_coro* co) {
     MCO_ASSERT(prev_co->state == MCO_RUNNING);
     prev_co->state = MCO_NORMAL;
   }
-  _mco_set_current(co);
+  _mco_set_current(co); /* srey补丁：写 TLS 走 noinline setter,理由见 _mco_set_current */
 #ifdef _MCO_USE_ASAN
   if(prev_co) {
     void* bottom_old = NULL;
     size_t size_old = 0;
     __sanitizer_finish_switch_fiber(prev_co->asan_prev_stack, (const void**)&bottom_old, &size_old);
     prev_co->asan_prev_stack = NULL;
-    _mco_asan_keep_thread(NULL == prev_co->prev_co, bottom_old, size_old);
+    _mco_asan_keep_thread(NULL == prev_co->prev_co, bottom_old, size_old); /* srey补丁：记下线程栈边界,见 _mco_asan_keep_thread */
   }
   __sanitizer_start_switch_fiber(&co->asan_prev_stack, co->stack_base, co->stack_size);
 #endif
@@ -638,12 +641,13 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpout(mco_coro* co) {
     /* MCO_ASSERT(prev_co->state == MCO_NORMAL); */
     prev_co->state = MCO_RUNNING;
   }
-  _mco_set_current(prev_co);
+  _mco_set_current(prev_co); /* srey补丁：同 _mco_prepare_jumpin */
 #ifdef _MCO_USE_ASAN
   void* bottom_old = NULL;
   size_t size_old = 0;
   __sanitizer_finish_switch_fiber(co->asan_prev_stack, (const void**)&bottom_old, &size_old);
   co->asan_prev_stack = NULL;
+  /* srey补丁：切回时各回各的栈边界,不拿 bottom_old 当去向(理由见 _mco_asan_thread_bottom),回线程栈走下面 else 支 */
   _mco_asan_keep_thread(NULL == prev_co, bottom_old, size_old);
   if(prev_co) {
     __sanitizer_start_switch_fiber(&prev_co->asan_prev_stack, prev_co->stack_base, prev_co->stack_size);
@@ -660,6 +664,7 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpout(mco_coro* co) {
 #endif
 }
 
+/* srey补丁：_mco_jumpin 改返回 mco_result:fibers 后端转线程可能失败,各后端定义同改 */
 static mco_result _mco_jumpin(mco_coro* co);
 static void _mco_jumpout(mco_coro* co);
 
@@ -714,12 +719,12 @@ typedef struct _mco_ctxbuf {
   void* dealloc_stack;
   void* stack_limit;
   void* stack_base;
-  /* MXCSR 与 x87 控制字按 ABI 归被调用方保存。偏移 0x110 / 0x114 被 _mco_switch_code 的
+  /* srey补丁：MXCSR 与 x87 控制字按 ABI 归被调用方保存。偏移 0x110 / 0x114 被 _mco_switch_code 的
      机器码按字面量引用,改这里的字段布局必须同步重新生成那段 blob */
   unsigned int mxcsr;
   unsigned short x87cw;
   unsigned short pad;
-  unsigned int guard_bytes; /* TIB 的 GuaranteedStackBytes(ULONG),偏移 0x118 */
+  unsigned int guard_bytes; /* srey补丁：TIB 的 GuaranteedStackBytes(ULONG),偏移 0x118 */
   unsigned int pad2;
 } _mco_ctxbuf;
 
@@ -738,6 +743,7 @@ _MCO_ASM_BLOB static unsigned char _mco_wrap_main_code[] = {
 };
 
 _MCO_ASM_BLOB static unsigned char _mco_switch_code[] = {
+  /* srey补丁：整段按汇编重新生成(注释排版随之变),加了 GuaranteedStackBytes 与 MXCSR / x87 控制字的存取,lea 位移随之由 0x13e 变 0x172 */
   0x48, 0x8d, 0x05, 0x72, 0x01, 0x00, 0x00,              /* lea 0x172(%rip),%rax     */
   0x48, 0x89, 0x01,                                      /* mov %rax,(%rcx)          */
   0x48, 0x89, 0x61, 0x08,                                /* mov %rsp,0x8(%rcx)       */
@@ -768,6 +774,7 @@ _MCO_ASM_BLOB static unsigned char _mco_switch_code[] = {
   0x48, 0x89, 0x81, 0x00, 0x01, 0x00, 0x00,              /* mov %rax,0x100(%rcx)     */
   0x49, 0x8b, 0x42, 0x08,                                /* mov 0x8(%r10),%rax       */
   0x48, 0x89, 0x81, 0x08, 0x01, 0x00, 0x00,              /* mov %rax,0x108(%rcx)     */
+  /* srey补丁：存 GuaranteedStackBytes、MXCSR、x87 控制字 */
   0x41, 0x8b, 0x82, 0x48, 0x17, 0x00, 0x00,              /* mov 0x1748(%r10),%eax    */
   0x89, 0x81, 0x18, 0x01, 0x00, 0x00,                    /* mov %eax,0x118(%rcx)     */
   0x0f, 0xae, 0x99, 0x10, 0x01, 0x00, 0x00,              /* stmxcsr 0x110(%rcx)      */
@@ -780,6 +787,7 @@ _MCO_ASM_BLOB static unsigned char _mco_switch_code[] = {
   0x49, 0x89, 0x82, 0x78, 0x14, 0x00, 0x00,              /* mov %rax,0x1478(%r10)    */
   0x48, 0x8b, 0x82, 0xf0, 0x00, 0x00, 0x00,              /* mov 0xf0(%rdx),%rax      */
   0x49, 0x89, 0x42, 0x20,                                /* mov %rax,0x20(%r10)      */
+  /* srey补丁：恢复 GuaranteedStackBytes */
   0x8b, 0x82, 0x18, 0x01, 0x00, 0x00,                    /* mov 0x118(%rdx),%eax     */
   0x41, 0x89, 0x82, 0x48, 0x17, 0x00, 0x00,              /* mov %eax,0x1748(%r10)    */
   0x44, 0x0f, 0x10, 0xba, 0xe0, 0x00, 0x00, 0x00,        /* movups 0xe0(%rdx),%xmm15 */
@@ -800,11 +808,13 @@ _MCO_ASM_BLOB static unsigned char _mco_switch_code[] = {
   0x4c, 0x8b, 0x62, 0x20,                                /* mov 0x20(%rdx),%r12      */
   0x48, 0x8b, 0x5a, 0x18,                                /* mov 0x18(%rdx),%rbx      */
   0x48, 0x8b, 0x6a, 0x10,                                /* mov 0x10(%rdx),%rbp      */
+  /* srey补丁：恢复 MXCSR、x87 控制字 */
   0x0f, 0xae, 0x92, 0x10, 0x01, 0x00, 0x00,              /* ldmxcsr 0x110(%rdx)      */
   0xd9, 0xaa, 0x14, 0x01, 0x00, 0x00,                    /* fldcw 0x114(%rdx)        */
   0x48, 0x8b, 0x62, 0x08,                                /* mov 0x8(%rdx),%rsp       */
   0xff, 0x22,                                            /* jmpq *(%rdx)             */
   0xc3,                                                  /* retq                     */
+  /* srey补丁：尾部填充改成每行一个 nop,个数同上游 */
   0x90,                                                  /* nop                      */
   0x90,                                                  /* nop                      */
   0x90,                                                  /* nop                      */
@@ -832,7 +842,7 @@ static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base,
   ctx->stack_base = stack_top;
   ctx->stack_limit = stack_base;
   ctx->dealloc_stack = stack_base;
-  /* 必须显式写默认值,不能靠 memset:MXCSR 为 0 表示解除全部浮点异常屏蔽,
+  /* srey补丁：必须显式写默认值,不能靠 memset:MXCSR 为 0 表示解除全部浮点异常屏蔽,
      协程第一次浮点运算就 SIGFPE。0x1f80 / 0x037f 是 ABI 默认态 */
   ctx->mxcsr = 0x1f80;
   ctx->x87cw = 0x037f;
@@ -843,7 +853,7 @@ static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base,
 
 typedef struct _mco_ctxbuf {
   void *rip, *rsp, *rbp, *rbx, *r12, *r13, *r14, *r15;
-  /* MXCSR 与 x87 控制字按 SysV ABI 归被调用方保存:协程里改了舍入模式 / FTZ 不能漏给别人。
+  /* srey补丁：MXCSR 与 x87 控制字按 SysV ABI 归被调用方保存:协程里改了舍入模式 / FTZ 不能漏给别人。
      偏移 64 / 68 被下面的汇编按字面量引用,加字段前先改那两处 */
   unsigned int mxcsr;
   unsigned short x87cw;
@@ -882,6 +892,7 @@ __asm__(
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
 #endif
+  /* srey补丁：返回点改用标号 1f,插指令不用重算偏移;下面两行存 MXCSR / x87 控制字 */
   "  leaq 1f(%rip), %rax\n"
   "  movq %rax, (%rdi)\n"
   "  stmxcsr 64(%rdi)\n"
@@ -899,6 +910,7 @@ __asm__(
   "  movq 32(%rsi), %r12\n"
   "  movq 24(%rsi), %rbx\n"
   "  movq 16(%rsi), %rbp\n"
+  /* srey补丁：恢复 MXCSR / x87 控制字;下面的 1: 即上面 leaq 1f 的返回点 */
   "  ldmxcsr 64(%rsi)\n"
   "  fldcw 68(%rsi)\n"
   "  movq 8(%rsi), %rsp\n"
@@ -918,7 +930,7 @@ static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base,
   ctx->rsp = (void*)(stack_high_ptr);
   ctx->r12 = (void*)(_mco_main);
   ctx->r13 = (void*)(co);
-  /* 必须显式写默认值,不能靠 _mco_create_context 那次 memset:MXCSR 为 0 表示解除全部
+  /* srey补丁：必须显式写默认值,不能靠 _mco_create_context 那次 memset:MXCSR 为 0 表示解除全部
      浮点异常屏蔽,协程第一次浮点运算就 SIGFPE。0x1f80 / 0x037f 是 ABI 默认态 */
   ctx->mxcsr = 0x1f80;
   ctx->x87cw = 0x037f;
@@ -1260,7 +1272,7 @@ typedef struct _mco_ctxbuf {
   void *sp;
   void *lr;
   void *d[8]; /* d8-d15 */
-  /* FPCR 按 AAPCS 归被调用方保存:协程里改了舍入模式/FTZ 不能漏回其它协程和线程。
+  /* srey补丁：FPCR 按 AAPCS 归被调用方保存:协程里改了舍入模式/FTZ 不能漏回其它协程和线程。
      新协程这一槽由 _mco_create_context 的 memset 置 0,即 ABI 默认态 */
   void *fpcr;
   void *pad; /* 填充,让本结构体沿用上面各槽 16 字节一对的排布 */
@@ -1294,6 +1306,7 @@ __asm__(
   "  stp d14, d15, [x0, #(10*16)]\n"
   "  stp x29, x30, [x0, #(5*16)]\n"
   "  stp x10, x11, [x0, #(6*16)]\n"
+  /* srey补丁：存 FPCR */
   "  mrs x10, fpcr\n"
   "  str x10, [x0, #(11*16)]\n"
   "  ldp x19, x20, [x1, #(0*16)]\n"
@@ -1306,6 +1319,7 @@ __asm__(
   "  ldp x27, x28, [x1, #(4*16)]\n"
   "  ldp d14, d15, [x1, #(10*16)]\n"
   "  ldp x29, x30, [x1, #(5*16)]\n"
+  /* srey补丁：恢复 FPCR */
   "  ldr x10, [x1, #(11*16)]\n"
   "  msr fpcr, x10\n"
   "  ldp x10, x11, [x1, #(6*16)]\n"
@@ -1407,6 +1421,7 @@ typedef struct _mco_context {
   _mco_ctxbuf back_ctx;
 } _mco_context;
 
+/* srey补丁：改返回 mco_result,见前向声明处 */
 static mco_result _mco_jumpin(mco_coro* co) {
   _mco_context* context = (_mco_context*)co->context;
   _mco_prepare_jumpin(co);
@@ -1425,12 +1440,13 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   size_t co_addr = (size_t)co;
   size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
   size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
-  /* 栈底正下方的守卫字,越过栈底的写先碰它。mco_coro 末尾的 magic_number 离栈底太远,拦不住浅溢出 */
+  /* srey补丁：栈底正下方的守卫字,越过栈底的写先碰它。mco_coro 末尾的 magic_number 离栈底太远,拦不住浅溢出 */
   size_t guard_addr = _mco_align_forward(storage_addr + desc->storage_size, 16);
   size_t stack_addr = guard_addr + MCO_STACK_GUARD_SIZE;
   /* Initialize context. */
   _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
+  /* srey补丁：填满栈底守卫带,每个字都填;_mco_stack_guard_ok 逐字核对 */
   for(size_t gi = 0; gi < MCO_STACK_GUARD_WORDS; ++gi) {
     ((size_t*)guard_addr)[gi] = MCO_MAGIC_NUMBER;
   }
@@ -1471,13 +1487,14 @@ static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_s
   size_t fixed = _mco_align_forward(sizeof(mco_coro), 16) +
                  _mco_align_forward(sizeof(_mco_context), 16) +
                  _mco_align_forward(desc->storage_size, 16) +
-                 MCO_STACK_GUARD_SIZE + /* 栈底守卫字，与 _mco_create_context 的 guard_addr 对应 */
+                 MCO_STACK_GUARD_SIZE + /* srey补丁：栈底守卫字，与 _mco_create_context 的 guard_addr 对应 */
                  16;
-  /* 回绕会得到一个很小的 coro_size 配上巨大的 stack_size,即"只分配几百字节、栈却按 4GB 用"。
+  /* srey补丁：回绕会得到一个很小的 coro_size 配上巨大的 stack_size,即"只分配几百字节、栈却按 4GB 用"。
      置 0 交给 _mco_validate_desc 的 coro_size < sizeof(mco_coro) 挡下 */
   desc->coro_size = (stack_size > (size_t)-1 - fixed) ? 0 : (fixed + stack_size);
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
 }
+
 #endif /* defined(MCO_USE_UCONTEXT) || defined(MCO_USE_ASM) */
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -1491,16 +1508,17 @@ typedef struct _mco_context {
   void* back_fib;
 } _mco_context;
 
+/* srey补丁：改返回 mco_result,见前向声明处 */
 static mco_result _mco_jumpin(mco_coro* co) {
   void *cur_fib = GetCurrentFiber();
   if(!cur_fib || cur_fib == (void*)0x1e00) { /* See http://blogs.msdn.com/oldnewthing/archive/2004/12/31/344799.aspx */
     cur_fib = ConvertThreadToFiber(NULL);
-    /* MCO_ASSERT 在 NDEBUG 下是空的,只靠它会把 NULL 存进 back_fib,之后 SwitchToFiber(NULL) 访问违例 */
+    /* srey补丁：MCO_ASSERT 在 NDEBUG 下是空的,只靠它会把 NULL 存进 back_fib,之后 SwitchToFiber(NULL) 访问违例 */
     if(!cur_fib) {
       MCO_LOG("failed to convert thread to fiber");
       return MCO_MAKE_CONTEXT_ERROR;
     }
-    _mco_thread_fiber = 1; /* 这个 fiber 是我们转的,由 mco_thread_cleanup 转回去 */
+    _mco_thread_fiber = 1; /* srey补丁：这个 fiber 是我们转的,由 mco_thread_cleanup 转回去 */
   }
   _mco_context* context = (_mco_context*)co->context;
   context->back_fib = cur_fib;
@@ -1597,6 +1615,7 @@ static void _mco_wrap_main(void* co) {
   _mco_main((mco_coro*)co);
 }
 
+/* srey补丁：改返回 mco_result,见前向声明处 */
 static mco_result _mco_jumpin(mco_coro* co) {
   _mco_context* context = (_mco_context*)co->context;
   emscripten_fiber_t* back_fib = running_fib;
@@ -1608,7 +1627,7 @@ static mco_result _mco_jumpin(mco_coro* co) {
   context->back_fib = back_fib;
   _mco_prepare_jumpin(co);
   emscripten_fiber_swap(back_fib, &context->fib); /* Do the context switch. */
-  return MCO_SUCCESS;
+  return MCO_SUCCESS; /* srey补丁：随 _mco_jumpin 改返回值 */
 }
 
 static void _mco_jumpout(mco_coro* co) {
@@ -1660,7 +1679,7 @@ static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_s
                  _mco_align_forward(desc->storage_size, 16) +
                  _mco_align_forward(MCO_ASYNCFY_STACK_SIZE, 16) +
                  16;
-  /* 回绕守卫,判据同 ASM/ucontext 那份 _mco_init_desc_sizes。对齐本身也会绕,故先判它 */
+  /* srey补丁：回绕守卫,判据同 ASM/ucontext 那份 _mco_init_desc_sizes。对齐本身也会绕,故先判它 */
   size_t aligned = _mco_align_forward(stack_size, 16);
   desc->coro_size = (stack_size > (size_t)-1 - 15 || aligned > (size_t)-1 - fixed) ? 0 : (fixed + aligned);
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
@@ -1693,6 +1712,7 @@ __attribute__((import_module("asyncify"), import_name("stop_unwind")))  void _as
 __attribute__((import_module("asyncify"), import_name("start_rewind"))) void _asyncify_start_rewind(void*);
 __attribute__((import_module("asyncify"), import_name("stop_rewind")))  void _asyncify_stop_rewind();
 
+/* srey补丁：改返回 mco_result,见前向声明处 */
 MCO_NO_INLINE mco_result _mco_jumpin(mco_coro* co) {
   _mco_context* context = (_mco_context*)co->context;
   _mco_prepare_jumpin(co);
@@ -1701,7 +1721,7 @@ MCO_NO_INLINE mco_result _mco_jumpin(mco_coro* co) {
   }
   _mco_main(co); /* Run the coroutine function. */
   _asyncify_stop_unwind(); /* Stop saving coroutine stack. */
-  return MCO_SUCCESS;
+  return MCO_SUCCESS; /* srey补丁：随 _mco_jumpin 改返回值 */
 }
 
 static MCO_NO_INLINE void _mco_finish_jumpout(mco_coro* co, volatile int rewind_id) {
@@ -1762,7 +1782,7 @@ static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_s
                  _mco_align_forward(sizeof(_mco_context), 16) +
                  _mco_align_forward(desc->storage_size, 16) +
                  16;
-  /* 回绕守卫,判据同 ASM/ucontext 那份 _mco_init_desc_sizes */
+  /* srey补丁：回绕守卫,判据同 ASM/ucontext 那份 _mco_init_desc_sizes */
   size_t aligned = _mco_align_forward(stack_size, 16);
   desc->coro_size = (stack_size > (size_t)-1 - 15 || aligned > (size_t)-1 - fixed) ? 0 : (fixed + aligned);
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
@@ -1795,7 +1815,7 @@ mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size) {
   return desc;
 }
 
-/* 栈底守卫字是否完好。没有守卫的后端恒返回完好 */
+/* srey补丁：栈底守卫字是否完好。没有守卫的后端恒返回完好 */
 static MCO_FORCE_INLINE int _mco_stack_guard_ok(mco_coro* co) {
 #ifdef MCO_HAS_STACK_GUARD
   const size_t* g = (const size_t*)((unsigned char*)co->stack_base - MCO_STACK_GUARD_SIZE);
@@ -1836,7 +1856,7 @@ mco_result mco_init(mco_coro* co, mco_desc* desc) {
     MCO_LOG("attempt to initialize an invalid coroutine");
     return MCO_INVALID_COROUTINE;
   }
-  /* 校验必须排在清零之前，理由同 mco_create：调用方按 desc->coro_size 自行分配，
+  /* srey补丁：校验必须排在清零之前，理由同 mco_create：调用方按 desc->coro_size 自行分配，
      溢出被置 0 时拿到的小块会被下面这次 sizeof(mco_coro) 清零撑破 */
   mco_result res = _mco_validate_desc(desc);
   if(res != MCO_SUCCESS)
@@ -1892,7 +1912,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     MCO_LOG("coroutine allocator description is not set");
     return MCO_INVALID_ARGUMENTS;
   }
-  /* 校验必须排在分配之前：溢出后被置 0 的 coro_size 拿去 alloc，得到的小块会被 mco_init 越界清零 */
+  /* srey补丁：校验必须排在分配之前：溢出后被置 0 的 coro_size 拿去 alloc，得到的小块会被 mco_init 越界清零 */
   mco_result res = _mco_validate_desc(desc);
   if(res != MCO_SUCCESS) {
     *out_co = NULL;
@@ -1906,7 +1926,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     return MCO_OUT_OF_MEMORY;
   }
   /* Initialize the coroutine. */
-  res = mco_init(co, desc);
+  res = mco_init(co, desc); /* srey补丁：res 已提到上面校验处声明 */
   if(res != MCO_SUCCESS) {
     desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
     *out_co = NULL;
@@ -1922,7 +1942,7 @@ mco_result mco_destroy(mco_coro* co) {
     return MCO_INVALID_COROUTINE;
   }
   /* Uninitialize the coroutine first. */
-  /* 校验必须排在 mco_uninit 之前:uninit 是不可逆的(置 MCO_DEAD、拆 TSAN fiber、销毁上下文),
+  /* srey补丁：校验必须排在 mco_uninit 之前:uninit 是不可逆的(置 MCO_DEAD、拆 TSAN fiber、销毁上下文),
      先拆后发现没有 dealloc_cb 的话,这个协程既跑不了也永远回收不掉 */
   if(!co->dealloc_cb) {
     MCO_LOG("attempt destroy a coroutine that has no free callback");
@@ -1949,18 +1969,18 @@ mco_result mco_resume(mco_coro* co) {
   co->state = MCO_RUNNING; /* The coroutine is now running. */
   mco_result jres = _mco_jumpin(co);
   if(jres != MCO_SUCCESS) {
-    co->state = MCO_SUSPENDED; /* 没进去,状态要退回来 */
+    co->state = MCO_SUSPENDED; /* srey补丁：没进去,状态要退回来 */
     return jres;
   }
 #ifdef _MCO_USE_ASAN
-  /* 与 _mco_prepare_jumpout 的 else 支配对,收掉那次 start。
+  /* srey补丁：与 _mco_prepare_jumpout 的 else 支配对,收掉那次 start。
      必须放这里:_mco_jumpin 每个后端各有一份,共用点只有 mco_resume */
   if(!mco_running()) {
     __sanitizer_finish_switch_fiber(co->asan_prev_stack, NULL, NULL);
     co->asan_prev_stack = NULL;
   }
 #endif
-  /* 补查栈底守卫:mco_yield 里那次覆盖不到 _mco_main 正常返回那条路 */
+  /* srey补丁：补查栈底守卫:mco_yield 里那次覆盖不到 _mco_main 正常返回那条路 */
   if(!_mco_stack_guard_ok(co)) {
     MCO_LOG("coroutine stack overflow, try increasing the stack size");
     return MCO_STACK_OVERFLOW;
@@ -1981,7 +2001,7 @@ mco_result mco_yield(mco_coro* co) {
   size_t stack_addr = (size_t)&dummy;
   size_t stack_min = (size_t)co->stack_base;
   size_t stack_max = stack_min + co->stack_size;
-  /* 本地补丁:顺序不能换。只有 _mco_stack_guard_ok 会解引用 stack_base 指向的内存,放最后,
+  /* srey补丁:顺序不能换。只有 _mco_stack_guard_ok 会解引用 stack_base 指向的内存,放最后,
      让前面三个纯比数值的判定先把陈旧 co 短路掉,免得野指针读把干净的 abort 变成 SIGSEGV */
   if(co->magic_number != MCO_MAGIC_NUMBER || stack_addr < stack_min || stack_addr > stack_max || !_mco_stack_guard_ok(co)) { /* Stack overflow. */
     MCO_LOG("coroutine stack overflow, try increasing the stack size");
@@ -1997,6 +2017,7 @@ mco_result mco_yield(mco_coro* co) {
   return MCO_SUCCESS;
 }
 
+/* srey补丁：此处删掉了上游的 mco_status 定义,已改成头文件里的 static inline */
 void* mco_get_user_data(mco_coro* co) {
   if(co != NULL) {
     return co->user_data;
@@ -2009,7 +2030,7 @@ mco_result mco_push(mco_coro* co, const void* src, size_t len) {
     MCO_LOG("attempt to use an invalid coroutine");
     return MCO_INVALID_COROUTINE;
   } else if(len > 0) {
-    if(len > co->storage_size - co->bytes_stored) {
+    if(len > co->storage_size - co->bytes_stored) { /* srey补丁：改成减法判定,原先的加法会回绕;与 mco_pop / mco_peek 同形 */
       MCO_LOG("attempt to push too many bytes into coroutine storage");
       return MCO_NOT_ENOUGH_SPACE;
     }
@@ -2018,7 +2039,7 @@ mco_result mco_push(mco_coro* co, const void* src, size_t len) {
       return MCO_INVALID_POINTER;
     }
     memcpy(&co->storage[co->bytes_stored], src, len);
-    co->bytes_stored += len;
+    co->bytes_stored += len; /* srey补丁：随上面的边界判定改写 */
   }
   return MCO_SUCCESS;
 }
@@ -2096,7 +2117,7 @@ mco_coro* mco_running(void) {
 }
 #endif
 
-/* fibers 后端会把线程转成 fiber 才能切协程,转了就得转回去,否则线程退出时那个 fiber 对象泄漏。
+/* srey补丁：fibers 后端会把线程转成 fiber 才能切协程,转了就得转回去,否则线程退出时那个 fiber 对象泄漏。
    只转回我们自己转的那一个:线程本来就是 fiber(调用方自己转的)时不能动它。
    反复创建销毁线程的调用方应在线程退出前调一次;线程活到进程结束的场景不调也无妨 */
 void mco_thread_cleanup(void) {

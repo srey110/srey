@@ -1,17 +1,20 @@
 ﻿
 #include "test_protocol.h"
+#include "test_base.h"
 #include "lib.h"
 #include "protocol/custz_head.h"
 #include "protocol/kcp/ikcp.h"
 
 // SMTP 状态机 ud->status 值（与 lib/protocol/smtp/smtp.c parse_status 对应）：
-//   0=INIT, 1=EHLO, 2=AUTH, 3=AUTH_CHECK, 4=COMMAND
+//   0=INIT, 1=EHLO, 2=AUTH, 3=AUTH_CHECK, 4=COMMAND, 5=AUTH_PSW(AUTH LOGIN 已回用户名，等第二个 334)
 // ev_send 在 fd==INVALID_SOCK 时会释放 data 并返回 ERR_FAILED 设置 PROT_ERROR；
 // 此时 ud->status 已在 ev_send 调用前完成切换，可用于验证状态转移
 #define _SMTP_INIT       0
 #define _SMTP_EHLO       1
 #define _SMTP_AUTH       2
 #define _SMTP_AUTH_CHECK 3
+#define _SMTP_COMMAND    4
+#define _SMTP_AUTH_PSW   5
 // authtype 直接取 smtp.h 的枚举，别再抄一份数值
 #define _SMTP_LOGIN      LOGIN
 #define _SMTP_PLAIN      PLAIN
@@ -345,6 +348,23 @@ static void test_http_pack_bytes(CuTest *tc) {
     CuAssertTrue(tc, bw.offset == 5 && 0 == memcmp(bw.data, "0\r\n\r\n", 5));
     binary_free(&bw);
 }
+// 附加头名判据：router 与脚本绑定共用这一份，上限、token、自动头三条都要卡住
+static void test_http_head_key_check(CuTest *tc) {
+    char key[HTTP_HEAD_KEY_MAX + 1];
+    memset(key, 'k', sizeof(key));
+    CuAssertIntEquals(tc, HTTP_KEY_OK, http_head_key_check("X-Id", 4, 0));
+    CuAssertIntEquals(tc, HTTP_KEY_OK, http_head_key_check(key, HTTP_HEAD_KEY_MAX - 1, 0));
+    CuAssertIntEquals(tc, HTTP_KEY_BAD, http_head_key_check(key, HTTP_HEAD_KEY_MAX, 0));
+    CuAssertIntEquals(tc, HTTP_KEY_BAD, http_head_key_check(NULL, 0, 0));
+    CuAssertIntEquals(tc, HTTP_KEY_BAD, http_head_key_check("", 0, 0));
+    CuAssertIntEquals(tc, HTTP_KEY_BAD, http_head_key_check("a b", 3, 0));
+    // 帧长头只在 HTTP_AUTO_FRAME 时拒，大小写无关；Content-Type 只在 HTTP_AUTO_CT 时拒
+    CuAssertIntEquals(tc, HTTP_KEY_OK, http_head_key_check("Content-Length", 14, 0));
+    CuAssertIntEquals(tc, HTTP_KEY_AUTO, http_head_key_check("content-LENGTH", 14, HTTP_AUTO_FRAME));
+    CuAssertIntEquals(tc, HTTP_KEY_AUTO, http_head_key_check("Transfer-Encoding", 17, HTTP_AUTO_FRAME));
+    CuAssertIntEquals(tc, HTTP_KEY_OK, http_head_key_check("Content-Type", 12, HTTP_AUTO_FRAME));
+    CuAssertIntEquals(tc, HTTP_KEY_AUTO, http_head_key_check("Content-Type", 12, HTTP_AUTO_CT));
+}
 /* 组包（POST 请求）后再解包，验证往返一致性 */
 static void test_http_pack_req(CuTest *tc) {
     binary_ctx bw;
@@ -668,6 +688,15 @@ static void test_http_smuggling(CuTest *tc) {
         "\r\n"
         "hello",
         0);
+    // 26. HTTP/1.0 请求带 Transfer-Encoding：按分帧有误处理(RFC 9112 §6.1) → 拒绝；1.0 带 CL 照收(见 test_http_status_line)
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.0\r\n"
+        "Host: x\r\n"
+        "Connection: keep-alive\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "0\r\n\r\n",
+        1);
 }
 
 // 首行三段拆分必须限定在首行内，空格不足的畸形首行不得越行吞并头部字段
@@ -690,12 +719,12 @@ static void test_http_status_line(CuTest *tc) {
         "Content-Length: 0\r\n"
         "\r\n",
         0);
-    // 4. 报文以空行开头 → 拒绝
+    // 4. 请求以空行(CRLF)开头 → 服务端忽略它照常解析(RFC 9112 §2.2，细节见 test_http_leading_crlf)
     _http_smuggle_check(tc,
         "\r\n"
         "GET / HTTP/1.1\r\n"
         "\r\n",
-        1);
+        0);
     // 5. 请求行前导空格(SP)：不得静默剥离，须与字段行一致拒绝，防上游折进的边界分歧走私
     _http_smuggle_check(tc,
         " GET /admin HTTP/1.1\r\n"
@@ -773,12 +802,13 @@ static void test_http_status_line(CuTest *tc) {
     buffer_free(&rbuf);
 }
 
-// chunked chunk-size 走私：第一次 unpack 解析 header(chunked)，第二次 unpack 解析 chunk-size 行；断言其是否被拒
-static void _chunked_size_check(CuTest *tc, const char *sizeline, int32_t expect_error) {
+// chunked chunk-size 走私：第一次 unpack 解析 header(chunked)，第二次 unpack 解析 chunk-size 行；断言其是否被拒。
+// 显式给长度，可构造含 NUL 的长度行
+static void _chunked_size_checkn(CuTest *tc, const char *sizeline, size_t slens, int32_t expect_error) {
     buffer_ctx buf;
     buffer_init(&buf);
     _bput(&buf, "GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
-    _bput(&buf, sizeline);
+    buffer_append(&buf, (void *)sizeline, slens);
     ud_cxt ud;
     ZERO(&ud, sizeof(ud_cxt));
     int32_t status = PROT_INIT;
@@ -799,6 +829,9 @@ static void _chunked_size_check(CuTest *tc, const char *sizeline, int32_t expect
     }
     _http_udfree(&ud);
     buffer_free(&buf);
+}
+static void _chunked_size_check(CuTest *tc, const char *sizeline, int32_t expect_error) {
+    _chunked_size_checkn(tc, sizeline, strlen(sizeline), expect_error);
 }
 // RFC 7230 §4.1：chunk-size 严格按 1*HEXDIG；前导空白 / '+' '-' / "0x" 都是旧实现走 strtoul 时被放过的走私写法，一律拒
 static void test_http_chunked_size_smuggle(CuTest *tc) {
@@ -841,6 +874,241 @@ static void test_http_chunked_ext(CuTest *tc) {
     memcpy(big + HTTP_MAX_HEADLENS + 8, "\r\n", 3);
     _chunked_size_check(tc, big, 1);
     FREE(big);
+    // 8. ext 里的裸 LF / 裸 CR / NUL 与头块同样拒：按裸 LF 收行的上游会切出另一条 chunk 边界(走私)
+    _chunked_size_check(tc, "2;\nxx\r\n", 1);
+    _chunked_size_check(tc, "5;a\nb\r\n", 1);
+    _chunked_size_check(tc, "5;a\rb\r\n", 1);
+    static const char nul_ext[] = "5;a\0b\r\n";
+    _chunked_size_checkn(tc, nul_ext, sizeof(nul_ext) - 1, 1);
+    _chunked_size_check(tc, "5;a=b;c=\"d e\"\r\n", 0);
+}
+// 长度行恰为 HTTP_MAX_HEADLENS 合法：行尾 CR 先到、LF 后到时也不能判超限；行长多 1 字节就拒
+static void test_http_chunked_line_cr_split(CuTest *tc) {
+    char *line;
+    MALLOC(line, HTTP_MAX_HEADLENS + 1);
+    memset(line, 'e', HTTP_MAX_HEADLENS + 1);
+    memcpy(line, "1;x=", 4);
+    for (size_t extra = 0; extra < 2; extra++) {
+        buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status = PROT_INIT;
+        size_t dlen = 0;
+        buffer_init(&buf);
+        ZERO(&ud, sizeof(ud_cxt));
+        _bput(&buf, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n");
+        struct http_pack_ctx *pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 1) header
+        CuAssertPtrNotNull(tc, pack);
+        _http_pkfree(pack);
+        buffer_append(&buf, line, HTTP_MAX_HEADLENS + extra);
+        _bput(&buf, "\r");
+        status = PROT_INIT;
+        pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 2) 长度行 + 行尾的 CR，LF 未到
+        CuAssertTrue(tc, NULL == pack);
+        if (0 == extra) {
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+            CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+            _bput(&buf, "\na\r\n");
+            status = PROT_INIT;
+            pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 3) LF 到了，连同 1 字节载荷一起解出
+            CuAssertPtrNotNull(tc, pack);
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE));
+            CuAssertTrue(tc, 0 == memcmp(http_data(pack, &dlen), "a", 1) && 1 == dlen);
+            CuAssertTrue(tc, 0 == buffer_size(&buf));
+            _http_pkfree(pack);
+        } else {
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        }
+        _http_udfree(&ud);
+        buffer_free(&buf);
+    }
+    FREE(line);
+}
+// trailer 块按头块的行口径收：\0 / 裸 CR / 裸 LF 一律拒，合法的照收并以 PROT_SLICE_END 收尾
+static void _chunked_trailer_check(CuTest *tc, const char *trailer, size_t tlens, int32_t expect_error) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status = PROT_INIT;
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    _bput(&buf, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n");
+    buffer_append(&buf, (void *)trailer, tlens);
+    struct http_pack_ctx *pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 1) header
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);// 2) 终止块 + trailer
+    if (expect_error) {
+        CuAssertTrue(tc, NULL == pack);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    } else {
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_END));
+        CuAssertTrue(tc, 0 == buffer_size(&buf));
+        _http_pkfree(pack);
+    }
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+static void test_http_chunked_trailer_eol(CuTest *tc) {
+    static const char ok2[] = "X: y\r\nZ: w\r\n\r\n";
+    static const char lf_smuggle[] = "X: y\n\nGET /s HTTP/1.1\r\nHost: h\r\n\r\n";// 按 \n\n 收尾的上游把 GET /s 当下一条请求
+    static const char bare_cr[] = "X: a\rb\r\n\r\n";
+    static const char nul[] = "X: a\0b\r\n\r\n";
+    _chunked_trailer_check(tc, "X: y\r\n\r\n", strlen("X: y\r\n\r\n"), 0);
+    _chunked_trailer_check(tc, ok2, sizeof(ok2) - 1, 0);
+    _chunked_trailer_check(tc, lf_smuggle, sizeof(lf_smuggle) - 1, 1);
+    _chunked_trailer_check(tc, bare_cr, sizeof(bare_cr) - 1, 1);
+    _chunked_trailer_check(tc, nul, sizeof(nul) - 1, 1);
+}
+// RFC 9112 §2.2：服务端忽略请求行前的空行(只认 CRLF)，跳过的字节计入 HTTP_MAX_HEADLENS；响应侧不跳
+static void test_http_leading_crlf(CuTest *tc) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    struct http_pack_ctx *pack;
+    // 1. keep-alive 上 POST 体后多带一个 CRLF，下一条请求照常解出
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    _bput(&buf, "POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n");
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, buf_compare(&http_status(pack)[1], "/b", 2));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+    // 2. 多个空行且分段到达：只有空行时等更多数据、不先吞掉；请求行到了再一起跳过
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    _bput(&buf, "\r\n\r\n\r");
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, 5 == buffer_size(&buf));
+    _bput(&buf, "\nGET / HTTP/1.1\r\n\r\n");
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, buf_compare(&http_status(pack)[0], "GET", 3));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+    // 3. 响应侧不跳：状态行前的空行照旧拒
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    _bput(&buf, "\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    status = PROT_INIT;
+    pack = _t_http_unpack(1, &buf, &ud, NULL, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    _http_udfree(&ud);
+    buffer_free(&buf);
+    // 4. 空行计入头块上限：空行 + 头块恰为 HTTP_MAX_HEADLENS 收，多 1 字节拒
+    static const char line1[] = "GET / HTTP/1.1\r\nX: ";
+    char *raw;
+    size_t pad;
+    MALLOC(raw, HTTP_MAX_HEADLENS + 1);
+    for (size_t extra = 0; extra < 2; extra++) {
+        pad = HTTP_MAX_HEADLENS + extra - CRLF_SIZE - (sizeof(line1) - 1) - CRLF_SIZE * 2;
+        memcpy(raw, "\r\n", CRLF_SIZE);
+        memcpy(raw + CRLF_SIZE, line1, sizeof(line1) - 1);
+        memset(raw + CRLF_SIZE + sizeof(line1) - 1, 'v', pad);
+        memcpy(raw + HTTP_MAX_HEADLENS + extra - CRLF_SIZE * 2, "\r\n\r\n", CRLF_SIZE * 2);
+        _http_smuggle_checkn(tc, raw, HTTP_MAX_HEADLENS + extra, (int32_t)extra);
+    }
+    FREE(raw);
+    // 5. 全是空行、累计超上限仍等不到请求行 → 拒
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    while (buffer_size(&buf) <= HTTP_MAX_HEADLENS) {
+        _bput(&buf, "\r\n");
+    }
+    status = PROT_INIT;
+    pack = _t_http_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+// 响应的 TE 最后一层不是 chunked：body 读到连接关闭为止(RFC 7230 §3.3.3 规则 3)，同 tillclose 分片投递；
+// 请求那半照旧拒(test_http_smuggling 9)。HTTP/1.0 响应带 TE 按分帧有误拒(RFC 9112 §6.1)
+static void test_http_te_resp(CuTest *tc) {
+    const char *te[] = { "gzip", "chunked, gzip" };
+    char raw[128];
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    size_t dlen = 0;
+    struct http_pack_ctx *pack;
+    for (size_t i = 0; i < ARRAY_SIZE(te); i++) {
+        buffer_init(&buf);
+        ZERO(&ud, sizeof(ud_cxt));
+        SNPRINTF(raw, sizeof(raw), "HTTP/1.1 200 OK\r\nTransfer-Encoding: %s\r\n\r\n", te[i]);
+        _bput(&buf, raw);
+        status = PROT_INIT;
+        pack = _t_http_unpack(1, &buf, &ud, NULL, &status);// 1) 头包即首片，不算 chunked
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE_START));
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertIntEquals(tc, 0, http_chunked(pack));
+        CuAssertPtrNotNull(tc, http_status(pack));
+        _http_pkfree(pack);
+        _bput(&buf, "abc");
+        status = PROT_INIT;
+        pack = _t_http_unpack(1, &buf, &ud, NULL, &status);// 2) 随后的字节原样切片
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_SLICE));
+        CuAssertIntEquals(tc, 2, http_chunked(pack));
+        CuAssertTrue(tc, 0 == memcmp(http_data(pack, &dlen), "abc", 3) && 3 == dlen);
+        _http_pkfree(pack);
+        pack = _http_on_close(&ud);// 3) 关闭补末片
+        CuAssertPtrNotNull(tc, pack);
+        _http_pkfree(pack);
+        _http_udfree(&ud);
+        buffer_free(&buf);
+    }
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    _bput(&buf, "HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n");
+    status = PROT_INIT;
+    pack = _t_http_unpack(1, &buf, &ud, NULL, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+// Content-Length 上限是 > 判定：恰等于 HTTP_MAX_CONTENT_LENS 进 CONTENT 态等体，加 1 直接拒
+static void test_http_content_lens_bound(CuTest *tc) {
+    char raw[128];
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    for (size_t extra = 0; extra < 2; extra++) {
+        buffer_init(&buf);
+        ZERO(&ud, sizeof(ud_cxt));
+        SNPRINTF(raw, sizeof(raw), "POST / HTTP/1.1\r\nContent-Length: %zu\r\n\r\n", (size_t)HTTP_MAX_CONTENT_LENS + extra);
+        _bput(&buf, raw);
+        status = PROT_INIT;
+        CuAssertTrue(tc, NULL == _t_http_unpack(0, &buf, &ud, NULL, &status));
+        if (0 == extra) {
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+            CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+            CuAssertPtrNotNull(tc, ud.context);// 头包挂在 ud 上等体，由 _http_udfree 收
+        } else {
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        }
+        _http_udfree(&ud);
+        buffer_free(&buf);
+    }
 }
 
 // chunk-size 声明的长度受 HTTP_MAX_CHUNK_LENS 限制，判据是 > 上限，故恰等于上限合法。
@@ -1081,6 +1349,136 @@ static void test_http_check_keyval_token(CuTest *tc) {
     head.value.lens = strlen("42");
     CuAssertIntEquals(tc, ERR_OK,
         _http_check_keyval(&head, "content-length", strlen("content-length"), NULL, 0));
+}
+
+// 参照实现：逐个头重扫，判据同解头时记标志之前的 http_expect_continue / http_want_close
+static int32_t _t_http_has_token(struct http_pack_ctx *pack, const char *key, const char *val) {
+    uint32_t n = http_nheader(pack);
+    for (uint32_t i = 0; i < n; i++) {
+        if (ERR_OK == _http_check_keyval(http_header_at(pack, i), key, strlen(key), val, strlen(val))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+static int32_t _t_http_ver_is(struct http_pack_ctx *pack, const char *ver) {
+    buf_ctx *st = http_status(pack);
+    return NULL != st && buf_compare(&st[2], ver, strlen(ver));
+}
+static int32_t _t_http_ref_expect(struct http_pack_ctx *pack) {
+    return _t_http_ver_is(pack, "HTTP/1.1") && _t_http_has_token(pack, "expect", "100-continue");
+}
+static int32_t _t_http_ref_close(struct http_pack_ctx *pack) {
+    if (_t_http_has_token(pack, "connection", "close")) {
+        return 1;
+    }
+    return _t_http_ver_is(pack, "HTTP/1.0") && !_t_http_has_token(pack, "connection", "keep-alive");
+}
+// 解出 raw 里的全部包(含数据片与连接关闭补的末片)，逐包对拍两个访问器与参照实现；首包另比期望值 ec / wc
+static void _t_http_hflags_check(CuTest *tc, int32_t client, const char *raw, int32_t ec, int32_t wc) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status = PROT_INIT;
+    struct http_pack_ctx *pack;
+    int32_t n = 0;
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    _bput(&buf, raw);
+    for (;;) {
+        status = PROT_INIT;
+        pack = _t_http_unpack(client, &buf, &ud, NULL, &status);
+        if (NULL == pack
+            && !BIT_CHECK(status, PROT_ERROR)) {
+            pack = _http_on_close(&ud);
+        }
+        if (NULL == pack) {
+            break;
+        }
+        CuAssertIntEquals(tc, _t_http_ref_expect(pack), http_expect_continue(pack));
+        CuAssertIntEquals(tc, _t_http_ref_close(pack), http_want_close(pack));
+        if (0 == n) {
+            CuAssertIntEquals(tc, ec, http_expect_continue(pack));
+            CuAssertIntEquals(tc, wc, http_want_close(pack));
+        }
+        n++;
+        _http_pkfree(pack);
+    }
+    CuAssertTrue(tc, n > 0);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+// 解头时记下的 Expect / Connection 标志与逐头重扫逐包一致：重复头、大小写、token 列表、
+// 1.0 / 1.1 默认值、请求与响应、chunked / 连接关闭界定的数据片、头数组搬到堆上
+static void test_http_hflags(CuTest *tc) {
+    static const struct {
+        int32_t client;
+        const char *raw;
+        int32_t ec;
+        int32_t wc;
+    } cases[] = {
+        { 0, "GET / HTTP/1.1\r\nHost: a\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nHost: a\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.2\r\nHost: a\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nconnection: Keep-Alive\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nConnection: keep-alivex\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.0\r\nConnection: ,, keep-alive ,\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nConnection:\tUpgrade ,\tkeep-alive\t\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nConnection: Upgrade\r\nConnection: keep-alive\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nConnection: keep-alive\r\nConnection: keep-alive\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nConnection:\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.0\r\nKeep-Alive: keep-alive\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.1\r\nCONNECTION: CLOSE\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.1\r\nConnection:close,\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.1\r\nConnection: closed\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.1\r\nConnection: xclose\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.1\r\nX-Connection: close\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.1\r\nConnectiom: close\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.1\r\nKeep-Alive: close\r\n\r\n", 0, 0 },
+        { 0, "GET / HTTP/1.0\r\nConnection: keep-alive, close\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.0\r\nConnection: close\r\nConnection: keep-alive\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.0\r\nConnection: keep-alive\r\nConnection: close\r\n\r\n", 0, 1 },
+        { 0, "\r\n\r\nGET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n", 0, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n", 1, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\nabc", 1, 0 },
+        { 0, "POST / HTTP/1.1\r\nEXPECT: 100-Continue\r\n\r\n", 1, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect: foo, 100-continue\r\n\r\n", 1, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect: foo\r\nExpect: 100-continue\r\n\r\n", 1, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect: 100-continuex\r\n\r\n", 0, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect:\r\n\r\n", 0, 0 },
+        { 0, "POST / HTTP/1.1\r\nAccept: 100-continue\r\n\r\n", 0, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect: close\r\nConnection: 100-continue\r\n\r\n", 0, 0 },
+        { 0, "POST / HTTP/1.0\r\nExpect: 100-continue\r\n\r\n", 0, 1 },
+        { 0, "POST / HTTP/1.2\r\nExpect: 100-continue\r\n\r\n", 0, 0 },
+        { 0, "POST / HTTP/1.1\r\nExpect: 100-continue\r\nConnection: Close\r\nContent-Length: 1\r\n\r\nx", 1, 1 },
+        { 0, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
+             "1\r\nx\r\n0\r\n\r\n", 1, 1 },
+        { 0, "GET / HTTP/1.1\r\nConnection: close\r\n\r\nGET / HTTP/1.1\r\nHost: a\r\n\r\n", 0, 1 },
+        { 0, "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET / HTTP/1.0\r\n\r\n", 0, 0 },
+        { 1, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", 0, 1 },
+        { 1, "HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n", 0, 0 },
+        { 1, "HTTP/1.0 200 HTTP/1.0\r\nContent-Length: 0\r\n\r\n", 0, 1 },
+        { 1, "HTTP/1.1 200 HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n", 1, 0 },
+        { 1, "HTTP/1.1 200 HTTP/1.10\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n", 0, 0 },
+        { 1, "HTTP/1.1 204 HTTP/1.0\r\nContent-Length: 5\r\n\r\n", 0, 1 },
+        { 1, "HTTP/1.1 200 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nabc", 0, 0 },
+        { 1, "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\nzz", 0, 1 },
+        { 1, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nab\r\n0\r\n\r\n", 0, 1 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        _t_http_hflags_check(tc, cases[i].client, cases[i].raw, cases[i].ec, cases[i].wc);
+    }
+    // 20 个头把头数组从内嵌槽搬到堆上，两个标志头都排在搬家之后
+    char many[1024];
+    size_t off = (size_t)snprintf(many, sizeof(many), "POST / HTTP/1.1\r\n");
+    for (int32_t i = 0; i < 20; i++) {
+        off += (size_t)snprintf(many + off, sizeof(many) - off, "X-H%d: v\r\n", (int)i);
+    }
+    snprintf(many + off, sizeof(many) - off, "Expect: 100-continue\r\nConnection: keep-alive, close\r\n\r\n");
+    _t_http_hflags_check(tc, 0, many, 1, 1);
 }
 
 // chunked trailer 超 HTTP_MAX_HEADLENS=4KB 应 PROT_ERROR；
@@ -1867,8 +2265,6 @@ static void test_redis_array(CuTest *tc) {
 }
 
 /* redis_pack 组包，再解包验证 */
-// 认不出的转换整条拒掉：之前是"抄成字面量继续走"，既不取走对应的可变参数、也不跳过转换符，
-// 后面每个转换都读到错位一格的参数——%s 拿到整数当指针实测就是段错误
 // redis_pack 的输出与期望的 RESP 字节串逐字节比对；got 用完即释放
 static void _redis_pack_eq(CuTest *tc, const char *want, size_t wlen, char *got, size_t glen) {
     CuAssertPtrNotNull(tc, got);
@@ -1906,6 +2302,8 @@ static void test_redis_pack_bytes(CuTest *tc) {
     p = redis_pack(&n, "%s k", "GET");// 单独成参数且在串首
     _redis_pack_eq(tc, w8, sizeof(w8) - 1, p, n);
 }
+// 认不出的转换整条拒掉：之前是"抄成字面量继续走"，既不取走对应的可变参数、也不跳过转换符，
+// 后面每个转换都读到错位一格的参数——%s 拿到整数当指针实测就是段错误
 static void test_redis_pack_bad_format(CuTest *tc) {
     size_t size = 1;
 
@@ -2043,7 +2441,7 @@ static void test_redis_resume_across_calls(CuTest *tc) {
     _redis_udfree(&ud);
     buffer_free(&buf);
 }
-// 同一 ud 连解两条大回复:节点计数每条回复清零,两条合计超 REDIS_MAX_NODES(1<<18)也不能误判超限
+// 同一 ud 连解两条大回复:节点计数每条回复清零,两条合计超 REDIS_MAX_NODES 也不能误判超限
 static void test_redis_back_to_back_count(CuTest *tc) {
     const int32_t nelem = 150000;
     buffer_ctx buf;
@@ -2071,7 +2469,7 @@ static void test_redis_back_to_back_count(CuTest *tc) {
     buffer_free(&buf);
 }
 
-// _reader_line / _reader_bulk 长度行无 CRLF 持续累积超 REDIS_MAX_LINE_LENS(64KB) 应 PROT_ERROR
+// 单行回复无 CRLF 累积超 REDIS_MAX_LINE_LENS(64KB)、bulk / 聚合长度行在本地副本装满后仍无 CRLF，都应 PROT_ERROR
 static void test_redis_oversize_no_crlf(CuTest *tc) {
     // 1. 单行 RESP "+aaa..." 无 CRLF 超 64KB
     {
@@ -2139,10 +2537,204 @@ static void test_redis_oversize_no_crlf(CuTest *tc) {
         _redis_udfree(&ud);
         buffer_free(&buf);
     }
+    // 4. bulk / 聚合长度行的本地副本是 66 字节(类型 1 + 长度最多 63 位 + CRLF 2)：
+    //    装满还没有 CRLF 当场拒，差 1 字节装满仍等数据
+    const size_t peek = 1 + 63 + 2;
+    const char types[] = { '$', '*' };
+    char line[66];
+    for (size_t t = 0; t < sizeof(types); t++) {
+        for (size_t n = peek - 1; n <= peek; n++) {
+            buffer_ctx buf;
+            buffer_init(&buf);
+            line[0] = types[t];
+            memset(line + 1, '1', n - 1);
+            buffer_append(&buf, line, n);
+            ud_cxt ud;
+            ZERO(&ud, sizeof(ud_cxt));
+            int32_t status = PROT_INIT;
+            redis_pack_ctx *pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+            CuAssertTrue(tc, NULL == pack);
+            if (n == peek) {
+                CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+            } else {
+                CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+                CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+            }
+            _redis_udfree(&ud);
+            buffer_free(&buf);
+        }
+    }
+}
+
+// 单行回复的行长(类型字节 + 数据)上限是 > 判定，不论一次到齐还是分段到达：恰等于收、多 1 字节拒；
+// 分段时行尾 CR 先到也不能误判超限
+static void test_redis_line_lens_bound(CuTest *tc) {
+    char *line;
+    MALLOC(line, REDIS_MAX_LINE_LENS + 1 + CRLF_SIZE);
+    line[0] = '+';
+    for (size_t extra = 0; extra < 2; extra++) {
+        size_t llens = REDIS_MAX_LINE_LENS + extra;// 行长，含类型字节
+        memset(line + 1, 'a', REDIS_MAX_LINE_LENS);// 上一轮写进去的 CRLF 抹掉
+        buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status = PROT_INIT;
+        redis_pack_ctx *pack;
+        // 1. 一次到齐
+        buffer_init(&buf);
+        ZERO(&ud, sizeof(ud_cxt));
+        memcpy(line + llens, FLAG_CRLF, CRLF_SIZE);
+        buffer_append(&buf, line, llens + CRLF_SIZE);
+        pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        if (0 == extra) {
+            CuAssertPtrNotNull(tc, pack);
+            CuAssertTrue(tc, RESP_STRING == pack->prot && (int64_t)llens - 1 == pack->len);
+            _redis_pkfree(pack);
+        } else {
+            CuAssertTrue(tc, NULL == pack);
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        }
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+        // 2. 先到行 + CR，LF 后到
+        buffer_init(&buf);
+        ZERO(&ud, sizeof(ud_cxt));
+        buffer_append(&buf, line, llens + 1);
+        status = PROT_INIT;
+        pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        CuAssertTrue(tc, NULL == pack);
+        if (0 == extra) {
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+            CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+            _bput(&buf, "\n");
+            status = PROT_INIT;
+            pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+            CuAssertPtrNotNull(tc, pack);
+            CuAssertTrue(tc, 0 == buffer_size(&buf));
+            _redis_pkfree(pack);
+        } else {
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        }
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+    FREE(line);
+}
+// RESP3 推送(顶层 '>')：invalidate / message 这类带外推送不唤醒等待者，订阅类确认照常唤醒；
+// RESP2 的 '*' 与普通回复不判
+static void test_redis_may_resume(CuTest *tc) {
+    static const struct {
+        const char *wire;
+        int32_t resume;
+    } cases[] = {
+        { ">2\r\n$10\r\ninvalidate\r\n*1\r\n$1\r\nk\r\n", 0 },
+        { ">3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$2\r\nhi\r\n", 0 },
+        { ">4\r\n$8\r\npmessage\r\n$2\r\nc*\r\n$2\r\nch\r\n$2\r\nhi\r\n", 0 },
+        { ">3\r\n$8\r\nsmessage\r\n$2\r\nch\r\n$2\r\nhi\r\n", 0 },
+        { ">0\r\n", 0 },
+        { ">3\r\n$9\r\nsubscribe\r\n$2\r\nch\r\n:1\r\n", 1 },
+        { ">3\r\n$12\r\npunsubscribe\r\n$2\r\nc*\r\n:0\r\n", 1 },
+        { ">3\r\n+ssubscribe\r\n$2\r\nch\r\n:1\r\n", 1 },
+        { "*3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$2\r\nhi\r\n", 1 },
+        { "+OK\r\n", 1 },
+    };
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        redis_pack_ctx *pack = _t_redis_one(&buf, &ud, cases[i].wire, &status);
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertTrue(tc, 0 == buffer_size(&buf));
+        CuAssertIntEquals(tc, cases[i].resume ? ERR_OK : ERR_FAILED, prots_may_resume(PACK_REDIS, pack));
+        _redis_pkfree(pack);
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+}
+// 一条回复的节点数
+static int32_t _redis_nodes(redis_pack_ctx *pack) {
+    int32_t n = 0;
+    for (; NULL != pack; pack = pack->next) {
+        n++;
+    }
+    return n;
+}
+// 几条拒收/特殊分支：节点数恰到 REDIS_MAX_NODES 收、多 1 个拒；bulk 长度恰等于上限等数据、加 1 当场拒；
+// 空 ATTR 与聚合内的 ATTR 不占父层元素数，整条一次解出
+static void test_redis_limits_attr(CuTest *tc) {
+    const int32_t maxnodes = REDIS_MAX_NODES;
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    redis_pack_ctx *pack;
+    char head[64];
+    // 1. 数组头算一个节点：maxnodes - 1 个元素正好用满，maxnodes 个元素拒
+    for (int32_t extra = 0; extra < 2; extra++) {
+        int32_t nelem = maxnodes - 1 + extra;
+        buffer_init(&buf);
+        ZERO(&ud, sizeof(ud_cxt));
+        SNPRINTF(head, sizeof(head), "*%d\r\n", (int)nelem);
+        _bput(&buf, head);
+        for (int32_t k = 0; k < nelem; k++) {
+            _bput(&buf, ":1\r\n");
+        }
+        status = PROT_INIT;
+        pack = _t_redis_unpack(0, &buf, &ud, NULL, &status);
+        if (0 == extra) {
+            CuAssertPtrNotNull(tc, pack);
+            CuAssertIntEquals(tc, maxnodes, _redis_nodes(pack));
+            _redis_pkfree(pack);
+        } else {
+            CuAssertTrue(tc, NULL == pack);
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        }
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+    // 2. bulk 声明长度：恰等于 REDIS_MAX_BULK_LENS 只是等数据，加 1 不等数据当场拒
+    for (int32_t extra = 0; extra < 2; extra++) {
+        SNPRINTF(head, sizeof(head), "$%lld\r\n", (long long)REDIS_MAX_BULK_LENS + extra);
+        pack = _t_redis_one(&buf, &ud, head, &status);
+        CuAssertTrue(tc, NULL == pack);
+        CuAssertTrue(tc, 0 == extra ? BIT_CHECK(status, PROT_MOREDATA) && !BIT_CHECK(status, PROT_ERROR)
+                                    : BIT_CHECK(status, PROT_ERROR));
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+    // 3. 空 ATTR、聚合内带一对 k/v 的 ATTR：都不消费父层一格，后面两个元素照样算数组的
+    pack = _t_redis_one(&buf, &ud, "*2\r\n|0\r\n:1\r\n:2\r\n", &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 4, _redis_nodes(pack));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+    pack = _t_redis_one(&buf, &ud, "*2\r\n|1\r\n+k\r\n+v\r\n:1\r\n:2\r\n", &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 6, _redis_nodes(pack));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
+// 转换说明装不进内部缓冲(63 字节)时同不支持的转换一样整条拒，返回 NULL，不再断言退出
+static void test_redis_pack_long_spec(CuTest *tc) {
+    char fmt[128];
+    size_t size = 1;
+    memcpy(fmt, "SET k %", 7);
+    memset(fmt + 7, '0', 70);// 标志位 '0' 连写 70 个
+    memcpy(fmt + 77, "5d", 3);
+    CuAssertTrue(tc, NULL == redis_pack(&size, fmt, 1));
+    CuAssertTrue(tc, 0 == size);
+    size = 1;
+    memcpy(fmt, "SET k %.", 8);
+    memset(fmt + 8, '0', 70);// 精度 70 位
+    memcpy(fmt + 78, "1f", 3);
+    CuAssertTrue(tc, NULL == redis_pack(&size, fmt, 1.5));
+    CuAssertTrue(tc, 0 == size);
 }
 
 // RESP3 类型解包：BOOL/DOUBLE/BIGNUM/BERROR/VERB
-// 对应 lib/protocol/redis.c:294-328 (line 类型) 与 _reader_bulk (bulk 类型)
+// 对应 redis.c 的 _redis_reader_line (line 类型) 与 _redis_reader_bulk (bulk 类型)
 static void test_redis_resp3_scalar(CuTest *tc) {
     // BOOL true: "#t\r\n"
     {
@@ -2217,7 +2809,7 @@ static void test_redis_resp3_scalar(CuTest *tc) {
     _t_redis_dbl_ok(tc, ",3.1415926535897931\r\n", 3.1415926535897931);
     _t_redis_dbl_ok(tc, ",12345678901234567890\r\n", 12345678901234567890.0);
     _t_redis_dbl_ok(tc, ",+1\r\n", 1.0);
-    // 128 字节以上、快路径不收的长串也要收下：回落用 strtod_c，换成有长度上限的 strtod_s 就会被拒
+    // 128 字节以上、快路径不收的长串也要收下：strtod_s 回落时栈缓冲装不下就临时上堆
     {
         char wire[160];
         char *end;
@@ -2238,6 +2830,20 @@ static void test_redis_resp3_scalar(CuTest *tc) {
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
         _redis_udfree(&ud);
         buffer_free(&buf);
+    }
+    // DOUBLE 无穷 / NaN 只认 inf、-inf、nan、-nan(不分大小写)：strtod_s 收下的 "Infinity"、"+inf"、"+nan" 也要拒；有残留拒
+    {
+        static const char *bad[] = { ",Infinity\r\n", ",+inf\r\n", ",-Infinity\r\n", ",+nan\r\n", ",1.5x\r\n" };
+        buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status;
+        for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+            redis_pack_ctx *pack = _t_redis_one(&buf, &ud, bad[i], &status);
+            CuAssertTrue(tc, NULL == pack);
+            CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+            _redis_udfree(&ud);
+            buffer_free(&buf);
+        }
     }
     // DOUBLE inf
     {
@@ -2348,7 +2954,7 @@ static void test_redis_resp3_scalar(CuTest *tc) {
 }
 
 // RESP3 聚合类型解包：SET/PUSHE/MAP/ATTR
-// 对应 lib/protocol/redis.c:494-499 (_reader_agg)，注意 MAP/ATTR 元素数 = nelem*2
+// 对应 redis.c 的 _redis_reader_agg，注意 MAP/ATTR 元素数 = nelem*2
 static void test_redis_resp3_aggregate(CuTest *tc) {
     // SET: "~3\r\n+a\r\n+b\r\n+c\r\n"
     {
@@ -2511,7 +3117,7 @@ static void _url_check_param(CuTest *tc, url_ctx *ctx, const char *key, const ch
     CuAssertTrue(tc, 0 == prm->lens || buf_compare(prm, val, strlen(val)));
 }
 static void test_url_parse(CuTest *tc) {
-    /* url_parse 在原始 char 数组上就地操作，不能用 const char * */
+    /* 传 1(URL_DECODE) 时 url 复制进 ctx->buf 解析、原串不改；不解码时才就地解析，各字段指向原串 */
     char url[] = "http://user:psw@host.com:8080/path/to?k1=v1&k2=v2#anchor";
     url_ctx ctx;
     url_parse(&ctx, url, strlen(url), '/', 1);
@@ -2820,6 +3426,37 @@ static void test_url_buf_lens_bound(CuTest *tc) {
     CuAssertTrue(tc, URL_BUF_LENS + 6 == (int)ctx.segs[0].lens);
 }
 
+// URL_SKIP_EMPTY：空路径段在解析时就丢，且不占 URL_MAX_PATH_DEPTH 名额；不带它(旧调用方传 1)空段照留
+static void test_url_skip_empty(CuTest *tc) {
+    url_ctx ctx;
+    char u1[] = "/a//b/";
+    char deep[URL_MAX_PATH_DEPTH * 2 + 8];
+    size_t n = 0;
+    int32_t i;
+    CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, u1, strlen(u1), '/', URL_DECODE | URL_SKIP_EMPTY));
+    CuAssertIntEquals(tc, 2, ctx.npath);
+    CuAssertTrue(tc, buf_compare(&ctx.segs[0], "a", 1));
+    CuAssertTrue(tc, buf_compare(&ctx.segs[1], "b", 1));
+    CuAssertTrue(tc, 4 == ctx.pathlens);
+    // 1 即 URL_DECODE：空段保留，尾随 '/' 也出一个空段，"a" "" "b" "" 四段
+    CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, u1, strlen(u1), '/', 1));
+    CuAssertIntEquals(tc, 4, ctx.npath);
+    CuAssertTrue(tc, 0 == ctx.segs[1].lens);
+    CuAssertTrue(tc, 0 == ctx.segs[3].lens);
+    // 恰 URL_MAX_PATH_DEPTH 个非空段，中间夹一个空段：跳空时合法，不跳时空段顶掉一个名额而失败
+    for (i = 0; i < URL_MAX_PATH_DEPTH; i++) {
+        deep[n++] = '/';
+        if (1 == i) {
+            deep[n++] = '/';
+        }
+        deep[n++] = 's';
+    }
+    deep[n] = '\0';
+    CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, deep, n, '/', URL_DECODE | URL_SKIP_EMPTY));
+    CuAssertIntEquals(tc, URL_MAX_PATH_DEPTH, ctx.npath);
+    CuAssertIntEquals(tc, ERR_FAILED, url_parse(&ctx, deep, n, '/', URL_DECODE));
+}
+
 /* 回归：userinfo 以 authority 里最后一个 '@' 为界(RFC 3986 §3.2)。
    取第一个的话 "user@host@evil.com" 的 host 会被认成 "host@evil.com"，
    与浏览器/curl 不一致——先按 host 过白名单再把原 URL 交出去就成了校验绕过 */
@@ -3057,6 +3694,35 @@ static void test_custz_wire_unpack(CuTest *tc) {
     memcpy(var128 + 2, expect, sizeof(expect));
     _custz_wire_unpack(tc, PACK_CUSTZ_VAR, var128, sizeof(var128), expect, sizeof(expect));
 }
+// 零长包：组包侧三种子类型都拒(返回 NULL、*size 置 0)；接收侧收到长度 0 的头判协议错误，
+// 不再只吞掉包头、静默不投递
+static void test_custz_zero_lens(CuTest *tc) {
+    pack_type types[] = { PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
+    const uint8_t fixed0[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 'x' };// 零长头后跟一个合法包
+    const uint8_t flag0[] = { 0x00, 0x01, 'x' };
+    const uint8_t var0[] = { 0x00, 0x01, 'x' };
+    const uint8_t *wires[] = { fixed0, flag0, var0 };
+    const size_t wlens[] = { sizeof(fixed0), sizeof(flag0), sizeof(var0) };
+    char one = 'x';
+    size_t pksize, out;
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    for (size_t i = 0; i < ARRAY_SIZE(types); i++) {
+        pksize = 12345;
+        CuAssertPtrEquals(tc, NULL, custz_pack(types[i], &one, 0, &pksize));
+        CuAssertTrue(tc, 0 == pksize);
+        buffer_init(&buf);
+        buffer_append(&buf, (void *)wires[i], wlens[i]);
+        ZERO(&ud, sizeof(ud));
+        ud.pktype = (subtype_t)types[i];
+        status = PROT_INIT;
+        out = 0;
+        CuAssertPtrEquals(tc, NULL, _t_custz_unpack(0, &buf, &ud, &out, &status));
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        buffer_free(&buf);
+    }
+}
 // 接收侧的 CUSTZ_MAX_PACK_LENS 判据是 > 上限，故恰等于上限合法（只是还在等数据体）。
 // 头里的长度用宏现算，不写死
 static void test_custz_unpack_maxlens(CuTest *tc) {
@@ -3162,6 +3828,7 @@ static void _smtp_auth_check(CuTest *tc, const char *input, int32_t expected) {
     buffer_append(&buf, (void *)input, strlen(input));
     smtp_ctx smtp;
     ZERO(&smtp, sizeof(smtp));
+    safe_fill_str(smtp.user, sizeof(smtp.user), "alice");// 用户名为空时握手跳过 AUTH、不解析通告
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = 1;// EHLO
@@ -3284,7 +3951,7 @@ static void test_smtp_full_response(CuTest *tc) {
 }
 
 // mail_clear 须把 reply 一并还原到 mail_init 后的状态：漏还原会让复用同一对象的下一封信
-// 沿用上一封的 No-Reply，而调用方从 API 上看不出 clear() 没覆盖它
+// 沿用上一封的 reply=0、丢掉默认的 Reply-To，而调用方从 API 上看不出 clear() 没覆盖它
 static void test_smtp_clear_reply(CuTest *tc) {
     mail_ctx mail;
     mail_init(&mail);
@@ -3295,7 +3962,8 @@ static void test_smtp_clear_reply(CuTest *tc) {
     mail_reply(&mail, 0);
     char *out = mail_pack(&mail, NULL);
     CuAssertPtrNotNull(tc, out);
-    CuAssert(tc, "reply=0 must emit No-Reply", NULL != strstr(out, "No-Reply: alice@example.com"));
+    CuAssert(tc, "reply=0 must emit no Reply-To", NULL == strstr(out, "Reply-To:"));
+    CuAssert(tc, "reply=0 must not emit the non-standard No-Reply", NULL == strstr(out, "No-Reply:"));
     FREE(out);
 
     mail_clear(&mail);
@@ -3861,7 +4529,7 @@ static void test_dns_parse_pack_nodata(CuTest *tc) {
         0x03, 'c','o','m', 0x00,
         0x00, 0x01, 0x00, 0x01,
         /* authority: 压缩指针 \xc0\x0c + type=SOA(6) + class=IN + ttl=300 + rdlen=4
-         * rdata 内容对本用例无意义，_dns_parse_data 只按 rdlen 跳过非 A/AAAA 记录 */
+         * an=0 即 NODATA，授权段根本不解析；应答段里跳过非 A/AAAA 记录那条路见 test_dns_parse_pack_cname_only */
         0xc0, 0x0c, 0x00, 0x06, 0x00, 0x01, 0x00, 0x00,
         0x01, 0x2c, 0x00, 0x04,
         0x00, 0x00, 0x00, 0x00
@@ -3892,6 +4560,52 @@ static void test_dns_parse_pack_nodata(CuTest *tc) {
     ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, NULL);
     CuAssertTrue(tc, NULL == ips);
     CuAssertTrue(tc, 0 == cnt);
+}
+// 应答段只有一条 CNAME、链目标的 A 不在应答段里(常见于转发器)：按 rdlen 跳过 CNAME 后一个地址都没有，
+// 是服务端的完整答复 → NULL 且 nodata=1
+static void test_dns_parse_pack_cname_only(CuTest *tc) {
+    uint8_t resp[] = {
+        /* head: id=0x1234, flags=0x8180(NOERROR), qd=1, an=1, ns=0, ar=0 */
+        0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00,
+        /* query: example.com A IN */
+        0x07, 'e','x','a','m','p','l','e',
+        0x03, 'c','o','m', 0x00,
+        0x00, 0x01, 0x00, 0x01,
+        /* answer: \xc0\x0c CNAME(5) IN ttl=300 rdlen=6 -> www.example.com(\x03www\xc0\x0c) */
+        0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00,
+        0x01, 0x2c, 0x00, 0x06,
+        0x03, 'w','w','w', 0xc0, 0x0c
+    };
+    size_t cnt = 12345;
+    int32_t nodata = 0;
+    CuAssertTrue(tc, NULL == dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, &nodata));
+    CuAssertTrue(tc, 0 == cnt);
+    CuAssertTrue(tc, 1 == nodata);
+}
+// rcode 非 0：一律返回 NULL；NXDOMAIN 是明确答复、nodata=1 不回退 TCP，SERVFAIL 等 nodata=0 照旧回退(Lua 侧见 dns_fake)
+static void test_dns_parse_pack_rcode(CuTest *tc) {
+    uint8_t resp[] = {
+        /* head: id=0x1234, flags=0x8183(rcode=3 NXDOMAIN), qd=1, an=0, ns=0, ar=0 */
+        0x12, 0x34, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x07, 'e','x','a','m','p','l','e',
+        0x03, 'c','o','m', 0x00,
+        0x00, 0x01, 0x00, 0x01
+    };
+    size_t cnt = 12345;
+    int32_t nodata = 0;
+    // NXDOMAIN 是明确答复：nodata=1，不回退 TCP
+    CuAssertTrue(tc, NULL == dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, &nodata));
+    CuAssertTrue(tc, 0 == cnt);
+    CuAssertTrue(tc, 1 == nodata);
+    // SERVFAIL(rcode=2)可能是暂时故障：nodata=0，值得回退 TCP
+    resp[3] = 0x82;
+    cnt = 12345;
+    nodata = 1;
+    CuAssertTrue(tc, NULL == dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, &nodata));
+    CuAssertTrue(tc, 0 == cnt);
+    CuAssertTrue(tc, 0 == nodata);
 }
 // DNS-TC：响应头 TC 位置位时应直接返回 NULL，不产出部分记录
 static void test_dns_parse_pack_truncated_flag(CuTest *tc) {
@@ -4080,8 +4794,55 @@ static void test_dns_parse_pack_multi_a(CuTest *tc) {
     CuAssertStrEquals(tc, "9.10.11.12", ips[2].ip);
     FREE(ips);
 }
-// _dns_encode_domain 的两条长度拒绝路径：整串 >=255 字节、单个 label >63 字节。
-// buf 按对外契约留满 head(12) + 域名最长 256 + question(4)
+// 只取应答段：授权段 / 附加段里的 A 是名字服务器的地址(转介、glue)，不是查询名的；
+// CNAME 链后的 A 属主名虽不同，照收
+static void test_dns_parse_pack_answer_only(CuTest *tc) {
+    // an=0, ns=1(NS ns1.example.com), ar=1(glue A 9.9.9.9)：应报 nodata
+    uint8_t glue[] = {
+        0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
+        0x07, 'e','x','a','m','p','l','e', 0x03, 'c','o','m', 0x00, 0x00, 0x01, 0x00, 0x01,
+        // authority(偏移 29)：NS，rdata "\x03ns1" + 指针回 example.com，ns1 标签落在偏移 41
+        0xc0, 0x0c, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x06,
+        0x03, 'n','s','1', 0xc0, 0x0c,
+        // additional：ns1.example.com A 9.9.9.9
+        0xc0, 0x29, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x04, 9, 9, 9, 9
+    };
+    size_t cnt = 12345;
+    int32_t nodata = 0;
+    dns_ip *ips = dns_parse_pack((char *)glue, sizeof(glue), &cnt, 0x1234, &nodata);
+    CuAssertTrue(tc, NULL == ips);
+    CuAssertTrue(tc, 0 == cnt);
+    CuAssertTrue(tc, 1 == nodata);
+
+    // an=1 A 1.2.3.4，ar=1 同名 A 9.9.9.9：只算应答段那一条
+    uint8_t extra[] = {
+        0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x07, 'e','x','a','m','p','l','e', 0x03, 'c','o','m', 0x00, 0x00, 0x01, 0x00, 0x01,
+        0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x04, 1, 2, 3, 4,
+        0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x04, 9, 9, 9, 9
+    };
+    ips = dns_parse_pack((char *)extra, sizeof(extra), &cnt, 0x1234, NULL);
+    CuAssertPtrNotNull(tc, ips);
+    CuAssertTrue(tc, 1 == cnt);
+    CuAssertStrEquals(tc, "1.2.3.4", ips[0].ip);
+    FREE(ips);
+
+    // an=2：example.com CNAME www.example.com(www 标签落在偏移 41)，www.example.com A 5.6.7.8
+    uint8_t cname[] = {
+        0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+        0x07, 'e','x','a','m','p','l','e', 0x03, 'c','o','m', 0x00, 0x00, 0x01, 0x00, 0x01,
+        0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x06,
+        0x03, 'w','w','w', 0xc0, 0x0c,
+        0xc0, 0x29, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x04, 5, 6, 7, 8
+    };
+    ips = dns_parse_pack((char *)cname, sizeof(cname), &cnt, 0x1234, NULL);
+    CuAssertPtrNotNull(tc, ips);
+    CuAssertTrue(tc, 1 == cnt);
+    CuAssertStrEquals(tc, "5.6.7.8", ips[0].ip);
+    FREE(ips);
+}
+// _dns_encode_domain 的两条长度拒绝路径：编码后超 255 字节(去掉结尾 '.' 后超 253)、单个 label >63 字节。
+// buf 按对外契约留满 head(12) + 名字最长 255 + question(4)
 static void test_dns_request_pack_domain_lens(CuTest *tc) {
     char buf[512];
     char domain[512];
@@ -4095,18 +4856,21 @@ static void test_dns_request_pack_domain_lens(CuTest *tc) {
     memset(domain, 'a', 64);
     memcpy(domain + 64, ".com", 5);
     CuAssertTrue(tc, 0 == (int)dns_request_pack(buf, domain, 0, &id));
-    // 整串 254 字节 → 合法(内部工作缓冲 256，判据是 >= 255)：12 + 256 + 4 = 272
-    memset(domain, 'b', 254);
-    domain[63] = '.';
-    domain[127] = '.';
-    domain[191] = '.';
-    domain[254] = '\0';
-    CuAssertTrue(tc, 272 == (int)dns_request_pack(buf, domain, 0, &id));
-    // 整串 255 字节 → 拒
+    // 整串 253 字节 → 合法，编码后恰 255：12 + 255 + 4 = 271
     memset(domain, 'b', 255);
     domain[63] = '.';
     domain[127] = '.';
     domain[191] = '.';
+    domain[253] = '\0';
+    CuAssertTrue(tc, 271 == (int)dns_request_pack(buf, domain, 0, &id));
+    // 同一名字带结尾 '.'(254 字节)判据一致 → 合法、同长
+    domain[253] = '.';
+    domain[254] = '\0';
+    CuAssertTrue(tc, 271 == (int)dns_request_pack(buf, domain, 0, &id));
+    // 去掉结尾 '.' 后 254 字节(编码后 256) → 拒，带不带结尾 '.' 都一样
+    domain[253] = 'b';
+    CuAssertTrue(tc, 0 == (int)dns_request_pack(buf, domain, 0, &id));
+    domain[254] = '.';
     domain[255] = '\0';
     CuAssertTrue(tc, 0 == (int)dns_request_pack(buf, domain, 0, &id));
 }
@@ -4594,6 +5358,12 @@ static void test_websock_handshake_server_reject(CuTest *tc) {
         // 方法不是 GET
         "POST / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
         "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // 方法区分大小写(RFC 9110 §9.1)：小写 get 不认
+        "get / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        // 版本低于 HTTP/1.1(RFC 6455 §4.2.1)
+        "GET / HTTP/1.0\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
         // 缺 Connection
         "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\n"
         "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
@@ -4902,6 +5672,45 @@ static void test_websock_unpack_close(CuTest *tc) {
     _websock_pkfree(pack);
     buffer_free(&buf);
 }
+// 客户端视角解一个无掩码 CLOSE 帧，返回协议层回应时要带的状态码
+static uint16_t _ws_close_code_of(CuTest *tc, const char *payload, size_t plens) {
+    char frame[2 + 8];
+    frame[0] = (char)0x88;// FIN=1 opcode=CLOSE
+    frame[1] = (char)plens;
+    memcpy(frame + 2, payload, plens);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, frame, 2 + plens);
+    websock_ctx ws;
+    ud_cxt ud;
+    _ws_ctx_init(&ws, &ud);
+    int32_t status = PROT_INIT;
+    struct websock_pack_ctx *pack = _t_websock_unpack(1, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_CLOSE));
+    uint16_t code = _websock_close_code(pack);
+    _websock_pkfree(pack);
+    buffer_free(&buf);
+    return code;
+}
+// 回应对端 CLOSE 的状态码(RFC 6455 §5.5.1 / §7.4)：合法码原样回显，空载荷回空 CLOSE；
+// 1 字节载荷与保留、未分配、越界的码一律回 1002，不原样回显
+static void test_websock_close_reply_code(CuTest *tc) {
+    static const uint16_t ok[] = { 1000, 1003, 1007, 1011, 1014, 3000, 4999 };
+    static const uint16_t bad[] = { 0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535 };
+    char body[4];
+    CuAssertIntEquals(tc, 0, _ws_close_code_of(tc, "", 0));
+    CuAssertIntEquals(tc, 1002, _ws_close_code_of(tc, "\x03", 1));
+    for (size_t i = 0; i < ARRAY_SIZE(ok); i++) {
+        write_be16(body, ok[i]);
+        memcpy(body + 2, "ab", 2);// 原因不回显，带不带不影响
+        CuAssertIntEquals(tc, ok[i], _ws_close_code_of(tc, body, 4));
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+        write_be16(body, bad[i]);
+        CuAssertIntEquals(tc, 1002, _ws_close_code_of(tc, body, 2));
+    }
+}
 
 // 服务端收到无掩码客户端帧应触发 PROT_ERROR（RFC 6455 §5.1）
 static void test_websock_unpack_server_no_mask(CuTest *tc) {
@@ -5157,6 +5966,7 @@ static void test_prots_pkfree_default(CuTest *tc) {
     pack_type defaults[] = { PACK_NONE, PACK_DNS, PACK_SMTP,
                              PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
     uint64_t a0, f0, a1, f1;
+    test_mem_settle();
     mem_stat(&a0, &f0);
     void *p;
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
@@ -5173,6 +5983,7 @@ static void test_prots_hsfree_default(CuTest *tc) {
     pack_type defaults[] = { PACK_NONE, PACK_HTTP, PACK_WEBSOCK, PACK_MQTT,
                              PACK_REDIS, PACK_MYSQL, PACK_PGSQL };
     uint64_t a0, f0, a1, f1;
+    test_mem_settle();
     mem_stat(&a0, &f0);
     void *p;
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
@@ -5188,6 +5999,7 @@ static void test_prots_udfree_default(CuTest *tc) {
     pack_type defaults[] = { PACK_NONE, PACK_DNS,
                              PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
     uint64_t a0, f0, a1, f1;
+    test_mem_settle();
     mem_stat(&a0, &f0);
     ud_cxt ud;
     sock_ctx sk;
@@ -6131,25 +6943,14 @@ static void _http_hdr_embed_check(CuTest *tc, size_t pad, uint32_t nh) {
     _http_udfree(&ud);
     buffer_free(&buf);
 }
-// 头字段数组内嵌进头包：16 槽连同头块整块不超过 1008B 才内嵌，用满搬到堆上(32 槽起)再照常倍增；
-// 放不下 16 槽就不内嵌、照旧单独分配
+// 头字段数组的 16 槽一律内嵌进头包，用满搬到堆上(32 槽起)再照常倍增；头块多大都一样
 static void test_http_header_embed(CuTest *tc) {
-    size_t pad;
-    uint32_t nh;
     _http_hdr_embed_check(tc, 1, 1);
     _http_hdr_embed_check(tc, 1, 16);// 内嵌槽正好用满
     _http_hdr_embed_check(tc, 1, 17);// 第 17 个搬到堆上
     _http_hdr_embed_check(tc, 1, 40);// 搬过去之后 32 -> 64 照常倍增
-    _http_hdr_embed_check(tc, 2000, 3);// 头块大到不内嵌
+    _http_hdr_embed_check(tc, 2000, 3);// 大头块照样内嵌
     _http_hdr_embed_check(tc, 2000, 40);
-    // 结构体大小是 http.c 私有的，算不出确切边界：头块长逐字节扫过一遍，跨过内嵌与不内嵌的分界；
-    // 每个长度都试少量头、正好 16 个(内嵌槽用满)与 17 个(搬到堆上)
-    static const uint32_t nhs[] = { 3, 16, 17 };
-    for (pad = 1; pad <= 1000; pad++) {
-        for (nh = 0; nh < sizeof(nhs) / sizeof(nhs[0]); nh++) {
-            _http_hdr_embed_check(tc, pad, nhs[nh]);
-        }
-    }
 }
 
 /* =======================================================================
@@ -6334,6 +7135,422 @@ static void test_websock_mqtt_ws_fragment_slice_clear(CuTest *tc) {
     CuAssertIntEquals(tc, MQTT_PINGREQ, mp2->fixhead.prot);
     _websock_pkfree(pack2);
 
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+// WS 承载 MQTT 的最小上下文：MQTT 3.1.1 已进命令阶段，ws 挂子协议缓冲，ud 摆在 websock 的 START
+static void _ws_mqtt_ctx_init(mqtt_ctx *mctx, ud_cxt *mqtt_ud, buffer_ctx *subbuf, websock_ctx *ws, ud_cxt *ud) {
+    ZERO(mctx, sizeof(mqtt_ctx));
+    mctx->version = MQTT_311;
+    ZERO(mqtt_ud, sizeof(ud_cxt));
+    mqtt_ud->status = 1;// mqtt 内部 COMMAND 状态
+    mqtt_ud->context = mctx;
+    buffer_init(subbuf);
+    ZERO(ws, sizeof(websock_ctx));
+    ws->secprot = PACK_MQTT;
+    ws->ud = mqtt_ud;
+    ws->buf = subbuf;
+    ZERO(ud, sizeof(ud_cxt));
+    ud->status = 1;// websock 内部 START 状态
+    ud->context = ws;
+}
+// 同一帧里 DISCONNECT 之后的包不再解(同 TCP 承载见 PROT_CLOSE 即停)，余下字节留在子协议缓冲随连接释放
+static void test_websock_mqtt_disconnect_stop(CuTest *tc) {
+    unsigned char payload[] = { 0xE0, 0x00, 0xC0, 0x00 };// DISCONNECT + PINGREQ
+    size_t fsize;
+    void *frame = websock_pack_binary(1, 1, payload, sizeof(payload), &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    int32_t status = PROT_INIT;
+    struct websock_pack_ctx *pack = _t_websock_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_CLOSE));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mqtt_pack_ctx *mp = (mqtt_pack_ctx *)websock_secpack(pack);
+    CuAssertPtrNotNull(tc, mp);
+    CuAssertIntEquals(tc, MQTT_DISCONNECT, mp->fixhead.prot);
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack));// 后面的 PINGREQ 没解出来
+    CuAssertTrue(tc, 2 == buffer_size(&subbuf));
+    _websock_pkfree(pack);
+    buffer_free(&subbuf);// 余下的 PINGREQ 连同承载它的那帧在这里回收
+    buffer_free(&buf);
+}
+// 一个 MQTT 包跨两个 WS 帧：前一帧只够半包(返回 NULL、不报错)，半包留在子协议缓冲；
+// 后一帧补齐后解出整包，两帧的载荷节点都被排空回收(漏回收或重复回收由内存检查兜住)
+static void test_websock_mqtt_cross_frame(CuTest *tc) {
+    unsigned char publish[] = { 0x30, 0x0A, 0x00, 0x03, 't', '/', 'a', 'h', 'e', 'l', 'l', 'o' };// QoS0 PUBLISH t/a hello
+    size_t f1size, f2size;
+    void *f1 = websock_pack_binary(1, 1, publish, 6, &f1size);
+    void *f2 = websock_pack_binary(1, 1, publish + 6, sizeof(publish) - 6, &f2size);
+    CuAssertPtrNotNull(tc, f1);
+    CuAssertPtrNotNull(tc, f2);
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, f1, f1size);
+    FREE(f1);
+    int32_t status = PROT_INIT;
+    CuAssertTrue(tc, NULL == _t_websock_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, 6 == buffer_size(&subbuf));
+    buffer_append(&buf, f2, f2size);
+    FREE(f2);
+    status = PROT_INIT;
+    struct websock_pack_ctx *pack = _t_websock_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mqtt_pack_ctx *mp = (mqtt_pack_ctx *)websock_secpack(pack);
+    CuAssertPtrNotNull(tc, mp);
+    CuAssertIntEquals(tc, MQTT_PUBLISH, mp->fixhead.prot);
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack));
+    CuAssertTrue(tc, 0 == buffer_size(&subbuf));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _websock_pkfree(pack);
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+// 一个 MQTT 包先拆成 1 字节一帧喂 1500 帧：小帧载荷拷进子协议缓冲，节点数跟字节量走、不跟帧数走；
+// 余下部分一帧发完(超 MAX_RECV_SIZE，挂外部节点)，内部节点与外部节点混排照样解出整包
+static void test_websock_mqtt_small_frames(CuTest *tc) {
+    const size_t nsmall = 1500;
+    char body[6000];
+    for (size_t i = 0; i < sizeof(body); i++) {
+        body[i] = (char)('a' + (i % 26));
+    }
+    size_t mlens;
+    char *mq = mqtt_pack_publish(MQTT_311, 0, 0, 0, "t/a", 0, body, sizeof(body), NULL, &mlens);
+    CuAssertPtrNotNull(tc, mq);
+    CuAssertTrue(tc, mlens > nsmall + MAX_RECV_SIZE);
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    size_t fsize;
+    void *frame;
+    int32_t status;
+    for (size_t i = 0; i < nsmall; i++) {
+        frame = websock_pack_binary(1, 1, mq + i, 1, &fsize);
+        CuAssertPtrNotNull(tc, frame);
+        buffer_append(&buf, frame, fsize);
+        FREE(frame);
+        status = PROT_INIT;
+        CuAssertTrue(tc, NULL == _t_websock_unpack(0, &buf, &ud, NULL, &status));
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    }
+    CuAssertTrue(tc, nsmall == buffer_size(&subbuf));
+    // 每帧挂一个节点的话这里是 1500 个节点(iov 取满 16 条)；拷进来只占两三个节点
+    IOV_TYPE iov[16];
+    uint32_t n = buffer_get(&subbuf, buffer_size(&subbuf), iov, ARRAY_SIZE(iov));
+    buffer_commit_get(&subbuf, 0);
+    CuAssertTrue(tc, n > 0 && n <= 3);
+    frame = websock_pack_binary(1, 1, mq + nsmall, mlens - nsmall, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    FREE(mq);
+    status = PROT_INIT;
+    struct websock_pack_ctx *pack = _t_websock_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mqtt_pack_ctx *mp = (mqtt_pack_ctx *)websock_secpack(pack);
+    CuAssertPtrNotNull(tc, mp);
+    CuAssertIntEquals(tc, MQTT_PUBLISH, mp->fixhead.prot);
+    mqtt_publish_payload *pl = (mqtt_publish_payload *)mp->payload;
+    CuAssertPtrNotNull(tc, pl);
+    CuAssertIntEquals(tc, (int32_t)sizeof(body), pl->lens);
+    CuAssertTrue(tc, 0 == memcmp(pl->content, body, sizeof(body)));
+    CuAssertTrue(tc, 0 == buffer_size(&subbuf));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _websock_pkfree(pack);
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+
+// 断言一个链节点是 MQTT 包节点：字段与新开的链节点一致(fin=1、BINARY、不带裸载荷)，子协议包类型对得上
+static mqtt_pack_ctx *_t_ws_mqtt_node(CuTest *tc, struct websock_pack_ctx *node, int32_t prot) {
+    size_t dlens = 1;
+    CuAssertPtrNotNull(tc, node);
+    CuAssertIntEquals(tc, 1, websock_fin(node));
+    CuAssertIntEquals(tc, WS_BINARY, websock_prot(node));
+    CuAssertIntEquals(tc, PACK_MQTT, websock_secprot(node));
+    (void)websock_data(node, &dlens);
+    CuAssertIntEquals(tc, 0, (int)dlens);
+    mqtt_pack_ctx *mp = (mqtt_pack_ctx *)websock_secpack(node);
+    CuAssertPtrNotNull(tc, mp);
+    CuAssertIntEquals(tc, prot, mp->fixhead.prot);
+    return mp;
+}
+// 子协议缓冲为空、帧里正好一整包：直接在帧上解，链头复用帧。承载帧是 WS 分片起始帧(fin=0)、CONTINUE 时
+// 链头照样是 fin=1 的 BINARY 节点；*size 为报文总长，子协议缓冲始终为空。
+// 超过 MAX_RECV_SIZE 的帧不走直解(照旧挂外部节点)，结果一样
+static void test_websock_mqtt_flat_one(CuTest *tc) {
+    unsigned char publish[] = { 0x30, 0x0A, 0x00, 0x03, 't', '/', 'a', 'h', 'e', 'l', 'l', 'o' };// QoS0 PUBLISH t/a hello
+    unsigned char ping[] = { 0xC0, 0x00 };
+    char body[6000];
+    for (size_t i = 0; i < sizeof(body); i++) {
+        body[i] = (char)('a' + (i % 26));
+    }
+    size_t mlens, fsize, size;
+    char *big = mqtt_pack_publish(MQTT_311, 0, 0, 0, "t/b", 0, body, sizeof(body), NULL, &mlens);
+    CuAssertPtrNotNull(tc, big);
+    CuAssertTrue(tc, mlens > MAX_RECV_SIZE);
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf, buf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    buffer_init(&buf);
+    void *frame = websock_pack_binary(1, 0, publish, sizeof(publish), &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    frame = websock_pack_continua(1, 1, ping, sizeof(ping), &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    frame = websock_pack_binary(1, 1, big, mlens, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    FREE(big);
+
+    // 1) 分片起始帧里的整包 PUBLISH
+    int32_t status = PROT_INIT;
+    size = 0;
+    struct websock_pack_ctx *pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    mqtt_pack_ctx *mp = _t_ws_mqtt_node(tc, pack, MQTT_PUBLISH);
+    CuAssertIntEquals(tc, PROT_INIT, status);
+    CuAssertIntEquals(tc, (int)sizeof(publish), (int)size);
+    CuAssertStrEquals(tc, "t/a", ((mqtt_publish_varhead *)mp->varhead)->topic);
+    mqtt_publish_payload *pl = (mqtt_publish_payload *)mp->payload;
+    CuAssertPtrNotNull(tc, pl);
+    CuAssertIntEquals(tc, 5, pl->lens);
+    CuAssertTrue(tc, 0 == memcmp(pl->content, "hello", 5));
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&subbuf));
+    _websock_pkfree(pack);
+
+    // 2) 分片结束帧(CONTINUE)里的整包 PINGREQ
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    (void)_t_ws_mqtt_node(tc, pack, MQTT_PINGREQ);
+    CuAssertIntEquals(tc, PROT_INIT, status);
+    CuAssertIntEquals(tc, (int)sizeof(ping), (int)size);
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&subbuf));
+    _websock_pkfree(pack);
+
+    // 3) 大帧
+    status = PROT_INIT;
+    size = 0;
+    pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    mp = _t_ws_mqtt_node(tc, pack, MQTT_PUBLISH);
+    CuAssertIntEquals(tc, PROT_INIT, status);
+    CuAssertIntEquals(tc, (int)mlens, (int)size);
+    pl = (mqtt_publish_payload *)mp->payload;
+    CuAssertPtrNotNull(tc, pl);
+    CuAssertIntEquals(tc, (int32_t)sizeof(body), pl->lens);
+    CuAssertTrue(tc, 0 == memcmp(pl->content, body, sizeof(body)));
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&subbuf));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    _websock_pkfree(pack);
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+// 一帧两个整包(QoS1 PUBLISH + QoS0 PUBLISH)：链头复用帧、第二个新开节点，内容各自对得上，*size 为两包之和
+static void test_websock_mqtt_flat_two(CuTest *tc) {
+    char payload[64];
+    size_t l1, l2, fsize, size;
+    char *p1 = mqtt_pack_publish(MQTT_311, 0, 1, 0, "t/a", 7, "abc", 3, NULL, &l1);
+    char *p2 = mqtt_pack_publish(MQTT_311, 0, 0, 0, "t/bb", 0, "wxyz", 4, NULL, &l2);
+    CuAssertPtrNotNull(tc, p1);
+    CuAssertPtrNotNull(tc, p2);
+    CuAssertTrue(tc, l1 + l2 <= sizeof(payload));
+    memcpy(payload, p1, l1);
+    memcpy(payload + l1, p2, l2);
+    FREE(p1);
+    FREE(p2);
+    void *frame = websock_pack_binary(1, 1, payload, l1 + l2, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf, buf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    buffer_init(&buf);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    int32_t status = PROT_INIT;
+    size = 0;
+    struct websock_pack_ctx *pack1 = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    mqtt_pack_ctx *mp = _t_ws_mqtt_node(tc, pack1, MQTT_PUBLISH);
+    CuAssertIntEquals(tc, PROT_INIT, status);
+    CuAssertIntEquals(tc, (int)(l1 + l2), (int)size);
+    mqtt_publish_varhead *vh = (mqtt_publish_varhead *)mp->varhead;
+    CuAssertStrEquals(tc, "t/a", vh->topic);
+    CuAssertIntEquals(tc, 1, vh->qos);
+    CuAssertIntEquals(tc, 7, vh->packid);
+    mqtt_publish_payload *pl = (mqtt_publish_payload *)mp->payload;
+    CuAssertIntEquals(tc, 3, pl->lens);
+    CuAssertTrue(tc, 0 == memcmp(pl->content, "abc", 3));
+    struct websock_pack_ctx *pack2 = _websock_pack_next(pack1);
+    mp = _t_ws_mqtt_node(tc, pack2, MQTT_PUBLISH);
+    CuAssertStrEquals(tc, "t/bb", ((mqtt_publish_varhead *)mp->varhead)->topic);
+    pl = (mqtt_publish_payload *)mp->payload;
+    CuAssertIntEquals(tc, 4, pl->lens);
+    CuAssertTrue(tc, 0 == memcmp(pl->content, "wxyz", 4));
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack2));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&subbuf));
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    _websock_pkfree(pack1);
+    _websock_pkfree(pack2);
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+// 帧尾不够一整包：前面的整包直接解出(链头复用帧)，余下字节拷进子协议缓冲；下一帧来时缓冲不空、走老路补齐。
+// 余下只差 1 字节固定头、差半个包体两种都过一遍
+static void test_websock_mqtt_flat_leftover(CuTest *tc) {
+    unsigned char publish[] = { 0x30, 0x0A, 0x00, 0x03, 't', '/', 'a', 'h', 'e', 'l', 'l', 'o' };// QoS0 PUBLISH t/a hello
+    unsigned char ping[] = { 0xC0, 0x00 };
+    unsigned char w1[2 + 5], w3[2 + 2 + 1], w4[1 + 2];
+    memcpy(w1, ping, 2);
+    memcpy(w1 + 2, publish, 5);// PINGREQ + PUBLISH 前 5 字节
+    memcpy(w3, ping, 2);
+    memcpy(w3 + 2, ping, 2);
+    w3[4] = 0xC0;// 两个 PINGREQ + 第三个的首字节
+    w4[0] = 0x00;
+    memcpy(w4 + 1, ping, 2);// 第三个的末字节 + 第四个 PINGREQ
+    const struct {
+        const void *data;
+        size_t lens;
+    } frames[] = { { w1, sizeof(w1) }, { publish + 5, sizeof(publish) - 5 }, { w3, sizeof(w3) }, { w4, sizeof(w4) } };
+    const int32_t npack[] = { 1, 1, 2, 2 };
+    const int32_t first[] = { MQTT_PINGREQ, MQTT_PUBLISH, MQTT_PINGREQ, MQTT_PINGREQ };
+    const size_t sizes[] = { 2, sizeof(publish), 4, 4 };
+    const size_t left[] = { 5, 0, 1, 0 };
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf, buf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    buffer_init(&buf);
+    size_t fsize, size;
+    int32_t status;
+    void *frame;
+    struct websock_pack_ctx *pack, *next;
+    for (size_t i = 0; i < ARRAY_SIZE(frames); i++) {
+        frame = websock_pack_binary(1, 1, (void *)frames[i].data, frames[i].lens, &fsize);
+        CuAssertPtrNotNull(tc, frame);
+        buffer_append(&buf, frame, fsize);
+        FREE(frame);
+        status = PROT_INIT;
+        size = 0;
+        pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+        (void)_t_ws_mqtt_node(tc, pack, first[i]);
+        CuAssertIntEquals(tc, PROT_INIT, status);
+        CuAssertIntEquals(tc, (int)sizes[i], (int)size);
+        next = _websock_pack_next(pack);
+        if (2 == npack[i]) {
+            (void)_t_ws_mqtt_node(tc, next, MQTT_PINGREQ);
+            CuAssertPtrEquals(tc, NULL, _websock_pack_next(next));
+            _websock_pkfree(next);
+        } else {
+            CuAssertPtrEquals(tc, NULL, next);
+        }
+        CuAssertIntEquals(tc, (int)left[i], (int)buffer_size(&subbuf));
+        CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+        _websock_pkfree(pack);
+    }
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+// 直解中途出错，结果同整帧进缓冲再解：已解出的包照常返回、置 PROT_ERROR；出错那包排掉固定头，余下留在缓冲。
+// 固定头那层的错(剩余长度超上限)交给 mqtt_unpack 判，同样报错
+static void test_websock_mqtt_flat_error(CuTest *tc) {
+    unsigned char badping[] = { 0xC0, 0x00, 0xC1, 0x00, 0xC0, 0x00 };// PINGREQ + 标志位非 0 的 PINGREQ + PINGREQ
+    unsigned char badfirst[] = { 0xC1, 0x00, 0xC0, 0x00 };
+    unsigned char toolong[] = { 0xC0, 0x00, 0x30, 0xFF, 0xFF, 0x7F };// PINGREQ + 剩余长度 2097151 的 PUBLISH 头
+    const struct {
+        const void *data;
+        size_t lens;
+        int32_t npack;
+        size_t left;
+    } cases[] = { { badping, sizeof(badping), 1, 2 }, { badfirst, sizeof(badfirst), 0, 2 }, { toolong, sizeof(toolong), 1, 4 } };
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf, buf;
+    websock_ctx ws;
+    size_t fsize;
+    int32_t status;
+    void *frame;
+    struct websock_pack_ctx *pack;
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+        buffer_init(&buf);
+        frame = websock_pack_binary(1, 1, (void *)cases[i].data, cases[i].lens, &fsize);
+        CuAssertPtrNotNull(tc, frame);
+        buffer_append(&buf, frame, fsize);
+        FREE(frame);
+        status = PROT_INIT;
+        pack = _t_websock_unpack(0, &buf, &ud, NULL, &status);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        if (0 == cases[i].npack) {
+            CuAssertPtrEquals(tc, NULL, pack);
+        } else {
+            (void)_t_ws_mqtt_node(tc, pack, MQTT_PINGREQ);
+            CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack));
+            _websock_pkfree(pack);
+        }
+        CuAssertIntEquals(tc, (int)cases[i].left, (int)buffer_size(&subbuf));
+        buffer_free(&subbuf);
+        buffer_free(&buf);
+    }
+}
+// 直解途中遇 DISCONNECT：链头(复用的帧)与 DISCONNECT 节点照常返回、置 PROT_CLOSE，之后的包不解，
+// 余下字节进子协议缓冲随连接释放(同 test_websock_mqtt_disconnect_stop 的老路口径)
+static void test_websock_mqtt_flat_disconnect(CuTest *tc) {
+    unsigned char payload[] = { 0xC0, 0x00, 0xE0, 0x00, 0xC0, 0x00 };// PINGREQ + DISCONNECT + PINGREQ
+    size_t fsize, size;
+    void *frame = websock_pack_binary(1, 1, payload, sizeof(payload), &fsize);
+    CuAssertPtrNotNull(tc, frame);
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf, buf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    buffer_init(&buf);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+    int32_t status = PROT_INIT;
+    size = 0;
+    struct websock_pack_ctx *pack = _t_websock_unpack(0, &buf, &ud, &size, &status);
+    (void)_t_ws_mqtt_node(tc, pack, MQTT_PINGREQ);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_CLOSE));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 4, (int)size);
+    struct websock_pack_ctx *next = _websock_pack_next(pack);
+    (void)_t_ws_mqtt_node(tc, next, MQTT_DISCONNECT);
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(next));
+    CuAssertIntEquals(tc, 2, (int)buffer_size(&subbuf));
+    _websock_pkfree(pack);
+    _websock_pkfree(next);
     buffer_free(&subbuf);
     buffer_free(&buf);
 }
@@ -6658,6 +7875,44 @@ static void test_mail_attach_long_name(CuTest *tc) {
     CuAssertTrue(tc, 0 != ext_ok);
 }
 
+// mail_attach_add 的返回值：读不到的路径、目录返回 ERR_FAILED 且不加附件；
+// 0 字节文件按空附件加入、组包照常。目录必须在 readall 之前挡掉：ext4 上目录 ftell 得到的是哈希 EOF 哨兵，
+// 照它分配会撞 OOM 断言；Windows 上目录 st_size 为 0，只看大小会被当成空文件
+static void test_mail_attach_add_ret(CuTest *tc) {
+    char tmpfile[PATH_LENS];
+    SNPRINTF(tmpfile, sizeof(tmpfile), "%s%stest_mail_empty.txt", procpath(), PATH_SEPARATORSTR);
+    FILE *fp = fopen(tmpfile, "wb");
+    CuAssertPtrNotNull(tc, fp);
+    fclose(fp);
+    char bogus[PATH_LENS];
+    SNPRINTF(bogus, sizeof(bogus), "%s%stest_mail_no_such_file.txt", procpath(), PATH_SEPARATORSTR);
+
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    int32_t rtn_bogus = mail_attach_add(&mail, bogus);
+    int32_t rtn_dir = mail_attach_add(&mail, procpath());
+    int32_t natt1 = (int32_t)mattach_arr_size(&mail.attach);
+    int32_t rtn_empty = mail_attach_add(&mail, tmpfile);
+    int32_t natt2 = (int32_t)mattach_arr_size(&mail.attach);
+    mail_attach *att = (1 == natt2) ? mattach_arr_at(&mail.attach, 0) : NULL;
+    int32_t lens_ok = (NULL != att && 0 == att->lens);
+    char *pkt = mail_pack(&mail, NULL);
+    int32_t pkt_ok = (NULL != pkt && NULL != strstr(pkt, "filename=\"test_mail_empty.txt\""));
+    FREE(pkt);
+    mail_free(&mail);
+    remove(tmpfile);
+
+    CuAssertIntEquals(tc, ERR_FAILED, rtn_bogus);
+    CuAssertIntEquals(tc, ERR_FAILED, rtn_dir);
+    CuAssertIntEquals(tc, 0, natt1);
+    CuAssertIntEquals(tc, ERR_OK, rtn_empty);
+    CuAssertIntEquals(tc, 1, natt2);
+    CuAssertTrue(tc, 0 != lens_ok);
+    CuAssertTrue(tc, 0 != pkt_ok);
+}
+
 // 握手回传桩，_smtp_ud_setup 每个用例都装一次。_smtp_connected 与 _smtp_auth_check 在被
 // 服务端拒绝时会把原文推给上层，而纯解析测试没起 loader，不装桩这条路没人收载荷。
 // 生产路径由 task 接管并释放，这里桩自己收，免得 MEMORY_CHECK 报泄漏
@@ -6765,6 +8020,7 @@ static void test_smtp_unpack_state_init(CuTest *tc) {
 
 // EHLO 状态：250-AUTH 多行响应 → 状态切换到 AUTH，authtype 设置
 // 无 AUTH 头的 250 响应 → PROT_ERROR
+// 用户名为空 → 不论服务端通不通告 AUTH 都跳过认证，直接进 COMMAND
 static void test_smtp_unpack_state_ehlo(CuTest *tc) {
     // 250-AUTH LOGIN PLAIN：authtype 优先 PLAIN
     {
@@ -6812,11 +8068,33 @@ static void test_smtp_unpack_state_ehlo(CuTest *tc) {
         CuAssertIntEquals(tc, _SMTP_EHLO, ud.status);
         buffer_free(&buf);
     }
+    // 用户名为空：不通告 AUTH 与通告了 AUTH 两种应答都跳过认证、握手成功
+    const char *noauth[] = { "250-mx.example.com Hello\r\n250 STARTTLS\r\n",
+                             "250-mx.example.com Hello\r\n250 AUTH LOGIN PLAIN\r\n" };
+    for (size_t i = 0; i < ARRAY_SIZE(noauth); i++) {
+        smtp_ctx smtp;
+        ud_cxt ud;
+        _smtp_ud_setup(&smtp, &ud, _SMTP_EHLO);
+        smtp.user[0] = '\0';
+        buffer_ctx buf;
+        buffer_init(&buf);
+        _bput(&buf, noauth[i]);
+        int32_t status = PROT_INIT;
+        size_t size = 0;
+        _t_smtp_unpack(0, &buf, &ud, &size, &status);
+        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+        CuAssertIntEquals(tc, _SMTP_COMMAND, ud.status);
+        CuAssertTrue(tc, 0 == buffer_size(&buf));
+        CuAssertIntEquals(tc, 1, g_smtp_hs_calls);
+        CuAssertIntEquals(tc, ERR_OK, g_smtp_hs_erro);
+        CuAssertIntEquals(tc, 0, smtp.authtype);
+        buffer_free(&buf);
+    }
 }
 
-// AUTH 状态 + LOGIN 认证：
-//   334 VXNlcm5hbWU6 (b64 "Username:") → 状态保持 AUTH（仍在 LOGIN 中间步骤）
-//   334 UGFzc3dvcmQ6 (b64 "Password:") → 状态切换 AUTH_CHECK
+// AUTH 状态 + LOGIN 认证：按顺序配对，不看提示文本
+//   AUTH 态第一个 334 → 回用户名，切 AUTH_PSW
+//   AUTH_PSW 态的 334 → 回密码，切 AUTH_CHECK
 // AUTH 状态 + PLAIN：334 任意挑战 → 状态切换 AUTH_CHECK
 // AUTH 状态 + 非 334 响应 → PROT_ERROR
 static void test_smtp_unpack_state_auth_login(CuTest *tc) {
@@ -6832,8 +8110,8 @@ static void test_smtp_unpack_state_auth_login(CuTest *tc) {
         int32_t status = PROT_INIT;
         size_t size = 0;
         _t_smtp_unpack(0, &buf, &ud, &size, &status);
-        // 仍在 AUTH（等待 Password 挑战）
-        CuAssertIntEquals(tc, _SMTP_AUTH, ud.status);
+        // 回了用户名，等第二个 334
+        CuAssertIntEquals(tc, _SMTP_AUTH_PSW, ud.status);
         CuAssertTrue(tc, 0 == buffer_size(&buf));
         buffer_free(&buf);
     }
@@ -6841,7 +8119,7 @@ static void test_smtp_unpack_state_auth_login(CuTest *tc) {
     {
         smtp_ctx smtp;
         ud_cxt ud;
-        _smtp_ud_setup(&smtp, &ud, _SMTP_AUTH);
+        _smtp_ud_setup(&smtp, &ud, _SMTP_AUTH_PSW);
         smtp.authtype = _SMTP_LOGIN;
         buffer_ctx buf;
         buffer_init(&buf);
@@ -6951,6 +8229,49 @@ static void test_mqtt_auth_version_gate(CuTest *tc) {
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     buffer_free(&buf);
 }
+// MQTT-2.2.1-3：报文标识符 0 是保留值。QoS>0 的 PUBLISH、PUBACK 族、SUB/UNSUB 及其 ACK 收到 0 按协议错误；
+// 同一报文把 id 改成 1 即照常解出，证明拒收只因 id 为 0
+static void test_mqtt_packid_zero(CuTest *tc) {
+    struct {
+        int32_t client;// 收包方：SUBSCRIBE / UNSUBSCRIBE 只该服务端收，两个 ACK 只该客户端收
+        size_t idoff;// 报文标识符高字节的偏移
+        size_t lens;
+        char pk[8];
+    } cases[] = {
+        { 0, 5, 7, { (char)0x32, 0x05, 0x00, 0x01, 't', 0x00, 0x00 } },// PUBLISH QoS1
+        { 0, 2, 4, { (char)0x40, 0x02, 0x00, 0x00 } },// PUBACK
+        { 0, 2, 4, { (char)0x50, 0x02, 0x00, 0x00 } },// PUBREC
+        { 0, 2, 4, { (char)0x62, 0x02, 0x00, 0x00 } },// PUBREL
+        { 0, 2, 4, { (char)0x70, 0x02, 0x00, 0x00 } },// PUBCOMP
+        { 0, 2, 8, { (char)0x82, 0x06, 0x00, 0x00, 0x00, 0x01, 'a', 0x00 } },// SUBSCRIBE
+        { 1, 2, 5, { (char)0x90, 0x03, 0x00, 0x00, 0x00 } },// SUBACK
+        { 0, 2, 7, { (char)0xA2, 0x05, 0x00, 0x00, 0x00, 0x01, 'a' } },// UNSUBSCRIBE
+        { 1, 2, 4, { (char)0xB0, 0x02, 0x00, 0x00 } },// UNSUBACK（3.1.1 无原因码）
+    };
+    mqtt_ctx mctx = { MQTT_311 };
+    ud_cxt ud;
+    buffer_ctx buf;
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (int32_t id = 0; id < 2; id++) {
+            cases[i].pk[cases[i].idoff + 1] = (char)id;
+            ZERO(&ud, sizeof(ud));
+            ud.status = 1;// COMMAND
+            ud.context = &mctx;
+            buffer_init(&buf);
+            buffer_append(&buf, cases[i].pk, cases[i].lens);
+            int32_t status = PROT_INIT;
+            mqtt_pack_ctx *pack = _t_mqtt_unpack(cases[i].client, &buf, &ud, NULL, &status);
+            int32_t got = (NULL != pack);
+            int32_t err = BIT_CHECK(status, PROT_ERROR) ? 1 : 0;
+            if (NULL != pack) {
+                _mqtt_pkfree(pack);
+            }
+            buffer_free(&buf);
+            CuAssertIntEquals(tc, id, got);
+            CuAssertIntEquals(tc, 0 == id ? 1 : 0, err);
+        }
+    }
+}
 // MQTT-1.5.4-2：UTF-8 字符串含 U+0000 即非法报文。解析后 clientid 只剩 char*、长度不再保留，
 // 放过去 "victim\0evil" 会在 Lua 侧塌缩成 "victim"，与合法客户端的 clientid 撞成同一个
 static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
@@ -6963,7 +8284,7 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.status = 0;// INIT：CONNECT 只在这个状态被受理，COMMAND 态一律落 default 返 NULL
-    // context 留 NULL：_mqtt_connect 不读它，只在成功末尾覆写；预置个栈对象会被它当堆块释放
+    // context 留 NULL：INIT 态 CONNECT 要求 context 为空
     buffer_ctx buf;
     buffer_init(&buf);
     buffer_append(&buf, nulid, sizeof(nulid));
@@ -7155,37 +8476,61 @@ static void test_strtod_s_paths(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, strtod_s("2.5xyz", 3, &d));// 只看 lens 个字节
     CuAssertTrue(tc, 2.5 == d);
 }
-// strtod_s 的长度边界与内嵌 NUL：快路径直接读原串，≥128 字节仍要拒(快路径本身收得下前导零很长的串)，
+// strtod_s 的长度与内嵌 NUL：长度不设上限，快路径直接读原串，回落时 128 字节以上(含 NUL 装不进栈缓冲)的临时上堆；
 // 含 NUL 的串两条路都不收
 static void test_strtod_s_bounds(CuTest *tc) {
-    char s[160];
+    char s[400];
+    char z[200];
+    char *end;
     double d;
-    // "1" 后跟 126 / 127 个 0：127 字节收，128 字节拒
+    // "1" 后跟一串 0：有效数字超 19 位快路径不收，127 字节走栈缓冲、128 字节起上堆，都收
     memset(s, '0', sizeof(s));
     s[0] = '1';
     d = 7;
     CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 127, &d));
     CuAssertTrue(tc, 1e126 == d);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 128, &d));
+    CuAssertTrue(tc, 1e127 == d);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 300, &d));
+    CuAssertTrue(tc, 1e299 == d);
+    // 上堆那条路照样拒上溢、拒残留，失败不写出参
     d = 7;
-    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, 128, &d));
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, sizeof(s), &d));// 1e399
+    s[200] = 'x';
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, 201, &d));
+    s[150] = '\0';
+    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, 151, &d));
     CuAssertTrue(tc, 7 == d);
-    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, sizeof(s), &d));
-    // 前导零 + "1.5"：快路径收的写法，正好 127 字节收、128 字节拒
+    // 前导零 + "1.5"：快路径收的写法，多长都收
     memset(s, '0', sizeof(s));
     memcpy(s + 124, "1.5", 3);
     CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 127, &d));
     CuAssertTrue(tc, 1.5 == d);
-    s[124] = '0';
-    memcpy(s + 125, "1.5", 3);
+    memset(s, '0', sizeof(s));
+    memcpy(s + 297, "1.5", 3);
     d = 7;
-    CuAssertIntEquals(tc, ERR_FAILED, strtod_s(s, 128, &d));
-    CuAssertTrue(tc, 7 == d);
-    // '+' 开头快路径不收、退回 strtod_c：127 字节照收
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 300, &d));
+    CuAssertTrue(tc, 1.5 == d);
+    // '+' 开头快路径不收、退回 strtod_c：127 字节与 200 字节都收
     memset(s, '0', sizeof(s));
     s[0] = '+';
     memcpy(s + 124, "2.5", 3);
     CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 127, &d));
     CuAssertTrue(tc, 2.5 == d);
+    memset(s, '0', sizeof(s));
+    s[0] = '+';
+    memcpy(s + 197, "2.5", 3);
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(s, 200, &d));
+    CuAssertTrue(tc, 2.5 == d);
+    // 小数位很多的长串："0." 后跟 150 个 '1'，结果与 strtod_c 解 NUL 结尾的同一串一致
+    z[0] = '0';
+    z[1] = '.';
+    memset(z + 2, '1', 150);
+    z[152] = '\0';
+    d = 7;
+    CuAssertIntEquals(tc, ERR_OK, strtod_s(z, 152, &d));
+    CuAssertTrue(tc, strtod_c(z, &end) == d);
+    CuAssertTrue(tc, d > 0.111 && d < 0.112);
     // 内嵌 NUL：快路径停在 NUL 上不收，strtod_c 也只解到 NUL 前，有残留即拒
     d = 7;
     CuAssertIntEquals(tc, ERR_FAILED, strtod_s("1\0", 2, &d));
@@ -7295,11 +8640,16 @@ static void test_kcp_seg_pool(CuTest *tc) {
     for (i = 0; i < (int32_t)sizeof(msg); i++) {
         msg[i] = (char)(i * 13 + 1);
     }
+    test_mem_settle();
     mem_stat(&a0, &f0);
     CALLOC(qab, 1, sizeof(_t_kq));
     CALLOC(qba, 1, sizeof(_t_kq));
     a = ikcp_create(5, qab);
     b = ikcp_create(5, qba);
+    // ikcp 的 mtu 上限补丁：(mtu+24)*3 无符号回绕的超大值与刚过上限的值都拒，mtu 不变
+    CuAssertIntEquals(tc, -1, ikcp_setmtu(a, 1431655742));
+    CuAssertIntEquals(tc, -1, ikcp_setmtu(a, 65536));
+    CuAssertIntEquals(tc, 1400, (int)a->mtu);
     ikcp_setoutput(a, _t_kq_out);
     ikcp_setoutput(b, _t_kq_out);
     ikcp_wndsize(a, 128, 128);
@@ -7740,6 +9090,61 @@ static void test_size_ws_mqtt_chain(CuTest *tc) {
     buffer_free(&subbuf);
     buffer_free(&buf);
 }
+// prots_net_recv 批内换目标的桩：第一条消息投出后把连接转给 handle 2(模拟当场处理时 ev_ud_handle 转走)，
+// g_sw_absent 非 0 时 handle 2 不存在(begin 返 NULL)。按目标记 emit 次数，节点在桩里就地放
+static int32_t g_sw_absent;
+static int32_t g_sw_begins;
+static int32_t g_sw_emits[3];
+static ud_cxt *g_sw_ud;
+static void *_sw_emit_begin(void *loader, name_t handle) {
+    (void)loader;
+    g_sw_begins++;
+    return (2 == handle && 0 != g_sw_absent) ? NULL : (void *)(uintptr_t)handle;
+}
+static void _sw_emit_emit(void *target, message_ctx *msg) {
+    g_sw_emits[(uintptr_t)target]++;
+    _websock_pkfree(msg->data);
+    g_sw_ud->handle = 2;
+}
+static void _sw_emit_end(void *target) {
+    (void)target;
+}
+static prot_emit g_sw_emit = { _sw_emit_begin, _sw_emit_emit, _sw_emit_end };
+// 一帧三个 MQTT 包，投完第一个连接就换了 task：新目标在，后两个投给它；新目标不在，
+// 还没拆链的后两个经 prots_pkfree 整条放掉(漏放由内存检查兜住)
+static void test_prots_recv_switch_target(CuTest *tc) {
+    unsigned char payload[] = { 0xC0, 0x00, 0xC0, 0x00, 0xC0, 0x00 };// 三个 PINGREQ
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf, buf;
+    websock_ctx ws;
+    size_t fsize;
+    void *frame;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    ud.pktype = PACK_WEBSOCK;
+    buffer_init(&buf);
+    g_sw_ud = &ud;
+    prots_init(&g_sw_emit);
+    for (int32_t absent = 0; absent < 2; absent++) {
+        frame = websock_pack_binary(1, 1, payload, sizeof(payload), &fsize);
+        CuAssertPtrNotNull(tc, frame);
+        buffer_append(&buf, frame, fsize);
+        FREE(frame);
+        ud.handle = 1;
+        g_sw_absent = absent;
+        g_sw_begins = 0;
+        ZERO(g_sw_emits, sizeof(g_sw_emits));
+        prots_net_recv(NULL, &_t_nosk, 0, &buf, buffer_size(&buf), &ud);
+        CuAssertIntEquals(tc, 2, g_sw_begins);
+        CuAssertIntEquals(tc, 1, g_sw_emits[1]);
+        CuAssertIntEquals(tc, 0 == absent ? 2 : 0, g_sw_emits[2]);
+        CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+        CuAssertIntEquals(tc, 0, (int)buffer_size(&subbuf));
+    }
+    prots_init(&g_stub_emit);// 换回共用桩
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
 // redis：size = 这条回复各节点的分配长度之和(节点头 + 数据)，与 _redis_node_new 的入参逐项对得上：
 // 单行类型 头 + CRLF 偏移，bulk 头 + 长度 + 2(连结尾 CRLF 一起拷)，聚合 头 + 1。
 // 回复交出后清零：背靠背的下一条、跨两次收齐的都只记自己这条
@@ -7802,12 +9207,351 @@ static void test_size_redis(CuTest *tc) {
     _redis_udfree(&ud);
     buffer_free(&buf);
 }
+// ── smtp_unpack 状态机(带握手回传桩)与 mail_pack 头部 ──────
+// 握手回传桩：失败原因 / 成败经 _hs_push 交给等待方。CuTest 阶段还没起 loader，桩自己收载荷；
+// 之后 loader_init 的 prots_init 会换回正式回调
+static int32_t g_hs_calls;
+static int32_t g_hs_erro;
+static char g_hs_msg[256];
+static sock_ctx g_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
+static int32_t _stub_hspush(sock_ctx *sk, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
+    (void)sk;
+    (void)client;
+    (void)ud;
+    g_hs_calls++;
+    g_hs_erro = erro;
+    g_hs_msg[0] = '\0';
+    if (NULL != data && lens < sizeof(g_hs_msg)) {
+        memcpy(g_hs_msg, data, lens);
+        g_hs_msg[lens] = '\0';
+    }
+    FREE(data);
+    return ERR_OK;
+}
+// 装桩、清计数，造一个停在 state 态的连接上下文
+static void _unpack_setup(smtp_ctx *smtp, ud_cxt *ud, buffer_ctx *buf, uint8_t state, int32_t authtype) {
+    _smtp_init(_stub_hspush);
+    g_hs_calls = 0;
+    g_hs_erro = ERR_OK;
+    g_hs_msg[0] = '\0';
+    ZERO(smtp, sizeof(smtp_ctx));
+    safe_fill_str(smtp->user, sizeof(smtp->user), "alice");
+    safe_fill_str(smtp->psw, sizeof(smtp->psw), "secret");
+    smtp->authtype = authtype;
+    ZERO(ud, sizeof(ud_cxt));
+    ud->status = state;
+    ud->context = smtp;
+    buffer_init(buf);
+}
+// 追加 wire 后喂一次 smtp_unpack，返回解析状态位。ev 与连接标识为空：要回的命令一律发送失败(置 PROT_ERROR)
+// 而不真发，状态迁移在发送之前，照样看得到
+static int32_t _unpack_feed(ud_cxt *ud, buffer_ctx *buf, const char *wire) {
+    buffer_append(buf, (void *)wire, strlen(wire));
+    int32_t status = PROT_INIT;
+    size_t size = 0;
+    char *pack = smtp_unpack(NULL, &g_nosk, 1, buf, ud, &size, &status);
+    FREE(pack);// 只有 COMMAND 态会交出包
+    return status;
+}
+// AUTH 机制按空格切词整词比：PLAIN-CLIENTTOKEN 不是 PLAIN，只通告它与 LOGIN 时须选 LOGIN
+static void test_smtp_authtype_token(CuTest *tc) {
+    smtp_ctx smtp;
+    ud_cxt ud;
+    buffer_ctx buf;
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_EHLO, 0);
+    _unpack_feed(&ud, &buf, "250-mx.example.com\r\n250-AUTH LOGIN PLAIN-CLIENTTOKEN\r\n250 OK\r\n");
+    CuAssertIntEquals(tc, LOGIN, smtp.authtype);
+    CuAssertIntEquals(tc, _SMTP_AUTH, (int)ud.status);
+    buffer_free(&buf);
+    // 大小写不敏感，行尾的机制词也认
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_EHLO, 0);
+    _unpack_feed(&ud, &buf, "250 AUTH xoauth2 plain\r\n");
+    CuAssertIntEquals(tc, PLAIN, smtp.authtype);
+    buffer_free(&buf);
+    // 只有带前后缀的近似词：都不算，按没有可用机制报错，整份应答交给等待方
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_EHLO, 0);
+    int32_t status = _unpack_feed(&ud, &buf, "250 AUTH XPLAIN LOGINX\r\n");
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, ERR_FAILED, smtp.authtype);
+    CuAssertIntEquals(tc, 1, g_hs_calls);
+    CuAssertStrEquals(tc, "250 AUTH XPLAIN LOGINX", g_hs_msg);
+    buffer_free(&buf);
+}
+// AUTH LOGIN 按顺序配对：第一个 334 回用户名、第二个回密码，提示文本是什么都不看
+static void test_smtp_login_by_order(CuTest *tc) {
+    smtp_ctx smtp;
+    ud_cxt ud;
+    buffer_ctx buf;
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_AUTH, LOGIN);
+    _unpack_feed(&ud, &buf, "334 VXNlciBOYW1lAA==\r\n");// "User Name\0"
+    CuAssertIntEquals(tc, _SMTP_AUTH_PSW, (int)ud.status);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    _unpack_feed(&ud, &buf, "334 UGFzc3dvcmQA\r\n");// "Password\0"
+    CuAssertIntEquals(tc, _SMTP_AUTH_CHECK, (int)ud.status);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    CuAssertIntEquals(tc, 0, g_hs_calls);
+    buffer_free(&buf);
+    // 提示写反了也一样：第一个照样回用户名
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_AUTH, LOGIN);
+    _unpack_feed(&ud, &buf, "334 UGFzc3dvcmQ6\r\n");// "Password:"
+    CuAssertIntEquals(tc, _SMTP_AUTH_PSW, (int)ud.status);
+    buffer_free(&buf);
+}
+// 在 state 态喂一条坏挑战：须断开、状态不前进、不发账号，原文交给等待方
+static void _login_reject(CuTest *tc, uint8_t state, const char *wire, const char *msg) {
+    smtp_ctx smtp;
+    ud_cxt ud;
+    buffer_ctx buf;
+    _unpack_setup(&smtp, &ud, &buf, state, LOGIN);
+    int32_t status = _unpack_feed(&ud, &buf, wire);
+    buffer_free(&buf);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, (int)state, (int)ud.status);
+    CuAssertIntEquals(tc, 1, g_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_hs_erro);
+    CuAssertStrEquals(tc, msg, g_hs_msg);
+}
+// LOGIN 挑战的拒收分支：半截合法的 Base64(前缀正好解出 "username:")、空挑战、裸 334、
+// 第二步的非法挑战，以及两种机制都接不住的 "334-" 续行
+static void test_smtp_login_reject(CuTest *tc) {
+    _login_reject(tc, _SMTP_AUTH, "334 dXNlcm5hbWU6!!!\r\n", "334 dXNlcm5hbWU6!!!");
+    _login_reject(tc, _SMTP_AUTH, "334 \r\n", "334 ");
+    _login_reject(tc, _SMTP_AUTH, "334\r\n", "334");
+    _login_reject(tc, _SMTP_AUTH_PSW, "334 !!!!\r\n", "334 !!!!");
+    _login_reject(tc, _SMTP_AUTH, "334-VXNlcm5hbWU6\r\n", "334-VXNlcm5hbWU6");
+}
+// AUTH_CHECK：235 切 COMMAND 并把成功交给等待方；别的码把整段多行诊断原样交出去，不能只留首行
+static void test_smtp_auth_check_result(CuTest *tc) {
+    smtp_ctx smtp;
+    ud_cxt ud;
+    buffer_ctx buf;
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_AUTH_CHECK, LOGIN);
+    int32_t status = _unpack_feed(&ud, &buf, "235 2.7.0 Accepted\r\n");
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, _SMTP_COMMAND, (int)ud.status);
+    CuAssertIntEquals(tc, 1, g_hs_calls);
+    CuAssertIntEquals(tc, ERR_OK, g_hs_erro);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    buffer_free(&buf);
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_AUTH_CHECK, LOGIN);
+    status = _unpack_feed(&ud, &buf, "535-5.7.8 not accepted\r\n535 5.7.8 https://help.example/x\r\n");
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, _SMTP_AUTH_CHECK, (int)ud.status);
+    CuAssertIntEquals(tc, 1, g_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_hs_erro);
+    CuAssertStrEquals(tc, "535-5.7.8 not accepted\r\n535 5.7.8 https://help.example/x", g_hs_msg);
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+    buffer_free(&buf);
+}
+// 拒绝行分段到达：只到一半时不判失败(CRLF 没到，原因交不出去)，整行到齐再判并把原文交出去
+static void test_smtp_reject_split(CuTest *tc) {
+    smtp_ctx smtp;
+    ud_cxt ud;
+    buffer_ctx buf;
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_INIT, 0);
+    int32_t status = _unpack_feed(&ud, &buf, "554 5.7.1 Cli");
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, g_hs_calls);
+    CuAssertIntEquals(tc, 13, (int)buffer_size(&buf));
+    status = _unpack_feed(&ud, &buf, "ent blocked\r\n");
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 1, g_hs_calls);
+    CuAssertStrEquals(tc, "554 5.7.1 Client blocked", g_hs_msg);
+    buffer_free(&buf);
+    // 多行应答里码对不上的那行同样等整行到齐才拒
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_COMMAND, 0);
+    status = _unpack_feed(&ud, &buf, "250-A\r\n500 X");
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    status = _unpack_feed(&ud, &buf, "\r\n");
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+}
+// 整封信里含 needle 的行中最长的那行有多少字符（不含 CRLF）；needle 为 NULL 即所有行
+static size_t _mail_maxline(const char *out, const char *needle) {
+    size_t maxlen = 0;
+    size_t lens;
+    const char *eol;
+    for (const char *p = out; NULL != (eol = strstr(p, "\r\n")); p = eol + 2) {
+        lens = (size_t)(eol - p);
+        if (lens > maxlen
+            && (NULL == needle || NULL != memstr(0, p, lens, needle, strlen(needle)))) {
+            maxlen = lens;
+        }
+    }
+    return maxlen;
+}
+// 长的非 ASCII 附件名按 RFC 2231 §3 分段续行：filename*0*= / filename*1*= …，字符集只在第 0 段；
+// 各段按序百分号解码后拼起来须还原出原名，且每行都远短于 998
+static void test_mail_attach_2231_segments(CuTest *tc) {
+    char tmpfile[PATH_LENS];
+    SNPRINTF(tmpfile, sizeof(tmpfile), "%s%stest_smtp_2231_seg.txt", procpath(), PATH_SEPARATORSTR);
+    FILE *fp = fopen(tmpfile, "wb");
+    CuAssertPtrNotNull(tc, fp);
+    fwrite("x", 1, 1, fp);
+    fclose(fp);
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    int32_t added = mail_attach_add(&mail, tmpfile);
+    remove(tmpfile);
+    // 直接改 att->file，不造真文件：要测的只是组包侧怎么写。100 个"报" + ".pdf" 共 304 字节
+    char name[512];
+    size_t off = 0;
+    for (int32_t i = 0; i < 100; i++) {
+        memcpy(name + off, "\xe6\x8a\xa5", 3);
+        off += 3;
+    }
+    memcpy(name + off, ".pdf", sizeof(".pdf"));
+    char *pkt = NULL;
+    if (ERR_OK == added) {
+        SNPRINTF(mattach_arr_at(&mail.attach, 0)->file, sizeof(((mail_attach *)0)->file), "%s", name);
+        pkt = mail_pack(&mail, NULL);
+    }
+    mail_free(&mail);
+    char got[1024];
+    size_t glen = 0;
+    int32_t nseg = 0;
+    char key[32];
+    const char *seg;
+    size_t n;
+    for (; NULL != pkt; nseg++) {
+        SNPRINTF(key, sizeof(key), "filename*%d*=", nseg);
+        seg = strstr(pkt, key);
+        if (NULL == seg) {
+            break;
+        }
+        seg += strlen(key);
+        if (0 == nseg) {
+            if (0 != strncmp(seg, "utf-8''", 7)) {
+                break;
+            }
+            seg += 7;
+        }
+        n = strcspn(seg, ";\r");
+        if (glen + n > sizeof(got)) {
+            break;
+        }
+        memcpy(got + glen, seg, n);
+        glen += url_decode(got + glen, n, 0);
+    }
+    int32_t single = (NULL != pkt && NULL != strstr(pkt, "filename*="));
+    int32_t name0 = (NULL != pkt && NULL != strstr(pkt, "\tname*0*=utf-8''"));
+    size_t maxline = (NULL != pkt) ? _mail_maxline(pkt, NULL) : 0;
+    FREE(pkt);
+    CuAssertIntEquals(tc, ERR_OK, added);
+    CuAssertTrue(tc, nseg > 1);
+    CuAssertTrue(tc, !single);
+    CuAssertTrue(tc, name0);
+    CuAssertTrue(tc, glen == strlen(name) && 0 == memcmp(got, name, glen));
+    CuAssertTrue(tc, maxline > 0 && maxline <= 120);
+}
+// 含 encoded-word 的行不超过 76 字符（RFC 2047 §2），首行连字段名一起算；
+// From 的显示名编码后，地址在同一行接不下就折到下一行
+static void test_mail_ew_line_width(CuTest *tc) {
+    char subject[256] = { 0 };
+    for (int32_t i = 0; i < 20; i++) {
+        strcat(subject, "\xe4\xb8\xad\xe6\x96\x87\xe4\xb8\xbb\xe9\xa2\x98");// "中文主题"
+    }
+    char name[64] = { 0 };
+    for (int32_t i = 0; i < 20; i++) {
+        strcat(name, "\xe6\x8a\xa5");// 20 个"报"，60 字节
+    }
+    const char *from = "a.rather.long.sender.address.for.folding@example.com";
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, name, from);
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, subject);
+    mail_msg(&mail, "body");
+    char *pkt = mail_pack(&mail, NULL);
+    mail_free(&mail);
+    char fold[128];
+    SNPRINTF(fold, sizeof(fold), "?=\r\n <%s>\r\n", from);
+    size_t ewmax = (NULL != pkt) ? _mail_maxline(pkt, "=?utf-8?B?") : 0;
+    int32_t folded = (NULL != pkt && NULL != strstr(pkt, fold));
+    int32_t subj = (NULL != pkt && NULL != strstr(pkt, "Subject: =?utf-8?B?"));
+    FREE(pkt);
+    CuAssertTrue(tc, ewmax > 0 && ewmax <= 76);
+    CuAssertTrue(tc, folded);
+    CuAssertTrue(tc, subj);
+}
+// Date 用四位年份（RFC 5322 §3.3 不许生成两位的 obs-year）；Message-ID 为 <随机串@发件域>，
+// 每封不同，发件地址里取不到域时用 srey.local
+static void test_mail_date_msgid(CuTest *tc) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "id");
+    mail_msg(&mail, "body");
+    char *p1 = mail_pack(&mail, NULL);
+    char *p2 = mail_pack(&mail, NULL);
+    mail_from(&mail, NULL, "nodomain");
+    char *p3 = mail_pack(&mail, NULL);
+    mail_free(&mail);
+    // "Date: 16 Oct 2026 12:00:00 +0800"：日、月之后那段是 4 位数字
+    const char *d = (NULL != p1) ? strstr(p1, "Date: ") : NULL;
+    d = (NULL != d) ? strchr(d + 6, ' ') : NULL;
+    d = (NULL != d) ? strchr(d + 1, ' ') : NULL;
+    int32_t year4 = (NULL != d && 4 == strspn(d + 1, "0123456789") && ' ' == d[5]);
+    // "Message-ID: <" 13 字符 + 24 位随机串 + "@域>"
+    const char *m1 = (NULL != p1) ? strstr(p1, "Message-ID: <") : NULL;
+    const char *m2 = (NULL != p2) ? strstr(p2, "Message-ID: <") : NULL;
+    int32_t id_ok = (NULL != m1 && NULL != m2
+        && 0 == strncmp(m1 + 37, "@example.com>\r\n", 15)
+        && 0 != strncmp(m1, m2, 37));
+    int32_t nodomain = (NULL != p3 && NULL != strstr(p3, "@srey.local>\r\n"));
+    FREE(p1);
+    FREE(p2);
+    FREE(p3);
+    CuAssertTrue(tc, year4);
+    CuAssertTrue(tc, id_ok);
+    CuAssertTrue(tc, nodomain);
+}
+// 显示名超 63 字节按 UTF-8 字符边界截断，不留半个字；地址超 255 字节整个不收——
+// 截断会变成另一个地址，RCPT TO 投给错的人
+static void test_mail_addr_limits(CuTest *tc) {
+    char name[128] = "A";
+    char expect[128] = "A";
+    for (int32_t i = 0; i < 21; i++) {
+        strcat(name, "\xe6\x8a\xa5");// "A" + 21 个"报" = 64 字节，第 21 个字只装得下前 2 字节
+        if (i < 20) {
+            strcat(expect, "\xe6\x8a\xa5");
+        }
+    }
+    char addr256[300];
+    memset(addr256, 'a', 244);
+    memcpy(addr256 + 244, "@example.com", sizeof("@example.com"));// 256 字节
+    char addr255[300];
+    memset(addr255, 'a', 243);
+    memcpy(addr255 + 243, "@example.com", sizeof("@example.com"));// 255 字节
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, name, "alice@example.com");
+    int32_t name_ok = (0 == strcmp(mail.from.name, expect));
+    mail_from(&mail, "x", addr256);
+    int32_t from_kept = (0 == strcmp(mail.from.addr, "alice@example.com") && 0 == strcmp(mail.from.name, expect));
+    mail_addrs_add(&mail, addr256, TO);
+    int32_t skipped = (0 == maddr_arr_size(&mail.addrs));
+    mail_addrs_add(&mail, addr255, TO);
+    int32_t fit = (1 == maddr_arr_size(&mail.addrs));
+    mail_free(&mail);
+    CuAssertTrue(tc, 256 == strlen(addr256) && 255 == strlen(addr255));
+    CuAssertTrue(tc, name_ok);
+    CuAssertTrue(tc, from_kept);
+    CuAssertTrue(tc, skipped);
+    CuAssertTrue(tc, fit);
+}
 void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_head_nobody);
     SUITE_ADD_TEST(suite, test_http_tillclose);
     SUITE_ADD_TEST(suite, test_http_tillclose_request_only);
     SUITE_ADD_TEST(suite, test_http_response);
     SUITE_ADD_TEST(suite, test_http_pack_req);
+    SUITE_ADD_TEST(suite, test_http_head_key_check);
     SUITE_ADD_TEST(suite, test_http_pack_bytes);
     SUITE_ADD_TEST(suite, test_http_smuggling);
     SUITE_ADD_TEST(suite, test_http_status_line);
@@ -7819,7 +9563,13 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_chunked_size_strict);
     SUITE_ADD_TEST(suite, test_http_chunked_data_crlf);
     SUITE_ADD_TEST(suite, test_http_check_keyval_token);
+    SUITE_ADD_TEST(suite, test_http_hflags);
     SUITE_ADD_TEST(suite, test_http_chunked_trailer_limit);
+    SUITE_ADD_TEST(suite, test_http_chunked_line_cr_split);
+    SUITE_ADD_TEST(suite, test_http_chunked_trailer_eol);
+    SUITE_ADD_TEST(suite, test_http_leading_crlf);
+    SUITE_ADD_TEST(suite, test_http_te_resp);
+    SUITE_ADD_TEST(suite, test_http_content_lens_bound);
     SUITE_ADD_TEST(suite, test_http_moredata);
     SUITE_ADD_TEST(suite, test_http_code_status);
     SUITE_ADD_TEST(suite, test_http_pack_chunked);
@@ -7843,6 +9593,10 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_redis_resume_across_calls);
     SUITE_ADD_TEST(suite, test_redis_back_to_back_count);
     SUITE_ADD_TEST(suite, test_redis_oversize_no_crlf);
+    SUITE_ADD_TEST(suite, test_redis_line_lens_bound);
+    SUITE_ADD_TEST(suite, test_redis_may_resume);
+    SUITE_ADD_TEST(suite, test_redis_limits_attr);
+    SUITE_ADD_TEST(suite, test_redis_pack_long_spec);
     SUITE_ADD_TEST(suite, test_redis_resp3_scalar);
     SUITE_ADD_TEST(suite, test_redis_resp3_aggregate);
     SUITE_ADD_TEST(suite, test_redis_nesting);
@@ -7852,12 +9606,14 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_url_userinfo_last_at);
     SUITE_ADD_TEST(suite, test_url_ctx_reuse);
     SUITE_ADD_TEST(suite, test_url_buf_lens_bound);
+    SUITE_ADD_TEST(suite, test_url_skip_empty);
     SUITE_ADD_TEST(suite, test_url_reorg_param);
     SUITE_ADD_TEST(suite, test_url_plus_decode);
     SUITE_ADD_TEST(suite, test_custz);
     SUITE_ADD_TEST(suite, test_custz_maxpack);
     SUITE_ADD_TEST(suite, test_custz_wire_unpack);
     SUITE_ADD_TEST(suite, test_custz_unpack_maxlens);
+    SUITE_ADD_TEST(suite, test_custz_zero_lens);
     SUITE_ADD_TEST(suite, test_smtp_full_response);
     SUITE_ADD_TEST(suite, test_smtp_authtype);
     SUITE_ADD_TEST(suite, test_smtp_body_transparency);
@@ -7879,6 +9635,15 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_init);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_ehlo);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_auth_login);
+    SUITE_ADD_TEST(suite, test_smtp_authtype_token);
+    SUITE_ADD_TEST(suite, test_smtp_login_by_order);
+    SUITE_ADD_TEST(suite, test_smtp_login_reject);
+    SUITE_ADD_TEST(suite, test_smtp_auth_check_result);
+    SUITE_ADD_TEST(suite, test_smtp_reject_split);
+    SUITE_ADD_TEST(suite, test_mail_attach_2231_segments);
+    SUITE_ADD_TEST(suite, test_mail_ew_line_width);
+    SUITE_ADD_TEST(suite, test_mail_date_msgid);
+    SUITE_ADD_TEST(suite, test_mail_addr_limits);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_auth_plain);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_auth_moredata);
     SUITE_ADD_TEST(suite, test_smtp_unpack_flood);
@@ -7890,12 +9655,15 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_dns_parse_pack_inline_name);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_bad_label);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_nodata);
+    SUITE_ADD_TEST(suite, test_dns_parse_pack_cname_only);
+    SUITE_ADD_TEST(suite, test_dns_parse_pack_rcode);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_query);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_flag);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_wrong_id);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_ptr_self_loop);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_jump_budget);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_multi_a);
+    SUITE_ADD_TEST(suite, test_dns_parse_pack_answer_only);
     SUITE_ADD_TEST(suite, test_dns_request_pack_domain_lens);
     SUITE_ADD_TEST(suite, test_dns_set_get_ip);
     SUITE_ADD_TEST(suite, test_custz_head_fixed);
@@ -7915,6 +9683,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_unpack_orphan_continue);
     SUITE_ADD_TEST(suite, test_websock_unpack_interleaved_data);
     SUITE_ADD_TEST(suite, test_websock_unpack_close);
+    SUITE_ADD_TEST(suite, test_websock_close_reply_code);
     SUITE_ADD_TEST(suite, test_websock_unpack_server_no_mask);
     SUITE_ADD_TEST(suite, test_websock_unpack_client_masked);
     SUITE_ADD_TEST(suite, test_websock_unpack_reserved_opcode);
@@ -7928,7 +9697,16 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_unpack_mask_all_zero);
     SUITE_ADD_TEST(suite, test_websock_mqtt_multipack);
     SUITE_ADD_TEST(suite, test_websock_mqtt_ws_fragment_slice_clear);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_disconnect_stop);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_cross_frame);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_small_frames);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_flat_one);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_flat_two);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_flat_leftover);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_flat_error);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_flat_disconnect);
     SUITE_ADD_TEST(suite, test_mqtt_auth_version_gate);
+    SUITE_ADD_TEST(suite, test_mqtt_packid_zero);
     SUITE_ADD_TEST(suite, test_mqtt_utf8_embedded_nul);
     SUITE_ADD_TEST(suite, test_mqtt_connect_pwd_no_user);
     SUITE_ADD_TEST(suite, test_mqtt_pack_lens_on_fail);
@@ -7950,6 +9728,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mail_attach_pack);
     SUITE_ADD_TEST(suite, test_mail_attach_name_rfc2231);
     SUITE_ADD_TEST(suite, test_mail_attach_long_name);
+    SUITE_ADD_TEST(suite, test_mail_attach_add_ret);
     SUITE_ADD_TEST(suite, test_strtod_s_paths);
     SUITE_ADD_TEST(suite, test_strtod_s_bounds);
     SUITE_ADD_TEST(suite, test_websock_unpack_masked_nodes);
@@ -7960,5 +9739,6 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_size_http);
     SUITE_ADD_TEST(suite, test_size_websock);
     SUITE_ADD_TEST(suite, test_size_ws_mqtt_chain);
+    SUITE_ADD_TEST(suite, test_prots_recv_switch_target);
     SUITE_ADD_TEST(suite, test_size_redis);
 }

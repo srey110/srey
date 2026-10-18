@@ -6,9 +6,10 @@ static int32_t _prt = 0;
 static name_t _rpcname = INVALID_TNAME;
 
 // 新连接接入
-static void _net_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
+static void _net_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *peer) {
     (void)task;
     (void)pktype;
+    (void)peer;
     if (_prt) {
         LOG_INFO("accept socket %d.", (uint32_t)sk->fd);
     }
@@ -101,11 +102,12 @@ static void _net_send(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     }
 }
 // 连接关闭
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
     (void)task;
     (void)pktype;
     (void)client;
     (void)erro;
+    (void)sess;
     if (_prt) {
         LOG_INFO("socket %d closed", (uint32_t)sk->fd);
     }

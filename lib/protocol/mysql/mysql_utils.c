@@ -44,7 +44,7 @@ uint64_t _mysql_get_lenenc(binary_ctx *breader, int32_t *err) {
     } else if (0xfe == flag) {
         need = 8;
     } else {
-        LOG_ERROR("unknow int<lenenc>, %d.", (int32_t)flag);
+        LOG_ERROR("unknown int<lenenc>, %d.", (int32_t)flag);
         return 0;
     }
     if (remain - sizeof(uint8_t) < need) {
@@ -54,7 +54,7 @@ uint64_t _mysql_get_lenenc(binary_ctx *breader, int32_t *err) {
     return binary_get_uinteger(breader, need, 1);
 }
 // 将 bwriter 中偏移 0-2 字节回填为实际 payload 长度（3 字节小端，总长度减去 4 字节包头）；包头已由调用方占好、在已写区内，直接写
-// 超 INT3_MAX(16MB-1) 时 LOG_WARN + 返 ERR_FAILED 由调用方释放 bwriter,本实现不支持 mysql 协议拆 packet
+// payload 达到 INT3_MAX(0xFFFFFF 是续传标记，本实现不拆包)即 LOG_WARN + 返 ERR_FAILED，由调用方释放 bwriter
 int32_t _mysql_set_payload_lens(binary_ctx *bwriter) {
     size_t size = bwriter->offset;
     size_t payload = size - MYSQL_HEAD_LENS;
@@ -66,4 +66,17 @@ int32_t _mysql_set_payload_lens(binary_ctx *bwriter) {
     bwriter->data[1] = (char)(payload >> 8);
     bwriter->data[2] = (char)(payload >> 16);
     return ERR_OK;
+}
+void _mysql_pack_begin(mysql_ctx *mysql, binary_ctx *bwriter, size_t hint, uint8_t cmd) {
+    if (0 == cmd) {
+        mysql->id++;
+    } else {
+        mysql->id = 0;
+    }
+    binary_init_write(bwriter, hint, 0);
+    binary_set_skip(bwriter, 3);
+    binary_set_uint8(bwriter, mysql->id);
+    if (0 != cmd) {
+        binary_set_uint8(bwriter, cmd);
+    }
 }

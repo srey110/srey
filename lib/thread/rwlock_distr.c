@@ -1,5 +1,4 @@
 ﻿#include "thread/rwlock_distr.h"
-#include "thread/spinlock.h"
 
 // 同一线程同时持有的 (ctx, slot) 槽位;owner=NULL 表示该槽位空闲
 // 通过线性扫描查找 ctx 对应的 slot,容量上限 RWLOCK_DISTR_MAX_TLS

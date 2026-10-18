@@ -99,7 +99,8 @@ static inline size_t mmap_size(const mmap_ctx *ctx) {
 /// <param name="path">文件路径</param>
 /// <param name="opts">创建参数，NULL 等同全零。RDONLY / COPY 下 off + size 不能超过文件长度；
 /// RDWR 下文件不够长就扩到 off + size。size 最终为 0 时不建映射（addr 为 NULL），第一次 resize 变大时才建</param>
-/// <returns>ERR_OK 成功；ERR_FAILED 失败，原因看 ERRNO</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 失败，原因看 ERRNO。带 MMAP_CREATE | MMAP_EXCL 新建了文件后才失败的，
+/// 把这个文件删掉再返回；不带 MMAP_EXCL 时分不清文件是不是本次建的，不删（可能留下新建的空文件）</returns>
 int32_t mmap_open(mmap_ctx *ctx, const char *path, const mmap_opts *opts);
 /// <summary>
 /// 映射调用方已打开的文件。内部复制一份句柄自己持有，调用方的句柄随时可关
@@ -125,7 +126,8 @@ int32_t mmap_anon(mmap_ctx *ctx, const mmap_opts *opts);
 /// Windows 上放进 Local\ 命名空间</param>
 /// <param name="opts">mode 只能是 RDONLY / RDWR（macOS 的 POSIX 共享内存不支持私有映射）；创建时 size 必须 > 0；
 /// 打开已有对象时 size 为 0 表示整个对象，大于现有长度则失败；cap 须为 0 或等于 size</param>
-/// <returns>同 mmap_open；打开已有对象时 size 可能是按页向上取整后的值（macOS 与 Windows）</returns>
+/// <returns>同 mmap_open（POSIX 上删的是共享内存名字；Windows 上新建的对象随句柄关闭自然消失）；
+/// 打开已有对象时 size 可能是按页向上取整后的值（macOS 与 Windows）</returns>
 int32_t mmap_shm(mmap_ctx *ctx, const char *name, const mmap_opts *opts);
 /// <summary>
 /// 删除命名共享内存的名字；已映射的仍可用。Windows 上什么也不做
@@ -141,7 +143,8 @@ void mmap_close(mmap_ctx *ctx);
 /// <summary>
 /// 改映射长度。cap 内变长/变短 addr 不变；超出 cap 按新 cap 重映射，地址可能变（契约 1）。
 /// 读写文件映射文件不够长就扩（契约 4）；只读 / 写时复制映射变长到超出原映射时重映射，用来跟上别人写长的文件，
-/// 写时复制映射原有的私有改动保留。
+/// 写时复制映射原有的私有改动保留；这种重映射（POSIX 接不上原映射尾部时、Windows 每次）把旧映射整段拷过去，
+/// 拷完整段都成了私有页，内存占用涨一个 size，之后也看不到别人写进文件的内容（契约 7 不再成立）。
 /// 匿名映射变短时把多出的内存还给系统，再变长时那部分重新为 0。命名共享内存不支持
 /// </summary>
 /// <param name="ctx">mmap_ctx</param>

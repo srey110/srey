@@ -3,7 +3,9 @@
 --      且默认端口不能因大小写落错分支;
 --   2) text_continua 的生产者返回非 string / userdata 缺 size 是违约,须记 ERROR 并返回 false,
 --      不可当成正常流结束——那会把截断的消息以 fin=1 收尾,对端当成一条完整消息。
--- 同一 task 内起 WEBSOCK 监听(C 层自动完成升级握手)再连回本机,server 侧只在第 3) 段原样回帧,其余不回。
+--      首帧已发出时连接随即被关:服务端只收到 START、收不到 END,并看到连接断开。
+--      正常多块流另测 text_continua / binary_continua 两条,服务端按序收到首帧、中间帧与空终止帧。
+-- 同一 task 内起 WEBSOCK 监听(C 层自动完成升级握手)再连回本机,server 侧只在第 2)、3) 段与正常多块流那段记录并原样回帧,其余不回。
 -- 末尾另有 MQTT over WS 一段:连 test.server_ws(15003) 走完 bind + CONNECT/CONNACK。
 -- 3) websock.frame(多返回值)与 websock.unpack(表)是两份平行实现:收到的每一帧两边逐字段比，
 --    覆盖 0/125/126 长度、分片、ping/pong/close、mask 0/1，以及带子协议的帧。
@@ -60,9 +62,15 @@ local function _bad_producer(state)
     return 42
 end
 
+-- 依次交出 state.blks 里的块，取完返回 nil 结束流
+local function _blk_producer(state)
+    state.n = state.n + 1
+    return state.blks[state.n]
+end
+
 srey.startup(function()
 runner.run(function(t)
-    -- 收到的每一帧都过一遍 _ws_compare。只有 frame 那段把 echo 打开:服务端不带掩码原样回一帧
+    -- 收到的每一帧都过一遍 _ws_compare。只有违约、frame 与正常多块流三段把 echo 打开:服务端不带掩码原样回一帧
     -- (close 不由业务回，协议层当场回一个)，客户端那头再比一次；其余用例只关心客户端 API 的返回值，server 侧不回
     local echo = false
     local srv_got, cli_got = {}, {}
@@ -96,6 +104,13 @@ runner.run(function(t)
             srey.send(sk, f, fs, 0)
         end
     end)
+    -- 服务端这头断开的连接数，违约用例靠它断言连接被关
+    local nsrv_close = 0
+    srey.on_closed(function(pktype, _, client)
+        if PACK_TYPE.WEBSOCK == pktype and 0 == client then
+            nsrv_close = nsrv_close + 1
+        end
+    end)
 
     local lid = srey.listen(PACK_TYPE.WEBSOCK, SSL_NAME.NONE, "0.0.0.0", PORT)
     t:check(ERR_FAILED ~= lid, "listen " .. PORT)
@@ -103,13 +118,31 @@ runner.run(function(t)
         return
     end
 
+    -- 等服务端收齐 nsrv 帧、客户端收齐 ncli 帧、服务端断开数到 nclose，最多约 3 秒
+    local function wait(nsrv, ncli, nclose)
+        for _ = 1, 150 do
+            if #srv_got >= nsrv and #cli_got >= ncli and nsrv_close >= (nclose or 0) then
+                break
+            end
+            srey.sleep(20)
+        end
+    end
+
     -- 大写 scheme:修复前 _parse_url 的 "ws" ~= url.scheme 会直接拒掉,连接这步就拿不到 fd
     local sk = wbsk.connect("WS://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE)
     t:check(sk and sk.valid, "大写 scheme 的 ws URL 可连接")
     if sk and sk.valid then
+        -- 首帧 "aa" 已发出后违约：连接由 text_continua 自己关掉，不补 fin=1
+        echo = true
+        local close0 = nsrv_close
         t:eq(false, wbsk.text_continua(sk, 1, _bad_producer, { n = 0 }),
              "生产者违约 text_continua 返回 false")
-        srey.close(sk)
+        wait(1, 0, close0 + 1)
+        echo = false
+        t:eq(close0 + 1, nsrv_close, "违约后连接被断")
+        t:eq(1, #srv_got, "服务端只收到首帧")
+        t:eq(SLICE_TYPE.START, srv_got[1] and srv_got[1].slice, "服务端收到 START、没收到 END(截断的消息没被当成完整的)")
+        srv_got, cli_got = {}, {}
     end
 
     -- 协商结果要落到名字上，不能只判 spctx 非 nil：回显成另一个子协议，
@@ -173,14 +206,6 @@ runner.run(function(t)
         frames[#frames + 1] = { websock.pack_ping }
         frames[#frames + 1] = { websock.pack_pong }
         frames[#frames + 1] = { websock.pack_close }
-        local function wait(nsrv, ncli)
-            for _ = 1, 150 do
-                if #srv_got >= nsrv and #cli_got >= ncli then
-                    break
-                end
-                srey.sleep(20)
-            end
-        end
         local f, fs
         for _, e in ipairs(frames) do
             if e[2] then
@@ -211,6 +236,33 @@ runner.run(function(t)
         t:eq(WEBSOCK_PROT.CLOSE, srv_got[#frames] and srv_got[#frames].prot, "close 帧")
         srey.close(wsk)
     end
+
+    -- ── text_continua / binary_continua 正常多块流 ─────────────────────
+    -- 两块数据：首帧 TEXT / BINARY(fin=0)、中间 CONTINUA(fin=0)、末尾 fin=1 的空 CONTINUA
+    local csk = wbsk.connect("ws://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE)
+    if t:check(csk and csk.valid, "continua 用例连上") then
+        echo = true
+        for _, c in ipairs({ { wbsk.text_continua, WEBSOCK_PROT.TEXT, "text_continua" },
+                             { wbsk.binary_continua, WEBSOCK_PROT.BINARY, "binary_continua" } }) do
+            srv_got, cli_got = {}, {}
+            t:eq(true, c[1](csk, 1, _blk_producer, { n = 0, blks = { "aa", "bb" } }), c[3] .. " 正常流返回 true")
+            wait(3, 3)-- 回帧也等齐，免得落进下一轮的 cli_got
+            local want = {
+                { c[2], SLICE_TYPE.START, "aa" },
+                { WEBSOCK_PROT.CONTINUA, SLICE_TYPE.SLICE, "bb" },
+                { WEBSOCK_PROT.CONTINUA, SLICE_TYPE.END, "" },
+            }
+            t:eq(#want, #srv_got, c[3] .. " 服务端收到三帧")
+            t:eq(#want, #cli_got, c[3] .. " 客户端收齐三帧回帧")
+            for i, w in ipairs(want) do
+                local g = srv_got[i]
+                t:check(nil ~= g and w[1] == g.prot and w[2] == g.slice and w[3] == g.body,
+                        string.format("%s 第 %d 帧的 prot / slice / 载荷", c[3], i))
+            end
+        end
+        echo = false
+        srey.close(csk)
+    end
     t:check(ws_ncmp >= 25, "frame 与 unpack 比过的帧数 " .. ws_ncmp)
     t:eq(0, #ws_mis, "frame 与 unpack 逐字段一致: " .. table.concat(ws_mis, ","))
 
@@ -223,8 +275,8 @@ runner.run(function(t)
     -- 以及 test/server_ws.lua 那个 mqtt 分支(在此之前全程不执行)。
     -- server_ws 在 test.test 里注册在 TESTS 之后,起来的顺序不定,故先等 500ms(同 unit_lib)
     do
-        local cmqtt = require("srey.mqtt")
-        local V311, CONNACK = 4, 0x02-- mqtt_protversion / mqtt_prot,Lua 侧无对应常量表
+        local cmqtt = require("lib.mqtt")-- 即 srey.mqtt 那张表，另挂了 VERSION / PROT 常量
+        local V311, CONNACK = cmqtt.VERSION.V311, cmqtt.PROT.CONNACK
         srey.sleep(500)
         local skm, spm = wbsk.connect("ws://127.0.0.1:15003/", SSL_NAME.NONE, "mqtt")
         t:check(skm and skm.valid, "连上 server_ws 的 mqtt 子协议")

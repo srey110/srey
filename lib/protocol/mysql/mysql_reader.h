@@ -34,7 +34,7 @@ size_t mysql_reader_size(mysql_reader_ctx *reader);
 /// 移到第几条数据
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
-/// <param name="pos">条数</param>
+/// <param name="pos">条数，从 0 起；不小于总条数时游标不动</param>
 void mysql_reader_seek(mysql_reader_ctx *reader, size_t pos);
 /// <summary>
 /// 是否有数据
@@ -105,17 +105,19 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="name">字段</param>
-/// <param name="lens">长度</param>
+/// <param name="lens">输出值的字节数，必须非 NULL；只在取到值时写</param>
 /// <param name="err">ERR_OK 成功  ERR_FAILED 失败 1 nil</param>
-/// <returns>值</returns>
+/// <returns>值，不以 '\0' 结尾，指向 reader 内部、随 mysql_reader_free 失效；空串返回 NULL 且 err 为 ERR_OK，
+/// 是否为 SQL NULL 以 err 为准</returns>
 char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err);
 /// <summary>
-/// 根据名称获取字段时间戳值
+/// 根据名称获取字段时间戳值，按本地时区换算。取值范围受平台 mktime 限制：Windows 上 1970 年前与 3000 年后、
+/// macOS 上 1900 年前的值读取失败(err 为 ERR_FAILED)
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="name">字段</param>
-/// <param name="err">ERR_OK 成功  ERR_FAILED 失败 1 nil</param>
-/// <returns>Unix 微秒时间戳（秒×1000000＋微秒）</returns>
+/// <param name="err">ERR_OK 成功  ERR_FAILED 失败(含字段量程越界) 1 nil</param>
+/// <returns>Unix 微秒时间戳（秒×1000000＋微秒）；零日期(0000-00-00)返回 0 且 err 为 ERR_OK，与 1970-01-01 00:00:00 UTC 分不开</returns>
 int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err);
 /// <summary>
 /// 根据名称获取字段时间值

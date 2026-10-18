@@ -13,9 +13,9 @@
 typedef struct lsnsock_ctx {
     evsock_ctx sock;          // 监听socket的事件上下文
     struct listener_ctx *lsn; // 所属监听器
-    watcher_ctx *watcher;   // 所属 watcher（EMFILE 退避 tick 回调重挂 READ 用）
-    uint64_t backoff_until; // EMFILE 退避截止时刻(ms)，0=未退避
-    ev_tick backoff_tick;   // EMFILE 退避周期驱动节点（cb 非 NULL 表示已挂）
+    watcher_ctx *watcher;   // 所属 watcher（accept 资源耗尽退避 tick 回调重挂 READ 用）
+    uint64_t backoff_until; // accept 资源耗尽退避截止时刻(ms)，0=未退避
+    ev_tick backoff_tick;   // accept 资源耗尽退避周期驱动节点（cb 非 NULL 表示已挂）
 }lsnsock_ctx;
 // Unix平台监听器上下文
 typedef struct listener_ctx {
@@ -61,6 +61,7 @@ typedef struct udp_ctx {
     tda_ctx tda;                // 字节告警翻倍状态
     cbs_ctx cbs;                // 回调函数集合
     sbuf_que buf_s;            // 发送队列
+    list_node close_node;       // 挂 watcher->tick_closes；只在 STATUS_REMOVE 置位期间在链上
     ud_cxt ud;                  // 用户数据
 }udp_ctx;
 
@@ -147,6 +148,13 @@ ud_cxt *_uev_get_ud(evsock_ctx *evsk) {
         return &UPCAST(evsk, tcp_ctx, sock)->ud;
     } else {
         return &UPCAST(evsk, udp_ctx, sock)->ud;
+    }
+}
+cbs_ctx *_uev_get_cbs(evsock_ctx *evsk) {
+    if (SOCK_STREAM == evsk->type) {
+        return &UPCAST(evsk, tcp_ctx, sock)->cbs;
+    } else {
+        return &UPCAST(evsk, udp_ctx, sock)->cbs;
     }
 }
 int32_t _uev_check_skid(evsock_ctx *evsk, const uint64_t skid) {
@@ -348,13 +356,26 @@ static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     _usk_detach(watcher, &tcp->sock);
     _uev_qtn_push(watcher, &tcp->sock, QTN_TCP);
 }
-// UDP datagram 无序无连接：从事件循环摘除 + close fd + 清回调 + qtn 隔离期延后释放
+// UDP datagram 无序无连接：关闭回调 + 释放 ud + 从事件循环摘除 + close fd + 清回调 + qtn 隔离期延后释放。
+// 本 socket 的收包回调里、tick 驱动期间只记下不当场关(理由与何时收尾见 STATUS_INCB)
 static inline void _usk_close_udp(watcher_ctx *watcher, udp_ctx *udp) {
     // 内层错误路径(如 _uev_disconnect)已关闭后，外层可能再次直调本函数；fd 已 INVALID 即早退，防止同一 udp 二次入 qtn 隔离队列被 drain 两次 free
     if (sock_is_invalid(&udp->sock.sk)) {
         return;
     }
+    BIT_SET(udp->status, STATUS_ERROR);// 记下之后发送一律拒收，收包循环见到即关
+    if (BIT_CHECK(udp->status, STATUS_INCB)) {
+        return;
+    }
+    if (0 != watcher->ticking) {
+        if (!BIT_CHECK(udp->status, STATUS_REMOVE)) {
+            BIT_SET(udp->status, STATUS_REMOVE);
+            list_push_tail(&watcher->tick_closes, &udp->close_node);
+        }
+        return;
+    }
     _usk_call_udp_close_cb(watcher->ev, udp);
+    UD_FREE(udp->cbs.ud_free, &udp->ud);// 口径同 _usk_close_tcp，隔离期满 _uev_free_udp 再调一次是空操作
     _usk_detach(watcher, &udp->sock);
     _uev_qtn_push(watcher, &udp->sock, QTN_UDP);
 }
@@ -379,7 +400,7 @@ void _uev_disconnect(watcher_ctx *watcher, evsock_ctx *evsk) {
             _usk_close_tcp(watcher, tcp);
         }
     } else {
-        // UDP datagram 无连接,没有待发队列要冲
+        // UDP 不冲发送队列：积压的 datagram 随关闭直接丢弃
         udp_ctx *udp = UPCAST(evsk, udp_ctx, sock);
         if (BIT_CHECK(udp->status, STATUS_ERROR)) {
             return;
@@ -392,11 +413,7 @@ void _uev_disconnect(watcher_ctx *watcher, evsock_ctx *evsk) {
 }
 void _uev_disconnect_failed(watcher_ctx *watcher, evsock_ctx *evsk) {
     if (SOCK_STREAM == evsk->type) {
-        tcp_ctx *tcp = UPCAST(evsk, tcp_ctx, sock);
-        // 已在关的保留原来的关闭类型
-        if (!BIT_CHECK(tcp->status, STATUS_ERROR)) {
-            _evpub_mark_close(&tcp->status, ERR_FAILED);
-        }
+        _evpub_mark_close(&UPCAST(evsk, tcp_ctx, sock)->status, ERR_FAILED);// 已在关的不改记，见 _evpub_mark_close
     }
     _uev_disconnect(watcher, evsk);
 }
@@ -477,10 +494,12 @@ static inline int32_t _usk_call_send_cb(watcher_ctx *watcher, tcp_ctx *tcp, size
     return ERR_OK;
 }
 // 调用UDP接收回调；0 字节 datagram 由本函数过滤不向上抛（_usk_on_udp_rcb 仍不视为 EOF，
-// 继续 recvmsg 循环），避免上层处理空 payload 的特殊路径
+// 继续 recvmsg 循环），避免上层处理空 payload 的特殊路径。回调期间置 STATUS_INCB，要关只记下(见 _usk_close_udp)
 static inline void _usk_call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, char *buf, netaddr_ctx *addr, size_t nread) {
     if (nread > 0) {
+        BIT_SET(udp->status, STATUS_INCB);
         udp->cbs.rf_cb(ev, &udp->sock.sk, buf, nread, addr, &udp->ud);
+        BIT_REMOVE(udp->status, STATUS_INCB);
     }
 }
 #if WITH_SSL
@@ -503,7 +522,8 @@ static int32_t _usk_ssl_exchange_trigger(watcher_ctx *watcher, tcp_ctx *tcp, str
                 return ERR_FAILED;
             }
             break;
-        default://错误
+        default://握手失败，记为 ABORT
+            _evpub_mark_close(&tcp->status, ERR_FAILED);
             return ERR_FAILED;
         }
     } else {
@@ -544,9 +564,10 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl_
     if (0 == _evpub_ssl_exchange_check(tcp->ssl, &tcp->status, client)) {
         return;
     }
-    // 判队列非空而不是判 EVENT_WRITE：攒发链上的连接数据还在队列里、写事件却尚未注册，
-    // 看 EVENT_WRITE 会把"还没发"当成"已发完"，握手报文就抢在明文尾包前面出去
-    if (!obuf_que_empty(&tcp->buf_s)) {
+    // 判队列非空而不是判 EVENT_WRITE：攒发链上的连接写事件尚未注册，看它会让握手报文抢在明文尾包前面。
+    // s_cb 期(SENDING)也推迟：外层 _usk_tcp_send 回调后见队列空会摘写事件，当场握手挂的写事件会被一起摘掉
+    if (!obuf_que_empty(&tcp->buf_s)
+        || BIT_CHECK(tcp->status, STATUS_SENDING)) {
         tcp->evssl = evssl;
         BIT_SET(tcp->status, STATUS_SSLEXCHANGE);
     } else {
@@ -602,7 +623,7 @@ static inline int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
 // STATUS_KEYUPDATE_READ 的置与清都只在本函数：别处清位条件对不上置位处，残留期间
 // _uev_add_bufs_send 会早退，请求-响应型协议下就再等不到读事件、连接卡死。
 // 本端已在关(含 s_cb 里同步 ev_close)就原样返回成功：关闭靠 _uev_disconnect 挂上的写事件驱动，
-// 这里再摘写事件会让关闭卡住，往已关写的 socket 上发会被误判成 ABORT。
+// 这里再摘写事件会让关闭卡住。
 // 回调里已把连接关掉(不是只发起关闭)返回 1，调用方立即返回
 static inline int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nsend;
@@ -610,6 +631,13 @@ static inline int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
         return ERR_OK;
     }
+#if WITH_SSL
+    // KEYUPDATE_WRITE 挂着待重试的 SSL_read，此时不能调 SSL_write：数据留在队列里，
+    // 由置位时挂上的写事件驱动(_usk_on_rw_cb 先清位再发)。守卫放在入口，调用点漏判也不出错
+    if (BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)) {
+        return ERR_OK;
+    }
+#endif
     rtn = _evpub_sock_send(tcp->sock.sk.fd, &tcp->buf_s, &nsend, TCP_SSL(tcp));
     tcp->wb_size -= nsend;
     if (1 == _usk_call_send_cb(watcher, tcp, nsend)) {
@@ -729,7 +757,8 @@ static int32_t _usk_ssl_do_handshake(watcher_ctx *watcher, tcp_ctx *tcp, int32_t
             return 1;
         }
         return 0;
-    default://错误
+    default://握手失败，记为 ABORT
+        _evpub_mark_close(&tcp->status, ERR_FAILED);
         *err = ERR_FAILED;
         return 1;
     }
@@ -854,7 +883,7 @@ void _uev_add_bufs_send(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf
     _evpub_sendqu_tda(&tcp->tda, tcp->wb_size, evsk->sk.fd, 1);
     obuf_que_push(&tcp->buf_s, buf);
     // s_cb 执行期：外层 _usk_tcp_send 尚未做完回调后那段记账,此刻发或改攒发链都会打乱它。
-    // 只入队即可,外层按回调之后重读的 cnt 把这批一并带出去,不会拖到下一轮
+    // 只入队即可,外层按回调之后重读的 cnt 挂上写事件,这批等下一轮写就绪时发出
     if (BIT_CHECK(tcp->status, STATUS_SENDING)) {
         return;
     }
@@ -893,28 +922,29 @@ void _uev_add_bufs_send(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx *buf
     }
 #endif
 }
-// 连接失败收尾：调 conn 回调，再摘除、撤掉回调里可能登记的事件、回池。两条连接失败路径都走这里，
-// 回调里 ev_close 补注册成功时连接没关，登记的事件得在这里撤，不能直接回池
+// 连接失败收尾：调 conn 回调，再摘除、撤掉回调里可能登记的事件、关 fd、入隔离队列。两条连接失败路径都走这里，
+// 回调里 ev_close 补注册成功时连接没关，登记的事件得在这里撤。kqueue 同批可能还有本连接的另一条事件，
+// 对象要在隔离期内保持有效，不能直接回池
 static void _usk_on_connect_cb_err(watcher_ctx *watcher, tcp_ctx *tcp) {
-    // 连接作废：回调里的 ev_send / ev_ssl 按未连通拒收(否则会挂上攒发链随对象回池)，关闭也不进延迟关闭
+    // 连接作废：回调里的 ev_send / ev_ssl 按未连通拒收(否则会挂上攒发链随对象一起被回收)，关闭也不进延迟关闭
     BIT_REMOVE(tcp->status, STATUS_ESTABLISHED);
     // 回调里已把它关了：摘除与回收都由关闭路径做过，再做一遍就是重复回收
     if (1 == _usk_call_conn_cb(watcher, tcp, ERR_FAILED)) {
         return;
     }
     _evpub_sockel_remove(watcher, tcp->sock.sk.fd);
-    // 顺序同 _usk_detach，但这里 drop 多担一件事：进来前已排过的那条 del_event 带着 evsk
-    // 当 udata，sock 紧接着回池，kqueue 下留着会落到复用同一 fd 号的新连接上。
-    // 代价是 devpoll 的 POLLREMOVE 也被清掉，故下面按平台补排一次
+    // 顺序同 _usk_detach：进来前已排过的那条 del_event 带着 evsk 当 udata，fd 随即关掉，
+    // kqueue 下留着会落到复用同一 fd 号的新连接上。代价是 devpoll 的 POLLREMOVE 也被清掉，故下面按平台补排一次
     _uev_drop_changes(watcher, &tcp->sock);
-    // epoll 也得显式摘：这里不经隔离直接回池，socket 若正被 fork 出、还没 exec 的子进程共享，
-    // close 撤不掉登记，之后的事件会带着已回池的对象回来。kqueue 不能摘：改动攒到下一轮才提交，
-    // 那时 fd 已关、对象已回池，报回的错误会落到它身上；kqueue 关 fd 时内核自己会撤
+    // epoll 也显式摘：socket 若正被 fork 出、还没 exec 的子进程共享，close 撤不掉登记。
+    // kqueue 不能摘：改动攒到下一轮才提交，那时 fd 已关、号可能已被复用；kqueue 关 fd 时内核自己会撤
 #if defined(MANUAL_REMOVE) || defined(EV_EPOLL)
     _uev_del_event(watcher, tcp->sock.sk.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
 #endif
     tcp->sock.ev_cb = NULL;
-    pool_push(&watcher->pool, &tcp->sock, 0);
+    // fd 当场关：kqueue 不关时读 EOF 是电平触发，隔离期内每轮都会报
+    CLOSE_SOCK(tcp->sock.sk.fd);
+    _uev_qtn_push(watcher, &tcp->sock, QTN_TCP);
 }
 // connect完成事件回调：检查连接结果，切换为读写回调，触发conn回调
 static void _usk_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
@@ -974,7 +1004,8 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t e
                 return;
             }
             break;
-        default://错误
+        default://握手失败，记为 ABORT
+            _evpub_mark_close(&tcp->status, ERR_FAILED);
             _uev_disconnect(watcher, evsk);
             return;
         }
@@ -1037,7 +1068,7 @@ void _uev_add_conn_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
         _usk_on_connect_cb_err(watcher, UPCAST(evsk, tcp_ctx, sock));
     }
 }
-// EMFILE/ENFILE 退避到点：重挂监听 READ 并摘除本 tick（重挂失败则继续退避）
+// accept 资源耗尽退避到点：重挂监听 READ 并摘除本 tick（重挂失败则继续退避）
 static uint32_t _usk_accept_backoff(void *ud, uint64_t now_ms) {
     lsnsock_ctx *acpt = ud;
     if (now_ms < acpt->backoff_until) {
@@ -1077,13 +1108,16 @@ static int32_t _usk_accept_retriable(int32_t err) {
     }
 }
 // accept 返回 INVALID_SOCK 的分类：可重试错误返回 ERR_OK 继续，其余返回 ERR_FAILED 退出循环；
-// EMFILE/ENFILE 额外暂停监听 READ 并挂退避 tick，到点重挂重试（不误拒 backlog，避免 ET 停滞/LT 忙轮询）
+// 资源耗尽(EMFILE/ENFILE/ENOBUFS/ENOMEM)额外暂停监听 READ 并挂退避 tick，到点重挂重试（不误拒 backlog，避免 ET 停滞/LT 忙轮询）
 static inline int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
     int32_t err = ERRNO;
     if (0 != _usk_accept_retriable(err)) {
         return ERR_OK;
     }
-    if (EMFILE == err || ENFILE == err) {
+    if (EMFILE == err
+        || ENFILE == err
+        || ENOBUFS == err
+        || ENOMEM == err) {
         _uev_del_event(watcher, acpt->sock.sk.fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
         acpt->backoff_until = timer_cur_ms(&watcher->timer) + ACCEPT_BACKOFF_MS;
         acpt->watcher = watcher;
@@ -1092,9 +1126,7 @@ static inline int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt)
     return ERR_FAILED;
 }
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher。
-// 末尾重挂 READ 失败时这条监听 socket 从此收不到事件，只能弃掉：cbs_ctx 里没有"监听失效"
-// 这类回调，通知不到业务，故把后果写进日志——SO_REUSEPORT 下每个收连接的线程一条，有多条时掉一条
-// 只是少一份 accept 容量、端口照常可连，不打出来没人会发现；只有一条时端口从此收不到新连接。清 ev_cb 的理由见 _usk_detach。
+// 末尾重挂 READ 失败时这条监听 socket 只能弃掉，没有回调能通知业务，只落 ERROR 日志；清 ev_cb 的理由见 _usk_detach。
 // kqueue 报了待接连接数(kevent.data)就只 accept 这么多次，省掉最后那次必然 EAGAIN 的；之后新到的留给下次事件
 static void _usk_on_accept_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
     (void)ev;
@@ -1178,15 +1210,11 @@ void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         _uev_disconnect(watcher, evsk);
     }
 }
-// 关闭监听socket（无SO_REUSEPORT只关闭第一个，否则关闭所有cnt个）
-static void _usk_close_lsnsock(listener_ctx *lsn, int32_t cnt) {
-#ifndef SO_REUSEPORT
-    CLOSE_SOCK(lsn->lsnsock[0].sock.sk.fd);
-#else
-    for (int32_t i = 0; i < cnt; i++) {
+// 关闭全部监听socket（无 SO_REUSEPORT 时只有一个）
+static void _usk_close_lsnsock(listener_ctx *lsn) {
+    for (int32_t i = 0; i < lsn->nlsn; i++) {
         CLOSE_SOCK(lsn->lsnsock[i].sock.sk.fd);
     }
-#endif
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, const int32_t *thrs, uint32_t nthrs, uint64_t *id) {
@@ -1256,6 +1284,10 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     return ERR_OK;
 }
 void _uev_add_lsn_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
+    // 本线程已先当场执行了 ev_unlisten(fd 已关)：不加表、不注册，引用已由 _uev_remove_lsn 减过
+    if (INVALID_SOCK == evsk->sk.fd) {
+        return;
+    }
     _evpub_sockel_add(watcher, evsk);
     if (ERR_OK != _uev_add_event(watcher, evsk->sk.fd, &evsk->events, EVENT_READ, evsk)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -1264,7 +1296,7 @@ void _uev_add_lsn_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
     }
 }
 void _uev_freelsn(listener_ctx *lsn) {
-    _usk_close_lsnsock(lsn, lsn->nlsn);
+    _usk_close_lsnsock(lsn);
     UD_FREE(lsn->cbs.ud_free, &lsn->ud);
     FREE(lsn->lsnsock);
     FREE(lsn->thrs);
@@ -1312,7 +1344,9 @@ static void _uev_qtn_release(watcher_ctx *watcher, qtn_entry *e, int32_t hard) {
 void _uev_qtn_drain(watcher_ctx *watcher, uint64_t now_ms) {
     qtn_entry *e;
     while (NULL != (e = qtn_que_peek(&watcher->qtn))) {
-        if (now_ms - e->enter_ms < QTN_MS) {
+        // tick 回调里入队的用的是后读的时钟，可能比 now_ms 还晚，按未到期算，免得相减下溢
+        if (e->enter_ms > now_ms
+            || now_ms - e->enter_ms < QTN_MS) {
             break;
         }
         _uev_qtn_release(watcher, e, 0);
@@ -1355,14 +1389,12 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     for (int32_t i = 0; i < lsn->nlsn; i++) {
         _cmd_unlisten(&ctx->watcher[lsn->lsnsock[i].sock.sk.index], lsn);
     }
-    // 占位减必须发 CMD 给 worker[0] 执行,不能主线程直接 FREE：worker 的 events[] 里可能还有
-    // 指向 lsnsock 的项没遍历完,同步 FREE 就是跨线程 UAF；走 worker 则 FREE 跨过 QTN_MS 隔离期
+    // 占位减必须交给 0 号事件线程执行,不能在调用线程直接 FREE：事件线程的 events[] 里可能还有
+    // 指向 lsnsock 的项没遍历完；交给事件线程则释放走 QTN_MS 隔离期
     _cmd_lsn_unref(&ctx->watcher[0], lsn);
 }
-// fd 就地从 lsnsock 上取:这个字段归本 watcher 写(出错路径的 CLOSE_SOCK 会把它置 INVALID_SOCK),
-// 由业务线程在 ev_unlisten 里读了再传进来的话，读到的可能是刚被关掉、fd 号又被新 accept 的连接
-// 占用的旧值——那样只按"在不在元素表里"判就会误关那条无辜连接,而它既不入池也不入隔离队列、
-// close 回调也不触发。在本线程读就没有这个时间差
+// fd 必须在本线程从 lsnsock 上现读：这个字段归本 watcher 写(出错路径会关掉它并置 INVALID_SOCK)，
+// 别的线程读了传进来的可能是已被新连接复用的旧号
 void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
     lsnsock_ctx *curlsn = NULL;
     int32_t i;
@@ -1417,8 +1449,8 @@ static inline int32_t _usk_udp_recv_err(udp_ctx *udp, int32_t *nerr) {
 }
 // 收到一个 datagram 后的处置，两个版本的 _usk_on_udp_rcb 共用。超过 MAX_RECVFROM_SIZE 被截断的残缺数据
 // 不上抛，告警丢弃后继续收(不关 socket)；0 字节是合法 datagram 不视为对端关闭，由 _usk_call_recvfrom_cb
-// 过滤不上抛。返回 0 已投递，1 截断丢弃。投递后调用方须查 STATUS_ERROR：回调里调了 ev_close 就返回
-// ERR_FAILED 当场关，本次已收上来的不再投递(同 IOCP 侧 _olp_on_recvfrom_cb)
+// 过滤不上抛。返回 0 已投递，1 截断丢弃。投递后调用方须查 STATUS_ERROR：回调里要关它(ev_close、同线程发送失败)
+// 都只记下这一位，见到就返回 ERR_FAILED 当场关，本次已收上来的不再投递(同 IOCP 侧 _olp_on_recvfrom_cb)
 static inline int32_t _usk_udp_deliver(watcher_ctx *watcher, udp_ctx *udp, int32_t flags,
                                        char *buf, netaddr_ctx *addr, size_t lens) {
     if (flags & MSG_TRUNC) {
@@ -1657,6 +1689,19 @@ int32_t _uev_try_sendto(watcher_ctx *watcher, evsock_ctx *evsk, const void *data
     }
     return 1;
 }
+uint32_t _uev_tick_drive(watcher_ctx *watcher, uint64_t *now_ms) {
+    watcher->ticking = 1;
+    uint32_t next_to = _evpub_tick_drive(watcher, &watcher->timer, now_ms);
+    watcher->ticking = 0;
+    list_node *node;
+    udp_ctx *udp;
+    while (NULL != (node = list_pop_head(&watcher->tick_closes))) {
+        udp = UPCAST(node, udp_ctx, close_node);
+        BIT_REMOVE(udp->status, STATUS_REMOVE);
+        _usk_close_udp(watcher, udp);
+    }
+    return next_to;
+}
 // 分配并初始化UDP上下文
 static evsock_ctx *_usk_new_udp(skpool_args *skargs) {
     udp_ctx *udp;
@@ -1691,7 +1736,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 1, &addr)) {
         return ERR_FAILED;
     }
-    sk->fd = _evpub_udp(&addr);
+    sk->fd = _evpub_udp(&addr, ud);
     if (sock_is_invalid(sk)) {
         LOG_ERROR("udp %s:%d error.", ip, port);
         UD_FREE(cbs->ud_free, ud);

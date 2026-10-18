@@ -20,6 +20,8 @@ rem
 rem   第三方依赖(openssl/mimalloc)由 tools\deps.py 准备，产物带变体后缀各自共存：
 rem   编 debug 就先 python3 tools\deps.py <架构> debug，换架构同理，都不用先 clean。
 rem   变体配错不会再静默链上另一套 CRT —— 库名对不上，链接期直接报缺文件。
+rem   项目自己的 lib.lib / lualib.lib / exe 按 bin\<平台>\<配置>\ 分目录，换配置同样不用先 clean；
+rem   链完把 srey.exe / test.exe(连同 pdb)拷回 bin\，运行目录不变；clean 时一并删掉这份拷贝。
 rem ***********************************************
 setlocal enabledelayedexpansion
 
@@ -51,8 +53,8 @@ goto parse
 where msbuild >nul 2>&1
 if errorlevel 1 echo 找不到 msbuild，请在「x64 Native Tools Command Prompt for VS」里运行本脚本& exit /b 1
 
-rem 读 config.h 的开关打印出来,与 mk.sh / deps.py 同一份真相
-for /f "tokens=2,3" %%a in ('findstr /r /c:"^#define WITH_" lib\base\config.h') do echo   %%a = %%b
+rem 读 config.h 的开关打印出来,与 mk.sh / deps.py 同一份真相(define 行有缩进)
+for /f "tokens=2,3" %%a in ('findstr /r /c:"^ *#define WITH_SSL " /c:"^ *#define WITH_LUA " /c:"^ *#define WITH_MIMALLOC " lib\base\config.h') do echo   %%a = %%b
 
 if /i "%TARGET%"=="clean" goto doclean
 
@@ -61,11 +63,11 @@ rem 共存,链哪一个由 os.h 的 DEPS_LIB_SUFFIX 拼出来。缺哪个变体,
 rem (如 libssld_x64.lib),照着名字跑一次 deps.py 即可,不会再静默串用另一套 CRT
 
 echo ====================== Build %MSTARGET% %CONFIG%^|%PLATFORM% ======================
-msbuild srey.sln /t:%MSTARGET% /p:Configuration=%CONFIG% /p:Platform=%PLATFORM% /m /v:normal /nologo > mk_build.log 2>&1
+msbuild srey.sln /t:%MSTARGET% /p:Configuration=%CONFIG% /p:Platform=%PLATFORM% /m /v:normal /clp:NoSummary /nologo > mk_build.log 2>&1
 set "RC=!errorlevel!"
 type mk_build.log
 
-rem 告警不是硬错误,退出码 0 也可能有告警,必须数一遍(见 CLAUDE.md)
+rem 告警不是硬错误,退出码 0 也可能有告警,必须数一遍(见 CLAUDE.md)。上面关了末尾汇总,否则每条会数两次
 set "NWARN=0"
 for /f %%n in ('findstr /r /c:" warning [A-Z][A-Z]*[0-9][0-9]*:" mk_build.log ^| find /c /v ""') do set "NWARN=%%n"
 echo ------------------------------------------------------

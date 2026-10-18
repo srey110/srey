@@ -9,6 +9,7 @@
 // + Lightweight, distributed as a single source file.
 //
 //=====================================================================
+// srey补丁：头文件按仓库路径引，另引 base/memory.h 用框架分配器
 #include "protocol/kcp/ikcp.h"
 #include "base/memory.h"
 
@@ -19,7 +20,7 @@
 #include <stdio.h>
 
 #define IKCP_FASTACK_CONSERVE
-// 每个 kcp 最多留这么多空闲满段(一个约 1.4KB，每会话闲置时最多占约 23KB)
+// srey补丁：每个 kcp 最多留这么多空闲满段(段按 mss 容量分配：默认 mtu 下一个约 1.4KB、每会话闲置最多约 23KB，mtu 大时按比例放大)
 #define IKCP_SEG_POOL_MAX 16
 
 //=====================================================================
@@ -38,7 +39,7 @@ const IUINT32 IKCP_ASK_TELL = 2;		// need to send IKCP_CMD_WINS
 const IUINT32 IKCP_WND_SND = 32;
 const IUINT32 IKCP_WND_RCV = 128;       // must >= max fragment size
 const IUINT32 IKCP_MTU_DEF = 1400;
-const IUINT32 IKCP_MTU_MAX = 65535;	// cap mtu: (mtu+OVERHEAD)*3 in ikcp_setmtu is unsigned and would wrap
+const IUINT32 IKCP_MTU_MAX = 65535;	// srey补丁：mtu 上限，ikcp_setmtu 里 (mtu+OVERHEAD)*3 是无符号运算，过大会回绕
 const IUINT32 IKCP_ACK_FAST	= 3;
 const IUINT32 IKCP_INTERVAL	= 100;
 const IUINT32 IKCP_OVERHEAD = 24;
@@ -154,7 +155,7 @@ static void (*ikcp_free_hook)(void *) = NULL;
 static void* ikcp_malloc(size_t size) {
 	if (ikcp_malloc_hook) 
 		return ikcp_malloc_hook(size);
-	return _malloc(size);
+	return _malloc(size);// srey补丁：改走框架分配器
 }
 
 // internal free
@@ -162,7 +163,7 @@ static void ikcp_free(void *ptr) {
 	if (ikcp_free_hook) {
 		ikcp_free_hook(ptr);
 	}	else {
-		_free(ptr);
+		_free(ptr);// srey补丁：改走框架分配器
 	}
 }
 
@@ -174,7 +175,7 @@ void ikcp_allocator(void* (*new_malloc)(size_t), void (*new_free)(void*))
 }
 
 // allocate a new kcp segment
-// [mss/2, mss] 的段一律按 mss 容量分配、删除时回 seg_pool，再要时先从链上取；其余按实际大小分配
+// srey补丁：[mss/2, mss] 的段一律按 mss 容量分配、删除时回 seg_pool，再要时先从链上取；其余按实际大小分配
 static IKCPSEG* ikcp_segment_new(ikcpcb *kcp, int size)
 {
 	IKCPSEG *seg;
@@ -201,6 +202,7 @@ static IKCPSEG* ikcp_segment_new(ikcpcb *kcp, int size)
 // delete a segment
 static void ikcp_segment_delete(ikcpcb *kcp, IKCPSEG *seg)
 {
+	// srey补丁：满段回 seg_pool 留着复用，链满才真释放
 	if (seg->cap == kcp->mss && kcp->nseg_pool < IKCP_SEG_POOL_MAX) {
 		iqueue_add(&seg->node, &kcp->seg_pool);
 		kcp->nseg_pool++;
@@ -209,7 +211,7 @@ static void ikcp_segment_delete(ikcpcb *kcp, IKCPSEG *seg)
 	ikcp_free(seg);
 }
 
-// 空闲满段链整条还给分配器
+// srey补丁：空闲满段链整条还给分配器
 static void ikcp_seg_pool_clear(ikcpcb *kcp)
 {
 	IKCPSEG *seg;
@@ -228,7 +230,7 @@ void ikcp_log(ikcpcb *kcp, int mask, const char *fmt, ...)
 	va_list argptr;
 	if ((mask & kcp->logmask) == 0 || kcp->writelog == 0) return;
 	va_start(argptr, fmt);
-	vsprintf(buffer, fmt, argptr);
+	vsnprintf(buffer, sizeof(buffer), fmt, argptr);	// srey补丁：原 vsprintf 不限长，macOS 新 SDK 报弃用
 	va_end(argptr);
 	kcp->writelog(buffer, kcp, kcp->user);
 }
@@ -255,7 +257,7 @@ static int ikcp_output(ikcpcb *kcp, const void *data, int size)
 // output queue
 void ikcp_qprint(const char *name, const struct IQUEUEHEAD *head)
 {
-	(void)name;
+	(void)name;// srey补丁：消 unused-parameter 告警(下面的打印被 #if 0 关掉)
 	(void)head;
 #if 0
 	const struct IQUEUEHEAD *p;
@@ -306,7 +308,7 @@ ikcpcb* ikcp_create(IUINT32 conv, void *user)
 	iqueue_init(&kcp->rcv_queue);
 	iqueue_init(&kcp->snd_buf);
 	iqueue_init(&kcp->rcv_buf);
-	iqueue_init(&kcp->seg_pool);
+	iqueue_init(&kcp->seg_pool);// srey补丁：空闲满段链
 	kcp->nseg_pool = 0;
 	kcp->nrcv_buf = 0;
 	kcp->nsnd_buf = 0;
@@ -373,7 +375,7 @@ void ikcp_release(ikcpcb *kcp)
 			iqueue_del(&seg->node);
 			ikcp_segment_delete(kcp, seg);
 		}
-		ikcp_seg_pool_clear(kcp);
+		ikcp_seg_pool_clear(kcp);// srey补丁：释放空闲满段链
 		if (kcp->buffer) {
 			ikcp_free(kcp->buffer);
 		}
@@ -756,7 +758,8 @@ static void ikcp_ack_get(const ikcpcb *kcp, int p, IUINT32 *sn, IUINT32 *ts)
 //---------------------------------------------------------------------
 // parse data
 //---------------------------------------------------------------------
-// sn 在接收窗口内且 rcv_buf 里还没有时返回插入点(新段挂在它后面)，出窗口返回 NULL，重复时 *repeat 置 1 并返回 NULL
+// srey补丁：上游的 ikcp_parse_data 拆成 ikcp_rcv_pos / ikcp_rcv_insert / ikcp_rcv_move，好让 ikcp_input 先定插入点再建段
+// srey补丁：sn 在接收窗口内且 rcv_buf 里还没有时返回插入点(新段挂在它后面)，出窗口返回 NULL，重复时 *repeat 置 1 并返回 NULL
 static struct IQUEUEHEAD *ikcp_rcv_pos(ikcpcb *kcp, IUINT32 sn, int *repeat)
 {
 	struct IQUEUEHEAD *p, *prev;
@@ -769,7 +772,7 @@ static struct IQUEUEHEAD *ikcp_rcv_pos(ikcpcb *kcp, IUINT32 sn, int *repeat)
 		IKCPSEG *seg = iqueue_entry(p, IKCPSEG, node);
 		prev = p->prev;
 		if (seg->sn == sn) {
-			*repeat = 1;
+			*repeat = 1;// srey补丁：重复段直接返回，上游是 break 出去再删段
 			return NULL;
 		}
 		if (_itimediff(sn, seg->sn) > 0) {
@@ -779,10 +782,10 @@ static struct IQUEUEHEAD *ikcp_rcv_pos(ikcpcb *kcp, IUINT32 sn, int *repeat)
 	return p;
 }
 
-// 把 rcv_buf 头部已连续的段挪进 rcv_queue
+// srey补丁：把 rcv_buf 头部已连续的段挪进 rcv_queue
 static void ikcp_rcv_move(ikcpcb *kcp);
 
-// 新段挂到 ikcp_rcv_pos 给出的插入点(NULL 表示不插)，再挪可交付的段
+// srey补丁：新段挂到 ikcp_rcv_pos 给出的插入点(NULL 表示不插)，再挪可交付的段
 static void ikcp_rcv_insert(ikcpcb *kcp, IKCPSEG *newseg, struct IQUEUEHEAD *p)
 {
 	if (NULL != p) {
@@ -793,6 +796,7 @@ static void ikcp_rcv_insert(ikcpcb *kcp, IKCPSEG *newseg, struct IQUEUEHEAD *p)
 	ikcp_rcv_move(kcp);
 }
 
+// srey补丁：函数体是上游 ikcp_parse_data 的后半段(原样保留)
 static void ikcp_rcv_move(ikcpcb *kcp)
 {
 
@@ -915,7 +919,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 			if (_itimediff(sn, kcp->rcv_nxt + kcp->rcv_wnd) < 0) {
 				ikcp_ack_push(kcp, sn, ts);
 				if (_itimediff(sn, kcp->rcv_nxt) >= 0) {
-					// 先定插入点再建段：重复段(对端没收到 ACK 的重传)不必分配、拷贝后又删掉
+					// srey补丁：先定插入点再建段：重复段(对端没收到 ACK 的重传)不必分配、拷贝后又删掉
 					int repeat;
 					struct IQUEUEHEAD *pos = ikcp_rcv_pos(kcp, sn, &repeat);
 					if (NULL != pos) {
@@ -933,7 +937,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 							memcpy(seg->data, data, len);
 						}
 						ikcp_rcv_insert(kcp, seg, pos);
-					} else if (repeat) {
+					} else if (repeat) {// srey补丁：重复段不建段，但同上游一样照常挪可交付段
 						ikcp_rcv_move(kcp);
 					}
 				}
@@ -1374,6 +1378,7 @@ IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
 int ikcp_setmtu(ikcpcb *kcp, int mtu)
 {
 	char *buffer;
+	// srey补丁：加 IKCP_MTU_MAX 上限
 	if (mtu < 50 || mtu < (int)IKCP_OVERHEAD || mtu > (int)IKCP_MTU_MAX) 
 		return -1;
 	buffer = (char*)ikcp_malloc((mtu + IKCP_OVERHEAD) * 3);
@@ -1381,7 +1386,7 @@ int ikcp_setmtu(ikcpcb *kcp, int mtu)
 		return -2;
 	kcp->mtu = mtu;
 	kcp->mss = kcp->mtu - IKCP_OVERHEAD;
-	ikcp_seg_pool_clear(kcp);
+	ikcp_seg_pool_clear(kcp);// srey补丁：mss 变了，旧容量的空闲段不能再复用
 	ikcp_free(kcp->buffer);
 	kcp->buffer = buffer;
 	return 0;

@@ -99,21 +99,17 @@ static inline void name##_init(name *s, void (*elfree)(void *item)) {           
     s->nfree = 0;                                                                                    \
     s->maxfree = 0;                                                                                  \
 }                                                                                                    \
+/* free 逐个节点的回调：调 elfree 再释放节点，ud 即集合 */                                           \
+static inline void name##_free_node(name##_node *nd, void *ud) {                                     \
+    name *s = (name *)ud;                                                                            \
+    if (NULL != s->elfree) {                                                                         \
+        s->elfree(&nd->item);                                                                        \
+    }                                                                                                \
+    FREE(nd);                                                                                        \
+}                                                                                                    \
 /* 逐个调 elfree 再释放节点（连池里的一起），之后可直接再用，池上限保持不变 */                       \
 static inline void name##_free(name *s) {                                                            \
-    rbt_node *n = rbt_first_postorder(&s->tree.root.rbt_root);                                       \
-    rbt_node *next;                                                                                  \
-    name##_node *nd;                                                                                 \
-    while (NULL != n) {                                                                              \
-        next = rbt_next_postorder(n);                                                                \
-        nd = UPCAST(n, name##_node, rb);                                                             \
-        if (NULL != s->elfree) {                                                                     \
-            s->elfree(&nd->item);                                                                    \
-        }                                                                                            \
-        FREE(nd);                                                                                    \
-        n = next;                                                                                    \
-    }                                                                                                \
-    name##_rb_init(&s->tree);                                                                        \
+    name##_rb_clear(&s->tree, name##_free_node, s);                                                  \
     name##_pool_shrink(s, 0);                                                                        \
 }                                                                                                    \
 /* 删除后最多留 maxfree 个节点给后面的插入复用；0 即不留（默认）；调低时当场释放多出来的 */          \
@@ -188,7 +184,6 @@ static inline T *name##_insert(name *s, T const *item, int32_t *found) {        
    MULTI 总是插入，返回 NULL。item 可以就是 &s->spare */                                             \
 static inline T *name##_insert_or_assign(name *s, T const *item) {                                   \
     rbt_insert_pos pos;                                                                              \
-    T old;                                                                                           \
     name##_node *nd = name##_rb_insert_check(&s->tree, KEYOF(item), &pos);                           \
     if (NULL == nd) {                                                                                \
         nd = name##_alloc(s);                                                                        \
@@ -196,7 +191,7 @@ static inline T *name##_insert_or_assign(name *s, T const *item) {              
         name##_rb_insert_commit(&s->tree, nd, &pos);                                                 \
         return NULL;                                                                                 \
     }                                                                                                \
-    old = nd->item;                                                                                  \
+    T old = nd->item;                                                                                \
     nd->item = *item;                                                                                \
     s->spare = old;                                                                                  \
     return &s->spare;                                                                                \

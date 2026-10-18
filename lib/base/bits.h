@@ -44,6 +44,27 @@ static inline uint32_t ctz64(uint64_t v) {
 #endif
 }
 /// <summary>
+/// 32 位整数最高那个 1 之上有几个 0，即前导 0 的个数
+/// </summary>
+/// <param name="v">待查值，必须非 0(为 0 时结果未定义)</param>
+/// <returns>前导 0 的个数，0~31</returns>
+static inline uint32_t clz32(uint32_t v) {
+#if defined(CC_GNU)
+    return (uint32_t)__builtin_clz(v);// gcc/clang 内建：数最高位往下连续 0 的个数
+#elif defined(OS_WIN)
+    unsigned long i;
+    _BitScanReverse(&i, v);// MSVC 内建：从高位往低位找第一个 1，位置写进 i
+    return 31 - (uint32_t)i;
+#else
+    uint32_t n = 0;
+    while (0 == (v & ((uint32_t)1 << 31))) {
+        v <<= 1;
+        n++;
+    }
+    return n;
+#endif
+}
+/// <summary>
 /// 64 位整数最高那个 1 之上有几个 0，即前导 0 的个数
 /// </summary>
 /// <param name="v">待查值，必须非 0(为 0 时结果未定义)</param>

@@ -87,7 +87,7 @@ static void _bw_round(uint16_t nworker, const bw_cfg *cfg, bw_result *out) {
     for (i = 0; i < BW_NTASK; i++) {
         msg.sess = (uint64_t)i;
         for (k = 0; k < BW_NMSG; k++) {
-            _task_message_push(tasks[i], &msg);
+            msgq_push(&tasks[i]->qumsg, &msg);
         }
     }
     t0 = nowms();

@@ -14,6 +14,7 @@ typedef enum parse_status {
     AUTH,      //已发送 AUTH 命令，等待服务端 334 挑战
     AUTH_CHECK,//已发送认证凭据，等待服务端 235 成功响应
     COMMAND,   //握手完成，正常命令交互阶段
+    AUTH_PSW,  //AUTH LOGIN 已回用户名，等第二个 334 挑战（放在末尾：测试里按数值写了前几个）
 }parse_status;
 static _handshaked_push _hs_push;
 
@@ -25,7 +26,7 @@ void _smtp_udfree(ud_cxt *ud) {
         return;
     }
     smtp_ctx *smtp = ud->context;
-    sock_set_invalid(&smtp->sk);
+    sock_mark_closed(&smtp->sk);// 网络线程上写，理由见 sock_mark_closed
     ud->context = NULL;
     PROT_REF_RELEASE(smtp);
 }
@@ -149,17 +150,16 @@ static int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
             memcpy(expect, line, SMTP_CODE_LENS);
             haveexp = 1;
         }
-        if (0 != memcmp(line, expect, SMTP_CODE_LENS)) {
-            return ERR_FAILED;
-        }
-        sep = line[SMTP_CODE_LENS];
-        //code 之后是 '-'(续行) / ' '(结束行) / CR(裸结束行 "<code>\r\n")，其余非法
-        if ('-' != sep && ' ' != sep && '\r' != sep) {
-            return ERR_FAILED;
-        }
+        // 整行到齐再判：拒绝行的 CRLF 还没到就判失败的话，调用方交不出这行原文
         crlf = buffer_search(buf, 0, (size_t)pos + SMTP_CODE_LENS, 0, FLAG_CRLF, CRLF_SIZE);
         if (ERR_FAILED == crlf) {
             return 0;
+        }
+        sep = line[SMTP_CODE_LENS];
+        //code 之后是 '-'(续行) / ' '(结束行) / CR(裸结束行 "<code>\r\n")，其余非法
+        if (0 != memcmp(line, expect, SMTP_CODE_LENS)
+            || ('-' != sep && ' ' != sep && '\r' != sep)) {
+            return ERR_FAILED;
         }
         if ('-' != sep) {
             return crlf + (int32_t)CRLF_SIZE;//结束行尾部位置
@@ -236,20 +236,41 @@ static void _smtp_connected(ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *u
         BIT_SET(*status, PROT_ERROR);
     }
 }
+// AUTH 行 [pos, end) 这段机制列表里有没有 mech：按空格切词整词比较，大小写不敏感。
+// 子串不算，"PLAIN-CLIENTTOKEN" 不是 PLAIN
+static int32_t _smtp_has_mech(buffer_ctx *buf, int32_t pos, int32_t end, const char *mech) {
+    size_t mlens = strlen(mech);
+    char word[8];// 调用方只传 "PLAIN" / "LOGIN"
+    int32_t sp;
+    while (pos < end) {
+        sp = buffer_search(buf, 0, (size_t)pos, (size_t)end, " ", 1);
+        if (ERR_FAILED == sp) {
+            sp = end;
+        }
+        if ((size_t)(sp - pos) == mlens) {
+            ASSERTAB(mlens == buffer_copyout(buf, (size_t)pos, word, mlens), "copy buffer failed.");
+            if (0 == memcasecmp(word, mech, mlens)) {
+                return 1;
+            }
+        }
+        pos = sp + 1;
+    }
+    return 0;
+}
 // 从 EHLO 响应里解析认证类型，优先 PLAIN 其次 LOGIN。total 是本条 250 响应的字节数，
 // 搜索一律卡在它之内。返回 smtp_authtype，没有可用的 AUTH 通告返回 ERR_FAILED。
 // RFC 5321 §4.2.1：多行响应中间行用 '-' 分隔，末行/单行用空格分隔；
 // 带尾随空格的字面量避免 "250-AUTHENTICATION" 等其他扩展误匹配
 static int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total) {
-    const char *authmid = "250-AUTH ";
-    const char *authend = "250 AUTH ";
-    size_t mlen = strlen(authmid);
-    size_t elen = strlen(authend);
     // 挡到 1：total - 1 在 0 处下溢成 SIZE_MAX，在 1 处算出 0，
     // 而 buffer_search 的 end 为 0 表示"搜到缓冲末尾"，边界会整个失效
     if (total <= 1) {
         return ERR_FAILED;
     }
+    const char *authmid = "250-AUTH ";
+    const char *authend = "250 AUTH ";
+    size_t mlen = strlen(authmid);
+    size_t elen = strlen(authend);
     size_t last = (size_t)total - 1;// buffer_search 的 end 是含端下标，不是长度
     int32_t start = buffer_search(buf, 1, 0, last, (char *)authmid, mlen);
     if (ERR_FAILED != start) {
@@ -267,15 +288,15 @@ static int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total) {
         LOG_WARN("format error.");
         return ERR_FAILED;
     }
-    if (ERR_FAILED != buffer_search(buf, 1, start, end, "PLAIN", strlen("PLAIN"))) {
+    if (_smtp_has_mech(buf, start, end, "PLAIN")) {
         return PLAIN;
     }
-    if (ERR_FAILED != buffer_search(buf, 1, start, end, "LOGIN", strlen("LOGIN"))) {
+    if (_smtp_has_mech(buf, start, end, "LOGIN")) {
         return LOGIN;
     }
     return ERR_FAILED;
 }
-// EHLO 阶段：等待服务端 250 响应，解析认证类型并发送 AUTH 命令，切换到 AUTH 状态
+// EHLO 阶段：等待服务端 250 响应，解析认证类型并发送 AUTH 命令，切换到 AUTH 状态；没设用户名则直接握手完成
 static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     //等待完整的 250 多行 EHLO 响应（典型形如 "250-AUTH LOGIN PLAIN\r\n250 OK\r\n"）
     int32_t total = _smtp_full_response(buf, SMTP_OK);
@@ -287,6 +308,16 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
     }
     if (0 == total) {
         BIT_SET(*status, PROT_MOREDATA);
+        return;
+    }
+    // 没给用户名就是免认证投递：服务端通不通告 AUTH 都不认证，EHLO 成功即握手完成
+    if ('\0' == smtp->user[0]) {
+        buffer_drain(buf, (size_t)total);
+        if (ERR_OK != _hs_push(sk, 1, ud, ERR_OK, NULL, 0)) {
+            BIT_SET(*status, PROT_ERROR);
+            return;
+        }
+        ud->status = COMMAND;
         return;
     }
     smtp->authtype = _smtp_get_authtype(buf, total);
@@ -315,56 +346,43 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
         BIT_SET(*status, PROT_ERROR);
     }
 }
-// AUTH LOGIN 认证阶段：解析服务端 334 挑战，按 "Username:"/"Password:" 顺序发送 Base64 凭据
-static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    //找首个 CRLF 确定单条响应边界，避免与流水线后续响应混淆
-    int32_t crlf = buffer_search(buf, 0, SMTP_CODE_LENS + 1, 0, FLAG_CRLF, CRLF_SIZE);
-    if (ERR_FAILED == crlf) {
-        BIT_SET(*status, PROT_ERROR);
-        return;
+// 334 挑战体（"334 " 与 CRLF 之间）是不是非空的合法 Base64；超长也算不合法。
+// 解码在中途撞上非法字符会就地返回 0，"334 dXNlcm5hbWU6!!!" 这种半截合法的也拦得住
+static int32_t _smtp_challenge_ok(buffer_ctx *buf, int32_t crlf) {
+    if (crlf <= SMTP_CODE_LENS + 1
+        || crlf - SMTP_CODE_LENS - 1 > SMTP_MAX_PACK_LENS) {
+        return 0;
     }
     size_t lens = (size_t)crlf - SMTP_CODE_LENS - 1;
-    // 空挑战（"334 \r\n"）或挑战体超长均非法，丢弃响应并报错
-    if (0 == lens || lens > SMTP_MAX_PACK_LENS) {
-        buffer_drain(buf, (size_t)crlf + CRLF_SIZE);
+    char *b64;
+    MALLOC(b64, lens + B64DE_SIZE(lens));
+    ASSERTAB(lens == buffer_copyout(buf, SMTP_CODE_LENS + 1, b64, lens), "copy buffer failed.");
+    size_t declens = bs64_decode(b64, lens, b64 + lens);
+    FREE(b64);
+    return 0 != declens;
+}
+// AUTH LOGIN 认证阶段：第一个 334 回用户名、第二个回密码，按顺序配对，不认提示文本——
+// 各家提示不一（"Username:" 之外还有 "User Name" 与本地化文本）。挑战不合法即断开，原文交给等待方
+static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+    // _smtp_auth 已确认首个 CRLF 在缓冲里，只取这一行，不和后面的响应混
+    int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+    if (!_smtp_challenge_ok(buf, crlf)) {
         BIT_SET(*status, PROT_ERROR);
+        _smtp_push_firstline(sk, ud, buf);
         return;
     }
-    char *b64flag;
-    CALLOC(b64flag, 1, lens + 1);
-    ASSERTAB(lens == buffer_copyout(buf, SMTP_CODE_LENS + 1, b64flag, lens), "copy buffer failed.");
     buffer_drain(buf, (size_t)crlf + CRLF_SIZE);
-    char *flag;
-    CALLOC(flag, 1, B64DE_SIZE(lens));
-    // 必须查返回值：解码在中途撞上非法字符会就地返回 0，而合法前缀已经写进 flag 了。
-    // 服务端答 "334 dXNlcm5hbWU6!!!" 时前缀正好解出 "username:"，不查就照着把账号发出去
-    size_t declens = bs64_decode(b64flag, lens, flag);
-    FREE(b64flag);
-    if (0 == declens) {
-        FREE(flag);
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
-    flag = strlower(flag);
-    if (0 == strcmp(flag, "username:")) {
-        FREE(flag);
-        char *cmd = _smtp_b64_line(smtp->user, strlen(smtp->user));
-        if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
-            BIT_SET(*status, PROT_ERROR);
-        }
-        return;
-    }
-    if (0 == strcmp(flag, "password:")) {
-        FREE(flag);
-        char *cmd = _smtp_b64_line(smtp->psw, strlen(smtp->psw));
+    char *cmd;
+    if (AUTH == ud->status) {
+        cmd = _smtp_b64_line(smtp->user, strlen(smtp->user));
+        ud->status = AUTH_PSW;
+    } else {
+        cmd = _smtp_b64_line(smtp->psw, strlen(smtp->psw));
         ud->status = AUTH_CHECK;
-        if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
-            BIT_SET(*status, PROT_ERROR);
-        }
-        return;
     }
-    BIT_SET(*status, PROT_ERROR);
-    FREE(flag);
+    if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
+        BIT_SET(*status, PROT_ERROR);
+    }
 }
 // AUTH PLAIN 认证阶段：构造 "\0user\0password" 格式并 Base64 编码后发送，切换到 AUTH_CHECK 状态
 static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -496,6 +514,7 @@ void *smtp_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         _smtp_ehlo(smtp, ev, sk, buf, ud, status);
         break;
     case AUTH:
+    case AUTH_PSW:
         if (NULL == smtp) {
             BIT_SET(*status, PROT_ERROR);
             break;

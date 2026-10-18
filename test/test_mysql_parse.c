@@ -66,7 +66,7 @@ static void _mysql_stage(mysql_ctx *mysql, mysql_reader_ctx *reader, int32_t rst
     mpack->_free_mpack = _mpack_reader_free;
     mysql->mpack = mpack;
 }
-// _mpack_ok / _mpack_parse_field / _mpack_parse_binary_row 都是库内 static，改从公开入口
+// _mpack_ok_parse / _mpack_parse_field / _mpack_parse_binary_row 都是库内 static，改从公开入口
 // mysql_unpack 喂整包间接测：这里补 4 字节包头(3 字节小端长度 + 序号)并把 ud 摆到 COMMAND 阶段。
 // 结果集的字段/行阶段还要调用方先摆好 mysql->mpack 与 parse_status。
 // payload 由 _mysql_payload 拷进独立块，故返回值不依赖这里的临时 buffer
@@ -740,8 +740,7 @@ static void test_mysql_reader_string(CuTest *tc) {
 }
 
 // mysql_reader_datetime 二进制协议：7 字节 year(2)+month(1)+day(1)+h(1)+m(1)+s(1)
-// 注：文本协议依赖 strtots → mktime 行为，在不同时区/DST 下可能不稳定；
-// 这里覆盖更可控的 binary 路径，文本路径的 0 长度短路在第二段验证
+// 这里覆盖 binary 路径，文本路径的 0 长度短路在第二段验证
 static void test_mysql_reader_datetime_binary(CuTest *tc) {
     char names[1][64] = { "dt" };
     uint8_t types[1] = { MYSQL_TYPE_DATETIME };
@@ -862,6 +861,57 @@ static void test_mysql_reader_datetime_zero_date(CuTest *tc) {
     // 只有年份是零的部分零日期不在此列，仍按解析失败处理（mktime 也表示不了）
     (void)_my_text_dt("2024-00-15 00:00:00", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
+}
+
+// 造一条二进制 DATETIME 行(v 为长度前缀之后的 lens 字节)并读出
+static int64_t _my_bin_dt(const uint8_t *v, size_t lens, int32_t *err) {
+    char names[1][64] = { "dt" };
+    uint8_t types[1] = { MYSQL_TYPE_DATETIME };
+    mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+    char *p;
+    MALLOC(p, lens);
+    memcpy(p, v, lens);
+    buf_ctx c[1] = { { .data = p, .lens = lens } };
+    _reader_push_row(r, &p, c, NULL);
+    int64_t ts = mysql_reader_datetime(r, "dt", err);
+    mysql_reader_free(r);
+    return ts;
+}
+
+// 二进制 DATE / DATETIME 先卡字段量程再交 mktime：越界值不能被归一成另一个日期还报成功，
+// 口径同文本路径(test_mysql_reader_datetime_text_range / zero_date)。年份 2024 小端是 E8 07
+static void test_mysql_reader_datetime_binary_range(CuTest *tc) {
+    static const uint8_t bad[][7] = {
+        { 0xE8, 0x07, 0, 0, 0, 0, 0 },// 2024-00-00：只有年份非零的部分零日期
+        { 0xE8, 0x07, 0, 15, 0, 0, 0 },// 月 0
+        { 0xE8, 0x07, 13, 1, 0, 0, 0 },// 月 13
+        { 0xE8, 0x07, 5, 0, 0, 0, 0 },// 日 0
+        { 0xE8, 0x07, 5, 32, 0, 0, 0 },// 日 32
+        { 0xE8, 0x07, 5, 21, 24, 0, 0 },// 时 24
+        { 0xE8, 0x07, 5, 21, 13, 60, 0 },// 分 60
+        { 0xE8, 0x07, 5, 21, 13, 45, 60 },// 秒 60
+        { 0xE8, 0x07, 5, 21, 200, 0, 0 },// 字节 >= 0x80：按有符号读会变负数混过上界
+    };
+    static const uint8_t zero[7] = { 0, 0, 0, 0, 12, 34, 56 };
+    static const uint8_t edge[7] = { 0xE8, 0x07, 12, 31, 23, 59, 59 };
+    int32_t err;
+    for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+        err = ERR_OK;
+        (void)_my_bin_dt(bad[i], 7, &err);
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+    }
+    // 4 字节 DATE 同样卡量程
+    err = ERR_OK;
+    (void)_my_bin_dt(bad[0], 4, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    // 日期部分全零按零日期：返回 0 且不报错，带不带时间都一样
+    CuAssertTrue(tc, 0 == _my_bin_dt(zero, 4, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 0 == _my_bin_dt(zero, 7, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    // 各字段取到上界的合法值照常换算
+    CuAssertTrue(tc, _my_bin_dt(edge, 7, &err) > 0);
+    CuAssertIntEquals(tc, ERR_OK, err);
 }
 
 // mysql_reader_time 文本协议：正/负 "HH:MM:SS" 格式 + 二进制协议 8 字节
@@ -1096,7 +1146,7 @@ static void test_mysql_status_flag_values(CuTest *tc) {
     CuAssertIntEquals(tc, 16384, SERVER_SESSION_STATE_CHANGED);
 }
 
-// _mpack_ok 解析 OK 包：两个计数落到 mysql_ctx，status_flags 的唯一后果是 more 与 cur_cmd。
+// 解析 OK 包：两个计数随 mpack 交付、不写 mysql_ctx(连接级只由 mysql_record 落)，status_flags 的唯一后果是 more 与 cur_cmd。
 // 直接读回 status_flags 证明不了什么——它得真的影响到这两处才算解对了
 static void test_mpack_ok_parse(CuTest *tc) {
     binary_ctx bw;
@@ -1107,8 +1157,10 @@ static void test_mpack_ok_parse(CuTest *tc) {
     mpack_ctx *mpack = _ok_feed(&mysql, 0x0002/*AUTOCOMMIT*/, &bw, &status);
     CuAssertTrue(tc, NULL != mpack);
     CuAssertIntEquals(tc, MPACK_OK, (int)mpack->pack_type);
-    CuAssertIntEquals(tc, 5, (int)mysql_affected_rows(&mysql));
-    CuAssertIntEquals(tc, 17, (int)mysql_last_id(&mysql));
+    CuAssertIntEquals(tc, 5, (int)mysql_pack_affected_rows(mpack));
+    CuAssertIntEquals(tc, 17, (int)mysql_pack_last_id(mpack));
+    CuAssertIntEquals(tc, 0, (int)mysql_affected_rows(&mysql));
+    CuAssertIntEquals(tc, 0, (int)mysql_last_id(&mysql));
     CuAssertIntEquals(tc, 0, (int)mpack->more);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
     _mysql_pkfree(mpack);
@@ -1119,6 +1171,30 @@ static void test_mpack_ok_parse(CuTest *tc) {
     CuAssertTrue(tc, NULL != mpack);
     CuAssertIntEquals(tc, 1, (int)mpack->more);
     CuAssertIntEquals(tc, MYSQL_QUERY, (int)mysql.cur_cmd);
+    _mysql_pkfree(mpack);
+    binary_free(&bw);
+
+    // 3) 两个计数超过 INT64_MAX：按无符号原样随包交付，不回绕成负数
+    binary_init_write(&bw, 0, 0);
+    binary_set_uint8(&bw, MYSQL_OK);
+    binary_set_uint8(&bw, 0xfe);
+    binary_set_integer(&bw, -1, 8, 1);// affected = UINT64_MAX
+    binary_set_uint8(&bw, 0xfe);
+    binary_set_integer(&bw, INT64_MIN, 8, 1);// last_id = 2^63
+    binary_set_integer(&bw, 0, 2, 1);
+    binary_set_integer(&bw, 0, 2, 1);
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_QUERY;
+    mpack = (mpack_ctx *)_mysql_feed(&mysql, bw.data, bw.offset, &status);
+    CuAssertTrue(tc, NULL != mpack);
+    CuAssertTrue(tc, UINT64_MAX == mysql_pack_affected_rows(mpack));
+    CuAssertTrue(tc, ((uint64_t)1 << 63) == mysql_pack_last_id(mpack));
+    // 只有无符号返回值才过得了这两句：有符号时它们是 -1 / INT64_MIN
+    CuAssertTrue(tc, mysql_pack_affected_rows(mpack) > 0);
+    CuAssertTrue(tc, mysql_pack_last_id(mpack) > 0);
+    mysql_record(&mysql, mpack);
+    CuAssertTrue(tc, UINT64_MAX == mysql_affected_rows(&mysql));
+    CuAssertTrue(tc, ((uint64_t)1 << 63) == mysql_last_id(&mysql));
     _mysql_pkfree(mpack);
     binary_free(&bw);
 }
@@ -1191,7 +1267,7 @@ static void test_mpack_ok_track_truncated(CuTest *tc) {
     mysql.cur_cmd = MYSQL_QUERY;
     mpack = (mpack_ctx *)_mysql_feed(&mysql, bw.data, bw.offset, &status);
     CuAssertTrue(tc, NULL != mpack);
-    CuAssertIntEquals(tc, 1, (int)mysql_affected_rows(&mysql));
+    CuAssertIntEquals(tc, 1, (int)mysql_pack_affected_rows(mpack));
     CuAssert(tc, "truncated session-track must not corrupt the database name",
         '\0' == mysql.client.database[0]);
     _mysql_pkfree(mpack);
@@ -1217,7 +1293,7 @@ static void test_mpack_ok_track_truncated(CuTest *tc) {
     binary_free(&bw);
 }
 
-// _mpack_err 解析 ERR 包：error_code + 跳过 6 字节 SQL state + 剩余字节为 msg
+// _mpack_err 解析 ERR 包：error_code + 跳过 6 字节 SQL state + 剩余字节为 msg，都记进 mpack
 static void test_mpack_err_parse(CuTest *tc) {
     char pkt[64];
     const char *msg = "syntax error near 'foo'";
@@ -1231,14 +1307,16 @@ static void test_mpack_err_parse(CuTest *tc) {
 
     binary_ctx br;
     binary_init_read(&br, pkt, 8 + mlens);
-    mysql_ctx mysql;
-    ZERO(&mysql, sizeof(mysql));
-    _mpack_err(&mysql, &br);
-    CuAssertIntEquals(tc, 0x1234, mysql.error_code);
-    CuAssertStrEquals(tc, msg, mysql.error_msg);
+    mpack_ctx mpack;
+    ZERO(&mpack, sizeof(mpack));
+    mpack.pack_type = MPACK_ERR;
+    _mpack_err(&mpack, &br);
+    CuAssertIntEquals(tc, 0x1234, mpack.error_code);
+    CuAssertStrEquals(tc, msg, mysql_pack_erro(&mpack, NULL));
+    FREE(mpack.pack);
 }
 
-// _mpack_err 空错误消息：error_msg 长度 0，mysql.error_msg 为空字符串
+// _mpack_err 空错误消息：不挂文案(pack 留 NULL)，mysql_pack_erro 给空串
 static void test_mpack_err_empty_msg(CuTest *tc) {
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
@@ -1248,11 +1326,13 @@ static void test_mpack_err_empty_msg(CuTest *tc) {
 
     binary_ctx br;
     binary_init_read(&br, bw.data, bw.offset);
-    mysql_ctx mysql;
-    ZERO(&mysql, sizeof(mysql));
-    _mpack_err(&mysql, &br);
-    CuAssertIntEquals(tc, 1045, mysql.error_code);
-    CuAssertStrEquals(tc, "", mysql.error_msg);
+    mpack_ctx mpack;
+    ZERO(&mpack, sizeof(mpack));
+    mpack.pack_type = MPACK_ERR;
+    _mpack_err(&mpack, &br);
+    CuAssertIntEquals(tc, 1045, mpack.error_code);
+    CuAssertTrue(tc, NULL == mpack.pack);
+    CuAssertStrEquals(tc, "", mysql_pack_erro(&mpack, NULL));
     binary_free(&bw);
 }
 
@@ -1267,15 +1347,17 @@ static void test_mpack_err_no_sqlstate(CuTest *tc) {
 
     binary_ctx br;
     binary_init_read(&br, bw.data, bw.offset);
-    mysql_ctx mysql;
-    ZERO(&mysql, sizeof(mysql));
-    _mpack_err(&mysql, &br);
-    CuAssertIntEquals(tc, 1040, mysql.error_code);
-    CuAssertStrEquals(tc, msg, mysql.error_msg);
+    mpack_ctx mpack;
+    ZERO(&mpack, sizeof(mpack));
+    mpack.pack_type = MPACK_ERR;
+    _mpack_err(&mpack, &br);
+    CuAssertIntEquals(tc, 1040, mpack.error_code);
+    CuAssertStrEquals(tc, msg, mysql_pack_erro(&mpack, NULL));
+    FREE(mpack.pack);
     binary_free(&bw);
 }
 
-// _mpack_err 报文不足 2 字节：连 error_code 都读不出来，须归零而不是读越界
+// _mpack_err 报文不足 2 字节：连 error_code 都读不出来，码与文案留 0 / NULL 而不是读越界
 static void test_mpack_err_truncated(CuTest *tc) {
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
@@ -1283,13 +1365,92 @@ static void test_mpack_err_truncated(CuTest *tc) {
 
     binary_ctx br;
     binary_init_read(&br, bw.data, bw.offset);
-    mysql_ctx mysql;
-    ZERO(&mysql, sizeof(mysql));
-    mysql.error_code = 0x7fff;// 打脏，确认被清成 0
-    _mpack_err(&mysql, &br);
-    CuAssertIntEquals(tc, 0, mysql.error_code);
-    CuAssertStrEquals(tc, "", mysql.error_msg);
+    mpack_ctx mpack;
+    ZERO(&mpack, sizeof(mpack));
+    mpack.pack_type = MPACK_ERR;
+    _mpack_err(&mpack, &br);
+    CuAssertIntEquals(tc, 0, mpack.error_code);
+    CuAssertTrue(tc, NULL == mpack.pack);
+    int32_t code = -1;
+    CuAssertStrEquals(tc, "", mysql_pack_erro(&mpack, &code));
+    CuAssertIntEquals(tc, 0, code);
     binary_free(&bw);
+}
+
+// ERR 包错误码线上是无符号 2 字节：>= 32768 的码(如留给第三方组件的 50000~51999)经 mysql_pack_erro、
+// 记到连接上后经 mysql_erro 都不能变成负数
+static void test_mpack_err_code_unsigned(CuTest *tc) {
+    static const int32_t codes[] = { 32768, 50001, 65535 };
+    mysql_ctx mysql;
+    mpack_ctx mpack;
+    binary_ctx bw;
+    binary_ctx br;
+    int32_t code;
+    for (size_t i = 0; i < ARRAY_SIZE(codes); i++) {
+        binary_init_write(&bw, 0, 0);
+        binary_set_integer(&bw, codes[i], 2, 1);
+        binary_set_binary(&bw, "#HY000", 6);
+        binary_set_binary(&bw, "x", 1);
+        binary_init_read(&br, bw.data, bw.offset);
+        ZERO(&mpack, sizeof(mpack));
+        mpack.pack_type = MPACK_ERR;
+        _mpack_err(&mpack, &br);
+        code = 0;
+        CuAssertStrEquals(tc, "x", mysql_pack_erro(&mpack, &code));
+        CuAssertIntEquals(tc, codes[i], code);
+        ZERO(&mysql, sizeof(mysql));
+        mysql_record(&mysql, &mpack);
+        code = 0;
+        CuAssertStrEquals(tc, "x", mysql_erro(&mysql, &code));
+        CuAssertIntEquals(tc, codes[i], code);
+        FREE(mpack.pack);
+        binary_free(&bw);
+    }
+}
+
+// 计数与错误随包交付：解析不写连接级字段，mysql_record 才落；OK 只改两个计数、ERR 只改错误，结果集与 NULL 都不改
+static void test_mysql_record(CuTest *tc) {
+    binary_ctx bw;
+    mysql_ctx mysql;
+    int32_t status;
+    int32_t code;
+    mpack_ctx *ok = _ok_feed(&mysql, 0, &bw, &status);// affected=5 last_id=17
+    binary_free(&bw);
+    CuAssertPtrNotNull(tc, ok);
+    code = -1;
+    CuAssertStrEquals(tc, "", mysql_pack_erro(ok, &code));
+    CuAssertIntEquals(tc, 0, code);
+    CuAssertTrue(tc, 0 == mysql_affected_rows(&mysql) && 0 == mysql_last_id(&mysql));
+    mysql_record(&mysql, ok);
+    CuAssertTrue(tc, 5 == mysql_affected_rows(&mysql) && 17 == mysql_last_id(&mysql));
+    _mysql_pkfree(ok);
+    // ERR(1062)：解析后连接级错误仍空，记下后才有；两个计数保持上一个 OK 的
+    const char dup[] = { (char)MYSQL_ERR, 0x26, 0x04, '#', '2', '3', '0', '0', '0', 'd', 'u', 'p' };
+    mysql.cur_cmd = MYSQL_QUERY;
+    mpack_ctx *err = _mysql_feed(&mysql, dup, sizeof(dup), &status);
+    CuAssertPtrNotNull(tc, err);
+    CuAssertIntEquals(tc, MPACK_ERR, (int)err->pack_type);
+    CuAssertTrue(tc, 0 == mysql_pack_affected_rows(err) && 0 == mysql_pack_last_id(err));
+    CuAssertStrEquals(tc, "", mysql_erro(&mysql, NULL));
+    mysql_record(&mysql, err);
+    code = 0;
+    CuAssertStrEquals(tc, "dup", mysql_erro(&mysql, &code));
+    CuAssertIntEquals(tc, 1062, code);
+    CuAssertTrue(tc, 5 == mysql_affected_rows(&mysql) && 17 == mysql_last_id(&mysql));
+    _mysql_pkfree(err);
+    // 结果集包与 NULL：什么都不改；结果集的 pack 是 reader，mysql_pack_erro 不能把它当串读
+    char names[1][64] = { "c" };
+    uint8_t types[1] = { MYSQL_TYPE_LONG };
+    mpack_ctx rs;
+    ZERO(&rs, sizeof(rs));
+    rs.pack_type = MPACK_QUERY;
+    rs.pack = _reader_new(MPACK_QUERY, 1, names, types);
+    CuAssertStrEquals(tc, "", mysql_pack_erro(&rs, NULL));
+    mysql_record(&mysql, &rs);
+    mysql_record(&mysql, NULL);
+    CuAssertTrue(tc, 5 == mysql_affected_rows(&mysql) && 17 == mysql_last_id(&mysql));
+    CuAssertStrEquals(tc, "dup", mysql_erro(&mysql, NULL));
+    mysql_reader_free(rs.pack);
 }
 
 // _mysql_payload：从 buffer 取 lenpref + payload；不足时 PROT_MOREDATA
@@ -1332,8 +1493,19 @@ static void test_mysql_payload(CuTest *tc) {
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     buffer_free(&buf);
 
-    // 长度 0xffffff（续传包）那条 PROT_ERROR 分支这里覆盖不到：_mysql_head 先要求缓冲里
-    // 真有 16MB payload 才轮得到它判，只喂包头会先在半包判定上返回 PROT_MOREDATA
+    // 长度 0xffffff 是续传标记：本实现不拼包，16MB payload 到齐后也必须判协议错误，不能当完整 payload 交出
+    buffer_init(&buf);
+    head[0] = (char)0xff; head[1] = (char)0xff; head[2] = (char)0xff; head[3] = 0;
+    buffer_append(&buf, head, 4);
+    char *big;
+    CALLOC(big, 1, INT3_MAX);
+    buffer_append(&buf, big, INT3_MAX);
+    FREE(big);
+    status = PROT_INIT;
+    p = _mysql_payload(&mysql, &buf, &plen, &status);
+    CuAssertTrue(tc, NULL == p);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
 
     // 零长包：合法报文里不存在，放行会让上层拿到空 payload 去解首字节
     buffer_init(&buf);
@@ -1513,6 +1685,34 @@ static void test_mpack_parse_binary_row_bitmap(CuTest *tc) {
     _mysql_pkfree(mysql.mpack);
 }
 
+// MySQL 9 的 VECTOR(242) 走预处理语句时按 lenenc 串发：解析须收下而不是判协议错误断连，取值同 BLOB
+static void test_mpack_parse_binary_row_vector(CuTest *tc) {
+    char names[1][64] = { "v" };
+    uint8_t types[1] = { MYSQL_TYPE_VECTOR };
+    mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+    binary_ctx bw;
+    binary_init_write(&bw, 0, 0);
+    binary_set_uint8(&bw, 0x00);// 前导字节
+    binary_set_uint8(&bw, 0x00);// NULL 位图
+    binary_set_uint8(&bw, 8);// lenenc 长度：两个 float
+    binary_set_float(&bw, 1.5f, 1);
+    binary_set_float(&bw, -2.0f, 1);
+    mysql_ctx mysql;
+    _mysql_stage(&mysql, r, 2, MPACK_STMT_EXECUTE);
+    int32_t status;
+    CuAssertTrue(tc, NULL == _mysql_feed(&mysql, bw.data, bw.offset, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR) && BIT_CHECK(status, PROT_MOREDATA));
+    mysql_reader_ctx *rd = (mysql_reader_ctx *)mysql.mpack->pack;
+    CuAssertIntEquals(tc, MYSQL_CLS_STRING, mysql_reader_cls(rd, "v"));
+    size_t lens = 0;
+    int32_t err;
+    char *val = mysql_reader_string(rd, "v", &lens, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 8 == lens && 0 == memcmp(val, bw.data + 3, 8));
+    binary_free(&bw);
+    _mysql_pkfree(mysql.mpack);
+}
+
 // COM_STMT_PREPARE 响应的解析入口。test_mysql_stmt_init 测的是"已经拼好的 mpack 交出 stmt"，
 // 从报文到 mpack 这一段没人走过 —— stmt_id / field_count / params_count 三个字段的
 // 小端读法与偏移全靠这里钉住，读错了要到 execute 阶段才以"未知语句"的形式冒出来
@@ -1567,8 +1767,10 @@ static void test_mpack_prepare_response(CuTest *tc) {
     CuAssertPtrNotNull(tc, out);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MPACK_ERR, (int)out->pack_type);
-    CuAssertIntEquals(tc, 1064, (int)mysql.error_code);
-    CuAssertStrEquals(tc, emsg, mysql.error_msg);
+    int32_t code = 0;
+    CuAssertStrEquals(tc, emsg, mysql_pack_erro(out, &code));
+    CuAssertIntEquals(tc, 1064, code);
+    CuAssertIntEquals(tc, 0, (int)mysql.error_code);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
     _mysql_pkfree(out);
 }
@@ -1602,8 +1804,10 @@ static void test_mpack_row_err_midstream(CuTest *tc) {
     CuAssertPtrNotNull(tc, out);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, MPACK_ERR, (int)out->pack_type);
-    CuAssertIntEquals(tc, 1317, (int)mysql.error_code);
-    CuAssertStrEquals(tc, emsg, mysql.error_msg);
+    // 本包在已释放的 reader 块链里：文案必须是拷出来的
+    int32_t code = 0;
+    CuAssertStrEquals(tc, emsg, mysql_pack_erro(out, &code));
+    CuAssertIntEquals(tc, 1317, code);
     CuAssertTrue(tc, NULL == mysql.mpack);
     CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
@@ -1833,8 +2037,8 @@ static void _push_oversized_field(mysql_reader_ctx *reader, size_t cap) {
     buf_ctx c[1] = { { .data = p, .lens = cap } };
     _reader_push_row(reader, &p, c, NULL);
 }
-// 超长文本字段一律拒绝，不截断也不越界。integer/uinteger 已改走 strtou64 按 lens 解析，
-// 靠上界判定挡下；float/double(cap=128) 与 datetime/time(cap=48) 仍走 copy_bounded
+// 超长文本字段不截断也不越界。integer/uinteger 走 strtou64 按 lens 解析，靠上界判定挡下；
+// float/double 走 strtod_s，不设长度上限；datetime/time(cap=48) 仍走 copy_bounded
 // strict=1 (bytes.h)，lens >= cap 直接返回 ERR_FAILED 且不写入目标缓冲
 static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
     char names[1][64] = { "n" };
@@ -1852,13 +2056,13 @@ static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
     CuAssertTrue(tc, 0 == uv);
     mysql_reader_free(r);
 
-    // float/double 共用 cap=128
+    // float/double：strtod_s 不设长度上限，128 个 '1' 照收
     uint8_t ftypes[1] = { MYSQL_TYPE_DOUBLE };
     mysql_reader_ctx *rf = _reader_new(MPACK_QUERY, 1, names, ftypes);
     _push_oversized_field(rf, 128);
     double dv = mysql_reader_double(rf, "n", &err);
-    CuAssertIntEquals(tc, ERR_FAILED, err);
-    CuAssertTrue(tc, 0.0 == dv);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, dv > 1.11e127 && dv < 1.12e127);
     mysql_reader_free(rf);
 
     // datetime/time 共用 cap=48
@@ -2044,13 +2248,12 @@ static mpack_ctx *_deprecate_eof_feed(mysql_ctx *mysql, buffer_ctx *buf, const v
     ZERO(mysql, sizeof(*mysql));
     mysql->client.caps = CLIENT_DEPRECATE_EOF;
     mysql->cur_cmd = MYSQL_QUERY;
-    mysql->affected_rows = 77;
     *status = PROT_INIT;
     mpack_ctx *out = _mpack_parser(mysql, buf, &breader, status);
     FREE(first);
     return out;
 }
-// 终止包比老式 EOF 长(带 session track 改当前库)也要认成终止；计数不落 ctx(同老式 EOF，结果集不改 affected_rows)；
+// 终止包比老式 EOF 长(带 session track 改当前库)也要认成终止；终止包的计数不要(同老式 EOF，结果集包不带计数)；
 // 带 SERVER_MORE_RESULTS_EXISTS 时交出本结果集并标 more，cur_cmd 留着续接下一个
 static void test_mpack_deprecate_eof_resultset(CuTest *tc) {
     mysql_ctx mysql;
@@ -2067,7 +2270,7 @@ static void test_mpack_deprecate_eof_resultset(CuTest *tc) {
     reader = mpack->pack;
     CuAssertIntEquals(tc, 1, (int)mrow_arr_size(&reader->arr_rows));
     CuAssertStrEquals(tc, "newdb", mysql.client.database);
-    CuAssertTrue(tc, 77 == mysql.affected_rows);
+    CuAssertTrue(tc, 0 == mysql_pack_affected_rows(mpack));
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
     _mysql_pkfree(mpack);
     buffer_free(&buf);
@@ -2337,15 +2540,17 @@ static void test_mysql_unpack_size(CuTest *tc) {
     _mysql_pkfree(mpack);
     buffer_free(&buf);
 }
-// 命令首包的栈缓冲是 260 字节(含 4 字节包头)：ERR 消息 247 字节时 payload 256 放栈，248 字节时 257 走堆。
+// 命令首包的栈缓冲是 MYSQL_FIRST_STK 字节(含 4 字节包头)：ERR 包头 9 字节，消息恰好填满 payload 时放栈，多 1 字节走堆。
 // 两边都得解对；栈缓冲写穿由 ASan 构建抓，漏释放交给收尾的内存检查
 static void test_mysql_first_packet_stack_edge(CuTest *tc) {
-    static const size_t mlens[] = { 247, 248 };
-    char payload[300];
-    char msg[260];
+    const size_t fit = MYSQL_FIRST_STK - MYSQL_HEAD_LENS - 9;
+    const size_t mlens[] = { fit, fit + 1 };
+    char payload[MYSQL_FIRST_STK];
+    char msg[MYSQL_FIRST_STK];
     mysql_ctx mysql;
     mpack_ctx *mpack;
     int32_t status;
+    int32_t code;
     size_t i;
     for (size_t k = 0; k < ARRAY_SIZE(mlens); k++) {
         for (i = 0; i < mlens[k]; i++) {
@@ -2362,8 +2567,10 @@ static void test_mysql_first_packet_stack_edge(CuTest *tc) {
         CuAssertPtrNotNull(tc, mpack);
         CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
         CuAssertIntEquals(tc, MPACK_ERR, (int)mpack->pack_type);
-        CuAssertIntEquals(tc, 1064, mysql.error_code);
-        CuAssertStrEquals(tc, msg, mysql.error_msg);
+        // 首包放栈时文案也得拷进 mpack，不能指着栈缓冲
+        code = 0;
+        CuAssertStrEquals(tc, msg, mysql_pack_erro(mpack, &code));
+        CuAssertIntEquals(tc, 1064, code);
         CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
         _mysql_pkfree(mpack);
     }
@@ -2490,6 +2697,346 @@ static void test_mysql_charset_lookup(CuTest *tc) {
         CuAssertIntEquals(tc, ids[i], mysql.client.charset);
     }
 }
+// 造一个 n 字节的 'a' 串
+static const char *_t_astr(char *buf, size_t n) {
+    memset(buf, 'a', n);
+    buf[n] = '\0';
+    return buf;
+}
+// user / password / database 的字节上限：恰等于 MYSQL_*_LENS 能 init，多 1 字节即失败
+static void test_mysql_init_limits(CuTest *tc) {
+    char s[MYSQL_USER_LENS + MYSQL_PASSWORD_LENS + MYSQL_DB_LENS + 2];
+    mysql_ctx mysql;
+    CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL,
+        _t_astr(s, MYSQL_USER_LENS), "p", "", "utf8mb4", 0));
+    CuAssertIntEquals(tc, ERR_FAILED, mysql_init(&mysql, "127.0.0.1", 0, NULL,
+        _t_astr(s, MYSQL_USER_LENS + 1), "p", "", "utf8mb4", 0));
+    CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL,
+        "u", _t_astr(s, MYSQL_PASSWORD_LENS), "", "utf8mb4", 0));
+    CuAssertIntEquals(tc, MYSQL_PASSWORD_LENS, (int)strlen(mysql.client.password));
+    CuAssertIntEquals(tc, ERR_FAILED, mysql_init(&mysql, "127.0.0.1", 0, NULL,
+        "u", _t_astr(s, MYSQL_PASSWORD_LENS + 1), "", "utf8mb4", 0));
+    CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL,
+        "u", "p", _t_astr(s, MYSQL_DB_LENS), "utf8mb4", 0));
+    CuAssertIntEquals(tc, MYSQL_DB_LENS, (int)strlen(mysql.client.database));
+    CuAssertIntEquals(tc, ERR_FAILED, mysql_init(&mysql, "127.0.0.1", 0, NULL,
+        "u", "p", _t_astr(s, MYSQL_DB_LENS + 1), "utf8mb4", 0));
+}
+// COM_INIT_DB 的应答：OK 才把 pending_db 提交进 client.database(重连握手用它)，ERR 不提交
+static void test_mpack_init_db_commit(CuTest *tc) {
+    const char ok[7] = { MYSQL_OK, 0, 0, 2, 0, 0, 0 };
+    const char err[] = { (char)MYSQL_ERR, 0x19, 0x04, '#', '4', '2', '0', '0', '0', 'n', 'o' };// 1049
+    mysql_ctx mysql;
+    mpack_ctx *mpack;
+    int32_t status;
+    ZERO(&mysql, sizeof(mysql));
+    safe_fill_str(mysql.client.database, sizeof(mysql.client.database), "olddb");
+    safe_fill_str(mysql.pending_db, sizeof(mysql.pending_db), "newdb");
+    mysql.cur_cmd = MYSQL_INIT_DB;
+    mpack = _mysql_feed(&mysql, err, sizeof(err), &status);
+    CuAssertPtrNotNull(tc, mpack);
+    CuAssertIntEquals(tc, MPACK_ERR, (int)mpack->pack_type);
+    int32_t code = 0;
+    CuAssertStrEquals(tc, "no", mysql_pack_erro(mpack, &code));
+    CuAssertIntEquals(tc, 1049, code);
+    CuAssertStrEquals(tc, "olddb", mysql.client.database);
+    CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
+    _mysql_pkfree(mpack);
+    mysql.cur_cmd = MYSQL_INIT_DB;
+    mpack = _mysql_feed(&mysql, ok, sizeof(ok), &status);
+    CuAssertPtrNotNull(tc, mpack);
+    CuAssertIntEquals(tc, MPACK_OK, (int)mpack->pack_type);
+    CuAssertStrEquals(tc, "newdb", mysql.client.database);
+    CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
+    _mysql_pkfree(mpack);
+}
+// COM_QUERY 应答首字节 0xfb 是 LOCAL INFILE 请求：不支持，按协议错误断连，不能当列数读下去
+static void test_mpack_local_infile_reject(CuTest *tc) {
+    const char req[] = { (char)MYSQL_LOCAL_INFILE, '/', 'f' };
+    mysql_ctx mysql;
+    int32_t status;
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_QUERY;
+    CuAssertTrue(tc, NULL == _mysql_feed(&mysql, req, sizeof(req), &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, NULL == mysql.mpack);
+    CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
+}
+
+// 认证阶段的握手回传桩：生产路径交给 task，纯解析测试没起 loader，桩自己收下并释放载荷。
+// loader_init 时 prots_init 会换回正式的回调
+static int32_t g_my_hs_calls;
+static int32_t g_my_hs_erro;
+static char g_my_hs_msg[64];// 收到的载荷原样拷一份(另补 NUL)，长度在 g_my_hs_lens
+static size_t g_my_hs_lens;
+static int32_t _stub_mysql_hspush(sock_ctx *sk, int32_t client,
+                                  ud_cxt *ud, int32_t erro, void *data, size_t lens) {
+    (void)sk;
+    (void)client;
+    (void)ud;
+    g_my_hs_calls++;
+    g_my_hs_erro = erro;
+    g_my_hs_msg[0] = '\0';
+    g_my_hs_lens = 0;
+    if (NULL != data && lens < sizeof(g_my_hs_msg)) {
+        memcpy(g_my_hs_msg, data, lens);
+        g_my_hs_msg[lens] = '\0';
+        g_my_hs_lens = lens;
+    }
+    FREE(data);
+    return ERR_OK;
+}
+// 认证阶段喂一个包，st 为 0(INIT，等握手包)或 2(AUTH_PROCESS)。mysql 由 mysql_init 建、连接标识无效：
+// 放行后要发的包(认证响应、明文口令等)一律发送失败、置 PROT_ERROR，但 ud->status 与包序号照样推进，
+// 用例据此区分"被守卫拒收"与"放行后发包失败"
+static void _mysql_auth_feed(mysql_ctx *mysql, ud_cxt *ud, int32_t st,
+                             const void *payload, size_t plens, uint8_t seq, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    _push_packet(&buf, payload, plens, seq);
+    ZERO(ud, sizeof(*ud));
+    ud->status = st;
+    ud->context = mysql;
+    *status = PROT_INIT;
+    (void)_t_mysql_unpack(1, &buf, ud, NULL, status);
+    buffer_free(&buf);
+}
+// 拼初始握手包(protocol 10)：caps 为服务端能力位，dlen 为 auth_plugin_data_len(合法值 21)，plugin 为 NULL 时不写插件名段
+static void _hs_build(binary_ctx *bw, const char *ver, uint32_t caps, uint8_t dlen, const char *plugin) {
+    binary_init_write(bw, 0, 0);
+    binary_set_uint8(bw, 0x0a);
+    binary_set_string(bw, ver);
+    binary_set_integer(bw, 7, 4, 1);// thread id
+    binary_set_binary(bw, "12345678", 8);// salt 前 8 字节
+    binary_set_uint8(bw, 0);// filler
+    binary_set_integer(bw, caps & 0xffff, 2, 1);
+    binary_set_uint8(bw, 45);// charset
+    binary_set_integer(bw, 2, 2, 1);// status_flags
+    binary_set_integer(bw, caps >> 16, 2, 1);
+    binary_set_uint8(bw, dlen);
+    binary_set_fill(bw, 0, 10);// reserved
+    binary_set_binary(bw, "abcdefghijkl", 12);// salt 后 12 字节
+    binary_set_uint8(bw, 0);// 这一段共 13 字节，末尾是 NUL
+    if (NULL != plugin) {
+        binary_set_string(bw, plugin);
+    }
+}
+// 初始握手包的各道守卫：截断、协议版本、版本串超长、能力位、auth_plugin_data_len、
+// 配了 SSL 时的防降级、握手前 ERR。被拒收的 ud 停在 INIT(0)；合法握手(含不认识的默认插件)放行后 ud 前进
+static void test_mysql_auth_handshake(CuTest *tc) {
+    const uint32_t caps = CLIENT_PROTOCOL_41 | CLIENT_PLUGIN_AUTH;
+    const size_t verend = 1 + 6;// 0x0a + "8.4.0\0"
+    char longver[80];
+    mysql_ctx mysql;
+    ud_cxt ud;
+    binary_ctx bw;
+    int32_t status;
+    _mysql_init(_stub_mysql_hspush);
+    CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL, "u", "p", "", "utf8mb4", 0));
+    _hs_build(&bw, "8.4.0", caps, 21, CACHING_SHA2_PASSWORD);
+    // 1) 各段截断：版本串缺 NUL、能力位不足 20 字节、插件数据不足 24 字节、插件名缺 NUL
+    const size_t cuts[] = { 1, 4, verend + 19, verend + 20 + 23, bw.offset - 1 };
+    for (size_t i = 0; i < ARRAY_SIZE(cuts); i++) {
+        _mysql_auth_feed(&mysql, &ud, 0, bw.data, cuts[i], 0, &status);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        CuAssertIntEquals(tc, 0, ud.status);
+    }
+    // 2) 协议版本不是 10
+    bw.data[0] = 9;
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, ud.status);
+    binary_free(&bw);
+    // 3) 版本串装不下 version[64]
+    _hs_build(&bw, _t_astr(longver, sizeof(mysql.version)), caps, 21, CACHING_SHA2_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, ud.status);
+    binary_free(&bw);
+    // 4) 缺 CLIENT_PROTOCOL_41 或 CLIENT_PLUGIN_AUTH
+    _hs_build(&bw, "8.4.0", CLIENT_PROTOCOL_41, 21, CACHING_SHA2_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, ud.status);
+    binary_free(&bw);
+    _hs_build(&bw, "8.4.0", CLIENT_PLUGIN_AUTH, 21, CACHING_SHA2_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, ud.status);
+    binary_free(&bw);
+    // 5) auth_plugin_data_len 不是 21
+    _hs_build(&bw, "8.4.0", caps, 20, CACHING_SHA2_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, ud.status);
+    binary_free(&bw);
+    // 6) 默认插件不认识：不拒收，按 caching_sha2_password 作答(等服务端 AuthSwitch)，进 AUTH_PROCESS；
+    //    认证响应因连接无效发送失败
+    _hs_build(&bw, "8.4.0", caps, 21, "sha256_password");
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertIntEquals(tc, 2, ud.status);
+    CuAssertStrEquals(tc, CACHING_SHA2_PASSWORD, mysql.server.plugin);
+    CuAssertIntEquals(tc, 1, (int)mysql.id);
+    binary_free(&bw);
+    // 7) 配了 evssl 而服务端不报 CLIENT_SSL：防降级，拒收；报了才进 SSL 交换(ud 为 1)。evssl 只判非空，
+    //    发 SSLRequest 因连接无效先失败，不会走到 ev_ssl
+    mysql.client.evssl = (struct evssl_ctx *)&mysql;
+    _hs_build(&bw, "8.4.0", caps, 21, CACHING_SHA2_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, ud.status);
+    binary_free(&bw);
+    _hs_build(&bw, "8.4.0", caps | CLIENT_SSL, 21, CACHING_SHA2_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertIntEquals(tc, 1, ud.status);
+    CuAssertTrue(tc, BIT_CHECK(mysql.client.caps, CLIENT_SSL));
+    binary_free(&bw);
+    mysql.client.evssl = NULL;
+    // 8) 合法握手：放行，进 AUTH_PROCESS(ud 为 2)；认证响应因连接无效发送失败。
+    //    服务端报了 CLIENT_INTERACTIVE 本端也不带：带了服务端按 interactive_timeout 回收空闲连接
+    _hs_build(&bw, "8.4.0", caps | CLIENT_INTERACTIVE, 21, MYSQL_NATIVE_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    CuAssertIntEquals(tc, 2, ud.status);
+    CuAssertTrue(tc, !BIT_CHECK(mysql.client.caps, CLIENT_INTERACTIVE));
+    CuAssertTrue(tc, BIT_CHECK(mysql.client.caps, CLIENT_PROTOCOL_41));
+    CuAssertStrEquals(tc, "8.4.0", mysql_version(&mysql));
+    CuAssertStrEquals(tc, MYSQL_NATIVE_PASSWORD, mysql.server.plugin);
+    CuAssertTrue(tc, 0 == memcmp(mysql.server.salt, "12345678abcdefghijkl", 20));
+    CuAssertIntEquals(tc, 1, (int)mysql.id);
+    binary_free(&bw);
+    // 9) 握手前 ERR(1040 Too many connections，不带 sql_state)：ERR 包体原样交给握手回传；
+    //    网络线程不写连接级错误，建连方经 mysql_record_handshake 记下后才取得到错误号与文案
+    const char hserr[] = { (char)MYSQL_ERR, 0x10, 0x04, 'b', 'u', 's', 'y' };
+    g_my_hs_calls = 0;
+    _mysql_auth_feed(&mysql, &ud, 0, hserr, sizeof(hserr), 0, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 1, g_my_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_my_hs_erro);
+    CuAssertIntEquals(tc, (int)sizeof(hserr) - 1, (int)g_my_hs_lens);
+    CuAssertIntEquals(tc, 0, (int)mysql.error_code);
+    CuAssertStrEquals(tc, "", mysql.error_msg);
+    int32_t hscode = 0;
+    CuAssertStrEquals(tc, "busy", mysql_record_handshake(&mysql, g_my_hs_msg, g_my_hs_lens));
+    CuAssertStrEquals(tc, "busy", mysql_erro(&mysql, &hscode));
+    CuAssertIntEquals(tc, 1040, hscode);
+    CuAssertStrEquals(tc, "", mysql_record_handshake(&mysql, NULL, 0));
+    mysql_erro_clear(&mysql);
+}
+// 认证响应里的字符集：utf8mb4 连 MySQL 8.0+ 发 255(utf8mb4_0900_ai_ci)，连 5.7 / MariaDB 发 45；别的字符集照表
+static void test_mysql_wire_charset(CuTest *tc) {
+    mysql_ctx mysql;
+    CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL, "u", "p", "", "utf8mb4", 0));
+    safe_fill_str(mysql.version, sizeof(mysql.version), "8.0.36-0ubuntu0.22.04.1");
+    CuAssertIntEquals(tc, 255, _mysql_wire_charset(&mysql));
+    safe_fill_str(mysql.version, sizeof(mysql.version), "5.7.44-log");
+    CuAssertIntEquals(tc, 45, _mysql_wire_charset(&mysql));
+    safe_fill_str(mysql.version, sizeof(mysql.version), "11.4.2-MariaDB");
+    CuAssertIntEquals(tc, 45, _mysql_wire_charset(&mysql));
+    safe_fill_str(mysql.version, sizeof(mysql.version), "5.5.5-10.11.6-MariaDB");
+    CuAssertIntEquals(tc, 45, _mysql_wire_charset(&mysql));
+    safe_fill_str(mysql.version, sizeof(mysql.version), "");
+    CuAssertIntEquals(tc, 45, _mysql_wire_charset(&mysql));
+    CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL, "u", "p", "", "latin1", 0));
+    safe_fill_str(mysql.version, sizeof(mysql.version), "8.4.9");
+    CuAssertIntEquals(tc, 8, _mysql_wire_charset(&mysql));
+}
+// 认证应答阶段(AUTH_PROCESS)的分派与守卫：caching_sha2 的 03 / 04(明文拒绝、TLS 上发口令) / 未知子状态 / 多带数据，
+// AuthSwitch 的截断、空数据、盐不足 20 字节、插件白名单，未知首字节，以及 OK / ERR 交给握手回传。
+// 拒收的不发包，包序号停在收到的 seq；放行后要发包的序号 +1
+static void test_mysql_auth_process(CuTest *tc) {
+    const char fast[] = { MYSQL_CACHING_SHA2, MYSQL_CACHING_SHA2_FAST };
+    const char full[] = { MYSQL_CACHING_SHA2, MYSQL_CACHING_SHA2_FULL };
+    const char unk[] = { MYSQL_CACHING_SHA2, 0x05 };
+    const char bare[] = { MYSQL_CACHING_SHA2 };
+    const char extra[] = { MYSQL_CACHING_SHA2, '-', '-', '-', '-', '-' };// 原先的公钥应答形状，现在不再索要
+    const char badtype[] = { 0x07 };
+    const char ok[7] = { MYSQL_OK, 0, 0, 2, 0, 0, 0 };
+    const char deny[] = { (char)MYSQL_ERR, 0x15, 0x04, '#', '2', '8', '0', '0', '0', 'n', 'o' };// 1045
+    const char salt[] = "ABCDEFGHIJKLMNOPQRST";
+    mysql_ctx mysql;
+    ud_cxt ud;
+    binary_ctx bw;
+    int32_t status;
+    _mysql_init(_stub_mysql_hspush);
+    CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL, "u", "p", "", "utf8mb4", 0));
+    safe_fill_str(mysql.server.plugin, sizeof(mysql.server.plugin), CACHING_SHA2_PASSWORD);
+    // 1) 快速认证 01 03：只等随后的 OK，不发包不报错
+    _mysql_auth_feed(&mysql, &ud, 2, fast, sizeof(fast), 2, &status);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 2, (int)mysql.id);
+    // 2) 完整认证 01 04：明文连接不做 RSA 公钥交换，直接认证失败、不发包(序号不动)；
+    //    走了 TLS(CLIENT_SSL)才明文发口令，序号 +1 后发包失败
+    _mysql_auth_feed(&mysql, &ud, 2, full, sizeof(full), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 2, (int)mysql.id);
+    BIT_SET(mysql.client.caps, CLIENT_SSL);
+    _mysql_auth_feed(&mysql, &ud, 2, full, sizeof(full), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 3, (int)mysql.id);
+    BIT_REMOVE(mysql.client.caps, CLIENT_SSL);
+    // 3) 未知子状态、只有 0x01 一个字节、未知首字节：拒收
+    _mysql_auth_feed(&mysql, &ud, 2, unk, sizeof(unk), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 2, (int)mysql.id);
+    _mysql_auth_feed(&mysql, &ud, 2, bare, sizeof(bare), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 2, (int)mysql.id);
+    _mysql_auth_feed(&mysql, &ud, 2, badtype, sizeof(badtype), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 2, (int)mysql.id);
+    // 4) 0x01 后带不止一个字节(原先的公钥应答)：本端从不索要公钥，拒收、不发包
+    _mysql_auth_feed(&mysql, &ud, 2, extra, sizeof(extra), 4, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 4, (int)mysql.id);
+    // 5) AuthSwitch 拒收：插件名缺 NUL、插件名后没有数据、盐不足 20 字节、插件不在白名单；插件名保持不变
+    binary_init_write(&bw, 0, 0);
+    binary_set_uint8(&bw, MYSQL_AUTH_SWITCH);
+    binary_set_binary(&bw, "my", 2);
+    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    binary_offset(&bw, 1);
+    binary_set_string(&bw, MYSQL_NATIVE_PASSWORD);
+    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    binary_set_binary(&bw, salt, 19);
+    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    binary_offset(&bw, 1);
+    binary_set_string(&bw, "sha256_password");
+    binary_set_binary(&bw, salt, sizeof(salt));
+    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertStrEquals(tc, CACHING_SHA2_PASSWORD, mysql.server.plugin);
+    CuAssertIntEquals(tc, 2, (int)mysql.id);
+    // 6) AuthSwitch 合法(盐 20 字节 + NUL)：换插件、换盐，序号 +1 后发响应失败
+    binary_offset(&bw, 1);
+    binary_set_string(&bw, MYSQL_NATIVE_PASSWORD);
+    binary_set_binary(&bw, salt, sizeof(salt));
+    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertStrEquals(tc, MYSQL_NATIVE_PASSWORD, mysql.server.plugin);
+    CuAssertTrue(tc, 0 == memcmp(mysql.server.salt, salt, 20));
+    CuAssertIntEquals(tc, 3, (int)mysql.id);
+    binary_free(&bw);
+    // 7) OK：交给握手回传，进命令阶段(ud 为 3)
+    g_my_hs_calls = 0;
+    _mysql_auth_feed(&mysql, &ud, 2, ok, sizeof(ok), 2, &status);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 3, ud.status);
+    CuAssertIntEquals(tc, 1, g_my_hs_calls);
+    CuAssertIntEquals(tc, ERR_OK, g_my_hs_erro);
+    // 8) ERR：ERR 包体原样交给握手回传，连接级错误不写；经 mysql_record_handshake 记下后跳过 sql_state 取到文案
+    g_my_hs_calls = 0;
+    _mysql_auth_feed(&mysql, &ud, 2, deny, sizeof(deny), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 1, g_my_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_my_hs_erro);
+    CuAssertIntEquals(tc, 0, (int)mysql.error_code);
+    int32_t dcode = 0;
+    CuAssertStrEquals(tc, "no", mysql_record_handshake(&mysql, g_my_hs_msg, g_my_hs_lens));
+    (void)mysql_erro(&mysql, &dcode);
+    CuAssertIntEquals(tc, 1045, dcode);
+}
 void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
     SUITE_ADD_TEST(suite, test_mysql_reader_cursor);
@@ -2506,12 +3053,14 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_binary);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_text_range);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_zero_date);
+    SUITE_ADD_TEST(suite, test_mysql_reader_datetime_binary_range);
     SUITE_ADD_TEST(suite, test_mysql_reader_time);
     SUITE_ADD_TEST(suite, test_mysql_reader_binary_lens);
     SUITE_ADD_TEST(suite, test_mpack_ok_parse);
     SUITE_ADD_TEST(suite, test_mysql_lenenc_truncated);
     SUITE_ADD_TEST(suite, test_mpack_parse_text_row_values);
     SUITE_ADD_TEST(suite, test_mpack_parse_binary_row_bitmap);
+    SUITE_ADD_TEST(suite, test_mpack_parse_binary_row_vector);
     SUITE_ADD_TEST(suite, test_mpack_prepare_response);
     SUITE_ADD_TEST(suite, test_mpack_row_err_midstream);
     SUITE_ADD_TEST(suite, test_mpack_row_eof_more_results);
@@ -2522,6 +3071,8 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_status_flag_values);
     SUITE_ADD_TEST(suite, test_mpack_err_no_sqlstate);
     SUITE_ADD_TEST(suite, test_mpack_err_truncated);
+    SUITE_ADD_TEST(suite, test_mpack_err_code_unsigned);
+    SUITE_ADD_TEST(suite, test_mysql_record);
     SUITE_ADD_TEST(suite, test_mysql_payload);
     SUITE_ADD_TEST(suite, test_mysql_stmt_init);
     SUITE_ADD_TEST(suite, test_mysql_binary_row_temporal_invalid_len);
@@ -2543,4 +3094,10 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_tzcache);
 #endif
     SUITE_ADD_TEST(suite, test_mysql_charset_lookup);
+    SUITE_ADD_TEST(suite, test_mysql_init_limits);
+    SUITE_ADD_TEST(suite, test_mpack_init_db_commit);
+    SUITE_ADD_TEST(suite, test_mpack_local_infile_reject);
+    SUITE_ADD_TEST(suite, test_mysql_auth_handshake);
+    SUITE_ADD_TEST(suite, test_mysql_wire_charset);
+    SUITE_ADD_TEST(suite, test_mysql_auth_process);
 }

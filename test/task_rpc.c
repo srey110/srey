@@ -24,6 +24,7 @@ static atomic_t _member_accepted;// 组员收到的 ACCEPT 数
 static atomic_t _member_bad;// 组员收到不归自己线程的连接、或回调跑错线程的次数
 static atomic_t _part_accepted;// 部分组员用例：唯一的组员收到的 ACCEPT 数
 static atomic_t _part_bad;// 部分组员用例：连接或回调不在组员绑的线程上的次数
+static atomic_t _peer_bad;// 组监听带 NETEV_PEERADDR 却拿不到对端地址、或不带却拿到了的次数
 static atomic_t _ws_handshaked;// 绑定 ws task 收到成功握手的次数
 static atomic_t _ws_recved;// 绑定 ws task 收到数据帧的次数
 static atomic_t _ws_disorder;// 数据帧乱序到达(抢在握手结果或先到的分片前面)的次数
@@ -200,7 +201,7 @@ static int32_t _evtco_connect_index(task_ctx *task) {
         idx = sk.index;
     }
     ev_close(&task->loader->netev, &sk);
-    if (ERR_OK != task_udp(task, PACK_NONE, "127.0.0.1", EVTASK_UDP_PORT, &usk)) {
+    if (ERR_OK != task_udp(task, PACK_NONE, "127.0.0.1", EVTASK_UDP_PORT, 0, &usk)) {
         return -1;
     }
     if (usk.index != idx) {
@@ -262,8 +263,11 @@ static void _member_check(task_ctx *task, sock_ctx *sk) {
         ATOMIC_ADD(&_member_bad, 1);
     }
 }
-static void _member_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
+static void _member_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *peer) {
     (void)pktype;
+    if (NULL == peer) {// 组头 listen 带了 NETEV_PEERADDR，经组员转交也得带着地址
+        ATOMIC_ADD(&_peer_bad, 1);
+    }
     _member_check(task, sk);
     ATOMIC_ADD(&_member_accepted, 1);
 }
@@ -315,7 +319,7 @@ static void _check_accept_group(task_ctx *task) {
     ASSERTAB(ERR_FAILED == task_accept_group(head, hs + 1, (uint16_t)nnet), "member bound to another thread must fail");
     ASSERTAB(ERR_OK == task_accept_group(head, hs, (uint16_t)nnet), "set accept group failed");
     ASSERTAB(ERR_FAILED == task_accept_group(head, hs, (uint16_t)nnet), "accept group can be set only once");
-    ASSERTAB(ERR_OK == task_listen(head, PACK_NONE, NULL, "127.0.0.1", ACP_GROUP_PORT, &id, NETEV_ACCEPT),
+    ASSERTAB(ERR_OK == task_listen(head, PACK_NONE, NULL, "127.0.0.1", ACP_GROUP_PORT, &id, NETEV_ACCEPT | NETEV_PEERADDR),
              "group listen failed");
     task_ungrab(head);
     FREE(hs);
@@ -330,9 +334,13 @@ static void _check_accept_group(task_ctx *task) {
     ev_unlisten(&task->loader->netev, id);
     ASSERTAB(2 * nnet == (uint32_t)ATOMIC_GET(&_member_accepted), "every accepted connection reaches a member");
     ASSERTAB(0 == ATOMIC_GET(&_member_bad), "member got a connection of another thread");
+    ASSERTAB(0 == ATOMIC_GET(&_peer_bad), "member got no peer address though NETEV_PEERADDR was set");
 }
-static void _part_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype) {
+static void _part_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *peer) {
     (void)pktype;
+    if (NULL != peer) {// 只订阅了 NETEV_ACCEPT，不该多取地址
+        ATOMIC_ADD(&_peer_bad, 1);
+    }
     if (sk->index != task_net_index(task)
         || ev_cur_index(&task->loader->netev) != sk->index) {
         ATOMIC_ADD(&_part_bad, 1);
@@ -389,6 +397,7 @@ static void _check_group_partial(task_ctx *task) {
     ev_unlisten(&task->loader->netev, id);
     ASSERTAB(2 * nnet == (uint32_t)ATOMIC_GET(&_part_accepted), "every connection reaches the only member");
     ASSERTAB(0 == ATOMIC_GET(&_part_bad), "partial group connection landed off the member's thread");
+    ASSERTAB(0 == ATOMIC_GET(&_peer_bad), "peer address delivered without NETEV_PEERADDR");
 }
 static void _sw_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
                      uint8_t slice, void *data, size_t size) {

@@ -57,7 +57,6 @@ static inline void _pgpack_results_clear(pgpack_ctx *pgpack) {
 // 无结果可提交的包（通知 / 认证期 / COPY OUT）走不到这里，不占位置也不分配
 static void _pgpack_results_reserve(pgpack_ctx *pgpack) {
     pgres_arr *arr = &pgpack->results;
-    pgsql_result *heap;
     if (NULL == arr->ptr) {
         arr->ptr = pgpack->res_inl;
         arr->maxsize = (uint32_t)ARRAY_SIZE(pgpack->res_inl);
@@ -67,6 +66,7 @@ static void _pgpack_results_reserve(pgpack_ctx *pgpack) {
         || pgres_arr_size(arr) < pgres_arr_capacity(arr)) {
         return;
     }
+    pgsql_result *heap;
     MALLOC(heap, sizeof(pgpack->res_inl) * 2);
     memcpy(heap, pgpack->res_inl, sizeof(pgpack->res_inl));
     arr->ptr = heap;
@@ -81,7 +81,7 @@ static pgpack_ctx *_pgpack_init(pgsql_ctx *pg, pgpack_type type) {
         pg->pack = _pgpack_new(type);
         return pg->pack;
     }
-    pgpack_type oldtype = ((pgpack_ctx *)pg->pack)->type;
+    pgpack_type oldtype = pg->pack->type;
     // 类型不符: 释放旧内部 pack 数据,保留外壳与 complete 字段
     if (type != oldtype) {
         if (NULL != pg->pack->_free_pgpack) {
@@ -201,6 +201,14 @@ static void _pgpack_rows_spill(pgsql_reader_ctx *reader) {
     reader->arr_rows.ptr = heap;
     reader->arr_rows.maxsize = ARRAY_INIT_SIZE;
 }
+// 一行入表，内嵌槽装满先搬到堆上
+static inline void _pgpack_row_push(pgsql_reader_ctx *reader, pgpack_row *rows) {
+    if (reader->arr_rows.ptr == reader->rows_inl
+        && pgrow_arr_size(&reader->arr_rows) == pgrow_arr_capacity(&reader->arr_rows)) {
+        _pgpack_rows_spill(reader);
+    }
+    pgrow_arr_push_back(&reader->arr_rows, &rows);
+}
 // 获取或创建 pgpack_ctx 中的 pgsql_reader_ctx
 static inline pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
     if (NULL != pgpack->pack) {
@@ -222,9 +230,10 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
         }
     }
     pgsql_reader_ctx *reader = inl ? _pgpack_reader_new(pgpack, peek) : pgpack->pack;
-    // 上一条语句的 reader 在 CommandComplete 时已提交进结果数组，这里 fields 仍非空
-    // 只能是两个 RowDescription 之间没有 CommandComplete 的违规消息流
-    if (NULL != reader->fields) {
+    // 上一条语句的 reader 在 CommandComplete 时已提交进结果数组，这里 fields 非空或已有行
+    // 只能是两个 RowDescription 之间没有 CommandComplete 的违规消息流(0 列 T 后、落行之前再来 T 照收)
+    if (NULL != reader->fields
+        || 0 != pgrow_arr_size(&reader->arr_rows)) {
         LOG_WARN("protocol violation: second RowDescription without CommandComplete in between.");
         return ERR_FAILED;
     }
@@ -278,6 +287,8 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
         field->type_modifier = (int32_t)binary_get_integer(breader, 4, 0);
         field->format = (pgpack_format)binary_get_integer(breader, 2, 0);
     }
+    // 取值按服务端给的格式码解析。本库的 Bind 只带一个结果格式码、对全部列生效，简单查询各列同格式，故取首列
+    reader->format = reader->fields[0].format;
     return ERR_OK;
 }
 // reader 已就绪、列数已核对过：把一条 DataRow 的各列填进块尾的行数组并入表，返回 ERR_FAILED 表示列长度非法或被截断。
@@ -311,18 +322,15 @@ static FORCE_INLINE int32_t _pgpack_row_fill(pgsql_reader_ctx *reader, binary_ct
             return ERR_FAILED;
         }
     }
-    if (reader->arr_rows.ptr == reader->rows_inl
-        && pgrow_arr_size(&reader->arr_rows) == pgrow_arr_capacity(&reader->arr_rows)) {
-        _pgpack_rows_spill(reader);
-    }
-    pgrow_arr_push_back(&reader->arr_rows, &rows);
+    _pgpack_row_push(reader, rows);
     return ERR_OK;
 }
 // 解析 DataRow（'D'），将列值追加到 reader 的行数组中。
 // 有建好字段描述的 reader 时，消息连同块尾的行数组都在它的块链里(见 _pgpack_row_alloc)，出错也不单独释放；
 // 否则消息是单独分配的，本函数就地释放。无论返回什么调用方都不得再触碰 breader->data。返回 ERR_FAILED 表示协议异常。
-// 行数组不清零：每列的 lens 与 val 都会写，写不完就是出错返回
-// 注意 0 列的 DataRow 是合法报文：不建行，仍返回 ERR_OK
+// 行数组不清零：每列的 lens 与 val 都会写，写不完就是出错返回。
+// 0 列的 DataRow 是合法报文：零列结果（RowDescription 为 0 列）照样计一行，行指针为 NULL、不会被解引用；
+// 其余情形不建行，仍返回 ERR_OK
 static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     int32_t own = (NULL == _pgpack_rows_reader(pgpack));
     if (!binary_have(breader, 2)) {
@@ -335,6 +343,10 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     if (0 == ncolumn) {
         if (own) {
             FREE(breader->data);
+        }
+        if (NULL != pgpack->pack
+            && 0 == ((pgsql_reader_ctx *)pgpack->pack)->field_count) {
+            _pgpack_row_push(pgpack->pack, NULL);
         }
         return ERR_OK;
     }
@@ -349,6 +361,9 @@ static int32_t _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
 }
 size_t _pgpack_rows_run(pgsql_ctx *pg, buffer_ctx *buf, int32_t *status) {
     pgsql_reader_ctx *reader = _pgpack_rows_reader(pg->pack);
+    if (NULL == reader) {
+        return 0;
+    }
     size_t done = 0;
     size_t blens, total;
     char head[7];// 类型码 1 + 长度 4 + 列数 2
@@ -356,9 +371,6 @@ size_t _pgpack_rows_run(pgsql_ctx *pg, buffer_ctx *buf, int32_t *status) {
     uint16_t ncolumn;
     char *blk;
     binary_ctx breader;
-    if (NULL == reader) {
-        return 0;
-    }
     for (;;) {
         blens = buffer_size(buf);
         if (blens < sizeof(head)
@@ -446,8 +458,7 @@ static int32_t _pgpack_complete(pgsql_ctx *pg, binary_ctx *breader) {
     }
     // 先清再填：多语句时残留上一条的标签会被错当本条的 affected_rows
     pg->pack->complete[0] = '\0';
-    if (!EMPTYSTR(complete)
-        && ERR_OK != safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete)) {
+    if (ERR_OK != safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete)) {
         LOG_ERROR("pgsql command tag exceeds %zu bytes: %zu, affected_rows unavailable.",
                   sizeof(pg->pack->complete) - 1, strlen(complete));
     }
@@ -459,8 +470,7 @@ static int32_t _pgpack_complete(pgsql_ctx *pg, binary_ctx *breader) {
     pgsql_result res;
     ZERO(&res, sizeof(res));
     res.reader = pg->pack->pack;
-    // 按目的数组自校验并只搬到 NUL: memcpy 定长要靠"两个 complete 数组恰好同样大"这个巧合,
-    // 且会把源数组 NUL 之后上一条标签的残字一起拷进来
+    // 只搬到 NUL，不带上源数组里上一条标签的残字
     safe_fill_str(res.complete, sizeof(res.complete), pg->pack->complete);
     pgres_arr_push_back(&pg->pack->results, &res);
     pg->pack->pack = NULL; // reader 所有权移入结果数组
@@ -468,8 +478,7 @@ static int32_t _pgpack_complete(pgsql_ctx *pg, binary_ctx *breader) {
     return ERR_OK;
 }
 // 解析一个完整的服务端消息，在收到 ReadyForQuery 时返回已累积的 pgpack_ctx
-pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
-    (void)ud;
+pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, int32_t *status) {
     pgpack_ctx *pack = NULL;
     int8_t code = binary_get_int8(breader); // 读取消息类型码
     binary_get_skip(breader, 4); // 跳过消息体长度字段

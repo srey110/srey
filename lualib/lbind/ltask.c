@@ -10,7 +10,6 @@
         lua_setfield(lua, -2, key);\
     } while (0)
 
-// Lua task 上下文：保存 Lua 虚拟机、待释放的载荷、内存统计
 #define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
 #define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
 #define MT_TASK_MSG "_task_msg_ctx" // 带 __gc 的消息元表名；task.msg_release 认它与 MT_TASK_MSG_NG 两张
@@ -20,22 +19,20 @@
 #define LSLOT_DISPATCH 1 // message_dispatch
 #define LSLOT_MSG_MT 2 // 不带 __gc 的消息元表（MT_TASK_MSG_NG）
 #define LSLOT_MSG_MT_GC 3 // 带 __gc 的消息元表（MT_TASK_MSG）
-// 用完的载荷先攒着再一起释放：条数在入队时判，字节与时间在一轮调度结束时判（_ltask_round_end），任一到了就全放
-#define LMSG_PEND_MAX 32 // 条数
-#define LMSG_PEND_BYTES (1024 * 1024) // 字节（按 msg->size 累加）
-#define LMSG_PEND_MS 100 // 最早那条攒了多久（毫秒）
+#define LWARN_BUF 256 // 一条 warn 的分片累积上限（字节），超出截断
 
+// Lua task 上下文：保存 Lua 虚拟机、内存统计
 typedef struct ltask_ctx {
-    uint32_t   npend;     // pend 里攒着的条数
+    int32_t    warnon;    // warn 开关，默认开（同 lauxlib），脚本 warn("@on") / warn("@off") 切换
+    int32_t    warncont;  // 正处在一条 warn 的续片中（首片已到、末片未到）；空分片不增 warnlen，不能拿它判
+    uint32_t   warnlen;   // warnbuf 里已攒的字节
     size_t     mem;       // 当前 Lua 累计内存（字节，单 worker 串行操作，无需 atomic）
     uint64_t   nalloc;    // 还没并进全局计数的 Lua 分配次数（同 mem 无需 atomic），见 _ltask_mem_flush
     uint64_t   nfree;     // 还没并进全局计数的 Lua 释放次数，同上
     task_ctx  *task;      // 回指 task_ctx，供 allocator 日志取 name
     lua_State *lua;       // 当前 task 独占的 Lua 虚拟机（主 thread）
     tda_ctx    mem_tda;   // 内存翻倍告警：默认 0 禁用，task.memlimit(N) 设阈值后 mem 超阈值仅 LOG_WARN（不拒绝分配）
-    size_t     pend_bytes; // pend 里攒着的字节
-    uint64_t   pend_since; // pend 里第一条进来的时刻（_ltimer 毫秒）
-    message_ctx pend[LMSG_PEND_MAX]; // 待释放的载荷
+    char       warnbuf[LWARN_BUF]; // 一条 warn 的分片先攒在这，最后一片到了整条打日志
 }ltask_ctx;
 
 // Lua 脚本根路径（含末尾分隔符），由 ltask_startup 初始化
@@ -80,8 +77,52 @@ static void _ltask_setpath(lua_State *lua, const char *name, const char *exname)
     lua_setfield(lua, -3, name);
     lua_pop(lua, 2);
 }
+// task state 的 panic 回调。返回后 Lua 随即 abort，日志是异步的，故同时直接写 stderr
+static int32_t _ltask_panic(lua_State *lua) {
+    const char *msg = lua_tostring(lua, -1);
+    if (NULL == msg) {
+        msg = "error object is not a string";
+    }
+    fprintf(stderr, "PANIC: unprotected error in call to Lua API (%s)\n", msg);
+    fflush(stderr);
+    LOG_FATAL("lua panic: %s", msg);
+    return 0;
+}
+// tocont 非 0 表示这条还有后续分片。控制消息只认自成一整条的 "@on" / "@off"。续片状态不论 warn 开没开都要记，
+// 否则关闭时多片消息末尾的 "@on" 会被当成控制消息(lauxlib 关闭时不记续片，这里有意不跟)
+static void _ltask_warnf(void *ud, const char *msg, int tocont) {
+    ltask_ctx *ltask = (ltask_ctx *)ud;
+    if (0 == ltask->warncont
+        && 0 == tocont
+        && '@' == msg[0]) {
+        if (0 == strcmp(msg + 1, "on")) {
+            ltask->warnon = 1;
+        } else if (0 == strcmp(msg + 1, "off")) {
+            ltask->warnon = 0;
+        }
+        return;
+    }
+    ltask->warncont = (0 != tocont);
+    if (0 == ltask->warnon) {
+        return;
+    }
+    size_t n = strlen(msg);
+    size_t room = sizeof(ltask->warnbuf) - 1 - ltask->warnlen;
+    if (n > room) {
+        n = room;
+    }
+    memcpy(ltask->warnbuf + ltask->warnlen, msg, n);
+    ltask->warnlen += (uint32_t)n;
+    if (0 != tocont) {
+        return;
+    }
+    ltask->warnbuf[ltask->warnlen] = '\0';
+    LOG_WARN("lua warning: %s", ltask->warnbuf);
+    ltask->warnlen = 0;
+}
 // 创建并初始化一个新的 Lua 虚拟机，设置路径、全局变量及当前 task 指针。
 // alloc_ud != NULL 时改用 lua_newstate 注入 _ltask_lalloc 以启用 per-task 内存监控；
+// 它不像 luaL_newstate 那样自带 panic 与 warn 处理，口径照 lauxlib 自己装。
 // alloc_ud == NULL 走 luaL_newstate（默认 allocator），用于 startup.lua 这类只跑一次即关的临时 state。
 static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
     lua_State *lua;
@@ -93,6 +134,12 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
     if (NULL == lua) {
         LOG_ERROR("%s", "luaL_newstate failed.");
         return NULL;
+    }
+    if (NULL != alloc_ud) {
+        //无法恢复的严重错误 回调函数
+        lua_atpanic(lua, _ltask_panic);
+        //虚拟机的警告（Warning）回调函数
+        lua_setwarnf(lua, _ltask_warnf, alloc_ud);
     }
     luaL_openlibs(lua);
     if (NULL != task) {
@@ -108,8 +155,7 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
     lua_setglobal(lua, PATH_SEP_NAME);
     lpub_reg_sock(lua);
     if (NULL != task) {
-        lua_pushlightuserdata(lua, task);
-        lua_setglobal(lua, CUR_TASK_NAME);
+        lpub_set_cur_task(lua, task);
 #if ENABLE_LUA_BYTECACHE
         lbc_install_searcher(lua);
 #endif
@@ -162,22 +208,10 @@ static void _ltask_log_err(lua_State *lua) {
     }
     lua_pop(lua, 1);
 }
-// 搜索并执行指定 Lua 脚本文件，执行失败时记录错误日志
-static int32_t _ltask_dofile(lua_State *lua, const char *file) {
-    char path[PATH_LENS];
-    uint64_t mt;
-    if (ERR_OK != _ltask_searchfile(file, path, &mt)) {
-        LOG_ERROR("cannot find %s:, no such file.", file);
-        return ERR_FAILED;
-    }
-    if (LUA_OK != luaL_dofile(lua, path)) {
-        _ltask_log_err(lua);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
-}
 // 将 from 栈 idx 位置的基本类型值（nil/bool/number/string）复制到 to 栈顶
 static void _ltask_copy_arg(lua_State *from, int32_t idx, lua_State *to) {
+    size_t lens;
+    const char *s;
     switch (lua_type(from, idx)) {
     case LUA_TNIL:
         lua_pushnil(to);
@@ -192,12 +226,10 @@ static void _ltask_copy_arg(lua_State *from, int32_t idx, lua_State *to) {
             lua_pushnumber(to, lua_tonumber(from, idx));
         }
         break;
-    case LUA_TSTRING: {
-        size_t lens;
-        const char *s = lua_tolstring(from, idx, &lens);
+    case LUA_TSTRING:
+        s = lua_tolstring(from, idx, &lens);
         lua_pushlstring(to, s, lens);
         break;
-    }
     default:
         // 不支持的类型（table/function/userdata 等）退化为 nil
         lua_pushnil(to);
@@ -257,7 +289,7 @@ int32_t ltask_startup(const char *script) {
     if (NULL == lua) {
         return ERR_FAILED;
     }
-    int32_t rtn = _ltask_dofile(lua, "startup");
+    int32_t rtn = _ltask_dofile_args(lua, "startup", NULL, 0, -1);
     lua_close(lua);
     return rtn;
 }
@@ -270,42 +302,19 @@ static inline void _ltask_mem_flush(ltask_ctx *ltask) {
         ltask->nfree = 0;
     }
 }
-// 攒着的载荷全部释放
-static inline void _ltask_pend_flush(ltask_ctx *ltask) {
-    for (uint32_t i = 0; i < ltask->npend; i++) {
-        message_clean(&ltask->pend[i]);
-    }
-    ltask->npend = 0;
-    ltask->pend_bytes = 0;
-}
-// 把载荷挪进 pend 攒着，msg 的 data/shared 置空（msg.data 读到 nil，__gc 与 msg_release 不再重复释放）；
-// 攒满当场全放
-static inline void _ltask_pend_push(ltask_ctx *ltask, message_ctx *msg) {
+// 当场释放载荷，msg 的 data/shared 置空（msg.data 读到 nil，__gc 与 msg_release 不再重复释放）
+static inline void _ltask_payload_free(message_ctx *msg) {
     if (NULL == msg->shared
         && NULL == msg->data) {
         return;
     }
-    if (0 == ltask->npend) {
-        ltask->pend_since = timer_cur_ms(&_ltimer);
-    }
-    ltask->pend[ltask->npend++] = *msg;
-    ltask->pend_bytes += msg->size;
+    message_clean(msg);
     msg->data = NULL;
     msg->shared = NULL;
-    if (LMSG_PEND_MAX == ltask->npend) {
-        _ltask_pend_flush(ltask);
-    }
 }
-// 一轮调度结束回调：并回 Lua 分配次数；载荷字节或时间阈值到了就全放（条数在 _ltask_pend_push 里已兜底）。
-// 每个 Lua task 都有每秒一次的 _coro_timeout 定时器，流量停后约 1 秒内总会再跑到这里
+// 一轮调度结束回调：并回 Lua 分配次数
 static void _ltask_round_end(task_ctx *task) {
-    ltask_ctx *ltask = task->arg;
-    _ltask_mem_flush(ltask);
-    if (0 != ltask->npend
-        && (ltask->pend_bytes >= LMSG_PEND_BYTES
-            || timer_cur_ms(&_ltimer) - ltask->pend_since >= LMSG_PEND_MS)) {
-        _ltask_pend_flush(ltask);
-    }
+    _ltask_mem_flush(task->arg);
 }
 // task 参数释放回调：关闭 Lua 虚拟机并释放 ltask_ctx 内存。
 // _ltask_init 失败时已自行 lua_close，也会走到这里，Lua 分配次数统一在这里并回
@@ -315,7 +324,6 @@ static void _ltask_arg_free(void *arg) {
         lua_close(ltask->lua);
     }
     _ltask_mem_flush(ltask);
-    _ltask_pend_flush(ltask);
     FREE(ltask);
 }
 // 消息对象的 __gc：兜底释放分发返回时没放掉的载荷（回调协程没跑完就被丢弃、task 关闭等）。
@@ -323,12 +331,8 @@ static void _ltask_arg_free(void *arg) {
 // 字段在 Lua 侧不可写（userdata 无 __newindex），故不存在改 mtype/data 换掉释放契约的问题
 static int32_t _msg_clean(lua_State *lua) {
     message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
-    // shared 非 NULL 走广播 ref-- 分支，否则仅 data 非 NULL 才需清理；已交还过的两者都是 NULL
-    if (NULL != ud
-        && (NULL != ud->shared || NULL != ud->data)) {
-        message_clean(ud);
-        ud->data = NULL;
-        ud->shared = NULL;
+    if (NULL != ud) {
+        _ltask_payload_free(ud);
     }
     return 0;
 }
@@ -339,7 +343,7 @@ NOINLINE static void _msg_push_ip(lua_State *lua, message_ctx *ud) {
     lua_pushstring(lua, ip);
 }
 // 消息对象的 __index：按字段名取 message_ctx 里的值。按长度 + 首字符分发，不做全量串比。
-// data/shared 为空时返回 nil 而不是 0，调用方有 if msg.data then 这类真值判断；
+// data 为空时返回 nil 而不是 0，调用方有 if msg.data then 这类真值判断；
 // ip/port/udata 只有 RECVFROM 才从 recvfrom_ctx 里取，别的类型 data 不是那个结构
 static int32_t _msg_index(lua_State *lua) {
     message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
@@ -423,16 +427,9 @@ static int32_t _msg_index(lua_State *lua) {
             return 1;
         }
         break;
-    case 6:// client shared
+    case 6:// client
         if ('c' == k[0]) {
             lua_pushinteger(lua, ud->client);
-            return 1;
-        }
-        if ('s' == k[0]) {
-            if (NULL == ud->shared) {
-                break;
-            }
-            lua_pushlightuserdata(lua, ud->shared);
             return 1;
         }
         break;
@@ -515,10 +512,10 @@ static void _ltask_run(task_dispatch_arg *arg) {
     }
     // 载荷还在（分发期间没被 msg_release 交还）才要处理。message_dispatch 返回真 = 回调协程挂起时还拿着它：
     // 补挂带 __gc 的元表，回调结束由 msg_release 释放（__gc 兜底），对象此刻在栈顶，补挂必须在 pop 之前；
-    // 否则交给 pend 攒批释放：等待者只能用到它下次挂起前，丢弃的消息没人再用。不能留给 __gc，晋升老年代后要等大回收
+    // 否则当场释放：等待者只能用到它下次挂起前，丢弃的消息没人再用。不能留给 __gc，晋升老年代后要等大回收
     if (ERR_OK == message_should_clean(ud)) {
         if (0 == held) {
-            _ltask_pend_push(ltask, ud);
+            _ltask_payload_free(ud);
         } else {
             lua_pushvalue(ltask->lua, LSLOT_MSG_MT_GC);
             lua_setmetatable(ltask->lua, -2);
@@ -539,6 +536,7 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
     ltask->mem = 0;
     tda_init(&ltask->mem_tda, 0);
     ltask->task = task;
+    ltask->warnon = 1;
     lua_State *lua = _ltask_luainit(task, ltask);
     if (NULL == lua) {
         return ERR_FAILED;
@@ -574,10 +572,10 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
 /// 取值须在 [0, UINT32_MAX]，越界直接报错而不是截断——截断的话 0x100000000 会变成 0、
 /// 被 task_new 悄悄换成默认 TASK_QUEUE_CAP，调用方从返回值看不出自己要的容量根本没生效</param>
 /// <param name="..." type="any">传给脚本的可变参数（nil/bool/number/string）</param>
-/// <returns type="lightuserdata?">task 指针；失败返回 nil</returns>
+/// <returns type="lightuserdata?">task 指针，不持引用：task 关闭后即失效，之后还要用就按名字或句柄 task.grab；失败返回 nil</returns>
 static int32_t _ltask_register(lua_State *lua) {
-    const char *file = luaL_checkstring(lua, 1);
-    const char *name = luaL_optstring(lua, 2, NULL);
+    const char *file = lpub_check_cstr(lua, 1);
+    const char *name = lua_isnoneornil(lua, 2) ? NULL : lpub_check_cstr(lua, 2);
     lua_Integer cap_arg = luaL_checkinteger(lua, 3);
     if (cap_arg < 0) {
         return luaL_argerror(lua, 3, "quecap must be non-negative");
@@ -763,13 +761,19 @@ static int32_t _ltask_mem(lua_State *lua) {
 /// 设置当前 task lua_State 的内存告警阈值。mem 超过该阈值时翻倍告警，
 /// 仅记录日志、不拒绝分配（不触发 LUA_ERRMEM）；默认 0 表示禁用。
 /// </summary>
-/// <param name="limit" type="integer">告警阈值字节数；0 表示禁用告警</param>
+/// <param name="limit" type="integer">告警阈值字节数；0 或负数表示禁用告警，超出 size_t 的钳到 SIZE_MAX</param>
 /// <returns>无</returns>
 static int32_t _ltask_memlimit(lua_State *lua) {
     lua_Integer limit = luaL_checkinteger(lua, 1);
     LPUB_CUR_TASK(lua, task);
     ltask_ctx *ltask = task->arg;
-    tda_init(&ltask->mem_tda, (size_t)(limit < 0 ? 0 : limit));
+    size_t lim = (size_t)limit;
+    if (limit < 0) {
+        lim = 0;
+    } else if ((lua_Integer)lim != limit) {
+        lim = SIZE_MAX;// 32 位上放不下，别截成另一个阈值
+    }
+    tda_init(&ltask->mem_tda, lim);
     return 0;
 }
 static int32_t _ltask_opt_timeout(lua_State *lua, task_ctx *task, uint32_t *ms) {
@@ -922,21 +926,19 @@ static int32_t _ltask_net_index(lua_State *lua) {
 /// <returns type="boolean">成功 true；个数不对、一个组员都没有、某个组员不在或没绑对线程、已经设过，返回 false</returns>
 static int32_t _ltask_accept_group(lua_State *lua) {
     LPUB_TASK_ARG(lua, task);
-    lua_Integer n, i;
-    name_t *hs;
-    int32_t vtype;
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
     luaL_checktype(lua, 2, LUA_TTABLE);
-    n = (lua_Integer)lua_rawlen(lua, 2);
+    lua_Integer n = (lua_Integer)lua_rawlen(lua, 2);
     if (n <= 0
         || n != (lua_Integer)loader_nnet(g_loader)) {
         return lpub_rtn_bool(lua, 0);
     }
     // 句柄表交给 GC：按名字查句柄会记缓存、可能抛内存错误，MALLOC 的来不及释放
-    hs = (name_t *)lua_newuserdatauv(lua, sizeof(name_t) * (size_t)n, 0);
-    for (i = 1; i <= n; i++) {
+    name_t *hs = (name_t *)lua_newuserdatauv(lua, sizeof(name_t) * (size_t)n, 0);
+    int32_t vtype;
+    for (lua_Integer i = 1; i <= n; i++) {
         vtype = lua_rawgeti(lua, 2, i);
         if (LUA_TSTRING != vtype
             && !lua_isinteger(lua, -1)) {
@@ -969,29 +971,28 @@ static int32_t _ltask_nnet(lua_State *lua) {
 /// 请求进程退出，本调用立即返回；收尾(loader_free、内存检查、带退出码退出)由程序入口完成，见 loader_exit。
 /// 测试汇总收齐结果后用它自行收尾
 /// </summary>
-/// <param name="code" type="integer?">退出码，缺省 0</param>
+/// <param name="code" type="integer?">退出码，缺省 0。只认第一次请求；请求 0 而内存检查不过、或不在 0..255 时进程以 1 退出，其余原样</param>
 /// <returns>无</returns>
 static int32_t _ltask_exit(lua_State *lua) {
-    loader_exit(g_loader, (int32_t)luaL_optinteger(lua, 1, 0));
+    loader_exit(g_loader, (int32_t)lpub_opt_range(lua, 1, 0, INT32_MIN, INT32_MAX, "exit code out of range"));
     return 0;
 }
 /// <summary>
-/// 交还消息载荷（交给 C 侧攒批释放），之后 msg.data 立即为 nil。可重复调；无载荷消息与非消息对象什么都不做。
+/// 交还消息载荷（当场释放），之后 msg.data 立即为 nil。可重复调；无载荷消息与非消息对象什么都不做。
 /// 两张消息元表都认：同一次分发内跑完的回调交还时，C 侧还没给它补挂带 __gc 的那张
 /// </summary>
 /// <param name="msg" type="Message?">消息对象</param>
 /// <returns>无</returns>
 static int32_t _ltask_msg_release(lua_State *lua) {
-    message_ctx *ud = (message_ctx *)lpub_test_udata(lua, 1, MT_TASK_MSG);
-    if (NULL == ud) {
-        ud = (message_ctx *)lpub_test_udata(lua, 1, MT_TASK_MSG_NG);
-    }
+    message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
     if (NULL == ud
-        || (NULL == ud->data && NULL == ud->shared)) {
+        || !lua_getmetatable(lua, 1)) {
         return 0;
     }
-    LPUB_CUR_TASK(lua, task);
-    _ltask_pend_push(task->arg, ud);
+    if (lpub_is_mtable(lua, MT_TASK_MSG)
+        || lpub_is_mtable(lua, MT_TASK_MSG_NG)) {
+        _ltask_payload_free(ud);
+    }
     return 0;
 }
 //srey.task

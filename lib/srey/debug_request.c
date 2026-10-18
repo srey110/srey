@@ -17,12 +17,7 @@ static int32_t _debug_cmd_eq(const seri_item *item, const char *name, size_t nle
 // 回复纯文本响应给请求方；debug 响应一律 ERR_OK，结果(含错误说明)由文本承载，
 // 否则 srey.request 对 erro!=ERR_OK 吞 data，文本到不了调用方。copy=1 内部拷贝。
 static void _debug_resp(task_ctx *task, name_t src, uint64_t sess, const char *text, size_t len) {
-    task_ctx *dtask = task_grab(task->loader, src);
-    if (NULL == dtask) {
-        return;
-    }
-    task_response(dtask, REQ_DEBUG, sess, ERR_OK, (void *)text, len, 1);
-    task_ungrab(dtask);
+    (void)task_response_to(task->loader, src, REQ_DEBUG, sess, ERR_OK, (void *)text, len, 1);
 }
 // stat：拼各 mtype 的 nmsg / dispatch_cpu_ns / avg，格式与 Lua 端 stat 命令一致
 static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {

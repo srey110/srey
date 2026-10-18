@@ -48,8 +48,8 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
         ev_send(&task->loader->netev, sk, ack, 1, 0);
     }
 }
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)task; (void)sk; (void)pktype; (void)client; (void)erro;
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
+    (void)task; (void)sk; (void)pktype; (void)client; (void)erro; (void)sess;
     ATOMIC_ADD(&g_closed, 1);
 }
 static void _startup(task_ctx *task) {
@@ -89,7 +89,13 @@ static void _startup(task_ctx *task) {
             return;
         }
         if ((size_t)cur >= TOTAL_BYTES) {
-            *(arg->ok) = 1;
+            // 一次 KeyUpdate 都没排上就只是普通大流量，不算通过
+            if (0 == ATOMIC_GET(&g_ku)) {
+                LOG_ERROR("ssl_keyupdate: received all %zu bytes but no KeyUpdate scheduled.", TOTAL_BYTES);
+                ev_close(&task->loader->netev, &sk);
+                return;
+            }
+            ATOMIC_SET((atomic_t *)arg->ok, 1);
             LOG_INFO("ssl_keyupdate: received all %zu bytes with %lld KeyUpdates.",
                      TOTAL_BYTES, (long long)ATOMIC_GET(&g_ku));
             ev_close(&task->loader->netev, &sk);

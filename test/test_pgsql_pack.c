@@ -3,17 +3,6 @@
 #include "protocol/pgsql/pgsql_pack.h"
 #include "protocol/pgsql/pgsql_bind.h"
 
-/* 大端读 16 位整数（参数/格式码计数字段） */
-static uint16_t _rd_be16(const char *p) {
-    return (uint16_t)(((uint32_t)(uint8_t)p[0] << 8) | (uint32_t)(uint8_t)p[1]);
-}
-/* 大端读 32 位整数（pgsql 消息长度字段统一大端格式） */
-static uint32_t _rd_be32(const char *p) {
-    return ((uint32_t)(uint8_t)p[0] << 24)
-         | ((uint32_t)(uint8_t)p[1] << 16)
-         | ((uint32_t)(uint8_t)p[2] << 8)
-         |  (uint32_t)(uint8_t)p[3];
-}
 /* bind 的格式码段与参数值段同在 buf 里：格式码段 = Int16 n + 已绑的格式码，
  * 参数值段从 2 + 2*nparam 起（含 Int16 参数值数量）。下面四个把两段各自的起点与长度取出来 */
 static const uint8_t *_bind_fmt(const pgsql_bind_ctx *b) {
@@ -41,7 +30,7 @@ static void test_pgsql_query(CuTest *tc) {
     /* 'Q' + len(4) + sql + '\0' */
     CuAssertTrue(tc, 'Q' == pack[0]);
     /* length 字段含 4 字节本身但不含类型字节 */
-    uint32_t mlen = _rd_be32(pack + 1);
+    uint32_t mlen = read_be32(pack + 1);
     CuAssertTrue(tc, mlen == 4 + strlen(sql) + 1);
     /* size = 1 (type) + 4 (len) + payload */
     CuAssertTrue(tc, size == 1 + mlen);
@@ -60,7 +49,7 @@ static void test_pgsql_terminate(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 5 == (int)size);
     CuAssertTrue(tc, 'X' == pack[0]);
-    CuAssertTrue(tc, 4 == _rd_be32(pack + 1));
+    CuAssertTrue(tc, 4 == read_be32(pack + 1));
     FREE(pack);
 }
 
@@ -74,7 +63,7 @@ static void test_pgsql_copy(CuTest *tc) {
     char *pack = pgsql_pack_copy_data(data, 3, &size);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 'd' == pack[0]);
-    CuAssertTrue(tc, 4 + 3 == (int)_rd_be32(pack + 1));
+    CuAssertTrue(tc, 4 + 3 == (int)read_be32(pack + 1));
     CuAssertTrue(tc, 0 == memcmp(pack + 5, data, 3));
     FREE(pack);
 
@@ -83,14 +72,14 @@ static void test_pgsql_copy(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 5 == (int)size);
     CuAssertTrue(tc, 'c' == pack[0]);
-    CuAssertTrue(tc, 4 == _rd_be32(pack + 1));
+    CuAssertTrue(tc, 4 == read_be32(pack + 1));
     FREE(pack);
 
     /* copy_fail ：'f' + len + msg + \0 */
     pack = pgsql_pack_copy_fail("bad data", &size);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 'f' == pack[0]);
-    uint32_t mlen = _rd_be32(pack + 1);
+    uint32_t mlen = read_be32(pack + 1);
     CuAssertTrue(tc, mlen == 4 + strlen("bad data") + 1);
     CuAssertTrue(tc, 0 == memcmp(pack + 5, "bad data", 8));
     FREE(pack);
@@ -102,22 +91,22 @@ static void test_pgsql_copy(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, (1 + 4 + qlen) + (1 + 4 + 3) + (1 + 4) == size);
     CuAssertTrue(tc, 'Q' == pack[0]);
-    CuAssertTrue(tc, 4 + qlen == _rd_be32(pack + 1));
+    CuAssertTrue(tc, 4 + qlen == read_be32(pack + 1));
     CuAssertTrue(tc, 0 == memcmp(pack + 5, sql, qlen));
     char *d = pack + 1 + 4 + qlen;
     CuAssertTrue(tc, 'd' == d[0]);
-    CuAssertTrue(tc, 4 + 3 == _rd_be32(d + 1));
+    CuAssertTrue(tc, 4 + 3 == read_be32(d + 1));
     CuAssertTrue(tc, 0 == memcmp(d + 5, data, 3));
     char *c = d + 1 + 4 + 3;
     CuAssertTrue(tc, 'c' == c[0]);
-    CuAssertTrue(tc, 4 == _rd_be32(c + 1));
+    CuAssertTrue(tc, 4 == read_be32(c + 1));
     FREE(pack);
 
     /* copy_in 的 sql 为 NULL：按空串写一个 NUL，后面两条照常 */
     pack = pgsql_pack_copy_in(NULL, data, 3, &size);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, (1 + 4 + 1) + (1 + 4 + 3) + (1 + 4) == size);
-    CuAssertTrue(tc, 5 == _rd_be32(pack + 1));
+    CuAssertTrue(tc, 5 == read_be32(pack + 1));
     CuAssertTrue(tc, 0 == pack[5]);
     CuAssertTrue(tc, 'd' == pack[6]);
     FREE(pack);
@@ -130,11 +119,11 @@ static void test_pgsql_cancel(CuTest *tc) {
     char buf[16];
     pgsql_pack_cancel(buf, 0x11223344, 0x55667788u);
     /* length = 16 */
-    CuAssertTrue(tc, 16 == (int)_rd_be32(buf));
+    CuAssertTrue(tc, 16 == (int)read_be32(buf));
     /* protocol version (取消请求魔术值) = 80877102 = 1234<<16 | 5678 */
-    CuAssertTrue(tc, 80877102 == (int)_rd_be32(buf + 4));
-    CuAssertTrue(tc, 0x11223344u == _rd_be32(buf + 8));
-    CuAssertTrue(tc, 0x55667788u == _rd_be32(buf + 12));
+    CuAssertTrue(tc, 80877102 == (int)read_be32(buf + 4));
+    CuAssertTrue(tc, 0x11223344u == read_be32(buf + 8));
+    CuAssertTrue(tc, 0x55667788u == read_be32(buf + 12));
 }
 
 /* =======================================================================
@@ -150,12 +139,12 @@ static void test_pgsql_stmt_prepare(CuTest *tc) {
     CuAssertTrue(tc, 'P' == pack[0]);
     /* 参数类型块也要验：只判首尾字节的话，oids 漏写或写成小端都发现不了 */
     size_t off = 5 + strlen("stmt1") + 1 + strlen(sql) + 1;
-    CuAssertIntEquals(tc, 2, _rd_be16(pack + off));
-    CuAssertIntEquals(tc, INT4OID, (int32_t)_rd_be32(pack + off + 2));
-    CuAssertIntEquals(tc, TEXTOID, (int32_t)_rd_be32(pack + off + 6));
+    CuAssertIntEquals(tc, 2, read_be16(pack + off));
+    CuAssertIntEquals(tc, INT4OID, (int32_t)read_be32(pack + off + 2));
+    CuAssertIntEquals(tc, TEXTOID, (int32_t)read_be32(pack + off + 6));
     /* 末尾应是 'S' + 长度 4（Sync）*/
     CuAssertTrue(tc, 'S' == pack[size - 5]);
-    CuAssertTrue(tc, 4 == (int)_rd_be32(pack + size - 4));
+    CuAssertTrue(tc, 4 == (int)read_be32(pack + size - 4));
     FREE(pack);
 
     /* nparam <= 0 走 else：仍要写出一个为 0 的 Int16，否则服务端按下一段解会整体错位 */
@@ -163,7 +152,7 @@ static void test_pgsql_stmt_prepare(CuTest *tc) {
     pack = pgsql_pack_stmt_prepare("stmt0", sql, 0, NULL, &size);
     CuAssertPtrNotNull(tc, pack);
     off = 5 + strlen("stmt0") + 1 + strlen(sql) + 1;
-    CuAssertIntEquals(tc, 0, _rd_be16(pack + off));
+    CuAssertIntEquals(tc, 0, read_be16(pack + off));
     CuAssertIntEquals(tc, (int32_t)off + 2 + 5, (int32_t)size);/* P 段 + Sync(5) */
     FREE(pack);
 }
@@ -190,7 +179,7 @@ static void test_pgsql_null_name(CuTest *tc) {
     char *pack = pgsql_pack_stmt_close(NULL, &size);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 'C' == pack[0]);
-    CuAssertIntEquals(tc, 6, (int)_rd_be32(pack + 1));
+    CuAssertIntEquals(tc, 6, (int)read_be32(pack + 1));
     CuAssertTrue(tc, 'S' == pack[5]);
     CuAssert(tc, "NULL name must still emit its terminating NUL", 0 == pack[6]);
     CuAssertTrue(tc, 'S' == pack[size - 5]);
@@ -217,13 +206,13 @@ static void test_pgsql_null_name(CuTest *tc) {
     size = 0;
     pack = pgsql_pack_query(NULL, &size);
     CuAssertPtrNotNull(tc, pack);
-    CuAssertIntEquals(tc, 5, (int)_rd_be32(pack + 1));
+    CuAssertIntEquals(tc, 5, (int)read_be32(pack + 1));
     CuAssertTrue(tc, 0 == pack[5]);
     FREE(pack);
     size = 0;
     pack = pgsql_pack_copy_fail(NULL, &size);
     CuAssertPtrNotNull(tc, pack);
-    CuAssertIntEquals(tc, 5, (int)_rd_be32(pack + 1));
+    CuAssertIntEquals(tc, 5, (int)read_be32(pack + 1));
     CuAssertTrue(tc, 0 == pack[5]);
     FREE(pack);
 }
@@ -245,9 +234,9 @@ static void test_pgsql_stmt_execute(CuTest *tc) {
     /* 末尾 5 字节是 Sync */
     CuAssertTrue(tc, 'S' == pack[size - 5]);
     /* Bind 之后是 Describe 未命名门户：'D' + 长度 6 + 'P' + 空门户名，门户描述不回 ParameterDescription */
-    size_t d = 1 + (size_t)_rd_be32(pack + 1);
+    size_t d = 1 + (size_t)read_be32(pack + 1);
     CuAssertTrue(tc, 'D' == pack[d]);
-    CuAssertIntEquals(tc, 6, (int)_rd_be32(pack + d + 1));
+    CuAssertIntEquals(tc, 6, (int)read_be32(pack + d + 1));
     CuAssertTrue(tc, 'P' == pack[d + 5] && 0 == pack[d + 6]);
     CuAssertTrue(tc, 'E' == pack[d + 7]);
     FREE(pack);
@@ -361,7 +350,7 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
     /* offset 0 是类型字节 */
     CuAssertTrue(tc, 'Q' == bw.data[0]);
     /* offset 1 起 4 字节大端长度，应等于 4(length) + 4(BODY) = 8 */
-    uint32_t mlen = _rd_be32(bw.data + 1);
+    uint32_t mlen = read_be32(bw.data + 1);
     CuAssertTrue(tc, 8 == (int)mlen);
     CuAssertTrue(tc, 0 == memcmp(bw.data + 5, "BODY", 4));
     binary_free(&bw);
@@ -377,10 +366,10 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
 
     /* 第一段 'A' + len(4)=6 + AA */
     CuAssertTrue(tc, 'A' == bw.data[0]);
-    CuAssertTrue(tc, 6 == (int)_rd_be32(bw.data + 1));
+    CuAssertTrue(tc, 6 == (int)read_be32(bw.data + 1));
     /* 第二段 'B' + len(4)=7 + BBB */
     CuAssertTrue(tc, 'B' == bw.data[7]);
-    CuAssertTrue(tc, 7 == (int)_rd_be32(bw.data + 8));
+    CuAssertTrue(tc, 7 == (int)read_be32(bw.data + 8));
 
     binary_free(&bw);
 }
@@ -419,19 +408,19 @@ static void test_pgsql_bind_free_reuse(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 'B' == pack[0]);
     /* Bind 自报长度含自身、不含类型字节，且必须落在总包内 */
-    uint32_t blen = _rd_be32(pack + 1);
+    uint32_t blen = read_be32(pack + 1);
     CuAssertTrue(tc, blen + 1 <= size);
     CuAssertIntEquals(tc, '\0', pack[5]);/* portal 为空串 */
     CuAssertTrue(tc, 0 == memcmp(pack + 6, "stmt1", 6));/* 含结尾 NUL */
     /* nparam=0 时两个计数都得写出来 */
-    CuAssertIntEquals(tc, 0, _rd_be16(pack + 12));
-    CuAssertIntEquals(tc, 0, _rd_be16(pack + 14));
-    CuAssertIntEquals(tc, 1, _rd_be16(pack + 16));/* 结果列格式码数固定 1 */
-    CuAssertIntEquals(tc, FORMAT_BINARY, _rd_be16(pack + 18));
+    CuAssertIntEquals(tc, 0, read_be16(pack + 12));
+    CuAssertIntEquals(tc, 0, read_be16(pack + 14));
+    CuAssertIntEquals(tc, 1, read_be16(pack + 16));/* 结果列格式码数固定 1 */
+    CuAssertIntEquals(tc, FORMAT_BINARY, read_be16(pack + 18));
     /* Bind 之后依次是 Describe / Execute / Sync，最后一条 Sync 是 'S' + Int32(4) */
     CuAssertIntEquals(tc, 'D', pack[blen + 1]);
     CuAssertIntEquals(tc, 'S', pack[size - 5]);
-    CuAssertIntEquals(tc, 4, (int32_t)_rd_be32(pack + size - 4));
+    CuAssertIntEquals(tc, 4, (int32_t)read_be32(pack + size - 4));
     FREE(pack);
 
     pgsql_bind_clear(&bind);
@@ -439,8 +428,7 @@ static void test_pgsql_bind_free_reuse(CuTest *tc) {
 }
 
 /* bind 两个缓冲的线格式逐字节验证。以前只断言过 format.offset == 18 与 values.offset > 2，
- * 于是 NULL 的 -1 长度、nparam 头与格式码的大端序、格式码本身全都没人钉；而唯一另外的
- * 调用方 task_pgsql 在 main.c 的 optional 白名单里，断言失败会被吞成 "- (network error)"。
+ * 于是 NULL 的 -1 长度、nparam 头与格式码的大端序、格式码本身全都没人钉；集成用例连不上库时整个跳过。
  * 最要紧的是 NULL 那条：PostgreSQL 里长度 -1 才是 NULL、0 是零长值，写成 0 会让
  * SQL NULL 静默变成空字符串写进库 */
 static void test_pgsql_bind_wire(CuTest *tc) {
@@ -514,6 +502,116 @@ static void test_pgsql_bind_wire(CuTest *tc) {
     CuAssertIntEquals(tc, 0x00, _bind_val(&b)[0]);
     CuAssertIntEquals(tc, 0x04, _bind_val(&b)[1]);
     pgsql_bind_free(&b);
+
+    /* 其余类型逐字节钉死：长度字段 + 大端值。写成小端、漏换序、bool 写成非 1 都会红；
+     * float / double 用精确可表示的 1.5 / -2.25 */
+    static const char uuid[16] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+    static const uint8_t want[] = {
+        0, 0, 0, 1, 0x01,/* bool：非零一律写 1 */
+        0, 0, 0, 2, 0x01, 0x02,/* int16 */
+        0, 0, 0, 8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,/* int64 */
+        0, 0, 0, 4, 0x3f, 0xc0, 0x00, 0x00,/* float 1.5 */
+        0, 0, 0, 8, 0xc0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,/* double -2.25 */
+        0, 0, 0, 2, 0x00, 0xff,/* bytea */
+        0, 0, 0, 8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,/* timestamp */
+        0, 0, 0, 8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,/* timestamptz -1 */
+        0, 0, 0, 4, 0x01, 0x02, 0x03, 0x04,/* date */
+        0, 0, 0, 16, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,/* uuid */
+        0, 0, 0, 2, 'h', 'i'/* pgsql_bind 原样，文本格式 */
+    };
+    static const uint16_t wantfmt[] = {
+        FORMAT_BINARY, FORMAT_BINARY, FORMAT_BINARY, FORMAT_BINARY, FORMAT_BINARY, FORMAT_BINARY,
+        FORMAT_BINARY, FORMAT_BINARY, FORMAT_BINARY, FORMAT_BINARY, FORMAT_TEXT
+    };
+    const char cval[2] = { 'h', 'i' };/* pgsql_bind 收 const 缓冲 */
+    pgsql_bind_init(&b, 11);
+    pgsql_bind_bool(&b, 5);
+    pgsql_bind_int16(&b, 0x0102);
+    pgsql_bind_int64(&b, 0x0102030405060708LL);
+    pgsql_bind_float(&b, 1.5f);
+    pgsql_bind_double(&b, -2.25);
+    pgsql_bind_bytea(&b, "\x00\xff", 2);
+    pgsql_bind_timestamp(&b, 0x1122334455667788LL);
+    pgsql_bind_timestamptz(&b, -1);
+    pgsql_bind_date(&b, 0x01020304);
+    pgsql_bind_uuid(&b, uuid);
+    pgsql_bind(&b, cval, sizeof(cval), FORMAT_TEXT);
+    CuAssertIntEquals(tc, 11, (int)b.count);
+    CuAssertIntEquals(tc, (int)(2 + sizeof(want)), (int)_bind_val_len(&b));
+    CuAssertTrue(tc, 0 == memcmp(_bind_val(&b) + 2, want, sizeof(want)));
+    f = _bind_fmt(&b);
+    for (size_t i = 0; i < ARRAY_SIZE(wantfmt); i++) {
+        CuAssertIntEquals(tc, wantfmt[i], read_be16(f + 2 + 2 * i));
+    }
+    pgsql_bind_free(&b);
+}
+
+/* StartupMessage：总长、协议 3.0、user / database 与固定的编码、日期格式参数逐个对上，NUL 收尾 */
+static void test_pgsql_startup(CuTest *tc) {
+    static const char *const kv[] = {
+        "user", "u1", "database", "db1",
+        "client_encoding", "UTF8", "DateStyle", "ISO", "application_name", "srey"
+    };
+    size_t size = 0;
+    char *pack = pgsql_pack_startup("u1", "db1", &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, (int)size, (int)read_be32(pack));
+    CuAssertIntEquals(tc, 3, (int)read_be16(pack + 4));
+    CuAssertIntEquals(tc, 0, (int)read_be16(pack + 6));
+    size_t off = 8;
+    for (size_t i = 0; i < ARRAY_SIZE(kv); i++) {
+        CuAssertStrEquals(tc, kv[i], pack + off);
+        off += strlen(kv[i]) + 1;
+    }
+    CuAssertIntEquals(tc, 0, pack[off]);/* 参数表结束 */
+    CuAssertIntEquals(tc, (int)size, (int)off + 1);
+    FREE(pack);
+}
+
+/* 长度字段是 Int32：消息体恰为 INT32_MAX 照常回填，多 1 字节就组包失败、长度字段不写。
+ * 只改 offset 伪造长度：回填只读 offset、只写长度字段那 4 字节，不真分配 2GB */
+static void test_pgsql_pack_len_limit(CuTest *tc) {
+    binary_ctx bw;
+    pgsql_pack_start(&bw, 'Q', 0);
+    size_t real = bw.offset;
+    bw.offset = (size_t)INT32_MAX + 1;/* 消息体 = offset - 1 */
+    int32_t at_max = pgsql_pack_end(&bw);
+    uint32_t at_max_len = read_be32(bw.data + 1);
+    write_be32(bw.data + 1, 0);
+    bw.offset = (size_t)INT32_MAX + 2;
+    int32_t over = pgsql_pack_end(&bw);
+    uint32_t over_len = read_be32(bw.data + 1);
+    /* 子消息同口径 */
+    bw.offset = real;
+    size_t off = pgsql_pack_append_start(&bw, 'd');
+    bw.offset = off + (size_t)INT32_MAX;
+    int32_t sub_max = pgsql_pack_append_end(&bw, off);
+    bw.offset = off + (size_t)INT32_MAX + 1;
+    int32_t sub_over = pgsql_pack_append_end(&bw, off);
+    bw.offset = real;
+    binary_free(&bw);
+    CuAssertIntEquals(tc, ERR_OK, at_max);
+    CuAssertTrue(tc, (uint32_t)INT32_MAX == at_max_len);
+    CuAssertIntEquals(tc, ERR_FAILED, over);
+    CuAssertTrue(tc, 0 == over_len);
+    CuAssertIntEquals(tc, ERR_OK, sub_max);
+    CuAssertIntEquals(tc, ERR_FAILED, sub_over);
+
+    /* 绑定值超 INT32_MAX：按多绑处理，Bind 组包被拒。守卫在读值之前，只传长度不读 "x" 之后的内存 */
+    pgsql_bind_ctx bind;
+    pgsql_bind_init(&bind, 1);
+    pgsql_bind_bytea(&bind, "x", (size_t)INT32_MAX + 1);
+    size_t size = 1;
+    char *pack = pgsql_pack_stmt_execute("s", &bind, FORMAT_TEXT, &size);
+    int32_t pack_null = (NULL == pack);
+    FREE(pack);
+    pgsql_bind_free(&bind);
+    CuAssertTrue(tc, 0 != pack_null);
+    CuAssertTrue(tc, 0 == size);
 }
 
 /* =======================================================================
@@ -534,4 +632,6 @@ void test_pgsql_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_bind_extra_types);
     SUITE_ADD_TEST(suite, test_pgsql_bind_free_reuse);
     SUITE_ADD_TEST(suite, test_pgsql_pack_helpers);
+    SUITE_ADD_TEST(suite, test_pgsql_startup);
+    SUITE_ADD_TEST(suite, test_pgsql_pack_len_limit);
 }

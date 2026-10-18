@@ -4,16 +4,14 @@
 #include "thread/thread.h"
 #include "thread/waiter.h"
 #include "base/structs.h"
-#include "utils/pool.h"
+#include "containers/fsqu.h"
 #include "containers/slist.h"
 
 #define TVN_BITS (6) //高精度轮（tv2~tv5）每级位数
 #define TVR_BITS (8) //最低精度轮（tv1）位数
 #define TVN_SIZE (1 << TVN_BITS) //高精度轮每级槽数（64）
 #define TVR_SIZE (1 << TVR_BITS) //最低精度轮槽数（256）
-#define TVN_MASK (TVN_SIZE - 1) //高精度轮索引掩码
-#define TVR_MASK (TVR_SIZE - 1) //最低精度轮索引掩码
-#define INDEX(N) ((ctx->jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK) //计算第 N 级高精度轮的当前槽索引
+
 typedef void(*tw_cb)(ud_cxt *ud); //超时回调函数类型
 typedef struct tw_node_ctx {
     list_node node;     //侵入式链表节点（slist，UPCAST 复原）
@@ -30,7 +28,6 @@ typedef struct tw_ctx {
     timer_ctx timer;        //高精度计时器
     waiter_ctx waiter;      //轮线程睡到下一个到期，tw_add / tw_free 提前叫醒
     twq reqadd;          //外部新增请求暂存队列（平台自适应 fsqu，容量 capacity）
-    pool_ctx node_pool;       //空闲节点复用池（utils/pool，容量 TW_NODE_POOL_MAX）
     list_ctx tv1[TVR_SIZE];   //最低精度轮（精度 1ms，范围 256ms），槽即 slist（元素 tw_node_ctx）
     list_ctx tv2[TVN_SIZE];   //第 2 级精度轮
     list_ctx tv3[TVN_SIZE];   //第 3 级精度轮

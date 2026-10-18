@@ -50,7 +50,7 @@ size_t i64tostr(char *out, int64_t v, uint32_t base);
 /// <param name="len">数据长度</param>
 /// <param name="out">转换后的数据,长度:HEX_ENSIZE</param>
 /// <param name="lower">0 输出大写；非 0 输出小写</param>
-/// <returns>char *</returns>
+/// <returns>out 本身，已写 len * 2 个字符并补 '\0'</returns>
 char *tohex(const void *buf, size_t len, char *out, int32_t lower);
 /// <summary>
 /// 单个十六进制字符转数值，大小写均可。非法字符自己认得出来，调用方不必先 isxdigit
@@ -92,12 +92,12 @@ int32_t strtod_fast(const char *str, size_t lens, double *out);
 /// 下溢同样置 ERANGE 但返回的是正确的次正规数（DOUBLE 列的常规输出），放行。
 /// strtod 直接认出的 "Infinity"/"-Infinity"/"NaN" 字面量是 PostgreSQL float 列的正常输出，
 /// 不置 ERANGE 因而放行，由业务自行处置（test_pgsql_reader_double_bounds 锁了这条契约）。
-/// mysql / pgsql 两侧的文本协议共用，别再各写一份
+/// 长度不设上限，快路径不收的长串回落时临时上堆拷一份。mysql / pgsql 的文本协议与 redis 的 DOUBLE 共用，别再各写一份
 /// </summary>
 /// <param name="data">源字节段(可非 NUL 结尾)</param>
 /// <param name="lens">源字节数；0 视为失败</param>
 /// <param name="val">输出：解析结果；返回 ERR_FAILED 时不写</param>
-/// <returns>ERR_OK 成功；ERR_FAILED 空串/≥128 字节/有残留字符/上溢</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 空串/有残留字符/上溢</returns>
 int32_t strtod_s(const void *data, size_t lens, double *val);
 
 #endif//STRCONV_H_

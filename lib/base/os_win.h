@@ -41,7 +41,7 @@
 #define STRTOK   strtok_s // 线程安全的字符串分割
 #define SNPRINTF snprintf // 格式化输出到缓冲区
 #define SWPRINTF swprintf // 宽字符格式化输出
-#define FSTAT    _stat // 获取文件状态
+#define FSTAT    _stat64 // 获取文件状态；结构体与函数同名，64 位长度，>= 2GB 的文件也取得到
 // 微秒级睡眠（Windows 使用可等待定时器实现）
 #define USLEEP(us)\
     do {\
@@ -86,8 +86,8 @@
             (h) = NULL;\
         }\
     } while(0)
-// 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）。定义在 os_win.c，全程序只一份线程局部缓冲；
-// 返回那块缓冲（FormatMessageA 失败时返回固定串），不用释放，本线程下次调用前有效
+// 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA，只取英文）。
+// 定义在 os_win.c，全程序只一份线程局部缓冲；返回那块缓冲（取不到英文时是带错误码的固定串），不用释放，本线程下次调用前有效
 const char *_fmterror(DWORD error);
 
 #endif

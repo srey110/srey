@@ -226,5 +226,22 @@ runner.run(function(t)
         local mixed = roundtrip({ 1, 2, 3, x = "y", [10] = 5 })
         t:check(1 == mixed[1] and 3 == mixed[3] and "y" == mixed.x and 5 == mixed[10] and nil == mixed[4], "混合表往返")
     end
+
+    -- lightuserdata 原样带回指针值；表当键时解出来的键也是表
+    do
+        local p = seri.pack(1)
+        local b, bn = seri.pack(p)
+        t:eq(p, seri.unpack(b, bn), "lightuserdata 往返保持指针值")
+        utils.ud_free(b)
+        utils.ud_free(p)
+        b, bn = seri.pack({ [{ 1 }] = "v" })
+        local tk = seri.unpack(b, bn)
+        utils.ud_free(b)
+        local k, v = next(tk)
+        t:check("table" == type(k) and 1 == k[1] and "v" == v, "表当键往返")
+    end
+
+    -- 嵌套表里的不支持类型：报错走的是出错处先放缓冲的那条路，泄漏靠退出时的内存检查发现
+    t:eq(false, pcall(seri.pack, { 1, { f = print } }), "嵌套表里的 function 报错")
 end)
 end)

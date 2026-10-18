@@ -5,7 +5,8 @@ project(srey C)
 # 第三方依赖先跑 python3 tools/deps.py(Debug 配 deps.py debug)，头在 lib/、静态库在 bin/
 
 # ── Options ───────────────────────────────────────────────────────────────────
-# 功能开关(WITH_SSL / WITH_LUA / WITH_MIMALLOC)只认 lib/base/config.h，这里读出来决定链什么，不另设 option
+# 功能开关(WITH_SSL / WITH_LUA / WITH_MIMALLOC)只认 lib/base/config.h，这里读出来决定链什么，不另设 option；
+# 例外：SREY_ASAN / SREY_TSAN 时强制 WITH_MIMALLOC=0、不链 mimalloc(见下方 sanitizer 段)
 file(STRINGS ${CMAKE_SOURCE_DIR}/lib/base/config.h _cfg_lines REGEX "^[ \t]*#define[ \t]+WITH_(SSL|LUA|MIMALLOC)[ \t]+[0-9]+")
 foreach(_line ${_cfg_lines})
     string(REGEX MATCH "WITH_(SSL|LUA|MIMALLOC)[ \t]+([0-9]+)" _m "${_line}")
@@ -57,6 +58,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "AIX")
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_compile_definitions(__const__=__unused__)# 协程换线程后 errno 地址不能复用，理由见 mk.sh，别删
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        add_compile_definitions(_FILE_OFFSET_BITS=64 _TIME_BITS=64)# 32 位也用 64 位 time_t / off_t，理由见 mk.sh
+    endif()
 endif()
 
 # ── Debug / Release ───────────────────────────────────────────────────────────
@@ -66,8 +70,8 @@ set(CMAKE_C_FLAGS_RELEASE "")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-O0 -g3)
 else()
-    add_compile_options(-O2)
-    add_compile_definitions(_FORTIFY_SOURCE=2)
+    # 先 -U 再 -D(同 mk.sh)；放 options 里才保证顺序，CMake 把 definitions 排在 options 前面
+    add_compile_options(-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
     if(NOT CMAKE_SYSTEM_NAME MATCHES "SunOS|AIX")
         include(CheckIPOSupported)
         check_ipo_supported(RESULT _ipo_ok)
@@ -84,6 +88,11 @@ if(SREY_TSAN)
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_compile_definitions(BUILD_TSAN=1)
     add_link_options(-fsanitize=thread)
+endif()
+# mimalloc 与 ASan / TSan 互斥，开检测时关掉它、也不链它(同 mk.sh)
+if(SREY_ASAN OR SREY_TSAN)
+    add_compile_definitions(WITH_MIMALLOC=0)
+    set(SREY_WITH_MIMALLOC 0)
 endif()
 
 # ── 线程局部变量门禁(同 mk.sh) ──────────────────────────────────────────────
@@ -118,11 +127,13 @@ target_include_directories(srey PUBLIC ${SREY_INCLUDES})
 add_dependencies(srey tls_gate)
 
 # ── Third-party libs (tools/deps.py) ──────────────────────────────────────────
-# 库名带变体后缀「[d]_<x86|x64|arm64>」，规则同 mk.sh；对不上就报错，不静默链别的变体
-if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-    set(_deps_arch x86)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+# 库名带变体后缀「[d]_<x86|x64|arm64>」，规则同 mk.sh；对不上就报错，不静默链别的变体。
+# 架构同 mk.sh / deps.py 按 uname -m 判：arm64/aarch64 算 arm64，i386/i686 或 x86_64 上编 32 位(同 mk.sh m32)算 x86，其余都是 x64
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
     set(_deps_arch arm64)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(i386|i686)$" OR
+       (CMAKE_SIZEOF_VOID_P EQUAL 4 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+    set(_deps_arch x86)
 else()
     set(_deps_arch x64)
 endif()
@@ -158,8 +169,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
     list(APPEND PLATFORM_LIBS socket nsl)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
-    list(APPEND PLATFORM_LIBS execinfo)# backtrace 在独立的 libexecinfo
+elseif(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD|OpenBSD|DragonFly)$")
+    list(APPEND PLATFORM_LIBS execinfo)# backtrace 在独立的 libexecinfo(同 mk.sh)
+endif()
+if(SREY_WITH_MIMALLOC AND CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|DragonFly)$")
+    list(APPEND PLATFORM_LIBS util)# mimalloc 用 libutil 的 kinfo_getvmmap(同 mk.sh)
 endif()
 target_link_libraries(srey PUBLIC ${PLATFORM_LIBS})
 

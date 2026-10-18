@@ -1,20 +1,9 @@
 ﻿#include "crypt/scram.h"
 #include "crypt/crypt_pub.h"
+#include "utils/binary.h"
 
-// 最小迭代轮数
-#define SCRAM_MIN_ITER  4096
-// 最大迭代轮数：仅用于挡住荒谬取值(解析器本身接受到 INT32_MAX，约 20 分钟 CPU)，不是安全阈值。
-// 取 256 倍下限即约 100 万轮，最坏约 1 秒 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
-// 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过。
-// 这段计算在协议解包里，跑在 net 线程上，期间该线程上的连接都在等
-#define SCRAM_MAX_ITER  (256 * SCRAM_MIN_ITER)
-#define SCRAM_SLOW_MS   20 // 算一次 SaltedPassword 超过这么多毫秒就打 WARN，取值同 EVTASK_SLOW_MS
+#define SCRAM_SLOW_MS   20 // 算一次 SaltedPassword 超过这么多毫秒就打 WARN（判 >，取 0 即耗时满 1 ms 就打，不是关闭）
 #define SCRAM_PLUS_SUFFIX "-PLUS" // 通道绑定变体的机制名后缀
-/* GS2 头三态（RFC 5802 §5.1）：本端不支持绑定发 "n"；支持但对端未通告 -PLUS 发 "y"，
- * 让真支持 PLUS 的对端能发现通告被剥；PLUS 变体发 "p=" 加绑定类型。*/
-#define SCRAM_GS2_STD     "n,,"
-#define SCRAM_GS2_CAPABLE "y,,"
-#define SCRAM_GS2_PLUS    "p=tls-server-end-point,,"
 // 机制基名 → 摘要算法。-PLUS 变体不单列,由 scram_init 剥掉后缀后共用同一行
 typedef struct scram_method {
     const char *name;
@@ -43,8 +32,7 @@ scram_ctx *scram_init(const char *method, int32_t client) {
         blens -= plens;
     }
     const scram_method *hit = NULL;
-    size_t i;
-    for (i = 0; i < ARRAY_SIZE(_scram_methods); i++) {
+    for (size_t i = 0; i < ARRAY_SIZE(_scram_methods); i++) {
         if (0 == strncmp(method, _scram_methods[i].name, blens)
             && '\0' == _scram_methods[i].name[blens]) {
             hit = &_scram_methods[i];
@@ -113,7 +101,7 @@ int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens) {
     scram->pwd = dup_zero(pwd, plens);
     return ERR_OK;
 }
-int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens) {
+int32_t scram_set_salt(scram_ctx *scram, const char *salt, size_t lens) {
     if (scram->client) {
         return ERR_FAILED;
     }
@@ -210,8 +198,8 @@ static char *_scram_username_recover(const char *user, size_t ulens) {
     return bwriter.data;
 }
 // 在 SCRAM 消息中查找指定属性的起始位置（必须位于消息开头或逗号之后）
-static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
-    char *pos = msg;
+static const char *_scram_attr_search(const char *msg, size_t mlens, const char *attr) {
+    const char *pos = msg;
     size_t remain = mlens;
     size_t wlens = strlen(attr);
     for (;;) {
@@ -229,15 +217,14 @@ static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
             return NULL;
         }
     }
-    return NULL;
 }
 // 提取 SCRAM 消息中指定属性的值，通过 lens 返回值长度
-static inline char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t *lens) {
-    char *pos = _scram_attr_search(msg, mlens, attr);
+static inline const char *_scram_attr_value(const char *msg, size_t mlens, const char *attr, size_t *lens) {
+    const char *pos = _scram_attr_search(msg, mlens, attr);
     if (NULL == pos) {
         return NULL;
     }
-    char *val = pos + strlen(attr);
+    const char *val = pos + strlen(attr);
     size_t off = val - msg;
     pos = memstr(0, val, mlens - off, ",", 1);
     if (NULL == pos) {
@@ -257,12 +244,11 @@ static inline int32_t _scram_ct_eq(const char *nulstr, const void *p, size_t len
 static void _scram_salt_password(scram_ctx *scram, const char *password) {
     hmac_ctx hmac;
     timer_ctx timer;
-    uint64_t cost;
     timer_init(&timer);
     hmac_init(&hmac, scram->dtype, password, strlen(password));
     scram->hslens = (int32_t)hmac_pbkdf2(&hmac, scram->salt, (size_t)scram->saltlen, scram->iter, scram->saltedpwd);
     hmac_free(&hmac);
-    cost = timer_elapsed_ms(&timer);
+    uint64_t cost = timer_elapsed_ms(&timer);
     if (cost > SCRAM_SLOW_MS) {
         LOG_WARN("scram pbkdf2 with %d iterations took %" PRIu64 " ms, the calling thread was blocked meanwhile.",
                  scram->iter, cost);
@@ -425,7 +411,7 @@ static size_t _scram_gs2_header_lens(scram_ctx *scram, const char *msg, size_t m
     return flens + 2;
 }
 // 服务端解析客户端第一条消息（提取用户名和 nonce）
-static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, size_t mlens) {
+static int32_t _scram_parse_client_first_message(scram_ctx *scram, const char *msg, size_t mlens) {
     if (SCRAM_INIT != scram->status) {
         return ERR_FAILED;
     }
@@ -447,7 +433,7 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
         return ERR_FAILED;
     }
     size_t lens;
-    char *user = _scram_attr_value(msg, mlens, "n=", &lens);
+    const char *user = _scram_attr_value(msg, mlens, "n=", &lens);
     if (NULL == user) {
         return ERR_FAILED;
     }
@@ -458,7 +444,7 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     size_t ulens = strlen(uname);
     _scram_store_user(scram, uname, ulens);
     SECURE_FREE(uname, ulens + 1);
-    char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
+    const char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
     if (NULL == nonce
         || 0 == lens) {
         return ERR_FAILED;
@@ -503,7 +489,7 @@ static char *_scram_server_first_message(scram_ctx *scram) {
     return buf;
 }
 // 客户端解析服务端第一条消息（提取 nonce、salt 和迭代轮数）
-static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, size_t mlens) {
+static int32_t _scram_parse_server_first_message(scram_ctx *scram, const char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FIRST != scram->status) {
         return ERR_FAILED;
     }
@@ -513,8 +499,12 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
         LOG_WARN("scram server-first contains embedded NUL, rejected.");
         return ERR_FAILED;
     }
+    if (NULL != _scram_attr_search(msg, mlens, "m=")) {
+        LOG_WARN("scram server-first declares a mandatory extension, rejected.");
+        return ERR_FAILED;
+    }
     size_t lens;
-    char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
+    const char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
     if (NULL == nonce) {
         return ERR_FAILED;
     }
@@ -525,7 +515,7 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
         return ERR_FAILED;
     }
     scram->remote_nonce = dup_zero(nonce, lens);
-    char *salt = _scram_attr_value(msg, mlens, "s=", &lens);
+    const char *salt = _scram_attr_value(msg, mlens, "s=", &lens);
     if (NULL == salt) {
         return ERR_FAILED;
     }
@@ -539,13 +529,13 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
         secure_zero(scram->salt + declens, (size_t)scram->saltlen - declens);
     }
     scram->saltlen = (int32_t)declens;
-    char *iter = _scram_attr_value(msg, mlens, "i=", &lens);
+    const char *iter = _scram_attr_value(msg, mlens, "i=", &lens);
     if (NULL == iter) {
         return ERR_FAILED;
     }
     uint64_t val;
     if (ERR_OK != strtou64(iter, lens, INT32_MAX, &val)) {
-        LOG_WARN("scram iter parse failed: '%.*s'.", (int32_t)lens, iter);
+        LOG_WARN("scram attribute 'i=' parse failed, value length %zu.", lens);// 值是对端字节，不原样进日志
         return ERR_FAILED;
     }
     scram->iter = (int32_t)val;
@@ -568,7 +558,7 @@ char *scram_first_message(scram_ctx *scram) {
     return scram->client ?
         _scram_client_first_message(scram) : _scram_server_first_message(scram);
 }
-int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens) {
+int32_t scram_parse_first_message(scram_ctx *scram, const char *msg, size_t mlens) {
     int32_t rtn = scram->client ?
         _scram_parse_server_first_message(scram, msg, mlens) : _scram_parse_client_first_message(scram, msg, mlens);
     if (ERR_OK != rtn) {
@@ -599,7 +589,7 @@ static char *_scram_client_final_message(scram_ctx *scram) {
     return buf;
 }
 // 服务端验证客户端最终消息（校验 c= 值、nonce 和客户端证明）
-static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
+static int32_t _scram_server_check_final_message(scram_ctx *scram, const char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FIRST != scram->status) {
         return ERR_FAILED;
     }
@@ -611,9 +601,9 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
     size_t lens;
     char *cbind_b64 = NULL;
     char *buf = NULL;
-    char *cbind_val;
-    char *nonce;
-    char *client_proof;
+    const char *cbind_val;
+    const char *nonce;
+    const char *client_proof;
     char proof[B64EN_SIZE(DG_BLOCK_SIZE)];
     cbind_val = _scram_attr_value(msg, mlens, "c=", &lens);
     if (NULL == cbind_val) {
@@ -665,16 +655,16 @@ static char *_scram_server_final_message(scram_ctx *scram) {
     return buf;
 }
 // 客户端验证服务端最终消息（检查错误字段，校验服务端签名）
-static int32_t _scram_client_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
+static int32_t _scram_client_check_final_message(scram_ctx *scram, const char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FINAL != scram->status) {
         return ERR_FAILED;
     }
     size_t lens;
-    char *error = _scram_attr_value(msg, mlens, "e=", &lens);
+    const char *error = _scram_attr_value(msg, mlens, "e=", &lens);
     if (NULL != error) {
         return ERR_FAILED;
     }
-    char *server_proof = _scram_attr_value(msg, mlens, "v=", &lens);
+    const char *server_proof = _scram_attr_value(msg, mlens, "v=", &lens);
     if (NULL == server_proof) {
         return ERR_FAILED;
     }
@@ -692,7 +682,7 @@ char *scram_final_message(scram_ctx *scram) {
     return scram->client ?
         _scram_client_final_message(scram) : _scram_server_final_message(scram);
 }
-int32_t scram_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
+int32_t scram_check_final_message(scram_ctx *scram, const char *msg, size_t mlens) {
     int32_t rtn = scram->client ?
         _scram_client_check_final_message(scram, msg, mlens) : _scram_server_check_final_message(scram, msg, mlens);
     if (ERR_OK != rtn) {

@@ -15,7 +15,7 @@
 // ── server task ────────────────────────────────────────────────────────────
 // server 是一个普通 (非协程) task: _net_recv 同步调 router_dispatch, handler/中间件
 // 全部在 worker 线程当场跑完, 不涉及 yield。router_ctx 单例放全局, 测试启动期间
-// 不会切换实例; 两个 _g_*_count 用 ATOMIC_* 仅为跨 task 验证服务端确实执行到了某处,
+// 不会切换实例; 三个 _g_*_count 用 ATOMIC_* 仅为跨 task 验证服务端确实执行到了某处,
 // 单 worker 内本来就不竞争, 只为表达"读写发生在不同 task 上"的语义清晰
 
 // 计数器: post-tag 中间件 next 返回后 +1, 客户端通过 GET /__stats 读回验证
@@ -65,7 +65,7 @@ static void _h_file(router_req *ctx) {
 // /povf 的 17 个必填段在注册期就被拒(它无论如何都用不满 16 的上限, 留着只会每个请求
 // 换一个 404 加一行 WARN) → 请求落 404;
 // /poptovf 末段是 {p17?}, 走 OPT 分支的同一上限判定 —— 给满 17 段同样 404,
-// 只给 16 段时 OPT 跳过仍应命中。C5 把两个分支的填参收敛到单点后, 这四个请求同时覆盖两条路径
+// 只给 16 段时 OPT 跳过仍应命中。必填与可选两个分支共用同一处填参, 这四个请求同时覆盖两条路径
 static void _h_pmax(router_req *ctx) {
     size_t n;
     const char *v = router_req_param(ctx, "p16", &n);
@@ -78,6 +78,16 @@ static void _h_pmax(router_req *ctx) {
 // GET /static/* → 固定回 "static-ok"; 覆盖 WILD 末尾通配 (任意后续段都匹配)
 static void _h_static(router_req *ctx) {
     router_req_text(ctx, 200, "static-ok", 9);
+}
+// GET /wild/* → 回末尾通配吃下的段 (参数 "*"), 一段都没吃下时回 "none"
+static void _h_wild(router_req *ctx) {
+    size_t n = 0;
+    const char *v = router_req_param(ctx, "*", &n);
+    if (NULL == v) {
+        router_req_text(ctx, 200, "none", 4);
+        return;
+    }
+    router_req_text(ctx, 200, v, n);
 }
 // GET /query?a=X&b=Y → 回 "a=X b=Y"; 覆盖 URL query 解析 (url_parse 已 url_decode)
 static void _h_query(router_req *ctx) {
@@ -366,13 +376,6 @@ static void _server_net_recv(task_ctx *task, sock_ctx *sk,
                              void *data, size_t size) {
     router_net_recv((router_ctx *)task->arg, task, sk, pktype, client, slice, data, size);
 }
-// 注册了流式路由就必须接这个, 否则连接中途断开时 router 持有的请求上下文不回收
-static void _server_net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)pktype;
-    (void)client;
-    (void)erro;
-    router_closed((router_ctx *)task->arg, sk);
-}
 // 用户数据释放(argfree, task_free 时调): router_free 一并释放所有 entry/segs/mws/named 字符串
 static void _router_free(void *arg) {
     router_free((router_ctx *)arg);
@@ -382,7 +385,9 @@ static void _router_free(void *arg) {
 static void _server_startup(task_ctx *task) {
     router_ctx *r = (router_ctx *)task->arg;
     task_recved(task, _server_net_recv);
-    task_closed(task, _server_net_close);
+    // 注册了流式路由就得登记它, 否则连接中途断开时 router 持有的请求上下文不回收。
+    // 流式中断的回收只走这一条, _run_stream [6] 的 /__aborts 计数即验它
+    task_watch_closed(task, router_closed_watch, r);
 
     // 5 个具名中间件先注册, 后续 router_get/post 的 mws 数组按名引用
     router_define(r, "auth",     _mw_auth);
@@ -412,7 +417,7 @@ static void _server_startup(task_ctx *task) {
     REG(router_get(r, NULL, "/asset/{id}/*", _h_user,        NULL, 0));
     REG(router_get(r, NULL, "/query",        _h_query,       NULL, 0));
     REG(router_get(r, NULL, "/qexist",       _h_qexist,      NULL, 0));
-    // {a?b} 参数名含内部 ?, 按 B2 文法当字面量段(对齐 Lua); 故 /litq/xyz 不命中参数 → 404
+    // {a?b} 参数名含内部 ?, 不是合法占位符, 按字面量段处理(对齐 Lua); 故 /litq/xyz 不命中参数 → 404
     REG(router_get(r, NULL, "/litq/{a?b}",   _h_root,        NULL, 0));
     // 空名段同样当字面量: {} 与 {?} 都不是参数, 注册须成功(失败计入 _g_regfail_count),
     // 且 /litbe/xyz 与 /litqe/xyz 都不该命中参数 → 404
@@ -467,6 +472,20 @@ static void _server_startup(task_ctx *task) {
     router_group g2;
     router_group_nest(&g1, &g2, "/g2", g2_names, 1);
     REG(router_get(r, &g2, "/deep", _h_deep, NULL, 0));
+    // 路由级再列一遍 g1mw / g2mw: 合并时去重只留第一次出现的位置, 读出仍是 deep=7912 而不是 791212
+    const char *dup_mws[] = { "g1mw", "g2mw" };
+    REG(router_get(r, &g2, "/dedup", _h_deep, dup_mws, 2));
+    // 分组前缀与路径之间自动补 '/': "/pg" + "users" 即 /pg/users
+    router_group pg;
+    router_group_root(&pg, "/pg", NULL, 0);
+    REG(router_get(r, &pg, "users", _h_root, NULL, 0));
+    // 引用没 define 的中间件名: 注册须失败(成了才是回归), 请求只能落 404
+    const char *undef_mws[] = { "nosuch-mw" };
+    if (NULL != router_get(r, NULL, "/undef-mw", _h_root, undef_mws, 1)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
+    // 末尾通配吃下的段作参数 "*" 交给 handler
+    REG(router_get(r, NULL, "/wild/*", _h_wild, NULL, 0));
 
     // URL_MAX_PATH_DEPTH(64) 段精确路由:测 >64 段请求被拒(400)不误命中(64 须与 urlparse.h URL_MAX_PATH_DEPTH 同步)
     char seg64_path[160];
@@ -491,14 +510,14 @@ void task_router_server_start(loader_ctx *loader, const char *name, uint16_t por
 
 // ── 第二个 server: 专压"一条流式路由都没注册"时的 chunked 首帧 ───────────────
 // 上面那个 server 注册了流式路由, chunked 首帧总能命中一条;
-// 这里一条都不注册, 才压得到 _router_chunked_probe 的三种拒绝结局
+// 这里一条都不注册, 才压得到 _router_chunked_nostream 的三种拒绝结局
 static uint16_t _g_idx_port = 0;
 
 // POST /idx-plain → 普通路由, 用来验证同一 router 上非 index 条目收 chunked 仍是 411
 static void _h_idx_plain(router_req *ctx) {
     router_req_text(ctx, 200, "plain", 5);
 }
-// 故意不注册流式路由, 也因此不需要 task_closed: 没有流就没有跨帧上下文要回收
+// 故意不注册流式路由, 也因此不登记 router_closed_watch: 没有流就没有跨帧上下文要回收
 static void _idx_startup(task_ctx *task) {
     router_ctx *r = (router_ctx *)task->arg;
     task_recved(task, _server_net_recv);
@@ -850,6 +869,123 @@ done:
     ev_close(&task->loader->netev, &sk);
     return rtn;
 }
+// 发一条无 body 的请求, 断言状态码与 Allow 头; 码为 200 的(OPTIONS 自动应答)另查不带 Content-Type
+static int32_t _do_req_allow(task_ctx *task, uint16_t port, const char *method, const char *url,
+                             int32_t code, const char *allow) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
+        LOG_WARN("router test: connect to %d failed for %s %s.", port, method, url);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init_write(&bw, 0, 0);
+    http_pack_req(&bw, method, url);
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_end(&bw);
+    size_t rsize;
+    int32_t rtn = ERR_FAILED;
+    struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
+    if (NULL == resp) {
+        LOG_WARN("router test: %s %s got no response.", method, url);
+        goto done;
+    }
+    if (ERR_OK != _resp_check(resp, method, url, code)
+        || ERR_OK != _hdr_check(resp, url, "Allow", allow, strlen(allow))
+        || (200 == code && ERR_OK != _hdr_check(resp, url, "Content-Type", NULL, 0))) {
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, &sk);
+    return rtn;
+}
+// 同一连接把 req 发两遍, 第一遍须得 code。want_close 非 0 时服务端回完即关, 第二遍拿不到响应
+// (关闭会唤醒等待, 不靠超时); 否则第二遍照常得 code。label 只用于日志
+static int32_t _do_conn_close(task_ctx *task, uint16_t port, const char *label, const char *req,
+                              int32_t code, int32_t want_close) {
+    sock_ctx sk;
+    size_t rsize;
+    int32_t rtn = ERR_FAILED;
+    struct http_pack_ctx *resp;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
+        LOG_WARN("router test: connect to %d failed for %s.", port, label);
+        return ERR_FAILED;
+    }
+    // copy=1: req 是字面量, 两遍共用
+    resp = coro_send(task, &sk, (void *)req, strlen(req), &rsize, 1);
+    if (NULL == resp) {
+        LOG_WARN("router test: %s got no response.", label);
+        goto done;
+    }
+    if (ERR_OK != _resp_check(resp, "GET", label, code)) {
+        goto done;
+    }
+    resp = coro_send(task, &sk, (void *)req, strlen(req), &rsize, 1);
+    if (want_close ? NULL != resp : (NULL == resp || ERR_OK != _resp_check(resp, "GET", label, code))) {
+        LOG_WARN("router test: %s connection %s after the response.", label, want_close ? "kept" : "closed");
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, &sk);
+    return rtn;
+}
+// 裸连接收字节: 从 coro_send 收回的第一段起用 coro_recv 续读, 累计到出现 stop、对端关闭或缓冲满为止。
+// acc 以 '\0' 结尾, 返回累计字节数
+static size_t _raw_collect(task_ctx *task, sock_ctx *sk, void *seg, size_t rsize,
+                           char *acc, size_t cap, const char *stop) {
+    size_t used = 0;
+    int32_t poll;
+    acc[0] = '\0';
+    for (poll = 0; poll < 64 && NULL != seg; poll++) {
+        if (rsize > cap - 1 - used) {
+            break;
+        }
+        memcpy(acc + used, seg, rsize);
+        used += rsize;
+        acc[used] = '\0';
+        if (NULL != strstr(acc, stop)) {
+            break;
+        }
+        seg = coro_recv(task, sk, &rsize);
+    }
+    return used;
+}
+// Expect: 100-continue。head 先单独发出, 请求体还没到: want100 非 0 时服务端先回的只能是一条 100 Continue,
+// 收到后再发 body; 为 0 时不该有 100, 直接是最终响应。最终响应须以 final 开头并含 tail(空行 + 正文)
+static int32_t _do_expect(task_ctx *task, uint16_t port, const char *head, const char *body,
+                          int32_t want100, const char *final, const char *tail) {
+    sock_ctx sk;
+    char acc[1024];
+    size_t rsize = 0;
+    size_t used;
+    int32_t rtn = ERR_FAILED;
+    void *seg;
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
+        LOG_WARN("router test: connect to %d failed for expect-continue.", port);
+        return ERR_FAILED;
+    }
+    seg = coro_send(task, &sk, (void *)head, strlen(head), &rsize, 1);
+    if (want100) {
+        used = _raw_collect(task, &sk, seg, rsize, acc, sizeof(acc), FLAG_CRLF FLAG_CRLF);
+        if (0 != strcmp(acc, HTTP_CONTINUE_RESP)) {
+            LOG_WARN("router test: expected a bare 100 Continue before the body, got %zu bytes.", used);
+            goto done;
+        }
+        seg = coro_send(task, &sk, (void *)body, strlen(body), &rsize, 1);
+    }
+    used = _raw_collect(task, &sk, seg, rsize, acc, sizeof(acc), tail);
+    if (used < strlen(final)
+        || 0 != memcmp(acc, final, strlen(final))
+        || NULL == strstr(acc, tail)) {
+        LOG_WARN("router test: expect-continue wanted '%s' first, got %zu bytes.", final, used);
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, &sk);
+    return rtn;
+}
 // 25 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
 // 每次 _do_req 之间插 task_isclosing 早返, SIGINT 时尽快收尾
 // bad 用位掩码记录, 单次跑不会复用, 但若失败时 LOG_WARN 输出可看到哪几位出错
@@ -960,8 +1096,8 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [13] 同 path 不同方法 → 404 (验证 method_mask 不会误命中)
-    if (ERR_OK != _do_req(task, port, "GET",  "/only-post",       NULL, NULL, 404, NULL)) {
+    // [13] 同 path 不同方法 → 405 (验证 method_mask 不会误命中; Allow 头见 _run_http_extra)
+    if (ERR_OK != _do_req(task, port, "GET",  "/only-post",       NULL, NULL, 405, NULL)) {
         bad |= (1 << 13);
     }
     if (task_isclosing(task)) {
@@ -1036,7 +1172,7 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [20] B2: {a?b} 参数名含内部 ? → 当字面量段, /litq/xyz 不命中参数 → 404 (修复前当 PARAM 会返 200)
+    // [20] {a?b} 参数名含内部 ? → 当字面量段, /litq/xyz 不命中参数 → 404 (当成 PARAM 会返 200)
     if (ERR_OK != _do_req(task, port, "GET", "/litq/xyz", NULL, NULL, 404, NULL)) {
         bad |= (1 << 20);
     }
@@ -1247,7 +1383,7 @@ done:
     ev_close(&task->loader->netev, &sk);
     return rtn;
 }
-// 发首帧 + 一块数据就断开, 不发终止块: 服务端只能靠 router_closed 收尾,
+// 发首帧 + 一块数据就断开, 不发终止块: 服务端只能靠关闭观察者 router_closed_watch 收尾,
 // 流式回调应收到一次 ROUTER_STREAM_ABORT。ev_close 关闭前冲一次, 这点数据一次就写进内核
 static int32_t _do_chunked_abort(task_ctx *task, uint16_t port) {
     sock_ctx sk;
@@ -1419,6 +1555,7 @@ done:
 // 流式路由相关的断言
 static int32_t _run_stream(task_ctx *task, uint16_t port) {
     int32_t bad = 0;
+    int32_t i;
     // 与 _run_all 的 _g_post_count 同理：全局静态量，多次跑要先清零隔离
     ATOMIC_SET(&_g_abort_count, 0);
     // [0] 三块按序到齐, 末帧回显的 body 与拼接结果一致
@@ -1471,7 +1608,10 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
     if (ERR_OK != _do_chunked_abort(task, port)) {
         bad |= (1 << 6);
     } else {
-        coro_sleep(task, 100);// 等服务端处理完连接关闭事件
+        // 断开的 CLOSE 与读计数的新连接可能落在不同 net 线程, 先后没保证: 先轮询到计数落地, 上限 1 秒
+        for (i = 0; i < 50 && 1 != (int32_t)ATOMIC_GET(&_g_abort_count) && !task_isclosing(task); i++) {
+            coro_sleep(task, 20);
+        }
         if (ERR_OK != _do_req(task, port, "GET", "/__aborts", NULL, NULL, 200, "1")) {
             bad |= (1 << 6);
         }
@@ -1524,7 +1664,7 @@ static int32_t _run_stream(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
-// 打第二个 server(无流式路由): 压 _router_chunked_probe 的拒绝结局。
+// 打第二个 server(无流式路由): 压 _router_chunked_nostream 的拒绝结局。
 // 主 server 注册了流式路由, 这几条在它上面会命中并开流, 压不到这里
 static int32_t _run_index(task_ctx *task, uint16_t port) {
     const char *one[] = { "x" };
@@ -1550,14 +1690,14 @@ static int32_t _run_index(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [3] 路径对上了但方法掩码不交 → 404 (不是 405): /idx-plain 只注册了 POST
-    if (ERR_OK != _do_chunked(task, port, "PUT", "/idx-plain", one, 1, NULL, 404, NULL)) {
+    // [3] 路径对上了但方法掩码不交 → 405 (带 Allow, 同一次到齐的请求): /idx-plain 只注册了 POST
+    if (ERR_OK != _do_chunked(task, port, "PUT", "/idx-plain", one, 1, NULL, 405, NULL)) {
         bad |= (1 << 3);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [4] 方法名压根不认识 → 405。405 只由这一种情形产生, 与 [3] 成对锁住两者的区别
+    // [4] 方法名压根不认识 → 405, 与 [3] 同码但不带 Allow
     if (ERR_OK != _do_chunked(task, port, "FROB", "/idx-plain", one, 1, NULL, 405, NULL)) {
         bad |= (1 << 4);
     }
@@ -1582,6 +1722,115 @@ static int32_t _run_index(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
+// 405 + Allow / OPTIONS / 中间件去重 / 分组补 '/' / 请求目标形状 / 参数 "*" / 回完关连接 / 100-continue。
+// 排在 _run_stream 之后: 这里的流式请求若中途失败会多投一次 ABORT, 不能搅了那边的计数
+static int32_t _run_http_extra(task_ctx *task, uint16_t port) {
+    int32_t bad = 0;
+    char p64e[176];
+    // [0] 路径在而方法不对 → 405 带 Allow; 方法表顺序, GET 路由连带 HEAD
+    if (ERR_OK != _do_req_allow(task, port, "GET", "/only-post", 405, "POST")
+        || ERR_OK != _do_req_allow(task, port, "DELETE", "/user/42", 405, "GET, HEAD")) {
+        bad |= (1 << 0);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [1] OPTIONS 自动 200 带 Allow, 空正文、不带 Content-Type
+    if (ERR_OK != _do_req_allow(task, port, "OPTIONS", "/only-post", 200, "POST")) {
+        bad |= (1 << 1);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [2] 分组与路由级重复的中间件只跑一次
+    if (ERR_OK != _do_req(task, port, "GET", "/g1/g2/dedup", NULL, NULL, 200, "deep=7912")) {
+        bad |= (1 << 2);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [3] 分组前缀补 '/'; 引用未 define 中间件的路由没注册上
+    if (ERR_OK != _do_req(task, port, "GET", "/pg/users", NULL, NULL, 200, "root")
+        || ERR_OK != _do_req(task, port, "GET", "/undef-mw", NULL, NULL, 404, NULL)) {
+        bad |= (1 << 3);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [4] 请求目标不以 '/' 开头 → 400 (否则首段被当成 host, user/42 命中 /42 一类); 绝对形式照常命中
+    if (ERR_OK != _do_req(task, port, "GET", "user/42", NULL, NULL, 400, NULL)
+        || ERR_OK != _do_req(task, port, "GET", "http://127.0.0.1/user/42", NULL, NULL, 200, "42")) {
+        bad |= (1 << 4);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [5] 末尾通配吃下的段(空段已丢)作参数 "*"; 一段没吃下就没有
+    if (ERR_OK != _do_req(task, port, "GET", "/wild/a//b/c", NULL, NULL, 200, "a/b/c")
+        || ERR_OK != _do_req(task, port, "GET", "/wild", NULL, NULL, 200, "none")) {
+        bad |= (1 << 5);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [6] 64 个非空段中间夹一个空段: 空段解析时就丢、不占深度名额, 命中 64 段路由而不是 400
+    memcpy(p64e, "/s/", 3);
+    _segpath(p64e + 3, sizeof(p64e) - 3, 63);
+    if (ERR_OK != _do_req(task, port, "GET", p64e, NULL, NULL, 200, "s64")) {
+        bad |= (1 << 6);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [7] Connection: close / HTTP/1.0 无 keep-alive → 回完即关(错误码那条路也关); 1.0 带 keep-alive 与 1.1 默认不关
+    if (ERR_OK != _do_conn_close(task, port, "1.1 close",
+                                 "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", 200, 1)
+        || ERR_OK != _do_conn_close(task, port, "1.1 token list",
+                                    "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: TE, CLOSE\r\n\r\n", 200, 1)
+        || ERR_OK != _do_conn_close(task, port, "1.1 close 404",
+                                    "GET /nonexist HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", 404, 1)
+        || ERR_OK != _do_conn_close(task, port, "1.0",
+                                    "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n", 200, 1)
+        || ERR_OK != _do_conn_close(task, port, "1.0 keep-alive",
+                                    "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n", 200, 0)
+        || ERR_OK != _do_conn_close(task, port, "1.1",
+                                    "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", 200, 0)) {
+        bad |= (1 << 7);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [8] 带 Content-Length 的请求: 等体之前先收到 100; HTTP/1.0 不回 100
+    if (ERR_OK != _do_expect(task, port,
+                             "POST /admin/stats HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\n"
+                             "Expect: 100-continue\r\n\r\n", "abcd",
+                             1, "HTTP/1.1 200", "\r\n\r\n{\"ok\":true}")
+        || ERR_OK != _do_expect(task, port,
+                                "POST /admin/stats HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\n"
+                                "Expect: 100-continue\r\n\r\nabcd", NULL,
+                                0, "HTTP/1.1 200", "\r\n\r\n{\"ok\":true}")) {
+        bad |= (1 << 8);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [9] 流式路由: 准入放行才回 100, 之后发块照常收齐; 准入被拒直接是最终响应, 没有 100
+    if (ERR_OK != _do_expect(task, port,
+                             "POST /st HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n"
+                             "Expect: 100-continue\r\n\r\n", "3\r\nabc\r\n0\r\n\r\n",
+                             1, "HTTP/1.1 200", "\r\n\r\nabc")
+        || ERR_OK != _do_expect(task, port,
+                                "POST /stauth HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n"
+                                "Expect: 100-continue\r\n\r\n", NULL,
+                                0, "HTTP/1.1 401", "\r\n\r\nno")) {
+        bad |= (1 << 9);
+    }
+    if (0 != bad) {
+        LOG_WARN("router test: http extra assertions failed, bad=0x%x.", bad);
+    }
+    return 0 == bad ? ERR_OK : ERR_FAILED;
+}
+
 // timeout 回调 (协程上下文中执行): 跑完一轮断言, 把 1/0 写入 result_slot
 static void _client_timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
@@ -1595,13 +1844,16 @@ static void _client_timeout(task_ctx *task, uint64_t sess) {
     if (ERR_OK != _run_stream(task, ctx->port)) {
         ctx->err = 1;
     }
+    if (ERR_OK != _run_http_extra(task, ctx->port)) {
+        ctx->err = 1;
+    }
     if (ERR_OK != _run_index(task, ctx->idxport)) {
         ctx->err = 1;
     }
     if (ctx->err) {
-        *ctx->result = 0;
+        ATOMIC_SET((atomic_t *)ctx->result, 0);
     } else {
-        *ctx->result = 1;
+        ATOMIC_SET((atomic_t *)ctx->result, 1);
     }
 }
 

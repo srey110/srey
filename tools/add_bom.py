@@ -11,7 +11,8 @@ srey 约定所有 .c/.h 文件以 UTF-8 BOM(EF BB BF)开头。第三方库(如 l
     python3 add_bom.py --check         # 只检查不修改,有缺失则退出码 1(CI 用)
     python3 add_bom.py --check lualib  # 只检查指定目录
 
-默认跳过 .git / build* / .vs / x64 / Debug / Release / obj 等非源码目录。
+默认跳过 .git / build* / .vs / x64 / Debug / Release / obj 等非源码目录,
+以及 tools/deps.py 拉下或装进来的第三方树(deps/、lib/openssl、lib/mimalloc)。
 """
 import os
 import sys
@@ -19,10 +20,14 @@ import sys
 BOM = b"\xef\xbb\xbf"
 # 跳过的目录:版本控制 / 构建产物 / IDE 缓存
 SKIP_EXACT = {".git", ".vs", "x64", "Win32", "Debug", "Release", "obj", "ipch"}
+# deps.py 管的第三方树,按仓库里的位置跳(lib/ 下其余目录是项目源码)
+_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SKIP_TREES = {os.path.join(_ROOT, *p) for p in (("deps",), ("lib", "openssl"), ("lib", "mimalloc"))}
 
 
-def _skip_dir(name):
-    return name in SKIP_EXACT or name.startswith("build")
+def _skip_dir(dirpath, name):
+    return (name in SKIP_EXACT or name.startswith("build")
+            or os.path.realpath(os.path.join(dirpath, name)) in SKIP_TREES)
 
 
 def iter_sources(roots):
@@ -44,7 +49,7 @@ def iter_sources(roots):
             continue
         for dirpath, dirnames, names in os.walk(root):
             # 原地裁剪,os.walk 不再进入被跳过的目录
-            dirnames[:] = [d for d in dirnames if not _skip_dir(d)]
+            dirnames[:] = [d for d in dirnames if not _skip_dir(dirpath, d)]
             for n in names:
                 if n.endswith((".c", ".h")):
                     p = os.path.join(dirpath, n)

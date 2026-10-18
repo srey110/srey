@@ -125,21 +125,20 @@ runner.run(function(t)
 
     -- ── fork_wait 的子任务在 yield 期间并发推进 ────────────────────────
     -- 用 srey.sleep 制造 yield（不是 srey.call —— 那个是 fire-and-forget，不等响应）：
-    -- 两个各睡 30ms 的任务若被串行执行，下面的耗时上界就会被撑破
+    -- 两个各睡 100ms 的任务若被串行执行，下面的耗时上界就会被撑破
     do
         local t0 = srey.timer_ms()
         local r = srey.fork_wait({
-            function() srey.sleep(30) end,
-            function() srey.sleep(30) end,
+            function() srey.sleep(100) end,
+            function() srey.sleep(100) end,
         })
         local elapsed = srey.timer_ms() - t0
         t:eq(2, #r, "fork_wait + sleep 两个任务都返回")
-        -- 上界证明是并发（串行要 60ms），下界证明 sleep 真的睡了：
+        -- 上界证明是并发（串行至少 200ms），下界证明 sleep 真的睡了：
         -- 只卡上界的话 srey.sleep 变成空操作也算过，而那时"并发"根本没被验证。
-        -- 上界贴着串行下界取 58 而不是 50：32 个测试 task 同时起跑时 worker 被占满，
-        -- TIMEOUT 消息多排队十几毫秒是常事，留 8ms 余量的话本条会偶发假红
-        t:check(elapsed >= 25 and elapsed < 58,
-                "两个 sleep(30) 并发，25ms <= " .. elapsed .. "ms < 58ms")
+        -- 睡得长一些，上界离理想值与串行下界各留几十毫秒，测试 task 一齐起跑时的排队抖动越不过去
+        t:check(elapsed >= 95 and elapsed < 180,
+                "两个 sleep(100) 并发，95ms <= " .. elapsed .. "ms < 180ms")
     end
 
     -- ── srey.fork_bind：参数预绑定，返回无参 lambda ───────────────────

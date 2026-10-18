@@ -125,6 +125,12 @@ runner.run(function(t)
         local cyc = {}
         cyc.self = cyc
         t:eq(false, pcall(yyjson.encode, cyc), "循环引用报错而不是爆栈")
+        -- NaN / ±Inf：JSON 表示不了，写出阶段失败；报错须带上 yyjson 给的原因，不能只剩一句 failed
+        local okn, errn = pcall(yyjson.encode, { v = 0 / 0 })
+        t:eq(false, okn, "NaN 编码报错")
+        t:check(type(errn) == "string" and nil ~= errn:find("nan or inf", 1, true), "NaN 报错点明原因")
+        t:eq(false, (pcall(yyjson.encode, math.huge)), "+Inf 编码报错")
+        t:eq(false, (pcall(yyjson.encode, { -math.huge })), "-Inf 编码报错")
     end
     -- ── decode 收 lightuserdata ─────────────────────────────────
     do

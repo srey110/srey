@@ -20,6 +20,16 @@ typedef struct waiter_until_arg {
     int32_t mode;       // waiter_until_mode
     waiter_ctx *w;
 }waiter_until_arg;
+// test_trylock_busy：另一线程上四种 try 的结果
+typedef struct {
+    mutex_ctx  mu;
+    spin_ctx   spin;
+    rwlock_ctx rw;
+    int32_t    mu_rtn;
+    int32_t    spin_rtn;
+    int32_t    rd_rtn;
+    int32_t    wr_rtn;
+} _try_shared;
 
 /* =======================================================================
  * mutex —— 互斥锁保护计数器
@@ -205,6 +215,77 @@ static void test_rwlock(CuTest *tc) {
 }
 
 /* =======================================================================
+ * trylock —— 别的线程持锁时 try 必须失败
+ * ======================================================================= */
+
+// 在另一线程上把四种 try 各试一次，记下结果；拿到了就当场放掉
+static void _try_worker(void *arg) {
+    _try_shared *s = (_try_shared *)arg;
+    s->mu_rtn = mutex_trylock(&s->mu);
+    if (ERR_OK == s->mu_rtn) {
+        mutex_unlock(&s->mu);
+    }
+    s->spin_rtn = spin_trylock(&s->spin);
+    if (ERR_OK == s->spin_rtn) {
+        spin_unlock(&s->spin);
+    }
+    s->rd_rtn = rwlock_tryrdlock(&s->rw);
+    if (ERR_OK == s->rd_rtn) {
+        rwlock_unlock(&s->rw);
+    }
+    s->wr_rtn = rwlock_trywrlock(&s->rw);
+    if (ERR_OK == s->wr_rtn) {
+        rwlock_unlock(&s->rw);
+    }
+}
+
+// 主线程持互斥锁、自旋锁、写锁时另一线程四种 try 全失败；主线程只持读锁时另一线程能再读、不能写，
+// 互斥锁与自旋锁已放开、能拿到。Windows 上 trywrlock 失败时不得误置 wlock，否则下面的读锁会按写锁释放
+static void test_trylock_busy(CuTest *tc) {
+    _try_shared s;
+    pthread_t th;
+    mutex_init(&s.mu);
+    spin_init(&s.spin, SPIN_CNT);
+    rwlock_init(&s.rw);
+
+    mutex_lock(&s.mu);
+    spin_lock(&s.spin);
+    rwlock_wrlock(&s.rw);
+    th = thread_creat(_try_worker, &s);
+    thread_join(th);
+    rwlock_unlock(&s.rw);
+    spin_unlock(&s.spin);
+    mutex_unlock(&s.mu);
+    int32_t mu_busy = s.mu_rtn;
+    int32_t spin_busy = s.spin_rtn;
+    int32_t rd_busy = s.rd_rtn;
+    int32_t wr_busy = s.wr_rtn;
+
+    rwlock_rdlock(&s.rw);
+    th = thread_creat(_try_worker, &s);
+    thread_join(th);
+    rwlock_unlock(&s.rw);
+    // 读锁真的放干净了：此刻本线程能拿到写锁
+    int32_t wr_after = rwlock_trywrlock(&s.rw);
+    if (ERR_OK == wr_after) {
+        rwlock_unlock(&s.rw);
+    }
+
+    rwlock_free(&s.rw);
+    spin_free(&s.spin);
+    mutex_free(&s.mu);
+    CuAssertIntEquals(tc, ERR_FAILED, mu_busy);
+    CuAssertIntEquals(tc, ERR_FAILED, spin_busy);
+    CuAssertIntEquals(tc, ERR_FAILED, rd_busy);
+    CuAssertIntEquals(tc, ERR_FAILED, wr_busy);
+    CuAssertIntEquals(tc, ERR_OK, s.mu_rtn);
+    CuAssertIntEquals(tc, ERR_OK, s.spin_rtn);
+    CuAssertIntEquals(tc, ERR_OK, s.rd_rtn);
+    CuAssertIntEquals(tc, ERR_FAILED, s.wr_rtn);
+    CuAssertIntEquals(tc, ERR_OK, wr_after);
+}
+
+/* =======================================================================
  * cond —— 条件变量：生产者-消费者
  * ======================================================================= */
 
@@ -280,11 +361,14 @@ static void test_cond(CuTest *tc) {
     /* 每次等待都必须被 signal/broadcast 唤醒，一次超时都不许有 */
     CuAssertIntEquals(tc, 0, _cond_waitfail);
 
-    /* timedwait 超时验证 */
+    /* timedwait 超时验证：没人 signal 就该报超时(1)。条件变量允许虚假唤醒(报 ERR_OK)，重试到不再是它为止 */
+    int ret = ERR_OK;
     mutex_lock(&s.mu);
-    int ret = cond_timedwait(&s.cond, &s.mu, 10); /* 等待 10ms，必然超时 */
+    for (int i = 0; i < 10 && ERR_OK == ret; i++) {
+        ret = cond_timedwait(&s.cond, &s.mu, 10);
+    }
     mutex_unlock(&s.mu);
-    CuAssertTrue(tc, 1 == ret); /* 1 表示超时 */
+    CuAssertTrue(tc, 1 == ret);
 
     cond_free(&s.cond);
     mutex_free(&s.mu);
@@ -728,11 +812,14 @@ static void test_rwlock_distr_mutex_check(CuTest *tc) {
     for (i = 0; i < 2; i++) {
         thread_join(wths[i]);
     }
-    // 读写互斥必须严格,违反计数为 0
-    CuAssertIntEquals(tc, 0, (int)ATOMIC_GET(&s.violation));
-    // 应观察到并发 reader > 1
-    CuAssertTrue(tc, ATOMIC_GET(&s.max_readers) > 1);
+    // 先收拾再断言：断言失败走 longjmp 会跳过释放
+    int violation = (int)ATOMIC_GET(&s.violation);
+    atomic_t max_readers = ATOMIC_GET(&s.max_readers);
     rwlock_distr_free(&s.ctx);
+    // 读写互斥必须严格,违反计数为 0
+    CuAssertIntEquals(tc, 0, violation);
+    // 应观察到并发 reader > 1
+    CuAssertTrue(tc, max_readers > 1);
 }
 
 // slot 复用:slot=2,串行起 10 个线程,unregister 后 slot 必须能被新线程拿到
@@ -795,9 +882,14 @@ static void test_waiter_state(CuTest *tc) {
     CuAssertTrue(tc, 0 != first && first == w.sig_at);
     waiter_wake_held(&w);
     waiter_trywake(&w);
-    waiter_prepare(&w, WAITER_SLEEP);
+    // 单次 commit 可能虚假唤醒提前回来，重试到累计睡够 10ms；commit 根本不睡的话 10 次转眼就完，照样判得出
     t0 = nowms();
-    CuAssertTrue(tc, 0 == waiter_commit(&w, 20));
+    uint64_t sig = 0;
+    for (int32_t i = 0; i < 10 && nowms() - t0 < 10; i++) {
+        waiter_prepare(&w, WAITER_SLEEP);
+        sig |= waiter_commit(&w, 20);
+    }
+    CuAssertTrue(tc, 0 == sig);
     CuAssertTrue(tc, nowms() - t0 >= 10);
     CuAssertIntEquals(tc, WAITER_AWAKE, waiter_state_get(&w));
 #if WITH_FUTEX
@@ -1226,6 +1318,7 @@ void test_thread(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mutex);
     SUITE_ADD_TEST(suite, test_spinlock);
     SUITE_ADD_TEST(suite, test_rwlock);
+    SUITE_ADD_TEST(suite, test_trylock_busy);
     SUITE_ADD_TEST(suite, test_cond);
 #if WITH_FUTEX
     SUITE_ADD_TEST(suite, test_futex);

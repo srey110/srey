@@ -1,15 +1,12 @@
 ﻿#include "utils/log.h"
 #include "thread/waiter.h"
 #include "thread/thread.h"
-#include "utils/pool.h"
+#include "containers/fsqu.h"
 
 #define LOG_FMT "[%s %03d][%s]%s" // 行首时间、级别与正文，换行由 _log_fprint 补
 #define LOG_LINE_STACK 512 // _log_fprint 栈上拼行的缓冲，装不下的长行退回 fprintf
-#define LOG_BATCH_BYTES (64 * ONEK) // 日志文件模式下日志线程攒行的缓冲，攒满或一批写完就一次 fwrite
 #define LOG_TIME_FMT "%Y-%m-%d %H:%M:%S" // 秒级部分;毫秒由调用方另拼
-#define LOG_INLINE_SIZE 256
-#define LOG_POP_BATCH   128
-#define LOG_LINGER_MS   10 // 日志线程写过行之后浅睡的毫秒数，浅睡时谁来叫醒见 _log_commit
+#define LOG_SLEEP_MAX   10000 // 空闲深睡时长(毫秒);新日志或退出会提前叫醒。浅睡 LOG_LINGER_MS 时谁来叫醒见 _log_commit
 #define LOG_FLUSH_WAIT  200 // log_abort 的等待上限(毫秒)
 #define LOG_FLUSH_STEP  10 // log_abort 每次让出的毫秒数
 #define LOG_ABORT_SLACK 3 // log_abort 输家比赢家多等的步数,覆盖赢家排空之后写那一行的时间
@@ -54,7 +51,6 @@ TLS_DEFINE(char, _sync_time, TIME_LENS)
 static char _batch[LOG_BATCH_BYTES];
 static size_t _nbatch = 0;
 static logq _que;
-static pool_ctx _itempool;
 static waiter_ctx _waiter;// 日志线程的睡眠握手，深睡 WAITER_SLEEP、浅睡 WAITER_LINGER
 static uint32_t _linger_full = LOG_POP_BATCH;// 浅睡时攒到这么多条就叫醒，log_init 按队列容量定
 #ifdef OS_WIN
@@ -199,9 +195,8 @@ static inline void _log_batch_flush(void) {
 static inline void _log_write_item(const log_item *item) {
     const char *time = _log_timestr(item->ms);
     int32_t msec = (int32_t)(item->ms % 1000);
-    size_t n;
     if (NULL != _handle) {
-        n = _log_line(_batch + _nbatch, sizeof(_batch) - _nbatch, item, time, msec, item->msg, "", "");
+        size_t n = _log_line(_batch + _nbatch, sizeof(_batch) - _nbatch, item, time, msec, item->msg, "", "");
         if (0 == n) {
             _log_batch_flush();
             n = _log_line(_batch, sizeof(_batch), item, time, msec, item->msg, "", "");
@@ -225,13 +220,12 @@ static inline void _log_write_item(const log_item *item) {
         _log_color_end();
     }
 }
-// 对象池 _elclear：归还前释放长消息独立缓冲（短消息走 inline_buf 不分配）
-static void _log_item_clear(void *data) {
-    log_item *it = (log_item *)data;
+// 释放一条日志项:先放掉长消息的独立缓冲(短消息 msg 即 inline_buf),再放 item 本身
+static void _log_item_free(log_item *it) {
     if (it->msg != it->inline_buf) {
         FREE(it->msg);
     }
-    it->msg = it->inline_buf;
+    FREE(it);
 }
 // 返回本轮写出的条数：0 而队列非空即撞上在途元素，调用方据此退避而不是空转。
 // 批里有 WARN 及以上就在这批写完后刷一次，不逐条刷：告警风暴时逐条刷就是每条一次 write
@@ -245,7 +239,7 @@ static uint32_t _log_write_all(log_item **items) {
             item = items[i];
             _log_write_item(item);
             urgent |= item->lv <= LOGLV_WARN;
-            pool_push(&_itempool, item, 0);
+            _log_item_free(item);
         }
         _log_batch_flush();
         if (urgent) {
@@ -273,9 +267,6 @@ static void _log_loop(void *arg) {
     (void)arg;
     *_in_logth_tls() = 1;
     log_item *items[LOG_POP_BATCH];
-    timer_ctx timer;
-    timer_init(&timer);
-    uint64_t now, shrink_start = timer_cur_ms(&timer);
     uint32_t spins = 0, nwrote;
     int32_t wrote = 0;
     while (ATOMIC_GET(&_running)) {
@@ -288,21 +279,16 @@ static void _log_loop(void *arg) {
         wrote |= (0 != nwrote);
         ATOMIC_ADD(&_drained, 1);
         spins = 0;
-        // 空闲时按 SHRINK_TIME 门控回落 log_item 池（锁外执行）
-        now = timer_cur_ms(&timer);
-        if (pool_shrink_due(&shrink_start, now)) {
-            pool_shrink(&_itempool);
-        }
         if (logq_empty(&_que)) {
             fflush(_log_out());
         }
-        // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩。握手见 waiter.h
+        // 单次带守卫等待，外层循环负责重试；新日志或退出会提前叫醒。握手见 waiter.h
         waiter_prepare(&_waiter, wrote ? WAITER_LINGER : WAITER_SLEEP);
         if (!logq_empty(&_que)
             || 0 == ATOMIC_GET(&_running)) {
             waiter_cancel(&_waiter);
         } else {
-            (void)waiter_commit(&_waiter, wrote ? LOG_LINGER_MS : SHRINK_TIME);
+            (void)waiter_commit(&_waiter, wrote ? LOG_LINGER_MS : LOG_SLEEP_MAX);
             wrote = 0;
         }
     }
@@ -335,16 +321,11 @@ void log_init(FILE *file, uint32_t capacity) {
     if (_linger_full > LOG_POP_BATCH) {
         _linger_full = LOG_POP_BATCH;
     }
-    pool_cbs _logitem_cbs = { NULL, NULL, NULL, _log_item_clear };
-    pool_init(&_itempool, sizeof(log_item), cap, LOG_POP_BATCH, POOL_THSAFE, &_logitem_cbs);
     waiter_init(&_waiter);
     ATOMIC_SET_RELEASE(&_running, 1); 
     _th = thread_creat(_log_loop, NULL);
 }
-/* 调用约定：log_free 必须在所有可能调用 slog 的线程停止后才能调用。
- * _running 置 0 与 logq_trypush 之间没有临界区，若有线程在检查 _running==1
- * 之后、logq_trypush 之前被抢占，等到 logq_free 执行后再恢复则会 UAF。
- * 正确关闭顺序：先 join 所有业务线程 → 再调用 log_free。*/
+// 调用约定见 log.h：_running 置 0 与 logq_trypush 之间没有临界区，还在打日志的线程会碰到已释放的队列
 void log_free(void) {
     ATOMIC_SET_RELAXED(&_running, 0);
     waiter_wake(&_waiter, NULL);// 先置 0 再叫(握手见 waiter.h)：日志线程要么复查时看到 0，要么已睡下被叫醒
@@ -353,7 +334,6 @@ void log_free(void) {
     _log_write_all(items);
     _log_write_exit();
     logq_free(&_que);
-    pool_free(&_itempool);
     waiter_free(&_waiter);
 }
 void log_abort(const char *file, const char *func, int32_t line, const char *msg) {
@@ -405,7 +385,9 @@ static inline log_item *_log_take(int32_t lv) {
         || 0 == ATOMIC_GET(&_running)) {
         return NULL;
     }
-    log_item *item = (log_item *)pool_pop(&_itempool, NULL, 0);
+    log_item *item;
+    MALLOC(item, sizeof(log_item));
+    item->msg = item->inline_buf;// 初始即指向内嵌缓冲,_log_item_free 判独立缓冲时不误放
     item->lv = lv;
     item->ms = nowms();
     return item;
@@ -413,19 +395,18 @@ static inline log_item *_log_take(int32_t lv) {
 // 进不了队列时在业务线程上同步写掉并归还 item
 static void _log_drop(log_item *item, const char *msg) {
     _log_sync(_log_out(), item, msg);
-    pool_push(&_itempool, item, 0);
+    _log_item_free(item);
 }
 // slog 一族的收尾：入队并按需唤醒日志线程；队列满不阻塞业务线程，同步写出兜底。
 // 浅睡时只有 WARN 及以上或攒到 _linger_full 条才叫醒，攒满就叫是给突发留出队列余量；队列长度用的是不拿锁的近似值，
 // 看漏了也只是晚一个 LOG_LINGER_MS 才写，不丢行
 static inline void _log_commit(log_item *item) {
     int32_t lv = item->lv;// 入队后 item 归日志线程，不能再读
-    waiter_state st;
     if (ERR_OK != logq_trypush(&_que, &item)) {
         _log_drop(item, item->msg);
         return;
     }
-    st = waiter_state_get(&_waiter);
+    waiter_state st = waiter_state_get(&_waiter);
     if ((WAITER_SLEEP == st
          || (WAITER_LINGER == st && (lv <= LOGLV_WARN || logq_size_fast(&_que) >= _linger_full)))
         && waiter_mark_waking(&_waiter, st)) {
@@ -450,7 +431,6 @@ void slog(int32_t lv, const char *fmt, ...) {
         return;
     }
     if (rtn < LOG_INLINE_SIZE) {
-        item->msg = item->inline_buf;
         va_end(args2);
     } else {
         char *heap_msg;

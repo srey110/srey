@@ -41,11 +41,10 @@ static const unsigned char hexval[256] = {
 };
 
 size_t url_encode(const char *data, const size_t lens, char *out, int32_t space2plus) {
-    unsigned char c;
-    size_t i;
-    unsigned char const *from = (unsigned char *)data;
+    const unsigned char *from = (const unsigned char *)data;
     unsigned char *to = (unsigned char *)out;
-    for (i = 0; i < lens; i++) {
+    unsigned char c;
+    for (size_t i = 0; i < lens; i++) {
         c = from[i];
         if (urlkeep[c]) {
             *to++ = c;
@@ -64,8 +63,7 @@ size_t url_encode(const char *data, const size_t lens, char *out, int32_t space2
 // 不用改写的前缀(没有 '%'、也没有要转空格的 '+')只读不写，读到第一个要解码的字节才开始搬
 size_t url_decode(char *data, size_t lens, int32_t plus2space) {
     unsigned char *s = (unsigned char *)data;
-    unsigned char c, h, l;
-    size_t i = 0, j = 0;
+    size_t i = 0;
     while (i < lens
         && '%' != s[i]
         && !('+' == s[i] && plus2space)) {
@@ -74,7 +72,8 @@ size_t url_decode(char *data, size_t lens, int32_t plus2space) {
     if (i == lens) {
         return lens;
     }
-    j = i;
+    size_t j = i;
+    unsigned char c, h, l;
     while (i < lens) {
         c = s[i];
         if ('%' == c

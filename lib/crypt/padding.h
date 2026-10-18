@@ -18,11 +18,21 @@ typedef enum padding_model {
 /// <param name="data">需要填充的数据；仅 dlens 为 0 时允许传 NULL</param>
 /// <param name="dlens">数据长度；必须 &lt;= reqlens</param>
 /// <param name="output">输出填充后的数据；仅 ERR_OK 时有效</param>
-/// <param name="reqlens">要求的数据长度</param>
+/// <param name="reqlens">要求的数据长度；PKCS57 / ISO10126 / ANSIX923 下不得超过 255（填充长度只占一个字节）</param>
 /// <returns>ERR_OK 成功；ERR_FAILED：dlens 超出 reqlens，dlens 非 0 却传了 NULL data，
 /// 或 ISO10126 取随机字节失败。失败返回时 output 内容一律无效，调用方不能当它有内容；
 /// 前两种一个字节都没写，取随机失败那种可能已写入前 dlens 字节</returns>
 int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uint8_t *output, size_t reqlens);
+/// <summary>
+/// 校验解密后末尾分组的填充并量出长度，_padding_data 的逆操作。
+/// PKCS57 / ANSIX923 按常数时间校验（成败不随出错位置变）；ISO10126 前面是随机字节，只能校验长度字节
+/// </summary>
+/// <param name="padding">PKCS57 / ISO10126 / ANSIX923</param>
+/// <param name="block">末尾分组的起始地址，读 blk 字节</param>
+/// <param name="blk">分组长度，不超过 255</param>
+/// <param name="pad">输出填充长度，[1, blk]；仅 ERR_OK 时有效</param>
+/// <returns>ERR_OK 填充合法；ERR_FAILED 长度字节越界或填充字节不符</returns>
+int32_t _padding_strip(padding_model padding, const uint8_t *block, size_t blk, uint8_t *pad);
 /// <summary>
 /// 密码填充
 /// </summary>

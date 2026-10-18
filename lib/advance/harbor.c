@@ -7,13 +7,10 @@
 // harbor_pack 请求行在 type 之后的部分与两条固定头，线格式同 http_pack_req + http_pack_head
 #define HARBOR_REQ_TAIL " HTTP/1.1"FLAG_CRLF"Connection: Keep-Alive"FLAG_CRLF"Content-Type: application/octet-stream"FLAG_CRLF
 
-// harbor 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取；仅监听信息）
+// harbor 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取）
 typedef struct harbor_ctx {
-    uint16_t port;          // 监听端口
     uint64_t lsnid;         // 监听ID（ev_unlisten使用）
-    struct evssl_ctx *ssl;  // SSL上下文（NULL表示不使用SSL）
     router_ctx *router;     // HTTP 路由器
-    char ip[IP_LENS];       // 监听IP
 }harbor_ctx;
 
 // 填一条响应头：key/val 须在 router_req_respond 组包完成前保持有效(组包时按值拷进缓冲)
@@ -62,7 +59,7 @@ static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     void *body;
     uint64_t dv = 0;
     uint64_t tv = 0;
-    // 必须按 lens 截断解析：url_parse(decode=1) 就地解码只缩短 lens、不搬移后续字节，
+    // 必须按 lens 截断解析：url_parse(URL_DECODE) 就地解码只缩短 lens、不搬移后续字节，
     // 切片尾部残留解码前的旧字节("%310" 解码为 "10" 但缓冲仍读作 "1010")
     if (ERR_OK != strtou64(ds, dn, UINT64_MAX, &dv)
         || ERR_OK != strtou64(tp, tn, UINT16_MAX, &tv)) {
@@ -101,37 +98,34 @@ static void _harbor_call(router_req *ctx) {
 static void _harbor_request(router_req *ctx) {
     _harbor_dispatch(ctx, 0);
 }
+// 全局中间件：带 Origin 的一律 403。srey 对端从不发 Origin，浏览器发 POST 一定带，借此挡网页跨站投递
+static void _harbor_guard(router_req *ctx) {
+    size_t n = 0;
+    if (NULL != router_req_header(ctx, "Origin", &n)) {
+        _harbor_respond_text(ctx, 403);
+        return;
+    }
+    router_next(ctx);
+}
 // HTTP 接收回调：取出本服务的 router 后转 router_net_recv（chunked 与派发都在那里）
 static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
     router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
-// 连接关闭回调：清掉该连接尚未收齐的流式请求。
-// 本服务眼下没有流式路由，接着是为了以后加了不至于漏，理由见 router_closed 的说明
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)pktype;
-    (void)client;
-    (void)erro;
-    harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
-    router_closed(ctx->router, sk);
-}
-// harbor任务启动回调：建路由器 + 注册 /call 与 /request + 监听
+// harbor任务启动回调：建路由器 + 注册 /call 与 /request；监听在 harbor_start 里，连接的消息排在本回调之后
 static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(harbor);
     task_recved(harbor, _net_recv);
-    task_closed(harbor, _net_close);
     ctx->router = router_new();
+    // 眼下没有流式路由，先接上免得以后加了漏掉
+    task_watch_closed(harbor, router_closed_watch, ctx->router);
+    router_use_fn(ctx->router, _harbor_guard);
     // 参数校验不再单设中间件：dst/type 的存在性判定与 _harbor_dispatch 的 strtou64 重复，
     // 结果同一类坏请求分两处决定、给出两种行为（缺参数静默关连接 vs 畸形参数回 404）。
     // 统一收到 _harbor_dispatch 一处：一律 404
     router_post(ctx->router, NULL, "/call", _harbor_call, NULL, 0);
     router_post(ctx->router, NULL, "/request", _harbor_request, NULL, 0);
-    if (ERR_OK != task_listen(harbor, PACK_HTTP, ctx->ssl, ctx->ip, ctx->port, &ctx->lsnid, 0)) {
-        LOG_ERROR("harbor task_listen %s:%d error.", ctx->ip, ctx->port);
-        return;
-    }
-    LOG_INFO("harbor on %s:%d", ctx->ip, ctx->port);
 }
 // 释放 harbor task 关联资源
 static void _harbor_free(void *arg) {
@@ -159,23 +153,21 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     if (EMPTYSTR(tname) || 0 == port) {
         return ERR_OK;
     }
-    if (NULL == ip || strlen(ip) >= IP_LENS) {
+    if (EMPTYSTR(ip)) {
         return ERR_FAILED;
     }
     struct evssl_ctx *evssl = NULL;
     if (!EMPTYSTR(ssl)) {
-#if WITH_SSL
-        evssl = evssl_qury(ssl);
-#endif
         // 配了名字却拿不到证书就直接拒绝启动，不能静默退化成明文：跨节点鉴权全指望这张证书，
-        // 而 /call、/request 能往任意 handle 的 task 投递消息，运维只会以为链路是加密的。
+        // 而 /call、/request 能往任意 handle 的 task 投递消息，运维只会以为链路是加密的
+#if WITH_SSL
         // 名字来自 evssl 注册表, 调用方必须排在注册之后(装配顺序见 srey/startup.c)
+        evssl = evssl_qury(ssl);
         if (NULL == evssl) {
             LOG_ERROR("harbor: evssl '%s' not registered before harbor starts, "
                       "refuse to listen in plaintext.", ssl);
             return ERR_FAILED;
         }
-#if WITH_SSL
         // 有证书只说明链路加密，不代表验了对端。两位都得有：只设 PEER 时客户端不交证书照样握手成功；
         // 只设 FAIL_IF_NO_PEER_CERT 时服务端根本不向客户端要证书，这一位不起作用
         int32_t need = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
@@ -186,6 +178,10 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
                      "SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT.",
                      ssl, ip, port);
         }
+#else
+        LOG_ERROR("harbor: ssl '%s' configured but built without SSL (WITH_SSL=0), "
+                  "refuse to listen in plaintext.", ssl);
+        return ERR_FAILED;
 #endif
     } else {
         // /call、/request 能往任意 handle 的 task 投任意 subtype 并读回响应，而句柄顺序递增可枚举。
@@ -196,15 +192,19 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     }
     harbor_ctx *ctx;
     CALLOC(ctx, 1, sizeof(harbor_ctx));
-    ctx->port = port;
-    ctx->ssl = evssl;
-    // 上面的 strlen(ip) >= IP_LENS 已挡过，ctx->ip 正好 IP_LENS，装得下
-    safe_fill_str(ctx->ip, sizeof(ctx->ip), ip);
-    if (NULL == coro_task_register(loader, tname, 4 * ONEK,
-                                   _harbor_startup, _harbor_closing,
-                                   _harbor_free, ctx)) {
+    task_ctx *harbor = coro_task_register(loader, tname, 4 * ONEK,
+                                          _harbor_startup, _harbor_closing,
+                                          _harbor_free, ctx);
+    if (NULL == harbor) {
         return ERR_FAILED;
     }
+    // 在这里同步监听，失败才拦得住启动；ctx 随 task 关闭由 _harbor_free 释放
+    if (ERR_OK != task_listen(harbor, PACK_HTTP, evssl, ip, port, &ctx->lsnid, 0)) {
+        LOG_ERROR("harbor task_listen %s:%d error.", ip, port);
+        task_close(harbor);
+        return ERR_FAILED;
+    }
+    LOG_INFO("harbor on %s:%d", ip, port);
     return ERR_OK;
 }
 void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, void *data, size_t size, size_t *lens) {

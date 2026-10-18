@@ -21,6 +21,9 @@ typedef struct mqtt_propertie {//属性
 }mqtt_propertie;
 ARR_DECL(mprop_arr, mqtt_propertie *)
 #define MQTT_PROP_SLOTS 8 // 属性指针数组先用块内这么多槽
+// 单个属性段最多这么多个属性，超了按协议错误断连(接收侧)。规范里除用户属性与订阅标识符外每种属性至多一次(约 27 种)，
+// 256 给用户属性留足；不设上限的话 2 字节一个的属性能把 64KB 的段在内存里放大约 24 倍，CONNECT 在认证前就会解析它
+#define MQTT_MAX_PROPS 256
 #define MQTT_PROP_ARENA 256 // 块内给属性条目切的小区最少这么多字节，属性段长了按段长放大(见 mqtt.c 的 _mqtt_prop_cap)
 // 解析出的属性数组一律是这个块的开头(见 mqtt.c 的 _mqtt_properties)，只读：不能再增删元素，
 // 释放只能走 _mqtt_propertie_free；例外是 v5 PUBLISH 预留在 pack 块里的那一份(见 mqtt.c 的 _mqtt_parse)，

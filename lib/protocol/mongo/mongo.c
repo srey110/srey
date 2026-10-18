@@ -16,9 +16,6 @@ void _mongo_init(void *hspush) {
     _hs_push = hspush;
 }
 void _mongo_pkfree(void *pack) {
-    if (NULL == pack) {
-        return;
-    }
     FREE(pack);
 }
 void _mongo_udfree(ud_cxt *ud) {
@@ -28,19 +25,18 @@ void _mongo_udfree(ud_cxt *ud) {
     mongo_ctx *mongo = (mongo_ctx *)ud->context;
     scram_free(mongo->scram);
     mongo->scram = NULL;
-    sock_set_invalid(&mongo->sk);
+    sock_mark_closed(&mongo->sk);// 网络线程上写，理由见 sock_mark_closed
     ud->context = NULL;
     PROT_REF_RELEASE(mongo);
 }
-// 格式化 SCRAM-SHA-1 密码：对 "user:mongo:password" 计算 MD5 后转十六进制小写
+// 格式化 SCRAM-SHA-1 密码：对 "user:mongo:password" 计算 MD5 后转十六进制小写；分三段喂给 MD5，不拼出明文串
 static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)]) {
-    char *buf = format_va("%s:mongo:%s", mongo->user, mongo->password);
-    size_t blen = strlen(buf);
     char hs[MD5_BLOCK_SIZE];
     md5_ctx md5;
     md5_init(&md5);
-    md5_update(&md5, buf, blen);
-    SECURE_FREE(buf, blen + 1);//format_va 分配的是 lens + 1
+    md5_update(&md5, mongo->user, strlen(mongo->user));
+    md5_update(&md5, ":mongo:", sizeof(":mongo:") - 1);
+    md5_update(&md5, mongo->password, strlen(mongo->password));
     md5_final(&md5, hs);
     secure_zero(&md5, sizeof(md5));
     tohex(hs, sizeof(hs), fmtpwd, 1);
@@ -58,7 +54,6 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     if (ERR_OK != scram_parse_first_message(mongo->scram, payload, size)) {
         return ERR_FAILED;
     }
-    char *client_final;
     if (DG_SHA1 == mongo->scram->dtype) {
         char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)];
         _mongo_format_pwd(mongo, fmtpwd);
@@ -67,13 +62,10 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
         if (ERR_OK != setrtn) {
             return ERR_FAILED;
         }
-        client_final = scram_final_message(mongo->scram);
-    } else {
-        if (ERR_OK != scram_set_pwd(mongo->scram, mongo->password, strlen(mongo->password))) {
-            return ERR_FAILED;
-        }
-        client_final = scram_final_message(mongo->scram);
+    } else if (ERR_OK != scram_set_pwd(mongo->scram, mongo->password, strlen(mongo->password))) {
+        return ERR_FAILED;
     }
+    char *client_final = scram_final_message(mongo->scram);
     if (NULL == client_final) {
         return ERR_FAILED;
     }
@@ -93,23 +85,21 @@ static int32_t _mongo_server_final_message(mongo_ctx *mongo, mgopack_ctx *mgopac
     }
     return scram_check_final_message(mongo->scram, payload, plens);
 }
-// SCRAM 认证状态机：根据 scram->status 分发处理服务端第一/最终消息
+// SCRAM 认证状态机：根据 scram->status 分发处理服务端第一/最终消息。
+// AUTH 态与 scram 由 _mongo_auth_begin_cb 一起装；只有通用的 ev_ud_status 能单独切出没有 scram 的 AUTH，
+// 那是误用，按认证失败处理，不解引用 NULL
 static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     int32_t rtn;
     mongo_ctx *mongo = ud->context;
-    // ud->status==AUTH 但 scram 未初始化(乱序消息 / _mongo_auth 中 pack_scram_client_first 失败后
-    // 未及时回滚状态):按认证失败处理,不解引用 NULL,同 pgsql _pgsql_scram_client_final 的判空
     if (NULL == mongo->scram) {
-        LOG_WARN("mongo scram auth response received without prior SCRAM initialization.");
+        LOG_WARN("%s", "mongo scram auth response received without SCRAM initialization.");
         ud->status = COMMAND;
         _hs_push(&mongo->sk, 1, ud, ERR_FAILED, NULL, 0);
         _mongo_pkfree(mgopack);
         return;
     }
     switch (mongo->scram->status) {
-    // 两条分支都是先清 scram 再 _hs_push：push 一落地，worker 线程就能唤醒等在
-    // coro_handshaked 上的协程，它接着调 mongo_pack_* 又会读写 mongo->scram，
-    // 和本线程随后的 scram_free 撞在一起（同 prots_closed 的"先清理后唤醒"顺序）
+    // 两条分支都是先清 scram 再 _hs_push，同 prots_closed 的"先清理后唤醒"
     case SCRAM_LOCAL_FIRST:
         rtn = _mongo_server_first_message(ev, mongo, mgopack);
         if (ERR_OK != rtn) {
@@ -130,6 +120,31 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
         break;
     }
     _mongo_pkfree(mgopack);
+}
+// 网络线程上装 scram 并切 AUTH 态，返回值按 _on_cmd_props 的约定：非 0 由它走 fcb 释放 scram。
+// 不是 mongo 连接、上下文已拆或上一轮认证没收尾都是误用，关连接让等认证结果的一方立刻失败
+static int32_t _mongo_auth_begin_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
+    void *data, uint64_t number) {
+    (void)number;
+    ud_cxt *ud = _evpub_get_ud(evsk);
+    mongo_ctx *mongo = (mongo_ctx *)ud->context;
+    if (PACK_MONGO != ud->pktype
+        || NULL == mongo
+        || NULL != mongo->scram) {
+        LOG_ERROR("mongo auth begin rejected, closing the connection.");
+        _evpub_disconnect(watcher, evsk);
+        return 1;
+    }
+    mongo->scram = data;
+    ud->status = AUTH;
+    return 0;
+}
+// 签名对上 free_cb
+static void _mongo_scram_free(void *arg) {
+    scram_free(arg);
+}
+int32_t mongo_auth_begin(ev_ctx *ev, sock_ctx *sk, struct scram_ctx *scram) {
+    return ev_props(ev, sk, _mongo_auth_begin_cb, _mongo_scram_free, scram, 0);
 }
 // 校验 OP_MSG section header（kind=0 body / kind=1 docid sequence），仅支持单 Section：
 // section 长度须正好覆盖 body 剩余；推进 breader 越过 section header，返回 ERR_FAILED 时已置 PROT_ERROR（调用方负责 _mongo_pkfree）
@@ -179,8 +194,7 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
             return ERR_FAILED;
         }
         // klens=5 + docid="\0" 是协议层合法但 BSON section 为空（dlens=0）；
-        // 下游 mongo_parse_*/bson_iter_init 无条件读 4 字节 doclens 触发 ASSERTAB abort,
-        // 此处提前拒收避免恶意 server 26 字节构造响应远程让客户端进程崩溃
+        // 不足 5 字节（最短的空文档）的 section 结构上就非法，在这里按协议错误提前拒收
         if (!binary_have(breader, 5)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("OP_MSG kind=1 BSON section too short.");
@@ -224,7 +238,7 @@ void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     binary_init_read(&breader, mgopack->payload, total);
     binary_get_skip(&breader, 4);
     mgopack->reqid = (int32_t)binary_get_integer(&breader, 4, 1);
-    mgopack->respto = (int32_t)binary_get_integer(&breader, 4, 1);
+    binary_get_skip(&breader, 4);// responseTo 不对账：回包配对靠同连接 FIFO（serial 保证）
     mgopack->prot = (int32_t)binary_get_integer(&breader, 4, 1);
     if (OP_MSG != mgopack->prot) {
         BIT_SET(*status, PROT_ERROR);
@@ -345,7 +359,7 @@ int32_t mongo_authmod(mongo_ctx *mongo, const char *authmod) {
     return ERR_OK;
 }
 int32_t mongo_requestid(mongo_ctx *mongo) {
-    return mongo->reqid;
+    return (int32_t)ATOMIC_GET(&mongo->reqid);
 }
 void mongo_set_flag(mongo_ctx *mongo, int32_t flag) {
     if (0 != (flag & ~MONGO_FLAGS_ALL)) {
@@ -382,10 +396,4 @@ int64_t mongo_session_expires(mongo_session *session) {
         return 0;
     }
     return (int64_t)session->timeout - (int64_t)nowsec();
-}
-int32_t mongo_status_auth(void) {
-    return AUTH;
-}
-int32_t mongo_status_command(void) {
-    return COMMAND;
 }

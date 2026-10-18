@@ -19,20 +19,21 @@ typedef struct sfid_ctx {
 }sfid_ctx;
 
 /// <summary>
-/// snowflake id 初始化
+/// snowflake id 初始化。同时在用的各 ctx(含同一进程里不同线程的)machineid 必须互不相同，
+/// ID 里没有别的字段区分它们，同一毫秒会撞号
 /// </summary>
 /// <param name="ctx">sfid_ctx</param>
 /// <param name="machineid">机器ID，范围 [0, 2^machinebitlen - 1]（默认位数下最大 1023）</param>
-/// <param name="machinebitlen">机器ID占用位数，0 用默认 10；合理范围 [1, 20]，
+/// <param name="machinebitlen">机器ID占用位数，0 用默认 10；取值 [1, 21]，
 ///   与 sequencebitlen 之和不得超过 22。位数越大节点越多、同毫秒可生成的 ID 越少</param>
-/// <param name="sequencebitlen">自增序列占用位数，0 用默认 12；合理范围 [2, 21]，
+/// <param name="sequencebitlen">自增序列占用位数，0 用默认 12；取值 [1, 21]，
 ///   与 machinebitlen 之和不得超过 22。每毫秒可生成 2^sequencebitlen 个 ID</param>
 /// <param name="customepoch">自定义纪元时间戳（毫秒），ID 的时间戳字段相对它计算，可延长可用年限；
 ///   0 用默认（2024-01-01 00:00:00 UTC）。必须小于当前时间，否则返回 NULL</param>
 /// <returns>成功返回 ctx，参数非法返回 NULL</returns>
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch);
 /// <summary>
-/// 获取ID（非线程安全：每个线程须持有独立的 sfid_ctx）。
+/// 获取ID（非线程安全：每个线程须持有独立的 sfid_ctx，且 machineid 互不相同，见 sfid_init）。
 /// 时间戳取自墙钟，NTP 回拨时等时钟追上来，等待上限 ctx->clockback_wait（默认 1000ms）
 /// 且**按每次调用计**；要快速失败就在 sfid_init 之后把该字段改小
 /// </summary>

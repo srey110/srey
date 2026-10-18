@@ -3,14 +3,21 @@
 
 #include "base/base.h"
 
+// 日志线程的几个参数；放在头文件是为了让用例直接引用，免得各抄一份
+#define LOG_INLINE_SIZE 256 // 正文短于它的内嵌在日志项里，不另分配
+#define LOG_POP_BATCH   128 // 日志线程单批出队上限，也是浅睡时攒到多少条就叫醒的上限
+#define LOG_LINGER_MS   10 // 日志线程写过行之后浅睡的毫秒数
+#define LOG_BATCH_BYTES (64 * ONEK) // 日志文件模式下日志线程攒行的缓冲，装不下的长行直写
+
 /// <summary>
-/// 日志初始化
+/// 日志初始化。调用之前打的日志静默丢弃；队列满时在打日志的线程上同步写出，不阻塞也不丢
 /// </summary>
-/// <param name="file">输出句柄</param>
-/// <param name="capacity">日志队列长度</param>
+/// <param name="file">输出句柄；NULL 输出到 stdout，按级别上色</param>
+/// <param name="capacity">日志队列长度，0 取 4096</param>
 void log_init(FILE *file, uint32_t capacity);
 /// <summary>
-/// 停止日志 I/O 线程，刷新并释放资源
+/// 停止日志 I/O 线程，写完队列里剩下的日志并释放资源。
+/// 必须在所有可能打日志的线程都停下(join)之后调用，否则会碰到已释放的队列；之后打的日志静默丢弃
 /// </summary>
 void log_free(void);
 /// <summary>

@@ -146,7 +146,7 @@
     <ClInclude Include="utils\binary.h" />
     <ClInclude Include="utils\buffer.h" />
     <ClInclude Include="utils\chan.h" />
-    <ClInclude Include="utils\dl.h" />
+    <ClInclude Include="utils\dynlib.h" />
     <ClInclude Include="utils\hash_ring.h" />
     <ClInclude Include="utils\hug.h" />
     <ClInclude Include="utils\load_trend.h" />
@@ -342,22 +342,22 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
-    <OutDir>../bin/</OutDir>
+    <OutDir>../bin/$(Platform)/$(Configuration)/</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>

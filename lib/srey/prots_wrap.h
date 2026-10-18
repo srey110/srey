@@ -14,7 +14,8 @@
 /// <param name="task">所属 task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="setsess">是否设置sess</param>
-/// <returns>ERR_OK 成功，其他失败</returns>
+/// <returns>ERR_OK 成功，其他失败。同一 ctx 上的旧连接还没关完（sk 仍有效）时直接返回 ERR_FAILED、不发起：
+/// 旧连接须先经 coro_close 确认关完，否则它晚到的关闭回调会破坏新连接</returns>
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess);
 /// <summary>
 /// 发起 PostgreSQL 连接：绑定 task 并经 task_connect 注册网络事件回调
@@ -22,7 +23,7 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess);
 /// <param name="task">所属 task_ctx</param>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="setsess">是否设置sess</param>
-/// <returns>ERR_OK 成功，其他失败</returns>
+/// <returns>同 mysql_try_connect</returns>
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess);
 /// <summary>
 /// 发起 MongoDB 连接：绑定 task 并经 task_connect 注册网络事件回调
@@ -30,7 +31,7 @@ int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess);
 /// <param name="task">所属 task_ctx</param>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="setsess">是否设置sess</param>
-/// <returns>ERR_OK 成功，其他失败</returns>
+/// <returns>同 mysql_try_connect</returns>
 int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess);
 /// <summary>
 /// 发起 SMTP 连接：绑定 task 并经 task_connect 注册网络事件回调
@@ -38,7 +39,7 @@ int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess);
 /// <param name="task">所属 task_ctx</param>
 /// <param name="smtp">smtp_ctx</param>
 /// <param name="setsess">是否设置sess</param>
-/// <returns>ERR_OK 成功，其他失败</returns>
+/// <returns>同 mysql_try_connect</returns>
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess);
 /// <summary>
 /// 发起 MQTT 连接：挂上按协议版本的全局 mqtt_ctx，绑定 task 并经 task_connect 注册网络事件回调

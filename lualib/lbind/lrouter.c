@@ -92,6 +92,15 @@ static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
     lpub_push_url_param(lua, url);
     lua_setfield(lua, -2, "param");
 }
+// 压 Allow 头的值；allow 为 0（不是 405 / OPTIONS 自动应答）压 nil
+static void _lrouter_push_allow(lua_State *lua, router_method allow) {
+    char buf[ROUTER_ALLOW_LENS];
+    if (0 == allow) {
+        lua_pushnil(lua);
+        return;
+    }
+    lua_pushlstring(lua, buf, router_allow_value(allow, buf));
+}
 // 压路径参数表 { 名字 = 取值 }
 static void _lrouter_push_params(lua_State *lua, router_req *ctx) {
     lua_createtable(lua, 0, ctx->params_n);
@@ -108,8 +117,9 @@ static void _lrouter_push_params(lua_State *lua, router_req *ctx) {
 /// <param name="method" type="string">HTTP 方法字符串</param>
 /// <param name="url" type="string">原始请求 URI（含查询字符串）</param>
 /// <returns type="boolean">true=命中；false=失败</returns>
-/// <returns type="integer">HTTP 状态码：200 命中 / 400 url 解析失败 / 404 无匹配路由 / 405 方法不在已知列表</returns>
-/// <returns type="RouterMatchedURL?">规范化后的 path 与 query 表 —— 仅命中时返回；未命中一律只返前两个值</returns>
+/// <returns type="integer">HTTP 状态码，取值见 C 层 router_match_code（未命中的 200 是 OPTIONS 自动应答）</returns>
+/// <returns type="RouterMatchedURL|string?">命中时是规范化后的 path 与 query 表；未命中时是 Allow 头的值
+/// （405 与 OPTIONS 自动应答才有，其余为 nil），且未命中只返到这里为止</returns>
 /// <returns type="integer?">路由索引（≥0）；仅命中时返回</returns>
 /// <returns type="table&lt;string,string&gt;?">路径参数表；仅命中时返回</returns>
 static int32_t _lrouter_match(lua_State *lua) {
@@ -126,9 +136,10 @@ static int32_t _lrouter_match(lua_State *lua) {
     int32_t code = router_match_code(idx);
     lua_pushboolean(lua, idx >= 0);
     lua_pushinteger(lua, code);
-    // 未命中(400/405/404)时不建 url 表：调用方 if not ok 就直接回响应了，建了也没人看
+    // 未命中时不建 url 表：调用方 if not ok 就直接回响应了，建了也没人看
     if (idx < 0) {
-        return 2;
+        _lrouter_push_allow(lua, ctx.allow);
+        return 3;
     }
     _lrouter_push_url(lua, ctx.url);
     lua_pushinteger(lua, idx);
@@ -144,10 +155,13 @@ static int32_t _lrouter_match(lua_State *lua) {
 /// <returns type="integer">HTTP 状态码，取值同 match</returns>
 /// <returns type="string">请求方法</returns>
 /// <returns type="string">请求行第三段（HTTP 版本）</returns>
-/// <returns type="string?">规范化后的 path —— 仅命中时返回；未命中一律只返前四个值</returns>
+/// <returns type="boolean">回完响应是否该关连接，判据见 C 层 http_want_close</returns>
+/// <returns type="string?">命中时是规范化后的 path；未命中时是 Allow 头的值（405 与 OPTIONS 自动应答才有，
+/// 其余为 nil），且未命中只返到这里为止</returns>
 /// <returns type="table&lt;string,string&gt;?">查询参数表；仅命中时返回，没有查询参数时为 nil（不建空表）</returns>
 /// <returns type="integer?">路由索引（≥0）；仅命中时返回</returns>
-/// <returns type="table&lt;string,string&gt;?">路径参数表；仅命中时返回，没有路径参数时为 nil（不建空表）</returns>
+/// <returns type="table&lt;string,string&gt;?">路径参数表；仅命中时返回，没有路径参数时为 nil（不建空表）；
+/// 末尾通配吃下的段在键 "*" 下</returns>
 static int32_t _lrouter_match_pack(lua_State *lua) {
     LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
     LPUB_LUD_ARG(lua, struct http_pack_ctx, 2, pack);
@@ -165,8 +179,10 @@ static int32_t _lrouter_match_pack(lua_State *lua) {
     lua_pushinteger(lua, router_match_code(idx));
     lua_pushlstring(lua, status[0].data, status[0].lens);
     lua_pushlstring(lua, status[2].data, status[2].lens);
+    lua_pushboolean(lua, http_want_close(pack));
     if (idx < 0) {
-        return 4;
+        _lrouter_push_allow(lua, ctx.allow);
+        return 6;
     }
     _lrouter_push_path(lua, ctx.url);
     if (0 == ctx.url->nparam) {
@@ -180,12 +196,27 @@ static int32_t _lrouter_match_pack(lua_State *lua) {
     } else {
         _lrouter_push_params(lua, &ctx);
     }
-    return 8;
+    return 9;
+}
+/// <summary>
+/// 请求带 Expect: 100-continue 时回一条 100 Continue，让客户端开始发请求体；流式路由准入通过后调。
+/// 判据见 C 层 http_expect_continue（HTTP/1.0 不回）
+/// </summary>
+/// <param name="sk" type="userdata">连接标识</param>
+/// <param name="pack" type="lightuserdata">首帧的 http_pack_ctx 指针</param>
+static int32_t _lrouter_expect_continue(lua_State *lua) {
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    LPUB_LUD_ARG(lua, struct http_pack_ctx, 2, pack);
+    if (http_expect_continue(pack)) {
+        ev_send(&g_loader->netev, sk, (void *)HTTP_CONTINUE_RESP, sizeof(HTTP_CONTINUE_RESP) - 1, 1);
+    }
+    return 0;
 }
 //srey.router
 LUAMOD_API int luaopen_router(lua_State *lua) {
     luaL_Reg reg_new[] = {
         { "new", _lrouter_new },
+        { "expect_continue", _lrouter_expect_continue },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {

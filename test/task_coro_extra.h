@@ -10,6 +10,7 @@
 //   dns_lookup 解析 example.com（DNS 协程路径）
 //   coro_request 未知 rtype 触发请求超时
 //   task_register 同名第二次被拒，已注册那个的名字索引不受影响
+//   task_close 先于 task_register：注册时在 STARTUP 之后补发 CLOSING，两个回调各跑一次
 // 另含 coro_sess 契约的七条（与 bin/script/test/unit_coro.lua 测同一组场景，两侧各自断言）：
 //   CLOSE 广播排空期间重新注册同一 sess，新等待者不被收尾误删
 //   同一 skid 上并发 coro_sendto，N 个等待者与 N 个响应逐一配对不丢

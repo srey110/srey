@@ -6,6 +6,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 
 local PORT = 15015
+local EXCL_PORT = 15016 -- 端口复用默认关的用例
 local GROUP = "239.99.99.98"
 local UNI_MSG = "UNI_LUA"
 
@@ -20,9 +21,26 @@ runner.run(function(t)
             end
         end
     end)
-    local sk = srey.udp(PACK_TYPE.NONE, "0.0.0.0", PORT)
+    -- 多播接收端按需打开端口复用
+    local sk = srey.udp(PACK_TYPE.NONE, "0.0.0.0", PORT, 1)
     t:check(sk and sk.valid, "udp create 成功")
     if not sk or not sk.valid then return end
+
+    -- 端口复用默认关：不带 reuse 的绑不上已被占的端口，先绑的没带 reuse 时后来带了也绑不上
+    local dup = srey.udp(PACK_TYPE.NONE, "0.0.0.0", PORT)
+    t:eq(false, dup.valid, "不带 reuse 绑不上共用中的端口")
+    local dup2 = srey.udp(PACK_TYPE.NONE, "0.0.0.0", PORT, 1)
+    t:check(dup2.valid, "都带 reuse 能共用端口")
+    local ex = srey.udp(PACK_TYPE.NONE, "127.0.0.1", EXCL_PORT)
+    t:check(ex.valid, "默认独占绑定成功")
+    local ex2 = srey.udp(PACK_TYPE.NONE, "127.0.0.1", EXCL_PORT, 1)
+    t:eq(false, ex2.valid, "独占的端口带 reuse 也绑不上")
+    for _, s in ipairs({ dup, dup2, ex, ex2 }) do
+        if s.valid then
+            srey.close(s)
+        end
+    end
+    t:eq(false, pcall(srey.udp, PACK_TYPE.NONE, "0.0.0.0", 0, 2), "reuse 只许 0 / 1")
 
     -- 4 个多播 API 路径验证
     t:eq(true, srey.udp_ttl(sk, 1), "udp_ttl 返回 true")
@@ -31,6 +49,9 @@ runner.run(function(t)
     t:eq(true, srey.udp_ttl(sk, 0), "udp_ttl 0(仅本机)合法")
     -- 直接窄化到 uint8_t 的话 256 会静默变成 0，多播从此出不了本机——是语义反转而非"值不对"
     t:eq(false, pcall(function() srey.udp_ttl(sk, 256) end), "udp_ttl 256 抛 error")
+    -- 报错要指向第 2 个参数(ttl)：下标写错会报 "bad argument #3"，按报错去查只会扑空
+    local _, ttlerr = pcall(srey.udp_ttl, sk, 256)
+    t:check(nil ~= string.find(tostring(ttlerr), "#2", 1, true), "udp_ttl 越界报错指向第 2 个参数")
     t:eq(false, pcall(function() srey.udp_ttl(sk, -1) end),  "udp_ttl 负值抛 error")
     t:eq(true, srey.udp_ttl(sk, 1), "还原 TTL 1 供后续用例")
     t:eq(true, srey.udp_loop(sk, 1), "udp_loop 返回 true")

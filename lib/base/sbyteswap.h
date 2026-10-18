@@ -8,17 +8,17 @@
 /// </summary>
 /// <param name="buf">buffer</param>
 /// <param name="val">数字</param>
-/// <param name="size">字节数</param>
+/// <param name="size">字节数，须 > 0，否则 ASSERTAB 中止；超过 8 时多出的高位字节写 0</param>
 /// <param name="islittle">是否为小端</param>
 void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle);
 /// <summary>
 /// char* 转数字
 /// </summary>
 /// <param name="buf">要转换的buffer</param>
-/// <param name="size">字节数</param>
+/// <param name="size">字节数；超过 8 时只取低 8 字节</param>
 /// <param name="islittle">是否为小端</param>
-/// <param name="issigned">是否有符号</param>
-/// <returns>数字</returns>
+/// <param name="issigned">是否有符号（size 不足 8 时按最高位做符号扩展）</param>
+/// <returns>数字；size <= 0 时为 0，不读 buf</returns>
 int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t issigned);
 /// <summary>
 /// float转 char*
@@ -48,7 +48,7 @@ void pack_double(char *buf, double val, int32_t islittle);
 /// <param name="islittle">是否为小端</param>
 /// <returns>double</returns>
 double unpack_double(const char *buf, int32_t islittle);
-#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX) && !defined(OS_SUN)
 /// <summary>
 /// 64 位网络字节序转主机字节序
 /// </summary>
@@ -61,7 +61,7 @@ uint64_t ntohll(uint64_t val);
 /// <param name="val">主机字节序值</param>
 /// <returns>网络字节序值</returns>
 uint64_t htonll(uint64_t val);
-#endif//OS_WIN OS_DARWIN OS_AIX
+#endif//OS_WIN OS_DARWIN OS_AIX OS_SUN
 // 字节序，三组：byteswap16/32/64 把整数的字节倒过来排；read_be* / read_le* 从 p 按大端 / 小端取整数；
 // write_be* / write_le* 把 v 按大端 / 小端写到 p。结果与本机字节序无关，p 不要求对齐，
 // 一次读写 位数/8 个字节。契约写在每组 16 位那个上，其余"同 xxx"
@@ -207,7 +207,7 @@ static inline void write_le64(void *p, uint64_t v) {
 /// 按字节数读整数：2 / 4 / 8 字节走上面的定长读，其余长度交给 unpack_integer
 /// </summary>
 /// <param name="p">数据起点，不要求对齐</param>
-/// <param name="size">字节数</param>
+/// <param name="size">字节数；非 2 / 4 / 8 时的取值规则同 unpack_integer</param>
 /// <param name="islittle">1 小端 0 大端</param>
 /// <param name="issigned">1 按有符号做符号扩展，0 零扩展</param>
 /// <returns>读出的值</returns>
@@ -232,7 +232,7 @@ static inline int64_t read_integer(const void *p, size_t size, int32_t islittle,
 /// </summary>
 /// <param name="p">写入起点，不要求对齐</param>
 /// <param name="val">值</param>
-/// <param name="size">字节数</param>
+/// <param name="size">字节数；非 2 / 4 / 8 时的取值规则同 pack_integer</param>
 /// <param name="islittle">1 小端 0 大端</param>
 static inline void write_integer(void *p, uint64_t val, size_t size, int32_t islittle) {
     switch (size) {

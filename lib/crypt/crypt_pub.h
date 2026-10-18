@@ -35,8 +35,7 @@ static inline int32_t crypt_memcmp(const void *a, const void *b, size_t len) {
     const volatile unsigned char *pa = (const volatile unsigned char *)a;
     const volatile unsigned char *pb = (const volatile unsigned char *)b;
     unsigned char diff = 0;
-    size_t i;
-    for (i = 0; i < len; i++) {
+    for (size_t i = 0; i < len; i++) {
         diff |= pa[i] ^ pb[i];
     }
     return (int32_t)diff;

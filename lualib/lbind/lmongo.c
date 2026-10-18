@@ -3,27 +3,18 @@
 #define MT_MONGO         "_mongo_ctx"
 #define MT_MONGO_SESSION "_mongo_session_ctx"
 #define MONGOFLAG_OUT_OF_RANGE "mongo flag out of range"
-// 读类命令要等回包：组包期间把连接级 flags 清零、组完原样恢复，同 coro_utils.c 的 mongo_find。
-// 参数必须在这之前全部取完——会抛 Lua 错的调用夹在清零与恢复之间就恢复不了
-#define LMONGO_PACK_NOFLAG(mongo, pack, call) \
-    do { \
-        int32_t _lpn_flags = mongo_clear_flag(mongo); \
-        (pack) = (call); \
-        mongo_set_flag((mongo), _lpn_flags); \
-    } while (0)
-// session 的五个入口共用: 自身非空 + 宿主还活着。后一半的理由见 lpub_owner_ptr
+// session 的七个入口共用: 自身非空 + 宿主没被 __gc 关掉(宿主关了 session 就拒绝，理由见 lpub_owner_ptr)
 #define LMONGO_SESSION_ARG(lua, var) \
     LPUB_UD_ARG((lua), mongo_session, MT_MONGO_SESSION, var, "session freed") \
     if (NULL == lpub_owner_ptr((lua), MT_MONGO)) { \
         return luaL_error((lua), "mongo session: owner mongo already freed"); \
     }
 
-// 从 Lua 栈 idx 位置提取一个可选 BSON 文档及其字节数;nil / 没传 / 空缓冲一律返 NULL 且 *lens 置 0。
-// 空缓冲也归零:BSON 最短的一篇也有 5 字节,零字节不是文档,放过去 bson_append_document 会写下
-// 键却不写文档体,整条命令从那里开始错位。opts 与 filter / query / update 全走这里,免得相邻两个
-// BSON 参数各写一套取法——一个认 string 另一个不认,传错了还静默当没传。
-// bson_cat 要求随指针给出缓冲长度,故 lightuserdata 必须在 idx+1 附上字节数;这里只验长度本身
-// 合法,"是不是一篇落在缓冲内的完整文档"交给 bson_cat 判——畸形文档不抛 Lua 错,整条命令组包失败返 nil
+// 从 Lua 栈 idx 位置提取一个可选 BSON 文档及其字节数;nil / 没传 / 空缓冲一律返 NULL 且 *lens 置 0(当没给)。
+// opts 与 filter / query / update 全走这里,免得相邻两个 BSON 参数各写一套取法、传错了还静默当没传。
+// lightuserdata 必须在 idx+1 附上字节数;这里只验长度本身合法,"是不是完整文档"交给组包侧判:
+// opts 走 bson_cat(声明长度可小于缓冲),filter / query / update 走 bson_check_doc(须恰好占满)。
+// 畸形文档不抛 Lua 错,整条命令组包失败返 nil
 static char *_lmongo_get_opts(lua_State *lua, int32_t idx, size_t *lens) {
     *lens = 0;
     if (lua_isnoneornil(lua, idx)) {
@@ -32,10 +23,10 @@ static char *_lmongo_get_opts(lua_State *lua, int32_t idx, size_t *lens) {
     char *doc = lpub_check_buf(lua, idx, lens, NULL);
     return EMPTYPTR(doc, *lens) ? NULL : doc;
 }
-// 取集合名参数：只认真字符串。luaL_checkstring 连数字也收，ctx:getmore 漏传 col 时 cursorid 会静默当集合名
+// 取集合名参数：只认真字符串且不许内含 '\0'。luaL_checkstring 连数字也收，ctx:getmore 漏传 col 时 cursorid 会静默当集合名
 static const char *_lmongo_arg_col(lua_State *lua, int32_t idx) {
     luaL_argcheck(lua, LUA_TSTRING == lua_type(lua, idx), idx, "collection must be a string");
-    return lua_tostring(lua, idx);
+    return lpub_check_cstr(lua, idx);
 }
 // 写类组包的统一收尾：比 lpub_rtn_lud 多带一个"包里写着 MORETOCOME"，发送方据此决定等不等回包。
 // 问包不问连接级 flags，理由见 C 层 mongo_pack_check_flag
@@ -50,7 +41,7 @@ static int32_t _lmongo_rtn_wpack(lua_State *lua, void *pack, size_t size) {
 }
 // ---- mongo ----
 /// <summary>
-/// 创建 MongoDB 连接上下文（不立即建立连接）
+/// 创建 MongoDB 连接上下文（不立即建立连接）。服务端最低 4.4，理由见 C 层 mongo_init
 /// </summary>
 /// <param name="ip" type="string">服务器 IP</param>
 /// <param name="port" type="integer">服务器端口</param>
@@ -58,10 +49,10 @@ static int32_t _lmongo_rtn_wpack(lua_State *lua, void *pack, size_t size) {
 /// <param name="db" type="string">初始数据库名</param>
 /// <returns type="_mongo_ctx?">mongo 对象；ip 或 db 超 63 字节导致初始化失败时返回 nil</returns>
 static int32_t _lmongo_new(lua_State *lua) {
-    const char *ip = luaL_checkstring(lua, 1);
+    const char *ip = lpub_check_cstr(lua, 1);
     uint16_t port = lpub_check_u16(lua, 2, PORT_OUT_OF_RANGE);
     struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
-    const char *db = luaL_checkstring(lua, 4);
+    const char *db = lpub_check_cstr(lua, 4);
     mongo_ctx **ud = (mongo_ctx **)lpub_push_ud(lua, NULL, MT_MONGO);
     mongo_ctx *mongo;
     MALLOC(mongo, sizeof(mongo_ctx));
@@ -122,26 +113,14 @@ static int32_t _lmongo_sock_id(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 将指定连接切换到 AUTH 状态，供 SCRAM 认证流程使用
-/// </summary>
-/// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
-/// <returns type="boolean">成功 true，stop 非0失败</returns>
-static int32_t _lmongo_set_auth_status(lua_State *lua) {
-    LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    sock_ctx *sk = lpub_check_sock(lua, 2);
-    LPUB_CUR_TASK(lua, task);
-    return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&task->loader->netev, sk, (uint8_t)mongo_status_auth()));
-}
-/// <summary>
-/// 设置当前数据库名
+/// 设置当前数据库名。成功时 C 层顺带清空当前集合名；本绑定的组包方法都带集合参数、组包前重设，不受影响
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="db" type="string">数据库名</param>
 /// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_db(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    const char *db = luaL_checkstring(lua, 2);
+    const char *db = lpub_check_cstr(lua, 2);
     return lpub_rtn_bool(lua, ERR_OK == mongo_db(*ud, db));
 }
 /// <summary>
@@ -152,14 +131,14 @@ static int32_t _lmongo_db(lua_State *lua) {
 /// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_authdb(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    const char *db = luaL_checkstring(lua, 2);
+    const char *db = lpub_check_cstr(lua, 2);
     return lpub_rtn_bool(lua, ERR_OK == mongo_authdb(*ud, db));
 }
 /// <summary>
 /// 设置当前集合名
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_collection(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -171,12 +150,12 @@ static int32_t _lmongo_collection(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="user" type="string">用户名</param>
-/// <param name="pwd" type="string">密码</param>
+/// <param name="pwd" type="string">密码，按原样参与认证、不做 SASLprep，约束见 C 层 mongo_user_pwd</param>
 /// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_user_pwd(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    const char *user = luaL_checkstring(lua, 2);
-    const char *pwd = luaL_checkstring(lua, 3);
+    const char *user = lpub_check_cstr(lua, 2);
+    const char *pwd = lpub_check_cstr(lua, 3);
     return lpub_rtn_bool(lua, ERR_OK == mongo_user_pwd(*ud, user, pwd));
 }
 /// <summary>
@@ -184,7 +163,7 @@ static int32_t _lmongo_user_pwd(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 指针</param>
-/// <returns type="integer">影响文档数 n；服务端报错返回 -1</returns>
+/// <returns type="integer">影响文档数 n；服务端报错、或 n 不是合法数值 / 超出 int32 返回 -1（判据同 C 层 mongo_parse_check_error）</returns>
 static int32_t _lmongo_check_error(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LPUB_LUD_ARG(lua, mgopack_ctx, 2, mgopack);
@@ -235,8 +214,8 @@ static int32_t _lmongo_arg_flag(lua_State *lua, int32_t idx) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错。
-/// 0 合法：lib/mongo.lua 的认证段先 clear_flag 存下旧值、完事原样传回来还原，那个值可能就是 0。
-/// 读类组包的清/还原在 C 侧做（LMONGO_PACK_NOFLAG），不经这里。
+/// 0 合法：还原惯用法 set_flag(clear_flag()) 传回的旧值可能就是 0。
+/// 要等回包的命令组包时包头恒不带 MORETOCOME，不受这里影响。
 /// C 层只实现了 MORETOCOME，其余位收下即丢弃</param>
 /// <returns>无</returns>
 static int32_t _lmongo_set_flag(lua_State *lua) {
@@ -258,9 +237,7 @@ static int32_t _lmongo_check_flag(lua_State *lua) {
 }
 /// <summary>
 /// 读回已组好的数据包里写着的消息标志位。
-/// "要不要等回包"必须问这个而不是 check_flag：后者读的是连接级可变字段，而组包与真正发送
-/// 之间隔着一次会挂起的加锁，那期间公开的 set_flag / clear_flag 一改，包里写的和判定读的
-/// 就成了两回事。详细后果见 C 层 mongo_pack_check_flag
+/// "要不要等回包"问包头（本函数），不问连接级 flags（check_flag），理由见 C 层 mongo_pack_check_flag
 /// </summary>
 /// <param name="pack" type="lightuserdata">pack_* 组出的数据包</param>
 /// <param name="flag" type="integer">单个 mongo_flags 枚举值；含枚举外的位报错</param>
@@ -281,7 +258,8 @@ static int32_t _lmongo_clear_flag(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 强制清空当前挂载的事务会话指针（不释放 session 对象本身），重连后调用避免跨代残留 lsid/txnNumber
+/// 强制清空当前挂载的事务会话指针（不释放 session 对象本身）。清掉之后的写不再带事务上下文、按自动提交执行；
+/// 重连作废事务不靠它（见 C 层 mongo_begin），事务中途别调
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <returns>无</returns>
@@ -303,6 +281,27 @@ static int32_t _lmongo_session_touch(lua_State *lua) {
     return 0;
 }
 /// <summary>
+/// 组包前记下事务现场，紧挨着带事务上下文的 pack_* 调，见 C 层 mongo_txn_mark
+/// </summary>
+/// <param name="self" type="userdata">mongo 对象</param>
+/// <returns type="integer">现场标记，只用来交给 txn_moved</returns>
+static int32_t _lmongo_txn_mark(lua_State *lua) {
+    LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
+    lua_pushinteger(lua, (lua_Integer)mongo_txn_mark(*ud));
+    return 1;
+}
+/// <summary>
+/// 拿到串行锁、发送之前复查组包之后连接换过没有，见 C 层 mongo_txn_moved；为 true 时包不得再发
+/// </summary>
+/// <param name="self" type="userdata">mongo 对象</param>
+/// <param name="mark" type="integer">组包前 txn_mark 的返回值</param>
+/// <returns type="boolean">连接已换过 true</returns>
+static int32_t _lmongo_txn_moved(lua_State *lua) {
+    LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
+    uint64_t mark = (uint64_t)luaL_checkinteger(lua, 2);
+    return lpub_rtn_bool(lua, 0 != mongo_txn_moved(*ud, mark));
+}
+/// <summary>
 /// 返回当前请求 ID
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
@@ -313,20 +312,19 @@ static int32_t _lmongo_requestid(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 构造 hello 握手命令包；包里恒不带 MORETOCOME（读类命令要等回包），连接级 flags 组完原样恢复
+/// 构造 hello 握手命令包；包头恒不带 MORETOCOME（要等回包），与连接级 flags 无关；恒不带事务上下文，见 C 层 mongo_pack_hello
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超组包上限(INT32_MAX)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_hello(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 2, &optlens);
     size_t size;
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_hello(*ud, opts, optlens, &size));
+    void *pack = mongo_pack_hello(*ud, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -338,18 +336,17 @@ static int32_t _lmongo_pack_hello(lua_State *lua) {
 static int32_t _lmongo_pack_ping(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     size_t size;
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_ping(*ud, &size));
+    void *pack = mongo_pack_ping(*ud, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 drop 删集合命令包
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、或超组包上限(INT32_MAX)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_drop(lua_State *lua) {
@@ -357,10 +354,10 @@ static int32_t _lmongo_pack_drop(lua_State *lua) {
     const char *col = _lmongo_arg_col(lua, 2);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 3, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 3);
     }
+    size_t size;
     void *pack = mongo_pack_drop(*ud, opts, optlens, &size);
     return _lmongo_rtn_wpack(lua, pack, size);
 }
@@ -368,12 +365,12 @@ static int32_t _lmongo_pack_drop(lua_State *lua) {
 /// 构造 insert 插入命令包
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="docs" type="lightuserdata">BSON 数组格式文档列表指针</param>
 /// <param name="dlens" type="integer">docs 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_insert(lua_State *lua) {
@@ -383,10 +380,10 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
     size_t dlens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 3);
     }
+    size_t size;
     void *pack = mongo_pack_insert(*ud, docs, dlens, opts, optlens, &size);
     return _lmongo_rtn_wpack(lua, pack, size);
 }
@@ -394,12 +391,12 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
 /// 构造 update 更新命令包
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="updates" type="lightuserdata">BSON 数组格式更新列表指针</param>
 /// <param name="ulens" type="integer">updates 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_update(lua_State *lua) {
@@ -409,10 +406,10 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
     size_t ulens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 3);
     }
+    size_t size;
     void *pack = mongo_pack_update(*ud, updates, ulens, opts, optlens, &size);
     return _lmongo_rtn_wpack(lua, pack, size);
 }
@@ -420,12 +417,12 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
 /// 构造 delete 删除命令包
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="deletes" type="lightuserdata">BSON 数组格式删除列表指针</param>
 /// <param name="dlens" type="integer">deletes 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_delete(lua_State *lua) {
@@ -435,10 +432,10 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
     size_t dlens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 3);
     }
+    size_t size;
     void *pack = mongo_pack_delete(*ud, deletes, dlens, opts, optlens, &size);
     return _lmongo_rtn_wpack(lua, pack, size);
 }
@@ -452,7 +449,7 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
 /// <param name="nlens" type="integer">nsinfo 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
@@ -471,12 +468,12 @@ static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
 /// 构造 find 查询命令包；不带 MORETOCOME，同 pack_hello
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="filter" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
 /// <param name="flens" type="integer?">filter 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、filter 不是恰好占满 flens 的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_find(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -485,24 +482,23 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
     char *filter = _lmongo_get_opts(lua, 3, &flens);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 2);
     }
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_find(*ud, filter, flens, opts, optlens, &size));
+    size_t size;
+    void *pack = mongo_pack_find(*ud, filter, flens, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 aggregate 聚合命令包；不带 MORETOCOME，同 pack_hello
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="pipeline" type="lightuserdata">BSON 数组格式聚合管道指针</param>
 /// <param name="pllens" type="integer">pipeline 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -511,23 +507,23 @@ static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     size_t pllens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 2);
     }
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_aggregate(*ud, pipeline, pllens, opts, optlens, &size));
+    size_t size;
+    void *pack = mongo_pack_aggregate(*ud, pipeline, pllens, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 getMore 获取游标后续批次命令包；不带 MORETOCOME，同 pack_hello
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="cursorid" type="integer">游标 ID</param>
-/// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
+/// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项(batchSize maxTimeMS comment)；须是一篇完整 BSON 文档。
+/// 集合取 col，别在这里再带 collection（重复字段服务端拒收）</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_getmore(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -535,24 +531,23 @@ static int32_t _lmongo_pack_getmore(lua_State *lua) {
     int64_t cursorid = (int64_t)luaL_checkinteger(lua, 3);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 2);
     }
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_getmore(*ud, cursorid, opts, optlens, &size));
+    size_t size;
+    void *pack = mongo_pack_getmore(*ud, cursorid, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 killCursors 关闭游标命令包
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="cursorids" type="lightuserdata">BSON 数组格式游标 ID 列表指针</param>
 /// <param name="cslens" type="integer">cursorids 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_killcursors(lua_State *lua) {
@@ -562,10 +557,10 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
     size_t cslens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 3);
     }
+    size_t size;
     void *pack = mongo_pack_killcursors(*ud, cursorids, cslens, opts, optlens, &size);
     return _lmongo_rtn_wpack(lua, pack, size);
 }
@@ -573,35 +568,34 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
 /// 构造 distinct 去重查询命令包；不带 MORETOCOME，同 pack_hello
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="key" type="string">去重字段名</param>
 /// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、query 不是恰好占满 qlens 的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_distinct(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *col = _lmongo_arg_col(lua, 2);
-    const char *key = luaL_checkstring(lua, 3);
+    const char *key = lpub_check_cstr(lua, 3);
     size_t qlens;
     char *query = _lmongo_get_opts(lua, 4, &qlens);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 6, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 2);
     }
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_distinct(*ud, key, query, qlens, opts, optlens, &size));
+    size_t size;
+    void *pack = mongo_pack_distinct(*ud, key, query, qlens, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 findAndModify 原子查找并修改/删除命令包；不带 MORETOCOME，同 pack_hello
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="remove" type="integer">非零表示删除匹配文档</param>
@@ -610,7 +604,7 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
 /// <param name="ulens" type="integer?">update 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、query 不是恰好占满 qlens 的完整文档、remove 为 0 时 update 不是恰好占满 ulens 的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -624,24 +618,23 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     luaL_argcheck(lua, remove || NULL != update, 7, "update required when remove is 0");
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 9, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 2);
     }
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_findandmodify(*ud, query, qlens, remove, pipeline, update, ulens, opts, optlens, &size));
+    size_t size;
+    void *pack = mongo_pack_findandmodify(*ud, query, qlens, remove, pipeline, update, ulens, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
-/// 构造 count 文档计数命令包；不带 MORETOCOME，同 pack_hello
+/// 构造 count 文档计数命令包；不带 MORETOCOME，同 pack_hello。不带事务上下文，事务内计数用 aggregate 的 $count，见 C 层 mongo_pack_count
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、query 不是恰好占满 qlens 的完整文档、opts 不是落在缓冲内的完整文档、或超组包上限(INT32_MAX)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_count(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -650,24 +643,23 @@ static int32_t _lmongo_pack_count(lua_State *lua) {
     char *query = _lmongo_get_opts(lua, 3, &qlens);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 2);
     }
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_count(*ud, query, qlens, opts, optlens, &size));
+    size_t size;
+    void *pack = mongo_pack_count(*ud, query, qlens, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 createIndexes 创建索引命令包
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="indexes" type="lightuserdata">BSON 数组格式索引定义指针</param>
 /// <param name="ilens" type="integer">indexes 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、超组包上限(INT32_MAX)被丢弃、或连接上绑着的事务已随重连作废时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_createindexes(lua_State *lua) {
@@ -677,10 +669,10 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
     size_t ilens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 3);
     }
+    size_t size;
     void *pack = mongo_pack_createindexes(*ud, indexes, ilens, opts, optlens, &size);
     return _lmongo_rtn_wpack(lua, pack, size);
 }
@@ -688,12 +680,12 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
 /// 构造 dropIndexes 删除索引命令包
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
-/// <param name="col" type="string">集合名；非字符串报错</param>
+/// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="indexes" type="lightuserdata">BSON 数组格式索引名列表指针</param>
 /// <param name="ilens" type="integer">indexes 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空、opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；集合名超 63 字节、必填的数组参数为空或不是恰好占满长度的完整文档、opts 不是落在缓冲内的完整文档、或超组包上限(INT32_MAX)被丢弃时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="boolean?">包里写着 MORETOCOME 时 true（只发不等回包），判据同 pack_check_flag；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
@@ -703,10 +695,10 @@ static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
     size_t ilens = lpub_check_lens(lua, 4, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
-    size_t size;
     if (ERR_OK != mongo_collection(*ud, col)) {
         return lpub_rtn_nil(lua, 3);
     }
+    size_t size;
     void *pack = mongo_pack_dropindexes(*ud, indexes, ilens, opts, optlens, &size);
     return _lmongo_rtn_wpack(lua, pack, size);
 }
@@ -719,22 +711,30 @@ static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
 static int32_t _lmongo_pack_startsession(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     size_t size;
-    void *pack;
-    LMONGO_PACK_NOFLAG(*ud, pack, mongo_pack_startsession(*ud, &size));
+    void *pack = mongo_pack_startsession(*ud, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
-/// 构造 SCRAM 认证第一步（saslStart）请求包
+/// 构造 SCRAM 认证第一步（saslStart）请求包，并把本次认证用的 scram 投给连接所在的网络线程装上（连同切 AUTH 态）。
+/// 返回的包须在本调用之后再发：二者走同一条命令队列，保证先装后发（同 C 侧 mongo_auth_begin）
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
+/// <param name="sk" type="userdata">连接标识，由 try_connect 给出</param>
 /// <param name="authmod" type="string">认证机制名（如 "SCRAM-SHA-256"）</param>
-/// <returns type="lightuserdata?">命令数据指针；失败返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；用户名 / 密码 / 认证库缺一、算法不支持或连接已失效返回 nil，与数据长度一并为 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_auth_first(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    const char *authmod = luaL_checkstring(lua, 2);
+    sock_ctx *sk = lpub_check_sock(lua, 2);
+    const char *authmod = luaL_checkstring(lua, 3);
+    LPUB_CUR_TASK(lua, task);
     size_t size;
-    void *pack = mongo_pack_scram_client_first(*ud, authmod, &size);
+    struct scram_ctx *scram;
+    void *pack = mongo_pack_scram_client_first(*ud, authmod, &scram, &size);
+    if (NULL != pack
+        && ERR_OK != mongo_auth_begin(&task->loader->netev, sk, scram)) {
+        FREE(pack);// 置空后下面按失败返回 nil
+    }
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -745,11 +745,11 @@ static int32_t _lmongo_pack_auth_first(lua_State *lua) {
 /// <param name="payload" type="lightuserdata">客户端 final payload 指针，由 crypt.scram 算出
 ///     （c=,r=,p=）；不是 parse_auth_response 给的那份服务端 payload，本函数不要求 NUL 结尾</param>
 /// <param name="plens" type="integer">payload 字节数</param>
-/// <returns type="lightuserdata?">命令数据指针；payload 撑得总长超单包上限(MONGO_MAX_PACK_LENS)时返回 nil，与数据长度一并为 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；payload 撑得总长超组包上限(INT32_MAX)时返回 nil，与数据长度一并为 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_auth_final(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
-    int32_t convid = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t convid = lpub_check_i32(lua, 2, "convid out of range");
     LPUB_LUD_ARG(lua, char, 3, payload);
     // 走 lpub_check_lens 拿上界：越界直接 bson_append_binary 的 ASSERTAB 会打死整个进程
     size_t plens = lpub_check_lens(lua, 4, INT32_MAX);
@@ -850,7 +850,6 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
     luaL_Reg reg_func[] = {
         { "try_connect",          _lmongo_try_connect },
         { "sock_id",              _lmongo_sock_id },
-        { "set_auth_status",      _lmongo_set_auth_status },
         { "db",                   _lmongo_db },
         { "authdb",               _lmongo_authdb },
         { "collection",           _lmongo_collection },
@@ -863,6 +862,8 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
         { "clear_flag",           _lmongo_clear_flag },
         { "clear_session",        _lmongo_clear_session },
         { "session_touch",        _lmongo_session_touch },
+        { "txn_mark",             _lmongo_txn_mark },
+        { "txn_moved",            _lmongo_txn_moved },
         { "requestid",            _lmongo_requestid },
         { "pack_hello",           _lmongo_pack_hello },
         { "pack_ping",            _lmongo_pack_ping },
@@ -891,7 +892,8 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
 }
 // ---- mongo.session ----
 /// <summary>
-/// 创建会话上下文。不传 uuid 时在本地生成 v4 UUID 作 lsid，服务端第一次见到它时自动建会话，不必发 startSession
+/// 创建会话上下文。不传 uuid 时在本地生成 v4 UUID 作 lsid，服务端第一次见到它时自动建会话，不必发 startSession。
+/// session 持宿主 C 块的一份引用，释放时交还
 /// </summary>
 /// <param name="mongo" type="_mongo_ctx">所属 mongo 连接</param>
 /// <param name="uuid" type="string?">16 字节会话 UUID；nil / 不传则本地生成</param>
@@ -917,6 +919,7 @@ static int32_t _lmongo_session_new(lua_State *lua) {
     CALLOC(session, 1, sizeof(mongo_session));
     memcpy(session->uuid, uuid_str, UUID_LENS);
     session->mongo = mongo;
+    PROT_REF_ACQUIRE(mongo);// 其后不再有会报错的步骤，__gc 的 release 与它成对
     session->timeoutmin = timeout;
     mongo_session_renew(session);
     *psession = session;
@@ -946,16 +949,14 @@ static int32_t _lmongo_session_expires(lua_State *lua) {
     lua_pushinteger(lua, (lua_Integer)mongo_session_expires(*ud));
     return 1;
 }
-// 解除宿主对本 session 的绑定。宿主可能已被 m:__gc() 先释放，那时 session->mongo 是悬垂指针，
-// 连读都不能读，所以先确认宿主还在
-static void _lmongo_session_unbind(lua_State *lua, mongo_session *session) {
-    if (NULL != lpub_owner_ptr(lua, MT_MONGO)
-        && NULL != session->mongo && session->mongo->session == session) {
+// 解除宿主对本 session 的绑定。宿主已被 __gc 也照做：块由本 session 的引用撑着
+static void _lmongo_session_unbind(mongo_session *session) {
+    if (session->mongo->session == session) {
         session->mongo->session = NULL;
     }
 }
 /// <summary>
-/// 释放会话：先解绑宿主 mongo 上的引用，再释放 options 与自身；同时作为 __gc 调用。
+/// 释放会话：先解宿主 mongo 上的绑定，再释放 options、交还宿主引用并释放自身；同时作为 __gc 调用。
 /// 不发送 endSessions，那一步由 Lua 层负责。可重复调用——内部指针置空后二次调用即早退
 /// </summary>
 /// <param name="self" type="userdata">mongo 会话对象</param>
@@ -964,8 +965,9 @@ static int32_t _lmongo_session_free(lua_State *lua) {
     mongo_session **psession = lpub_check_udata(lua, 1, MT_MONGO_SESSION);
     if (NULL != *psession) {
         mongo_session *session = *psession;
-        _lmongo_session_unbind(lua, session);
+        _lmongo_session_unbind(session);
         FREE(session->options);
+        PROT_REF_RELEASE(session->mongo);
         FREE(session);
         *psession = NULL;
     }
@@ -975,7 +977,7 @@ static int32_t _lmongo_session_free(lua_State *lua) {
 /// 开始事务（递增 txnNumber，构建事务选项 BSON，设置 mongo->session）
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
-/// <returns type="boolean">成功 true；该连接上已有别的 session 处于事务中、或本会话已随旧连接失效时 false</returns>
+/// <returns type="boolean">成功 true；该连接上已有别的 session 处于事务中（含已随重连作废、还没收尾的）时 false</returns>
 static int32_t _lmongo_session_begin(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
     return lpub_rtn_bool(lua, ERR_OK == mongo_begin(*psession));
@@ -993,7 +995,7 @@ static int32_t _lmongo_session_done(lua_State *lua) {
     }
     FREE(session->options);
     session->options = NULL;
-    _lmongo_session_unbind(lua, session);
+    _lmongo_session_unbind(session);
     return 0;
 }
 /// <summary>
@@ -1005,8 +1007,7 @@ static int32_t _lmongo_session_done(lua_State *lua) {
 static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
     size_t size;
-    void *pack;
-    LMONGO_PACK_NOFLAG((*psession)->mongo, pack, mongo_pack_refreshsession(*psession, &size));
+    void *pack = mongo_pack_refreshsession(*psession, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -1028,16 +1029,15 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃、
-/// 或连接已不再绑定该 session 时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超组包上限(INT32_MAX)被丢弃、
+/// 或连接已不再绑定该 session 时返回 nil；事务已随重连作废(见 stale)时同样返回 nil，绑定不动，该改发 pack_abort 了结</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 2, &optlens);
     size_t size;
-    void *pack;
-    LMONGO_PACK_NOFLAG((*psession)->mongo, pack, mongo_pack_committransaction(*psession, opts, optlens, &size));
+    void *pack = mongo_pack_committransaction(*psession, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -1046,17 +1046,46 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超单包上限(MONGO_MAX_PACK_LENS)被丢弃、
-/// 或连接已不再绑定该 session 时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；opts 不是落在缓冲内的完整文档、或超组包上限(INT32_MAX)被丢弃、
+/// 或连接已不再绑定该 session 时返回 nil；事务已随重连作废照常组包(在新连接上中止一样作数)</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     LMONGO_SESSION_ARG(lua, psession);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 2, &optlens);
     size_t size;
-    void *pack;
-    LMONGO_PACK_NOFLAG((*psession)->mongo, pack, mongo_pack_aborttransaction(*psession, opts, optlens, &size));
+    void *pack = mongo_pack_aborttransaction(*psession, opts, optlens, &size);
     return lpub_rtn_lud(lua, pack, size);
+}
+/// <summary>
+/// 本次事务是否已随重连作废（begin 之后连接换过），判据见 C 层 mongo_session_stale。作废的事务只能中止
+/// </summary>
+/// <param name="self" type="userdata">session 对象，须已 begin</param>
+/// <returns type="boolean">已作废 true</returns>
+static int32_t _lmongo_session_stale(lua_State *lua) {
+    LMONGO_SESSION_ARG(lua, psession);
+    return lpub_rtn_bool(lua, mongo_session_stale(*psession));
+}
+/// <summary>
+/// 绑在连接上的事务是否还没组出过首条命令（begin 之后的空事务）。空事务收尾不发包，本地 done 并按成功返回，同 C 层 mongo_commit
+/// </summary>
+/// <param name="self" type="userdata">session 对象</param>
+/// <returns type="boolean">空事务 true</returns>
+static int32_t _lmongo_session_empty(lua_State *lua) {
+    LMONGO_SESSION_ARG(lua, psession);
+    mongo_session *session = *psession;
+    return lpub_rtn_bool(lua, session->mongo->session == session && 0 == session->started);
+}
+/// <summary>
+/// 当前事务序号（txnNumber），每次 begin 加一。收尾等回包期间若同一 session 又 begin 过，前后读到的不同，
+/// 此时绑定与 options 已归新事务，不能再 done
+/// </summary>
+/// <param name="self" type="userdata">session 对象</param>
+/// <returns type="integer">事务序号</returns>
+static int32_t _lmongo_session_txn(lua_State *lua) {
+    LMONGO_SESSION_ARG(lua, psession);
+    lua_pushinteger(lua, (lua_Integer)(*psession)->txnnumber);
+    return 1;
 }
 //mongo.session
 LUAMOD_API int luaopen_mongo_session(lua_State *lua) {
@@ -1073,6 +1102,9 @@ LUAMOD_API int luaopen_mongo_session(lua_State *lua) {
         { "pack_endsession",  _lmongo_session_pack_endsession },
         { "pack_commit",      _lmongo_session_pack_commit },
         { "pack_abort",       _lmongo_session_pack_abort },
+        { "stale",            _lmongo_session_stale },
+        { "empty",            _lmongo_session_empty },
+        { "txn",              _lmongo_session_txn },
         { "free",             _lmongo_session_free },
         { "__gc",             _lmongo_session_free },
         { NULL, NULL }

@@ -55,10 +55,10 @@ static inline void spin_lock(spin_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// 尝试锁定
+/// 尝试锁定。可重入性同 mutex_trylock：Windows 上(CRITICAL_SECTION)已持锁的线程再 trylock 也成功，其余平台失败
 /// </summary>
 /// <param name="ctx">spin_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 锁被占用</returns>
 static inline int32_t spin_trylock(spin_ctx *ctx) {
 #if defined(OS_WIN)
     return TRUE == TryEnterCriticalSection(ctx) ? ERR_OK : ERR_FAILED;

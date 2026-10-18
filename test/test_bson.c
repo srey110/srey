@@ -621,8 +621,8 @@ static void test_bson_cat_bounds(CuTest *tc) {
     big[0] = (char)0x70;
     big[1] = (char)0x11;
     big[2] = (char)0x01;
-    // 结构合法的大文档照收:字节数上限不归 bson_cat 管(取决于承载协议,如 mongo 的
-    // MONGO_MAX_PACK_LENS)。换个 ctx 拼,免得把 dst 撑大影响后面的 before 比对
+    // 结构合法的大文档照收:字节数上限不归 bson_cat 管(取决于承载协议,如 mongo 组包侧的
+    // INT32_MAX)。换个 ctx 拼,免得把 dst 撑大影响后面的 before 比对
     bson_ctx bigdst;
     bson_init(&bigdst, NULL, 0);
     CuAssertIntEquals(tc, ERR_OK, bson_cat(&bigdst, big, 70000));
@@ -673,6 +673,53 @@ static void test_bson_cat_bounds(CuTest *tc) {
     BSON_FREE(&empty);
     BSON_FREE(&src);
     BSON_FREE(&dst);
+}
+
+// bson_check_doc 的三条判据：不足 5 字节、头声明长度不等于 lens(大小两个方向)、末字节不是 EOD。
+// 比 bson_cat 严的只有"声明长度小于 lens"这一处：尾部多出字节时 bson_cat 照收、bson_check_doc 拒
+static void test_bson_check_doc(CuTest *tc) {
+    size_t elens = 0;
+    const char *empty = bson_empty(&elens);
+    CuAssertIntEquals(tc, ERR_OK, bson_check_doc(empty, elens));
+
+    bson_ctx src;
+    bson_init(&src, NULL, 0);
+    bson_append_int32(&src, "n", 7);
+    bson_append_end(&src);
+    CuAssertIntEquals(tc, ERR_OK, bson_check_doc(BSON_DOC(&src), BSON_DOC_LENS(&src)));
+
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_doc(NULL, 5));
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_doc(empty, 0));
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_doc(empty, 4));
+    // 头声明长度大于 lens：截断的文档
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_doc(BSON_DOC(&src), BSON_DOC_LENS(&src) - 1));
+    // 非 BSON 文本：头 4 字节读出来的长度对不上
+    char text[] = "abcdefgh";
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_doc(text, sizeof(text)));
+
+    // 头声明 8、末字节不是 EOD
+    char tiny[8];
+    ZERO(tiny, sizeof(tiny));
+    tiny[0] = 8;
+    tiny[7] = 0x41;
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_doc(tiny, sizeof(tiny)));
+    tiny[7] = 0;
+    CuAssertIntEquals(tc, ERR_OK, bson_check_doc(tiny, sizeof(tiny)));
+
+    // 头声明长度小于 lens：尾部多出字节，bson_check_doc 拒，bson_cat 只拼声明的那段
+    char slack[32];
+    ZERO(slack, sizeof(slack));
+    memcpy(slack, BSON_DOC(&src), BSON_DOC_LENS(&src));
+    slack[BSON_DOC_LENS(&src)] = 0x41;
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_doc(slack, BSON_DOC_LENS(&src) + 1));
+    bson_ctx dst;
+    bson_init(&dst, NULL, 0);
+    size_t before = BSON_DOC_LENS(&dst);
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, slack, BSON_DOC_LENS(&src) + 1));
+    CuAssertTrue(tc, before + BSON_DOC_LENS(&src) - 5 == BSON_DOC_LENS(&dst));
+
+    BSON_FREE(&dst);
+    BSON_FREE(&src);
 }
 
 /* =======================================================================
@@ -756,10 +803,10 @@ static void test_bson_extra_types(CuTest *tc) {
 
 /* =======================================================================
  * bson_check_depth —— DoS 防护（消费者递归解码前的嵌套深度预检）
- * BSON_MAX_DEPTH = 18，depth > 18 拒绝
+ * BSON_MAX_DEPTH = 18，顶层算第 1 层，超过 18 层拒绝（与写侧同口径）
  * ======================================================================= */
 static void test_bson_check_depth(CuTest *tc) {
-    /* 平坦文档：深度 0，应允许 */
+    /* 平坦文档：只有顶层 1 层，应允许 */
     bson_ctx flat;
     bson_init(&flat, NULL, 0);
     bson_append_int32(&flat, "a", 1);
@@ -805,8 +852,36 @@ static void test_bson_check_depth(CuTest *tc) {
         buf[i][7 + blens[i-1]] = 0;
         blens[i] = total;
     }
-    /* buf[19] 最外层从 depth=0 起递归 19 次进入叶子时 depth=19 > 18 → 拒绝 */
+    /* buf[19] 共 20 层，最外层从 depth=1 起，递归到 buf[1] 时 depth=19 > 18 → 拒绝 */
     CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(buf[19], blens[19]));
+
+    // 同一组文档钉住另两处同口径的边界(顶层算第 1 层)。串化：18 层照常，19 层截成 "(too deep)"
+    char *s18 = bson_tostring2(buf[17], blens[17]);
+    char *s19 = bson_tostring2(buf[18], blens[18]);
+    int deep18 = (NULL != strstr(s18, "(too deep)"));
+    int deep19 = (NULL != strstr(s19, "(too deep)"));
+    FREE(s18);
+    FREE(s19);
+    CuAssertTrue(tc, !deep18);
+    CuAssertTrue(tc, deep19);
+    // 点分路径：18 段能找到；19 段即使文档里真有也按超限返 ERR_FAILED，且不置错误标志
+    char path[40];
+    for (i = 0; i < 19; i++) {
+        path[i * 2] = 'x';
+        path[i * 2 + 1] = '.';
+    }
+    bson_ctx deep;
+    bson_iter it, res;
+    bson_init(&deep, buf[19], blens[19]);
+    bson_iter_init(&it, &deep);
+    path[18 * 2 - 1] = '\0';
+    CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&it, path, &res));
+    CuAssertIntEquals(tc, BSON_DOCUMENT, res.type);
+    bson_iter_init(&it, &deep);
+    path[18 * 2 - 1] = '.';
+    path[19 * 2 - 1] = '\0';
+    CuAssertIntEquals(tc, ERR_FAILED, bson_iter_find(&it, path, &res));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&it));
 }
 
 /* =======================================================================
@@ -872,6 +947,21 @@ static void test_bson_tostring(CuTest *tc) {
     CuAssertTrue(tc, NULL != strstr(s3, "a\\0b"));
     FREE(s3);
     BSON_FREE(&nb);
+
+    // 整数类字段的文本与 printf 的 %d / %lld 一致，负数端点也对
+    bson_ctx ib;
+    bson_init(&ib, NULL, 0);
+    bson_append_int32(&ib, "i32", INT32_MIN);
+    bson_append_int64(&ib, "i64", INT64_MIN);
+    bson_append_date(&ib, "d", -1);
+    bson_append_end(&ib);
+    char *s4 = bson_tostring(&ib);
+    CuAssertPtrNotNull(tc, s4);
+    CuAssertTrue(tc, NULL != strstr(s4, "i32(int): -2147483648\r\n"));
+    CuAssertTrue(tc, NULL != strstr(s4, "i64(long): -9223372036854775808\r\n"));
+    CuAssertTrue(tc, NULL != strstr(s4, "d(date): -1\r\n"));
+    FREE(s4);
+    BSON_FREE(&ib);
 }
 
 /* =======================================================================
@@ -896,6 +986,9 @@ static void test_bson_misc(CuTest *tc) {
     CuAssertTrue(tc, !all_zero);
     /* 序列号字段（最后 3 字节）应不同（或时间字段不同） */
     CuAssertTrue(tc, 0 != memcmp(a, b, BSON_OID_LENS));
+    // 同进程: 中间 5 字节随机段不变, 计数器(末 3 字节)按 24 位回绕逐个加 1
+    CuAssertTrue(tc, 0 == memcmp(a + 4, b + 4, 5));
+    CuAssertTrue(tc, ((read_be32(a + 8) + 1) & 0xFFFFFF) == (read_be32(b + 8) & 0xFFFFFF));
 
     /* bson_type_tostring 覆盖主要类型分支 */
     CuAssertStrEquals(tc, "double",   bson_type_tostring(BSON_DOUBLE));
@@ -936,13 +1029,13 @@ static void test_bson_iter_neg_lens(CuTest *tc) {
     CuAssertTrue(tc, !bson_iter_next(&iter));
 }
 
-// 深度临界：18 层（BSON_MAX_DEPTH=18）应允许，19 层拒绝
-// 现有 test_bson_check_depth 已覆盖 17/20 层，本测试精确卡边界
+// 深度临界：连同顶层 18 层（BSON_MAX_DEPTH=18）应允许，19 层拒绝，与写侧能写的层数一致
+// 现有 test_bson_check_depth 已覆盖 18/20 层，本测试精确卡边界
 static void test_bson_check_depth_boundary(CuTest *tc) {
     // 复用 test_bson_check_depth 同样的手工 wire 构造方式
     char buf[20][1024];
     size_t blens[20];
-    // 叶子（深度 0）: 空文档 5 字节
+    // 叶子: 空文档 5 字节，buf[i] 共 i + 1 层
     buf[0][0] = 5; buf[0][1] = 0; buf[0][2] = 0; buf[0][3] = 0; buf[0][4] = 0;
     blens[0] = 5;
     int i;
@@ -959,10 +1052,10 @@ static void test_bson_check_depth_boundary(CuTest *tc) {
         buf[i][7 + blens[i-1]] = 0;
         blens[i] = total;
     }
-    // buf[18] 包含 19 个嵌套层级（含叶子），递归深度走到 18 = BSON_MAX_DEPTH，允许
-    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(buf[18], blens[18]));
-    // buf[19] 深度走到 19，超出 BSON_MAX_DEPTH 拒绝
-    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(buf[19], blens[19]));
+    // buf[17] 共 18 层（含叶子），深度走到 18 = BSON_MAX_DEPTH，允许
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(buf[17], blens[17]));
+    // buf[18] 共 19 层，超出 BSON_MAX_DEPTH 拒绝
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(buf[18], blens[18]));
 }
 
 // bson_check_depth 的契约是"深度未超限 且 文档结构合法"。此前它只能判前者：
@@ -1903,6 +1996,22 @@ static void test_bson_append_klens(CuTest *tc) {
     bson_append_int322(&b, "0", 1, 2);
     bson_append_end(&a);
     bson_append_end(&b);
+    size_t elens;
+    char *edoc = (char *)bson_empty(&elens);
+    bson_append_document(&a, "key", edoc, elens);
+    bson_append_document2(&b, kbuf, 3, edoc, elens);
+    bson_append_array(&a, "key", edoc, elens);
+    bson_append_array2(&b, kbuf, 3, edoc, elens);
+    bson_append_regex(&a, "key", "^a.*", "i");
+    bson_append_regex2(&b, kbuf, 3, "^a.*", "i");
+    bson_append_jscode_n(&a, "key", "f()\0g", 5);
+    bson_append_jscode_n2(&b, kbuf, 3, "f()\0g", 5);
+    bson_append_timestamp(&a, "key", 0x11223344u, 0x55667788u);
+    bson_append_timestamp2(&b, kbuf, 3, 0x11223344u, 0x55667788u);
+    bson_append_minkey(&a, "key");
+    bson_append_minkey2(&b, kbuf, 3);
+    bson_append_maxkey(&a, "key");
+    bson_append_maxkey2(&b, kbuf, 3);
     // 空 key
     bson_append_null(&a, "");
     bson_append_null2(&b, kbuf, 0);
@@ -1924,6 +2033,28 @@ static void test_bson_append_klens(CuTest *tc) {
     bson_append_binary2(&b, BSON_DOC(&b) + off, 4, BSON_SUBTYPE_USER, big, sizeof(big));
     bson_append_int32(&a, "elf", 3);
     bson_append_int322(&b, BSON_DOC(&b) + off + 1, 3, 3);
+    bson_append_end(&a);
+    bson_append_end(&b);
+    CuAssertTrue(tc, BSON_DOC_LENS(&a) == BSON_DOC_LENS(&b));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&a), BSON_DOC(&b), BSON_DOC_LENS(&a)));
+    BSON_FREE(&a);
+    BSON_FREE(&b);
+
+    // regex2：key / pattern / options 三者都取自本 ctx 缓冲，且这次追加必然扩容(初始 256 → 512 → 1024)
+    static char pat[301];
+    memset(pat, 'r', 300);
+    pat[300] = '\0';
+    bson_init(&a, NULL, 0);
+    bson_init(&b, NULL, 0);
+    bson_append_utf8(&a, "p", pat);
+    bson_append_utf8(&b, "p", pat);
+    bson_append_utf8(&a, "o", "im");
+    bson_append_utf8(&b, "o", "im");
+    size_t popt = b.doc.offset - 3;// "im\0" 的起点
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&b) + 5, "p", 1));// 首元素的 key
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&b) + 11, pat, 301));// 首元素的值(type 1 + key 2 + 长度 4 之后)
+    bson_append_regex(&a, "p", pat, "im");
+    bson_append_regex2(&b, BSON_DOC(&b) + 5, 1, BSON_DOC(&b) + 11, BSON_DOC(&b) + popt);
     bson_append_end(&a);
     bson_append_end(&b);
     CuAssertTrue(tc, BSON_DOC_LENS(&a) == BSON_DOC_LENS(&b));
@@ -2149,6 +2280,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_cat_self_alias);
     SUITE_ADD_TEST(suite, test_bson_complete_cat);
     SUITE_ADD_TEST(suite, test_bson_cat_bounds);
+    SUITE_ADD_TEST(suite, test_bson_check_doc);
     SUITE_ADD_TEST(suite, test_bson_extra_types);
     SUITE_ADD_TEST(suite, test_bson_check_depth);
     SUITE_ADD_TEST(suite, test_bson_iter_neg_lens);

@@ -4,6 +4,11 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local pgsql  = require("lib.pgsql")
 local pbind  = require("srey.pgsql.bind")
+local cpg    = require("srey.pgsql")
+local preader = require("srey.pgsql.reader")
+
+-- 数据库地址：在 VM 上跑时改成宿主机 IP，只改这一处
+local DB_HOST = "127.0.0.1"
 
 -- reader:get 对拍用的列：{ 列名, 对应的单列取值方法 }；numeric 没有单列方法，get 对它必须抛错
 local PG_COLS = {
@@ -65,9 +70,45 @@ local function _pg_get_vs_single(t, rd, label)
     return rows
 end
 
+-- TLS：SSLRequest → 握手 → SCRAM（服务端开 TLS 时选 SCRAM-SHA-256-PLUS）→ 查一条。
+-- 服务端没开 TLS（show ssl 为 off，SSLRequest 会回 'N'）或没注册客户端 SSL 上下文时跳过；pg 是明文主连接，拿来探测
+local function _pg_tls_case(t, pg)
+    local srs = pg:query("show ssl")
+    local sok, sslset = false, nil
+    if srs and "userdata" == type(srs[1]) then
+        sok, sslset = srs[1]:text("ssl", true)
+    end
+    if not t:check(sok, "show ssl 读得出: " .. tostring(sslset)) then
+        return
+    end
+    if "on" ~= sslset then
+        printd("[%s] server ssl is off, pgsql tls case skipped", t.name)
+        return
+    end
+    if not srey.ssl_qury(SSL_NAME.CLIENT) then
+        printd("[%s] ssl context not registered, pgsql tls case skipped", t.name)
+        return
+    end
+    local ps = pgsql.new(DB_HOST, 5432, SSL_NAME.CLIENT, "admin", "12345678", "test")
+    if not t:check(ps:connect(), "pgsql TLS 连接并完成 SCRAM 认证") then
+        return
+    end
+    local trs = ps:query("select ssl, system_user from pg_stat_ssl where pid = pg_backend_pid()")
+    local bok, bv, uok, su = false, nil, false, nil
+    if trs and "userdata" == type(trs[1]) then
+        bok, bv = trs[1]:bool("ssl")
+        uok, su = trs[1]:text("system_user", true)
+    end
+    t:check(bok and true == bv, "TLS 连接上服务端看到的会话是 SSL")
+    -- pg_hba 若不是 scram-sha-256(md5 / trust)就根本没走通道绑定，上面那条连上也说明不了 PLUS
+    t:check(uok and "string" == type(su) and nil ~= su:find("^scram%-sha%-256:"),
+            "TLS 连接走的是 SCRAM 认证: " .. tostring(su))
+    ps:quit()
+end
+
 srey.startup(function()
 runner.run(function(t)
-    local pg = pgsql.new("127.0.0.1", 5432, SSL_NAME.NONE,
+    local pg = pgsql.new(DB_HOST, 5432, SSL_NAME.NONE,
                          "admin", "12345678", "test")
     if not pg:connect() then
         t:fail("pgsql connect")
@@ -136,6 +177,43 @@ runner.run(function(t)
     local back = pg:query("select name from srey_test where id = 102")
     t:check(back and "userdata" == type(back[1]) and 0 == back[1]:size(),
             "multi-statement: first insert rolled back")
+    -- reader.at / pgsql.affected_at / pgsql.result_count / pgsql.complete：直接对原始响应包调，下标 1 基。
+    -- 响应包只到本协程下次挂起前有效，断言全在 syn_send 之后、不挂起的这一段里做完
+    local aok, aret = pg.serial(function()
+        local qpack, qsize = cpg.pack_query("select 1 as a; select 2 as b;"
+            .. " insert into srey_test (id, name, score) values (200, 'at', 0)")
+        local pgpack = srey.syn_send(pg:sock_id(), qpack, qsize, 0)
+        if not pgpack then
+            return "query 无应答"
+        end
+        t:eq(3, cpg.result_count(pgpack), "result_count 每条语句一个")
+        local rb = preader.at(pgpack, 2)
+        local bok, bv = false, nil
+        if rb then
+            bok, bv = rb:integer("b")
+        end
+        t:check(bok and 2 == bv, "reader.at(2) 取第二条语句的结果: " .. tostring(bv))
+        t:eq(nil, preader.at(pgpack, 2), "同一下标只能取走一次")
+        t:eq(nil, preader.at(pgpack, 3), "无结果集的语句给 nil")
+        t:eq(nil, preader.at(pgpack, 4), "下标越界给 nil")
+        t:eq(nil, preader.at(pgpack, 0), "下标 0 给 nil")
+        local ra = preader.at(pgpack, 1)
+        local aok1, av = false, nil
+        if ra then
+            aok1, av = ra:integer("a")
+        end
+        t:check(aok1 and 1 == av, "reader.at(1) 乱序取也对: " .. tostring(av))
+        t:eq(1, cpg.affected_at(pgpack, 1), "affected_at(1) 是第一条 SELECT 的行数")
+        t:eq(1, cpg.affected_at(pgpack, 3), "affected_at(3) 是 INSERT 的行数")
+        t:eq(0, cpg.affected_at(pgpack, 4), "affected_at 越界为 0")
+        t:eq("INSERT 0 1", cpg.complete(pgpack), "complete 是最后一条的标签")
+        return true
+    end)
+    t:check(aok and true == aret, "reader.at 一组跑完: " .. tostring(aret))
+
+    -- 组包抛错（sql 不是字符串）：serial 只打 ERROR 日志，erro() 也得有文案
+    t:check(not pg:query({}), "sql 非字符串 query 返 false")
+    t:check(pg:erro() ~= "", "组包抛错时 pg:erro() 不为空")
 
     -- 预处理 + 执行
     local stmt = pg:prepare("stmt_sel", "select name from srey_test where id = $1", 1, { 23 })
@@ -145,9 +223,14 @@ runner.run(function(t)
         local r2 = stmt:execute(bind)
         if r2 then
             t:eq(1, _count_rows(r2), "stmt execute one row")
+            -- 返回结果集时 affected 也刷成返回的行数，口径同 pg:query
+            t:eq(1, stmt:affected_rows(), "stmt execute 有结果集时 affected 为返回行数")
         else
             t:fail("pgsql stmt execute reader nil")
         end
+        -- stmt 同理：实绑个数与 bind.new 声明不符时组包抛错
+        t:check(not stmt:execute(pbind.new(1)), "绑定个数不符 execute 返 false")
+        t:check(stmt:erro() ~= "", "组包抛错时 stmt:erro() 不为空")
         stmt:close()
     else
         t:fail("pgsql prepare nil")
@@ -231,6 +314,18 @@ runner.run(function(t)
     end), "producer 返回非法块返 false")
     t:check(pg:erro() ~= "", "非法块写了 err")
     t:check(pg:query("select 1"), "非法块后连接仍可用")
+    -- 服务端中途报错（坏行）：producer 不挂起，错误原文随 CopyDone 的应答带回；服务端出错后
+    -- 会丢掉随后的 CopyData / CopyDone，只回一次 ErrorResponse + ReadyForQuery，连接不错位
+    local badsent = false
+    t:check(not pg:copy_in("copy srey_test (id, name, score) from stdin", function()
+        if badsent then
+            return nil
+        end
+        badsent = true
+        return "srey_bad_id\tzed\t1.0\n"
+    end), "copy_in 服务端报错返 false")
+    t:check(string.find(pg:erro(), "srey_bad_id", 1, true), "erro 带服务端原文: " .. pg:erro())
+    t:check(pg:query("select 1"), "服务端报错后连接仍可用")
 
     -- COPY IN 中止：CopyFail 的正常应答就是 ErrorResponse，所以"中止成功"也走 ERR 包。
     -- 服务端文本走第二返回值而不写 err —— 写了的话 erro() 会把一次正常中止报成失败，
@@ -259,6 +354,23 @@ runner.run(function(t)
     t:check(bok, "reason 为 boolean 时中止照常完成")
     t:check(pg:query("select 1"), "boolean reason 中止后连接仍可用")
 
+    -- COPY FROM STDIN 误交给 query / copy_out：库须发 CopyFail 把服务端拉出 COPY IN 模式，
+    -- 否则服务端攥着事务与表锁，下一条无关命令必失败
+    t:check(not pg:query("copy srey_test (id, name, score) from stdin"), "query 收到 COPY_IN 返 false")
+    t:check(pg:erro() ~= "", "query 收到 COPY_IN 写了 err")
+    t:check(pg:query("select 1"), "query 误收 COPY_IN 后连接仍可用")
+    t:check(not pg:copy_out("copy srey_test (id, name, score) from stdin"), "copy_out 收到 COPY_IN 返 false")
+    t:check(pg:query("select 1"), "copy_out 误收 COPY_IN 后连接仍可用")
+    -- 预处理语句走扩展协议，没法补 Sync，库直接关连接；ping 重连回来
+    local cst = pg:prepare("stmt_copy", "copy srey_test (id, name, score) from stdin")
+    if t:check(cst, "COPY FROM STDIN 可以 prepare: " .. tostring(pg:erro())) then
+        local g = pg.generation
+        t:check(not cst:execute(nil), "stmt execute 收到 COPY_IN 返 false")
+        -- 代次前进才说明连接已当场关掉；下面的 ping 无论如何都会让它前进，故夹在两者之间查
+        t:check(pg.generation ~= g, "stmt 误收 COPY_IN 当场关连接（代次前进）")
+        t:check(pg:ping(), "stmt 误收 COPY_IN 关连接后 ping 重连")
+    end
+
     -- COPY OUT
     local out, outlen = pg:copy_out("copy srey_test to stdout")
     if out then
@@ -281,8 +393,30 @@ runner.run(function(t)
     t:check(pg:ping(), "selectdb 失败后原连接仍可用")
 
     -- ping 自动重连：quit 关闭连接后 ping 应检测到死连接并重连
+    local ist = pg:prepare("stmt_reco", "select 1 as v")
+    t:check(ist, "stmt 作废用例 prepare: " .. tostring(pg:erro()))
     pg:quit()
     t:check(pg:ping(), "pgsql ping auto-reconnect after quit")
+    -- quit + ping 让代次前进：服务端已随旧连接清掉该语句，execute 拒绝，close 不再发包
+    if ist then
+        t:check(not ist:execute(nil), "重连后旧 stmt execute 返 false")
+        t:check(string.find(ist:erro(), "invalidated", 1, true), "stmt erro 写明随重连失效: " .. ist:erro())
+        t:check(ist:close(), "重连后旧 stmt close 返 true")
+    end
+
+    -- 命令没等到应答：锁内就地关连接（established 清零、代次前进），之后 ping 能重连。
+    -- 读超时有 1s 粒度（最坏多等 1s），pg_sleep 给足 2 秒
+    local oldnr = srey.get_netread_timeout()
+    srey.set_netread_timeout(300)
+    local g = pg.generation
+    local rsl = pg:query("select pg_sleep(2)")
+    srey.set_netread_timeout(oldnr)
+    t:eq(false, rsl, "没等到应答 query 返 false")
+    t:check(string.find(pg:erro(), "send failed", 1, true), "没等到应答 erro 为发送失败: " .. pg:erro())
+    t:eq(false, pg.established, "没等到应答即锁内关连接")
+    t:check(pg.generation ~= g, "没等到应答代次前进")
+    t:check(pg:ping(), "无应答关连接后 ping 重连")
+    t:check(pg:query("select 1"), "重连后查询照常")
 
     -- 并发：多协程同一条连接各查自己的常量，回读必须原样。没有串行化时命令交错，
     -- 一条 pgsql 命令要读到 ReadyForQuery 才算完，交错会让响应对错协程
@@ -311,6 +445,25 @@ runner.run(function(t)
         t:check(res[i].ok and true == res[i].val,
                 "pgsql 并发协程 " .. i .. ": " .. tostring(res[i].ok and res[i].val or res[i][1]))
     end
+
+    -- 活连接上提前回收句柄：发 Terminate 并关连接，C 块由网络线程最后释放
+    local p2 = pgsql.new(DB_HOST, 5432, SSL_NAME.NONE, "admin", "12345678", "test")
+    if t:check(p2:connect(), "pgsql 第二条连接") then
+        p2.pg:__gc()
+        t:eq(false, pcall(p2.pg.sock_id, p2.pg), "__gc 后句柄入口报错")
+    end
+    p2 = nil
+    -- 不显式 __gc：连着的句柄丢掉引用后由 GC 回收，走的是同一条路径
+    do
+        local p3 = pgsql.new(DB_HOST, 5432, SSL_NAME.NONE, "admin", "12345678", "test")
+        t:check(p3:connect(), "pgsql 第三条连接")
+    end
+    collectgarbage()
+    collectgarbage()
+    srey.sleep(200)-- 让两条连接的关闭在网络线程上走完
+    t:check(pg:ping(), "别的连接在活着时被回收后，本连接照常可用")
+
+    _pg_tls_case(t, pg)
 
     pg:quit()
 end)

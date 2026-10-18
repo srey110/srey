@@ -13,6 +13,10 @@
 #define FRAME_HEAD_MAX (HEAD_LESN + sizeof(uint64_t) + MASK_KEY_LENS)
 #define WS_UNMASK_NIOV 16 // 带掩码帧直接从节点解掩码时最多跨几个节点，再多退回拷出后原地解
 #define WS_KEYPOOL_LENS 256 // 每线程攒的掩码熵字节数，一次 csprng 顶 64 帧
+// 子协议载荷不超过它的帧：子协议缓冲为空时整包直接在帧上解(帧当链头，随消息留着)，解不完的拷进缓冲；
+// 超过它的整帧挂成外部节点。小帧也挂节点的话，对端拆成小帧发时每字节都背一个帧头和一个节点头。
+// 取 buffer_append 新开节点的最小块：不超过它的载荷拷进来不比单独挂一个节点贵，大帧与小帧交替发也放大不了几倍
+#define WS_SEC_COPY_LENS MAX_RECV_SIZE
 
 // WebSocket 帧解析状态
 typedef enum parse_status {
@@ -53,7 +57,7 @@ typedef struct ws_keypool {
 }ws_keypool;
 static _handshaked_push _hs_push; // 握手完成后的推送回调
 TLS_DEFINE(ws_keypool, _keypool, 1)
-// 承载子协议表。prots.c 只在 pkfree / udfree / may_resume 三个钩子里按 secprot 下钻,
+// 承载子协议表。只有 pkfree / udfree / may_resume 三个钩子按 secprot 下钻到 prots 的子协议表,
 // _vtbl_websock 的 closed / connected / ssl_exchanged / close_tail / recvfrom 五个仍是 NULL,
 // 留 NULL 编译器不报——往这张表里加带关闭副作用的协议(mysql/pgsql/mongo/smtp 那类)时必须同步补上
 static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqtt") - 1, "mqtt"} };
@@ -107,9 +111,9 @@ static inline void _websock_mask_xor(char *dst, const char *src, size_t lens, co
         dst[i] = src[i] ^ key[i & 3];
     }
 }
-// 与 _redis_pkfree 同契约：整条链一起释放。当前唯一的消费路径 prots_net_recv 会先用
-// _websock_pack_next 把节点逐个摘下来（摘时置 next 为 NULL），所以实际每次只释放一个；
-// 遍历是为了将来出现"拿到链头就整条丢弃"的路径（错误 unwind 之类）时不会漏掉尾部节点
+// 与 _redis_pkfree 同契约：整条链一起释放。prots_net_recv 逐个投递时先用 _websock_pack_next
+// 把节点摘下来(摘时置 next 为 NULL)，那时每次只放一个；但它换目标 task 失败时链还没拆，
+// 靠这里连同单帧多包的后继一起放，不能简化成只放单个节点
 void _websock_pkfree(void *data) {
     websock_pack_ctx *pack = (websock_pack_ctx *)data;
     websock_pack_ctx *next;
@@ -120,12 +124,26 @@ void _websock_pkfree(void *data) {
         pack = next;
     }
 }
-// 取出并断开单帧多包链表的下一个节点,供 prots_next_pack 分派调用
+// 取出并断开单帧多包链表的下一个节点,由 prots_net_recv 经协议表的 next_pack 调用
 void *_websock_pack_next(void *pack) {
     websock_pack_ctx *p = (websock_pack_ctx *)pack;
     void *next = p->next;
     p->next = NULL;
     return next;
+}
+// PING 不会是响应:放过去的话对端一个保活 PING 就能唤醒正等响应的协程,请求-响应从此错开一格;
+// PONG 照旧可唤醒,发 PING 等的就是它。承载子协议时只有真带出子协议包的帧才可能是响应——控制帧
+// 与零长数据帧的 secpack 为 NULL,放过去会撞上 prots_may_resume 入口的 NULL 短路变成"恒可唤醒"
+int32_t _websock_may_resume(void *data) {
+    websock_pack_ctx *pack = (websock_pack_ctx *)data;
+    if (WS_PING == pack->prot) {
+        return ERR_FAILED;
+    }
+    if (PACK_NONE != pack->secprot
+        && NULL == pack->secpack) {
+        return ERR_FAILED;
+    }
+    return prots_may_resume(pack->secprot, pack->secpack);
 }
 void _websock_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
@@ -147,7 +165,10 @@ void _websock_udfree(ud_cxt *ud) {
     FREE(ws);
     ud->context = NULL;
 }
-static int32_t _websock_secextra(struct watcher_ctx *watcher, struct evsock_ctx *evsk, void *val) {
+// 返回值按 _on_cmd_props 的约定：非 0 表示没接管 data，由它走 fcb 回收
+static int32_t _websock_set_secextra_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
+    void *data, uint64_t number) {
+    (void)number;
     ud_cxt *ud = _evpub_get_ud(evsk);
     const char *why = NULL;
     websock_ctx *ws = (websock_ctx *)ud->context;
@@ -166,16 +187,10 @@ static int32_t _websock_secextra(struct watcher_ctx *watcher, struct evsock_ctx 
     if (NULL != why) {
         LOG_ERROR("websock set secextra rejected (%s), closing the connection.", why);
         _evpub_disconnect(watcher, evsk);
-        return ERR_FAILED;
+        return 1;
     }
-    ws->ud->context = val;
-    return ERR_OK;
-}
-// 返回值按 _on_cmd_props 的约定：非 0 表示没接管 data，由它走 fcb 回收
-static int32_t _websock_set_secextra_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
-    void *data, uint64_t number) {
-    (void)number;
-    return ERR_OK == _websock_secextra(watcher, evsk, data) ? 0 : 1;
+    ws->ud->context = data;
+    return 0;
 }
 int32_t websock_set_secextra(ev_ctx *ev, sock_ctx *sk, void *val, free_cb fcb) {
     return ev_props(ev, sk, _websock_set_secextra_cb, fcb, val, 0);
@@ -191,8 +206,8 @@ static http_header_ctx *_websock_hscheck(struct http_pack_ctx *hpack, const ws_h
     uint32_t all = (1u << n) - 1;
     uint32_t hit = 0;
     uint32_t cnt = http_nheader(hpack);
-    uint32_t i, j;
-    for (i = 0; i < cnt && hit != all; i++) {
+    uint32_t j;
+    for (uint32_t i = 0; i < cnt && hit != all; i++) {
         head = http_header_at(hpack, i);
         for (j = 0; j < n; j++) {
             if (0 != (hit & (1u << j))// 该项已经命中过,不再重复比
@@ -221,8 +236,11 @@ static inline http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *
         { 1, "sec-websocket-key", sizeof("sec-websocket-key") - 1, NULL, 0 }
     };
     buf_ctx *status = http_status(hpack);
+    // RFC 6455 §4.2.1：方法须为 GET(区分大小写)，版本 HTTP/1.1 起。首段是 GET 时末段必是 HTTP/D.D
+    // (_http_parse_status 保证)，定长两位数字按字节比即按版本比
     if (NULL == status
-        || !buf_icompare(&status[0], "get", sizeof("get") - 1)) {
+        || !buf_compare(&status[0], "GET", sizeof("GET") - 1)
+        || memcmp(status[2].data, "HTTP/1.1", 8) < 0) {
         return NULL;
     }
     return _websock_hscheck(hpack, _svtbl, (uint32_t)ARRAY_SIZE(_svtbl));
@@ -459,7 +477,7 @@ static int32_t _websock_handshake_client(sock_ctx *sk, int32_t client, ud_cxt *u
 static void _websock_handshake(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t transfer;
-    struct http_pack_ctx *hpack = _http_parsehead(buf, ud, &transfer, status);
+    struct http_pack_ctx *hpack = _http_parsehead(buf, ud, client, &transfer, status);
     if (NULL == hpack) {
         return;
     }
@@ -496,10 +514,27 @@ static void _websock_handshake(ev_ctx *ev, sock_ctx *sk, int32_t client,
     }
     _http_pkfree(hpack);
 }
-// 释放以 websock_pack_ctx 为容器的 MQTT 数据包（通过 UPCAST 找到结构体头部）
+// 大帧载荷挂成子协议缓冲的外部节点时的释放回调：经 UPCAST 找回整帧释放
 static void _websock_mqtt_buffree(void *buf) {
     websock_pack_ctx *pack = UPCAST(buf, websock_pack_ctx, data);
     _websock_pkfree(pack);
+}
+// 解出的 MQTT 包包成链节点。frame 非 NULL 时拿它当节点(包已从它的载荷上解出的帧)，否则新开
+static websock_pack_ctx *_websock_mqtt_node(websock_ctx *ws, websock_pack_ctx *frame, struct mqtt_pack_ctx *mpack) {
+    websock_pack_ctx *node = frame;
+    if (NULL == node) {
+        MALLOC(node, sizeof(websock_pack_ctx));
+        ZERO(node, sizeof(websock_pack_ctx));
+    } else {
+        // 不能整块清零：data 的起点落在结构体尾部填充里，帧上后面的包还要读
+        node->mask = 0;
+        node->dlens = 0;
+    }
+    node->fin = 1;
+    node->prot = WS_BINARY;
+    node->secprot = ws->secprot;
+    node->secpack = mpack;
+    return node;
 }
 // 将 WebSocket 帧数据交给 MQTT 子协议解包，返回包含 MQTT 包的 websock_pack_ctx
 static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
@@ -508,19 +543,55 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
         _websock_pkfree(pack);
         return NULL;
     }
-    buffer_external(ws->buf, pack->data, pack->dlens, _websock_mqtt_buffree);
     websock_pack_ctx *head = NULL, *tail = NULL, *node;
     struct mqtt_pack_ctx *mpack;
     size_t seclens = 0, total = 0;// mqtt_unpack 裸写 *size，必须给个真地址
+    size_t dlens = pack->dlens, off = 0;
+    int32_t more = 1;
+    // 子协议缓冲为空的小帧先在帧上直接解整包，不拷进缓冲，第一个包的链节点复用帧 pack。
+    // 余下不够一整包、解出错或遇 DISCONNECT 时，没解的字节照旧进缓冲，结果同整帧进缓冲再解
+    if (dlens <= WS_SEC_COPY_LENS
+        && 0 == buffer_size(ws->buf)) {
+        while (off < dlens) {
+            mpack = _mqtt_unpack_mem(client, pack->data + off, dlens - off, ws->ud, &seclens, status);
+            if (0 == seclens) {
+                break;
+            }
+            off += seclens;
+            if (NULL == mpack) {
+                more = 0;
+                break;
+            }
+            node = _websock_mqtt_node(ws, NULL == head ? pack : NULL, mpack);
+            total += seclens;
+            if (NULL == head) {
+                head = node;
+            } else {
+                tail->next = node;
+            }
+            tail = node;
+            if (BIT_CHECK(*status, PROT_CLOSE)) {
+                more = 0;
+                break;
+            }
+        }
+    }
+    if (off == dlens) {
+        more = 0;
+    } else if (dlens <= WS_SEC_COPY_LENS) {
+        buffer_append(ws->buf, pack->data + off, dlens - off);
+    } else {
+        buffer_external(ws->buf, pack->data, dlens, _websock_mqtt_buffree);
+        pack = NULL;// 整帧交给子协议缓冲，排空时回收
+    }
+    if (pack != head) {
+        _websock_pkfree(pack);
+    }
     sock_ctx nosk = { INVALID_SOCK, INVALID_INDEX, 0 };// 子协议解包不认连接,给个无效标识而非 NULL——同族 unpack 有裸解引用的
     // ws->buf 一次性吐空,一帧内含多个完整 MQTT 包时串成链表,避免余包积压到无新数据触发才被拾起
-    while (NULL != (mpack = mqtt_unpack(NULL, &nosk, client, ws->buf, ws->ud, &seclens, status))) {
-        MALLOC(node, sizeof(websock_pack_ctx));
-        ZERO(node, sizeof(websock_pack_ctx));
-        node->fin = 1;
-        node->prot = WS_BINARY;
-        node->secprot = ws->secprot;
-        node->secpack = mpack;
+    while (more
+        && NULL != (mpack = mqtt_unpack(NULL, &nosk, client, ws->buf, ws->ud, &seclens, status))) {
+        node = _websock_mqtt_node(ws, NULL, mpack);
         total += seclens;
         if (NULL == head) {
             head = node;
@@ -528,6 +599,10 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
             tail->next = node;
         }
         tail = node;
+        // 同 TCP 承载：DISCONNECT 之后的包不再解，余下字节留在 ws->buf 里随连接释放
+        if (BIT_CHECK(*status, PROT_CLOSE)) {
+            break;
+        }
     }
     if (NULL != head) {
         head->remain = total;
@@ -554,20 +629,17 @@ static inline websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pac
 // 跨节点时按已写字节数给掩码转相位；节点数超过 WS_UNMASK_NIOV 退回拷出再原地异或
 static void _websock_unmask_from(buffer_ctx *buf, websock_pack_ctx *pack) {
     IOV_TYPE iov[WS_UNMASK_NIOV];
-    char rk[MASK_KEY_LENS];
-    const char *src;
     size_t total = pack->remain;
-    size_t seg, got = 0, done = 0, k = 0;
-    uint32_t n, i;
-    int32_t j;
-    n = buffer_get(buf, total, iov, WS_UNMASK_NIOV);
-    src = (const char *)iov[0].IOV_PTR_FIELD;
+    uint32_t n = buffer_get(buf, total, iov, WS_UNMASK_NIOV);
+    const char *src = (const char *)iov[0].IOV_PTR_FIELD;
     if ((size_t)iov[0].IOV_LEN_FIELD >= total) {
         memcpy(pack->key, src, sizeof(pack->key));
         _websock_mask_xor(pack->data, src + sizeof(pack->key), pack->dlens, pack->key);
         buffer_commit_get(buf, total);
         return;
     }
+    size_t got = 0;
+    uint32_t i;
     for (i = 0; i < n; i++) {
         got += (size_t)iov[i].IOV_LEN_FIELD;
     }
@@ -579,6 +651,9 @@ static void _websock_unmask_from(buffer_ctx *buf, websock_pack_ctx *pack) {
         ASSERTAB(total == buffer_drain(buf, total), "drain buffer failed.");
         return;
     }
+    char rk[MASK_KEY_LENS];
+    size_t seg, done = 0, k = 0;
+    int32_t j;
     for (i = 0; i < n; i++) {
         src = (const char *)iov[i].IOV_PTR_FIELD;
         seg = (size_t)iov[i].IOV_LEN_FIELD;
@@ -684,7 +759,7 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
     MALLOC(pack, sizeof(websock_pack_ctx) + dlens);
     pack->dlens = dlens;
     pack->remain = (0 == mask) ? dlens : sizeof(pack->key) + dlens;
-    pack->next = NULL;// MALLOC 不清零,显式初始化避免 prots_next_pack 读到垃圾值
+    pack->next = NULL;// MALLOC 不清零,显式初始化避免 _websock_pack_next 读到垃圾值
     ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
     return pack;
 }
@@ -771,7 +846,7 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     // 链节点只有结构体没有 data，绝不能借 dlens 记数；secpack 非空即链头(裸帧在 parse_head 置了 NULL)
     if (NULL != pack) {
         *size = (NULL != pack->secpack) ? pack->remain : pack->dlens;
-        // 对端发来 CLOSE：协议要求回一个(回显状态码)。业务回的那帧排在随后的关闭之后发不出去，只能在这里当场回。
+        // 对端发来 CLOSE：协议要求回一个(带状态码)。业务回的那帧排在随后的关闭之后发不出去，只能在这里当场回。
         // ev 为 NULL 是只解包、不在连接上收发的调用
         if (WS_CLOSE == pack->prot
             && NULL != ev) {
@@ -901,12 +976,24 @@ void *websock_pack_close(int32_t mask, uint16_t code, const char *reason, size_t
     }
     return _websock_pack_ctrl(mask, WS_CLOSE, body, sizeof(uint16_t) + rlens, size);
 }
-// 回应对端的 CLOSE：载荷只回显状态码(前 2 字节)，不带原因。协议层看不到业务发过什么，本端先发起关闭时
+uint16_t _websock_close_code(struct websock_pack_ctx *pack) {
+    if (0 == pack->dlens) {
+        return 0;
+    }
+    uint16_t code = (pack->dlens >= sizeof(uint16_t)) ? read_be16(pack->data) : 0;
+    // RFC 6455 §7.4：1004~1006、1015 是保留码，不许出现在帧里；1016~2999 未分配，5000 起无定义
+    if ((code >= 1000 && code <= 1003)
+        || (code >= 1007 && code <= 1014)
+        || (code >= 3000 && code <= 4999)) {
+        return code;
+    }
+    return 1002;// 协议错误
+}
+// 回应对端的 CLOSE：载荷只带状态码(见 _websock_close_code)，不带原因。协议层看不到业务发过什么，本端先发起关闭时
 // 收到对端的回应也会再回一个，此时对端已在收尾，多一帧无害
 static void _websock_close_reply(ev_ctx *ev, sock_ctx *sk, int32_t client, websock_pack_ctx *pack) {
     size_t size;
-    void *frame = _websock_pack_ctrl(client, WS_CLOSE, pack->data,
-                                     pack->dlens >= sizeof(uint16_t) ? sizeof(uint16_t) : 0, &size);
+    void *frame = websock_pack_close(client, _websock_close_code(pack), NULL, 0, &size);
     if (NULL != frame) {
         (void)ev_send(ev, sk, frame, size, 0);
     }
@@ -937,7 +1024,7 @@ char *websock_data(websock_pack_ctx *pack, size_t *lens) {
     return pack->data;
 }
 // 生成握手签名。nonce 走 csprng_rand 而非 randstr：后者底层是 xorshift64,种子只有
-// 线程 ID 异或时间戳,不是密码学随机源；同文件的掩码 key 一直用的就是 csprng_rand。
+// 本线程状态槽地址 ^ 时间,不是密码学随机源；同文件的掩码 key 一直用的就是 csprng_rand。
 // 取不到熵就让整条握手失败（调用方已在判 NULL），既不 abort 也不退化到弱随机源
 static int32_t _websock_sign_keys(char bs64key[B64EN_SIZE(SIGN_KEY_LENS)], char bs64sha1key[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
     char key[SIGN_KEY_LENS];

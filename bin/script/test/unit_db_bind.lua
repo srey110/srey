@@ -49,11 +49,20 @@ runner.run(function(t)
         b:clear()
         -- 命名参数（query attribute 用）
         b:integer("k_int8", 127)
-        b:integer("k_int64", 9007199254740991) -- 2^53-1（lua_Integer 安全范围上限）
+        b:integer("k_int64", 9007199254740991) -- 2^53-1（double 能精确表示的最大整数，lua_Integer 本身是 int64）
         b:float("k_float", 1.5)
         b:double("k_double", 3.14159265358979)
         b:string("k_str", "srey-mysql-bind")
         b:datetime("k_dt", os.time())
+        -- datetime 收秒，上下界是 MySQL DATETIME 的 1000-01-01 ~ 9999-12-31 23:59:59(UTC)：
+        -- 线格式年份只占 2 字节，把 reader:datetime 给的微秒原样回绑会截成另一个合法年份
+        -- 32 位 time_t 的平台(m32)上 2038 年后的秒数一律被拒，两条"合法"按平台判
+        local tt64 = pcall(b.datetime, b, "k_dt", 2147483648)
+        t:eq(tt64,  pcall(b.datetime, b, "k_dt", 253402300799),          "bind:datetime 上界 9999-12-31 23:59:59 合法")
+        t:eq(false, pcall(b.datetime, b, "k_dt", 253402300800),          "bind:datetime 超上界被拒")
+        t:eq(false, pcall(b.datetime, b, "k_dt", os.time() * 1000000),   "bind:datetime 误传微秒被拒")
+        t:eq(tt64,  pcall(b.datetime, b, "k_dt", -30610224000),          "bind:datetime 下界 1000-01-01 合法")
+        t:eq(false, pcall(b.datetime, b, "k_dt", -30610224001),          "bind:datetime 超下界被拒")
         b:time("k_tm", 0, 0, 1, 30, 0)
         -- days 与后面三个字段同口径卡下界：线格式里它是 4 字节无符号，-1 写出去解成
         -- 4294967295 天，远超 MySQL TIME 的 ±838:59:59，服务端截成另一个合法时间且无从报错
@@ -123,6 +132,13 @@ runner.run(function(t)
         t:eq(false, pcall(pbind.new, 32768), "pgsql.bind.new 超 INT16_MAX 被拒")
         t:eq(false, pcall(pbind.new, 65536), "pgsql.bind.new 超 UINT16 也被拒")
         t:eq(true,  pcall(pbind.new, 0),     "pgsql.bind.new(0) 合法")
+        -- nparam=0 的 bind 上绑值当场报错：C 层对它绑什么都静默丢掉，组包照样成功，文档却承诺个数不符报错
+        local b0 = pbind.new(0)
+        t:eq(false, pcall(b0.int32, b0, 1),   "nparam=0 时 int32 报错")
+        t:eq(false, pcall(b0.null, b0),       "nparam=0 时 null 报错")
+        t:eq(false, pcall(b0.text, b0, "x"),  "nparam=0 时 text 报错")
+        t:eq(false, pcall(b0.uuid, b0, nil),  "nparam=0 时 uuid 报错")
+        t:eq(true,  pcall(b0.clear, b0),      "nparam=0 时 clear 照常")
         t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", -1),
              "pack_stmt_prepare 负 nparam 被拒")
         t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", 32768),
@@ -140,6 +156,9 @@ runner.run(function(t)
              "oids 超 UINT32_MAX 被拒")
         t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select $1, $2", 2, { 23 }),
              "oids 短于 nparam 被拒（缺的格子原先静默补 0）")
+        -- oids / bind 传错类型当场报错，原先静默当成没传
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select $1", 1, 23), "oids 非 table 被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_execute, "st", {}), "pack_stmt_execute 的 bind 传 table 被拒")
         do
             -- 合法路径照常：整值浮点 1043.0 在 Lua 5.5 里能精确转成整数,不该误伤
             local pk, sz = pgsql.pack_stmt_prepare("st", "select $1, $2", 2, { 23, 1043.0 })
@@ -148,10 +167,11 @@ runner.run(function(t)
             t:eq(true, ok, "oids 合法值（含整值浮点）照常组包")
         end
 
-        -- 时间相关
+        -- 时间相关：timestamp 收相对 2000-01-01 的微秒，date 收相对 2000-01-01 的天数
+        local PG_EPOCH = 946684800 -- 2000-01-01 00:00:00 UTC 的 Unix 秒
         local b3 = pbind.new(3)
-        b3:timestamp(os.time())
-        b3:date(20260522)
+        b3:timestamp((os.time() - PG_EPOCH) * 1000000)
+        b3:date((os.time() - PG_EPOCH) // 86400)
         -- uuid 吃的是 16 个**原始字节**，不是 32 个十六进制字符：长度不对时
         -- _lpgsql_bind_uuid 静默改绑 NULL（既有契约，不是 bug）。
         -- 两种长度各组一次包、按 wire 里有没有那 16 字节区分——只调不断言的话，
@@ -203,10 +223,10 @@ runner.run(function(t)
         p:int32(1)
         p:__gc()
         p:__gc()
-        -- 析构后 nparam 归零，后续绑定被统一早退挡住，静默无视
-        p:int32(2)
-        p:text("after-free")
-        p:null()
+        -- 析构后等同 new(0)：再绑值报可捕获的错，clear 照常
+        t:eq(false, pcall(p.int32, p, 2), "pgsql.bind __gc 后 int32 报错")
+        t:eq(false, pcall(p.text, p, "after-free"), "pgsql.bind __gc 后 text 报错")
+        t:eq(false, pcall(p.null, p), "pgsql.bind __gc 后 null 报错")
         p:clear()
         t:check(true, "pgsql.bind __gc 后复用不崩")
 
@@ -253,6 +273,41 @@ runner.run(function(t)
 
         handle = nil
         collectgarbage()
+    end
+
+    -- ── 按 C 串下传的名字参数内含 '\0' 报错 ──────────────────────────
+    -- 下游按 strlen 取长度，不拦的话 "a\0b" 被静默截成 "a"：另一个库、另一个集合、另一条语句
+    do
+        local Z = "a\0b"
+        local my = mysql.new("127.0.0.1", 3306, nil, "u", "p", "d", "utf8mb4")
+        local mb = mbind.new()
+        local pg = pgsql.new("127.0.0.1", 5432, nil, "u", "p", "d")
+        local mg = mongo.new("127.0.0.1", 27017, nil, "d")
+        for _, e in ipairs({
+            { "mysql.new user", function() return mysql.new("127.0.0.1", 3306, nil, Z, "p", "d", "utf8mb4") end },
+            { "mysql pack_selectdb", function() return my:pack_selectdb(Z) end },
+            { "mysql bind 具名参数", function() mb:string(Z, "v") end },
+            { "pgsql.new database", function() return pgsql.new("127.0.0.1", 5432, nil, "u", "p", Z) end },
+            { "pgsql pack_stmt_execute", function() return pgsql.pack_stmt_execute(Z) end },
+            { "pgsql pack_stmt_close", function() return pgsql.pack_stmt_close(Z) end },
+            { "pgsql set_userpwd", function() return pg:set_userpwd("u", Z) end },
+            { "pgsql set_db", function() return pg:set_db(Z) end },
+            { "mongo.new db", function() return mongo.new("127.0.0.1", 27017, nil, Z) end },
+            { "mongo collection", function() return mg:collection(Z) end },
+            { "mongo pack_find 集合名", function() return mg:pack_find(Z) end },
+            { "mongo db", function() return mg:db(Z) end },
+            { "mongo user_pwd", function() return mg:user_pwd(Z, "p") end },
+            { "mongo pack_distinct key", function() return mg:pack_distinct("c", Z) end },
+        }) do
+            t:eq(false, pcall(e[2]), e[1] .. " 名字内含 \\0 报错")
+        end
+        -- 正向对照：同样的入口收正常名字照常，免得上面是因为别的原因才失败
+        t:eq(true, pg:set_db("d2"), "pgsql set_db 正常名字照常")
+        t:eq(true, mg:collection("c"), "mongo collection 正常名字照常")
+        t:eq(true, pcall(mb.string, mb, "k", "v"), "mysql bind 具名参数正常名字照常")
+        local pk, sz = pgsql.pack_stmt_close("st")
+        t:check(nil ~= pk and sz > 0, "pgsql pack_stmt_close 正常名字照常组包")
+        utils.ud_free(pk)
     end
 
     -- ── mongo.session ──────────────────────────────────────────────────
@@ -331,8 +386,22 @@ runner.run(function(t)
         t:eq(false, pcall(raw.collection, raw, 7), "collection 拒收数字")
         t:eq(true, pcall(raw.collection, raw, "c"), "collection 收字符串")
 
+        -- 挂不起的地方（sort 比较函数里）调命令：包在锁外已组好，须先放掉再抛（漏放退出时报 not free）。
+        -- 读写两个漏斗各打一次，都在发任何东西之前抛，故不需要连库
+        local wdocs = bson.encode({ { a = 1 } })
+        local wptr, wsz = wdocs:data()
+        for _, c in ipairs({ { "find", function() return mg2:find("c") end },
+                             { "insert", function() return mg2:insert("c", wptr, wsz) end } }) do
+            local sok, serr = pcall(table.sort, { 2, 1 }, function(a, b)
+                c[2]()
+                return a < b
+            end)
+            t:check(not sok and string.find(tostring(serr), "cannot yield here", 1, true),
+                "挂不起时 " .. c[1] .. " 放包后抛错: " .. tostring(serr))
+        end
+
         -- ctor 的 authmod 自查：不挡的话非字符串要到第一次 _connect 的 pack_auth_first
-        -- 才抛，而那一抛正落在 clear_flag 与 set_flag 之间，MORETOCOME 被永久摘掉、fd 也漏
+        -- 才抛，那一抛 fd 没人关，conn_pub 的 established 也留成陈旧值
         t:eq(false, pcall(mgolib.new, "127.0.0.1", 27017, SSL_NAME.NONE, "d", "u", "p", nil, {}),
             "mongo ctor: authmod 传 table 被拒")
         t:eq(false, pcall(mgolib.new, "127.0.0.1", 27017, SSL_NAME.NONE, "d", "u", "p", nil, true),
@@ -342,6 +411,20 @@ runner.run(function(t)
         -- 同族的 password 自查（既有行为，一并钉住）
         t:eq(false, pcall(mgolib.new, "127.0.0.1", 27017, SSL_NAME.NONE, "d", "u"),
             "mongo ctor: 给了 user 不给 password 被拒")
+        -- ctor 与 conn_pub.ssl 的报错位置要指回业务调用点（本文件），不是 class() 生成的 new。
+        -- 隔一层 Lua 闭包且不写成尾调用：pcall 直接调 new 时那一层是 C 函数，消息不带位置
+        local _, cmsg = pcall(function()
+            local m = mgolib.new("127.0.0.1", 27017, SSL_NAME.NONE, "d", "u", "p", nil, {})
+            return m
+        end)
+        t:check(string.find(tostring(cmsg), "unit_db_bind.lua", 1, true),
+            "mongo ctor 报错位置指向业务调用点: " .. tostring(cmsg))
+        _, cmsg = pcall(function()
+            local m = mgolib.new("127.0.0.1", 27017, "no_such_ssl", "d")
+            return m
+        end)
+        t:check(string.find(tostring(cmsg), "unit_db_bind.lua", 1, true),
+            "conn_pub.ssl 报错位置指向业务调用点: " .. tostring(cmsg))
 
         -- 超时判定：timeoutmin=30 建出来的会话剩余约 1800 秒（留出跑测试的余量）
         local left = sess:expires_in()
@@ -363,14 +446,14 @@ runner.run(function(t)
         _pack_has(t, "abortTransaction", "session pack_abort (after begin)", sess:pack_abort())
         sess:done()
 
-        -- session 的读类组包同样清零-还原宿主连接的 flags，口径见 mongo packer 段的 _check_noflag
+        -- session 的读类组包同样恒不带 MORETOCOME、不碰宿主连接的 flags，口径见 mongo packer 段的 _check_noflag
         t:check(sess:begin(), "session begin (MORETOCOME 用例)")
         for _, e in ipairs({ { "pack_refresh", sess.pack_refresh }, { "pack_commit", sess.pack_commit }, { "pack_abort", sess.pack_abort } }) do
             mg:set_flag(MORETOCOME)
             local p = e[2](sess)
             t:eq(false, nil == p or mongo.pack_check_flag(p, MORETOCOME), "session " .. e[1] .. " 读包不带 MORETOCOME")
             utils.ud_free(p)
-            t:eq(MORETOCOME, mg:clear_flag(), "session " .. e[1] .. " 组完宿主 MORETOCOME 已还原")
+            t:eq(MORETOCOME, mg:clear_flag(), "session " .. e[1] .. " 组完宿主 MORETOCOME 原样在")
         end
         sess:done()
 
@@ -384,26 +467,72 @@ runner.run(function(t)
     end
 
     -- ── 宿主被 m:__gc() 提前释放后，session 的每个入口都必须报可捕获的错 ──
-    -- session 里存的是宿主的裸指针，宿主一释放读它就是 use-after-free；
-    -- begin 更是往里写（mongo->session = session），只判自身非空拦不住
+    -- session 持宿主 C 块的一份引用，块还在；报错守的是"宿主关了 session 就不能接着用"。
+    -- 先 begin 让宿主绑着本 session，free 时解绑要写进那块仍活着的内存
     do
         local mg = mongo.new("127.0.0.1", 27017, nil, "testdb")
         local sess = mgsess.new(mg, string.rep("\xcd", 16), 30)
         t:check(sess ~= nil, "session.new before owner gc")
+        t:check(sess:begin(), "owner 释放前 begin 绑上宿主")
         mg:__gc()
-        t:eq(false, pcall(function() sess:begin() end), "owner 释放后 begin 被拒")
+        local eok, emsg = pcall(function() sess:begin() end)
+        t:check(not eok and string.find(tostring(emsg), "owner mongo already freed", 1, true),
+                "owner 释放后 begin 按宿主已释放报错: " .. tostring(emsg))
         t:eq(false, pcall(function() sess:pack_refresh() end), "owner 释放后 pack_refresh 被拒")
         t:eq(false, pcall(function() sess:pack_endsession() end), "owner 释放后 pack_endsession 被拒")
         t:eq(false, pcall(function() sess:pack_commit() end), "owner 释放后 pack_commit 被拒")
         t:eq(false, pcall(function() sess:pack_abort() end), "owner 释放后 pack_abort 被拒")
-        -- done / free 不抛错，但内部那步"解宿主的 session 绑定"必须跳过。
-        -- 注意：守卫真被删掉时那步是读悬垂指针，release 下全程静默，这里只能守住
-        -- "不抛错 / 幂等 / 之后仍按已释放报错"这几条可观测的，UAF 本身要靠 ASan
+        t:eq(false, pcall(function() sess:stale() end), "owner 释放后 stale 被拒")
+        t:eq(false, pcall(function() sess:txn() end), "owner 释放后 txn 被拒")
+        -- 只碰 session 自身的入口照常
+        t:eq(true, pcall(function() sess:renew() end), "owner 释放后 renew 不抛错")
         t:eq(true, pcall(function() sess:done() end), "owner 释放后 done 不抛错")
         t:eq(true, pcall(function() sess:free() end), "owner 释放后 free 不抛错")
         t:eq(true, pcall(function() sess:free() end), "owner 释放后 free 幂等")
         t:eq(false, pcall(function() sess:begin() end), "free 之后 begin 仍被拒")
         sess = nil
+        mg = nil
+        collectgarbage()
+    end
+
+    -- ── 宿主先 __gc、session 不显式 free 交给 GC：最后一份引用由 session 的 __gc 放手 ──
+    -- 漏放手退出时报 not free，多放一次即重复释放
+    do
+        local mg = mongo.new("127.0.0.1", 27017, nil, "testdb")
+        local sess = mgsess.new(mg, string.rep("\xce", 16), 30)
+        t:check(sess:begin(), "宿主先 gc 用例: begin 绑上宿主")
+        mg:__gc()
+        sess = nil
+        mg = nil
+        collectgarbage()
+        collectgarbage()
+        t:check(true, "宿主先 __gc、session 后由 GC 回收不崩")
+    end
+
+    -- ── session 先释放，宿主照常可用：解绑生效、引用归还后宿主仍持自己那份 ──
+    do
+        local mg = mongo.new("127.0.0.1", 27017, nil, "testdb")
+        local s1 = mgsess.new(mg, string.rep("\xd1", 16), 30)
+        t:check(s1:begin(), "session 先放用例: s1 begin")
+        s1:free()
+        -- 宿主块被清零释放的话 $db 就成了空串：查库名才测得出 s1 是不是多放了一份引用
+        _pack_has(t, "testdb", "s1 free 后宿主块仍在", mg:pack_ping())
+        -- s1 释放时解了绑，否则这里会因"连接已有活跃事务"被拒
+        local s2 = mgsess.new(mg, string.rep("\xd2", 16), 30)
+        t:check(s2:begin(), "s1 free 后 s2 能 begin")
+        _pack_has(t, "commitTransaction", "s1 free 后 s2 pack_commit", s2:pack_commit())
+        s1 = nil
+        s2 = nil
+        collectgarbage()
+        collectgarbage()
+        -- s2 由 GC 回收，同样解绑并交还引用
+        local s3 = mgsess.new(mg, string.rep("\xd3", 16), 30)
+        t:check(s3:begin(), "s2 被 GC 后 s3 能 begin")
+        _pack_has(t, "abortTransaction", "s2 被 GC 后 s3 pack_abort", s3:pack_abort())
+        s3:free()
+        _pack_has(t, "testdb", "session 都放手后宿主 pack_ping 照常", mg:pack_ping())
+        mg:__gc()
+        s3 = nil
         mg = nil
         collectgarbage()
     end
@@ -421,6 +550,14 @@ runner.run(function(t)
         t:eq(false, pcall(mysql.has_more, yyjson.null), "mysql.has_more NULL 指针被拒")
         t:eq(false, pcall(mreader.new, yyjson.null), "mysql.reader.new NULL 指针被拒")
         t:eq(false, pcall(mstmt.new, m, yyjson.null), "mysql.stmt.new NULL 指针被拒")
+        -- 按包取计数 / 错误与 record 同样裸解引用 mpack
+        t:eq(false, pcall(mysql.pack_affected_rows, yyjson.null), "mysql.pack_affected_rows NULL 指针被拒")
+        t:eq(false, pcall(mysql.pack_last_id, yyjson.null), "mysql.pack_last_id NULL 指针被拒")
+        t:eq(false, pcall(mysql.pack_erro, yyjson.null), "mysql.pack_erro NULL 指针被拒")
+        t:eq(false, pcall(m.record, m, yyjson.null), "mysql:record NULL 指针被拒")
+        -- 没记过任何包时连接级计数为 0
+        t:eq(0, m:last_id(), "未记包时 last_id 为 0")
+        t:eq(0, m:affectd_rows(), "未记包时 affectd_rows 为 0")
 
         local pack, size = m:pack_ping()
         t:check(pack ~= nil and size > 0, "mysql pack_ping non-empty")
@@ -432,10 +569,10 @@ runner.run(function(t)
 
         pack, size = m:pack_selectdb("newdb")
         t:check(pack ~= nil and size > 0, "mysql pack_selectdb non-empty")
-        -- 库名超 63 字节:组包被拒,两个返回值都得是 nil。此前长度那位返 0,
+        -- 库名超 256 字节:组包被拒,两个返回值都得是 nil。此前长度那位返 0,
         -- 而文档写的是"一并为 nil",按文档写 if nil == size 的调用方判不出失败
-        local bad, badsz = m:pack_selectdb(string.rep("d", 64))
-        t:eq(2, select('#', m:pack_selectdb(string.rep("d", 64))), "失败仍返 2 个值")
+        local bad, badsz = m:pack_selectdb(string.rep("d", 257))
+        t:eq(2, select('#', m:pack_selectdb(string.rep("d", 257))), "失败仍返 2 个值")
         t:eq(nil, bad, "库名超限时 pack 为 nil")
         t:eq(nil, badsz, "库名超限时长度一并为 nil")
         t:check(srey.ud_str(pack, size):find("newdb", 1, true) ~= nil, "selectdb wire 含库名")
@@ -463,6 +600,8 @@ runner.run(function(t)
         pack, size = m:pack_query("SELECT ? AS v", b)
         t:check(pack ~= nil and size > 0, "mysql pack_query with bind non-empty")
         utils.ud_free(pack)
+        -- bind 传错类型当场报错，原先静默当成无绑定
+        t:eq(false, pcall(m.pack_query, m, "SELECT ? AS v", {}), "mysql pack_query 的 bind 传 table 被拒")
 
         pack, size = m:pack_stmt_prepare("SELECT * FROM t WHERE id=?")
         t:check(pack ~= nil and size > 0, "mysql pack_stmt_prepare non-empty")
@@ -559,9 +698,9 @@ runner.run(function(t)
         t:check(mg ~= nil, "mongo.new (无连接) for packer")
         mg:collection("coll1")
 
-        -- clear_flag 的返回值原样回灌是 lib/mongo.lua 认证段（_connect）的还原手法，0 必须收得下：
-        -- 这里卡死它，免得日后把 set_flag 收紧成"只认 MORETOCOME"再把认证路径打断。
-        -- 读命令的清零与还原不经过这里，在 C 绑定的 LMONGO_PACK_NOFLAG 里，见下方 MORETOCOME 那段
+        -- set_flag(clear_flag()) 是业务存档-还原标志位的惯用法，clear_flag 可能返 0，0 必须收得下：
+        -- 这里卡死它，免得日后把 set_flag 收紧成"只认 MORETOCOME"。
+        -- 读命令组包时恒不带连接级 flags(mongo_pack 层决定)，不经过这里，见下方 MORETOCOME 那段
         t:eq(true, pcall(function() mg:set_flag(0) end), "set_flag(0) 合法（还原空标志）")
         t:eq(true, pcall(function() mg:set_flag(mgolib.FLAGS.MORETOCOME) end), "set_flag(MORETOCOME)")
         t:eq(mgolib.FLAGS.MORETOCOME, mg:clear_flag(), "clear_flag 回收前一步置上的位")
@@ -769,8 +908,8 @@ runner.run(function(t)
             end
         end
 
-        -- 读类要等回包：组包期间连接级 MORETOCOME 临时清零、组完原样还原（C 绑定的 LMONGO_PACK_NOFLAG）。
-        -- 读包带着它发出去服务端不回包，调用方白等到超时；还原漏了则此后的写命令悄悄变成等回包
+        -- 读类要等回包：组包时恒不带连接级 MORETOCOME（mongo_pack 层按命令定），连接上的标志也不动。
+        -- 读包带着它发出去服务端不回包，调用方白等到超时；动了连接标志则此后的写命令悄悄变成等回包
         local function _check_noflag(name, fn)
             mg:set_flag(MORETOCOME)
             local p, s = fn("coll1")
@@ -778,7 +917,7 @@ runner.run(function(t)
                 t:eq(false, mongo.pack_check_flag(p, MORETOCOME), name .. " 读包不带 MORETOCOME")
                 utils.ud_free(p)
             end
-            t:eq(MORETOCOME, mg:clear_flag(), name .. " 组完连接级 MORETOCOME 已还原")
+            t:eq(MORETOCOME, mg:clear_flag(), name .. " 组完连接级 MORETOCOME 原样在")
         end
         for _, e in ipairs(COL_PACKS) do
             if 2 == e[2] then
@@ -840,6 +979,24 @@ runner.run(function(t)
         -- opts 位置在各 pack_* 上不同，抽样确认走的是同一条组包路径
         t:eq(nil, mg:pack_drop("coll1", o_ptr, 5), "pack_drop 的 opts 同样返 nil")
         t:eq(nil, mg:pack_count("coll1", nil, nil, o_ptr, 5), "pack_count 的 opts 同样返 nil")
+
+        -- filter / query / update 与必填数组原样嵌进命令，组包侧 bson_check_doc 要求恰好占满长度：
+        -- 非 BSON、截断、尾部多字节都整条作废返 nil（opts 走 bson_cat，尾部多字节照收）
+        local fdoc = bson.encode({ a = 1 })
+        local fd_ptr, fd_sz = fdoc:data()
+        local fd_str = srey.ud_str(fd_ptr, fd_sz)
+        t:eq(nil, mg:pack_find("coll1", "abc"), "pack_find 非 BSON filter 返 nil")
+        t:eq(nil, mg:pack_find("coll1", fd_ptr, fd_sz - 1), "pack_find 截断的 filter 返 nil")
+        t:eq(nil, mg:pack_find("coll1", fd_str .. "\0"), "pack_find filter 尾部多字节返 nil")
+        t:eq(nil, mg:pack_distinct("coll1", "k", "abc"), "pack_distinct 非 BSON query 返 nil")
+        t:eq(nil, mg:pack_count("coll1", "abc"), "pack_count 非 BSON query 返 nil")
+        t:eq(nil, mg:pack_findandmodify("coll1", "abc", nil, 1, 0, nil, 0), "pack_findandmodify 非 BSON query 返 nil")
+        t:eq(nil, mg:pack_findandmodify("coll1", fd_ptr, fd_sz, 0, 0, "abc"), "pack_findandmodify 非 BSON update 返 nil")
+        t:eq(nil, mg:pack_findandmodify("coll1", fd_ptr, fd_sz, 0, 1, "abc"), "pack_findandmodify 非 BSON 管道 update 返 nil")
+        t:eq(nil, mg:pack_insert("coll1", fd_ptr, fd_sz - 1), "pack_insert 截断的 documents 返 nil")
+        pack, size = mg:pack_find("coll1", fd_str)
+        t:check(pack ~= nil and size > 0, "pack_find 恰好占满的 filter 照常组包")
+        utils.ud_free(pack)
 
         mg = nil
         collectgarbage()

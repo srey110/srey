@@ -1,7 +1,7 @@
 ﻿#include "lbind/lpub.h"
 
-// 编解码深度上限(容器层数: encode 数 table, decode 数 array/object)、稀疏数组的判定阈值。
-// 深度上限与 BSON_MAX_DEPTH / REDIS_MAX_DEPTH 取同一个数, 全项目一个口径。
+// 编解码深度上限(容器层数，连同最外层: encode 数 table, decode 数 array/object)、稀疏数组的判定阈值。
+// 深度上限与 BSON_MAX_DEPTH 同值同口径：bson.encode / bson.decode 都连同顶层数
 #define LYYJSON_MAX_DEPTH    18
 #define LYYJSON_SPARSE_RATIO 2
 #define LYYJSON_SPARSE_SAFE  10
@@ -130,12 +130,12 @@ static int64_t _lyyjson_arrlen(lua_State *lua) {
     return max;
 }
 static yyjson_mut_val *_lyyjson_pack_arr(lyyjson_ctx *ctx, int64_t lens, int32_t depth) {
-    yyjson_mut_val *val;
     yyjson_mut_val *arr = yyjson_mut_arr(ctx->doc);
     if (NULL == arr) {
         ctx->erro = "out of memory";
         return NULL;
     }
+    yyjson_mut_val *val;
     for (int64_t i = 1; i <= lens; i++) {
         lua_rawgeti(ctx->lua, -1, i);
         val = _lyyjson_pack(ctx, depth);
@@ -148,19 +148,19 @@ static yyjson_mut_val *_lyyjson_pack_arr(lyyjson_ctx *ctx, int64_t lens, int32_t
     return arr;
 }
 static yyjson_mut_val *_lyyjson_pack_obj(lyyjson_ctx *ctx, int32_t depth) {
+    yyjson_mut_val *obj = yyjson_mut_obj(ctx->doc);
+    if (NULL == obj) {
+        ctx->erro = "out of memory";
+        return NULL;
+    }
     lua_State *lua = ctx->lua;
+    lua_pushnil(lua);
     size_t klens;
     int32_t ktype;
     const char *kstr;
     char kbuf[LUA_N2SBUFFSZ];
     yyjson_mut_val *key;
     yyjson_mut_val *val;
-    yyjson_mut_val *obj = yyjson_mut_obj(ctx->doc);
-    if (NULL == obj) {
-        ctx->erro = "out of memory";
-        return NULL;
-    }
-    lua_pushnil(lua);
     while (0 != lua_next(lua, -2)) {
         ktype = lua_type(lua, -2);
         if (LUA_TSTRING == ktype) {
@@ -319,7 +319,8 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
 /// 键全为 >= 1 的整数才编成数组，空表编成 {}，过度稀疏的数组直接报错而非静默转对象；
 /// 数字 key 串成字符串当键名，故 [1] 与 "1" 撞成同一个键，本函数不查重（同 bson.encode），撞了就
 /// 产出带重复键的 JSON、decode 回来只剩其一，调用方自己保证不撞；
-/// 嵌套超过 LYYJSON_MAX_DEPTH 层、出现 table/number/string/boolean/nil 之外的类型都报错。
+/// nil 与 yyjson.null 编成 null；嵌套超过 LYYJSON_MAX_DEPTH 层（连同最外层）、出现
+/// table/number/string/boolean/nil/yyjson.null 之外的值、浮点为 NaN 或 ±Inf，都报错并带上原因。
 /// 非 UTF-8 字节原样写出不报错：Lua 字符串就是字节串，框架里 srey.ud_str 取出的
 /// 二进制载荷进 JSON 是常态，卡死会让这类请求一个字节都发不出去
 /// </summary>
@@ -346,10 +347,11 @@ static int32_t _lyyjson_encode(lua_State *lua) {
     }
     yyjson_mut_doc_set_root(ctx.doc, root);
     size_t lens = 0;
-    char *out = yyjson_mut_write_opts(ctx.doc, LYYJSON_WRITE_FLAG, &alc, &lens, NULL);
+    yyjson_write_err werr;
+    char *out = yyjson_mut_write_opts(ctx.doc, LYYJSON_WRITE_FLAG, &alc, &lens, &werr);
     yyjson_mut_doc_free(ctx.doc);
     if (NULL == out) {
-        return luaL_error(lua, "json encode failed");
+        return luaL_error(lua, "json encode: %s", werr.msg);
     }
     lua_pushlstring(lua, out, lens);
     alc.free(alc.ctx, out);

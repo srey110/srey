@@ -23,16 +23,16 @@ static stm_data *_stm_new_data(void *data, size_t sz, int32_t copy) {
     snap->sz = sz;
     return snap;
 }
-// 释放 stm_data 引用; ref 归 0 时释放快照 (inl 为 0 才另 FREE data); snap=NULL 安全 noop
-static void _stm_free_data(stm_data *snap) {
-    if (NULL == snap) {
+// writer 的那一票也走这里释放
+void stm_ungrab_data(stm_data *data) {
+    if (NULL == data) {
         return;
     }
-    if (1 == ATOMIC_ADD(&snap->ref, -1)) {
-        if (0 == snap->inl) {
-            FREE(snap->data);
+    if (1 == ATOMIC_ADD(&data->ref, -1)) {
+        if (0 == data->inl) {
+            FREE(data->data);
         }
-        FREE(snap);
+        FREE(data);
     }
 }
 stm_ctx *stm_new(void *data, size_t sz, int32_t copy) {
@@ -46,7 +46,7 @@ stm_ctx *stm_new(void *data, size_t sz, int32_t copy) {
 void stm_free(stm_ctx *ctx) {
     // wrlock 内清当前快照: 保证此后 stm_grab_data 要么看到旧快照 (已 inc 自己 ref), 要么看到 NULL
     rwlock_wrlock(&ctx->lock);
-    _stm_free_data(ctx->data);
+    stm_ungrab_data(ctx->data);
     ctx->data = NULL;
     rwlock_unlock(&ctx->lock);
     // 必须在 unlock 之后才减引: 同步 release 的 reader 若把 ref 减到 0 会触发 rwlock_free + FREE(ctx),
@@ -64,7 +64,7 @@ void stm_update(stm_ctx *ctx, void *data, size_t sz, int32_t copy) {
     ctx->data = snap;
     rwlock_unlock(&ctx->lock);
     // 锁外释放旧快照: 已 stm_grab_data 的 reader 持自己的引用, 这里只减 writer 的 1 票
-    _stm_free_data(old);
+    stm_ungrab_data(old);
 }
 stm_ctx *stm_grab(stm_ctx *ctx) {
     ATOMIC_ADD(&ctx->ref, 1);
@@ -94,7 +94,4 @@ stm_data *stm_grab_data_since(stm_ctx *ctx, stm_data *last) {
     }
     rwlock_unlock(&ctx->lock);
     return snap;
-}
-void stm_ungrab_data(stm_data *data) {
-    _stm_free_data(data);
 }

@@ -65,7 +65,7 @@ typedef enum log_level {
 #define LOG_INFO(fmt, ...)  LOG(LOGLV_INFO,  fmt, ##__VA_ARGS__) // 信息日志
 #define LOG_DEBUG(fmt, ...) LOG(LOGLV_DEBUG, fmt, ##__VA_ARGS__) // 调试日志
 /// <summary>
-/// 输出一条日志，低于当前日志级别时直接忽略。实现在 utils/log.c，声明放这一层
+/// 输出一条日志，低于当前日志级别时直接忽略；log_init 之前、log_free 之后打的静默丢弃。实现在 utils/log.c，声明放这一层
 /// 是为了让本文件的 LOG 宏不必反向依赖 utils/log.h。
 /// 由此带来一条链接约束：本文件的 LOG_* 与 ASSERTAB 展开后都指向 utils/log.c，凡用到它们的
 /// target 都必须链上 lib/utils，只链 base + containers 会在某处无关的断言上报未定义符号

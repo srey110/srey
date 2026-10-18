@@ -297,7 +297,18 @@ static void test_mongo_pack_check_flag(CuTest *tc) {
     CuAssertIntEquals(tc, 0, mongo_pack_check_flag(pack, MORETOCOME));
     FREE(pack);
 
-    // NULL 直接返回 0，不落到 binary_init_write 去 MALLOC
+    // 要等回包的命令组包时恒不带连接级 flags：置着 MORETOCOME 也照常等回包，且连接上的标志不被动
+    pack = mongo_pack_find(&mongo, NULL, 0, NULL, 0, &size);
+    _assert_msg_head(tc, pack, size);
+    CuAssertIntEquals(tc, 0, _read_le32((char *)pack, _MSG_OFF_FLAGS));
+    FREE(pack);
+    pack = mongo_pack_hello(&mongo, NULL, 0, &size);
+    _assert_msg_head(tc, pack, size);
+    CuAssertIntEquals(tc, 0, _read_le32((char *)pack, _MSG_OFF_FLAGS));
+    FREE(pack);
+    CuAssertIntEquals(tc, MORETOCOME, mongo_clear_flag(&mongo));
+
+    // NULL 直接返回 0，不解引用
     CuAssertIntEquals(tc, 0, mongo_pack_check_flag(NULL, MORETOCOME));
 
     BSON_FREE(&doc);
@@ -306,7 +317,8 @@ static void test_mongo_pack_check_flag(CuTest *tc) {
 // options 被拒时 MONGO_PACK_CAT 令整条命令作废：必须返回 NULL 且把 *size 置 0——
 // 旧行为是照常发出缺 options 的命令，服务端返回错误结果集。
 // *size 置 0 尤其关键：调用方(coro_utils / lmongo)的 lens/size 是未初始化栈变量。
-// 拒收只剩两类：bson_cat 的结构性畸形，以及超单包上限 MONGO_MAX_PACK_LENS(64MB)
+// 拒收只剩两类：bson_cat 的结构性畸形，以及超组包上限 INT32_MAX(OP_MSG 长度字段装不下)。
+// 收包上限 MONGO_MAX_PACK_LENS 只管接收侧，组包超过它照常放行
 static void test_mongo_pack_oversize_options(CuTest *tc) {
     mongo_ctx mongo;
     char *opts;
@@ -321,7 +333,7 @@ static void test_mongo_pack_oversize_options(CuTest *tc) {
     opts[2] = (char)0x01;
 
     // 70000 字节的结构合法 options:改前撞 bson_cat 的 64KB 上限被整篇丢弃、整条命令作废,
-    // 现在照常拼入 —— 上限归 mongo 层的 MONGO_MAX_PACK_LENS(64MB)。
+    // 现在照常拼入 —— 组包上限归 mongo 层(INT32_MAX)。
     // 所有 mongo_pack_* 共用 MONGO_PACK_CAT, 这里用 drop / find 两条代表
     size = 0;
     pack = mongo_pack_drop(&mongo, opts, 70000, &size);
@@ -342,13 +354,28 @@ static void test_mongo_pack_oversize_options(CuTest *tc) {
     CuAssertTrue(tc, 0 == size);
     FREE(opts);
 
-    // 超单包上限:MONGO_PACK_CAT 先按 lens 挡住、不解引用指针，
-    // 拿一个栈字节即可，不必真分配 64MB（同 test_mongo_pack_oversize_docs）
+    // 超组包上限:MONGO_PACK_CAT 先按 lens 挡住、不解引用指针，
+    // 拿一个栈字节即可，不必真分配 2GB（同 test_mongo_pack_oversize_docs）
     char oversize = 0;
     size = 12345;
-    pack = mongo_pack_drop(&mongo, &oversize, (size_t)MONGO_MAX_PACK_LENS + 1, &size);
+    pack = mongo_pack_drop(&mongo, &oversize, (size_t)INT32_MAX + 1, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
+
+    // 比收包上限大 1 字节的 options 照常组包：{c: <binary>}，长度正好 MONGO_MAX_PACK_LENS + 1
+    size_t biglens = (size_t)MONGO_MAX_PACK_LENS + 1;
+    char *big;
+    CALLOC(big, 1, biglens);
+    write_le32(big, (uint32_t)biglens);
+    big[4] = (char)BSON_BINARY;
+    big[5] = 'c';
+    write_le32(big + 7, (uint32_t)(biglens - 13));// 4 长度 + 1 类型 + "c\0" + 4 长度 + 1 子类型 + 数据 + 1 EOD
+    size = 0;
+    pack = mongo_pack_drop(&mongo, big, biglens, &size);
+    CuAssertTrue(tc, NULL != pack);
+    CuAssertTrue(tc, size > biglens);
+    FREE(pack);
+    FREE(big);
 
     size = 0;
     pack = mongo_pack_drop(&mongo, NULL, 0, &size);
@@ -556,6 +583,57 @@ static void test_mongo_pack_findandmodify(CuTest *tc) {
     BSON_FREE(&body);
 }
 
+// filter / query / update 与必填数组原样嵌进命令，组包前先过 bson_check_doc：
+// 不是恰好占满长度的一篇完整 BSON 就整条命令作废(返回 NULL、*size 置 0)，不再写出混着垃圾的元素
+static void test_mongo_pack_reject_malformed(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    bson_ctx q;
+    bson_init(&q, NULL, 0);
+    bson_append_int32(&q, "age", 18);
+    bson_append_end(&q);
+    size_t ql = BSON_DOC_LENS(&q);
+    // 文档后多带 1 字节：bson_cat 照收的形态，这里必须拒
+    char slack[64];
+    ZERO(slack, sizeof(slack));
+    memcpy(slack, BSON_DOC(&q), ql);
+    char text[] = "abcdefgh";// 非 BSON，头 4 字节读出的长度对不上
+
+    size_t size = 12345;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_find(&mongo, text, sizeof(text), NULL, 0, &size));
+    CuAssertTrue(tc, 0 == size);
+    size = 12345;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_find(&mongo, slack, ql + 1, NULL, 0, &size));
+    CuAssertTrue(tc, 0 == size);
+    size = 12345;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_distinct(&mongo, "name", text, sizeof(text), NULL, 0, &size));
+    CuAssertTrue(tc, 0 == size);
+    // 截断：头里声明的比给的长
+    size = 12345;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_count(&mongo, BSON_DOC(&q), ql - 1, NULL, 0, &size));
+    CuAssertTrue(tc, 0 == size);
+    size = 12345;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_findandmodify(&mongo, text, sizeof(text), 1, 0, NULL, 0, NULL, 0, &size));
+    CuAssertTrue(tc, 0 == size);
+    // update 的两种形态(文档 / 管道数组)都校验
+    for (int32_t pipeline = 0; pipeline <= 1; pipeline++) {
+        size = 12345;
+        CuAssertPtrEquals(tc, NULL, mongo_pack_findandmodify(&mongo, BSON_DOC(&q), ql, 0, pipeline,
+                                                            text, sizeof(text), NULL, 0, &size));
+        CuAssertTrue(tc, 0 == size);
+    }
+    // 必填数组(MONGO_PACK_ARR)同一道判据
+    size = 12345;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_insert(&mongo, slack, ql + 1, NULL, 0, &size));
+    CuAssertTrue(tc, 0 == size);
+
+    // 恰好占满的合法文档照常组包
+    void *pack = mongo_pack_find(&mongo, slack, ql, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+    BSON_FREE(&q);
+}
+
 // mongo_pack_createindexes / dropindexes
 static void test_mongo_pack_indexes(CuTest *tc) {
     mongo_ctx mongo;
@@ -740,17 +818,19 @@ static void test_mongo_pack_session(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int)size);
 }
 
-// mongo_pack_scram_client_first：user/password/authdb 三者缺一不可
+// mongo_pack_scram_client_first：user/password/authdb 三者缺一不可；scram 经出参交出，不碰 mongo->scram
 static void test_mongo_pack_scram_first(CuTest *tc) {
-    // 用户名为空 → NULL
+    // 用户名为空 → NULL，出参不写
     {
         mongo_ctx mongo;
         ZERO(&mongo, sizeof(mongo));
         safe_fill_str(mongo.db, sizeof(mongo.db), "admin");
         safe_fill_str(mongo.password, sizeof(mongo.password), "pwd");
         size_t size = 0;
-        void *pack = mongo_pack_scram_client_first(&mongo, "SCRAM-SHA-256", &size);
+        scram_ctx *scram = NULL;
+        void *pack = mongo_pack_scram_client_first(&mongo, "SCRAM-SHA-256", &scram, &size);
         CuAssertTrue(tc, NULL == pack);
+        CuAssertPtrEquals(tc, NULL, scram);
         // 即使失败，authdb 已被填上 db 的值
         CuAssertStrEquals(tc, "admin", mongo.authdb);
     }
@@ -760,16 +840,19 @@ static void test_mongo_pack_scram_first(CuTest *tc) {
         _mongo_test_init(&mongo);
         safe_fill_str(mongo.authdb, sizeof(mongo.authdb), "admin");
         size_t size = 0;
-        void *pack = mongo_pack_scram_client_first(&mongo, "SCRAM-MD5", &size);
+        scram_ctx *scram = NULL;
+        void *pack = mongo_pack_scram_client_first(&mongo, "SCRAM-MD5", &scram, &size);
         CuAssertTrue(tc, NULL == pack);
+        CuAssertPtrEquals(tc, NULL, scram);
     }
-    // 正常路径：scram=NULL → init → 包结构正确
+    // 正常路径：包结构正确；scram 经出参交出，mongo->scram 不动；每次调用各建一份
     {
         mongo_ctx mongo;
         _mongo_test_init(&mongo);
         safe_fill_str(mongo.authdb, sizeof(mongo.authdb), "admin");
         size_t size = 0;
-        void *pack = mongo_pack_scram_client_first(&mongo, "SCRAM-SHA-256", &size);
+        scram_ctx *scram = NULL;
+        void *pack = mongo_pack_scram_client_first(&mongo, "SCRAM-SHA-256", &scram, &size);
         char *bson = _assert_msg_head(tc, pack, size);
         int32_t err;
         // 含 saslStart:1
@@ -779,13 +862,15 @@ static void test_mongo_pack_scram_first(CuTest *tc) {
             _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "mechanism"));
         CuAssertStrEquals(tc, "admin", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "$db"));
         FREE(pack);
-        // mongo->scram 已被初始化
-        CuAssertPtrNotNull(tc, mongo.scram);
-        // 再次调用：scram 已存在 → 拒绝
-        void *pack2 = mongo_pack_scram_client_first(&mongo, "SCRAM-SHA-256", &size);
-        CuAssertTrue(tc, NULL == pack2);
-        scram_free(mongo.scram);
-        mongo.scram = NULL;
+        CuAssertPtrNotNull(tc, scram);
+        CuAssertPtrEquals(tc, NULL, mongo.scram);
+        scram_ctx *scram2 = NULL;
+        void *pack2 = mongo_pack_scram_client_first(&mongo, "SCRAM-SHA-256", &scram2, &size);
+        CuAssertPtrNotNull(tc, pack2);
+        CuAssertTrue(tc, NULL != scram2 && scram != scram2);
+        FREE(pack2);
+        scram_free(scram);
+        scram_free(scram2);
     }
 }
 
@@ -1016,6 +1101,60 @@ static void test_mongo_parse_check_error_keys(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
 }
 
+// n / nErrors 按数值大小可能编成 int32 / int64 / double：只认 int32 的话，十亿级集合的 count
+// 读成 0 当成功返回，int64 的 nErrors 也会被当成没错
+static void test_mongo_parse_check_error_numtypes(CuTest *tc) {
+    bson_ctx b;
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int64(&b, "n", 5);
+    CuAssertIntEquals(tc, 5, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_double(&b, "n", 7.0);
+    CuAssertIntEquals(tc, 7, _check_error_end(&b));
+    // 恰等于 int32 上限照常返回，再大一个就装不进返回值，按失败
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int64(&b, "n", INT32_MAX);
+    CuAssertIntEquals(tc, INT32_MAX, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int64(&b, "n", (int64_t)INT32_MAX + 1);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_double(&b, "n", 3e9);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    // 负数、非数值、NaN 都不是合法计数
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "n", -1);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_utf8(&b, "n", "3");
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_double(&b, "n", NAN);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    // nErrors：int64 / double 的非零值同样是有错，零值不是
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int64(&b, "nErrors", 1);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_double(&b, "nErrors", 2.0);
+    CuAssertIntEquals(tc, ERR_FAILED, _check_error_end(&b));
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "n", 2);
+    bson_append_int64(&b, "nErrors", 0);
+    CuAssertIntEquals(tc, 2, _check_error_end(&b));
+}
+
 // mongo_parse_startsession：含合法 id 子文档 + timeoutMinutes → 成功提取 UUID
 static void test_mongo_parse_startsession(CuTest *tc) {
     char uuid[UUID_LENS];
@@ -1226,11 +1365,291 @@ static void test_mongo_unpack_kind1_empty_section(CuTest *tc) {
     buffer_free(&buf);
 }
 
-// 事务会话的绑定不能跨连接存活,否则 mongo_commit/rollback 那道 mongo->session != session 的
-// 守卫形同虚设,会拿旧的 lsid/txnNumber 往新连接上发 commit。但解绑不能放在 _mongo_udfree:
-// 它跑在网络线程,而组包侧在属主线程上判 mongo->session 非空后解引用它的 options/started,
-// 跨线程置空会让那两步之间读到 NULL。所以断开时只清连接自身的状态,session 留给 mongo_connect
-// 在属主线程上解绑(见 coro_utils.c 的 mongo_connect)
+// 在 p 处拼 OP_MSG 头(总长 total、opcode、section kind)，返回头之后的写入位置
+static char *_wire_head(char *p, size_t total, int32_t opcode, int8_t kind) {
+    write_le32(p, (uint32_t)total);
+    write_le32(p + 4, 0);// reqid
+    write_le32(p + 8, 0);// respto
+    write_le32(p + 12, (uint32_t)opcode);
+    write_le32(p + 16, 0);// flags
+    p[20] = (char)kind;
+    return p + _MSG_HEAD_LENS;
+}
+// 整包喂 mongo_unpack：须判 PROT_ERROR、不吐包
+static void _unpack_reject(CuTest *tc, const char *pkt, size_t lens) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, (void *)pkt, lens);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    int32_t status = 0;
+    void *mgopack = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrEquals(tc, NULL, mgopack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+}
+// mongo_unpack 的拒收分支逐条过一遍：每条只造它要拦的那一种毛病，其余字段都合法
+static void test_mongo_unpack_reject(CuTest *tc) {
+    char pkt[128];
+    char *p;
+    bson_ctx b;
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_end(&b);
+    size_t blens = b.doc.offset;
+    // opcode 不是 OP_MSG（压缩消息不支持）
+    p = _wire_head(pkt, _MSG_HEAD_LENS + blens, OP_COMPRESSED, 0);
+    memcpy(p, b.doc.data, blens);
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + blens);
+    // 总长 25：头 21 字节加一个最短的 BSON 都装不下
+    ZERO(pkt, sizeof(pkt));
+    _wire_head(pkt, 25, OP_MSG, 0);
+    _unpack_reject(tc, pkt, 25);
+    // 总长超收包上限：读到前 4 字节就拒，不等数据到齐
+    write_le32(pkt, (uint32_t)MONGO_MAX_PACK_LENS + 1);
+    _unpack_reject(tc, pkt, 4);
+    // section kind 既不是 0 也不是 1
+    p = _wire_head(pkt, _MSG_HEAD_LENS + blens, OP_MSG, 2);
+    memcpy(p, b.doc.data, blens);
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + blens);
+    // kind=0：BSON 声明长度小于 5
+    ZERO(pkt, sizeof(pkt));
+    p = _wire_head(pkt, _MSG_HEAD_LENS + 5, OP_MSG, 0);
+    write_le32(p, 4);
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + 5);
+    // kind=0：BSON 声明长度超出包内剩余
+    p = _wire_head(pkt, _MSG_HEAD_LENS + blens, OP_MSG, 0);
+    memcpy(p, b.doc.data, blens);
+    write_le32(p, (uint32_t)blens + 1);
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + blens);
+    // kind=0 后面还跟着第二个 section(kind=1，docid 为空串、无文档)
+    p = _wire_head(pkt, _MSG_HEAD_LENS + blens + 6, OP_MSG, 0);
+    memcpy(p, b.doc.data, blens);
+    p[blens] = 1;
+    write_le32(p + blens + 1, 5);
+    p[blens + 5] = '\0';
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + blens + 6);
+    // kind=1：section 长度小于 5
+    ZERO(pkt, sizeof(pkt));
+    p = _wire_head(pkt, _MSG_HEAD_LENS + 5, OP_MSG, 1);
+    write_le32(p, 4);
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + 5);
+    // kind=1：docid 没有 NUL 结尾
+    p = _wire_head(pkt, _MSG_HEAD_LENS + 7, OP_MSG, 1);
+    write_le32(p, 7);
+    memcpy(p + 4, "abc", 3);
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + 7);
+    // kind=1：section 长度没覆盖到包尾，后面还有第二个 section
+    p = _wire_head(pkt, _MSG_HEAD_LENS + 4 + 2 + blens + 6, OP_MSG, 1);
+    write_le32(p, (uint32_t)(4 + 2 + blens));
+    memcpy(p + 4, "d", 2);
+    memcpy(p + 6, b.doc.data, blens);
+    p += 6 + blens;
+    p[0] = 1;
+    write_le32(p + 1, 5);
+    p[5] = '\0';
+    _unpack_reject(tc, pkt, _MSG_HEAD_LENS + 4 + 2 + blens + 6);
+    BSON_FREE(&b);
+
+    // 总长恰等于收包上限是合法的：数据没到齐只报 MOREDATA
+    buffer_ctx buf;
+    buffer_init(&buf);
+    write_le32(pkt, (uint32_t)MONGO_MAX_PACK_LENS);
+    buffer_append(&buf, pkt, 4);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    int32_t status = 0;
+    CuAssertPtrEquals(tc, NULL, _t_mongo_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    buffer_free(&buf);
+}
+// kind=1 合法包：BSON 在 docid 之后，doc / dlens 必须越过 docid；用 check_error 读出 n 反证偏移对了
+static void test_mongo_unpack_kind1_ok(CuTest *tc) {
+    bson_ctx b;
+    bson_init(&b, NULL, 0);
+    bson_append_double(&b, "ok", 1.0);
+    bson_append_int32(&b, "n", 3);
+    bson_append_end(&b);
+    size_t blens = b.doc.offset;
+    const char docid[] = "documents";
+    size_t klens = 4 + sizeof(docid) + blens;
+    size_t total = _MSG_HEAD_LENS + klens;
+    char *pkt;
+    MALLOC(pkt, total);
+    char *p = _wire_head(pkt, total, OP_MSG, 1);
+    write_le32(p, (uint32_t)klens);
+    memcpy(p + 4, docid, sizeof(docid));
+    memcpy(p + 4 + sizeof(docid), b.doc.data, blens);
+    BSON_FREE(&b);
+
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, pkt, total);
+    FREE(pkt);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    int32_t status = 0;
+    mgopack_ctx *mg = _t_mongo_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, mg);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 1, (int)mg->kind);
+    CuAssertIntEquals(tc, (int)klens, (int)mg->klens);
+    CuAssertStrEquals(tc, docid, mg->docid);
+    CuAssertIntEquals(tc, (int)blens, (int)mg->dlens);
+    CuAssertTrue(tc, mg->doc == mg->payload + _MSG_HEAD_LENS + 4 + sizeof(docid));
+    CuAssertIntEquals(tc, 3, mongo_parse_check_error(mg));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    _mongo_pkfree(mg);
+    buffer_free(&buf);
+}
+
+// 握手回传桩：AUTH 态的成败经 _hs_push 交给等待方。CuTest 阶段还没起 loader，桩自己收载荷；
+// 之后 loader_init 的 prots_init 会换回正式回调
+static int32_t g_mongo_hs_calls;
+static int32_t g_mongo_hs_erro;
+static int32_t _stub_mongo_hspush(sock_ctx *sk, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
+    (void)sk;
+    (void)client;
+    (void)ud;
+    (void)lens;
+    g_mongo_hs_calls++;
+    g_mongo_hs_erro = erro;
+    FREE(data);
+    return ERR_OK;
+}
+// 拼一条 SASL 回包 {conversationId:1, done, payload, ok} 在 AUTH 态喂给 mongo_unpack，返回解析状态位。
+// payload 为 NULL 即不带；AUTH 态的包在内部消费，不会吐出来
+static int32_t _auth_reply(ev_ctx *ev, ud_cxt *ud, double ok, int8_t done, const char *payload) {
+    bson_ctx b;
+    bson_init(&b, NULL, 0);
+    bson_append_int32(&b, "conversationId", 1);
+    bson_append_bool(&b, "done", done);
+    if (NULL != payload) {
+        bson_append_binary(&b, "payload", BSON_SUBTYPE_BINARY, (char *)payload, strlen(payload));
+    }
+    bson_append_double(&b, "ok", ok);
+    bson_append_end(&b);
+    size_t total = _MSG_HEAD_LENS + b.doc.offset;
+    char *pkt;
+    MALLOC(pkt, total);
+    memcpy(_wire_head(pkt, total, OP_MSG, 0), b.doc.data, b.doc.offset);
+    BSON_FREE(&b);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, pkt, total);
+    FREE(pkt);
+    int32_t status = 0;
+    size_t size = 0;
+    _mongo_pkfree(mongo_unpack(ev, &_t_nosk, 0, &buf, ud, &size, &status));
+    buffer_free(&buf);
+    return status;
+}
+// 新建一份停在 st 状态的客户端 scram，挂到 mongo 上并把 ud 切到 AUTH 态
+static void _auth_setup(mongo_ctx *mongo, ud_cxt *ud, scram_status st) {
+    _mongo_test_init(mongo);
+    mongo->scram = scram_init("SCRAM-SHA-256", 1);
+    mongo->scram->status = st;
+    ZERO(ud, sizeof(ud_cxt));
+    ud->status = 1;// AUTH
+    ud->context = mongo;
+    g_mongo_hs_calls = 0;
+    g_mongo_hs_erro = ERR_OK;
+}
+// AUTH 态的失败支路：每条都得把失败交给等待方(漏了握手方只能干等到超时)，同时释放 scram、切回 COMMAND
+static void test_mongo_unpack_auth_fail(CuTest *tc) {
+    _mongo_init(_stub_mongo_hspush);
+    mongo_ctx mongo;
+    ud_cxt ud;
+    // 服务端拒绝 saslStart(ok:0)
+    _auth_setup(&mongo, &ud, SCRAM_LOCAL_FIRST);
+    _auth_reply(NULL, &ud, 0.0, 0, "r=x,s=c2FsdA==,i=4096");
+    CuAssertIntEquals(tc, 1, g_mongo_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_mongo_hs_erro);
+    CuAssertPtrEquals(tc, NULL, mongo.scram);
+    CuAssertIntEquals(tc, 0, (int)ud.status);
+    // ok:1 却缺 payload
+    _auth_setup(&mongo, &ud, SCRAM_LOCAL_FIRST);
+    _auth_reply(NULL, &ud, 1.0, 0, NULL);
+    CuAssertIntEquals(tc, 1, g_mongo_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_mongo_hs_erro);
+    CuAssertPtrEquals(tc, NULL, mongo.scram);
+    CuAssertIntEquals(tc, 0, (int)ud.status);
+    // 最后一步 done 仍为 false：不算认证完成
+    _auth_setup(&mongo, &ud, SCRAM_LOCAL_FINAL);
+    _auth_reply(NULL, &ud, 1.0, 0, "v=AAAA");
+    CuAssertIntEquals(tc, 1, g_mongo_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_mongo_hs_erro);
+    CuAssertPtrEquals(tc, NULL, mongo.scram);
+    CuAssertIntEquals(tc, 0, (int)ud.status);
+    // AUTH 态却没有 scram(只有通用的 ev_ud_status 能切出来)：按认证失败处理，不解引用 NULL
+    _auth_setup(&mongo, &ud, SCRAM_LOCAL_FIRST);
+    scram_free(mongo.scram);
+    mongo.scram = NULL;
+    _auth_reply(NULL, &ud, 1.0, 0, "r=x");
+    CuAssertIntEquals(tc, 1, g_mongo_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_mongo_hs_erro);
+    CuAssertIntEquals(tc, 0, (int)ud.status);
+    // 上下文已拆：直接 PROT_ERROR，不推送
+    _auth_setup(&mongo, &ud, SCRAM_LOCAL_FIRST);
+    ud.context = NULL;
+    CuAssertTrue(tc, BIT_CHECK(_auth_reply(NULL, &ud, 1.0, 0, "r=x"), PROT_ERROR));
+    CuAssertIntEquals(tc, 0, g_mongo_hs_calls);
+    scram_free(mongo.scram);
+}
+// SCRAM-SHA-1 的口令预处理 hex(MD5("user:mongo:pwd")) 走真实 AUTH 路径验：用 MongoDB 认证规范的示例会话
+// (user / pencil、固定客户端 nonce)，预处理错一位，服务端签名就对不上，最后交出去的是失败。
+// 中间那条 saslContinue 要经 ev_send 发出，起一个空跑的事件循环收下(连接标识不存在，命令被丢弃)
+static void test_mongo_auth_sha1_kat(CuTest *tc) {
+    const char *cnonce = "fyko+d2lbbFgONRv9qkxdawL";
+    _mongo_init(_stub_mongo_hspush);
+    g_mongo_hs_calls = 0;
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    safe_fill_str(mongo.user, sizeof(mongo.user), "user");
+    safe_fill_str(mongo.password, sizeof(mongo.password), "pencil");
+    safe_fill_str(mongo.authdb, sizeof(mongo.authdb), "admin");
+    mongo.sk.fd = (SOCKET)0x7FFFFFF0;
+    mongo.sk.index = 0;
+    mongo.sk.skid = UINT64_MAX - 1;
+    scram_ctx *scram = NULL;
+    size_t size = 0;
+    void *first = mongo_pack_scram_client_first(&mongo, "SCRAM-SHA-1", &scram, &size);
+    FREE(first);
+    CuAssertPtrNotNull(tc, scram);
+    // 换成规范示例的客户端 nonce，同 test_crypt 的 _scram_inject_nonce
+    safe_fill_str(scram->local_nonce, sizeof(scram->local_nonce), cnonce);
+    FREE(scram->local_first_message);
+    scram->local_first_message = format_va("n=user,r=%s", cnonce);
+    mongo.scram = scram;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1;// AUTH
+    ud.context = &mongo;
+    ev_ctx ev;
+    ev_init(&ev, 1, NULL);
+    // 服务端第一条：算出 client final 交给 ev_send，认证还没完
+    int32_t st1 = _auth_reply(&ev, &ud, 1.0, 0,
+        "r=fyko+d2lbbFgONRv9qkxdawLHo+Vgk7qvUOKUwuWLIWg4l/9SraGMHEE,s=rQ9ZY3MntBeuP3E1TDVC4w==,i=10000");
+    int32_t calls1 = g_mongo_hs_calls;
+    int32_t final1 = (mongo.scram == scram && SCRAM_LOCAL_FINAL == scram->status);
+    // 服务端最终消息：签名对得上才交出成功
+    int32_t st2 = _auth_reply(&ev, &ud, 1.0, 1, "v=UMWeI25JD1yNYZRMpZ4VHvhZ9e0=");
+    ev_free(&ev);
+    // 断言放 ev_free 之后，失败也不留事件线程
+    CuAssertTrue(tc, !BIT_CHECK(st1, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, calls1);
+    CuAssertTrue(tc, final1);
+    CuAssertTrue(tc, !BIT_CHECK(st2, PROT_ERROR));
+    CuAssertIntEquals(tc, 1, g_mongo_hs_calls);
+    CuAssertIntEquals(tc, ERR_OK, g_mongo_hs_erro);
+    CuAssertPtrEquals(tc, NULL, mongo.scram);
+    CuAssertIntEquals(tc, 0, (int)ud.status);
+}
+
+// 断开时只清连接自身的状态,事务绑定原样留着:组包侧在属主线程上判 mongo->session 非空后解引用它的
+// options/started,在网络线程的 _mongo_udfree 里置空会让那两步之间读到 NULL。重连换了 skid,
+// 组包侧据此判事务作废,绑定留到 commit / rollback / 重新 begin 时在属主线程上解(见 coro_utils.c 的 mongo_begin)
 static void test_mongo_udfree_keeps_session(CuTest *tc) {
     mongo_ctx mongo;
     _mongo_test_init(&mongo);// 内部 ZERO 过,ref=0 → PROT_REF_RELEASE 短路,不会 FREE 栈上对象
@@ -1349,6 +1768,77 @@ static void test_mongo_pack_getmore_not_start_txn(CuTest *tc) {
 
     FREE(session.options);
 }
+// count 与 hello 恒不带事务上下文：服务端不许 count 进事务，hello 还要给重连握手用(那时别的协程可能已在新连接上 begin)。
+// 绑着未作废的事务、started 为 0 与 1 各组一次，包里都没有 lsid / txnNumber / startTransaction，也不动 started
+static void test_mongo_pack_no_txn_cmds(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    mongo.sk.skid = 10;
+    mongo_session session;
+    ZERO(&session, sizeof(session));
+    session.mongo = &mongo;
+    for (int32_t i = 0; i < UUID_LENS; i++) {
+        session.uuid[i] = (char)(i + 1);
+    }
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    size_t size = 0;
+    void *pack;
+    for (int32_t started = 0; started < 2; started++) {
+        session.started = started;
+        pack = mongo_pack_count(&mongo, NULL, 0, NULL, 0, &size);
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertTrue(tc, NULL == memstr(0, pack, size, "lsid", strlen("lsid")));
+        CuAssertTrue(tc, NULL == memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+        CuAssertTrue(tc, NULL == memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
+        CuAssertIntEquals(tc, started, session.started);
+        FREE(pack);
+        pack = mongo_pack_hello(&mongo, NULL, 0, &size);
+        CuAssertPtrNotNull(tc, pack);
+        CuAssertTrue(tc, NULL == memstr(0, pack, size, "lsid", strlen("lsid")));
+        CuAssertTrue(tc, NULL == memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+        CuAssertTrue(tc, NULL == memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
+        CuAssertIntEquals(tc, started, session.started);
+        FREE(pack);
+    }
+    // 对照：同一绑定下 find 带上下文，说明上面不是因为没绑上
+    pack = mongo_pack_find(&mongo, NULL, 0, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL != memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+    FREE(pack);
+    mongo_clear_session(&mongo);
+    FREE(session.options);
+}
+// 组包前记现场、拿到锁后复查(mongo_txn_mark / mongo_txn_moved)：没绑事务记 MONGO_TXN_NONE、恒不算换过；
+// 绑着时记此刻的 skid，之后 skid 变了才算换过。从没连过(skid 为 0)时 begin 记下的 0 也照样比
+static void test_mongo_txn_mark(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    mongo.sk.skid = 10;
+    CuAssertTrue(tc, MONGO_TXN_NONE == mongo_txn_mark(&mongo));
+    mongo.sk.skid = 11;
+    CuAssertIntEquals(tc, 0, mongo_txn_moved(&mongo, MONGO_TXN_NONE));
+
+    mongo_session session;
+    ZERO(&session, sizeof(session));
+    session.mongo = &mongo;
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    uint64_t mark = mongo_txn_mark(&mongo);
+    CuAssertTrue(tc, 11 == mark);
+    CuAssertIntEquals(tc, 0, mongo_txn_moved(&mongo, mark));
+    mongo.sk.skid = 12;// 排队等锁期间重连
+    CuAssertTrue(tc, 0 != mongo_txn_moved(&mongo, mark));
+    CuAssertIntEquals(tc, 0, mongo_txn_moved(&mongo, MONGO_TXN_NONE));
+
+    mongo.sk.skid = 0;
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    mark = mongo_txn_mark(&mongo);
+    CuAssertTrue(tc, 0 == mark);
+    mongo.sk.skid = 13;
+    CuAssertTrue(tc, 0 != mongo_txn_moved(&mongo, mark));
+
+    mongo_clear_session(&mongo);
+    FREE(session.options);
+}
 // session 不随连接失效：服务端按 lsid 记账、与连接无关，重连只废掉在途事务。
 // 代次前进后拿旧 session 重新 begin 是正常用法（txnNumber 递增），只有"连接上已有别的
 // session 在事务中"才拒。判定都在网络之前，可纯内存构造
@@ -1363,16 +1853,19 @@ static void test_mongo_session_survives_reconnect(CuTest *tc) {
         session.uuid[i] = (char)(i + 1);
     }
 
+    mongo.sk.skid = 10;
     CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
     CuAssertIntEquals(tc, 1, session.txnnumber);
     CuAssertTrue(tc, &session == mongo.session);
 
-    // 重连：代次前进 + 解绑，mongo_connect 内部即这两步
+    // 重连：代次前进、skid 换掉，绑定不解(事务作废另见 test_mongo_txn_stale_after_reconnect)；
+    // 同一 session 重新 begin 照常放行，并改记新连接的 skid
     mongo.generation = 4;
-    mongo.session = NULL;
+    mongo.sk.skid = 11;
     CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
     CuAssertIntEquals(tc, 2, session.txnnumber);
     CuAssertTrue(tc, &session == mongo.session);
+    CuAssertTrue(tc, 11 == session.skid);
 
     // 绑定门仍在：另一个 session 占着事务时拒绝，且一个字段都不动
     mongo_session other;
@@ -1385,20 +1878,90 @@ static void test_mongo_session_survives_reconnect(CuTest *tc) {
 
     FREE(session.options);
 }
-// 文档数组这类大入参的长度闸门：排在 MONGO_PACK_BEGIN 里、任何分配与拷贝之前，
-// 所以指针不会被解引用，用例不必真的准备 64MB 数据
+// 事务中途重连(连接换了 skid)即作废：同一事务里后续的 CRUD 组包失败，而不是脱离事务悄悄自动提交；
+// commit 组包失败、绑定不动，abort 照常组包(事务挂在会话上，新连接上中止一样作数)；重连握手的 hello
+// 照常组包、不带事务上下文。收尾解绑后普通写照常，同一 session 重新 begin 后恢复正常。判定全在组包侧，可纯内存构造
+static void test_mongo_txn_stale_after_reconnect(CuTest *tc) {
+    mongo_ctx mongo;
+    mongo_session session;
+    bson_ctx doc;
+    size_t size = 0;
+    void *pack;
+    int32_t i;
+    _mongo_test_init(&mongo);
+    mongo.sk.skid = 10;
+    ZERO(&session, sizeof(session));
+    session.mongo = &mongo;
+    for (i = 0; i < UUID_LENS; i++) {
+        session.uuid[i] = (char)(i + 1);
+    }
+    bson_init(&doc, NULL, 0);
+    bson_append_document_begain(&doc, "0");
+    bson_append_int32(&doc, "id", 1);
+    bson_append_end(&doc);
+    bson_append_end(&doc);
+
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertTrue(tc, 0 == mongo_session_stale(&session));
+    pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+
+    mongo.sk.skid = 11;// 重连
+    CuAssertTrue(tc, 0 != mongo_session_stale(&session));
+    size = 123;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    CuAssertPtrEquals(tc, NULL, mongo_pack_find(&mongo, NULL, 0, NULL, 0, &size));
+    CuAssertTrue(tc, &session == mongo.session);// 写失败不解绑，留给收尾
+    pack = mongo_pack_hello(&mongo, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL == memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+    FREE(pack);
+
+    // commit 组包失败、绑定与 options 都不动；abort 照常组包并带上这次事务的 lsid/txnNumber
+    size = 123;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_committransaction(&session, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    CuAssertTrue(tc, &session == mongo.session);
+    CuAssertPtrNotNull(tc, session.options);
+    pack = mongo_pack_aborttransaction(&session, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL != memstr(0, pack, size, "abortTransaction", strlen("abortTransaction")));
+    CuAssertTrue(tc, NULL != memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+    FREE(pack);
+    // 收到回包后的收尾(coro_utils 的 _mongo_txn_end)：解绑并放掉 options
+    mongo_clear_session(&mongo);
+    FREE(session.options);
+    // 解绑之后普通写照常组包(自动提交)；同一 session 重新 begin 后事务内的写也恢复
+    pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL == memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+    FREE(pack);
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertTrue(tc, 0 == mongo_session_stale(&session));
+    pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL != memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
+    FREE(pack);
+    mongo_clear_session(&mongo);
+    FREE(session.options);
+    BSON_FREE(&doc);
+}
+// 文档数组这类大入参的长度闸门(组包上限 INT32_MAX)：排在 MONGO_PACK_BEGIN 里、任何分配与拷贝之前，
+// 所以指针不会被解引用，用例不必真的准备 2GB 数据
 static void test_mongo_pack_oversize_docs(CuTest *tc) {
     mongo_ctx mongo;
     _mongo_test_init(&mongo);
     char dummy = 0;
     size_t size = 12345;
 
-    void *pack = mongo_pack_insert(&mongo, &dummy, (size_t)MONGO_MAX_PACK_LENS + 1, NULL, 0, &size);
+    void *pack = mongo_pack_insert(&mongo, &dummy, (size_t)INT32_MAX + 1, NULL, 0, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
 
     size = 12345;
-    pack = mongo_pack_update(&mongo, &dummy, (size_t)MONGO_MAX_PACK_LENS + 1, NULL, 0, &size);
+    pack = mongo_pack_update(&mongo, &dummy, (size_t)INT32_MAX + 1, NULL, 0, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
 
@@ -1502,6 +2065,7 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_find);
     SUITE_ADD_TEST(suite, test_mongo_pack_misc);
     SUITE_ADD_TEST(suite, test_mongo_pack_findandmodify);
+    SUITE_ADD_TEST(suite, test_mongo_pack_reject_malformed);
     SUITE_ADD_TEST(suite, test_mongo_pack_indexes);
     SUITE_ADD_TEST(suite, test_mongo_pack_startsession);
     SUITE_ADD_TEST(suite, test_mongo_parse_sesstimeout);
@@ -1512,12 +2076,20 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_parse_cursorid);
     SUITE_ADD_TEST(suite, test_mongo_parse_check_error);
     SUITE_ADD_TEST(suite, test_mongo_parse_check_error_keys);
+    SUITE_ADD_TEST(suite, test_mongo_parse_check_error_numtypes);
     SUITE_ADD_TEST(suite, test_mongo_parse_startsession);
     SUITE_ADD_TEST(suite, test_mongo_unpack_kind0_ok);
     SUITE_ADD_TEST(suite, test_mongo_unpack_flags_whitelist);
     SUITE_ADD_TEST(suite, test_mongo_unpack_kind1_empty_section);
+    SUITE_ADD_TEST(suite, test_mongo_unpack_reject);
+    SUITE_ADD_TEST(suite, test_mongo_unpack_kind1_ok);
+    SUITE_ADD_TEST(suite, test_mongo_unpack_auth_fail);
+    SUITE_ADD_TEST(suite, test_mongo_auth_sha1_kat);
     SUITE_ADD_TEST(suite, test_mongo_udfree_keeps_session);
     SUITE_ADD_TEST(suite, test_mongo_setter_atomic);
     SUITE_ADD_TEST(suite, test_mongo_pack_getmore_not_start_txn);
+    SUITE_ADD_TEST(suite, test_mongo_pack_no_txn_cmds);
+    SUITE_ADD_TEST(suite, test_mongo_txn_mark);
     SUITE_ADD_TEST(suite, test_mongo_session_survives_reconnect);
+    SUITE_ADD_TEST(suite, test_mongo_txn_stale_after_reconnect);
 }

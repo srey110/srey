@@ -9,10 +9,16 @@
 // 须与 ikcp.c 的 IKCP_MTU_DEF / IKCP_WND_RCV 一致(ikcp.h 未导出这两个常量)
 #define KCP_MTU_DEF 1400
 #define KCP_WND_RCV 128
-#define KCP_DROP_WARN_MS 1000 // 丢包告警间隔:期间的丢弃只计数,到点合成一条
+#define KCP_DROP_WARN_MS 1000 // 丢包告警间隔:期间的丢弃只计数(不分 conv 与原因),过了间隔的下一次丢包才合成一条
+// 对端地址学习(kcp_start 的 port 为 0 时进入):首个 conv 匹配的包定下对端后归 NONE,之后严格比
+enum {
+    KCP_LEARN_NONE = 0, // 不学:按 kcp_start 给的 ip:port 严格比
+    KCP_LEARN_PORT,     // 只学端口:ip 照比,端口取首包来源
+    KCP_LEARN_ALL       // ip 也学:kcp_start 给的是通配 ip(0.0.0.0 / ::),ip 与端口都取首包来源
+};
 
 typedef struct kcp_element {
-    uint8_t warned;
+    uint8_t learn;       // KCP_LEARN_*;首个通过校验的包定下对端后归 NONE
 #if KCP_TICK_HEAP
     uint8_t parked;      // 1=空闲停表,不在 heap_due 里;send / input 经 _kcp_unpark 挂回
     uint32_t hidx;       // 在 heap_due 中的下标,由堆维护
@@ -54,10 +60,8 @@ typedef struct kcp_handle_arg {
 #define _KCP_MAP_CMP(a, b) (((*(a))->conv < (*(b))->conv) ? -1 : ((*(a))->conv > (*(b))->conv) ? 1 : 0)
 HASHMAP_DECL(kcp_map, kcp_element *, _KCP_MAP_HASH, _KCP_MAP_CMP)
 typedef struct kcp_ud_ctx {
-    int32_t in_tick;             // 正在 _kcp_tick_update 迭代中:期间 _kcp_udfree 只置 closing 延后,不真正释放
-    int32_t closing;             // tick 内被请求关闭的延后标记;tick 循环结束后才真正释放
     uint32_t ndrop;              // 距上次丢包告警累计丢弃的包数
-    ud_cxt *ud;                  // 反指所属 ud(延后释放时取用);ud->context == 本 ctx
+    ud_cxt *ud;                  // 反指所属 ud(tick 里拆会话取用);ud->context == 本 ctx
     struct watcher_ctx *watcher; // 所属 event 线程(注销 tick、取时钟用)
     kcp_map *mapkcp;             // conv -> kcp_element 会话表
     uint64_t warn_ms;            // 上次丢包告警的时刻
@@ -102,12 +106,11 @@ static inline void _kcp_map_remove(kcp_ud_ctx *ctx, kcp_element *kel) {
 // 停表的会话挂回到期堆,没停表的不动。current 拨到现在(ikcp_input 拿它采 RTT,须在 input 之前调);
 // 下次 flush 落回原 interval 格点,与一直挂在堆上一样:收包唤醒时 ACK 能和随后的回包合成一个包
 static void _kcp_unpark(kcp_ud_ctx *ctx, kcp_element *kel) {
-    ikcpcb *ikcp = kel->ikcp;
-    IUINT32 now;
     if (!kel->parked) {
         return;
     }
-    now = (IUINT32)timer_cur_ms(_evpub_watcher_timer(ctx->watcher));
+    ikcpcb *ikcp = kel->ikcp;
+    IUINT32 now = (IUINT32)timer_cur_ms(_evpub_watcher_timer(ctx->watcher));
     ikcp->current = now;
     ikcp->ts_flush = _kcp_regrid(ikcp->ts_flush, now, ikcp->interval);
     kel->next_update = ikcp->ts_flush;
@@ -158,13 +161,9 @@ void _kcp_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
         return;
     }
+    // 不会在本 socket 的收包回调或 tick 执行中到这里:事件层把那期间的关闭推迟到回调返回 / 本轮 tick 跑完(见 STATUS_INCB)
     kcp_ud_ctx *ctx = ud->context;
-    if (ctx->in_tick) {
-        // 正在本 ctx 的 tick 迭代中(ikcp_update→_kcp_output 发送失败触发的关闭):此刻释放会销毁
-        // 正被迭代的 mapkcp/heap/kel → UAF;仅置延后标记,由 _kcp_tick_update 循环结束后真正释放
-        ctx->closing = 1;
-        return;
-    }
+    ud->context = NULL;
     _evpub_tick_remove(ctx->watcher, &ctx->tick);
     kcp_map_scan(ctx->mapkcp, _kcp_notify_closed_iter, ud);
     kcp_map_free(ctx->mapkcp);
@@ -172,9 +171,8 @@ void _kcp_udfree(ud_cxt *ud) {
     kcp_heap_free(&ctx->heap_due);
 #endif
     FREE(ctx);
-    ud->context = NULL;
 }
-// conv 查不到/源地址不符的包每 KCP_DROP_WARN_MS 至多告警一条,带上期间累计的丢弃数
+// conv 查不到 / 源地址不符 / 推送目标已不在的包每 KCP_DROP_WARN_MS 至多告警一条,带上期间累计的丢弃数
 static void _kcp_drop_warn(kcp_ud_ctx *ctx, uint32_t conv, const char *why) {
     uint64_t now = timer_cur_ms(_evpub_watcher_timer(ctx->watcher));
     ctx->ndrop++;
@@ -184,6 +182,26 @@ static void _kcp_drop_warn(kcp_ud_ctx *ctx, uint32_t conv, const char *why) {
     LOG_WARN("kcp conv %u %s, %u packets dropped since last warning.", conv, why, ctx->ndrop);
     ctx->ndrop = 0;
     ctx->warn_ms = now;
+}
+// 源地址校验:只认建会话时的对端。学习模式下首个 conv 匹配的包来源定为对端(只学端口时 ip 照比),之后严格比
+static inline int32_t _kcp_addr_check(kcp_element *kel, netaddr_ctx *addr) {
+    if (KCP_LEARN_NONE == kel->learn) {
+        return netaddr_compare(addr, &kel->addr);
+    }
+    if (KCP_LEARN_PORT == kel->learn) {
+        netaddr_ctx noport = *addr;// kel->addr 的端口记的是 0
+        if (AF_INET == noport.addr.sa_family) {
+            noport.ipv4.sin_port = 0;
+        } else {
+            noport.ipv6.sin6_port = 0;
+        }
+        if (ERR_OK != netaddr_compare(&noport, &kel->addr)) {
+            return ERR_FAILED;
+        }
+    }
+    kel->addr = *addr;
+    kel->learn = KCP_LEARN_NONE;
+    return ERR_OK;
 }
 void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     (void)ev;
@@ -198,9 +216,8 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
         _kcp_drop_warn(ctx, conv, "not found");
         return;
     }
-    // 源地址校验:防 off-path 猜中 conv 后伪造源地址注入;仅严格绑定建会话时的对端地址(kcp_start 指定),
-    // 未处理地址正常变化(NAT 重绑定/客户端漫游),如需地址迁移须另行设计
-    if (ERR_OK != netaddr_compare(addr, &kel->addr)) {
+    // 防 off-path 猜中 conv 后伪造源地址注入;不处理绑定后的地址变化(NAT 重绑定/客户端漫游)
+    if (ERR_OK != _kcp_addr_check(kel, addr)) {
         _kcp_drop_warn(ctx, conv, "source addr mismatch");
         return;
     }
@@ -216,13 +233,19 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
     }
     void *target = g_emit->begin(ud->loader, kel->handle);
     if (NULL == target) {
-        LOG_WARN("kcp get target %"PRIu64" error.", kel->handle);
+        // 推送目标已不在:消息取出丢掉,留在接收队列里会把通告窗口占到 0
+        do {
+            ikcp_recv(kel->ikcp, NULL, peek);
+            peek = ikcp_peeksize(kel->ikcp);
+        } while (peek >= 0);
+        _kcp_drop_warn(ctx, conv, "target gone");
         return;
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
     msg.subtype = ud->pktype;
     msg.sk = *sk;
+    msg.sess = kel->sess;
     int32_t rtn;
     recvfrom_ctx *umsg;
     for (;;) {
@@ -240,7 +263,6 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
             umsg->addr = kel->addr;
             msg.data = umsg;
             msg.size = umsg->len;
-            msg.sess = kel->sess;
             g_emit->emit(target, &msg);
         }
         peek = ikcp_peeksize(kel->ikcp);
@@ -257,16 +279,13 @@ static int _kcp_output(const char *buf, int len, ikcpcb *ikcp, void *user) {
         return ERR_FAILED;
     }
     kcp_element *kel = user;
+    if (KCP_LEARN_NONE != kel->learn) {
+        return ERR_FAILED;// 对端还没学到:段丢掉,学到后靠重传补上
+    }
     struct watcher_ctx *watcher = kel->watcher;
     struct evsock_ctx *evsk = _evpub_sockel_get(watcher, kel->sk.fd);
-    if (NULL == evsk
-        || ERR_OK != _evpub_checkid(evsk, kel->sk.skid)) {
-        if (!kel->warned) {
-            LOG_WARN("maybe forgot stop kcp.");
-            kel->warned = 1;
-        }
-        return ERR_FAILED;
-    }
+    // 只在 tick 里调;tick 期间的关闭被事件层推迟到本轮 tick 之后、会话随 socket 一起拆,这里必查得到
+    ASSERTAB(NULL != evsk && ERR_OK == _evpub_checkid(evsk, kel->sk.skid), "kcp output on a closed socket.");
     // 队列空且无在途发送时就地发出去,省掉下面那次 MALLOC+memcpy
     if (!_evpub_try_sendto(watcher, evsk, buf, (size_t)len, &kel->addr)) {
         return ERR_OK;
@@ -279,19 +298,16 @@ static int _kcp_output(const char *buf, int len, ikcpcb *ikcp, void *user) {
     _evpub_add_bufs_sendto(watcher, evsk, &sbuf, 1);
     return ERR_OK;
 }
-// 单次 kcp_send 消息上限 = 最大分片数 × mss;mtu<=0 按默认
-static size_t _kcp_maxpack(int32_t mtu) {
-    if (mtu <= 0) {
-        mtu = KCP_MTU_DEF;
-    }
-    return (size_t)(KCP_WND_RCV - 1) * (size_t)(mtu - KCP_MIN_OVERHEAD);
+// 单次 kcp_send 消息上限 = 最大分片数 × mss
+static size_t _kcp_maxpack(IUINT32 mss) {
+    return (size_t)(KCP_WND_RCV - 1) * mss;
 }
 void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv) {
     kcp->stopped = 1;
     kcp->conv = conv;
     kcp->sess = 0;
     kcp->netev = netev;
-    kcp->maxpack = _kcp_maxpack(0);
+    kcp->maxpack = _kcp_maxpack(KCP_MTU_DEF - KCP_MIN_OVERHEAD);
     kcp->sk = *sk;
 }
 static void _kcp_element_free(void *arg) {
@@ -305,21 +321,20 @@ static void _kcp_element_free(void *arg) {
     }
     FREE(kel);
 }
-// 拆一个会话:向 task 投 CLOSE(erro 为 close_type)、出表出堆、释放。kcp_stop 与死链共用
+// 拆一个会话:出表出堆、向 task 投 CLOSE(erro 为 close_type)、释放。kcp_stop 与死链共用
 static void _kcp_teardown(ud_cxt *ud, kcp_element *kel, int32_t erro) {
-    _kcp_notify_closed(ud, kel, erro);
     _kcp_map_remove((kcp_ud_ctx *)ud->context, kel);
+    _kcp_notify_closed(ud, kel, erro);
     _kcp_element_free(kel);
 }
 // 下次该调 ikcp_update 的时刻。ikcp_update 只在到了 ts_flush 才 flush(重传也只在 flush 里判)，故直接按 ts_flush 算；
 // 不用 ikcp_check：它把"重传时刻已过、ts_flush 未到"算成立即到期，那段时间每个 tick 都白跑一轮。
 // 与 ts_flush 相差超 10 秒(时钟跳变)视为到期，口径同 ikcp_check
 static inline IUINT32 _kcp_next_update(const ikcpcb *ikcp, IUINT32 now) {
-    IINT32 diff;
     if (0 == ikcp->updated) {
         return now;
     }
-    diff = (IINT32)(ikcp->ts_flush - now);
+    IINT32 diff = (IINT32)(ikcp->ts_flush - now);
     if (diff <= 0
         || diff > 10000) {
         return now;
@@ -333,12 +348,12 @@ static void _kcp_map_elfree(void *item) {
 #if KCP_TICK_HEAP
 // ev_tick 回调:堆顶到期(<=now)才处理:空闲的摘出堆停表(不 update,见 _kcp_idle / _kcp_unpark),
 // 死链的拆掉,其余 update 后按新 next_update 原地下沉;堆为空或堆顶未到期直接返回。
-// 原地下沉的前提:ikcp_update 期间堆不被改动(关闭一律经 in_tick/closing 延后),kel 始终是堆顶
-static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
+// 原地下沉的前提:ikcp_update 期间堆不被改动(tick 里的关闭由事件层推迟到本轮 tick 之后,见 STATUS_INCB),kel 始终是堆顶
+static uint32_t _kcp_tick_update(void *arg, uint64_t now_ms) {
+    kcp_ud_ctx *ctx = arg;
     IUINT32 now = (IUINT32)now_ms;
     uint32_t remain = kcp_heap_size(&ctx->heap_due);// 至多处理本轮已有会话数,防下次时刻算成<=now 时死循环
     kcp_element *kel;
-    ctx->in_tick = 1;
     while (remain-- > 0 && NULL != (kel = kcp_heap_min(&ctx->heap_due))) {
         if ((IINT32)(now - kel->next_update) < 0) {// 堆顶未到期,防回绕
             break;
@@ -349,20 +364,12 @@ static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
             continue;
         }
         ikcp_update(kel->ikcp, now);
-        if (ctx->closing) {// ikcp_update 内发送失败触发了本 socket 关闭:kel/ctx 待释放,勿再触碰
-            break;
-        }
         if ((IUINT32)-1 == kel->ikcp->state) {// 有段重传到 dead_link 次,对端已失联
             _kcp_teardown(ctx->ud, kel, CLOSE_TYPE_ABORT);
             continue;
         }
         kel->next_update = _kcp_next_update(kel->ikcp, now);
         kcp_heap_sift_down(&ctx->heap_due, kel->hidx);
-    }
-    ctx->in_tick = 0;
-    if (ctx->closing) {// 延后至此真正释放(in_tick 已清零,_kcp_udfree 走真正释放分支)
-        _kcp_udfree(ctx->ud);
-        return EVENT_WAIT_TIMEOUT;
     }
     if (kcp_heap_empty(&ctx->heap_due)) {
         return EVENT_WAIT_TIMEOUT;
@@ -378,28 +385,28 @@ static int32_t _kcp_tick_iter(kcp_element *const *item, void *udata) {
         ikcp_update(kel->ikcp, a->now);
         kel->next_update = _kcp_next_update(kel->ikcp, a->now);
     }
-    uint32_t d = (kel->next_update > a->now) ? (uint32_t)(kel->next_update - a->now) : 0;
+    IINT32 diff = (IINT32)(kel->next_update - a->now);// 防回绕,口径同堆版本
+    uint32_t d = (diff > 0) ? (uint32_t)diff : 0;
     if (d < a->next) {
         a->next = d;
     }
     return 1;
 }
 // ev_tick 回调:驱动本 socket 所有会话 ikcp_update,返回距下次最近的 update 间隔(ms)
-static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
+static uint32_t _kcp_tick_update(void *arg, uint64_t now_ms) {
+    kcp_ud_ctx *ctx = arg;
     kcp_tick_arg a = { (IUINT32)now_ms, EVENT_WAIT_TIMEOUT };
-    ctx->in_tick = 1;
     kcp_map_scan(ctx->mapkcp, _kcp_tick_iter, &a);
-    ctx->in_tick = 0;
-    if (ctx->closing) {// 扫描中某会话 ikcp_update 发送失败触发关闭:延后至此真正释放
-        _kcp_udfree(ctx->ud);
-        return EVENT_WAIT_TIMEOUT;
-    }
     return a.next;
 }
 #endif
-static uint32_t _kcp_tick(void *ud, uint64_t now_ms) {
-    kcp_ud_ctx *ctx = ud;
-    return _kcp_tick_update(ctx, now_ms);
+// 是否通配 ip(0.0.0.0 / ::)。逐字节比,理由同 netaddr.c 的 is_loopback
+static int32_t _kcp_addr_any(const netaddr_ctx *addr) {
+    static const uint8_t any6[16] = { 0 };
+    if (AF_INET == addr->addr.sa_family) {
+        return 0 == addr->ipv4.sin_addr.s_addr;
+    }
+    return 0 == memcmp(&addr->ipv6.sin6_addr, any6, sizeof(any6));
 }
 static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, uint64_t sess,
                                       const char *ip, uint16_t port, const kcp_config *cfg) {
@@ -412,7 +419,8 @@ static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, uint64_t sess
     }
     ikcp_setoutput(kel->ikcp, _kcp_output);
     if (NULL != cfg) {
-        if (cfg->mtu > 0 && 0 != ikcp_setmtu(kel->ikcp, cfg->mtu)) {
+        if (cfg->mtu > 0
+            && (cfg->mtu > KCP_MTU_MAX || 0 != ikcp_setmtu(kel->ikcp, cfg->mtu))) {
             LOG_WARN("kcp invalid mtu %d, keep %u.", cfg->mtu, kel->ikcp->mtu);
         }
         if (cfg->sndwnd > 0 || cfg->rcvwnd > 0) {
@@ -423,6 +431,9 @@ static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, uint64_t sess
     if (ERR_OK != netaddr_set(&kel->addr, ip, port)) {
         _kcp_element_free(kel);
         return NULL;
+    }
+    if (0 == port) {
+        kel->learn = _kcp_addr_any(&kel->addr) ? KCP_LEARN_ALL : KCP_LEARN_PORT;
     }
     kel->conv = kcp->conv;
     kel->sess = sess;
@@ -447,8 +458,6 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     kcp_ud_ctx *ctx = ud->context;
     if (NULL == ctx) {
         MALLOC(ctx, sizeof(kcp_ud_ctx));
-        ctx->in_tick = 0;
-        ctx->closing = 0;
         ctx->ud = ud;
         ctx->ndrop = 0;
         ctx->warn_ms = 0;
@@ -458,7 +467,7 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
         kcp_heap_init(&ctx->heap_due, 0);
 #endif
         ctx->watcher = watcher;
-        ctx->tick.cb = _kcp_tick;
+        ctx->tick.cb = _kcp_tick_update;
         ctx->tick.ud = ctx;
         _evpub_tick_add(watcher, &ctx->tick);
         ud->context = ctx;
@@ -483,7 +492,7 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
         return ERR_FAILED;
     }
     // maxpack 须在投递前算:ev_props 成功后 kel 所有权已转给 event 线程,不可再读
-    size_t maxpack = _kcp_maxpack((int32_t)kel->ikcp->mtu);
+    size_t maxpack = _kcp_maxpack(kel->ikcp->mss);
     if (ERR_OK != ev_props(kcp->netev, &kcp->sk,
                            _kcp_start, _kcp_element_free, kel, 0)) {
         return ERR_FAILED;
@@ -504,11 +513,8 @@ static kcp_element *_kcp_resolve(struct evsock_ctx *evsk, ud_cxt *ud, uint32_t c
         LOG_ERROR("kcp resolve called on non-UDP_KCP fd, conv %u, drop.", conv);
         return NULL;
     }
-    if (NULL == ud->context) {
-        LOG_WARN("kcp context not init.");
-        return NULL;
-    }
-    kcp_element *kel = _kcp_map_get((kcp_ud_ctx *)ud->context, conv);
+    // context 为空即 socket 正在拆(见 _kcp_udfree),同"找不到会话"
+    kcp_element *kel = NULL == ud->context ? NULL : _kcp_map_get((kcp_ud_ctx *)ud->context, conv);
     if (NULL == kel || kel->sess != sess) {
         if (0 == quiet) {
             LOG_WARN("can't find conv %u.", conv);
@@ -594,7 +600,7 @@ int32_t kcp_send(kcp_ctx *kcp, void *data, size_t lens, int32_t copy) {
         CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
-    kcp_send_buf *buf;//todo 可以用池
+    kcp_send_buf *buf;
     if (copy) {
         MALLOC(buf, sizeof(kcp_send_buf) + lens);
         memcpy(buf->payload, data, lens);

@@ -8,7 +8,7 @@
     #error "MCO_USE_VMEM_ALLOCATOR skips the C-allocator block, silently reverting coroutine stacks to mmap/VirtualAlloc"
 #endif
 // 协程栈改走框架分配器以计入 MEMORY_CHECK，不必清零。
-// Win32 走 MCO_USE_FIBERS，栈由 CreateFiberEx 给，同样不计入——有意保留，上面那道 #error 只挡 VMEM
+// Windows 上除 x64 外（32 位与 ARM64）走 MCO_USE_FIBERS，栈由 CreateFiberEx 给，不计入——有意保留，上面那道 #error 只挡 VMEM
 #define MCO_ALLOC(size) _malloc(size)
 #define MCO_DEALLOC(ptr, size) _free(ptr)
 // 全项目只推/弹一个 8 字节指针；这个值设多大，每个协程就白占多大（谁都不清零它）
@@ -22,7 +22,6 @@
 #define MINICORO_IMPL
 #include "coro/minicoro.h"
 
-#define COROPOOL_CAP 128
 // 协程栈上下界。ASan 插桩把每帧撑大数倍，56KB 必爆栈，故两头一起抬；非 ASan 的下界取 minicoro
 // 默认值（它只把不足 32KB 的静默抬到 32KB，比默认还小，调小反更易爆栈）。
 // 上界按每个调度器最多 COROPOOL_CAP 个协程折算，再大单个调度器的常驻栈就上百 MB。
@@ -56,9 +55,9 @@ typedef struct coro_info {
 HEAP_DECL(coro_heap, coro_info, hidx, _CORO_TIMEOUT_LT)
 // session 到挂起协程的映射节点
 typedef struct coro_sess {
-    int32_t keep;       // waiters 摘空后是否保留本条目：0 立即删除 mapco 条目；1 保留（同一 sess 高频复用，免去反复 coro_map 删除+插入），仅 coro_wake_all 会强制清零并真正删除
+    int32_t keep;       // waiters 摘空后是否保留本条目（同一 sess 高频复用，免去反复删除+插入）；广播清零、超时无视，规则见 CLAUDE.md 的 coro_sess 不变式
     uint64_t sess;      // session ID
-    list_ctx waiters;   // 挂起协程链表（元素 coro_info，严格按 FIFO 顺序等待/唤醒：仅队头 tag 匹配才摘除）
+    list_ctx waiters;   // 挂起协程链表（元素 coro_info，FIFO）：唤醒只看队头，广播整批摘，超时从中间摘
 }coro_sess;
 // fork 任务载荷：coro_fork / coro_fork_wait 均建此结构追加到 co->fork_pending，
 // drain 时由 _coro_fork_run 跑 fn 后归还 fork_item_pool；fwctx=NULL 即 coro_fork(fire-and-forget) 退化态
@@ -79,16 +78,17 @@ typedef struct fork_wait_ctx {
 } fork_wait_ctx;
 // serial waiter 链表节点：cs 挂起协程的 FIFO 元素，进队时 pool_pop、出队由前一个协程的 coro_serial_leave pool_push
 typedef struct serial_node {
-    list_node node;           // 侵入式 FIFO 链表节点（slist，UPCAST 复原外层），须在首位
+    list_node node;           // 侵入式 FIFO 链表节点（slist，UPCAST 复原外层）
     int32_t aborted;          // 1 = 被 coro_serial_free 唤醒，锁未交接给本协程，须失败返回
     mco_coro *co;             // 等待中的协程
     uint64_t since;           // 入队时刻(ms)，coro_dump 据此报"排了多久"
 } serial_node;
 struct coro_serial_ctx {
-    list_node node;        // 挂 co->serials（侵入式，须在首位）；仅供 coro_dump 遍历，
+    list_node node;        // 挂 co->serials（侵入式）；仅供 coro_dump 遍历，
                            // 摘挂点严格对齐三处生死：coro_serial_new 挂、两处 FREE(serial) 前摘
     int32_t ref;           // 嵌套深度（同协程多次进入累加）
     int32_t closed;        // 1 = 已关闭，此后任何 enter 一律失败，不再有人能拿到锁
+    int32_t draining;      // 1 = coro_serial_free 正在逐个唤醒排队者，此间 leave 只放锁不释放
     uint64_t since;        // current 转为非 NULL 的时刻(ms)，coro_dump 据此报"持锁多久"；
                            // current 为 NULL 时是上一任的残值，不可读
     coro_ctx *co;          // 所属调度器；resume 时同步 co->curco 需要
@@ -511,21 +511,26 @@ void coro_serial_free(coro_serial_ctx *serial) {
         return;
     }
     serial->closed = 1;
-    // 逐个唤醒排队者并标记 aborted：它们醒来即失败返回,锁不交接给任何一个
+    // 整条队列先摘到本地、全标 aborted 再逐个唤醒：被唤醒者途中让持锁者出锁时,它看到的是空队列,锁不交接。
+    // draining 期间 leave 只放锁不释放,释放统一留到排空之后
     coro_ctx *co = serial->co;
+    list_ctx local = serial->waiters;
+    list_init(&serial->waiters);
+    list_foreach(&local, it) {
+        UPCAST(it, serial_node, node)->aborted = 1;
+    }
+    serial->draining = 1;
     list_node *ln;
     serial_node *nd;
     mco_coro *wco;
-    while (NULL != (ln = list_pop_head(&serial->waiters))) {
+    while (NULL != (ln = list_pop_head(&local))) {
         nd = UPCAST(ln, serial_node, node);
-        nd->aborted = 1;
         wco = nd->co;
         _coro_resume_reap(co, wco);
         pool_push(&co->serial_node_pool, nd, 0);
     }
-    // 排队者能唤醒,持锁者不能——锁抢不走,它还在临界区里跑,后面还要 leave。
-    // 所以有持锁者时本函数不释放,只把 closed 留在那儿当交接凭据:
-    // 队列已排空且 closed 之后再没人能入队,那位最后一次 leave 走的必是"队列空"分支,由它关灯
+    serial->draining = 0;
+    // 持锁者还在临界区就不释放(锁抢不走),closed 留作凭据,由它最后一次 leave 释放
     if (NULL == serial->current) {
         list_remove(&co->serials, &serial->node);
         FREE(serial);
@@ -591,8 +596,8 @@ void coro_serial_leave(coro_serial_ctx *serial) {
     list_node *ln = list_pop_head(&serial->waiters);
     if (NULL == ln) {
         serial->current = NULL;
-        // coro_serial_free 撞上本协程持锁,把释放推给了这里(见该函数末尾)
-        if (0 != serial->closed) {
+        // coro_serial_free 撞上本协程持锁,把释放推给了这里;它还在排空时由它自己收尾
+        if (0 != serial->closed && 0 == serial->draining) {
             list_remove(&co->serials, &serial->node);
             FREE(serial);
         }

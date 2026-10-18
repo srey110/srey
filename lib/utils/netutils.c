@@ -2,9 +2,10 @@
 #include "utils/netaddr.h"
 
 #define MSEC    1000 //毫秒与秒的换算系数
+#define KEEPALIVE_PROBES 3 //保活探测次数
 #ifdef OS_WIN
-// 0:未初始化 1:初始化中或收尾中 >=2:就绪（引用数 = 值 - 1）。
-// 只保证"启停各一次"与"init 期间并发调用"两种用法,不是通用的并发引用计数
+#pragma comment(lib, "ws2_32.lib")// 全项目的 Winsock 依赖记在这里：用套接字前都得 sock_init，本模块必被链入
+// 0:未初始化 1:初始化中或收尾中 >=2:就绪（引用数 = 值 - 1）。使用限制见 netutils.h 的 sock_init
 static atomic_t _init_sock_ref = 0;
 #endif
 
@@ -144,10 +145,23 @@ int32_t sock_reuseaddr(SOCKET fd, int32_t istcp) {
     if (0 != istcp) {
         return _setsockopt_flag(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE);
     }
+#elif (defined(OS_DARWIN) || defined(OS_BSD)) && defined(SO_REUSEPORT)
+    // BSD 系只有 SO_REUSEADDR 时，绑通配地址的 UDP 仍共用不了端口
+    if (0 == istcp && ERR_OK != _setsockopt_flag(fd, SOL_SOCKET, SO_REUSEPORT)) {
+        return ERR_FAILED;
+    }
 #else
     (void)istcp;
 #endif
     return _setsockopt_flag(fd, SOL_SOCKET, SO_REUSEADDR);
+}
+int32_t sock_exclusiveaddr(SOCKET fd) {
+#if defined(OS_WIN)
+    return _setsockopt_flag(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE);
+#else
+    (void)fd;
+    return ERR_OK;
+#endif
 }
 int32_t sock_reuseport(SOCKET fd) {
 #ifdef SO_REUSEPORT_LB
@@ -194,6 +208,11 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
         (LPVOID)&out, sizeof(struct tcp_keepalive), &ret, NULL, NULL) < ERR_OK) {
         return ERR_FAILED;
     }
+#ifdef TCP_KEEPCNT
+    // 次数 SIO_KEEPALIVE_VALS 设不了，Win10 1703 起才认 TCP_KEEPCNT；设不上就沿用系统的 10 次，不算失败
+    int32_t cnt = KEEPALIVE_PROBES;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&cnt, (int32_t)sizeof(cnt));
+#endif
 #else
     //首次发送 keepalive 前的空闲等待秒数
 #ifdef TCP_KEEPIDLE
@@ -215,7 +234,7 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
 #endif
     //keepalive 最大重试次数
 #ifdef TCP_KEEPCNT
-    int32_t cnt = 3;
+    int32_t cnt = KEEPALIVE_PROBES;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&cnt, (int32_t)sizeof(cnt)) < ERR_OK) {
         return ERR_FAILED;
     }

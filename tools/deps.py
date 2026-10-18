@@ -8,7 +8,7 @@
 依赖源码克隆到 deps/<name>(不入版本控制),编译产物按仓库既有约定摆放:
     头文件 -> lib/<name>/     (与 -Ilib、MSVC 的 ../lib 对齐,#include <openssl/ssl.h> 直接命中)
     静态库 -> bin/            (与 -Lbin、MSVC 的 ../bin/ 对齐)
-所以构建文件(mk.sh / 四个 .vcxproj)不需要任何改动。
+所以构建文件(mk.sh / CMakeLists.txt / 四个 .vcxproj)不需要任何改动。
 
 用法(项目根目录运行):
     python3 tools/deps.py              # 按 config.h 的开关决定做哪几个
@@ -20,8 +20,8 @@
 
 库名带变体后缀「<名字>[d]_<x86|x64|arm64>」,如 libssl_x64.a / libssld_x86.lib /
 libmimalloc_arm64.a。各变体在 bin/ 里互不覆盖,一个平台每种变体各编一次就够,
-换架构或换 debug/release 不用先 clean。链接侧按同一规则拼名字:POSIX 由 mk.sh 拼 -l,
-Windows 由 os.h 的 DEPS_LIB_SUFFIX 拼进两个 main.c 的 #pragma comment(lib)。
+换架构或换 debug/release 不用先 clean。链接侧按同一规则拼名字:POSIX 由 mk.sh / CMakeLists.txt 拼,
+Windows 由 os.h 的 DEPS_LIB_SUFFIX 拼进 #pragma comment(lib)（openssl 在 lib/event/evssl.c，mimalloc 在 lib/base/memory.c）。
 头不带后缀,各变体共用一份(装的是公开头,最后一次构建装上去的那份)。
 
 Windows ARM64 的 OpenSSL 一律降到 /O1(见文件前部的 WIN_ARM64_OSSL_CFLAGS):
@@ -83,8 +83,8 @@ DEPS = {
 
 IS_WIN = os.name == "nt"
 # 目标架构:mk.sh 风格的位置参数(m32/m64/arm64),不传则探测。
-# 只有 openssl 用得上:它的 Windows 构建没有 ./config 自动探测,必须显式给 target。
-# mimalloc 走 cmake,由所在 shell 的编译器决定目标,不传架构
+# openssl 的 Windows 构建没有 ./config 自动探测,必须显式给 target;POSIX 上显式指定时两个依赖都附加 cflag。
+# Windows 上 mimalloc 的目标由所在 shell 的 cl.exe 决定,不传架构
 ARCH_SPECS = {
     "m32": {"vc": "VC-WIN32", "cflag": "-m32"},
     "m64": {"vc": "VC-WIN64A", "cflag": "-m64"},
@@ -125,6 +125,13 @@ TOOL_HINTS = {
         "freebsd": "pkg install cmake",
         "linux": "dnf install cmake 或 apt install cmake",
         "darwin": "brew install cmake",
+    },
+    "make": {
+        "linux": "dnf install make 或 apt install make",
+        "darwin": "xcode-select --install",
+    },
+    "nmake": {
+        "win": "随 VS 的 C++ 工具集提供,在 VS 开发者命令提示符里运行本脚本",
     },
     "git": {
         "win": "https://git-scm.com/download/win",
@@ -183,7 +190,11 @@ def run_soft(cmd, cwd=None) -> int:
     """给清理用:上游 clean 目标失败不该中断整轮,后面还有模式兜底"""
     printable = " ".join(str(c) for c in cmd)
     print(f"  $ {printable}")
-    rc = subprocess.call(cmd, cwd=str(cwd) if cwd else None)
+    try:
+        rc = subprocess.call(cmd, cwd=str(cwd) if cwd else None)
+    except OSError as e:
+        print(f"  [提示] {printable} 跑不起来({e}),改由模式清理接手")
+        return -1
     if 0 != rc:
         print(f"  [提示] {printable} 返回 {rc},改由模式清理接手")
     return rc
@@ -343,9 +354,24 @@ def copy_into(files: list, dest: Path, sfx: str, strip: str = "") -> list:
     return done
 
 
+def ossl_config_prefix(arch: str, forced: bool) -> list:
+    """POSIX 上强制 m32 时 ./config 仍按 uname 选目标:64 位 x86 Linux 用 setarch i686 让它选 32 位(OpenSSL 官方写法),
+    别的 64 位主机没有对应办法,直接报不支持"""
+    if not forced or "m32" != arch:
+        return []
+    m = platform.machine().lower()
+    if m in ("i386", "i486", "i586", "i686", "x86"):
+        return []
+    if "linux" == plat_key() and m in ("x86_64", "amd64") and shutil.which("setarch"):
+        return ["setarch", "i686"]
+    raise RuntimeError(f"{platform.system()} {platform.machine()} 上编不了 32 位 openssl:"
+                       "只支持 32 位主机,或带 setarch 的 x86_64 Linux")
+
+
 def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
-    """no-shared 静态构建 + install_dev(只装头与库,跳过极慢的文档)"""
-    prefix = src / "_prefix"
+    """no-shared 静态构建 + install_dev(只装头与库,跳过极慢的文档)。
+    prefix 按架构分开:各架构的 libdir 不同(lib / lib64),共用会把旧架构的库当成本次产物"""
+    prefix = src / f"_prefix_{SFX_ARCH[arch]}"
     opts = [f"--prefix={prefix}", f"--openssldir={prefix / 'ssl'}",
             "no-shared", "no-tests", "no-docs"]
     if dbg:
@@ -358,7 +384,7 @@ def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
     else:
         # 不指定时让 ./config 自己探测;显式指定才附加 -m32/-m64,口径同 mk.sh 的 CFLAGS
         cflag = ARCH_SPECS[arch]["cflag"] if forced else None
-        run(["./config"] + opts + ([cflag] if cflag else []), cwd=src)
+        run(ossl_config_prefix(arch, forced) + ["./config"] + opts + ([cflag] if cflag else []), cwd=src)
     # config 出错也可能返回 0(实测缺 perl 模块时如此),故另验它该产出的文件。
     # 只查 configdata.pm:makefile 在 Windows 上是小写,两平台同名的只有这个
     if not (src / "configdata.pm").is_file():
@@ -390,8 +416,10 @@ def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
 
 def build_mimalloc(src: Path, arch: str, forced: bool, dbg: bool) -> list:
     """只要静态库,且必须 MI_OVERRIDE=OFF:srey 在 memory.c 显式调 mi_*,不劫持 libc malloc。
-    arch/forced 不用:mimalloc 的目标由所在 shell 的编译器决定"""
-    build = src / "build"
+    每个变体一个 build 目录:Debug 与 Release 的库名不同,共用目录会把上一轮的库一起捞走"""
+    cfgtype = "Debug" if dbg else "Release"
+    bdir = f"build/{cfgtype}_{SFX_ARCH[arch]}"
+    build = src / bdir
     if IS_WIN:
         ver = msvc_ver()
         if 0 != ver and ver < MSVC_MIN_FOR_MIMALLOC:
@@ -400,13 +428,17 @@ def build_mimalloc(src: Path, arch: str, forced: bool, dbg: bool) -> list:
                 f"(上游只自带 VS2022 的工程);Windows 上请把 lib/base/config.h 的 "
                 f"WITH_MIMALLOC 改回 0(openssl 不受影响)")
     # 不传 -A:那是 VS 生成器专用的,Ninja(Windows 上 cmake 常见的默认)会直接报错。
-    # 目标架构由所在 shell 的 cl.exe 决定,与 srey 自身的构建同一来源
-    cfgtype = "Debug" if dbg else "Release"
-    run(["cmake", "-S", ".", "-B", "build", f"-DCMAKE_BUILD_TYPE={cfgtype}",
-         "-DMI_OVERRIDE=OFF", "-DMI_BUILD_SHARED=OFF",
-         "-DMI_BUILD_OBJECT=OFF", "-DMI_BUILD_TESTS=OFF"], cwd=src)
+    # Windows 上目标架构由所在 shell 的 cl.exe 决定,与 srey 自身的构建同一来源
+    cmd = ["cmake", "-S", ".", "-B", bdir, f"-DCMAKE_BUILD_TYPE={cfgtype}",
+           "-DMI_OVERRIDE=OFF", "-DMI_BUILD_SHARED=OFF",
+           "-DMI_BUILD_OBJECT=OFF", "-DMI_BUILD_TESTS=OFF"]
+    # POSIX 上显式指定架构时附加位宽参数,口径同 build_openssl 与 mk.sh
+    cflag = ARCH_SPECS[arch]["cflag"] if forced and not IS_WIN else None
+    if cflag:
+        cmd.append(f"-DCMAKE_C_FLAGS={cflag}")
+    run(cmd, cwd=src)
     # -j 必须带数字:FreeBSD 的 bmake 不接受裸 -j
-    run(["cmake", "--build", "build", "--config", cfgtype, "-j", str(njobs())], cwd=src)
+    run(["cmake", "--build", bdir, "--config", cfgtype, "-j", str(njobs())], cwd=src)
 
     hdr = src / "include" / "mimalloc.h"
     if not hdr.is_file():
@@ -427,11 +459,18 @@ def build_mimalloc(src: Path, arch: str, forced: bool, dbg: bool) -> list:
 
 
 BUILDERS = {"openssl": build_openssl, "mimalloc": build_mimalloc}
-# 各依赖构建所需的工具,在克隆之前查——缺工具时不该已经拉完几百 MB 源码才报错
-BUILD_TOOLS = {
-    "openssl": ["perl", "nasm", "cl"] if IS_WIN else ["perl", "cc"],
-    "mimalloc": ["cmake"],
-}
+
+
+def build_tools(name: str, arch: str) -> list:
+    """各依赖构建所需的工具,在克隆之前查——缺工具时不该已经拉完几百 MB 源码才报错。
+    nasm 只有 x86/x64 的 openssl 汇编用,ARM64 用 MSVC 自带的 armasm64"""
+    if "mimalloc" == name:
+        return ["cmake"]
+    if not IS_WIN:
+        return ["perl", "cc", make_cmd()]
+    return ["perl", "cl", make_cmd()] + ([] if "arm64" == arch else ["nasm"])
+
+
 # 每个依赖的产物特征:头文件锚点 + bin/ 下库名的通配。跳过判定与 clean 共用这一份
 ARTIFACTS = {
     "openssl": {
@@ -566,7 +605,7 @@ def main() -> int:
             print(f"  该变体产物已存在,跳过(要重编先 clean)")
             report.append((name, "已存在", [ARTIFACTS[name]["inc"]] + found_libs(name, sfx)))
             continue
-        need_tools(BUILD_TOOLS[name])
+        need_tools(build_tools(name, arch))
         if "openssl" == name:
             need_perl_mods(OPENSSL_PERL_MODS)
         src = ensure_clone(name, spec)
@@ -590,7 +629,7 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
         sys.stderr.write(f"\n失败: {e}\n")
         sys.exit(1)
     except KeyboardInterrupt:

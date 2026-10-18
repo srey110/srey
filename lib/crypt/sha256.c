@@ -82,11 +82,10 @@ void sha256_init(sha256_ctx *sha256) {
 }
 void sha256_update(sha256_ctx *sha256, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;
-    size_t left, blocks;
     if (0 == lens) {
         return;
     }
-    left = 64 - sha256->datalen;
+    size_t left = 64 - sha256->datalen;
     if (sha256->datalen > 0 && lens >= left) {
         memcpy(sha256->data + sha256->datalen, p, left);
         _sha256_transform(sha256->state, sha256->data, 1);
@@ -96,7 +95,7 @@ void sha256_update(sha256_ctx *sha256, const void *data, size_t lens) {
         lens -= left;
     }
     if (lens >= 64) {
-        blocks = lens / 64;
+        size_t blocks = lens / 64;
         _sha256_transform(sha256->state, p, blocks);
         sha256->bitlen += (uint64_t)blocks * 512;
         p += blocks * 64;
@@ -108,8 +107,7 @@ void sha256_update(sha256_ctx *sha256, const void *data, size_t lens) {
     }
 }
 void sha256_final(sha256_ctx *sha256, char hash[SHA256_BLOCK_SIZE]) {
-    uint32_t i;
-    i = sha256->datalen;
+    uint32_t i = sha256->datalen;
     if (sha256->datalen < 56) {
         sha256->data[i++] = 0x80;
         while (i < 56) {

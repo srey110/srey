@@ -18,8 +18,9 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a))) // 获取静态数组元素个数
 #define EMPTYSTR(str) ((NULL == (str)) || ('\0' == *(const char *)(str))) // 判断字符串是否为空
 #define EMPTYPTR(ptr, lens) ((NULL == (ptr)) || (0 == (lens)))
-// s 向上取整,结果恒为 size_t。掩码 ~(n-1) 只在 n 是 2 的幂时才等价于"取 n 的整数倍",
-// n 取别的值（比如 6）结果不会是 n 的倍数；但任何 n 下结果都 >= s（被清掉的低位至多 n-1）
+// s 向上取整,结果为 size_t。掩码 ~(n-1) 只在 n 是 2 的幂时才等价于"取 n 的整数倍",
+// n 取别的值（比如 6）结果不会是 n 的倍数。s + n - 1 不先转 size_t，按 s 与 n 运算后的类型算：
+// 该类型比 size_t 窄（如 uint32_t 的 s 配 int 常量 n）且 s 离其上限不足 n 时先回绕，结果反而比 s 小；不回绕时结果 >= s
 #define ROUND_UP(s, n) (((s) + (n) - 1) & (~((size_t)(n) - 1)))
 #define CONCAT2(a, b) a b // 拼接两个字符串字面量
 #define CONCAT3(a, b, c) a b c // 拼接三个字符串字面量

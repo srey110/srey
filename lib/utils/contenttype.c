@@ -858,5 +858,5 @@ static int32_t _contenttype_cmp(const void *key, const void *elem) {
 const char *contenttype(const char *extension) {
     const contenttype_ctx *found = bsearch(extension, _typegreg,
         ARRAY_SIZE(_typegreg), sizeof(_typegreg[0]), _contenttype_cmp);
-    return found ? (const char *)&_ct_types + found->type : "application/X-other-1";
+    return found ? (const char *)&_ct_types + found->type : _ct_types.application_octet_stream;
 }

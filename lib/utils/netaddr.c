@@ -86,13 +86,50 @@ static int32_t _netaddr_pton4(const char *s, uint8_t out[4]) {
     memcpy(out, b, sizeof(b));
     return ERR_OK;
 }
+// "IPv6%网卡"：后缀是数字就直接当网卡号，否则按网卡名查(Windows 只认数字)，写进 scope_id。
+// NOINLINE：带栈上数组，内联进 netaddr_set 会让每次调用都过一次栈保护检查
+NOINLINE static int32_t _netaddr_pton6_scope(netaddr_ctx *ctx, const char *ip, const char *pct) {
+    if ('\0' == pct[1]) {
+        return ERR_FAILED;
+    }
+    char addr[IP_LENS];
+    size_t n = (size_t)(pct - ip);
+    if (n >= sizeof(addr)) {
+        return ERR_FAILED;
+    }
+    memcpy(addr, ip, n);
+    addr[n] = '\0';
+    struct in6_addr a6;
+    if (1 != inet_pton(AF_INET6, addr, &a6)) {
+        return ERR_FAILED;
+    }
+    const char *scope = pct + 1;
+    uint64_t id;
+    if (ERR_OK != strtou64(scope, strlen(scope), UINT32_MAX, &id)) {
+#if defined(OS_WIN)
+        return ERR_FAILED;
+#else
+        id = if_nametoindex(scope);
+        if (0 == id) {
+            return ERR_FAILED;
+        }
+#endif
+    }
+    ctx->ipv6.sin6_addr = a6;
+    ctx->ipv6.sin6_scope_id = (uint32_t)id;
+    return ERR_OK;
+}
 int32_t netaddr_set(netaddr_ctx *ctx, const char *ip, const uint16_t port) {
     ZERO(ctx, sizeof(netaddr_ctx));
+    // 带 % 的不能交给 inet_pton：macOS 照收并丢掉后缀，网卡名还会被塞进地址字节
+    const char *pct;
     if (ERR_OK == _netaddr_pton4(ip, (uint8_t *)&ctx->ipv4.sin_addr.s_addr)
         || 1 == inet_pton(AF_INET, ip, &ctx->ipv4.sin_addr.s_addr)) {
         ctx->addr.sa_family = AF_INET;
         ctx->ipv4.sin_port = htons(port);
-    } else if (1 == inet_pton(AF_INET6, ip, &ctx->ipv6.sin6_addr.s6_addr)) {
+    } else if (NULL == (pct = strchr(ip, '%'))
+               ? 1 == inet_pton(AF_INET6, ip, &ctx->ipv6.sin6_addr.s6_addr)
+               : ERR_OK == _netaddr_pton6_scope(ctx, ip, pct)) {
         ctx->addr.sa_family = AF_INET6;
         ctx->ipv6.sin6_port = htons(port);
     } else {
@@ -140,6 +177,12 @@ int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]) {
         ip[0] = '\0';
         return ERR_FAILED;
     }
+    // 补 "%网卡号"：地址最长 45 字节，再加 '%' 与 10 位数仍在 IP_LENS 内
+    if (0 != ctx->ipv6.sin6_scope_id) {
+        char *p = ip + strlen(ip);
+        *p = '%';
+        u64tostr(p + 1, ctx->ipv6.sin6_scope_id, 10);
+    }
     return ERR_OK;
 }
 uint16_t netaddr_port(netaddr_ctx *ctx) {
@@ -158,8 +201,8 @@ int32_t netaddr_compare(netaddr_ctx *a, netaddr_ctx *b) {
             return ERR_FAILED;
         }
     } else {
-        // scope_id 区分链路本地地址在哪块网卡上。只在两边都给了时才比：netaddr_set 解析不了 "%网卡"
-        // 后缀、恒为 0，拿它跟内核收包带回的网卡号比就永远对不上
+        // scope_id 区分链路本地地址在哪块网卡上。只在两边都给了时才比：不带 "%网卡" 的地址 scope_id 为 0，
+        // 拿它跟内核收包带回的网卡号比就永远对不上
         if (a->ipv6.sin6_port != b->ipv6.sin6_port
             || (0 != a->ipv6.sin6_scope_id
                 && 0 != b->ipv6.sin6_scope_id

@@ -3,6 +3,16 @@
 #include "containers/sarray.h"
 #include "thread/rwlock.h"
 #include <openssl/pkcs12.h>
+#ifdef OS_WIN
+// 全项目的 OpenSSL 依赖记在这里(loader 必调 evssl_init，本模块必被链入)。库名后缀见 os.h 的 DEPS_LIB_SUFFIX。
+// 后四个是静态 OpenSSL 自己声明的 Windows 依赖(其 Configurations/10-main.conf 的 ex_libs)，链静态库就得补上
+#pragma comment(lib, "libcrypto" DEPS_LIB_SUFFIX ".lib")
+#pragma comment(lib, "libssl" DEPS_LIB_SUFFIX ".lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
+#endif
 
 // ERR_error_string(err, NULL) 的 NULL 分支写 OpenSSL 进程级静态缓冲，多 watcher 线程并发失败时数据竞争；
 // 改 ERR_error_string_n 写各自栈缓冲
@@ -11,7 +21,7 @@
         unsigned long _sslec = ERR_get_error();\
         char _sslebuf[256];\
         ERR_error_string_n(_sslec, _sslebuf, sizeof(_sslebuf));\
-        LOG_WARN("errno: %lu, %s", _sslec, _sslebuf);\
+        LOG_WARN("ssl error: %lu, %s", _sslec, _sslebuf);\
     } while (0)
 // 每个 SSL_* 入口前都得保证错误队列是干净的,否则残留会被 _evssl_unexpected_eof 误判成截断。
 // 队列空时 clear 仍要走一遍清理流程,比 peek 贵不少,而稳态下它恒为空,故先 peek 再决定
@@ -36,16 +46,11 @@ static certs_arr *_arr_certs = NULL;// 全局证书注册池
 static rwlock_ctx *_rwlck_certs = NULL;// 保护证书池的读写锁
 static once_ctx _init_once = 0;// 证书池只初始化一次，evssl_pool_free 后可再来一次
 
-// 设置SSL_CTX的通用选项：禁止重协商、不验证对端
-// 不设 SSL_OP_IGNORE_UNEXPECTED_EOF：它把无 close_notify 的 EOF 伪装成 ZERO_RETURN，
-// 关闭类型就分不出有序结束与截断。留着这条错误串是 _evssl_unexpected_eof 的判据，别再压掉
-// 不设 SSL_MODE_AUTO_RETRY：该模式在非阻塞 socket 上会使 SSL_read/write 内部自旋，
-// 阻塞 watcher 线程。WANT_READ/WANT_WRITE 由事件循环驱动重试。
-// 设 SSL_MODE_RELEASE_BUFFERS：空闲连接交还读写缓冲(每条约 34KB)，代价是再收发时重新分配
-// 设 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER：合并写的缓冲在栈上，WANT_WRITE 后重试时地址会变，不开 OpenSSL 会判重试非法
-// 写分片跟着 MAX_SSL_SEND_SIZE 收窄：_evpub_sock_send_ssl 本就把每次 SSL_write 卡在那个值上，
-// 默认 16KB 的写缓冲永远填不满，收窄后每条连接省约 12.5KB 而行为不变。
-// 超出 OpenSSL 允许的 512~16384 时该调用返 0，写缓冲退回默认值，只是省不到内存，不影响收发
+// 设置SSL_CTX的通用选项：禁止重协商、不验证对端。
+// 不设 SSL_OP_IGNORE_UNEXPECTED_EOF：设了分不出有序结束与截断，_evssl_unexpected_eof 靠那条错误串判截断。
+// SSL_MODE_AUTO_RETRY 自 OpenSSL 1.1.1 起默认开着，这里只加模式不清它，非阻塞 socket 上不会卡住线程。
+// RELEASE_BUFFERS 让空闲连接交还读写缓冲；ACCEPT_MOVING_WRITE_BUFFER：合并写的缓冲在栈上，重试时地址会变。
+// 写分片收窄到 MAX_SSL_SEND_SIZE(每次 SSL_write 本就不超过它)，省掉填不满的写缓冲；超出 512~16384 时设置无效、退回默认值
 static void _evssl_options(evssl_ctx *evssl) {
 #ifdef SSL_OP_NO_RENEGOTIATION
     SSL_CTX_set_options(evssl->ssl, SSL_OP_NO_RENEGOTIATION);
@@ -280,6 +285,16 @@ SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     }
     return ssl;
 }
+// 记一条 SSL 失败：SSL_ERROR_SYSCALL 且错误队列为空时原因在系统调用上，打系统错误码，其余打 OpenSSL 错误串
+static void _evssl_log_err(int32_t err) {
+    int32_t erro = (int32_t)ERRNO;// 先取，后面的调用可能改掉它
+    if (SSL_ERROR_SYSCALL == err
+        && 0 == ERR_peek_error()) {
+        LOG_WARN("ssl syscall error: %d, %s", erro, ERRORSTR(erro));
+        return;
+    }
+    SSLCTX_ERRO();
+}
 int32_t evssl_tryacpt(SSL *ssl) {
     SSL_ERRQU_CLEAR();
     int32_t rtn = SSL_accept(ssl);
@@ -297,6 +312,7 @@ int32_t evssl_tryacpt(SSL *ssl) {
     if (SSL_ERROR_WANT_WRITE == err) {
         return 2;
     }
+    _evssl_log_err(err);
     return ERR_FAILED;
 }
 int32_t evssl_tryconn(SSL *ssl) {
@@ -313,6 +329,7 @@ int32_t evssl_tryconn(SSL *ssl) {
     if (SSL_ERROR_WANT_WRITE == err) {
         return 2;
     }
+    _evssl_log_err(err);
     return ERR_FAILED;
 }
 // 对端没发 close_notify 就断了。OpenSSL 3.0 起报成 SSL_ERROR_SSL 加这个 reason；
@@ -347,8 +364,8 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
     if (_evssl_unexpected_eof(err)) {
         return 2;
     }
-    // 这一行是 SSL 错误在日志里的唯一出口：错误码不往上传，上层拿到 ERR_FAILED 直接关连接
-    SSLCTX_ERRO();
+    // 错误码不往上传，上层拿到 ERR_FAILED 直接关连接，原因只在这里落日志
+    _evssl_log_err(err);
     return ERR_FAILED;
 }
 int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
@@ -379,7 +396,7 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
             if (_evssl_unexpected_eof(err)) {
                 return 2;
             }
-            SSLCTX_ERRO();
+            _evssl_log_err(err);
             return ERR_FAILED;
         }
     } while (*sended < len);

@@ -18,9 +18,9 @@ typedef struct mysql_client_param {
     struct evssl_ctx *evssl; // SSL 上下文，NULL 表示不启用 SSL
     sock_ctx sk;               // 连接标识 fd+skid
     char ip[IP_LENS];       // 服务器 IP 地址
-    char user[64];          // 登录用户名
-    char database[64];      // 握手用库名；重连据此重建握手，故须与服务端当前库一致
-    char password[64];      // 登录密码
+    char user[MYSQL_USER_LENS + 1];         // 登录用户名
+    char database[MYSQL_DB_LENS + 1];       // 握手用库名；重连据此重建握手，故须与服务端当前库一致
+    char password[MYSQL_PASSWORD_LENS + 1]; // 登录密码
 }mysql_client_param;
 
 // 服务器握手参数（从握手包中解析）
@@ -37,9 +37,10 @@ typedef struct mysql_ctx {
     int8_t parse_status;    // 当前解析状态（结果集解析进度）；不变式：非 0 时 mpack 必须非 NULL——
                             // 续接解析那条分支裸解引用 mpack->pack，故每条摘走 mpack 的路径都要归 0
     uint8_t cur_cmd;        // 当前正在处理的命令类型
-    int16_t error_code;     // 最近一次错误码
-    int64_t last_id;        // 最近一次 INSERT 的自增 ID
-    int64_t affected_rows;  // 最近一次操作影响的行数
+    uint16_t error_code;    // 最近一个经 mysql_record 记下的 ERR 包错误码；这三个与 error_msg 只在收应答的一方写
+                            // (mysql_record / mysql_erro_clear)，网络线程不碰
+    uint64_t last_id;       // 最近一个经 mysql_record 记下的 OK 包自增 ID
+    uint64_t affected_rows; // 最近一个经 mysql_record 记下的 OK 包影响行数
     size_t recvlens;        // 当前响应已收的线上字节（含包头），交出包时记给 size 后清零
     struct mpack_ctx *mpack; // 正在积累的数据包上下文（多包场景）
     struct task_ctx *task;   // 所属任务上下文
@@ -54,8 +55,8 @@ typedef struct mysql_ctx {
     // (MySQL 5.7+，握手时与 server.caps 求交)时 query("USE x") 也会经 OK 包尾部的
     // session-state-change 回带、由 _mpack_ok_track 更新 client.database；老服务端不置
     // SERVER_SESSION_STATE_CHANGED，那时只有本字段这条 selectdb 路径能跟踪当前库
-    char pending_db[64];
-    char error_msg[256];     // 最近一次错误信息
+    char pending_db[MYSQL_DB_LENS + 1];
+    char error_msg[256];     // 最近一个经 mysql_record 记下的 ERR 包错误信息，装不下截断
 }mysql_ctx;
 
 // 参数绑定上下文（用于 COM_QUERY / COM_STMT_EXECUTE 的参数绑定）。NULL 位图不单存：类型为 MYSQL_TYPE_NULL
@@ -67,11 +68,15 @@ typedef struct mysql_bind_ctx {
     binary_ctx value;       // 参数值缓冲区
 }mysql_bind_ctx;
 
-// MySQL 数据包上下文（解析后的响应包）
+// MySQL 数据包上下文（解析后的响应包）。OK 的计数与 ERR 的错误随包交付，取法见 mysql.h 的 mysql_pack_*
 typedef struct mpack_ctx {
     int8_t more;            // 1=其后还有结果集（SERVER_MORE_RESULTS_EXISTS，多语句 / CALL 多结果集）
+    uint16_t error_code;    // MPACK_ERR 的错误码，线上是无符号 2 字节；其余类型为 0
     mpack_type pack_type;   // 数据包类型
-    void *pack;             // 实际解析结果（mysql_reader_ctx / mysql_stmt_ctx）；OK 与 ERR 包不带，计数与错误串直接落在 mysql_ctx 上
+    uint64_t affected_rows; // MPACK_OK 的影响行数；其余类型为 0
+    uint64_t last_id;       // MPACK_OK 的自增 ID；其余类型为 0
+    void *pack;             // QUERY / STMT_EXECUTE 为 mysql_reader_ctx，STMT_PREPARE 为 mysql_stmt_ctx，
+                            // ERR 为错误串(NUL 结尾，没有文案时为 NULL)，OK 不带
     void(*_free_mpack)(void *); // pack 字段的释放回调，NULL 表示直接 FREE
 }mpack_ctx;
 

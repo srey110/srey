@@ -1,8 +1,7 @@
 ﻿#include "utils/buffer.h"
 
-#define MAX_COPY_IN_EXPAND       4096 //节点数据量超过此值时不做数据迁移，直接新建节点
 #define MAX_REALIGN_IN_EXPAND    2048 //节点 off 不超过此值时允许通过对齐操作复用空间
-#define FIRST_FORMAT_IN_EXPAND   256 //格式化写入时首次预分配的空间大小
+#define APPENDV_STACK_SIZE       256 //buffer_appendv 先格式化到这么大的栈缓冲，装不下再按需分配
 #define NODE_CACHE_MAX (MAX_RECV_SIZE + ONEK) //备用槽只收这么大以内的节点，挡住偶发的大块
 #define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off) //节点空闲区起始指针
 #define NODE_SPACE_LEN(ch) ((ch)->buffer_lens - ((ch)->misalign + (ch)->off)) //节点空闲区长度
@@ -23,6 +22,7 @@ typedef int32_t(*cmp_func)(const void *, const void *, size_t); //内存比较�
 //|node          |buffer                                |
 typedef struct bufnode_ctx {
     int32_t used;           //是否被分散读写操作锁定（非零时不可释放）
+    int32_t external;       //外部托管(零拷贝)节点:buffer 指向调用方内存,只由 buffer_external 置 1
     struct bufnode_ctx *next;
     char *buffer;           //实际数据缓冲区指针
     free_cb _free;          //外部数据的释放函数（零拷贝时使用）
@@ -32,15 +32,10 @@ typedef struct bufnode_ctx {
 }bufnode_ctx;
 // 每线程留一个排空的节点不还给分配器:稳态是"收一个包-解一个包-drain 到空",
 // 不留的话每个包都要一次 MALLOC + FREE。单槽不做数组——尺寸对不上就照常走分配器,
-// 不会互相顶掉,生产上稳定停着一个接收节点(_buffer_expand 补的节点也按接收那一档开,
+// 不会互相顶掉,生产上稳定停着一个接收节点(_buffer_expand 补的节点与 buffer_append 空缓冲直写的节点也按接收那一档开,
 // 否则零头尺寸停进槽里, 本线程之后的首读就都对不上)。线程退出前必须调 buffer_thread_cleanup
 TLS_DEFINE(bufnode_ctx *, _node_spare, 1)
 
-// 外部托管(零拷贝)节点判定:内部节点的 buffer 由 _buffer_node_new 与节点头一次分配、紧随其后,
-// 外部节点的 buffer 指向调用方内存。不用 _free 判定——buffer_external 允许 ext_free 传 NULL
-static inline int32_t _buffer_node_external(bufnode_ctx *node) {
-    return node->buffer != (char *)(node + 1);
-}
 //新建一节点
 static bufnode_ctx *_buffer_node_new(const size_t size) {
     size_t align = sizeof(void *) < 8 ? 512 : ONEK;
@@ -70,7 +65,7 @@ static inline void _buffer_node_free(bufnode_ctx *node) {
     bufnode_ctx **spare = _node_spare_tls();
     // 外部节点的 buffer 是调用方内存,留下来下次当内部节点用就是野指针
     if (NULL == *spare
-        && !_buffer_node_external(node)
+        && !node->external
         && node->buffer_lens <= NODE_CACHE_MAX) {
         node->used = 0;
         node->next = NULL;
@@ -102,11 +97,11 @@ static inline size_t _buffer_node_avail(bufnode_ctx *node, uint32_t *slot) {
         return space;
     }
     *slot = 1;
-    return _buffer_node_external(node) ? 0 : node->buffer_lens;
+    return node->external ? 0 : node->buffer_lens;
 }
 //通过偏移判断是否足够。外部节点的 misalign 区属调用方内存,回收它等于改写调用方数据,一律拒绝
 static inline int32_t _buffer_should_realign(bufnode_ctx *node, const size_t lens) {
-    if (_buffer_node_external(node)) {
+    if (node->external) {
         return 0;
     }
     return node->buffer_lens - node->off >= lens &&
@@ -165,12 +160,6 @@ static inline void _buffer_node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     }
     ctx->total_lens += node->off;
 }
-//新建节点并插入
-static inline bufnode_ctx *_buffer_node_insert_new(buffer_ctx *ctx, const size_t lens) {
-    bufnode_ctx *pnode = _buffer_node_new(lens);
-    _buffer_node_insert(ctx, pnode);
-    return pnode;
-}
 // 更新 tail_with_data 指针，使其指向最后一个有数据的节点
 static void _buffer_last_with_data(buffer_ctx *ctx) {
     bufnode_ctx **node = ctx->tail_with_data;
@@ -184,60 +173,7 @@ static void _buffer_last_with_data(buffer_ctx *ctx) {
         }
     }
 }
-//扩展空间，保证外部在 used 外部设定
-static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
-    bufnode_ctx *node, **last;
-    last = ctx->tail_with_data;
-    //找最后一个有数据的节点位置
-    if (NULL != *last 
-        && 0 == NODE_SPACE_LEN(*last)) {
-        last = &(*last)->next;
-    }
-    node = *last;
-    if (NULL == node) {
-        return _buffer_node_insert_new(ctx, lens);
-    }
-    if (NODE_SPACE_LEN(node) >= lens) {
-        return node;
-    }
-    if (0 == node->off) {
-        //是全新的，则删除pnode
-        return _buffer_node_insert_new(ctx, lens);
-    }
-    //对齐
-    if (_buffer_should_realign(node, lens)) {
-        _buffer_align(node);
-        return node;
-    }
-    //剩余空间小于总空间的1/8 或者 存在的数据量超过MAX_COPY_IN_EXPAND(4096)
-    if (NODE_SPACE_LEN(node) < node->buffer_lens / 8 
-        || node->off > MAX_COPY_IN_EXPAND) {
-        if (NULL != node->next 
-            && NODE_SPACE_LEN(node->next) >= lens) {
-            return node->next;
-        } else {
-            return _buffer_node_insert_new(ctx, lens);
-        }
-    }
-    //数据迁移
-    bufnode_ctx *tmp = _buffer_node_new(node->off + lens);
-    tmp->off = node->off;
-    memcpy(tmp->buffer, node->buffer + node->misalign, node->off);
-    ASSERTAB(*last == node, "tail_with_data not equ pnode.");
-    *last = tmp;
-    if (ctx->tail == node) {
-        ctx->tail = tmp;
-    }
-    tmp->next = node->next;
-    if (ctx->hint_node == node) {
-        ctx->hint_node = NULL;
-        ctx->hint_base_off = 0;
-    }
-    ASSERTAB(0 == node->used, "node in use.");
-    _buffer_node_free(node);
-    return tmp;
-}
-// 尾节点剩的空闲不够 lens、而前面已消费的空间够时，先把残包挪到节点开头(判据同 _buffer_expand_single)。
+// 尾节点剩的空闲不够 lens、而前面已消费的空间够时，先把残包挪到节点开头(判据见 _buffer_should_realign)。
 // 读事件常切在包中间，不挪的话每次都要另建一个节点，解包也跟着走跨节点的慢路径
 static inline void _buffer_tail_realign(buffer_ctx *ctx, const size_t lens) {
     bufnode_ctx *node = *ctx->tail_with_data;
@@ -256,9 +192,7 @@ static inline void _buffer_tail_realign(buffer_ctx *ctx, const size_t lens) {
 // 少登那截就白空着,且与 _buffer_node_avail 对空内部节点的口径不一致
 static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov,
                                const uint32_t cnt, size_t *iovlens) {
-    bufnode_ctx *tmp, *next, *node = ctx->tail;
-    size_t avail, remain, used, space;
-    uint32_t slot;
+    bufnode_ctx *node = ctx->tail;
     uint32_t index = 0;
     *iovlens = 0;
     ASSERTAB(cnt >= 2, "param error.");
@@ -268,14 +202,16 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
         RECOED_IOV(node, NODE_SPACE_LEN(node));
         return index;
     }
-    used = 0; //使用了多少个节点
-    avail = 0;//可用空间
+    size_t used = 0;//使用了多少个节点
+    size_t avail = 0;//可用空间
     _buffer_tail_realign(ctx, lens);
+    size_t space;
+    uint32_t slot;
     for (node = *ctx->tail_with_data; NULL != node; node = node->next) {
         // 登记的字节数与槽位归 _buffer_node_avail 统管, 这里只补 expand 独有的副作用
         if (0 != node->off) {
             ASSERTAB(node == *ctx->tail_with_data, "tail_with_data not equ pnode.");
-        } else if (!_buffer_node_external(node)) {
+        } else if (!node->external) {
             node->misalign = 0; //空的内部节点整块可写, 先把前缩量清掉
         }
         space = _buffer_node_avail(node, &slot);
@@ -293,9 +229,9 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     }
     //没有达到满节点，剩余空间还够
     if (used < cnt) {
-        remain = lens - avail;
+        size_t remain = lens - avail;
         ASSERTAB(NULL == node, "pnode not equ NULL.");
-        tmp = _buffer_node_new(remain < MAX_RECV_SIZE ? MAX_RECV_SIZE : remain);
+        bufnode_ctx *tmp = _buffer_node_new(remain < MAX_RECV_SIZE ? MAX_RECV_SIZE : remain);
         ctx->tail->next = tmp;
         ctx->tail = tmp;
         RECOED_IOV(tmp, NODE_SPACE_LEN(tmp));
@@ -320,14 +256,15 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     }
     //释放。这些节点第一趟被 RECOED_IOV 置过 used, 但那批 iov 已随 index 归零整体作废、
     //调用方拿不到, 故此处释放不违反"外部持有 iov 的节点不可释放"
+    bufnode_ctx *next;
     for (; NULL != node; node = next) {
         next = node->next;
         ASSERTAB(0 == node->off, "node not empty.");
         _buffer_node_free(node);
     }
     ASSERTAB(lens >= avail, "logic error.");
-    remain = lens - avail;
-    tmp = _buffer_node_new(remain < MAX_RECV_SIZE ? MAX_RECV_SIZE : remain);
+    size_t remain = lens - avail;
+    bufnode_ctx *tmp = _buffer_node_new(remain < MAX_RECV_SIZE ? MAX_RECV_SIZE : remain);
     RECOED_IOV(tmp, NODE_SPACE_LEN(tmp));
     if (delall) {
         ctx->head = ctx->tail = tmp;
@@ -349,7 +286,7 @@ static void _buffer_unpin(bufnode_ctx **first, const uint32_t cnt) {
         cur = &(*cur)->next;
     }
 }
-//cnt _buffer_expand_iov 的数组数量
+//按 iov 逐节点提交写入的 lens 字节。cnt 是 _buffer_expand 返回的 iov 条数
 static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     if (0 == cnt) {
         return 0;
@@ -367,9 +304,7 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
         }
         return lens;
     }
-    uint32_t i;
-    bufnode_ctx *node, **first, **fill;
-    first = ctx->tail_with_data;
+    bufnode_ctx **first = ctx->tail_with_data;
     // 这里无需 unpin: _buffer_expand 打 pin 也是从 *tail_with_data 起步的
     // (唯一的例外是它开头"缓冲全空"那条分支, 但那条 insert 完 *tail_with_data 必非 NULL),
     // 所以 *first 为 NULL 就意味着一个节点都没被 pin 过
@@ -380,7 +315,8 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
         first = &(*first)->next;
     }
     //验证
-    node = *first;
+    bufnode_ctx *node = *first;
+    uint32_t i;
     for (i = 0; i < cnt; ++i) {
         if (NULL == node) {
             _buffer_unpin(first, cnt);
@@ -394,7 +330,7 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
     }
     //填充
     size_t added = 0;
-    fill = first;
+    bufnode_ctx **fill = first;
     for (i = 0; i < cnt; ++i) {
         (*fill)->used = 0;
         if (lens > 0) {
@@ -462,6 +398,7 @@ void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb ext
     }
     bufnode_ctx *node;
     CALLOC(node, 1, sizeof(bufnode_ctx));
+    node->external = 1;
     node->buffer = (char *)data;
     node->_free = ext_free;
     node->buffer_lens = lens;
@@ -475,16 +412,26 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         || NULL == data) {
         return ERR_OK;
     }
+#if defined(OS_WIN)
+    // iov 长度是 32 位 ULONG: 超大块分段追加, 保证节点容量不超过它, 否则登记进 iov 时被截断
+    if (lens > (size_t)INT32_MAX) {
+        const size_t step = INT32_MAX;
+        for (size_t done = 0; done < lens; done += step) {
+            buffer_append(ctx, (char *)data + done, lens - done > step ? step : lens - done);
+        }
+        return ERR_OK;
+    }
+#endif
     /* 快速路径：尾节点已有数据且未被分散读写锁定时，直接单次 memcpy 写进去，跳过
      * expand/commit 流程。空间不够但有 misalign 可回收就先 _buffer_align 把数据前移
      * (misalign→0)；对齐后空闲区必然装得下——_buffer_should_realign 的首条就是它 */
     bufnode_ctx *tail = ctx->tail;
-    /* 空缓冲直写：自己建节点填好接上，不绕 _buffer_expand + _buffer_commit_expand。
-     * 终态与慢路径逐字段相同，省的是两次非内联调用与 iov 数组的写-回读。
+    /* 空缓冲直写：自己建节点填好接上，不绕 _buffer_expand + _buffer_commit_expand，
+     * 省的是两次非内联调用与 iov 数组的写-回读。节点按接收那一档开，理由见备用槽注释。
      * 稳态小包（drain 到空 → 下一条进来）走的就是这条 */
     if (NULL == tail) {
         ASSERTAB(NULL == ctx->head, "head not equ NULL.");
-        bufnode_ctx *node = _buffer_node_new(lens);
+        bufnode_ctx *node = _buffer_node_new(lens < MAX_RECV_SIZE ? MAX_RECV_SIZE : lens);
         memcpy(node->buffer, data, lens);
         node->off = lens;
         ctx->head = ctx->tail = node;
@@ -516,8 +463,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
     size_t iovlens;// 这条路径按 iov 逐条搬,用不上总量
     uint32_t num = _buffer_expand(ctx, lens, iov, MAX_EXPAND_NIOV, &iovlens);
     for (i = 0; i < num && remain > 0; i++) {
-        // 比较放在 size_t 域内做:Windows 的 IOV_LEN_TYPE 是 32 位 ULONG,
-        // 把 remain 窄化过去会在 lens > 4GiB 时截断成小值,进而按完整 remain 越界 memcpy
+        // 比较放在 size_t 域内做, 别把 remain 窄化成 IOV_LEN_TYPE(Windows 上是 32 位 ULONG)
         if (remain >= (size_t)iov[i].IOV_LEN_FIELD) {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, iov[i].IOV_LEN_FIELD);
             off += iov[i].IOV_LEN_FIELD;
@@ -531,44 +477,33 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
     ASSERTAB(lens == _buffer_commit_expand(ctx, lens, iov, num), "commit lens not equ buffer lens.");
     return ERR_OK;
 }
+// 先格式化到栈缓冲，装不下按返回长度分配一次重来，再整段交给 buffer_append
 int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    va_list va;
-    int32_t rtn, size;
-    bufnode_ctx *node = _buffer_expand_single(ctx, FIRST_FORMAT_IN_EXPAND);
-    node->used = 1;
-    va_list tmp;
+    char stk[APPENDV_STACK_SIZE];
+    va_list va, tmp;
     va_start(va, fmt);
-    size_t space;
-    while (1) {
-        // 收窄前钳一下: 节点空闲区超 INT32_MAX 时直接转 int32_t 会变负数,
-        // 再 (size_t)size 传给 vsnprintf 就是个天文数字
-        space = NODE_SPACE_LEN(node);
-        size = space > (size_t)INT32_MAX ? INT32_MAX : (int32_t)space;
-        va_copy(tmp, va);
-        rtn = vsnprintf(NODE_SPACE_PTR(node), (size_t)size, fmt, tmp);
-        va_end(tmp);
-        if (rtn < 0) {
-            node->used = 0;
-            va_end(va);
-            return ERR_FAILED;
-        }
-        if (rtn < size) {
-            node->used = 0;
-            node->off += rtn;
-            ctx->total_lens += rtn;
-            if (0 != rtn) {
-                _buffer_last_with_data(ctx);
-            }
-            break;
-        }
-        node->used = 0;
-        node = _buffer_expand_single(ctx, (size_t)rtn + 1);
-        node->used = 1;
+    va_copy(tmp, va);
+    int32_t rtn = vsnprintf(stk, sizeof(stk), fmt, tmp);
+    va_end(tmp);
+    if (rtn < 0) {
+        va_end(va);
+        return ERR_FAILED;
     }
+    if ((size_t)rtn < sizeof(stk)) {
+        va_end(va);
+        return buffer_append(ctx, stk, (size_t)rtn);
+    }
+    char *heap;
+    MALLOC(heap, (size_t)rtn + 1);
+    int32_t n = vsnprintf(heap, (size_t)rtn + 1, fmt, va);
     va_end(va);
-    return ERR_OK;
+    if (n == rtn) {
+        buffer_append(ctx, heap, (size_t)rtn);
+    }
+    FREE(heap);
+    return n == rtn ? ERR_OK : ERR_FAILED;
 }
 // 带游标缓存的版本：若 start >= hint_base_off，直接从上次节点继续，
 // 避免从 head 线性遍历；命中后更新游标供下次使用。
@@ -664,11 +599,9 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
 NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
-    bufnode_ctx *node, *next;
-    size_t remain, oldlen;
     /* 多节点、只取走首节点一部分：省掉下面游标的保存恢复与逐节点循环，游标在后面节点上时基偏移减 lens。
      * off 与 misalign 隔开写：两个写挨着会被并成一条 stp，紧接着读其中一个时 M2 上慢一截 */
-    node = ctx->head;
+    bufnode_ctx *node = ctx->head;
     if (NULL != node
         && 0 == node->used
         && lens < node->off) {
@@ -681,7 +614,7 @@ NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
         node->misalign += lens;
         return lens;
     }
-    oldlen = ctx->total_lens;
+    size_t oldlen = ctx->total_lens;
     if (0 == oldlen) {
         return 0;
     }
@@ -702,7 +635,8 @@ NOINLINE static size_t _buffer_drain_slow(buffer_ctx *ctx, size_t lens) {
     ctx->hint_node = NULL;
     ctx->hint_base_off = 0;
     ctx->total_lens -= lens;
-    remain = lens;
+    size_t remain = lens;
+    bufnode_ctx *next;
     for (node = ctx->head; NULL != node && remain >= node->off; node = next) {
         next = node->next;
         remain -= node->off;
@@ -764,6 +698,7 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
             && 0 != lens) {
             return _buffer_drain_whole(ctx, lens);
         }
+        // 单节点这里 misalign、off 挨着写(并成 stp)实测更快，与 _buffer_drain_slow 那处相反，别拆
         head->misalign += lens;
         head->off -= lens;
         ctx->total_lens -= lens;
@@ -791,7 +726,7 @@ size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens) {
             return lens;
         }
         memcpy(out, head->buffer + head->misalign, lens);
-        head->misalign += lens;
+        head->misalign += lens;// 写序同 buffer_drain 单节点，别拆
         head->off -= lens;
         ctx->total_lens -= lens;
         return lens;
@@ -911,23 +846,21 @@ NOINLINE static int32_t _buffer_search_slow(buffer_ctx *ctx, const int32_t ncs,
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens) {
     bufnode_ctx *head = ctx->head;
-    char *base, *cur;
-    size_t e, found;
     if (0 == ncs
         && NULL != head
         && 0 == ctx->freeze_read
         && NULL != what
         && 0 != wlens) {
-        e = (0 == end || end >= ctx->total_lens) ? ctx->total_lens : end + 1;
+        size_t e = (0 == end || end >= ctx->total_lens) ? ctx->total_lens : end + 1;
         if (e <= head->off
             && start < e
             && wlens <= e - start) {
-            base = head->buffer + head->misalign;
-            cur = (char *)_memstr(base + start, e - start, what, wlens);
+            char *base = head->buffer + head->misalign;
+            char *cur = (char *)_memstr(base + start, e - start, what, wlens);
             if (NULL == cur) {
                 return ERR_FAILED;
             }
-            found = (size_t)(cur - base);
+            size_t found = (size_t)(cur - base);
             return (found > (size_t)INT32_MAX) ? ERR_FAILED : (int32_t)found;
         }
     }
@@ -1029,12 +962,6 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {
     *nread = 0;
     size_t nbuf = MAX_RECV_SIZE;
-    size_t readed;
-    size_t space;
-    int32_t rtn;
-    uint32_t niov;
-    size_t iovlens;
-    IOV_TYPE iov[MAX_EXPAND_NIOV];
     size_t khint = hint;// 调用方给的内核读量提示，下面 hint 会被 want 改写
     // 消费方报的"本条还差多少"只给裸 socket 读用(SSL 读进来的是密文)，按 RECV_GROW_CAP 截，用一次即清
     size_t want = ctx->want > RECV_GROW_CAP ? RECV_GROW_CAP : ctx->want;
@@ -1047,6 +974,10 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
         && nbuf < RECV_HINT_CAP) {
         nbuf = hint > RECV_HINT_CAP ? RECV_HINT_CAP : hint;
     }
+    IOV_TYPE iov[MAX_EXPAND_NIOV];
+    uint32_t niov;
+    size_t iovlens, readed, space;
+    int32_t rtn;
     for (;;) {
         // iovlens 是这轮实际给出的可写空间,由 buffer_expand 登记 iov 时一并带出,下面的早退判据要用
         niov = buffer_expand(ctx, nbuf, iov, MAX_EXPAND_NIOV, &iovlens);
@@ -1079,15 +1010,14 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, size_t hint,
 #elif defined(TRIGGER_LT) || defined(EV_IOCP)
         // 没填满这轮给出的空间即 socket 已空,省掉那轮必然 EAGAIN 的确认读。
         // IOCP 的 ol_r 投的是 0 字节探针,还有数据时重投即刻完成,与电平同效,故同档。
-        // 判据用 iovlens 不用 nbuf:expand 给出的空间可能比 nbuf 少,用 nbuf 判会把"填满"当"读空"
+        // 判据用 iovlens 不用 nbuf:expand 给出的空间可能比 nbuf 多,用 nbuf 判会把没填满当填满、白读一轮
         if (NULL == arg
             && readed < iovlens) {
             break;
         }
 #endif
         if (readed < nbuf) {
-            // 加地板: 残余空间太小时, 万一确认轮真读到了数据, 为省一次 malloc(~100ns)
-            // 反而要多付一次 readv 系统调用(~1-2us), 买卖倒挂
+            // 加地板: 残余空间太小时宁可新建节点, 免得确认轮真读到数据后还要多读一轮
             space = buffer_space(ctx, MAX_EXPAND_NIOV);
             nbuf = (space >= MAX_RECV_SIZE / 4) ? space : MAX_RECV_SIZE;
         } else if (nbuf < RECV_GROW_CAP) {

@@ -19,6 +19,7 @@ local TESTS = {
     { "test.lua_layer",           "lua_layer" },
     { "test.unit_db_bind",        "db_bind" },
     { "test.unit_framework",      "framework" },
+    { "test.unit_bytecache",      "bytecache" },
     { "test.unit_lib",            "lib" },
     { "test.unit_router",         "unit_router" },
     { "test.unit_fork",           "fork" },
@@ -41,6 +42,8 @@ local TESTS = {
     -- 同一 task 内起假 SMTP 服务端再用 4 个协程并发投递,验证 smtp.lua 的命令串行化
     -- (镜像 C 层 task_smtp.c 的同名用例);不依赖外网账号,末参为监听端口
     { "test.smtp_fake",           "smtp_fake", 12526 },
+    -- 同一 task 内起假 DNS 服务端(UDP 与 TCP 同端口)再跑 nslookup 各分支,不依赖公网;末参为监听端口
+    { "test.dns_fake",            "dns_fake", 12553 },
     { "test.e2e_runner",          "e2e" },-- 用 srey.popen 跑 bin/py_assist/test_*.py 自动收集 exit code
     -- 集成测试(依赖 docker-compose)
     { "test.db_mysql",            "db_mysql" },

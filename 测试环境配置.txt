@@ -21,6 +21,9 @@ MySQL        3306       admin      12345678      test / test1
                                                  自动安装组件
                                                  component_query_attributes
 PostgreSQL   5432       admin      12345678      test
+                                                 开 TLS(自签 ECDSA P-384 /
+                                                 SHA-384，启动时现生成)，
+                                                 明文连接照常可用
 Redis        6379       —          —             无密码
 MongoDB      27017      admin      12345678      test
                                                  authdb=admin
@@ -203,10 +206,11 @@ Q1. docker compose ps 显示某服务 unhealthy / restarting？
     docker compose logs <服务名>  看错误。
     常见：端口被占用、首次拉镜像超时、磁盘空间不足。
 
-Q2. mysql_test 报 _mysql_sha2_rsa error？
-    需要确认 mysql 容器以 caching_sha2_password 启动，且
-    docker/mysql-init.sql 安装了 component_query_attributes。
-    重建数据卷生效：
+Q2. mysql 报 "caching_sha2_password full authentication needs SSL"？
+    明文连接不做 RSA 公钥交换，服务端缓存冷时(容器重启后首连)完整认证必须走 TLS。
+    测试都先经 TLS 登录一次让服务端缓存口令；WITH_SSL=0 构建或 Lua 侧没有客户端证书时，
+    先用带 SSL 的客户端登录一次，或换 mysql_native_password 账号(8.4 需 --mysql-native-password=ON)。
+    另需确认 docker/mysql-init.sql 安装了 component_query_attributes，重建数据卷生效：
         docker compose down -v && docker compose up -d --wait
 
 Q3. mongo_test 报 "Transaction numbers are only allowed on a replica set"？

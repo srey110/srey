@@ -4,6 +4,8 @@
 #include "protocol/mysql/mysql_struct.h"
 #include "utils/buffer.h"
 
+#define MYSQL_FIRST_STK 260 // 命令响应首包的栈缓冲(含 4 字节包头)：OK / ERR / 列数这类首包几乎都放得下
+
 /// <summary>
 /// 从 STMT_PREPARE 响应包中初始化并提取预处理语句上下文
 /// </summary>
@@ -24,8 +26,9 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
 char *_mysql_payload_first(mysql_ctx *mysql, buffer_ctx *buf, char *stk, size_t cap,
                            size_t *payload_lens, int32_t *status);
 
-// 内部函数：解析 ERROR 响应包，更新 mysql->error_code 和 mysql->error_msg
-void _mpack_err(mysql_ctx *mysql, binary_ctx *breader);
+// 内部函数：解析 ERR 包体(首字节之后)，错误码记进 mpack->error_code，文案复制一份挂到 mpack->pack(随 mpack 释放，
+// 没有文案时留 NULL)。mpack 须是全零的新包；不写 mysql_ctx
+void _mpack_err(mpack_ctx *mpack, binary_ctx *breader);
 // 内部函数：根据 mysql->cur_cmd 分发并解析响应包，返回完整解析的 mpack_ctx。进来时 parse_status 为 0 的是首包，
 // 它的内存始终归调用方(不挂进返回的 mpack)；续接包的归属见各阶段
 mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status);

@@ -51,10 +51,10 @@ static int32_t _lkcp_cfgint(lua_State *lua, int32_t tidx, const char *key,
 /// 本句柄已有会话未 stop 时先隐式 stop 旧会话再起新的(旧会话投出 CLOSE),不返回失败
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
-/// <param name="sess" type="integer">本次会话的唤醒 sess(调用方生成,如 srey.id());0 表示不唤醒。
-///   每次 start 须传新值:stop 后重启若复用旧 sess,上一会话在途的 CLOSE 会击穿本次等待</param>
-/// <param name="ip" type="string">对端 IP</param>
-/// <param name="port" type="integer">对端端口</param>
+/// <param name="sess" type="integer">本次会话的 sess,用 srey.id() 生成,每次 start 传新值(契约同 kcp.h 的 kcp_start);
+///   会话级 RECVFROM / HANDSHAKED / CLOSE 都带它,on_closed 第 5 参据此认会话。0 仅为兼容,失去按 sess 认会话的保护</param>
+/// <param name="ip" type="string">对端 IP;port 为 0 且 ip 为通配地址时 ip 也从首包学</param>
+/// <param name="port" type="integer">对端端口;0 为学习模式,以首个 conv 匹配的数据报来源为对端(细则同 kcp_start)</param>
 /// <param name="config" type="kcp_config?">KCP 可调参数,缺省用库默认,非 table 报错;
 ///   字段与取值域见 lib/kcp.lua 的 kcp_config</param>
 /// <returns type="boolean">成功 true,失败 false</returns>
@@ -68,13 +68,13 @@ static int32_t _lkcp_start(lua_State *lua) {
     kcp_config cfg;
     kcp_config *pcfg = NULL;
     if (lua_istable(lua, 5)) {
-        cfg.nodelay = _lkcp_cfgint(lua, 5, "nodelay", -1, -1, 1);
+        cfg.nodelay = _lkcp_cfgint(lua, 5, "nodelay", -1, -1, 2);
         cfg.interval = _lkcp_cfgint(lua, 5, "interval", -1, -1, 5000);
         cfg.resend = _lkcp_cfgint(lua, 5, "resend", -1, -1, INT32_MAX);
         cfg.nc = _lkcp_cfgint(lua, 5, "nc", -1, -1, 1);
         cfg.sndwnd = _lkcp_cfgint(lua, 5, "sndwnd", 0, 0, UINT16_MAX);
         cfg.rcvwnd = _lkcp_cfgint(lua, 5, "rcvwnd", 0, 0, UINT16_MAX);
-        cfg.mtu = _lkcp_cfgint(lua, 5, "mtu", 0, 0, UINT16_MAX);
+        cfg.mtu = _lkcp_cfgint(lua, 5, "mtu", 0, 0, KCP_MTU_MAX);
         pcfg = &cfg;
     }
     return lpub_rtn_bool(lua, ERR_OK == kcp_start(kcp, task->handle, sess, ip, port, pcfg));
@@ -85,7 +85,7 @@ static int32_t _lkcp_start(lua_State *lua) {
 /// <param name="self" type="userdata">kcp 会话句柄</param>
 /// <param name="handle" type="string|integer">目标 task：字符串按名字查，整数按句柄直取</param>
 /// <returns type="boolean">成功 true；目标不存在（名字未注册 / 数字句柄对应 task 已退出）或会话已 stop 时 false。
-/// 仅保证调用时目标存在：目标若在此之后退出，该会话的消息会被静默丢弃。探测口径同 core.bind_task</returns>
+/// 仅保证调用时目标存在：目标若在此之后退出，该会话收到的消息会被丢弃(限频打告警)。探测口径同 core.bind_task</returns>
 static int32_t _lkcp_handle(lua_State *lua) {
     kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     name_t handle = lpub_task_live(lua, 2, lpub_task_handle(lua, 2));// 理由同 core.bind_task

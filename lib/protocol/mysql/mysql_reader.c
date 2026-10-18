@@ -13,7 +13,7 @@ static const uint8_t _mysql_type_cls[256] = {
     [MYSQL_TYPE_ENUM] = MYSQL_CLS_STRING, [MYSQL_TYPE_SET] = MYSQL_CLS_STRING, [MYSQL_TYPE_LONG_BLOB] = MYSQL_CLS_STRING,
     [MYSQL_TYPE_MEDIUM_BLOB] = MYSQL_CLS_STRING, [MYSQL_TYPE_BLOB] = MYSQL_CLS_STRING, [MYSQL_TYPE_TINY_BLOB] = MYSQL_CLS_STRING,
     [MYSQL_TYPE_GEOMETRY] = MYSQL_CLS_STRING, [MYSQL_TYPE_BIT] = MYSQL_CLS_STRING, [MYSQL_TYPE_DECIMAL] = MYSQL_CLS_STRING,
-    [MYSQL_TYPE_NEWDECIMAL] = MYSQL_CLS_STRING, [MYSQL_TYPE_JSON] = MYSQL_CLS_STRING,
+    [MYSQL_TYPE_NEWDECIMAL] = MYSQL_CLS_STRING, [MYSQL_TYPE_JSON] = MYSQL_CLS_STRING, [MYSQL_TYPE_VECTOR] = MYSQL_CLS_STRING,
     [MYSQL_TYPE_DATE] = MYSQL_CLS_DATETIME, [MYSQL_TYPE_DATETIME] = MYSQL_CLS_DATETIME, [MYSQL_TYPE_DATETIME2] = MYSQL_CLS_DATETIME,
     [MYSQL_TYPE_TIMESTAMP] = MYSQL_CLS_DATETIME, [MYSQL_TYPE_TIMESTAMP2] = MYSQL_CLS_DATETIME,
     [MYSQL_TYPE_TIME] = MYSQL_CLS_TIME, [MYSQL_TYPE_TIME2] = MYSQL_CLS_TIME
@@ -174,7 +174,7 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, int32_t col,
     }
     mpack_row *row = *mrow_arr_at(&reader->arr_rows, reader->index);
     if (row[col].nil) {
-        SET_PTR(err, 1); // 1 表示该字段值为 NULL
+        SET_PTR(err, 1);// 1 表示该字段值为 NULL
         return NULL;
     }
     if (0 == (_mysql_type_cls[column->type] & cls)) {
@@ -234,7 +234,7 @@ uint64_t mysql_reader_uinteger_at(mysql_reader_ctx *reader, int32_t col, int32_t
     }
 }
 // 文本协议浮点解析公共逻辑：空串 / 有残留字符 / 上溢的判定全在 strtod_s 里，
-// 与 pgsql 侧共用同一份（见 prots_pub.h），这里只负责写 err 和打日志
+// 与 pgsql 侧共用同一份（见 base/strconv.h），这里只负责写 err 和打日志
 static inline double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
     double val;
     if (ERR_OK != strtod_s(row->val.data, row->val.lens, &val)) {
@@ -297,9 +297,7 @@ int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t 
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        // 零日期 0000-00-00 是非严格 sql_mode 下的合法值，进 _strptime 之前先认掉：二进制协议
-        // 按 0 + err=ERR_OK 返回，而 %m 卡 1..12 会判成解析失败，同值两条路径会分叉。
-        // 折成 0 后与真实的 1970-01-01 分不开，现有契约留不出第四种状态
+        // 零日期(非严格 sql_mode 下合法)按 0 + ERR_OK 返回，与二进制路径一致；%m 会把它判成解析失败，故先认掉
         if (row->val.lens >= 10
             && 0 == memcmp(tmp, "0000-00-00", 10)) {
             return 0;
@@ -342,12 +340,21 @@ int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t 
         binary_ctx breader;
         binary_init_read(&breader, row->val.data, row->val.lens);
         dt.tm_year = (int32_t)binary_get_integer(&breader, 2, 1) - 1900;
-        dt.tm_mon = (int32_t)binary_get_int8(&breader) - 1;
-        dt.tm_mday = (int32_t)binary_get_int8(&breader);
+        dt.tm_mon = (int32_t)binary_get_uint8(&breader) - 1;
+        dt.tm_mday = (int32_t)binary_get_uint8(&breader);
         if (row->val.lens >= 7) {
-            dt.tm_hour = (int32_t)binary_get_int8(&breader);
-            dt.tm_min = (int32_t)binary_get_int8(&breader);
-            dt.tm_sec = (int32_t)binary_get_int8(&breader);
+            dt.tm_hour = (int32_t)binary_get_uint8(&breader);
+            dt.tm_min = (int32_t)binary_get_uint8(&breader);
+            dt.tm_sec = (int32_t)binary_get_uint8(&breader);
+        }
+        // 日期部分全零按零日期，同文本路径；其余字段卡量程，越界值交给 mktime 会被静默归一成别的日期
+        if (-1900 == dt.tm_year && -1 == dt.tm_mon && 0 == dt.tm_mday) {
+            return 0;
+        }
+        if (dt.tm_mon < 0 || dt.tm_mon > 11 || dt.tm_mday < 1 || dt.tm_mday > 31
+            || dt.tm_hour > 23 || dt.tm_min > 59 || dt.tm_sec > 59) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
         }
         time_t ts;
         if (ERR_OK != _mysql_mktime(reader, &dt, &ts)) {

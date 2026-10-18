@@ -56,7 +56,8 @@ void test_hashmap_iter_unversioned(CuTest *tc) {
     CuAssertTrue(tc, !uv_map_iter(m, &i, &item));
     CuAssertTrue(tc, !uv_map_iter(m, &i, &item));
 
-    // 原位覆盖不挪位置，持游标覆盖后接着走，总数不变
+    // 覆盖没到扩容水位（64 个元素、128 桶，水位 76）就不挪位置，持游标覆盖后接着走，总数不变；
+    // 到了水位覆盖也会先扩容，游标随之作废
     i = 0;
     cnt = 0;
     CuAssertTrue(tc, uv_map_iter(m, &i, &item));

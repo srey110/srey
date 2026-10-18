@@ -117,41 +117,38 @@ static int32_t _test_nested(task_ctx *task) {
 // ── 测试 5：scatter-gather（fork_wait 并发 sleep） ────────────────────────
 typedef struct scatter_arg {
     uint32_t sleep_ms;
-    uint64_t finish_ms;
+    int32_t seen;       // 醒来时已开跑的 worker 数；0 = 没跑完
+    int32_t *started;   // 已开跑的 worker 数，三个共用
 }scatter_arg;
 
 static void _scatter_worker(void *owner, void *arg) {
     task_ctx *task = owner;
     scatter_arg *a = (scatter_arg *)arg;
+    ++(*a->started);
     coro_sleep(task, a->sleep_ms);
-    a->finish_ms = nowms();
+    a->seen = *a->started;
 }
 
 static int32_t _test_scatter(task_ctx *task) {
+    int32_t started = 0;
     scatter_arg sa[3] = {
-        { .sleep_ms = 50, .finish_ms = 0 },
-        { .sleep_ms = 50, .finish_ms = 0 },
-        { .sleep_ms = 50, .finish_ms = 0 },
+        { .sleep_ms = 50, .seen = 0, .started = &started },
+        { .sleep_ms = 50, .seen = 0, .started = &started },
+        { .sleep_ms = 50, .seen = 0, .started = &started },
     };
     void *args[3] = { &sa[0], &sa[1], &sa[2] };
     coro_fn funcs[3] = {
         _scatter_worker, _scatter_worker, _scatter_worker,
     };
-    uint64_t t0 = nowms();
     int32_t r = coro_fork_wait(coro_task_co(task), funcs, args, 3);
-    uint64_t elapsed = nowms() - t0;
     if (ERR_OK != r) {
         LOG_ERROR("fork_wait scatter: return %d.", r);
         return ERR_FAILED;
     }
-    if (0 == sa[0].finish_ms || 0 == sa[1].finish_ms || 0 == sa[2].finish_ms) {
-        LOG_ERROR("fork_wait scatter: not all workers finished.");
-        return ERR_FAILED;
-    }
-    // 3 个 sleep(50) 并发，总耗时应 < 串行 150ms（留 30ms 余量）
-    if (elapsed > 120) {
-        LOG_ERROR("fork_wait scatter: expected concurrent (<120ms), got %llums.",
-                  (unsigned long long)elapsed);
+    // 并发才会每个 worker 醒来时三个都已开跑；串行时第一个醒来只见到 1。不看墙钟，负载高也不误报
+    if (3 != sa[0].seen || 3 != sa[1].seen || 3 != sa[2].seen) {
+        LOG_ERROR("fork_wait scatter: expected concurrent, seen %d,%d,%d.",
+                  sa[0].seen, sa[1].seen, sa[2].seen);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -234,6 +231,7 @@ static int32_t _test_concurrent_fork_wait(task_ctx *task) {
     static int32_t b_ok;
     static concurrent_arg ca;
     static concurrent_arg cb;
+    int32_t i;
     a_ok = 0;
     b_ok = 0;
     ca.sleep_ms = 20; ca.done = 0; ca.ok = &a_ok;
@@ -241,7 +239,10 @@ static int32_t _test_concurrent_fork_wait(task_ctx *task) {
     // A 先 fork（先入链表，处于链表尾），B 后 fork（链表头）；A 先完成 → 非 LIFO 移除
     coro_fork(coro_task_co(task), _concurrent_driver, &ca);
     coro_fork(coro_task_co(task), _concurrent_driver, &cb);
-    coro_sleep(task, 140);// 等 A(~20ms) 与 B(~60ms) 两个 fork_wait 都完成
+    // 轮询等 A(~20ms) 与 B(~60ms) 两个 fork_wait 都完成，上限 2 秒
+    for (i = 0; i < 100 && (1 != a_ok || 1 != b_ok) && !task_isclosing(task); i++) {
+        coro_sleep(task, 20);
+    }
     if (1 != a_ok || 1 != b_ok) {
         LOG_ERROR("fork_wait concurrent: expect both ok, got a=%d b=%d.", a_ok, b_ok);
         return ERR_FAILED;
@@ -365,7 +366,7 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_fork_ff_pool(task)) {
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("fork tested.");
 }
 

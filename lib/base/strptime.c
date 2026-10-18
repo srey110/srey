@@ -6,7 +6,7 @@
 #define LEGAL_ALT(x) { if (alt_format & ~(x)) return NULL; }
 #define TM_YEAR_BASE 1900
 #ifndef TIME_MAX
-#define TIME_MAX INT64_MAX
+#define TIME_MAX (4 == sizeof(time_t) ? (uint64_t)INT32_MAX : (uint64_t)INT64_MAX) // 按 time_t 实际宽度取
 #endif
 #define TM_SUNDAY       0
 #define TM_MONDAY       1
@@ -365,11 +365,13 @@ static char *_strptime_st(const char *buf, const char *fmt, struct tm *tm, int *
             acc *= 10;
             acc += (uint64_t)(*bp++ - '0');
             rulim /= 10;
-            // acc 用 uint64 累加,避免 32 位 time_t(int32) 下有符号溢出 UB;rulim 先除后比防条件中再溢出
+            // acc 用 uint64 累加不会溢出;超过 TIME_MAX(随 time_t 宽度)即失败,不截断成别的时刻
         } while (acc <= (uint64_t)TIME_MAX / 10 &&
             rulim && *bp >= '0' && *bp <= '9');
 
-        if (acc > (uint64_t)TIME_MAX) {
+        // 停在"再乘 10 必超上限"处而后面还有数字,同样算超出
+        if (acc > (uint64_t)TIME_MAX
+            || (acc > (uint64_t)TIME_MAX / 10 && *bp >= '0' && *bp <= '9')) {
             bp = NULL;
             continue;
         }

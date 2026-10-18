@@ -20,24 +20,24 @@ typedef struct thread_hooks {
 /// 调用顺序:全局 init → 线程 init → 业务回调 → 线程 exit → 全局 exit,参数恒为 (NULL, NULL)。
 /// 须在创建任何线程之前调用一次;与具体模块无关的线程级缓存(如 buffer_thread_cleanup)挂在这里
 /// </summary>
-/// <param name="init">每条线程最先调用,可为 NULL</param>
-/// <param name="exit">每条线程最后调用,可为 NULL</param>
+/// <param name="_init">每条线程最先调用,可为 NULL</param>
+/// <param name="_exit">每条线程最后调用,可为 NULL</param>
 void thread_global_hooks(hook_cb _init, hook_cb _exit);
 /// <summary>
 /// 创建线程并附加 init / exit 钩子
 /// </summary>
-/// <param name="cb">业务线程回调函数</param>
-/// <param name="init">线程进入业务回调前调用,接收 (udata, assist),可为 NULL</param>
-/// <param name="exit">业务回调返回后调用,接收 (udata, assist),可为 NULL</param>
-/// <param name="udata">透传给 cb / init / exit 的业务参数</param>
-/// <param name="assist">透传给 init / exit 的钩子辅助参数,cb 不接收</param>
+/// <param name="_cb">业务线程回调函数</param>
+/// <param name="_init">线程进入业务回调前调用,接收 (udata, assist),可为 NULL</param>
+/// <param name="_exit">业务回调返回后调用,接收 (udata, assist),可为 NULL</param>
+/// <param name="udata">透传给 _cb / _init / _exit 的业务参数</param>
+/// <param name="assist">透传给 _init / _exit 的钩子辅助参数,_cb 不接收</param>
 /// <returns>pthread_t</returns>
 pthread_t thread_creat_hooks(th_cb _cb, hook_cb _init, hook_cb _exit,
                              void *udata, void *assist);
 /// <summary>
 /// 创建线程
 /// </summary>
-/// <param name="cb">回调函数</param>
+/// <param name="_cb">回调函数</param>
 /// <param name="udata">用户参数</param>
 /// <returns>pthread_t</returns>
 pthread_t thread_creat(th_cb _cb, void *udata);

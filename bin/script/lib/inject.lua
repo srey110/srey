@@ -59,9 +59,9 @@ end
 
 ---在当前 task 的沙箱中编译并执行 Lua 源码；print 输出通过返回值传回。
 ---注入代码可见两个变量：
----  _U    从 message_dispatch upvalue 树收集到的 table。每个都有 "名字@文件" 的限定名，
----        短名只在全局唯一时才有——同名不同表时短名为 nil，须改用限定名（如 _U["cache@lib/mysql.lua"]）；
----        同一文件里还有同名的，第二个起缀 "#2"、"#3"（如 _U["cache@lib/mysql.lua#2"]）
+---  _U    从 message_dispatch upvalue 树收集到的 table。每个都有 "名字@文件" 的限定名，文件取函数的 short_src：
+---        脚本按绝对路径加载，所以是绝对路径，过长时截成 "..." 加尾段，取前先遍历 _U 的键看实际写法；
+---        短名只在全局唯一时才有（同名不同表时为 nil，须改用限定名）；同一文件里还有同名的，限定名第二个起缀 "#2"、"#3"
 ---  _UDUP 上述被撤掉短名的名字列表；为空表示没有重名
 ---@param source string Lua 源码字符串
 ---@param filename string? 调试显示名；nil 时默认为 "=(inject)"

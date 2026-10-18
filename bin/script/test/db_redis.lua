@@ -4,6 +4,9 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local redis  = require("lib.redis")
 
+-- 数据库地址：在 VM 上跑时改成宿主机 IP，只改这一处
+local DB_HOST = "127.0.0.1"
+
 -- 同步发送一条命令并解包响应；命令用 pack_ud 编进 C 内存，copy=0 交给 syn_send（走真 redis 一圈）
 local function _exec(sk, ...)
     local cmd, size = redis.pack_ud(...)
@@ -16,7 +19,7 @@ end
 
 srey.startup(function()
 runner.run(function(t)
-    local sk = redis.connect("127.0.0.1", 6379, SSL_NAME.NONE, nil, 0)
+    local sk = redis.connect(DB_HOST, 6379, SSL_NAME.NONE, nil, 0)
     if not sk.valid then
         t:fail("redis connect")
         return

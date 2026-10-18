@@ -5,12 +5,12 @@
 #include "protocol/mqtt/mqtt_struct.h"
 
 /// <summary>
-/// 打包定长数值属性(MQTT5.0)
+/// 打包定长数值属性(MQTT5.0)，按 flag 写 1 / 2 / 4 字节
 /// </summary>
 /// <param name="props">属性 binary_ctx</param>
 /// <param name="flag">属性标识</param>
 /// <param name="val">数值</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
+/// <returns>ERR_OK 成功；flag 不是定长数值属性或 val 超出该属性的线宽返回 ERR_FAILED，props 不变</returns>
 int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val);
 /// <summary>
 /// 打包变长整数(varint)属性(MQTT5.0)
@@ -57,7 +57,7 @@ int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t 
 /// 1:订阅建立时，若该订阅当前不存在则发送保留消息
 /// 2:订阅建立时不要发送保留消息
 /// </param>
-/// <returns>ERR_OK 成功；ERR_FAILED topic 长度超过 65535 字节被跳过</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED topic 长度超过 65535 字节、qos 不在 0~2、5.0 下 retain 不在 0~2，本条被跳过</returns>
 int32_t mqtt_topics_subscribe(binary_ctx *topics, mqtt_protversion version, const char *topic,
     int8_t qos, int8_t nl, int8_t rap, int8_t retain);
 /// <summary>
@@ -74,8 +74,8 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// <param name="cleanstart">新开始 表明此次连接是一个新的会话还是一个已存在的会话的延续；MQTT 3.1.1 下若 clientid 为零长度，此值必须为 1</param>
 /// <param name="keepalive">保持连接</param>
 /// <param name="clientid">唯一的客户标识符 UTF-8字符串；NULL 或空串均按零长度处理（服务端在 CONNACK 分配 ID）。MQTT 3.1.1 零长度时必须 cleanstart=1，否则返回 NULL</param>
-/// <param name="user">用户名  UTF-8字符串</param>
-/// <param name="password">密码 二进制数据</param>
+/// <param name="user">用户名  UTF-8字符串；NULL 不带，空串带零长用户名</param>
+/// <param name="password">密码 二进制数据；NULL 不带，非 NULL 时按 pwlens 带(可为 0)</param>
 /// <param name="pwlens">密码长度</param>
 /// <param name="willtopic">遗嘱主题 UTF-8字符串</param>
 /// <param name="willpayload">遗嘱载荷 二进制数据</param>
@@ -91,10 +91,11 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包；失败返回 NULL(*lens 置 0)。
-/// 以下"组包失败"三条为全部 mqtt_pack_* 共有：属性段编码失败、任一字符串/载荷长度超 UINT16_MAX、
-/// 剩余长度超 varint 上限。version 低于 MQTT_50 时属性整体忽略，不算失败——3.1.1 没有属性段，
-/// 调用方可以只建一份 props 发给两种版本。
-/// 本函数另有一条：MQTT 3.1.1 下零长度 clientid 配 cleanstart=0</returns>
+/// 以下"组包失败"三条为全部 mqtt_pack_* 共有：属性段编码失败、任一带 2 字节长度前缀的字段
+/// (字符串、遗嘱载荷、密码；PUBLISH 的载荷不算)超 UINT16_MAX、剩余长度超 varint 上限。
+/// version 低于 MQTT_50 时属性整体忽略，不算失败——3.1.1 没有属性段，调用方可以只建一份 props 发给两种版本。
+/// 本函数另有三条：MQTT 3.1.1 下零长度 clientid 配 cleanstart=0、MQTT 3.1.1 下带密码不带用户名、
+/// 带遗嘱时 willqos 不在 0~2</returns>
 char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t keepalive, const char *clientid,
     const char *user, char *password, size_t pwlens,
     const char *willtopic, char *willpayload, size_t wplens, int8_t willqos, int8_t willretain,
@@ -127,9 +128,9 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
 /// Client  -- PUBREL    ->  Server
 /// Client  <- PUBCOMP   --  Server 
 /// </param>
-/// <param name="dup">重发标志 0:表示这是客户端或服务端第一次请求发送这个PUBLISH报文 1:表示这可能是一个早前报文请求的重发</param>
+/// <param name="dup">重发标志 0:表示这是客户端或服务端第一次请求发送这个PUBLISH报文 1:表示这可能是一个早前报文请求的重发(QoS0 时必须为 0)</param>
 /// <param name="topic">主题名 UTF-8字符串</param>
-/// <param name="packid">报文标识符(只有当QoS等级是1或2时)</param>
+/// <param name="packid">报文标识符(只有当QoS等级是1或2时，此时不能为 0)</param>
 /// <param name="payload">载荷</param>
 /// <param name="pllens">载荷长度</param>
 /// <param name="props">属性(MQTT5.0):
@@ -137,7 +138,8 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
 /// SUBSCRIPTION_ID(0x0B) CONTENT_TYPE(0x03)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，条件同 mqtt_pack_connect</returns>
+/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，条件同 mqtt_pack_connect 的共有三条，
+/// 另有 qos 不在 0~2、qos 非 0 而 packid 为 0、qos 为 0 而 dup 非 0</returns>
 char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int8_t dup,
     const char *topic, uint16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens);
 /// <summary>
@@ -192,13 +194,13 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, uint16_t packid, uint8_t reaso
 /// 订阅请求
 /// </summary>
 /// <param name="version">mqtt_protversion</param>
-/// <param name="packid">报文标识符</param>
+/// <param name="packid">报文标识符，不能为 0</param>
 /// <param name="topics">mqtt_topics_subscribe函数打包的数据</param>
 /// <param name="props">属性(MQTT5.0):
 /// SUBSCRIPTION_ID(0x0B) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，条件同 mqtt_pack_connect</returns>
+/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，条件同 mqtt_pack_connect 的共有三条，另有 packid 为 0</returns>
 char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 订阅确认
@@ -217,13 +219,13 @@ char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reaso
 /// 取消订阅请求
 /// </summary>
 /// <param name="version">mqtt_protversion</param>
-/// <param name="packid">报文标识符</param>
+/// <param name="packid">报文标识符，不能为 0</param>
 /// <param name="topics">mqtt_topics_unsubscribe函数打包的数据</param>
 /// <param name="props">属性(MQTT5.0):
-/// SUBSCRIPTION_ID(0x0B) USER_PROPERTY(0x26)
+/// USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，条件同 mqtt_pack_connect</returns>
+/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，同 mqtt_pack_subscribe</returns>
 char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 取消订阅确认

@@ -27,8 +27,8 @@ typedef struct multi_grp {
 }multi_grp;
 // 组间步长：各组计数被不同线程改，相隔不小于一条 cache line 就不会挤在同一条上
 #define MULTI_GRP_STRIDE ROUND_UP(sizeof(multi_grp), CACHELINE_SIZE)
-// ev_ud_* 四个 setter 只差字段名与 cast: 展开成"props 回调 + 对外入口"一对。
-// 值走 number 而非 data,故不需要 fcb
+// ev_ud_status / sess / handle 三个 setter 只差字段名与 cast: 展开成"props 回调 + 对外入口"一对。
+// 值走 number 而非 data,故不需要 fcb。pktype 切换要先放旧上下文，单独写
 #define DEF_UD_SETTER(field, type)  \
 static int32_t _cmd_ud_##field(struct watcher_ctx *watcher, struct evsock_ctx *evsk, \
     void *data, uint64_t number) { \
@@ -61,6 +61,14 @@ ud_cxt *_evpub_get_ud(struct evsock_ctx *evsk) {
 static inline watcher_ctx *_cmd_get_watcher(ev_ctx *ctx, sock_ctx *sk) {
     ASSERTAB(sk->index >= 0 && sk->index < (int32_t)ctx->nthreads, "sock index out of range.");
     return &ctx->watcher[sk->index];
+}
+// 针对已有连接的命令能否当场执行：同线程且表里查得到就返回查到的元素，否则 NULL。别的线程建的 socket，
+// CMD_ADD / CMD_CONN 可能还排在本线程队列里，查不到就投命令排在它后面；真失效的 sk 到命令执行时再丢
+static inline evsock_ctx *_cmd_sk_inloop(watcher_ctx *watcher, sock_ctx *sk) {
+    if (!_evpub_inloop(watcher)) {
+        return NULL;
+    }
+    return _evpub_sockel_get(watcher, sk->fd);
 }
 #ifdef NO_CMD_PIPE
 static inline void _cmd_note_trigger(watcher_ctx *watcher, pip_ctx *pip) {
@@ -224,9 +232,9 @@ void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
 #endif
     ATOMIC_SET_RELAXED(&watcher->stop, 1);
 }
-static inline void _cmd_props(watcher_ctx *watcher, sock_ctx *sk,
+// evsk 是按 sk->fd 在本线程元素表里查到的，可为 NULL
+static inline void _cmd_props(watcher_ctx *watcher, evsock_ctx *evsk, sock_ctx *sk,
                           props_cb ppcb, free_cb fcb, void *data, uint64_t number) {
-    evsock_ctx *evsk = _evpub_sockel_get(watcher, sk->fd);
     if (NULL == evsk
         || ERR_OK != _evpub_checkid(evsk, sk->skid)) {
         UD_FREE(fcb, data);
@@ -243,8 +251,9 @@ int32_t ev_props(ev_ctx *ctx, sock_ctx *sk,
         return ERR_FAILED;
     }
     watcher_ctx *watcher = _cmd_get_watcher(ctx, sk);
-    if (_evpub_inloop(watcher)) {
-        _cmd_props(watcher, sk, ppcb, fcb, data, number);
+    evsock_ctx *evsk = _cmd_sk_inloop(watcher, sk);
+    if (NULL != evsk) {
+        _cmd_props(watcher, evsk, sk, ppcb, fcb, data, number);
         return ERR_OK;
     }
     cmd_ctx cmd = { 0 };
@@ -258,7 +267,7 @@ int32_t ev_props(ev_ctx *ctx, sock_ctx *sk,
     return ERR_OK;
 }
 void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd) {
-    _cmd_props(watcher, &cmd->sk,
+    _cmd_props(watcher, _evpub_sockel_get(watcher, cmd->sk.fd), &cmd->sk,
         cmd->args.props.ppcb, cmd->args.props.fcb,
         cmd->args.props.data, cmd->args.props.number);
 }
@@ -560,8 +569,8 @@ int32_t ev_sendto(ev_ctx *ctx, sock_ctx *sk, const char *ip, const uint16_t port
     }
     return ev_sendto_addr(ctx, sk, &addr, data, len, copy);
 }
-static inline void _cmd_sendto(watcher_ctx *watcher, sock_ctx *sk, sendto_ctx *buf) {
-    evsock_ctx *evsk = _evpub_sockel_get(watcher, sk->fd);
+// evsk 同 _cmd_props
+static inline void _cmd_sendto(watcher_ctx *watcher, evsock_ctx *evsk, sock_ctx *sk, sendto_ctx *buf) {
     if (NULL == evsk
         || ERR_OK != _evpub_checkid(evsk, sk->skid)) {
         FREE(buf->data);
@@ -582,12 +591,13 @@ int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, netaddr_ctx *addr,
         return ERR_FAILED;
     }
     watcher_ctx *watcher = _cmd_get_watcher(ctx, sk);
-    if (_evpub_inloop(watcher)) {
+    evsock_ctx *evsk = _cmd_sk_inloop(watcher, sk);
+    if (NULL != evsk) {
         sendto_ctx sbuf;
         sbuf.len = len;
         sbuf.addr = *addr;
         sbuf.data = _cmd_cpy_buf(data, len, copy);
-        _cmd_sendto(watcher, sk, &sbuf);
+        _cmd_sendto(watcher, evsk, sk, &sbuf);
         return ERR_OK;
     }
     cmd_ctx cmd = { 0 };
@@ -601,7 +611,7 @@ int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, netaddr_ctx *addr,
     return ERR_OK;
 }
 void _on_cmd_sendto(watcher_ctx *watcher, cmd_ctx *cmd) {
-    _cmd_sendto(watcher, &cmd->sk, &cmd->args.sendto);
+    _cmd_sendto(watcher, _evpub_sockel_get(watcher, cmd->sk.fd), &cmd->sk, &cmd->args.sendto);
 }
 // 事件线程内执行 UDP 多播 setsockopt：先取 sock family,按 IPv4/IPv6 分支调对应 IP_*/IPV6_* 选项;
 // Windows 路径下 IPv6 iface_str 忽略走默认接口(if_nametoindex 需 iphlpapi.lib,不引入依赖);
@@ -643,11 +653,10 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
                 LOG_ERROR("group %s is IPv4 but fd %d bound as IPv6.", arg->group_ip, (int32_t)evsk->sk.fd);
                 return 1;
             }
+            // 空串不填：mreq 已清零即 INADDR_ANY
             if ('\0' != arg->iface_str[0]
                 && 1 != inet_pton(AF_INET, arg->iface_str, &mreq.imr_interface)) {
                 LOG_WARN("inet_pton(iface %s) failed,fallback INADDR_ANY", arg->iface_str);
-                mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-            } else if ('\0' == arg->iface_str[0]) {
                 mreq.imr_interface.s_addr = htonl(INADDR_ANY);
             }
             int32_t opt = (UDP_OPT_JOIN == arg->op) ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP;
@@ -777,7 +786,27 @@ int32_t ev_udp_loop(ev_ctx *ctx, sock_ctx *sk, int32_t enable) {
     arg->loop = enable ? 1 : 0;
     return ev_props(ctx, sk, _udp_opt_cb, _free, arg, 0);
 }
-DEF_UD_SETTER(pktype, subtype_t)
+// 换协议前按旧类型放掉旧上下文：上下文只有挂它的协议认得，留着会被新协议当成自己的读写或释放。
+// ud_free 契约要求放完把 context 置空，之后再换回来也是从空上下文起
+static int32_t _cmd_ud_pktype(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
+    void *data, uint64_t number) {
+    (void)watcher;
+    (void)data;
+    ud_cxt *ud = _evpub_get_ud(evsk);
+    if ((subtype_t)number != ud->pktype
+        && NULL != ud->context) {
+#ifdef EV_IOCP
+        UD_FREE(_iocp_get_cbs(evsk)->ud_free, ud);
+#else
+        UD_FREE(_uev_get_cbs(evsk)->ud_free, ud);
+#endif
+    }
+    ud->pktype = (subtype_t)number;
+    return 0;
+}
+int32_t ev_ud_pktype(ev_ctx *ctx, sock_ctx *sk, subtype_t pktype) {
+    return ev_props(ctx, sk, _cmd_ud_pktype, NULL, NULL, pktype);
+}
 DEF_UD_SETTER(status, uint8_t)
 DEF_UD_SETTER(sess, uint64_t)
 DEF_UD_SETTER(handle, name_t)

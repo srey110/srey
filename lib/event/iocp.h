@@ -62,6 +62,7 @@ typedef struct exfuncs_ctx {
     BOOL(WINAPI *acceptex)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);  // AcceptEx函数指针
     BOOL(WINAPI *connectex)(SOCKET, const struct sockaddr *, int, PVOID, DWORD, LPDWORD, LPOVERLAPPED); // ConnectEx函数指针
 }exfuncs_ctx;
+
 extern exfuncs_ctx _exfuncs; // 全局扩展函数指针（懒加载初始化）
 
 // 将fd关联到IOCP句柄
@@ -110,6 +111,8 @@ void _olp_revive_dead(ev_ctx *ev);
 void _iocp_acpex_release(evsock_ctx *evsk);
 // 获取evsock_ctx对应的ud_cxt指针
 ud_cxt *_iocp_get_ud(evsock_ctx *evsk);
+// 获取evsock_ctx对应的回调集合(TCP/UDP，口径同 _iocp_get_ud)
+cbs_ctx *_iocp_get_cbs(evsock_ctx *evsk);
 // 校验skid是否与当前连接匹配（防止fd复用误操作）
 int32_t _iocp_check_skid(evsock_ctx *evsk, const uint64_t skid);
 

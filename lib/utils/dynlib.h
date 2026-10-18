@@ -35,7 +35,7 @@ static inline int32_t dl_init(dl_ctx *ctx, const char *lib) {
     return NULL == ctx->handle ? ERR_FAILED : ERR_OK;
 }
 /// <summary>
-/// 释放动态库
+/// 释放动态库。释放后 ctx->handle 不置空，同一个 ctx 不得重复释放
 /// </summary>
 /// <param name="ctx">dl_ctx</param>
 static inline void dl_free(dl_ctx *ctx) {
@@ -63,8 +63,10 @@ static inline void *dl_sym(dl_ctx *ctx, const char *sym) {
     return GetProcAddress(ctx->handle, sym);
 #else
 #ifdef OS_HPUX
+    // 原型要句柄的地址且会回写，传副本免得改动 ctx->handle(无 HP-UX 环境，未实测)
+    shl_t handle = ctx->handle;
     void *func = NULL;
-    shl_findsym(ctx->handle, sym, TYPE_PROCEDURE, &func);
+    shl_findsym(&handle, sym, TYPE_PROCEDURE, &func);
     return func;
 #else
     return dlsym(ctx->handle, sym);

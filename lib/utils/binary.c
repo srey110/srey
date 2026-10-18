@@ -64,11 +64,17 @@ void binary_set_va(binary_ctx *ctx, const char *fmt, ...) {
     va_list args, tmp;
     va_start(args, fmt);
     while (1) {
+        // 钳到 INT32_MAX: macOS / FreeBSD 的 vsnprintf 在 n 超 INT_MAX 时直接返回 -1、什么都不写。
+        // 钳过之后输出恰为 INT32_MAX 字节就永远装不下, 同失败一样放弃, 否则死循环
         size = ctx->size - ctx->offset;
+        if (size > (size_t)INT32_MAX) {
+            size = INT32_MAX;
+        }
         va_copy(tmp, args);
         rtn = vsnprintf(ctx->data + ctx->offset, size, fmt, tmp);
         va_end(tmp);
-        if (rtn < 0) {
+        if (rtn < 0
+            || INT32_MAX == rtn) {
             break;
         }
         if ((size_t)rtn < size) {

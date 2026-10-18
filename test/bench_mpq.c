@@ -8,7 +8,8 @@
 // 比的是 FSQU_FAST_MODEL 的三个取值:0 queue+spin / 1 mpq / 2 bbq。
 // 三家直接用 fsqu 的本体实例化(FSQU_SPIN_DECL / FSQU_RING_DECL),测的就是产线那套入队出队。
 // 容量与元素尺寸取产线实参:msgq 256 / taskq 1024 / cmdq·twq·logq 4096;
-// 6 个 FSQU_DECL 实例里 4 个是 8 字节指针,另两个是 72 字节结构体。
+// 产线 5 个 FSQU_DECL 实例:taskq / twq / logq 是 8 字节指针,msgq 的 message_ctx 在 64 位 Unix 上 72 字节,
+// cmdq 的 cmd_ctx 更大(带 netaddr_ctx),这里只取 8 / 72 两档。
 // 消费侧分单条与批量两个维度:产线真正在用的是批量(loader 32,log/tw/cmd 128)。
 #define BQ_TOTAL   2000000 // MPSC 两个维度的总入队条数;太小的话计时窗口只有几毫秒,全是噪声
 #define BQ_ROUNDS  9       // 逐轮换起手取中位,单跑一次测不出东西

@@ -281,18 +281,14 @@ static void test_mysql_pack_simple_cmds(CuTest *tc) {
     CuAssertTrue(tc, 0x0e == (uint8_t)p[4]);
     FREE(pack);
 
-    /* COM_QUIT = 0x01；组包不得触碰 id / cur_cmd —— Lua 侧 __gc 在工作线程调它，
-       而网络线程正拿这两个字段解析来包，写一下就是无同步的跨线程写 */
-    mysql.id = 7;
-    mysql.cur_cmd = MYSQL_PING;
+    /* COM_QUIT = 0x01，序号恒 0。不碰连接状态靠的是签名不收 mysql_ctx(析构时在工作线程调，
+       网络线程正拿 id / cur_cmd 解析来包)，这里只验包的字节 */
     pack = mysql_pack_quit(&size);
     CuAssertPtrNotNull(tc, pack);
     p = (char *)pack;
     CuAssertTrue(tc, 5 == size);
     CuAssertIntEquals(tc, 0, (int)(uint8_t)p[3]);
     CuAssertTrue(tc, 0x01 == (uint8_t)p[4]);
-    CuAssertIntEquals(tc, 7, (int)mysql.id);
-    CuAssertIntEquals(tc, MYSQL_PING, (int)mysql.cur_cmd);
     FREE(pack);
 
     /* COM_INIT_DB = 0x02 */
@@ -304,21 +300,64 @@ static void test_mysql_pack_simple_cmds(CuTest *tc) {
     CuAssertTrue(tc, 0 == memcmp(p + 5, "mydb", 4));
     FREE(pack);
 
-    char longdb[80];
+    char longdb[MYSQL_DB_LENS + 2];
     memset(longdb, 'a', sizeof(longdb));
-    longdb[64] = '\0';
+    longdb[MYSQL_DB_LENS + 1] = '\0';
     size = 1;
     pack = mysql_pack_selectdb(&mysql, longdb, &size);
-    CuAssert(tc, "64-byte db name must be rejected (pending_db holds only 63)", NULL == pack);
+    CuAssert(tc, "db name over MYSQL_DB_LENS must be rejected", NULL == pack);
     CuAssert(tc, "rejected selectdb must set *size to 0", 0 == size);
     CuAssert(tc, "rejected selectdb must not touch pending_db", 0 == strcmp(mysql.pending_db, "mydb"));
 
-    longdb[63] = '\0';
+    longdb[MYSQL_DB_LENS] = '\0';
     pack = mysql_pack_selectdb(&mysql, longdb, &size);
     CuAssertPtrNotNull(tc, pack);
     p = (char *)pack;
-    CuAssert(tc, "63-byte db name must still be packed", 0 == memcmp(p + 5, longdb, 63));
+    CuAssert(tc, "db name of exactly MYSQL_DB_LENS must still be packed", 0 == memcmp(p + 5, longdb, MYSQL_DB_LENS));
     CuAssert(tc, "successful pack must record db name into pending_db for commit on OK", 0 == strcmp(mysql.pending_db, longdb));
+    FREE(pack);
+}
+
+/* =======================================================================
+ * _mysql_pack_begin —— 组包前导：命令首包序号归零并写命令字节，认证续包序号自增、不写命令字节；
+ * 3 字节长度位只占位，收尾由 _mysql_set_payload_lens 回填
+ * ======================================================================= */
+static void test_mysql_pack_begin(CuTest *tc) {
+    mysql_ctx mysql;
+    binary_ctx bw;
+    ZERO(&mysql, sizeof(mysql));
+    mysql.id = 7;
+    _mysql_pack_begin(&mysql, &bw, 0, MYSQL_PING);
+    CuAssertIntEquals(tc, 0, (int)mysql.id);
+    CuAssertIntEquals(tc, 5, (int)bw.offset);
+    CuAssertIntEquals(tc, 0, (int)(uint8_t)bw.data[3]);
+    CuAssertIntEquals(tc, MYSQL_PING, (int)(uint8_t)bw.data[4]);
+    CuAssertIntEquals(tc, ERR_OK, _mysql_set_payload_lens(&bw));
+    CuAssertIntEquals(tc, 1, (int)(uint8_t)bw.data[0]);
+    binary_free(&bw);
+    mysql.id = 3;
+    _mysql_pack_begin(&mysql, &bw, 0, 0);
+    CuAssertIntEquals(tc, 4, (int)mysql.id);
+    CuAssertIntEquals(tc, 4, (int)bw.offset);
+    CuAssertIntEquals(tc, 4, (int)(uint8_t)bw.data[3]);
+    binary_free(&bw);
+    /* 改走它的定长命令包：上一条命令留下的序号不影响首包序号，长度位按实际载荷回填 */
+    size_t size = 0;
+    mysql.id = 9;
+    void *pack = mysql_pack_selectdb(&mysql, "mydb", &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 9, (int)size);
+    CuAssertIntEquals(tc, 5, (int)((uint8_t *)pack)[0]);/* COM_INIT_DB + "mydb" */
+    CuAssertIntEquals(tc, 0, (int)((uint8_t *)pack)[1]);
+    CuAssertIntEquals(tc, 0, (int)((uint8_t *)pack)[3]);
+    CuAssertIntEquals(tc, 0, (int)mysql.id);
+    FREE(pack);
+    mysql.id = 9;
+    pack = mysql_pack_ping(&mysql, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 5, (int)size);
+    CuAssertIntEquals(tc, 1, (int)((uint8_t *)pack)[0]);
+    CuAssertIntEquals(tc, 0, (int)((uint8_t *)pack)[3]);
     FREE(pack);
 }
 
@@ -469,6 +508,56 @@ static void test_mysql_pack_stmt_close(CuTest *tc) {
     CuAssertTrue(tc, 0x77 == (uint8_t)p[8]);
     FREE(pack);
     mysql_stmt_free(stmt);
+}
+
+/* =======================================================================
+ * 三个公开组包函数的 16MB 门槛：载荷(命令字节起算)达到 INT3_MAX 就返回 NULL 且 size 置 0，
+ * 差一字节照常组包。_mysql_set_payload_lens 自己的边界见 test_mysql_set_payload_lens
+ * ======================================================================= */
+static void test_mysql_pack_payload_limit(CuTest *tc) {
+    mysql_ctx mysql;
+    ZERO(&mysql, sizeof(mysql));
+    char *sql;
+    CALLOC(sql, 1, INT3_MAX);
+    size_t size;
+    void *pack;
+
+    /* COM_QUERY：SQL 本身达到 INT3_MAX 走早退；SQL 少一字节时加上命令字节正好 INT3_MAX，在收尾处拒 */
+    size = 1;
+    CuAssertTrue(tc, NULL == mysql_pack_query2(&mysql, sql, INT3_MAX, NULL, &size));
+    CuAssertTrue(tc, 0 == size);
+    size = 1;
+    CuAssertTrue(tc, NULL == mysql_pack_query2(&mysql, sql, INT3_MAX - 1, NULL, &size));
+    CuAssertTrue(tc, 0 == size);
+    pack = mysql_pack_query2(&mysql, sql, INT3_MAX - 2, NULL, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, MYSQL_HEAD_LENS + INT3_MAX - 1 == size);
+    FREE(pack);
+    /* 带查询属性段时 SQL 更短也会超：CLIENT_QUERY_ATTRIBUTES 多出 parameter_count / set_count 两字节 */
+    BIT_SET(mysql.client.caps, CLIENT_QUERY_ATTRIBUTES);
+    size = 1;
+    CuAssertTrue(tc, NULL == mysql_pack_query2(&mysql, sql, INT3_MAX - 2, NULL, &size));
+    CuAssertTrue(tc, 0 == size);
+    mysql.client.caps = 0;
+
+    /* COM_STMT_PREPARE */
+    size = 1;
+    CuAssertTrue(tc, NULL == mysql_pack_stmt_prepare2(&mysql, sql, INT3_MAX - 1, &size));
+    CuAssertTrue(tc, 0 == size);
+
+    /* COM_STMT_EXECUTE：一个 16MB 的字符串参数把载荷撑过门槛 */
+    mysql_stmt_ctx stmt;
+    ZERO(&stmt, sizeof(stmt));
+    stmt.mysql = &mysql;
+    stmt.params_count = 1;
+    mysql_bind_ctx mb;
+    mysql_bind_init(&mb);
+    mysql_bind_string(&mb, "a", sql, INT3_MAX);
+    size = 1;
+    CuAssertTrue(tc, NULL == mysql_pack_stmt_execute(&stmt, &mb, &size));
+    CuAssertTrue(tc, 0 == size);
+    mysql_bind_free(&mb);
+    FREE(sql);
 }
 
 /* =======================================================================
@@ -634,8 +723,10 @@ void test_mysql_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_pack_query_no_bind);
     SUITE_ADD_TEST(suite, test_mysql_pack_query_attrs);
     SUITE_ADD_TEST(suite, test_mysql_pack_simple_cmds);
+    SUITE_ADD_TEST(suite, test_mysql_pack_begin);
     SUITE_ADD_TEST(suite, test_mysql_pack_stmt_prepare);
     SUITE_ADD_TEST(suite, test_mysql_pack_stmt_execute);
     SUITE_ADD_TEST(suite, test_mysql_pack_stmt_reset);
     SUITE_ADD_TEST(suite, test_mysql_pack_stmt_close);
+    SUITE_ADD_TEST(suite, test_mysql_pack_payload_limit);
 }

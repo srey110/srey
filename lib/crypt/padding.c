@@ -41,6 +41,30 @@ int32_t _padding_data(padding_model padding, const void *data, size_t dlens, uin
     }
     return ERR_OK;
 }
+int32_t _padding_strip(padding_model padding, const uint8_t *block, size_t blk, uint8_t *pad) {
+    uint8_t len = block[blk - 1];
+    if (ISO10126 == padding) {
+        if (len < 1 || len > blk) {
+            return ERR_FAILED;
+        }
+        *pad = len;
+        return ERR_OK;
+    }
+    // 循环长度固定 [1, blk)，mask 屏蔽非填充区；PKCS#7 期望全部 == len，ANSI X.923 前 N-1 字节 == 0。
+    // 长度越界也折进 bad 而不提前返回：两条失败路径耗时不同就把"长度字节是否合法"漏了出去
+    uint8_t expected = (PKCS57 == padding) ? len : (uint8_t)0;
+    volatile uint8_t bad = (uint8_t)(0u - ((((uint32_t)len - 1u) | ((uint32_t)blk - (uint32_t)len)) >> 31));
+    uint8_t mask;
+    for (size_t j = 1; j < blk; j++) {
+        mask = (uint8_t)(0u - (((uint32_t)j - (uint32_t)len) >> 31));// j < len 即在填充区
+        bad |= mask & (block[blk - 1 - j] ^ expected);
+    }
+    if (0 != bad) {
+        return ERR_FAILED;
+    }
+    *pad = len;
+    return ERR_OK;
+}
 uint8_t *_padding_key(const char *key, size_t klens, uint8_t *pdkey, size_t reqlens) {
     if (klens < reqlens) {
         if (klens > 0) {

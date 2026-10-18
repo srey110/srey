@@ -7,6 +7,14 @@
 #define KCP_SV_MAXSESS 8 // server 侧会话表容量
 #define KCP_NOECHO "noecho" // 以此开头的消息 server 只收不回,验证收包唤醒停表会话后会回 ACK
 #define KCP_DL2 "dl2_" // 死链用例里 conv 2 的消息前缀,对端按它挑回显用的会话
+#define KCP_SEG_PUSH 81 // ikcp 的 IKCP_CMD_PUSH,手拼数据段用
+// _peer_cases 收到的消息按内容记成位,位序同 _peer_msgs 的下标
+enum { PEER_INJECT = 1, PEER_AFTER = 2, PEER_SINK = 4, PEER_LOST = 8, PEER_BACK = 16 };
+// _peer_cases 的四个 socket:a 上建会话;b 是 a 的 kcp 对端(收到即回显);d 是 a 上 conv 3 登记的对端,
+// e 是冒充者,d / e 都不建会话,手拼 PUSH 段发给 a
+enum { PEER_A, PEER_B, PEER_D, PEER_E, PEER_NSK };
+// _learn_cases 的三个 socket:a 上以 port 0 起学习会话;b 是真对端;e 冒充 b 用同 conv 发给 a
+enum { LEARN_A, LEARN_B, LEARN_E, LEARN_NSK };
 
 // ================= server =================
 typedef struct kcp_sv_sess {
@@ -75,7 +83,7 @@ static void _sv_startup(task_ctx *task) {
         LOG_ERROR("kcp server tcp listen %u error.", _sv_tcp_port);
         return;
     }
-    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", _sv_udp_port, &_sv_udp_sk)) {
+    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", _sv_udp_port, 0, &_sv_udp_sk)) {
         LOG_ERROR("kcp server udp %u error.", _sv_udp_port);
         return;
     }
@@ -97,7 +105,7 @@ static void _cli_worker(void *owner, void *arg) {
     int32_t idx = (int32_t)(intptr_t)arg;
     // 1. 建 UDP socket(OS 分配端口)
     sock_ctx usk;
-    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, &usk)) {
+    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, &usk)) {
         LOG_ERROR("kcp client %d udp error.", idx);
         return;
     }
@@ -131,8 +139,8 @@ static void _cli_worker(void *owner, void *arg) {
     kcp_ctx kcp;
     kcp_init(&kcp, &task->loader->netev, &usk, conv);
     kcp_config badmtu = { -1, -1, -1, -1, 0, 0, 24 }; // client 0 故意传非法 mtu(<50),验证 maxpack 不会因此归零导致永久发送失败
-    // client 1 传的 1431655742 会让 ikcp 内部的 (mtu+24)*3 在 32 位无符号下回绕成 2:
-    // 修复前 buffer 只有 2 字节而 mss 仍是天文数字,首次 flush 即堆越界写
+    // client 1 传的 1431655742 超过 KCP_MTU_MAX,先被 kcp.c 拒收(告警、保留默认 mtu),会话照常收发。
+    // ikcp_setmtu 自身对这个值的回绕守卫由 test_protocol.c 的裸 ikcp 用例直接断言
     kcp_config hugemtu = { -1, -1, -1, -1, 0, 0, 1431655742 };
     if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _cli_sv_udp, 0 == idx ? &badmtu : (1 == idx ? &hugemtu : NULL))) {
         LOG_ERROR("kcp client %d kcp_start error.", idx);
@@ -169,7 +177,7 @@ static void _cli_startup(task_ctx *task) {
         }
     }
     if (KCP_N_CLIENTS == ATOMIC_GET(&_cli_success)) {
-        *_cli_ok = 1;
+        ATOMIC_SET((atomic_t *)_cli_ok, 1);
         LOG_INFO("kcp tested: %d/%d clients synsend echo ok.", KCP_N_CLIENTS, KCP_N_CLIENTS);
     } else {
         LOG_ERROR("kcp test: %d/%d only.", (int32_t)ATOMIC_GET(&_cli_success), KCP_N_CLIENTS);
@@ -215,7 +223,7 @@ static void _close_stopper(void *owner, void *arg) {
 static void _close_startup(task_ctx *task) {
     coro_sleep(task, 300);// 等 server TCP listen / UDP 落地
     sock_ctx usk;
-    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, &usk)) {
+    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, &usk)) {
         LOG_ERROR("kcp close test udp error.");
         return;
     }
@@ -239,7 +247,7 @@ static void _close_startup(task_ctx *task) {
     // 而那证明不了"是 CLOSE 把它唤醒的"。stopper 先 sleep 200ms 才 kcp_stop，
     // 所以真被唤醒的 waiter 必然等过 200ms 上下（留些余量取 150）
     if (NULL == ctx.echo && ctx.elapse >= 150 && ctx.elapse < 2000) {
-        *_close_ok = 1;
+        ATOMIC_SET((atomic_t *)_close_ok, 1);
         LOG_INFO("kcp close tested: waiter woken by close, elapse %"PRIu64"ms.", ctx.elapse);
     } else {
         LOG_ERROR("kcp close test failed: echo %p elapse %"PRIu64"ms.", ctx.echo, ctx.elapse);
@@ -280,7 +288,7 @@ static void _fifo_startup(task_ctx *task) {
     coro_sleep(task, 300);// 等 server TCP listen / UDP 落地
     // 1. 建 UDP socket(OS 分配端口)
     sock_ctx usk;
-    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, &usk)) {
+    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, &usk)) {
         LOG_ERROR("kcp fifo test udp error.");
         return;
     }
@@ -344,7 +352,7 @@ static void _fifo_startup(task_ctx *task) {
         }
     }
     if (allok) {
-        *_fifo_ok = 1;
+        ATOMIC_SET((atomic_t *)_fifo_ok, 1);
         LOG_INFO("kcp fifo tested: %d/%d concurrent synsend matched.", KCP_FIFO_N, KCP_FIFO_N);
     }
 }
@@ -372,10 +380,12 @@ static void _syn_close_fork(void *owner, void *arg) {
     ev_close(_syn_dead_netev, &_syn_dead_sk);
 }
 static int32_t *_syn_ok;
+static int32_t _peer_cases(task_ctx *task);// 定义在下面"对端行为"一节,借本组跑
+static int32_t _learn_cases(task_ctx *task);// 定义在下面"学习模式"一节,同上
 
 static void _syn_startup(task_ctx *task) {
     sock_ctx usk;
-    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, &usk)) {
+    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, &usk)) {
         LOG_ERROR("kcp synstart test udp error.");
         return;
     }
@@ -401,7 +411,7 @@ static void _syn_startup(task_ctx *task) {
     // 4. stop 后立即 synstart 重启:每次生成新 sess,不被上一会话在途的 CLOSE 击穿
     kcp_stop(&kcp1);
     int32_t r5 = kcp_synstart(task, &kcp1, "127.0.0.1", _syn_sv_udp, NULL);
-    // 5. stop 后 synstart 被拒:失败路径须置回"无会话"(sess=0 / stopped=1)并还原 maxpack。
+    // 5. stop 后 synstart 被拒:失败路径须置 stopped=1 并还原 maxpack(sess 留着,关闭回调按它认会话)。
     // 先 stop 让 conv 空出给 kcp5,kcp1 再以同 conv 重启必被 event 线程拒;若 stopped 停在 0,句柄就从
     // "已停"变回"在跑",下面的 synsend 会绕过守卫投到已消失的会话,被静默丢弃后空等满超时
     kcp_stop(&kcp1);
@@ -435,17 +445,18 @@ static void _syn_startup(task_ctx *task) {
     kcp_stop(&kcp3);
     ev_close(&task->loader->netev, &usk);
     // 6. CLOSE 唤醒 kcp_synsend:挂起期间 socket 被关,_kcp_udfree 逐会话补 CLOSE;
-    // 唤醒后句柄须置回"无会话"(sess=0 且 stopped=1):sess 不清则下次 synsend 通过守卫投到已消失的会话,
-    // 被 _kcp_resolve 静默丢弃后空等满超时;stopped 不置则之后的 kcp_start 被当成重启存活会话。
+    // 唤醒后句柄须置 stopped=1、sess 不动:stopped 不置则下次 synsend 投到已消失的会话、空等满超时,
+    // 之后的 kcp_start 也会被当成重启存活会话;sess 留着,关闭回调按它认会话。
     // 与 bin/script/lib/kcp.lua 的 ctx:send 同款分支互为镜像
     sock_ctx dsk;
     int32_t r6 = ERR_FAILED;
     int32_t r7 = ERR_FAILED;
     uint64_t elapse6 = 0;
     kcp_ctx kcp4;
-    if (ERR_OK == task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, &dsk)) {
+    if (ERR_OK == task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, &dsk)) {
         kcp_init(&kcp4, &task->loader->netev, &dsk, 300);
         if (ERR_OK == kcp_synstart(task, &kcp4, "127.0.0.1", _syn_sv_udp, NULL)) {
+            uint64_t s7 = kcp4.sess;
             _syn_dead_netev = &task->loader->netev;
             _syn_dead_sk = dsk;
             // 收窄放在 synstart 成功之后:否则安装步骤自身可能超时,后续断言会以错误理由通过
@@ -456,28 +467,30 @@ static void _syn_startup(task_ctx *task) {
             void *r6p = kcp_synsend(task, &kcp4, "x", 1, 1, &esize);
             elapse6 = nowms() - b6;
             r6 = (NULL == r6p) ? ERR_OK : ERR_FAILED;
-            r7 = (0 == kcp4.sess && 1 == kcp4.stopped) ? ERR_OK : ERR_FAILED;
+            r7 = (s7 == kcp4.sess && 1 == kcp4.stopped) ? ERR_OK : ERR_FAILED;
         } else {
             // 成功路径的 close 在 _syn_close_fork 里，安装失败就没人关它了
             ev_close(&task->loader->netev, &dsk);
         }
     }
+    int32_t r18 = _peer_cases(task);
+    int32_t r19 = _learn_cases(task);
     if (ERR_OK == r1 && ERR_OK != r2 && ERR_OK == r3 && elapse3 < 1000 && NULL == r4 && ERR_OK == r5
         && ERR_OK == r8 && ERR_OK != r9 && ERR_OK == r10 && NULL == r11 && elapse11 < 1000
         && ERR_OK == r6 && ERR_OK == r7 && elapse6 < 2000
         && ERR_OK == r12 && ERR_OK == r13 && ERR_OK == r14 && ERR_OK == r15
-        && ERR_OK == r16 && ERR_OK == r17) {
-        *_syn_ok = 1;
+        && ERR_OK == r16 && ERR_OK == r17 && ERR_OK == r18 && ERR_OK == r19) {
+        ATOMIC_SET((atomic_t *)_syn_ok, 1);
         LOG_INFO("kcp synstart tested: normal/restart ok, collision/sess-guard rejected,"
-                 " reject clears sess and restores stopped/maxpack, CLOSE clears sess and sets stopped,"
+                 " reject sets stopped and restores maxpack, CLOSE keeps sess and sets stopped,"
                  " same-handle restart implicitly stops the live session and re-registers conv,"
-                 " async handle refused by the event thread stays restartable.");
+                 " async handle refused by the event thread stays restartable, peer and learn cases ok.");
     } else {
         LOG_ERROR("kcp synstart test failed: r1=%d r2=%d r3=%d elapse3=%"PRIu64" r4=%p r5=%d"
                   " r8=%d r9=%d r10=%d r11=%p elapse11=%"PRIu64" r6=%d r7=%d elapse6=%"PRIu64
-                  " r12=%d r13=%d r14=%d r15=%d r16=%d r17=%d.",
+                  " r12=%d r13=%d r14=%d r15=%d r16=%d r17=%d r18=%d r19=%d.",
                   r1, r2, r3, elapse3, r4, r5, r8, r9, r10, r11, elapse11, r6, r7, elapse6,
-                  r12, r13, r14, r15, r16, r17);
+                  r12, r13, r14, r15, r16, r17, r18, r19);
     }
 }
 void task_kcp_synstart_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok) {
@@ -493,7 +506,7 @@ void task_kcp_synstart_start(loader_ctx *loader, const char *name, uint16_t sv_u
 // 建 UDP(OS 分配端口)并取回端口;失败时已关好
 static int32_t _kcp_test_udp(task_ctx *task, sock_ctx *usk, uint16_t *port) {
     netaddr_ctx la;
-    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, usk)) {
+    if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, usk)) {
         return ERR_FAILED;
     }
     if (ERR_OK != netaddr_local(&la, usk->fd)) {
@@ -525,6 +538,178 @@ static int32_t _kcp_test_conv(task_ctx *task, uint16_t sv_tcp, sock_ctx *usk, ui
     memcpy(conv, resp, sizeof(*conv));// resp 只到下次 coro_* 前有效
     coro_close(task, &tsk);
     return ERR_OK;
+}
+
+// ================= 对端行为:maxpack 大消息 / 源地址校验 / 0 长度消息 / 改投与目标退出 =================
+// 借 kcp_synstart 那组跑(_syn_startup 末尾调),四个 socket 的分工见文件头的 PEER_A..PEER_E
+static const char *_peer_msgs[] = { "inject", "after", "sink", "lost", "back" };
+static sock_ctx _peer_bsk;
+static kcp_ctx _peer_kb;// b 上的会话,回显用
+static atomic_t _peer_self;// 本 task 收到的消息位
+static atomic_t _peer_sink;// 临时 task 收到的消息位
+
+// 认出是 _peer_msgs 里哪一条,返回它的位;认不出返回最高位
+static int32_t _peer_bit(const void *data, size_t size) {
+    for (int32_t i = 0; i < (int32_t)ARRAY_SIZE(_peer_msgs); i++) {
+        if (strlen(_peer_msgs[i]) == size && 0 == memcmp(data, _peer_msgs[i], size)) {
+            return 1 << i;
+        }
+    }
+    return 1 << 30;
+}
+static void _peer_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+    (void)task;
+    (void)pktype;
+    (void)ip;
+    (void)port;
+    if (sk->skid == _peer_bsk.skid) {
+        kcp_send(&_peer_kb, data, size, 1);// b 上原样回显
+        return;
+    }
+    ATOMIC_ADD(&_peer_self, _peer_bit(data, size));
+}
+static void _peer_sink_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+    (void)task;
+    (void)sk;
+    (void)pktype;
+    (void)ip;
+    (void)port;
+    ATOMIC_ADD(&_peer_sink, _peer_bit(data, size));
+}
+// 手拼一个 PUSH 段(24 字节头 + 数据,小端,字段顺序同 ikcp 的段编码),从 sk 发到本机 port
+static void _peer_push(task_ctx *task, sock_ctx *sk, uint16_t port, uint32_t conv, uint32_t sn, const char *data) {
+    char seg[64];
+    size_t lens = strlen(data);
+    write_le32(seg, conv);
+    seg[4] = KCP_SEG_PUSH;
+    seg[5] = 0;// frg
+    write_le16(seg + 6, 128);// wnd
+    write_le32(seg + 8, 0);// ts
+    write_le32(seg + 12, sn);
+    write_le32(seg + 16, 0);// una
+    write_le32(seg + 20, (uint32_t)lens);
+    memcpy(seg + 24, data, lens);
+    ev_sendto(&task->loader->netev, sk, "127.0.0.1", port, seg, 24 + lens, 1);
+}
+// 每 20ms 看一次,至多 2 秒,等 got 里出现 bits
+static int32_t _peer_wait(task_ctx *task, atomic_t *got, int32_t bits) {
+    for (int32_t i = 0; i < 100; i++) {
+        if (bits == ((int32_t)ATOMIC_GET(got) & bits)) {
+            return 1;
+        }
+        coro_sleep(task, 20);
+    }
+    return 0;
+}
+// 1) a / b 互为对端,恰好 maxpack(127 片)的消息端到端回显,多 1 字节本地即拒;
+// 2) mtu 恰为 KCP_MTU_MAX 生效、大 1 保持默认(只在本地算 maxpack,不发包);
+// 3) a 上 conv 3 登记 d 为对端:e 冒充发的 sn 0 须被丢;d 先发 0 长度消息再发 after,前者不能堵住后者;
+// 4) 改投到临时 task 后消息归它;它退出后到的 lost 被取出丢掉,改回本 task 后不会再冒出来
+static int32_t _peer_cases(task_ctx *task) {
+    ev_ctx *netev = &task->loader->netev;
+    sock_ctx sks[PEER_NSK];
+    uint16_t ports[PEER_NSK];
+    int32_t nsk = 0;
+    while (nsk < PEER_NSK && ERR_OK == _kcp_test_udp(task, &sks[nsk], &ports[nsk])) {
+        nsk++;
+    }
+    if (PEER_NSK != nsk) {
+        for (int32_t i = 0; i < nsk; i++) {
+            ev_close(netev, &sks[i]);
+        }
+        LOG_ERROR("kcp peer test udp error.");
+        return ERR_FAILED;
+    }
+    ATOMIC_SET(&_peer_self, 0);
+    ATOMIC_SET(&_peer_sink, 0);
+    _peer_bsk = sks[PEER_B];
+    task_recvedfrom(task, _peer_recvfrom);
+    task_set_netread_timeout(task, 10000);
+    // 1) 两端都关流控、10ms 一轮,127 片几轮就走完
+    kcp_config fast = { 1, 10, -1, 1, 0, 0, 0 };
+    kcp_ctx ka;
+    int32_t big_ok = 0;
+    int32_t over_ok = 0;
+    kcp_init(&ka, netev, &sks[PEER_A], 1);
+    kcp_init(&_peer_kb, netev, &sks[PEER_B], 1);
+    if (ERR_OK == kcp_synstart(task, &ka, "127.0.0.1", ports[PEER_B], &fast)
+        && ERR_OK == kcp_synstart(task, &_peer_kb, "127.0.0.1", ports[PEER_A], &fast)) {
+        size_t esize = 0;
+        char *big;
+        MALLOC(big, ka.maxpack + 1);
+        for (size_t i = 0; i <= ka.maxpack; i++) {
+            big[i] = (char)(i * 31 + 7);
+        }
+        over_ok = (ERR_FAILED == kcp_send(&ka, big, ka.maxpack + 1, 1));
+        void *echo = kcp_synsend(task, &ka, big, ka.maxpack, 1, &esize);
+        big_ok = (NULL != echo && esize == ka.maxpack && 0 == memcmp(echo, big, esize));
+        FREE(big);
+    }
+    // 2)
+    kcp_ctx km;
+    kcp_init(&km, netev, &sks[PEER_A], 500);
+    size_t mp_def = km.maxpack;
+    kcp_config mtucfg = { -1, -1, -1, -1, 0, 0, KCP_MTU_MAX };
+    int32_t mtu_ok = (ERR_OK == kcp_start(&km, task->handle, 0, "127.0.0.1", ports[PEER_B], &mtucfg)
+        && (size_t)127 * (KCP_MTU_MAX - 24) == km.maxpack);
+    kcp_stop(&km);
+    mtucfg.mtu = KCP_MTU_MAX + 1;
+    mtu_ok = mtu_ok && ERR_OK == kcp_start(&km, task->handle, 0, "127.0.0.1", ports[PEER_B], &mtucfg)
+        && mp_def == km.maxpack;
+    kcp_stop(&km);
+    // 3) 4)
+    kcp_ctx kc;
+    int32_t raw_ok = 0;
+    int32_t sink_ok = 0;
+    int32_t back_ok = 0;
+    kcp_init(&kc, netev, &sks[PEER_A], 3);
+    if (ERR_OK == kcp_synstart(task, &kc, "127.0.0.1", ports[PEER_D], NULL)) {
+        _peer_push(task, &sks[PEER_E], ports[PEER_A], 3, 0, "inject");
+        coro_sleep(task, 100);// 冒充的先到:校验失效的话它会占走 sn 0 被投出来
+        _peer_push(task, &sks[PEER_D], ports[PEER_A], 3, 0, "");
+        _peer_push(task, &sks[PEER_D], ports[PEER_A], 3, 1, "after");
+        raw_ok = _peer_wait(task, &_peer_self, PEER_AFTER);
+        task_ctx *sink = task_new(task->loader, NULL, 0, NULL, NULL, NULL);
+        name_t hsink = sink->handle;
+        task_recvedfrom(sink, _peer_sink_recvfrom);
+        (void)task_register(sink, NULL, NULL);// 匿名 task 不会重名
+        sink_ok = (ERR_OK == kcp_handle(&kc, hsink));
+        coro_sleep(task, 100);// 等改投在 a 的 event 线程上落地
+        _peer_push(task, &sks[PEER_D], ports[PEER_A], 3, 2, "sink");
+        sink_ok = sink_ok && _peer_wait(task, &_peer_sink, PEER_SINK);
+        // 挂起期间 loader 可能已在关闭、sink 已被释放：按句柄重新取，不碰前面的裸指针
+        sink = task_grab(task->loader, hsink);
+        if (NULL != sink) {
+            task_close(sink);
+            task_ungrab(sink);
+        }
+        for (int32_t i = 0; i < 100 && task_exists(task->loader, hsink); i++) {
+            coro_sleep(task, 20);
+        }
+        _peer_push(task, &sks[PEER_D], ports[PEER_A], 3, 3, "lost");
+        coro_sleep(task, 300);// lost 须在改回之前到 a
+        back_ok = (ERR_OK == kcp_handle(&kc, task->handle));
+        coro_sleep(task, 100);
+        _peer_push(task, &sks[PEER_D], ports[PEER_A], 3, 4, "back");
+        back_ok = back_ok && _peer_wait(task, &_peer_self, PEER_BACK);
+    }
+    kcp_stop(&ka);
+    kcp_stop(&_peer_kb);
+    kcp_stop(&kc);
+    for (int32_t i = 0; i < PEER_NSK; i++) {
+        ev_close(netev, &sks[i]);
+    }
+    // 本 task 只该收到 after 与 back:多出 inject 是源地址校验失效,多出 lost 是目标退出时消息没被取走
+    int32_t self = (int32_t)ATOMIC_GET(&_peer_self);
+    int32_t sinkgot = (int32_t)ATOMIC_GET(&_peer_sink);
+    if (big_ok && over_ok && mtu_ok && raw_ok && sink_ok && back_ok
+        && (PEER_AFTER | PEER_BACK) == self && PEER_SINK == sinkgot) {
+        LOG_INFO("kcp peer tested: maxpack echo, mtu bound, source check, empty message, redirect and gone target ok.");
+        return ERR_OK;
+    }
+    LOG_ERROR("kcp peer test failed: big %d over %d mtu %d raw %d sink %d back %d self %d sink got %d.",
+              big_ok, over_ok, mtu_ok, raw_ok, sink_ok, back_ok, self, sinkgot);
+    return ERR_FAILED;
 }
 
 // ================= 空闲停表后的唤醒 =================
@@ -576,7 +761,7 @@ static void _idle_startup(task_ctx *task) {
     ev_close(&task->loader->netev, &usk);
     // 上界:按格点唤醒最坏约 4 个 interval + RTT,留足余量;server 侧停表的会话随 loader_free 走 _kcp_udfree
     if (ea < 2000 && eb < 2000) {
-        *_idle_ok = 1;
+        ATOMIC_SET((atomic_t *)_idle_ok, 1);
         LOG_INFO("kcp idle tested: recv wakeup %"PRIu64"ms, send wakeup %"PRIu64"ms, stop parked ok.", ea, eb);
     } else {
         LOG_ERROR("kcp idle test failed: recv wakeup %"PRIu64"ms, send wakeup %"PRIu64"ms.", ea, eb);
@@ -592,9 +777,80 @@ void task_kcp_idle_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_p
     coro_task_register(loader, name, 0, _idle_startup, NULL, NULL, NULL);
 }
 
+// ================= 学习模式:kcp_start 的 port 为 0,首包来源定为对端 =================
+// 借 kcp_synstart 那组跑(_syn_startup 末尾调),三个 socket 的分工见文件头的 LEARN_A..LEARN_E,端口都由 OS 分配
+static sock_ctx _learn_ask;
+static kcp_ctx _learn_ka;// a 上的学习会话,收到即回显
+static atomic_t _learn_hits;// a 上收到的消息数
+
+static void _learn_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+    (void)task;
+    (void)pktype;
+    (void)ip;
+    (void)port;
+    if (sk->skid != _learn_ask.skid) {
+        return;
+    }
+    ATOMIC_ADD(&_learn_hits, 1);
+    kcp_send(&_learn_ka, data, size, 1);
+}
+// a 上以 ip:0 起 conv 的学习会话:b 先发、拿到回显,说明学到了 b 的端口且能回发;之后 e 冒充同 conv 发的
+// 被丢(e 等满超时),b 再发照常回显,a 一共只收到 b 的两条
+static int32_t _learn_one(task_ctx *task, sock_ctx *sks, uint16_t aport, uint32_t conv, const char *ip) {
+    ev_ctx *netev = &task->loader->netev;
+    kcp_ctx kb, ke;
+    size_t esize = 0;
+    int32_t ok = 0;
+    ATOMIC_SET(&_learn_hits, 0);
+    kcp_init(&_learn_ka, netev, &sks[LEARN_A], conv);
+    kcp_init(&kb, netev, &sks[LEARN_B], conv);
+    kcp_init(&ke, netev, &sks[LEARN_E], conv);
+    if (ERR_OK == kcp_start(&_learn_ka, task->handle, createid(), ip, 0, NULL)
+        && ERR_OK == kcp_synstart(task, &kb, "127.0.0.1", aport, NULL)
+        && ERR_OK == kcp_synstart(task, &ke, "127.0.0.1", aport, NULL)) {
+        ok = (UINT64_MAX != _idle_echo(task, &kb, "learn_1"));
+        task_set_netread_timeout(task, 500);
+        ok = ok && NULL == kcp_synsend(task, &ke, "learn_x", 7, 1, &esize);
+        task_set_netread_timeout(task, 10000);
+        ok = ok && UINT64_MAX != _idle_echo(task, &kb, "learn_2") && 2 == (int32_t)ATOMIC_GET(&_learn_hits);
+    }
+    kcp_stop(&_learn_ka);
+    kcp_stop(&kb);
+    kcp_stop(&ke);
+    return ok;
+}
+// 给定 ip 只学端口(conv 1);通配 ip 连 ip 一起学(conv 2)
+static int32_t _learn_cases(task_ctx *task) {
+    ev_ctx *netev = &task->loader->netev;
+    sock_ctx sks[LEARN_NSK];
+    uint16_t ports[LEARN_NSK];
+    int32_t nsk = 0;
+    int32_t port_ok = 0;
+    int32_t all_ok = 0;
+    while (nsk < LEARN_NSK && ERR_OK == _kcp_test_udp(task, &sks[nsk], &ports[nsk])) {
+        nsk++;
+    }
+    if (LEARN_NSK == nsk) {
+        _learn_ask = sks[LEARN_A];
+        task_recvedfrom(task, _learn_recvfrom);
+        port_ok = _learn_one(task, sks, ports[LEARN_A], 1, "127.0.0.1");
+        all_ok = _learn_one(task, sks, ports[LEARN_A], 2, "0.0.0.0");
+    }
+    for (int32_t i = 0; i < nsk; i++) {
+        ev_close(netev, &sks[i]);
+    }
+    if (port_ok && all_ok) {
+        LOG_INFO("kcp learn tested: port-only and any-ip sessions bind the first sender, impostor dropped.");
+        return ERR_OK;
+    }
+    LOG_ERROR("kcp learn test failed: udp %d port-only %d any-ip %d.", nsk, port_ok, all_ok);
+    return ERR_FAILED;
+}
+
 // ================= 死链:对端失联后在途数据重传超限,会话被动拆除并投 CLOSE =================
 static int32_t *_dead_ok;
-static int32_t _dead_abort;// 收到过 erro 为 CLOSE_TYPE_ABORT 的 kcp CLOSE
+static int32_t _dead_abort;// 收到过死链会话的 kcp CLOSE(erro 为 CLOSE_TYPE_ABORT,sess 为 _dead_sess)
+static uint64_t _dead_sess;// conv 1 会话的 sess,synstart 内部生成,建好后从句柄上取
 static sock_ctx _dead_bsk;// 对端 socket b:只在它上面回显
 static kcp_ctx _dead_peer;// conv 1 的对端会话:收到即原样回,只用于热身
 static kcp_ctx _dead_peer2;// conv 2 的对端会话:conv 1 拆掉后才建,回显 KCP_DL2 开头的消息
@@ -614,11 +870,12 @@ static void _dead_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char 
         kcp_send(&_dead_peer, data, size, 1);
     }
 }
-static void _dead_closed(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
+// 会话级关闭的 sess 是会话的 sess,不是 socket 的 skid;认不出是哪个会话的 ABORT 不算
+static void _dead_closed(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
     (void)task;
-    (void)sk;
     (void)client;
-    if (PACK_UDP_KCP == pktype && CLOSE_TYPE_ABORT == erro) {
+    if (PACK_UDP_KCP == pktype && CLOSE_TYPE_ABORT == erro
+        && sess == _dead_sess && sess != sk->skid) {
         _dead_abort = 1;
     }
 }
@@ -641,6 +898,7 @@ static void _dead_startup(task_ctx *task) {
     int32_t survived = 0;
     uint64_t bgts, elapse = 0;
     _dead_abort = 0;
+    _dead_sess = 0;
     task_recvedfrom(task, _dead_recvfrom);
     task_closed(task, _dead_closed);
     if (ERR_OK != _kcp_test_udp(task, &ask, &aport)) {
@@ -659,6 +917,7 @@ static void _dead_startup(task_ctx *task) {
     kcp_init(&_dead_peer2, &task->loader->netev, &bsk, 2);
     if (ERR_OK == kcp_synstart(task, &kcp, "127.0.0.1", bport, &fast)
         && ERR_OK == kcp_synstart(task, &_dead_peer, "127.0.0.1", aport, &fast)) {
+        _dead_sess = kcp.sess;
         warm = kcp_synsend(task, &kcp, "dl_warm", 7, 1, &esize);
     }
     if (NULL != warm) {
@@ -671,8 +930,8 @@ static void _dead_startup(task_ctx *task) {
         bgts = nowms();
         dead = kcp_synsend(task, &kcp, "dl_x", 4, 1, &esize);
         elapse = nowms() - bgts;
-        // CLOSE 唤醒置 sess=0 且 stopped=1;超时那条走 kcp_stop,只置 stopped、sess 不动
-        closed = (NULL == dead && 0 == kcp.sess && 1 == kcp.stopped);
+        // CLOSE 唤醒与超时(走 kcp_stop)都只置 stopped=1、sess 不动
+        closed = (NULL == dead && _dead_sess == kcp.sess && 1 == kcp.stopped);
         coro_sleep(task, 100);// close 回调协程排在被唤醒的等待者之后跑
     }
     if (closed && pre
@@ -690,7 +949,7 @@ static void _dead_startup(task_ctx *task) {
     ev_close(&task->loader->netev, &bsk);
     // 下界:rx_rto 不低于 30,20 次发送至少隔 19 段线性增长的 rto,约 3.1 秒,取 2000 证明是重传超限而非别的原因
     if (closed && _dead_abort && elapse >= 2000 && survived) {
-        *_dead_ok = 1;
+        ATOMIC_SET((atomic_t *)_dead_ok, 1);
         LOG_INFO("kcp dead link tested: session closed with abort after %"PRIu64"ms of retransmits,"
                  " the other session on the same socket still driven.", elapse);
     } else {

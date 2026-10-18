@@ -16,9 +16,13 @@ size_t _pgpack_rows_run(pgsql_ctx *pg, buffer_ctx *buf, int32_t *status);
 void _pgpack_free(pgpack_ctx *pgpack);
 // 释放 pgsql_reader_ctx 内部数据（行数组与字段数组），不释放结构体本身
 void _pgpack_reader_free(void *arg);
+// 类型码为 code 的消息缓冲由 _pgpack_parser 接管（DataRow / NotificationResponse）：调用方不释放，也不得放栈上
+static inline int32_t _pgpack_takes_buf(char code) {
+    return 'D' == code || 'A' == code;
+}
 // 解析一个完整的服务端消息，更新 pgsql_ctx 状态，在 ReadyForQuery 时返回累积的 pgpack_ctx。
-// breader->data 只有 DataRow('D') 与 NotificationResponse('A') 由本函数接管(释放或转交)，
+// breader->data 只有 _pgpack_takes_buf 认的类型由本函数接管(释放或转交)，
 // 其余类型本函数不留指向它的指针、也不释放，由调用方处置（可以是栈上缓冲）
-pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status);
+pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, int32_t *status);
 
 #endif//PGSQL_PARSE_H_

@@ -8,11 +8,14 @@
 // 内核只保证同一个字上"比较→睡"与"改值→叫"不错过；睡前还要复查别的变量(先登记自己在等、再看对方)时，
 // 两边的先后(足序读写或全屏障)由调用方保证，参照 thread/waiter.h 的 waiter_prepare 与 waiter_state_get。
 // 只在 config.h 的 WITH_FUTEX 为 1 时可用：Linux futex、macOS os_sync(14.4 起)、FreeBSD umtx、
-// Windows WaitOnAddress(8 起，链接 Synchronization.lib，见 srey/main.c)
+// Windows WaitOnAddress(8 起，链接 Synchronization.lib，下方 pragma)
 #if WITH_FUTEX
 
 #if !defined(OS_LINUX) && !defined(OS_FBSD) && !defined(OS_WIN) && !(defined(OS_DARWIN) && defined(HAVE_OS_SYNC))
     #error "WITH_FUTEX: unsupported platform"
+#endif
+#if defined(OS_WIN)
+    #pragma comment(lib, "Synchronization.lib")// 本头只有内联函数，引入它的编译单元各自记一次
 #endif
 #if defined(OS_LINUX)
     // 超时结构要与系统调用号配对：SYS_futex 收 {long, long}(32 位上就是旧的 32 位时间)，32 位 libc 的 struct timespec
@@ -39,11 +42,11 @@
 /// <returns>1 超时；ERR_OK 其它：被叫醒、值已不等于 val、虚假唤醒、被信号打断，以及参数错等系统调用失败</returns>
 static inline int32_t futex_wait(atomic_t *addr, uint32_t val, uint32_t ms) {
 #if defined(OS_LINUX)
-    futex_ts ts;
     if (0 == ms) {
         (void)syscall(FUTEX_SYSNO, addr, FUTEX_WAIT_PRIVATE, val, NULL, NULL, 0);
         return ERR_OK;
     }
+    futex_ts ts;
     ts.tv_sec = ms / 1000;
     ts.tv_nsec = (long)(ms % 1000) * 1000000;
     if (-1 == syscall(FUTEX_SYSNO, addr, FUTEX_WAIT_PRIVATE, val, &ts, NULL, 0)
@@ -63,11 +66,11 @@ static inline int32_t futex_wait(atomic_t *addr, uint32_t val, uint32_t ms) {
     }
     return ERR_OK;
 #elif defined(OS_FBSD)
-    struct timespec ts;
     if (0 == ms) {
         (void)_umtx_op((void *)addr, UMTX_OP_WAIT_UINT_PRIVATE, (u_long)val, NULL, NULL);
         return ERR_OK;
     }
+    struct timespec ts;
     ts.tv_sec = ms / 1000;
     ts.tv_nsec = (long)(ms % 1000) * 1000000;
     // 带时长时 uaddr 传时长结构的大小，uaddr2 传相对时长

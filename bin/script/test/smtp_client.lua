@@ -54,7 +54,7 @@ runner.run(function(t)
     mailctx:html("<!DOCTYPE html><html><title>HTML Tutorial</title><body>"
         .. "<h1>This is a heading</h1><p>This is a paragraph.</p></body></html>")
     if _mail_attach and _mail_attach ~= "" then
-        mailctx:attach_add(_mail_attach)
+        t:check(mailctx:attach_add(_mail_attach), "attach_add " .. _mail_attach)
     end
     mailctx:reply(1)
     t:check(smtpctx:send(mailctx), "smtp send 2 (html + attach)")

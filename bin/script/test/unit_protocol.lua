@@ -13,6 +13,7 @@ local smtp    = require("srey.smtp")
 local mail    = require("srey.smtp.mail")
 local yyjson  = require("yyjson")-- yyjson.null 是一个 NULL lightuserdata，用来测空指针拒收
 local base64  = require("srey.base64")
+local custz   = require("srey.custz")
 
 local rand  = math.random
 local rnode = sredis.node-- 参照实现逐节点取值用
@@ -380,6 +381,8 @@ runner.run(function(t)
     t:eq("OK",                    http.code_status(200), "http 200")
     t:eq("Not Found",             http.code_status(404), "http 404")
     t:eq("Internal Server Error", http.code_status(500), "http 500")
+    -- 截成 int32 的话 2^32+200 会变成 200 拿回 "OK"
+    t:eq(false, pcall(http.code_status, (1 << 32) + 200), "http.code_status 超 int32 报错")
 
     -- ── 封包访问器拒收空指针 ───────────────────────────────────────────
     do
@@ -387,6 +390,15 @@ runner.run(function(t)
         t:eq(false, pcall(websock.unpack, yyjson.null), "websock.unpack NULL 指针被拒")
         t:eq(false, pcall(http.chunked, yyjson.null), "http.chunked NULL 指针被拒")
         t:eq(false, pcall(http.status, yyjson.null), "http.status NULL 指针被拒")
+    end
+
+    -- ── custz.pack 拒零长载荷：接收侧把零长包当协议错误断开 ─────────────
+    do
+        t:eq(false, pcall(custz.pack, PACK_TYPE.CUSTZ_FIXED, ""), "custz.pack 空串报错")
+        t:eq(false, pcall(custz.pack, PACK_TYPE.CUSTZ_VAR, yyjson.null, 0), "custz.pack 零长 lightuserdata 报错")
+        local cp, cl = custz.pack(PACK_TYPE.CUSTZ_FLAG, "x")
+        t:check(cp ~= nil and cl == 2, "custz.pack 一字节载荷照常组包")
+        utils.ud_free(cp)
     end
 
     -- ── redis.pack ─────────────────────────────────────────────────────
@@ -519,6 +531,10 @@ runner.run(function(t)
         t:check(txt:find("Sec%-WebSocket%-Protocol: chat") ~= nil, "handshake has Sec-WebSocket-Protocol")
         utils.ud_free(pack)
         utils.ud_free(hsctx)
+        -- host / uri / secprot 按 C 串组包，内含 \0 会截成另一个值发出去
+        t:eq(false, pcall(websock.pack_handshake, "a.com\0evil", nil, nil), "handshake host 内含 \\0 报错")
+        t:eq(false, pcall(websock.pack_handshake, nil, "/p\0q", nil), "handshake uri 内含 \\0 报错")
+        t:eq(false, pcall(websock.pack_handshake, nil, nil, "chat\0x"), "handshake secprot 内含 \\0 报错")
     end
     do
         -- secprots：nil/非 lightuserdata 安全返回 nil（真实协商结果由 C 集成测试覆盖）
@@ -605,6 +621,7 @@ runner.run(function(t)
                 "smtp.new 正好 63 字节仍合法")
         t:eq(nil, smtp.new("127.0.0.1", 25, nil, "user", string.rep("y", 64)),
              "smtp.new 64 字节即超限(缓冲 64 含结尾 NUL)")
+        t:eq(false, pcall(smtp.new, "127.0.0.1\0x", 25, nil, "user", "psw"), "smtp.new ip 内含 \\0 报错")
         -- 正常地址
         local pack, size = s:pack_from("alice@example.com")
         t:check(pack ~= nil and size > 0, "smtp pack_from")
@@ -652,6 +669,9 @@ runner.run(function(t)
         t:eq(true, pcall(rm.reply, rm, 1), "mail:reply(1) 请求回执")
         -- 契约是"非 0 即真"而不是只收 0/1，别顺手收紧成 lpub_opt_flag
         t:eq(true, pcall(rm.reply, rm, 2), "mail:reply 非 0 值一律当请求回执")
+        -- 按 C 串交给下游的参数内含 \0 要报错：静默截断会把邮件发给另一个收件人、带上半截主题
+        t:eq(false, pcall(rm.subject, rm, "a\0b"), "mail:subject 内含 \\0 报错")
+        t:eq(false, pcall(rm.addrs_add, rm, "x@example.com\0y", 1), "mail:addrs_add 地址内含 \\0 报错")
 
         local m = mail.new()
         m:from("Srey", "srey@example.com")
@@ -695,6 +715,22 @@ runner.run(function(t)
         -- RFC 5322 §3.4 的 name-addr 形式
         t:check(txt:find("From: Srey <srey@example.com>", 1, true) ~= nil, "From 用 display-name <addr>")
         utils.ud_free(pack)
+    end
+
+    -- ── mail:attach_add 的返回值 ───────────────────────────────────────
+    -- 读不到的路径、目录返回 false；0 字节文件按空附件加入，返回 true
+    do
+        local m = mail.new()
+        t:eq(false, m:attach_add(_propath .. _pathsep .. "unit_proto_no_such_file.txt"), "attach_add 不存在的路径返回 false")
+        t:eq(false, m:attach_add(_propath), "attach_add 目录返回 false")
+        local empty = _propath .. _pathsep .. "unit_proto_mail_empty.txt"
+        local f = io.open(empty, "wb")
+        if t:check(nil ~= f, "建 0 字节临时文件") then
+            f:close()
+            t:eq(true, m:attach_add(empty), "attach_add 0 字节文件返回 true")
+            os.remove(empty)
+        end
+        m:__gc()
     end
 
     -- ── mail 释放后再调用 ─────────────────────────────────────────────

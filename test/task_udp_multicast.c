@@ -25,7 +25,8 @@ static void _startup(task_ctx *task) {
     ATOMIC_SET(&_recv_count, 0);
     task_recvedfrom(task, _net_recvfrom);
     sock_ctx sk;
-    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", arg->port, &sk)) {
+    // 多播接收端按需打开端口复用
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", arg->port, 1, &sk)) {
         LOG_ERROR("udp_multicast: task_udp failed.");
         return;
     }
@@ -77,7 +78,7 @@ static void _startup(task_ctx *task) {
         return;
     }
     coro_sleep(task, 50);
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("udp_multicast tested: 4 API paths OK + recvfrom path verified.");
 }
 

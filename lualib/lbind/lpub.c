@@ -12,6 +12,8 @@
 static const char _sk_cache_key = 0;
 // 注册表里那张 名字→句柄 缓存表的键(只取地址用)。一个 lua_State 一张,只记查到了的名字
 static const char _tname_cache_key = 0;
+// 注册表里当前 task 指针的键(只取地址用)
+static char _cur_task_key;// 可写变量：只读的同值常量可能被链接器合并成同一地址，键就撞了
 
 void lpub_new_mtable(lua_State *lua, const char *name) {
     luaL_newmetatable(lua, name);
@@ -26,9 +28,8 @@ int32_t lpub_get_mtable(lua_State *lua, const char *name) {
     return luaL_getmetatable(lua, name);
 }
 int32_t lpub_is_mtable(lua_State *lua, const char *name) {
-    int32_t same;
     lpub_get_mtable(lua, name);
-    same = lua_rawequal(lua, -1, -2);
+    int32_t same = lua_rawequal(lua, -1, -2);
     lua_pop(lua, 1);
     return same;
 }
@@ -51,6 +52,17 @@ void *lpub_check_udata(lua_State *lua, int32_t idx, const char *name) {
         luaL_typeerror(lua, idx, name);
     }
     return p;
+}
+void lpub_set_cur_task(lua_State *lua, task_ctx *task) {
+    lua_pushlightuserdata(lua, task);
+    lua_pushvalue(lua, -1);
+    lua_rawsetp(lua, LUA_REGISTRYINDEX, &_cur_task_key);
+    lua_setglobal(lua, CUR_TASK_NAME);
+}
+task_ctx *lpub_cur_task(lua_State *lua) {
+    task_ctx *task = LUA_TLIGHTUSERDATA == lua_rawgetp(lua, LUA_REGISTRYINDEX, &_cur_task_key) ? lua_touserdata(lua, -1) : NULL;
+    lua_pop(lua, 1);
+    return task;
 }
 // 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
 void *global_userdata(lua_State *lua, const char *name) {
@@ -86,7 +98,7 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 }
 size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max) {
     lua_Integer lens = luaL_checkinteger(lua, idx);
-    luaL_argcheck(lua, lens >= 0 && (0 == max || (size_t)lens <= max), idx, LENS_RANGE);
+    luaL_argcheck(lua, lens >= 0 && (uint64_t)lens <= (0 == max ? SIZE_MAX : max), idx, LENS_RANGE);
     return (size_t)lens;
 }
 int64_t lpub_check_range(lua_State *lua, int32_t idx, int64_t lo, int64_t hi, const char *what) {
@@ -151,6 +163,15 @@ int64_t lpub_check_index0(lua_State *lua, int32_t idx, uint64_t count) {
         return -1;
     }
     return (int64_t)(i - 1);
+}
+const char *lpub_check_cstr_lens(lua_State *lua, int32_t idx, size_t *lens) {
+    const char *s = luaL_checklstring(lua, idx, lens);
+    luaL_argcheck(lua, strlen(s) == *lens, idx, "string contains embedded zero");
+    return s;
+}
+const char *lpub_check_cstr(lua_State *lua, int32_t idx) {
+    size_t lens;
+    return lpub_check_cstr_lens(lua, idx, &lens);
 }
 // 不写 default：新增 pack_type 时 -Wswitch 报在这里，逼着表态它能不能从 Lua 传进来。
 // 只管本函数这一件事；协议分派表 prots.c 的 _vtbls 没有编译期提醒，漏加的按 PACK_NONE，要另去补
@@ -296,18 +317,23 @@ static void _tname_cache_fix(lua_State *lua, int32_t idx, name_t handle) {
     }
     lua_pop(lua, 1);
 }
+// 按栈位 idx 上的名字(须是 string)查句柄。内含 '\0' 当查不到：按 C 串查会截成前半段、命中另一个 task
+static name_t _tname_find(lua_State *lua, int32_t idx) {
+    size_t lens;
+    const char *name = lua_tolstring(lua, idx, &lens);
+    return strlen(name) == lens ? task_find_name(g_loader, name) : INVALID_TNAME;
+}
 // cache 非 0 时把查到的名字记进缓存
 static name_t _lpub_task_handle(lua_State *lua, int32_t idx, int32_t cache) {
-    name_t handle;
     if (LUA_TSTRING != lua_type(lua, idx)) {
         return (name_t)luaL_checkinteger(lua, idx);
     }
     idx = lua_absindex(lua, idx);
-    handle = _tname_cache_get(lua, idx);
+    name_t handle = _tname_cache_get(lua, idx);
     if (INVALID_TNAME != handle) {
         return handle;
     }
-    handle = task_find_name(g_loader, lua_tostring(lua, idx));
+    handle = _tname_find(lua, idx);
     if (0 != cache
         && INVALID_TNAME != handle) {
         _tname_cache_set(lua, idx, handle);
@@ -318,15 +344,14 @@ name_t lpub_task_handle(lua_State *lua, int32_t idx) {
     return _lpub_task_handle(lua, idx, 1);
 }
 int32_t lpub_task_handles(lua_State *lua, int32_t idx, int32_t n, name_t *hs) {
-    int32_t i;
-    int32_t top;
     int32_t cidx = 0;// 名字缓存表的栈位,0 表示还没建
-    name_t handle;
     idx = lua_absindex(lua, idx);
     if (LUA_TTABLE == lua_rawgetp(lua, LUA_REGISTRYINDEX, &_tname_cache_key)) {
         cidx = lua_gettop(lua);
     }
-    for (i = 0; i < n; i++) {
+    int32_t top;
+    name_t handle;
+    for (int32_t i = 0; i < n; i++) {
         switch (lua_rawgeti(lua, idx, i + 1)) {
         case LUA_TNIL:
             hs[i] = INVALID_TNAME;
@@ -343,7 +368,7 @@ int32_t lpub_task_handles(lua_State *lua, int32_t idx, int32_t n, name_t *hs) {
                 lua_pop(lua, 1);
             }
             if (INVALID_TNAME == handle) {
-                handle = task_find_name(g_loader, lua_tostring(lua, top));
+                handle = _tname_find(lua, top);
                 if (INVALID_TNAME != handle) {
                     _tname_cache_set(lua, top, handle);
                 }
@@ -367,7 +392,6 @@ name_t lpub_task_peek(lua_State *lua, int32_t idx) {
     return _lpub_task_handle(lua, idx, 0);
 }
 name_t lpub_task_refresh(lua_State *lua, int32_t idx, name_t handle) {
-    name_t fresh;
     // 缓存只存查到的句柄，无效值说明刚按名字查过就没有，不必再当过期重查
     if (INVALID_TNAME == handle
         || LUA_TSTRING != lua_type(lua, idx)) {
@@ -375,16 +399,15 @@ name_t lpub_task_refresh(lua_State *lua, int32_t idx, name_t handle) {
     }
     // 缓存的句柄可能已过期(同名 task 退出后又注册了新的),按名字重查一次
     idx = lua_absindex(lua, idx);
-    fresh = task_find_name(g_loader, lua_tostring(lua, idx));
+    name_t fresh = _tname_find(lua, idx);
     _tname_cache_fix(lua, idx, fresh);
     return fresh == handle ? INVALID_TNAME : fresh;
 }
 task_ctx *lpub_task_grab(lua_State *lua, int32_t idx, name_t handle) {
-    task_ctx *task;
     if (INVALID_TNAME == handle) {
         return NULL;// 理由同 lpub_task_refresh 开头那句
     }
-    task = task_grab(g_loader, handle);
+    task_ctx *task = task_grab(g_loader, handle);
     if (NULL != task) {
         return task;
     }
@@ -614,19 +637,17 @@ void lpub_push_sock_mt(lua_State *lua) {
 }
 // 判据同 lpub_test_udata，只是元表已在栈上
 int32_t lpub_is_sock_mt(lua_State *lua, int32_t idx, int32_t mtidx) {
-    int32_t same;
     if (NULL == lua_touserdata(lua, idx)
         || !lua_getmetatable(lua, idx)) {
         return 0;
     }
-    same = lua_rawequal(lua, -1, mtidx);
+    int32_t same = lua_rawequal(lua, -1, mtidx);
     lua_pop(lua, 1);
     return same;
 }
 const char *lpub_int_str(char *buf, size_t buflen, lua_Integer i, size_t *lens) {
-    size_t n;
     ASSERTAB(buflen >= 21, ERRSTR_INVPARAM);
-    n = i64tostr(buf, (int64_t)i, 10);
+    size_t n = i64tostr(buf, (int64_t)i, 10);
     SET_PTR(lens, n);
     return buf;
 }

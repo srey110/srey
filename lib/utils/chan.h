@@ -31,6 +31,7 @@ void chan_close(chan_ctx *chan);
 /// 是否关闭
 /// </summary>
 /// <param name="chan">chan_ctx</param>
+/// <returns>非 0 已关闭，0 未关闭</returns>
 int32_t chan_is_closed(chan_ctx *chan);
 /// <summary>
 /// 发送
@@ -39,7 +40,7 @@ int32_t chan_is_closed(chan_ctx *chan);
 /// <param name="data">数据</param>
 /// <param name="lens">data长度</param>
 /// <param name="copy">非 0 时内部拷贝一份, data 仍由调用方释放;
-/// 0 转移 data 所有权, 但只在成功时转移, 失败时 data 仍归调用方</param>
+/// 0 转移 data 所有权, 但只在成功时转移, 失败时 data 仍归调用方; 此时 data 不得为 NULL(NULL 是 chan_recv 的"无数据"返回值)</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy);
 /// <summary>
@@ -48,8 +49,8 @@ int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy);
 /// <param name="chan">chan_ctx</param>
 /// <param name="lens">接收到的数据长度</param>
 /// <returns>NULL 无数据或失败。关闭后两种模式口径不同：buffered 会把队列排空再返 NULL；
-/// 非缓存是 rendezvous，只有关闭时已有接收者在等，发送方已发布的那条才会交付，
-/// 否则发送方放弃(返 ERR_FAILED)，此后 recv 直接返 NULL</returns>
+/// 非缓存是 rendezvous，关闭时发送方已发布的那条，在发送方放弃之前被任一接收方取走就照常交付
+/// (发送方返 ERR_OK)，否则发送方返 ERR_FAILED、data 仍归它，此后 recv 直接返 NULL</returns>
 void *chan_recv(chan_ctx *chan, size_t *lens);
 /// <summary>
 /// 数据数量
@@ -58,16 +59,16 @@ void *chan_recv(chan_ctx *chan, size_t *lens);
 /// <returns>数据数量</returns>
 uint32_t chan_size(chan_ctx *chan);
 /// <summary>
-/// 是否可以接收
+/// 是否可以接收。结果只是此刻的快照，返回后随时会变，不保证随后的 chan_recv 不阻塞
 /// </summary>
 /// <param name="chan">chan_ctx</param>
-/// <returns></returns>
+/// <returns>非 0 可收：缓存模式下队列非空，非缓存模式下有发送方在等；否则 0</returns>
 int32_t chan_can_recv(chan_ctx *chan);
 /// <summary>
-/// 是否可以发送
+/// 是否可以发送。结果只是此刻的快照，返回后随时会变，不保证随后的 chan_send 不阻塞
 /// </summary>
 /// <param name="chan">chan_ctx</param>
-/// <returns></returns>
+/// <returns>非 0 可发：缓存模式下队列未满，非缓存模式下有接收方在等；否则 0</returns>
 int32_t chan_can_send(chan_ctx *chan);
 
 #endif//CHAN_H_

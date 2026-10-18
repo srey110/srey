@@ -1,10 +1,6 @@
 ﻿#include "crypt/aes.h"
 #include "crypt/padding.h"
 
-// 轮函数是否完全展开：1 展开(快、代码大)，0 用循环(小、慢)，可由构建侧 -DFULL_UNROLL=0 覆盖
-#ifndef FULL_UNROLL
-#define FULL_UNROLL 1
-#endif
 #define KEYLENGTH(keybits) ((keybits) / 8) // 将密钥位数转换为字节数
 
 // AES 加密正向查找表 te0~te3（SubBytes + ShiftRows + MixColumns 组合）
@@ -710,8 +706,8 @@ static int32_t _aes_key_setup_encrypt(const uint8_t *key, int32_t keybits, uint3
 // 解密密钥扩展，基于加密调度表逆序并应用 InvMixColumns，返回轮数
 static int32_t _aes_key_setup_decrypt(const uint8_t *key, int32_t keybits, uint32_t *rk) {
     uint32_t temp;
-    int32_t nrounds, i, j;
-    nrounds = _aes_key_setup_encrypt(key, keybits, rk);
+    int32_t nrounds = _aes_key_setup_encrypt(key, keybits, rk);
+    int32_t i, j;
     for (i = 0, j = 4 * nrounds; i < j; i += 4, j -= 4) {
         temp = rk[i]; rk[i] = rk[j]; rk[j] = temp;
         temp = rk[i + 1]; rk[i + 1] = rk[j + 1]; rk[j + 1] = temp;
@@ -742,14 +738,10 @@ static int32_t _aes_key_setup_decrypt(const uint8_t *key, int32_t keybits, uint3
 // AES 核心加密，将 16 字节明文加密为密文
 static void _aes_encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *plaintext, uint8_t ciphertext[16]) {
     uint32_t s0, s1, s2, s3, t0, t1, t2, t3;
-#if !FULL_UNROLL
-    int32_t r;
-#endif
     s0 = read_be32(plaintext) ^ rk[0];
     s1 = read_be32(plaintext + 4) ^ rk[1];
     s2 = read_be32(plaintext + 8) ^ rk[2];
     s3 = read_be32(plaintext + 12) ^ rk[3];
-#if FULL_UNROLL
     // 第 1 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[4];
     t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[5];
@@ -820,55 +812,6 @@ static void _aes_encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *pla
         }
     }
     rk += nrounds << 2;
-#else
-    r = nrounds >> 1;
-    for (;;) {
-        t0 = te0[(s0 >> 24)] ^
-            te1[(s1 >> 16) & 0xff] ^
-            te2[(s2 >> 8) & 0xff] ^
-            te3[(s3) & 0xff] ^
-            rk[4];
-        t1 = te0[(s1 >> 24)] ^
-            te1[(s2 >> 16) & 0xff] ^
-            te2[(s3 >> 8) & 0xff] ^
-            te3[(s0) & 0xff] ^
-            rk[5];
-        t2 = te0[(s2 >> 24)] ^
-            te1[(s3 >> 16) & 0xff] ^
-            te2[(s0 >> 8) & 0xff] ^
-            te3[(s1) & 0xff] ^
-            rk[6];
-        t3 = te0[(s3 >> 24)] ^
-            te1[(s0 >> 16) & 0xff] ^
-            te2[(s1 >> 8) & 0xff] ^
-            te3[(s2) & 0xff] ^
-            rk[7];
-        rk += 8;
-        if (0 == --r) {
-            break;
-        }
-        s0 = te0[(t0 >> 24)] ^
-            te1[(t1 >> 16) & 0xff] ^
-            te2[(t2 >> 8) & 0xff] ^
-            te3[(t3) & 0xff] ^
-            rk[0];
-        s1 = te0[(t1 >> 24)] ^
-            te1[(t2 >> 16) & 0xff] ^
-            te2[(t3 >> 8) & 0xff] ^
-            te3[(t0) & 0xff] ^
-            rk[1];
-        s2 = te0[(t2 >> 24)] ^
-            te1[(t3 >> 16) & 0xff] ^
-            te2[(t0 >> 8) & 0xff] ^
-            te3[(t1) & 0xff] ^
-            rk[2];
-        s3 = te0[(t3 >> 24)] ^
-            te1[(t0 >> 16) & 0xff] ^
-            te2[(t1 >> 8) & 0xff] ^
-            te3[(t2) & 0xff] ^
-            rk[3];
-    }
-#endif
     s0 = (te4[(t0 >> 24)] & 0xff000000) ^
         (te4[(t1 >> 16) & 0xff] & 0x00ff0000) ^
         (te4[(t2 >> 8) & 0xff] & 0x0000ff00) ^
@@ -897,14 +840,10 @@ static void _aes_encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *pla
 // AES 核心解密，将 16 字节密文解密为明文
 static void _aes_decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphertext, uint8_t plaintext[16]) {
     uint32_t s0, s1, s2, s3, t0, t1, t2, t3;
-#if !FULL_UNROLL
-    int32_t r;
-#endif
     s0 = read_be32(ciphertext) ^ rk[0];
     s1 = read_be32(ciphertext + 4) ^ rk[1];
     s2 = read_be32(ciphertext + 8) ^ rk[2];
     s3 = read_be32(ciphertext + 12) ^ rk[3];
-#if FULL_UNROLL
     // 第 1 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[4];
     t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[5];
@@ -975,55 +914,6 @@ static void _aes_decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *cip
         }
     }
     rk += nrounds << 2;
-#else
-    r = nrounds >> 1;
-    for (;;) {
-        t0 = td0[(s0 >> 24)] ^
-            td1[(s3 >> 16) & 0xff] ^
-            td2[(s2 >> 8) & 0xff] ^
-            td3[(s1) & 0xff] ^
-            rk[4];
-        t1 = td0[(s1 >> 24)] ^
-            td1[(s0 >> 16) & 0xff] ^
-            td2[(s3 >> 8) & 0xff] ^
-            td3[(s2) & 0xff] ^
-            rk[5];
-        t2 = td0[(s2 >> 24)] ^
-            td1[(s1 >> 16) & 0xff] ^
-            td2[(s0 >> 8) & 0xff] ^
-            td3[(s3) & 0xff] ^
-            rk[6];
-        t3 = td0[(s3 >> 24)] ^
-            td1[(s2 >> 16) & 0xff] ^
-            td2[(s1 >> 8) & 0xff] ^
-            td3[(s0) & 0xff] ^
-            rk[7];
-        rk += 8;
-        if (0 == --r) {
-            break;
-        }
-        s0 = td0[(t0 >> 24)] ^
-            td1[(t3 >> 16) & 0xff] ^
-            td2[(t2 >> 8) & 0xff] ^
-            td3[(t1) & 0xff] ^
-            rk[0];
-        s1 = td0[(t1 >> 24)] ^
-            td1[(t0 >> 16) & 0xff] ^
-            td2[(t3 >> 8) & 0xff] ^
-            td3[(t2) & 0xff] ^
-            rk[1];
-        s2 = td0[(t2 >> 24)] ^
-            td1[(t1 >> 16) & 0xff] ^
-            td2[(t0 >> 8) & 0xff] ^
-            td3[(t3) & 0xff] ^
-            rk[2];
-        s3 = td0[(t3 >> 24)] ^
-            td1[(t2 >> 16) & 0xff] ^
-            td2[(t1 >> 8) & 0xff] ^
-            td3[(t0) & 0xff] ^
-            rk[3];
-    }
-#endif
     s0 = ((uint32_t)td4[(t0 >> 24)] << 24) ^
         ((uint32_t)td4[(t3 >> 16) & 0xff] << 16) ^
         ((uint32_t)td4[(t2 >> 8) & 0xff] << 8) ^
@@ -1050,22 +940,9 @@ static void _aes_decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *cip
     write_be32(plaintext + 12, s3);
 }
 void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int32_t encrypt) {
-    uint8_t *k;
+    ASSERTAB(128 == keybits || 192 == keybits || 256 == keybits, "key bits error.");
     uint8_t pdkey[KEYLENGTH(256)];
-    switch (keybits) {
-    case 128:
-        k = _padding_key(key, klens, pdkey, KEYLENGTH(128));
-        break;
-    case 192:
-        k = _padding_key(key, klens, pdkey, KEYLENGTH(192));
-        break;
-    case 256:
-        k = _padding_key(key, klens, pdkey, KEYLENGTH(256));
-        break;
-    default:
-        ASSERTAB(0, "key bits error.");
-        break;
-    }
+    uint8_t *k = _padding_key(key, klens, pdkey, KEYLENGTH(keybits));
     aes->encrypt = encrypt;
     if (aes->encrypt) {
         aes->nrounds = _aes_key_setup_encrypt(k, keybits, aes->schedule);

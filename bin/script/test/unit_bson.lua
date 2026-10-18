@@ -22,11 +22,12 @@ runner.run(function(t)
         local full = bson.encode({ a = 1, b = "xyz", c = true })
         local ptr, sz = full:data()
         local raw = srey.ud_str(ptr, sz)
-        -- 头 4 字节仍声明 sz，缓冲却少 3 字节：遍历会在耗尽前撞不到 EOD
+        -- 头 4 字节仍声明 sz，缓冲却少 3 字节：bson_iter_init 发现头长超出缓冲直接判坏，根本不进遍历
+        -- （测到的是头长校验，"遍历到缓冲尽头仍未见 EOD"那条路这里没有覆盖）
         local cut = raw:sub(1, sz - 3)
         local ok, err = pcall(bson.decode, cut)
         t:eq(false, ok, "截断文档 decode 报错而不是返回半截表")
-        -- 两类失败共用 lbson.c:946 的同一条文案，Lua 侧分不出来（分辨靠那条
+        -- 两类失败共用 _lbson_decode_document 末尾同一条文案，Lua 侧分不出来（分辨靠那条
         -- "unsupported bson type" 的 LOG_WARN）。这里只钉"抛的是解码失败"这件事
         t:check(type(err) == "string" and nil ~= err:find("bson decode failed", 1, true),
                 "截断文档抛的是 bson decode failed")
@@ -84,6 +85,11 @@ runner.run(function(t)
 
         -- NULL lightuserdata：bson.new 会造出永远闭合不了的对象，oid 会写出无 OID 体的元素
         t:eq(false, pcall(bson.new, yyjson.null, 1024), "bson.new: NULL 指针被拒")
+        -- 既非 nil 也非 lightuserdata：原先静默丢掉入参、建一个空的可写文档
+        t:eq(false, (pcall(bson.new, sraw)), "bson.new: 原始 BSON 串被拒，不静默建空文档")
+        t:eq(false, (pcall(bson.new, 42)), "bson.new: 数字被拒")
+        t:eq("_bson_ctx", getmetatable(bson.new(nil)), "bson.new(nil) 同省略，建可写对象")
+        t:eq("_bson_ctx", getmetatable(bson.new()), "bson.new() 无参建可写对象")
         local ob = bson.new()
         t:eq(false, pcall(ob.oid, ob, "k", yyjson.null), "b:oid: NULL 指针被拒")
         -- binary/cat/mkbinary 走 lpub_check_buf：长度非 0 时拒收空指针（否则 binary 会写出
@@ -235,6 +241,18 @@ runner.run(function(t)
 
         iter = bson.iter.new(b3)
         t:eq(false, iter:find("missing"), "iter find missing returns false")
+
+        -- 路径按 C 串交给 bson_iter_find：内含 NUL 会被截成 "name" 命中另一个键，必须报错
+        iter = bson.iter.new(b3)
+        t:eq(false, (pcall(iter.find, iter, "name\0x")), "iter find 路径含 NUL 报错")
+
+        -- 命中后收窄到所在那一层：点分 find 之后再找根级键找不到；未命中时迭代器原位不动
+        local b4 = bson.encode({ top = 1, sub = { x = 7 } })
+        local it4 = bson.iter.new(b4)
+        t:eq(true, it4:find("sub.x"), "点分 find 命中")
+        t:eq(7, it4:int32(), "点分 find 停在 sub.x")
+        t:eq(false, it4:find("top"), "收窄到 sub 之后找不到根级键")
+        t:eq(7, it4:int32(), "未命中时迭代器原位不动")
     end
 
     -- 13. 低阶 builder：double / utf8 / int32 / int64 / bool / null / date / minkey / maxkey
@@ -438,7 +456,7 @@ runner.run(function(t)
 
     -- 19a. 解码深度超 BSON_MAX_DEPTH(18) 要报错而不是交出空表：
     -- 空表让调用方分不清"这个子文档本来就是空的"和"从这层起全丢了"，
-    -- 与同函数畸形文档路径同处置。encode 侧撞 ASSERTAB 造不出这种输入，只能手拼 wire
+    -- 与同函数畸形文档路径同处置。encode 连同顶层最多 18 层，造不出这种输入，只能手拼 wire
     do
         -- 一篇 BSON = int32 总长 + 元素 + 0x00；一层嵌套的元素是 0x03 + "a\0" + 子文档
         local function nest(n)
@@ -454,14 +472,50 @@ runner.run(function(t)
         local ok, tb = pcall(bson.decode, shallow, #shallow)
         t:eq(true, ok, "手拼的 3 层文档解得开(证明 wire 拼法没错)")
         t:check(ok and "table" == type(tb.a) and "table" == type(tb.a.a), "3 层嵌套结构正确")
-        -- 上限本身是 18（与 JSON 同口径）：贴边各钉一条，改成 12 或 25 都会被抓到。
-        -- 只测 3/25 的话上限挪到任何一个中间值都发现不了
-        local at = nest(18)
-        t:eq(true, pcall(bson.decode, at, #at), "恰好 18 层放行")
-        local over = nest(19)
-        t:eq(false, pcall(bson.decode, over, #over), "19 层被拒")
+        -- decode 连同顶层计：nest(17) 是顶层之下 17 层（共 18 层，与 JSON、bson.encode 同口径）。
+        -- 贴边各钉一条，改成 12 或 25 都会被抓到；只测 3/25 的话上限挪到任何一个中间值都发现不了
+        local at = nest(17)
+        t:eq(true, pcall(bson.decode, at, #at), "共 18 层放行")
+        local over = nest(18)
+        t:eq(false, pcall(bson.decode, over, #over), "共 19 层被拒")
         local deep = nest(25)
         t:eq(false, pcall(bson.decode, deep, #deep), "25 层嵌套被拒而不是静默返空表")
+        -- 读写同一个界：decode 收下的文档原样 encode 回去不超写侧上限
+        t:eq(true, (pcall(bson.encode, bson.decode(at, #at))), "decode 收下的 18 层文档能 encode 回去")
+    end
+
+    -- 19b. encode 与手工 builder 的嵌套上限：连同顶层最多 BSON_MAX_DEPTH(18) 层，超了报错
+    -- （原先 encode 与 doc_begin / arr_begin 都直接撞写侧断言，整个进程 abort）
+    do
+        local function tnest(n)-- 顶层 + n 层嵌套
+            local root = {}
+            local cur = root
+            for _ = 1, n do
+                cur.a = {}
+                cur = cur.a
+            end
+            return root
+        end
+        t:eq(true, (pcall(bson.encode, tnest(17))), "encode 顶层 + 17 层(共 18 层)放行")
+        local ok, err = pcall(bson.encode, tnest(18))
+        t:eq(false, ok, "encode 顶层 + 18 层报错")
+        t:check(type(err) == "string" and nil ~= err:find("nesting", 1, true), "报错点明嵌套过深")
+        t:eq(false, (pcall(bson.encode, { tnest(17) })), "外面再包一层数组同样按总层数算")
+        local cyc = {}
+        cyc.self = cyc
+        t:eq(false, (pcall(bson.encode, cyc)), "encode 循环引用报错")
+
+        local bb = bson.new()
+        for i = 1, 17 do
+            bb:doc_begin("d" .. i)
+        end
+        t:eq(false, (pcall(bb.doc_begin, bb, "x")), "builder 第 18 次 doc_begin 被拒")
+        t:eq(false, (pcall(bb.arr_begin, bb, "x")), "builder 第 18 次 arr_begin 被拒")
+        for _ = 1, 18 do
+            bb["end"](bb)
+        end
+        t:eq(true, bb:complete(), "嵌套到上限再逐层 end 后闭合")
+        t:eq("table", type(bson.decode(bb).d1), "被拒的 begin 没写进文档，照常 decode")
     end
 
     -- 20a. regex 的 pattern / options 是 BSON cstring，内嵌 NUL 只能拒不能截
@@ -713,27 +767,34 @@ runner.run(function(t)
         t:eq(false, pcall(function() bson.new():append_arr("r", 42) end),   "append_arr 类型错被拒")
     end
 
-    -- 29. 建 iter 后往源对象写入撑破容量：REALLOC 搬走缓冲，iter 的 key/val 裸指针集体悬垂。
-    --     iter.new 已把 doc.offset 重置为 0，所以写入从头开始，得写够超出容量才会触发扩容
+    -- 29a. 根文档已闭合(bson.encode 的结果、顶层 end() 之后)不得再写：字段会落在 EOD 之后，
+    --      头声明长度与缓冲对不上，decode 读到 EOD 即止、新字段静默丢失
     do
         local b = bson.encode({ a = 1 })
-        local before = b:data()
+        local ok, err = pcall(function() b:int32("limit", 10) end)
+        t:eq(false, ok, "encode 结果上 :int32 被拒")
+        t:check(type(err) == "string" and nil ~= err:find("closed", 1, true), "错误信息点明已闭合")
+        t:eq(false, (pcall(function() b:doc_begin("d") end)), "encode 结果上 :doc_begin 被拒")
+        t:eq(false, (pcall(function() b:cat("\5\0\0\0\0") end)), "encode 结果上 :cat 被拒")
+        t:eq(false, (pcall(function() b["end"](b) end)), "encode 结果上多调 end 被拒而不是 abort")
+        t:eq(true, b:complete(), "被拒的写入不影响闭合状态")
+        t:eq(1, bson.decode(b).a, "被拒的写入之后原文档照常 decode")
+
+        local n = bson.new()
+        n:int32("x", 1)
+        n["end"](n)
+        t:eq(false, (pcall(function() n:utf8("y", "z") end)), "顶层 end 后 :utf8 被拒")
+        t:eq(false, (pcall(function() n["end"](n) end)), "顶层 end 后再调 end 被拒")
+        t:eq(1, bson.decode(n).x, "顶层 end 后原文档完好")
+
+        -- 建 iter 要求已闭合，写入要求未闭合：iter 存续期间源缓冲不会被写入搬走
         local it = bson.iter.new(b)
-        t:eq(true, it:next(), "搬移前 iter 正常")
-        b:utf8("z", string.rep("x", 1 << 20))
-        local after = b:data()
-        if after ~= before then
-            local ok, err = pcall(function() return it:next() end)
-            t:eq(false, ok, "缓冲被搬走后 iter 拒绝访问")
-            t:check(type(err) == "string" and nil ~= err:find("realloc"), "错误信息点明缓冲被搬移")
-            t:eq(false, pcall(function() return it:key() end), "取 key 同样被拒")
-        else
-            -- REALLOC 原地扩容返回同一地址：内存没被释放，不构成 UAF，本轮无从验证
-            t:check(true, "本次扩容未搬移地址，跳过")
-        end
+        t:eq(true, it:next(), "建 iter 后照常遍历")
+        t:eq(false, (pcall(function() b:utf8("z", string.rep("x", 1 << 20)) end)), "建 iter 后往源对象写被拒")
+        t:eq("a", it:key(), "写入被拒后 iter 照常可读")
     end
 
-    -- 29. :free() 之后的写入方法必须报错。binary_free 只清 data/size/offset 却留着 inc，
+    -- 29b. :free() 之后的写入方法必须报错。binary_free 只清 data/size/offset 却留着 inc，
     --     所以下一次写入照样能扩容出一块新缓冲、一声不吭地写进去；而这块新缓冲从没经过
     --     bson.new() 那次 append_start，缺开头 4 字节长度前缀与结尾 EOD，:data() 的两道
     --     守卫(非空 + depth==0)又恰好都能过 —— 交出去的是一份结构非法、原有字段也没了的文档，

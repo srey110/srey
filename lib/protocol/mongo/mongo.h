@@ -9,7 +9,7 @@
 void _mongo_init(void *hspush);
 // 释放 mgopack_ctx 及其 payload 缓冲区
 void _mongo_pkfree(void *pack);
-// 释放 ud_cxt 中挂载的 mongo_ctx 相关资源（scram/error），并重置 fd
+// 释放连接上挂的 scram、把 mongo->sk 标成已关、放手本连接持有的 mongo_ctx 引用
 void _mongo_udfree(ud_cxt *ud);
 /// <summary>
 /// 从缓冲区解析一个完整的 MongoDB OP_MSG 数据包；AUTH 状态下内部处理 SCRAM 认证流程
@@ -24,17 +24,19 @@ void _mongo_udfree(ud_cxt *ud);
 void *mongo_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
-/// mongo_ctx 初始化
+/// mongo_ctx 初始化。服务端最低 4.4：SCRAM 认证依赖 saslStart 的 skipEmptyExchange，更早的版本认证必败
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="ip">ip</param>
 /// <param name="port">端口</param>
 /// <param name="evssl">struct evssl_ctx</param>
 /// <param name="db">数据库；空串用 "admin"</param>
-/// <returns>ERR_OK 成功；ip 或 db 超 63 字节返 ERR_FAILED 并记 LOG_ERROR，此时不改动 mongo 任何字段</returns>
+/// <returns>ERR_OK 成功；ip 或 db 超 63 字节返 ERR_FAILED 并记 LOG_ERROR，此时 mongo 已被清零、
+/// 可能填了部分字段，按 init 失败丢弃，不得继续用</returns>
 int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db);
 /// <summary>
-/// 设置当前数据库
+/// 设置当前数据库。成功时顺带清空当前集合名，切库后须重新 mongo_collection，
+/// 否则后续命令组出空集合名、服务端按非法命名空间拒收
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="db">数据库</param>
@@ -60,7 +62,8 @@ int32_t mongo_collection(mongo_ctx *mongo, const char *collection);
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="user">用户名</param>
-/// <param name="pwd">密码</param>
+/// <param name="pwd">密码，SCRAM-SHA-256 下按原样参与认证、不做 SASLprep：含需 NFKC 规范化字符的
+/// 非 ASCII 密码须由调用方先规范化，否则与服务端存的凭据对不上、认证失败</param>
 /// <returns>ERR_OK 成功；任一超 63 字节返 ERR_FAILED 并记 LOG_ERROR，两个字段都不改动</returns>
 int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd);
 /// <summary>
@@ -73,13 +76,13 @@ int32_t mongo_authmod(mongo_ctx *mongo, const char *authmod);
 /// <summary>
 /// 获取当前命令requestid
 /// </summary>
-/// <param name="mgpack">mgopack_ctx</param>
+/// <param name="mongo">mongo_ctx</param>
 /// <returns>requestid</returns>
 int32_t mongo_requestid(mongo_ctx *mongo);
 /// <summary>
 /// 置上消息标志位（目前仅实现 MORETOCOME，其余位收下即丢弃）。
 /// 置上就一直有效直到 mongo_clear_flag——不是只管下一条：此后每条写命令都只发不等，
-/// 服务端的失败(重复键、校验不过)没有响应可解析，一律报成功；读命令内部临时清掉再恢复。
+/// 服务端的失败(重复键、校验不过)没有响应可解析，一律报成功；要等回包的命令组包时恒不带（见 mongo_pack.h 文件头）。
 /// 标志挂在连接上，多协程共用时别人的写也跟着变 fire-and-forget，批量写完及时清掉
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
@@ -120,20 +123,20 @@ void mongo_session_touch(mongo_ctx *mongo);
 /// <returns>剩余秒数；已过期返回 0 或负数；服务端未给出超时分钟数时恒返回 0（按需刷新处理）</returns>
 int64_t mongo_session_expires(mongo_session *session);
 /// <summary>
-/// 强制清空当前挂载的事务会话指针（不释放 session 对象本身）；重连后调用，避免跨代残留的
-/// lsid/txnNumber 被 TRANSACTION_OPTIONS 宏自动附加到后续普通命令
+/// 强制清空当前挂载的事务会话指针（不释放 session 对象本身）。清掉之后的写不再带事务上下文、
+/// 按自动提交执行；重连作废事务不靠它（见 mongo_begin），事务中途别调
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 void mongo_clear_session(mongo_ctx *mongo);
 /// <summary>
-/// AUTH 状态值，供外部设置 ud_cxt.status 以触发认证流程
+/// 把 mongo_pack_scram_client_first 新建的 scram 投到连接所在的网络线程装上，并把连接切到 AUTH 态。
+/// 必须在发 saslStart 包之前调：二者走同一条命令队列，保证先装后发。
+/// 到达时不是 mongo 连接、上下文已拆或上一轮认证还没收尾就不装，并关掉连接
 /// </summary>
-/// <returns>AUTH 状态枚举值</returns>
-int32_t mongo_status_auth(void);
-/// <summary>
-/// COMMAND 状态值，供外部在 AUTH 初始化失败时回滚 ud_cxt.status，避免连接卡在 AUTH 态
-/// </summary>
-/// <returns>COMMAND 状态枚举值</returns>
-int32_t mongo_status_command(void);
+/// <param name="ev">事件上下文</param>
+/// <param name="sk">mongo 连接标识</param>
+/// <param name="scram">所有权交给本函数，没装上（含连接已不在、事件循环拆除时命令还没执行）都由它释放</param>
+/// <returns>ERR_OK 命令已入队；sk 已失效返回 ERR_FAILED，scram 已释放</returns>
+int32_t mongo_auth_begin(ev_ctx *ev, sock_ctx *sk, struct scram_ctx *scram);
 
 #endif//MONGO_H_

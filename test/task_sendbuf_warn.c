@@ -23,8 +23,8 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     }
     ATOMIC_ADD(&g_recv_bytes, (atomic_t)size);
 }
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)task; (void)sk; (void)pktype; (void)erro;
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
+    (void)task; (void)sk; (void)pktype; (void)erro; (void)sess;
     if (client) {
         return;
     }
@@ -56,7 +56,7 @@ static void _startup(task_ctx *task) {
         }
         MALLOC(data, BYTES_PER_ROUND);
         memset(data, 'Y', BYTES_PER_ROUND);
-        // 单次 ev_send 即 _uev_add_write_inloop 把整块入队，wb_size += 4MB 必触告警
+        // 单次 ev_send 即 _uev_add_bufs_send 把整块入队，wb_size += 4MB 必触告警
         ev_send(&task->loader->netev, &sk, data, BYTES_PER_ROUND, 0);
     }
     // ev_close 只在关闭前冲一次，写不进内核的会被丢掉；要完整送达就得自己先等收齐再关
@@ -86,7 +86,7 @@ static void _startup(task_ctx *task) {
                   expect, received, closed);
         return;
     }
-    *(arg->ok) = 1;
+    ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("sendbuf_warn tested (%d rounds x %d KB = %d KB delivered).",
              ROUNDS, BYTES_PER_ROUND / 1024, expect / 1024);
 }

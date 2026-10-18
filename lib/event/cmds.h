@@ -64,8 +64,8 @@ void _on_cmd_lsn(struct watcher_ctx *watcher, cmd_ctx *cmd);
 void _cmd_unlisten(struct watcher_ctx *watcher, struct listener_ctx *lsn);
 // CMD_UNLSN命令处理：在事件循环内取消监听
 void _on_cmd_unlsn(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// 发送CMD_LSN_UNREF命令，让 worker 在 _uev_cmd_loop 内减 lsn 占位 ref
-// (ev_unlisten 末尾用, 让减占位在 worker 上下文走 qtn 隔离队列)
+// 发送CMD_LSN_UNREF命令，让事件线程在 _uev_cmd_loop 内减 lsn 占位 ref
+// (ev_unlisten 末尾用, 让减占位在事件线程上走 qtn 隔离队列)
 void _cmd_lsn_unref(struct watcher_ctx *watcher, struct listener_ctx *lsn);
 // CMD_LSN_UNREF命令处理：在事件循环内减 lsn 占位 ref (ev_unlisten 末尾发的减占位命令)
 void _on_cmd_lsn_unref(struct watcher_ctx *watcher, cmd_ctx *cmd);

@@ -4,11 +4,11 @@
 #include "lbind/lpub.h"
 #if ENABLE_LUA_BYTECACHE
 
-// mtime 失效开关:1 每次加载校验文件 mtime(开发期改脚本重启 task 自动失效);0 关闭(省一次 stat)
+// mtime 失效开关:1 每次加载校验文件 mtime 与长度(开发期改脚本重启 task 自动失效);0 关闭(省一次 stat)
 #define LBC_CHECK_MTIME 1
 
 /// <summary>
-/// 初始化进程级 Lua 字节码缓存;须在首个业务 task 加载脚本前调用一次。
+/// 初始化进程级 Lua 字节码缓存;须在 ltask_startup 之前调用一次。
 /// </summary>
 /// <param name="lck">rwlock_distr_ctx 分布式读写锁</param>
 void lbc_init(rwlock_distr_ctx *lck);
@@ -20,7 +20,7 @@ void lbc_free(void);
 /// 判断 file 是不是普通文件,顺手取缓存校验要用的 mtime;找文件时用它代替 isfile,加载时就不必再 stat 一次。
 /// </summary>
 /// <param name="file">文件路径</param>
-/// <param name="mt">出参:文件修改时间;LBC_CHECK_MTIME=0 时恒 0</param>
+/// <param name="mt">出参:文件版本戳(修改时间与长度拼成,只用来比相等);LBC_CHECK_MTIME=0 时恒 0</param>
 /// <returns>普通文件 ERR_OK,否则 ERR_FAILED(此时 mt 未写)</returns>
 int32_t lbc_stat(const char *file, uint64_t *mt);
 /// <summary>

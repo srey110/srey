@@ -1,8 +1,8 @@
--- lib.http 客户端 chunked 违约路径:生产者返回非 string 时,http.post 须先把对端必回的响应收掉再返回 nil。
--- 漏收则残留响应会被同一连接上的下一次请求错认——srey.lua 的 _wait_msg 按 skid 匹配,不区分是哪次请求。
+-- lib.http chunked 生产者违约(返回非 string):首块已发出后关连接、不补终止块。请求侧断言服务端收不到
+-- 末片(截断的上传不被当成完整请求)且连接被断；响应侧断言客户端拿不到截断的响应、http.post 返回 nil。
 -- 同一 task 内起 server(PACK_HTTP 监听)与 client(连回本机):server 对分片请求回固定串,非分片请求回显 body。
 -- 另覆盖客户端 chunked 接收段(lib/http.lua 的 srey.syn_slice 循环):server 回真 chunked 响应,
--- client 分传 / 不传 ckfunc 两种走法。
+-- client 分传 / 不传 ckfunc 两种走法；以及既无 CL 又无 TE、由连接关闭界定的响应。
 -- 不走网络的三段：C 组包 srey.http.pack_resp 与 Lua 原路 _response_lua 逐字节对拍；
 -- 请求侧 http.get / post 走 C 组包（srey.http.pack_req，copy=0）与 _http_msg 原路逐字节对拍；
 -- 请求侧带头表时帧长头的取舍（抓 srey.syn_send 的入参看线缆字节）。
@@ -19,6 +19,14 @@ local PORT = 15047
 -- 别用 PORT+1 这种推导写法,新端口先 grep 再定
 local HEAD_PORT = 15049
 local CK_RSP = "chunked-done"
+-- n 条互不相同的合法附加头：C 组包对头表有 16 条的缓存，16 / 17 / 20 条分别落在缓存满、刚溢出、续扫三种走法上
+local function _heads(n)
+    local h = {}
+    for i = 1, n do
+        h[string.format("X-H%02d", i)] = "v" .. i
+    end
+    return h
+end
 local BODY = "hello"
 local PROBE = "hdrprobe"
 local FRAME = "frameprobe"
@@ -33,6 +41,10 @@ local HEAD_RSP = "HTTP/1.1 200 OK\r\nContent-Length: 1234\r\nX-Head: v\r\n\r\n"
 local INTERIM_URI = "/interim"
 local INTERIM_RSP = "HTTP/1.1 103 Early Hints\r\nLink: </s.css>; rel=preload\r\n\r\n"
     .. "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+-- 由连接关闭界定 body 的用例：同样走那个裸监听，响应既无 CL 又无 TE，服务端写完即关连接
+local TILLCLOSE_URI = "/tillclose"
+local TILLCLOSE_BODY = "body-till-close"
+local TILLCLOSE_RSP = "HTTP/1.1 200 OK\r\nX-Till: 1\r\n\r\n" .. TILLCLOSE_BODY
 local N204 = "want204"-- 触发 server 回 204+body，验证 body 与 Content-Length 都被丢弃
 local BADBODY = "wantbadbody"-- 触发 server 回一个类型不受支持的 body（数字），验证告警确实打出来
 -- 触发 server 回真 chunked 响应(生产者吐两块)。lib.http 的接收段原先零覆盖:现有 /chunked
@@ -40,6 +52,7 @@ local BADBODY = "wantbadbody"-- 触发 server 回一个类型不受支持的 bod
 local CKBODY = "wantckbody"
 local CK1 = "chunk-one"
 local CK2 = "chunk-two-longer"
+local BADCK = "wantbadck"-- 触发 server 回 chunked 响应时生产者违约
 
 -- WARN 打桩，用来断言"响应带了不支持的 body 类型时确实告警"。
 -- 每个 unit 模块是独立 task（各有各的 lua_State），改全局波及不到别的模块。
@@ -75,7 +88,7 @@ local function _ck_producer(state)
     return nil
 end
 
--- 第 1 块正常发出(让对端收到一条语法完整的 chunked 请求),第 2 块返回非 string 触发违约
+-- 第 1 块正常发出(对端已进入 chunked 报文体),第 2 块返回非 string 触发违约；请求、响应两侧共用
 local function _bad_producer(state)
     state.n = state.n + 1
     if 1 == state.n then
@@ -105,6 +118,13 @@ end
 
 srey.startup(function()
 runner.run(function(t)
+    -- 服务端收到的分片请求末片数、服务端这头断开的连接数，违约用例靠它们断言
+    local nsrv_end, nsrv_close = 0, 0
+    srey.on_closed(function(_, _, client)
+        if 0 == client then
+            nsrv_close = nsrv_close + 1
+        end
+    end)
     srey.on_recved(function(pktype, sk, client, slice, data, size)
         -- 只处理 accept 来的连接;客户端侧响应由 syn_send 的等待者接走。
         -- 不能按 fd 值排除客户端 socket:客户端 fd 关掉后号会被后续 accept 复用,
@@ -113,9 +133,13 @@ runner.run(function(t)
             return
         end
         if PACK_TYPE.NONE == pktype then
-            -- 裸监听侧，两个用例共用：按请求目标分流
-            if nil ~= string.find(srey.ud_str(data, size), INTERIM_URI, 1, true) then
+            -- 裸监听侧，三个用例共用：按请求目标分流
+            local req = srey.ud_str(data, size)
+            if nil ~= string.find(req, INTERIM_URI, 1, true) then
                 srey.send(sk, INTERIM_RSP, #INTERIM_RSP, 1)
+            elseif nil ~= string.find(req, TILLCLOSE_URI, 1, true) then
+                srey.send(sk, TILLCLOSE_RSP, #TILLCLOSE_RSP, 1)
+                srey.close(sk)-- body 的结尾只由关闭界定
             else
                 srey.send(sk, HEAD_RSP, #HEAD_RSP, 1)
             end
@@ -123,6 +147,7 @@ runner.run(function(t)
         end
         if 0 ~= slice then
             if 0 ~= (slice & 4) then-- PROT_SLICE_END:分片请求收齐才回
+                nsrv_end = nsrv_end + 1
                 http.response(sk, 200, nil, CK_RSP)
             end
             return
@@ -166,6 +191,10 @@ runner.run(function(t)
             http.response(sk, 200, nil, _ck_producer, { n = 0 })
             return
         end
+        if BADCK == body then
+            http.response(sk, 200, nil, _bad_producer, { n = 0 })
+            return
+        end
         if BADBODY == body then
             -- body 是数字：三个 body 分支都不命中，按无 body 发走并告警
             http.response(sk, 200, nil, 42)
@@ -187,13 +216,25 @@ runner.run(function(t)
         return
     end
 
-    t:eq(nil, http.post(cli_sk, "/", nil, nil, _bad_producer, { n = 0 }), "生产者违约返回 nil")
-    -- 关键断言:同一连接的下一次请求必须拿到属于自己的响应。上一条响应未被收掉时,
-    -- 它会被本次注册的等待者接走,这里拿到的是 CK_RSP 而非 BODY
-    local pack = http.post(cli_sk, "/", nil, nil, BODY)
-    t:check(nil ~= pack, "后续请求拿到响应")
-    if pack then
-        t:eq(BODY, pack.data, "响应属于本次请求(未错认上一条残留)")
+    -- 请求侧违约：首块 "aa" 已发出，连接由 http.post 关掉。等服务端看到断开再数末片
+    local vsk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", PORT)
+    if t:check(vsk and vsk.valid, "违约用例 connect") then
+        local end0, close0 = nsrv_end, nsrv_close
+        t:eq(nil, http.post(vsk, "/", nil, nil, _bad_producer, { n = 0 }), "请求侧生产者违约返回 nil")
+        for _ = 1, 150 do
+            if nsrv_close > close0 then
+                break
+            end
+            srey.sleep(20)
+        end
+        t:eq(close0 + 1, nsrv_close, "请求侧违约后连接被断")
+        t:eq(end0, nsrv_end, "服务端没收到末片(截断的请求没被当成完整的)")
+    end
+    -- 响应侧违约：服务端首块已发出就关连接，客户端收不到终止块，按失败返回而不是拿到截断的 body
+    local rsk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", PORT)
+    if t:check(rsk and rsk.valid, "响应侧违约用例 connect") then
+        t:eq(nil, http.post(rsk, "/", nil, nil, BADCK), "响应侧生产者违约：客户端拿不到截断的响应")
+        srey.close(rsk)
     end
 
     -- url 里塞 CRLF 就是请求拆分：放行的话对端会看到两条完整请求、回两条响应，
@@ -331,6 +372,12 @@ runner.run(function(t)
     t:check(not srey_http.is_token(1), "is_token 拒非字符串(数字当不了头名)")
     t:eq(4096, srey_http.max_headlens, "max_headlens 取自 prots_pub.h 的 HTTP_MAX_HEADLENS")
     -- 组包侧不按它判(见上面 X-Big 那条)，这里只确认常量值没与 C 分叉
+    -- 附加头名长度上限同 C 侧 router_req_respond(HTTP_HEAD_KEY_MAX = 128，不含)：127 字节放行、128 字节拒
+    local _, hrc = srey_http.head_check(string.rep("k", 127), "v", 0)
+    t:eq(0, hrc, "127 字节的头名放行")
+    _, hrc = srey_http.head_check(string.rep("k", 128), "v", 0)
+    t:eq(1, hrc, "128 字节的头名按头名不合法拒")
+    t:eq(nil, srey_http.pack_resp(200, { [string.rep("k", 128)] = "v" }, "b"), "超长头名 C 组包不接")
 
     -- C 组包与 Lua 原路逐字节对拍：同一形状走 C(srey.http.respond)还是走 _response_lua，
     -- 取决于头值类型、码、body 类型，两边发出的字节必须一样。pack_resp 是 respond 的不发送版；
@@ -372,6 +419,9 @@ runner.run(function(t)
             { 304, nil, "abc", PLAIN },
             { 404, nil, "Not Found\n", PLAIN },
             { 599, nil, "u" },
+            { 200, _heads(16), "body" },
+            { 200, _heads(17), "body" },
+            { 200, _heads(20), nil },
         }
         local nmis = 0
         local cb, lb
@@ -398,6 +448,17 @@ runner.run(function(t)
         t:eq(nil, srey_http.pack_resp(200, { ["X"] = "a\r\nb" }, "b"), "头值含 CRLF C 不接")
         t:eq(nil, srey_http.pack_resp(200, nil, 5), "数字体 C 不接")
         t:eq(nil, srey_http.pack_resp(200, nil, "x", false, 5), "非字符串头部块 C 不接")
+        -- 非法头排在遍历序第 17 条（缓存已满之后才校验失败）：照样整表不接。遍历中改已有字段的值是允许的
+        local bad = _heads(20)
+        bad["X-Bad"] = "ok"
+        local nth = 0
+        for k in pairs(bad) do
+            nth = nth + 1
+            if 17 == nth then
+                bad[k] = "a\r\nb"
+            end
+        end
+        t:eq(nil, srey_http.pack_resp(200, bad, "b"), "第 17 条头非法 C 不接")
     end
 
     -- 请求侧 C 组包与原路对拍：http.get / post 先试 srey.http.pack_req，接手的形状以 copy=0 交给 syn_send，
@@ -439,6 +500,9 @@ runner.run(function(t)
             { "POST", "/", nil, {} },
             { "POST", "/", nil, { 1, 2, 3 } },
             { "POST", "/", { Authorization = "Bearer t", ["X-B"] = "2" }, { k = "v" } },
+            { "GET", "/", _heads(16), nil },
+            { "POST", "/", _heads(17), "body" },
+            { "POST", "/", _heads(17), { k = "v" } },
         }
         local nmis = 0
         local cb, cc, lb
@@ -559,6 +623,22 @@ runner.run(function(t)
                 t:eq("hello", ip.data, "最终响应的 body 完整")
             end
             srey.close(itm_sk)
+        end
+
+        -- 既无 Content-Length 又无 Transfer-Encoding 的响应(RFC 7230 §3.3.3 规则 7)：C 侧按分片投，
+        -- 末片由关闭事件补，客户端与 chunked 同走 syn_slice 循环
+        local tc_sk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
+        t:check(tc_sk and tc_sk.valid, "tillclose connect")
+        if tc_sk and tc_sk.valid then
+            local tp = http.get(tc_sk, TILLCLOSE_URI)
+            t:check(nil ~= tp, "由连接关闭界定的响应收到")
+            if tp then
+                t:eq(0, tp.chunked, "无 TE 时 chunked 为 0")
+                t:eq("1", tp.heads and tp.heads["X-Till"], "响应头可读")
+                t:eq(TILLCLOSE_BODY, tp.data, "body 收到连接关闭为止")
+                t:eq(#TILLCLOSE_BODY, tp.cksize, "cksize 按分片累加")
+            end
+            srey.close(tc_sk)
         end
         srey.unlisten(hlid)
     end

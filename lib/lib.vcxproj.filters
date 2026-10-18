@@ -334,7 +334,7 @@
     <ClInclude Include="crypt\hmac.h">
       <Filter>crypt</Filter>
     </ClInclude>
-    <ClInclude Include="utils\dl.h">
+    <ClInclude Include="utils\dynlib.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\popen2.h">

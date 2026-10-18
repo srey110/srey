@@ -25,7 +25,7 @@ typedef struct overlap_acpt_ctx {
 typedef struct listener_ctx {
     int32_t family;                                 // 地址族（AF_INET/AF_INET6）
     atomic_t remove;                                // 标记为待移除（ev_unlisten后设置）
-    atomic_t ref;                                   // 引用计数（等于挂起的AcceptEx数量）
+    atomic_t ref;                                   // 引用计数：占位 1(ev_unlisten / ev_listen 失败时减) + 在途 AcceptEx 与 CMD_ADDACP 各 1 + revive 快照期间 1，归零即释放
     atomic_t ndead;                                 // 当前dead槽位数,==0时_olp_try_revive_slot跳过整个扫描
     uint32_t nthrs;                                 // thrs 个数
     SOCKET fd;                                      // 监听socket句柄
@@ -177,6 +177,13 @@ ud_cxt *_iocp_get_ud(evsock_ctx *evsk) {
         return &UPCAST(evsk, overlap_udp_ctx, ol_r)->ud;
     }
 }
+cbs_ctx *_iocp_get_cbs(evsock_ctx *evsk) {
+    if (SOCK_STREAM == evsk->type) {
+        return &UPCAST(evsk, overlap_tcp_ctx, ol_r)->cbs;
+    } else {
+        return &UPCAST(evsk, overlap_udp_ctx, ol_r)->cbs;
+    }
+}
 int32_t _iocp_check_skid(evsock_ctx *evsk, const uint64_t skid) {
     // listener / cmd channel 的 skid 恒 0 而业务 skid 最小为 1，故无需再按 type 排除，见 evsock_ctx.sk
     return skid == evsk->sk.skid ? ERR_OK : ERR_FAILED;
@@ -263,7 +270,7 @@ static inline void _olp_call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, siz
         oludp->cbs.rf_cb(ev, &oludp->ol_r.sk, oludp->wsabuf_r.buf, nread, &oludp->addr_r, &oludp->ud);
     }
 }
-// 提交WSARecv异步接收请求（用于TCP和命令管道）
+// 提交WSARecv异步接收请求（TCP 读与延迟关闭的零字节探针）
 int32_t _iocp_post_recv(evsock_ctx *evsk, DWORD *bytes, DWORD *flag, IOV_TYPE *wsabuf, DWORD niov) {
     *flag = 0;
     *bytes = 0;
@@ -281,13 +288,6 @@ int32_t _iocp_post_recv(evsock_ctx *evsk, DWORD *bytes, DWORD *flag, IOV_TYPE *w
     }
     return ERR_OK;
 }
-// 投递同步失败即连接已坏（RST 一类），按对端中止记：调用方只管关，不再各自分类。
-// 本地已在关（STATUS_ERROR）就不标：那之后的投递失败是本端关闭造成的，close_type 须留在 LOCAL
-static inline void _olp_post_fail(overlap_tcp_ctx *oltcp) {
-    if (!BIT_CHECK(oltcp->status, STATUS_ERROR)) {
-        _evpub_mark_close(&oltcp->status, ERR_FAILED);
-    }
-}
 // 重投 ol_r 的零字节探针。本地已在关（含 recv_cb 里同步 ev_close）就不投、按失败返回，由调用方
 // 各自的失败路径收尾：关闭时的取消已经发过，这时新投的探针没人取消，关闭会一直等到对端先动
 static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
@@ -295,16 +295,20 @@ static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
         return ERR_FAILED;
     }
     if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
-        _olp_post_fail(oltcp);
+        _evpub_mark_close(&oltcp->status, ERR_FAILED);// 投递同步失败即连接已坏(RST 一类)，按对端中止记，调用方只管关
         return ERR_FAILED;
     }
     return ERR_OK;
 }
-// 提交WSASend异步发送请求；同步失败走 _olp_post_fail
+// 提交WSASend异步发送请求；同步失败按对端中止记(同 _olp_post_recv)
 // 0 字节 wakeup：
 // 成功 → kernel 有空间 → continue
 // EWOULDBLOCK → kernel 满 → 0 字节 post pend → 等到 buffer 空出空间触发完成 → continue
+// 本地已在关就不投、按失败返回，理由同 _olp_post_recv
 static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        return ERR_FAILED;
+    }
     oltcp->bytes_s = 0;
     ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
     if (ERR_OK != WSASend(oltcp->ol_s.sk.fd,
@@ -315,7 +319,7 @@ static inline int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
                           &oltcp->ol_s.overlapped,
                           NULL)) {
         if (ERROR_IO_PENDING != ERRNO) {
-            _olp_post_fail(oltcp);
+            _evpub_mark_close(&oltcp->status, ERR_FAILED);
             return ERR_FAILED;
         }
     }
@@ -391,6 +395,7 @@ static int32_t _olp_ssl_do_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltc
         }
         return 0;
     default://错误
+        _evpub_mark_close(&oltcp->status, ERR_FAILED);
         *err = ERR_FAILED;
         return 1;
     }
@@ -417,7 +422,7 @@ static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     }
 #endif
     _olp_call_recv_cb(watcher->ev, oltcp, nread);
-    // 读失败先按 rtn 记下断连原因；下面投递的同步失败由 _olp_post_fail 自己分类
+    // 读失败先按 rtn 记下断连原因；下面投递的同步失败由投递函数自己记
     if (ERR_OK != rtn) {
         _evpub_mark_close(&oltcp->status, rtn);
         return ERR_FAILED;// 分类已进 status, 不透传 evssl_* 的 1/2(口径同 _olp_tcp_send)
@@ -565,11 +570,13 @@ static void _olp_close_final(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     _evpub_sockel_remove(watcher, oltcp->ol_r.sk.fd);
     pool_push(&watcher->pool, &oltcp->ol_r, 0);
 }
-// 关闭TCP连接：WSASend 探针在途就等它完成再收尾，否则立即收尾
+// 关闭TCP连接：WSASend 探针在途就取消它、等它完成再收尾，否则立即收尾。
+// 必须取消：对端不再读时探针在满缓冲上永远不完成，连接就一直收不了尾
 static inline void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     BIT_SET(oltcp->status, STATUS_ERROR);
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
+        CancelIoEx((HANDLE)oltcp->ol_s.sk.fd, &oltcp->ol_s.overlapped);
     } else {
         _olp_close_final(watcher, oltcp);
     }
@@ -577,8 +584,7 @@ static inline void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *ol
 // IOCP TCP接收完成回调：处理SSL握手或普通数据接收
 static void _olp_on_recv_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
-    // 本地已在关就不标 PEER_*，close_type 即 LOCAL。这道判定必须排在 iofail 之前——
-    // ev_close 的 CancelIoEx 会让在途 ol_r 以"已取消"完成，iofail 同样为 1，颠倒就把本地关判成 ABORT
+    // 本地已在关(ev_close 的 CancelIoEx 让在途 ol_r 以"已取消"完成)：不再读，直接收尾，close_type 留在 LOCAL
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         _olp_on_recv_cb_err(watcher, oltcp);
         return;
@@ -645,6 +651,7 @@ static int32_t _olp_ssl_exchange_trigger(watcher_ctx *watcher, overlap_tcp_ctx *
             }
             return ERR_OK;
         default://错误
+            _evpub_mark_close(&oltcp->status, ERR_FAILED);
             return ERR_FAILED;
         }
     } else {
@@ -826,7 +833,7 @@ static inline void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *ol
 }
 // IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调。
 // 中途的回调(握手完成、KeyUpdate 冲刷里的 r_cb)可能同步 ev_close，发送前要再判一次本端已在关，
-// 否则会对已发过 close_notify 的连接 SSL_write，本端关闭被报成 ABORT(口径同 usock.c 的 _usk_tcp_send)
+// 否则会对已发过 close_notify 的连接 SSL_write(口径同 usock.c 的 _usk_tcp_send)
 static void _olp_on_send_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_s);
     // 判定顺序同 _olp_on_recv_cb：先认本地关，再认传输错
@@ -898,8 +905,8 @@ void _iocp_add_bufs_trypost(watcher_ctx *watcher, evsock_ctx *evsk, off_buf_ctx 
     obuf_que_push(&oltcp->buf_s, buf);
 #if WITH_SSL
     // 方向 B 挂着未完成的 SSL_write，投探针只是空转；数据留队等 _olp_on_recv_cb 那次重试。
-    // 对应 usock 的 _uev_add_bufs_send，那边还判 KEYUPDATE_WRITE——本平台方向 A 期 SENDING 必为 1，
-    // 下面的 SENDING 判定已挡住
+    // 方向 A(KEYUPDATE_WRITE)不用判：探针在途时下面的 SENDING 已挡住；recv_cb 里探针还没投、这里先投了的，
+    // 完成后 _olp_on_send_cb 也是先冲 KeyUpdate 再发 buf_s
     if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE_READ)) {
         return;
     }
@@ -1028,6 +1035,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD byt
             }
             break;
         default:
+            _evpub_mark_close(&oltcp->status, ERR_FAILED);
             _iocp_disconnect(&oltcp->ol_r);
             return;
         }
@@ -1080,7 +1088,9 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 }
 void _iocp_add_conn_inloop(watcher_ctx *watcher, struct evsock_ctx *evsk, netaddr_ctx *addr) {
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
-    if (ERR_OK != _iocp_join(watcher, evsk->sk.fd)) {
+    // 停机后到的按失败处理：停机时的取消已经发过，这时投出的 IO 没人取消
+    if (0 != ATOMIC_GET(&watcher->stop)
+        || ERR_OK != _iocp_join(watcher, evsk->sk.fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
         pool_push(&watcher->pool, &oltcp->ol_r, 0);
@@ -1282,7 +1292,8 @@ static void _olp_free_acceptex(listener_ctx *lsn, int32_t cnt) {
         _olp_take_close(&lsn->overlap_acpt[i].overlap.sk.fd);
     }
 }
-// 将监听socket关联到AcceptEx IOCP并预挂MAX_ACCEPTEX_CNT个AcceptEx操作
+// 将监听socket关联到AcceptEx IOCP并预挂MAX_ACCEPTEX_CNT个AcceptEx操作。
+// 只有第 0 槽投不出去才算失败(这时没有槽能交出连接)；其余槽失败记 dead，由 _olp_revive_dead 补投
 static int32_t _olp_acceptex(ev_ctx *ev, listener_ctx *lsn) {
     // 占位先 +1 提前到任何失败点之前：_olp_acceptex 失败时 ref 始终 >= 1，
     // ev_listen 失败路径统一减占位释放；同时保证 cb 任何路径减 ref 不会下溢
@@ -1292,6 +1303,7 @@ static int32_t _olp_acceptex(ev_ctx *ev, listener_ctx *lsn) {
         return ERR_FAILED;
     }
     overlap_acpt_ctx *olacp;
+    int32_t ndead = 0;
     for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
         olacp = &lsn->overlap_acpt[i];
         olacp->lsn = lsn;
@@ -1300,13 +1312,17 @@ static int32_t _olp_acceptex(ev_ctx *ev, listener_ctx *lsn) {
         // 投递前 +1：客户端在 ev_listen 窗口内连接触发 cb 时，ref 已包含本槽位
         ATOMIC_ADD(&lsn->ref, 1);
         if (ERR_OK != _olp_post_accept(olacp)) {
-            // 投递失败回退本槽位；保留占位(1) + 前 i 个成功槽位。
-            // _olp_free_acceptex 关 fd 触发取消 → cb 走 path 1 减 ref；remove=1 强制释放路径
-            ATOMIC_ADD(&lsn->ref, -1);
-            ATOMIC_SET(&lsn->remove, 1);
-            _olp_free_acceptex(lsn, i);
-            return ERR_FAILED;
+            ATOMIC_ADD(&lsn->ref, -1);// 回退本槽位
+            if (0 == i) {
+                return ERR_FAILED;
+            }
+            ATOMIC_SET_RELEASE(&olacp->dead, 1);
+            _olp_ndead_add(ev, lsn, 1);
+            ndead++;
         }
+    }
+    if (0 != ndead) {
+        LOG_WARN("%d AcceptEx slot(s) post failed on listener fd %d, retry later.", ndead, (int32_t)lsn->fd);
     }
     return ERR_OK;
 }
@@ -1347,8 +1363,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     (void)evssl;
 #endif
     if (ERR_OK != _olp_acceptex(ctx, lsn)) {
-        // _olp_acceptex 在 CreateIoCompletionPort 之前已占位 ref=1，失败时 ref 始终 >= 1。
-        // 减占位仲裁释放：cb 全减完时此处减到 0 释放，否则由最后一个 cb 释放。
+        // _olp_acceptex 失败时没有在途的 AcceptEx，ref 只剩占位 1，这里减掉即释放。
         // _iocp_freelsn 内已 ud_free(lsn->ud)(浅拷贝同一资源),此处不再调业务侧 ud_free 避免 double-free
         _iocp_try_freelsn(lsn);
         return ERR_FAILED;
@@ -1456,6 +1471,7 @@ static inline int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {
 // 处理UDP接收侧关闭：若正在发送则标记延迟，否则直接移除并释放
 static inline void _olp_on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     _olp_call_udp_close_cb(watcher->ev, oludp);
+    UD_FREE(oludp->cbs.ud_free, &oludp->ud);// 不等在途发送完成，口径同 TCP；_iocp_free_udp 再调一次是空操作
     if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         BIT_SET(oludp->status, STATUS_REMOVE);
     } else {
@@ -1753,7 +1769,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     if (ERR_OK != _evpub_sock_launch_check(ctx, ip, port, cbs, ud, 1, &addr)) {
         return ERR_FAILED;
     }
-    sk->fd = _evpub_udp(&addr);
+    sk->fd = _evpub_udp(&addr, ud);
     if (sock_is_invalid(sk)) {
         LOG_ERROR("udp %s:%d error.", ip, port);
         UD_FREE(cbs->ud_free, ud);
@@ -1767,7 +1783,9 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     return ERR_OK;
 }
 void _iocp_add_fd_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
-    if (ERR_OK != _iocp_join(watcher, evsk->sk.fd)) {
+    // 停机后到的按失败处理，理由同 _iocp_add_conn_inloop
+    if (0 != ATOMIC_GET(&watcher->stop)
+        || ERR_OK != _iocp_join(watcher, evsk->sk.fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         if (SOCK_STREAM == evsk->type) {
             pool_push(&watcher->pool, evsk, 0);

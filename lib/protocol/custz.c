@@ -24,8 +24,9 @@ void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     if (ERR_OK != rtn) {
         return NULL;
     }
-    // 数据体长度超限，协议错误
-    if (*size > CUSTZ_MAX_PACK_LENS) {
+    // 零长包组包侧不组，收到与超限一样按协议错误断开
+    if (0 == *size
+        || *size > CUSTZ_MAX_PACK_LENS) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
@@ -34,11 +35,6 @@ void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     if (pklens > buffer_size(buf)) {
         BIT_SET(*status, PROT_MOREDATA);
         buffer_want(buf, pklens - buffer_size(buf));
-        return NULL;
-    }
-    // 数据体为空，仅消耗头部后返回 NULL
-    if (0 == *size) {
-        ASSERTAB(hlens == buffer_drain(buf, hlens), "drain buffer error.");
         return NULL;
     }
     char *msg;
@@ -50,6 +46,10 @@ void *custz_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
     return msg;
 }
 void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size) {
+    if (0 == lens) {
+        *size = 0;
+        return NULL;
+    }
     size_t hlens;
     char *pack = NULL;
     // 根据包类型调用对应的头部编码函数，分配头部+数据体的连续内存
@@ -70,9 +70,6 @@ void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size) {
     if (NULL == pack) {
         return NULL;
     }
-    // 将数据体拷贝到头部之后的位置
-    if (0 != lens) {
-        memcpy(pack + hlens, data, lens);
-    }
+    memcpy(pack + hlens, data, lens);// 将数据体拷贝到头部之后的位置
     return pack;
 }

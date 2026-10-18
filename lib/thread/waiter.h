@@ -141,14 +141,13 @@ static inline uint64_t waiter_commit(waiter_ctx *w, uint32_t ms) {
     ATOMIC_SET_RELAXED(&w->state, WAITER_AWAKE);
     return (uint64_t)ATOMIC64_SET(&w->sig_at, 0);
 #else
-    uint64_t sig_at;
     if (0 == ms) {
         cond_wait(&w->cond, &w->mutex);
     } else {
         (void)cond_timedwait(&w->cond, &w->mutex, ms);
     }
     ATOMIC_SET_RELAXED(&w->state, WAITER_AWAKE);
-    sig_at = w->sig_at;
+    uint64_t sig_at = w->sig_at;
     w->sig_at = 0;
     mutex_unlock(&w->mutex);
     return sig_at;
@@ -384,11 +383,10 @@ static inline void spinner_init(spinner_ctx *sp, timer_ctx *timer, uint32_t lo_u
 /// </summary>
 /// <param name="sp">spinner_ctx</param>
 static inline void spinner_busy(spinner_ctx *sp) {
-    uint64_t at;
     if (0 == sp->idle_since) {
         return;
     }
-    at = sp->sig_at >= sp->idle_since ? sp->sig_at : timer_cur(sp->timer);
+    uint64_t at = sp->sig_at >= sp->idle_since ? sp->sig_at : timer_cur(sp->timer);
     sp->gap_ns = _spinner_gap(sp, at - sp->idle_since);
     sp->idle_since = 0;
 }
@@ -396,12 +394,11 @@ static inline void spinner_busy(spinner_ctx *sp) {
 // 它不属于这一轮)，返回空转的截止时刻(timer_cur 的纳秒)；*hot 置这次是否按上限转
 static inline uint64_t _spinner_until(spinner_ctx *sp, int32_t *hot) {
     uint64_t now = timer_cur(sp->timer);
-    int64_t budget;
     if (0 == sp->idle_since) {
         sp->idle_since = now;
     }
     sp->sig_at = 0;
-    budget = _spinner_budget(sp);
+    int64_t budget = _spinner_budget(sp);
     *hot = _spinner_hot(sp, budget);
     if (0 != *hot) {
         budget = sp->hi_ns;
@@ -450,10 +447,9 @@ static inline int32_t spinner_spin(spinner_ctx *sp, atomic_t *spinning, spinner_
 /// <param name="sp">spinner_ctx</param>
 /// <param name="sig_at">waiter_commit 的返回值</param>
 static inline void spinner_wake(spinner_ctx *sp, uint64_t sig_at) {
-    uint64_t lat;
     sp->sig_at = sig_at;
     if (0 != sig_at) {
-        lat = timer_cur(sp->timer) - sig_at;
+        uint64_t lat = timer_cur(sp->timer) - sig_at;
         sp->wake_ns = _spinner_wake(sp, lat);
         sp->wake_min_ns = _spinner_wake_min(sp, lat);
     }

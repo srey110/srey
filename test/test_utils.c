@@ -1,4 +1,5 @@
 ﻿#include "test_utils.h"
+#include "test_base.h"
 #include "lib.h"
 #include "utils/pool.h"
 #include "utils/uuid.h"
@@ -24,13 +25,19 @@ typedef struct _uuid_mt_arg {
     int32_t nfail;
     char *ids;
 } _uuid_mt_arg;
+// 非缓存 chan 用例：一条线程只发或只收一次，结果留在这里
+typedef struct _chan_ub_arg {
+    chan_ctx *ch;
+    int32_t rtn;// 发送方的 chan_send 返回值
+    void *got;// 接收方的 chan_recv 返回值
+} _chan_ub_arg;
 
 /* =======================================================================
  * binary —— 连续内存流式读写
  * ======================================================================= */
 static void test_binary(CuTest *tc) {
     binary_ctx bw;
-    binary_init_write(&bw, 0, 64); /* 动态分配，初始不设缓冲 */
+    binary_init_write(&bw, 0, 64); /* 动态分配，lens 为 0 时先按 inc 开 64 字节 */
 
     /* 写入各种类型 */
     int8_t i8 = -120;
@@ -249,12 +256,15 @@ static void test_buffer(CuTest *tc) {
     CuAssertTrue(tc, 0 == memcmp(", World!", out, 8));
     CuAssertTrue(tc, 0 == buffer_size(&buf));
 
-    /* 大量数据追加，触发多节点 */
+    /* 大块追加：先留 1 字节，8192 字节装不进首节点余量，才落成多节点（缓冲空着时是单个大节点） */
     char big[8192];
     memset(big, 'A', sizeof(big));
+    buffer_append(&buf, (void *)"x", 1);
     buffer_append(&buf, big, sizeof(big));
-    CuAssertTrue(tc, sizeof(big) == buffer_size(&buf));
-    buffer_drain(&buf, sizeof(big));
+    CuAssertTrue(tc, sizeof(big) + 1 == buffer_size(&buf));
+    CuAssertTrue(tc, 'x' == buffer_at(&buf, 0));
+    CuAssertTrue(tc, 'A' == buffer_at(&buf, sizeof(big)));
+    buffer_drain(&buf, sizeof(big) + 1);
     CuAssertTrue(tc, 0 == buffer_size(&buf));
 
     buffer_free(&buf);
@@ -361,15 +371,24 @@ static void test_sfid_epoch_underflow(CuTest *tc) {
     CuAssertTrue(tc, 0 != sfid_id(&ctx));
 
     /* 把纪元直接推到未来，等价于墙钟退到纪元之前 */
+    uint64_t ep = ctx.customepoch;
     ctx.clockback_wait = 10;
     ctx.customepoch = nowms() + 3600llu * 1000;
     /* 下溢的话 curms 远大于 lasttimestamp，会走 else 分支"成功"返回一个垃圾 ID；
        钳到 0 后落进回拨分支，等满预算返 0 */
     CuAssertTrue(tc, 0 == sfid_id(&ctx));
 
-    /* lasttimestamp 没被污染：纪元恢复后立刻又能正常出 ID */
-    ctx.customepoch = 0;
-    CuAssertTrue(tc, 0 != sfid_id(&ctx));
+    /* lasttimestamp 没被污染：恢复成原来的纪元后立刻又能正常出 ID，解出的时间戳就是此刻
+       (两端留 2s 余量，同 test_sfid)。恢复成 0 的话纪元成了 1970，被污染的小值也照样过得去 */
+    ctx.customepoch = ep;
+    uint64_t before = nowms();
+    uint64_t id = sfid_id(&ctx);
+    uint64_t after = nowms();
+    CuAssertTrue(tc, 0 != id);
+    uint64_t ts;
+    int32_t mid, seq;
+    sfid_decode(&ctx, id, &ts, &mid, &seq);
+    CuAssertTrue(tc, ts + 2000 >= before && ts <= after + 2000);
 }
 
 /* =======================================================================
@@ -793,7 +812,7 @@ static void test_netaddr_extra(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, netaddr_compare(&ll1, &ll2));
     ll2.ipv6.sin6_scope_id = 1;
     CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&ll1, &ll2));
-    // 一边没指定网卡(netaddr_set 出来的恒为 0)：不比 scope_id，KCP 按配置地址校验收包来源靠这个
+    // 一边没指定网卡(netaddr_set 不带 %网卡 时为 0)：不比 scope_id，KCP 按配置地址校验收包来源靠这个
     ll2.ipv6.sin6_scope_id = 0;
     CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&ll1, &ll2));
     CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&ll2, &ll1));
@@ -824,6 +843,53 @@ static void test_netaddr_extra(CuTest *tc) {
 
     CLOSE_SOCK(fds[0]);
     CLOSE_SOCK(fds[1]);
+}
+// IPv6 "%网卡" 后缀：进 scope_id，netaddr_ip 补回数字网卡号，再 set 回来是同一块网卡
+static void test_netaddr_scope(CuTest *tc) {
+    netaddr_ctx a, b;
+    char ip[IP_LENS];
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&a, "fe80::1%7", 80));
+    CuAssertIntEquals(tc, AF_INET6, netaddr_family(&a));
+    CuAssertIntEquals(tc, 80, netaddr_port(&a));
+    CuAssertTrue(tc, 7 == a.ipv6.sin6_scope_id);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_ip(&a, ip));
+    CuAssertStrEquals(tc, "fe80::1%7", ip);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&b, ip, 80));
+    CuAssertTrue(tc, 7 == b.ipv6.sin6_scope_id);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_compare(&a, &b));
+    // 最长的地址带最大网卡号也装得下 IP_LENS
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&a, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff%4294967295", 80));
+    CuAssertTrue(tc, 4294967295U == a.ipv6.sin6_scope_id);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_ip(&a, ip));
+    CuAssertStrEquals(tc, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff%4294967295", ip);
+    // 不带后缀：scope_id 为 0，输出不变
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&a, "fe80::1", 80));
+    CuAssertTrue(tc, 0 == a.ipv6.sin6_scope_id);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_ip(&a, ip));
+    CuAssertStrEquals(tc, "fe80::1", ip);
+    // 后缀为空 / 只有后缀 / 网卡号超 32 位 / IPv4 带后缀 / 查不到的网卡名
+    CuAssertIntEquals(tc, ERR_FAILED, netaddr_set(&a, "fe80::1%", 80));
+    CuAssertIntEquals(tc, ERR_FAILED, netaddr_set(&a, "%1", 80));
+    CuAssertIntEquals(tc, ERR_FAILED, netaddr_set(&a, "fe80::1%4294967296", 80));
+    CuAssertIntEquals(tc, ERR_FAILED, netaddr_set(&a, "127.0.0.1%1", 80));
+    CuAssertIntEquals(tc, ERR_FAILED, netaddr_set(&a, "fe80::1%no_such_if_srey", 80));
+#if !defined(OS_WIN)
+    // 网卡名：拿回环网卡(Linux 叫 lo，BSD 系叫 lo0)，输出写的是它的网卡号
+    const char *lo = "lo";
+    uint32_t idx = (uint32_t)if_nametoindex(lo);
+    if (0 == idx) {
+        lo = "lo0";
+        idx = (uint32_t)if_nametoindex(lo);
+    }
+    CuAssertTrue(tc, 0 != idx);
+    char named[IP_LENS], num[IP_LENS];
+    snprintf(named, sizeof(named), "fe80::1%%%s", lo);
+    snprintf(num, sizeof(num), "fe80::1%%%u", (unsigned)idx);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_set(&a, named, 80));
+    CuAssertTrue(tc, idx == a.ipv6.sin6_scope_id);
+    CuAssertIntEquals(tc, ERR_OK, netaddr_ip(&a, ip));
+    CuAssertStrEquals(tc, num, ip);
+#endif
 }
 
 /* =======================================================================
@@ -870,6 +936,24 @@ static void test_binary_extra(CuTest *tc) {
     const char *body = binary_get_binary(&br, 4);
     CuAssertTrue(tc, 0 == memcmp("body", body, 4));
 
+    binary_free(&bw);
+}
+// binary_set_va 的"写不下 -> 扩容 -> 重写"：先写到只剩 1 字节，再格式化一段 300 字节的串
+static void test_binary_set_va_grow(CuTest *tc) {
+    char str[301];
+    memset(str, 'k', 300);
+    str[300] = '\0';
+    binary_ctx bw;
+    binary_init_write(&bw, 0, 16);
+    binary_set_fill(&bw, 'p', 15);
+    CuAssertTrue(tc, 1 == bw.size - bw.offset);// 前提：首轮只给 1 字节
+    binary_set_va(&bw, "[%s]", str);
+    CuAssertTrue(tc, 15 + 302 == bw.offset);
+    CuAssertTrue(tc, '\0' == bw.data[bw.offset]);// 扩容留了结尾 NUL 那 1 字节
+    CuAssertTrue(tc, 'p' == bw.data[14]);
+    CuAssertTrue(tc, '[' == bw.data[15]);
+    CuAssertTrue(tc, 0 == memcmp(bw.data + 16, str, 300));
+    CuAssertTrue(tc, ']' == bw.data[316]);
     binary_free(&bw);
 }
 
@@ -982,6 +1066,44 @@ static void test_buffer_external_appendv(CuTest *tc) {
 
     buffer_free(&buf);
 }
+// buffer_appendv 写不下时：前移残包复用本节点；尾部已挂着空节点时接着写进去，内容连续
+static void test_buffer_appendv_realign_borrow(CuTest *tc) {
+    char data[5056];
+    char str[501];
+    char out[5400];
+    memset(str, 'v', 500);
+    str[500] = '\0';
+    for (size_t i = 0; i < sizeof(data); i++) {
+        data[i] = (char)('a' + i % 26);
+    }
+    buffer_ctx buf;
+
+    // 前移：空缓冲直写的首节点按接收那一档开(容量 5064)。写 4600 再 drain 4400，余 464 写不下 500，
+    // 残包 200 前移后够用
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, data, 4600));
+    CuAssertTrue(tc, 4400 == buffer_drain(&buf, 4400));
+    CuAssertIntEquals(tc, ERR_OK, buffer_appendv(&buf, "%s", str));
+    CuAssertTrue(tc, 700 == buffer_size(&buf));
+    CuAssertTrue(tc, 700 == buffer_copyout(&buf, 0, out, 700));
+    CuAssertTrue(tc, 0 == memcmp(out, data + 4400, 200));
+    CuAssertTrue(tc, 0 == memcmp(out + 200, str, 500));
+    buffer_free(&buf);
+
+    // 尾部空节点：首节点 5056 字节只剩 8 字节空闲，expand 后提交 0 字节留下一个空的后继节点
+    IOV_TYPE iov[2];
+    size_t iovlens;
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, data, 5056));
+    CuAssertTrue(tc, 2 == buffer_expand(&buf, 100, iov, 2, &iovlens));
+    buffer_commit_expand(&buf, 0, iov, 2);
+    CuAssertIntEquals(tc, ERR_OK, buffer_appendv(&buf, "%.300s", str));
+    CuAssertTrue(tc, 5356 == buffer_size(&buf));
+    CuAssertTrue(tc, 5356 == buffer_copyout(&buf, 0, out, 5356));
+    CuAssertTrue(tc, 0 == memcmp(out, data, 5056));
+    CuAssertTrue(tc, 0 == memcmp(out + 5056, str, 300));
+    buffer_free(&buf);
+}
 
 /* =======================================================================
  * buffer_external 节点的 misalign 区属调用方内存，任何写入路径都不得回收它。
@@ -1085,7 +1207,7 @@ static void test_buffer_external_zero(CuTest *tc) {
 /* =======================================================================
  * buffer_get / buffer_commit_get 读暂存契约。
  * 补全前的问题是：buffer_get 不置 node->used，暂存期间一次 append 触发的对齐 memmove 或
- * _buffer_expand_single 节点迁移，就能让已暂存的 iov 指向被改写/已释放的内存
+ * 节点迁移，就能让已暂存的 iov 指向被改写/已释放的内存
  * （freeze_read 只挡读接口，append/appendv 只断言 freeze_write）。
  * 现在：get 锁定节点、读写两族暂存态互斥（均以断言拦截）、commit_get 先解锁再 drain。
  * 本用例守的是"锁定与解锁配对"这半边——used 置了不清，drain 就会走"节点被锁定"分支，
@@ -1095,7 +1217,7 @@ static void test_buffer_external_zero(CuTest *tc) {
 static void test_buffer_get_commit(CuTest *tc) {
     buffer_ctx buf;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
-    char big[2000];
+    char big[6000];
     char readback[16];
     size_t total = 0;
     uint32_t n, i;
@@ -1107,9 +1229,9 @@ static void test_buffer_get_commit(CuTest *tc) {
     CuAssertTrue(tc, 0 == buffer_get(&buf, 16, iov, MAX_EXPAND_NIOV));
     CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "0123456789", 10));
 
-    // 第二次 append 放不进首节点余量，必然跨出第二个节点
+    // 第二次 append 放不进首节点余量(首节点按接收那一档开，容量 5064)，必然跨出第二个节点
     CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, big, sizeof(big)));
-    CuAssertTrue(tc, 2010 == buffer_size(&buf));
+    CuAssertTrue(tc, 6010 == buffer_size(&buf));
 
     // 暂存全部数据：iov 按节点切分，总长应等于 buffer_size
     n = buffer_get(&buf, buffer_size(&buf), iov, MAX_EXPAND_NIOV);
@@ -1117,11 +1239,11 @@ static void test_buffer_get_commit(CuTest *tc) {
     for (i = 0; i < n; i++) {
         total += (size_t)iov[i].IOV_LEN_FIELD;
     }
-    CuAssertTrue(tc, 2010 == total);
+    CuAssertTrue(tc, 6010 == total);
     CuAssertTrue(tc, 0 == memcmp(iov[0].IOV_PTR_FIELD, "0123456789", 10));
 
     // 解除暂存并全量删除：补全前在 drain 的 ASSERTAB 处 abort
-    buffer_commit_get(&buf, 2010);
+    buffer_commit_get(&buf, 6010);
     CuAssertTrue(tc, 0 == buffer_size(&buf));
 
     // 节点是真被释放而非留成零长节点，重新写入可正常读回
@@ -1270,9 +1392,7 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     buffer_free(&buf);
 
 #if defined(TRIGGER_LT) || defined(EV_IOCP)
-    // 场景二(早退档)：填满就得接着读。want 给足让假 readv 把 iov 填满 ——
-    // 这一条直接钉早退判据用的是本轮 iov 实际给出的总量(offer)而不是 nbuf：
-    // expand 给出的空间大于 nbuf 时，用 nbuf 判会把"填满了"误当"读空了"，每轮少读一截
+    // 场景二(早退档)：填满就得接着读。want 给足让假 readv 把 iov 填满
     buffer_init(&buf);
     _fake_rv_reset();
     _fake_rv_want[0] = MAX_RECV_SIZE * 4;
@@ -1286,6 +1406,17 @@ static void test_buffer_from_sock_space(CuTest *tc) {
     CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
     CuAssertTrue(tc, _fake_rv_offer[1] >= MAX_RECV_SIZE);
     CuAssertTrue(tc, _fake_rv_offer[2] >= MAX_RECV_SIZE);
+    buffer_free(&buf);
+
+    // 场景三(早退档)：钉住早退判据用本轮实际给出的空间(offer)而不是 nbuf。
+    // 读到 MAX_RECV_SIZE + 1 字节：没填满 offer 该停；若改用 nbuf 判，会当成填满再白读一轮
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = MAX_RECV_SIZE + 1;
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
+    CuAssertTrue(tc, _fake_rv_offer[0] > MAX_RECV_SIZE + 1);// 前提：节点按 ROUND_UP 开，给出的空间比 nbuf 多
+    CuAssertIntEquals(tc, 1, _fake_rv_calls);
+    CuAssertTrue(tc, (MAX_RECV_SIZE + 1) == nread);
     buffer_free(&buf);
 #else
     // 场景二(不早退档，即 epoll 边缘触发)：连续两轮读满，后续轮次仍须按 MAX_RECV_SIZE 要空间。
@@ -1600,10 +1731,10 @@ static void test_buffer_drain_multi_hint(CuTest *tc) {
 }
 
 /* =======================================================================
- * buffer hint_node 悬空回归
- *   copyout(start>0) 把搜索游标缓存到某数据节点(hint_node)；随后 buffer_appendv
- *   触发 _buffer_expand_single 数据迁移、释放该节点。若不失效游标，下次 copyout
- *   会解引用已释放节点(ASan 下 heap-use-after-free)。本用例确定性命中迁移分支。
+ * buffer hint_node 回归
+ *   copyout(start>0) 把搜索游标缓存到某数据节点(hint_node)；随后 buffer_appendv 追加到写不下
+ *   (曾经会迁移并释放该节点，游标悬空)。现在 appendv 走 buffer_append、不再迁移，
+ *   本用例留作"追加跨节点后游标读到的仍是原字节"的回归。
  * ======================================================================= */
 static void test_buffer_hint_after_migrate(CuTest *tc) {
     buffer_ctx buf;
@@ -1622,8 +1753,7 @@ static void test_buffer_hint_after_migrate(CuTest *tc) {
     CuAssertTrue(tc, sizeof(out1) == buffer_copyout(&buf, 100, out1, sizeof(out1)));
     CuAssertTrue(tc, 0 == memcmp(out1, seed + 100, sizeof(out1)));
 
-    // 3) appendv 一个 800 字节串(> free≈368) → _buffer_expand_single 迁移并释放原节点
-    //    (原节点正是 hint_node；修复前此后 hint 悬空)
+    // 3) appendv 一个 800 字节串(> free≈368)，写不下、要接新节点
     char big[801];
     for (size_t i = 0; i + 1 < sizeof(big); i++) {
         big[i] = (char)('a' + (i % 26));
@@ -1632,13 +1762,12 @@ static void test_buffer_hint_after_migrate(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, buffer_appendv(&buf, "%s", big));
     CuAssertTrue(tc, (sizeof(seed) + sizeof(big) - 1) == buffer_size(&buf));
 
-    // 4) 再次 start>0 copyout：命中已失效/重建的 hint。修复后读到原始字节；
-    //    修复前 hint 指向已释放节点 → _buffer_search_start_cached 解引用即 UAF
+    // 4) 再次 start>0 copyout：经 hint 读到的仍是原始字节
     char out2[50];
     CuAssertTrue(tc, sizeof(out2) == buffer_copyout(&buf, 100, out2, sizeof(out2)));
     CuAssertTrue(tc, 0 == memcmp(out2, seed + 100, sizeof(out2)));
 
-    // 5) 跨迁移边界读,确认整体数据完整(原 600 + 追加 800)
+    // 5) 跨节点边界读,确认整体数据完整(原 600 + 追加 800)
     char span[60];
     CuAssertTrue(tc, sizeof(span) == buffer_copyout(&buf, 580, span, sizeof(span)));
     CuAssertTrue(tc, 0 == memcmp(span, seed + 580, 20));// [580,600) 原始尾
@@ -1751,6 +1880,102 @@ static void test_chan_capacity_round(CuTest *tc) {
     _chan_cap_check(tc, 5, 8);
     _chan_cap_check(tc, 100, 128);
 }
+static void _chan_ub_send(void *arg) {
+    _chan_ub_arg *a = (_chan_ub_arg *)arg;
+    a->rtn = chan_send(a->ch, (void *)(uintptr_t)7, 0, 0);
+}
+static void _chan_ub_recv(void *arg) {
+    _chan_ub_arg *a = (_chan_ub_arg *)arg;
+    size_t lens;
+    a->got = chan_recv(a->ch, &lens);
+}
+// 轮询到 probe 成立，最多等 2 秒；超时只是没等到，不影响后面各步的出口
+static int32_t _chan_wait_until(chan_ctx *ch, int32_t (*probe)(chan_ctx *)) {
+    for (int32_t i = 0; i < 2000; i++) {
+        if (probe(ch)) {
+            return 1;
+        }
+        MSLEEP(1);
+    }
+    return 0;
+}
+// 非缓存 chan(capacity=0)：一对一按序交接；没人在等时 can_send / can_recv 都为 0，
+// 对方在等时变非 0；发送方阻塞时关闭 → 发送返 ERR_FAILED、之后 recv 返 NULL；
+// 接收方阻塞时关闭 → recv 返 NULL；接收方在等时发送与关闭并发 → 发送返 ERR_OK 当且仅当接收方拿到了那条
+static void test_chan_unbuffered(CuTest *tc) {
+    const int32_t n = 1000;
+    _chan_arg arg = { NULL, n, 0 };
+
+    // 1) 一对一交接 n 次，_chan_sender 发 1..n
+    chan_ctx *ch = chan_init(0);
+    int32_t can0 = chan_can_recv(ch) || chan_can_send(ch);
+    arg.ch = ch;
+    pthread_t tid = thread_creat(_chan_sender, &arg);
+    size_t lens;
+    void *p;
+    int32_t nrecv = 0, inorder = 1;
+    for (int32_t i = 1; i <= n; i++) {
+        p = chan_recv(ch, &lens);
+        if (NULL == p) {
+            break;// 发送方出错会 close，这里才有出口
+        }
+        nrecv++;
+        inorder &= ((void *)(uintptr_t)i == p);
+    }
+    thread_join(tid);
+    chan_free(ch);
+    CuAssertIntEquals(tc, 0, can0);
+    CuAssertIntEquals(tc, 0, arg.nfail);
+    CuAssertIntEquals(tc, n, nrecv);
+    CuAssertIntEquals(tc, 1, inorder);
+
+    // 2) 发送方已发布、在等接收方时关闭：发送失败，data 仍归发送方，之后 recv 返 NULL
+    ch = chan_init(0);
+    _chan_ub_arg snd, rcv;
+    snd.ch = ch;
+    snd.rtn = ERR_OK;
+    tid = thread_creat(_chan_ub_send, &snd);
+    int32_t seen = _chan_wait_until(ch, chan_can_recv);
+    chan_close(ch);
+    thread_join(tid);
+    p = chan_recv(ch, &lens);
+    chan_free(ch);
+    CuAssertIntEquals(tc, 1, seen);
+    CuAssertIntEquals(tc, ERR_FAILED, snd.rtn);
+    CuAssertPtrEquals(tc, NULL, p);
+
+    // 3) 接收方在等、没有发送方时关闭：recv 返 NULL
+    ch = chan_init(0);
+    rcv.ch = ch;
+    rcv.got = (void *)(uintptr_t)1;
+    pthread_t rtid = thread_creat(_chan_ub_recv, &rcv);
+    seen = _chan_wait_until(ch, chan_can_send);
+    chan_close(ch);
+    thread_join(rtid);
+    chan_free(ch);
+    CuAssertIntEquals(tc, 1, seen);
+    CuAssertPtrEquals(tc, NULL, rcv.got);
+
+    // 4) 接收方在等时再起发送方并立刻关闭，谁先拿到锁不定，两边结果必须对得上(不丢不重)
+    int32_t consistent = 1;
+    for (int32_t i = 0; i < 100 && consistent; i++) {
+        ch = chan_init(0);
+        rcv.ch = ch;
+        rcv.got = NULL;
+        snd.ch = ch;
+        snd.rtn = ERR_FAILED;
+        rtid = thread_creat(_chan_ub_recv, &rcv);
+        (void)_chan_wait_until(ch, chan_can_send);
+        tid = thread_creat(_chan_ub_send, &snd);
+        chan_close(ch);
+        thread_join(tid);
+        thread_join(rtid);
+        chan_free(ch);
+        consistent = (ERR_OK == snd.rtn) == ((void *)(uintptr_t)7 == rcv.got)
+            && (NULL == rcv.got || (void *)(uintptr_t)7 == rcv.got);
+    }
+    CuAssertIntEquals(tc, 1, consistent);
+}
 
 /* =======================================================================
  * hug —— 退出等待原语(POSIX self-pipe / Windows mutex+cond)
@@ -1777,6 +2002,13 @@ static void test_hug(CuTest *tc) {
     hug_wait(&hug);
     thread_join(tid);
     hug_free(&hug);
+
+    // 3) hug_free 之后迟到的 wakeup(再按一次 Ctrl+C)直接返回, 含没唤醒过就 free 的;
+    // Windows 上若照旧加锁, 碰的是已删除的临界区
+    hug_wakeup(&hug);
+    CuAssertTrue(tc, ERR_OK == hug_init(&hug));
+    hug_free(&hug);
+    hug_wakeup(&hug);
 }
 
 // 信号可反复投递, 而 hug_wait 返回后再没人读管道。若每次 hug_wakeup 都写一个字节,
@@ -2030,9 +2262,8 @@ static void test_popen2(CuTest *tc) {
     memset(payload, 'x', big);
     n = popen_write(&ctx, payload, big);
     FREE(payload);
-    // 必须 close 再 free：kill + waitpid 在 close 里，free 只关 socket。
-    // 少这一句，sleep 30 会活过本用例成为没人回收的子进程，而 ./bin/test 要阻塞等 SIGINT，
-    // 它就一直挂到整个会话结束，每跑一轮再漏一个。断言同理必须排在这两句之后：CuAssert 走 longjmp
+    // free 没见过 close 时自己会兜底杀进程收尸，这里显式 close 只是照常用法收尾。
+    // 断言必须排在这两句之后：CuAssert 走 longjmp，跳过收尾 sleep 30 就成了没人回收的子进程
     popen_close(&ctx);
     popen_free(&ctx);
     CuAssertTrue(tc, n > 0);
@@ -2044,34 +2275,33 @@ static void test_popen2(CuTest *tc) {
  * log —— 日志等级 set/get
  * ======================================================================= */
 static void test_log_lv(CuTest *tc) {
-    /* 注：main.c 已 log_init(NULL, 0)，此处仅做 set/get 一致性验证，
-     * 测试结束后还原默认级别避免影响后续日志输出 */
+    /* 注：main.c 已 log_init(NULL, 0)，此处仅做 set/get 一致性验证。
+     * 先记下读回的值、还原级别再断言：断言失败时全局级别不会停在中间某级 */
+    const log_level lvs[5] = { LOGLV_FATAL, LOGLV_ERROR, LOGLV_WARN, LOGLV_INFO, LOGLV_DEBUG };
+    log_level got[5];
     log_level prev = log_getlv();
-
-    log_setlv(LOGLV_FATAL);
-    CuAssertIntEquals(tc, LOGLV_FATAL, log_getlv());
-    log_setlv(LOGLV_ERROR);
-    CuAssertIntEquals(tc, LOGLV_ERROR, log_getlv());
-    log_setlv(LOGLV_WARN);
-    CuAssertIntEquals(tc, LOGLV_WARN, log_getlv());
-    log_setlv(LOGLV_INFO);
-    CuAssertIntEquals(tc, LOGLV_INFO, log_getlv());
-    log_setlv(LOGLV_DEBUG);
-    CuAssertIntEquals(tc, LOGLV_DEBUG, log_getlv());
-
-    /* 还原 */
+    int32_t i;
+    for (i = 0; i < 5; i++) {
+        log_setlv(lvs[i]);
+        got[i] = log_getlv();
+    }
     log_setlv(prev);
+    for (i = 0; i < 5; i++) {
+        CuAssertIntEquals(tc, lvs[i], got[i]);
+    }
 }
 
 // 日志文件模式：slog_parts 与 slog 同内容输出相同(含堆分配与段内 NUL)；攒批写满中途回刷、
-// 超过攒批缓冲(64KB)的长行回退直写、log_free 退出补刷，行数与先后都不能乱。借全局日志用，测完换回控制台
+// 超过攒批缓冲(LOG_BATCH_BYTES)的长行回退直写、log_free 退出补刷，行数与先后都不能乱。借全局日志用，测完换回控制台
 static void test_log_file_mode(CuTest *tc) {
     const char *path = "log_file_mode.tmp";
     const int32_t nbatch = 200;
-    const size_t nlong = 70000;
+    const size_t nlong = LOG_BATCH_BYTES + 4 * ONEK;
+    char fill[600], head[16];
+    // 一次出队(最多 LOG_POP_BATCH 条)的行装不下攒批缓冲，才走得到中途回刷；log.h 的参数改了这里先报
+    CuAssertTrue(tc, nbatch >= LOG_POP_BATCH && (size_t)LOG_POP_BATCH * sizeof(fill) > (size_t)LOG_BATCH_BYTES);
     log_level prev = log_getlv();
     FILE *f = fopen(path, "wb+");
-    char fill[600], head[16];
     char *big, *all, *cur, *eol, *msg;
     const char *parts[2];
     size_t lens[2], i;
@@ -2100,7 +2330,7 @@ static void test_log_file_mode(CuTest *tc) {
     lens[1] = 5;
     parts[0] = "N:";
     slog_parts(LOGLV_INFO, parts, lens, 2);// 截在第一个 NUL 处
-    for (k = 0; k < nbatch; k++) {// 200 x 600B 一批装不进 64KB，中途必回刷
+    for (k = 0; k < nbatch; k++) {// 一批装不进攒批缓冲，中途回刷
         SNPRINTF(head, sizeof(head), "B%03d:", k);
         parts[0] = head;
         lens[0] = strlen(head);
@@ -2161,23 +2391,19 @@ static void test_log_file_mode(CuTest *tc) {
 }
 // 轮询到文件里至少有 want 个整行，最多等 2 秒，返回最后数到的行数。前 20ms 只让出不睡：
 // 量浅睡叫醒要毫秒级的分辨率，Windows 上 MSLEEP(1) 实际可能睡到十几毫秒
-static int32_t _log_wait_lines(const char *path, int32_t want) {
+static int32_t _log_wait_lines(FILE *rd, int32_t want) {
     uint64_t start = nowms();
     uint64_t end = start + 2000;
     char buf[4096];
     size_t r, i;
     int32_t n;
-    FILE *f;
     do {
         n = 0;
-        f = fopen(path, "rb");
-        if (NULL != f) {
-            while ((r = fread(buf, 1, sizeof(buf), f)) > 0) {
-                for (i = 0; i < r; i++) {
-                    n += '\n' == buf[i];
-                }
+        fseek(rd, 0, SEEK_SET);// 读端只开一次、每轮回到开头重数：Windows 实时防护下每次重开文件要几到几十毫秒
+        while ((r = fread(buf, 1, sizeof(buf), rd)) > 0) {
+            for (i = 0; i < r; i++) {
+                n += '\n' == buf[i];
             }
-            fclose(f);
         }
         if (n >= want) {
             return n;
@@ -2192,7 +2418,7 @@ static int32_t _log_wait_lines(const char *path, int32_t want) {
 }
 // 日志线程写过行之后浅睡：深睡时来一行照样当场叫醒；浅睡期间的 INFO 不滞留、与 WARN 先后不乱；
 // 一批超过 LOG_POP_BATCH 的行全部落盘；空闲超过浅睡时长回到深睡后，下一行也要能落盘，log_free 也要当场叫醒它。
-// 只卡"2 秒内落盘、不丢、不乱"与关停 1 秒内(深睡一次 SHRINK_TIME)，不卡多快(VM 上调度抖动大)。借全局日志用，测完换回控制台
+// 只卡"2 秒内落盘、不丢、不乱"与关停 1 秒内(叫不醒就要睡满 log.c 的 LOG_SLEEP_MAX)，不卡多快(VM 上调度抖动大)。借全局日志用，测完换回控制台
 static void test_log_linger(CuTest *tc) {
     const char *path = "log_linger.tmp";
     const int32_t nburst = 300;
@@ -2204,28 +2430,31 @@ static void test_log_linger(CuTest *tc) {
     uint64_t t0, tfree;
     int32_t k, n1, n2, n3, n4, nline = 0;
     CuAssertPtrNotNull(tc, f);
+    FILE *rd = fopen(path, "rb");
+    CuAssertPtrNotNull(tc, rd);
     log_free();
     log_init(f, 0);
     log_setlv(LOGLV_DEBUG);
     MSLEEP(50);// 日志线程还没写过行，此刻在深睡
     slog(LOGLV_INFO, "A");
-    n1 = _log_wait_lines(path, 1);
+    n1 = _log_wait_lines(rd, 1);
     slog(LOGLV_INFO, "B");// 刚写完 A，日志线程此刻在浅睡
     slog(LOGLV_WARN, "C");
-    n2 = _log_wait_lines(path, 3);
+    n2 = _log_wait_lines(rd, 3);
     for (k = 0; k < nburst; k++) {
         slog(LOGLV_INFO, "M%03d", k);
     }
-    n3 = _log_wait_lines(path, 3 + nburst);
+    n3 = _log_wait_lines(rd, 3 + nburst);
     MSLEEP(50);// 超过浅睡时长，回到深睡
     slog(LOGLV_INFO, "D");
-    n4 = _log_wait_lines(path, 4 + nburst);
+    n4 = _log_wait_lines(rd, 4 + nburst);
     MSLEEP(50);// 再回到深睡后关停
     t0 = nowms();
     log_free();
     tfree = nowms() - t0;
     log_init(NULL, 0);
     log_setlv(prev);
+    fclose(rd);
     // 先换回控制台再断言，断言失败也不会把全局日志留在临时文件上
     CuAssertTrue(tc, tfree < 1000);
     CuAssertIntEquals(tc, 1, n1);
@@ -2270,62 +2499,128 @@ static void test_log_linger(CuTest *tc) {
     CuAssertIntEquals(tc, 5 + nburst, nline);
 }
 // 先写一行 INFO 等它落盘、再等 1ms(日志线程这时已进浅睡)，然后连打 n 行 lv 级别的，返回从打第一行到全部落盘的毫秒数
-static uint64_t _log_linger_cost(const char *path, int32_t *have, int32_t lv, int32_t n) {
+static uint64_t _log_linger_cost(FILE *rd, int32_t *have, int32_t lv, int32_t n) {
     uint64_t t0;
     int32_t k;
     slog(LOGLV_INFO, "P");
-    *have = _log_wait_lines(path, *have + 1);
+    *have = _log_wait_lines(rd, *have + 1);
     MSLEEP(1);
     t0 = nowms();
     for (k = 0; k < n; k++) {
         slog(lv, "Q%d", k);
     }
-    *have = _log_wait_lines(path, *have + n);
+    *have = _log_wait_lines(rd, *have + n);
     return nowms() - t0;
 }
 // 浅睡时 WARN、攒满一批都要当场叫醒日志线程：落盘耗时远小于浅睡时长，条件写错就得等浅睡超时。
 // 各量 5 次取最小，抗调度抖动。借全局日志用，测完换回控制台
 static void test_log_linger_wake(CuTest *tc) {
     const char *path = "log_linger_wake.tmp";
-    const uint64_t linger = 10;// log.c 的 LOG_LINGER_MS
-    const int32_t batch = 128;// log.c 的 LOG_POP_BATCH，默认容量下浅睡攒到这么多就叫
+    const uint64_t linger = LOG_LINGER_MS;
+    const int32_t batch = LOG_POP_BATCH;// 默认容量下浅睡攒到这么多就叫
     log_level prev = log_getlv();
     FILE *f = fopen(path, "wb+");
     uint64_t warn = UINT64_MAX, full = UINT64_MAX, cost;
     int32_t have = 0, r;
     CuAssertPtrNotNull(tc, f);
+    FILE *rd = fopen(path, "rb");
+    CuAssertPtrNotNull(tc, rd);
     log_free();
     log_init(f, 0);
     log_setlv(LOGLV_DEBUG);
     for (r = 0; r < 5; r++) {
-        cost = _log_linger_cost(path, &have, LOGLV_WARN, 1);
+        cost = _log_linger_cost(rd, &have, LOGLV_WARN, 1);
         warn = cost < warn ? cost : warn;
-        cost = _log_linger_cost(path, &have, LOGLV_INFO, batch);
+        cost = _log_linger_cost(rd, &have, LOGLV_INFO, batch);
         full = cost < full ? cost : full;
     }
     log_free();
     log_init(NULL, 0);
     log_setlv(prev);
+    fclose(rd);
     fclose(f);
     remove(path);
     CuAssertTrue(tc, warn < linger / 2);
     CuAssertTrue(tc, full < linger / 2);
 }
+// 队列配得很小(4，浅睡攒到容量一半就叫)时突发打满：进不了队的在打日志的线程上同步写出(时间串用本线程的缓存)。
+// 首次叫醒日志线程的空当里 4 个槽就满了，同步那条路基本必走。入队的与同步写的两条路各写各的，不卡先后，
+// 只卡每行恰好一次、行完整不乱码。借全局日志用，测完换回控制台
+static void test_log_queue_full(CuTest *tc) {
+    const char *path = "log_queue_full.tmp";
+    const int32_t n = 3000;
+    log_level prev = log_getlv();
+    FILE *f = fopen(path, "wb+");
+    CuAssertPtrNotNull(tc, f);
+    log_free();
+    log_init(f, 4);
+    log_setlv(LOGLV_DEBUG);
+    for (int32_t k = 0; k < n; k++) {
+        slog(LOGLV_INFO, "Q%05d", k);
+    }
+    log_free();
+    log_init(NULL, 0);
+    log_setlv(prev);
+
+    fseek(f, 0, SEEK_END);
+    long flen = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *all;
+    MALLOC(all, (size_t)flen + 1);
+    size_t nread = fread(all, 1, (size_t)flen, f);
+    all[nread] = '\0';
+    fclose(f);
+    remove(path);
+    char *seen;
+    CALLOC(seen, 1, (size_t)n);
+    char *cur = all;
+    char *eol, *msg;
+    int32_t k, nline = 0, nseen = 0, nbad = 0, ndup = 0;
+    while (NULL != (eol = strchr(cur, '\n'))) {
+        *eol = '\0';
+        msg = strstr(cur, "][info]");
+        if (NULL != msg && 'Q' == msg[7] && 6 == strlen(msg + 7)) {
+            k = atoi(msg + 8);
+            if (k < 0 || k >= n) {
+                nbad++;
+            } else if (seen[k]) {
+                ndup++;
+            } else {
+                seen[k] = 1;
+                nseen++;
+            }
+        } else if (NULL == msg || NULL == strstr(msg, "log thread exited.")) {
+            nbad++;
+        }
+        nline++;
+        cur = eol + 1;
+    }
+    int32_t tail = ('\0' == *cur);
+    FREE(seen);
+    FREE(all);
+    CuAssertTrue(tc, 0 != tail);
+    CuAssertIntEquals(tc, (int32_t)flen, (int32_t)nread);
+    CuAssertIntEquals(tc, 0, nbad);
+    CuAssertIntEquals(tc, 0, ndup);
+    CuAssertIntEquals(tc, n, nseen);
+    CuAssertIntEquals(tc, n + 1, nline);
+}
 // slog 等级过滤路径：lv > _log_lv 时早返，既不入队也不分配
-// 注：mpq 入队/丢弃路径已由 test_mpq_concurrent_mc 覆盖，slog 入队路径无需重复测试
+// 注：队列满时的同步写出见 test_log_queue_full
 static void test_log_slog_filter(CuTest *tc) {
     const int32_t nfilter = 100;
     log_level prev = log_getlv();
-    char big[300];// 超过 LOG_INLINE_SIZE(256)，漏过过滤的话每条都要单独 MALLOC 一次
+    char big[LOG_INLINE_SIZE + 44];// 超过 LOG_INLINE_SIZE，漏过过滤的话每条都要单独 MALLOC 一次
     int32_t i;
 #if MEMORY_CHECK
     uint64_t alloc0, alloc1;
 #endif
     memset(big, 'x', sizeof(big) - 1);
     big[sizeof(big) - 1] = '\0';
-    // 设到 FATAL（最高级，值 0）：所有 lv > 0 的 slog 都被过滤
+    // 设到 FATAL（最高级，值 0）：所有 lv > 0 的 slog 都被过滤。
+    // 要断言的值先记下，还原级别之后再断言：断言失败时全局级别不会停在 FATAL
     log_setlv(LOGLV_FATAL);
-    CuAssertIntEquals(tc, LOGLV_FATAL, log_getlv());
+    log_level got = log_getlv();
 #if MEMORY_CHECK
     mem_stat(&alloc0, NULL);
 #endif
@@ -2336,15 +2631,20 @@ static void test_log_slog_filter(CuTest *tc) {
         slog(LOGLV_DEBUG, "filtered debug %d %s", i, big);
     }
 #if MEMORY_CHECK
+    mem_stat(&alloc1, NULL);
+#endif
+    log_level after = log_getlv();
+    log_setlv(prev);
+    log_level restored = log_getlv();
+    CuAssertIntEquals(tc, LOGLV_FATAL, got);
+#if MEMORY_CHECK
     // 上界取总条数(4 * nfilter)的一半：过滤正常时增量近 0（日志线程另有零星分配），
     // 漏过过滤则是每条一次 MALLOC，两者差一个数量级
-    mem_stat(&alloc1, NULL);
     CuAssertTrue(tc, alloc1 - alloc0 < (uint64_t)nfilter * 2);
 #endif
     // 过滤路径不许碰日志级别；还原后必须精确回到原值
-    CuAssertIntEquals(tc, LOGLV_FATAL, log_getlv());
-    log_setlv(prev);
-    CuAssertIntEquals(tc, prev, log_getlv());
+    CuAssertIntEquals(tc, LOGLV_FATAL, after);
+    CuAssertIntEquals(tc, prev, restored);
 }
 
 /* =======================================================================
@@ -2376,9 +2676,9 @@ static void test_tw(CuTest *tc) {
         MSLEEP(20);
         waited += 20;
     }
-    CuAssertIntEquals(tc, 3, ATOMIC_GET(&_tw_fired));
-
+    // 先停轮线程再断言：断言失败 longjmp 出去时轮线程还握着这个栈上的 tw
     tw_free(&tw);
+    CuAssertIntEquals(tc, 3, ATOMIC_GET(&_tw_fired));
 }
 
 /* =======================================================================
@@ -2443,7 +2743,7 @@ static void test_sock_pair(CuTest *tc) {
 
 /* =======================================================================
  * sock_* 配置 / 状态查询接口
- * 现有 test_sock_pair 仅验证了 sock_init/clean/pair 三个 API，
+ * test_sock_pair 只验 sock_pair 建出的一对能双向收发，
  * 本测试在 sock_pair 已建立的 TCP 对上集中验证：
  *   setter: sock_nodelay / sock_nonblock / sock_reuseaddr /
  *           sock_reuseport / sock_keepalive / sock_linger
@@ -2461,7 +2761,7 @@ static void test_sock_options(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, sock_keepalive(fds[0], 60, 10));
     CuAssertIntEquals(tc, ERR_OK, sock_linger(fds[0]));
     // 读回 keepalive 三项确认真落到内核：断言值与系统默认(idle 7200/intvl 75/cnt 8~9)不同,
-    // 故能区分"已设置"与"整块被 #ifdef 跳过"(Windows 走 WSAIoctl,无法逐项读回)
+    // 故能区分"已设置"与"整块被 #ifdef 跳过"(Windows 的 idle/intvl 走 WSAIoctl 读不回,只读回次数)
 #if !defined(OS_WIN)
     int32_t kaopt;
     socklen_t kalen;
@@ -2488,6 +2788,11 @@ static void test_sock_options(CuTest *tc) {
     CuAssertTrue(tc, getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPCNT, (char *)&kaopt, &kalen) >= 0);
     CuAssertIntEquals(tc, 3, kaopt);
 #endif
+#elif defined(TCP_KEEPCNT)
+    int32_t kacnt = 0;
+    socklen_t kclen = (socklen_t)sizeof(kacnt);
+    CuAssertTrue(tc, 0 == getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPCNT, (char *)&kacnt, &kclen));
+    CuAssertIntEquals(tc, 3, kacnt);
 #endif
 #if !defined(OS_WIN)
     // SO_REUSEPORT 在 Windows 不支持，跳过
@@ -2539,13 +2844,13 @@ static void test_popen_close(CuTest *tc) {
 #else
     SNPRINTF(cmd, sizeof(cmd), "sh -c 'sleep 30'");
 #endif
-    /* 启动 30 秒长任务，无管道模式即可 */
+    /* 启动 30 秒长任务，无管道模式即可。观测值先存局部量，free 之后再断言(同 test_popen2) */
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, NULL));
 #ifdef OS_WIN
     /* 作业对象里应是 cmd 与它派生的 timeout.exe：先等孙进程起来，否则 close 太早测不到它 */
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION acct;
     int32_t alive = -1, waits;
-    CuAssertPtrNotNull(tc, ctx.job);
+    int32_t has_job = (NULL != ctx.job);
     for (waits = 0; waits < 500; waits++) {
         if (QueryInformationJobObject(ctx.job, JobObjectBasicAccountingInformation, &acct, sizeof(acct), NULL)
             && acct.ActiveProcesses >= 2) {
@@ -2553,14 +2858,13 @@ static void test_popen_close(CuTest *tc) {
         }
         MSLEEP(10);
     }
-    CuAssertTrue(tc, waits < 500);
+    int32_t grand_up = (waits < 500);
 #endif
 
     /* 立即 popen_close 应在毫秒级返回（SIGKILL + waitpid 同步收尸） */
     uint64_t t0 = nowms();
     popen_close(&ctx);
     uint64_t elapsed = nowms() - t0;
-    CuAssertTrue(tc, elapsed < 5000); /* 5s 内必结束（实际应远低于 100ms） */
 #ifdef OS_WIN
     /* 连孙进程一起结束：作业里的活进程数归零 */
     for (waits = 0; waits < 500; waits++) {
@@ -2572,19 +2876,26 @@ static void test_popen_close(CuTest *tc) {
         }
         MSLEEP(10);
     }
-    CuAssertIntEquals(tc, 0, alive);
-#endif
-#ifndef OS_WIN
+#else
     /* Unix 下 popen_close 自带 waitpid，exited 标志置 1 */
-    CuAssertIntEquals(tc, 1, ctx.exited);
-    CuAssertIntEquals(tc, ERR_FAILED, ctx.exitcode);
+    int32_t exited = ctx.exited;
+    int32_t exitcode = ctx.exitcode;
 #endif
     popen_free(&ctx);
+    CuAssertTrue(tc, elapsed < 5000); /* 5s 内必结束（实际应远低于 100ms） */
+#ifdef OS_WIN
+    CuAssertTrue(tc, 0 != has_job);
+    CuAssertTrue(tc, 0 != grand_up);
+    CuAssertIntEquals(tc, 0, alive);
+#else
+    CuAssertIntEquals(tc, 1, exited);
+    CuAssertIntEquals(tc, ERR_FAILED, exitcode);
+#endif
 
     /* close 后再次 close 应为 no-op（idempotent，不应 crash 不应阻塞） */
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, NULL));
     popen_close(&ctx);
-    popen_close(&ctx);/* 重复调用：pid 仍非 0 但 exited=1，分支 if 不进入 kill */
+    popen_close(&ctx);/* 重复调用：closed 已置位，直接返回 */
     popen_free(&ctx);
 }
 
@@ -2594,22 +2905,27 @@ static void test_popen_waitexit_event(CuTest *tc) {
 #ifndef OS_WIN
     popen_ctx ctx;
     uint64_t t0, cost;
+    // 观测值先存局部量，free 之后再断言(同 test_popen2)
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sh -c 'sleep 0.2; exit 3'", NULL));
     t0 = nowms();
-    CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 10000));
+    int32_t rwait = popen_waitexit(&ctx, 10000);
     cost = nowms() - t0;
-    CuAssertTrue(tc, cost < 5000);
-    CuAssertIntEquals(tc, 3, popen_exitcode(&ctx));
+    int32_t code = popen_exitcode(&ctx);
     popen_free(&ctx);
+    CuAssertIntEquals(tc, ERR_OK, rwait);
+    CuAssertTrue(tc, cost < 5000);
+    CuAssertIntEquals(tc, 3, code);
 
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sh -c 'sleep 30'", NULL));
-    CuAssertIntEquals(tc, ERR_FAILED, popen_waitexit(&ctx, 0));
+    int32_t rprobe = popen_waitexit(&ctx, 0);
     t0 = nowms();
-    CuAssertIntEquals(tc, ERR_FAILED, popen_waitexit(&ctx, 150));
+    rwait = popen_waitexit(&ctx, 150);
     cost = nowms() - t0;
-    CuAssertTrue(tc, cost >= 140 && cost < 5000);
     popen_close(&ctx);
     popen_free(&ctx);
+    CuAssertIntEquals(tc, ERR_FAILED, rprobe);
+    CuAssertIntEquals(tc, ERR_FAILED, rwait);
+    CuAssertTrue(tc, cost >= 140 && cost < 5000);
 #else
     (void)tc;
 #endif
@@ -2669,10 +2985,9 @@ static void test_sfid_invalid(CuTest *tc) {
 
 /* =======================================================================
  * hash_ring 边界场景：空环查找、NULL 入参、重复添加、replicas=0、移除不存在。
- * 末尾三组验 hash_ring_free 的完整复位：原实现只重置链表与 items 指针，
+ * 末尾验 hash_ring_free 的完整复位：原实现只重置链表与 items 指针，
  * nitems/nnodes 留旧值，于是 find 会越过 0 == nitems 早退再解引用已置空的 items、
- * 二次 free 在 FREE(items[i]) 上崩、free 后重用则按旧计数分配却只填尾部，
- * qsort 读到未初始化指针
+ * 二次 free 在 FREE(items[i]) 上崩。free 后复用照头文件契约先 hash_ring_init
  * ======================================================================= */
 static void test_hash_ring_edge(CuTest *tc) {
     hash_ring_ctx ring;
@@ -2701,6 +3016,7 @@ static void test_hash_ring_edge(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&ring, "atcap", 5, 65536u));
     CuAssertTrue(tc, 65536u == ring.nitems);
     hash_ring_free(&ring);
+    hash_ring_init(&ring);
 
     /* 添加 + 重复添加同名 → 拒绝 */
     CuAssertIntEquals(tc, ERR_OK,     hash_ring_add(&ring, "nodeA", 5, 100));
@@ -2730,6 +3046,7 @@ static void test_hash_ring_edge(CuTest *tc) {
 
     hash_ring_free(&ring);
 
+    hash_ring_init(&ring);
     CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&ring, "reuse", 5, 10));
     CuAssertTrue(tc, 1 == ring.nnodes);
     CuAssertTrue(tc, 10 == ring.nitems);
@@ -2758,9 +3075,8 @@ static void test_tw_long_timeout(CuTest *tc) {
         MSLEEP(50);
         waited += 50;
     }
+    tw_free(&tw);// 先停轮线程再断言，理由同 test_tw
     CuAssertIntEquals(tc, 1, ATOMIC_GET(&_tw_fired));
-
-    tw_free(&tw);
 }
 
 /* =======================================================================
@@ -2846,8 +3162,61 @@ static void test_tw_wakeup_after_idle(CuTest *tc) {
     CuAssertIntEquals(tc, 1, ATOMIC_GET(&_tw_fired));
     CuAssertTrue(tc, waited < 100);
 }
+static atomic_t _tw_freed;
+static uint64_t _tw_cb_tid;
+static void _tw_freecb(void *ud) {// free_cb 收 void *，tw 传的是节点里的 ud_cxt
+    (void)ud;
+    ATOMIC_ADD(&_tw_freed, 1);
+}
+static void _tw_tid_cb(ud_cxt *ud) {
+    (void)ud;
+    _tw_cb_tid = threadid();
+    ATOMIC_ADD(&_tw_fired, 1);
+}
+// tw_free 时还没触发的节点：_freecb 各调一次、_cb 一次不调。远期的四个分落 tv2~tv5(槽里那段)，
+// 紧跟 tw_free 的那批多半还停在 reqadd 里(排空那段)；两处都得走到 _freecb。
+// tv3 以上真到期后的逐级 cascade 要等 16 秒以上，这里不测
+static void test_tw_freecb(CuTest *tc) {
+    const uint32_t delays[4] = { 5000, 60000, 2000000, 100000000 };// tv2 / tv3 / tv4 / tv5
+    tw_ctx tw;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ATOMIC_SET(&_tw_fired, 0);
+    ATOMIC_SET(&_tw_freed, 0);
+    tw_init(&tw, 0, NULL);
+    for (int32_t i = 0; i < 4; i++) {
+        tw_add(&tw, delays[i], _tw_cb, _tw_freecb, &ud);
+    }
+    MSLEEP(50);// 让轮线程把它们分进槽里
+    for (int32_t i = 0; i < 100; i++) {
+        tw_add(&tw, 60000, _tw_cb, _tw_freecb, &ud);
+    }
+    tw_free(&tw);
+    int32_t fired = (int32_t)ATOMIC_GET(&_tw_fired);
+    int32_t freed = (int32_t)ATOMIC_GET(&_tw_freed);
+    CuAssertIntEquals(tc, 0, fired);
+    CuAssertIntEquals(tc, 104, freed);
+}
+// timeout 为 0 不入轮：tw_add 返回前就在调用线程上同步调完 _cb，_freecb 不调
+static void test_tw_zero_timeout(CuTest *tc) {
+    tw_ctx tw;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ATOMIC_SET(&_tw_fired, 0);
+    ATOMIC_SET(&_tw_freed, 0);
+    _tw_cb_tid = 0;
+    tw_init(&tw, 0, NULL);
+    tw_add(&tw, 0, _tw_tid_cb, _tw_freecb, &ud);
+    int32_t fired = (int32_t)ATOMIC_GET(&_tw_fired);
+    uint64_t tid = _tw_cb_tid;
+    tw_free(&tw);
+    int32_t freed = (int32_t)ATOMIC_GET(&_tw_freed);
+    CuAssertIntEquals(tc, 1, fired);
+    CuAssertTrue(tc, threadid() == tid);
+    CuAssertIntEquals(tc, 0, freed);
+}
 /* =======================================================================
- * pool —— 对象池:取/还/复用、满处理、收缩、释放(flags=0 queue / POOL_THSAFE fsqu)
+ * pool —— 对象池:取/还/复用、满处理、收缩、释放(flags=0 后进先出 / POOL_FIFO 先进先出)
  * ======================================================================= */
 typedef struct pool_t_obj {
     uint32_t magic;      // _elnew 置 POOL_T_MAGIC
@@ -2923,7 +3292,7 @@ static void _pool_basic_check(CuTest *tc, int32_t flags) {
 }
 static void test_pool_basic(CuTest *tc) {
     _pool_basic_check(tc, 0);
-    _pool_basic_check(tc, POOL_THSAFE);
+    _pool_basic_check(tc, POOL_FIFO);
 }
 // 满池:pool_push 满则 _elfree;POOL_OP_NOFREE 满则不释放,对象仍归调用方
 static void test_pool_full(CuTest *tc) {
@@ -2991,8 +3360,8 @@ static void _pool_shrink_check(CuTest *tc, int32_t flags) {
     CuAssertIntEquals(tc, 0, _pt_free_bad);
 }
 static void test_pool_shrink(CuTest *tc) {
-    _pool_shrink_check(tc, 0); // 非线程安全 queue —— 本次修复路径
-    _pool_shrink_check(tc, POOL_THSAFE); // 线程安全 fsqu —— 确认仍正确
+    _pool_shrink_check(tc, 0);
+    _pool_shrink_check(tc, POOL_FIFO);
 }
 // 收缩策略:nkeep 下限 与 load_trend busy 跳过(flags=0,确定性)
 static void test_pool_shrink_policy(CuTest *tc) {
@@ -3042,8 +3411,8 @@ static void test_pool_default(CuTest *tc) {
     pool_push(&pool, b, 0);
     pool_free(&pool);
 }
-// 出队顺序:非安全池默认后进先出(拿刚还的),POOL_FIFO 与线程安全池先进先出。
-// 收缩不论哪种都从最冷的队头释放,留下的是最近归还的那个
+// 出队顺序:默认后进先出(拿刚还的),POOL_FIFO 先进先出。
+// 收缩从最冷的队头释放,留下的是最近归还的那个
 static void _pool_order_check(CuTest *tc, int32_t flags, int32_t lifo) {
     pool_ctx pool;
     pool_t_obj *a, *b, *c, *got, *left;
@@ -3071,8 +3440,6 @@ static void _pool_order_check(CuTest *tc, int32_t flags, int32_t lifo) {
 static void test_pool_order(CuTest *tc) {
     _pool_order_check(tc, 0, 1);
     _pool_order_check(tc, POOL_FIFO, 0);
-    _pool_order_check(tc, POOL_THSAFE, 0);
-    _pool_order_check(tc, POOL_THSAFE | POOL_FIFO, 0);// FIFO 对安全池不起作用,本来就先进先出
 }
 // 容量非 2 的幂时向上取到 2 的幂:写满 want 个后再还即失败(对象被释放),取空后再取走新建
 static void _pool_cap_check(CuTest *tc, int32_t flags, uint32_t cap, uint32_t want) {
@@ -3112,9 +3479,59 @@ static void test_pool_capacity_round(CuTest *tc) {
     _pool_cap_check(tc, 0, 3, 4);
     _pool_cap_check(tc, 0, 5, 8);
     _pool_cap_check(tc, 0, 100, 128);
-    // 安全池只取 >= 8 的:bbq 后端最小容量就是 8,更小的值在它上面取整结果不同
-    _pool_cap_check(tc, POOL_THSAFE, 5, 8);
-    _pool_cap_check(tc, POOL_THSAFE, 100, 128);
+    _pool_cap_check(tc, POOL_FIFO, 1, 2);
+    _pool_cap_check(tc, POOL_FIFO, 100, 128);
+}
+// POOL_OP_NOCLEAR 归还时不调 _elclear，POOL_OP_NORESET 取出时不调 _elreset
+static void test_pool_ops(CuTest *tc) {
+    pool_ctx pool;
+    pool_t_obj *o, *o2;
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 8, 0, 0, &_pt_cbs);
+    o = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    CuAssertIntEquals(tc, ERR_OK, pool_push(&pool, o, POOL_OP_NOCLEAR));
+    CuAssertIntEquals(tc, 0, _pt_clear);
+    CuAssertIntEquals(tc, 0, (int)o->clear_cnt);
+    o2 = (pool_t_obj *)pool_pop(&pool, NULL, POOL_OP_NORESET);
+    CuAssertPtrEquals(tc, o, o2);
+    CuAssertIntEquals(tc, 0, _pt_reset);
+    CuAssertIntEquals(tc, 0, (int)o2->reset_cnt);
+    // 不带开关时照常 clear / reset
+    pool_push(&pool, o2, 0);
+    o2 = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    CuAssertIntEquals(tc, 1, _pt_clear);
+    CuAssertIntEquals(tc, 1, _pt_reset);
+    pool_push(&pool, o2, 0);
+    pool_free(&pool);
+    CuAssertIntEquals(tc, 1, _pt_free);
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+}
+// pool_shrink 按自身占用收：10 个空闲留 shrink_nkeep(10)=8 个；
+// pool_shrink_due 不足 SHRINK_TIME 返 0 且不动 last_ms，到点返非 0 并把 last_ms 推到 now
+static void test_pool_shrink_self(CuTest *tc) {
+    pool_ctx pool;
+    pool_t_obj *objs[10];
+    uint64_t last = 1000;
+    uint32_t i;
+    CuAssertIntEquals(tc, 0, pool_shrink_due(&last, 1000 + SHRINK_TIME - 1));
+    CuAssertTrue(tc, 1000 == last);
+    CuAssertTrue(tc, 0 != pool_shrink_due(&last, 1000 + SHRINK_TIME));
+    CuAssertTrue(tc, 1000 + SHRINK_TIME == last);
+    CuAssertIntEquals(tc, 0, pool_shrink_due(&last, 1000 + SHRINK_TIME));
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 16, 0, 0, &_pt_cbs);
+    for (i = 0; i < 10; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    }
+    for (i = 0; i < 10; i++) {
+        pool_push(&pool, objs[i], 0);
+    }
+    pool_shrink(&pool);
+    CuAssertIntEquals(tc, 2, _pt_free);
+    CuAssertIntEquals(tc, 8, pool_size(&pool));
+    pool_free(&pool);
+    CuAssertIntEquals(tc, 10, _pt_free);
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
 }
 
 // TDA-1：threshold 翻倍溢出修复验证
@@ -3276,12 +3693,15 @@ static void test_buffer_node_spare(CuTest *tc) {
     memset(data, 'x', sizeof(data));
     buffer_ctx buf;
     buffer_init(&buf);
+    // 先清空备用槽：前面用例留下的别的尺寸节点会占住它，让下面每轮都走分配器
+    buffer_thread_cleanup();
     // 先跑一轮把备用槽填上，免得把"首次分配"算进统计窗口
     CuAssertTrue(tc, ERR_OK == buffer_append(&buf, data, sizeof(data)));
     CuAssertTrue(tc, sizeof(data) == buffer_drain(&buf, sizeof(data)));
     const int32_t rounds = 1000;
     uint64_t a0, f0, a1, f1;
     int32_t i;
+    test_mem_settle();
     mem_stat(&a0, &f0);
     for (i = 0; i < rounds; i++) {
         CuAssertTrue(tc, ERR_OK == buffer_append(&buf, data, sizeof(data)));
@@ -3296,8 +3716,6 @@ static void test_buffer_node_spare(CuTest *tc) {
     buffer_free(&buf);
     buffer_thread_cleanup();
 }
-/* 三条快路径与通用路径的对拍：单节点 search、跨节点 search、buffer_at。
- * 单节点走 memchr 直路，双节点（buffer_external 造出来）走通用路径，两者结果必须一致 */
 /* =======================================================================
  * buffer_at 的尾节点直取：落在最后一个有数据节点时按 tail_with_data 一步到位，
  * 不再从 head 逐节点游走。协议层校验包尾 CRLF（redis bulk / http chunk）走的就是这条。
@@ -3347,6 +3765,8 @@ static void test_buffer_at_tail_node(CuTest *tc) {
     buffer_free(&many);
     buffer_free(&one);
 }
+/* 三条快路径与通用路径的对拍：单节点 search、跨节点 search、buffer_at。
+ * 单节点走 _memstr 直路，双节点（buffer_external 造出来）走通用路径，两者结果必须一致 */
 static void test_buffer_fastpath_equiv(CuTest *tc) {
     const char *body = "GET /path HTTP/1.1\r\nHost: a.b\r\n\r\nBODY";
     size_t blens = strlen(body);
@@ -3852,34 +4272,52 @@ static void test_mmap_shm(CuTest *tc) {
     o.flags = MMAP_CREATE | MMAP_EXCL;
     o.size = 5000;
     CuAssertIntEquals(tc, ERR_OK, mmap_shm(&a, name, &o));
-    CuAssertTrue(tc, 5000 == a.size);
+    // 名字建出来到 unlink 之间不断言：失败 longjmp 走就跳过 unlink，名字带 PID，下次运行清不到。
+    // 观测值先存局部量，收拾完再断言；预期失败的调用万一成功了也随手 close 掉
+    int32_t asize_ok = (5000 == a.size);
     memcpy(a.addr, "hello", 5);
     a.addr[4999] = 'E';
-    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+    int32_t rexcl = mmap_shm(&c, name, &o);
+    mmap_close(&c);
     ZERO(&o, sizeof(o));
-    CuAssertIntEquals(tc, ERR_OK, mmap_shm(&b, name, &o));
-    CuAssertTrue(tc, b.size >= 5000 && 0 == memcmp(b.addr, "hello", 5) && 'E' == b.addr[4999]);
+    int32_t rb = mmap_shm(&b, name, &o);
+    int32_t b_ok = ERR_OK == rb && b.size >= 5000 && 0 == memcmp(b.addr, "hello", 5) && 'E' == b.addr[4999];
     o.mode = MMAP_COPY;
-    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+    int32_t rcopy = mmap_shm(&c, name, &o);
+    mmap_close(&c);
     o.mode = MMAP_RDONLY;
     o.size = 1024 * 1024;
-    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
-    CuAssertIntEquals(tc, ERR_FAILED, mmap_resize(&a, 100, 0));
-    CuAssertTrue(tc, ERR_FAILED == mmap_filesize(&a));
-    CuAssertIntEquals(tc, ERR_OK, mmap_sync(&a, 0, 0, 0));
+    int32_t rbig = mmap_shm(&c, name, &o);
+    mmap_close(&c);
+    int32_t rresize = mmap_resize(&a, 100, 0);
+    int64_t fsz = mmap_filesize(&a);
+    int32_t rsync = mmap_sync(&a, 0, 0, 0);
     mmap_close(&b);
     mmap_close(&a);
     o.size = 0;
-#ifdef OS_WIN
-    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
-#else
-    CuAssertIntEquals(tc, ERR_OK, mmap_shm(&c, name, &o));
-    int32_t ok = 0 == memcmp(c.addr, "hello", 5);
-    mmap_close(&c);
-    CuAssertTrue(tc, ok);
-    CuAssertIntEquals(tc, ERR_OK, mmap_shm_unlink(name));
-    CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+    int32_t rreopen = mmap_shm(&c, name, &o);
+#ifndef OS_WIN
+    int32_t reopen_ok = ERR_OK == rreopen && 0 == memcmp(c.addr, "hello", 5);
 #endif
+    mmap_close(&c);
+    int32_t runlink = mmap_shm_unlink(name);
+    int32_t rgone = mmap_shm(&c, name, &o);
+    mmap_close(&c);
+    CuAssertTrue(tc, asize_ok);
+    CuAssertIntEquals(tc, ERR_FAILED, rexcl);
+    CuAssertTrue(tc, b_ok);
+    CuAssertIntEquals(tc, ERR_FAILED, rcopy);
+    CuAssertIntEquals(tc, ERR_FAILED, rbig);
+    CuAssertIntEquals(tc, ERR_FAILED, rresize);
+    CuAssertTrue(tc, ERR_FAILED == fsz);
+    CuAssertIntEquals(tc, ERR_OK, rsync);
+#ifdef OS_WIN
+    CuAssertIntEquals(tc, ERR_FAILED, rreopen);// 最后一个句柄关掉对象即消失
+#else
+    CuAssertTrue(tc, reopen_ok);// POSIX 对象活到 unlink
+#endif
+    CuAssertIntEquals(tc, ERR_OK, runlink);
+    CuAssertIntEquals(tc, ERR_FAILED, rgone);
     CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, "noslash", &o));
     CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, "/a/b", &o));
     CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, "/", &o));
@@ -3890,6 +4328,40 @@ static void test_mmap_shm(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, mmap_shm_unlink(bad));
     o.flags = MMAP_CREATE;
     CuAssertIntEquals(tc, ERR_FAILED, mmap_shm(&c, name, &o));
+}
+// CREATE|EXCL 新建之后才失败的，新建的文件 / 共享内存名字要删掉：留着的话同参数 EXCL 重试永远撞"已存在"
+static void test_mmap_excl_rollback(CuTest *tc) {
+    char path[PATH_LENS], name[32];
+    mmap_ctx mm;
+    mmap_opts o;
+    _mm_path(path, sizeof(path), "test_mmap_excl.tmp");
+    remove(path);
+    // 只读映射越过新建空文件的末尾：文件建好之后才判出参数非法
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDONLY;
+    o.flags = MMAP_CREATE | MMAP_EXCL;
+    o.size = 4096;
+    int32_t ropen = mmap_open(&mm, path, &o);
+    int32_t file_left = (ERR_OK == isfile(path));// isfile 存在返回 ERR_OK(0)
+    mmap_close(&mm);
+    remove(path);
+    CuAssertIntEquals(tc, ERR_FAILED, ropen);
+    CuAssertIntEquals(tc, 0, file_left);
+    // 共享内存长度大到建不出来(POSIX 上是 shm_open 建出名字之后才失败)：名字不能留，同名 EXCL 重试要能成功
+    SNPRINTF(name, sizeof(name), "/srey_x_%d", (int32_t)GETPID());
+    (void)mmap_shm_unlink(name);
+    ZERO(&o, sizeof(o));
+    o.mode = MMAP_RDWR;
+    o.flags = MMAP_CREATE | MMAP_EXCL;
+    o.size = SIZE_MAX / 4 * 3;
+    int32_t rbig = mmap_shm(&mm, name, &o);
+    mmap_close(&mm);
+    o.size = 4096;
+    int32_t rretry = mmap_shm(&mm, name, &o);
+    mmap_close(&mm);
+    (void)mmap_shm_unlink(name);
+    CuAssertIntEquals(tc, ERR_FAILED, rbig);
+    CuAssertIntEquals(tc, ERR_OK, rretry);
 }
 // advise / sync / populate 的参数与越界检查
 static void test_mmap_advise_sync(CuTest *tc) {
@@ -4236,8 +4708,38 @@ static void test_contenttype_rows(CuTest *tc) {
     CuAssertStrEquals(tc, "video/mp4", contenttype(".MP4"));
     CuAssertStrEquals(tc, "image/x-xwindowdump", contenttype(".xwd"));
     CuAssertStrEquals(tc, "application/x-zip-compressed", contenttype(".zip"));
-    CuAssertStrEquals(tc, "application/X-other-1", contenttype(".zip2"));
-    CuAssertStrEquals(tc, "application/X-other-1", contenttype(""));
+    CuAssertStrEquals(tc, "application/octet-stream", contenttype(".zip2"));
+    CuAssertStrEquals(tc, "application/octet-stream", contenttype(""));
+}
+// 查询参数超过 URL_MAX_PARAM 个时 url_parse 失败、不静默截断(同路径段超限)；恰好 URL_MAX_PARAM 个合法，空段不占名额
+static void test_url_param_max(CuTest *tc) {
+    char u[URL_MAX_PARAM * 8 + 32];
+    char raw[sizeof(u)];
+    url_ctx ctx;
+    size_t n = 3;
+    int32_t i;
+    memcpy(u, "/p?", 3);
+    for (i = 0; i < URL_MAX_PARAM; i++) {
+        n += (size_t)snprintf(u + n, sizeof(u) - n, "%sk%d=%d", 0 == i ? "" : "&", i, i);
+    }
+    CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, u, n, '/', URL_DECODE));
+    CuAssertIntEquals(tc, URL_MAX_PARAM, ctx.nparam);
+    buf_ctx *v = url_get_param(&ctx, "k63");
+    CuAssertTrue(tc, NULL != v && buf_compare(v, "63", 2));
+    // 空段不入表，仍是 URL_MAX_PARAM 个
+    memcpy(u + n, "&&", 2);
+    n += 2;
+    CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, u, n, '/', URL_DECODE));
+    CuAssertIntEquals(tc, URL_MAX_PARAM, ctx.nparam);
+    // 再多一个：原来静默丢掉，同名取最后一个的规则在第 65 个以后失效
+    memcpy(u + n, "&k0=x", 5);
+    n += 5;
+    CuAssertIntEquals(tc, ERR_FAILED, url_parse(&ctx, u, n, '/', URL_DECODE));
+    CuAssertIntEquals(tc, 0, ctx.nparam);
+    CuAssertTrue(tc, NULL == url_get_param(&ctx, "k0"));
+    // 不解码时就地解析，同样失败
+    memcpy(raw, u, n);
+    CuAssertIntEquals(tc, ERR_FAILED, url_parse(&ctx, raw, n, '/', 0));
 }
 // 子进程自成进程组(pgid == 子进程 pid)，popen_close 才能连孙进程一起杀
 static void test_popen_pgroup(CuTest *tc) {
@@ -4261,9 +4763,174 @@ static void test_popen_pgroup(CuTest *tc) {
     (void)tc;
 #endif
 }
+// 读子进程输出直到 EOF 或超时，结果以 '\0' 结尾；返回是否读到了 EOF
+static int32_t _popen_read_all(popen_ctx *ctx, char *buf, size_t cap, uint32_t ms) {
+    size_t got = 0;
+    int32_t eof = 0, n;
+    uint64_t dl = nowms() + ms;
+    while (0 == eof && got + 1 < cap && nowms() < dl) {
+        n = popen_read(ctx, buf + got, cap - 1 - got, &eof);
+        if (ERR_FAILED == n) {
+            break;
+        }
+        if (n > 0) {
+            got += (size_t)n;
+        } else if (0 == eof) {
+            MSLEEP(1);
+        }
+    }
+    buf[got] = '\0';
+    return eof;
+}
+#ifndef OS_WIN
+// ls /dev/fd/ 的输出(每行一个编号)里有没有 fd
+static int32_t _fd_listed(const char *out, SOCKET fd) {
+    const char *p = out;
+    char *end;
+    while ('\0' != *p) {
+        if (strtol(p, &end, 10) == (long)fd && end != p && ('\n' == *end || '\0' == *end)) {
+            return 1;
+        }
+        p = strchr(p, '\n');
+        if (NULL == p) {
+            break;
+        }
+        p++;
+    }
+    return 0;
+}
+#endif
+// popen 子进程的执行环境(POSIX)：本进程的 socket 带 CLOEXEC、不被子进程继承；
+// 本进程忽略的 SIGPIPE 在子进程里恢复默认；不接管的 stdin 接 /dev/null，读到的是 EOF
+static void test_popen_env(CuTest *tc) {
+#ifndef OS_WIN
+    popen_ctx ctx;
+    SOCKET fds[2];
+    char out[2048];
+    CuAssertIntEquals(tc, ERR_OK, sock_pair(fds, 0));
+    SOCKET lsn = sock_create_cloexec(AF_INET, SOCK_STREAM, 0, 1);
+    int32_t rls = popen_startup(&ctx, "ls /dev/fd/", "r");
+    // CLOEXEC 位：sock_create_cloexec、sock_pair 两端(各走 create / accept)、popen 父端
+    int32_t own_cloexec = INVALID_SOCK != lsn && 0 != (fcntl(lsn, F_GETFD) & FD_CLOEXEC)
+        && 0 != (fcntl(fds[0], F_GETFD) & FD_CLOEXEC) && 0 != (fcntl(fds[1], F_GETFD) & FD_CLOEXEC)
+        && ERR_OK == rls && 0 != (fcntl(ctx.sock, F_GETFD) & FD_CLOEXEC);
+    _popen_read_all(&ctx, out, sizeof(out), 5000);
+    // 0~2 是子进程的标准流，3、4 是 ls 自己开的(macOS / FreeBSD 都会占两个)，编号撞上不算继承。
+    // FreeBSD 没挂 fdescfs 时只列 0~2，查不出来
+    SOCKET own[4] = { fds[0], fds[1], lsn, ctx.sock };
+    int32_t inherited = 0;
+    for (int32_t i = 0; i < 4; i++) {
+        if (own[i] > 4 && _fd_listed(out, own[i])) {
+            inherited = 1;
+        }
+    }
+    int32_t listed = _fd_listed(out, 1);// 确实拿到了 fd 列表
+    popen_free(&ctx);
+    CLOSE_SOCK(fds[0]);
+    CLOSE_SOCK(fds[1]);
+    CLOSE_SOCK(lsn);
+    CuAssertIntEquals(tc, ERR_OK, rls);
+    CuAssertTrue(tc, own_cloexec);
+    CuAssertTrue(tc, listed);
+    CuAssertIntEquals(tc, 0, inherited);
+
+    // stdin 读到 EOF(继承终端的话前台跑会被 SIGTTIN 挂住)；给自己发 SIGPIPE 应按默认处置被杀，打不出 alive
+    int32_t rsig = popen_startup(&ctx, "if read x; then echo got; else echo eof; fi; kill -s PIPE $$; echo alive", "r");
+    _popen_read_all(&ctx, out, sizeof(out), 5000);
+    int32_t wait_ok = (ERR_OK == popen_waitexit(&ctx, 5000));
+    int32_t code = popen_exitcode(&ctx);
+    popen_free(&ctx);
+    CuAssertIntEquals(tc, ERR_OK, rsig);
+    CuAssertTrue(tc, NULL != strstr(out, "eof"));
+    CuAssertTrue(tc, NULL == strstr(out, "alive"));
+    CuAssertTrue(tc, wait_ok);
+    CuAssertIntEquals(tc, ERR_FAILED, code);// 被信号终止
+#else
+    (void)tc;
+#endif
+}
+// popen_close 一律清理整组：先 waitexit 等到直接子进程退出，再 close，它派生的后台孙进程也得一起结束。
+// 孙进程拿着输出端，它活着读端就见不到 EOF，close 之后读到 EOF 即说明它已被结束
+static void test_popen_close_group(CuTest *tc) {
+    popen_ctx ctx;
+    char out[256];
+    char rest[4096];
+#ifdef OS_WIN
+    const char *cmd = "cmd /c start /b ping -n 30 127.0.0.1";
+#else
+    const char *cmd = "sleep 30 & echo $!";
+#endif
+    int32_t rst = popen_startup(&ctx, cmd, "r");
+    int32_t wait_ok = (ERR_OK == popen_waitexit(&ctx, 5000));
+    int32_t eof = 0;
+    ZERO(out, sizeof(out));
+    int32_t n = popen_read(&ctx, out, sizeof(out) - 1, &eof);
+    int32_t held = (0 == eof);// 直接子进程已退，孙进程还拿着输出端
+    popen_close(&ctx);
+    int32_t code = popen_exitcode(&ctx);// 直接子进程是自己正常退的，close 不改它的退出码
+    int32_t eof_after = _popen_read_all(&ctx, rest, sizeof(rest), 5000);
+#ifndef OS_WIN
+    long bg = strtol(out, NULL, 10);
+    if (0 == eof_after && bg > 0) {
+        kill((pid_t)bg, SIGKILL);// 回归时别把 sleep 30 留成孤儿
+    }
+#endif
+    popen_free(&ctx);
+    CuAssertIntEquals(tc, ERR_OK, rst);
+    CuAssertTrue(tc, wait_ok);
+    CuAssertTrue(tc, n >= 0);
+    CuAssertTrue(tc, held);
+    CuAssertIntEquals(tc, 0, code);
+    CuAssertTrue(tc, eof_after);
+#ifndef OS_WIN
+    CuAssertTrue(tc, n > 0 && bg > 0);
+#endif
+}
+// popen_close_stdin：sort 读 stdin 到 EOF 才输出，关掉 stdin 后能读到排好序的完整输出、它自己正常退出；
+// 关过之后再关、再写都失败；没接管 stdin 的 'r' 模式无可关、也写不了
+static void test_popen_close_stdin(CuTest *tc) {
+    popen_ctx ctx;
+    char out[256];
+#ifdef OS_WIN
+    const char *input = "b\r\na\r\n";
+    const char *quick = "cmd /c exit 0";
+#else
+    const char *input = "b\na\n";
+    const char *quick = "exit 0";
+#endif
+    int32_t rst = popen_startup(&ctx, "sort", "rw");
+    int32_t nwrite = popen_write(&ctx, input, strlen(input));
+    int32_t rclose = popen_close_stdin(&ctx);
+    int32_t rclose2 = popen_close_stdin(&ctx);
+    int32_t nwrite2 = popen_write(&ctx, "c\n", 2);
+    int32_t eof = _popen_read_all(&ctx, out, sizeof(out), 5000);
+    int32_t wait_ok = (ERR_OK == popen_waitexit(&ctx, 5000));
+    int32_t code = popen_exitcode(&ctx);
+    popen_free(&ctx);
+    const char *pa = strchr(out, 'a');
+    const char *pb = strchr(out, 'b');
+    CuAssertIntEquals(tc, ERR_OK, rst);
+    CuAssertIntEquals(tc, (int32_t)strlen(input), nwrite);
+    CuAssertIntEquals(tc, ERR_OK, rclose);
+    CuAssertIntEquals(tc, ERR_FAILED, rclose2);
+    CuAssertIntEquals(tc, ERR_FAILED, nwrite2);
+    CuAssertTrue(tc, eof);
+    CuAssertTrue(tc, NULL != pa && NULL != pb && pa < pb);
+    CuAssertTrue(tc, wait_ok);
+    CuAssertIntEquals(tc, 0, code);
+
+    rst = popen_startup(&ctx, quick, "r");
+    rclose = popen_close_stdin(&ctx);
+    nwrite = popen_write(&ctx, "x", 1);
+    popen_free(&ctx);
+    CuAssertIntEquals(tc, ERR_OK, rst);
+    CuAssertIntEquals(tc, ERR_FAILED, rclose);
+    CuAssertIntEquals(tc, ERR_FAILED, nwrite);
+}
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_binary);
     SUITE_ADD_TEST(suite, test_binary_extra);
+    SUITE_ADD_TEST(suite, test_binary_set_va_grow);
     SUITE_ADD_TEST(suite, test_binary_set_binary_self_alias);
     SUITE_ADD_TEST(suite, test_binary_bounds);
     SUITE_ADD_TEST(suite, test_buffer);
@@ -4272,6 +4939,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_sfid_epoch_underflow);
     SUITE_ADD_TEST(suite, test_buffer_extra);
     SUITE_ADD_TEST(suite, test_buffer_external_appendv);
+    SUITE_ADD_TEST(suite, test_buffer_appendv_realign_borrow);
     SUITE_ADD_TEST(suite, test_buffer_external_not_writable);
     SUITE_ADD_TEST(suite, test_buffer_external_zero);
     SUITE_ADD_TEST(suite, test_buffer_get_commit);
@@ -4300,8 +4968,10 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hash_ring_edge);
     SUITE_ADD_TEST(suite, test_netaddr);
     SUITE_ADD_TEST(suite, test_netaddr_extra);
+    SUITE_ADD_TEST(suite, test_netaddr_scope);
     SUITE_ADD_TEST(suite, test_chan);
     SUITE_ADD_TEST(suite, test_chan_capacity_round);
+    SUITE_ADD_TEST(suite, test_chan_unbuffered);
     SUITE_ADD_TEST(suite, test_hug);
     SUITE_ADD_TEST(suite, test_hug_wakeup_flood);
     SUITE_ADD_TEST(suite, test_load_trend);
@@ -4314,10 +4984,13 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_log_file_mode);
     SUITE_ADD_TEST(suite, test_log_linger);
     SUITE_ADD_TEST(suite, test_log_linger_wake);
+    SUITE_ADD_TEST(suite, test_log_queue_full);
     SUITE_ADD_TEST(suite, test_tw);
     SUITE_ADD_TEST(suite, test_tw_long_timeout);
     SUITE_ADD_TEST(suite, test_tw_latency);
     SUITE_ADD_TEST(suite, test_tw_wakeup_after_idle);
+    SUITE_ADD_TEST(suite, test_tw_freecb);
+    SUITE_ADD_TEST(suite, test_tw_zero_timeout);
     SUITE_ADD_TEST(suite, test_sock_pair);
     SUITE_ADD_TEST(suite, test_sock_options);
     SUITE_ADD_TEST(suite, test_pool_basic);
@@ -4327,6 +5000,8 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pool_default);
     SUITE_ADD_TEST(suite, test_pool_order);
     SUITE_ADD_TEST(suite, test_pool_capacity_round);
+    SUITE_ADD_TEST(suite, test_pool_ops);
+    SUITE_ADD_TEST(suite, test_pool_shrink_self);
     SUITE_ADD_TEST(suite, test_tda_overflow);
     SUITE_ADD_TEST(suite, test_strtou64_ref);
     SUITE_ADD_TEST(suite, test_sfid_init_keeps_ctx);
@@ -4342,6 +5017,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mmap_map_fd);
     SUITE_ADD_TEST(suite, test_mmap_anon);
     SUITE_ADD_TEST(suite, test_mmap_shm);
+    SUITE_ADD_TEST(suite, test_mmap_excl_rollback);
     SUITE_ADD_TEST(suite, test_mmap_advise_sync);
     SUITE_ADD_TEST(suite, test_mmap_granularity);
     SUITE_ADD_TEST(suite, test_netaddr_ip4_format);
@@ -4355,5 +5031,9 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_search_long_line);
     SUITE_ADD_TEST(suite, test_netaddr_set_pton);
     SUITE_ADD_TEST(suite, test_contenttype_rows);
+    SUITE_ADD_TEST(suite, test_url_param_max);
     SUITE_ADD_TEST(suite, test_popen_pgroup);
+    SUITE_ADD_TEST(suite, test_popen_env);
+    SUITE_ADD_TEST(suite, test_popen_close_group);
+    SUITE_ADD_TEST(suite, test_popen_close_stdin);
 }

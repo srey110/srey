@@ -1,8 +1,7 @@
 ﻿#include "crypt/sha512.h"
 #include "crypt/crypt_pub.h"
 
-#define SHA512_BLOCK_LENGTH 128 // SHA-512 输入块长度（字节）
-#define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16) // 末尾块长度阈值（留出 128 位存放长度）
+#define SHA512_SHORT_BLOCK_LENGTH (SHA512_KEY_BLOCK - 16) // 末尾块长度阈值（留出 128 位存放长度）
 // 128 位计数器加法。n 存局部再用:直接展开会求值两次,带副作用的实参会让进位判错
 #define ADDINC128(w,n) do { \
     uint64_t _addinc = (uint64_t)(n); \
@@ -91,14 +90,14 @@ static const uint64_t ihv[8] = {
 };
 
 void sha512_init(sha512_ctx *sha512) {
-    memcpy(sha512->state, ihv, SHA512_BLOCK_SIZE);
+    memcpy(sha512->state, ihv, sizeof(sha512->state));
     sha512->bitlen[0] = sha512->bitlen[1] = 0;
 }
 // SHA-512 核心变换：连续处理 blocks 个 128 字节块
 static void _sha512_transform(uint64_t state[8], const uint8_t *data, size_t blocks) {
     uint64_t a, b, c, d, e, f, g, h, t1, w[16];
     size_t i;
-    for (; blocks > 0; --blocks, data += SHA512_BLOCK_LENGTH) {
+    for (; blocks > 0; --blocks, data += SHA512_KEY_BLOCK) {
         a = state[0];
         b = state[1];
         c = state[2];
@@ -130,10 +129,9 @@ void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
         return;
     }
     const uint8_t *p = (const uint8_t *)data;
-    size_t blocks;
-    size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_BLOCK_LENGTH;
+    size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_KEY_BLOCK;
     if (usedspace > 0) {
-        size_t freespace = SHA512_BLOCK_LENGTH - usedspace;
+        size_t freespace = SHA512_KEY_BLOCK - usedspace;
         if (lens >= freespace) {
             memcpy(&sha512->data[usedspace], p, freespace);
             ADDINC128(sha512->bitlen, freespace << 3);
@@ -143,16 +141,15 @@ void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
         } else {
             memcpy(&sha512->data[usedspace], p, lens);
             ADDINC128(sha512->bitlen, lens << 3);
-            usedspace = freespace = 0;
             return;
         }
     }
-    if (lens >= SHA512_BLOCK_LENGTH) {
-        blocks = lens / SHA512_BLOCK_LENGTH;
+    if (lens >= SHA512_KEY_BLOCK) {
+        size_t blocks = lens / SHA512_KEY_BLOCK;
         _sha512_transform(sha512->state, p, blocks);
         ADDINC128(sha512->bitlen, (uint64_t)blocks << 10);
-        lens -= blocks * SHA512_BLOCK_LENGTH;
-        p += blocks * SHA512_BLOCK_LENGTH;
+        lens -= blocks * SHA512_KEY_BLOCK;
+        p += blocks * SHA512_KEY_BLOCK;
     }
     if (lens > 0) {
         memcpy(sha512->data, p, lens);
@@ -161,14 +158,14 @@ void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
 }
 // 处理末尾块：填充消息并附加总长度，然后执行最后一次变换
 static void _sha512_last(sha512_ctx *sha512) {
-    size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_BLOCK_LENGTH;
+    size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_KEY_BLOCK;
     if (usedspace > 0) {
         sha512->data[usedspace++] = 0x80;
         if (usedspace <= SHA512_SHORT_BLOCK_LENGTH) {
             ZERO(&sha512->data[usedspace], SHA512_SHORT_BLOCK_LENGTH - usedspace);
         } else {
-            if (usedspace < SHA512_BLOCK_LENGTH) {
-                ZERO(&sha512->data[usedspace], SHA512_BLOCK_LENGTH - usedspace);
+            if (usedspace < SHA512_KEY_BLOCK) {
+                ZERO(&sha512->data[usedspace], SHA512_KEY_BLOCK - usedspace);
             }
             _sha512_transform(sha512->state, sha512->data, 1);
             ZERO(sha512->data, SHA512_SHORT_BLOCK_LENGTH);
@@ -183,9 +180,8 @@ static void _sha512_last(sha512_ctx *sha512) {
     _sha512_transform(sha512->state, sha512->data, 1);
 }
 void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]) {
-    size_t j;
     _sha512_last(sha512);
-    for (j = 0; j < 8; j++) {
+    for (size_t j = 0; j < 8; j++) {
         write_be64(hash + j * 8, sha512->state[j]);
     }
     secure_zero(sha512, sizeof(sha512_ctx));

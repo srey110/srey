@@ -3,8 +3,8 @@
 #include "srey/task.h"
 #include "coro/coro.h"
 
-#define TASK_MSG_BATCH   32 // 单次批量 pop 消息的最大条数,也是 worker 栈上那个数组的长度
-                            // (按值存,一条 72 字节);调大摊薄出队开销,代价是栈占用等比涨
+#define TASK_MSG_BATCH   32 // 单次批量 pop 消息的最大条数,也是 worker 与跑绑定 task 的 net 线程栈上那个数组的长度
+                            // (按值存 message_ctx);调大摊薄出队开销,代价是两处栈占用等比涨
 #define CLOSING_WARN_MS  15000// 关闭期每隔这么久把还没退的 task 打一遍
 #define MONITOR_INTERVAL_MS 5000// 监控线程每隔这么久查一次有没有 task 卡在一条消息上
 #define WORKER_IDLE_SPIN_MIN_US 1 // worker 睡前空转时长的下限(微秒);到活间隔长于唤醒代价时只转这么久,规则见 waiter.h 的 spinner_ctx
@@ -15,7 +15,7 @@ typedef struct _task_each_arg {
     void *arg;
 }_task_each_arg;
 
-loader_ctx *g_loader; // 全局 loader 单例，由 loader_init 创建
+loader_ctx *g_loader; // 全局 loader 单例，程序入口把 loader_init 的返回值存进来
 // 前向声明：绑定 task 在 net 线程上跑一轮也走它，而它末尾的重调度又要用到 _loader_task_schedule
 static void _loader_task_run(loader_ctx *loader, int32_t weight,
     worker_version *version, task_dispatch_arg *runarg, message_ctx *msgbatch);
@@ -156,12 +156,6 @@ static inline void _loader_task_schedule(loader_ctx *loader, task_ctx *task) {
     }
     _loader_worker_wakeup(loader, task);
 }
-// 只入队，不触发调度；一次解出多个包时由调用方在末尾统一 _task_message_active 一次。
-// 队列按值存 message_ctx：存指针要另配一个所有线程共抢的对象池（每条消息一取一还），
-// 消费侧还得解引用一次生产者线程写的堆对象，白吃一次跨核 cache miss
-void _task_message_push(task_ctx *task, message_ctx *msg) {
-    msgq_push(&task->qumsg, msg);
-}
 // 触发调度：队列非空而尚未被调度时交给 worker(绑定的交给它的 net 线程)
 void _task_message_active(task_ctx *task) {
     // CAS 0→1：只有首个生产者负责调度，避免重复唤醒
@@ -171,7 +165,7 @@ void _task_message_active(task_ctx *task) {
 }
 // 入队并触发调度；非网络生产者（超时、请求、响应、广播）都走这个
 void _task_message_post(task_ctx *task, message_ctx *msg) {
-    _task_message_push(task, msg);
+    msgq_push(&task->qumsg, msg);
     _task_message_active(task);
 }
 // 找出积压任务最多的 worker 索引，用于任务窃取；队列全空时返回 -1。
@@ -529,37 +523,42 @@ static int32_t _loader_closing_timeout(name_t *const *item, void *udata) {
     LOG_WARN("task %s close timeout, ref %d.", _NAME_OR(task->name), ATOMIC_GET(&task->ref));
     return 1;/* 非 0 = 继续扫 */
 }
-// 广播关闭消息给所有任务，并等待所有任务退出（每 CLOSING_WARN_MS 毫秒打一次仍在的 task）
+// 广播关闭消息给所有任务，并等待所有任务退出、net 线程上推迟的释放全部做完(之后 ev_free 才能停 net 线程)。
+// 每 CLOSING_WARN_MS 毫秒打一次仍在的 task
 static void _loader_task_closing(loader_ctx *loader) {
     message_ctx closing = { 0 };
     closing.mtype = MSG_TYPE_CLOSING;
     rwlock_distr_rdlock(&loader->lckmaptasks);
     // 在持锁期间置位 closing，与 task_register 的写锁互斥：先注册的被本次扫描覆盖，
-    // 后注册的由 task_register 自己看到 closing=1 追加 CLOSING，两侧都不会漏
-    ATOMIC_SET_RELAXED(&loader->closing, 1);
+    // 后注册的由 task_register 自己看到 closing=1 追加 CLOSING，两侧都不会漏。
+    // 用足序：与推迟释放那边"减 nfreeing 再查 closing"握手，见 _task_free_deferred
+    ATOMIC_SET(&loader->closing, 1);
     task_map_scan(loader->maptasks, _loader_closing_push, &closing);
     rwlock_distr_runlock(&loader->lckmaptasks);
     // 查计数夹在 waiter_prepare 与 cancel / commit_until 之间(握手见 waiter.h)，发布方摘掉最后一个再叫醒
-    // 不会落在"查到非 0"与"开始等"之间。发布方见 task_ungrab
-    timer_ctx timer;
-    timer_init(&timer);
-    uint64_t next_warn = timer_cur_ms(&timer) + CLOSING_WARN_MS;
+    // 不会落在"查到非 0"与"开始等"之间。发布方见 task_ungrab 与 _task_free_deferred。
+    // 先查表后查 nfreeing：推迟释放的计数在摘表的写锁里加，看到表空就一定看得到它
+    uint64_t next_warn = timer_cur_ms(&loader->timer) + CLOSING_WARN_MS;
     size_t n;
     for (;;) {
         waiter_prepare(&loader->closing_waiter, WAITER_SLEEP);
         rwlock_distr_rdlock(&loader->lckmaptasks);
         n = task_map_size(loader->maptasks);
         rwlock_distr_runlock(&loader->lckmaptasks);
-        if (0 == n) {
+        if (0 == n
+            && 0 == ATOMIC_GET_SEQCST(&loader->nfreeing)) {
             waiter_cancel(&loader->closing_waiter);
             break;
         }
         // 被叫醒就回去重查计数；到点(已过点则不睡)把还没退的 task 打一遍
-        if (1 == waiter_commit_until(&loader->closing_waiter, &timer, next_warn)) {
-            next_warn = timer_cur_ms(&timer) + CLOSING_WARN_MS;
+        if (1 == waiter_commit_until(&loader->closing_waiter, &loader->timer, next_warn)) {
+            next_warn = timer_cur_ms(&loader->timer) + CLOSING_WARN_MS;
             rwlock_distr_rdlock(&loader->lckmaptasks);
             task_map_scan(loader->maptasks, _loader_closing_timeout, NULL);
             rwlock_distr_runlock(&loader->lckmaptasks);
+            if (0 != ATOMIC_GET(&loader->nfreeing)) {
+                LOG_WARN("%d task(s) still waiting to be freed on net threads.", (int32_t)ATOMIC_GET(&loader->nfreeing));
+            }
         }
     }
 }

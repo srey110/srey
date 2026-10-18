@@ -1,5 +1,5 @@
 -- harbor 跨节点 RPC 的 Lua 客户端(srey.net_call / srey.net_request / 内部的 _net_rpc)。
--- 本进程自己就起着 harbor(srey/startup.c 末尾无条件 harbor_start),故连回本机、dst 用自己的
+-- config.json 配了 harbor.port 时 srey/startup.c 会起 harbor,本用例连回本机、dst 用自己的
 -- 句柄:请求经 harbor 绕一圈回到本 task 的 on_requested,响应再原路回来。harbor 是独立 task,
 -- 本协程挂在 syn_send 上不挡自己的消息派发,故不会自锁。
 -- 刻意不借 multi_call_sub 当靶:它 reqtype=100 会 srey.call 回 multi_call,给那个模块塞一条
@@ -61,8 +61,10 @@ runner.run(function(t)
     t:eq(false, srey.net_call(sk, self_h, REQUEST_TYPE.REQ_DEBUG, PAYLOAD),
          "框架保留的 reqtype 被拒")
 
-    srey.sleep(100)-- 单向 call 的投递是异步的,等它落到 on_requested
-    t:check(ncall >= 2, "on_requested 被 harbor 投到至少两次 (" .. ncall .. ")")
+    -- harbor 先投 call 后投 request,同一队列按序派发,net_request 返回时两次都已落到 on_requested;
+    -- 再等一会儿是为了让重复投递也有机会冒出来
+    srey.sleep(100)
+    t:eq(2, ncall, "on_requested 恰被 harbor 投到两次 (call + request)")
     srey.close(sk)
 end)
 end)

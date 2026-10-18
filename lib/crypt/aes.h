@@ -12,7 +12,7 @@ typedef struct aes_ctx {
 }aes_ctx;
 
 /// <summary>
-/// aes 初始化
+/// aes 初始化。keybits 不是 128 / 192 / 256 时 ASSERTAB 终止进程
 /// </summary>
 /// <param name="aes">aes_ctx</param>
 /// <param name="key">密码</param>
@@ -26,7 +26,8 @@ void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int3
 /// </summary>
 /// <param name="aes">aes_ctx</param>
 /// <param name="data">待加解密数据,长度:AES_BLOCK_SIZE；可以就是上次返回的输出缓冲（先读完输入再写输出）</param>
-/// <returns>加解密后的数据,长度:AES_BLOCK_SIZE</returns>
+/// <returns>加解密后的数据,长度:AES_BLOCK_SIZE。指向 aes_ctx 内部缓冲,调用方不得释放,
+///   下次 aes_crypt / aes_init 前有效</returns>
 char *aes_crypt(aes_ctx *aes, const void *data);
 
 #endif//AES_H_

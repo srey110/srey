@@ -46,8 +46,8 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cl
     }
     _push(task, sk);
 }
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)task; (void)sk; (void)pktype; (void)client;
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
+    (void)task; (void)sk; (void)pktype; (void)client; (void)sess;
     if (CLOSE_TYPE_ABORT != erro) {
         ATOMIC_ADD(&g_bad_erro, 1);
     }
@@ -81,6 +81,7 @@ static void _startup(task_ctx *task) {
     atomic_t curs;
     int32_t stall = 0;
     int32_t waited = 0;
+    int32_t grace;
     while (waited < STALL_MS + 5000) {
         if (task_isclosing(task)) {
             return;
@@ -91,17 +92,25 @@ static void _startup(task_ctx *task) {
         curs = ATOMIC_GET(&g_srv_recv);
         if ((size_t)curc >= TOTAL_BYTES
             && (size_t)curs >= TOTAL_BYTES) {
-            *(arg->ok) = 1;
+            ATOMIC_SET((atomic_t *)arg->ok, 1);
             LOG_INFO("ssl_deadlock: both sides received all %zu bytes, no cycle.", TOTAL_BYTES);
             return;
         }
         // 两端都不主动读时环必成:谁都在等对方先读,只有看门狗能拆。故收割即预期结局,
         // 判据是 close_type 必须是 ABORT。真正的失败是停住且无人收割
         if (ATOMIC_GET(&g_closed) > 0) {
+            // 被收割的一侧先报关闭，对端的要等它关了才来：两侧都关了(或宽限到期)再判 close_type。
+            // 对端可能也得等自己的看门狗，宽限同 STALL_MS
+            for (grace = 0; grace < STALL_MS && ATOMIC_GET(&g_closed) < 2; grace += POLL_MS) {
+                coro_sleep(task, POLL_MS);
+                if (task_isclosing(task)) {
+                    return;
+                }
+            }
             if (0 == ATOMIC_GET(&g_bad_erro)) {
-                *(arg->ok) = 1;
-                LOG_INFO("ssl_deadlock: reaped by wpend watchdog (cli %lld / srv %lld), as expected.",
-                         (long long)curc, (long long)curs);
+                ATOMIC_SET((atomic_t *)arg->ok, 1);
+                LOG_INFO("ssl_deadlock: reaped by wpend watchdog (cli %lld / srv %lld, %lld closed), as expected.",
+                         (long long)curc, (long long)curs, (long long)ATOMIC_GET(&g_closed));
             } else {
                 LOG_ERROR("ssl_deadlock: closed but close_type is not ABORT.");
             }

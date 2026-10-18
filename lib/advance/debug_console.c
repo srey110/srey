@@ -8,19 +8,17 @@
 #include "utils/binary.h"
 #include "utils/netaddr.h"
 #include "utils/log.h"
+#include "containers/sarray.h"
 
 // Lua VM 专属命令打到非 Lua task 时的应答；由发起方（各路由 handler 传的 needlua）判定
 #define _DBG_NOTLUA "command not supported in C task."
-// task 列表收集项 + 动态数组（用于 /__alive 与广播）
+#define _DBG_ORIGIN_SCHEME "http://"// 本服务只有明文，同源的 Origin 就是它 + Host
+// task 列表收集项（用于 /__alive 与广播）
 typedef struct dbg_task {
     name_t handle;   // task 句柄
     char *name;      // task 名（dup_zero；匿名 task 为 NULL）；不定长，避免长同前缀名被截断后合体
 }dbg_task;
-typedef struct dbg_tasklist {
-    uint32_t n;      // 当前元素数
-    uint32_t cap;    // 已分配容量
-    dbg_task *items; // 元素数组（REALLOC 倍增，调用方走 _debug_tasklist_free）
-}dbg_tasklist;
+ARR_DECL(dbg_task_arr, dbg_task)
 // 广播单个 task 的 fork 参数；coro_request 响应在协程结束后失效，须复制到 resp 堆
 typedef struct bcast_arg {
     int32_t needlua;   // 非 0：仅 Lua task 能执行，其余直接回 _DBG_NOTLUA 不发请求
@@ -32,12 +30,10 @@ typedef struct bcast_arg {
 }bcast_arg;
 // debug_console 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取）
 typedef struct debug_console_ctx {
-    uint16_t port;       // 监听端口
     size_t html_len;     // HTML 字节数
     uint64_t lsnid;      // 监听 ID（ev_unlisten 用）
     router_ctx *router;  // HTTP 路由器
     char *html;          // 调试 UI 页面（启动时 readall 一次，失败为 NULL）
-    char ip[IP_LENS];    // 监听 IP
 }debug_console_ctx;
 
 // 调试命令用法说明（对齐前端 UI 与 debug_request 处理器）
@@ -104,43 +100,37 @@ static void _debug_bcast_one(void *owner, void *arg) {
 }
 // loader_task_each 回调：把 {name, handle} 追加进动态数组
 static void _debug_tasklist(const char *name, name_t handle, void *arg) {
-    dbg_tasklist *tl = arg;
-    if (tl->n >= tl->cap) {
-        uint32_t ncap = (0 == tl->cap) ? 16u : tl->cap * 2u;
-        REALLOC(tl->items, tl->items, sizeof(dbg_task) * (size_t)ncap);
-        tl->cap = ncap;
-    }
-    dbg_task *it = &tl->items[tl->n++];
-    it->handle = handle;
-    it->name = (NULL != name) ? dup_zero(name, strlen(name)) : NULL;
+    dbg_task it;
+    it.handle = handle;
+    it.name = (NULL != name) ? dup_zero(name, strlen(name)) : NULL;
+    dbg_task_arr_push_back(arg, &it);
 }
 // 释放收集列表：逐元素释放 dup_zero 的 name 后释放数组本身
-static void _debug_tasklist_free(dbg_tasklist *tl) {
-    uint32_t i;
-    for (i = 0; i < tl->n; i++) {
-        FREE(tl->items[i].name);
+static void _debug_tasklist_free(dbg_task_arr *tl) {
+    for (uint32_t i = 0; i < tl->size; i++) {
+        FREE(tl->ptr[i].name);
     }
-    FREE(tl->items);
+    dbg_task_arr_free(tl);
 }
 // 广播命令到所有 task（coro_fork_wait 并发），按 name 升序聚合响应（"name:\n<resp 或 (unavailable)>\n"）
 // bargs / funcs / args 三个等长数组同一块分配，依次排开
 static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t needlua) {
     task_ctx *task = ctx->task;
-    dbg_tasklist tl = { 0, 0, NULL };
+    dbg_task_arr tl;
+    dbg_task_arr_init(&tl, 0);
     loader_task_each(task->loader, _debug_tasklist, &tl);
-    if (0 == tl.n) {
+    if (0 == tl.size) {
         router_req_text(ctx, 200, "(no task)\n", strlen("(no task)\n"));
         _debug_tasklist_free(&tl);
         return;
     }
-    qsort(tl.items, (size_t)tl.n, sizeof(dbg_task), _debug_cmp_name);
+    qsort(tl.ptr, (size_t)tl.size, sizeof(dbg_task), _debug_cmp_name);
     bcast_arg *bargs;
-    MALLOC(bargs, (sizeof(bcast_arg) + sizeof(void *) * 2) * (size_t)tl.n);
-    coro_fn *funcs = (coro_fn *)(bargs + tl.n);
-    void **args = (void **)(funcs + tl.n);
-    uint32_t i;
-    for (i = 0; i < tl.n; i++) {
-        bargs[i].handle = tl.items[i].handle;
+    MALLOC(bargs, (sizeof(bcast_arg) + sizeof(void *) * 2) * (size_t)tl.size);
+    coro_fn *funcs = (coro_fn *)(bargs + tl.size);
+    void **args = (void **)(funcs + tl.size);
+    for (uint32_t i = 0; i < tl.size; i++) {
+        bargs[i].handle = tl.ptr[i].handle;
         bargs[i].needlua = needlua;
         bargs[i].body = body;
         bargs[i].bsize = bsize;
@@ -149,12 +139,12 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
         funcs[i] = _debug_bcast_one;
         args[i] = &bargs[i];
     }
-    coro_fork_wait(coro_task_co(task), funcs, args, (int32_t)tl.n);
+    coro_fork_wait(coro_task_co(task), funcs, args, (int32_t)tl.size);
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
     const char *nm;
-    for (i = 0; i < tl.n; i++) {
-        nm = (NULL == tl.items[i].name) ? "(anonymous)" : tl.items[i].name;
+    for (uint32_t i = 0; i < tl.size; i++) {
+        nm = (NULL == tl.ptr[i].name) ? "(anonymous)" : tl.ptr[i].name;
         binary_set_binary(&bw, nm, strlen(nm));
         binary_set_binary(&bw, ":\n", 2);
         if (NULL != bargs[i].resp && bargs[i].resp_len > 0) {
@@ -176,11 +166,6 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize, int32_t 
 static void _debug_forward(router_req *ctx, binary_ctx *cmd, int32_t needlua) {
     size_t n = 0;
     const char *ts = router_req_param(ctx, "task", &n);
-    if (NULL == ts) {
-        router_req_text(ctx, 404, "invalid task handle\n", strlen("invalid task handle\n"));
-        binary_free(cmd);
-        return;
-    }
     uint64_t hv;
     if (ERR_OK != strtou64(ts, n, UINT64_MAX, &hv)) {
         router_req_text(ctx, 404, "invalid task handle\n", strlen("invalid task handle\n"));
@@ -230,19 +215,19 @@ static void _debug_root(router_req *ctx) {
 }
 // GET /__alive：每行 "handle\tname"（按 handle 升序）；供前端建 name→handle 映射 + 下拉
 static void _debug_alive(router_req *ctx) {
-    dbg_tasklist tl = { 0, 0, NULL };
+    dbg_task_arr tl;
+    dbg_task_arr_init(&tl, 0);
     loader_task_each(ctx->task->loader, _debug_tasklist, &tl);
-    if (0 != tl.n) {
-        qsort(tl.items, (size_t)tl.n, sizeof(dbg_task), _debug_cmp_handle);
+    if (0 != tl.size) {
+        qsort(tl.ptr, (size_t)tl.size, sizeof(dbg_task), _debug_cmp_handle);
     }
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
-    uint32_t i;
-    for (i = 0; i < tl.n; i++) {
-        binary_set_uint(&bw, tl.items[i].handle, 10);
+    for (uint32_t i = 0; i < tl.size; i++) {
+        binary_set_uint(&bw, tl.ptr[i].handle, 10);
         binary_set_binary(&bw, "\t", 1);
-        if (NULL != tl.items[i].name) {
-            binary_set_binary(&bw, tl.items[i].name, strlen(tl.items[i].name));
+        if (NULL != tl.ptr[i].name) {
+            binary_set_binary(&bw, tl.ptr[i].name, strlen(tl.ptr[i].name));
         }
         binary_set_binary(&bw, "\n", 1);
     }
@@ -331,9 +316,73 @@ static void _debug_hotfix(router_req *ctx) {
     const char *mod = router_req_param(ctx, "module", &mn);
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "hotfix");
-    seri_append_string(&cmd, (NULL == mod) ? "" : mod, (NULL == mod) ? 0 : mn);
+    seri_append_string(&cmd, mod, mn);
     seri_append_string(&cmd, (const char *)body, blen);
     _debug_forward(ctx, &cmd, 1);
+}
+// Host 的主机部分是否 IP 字面量或 localhost，端口不看：DNS rebinding 必须借域名。取不到 Host 时 lens 为 0
+static int32_t _debug_host_ok(const char *host, size_t lens) {
+    if (0 == lens) {
+        return 0;
+    }
+    const char *end;
+    if ('[' == host[0]) {// IPv6 字面量带方括号
+        end = memchr(host, ']', lens);
+        if (NULL == end) {
+            return 0;
+        }
+        host++;
+    } else {
+        end = memchr(host, ':', lens);
+        if (NULL == end) {
+            end = host + lens;
+        }
+    }
+    size_t n = (size_t)(end - host);
+    if (sizeof("localhost") - 1 == n
+        && 0 == memcasecmp(host, "localhost", n)) {
+        return 1;
+    }
+    char ip[IP_LENS];
+    if (0 == n || n >= sizeof(ip)) {
+        return 0;
+    }
+    memcpy(ip, host, n);
+    ip[n] = '\0';
+    return ERR_OK == is_ipaddr(ip);
+}
+// 能否放行：Host 须过 _debug_host_ok；带 Origin 须等于 "http://" + Host；带 Sec-Fetch-Site 须是
+// same-origin 或 none(地址栏直接打开)，img 这类不带 Origin 的跨站 GET 靠它挡
+static int32_t _debug_allowed(router_req *ctx) {
+    size_t hn = 0;
+    const char *host = router_req_header(ctx, "Host", &hn);
+    if (!_debug_host_ok(host, hn)) {
+        return 0;
+    }
+    size_t on = 0;
+    const char *origin = router_req_header(ctx, "Origin", &on);
+    const size_t sclen = sizeof(_DBG_ORIGIN_SCHEME) - 1;
+    if (NULL != origin
+        && (on != sclen + hn
+            || 0 != memcmp(origin, _DBG_ORIGIN_SCHEME, sclen)
+            || 0 != memcmp(origin + sclen, host, hn))) {
+        return 0;
+    }
+    size_t sn = 0;
+    const char *site = router_req_header(ctx, "Sec-Fetch-Site", &sn);
+    if (NULL == site) {
+        return 1;
+    }
+    return (sizeof("same-origin") - 1 == sn && 0 == memcmp(site, "same-origin", sn))
+        || (sizeof("none") - 1 == sn && 0 == memcmp(site, "none", sn));
+}
+// 全局中间件：挡 DNS rebinding 与跨站请求，不放行就回 403
+static void _debug_guard(router_req *ctx) {
+    if (!_debug_allowed(ctx)) {
+        router_req_text(ctx, 403, "forbidden\n", strlen("forbidden\n"));
+        return;
+    }
+    router_next(ctx);
 }
 // HTTP 接收回调：取出本服务的 router 后转 router_net_recv（chunked 与派发都在那里）
 static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype,
@@ -341,20 +390,13 @@ static void _net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype,
     debug_console_ctx *ctx = coro_get_arg(task);
     router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
-// 连接关闭回调：清掉该连接尚未收齐的流式请求。理由同 harbor 的同名回调
-static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro) {
-    (void)pktype;
-    (void)client;
-    (void)erro;
-    debug_console_ctx *ctx = coro_get_arg(task);
-    router_closed(ctx->router, sk);
-}
-// 启动回调：建路由器 + 注册路由 + 监听 HTTP
+// 启动回调：建路由器 + 注册路由；监听在 debug_console_start 里，连接的消息排在本回调之后
 static void _debug_startup(task_ctx *task) {
     debug_console_ctx *ctx = coro_get_arg(task);
     task_recved(task, _net_recv);
-    task_closed(task, _net_close);
     ctx->router = router_new();
+    task_watch_closed(task, router_closed_watch, ctx->router);
+    router_use_fn(ctx->router, _debug_guard);
     router_get(ctx->router, NULL, "/", _debug_root, NULL, 0);
     router_get(ctx->router, NULL, "/__alive", _debug_alive, NULL, 0);
     router_get(ctx->router, NULL, "/__cmem", _debug_cmem, NULL, 0);
@@ -368,11 +410,6 @@ static void _debug_startup(task_ctx *task) {
     router_add(ctx->router, NULL, ROUTER_M_GET, "/{task}/loglv/{lv}", _debug_loglv, NULL, 0);
     router_post(ctx->router, NULL, "/{task}/inject", _debug_inject, NULL, 0);
     router_post(ctx->router, NULL, "/{task}/hotfix/{module}", _debug_hotfix, NULL, 0);
-    if (ERR_OK != task_listen(task, PACK_HTTP, NULL, ctx->ip, ctx->port, &ctx->lsnid, 0)) {
-        LOG_ERROR("debug_console task_listen %s:%d error.", ctx->ip, ctx->port);
-        return;
-    }
-    LOG_INFO("debug_console on %s:%d", ctx->ip, ctx->port);
 }
 // 关闭回调：取消监听
 static void _debug_closing(task_ctx *task) {
@@ -401,11 +438,7 @@ int32_t debug_console_start(loader_ctx *loader, const char *name, const char *ip
     if (EMPTYSTR(name) || 0 == port) {
         return ERR_OK;
     }
-    if (NULL == ip) {
-        return ERR_FAILED;
-    }
-    size_t iplens = strlen(ip);
-    if (0 == iplens || iplens >= IP_LENS) {
+    if (EMPTYSTR(ip)) {
         return ERR_FAILED;
     }
     // 端口开出去之前先告警：/inject 与 /hotfix 直接在目标 task 的 lua 虚拟机里跑代码，
@@ -418,9 +451,6 @@ int32_t debug_console_start(loader_ctx *loader, const char *name, const char *ip
     }
     debug_console_ctx *ctx;
     CALLOC(ctx, 1, sizeof(debug_console_ctx));
-    ctx->port = port;
-    // 上面的 iplens >= IP_LENS 已挡过，ctx->ip 正好 IP_LENS，装得下
-    safe_fill_str(ctx->ip, sizeof(ctx->ip), ip);
     // 读取调试 UI （html/debug_console.html）；失败仅警告，/ 端点回提示
     char path[PATH_LENS];
     SNPRINTF(path, sizeof(path), "%s%shtml%sdebug_console.html",
@@ -429,10 +459,18 @@ int32_t debug_console_start(loader_ctx *loader, const char *name, const char *ip
     if (NULL == ctx->html) {
         LOG_WARN("debug_console cannot read %s, UI page disabled.", path);
     }
-    if (NULL == coro_task_register(loader, name, ONEK,
-                                   _debug_startup, _debug_closing,
-                                   _debug_free, ctx)) {
+    task_ctx *task = coro_task_register(loader, name, ONEK,
+                                        _debug_startup, _debug_closing,
+                                        _debug_free, ctx);
+    if (NULL == task) {
         return ERR_FAILED;
     }
+    // 在这里同步监听，失败才拦得住启动；ctx 随 task 关闭由 _debug_free 释放
+    if (ERR_OK != task_listen(task, PACK_HTTP, NULL, ip, port, &ctx->lsnid, 0)) {
+        LOG_ERROR("debug_console task_listen %s:%d error.", ip, port);
+        task_close(task);
+        return ERR_FAILED;
+    }
+    LOG_INFO("debug_console on %s:%d", ip, port);
     return ERR_OK;
 }

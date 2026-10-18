@@ -9,16 +9,13 @@ TLS_DEFINE(char, _errstr, _ERRSTR_LENS)// 每线程一份，免得多线程互�
 
 const char *_fmterror(DWORD error) {
     char *err = NULL;
-    if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                            NULL,
-                            error,
-                            MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-                            (LPTSTR)&err,
-                            0,
-                            NULL)) {
-        return "FormatMessageA error.";
-    }
     char *errstr = _errstr_tls();
+    // 只取英文：本地化文本是 ANSI 代码页，进日志就是乱码；没装英文语言包取不到时只给错误码
+    if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                            NULL, error, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPTSTR)&err, 0, NULL)) {
+        SNPRINTF(errstr, _ERRSTR_LENS, "FormatMessageA error, code %lu.", (unsigned long)error);
+        return errstr;
+    }
     size_t ilens = strlen(err);
     ilens = ilens >= _ERRSTR_LENS ? _ERRSTR_LENS - 1 : ilens;
     memcpy(errstr, err, ilens);

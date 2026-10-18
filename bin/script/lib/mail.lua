@@ -43,20 +43,20 @@ function ctx:html(html)
 end
 
 ---设置发件人
----@param name string 显示名称
----@param email string 邮箱地址
+---@param name string 显示名称；最长 63 字节，超出按 UTF-8 字符边界截断
+---@param email string 邮箱地址；最长 255 字节，超出则整个调用不生效（C 侧打 WARN）
 function ctx:from(name, email)
     self.mail:from(name, email)
 end
 
 ---获取发件人邮箱地址，供 SMTP MAIL FROM 使用
----@return string email 发件人邮箱；交出的是 C 侧存量值，CRLF 已剔除、过长已截断
+---@return string email 发件人邮箱；交出的是 C 侧存量值，CRLF 已剔除；过长的地址根本不会被收下
 function ctx:from_get()
     return self.mail:from_get()
 end
 
 ---添加一个收件人
----@param email string 收件人邮箱
+---@param email string 收件人邮箱；最长 255 字节，超出不加入（C 侧打 WARN）
 ---@param type MAIL_ADDR_TYPE 收件人类型
 function ctx:addrs_add(email, type)
     self.mail:addrs_add(email, type)
@@ -75,8 +75,9 @@ end
 
 ---添加附件
 ---@param file string 本地文件路径
+---@return boolean ok 不存在、不是常规文件或读失败为 false（C 侧打 WARN，附件不加入）；0 字节文件按空附件加入
 function ctx:attach_add(file)
-    self.mail:attach_add(file)
+    return self.mail:attach_add(file)
 end
 
 ---清空所有附件
@@ -84,14 +85,14 @@ function ctx:attach_clear()
     self.mail:attach_clear()
 end
 
----设置是否请求邮件回执（DSN）
----@param reply integer? nil 或 0 不请求；非 0 请求回执
+---设置组包时写不写 Reply-To: <发件人>；新建与 clear 后默认写。只决定这一行头，挡不住收件人回复（同 C 侧 mail_reply）
+---@param reply integer? 非 0 写 Reply-To；nil 或 0 不写回复头
 function ctx:reply(reply)
     self.mail:reply(reply)
 end
 
 ---重置邮件内容（主题、正文、收件人、附件、发件人均清空）。
----C 侧 mail_clear 会把 reply 标志复位为 1，同一对象复用时若需 No-Reply 须在每次 clear 后重新调 reply(0)
+---C 侧 mail_clear 会把 reply 标志复位为 1，同一对象复用时若不要 Reply-To 须在每次 clear 后重新调 reply(0)
 function ctx:clear()
     self.mail:clear()
 end

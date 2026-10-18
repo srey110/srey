@@ -74,10 +74,16 @@ runner.run(function(t)
     local server_sks = {}
     local accepted = 0
     local received = 0
+    local peer_bad = 0-- 对端地址缺失、不是 127.0.0.1 或端口不合理的次数
 
-    srey.on_accepted(function(pktype, sk)
+    srey.on_accepted(function(pktype, sk, addr)
         accepted = accepted + 1
         server_sks[accepted] = sk
+        -- listen 带了 NET_EV.PEERADDR：addr 必须在，且就是本机 client 那头(端口是 client 的临时端口，不会是监听端口)
+        local ip, port = srey.remote_addr(addr)
+        if "127.0.0.1" ~= ip or "number" ~= type(port) or port <= 0 or PORT == port then
+            peer_bad = peer_bad + 1
+        end
     end)
     srey.on_recved(function(pktype, sk, client, slice, data, size)
         -- client 非 0 即 outgoing 连接(收到 server 广播)
@@ -89,8 +95,8 @@ runner.run(function(t)
         end
     end)
 
-    -- listen 必须显式传 NET_EV.ACCEPT,否则 task 不订阅 ACCEPT 消息回调无法触发
-    local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "0.0.0.0", PORT, NET_EV.ACCEPT)
+    -- listen 必须显式传 NET_EV.ACCEPT,否则 task 不订阅 ACCEPT 消息回调无法触发；PEERADDR 让回调带上对端地址
+    local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "0.0.0.0", PORT, NET_EV.ACCEPT | NET_EV.PEERADDR)
     t:check(lid and lid >= 0, "task_listen 成功")
 
     -- 起 N 个 client coro。连接结果记进 cli_sks 由主体统一判：断言写在 fork 里的话，
@@ -112,6 +118,8 @@ runner.run(function(t)
     srey.sleep(200)
     t:eq(N, #cli_sks, "全部 N 个 client coro_connect 成功")
     t:eq(N, accepted, "全部 N 个 client 已 accept")
+    t:eq(0, peer_bad, "on_accepted 的 addr 经 remote_addr 转出 127.0.0.1 与 client 端口")
+    t:eq(nil, srey.remote_addr(nil), "remote_addr(nil) 返回 nil(没订阅 PEERADDR 时 addr 就是 nil)")
 
     -- 调 srey.send_multi 一次广播给所有 server-side 连接
     local ok = srey.send_multi(server_sks, MSG)
@@ -126,14 +134,19 @@ runner.run(function(t)
 
     -- 库级 CLOSE 观察者：on_closed 是单槽、库抢不到，watch_closed 与业务回调并存。
     -- router 的流式上下文回收就靠它，这里借关连接验一次真的会被调到。
-    -- 两条转发路径都要把 erro 交出来：watch_closed 就地同步调，on_closed 走协程
+    -- 两条转发路径都要把 erro 与 sess 交出来：watch_closed 就地同步调，on_closed 走协程。
+    -- 连接级关闭的 sess 等于该连接的 skid
     local seen = {}
     local seen_cb = {}
-    srey.watch_closed(function(_, sk, _, erro)
+    local sess_w = {}
+    local sess_cb = {}
+    srey.watch_closed(function(_, sk, _, erro, sess)
         seen[sk.skid] = erro
+        sess_w[sk.skid] = sess
     end)
-    srey.on_closed(function(_, sk, _, erro)
+    srey.on_closed(function(_, sk, _, erro, sess)
         seen_cb[sk.skid] = erro
+        sess_cb[sk.skid] = sess
     end)
 
     -- 收尾: 关掉两侧连接再 unlisten 释放端口，否则这 2N 条连接一直挂在事件循环里到进程退出
@@ -146,7 +159,7 @@ runner.run(function(t)
     srey.unlisten(lid)
 
     srey.sleep(200)
-    local nseen, nlocal, ncb = 0, 0, 0
+    local nseen, nlocal, ncb, nsess = 0, 0, 0, 0
     local skid
     for i = 1, #cli_sks do
         skid = cli_sks[i].skid
@@ -162,9 +175,13 @@ runner.run(function(t)
         if CLOSE_TYPE.LOCAL == seen_cb[skid] then
             ncb = ncb + 1
         end
+        if skid == sess_w[skid] and skid == sess_cb[skid] then
+            nsess = nsess + 1
+        end
     end
     t:eq(N, nseen, "watch_closed 观察到全部 client 连接的关闭 (" .. nseen .. "/" .. N .. ")")
     t:eq(N, nlocal, "watch_closed 拿到的 erro 是 LOCAL (" .. nlocal .. "/" .. N .. ")")
     t:eq(N, ncb, "on_closed 拿到的 erro 是 LOCAL (" .. ncb .. "/" .. N .. ")")
+    t:eq(N, nsess, "watch_closed 与 on_closed 的第 5 参 sess 等于 sk.skid (" .. nsess .. "/" .. N .. ")")
 end)
 end)

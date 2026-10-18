@@ -1,5 +1,6 @@
 ﻿#include "protocol/smtp/mail.h"
 #include "crypt/base64.h"
+#include "crypt/urlraw.h"
 #include "utils/contenttype.h"
 #include "utils/binary.h"
 
@@ -7,9 +8,16 @@
 #define MIME_B64_RAW 57 // 编成 base64 恰好 76 字符的原文字节数（76/4*3），即一行的原文用量
 #define MIME_BOUND_RAND 16 // boundary 的随机字节数，转 hex 后即 boundary 主体
 #define MIME_BOUND_LENS (HEX_ENSIZE(MIME_BOUND_RAND) + 8) // hex 主体 + "srey_" 前缀 + 余量
-// 每个 RFC 2047 encoded-word 最多编码的原文字节数。单个 word 连同 "=?utf-8?B?" 与 "?=" 不得
-// 超过 75 字符：45 字节原文 → base64 60 字符 + 12 字符外壳 = 72，是 3 的整数倍里最大的那个
+// RFC 2047 §2：含 encoded-word 的行不超过 76 字符；外壳 "=?utf-8?B?" 与 "?=" 占 12 字符
+#define MIME_EW_LINE 76
+#define MIME_EW_WRAP 12
+// 每个 encoded-word 最多编码的原文字节数：折行后的续行是 1 个空格 + 外壳 + 60 个 base64 字符 = 73。
+// 首行还有字段名，按剩余宽度切得更短，见 _mail_set_header_text
 #define MIME_EW_RAW 45
+// RFC 2231 续行每段最多编码的原文字节数：百分号编码后最多 60 字符
+#define MIME_2231_RAW 20
+#define MAIL_MSGID_RAND 24 // Message-ID 随机部分的字符数
+#define MAIL_MSGID_DOMAIN "srey.local" // Message-ID 的域：发件地址里取不到域(没有 '@' 或其后为空)时用它
 // 头字段裸写 ASCII 的长度上限。RFC 5322 §2.1.1 限一行 998 octet，减去字段名与余量；
 // 超过就改走 encoded-word，那条路按 MIME_EW_RAW 切段且自带折行
 #define MIME_HDR_RAW_MAX 900
@@ -40,12 +48,25 @@ void mail_reply(mail_ctx *mail, int32_t reply) {
 }
 /* 将 src 复制到 dst（最多 maxlen-1 字节），跳过所有 \r 和 \n 字符，末尾补 '\0'。
  * 用于邮件头字段的注入过滤：任何包含 CRLF 的用户输入均被净化，
- * 防止攻击者通过 Subject/From/To 等字段注入任意 MIME 头部（如 Bcc 注入）。*/
+ * 防止攻击者通过 Subject/From/To 等字段注入任意 MIME 头部（如 Bcc 注入）。
+ * 装不下被截断时退到 UTF-8 字符边界，不留半个字。*/
 static void _mail_strip_crlf(char *dst, const char *src, size_t maxlen) {
     size_t j = 0;
-    for (size_t i = 0; '\0' != src[i] && j < maxlen - 1; i++) {
+    size_t i = 0;
+    for (; '\0' != src[i] && j < maxlen - 1; i++) {
         if ('\r' != src[i] && '\n' != src[i]) {
             dst[j++] = src[i];
+        }
+    }
+    // 下一个没拷的字节是续接字节(10xxxxxx)，说明末尾那个字只拷了一半：续接字节连同首字节一起退掉
+    i += strspn(src + i, "\r\n");
+    if (0x80 == (0xC0 & (unsigned char)src[i])) {
+        while (j > 0
+            && 0x80 == (0xC0 & (unsigned char)dst[j - 1])) {
+            j--;
+        }
+        if (j > 0) {
+            j--;
         }
     }
     dst[j] = '\0';
@@ -88,32 +109,51 @@ void mail_html(mail_ctx *mail, const char *html, size_t lens) {
     mail->html = dup_zero(html, lens);
     mail->hlens = lens;
 }
-// 填充 mail_addr 结构：设置显示名称和邮箱地址，name 为 NULL 或空时清空 name 字段
-static inline void _mail_addr(mail_addr *addr, const char *name, const char *email) {
+// 填充 mail_addr 结构：设置显示名称和邮箱地址，name 为 NULL 或空时清空 name 字段。
+// 地址装不下就不收、addr 原样不动：截断会变成另一个地址(如 .com 截成 .co)，RCPT TO 投给错的人
+static inline int32_t _mail_addr(mail_addr *addr, const char *name, const char *email) {
+    if (strlen(email) >= sizeof(addr->addr)) {
+        LOG_WARN("mail address exceeds %zu bytes, ignored.", sizeof(addr->addr) - 1);
+        return ERR_FAILED;
+    }
     if (EMPTYSTR(name)) {
         addr->name[0] = '\0';
     } else {
         _mail_strip_crlf(addr->name, name, sizeof(addr->name));
     }
     _mail_strip_crlf(addr->addr, email, sizeof(addr->addr));
+    return ERR_OK;
 }
 void mail_from(mail_ctx *mail, const char *name, const char *email) {
-    _mail_addr(&mail->from, name, email);
+    (void)_mail_addr(&mail->from, name, email);
 }
 void mail_addrs_add(mail_ctx *mail, const char *email, mail_addr_type type) {
     mail_addr addr;
     addr.addr_type = type;
-    _mail_addr(&addr, NULL, email);
-    maddr_arr_push_back(&mail->addrs, &addr);
+    if (ERR_OK == _mail_addr(&addr, NULL, email)) {
+        maddr_arr_push_back(&mail->addrs, &addr);
+    }
 }
 void mail_addrs_clear(mail_ctx *mail) {
     maddr_arr_clear(&mail->addrs);
 }
-void mail_attach_add(mail_ctx *mail, const char *file) {
-    size_t flens;
+int32_t mail_attach_add(mail_ctx *mail, const char *file) {
+    // 目录等非常规文件先挡掉，不交给 readall：部分文件系统上目录的 ftell 不是可信的长度
+    errno = 0;
+    if (ERR_OK != isfile(file)) {
+        LOG_WARN("mail attach %s: %s.", file, 0 == errno ? "not a regular file" : strerror(errno));
+        return ERR_FAILED;
+    }
+    size_t flens = 0;
     char *info = readall(file, &flens);
     if (NULL == info) {
-        return;
+        int32_t err = errno;
+        // readall 把 0 字节文件也算失败(errno 为 EINVAL)，这里按空附件收下；其余失败照报
+        if (EINVAL != err
+            || 0 != filesize(file)) {
+            LOG_WARN("mail attach read %s failed: %s.", file, strerror(err));
+            return ERR_FAILED;
+        }
     }
     mail_attach att;
     _mail_strip_crlf(att.file, _filename(file), sizeof(att.file));
@@ -127,6 +167,7 @@ void mail_attach_add(mail_ctx *mail, const char *file) {
     att.content = info;
     att.lens = flens;
     mattach_arr_push_back(&mail->attach, &att);
+    return ERR_OK;
 }
 void mail_attach_clear(mail_ctx *mail) {
     _mail_attach_free(&mail->attach);
@@ -187,7 +228,7 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
             continue;
         }
         index++;
-        if (count > 1 && index < count) {
+        if (index < count) {
             _mail_set_wrap(bwriter, MAIL_LIT(""), addr->addr, MAIL_LIT(",\r\n "));// 逗号后需要加空格
         } else {
             _mail_set_wrap(bwriter, MAIL_LIT(""), addr->addr, MAIL_LIT("\r\n"));
@@ -212,6 +253,16 @@ static inline int32_t _mail_gen_boundary(char *out, size_t cap) {
     tohex(rnd, sizeof(rnd), out + 5, 1);
     return ERR_OK;
 }
+// 从 off 起最多取 max 字节、且不把 UTF-8 字符劈开的长度：切点落在续接字节(10xxxxxx)上就往回退
+static size_t _mail_utf8_cut(const char *s, size_t lens, size_t off, size_t max) {
+    size_t n = (lens - off > max) ? max : (lens - off);
+    while (n > 1
+        && off + n < lens
+        && 0x80 == (0xC0 & (unsigned char)s[off + n])) {
+        n--;
+    }
+    return n;
+}
 // 是否含非 ASCII 字节，决定头字段走原样写还是 encoded-word
 static int32_t _mail_has_nonascii(const char *s, size_t lens) {
     for (size_t i = 0; i < lens; i++) {
@@ -225,38 +276,39 @@ static int32_t _mail_has_nonascii(const char *s, size_t lens) {
 // RFC 5322 §2.2 规定 header field body 只能是 US-ASCII，而本实现从不协商 SMTPUTF8
 // （EHLO 响应只解析 AUTH 类型），裸 UTF-8 主题在严格服务端上会被改写甚至拒收。
 // 超过一个 word 时按 RFC 5322 §2.2.3 折行（CRLF + 一个空格）；切段必须落在 UTF-8 字符边界上，
-// 从中间劈开会让对端解出半个字
-static void _mail_set_header_text(binary_ctx *bw, const char *s) {
+// 从中间劈开会让对端解出半个字。
+// col 是当前行已有的字符数（字段名等），首个 word 按 76 字符的剩余宽度切；返回写完后当前行的字符数
+static size_t _mail_set_header_text(binary_ctx *bw, const char *s, size_t col) {
     size_t lens = strlen(s);
     if (lens <= MIME_HDR_RAW_MAX
         && !_mail_has_nonascii(s, lens)) {
         binary_set_binary(bw, s, lens);
-        return;
+        return col + lens;
     }
     char b64[B64EN_SIZE(MIME_EW_RAW)];
     size_t off = 0;
-    size_t n;
+    size_t n, room, blens;
     while (off < lens) {
-        n = (lens - off > MIME_EW_RAW) ? MIME_EW_RAW : (lens - off);
-        // UTF-8 续接字节形如 10xxxxxx，落在这种字节上说明切在了字符中间，往回退
-        while (n > 1
-            && off + n < lens
-            && 0x80 == (0xC0 & (unsigned char)s[off + n])) {
-            n--;
-        }
+        room = (MIME_EW_LINE - MIME_EW_WRAP - col) / 4 * 3;// 每 4 个 base64 字符装 3 字节原文
+        n = _mail_utf8_cut(s, lens, off, room < MIME_EW_RAW ? room : MIME_EW_RAW);
+        blens = bs64_encode(s + off, n, b64);
         binary_set_binary(bw, MAIL_LIT("=?" MIME_CHARSET "?B?"));
-        binary_set_binary(bw, b64, bs64_encode(s + off, n, b64));
+        binary_set_binary(bw, b64, blens);
         binary_set_binary(bw, MAIL_LIT("?="));
+        col += MIME_EW_WRAP + blens;
         off += n;
         if (off < lens) {
             binary_set_binary(bw, "\r\n ", 3);
+            col = 1;
         }
     }
+    return col;
 }
 // 头字段参数值（Content-Type 的 name= 与 Content-Disposition 的 filename=）。纯 ASCII 且不含
 // quoted-string 转义字符时裸写引号形式，否则按 RFC 2231 编成 key*=UTF-8''<百分号编码>。
 // 不能改走 _mail_set_header_text：RFC 2047 §5 禁止 encoded-word 出现在 quoted-string 里。
-// 编码集取 RFC 3986 unreserved，它是 RFC 2231 attribute-char 的子集，多编几个字符合法
+// 编码用 url_encode：只留 0-9 A-Z a-z - . _，是 RFC 2231 attribute-char 的子集，多编几个字符合法。
+// 一段装不下时按 RFC 2231 §3 拆成 key*0*= / key*1*= …（字符集只写在第 0 段），段间折行，长文件名也不超行长
 static void _mail_set_header_param(binary_ctx *bw, const char *key, const char *val) {
     size_t lens = strlen(val);
     if (!_mail_has_nonascii(val, lens)
@@ -266,45 +318,38 @@ static void _mail_set_header_param(binary_ctx *bw, const char *key, const char *
         binary_set_binary(bw, MAIL_LIT("\""));
         return;
     }
-    static const char hexchars[] = "0123456789ABCDEF";
-    unsigned char c;
-    char pct[3];
-    _mail_set_wrap(bw, MAIL_LIT(""), key, MAIL_LIT("*=" MIME_CHARSET "''"));
-    for (size_t i = 0; i < lens; i++) {
-        c = (unsigned char)val[i];
-        if ((c >= 'A' && c <= 'Z')
-            || (c >= 'a' && c <= 'z')
-            || (c >= '0' && c <= '9')
-            || '-' == c
-            || '.' == c
-            || '_' == c) {
-            binary_set_binary(bw, val + i, 1);
-            continue;
-        }
-        pct[0] = '%';
-        pct[1] = hexchars[c >> 4];
-        pct[2] = hexchars[c & 15];
-        binary_set_binary(bw, pct, sizeof(pct));
-    }
-}
-// 发件人显示名。RFC 5322 §3.4 的 display-name 是 phrase：只由 atom 组成时可以裸写，
-// 一旦含 specials（RFC 5322 §3.2.3 的 ()<>[]:;@\,." 这几个）就必须整体加引号——
-// 否则 "Doe, John <a@b>" 会被解析成 "Doe" 与 "John <a@b>" 两个地址。
-// 含非 ASCII 时走 encoded-word，且不能再加引号：RFC 2047 §5 明确禁止 encoded-word
-// 出现在 quoted-string 里。两条路互斥，编码过的必然不带引号，带引号的必然是纯 ASCII
-static void _mail_set_display_name(binary_ctx *bw, const char *name) {
-    size_t lens = strlen(name);
-    if (_mail_has_nonascii(name, lens)) {
-        _mail_set_header_text(bw, name);
+    char enc[URLEN_SIZE(MIME_2231_RAW)];
+    size_t n = _mail_utf8_cut(val, lens, 0, MIME_2231_RAW);
+    if (n == lens) {
+        _mail_set_wrap(bw, MAIL_LIT(""), key, MAIL_LIT("*=" MIME_CHARSET "''"));
+        binary_set_binary(bw, enc, url_encode(val, lens, enc, 0));
         return;
     }
-    size_t i;
+    char sect[INT2STR_MAX];
+    for (size_t off = 0, i = 0; off < lens; off += n, i++) {
+        n = _mail_utf8_cut(val, lens, off, MIME_2231_RAW);
+        if (0 != i) {
+            binary_set_binary(bw, MAIL_LIT(";\r\n\t"));
+        }
+        _mail_set_wrap(bw, MAIL_LIT(""), key, MAIL_LIT("*"));
+        binary_set_binary(bw, sect, u64tostr(sect, i, 10));
+        binary_set_binary(bw, MAIL_LIT("*="));
+        if (0 == i) {
+            binary_set_binary(bw, MAIL_LIT(MIME_CHARSET "''"));
+        }
+        binary_set_binary(bw, enc, url_encode(val + off, n, enc, 0));
+    }
+}
+// 纯 ASCII 的发件人显示名。RFC 5322 §3.4 的 display-name 是 phrase：只由 atom 组成时可以裸写，
+// 一旦含 specials（RFC 5322 §3.2.3 的 ()<>[]:;@\,." 这几个）就必须整体加引号——
+// 否则 "Doe, John <a@b>" 会被解析成 "Doe" 与 "John <a@b>" 两个地址
+static void _mail_set_display_name(binary_ctx *bw, const char *name, size_t lens) {
     if (lens == memcspn(name, lens, MAIL_LIT("()<>[]:;@\\,.\""))) {
         binary_set_binary(bw, name, lens);
         return;
     }
     binary_set_binary(bw, "\"", 1);
-    for (i = 0; i < lens; i++) {
+    for (size_t i = 0; i < lens; i++) {
         // quoted-string 里只有 '\' 和 '"' 需要转义
         if ('"' == name[i]
             || '\\' == name[i]) {
@@ -313,6 +358,36 @@ static void _mail_set_display_name(binary_ctx *bw, const char *name) {
         binary_set_binary(bw, name + i, 1);
     }
     binary_set_binary(bw, "\"", 1);
+}
+// From 头：RFC 5322 §3.4 的 name-addr 形式 display-name <addr-spec>，name 为空只写地址。
+// 显示名含非 ASCII 时编成 encoded-word，且不能再加引号：RFC 2047 §5 禁止它出现在 quoted-string 里。
+// 编码过的这一行受 76 字符限制，地址接不下就折到下一行
+static void _mail_set_from(binary_ctx *bw, mail_addr *from) {
+    binary_set_binary(bw, MAIL_LIT("From: "));
+    size_t lens = strlen(from->name);
+    if (0 == lens) {
+        _mail_set_wrap(bw, MAIL_LIT(""), from->addr, MAIL_LIT("\r\n"));
+        return;
+    }
+    if (_mail_has_nonascii(from->name, lens)) {
+        size_t col = _mail_set_header_text(bw, from->name, sizeof("From: ") - 1);
+        if (col + strlen(from->addr) + 3 > MIME_EW_LINE) {// 3 = " <" 与 ">"
+            binary_set_binary(bw, MAIL_LIT("\r\n"));
+        }
+    } else {
+        _mail_set_display_name(bw, from->name, lens);
+    }
+    _mail_set_wrap(bw, MAIL_LIT(" <"), from->addr, MAIL_LIT(">\r\n"));
+}
+// Message-ID：随机串 + "@" + 发件地址的域，取不到域用 MAIL_MSGID_DOMAIN。
+// 只求不重复、不求不可猜，用线程局部伪随机，不碰可能阻塞或失败的系统熵源
+static void _mail_set_msgid(binary_ctx *bw, const char *from) {
+    char rnd[MAIL_MSGID_RAND + 1];
+    const char *at = strrchr(from, '@');
+    const char *domain = (NULL != at && '\0' != at[1]) ? at + 1 : MAIL_MSGID_DOMAIN;
+    binary_set_binary(bw, MAIL_LIT("Message-ID: <"));
+    binary_set_binary(bw, randstr(rnd, MAIL_MSGID_RAND), MAIL_MSGID_RAND);
+    _mail_set_wrap(bw, MAIL_LIT("@"), domain, MAIL_LIT(">\r\n"));
 }
 // lens 字节原文按每行 MIME_B64_RAW 折行编成 base64 后的字节数(行间 CRLF，末行不带)
 static inline size_t _mail_b64_size(size_t lens) {
@@ -325,15 +400,14 @@ static inline size_t _mail_b64_size(size_t lens) {
 // 拒收或强行折行；纯文本单段分支不写 Content-Type，缺省即 us-ascii，UTF-8 正文必乱码。
 // 顺带 dot-stuffing（RFC 5321 §4.5.2）也不需要了：base64 行首出不了 '.'
 static void _mail_set_b64(binary_ctx *bw, const char *msg, size_t lens) {
-    size_t off = 0;
-    size_t n, start;
-    char *p;
     if (0 == lens) {
         return;
     }
-    start = bw->offset;
+    size_t start = bw->offset;
     binary_set_skip(bw, _mail_b64_size(lens));
-    p = bw->data + start;
+    char *p = bw->data + start;
+    size_t off = 0;
+    size_t n;
     while (off < lens) {
         n = (lens - off > MIME_B64_RAW) ? MIME_B64_RAW : (lens - off);
         p += bs64_encode(msg + off, n, p);
@@ -379,22 +453,13 @@ char *mail_pack(mail_ctx *mail, size_t *size) {
     }
     binary_ctx bwriter;
     binary_init_write(&bwriter, _mail_pack_estimate(mail, nattach), ONEK);
-    // RFC 5322 §3.4 的 name-addr 形式：display-name <addr-spec>
-    binary_set_binary(&bwriter, "From: ", 6);
-    if (0 != strlen(mail->from.name)) {
-        _mail_set_display_name(&bwriter, mail->from.name);
-        _mail_set_wrap(&bwriter, MAIL_LIT(" <"), mail->from.addr, MAIL_LIT(">\r\n"));
-    } else {
-        _mail_set_wrap(&bwriter, MAIL_LIT(""), mail->from.addr, MAIL_LIT("\r\n"));
-    }
+    _mail_set_from(&bwriter, &mail->from);
     if (mail->reply) {
         _mail_set_wrap(&bwriter, MAIL_LIT("Reply-To: "), mail->from.addr, MAIL_LIT("\r\n"));
-    } else {
-        _mail_set_wrap(&bwriter, MAIL_LIT("No-Reply: "), mail->from.addr, MAIL_LIT("\r\n"));
     }
     _mail_pack_addr(mail, &bwriter, TO);
     _mail_pack_addr(mail, &bwriter, CC);
-    // BCC 收件人已由 _smtp_send 的 RCPT TO 逐个投递(信封层)；密送要求不出现在正文头部，故此处不写 Bcc 头，否则名单对全体收件人可见
+    // BCC 收件人已由 smtp_send 的 RCPT TO 逐个投递(信封层)；密送要求不出现在正文头部，故此处不写 Bcc 头，否则名单对全体收件人可见
     // MIME 头无论单段多段都要写：只有多段时才写的话，最常见的"纯文本一封信"整封没有
     // Content-Type，按 RFC 2045 缺省成 us-ascii，UTF-8 正文到严格客户端上就是乱码
     if (multipart) {
@@ -406,12 +471,13 @@ char *mail_pack(mail_ctx *mail, size_t *size) {
     }
     char date[TIME_LENS] = { 0 };
     // sectostr 失败时跳过 Date header（RFC 5322 §3.6.1 推荐但不强制），不写空行避免协议歧义
-    if (ERR_OK == sectostr(nowsec(), "Date: %d %b %y %H:%M:%S %z", date)) {
+    if (ERR_OK == sectostr(nowsec(), "Date: %d %b %Y %H:%M:%S %z", date)) {// RFC 5322 §3.3 年份 4 位
         _mail_set_wrap(&bwriter, MAIL_LIT(""), date, MAIL_LIT("\r\n"));
     }
-    binary_set_binary(&bwriter, "Subject: ", 9);
+    _mail_set_msgid(&bwriter, mail->from.addr);
+    binary_set_binary(&bwriter, MAIL_LIT("Subject: "));
     if (!EMPTYSTR(mail->subject)) {
-        _mail_set_header_text(&bwriter, mail->subject);
+        _mail_set_header_text(&bwriter, mail->subject, sizeof("Subject: ") - 1);
     }
     // 空行终止头部
     binary_set_binary(&bwriter, CONCAT2(FLAG_CRLF, FLAG_CRLF), CRLF_SIZE * 2);

@@ -1118,12 +1118,8 @@ uint16_t crc16(const void *data, const size_t lens) {
     uint16_t crc = 0;
     const uint8_t *p = (const uint8_t *)data;
     size_t n = lens;
-    uint32_t a, c0, c1, c2, c3;
     if (n >= 64) {
-        c0 = crc;
-        c1 = 0;
-        c2 = 0;
-        c3 = 0;
+        uint32_t c0 = crc, c1 = 0, c2 = 0, c3 = 0;
         for (; n >= 64; n -= 32, p += 32) {
             c0 = _crc16_word(crc16_btab, read_le64(p), c0);
             c1 = _crc16_word(crc16_btab, read_le64(p + 8), c1);
@@ -1137,6 +1133,7 @@ uint16_t crc16(const void *data, const size_t lens) {
         n -= 32;
         p += 32;
     }
+    uint32_t a;
     for (; n >= 8; n -= 8, p += 8) {
         a = crc ^ read_le16(p);
         crc = crc16_tab[7][a & 0xFF] ^ crc16_tab[6][a >> 8] ^ crc16_tab[5][p[2]] ^ crc16_tab[4][p[3]]
@@ -1154,27 +1151,20 @@ uint16_t crc16(const void *data, const size_t lens) {
     return crc;
 }
 #ifdef CRC32_HW
-// 8 字节一条 crc32x，memcpy 读不要求对齐；尾巴按 4/2/1 字节各补一条
+// 8 字节一条 crc32x（__crc32d）；尾巴按 4/2/1 字节各补一条（__crc32w / h / b）
 uint32_t crc32(const void *data, const size_t lens) {
     uint32_t crc = ~0U;
     const uint8_t *p = (const uint8_t *)data;
     size_t n = lens;
-    uint64_t v;
-    uint32_t w;
-    uint16_t h;
     for (; n >= 8; n -= 8, p += 8) {
-        memcpy(&v, p, sizeof(v));
-        // __crc32d / w / h / b 是 ARMv8 的 CRC32 指令(arm_acle.h)，一条把 8 / 4 / 2 / 1 字节并进 crc
-        crc = __crc32d(crc, v);
+        crc = __crc32d(crc, read_le64(p));
     }
     if (n & 4) {
-        memcpy(&w, p, sizeof(w));
-        crc = __crc32w(crc, w);
+        crc = __crc32w(crc, read_le32(p));
         p += 4;
     }
     if (n & 2) {
-        memcpy(&h, p, sizeof(h));
-        crc = __crc32h(crc, h);
+        crc = __crc32h(crc, read_le16(p));
         p += 2;
     }
     if (n & 1) {
@@ -1194,12 +1184,8 @@ uint32_t crc32(const void *data, const size_t lens) {
     uint32_t crc = ~0U;
     const uint8_t *p = (const uint8_t *)data;
     size_t n = lens;
-    uint32_t a, c0, c1, c2, c3;
     if (n >= 64) {
-        c0 = crc;
-        c1 = 0;
-        c2 = 0;
-        c3 = 0;
+        uint32_t c0 = crc, c1 = 0, c2 = 0, c3 = 0;
         for (; n >= 64; n -= 32, p += 32) {
             c0 = _crc32_word(crc32_btab, read_le64(p), c0);
             c1 = _crc32_word(crc32_btab, read_le64(p + 8), c1);
@@ -1213,6 +1199,7 @@ uint32_t crc32(const void *data, const size_t lens) {
         n -= 32;
         p += 32;
     }
+    uint32_t a;
     for (; n >= 8; n -= 8, p += 8) {
         a = crc ^ read_le32(p);
         crc = crc32_tab[7][a & 0xFF] ^ crc32_tab[6][(a >> 8) & 0xFF] ^ crc32_tab[5][(a >> 16) & 0xFF] ^ crc32_tab[4][a >> 24]

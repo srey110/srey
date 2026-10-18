@@ -6,13 +6,16 @@
 #include "containers/sarray.h"
 #include "utils/binary.h"
 #include "protocol/pgsql/pgsql_macro.h"
+#if WITH_SSL
+#include <openssl/evp.h>
+#endif
 
 struct coro_serial_ctx;
 
 // 单条语句的执行结果，多语句 simple query 时每条语句一个，按 CommandComplete 边界提交
 typedef struct pgsql_result {
     struct pgsql_reader_ctx *reader;// 结果集，无结果集语句（INSERT/UPDATE 无 RETURNING）为 NULL
-    char complete[32];              // 该语句的 CommandComplete 命令完成标签
+    char complete[64];              // 该语句的 CommandComplete 命令完成标签
 }pgsql_result;
 ARR_DECL(pgres_arr, pgsql_result)
 
@@ -23,7 +26,7 @@ typedef struct pgpack_ctx {
     void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息或通知）
     void(*_free_pgpack)(void *);    // 释放 pack 的回调函数
     pgres_arr results;              // 已完成语句的结果数组；CALLOC 全零即合法空数组，首条提交时指向 res_inl，装满才搬到堆上
-    char complete[32];              // 最后一条 CommandComplete 命令完成标签，格式示例：INSERT oid rows / UPDATE rows 等
+    char complete[64];              // 最后一条 CommandComplete 命令完成标签，格式示例：INSERT oid rows / UPDATE rows 等
     pgsql_result res_inl[2];        // 前 2 条语句的结果，单语句查询不另分配结果数组
 }pgpack_ctx;
 
@@ -58,7 +61,7 @@ ARR_DECL(pgrow_arr, pgpack_row *)
 typedef struct pgsql_reader_ctx {
     int8_t fields_inl;          // fields 与 reader 同一次分配(随 reader 释放)；0 为单独分配
     uint16_t field_count;       // 字段（列）数量
-    pgpack_format format;       // 结果格式（文本或二进制）
+    pgpack_format format;       // 结果格式（文本或二进制），解析 RowDescription 时取自服务端的格式码
     int32_t index;              // 当前读取行的游标位置
     pgpack_field *fields;       // 字段描述数组
     pgrow_arr arr_rows;         // 数据行指针数组；起初指向 rows_inl，装满才搬到堆上
@@ -87,8 +90,8 @@ typedef struct pgsql_ctx {
     char password[64];          // 登录密码
     char database[64];          // 目标数据库名
 #if WITH_SSL
-    char    tls_cbind[32];      // tls-server-end-point：服务端证书 SHA-256 摘要（32字节）
-    int32_t tls_cbind_len;      // 0=无TLS或未获取到证书，32=可用
+    char    tls_cbind[EVP_MAX_MD_SIZE];// tls-server-end-point：服务端证书按其签名摘要算法取的哈希
+    int32_t tls_cbind_len;      // 0=无 TLS、取不到证书或签名摘要（不做通道绑定），>0 可用
 #endif
 }pgsql_ctx;
 

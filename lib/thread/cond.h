@@ -18,7 +18,7 @@ typedef pthread_cond_t cond_ctx;
 #endif
 
 /// <summary>
-/// 信号量初始化。具备 pthread_condattr_setclock 与 CLOCK_MONOTONIC 的 POSIX 平台强制
+/// 条件变量初始化。具备 pthread_condattr_setclock 与 CLOCK_MONOTONIC 的 POSIX 平台强制
 /// 把条件变量绑定到 CLOCK_MONOTONIC，绑定失败直接 abort——半绑定会让 cond_timedwait
 /// 的截止时间两套时钟对不上、退化成静默忙等。
 /// 缺任一能力的平台（macOS / 老 HP-UX）保持默认 CLOCK_REALTIME：老 HP-UX 的 cond_timedwait
@@ -41,7 +41,7 @@ static inline void cond_init(cond_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// 信号量释放
+/// 条件变量释放
 /// </summary>
 /// <param name="ctx">cond_ctx</param>
 static inline void cond_free(cond_ctx *ctx) {
