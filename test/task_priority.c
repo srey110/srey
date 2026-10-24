@@ -1,4 +1,5 @@
 ﻿#include "task_priority.h"
+#include "task_pub.h"
 
 typedef struct task_priority_args {
     int32_t *ok;
@@ -67,7 +68,7 @@ static int32_t _test_range(task_ctx *task) {
     return ERR_OK;
 }
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_priority_args *arg = (task_priority_args *)coro_get_arg(task);
     if (ERR_OK != _test_roundtrip(task)) {
         return;
@@ -92,6 +93,11 @@ static void _startup(task_ctx *task) {
     }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("priority tested.");
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_priority_args *)coro_get_arg(task))->ok);
 }
 
 void task_priority_start(loader_ctx *loader, const char *name, int32_t *ok) {

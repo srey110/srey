@@ -252,7 +252,7 @@ static int32_t _lcore_response(lua_State *lua) {
 /// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
 /// <param name="ip" type="string">监听 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)，要同时收两种就 "0.0.0.0" 与 "::" 各监听一次</param>
 /// <param name="port" type="integer">监听端口</param>
-/// <param name="netev" type="integer?">事件订阅掩码(NET_EV.*)，默认 NONE；PEERADDR 让 ACCEPT 带上对端地址，须与 ACCEPT 同用</param>
+/// <param name="netev" type="integer?">事件订阅掩码(NET_EV.*)，默认 NONE；PEERADDR 让 ACCEPT 带上对端地址，须与 ACCEPT 同用；SESS 让 accept 出的连接会话键预设为它的 skid</param>
 /// <returns type="integer">监听 id，失败返回 -1</returns>
 static int32_t _lcore_listen(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
@@ -314,12 +314,12 @@ static int32_t _lcore_connect(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 对已有明文连接发起 SSL 升级握手
+/// 对已有明文连接发起 SSL 升级握手。带内升级(先回一条明文再切 SSL)用 send_ssl
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错</param>
 /// <param name="evssl" type="lightuserdata">SSL 上下文；为 nil 时直接失败，传了别的类型报错</param>
-/// <returns type="boolean">成功 true，失败 false</returns>
+/// <returns type="boolean">命令已投出 true，执行结果不回传(握手结果走 SSLEXCHANGED)；sk 无效或 evssl 为 nil 时 false</returns>
 static int32_t _lcore_ssl_exchange(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
     int32_t client = lpub_check_flag(lua, 2);
@@ -359,14 +359,35 @@ static int32_t _lcore_udp(lua_State *lua) {
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
-/// <returns type="boolean">成功 true，失败 false</returns>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）；0 时所有权直接转移给框架</param>
+/// <returns type="boolean">命令已投出 true，执行结果不回传；sk 无效或 data 为空时 false，此时 copy=0 的 data 已释放</returns>
 static int32_t _lcore_send(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
     size_t size;
     int32_t copy;
     void *data = lpub_check_buf(lua, 2, &size, &copy);
     return lpub_rtn_bool(lua, ERR_OK == ev_send(&g_loader->netev, sk, data, size, copy));
+}
+/// <summary>
+/// 发送升级前的最后一条明文，并在它写出后把本端切为 SSL，两步在事件线程内一次做完，契约同 ev_send_ssl。
+/// 带内升级(回一条明文告知对端可以握手，再切 SSL)必须用它：拆成 send + ssl_exchange 两次调用时，
+/// 对端的握手报文可能被当明文读走。本包之后到握手完成前不得再 send
+/// </summary>
+/// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
+/// <param name="client" type="integer">1 表示客户端握手，0 表示服务端；其余值报错</param>
+/// <param name="evssl" type="lightuserdata?">SSL 上下文；nil 时不发、返回 false，传了别的类型报错</param>
+/// <param name="data" type="string|lightuserdata">明文尾包，不可为空；字符串时长度自动取得</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
+/// <returns type="boolean">命令已投出 true，执行结果不回传；sk 无效、data 为空或 evssl 为 nil 时 false</returns>
+static int32_t _lcore_send_ssl(lua_State *lua) {
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    int32_t client = lpub_check_flag(lua, 2);
+    struct evssl_ctx *evssl = lpub_check_evssl(lua, 3);
+    size_t size;
+    int32_t copy;
+    void *data = lpub_check_buf(lua, 4, &size, &copy);
+    return lpub_rtn_bool(lua, ERR_OK == ev_send_ssl(&g_loader->netev, sk, data, size, copy, client, evssl));
 }
 /// <summary>
 /// 多播 TCP 数据：把同一份 data 零拷贝广播给多个连接（N 个 buf 共享，引用计数自动释放）
@@ -428,8 +449,8 @@ static int32_t _lcore_send_multi(lua_State *lua) {
 /// <param name="port" type="integer">目标端口</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
-/// <returns type="boolean">成功 true，失败 false</returns>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）；0 时所有权直接转移给框架</param>
+/// <returns type="boolean">命令已投出 true，执行结果不回传；sk 无效、ip 解析失败或 data 为空时 false，此时 copy=0 的 data 已释放</returns>
 static int32_t _lcore_sendto(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
     const char *ip = lpub_check_cstr(lua, 2);
@@ -438,6 +459,24 @@ static int32_t _lcore_sendto(lua_State *lua) {
     int32_t copy;
     void *data = lpub_check_buf(lua, 4, &size, &copy);
     return lpub_rtn_bool(lua, ERR_OK == ev_sendto(&g_loader->netev, sk, ip, port, data, size, copy));
+}
+/// <summary>
+/// 按 on_recvedfrom 交出的源地址发送 UDP 数据(回包用)：直接用地址结构，不经字符串来回
+/// </summary>
+/// <param name="sk" type="userdata">连接标识，由 core.udp 给出</param>
+/// <param name="addr" type="lightuserdata">on_recvedfrom 回调的 addr，只在该回调结束前有效</param>
+/// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）；0 时所有权直接转移给框架</param>
+/// <returns type="boolean">命令已投出 true，执行结果不回传；sk 无效、addr 为空或 data 为空时 false，此时 copy=0 的 data 已释放</returns>
+static int32_t _lcore_sendto_addr(lua_State *lua) {
+    sock_ctx *sk = lpub_check_sock(lua, 1);
+    LUACHECK_LUDATA(lua, 2);
+    const netaddr_ctx *addr = lua_touserdata(lua, 2);
+    size_t size;
+    int32_t copy;
+    void *data = lpub_check_buf(lua, 3, &size, &copy);
+    return lpub_rtn_bool(lua, ERR_OK == ev_sendto_addr(&g_loader->netev, sk, addr, data, size, copy));
 }
 /// <summary>
 /// UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)
@@ -551,7 +590,7 @@ static int32_t _lcore_close(lua_State *lua) {
 }
 /// <summary>
 /// 动态修改指定连接的封包协议类型。切换会丢弃旧协议的连接状态(如 UDP_KCP 上的全部 kcp 会话，各会话收到 CLOSE)，
-/// 新协议从空状态起，契约同 ev_ud_pktype
+/// 新协议从初始状态起(上下文放掉、解析状态清零)，契约同 ev_ud_pktype
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="pktype" type="integer">新封包协议类型，参考 PACK_TYPE</param>
@@ -563,14 +602,14 @@ static int32_t _lcore_pack_type(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == ev_ud_pktype(&g_loader->netev, sk, pktype));
 }
 /// <summary>
-/// 设置指定连接的用户自定义状态值
+/// 设置连接的解包状态(协议解析状态机当前所处的状态，取值由各协议定义)。不是业务标记：写错值协议就按错的状态解下一个包
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
-/// <param name="status" type="integer">用户自定义状态值（int8）</param>
-/// <returns type="boolean">成功 true，stop 非0失败</returns>
+/// <param name="status" type="integer">协议定义的状态值，[0, 255]</param>
+/// <returns type="boolean">命令已投出 true，连接不在当前 net 线程时异步生效；sk 无效 false</returns>
 static int32_t _lcore_status(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
-    int8_t status = lpub_check_i8(lua, 2, "status out of range");
+    uint8_t status = lpub_check_u8(lua, 2, "status out of range");
     return lpub_rtn_bool(lua, ERR_OK == ev_ud_status(&g_loader->netev, sk, status));
 }
 /// <summary>
@@ -578,7 +617,7 @@ static int32_t _lcore_status(lua_State *lua) {
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
 /// <param name="name" type="string|integer">目标字符串名或数字句柄</param>
-/// <returns type="boolean">成功 true；目标 task 不存在(名字未注册 / 句柄对应 task 已退出)或事件线程已停时 false。
+/// <returns type="boolean">命令已投出 true，连接不在当前 net 线程时异步生效；目标 task 不存在(名字未注册 / 句柄对应 task 已退出)或 sk 无效 false。
 ///   仅保证调用时目标存在——若目标在绑定之后才退出,该连接下一条消息仍会被静默关闭</returns>
 static int32_t _lcore_bind_task(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
@@ -601,7 +640,7 @@ static int32_t _lcore_session_set(lua_State *lua, int32_t use_skid) {
 /// 会话键不可自定义：CLOSE 恒以 skid 为 sess 发出，挂在别的键上的等待者断连时一个都唤不到
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
-/// <returns type="boolean">成功 true，stop 非0失败</returns>
+/// <returns type="boolean">命令已投出 true，连接不在当前 net 线程时异步生效(之后才解出的包才带上新值)；sk 无效 false</returns>
 static int32_t _lcore_session(lua_State *lua) {
     return _lcore_session_set(lua, 1);
 }
@@ -611,7 +650,7 @@ static int32_t _lcore_session(lua_State *lua) {
 /// 清除前已挂起在该 skid 上的等待者仍由 CLOSE 唤醒——它恒以 skid 为 sess 发出，与本设置无关
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
-/// <returns type="boolean">成功 true，stop 非0失败</returns>
+/// <returns type="boolean">命令已投出 true，连接不在当前 net 线程时异步生效(之后才解出的包才带上新值)；sk 无效 false</returns>
 static int32_t _lcore_session_clear(lua_State *lua) {
     return _lcore_session_set(lua, 0);
 }
@@ -628,10 +667,10 @@ static int32_t _lcore_http_set_method(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == http_set_method(&g_loader->netev, sk, method));
 }
 /// <summary>
-/// 询问协议层指定封包能否唤醒等待者(非 true 时框架改新建协程走 on_recved),契约见 prots_may_resume
+/// 询问协议层指定封包能否唤醒等回复的等待者(非 true 时只有 syn_recv_any 的等待者收得到,否则走 on_recved),契约见 prots_may_resume
 /// </summary>
 /// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
-/// <param name="data" type="lightuserdata">协议层封包指针</param>
+/// <param name="data" type="lightuserdata?">协议层封包指针；nil 视为无包可拦</param>
 /// <returns type="boolean">可唤醒等待者 true；false 表示该包不走命令响应路径</returns>
 static int32_t _lcore_may_resume(lua_State *lua) {
     pack_type pktype = lpub_check_pktype(lua, 1);
@@ -722,7 +761,7 @@ static int32_t _lcore_mem_stat(lua_State *lua) {
 /// 查询本次构建有没有把 SSL 编进来
 /// </summary>
 /// <returns type="boolean">编了 true；没编 false，此时 cert_register / p12_register 恒返 nil、
-/// ssl_min_proto 恒返 false、seclevel / verify 是空操作</returns>
+/// ssl_min_proto / ssl_host / send_ssl 恒返 false、seclevel / verify 是空操作</returns>
 static int32_t _lcore_with_ssl(lua_State *lua) {
     return lpub_rtn_bool(lua, WITH_SSL);
 }
@@ -774,7 +813,8 @@ static int32_t _lcore_cert_register(lua_State *lua) {
 #endif
 }
 /// <summary>
-/// 加载 PKCS12 格式证书文件，按 name 注册 SSL 上下文
+/// 加载 PKCS12 格式证书文件，按 name 注册 SSL 上下文。p12 里附带的 CA 只当自己要发出的证书链、不进信任库，
+/// 用它开 SSL_VERIFY_PEER 验对端必然失败，要验对端用 cert_register 带 ca(同 evssl_p12_new)
 /// </summary>
 /// <param name="name" type="string">SSL 上下文注册名（字符串 key）</param>
 /// <param name="p12" type="string">PKCS12 文件名（相对 cert 目录）</param>
@@ -872,6 +912,22 @@ static int32_t _lcore_ssl_verify(lua_State *lua) {
 #endif
     return 0;
 }
+/// <summary>
+/// 设置客户端要连的主机名：握手时作 SNI 发出，开了 SSL_VERIFY_PEER 时还校验对端证书是签给它的，契约同 evssl_host。
+/// 只开 ssl_verify 只验证书链，公网客户端还须设它。只给作客户端用的上下文设，须在上下文投入使用前设好
+/// </summary>
+/// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
+/// <param name="host" type="string?">域名或 IP；nil 或空串清除</param>
+/// <returns type="boolean">设置成功 true；超过 255 字节时 false，原设置不变。WITH_SSL 关闭时恒 false</returns>
+static int32_t _lcore_ssl_host(lua_State *lua) {
+#if WITH_SSL
+    LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
+    const char *host = lua_isnoneornil(lua, 2) ? NULL : lpub_check_cstr(lua, 2);
+    return lpub_rtn_bool(lua, ERR_OK == evssl_host(ssl, host));
+#else
+    return lpub_rtn_bool(lua, 0);
+#endif
+}
 //srey.core
 LUAMOD_API int luaopen_core(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -888,8 +944,10 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "udp", _lcore_udp },
 
         { "send", _lcore_send },
+        { "send_ssl", _lcore_send_ssl },
         { "send_multi", _lcore_send_multi },
         { "sendto", _lcore_sendto },
+        { "sendto_addr", _lcore_sendto_addr },
         { "udp_join", _lcore_udp_join },
         { "udp_leave", _lcore_udp_leave },
         { "udp_ttl", _lcore_udp_ttl },
@@ -918,6 +976,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "p12_register", _lcore_p12_register },
         { "ssl_qury", _lcore_ssl_qury },
         { "ssl_verify", _lcore_ssl_verify },
+        { "ssl_host", _lcore_ssl_host },
         { "ssl_seclevel", _lcore_ssl_seclevel },
         { "ssl_min_proto", _lcore_ssl_min_proto },
 

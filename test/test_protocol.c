@@ -1374,7 +1374,8 @@ static int32_t _t_http_ref_close(struct http_pack_ctx *pack) {
     }
     return _t_http_ver_is(pack, "HTTP/1.0") && !_t_http_has_token(pack, "connection", "keep-alive");
 }
-// 解出 raw 里的全部包(含数据片与连接关闭补的末片)，逐包对拍两个访问器与参照实现；首包另比期望值 ec / wc
+// 解出 raw 里的全部包(含数据片与连接关闭补的末片)。请求包(client=0)逐包对拍两个访问器与参照实现、首包另比 ec / wc；
+// 两个访问器只对服务端收到的请求有定义(见 http.h)，响应包(client=1)只验解包，ec / wc 不看
 static void _t_http_hflags_check(CuTest *tc, int32_t client, const char *raw, int32_t ec, int32_t wc) {
     buffer_ctx buf;
     ud_cxt ud;
@@ -1394,9 +1395,11 @@ static void _t_http_hflags_check(CuTest *tc, int32_t client, const char *raw, in
         if (NULL == pack) {
             break;
         }
-        CuAssertIntEquals(tc, _t_http_ref_expect(pack), http_expect_continue(pack));
-        CuAssertIntEquals(tc, _t_http_ref_close(pack), http_want_close(pack));
-        if (0 == n) {
+        if (0 == client) {
+            CuAssertIntEquals(tc, _t_http_ref_expect(pack), http_expect_continue(pack));
+            CuAssertIntEquals(tc, _t_http_ref_close(pack), http_want_close(pack));
+        }
+        if (0 == n && 0 == client) {
             CuAssertIntEquals(tc, ec, http_expect_continue(pack));
             CuAssertIntEquals(tc, wc, http_want_close(pack));
         }
@@ -1458,6 +1461,7 @@ static void test_http_hflags(CuTest *tc) {
              "1\r\nx\r\n0\r\n\r\n", 1, 1 },
         { 0, "GET / HTTP/1.1\r\nConnection: close\r\n\r\nGET / HTTP/1.1\r\nHost: a\r\n\r\n", 0, 1 },
         { 0, "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET / HTTP/1.0\r\n\r\n", 0, 0 },
+        // 响应包：只验解包不出错，后两列不检查(两个访问器对响应无定义)
         { 1, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", 0, 1 },
         { 1, "HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n", 0, 0 },
         { 1, "HTTP/1.0 200 HTTP/1.0\r\nContent-Length: 0\r\n\r\n", 0, 1 },
@@ -2537,11 +2541,11 @@ static void test_redis_oversize_no_crlf(CuTest *tc) {
         _redis_udfree(&ud);
         buffer_free(&buf);
     }
-    // 4. bulk / 聚合长度行的本地副本是 66 字节(类型 1 + 长度最多 63 位 + CRLF 2)：
+    // 4. bulk / 聚合长度行的本地副本是 REDIS_HDR_PEEK 字节(类型 1 + 长度最多 63 位 + CRLF 2)：
     //    装满还没有 CRLF 当场拒，差 1 字节装满仍等数据
-    const size_t peek = 1 + 63 + 2;
+    const size_t peek = REDIS_HDR_PEEK;
     const char types[] = { '$', '*' };
-    char line[66];
+    char line[REDIS_HDR_PEEK];
     for (size_t t = 0; t < sizeof(types); t++) {
         for (size_t n = peek - 1; n <= peek; n++) {
             buffer_ctx buf;
@@ -3432,7 +3436,6 @@ static void test_url_skip_empty(CuTest *tc) {
     char u1[] = "/a//b/";
     char deep[URL_MAX_PATH_DEPTH * 2 + 8];
     size_t n = 0;
-    int32_t i;
     CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, u1, strlen(u1), '/', URL_DECODE | URL_SKIP_EMPTY));
     CuAssertIntEquals(tc, 2, ctx.npath);
     CuAssertTrue(tc, buf_compare(&ctx.segs[0], "a", 1));
@@ -3444,7 +3447,7 @@ static void test_url_skip_empty(CuTest *tc) {
     CuAssertTrue(tc, 0 == ctx.segs[1].lens);
     CuAssertTrue(tc, 0 == ctx.segs[3].lens);
     // 恰 URL_MAX_PATH_DEPTH 个非空段，中间夹一个空段：跳空时合法，不跳时空段顶掉一个名额而失败
-    for (i = 0; i < URL_MAX_PATH_DEPTH; i++) {
+    for (int32_t i = 0; i < URL_MAX_PATH_DEPTH; i++) {
         deep[n++] = '/';
         if (1 == i) {
             deep[n++] = '/';
@@ -6201,15 +6204,16 @@ static void test_parse_colon_triple(CuTest *tc) {
     CuAssertIntEquals(tc, 1, parse_colon_triple("09:", max, v));
     CuAssertIntEquals(tc, 9, (int)v[0]);
 }
-// prots_may_resume default 分支：无专属判定的协议返回 ERR_OK。
-// PACK_PGSQL / PACK_MQTT / PACK_WEBSOCK 各有自己的判定，不在此列
+// prots_may_resume 收到 data 为 NULL 时首行就放行、不看协议表：这里只钉这条短路，有没有专属判定都一样。
+// 各协议的判定(PACK_PGSQL / PACK_MQTT / PACK_WEBSOCK / PACK_REDIS)在各自的用例里测
 static void test_prots_may_resume_default(CuTest *tc) {
     pack_type defaults[] = { PACK_NONE, PACK_DNS, PACK_HTTP, PACK_SMTP,
-                             PACK_REDIS, PACK_MYSQL, PACK_MONGO, PACK_UDP_KCP };
+                             PACK_MYSQL, PACK_MONGO, PACK_UDP_KCP };
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         CuAssertIntEquals(tc, ERR_OK, prots_may_resume(defaults[i], NULL));
     }
-    // data 为 NULL 时无包可拦，带判定的三个协议一律放行
+    // 带判定的四个协议也一样
+    CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_REDIS, NULL));
     CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_PGSQL, NULL));
     CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_MQTT, NULL));
     CuAssertIntEquals(tc, ERR_OK, prots_may_resume(PACK_WEBSOCK, NULL));
@@ -7183,6 +7187,46 @@ static void test_websock_mqtt_disconnect_stop(CuTest *tc) {
     buffer_free(&subbuf);// 余下的 PINGREQ 连同承载它的那帧在这里回收
     buffer_free(&buf);
 }
+// 子协议缓冲里已有半包时走缓冲区循环(不走帧上直解)：那里同样见 DISCONNECT 即停，余下字节留在子协议缓冲
+static void test_websock_mqtt_disconnect_stop_buffered(CuTest *tc) {
+    unsigned char half[] = { 0xC0 };// PINGREQ 前半
+    unsigned char rest[] = { 0x00, 0xE0, 0x00, 0xC0, 0x00 };// PINGREQ 后半 + DISCONNECT + PINGREQ
+    size_t f1size, f2size;
+    void *f1 = websock_pack_binary(1, 1, half, sizeof(half), &f1size);
+    void *f2 = websock_pack_binary(1, 1, rest, sizeof(rest), &f2size);
+    CuAssertPtrNotNull(tc, f1);
+    CuAssertPtrNotNull(tc, f2);
+    mqtt_ctx mctx;
+    ud_cxt mqtt_ud, ud;
+    buffer_ctx subbuf;
+    websock_ctx ws;
+    _ws_mqtt_ctx_init(&mctx, &mqtt_ud, &subbuf, &ws, &ud);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, f1, f1size);
+    FREE(f1);
+    int32_t status = PROT_INIT;
+    CuAssertPtrEquals(tc, NULL, _t_websock_unpack(0, &buf, &ud, NULL, &status));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, 1 == buffer_size(&subbuf));
+    buffer_append(&buf, f2, f2size);
+    FREE(f2);
+    status = PROT_INIT;
+    struct websock_pack_ctx *pack = _t_websock_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_CLOSE));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, MQTT_PINGREQ, ((mqtt_pack_ctx *)websock_secpack(pack))->fixhead.prot);
+    struct websock_pack_ctx *next = _websock_pack_next(pack);
+    CuAssertPtrNotNull(tc, next);
+    CuAssertIntEquals(tc, MQTT_DISCONNECT, ((mqtt_pack_ctx *)websock_secpack(next))->fixhead.prot);
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(next));// DISCONNECT 后面的 PINGREQ 没解出来
+    CuAssertTrue(tc, 2 == buffer_size(&subbuf));
+    _websock_pkfree(pack);
+    _websock_pkfree(next);
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
 // 一个 MQTT 包跨两个 WS 帧：前一帧只够半包(返回 NULL、不报错)，半包留在子协议缓冲；
 // 后一帧补齐后解出整包，两帧的载荷节点都被排空回收(漏回收或重复回收由内存检查兜住)
 static void test_websock_mqtt_cross_frame(CuTest *tc) {
@@ -7225,7 +7269,7 @@ static void test_websock_mqtt_cross_frame(CuTest *tc) {
 // 余下部分一帧发完(超 MAX_RECV_SIZE，挂外部节点)，内部节点与外部节点混排照样解出整包
 static void test_websock_mqtt_small_frames(CuTest *tc) {
     const size_t nsmall = 1500;
-    char body[6000];
+    static char body[MAX_RECV_SIZE + 2048];// 按 MAX_RECV_SIZE 现算：调大到约 60K 以内照样成立，再大会碰到 MQTT / WS 单包上限
     for (size_t i = 0; i < sizeof(body); i++) {
         body[i] = (char)('a' + (i % 26));
     }
@@ -7301,7 +7345,7 @@ static mqtt_pack_ctx *_t_ws_mqtt_node(CuTest *tc, struct websock_pack_ctx *node,
 static void test_websock_mqtt_flat_one(CuTest *tc) {
     unsigned char publish[] = { 0x30, 0x0A, 0x00, 0x03, 't', '/', 'a', 'h', 'e', 'l', 'l', 'o' };// QoS0 PUBLISH t/a hello
     unsigned char ping[] = { 0xC0, 0x00 };
-    char body[6000];
+    static char body[MAX_RECV_SIZE + 2048];// 按 MAX_RECV_SIZE 现算：调大到约 60K 以内照样成立，再大会碰到 MQTT / WS 单包上限
     for (size_t i = 0; i < sizeof(body); i++) {
         body[i] = (char)('a' + (i % 26));
     }
@@ -7524,7 +7568,7 @@ static void test_websock_mqtt_flat_error(CuTest *tc) {
     }
 }
 // 直解途中遇 DISCONNECT：链头(复用的帧)与 DISCONNECT 节点照常返回、置 PROT_CLOSE，之后的包不解，
-// 余下字节进子协议缓冲随连接释放(同 test_websock_mqtt_disconnect_stop 的老路口径)
+// 余下字节进子协议缓冲随连接释放(缓冲区循环那条路见 test_websock_mqtt_disconnect_stop_buffered)
 static void test_websock_mqtt_flat_disconnect(CuTest *tc) {
     unsigned char payload[] = { 0xC0, 0x00, 0xE0, 0x00, 0xC0, 0x00 };// PINGREQ + DISCONNECT + PINGREQ
     size_t fsize, size;
@@ -7918,7 +7962,7 @@ static void test_mail_attach_add_ret(CuTest *tc) {
 // 生产路径由 task 接管并释放，这里桩自己收，免得 MEMORY_CHECK 报泄漏
 static int32_t g_smtp_hs_calls;
 static int32_t g_smtp_hs_erro;
-static char g_smtp_hs_msg[128];
+static char g_smtp_hs_msg[256];
 static int32_t _stub_smtp_hspush(sock_ctx *sk, int32_t client,
                                  ud_cxt *ud, int32_t erro, void *data, size_t lens) {
     (void)sk;
@@ -8092,44 +8136,9 @@ static void test_smtp_unpack_state_ehlo(CuTest *tc) {
     }
 }
 
-// AUTH 状态 + LOGIN 认证：按顺序配对，不看提示文本
-//   AUTH 态第一个 334 → 回用户名，切 AUTH_PSW
-//   AUTH_PSW 态的 334 → 回密码，切 AUTH_CHECK
-// AUTH 状态 + PLAIN：334 任意挑战 → 状态切换 AUTH_CHECK
-// AUTH 状态 + 非 334 响应 → PROT_ERROR
+// AUTH 状态 + LOGIN 认证收到非 334 响应 → PROT_ERROR、状态不切换(正常的两步迁移见 test_smtp_login_by_order)
 static void test_smtp_unpack_state_auth_login(CuTest *tc) {
-    // LOGIN username 阶段
-    {
-        smtp_ctx smtp;
-        ud_cxt ud;
-        _smtp_ud_setup(&smtp, &ud, _SMTP_AUTH);
-        smtp.authtype = _SMTP_LOGIN;
-        buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "334 VXNlcm5hbWU6\r\n");
-        int32_t status = PROT_INIT;
-        size_t size = 0;
-        _t_smtp_unpack(0, &buf, &ud, &size, &status);
-        // 回了用户名，等第二个 334
-        CuAssertIntEquals(tc, _SMTP_AUTH_PSW, ud.status);
-        CuAssertTrue(tc, 0 == buffer_size(&buf));
-        buffer_free(&buf);
-    }
-    // LOGIN password 阶段：切换 AUTH_CHECK
-    {
-        smtp_ctx smtp;
-        ud_cxt ud;
-        _smtp_ud_setup(&smtp, &ud, _SMTP_AUTH_PSW);
-        smtp.authtype = _SMTP_LOGIN;
-        buffer_ctx buf;
-        buffer_init(&buf);
-        _bput(&buf, "334 UGFzc3dvcmQ6\r\n");
-        int32_t status = PROT_INIT;
-        size_t size = 0;
-        _t_smtp_unpack(0, &buf, &ud, &size, &status);
-        CuAssertIntEquals(tc, _SMTP_AUTH_CHECK, ud.status);
-        buffer_free(&buf);
-    }
+    // 正常的两步迁移(AUTH → AUTH_PSW → AUTH_CHECK)见 test_smtp_login_by_order
     // 非 334 响应（如 535 auth failed）→ PROT_ERROR
     {
         smtp_ctx smtp;
@@ -9124,10 +9133,15 @@ static void test_prots_recv_switch_target(CuTest *tc) {
     ud.pktype = PACK_WEBSOCK;
     buffer_init(&buf);
     g_sw_ud = &ud;
+    // 结果先记进局部，换回共用桩后再断言：断言失败会 longjmp 出去，危险桩留在全局会撞坏后面的套件
+    int32_t got[2][5];
+    ZERO(got, sizeof(got));
     prots_init(&g_sw_emit);
     for (int32_t absent = 0; absent < 2; absent++) {
         frame = websock_pack_binary(1, 1, payload, sizeof(payload), &fsize);
-        CuAssertPtrNotNull(tc, frame);
+        if (NULL == frame) {
+            break;
+        }
         buffer_append(&buf, frame, fsize);
         FREE(frame);
         ud.handle = 1;
@@ -9135,13 +9149,20 @@ static void test_prots_recv_switch_target(CuTest *tc) {
         g_sw_begins = 0;
         ZERO(g_sw_emits, sizeof(g_sw_emits));
         prots_net_recv(NULL, &_t_nosk, 0, &buf, buffer_size(&buf), &ud);
-        CuAssertIntEquals(tc, 2, g_sw_begins);
-        CuAssertIntEquals(tc, 1, g_sw_emits[1]);
-        CuAssertIntEquals(tc, 0 == absent ? 2 : 0, g_sw_emits[2]);
-        CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
-        CuAssertIntEquals(tc, 0, (int)buffer_size(&subbuf));
+        got[absent][0] = 1;
+        got[absent][1] = (int32_t)g_sw_begins;
+        got[absent][2] = (int32_t)g_sw_emits[1];
+        got[absent][3] = (int32_t)g_sw_emits[2];
+        got[absent][4] = (int32_t)(buffer_size(&buf) + buffer_size(&subbuf));
     }
     prots_init(&g_stub_emit);// 换回共用桩
+    for (int32_t absent = 0; absent < 2; absent++) {
+        CuAssertIntEquals(tc, 1, got[absent][0]);
+        CuAssertIntEquals(tc, 2, got[absent][1]);
+        CuAssertIntEquals(tc, 1, got[absent][2]);
+        CuAssertIntEquals(tc, 0 == absent ? 2 : 0, got[absent][3]);
+        CuAssertIntEquals(tc, 0, got[absent][4]);
+    }
     buffer_free(&subbuf);
     buffer_free(&buf);
 }
@@ -9208,39 +9229,10 @@ static void test_size_redis(CuTest *tc) {
     buffer_free(&buf);
 }
 // ── smtp_unpack 状态机(带握手回传桩)与 mail_pack 头部 ──────
-// 握手回传桩：失败原因 / 成败经 _hs_push 交给等待方。CuTest 阶段还没起 loader，桩自己收载荷；
-// 之后 loader_init 的 prots_init 会换回正式回调
-static int32_t g_hs_calls;
-static int32_t g_hs_erro;
-static char g_hs_msg[256];
-static sock_ctx g_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
-static int32_t _stub_hspush(sock_ctx *sk, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
-    (void)sk;
-    (void)client;
-    (void)ud;
-    g_hs_calls++;
-    g_hs_erro = erro;
-    g_hs_msg[0] = '\0';
-    if (NULL != data && lens < sizeof(g_hs_msg)) {
-        memcpy(g_hs_msg, data, lens);
-        g_hs_msg[lens] = '\0';
-    }
-    FREE(data);
-    return ERR_OK;
-}
 // 装桩、清计数，造一个停在 state 态的连接上下文
 static void _unpack_setup(smtp_ctx *smtp, ud_cxt *ud, buffer_ctx *buf, uint8_t state, int32_t authtype) {
-    _smtp_init(_stub_hspush);
-    g_hs_calls = 0;
-    g_hs_erro = ERR_OK;
-    g_hs_msg[0] = '\0';
-    ZERO(smtp, sizeof(smtp_ctx));
-    safe_fill_str(smtp->user, sizeof(smtp->user), "alice");
-    safe_fill_str(smtp->psw, sizeof(smtp->psw), "secret");
+    _smtp_ud_setup(smtp, ud, state);
     smtp->authtype = authtype;
-    ZERO(ud, sizeof(ud_cxt));
-    ud->status = state;
-    ud->context = smtp;
     buffer_init(buf);
 }
 // 追加 wire 后喂一次 smtp_unpack，返回解析状态位。ev 与连接标识为空：要回的命令一律发送失败(置 PROT_ERROR)
@@ -9249,7 +9241,7 @@ static int32_t _unpack_feed(ud_cxt *ud, buffer_ctx *buf, const char *wire) {
     buffer_append(buf, (void *)wire, strlen(wire));
     int32_t status = PROT_INIT;
     size_t size = 0;
-    char *pack = smtp_unpack(NULL, &g_nosk, 1, buf, ud, &size, &status);
+    char *pack = smtp_unpack(NULL, &_t_nosk, 1, buf, ud, &size, &status);
     FREE(pack);// 只有 COMMAND 态会交出包
     return status;
 }
@@ -9273,8 +9265,8 @@ static void test_smtp_authtype_token(CuTest *tc) {
     int32_t status = _unpack_feed(&ud, &buf, "250 AUTH XPLAIN LOGINX\r\n");
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, ERR_FAILED, smtp.authtype);
-    CuAssertIntEquals(tc, 1, g_hs_calls);
-    CuAssertStrEquals(tc, "250 AUTH XPLAIN LOGINX", g_hs_msg);
+    CuAssertIntEquals(tc, 1, g_smtp_hs_calls);
+    CuAssertStrEquals(tc, "250 AUTH XPLAIN LOGINX", g_smtp_hs_msg);
     buffer_free(&buf);
 }
 // AUTH LOGIN 按顺序配对：第一个 334 回用户名、第二个回密码，提示文本是什么都不看
@@ -9289,7 +9281,7 @@ static void test_smtp_login_by_order(CuTest *tc) {
     _unpack_feed(&ud, &buf, "334 UGFzc3dvcmQA\r\n");// "Password\0"
     CuAssertIntEquals(tc, _SMTP_AUTH_CHECK, (int)ud.status);
     CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
-    CuAssertIntEquals(tc, 0, g_hs_calls);
+    CuAssertIntEquals(tc, 0, g_smtp_hs_calls);
     buffer_free(&buf);
     // 提示写反了也一样：第一个照样回用户名
     _unpack_setup(&smtp, &ud, &buf, _SMTP_AUTH, LOGIN);
@@ -9307,9 +9299,9 @@ static void _login_reject(CuTest *tc, uint8_t state, const char *wire, const cha
     buffer_free(&buf);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, (int)state, (int)ud.status);
-    CuAssertIntEquals(tc, 1, g_hs_calls);
-    CuAssertIntEquals(tc, ERR_FAILED, g_hs_erro);
-    CuAssertStrEquals(tc, msg, g_hs_msg);
+    CuAssertIntEquals(tc, 1, g_smtp_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_smtp_hs_erro);
+    CuAssertStrEquals(tc, msg, g_smtp_hs_msg);
 }
 // LOGIN 挑战的拒收分支：半截合法的 Base64(前缀正好解出 "username:")、空挑战、裸 334、
 // 第二步的非法挑战，以及两种机制都接不住的 "334-" 续行
@@ -9329,17 +9321,17 @@ static void test_smtp_auth_check_result(CuTest *tc) {
     int32_t status = _unpack_feed(&ud, &buf, "235 2.7.0 Accepted\r\n");
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, _SMTP_COMMAND, (int)ud.status);
-    CuAssertIntEquals(tc, 1, g_hs_calls);
-    CuAssertIntEquals(tc, ERR_OK, g_hs_erro);
+    CuAssertIntEquals(tc, 1, g_smtp_hs_calls);
+    CuAssertIntEquals(tc, ERR_OK, g_smtp_hs_erro);
     CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
     buffer_free(&buf);
     _unpack_setup(&smtp, &ud, &buf, _SMTP_AUTH_CHECK, LOGIN);
     status = _unpack_feed(&ud, &buf, "535-5.7.8 not accepted\r\n535 5.7.8 https://help.example/x\r\n");
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, _SMTP_AUTH_CHECK, (int)ud.status);
-    CuAssertIntEquals(tc, 1, g_hs_calls);
-    CuAssertIntEquals(tc, ERR_FAILED, g_hs_erro);
-    CuAssertStrEquals(tc, "535-5.7.8 not accepted\r\n535 5.7.8 https://help.example/x", g_hs_msg);
+    CuAssertIntEquals(tc, 1, g_smtp_hs_calls);
+    CuAssertIntEquals(tc, ERR_FAILED, g_smtp_hs_erro);
+    CuAssertStrEquals(tc, "535-5.7.8 not accepted\r\n535 5.7.8 https://help.example/x", g_smtp_hs_msg);
     CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
     buffer_free(&buf);
 }
@@ -9352,12 +9344,12 @@ static void test_smtp_reject_split(CuTest *tc) {
     int32_t status = _unpack_feed(&ud, &buf, "554 5.7.1 Cli");
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 0, g_hs_calls);
+    CuAssertIntEquals(tc, 0, g_smtp_hs_calls);
     CuAssertIntEquals(tc, 13, (int)buffer_size(&buf));
     status = _unpack_feed(&ud, &buf, "ent blocked\r\n");
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 1, g_hs_calls);
-    CuAssertStrEquals(tc, "554 5.7.1 Client blocked", g_hs_msg);
+    CuAssertIntEquals(tc, 1, g_smtp_hs_calls);
+    CuAssertStrEquals(tc, "554 5.7.1 Client blocked", g_smtp_hs_msg);
     buffer_free(&buf);
     // 多行应答里码对不上的那行同样等整行到齐才拒
     _unpack_setup(&smtp, &ud, &buf, _SMTP_COMMAND, 0);
@@ -9497,12 +9489,12 @@ static void test_mail_date_msgid(CuTest *tc) {
     d = (NULL != d) ? strchr(d + 6, ' ') : NULL;
     d = (NULL != d) ? strchr(d + 1, ' ') : NULL;
     int32_t year4 = (NULL != d && 4 == strspn(d + 1, "0123456789") && ' ' == d[5]);
-    // "Message-ID: <" 13 字符 + 24 位随机串 + "@域>"
+    // "Message-ID: <" 13 字符 + MAIL_MSGID_RAND 位随机串 + "@域>"
     const char *m1 = (NULL != p1) ? strstr(p1, "Message-ID: <") : NULL;
     const char *m2 = (NULL != p2) ? strstr(p2, "Message-ID: <") : NULL;
     int32_t id_ok = (NULL != m1 && NULL != m2
-        && 0 == strncmp(m1 + 37, "@example.com>\r\n", 15)
-        && 0 != strncmp(m1, m2, 37));
+        && 0 == strncmp(m1 + 13 + MAIL_MSGID_RAND, "@example.com>\r\n", 15)
+        && 0 != strncmp(m1, m2, 13 + MAIL_MSGID_RAND));
     int32_t nodomain = (NULL != p3 && NULL != strstr(p3, "@srey.local>\r\n"));
     FREE(p1);
     FREE(p2);
@@ -9698,6 +9690,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_mqtt_multipack);
     SUITE_ADD_TEST(suite, test_websock_mqtt_ws_fragment_slice_clear);
     SUITE_ADD_TEST(suite, test_websock_mqtt_disconnect_stop);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_disconnect_stop_buffered);
     SUITE_ADD_TEST(suite, test_websock_mqtt_cross_frame);
     SUITE_ADD_TEST(suite, test_websock_mqtt_small_frames);
     SUITE_ADD_TEST(suite, test_websock_mqtt_flat_one);

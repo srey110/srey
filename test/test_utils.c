@@ -30,6 +30,7 @@ typedef struct _chan_ub_arg {
     chan_ctx *ch;
     int32_t rtn;// 发送方的 chan_send 返回值
     void *got;// 接收方的 chan_recv 返回值
+    atomic_t done;// 线程跑完置 1
 } _chan_ub_arg;
 
 /* =======================================================================
@@ -1078,6 +1079,8 @@ static void test_buffer_appendv_realign_borrow(CuTest *tc) {
     }
     buffer_ctx buf;
 
+    // 下面几段的长度按 MAX_RECV_SIZE 为 4096 推出首节点容量 5064；调了它这里要重算，先挡住免得静默不再覆盖原路径
+    CuAssertIntEquals(tc, 4096, MAX_RECV_SIZE);
     // 前移：空缓冲直写的首节点按接收那一档开(容量 5064)。写 4600 再 drain 4400，余 464 写不下 500，
     // 残包 200 前移后够用
     buffer_init(&buf);
@@ -1222,6 +1225,8 @@ static void test_buffer_get_commit(CuTest *tc) {
     size_t total = 0;
     uint32_t n, i;
 
+    // 下面"必然跨出第二个节点"按 MAX_RECV_SIZE 为 4096 推(首节点容量 5064)；放在 buffer_init 之前，挡住时不漏放缓冲
+    CuAssertIntEquals(tc, 4096, MAX_RECV_SIZE);
     memset(big, 'B', sizeof(big));
     buffer_init(&buf);
 
@@ -1883,11 +1888,24 @@ static void test_chan_capacity_round(CuTest *tc) {
 static void _chan_ub_send(void *arg) {
     _chan_ub_arg *a = (_chan_ub_arg *)arg;
     a->rtn = chan_send(a->ch, (void *)(uintptr_t)7, 0, 0);
+    ATOMIC_SET(&a->done, 1);
 }
 static void _chan_ub_recv(void *arg) {
     _chan_ub_arg *a = (_chan_ub_arg *)arg;
     size_t lens;
     a->got = chan_recv(a->ch, &lens);
+    ATOMIC_SET(&a->done, 1);
+}
+// 有界等线程跑完(约 2 秒)再 join：关闭没叫醒阻塞方时报失败，而不是把 ./bin/test 挂死(线程与 chan 就此泄漏)
+static int32_t _chan_ub_join(pthread_t tid, _chan_ub_arg *a) {
+    for (int32_t i = 0; i < 2000 && 0 == ATOMIC_GET(&a->done); i++) {
+        MSLEEP(1);
+    }
+    if (0 == ATOMIC_GET(&a->done)) {
+        return 0;
+    }
+    thread_join(tid);
+    return 1;
 }
 // 轮询到 probe 成立，最多等 2 秒；超时只是没等到，不影响后面各步的出口
 static int32_t _chan_wait_until(chan_ctx *ch, int32_t (*probe)(chan_ctx *)) {
@@ -1915,12 +1933,19 @@ static void test_chan_unbuffered(CuTest *tc) {
     void *p;
     int32_t nrecv = 0, inorder = 1;
     for (int32_t i = 1; i <= n; i++) {
+        // 有界等发送方挂上来(约 2 秒)：交接卡住时报失败，不让 ./bin/test 挂死
+        if (!_chan_wait_until(ch, chan_can_recv)) {
+            break;
+        }
         p = chan_recv(ch, &lens);
         if (NULL == p) {
             break;// 发送方出错会 close，这里才有出口
         }
         nrecv++;
         inorder &= ((void *)(uintptr_t)i == p);
+    }
+    if (n != nrecv) {
+        chan_close(ch);// 发送方可能还挂在 send 上，关掉让它出来再 join
     }
     thread_join(tid);
     chan_free(ch);
@@ -1934,10 +1959,11 @@ static void test_chan_unbuffered(CuTest *tc) {
     _chan_ub_arg snd, rcv;
     snd.ch = ch;
     snd.rtn = ERR_OK;
+    ATOMIC_SET(&snd.done, 0);
     tid = thread_creat(_chan_ub_send, &snd);
     int32_t seen = _chan_wait_until(ch, chan_can_recv);
     chan_close(ch);
-    thread_join(tid);
+    CuAssertIntEquals(tc, 1, _chan_ub_join(tid, &snd));
     p = chan_recv(ch, &lens);
     chan_free(ch);
     CuAssertIntEquals(tc, 1, seen);
@@ -1948,10 +1974,11 @@ static void test_chan_unbuffered(CuTest *tc) {
     ch = chan_init(0);
     rcv.ch = ch;
     rcv.got = (void *)(uintptr_t)1;
+    ATOMIC_SET(&rcv.done, 0);
     pthread_t rtid = thread_creat(_chan_ub_recv, &rcv);
     seen = _chan_wait_until(ch, chan_can_send);
     chan_close(ch);
-    thread_join(rtid);
+    CuAssertIntEquals(tc, 1, _chan_ub_join(rtid, &rcv));
     chan_free(ch);
     CuAssertIntEquals(tc, 1, seen);
     CuAssertPtrEquals(tc, NULL, rcv.got);
@@ -1964,12 +1991,14 @@ static void test_chan_unbuffered(CuTest *tc) {
         rcv.got = NULL;
         snd.ch = ch;
         snd.rtn = ERR_FAILED;
+        ATOMIC_SET(&snd.done, 0);
+        ATOMIC_SET(&rcv.done, 0);
         rtid = thread_creat(_chan_ub_recv, &rcv);
         (void)_chan_wait_until(ch, chan_can_send);
         tid = thread_creat(_chan_ub_send, &snd);
         chan_close(ch);
-        thread_join(tid);
-        thread_join(rtid);
+        CuAssertIntEquals(tc, 1, _chan_ub_join(tid, &snd));
+        CuAssertIntEquals(tc, 1, _chan_ub_join(rtid, &rcv));
         chan_free(ch);
         consistent = (ERR_OK == snd.rtn) == ((void *)(uintptr_t)7 == rcv.got)
             && (NULL == rcv.got || (void *)(uintptr_t)7 == rcv.got);
@@ -2008,6 +2037,7 @@ static void test_hug(CuTest *tc) {
     hug_wakeup(&hug);
     CuAssertTrue(tc, ERR_OK == hug_init(&hug));
     hug_free(&hug);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&hug.exitflag));// free 自己置 1, 迟到的 wakeup 才不碰已删的管道/锁
     hug_wakeup(&hug);
 }
 
@@ -2445,10 +2475,10 @@ static void test_log_linger(CuTest *tc) {
         slog(LOGLV_INFO, "M%03d", k);
     }
     n3 = _log_wait_lines(rd, 3 + nburst);
-    MSLEEP(50);// 超过浅睡时长，回到深睡
+    MSLEEP(5 * LOG_LINGER_MS);// 超过浅睡时长，回到深睡
     slog(LOGLV_INFO, "D");
     n4 = _log_wait_lines(rd, 4 + nburst);
-    MSLEEP(50);// 再回到深睡后关停
+    MSLEEP(5 * LOG_LINGER_MS);// 再回到深睡后关停
     t0 = nowms();
     log_free();
     tfree = nowms() - t0;
@@ -2789,10 +2819,13 @@ static void test_sock_options(CuTest *tc) {
     CuAssertIntEquals(tc, 3, kaopt);
 #endif
 #elif defined(TCP_KEEPCNT)
+    // 契约是"尽力设": Win10 1703 之前系统不认 TCP_KEEPCNT, setsockopt 失败被忽略、沿用默认 10 次。
+    // 取不到就不判, 别把运行期才知道的系统能力当成编译期事实
     int32_t kacnt = 0;
     socklen_t kclen = (socklen_t)sizeof(kacnt);
-    CuAssertTrue(tc, 0 == getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPCNT, (char *)&kacnt, &kclen));
-    CuAssertIntEquals(tc, 3, kacnt);
+    if (0 == getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPCNT, (char *)&kacnt, &kclen)) {
+        CuAssertIntEquals(tc, 3, kacnt);
+    }
 #endif
 #if !defined(OS_WIN)
     // SO_REUSEPORT 在 Windows 不支持，跳过
@@ -3491,9 +3524,9 @@ static void test_pool_ops(CuTest *tc) {
     o = (pool_t_obj *)pool_pop(&pool, NULL, 0);
     CuAssertIntEquals(tc, ERR_OK, pool_push(&pool, o, POOL_OP_NOCLEAR));
     CuAssertIntEquals(tc, 0, _pt_clear);
-    CuAssertIntEquals(tc, 0, (int)o->clear_cnt);
     o2 = (pool_t_obj *)pool_pop(&pool, NULL, POOL_OP_NORESET);
     CuAssertPtrEquals(tc, o, o2);
+    CuAssertIntEquals(tc, 0, (int)o2->clear_cnt);// 在池里时 ASan 下不可读，取出后再看
     CuAssertIntEquals(tc, 0, _pt_reset);
     CuAssertIntEquals(tc, 0, (int)o2->reset_cnt);
     // 不带开关时照常 clear / reset
@@ -3533,6 +3566,26 @@ static void test_pool_shrink_self(CuTest *tc) {
     CuAssertIntEquals(tc, 10, _pt_free);
     CuAssertIntEquals(tc, 0, _pt_free_bad);
 }
+#if ENABLED_ASAN && defined(CC_GNU)
+// ASan 下对象在池里期间整个不可访问(含末尾不满 8 字节的那格)，取出后放开
+static void test_pool_asan_poison(CuTest *tc) {
+    pool_ctx pool;
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 8, 0, 0, &_pt_cbs);
+    pool_t_obj *o = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    char *last = (char *)o + sizeof(pool_t_obj) - 1;
+    CuAssertIntEquals(tc, 0, __asan_address_is_poisoned(o));
+    CuAssertIntEquals(tc, ERR_OK, pool_push(&pool, o, 0));
+    CuAssertTrue(tc, 0 != __asan_address_is_poisoned(o));
+    CuAssertTrue(tc, 0 != __asan_address_is_poisoned(last));
+    CuAssertPtrEquals(tc, o, pool_pop(&pool, NULL, 0));
+    CuAssertIntEquals(tc, 0, __asan_address_is_poisoned(o));
+    CuAssertIntEquals(tc, 0, __asan_address_is_poisoned(last));
+    pool_push(&pool, o, 0);
+    pool_free(&pool);// 收尾经 _elfree 读 magic，没放开就当场报错
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+}
+#endif
 
 // TDA-1：threshold 翻倍溢出修复验证
 // overload = SIZE_MAX, init = 1 → 不死循环，threshold 钳至 SIZE_MAX，返回 1
@@ -4713,7 +4766,7 @@ static void test_contenttype_rows(CuTest *tc) {
 }
 // 查询参数超过 URL_MAX_PARAM 个时 url_parse 失败、不静默截断(同路径段超限)；恰好 URL_MAX_PARAM 个合法，空段不占名额
 static void test_url_param_max(CuTest *tc) {
-    char u[URL_MAX_PARAM * 8 + 32];
+    char u[URL_MAX_PARAM * 24 + 32];// 每个参数 "&k下标=下标" 按两个 10 位数留够
     char raw[sizeof(u)];
     url_ctx ctx;
     size_t n = 3;
@@ -4724,14 +4777,16 @@ static void test_url_param_max(CuTest *tc) {
     }
     CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, u, n, '/', URL_DECODE));
     CuAssertIntEquals(tc, URL_MAX_PARAM, ctx.nparam);
-    buf_ctx *v = url_get_param(&ctx, "k63");
-    CuAssertTrue(tc, NULL != v && buf_compare(v, "63", 2));
+    char key[16];
+    snprintf(key, sizeof(key), "k%d", URL_MAX_PARAM - 1);
+    buf_ctx *v = url_get_param(&ctx, key);
+    CuAssertTrue(tc, NULL != v && buf_compare(v, key + 1, strlen(key + 1)));
     // 空段不入表，仍是 URL_MAX_PARAM 个
     memcpy(u + n, "&&", 2);
     n += 2;
     CuAssertIntEquals(tc, ERR_OK, url_parse(&ctx, u, n, '/', URL_DECODE));
     CuAssertIntEquals(tc, URL_MAX_PARAM, ctx.nparam);
-    // 再多一个：原来静默丢掉，同名取最后一个的规则在第 65 个以后失效
+    // 再多一个：原来静默丢掉，同名取最后一个的规则超过上限以后失效
     memcpy(u + n, "&k0=x", 5);
     n += 5;
     CuAssertIntEquals(tc, ERR_FAILED, url_parse(&ctx, u, n, '/', URL_DECODE));
@@ -5002,6 +5057,9 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pool_capacity_round);
     SUITE_ADD_TEST(suite, test_pool_ops);
     SUITE_ADD_TEST(suite, test_pool_shrink_self);
+#if ENABLED_ASAN && defined(CC_GNU)
+    SUITE_ADD_TEST(suite, test_pool_asan_poison);
+#endif
     SUITE_ADD_TEST(suite, test_tda_overflow);
     SUITE_ADD_TEST(suite, test_strtou64_ref);
     SUITE_ADD_TEST(suite, test_sfid_init_keeps_ctx);

@@ -3,6 +3,7 @@
 #include "utils/idgen.h"
 
 #define CORO_TIMEOUT_SCAN_MS 1000 // 挂起等待的超时每隔这么久扫一次，到期最多晚这么久才醒
+#define CORO_TAG_RECV_ANY (-(int32_t)MSG_TYPE_RECV) // 等待者标记(不是消息类型)：等对端下一条任意消息、不过协议的回复判定；keep 同 RECV
 
 typedef void (*_coro_msg_handler_t)(task_dispatch_arg *arg);
 // 协程 task 的 task->arg：调度器加上注册时传入的业务参数
@@ -32,7 +33,7 @@ static void _coro_task_after_run(void *owner) {
     task_ungrab((task_ctx *)owner);
 }
 static const char *_coro_task_tagstr(int32_t tag) {
-    return message_str((msg_type)tag);
+    return CORO_TAG_RECV_ANY == tag ? "RECV_ANY" : message_str((msg_type)tag);
 }
 static const coro_hooks _coro_task_hooks = {
     _coro_task_run, _coro_task_before_run, _coro_task_after_run, _coro_task_tagstr
@@ -72,14 +73,19 @@ static void _coro_handle_timeout(task_dispatch_arg *arg) {
 static void _coro_handle_miss_create(task_dispatch_arg *arg) {
     _coro_dispatch(arg, 1, 0);
 }
-// 处理数据接收消息：sess==0 或协议不允许 resume 则新建协程，否则唤醒等待的协程
+// 处理数据接收消息：队头等回复(RECV)的须过协议的回复判定，等任意消息(RECV_ANY)的直接唤醒；
+// 都不中(含 sess==0)则新建协程
 static void _coro_handle_recved(task_dispatch_arg *arg) {
-    if (0 == arg->msg->sess
-        || ERR_OK != prots_may_resume(arg->msg->subtype, arg->msg->data)) {
-        _coro_handle_spawn(arg);
+    coro_ctx *co = _coro_co(arg->task);
+    message_ctx *msg = arg->msg;
+    if (0 != msg->sess
+        && ((ERR_OK == prots_may_resume(msg->subtype, msg->data)
+             && ERR_OK == coro_wake(co, msg->sess, (int32_t)MSG_TYPE_RECV, msg))
+            || ERR_OK == coro_wake(co, msg->sess, CORO_TAG_RECV_ANY, msg))) {
+        message_clean(msg);
         return;
     }
-    _coro_dispatch(arg, 1, 0);
+    coro_spawn(co, msg);
 }
 // 处理连接关闭消息：sess(连接类即 skid)下全部等待者不看 mtype 一律唤醒，再新建协程先调观察者、后调关闭回调。
 // 新协程当场跑到第一次挂起，故观察者排在等待者之后、在本条消息内同步调完。
@@ -92,8 +98,8 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
 // 给每个到期的等待者造 TIMEOUT 消息：同一条复用，每个到期者只用到它下次挂起
 static void *_coro_timeout_msg(void *ud, uint64_t sess, int32_t tag) {
     coro_task_timeout *tmo = (coro_task_timeout *)ud;
-    LOG_INFO("task %s message type %d session %"PRIu64" timeout.",
-             _NAME_OR(tmo->task->name), tag, sess);
+    LOG_INFO("task %s message type %s session %"PRIu64" timeout.",
+             _NAME_OR(tmo->task->name), _coro_task_tagstr(tag), sess);
     tmo->msg.sess = sess;
     return &tmo->msg;
 }
@@ -127,7 +133,7 @@ static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_CONNECT]      = _coro_handle_miss_create, // 连接建立；未找到静默新建
     [MSG_TYPE_SSLEXCHANGED] = _coro_handle_miss_create, // SSL 握手；未找到静默新建
     [MSG_TYPE_HANDSHAKED]   = _coro_handle_miss_create, // 应用层握手；未找到静默新建
-    [MSG_TYPE_RECV]         = _coro_handle_recved,// sess==0 或协议不允许 创建；未找到新建，否则唤醒
+    [MSG_TYPE_RECV]         = _coro_handle_recved,// 队头 RECV 须过 may_resume、RECV_ANY 直接唤醒；都不中(含 sess==0)新建
     [MSG_TYPE_SEND]         = _coro_handle_spawn,// 新建
     [MSG_TYPE_CLOSE]        = _coro_handle_closed,// 唤醒 sess(连接即 skid，kcp 会话即其 sess)下全部等待者
     [MSG_TYPE_RECVFROM]     = _coro_handle_miss_create,// sess 0新建；未找到静默新建，不告警(UDP 不保证顺序与送达，迟到/孤儿包是常态)
@@ -204,15 +210,26 @@ int32_t coro_incoro(task_ctx *task) {
 int32_t coro_sync(task_ctx *task, sock_ctx *sk) {
     return ev_ud_sess(&task->loader->netev, sk, sk->skid);
 }
-// 挂起当前协程并等待下一条匹配消息；keep 由消息类型定，只在新建 sess 条目时生效
+int32_t coro_bind_task(task_ctx *task, sock_ctx *sk, name_t handle) {
+    if (ERR_OK != ev_ud_handle(&task->loader->netev, sk, handle)) {
+        return ERR_FAILED;
+    }
+    coro_unkeep(_coro_co(task), sk->skid);
+    return ERR_OK;
+}
+// 挂起当前协程并等待队头标记为 wtag 的消息；keep 由消息类型定(RECV_ANY 同 RECV)，只在新建 sess 条目时生效
 // 返回唤醒方给的消息指针（在唤醒方栈上），在本协程下次挂起前有效
-message_ctx *_coro_wait(task_ctx *task, uint64_t sess, msg_type mtype, uint32_t ms) {
-    message_ctx *msg = (message_ctx *)coro_wait(_coro_co(task), sess, (int32_t)mtype, message_may_keep(mtype), ms);
+static inline message_ctx *_coro_wait_tag(task_ctx *task, uint64_t sess, int32_t wtag, uint32_t ms) {
+    msg_type kmtype = CORO_TAG_RECV_ANY == wtag ? MSG_TYPE_RECV : (msg_type)wtag;
+    message_ctx *msg = (message_ctx *)coro_wait(_coro_co(task), sess, wtag, message_may_keep(kmtype), ms);
     /* 所有消息类型均保证 msg.sess 与注册 key 一致
      * （CONNECT/SSL/CLOSE 系 skid，TIMEOUT 系到期者的 sess，RESPONSE/RECV 系传入 sess），
      * 若此断言触发，说明分发逻辑有 bug。*/
     ASSERTAB(sess == msg->sess, "different session");
     return msg;
+}
+message_ctx *_coro_wait(task_ctx *task, uint64_t sess, msg_type mtype, uint32_t ms) {
+    return _coro_wait_tag(task, sess, (int32_t)mtype, ms);
 }
 void coro_sleep(task_ctx *task, uint32_t ms) {
     if (0 == ms) {
@@ -238,17 +255,17 @@ void *coro_request(task_ctx *dst, task_ctx *src,
     return msg->data;
 }
 // 等一条指定类型的消息:超时则关连接并告警,连接已关则静默,两种都返 NULL。
-// 四个等待点(ssl exchange / handshake / connect / recv)只差 mtype、超时值与告警里的动作名,
+// 各等待点(ssl exchange / handshake / connect / recv / recv_any)只差等待标记、超时值与告警里的动作名,
 // tag 仅进日志。返回的指针在本协程下次 _coro_wait 前有效。
 // CLOSE 分支有意不告警:对端关连接是正常事件,而调用方是每命令一轮的循环,一条连接断掉能刷出几十条
 static inline message_ctx *_coro_wait_msg(task_ctx *task, sock_ctx *sk,
-                                   msg_type mtype, uint32_t ms, const char *tag) {
+                                   int32_t wtag, uint32_t ms, const char *tag) {
     // 连接已 teardown 就别挂上去:等不到唤醒,只会挂满超时再对 INVALID_SOCK 调一次 ev_close、
-    // 打一条假的 timeout 日志。四个 coro_* 入口都经本函数,守卫收在这里一处
+    // 打一条假的 timeout 日志。各 coro_* 等待入口都经本函数,守卫收在这里一处
     if (sock_is_invalid(sk)) {
         return NULL;
     }
-    message_ctx *msg = _coro_wait(task, sk->skid, mtype, ms);
+    message_ctx *msg = _coro_wait_tag(task, sk->skid, wtag, ms);
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
         ev_close(&task->loader->netev, sk);
         LOG_WARN("task %s, %s timeout, skid %"PRIu64".", _NAME_OR(task->name), tag, sk->skid);
@@ -343,6 +360,16 @@ void *coro_recv(task_ctx *task, sock_ctx *sk, size_t *size) {
     if (NULL == msg) {
         return NULL;
     }
+    SET_PTR(size, msg->size);
+    return msg->data;
+}
+void *coro_recv_any(task_ctx *task, sock_ctx *sk, size_t *size, uint8_t *slice) {
+    SET_PTR(slice, 0);
+    message_ctx *msg = _coro_wait_msg(task, sk, CORO_TAG_RECV_ANY, task_get_netread_timeout(task), "netread");
+    if (NULL == msg) {
+        return NULL;
+    }
+    SET_PTR(slice, msg->slice);
     SET_PTR(size, msg->size);
     return msg->data;
 }

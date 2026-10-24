@@ -1,4 +1,5 @@
 ﻿#include "task_debug.h"
+#include "task_pub.h"
 
 // 与被测各层的固定文案同串，任一侧改文案本测试立即失败（正是要盯住的东西）
 static const char *_NOTLUA = "command not supported in C task.";// debug_console.c 的 _DBG_NOTLUA
@@ -242,9 +243,11 @@ static int32_t _test_passthrough(task_ctx *task, name_t noreq, name_t hasreq) {
 }
 
 // ── 测试 4：debug_console 的 HTTP 面 ──────────────────────────────────────
-// 广播正文由 "name:\n<应答>\n" 逐段拼成：每段应答都须恰为 want，且至少一段。
-// (unavailable) 或丢段都对不上，只查子串的话这些都能混过去
+// 广播正文由 "name:\n<应答>\n" 逐段拼成：每段应答须恰为 want 或 (unavailable)，且至少一段是 want。
+// 广播期间刚好退出或没按时回话的 task(进程里一直有 task 在建 / 关)渲染成 (unavailable)，放行不计数；丢段对不上
 static int32_t _bcast_all(const char *body, size_t len, const char *want) {
+    static const char unav[] = "(unavailable)";
+    const size_t ul = sizeof(unav) - 1;
     size_t wl = strlen(want);
     size_t pos = 0;
     int32_t nsec = 0;
@@ -255,6 +258,12 @@ static int32_t _bcast_all(const char *body, size_t len, const char *want) {
             return 0;
         }
         pos = (size_t)(nl - body) + 1;
+        if (len - pos >= ul + 1
+            && 0 == memcmp(body + pos, unav, ul)
+            && '\n' == body[pos + ul]) {
+            pos += ul + 1;
+            continue;
+        }
         if (len - pos < wl + 1
             || 0 != memcmp(body + pos, want, wl)
             || '\n' != body[pos + wl]) {
@@ -265,9 +274,10 @@ static int32_t _bcast_all(const char *body, size_t len, const char *want) {
     }
     return nsec > 0;
 }
-// heads 为 {名, 值, ..., NULL}；match 0 查子串、1 比全串、2 广播正文每段都是 want(见 _bcast_all)
-static int32_t _http_get(task_ctx *task, uint16_t port, const char *url, const char *const *heads,
-                         int32_t code, const char *want, int32_t match) {
+// heads 为 {名, 值, ..., NULL}；match 0 查子串、1 比全串、2 广播正文每段是 want 或 (unavailable)(见 _bcast_all)；
+// state_hdr 非 0 时额外带 X-Srey-Debug: 1(改状态的入口要求)
+static int32_t _http_get_ex(task_ctx *task, uint16_t port, const char *url, const char *const *heads,
+                            int32_t code, const char *want, int32_t match, int32_t state_hdr) {
     sock_ctx sk;
     int32_t i;
     // console 在 debug_console_start 里同步监听，有界重试只是兜底
@@ -283,6 +293,9 @@ static int32_t _http_get(task_ctx *task, uint16_t port, const char *url, const c
     http_pack_req(&bw, "GET", url);
     for (i = 0; NULL != heads[i]; i += 2) {
         http_pack_head(&bw, heads[i], heads[i + 1]);
+    }
+    if (0 != state_hdr) {
+        http_pack_head(&bw, "X-Srey-Debug", "1");
     }
     http_pack_end(&bw);
     size_t rsize = 0;// coro_send 的必填出参；HTTP 走的是 pack 语义，长度信息看 http_data
@@ -321,6 +334,9 @@ done:
     ev_close(&task->loader->netev, &sk);
     return rtn;
 }
+// 绝大多数请求都该带那个头；要验"没带就 403"时直接调 _http_get_ex 传 0
+#define _http_get(task, port, url, heads, code, want, match) \
+    _http_get_ex(task, port, url, heads, code, want, match, 1)
 static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     char url[64];
     // Lua VM 专属命令打到 C task：发起方就地挡下，请求根本不发出去。
@@ -399,6 +415,13 @@ static int32_t _test_console_guard(task_ctx *task, task_debug_args *arg) {
     const char *portless[] = { "Host", host, "Origin", "http://127.0.0.1", NULL };
     const char *sitex[] = { "Host", host, "Sec-Fetch-Site", "cross-site", NULL };
     const char *siteok[] = { "Host", host, "Sec-Fetch-Site", "same-origin", NULL };
+    // 改状态的入口要求自定义头：旧浏览器跨站表单不带 Origin 与 Sec-Fetch-Site，
+    // 但表单也发不出自定义头，这条是那批浏览器上的最后一道
+    char url[64];
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/loglv/%d", (uint64_t)arg->noreq, (int32_t)LOGLV_INFO);
+    if (ERR_OK != _http_get_ex(task, arg->port, url, local, 403, "X-Srey-Debug", 0, 0)) {
+        return ERR_FAILED;
+    }
     if (ERR_OK != _http_get(task, arg->port, "/__cmem", nohost, 403, _FORBID, 1)
         || ERR_OK != _http_get(task, arg->port, "/__cmem", named, 403, _FORBID, 1)
         || ERR_OK != _http_get(task, arg->port, "/__cmem", local, 200, "inuse:", 0)
@@ -413,7 +436,7 @@ static int32_t _test_console_guard(task_ctx *task, task_debug_args *arg) {
     return ERR_OK;
 }
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_debug_args *arg = (task_debug_args *)coro_get_arg(task);
     if (ERR_OK != _test_builtin(task, arg->noreq)
         || ERR_OK != _test_coros_plain(task, arg->plain)) {
@@ -445,6 +468,11 @@ static void _startup(task_ctx *task) {
     }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("debug tested.");
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_debug_args *)coro_get_arg(task))->ok);
 }
 
 void task_debug_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

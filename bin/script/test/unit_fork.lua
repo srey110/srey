@@ -2,18 +2,8 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
-local seri   = require("srey.seri")
 
--- 取 coros 汇总行的计数：suspended(coro_sess 里的等待者) / sessions / fork_wait / serial(排队数) / yield total。
--- 发请求的协程自己也挂着一个，只比前后差值
-local function _counts()
-    local ptr, sz = seri.pack("coros")
-    local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
-    local txt = rdata and srey.ud_str(rdata, rsize) or ""
-    local c = { txt:match("(%d+) suspended, (%d+) sessions, (%d+) fork_wait, (%d+) serial, (%d+) yield total") }
-    assert(c[1], "coros summary not matched: " .. txt)-- 不挡的话各字段全 nil，计数断言变成 nil == nil 恒过
-    return { susp = tonumber(c[1]), sess = tonumber(c[2]), fork = tonumber(c[3]), serial = tonumber(c[4]), nyield = tonumber(c[5]) }
-end
+local _counts = runner.coro_counts
 
 srey.startup(function()
 runner.run(function(t)
@@ -91,8 +81,8 @@ runner.run(function(t)
         t:eq("a", r[1].val, "results[1] = a")
         t:eq("b", r[2].val, "results[2] = b")
         t:eq("c", r[3].val, "results[3] = c")
-        -- 3 个 sleep 50ms 并发，总耗时应该 < 串行 150ms（留 30ms 余量）
-        t:check(elapsed < 120, "3 个 fork 并发耗时 < 120ms（实际 " .. elapsed .. "ms）")
+        -- 3 个 sleep 50ms 并发，总耗时应该 < 串行 150ms（留 30ms 余量）；下界理由见下面"yield 期间并发推进"那条
+        t:check(elapsed >= 45 and elapsed < 120, "3 个 fork 并发耗时在 [45, 120)ms（实际 " .. elapsed .. "ms）")
     end
 
     -- ── srey.fork_wait：错误路径，ok=false 时 val 是 err 字符串 ───────

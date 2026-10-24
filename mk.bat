@@ -18,7 +18,7 @@ rem     arm64   ARM64（本机是 ARM64 时用它出原生产物）
 rem     debug   Debug 配置，默认 Release
 rem
 rem   第三方依赖(openssl/mimalloc)由 tools\deps.py 准备，产物带变体后缀各自共存：
-rem   编 debug 就先 python3 tools\deps.py <架构> debug，换架构同理，都不用先 clean。
+rem   编 debug 就先 python3 tools\deps.py <架构> debug，换架构同理（还得换到该架构的 VS 开发者提示符），都不用先 clean。
 rem   变体配错不会再静默链上另一套 CRT —— 库名对不上，链接期直接报缺文件。
 rem   项目自己的 lib.lib / lualib.lib / exe 按 bin\<平台>\<配置>\ 分目录，换配置同样不用先 clean；
 rem   链完把 srey.exe / test.exe(连同 pdb)拷回 bin\，运行目录不变；clean 时一并删掉这份拷贝。

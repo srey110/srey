@@ -821,6 +821,17 @@ static void test_mysql_reader_datetime_text_range(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, err);
     (void)_my_text_dt("2024-05-21 13:60:00", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
+    // 日超当月天数同样拒收(不让 mktime 归一到下月)，闰年 2 月 29 照收
+    (void)_my_text_dt("2024-04-31", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_my_text_dt("2023-02-29 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, _my_text_dt("2024-02-29", &err) > 0);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    (void)_my_text_dt("2100-02-29", &err);// 整百年不是闰年
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, _my_text_dt("2000-02-29", &err) > 0);// 能被 400 整除
+    CuAssertIntEquals(tc, ERR_OK, err);
 
     // 5) 分隔符不对 / 整串非日期：第一段就匹配不上
     (void)_my_text_dt("2024/05/21 13:45:30", &err);
@@ -891,9 +902,15 @@ static void test_mysql_reader_datetime_binary_range(CuTest *tc) {
         { 0xE8, 0x07, 5, 21, 13, 60, 0 },// 分 60
         { 0xE8, 0x07, 5, 21, 13, 45, 60 },// 秒 60
         { 0xE8, 0x07, 5, 21, 200, 0, 0 },// 字节 >= 0x80：按有符号读会变负数混过上界
+        { 0xE8, 0x07, 4, 31, 0, 0, 0 },// 2024-04-31：日超当月天数
+        { 0xE7, 0x07, 2, 29, 0, 0, 0 },// 2023-02-29：平年
+        { 0x6C, 0x07, 2, 29, 0, 0, 0 },// 1900-02-29：整百年不是闰年
+        { 0x34, 0x08, 2, 29, 0, 0, 0 },// 2100-02-29：同上，且在各平台 mktime 都能算的范围内，不靠 mktime 失败过关
     };
     static const uint8_t zero[7] = { 0, 0, 0, 0, 12, 34, 56 };
     static const uint8_t edge[7] = { 0xE8, 0x07, 12, 31, 23, 59, 59 };
+    static const uint8_t leap[7] = { 0xE8, 0x07, 2, 29, 0, 0, 0 };// 2024-02-29 合法
+    static const uint8_t leap400[7] = { 0xD0, 0x07, 2, 29, 0, 0, 0 };// 2000-02-29：能被 400 整除，合法
     int32_t err;
     for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
         err = ERR_OK;
@@ -911,6 +928,10 @@ static void test_mysql_reader_datetime_binary_range(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, err);
     // 各字段取到上界的合法值照常换算
     CuAssertTrue(tc, _my_bin_dt(edge, 7, &err) > 0);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, _my_bin_dt(leap, 7, &err) > 0);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, _my_bin_dt(leap400, 7, &err) > 0);
     CuAssertIntEquals(tc, ERR_OK, err);
 }
 

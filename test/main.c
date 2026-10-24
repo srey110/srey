@@ -69,20 +69,37 @@
 // 汇总 task 的参数：结果槽在 main 的栈上，主线程等到退出请求后才 loader_free，task 先于它失效
 typedef struct test_reporter_arg {
     name_val_ctx *list;
-    uint64_t start;// 开始等集成结果的时刻(nowms)
+    uint64_t start;// 开始等集成结果的时刻(_mono_ms)
 }test_reporter_arg;
 
 static hug_ctx _hug;// 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
 static atomic_t _exit_code = -1;// loader_exit 请求的退出码，只记第一次；-1 表示没人请求(信号退出)
 static atomic_t _forcexit = 0;// 已请求过退出(信号或 loader_exit)后又来退出信号时置 1，看门狗见到就强退
 static atomic_t _wdstate = 0;// 看门狗阶段：0 测试中，1 主线程已进 loader_free(开始计时)，2 loader_free 已返回
+static timer_ctx _mono;// 单调计时，main 开头 timer_init；测试里的各种期限一律按它算，改系统时间不影响
 
+// 自 main 开头起的毫秒数(单调钟)
+static uint64_t _mono_ms(void) {
+    return timer_elapsed_ms(&_mono);
+}
 // 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程。
-// 已唤醒过说明这是再一次的退出请求，只记标志，强退交给看门狗线程(这里只做信号上下文里安全的事)
+// 已唤醒过说明这是再一次的退出请求：测试中只记标志，强退交给看门狗线程；loader_free 返回后看门狗已收工，
+// 由这里直接 _exit(1)(这里只做信号上下文里安全的事)。
+// abort() 也会进来：不当作退出请求(不记强退标志)，但照常唤醒主线程，最终由默认处理留 core(同 srey/main.c)
 static void _on_sigcb(int32_t sig, void *arg) {
     hug_ctx *hug = (hug_ctx *)arg;
+#ifdef OS_WIN
     (void)sig;
-    if (0 != ATOMIC_GET(&hug->exitflag)) {
+    int32_t isabort = 0;
+#else
+    int32_t isabort = SIGABRT == sig;
+#endif
+    if (!isabort
+        && 0 != ATOMIC_GET(&hug->exitflag)) {
+        // 看门狗已收工(loader_free 之后的收尾阶段)，没人再处理强退，当场退出(同 srey/main.c)
+        if (2 == ATOMIC_GET(&_wdstate)) {
+            _exit(1);
+        }
         ATOMIC_SET(&_forcexit, 1);
     }
     hug_wakeup(hug);
@@ -123,14 +140,15 @@ static int32_t _test_optional(const char *name) {
         || 0 == strcmp(name, "redis_test")
         || 0 == strcmp(name, "mongo_test");
 }
-// 还没到终态的结果槽个数。1 是通过；可选用例停在 0 说明压根没连上，也算终态；
-// 其余（0 没走完、-2 正在连、-1 连上后没走完或断言失败）都算未完成。print 非 0 时顺带逐个列出
+// 还没到终态的结果槽个数。1 是通过、-3 是已失败；可选用例停在 0 说明压根没连上，也算终态；
+// 其余（0 没走完、-2 正在连、-1 连上后没走完）都算未完成。print 非 0 时顺带逐个列出
 static int32_t _test_pending(name_val_ctx *list, int32_t print) {
     int32_t n = 0;
     int32_t val;
     for (int32_t i = 0; NULL != list[i].name; i++) {
         val = (int32_t)ATOMIC_GET((atomic_t *)&list[i].val);// 各 task 在自己的线程里用 ATOMIC_SET 写
         if (1 == val
+            || -3 == val
             || (0 == val && _test_optional(list[i].name))) {
             continue;
         }
@@ -156,7 +174,7 @@ static void _test_reporter_tick(task_ctx *task, uint64_t sess) {
         loader_exit(task->loader, 0);
         return;
     }
-    if (nowms() - arg->start >= maxms) {
+    if (_mono_ms() - arg->start >= maxms) {
         PRINT("integration wait timed out after %u s, shutting down with:", (uint32_t)(maxms / 1000));
         (void)_test_pending(arg->list, 1);
         loader_exit(task->loader, 1);
@@ -192,8 +210,8 @@ static void _test_watchdog(void *arg) {
             break;
         }
         if (1 == state && 0 == deadline) {
-            deadline = nowms() + freems;
-        } else if (0 != deadline && nowms() >= deadline) {
+            deadline = _mono_ms() + freems;
+        } else if (0 != deadline && _mono_ms() >= deadline) {
             PRINT("loader_free not returned after %u s (stuck tasks: see 'close timeout' warnings), force exit with:",
                   (uint32_t)(freems / 1000));
             break;
@@ -208,6 +226,7 @@ static void _test_watchdog(void *arg) {
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
+    timer_init(&_mono);
     if (ERR_OK != hug_init(&_hug)) {
         PRINT("hug_init failed.");
         return 1;// 与文件末尾归一后的退出码同口径；ERR_FAILED 是 -1，低 8 位得 255
@@ -578,19 +597,29 @@ int main(int argc, char *argv[]) {
     popen_ctx pctx;
     size_t pyi;
     for (pyi = 0; pyi < sizeof(pyitems) / sizeof(pyitems[0]); pyi++) {
+        // 已经收到退出信号就别再起脚本(含 CuTest 阶段就按下的): 子进程自成进程组后收不到终端 SIGINT,
+        // 挨个等满 60 秒预算会让 Ctrl+C 看起来几分钟没反应
+        if (0 != ATOMIC_GET(&_hug.exitflag)) {
+            LOG_WARN("exit signaled, skip remaining python assists.");
+            break;
+        }
         // 路径加引号：exe 目录带空格时不加会被 shell 拆成两个参数
         SNPRINTF(pycmd, sizeof(pycmd), "python3 \"%s%spy_assist%s%s\"",
             local, PATH_SEPARATORSTR, PATH_SEPARATORSTR, pyitems[pyi].script);
         PRINT("running %s", pycmd);
         if (ERR_OK != popen_startup(&pctx, pycmd, "r")) {
             LOG_WARN("popen %s failed.", pycmd);
+            pyslot = _get_name_val(testlist, pyitems[pyi].name);
+            if (NULL != pyslot) {
+                test_fail(pyslot);
+            }
             continue;
         }
         // 边读边等：先等退出再读的话，输出超过管道缓冲时子进程卡在写上退不了，白等满 60 秒。
         // 必须看 eof 出参：返回 0 是"此刻没数据"，不是流末尾，按 EOF 处理会把输出截一半
         pyeof = 0;
-        pydl = nowms() + 60000;
-        while (0 == pyeof && nowms() < pydl) {
+        pydl = _mono_ms() + 60000;
+        while (0 == pyeof && _mono_ms() < pydl) {
             nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1, &pyeof);
             if (ERR_FAILED == nread) {
                 break;
@@ -603,7 +632,7 @@ int main(int argc, char *argv[]) {
             }
         }
         // 输出读完再等退出，预算是读和等合起来的 60 秒。返回值不能丢: 脚本挂满 60 秒与正常跑完 3 秒, 日志里本来长得一模一样
-        pynow = nowms();
+        pynow = _mono_ms();
         if (ERR_OK != popen_waitexit(&pctx, pynow < pydl ? (uint32_t)(pydl - pynow) : 0)) {
             LOG_WARN("popen %s exceeded 60s budget.", pycmd);
         }
@@ -614,15 +643,12 @@ int main(int argc, char *argv[]) {
             ATOMIC_SET((atomic_t *)pyslot, 1);
         } else {
             LOG_WARN("%s exit code %d.", pyitems[pyi].name, pycode);
-        }
-        // 已经收到退出信号就别再起后面的脚本: 子进程自成进程组后收不到终端 SIGINT,
-        // 挨个等满 60 秒预算会让 Ctrl+C 看起来几分钟没反应
-        if (0 != ATOMIC_GET(&_hug.exitflag)) {
-            LOG_WARN("exit signaled, skip remaining python assists.");
-            break;
+            if (NULL != pyslot) {
+                test_fail(pyslot);
+            }
         }
     }
-    test_reporter_arg reparg = { testlist, nowms() };
+    test_reporter_arg reparg = { testlist, _mono_ms() };
     _test_reporter_start(g_loader, &reparg);
     hug_wait(&_hug);
     if (-1 == (int32_t)ATOMIC_GET(&_exit_code)) {
@@ -677,7 +703,7 @@ int main(int argc, char *argv[]) {
         if (NULL == testlist[i].name) {
             break;
         }
-        // 可选用例只放行 val == 0（压根没连上），val == -1 是连上之后断言失败、-2 是收尾时还在连，一律计失败——
+        // 可选用例只放行 val == 0（压根没连上），-3 是已失败、-1 是连上后没走完、-2 是收尾时还在连，一律计失败——
         // 前两者以前都是 0，于是这六条在 docker 起着的标准环境下永久不 gate 任何东西
         optional = _test_optional(testlist[i].name);
         if (1 == testlist[i].val) {
@@ -687,8 +713,9 @@ int main(int argc, char *argv[]) {
         } else {
             unit_failed++;
             PRINT("%s: x%s", testlist[i].name,
-                  (-1 == testlist[i].val) ? " (connected, assertion failed)"
-                  : ((-2 == testlist[i].val) ? " (still connecting)" : ""));
+                  (-3 == testlist[i].val) ? " (failed)"
+                  : ((-1 == testlist[i].val) ? " (connected, not finished)"
+                  : ((-2 == testlist[i].val) ? " (still connecting)" : "")));
         }
     }
     // 归一成 0/1：退出码只取低 8 位，而失败数上限约 515，恰为 256 的倍数时会得 0；

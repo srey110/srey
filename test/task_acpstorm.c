@@ -1,4 +1,5 @@
 ﻿#include "task_acpstorm.h"
+#include "task_pub.h"
 #include "utils/netaddr.h"
 
 typedef struct task_acpstorm_args {
@@ -60,7 +61,7 @@ static void _storm_close(SOCKET *fds) {
         }
     }
 }
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_acpstorm_args *arg = (task_acpstorm_args *)coro_get_arg(task);
     SOCKET fds[STORM_CONNS];
     ev_ctx ev;
@@ -102,6 +103,11 @@ static void _startup(task_ctx *task) {
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("acpstorm tested (%d iters x %d conns, %d fired).",
              STORM_ITERS, STORM_CONNS, fired);
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_acpstorm_args *)coro_get_arg(task))->ok);
 }
 void task_acpstorm_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {
     if (NULL == ok || 0 == port) {

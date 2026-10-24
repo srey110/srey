@@ -111,21 +111,25 @@
             && 0 != _txnstart) { \
             mongo->session->started = 1; \
         } \
+        if (NULL != _data \
+            && NULL != mongo->session \
+            && 0 != ((flags) & MORETOCOME)) { \
+            mongo->session->unacked = 1; \
+        } \
         return _data; \
     } while (0)
-// 只带事务上下文(lsid/txnNumber/autocommit)，不带 startTransaction。commit / getMore / killCursors 用：
-// commit 按规范不得携带 startTransaction，getMore / killCursors 理由见各自组包处。
-// abort 不用它(作废的事务也要照发)，见 mongo_pack_aborttransaction；hello 与 count 不带事务上下文。
-// 取连接当前绑定的 mongo->session；与 commit 的入参 session 必然相等，分叉已由入口挡掉
+// 只带事务上下文(lsid/txnNumber/autocommit)，不带 startTransaction。getMore / killCursors 用，理由见各自组包处。
+// commit 与 abort 不用它，作废判据各不相同，见各自组包处；hello 与 count 不带事务上下文。
+// 取连接当前绑定的 mongo->session
 #define TRANSACTION_OPTIONS \
     if (NULL != mongo->session) {\
         MONGO_PACK_TXN_LIVE;\
         MONGO_PACK_CAT(mongo->session->options, mongo->session->optionslens);\
     }
 
-// 连接上绑着的事务已作废，判据见 mongo_session_stale
+// 连接上绑着的事务已随重连作废：CRUD 只看连接换没换，提交交出过也不放行(那只许重发提交，见 mongo_session_stale)
 static inline int32_t _mongo_txn_stale(mongo_ctx *mongo) {
-    return NULL != mongo->session && mongo_session_stale(mongo->session);
+    return NULL != mongo->session && mongo->session->skid != mongo->sk.skid;
 }
 // 组包前的入参长度闸门：cap 为 0（不预估容量）时无可判，直接放行
 static inline int32_t _mongo_cap_toolong(size_t cap) {
@@ -393,7 +397,8 @@ void *mongo_pack_endsession(mongo_session *session, size_t *size) {
     MONGO_PACK_RETURN(mongo->db, MORETOCOME);// 包头恒带 MORETOCOME，只发不等
 }
 int32_t mongo_session_stale(mongo_session *session) {
-    return session->skid != session->mongo->sk.skid;
+    return session->skid != session->mongo->sk.skid
+        && 0 == session->committing;
 }
 uint64_t mongo_txn_mark(mongo_ctx *mongo) {
     return NULL == mongo->session ? MONGO_TXN_NONE : mongo->sk.skid;
@@ -431,9 +436,23 @@ void *mongo_pack_committransaction(mongo_session *session, char *options, size_t
     mongo_ctx *mongo = session->mongo;
     MONGO_PACK_BEGIN(0);
     bson_append_int32(&bson, "commitTransaction", 1);
-    TRANSACTION_OPTIONS
+    // 不走 TRANSACTION_OPTIONS：作废判据要用放行"提交已交出"的那个，网络失败后才能在新连接上重发、由服务端裁决
+    if (0 != mongo_session_stale(session)) {
+        LOG_WARN("mongo transaction invalidated by reconnect, rollback or begin again.");
+        *size = 0;
+        BSON_FREE(&bson);
+        return NULL;
+    }
+    MONGO_PACK_CAT(session->options, session->optionslens);
     MONGO_PACK_CAT(options, optlens);
-    MONGO_PACK_RETURN(MONGO_TXN_DB, MONGO_READ_FLAGS);
+    _MONGO_PACK_TAIL(MONGO_TXN_DB, MONGO_READ_FLAGS);
+    // 只有事务内容确定时才许跨重连重发：连接已断(前一条写没等到应答)或发过只发不等的写，都说不清服务端收了哪些
+    if (NULL != _data
+        && !sock_is_invalid(&mongo->sk)
+        && 0 == session->unacked) {
+        session->committing = 1;
+    }
+    return _data;
 }
 void *mongo_pack_aborttransaction(mongo_session *session, char *options, size_t optlens, size_t *size) {
     if (!_mongo_txn_bound(session, "abortTransaction")) {

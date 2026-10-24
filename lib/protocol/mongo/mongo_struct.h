@@ -23,6 +23,8 @@ typedef struct mongo_session {
     int32_t timeoutmin; //会话超时时间（分钟）
     int32_t txnnumber;  //事务序号
     int32_t started;    //本次事务的首个操作是否已发出（决定是否附带 startTransaction）
+    int32_t committing; //本次事务的 commitTransaction 已交给连着的连接：之后连接换过也不算作废，只许重发提交
+    int32_t unacked;    //本次事务发过只发不等(MORETOCOME)的写：它到没到服务端无从知道，提交不许跨重连重发
     size_t optionslens; //options 字节数（bson_cat 要求随指针给出缓冲长度；options 为 NULL 时该值无意义）
     uint64_t timeout;   //会话超时时刻（秒）；0 = 服务端没给出 timeoutmin，超时未知
     uint64_t skid;      //begin 时连接的 skid；与连接当前的不同即本次事务已随重连作废
@@ -39,6 +41,7 @@ typedef struct mongo_ctx {
     atomic_t ref;               //上层 handle 引用计数：0=C 借用(事件层不 free 块)，>0=持有者数
     int32_t established;     // 当前是否连着（建连失败 / quit / 就地关连接都清零）
     uint32_t generation;     // 连接身份代次，建连成功 / 断开各前进一次；判短路见 _serial_connect
+    int32_t managed;         // 调过 *_connect：quit 拆掉执行器后，ping 重连照 connect 把执行器装回去
     mongo_session *session;     //当前会话（事务时非 NULL）
     struct task_ctx *task;      //所属任务上下文
     struct evssl_ctx *evssl;    //TLS 上下文，NULL 表示不加密

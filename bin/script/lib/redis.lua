@@ -6,7 +6,8 @@ local srey       = require("lib.srey")
 local srey_redis = require("srey.redis")
 local redis   = {}
 
----连接 Redis 服务器并可选地执行 AUTH 认证
+---连接 Redis 服务器并可选地执行 AUTH 认证。RESP3 带外推送（invalidate / message / pmessage / smessage）不算命令回复：
+---不唤醒 syn_send / syn_recv，落到 srey.on_recved（或用 srey.syn_recv_any 收）；订阅类确认照常算回复
 ---@param ip string 服务器 IP
 ---@param port integer 服务器端口
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文

@@ -1,10 +1,14 @@
 ﻿#include "task_coro_extra.h"
+#include "task_pub.h"
+#include "protocol/mqtt/mqtt_struct.h"
 
 // 并发 coro_sendto 的协程数；payload 固定 2 字节("pN")，靠末位数字回认是哪一份
 #define CONCURRENT_N 4
 // 等超时唤醒要多给的富余：coro_task.c 的 _coro_timeout_monitor 每 1s 才调一次 coro_expire 扫到期堆，
 // 所以 N 毫秒的 _coro_wait 最坏 N+1000 才被观察到。凡断言超时的地方一律等 N + 本值
 #define TIMEOUT_SETTLE_MS 1300
+// coro_recv_any 用例的 MQTT 监听端口，与 Lua unit_coro 的 15134 / 15135 错开
+#define RECV_ANY_PORT 15136
 
 typedef struct task_coro_extra_args {
     uint16_t httpport;
@@ -126,6 +130,125 @@ static int32_t _test_request_timeout(task_ctx *task, const char *rpcname) {
     task_ungrab(dst);
     if (ERR_FAILED != erro) {
         LOG_ERROR("coro_request timeout: expected ERR_FAILED, got erro=%d.", erro);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// 从 coro_dump 末行抠出 sess 条目数；取不到返回 -1(同 test_coro.c 的同名函数)
+static int32_t _co_sessions(coro_ctx *co) {
+    size_t lens = 0;
+    char *dump = coro_dump(co, &lens);
+    int32_t n = -1;
+    char *p = strstr(dump, " sessions");
+    if (NULL != p) {
+        while (p > dump && ' ' != p[-1]) {
+            p--;
+        }
+        n = atoi(p);
+    }
+    FREE(dump);
+    return n;
+}
+// MQTT + NETEV_SESS：
+// 1. CONNECT 不算回复(coro_recv 收不到)，accept 回调里 coro_recv_any 收得到；
+// 2. 服务端 coro_send 发 QoS1 PUBLISH 等回复，客户端一次写入 SUBSCRIBE + PUBACK：
+//    SUBSCRIBE 不算回复、落到收包回调，PUBACK 唤醒 coro_send(等回复的不会被对端主动发的包唤醒)
+static int32_t _recv_any_prot = -1;
+static int32_t _recv_any_slice = -1;
+static int32_t _recv_any_reply = -1;
+static int32_t _recv_any_sub = -1;
+static void _recv_any_recved(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
+                             uint8_t slice, void *data, size_t size) {
+    (void)task;
+    (void)sk;
+    (void)slice;
+    (void)size;
+    if (PACK_MQTT == pktype && 0 == client && NULL != data) {
+        _recv_any_sub = (int32_t)((mqtt_pack_ctx *)data)->fixhead.prot;
+    }
+}
+static void _recv_any_accepted(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *peer) {
+    (void)pktype;
+    (void)peer;
+    uint8_t slice = 0xff;
+    mqtt_pack_ctx *pack = coro_recv_any(task, sk, NULL, &slice);
+    _recv_any_slice = slice;
+    _recv_any_prot = (NULL == pack) ? 0 : (int32_t)pack->fixhead.prot;
+    if (NULL != pack) {
+        static const char pub[] = "\x32\x06\x00\x01t\x00\x01x";// QoS1 PUBLISH，topic "t"、包标识 1
+        pack = coro_send(task, sk, (void *)pub, sizeof(pub) - 1, NULL, 1);
+    }
+    _recv_any_reply = (NULL == pack) ? 0 : (int32_t)pack->fixhead.prot;
+    ev_close(&task->loader->netev, sk);
+}
+static int32_t _test_recv_any(task_ctx *task) {
+    int32_t base = _co_sessions(coro_task_co(task));
+    task_accepted(task, _recv_any_accepted);
+    task_recved(task, _recv_any_recved);
+    uint64_t lsnid;
+    if (ERR_OK != task_listen(task, PACK_MQTT, NULL, "127.0.0.1", RECV_ANY_PORT, &lsnid, NETEV_ACCEPT | NETEV_SESS)) {
+        LOG_ERROR("recv_any: task_listen %u failed.", RECV_ANY_PORT);
+        return ERR_FAILED;
+    }
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", RECV_ANY_PORT, 0, NULL, &sk)) {
+        ev_unlisten(&task->loader->netev, lsnid);
+        LOG_ERROR("recv_any: connect %u failed.", RECV_ANY_PORT);
+        return ERR_FAILED;
+    }
+    // 最小的 3.1.1 CONNECT：空 client id、clean session
+    static const char conn[] = "\x10\x0C\x00\x04MQTT\x04\x02\x00\x3C\x00\x00";
+    (void)ev_send(&task->loader->netev, &sk, (void *)conn, sizeof(conn) - 1, 1);
+    // 收到服务端的 PUBLISH，说明它已挂在 coro_send 上，这时再把 SUBSCRIBE 与 PUBACK 一次写过去
+    if (NULL != coro_recv(task, &sk, NULL)) {
+        static const char two[] = "\x82\x06\x00\x02\x00\x01t\x00\x40\x02\x00\x01";
+        (void)ev_send(&task->loader->netev, &sk, (void *)two, sizeof(two) - 1, 1);
+    }
+    for (int32_t i = 0; i < 200 && -1 == _recv_any_reply; i++) {
+        coro_sleep(task, 10);
+    }
+    ev_close(&task->loader->netev, &sk);
+    ev_unlisten(&task->loader->netev, lsnid);
+    // 两端的 CLOSE 到了条目才删干净：等它回到基线(最多约 2 秒)，后面按条目数取基线的用例才不会差
+    for (int32_t i = 0; i < 100 && _co_sessions(coro_task_co(task)) > base; i++) {
+        coro_sleep(task, 20);
+    }
+    if (MQTT_CONNECT != _recv_any_prot || 0 != _recv_any_slice) {
+        LOG_ERROR("recv_any: expected CONNECT slice 0, got prot %d slice %d.", _recv_any_prot, _recv_any_slice);
+        return ERR_FAILED;
+    }
+    if (MQTT_PUBACK != _recv_any_reply || MQTT_SUBSCRIBE != _recv_any_sub) {
+        LOG_ERROR("recv_any: coro_send expected PUBACK got %d, recved cb expected SUBSCRIBE got %d.",
+                  _recv_any_reply, _recv_any_sub);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// coro_bind_task：连上后留下一条 keep 条目，转给别的 task 时当场放掉
+// (转交后 CLOSE 投给新 task，本 task 再没有路径能删它)
+static int32_t _test_bind_task(task_ctx *task, uint16_t httpport, const char *rpcname) {
+    coro_ctx *co = coro_task_co(task);
+    int32_t s0 = _co_sessions(co);
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &sk)) {
+        LOG_ERROR("bind_task: connect to http_sv failed.");
+        return ERR_FAILED;
+    }
+    int32_t s1 = _co_sessions(co);
+    task_ctx *dst = task_grab(task->loader, task_find_name(task->loader, rpcname));
+    if (NULL == dst) {
+        ev_close(&task->loader->netev, &sk);
+        LOG_ERROR("bind_task: rpc task %s not found.", rpcname);
+        return ERR_FAILED;
+    }
+    int32_t rtn = coro_bind_task(task, &sk, dst->handle);
+    task_ungrab(dst);
+    int32_t s2 = _co_sessions(co);
+    ev_close(&task->loader->netev, &sk);
+    if (ERR_OK != rtn || s0 + 1 != s1 || s0 != s2) {
+        LOG_ERROR("bind_task: rtn %d, sessions %d -> connect %d -> bind %d.", rtn, s0, s1, s2);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -492,7 +615,12 @@ static int32_t _test_close_before_register(task_ctx *task) {
         LOG_ERROR("close before register: register failed.");
         return ERR_FAILED;
     }
-    coro_sleep(task, 200);
+    // 等 STARTUP、CLOSING 派发与 task 退出走完：有界轮询(约 3 秒)
+    for (int32_t i = 0; i < 150 && !task_isclosing(task)
+         && (1 != ATOMIC_GET(&_cbr_nstartup) || 1 != ATOMIC_GET(&_cbr_nclosing)
+             || task_exists(task->loader, handle)); i++) {
+        coro_sleep(task, 20);
+    }
     if (1 != ATOMIC_GET(&_cbr_nstartup)
         || 1 != ATOMIC_GET(&_cbr_nclosing)
         || task_exists(task->loader, handle)) {
@@ -534,7 +662,7 @@ static int32_t _test_timeout_setters(task_ctx *task) {
     return rtn;
 }
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_coro_extra_args *arg = (task_coro_extra_args *)coro_get_arg(task);
     if (ERR_OK != _test_register_dup_name(task)
         || ERR_OK != _test_timeout_setters(task)) {
@@ -612,6 +740,18 @@ static void _startup(task_ctx *task) {
     if (task_isclosing(task)) {
         return;
     }
+    if (ERR_OK != _test_recv_any(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_bind_task(task, arg->httpport, arg->rpcname)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
     // DNS 这条必须排在最后：它是本文件唯一需要真出网（UDP:53 打 8.8.8.8）的用例，
     // 而 _startup 是失败即 return 的串行链。原来它排第 4 个，断网/防火墙拦 DNS 时
     // 后面 7 个用例——全仓唯一覆盖 coro_sess 那五条不变式的地方——一个都不跑，
@@ -621,6 +761,11 @@ static void _startup(task_ctx *task) {
     }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("coro_extra tested.");
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_coro_extra_args *)coro_get_arg(task))->ok);
 }
 
 void task_coro_extra_start(loader_ctx *loader, const char *name, uint16_t httpport, uint16_t udpport,

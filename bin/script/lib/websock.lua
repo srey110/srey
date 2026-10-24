@@ -168,6 +168,7 @@ end
 ---@return userdata sk 连接标识；失败时 sk.valid 为 false
 ---@return lightuserdata? spctx 协商到的子协议(ws_secprots_ctx)，用 websock.secprots 解析；未协商/降级为 nil；仅本协程下次挂起前有效
 function wbsk.connect(ws, sslname, secprot, netev)
+    srey._check_wait("websock.connect")
     local url = _parse_url(ws, sslname)
     if not url then
         return srey.sock_invalid(), nil
@@ -181,12 +182,12 @@ function wbsk.connect(ws, sslname, secprot, netev)
 end
 
 -- ── 控制帧构造 ────────────────────────────────────────────────────────────
--- 本节与下节的构造函数都可能返回 nil, nil，调用方一律须判（下面 _continua /
--- _send_end_frame 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key；
+-- 本节与下节的构造函数都可能返回 nil, nil，调用方一律须判（下面 _continua
+-- 就是按此判空的）：client=1 时取不到 CSPRNG 熵生成掩码 key；
 -- 控制帧的载荷超过 125 字节（close 含 2 字节状态码）同样返回 nil
 
 ---构造 ping 控制帧（client=1 加掩码），data 为可选载荷。
----对端发来的 PING 不会唤醒正在等收包的协程，一律走 srey.on_recved，由业务回 pong
+---对端发来的 PING 不会唤醒等回复的协程，走 srey.on_recved(队头是 syn_recv_any 时交给它)，由业务回 pong
 ---@type fun(client:integer, data?:string|lightuserdata, size?:integer):lightuserdata?, integer?
 wbsk.ping = websock.pack_ping
 

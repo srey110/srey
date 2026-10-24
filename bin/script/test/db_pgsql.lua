@@ -89,6 +89,11 @@ local function _pg_tls_case(t, pg)
         printd("[%s] ssl context not registered, pgsql tls case skipped", t.name)
         return
     end
+    -- TLS 由协议在 SSLRequest 之后自己升级，不上推 SSLEXCHANGED：挂个计数回调，连上并查完后应仍为 0
+    local nexch = 0
+    srey.on_ssl_exchanged(function()
+        nexch = nexch + 1
+    end)
     local ps = pgsql.new(DB_HOST, 5432, SSL_NAME.CLIENT, "admin", "12345678", "test")
     if not t:check(ps:connect(), "pgsql TLS 连接并完成 SCRAM 认证") then
         return
@@ -103,6 +108,7 @@ local function _pg_tls_case(t, pg)
     -- pg_hba 若不是 scram-sha-256(md5 / trust)就根本没走通道绑定，上面那条连上也说明不了 PLUS
     t:check(uok and "string" == type(su) and nil ~= su:find("^scram%-sha%-256:"),
             "TLS 连接走的是 SCRAM 认证: " .. tostring(su))
+    t:eq(0, nexch, "pgsql TLS 不上推 SSLEXCHANGED")
     ps:quit()
 end
 
@@ -115,6 +121,12 @@ runner.run(function(t)
         return
     end
     t:check(pg:ping(), "pgsql ping")
+
+    -- 错口令：认证失败干净地返 false（服务端原因由 pgsql.lua 打 WARN），主连接不受影响
+    local bad = pgsql.new(DB_HOST, 5432, SSL_NAME.NONE, "admin", "wrong-password", "test")
+    t:check(not bad:connect(), "pgsql 错口令 connect 返 false")
+    t:eq(false, bad.established, "pgsql 错口令后 established 为 false")
+    t:check(pg:ping(), "错口令连接失败后主连接照常")
 
     -- 重建测试表
     t:check(pg:query("drop table if exists srey_test"),

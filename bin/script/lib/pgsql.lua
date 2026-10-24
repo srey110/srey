@@ -52,7 +52,11 @@ function ctx:_connect()
     if not srey.wait_connect(sk) then
         return false
     end
-    local ok, _, _ = srey.wait_handshaked(sk)
+    -- 认证失败时载荷是服务端的 ErrorResponse 原文（口令错、库不存在等），协议层不打，这里打（同 C 侧 _pgsql_do_connect）
+    local ok, err, elens = srey.wait_handshaked(sk)
+    if not ok and err then
+        WARN("%s", srey.ud_str(err, elens))
+    end
     return ok
 end
 
@@ -281,7 +285,8 @@ function ctx:cancel()
         return false
     end
     if SSL_NAME.NONE ~= self.sslname then
-        WARN("pgsql cancel: CancelRequest sent in plaintext (BackendKeyData pid+key exposed); SSL cancel not supported")
+        -- 与 C 侧 pgsql_cancel 同级别：正式运行按取消频率刷 WARN 太吵，降成 DEBUG
+        DEBUG("pgsql cancel: CancelRequest sent in plaintext (BackendKeyData pid+key exposed); SSL cancel not supported")
     end
     local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, self.ip, self.port)
     if not csk.valid then

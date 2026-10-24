@@ -7,13 +7,13 @@
 // 名字→句柄 缓存最多记这么多条，记满整表换新：条目只在"同名再用且旧句柄失效"时删，按动态名字起 task 会一直涨
 #define TNAME_CACHE_MAX 4096
 
-// 注册表里那张连接标识缓存表的键(只取地址用)。一个 lua_State 一张,按 skid 存,
-// 免得每条消息取 sk 都造一个新 userdata
-static const char _sk_cache_key = 0;
-// 注册表里那张 名字→句柄 缓存表的键(只取地址用)。一个 lua_State 一张,只记查到了的名字
-static const char _tname_cache_key = 0;
-// 注册表里当前 task 指针的键(只取地址用)
-static char _cur_task_key;// 可写变量：只读的同值常量可能被链接器合并成同一地址，键就撞了
+// 下面三个是注册表键，只取地址用。都是可写变量：只读的同值常量可能被链接器合并成同一地址，键就撞了
+// 连接标识缓存表。一个 lua_State 一张,按 skid 存,免得每条消息取 sk 都造一个新 userdata
+static char _sk_cache_key;
+// 名字→句柄 缓存表。一个 lua_State 一张,只记查到了的名字
+static char _tname_cache_key;
+// 当前 task 指针
+static char _cur_task_key;
 
 void lpub_new_mtable(lua_State *lua, const char *name) {
     luaL_newmetatable(lua, name);
@@ -63,38 +63,6 @@ task_ctx *lpub_cur_task(lua_State *lua) {
     task_ctx *task = LUA_TLIGHTUSERDATA == lua_rawgetp(lua, LUA_REGISTRYINDEX, &_cur_task_key) ? lua_touserdata(lua, -1) : NULL;
     lua_pop(lua, 1);
     return task;
-}
-// 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
-void *global_userdata(lua_State *lua, const char *name) {
-    if (LUA_TLIGHTUSERDATA != lua_getglobal(lua, name)) {
-        lua_pop(lua, 1);
-        return NULL;
-    }
-    void *data = lua_touserdata(lua, -1);
-    lua_pop(lua, 1);
-    return data;
-}
-// 从 Lua 全局变量表中取字符串并复制到 buf(NUL 结尾)。
-// 复制而非返回内部指针：lua_tostring 返回的指针在 string 弹栈后,理论可被 GC 释放
-int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsize) {
-    if (EMPTYPTR(buf, bufsize)) {
-        return ERR_FAILED;
-    }
-    buf[0] = '\0';
-    if (LUA_TSTRING != lua_getglobal(lua, name)) {
-        lua_pop(lua, 1);
-        return ERR_FAILED;
-    }
-    size_t lens;
-    const char *data = lua_tolstring(lua, -1, &lens);
-    if (lens >= bufsize) {
-        lua_pop(lua, 1);
-        return ERR_FAILED;
-    }
-    memcpy(buf, data, lens);
-    buf[lens] = '\0';
-    lua_pop(lua, 1);
-    return ERR_OK;
 }
 size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max) {
     lua_Integer lens = luaL_checkinteger(lua, idx);
@@ -517,7 +485,7 @@ static int32_t _sock_index(lua_State *lua) {
     } else if (5 == len && 0 == memcmp(k, "valid", 5)) {
         lua_pushboolean(lua, !sock_is_invalid(sk));
     } else if (2 == len && 0 == memcmp(k, "fd", 2)) {
-        lua_pushinteger(lua, (lua_Integer)sk->fd);
+        lua_pushinteger(lua, (lua_Integer)(intptr_t)sk->fd);// Windows 的 SOCKET 无符号，不经 intptr_t 的话 32 位上无效值是 4294967295 而不是 -1
     } else {
         lua_pushnil(lua);
     }
@@ -569,8 +537,7 @@ void lpub_push_sock(lua_State *lua, sock_ctx *sk) {
     *ud = *sk;
     ASSOC_MTABLE(lua, MT_SOCK);
 }
-// 消息分发专用:按 skid 复用同一个 userdata,免得每条消息都造一个。
-// 命中必须刷新值——teardown 会先把 fd 复位再发 CLOSE,拿旧快照会让 valid 恒真。
+// 消息分发专用:按 skid 复用同一个 userdata,免得每条消息都造一个。命中也照这条消息刷新一次值。
 // 只给这条路用:别处(sock_id / connect / udp)不进这张表,否则连接关掉之后
 // 再取一次就会把死 skid 写回表里,而 uncache 只在 CLOSE 分发后触发一次,再没人摘得掉
 void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk) {

@@ -18,6 +18,11 @@ local runner = require("test.runner")
 local seri   = require("srey.seri")
 local core = require("srey.core")
 local utils = require("srey.utils")
+local mqtt = require("lib.mqtt")
+local websock = require("lib.websock")
+local http = require("lib.http")
+local kcp = require("lib.kcp")
+require("lib.dns")-- 定义全局 nslookup
 
 local TCP_PORT = 15071
 local UDP_PORT = 15072
@@ -27,6 +32,13 @@ local TCP_PORT_TMO = 15077
 local PLAIN_PORT = 15131
 local TLS_PORT = 15132
 local WS_PORT = 15133
+-- listen 带 NET_EV.SESS 那段：客户端连上就发
+local SESS_PORT = 15134
+local SESS_ANY_PORT = 15135 -- 同上，MQTT 服务端用 syn_recv_any 收客户端的 CONNECT
+-- 客户端校验主机名那小段：OpenSSL 的 SSL_VERIFY_PEER，与两个只带 CA、开了它的客户端上下文名
+local SSL_VERIFY_PEER = 1
+local SSL_VHOST = "unit_coro_vhost"
+local SSL_VCHAIN = "unit_coro_vchain"
 local NSEND    = 4
 -- 等超时唤醒要多给的富余：超时监控每 1s 才扫一次到期表(lib/srey 的 _coro_timeout)，
 -- 所以 N 毫秒的等待最坏 N+1000 才被观察到。凡断言超时的地方一律等 N + 本值
@@ -40,17 +52,7 @@ local RT_GATE       = 0x213 -- 等 NPOOL 条到齐后回显
 local RT_HELD       = 0x214 -- 拿着本条 msg 挂起，记下挂起前后的元表与 data 后回显
 local NPOOL         = 200 -- 同时挂着的回调数，要超过协程池上限（池满那段按 srey.lua 的真实池断言）
 
--- 取 coros 汇总行的计数：suspended(coro_sess 里的等待者) / sessions / fork_wait / serial(排队数) / yield total。
--- 发起请求的协程自己也占着一个条目（等 RESPONSE），所以这些值恒含一个常量 +1；
--- 下面一律比较前后差值，不看绝对值
-local function _counts()
-    local ptr, sz = seri.pack("coros")
-    local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
-    local txt = rdata and srey.ud_str(rdata, rsize) or ""
-    local c = { txt:match("(%d+) suspended, (%d+) sessions, (%d+) fork_wait, (%d+) serial, (%d+) yield total") }
-    assert(c[1], "coros summary not matched: " .. txt)-- 不挡的话各字段全 nil，计数断言变成 nil == nil 恒过
-    return { susp = tonumber(c[1]), sess = tonumber(c[2]), fork = tonumber(c[3]), serial = tonumber(c[4]), nyield = tonumber(c[5]) }
-end
+local _counts = runner.coro_counts
 
 -- coro_sess 的条目数
 local function _sessions()
@@ -119,11 +121,12 @@ runner.run(function(t)
     -- 服务端侧回显：keep 那段要让客户端 skid 上真收到一条 RECV（走正常摘空，不是超时）。
     -- 只回显 accept 来的那条（client==0）：客户端那条的 RECV 有协程等着，先被 _resume_waiter
     -- 摘走、根本到不了这里，等它没人等了再回显就成互相打乒乓
-    srey.on_recved(function(_, sk, client, _, data, size)
+    local function _echo(_, sk, client, _, data, size)
         if 0 == client and data then
             srey.send(sk, data, size, 1)
         end
-    end)
+    end
+    srey.on_recved(_echo)
 
     -- ── ④ CLOSE 排空期间重新注册的等待者必须活下来 ────────────────────
     -- _net_close_dispatch 先把 keep 清 false、把 waiters 整批挪到局部表再逐个 resume。
@@ -230,6 +233,59 @@ runner.run(function(t)
         srey.response(srey.task_handle(), 0, sess, 0, "x")
         srey.sleep(300 + SETTLE)
         t:eq(srey.MSG_TYPE.TIMEOUT, got, "队头等 RECV 时不被同 sess 的 RESPONSE 唤醒")
+    end
+
+    -- ── ② RECV 先按 RECV 查队头、不中再按 RECV_ANY 查；RECV_ANY 的 keep 同 RECV ─────────
+    -- 直接拿 RECV 分发函数喂假消息：它只读 msg() 与 msg.sk，等待者醒来读 mtype。PACK_TYPE.NONE 没有
+    -- 回复判定、may_resume 恒真，这里只测两种等待标记的排队与 keep；判定拒收那一支见下面 MQTT + SESS 段
+    do
+        local disp = _upvalue(message_dispatch, "_dispatchers")
+        local recv_dispatch = disp and disp[srey.MSG_TYPE.RECV]
+        local ANY = -srey.MSG_TYPE.RECV -- 与 srey.lua 的 TAG_RECV_ANY 同值
+        if t:check(nil ~= recv_dispatch, "摸到 RECV 分发函数") then
+            local function _fake(sess)
+                return setmetatable({ mtype = srey.MSG_TYPE.RECV, sk = srey.sock_invalid() }, {
+                    __call = function()
+                        return srey.MSG_TYPE.RECV, sess, PACK_TYPE.NONE, 1, 0, 0, nil, nil, 0
+                    end,
+                })
+            end
+            -- 新建条目时 keep 按 RECV 算(为真)：等待者被唤醒摘空后条目仍留着
+            local sess = srey.id()
+            local s0 = _sessions()
+            local woke
+            srey.fork(function()
+                woke = srey._coro_wait(sess, ANY, 3000).mtype
+            end)
+            srey.sleep(30)
+            t:eq(s0 + 1, _sessions(), "RECV_ANY 等待者新建条目")
+            recv_dispatch(_fake(sess))
+            srey.sleep(30)
+            t:eq(srey.MSG_TYPE.RECV, woke, "队头是 RECV_ANY 时 RECV 唤醒它")
+            t:eq(s0 + 1, _sessions(), "RECV_ANY 新建的条目 keep 为真，摘空后仍留着")
+            srey._coro_sess_unkeep(sess)
+            t:eq(s0, _sessions(), "放掉后条目删掉")
+            -- 只看队头：RECV 在前、RECV_ANY 在后，第一条只给 RECV，第二条才轮到 RECV_ANY
+            sess = srey.id()
+            local order = {}
+            srey.fork(function()
+                srey._coro_wait(sess, srey.MSG_TYPE.RECV, 3000)
+                order[#order + 1] = "recv"
+            end)
+            srey.fork(function()
+                srey._coro_wait(sess, ANY, 3000)
+                order[#order + 1] = "any"
+            end)
+            srey.sleep(30)
+            recv_dispatch(_fake(sess))
+            srey.sleep(30)
+            t:eq("recv", table.concat(order, ","), "第一条只给队头的 RECV")
+            recv_dispatch(_fake(sess))
+            srey.sleep(30)
+            t:eq("recv,any", table.concat(order, ","), "第二条轮到 RECV_ANY")
+            srey._coro_sess_unkeep(sess)
+            t:eq(s0, _sessions(), "两段用完条目都已放掉")
+        end
     end
 
     -- ── ①③④ keep 决定条目存亡，CLOSE 清零不可逆 ──────────────────────
@@ -384,6 +440,7 @@ runner.run(function(t)
     do
         local sk = srey.sock_invalid()
         local me = srey.task_handle()
+        local kc = kcp.new(sk, 1, true)-- 同步 kcp 句柄：start / send 的守卫排在任何动作之前
         local cases = {
             { "srey.request", function() srey.request(me, 0x100, "x") end },
             { "srey.syn_send", function() srey.syn_send(sk, "x") end },
@@ -399,6 +456,15 @@ runner.run(function(t)
             { "srey.net_call", function() srey.net_call(sk, 1, 0x100, "x") end },
             { "srey.net_request", function() srey.net_request(sk, 1, 0x100, "x") end },
             { "srey._coro_wait", function() srey._coro_wait(srey.id(), srey.MSG_TYPE.RESPONSE, 10) end },
+            -- 库的对外入口：守卫都在建连接、组包、起会话之前
+            { "mqtt.connect", function() mqtt.connect(mqtt.VERSION.V311, SSL_NAME.NONE, "127.0.0.1", TCP_PORT) end },
+            { "websock.connect", function() websock.connect("ws://127.0.0.1:1/", SSL_NAME.NONE) end },
+            { "http.get", function() http.get(sk, "/") end },
+            { "http.head_req", function() http.head_req(sk, "/") end },
+            { "http.post", function() http.post(sk, "/") end },
+            { "kcp.start", function() kc:start("127.0.0.1", UDP_PORT) end },
+            { "kcp.send", function() kc:send("x") end },
+            { "nslookup", function() nslookup("example.com") end },
         }
         local c0 = _counts()
         local name, call, ok, err
@@ -732,13 +798,12 @@ runner.run(function(t)
     end
 
     -- ── 连接类其余路径 ─────────────────────────────────────────────────────
-    -- 明文监听 PLAIN_PORT 几小段共用；它订阅 ACCEPT，明文升级那小段要在服务端 accept 时就切 SSL
+    -- 明文监听 PLAIN_PORT 几小段共用；它订阅 ACCEPT，明文升级那小段由服务端在 accept 时 send_ssl 回 "go" 并切 SSL
     do
-        local upgrade, accepted = false, 0
+        local upgrade = false
         srey.on_accepted(function(_, ask)
-            accepted = accepted + 1
             if upgrade then
-                srey.ssl_exchange(ask, 0, SSL_NAME.SERVER)
+                srey.send_ssl(ask, 0, SSL_NAME.SERVER, "go", 2, 1)
             end
         end)
         local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT, NET_EV.ACCEPT)
@@ -764,6 +829,14 @@ runner.run(function(t)
             t:check(srey.timer_ms() - t0 >= 200, "等满读超时才返回")
             t:eq(s0, _sessions(), "超时摘掉等待者后条目已删")
         end
+        -- 连上后直接转交、不再碰它：CLOSE 落在 reporter 那边删不到本 task 的条目，得在转交时就放掉
+        sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT)
+        if t:check(sk.valid, "connect " .. PLAIN_PORT) then
+            t:eq(s0 + 1, _sessions(), "connect 留下一条 keep 条目")
+            t:eq(true, srey.sock_bind_task(sk, "reporter"), "转交给 reporter")
+            t:eq(s0, _sessions(), "转交之后本 task 的条目已放掉")
+            srey.close(sk)-- 关闭投到 reporter，不影响本 task 的条目数；服务端那条随之被动关闭
+        end
 
         -- 本段连接一律 sync_close：connect 留下的 keep 条目要等 CLOSE 才删，异步关会让后面按条目数取基线的用例偶发对不上
         -- 客户端 TLS：带 SSL_NAME.CLIENT 连 TLS 监听，srey.connect 连同握手一起等完；
@@ -777,21 +850,34 @@ runner.run(function(t)
                 t:eq("tls-echo", rd and srey.ud_str(rd, rs), "TLS 连接上收发正常")
                 srey.sync_close(sk)
             end
+            -- 开 SSL_VERIFY_PEER：设了主机名而服务端证书不是签给它的，握手必须失败；
+            -- 同样的 CA 与校验、不设主机名的能连上，说明挡下的是主机名而不是证书链
+            local vhost = core.cert_register(SSL_VHOST, "ca.crt", "", "")
+            local vchain = core.cert_register(SSL_VCHAIN, "ca.crt", "", "")
+            if t:check(vhost and vchain, "注册两个只带 CA 的客户端上下文") then
+                core.ssl_verify(vhost, SSL_VERIFY_PEER)
+                core.ssl_verify(vchain, SSL_VERIFY_PEER)
+                t:eq(true, core.ssl_host(vhost, "wrong.example.com"), "ssl_host 设主机名")
+                sk = srey.connect(PACK_TYPE.NONE, SSL_VHOST, "127.0.0.1", TLS_PORT)
+                t:eq(false, sk.valid, "主机名与证书对不上时握手失败")
+                sk = srey.connect(PACK_TYPE.NONE, SSL_VCHAIN, "127.0.0.1", TLS_PORT)
+                if t:check(sk.valid, "只验证书链时能连上") then
+                    srey.sync_close(sk)
+                end
+            end
             srey.unlisten(tlid)
-            -- 客户端带 NET_EV.AUTHSSL 才收得到握手结果。服务端在 accept 时切 SSL，客户端等它切完
-            -- 再发 ClientHello：抢在前面的话 ClientHello 会被服务端当明文回显回来
+            -- 客户端带 NET_EV.AUTHSSL 才收得到握手结果。服务端 send_ssl 的明文 "go" 写出时已切好 SSL，
+            -- 客户端收到它再发 ClientHello 就不会被当明文读走。连上到 syn_recv 之间不能挂起：同一连接的 CONNECT
+            -- 先于 "go" 投来，中间不让出，"go" 就不会落到 on_recved 去
             upgrade = true
-            local nacc = accepted
             sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT, NET_EV.AUTHSSL)
             if t:check(sk.valid, "明文连上") then
-                local deadline = srey.timer_ms() + 1000
-                while accepted == nacc and srey.timer_ms() < deadline do
-                    srey.sleep(10)
+                local rd, rs = srey.syn_recv(sk)
+                if t:eq("go", rd and srey.ud_str(rd, rs), "先收到服务端 send_ssl 的明文尾包") then
+                    t:eq(true, srey.syn_ssl_exchange(sk, 1, SSL_NAME.CLIENT), "syn_ssl_exchange 升级成功")
+                    rd, rs = srey.syn_send(sk, "upgraded", 8, 1)
+                    t:eq("upgraded", rd and srey.ud_str(rd, rs), "升级后收发正常")
                 end
-                srey.sleep(20)
-                t:eq(true, srey.syn_ssl_exchange(sk, 1, SSL_NAME.CLIENT), "syn_ssl_exchange 升级成功")
-                local rd, rs = srey.syn_send(sk, "upgraded", 8, 1)
-                t:eq("upgraded", rd and srey.ud_str(rd, rs), "升级后收发正常")
                 srey.sync_close(sk)
             end
             upgrade = false
@@ -844,6 +930,91 @@ runner.run(function(t)
         end
         srey.unlisten(wlid)
         srey.unlisten(lid)
+    end
+
+    -- ── listen 带 NET_EV.SESS：客户端连上就发，服务端 accept 后直接 syn_recv 收得到首包 ──────
+    -- 不带它时 accept 出的连接会话键为 0，事后 sock_session 是异步的，先到的首包会落到 on_recved。
+    -- ACCEPT 先于这条连接的任何 RECV 投到本 task，on_accepted 跑到 syn_recv 挂起之后 RECV 才分发
+    do
+        local got
+        local s0 = _sessions()
+        srey.on_accepted(function(_, ask)
+            local rd, rs = srey.syn_recv(ask)
+            got = rd and srey.ud_str(rd, rs) or false
+            srey.close(ask)
+        end)
+        local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", SESS_PORT, NET_EV.ACCEPT | NET_EV.SESS)
+        if t:check(ERR_FAILED ~= lid, "listen " .. SESS_PORT) then
+            local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", SESS_PORT)
+            if t:check(sk.valid, "connect " .. SESS_PORT) then
+                t:check(srey.send(sk, "first", 5, 1), "连上就发")
+                local deadline = srey.timer_ms() + 2000
+                while nil == got and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                t:eq("first", got, "accept 之后 syn_recv 收到客户端先发的首包")
+                -- 服务端已在关：客户端异步关就行(sync_close 会去等一条已经过去的 CLOSE，白等满读超时)。
+                -- 两端的 CLOSE 都到了条目才删干净，等它回到基线，免得下一段数条目时差一
+                srey.close(sk)
+                deadline = srey.timer_ms() + 2000
+                while _sessions() > s0 and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                t:check(_sessions() <= s0, "两端关闭后会话条目回到基线")
+            end
+            srey.unlisten(lid)
+        end
+    end
+
+    -- ── MQTT + NET_EV.SESS：CONNECT 不算回复，syn_recv 收不到，syn_recv_any 收得到 ──────
+    -- 之后服务端 syn_send 发 QoS1 PUBLISH 等回复，客户端一次写入 SUBSCRIBE + PUBACK：
+    -- SUBSCRIBE 不算回复、落到 on_recved，PUBACK 唤醒 syn_send(等回复的不会被对端主动发的包唤醒)。
+    -- 客户端用裸连接发报文；MQTT 收到的是 pack 指针，本段换掉回显的 on_recved，收尾换回
+    do
+        local got, reply, sub
+        local s0 = _sessions()
+        srey.on_recved(function(pktype, _, client, _, data)
+            if PACK_TYPE.MQTT == pktype and 0 == client and data then
+                sub = mqtt.prot(data)
+            end
+        end)
+        srey.on_accepted(function(_, ask)
+            local rd = srey.syn_recv_any(ask)
+            got = rd and mqtt.prot(rd) or false
+            local pub = "\x32\x06\x00\x01t\x00\x01x" -- QoS1 PUBLISH，topic "t"、包标识 1
+            local rp = rd and srey.syn_send(ask, pub, #pub, 1)
+            reply = rp and mqtt.prot(rp) or false
+            srey.close(ask)
+        end)
+        local lid = srey.listen(PACK_TYPE.MQTT, SSL_NAME.NONE, "127.0.0.1", SESS_ANY_PORT, NET_EV.ACCEPT | NET_EV.SESS)
+        if t:check(ERR_FAILED ~= lid, "listen " .. SESS_ANY_PORT) then
+            local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", SESS_ANY_PORT)
+            if t:check(sk.valid, "connect " .. SESS_ANY_PORT) then
+                local conn = "\x10\x0C\x00\x04MQTT\x04\x02\x00\x3C\x00\x00"
+                t:check(srey.send(sk, conn, #conn, 1), "连上就发 CONNECT")
+                -- 收到服务端的 PUBLISH，说明它已挂在 syn_send 上，这时再把 SUBSCRIBE 与 PUBACK 一次写过去
+                if t:check(nil ~= srey.syn_recv(sk), "客户端收到服务端的 PUBLISH") then
+                    local two = "\x82\x06\x00\x02\x00\x01t\x00\x40\x02\x00\x01"
+                    t:check(srey.send(sk, two, #two, 1), "一次写入 SUBSCRIBE + PUBACK")
+                end
+                local deadline = srey.timer_ms() + 2000
+                while nil == reply and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                t:eq(mqtt.PROT.CONNECT, got, "accept 之后 syn_recv_any 收到客户端的 CONNECT")
+                t:eq(mqtt.PROT.PUBACK, reply, "syn_send 等到 PUBACK，没被先到的 SUBSCRIBE 唤醒")
+                t:eq(mqtt.PROT.SUBSCRIBE, sub, "SUBSCRIBE 落到 on_recved")
+                srey.close(sk)
+                -- 两端的 CLOSE 都到了，条目才删干净；等它回到基线，免得下一段数条目时差一
+                deadline = srey.timer_ms() + 2000
+                while _sessions() > s0 and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                t:check(_sessions() <= s0, "两端关闭后会话条目回到基线")
+            end
+            srey.unlisten(lid)
+        end
+        srey.on_recved(_echo)
     end
 
     -- ── NEVERCONN 的合成 CLOSE 只唤醒等待方，不触发 on_closed 与观察者 ───────

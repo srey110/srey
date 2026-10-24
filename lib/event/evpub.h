@@ -12,6 +12,7 @@
 
 #define EVENT_WAIT_TIMEOUT   100 // 事件循环等待超时（毫秒）
 #define EVENT_CHANGES_CNT    128 // 事件变更队列初始容量
+#define QTN_MS               500 // Unix 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
 #define EVENT_CHECK_INTERVAL 5 // 每隔多少轮事件循环才做一次低频检查(隔离队列释放、对象池收缩、IOCP 的 AcceptEx 补投)；tick 每轮照常驱动
 #define INIT_EVENTS_CNT      256 // 初始事件槽位数量
 #define INIT_SENDBUF_LEN     4 // 发送队列初始槽数，深流水按需倍增
@@ -111,7 +112,7 @@ typedef enum sock_status {
     // 第三个表示"我这边还有没发完的应用写"。后两个互斥，由 _usk_tcp_send /
     // _olp_tcp_send 单点保证；KEYUPDATE_WRITE 可与 KEYUPDATE_READ 共存，它与
     // WPEND_SSL 不共存在 Unix 上靠的是 _usk_tcp_send 入口那道 !KEYUPDATE_WRITE 守卫，别删
-    STATUS_KEYUPDATE_WRITE = 0x8000,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
+    STATUS_KEYUPDATE_WRITE = 0x8000,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE 并摘 EVENT_READ，IOCP 投 0 字节 WSASend 探针并暂停收
     STATUS_KEYUPDATE_READ = 0x10000, // 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
                                      // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针。
                                      // 置位来自对端把 post-handshake 消息(现实中是 NewSessionTicket)

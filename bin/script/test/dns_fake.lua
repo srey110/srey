@@ -50,7 +50,7 @@ runner.run(function(t)
         t:fail("fake dns: udp / listen " .. _PORT .. " failed")
         return
     end
-    srey.on_recvedfrom(function(_, sk, ip, port, data, size)
+    srey.on_recvedfrom(function(_, sk, addr, data, size)
         if sk.skid ~= usk.skid then
             return
         end
@@ -69,12 +69,12 @@ runner.run(function(t)
         elseif "spoof.test" == name then
             nspoof = nspoof + 1
             r = _reply(q, qend, FLAGS, SPOOF_A)
-            srey.sendto(ssk, ip, port, r, #r, 1)
+            srey.sendto_addr(ssk, addr, r, #r, 1)
             return
         else
             r = _reply(q, qend, FLAGS)-- nodata.test：应答段为空
         end
-        srey.sendto(sk, ip, port, r, #r, 1)
+        srey.sendto_addr(sk, addr, r, #r, 1)
     end)
     -- TCP 一律回 TCP_A，前面带 2 字节大端长度
     srey.on_recved(function(pktype, sk, client, _, data, size)

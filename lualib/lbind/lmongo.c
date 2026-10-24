@@ -3,7 +3,7 @@
 #define MT_MONGO         "_mongo_ctx"
 #define MT_MONGO_SESSION "_mongo_session_ctx"
 #define MONGOFLAG_OUT_OF_RANGE "mongo flag out of range"
-// session 的七个入口共用: 自身非空 + 宿主没被 __gc 关掉(宿主关了 session 就拒绝，理由见 lpub_owner_ptr)
+// session 的入口共用: 自身非空 + 宿主没被 __gc 关掉(宿主关了 session 就拒绝，理由见 lpub_owner_ptr)
 #define LMONGO_SESSION_ARG(lua, var) \
     LPUB_UD_ARG((lua), mongo_session, MT_MONGO_SESSION, var, "session freed") \
     if (NULL == lpub_owner_ptr((lua), MT_MONGO)) { \
@@ -726,7 +726,7 @@ static int32_t _lmongo_pack_startsession(lua_State *lua) {
 static int32_t _lmongo_pack_auth_first(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     sock_ctx *sk = lpub_check_sock(lua, 2);
-    const char *authmod = luaL_checkstring(lua, 3);
+    const char *authmod = lpub_check_cstr(lua, 3);
     LPUB_CUR_TASK(lua, task);
     size_t size;
     struct scram_ctx *scram;
@@ -1058,7 +1058,7 @@ static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
-/// 本次事务是否已随重连作废（begin 之后连接换过），判据见 C 层 mongo_session_stale。作废的事务只能中止
+/// 本次事务是否已随重连作废（begin 之后连接换过；提交已交出过的不算），判据见 C 层 mongo_session_stale。作废的事务只能中止
 /// </summary>
 /// <param name="self" type="userdata">session 对象，须已 begin</param>
 /// <returns type="boolean">已作废 true</returns>

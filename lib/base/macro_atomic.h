@@ -32,7 +32,12 @@
     typedef long atomic64_t; // 64 位原子整数类型（AIX）
 #else
     typedef uint32_t atomic_t; // 32 位原子整数类型
-    typedef uint64_t atomic64_t; // 64 位原子整数类型
+    #if defined(CC_GNU)
+        // 显式 8 字节对齐：32 位 x86 的 SysV ABI 里结构体中的 uint64_t 只按 4 字节对齐，跨 cache line 时 8 字节原子读写不保证原子
+        typedef uint64_t atomic64_t __attribute__((aligned(8))); // 64 位原子整数类型
+    #else
+        typedef uint64_t atomic64_t; // 64 位原子整数类型
+    #endif
 #endif
 
 #if defined(CC_GNU)

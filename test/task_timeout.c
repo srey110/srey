@@ -754,7 +754,7 @@ static inline void _timeout_failed(task_ctx *task, task_timeout_ctx *ctx) {
         return;
     }
     ctx->_failed = 1;
-    ATOMIC_SET((atomic_t *)ctx->_ok, 0);
+    test_fail(ctx->_ok);// 终态：汇总见到就不再等满超时
 }
 static void _timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
@@ -820,7 +820,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
             LOG_WARN("habor reject test error.");
         }
     }
-    ATOMIC_SET((atomic_t *)ctx->_ok, ctx->_failed ? 0 : 1);
+    ATOMIC_SET((atomic_t *)ctx->_ok, ctx->_failed ? -3 : 1);
     task_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {

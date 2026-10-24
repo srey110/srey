@@ -1,4 +1,5 @@
 ﻿#include "task_smtp.h"
+#include "task_pub.h"
 
 // 假 SMTP 服务端的容量与并发规模（说明见下面的同名段）
 #define FAKE_MAXCONN  8
@@ -178,6 +179,7 @@ typedef struct fake_smtp_ctx {
     int32_t mails;          // 服务端确认收下的邮件数
     int32_t rsets;          // 服务端收到的 RSET 条数
     int32_t fail_rcpt;      // 1 = 下一条 RCPT 回 550（一次性），造一封失败的信
+    int32_t fail_rset;      // 1 = 下一条 RSET 回 550（一次性），造 RSET 失败
     int32_t naccept;        // 已接受的连接数；第 2 条连接发带裸 LF 的问候
     int32_t ehlo_local;     // 收到 "EHLO localhost" 的次数
     int32_t ehlo_bad;       // EHLO 行里混进 CR / LF 的次数
@@ -321,6 +323,11 @@ static void _fake_cmd(task_ctx *task, sock_ctx *sk, fake_smtp_ctx *ctx, fake_con
     if (0 == memcasecmp(line, "RSET", 4)) {
         ctx->rsets++;
         fc->sender = -1;
+        if (0 != ctx->fail_rset) {
+            ctx->fail_rset = 0;
+            _fake_reply(task, sk, "550 RSET failed\r\n");
+            return;
+        }
         _fake_reply(task, sk, "250 OK\r\n");
         return;
     }
@@ -470,7 +477,7 @@ static void _fake_conc_worker(void *owner, void *arg) {
     }
     a->done = 1;
 }
-static void _fake_startup(task_ctx *task) {
+static void _fake_startup_run(task_ctx *task) {
     fake_smtp_ctx *ctx = (fake_smtp_ctx *)coro_get_arg(task);
     task_accepted(task, _fake_accept);
     task_recved(task, _fake_recv);
@@ -583,12 +590,40 @@ static void _fake_startup(task_ctx *task) {
         LOG_ERROR("fake smtp: empty user with AUTH advertised, server took %d mails (want %d).", ctx->mails, mails + 1);
         return;
     }
+    // 下面两段重连会占新的 accept 序号，须排在依赖 naccept 的第二~四条连接之后。
+    // quit 拆掉执行器后 ping：照 connect 重建并装回执行器，照样能发(同 task_mysql 的 _quit_ping)
+    if (NULL != ctx->smtp.serial
+        || ERR_OK != smtp_ping(&ctx->smtp)
+        || NULL == ctx->smtp.serial
+        || ERR_OK != _fake_send(&ctx->smtp, "c8@t", "r8@t")) {
+        LOG_ERROR("fake smtp: ping after quit must reconnect and re-install the executor.");
+        smtp_quit(&ctx->smtp);
+        return;
+    }
+    // RCPT 被拒后 RSET 也失败：连接当场拆掉，ping 重连后照样能发
+    uint64_t oldskid = ctx->smtp.sk.skid;
+    ctx->fail_rcpt = 1;
+    ctx->fail_rset = 1;
+    if (ERR_OK == _fake_send(&ctx->smtp, "c7@t", "r7@t")
+        || ERR_OK != smtp_ping(&ctx->smtp)
+        || oldskid == ctx->smtp.sk.skid
+        || ERR_OK != _fake_send(&ctx->smtp, "c7@t", "r7@t")) {
+        LOG_ERROR("fake smtp: failed RSET should drop the connection and ping should reconnect.");
+        smtp_quit(&ctx->smtp);
+        return;
+    }
+    smtp_quit(&ctx->smtp);
     if (!_mail_reply_hdr_ok()) {
         LOG_ERROR("fake smtp: mail_reply(0) must write no reply header, mail_reply(1) writes Reply-To.");
         return;
     }
     LOG_INFO("smtp fake tested: %d mails, no interleaving.", ctx->mails);
     ATOMIC_SET((atomic_t *)ctx->ok, 1);
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _fake_startup(task_ctx *task) {
+    _fake_startup_run(task);
+    test_fail_unfinished(task, ((fake_smtp_ctx *)coro_get_arg(task))->ok);
 }
 void task_smtp_fake_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {
     if (NULL == ok) {

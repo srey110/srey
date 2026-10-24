@@ -74,6 +74,7 @@ static inline int32_t _pool_qu_pop(pool_ctx *pool, void **out) {
         return ERR_FAILED;
     }
     *out = *elem;
+    ASAN_UNPOISON(*out, pool->elsize);
     return ERR_OK;
 }
 // 释放 nfree 个空闲对象，逐个取；nkeep 下限由调用方保证。收缩是冷路径，定义放在 pool.c
@@ -83,7 +84,8 @@ void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree);
 /// 换线程接着用时由调用方保证前后两段有先后(如 task 的互斥)
 /// </summary>
 /// <param name="pool">pool_ctx</param>
-/// <param name="elsize">对象大小(字节);未设 _elnew 时按此大小 CALLOC 新建对象</param>
+/// <param name="elsize">对象大小(字节);未设 _elnew 时按此大小 CALLOC 新建对象。ASan 构建下对象在池里期间按此大小
+/// 从对象指针起标成不可访问,故设了 _elnew 时只能填它新建对象的实际大小(对象指针须是起点),对不上就填 0(不标)</param>
 /// <param name="capacity">底层队列容量,0 用默认值。实际容量向上取到 2 的幂,pool_capacity 返回取整后的值</param>
 /// <param name="nkeep">收缩时保留的最小空闲对象数</param>
 /// <param name="flags">pool_flags 按位或:POOL_FIFO 从队头取对象(先进先出),默认从队尾取(后进先出)</param>
@@ -97,7 +99,7 @@ void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
 /// <param name="pool">pool_ctx</param>
 void pool_free(pool_ctx *pool);
 /// <summary>
-/// 归还对象到池:先 _elclear,再尝试入池;池满则经 _elfree 释放
+/// 归还对象到池:先 _elclear,再尝试入池;池满则经 _elfree 释放。入池后到下次取出前不得再读写该对象(ASan 构建下当场报错)
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 /// <param name="data">归还的对象指针</param>
@@ -108,6 +110,7 @@ static inline int32_t pool_push(pool_ctx *pool, void *data, int32_t ops) {
         _pool_elclear(pool, data);
     }
     if (ERR_OK == pptr_que_trypush(&pool->qu, &data)) {
+        ASAN_POISON(data, pool->elsize);
         return ERR_OK;
     }
     if (!BIT_CHECK(ops, POOL_OP_NOFREE)) {

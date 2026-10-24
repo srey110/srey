@@ -17,7 +17,7 @@ typedef struct _task_each_arg {
 
 loader_ctx *g_loader; // 全局 loader 单例，程序入口把 loader_init 的返回值存进来
 // 前向声明：绑定 task 在 net 线程上跑一轮也走它，而它末尾的重调度又要用到 _loader_task_schedule
-static void _loader_task_run(loader_ctx *loader, int32_t weight,
+static void _loader_task_run(loader_ctx *loader, int32_t weight, int32_t onworker,
     worker_version *version, task_dispatch_arg *runarg, message_ctx *msgbatch);
 
 // 哈希表元素析构回调：通过任务名指针反推 task_ctx 并释放
@@ -139,7 +139,7 @@ static void _loader_evtask_run(void *arg) {
 #if 0 != EVTASK_SLOW_MS
     t0 = timer_cur_ms(&loader->timer);
 #endif
-    _loader_task_run(loader, 0, &loader->monitor.version[loader->nworker + idx], &runarg, msgbatch);
+    _loader_task_run(loader, 0, 0, &loader->monitor.version[loader->nworker + idx], &runarg, msgbatch);
 #if 0 != EVTASK_SLOW_MS
     _loader_evslow_check(loader, task, idx, t0);
 #endif
@@ -269,8 +269,8 @@ static inline uint64_t _loader_dispatch_one(task_ctx *task, worker_version *vers
     return 0;
 #endif
 }
-// 从任务消息队列批量取出消息并依次分发，处理完成后重调度或清除调度标志
-static void _loader_task_run(loader_ctx *loader, int32_t weight,
+// 从任务消息队列批量取出消息并依次分发，处理完成后重调度或清除调度标志。
+static void _loader_task_run(loader_ctx *loader, int32_t weight, int32_t onworker,
     worker_version *version, task_dispatch_arg *runarg, message_ctx *msgbatch) {
     task_ctx *task = runarg->task;
     uint32_t lens = msgq_size(&task->qumsg);
@@ -279,6 +279,8 @@ static void _loader_task_run(loader_ctx *loader, int32_t weight,
     }
     uint32_t n = _loader_msg_quota(weight, task, lens);
     uint32_t want, got, k, processed = 0;
+    uint32_t spins = 0;
+    uint32_t tries = 0;
     uint64_t t0;
     // version 是每个线程独占的单写者字段, monitor 每 5s 才读一次, 用 RELAXED 换掉不必要的 seq_cst 屏障
     ATOMIC64_SET_RELAXED(&version->handle, task->handle);
@@ -290,6 +292,16 @@ static void _loader_task_run(loader_ctx *loader, int32_t weight,
         }
         got = msgq_pop_sc_batch(&task->qumsg, msgbatch, want);
         if (0 == got) {
+            // onworker 非 0 表示在 worker 上跑：第一批就撞上在途元素(生产者已占槽、还没写完)时照 taskq 的做法退避重试，
+            // 不立刻交还调度权让别的 worker 空跑；net 线程上不等，等了会卡住该线程上所有连接
+            if (0 != onworker
+                && 0 == processed
+                && tries < 2 * SPIN_YIELD_CNT
+                && !msgq_empty(&task->qumsg)) {
+                tries++;
+                spin_backoff(&spins);
+                continue;
+            }
             break;
         }
         t0 = _loader_stat_now();
@@ -367,7 +379,7 @@ static void _loader_worker_loop(void *arg) {
             spinner_busy(&spinner);
             runarg.task = task;
             // 执行
-            _loader_task_run(loader, worker->weight, version, &runarg, msgbatch);
+            _loader_task_run(loader, worker->weight, 1, version, &runarg, msgbatch);
             task_ungrab(task);
             continue;
         }
@@ -557,7 +569,7 @@ static void _loader_task_closing(loader_ctx *loader) {
             task_map_scan(loader->maptasks, _loader_closing_timeout, NULL);
             rwlock_distr_runlock(&loader->lckmaptasks);
             if (0 != ATOMIC_GET(&loader->nfreeing)) {
-                LOG_WARN("%d task(s) still waiting to be freed on net threads.", (int32_t)ATOMIC_GET(&loader->nfreeing));
+                LOG_WARN("%d task(s) removed from the table but not freed yet.", (int32_t)ATOMIC_GET(&loader->nfreeing));
             }
         }
     }

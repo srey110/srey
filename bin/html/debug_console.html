@@ -156,12 +156,14 @@ function log(ok,req,body){
   o.appendChild(d);o.scrollTop=o.scrollHeight;
 }
 // 结果打进输出区；成功时把正文交回，失败为 null
+// 改状态的入口(gc / loglv / inject / hotfix)要求自定义头；带上它也就顺带挡住了跨站表单
+var H={'X-Srey-Debug':'1'};
 async function get(p){
-  try{var r=await fetch(p),t=await r.text();log(r.ok,'GET '+p,t);return r.ok?t:null}
+  try{var r=await fetch(p,{headers:H}),t=await r.text();log(r.ok,'GET '+p,t);return r.ok?t:null}
   catch(e){log(false,'GET '+p,e.message);return null}
 }
 async function post(p,b){
-  try{var r=await fetch(p,{method:'POST',body:b});log(r.ok,'POST '+p,await r.text())}
+  try{var r=await fetch(p,{method:'POST',headers:H,body:b});log(r.ok,'POST '+p,await r.text())}
   catch(e){log(false,'POST '+p,e.message)}
 }
 function G(){var t=tk();if(t!==null)get('/'+t+'/help')}

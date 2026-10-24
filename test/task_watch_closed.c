@@ -1,4 +1,5 @@
 ﻿#include "task_watch_closed.h"
+#include "task_pub.h"
 
 #define WATCH_LOG_MAX 8
 
@@ -46,6 +47,7 @@ static void _watch_finish(task_ctx *task, watch_ctx *ctx, sock_ctx *sk, uint64_t
         || 2 != ctx->log[1]
         || 3 != ctx->log[2]) {
         LOG_ERROR("watch_closed %s: unexpected close order, nlog %d.", task->name, ctx->nlog);
+        test_fail(ctx->ok);
         return;
     }
     ATOMIC_SET((atomic_t *)ctx->ok, 1);
@@ -63,6 +65,7 @@ static void _normal_connect_real(task_ctx *task, watch_ctx *ctx) {
     ctx->real = 1;
     if (ERR_OK != task_connect(task, PACK_NONE, NULL, "127.0.0.1", ctx->httpport, NETEV_NONE, NULL, 0, &sk)) {
         LOG_ERROR("watch_closed normal: connect %d failed.", (int32_t)ctx->httpport);
+        test_fail(ctx->ok);
     }
 }
 // 拒连那条 CONNECT 失败时，它的合成 CLOSE 已紧跟着入队，真连接的消息必然排在它后面
@@ -72,6 +75,7 @@ static void _normal_connected(task_ctx *task, sock_ctx *sk, subtype_t pktype, in
     if (0 == ctx->real) {
         if (ERR_OK == erro) {
             LOG_ERROR("watch_closed normal: 127.0.0.1:1 unexpectedly accepted.");
+            test_fail(ctx->ok);
             ev_close(&task->loader->netev, sk);
             return;
         }
@@ -80,6 +84,7 @@ static void _normal_connected(task_ctx *task, sock_ctx *sk, subtype_t pktype, in
     }
     if (ERR_OK != erro) {
         LOG_ERROR("watch_closed normal: connect %d failed.", (int32_t)ctx->httpport);
+        test_fail(ctx->ok);
         return;
     }
     ctx->skid = sk->skid;
@@ -114,14 +119,23 @@ static void _coro_startup(task_ctx *task) {
     if (ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", 1, 0, NULL, &sk)) {
         ev_close(&task->loader->netev, &sk);
         LOG_ERROR("watch_closed coro: 127.0.0.1:1 unexpectedly accepted.");
+        test_fail(ctx->ok);
         return;
     }
     if (task_isclosing(task)) {
         return;
     }
-    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", ctx->httpport, 0, NULL, &sk)) {
-        LOG_ERROR("watch_closed coro: connect %d failed.", (int32_t)ctx->httpport);
-        return;
+    // http_sv 与本 task 一起起，它的监听可能还没落地：有界重试(同 task_debug 的 _http_get)
+    for (int32_t i = 0; ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", ctx->httpport, 0, NULL, &sk); i++) {
+        if (task_isclosing(task)) {
+            return;// 收尾早退不算失败
+        }
+        if (i >= 20) {
+            LOG_ERROR("watch_closed coro: connect %d failed.", (int32_t)ctx->httpport);
+            test_fail(ctx->ok);
+            return;
+        }
+        coro_sleep(task, 50);
     }
     ctx->skid = sk.skid;
     ev_close(&task->loader->netev, &sk);

@@ -8,9 +8,11 @@
 // 同一个 coro_ctx 上的调用必须串行，由 owner 保证(task 靠调度标志，同一时刻只有一个 worker 在跑它)。
 // 协程挂起后若可能在别的线程上恢复，协程代码里的线程局部变量一律经 TLS_DEFINE 的访问器取，
 // 也不许跨挂起持有 rwlock_distr / 互斥锁，见 lib/base/macro_util.h。
-// sess 条目的五条规则分别落在：keep 只在新建条目时定(coro_wait)；只看队头、摘空且 !keep 才删(coro_wake)；
-// 广播先清 keep、全部唤醒、重新查询再删(coro_wake_all)；超时无视 keep(coro_expire)
+// sess 条目的六条规则分别落在：keep 只在新建条目时定(coro_wait)；只看队头、摘空且 !keep 才删(coro_wake)；
+// 广播先清 keep、全部唤醒、重新查询再删(coro_wake_all)；超时无视 keep(coro_expire)；
+// 会话转交后放掉条目：空的当场删、还有等待者的只清 keep(coro_unkeep)
 
+#define MAPCO_INIT_CAP 32 // mapco 建表容量,同时是缩容地板,见 coro_new
 #define COROPOOL_CAP 128 // 每个调度器的空闲协程池容量，须是 2 的幂(池容量按 2 的幂取整)；池满时回池的协程跑完即销毁
 
 typedef struct coro_ctx coro_ctx;
@@ -112,6 +114,13 @@ int32_t coro_wake(coro_ctx *co, uint64_t sess, int32_t tag, void *payload);
 /// <param name="payload">交给每个等待者，由调用方持有</param>
 /// <param name="spawn">非 NULL 时等同 coro_spawn(co, spawn)；NULL 不起协程</param>
 void coro_wake_all(coro_ctx *co, uint64_t sess, void *payload, void *spawn);
+/// <summary>
+/// sess 上不会再有广播来时(如连接已转给别的 owner)放掉它的条目：没有等待者就当场删，
+/// 还有的把 keep 清零(不可逆)，等它们都被唤醒或超时摘走时随之删掉
+/// </summary>
+/// <param name="co">调度器</param>
+/// <param name="sess">会话 ID；没有条目时什么都不做</param>
+void coro_unkeep(coro_ctx *co, uint64_t sess);
 /// <summary>
 /// 唤醒全部已到期的等待者：按到期先后从超时堆取，摘掉后队列空就删条目(无视 keep：留着的话
 /// 该 sess 的广播若已过去，条目再没有路径能删)，再用 mk(ud, sess, tag) 的返回值唤醒它。

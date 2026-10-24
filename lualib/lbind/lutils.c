@@ -158,10 +158,11 @@ static int32_t _lutils_csprng_rand(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 把 on_accepted 交出的对端地址转成 IP 与端口。地址是网络线程在 accept 当场取的，不会因 fd 复用张冠李戴；
-/// 只在 on_accepted 回调期间有效，要留就当场转好、按 sk.skid 自己存
+/// 把 on_accepted / on_recvedfrom 交出的对端地址转成 IP 与端口。地址是网络线程收到时当场取的，不会因 fd 复用张冠李戴；
+/// 只在交出它的那个回调期间有效，要留就当场转好自己存
 /// </summary>
-/// <param name="addr" type="lightuserdata?">on_accepted 的第 3 个参数；listen 没订阅 NET_EV.PEERADDR 或取失败时为 nil</param>
+/// <param name="addr" type="lightuserdata?">on_accepted 的第 3 个参数(listen 没订阅 NET_EV.PEERADDR 或取失败时为 nil)，
+/// 或 on_recvedfrom 的第 3 个参数</param>
 /// <returns type="string?">对端 IP，IPv6 链路本地地址带 "%网卡号"；addr 为 nil 时返回 nil</returns>
 /// <returns type="integer?">对端端口；仅在第一个返回值非 nil 时有效</returns>
 static int32_t _lutils_remote_addr(lua_State *lua) {
@@ -343,7 +344,8 @@ LUAMOD_API int luaopen_trend(lua_State *lua) {
 /// <summary>
 /// 启动子进程；mode 含 "r" 读子进程 stdout（stderr 并入同一通道），含 "w" 写子进程 stdin，"rw" 两者都要。
 /// POSIX 经 /bin/sh -c 执行，Windows 直接起可执行文件、不经 cmd.exe；POSIX 上子进程的 SIGPIPE 为默认处置，
-/// 不接管的 stdin 是 /dev/null
+/// 不接管的 stdin 是 /dev/null。Windows 上别和 io.popen / os.execute 并发用：它们起的进程会带走这里在建的管道端，
+/// 拖迟读到 EOF（见 popen_startup）
 /// </summary>
 /// <param name="cmd" type="string">命令行字符串</param>
 /// <param name="mode" type="string">"r"、"w" 或 "rw"</param>

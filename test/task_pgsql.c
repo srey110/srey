@@ -4,6 +4,7 @@
 
 typedef struct task_pgsql_args {
     uint16_t port;
+    int32_t nexch;// 收到 SSLEXCHANGED 的次数，pgsql 自己升级 TLS，应恒为 0
     int32_t *ok;
     char host[64];
     char user[64];
@@ -11,6 +12,7 @@ typedef struct task_pgsql_args {
     char database[64];
     pgsql_ctx pg;
     pgsql_ctx pg_ssl;// TLS 那一段另建的连接
+    pgsql_ctx pg_bad;// 错口令建链用
 }task_pgsql_args;
 
 // 重建测试表，使每次运行从干净状态开始
@@ -530,13 +532,118 @@ static int32_t _ssl_query(task_ctx *task, task_pgsql_args *arg) {
         LOG_ERROR("pgsql ssl: the session did not authenticate with SCRAM, channel binding not exercised.");
         return ERR_FAILED;
     }
+    // TLS 由 pgsql 协议自己升级(PROT_SSL_OWNED)，task 不该收到 SSLEXCHANGED
+    if (0 != arg->nexch) {
+        LOG_ERROR("pgsql ssl: SSLEXCHANGED delivered %d time(s), want 0.", arg->nexch);
+        return ERR_FAILED;
+    }
     LOG_INFO("pgsql ssl: SCRAM-SHA-256-PLUS ok, channel binding %d bytes.", cbind);
     return ERR_OK;
 }
 #endif
+// 没有等待者的 SSLEXCHANGED 会落到这里，只计数
+static void _on_ssl_exchanged(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client) {
+    (void)sk;
+    (void)pktype;
+    (void)client;
+    ((task_pgsql_args *)coro_get_arg(task))->nexch++;
+}
+// 强制断连后 ping 重连：skid 换过、查询照常
+static int32_t _reconnect(task_ctx *task, pgsql_ctx *pg) {
+    uint64_t oldskid = pg->sk.skid;
+    ev_close(&task->loader->netev, &pg->sk);
+    for (int32_t i = 0; i < 50 && !sock_is_invalid(&pg->sk); i++) {// 等 CLOSE 处理完(最多约 1 秒)，ping 走"连接已失效"那支
+        coro_sleep(task, 20);
+    }
+    if (ERR_OK != pgsql_ping(pg)
+        || oldskid == pg->sk.skid) {
+        LOG_ERROR("pgsql reconnect: ping did not reconnect.");
+        return ERR_FAILED;
+    }
+    pgpack_ctx *p = pgsql_query(pg, "select 1");
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql reconnect: query after reconnect error.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// COPY FROM STDIN 误交给 query / copy_out：库发 CopyFail 把服务端拉出 COPY IN 态、返回 NULL，连接不断、照常可用；
+// 误交给预处理语句：扩展协议没法就地收尾，库直接断连(代次前进)，ping 重连回来
+static int32_t _copy_in_misuse(pgsql_ctx *pg) {
+    const char *sql = "copy srey_test (id, name, score) from stdin";
+    uint64_t skid = pg->sk.skid;
+    if (NULL != pgsql_query(pg, sql)
+        || NULL != pgsql_copy_out(pg, sql)) {
+        LOG_ERROR("pgsql copy misuse: query / copy_out must fail on COPY FROM STDIN.");
+        return ERR_FAILED;
+    }
+    pgpack_ctx *p = pgsql_query(pg, "select 1");
+    if (NULL == p
+        || PGPACK_OK != p->type
+        || skid != pg->sk.skid) {
+        LOG_ERROR("pgsql copy misuse: connection must stay usable after CopyFail.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != pgsql_stmt_prepare(pg, "stmt_copy", sql, 0, NULL)) {
+        LOG_ERROR("pgsql copy misuse: prepare COPY FROM STDIN error.");
+        return ERR_FAILED;
+    }
+    uint32_t gen = pg->generation;
+    if (NULL != pgsql_stmt_execute(pg, "stmt_copy", NULL, FORMAT_TEXT)
+        || gen == pg->generation) {
+        LOG_ERROR("pgsql copy misuse: stmt execute must fail and close the connection.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != pgsql_ping(pg)) {
+        LOG_ERROR("pgsql copy misuse: ping did not reconnect.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// quit 拆掉执行器后 selectdb：经 pgsql_connect 建的连接照 connect 重建并装回执行器，多协程的命令照常排队
+static int32_t _quit_selectdb(pgsql_ctx *pg, const char *database) {
+    pgsql_quit(pg);
+    if (NULL != pg->serial) {
+        LOG_ERROR("pgsql quit_selectdb: quit should release the executor.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != pgsql_selectdb(pg, database)
+        || NULL == pg->serial) {
+        LOG_ERROR("pgsql quit_selectdb: selectdb after quit must reconnect and re-install the executor.");
+        return ERR_FAILED;
+    }
+    return _concurrent_query(pg);
+}
+// 错口令建链：返回失败、本次新建的执行器已就地拆掉(服务端回的 28P01 原文由建链方打 WARN)
+static int32_t _auth_fail(task_ctx *task, task_pgsql_args *arg) {
+    if (ERR_OK != pgsql_init(&arg->pg_bad, arg->host, arg->port, NULL,
+                             arg->user, "srey-wrong-password", arg->database)) {
+        LOG_ERROR("pgsql auth fail: pgsql_init error.");
+        return ERR_FAILED;
+    }
+    timer_ctx tm;
+    timer_init(&tm);
+    timer_start(&tm);
+    if (ERR_OK == pgsql_connect(task, &arg->pg_bad)) {
+        LOG_ERROR("pgsql auth fail: connect with a wrong password succeeded.");
+        pgsql_quit(&arg->pg_bad);
+        return ERR_FAILED;
+    }
+    // 当场被拒才对：等满读超时才失败说明错误没映射出来(只是超时)
+    if (timer_elapsed_ms(&tm) >= task_get_netread_timeout(task) / 2) {
+        LOG_ERROR("pgsql auth fail: took %"PRIu64"ms, a timeout rather than a rejection.", timer_elapsed_ms(&tm));
+        return ERR_FAILED;
+    }
+    if (NULL != arg->pg_bad.serial) {
+        LOG_ERROR("pgsql auth fail: failed connect left the executor installed.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_pgsql_args *arg = (task_pgsql_args *)coro_get_arg(task);
+    task_ssl_exchanged(task, _on_ssl_exchanged);
     if (ERR_OK != pgsql_init(&arg->pg, arg->host, arg->port, NULL,
                              arg->user, arg->password, arg->database)) {
         LOG_ERROR("pgsql_init error.");
@@ -552,7 +659,9 @@ static void _startup(task_ctx *task) {
     ATOMIC_SET((atomic_t *)arg->ok, -1);
     if (task_isclosing(task)
         || ERR_OK != pgsql_ping(&arg->pg)) {
-        LOG_ERROR("pgsql ping error.");
+        if (!task_isclosing(task)) {// 收尾早退不算失败
+            LOG_ERROR("pgsql ping error.");
+        }
         pgsql_quit(&arg->pg);
         return;
     }
@@ -635,9 +744,37 @@ static void _startup(task_ctx *task) {
         return;
     }
 #endif
+    if (task_isclosing(task)
+        || ERR_OK != _reconnect(task, &arg->pg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _copy_in_misuse(&arg->pg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _quit_selectdb(&arg->pg, arg->database)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _auth_fail(task, arg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
     pgsql_quit(&arg->pg);
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("pgsql tested.");
+}
+// 各失败出口直接 return、槽停在 -1：走完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    task_pgsql_args *arg = (task_pgsql_args *)coro_get_arg(task);
+    if (!task_isclosing(task) && -1 == (int32_t)ATOMIC_GET((atomic_t *)arg->ok)) {
+        test_fail(arg->ok);
+    }
 }
 
 void task_pgsql_start(loader_ctx *loader, const char *name,

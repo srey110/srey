@@ -1,4 +1,5 @@
 ﻿#include "task_multi_call.h"
+#include "task_pub.h"
 
 #define N_SUBS 5
 #define MSG_BROADCAST "MULTI_HELLO"
@@ -51,7 +52,7 @@ static void _pub_response(task_ctx *task, subtype_t reqtype, uint64_t sess, int3
     }
 }
 
-static void _pub_startup(task_ctx *task) {
+static void _pub_startup_run(task_ctx *task) {
     task_multi_call_args *arg = (task_multi_call_args *)coro_get_arg(task);
     ATOMIC_SET(&_received_call, 0);
     ATOMIC_SET(&_received_rpc, 0);
@@ -125,6 +126,11 @@ ungrab:
     for (i = 0; i < N_SUBS; i++) {
         task_ungrab(dsts[i]);
     }
+}
+// 失败出口走 goto ungrab、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _pub_startup(task_ctx *task) {
+    _pub_startup_run(task);
+    test_fail_unfinished(task, ((task_multi_call_args *)coro_get_arg(task))->ok);
 }
 
 void task_multi_call_start(loader_ctx *loader, const char *base_name, int32_t *ok) {

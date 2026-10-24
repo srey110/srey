@@ -24,7 +24,23 @@ int32_t is_ipv4(const char *ip) {
     struct in_addr addr;
     return inet_pton(AF_INET, ip, &addr) == 1 ? ERR_OK : ERR_FAILED;
 }
+// 带 "%网卡号" 的 IPv6(链路本地常见)：inet_pton 只在部分平台认这个后缀，一律先剥掉再判，
+// 让 is_ipv6 / is_ipaddr 两个平台一致。网卡号只当不透明后缀，不校验
 int32_t is_ipv6(const char *ip) {
+    char buf[IP_LENS];
+    if (NULL == ip || '\0' == *ip) {
+        return ERR_FAILED;
+    }
+    const char *scope = strchr(ip, '%');
+    if (NULL != scope) {
+        size_t lens = (size_t)(scope - ip);
+        if (lens >= sizeof(buf)) {
+            return ERR_FAILED;
+        }
+        memcpy(buf, ip, lens);
+        buf[lens] = '\0';
+        ip = buf;
+    }
     struct in6_addr addr;
     return inet_pton(AF_INET6, ip, &addr) == 1 ? ERR_OK : ERR_FAILED;
 }
@@ -156,7 +172,7 @@ int32_t netaddr_local(netaddr_ctx *ctx, SOCKET fd) {
 struct sockaddr *netaddr_addr(netaddr_ctx *ctx) {
     return &ctx->addr;
 }
-socklen_t netaddr_size(netaddr_ctx *ctx) {
+socklen_t netaddr_size(const netaddr_ctx *ctx) {
     return AF_INET == ctx->addr.sa_family ? (socklen_t)sizeof(ctx->ipv4) : (socklen_t)sizeof(ctx->ipv6);
 }
 void netaddr_ip4_str(const uint8_t *b, char ip[IP_LENS]) {
@@ -168,7 +184,7 @@ void netaddr_ip4_str(const uint8_t *b, char ip[IP_LENS]) {
     }
     p[-1] = '\0';
 }
-int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]) {
+int32_t netaddr_ip(const netaddr_ctx *ctx, char ip[IP_LENS]) {
     if (AF_INET == ctx->addr.sa_family) {
         netaddr_ip4_str((const uint8_t *)&ctx->ipv4.sin_addr, ip);
         return ERR_OK;
@@ -185,13 +201,13 @@ int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]) {
     }
     return ERR_OK;
 }
-uint16_t netaddr_port(netaddr_ctx *ctx) {
+uint16_t netaddr_port(const netaddr_ctx *ctx) {
     return AF_INET == ctx->addr.sa_family ? ntohs(ctx->ipv4.sin_port) : ntohs(ctx->ipv6.sin6_port);
 }
-int32_t netaddr_family(netaddr_ctx *ctx) {
+int32_t netaddr_family(const netaddr_ctx *ctx) {
     return ctx->addr.sa_family;
 }
-int32_t netaddr_compare(netaddr_ctx *a, netaddr_ctx *b) {
+int32_t netaddr_compare(const netaddr_ctx *a, const netaddr_ctx *b) {
     if (a->addr.sa_family != b->addr.sa_family) {
         return ERR_FAILED;
     }

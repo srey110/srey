@@ -937,7 +937,7 @@ static int32_t _lpgsql_pack_copy_done(lua_State *lua) {
 /// <returns type="lightuserdata?">命令数据指针；同 pack_query</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lpgsql_pack_copy_fail(lua_State *lua) {
-    const char *msg = luaL_checkstring(lua, 1);
+    const char *msg = lpub_check_cstr(lua, 1);
     size_t size;
     void *pack = pgsql_pack_copy_fail(msg, &size);
     return lpub_rtn_lud(lua, pack, size);
@@ -995,7 +995,7 @@ static int32_t _lpgsql_free(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 发起到 pgsql 服务端的异步连接请求
+/// 发起到 pgsql 服务端的异步连接请求。等待方式与 TLS 的说明同 mysql 的 try_connect
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <returns type="boolean">发起成功 true，失败 false</returns>

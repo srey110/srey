@@ -575,6 +575,11 @@ def main() -> int:
 
     if do_clean:
         return clean()
+    # Windows 上 mimalloc 的目标由所在提示符的 cl.exe 定,参数只管贴后缀:两者不一致会编出别的架构还贴这个名字
+    shell_arch = ARCH_ALIAS.get((os.environ.get("VSCMD_ARG_TGT_ARCH") or os.environ.get("Platform") or "").strip().lower())
+    if IS_WIN and arch_forced and shell_arch and shell_arch != arch:
+        sys.stderr.write(f"当前 VS 提示符的目标架构是 {shell_arch},与参数 {arch} 不符;换到 {arch} 的开发者提示符再跑\n")
+        return 1
 
     need_tools(["git"])
     flags = read_flags()

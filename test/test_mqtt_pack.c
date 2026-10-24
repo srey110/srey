@@ -311,6 +311,9 @@ static void test_mqtt_connack_edge(CuTest *tc) {
     mqtt_connack_varhead *vh = (mqtt_connack_varhead *)p->varhead;
     CuAssertIntEquals(tc, 0x01, vh->reason);
     CuAssertPtrEquals(tc, NULL, vh->properties);
+    // 按 3.1.1 格式回的拒绝，version 记 3.1.1，原因码才查得到文案
+    CuAssertIntEquals(tc, MQTT_311, (int)p->version);
+    CuAssertStrEquals(tc, "Unacceptable protocol version", mqtt_reason(p->version, MQTT_CONNACK, vh->reason));
     CuAssertIntEquals(tc, _MQ_INIT, (int)ud.status);
     CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
     _mqtt_pkfree(p);
@@ -656,10 +659,10 @@ static mqtt_pack_ctx *_mq_split_whole(CuTest *tc, buffer_ctx *buf, ud_cxt *ud, c
     CuAssertIntEquals(tc, (int)sizeof(ping), (int)buffer_size(buf));
     return p;
 }
-// 非 PUBLISH 包跨节点走整包拷出：不超过 256 字节(mqtt.c 的 MQTT_SPLIT_HEAD)拷到栈上，更长的 MALLOC。
+// 非 PUBLISH 包跨节点走整包拷出：不超过 MQTT_SPLIT_HEAD 字节拷到栈上，更长的 MALLOC。
 // CONNECT 两档各一(密码排在载荷最后，拷错位最先坏它)，SUBSCRIBE 在类型字节后 / 剩余长度后 / 中间切开
 static void test_mqtt_split_whole(CuTest *tc) {
-    char pw[400];
+    char pw[MQTT_SPLIT_HEAD + 144];
     memset(pw, 'p', sizeof(pw));
     const size_t pwls[] = { 8, sizeof(pw) };
     for (size_t i = 0; i < ARRAY_SIZE(pwls); i++) {
@@ -667,7 +670,7 @@ static void test_mqtt_split_whole(CuTest *tc) {
         char *pack = mqtt_pack_connect(MQTT_50, 1, 60, "cid", "user", pw, pwls[i],
             NULL, NULL, 0, 0, 0, NULL, NULL, &lens);
         CuAssertPtrNotNull(tc, pack);
-        CuAssertTrue(tc, 0 == i ? lens < 256 : lens > 256);
+        CuAssertTrue(tc, 0 == i ? lens <= MQTT_SPLIT_HEAD : lens > MQTT_SPLIT_HEAD);
         buffer_ctx buf;
         ud_cxt ud;
         ZERO(&ud, sizeof(ud));
@@ -1282,6 +1285,15 @@ static void test_mqtt_may_resume(CuTest *tc) {
         pack.fixhead.prot = res[i];
         CuAssertIntEquals(tc, ERR_OK, _mqtt_may_resume(&pack));
     }
+    // AUTH 只有重新认证(0x19)由客户端发起、不算回复；上面 varhead 为 NULL(紧凑形式)已按回复判过
+    mqtt_reason_varhead rv;
+    ZERO(&rv, sizeof(rv));
+    pack.fixhead.prot = MQTT_AUTH;
+    pack.varhead = &rv;
+    rv.reason = 0x18;
+    CuAssertIntEquals(tc, ERR_OK, _mqtt_may_resume(&pack));
+    rv.reason = 0x19;
+    CuAssertIntEquals(tc, ERR_FAILED, _mqtt_may_resume(&pack));
     CuAssertIntEquals(tc, ERR_OK, _mqtt_may_resume(NULL));
 }
 

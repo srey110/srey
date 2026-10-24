@@ -11,6 +11,14 @@
 
 local srey = require("lib.srey")
 local json = require("yyjson")
+local seri = require("srey.seri")
+
+---@class CoroCounts
+---@field susp integer coro_sess 里的等待者数
+---@field sess integer coro_sess 条目数
+---@field fork integer fork_wait 的等待数
+---@field serial integer serial 排队数
+---@field nyield integer yield 总次数
 
 ---@class M
 ---@field name string 模块名（即 task 名）
@@ -98,6 +106,17 @@ function M.run(body)
         t:fail("test crashed: " .. tostring(err))
     end
     t:done()
+end
+
+---取本 task 的 coros 汇总行计数。发请求的协程自己也挂着一个(等 RESPONSE)，这些值恒含一个常量，只比前后差值
+---@return CoroCounts counts
+function M.coro_counts()
+    local ptr, sz = seri.pack("coros")
+    local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
+    local txt = rdata and srey.ud_str(rdata, rsize) or ""
+    local c = { txt:match("(%d+) suspended, (%d+) sessions, (%d+) fork_wait, (%d+) serial, (%d+) yield total") }
+    assert(c[1], "coros summary not matched: " .. txt)-- 不挡的话各字段全 nil，计数断言变成 nil == nil 恒过
+    return { susp = tonumber(c[1]), sess = tonumber(c[2]), fork = tonumber(c[3]), serial = tonumber(c[4]), nyield = tonumber(c[5]) }
 end
 
 return M

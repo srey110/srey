@@ -1831,7 +1831,7 @@ static int32_t _run_http_extra(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
-// timeout 回调 (协程上下文中执行): 跑完一轮断言, 把 1/0 写入 result_slot
+// timeout 回调 (协程上下文中执行): 跑完一轮断言, 把 1 / 终态 -3 写入 result_slot
 static void _client_timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
     task_router_client_ctx *ctx = coro_get_arg(task);
@@ -1851,7 +1851,7 @@ static void _client_timeout(task_ctx *task, uint64_t sess) {
         ctx->err = 1;
     }
     if (ctx->err) {
-        ATOMIC_SET((atomic_t *)ctx->result, 0);
+        test_fail(ctx->result);
     } else {
         ATOMIC_SET((atomic_t *)ctx->result, 1);
     }

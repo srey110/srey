@@ -6,16 +6,7 @@ local runner = require("test.runner")
 local seri   = require("srey.seri")
 local task   = require("srey.task")-- 起一个安静的 helper task，测"三张登记表全空"那条路径
 
--- 取 coros 汇总行的计数：suspended(coro_sess 里的等待者) / sessions / fork_wait / serial(排队数) / yield total。
--- 发请求的协程自己也挂着一个，只比前后差值
-local function _counts()
-    local ptr, sz = seri.pack("coros")
-    local rdata, rsize = srey.request(srey.task_handle(), REQUEST_TYPE.REQ_DEBUG, ptr, sz, 0)
-    local txt = rdata and srey.ud_str(rdata, rsize) or ""
-    local c = { txt:match("(%d+) suspended, (%d+) sessions, (%d+) fork_wait, (%d+) serial, (%d+) yield total") }
-    assert(c[1], "coros summary not matched: " .. txt)-- 不挡的话各字段全 nil，计数断言变成 nil == nil 恒过
-    return { susp = tonumber(c[1]), sess = tonumber(c[2]), fork = tonumber(c[3]), serial = tonumber(c[4]), nyield = tonumber(c[5]) }
-end
+local _counts = runner.coro_counts
 
 srey.startup(function()
 runner.run(function(t)

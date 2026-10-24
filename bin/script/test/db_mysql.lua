@@ -75,6 +75,11 @@ local function _tls_case(t)
         t:fail("注册不带证书的客户端 TLS 上下文")
         return
     end
+    -- TLS 由协议在握手中途自己升级，不上推 SSLEXCHANGED：挂个计数回调，本段两条 TLS 连接走完应仍为 0
+    local nexch = 0
+    srey.on_ssl_exchanged(function()
+        nexch = nexch + 1
+    end)
     local ms = mysql.new(DB_HOST, 3306, SSL_NOCERT, "admin", "12345678", "test", "utf8mb4", 0)
     if not t:check(ms:connect(), "mysql TLS 连接并完成认证") then
         return
@@ -86,6 +91,12 @@ local function _tls_case(t)
     end
     t:check(vok and 1 == v, "mysql TLS 连接上查询: " .. tostring(v))
     ms:quit()
+    -- 错口令：TLS 上走完整认证，服务端回 ERR，错误号经 erro() 取得到
+    local bad = mysql.new(DB_HOST, 3306, SSL_NOCERT, "admin", "wrong-password", "test", "utf8mb4", 0)
+    t:check(not bad:connect(), "mysql TLS 错口令 connect 返 false")
+    local bmsg, bcode = bad:erro()
+    t:eq(1045, bcode, "mysql 错口令 erro 为 1045: " .. tostring(bmsg))
+    t:eq(0, nexch, "mysql TLS 不上推 SSLEXCHANGED")
 end
 
 srey.startup(function()
@@ -98,6 +109,12 @@ runner.run(function(t)
         return
     end
     t:check(mctx:version() ~= nil and #mctx:version() > 0, "mysql version")
+
+    -- 错口令明文连：服务端要完整认证、明文上不做，干净地返 false（拿不到服务端错误号，1045 在 TLS 用例里验）
+    local bad = mysql.new(DB_HOST, 3306, SSL_NAME.NONE, "admin", "wrong-password", "test", "utf8mb4", 0)
+    t:check(not bad:connect(), "mysql 明文错口令 connect 返 false")
+    t:eq(false, bad.established, "mysql 错口令后 established 为 false")
+    t:check(mctx:ping(), "错口令连接失败后主连接照常")
 
     -- 切库 / ping
     t:check(mctx:selectdb("test"), "selectdb test")

@@ -13,6 +13,8 @@
 // Lua VM 专属命令打到非 Lua task 时的应答；由发起方（各路由 handler 传的 needlua）判定
 #define _DBG_NOTLUA "command not supported in C task."
 #define _DBG_ORIGIN_SCHEME "http://"// 本服务只有明文，同源的 Origin 就是它 + Host
+#define _DBG_STATE_HDR  "X-Srey-Debug"// 改状态的入口要求带的头
+#define _DBG_STATE_BODY "forbidden: X-Srey-Debug: 1 required\n"
 // task 列表收集项（用于 /__alive 与广播）
 typedef struct dbg_task {
     name_t handle;   // task 句柄
@@ -257,8 +259,19 @@ static void _debug_mem(router_req *ctx) {
     _debug_pack_cmd(&cmd, "mem");
     _debug_forward(ctx, &cmd, 1);
 }
+// 改状态的四个入口(GC / 日志级别 / inject / hotfix)额外要求自定义头：旧浏览器跨站表单不带
+// Origin 与 Sec-Fetch-Site，但表单也发不出自定义头，fetch 带它又要先过 CORS 预检
+static int32_t _debug_state_allowed(router_req *ctx) {
+    size_t n = 0;
+    const char *v = router_req_header(ctx, _DBG_STATE_HDR, &n);
+    return (NULL != v && 1 == n && '1' == *v) ? 1 : 0;
+}
 // GET /{handle}/gc：令目标 task 强制 Lua GC，返回释放量
 static void _debug_gc(router_req *ctx) {
+    if (!_debug_state_allowed(ctx)) {
+        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
+        return;
+    }
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "gc");
     _debug_forward(ctx, &cmd, 1);
@@ -278,6 +291,10 @@ static void _debug_coros(router_req *ctx) {
 // GET /{handle}/loglv/{lv}：lv 须 0-4；日志级别是进程级的一份原子变量，就地设掉即可，
 // URL 里的 {handle} 忽略
 static void _debug_loglv(router_req *ctx) {
+    if (!_debug_state_allowed(ctx)) {
+        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
+        return;
+    }
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);
     // max 传 LOGLV_DEBUG，上界检查一并折进去；负号 / 空白 / 尾随垃圾都由 strtou64 挡掉
@@ -293,6 +310,10 @@ static void _debug_loglv(router_req *ctx) {
 }
 // POST /{handle}/inject：body 为 Lua 源码
 static void _debug_inject(router_req *ctx) {
+    if (!_debug_state_allowed(ctx)) {
+        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
+        return;
+    }
     size_t blen = 0;
     void *body = router_req_body(ctx, &blen);
     if (NULL == body || 0 == blen) {
@@ -306,6 +327,10 @@ static void _debug_inject(router_req *ctx) {
 }
 // POST /{handle}/hotfix/{module}：body 为补丁源码
 static void _debug_hotfix(router_req *ctx) {
+    if (!_debug_state_allowed(ctx)) {
+        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
+        return;
+    }
     size_t blen = 0;
     void *body = router_req_body(ctx, &blen);
     if (NULL == body || 0 == blen) {

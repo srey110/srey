@@ -42,6 +42,9 @@
 #define SNPRINTF snprintf // 格式化输出到缓冲区
 #define SWPRINTF swprintf // 宽字符格式化输出
 #define FSTAT    _stat64 // 获取文件状态；结构体与函数同名，64 位长度，>= 2GB 的文件也取得到
+#define FSTAT_FD _fstat64 // 获取已打开 fd 的状态；结构体同 FSTAT
+#define FILENO   _fileno // FILE* 取底层 fd
+#define FSET_CLOEXEC(fp) SET_CLOEXEC(_get_osfhandle(FILENO(fp))) // 标记 FILE* 的底层句柄不被子进程继承
 // 微秒级睡眠（Windows 使用可等待定时器实现）
 #define USLEEP(us)\
     do {\

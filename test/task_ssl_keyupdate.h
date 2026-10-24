@@ -14,9 +14,11 @@
 // 最小发送缓冲，故 B 的 SSL_write 不可能 WANT_WRITE、B 从不进 WPEND_SSL、B 从不停读——
 // A 的挂起写必然能排空，结构上不成环。这条不变式是本用例的承重墙:
 // 谁要加大 ack 或提高 KeyUpdate 频率，先重算这个上界。
-// 于是判据没有二义:B 在 DEADLINE 内收全即通过，任何 close 回调或停住都只可能是接力坏了。
-// *ok 只写 1，调用方须预置 0。evssl 必须是 TLS1.3 专用上下文，
-// 协商不到 1.3 时 evssl_keyupdate 直接失败，用例会退化成普通大流量测试而静默报绿
+// 判据:DEADLINE 内 B 收全 8MB、A 收齐全部 ack，两边收到的内容都没坏，且 A 真读到过 KeyUpdate——
+// ev_keyupdate 只投递、排程失败只落 WARN，投递次数证明不了排上了，故在 evssl 的 SSL_CTX 上挂 msg 回调数 A 读到的条数。
+// 任何 close 回调或停住都只可能是接力坏了。
+// *ok 只写 1，调用方须预置 0。evssl 必须是本用例专用的 TLS1.3 上下文(会被挂上 msg 回调)，
+// 协商不到 1.3 时一次 KeyUpdate 都排不上，用例报失败
 void task_ssl_keyupdate_start(loader_ctx *loader, const char *name, uint16_t port,
     void *evssl, int32_t *ok);
 

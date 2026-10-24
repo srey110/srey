@@ -1887,12 +1887,11 @@ static void test_mongo_txn_stale_after_reconnect(CuTest *tc) {
     bson_ctx doc;
     size_t size = 0;
     void *pack;
-    int32_t i;
     _mongo_test_init(&mongo);
     mongo.sk.skid = 10;
     ZERO(&session, sizeof(session));
     session.mongo = &mongo;
-    for (i = 0; i < UUID_LENS; i++) {
+    for (int32_t i = 0; i < UUID_LENS; i++) {
         session.uuid[i] = (char)(i + 1);
     }
     bson_init(&doc, NULL, 0);
@@ -1944,6 +1943,56 @@ static void test_mongo_txn_stale_after_reconnect(CuTest *tc) {
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, NULL != memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
     FREE(pack);
+
+    // 提交在连着时交出、没等到回包就重连：不算作废，提交可在新连接上重发(服务端按 lsid/txnNumber 裁决)；
+    // CRUD 照旧拒绝。重新 begin 后这个放行随之清掉
+    pack = mongo_pack_committransaction(&session, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+    mongo.sk.skid = 12;// 提交在途时断开、ping 重连
+    CuAssertTrue(tc, 0 == mongo_session_stale(&session));
+    size = 123;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    pack = mongo_pack_committransaction(&session, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL != memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+    FREE(pack);
+    mongo_clear_session(&mongo);
+    FREE(session.options);
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertIntEquals(tc, 0, session.committing);
+    // 连接已断时组的提交不算交出(前一条写可能没等到应答)
+    mongo.sk.fd = INVALID_SOCK;
+    pack = mongo_pack_committransaction(&session, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+    CuAssertIntEquals(tc, 0, session.committing);
+    mongo.sk.fd = 0;
+    // 事务里发过只发不等的写，提交也不算交出
+    mongo_set_flag(&mongo, MORETOCOME);
+    pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+    mongo_clear_flag(&mongo);
+    pack = mongo_pack_committransaction(&session, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+    CuAssertIntEquals(tc, 0, session.committing);
+    CuAssertIntEquals(tc, 1, session.unacked);
+    // 发过只发不等的写之后连接换过：作废，提交不得重发
+    mongo.sk.skid = 13;
+    CuAssertTrue(tc, 0 != mongo_session_stale(&session));
+    size = 123;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_committransaction(&session, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int)size);
+    // 重新 begin 清掉 unacked：之后连着时组的提交照常算交出
+    CuAssertIntEquals(tc, ERR_OK, mongo_begin(&session));
+    CuAssertIntEquals(tc, 0, session.unacked);
+    pack = mongo_pack_committransaction(&session, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+    CuAssertIntEquals(tc, 1, session.committing);
     mongo_clear_session(&mongo);
     FREE(session.options);
     BSON_FREE(&doc);

@@ -27,6 +27,8 @@ void evssl_init(void);
 /// 默认 SSL_VERIFY_NONE（不验证对端）+ security_level=0；适合内网/自签证书场景。
 /// 公网客户端连 trusted CA 时务必显式：
 ///   evssl_verify(ssl, SSL_VERIFY_PEER, NULL)  启用对端证书验证(第三参为自定义校验回调,不用就传 NULL)
+///   evssl_host(ssl, "api.example.com")   发 SNI 并校验证书是签给这个名字的；只开 verify 不设它只验证书链，
+///                                        任何受信 CA 签给别的域名的证书都能通过
 ///   evssl_seclevel(ssl, 2)               禁用 RSA<2048 / MD5 等弱算法
 ///   evssl_min_proto(ssl, TLS1_2_VERSION) 禁用 TLS 小于 1.2
 /// </summary>
@@ -36,14 +38,16 @@ void evssl_init(void);
 /// <param name="key">key文件, NULL 或 "" 不加载</param>
 /// <param name="type">证书类型 SSL_FILETYPE_PEM,SSL_FILETYPE_ASN1</param>
 /// <returns>evssl_ctx；证书路径不存在、权限不足、cert 与 key 不匹配等任一步失败返回 NULL。
-/// 调用方必须判空：本文件其余接口（evssl_sslctx / evssl_verify / evssl_seclevel /
+/// 调用方必须判空：本文件其余接口（evssl_sslctx / evssl_verify / evssl_host / evssl_seclevel /
 /// evssl_min_proto / evssl_setfd / evssl_free）一律裸解引用 evssl，
 /// 而 ev_listen / ev_connect 把 NULL 当作"不使用 SSL"，会静默退化成明文监听</returns>
 evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type);
 /// <summary>
 /// 加载p12证书。
 /// 默认安全选项与 evssl_new 一致（SSL_VERIFY_NONE / security_level=0）；
-/// 公网客户端务必配合 evssl_verify / evssl_seclevel / evssl_min_proto 显式加固。
+/// 公网客户端务必配合 evssl_verify / evssl_host / evssl_seclevel / evssl_min_proto 显式加固。
+/// p12 里附带的 CA 证书只当自己要发出的证书链，不进信任库：建出的上下文信任库是空的，
+/// 开 SSL_VERIFY_PEER 验对端必然失败，要验对端用 evssl_new 带 ca。
 /// </summary>
 /// <param name="p12">p12文件, NULL 或 "" 不加载</param>
 /// <param name="pwd">证书密码</param>
@@ -56,12 +60,23 @@ evssl_ctx *evssl_p12_new(const char *p12, const char *pwd);
 /// <returns>SSL_CTX</returns>
 SSL_CTX *evssl_sslctx(evssl_ctx *evssl);
 /// <summary>
-/// 设置是否验证对端证书（需先加载 CA 证书）
+/// 设置是否验证对端证书（需先加载 CA 证书）。只验证书链，不比对主机名，客户端要比对见 evssl_host
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="mod">SSL_VERIFY_* </param>
 /// <param name="vcb">SSL_verify_cb</param>
 void evssl_verify(evssl_ctx *evssl, int32_t mod, SSL_verify_cb vcb);
+/// <summary>
+/// 设置客户端要连的主机名：握手时作 SNI 发出(IP 不发)，并让证书校验比对它(域名或 IP 都认)。
+/// 比对只在 evssl_verify 开了 SSL_VERIFY_PEER 时才拦得住握手，没开时只发 SNI。
+/// 只给作客户端用的上下文设：拿去监听的话，验客户端证书(mTLS)也会按这个名字比对。
+/// 一个上下文只存一个名字，连不同主机就各注册一个上下文。
+/// 须在该上下文投入使用前设好(同 evssl_verify)，连接建立时不加锁读它
+/// </summary>
+/// <param name="evssl">evssl_ctx</param>
+/// <param name="host">主机名，复制一份存下；NULL 或 "" 清除</param>
+/// <returns>ERR_OK 成功；超过 255 字节(SNI 上限)时 ERR_FAILED，原设置不变</returns>
+int32_t evssl_host(evssl_ctx *evssl, const char *host);
 /// <summary>
 /// 设置 SSL 安全级别（OpenSSL 安全级别 0-5，默认 0）
 /// </summary>
@@ -110,7 +125,7 @@ int32_t evssl_register(const char *name, evssl_ctx *evssl);
 /// <returns>evssl_ctx  NULL失败</returns>
 evssl_ctx *evssl_qury(const char *name);
 /// <summary>
-/// 设置socket为SSL链接
+/// 设置socket为SSL链接；上下文设了主机名(evssl_host)时一并设上
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="fd">socket句柄</param>

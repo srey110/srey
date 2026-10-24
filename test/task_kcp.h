@@ -19,12 +19,12 @@
 //      两个相同 conv,验证第二次因冲突同步返回失败;以 kcp_start(sess=0) 异步建的会话验证
 //      kcp_synsend 立即失败(不进入 _coro_wait)且 copy=0 时不漏释放调用方缓冲区;
 //      kcp_stop 后立即 kcp_synstart 重启,验证新 sess 不被上一会话在途的 CLOSE 击穿;
-//      再 stop 并让另一句柄占走同 conv,重启必被拒,验证失败路径把 stopped/maxpack 与 sess 一并还原
+//      再 stop 并让另一句柄占走同 conv,重启必被拒,验证失败路径把 stopped/maxpack 还原、sess 不动(关闭回调按它认会话)
 //      (stopped 未还原则句柄从"已停"变回"在跑",随后的 synsend 会空等满超时而非立即失败);
-//      最后另开一个 socket,synsend 挂起期间关掉它,验证 CLOSE 唤醒后 kcp->sess 清零、stopped 置 1。
+//      最后另开一个 socket,synsend 挂起期间关掉它,验证 CLOSE 唤醒后 stopped 置 1、sess 不动。
 //      末尾借本组再跑一组对端行为(本 task 内四个 socket):恰好 maxpack(127 片)的消息端到端回显、多 1 字节被拒;
 //      mtu 恰为 KCP_MTU_MAX 生效、大 1 保持默认;冒充源地址的段被丢;0 长度消息不堵住其后的消息;
-//      kcp_handle 改投后消息归新 task,它退出后到的消息被取出丢掉,改回后不会再冒出来。
+//      kcp_bind_task 改投后消息归新 task、本 task 的会话条目随即放掉,它退出后到的消息被取出丢掉,改回后不会再冒出来。
 //      再借本组跑学习模式(本 task 内三个 socket):port 0 起会话,对端从临时端口先发后双向回显正常,
 //      冒充者同 conv 发的被丢;给定 ip 只学端口、通配 ip 连 ip 一起学,两种各跑一遍。
 //   6) idle: 两端停表后先发单向消息再 synsend(收包唤醒),再闲 1.5 秒后 synsend(发送唤醒),最后 stop 已停表的会话。

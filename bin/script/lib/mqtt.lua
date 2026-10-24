@@ -64,6 +64,7 @@ cmqtt.PROP = {
 ---@param netev NET_EV? 事件订阅掩码，默认 0
 ---@return userdata sk 连接标识；失败时 sk.valid 为 false
 function cmqtt.connect(version, sslname, ip, port, netev)
+    srey._check_wait("mqtt.connect")-- 先查：try_connect 建好连接之后再在 wait_connect 里抛，连接就没人管了
     local sk = cmqtt.try_connect(version, sslname or SSL_NAME.NONE, ip, port, netev or 0)
     if not sk.valid then
         return srey.sock_invalid()

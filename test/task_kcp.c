@@ -1,4 +1,5 @@
 ﻿#include "task_kcp.h"
+#include "task_pub.h"
 
 #define KCP_CLOSE_BOGUS_CONV 0xFFFFFFFF // server 从未注册的 conv,_kcp_unpack 查不到会静默丢包,永远不会 echo
 #define KCP_FIFO_N 3 // 并发 synsend 协程数
@@ -55,15 +56,15 @@ static void _sv_net_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t
     ev_send(&task->loader->netev, sk, out, sizeof(conv), 0);
 }
 // UDP 侧 kcp 数据:按来源端口找到会话,原样 echo 回该 client
-static void _sv_net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+static void _sv_net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
     (void)task;
     (void)sk;
     (void)pktype;
-    (void)ip;
     int32_t i;
     if (size >= sizeof(KCP_NOECHO) - 1 && 0 == memcmp(data, KCP_NOECHO, sizeof(KCP_NOECHO) - 1)) {
         return;// 单向:client 只能靠 server 收包唤醒后的 flush 拿到 ACK
     }
+    uint16_t port = netaddr_port(addr);
     for (i = 0; i < _sv_nsess; i++) {
         if (_sv_sess[i].cport == port) {
             kcp_send(&_sv_sess[i].kcp, data, size, 1);
@@ -162,7 +163,7 @@ static void _cli_worker(void *owner, void *arg) {
     kcp_stop(&kcp);
     ev_close(&task->loader->netev, &usk);
 }
-static void _cli_startup(task_ctx *task) {
+static void _cli_startup_run(task_ctx *task) {
     ATOMIC_SET(&_cli_success, 0);
     coro_sleep(task, 300);// 等 server TCP listen / UDP 落地
     int32_t i;
@@ -182,6 +183,11 @@ static void _cli_startup(task_ctx *task) {
     } else {
         LOG_ERROR("kcp test: %d/%d only.", (int32_t)ATOMIC_GET(&_cli_success), KCP_N_CLIENTS);
     }
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _cli_startup(task_ctx *task) {
+    _cli_startup_run(task);
+    test_fail_unfinished(task, _cli_ok);
 }
 void task_kcp_client_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_port, uint16_t sv_udp_port, int32_t *ok) {
     if (NULL == ok) {
@@ -220,7 +226,7 @@ static void _close_stopper(void *owner, void *arg) {
     coro_sleep(task, 200);
     kcp_stop(ctx->kcp);
 }
-static void _close_startup(task_ctx *task) {
+static void _close_startup_run(task_ctx *task) {
     coro_sleep(task, 300);// 等 server TCP listen / UDP 落地
     sock_ctx usk;
     if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, &usk)) {
@@ -253,6 +259,11 @@ static void _close_startup(task_ctx *task) {
         LOG_ERROR("kcp close test failed: echo %p elapse %"PRIu64"ms.", ctx.echo, ctx.elapse);
     }
 }
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _close_startup(task_ctx *task) {
+    _close_startup_run(task);
+    test_fail_unfinished(task, _close_ok);
+}
 void task_kcp_close_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok) {
     if (NULL == ok) {
         return;
@@ -284,7 +295,7 @@ static void _fifo_worker(void *owner, void *arg) {
     void *echo = kcp_synsend(task, ctx->kcp, msg, mlen, 1, &esize);
     ctx->matched = (NULL != echo && esize == mlen && 0 == memcmp(echo, msg, mlen));
 }
-static void _fifo_startup(task_ctx *task) {
+static void _fifo_startup_run(task_ctx *task) {
     coro_sleep(task, 300);// 等 server TCP listen / UDP 落地
     // 1. 建 UDP socket(OS 分配端口)
     sock_ctx usk;
@@ -356,6 +367,11 @@ static void _fifo_startup(task_ctx *task) {
         LOG_INFO("kcp fifo tested: %d/%d concurrent synsend matched.", KCP_FIFO_N, KCP_FIFO_N);
     }
 }
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _fifo_startup(task_ctx *task) {
+    _fifo_startup_run(task);
+    test_fail_unfinished(task, _fifo_ok);
+}
 void task_kcp_fifo_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_port, uint16_t sv_udp_port, int32_t *ok) {
     if (NULL == ok) {
         return;
@@ -383,7 +399,7 @@ static int32_t *_syn_ok;
 static int32_t _peer_cases(task_ctx *task);// 定义在下面"对端行为"一节,借本组跑
 static int32_t _learn_cases(task_ctx *task);// 定义在下面"学习模式"一节,同上
 
-static void _syn_startup(task_ctx *task) {
+static void _syn_startup_run(task_ctx *task) {
     sock_ctx usk;
     if (ERR_OK != task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, 0, &usk)) {
         LOG_ERROR("kcp synstart test udp error.");
@@ -493,6 +509,11 @@ static void _syn_startup(task_ctx *task) {
                   r12, r13, r14, r15, r16, r17, r18, r19);
     }
 }
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _syn_startup(task_ctx *task) {
+    _syn_startup_run(task);
+    test_fail_unfinished(task, _syn_ok);
+}
 void task_kcp_synstart_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok) {
     if (NULL == ok) {
         return;
@@ -557,23 +578,21 @@ static int32_t _peer_bit(const void *data, size_t size) {
     }
     return 1 << 30;
 }
-static void _peer_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+static void _peer_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
     (void)task;
     (void)pktype;
-    (void)ip;
-    (void)port;
+    (void)addr;
     if (sk->skid == _peer_bsk.skid) {
         kcp_send(&_peer_kb, data, size, 1);// b 上原样回显
         return;
     }
     ATOMIC_ADD(&_peer_self, _peer_bit(data, size));
 }
-static void _peer_sink_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+static void _peer_sink_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
     (void)task;
     (void)sk;
     (void)pktype;
-    (void)ip;
-    (void)port;
+    (void)addr;
     ATOMIC_ADD(&_peer_sink, _peer_bit(data, size));
 }
 // 手拼一个 PUSH 段(24 字节头 + 数据,小端,字段顺序同 ikcp 的段编码),从 sk 发到本机 port
@@ -600,6 +619,21 @@ static int32_t _peer_wait(task_ctx *task, atomic_t *got, int32_t bits) {
         coro_sleep(task, 20);
     }
     return 0;
+}
+// 从 coro_dump 末行抠出 sess 条目数;取不到返回 -1(同 test_coro.c 的同名函数)
+static int32_t _co_sessions(coro_ctx *co) {
+    size_t lens = 0;
+    char *dump = coro_dump(co, &lens);
+    int32_t n = -1;
+    char *p = strstr(dump, " sessions");
+    if (NULL != p) {
+        while (p > dump && ' ' != p[-1]) {
+            p--;
+        }
+        n = atoi(p);
+    }
+    FREE(dump);
+    return n;
 }
 // 1) a / b 互为对端,恰好 maxpack(127 片)的消息端到端回显,多 1 字节本地即拒;
 // 2) mtu 恰为 KCP_MTU_MAX 生效、大 1 保持默认(只在本地算 maxpack,不发包);
@@ -673,7 +707,14 @@ static int32_t _peer_cases(task_ctx *task) {
         name_t hsink = sink->handle;
         task_recvedfrom(sink, _peer_sink_recvfrom);
         (void)task_register(sink, NULL, NULL);// 匿名 task 不会重名
-        sink_ok = (ERR_OK == kcp_handle(&kc, hsink));
+        // kcp_synstart 留下一条 keep 条目,转交后 CLOSE 投给 sink,kcp_bind_task 须当场放掉它
+        int32_t s0 = _co_sessions(coro_task_co(task));
+        sink_ok = (ERR_OK == kcp_bind_task(task, &kc, hsink));
+        int32_t s1 = _co_sessions(coro_task_co(task));
+        if (sink_ok && s0 - 1 != s1) {
+            LOG_ERROR("kcp peer: bind_task should release the session entry, sessions %d -> %d.", s0, s1);
+            sink_ok = 0;
+        }
         coro_sleep(task, 100);// 等改投在 a 的 event 线程上落地
         _peer_push(task, &sks[PEER_D], ports[PEER_A], 3, 2, "sink");
         sink_ok = sink_ok && _peer_wait(task, &_peer_sink, PEER_SINK);
@@ -730,7 +771,7 @@ static uint64_t _idle_echo(task_ctx *task, kcp_ctx *kcp, const char *msg) {
     }
     return nowms() - bgts;
 }
-static void _idle_startup(task_ctx *task) {
+static void _idle_startup_run(task_ctx *task) {
     sock_ctx usk;
     uint32_t conv;
     kcp_ctx kcp;
@@ -767,6 +808,11 @@ static void _idle_startup(task_ctx *task) {
         LOG_ERROR("kcp idle test failed: recv wakeup %"PRIu64"ms, send wakeup %"PRIu64"ms.", ea, eb);
     }
 }
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _idle_startup(task_ctx *task) {
+    _idle_startup_run(task);
+    test_fail_unfinished(task, _idle_ok);
+}
 void task_kcp_idle_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_port, uint16_t sv_udp_port, int32_t *ok) {
     if (NULL == ok) {
         return;
@@ -783,11 +829,10 @@ static sock_ctx _learn_ask;
 static kcp_ctx _learn_ka;// a 上的学习会话,收到即回显
 static atomic_t _learn_hits;// a 上收到的消息数
 
-static void _learn_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+static void _learn_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
     (void)task;
     (void)pktype;
-    (void)ip;
-    (void)port;
+    (void)addr;
     if (sk->skid != _learn_ask.skid) {
         return;
     }
@@ -856,11 +901,10 @@ static kcp_ctx _dead_peer;// conv 1 的对端会话:收到即原样回,只用于
 static kcp_ctx _dead_peer2;// conv 2 的对端会话:conv 1 拆掉后才建,回显 KCP_DL2 开头的消息
 
 // 只在 b 上回显:a 上没人等的回显(conv 2 的第二条)也会落到这里,弹回去就来回打乒乓
-static void _dead_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
+static void _dead_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
     (void)task;
     (void)pktype;
-    (void)ip;
-    (void)port;
+    (void)addr;
     if (sk->skid != _dead_bsk.skid) {
         return;
     }
@@ -884,7 +928,7 @@ static void _dead_closed(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t
 // nodelay=2 让重传间隔每次只加 rx_rto/2(不翻倍),20 次约 3.1 秒;不停表也靠这个:停了就不重传、等满超时。
 // 同一 socket a 上另挂 conv 2:对端先不建,它发的一条收不到确认,用库默认配置一直重传(间隔逐次翻倍,判死链要几分钟),
 // conv 1 被拆时它还在堆里;之后再建它的对端,synsend 能拿到回显,说明拆会话没把同 socket 上别的会话弄出堆
-static void _dead_startup(task_ctx *task) {
+static void _dead_startup_run(task_ctx *task) {
     kcp_config fast = { 2, 10, -1, -1, 0, 0, 0 };
     sock_ctx ask, bsk;
     uint16_t aport, bport;
@@ -956,6 +1000,11 @@ static void _dead_startup(task_ctx *task) {
         LOG_ERROR("kcp dead link test failed: warm %p pre %d dead %p closed %d abort %d elapse %"PRIu64"ms"
                   " survived %d.", warm, pre, dead, closed, _dead_abort, elapse, survived);
     }
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _dead_startup(task_ctx *task) {
+    _dead_startup_run(task);
+    test_fail_unfinished(task, _dead_ok);
 }
 void task_kcp_dead_start(loader_ctx *loader, const char *name, int32_t *ok) {
     if (NULL == ok) {

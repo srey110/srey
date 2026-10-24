@@ -58,8 +58,9 @@ typedef void(*_net_close_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uin
 // 连接关闭观察者，见 task_watch_closed；前六个参数同 _net_close_cb
 typedef void(*_net_close_watch_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro,
                                    uint64_t sess, void *arg);
-typedef void(*_net_recvfrom_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, char ip[IP_LENS], uint16_t port,
-                                void *data, size_t size);// UDP 数据接收回调
+// UDP 数据接收回调。源地址原样给出，只在回调内有效：回包直接交给 ev_sendto_addr，要字符串用 netaddr_ip / netaddr_port
+typedef void(*_net_recvfrom_cb)(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr,
+                                void *data, size_t size);
 // task_watch_closed 登记的一项
 typedef struct close_watch {
     _net_close_watch_cb cb;
@@ -110,7 +111,7 @@ struct loader_ctx {
     uint16_t nnet;             // net 线程数量，与 netev.nthreads 相同；monitor 线程启动前就要用，故单独存
     atomic_t stop;             // 非 0 表示调度器应停止
     atomic_t closing;          // 非 0 表示正在广播关闭消息，新注册 task 须立即关闭
-    atomic_t nfreeing;         // 已从 maptasks 摘掉、释放推迟到 net 线程本轮派发之后还没做完的 task 数，见 task_ungrab
+    atomic_t nfreeing;         // 已从 maptasks 摘掉、task_free 还没做完的 task 数(含推迟到 net 线程本轮派发之后的)，见 task_ungrab
     atomic64_t index;          // 轮询工作线程的原子计数器
     worker_ctx *worker;        // 工作线程数组
     tda_ctx *evslow;           // 每个 net 线程一份：绑定 task 单轮慢告警的翻倍阈值，只由该线程读写

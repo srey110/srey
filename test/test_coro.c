@@ -6,6 +6,7 @@
 // 每个用例结束前把挂起的协程全部唤醒，否则 coro_free 收不回它们的栈
 
 #define CO_OVERFLOW_N (COROPOOL_CAP + 2) // 比协程池容量多，逼出回池失败
+#define CO_GROW_N (2 * MAPCO_INIT_CAP) // 远超 mapco 建表容量，广播排空期间逼出扩容
 
 // 在新协程里跑的一段测试动作
 typedef void (*co_step)(coro_ctx *co, void *arg);
@@ -72,6 +73,12 @@ typedef struct co_sdrain {
     co_serial child;   // fork 出来去排同一把锁的子协程
     co_serial late;    // 排在子协程后面的第二个排队者
 }co_sdrain;
+// 广播排空期间扩容用例的参数
+typedef struct co_grow {
+    co_waiter first;           // 被广播唤醒的那个
+    co_waiter again;           // 它醒来后在同一 sess 上再挂一次
+    co_waiter many[CO_GROW_N]; // 它醒来后在别的 sess 上挂一大批
+}co_grow;
 
 static int32_t _seq;// 醒来次序
 
@@ -231,6 +238,71 @@ static void test_coro_wake_all_order(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, r);
     CuAssertIntEquals(tc, 3, c.woke);
     CuAssertIntEquals(tc, 0, end);
+}
+// 被广播唤醒后先在别的 sess 上挂一大批(mapco 扩容)，再回到同一 sess 上挂
+static void _step_grow(coro_ctx *co, void *arg) {
+    co_grow *g = arg;
+    _step_wait(co, &g->first);
+    for (int32_t i = 0; i < CO_GROW_N; i++) {
+        _co_spawn(co, _step_wait, &g->many[i]);
+    }
+    _step_wait(co, &g->again);
+}
+// ④ 广播末尾重新查条目：排空期间 mapco 扩容过，复用旧指针就读到已释放的表(ASan 下报错)；
+// 同一 sess 上重新挂的等待者在，条目不能删
+static void test_coro_wake_all_grow(CuTest *tc) {
+    co_owner o;
+    coro_ctx *co = _co_new(&o, 0);
+    co_grow g;
+    _co_waiter_set(&g.first, 20, 1, 1, 0);
+    _co_waiter_set(&g.again, 20, 1, 0, 0);
+    for (int32_t i = 0; i < CO_GROW_N; i++) {
+        _co_waiter_set(&g.many[i], 100 + (uint64_t)i, 1, 0, 0);
+    }
+    _co_spawn(co, _step_grow, &g);
+    coro_wake_all(co, 20, NULL, NULL);
+    int32_t mid = _co_sessions(co);
+    int32_t r = coro_wake(co, 20, 1, NULL);
+    for (int32_t i = 0; i < CO_GROW_N; i++) {
+        coro_wake(co, 100 + (uint64_t)i, 1, NULL);
+    }
+    int32_t end = _co_sessions(co);
+    int32_t susp = coro_suspended(co);
+    coro_free(co);
+    CuAssertIntEquals(tc, CO_GROW_N + 1, mid);
+    CuAssertIntEquals(tc, ERR_OK, r);
+    CuAssertIntEquals(tc, 1, g.first.woke);
+    CuAssertTrue(tc, 0 != g.again.woke);
+    CuAssertIntEquals(tc, 0, end);
+    CuAssertIntEquals(tc, 0, susp);
+}
+// 连接转走后放掉条目：空的 keep 条目当场删；还有等待者的只清 keep，最后一个被唤醒后随之删；没有条目什么都不做
+static void test_coro_unkeep(CuTest *tc) {
+    co_owner o;
+    coro_ctx *co = _co_new(&o, 0);
+    co_waiter a, b;
+    _co_waiter_set(&a, 21, 1, 1, 0);
+    _co_spawn(co, _step_wait, &a);
+    coro_wake(co, 21, 1, NULL);
+    int32_t kept = _co_sessions(co);
+    coro_unkeep(co, 21);
+    int32_t dropped = _co_sessions(co);
+    _co_waiter_set(&b, 22, 1, 1, 0);
+    _co_spawn(co, _step_wait, &b);
+    coro_unkeep(co, 22);
+    int32_t busy = _co_sessions(co);
+    int32_t r = coro_wake(co, 22, 1, NULL);
+    int32_t end = _co_sessions(co);
+    coro_unkeep(co, 23);
+    int32_t none = _co_sessions(co);
+    coro_free(co);
+    CuAssertIntEquals(tc, 1, kept);
+    CuAssertIntEquals(tc, 0, dropped);
+    CuAssertIntEquals(tc, 1, busy);
+    CuAssertIntEquals(tc, ERR_OK, r);
+    CuAssertIntEquals(tc, 2, b.woke);
+    CuAssertIntEquals(tc, 0, end);
+    CuAssertIntEquals(tc, 0, none);
 }
 static void *_co_mk(void *ud, uint64_t sess, int32_t tag) {
     co_timeout *t = ud;
@@ -659,6 +731,8 @@ void test_coro(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_coro_fifo_head_only);
     SUITE_ADD_TEST(suite, test_coro_keep);
     SUITE_ADD_TEST(suite, test_coro_wake_all_order);
+    SUITE_ADD_TEST(suite, test_coro_wake_all_grow);
+    SUITE_ADD_TEST(suite, test_coro_unkeep);
     SUITE_ADD_TEST(suite, test_coro_expire);
     SUITE_ADD_TEST(suite, test_coro_fork);
     SUITE_ADD_TEST(suite, test_coro_serial);

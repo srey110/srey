@@ -106,7 +106,7 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 /// 返回 NULL(此时 *hsctx 不写入)</returns>
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx);
 /// <summary>
-/// ping包。对端发来的 PING 不会唤醒正在等响应的协程，一律走收包回调，由业务回 PONG；
+/// ping包。对端发来的 PING 不会唤醒等回复的协程，走收包回调(队头是 coro_recv_any 时交给它)，由业务回 PONG；
 /// 不承载子协议时对端回的 PONG 照常可唤醒，发 PING 后可直接等它
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>

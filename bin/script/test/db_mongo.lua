@@ -4,6 +4,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local mongo  = require("lib.mongo")
 local bson   = require("lib.bson")
+local utils  = require("srey.utils")
 local mgmod  = require("srey.mongo")
 
 -- 数据库地址：在 VM 上跑时改成宿主机 IP，只改这一处
@@ -18,6 +19,12 @@ runner.run(function(t)
         return
     end
     t:check(mg:ping(), "mongo ping")
+    -- 错口令：SCRAM 认证失败干净地返 false，主连接不受影响
+    local bad = mongo.new(DB_HOST, 27017, SSL_NAME.NONE,
+                          "test", "admin", "wrong-password", "admin", "SCRAM-SHA-256")
+    t:check(not bad:connect(), "mongo 错口令 connect 返 false")
+    t:eq(false, bad.established, "mongo 错口令后 established 为 false")
+    t:check(mg:ping(), "错口令连接失败后主连接照常")
     -- drop 的返回值不判：集合本就可能不存在（首次跑），服务端回 "ns not found"。
     -- 改用 count 确认起点确实是空的——这才是后面所有条数断言的前提
     mg:drop("srey_test")
@@ -257,6 +264,34 @@ runner.run(function(t)
         t:check(sess:commit(), "empty: 作废的空事务 commit 也本地收尾返回 true")
         t:check(sess:begin(), "empty: 收尾后已解绑，可再 begin")
         t:check(sess:rollback(), "empty: 收尾")
+
+        -- 提交能否跨重连重发(同 C 侧 _txn_commit_retry_flow)。A：提交前连接就断了(同前一条写没等到应答)，
+        -- 组包时不记"已交出"，重连后按作废改发 abort；B：连着时交出、没到服务端就断(组好包后丢掉来模拟)，
+        -- 重连后按同一 lsid / txnNumber 重发，由服务端提交
+        local PCOL = "srey_test_recommit_lua"
+        mg:drop(PCOL)-- 集合本就可能不存在，返回值不判
+        t:check(sess:begin(), "recommit A: txn begin")
+        local pdoc = bson.encode({ { id = 700, name = "recommit" } })
+        local pptr, psz = pdoc:data()
+        t:check(mg:insert(PCOL, pptr, psz), "recommit A: 事务内 insert ok")
+        t:check(srey.sync_close(mg.mongo:sock_id()), "recommit A: 提交前关掉连接")
+        t:eq(false, sess:commit(), "recommit A: 连接已断，commit 返回 false")
+        t:check(mg:ping(), "recommit A: ping 重连")
+        t:check(sess.session:stale(), "recommit A: 断开后才组的提交不算交出，事务作废")
+        t:eq(false, sess:commit(), "recommit A: 作废的事务 commit 改发 abort、返回 false")
+        t:eq(0, mg:count(PCOL, eptr, esz), "recommit A: 事务里那条不可见")
+        t:check(sess:begin(), "recommit B: txn begin")
+        t:check(mg:insert(PCOL, pptr, psz), "recommit B: 事务内 insert ok")
+        local cpack = sess.session:pack_commit()
+        t:check(cpack, "recommit B: 连着时组出 commit 包")
+        utils.ud_free(cpack)
+        t:check(srey.sync_close(mg.mongo:sock_id()), "recommit B: 交出后断开")
+        t:check(mg:ping(), "recommit B: ping 重连")
+        t:eq(false, sess.session:stale(), "recommit B: 提交已交出过，重连后不算作废")
+        t:check(not mg:insert(PCOL, pptr, psz), "recommit B: 重连后事务里的写照旧拒绝")
+        t:check(sess:commit(), "recommit B: 新连接上重发 commit 成功")
+        t:eq(1, mg:count(PCOL, eptr, esz), "recommit B: 事务里那条已提交可见")
+        t:check(mg:drop(PCOL), "recommit: drop")
 
         sess:close()
         -- endSessions 只发不等：服务端若回了包，紧跟的这条 insert 会读到它而拿不到 n=1

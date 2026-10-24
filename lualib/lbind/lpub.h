@@ -132,22 +132,6 @@ void lpub_set_cur_task(lua_State *lua, task_ctx *task);
 /// <returns>当前 task；没登记过（不属于任何 task 的临时 state）返回 NULL</returns>
 task_ctx *lpub_cur_task(lua_State *lua);
 /// <summary>
-/// 从 Lua 全局变量中读取轻量用户数据（light userdata）
-/// </summary>
-/// <param name="lua">Lua 虚拟机状态</param>
-/// <param name="name">全局变量名</param>
-/// <returns>成功返回指针；变量不存在或类型不匹配时返回 NULL</returns>
-void *global_userdata(lua_State *lua, const char *name);
-/// <summary>
-/// 从 Lua 全局变量中读取字符串值并复制到调用方栈缓冲(NUL 结尾)
-/// </summary>
-/// <param name="lua">Lua 虚拟机状态</param>
-/// <param name="name">全局变量名</param>
-/// <param name="buf">调用方提供的输出缓冲</param>
-/// <param name="bufsize">buf 字节数(含 NUL 终止)</param>
-/// <returns>ERR_OK 成功;ERR_FAILED 变量缺失/类型不符/buf 不足</returns>
-int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsize);
-/// <summary>
 /// 校验跟 lightuserdata 一起传进来的字节数。凡是 (指针, 长度) 形状的入口都从这里取长度,
 /// 别再各写一句 (size_t)luaL_checkinteger。下界恒为 0：负数转成 size_t 是天文数字,
 /// 会击穿下游所有"剩余长度 &lt; 需要长度"式的边界判定。

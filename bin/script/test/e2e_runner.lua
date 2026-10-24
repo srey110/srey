@@ -32,6 +32,10 @@ srey.startup(function()
     srey.sleep(1000)
     runner.run(function(t)
         for _, name in ipairs(_SCRIPTS) do
+            -- 已经在关停就别再起后面的脚本(同 test/main.c)：每个最多等满超时，srey -d 又没有看门狗
+            if srey.isclosing() then
+                break
+            end
             local cmd = "python3 " .. _PY_DIR .. "test_" .. name .. ".py 2>&1"
             -- 仿 C 层 main.c LOG_INFO("running %s", pycmd) + 后续 PRINT outbuf 的格式：
             -- 直接 io.write 到 stdout，不走 log；python 输出原样打印

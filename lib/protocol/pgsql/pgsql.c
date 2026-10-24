@@ -140,7 +140,7 @@ int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
 #else
     (void)ssl;
 #endif
-    return _pgsql_startup(ev, ud);
+    return ERR_OK == _pgsql_startup(ev, ud) ? PROT_SSL_OWNED : ERR_FAILED;
 }
 // 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回数据指针，内存去处见末两行。
 // total 是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init_read，别再 +1（int32 加 1 会溢出）。

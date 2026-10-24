@@ -27,10 +27,20 @@
             FREE(data);\
         }\
     } while(0)
+// 交还给池、还没切出去的内存在 ASan 下标成不可访问，交出去前再放开，期间的读写当场报错；其余构建与 MSVC 是空操作
+#if ENABLED_ASAN && defined(CC_GNU)
+    #include <sanitizer/asan_interface.h>
+    #define ASAN_POISON(addr, size) __asan_poison_memory_region((addr), (size))
+    #define ASAN_UNPOISON(addr, size) __asan_unpoison_memory_region((addr), (size))
+#else
+    #define ASAN_POISON(addr, size) ((void)(addr), (void)(size))
+    #define ASAN_UNPOISON(addr, size) ((void)(addr), (void)(size))
+#endif
 
 // 块链：从定长块里顺序切，只往当前块(链头)追加，放不下就开新块、
 // 旧块剩余作废；超过半块的按实际大小单独开一块挂在当前块后面，当前块剩余照用。
 // 切出的内存不能单独释放，清零即空链。
+// ASan 构建下块里还没切出去的部分与每段取整补的尾巴不可访问，写过界当场报错。
 // 使用方：mysql / pgsql 结果集行、mysql 列定义包、redis 回复节点
 // 块链里每块开头的块头，后面紧跟可切的区域
 typedef struct mem_arena_blk {
@@ -120,6 +130,7 @@ static inline void *mem_arena_alloc(mem_arena *arena, size_t lens) {
         && rlens <= arena->cap - arena->off) {
         char *blk = (char *)arena->cur + arena->off;
         arena->off += rlens;
+        ASAN_UNPOISON(blk, lens);
         return blk;
     }
     return _mem_arena_alloc_slow(arena, lens);

@@ -78,6 +78,7 @@ typedef struct pgsql_ctx {
     atomic_t ref;               // 上层 handle 引用计数：0=C 借用(事件层不 free 块)，>0=持有者数
     int32_t established;     // 当前是否连着（建连失败 / quit / 就地关连接都清零）
     uint32_t generation;     // 连接身份代次，建连成功 / 断开各前进一次；判短路见 _serial_connect
+    int32_t managed;         // 调过 *_connect：quit 拆掉执行器后，ping 重连照 connect 把执行器装回去
     size_t recvlens;            // 上次 ReadyForQuery 以来命令阶段已收的消息字节，到 'Z' 记给 size 后清零
     struct task_ctx *task;      // 所属任务上下文
     struct evssl_ctx *evssl;    // SSL 上下文（不使用 SSL 时为 NULL）

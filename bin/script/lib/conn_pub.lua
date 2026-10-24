@@ -85,7 +85,8 @@ function pub:_doconnect(gen)
     return ok
 end
 
----连接保活：探活失败时自动重连，建议在执行命令前调用
+---连接保活：探活失败时自动重连。命令没等到应答只断开、不重连，故在命令失败后或空闲较久后调一次即可，
+---不必每条命令前都调（每次多一个往返）
 ---@return boolean ok 连接可用 true；探活失败时在锁内重连，重连也失败返 false
 function pub:ping()
     return srey.serial_ret(false, self.serial(self._pingreconn, self))

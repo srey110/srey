@@ -2,6 +2,7 @@
 #if WITH_SSL
 #include "containers/sarray.h"
 #include "thread/rwlock.h"
+#include "utils/netaddr.h"
 #include <openssl/pkcs12.h>
 #ifdef OS_WIN
 // 全项目的 OpenSSL 依赖记在这里(loader 必调 evssl_init，本模块必被链入)。库名后缀见 os.h 的 DEPS_LIB_SUFFIX。
@@ -35,6 +36,7 @@
 // SSL上下文封装结构
 struct evssl_ctx {
     SSL_CTX *ssl; // OpenSSL上下文
+    char *host;   // 客户端要连的主机名，NULL 不设(见 evssl_host)
 };
 // SSL证书注册条目（名称 -> evssl_ctx 映射）
 typedef struct certs_ctx {
@@ -58,6 +60,9 @@ static void _evssl_options(evssl_ctx *evssl) {
     SSL_CTX_set_mode(evssl->ssl, SSL_MODE_RELEASE_BUFFERS | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     SSL_CTX_set_max_send_fragment(evssl->ssl, MAX_SSL_SEND_SIZE);
     SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_NONE, NULL);
+    // 服务端开了 SSL_VERIFY_PEER(mTLS)而没有会话上下文 ID 时，对端拿会话恢复会被判握手失败、不退回完整握手；
+    // 会话缓存按 SSL_CTX 各管各的，所有上下文共用一个值无妨，客户端用不到
+    SSL_CTX_set_session_id_context(evssl->ssl, (const unsigned char *)"srey", 4);
 }
 void evssl_init(void) {
     OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
@@ -66,6 +71,7 @@ void evssl_init(void) {
 static evssl_ctx *_evssl_new(void) {
     evssl_ctx *evssl;
     MALLOC(evssl, sizeof(evssl_ctx));
+    evssl->host = NULL;
     SSL_ERRQU_CLEAR();
     evssl->ssl = SSL_CTX_new(TLS_method());
     if (NULL == evssl->ssl) {
@@ -171,8 +177,21 @@ void evssl_seclevel(evssl_ctx *evssl, int32_t level) {
 int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version) {
     return (1 == SSL_CTX_set_min_proto_version(evssl->ssl, version)) ? ERR_OK : ERR_FAILED;
 }
+int32_t evssl_host(evssl_ctx *evssl, const char *host) {
+    size_t lens = EMPTYSTR(host) ? 0 : strlen(host);
+    if (lens > TLSEXT_MAXLEN_host_name) {
+        return ERR_FAILED;
+    }
+    FREE(evssl->host);
+    if (0 != lens) {
+        MALLOC(evssl->host, lens + 1);
+        memcpy(evssl->host, host, lens + 1);
+    }
+    return ERR_OK;
+}
 void evssl_free(evssl_ctx *evssl) {
     SSL_CTX_free(evssl->ssl);
+    FREE(evssl->host);
     FREE(evssl);
 }
 void evssl_pool_init(void) {
@@ -267,6 +286,14 @@ evssl_ctx *evssl_qury(const char *name) {
     rwlock_unlock(_rwlck_certs);
     return ssl;
 }
+// SNI 只发域名(规范不许填 IP)；证书校验 IP 与域名都认
+static int32_t _evssl_set_host(SSL *ssl, const char *host) {
+    if (ERR_OK != is_ipaddr(host)
+        && 1 != SSL_set_tlsext_host_name(ssl, host)) {
+        return ERR_FAILED;
+    }
+    return 1 == SSL_set1_host(ssl, host) ? ERR_OK : ERR_FAILED;
+}
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     if ((uint64_t)fd > (uint64_t)INT_MAX) {
         LOG_ERROR("fd %llu exceeds INT_MAX, SSL_set_fd skipped.", (unsigned long long)fd);
@@ -283,7 +310,31 @@ SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
         SSL_free(ssl);
         return NULL;
     }
+    if (NULL != evssl->host
+        && ERR_OK != _evssl_set_host(ssl, evssl->host)) {
+        SSLCTX_ERRO();
+        SSL_free(ssl);
+        return NULL;
+    }
     return ssl;
+}
+// 对端没发 close_notify 就断了。OpenSSL 3.0 起报成 SSL_ERROR_SSL 加这个 reason；
+// 更早的版本与 LibreSSL 没有该 reason 码，那里一律当协议错，只是分不出截断。
+// 判据取自错误队列，故每个 SSL_* 入口调用前都必须先清干净（见 SSL_ERRQU_CLEAR），残留会被误判成截断
+static inline int32_t _evssl_unexpected_eof(int32_t err) {
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
+    return (SSL_ERROR_SSL == err
+        && SSL_R_UNEXPECTED_EOF_WHILE_READING == ERR_GET_REASON(ERR_peek_error())) ? 1 : 0;
+#else
+    (void)err;
+    return 0;
+#endif
+}
+// 握手时对端一个字节都没发就断了(负载均衡、k8s 的 TCP 探活就这样)：只记 DEBUG，免得按探活频率刷 WARN
+static inline int32_t _evssl_eof_before_hello(SSL *ssl, int32_t err) {
+    return (_evssl_unexpected_eof(err)
+            || (SSL_ERROR_SYSCALL == err && 0 == ERR_peek_error()))
+        && 0 == BIO_number_read(SSL_get_rbio(ssl));
 }
 // 记一条 SSL 失败：SSL_ERROR_SYSCALL 且错误队列为空时原因在系统调用上，打系统错误码，其余打 OpenSSL 错误串
 static void _evssl_log_err(int32_t err) {
@@ -312,6 +363,10 @@ int32_t evssl_tryacpt(SSL *ssl) {
     if (SSL_ERROR_WANT_WRITE == err) {
         return 2;
     }
+    if (_evssl_eof_before_hello(ssl, err)) {
+        LOG_DEBUG("%s", "ssl peer closed before sending any handshake byte.");
+        return ERR_FAILED;
+    }
     _evssl_log_err(err);
     return ERR_FAILED;
 }
@@ -331,18 +386,6 @@ int32_t evssl_tryconn(SSL *ssl) {
     }
     _evssl_log_err(err);
     return ERR_FAILED;
-}
-// 对端没发 close_notify 就断了。OpenSSL 3.0 起报成 SSL_ERROR_SSL 加这个 reason；
-// 更早的版本与 LibreSSL 没有该 reason 码，那里一律当协议错，只是分不出截断。
-// 判据取自错误队列，故每个 SSL_* 入口调用前都必须先清干净（见 SSL_ERRQU_CLEAR），残留会被误判成截断
-static inline int32_t _evssl_unexpected_eof(int32_t err) {
-#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
-    return (SSL_ERROR_SSL == err
-        && SSL_R_UNEXPECTED_EOF_WHILE_READING == ERR_GET_REASON(ERR_peek_error())) ? 1 : 0;
-#else
-    (void)err;
-    return 0;
-#endif
 }
 int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
     *readed = 0;

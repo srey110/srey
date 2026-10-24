@@ -3,6 +3,8 @@
 
 #include "protocol/mqtt/mqtt_pack.h"
 
+#define MQTT_SPLIT_HEAD 256 // 跨节点的包拷出来解析时先用栈上这块，装不下才 MALLOC
+
 // 释放 mqtt_pack_ctx 及其子结构的内存
 void _mqtt_pkfree(void *data);
 // 释放 ud_cxt 中挂载的 mqtt_ctx 上下文

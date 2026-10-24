@@ -3,6 +3,8 @@
 
 #include "containers/sarray.h"
 
+#define MAIL_MSGID_RAND 24 // Message-ID 随机部分的字符数
+
 typedef enum mail_addr_type {
     TO = 0x01, //收件人
     CC,        //抄送

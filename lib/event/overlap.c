@@ -627,10 +627,15 @@ static void _olp_on_recv_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD bytes)
 #endif
 }
 #if WITH_SSL
-// 触发切ssl
+// 触发切ssl；接收缓冲有明文残留时不切，口径同 usock.c 的 _usk_ssl_exchange_trigger
 static int32_t _olp_ssl_exchange_trigger(watcher_ctx *watcher, overlap_tcp_ctx *oltcp,
                                          struct evssl_ctx *evssl, int32_t *sending) {
     *sending = 0;
+    size_t residue = buffer_size(&oltcp->buf_r);
+    if (0 != residue) {
+        LOG_WARN("fd %d has %zu plaintext bytes unconsumed at ssl exchange, close.", (int32_t)oltcp->ol_r.sk.fd, residue);
+        return ERR_FAILED;
+    }
     oltcp->ssl = evssl_setfd(evssl, oltcp->ol_r.sk.fd);
     if (NULL == oltcp->ssl) {
         return ERR_FAILED;
@@ -1218,20 +1223,16 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, evsock_ctx *evsk, DWORD byte
     // 须在此之前 +1 占位，否则 lsn 可能提前被释放
     ATOMIC_ADD(&lsn->ref, 1);
     if (ERR_OK != _olp_post_accept(olacp)) {
-        SOCKET log_fd = lsn->fd;
-        CLOSE_SOCK(fd);
+        // 重投失败只废本槽、退回占位那份 ref；本次已接好的连接照常交出去，
+        // 同 Unix 资源耗尽时只停接新连接、不丢已接的。本槽原有那份 ref 仍由下面的交付路径归还
         ATOMIC_SET_RELEASE(&olacp->dead, 1);
         _olp_ndead_add(acpctx->ev, lsn, 1);
-        int32_t old = ATOMIC_ADD(&lsn->ref, -2);
-        if (2 == old) {
-            _iocp_freelsn(lsn);
-        } else if (3 == old) {
-            LOG_ERROR("AcceptEx slot failed to re-post, listener fd %d.", (int32_t)log_fd);
+        ATOMIC_ADD(&lsn->ref, -1);
+        if (0 == ATOMIC_GET(&lsn->remove)) {
+            LOG_ERROR("AcceptEx slot failed to re-post, listener fd %d.", (int32_t)lsn->fd);
         }
-        return;
-    }
-    // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd，返回后需补关
-    if (0 != ATOMIC_GET(&lsn->remove)) {
+    } else if (0 != ATOMIC_GET(&lsn->remove)) {
+        // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd，返回后需补关
         _olp_take_close(&olacp->overlap.sk.fd);
     }
     if (acpfail) {
@@ -1265,6 +1266,9 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
     evsock_ctx *evsk = pool_pop(&watcher->pool, &skargs, 0);
     overlap_tcp_ctx *oltcp = UPCAST(evsk, overlap_tcp_ctx, ol_r);
     BIT_SET(oltcp->status, STATUS_ESTABLISHED);// accept 出来的连接已连通
+    if (BIT_CHECK(oltcp->ud.flags, UD_SESS)) {
+        oltcp->ud.sess = oltcp->ol_r.sk.skid;// 在收第一个包之前设好，事后再设的话先到的包会落到回调上
+    }
     _evpub_sockel_add(watcher, evsk);
 #if WITH_SSL
     if (NULL != lsn->evssl) {// 默认启用ssl

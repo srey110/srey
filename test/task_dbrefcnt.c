@@ -1,4 +1,5 @@
 ﻿#include "task_dbrefcnt.h"
+#include "task_pub.h"
 
 typedef struct dbrefcnt_args {
     int32_t *ok;
@@ -53,7 +54,7 @@ DBREFCNT_CASE(mongo, mongo_ctx,
 DBREFCNT_CASE(smtp, smtp_ctx,
     smtp_init(ctx, DBREFCNT_BADIP, 25, NULL, "u", "p"), smtp_try_connect)
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     dbrefcnt_args *arg = (dbrefcnt_args *)coro_get_arg(task);
     if (ERR_OK != _refcnt_mysql(task)
         || ERR_OK != _refcnt_pgsql(task)
@@ -63,6 +64,11 @@ static void _startup(task_ctx *task) {
     }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("db refcount paired.");
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((dbrefcnt_args *)coro_get_arg(task))->ok);
 }
 void task_dbrefcnt_start(loader_ctx *loader, const char *name, int32_t *ok) {
     if (NULL == ok) {

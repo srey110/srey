@@ -35,7 +35,6 @@
 #endif
 #define NODEPOOL_CAP ONEK
 #define NODEPOOL_QUE_CAP 64 // fork_item / serial_node 只在排队期间存在，同时排着的远到不了 NODEPOOL_CAP
-#define MAPCO_INIT_CAP 32 // mapco 建表容量,同时是缩容地板,见 coro_new
 #define COROPOOL_MIN_KEEP 4
 
 // 单个挂起协程的等待信息。超时堆节点直接嵌在这里:一个等待者一个对象,
@@ -157,7 +156,7 @@ static inline void _coro_cosess_set(coro_ctx *co, mco_coro *coro, uint64_t sess,
     list_push_tail(&cur->waiters, &coinfo->node);
 }
 // 从 mapco 中删除指定 sess 的记录。hash 由调用方用 _CORO_SESS_HASH_OF 算好传进来:
-// 三个调用点都是刚 get 过同一个 sess,不必再算一遍
+// 调用点都是刚 get 过同一个 sess,不必再算一遍
 static inline void _coro_cosess_delete(coro_ctx *co, uint64_t sess, uint64_t hash) {
     coro_sess key;
     key.sess = sess;
@@ -396,6 +395,20 @@ void coro_wake_all(coro_ctx *co, uint64_t sess, void *payload, void *spawn) {
     cofind = coro_map_get_with_hash(co->mapco, &key, hash);
     if (NULL != cofind && list_empty(&cofind->waiters)) {
         _coro_cosess_delete(co, sess, hash);
+    }
+}
+void coro_unkeep(coro_ctx *co, uint64_t sess) {
+    coro_sess key;
+    key.sess = sess;
+    uint64_t hash = _CORO_SESS_HASH_OF(sess);
+    coro_sess *cofind = coro_map_get_with_hash(co->mapco, &key, hash);
+    if (NULL == cofind) {
+        return;
+    }
+    if (list_empty(&cofind->waiters)) {
+        _coro_cosess_delete(co, sess, hash);
+    } else {
+        cofind->keep = 0;
     }
 }
 // 超时绝大多数等不到触发就被正常唤醒摘走，故放调度器私有的堆：插删不用锁，由 owner 定时来扫

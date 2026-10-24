@@ -13,7 +13,7 @@
 // mpack 只在本次回调内有效——下一个结果集的续读会让它失效,要留数据请就地取走
 // (mysql_reader_init 会把解析结果的所有权转移给调用方,拿走后不受此限)。
 // 返回 ERR_FAILED 不中断循环,剩余包仍会读完;它只决定 mysql_query / mysql_stmt_execute
-// 最终报成功还是失败。回调跑在连接的串行化临界区内,允许在其中调 mysql_quit 销毁本连接。
+// 最终报成功还是失败。回调跑在连接的串行化临界区内,除 mysql_quit 外不得挂起、不得在本连接上发别的命令。
 // 交给回调前本包已 mysql_record;逐条取计数与错误用 mysql_pack_*,连接级 getter 只留最后一个 OK / ERR 包的
 typedef int32_t (*mysql_result_cb)(mpack_ctx *mpack, void *udata);
 
@@ -44,7 +44,8 @@ struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int3
 int32_t wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot,
     int32_t netev, sock_ctx *sk, struct ws_secprots_ctx **spctx);
 /// <summary>
-/// redis链接
+/// redis链接。RESP3 带外推送(invalidate / message / pmessage / smessage)不算命令回复:不唤醒 coro_send / coro_recv
+/// 的等待者,经 task_recved 投递(或用 coro_recv_any 收);订阅类确认照常算回复
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="evssl">evssl_ctx</param>
@@ -73,7 +74,8 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 /// <returns>ERR_OK 成功；库名超 MYSQL_DB_LENS(256) 字节时不发包直接返 ERR_FAILED</returns>
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database);
 /// <summary>
-/// ping
+/// 探活，失败即在锁内重连。调过 mysql_connect 的连接被 mysql_quit 拆掉执行器后，本函数照 mysql_connect
+/// 重建连接并装回执行器；经 mysql_try_connect 自建的连接重连后仍不受管。smtp_ping / pgsql_ping / mongo_ping 同此
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>ERR_OK 成功</returns>
@@ -129,7 +131,7 @@ int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt);
 /// <param name="stmt">mysql_stmt_ctx，调用后失效</param>
 void mysql_stmt_close(mysql_stmt_ctx *stmt);
 /// <summary>
-/// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
+/// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。之后再 ping 会把连接与执行器一起重建（见 mysql_ping）。
 /// 先排在在途命令之后再退出，不把别人半途的等待打断。**须在协程内调用**（内部要等断连确认）。
 /// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
 /// 没有执行器的连接（未经 *_connect 建链）不排队直接断连——那种连接上的命令本就不串行。
@@ -153,7 +155,7 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
 /// <param name="smtp">smtp_ctx</param>
 void smtp_quit(smtp_ctx *smtp);
 /// <summary>
-/// ping测试
+/// 探活，失败即在锁内重连；quit 之后的处置同 mysql_ping
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 /// <returns>ERR_OK 成功</returns>
@@ -185,7 +187,8 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 /// <summary>
 /// 在独立 TCP 连接上向服务端发送 CancelRequest，中止当前正在执行的查询。
 /// 服务端处理后主动关闭该连接、无响应；原连接会收到错误回包。
-/// 有意不参与命令串行化（排队等锁就等到查询自己结束了），也不往原连接写任何字节
+/// 有意不参与命令串行化（排队等锁就等到查询自己结束了），也不往原连接写任何字节。
+/// 这条连接一律明文：原连接走 TLS 时，BackendKeyData 的 pid 与 key 会以明文上线路(打一行 DEBUG)
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针，须已成功连接（pid/key 已初始化）</param>
 /// <returns>ERR_OK 发送成功，ERR_FAILED 连接未建立或网络失败</returns>
@@ -196,14 +199,14 @@ int32_t pgsql_cancel(pgsql_ctx *pg);
 /// <param name="pg">pgsql_ctx</param>
 void pgsql_quit(pgsql_ctx *pg);
 /// <summary>
-/// 选择数据库（断开重连，库名在重连握手时生效）
+/// 选择数据库（断开重连，库名在重连握手时生效）。pgsql_quit 之后调，同 pgsql_ping 照 pgsql_connect 重建、装回执行器
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="database">数据库</param>
 /// <returns>ERR_OK 成功；库名超 63 字节时不断连直接返 ERR_FAILED，原连接与原库名均保持不变</returns>
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database);
 /// <summary>
-/// ping
+/// 探活，失败即在锁内重连；quit 之后的处置同 mysql_ping
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <returns>ERR_OK 成功</returns>
@@ -214,7 +217,8 @@ int32_t pgsql_ping(pgsql_ctx *pg);
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="sql">SQL语句</param>
-/// <returns>NULL 失败（含 SQL 使消息体超 INT32_MAX、组包失败：此时不发包，连接不动）；
+/// <returns>NULL 失败（含 SQL 使消息体超 INT32_MAX、组包失败：此时不发包，连接不动；
+/// 含 COPY FROM STDIN：须走 pgsql_copy_in，这里会发 CopyFail 中止它）；
 /// pgpack_ctx 归消息系统所有，只在本协程下次挂起前有效，勿释放</returns>
 pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql);
 /// <summary>
@@ -235,7 +239,7 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
 /// <param name="bind">pgsql_bind_ctx；实际绑定个数须等于 pgsql_bind_init 声明的 nparam，不符即失败。
 /// 与预处理语句声明的个数是否相符不在本地校验，见 pgsql_pack_stmt_execute</param>
 /// <param name="resultformat">pgpack_format</param>
-/// <returns>NULL 失败；pgpack_ctx 的所有权与有效期同 pgsql_query</returns>
+/// <returns>NULL 失败（预处理的是 COPY FROM STDIN 时断开连接并返回 NULL）；pgpack_ctx 的所有权与有效期同 pgsql_query</returns>
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat);
 /// <summary>
 /// 预处理关闭
@@ -297,7 +301,7 @@ void mongo_quit(mongo_ctx *mongo);
 /// <returns>NULL 失败；mgopack_ctx 归消息系统所有，只在本协程下次挂起前有效，勿释放</returns>
 mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options, size_t optlens);
 /// <summary>
-/// ping 命令
+/// 探活，失败即在锁内重连；quit 之后的处置同 mysql_ping
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <returns>ERR_OK 成功</returns>
@@ -487,9 +491,10 @@ void mongo_freesession(mongo_session *session);
 /// 串行化只保证单条命令原子、不保证事务原子：别人的命令挤在 begin 与 commit/rollback 之间时，
 /// 组包侧照样给它附上本事务的 lsid/txnNumber；要隔离须在 begin..commit 外自己套一层 coro_serial，
 /// 或给事务用独占连接。
-/// 事务进行中连接换过（断开后重连）即作废（mongo_session_stale）：此后带事务上下文的命令一律组包失败，
+/// 事务进行中连接换过（断开后重连）即作废：此后带事务上下文的命令一律组包失败，
 /// 组包后排队等锁期间才换的，拿到锁后同样不发、按失败返回（见 mongo_txn_moved）。
-/// 绑定留到 commit/rollback 收尾，二者都在新连接上发 abortTransaction 让服务端当场中止、放锁；要继续须重新 begin
+/// 绑定留到 commit/rollback 收尾，二者都在新连接上发 abortTransaction 让服务端当场中止、放锁（提交已交出过的 commit
+/// 除外，照常重发，见 mongo_commit）；要继续须重新 begin
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <returns>ERR_OK 成功；该连接上已有别的 session 处于事务中（含已作废还没收尾的）时返回 ERR_FAILED，
@@ -501,9 +506,11 @@ int32_t mongo_begin(mongo_session *session);
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
-/// <returns>ERR_OK 成功。组包/网络失败时事务状态原样保留，可重试；服务端有响应即释放事务状态
-/// （命令本身失败也不再可重试），等回包期间同一 session 已重新 mongo_begin 的除外，那份状态归新事务。
-/// 事务已随重连作废时不能提交（空事务除外，照上面本地收尾）：改发 abortTransaction 了结它（服务端有响应即解绑、释放状态），返回 ERR_FAILED。
+/// <returns>ERR_OK 成功。组包/网络失败时事务状态原样保留，可重试。提交已交给连着的连接、本事务又没发过只发不等的写时，
+/// 网络失败后先 mongo_ping 重连再调本函数：在新连接上按同一事务重发提交，由服务端裁决（已提交的照样返回成功）；
+/// 不满足的（如前一条写没等到应答、连接已断）重连后按作废处理。
+/// 服务端有响应即释放事务状态（命令本身失败也不再可重试），等回包期间同一 session 已重新 mongo_begin 的除外，那份状态归新事务。
+/// 事务已随重连作废时不能提交（空事务、提交已交出过的除外）：改发 abortTransaction 了结它（服务端有响应即解绑、释放状态），返回 ERR_FAILED。
 /// 连接已不再绑定该 session（被 mongo_clear_session 清过，或被别的 session 接管）时同样不发送、
 /// 返回 ERR_FAILED，本地事务状态原样保留。两种情形要再开事务都须重新 mongo_begin（会递增 txnNumber）</returns>
 int32_t mongo_commit(mongo_session *session, char *options, size_t optlens);
@@ -545,5 +552,14 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
 /// <param name="size">出参:响应数据长度</param>
 /// <returns>响应数据(仅在下次 yield 前有效,需保留请自行拷贝);超时或失败返回 NULL</returns>
 void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, int32_t copy, size_t *size);
+/// <summary>
+/// 协程 task 版的 kcp_handle:转交成功后放掉本 task 在该会话 sess 上的等待条目(同 coro_bind_task)。
+/// 转交后 RECVFROM 与 CLOSE 都投给新 task,不放掉的话本 task 的条目再没有路径能删
+/// </summary>
+/// <param name="task">本协程 task,须是协程 task(取它的调度器放条目)</param>
+/// <param name="kcp">kcp_ctx</param>
+/// <param name="handle">新的目标 task 句柄</param>
+/// <returns>同 kcp_handle</returns>
+int32_t kcp_bind_task(task_ctx *task, struct kcp_ctx *kcp, name_t handle);
 
 #endif//CORO_UTILS_H_

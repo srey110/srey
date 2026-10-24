@@ -4,6 +4,7 @@
 
 typedef struct task_mysql_args {
     uint16_t port;
+    int32_t nexch;// 收到 SSLEXCHANGED 的次数，mysql 自己升级 TLS，应恒为 0
     int32_t *ok;
     char host[64];
     char user[64];
@@ -11,6 +12,7 @@ typedef struct task_mysql_args {
     char database[64];
     mysql_ctx mysql;
     mysql_ctx mysql_ssl;// TLS 那一段另建的连接
+    mysql_ctx mysql_bad;// 错口令建链用
 }task_mysql_args;
 // 多语句逐条计数用例的记录：各包按包取的计数，以及回调里连接级 getter 与本包一致的次数
 typedef struct {
@@ -426,12 +428,104 @@ static int32_t _ssl_query(task_ctx *task, task_mysql_args *arg) {
         LOG_ERROR("mysql ssl: select error.");
         return ERR_FAILED;
     }
+    // TLS 由 mysql 协议自己升级(PROT_SSL_OWNED)，task 不该收到 SSLEXCHANGED
+    if (0 != arg->nexch) {
+        LOG_ERROR("mysql ssl: SSLEXCHANGED delivered %d time(s), want 0.", arg->nexch);
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 #endif
+// 没有等待者的 SSLEXCHANGED 会落到这里，只计数
+static void _on_ssl_exchanged(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client) {
+    (void)sk;
+    (void)pktype;
+    (void)client;
+    ((task_mysql_args *)coro_get_arg(task))->nexch++;
+}
+// 强制断连后 ping 重连：skid 换过、回到原库查询照常。断连前 prepare 的语句属于旧连接，
+// execute / reset 都得在本地拒掉、不发包(发了服务端必回包：回调会被调到、错误码会被记下)
+static int32_t _reconnect(task_ctx *task, mysql_ctx *mysql) {
+    mysql_stmt_ctx *stmt = mysql_stmt_prepare(mysql, "select 1 as v");
+    if (NULL == stmt) {
+        LOG_ERROR("mysql reconnect: stmt_prepare error.");
+        return ERR_FAILED;
+    }
+    uint64_t oldskid = mysql->client.sk.skid;
+    ev_close(&task->loader->netev, &mysql->client.sk);
+    for (int32_t i = 0; i < 50 && !sock_is_invalid(&mysql->client.sk); i++) {// 等 CLOSE 处理完(最多约 1 秒)，ping 走"连接已失效"那支
+        coro_sleep(task, 20);
+    }
+    if (ERR_OK != mysql_ping(mysql)
+        || oldskid == mysql->client.sk.skid) {
+        LOG_ERROR("mysql reconnect: ping did not reconnect.");
+        mysql_stmt_close(stmt);
+        return ERR_FAILED;
+    }
+    mysql_erro_clear(mysql);
+    _mres_rec rec = { 0, { 0 }, { 0 } };
+    int32_t exrtn = mysql_stmt_execute(stmt, NULL, _cb_record, &rec);
+    int32_t rsrtn = mysql_stmt_reset(stmt);
+    int32_t code = 0;
+    (void)mysql_erro(mysql, &code);
+    mysql_stmt_close(stmt);// skid 已变，只做本地释放
+    if (ERR_OK == exrtn
+        || ERR_OK == rsrtn
+        || 0 != rec.n
+        || 0 != code) {
+        LOG_ERROR("mysql reconnect: stale stmt must be rejected locally (exec=%d reset=%d n=%d code=%d).",
+                  exrtn, rsrtn, rec.n, code);
+        return ERR_FAILED;
+    }
+    return _select_iterate(mysql, 3);
+}
+// quit 拆掉执行器后 ping：经 mysql_connect 建的连接照 connect 重建并装回执行器，多协程的命令照常排队
+static int32_t _quit_ping(mysql_ctx *mysql) {
+    mysql_quit(mysql);
+    if (NULL != mysql->serial) {
+        LOG_ERROR("mysql quit_ping: quit should release the executor.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != mysql_ping(mysql)
+        || NULL == mysql->serial) {
+        LOG_ERROR("mysql quit_ping: ping after quit must reconnect and re-install the executor.");
+        return ERR_FAILED;
+    }
+    return _concurrent_query(mysql);
+}
+// 错口令建链：返回失败、本次新建的执行器已就地拆掉。走 TLS 时服务端做完整认证、回 ERR 1045 记到 mysql_erro；
+// 明文时 caching_sha2 要完整认证而本实现不做 RSA，客户端自己判失败，没有错误码可查。
+// 排在明文重连之后：万一失败的认证清了服务端口令缓存，也不拖累明文的快速认证
+static int32_t _auth_fail(task_ctx *task, task_mysql_args *arg) {
+    struct evssl_ctx *evssl = NULL;
+#if WITH_SSL
+    evssl = evssl_qury("clientnull");
+#endif
+    if (ERR_OK != mysql_init(&arg->mysql_bad, arg->host, arg->port, evssl,
+                             arg->user, "srey-wrong-password", arg->database, "utf8mb4", 0)) {
+        LOG_ERROR("mysql auth fail: mysql_init error.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK == mysql_connect(task, &arg->mysql_bad)) {
+        LOG_ERROR("mysql auth fail: connect with a wrong password succeeded.");
+        mysql_quit(&arg->mysql_bad);
+        return ERR_FAILED;
+    }
+    int32_t code = 0;
+    (void)mysql_erro(&arg->mysql_bad, &code);
+    if (NULL != arg->mysql_bad.serial
+        || (NULL != evssl && 1045 != code)
+        || 0 != arg->nexch) {
+        LOG_ERROR("mysql auth fail: executor %p, code %d (want 1045 over TLS), SSLEXCHANGED %d.",
+                  (void *)arg->mysql_bad.serial, code, arg->nexch);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_mysql_args *arg = (task_mysql_args *)coro_get_arg(task);
+    task_ssl_exchanged(task, _on_ssl_exchanged);
     ATOMIC_SET((atomic_t *)arg->ok, -2);// 正在连：汇总 task 不把它当终态，连不上再回 0
 #if WITH_SSL
     // 成败等明文连上之后再算：docker 没起时两条都连不上，得按"没连上"收场
@@ -465,13 +559,17 @@ static void _startup(task_ctx *task) {
         || ERR_OK != mysql_selectdb(&arg->mysql, arg->database)) {
         int32_t code = 0;
         const char *msg = mysql_erro(&arg->mysql, &code);
-        LOG_ERROR("mysql selectdb error: %s (code=%d)", msg, code);
+        if (!task_isclosing(task)) {// 收尾早退不算失败
+            LOG_ERROR("mysql selectdb error: %s (code=%d)", msg, code);
+        }
         mysql_quit(&arg->mysql);
         return;
     }
     if (task_isclosing(task)
         || ERR_OK != mysql_ping(&arg->mysql)) {
-        LOG_ERROR("mysql ping error.");
+        if (!task_isclosing(task)) {// 收尾早退不算失败
+            LOG_ERROR("mysql ping error.");
+        }
         mysql_quit(&arg->mysql);
         return;
     }
@@ -527,9 +625,32 @@ static void _startup(task_ctx *task) {
         mysql_quit(&arg->mysql);
         return;
     }
+    if (task_isclosing(task)
+        || ERR_OK != _reconnect(task, &arg->mysql)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _quit_ping(&arg->mysql)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _auth_fail(task, arg)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
     mysql_quit(&arg->mysql);
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("mysql tested.");
+}
+// 各失败出口直接 return、槽停在 -1：走完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    task_mysql_args *arg = (task_mysql_args *)coro_get_arg(task);
+    if (!task_isclosing(task) && -1 == (int32_t)ATOMIC_GET((atomic_t *)arg->ok)) {
+        test_fail(arg->ok);
+    }
 }
 
 void task_mysql_start(loader_ctx *loader, const char *name,

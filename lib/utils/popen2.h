@@ -25,7 +25,9 @@ typedef struct popen_ctx {
 /// Windows 直接交给 CreateProcess、不经 cmd.exe，要管道或内建命令须自己写成 "cmd /c ..."。
 /// 子进程自成进程组（Windows 放进作业对象）；POSIX 上 SIGPIPE 恢复默认处置，
 /// 不接管的 stdin 接 /dev/null（Windows 沿用本进程的），不接管的 stdout / stderr 沿用本进程的。
-/// Windows 上子进程只继承交给它的标准流句柄，本进程别的句柄一个也不带过去
+/// Windows 上子进程只继承交给它的标准流句柄，本进程别的句柄一个也不带过去。反过来挡不住：
+/// 同一时刻本进程别处不带白名单起子进程（CRT 的 _popen / system 都是）会带走这里正在建的子进程端，
+/// 本子进程退出后要等那个进程也退出才读到 EOF
 /// </summary>
 /// <param name="ctx">popen_ctx，函数内先整体清零；失败后仍可安全调 popen_free</param>
 /// <param name="cmd">命令</param>

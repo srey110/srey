@@ -1,11 +1,12 @@
 ﻿#include "task_v6only.h"
+#include "task_pub.h"
 
 typedef struct task_v6only_args {
     uint16_t port;
     int32_t *ok;
 }task_v6only_args;
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_v6only_args *arg = (task_v6only_args *)coro_get_arg(task);
     uint64_t lsnid;
     sock_ctx csk;
@@ -35,6 +36,11 @@ static void _startup(task_ctx *task) {
     ev_unlisten(&task->loader->netev, lsnid);
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("v6only tested.");
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_v6only_args *)coro_get_arg(task))->ok);
 }
 
 void task_v6only_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

@@ -18,6 +18,11 @@ local MSG      = "kcp_hello_lua"
 local ASYNC_MSG = "kcp_async_lua" -- 发给 async 会话的消息,server 按内容挑它回显
 local LEARN_MSG = "kcp_learn_lua" -- 发给学习模式会话的消息,同上
 
+-- coro_sess 的条目数：只比前后差值
+local function _sessions()
+    return runner.coro_counts().sess
+end
+
 srey.startup(function()
 runner.run(function(t)
     -- server / client 两个 UDP socket(不同端口,各自独立 conv 空间)
@@ -33,8 +38,12 @@ runner.run(function(t)
 
     -- on_closed 按第 5 参 sess 记下 erro:会话级关闭的 sess 是 k.sess,socket 本身关闭的是 sk.skid
     local closed = {}
-    srey.on_closed(function(_, _, _, erro, sess)
+    local closed_sk = {}
+    srey.on_closed(function(_, sk, _, erro, sess)
         closed[sess] = erro
+        if nil == closed_sk[sess] then
+            closed_sk[sess] = sk
+        end
     end)
     -- on_closed 排在被唤醒的等待者之后跑,每 50ms 看一次,至多 1 秒
     local function wait_closed(sess)
@@ -69,7 +78,19 @@ runner.run(function(t)
     -- 消息都被取出丢弃(限频告警)而绑定层照样返 true。用一个必然没分配过的句柄验探测生效
     -- (INVALID_TNAME 是 0,加个大偏移确保不是靠旧那道 0 判定过的)
     t:eq(false, cli_kcp:handle(srey.task_handle() + 1000000), "不存在的数字句柄被拒")
+    -- 同步 start 留下一条 keep 条目；handle 成功即放掉它(转交给别的 task 后本 task 再没路径能删，给自己也照放)
+    -- 上面 dup_kcp 那次失败的 start 会补一条合成 CLOSE 删它的占位条目：等条目数稳定了再取基线
+    local s0 = _sessions()
+    for _ = 1, 50 do
+        srey.sleep(10)
+        local s = _sessions()
+        if s == s0 then
+            break
+        end
+        s0 = s
+    end
     t:eq(true, cli_kcp:handle(srey.task_handle()), "本 task 句柄仍可设")
+    t:eq(s0 - 1, _sessions(), "handle 之后本 task 在该会话上的条目已放掉")
 
     -- config 字段越界须报错并点出字段名,不能静默截断成另一个合法值：
     -- mtu = 2^32+1480 截成 int32 正好是 1480,ikcp_setmtu 会成功且不打 WARN,
@@ -121,7 +142,7 @@ runner.run(function(t)
     local async_kcp
     local learn_kcp
     local learn_hits = 0
-    srey.on_recvedfrom(function(pktype, sk, ip, port, data, size)
+    srey.on_recvedfrom(function(pktype, sk, addr, data, size)
         if sk.fd == sv_sk.fd then
             if learn_kcp and #LEARN_MSG == size and LEARN_MSG == srey.ud_str(data, size) then
                 learn_hits = learn_hits + 1
@@ -181,6 +202,10 @@ runner.run(function(t)
                 t:eq(dsess, dead_kcp.sess, "CLOSE 后 k.sess 保留")
                 t:eq(CLOSE_TYPE.LOCAL, wait_closed(dsess), "socket 关闭逐会话补的 CLOSE:on_closed 第 5 参是 k.sess")
                 t:check(nil ~= wait_closed(dskid), "socket 本身关闭:on_closed 第 5 参是 skid")
+                -- 会话 CLOSE 带的是仍在用的 UDP socket，不该摘它的 sk 缓存；摘了的话下面那条
+                -- socket 级 CLOSE 会按同一 skid 再造一个 userdata
+                t:check(rawequal(closed_sk[dsess], closed_sk[dskid]),
+                        "会话 CLOSE 未摘 UDP socket 的 sk 缓存(两条消息是同一 userdata)")
                 t:eq(false, dead_kcp:handle(srey.task_handle()), "CLOSE 后 handle 被 stopped 守卫拒绝")
                 srey.set_netread_timeout(saved_net)
             else

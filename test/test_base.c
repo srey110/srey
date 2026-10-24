@@ -9,12 +9,18 @@
 #define MEMSTR_HAY 48// memstr 随机比对用例的最大源长度
 #define MEMSTR_ROUNDS 6000// memstr 随机比对每种 ncs 的轮数
 
-// 隔 20ms(长于日志线程浅睡的 10ms)两次读数相同即算静止，最多等约 1 秒
+// atomic64_t 放进结构体时的偏移：GNU 编译器下它带 aligned(8)，32 位构建里也得是 8
+typedef struct _t_a64_align {
+    char c;
+    atomic64_t a;
+}_t_a64_align;
+
+// 隔两倍 LOG_LINGER_MS(长于日志线程浅睡时长)两次读数相同即算静止，最多等 50 轮
 void test_mem_settle(void) {
     uint64_t a0, f0, a1, f1;
     mem_stat(&a1, &f1);
     for (int32_t i = 0; i < 50; i++) {
-        MSLEEP(20);
+        MSLEEP(2 * LOG_LINGER_MS);
         a0 = a1;
         f0 = f1;
         mem_stat(&a1, &f1);
@@ -310,6 +316,8 @@ static void test_atomic32(CuTest *tc) {
  * ----------------------------------------------------------------------- */
 static void test_atomic64(CuTest *tc) {
     atomic64_t v = 0;
+    // GNU 编译器下 atomic64_t 带 aligned(8)：32 位构建里放进结构体也得 8 字节对齐
+    CuAssertIntEquals(tc, 8, (int)offsetof(_t_a64_align, a));
 
     ATOMIC64_SET(&v, 1000000000LL);
     CuAssertTrue(tc, 1000000000LL == ATOMIC64_GET(&v));
@@ -592,6 +600,26 @@ static void test_mem_arena_half(CuTest *tc) {
     mem_arena_free(&a);// 定长块与两块单开块都要收，漏收由收尾内存检查报出
     CuAssertTrue(tc, NULL == a.cur && 0 == a.off && 0 == a.cap);
 }
+#if ENABLED_ASAN && defined(CC_GNU)
+// ASan 下切出的那段可访问，取整补的尾巴与块里还没切出去的部分不可访问；三条路径各验一次
+static void test_mem_arena_asan_poison(CuTest *tc) {
+    mem_arena a;
+    ZERO(&a, sizeof(a));
+    char *p = mem_arena_alloc(&a, 13);// 空链：开定长块
+    CuAssertIntEquals(tc, 0, __asan_address_is_poisoned(p + 12));
+    CuAssertTrue(tc, 0 != __asan_address_is_poisoned(p + 13));
+    CuAssertTrue(tc, 0 != __asan_address_is_poisoned(p + 16));
+    char *q = mem_arena_alloc(&a, 13);// 快路径接着切
+    CuAssertTrue(tc, q == p + 16);
+    CuAssertIntEquals(tc, 0, __asan_address_is_poisoned(q));
+    CuAssertIntEquals(tc, 0, __asan_address_is_poisoned(q + 12));
+    CuAssertTrue(tc, 0 != __asan_address_is_poisoned(q + 13));
+    char *big = mem_arena_alloc(&a, 9001);// 当前块放不下且超过半块：单开一块
+    CuAssertIntEquals(tc, 0, __asan_address_is_poisoned(big + 9000));
+    CuAssertTrue(tc, 0 != __asan_address_is_poisoned(big + 9001));
+    mem_arena_free(&a);
+}
+#endif
 // u64tostr 十进制与 snprintf("%llu") 逐字节、返回长度都一致；输出缓冲先填满非数字，多写少写都看得出
 static void _u64tostr_eq(CuTest *tc, uint64_t v) {
     char want[32], got[32];
@@ -1433,6 +1461,10 @@ static void test_strptime_epoch_range(CuTest *tc) {
     CuAssertIntEquals(tc, 138, tm.tm_year);// 2038-01-19
     ZERO(&tm, sizeof(tm));
     CuAssertTrue(tc, NULL == _strptime("99999999999999999999", "%s", &tm));
+    // 前导零长串：acc 一直很小，停在位数用尽(rulim 归零)处而后面还有数字，
+    // 不能把秒数静默截成前面那一段
+    ZERO(&tm, sizeof(tm));
+    CuAssertTrue(tc, NULL == _strptime("0000000000000000000000005", "%s", &tm));
     if (4 == sizeof(time_t)) {
         ZERO(&tm, sizeof(tm));
         CuAssertTrue(tc, NULL == _strptime("2147483648", "%s", &tm));
@@ -2673,6 +2705,9 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mem_arena_fast_slow);
     SUITE_ADD_TEST(suite, test_mem_arena_big);
     SUITE_ADD_TEST(suite, test_mem_arena_half);
+#if ENABLED_ASAN && defined(CC_GNU)
+    SUITE_ADD_TEST(suite, test_mem_arena_asan_poison);
+#endif
     SUITE_ADD_TEST(suite, test_u64tostr_dec);
     SUITE_ADD_TEST(suite, test_u64tostr_bases);
     SUITE_ADD_TEST(suite, test_timer);

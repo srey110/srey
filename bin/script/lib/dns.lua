@@ -42,7 +42,11 @@ local function nslookup_udp(domain, ipv6, ip, port)
     local msg = srey._coro_wait(sk.skid, MSG_RECVFROM, srey.get_netread_timeout())
     srey.close(sk)
     -- 超时、断开、来源不是 ip:port 都按失败回退 TCP(同 TC 位)。来源按串比，配置的 IPv6 不是规范写法时一律走 TCP
-    if MSG_RECVFROM ~= msg.mtype or ip ~= msg.ip or port ~= msg.port then
+    if MSG_RECVFROM ~= msg.mtype then
+        return nil
+    end
+    local fip, fport = srey.remote_addr(msg.addr)
+    if ip ~= fip or port ~= fport then
         return nil
     end
     -- 解包响应，提取 IP 地址列表；TC 位置位时 dns.unpack 内部已按失败处理返回 nil
@@ -82,7 +86,7 @@ end
 ---@param ip string? DNS 服务器 IP，缺省取配置；与 port 一样只给测试指向本地假服务端用
 ---@param port integer? DNS 服务器端口，缺省 53
 ---@return string[]|nil ips IP 字符串数组；失败或无结果时返回 nil。
----服务端明确答复"无此记录"（NOERROR/NODATA）时不再回退 TCP，与 C 侧 dns_lookup 行为一致
+---服务端明确答复"无此记录"（NOERROR/NODATA）或名字不存在（NXDOMAIN）时不再回退 TCP，与 C 侧 dns_lookup 行为一致
 function nslookup(domain, ipv6, udp, ip, port)
     srey._check_wait("nslookup")-- 先查：UDP 那支建 socket、发查询都在挂起之前
     ip = ip or dns_ip

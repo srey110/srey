@@ -1,4 +1,5 @@
 ﻿#include "task_selfpost.h"
+#include "task_pub.h"
 
 // 故意设小的 qumsg 容量, 使自投递立刻越过快路径进入溢出层。
 // 取 2 而非更大值有第二个理由: task_new 按 msgq_capacity / QUEUE_OVERLOAD_RATIO 推导过载告警阈值,
@@ -29,6 +30,9 @@ static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t 
         return;
     }
     task_selfpost_args *arg = (task_selfpost_args *)coro_get_arg(task);
+    if (-3 == (int32_t)ATOMIC_GET((atomic_t *)arg->ok)) {
+        return;// _late 已判失败(5 秒内没收齐)，晚到的不翻回通过
+    }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
 #if FSQU_FAST_MODEL
     LOG_INFO("selfpost tested, %d messages received.", SELFPOST_CNT);
@@ -37,8 +41,19 @@ static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t 
              SELFPOST_CNT);
 #endif
 }
+// 收齐条数由 _requested 写 1。这里只管"消息丢了/条数对不上"：真卡在入队上时本 task 自己
+// 也跑不到这个回调，那种挂死只能靠汇总 task 的超时兜底
+static void _late(task_ctx *task, uint64_t sess) {
+    (void)sess;
+    task_selfpost_args *arg = (task_selfpost_args *)coro_get_arg(task);
+    if (SELFPOST_CNT != (int32_t)ATOMIC_GET(&_nrecved)) {
+        LOG_ERROR("selfpost: %d/%d messages received.", (int32_t)ATOMIC_GET(&_nrecved), SELFPOST_CNT);
+        test_fail(arg->ok);
+    }
+}
 static void _startup(task_ctx *task) {
     task_requested(task, _requested);
+    task_timeout(task, 0, 5000, _late);
     // 在自身 dispatch 内向自己投递: 唯一消费者是执行本函数的 worker,
     // 入队若阻塞则无人排空, 此处必挂死(见头文件说明)
     int32_t i;

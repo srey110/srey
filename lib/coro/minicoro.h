@@ -494,7 +494,8 @@ extern "C" {
   #endif
 #endif
 
-#if defined(_WIN32) && (defined(MCO_USE_FIBERS) || defined(MCO_USE_VMEM_ALLOCATOR))
+/* srey补丁：MSVC 的 ASM 后端(x64)也要 windows.h,_mco_main 的异常兜底用 */
+#if defined(_WIN32) && (defined(MCO_USE_FIBERS) || defined(MCO_USE_VMEM_ALLOCATOR) || (defined(_MSC_VER) && defined(MCO_USE_ASM)))
   #ifndef _WIN32_WINNT
     #define _WIN32_WINNT 0x0400
   #endif
@@ -669,7 +670,17 @@ static mco_result _mco_jumpin(mco_coro* co);
 static void _mco_jumpout(mco_coro* co);
 
 static MCO_NO_INLINE void _mco_main(mco_coro* co) {
+#if defined(_MSC_VER) && defined(MCO_USE_ASM)
+  /* srey补丁：MSVC x64 的 ASM 后端栈底是假返回地址、栈界换成了协程栈,协程里未处理的异常走不到线程起点的
+     顶层 __except,SetUnhandledExceptionFilter 装的过滤器不会被调。在这里接住转给它,之后照线程起点的做法结束进程 */
+  __try {
+    co->func(co); /* Run the coroutine function. */
+  } __except (UnhandledExceptionFilter(GetExceptionInformation())) {
+    TerminateProcess(GetCurrentProcess(), (UINT)GetExceptionCode());
+  }
+#else
   co->func(co); /* Run the coroutine function. */
+#endif
   co->state = MCO_DEAD; /* Coroutine finished successfully, set state to dead. */
   _mco_jumpout(co); /* Jump back to the old context .*/
 }

@@ -7,6 +7,8 @@
 //最大聚合嵌套层数：解包的帧栈按它定长，嵌套超限即 PROT_ERROR，保的是帧栈不溢出(内存兜底见 REDIS_MAX_NODES)。
 //含 stack[0] 顶层虚拟帧，故实际可嵌套 REDIS_MAX_DEPTH-1 层；上层沿回复链表建嵌套结构时，层栈按它定长不会溢出
 #define REDIS_MAX_DEPTH     18
+#define REDIS_NUM_CAP       64 // 长度 token 的容量(不含)：最多 63 位
+#define REDIS_HDR_PEEK      (REDIS_NUM_CAP + 2) // 元素头本地副本：类型 1 + 长度最多 63 位 + CRLF 2
 //单次 RESP 解包最大节点数，纯内存兜底(嵌套深度另由 REDIS_MAX_DEPTH 卡，那道保的是帧栈不溢出)，
 //此值只决定为一个未完成回复最多垫多少内存，不应低到误伤合法的扁平大结果集。
 //1<<18 时最坏约 17MB（节点约 64B/个），仍是现有 7 万元素用例的 3.7 倍余量；

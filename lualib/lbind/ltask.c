@@ -336,15 +336,10 @@ static int32_t _msg_clean(lua_State *lua) {
     }
     return 0;
 }
-// _msg_index 的 RECVFROM 取 ip：栈上的地址串放进冷函数，免得每次取字段都背着它的栈保护
-NOINLINE static void _msg_push_ip(lua_State *lua, message_ctx *ud) {
-    char ip[IP_LENS];
-    netaddr_ip(&((recvfrom_ctx *)ud->data)->addr, ip);
-    lua_pushstring(lua, ip);
-}
 // 消息对象的 __index：按字段名取 message_ctx 里的值。按长度 + 首字符分发，不做全量串比。
 // data 为空时返回 nil 而不是 0，调用方有 if msg.data then 这类真值判断；
-// ip/port/udata 只有 RECVFROM 才从 recvfrom_ctx 里取，别的类型 data 不是那个结构
+// udata 只有 RECVFROM 才从 recvfrom_ctx 里取，别的类型 data 不是那个结构。对端地址只给原样的 addr
+// (RECVFROM 与 ACCEPT)，要 ip / port 由业务调 remote_addr 自己转
 static int32_t _msg_index(lua_State *lua) {
     message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
     size_t len;
@@ -356,18 +351,10 @@ static int32_t _msg_index(lua_State *lua) {
     }
     // 按字段长度 + 首字符分发
     switch (len) {
-    case 2:// ip sk
+    case 2:// sk
         // 连接标识只经 sk 给出,按 skid 缓存在注册表里,取多少次都是同一个 userdata
         if ('s' == k[0]) {
             lpub_push_sock_msg(lua, &ud->sk);
-            return 1;
-        }
-        if ('i' == k[0]) {
-            if (MSG_TYPE_RECVFROM != ud->mtype
-                || NULL == ud->data) {
-                break;
-            }
-            _msg_push_ip(lua, ud);
             return 1;
         }
         break;
@@ -377,7 +364,7 @@ static int32_t _msg_index(lua_State *lua) {
             return 1;
         }
         break;
-    case 4:// sess size erro data port
+    case 4:// sess size erro data addr
         switch (k[0]) {
         case 's':// sess size,再比第二字符
             if ('e' == k[1]) {
@@ -398,13 +385,19 @@ static int32_t _msg_index(lua_State *lua) {
             }
             lua_pushlightuserdata(lua, ud->data);
             return 1;
-        case 'p':// port
-            if (MSG_TYPE_RECVFROM != ud->mtype
-                || NULL == ud->data) {
+        case 'a':// addr：对端地址原样给出，不格式化。ACCEPT 的载荷本身就是地址(订阅了 PEERADDR 才有)
+            if (NULL == ud->data) {
                 break;
             }
-            lua_pushinteger(lua, netaddr_port(&((recvfrom_ctx *)ud->data)->addr));
-            return 1;
+            if (MSG_TYPE_RECVFROM == ud->mtype) {
+                lua_pushlightuserdata(lua, &((recvfrom_ctx *)ud->data)->addr);
+                return 1;
+            }
+            if (MSG_TYPE_ACCEPT == ud->mtype) {
+                lua_pushlightuserdata(lua, ud->data);
+                return 1;
+            }
+            break;
         default:
             break;
         }
@@ -447,7 +440,7 @@ static int32_t _msg_index(lua_State *lua) {
 }
 // 消息对象的 __call：msg() 按固定顺序一次压出全部标量字段，省掉逐个 __index。
 // 顺序 mtype, sess, subtype, client, slice, erro, src, data, size，值与 __index 相同（data 为空压 nil）；
-// sk 要查缓存、ip/port/udata 只有 RECVFROM 有，这几个仍走 msg.xxx
+// sk 要查缓存、addr 只有 RECVFROM / ACCEPT 有、udata 只有 RECVFROM 有，这几个仍走 msg.xxx
 static int32_t _msg_unpack(lua_State *lua) {
     message_ctx *ud = (message_ctx *)lua_touserdata(lua, 1);
     if (NULL == ud) {
@@ -522,8 +515,10 @@ static void _ltask_run(task_dispatch_arg *arg) {
         }
     }
     lua_pop(ltask->lua, 1);
-    // 连接关了才摘缓存,且必须排在分发之后——业务回调里还要用这条 sk
-    if (MSG_TYPE_CLOSE == arg->msg->mtype) {
+    // 连接关了才摘缓存,且必须排在分发之后——业务回调里还要用这条 sk。kcp 的 CLOSE 是会话关了、
+    // 带的是仍在用的 UDP socket,不摘;那个 socket 自己关时的条目留给弱值表回收(skid 不复用)
+    if (MSG_TYPE_CLOSE == arg->msg->mtype
+        && PACK_UDP_KCP != arg->msg->subtype) {
         lpub_sock_uncache(ltask->lua, arg->msg->sk.skid);
     }
 }

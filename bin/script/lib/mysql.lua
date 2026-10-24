@@ -31,7 +31,6 @@ function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
     if not self.mysql then
         error(string.format("mysql.new failed: %s:%d db=%s", ip, port, tostring(database)), 3)
     end
-    self.sslname = sslname
     -- MySQL 半双工，一条命令的响应没收完就发下一条会串包，而 mysql_ctx 的解析状态
     -- 又是每连接一份，交错即互相覆盖——串行化执行器由 conn_pub 建
     pub.init(self, self.mysql)
@@ -43,7 +42,8 @@ function ctx:_connect()
         return false
     end
     local sk = self.mysql:sock_id()
-    if not srey.wait_connect(sk, SSL_NAME.NONE ~= self.sslname or nil) then
+    -- SSL 由协议层在握手中途发起并接管，不投 SSLEXCHANGED，这里不带 ssl(同 pgsql)；greeting 位置的 ERR 也由下面收到
+    if not srey.wait_connect(sk) then
         return false
     end
     -- 握手失败的 ERR 包体记到连接上(之后 erro() 取得到错误号)，同时打出来；同 C 侧 _mysql_do_connect

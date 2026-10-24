@@ -14,7 +14,7 @@
 //   B. debug_console 的 HTTP 面（需 main.c 先起 console）
 //      4) GET /{handle}/mem 打到 C task：发起方按目标 task 类型就地挡下，回 200 + 不支持
 //      5) GET /{handle}/stat：needlua=0 正常透传，回统计文本
-//      6) GET /0/mem 广播：每个 C task 都是同一句不支持
+//      6) GET /0/mem 广播：每个 C task 都是同一句不支持(正在建 / 关的 task 渲染成 (unavailable)，放行)
 // 未覆盖：门的放行侧（needlua 且目标为 TASK_LUA）—— 本二进制里没有 Lua task
 // 全部通过后置 *ok = 1
 void task_debug_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok);

@@ -10,7 +10,7 @@ void _mysql_init(void *hspush);
 void _mysql_pkfree(void *pack);
 // 内部函数：释放用户数据上下文中的 MySQL 资源
 void _mysql_udfree(ud_cxt *ud);
-// 内部函数：SSL 握手完成后发送认证响应。ssl 形参只为与 pgsql 同签名、共用 prots 的挂钩，本协议不做通道绑定
+// 内部函数：SSL 握手完成后发送认证响应，成功返 PROT_SSL_OWNED。ssl 形参只为与 pgsql 同签名、共用 prots 的挂钩，本协议不做通道绑定
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl);
 // 内部函数：SSLRequest / 认证响应里发的字符集 ID。utf8mb4 连 MySQL 8.0+(握手版本串主版本 >= 8 且不含 "MariaDB")
 // 发 255(utf8mb4_0900_ai_ci，8.0 起的默认排序规则)，其余照 client.charset

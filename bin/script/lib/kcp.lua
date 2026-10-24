@@ -59,6 +59,7 @@ function ctx:start(ip, port, config)
         self.sess = sess
         return true
     end
+    srey._check_wait("kcp.start")-- 先查：会话起好之后再在 _coro_wait 里抛，就留下一条没人等的会话
     -- sync 模式存活期间重复 start 一律在 Lua 侧挡掉:C 侧虽会隐式 stop 旧会话再起
     -- (不产生 stop 不掉的孤儿),但那会静默丢掉本对象正在等的会话,不如让调用方显式 stop
     if self.live then
@@ -104,8 +105,13 @@ end
 ---@param handle integer|string 目标 task：字符串按名字查，整数按句柄直取(srey.task_handle 取)
 ---@return boolean ok 目标不存在(名字未注册 / 数字句柄对应 task 已退出)或会话已 stop 时 false。
 --- 仅保证调用时目标存在:目标若在此之后退出,该会话收到的消息会被丢弃(限频打告警)。探测口径同 srey.sock_bind_task
+--- 成功后放掉本 task 在该会话 sess 上的等待条目：之后 RECVFROM 与 CLOSE 都投给新 task，本 task 的条目再没有路径能删
 function ctx:handle(handle)
-    return self.kcp:handle(handle)
+    if not self.kcp:handle(handle) then
+        return false
+    end
+    srey._coro_sess_unkeep(self.sess)
+    return true
 end
 
 ---发送数据;ctor 未传 sync 时异步发送(不等响应),sync 时同步发送并等待响应
@@ -119,6 +125,7 @@ function ctx:send(data, size, copy)
     if not self.sync then
         return self.kcp:send(data, size, copy)
     end
+    srey._check_wait("kcp.send")-- 先查：发出去之后再在 _coro_wait 里抛，回包就落到回调上了
     -- 捏住 sess 而不是等待与回写各读一次 self.sess:挂起期间它可能被别的协程换掉，
     -- 按新值等待就等错了会话，按新值回写更会抹掉别人刚建好的那条。与 C 侧 kcp_synsend 同形
     local sess = self.sess

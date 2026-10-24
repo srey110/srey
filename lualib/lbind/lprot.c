@@ -136,10 +136,8 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
     lua_pushinteger(lua, id);
     return 2;
 }
-// dns.unpack 的结果表：1 为 dns_ip 数组(lightuserdata)、2 为个数，压一张 IP 串数组
-static int32_t _lprot_dns_ips_table(lua_State *lua) {
-    dns_ip *ips = lua_touserdata(lua, 1);
-    size_t n = (size_t)lua_tointeger(lua, 2);
+// dns.unpack 的结果表：ips 为 dns_ip 数组、n 为个数，压一张 IP 串数组；ips 由调用方释放
+static int32_t _lprot_dns_ips_table(lua_State *lua, dns_ip *ips, size_t n) {
     lua_createtable(lua, (int32_t)n, 0);
     for (size_t i = 0; i < n; i++) {
         ips[i].ip[IP_LENS - 1] = '\0';
@@ -169,17 +167,12 @@ static int32_t _lprot_dns_unpack(lua_State *lua) {
         lua_pushboolean(lua, 0 != nodata ? 1 : 0);
         return 2;
     }
-    // 建表压串放进保护调用：撞 task.memlimit 抛内存错误时也能先把 ips 放掉再报错
-    lua_pushcfunction(lua, _lprot_dns_ips_table);
-    lua_pushlightuserdata(lua, ips);
-    lua_pushinteger(lua, (lua_Integer)n);
-    int32_t st = lua_pcall(lua, 2, 1, 0);
+    // 建表压串直接调用：分配失败时分配器不动返回、直接 abort（见 memory.c 的 _mem_oom），
+    // 不存在能 longjmp 出去的 LUA_ERRMEM，不必套 pcall
+    int32_t rtn = _lprot_dns_ips_table(lua, ips, n);
     FREE(ips);
-    if (LUA_OK != st) {
-        return lua_error(lua);
-    }
     lua_pushboolean(lua, 0);
-    return 2;
+    return rtn + 1;
 }
 //srey.dns
 LUAMOD_API int luaopen_dns(lua_State *lua) {
@@ -1504,7 +1497,7 @@ static int32_t _lprot_smtp_try_connect(lua_State *lua) {
 static int32_t _lprot_smtp_check_code(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LPUB_LUD_ARG(lua, char, 2, pack);
-    const char *code = luaL_checkstring(lua, 3);
+    const char *code = lpub_check_cstr(lua, 3);
     return lpub_rtn_bool(lua, ERR_OK == smtp_check_code(pack, code));
 }
 /// <summary>

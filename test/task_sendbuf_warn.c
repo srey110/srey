@@ -1,4 +1,5 @@
 ﻿#include "task_sendbuf_warn.h"
+#include "task_pub.h"
 
 typedef struct sendbuf_warn_args {
     uint16_t port;
@@ -30,7 +31,7 @@ static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t c
     }
     ATOMIC_ADD(&g_close_cnt, 1);
 }
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     sendbuf_warn_args *arg = (sendbuf_warn_args *)coro_get_arg(task);
     task_recved(task, _net_recv);
     task_closed(task, _net_close);
@@ -89,6 +90,11 @@ static void _startup(task_ctx *task) {
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("sendbuf_warn tested (%d rounds x %d KB = %d KB delivered).",
              ROUNDS, BYTES_PER_ROUND / 1024, expect / 1024);
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((sendbuf_warn_args *)coro_get_arg(task))->ok);
 }
 void task_sendbuf_warn_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {
     if (NULL == ok || 0 == port) {

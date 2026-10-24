@@ -6,7 +6,7 @@
 
 // 以下 10 个上限是可调的:某个判定在当前取值下恒假(如 16 位长度比 65535)不等于死代码,
 // 上限调小它立刻生效,勿删
-#define HTTP_MAX_HEADLENS (ONEK * 4) // HTTP 头部块 / trailer 块 / chunk 长度行的总长
+#define HTTP_MAX_HEADLENS (ONEK * 4) // HTTP 头部块 / trailer 块的总长(含跳过的前导空行与结尾空行)，chunk 长度行的行长(不含行尾 CRLF)
 #define HTTP_MAX_CONTENT_LENS 65535 // HTTP Content-Length 声明的 body 总长，整包一次缓冲
 #define HTTP_MAX_CHUNK_LENS 65535 // HTTP 单个 chunk 的声明长度，每块一次分配；不限 body 总长
 #define WS_MAX_PAYLOAD_LENS 65535 // WebSocket 单帧载荷
@@ -17,6 +17,9 @@
 #define REDIS_MAX_BULK_LENS (512 * 1024 * 1024) // Redis Bulk String，对齐 proto-max-bulk-len 默认值
 #define MONGO_MAX_PACK_LENS (64 * 1024 * 1024) // MongoDB 单包，协议规范值
 #define MQTT_VARINT_MAX 268435455u // 4 字节 7-bit varint 的上界(256MB-1)，线格式定死，不属于上面可调的那 10 个
+// 协议 ssl_exchanged 钩子的返回值：这次升级是协议在握手中途自己发起的(mysql / pgsql)，
+// 握手完成只是它接着认证的信号，不向上推 SSLEXCHANGED；等待方等的是 HANDSHAKED
+#define PROT_SSL_OWNED 1
 
 // mysql pgsql mongo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=上层 handle 持有者数）
 // 建连前、上层子对象(会话 / 预处理语句)创建时 acquire：仅上层持有(ref>0)时 +1，C 借用(ref=0)短路

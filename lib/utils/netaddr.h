@@ -16,7 +16,7 @@ typedef union netaddr_ctx {
 /// <returns>ERR_OK ipv4 </returns>
 int32_t is_ipv4(const char *ip);
 /// <summary>
-/// 是否为ipv6 地址
+/// 是否为ipv6 地址。带 "%网卡号" 的后缀先剥掉再判，两个平台一致
 /// </summary>
 /// <param name="ip">IP</param>
 /// <returns>ERR_OK ipv6 </returns>
@@ -74,7 +74,7 @@ struct sockaddr *netaddr_addr(netaddr_ctx *ctx);
 /// </summary>
 /// <param name="ctx">netaddr_ctx</param>
 /// <returns>长度</returns>
-socklen_t netaddr_size(netaddr_ctx *ctx);
+socklen_t netaddr_size(const netaddr_ctx *ctx);
 /// <summary>
 /// 获取ip。IPv6 的 scope_id 非 0 时(链路本地地址)在末尾补 "%网卡号"，一律写数字不写网卡名，
 /// 原样交给 netaddr_set 能还原出同一块网卡；其余地址的输出不带后缀
@@ -82,7 +82,7 @@ socklen_t netaddr_size(netaddr_ctx *ctx);
 /// <param name="ctx">netaddr_ctx</param>
 /// <param name="ip">IP</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]);
+int32_t netaddr_ip(const netaddr_ctx *ctx, char ip[IP_LENS]);
 /// <summary>
 /// 4 字节网络序 IPv4 地址转点分十进制，输出与 inet_ntop(AF_INET) 逐字节相同
 /// </summary>
@@ -94,19 +94,19 @@ void netaddr_ip4_str(const uint8_t *b, char ip[IP_LENS]);
 /// </summary>
 /// <param name="ctx">netaddr_ctx</param>
 /// <returns>端口</returns>
-uint16_t netaddr_port(netaddr_ctx *ctx);
+uint16_t netaddr_port(const netaddr_ctx *ctx);
 /// <summary>
 /// 获取AF_INET 或 AF_INET6
 /// </summary>
 /// <param name="ctx">netaddr_ctx</param>
 /// <returns>AF_INET 或 AF_INET6</returns>
-int32_t netaddr_family(netaddr_ctx *ctx);
+int32_t netaddr_family(const netaddr_ctx *ctx);
 /// <summary>
 /// 比较两个网络地址（family+IP+端口）是否相同。IPv6 两边的 scope_id 都非 0 时另比 scope_id，有一边是 0(没指定网卡)就不比
 /// </summary>
 /// <param name="a">netaddr_ctx</param>
 /// <param name="b">netaddr_ctx</param>
 /// <returns>ERR_OK 相同</returns>
-int32_t netaddr_compare(netaddr_ctx *a, netaddr_ctx *b);
+int32_t netaddr_compare(const netaddr_ctx *a, const netaddr_ctx *b);
 
 #endif//NETADDR_H_

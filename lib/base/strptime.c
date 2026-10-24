@@ -369,9 +369,10 @@ static char *_strptime_st(const char *buf, const char *fmt, struct tm *tm, int *
         } while (acc <= (uint64_t)TIME_MAX / 10 &&
             rulim && *bp >= '0' && *bp <= '9');
 
-        // 停在"再乘 10 必超上限"处而后面还有数字,同样算超出
+        // 循环停下时后面还有数字:要么再乘 10 必超上限,要么位数已用尽(rulim 归零),
+        // 都会把秒数截成前面那一段,一律失败
         if (acc > (uint64_t)TIME_MAX
-            || (acc > (uint64_t)TIME_MAX / 10 && *bp >= '0' && *bp <= '9')) {
+            || (*bp >= '0' && *bp <= '9')) {
             bp = NULL;
             continue;
         }

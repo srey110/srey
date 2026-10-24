@@ -52,7 +52,8 @@ NET_EV = {
     ACCEPT  = 0x01,   -- 监听接受新连接
     AUTHSSL = 0x02,   -- 投递 SSL 握手结果(SSLEXCHANGED)；明文连接之后要 syn_ssl_exchange / wait_ssl_exchanged 升级时必须带
     SEND    = 0x04,   -- 关注发送完成事件
-    PEERADDR = 0x08   -- ACCEPT 带上对端地址(on_accepted 的 addr)，须与 ACCEPT 同用；不订阅不多花一次 getpeername
+    PEERADDR = 0x08,  -- ACCEPT 带上对端地址(on_accepted 的 addr)，须与 ACCEPT 同用；不订阅不多花一次 getpeername
+    SESS    = 0x10    -- listen 用：accept 出的连接会话键预设为它的 skid，能直接 syn_recv 等；客户端先发数据的协议要用它，首包不算回复的(如 MQTT)用 syn_recv_any 等
 }
 -- Socket 协议类型，标识该 socket 所使用的应用层协议；与 C 层 pack_type 枚举对应。
 ---@enum PACK_TYPE
@@ -63,9 +64,9 @@ PACK_TYPE = {
     WEBSOCK = 0x03,
     MQTT    = 0x04,
     SMTP    = 0x05,
-    CUSTZ_FIXED =  0x06,  -- 自定义：固定长度包头
-    CUSTZ_FLAG = 0x07,    -- 自定义：标志分隔
-    CUSTZ_VAR = 0x08,     -- 自定义：变长包
+    CUSTZ_FIXED =  0x06,  -- 自定义：固定 4 字节长度头
+    CUSTZ_FLAG = 0x07,    -- 自定义：标志位变长头
+    CUSTZ_VAR = 0x08,     -- 自定义：MQTT 风格变长头
 
     REDIS   = 0x20,
     MYSQL   = 0x21,

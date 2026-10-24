@@ -1,4 +1,5 @@
 ﻿#include "task_listen_churn.h"
+#include "task_pub.h"
 
 typedef struct task_listen_churn_args {
     uint16_t port;
@@ -12,7 +13,7 @@ typedef struct task_listen_churn_args {
 // 短了下一轮 listen 就撞 EADDRINUSE
 #define CHURN_SETTLE_MS 500
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_listen_churn_args *arg = (task_listen_churn_args *)coro_get_arg(task);
     uint64_t lsnid;
     sock_ctx csk;
@@ -45,6 +46,11 @@ static void _startup(task_ctx *task) {
     }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("listen_churn tested (%d iters, %d connected).", CHURN_ITERS, nconn);
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_listen_churn_args *)coro_get_arg(task))->ok);
 }
 
 void task_listen_churn_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

@@ -7,8 +7,9 @@
 //https://www.mongodb.com/zh-cn/docs/manual/reference/command/
 // 包头 flags：drop insert update delete bulkWrite killCursors createIndexes dropIndexes 照抄连接级
 // flags（MORETOCOME 可用）；endSessions 恒带 MORETOCOME；其余命令都要等回包，恒不带。
-// 连接上绑着的事务已随重连作废（见 mongo_session_stale）时，带事务上下文的命令一律组包失败返回 NULL；
-// 例外是 abortTransaction（照发，让服务端当场中止放锁）。hello 与 count 从不带事务上下文。
+// 连接上绑着的事务已随重连作废（连接换过）时，带事务上下文的命令一律组包失败返回 NULL；
+// 例外是 abortTransaction（照发，让服务端当场中止放锁）与提交已交出过的 commitTransaction（可重发，
+// 见 mongo_session_stale）。hello 与 count 从不带事务上下文。
 // 组包在锁外、发送在拿到锁之后，中间可能重连：带事务上下文的包发送前须经 mongo_txn_moved 复查
 
 /// <summary>
@@ -250,7 +251,9 @@ void *mongo_pack_endsession(mongo_session *session, size_t *size);
 char *mongo_transaction_options(mongo_session *session, size_t *lens);
 /// <summary>
 /// 本次事务是否已随重连作废：mongo_begin 之后连接换过(skid 变了)。断开前最后那条写生效没有无从确认，
-/// 作废的事务不能再写、不能提交，只能中止(abortTransaction)
+/// 作废的事务不能再写、不能提交，只能中止(abortTransaction)。例外是 commitTransaction 已交给连着的连接、
+/// 且本事务没发过只发不等(MORETOCOME)的写：提交结果未知但事务内容确定，不算作废，可在新连接上按同一
+/// lsid/txnNumber 重发提交，由服务端裁决（已提交的照样回成功）；这时 CRUD 照旧拒绝
 /// </summary>
 /// <param name="session">mongo_session，须已 mongo_begin</param>
 /// <returns>非 0 表示已作废</returns>
@@ -277,7 +280,8 @@ int32_t mongo_txn_moved(mongo_ctx *mongo, uint64_t mark);
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放；session 已不是连接当前绑定的那个、或事务已随重连作废时返回 NULL
+/// <returns>数据包指针，需调用者释放；组包成功、连接还连着且本事务没发过只发不等的写时记下"提交已交出"(见 mongo_session_stale)。
+/// session 已不是连接当前绑定的那个、或事务已随重连作废时返回 NULL
 /// 并置 *size 为 0，绑定不动(作废的事务该改发 abortTransaction 了结)</returns>
 void *mongo_pack_committransaction(mongo_session *session, char *options, size_t optlens, size_t *size);
 /// <summary>

@@ -19,6 +19,13 @@ static const uint8_t _mysql_type_cls[256] = {
     [MYSQL_TYPE_TIME] = MYSQL_CLS_TIME, [MYSQL_TYPE_TIME2] = MYSQL_CLS_TIME
 };
 
+// 日不超过当月天数(闰年 2 月 29)：4/31、2/30 交给 mktime 会被静默归一成下月的日期。tm_mon 须已在 0~11
+static inline int32_t _mysql_mday_ok(const struct tm *dt) {
+    static const int8_t mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    int32_t y = dt->tm_year + 1900;
+    int32_t leap = ((0 == y % 4 && 0 != y % 100) || 0 == y % 400) ? 1 : 0;
+    return dt->tm_mday <= mdays[dt->tm_mon] + (1 == dt->tm_mon ? leap : 0);
+}
 #if defined(OS_WIN)
 // 同 mktime(dt->tm_isdst 须为 -1)。Windows 直接调 mktime、不走偏移缓存：UCRT 的 mktime 比快路径要做的几次 localtime_s 便宜
 static int32_t _mysql_mktime(mysql_reader_ctx *reader, struct tm *dt, time_t *ts) {
@@ -319,6 +326,10 @@ int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t 
                 return 0;
             }
         }
+        if (!_mysql_mday_ok(&dt)) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
+        }
         uint32_t usec = parse_usec_frac(end);
         time_t ts;
         if (ERR_OK != _mysql_mktime(reader, &dt, &ts)) {
@@ -347,12 +358,13 @@ int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t 
             dt.tm_min = (int32_t)binary_get_uint8(&breader);
             dt.tm_sec = (int32_t)binary_get_uint8(&breader);
         }
-        // 日期部分全零按零日期，同文本路径；其余字段卡量程，越界值交给 mktime 会被静默归一成别的日期
+        // 日期部分全零按零日期，同文本路径；其余字段卡量程(日按当月天数)，越界值交给 mktime 会被静默归一成别的日期
         if (-1900 == dt.tm_year && -1 == dt.tm_mon && 0 == dt.tm_mday) {
             return 0;
         }
         if (dt.tm_mon < 0 || dt.tm_mon > 11 || dt.tm_mday < 1 || dt.tm_mday > 31
-            || dt.tm_hour > 23 || dt.tm_min > 59 || dt.tm_sec > 59) {
+            || dt.tm_hour > 23 || dt.tm_min > 59 || dt.tm_sec > 59
+            || !_mysql_mday_ok(&dt)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }

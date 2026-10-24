@@ -422,8 +422,11 @@ SOCKET _evpub_udp(netaddr_ctx *addr, ud_cxt *ud) {
         return INVALID_SOCK;
     }
 #ifdef EV_IOCP
+    // 未连接的 UDP 不收 ICMP 报错(端口不可达、TTL 超时)：Windows 默认报成收包失败，Unix 收不到。
+    // TTL 超时那条拿不到开关(老系统)不算错
     DWORD bytes = 0;
     BOOL behavior = FALSE;
+    (void)WSAIoctl(fd, SIO_UDP_NETRESET, &behavior, sizeof(behavior), NULL, 0, &bytes, NULL, NULL);
     if (WSAIoctl(fd,
                  SIO_UDP_CONNRESET,
                  &behavior,

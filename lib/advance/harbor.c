@@ -5,7 +5,8 @@
 #include "utils/binary.h"
 
 // harbor_pack 请求行在 type 之后的部分与两条固定头，线格式同 http_pack_req + http_pack_head
-#define HARBOR_REQ_TAIL " HTTP/1.1"FLAG_CRLF"Connection: Keep-Alive"FLAG_CRLF"Content-Type: application/octet-stream"FLAG_CRLF
+#define HARBOR_CTYPE "application/octet-stream"
+#define HARBOR_REQ_TAIL " HTTP/1.1"FLAG_CRLF"Connection: Keep-Alive"FLAG_CRLF"Content-Type: "HARBOR_CTYPE FLAG_CRLF
 
 // harbor 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取）
 typedef struct harbor_ctx {
@@ -98,10 +99,16 @@ static void _harbor_call(router_req *ctx) {
 static void _harbor_request(router_req *ctx) {
     _harbor_dispatch(ctx, 0);
 }
-// 全局中间件：带 Origin 的一律 403。srey 对端从不发 Origin，浏览器发 POST 一定带，借此挡网页跨站投递
+// 全局中间件：带 Origin 的一律 403。srey 对端从不发 Origin，浏览器发 POST 一定带，借此挡网页跨站投递。
+// 旧浏览器的跨站表单不带 Origin，故再要求 Content-Type：自家客户端恒带它，表单发不出、fetch 带它要先过 CORS 预检
 static void _harbor_guard(router_req *ctx) {
-    size_t n = 0;
-    if (NULL != router_req_header(ctx, "Origin", &n)) {
+    size_t cn = 0;
+    size_t on = 0;
+    const char *ctype = router_req_header(ctx, "Content-Type", &cn);
+    if (NULL != router_req_header(ctx, "Origin", &on)
+        || NULL == ctype
+        || sizeof(HARBOR_CTYPE) - 1 != cn
+        || 0 != memcasecmp(ctype, HARBOR_CTYPE, cn)) {
         _harbor_respond_text(ctx, 403);
         return;
     }

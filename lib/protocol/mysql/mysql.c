@@ -246,7 +246,7 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
 }
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
     (void)ssl;// mysql 不做通道绑定，形参只为与 pgsql 同签名、共用 prots 的挂钩
-    return _mysql_auth_response(ud->context, ev, ud);
+    return ERR_OK == _mysql_auth_response(ud->context, ev, ud) ? PROT_SSL_OWNED : ERR_FAILED;
 }
 // 认证失败：把 ERR 包体(error_code + [#sql_state] + 错误串)原样交给等待者，所有权随之交出；
 // 连接级错误只在持串行化执行权的一侧写，由它经 mysql_record_handshake 落到连接上

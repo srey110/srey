@@ -147,7 +147,7 @@ end
 ---开始事务：递增 txnNumber，构建 lsid + txnNumber 事务选项 BSON，挂载到 mongo->session
 ---一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false。
 ---事务进行中连接重连过即作废：之后带事务上下文的命令一律失败，commit/rollback 都发 abortTransaction
----让服务端当场中止、放锁（commit 返回 false）；要继续须重新 begin（同 C 侧 mongo_begin）
+---让服务端当场中止、放锁（commit 返回 false；提交已交出过的 commit 除外，照常重发，见 commit）；要继续须重新 begin（同 C 侧 mongo_begin）
 ---@return boolean ok 成功 true（该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
     return self.session:begin()
@@ -164,7 +164,8 @@ local function _txn_do(self, opts, optslens, packname, what)
         sess:done()
         return true
     end
-    -- 事务已随重连作废就不能提交：改发 abortTransaction 让服务端当场中止、放锁，本次按失败返回(同 C 侧 _mongo_commit)
+    -- 事务已随重连作废就不能提交：改发 abortTransaction 让服务端当场中止、放锁，本次按失败返回(同 C 侧 _mongo_commit)。
+    -- 提交已交出过的不算作废(判据在 C 层 mongo_session_stale)，照常重发提交
     if "pack_commit" == packname
         and sess:stale() then
         _txn_do(self, nil, nil, "pack_abort", "abort(stale)")
@@ -201,7 +202,9 @@ local function _txn_finish(self, opts, optslens, packname, what)
     return srey.serial_ret(false, self.mgoctx.serial(_txn_do, self, opts, optslens, packname, what))
 end
 
----提交事务；网络失败或组包被拒时保留事务状态供重试，仅服务端响应确认时清理（见 _txn_finish）
+---提交事务；网络失败或组包被拒时保留事务状态供重试，仅服务端响应确认时清理（见 _txn_finish）。
+---提交已交给连着的连接、本事务又没发过只发不等的写时，网络失败后先 ping 重连再 commit，会在新连接上按同一事务
+---重发提交，由服务端裁决；不满足的重连后按作废处理（同 C 侧 mongo_commit）
 ---@param opts string|lightuserdata|nil 附加 writeConcern 等 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return boolean ok 提交成功 true
@@ -453,7 +456,7 @@ end
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|true|nil mgopack 普通模式返回响应包指针，仅在本协程下次 yield 前有效，
----需保留请自行拷贝；MORETOCOME fire-and-forget 成功返回 true；发送失败返回 nil
+---需保留请自行拷贝；MORETOCOME fire-and-forget 成功返回 true；组包被拒或网络失败返回 nil，服务端报错同样返回应答包
 function ctx:bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
     local mark = self.mongo:txn_mark()
     local pack, size, more = self.mongo:pack_bulkwrite(ops, opsz, nsinfo, nsz, opts, optslens)
@@ -501,7 +504,7 @@ end
 ---@param opts string|lightuserdata|nil 附加 BSON 选项（limit/skip/sort 等）
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
----需保留请自行拷贝；失败返回 nil
+---需保留请自行拷贝；组包被拒或网络失败返回 nil，服务端报错（ok:0）照样返回应答包，须自行判 ok
 function ctx:find(col, filter, flens, opts, optslens)
     local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_find(col, filter, flens, opts, optslens)
@@ -516,7 +519,7 @@ end
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
----需保留请自行拷贝；失败返回 nil
+---需保留请自行拷贝；组包被拒或网络失败返回 nil，服务端报错（ok:0）照样返回应答包，须自行判 ok
 function ctx:aggregate(col, pipeline, pllens, opts, optslens)
     local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_aggregate(col, pipeline, pllens, opts, optslens)
@@ -530,7 +533,7 @@ end
 ---@param opts string|lightuserdata|nil 附加 BSON 选项(batchSize maxTimeMS comment)；集合取 col，别再带 collection
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
----需保留请自行拷贝；失败返回 nil
+---需保留请自行拷贝；组包被拒或网络失败返回 nil，服务端报错（ok:0）照样返回应答包，须自行判 ok
 function ctx:getmore(col, cursorid, opts, optslens)
     local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_getmore(col, cursorid, opts, optslens)
@@ -559,7 +562,7 @@ end
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
----需保留请自行拷贝；失败返回 nil
+---需保留请自行拷贝；组包被拒或网络失败返回 nil，服务端报错（ok:0）照样返回应答包，须自行判 ok
 function ctx:distinct(col, key, query, qlens, opts, optslens)
     local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_distinct(col, key, query, qlens, opts, optslens)
@@ -578,7 +581,7 @@ end
 ---@param opts string|lightuserdata|nil 附加 BSON 选项
 ---@param optslens integer? opts 为 lightuserdata 时必填，缓冲字节数
 ---@return lightuserdata|nil mgopack 响应包指针，仅在本协程下次 yield 前有效，
----需保留请自行拷贝；失败返回 nil
+---需保留请自行拷贝；组包被拒或网络失败返回 nil，服务端报错（ok:0）照样返回应答包，须自行判 ok
 function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts, optslens)
     local mark = self.mongo:txn_mark()
     local pack, size = self.mongo:pack_findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts, optslens)

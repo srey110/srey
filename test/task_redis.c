@@ -69,7 +69,26 @@ static int32_t _wrong_type_error(task_ctx *task, sock_ctx *sk) {
     return ERR_OK;
 }
 
-static void _startup(task_ctx *task) {
+// 带错口令建链：测试库没设口令(或口令不是这个)，AUTH 回错误，redis_connect 须返回失败并自己关掉连接
+static int32_t _auth_fail(task_ctx *task, task_redis_args *arg) {
+    sock_ctx sk;
+    timer_ctx tm;
+    timer_init(&tm);
+    timer_start(&tm);
+    if (ERR_OK == redis_connect(task, NULL, arg->host, arg->port, "srey-wrong-key", 0, &sk)) {
+        LOG_ERROR("redis connect with a wrong AUTH key should fail.");
+        ev_close(&task->loader->netev, &sk);
+        return ERR_FAILED;
+    }
+    // 当场被拒才对：等满读超时才失败说明错误没映射出来(只是超时)
+    if (timer_elapsed_ms(&tm) >= task_get_netread_timeout(task) / 2) {
+        LOG_ERROR("redis auth fail: took %"PRIu64"ms, a timeout rather than a rejection.", timer_elapsed_ms(&tm));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+static void _startup_run(task_ctx *task) {
     task_redis_args *arg = (task_redis_args *)coro_get_arg(task);
     const char *key = EMPTYSTR(arg->key) ? NULL : arg->key;
     ATOMIC_SET((atomic_t *)arg->ok, -2);// 正在连：汇总 task 不把它当终态，连不上再回 0
@@ -125,7 +144,9 @@ static void _startup(task_ctx *task) {
     // GET KEY_HASH → -WRONGTYPE ...
     if (task_isclosing(task)
         || ERR_OK != _wrong_type_error(task, &arg->sk)) {
-        LOG_ERROR("redis WRONGTYPE error.");
+        if (!task_isclosing(task)) {// 收尾早退不算失败
+            LOG_ERROR("redis WRONGTYPE error.");
+        }
         goto END;
     }
     // INCR KEY_CNT → :1（首次自增）
@@ -139,10 +160,26 @@ static void _startup(task_ctx *task) {
     // 清理测试键
     pack = redis_pack(&size, "DEL %s %s", KEY_HASH, KEY_CNT);
     _exec(task, &arg->sk, pack, size, RESP_INTEGER, NULL, NULL);
+    // 主连接刚连通过，这里建链失败即视为 AUTH 被拒
+    if (task_isclosing(task)
+        || ERR_OK != _auth_fail(task, arg)) {
+        if (!task_isclosing(task)) {// 收尾早退不算失败
+            LOG_ERROR("redis AUTH failure check error.");
+        }
+        goto END;
+    }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("redis tested.");
 END:
     ev_close(&task->loader->netev, &arg->sk);
+}
+// 各失败出口直接 return、槽停在 -1：走完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    task_redis_args *arg = (task_redis_args *)coro_get_arg(task);
+    if (!task_isclosing(task) && -1 == (int32_t)ATOMIC_GET((atomic_t *)arg->ok)) {
+        test_fail(arg->ok);
+    }
 }
 
 void task_redis_start(loader_ctx *loader, const char *name,

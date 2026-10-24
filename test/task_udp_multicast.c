@@ -1,4 +1,5 @@
 ﻿#include "task_udp_multicast.h"
+#include "task_pub.h"
 
 #define MCAST_GROUP "239.99.99.99"
 #define UNI_MSG     "UNI_HELLO"
@@ -13,14 +14,14 @@ static atomic_t _recv_count;
 
 // 单播自收回调：验证 task_recvedfrom 路径基本工作
 static void _net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype,
-                          char ip[IP_LENS], uint16_t port, void *data, size_t size) {
-    (void)task; (void)sk; (void)pktype; (void)ip; (void)port;
+                          const netaddr_ctx *addr, void *data, size_t size) {
+    (void)task; (void)sk; (void)pktype; (void)addr;
     if (UNI_LEN == size && 0 == memcmp(data, UNI_MSG, UNI_LEN)) {
         ATOMIC_ADD(&_recv_count, 1);
     }
 }
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_udp_multicast_args *arg = (task_udp_multicast_args *)coro_get_arg(task);
     ATOMIC_SET(&_recv_count, 0);
     task_recvedfrom(task, _net_recvfrom);
@@ -80,6 +81,11 @@ static void _startup(task_ctx *task) {
     coro_sleep(task, 50);
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("udp_multicast tested: 4 API paths OK + recvfrom path verified.");
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_udp_multicast_args *)coro_get_arg(task))->ok);
 }
 
 void task_udp_multicast_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

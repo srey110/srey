@@ -635,7 +635,7 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
     if (NULL == pack) {
         int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
         if (pos < 0) {
-            // 长度行还没收全时缓冲里的字节全属于这一行，按 HTTP_MAX_HEADLENS 挡住无限累积(同头块与 trailer 块)。
+            // 长度行还没收全时缓冲里的字节全属于这一行，按 HTTP_MAX_HEADLENS 挡住无限累积(行长口径见 prots_pub.h)。
             // 多容 1 字节给行尾先到的 CR：恰等于上限的行合法，判据同下面找到 CRLF 那支
             if (buffer_size(buf) > HTTP_MAX_HEADLENS + 1) {
                 BIT_SET(*status, PROT_ERROR);
@@ -648,7 +648,7 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        // 整行长度按 HTTP_MAX_HEADLENS 卡（同头块与 trailer 块）。行内的 chunk-ext 多长都不影响
+        // 整行长度(不含行尾 CRLF)按 HTTP_MAX_HEADLENS 卡。行内的 chunk-ext 多长都不影响
         // chunk-size 的解析，故只在这里卡总长，不拿它去限制下面那个栈缓冲
         if (pos > (int32_t)HTTP_MAX_HEADLENS) {
             BIT_SET(*status, PROT_ERROR);

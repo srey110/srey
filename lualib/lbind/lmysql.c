@@ -776,7 +776,8 @@ static int32_t _lmysql_free(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 尝试建立 MySQL 连接（异步）
+/// 尝试建立 MySQL 连接（异步）。用 srey.wait_connect(sk) 等连接建立、不传 ssl，再用 srey.wait_handshaked 等认证结果：
+/// 配了 TLS 时由协议在握手中途自行升级，只收到 CONNECT 与 HANDSHAKED，不会收到 SSLEXCHANGED
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="boolean">发起成功 true，失败 false</returns>
@@ -871,12 +872,17 @@ static int32_t _lmysql_record(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="body" type="lightuserdata?">握手失败载荷；nil 时什么都不做</param>
-/// <param name="size" type="integer?">载荷字节数</param>
+/// <param name="size" type="integer?">载荷字节数；body 为 lightuserdata 时必填</param>
 /// <returns type="string">记下的错误串；没有载荷时为空串</returns>
 static int32_t _lmysql_record_handshake(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
-    const char *body = lua_touserdata(lua, 2);
-    size_t lens = (size_t)luaL_optinteger(lua, 3, 0);
+    const char *body = NULL;
+    size_t lens = 0;
+    if (!lua_isnoneornil(lua, 2)) {
+        LUACHECK_LUDATA(lua, 2);
+        body = lua_touserdata(lua, 2);
+        lens = lpub_check_lens(lua, 3, 0);
+    }
     lua_pushstring(lua, mysql_record_handshake(*ud, body, lens));
     return 1;
 }

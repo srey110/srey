@@ -11,7 +11,6 @@ typedef enum parse_status {
 #define MQTT_PUB_SLACK 8
 // PUBLISH 块里可变报头之后的偏移：v5 属性块预留在这里(见 _mqtt_publish_prelens)，按 8 对齐给属性块用
 #define MQTT_PUB_PREOFF ROUND_UP(sizeof(mqtt_pack_ctx) + sizeof(mqtt_publish_varhead), 8)
-#define MQTT_SPLIT_HEAD 256 // 跨节点的包拷出来解析时先用栈上这块，装不下才 MALLOC
 #define MQTT_PROP_FIT 4 // 属性小区按段长放大时保证前这么多个属性放得下(见 _mqtt_prop_cap)
 #define MQTT_PROP_SLACK (sizeof(mqtt_propertie) + 8) // 一个属性在小区里比线上多占的字节上界：条目头、两个 NUL、按 8 取整
 // 非 PUBLISH 包的可变报头就放在 pack 块尾(见 _mqtt_parse)，按最大的那种留位置；PUBLISH 的见 _mqtt_publish_blk
@@ -105,8 +104,12 @@ int32_t _mqtt_may_resume(void *data) {
         return ERR_OK;
     }
     // 对端主动发起的包不是任何一次请求的回复,交给等待者会让请求-响应从此错开一格:
-    // PUBLISH / PUBREL / DISCONNECT 两个方向都会主动发,CONNECT / SUBSCRIBE / UNSUBSCRIBE / PINGREQ 只由客户端发起
-    switch (((mqtt_pack_ctx *)data)->fixhead.prot) {
+    // PUBLISH / PUBREL / DISCONNECT 两个方向都会主动发,CONNECT / SUBSCRIBE / UNSUBSCRIBE / PINGREQ 只由客户端发起,
+    // AUTH 只有重新认证(0x19)是客户端发起,其余是认证往返里的回复
+    mqtt_pack_ctx *pack = data;
+    switch (pack->fixhead.prot) {
+    case MQTT_AUTH:
+        return (NULL != pack->varhead && 0x19 == ((mqtt_reason_varhead *)pack->varhead)->reason) ? ERR_FAILED : ERR_OK;
     case MQTT_CONNECT:
     case MQTT_PUBLISH:
     case MQTT_PUBREL:
@@ -560,11 +563,12 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br
     }
     vh->reason = (uint8_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
-    // 剩余长度为 2 且是拒绝码，是对方不认 5.0、按 3.1.1 格式回的拒绝，按无属性交出返回码；
+    // 剩余长度为 2 且是拒绝码，是对方不认 5.0、按 3.1.1 格式回的拒绝：按无属性交出返回码，version 记 3.1.1 让 mqtt_reason 查对表；
     // 5.0 没有省掉属性的 CONNACK，成功码配剩余长度 2 照旧按缺属性拒收
-    if (pack->version >= MQTT_50
-        && (2 != pack->fixhead.remaining_lens || 0x00 == vh->reason)) {
-        if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &vh->properties)) {//属性
+    if (pack->version >= MQTT_50) {
+        if (2 == pack->fixhead.remaining_lens && 0x00 != vh->reason) {
+            pack->version = MQTT_311;
+        } else if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &vh->properties)) {//属性
             return ERR_FAILED;
         }
     }

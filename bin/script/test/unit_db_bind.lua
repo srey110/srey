@@ -506,7 +506,6 @@ runner.run(function(t)
         mg = nil
         collectgarbage()
         collectgarbage()
-        t:check(true, "宿主先 __gc、session 后由 GC 回收不崩")
     end
 
     -- ── session 先释放，宿主照常可用：解绑生效、引用归还后宿主仍持自己那份 ──

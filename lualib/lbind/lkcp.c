@@ -62,7 +62,7 @@ static int32_t _lkcp_start(lua_State *lua) {
     kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     LPUB_CUR_TASK(lua, task);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
-    const char *ip = luaL_checkstring(lua, 3);
+    const char *ip = lpub_check_cstr(lua, 3);
     uint16_t port = lpub_check_u16(lua, 4, PORT_OUT_OF_RANGE);
     luaL_argcheck(lua, lua_isnoneornil(lua, 5) || lua_istable(lua, 5), 5, "config must be a table");
     kcp_config cfg;

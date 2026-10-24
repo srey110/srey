@@ -41,14 +41,14 @@ void prots_hsfree(pack_type pktype, void *data);
 void prots_udfree(void *arg);
 /// <summary>
 /// 询问已解包的封包能否唤醒等待该 session 的协程。
-/// 服务端主动推来的包不属于任何命令的响应,返非 OK 让框架改新建协程走 recv 回调,而不是按队头
-/// 匹配挤掉真正的等待者:pgsql 的 PGPACK_NOTIFICATION、mqtt 的 PUBLISH/PUBREL/DISCONNECT 及只由客户端发起的
-/// CONNECT/SUBSCRIBE/UNSUBSCRIBE/PINGREQ、redis 的 RESP3 推送(订阅类确认除外)。
-/// WS 承载子协议时按其子协议判定
+/// 对端主动发来的包不属于任何命令的响应,返非 OK 就不唤醒等回复的等待者(coro_send / coro_recv),免得
+/// 挤掉真正的回复:pgsql 的 PGPACK_NOTIFICATION、mqtt 的 PUBLISH/PUBREL/DISCONNECT 及只由客户端发起的
+/// CONNECT/SUBSCRIBE/UNSUBSCRIBE/PINGREQ 与 AUTH 重新认证(0x19)、redis 的 RESP3 推送(订阅类确认除外)。
+/// 等任意消息的等待者(coro_recv_any)不看这个判定,照样收到。WS 承载子协议时按其子协议判定
 /// </summary>
 /// <param name="pktype">协议包类型</param>
 /// <param name="data">已解析的包数据;NULL 视为无包可拦</param>
-/// <returns>ERR_OK=可唤醒等待者;其他值=不可,由调用方改新建协程处理</returns>
+/// <returns>ERR_OK=可唤醒等回复的等待者;其他值=不可,队头不是 coro_recv_any 时由调用方改新建协程走 recv 回调</returns>
 int32_t prots_may_resume(pack_type pktype, void *data);
 /// <summary>
 /// 统一解包入口，根据 ud->pktype 调用对应协议的解包函数
@@ -82,7 +82,8 @@ int32_t prots_net_connect(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud);
 void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);
 /// <summary>发送完成：推送 MSG_TYPE_SEND</summary>
 void prots_net_send(ev_ctx *ev, sock_ctx *sk, int32_t client, size_t size, ud_cxt *ud);
-/// <summary>SSL 握手完成：完成协议 SSL 初始化并推送 MSG_TYPE_SSLEXCHANGED</summary>
+/// <summary>SSL 握手完成：完成协议 SSL 初始化并推送 MSG_TYPE_SSLEXCHANGED。
+/// 协议自己发起的升级(钩子返 PROT_SSL_OWNED，即 mysql / pgsql)不推送，等待方改等 HANDSHAKED</summary>
 int32_t prots_net_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl);
 /// <summary>连接关闭：通知协议层并推送 MSG_TYPE_CLOSE</summary>
 /// <param name="erro">close_type，连接是怎么断的。CLOSE_TYPE_ORDERLY 与 CLOSE_TYPE_TRUNCATED 才认为

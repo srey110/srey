@@ -11,7 +11,7 @@ void _pgsql_pkfree(void *pack);
 void _pgsql_udfree(ud_cxt *ud);
 // 连接建立后处理：配置 evssl 则发送 SSL 协商请求，否则跳过协商直接发送 Startup
 int32_t _pgsql_on_connected(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud, int32_t err);
-// SSL 握手完成后提取服务端证书摘要（用于 SCRAM-PLUS 通道绑定）并发送 Startup 消息
+// SSL 握手完成后提取服务端证书摘要（用于 SCRAM-PLUS 通道绑定）并发送 Startup 消息，成功返 PROT_SSL_OWNED
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl);
 // 判断当前数据包是否允许 task 恢复（通知包不允许立即恢复）
 int32_t _pgsql_may_resume(void *data);

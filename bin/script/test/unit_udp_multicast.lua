@@ -13,11 +13,13 @@ local UNI_MSG = "UNI_LUA"
 srey.startup(function()
 runner.run(function(t)
     local received = 0
-    srey.on_recvedfrom(function(pktype, sk, ip, port, data, size)
+    local from_ip, from_port
+    srey.on_recvedfrom(function(pktype, sk, addr, data, size)
         if size == #UNI_MSG then
             local s = srey.ud_str(data, size)
             if s == UNI_MSG then
                 received = received + 1
+                from_ip, from_port = srey.remote_addr(addr)-- 回调只给原样地址，要串自己转
             end
         end
     end)
@@ -70,6 +72,8 @@ runner.run(function(t)
         if received >= 1 then break end
     end
     t:check(received >= 1, "unicast 自收(" .. received .. "/1+)")
+    t:eq("127.0.0.1", from_ip, "remote_addr 取到的源 IP")
+    t:eq(PORT, from_port, "remote_addr 取到的源端口(自己发给自己)")
 
     t:eq(true, srey.udp_leave(sk, GROUP), "udp_leave 返回 true")
     srey.sleep(50)

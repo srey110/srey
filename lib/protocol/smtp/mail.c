@@ -16,7 +16,6 @@
 #define MIME_EW_RAW 45
 // RFC 2231 续行每段最多编码的原文字节数：百分号编码后最多 60 字符
 #define MIME_2231_RAW 20
-#define MAIL_MSGID_RAND 24 // Message-ID 随机部分的字符数
 #define MAIL_MSGID_DOMAIN "srey.local" // Message-ID 的域：发件地址里取不到域(没有 '@' 或其后为空)时用它
 // 头字段裸写 ASCII 的长度上限。RFC 5322 §2.1.1 限一行 998 octet，减去字段名与余量；
 // 超过就改走 encoded-word，那条路按 MIME_EW_RAW 切段且自带折行

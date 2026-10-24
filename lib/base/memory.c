@@ -387,28 +387,30 @@ void *_mem_arena_alloc_slow(mem_arena *arena, size_t lens) {
     mem_arena_blk *blk;
     // 这么大本来也分配不出来；放过去的话取整与加块头都会回绕，按回绕后的小数分配
     ASSERTAB(lens <= SIZE_MAX / 2, "mem_arena_alloc size overflow.");
-    lens = ROUND_UP(lens, 8);
+    size_t rlens = ROUND_UP(lens, 8);
     // 超过半块：按实际大小单开一块，整块只给这一次分配用。换定长新块的话当前块剩余作废、新块也剩不到一半
-    if (lens > (MEM_ARENA_BLOCK - MEM_ARENA_HEAD) / 2) {
-        MALLOC(blk, MEM_ARENA_HEAD + lens);
+    if (rlens > (MEM_ARENA_BLOCK - MEM_ARENA_HEAD) / 2) {
+        MALLOC(blk, MEM_ARENA_HEAD + rlens);
         if (NULL == arena->cur) {
             // 空链：它就是当前块，off 与 cap 相等表示已用满，下次分配会再开新块
             blk->next = NULL;
             arena->cur = blk;
-            arena->off = arena->cap = MEM_ARENA_HEAD + lens;
+            arena->off = arena->cap = MEM_ARENA_HEAD + rlens;
         } else {
             // 已有当前块：插到它后面而不是链头，当前块没用完的空间后面还能接着切
             blk->next = arena->cur->next;
             arena->cur->next = blk;
         }
+        ASAN_POISON((char *)blk + MEM_ARENA_HEAD + lens, rlens - lens);
         return (char *)blk + MEM_ARENA_HEAD;
     }
     // 当前块剩余不够：开一个定长新块插在链头当作新的当前块，旧块剩下的空间不再用
     MALLOC(blk, MEM_ARENA_BLOCK);
     blk->next = arena->cur;
     arena->cur = blk;
-    arena->off = MEM_ARENA_HEAD + lens;
+    arena->off = MEM_ARENA_HEAD + rlens;
     arena->cap = MEM_ARENA_BLOCK;
+    ASAN_POISON((char *)blk + MEM_ARENA_HEAD + lens, MEM_ARENA_BLOCK - MEM_ARENA_HEAD - lens);
     return (char *)blk + MEM_ARENA_HEAD;
 }
 void mem_arena_free(mem_arena *arena) {

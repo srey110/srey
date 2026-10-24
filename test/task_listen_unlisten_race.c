@@ -1,4 +1,5 @@
 ﻿#include "task_listen_unlisten_race.h"
+#include "task_pub.h"
 
 typedef struct task_unlisten_race_args {
     uint16_t port;
@@ -29,7 +30,7 @@ static void _client_worker(void *owner, void *arg) {
     }
 }
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_unlisten_race_args *arg = (task_unlisten_race_args *)coro_get_arg(task);
     ATOMIC_SET(&_race_nconn, 0);
     uint64_t lsnid;
@@ -69,6 +70,11 @@ static void _startup(task_ctx *task) {
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("listen_unlisten_race tested (%d iters x %d clients, %d connected).",
              RACE_ITERS, RACE_CLIENTS, nconn);
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_unlisten_race_args *)coro_get_arg(task))->ok);
 }
 
 void task_listen_unlisten_race_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

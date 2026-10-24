@@ -29,6 +29,7 @@ typedef struct {
     int32_t    spin_rtn;
     int32_t    rd_rtn;
     int32_t    wr_rtn;
+    atomic_t   done;// 试锁线程四种 try 都跑完置 1
 } _try_shared;
 
 /* =======================================================================
@@ -237,6 +238,14 @@ static void _try_worker(void *arg) {
     if (ERR_OK == s->wr_rtn) {
         rwlock_unlock(&s->rw);
     }
+    ATOMIC_SET(&s->done, 1);
+}
+// 有界等试锁线程跑完(约 2 秒)：*_trylock 退化成阻塞时它会卡在主线程持有的锁上，直接 join 就挂死
+static int32_t _try_wait_done(_try_shared *s) {
+    for (int32_t i = 0; i < 2000 && 0 == ATOMIC_GET(&s->done); i++) {
+        MSLEEP(1);
+    }
+    return (int32_t)ATOMIC_GET(&s->done);
 }
 
 // 主线程持互斥锁、自旋锁、写锁时另一线程四种 try 全失败；主线程只持读锁时另一线程能再读、不能写，
@@ -251,20 +260,25 @@ static void test_trylock_busy(CuTest *tc) {
     mutex_lock(&s.mu);
     spin_lock(&s.spin);
     rwlock_wrlock(&s.rw);
+    ATOMIC_SET(&s.done, 0);
     th = thread_creat(_try_worker, &s);
-    thread_join(th);
+    int32_t done1 = _try_wait_done(&s);
+    // 先放锁再 join：试锁退化成阻塞时线程拿到锁就能退出，用例报失败而不是挂死
     rwlock_unlock(&s.rw);
     spin_unlock(&s.spin);
     mutex_unlock(&s.mu);
+    thread_join(th);
     int32_t mu_busy = s.mu_rtn;
     int32_t spin_busy = s.spin_rtn;
     int32_t rd_busy = s.rd_rtn;
     int32_t wr_busy = s.wr_rtn;
 
     rwlock_rdlock(&s.rw);
+    ATOMIC_SET(&s.done, 0);
     th = thread_creat(_try_worker, &s);
-    thread_join(th);
+    int32_t done2 = _try_wait_done(&s);
     rwlock_unlock(&s.rw);
+    thread_join(th);
     // 读锁真的放干净了：此刻本线程能拿到写锁
     int32_t wr_after = rwlock_trywrlock(&s.rw);
     if (ERR_OK == wr_after) {
@@ -274,6 +288,8 @@ static void test_trylock_busy(CuTest *tc) {
     rwlock_free(&s.rw);
     spin_free(&s.spin);
     mutex_free(&s.mu);
+    CuAssertIntEquals(tc, 1, done1);
+    CuAssertIntEquals(tc, 1, done2);
     CuAssertIntEquals(tc, ERR_FAILED, mu_busy);
     CuAssertIntEquals(tc, ERR_FAILED, spin_busy);
     CuAssertIntEquals(tc, ERR_FAILED, rd_busy);

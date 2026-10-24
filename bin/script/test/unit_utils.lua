@@ -244,11 +244,19 @@ runner.run(function(t)
         t:eq(true, rejects(custz.pack, 999, "x"),
              "custz.pack 未知 pktype 被拒")
         -- sock_pack_type 是第五个 pktype 入口，且它落到的 ud->pktype 是 uint16_t，
-        -- 不校验的话 65538 截成 2 就成了 PACK_HTTP，连接的解包协议被静默换掉
-        t:eq(true, rejects(srey.sock_pack_type, 1, 1, 65538),
-             "sock_pack_type 越界 pktype 被拒")
-        t:eq(true, rejects(srey.sock_pack_type, 1, 1, 999),
-             "sock_pack_type 未知 pktype 被拒")
+        -- 不校验的话 65538 截成 2 就成了 PACK_HTTP，连接的解包协议被静默换掉。
+        -- 首参必须是真连接标识：传整数会在 lpub_check_sock 就先抛，走不到 pktype 校验
+        local usk = srey.udp(PACK_TYPE.NONE, "127.0.0.1", 0)
+        t:check(usk and usk.valid, "sock_pack_type / sock_status 用例先建一个 UDP socket")
+        if usk and usk.valid then
+            t:eq(true, rejects(srey.sock_pack_type, usk, 65538), "sock_pack_type 越界 pktype 被拒")
+            t:eq(true, rejects(srey.sock_pack_type, usk, 999), "sock_pack_type 未知 pktype 被拒")
+            -- status 取值 [0,255]：负数(旧接口是 int8)与越界当场报错，255 合法
+            t:eq(true, rejects(srey.sock_status, usk, -1), "sock_status -1 被拒")
+            t:eq(true, rejects(srey.sock_status, usk, 256), "sock_status 256 被拒")
+            t:eq(true, srey.sock_status(usk, 255), "sock_status 255 合法")
+            srey.close(usk)
+        end
 
         local cp, cl = custz.pack(PACK_TYPE.CUSTZ_FIXED, "x")
         t:check(cp ~= nil and cl > 1, "custz.pack 合法子类型仍可组包")

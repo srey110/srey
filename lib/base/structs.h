@@ -10,7 +10,8 @@ typedef void(*free_cb)(void *arg); // 通用资源释放回调函数类型
 // ud_cxt.flags 的位，按位组合；accept 出的连接从监听继承
 typedef enum ud_flag {
     UD_PEERADDR = 0x01, // ACCEPT 消息带对端地址
-    UD_REUSEADDR = 0x02 // UDP 绑定前设 SO_REUSEADDR，允许多个 socket 共用 addr:port(多播要)；不设则独占
+    UD_REUSEADDR = 0x02, // UDP 绑定前设 SO_REUSEADDR，允许多个 socket 共用 addr:port(多播要)；不设则独占
+    UD_SESS = 0x04 // 监听用：accept 出的连接会话键预设为它自己的 skid(同 ev_connect 的 setsess)
 }ud_flag;
 // 连接用户自定义上下文，挂载在每个网络连接上
 typedef struct ud_cxt {

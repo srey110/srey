@@ -1,4 +1,5 @@
 ﻿#include "task_multicast.h"
+#include "task_pub.h"
 
 #define N_CLIENTS 5
 #define MSG_BROADCAST "BROADCAST_HELLO"
@@ -30,12 +31,12 @@ static void _net_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype, const ne
     // listen 带了 NETEV_PEERADDR：地址必须在，且就是 client 那头
     char ip[IP_LENS];
     if (NULL == peer
-        || ERR_OK != netaddr_ip((netaddr_ctx *)peer, ip)
+        || ERR_OK != netaddr_ip(peer, ip)
         || 0 != strcmp(ip, "127.0.0.1")) {
         ATOMIC_ADD(&_peer_bad, 1);
         return;
     }
-    _peer_ports[idx] = netaddr_port((netaddr_ctx *)peer);
+    _peer_ports[idx] = netaddr_port(peer);
 }
 
 // 任意 fd 收到数据回调：client=1 时是 outgoing 连接收到 server 广播,验证内容并计数
@@ -69,7 +70,7 @@ static void _client_worker(void *owner, void *arg) {
     ev_close(&task->loader->netev, &sk);
 }
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_multicast_args *arg = (task_multicast_args *)coro_get_arg(task);
     ATOMIC_SET(&_accepted_count, 0);
     ATOMIC_SET(&_connected_count, 0);
@@ -102,6 +103,12 @@ static void _startup(task_ctx *task) {
     }
     if (N_CLIENTS != acpcnt) {
         LOG_ERROR("multicast: accepted %d/%d only.", acpcnt, N_CLIENTS);
+        return;
+    }
+    // 客户端那侧没全连上时 _client_ports 还有空格，往下比端口会误报成地址回归
+    int32_t concnt = (int32_t)ATOMIC_GET(&_connected_count);
+    if (N_CLIENTS != concnt) {
+        LOG_ERROR("multicast: connected %d/%d only.", concnt, N_CLIENTS);
         return;
     }
     if (0 != ATOMIC_GET(&_peer_bad)) {
@@ -141,6 +148,11 @@ static void _startup(task_ctx *task) {
     }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("multicast tested: %d/%d clients received broadcast.", recvcnt, N_CLIENTS);
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((task_multicast_args *)coro_get_arg(task))->ok);
 }
 
 void task_multicast_start(loader_ctx *loader, const char *name, uint16_t port, int32_t *ok) {

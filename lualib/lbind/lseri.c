@@ -128,7 +128,7 @@ static int32_t _lseri_pack(lua_State *lua) {
     binary_init_write(&bw, 0, 0);
     int32_t top = lua_gettop(lua);
     for (int32_t i = 1; i <= top; i++) {
-        // 出错处已先 binary_free 再压报错串：压串可能撞 task.memlimit 抛内存错误直接跳出，走不到这里
+        // 出错处已先 binary_free 再压报错串：lua_error 直接跳出，压串之后的语句跑不到
         if (ERR_OK != _lseri_pack_one(lua, &bw, i, 0)) {
             return lua_error(lua);
         }

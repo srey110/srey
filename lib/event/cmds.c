@@ -87,7 +87,7 @@ static inline void _cmd_note_trigger(watcher_ctx *watcher, pip_ctx *pip) {
 }
 #endif
 // 唤醒只管叫醒事件线程,命令在无界队列里,消费端抽的是队列到空,故唤醒数与命令数不必对齐。
-// 标志为 1 时不投唤醒,CAS 抢到才投;标志只能靠 CAS 判——MSVC 没有足序的原子读。
+// 标志为 1 时不投唤醒,CAS 抢到才投。
 // 消费端清 0 必须在抽队列之前,颠倒会丢唤醒。Unix 是命令通道就绪时清 0 再抽,在途最多一个字节,
 // 管道填不满,故写失败只可能是 EINTR;IOCP 是事件线程醒着时把标志拿在 1、进等待前清 0 再抽
 // (见 _iocp_loop_event),满批返回时上个命令包可能还没取出,在途可多于一个,无害:消费端抽到空为止。
@@ -584,7 +584,7 @@ static inline void _cmd_sendto(watcher_ctx *watcher, evsock_ctx *evsk, sock_ctx 
     }
     _evpub_add_bufs_sendto(watcher, evsk, buf, 0);
 }
-int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, netaddr_ctx *addr,
+int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, const netaddr_ctx *addr,
     void *data, size_t len, int32_t copy) {
     if (sock_is_invalid(sk) || NULL == addr || EMPTYPTR(data, len)) {
         CHECK_COPY_FREE(data, copy);
@@ -787,20 +787,25 @@ int32_t ev_udp_loop(ev_ctx *ctx, sock_ctx *sk, int32_t enable) {
     return ev_props(ctx, sk, _udp_opt_cb, _free, arg, 0);
 }
 // 换协议前按旧类型放掉旧上下文：上下文只有挂它的协议认得，留着会被新协议当成自己的读写或释放。
-// ud_free 契约要求放完把 context 置空，之后再换回来也是从空上下文起
+// ud_free 契约要求放完把 context 置空，之后再换回来也是从空上下文起。解析状态与扫描偏移一并清零：
+// 各协议的初始状态都是 0，留着旧值新协议会直接进非初始分支，而那些分支默认上下文已建好
 static int32_t _cmd_ud_pktype(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)watcher;
     (void)data;
     ud_cxt *ud = _evpub_get_ud(evsk);
-    if ((subtype_t)number != ud->pktype
-        && NULL != ud->context) {
+    if ((subtype_t)number == ud->pktype) {
+        return 0;
+    }
+    if (NULL != ud->context) {
 #ifdef EV_IOCP
         UD_FREE(_iocp_get_cbs(evsk)->ud_free, ud);
 #else
         UD_FREE(_uev_get_cbs(evsk)->ud_free, ud);
 #endif
     }
+    ud->status = 0;
+    ud->prot_offset = 0;
     ud->pktype = (subtype_t)number;
     return 0;
 }

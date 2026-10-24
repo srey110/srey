@@ -5,7 +5,10 @@
 #include "coro/coro.h"
 
 // sess 唤醒约定:客户端 connect 默认 setsess=1(ud.sess=skid),coro_ssl_exchange/coro_handshaked/coro_send/coro_slice
-// 等挂起等 skid 消息的 API 会被自动唤醒;服务端 accept 连接 ud.sess=0,须显式 coro_sync 设置,否则这些等待挂到超时。
+// 等挂起等 skid 消息的 API 会被自动唤醒;服务端 accept 连接 ud.sess=0,须设好会话键,否则这些等待挂到超时:
+// listen 带 NETEV_SESS 则 accept 时就设好;事后 coro_sync 是异步生效的,只适合服务端先发数据的协议(客户端先发的首包会落到回调上)。
+// coro_send / coro_recv / coro_slice 只收回复(要过各协议的 may_resume),对端主动发的包(如 MQTT 的 CONNECT)落到回调上,
+// 要挂起等这类包用 coro_recv_any。
 // UDP coro_sendto 同此约定:ud.sess 不会自动清零,须在首次调用 coro_sendto 前显式 coro_sync 一次,
 // 之后该 skid 上持续有效,可连续/并发多次调用 coro_sendto,无需每次重新同步。
 // 换线程约定:协程挂起后可能在另一个 worker 线程上恢复。协程代码里的线程局部变量一律经 TLS_DEFINE
@@ -53,13 +56,24 @@ coro_ctx *coro_task_co(task_ctx *task);
 int32_t coro_incoro(task_ctx *task);
 /// <summary>
 /// 把连接的会话键设为 skid，使收到的消息能唤醒在它上面挂起的协程。
-/// 服务端 accept 的 TCP 连接与 UDP 须先调一次(客户端 connect 默认已设)，见文件头约定
+/// UDP 与 listen 没带 NETEV_SESS 的 accept 连接须先调一次(客户端 connect 默认已设)，见文件头约定
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 仅表示命令已入队（fd 非 INVALID_SOCK），不代表绑定已生效；
 ///   绑定必然先于随后同一 fd 的 sendto 落定，两者投给同一 watcher 的同一条命令队列，FIFO</returns>
 int32_t coro_sync(task_ctx *task, sock_ctx *sk);
+/// <summary>
+/// 把连接转给 handle 那个 task(同 ev_ud_handle)，并放掉本 task 在这条连接上的会话条目(见 coro_unkeep)。
+/// 协程 task 转交自己等过的连接要用它：直接调 ev_ud_handle 的话 CLOSE 投给新 task，本 task 那条条目再没有路径能删。
+/// 只能在本 task 的上下文里调(消息回调或它的协程里)；转交之后本 task 别再在这条连接上等。
+/// 转交是异步生效的(见 ev_ud_handle)，生效前到达本 task 的包没有等待者，照常走注册的回调
+/// </summary>
+/// <param name="task">本 task，须是协程 task</param>
+/// <param name="sk">连接标识</param>
+/// <param name="handle">目标 task 句柄</param>
+/// <returns>同 ev_ud_handle；失败时会话条目不动</returns>
+int32_t coro_bind_task(task_ctx *task, sock_ctx *sk, name_t handle);
 /// <summary>
 /// 休眠
 /// </summary>
@@ -83,7 +97,8 @@ void *coro_request(task_ctx *dst, task_ctx *src,
                    subtype_t rtype, void *data, size_t size, int32_t copy,
                    int32_t *erro, size_t *lens);
 /// <summary>
-/// 切换为SSL链接
+/// 切换为SSL链接并等握手完成。明文建的连接要在 coro_connect / task_listen 时带 NETEV_AUTHSSL，握手结果才会投回来，
+/// 否则握手成了也等满读超时、连接被关；事件线程拒收这次切换(已是 SSL 连接、未连通、已在关)时同样等满超时后关
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
@@ -120,7 +135,7 @@ int32_t coro_wait_connect(task_ctx *task, sock_ctx *sk, struct evssl_ctx *evssl)
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
 /// <param name="netev">task_netev</param>
-/// <param name="extra">ud_cxt extra</param>
+/// <param name="extra">协议专用附加参数(ud_cxt extra，如 websock 握手的校验 key)；所有权一律交给框架，同步失败也已在函数内释放，之后按 pktype 的 udfree 释放</param>
 /// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t coro_connect(task_ctx *task, pack_type pktype,
@@ -162,6 +177,18 @@ void *coro_send(task_ctx *task, sock_ctx *sk, void *data, size_t len, size_t *si
 /// <returns>响应数据指针,仅在本协程下次挂起前有效(同 coro_send);超时/断开返回 NULL。
 ///   fd 为 INVALID_SOCK 时不挂起,直接返回 NULL——连接已 teardown 时挂上去等不到唤醒</returns>
 void *coro_recv(task_ctx *task, sock_ctx *sk, size_t *size);
+/// <summary>
+/// 同步接收对端发来的下一条消息(不发送),不过协议层的回复判定:协议交上来的任意一条都会收到,
+/// 是什么、怎么处理由调用方决定。同一连接上多协程并发的约束同 coro_send
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="sk">连接标识</param>
+/// <param name="size">输出:消息的 size，同 coro_send；可传 NULL</param>
+/// <param name="slice">输出:分片标记(slice_type),0 为非分片完整消息,分片时调用方循环到 PROT_SLICE_END;
+///   可传 NULL,返回 NULL 时写 0</param>
+/// <returns>消息数据指针,有效期同 coro_send;断开返回 NULL;等满读超时(task_set_netread_timeout)会关掉连接再返回 NULL,
+///   对端空闲时间可能超过读超时的服务端要先把它调大。fd 为 INVALID_SOCK 时不挂起,直接返回 NULL</returns>
+void *coro_recv_any(task_ctx *task, sock_ctx *sk, size_t *size, uint8_t *slice);
 /// <summary>
 /// 等待分片消息。等待按 skid 排队、只认队头，而本函数每次调用都重新排到队尾——同一连接上
 /// 有其他等待者时，后续分片会被派给别人，两边各拿到半截。整趟分片循环期间调用方须保证

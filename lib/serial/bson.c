@@ -10,6 +10,7 @@
 static char _bson_empty[5] = { 0 };
 static uint8_t _oid_header[5];
 static atomic_t _oid_counter = 0;
+static once_ctx _oid_once;// bson_oid 首次调用时才取随机段，见 bson_oid
 
 // OID 中间 5 字节每进程取一次随机值，计数器起点随机(只用低 24 位)；系统随机源不可用时退回伪随机
 static void _bson_oid_init(void) {
@@ -27,10 +28,15 @@ static void _bson_empty_init(void) {
     write_le32(_bson_empty, 5);
 }
 void bson_globle_init(void) {
-    _bson_oid_init();
     _bson_empty_init();
 }
 void bson_oid(char oid[BSON_OID_LENS]) {
+    // 首次取 OID 才取系统随机源：启动期取的话 Linux 上 getrandom 要等 CRNG 就绪，
+    // 全程不用 BSON 的进程不该付这份等待
+    if (once_begin(&_oid_once)) {
+        _bson_oid_init();
+        once_end(&_oid_once);
+    }
     time_t ti = time(NULL);
     uint32_t id = ATOMIC_ADD_RELAXED(&_oid_counter, 1);
     write_be32(oid, (uint32_t)ti);

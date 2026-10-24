@@ -9,6 +9,7 @@ void _pool_qu_nelfree(pool_ctx *pool, uint32_t nfree) {
         if (NULL == elem) {
             break;
         }
+        ASAN_UNPOISON(*elem, pool->elsize);
         _pool_elfree(pool, *elem);
     }
 }

@@ -50,15 +50,19 @@ FILE *fopen_cloexec(const char *file, const char *mode) {
     if (NULL == fp) {
         return NULL;
     }
-#ifdef OS_WIN
-    SET_CLOEXEC(_get_osfhandle(_fileno(fp)));
-#else
-    SET_CLOEXEC(fileno(fp));
-#endif
+    FSET_CLOEXEC(fp);
     return fp;
 }
+// 按已打开的句柄取长度(64 位，>=2GB 也取得到)；失败返回 -1，errno 由 fstat 留下
+static int64_t _filesize_fp(FILE *fp) {
+    struct FSTAT st;
+    if (0 != FSTAT_FD(FILENO(fp), &st)) {
+        return -1;
+    }
+    return (int64_t)st.st_size;
+}
 char *readall(const char *file, size_t *lens) {
-    // 只读常规文件：目录在部分文件系统上能 fopen 成功，ftell 给的是哨兵值不是长度。
+    // 只读常规文件：目录在部分文件系统上也能 fopen 成功，读出来的不是文件内容。
     // 不是常规文件时 errno 补 EINVAL(同空文件)，stat 失败则留它自己的 errno
     errno = 0;
     if (ERR_OK != isfile(file)) {
@@ -71,28 +75,24 @@ char *readall(const char *file, size_t *lens) {
     if (NULL == fp) {
         return NULL;
     }
-    if (0 != fseek(fp, 0, SEEK_END)) {
-        /* fclose 失败会盖掉 fseek 留下的 errno，先存后还 */
-        int32_t err = errno;
-        fclose(fp);
-        errno = err;
-        return NULL;
-    }
-    long sz = ftell(fp);
-    /* ftell 对管道/特殊文件返回 -1，文件大小 0 也视为无效。这条不来自失败的系统调用，
-       errno 里躺着的是上一次调用的陈旧值，得自己补一个 */
-    if (sz <= 0) {
+    // 长度按已打开的句柄取，不按路径 stat：stat 与 open 之间文件可能被替换或追加，
+    // 那样 fread 只读到前缀却照样报成功
+    int64_t sz = _filesize_fp(fp);
+    if (sz <= 0
+        || (uint64_t)sz > SIZE_MAX - 1) {
         fclose(fp);
         errno = EINVAL;
         return NULL;
     }
-    rewind(fp);
     char *buf;
     MALLOC(buf, (size_t)sz + 1);
     size_t got = fread(buf, 1, (size_t)sz, fp);
+    // 读满后再探一个字节：打开之后被追加过就说明拿到的不是全部
+    int32_t more = (EOF != fgetc(fp)) ? 1 : 0;
     fclose(fp);
-    if (got != (size_t)sz) {
-        /* 短读：文件在读取过程中被截断或发生 I/O 错误；fread 不保证置 errno，同上自己补 */
+    if (got != (size_t)sz
+        || 0 != more) {
+        /* 短读是读取过程中被截断或 I/O 错误，多出的是期间被追加过；两者都不算读全 */
         FREE(buf);
         errno = EIO;
         return NULL;

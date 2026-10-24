@@ -9,7 +9,8 @@
 #include "protocol/mqtt/mqtt.h"
 
 /// <summary>
-/// 发起 MySQL 连接：绑定 task 并经 task_connect 注册网络事件回调
+/// 发起 MySQL 连接：绑定 task 并经 task_connect 注册网络事件回调。
+/// 配了 TLS 时由协议层自己切换，task 只收到 CONNECT 与 HANDSHAKED，不会收到 SSLEXCHANGED
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
@@ -18,7 +19,7 @@
 /// 旧连接须先经 coro_close 确认关完，否则它晚到的关闭回调会破坏新连接</returns>
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess);
 /// <summary>
-/// 发起 PostgreSQL 连接：绑定 task 并经 task_connect 注册网络事件回调
+/// 发起 PostgreSQL 连接：绑定 task 并经 task_connect 注册网络事件回调。TLS 的消息口径同 mysql_try_connect
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="pg">pgsql_ctx</param>

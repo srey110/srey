@@ -53,7 +53,7 @@ static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t c
     }
     ATOMIC_ADD(&g_closed, 1);
 }
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     ssl_deadlock_args *arg = (ssl_deadlock_args *)coro_get_arg(task);
     ATOMIC_SET(&g_cli_recv, 0);
     ATOMIC_SET(&g_srv_recv, 0);
@@ -97,15 +97,21 @@ static void _startup(task_ctx *task) {
             return;
         }
         // 两端都不主动读时环必成:谁都在等对方先读,只有看门狗能拆。故收割即预期结局,
-        // 判据是 close_type 必须是 ABORT。真正的失败是停住且无人收割
+        // 判据是两侧都关、close_type 都是 ABORT。真正的失败是停住且无人收割，或只关了一侧
         if (ATOMIC_GET(&g_closed) > 0) {
-            // 被收割的一侧先报关闭，对端的要等它关了才来：两侧都关了(或宽限到期)再判 close_type。
-            // 对端可能也得等自己的看门狗，宽限同 STALL_MS
+            // 被收割的一侧先报关闭，对端的要等它关了才来：两侧都关了再判 close_type。
+            // 对端可能也得等自己的看门狗，宽限同 STALL_MS；宽限到了还只关了一侧就是对端挂住了，算失败
             for (grace = 0; grace < STALL_MS && ATOMIC_GET(&g_closed) < 2; grace += POLL_MS) {
                 coro_sleep(task, POLL_MS);
                 if (task_isclosing(task)) {
                     return;
                 }
+            }
+            if (ATOMIC_GET(&g_closed) < 2) {
+                LOG_ERROR("ssl_deadlock: reaped one side, the other never closed within %ds (cli %lld / srv %lld).",
+                          STALL_MS / 1000, (long long)curc, (long long)curs);
+                test_fail(arg->ok);
+                return;
             }
             if (0 == ATOMIC_GET(&g_bad_erro)) {
                 ATOMIC_SET((atomic_t *)arg->ok, 1);
@@ -132,6 +138,11 @@ static void _startup(task_ctx *task) {
     }
     LOG_ERROR("ssl_deadlock: %ds elapsed, neither complete nor stalled, cli %lld / srv %lld.", (STALL_MS + 5000) / 1000,
               (long long)ATOMIC_GET(&g_cli_recv), (long long)ATOMIC_GET(&g_srv_recv));
+}
+// 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    test_fail_unfinished(task, ((ssl_deadlock_args *)coro_get_arg(task))->ok);
 }
 void task_ssl_deadlock_start(loader_ctx *loader, const char *name, uint16_t port,
     void *evssl, int32_t *ok) {

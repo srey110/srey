@@ -10,6 +10,25 @@ local task   = require("srey.task")
 -- 新端口先 grep 再定，别写裸字面量
 local UDP_PORT = 15046
 
+-- 名字对应的 task 已不在表里。grab 到了就马上放掉，不多留引用
+local function _task_gone(name)
+    local tk = task.grab(name)
+    if tk then
+        task.ungrab(tk)
+        return false
+    end
+    return true
+end
+-- 轮询到 pred() 为真，最多约 3 秒：等异步收尾不用固定 sleep，机器一忙固定时长就不够
+local function _poll(pred)
+    for _ = 1, 150 do
+        if pred() then
+            return
+        end
+        srey.sleep(20)
+    end
+end
+
 srey.startup(function()
 runner.run(function(t)
     -- ── srey.core: SSL 证书注册与查询 ─────────────────────────────────
@@ -54,6 +73,20 @@ runner.run(function(t)
         t:eq(false, pcall(core.ssl_min_proto, ssl, 0x0399), "ssl_min_proto 拒表外版本号")
         t:eq(false, pcall(core.ssl_seclevel, ssl, 99), "ssl_seclevel 拒超上界")
         t:eq(false, pcall(core.ssl_seclevel, ssl, -1), "ssl_seclevel 拒负数")
+
+        -- ssl_host：未注册的名字查回 nil，传进来与 ssl_verify 一样报错；注册过的客户端上下文收主机名。
+        -- 另注册一个只带 CA 的上下文来设，设了主机名的上下文不能拿去监听
+        local miss = core.ssl_qury("unregistered")
+        t:eq(false, pcall(core.ssl_verify, miss, 0), "ssl_verify 未注册(nil)报错")
+        t:eq(false, pcall(core.ssl_host, miss, "a.example.com"), "ssl_host 未注册(nil)同样报错")
+        local cli = core.cert_register("unit_host_cli", "ca.crt", "", "")
+        if t:check(cli ~= nil, "cert_register 只带 CA 的客户端上下文") then
+            t:eq(true, core.ssl_host(cli, "a.example.com"), "ssl_host 收域名")
+            t:eq(true, core.ssl_host(cli, "127.0.0.1"), "ssl_host 收 IP")
+            t:eq(false, core.ssl_host(cli, string.rep("a", 256)), "ssl_host 超 255 字节返 false")
+            t:eq(false, pcall(core.ssl_host, cli, "a\0b"), "ssl_host 主机名内含 \\0 报错")
+            t:eq(true, core.ssl_host(cli, nil), "ssl_host 传 nil 清除")
+        end
     end
 
     -- ── core.listen / core.connect: netev 非整数不得静默降级 ───────────
@@ -332,7 +365,8 @@ runner.run(function(t)
             task.close(rtk)
             task.ungrab(rtk)
         end
-        srey.sleep(300)-- task_close 是异步的,等 CLOSING 派发 + ungrab + free 走完
+        -- task_close 是异步的,等 CLOSING 派发 + ungrab + free 走完
+        _poll(function() return #got >= 1 and _task_gone(NORMAL) and _task_gone(RAISE) end)
         t:eq(1, #got, "CLOSING 回调被调到一次 (" .. #got .. ")")
         t:eq("closed", got[1], "回调里 srey.call 回来的负载")
         -- 必须接住再判:grab 命中时返回的是裸 lightuserdata,没有 __gc,不 ungrab 就永久多一个 ref,
@@ -356,7 +390,7 @@ runner.run(function(t)
         local NAME = "close_before_reg"
         t:check(nil ~= task.register("test.close_before_reg", NAME, 0, "framework"),
                 "顶层 task.close 后仍注册成功")
-        srey.sleep(300)-- 等 STARTUP、CLOSING 派发 + ungrab + free 走完
+        _poll(function() return #got >= 2 and _task_gone(NAME) end)-- 等 STARTUP、CLOSING 派发 + ungrab + free 走完
         t:eq(2, #got, "startup 与 closing 各回报一次 (" .. #got .. ")")
         t:eq("startup", got[1], "先跑 startup")
         t:eq("closing", got[2], "再跑 closing")

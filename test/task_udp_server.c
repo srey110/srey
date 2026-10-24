@@ -3,11 +3,12 @@
 static pack_type _pktype = PACK_NONE;
 static uint16_t _port = 0;
 
-// 收到 UDP 数据报后原样回发给发送方
+// 收到 UDP 数据报后原样回发给发送方：源地址直接交给 ev_sendto_addr，不经字符串来回；
+// 客户端那边 coro_sendto 收得到回显就说明地址原样无误
 static void _net_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype,
-    char ip[IP_LENS], uint16_t port, void *data, size_t size) {
+    const netaddr_ctx *addr, void *data, size_t size) {
     (void)pktype;
-    ev_sendto(&task->loader->netev, sk, ip, port, data, size, 1);
+    ev_sendto_addr(&task->loader->netev, sk, addr, data, size, 1);
 }
 static void _startup(task_ctx *task) {
     task_recvedfrom(task, _net_recvfrom);

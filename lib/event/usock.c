@@ -7,8 +7,6 @@
 
 #ifndef EV_IOCP
 
-#define QTN_MS   500 // 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
-
 // 监听socket与所属监听器的绑定（SO_REUSEPORT时每个watcher有独立fd）
 typedef struct lsnsock_ctx {
     evsock_ctx sock;          // 监听socket的事件上下文
@@ -503,8 +501,14 @@ static inline void _usk_call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, char *buf, ne
     }
 }
 #if WITH_SSL
-// 触发切ssl；握手当场完成会调 exch 回调，返回值同 _usk_cb_leave
+// 触发切ssl；握手当场完成会调 exch 回调，返回值同 _usk_cb_leave。
+// 接收缓冲里还有没被解包吃掉的明文就不切、按失败返回(连接按 LOCAL 关)：留着会和解密数据拼在一起当成 TLS 内的数据
 static int32_t _usk_ssl_exchange_trigger(watcher_ctx *watcher, tcp_ctx *tcp, struct evssl_ctx *evssl) {
+    size_t residue = buffer_size(&tcp->buf_r);
+    if (0 != residue) {
+        LOG_WARN("fd %d has %zu plaintext bytes unconsumed at ssl exchange, close.", (int32_t)tcp->sock.sk.fd, residue);
+        return ERR_FAILED;
+    }
     tcp->ssl = evssl_setfd(evssl, tcp->sock.sk.fd);
     if (NULL == tcp->ssl) {
         return ERR_FAILED;
@@ -617,6 +621,18 @@ static inline int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     if (ERR_OK != evrtn) {
         return ERR_FAILED;
     }
+#if WITH_SSL
+    // KEYUPDATE_WRITE 挂着时 SSL_read 不碰 socket，水平触发下留着读事件就每轮空转。
+    // 摘掉，写就绪清位后 _usk_on_rw_cb 会强制补读一次，那次读的末尾再挂回来(口径同 WPEND_SSL 那一档)。
+    // 本端已在关(STATUS_ERROR)时不摘：关闭要靠这条读事件驱动
+    if (BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)
+        && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
+        if (BIT_CHECK(tcp->sock.events, EVENT_READ)) {
+            _uev_del_event(watcher, tcp->sock.sk.fd, &tcp->sock.events, EVENT_READ, &tcp->sock);
+        }
+        return ERR_OK;
+    }
+#endif
     return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
 }
 // 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件。
@@ -1190,6 +1206,9 @@ void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     evsock_ctx *evsk = pool_pop(&watcher->pool, &skargs, 0);
     tcp_ctx *tcp = UPCAST(evsk, tcp_ctx, sock);
     BIT_SET(tcp->status, STATUS_ESTABLISHED);// accept 出来的连接已连通
+    if (BIT_CHECK(tcp->ud.flags, UD_SESS)) {
+        tcp->ud.sess = tcp->sock.sk.skid;// 在收第一个包之前设好，事后再设的话先到的包会落到回调上
+    }
     _evpub_sockel_add(watcher, evsk);
 #if WITH_SSL
     if (NULL != lsn->evssl) {// 默认启用ssl

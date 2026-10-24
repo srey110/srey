@@ -1,4 +1,5 @@
 ﻿#include "task_mqtt_client.h"
+#include "task_pub.h"
 
 typedef struct mqtt_client_args {
     uint16_t port;
@@ -44,6 +45,18 @@ static void _net_connect(task_ctx *task, sock_ctx *sk, subtype_t pktype, int32_t
         if (arg->prt) {
             LOG_INFO("C->CONNECT");
         }
+    }
+}
+// 连上之后连接就断了：用例只在 PINGRESP 那步置 1，槽停在 -1 说明没跑完，落终态免得汇总等满超时
+static void _net_close(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client, int32_t erro, uint64_t sess) {
+    mqtt_client_args *arg = (mqtt_client_args *)coro_get_arg(task);
+    (void)sk;
+    (void)pktype;
+    (void)client;
+    (void)sess;
+    if (-1 == (int32_t)ATOMIC_GET((atomic_t *)arg->ok)) {
+        LOG_ERROR("mqtt client %s: closed before the test finished (erro %d).", task->name, erro);
+        test_fail(arg->ok);
     }
 }
 // 发送 PUBLISH 包，qos 指定服务质量等级，payload 固定为测试字符串
@@ -211,6 +224,9 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
             }
             ATOMIC_SET((atomic_t *)arg->ok, 1);
             LOG_INFO("mqtt client tested.");
+        } else {
+            LOG_ERROR("mqtt client %s: pack DISCONNECT failed.", task->name);
+            test_fail(arg->ok);
         }
         break;
     }
@@ -221,6 +237,7 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
 static void _startup(task_ctx *task) {
     task_connected(task, _net_connect);
     task_recved(task, _net_recv);
+    task_closed(task, _net_close);
 
     mqtt_client_args *arg = coro_get_arg(task);
     int32_t rtn;

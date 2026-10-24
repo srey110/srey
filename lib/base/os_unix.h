@@ -106,6 +106,9 @@ static const union {
 #define SNPRINTF snprintf // 格式化输出到缓冲区
 #define SWPRINTF swprintf // 宽字符格式化输出
 #define FSTAT    stat // 获取文件状态
+#define FSTAT_FD fstat // 获取已打开 fd 的状态，64 位口径同 FSTAT
+#define FILENO   fileno // FILE* 取底层 fd
+#define FSET_CLOEXEC(fp) SET_CLOEXEC(FILENO(fp)) // 标记 FILE* 的底层 fd 为 exec 时关闭
 // 微秒级睡眠
 #define USLEEP(us)\
     do {\

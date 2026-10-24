@@ -103,7 +103,7 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
 void kcp_stop(kcp_ctx *kcp);
 /// <summary>
 /// 变更会话的数据推送目标 task 句柄(之后的 RECVFROM 与 CLOSE 都投给它)。
-/// 目标在此之后退出时,该会话收到的消息被丢弃并限频告警
+/// 目标在此之后退出时,该会话收到的消息被丢弃并限频告警。协程 task 上转交 kcp_synstart 建的会话用 kcp_bind_task
 /// </summary>
 /// <param name="kcp">kcp_ctx</param>
 /// <param name="handle">新的目标 task 句柄</param>

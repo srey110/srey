@@ -56,7 +56,6 @@ static int32_t _lstm_copy(lua_State *lua) {
 /// <param name="copy" type="integer?">data 为 lightuserdata 时: 1=内部拷贝 (默认), 0=转移所有权</param>
 /// <returns type="userdata">writer 对象; 调用它自身即更新数据 w(data, sz?, copy?), 参数同本函数; 出作用域自动 release</returns>
 static int32_t _lstm_newwriter(lua_State *lua) {
-    // userdata 先建再取载荷：copy=0 时 data 一取出所有权就离开了 Lua，之后再分配抛错它就漏了。
     // 参数先补齐到 3 格，新 userdata 落在第 4 格，不会被当成 sz / copy 读
     lua_settop(lua, 3);
     lua_stm_ctx *box = lua_newuserdatauv(lua, sizeof(lua_stm_ctx), 0);

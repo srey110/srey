@@ -4,8 +4,6 @@
 /* RESP 数组计数头 "*n\r\n" 所需的最大字节数：'*' + u64 最多 20 位 + CRLF 共 23 字节，32 足够。 */
 #define MAX_HEADER_RESERVE  32
 #define REDIS_SOLO_NODES    4 // 一条回复的前几个节点单独分配，其后的从块链切：小聚合开一整块反而比几次小分配贵
-#define REDIS_NUM_CAP       64 // 长度 token 的容量(不含)：最多 63 位
-#define REDIS_HDR_PEEK      (REDIS_NUM_CAP + 2) // 元素头本地副本：类型 1 + 长度最多 63 位 + CRLF 2
 #define FMT_INTEGER_FLAG  "diouxX" // 整型格式字符集
 // 提取 [p, f] 范围的格式说明符，格式化并追加到 fbuf；说明符装不进 _fmt 置 fmterr，同不支持的转换整条拒
 #define FMT_TYPE(type)\

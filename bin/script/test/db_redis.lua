@@ -25,6 +25,11 @@ runner.run(function(t)
         return
     end
 
+    -- AUTH 分支：测试库没设口令，带口令连时服务端对 AUTH 回错，connect 关掉连接、返回失效的 sk
+    local bad = redis.connect(DB_HOST, 6379, SSL_NAME.NONE, "wrong-password", 0)
+    t:check(not bad.valid, "redis 带口令连无口令库返回失效 sk")
+    t:eq("PONG", _exec(sk, "PING"), "AUTH 失败的连接不影响主连接")
+
     -- SET / GET / DEL string
     t:eq("OK",    _exec(sk, "SET", "srey:test", "hello"), "SET")
     t:eq("hello", _exec(sk, "GET", "srey:test"),           "GET")

@@ -116,14 +116,11 @@ static void _task_handle_close(task_ctx *task, message_ctx *msg) {
         task->_net_close(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->sess);
     }
 }
-// 处理 UDP 数据接收消息：从消息数据中解析出地址和载荷
+// 处理 UDP 数据接收消息：源地址原样交给回调，不格式化成串
 static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recvfrom) {
-        recvfrom_ctx *rfmsg = msg->data;
-        char ip[IP_LENS];
-        netaddr_ip(&rfmsg->addr, ip);
-        uint16_t port = netaddr_port(&rfmsg->addr);
-        task->_net_recvfrom(task, &msg->sk, msg->subtype, ip, port, rfmsg->data, rfmsg->len);
+        recvfrom_ctx *rf = msg->data;
+        task->_net_recvfrom(task, &msg->sk, msg->subtype, &rf->addr, rf->data, rf->len);
     }
 }
 // 处理任务间请求消息：若未注册请求回调，则返回错误响应
@@ -300,8 +297,9 @@ int32_t task_exists(loader_ctx *loader, name_t handle) {
 void task_incref(task_ctx *task) {
     ATOMIC_ADD_RELAXED(&task->ref, 1);
 }
-// task_ungrab 推到 net 线程本轮派发之后的释放，放完 nfreeing 减一。ev_free 时还在队里的也走它(作 fcb)，
-// 那时在 ev_free 的线程上、里面不得再调 ev_*；正常关停 _loader_task_closing 要等 nfreeing 归零，走不到那一步。
+// task_ungrab 摘表之后的释放，放完 nfreeing 减一：net 线程上的推到本轮派发之后，别的线程当场调。
+// ev_free 时还在队里的也走它(作 fcb)，那时在 ev_free 的线程上、里面不得再调 ev_*；正常关停 _loader_task_closing
+// 要等 nfreeing 归零，走不到那一步。
 // 叫醒的握手：这边先减计数再查 closing，关停那边先置 closing 再查计数，两边都是足序，至少一方看得见对方
 static void _task_free_deferred(void *arg) {
     task_ctx *task = arg;
@@ -316,7 +314,8 @@ static void _task_free_deferred(void *arg) {
 // waiter 用 mutex + cond 实现时，等待方是持着 closing_waiter 的锁去拿 lckmaptasks，放进写锁内锁序就反过来了。
 // closing 为 0 时（正常运行期）没有等待者，一条 atomic load 就短路掉。
 // net 线程上归零的不当场释放：_arg_free 会析构上层句柄，此刻多半还嵌在协议回调或 tick 里，句柄析构经 ev_props
-// 同线程当场执行会重入正在用的连接状态。推到本线程本轮派发之后再放，nfreeing 记着没放完的
+// 同线程当场执行会重入正在用的连接状态，推到本线程本轮派发之后再放。哪个线程摘的都记 nfreeing：
+// 只记 net 线程的话，别的线程摘完表、task_free 还没做完时关停就看到表空往下走了
 void task_ungrab(task_ctx *task) {
     loader_ctx *loader = task->loader;
     name_t handle = task->handle;
@@ -338,9 +337,7 @@ void task_ungrab(task_ctx *task) {
         if (NULL != task->name) {
             _task_name_map_del(loader->mapnames, task->name);
         }
-        if (INVALID_INDEX != idx) {
-            ATOMIC_ADD(&loader->nfreeing, 1);// 与摘表同在写锁里：关停那边不会看到表里没了、计数却还没记上
-        }
+        ATOMIC_ADD(&loader->nfreeing, 1);// 与摘表同在写锁里：关停那边不会看到表里没了、计数却还没记上
     }
     rwlock_distr_wrunlock(&loader->lckmaptasks);
     if (NULL == ptr) {
@@ -350,10 +347,7 @@ void task_ungrab(task_ctx *task) {
         ev_defer_exec(&loader->netev, idx, _task_free_deferred, _task_free_deferred, task);
         return;
     }
-    task_free(task);
-    if (0 != ATOMIC_GET(&loader->closing)) {
-        waiter_wake_held(&loader->closing_waiter);// 关停期冷路径不看睡眠态；摘的可能是 loader 不 join 的线程，所以用 wake_held
-    }
+    _task_free_deferred(task);
 }
 int32_t task_bind_net(task_ctx *task, int32_t index) {
     if (index < INVALID_INDEX
@@ -367,18 +361,32 @@ int32_t task_net_index(task_ctx *task) {
     int32_t bind = (int32_t)ATOMIC_GET_RELAXED(&task->evbind);
     return 0 == bind ? INVALID_INDEX : bind - 1;
 }
-// 时间轮超时回调：将超时消息推入对应任务队列
-static void _task_message_timeout_push(ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        return;
+// 读锁内按句柄查到就投递：读锁挡住 task_ungrab 摘表那一步，能查到就说明 task 还在表里、创建引用
+// (task_new 的 ref=1，到 CLOSING 处理里才放)还在，投递之后不会被别人提前释放。
+// 查不到时 copy 非 0 就放掉组包时 dup 的副本，copy=0 的载荷不碰、归调用方
+static int32_t _task_post_to(loader_ctx *loader, name_t handle, message_ctx *msg, int32_t copy) {
+    rwlock_distr_rdlock(&loader->lckmaptasks);
+    task_ctx *task = _task_map_get(loader->maptasks, handle);
+    if (NULL != task) {
+        _task_message_post(task, msg);
     }
+    rwlock_distr_runlock(&loader->lckmaptasks);
+    if (NULL != task) {
+        return ERR_OK;
+    }
+    if (0 != copy) {
+        FREE(msg->data);
+    }
+    return ERR_FAILED;
+}
+// 时间轮超时回调：将超时消息推入对应任务队列。走 _task_post_to 不持引用，task 的最后一次释放就不会落在
+// 时间轮线程上——Lua task 会在那里 lua_close，期间全进程的定时器都停
+static void _task_message_timeout_push(ud_cxt *ud) {
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_TIMEOUT;
     msg.sess = ud->sess;
     msg.data = ud->context;
-    _task_message_post(task, &msg);
-    task_ungrab(task);
+    (void)_task_post_to(ud->loader, ud->handle, &msg, 0);
 }
 void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeout) {
     ASSERTAB((NULL == _timeout && 0 != sess) || (NULL != _timeout && 0 == sess), "parameter error");
@@ -421,23 +429,6 @@ static inline void _task_response_msg(message_ctx *msg, subtype_t reqtype, uint6
     } else {
         msg->data = data;
     }
-}
-// 读锁内按句柄查到就投递：读锁期间 task_ungrab 的释放那步要写锁进不来，投递里的 incref 在锁内完成。
-// 查不到时 copy 非 0 就放掉组包时 dup 的副本，copy=0 的载荷不碰、归调用方
-static int32_t _task_post_to(loader_ctx *loader, name_t handle, message_ctx *msg, int32_t copy) {
-    rwlock_distr_rdlock(&loader->lckmaptasks);
-    task_ctx *task = _task_map_get(loader->maptasks, handle);
-    if (NULL != task) {
-        _task_message_post(task, msg);
-    }
-    rwlock_distr_runlock(&loader->lckmaptasks);
-    if (NULL != task) {
-        return ERR_OK;
-    }
-    if (0 != copy) {
-        FREE(msg->data);
-    }
-    return ERR_FAILED;
 }
 void task_request(task_ctx *dst, task_ctx *src, subtype_t reqtype, uint64_t sess,
                   void *data, size_t size, int32_t copy) {
@@ -693,6 +684,9 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     }
     if (BIT_CHECK(netev, NETEV_PEERADDR)) {
         BIT_SET(ud.flags, UD_PEERADDR);
+    }
+    if (BIT_CHECK(netev, NETEV_SESS)) {
+        BIT_SET(ud.flags, UD_SESS);
     }
     if (NULL != task->acp_group) {
         cbs.acp_cb = BIT_CHECK(netev, NETEV_ACCEPT) ? _task_acp_accept_emit : _task_acp_accept;

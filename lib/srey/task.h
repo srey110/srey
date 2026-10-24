@@ -15,7 +15,8 @@ typedef enum task_netev {
     NETEV_ACCEPT = 0x01, // 触发新连接接受回调
     NETEV_AUTHSSL= 0x02, // 触发 SSL 交换完成回调
     NETEV_SEND   = 0x04, // 触发数据发送完成回调
-    NETEV_PEERADDR = 0x08 // ACCEPT 消息带上对端地址；只在同时订阅 NETEV_ACCEPT 时有用，不订阅不多花一次 getpeername
+    NETEV_PEERADDR = 0x08, // ACCEPT 消息带上对端地址；只在同时订阅 NETEV_ACCEPT 时有用，不订阅不多花一次 getpeername
+    NETEV_SESS   = 0x10 // listen 用：accept 出的连接会话键预设为它的 skid，协程能直接按 skid 等它的消息；客户端先发数据的协议要用它，首包不算回复的(如 MQTT)用 coro_recv_any 等
 }task_netev;
 
 /// <summary>
@@ -94,7 +95,8 @@ void task_incref(task_ctx *task);
 /// <summary>
 /// 释放task_grab获取的任务,并使引用减一. 与 task_grab task_incref 配对。
 /// 引用归零时从表里摘掉并 task_free；在 net 线程上归零的，摘表当场做，task_free(含 _argfree)推迟到该线程
-/// 本轮事件派发完之后，不嵌在协议回调或 tick 里；loader_free 等这些释放做完才停 net 线程
+/// 本轮事件派发完之后，不嵌在协议回调或 tick 里；loader_free 等这些释放做完才停 net 线程。
+/// loader_free 只 join 它自己的线程(worker、net、监控、时间轮)，业务自建的线程要在 loader_free 之前停止 grab / ungrab
 /// </summary>
 /// <param name="task">task_ctx</param>
 void task_ungrab(task_ctx *task);
@@ -103,6 +105,7 @@ void task_ungrab(task_ctx *task);
 /// 都在该线程本轮事件派发完之后跑，不再进 worker。任何时候可调，从下一次调度起生效。
 /// 要让 startup 也在 net 线程上跑须在 task_register 之前调；由注册函数代为注册的 task(如协程 task)
 /// 只能注册后再绑，startup 那一轮(连同绑定时已排进这一轮的消息)仍在 worker 上。已有连接不跟着迁：先绑再 connect / udp。
+/// 运行中改绑时，改绑前在 worker 上发出、还没被 net 线程执行的发送，可能被改绑后当场处理里发的越过(同一连接字节乱序)
 /// listen 不看绑定，accept 出的连接分到各 net 线程；要让新连接落在处理它的 task 所在线程，用 task_accept_group(只用这一个线程就只给它放组员)。
 /// 空闲时本线程上连接收到的完整包会在收包当场处理、不入队，回调里关连接推迟到收包回调返回后生效。
 /// 回调里禁止阻塞与长计算：会卡住该线程上所有连接的收发，含别的 task 的连接
@@ -267,7 +270,9 @@ int32_t task_multi_request2(loader_ctx *loader, const name_t *handles, int32_t n
 void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy);
 /// <summary>
-/// 监听。task 设过 task_accept_group 的，只在有组员的 net 线程上收，新连接交给所在线程的组员
+/// 监听。task 设过 task_accept_group 的，只在有组员的 net 线程上收，新连接交给所在线程的组员。
+/// 带 evssl 时 ACCEPT 早于 TLS 握手完成投来，握手完成前发送会被判断连；要先发数据(如欢迎语)就订阅 NETEV_AUTHSSL，
+/// 在 SSLEXCHANGED 回调里发
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pktype">包类型</param>
@@ -288,7 +293,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
 /// <param name="netev">task_netev</param>
-/// <param name="extra">ud_cxt extra</param>
+/// <param name="extra">协议专用附加参数(ud_cxt extra，如 websock 握手的校验 key)；所有权一律交给框架，同步失败也已在函数内释放，之后按 pktype 的 udfree 释放</param>
 /// <param name="setsess">是否设置sess</param>
 /// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 成功</returns>
@@ -374,7 +379,8 @@ void task_stat(task_ctx *task, uint64_t nmsg[MSG_TYPE_ALL], uint64_t dispatch_cp
 /// <param name="_accept">_net_accept_cb 回调函数</param>
 void task_accepted(task_ctx *task, _net_accept_cb _accept);
 /// <summary>
-/// 注册数据接收回调函数
+/// 注册数据接收回调函数。协程 task 里等应答的一方超时或已转去等关闭后才到的应答(含 DB、smtp 客户端
+/// 连接上迟到的协议包)也投到这里，同一 task 收多种协议时须按 pktype 分流
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_recv">_net_recv_cb 回调函数</param>
@@ -386,19 +392,20 @@ void task_recved(task_ctx *task, _net_recv_cb _recv);
 /// <param name="_send">_net_send_cb 回调函数</param>
 void task_sended(task_ctx *task, _net_send_cb _send);
 /// <summary>
-/// 注册连接建立回调函数
+/// 注册连接建立回调函数。协程 task 里 coro_connect 等满超时后，连接结果才到的那一条也投到这里
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_connect">_net_connect_cb 回调函数</param>
 void task_connected(task_ctx *task, _net_connect_cb _connect);
 /// <summary>
-/// 注册 SSL 交换完成回调函数
+/// 注册 SSL 交换完成回调函数。协程 task 里 coro_connect / coro_ssl_exchange 等满超时后才到的那一条也投到这里
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_exchanged">_net_ssl_exchanged_cb 回调函数</param>
 void task_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged);
 /// <summary>
-/// 注册应用层握手完成回调函数
+/// 注册应用层握手完成回调函数。协程 task 里 coro_handshaked 等满超时后才到的握手结果(含 DB、smtp、
+/// websocket 客户端建链)也投到这里，按 pktype 过滤
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_handshake">_net_handshake_cb 回调函数</param>
@@ -428,7 +435,8 @@ void task_closed(task_ctx *task, _net_close_cb _close);
 /// <param name="arg">原样交给 cb；须活到 task 释放，本函数不负责释放</param>
 void task_watch_closed(task_ctx *task, _net_close_watch_cb cb, void *arg);
 /// <summary>
-/// 注册 UDP 数据接收回调函数
+/// 注册 UDP 数据接收回调函数。源地址以 netaddr_ctx 原样给出、不逐包格式化成字符串，只在回调内有效：
+/// 回包直接把它交给 ev_sendto_addr；要字符串时用 netaddr_ip / netaddr_port，要留到回调之后就整个拷走
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="_recvfrom">_net_recvfrom_cb 回调函数</param>

@@ -53,19 +53,22 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     int32_t setsess, int32_t index, sock_ctx *sk);
 /// <summary>
-/// 切换为SSL链接。启用 SSL 时 业务须等 ssl握手完成回调后才能 ev_send
+/// 切换为SSL链接。启用 SSL 时 业务须等 ssl握手完成回调后才能 ev_send。
+/// 切换那一刻接收缓冲里若还有没被解包吃掉的明文，不切，打 WARN 并关连接(CLOSE_TYPE_LOCAL，同解析错误)：
+/// 留着会和解密出的数据拼在一起，被当成 TLS 内的数据
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>
 /// <param name="client">1 作为客户端, 0 作为服务端</param>
 /// <param name="evssl">evssl_ctx, 必须非 NULL (NULL 时返 ERR_FAILED)</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 只表示命令已投递，执行结果不回传：事件线程上拒收(已是 SSL 连接、未连通、已在关等)只打 WARN；
+///   evssl 为 NULL 或 fd 为 INVALID_SOCK 时 ERR_FAILED</returns>
 int32_t ev_ssl(ev_ctx *ctx, sock_ctx *sk, int32_t client, struct evssl_ctx *evssl);
 /// <summary>
 /// 发送升级前的最后一条明文，并在它写出后把本端切为 SSL。两步在事件线程内一次做完。
 /// 带内升级（回一条明文告知对端可以握手，再切 SSL）必须用它：拆成 ev_send + ev_ssl 两条命令时，
 /// 发起方可能在两者之间被抢占，对端的握手报文会被当明文协议解析并按超长包断连。
-/// 升级的准入条件同 ev_ssl；被拒时尾包已经发出，不回滚。
+/// 升级的准入条件与明文残留的处理同 ev_ssl；被拒时尾包已经发出，不回滚。
 /// 本包之后到 SSL 握手完成回调之前不得再 ev_send（同 ev_ssl）。
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
@@ -81,7 +84,7 @@ int32_t ev_send_ssl(ev_ctx *ctx, sock_ctx *sk, void *data, size_t len,
     int32_t copy, int32_t client, struct evssl_ctx *evssl);
 /// <summary>
 /// 对已完成握手的 TLS1.3 连接排程一次 KeyUpdate。非 TCP、没用 TLS、握手未完成或已在关时静默忽略；
-/// 非 TLS1.3，或上一次 SSL_write 还挂着没写完(OpenSSL 此时拒绝排程)时不排程，只落一条 WARN。
+/// 非 TLS1.3，或上一次 SSL_write 还挂着没写完、上一次排程的 KeyUpdate 还没写出去(OpenSSL 此时都拒绝排程)时不排程，只落一条 WARN。
 /// 排程不等于发出：报文要等该连接下一次 SSL_write 才上线路（口径见 evssl_keyupdate），
 /// 故空闲连接上调它不会有任何报文，调用方须自己再发点数据把它带出去。
 /// </summary>
@@ -153,7 +156,7 @@ int32_t ev_sendto(ev_ctx *ctx, sock_ctx *sk, const char *ip, const uint16_t port
 /// <param name="copy">1 不自动释放, 0 自动释放</param>
 /// <returns>ERR_OK 请求成功; sk 无效、addr 为 NULL、data 为 NULL 或 len 为 0 返 ERR_FAILED,
 ///   失败时 copy 为 0 的 data 已在本函数内释放</returns>
-int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, netaddr_ctx *addr,
+int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, const netaddr_ctx *addr,
     void *data, size_t len, int32_t copy);
 /// <summary>
 /// UDP socket 加入多播组(按 group_ip 的 family 选 IPv4 / IPv6 选项)。
@@ -230,8 +233,8 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id);
 int32_t ev_props(ev_ctx *ctx, sock_ctx *sk,
                  props_cb ppcb, free_cb fcb, void *data, uint64_t number);
 /// <summary>
-/// 设置ud_cxt的数据包类型。切换会丢弃旧协议的连接状态：新旧类型不同且已挂协议上下文时，先按旧类型调该连接的
-/// ud_free 放掉它(context 随之为空)，新协议从空上下文起；类型不变不动上下文
+/// 设置ud_cxt的数据包类型。切换会丢弃旧协议的连接状态：新旧类型不同时，已挂协议上下文的先按旧类型调该连接的
+/// ud_free 放掉它(context 随之为空)，解析状态 status 与扫描偏移 prot_offset 清零，新协议从初始状态起；类型不变什么都不动
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>
@@ -239,11 +242,11 @@ int32_t ev_props(ev_ctx *ctx, sock_ctx *sk,
 /// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_pktype(ev_ctx *ctx, sock_ctx *sk, subtype_t pktype);
 /// <summary>
-/// 设置ud_cxt的状态
+/// 设置ud_cxt的解包状态(协议解析状态机当前所处的状态，取值由各协议定义)，不是业务标记
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>
-/// <param name="status">状态</param>
+/// <param name="status">协议定义的状态值，[0, 255]</param>
 /// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_status(ev_ctx *ctx, sock_ctx *sk, uint8_t status);
 /// <summary>
@@ -255,7 +258,9 @@ int32_t ev_ud_status(ev_ctx *ctx, sock_ctx *sk, uint8_t status);
 /// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_sess(ev_ctx *ctx, sock_ctx *sk, uint64_t sess);
 /// <summary>
-/// 设置ud_cxt的任务句柄
+/// 设置ud_cxt的任务句柄。命令在连接所在 net 线程上执行之后，这条连接的消息(含 CLOSE)才投给新 task；
+/// 在那之前解出的、已排进原 task 队列的仍由原 task 处理。原 task 按连接记下的状态(协程等待条目、流式请求等)
+/// 收不到 CLOSE 了，要自己放掉(协程 task 的会话条目用 coro_bind_task)
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>

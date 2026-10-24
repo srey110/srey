@@ -278,10 +278,22 @@ static int32_t service_init(void) {
     }
     return ERR_OK;
 }
-// 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程
+// 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程。
+// 已请求过退出(信号或 loader_exit)又来退出信号，说明收尾卡住了：直接 _exit(1)，不冲日志(同 test/main.c)。
+// abort()(如收尾期 ASSERTAB)也会进来：不当作第二次退出信号(不强退)，但照常唤醒主线程，最终由默认处理留 core
 static void _on_sigcb(int32_t sig, void *arg) {
+    hug_ctx *hug = (hug_ctx *)arg;
+#ifdef OS_WIN
     (void)sig;
-    hug_wakeup((hug_ctx *)arg);
+    int32_t isabort = 0;
+#else
+    int32_t isabort = SIGABRT == sig;
+#endif
+    if (!isabort
+        && 0 != ATOMIC_GET(&hug->exitflag)) {
+        _exit(1);
+    }
+    hug_wakeup(hug);
 }
 #ifndef OS_WIN
 // 生成停止脚本：确认 PID 上还是 srey 才发 SIGUSR1(崩溃后脚本留着、PID 可能已被别的进程复用)。
@@ -300,6 +312,27 @@ static void _stop_sh(const char *sh) {
         "esac\n", pid, SIGUSR1, pid, pid);
     fclose(file);
     chmod(sh, 0755);
+}
+// 停止脚本还是本进程写的才删：stop.sh 发完信号就返回，紧接着起的新实例会在本进程收尾期间写上它自己的
+static void _stop_sh_remove(const char *sh) {
+    FILE *file = fopen_cloexec(sh, "r");
+    if (NULL == file) {
+        return;
+    }
+    char mine[64];
+    char line[128];
+    int32_t own = 0;
+    SNPRINTF(mine, sizeof(mine), "ps -p %d -o", (int32_t)GETPID());
+    while (NULL != fgets(line, sizeof(line), file)) {
+        if (NULL != strstr(line, mine)) {
+            own = 1;
+            break;
+        }
+    }
+    fclose(file);
+    if (own) {
+        remove(sh);
+    }
 }
 #endif
 // 注册信号处理、启动服务并阻塞等待退出信号，返回进程退出码
@@ -355,7 +388,7 @@ static int32_t service_hug(int32_t ready_fd, int32_t devnull, const char *sh) {
         rtn = _exit_rtn(service_exit());
 #ifndef OS_WIN
         if (NULL != sh) {
-            remove(sh);
+            _stop_sh_remove(sh);
         }
 #endif
     }

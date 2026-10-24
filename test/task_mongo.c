@@ -9,6 +9,7 @@ typedef struct task_mongo_args {
     char db[64];
     char authdb[64];
     mongo_ctx mongo;
+    mongo_ctx mongo_bad;// 错口令建链用
 }task_mongo_args;
 // commit 挂起期间另一个协程重新 begin 用：两个子协程共用，各自回带结果
 typedef struct rebegin_arg {
@@ -762,6 +763,141 @@ done:
     return rtn;
 }
 
+// 提交能否跨重连重发。A：提交前连接就断了(同前一条写没等到应答)，组包时不记"已交出"，重连后按作废改发 abort、
+// 那条不可见；B：连着时交出、没到服务端就断(组好包后丢掉来模拟)，重连后按同一 lsid / txnNumber 重发，
+// 服务端提交，事务里那条可见、重连后被拒那条不可见。用单独的集合，需要副本集(同 _txn_flow)
+static int32_t _txn_commit_retry_flow(task_ctx *task, mongo_ctx *mongo) {
+    int32_t rtn = ERR_FAILED;
+    uint64_t oldskid;
+    size_t size;
+    void *pack;
+    mongo_session *sess = mongo_startsession(mongo);
+    if (NULL == sess) {
+        LOG_ERROR("mongo startsession(commit retry) error.");
+        return ERR_FAILED;
+    }
+    mongo_collection(mongo, "srey_test_retry");
+    mongo_drop(mongo, NULL, 0);// 集合本就可能不存在，返回值不判
+    // A
+    if (ERR_OK != mongo_begin(sess)
+        || 1 != _insert_id(mongo, 700, "txn-closed-before-commit")) {
+        LOG_ERROR("mongo commit retry A: begin / insert in txn error.");
+        goto done;
+    }
+    ev_close(&task->loader->netev, &mongo->sk);
+    for (int32_t i = 0; i < 50 && !sock_is_invalid(&mongo->sk); i++) {// 等 CLOSE 处理完(最多约 1 秒)：连接已失效、skid 不变
+        coro_sleep(task, 20);
+    }
+    if (ERR_OK == mongo_commit(sess, NULL, 0)
+        || 0 != sess->committing) {
+        LOG_ERROR("mongo commit retry A: commit on a closed connection must fail without marking the commit as handed over.");
+        goto done;
+    }
+    if (ERR_OK != mongo_ping(mongo)
+        || !mongo_session_stale(sess)
+        || ERR_OK == mongo_commit(sess, NULL, 0)
+        || NULL != mongo->session
+        || 0 != _count_id(mongo, 700)) {
+        LOG_ERROR("mongo commit retry A: after reconnect the commit must abort and the write stay invisible.");
+        goto done;
+    }
+    // B
+    if (ERR_OK != mongo_begin(sess)
+        || 1 != _insert_id(mongo, 702, "txn-retry")) {
+        LOG_ERROR("mongo commit retry B: begin / insert in txn error.");
+        goto done;
+    }
+    pack = mongo_pack_committransaction(sess, NULL, 0, &size);
+    if (NULL == pack
+        || 0 == sess->committing) {
+        LOG_ERROR("mongo commit retry B: commit packed on a live connection must be marked as handed over.");
+        FREE(pack);
+        goto done;
+    }
+    FREE(pack);
+    oldskid = mongo->sk.skid;
+    ev_close(&task->loader->netev, &mongo->sk);
+    for (int32_t i = 0; i < 50 && !sock_is_invalid(&mongo->sk); i++) {
+        coro_sleep(task, 20);
+    }
+    if (ERR_OK != mongo_ping(mongo)
+        || oldskid == mongo->sk.skid
+        || mongo_session_stale(sess)) {
+        LOG_ERROR("mongo commit retry B: ping did not reconnect, or the handed-over commit was treated as stale.");
+        goto done;
+    }
+    if (_insert_id(mongo, 703, "txn-after-reconnect") >= 0) {
+        LOG_ERROR("mongo commit retry B: write in the transaction after reconnect must still fail.");
+        goto done;
+    }
+    if (ERR_OK != mongo_commit(sess, NULL, 0)
+        || NULL != mongo->session) {
+        LOG_ERROR("mongo commit retry B: resent commit must succeed and unbind.");
+        goto done;
+    }
+    if (1 != _count_id(mongo, 702)
+        || 0 != _count_id(mongo, 703)) {
+        LOG_ERROR("mongo commit retry B: visibility mismatch (702 present, 703 absent).");
+        goto done;
+    }
+    if (ERR_OK != mongo_drop(mongo, NULL, 0)) {
+        LOG_ERROR("mongo commit retry: drop error.");
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    if (ERR_OK != rtn) {
+        // 中途失败时事务还挂在服务端、持着集合的锁，60 秒内重跑开头的 drop 会被挡住：重连后发 abort 当场放锁
+        (void)mongo_ping(mongo);
+        (void)mongo_rollback(sess, NULL, 0);
+    }
+    mongo_freesession(sess);
+    return rtn;
+}
+// quit 拆掉执行器后 ping：经 mongo_connect 建的连接照 connect 重建并装回执行器(同 task_mysql 的 _quit_ping)
+static int32_t _quit_ping_flow(mongo_ctx *mongo) {
+    mongo_quit(mongo);
+    if (NULL != mongo->serial) {
+        LOG_ERROR("mongo quit_ping: quit should release the executor.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != mongo_ping(mongo)
+        || NULL == mongo->serial
+        || ERR_OK != mongo_ping(mongo)) {
+        LOG_ERROR("mongo quit_ping: ping after quit must reconnect and re-install the executor.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 错口令建链：认证失败(原因由协议层打 WARN)即返回失败，本次新建的执行器已就地拆掉
+static int32_t _auth_fail_flow(task_ctx *task, task_mongo_args *arg) {
+    mongo_ctx *bad = &arg->mongo_bad;
+    if (ERR_OK != mongo_init(bad, arg->host, arg->port, NULL, arg->db)
+        || ERR_OK != mongo_user_pwd(bad, arg->user, "srey-wrong-password")
+        || ERR_OK != mongo_authdb(bad, arg->authdb)
+        || ERR_OK != mongo_authmod(bad, "SCRAM-SHA-256")) {
+        LOG_ERROR("mongo auth fail: init error.");
+        return ERR_FAILED;
+    }
+    timer_ctx tm;
+    timer_init(&tm);
+    timer_start(&tm);
+    if (ERR_OK == mongo_connect(task, bad)) {
+        LOG_ERROR("mongo auth fail: connect with a wrong password succeeded.");
+        mongo_quit(bad);
+        return ERR_FAILED;
+    }
+    // 当场被拒才对：等满读超时才失败说明错误没映射出来(只是超时)
+    if (timer_elapsed_ms(&tm) >= task_get_netread_timeout(task) / 2) {
+        LOG_ERROR("mongo auth fail: took %"PRIu64"ms, a timeout rather than a rejection.", timer_elapsed_ms(&tm));
+        return ERR_FAILED;
+    }
+    if (NULL != bad->serial) {
+        LOG_ERROR("mongo auth fail: failed connect left the executor installed.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 // ping 自动重连（含 re-auth）：强制关闭连接后 mongo_ping 应重连并恢复可用，count 验证
 static int32_t _reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
     uint64_t oldskid = mongo->sk.skid;
@@ -820,7 +956,7 @@ static int32_t _moretocome_flow(mongo_ctx *mongo) {
     return ERR_OK;
 }
 
-static void _startup(task_ctx *task) {
+static void _startup_run(task_ctx *task) {
     task_mongo_args *arg = (task_mongo_args *)coro_get_arg(task);
     if (ERR_OK != mongo_init(&arg->mongo, arg->host, arg->port, NULL, arg->db)) {
         LOG_ERROR("mongo_init error.");
@@ -840,7 +976,9 @@ static void _startup(task_ctx *task) {
     ATOMIC_SET((atomic_t *)arg->ok, -1);
     if (task_isclosing(task)
         || ERR_OK != mongo_ping(&arg->mongo)) {
-        LOG_ERROR("mongo ping error.");
+        if (!task_isclosing(task)) {// 收尾早退不算失败
+            LOG_ERROR("mongo ping error.");
+        }
         ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
@@ -889,6 +1027,12 @@ static void _startup(task_ctx *task) {
         ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
+    // 不需要副本集，排在事务用例之前
+    if (task_isclosing(task)
+        || ERR_OK != _auth_fail_flow(task, arg)) {
+        ev_close(&task->loader->netev, &arg->mongo.sk);
+        return;
+    }
     // 事务路径要求 mongo 以副本集运行：docker-compose 的 MONGO_REPLSET 默认 rs0 即满足。
     // 排在全部计数断言之后，故它多插的一行不影响 _crud_flow / _reconnect_flow / _moretocome_flow
     if (task_isclosing(task)
@@ -916,9 +1060,27 @@ static void _startup(task_ctx *task) {
         ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }
+    if (task_isclosing(task)
+        || ERR_OK != _txn_commit_retry_flow(task, &arg->mongo)) {
+        ev_close(&task->loader->netev, &arg->mongo.sk);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _quit_ping_flow(&arg->mongo)) {
+        mongo_quit(&arg->mongo);
+        return;
+    }
     mongo_quit(&arg->mongo);
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("mongo tested.");
+}
+// 各失败出口直接 return、槽停在 -1：走完没置 1 的记成已失败，汇总不必等满超时
+static void _startup(task_ctx *task) {
+    _startup_run(task);
+    task_mongo_args *arg = (task_mongo_args *)coro_get_arg(task);
+    if (!task_isclosing(task) && -1 == (int32_t)ATOMIC_GET((atomic_t *)arg->ok)) {
+        test_fail(arg->ok);
+    }
 }
 
 void task_mongo_start(loader_ctx *loader, const char *name,

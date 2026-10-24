@@ -30,6 +30,16 @@
 #define CONN_FAIL_PORT 15030
 // 连通后注册读事件失败、回调里还发数据的用例
 #define CONN_FAIL_SEND_PORT 15032
+// 连接还没出结果就 ev_send、ev_close 的用例：连一个没人监听的端口
+#define CONN_PEND_PORT 15078
+// SSL 握手完成回调里同线程发送失败的用例
+#define SSL_EXCH_CLOSE_PORT 15079
+// TLS 连接几种结束方式报的 close_type：几段共用一个监听
+#define SSL_CLOSE_TYPE_PORT 15080
+// KeyUpdate 握手记录挂着没写完时再发不足 5 字节的用例
+#define SSL_KU_SHORT_PORT 15081
+// 明文切 TLS 时接收缓冲里还有残留的用例
+#define SSL_UPG_RESIDUE_PORT 15082
 // 指定 watcher 的用例：TCP 监听端口与 UDP 端口
 #define LAUNCH_IDX_PORT 15022
 #define LAUNCH_UDP_PORT 15023
@@ -67,10 +77,20 @@
 // 发送队列超 MAX_SENDQ_CNT 断连的用例：端口，以及先塞满内核缓冲的那一大块
 #define SENDQ_PORT 15058
 #define SENDQ_BIG (1024 * 1024)
-// 等隔离队列把对象真放掉：隔离期(usock.c 的 QTN_MS，500ms)满后，最多再隔 EVENT_CHECK_INTERVAL 轮空等才收一次
-#define QTN_WAIT_MS (500 + EVENT_CHECK_INTERVAL * EVENT_WAIT_TIMEOUT + 200)
+// 等隔离队列把对象真放掉：隔离期(QTN_MS)满后，最多再隔 EVENT_CHECK_INTERVAL 轮空等才收一次
+#define QTN_WAIT_MS (QTN_MS + EVENT_CHECK_INTERVAL * EVENT_WAIT_TIMEOUT + 200)
 #define SSL_MERGE_TOTAL (256 * 1024)
 #define SSL_MERGE_BATCH 512
+// KeyUpdate 短写用例：造现场时最多排几次 KeyUpdate(远超两端缓冲能装下的条数)；之后逐字节分开发的内容，
+// 合起来也不足 KeyUpdate 消息的 5 字节
+#define SSL_KU_FILL_MAX 200000
+#define SSL_KU_SHORT "abcd"
+#define SSL_KU_GAP 16 // 每排这么多个 KeyUpdate 夹 1 字节填充：对端连续收到太多 KeyUpdate、中间没有应用数据会判 too many key updates
+#define SSL_KU_FILL "." // 填充字节，客户端读的时候滤掉
+// 明文升级用例：升级请求、同一次 send 里紧跟着的多余明文、服务端回的尾包
+#define SSL_UPG_REQ "STARTTLS\n"
+#define SSL_UPG_EXTRA "EXTRA"
+#define SSL_UPG_GO "GO"
 // 读保活空闲时长的选项名，取法同 sock_keepalive
 #if defined(TCP_KEEPIDLE)
     #define ACP_IDLE_OPT TCP_KEEPIDLE
@@ -85,6 +105,14 @@ typedef enum linger_mode {
     LINGER_CLOSE_IN_SENT,       // 只回响应，关放在 s_cb 里
     LINGER_CLOSE_BUSY           // 先回大包制造积压，第 2 字节卡住事件线程，第 3 字节再关
 }linger_mode;
+// test_ev_ssl_close_type 里客户端的收尾方式，同时是结果数组的下标
+typedef enum tls_close_mode {
+    TLS_CLOSE_PLAIN = 0,    // 不握手，直接发一串明文
+    TLS_CLOSE_NOTIFY,       // 握手完成后发 close_notify 再关写
+    TLS_CLOSE_TRUNC,        // 握手完成后不发 close_notify，直接关写
+    TLS_CLOSE_EARLY,        // 什么也不做：服务端在 accept 回调里抢先发一包
+    TLS_CLOSE_NMODE
+}tls_close_mode;
 
 #if WITH_SSL
 // mem BIO 之间搬一次数据，limit < 0 表示能搬多少搬多少。返回实际搬运字节数
@@ -838,6 +866,71 @@ static void test_ev_close_in_acp_conn_deferred(CuTest *tc) {
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_state));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_closed));
 }
+#if WITH_SSL
+static int32_t _incb_on_exch(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl) {
+    (void)client; (void)ud; (void)ssl;
+    _incb_burst(ev, sk);
+    return ERR_OK;
+}
+// SSL 握手完成回调里同线程发送失败：同收包回调，关连接推迟到回调返回之后、关闭回调只来一次。
+// mysql 就是在这个回调里同线程发认证包
+static void test_ev_close_in_exch_deferred(CuTest *tc) {
+    evssl_ctx *sc = NULL, *cc = NULL;
+    int32_t rtn = _ssl_ctxs(&sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_ev_close_in_exch_deferred, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    cbs_ctx cbs;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.exch_cb = _incb_on_exch;
+    cbs.r_cb = _incb_drain;
+    cbs.c_cb = _incb_on_close;
+    ATOMIC_SET(&_g_incb_closed, 0);
+    ATOMIC_SET(&_g_incb_state, 0);
+    ev_ctx ev;
+    ev_init(&ev, 1, NULL);
+    uint64_t id;
+    int32_t lrtn = ev_listen(&ev, sc, "127.0.0.1", SSL_EXCH_CLOSE_PORT, &cbs, NULL, NULL, 0, &id);
+    MSLEEP(50);// listen 落地是异步的
+    SOCKET fd = INVALID_SOCK;
+    if (ERR_OK == lrtn) {
+        fd = _connect_local(SSL_EXCH_CLOSE_PORT, 0);
+    }
+    SSL *cli = NULL;
+    if (INVALID_SOCK != fd
+        && ERR_OK == sock_nonblock(fd)) {
+        cli = evssl_setfd(cc, fd);
+    }
+    int32_t i;
+    int32_t shake = ERR_FAILED;
+    for (i = 0; NULL != cli && i < 2000 && ERR_OK != shake; i++) {
+        shake = evssl_tryconn(cli);
+        if (ERR_FAILED == shake) {
+            break;
+        }
+        if (ERR_OK != shake) {
+            MSLEEP(1);
+        }
+    }
+    // 服务端收到客户端的 Finished 才算握手完成、调 exch_cb，比客户端这边晚一点
+    for (i = 0; ERR_OK == shake && i < 1000 && 0 == (int32_t)ATOMIC_GET(&_g_incb_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    // 先收拾再断言(同 _ssl_pair)
+    FREE_SSL(cli);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    evssl_free(sc);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, lrtn);
+    CuAssertIntEquals(tc, ERR_OK, shake);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_state));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_incb_closed));
+}
+#endif
 #if defined(EV_EPOLL)
 // 连接失败回调里关连接（只有 epoll 能造）：回调里重新注册事件失败才会真的关掉，kqueue 的注册攒到下一轮才提交、
 // 不会当场失败。这里替换整个 test 程序的 epoll_ctl：平时原样转发，置了 fd 后让它的下一次 MOD 失败；
@@ -1014,6 +1107,72 @@ static void test_ev_conn_fail_send(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cfail_closed));// 连接失败不走关闭回调
 }
 #endif
+static atomic_t _g_cpend_started;// 卡住 event 线程的回调已开始
+static atomic_t _g_cpend_gate;// 置 1 放行
+static atomic_t _g_cpend_conn;// 连接失败回调次数
+static atomic_t _g_cpend_closed;// 关闭回调次数
+static void _cpend_block(void *arg) {
+    (void)arg;
+    ATOMIC_SET(&_g_cpend_started, 1);
+    while (0 == ATOMIC_GET(&_g_cpend_gate)) {
+        MSLEEP(1);
+    }
+}
+static int32_t _cpend_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)ud;
+    if (ERR_OK != erro) {
+        ATOMIC_ADD(&_g_cpend_conn, 1);
+    }
+    return ERR_OK;
+}
+static void _cpend_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)erro; (void)ud;
+    ATOMIC_ADD(&_g_cpend_closed, 1);
+}
+// connect 还没出结果就关掉：先卡住 event 线程，让连接(、发送)、关闭几条命令一齐排在连接结果之前，
+// 验连接失败只报一次、不走关闭回调。dosend=1 时发送被拒先把连接拆了；dosend=0 直接 ev_close，走关闭
+// 连接中 socket 那条路(IOCP 上是 CancelIoEx 取消在途的 ConnectEx)。4231761 修的 kqueue 同批两条事件的 UAF
+// 要池满当场释放或同轮被复用才现形，本用例抓不到
+static void _close_while_connecting(CuTest *tc, int32_t dosend) {
+    cbs_ctx cbs;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.conn_cb = _cpend_on_conn;
+    cbs.r_cb = _incb_drain;// TCP 必须有 r_cb，否则 ev_connect 当场拒绝
+    cbs.c_cb = _cpend_on_close;
+    ATOMIC_SET(&_g_cpend_started, 0);
+    ATOMIC_SET(&_g_cpend_gate, 0);
+    ATOMIC_SET(&_g_cpend_conn, 0);
+    ATOMIC_SET(&_g_cpend_closed, 0);
+    ev_ctx ev;
+    ev_init(&ev, 1, NULL);
+    ev_defer_exec(&ev, 0, _cpend_block, NULL, NULL);
+    int32_t i;
+    for (i = 0; i < 1000 && 0 == ATOMIC_GET(&_g_cpend_started); i++) {
+        MSLEEP(1);
+    }
+    sock_ctx sk;
+    int32_t crtn = ev_connect(&ev, NULL, "127.0.0.1", CONN_PEND_PORT, &cbs, NULL, 0, INVALID_INDEX, &sk);
+    if (ERR_OK == crtn) {
+        if (dosend) {
+            ev_send(&ev, &sk, (void *)"x", 1, 1);
+        }
+        ev_close(&ev, &sk);
+    }
+    ATOMIC_SET(&_g_cpend_gate, 1);// 不论成败都得放行，否则 ev_free 等不到线程退出
+    for (i = 0; ERR_OK == crtn && i < 1000 && 0 == ATOMIC_GET(&_g_cpend_conn); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 同批的第二条事件、重复的回调都紧跟着来
+    ev_free(&ev);
+    // 断言放 ev_free 之后，理由同 test_ev_close_in_acp_conn_deferred
+    CuAssertIntEquals(tc, ERR_OK, crtn);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_cpend_conn));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_cpend_closed));
+}
+static void test_ev_close_while_connecting(CuTest *tc) {
+    _close_while_connecting(tc, 1);
+    _close_while_connecting(tc, 0);
+}
 // ev_defer_exec 用例：投出去的回调在哪个 event 线程上跑、同线程再投何时跑、停机时没跑成的走 fcb
 static ev_ctx *_g_defer_exec_ev;
 static ev_ctx *_g_defer_exec_ev2;
@@ -1894,7 +2053,9 @@ static void test_ev_udp_close_udfree(CuTest *tc) {
 static sock_ctx _g_pkt_sk;
 static atomic_t _g_pkt_freed_type;// 放掉时的 pktype，0xffff 表示还没放过
 static atomic_t _g_pkt_nfree;
-static atomic_t _g_pkt_step[3];// 切成同类型后的放掉次数、换类型后的放掉次数、换类型后 context 已空且 pktype 已换(1)；-1 还没跑
+// 切成同类型后的放掉次数、换类型后的放掉次数、换类型后 context 已空且 pktype 已换且解析状态与偏移已清零(1)、
+// 切成同类型后解析状态与偏移原样(1)；-1 还没跑
+static atomic_t _g_pkt_step[4];
 static void _pkt_udfree(void *arg) {
     ud_cxt *ud = arg;
     if (NULL != ud->context) {
@@ -1906,16 +2067,18 @@ static void _pkt_udfree(void *arg) {
 // 事件线程上当场切：先切成同一类型(不该放)，再换类型(按旧类型放一次)，然后关掉
 static void _pkt_switch_cb(void *arg) {
     ev_ctx *ev = arg;
-    ev_ud_pktype(ev, &_g_pkt_sk, PACK_CUSTZ_FIXED);
-    ATOMIC_SET(&_g_pkt_step[0], ATOMIC_GET(&_g_pkt_nfree));
-    ev_ud_pktype(ev, &_g_pkt_sk, PACK_NONE);
-    ATOMIC_SET(&_g_pkt_step[1], ATOMIC_GET(&_g_pkt_nfree));
     evsock_ctx *evsk = _evpub_sockel_get(&ev->watcher[_g_pkt_sk.index], _g_pkt_sk.fd);
     ud_cxt *ud = NULL == evsk ? NULL : _evpub_get_ud(evsk);
-    ATOMIC_SET(&_g_pkt_step[2], (NULL != ud && NULL == ud->context && PACK_NONE == ud->pktype) ? 1 : 0);
+    ev_ud_pktype(ev, &_g_pkt_sk, PACK_CUSTZ_FIXED);
+    ATOMIC_SET(&_g_pkt_step[0], ATOMIC_GET(&_g_pkt_nfree));
+    ATOMIC_SET(&_g_pkt_step[3], (NULL != ud && 3 == ud->status && 7 == ud->prot_offset) ? 1 : 0);
+    ev_ud_pktype(ev, &_g_pkt_sk, PACK_NONE);
+    ATOMIC_SET(&_g_pkt_step[1], ATOMIC_GET(&_g_pkt_nfree));
+    ATOMIC_SET(&_g_pkt_step[2], (NULL != ud && NULL == ud->context && PACK_NONE == ud->pktype
+                                 && 0 == ud->status && 0 == ud->prot_offset) ? 1 : 0);
     ev_close(ev, &_g_pkt_sk);
 }
-// 已挂协议上下文的连接切类型：按旧类型调一次 ud_free、context 置空，切成同一类型不动；
+// 已挂协议上下文的连接切类型：按旧类型调一次 ud_free、context 置空，解析状态与偏移清零，切成同一类型都不动；
 // 之后关闭再调 ud_free 是空操作，不重复放也不漏放
 static void test_ev_ud_pktype_udfree(CuTest *tc) {
     ev_ctx ev;
@@ -1928,10 +2091,12 @@ static void test_ev_ud_pktype_udfree(CuTest *tc) {
     ZERO(&ud, sizeof(ud));
     ud.pktype = PACK_CUSTZ_FIXED;
     ud.context = &_g_udfree_mark;
+    ud.status = 3;// 旧协议解到一半
+    ud.prot_offset = 7;
     ATOMIC_SET(&_g_pkt_freed_type, 0xffff);
     ATOMIC_SET(&_g_pkt_nfree, 0);
     int32_t i;
-    for (i = 0; i < 3; i++) {
+    for (i = 0; i < 4; i++) {
         ATOMIC_SET(&_g_pkt_step[i], (atomic_t)-1);
     }
     ATOMIC_SET(&_g_udp_nclose, 0);
@@ -1949,6 +2114,7 @@ static void test_ev_ud_pktype_udfree(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_pkt_step[0]));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_pkt_step[1]));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_pkt_step[2]));
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_pkt_step[3]));
     CuAssertIntEquals(tc, PACK_CUSTZ_FIXED, (int32_t)ATOMIC_GET(&_g_pkt_freed_type));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_pkt_nfree));// 关闭、隔离期满与 ev_free 再调都是空操作
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_udp_nclose));
@@ -2103,6 +2269,49 @@ static void test_task_ungrab_on_net(CuTest *tc) {
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_nfree_freed));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_nfree_idx));// 在 0 号 net 线程上放的
     CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_nfree_stopping));// 放在 ev_free 之前：关停等到了它
+}
+// 不在 net 线程上的最后一次 ungrab：摘表后在本线程当场 task_free，关停同样要等它做完才停 net 线程。
+// 裸线程不归 loader join：它把 nfreeing 减到 0 之后还要读 closing、叫醒 closing_waiter，主线程此后才往下走，
+// 还得停 worker、监控、net 与时间轮线程才到 FREE(loader)，窗口差几个数量级；产线上做这一步的线程都在那之前 join
+static loader_ctx *_g_offnet_loader;
+static atomic_t _g_offnet_started;// startup 跑过
+static atomic_t _g_offnet_in;// _argfree 已开始
+static atomic_t _g_offnet_stopping;// _argfree 末尾看到 ev_free 是否已开始；-1 还没跑到
+static void _offnet_startup(task_ctx *task) {
+    (void)task;
+    ATOMIC_SET(&_g_offnet_started, 1);
+}
+static void _offnet_argfree(void *arg) {
+    (void)arg;
+    ATOMIC_SET(&_g_offnet_in, 1);
+    MSLEEP(300);// 这期间主线程已进 loader_free
+    ATOMIC_SET(&_g_offnet_stopping, ATOMIC_GET(&_g_offnet_loader->netev.stopping));
+}
+static void _offnet_ungrab_th(void *arg) {
+    task_ungrab((task_ctx *)arg);
+}
+static void test_task_ungrab_off_net(CuTest *tc) {
+    ATOMIC_SET(&_g_offnet_started, 0);
+    ATOMIC_SET(&_g_offnet_in, 0);
+    ATOMIC_SET(&_g_offnet_stopping, -1);
+    loader_ctx *loader = loader_init(1, 1, 0);
+    _g_offnet_loader = loader;
+    task_ctx *task = task_new(loader, NULL, 0, NULL, _offnet_argfree, &_g_offnet_in);// arg 非 NULL 才调 _argfree
+    int32_t rtn = task_register(task, _offnet_startup, NULL);
+    int32_t i;
+    for (i = 0; ERR_OK == rtn && i < 1000
+         && (0 == ATOMIC_GET(&_g_offnet_started) || 1 != ATOMIC_GET(&task->ref)); i++) {
+        MSLEEP(1);
+    }
+    pthread_t th = thread_creat(_offnet_ungrab_th, task);
+    for (i = 0; i < 1000 && 0 == ATOMIC_GET(&_g_offnet_in); i++) {
+        MSLEEP(1);
+    }
+    loader_free(loader);
+    thread_join(th);
+    CuAssertIntEquals(tc, ERR_OK, rtn);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_offnet_in));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_g_offnet_stopping));// 放完才 ev_free
 }
 #if 0 != MAX_SENDQ_CNT
 static atomic_t _g_sendq_closed;// 服务端关闭回调次数
@@ -2677,6 +2886,390 @@ static void test_ev_ssl_merge_send(CuTest *tc) {
     CuAssertTrue(tc, SIZE_MAX == bad);
     CuAssertTrue(tc, SSL_MERGE_TOTAL == got);
 }
+// 下面三个 TLS 用例共用：服务端关闭回调次数与带的 close_type(-1 表示还没来)、握手完成次数与那条连接、
+// accept 回调里要不要抢先发一包
+static atomic_t _g_tls_closed;
+static atomic_t _g_tls_type;
+static atomic_t _g_tls_exch;
+static atomic_t _g_tls_early;
+static sock_ctx _g_tls_sk;
+static SSL *_g_tls_ssl;
+static void _tls_reset(void) {
+    ATOMIC_SET(&_g_tls_closed, 0);
+    ATOMIC_SET(&_g_tls_type, (atomic_t)-1);
+    ATOMIC_SET(&_g_tls_exch, 0);
+    ATOMIC_SET(&_g_tls_early, 0);
+}
+static int32_t _tls_on_acp(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
+    (void)ud;
+    if (0 != ATOMIC_GET(&_g_tls_early)) {
+        ev_send(ev, sk, "x", 1, 1);// 握手还没完成
+    }
+    return ERR_OK;
+}
+static int32_t _tls_on_exch(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl) {
+    (void)ev; (void)client; (void)ud;
+    _g_tls_sk = *sk;
+    _g_tls_ssl = ssl;
+    ATOMIC_ADD(&_g_tls_exch, 1);
+    return ERR_OK;
+}
+static void _tls_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)ud;
+    ATOMIC_SET(&_g_tls_type, (atomic_t)erro);
+    ATOMIC_ADD(&_g_tls_closed, 1);
+}
+// 非阻塞客户端握手，有界重试。cli 为 NULL 时直接失败
+static int32_t _tls_client_shake(SSL *cli) {
+    int32_t shake = ERR_FAILED;
+    for (int32_t i = 0; NULL != cli && i < 2000; i++) {
+        shake = evssl_tryconn(cli);
+        if (ERR_OK == shake || ERR_FAILED == shake) {
+            break;
+        }
+        MSLEEP(1);
+    }
+    return shake;
+}
+// 跑一段：连上 TLS 监听，按 mode 收尾，等服务端的关闭回调，回带关闭次数与 close_type。
+// 返回 0 表示前置步骤(连接、发送、握手)就没走通
+static int32_t _tls_close_run(evssl_ctx *cc, tls_close_mode mode, int32_t *nclosed, int32_t *type) {
+    char junk[] = "hello, plain text\r\n";
+    SSL *cli = NULL;
+    int32_t ok = 0;
+    int32_t i;
+    _tls_reset();
+    ATOMIC_SET(&_g_tls_early, TLS_CLOSE_EARLY == mode ? 1 : 0);
+    SOCKET fd = _connect_local(SSL_CLOSE_TYPE_PORT, 0);
+    if (INVALID_SOCK == fd) {
+        return 0;
+    }
+    if (TLS_CLOSE_PLAIN == mode) {
+        ok = (int32_t)(sizeof(junk) - 1) == (int32_t)send(fd, junk, (int32_t)(sizeof(junk) - 1), 0);
+    } else if (TLS_CLOSE_EARLY == mode) {
+        ok = 1;
+    } else {
+        if (ERR_OK == sock_nonblock(fd)) {
+            cli = evssl_setfd(cc, fd);
+        }
+        // 服务端收到客户端 Finished 才算握手完成，比客户端这边晚一点；等它进了数据期再收尾
+        if (ERR_OK == _tls_client_shake(cli)) {
+            for (i = 0; i < 1000 && 0 == ATOMIC_GET(&_g_tls_exch); i++) {
+                MSLEEP(1);
+            }
+            ok = 0 != ATOMIC_GET(&_g_tls_exch);
+        }
+        if (ok && TLS_CLOSE_NOTIFY == mode) {
+            evssl_shutdown(cli, fd, SHUT_WR);
+        } else if (ok) {
+            shutdown(fd, SHUT_WR);// 只送 FIN，不调 SSL_shutdown 就没有 close_notify
+        }
+    }
+    // 只关写、fd 留到服务端报完再关：带着没读的数据(服务端的 NewSessionTicket、alert)关 fd 会回 RST，被记成 ABORT
+    for (i = 0; ok && i < 2000 && 0 == ATOMIC_GET(&_g_tls_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    *nclosed = (int32_t)ATOMIC_GET(&_g_tls_closed);
+    *type = (int32_t)ATOMIC_GET(&_g_tls_type);
+    FREE_SSL(cli);
+    CLOSE_SOCK(fd);
+    return ok;
+}
+// TLS 连接几种结束方式报的 close_type，走事件层一路到关闭回调(evssl 层的分档见 test_evssl_read_close_notify)：
+// 明文客户端连 TLS 监听发垃圾 → 握手失败记 ABORT；数据期收到 close_notify → ORDERLY；
+// 数据期对端不发 close_notify 就关 → TRUNCATED；握手完成前 ev_send → 判握手期发送、本端断连记 LOCAL
+static void test_ev_ssl_close_type(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    evssl_ctx *sc = NULL, *cc = NULL;
+    uint64_t id;
+    int32_t ok[TLS_CLOSE_NMODE], nclosed[TLS_CLOSE_NMODE], type[TLS_CLOSE_NMODE];
+    int32_t rtn = _ssl_ctxs(&sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_ev_ssl_close_type, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    ZERO(&cbs, sizeof(cbs));
+    cbs.acp_cb = _tls_on_acp;
+    cbs.exch_cb = _tls_on_exch;
+    cbs.r_cb = _incb_drain;
+    cbs.c_cb = _tls_on_close;
+    ev_init(&ev, 1, NULL);
+    int32_t lrtn = ev_listen(&ev, sc, "127.0.0.1", SSL_CLOSE_TYPE_PORT, &cbs, NULL, NULL, 0, &id);
+    MSLEEP(50);// listen 落地是异步的
+    for (int32_t m = 0; m < TLS_CLOSE_NMODE; m++) {
+        ok[m] = 0;
+        nclosed[m] = 0;
+        type[m] = -1;
+        if (ERR_OK == lrtn) {
+            ok[m] = _tls_close_run(cc, (tls_close_mode)m, &nclosed[m], &type[m]);
+        }
+    }
+    // 先收拾再断言(同 _ssl_pair)
+    ev_free(&ev);
+    evssl_free(sc);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, lrtn);
+    for (int32_t m = 0; m < TLS_CLOSE_NMODE; m++) {
+        CuAssertTrue(tc, 0 != ok[m]);
+        CuAssertIntEquals(tc, 1, nclosed[m]);
+    }
+    CuAssertIntEquals(tc, CLOSE_TYPE_ABORT, type[TLS_CLOSE_PLAIN]);
+    CuAssertIntEquals(tc, CLOSE_TYPE_ORDERLY, type[TLS_CLOSE_NOTIFY]);
+    CuAssertIntEquals(tc, CLOSE_TYPE_TRUNCATED, type[TLS_CLOSE_TRUNC]);
+    CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, type[TLS_CLOSE_EARLY]);
+}
+// KeyUpdate 短写用例：服务端收到的客户端回包(0 表示还没收到)；造现场的结果：0 还没跑，1 已造出并已投出那几个
+// 1 字节包，-1 没停在写不动上(到了次数上限或握手函数出错)，-2 KeyUpdate 没排上，-3 没协商到 TLS1.3，
+// -4 卡在了填充字节上(这次没造出现场，用例跳过)
+static atomic_t _g_kus_back;
+static atomic_t _g_kus_state;
+static void _kus_on_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    char c;
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    if (1 == buffer_remove(buf, &c, 1)) {
+        ATOMIC_SET(&_g_kus_back, (atomic_t)(unsigned char)c);
+    }
+    buffer_drain(buf, buffer_size(buf));
+}
+// 在服务端连接的事件线程里造现场：发送缓冲调小，反复排 KeyUpdate 并只把它单独写出去(SSL_do_handshake)，
+// 直到写不动。每 SSL_KU_GAP 个夹 1 字节填充(直接 SSL_write，不经事件层)；卡在填充上就是没造出来。
+// 卡在 KeyUpdate 上时发送队列为空、没有挂起的应用写。随后逐字节投 SSL_KU_SHORT，事件层合并后一次 SSL_write 也不足 5 字节
+static void _kus_fill_cb(void *arg) {
+    ev_ctx *ev = arg;
+    SSL *ssl = _g_tls_ssl;
+    int32_t sndbuf = 4096;
+    if (TLS1_3_VERSION != SSL_version(ssl)) {
+        ATOMIC_SET(&_g_kus_state, (atomic_t)-3);
+        return;
+    }
+    (void)setsockopt(_g_tls_sk.fd, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, (socklen_t)sizeof(sndbuf));
+    int32_t rtn = 1;
+    for (int32_t i = 0; i < SSL_KU_FILL_MAX && 1 == rtn; i++) {
+        if (0 != i
+            && 0 == i % SSL_KU_GAP) {
+            ERR_clear_error();
+            if (1 != SSL_write(ssl, SSL_KU_FILL, 1)) {
+                ATOMIC_SET(&_g_kus_state, (atomic_t)-4);
+                return;
+            }
+        }
+        ev_keyupdate(ev, &_g_tls_sk, SSL_KEY_UPDATE_NOT_REQUESTED);// 同线程当场执行
+        if (!SSL_in_init(ssl)) {
+            ATOMIC_SET(&_g_kus_state, (atomic_t)-2);
+            return;
+        }
+        ERR_clear_error();// SSL_get_error 先看错误队列
+        rtn = SSL_do_handshake(ssl);
+    }
+    if (1 == rtn
+        || SSL_ERROR_WANT_WRITE != SSL_get_error(ssl, rtn)) {
+        ATOMIC_SET(&_g_kus_state, (atomic_t)-1);
+        return;
+    }
+    for (size_t i = 0; i < sizeof(SSL_KU_SHORT) - 1; i++) {
+        ev_send(ev, &_g_tls_sk, (void *)&SSL_KU_SHORT[i], 1, 1);
+    }
+    ATOMIC_SET(&_g_kus_state, 1);
+}
+// OpenSSL 挂着一条没写完的 KeyUpdate 握手记录(消息 5 字节)时，应用再 SSL_write 不足 5 字节，据称会撞上
+// "重试长度不得小于挂起量"那道守卫被判死、断连。本用例钉住"挂起的握手记录 + 短写"这个组合：服务端在发送缓冲
+// 写满、对端不读时排 KeyUpdate，再连发几个 1 字节包；之后客户端读空，断言连接没断、每个字节按序到达、
+// 反方向也还通。现场怎么造的见 _kus_fill_cb。跑红说明事件层发送前得先冲掉挂起的握手记录
+static void test_ev_ssl_keyupdate_short(CuTest *tc) {
+    evssl_ctx *sc = NULL, *cc = NULL;
+    int32_t rtn = _ssl_ctxs(&sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_ev_ssl_keyupdate_short, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    cbs_ctx cbs;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.exch_cb = _tls_on_exch;
+    cbs.r_cb = _kus_on_recv;
+    cbs.c_cb = _tls_on_close;
+    _tls_reset();
+    ATOMIC_SET(&_g_kus_back, 0);
+    ATOMIC_SET(&_g_kus_state, 0);
+    ev_ctx ev;
+    ev_init(&ev, 1, NULL);
+    uint64_t id;
+    int32_t lrtn = ev_listen(&ev, sc, "127.0.0.1", SSL_KU_SHORT_PORT, &cbs, NULL, NULL, 0, &id);
+    MSLEEP(50);// listen 落地是异步的
+    SOCKET fd = INVALID_SOCK;
+    if (ERR_OK == lrtn) {
+        fd = _connect_local(SSL_KU_SHORT_PORT, 4096);// 接收缓冲也调小，服务端很快就写不动
+    }
+    SSL *cli = NULL;
+    if (INVALID_SOCK != fd
+        && ERR_OK == sock_nonblock(fd)) {
+        cli = evssl_setfd(cc, fd);
+    }
+    int32_t shake = _tls_client_shake(cli);
+    int32_t i;
+    for (i = 0; ERR_OK == shake && i < 1000 && 0 == ATOMIC_GET(&_g_tls_exch); i++) {
+        MSLEEP(1);
+    }
+    int32_t state = 0;
+    if (ERR_OK == shake
+        && 0 != ATOMIC_GET(&_g_tls_exch)) {
+        ev_defer_exec(&ev, _g_tls_sk.index, _kus_fill_cb, NULL, &ev);
+        for (i = 0; i < 5000 && 0 == state; i++) {
+            MSLEEP(1);
+            state = (int32_t)ATOMIC_GET(&_g_kus_state);
+        }
+    }
+    char buf[256], got[sizeof(SSL_KU_SHORT) - 1];
+    size_t nrecv = 0, n;
+    if (1 == state) {
+        MSLEEP(50);// 让那几个字节先在缓冲还满着的时候试写一次
+        uint64_t t0 = nowms();
+        size_t k;
+        while (nrecv < sizeof(got) && nowms() - t0 < 10000) {
+            if (ERR_OK != evssl_read(cli, buf, sizeof(buf), &n)) {
+                break;// 服务端断了
+            }
+            if (0 == n) {
+                MSLEEP(1);
+                continue;
+            }
+            for (k = 0; k < n && nrecv < sizeof(got); k++) {
+                if (SSL_KU_FILL[0] != buf[k]) {
+                    got[nrecv++] = buf[k];
+                }
+            }
+        }
+    }
+    // 反方向：服务端还能读，连接才算活着
+    if (sizeof(got) == nrecv) {
+        buf[0] = 'z';
+        if (ERR_OK == evssl_send(cli, buf, 1, &n)
+            && 1 == n) {
+            for (i = 0; i < 2000 && 0 == ATOMIC_GET(&_g_kus_back); i++) {
+                MSLEEP(1);
+            }
+        }
+    }
+    // 客户端一关服务端就会报关闭，先记下
+    int32_t closed = (int32_t)ATOMIC_GET(&_g_tls_closed);
+    int32_t back = (int32_t)ATOMIC_GET(&_g_kus_back);
+    // 先收拾再断言(同 _ssl_pair)
+    FREE_SSL(cli);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    evssl_free(sc);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, lrtn);
+    CuAssertIntEquals(tc, ERR_OK, shake);
+    if (-4 == state) {
+        PRINT("skip test_ev_ssl_keyupdate_short, stalled on a filler byte this run.");
+        return;
+    }
+    CuAssertIntEquals_Msg(tc, "pending KeyUpdate scene not built", 1, state);
+    CuAssertIntEquals_Msg(tc, "dropped on short write with pending KeyUpdate", 0, closed);
+    CuAssertTrue(tc, sizeof(got) == nrecv);
+    CuAssertTrue(tc, 0 == memcmp(got, SSL_KU_SHORT, sizeof(got)));
+    CuAssertIntEquals(tc, 'z', back);
+}
+// 明文升级用例：切换之后还有数据交给 r_cb 的次数、所处阶段(0 等升级请求，1 已发起切换)、服务端切换用的 evssl
+static atomic_t _g_upg_late;
+static atomic_t _g_upg_phase;
+static evssl_ctx *_g_upg_sc;
+// 攒够"升级请求 + 多余字节"才动手：只吃掉请求，多余的留在接收缓冲里，回尾包并切 TLS(带内升级的正规写法)。
+// 切换之后再有数据交上来，就是那段残留混进了 TLS 通道
+static void _upg_on_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)client; (void)size; (void)ud;
+    if (0 != ATOMIC_GET(&_g_upg_phase)) {
+        ATOMIC_ADD(&_g_upg_late, 1);
+        buffer_drain(buf, buffer_size(buf));
+        return;
+    }
+    if (buffer_size(buf) < sizeof(SSL_UPG_REQ) - 1 + sizeof(SSL_UPG_EXTRA) - 1) {
+        return;
+    }
+    buffer_drain(buf, sizeof(SSL_UPG_REQ) - 1);
+    ATOMIC_SET(&_g_upg_phase, 1);
+    ev_send_ssl(ev, sk, SSL_UPG_GO, sizeof(SSL_UPG_GO) - 1, 1, 0, _g_upg_sc);
+}
+// 明文切 TLS 时接收缓冲里还留着没被吃掉的明文(STARTTLS 注入那一类)：客户端把升级请求和几个多余字节放在
+// 同一次 send 里，服务端只吃掉请求就用 ev_send_ssl 升级。契约(见 ev_ssl)：不切、关连接记 LOCAL，尾包照常送达，
+// 残留不会接在解密数据前面交给 r_cb。客户端照样去握手、握上了就再发一包，没守住时 r_cb 才真看得到拼接
+static void test_ev_ssl_upgrade_residue(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    evssl_ctx *sc = NULL, *cc = NULL;
+    SSL *cli = NULL;
+    SOCKET fd = INVALID_SOCK;
+    char req[] = SSL_UPG_REQ SSL_UPG_EXTRA;
+    char go[sizeof(SSL_UPG_GO)] = { 0 };
+    char data[] = "DATA";
+    uint64_t id;
+    size_t ngo = 0, n;
+    int32_t i, sent = 0;
+    int32_t rtn = _ssl_ctxs(&sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_ev_ssl_upgrade_residue, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
+    ZERO(&cbs, sizeof(cbs));
+    cbs.exch_cb = _tls_on_exch;
+    cbs.r_cb = _upg_on_recv;
+    cbs.c_cb = _tls_on_close;
+    _tls_reset();
+    ATOMIC_SET(&_g_upg_late, 0);
+    ATOMIC_SET(&_g_upg_phase, 0);
+    _g_upg_sc = sc;
+    ev_init(&ev, 1, NULL);
+    int32_t lrtn = ev_listen(&ev, NULL, "127.0.0.1", SSL_UPG_RESIDUE_PORT, &cbs, NULL, NULL, 0, &id);
+    MSLEEP(50);// listen 落地是异步的
+    if (ERR_OK == lrtn) {
+        fd = _connect_local(SSL_UPG_RESIDUE_PORT, 0);
+    }
+    if (INVALID_SOCK != fd) {
+        sent = (int32_t)send(fd, req, (int32_t)(sizeof(req) - 1), 0);// 一次 send：请求和多余字节落在同一段里
+    }
+    if ((int32_t)(sizeof(req) - 1) == sent
+        && ERR_OK == sock_nonblock(fd)) {
+        ngo = _recv_all(fd, go, sizeof(go) - 1);
+        cli = evssl_setfd(cc, fd);
+    }
+    if (ERR_OK == _tls_client_shake(cli)) {
+        // 没守住才走得到：服务端握完后再送一包，解密出来会接在残留后面交给 r_cb
+        for (i = 0; i < 1000 && 0 == ATOMIC_GET(&_g_tls_exch); i++) {
+            MSLEEP(1);
+        }
+        (void)evssl_send(cli, data, sizeof(data) - 1, &n);
+        for (i = 0; i < 500 && 0 == ATOMIC_GET(&_g_upg_late); i++) {
+            MSLEEP(1);
+        }
+    }
+    for (i = 0; i < 2000 && 0 == ATOMIC_GET(&_g_tls_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    int32_t closed = (int32_t)ATOMIC_GET(&_g_tls_closed);
+    int32_t type = (int32_t)ATOMIC_GET(&_g_tls_type);
+    int32_t exch = (int32_t)ATOMIC_GET(&_g_tls_exch);
+    int32_t late = (int32_t)ATOMIC_GET(&_g_upg_late);
+    // 先收拾再断言(同 _ssl_pair)
+    FREE_SSL(cli);
+    CLOSE_SOCK(fd);
+    ev_free(&ev);
+    evssl_free(sc);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, lrtn);
+    CuAssertIntEquals(tc, (int32_t)(sizeof(req) - 1), sent);
+    CuAssertTrue(tc, sizeof(go) - 1 == ngo);
+    CuAssertStrEquals(tc, SSL_UPG_GO, go);
+    CuAssertIntEquals_Msg(tc, "switched to TLS with residue in buffer", 0, exch);
+    CuAssertIntEquals_Msg(tc, "residue delivered after TLS switch", 0, late);
+    CuAssertIntEquals(tc, 1, closed);
+    CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, type);
+}
 #endif
 void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evpub_close_flush);
@@ -2687,11 +3280,15 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ev_udp_reuseaddr);
     SUITE_ADD_TEST(suite, test_ev_close_in_recv_deferred);
     SUITE_ADD_TEST(suite, test_ev_close_in_acp_conn_deferred);
+#if WITH_SSL
+    SUITE_ADD_TEST(suite, test_ev_close_in_exch_deferred);
+#endif
 #if defined(EV_EPOLL)
     SUITE_ADD_TEST(suite, test_ev_close_in_conn_fail);
     SUITE_ADD_TEST(suite, test_ev_conn_fail_epoll_del);
     SUITE_ADD_TEST(suite, test_ev_conn_fail_send);
 #endif
+    SUITE_ADD_TEST(suite, test_ev_close_while_connecting);
     SUITE_ADD_TEST(suite, test_ev_defer_exec_run);
     SUITE_ADD_TEST(suite, test_ev_defer_exec_free);
     SUITE_ADD_TEST(suite, test_ev_defer_exec_pass);
@@ -2712,6 +3309,7 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ev_udp_close_in_tick);
 #endif
     SUITE_ADD_TEST(suite, test_task_ungrab_on_net);
+    SUITE_ADD_TEST(suite, test_task_ungrab_off_net);
 #if 0 != MAX_SENDQ_CNT
     SUITE_ADD_TEST(suite, test_ev_sendq_overflow);
 #endif
@@ -2729,5 +3327,8 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_evssl_read_close_notify);
     SUITE_ADD_TEST(suite, test_ssl_write_wants_read);
     SUITE_ADD_TEST(suite, test_ev_ssl_merge_send);
+    SUITE_ADD_TEST(suite, test_ev_ssl_close_type);
+    SUITE_ADD_TEST(suite, test_ev_ssl_keyupdate_short);
+    SUITE_ADD_TEST(suite, test_ev_ssl_upgrade_residue);
 #endif
 }
