@@ -15,6 +15,7 @@
 #define _DBG_ORIGIN_SCHEME "http://"// 本服务只有明文，同源的 Origin 就是它 + Host
 #define _DBG_STATE_HDR  "X-Srey-Debug"// 改状态的入口要求带的头
 #define _DBG_STATE_BODY "forbidden: X-Srey-Debug: 1 required\n"
+#define _DBG_STATE_MW   "state_hdr"// 改状态的入口挂的路由级中间件名，见 _debug_state_guard
 // task 列表收集项（用于 /__alive 与广播）
 typedef struct dbg_task {
     name_t handle;   // task 句柄
@@ -47,7 +48,8 @@ static const char *_HELP =
     "GET  /{handle}/coros           list suspended coros clustered by stack\n"
     "GET  /{handle}/loglv/{lv}      set log level for ALL tasks (handle ignored; 0=FATAL 1=ERROR 2=WARN 3=INFO 4=DEBUG)\n"
     "POST /{handle}/inject          inject Lua; body=source, _U holds upvalues\n"
-    "POST /{handle}/hotfix/{module} hotfix module; body=patch source\n";
+    "POST /{handle}/hotfix/{module} hotfix module; body=patch source\n"
+    "gc / loglv / inject / hotfix require header X-Srey-Debug: 1\n";
 
 // qsort 比较器：按 name 升序，同名（含多个匿名 task）以 handle 定序，保证多次请求顺序稳定
 static int32_t _debug_cmp_name(const void *a, const void *b) {
@@ -207,7 +209,8 @@ static void _debug_forward(router_req *ctx, binary_ctx *cmd, int32_t needlua) {
     binary_free(cmd);
 }
 // GET / → 调试 UI 页面
-static void _debug_root(router_req *ctx) {
+static void _debug_root(router_req *ctx, void *arg) {
+    (void)arg;
     debug_console_ctx *dc = coro_get_arg(ctx->task);
     if (NULL != dc->html) {
         router_req_html(ctx, 200, dc->html, dc->html_len);
@@ -216,7 +219,8 @@ static void _debug_root(router_req *ctx) {
     }
 }
 // GET /__alive：每行 "handle\tname"（按 handle 升序）；供前端建 name→handle 映射 + 下拉
-static void _debug_alive(router_req *ctx) {
+static void _debug_alive(router_req *ctx, void *arg) {
+    (void)arg;
     dbg_task_arr tl;
     dbg_task_arr_init(&tl, 0);
     loader_task_each(ctx->task->loader, _debug_tasklist, &tl);
@@ -239,7 +243,8 @@ static void _debug_alive(router_req *ctx) {
 }
 // GET /__cmem：C 层全局内存分配统计（MEMORY_CHECK 关闭时全为 0）。
 // Lua 虚拟机的分配次数按调度轮并入，各 Lua task 正在跑的这一轮不在其中，运行期是近似值
-static void _debug_cmem(router_req *ctx) {
+static void _debug_cmem(router_req *ctx, void *arg) {
+    (void)arg;
     uint64_t nalloc = 0;
     uint64_t nfree = 0;
     mem_stat(&nalloc, &nfree);
@@ -250,51 +255,42 @@ static void _debug_cmem(router_req *ctx) {
     router_req_text(ctx, 200, buf, snprintf_lens(n, sizeof(buf)));
 }
 // GET /{handle}/help：静态用法文本
-static void _debug_help(router_req *ctx) {
+static void _debug_help(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, _HELP, strlen(_HELP));
 }
 // GET /{handle}/mem：查询目标 task Lua VM 的 GC 内存占用 (KB)
-static void _debug_mem(router_req *ctx) {
+static void _debug_mem(router_req *ctx, void *arg) {
+    (void)arg;
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "mem");
     _debug_forward(ctx, &cmd, 1);
 }
-// 改状态的四个入口(GC / 日志级别 / inject / hotfix)额外要求自定义头：旧浏览器跨站表单不带
-// Origin 与 Sec-Fetch-Site，但表单也发不出自定义头，fetch 带它又要先过 CORS 预检
-static int32_t _debug_state_allowed(router_req *ctx) {
-    size_t n = 0;
-    const char *v = router_req_header(ctx, _DBG_STATE_HDR, &n);
-    return (NULL != v && 1 == n && '1' == *v) ? 1 : 0;
-}
 // GET /{handle}/gc：令目标 task 强制 Lua GC，返回释放量
-static void _debug_gc(router_req *ctx) {
-    if (!_debug_state_allowed(ctx)) {
-        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
-        return;
-    }
+static void _debug_gc(router_req *ctx, void *arg) {
+    (void)arg;
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "gc");
     _debug_forward(ctx, &cmd, 1);
 }
 // GET /{handle}/stat：目标 task 各 mtype 的消息派发统计 (nmsg/cpu_ns/avg + 合计)
-static void _debug_stat(router_req *ctx) {
+static void _debug_stat(router_req *ctx, void *arg) {
+    (void)arg;
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "stat");
     _debug_forward(ctx, &cmd, 0);
 }
 // GET /{handle}/coros：列出目标 task 挂起的协程 (按栈聚类)
-static void _debug_coros(router_req *ctx) {
+static void _debug_coros(router_req *ctx, void *arg) {
+    (void)arg;
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "coros");
     _debug_forward(ctx, &cmd, 0);
 }
 // GET /{handle}/loglv/{lv}：lv 须 0-4；日志级别是进程级的一份原子变量，就地设掉即可，
 // URL 里的 {handle} 忽略
-static void _debug_loglv(router_req *ctx) {
-    if (!_debug_state_allowed(ctx)) {
-        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
-        return;
-    }
+static void _debug_loglv(router_req *ctx, void *arg) {
+    (void)arg;
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);
     // max 传 LOGLV_DEBUG，上界检查一并折进去；负号 / 空白 / 尾随垃圾都由 strtou64 挡掉
@@ -309,11 +305,8 @@ static void _debug_loglv(router_req *ctx) {
     router_req_text(ctx, 200, buf, snprintf_lens(rn, sizeof(buf)));
 }
 // POST /{handle}/inject：body 为 Lua 源码
-static void _debug_inject(router_req *ctx) {
-    if (!_debug_state_allowed(ctx)) {
-        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
-        return;
-    }
+static void _debug_inject(router_req *ctx, void *arg) {
+    (void)arg;
     size_t blen = 0;
     void *body = router_req_body(ctx, &blen);
     if (NULL == body || 0 == blen) {
@@ -326,11 +319,8 @@ static void _debug_inject(router_req *ctx) {
     _debug_forward(ctx, &cmd, 1);
 }
 // POST /{handle}/hotfix/{module}：body 为补丁源码
-static void _debug_hotfix(router_req *ctx) {
-    if (!_debug_state_allowed(ctx)) {
-        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
-        return;
-    }
+static void _debug_hotfix(router_req *ctx, void *arg) {
+    (void)arg;
     size_t blen = 0;
     void *body = router_req_body(ctx, &blen);
     if (NULL == body || 0 == blen) {
@@ -402,9 +392,22 @@ static int32_t _debug_allowed(router_req *ctx) {
         || (sizeof("none") - 1 == sn && 0 == memcmp(site, "none", sn));
 }
 // 全局中间件：挡 DNS rebinding 与跨站请求，不放行就回 403
-static void _debug_guard(router_req *ctx) {
+static void _debug_guard(router_req *ctx, void *arg) {
+    (void)arg;
     if (!_debug_allowed(ctx)) {
         router_req_text(ctx, 403, "forbidden\n", strlen("forbidden\n"));
+        return;
+    }
+    router_next(ctx);
+}
+// 路由级中间件，挂在改状态的四个入口(GC / 日志级别 / inject / hotfix)上，额外要求自定义头：
+// 旧浏览器跨站表单不带 Origin 与 Sec-Fetch-Site，但表单也发不出自定义头，fetch 带它又要先过 CORS 预检
+static void _debug_state_guard(router_req *ctx, void *arg) {
+    (void)arg;
+    size_t n = 0;
+    const char *v = router_req_header(ctx, _DBG_STATE_HDR, &n);
+    if (NULL == v || 1 != n || '1' != *v) {
+        router_req_text(ctx, 403, _DBG_STATE_BODY, sizeof(_DBG_STATE_BODY) - 1);
         return;
     }
     router_next(ctx);
@@ -421,7 +424,7 @@ static void _debug_startup(task_ctx *task) {
     task_recved(task, _net_recv);
     ctx->router = router_new();
     task_watch_closed(task, router_closed_watch, ctx->router);
-    router_use_fn(ctx->router, _debug_guard);
+    router_use_fn(ctx->router, _debug_guard, NULL);
     router_get(ctx->router, NULL, "/", _debug_root, NULL, 0);
     router_get(ctx->router, NULL, "/__alive", _debug_alive, NULL, 0);
     router_get(ctx->router, NULL, "/__cmem", _debug_cmem, NULL, 0);
@@ -429,12 +432,14 @@ static void _debug_startup(task_ctx *task) {
     router_get(ctx->router, NULL, "/{task}/mem", _debug_mem, NULL, 0);
     router_get(ctx->router, NULL, "/{task}/stat", _debug_stat, NULL, 0);
     router_get(ctx->router, NULL, "/{task}/coros", _debug_coros, NULL, 0);
-    // 这两条会改进程状态(投 GC 命令 / 改全局日志级别), 只收 GET 不连带 HEAD:
-    // router_get 注册的是 GET|HEAD, 那会让一次 HEAD 探测也真的执行下去
-    router_add(ctx->router, NULL, ROUTER_M_GET, "/{task}/gc", _debug_gc, NULL, 0);
-    router_add(ctx->router, NULL, ROUTER_M_GET, "/{task}/loglv/{lv}", _debug_loglv, NULL, 0);
-    router_post(ctx->router, NULL, "/{task}/inject", _debug_inject, NULL, 0);
-    router_post(ctx->router, NULL, "/{task}/hotfix/{module}", _debug_hotfix, NULL, 0);
+    // 以下四条会改进程状态，都挂 _debug_state_guard；中间件在 router_add 时按名取，define 须在前
+    const char *const state_mws[] = { _DBG_STATE_MW };
+    router_define(ctx->router, _DBG_STATE_MW, _debug_state_guard, NULL);
+    // gc / loglv 只收 GET 不连带 HEAD：router_get 注册的是 GET|HEAD，那会让一次 HEAD 探测也真的执行下去
+    router_add(ctx->router, NULL, ROUTER_M_GET, "/{task}/gc", _debug_gc, NULL, state_mws, 1);
+    router_add(ctx->router, NULL, ROUTER_M_GET, "/{task}/loglv/{lv}", _debug_loglv, NULL, state_mws, 1);
+    router_post(ctx->router, NULL, "/{task}/inject", _debug_inject, state_mws, 1);
+    router_post(ctx->router, NULL, "/{task}/hotfix/{module}", _debug_hotfix, state_mws, 1);
 }
 // 关闭回调：取消监听
 static void _debug_closing(task_ctx *task) {

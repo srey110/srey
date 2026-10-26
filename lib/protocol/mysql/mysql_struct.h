@@ -37,6 +37,8 @@ typedef struct mysql_ctx {
     int8_t parse_status;    // 当前解析状态（结果集解析进度）；不变式：非 0 时 mpack 必须非 NULL——
                             // 续接解析那条分支裸解引用 mpack->pack，故每条摘走 mpack 的路径都要归 0
     uint8_t cur_cmd;        // 当前正在处理的命令类型
+    uint8_t in_trans;       // 最近一个 OK / EOF 包说服务端处在事务里（SERVER_STATUS_IN_TRANS）；命令回 ERR 后置 1（说不准按在事务里算）；断开清零。
+                            // 网络线程解析时写，收应答的一方在拿到应答之后读
     uint16_t error_code;    // 最近一个经 mysql_record 记下的 ERR 包错误码；这三个与 error_msg 只在收应答的一方写
                             // (mysql_record / mysql_erro_clear)，网络线程不碰
     uint64_t last_id;       // 最近一个经 mysql_record 记下的 OK 包自增 ID

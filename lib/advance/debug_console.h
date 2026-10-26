@@ -11,7 +11,8 @@
 /// mem / gc / inject / hotfix 要 Lua VM，只转给 TASK_LUA，其余类型由本服务就地回不支持。
 /// 防跨站与 DNS rebinding，以下任一不满足即回 403：Host 须是 IP 字面量或 localhost(可带端口)，
 /// 用主机名访问会被拒；带 Origin 须等于 "http://" + Host；带 Sec-Fetch-Site 须是 same-origin 或 none，
-/// 故从别的网页点链接进来也会被拒，须在地址栏直接打开
+/// 故从别的网页点链接进来也会被拒，须在地址栏直接打开。
+/// 改状态的 gc / loglv / inject / hotfix 另须带 X-Srey-Debug: 1 头(curl 加 -H)，不带也回 403
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示不启动</param>

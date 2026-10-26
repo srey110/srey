@@ -92,16 +92,19 @@ static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     _harbor_respond(ctx, (ERR_OK != err) ? 400 : 200, &err, "application/octet-stream", rtn, rlen);
 }
 // POST /call：单向投递（task_call），不等响应
-static void _harbor_call(router_req *ctx) {
+static void _harbor_call(router_req *ctx, void *arg) {
+    (void)arg;
     _harbor_dispatch(ctx, 1);
 }
 // POST /request：请求-响应（coro_request，handler 处于协程栈可 yield），回带目标 task 响应
-static void _harbor_request(router_req *ctx) {
+static void _harbor_request(router_req *ctx, void *arg) {
+    (void)arg;
     _harbor_dispatch(ctx, 0);
 }
 // 全局中间件：带 Origin 的一律 403。srey 对端从不发 Origin，浏览器发 POST 一定带，借此挡网页跨站投递。
 // 旧浏览器的跨站表单不带 Origin，故再要求 Content-Type：自家客户端恒带它，表单发不出、fetch 带它要先过 CORS 预检
-static void _harbor_guard(router_req *ctx) {
+static void _harbor_guard(router_req *ctx, void *arg) {
+    (void)arg;
     size_t cn = 0;
     size_t on = 0;
     const char *ctype = router_req_header(ctx, "Content-Type", &cn);
@@ -127,7 +130,7 @@ static void _harbor_startup(task_ctx *harbor) {
     ctx->router = router_new();
     // 眼下没有流式路由，先接上免得以后加了漏掉
     task_watch_closed(harbor, router_closed_watch, ctx->router);
-    router_use_fn(ctx->router, _harbor_guard);
+    router_use_fn(ctx->router, _harbor_guard, NULL);
     // 参数校验不再单设中间件：dst/type 的存在性判定与 _harbor_dispatch 的 strtou64 重复，
     // 结果同一类坏请求分两处决定、给出两种行为（缺参数静默关连接 vs 畸形参数回 404）。
     // 统一收到 _harbor_dispatch 一处：一律 404

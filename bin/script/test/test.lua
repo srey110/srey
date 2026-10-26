@@ -25,6 +25,7 @@ local TESTS = {
     { "test.unit_fork",           "fork" },
     { "test.unit_coro",           "coro" },
     { "test.unit_serial",         "serial" },
+    { "test.unit_db_pool",        "db_pool_unit" },
     { "test.unit_yyjson",         "yyjson" },
     { "test.unit_multicast",      "multicast" },
     { "test.unit_udp_multicast",  "udp_multicast" },
@@ -47,6 +48,7 @@ local TESTS = {
     { "test.e2e_runner",          "e2e" },-- 用 srey.popen 跑 bin/py_assist/test_*.py 自动收集 exit code
     -- 集成测试(依赖 docker-compose)
     { "test.db_mysql",            "db_mysql" },
+    { "test.db_pool",             "db_pool" },
     { "test.db_pgsql",            "db_pgsql" },
     { "test.db_redis",            "db_redis" },
     { "test.db_mongo",            "db_mongo" },

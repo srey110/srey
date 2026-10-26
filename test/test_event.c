@@ -3041,11 +3041,15 @@ static void _kus_fill_cb(void *arg) {
     ev_ctx *ev = arg;
     SSL *ssl = _g_tls_ssl;
     int32_t sndbuf = 4096;
+    int32_t nodelay = 0;
     if (TLS1_3_VERSION != SSL_version(ssl)) {
         ATOMIC_SET(&_g_kus_state, (atomic_t)-3);
         return;
     }
     (void)setsockopt(_g_tls_sk.fd, SOL_SOCKET, SO_SNDBUF, (char *)&sndbuf, (socklen_t)sizeof(sndbuf));
+    // 造现场期间关掉 NODELAY：FreeBSD 回环对开着 NODELAY 的几十字节小报文不按接收窗口卡，
+    // 对端 4KB 接收缓冲也能一直收下去(实测 20 秒 131MB)，KeyUpdate 记录写多少都不堵
+    (void)setsockopt(_g_tls_sk.fd, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, (socklen_t)sizeof(nodelay));
     int32_t rtn = 1;
     for (int32_t i = 0; i < SSL_KU_FILL_MAX && 1 == rtn; i++) {
         if (0 != i
@@ -3069,6 +3073,8 @@ static void _kus_fill_cb(void *arg) {
         ATOMIC_SET(&_g_kus_state, (atomic_t)-1);
         return;
     }
+    nodelay = 1;// 现场造好就还原，后面的短写与平时一样逐个立即发出
+    (void)setsockopt(_g_tls_sk.fd, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, (socklen_t)sizeof(nodelay));
     for (size_t i = 0; i < sizeof(SSL_KU_SHORT) - 1; i++) {
         ev_send(ev, &_g_tls_sk, (void *)&SSL_KU_SHORT[i], 1, 1);
     }

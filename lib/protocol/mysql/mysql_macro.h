@@ -17,6 +17,7 @@
 
 #define MYSQL_LOCAL_INFILE         0xfb             // 本地文件加载标志
 #define MYSQL_HEAD_LENS            4                // MySQL 数据包头部长度（字节）
+#define SERVER_STATUS_IN_TRANS     1                // 服务器状态标志：处在事务里（含 autocommit=0 下已执行过语句）
 #define SERVER_MORE_RESULTS_EXISTS 8                // 服务器状态标志：还有更多结果集
 #define SERVER_SESSION_STATE_CHANGED 16384          // 服务器状态标志：OK 包尾部带 session 状态变更信息
 #define SESSION_TRACK_SCHEMA       0x01             // session 状态变更类型：当前库已变更

@@ -21,6 +21,7 @@
 #include "containers/slist.h"
 #include "containers/rbtree.h"
 #include "containers/rbtset.h"
+#include "containers/radix.h"
 #include "crypt/base64.h"
 #include "crypt/crc.h"
 #include "crypt/urlraw.h"

@@ -39,7 +39,7 @@ uint64_t file_mtime(const char *file);
 FILE *fopen_cloexec(const char *file, const char *mode);
 /// <summary>
 /// 读取常规文件全部；目录等非常规文件直接失败。所有失败路径都会置 errno，调用方可直接 strerror——
-/// 非常规文件、空文件（这两种为 EINVAL）与读取途中被截断本身不来自系统调用，函数会自己补上 errno，
+/// 非常规文件、空文件、长度放不进 size_t（这三种为 EINVAL）与读取途中被截断或追加（EIO）本身不来自系统调用，函数会自己补上 errno，
 /// 不会留下上一次系统调用的陈旧值
 /// </summary>
 /// <param name="file">路径</param>

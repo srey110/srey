@@ -568,13 +568,16 @@ erro:
     return ERR_FAILED;
 }
 // 用调用方给定的原始 URL 组 harbor POST 请求：harbor_pack 只会生成规范查询串，
-// 百分号编码 / 非法数值等畸形 URL 须在这里自行组包。origin 非 NULL 时带上 Origin 头
-static void *_harbor_pack_url(const char *url, const char *origin, void *data, size_t size, size_t *lens) {
+// 百分号编码 / 非法数值等畸形 URL 须在这里自行组包。origin 非 NULL 时带上 Origin 头，ctype 为 NULL 时不带 Content-Type
+static void *_harbor_pack_url(const char *url, const char *origin, const char *ctype,
+                              void *data, size_t size, size_t *lens) {
     binary_ctx bwriter;
     binary_init_write(&bwriter, 0, 0);
     http_pack_req(&bwriter, "POST", url);
     http_pack_head(&bwriter, "Connection", "Keep-Alive");
-    http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
+    if (NULL != ctype) {
+        http_pack_head(&bwriter, "Content-Type", ctype);
+    }
     if (NULL != origin) {
         http_pack_head(&bwriter, "Origin", origin);
     }
@@ -582,11 +585,11 @@ static void *_harbor_pack_url(const char *url, const char *origin, void *data, s
     *lens = bwriter.offset;
     return bwriter.data;
 }
-// 发一个 harbor 请求并断言响应状态码（code 为状态码字符串，如 "404"），不校验 body
-static int32_t _harbor_expect_code(task_ctx *task, sock_ctx *sk, const char *url, const char *origin,
-                                   void *data, size_t size, const char *code) {
+// 发一个 harbor 请求并断言响应状态码（code 为状态码字符串，如 "404"），不校验 body；ctype 同 _harbor_pack_url
+static int32_t _harbor_expect_ct(task_ctx *task, sock_ctx *sk, const char *url, const char *origin, const char *ctype,
+                                 void *data, size_t size, const char *code) {
     size_t rsize = 0;
-    void *pack = _harbor_pack_url(url, origin, data, size, &rsize);
+    void *pack = _harbor_pack_url(url, origin, ctype, data, size, &rsize);
     struct http_pack_ctx *rpack = coro_send(task, sk, pack, rsize, NULL, 0);
     if (NULL == rpack) {
         LOG_WARN("coro_send error.");
@@ -597,6 +600,11 @@ static int32_t _harbor_expect_code(task_ctx *task, sock_ctx *sk, const char *url
         return ERR_FAILED;
     }
     return ERR_OK;
+}
+// 带自家客户端那个 Content-Type 的常规版本
+static int32_t _harbor_expect_code(task_ctx *task, sock_ctx *sk, const char *url, const char *origin,
+                                   void *data, size_t size, const char *code) {
+    return _harbor_expect_ct(task, sk, url, origin, "application/octet-stream", data, size, code);
 }
 static int32_t _timeout_habor(task_ctx *task) {
     task_timeout_ctx *ctx = coro_get_arg(task);
@@ -678,7 +686,7 @@ static int32_t _timeout_habor(task_ctx *task) {
     SNPRINTF(qurl, sizeof(qurl), "/request?dst=%%3%c%s&type=%%3101", dstr[0], dstr + 1);
     dlen = randrange(1, 256);
     randstr(data, (size_t)dlen);
-    pack = _harbor_pack_url(qurl, NULL, data, (size_t)dlen, &rsize);
+    pack = _harbor_pack_url(qurl, NULL, "application/octet-stream", data, (size_t)dlen, &rsize);
     rpack = coro_send(task, &sk, pack, rsize, NULL, 0);
     if (NULL == rpack) {
         LOG_WARN("coro_send error.");
@@ -717,6 +725,12 @@ static int32_t _timeout_habor(task_ctx *task) {
     SNPRINTF(qurl, sizeof(qurl), "/request?dst=%s&type=101", dstr);
     if (ERR_OK != _harbor_expect_code(task, &sk, qurl, "http://evil.example", data, (size_t)dlen, "403")
         || ERR_OK != _harbor_expect_code(task, &sk, qurl, "null", data, (size_t)dlen, "403")) {
+        goto erro;
+    }
+    // 旧浏览器的跨站表单不带 Origin，靠 Content-Type 挡：缺了、换成表单发得出的类型都 403；比较不分大小写
+    if (ERR_OK != _harbor_expect_ct(task, &sk, qurl, NULL, NULL, data, (size_t)dlen, "403")
+        || ERR_OK != _harbor_expect_ct(task, &sk, qurl, NULL, "text/plain", data, (size_t)dlen, "403")
+        || ERR_OK != _harbor_expect_ct(task, &sk, qurl, NULL, "Application/Octet-Stream", data, (size_t)dlen, "200")) {
         goto erro;
     }
     ev_close(&task->loader->netev, &sk);

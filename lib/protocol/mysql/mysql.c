@@ -80,6 +80,7 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql->mpack = NULL;
     mysql->parse_status = 0;
     mysql->cur_cmd = 0;
+    mysql->in_trans = 0;
     mysql->recvlens = 0;
     sock_mark_closed(&mysql->client.sk);// 网络线程上写，理由见 sock_mark_closed
     ud->context = NULL;

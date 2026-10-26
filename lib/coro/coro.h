@@ -104,7 +104,7 @@ void *coro_wait(coro_ctx *co, uint64_t sess, int32_t tag, int32_t keep, uint32_t
 /// <returns>ERR_OK 唤醒了一个；ERR_FAILED 没有匹配的等待者(要不要另起协程由调用方定)</returns>
 int32_t coro_wake(coro_ctx *co, uint64_t sess, int32_t tag, void *payload);
 /// <summary>
-/// 广播(连接关闭用)：条目的 keep 先清零(不可逆)，再按顺序唤醒 sess 上全部等待者(不看标签)，
+/// 广播(连接关闭、资源池关闭或整体失败时叫醒全部等待者)：条目的 keep 先清零(不可逆)，再按顺序唤醒 sess 上全部等待者(不看标签)，
 /// spawn 非 NULL 时随后起一个协程跑它，最后重新查一次条目，空了才删。
 /// 起协程必须排在重新查询之前：新协程若在同一 sess 上挂起，得追加进这个已经 keep=0 的条目，
 /// 否则会新建一个 keep 条目，而该 sess 的广播已经过去，再没有路径能删它

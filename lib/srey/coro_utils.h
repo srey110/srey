@@ -8,6 +8,7 @@
 #include "protocol/smtp/smtp.h"
 #include "protocol/kcp/kcp.h"
 #include "protocol/websock.h"
+#include "srey/db_pool.h"
 
 // 结果集回调：一次 query / stmt_execute 可能产生多个结果集(多语句、CALL),库内部逐个回调。
 // mpack 只在本次回调内有效——下一个结果集的续读会让它失效,要留数据请就地取走
@@ -561,5 +562,75 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
 /// <param name="handle">新的目标 task 句柄</param>
 /// <returns>同 kcp_handle</returns>
 int32_t kcp_bind_task(task_ctx *task, struct kcp_ctx *kcp, name_t handle);
+/// <summary>
+/// MySQL 连接池操作表，直接传给 db_pool_new。
+/// 归还时服务端还处在事务里（最近一个 OK / EOF 包带 SERVER_STATUS_IN_TRANS）就先发 ROLLBACK，回滚不成则断开
+/// </summary>
+/// <returns>静态操作表</returns>
+const db_pool_ops *mysql_pool_ops(void);
+/// <summary>
+/// PostgreSQL 连接池操作表，直接传给 db_pool_new。
+/// 事务没结束（就绪状态不是 'I'）就归还的连接先发 ROLLBACK，回滚不成则断开（服务端随断连回滚）
+/// </summary>
+/// <returns>静态操作表</returns>
+const db_pool_ops *pgsql_pool_ops(void);
+/// <summary>
+/// MongoDB 连接池操作表，直接传给 db_pool_new
+/// </summary>
+/// <returns>静态操作表</returns>
+const db_pool_ops *mongo_pool_ops(void);
+/// <summary>
+/// SMTP 连接池操作表，直接传给 db_pool_new
+/// </summary>
+/// <returns>静态操作表</returns>
+const db_pool_ops *smtp_pool_ops(void);
+/// <summary>
+/// 借一条 MySQL 连接：db_pool_get 的类型化包装
+/// </summary>
+/// <param name="pool">池</param>
+/// <param name="timeout_ms">等空闲连接的毫秒数；0=一直等</param>
+/// <param name="rtn">出参：db_pool_get 的返回（ERR_OK / DB_POOL_TIMEDOUT / ERR_FAILED）；必须非 NULL，函数内裸解引用</param>
+/// <returns>借到的连接；rtn 不是 ERR_OK 时为 NULL</returns>
+static inline mysql_ctx *mysql_pool_get(db_pool_ctx *pool, uint32_t timeout_ms, int32_t *rtn) {
+    void *conn = NULL;
+    *rtn = db_pool_get(pool, timeout_ms, &conn);
+    return (mysql_ctx *)conn;
+}
+/// <summary>
+/// 借一条 PostgreSQL 连接：db_pool_get 的类型化包装
+/// </summary>
+/// <param name="pool">池</param>
+/// <param name="timeout_ms">等空闲连接的毫秒数；0=一直等</param>
+/// <param name="rtn">出参：db_pool_get 的返回（ERR_OK / DB_POOL_TIMEDOUT / ERR_FAILED）；必须非 NULL，函数内裸解引用</param>
+/// <returns>借到的连接；rtn 不是 ERR_OK 时为 NULL</returns>
+static inline pgsql_ctx *pgsql_pool_get(db_pool_ctx *pool, uint32_t timeout_ms, int32_t *rtn) {
+    void *conn = NULL;
+    *rtn = db_pool_get(pool, timeout_ms, &conn);
+    return (pgsql_ctx *)conn;
+}
+/// <summary>
+/// 借一条 MongoDB 连接：db_pool_get 的类型化包装
+/// </summary>
+/// <param name="pool">池</param>
+/// <param name="timeout_ms">等空闲连接的毫秒数；0=一直等</param>
+/// <param name="rtn">出参：db_pool_get 的返回（ERR_OK / DB_POOL_TIMEDOUT / ERR_FAILED）；必须非 NULL，函数内裸解引用</param>
+/// <returns>借到的连接；rtn 不是 ERR_OK 时为 NULL</returns>
+static inline mongo_ctx *mongo_pool_get(db_pool_ctx *pool, uint32_t timeout_ms, int32_t *rtn) {
+    void *conn = NULL;
+    *rtn = db_pool_get(pool, timeout_ms, &conn);
+    return (mongo_ctx *)conn;
+}
+/// <summary>
+/// 借一条 SMTP 连接：db_pool_get 的类型化包装
+/// </summary>
+/// <param name="pool">池</param>
+/// <param name="timeout_ms">等空闲连接的毫秒数；0=一直等</param>
+/// <param name="rtn">出参：db_pool_get 的返回（ERR_OK / DB_POOL_TIMEDOUT / ERR_FAILED）；必须非 NULL，函数内裸解引用</param>
+/// <returns>借到的连接；rtn 不是 ERR_OK 时为 NULL</returns>
+static inline smtp_ctx *smtp_pool_get(db_pool_ctx *pool, uint32_t timeout_ms, int32_t *rtn) {
+    void *conn = NULL;
+    *rtn = db_pool_get(pool, timeout_ms, &conn);
+    return (smtp_ctx *)conn;
+}
 
 #endif//CORO_UTILS_H_

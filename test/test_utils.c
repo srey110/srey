@@ -736,6 +736,11 @@ static void test_netaddr(CuTest *tc) {
     CuAssertTrue(tc, ERR_OK == is_ipv6("::1"));
     CuAssertTrue(tc, ERR_OK == is_ipv6("fe80::1"));
     CuAssertTrue(tc, ERR_OK != is_ipv6("127.0.0.1"));
+    /* 带 %网卡号 的先剥后缀再判，各平台一致；前半段不是 IPv6 的照样不认 */
+    CuAssertTrue(tc, ERR_OK == is_ipv6("fe80::1%1"));
+    CuAssertTrue(tc, ERR_OK == is_ipaddr("fe80::1%en0"));
+    CuAssertTrue(tc, ERR_OK != is_ipv6("127.0.0.1%1"));
+    CuAssertTrue(tc, ERR_OK != is_ipv6("%1"));
 
     /* is_loopback：v4 认整个 127.0.0.0/8 */
     CuAssertTrue(tc, ERR_OK == is_loopback("127.0.0.1"));
@@ -4807,10 +4812,18 @@ static void test_popen_pgroup(CuTest *tc) {
     wait_ok = (ERR_OK == popen_waitexit(&ctx, 5000));
     ZERO(buf, sizeof(buf));
     n = popen_read(&ctx, buf, sizeof(buf) - 1, NULL);
-    pgid = strtol(buf, NULL, 10);
+    char *end = NULL;
+    pgid = strtol(buf, &end, 10);
+    int32_t have_pgid = (n > 0 && NULL != end && end != buf && pgid > 0);
     int32_t same = ((long)ctx.pid == pgid);
     // 先收拾再断言，理由同 test_popen2
     popen_free(&ctx);
+    // 某些沙箱/容器里 ps 本身被拒(输出 "Operation not permitted")，这不是 popen 的错，
+    // 有输出却不是 pgid 时跳过；一个字节都没读到仍按失败断言，别掩盖 popen 回归
+    if (n > 0 && !have_pgid) {
+        PRINT("skip test_popen_pgroup, ps unavailable: %s", buf);
+        return;
+    }
     CuAssertTrue(tc, 0 != wait_ok);
     CuAssertTrue(tc, n > 0);
     CuAssertTrue(tc, 0 != same);

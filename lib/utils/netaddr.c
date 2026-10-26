@@ -28,9 +28,6 @@ int32_t is_ipv4(const char *ip) {
 // 让 is_ipv6 / is_ipaddr 两个平台一致。网卡号只当不透明后缀，不校验
 int32_t is_ipv6(const char *ip) {
     char buf[IP_LENS];
-    if (NULL == ip || '\0' == *ip) {
-        return ERR_FAILED;
-    }
     const char *scope = strchr(ip, '%');
     if (NULL != scope) {
         size_t lens = (size_t)(scope - ip);

@@ -33,7 +33,16 @@ static void _coro_task_after_run(void *owner) {
     task_ungrab((task_ctx *)owner);
 }
 static const char *_coro_task_tagstr(int32_t tag) {
-    return CORO_TAG_RECV_ANY == tag ? "RECV_ANY" : message_str((msg_type)tag);
+    switch (tag) {
+    case CORO_TAG_DB_POOL:
+        return "DB_POOL";
+    case CORO_TAG_DB_POOL_TICK:
+        return "DB_POOL_TICK";
+    case CORO_TAG_RECV_ANY:
+        return "RECV_ANY";
+    default:
+        return message_str((msg_type)tag);
+    }
 }
 static const coro_hooks _coro_task_hooks = {
     _coro_task_run, _coro_task_before_run, _coro_task_after_run, _coro_task_tagstr
@@ -98,8 +107,14 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
 // 给每个到期的等待者造 TIMEOUT 消息：同一条复用，每个到期者只用到它下次挂起
 static void *_coro_timeout_msg(void *ud, uint64_t sess, int32_t tag) {
     coro_task_timeout *tmo = (coro_task_timeout *)ud;
-    LOG_INFO("task %s message type %s session %"PRIu64" timeout.",
-             _NAME_OR(tmo->task->name), _coro_task_tagstr(tag), sess);
+    // 池借连接的超时是常态（等 DB 连接），别用 INFO 刷日志；维护协程的定时到期不打
+    if (CORO_TAG_DB_POOL == tag) {
+        LOG_DEBUG("task %s message type %s session %"PRIu64" timeout.",
+                  _NAME_OR(tmo->task->name), _coro_task_tagstr(tag), sess);
+    } else if (CORO_TAG_DB_POOL_TICK != tag) {
+        LOG_INFO("task %s message type %s session %"PRIu64" timeout.",
+                 _NAME_OR(tmo->task->name), _coro_task_tagstr(tag), sess);
+    }
     tmo->msg.sess = sess;
     return &tmo->msg;
 }

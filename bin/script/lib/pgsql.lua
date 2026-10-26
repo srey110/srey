@@ -11,6 +11,7 @@ local reader = require("srey.pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 失败原因与 err 契约，见该模块头部
 local pub    = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 local PGPACK_TYPE = ppub.PACK_TYPE
+local PG_IDLE <const> = 73-- 就绪状态 'I'：空闲、不在事务里
 
 -- pgsql_ctx：PostgreSQL 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
@@ -325,6 +326,18 @@ end
 ---@return string database 数据库名
 function ctx:get_db()
     return self.pg:get_db()
+end
+
+---连接池归还时调：事务没结束（就绪状态不是 'I'）就回滚，'E' 状态下 ROLLBACK 照样被接受
+---@return boolean ok 本来就空闲或回滚成功；false 时连接池会断开这条连接
+function ctx:reset_session()
+    if PG_IDLE == self:readyforquery() then
+        return true
+    end
+    if not self:query("ROLLBACK") then
+        return false
+    end
+    return PG_IDLE == self:readyforquery()
 end
 
 ---返回服务端就绪状态字符（ASCII 整数）

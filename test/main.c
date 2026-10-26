@@ -40,6 +40,7 @@
 #include "task_coro_extra.h"
 #include "task_fork.h"
 #include "task_serial.h"
+#include "task_pool.h"
 #include "task_multicast.h"
 #include "task_udp_multicast.h"
 #include "task_kcp.h"
@@ -280,6 +281,7 @@ int main(int argc, char *argv[]) {
         {"coro_extra", 0},
         {"fork_test", 0},
         {"serial_test", 0},
+        {"pool_test", 0},
         {"multicast_test", 0},
         {"udp_multicast_test", 0},
         {"multi_call_test", 0},
@@ -489,6 +491,8 @@ int main(int argc, char *argv[]) {
     task_fork_start(g_loader, "fork_test", _get_name_val(testlist, "fork_test"));
     //coro_serial_new / coro_serial_call 单元测试
     task_serial_start(g_loader, "serial_test", _get_name_val(testlist, "serial_test"));
+    //db_pool_ctx 单元测试（假连接）
+    task_pool_start(g_loader, "pool_test", _get_name_val(testlist, "pool_test"));
     //ev_send_multi 多播测试：端口 15012 避开其他服务
     task_multicast_start(g_loader, "multicast_test", 15012, _get_name_val(testlist, "multicast_test"));
     //ev_udp_join/leave/ttl/loop UDP 多播测试：端口 15014

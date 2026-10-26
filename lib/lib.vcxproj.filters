@@ -442,11 +442,20 @@
     <ClInclude Include="srey\coro_utils.h">
       <Filter>srey</Filter>
     </ClInclude>
+    <ClInclude Include="srey\db_pool.h">
+      <Filter>srey</Filter>
+    </ClInclude>
     <ClInclude Include="srey\prots_wrap.h">
       <Filter>srey</Filter>
     </ClInclude>
     <ClInclude Include="srey\coro_task.h">
       <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="advance\router_pub.h">
+      <Filter>advance</Filter>
+    </ClInclude>
+    <ClInclude Include="advance\router_tree.h">
+      <Filter>advance</Filter>
     </ClInclude>
     <ClInclude Include="advance\router.h">
       <Filter>advance</Filter>
@@ -482,6 +491,9 @@
       <Filter>containers</Filter>
     </ClInclude>
     <ClInclude Include="containers\rbtset.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\radix.h">
       <Filter>containers</Filter>
     </ClInclude>
     <ClInclude Include="protocol\kcp\ikcp.h">
@@ -765,6 +777,9 @@
     <ClCompile Include="srey\coro_utils.c">
       <Filter>srey</Filter>
     </ClCompile>
+    <ClCompile Include="srey\db_pool.c">
+      <Filter>srey</Filter>
+    </ClCompile>
     <ClCompile Include="srey\prots_wrap.c">
       <Filter>srey</Filter>
     </ClCompile>
@@ -775,6 +790,9 @@
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="advance\router.c">
+      <Filter>advance</Filter>
+    </ClCompile>
+    <ClCompile Include="advance\router_tree.c">
       <Filter>advance</Filter>
     </ClCompile>
     <ClCompile Include="advance\harbor.c">

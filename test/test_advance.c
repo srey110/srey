@@ -216,27 +216,124 @@ static void test_router_seg_index(CuTest *tc) {
  * 不会越过下游里截断的那层。共用一个游标时，第二次会直接跳到 handler，鉴权类中间件就被绕过 */
 static int32_t _next_gate_n;
 static int32_t _next_handler_n;
-static void _next_twice(router_req *ctx) {
+static void _next_twice(router_req *ctx, void *arg) {
+    (void)arg;
     router_next(ctx);
     router_next(ctx);
 }
-static void _next_gate(router_req *ctx) {
+static void _next_gate(router_req *ctx, void *arg) {
+    (void)arg;
     (void)ctx;
     _next_gate_n++;// 恒截断：不调 router_next
 }
-static void _next_pass(router_req *ctx) {
+static void _next_pass(router_req *ctx, void *arg) {
+    (void)arg;
     router_next(ctx);
 }
-static void _next_handler(router_req *ctx) {
+static void _next_handler(router_req *ctx, void *arg) {
+    (void)arg;
     (void)ctx;
     _next_handler_n++;
+}
+static void _arg_step(router_req *ctx, void *arg) {
+    *(int32_t *)ctx->user = *(int32_t *)arg;
+}
+static void _arg_route(router_req *ctx, void *arg) {
+    *(int32_t *)ctx->user = *(int32_t *)arg;
+}
+static void test_router_step_arg(CuTest *tc) {
+    router_req ctx;
+    int32_t got = 0;
+    int32_t want = 7;
+    ZERO(&ctx, sizeof(ctx));
+    ctx.user = &got;
+    ctx.chain[0].cb = _arg_step;
+    ctx.chain[0].arg = &want;
+    ctx.chain_n = 1;
+    router_next(&ctx);
+    CuAssertIntEquals(tc, 7, got);
+}
+static int32_t _fallback_n;
+static void _fallback_handler(router_req *ctx, void *arg) {
+    _fallback_n = *(int32_t *)arg;
+    ctx->responded = 1;
+}
+static void test_router_fallback(CuTest *tc) {
+    router_ctx *r = router_new();
+    router_req ctx;
+    int32_t tag = 23;
+    ZERO(&ctx, sizeof(ctx));
+    CuAssertIntEquals(tc, ERR_OK, router_set_no_route(r, _fallback_handler, &tag));
+    CuAssertIntEquals(tc, ERR_OK, router_exec(r, -1, &ctx));
+    CuAssertIntEquals(tc, 23, _fallback_n);
+    CuAssertIntEquals(tc, 1, ctx.responded);
+
+    ZERO(&ctx, sizeof(ctx));
+    CuAssertIntEquals(tc, ERR_OK, router_set_no_method(r, _fallback_handler, &tag));
+    CuAssertIntEquals(tc, ERR_OK, router_exec(r, -4, &ctx));
+    CuAssertIntEquals(tc, 23, _fallback_n);
+    // -3(未知方法) 不是 -4(路径在而方法不对)，不存在的 NoMethod 也不能兜它
+    CuAssertIntEquals(tc, ERR_FAILED, router_exec(r, -3, &ctx));
+
+    CuAssertIntEquals(tc, ERR_OK, router_set_no_route(r, NULL, NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, router_exec(r, -1, &ctx));
+    CuAssertIntEquals(tc, ERR_FAILED, router_exec(r, -5, &ctx));
+    router_free(r);
+}
+static void _arg_mw(router_req *ctx, void *arg) {
+    *(int32_t *)ctx->user += *(int32_t *)arg;
+    router_next(ctx);
+}
+static void _arg_add(router_req *ctx, void *arg) {
+    *(int32_t *)ctx->user += *(int32_t *)arg;
+}
+static void test_router_chain_api(CuTest *tc) {
+    router_ctx *r = router_new();
+    router_req ctx;
+    router_step got;
+    int32_t sum = 0;
+    int32_t mw_arg = 3;
+    int32_t h_arg = 4;
+    router_step mws[1];
+    mws[0].cb = _arg_mw;
+    mws[0].arg = &mw_arg;
+    router_entry *e = router_add_steps(r, NULL, ROUTER_M_GET, "/steps", _arg_add, &h_arg, mws, 1);
+    CuAssertPtrNotNull(tc, e);
+    CuAssertIntEquals(tc, 2, router_chain_count(r, 0));
+    CuAssertIntEquals(tc, ERR_OK, router_chain_at(r, 0, 0, &got));
+    CuAssertTrue(tc, got.cb == _arg_mw && got.arg == &mw_arg);
+    CuAssertIntEquals(tc, ERR_OK, router_chain_at(r, 0, 1, &got));
+    CuAssertTrue(tc, got.cb == _arg_add && got.arg == &h_arg);
+    // r / out 为 NULL、下标越界都拒
+    CuAssertIntEquals(tc, -1, router_chain_count(NULL, 0));
+    CuAssertIntEquals(tc, ERR_FAILED, router_chain_at(NULL, 0, 0, &got));
+    CuAssertIntEquals(tc, ERR_FAILED, router_chain_at(r, 0, 0, NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, router_chain_at(r, 0, 2, &got));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.user = &sum;
+    CuAssertIntEquals(tc, ERR_OK, router_exec(r, 0, &ctx));
+    CuAssertIntEquals(tc, 7, sum);
+    router_free(r);
+}
+static void test_router_route_arg(CuTest *tc) {
+    router_ctx *r = router_new();
+    router_req ctx;
+    int32_t got = 0;
+    int32_t want = 11;
+    router_entry *e = router_add(r, NULL, ROUTER_M_GET, "/arg", _arg_route, &want, NULL, 0);
+    CuAssertPtrNotNull(tc, e);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.user = &got;
+    CuAssertIntEquals(tc, ERR_OK, router_exec(r, 0, &ctx));
+    CuAssertIntEquals(tc, 11, got);
+    router_free(r);
 }
 static void test_router_next_twice(CuTest *tc) {
     router_req ctx;
     ZERO(&ctx, sizeof(ctx));
-    ctx.chain[0] = _next_twice;
-    ctx.chain[1] = _next_gate;
-    ctx.chain[2] = _next_handler;
+    ctx.chain[0].cb = _next_twice;
+    ctx.chain[1].cb = _next_gate;
+    ctx.chain[2].cb = _next_handler;
     ctx.chain_n = 3;
     _next_gate_n = 0;
     _next_handler_n = 0;
@@ -245,7 +342,7 @@ static void test_router_next_twice(CuTest *tc) {
     CuAssertIntEquals(tc, 0, _next_handler_n);
     CuAssertIntEquals(tc, 0, ctx.chain_i);
     /* 换成放行的一层：两次 next 各把下游完整跑一遍 */
-    ctx.chain[1] = _next_pass;
+    ctx.chain[1].cb = _next_pass;
     router_next(&ctx);
     CuAssertIntEquals(tc, 2, _next_handler_n);
     CuAssertIntEquals(tc, 0, ctx.chain_i);
@@ -286,8 +383,13 @@ static void test_router_allow(CuTest *tc) {
     CuAssertTrue(tc, 0 == ctx.allow);
     ZERO(&ctx, sizeof(ctx));
     ctx.url = &url;
+    ctx.allow = ROUTER_M_GET;
+    ctx.params_n = 3;
+    ctx.method = ROUTER_M_HEAD;
     CuAssertIntEquals(tc, -3, router_match_index(r, "FROB", 4, "/u/7", 4, &ctx));
     CuAssertTrue(tc, 0 == ctx.allow);
+    CuAssertIntEquals(tc, 0, ctx.params_n);
+    CuAssertIntEquals(tc, 0, (int32_t)ctx.method);
     ZERO(&ctx, sizeof(ctx));
     ctx.url = &url;
     CuAssertTrue(tc, router_match_index(r, "POST", 4, "/u/7", 4, &ctx) >= 0);
@@ -351,6 +453,14 @@ static void test_router_wild_param(CuTest *tc) {
     CuAssertTrue(tc, router_match_index(r, "GET", 3, "/static", 7, &ctx) >= 0);
     CuAssertPtrEquals(tc, NULL, (void *)router_req_param(&ctx, "*", &n));
 
+    // 通配零段命中：前面的 {id} 仍要绑上，"*" 不应出现
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/asset/42", 9, &ctx) >= 0);
+    v = router_req_param(&ctx, "id", &n);
+    CuAssertTrue(tc, NULL != v && 2 == n && 0 == memcmp(v, "42", 2));
+    CuAssertPtrEquals(tc, NULL, (void *)router_req_param(&ctx, "*", &n));
+
     ZERO(&ctx, sizeof(ctx));
     ctx.url = &url;
     CuAssertTrue(tc, router_match_index(r, "GET", 3, "/asset/42/x/y", 13, &ctx) >= 0);
@@ -372,12 +482,12 @@ static void test_router_register(CuTest *tc) {
     const char *undef[] = { "nosuch" };
 
     CuAssertPtrNotNull(tc, r);
-    CuAssertIntEquals(tc, ERR_FAILED, router_define(r, "x", NULL));
-    CuAssertIntEquals(tc, ERR_FAILED, router_use_fn(r, NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, router_define(r, "x", NULL, NULL));
+    CuAssertIntEquals(tc, ERR_FAILED, router_use_fn(r, NULL, NULL));
     CuAssertIntEquals(tc, ERR_FAILED, router_use(r, "x"));
-    CuAssertIntEquals(tc, ERR_OK, router_define(r, "x", _next_pass));
+    CuAssertIntEquals(tc, ERR_OK, router_define(r, "x", _next_pass, NULL));
     CuAssertIntEquals(tc, ERR_OK, router_use(r, "x"));
-    CuAssertIntEquals(tc, ERR_OK, router_use_fn(r, _next_pass));
+    CuAssertIntEquals(tc, ERR_OK, router_use_fn(r, _next_pass, NULL));
 
     CuAssertPtrEquals(tc, NULL, (void *)router_get(r, NULL, "/undef", _next_handler, undef, 1));
     router_group_root(&g, "/gu", undef, 1);
@@ -426,9 +536,14 @@ void test_advance(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_harbor_pack_wire);
     SUITE_ADD_TEST(suite, test_router_shadow_mask);
     SUITE_ADD_TEST(suite, test_router_seg_index);
+    SUITE_ADD_TEST(suite, test_router_step_arg);
+    SUITE_ADD_TEST(suite, test_router_chain_api);
+    SUITE_ADD_TEST(suite, test_router_route_arg);
+    SUITE_ADD_TEST(suite, test_router_fallback);
     SUITE_ADD_TEST(suite, test_router_next_twice);
     SUITE_ADD_TEST(suite, test_router_allow);
     SUITE_ADD_TEST(suite, test_router_target_form);
     SUITE_ADD_TEST(suite, test_router_wild_param);
     SUITE_ADD_TEST(suite, test_router_register);
+    test_router_tree(suite);
 }

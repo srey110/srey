@@ -48,7 +48,7 @@ static const char *const SMTP_CODE_DATA[] = { "354" };
 static const char *const SMTP_CODE_QUIT[] = { "221" };
 
 static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt, int32_t *nodata) {
-    // 按解析出的地址族选绑定地址：is_ipv6 不认带 %网卡 的链路本地地址
+    // 按解析出的地址族选绑定地址
     netaddr_ctx srv;
     if (ERR_OK != netaddr_set(&srv, dns_get_ip(), 53)) {
         return NULL;
@@ -1451,4 +1451,119 @@ int32_t kcp_bind_task(task_ctx *task, struct kcp_ctx *kcp, name_t handle) {
     }
     coro_unkeep(coro_task_co(task), kcp->sess);
     return ERR_OK;
+}
+// 四套 ready 都另看连接标识：空闲期间对端关掉的，网络线程已把 fd 置失效（理由见 sock_mark_closed），
+// established 却还留着，不看它就会借出一条死连接。MySQL 另看 parse_status：结果集收到一半时不能交给别人
+static int32_t _mysql_pool_ready(void *conn) {
+    mysql_ctx *mysql = (mysql_ctx *)conn;
+    return 0 != mysql->established && 0 == mysql->parse_status && !sock_is_invalid(&mysql->client.sk);
+}
+static int32_t _mysql_pool_connect(task_ctx *task, void *conn) {
+    if (0 != _mysql_pool_ready(conn)) {
+        return ERR_OK;// 已连着且没有半截结果集；mysql_connect 这时会拆掉重连，不能调
+    }
+    mysql_ctx *mysql = (mysql_ctx *)conn;
+    return mysql_connect(task, mysql);
+}
+static int32_t _mysql_pool_ping(void *conn) {
+    return mysql_ping((mysql_ctx *)conn);
+}
+static void _mysql_pool_quit(void *conn) {
+    mysql_quit((mysql_ctx *)conn);
+}
+// 归还时还在事务里（没提交 / 回滚，或 autocommit=0 下执行过语句）：回滚掉，不让下一个人接着跑在里面
+static int32_t _mysql_pool_reset(void *conn) {
+    mysql_ctx *mysql = (mysql_ctx *)conn;
+    if (0 == mysql->in_trans) {
+        return ERR_OK;
+    }
+    if (ERR_OK != mysql_query(mysql, "ROLLBACK", NULL, NULL, NULL)) {
+        return ERR_FAILED;
+    }
+    return 0 == mysql->in_trans ? ERR_OK : ERR_FAILED;
+}
+static const db_pool_ops _mysql_pool_ops = {
+    _mysql_pool_ready, _mysql_pool_connect, _mysql_pool_ping, _mysql_pool_quit, _mysql_pool_reset
+};
+const db_pool_ops *mysql_pool_ops(void) {
+    return &_mysql_pool_ops;
+}
+// 事务没结束的连接由归还时的 reset 回滚，回滚不成即断开，故 ready 只看连没连着
+static int32_t _pgsql_pool_ready(void *conn) {
+    pgsql_ctx *pg = (pgsql_ctx *)conn;
+    return 0 != pg->established && !sock_is_invalid(&pg->sk);
+}
+static int32_t _pgsql_pool_connect(task_ctx *task, void *conn) {
+    if (0 != _pgsql_pool_ready(conn)) {
+        return ERR_OK;// 同 MySQL：已连着不重连
+    }
+    pgsql_ctx *pg = (pgsql_ctx *)conn;
+    return pgsql_connect(task, pg);
+}
+static int32_t _pgsql_pool_ping(void *conn) {
+    return pgsql_ping((pgsql_ctx *)conn);
+}
+static void _pgsql_pool_quit(void *conn) {
+    pgsql_quit((pgsql_ctx *)conn);
+}
+// 归还时事务没结束（'T' / 'E'）：回滚到空闲；'E' 状态下 ROLLBACK 照样被接受
+static int32_t _pgsql_pool_reset(void *conn) {
+    pgsql_ctx *pg = (pgsql_ctx *)conn;
+    if ('I' == pg->readyforquery) {
+        return ERR_OK;
+    }
+    pgpack_ctx *p = pgsql_query(pg, "ROLLBACK");
+    return (NULL != p && PGPACK_OK == p->type && 'I' == pg->readyforquery) ? ERR_OK : ERR_FAILED;
+}
+static const db_pool_ops _pgsql_pool_ops = {
+    _pgsql_pool_ready, _pgsql_pool_connect, _pgsql_pool_ping, _pgsql_pool_quit, _pgsql_pool_reset
+};
+const db_pool_ops *pgsql_pool_ops(void) {
+    return &_pgsql_pool_ops;
+}
+static int32_t _mongo_pool_ready(void *conn) {
+    mongo_ctx *mongo = (mongo_ctx *)conn;
+    return 0 != mongo->established && !sock_is_invalid(&mongo->sk);
+}
+static int32_t _mongo_pool_connect(task_ctx *task, void *conn) {
+    if (0 != _mongo_pool_ready(conn)) {
+        return ERR_OK;// 同 MySQL：已连着不重连
+    }
+    mongo_ctx *mongo = (mongo_ctx *)conn;
+    return mongo_connect(task, mongo);
+}
+static int32_t _mongo_pool_ping(void *conn) {
+    return mongo_ping((mongo_ctx *)conn);
+}
+static void _mongo_pool_quit(void *conn) {
+    mongo_quit((mongo_ctx *)conn);
+}
+static const db_pool_ops _mongo_pool_ops = {
+    _mongo_pool_ready, _mongo_pool_connect, _mongo_pool_ping, _mongo_pool_quit, NULL
+};
+const db_pool_ops *mongo_pool_ops(void) {
+    return &_mongo_pool_ops;
+}
+static int32_t _smtp_pool_ready(void *conn) {
+    smtp_ctx *smtp = (smtp_ctx *)conn;
+    return 0 != smtp->established && !sock_is_invalid(&smtp->sk);
+}
+static int32_t _smtp_pool_connect(task_ctx *task, void *conn) {
+    if (0 != _smtp_pool_ready(conn)) {
+        return ERR_OK;// 同 MySQL：已连着不重连
+    }
+    smtp_ctx *smtp = (smtp_ctx *)conn;
+    return smtp_connect(task, smtp);
+}
+static int32_t _smtp_pool_ping(void *conn) {
+    return smtp_ping((smtp_ctx *)conn);
+}
+static void _smtp_pool_quit(void *conn) {
+    smtp_quit((smtp_ctx *)conn);
+}
+static const db_pool_ops _smtp_pool_ops = {
+    _smtp_pool_ready, _smtp_pool_connect, _smtp_pool_ping, _smtp_pool_quit, NULL
+};
+const db_pool_ops *smtp_pool_ops(void) {
+    return &_smtp_pool_ops;
 }

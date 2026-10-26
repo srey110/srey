@@ -1,5 +1,5 @@
 -- HTTP 路由/中间件框架，仿 Laravel 风格。
--- 路径参数使用 {param} 语法，可选参数 {param?}，末尾通配 *。
+-- 路径参数使用 {param} 语法，可选参数 {param?}（只能在末尾，后面只许再跟可选参数或 *），末尾通配 *。
 -- 快速上手:
 --   local Route = require("advance.router")
 --   -- 具名中间件注册（可选）
@@ -52,6 +52,7 @@
 --   ctx.query   -- 查询参数 {page="1"}
 --   ctx.body    -- 请求体（可能为 nil）；惰性取，见下
 --   ctx.headers -- 请求头 table（键为线格式原样大小写）；惰性取，见下
+--   ctx.allow   -- 仅 NoMethod 回退里有：Allow 头的值
 --   ctx:header(name) -- 按名字取单个头，大小写无关；不物化头表
 -- ctx 的生命周期只在本次 dispatch 内（与 C 侧 router_req 同口径）：body / headers 首次访问
 -- 时才从底层 pack 物化，而 pack 出了 dispatch 就没了。要带进 srey.fork / timer 延迟用，
@@ -242,6 +243,7 @@ end
 ---@field path    string             请求路径，如 "/user/42"
 ---@field params  table<string,string>  路由路径参数，dispatch 匹配后填充
 ---@field query   table<string,string>  URL 查询参数
+---@field allow   string?            仅 NoMethod 回退里有：Allow 头的值（如 "GET, HEAD"），自己回 405 时带上
 ---@field body    string?            请求体，无则为 nil。惰性物化：首次访问才从 pack 取，
 ---                                  出了 dispatch 再读一律为 nil（详见模块头）
 ---@field headers table<string,string>  请求头，键为线格式原样大小写，取值须大小写一致；
@@ -393,17 +395,20 @@ Router.__index = Router
 function Router.new()
     local r = setmetatable({
         _c_router  = _srey_router_new(), -- C 路由器（持有路径段数组，匹配在 C 侧完成）
-        -- [C索引] = {handler, mws, raw}。C 侧索引只增不回收也没有删除接口，add 成功即在此写入，
+        -- [C索引] = RouteEntry。C 侧索引只增不回收也没有删除接口，add 成功即在此写入，
         -- 中间只有建表，正常不会留空洞；_match_ctx 仍兜一层（取不到按 500 处理）
         _routes    = {},
+        _fns       = {},    -- C 链里的 arg 下标 → Lua 函数；路由/中间件都放这里
+        _fn_ids    = {},    -- Lua 函数 → _fns 下标，同一函数复用同一个下标
         _named     = {},    -- 命名路由索引：name → entry，由 :name("key") 写入，Router:url 反查
-        _global_mw = {},    -- 全局中间件列表，对所有路由生效
         _mw_reg    = {},    -- 具名中间件注册表：name → fun，由 :define() 写入
         _stack     = {},    -- 分组上下文栈，group() 进入时压栈、退出时弹栈
         _mw_version = 0,    -- 全局中间件版本号，use() 追加时自增，route chain 缓存据此失效重建
         -- 正在接收的流式请求：[skid] = {sk, route, ctx}。skid 进程内唯一且不复用，见 _st_drop
         _streams   = {},
         _recv_cb   = nil,   -- recv_cb() 首次调用时建的接收回调，之后复用
+        _no_route  = nil,   -- 404 回退编好的 step，no_route() 设置
+        _no_method = nil,   -- 405 回退编好的 step，no_method() 设置
     }, Router)
     return r
 end
@@ -473,17 +478,27 @@ end
 
 ---@class RouteEntry
 ---@field raw     string                          注册时的完整路径（含 prefix），调试用
----@field handler fun(ctx:Ctx)?                   普通路由的处理函数，流式路由为 nil。注册后只读：首次 dispatch 会把它连同
----                                               中间件拼成执行链缓存起来，之后改这个字段不会生效
+---@field _c_idx  integer                         C 路由索引
+---@field _stream boolean                         是否流式路由（链尾要补准入哨兵）
 ---@field on_chunk fun(ctx:Ctx, slice:integer, data:string?)?  流式路由的数据回调，普通路由为 nil。
----                                               与 handler 一样只认 function，不收带 __call 的可调用对象
----@field mws     fun(ctx:Ctx,next:fun())[]        路由级中间件列表（分组中间件已静态合并）。
----                                               同 handler，注册后只读
+---                                               只认 function，不收带 __call 的可调用对象
 ---@field _segs   (string|RouterSeg)[]             注册时 C 侧解析好的段序列，Router:url 回填占位符用
 ---@field _name   string?                         命名路由键，由 :name("key") 写入
 ---@field _step   fun(ctx:Ctx, nxt:fun())?          dispatch 缓存的执行链（全局中间件+路由级+handler），已编成从第一层跑起的 step，按 step(ctx, _nop) 调
 ---@field _chain_ver integer?                     _step 对应的全局中间件版本号，与 Router._mw_version 不等即重建
 ---@field name    fun(self:RouteEntry,n:string):RouteEntry  链式命名方法
+
+-- 同一个 Lua 函数只占一个下标；C 链里存的是这个下标，不直接存函数指针
+function Router:_fn_index(fn)
+    local idx = self._fn_ids[fn]
+    if idx then
+        return idx
+    end
+    idx = #self._fns + 1
+    self._fns[idx] = fn
+    self._fn_ids[fn] = idx
+    return idx
+end
 
 -- 路由注册的共同实现；handler 与 on_chunk 恰有一个非 nil，决定这条是普通派发还是流式接收。
 -- 返回 entry，支持 :name() 链式调用
@@ -506,27 +521,26 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
             _mw_add(mws, seen, self:_resolve(extra_mws[i]))
         end
     end
-    -- 去重由 C 侧 router_add_index 做：它按 (已注册项的掩码把新掩码整个包住, 匹配意义上的
-    -- 段序列) 比对，能覆盖这里用字符串 key 看不出来的两类——先注册的 ANY /x 遮住后注册的
-    -- GET /x、/u/{id} 与 /u/{uid} 参数名不同但路由等价。dispatch 取首条命中，被遮的永远够不着
-    local ok, code, csegs = self._c_router:add(method, full)
+    -- 路由级中间件和 handler 都交给 C；C 负责链顺序与匹配，Lua 只保留函数表
+    local mw_idxs = {}
+    for i = 1, #mws do
+        mw_idxs[i] = self:_fn_index(mws[i])
+    end
+    local hidx = self:_fn_index(cb)
+    local ok, code, csegs = self._c_router:add_steps(method, full, hidx, mw_idxs, nil ~= on_chunk)
     if not ok then
-        if -2 == code then
-            WARN("router: %s '%s' is shadowed by an existing route, this registration is ignored.", method, full)
-        else
-            WARN("router: path '%s' rejected.", full)
-        end
+        WARN("router: path '%s' rejected.", full)
         return _bad_entry
     end
     local idx = code
     local router = self
     local entry = {
-        raw      = full,     -- 原始完整路径字符串（含前缀），调试用
-        handler  = handler,  -- 普通路由处理函数 fun(ctx)；流式路由为 nil
-        on_chunk = on_chunk, -- 流式路由数据回调 fun(ctx, slice, data)；普通路由为 nil
-        mws      = mws,      -- 路由级中间件列表（分组中间件已静态合并进来）
-        _segs    = csegs,    -- C 侧解析好的段序列，Router:url 回填占位符用
-        _name    = nil,      -- 命名路由键，由 :name("key") 写入
+        raw       = full,     -- 原始完整路径字符串（含前缀），调试用
+        on_chunk  = on_chunk, -- 流式路由数据回调 fun(ctx, slice, data)；普通路由为 nil
+        _c_idx    = idx,      -- C 路由索引
+        _stream   = nil ~= on_chunk,
+        _segs     = csegs,    -- C 侧解析好的段序列，Router:url 回填占位符用
+        _name     = nil,      -- 命名路由键，由 :name("key") 写入
     }
     -- :name("key") 链式命名路由
     entry.name = function(_, n)
@@ -549,20 +563,23 @@ function Router:_add_stream(method, path, on_chunk, extra_mws)
     return self:_add_common(method, path, nil, on_chunk, extra_mws)
 end
 
--- 拼执行链（全局中间件 → 路由级 → 末位）、编成 step 缓存到 route：末位普通路由是 handler，
--- 流式路由是准入哨兵。注册期即静态确定，仅当全局中间件版本变化（use() 追加）时重建
+-- 从 C 取链顺序（全局 → 路由级 → handler），流式路由末尾补准入哨兵。
+-- 全局中间件版本变化时重建缓存；路由本身的链在注册时已确定。
 local function _chain_of(self, route)
     if route._chain_ver == self._mw_version then
         return route._step
     end
+    local idxs = self._c_router:chain(route._c_idx)
+    assert(idxs, "router chain lookup failed")
     local chain = {}
-    for _, mw in ipairs(self._global_mw) do
-        chain[#chain + 1] = mw
+    for i = 1, #idxs do
+        local fn = self._fns[idxs[i]]
+        assert(fn, "router chain function missing")
+        chain[i] = fn
     end
-    for _, mw in ipairs(route.mws) do
-        chain[#chain + 1] = mw
+    if route._stream then
+        chain[#chain + 1] = _admit
     end
-    chain[#chain + 1] = route.handler or _admit
     local step = _compile_chain(chain)
     route._step = step
     route._chain_ver = self._mw_version
@@ -572,8 +589,22 @@ end
 ---注册全局中间件，对所有路由生效
 ---@param mw string|fun(ctx:Ctx, next:fun()) 中间件名称或函数
 function Router:use(mw)
-    self._global_mw[#self._global_mw + 1] = self:_resolve(mw)
+    local fn = self:_resolve(mw)
+    local idx = self:_fn_index(fn)
+    assert(self._c_router:use_step(idx), "router use failed")
     self._mw_version = self._mw_version + 1
+end
+
+---设置 404 回退 handler；fn 为 nil 时清除。只跑这一个函数，不经全局 / 路由级中间件；ctx 带 path / query，没有 params
+---@param fn fun(ctx:Ctx)?
+function Router:no_route(fn)
+    self._no_route = (nil ~= fn) and _compile_chain({ _assert_callable(fn, "no_route handler") }) or nil
+end
+
+---设置 405 回退 handler；fn 为 nil 时清除。OPTIONS 自动应答不走这里；中间件口径同 no_route，ctx 另带 allow（Allow 头的值）
+---@param fn fun(ctx:Ctx)?
+function Router:no_method(fn)
+    self._no_method = (nil ~= fn) and _compile_chain({ _assert_callable(fn, "no_method handler") }) or nil
 end
 
 ---注册 GET 路由；同时接住 HEAD——HEAD 的语义就是"要 GET 的头不要体"，分开注册会让 HEAD 落 404。
@@ -771,13 +802,45 @@ end
 ---@return Ctx? ctx 请求上下文；非 HTTP 包或未匹配返回 nil（响应已发）
 ---@return RouteEntry? route 命中的路由条目
 local function _match_ctx(self, sk, pack, client, close_on_fail)
-    -- ok 为 nil 表示非 HTTP 包（如连接/断开事件），直接忽略。未命中时 path 那一位是 Allow 的值
+    -- ok 为 nil 表示非 HTTP 包（如连接/断开事件），直接忽略。未命中时往后挪一位：
+    -- path 那一位是 Allow 的值，接着是 path 与 query（400 与未知方法没有这两位）
     local ok, code, method, version, close, path, query, idx, params = self._c_router:match_pack(pack)
     if nil == ok then
         return nil
     end
     if not ok then
-        _send_fail(method, sk, code, path)
+        local allow = path
+        local step
+        if 404 == code then
+            step = self._no_route
+        elseif 405 == code and nil ~= query then
+            step = self._no_method-- 未知方法不带 path 那一位，只回 405，不走 NoMethod
+        end
+        if step then
+            -- 不带 _close：回退回完响应后由下面统一关，免得关两次
+            local fctx = setmetatable({
+                sk      = sk,
+                client  = client,
+                method  = method,
+                version = version,
+                path    = query,
+                query   = idx,
+                allow   = allow,
+                _pack   = pack,
+                responded = false,
+            }, CtxMeta)
+            local fok = srey.xpcall(step, fctx, _nop)
+            fctx._pack = nil
+            if not fctx.responded then
+                if fok then
+                    _send_fail(method, sk, code, allow)
+                else
+                    _fallback_500(fctx)-- 回退自己抛错同普通路由回 500
+                end
+            end
+        else
+            _send_fail(method, sk, code, allow)
+        end
         if close_on_fail or close then
             srey.close(sk)
         end

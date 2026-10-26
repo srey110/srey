@@ -4,6 +4,12 @@
 #include "srey/task.h"
 #include "coro/coro.h"
 
+// 连接池等待者的唤醒 tag（等待标记，不是消息类型）：只用于 coro_wait / coro_wake 的队头匹配，
+// 取负值避免与 MSG_TYPE 混用；-MSG_TYPE_* 那段小负数已被 coro_task.c 的 CORO_TAG_RECV_ANY 用了，故从 -0x40000000 起。coro_dump 里显示为 DB_POOL
+#define CORO_TAG_DB_POOL (-0x40000000)
+// 连接池维护协程的定时等待 tag：每秒到期一次是常态，超时不打日志；coro_dump 里显示为 DB_POOL_TICK
+#define CORO_TAG_DB_POOL_TICK (-0x40000001)
+
 // sess 唤醒约定:客户端 connect 默认 setsess=1(ud.sess=skid),coro_ssl_exchange/coro_handshaked/coro_send/coro_slice
 // 等挂起等 skid 消息的 API 会被自动唤醒;服务端 accept 连接 ud.sess=0,须设好会话键,否则这些等待挂到超时:
 // listen 带 NETEV_SESS 则 accept 时就设好;事后 coro_sync 是异步生效的,只适合服务端先发数据的协议(客户端先发的首包会落到回调上)。

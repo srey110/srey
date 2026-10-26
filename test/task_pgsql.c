@@ -13,6 +13,7 @@ typedef struct task_pgsql_args {
     pgsql_ctx pg;
     pgsql_ctx pg_ssl;// TLS 那一段另建的连接
     pgsql_ctx pg_bad;// 错口令建链用
+    pgsql_ctx pg_pool;// 连接池用例的那条连接
 }task_pgsql_args;
 
 // 重建测试表，使每次运行从干净状态开始
@@ -641,6 +642,89 @@ static int32_t _auth_fail(task_ctx *task, task_pgsql_args *arg) {
     return ERR_OK;
 }
 
+// 连接池：事务没结束就归还('T')，池先回滚再交给下一个人；同一条连接、不重连，回到空闲('I')
+static int32_t _pool_txn(task_ctx *task, task_pgsql_args *arg) {
+    if (ERR_OK != pgsql_init(&arg->pg_pool, arg->host, arg->port, NULL,
+                             arg->user, arg->password, arg->database)) {
+        LOG_ERROR("pgsql pool: pgsql_init error.");
+        return ERR_FAILED;
+    }
+    db_pool_cfg cfg;
+    ZERO(&cfg, sizeof(cfg));
+    cfg.cap = 1;
+    db_pool_ctx *pool = db_pool_new(task, pgsql_pool_ops(), &cfg);
+    if (NULL == pool
+        || ERR_OK != db_pool_add(pool, &arg->pg_pool)) {
+        LOG_ERROR("pgsql pool: setup error.");
+        if (NULL != pool) {
+            db_pool_free(pool);
+        }
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    int32_t grtn;
+    pgsql_ctx *pg = pgsql_pool_get(pool, 2000, &grtn);
+    if (NULL == pg) {
+        LOG_ERROR("pgsql pool: first get error %d.", grtn);
+        goto out;
+    }
+    pgpack_ctx *p = pgsql_query(pg, "begin");
+    if (NULL == p || PGPACK_OK != p->type || 'T' != pg->readyforquery) {
+        LOG_ERROR("pgsql pool: begin error.");
+        db_pool_put(pool, pg);
+        goto out;
+    }
+    db_pool_put(pool, pg);
+    pg = pgsql_pool_get(pool, 2000, &grtn);
+    if (NULL == pg) {
+        LOG_ERROR("pgsql pool: second get error %d.", grtn);
+        goto out;
+    }
+    db_pool_stat st;
+    db_pool_stat_get(pool, &st);
+    p = pgsql_query(pg, "select 1");
+    if (1 != st.connects
+        || NULL == p || PGPACK_OK != p->type
+        || 'I' != pg->readyforquery) {
+        LOG_ERROR("pgsql pool: connects=%u, want 1; conn not idle after reuse.", st.connects);
+        db_pool_put(pool, pg);
+        goto out;
+    }
+    // 事务里语句报错（'E'）后归还：reset 照样回滚到空闲，不重连
+    p = pgsql_query(pg, "begin");
+    if (NULL == p || 'T' != pg->readyforquery) {
+        LOG_ERROR("pgsql pool: second begin error.");
+        db_pool_put(pool, pg);
+        goto out;
+    }
+    (void)pgsql_query(pg, "select * from srey_pool_no_such_table");
+    if ('E' != pg->readyforquery) {
+        LOG_ERROR("pgsql pool: readyforquery=%c after failed stmt, want E.", pg->readyforquery);
+        db_pool_put(pool, pg);
+        goto out;
+    }
+    db_pool_put(pool, pg);
+    pg = pgsql_pool_get(pool, 2000, &grtn);
+    if (NULL == pg) {
+        LOG_ERROR("pgsql pool: third get error %d.", grtn);
+        goto out;
+    }
+    db_pool_stat_get(pool, &st);
+    p = pgsql_query(pg, "select 1");
+    if (1 != st.connects
+        || NULL == p || PGPACK_OK != p->type
+        || 'I' != pg->readyforquery) {
+        LOG_ERROR("pgsql pool: connects=%u, want 1; conn not idle after failed txn.", st.connects);
+        db_pool_put(pool, pg);
+        goto out;
+    }
+    db_pool_put(pool, pg);
+    rtn = ERR_OK;
+out:
+    db_pool_free(pool);
+    return rtn;
+}
+
 static void _startup_run(task_ctx *task) {
     task_pgsql_args *arg = (task_pgsql_args *)coro_get_arg(task);
     task_ssl_exchanged(task, _on_ssl_exchanged);
@@ -761,6 +845,11 @@ static void _startup_run(task_ctx *task) {
     }
     if (task_isclosing(task)
         || ERR_OK != _auth_fail(task, arg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _pool_txn(task, arg)) {
         pgsql_quit(&arg->pg);
         return;
     }

@@ -80,8 +80,10 @@ char *readall(const char *file, size_t *lens) {
     int64_t sz = _filesize_fp(fp);
     if (sz <= 0
         || (uint64_t)sz > SIZE_MAX - 1) {
+        // fstat 失败留它自己的 errno(fclose 可能盖掉，先存)；空文件与放不进 size_t 的补 EINVAL
+        int32_t err = sz < 0 ? errno : EINVAL;
         fclose(fp);
-        errno = EINVAL;
+        errno = err;
         return NULL;
     }
     char *buf;

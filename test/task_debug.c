@@ -373,7 +373,7 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     }
     // GET /{h}/help：查最后一行，帮助文本被截断时能发现
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/help", (uint64_t)arg->noreq);
-    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 200, "POST /{handle}/hotfix/{module}", 0)) {
+    if (ERR_OK != _http_get(task, arg->port, url, _HOST_OK, 200, "require header X-Srey-Debug: 1", 0)) {
         return ERR_FAILED;
     }
     SNPRINTF(url, sizeof(url), "/%"PRIu64"/coros", (uint64_t)arg->noreq);

@@ -280,6 +280,7 @@
     <ClCompile Include="task_selfpost.c" />
     <ClCompile Include="task_sendbuf_warn.c" />
     <ClCompile Include="task_serial.c" />
+    <ClCompile Include="task_pool.c" />
     <ClCompile Include="task_smtp.c" />
     <ClCompile Include="task_ssl_deadlock.c" />
     <ClCompile Include="task_ssl_keyupdate.c" />
@@ -307,6 +308,7 @@
     <ClCompile Include="test_minicoro.c" />
     <ClCompile Include="test_coro.c" />
     <ClCompile Include="test_advance.c" />
+    <ClCompile Include="test_router_tree.c" />
     <ClCompile Include="test_protocol.c" />
     <ClCompile Include="test_seri.c" />
     <ClCompile Include="test_stm.c" />
@@ -344,6 +346,7 @@
     <ClInclude Include="task_selfpost.h" />
     <ClInclude Include="task_sendbuf_warn.h" />
     <ClInclude Include="task_serial.h" />
+    <ClInclude Include="task_pool.h" />
     <ClInclude Include="task_smtp.h" />
     <ClInclude Include="task_ssl_deadlock.h" />
     <ClInclude Include="task_ssl_keyupdate.h" />

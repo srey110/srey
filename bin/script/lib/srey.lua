@@ -91,6 +91,11 @@ local coro_pool_trend = trend.new()-- 协程池负载趋势
 local coro_shrink_tick = 0 -- _coro_pool_shrink 距上次实际收缩的累计触发次数（每次 = 一轮 _coro_timeout = 1s）
 local fork_queue      = {}-- srey.fork 待执行任务队列：func(不带实参时)或 table.pack(func, ...)，在 message_dispatch 末尾批量起协程
 local serial_wakes    = {}-- srey.serial 待唤醒的队头等待者，同样在 message_dispatch 末尾摊平唤醒
+-- 带实参的延迟唤醒：3 格一条（协程、payload、sess），由 srey._coro_wake 追加，
+-- message_dispatch 末尾统一 _coro_resume(协程, payload, sess)；不包 table，省一次分配
+local coro_wakes      = {}
+local coro_wakes_n    = 0
+local dispatch_depth  = 0-- message_dispatch 嵌套深度；_coro_wake 只允许在这个窗口里排队
 local SERIAL_COMPACT <const> = 64 -- serial 一直排不空时队头走出这么多格就把剩下的整体前移
 ---@class ForkBarrier
 ---@field results ForkResult[]  与 funcs 同序的结果数组，子协程各自回填
@@ -130,6 +135,10 @@ local MTYPE_REQUEST <const> = 0x0c
 local MTYPE_RESPONSE <const> = 0x0d
 -- 等待者标记(不是消息类型)：等对端下一条任意消息、不过协议的回复判定，与 C 侧 CORO_TAG_RECV_ANY 同值；keep 同 RECV
 local TAG_RECV_ANY <const> = -MTYPE_RECV
+-- 连接池的等待标记，与 C 侧 CORO_TAG_DB_POOL / CORO_TAG_DB_POOL_TICK 同值：借连接的等待者 / 维护协程的定时等待。
+-- 两者到期都是常态，超时日志前者降到 DEBUG、后者不打
+local TAG_DB_POOL <const> = -0x40000000
+local TAG_DB_POOL_TICK <const> = -0x40000001
 ---@enum MSG_TYPE
 local MSG_TYPE = {
     STARTUP      = MTYPE_STARTUP,   -- task 启动
@@ -147,6 +156,8 @@ local MSG_TYPE = {
     RESPONSE     = MTYPE_RESPONSE    -- 收到跨 task 响应
 }
 srey.MSG_TYPE = MSG_TYPE
+srey.TAG_DB_POOL = TAG_DB_POOL
+srey.TAG_DB_POOL_TICK = TAG_DB_POOL_TICK
 -- message_may_keep 是纯函数，加载时按类型算一遍存表；策略仍只来自这个 C 函数
 local MAY_KEEP = {}
 for _, mtype in pairs(MSG_TYPE) do
@@ -563,6 +574,30 @@ local function _run_fork(item)
     _coro_run(item[1], nil, tunpack(item, 2, item.n))
 end
 
+---排空带实参的唤醒队列：按 3 格一条 resume；resume 期间新追加的接着跑。
+---与 _drain 分开是因为这里要保留 payload/sess 三元组，不能只存协程
+local function _drain_coro_wakes()
+    local i = 1
+    while i <= coro_wakes_n do
+        _coro_resume(coro_wakes[i], coro_wakes[i + 1], coro_wakes[i + 2])
+        i = i + 3
+    end
+    for j = 1, coro_wakes_n do
+        coro_wakes[j] = nil
+    end
+    coro_wakes_n = 0
+end
+
+---排空三个延迟队列：被唤醒的 serial 等待者可能 srey.fork，新起的协程也可能进 serial 排队并
+---触发交接，故循环到三者都空为止。前两个只尾部追加、_drain 整段清空，看队头即可判空
+local function _drain_all()
+    while fork_queue[1] or serial_wakes[1] or coro_wakes_n > 0 do
+        _drain(fork_queue, _run_fork)-- srey.fork 在此起新协程
+        _drain(serial_wakes, _coro_resume)-- srey.serial 交接后的队头等待者在此起跑
+        _drain_coro_wakes()-- 连接池等带实参的唤醒在此 resume
+    end
+end
+
 ---生成全局唯一 64 位整数 ID（自增序列，由 C 层实现）
 ---@type fun():integer
 srey.id = utils.id
@@ -704,9 +739,11 @@ local function _closing()
     srey.task_ungrab(cur_task)
 end
 
----CLOSING 消息分发：在协程中执行关闭逻辑，若此时仍有协程挂起则打印告警
+---CLOSING 消息分发：在协程中执行关闭逻辑，若此时仍有协程挂起则打印告警。
+---告警前先排空延迟队列：closing 里 free 掉的连接池只是把等待者排进了队列，还没让它们退出
 local function _closing_dispatch()
     _coro_run(_closing)
+    _drain_all()
     if nyield > 0 then
         WARN("coro yield %d.", nyield)
     end
@@ -878,6 +915,41 @@ end
 function srey._coro_wait(sess, mtype, ms)
     _check_wait("srey._coro_wait")
     return srey._coro_wait_nocheck(sess, mtype, ms)
+end
+
+---把 sess 上队头等待者摘下，排进带实参的延迟唤醒队列；payload 与 sess 在 dispatch 末尾随 resume 一起带回。
+---内部接口，供连接池这类“等资源”的实现用；业务勿直接调
+---@param sess integer 会话 id
+---@param mtype integer 等待标记（与 srey._coro_wait 的一致）
+---@param payload any 唤醒数据，会作为 _coro_wait 的返回值交回
+---@return boolean 摘到并排队返回 true；队头标记不符或队列空返回 false
+function srey._coro_wake(sess, mtype, payload)
+    if 0 == dispatch_depth then
+        error("srey._coro_wake is only valid inside srey dispatch", 2)
+    end
+    local coro = _get_coro_sess(sess, mtype)
+    if not coro then
+        return false
+    end
+    local n = coro_wakes_n + 3
+    coro_wakes_n = n
+    coro_wakes[n - 2] = coro
+    coro_wakes[n - 1] = payload
+    coro_wakes[n] = sess
+    return true
+end
+
+---从队头起把连续同标记的等待者全部摘下（遇到标记不同的队头即停），统一带 payload 排队唤醒；关闭/整体失败广播用
+---@param sess integer 会话 id
+---@param mtype integer 等待标记
+---@param payload any 唤醒数据
+---@return boolean 至少摘到一个返回 true
+function srey._coro_wake_all(sess, mtype, payload)
+    local any = false
+    while srey._coro_wake(sess, mtype, payload) do
+        any = true
+    end
+    return any
 end
 
 ---阻塞当前协程指定毫秒（底层使用定时器，不阻塞事件线程）
@@ -1807,7 +1879,7 @@ local function _timeout_wake(sess, now)
     if not corosess then
         return
     end
-    -- 两趟：先把未到期的原地前移压紧、到期的协程收进 expired，再逐个唤醒（仍是先摘后唤醒）。
+    -- 两趟：先把未到期的原地前移压紧、到期的协程与等待标记收进 expired，再逐个唤醒（仍是先摘后唤醒）。
     -- 边摘边唤醒的话每摘一个都要整体前移一次，同一 sess 上 k 个一起到期就是 O(k²)
     local n = #corosess
     local w = 1
@@ -1818,6 +1890,7 @@ local function _timeout_wake(sess, now)
         if dl > 0 and now >= dl then
             expired = expired or {}
             expired[#expired + 1] = corosess[r]
+            expired[#expired + 1] = corosess[r + 1]
         else
             if w ~= r then
                 corosess[w], corosess[w + 1], corosess[w + 2], corosess[w + 3] =
@@ -1831,13 +1904,20 @@ local function _timeout_wake(sess, now)
     end
     if expired then
         local msg = setmetatable({mtype = MTYPE_TIMEOUT, sess = sess}, TIMEOUT_MSG_MT)
-        for i = 1, #expired do
+        local tag
+        for i = 1, #expired, 2 do
+            tag = expired[i + 1]
             _coro_resume(expired[i], msg, sess)
-            INFO("resume timeout session %s.", tostring(sess))
+            if TAG_DB_POOL == tag then
+                DEBUG("resume timeout session %s.", tostring(sess))
+            elseif TAG_DB_POOL_TICK ~= tag then
+                INFO("resume timeout session %s.", tostring(sess))
+            end
         end
     end
-    -- 超时路径无视 keep：理由同 C 侧 lib/coro/coro.c 的 coro_expire
-    if nil == corosess[1] then
+    -- 超时路径无视 keep：理由同 C 侧 lib/coro/coro.c 的 coro_expire。resume 期间这个 sess 可能已被
+    -- 摘空删掉又新建（连接池的等待），只删仍是这张的空表
+    if coro_sess[sess] == corosess and nil == corosess[1] then
         coro_sess[sess] = nil
     end
 end
@@ -1958,7 +2038,7 @@ local _dispatchers = {
 }
 
 ---全局消息分发入口，由 C 层 loader 在每条消息到达时调用；按 msg.mtype 查表路由到对应内部分发函数。
----dispatcher 包 xpcall 是为了让下面两个 drain 无条件跑到：分发过程中可能已有协程走完
+---dispatcher 包 xpcall 是为了让下面几个 drain 无条件跑到：分发过程中可能已有协程走完
 ---srey.serial 的 _release，此时 current/ref 已写死、后继者只是排进 serial_wakes 等着被起跑，
 ---抛出跳过 drain 就把锁留给一个没在跑的协程。抛出点确实存在——_request_dispatch 里有惰性 require，
 ---模块或其依赖加载失败即抛，而它跑在协程外，没有 _coro_exec 的 xpcall 兜着
@@ -1967,16 +2047,13 @@ local _dispatchers = {
 ---为假时 C 在返回后当场释放载荷（msg.data 立即为 nil）
 function message_dispatch(msg)
     msg_held = false-- 承重：C 侧 _ltask_run 按返回值决定是否回收载荷，漏了返回会放掉挂起回调手里的载荷
+    dispatch_depth = dispatch_depth + 1
     local dispatcher = _dispatchers[msg.mtype]
     if dispatcher then
         srey.xpcall(dispatcher, msg)
     end
-    -- 两个队列互相喂：被唤醒的 serial 等待者可能 srey.fork，新起的协程也可能进 serial 排队并
-    -- 触发交接，故循环到两者都空为止
-    while fork_queue[1] or serial_wakes[1] do-- 两队列只尾部追加、_drain 整段清空，看队头即可判空
-        _drain(fork_queue, _run_fork)-- srey.fork 在此起新协程
-        _drain(serial_wakes, _coro_resume)-- srey.serial 交接后的队头等待者在此起跑
-    end
+    _drain_all()
+    dispatch_depth = dispatch_depth - 1
     return msg_held
 end
 

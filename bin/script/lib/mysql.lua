@@ -174,6 +174,16 @@ function ctx:_doquit()
     srey.sync_close(sk)
 end
 
+---连接池归还时调：服务端还处在事务里就回滚，不让下一个借到的人接着跑在里面
+---@return boolean ok 本来就干净或回滚成功；false 时连接池会断开这条连接
+function ctx:reset_session()
+    if not self.mysql:in_trans() then
+        return true
+    end
+    local rs = self:query("ROLLBACK")
+    return nil ~= rs and true == rs[1] and not self.mysql:in_trans()
+end
+
 ---返回服务端版本字符串（握手阶段获取）
 ---@return string version 服务端版本
 function ctx:version()

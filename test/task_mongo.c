@@ -10,6 +10,7 @@ typedef struct task_mongo_args {
     char authdb[64];
     mongo_ctx mongo;
     mongo_ctx mongo_bad;// 错口令建链用
+    mongo_ctx mongo_pool;// 经连接池借还用；跟 task 参数同生命周期，池里挂起的操作碰得到
 }task_mongo_args;
 // commit 挂起期间另一个协程重新 begin 用：两个子协程共用，各自回带结果
 typedef struct rebegin_arg {
@@ -956,6 +957,58 @@ static int32_t _moretocome_flow(mongo_ctx *mongo) {
     return ERR_OK;
 }
 
+// 经连接池借还：mongo 操作表懒建连、借出能 ping、归还后再借复用同一条（同 task_mysql / task_pgsql 的 _pool_txn）
+static int32_t _pool_flow(task_ctx *task, task_mongo_args *arg) {
+    mongo_ctx *m = &arg->mongo_pool;
+    if (ERR_OK != mongo_init(m, arg->host, arg->port, NULL, arg->db)) {
+        LOG_ERROR("%s", "mongo pool: mongo_init error.");
+        return ERR_FAILED;
+    }
+    mongo_user_pwd(m, arg->user, arg->password);
+    mongo_authdb(m, arg->authdb);
+    mongo_authmod(m, "SCRAM-SHA-256");
+    db_pool_cfg cfg;
+    ZERO(&cfg, sizeof(cfg));
+    cfg.cap = 1;
+    db_pool_ctx *pool = db_pool_new(task, mongo_pool_ops(), &cfg);
+    if (NULL == pool
+        || ERR_OK != db_pool_add(pool, m)) {
+        LOG_ERROR("%s", "mongo pool: setup error.");
+        if (NULL != pool) {
+            db_pool_free(pool);
+        }
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    int32_t grtn;
+    mongo_ctx *got = mongo_pool_get(pool, 2000, &grtn);
+    if (NULL == got
+        || ERR_OK != mongo_ping(got)) {
+        LOG_ERROR("mongo pool: first get %d / ping error.", grtn);
+        if (NULL != got) {
+            db_pool_put(pool, got);
+        }
+        goto out;
+    }
+    db_pool_put(pool, got);
+    got = mongo_pool_get(pool, 2000, &grtn);
+    db_pool_stat st;
+    db_pool_stat_get(pool, &st);
+    if (NULL == got
+        || 1 != st.connects
+        || ERR_OK != mongo_ping(got)) {
+        LOG_ERROR("mongo pool: second get %d, connects=%u, want 1.", grtn, st.connects);
+        if (NULL != got) {
+            db_pool_put(pool, got);
+        }
+        goto out;
+    }
+    db_pool_put(pool, got);
+    rtn = ERR_OK;
+out:
+    db_pool_free(pool);
+    return rtn;
+}
 static void _startup_run(task_ctx *task) {
     task_mongo_args *arg = (task_mongo_args *)coro_get_arg(task);
     if (ERR_OK != mongo_init(&arg->mongo, arg->host, arg->port, NULL, arg->db)) {
@@ -1030,6 +1083,11 @@ static void _startup_run(task_ctx *task) {
     // 不需要副本集，排在事务用例之前
     if (task_isclosing(task)
         || ERR_OK != _auth_fail_flow(task, arg)) {
+        ev_close(&task->loader->netev, &arg->mongo.sk);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _pool_flow(task, arg)) {
         ev_close(&task->loader->netev, &arg->mongo.sk);
         return;
     }

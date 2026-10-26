@@ -5,6 +5,7 @@
 #include "utils/urlparse.h"
 #include "srey/spub.h"
 #include "event/event.h"
+#include "advance/router_pub.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP 路由器 (基于 task + http_pack_ctx)
@@ -20,20 +21,23 @@
 //   router_group 分组对象 (栈), prefix + 中间件; 嵌套通过 parent 指针向上找;
 //                各级前缀与路径之间自动补 '/' ("/api" + "users" 即 /api/users, 同 Laravel)
 //   router_req   单次请求上下文; dispatch 期间栈分配, handler / 中间件读写
-//   router_cb    handler 和中间件的统一签名 void (*)(router_req *)
+//   router_cb    handler 和中间件的统一签名 void (*)(router_req *, void *arg)
 //   router_stream_cb 流式路由的数据回调 (请求体逐块到, router 不缓存)
 // 路径模板
 //   /foo/bar         字面量精确匹配
 //   /user/{id}       {name} 必填路径参数, router_req_param("id", ...) 取
-//   /file/{path?}    {name?} 可选路径参数, 缺失时取不到值但仍匹配
-//                    匹配是精确的(非贪婪前瞻): 只要存在"某些 OPT 取值、其余缺失"的组合能让
-//                    整条路径对齐就算命中, 能取到值的 OPT 优先取值; 单条路由最多 ROUTER_MAX_OPT 个
+//   /file/{path?}    {name?} 可选路径参数, 缺失时取不到值但仍匹配; 只能放在末尾, 后面只许再跟
+//                    可选段或 * (/a/{x?}/b、/{lang?}/docs 注册失败); 靠前的 OPT 优先取值,
+//                    /a/{x?}/{y?} 打 /a/foo 给 x; 单条路由最多 ROUTER_MAX_OPT 个
 //   {name} 名字只认 [A-Za-z0-9_]: 为空 (如 {} / {?}) 或含别的字符 (如 {a?b} / {a-b} / {*})
 //                    都不算参数, 整段退化为字面量匹配 (注册照常成功, 只是该段按原文逐字比对);
 //                    同一条路由里占位符重名 (/u/{id}/{id}) 注册失败
 //   /static/*        末尾通配, 一旦命中后续任意请求段都吃下; 吃下的段 (已解码) 按 '/' 拼起来作参数 "*",
 //                    router_req_param(ctx, "*", ...) 取, 一段都没吃下时没有这个参数
 //   多条同 path 不同 method 算独立路由, 方法位掩码 ROUTER_M_GET|ROUTER_M_POST 也支持
+// 匹配优先级
+//   静态段 > 参数段 > 末尾通配; 同一具体形状上多个方法条目按注册顺序取第一个命中的。
+//   可选段在注册期展开成具体形状, "靠前的 OPT 优先取值"
 // HEAD
 //   router_get 注册的是 ROUTER_M_GET|ROUTER_M_HEAD —— HEAD 的语义就是"要 GET 的头不要体",
 //   分开注册会让 HEAD 落 404。handler 照常写 body, router_req_text / _json / _html / _respond
@@ -41,8 +45,8 @@
 //   HEAD 的头与 GET 一致), 报文体不写 —— 多发的字节会被对端当成下一条响应的开头
 // 线程约定
 //   注册期 (router_add / router_use / router_define 等) 与派发期 (router_dispatch) 不可并发:
-//   路由表是连续数组, 扩容会 realloc 整块, 派发方手里的 router_entry * 和正在扫的下标都会失效;
-//   条目也是先入表后补 handler/中间件, 中途被读到就是半成品。按"启动期注册完再开始服务"用即可
+//   router_tree 和路由表都没有锁, 注册会改树/数组; 条目本身单独分配, 指针到 router_free
+//   前稳定, 但"先插树后提交"期间被派发读到会是不完整状态。按"启动期注册完再开始服务"用即可
 // 中间件 (洋葱模型)
 //   注册顺序:        全局中间件 → 分组中间件 (父→子) → 路由级中间件 → handler
 //   每个中间件主动调 router_next(ctx) 进入下一层, 不调即截断 (后续不执行)
@@ -52,7 +56,8 @@
 //   分组与路由级中间件合并时去重, 同一个中间件只留第一次出现的位置 (同 Laravel)
 // 完整使用流程
 //   ─────────────────────────────────────────────────────────────────────────
-//   static void mw_auth(router_req *ctx) {
+//   static void mw_auth(router_req *ctx, void *arg) {
+//       (void)arg;
 //       size_t n; char *t = router_req_header(ctx, "X-Token", &n);
 //       // 长度必须严格相等再 memcmp; n != 6 时 memcmp 读 "secret" 越界 + 短 token 可前缀通过
 //       if (NULL == t || 6 != n || 0 != memcmp(t, "secret", 6)) {
@@ -61,7 +66,8 @@
 //       }
 //       router_next(ctx);    // 继续后续中间件 / handler
 //   }
-//   static void h_user(router_req *ctx) {
+//   static void h_user(router_req *ctx, void *arg) {
+//       (void)arg;
 //       size_t n; const char *id = router_req_param(ctx, "id", &n);
 //       router_req_text(ctx, 200, id, n);
 //   }
@@ -75,11 +81,11 @@
 //       task_recved(task, _net_recv);
 //       task_watch_closed(task, router_closed_watch, r);// 用了流式路由才需要
 //       // 1) 注册具名中间件 (引用前必须 define, 否则引用它的那次注册失败)
-//       router_define(r, "auth", mw_auth);
-//       router_define(r, "rate_limit", mw_rate_limit);
+//       router_define(r, "auth", mw_auth, NULL);
+//       router_define(r, "rate_limit", mw_rate_limit, NULL);
 //       // 2) 全局中间件 (对所有路由生效)
 //       router_use(r, "auth");                 // 按名引用
-//       // router_use_fn(r, mw_logger);        // 或函数指针直传
+//       // router_use_fn(r, mw_logger, NULL);  // 或函数指针直传
 //       // 3) 路由 (无 group / 无路由级中间件)
 //       router_get(r, NULL, "/user/{id}", h_user, NULL, 0);
 //       // 4) 带路由级中间件
@@ -144,47 +150,34 @@
 //                    流式路由收 chunked 时 ctx 才是 router 持有的堆对象, 活到收齐或连接关闭,
 //                    slice == 0 那次仍是栈对象
 //   params[].key     指向 router_ctx 内部路径模板, 跟 router_new ~ router_free 同生命周期
-//   params[].val     指向 ctx->url 内部, 跟 ctx 同生命周期
+//   params[].val     指向 ctx->url 内部（末尾通配的值在 ctx->wildbuf）, 跟 ctx 同生命周期
 //   query 返回值     指向 ctx->url 内部, 跟 ctx 同生命周期
 //   header / body    指向 pack 内部, pack 在 _net_recv 返回后失效;
 //                    流式路由只有首帧有 pack, 之后两个访问器返 NULL
 // ─────────────────────────────────────────────────────────────────────────────
 
-// 路径参数 / chain 数组上限
-#define ROUTER_MAX_PARAMS  16
+// 执行链步数上限（全局中间件 + 路由级中间件 + handler）
 #define ROUTER_MAX_CHAIN   16
-// 单条路由内 {name?} 段数上限; 匹配用的可行性表按本值定维, 超出即注册失败
-#define ROUTER_MAX_OPT     8
 // 流式路由的中止通知, router 自造, 协议层不会产生这个值
 // (msg.slice 只可能是 0 / PROT_SLICE_START / PROT_SLICE / PROT_SLICE_END)
 #define ROUTER_STREAM_ABORT 0x80
 // router_allow_value 输出缓冲的字节数, 放得下全部方法
 #define ROUTER_ALLOW_LENS 64
 
-// HTTP 方法位掩码; 单个路由可通过按位或组合 (ROUTER_M_ANY 匹配所有方法)
-typedef enum router_method {
-    ROUTER_M_GET     = 1 << 0,
-    ROUTER_M_POST    = 1 << 1,
-    ROUTER_M_PUT     = 1 << 2,
-    ROUTER_M_DELETE  = 1 << 3,
-    ROUTER_M_PATCH   = 1 << 4,
-    ROUTER_M_HEAD    = 1 << 5,
-    ROUTER_M_OPTIONS = 1 << 6,
-    ROUTER_M_ANY     = 0xFF
-} router_method;
-// 路径段类型; router_seg_index 交回, 反向生成 URL 的调用方据此还原模板
-typedef enum router_seg_type {
-    ROUTER_SEG_LIT,    // 字面量
-    ROUTER_SEG_PARAM,  // {name}    必填路径参数
-    ROUTER_SEG_OPT,    // {name?}   可选路径参数
-    ROUTER_SEG_WILD    // *         末尾通配, 出现即吞掉后续所有请求段
-} router_seg_type;
+// router_method / router_seg_type / router_seg / ROUTER_MAX_PARAMS / ROUTER_MAX_OPT
+// 统一在 advance/router_pub.h，router_tree 与 router 共用同一份。
 
 typedef struct router_ctx router_ctx;
 typedef struct router_entry router_entry;
 typedef struct router_req router_req;
-// 路由 handler / 中间件统一签名;handler 不调 next, 中间件主动调 router_next(ctx) 推进链路, 不调即截断
-typedef void (*router_cb)(router_req *ctx);
+// 路由 handler / 中间件统一签名; handler 不调 next, 中间件主动调 router_next(ctx) 推进链路, 不调即截断。
+// arg 是注册时传入的上下文指针, 生命周期由注册方保证到 router_free。
+typedef void (*router_cb)(router_req *ctx, void *arg);
+// 执行链的一步: 回调 + 注册时传入的 arg
+typedef struct router_step {
+    router_cb cb;
+    void *arg;
+} router_step;
 /// <summary>
 /// 流式路由的数据回调 (router_add_stream 注册)。slice 透传协议层分片状态，按它分支；
 /// data 仅本次调用内有效；ctx 在"只调这一次 / 最后一次"的那次返回后即失效。
@@ -196,16 +189,18 @@ typedef void (*router_cb)(router_req *ctx);
 ///   ROUTER_STREAM_ABORT 流没收齐就没了（连接断 / 同连接新流式首帧 / router_free），
 ///                       data 恒为 NULL，与 END 只会来一个。这是 ctx->user 最后的释放机会，
 ///                       只做清理：不写响应（无兜底 500），不用 ctx->task 投消息或挂起；
-///                       该流已先摘表，回调内调 router_closed 是安全的 no-op
+///                       该流已先摘表，回调内调 router_closed 是安全的 no-op（END 与 0 同样）；
+///                       START / 中间帧回调里调它会立刻释放 ctx（这次回调里就会重入收到 ABORT），
+///                       返回后不能再读写 ctx
 /// 请求头只在 slice == 0 与首帧（及之前的准入中间件）读得到，之后 router_req_header / _body
 /// 一律返 NULL，要留就首帧拷进 ctx->user；路径参数与 query 每帧都在（含 ABORT）。
 /// 与中间件一样不能挂起，理由见 router_add_stream
 /// </summary>
-typedef void (*router_stream_cb)(router_req *ctx, uint8_t slice, void *data, size_t lens);
+typedef void (*router_stream_cb)(router_req *ctx, uint8_t slice, void *data, size_t lens, void *arg);
 // 路径参数键值对 (仅用于 router_req::params);
 // key 指向 router_entry::segs[].str  (router_ctx 持有, 跟 router_new ~ router_free 同生命周期),
 //     末尾通配的参数 key 是常量 "*"
-// val 指向 ctx->url->buf 内部 (跟 ctx 同生命周期)
+// val 指向 ctx->url->buf 或 ctx->wildbuf 内部 (跟 ctx 同生命周期)
 // 调用方不得释放
 typedef struct router_kv {
     uint32_t key_len;
@@ -229,10 +224,11 @@ struct router_req {
                                       // 流式路由过了首帧即为 NULL
     void *user;       // 中间件间传值, 用户自管
     sock_ctx sk;                 // 连接标识 fd+skid
-    // 零初始化只清到 chain 之前: 从 chain 起的两个数组按 chain_n / params_n 取用, url 由各入口显式赋值;
+    // 零初始化只清到 chain 之前: 从 chain 起的三个数组按 chain_n / params_n / 通配值长度取用, url 由各入口显式赋值;
     // 要靠清零初始化的新字段加在 chain 之前
-    router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
+    router_step chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链, 每步带 arg
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
+    uint8_t wildbuf[URL_BUF_LENS]; // 末尾通配的拼接缓冲; params[].val 可指向这里
     // URL 解析结果 (内部使用)。存储由调用方提供并在调用 router_match_index 前赋值:
     // url_ctx 有 4KB 出头, 内嵌会让本结构每次零初始化都白清一遍; 指针化后不必预先清零(见 url_parse)
     url_ctx *url;
@@ -253,6 +249,13 @@ typedef struct router_group {
 /// <returns>router_ctx 指针</returns>
 router_ctx *router_new(void);
 /// <summary>
+/// 声明执行链由上层自己跑（只用 router_chain_count / router_chain_at 取链、不走 router_dispatch）：
+/// 注册路由与 router_use 时不再按 ROUTER_MAX_CHAIN 告警。router_dispatch 照旧按上限拒绝
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="on">非 0 打开</param>
+void router_set_own_chain(router_ctx *r, int32_t on);
+/// <summary>
 /// 释放路由器及全部已注册路由 / 中间件资源
 /// </summary>
 /// <param name="r">router_ctx</param>
@@ -265,8 +268,9 @@ void router_free(router_ctx *r);
 /// <param name="r">router_ctx</param>
 /// <param name="name">中间件名</param>
 /// <param name="fn">中间件函数, 不可为 NULL</param>
+/// <param name="arg">传给 fn 的上下文指针, 生命周期由调用方保证到 router_free</param>
 /// <returns>ERR_OK 成功; fn 为 NULL 返回 ERR_FAILED, 什么都不登记</returns>
-int32_t router_define(router_ctx *r, const char *name, router_cb fn);
+int32_t router_define(router_ctx *r, const char *name, router_cb fn, void *arg);
 /// <summary>
 /// 注册全局中间件 (具名查表); 对所有路由生效, 按注册顺序追加到链头
 /// </summary>
@@ -279,8 +283,25 @@ int32_t router_use(router_ctx *r, const char *name);
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="fn">中间件函数, 不可为 NULL</param>
+/// <param name="arg">传给 fn 的上下文指针, 生命周期由调用方保证到 router_free</param>
 /// <returns>ERR_OK 成功; fn 为 NULL 返回 ERR_FAILED, 什么都不登记</returns>
-int32_t router_use_fn(router_ctx *r, router_cb fn);
+int32_t router_use_fn(router_ctx *r, router_cb fn, void *arg);
+/// <summary>
+/// 设置 404 回退 handler；cb 为 NULL 表示清掉。handler 走独立一步链，不跑全局/路由中间件。
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="cb">404 回调, 可为 NULL</param>
+/// <param name="arg">传给 cb 的上下文指针</param>
+/// <returns>ERR_OK 成功；r 为 NULL 返回 ERR_FAILED</returns>
+int32_t router_set_no_route(router_ctx *r, router_cb cb, void *arg);
+/// <summary>
+/// 设置 405 回退 handler；cb 为 NULL 表示清掉。OPTIONS 自动应答(-5)不走这里。
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="cb">405 回调, 可为 NULL</param>
+/// <param name="arg">传给 cb 的上下文指针</param>
+/// <returns>ERR_OK 成功；r 为 NULL 返回 ERR_FAILED</returns>
+int32_t router_set_no_method(router_ctx *r, router_cb cb, void *arg);
 /// <summary>
 /// 初始化根分组; 后续 router_* 注册时传该 group 即可继承 prefix 和 mws。
 /// group 不记 router: 注册时 router_ctx 由 router_add / router_get 等自己的形参给出
@@ -303,24 +324,39 @@ void router_group_nest(const router_group *parent, router_group *g, const char *
                        const char *const *mw_names, int32_t n);
 /// <summary>
 /// 注册路由; method 为 router_method 位掩码, group=NULL 表示注册到根
-/// path 支持 {name} 字面参数、{name?} 可选参数、* 末尾通配
+/// path 支持 {name} 字面参数、{name?} 可选参数、* 末尾通配。
+/// 需要给 handler 传 arg 时用本函数；router_get/post 等便捷包装固定传 NULL。
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="g">分组, 可为 NULL</param>
 /// <param name="method">方法位掩码</param>
 /// <param name="path">路由路径</param>
 /// <param name="h">handler, 不可为 NULL</param>
+/// <param name="arg">传给 handler 的上下文指针, 生命周期由调用方保证到 router_free</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param>
 /// <param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败 (handler 为空 / 前缀或路径过长 / 段数超上限 /
-///   可选段超 ROUTER_MAX_OPT / 必填参数超 ROUTER_MAX_PARAMS / 通配符非末段 / 占位符重名 /
-///   group 或 mws 引用了没 define 的中间件名 / 被已注册的等价路由遮蔽, 判据同 router_add_index 的 -2);
-///   返回指针仅即时有效, 下次 router_* 注册可能 realloc 路由表使其失效, 不可长期持有</returns>
+///   可选段超 ROUTER_MAX_OPT / 可选段不在末尾 / 必填参数与末尾通配合计超 ROUTER_MAX_PARAMS / 通配符非末段 / 占位符重名 /
+///   group 或 mws 引用了没 define 的中间件名 / 全部变体被已注册的等价路由遮蔽, 判据同 router_add_index 的 -2);
+///   返回指针在 router_free 前一直有效, 可长期持有; 条目本身单独分配, 不随路由表扩容搬动</returns>
 router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
-                         router_cb h,
+                         router_cb h, void *arg,
                          const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_GET | ROUTER_M_HEAD, path, h, mws, mws_n)；
+/// <summary>
+/// 同 router_add，但路由级中间件直接传已解析的 step 数组 (回调 + arg)，
+/// 供不带具名中间件表的上层绑定使用。
+/// </summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="method">方法位掩码</param><param name="path">路由路径</param>
+/// <param name="h">handler, 不可为 NULL</param><param name="arg">传给 handler 的上下文指针</param>
+/// <param name="mws">路由级中间件 step 数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>同 router_add</returns>
+router_entry *router_add_steps(router_ctx *r, const router_group *g,
+                               router_method method, const char *path,
+                               router_cb h, void *arg,
+                               const router_step *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_GET | ROUTER_M_HEAD, path, h, NULL, mws, mws_n)；
 /// 连带接住 HEAD，响应侧自动抑制报文体，理由见文件头 HEAD 一节</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
@@ -328,35 +364,35 @@ router_entry *router_add(router_ctx *r, const router_group *g,
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_get(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_POST, path, h, mws, mws_n)</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_POST, path, h, NULL, mws, mws_n)</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_post(router_ctx *r, const router_group *g, const char *path,
                           router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_PUT, path, h, mws, mws_n)</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_PUT, path, h, NULL, mws, mws_n)</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_put(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_DELETE, path, h, mws, mws_n)</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_DELETE, path, h, NULL, mws, mws_n)</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_delete(router_ctx *r, const router_group *g, const char *path,
                             router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_PATCH, path, h, mws, mws_n)</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_PATCH, path, h, NULL, mws, mws_n)</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_patch(router_ctx *r, const router_group *g, const char *path,
                            router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_HEAD, path, h, mws, mws_n)。
+/// <summary>等价于 router_add(r, g, ROUTER_M_HEAD, path, h, NULL, mws, mws_n)。
 /// 多数情况不需要：router_get 已连带接住 HEAD。只在 HEAD 要跑与 GET 不同的 handler 时用，
 /// 且须注册在同路径的 router_get 之前——反过来会被那条的 GET|HEAD 掩码整个包住而遭遮蔽</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
@@ -365,14 +401,14 @@ router_entry *router_patch(router_ctx *r, const router_group *g, const char *pat
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_head(router_ctx *r, const router_group *g, const char *path,
                           router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_OPTIONS, path, h, mws, mws_n)</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_OPTIONS, path, h, NULL, mws, mws_n)</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_options(router_ctx *r, const router_group *g, const char *path,
                              router_cb h, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add(r, g, ROUTER_M_ANY, path, h, mws, mws_n)，匹配所有已知 HTTP 方法</summary>
+/// <summary>等价于 router_add(r, g, ROUTER_M_ANY, path, h, NULL, mws, mws_n)，匹配所有已知 HTTP 方法</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
@@ -381,6 +417,7 @@ router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
 /// <summary>
 /// 注册流式路由：请求体逐块交给 sh，不在 router 内缓存，请求体多大都不占额外内存。
+/// 需要给 sh 传 arg 时用本函数；router_post_stream / put_stream 固定传 NULL。
 /// 只有 router_net_recv 这条入口认流式路由；用它就在 startup 里
 /// task_watch_closed(task, router_closed_watch, r) 登记一次，连接中途断开的流才回收得了。
 /// 与 router_add 的三点不同：
@@ -396,21 +433,32 @@ router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
 /// <param name="method">方法位掩码</param>
 /// <param name="path">路由路径</param>
 /// <param name="sh">流式回调, 不可为 NULL</param>
+/// <param name="arg">传给 sh 的上下文指针, 生命周期由调用方保证到 router_free</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param>
 /// <param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败 (失败原因同 router_add)</returns>
 router_entry *router_add_stream(router_ctx *r, const router_group *g,
                                 router_method method, const char *path,
-                                router_stream_cb sh,
+                                router_stream_cb sh, void *arg,
                                 const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add_stream(r, g, ROUTER_M_POST, path, sh, mws, mws_n)</summary>
+/// <summary>同 router_add_stream，但路由级中间件直接传 step 数组。</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="method">方法位掩码</param><param name="path">路由路径</param>
+/// <param name="sh">流式回调, 不可为 NULL</param><param name="arg">传给 sh 的上下文指针</param>
+/// <param name="mws">路由级中间件 step 数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>同 router_add_stream</returns>
+router_entry *router_add_stream_steps(router_ctx *r, const router_group *g,
+                                      router_method method, const char *path,
+                                      router_stream_cb sh, void *arg,
+                                      const router_step *mws, int32_t mws_n);
+/// <summary>等价于 router_add_stream(r, g, ROUTER_M_POST, path, sh, NULL, mws, mws_n)</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="sh">流式回调</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
 /// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_post_stream(router_ctx *r, const router_group *g, const char *path,
                                  router_stream_cb sh, const char *const *mws, int32_t mws_n);
-/// <summary>等价于 router_add_stream(r, g, ROUTER_M_PUT, path, sh, mws, mws_n)</summary>
+/// <summary>等价于 router_add_stream(r, g, ROUTER_M_PUT, path, sh, NULL, mws, mws_n)</summary>
 /// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
 /// <param name="path">路由路径</param><param name="sh">流式回调</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
@@ -418,22 +466,29 @@ router_entry *router_post_stream(router_ctx *r, const router_group *g, const cha
 router_entry *router_put_stream(router_ctx *r, const router_group *g, const char *path,
                                 router_stream_cb sh, const char *const *mws, int32_t mws_n);
 /// <summary>
-/// 注册路由；不经 group/mw 解析，handler 置 NULL，只能配 router_match_index 使用
-/// （调用方自己按索引派发），再交给 router_dispatch / router_net_recv 命中即回 500 拒绝。
-/// 与已注册条目等价时拒绝注册（见返回值）：dispatch 取首条命中，后注册的那条永远够不着。
+/// 只注册匹配路由：不经 group/mw 解析，handler 置 NULL，供 router_match_index /
+/// 反向生成 URL 等只做匹配的调用方使用。再交给 router_dispatch / router_net_recv，
+/// 命中后会按配置错误回 500。
 /// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"，
-/// 也支持 '|' 分隔的组合如 "GET|HEAD"；任一段不认识或出现空段一律整体拒绝
+/// 也支持 '|' 分隔的组合如 "GET|HEAD"；任一段不认识或出现空段一律整体拒绝。
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="method">HTTP 方法字符串</param>
 /// <param name="method_len">method 长度</param>
 /// <param name="path">路由完整路径（调用方已拼好前缀）</param>
 /// <param name="path_len">path 长度</param>
-/// <returns>路由索引（≥0）；-1 路径非法（含占位符重名）或方法未知；-2 已有一条等价路由把它遮住
-/// （已注册项的方法掩码把它整个包住，且段序列在匹配意义上相同——参数名不参与匹配，
-/// 如 /u/{id} 之于 /u/{uid}）；掩码只有交集不算遮蔽，先注册者拿走它覆盖的方法即可</returns>
+/// <returns>路由索引（≥0）；-1 路径非法（含占位符重名）或方法未知；-2 全部变体都被已有路由
+/// 完全遮住（已注册条目的方法掩码包住它，且具体形状相同——参数名不参与匹配，如 /u/{id}
+/// 之于 /u/{uid}）。部分变体被遮时仍注册成功，剩余形状照常匹配</returns>
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                          const char *path, size_t path_len);
+/// <summary>
+/// 把注册用的方法串解析成位掩码，支持 "GET"/"POST"/.../"ANY" 和 "GET|HEAD" 组合。
+/// </summary>
+/// <param name="m">方法串</param>
+/// <param name="n">长度</param>
+/// <returns>方法位掩码；字符串非法或含空段返回 0</returns>
+router_method router_method_mask(const char *m, size_t n);
 /// <summary>
 /// 取第 idx 条路由第 k 段的解析结果。注册时解析过一遍，这里只把结果交出去，
 /// 供反向生成 URL 一类的调用方复用，不必自行再解析一遍路径模板
@@ -443,8 +498,8 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 /// <param name="k">段下标，从 0 起</param>
 /// <param name="t">出参，段类型；必须非 NULL，函数内裸解引用</param>
 /// <param name="str">出参，LIT 为字面量内容、PARAM/OPT 为参数名（不含花括号与问号）、
-/// WILD 为 NULL；带 NUL 结尾，长度另由 str_len 给出。指向路由表内部，下一次 router_add* 之前有效
-/// （路由表是连续数组，扩容会 realloc 整块）。必须非 NULL，函数内裸解引用</param>
+/// WILD 为 NULL；带 NUL 结尾，长度另由 str_len 给出。指向路由条目内部，router_free 前有效。
+/// 必须非 NULL，函数内裸解引用</param>
 /// <param name="str_len">出参，str 字节数；必须非 NULL，函数内裸解引用</param>
 /// <returns>ERR_OK 取到；idx 或 k 越界返回 ERR_FAILED，逐段遍历即以此收尾</returns>
 int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type *t,
@@ -458,16 +513,41 @@ int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type 
 /// <param name="method_len">method 长度</param>
 /// <param name="url">原始请求 URI（含查询字符串）</param>
 /// <param name="url_len">url 长度</param>
-/// <param name="ctx">调用方提供的 router_req，**chain 之前的字段必须已清零**（匹配失败不写 params_n，
-/// 脏值会让 router_req_param 读到未初始化指针），同一个 ctx 不可跨请求复用。
+/// <param name="ctx">调用方提供的 router_req，**chain 之前的字段必须已清零**；匹配开始会清
+/// allow / params_n，失败时 params_n 为 0，不会让 router_req_param 读到未初始化指针。同一个
+/// ctx 不可跨请求复用。
 /// ctx->url 须指向一块调用方持有的 url_ctx，不必预先清零；仅返回 ≥0、-1、-4、-5 时其内容可用，
 /// 且是**规范化后**的：空段一律剔除（"/a//b" 读出来是 "/a/b"），"/" 与 "//" 的 npath 与
 /// pathlens 均为 0（url_reorg_path 只吐得出空串，需要 "/" 由调用方补）</param>
 /// <returns>路由索引（≥0）；-1 无匹配路由；-2 URL 解析失败（含请求目标不以 '/' 开头且不是绝对形式）；
 /// -3 方法不在已知列表(对应 405)；-4 路径在而方法不对(对应 405)；-5 同 -4 但请求是 OPTIONS(对应自动 200)。
-/// -4 / -5 时 ctx->allow 为该路径上注册过的方法，Allow 头的值用 router_allow_value 生成</returns>
+/// -4 / -5 时 ctx->allow 为该路径上注册过的方法，Allow 头的值用 router_allow_value 生成。
+/// 命中时 ctx->params 的值指向 ctx->url 段或 ctx->wildbuf，调用方不必另行拷贝</returns>
 int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
                            const char *url, size_t url_len, router_req *ctx);
+/// <summary>
+/// 取 router_add* 返回条目的路由索引。
+/// </summary>
+/// <param name="e">路由条目</param>
+/// <returns>路由索引；e 为 NULL 返回 -1</returns>
+int32_t router_entry_id(const router_entry *e);
+/// <summary>
+/// 取已注册路由的执行链长度 (全局中间件 + 路由级中间件 + handler)。
+/// 流式路由不含准入哨兵，调用方自己在末尾补；router_add_index 注册的条目没有 handler 这一步。
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="route_id">路由索引；-1 取 NoRoute，-4 取 NoMethod</param>
+/// <returns>链长度；索引越界或对应回退未设置返回 -1</returns>
+int32_t router_chain_count(const router_ctx *r, int32_t route_id);
+/// <summary>
+/// 取执行链第 k 步。
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="route_id">路由索引；-1 取 NoRoute，-4 取 NoMethod</param>
+/// <param name="k">步骤下标，从 0 起</param>
+/// <param name="out">输出 step，必须非 NULL</param>
+/// <returns>ERR_OK 取到；越界、回退未设置或 r / out 为 NULL 返回 ERR_FAILED</returns>
+int32_t router_chain_at(const router_ctx *r, int32_t route_id, int32_t k, router_step *out);
 /// <summary>
 /// router_match_index 的返回值 → HTTP 状态码。所有派发面共用本映射，
 /// 新增失败哨兵时只需改这一处，不同派发面不会对同一请求给出不同状态码
@@ -504,9 +584,10 @@ void router_dispatch(router_ctx *r, task_ctx *task, sock_ctx *sk, struct http_pa
 /// <param name="head_only">非 0 只回头不带正文：请求方法是 HEAD 时传 1</param>
 void router_reject_chunked(task_ctx *task, sock_ctx *sk, int32_t head_only);
 /// <summary>
-/// 连接关闭时清理该连接尚未收齐的流式请求。未收齐的流在 router 内占约 5KB 上下文, 只有这里能回收,
+/// 连接关闭时清理该连接尚未收齐的流式请求。未收齐的流在 router 内占约 6KB 上下文, 只有这里能回收,
 /// 回收前投一次 ROUTER_STREAM_ABORT 让 on_chunk 清 ctx->user; 没人调则两者都泄漏, 无上限兜底。
-/// 一般不必手调: 用 router_closed_watch 经 task_watch_closed 登记即可; 自己接管关闭分发时才用本函数
+/// 一般不必手调: 用 router_closed_watch 经 task_watch_closed 登记即可; 自己接管关闭分发时才用本函数。
+/// 在流式回调里调用时, 返回后该连接的 ctx 已释放, 不能再读写
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="sk">连接标识</param>
@@ -546,6 +627,15 @@ void router_net_recv(router_ctx *r, task_ctx *task, sock_ctx *sk,
 /// </summary>
 /// <param name="ctx">router_req</param>
 void router_next(router_req *ctx);
+/// <summary>
+/// 执行已匹配路由的完整链 (全局中间件 → 路由级 → handler)，不解析 HTTP / URL。
+/// 只用于普通路由；route_id 由 router_match_index 取得，ctx 的 chain 会被重建。
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="route_id">router_match_index 返回的路由索引；-1/-4 走 NoRoute/NoMethod</param>
+/// <param name="ctx">请求上下文，调用方负责 task / url 等字段</param>
+/// <returns>ERR_OK 执行完成；索引越界、没有对应回退、纯匹配条目或链超限返回 ERR_FAILED</returns>
+int32_t router_exec(router_ctx *r, int32_t route_id, router_req *ctx);
 /// <summary>
 /// 取请求头; 大小写不敏感匹配。流式路由过了首帧就取不到了, 见 router_stream_cb
 /// </summary>

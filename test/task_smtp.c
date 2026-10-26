@@ -188,6 +188,7 @@ typedef struct fake_smtp_ctx {
     smtp_ctx smtp;
     smtp_ctx smtp2;         // 第二条连接，验问候里的裸 LF；放堆上，关连接时网络线程还会碰它
     smtp_ctx smtp3;         // 第三条连接，验用户名为空时免认证投递
+    smtp_ctx smtp5;         // 第五条连接，经连接池借还
     smtp_ctx smtp4;         // 第四条连接，验服务端通告了 AUTH 时用户名为空也不认证
     fake_conn conns[FAKE_MAXCONN];
 }fake_smtp_ctx;
@@ -461,6 +462,57 @@ static int32_t _fake_send(smtp_ctx *smtp, const char *from, const char *to) {
     mail_free(&mail);
     return rtn;
 }
+// 经连接池借还：smtp 操作表懒建连、借出能发、归还后再借复用同一条（同 task_mysql / task_pgsql 的 _pool_txn）
+static int32_t _fake_pool(task_ctx *task, fake_smtp_ctx *ctx) {
+    if (ERR_OK != smtp_init(&ctx->smtp5, "127.0.0.1", ctx->port, NULL, "user", "psw")) {
+        LOG_ERROR("%s", "fake smtp pool: smtp_init failed.");
+        return ERR_FAILED;
+    }
+    db_pool_cfg cfg;
+    ZERO(&cfg, sizeof(cfg));
+    cfg.cap = 1;
+    db_pool_ctx *pool = db_pool_new(task, smtp_pool_ops(), &cfg);
+    if (NULL == pool
+        || ERR_OK != db_pool_add(pool, &ctx->smtp5)) {
+        LOG_ERROR("%s", "fake smtp pool: setup failed.");
+        if (NULL != pool) {
+            db_pool_free(pool);
+        }
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    int32_t grtn;
+    int32_t mails = ctx->mails;
+    smtp_ctx *s = smtp_pool_get(pool, 2000, &grtn);
+    if (NULL == s
+        || ERR_OK != _fake_send(s, "c9@t", "r9@t")) {
+        LOG_ERROR("fake smtp pool: first get %d / send failed.", grtn);
+        if (NULL != s) {
+            db_pool_put(pool, s);
+        }
+        goto out;
+    }
+    db_pool_put(pool, s);
+    s = smtp_pool_get(pool, 2000, &grtn);
+    db_pool_stat st;
+    db_pool_stat_get(pool, &st);
+    if (NULL == s
+        || 1 != st.connects
+        || ERR_OK != _fake_send(s, "c9@t", "r9@t")
+        || mails + 2 != ctx->mails) {
+        LOG_ERROR("fake smtp pool: second get %d, connects=%u (want 1), server took %d mails (want %d).",
+                  grtn, st.connects, ctx->mails, mails + 2);
+        if (NULL != s) {
+            db_pool_put(pool, s);
+        }
+        goto out;
+    }
+    db_pool_put(pool, s);
+    rtn = ERR_OK;
+out:
+    db_pool_free(pool);
+    return rtn;
+}
 static void _fake_conc_worker(void *owner, void *arg) {
     (void)owner;
     fake_conc_arg *a = (fake_conc_arg *)arg;
@@ -615,6 +667,9 @@ static void _fake_startup_run(task_ctx *task) {
     smtp_quit(&ctx->smtp);
     if (!_mail_reply_hdr_ok()) {
         LOG_ERROR("fake smtp: mail_reply(0) must write no reply header, mail_reply(1) writes Reply-To.");
+        return;
+    }
+    if (ERR_OK != _fake_pool(task, ctx)) {
         return;
     }
     LOG_INFO("smtp fake tested: %d mails, no interleaving.", ctx->mails);

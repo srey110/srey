@@ -13,6 +13,8 @@ typedef struct task_mysql_args {
     mysql_ctx mysql;
     mysql_ctx mysql_ssl;// TLS 那一段另建的连接
     mysql_ctx mysql_bad;// 错口令建链用
+    mysql_ctx mysql_pool[2];// 连接池两条真实连接
+    mysql_ctx mysql_txn;// 连接池归还回滚用例的那条连接
 }task_mysql_args;
 // 多语句逐条计数用例的记录：各包按包取的计数，以及回调里连接级 getter 与本包一致的次数
 typedef struct {
@@ -393,6 +395,174 @@ static int32_t _concurrent_query(mysql_ctx *mysql) {
     }
     return ERR_OK;
 }
+// 连接池：2 条真实连接跑 4 个协程，每个查一次 sleep(0.1)。断言同时在查的峰值为 2
+// (不按耗时卡，ASan / 慢机器上会偶发超)；借还后连接仍能继续用，顺便验证池的 handoff
+typedef struct {
+    db_pool_ctx *pool;
+    int32_t done;
+    int32_t fail;
+    int32_t in_use;
+    int32_t peak;
+} _pool_arg;
+static void _pool_worker(void *owner, void *arg) {
+    (void)owner;
+    _pool_arg *a = (_pool_arg *)arg;
+    void *conn = NULL;
+    if (ERR_OK != db_pool_get(a->pool, 5000, &conn)) {
+        a->fail++;
+        return;
+    }
+    a->in_use++;
+    if (a->in_use > a->peak) {
+        a->peak = a->in_use;
+    }
+    mysql_reader_ctx *reader = NULL;
+    int32_t rtn = mysql_query((mysql_ctx *)conn, "select sleep(0.1) as s",
+                              NULL, _cb_take_reader, &reader);
+    a->in_use--;
+    if (NULL != reader) {
+        mysql_reader_free(reader);
+    }
+    if (ERR_OK != rtn || NULL == reader) {
+        a->fail++;
+    }
+    db_pool_put(a->pool, conn);
+    a->done++;
+}
+static int32_t _pool_query(task_ctx *task, task_mysql_args *arg) {
+    db_pool_cfg cfg;
+    ZERO(&cfg, sizeof(cfg));
+    cfg.cap = 2;
+    cfg.backoff_ms = 1000;
+    db_pool_ctx *pool = db_pool_new(task, mysql_pool_ops(), &cfg);
+    if (NULL == pool) {
+        LOG_ERROR("mysql pool: new error.");
+        return ERR_FAILED;
+    }
+    for (int32_t i = 0; i < 2; i++) {
+        if (ERR_OK != mysql_init(&arg->mysql_pool[i], arg->host, arg->port, NULL,
+                                 arg->user, arg->password, arg->database, "utf8mb4", 0)) {
+            LOG_ERROR("mysql pool: init error.");
+            db_pool_free(pool);
+            return ERR_FAILED;
+        }
+        if (ERR_OK != db_pool_add(pool, &arg->mysql_pool[i])) {
+            LOG_ERROR("mysql pool: add error.");
+            mysql_quit(&arg->mysql_pool[i]);
+            db_pool_free(pool);
+            return ERR_FAILED;
+        }
+    }
+    _pool_arg pa;
+    ZERO(&pa, sizeof(pa));
+    pa.pool = pool;
+    coro_fn funcs[_CONC_N];
+    void *argp[_CONC_N];
+    int32_t i;
+    for (i = 0; i < _CONC_N; i++) {
+        funcs[i] = _pool_worker;
+        argp[i] = &pa;
+    }
+    timer_ctx tm;
+    timer_init(&tm);
+    if (ERR_OK != coro_fork_wait(coro_task_co(task), funcs, argp, _CONC_N)) {
+        LOG_ERROR("mysql pool: fork_wait error.");
+        db_pool_free(pool);
+        return ERR_FAILED;
+    }
+    uint64_t elapsed = timer_elapsed_ms(&tm);
+    LOG_INFO("mysql pool: %d workers done, %" PRIu64 "ms.", pa.done, elapsed);
+    int32_t rtn = ERR_OK;
+    if (_CONC_N != pa.done || 0 != pa.fail) {
+        LOG_ERROR("mysql pool: done=%d fail=%d.", pa.done, pa.fail);
+        rtn = ERR_FAILED;
+    }
+    if (2 != pa.peak) {
+        LOG_ERROR("mysql pool: peak=%d, want 2.", pa.peak);
+        rtn = ERR_FAILED;
+    }
+    db_pool_free(pool);
+    return rtn;
+}
+// 连接池：事务没结束就归还，池先回滚再交给下一个人；同一条连接、不重连
+static int32_t _pool_txn(task_ctx *task, task_mysql_args *arg) {
+    if (ERR_OK != mysql_init(&arg->mysql_txn, arg->host, arg->port, NULL,
+                             arg->user, arg->password, arg->database, "utf8mb4", 0)) {
+        LOG_ERROR("mysql pool txn: init error.");
+        return ERR_FAILED;
+    }
+    db_pool_cfg cfg;
+    ZERO(&cfg, sizeof(cfg));
+    cfg.cap = 1;
+    db_pool_ctx *pool = db_pool_new(task, mysql_pool_ops(), &cfg);
+    if (NULL == pool
+        || ERR_OK != db_pool_add(pool, &arg->mysql_txn)) {
+        LOG_ERROR("mysql pool txn: setup error.");
+        if (NULL != pool) {
+            db_pool_free(pool);
+        }
+        mysql_quit(&arg->mysql_txn);
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    int32_t grtn;
+    mysql_ctx *my = mysql_pool_get(pool, 2000, &grtn);
+    if (NULL == my) {
+        LOG_ERROR("mysql pool txn: first get error %d.", grtn);
+        goto out;
+    }
+    if (ERR_OK != mysql_query(my, "begin", NULL, NULL, NULL)
+        || 0 == my->in_trans) {
+        LOG_ERROR("mysql pool txn: begin error.");
+        db_pool_put(pool, my);
+        goto out;
+    }
+    db_pool_put(pool, my);
+    my = mysql_pool_get(pool, 2000, &grtn);
+    if (NULL == my) {
+        LOG_ERROR("mysql pool txn: second get error %d.", grtn);
+        goto out;
+    }
+    db_pool_stat st;
+    db_pool_stat_get(pool, &st);
+    if (1 != st.connects
+        || 0 != my->in_trans) {
+        LOG_ERROR("mysql pool txn: connects=%u in_trans=%d, want 1/0.", st.connects, (int32_t)my->in_trans);
+        db_pool_put(pool, my);
+        goto out;
+    }
+    // autocommit=0 下第一条语句就报错：ERR 包不带状态，按在事务里算，归还时照样回滚，不重连
+    if (ERR_OK != mysql_query(my, "set autocommit=0", NULL, NULL, NULL)) {
+        LOG_ERROR("mysql pool txn: set autocommit error.");
+        db_pool_put(pool, my);
+        goto out;
+    }
+    (void)mysql_query(my, "select * from srey_pool_no_such_table", NULL, NULL, NULL);
+    if (0 == my->in_trans) {
+        LOG_ERROR("%s", "mysql pool txn: in_trans=0 after ERR, want 1.");
+        db_pool_put(pool, my);
+        goto out;
+    }
+    db_pool_put(pool, my);
+    my = mysql_pool_get(pool, 2000, &grtn);
+    if (NULL == my) {
+        LOG_ERROR("mysql pool txn: third get error %d.", grtn);
+        goto out;
+    }
+    db_pool_stat_get(pool, &st);
+    if (1 != st.connects
+        || 0 != my->in_trans) {
+        LOG_ERROR("mysql pool txn: connects=%u in_trans=%d after failed stmt, want 1/0.",
+                  st.connects, (int32_t)my->in_trans);
+        db_pool_put(pool, my);
+        goto out;
+    }
+    db_pool_put(pool, my);
+    rtn = ERR_OK;
+out:
+    db_pool_free(pool);
+    return rtn;
+}
 #if WITH_SSL
 // 走 TLS 另连一次并查一条：握手完成回调里当场发认证包，握手位没先清就会被当成握手期发送断连。
 // 排在明文连接之前：caching_sha2_password 账号在服务端缓存未命中(如容器刚起)时只在 TLS 上做完整认证，
@@ -622,6 +792,16 @@ static void _startup_run(task_ctx *task) {
     }
     if (task_isclosing(task)
         || ERR_OK != _concurrent_query(&arg->mysql)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _pool_query(task, arg)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _pool_txn(task, arg)) {
         mysql_quit(&arg->mysql);
         return;
     }

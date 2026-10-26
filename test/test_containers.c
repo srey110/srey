@@ -18,6 +18,8 @@ ARR_DECL(iarr, int)
 ARR_DECL(parr, void *)
 typedef struct { uint8_t b[200]; } _big200;
 ARR_DECL(barr, _big200)
+// radix 通用容器测试实例；T 用 int32_t，值直接比较
+RADIX_DECL(rx_i32, int32_t)
 /* fsqu 的两个无锁环后端直接用本体实例化，不看 FSQU_FAST_MODEL：macOS / BSD 默认是 queue+spin，
    不这样的话 mpq / bbq 两个后端在那里一次都跑不到 */
 FSQU_RING_DECL(i32_rfm, int32_t, MPQ_DECL)
@@ -5096,6 +5098,572 @@ static void test_rbtset_pool(CuTest *tc) {
     CuAssertTrue(tc, 0 == s.nfree);
 }
 
+// 三路比较，测试侧独立实现，不复用 radix 内部辅助
+static int32_t _rx_cmp(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen) {
+    size_t n = alen < blen ? alen : blen;
+    int32_t c = n > 0 ? memcmp(a, b, n) : 0;
+    if (0 != c) {
+        return c < 0 ? -1 : 1;
+    }
+    return alen < blen ? -1 : (alen > blen ? 1 : 0);
+}
+
+// 基本读写：空 key、二进制 key、替换、try_set、get_or_insert、删除
+static void test_radix_basic(CuTest *tc) {
+    rx_i32 m;
+    int32_t v;
+    int32_t old;
+    int32_t def;
+    int32_t created;
+    int32_t *p;
+    const uint8_t bin[] = { 0, 'a', 0, 'b', 0xff };
+
+    rx_i32_init(&m, NULL);
+    CuAssertTrue(tc, rx_i32_empty(&m));
+    CuAssertIntEquals(tc, 0, (int32_t)rx_i32_size(&m));
+
+    v = 10;
+    CuAssertIntEquals(tc, 1, rx_i32_set(&m, "", 0, &v, NULL));
+    CuAssertIntEquals(tc, 1, (int32_t)rx_i32_size(&m));
+    CuAssertPtrNotNull(tc, rx_i32_get(&m, "", 0));
+
+    v = 11;
+    CuAssertIntEquals(tc, 1, rx_i32_set(&m, "a", 1, &v, NULL));
+    v = 12;
+    CuAssertIntEquals(tc, 1, rx_i32_set(&m, "ab", 2, &v, NULL));
+    v = 13;
+    CuAssertIntEquals(tc, 1, rx_i32_set(&m, bin, sizeof(bin), &v, NULL));
+
+    old = -1;
+    v = 21;
+    CuAssertIntEquals(tc, 0, rx_i32_set(&m, "a", 1, &v, &old));
+    CuAssertIntEquals(tc, 11, old);
+    CuAssertIntEquals(tc, 21, *rx_i32_get(&m, "a", 1));
+    CuAssertIntEquals(tc, 4, (int32_t)rx_i32_size(&m));
+    CuAssertTrue(tc, rx_i32_contains(&m, "ab", 2));
+    CuAssertTrue(tc, !rx_i32_contains(&m, "abc", 3));
+
+    v = 99;
+    CuAssertIntEquals(tc, 0, rx_i32_try_set(&m, "a", 1, &v));
+    CuAssertIntEquals(tc, 21, *rx_i32_get(&m, "a", 1));
+
+    def = 77;
+    created = -1;
+    p = rx_i32_get_or_insert(&m, "new", 3, &def, &created);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertIntEquals(tc, 1, created);
+    CuAssertIntEquals(tc, 77, *p);
+    created = -1;
+    p = rx_i32_get_or_insert(&m, "new", 3, &def, &created);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertIntEquals(tc, 0, created);
+    CuAssertIntEquals(tc, 77, *p);
+
+    old = -1;
+    CuAssertIntEquals(tc, 1, rx_i32_del(&m, "ab", 2, &old));
+    CuAssertIntEquals(tc, 12, old);
+    CuAssertPtrEquals(tc, NULL, (void *)rx_i32_get(&m, "ab", 2));
+    CuAssertIntEquals(tc, 0, rx_i32_del(&m, "ab", 2, NULL));
+
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+    CuAssertIntEquals(tc, 4, (int32_t)rx_i32_size(&m));
+    rx_i32_free(&m);
+    CuAssertTrue(tc, rx_i32_empty(&m));
+}
+
+// 迭代器：正反遍历、seek/seek_prefix、版本失效、iter_del 删空
+static void test_radix_iter(CuTest *tc) {
+    rx_i32 m;
+    rx_i32_iter it;
+    static const char *const input[] = { "b", "ab", "", "ba", "abc", "a", "abd" };
+    static const char *const want[] = { "", "a", "ab", "abc", "abd", "b", "ba" };
+    char got[8][8];
+    size_t got_len[8];
+    size_t n;
+    int32_t i;
+    int32_t idx;
+    const uint8_t *k;
+    int32_t v;
+
+    rx_i32_init(&m, NULL);
+    for (i = 0; i < 7; i++) {
+        v = i;
+        CuAssertIntEquals(tc, 1, rx_i32_set(&m, input[i], strlen(input[i]), &v, NULL));
+    }
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+
+    rx_i32_iter_init(&it, &m);
+    CuAssertTrue(tc, rx_i32_iter_first(&it));
+    for (idx = 0; rx_i32_iter_valid(&it); idx++, rx_i32_iter_next(&it)) {
+        CuAssertTrue(tc, idx < 7);
+        k = rx_i32_iter_key(&it, &n);
+        CuAssertPtrNotNull(tc, k);
+        CuAssertTrue(tc, n < sizeof(got[0]));
+        memcpy(got[idx], k, n);
+        got[idx][n] = '\0';
+        got_len[idx] = n;
+    }
+    CuAssertIntEquals(tc, 7, idx);
+    for (i = 0; i < 7; i++) {
+        CuAssertIntEquals(tc, (int32_t)strlen(want[i]), (int32_t)got_len[i]);
+        CuAssertStrEquals(tc, want[i], got[i]);
+    }
+
+    // 反向
+    CuAssertTrue(tc, rx_i32_iter_last(&it));
+    for (idx = 6; rx_i32_iter_valid(&it); idx--, rx_i32_iter_prev(&it)) {
+        CuAssertTrue(tc, idx >= 0);
+        k = rx_i32_iter_key(&it, &n);
+        CuAssertIntEquals(tc, (int32_t)strlen(want[idx]), (int32_t)n);
+        CuAssertTrue(tc, 0 == memcmp(k, want[idx], n));
+    }
+    CuAssertIntEquals(tc, -1, idx);
+
+    // seek / seek_prefix
+    CuAssertTrue(tc, rx_i32_iter_seek(&it, "aba", 3));
+    k = rx_i32_iter_key(&it, &n);
+    CuAssertIntEquals(tc, 3, (int32_t)n);
+    CuAssertTrue(tc, 0 == memcmp(k, "abc", 3));
+    CuAssertTrue(tc, rx_i32_iter_seek_prefix(&it, "ab", 2));
+    k = rx_i32_iter_key(&it, &n);
+    CuAssertIntEquals(tc, 2, (int32_t)n);
+    CuAssertTrue(tc, 0 == memcmp(k, "ab", 2));
+    CuAssertTrue(tc, rx_i32_iter_seek(&it, "abe", 3));
+    k = rx_i32_iter_key(&it, &n);
+    CuAssertIntEquals(tc, 1, (int32_t)n);
+    CuAssertTrue(tc, 0 == memcmp(k, "b", 1));
+    CuAssertTrue(tc, rx_i32_iter_seek(&it, "abd", 3));
+    CuAssertTrue(tc, rx_i32_iter_next(&it));
+    k = rx_i32_iter_key(&it, &n);
+    CuAssertTrue(tc, 0 == memcmp(k, "b", 1));
+    CuAssertTrue(tc, rx_i32_iter_seek(&it, "", 0));
+    k = rx_i32_iter_key(&it, &n);
+    CuAssertIntEquals(tc, 0, (int32_t)n);
+    CuAssertTrue(tc, !rx_i32_iter_seek(&it, "zzz", 3));
+
+    // 遍历中改表：下一次 next 检出并失效
+    // version 不一致后，迭代器必须停下；first 重新定位可恢复
+    CuAssertTrue(tc, rx_i32_iter_first(&it));
+    v = 55;
+    CuAssertIntEquals(tc, 1, rx_i32_set(&m, "zz", 2, &v, NULL));
+    CuAssertTrue(tc, !rx_i32_iter_next(&it));
+    CuAssertTrue(tc, rx_i32_iter_first(&it));
+
+    // 边遍历边删，删空
+    idx = 0;
+    while (rx_i32_iter_valid(&it)) {
+        CuAssertIntEquals(tc, 1, rx_i32_iter_del(&m, &it, NULL));
+        idx++;
+    }
+    CuAssertIntEquals(tc, 8, idx);
+    CuAssertTrue(tc, rx_i32_empty(&m));
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+    rx_i32_iter_free(&it);
+    rx_i32_free(&m);
+}
+
+typedef struct rx_walk_ctx {
+    int32_t n;
+    int32_t stop;
+} rx_walk_ctx;
+
+static int32_t _rx_walk_cb(const uint8_t *key, size_t klen, int32_t *val, void *ud) {
+    rx_walk_ctx *ctx = ud;
+    (void)key;
+    (void)klen;
+    (void)val;
+    ctx->n++;
+    if (ctx->stop > 0 && ctx->n >= ctx->stop) {
+        return 0;
+    }
+    return 1;
+}
+
+// 前缀与回调遍历：prefix_match、walk、walk_range、walk_prefix
+static void test_radix_prefix_walk(CuTest *tc) {
+    rx_i32 m;
+    static const char *const keys[] = { "a", "ab", "abc", "abd", "b" };
+    uint8_t keybuf[32];
+    size_t match_len;
+    int32_t *val;
+    int32_t v;
+    int32_t i;
+    rx_walk_ctx ctx;
+
+    rx_i32_init(&m, NULL);
+    for (i = 0; i < 5; i++) {
+        v = i;
+        CuAssertIntEquals(tc, 1, rx_i32_set(&m, keys[i], strlen(keys[i]), &v, NULL));
+    }
+
+    CuAssertTrue(tc, rx_i32_prefix_match(&m, "abcd", 4, keybuf, sizeof(keybuf), &match_len, &val));
+    CuAssertIntEquals(tc, 3, (int32_t)match_len);
+    CuAssertTrue(tc, 0 == memcmp(keybuf, "abc", 3));
+    CuAssertIntEquals(tc, 2, *val);
+
+    CuAssertTrue(tc, rx_i32_prefix_match(&m, "abx", 3, keybuf, sizeof(keybuf), &match_len, &val));
+    CuAssertIntEquals(tc, 2, (int32_t)match_len);
+    CuAssertTrue(tc, 0 == memcmp(keybuf, "ab", 2));
+
+    CuAssertTrue(tc, !rx_i32_prefix_match(&m, "zzz", 3, keybuf, sizeof(keybuf), &match_len, &val));
+
+    v = 9;
+    CuAssertIntEquals(tc, 1, rx_i32_set(&m, "", 0, &v, NULL));
+    CuAssertTrue(tc, rx_i32_prefix_match(&m, "zzz", 3, keybuf, sizeof(keybuf), &match_len, &val));
+    CuAssertIntEquals(tc, 0, (int32_t)match_len);
+    CuAssertIntEquals(tc, 9, *val);
+
+    ctx.n = 0;
+    ctx.stop = 0;
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_walk(&m, _rx_walk_cb, &ctx));
+    CuAssertIntEquals(tc, 6, ctx.n);
+
+    ctx.n = 0;
+    ctx.stop = 2;
+    CuAssertIntEquals(tc, ERR_FAILED, rx_i32_walk(&m, _rx_walk_cb, &ctx));
+    CuAssertIntEquals(tc, 2, ctx.n);
+
+    // [ab, b) 只覆盖 ab/abc/abd，b 本身是右开边界
+    ctx.n = 0;
+    ctx.stop = 0;
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_walk_range(&m, "ab", 2, "b", 1, _rx_walk_cb, &ctx));
+    CuAssertIntEquals(tc, 3, ctx.n);
+
+    ctx.n = 0;
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_walk_prefix(&m, "ab", 2, _rx_walk_cb, &ctx));
+    CuAssertIntEquals(tc, 3, ctx.n);
+
+    rx_i32_free(&m);
+}
+
+// 随机对拍：随机二进制 key 的增删查、排序、check
+static void test_radix_random(CuTest *tc) {
+    enum { RX_N = 600, RX_KEY_MAX = 12 };
+    static uint8_t keys[RX_N][RX_KEY_MAX];
+    static uint8_t uniq[RX_N][RX_KEY_MAX];
+    static size_t uniq_len[RX_N];
+    static int32_t uniq_val[RX_N];
+    static int32_t order[RX_N];
+    rx_i32 m;
+    rx_i32_iter it;
+    test_rng rng;
+    int32_t nused = 0;
+    int32_t i;
+    int32_t j;
+    size_t n;
+    int32_t *p;
+    int32_t v;
+
+    rx_i32_init(&m, NULL);
+    test_rng_init(&rng, 0x5a17c0deULL);
+    // 随机 key 可能重复：重复时 set 返回 0，值覆盖，uniq 只留一份
+    for (i = 0; i < RX_N; i++) {
+        n = (size_t)(test_rng_next(&rng) % RX_KEY_MAX);
+        for (j = 0; j < (int32_t)n; j++) {
+            keys[i][j] = (uint8_t)("ab01"[test_rng_next(&rng) % 4]);
+        }
+        for (j = 0; j < nused; j++) {
+            if (0 == _rx_cmp(keys[i], n, uniq[j], uniq_len[j])) {
+                break;
+            }
+        }
+        v = i;
+        if (j < nused) {
+            CuAssertIntEquals(tc, 0, rx_i32_set(&m, keys[i], n, &v, NULL));
+            uniq_val[j] = i;
+        } else {
+            CuAssertIntEquals(tc, 1, rx_i32_set(&m, keys[i], n, &v, NULL));
+            memcpy(uniq[nused], keys[i], n);
+            uniq_len[nused] = n;
+            uniq_val[nused] = i;
+            nused++;
+        }
+    }
+    CuAssertIntEquals(tc, nused, (int32_t)rx_i32_size(&m));
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+
+    for (i = 0; i < nused; i++) {
+        p = rx_i32_get(&m, uniq[i], uniq_len[i]);
+        CuAssertPtrNotNull(tc, p);
+        CuAssertIntEquals(tc, uniq_val[i], *p);
+    }
+
+    uint8_t prev_key[RX_KEY_MAX];
+    size_t prev_len = 0;
+    rx_i32_iter_init(&it, &m);
+    CuAssertTrue(tc, rx_i32_iter_first(&it));
+    j = 0;
+    for (; rx_i32_iter_valid(&it); j++, rx_i32_iter_next(&it)) {
+        size_t klen;
+        const uint8_t *k = rx_i32_iter_key(&it, &klen);
+        CuAssertTrue(tc, j < nused);
+        if (j > 0) {
+            CuAssertTrue(tc, _rx_cmp(prev_key, prev_len, k, klen) < 0);
+        }
+        CuAssertTrue(tc, klen <= RX_KEY_MAX);
+        memcpy(prev_key, k, klen);
+        prev_len = klen;
+    }
+    CuAssertIntEquals(tc, nused, j);
+
+    for (i = 0; i < nused; i++) {
+        order[i] = i;
+    }
+    // 打乱删除顺序，覆盖叶子删除、空节点摘除和单子节点合并
+    test_shuffle(&rng, order, nused);
+    for (i = 0; i < nused / 2; i++) {
+        int32_t old = -1;
+        j = order[i];
+        CuAssertIntEquals(tc, 1, rx_i32_del(&m, uniq[j], uniq_len[j], &old));
+        CuAssertIntEquals(tc, uniq_val[j], old);
+        CuAssertPtrEquals(tc, NULL, (void *)rx_i32_get(&m, uniq[j], uniq_len[j]));
+    }
+    CuAssertIntEquals(tc, nused - nused / 2, (int32_t)rx_i32_size(&m));
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+    rx_i32_iter_free(&it);
+    rx_i32_free(&m);
+}
+
+// 随机操作对拍的参照：按 _rx_cmp 排好序的数组
+enum { RXO_CAP = 1400, RXO_KEY_MAX = 6 };
+static uint8_t _rxo_k[RXO_CAP][RXO_KEY_MAX];
+static size_t _rxo_n[RXO_CAP];
+static int32_t _rxo_v[RXO_CAP];
+static int32_t _rxo_cnt;
+
+// 参照的 lower_bound 下标
+static int32_t _rxo_lb(const uint8_t *k, size_t n) {
+    int32_t lo = 0;
+    int32_t hi = _rxo_cnt;
+    while (lo < hi) {
+        int32_t mid = (lo + hi) / 2;
+        if (_rx_cmp(_rxo_k[mid], _rxo_n[mid], k, n) < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+static int32_t _rxo_found(int32_t i, const uint8_t *k, size_t n) {
+    return i < _rxo_cnt && 0 == _rx_cmp(_rxo_k[i], _rxo_n[i], k, n);
+}
+static void _rxo_insert(int32_t i, const uint8_t *k, size_t n, int32_t v) {
+    memmove(&_rxo_k[i + 1], &_rxo_k[i], sizeof(_rxo_k[0]) * (size_t)(_rxo_cnt - i));
+    memmove(&_rxo_n[i + 1], &_rxo_n[i], sizeof(_rxo_n[0]) * (size_t)(_rxo_cnt - i));
+    memmove(&_rxo_v[i + 1], &_rxo_v[i], sizeof(_rxo_v[0]) * (size_t)(_rxo_cnt - i));
+    memcpy(_rxo_k[i], k, n);
+    _rxo_n[i] = n;
+    _rxo_v[i] = v;
+    _rxo_cnt++;
+}
+static void _rxo_remove(int32_t i) {
+    _rxo_cnt--;
+    memmove(&_rxo_k[i], &_rxo_k[i + 1], sizeof(_rxo_k[0]) * (size_t)(_rxo_cnt - i));
+    memmove(&_rxo_n[i], &_rxo_n[i + 1], sizeof(_rxo_n[0]) * (size_t)(_rxo_cnt - i));
+    memmove(&_rxo_v[i], &_rxo_v[i + 1], sizeof(_rxo_v[0]) * (size_t)(_rxo_cnt - i));
+}
+static void _rxo_key(test_rng *rng, uint8_t *k, size_t *n) {
+    static const uint8_t al[] = { 0x00, 'a', 'b', 0xff };
+    *n = (size_t)(test_rng_next(rng) % RXO_KEY_MAX);
+    for (size_t i = 0; i < *n; i++) {
+        k[i] = al[test_rng_next(rng) % sizeof(al)];
+    }
+}
+
+// 随机操作对拍：增删查三种写法、seek + prev、最长前缀、区间遍历，每步对照参照数组
+static void test_radix_random_ops(CuTest *tc) {
+    rx_i32 m;
+    rx_i32_iter it;
+    test_rng rng;
+    uint8_t k[RXO_KEY_MAX];
+    uint8_t k2[RXO_KEY_MAX];
+    uint8_t keybuf[RXO_KEY_MAX];
+    size_t n, n2, klen, mlen;
+    const uint8_t *ik;
+    int32_t *p;
+    int32_t i, j, v, old, created, want;
+    rx_walk_ctx ctx;
+
+    rx_i32_init(&m, NULL);
+    rx_i32_iter_init(&it, &m);
+    test_rng_init(&rng, 0x0dd5eedULL);
+    _rxo_cnt = 0;
+    for (int32_t step = 0; step < 6000; step++) {
+        _rxo_key(&rng, k, &n);
+        i = _rxo_lb(k, n);
+        v = step;
+        switch (test_rng_next(&rng) % 8) {
+        case 0:
+        case 1:
+            old = -1;
+            CuAssertIntEquals(tc, _rxo_found(i, k, n) ? 0 : 1, rx_i32_set(&m, k, n, &v, &old));
+            if (_rxo_found(i, k, n)) {
+                CuAssertIntEquals(tc, _rxo_v[i], old);
+                _rxo_v[i] = v;
+            } else {
+                _rxo_insert(i, k, n, v);
+            }
+            break;
+        case 2:
+            CuAssertIntEquals(tc, _rxo_found(i, k, n) ? 0 : 1, rx_i32_try_set(&m, k, n, &v));
+            if (!_rxo_found(i, k, n)) {
+                _rxo_insert(i, k, n, v);
+            }
+            CuAssertIntEquals(tc, _rxo_v[i], *rx_i32_get(&m, k, n));
+            break;
+        case 3:
+            created = -1;
+            p = rx_i32_get_or_insert(&m, k, n, &v, &created);
+            CuAssertPtrNotNull(tc, p);
+            CuAssertIntEquals(tc, _rxo_found(i, k, n) ? 0 : 1, created);
+            if (!_rxo_found(i, k, n)) {
+                _rxo_insert(i, k, n, v);
+            }
+            CuAssertIntEquals(tc, _rxo_v[i], *p);
+            break;
+        case 4:
+            old = -1;
+            CuAssertIntEquals(tc, _rxo_found(i, k, n) ? 1 : 0, rx_i32_del(&m, k, n, &old));
+            if (_rxo_found(i, k, n)) {
+                CuAssertIntEquals(tc, _rxo_v[i], old);
+                _rxo_remove(i);
+            }
+            CuAssertPtrEquals(tc, NULL, (void *)rx_i32_get(&m, k, n));
+            break;
+        case 5:
+            // seek 落在 lower_bound，再 prev 一步落在它前一项
+            CuAssertIntEquals(tc, i < _rxo_cnt ? 1 : 0, rx_i32_iter_seek(&it, k, n));
+            if (i < _rxo_cnt) {
+                ik = rx_i32_iter_key(&it, &klen);
+                CuAssertIntEquals(tc, 0, _rx_cmp(ik, klen, _rxo_k[i], _rxo_n[i]));
+                CuAssertIntEquals(tc, i > 0 ? 1 : 0, rx_i32_iter_prev(&it));
+                if (i > 0) {
+                    ik = rx_i32_iter_key(&it, &klen);
+                    CuAssertIntEquals(tc, 0, _rx_cmp(ik, klen, _rxo_k[i - 1], _rxo_n[i - 1]));
+                    CuAssertIntEquals(tc, _rxo_v[i - 1], *rx_i32_iter_val(&it));
+                }
+            }
+            break;
+        case 6:
+            // 参照里最长的、是 k 前缀的那个
+            want = -1;
+            for (j = 0; j < _rxo_cnt; j++) {
+                if (_rxo_n[j] <= n && 0 == memcmp(_rxo_k[j], k, _rxo_n[j])
+                    && (want < 0 || _rxo_n[j] > _rxo_n[want])) {
+                    want = j;
+                }
+            }
+            CuAssertIntEquals(tc, want >= 0 ? 1 : 0,
+                              rx_i32_prefix_match(&m, k, n, keybuf, sizeof(keybuf), &mlen, &p));
+            if (want >= 0) {
+                CuAssertIntEquals(tc, (int32_t)_rxo_n[want], (int32_t)mlen);
+                CuAssertTrue(tc, 0 == mlen || 0 == memcmp(keybuf, _rxo_k[want], mlen));
+                CuAssertIntEquals(tc, _rxo_v[want], *p);
+            }
+            break;
+        default:
+            // [k, k2) 的条数
+            _rxo_key(&rng, k2, &n2);
+            want = _rx_cmp(k, n, k2, n2) < 0 ? _rxo_lb(k2, n2) - i : 0;
+            ctx.n = 0;
+            ctx.stop = 0;
+            CuAssertIntEquals(tc, ERR_OK, rx_i32_walk_range(&m, k, n, k2, n2, _rx_walk_cb, &ctx));
+            CuAssertIntEquals(tc, want, ctx.n);
+            break;
+        }
+        CuAssertIntEquals(tc, _rxo_cnt, (int32_t)rx_i32_size(&m));
+        if (0 == step % 500) {
+            CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+        }
+    }
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+    rx_i32_iter_free(&it);
+    rx_i32_free(&m);
+}
+
+static int32_t _rx_freed;
+
+static void _rx_free_cb(void *p) {
+    (void)p;
+    _rx_freed++;
+}
+
+// free_cb 只在 clear/free 调用，set/del 不调用
+static void test_radix_free_cb(CuTest *tc) {
+    rx_i32 m;
+    int32_t v;
+    int32_t i;
+
+    _rx_freed = 0;
+    rx_i32_init(&m, _rx_free_cb);
+    for (i = 0; i < 3; i++) {
+        v = i;
+        CuAssertIntEquals(tc, 1, rx_i32_set(&m, &i, sizeof(i), &v, NULL));
+    }
+    int32_t zero = 0;
+    CuAssertIntEquals(tc, 1, rx_i32_del(&m, &zero, sizeof(zero), NULL));
+    // set/del 不调 elfree；clear 只对仍存活的两项调用
+    CuAssertIntEquals(tc, 0, _rx_freed);
+    rx_i32_clear(&m);
+    CuAssertIntEquals(tc, 2, _rx_freed);
+
+    for (i = 0; i < 2; i++) {
+        v = i;
+        CuAssertIntEquals(tc, 1, rx_i32_set(&m, &i, sizeof(i), &v, NULL));
+    }
+    rx_i32_free(&m);
+    CuAssertIntEquals(tc, 4, _rx_freed);
+}
+
+// 长 key：1KB key 的分裂/合并/迭代
+static void test_radix_long(CuTest *tc) {
+    enum { RX_LONG_N = 32, RX_LONG_LEN = 1024 };
+    rx_i32 m;
+    rx_i32_iter it;
+    char key[RX_LONG_LEN];
+    int32_t v;
+    int32_t i;
+    int32_t *p;
+    size_t n;
+    const uint8_t *k;
+
+    rx_i32_init(&m, NULL);
+    // 1KB key 让节点路径变深，覆盖显式栈而非递归
+    for (i = 0; i < RX_LONG_N; i++) {
+        memset(key, 'x', sizeof(key));
+        memcpy(key, &i, sizeof(i));
+        v = i;
+        CuAssertIntEquals(tc, 1, rx_i32_set(&m, key, sizeof(key), &v, NULL));
+    }
+    CuAssertIntEquals(tc, RX_LONG_LEN, (int32_t)rx_i32_max_key_len(&m));
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+    for (i = 0; i < RX_LONG_N; i++) {
+        memset(key, 'x', sizeof(key));
+        memcpy(key, &i, sizeof(i));
+        p = rx_i32_get(&m, key, sizeof(key));
+        CuAssertPtrNotNull(tc, p);
+        CuAssertIntEquals(tc, i, *p);
+    }
+    rx_i32_iter_init(&it, &m);
+    CuAssertTrue(tc, rx_i32_iter_first(&it));
+    k = rx_i32_iter_key(&it, &n);
+    CuAssertIntEquals(tc, RX_LONG_LEN, (int32_t)n);
+    i = 0;
+    memset(key, 'x', sizeof(key));
+    memcpy(key, &i, sizeof(i));
+    CuAssertTrue(tc, 0 == memcmp(k, key, sizeof(key)));
+    rx_i32_iter_free(&it);
+    for (i = 0; i < RX_LONG_N; i += 2) {
+        memset(key, 'x', sizeof(key));
+        memcpy(key, &i, sizeof(i));
+        CuAssertIntEquals(tc, 1, rx_i32_del(&m, key, sizeof(key), NULL));
+    }
+    CuAssertIntEquals(tc, ERR_OK, rx_i32_check(&m));
+    CuAssertIntEquals(tc, RX_LONG_N / 2, (int32_t)rx_i32_size(&m));
+    rx_i32_free(&m);
+}
+
 void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpq_basic);
     SUITE_ADD_TEST(suite, test_mpq_basic_sc);
@@ -5139,6 +5707,13 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_fsqu_ring_order);
     SUITE_ADD_TEST(suite, test_fsqu_ring_mpmc);
     SUITE_ADD_TEST(suite, test_chan_buffered_race);
+    SUITE_ADD_TEST(suite, test_radix_basic);
+    SUITE_ADD_TEST(suite, test_radix_iter);
+    SUITE_ADD_TEST(suite, test_radix_prefix_walk);
+    SUITE_ADD_TEST(suite, test_radix_random);
+    SUITE_ADD_TEST(suite, test_radix_random_ops);
+    SUITE_ADD_TEST(suite, test_radix_free_cb);
+    SUITE_ADD_TEST(suite, test_radix_long);
     SUITE_ADD_TEST(suite, test_hashmap);
     SUITE_ADD_TEST(suite, test_hashmap_scan_iter);
     SUITE_ADD_TEST(suite, test_hashmap_with_hash_variants);

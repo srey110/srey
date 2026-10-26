@@ -171,7 +171,8 @@ static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
         binary_offset(breader, next);
     }
 }
-// 读 OK 包体：两个计数与 status_flags 经出参回带(不要的传 NULL)，截断时一个都不写；带 session track 时顺带更新当前库
+// 读 OK 包体：两个计数与 status_flags 经出参回带(不要的传 NULL)，截断时一个都不写；顺带按 status_flags 更新 in_trans，
+// 带 session track 时还更新当前库
 static int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
     uint64_t *affected_rows, uint64_t *last_id, int16_t *status_flags) {
     int32_t _rtn;
@@ -188,6 +189,7 @@ static int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
     }
     int16_t flags = (int16_t)binary_get_integer(breader, 2, 1);
     binary_get_skip(breader, 2);// warnings：本库不用，只推进读位置
+    mysql->in_trans = BIT_CHECK(flags, SERVER_STATUS_IN_TRANS) ? 1 : 0;
     if (BIT_CHECK(flags, SERVER_SESSION_STATE_CHANGED)) {
         _mpack_ok_track(mysql, breader);
     }
@@ -225,6 +227,12 @@ void _mpack_err(mpack_ctx *mpack, binary_ctx *breader) {
         mpack->pack = dup_zero(binary_get_binary(breader, mlens), mlens);
     }
 }
+// 命令回了 ERR：ERR 包不带 status_flags，事务状态说不准，按在事务里算（池归还时多回滚一次，报错本就少见）
+static inline void _mpack_cmd_err(mysql_ctx *mysql, mpack_ctx *mpack, binary_ctx *breader) {
+    mpack->pack_type = MPACK_ERR;
+    _mpack_err(mpack, breader);
+    mysql->in_trans = 1;
+}
 // 分配并初始化一个新的 mpack_ctx
 static inline mpack_ctx *_mpack_new(void) {
     mpack_ctx *mpack;
@@ -236,15 +244,14 @@ static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, 
     mpack_ctx *mpack = _mpack_new();
     if (MYSQL_OK == binary_get_uint8(breader)) {
         mpack->pack_type = MPACK_OK;
-        // COM_INIT_DB / COM_PING / COM_STMT_RESET 不会有后续结果集，status_flags 无人问
+        // COM_INIT_DB / COM_PING / COM_STMT_RESET 不会有后续结果集，status_flags 不用回带（in_trans 已在里面更新）
         if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, NULL)) {
             BIT_SET(*status, PROT_ERROR);
             _mysql_pkfree(mpack);
             return NULL;
         }
     } else {
-        mpack->pack_type = MPACK_ERR;
-        _mpack_err(mpack, breader);
+        _mpack_cmd_err(mysql, mpack, breader);
     }
     mysql->cur_cmd = 0;
     return mpack;
@@ -306,6 +313,7 @@ static inline eof_final _mpack_check_final(mysql_ctx *mysql, binary_ctx *breader
     if (ERR_OK != rtn) {
         return EOF_FINAL_BROKEN;
     }
+    mysql->in_trans = BIT_CHECK(status_flags, SERVER_STATUS_IN_TRANS) ? 1 : 0;
     if (BIT_CHECK(status_flags, SERVER_MORE_RESULTS_EXISTS)) {
         BIT_SET(*status, PROT_MOREDATA);
         return EOF_FINAL_MORE;
@@ -485,8 +493,7 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
 static mpack_ctx *_mpack_reader_err(mysql_ctx *mysql, binary_ctx *breader) {
     binary_get_skip(breader, 1);
     mpack_ctx *mpack = _mpack_new();
-    mpack->pack_type = MPACK_ERR;
-    _mpack_err(mpack, breader);
+    _mpack_cmd_err(mysql, mpack, breader);
     _mysql_pkfree(mysql->mpack);
     mysql->mpack = NULL;
     mysql->parse_status = 0;
@@ -704,8 +711,7 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
         } else if (MYSQL_ERR == first) {
             binary_get_skip(breader, 1);
             mpack = _mpack_new();
-            mpack->pack_type = MPACK_ERR;
-            _mpack_err(mpack, breader);
+            _mpack_cmd_err(mysql, mpack, breader);
             mysql->cur_cmd = 0;
         } else if (MPACK_QUERY == restype && MYSQL_LOCAL_INFILE == first) {
             // 不支持 LOCAL INFILE，直接报错
@@ -854,8 +860,7 @@ static mpack_ctx *_mpack_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, bin
         if (MYSQL_ERR == (uint8_t)(binary_at(breader, 0)[0])) {
             binary_get_skip(breader, 1);
             mpack_ctx * mpack = _mpack_new();
-            mpack->pack_type = MPACK_ERR;
-            _mpack_err(mpack, breader);
+            _mpack_cmd_err(mysql, mpack, breader);
             mysql->cur_cmd = 0;
             return mpack;
         }

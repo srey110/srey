@@ -23,7 +23,7 @@ static int32_t _lseri_pack_array_rest(lua_State *lua, binary_ctx *bw, int32_t id
 // 先按下标把数组段补完，之后的键照常判断。输出与"先按下标写满数组段、再整表遍历"逐字节相同
 static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth) {
     if (depth > SERI_PACK_MAX_DEPTH) {
-        binary_free(bw);// 先放缓冲再压报错串，理由见 _lseri_pack
+        binary_free(bw);// 返回失败前先放缓冲，理由见 _lseri_pack
         lua_pushfstring(lua, "seri pack: table nested too deep (>%d)", SERI_PACK_MAX_DEPTH);
         return ERR_FAILED;
     }
@@ -128,7 +128,7 @@ static int32_t _lseri_pack(lua_State *lua) {
     binary_init_write(&bw, 0, 0);
     int32_t top = lua_gettop(lua);
     for (int32_t i = 1; i <= top; i++) {
-        // 出错处已先 binary_free 再压报错串：lua_error 直接跳出，压串之后的语句跑不到
+        // 出错处返回前已 binary_free：lua_error 跳出后不返回，这里没机会再放
         if (ERR_OK != _lseri_pack_one(lua, &bw, i, 0)) {
             return lua_error(lua);
         }

@@ -798,6 +798,17 @@ static int32_t _lmysql_version(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 最近一个 OK / EOF 包是否说服务端处在事务里（含 autocommit=0 下已执行过语句）；命令回 ERR 后说不准，按 true 算；
+/// 断开后为 false。读取时机同 erro：命令返回后、本协程下次挂起之前
+/// </summary>
+/// <param name="self" type="userdata">mysql 对象</param>
+/// <returns type="boolean">true=在事务里</returns>
+static int32_t _lmysql_in_trans(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    lua_pushboolean(lua, 0 != (*ud)->in_trans);
+    return 1;
+}
+/// <summary>
 /// 返回最近一个经 record / record_handshake 记下的 ERR 包错误并清除错误状态；成功的命令不清它。
 /// 多协程共用连接时须在命令返回后、本协程下次挂起之前读
 /// </summary>
@@ -938,6 +949,7 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
         { "pack_stmt_prepare", _lmysql_pack_stmt_prepare },
         { "try_connect", _lmysql_try_connect },
         { "version", _lmysql_version },
+        { "in_trans", _lmysql_in_trans },
         { "erro", _lmysql_erro },
         { "sock_id", _lmysql_sock_id },
         { "last_id", _lmysql_last_id },

@@ -136,7 +136,11 @@ local function _shim_match_pack(self, pack)
     local close = _want_close(pack)
     local ok, code, parsed, idx, params = self:match(st[1], st[2] or "")
     if not ok then
-        return false, code, st[1], st[3], close, parsed-- 未命中时 match 的第三个返回值是 Allow
+        -- 未命中时 match 的第三个返回值是 Allow，404 / 405 / OPTIONS 第四个是 url 表
+        if nil == idx then
+            return false, code, st[1], st[3], close, parsed
+        end
+        return false, code, st[1], st[3], close, parsed, idx.path, next(idx.param) and idx.param or nil
     end
     local query = parsed.param
     return true, code, st[1], st[3], close, parsed.path, next(query) and query or nil, idx,
@@ -855,7 +859,7 @@ runner.run(function(t)
         t:eq(false, ok, "use(nil) → 抛错")
         t:check(err ~= nil and err:find("middleware") ~= nil, "错误信息点明是中间件问题")
         t:eq(false, pcall(function() r:use(42) end), "use(非函数) → 抛错")
-        t:eq(0, #r._global_mw, "抛错后全局中间件表未被写入")
+        t:eq(0, #r._fns, "抛错后全局中间件表未被写入")
     end
 
     -- 4.14(回归):变长中间件参数中间夹 nil,须抛错而不是连后续中间件一起丢掉
@@ -1179,24 +1183,22 @@ runner.run(function(t)
         t:eq("text/plain; charset=utf-8", r400 and r400.headers and r400.headers["Content-Type"], "400 带 Content-Type")
     end
 
-    -- 8.4 OPT 中置：对齐 C 端 _router_match_path 的可行性 DP（旧的一步前瞻 skip_opt 已删）
+    -- 8.4 可选段只能在末尾：中间带可选段（后跟字面量 / 必填段）的注册期就拒，请求落 404
     do
         local r = Route.new()
-        local got_x
-        r:get("/a/{x?}/b", function(ctx)
-            got_x = ctx.params.x
+        r:get("/a/{x?}/b", function(ctx) ctx:text(200, "ok") end)
+        r:get("/lead/{x?}/{y}", function(ctx) ctx:text(200, "ok") end)
+        t:eq(404, (dispatch(r, "GET", "/a/42/b") or {}).code, "opt mid: 注册被拒 → 404")
+        t:eq(404, (dispatch(r, "GET", "/a/b") or {}).code, "opt mid 缺省形态: 注册被拒 → 404")
+        t:eq(404, (dispatch(r, "GET", "/lead/a/b") or {}).code, "opt 后跟必填段: 注册被拒 → 404")
+        -- 末尾可选段后跟 * 照常
+        local got
+        r:get("/w/{x?}/*", function(ctx)
+            got = ctx.params.x
             ctx:text(200, "ok")
         end)
-        -- OPT 有值时消耗，后续 LIT /b 匹配
-        got_x = nil
-        t:eq(200,  (dispatch(r, "GET", "/a/42/b") or {}).code, "opt mid+value: 200")
-        t:eq("42", got_x, "opt mid+value: param filled")
-        -- OPT 无值：唯一可行解是 OPT 不取值，由 LIT /b 吞掉当前请求段
-        got_x = "SENTINEL"
-        t:eq(200, (dispatch(r, "GET", "/a/b") or {}).code, "opt mid+skip: 200")
-        t:eq(nil, got_x, "opt mid+skip: param nil")
-        -- 多余段不匹配
-        t:eq(404, (dispatch(r, "GET", "/a/b/c") or {}).code, "opt mid: extra seg → 404")
+        t:eq(200, (dispatch(r, "GET", "/w/a/b") or {}).code, "opt + 末尾通配: 200")
+        t:eq("a", got, "opt + 末尾通配: 可选段优先取值")
     end
 
     -- ── 注册期的两类误用必须当场可见 ────────────────────────────────────────
@@ -1270,15 +1272,82 @@ runner.run(function(t)
         t:eq(203, (dispatch(r, "GET", "/other/7") or {}).code, "字面量不同不算重复")
     end
     do
-        -- 已知未覆盖：通配段吞并。/s/* 会让后注册的 /s/css 永远够不着，但"谁比谁宽泛"
-        -- 在 OPT 与 WILD 组合下是偏序判定，判宽了会误杀合法注册，故不做——本用例把这个
-        -- 缺口钉成显式行为，哪天补上了这里会红，是提醒不是回归
+        -- router_tree 按 静态 > 参数 > 通配 匹配，不再按注册顺序；先注册的 /s/* 不会吞掉
+        -- 后注册的静态 /s/css。两条都注册成功，/s/css 命中静态路由。
         local r = Route.new()
         r:get("/s/*", function(ctx) ctx:text(200, "wild") end)
         r:get("/s/css", function(ctx) ctx:text(201, "css") end)
         local resp = dispatch(r, "GET", "/s/css") or {}
-        t:eq(200, resp.code, "通配段吞并暂不检测：/s/css 注册成功但被 /s/* 遮住")
-        t:eq("wild", resp.body, "命中的仍是先注册的通配路由")
+        t:eq(201, resp.code, "静态 /s/css 优先于先注册的 /s/*")
+        t:eq("css", resp.body, "命中的是静态路由")
+    end
+
+    do
+        -- NoRoute / NoMethod 走 C 回退链，再由 Lua runner 执行
+        local r = Route.new()
+        local fseen
+        r:no_route(function(ctx)
+            fseen = { path = ctx.path, q = ctx.query.q, allow = ctx.allow }
+            ctx:text(404, "nf")
+        end)
+        local resp = dispatch(r, "GET", "/no-such?q=1") or {}
+        t:eq(404, resp.code, "NoRoute 状态码")
+        t:eq("nf", resp.body, "NoRoute 正文")
+        t:eq("/no-such", fseen and fseen.path, "NoRoute 拿得到请求路径")
+        t:eq("1", fseen and fseen.q, "NoRoute 拿得到查询参数")
+        t:eq(nil, fseen and fseen.allow, "NoRoute 没有 allow")
+
+        r:no_route(nil)
+        resp = dispatch(r, "GET", "/no-such") or {}
+        t:eq(404, resp.code, "清除 NoRoute 后回到默认 404")
+
+        local r2 = Route.new()
+        r2:get("/only-get", function(ctx) ctx:text(200, "ok") end)
+        r2:no_method(function(ctx)
+            fseen = { path = ctx.path, allow = ctx.allow }
+            ctx:text(405, "nm")
+        end)
+        fseen = nil
+        resp = dispatch(r2, "POST", "/only-get") or {}
+        t:eq(405, resp.code, "NoMethod 状态码")
+        t:eq("nm", resp.body, "NoMethod 正文")
+        t:eq("/only-get", fseen and fseen.path, "NoMethod 拿得到请求路径")
+        t:eq("GET, HEAD", fseen and fseen.allow, "NoMethod 拿得到 Allow")
+        -- 未知方法 C 侧返回 -3，与 -4 都映射成 405；只有 -4 才走 NoMethod
+        resp = dispatch(r2, "FROB", "/only-get") or {}
+        t:eq(405, resp.code, "未知方法仍 405")
+        t:eq("Method Not Allowed\n", resp.body, "未知方法不走 NoMethod")
+    end
+
+    -- 回退不回应回默认码、抛错回 500、要求关连接时只关一次、chunked 首帧打到回退同样走回退
+    do
+        local r = Route.new()
+        local mode
+        r:no_route(function(ctx)
+            if "silent" == mode then
+                return
+            elseif "throw" == mode then
+                error("fallback boom")
+            end
+            ctx:text(404, "nf")
+        end)
+        mode = "silent"
+        local resp = dispatch(r, "GET", "/x") or {}
+        t:eq(404, resp.code, "回退不回应：回默认 404")
+        t:check("nf" ~= resp.body, "回退不回应：正文是默认的")
+        mode = "throw"
+        resp = dispatch(r, "GET", "/x") or {}
+        t:eq(500, resp.code, "回退抛错回 500")
+        mode = nil
+        closed_log = {}
+        resp = dispatch(r, "GET", "/x", nil, { Connection = "close" }, "HTTP/1.1") or {}
+        t:eq("nf", resp.body, "要求关连接时回退照常回")
+        t:eq(1, #closed_log, "回退回完要求关连接：只关一次")
+        closed_log = {}
+        last_resp = nil
+        r:net_recv(nil, sk_a, 0, SLICE_TYPE.START, make_pack("POST", "/x"), nil)
+        t:eq("nf", (last_resp or {}).body, "chunked 首帧打到回退")
+        t:eq(1, #closed_log, "chunked 首帧回完关一次")
     end
 
     -- ── 9. 流式路由（chunked） ──────────────────────────────────────────────
@@ -1710,7 +1779,7 @@ runner.run(function(t)
 
     -- ── 10. 真包走真实的 C match_pack ───────────────────────────────────────
     -- 前面全走模块头的 shim。这里起真监听收真包：C 的 match_pack 与 match 逐项比（命中 9 个返回值、
-    -- 未命中 6 个、空的查询 / 路径参数给 nil、chunked 后续包只给 1 个 nil），再让 dispatch 用真实现
+    -- 404 / 405 8 个、400 与未知方法 6 个、空的查询 / 路径参数给 nil、chunked 后续包只给 1 个 nil），再让 dispatch 用真实现
     -- 跑一遍，钉住 _match_ctx 按位置解构出来的 ctx 字段
     do
         local function same(a, b)
@@ -1779,9 +1848,9 @@ runner.run(function(t)
                 if not t:check(nil ~= g and g.ok, "收到并派发 " .. label) then
                     break
                 end
-                -- 未命中时 match 的第三个返回值是 Allow
+                -- 未命中时 match 的第三个返回值是 Allow，404 / 405 第四个是 url 表
                 ok, code, purl, idx, params = r._c_router:match(rq[1], rq[2])
-                t:eq(ok and 9 or 6, g.rtn.n, "match_pack 返回值个数 " .. label)
+                t:eq(ok and 9 or (idx and 8 or 6), g.rtn.n, "match_pack 返回值个数 " .. label)
                 t:eq(ok, g.rtn[1], "match_pack 命中与否 " .. label)
                 t:eq(code, g.rtn[2], "match_pack 状态码 " .. label)
                 t:eq(rq[1], g.rtn[3], "match_pack 方法 " .. label)
@@ -1799,6 +1868,10 @@ runner.run(function(t)
                     t:check(g.ctx and same(params, g.ctx.params), "ctx.params " .. label)
                 else
                     t:eq(purl, g.rtn[6], "match_pack Allow " .. label)
+                    if idx then
+                        t:eq(idx.path, g.rtn[7], "match_pack 未命中 path " .. label)
+                        t:check(same(next(idx.param) and idx.param or nil, g.rtn[8]), "match_pack 未命中 query " .. label)
+                    end
                     t:eq(code, g.code, "未命中按 match 的码回 " .. label)
                     t:eq(nil, g.ctx, "未命中不进 handler " .. label)
                 end

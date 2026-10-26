@@ -35,11 +35,13 @@ static router_ctx *_g_router = NULL;
 // handler 内只调 router_req_text/json, 不调阻塞 API, 同步完成响应
 
 // GET / → text "root"; 覆盖空路径 + 字面量精确匹配
-static void _h_root(router_req *ctx) {
+static void _h_root(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, "root", 4);
 }
 // GET /user/{id} → 回写 id 原文; 覆盖 PARAM 段提取
-static void _h_user(router_req *ctx) {
+static void _h_user(router_req *ctx, void *arg) {
+    (void)arg;
     size_t n;
     const char *id = router_req_param(ctx, "id", &n);
     if (NULL == id) {
@@ -50,7 +52,8 @@ static void _h_user(router_req *ctx) {
     router_req_text(ctx, 200, id, n);
 }
 // GET /file/{path?} → 有 path 回原文, 无则 "none"; 覆盖 OPT 段可选提取
-static void _h_file(router_req *ctx) {
+static void _h_file(router_req *ctx, void *arg) {
+    (void)arg;
     size_t n;
     const char *p = router_req_param(ctx, "path", &n);
     if (NULL == p) {
@@ -66,7 +69,8 @@ static void _h_file(router_req *ctx) {
 // 换一个 404 加一行 WARN) → 请求落 404;
 // /poptovf 末段是 {p17?}, 走 OPT 分支的同一上限判定 —— 给满 17 段同样 404,
 // 只给 16 段时 OPT 跳过仍应命中。必填与可选两个分支共用同一处填参, 这四个请求同时覆盖两条路径
-static void _h_pmax(router_req *ctx) {
+static void _h_pmax(router_req *ctx, void *arg) {
+    (void)arg;
     size_t n;
     const char *v = router_req_param(ctx, "p16", &n);
     if (NULL == v) {
@@ -76,11 +80,13 @@ static void _h_pmax(router_req *ctx) {
     router_req_text(ctx, 200, v, n);
 }
 // GET /static/* → 固定回 "static-ok"; 覆盖 WILD 末尾通配 (任意后续段都匹配)
-static void _h_static(router_req *ctx) {
+static void _h_static(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, "static-ok", 9);
 }
 // GET /wild/* → 回末尾通配吃下的段 (参数 "*"), 一段都没吃下时回 "none"
-static void _h_wild(router_req *ctx) {
+static void _h_wild(router_req *ctx, void *arg) {
+    (void)arg;
     size_t n = 0;
     const char *v = router_req_param(ctx, "*", &n);
     if (NULL == v) {
@@ -90,7 +96,8 @@ static void _h_wild(router_req *ctx) {
     router_req_text(ctx, 200, v, n);
 }
 // GET /query?a=X&b=Y → 回 "a=X b=Y"; 覆盖 URL query 解析 (url_parse 已 url_decode)
-static void _h_query(router_req *ctx) {
+static void _h_query(router_req *ctx, void *arg) {
+    (void)arg;
     size_t alen, blen;
     const char *a = router_req_query(ctx, "a", &alen);
     const char *b = router_req_query(ctx, "b", &blen);
@@ -102,36 +109,43 @@ static void _h_query(router_req *ctx) {
 }
 // GET /qexist?a=... → 区分 a 键不存在(NULL→"missing")/值空(非NULL+len0→"empty")/有值("value");
 // 验证 router_req_query 对 ?a= 返非 NULL 零长指针, 与 Lua query 子表 "" 对齐
-static void _h_qexist(router_req *ctx) {
+static void _h_qexist(router_req *ctx, void *arg) {
+    (void)arg;
     size_t alen;
     const char *a = router_req_query(ctx, "a", &alen);
     const char *r = (NULL == a) ? "missing" : (0 == alen ? "empty" : "value");
     router_req_text(ctx, 200, r, strlen(r));
 }
 // POST /admin/stats → JSON; 覆盖 router_req_json (Content-Type 自动写)
-static void _h_admin_stats(router_req *ctx) {
+static void _h_admin_stats(router_req *ctx, void *arg) {
+    (void)arg;
     const char *json = "{\"ok\":true}";
     router_req_json(ctx, 200, json, strlen(json));
 }
 // GET /forget → 故意不写响应, 让 router_dispatch 末尾 !responded 兜底 500
-static void _h_forget(router_req *ctx) {
+static void _h_forget(router_req *ctx, void *arg) {
+    (void)arg;
     (void)ctx;
 }
 // POST /only-post → text "post-ok"; 配合 GET /only-post → 404 测试方法位掩码隔离
-static void _h_only_post(router_req *ctx) {
+static void _h_only_post(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, "post-ok", 7);
 }
 // GET /needauth → text "authed"; 仅在 auth 中间件放行后调到 (token 错误时被截断)
-static void _h_needauth(router_req *ctx) {
+static void _h_needauth(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, "authed", 6);
 }
 // GET /post-mw → text "tagged"; 配合 post-tag 中间件验证 next 后置 (handler 先跑完,
 // post-tag 在 router_next 返回后 ATOMIC_ADD 计数器)
-static void _h_post_mw(router_req *ctx) {
+static void _h_post_mw(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, "tagged", 6);
 }
 // GET /__stats → 当前 _g_post_count 字符串值; 客户端打完 N 次 /post-mw 后读出验证
-static void _h_stats(router_req *ctx) {
+static void _h_stats(router_req *ctx, void *arg) {
+    (void)arg;
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_post_count);
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
@@ -139,60 +153,29 @@ static void _h_stats(router_req *ctx) {
 }
 // GET /nobody → 204: RFC 7230 禁止 1xx/204/304 带 Content-Length 与报文体,
 // 这里故意传一个 body, 验证 router 把它连同 CL 一起丢掉
-static void _h_nobody(router_req *ctx) {
+static void _h_nobody(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 204, "dropped", 7);
 }
 // GET /__aborts → 当前 _g_abort_count 字符串值; 客户端发一半就断开后读出验证 ABORT 已投递
-static void _h_aborts(router_req *ctx) {
+static void _h_aborts(router_req *ctx, void *arg) {
+    (void)arg;
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_abort_count);
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
     router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
 // GET /__regfail → 当前 _g_regfail_count 字符串值; 客户端读出 "0" 即所有注册结果都与预期一致
-static void _h_regfail(router_req *ctx) {
+static void _h_regfail(router_req *ctx, void *arg) {
+    (void)arg;
     char buf[32];
     int32_t cnt = (int32_t)ATOMIC_GET(&_g_regfail_count);
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
     router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
 }
-// GET /a/{x?}/b → OPT 中置: 有值返 "x=<val>", 无值(OPT 未取到段)返 "x=none"
-static void _h_opt_mid(router_req *ctx) {
-    size_t n;
-    const char *x = router_req_param(ctx, "x", &n);
-    if (NULL == x) {
-        router_req_text(ctx, 200, "x=none", 6);
-    } else {
-        char buf[64];
-        int32_t k = SNPRINTF(buf, sizeof(buf), "x=%.*s", (int32_t)n, x);
-        router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
-    }
-}
-// GET /optlead/{x?}/{y} → "x=<x|none>,y=<y>"; OPT 排在必填段之前,
-// 只前瞻一步的贪婪匹配会让 x 吃掉唯一请求段, 使 y 无段可用而误判 404
-static void _h_opt_lead(router_req *ctx) {
-    size_t xn = 0;
-    size_t yn = 0;
-    const char *x = router_req_param(ctx, "x", &xn);
-    const char *y = router_req_param(ctx, "y", &yn);
-    char buf[128];
-    int32_t k = SNPRINTF(buf, sizeof(buf), "x=%.*s,y=%.*s",
-                         NULL == x ? 4 : (int32_t)xn, NULL == x ? "none" : x,
-                         NULL == y ? 4 : (int32_t)yn, NULL == y ? "none" : y);
-    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
-}
-// GET /files/{ver?}/list → "ver=<ver|none>"; 请求段与后继字面量同名时(/files/list/list)
-// 前瞻会把 OPT 跳过, 末段剩余无处消耗而误判 404
-static void _h_opt_ambig(router_req *ctx) {
-    size_t n = 0;
-    const char *v = router_req_param(ctx, "ver", &n);
-    char buf[64];
-    int32_t k = SNPRINTF(buf, sizeof(buf), "ver=%.*s",
-                         NULL == v ? 4 : (int32_t)n, NULL == v ? "none" : v);
-    router_req_text(ctx, 200, buf, snprintf_lens(k, sizeof(buf)));
-}
 // GET /bighdr → 回一条 BIGHDR_LEN 字节的 X-Big 头; 覆盖头值按长度直写、不再截断
-static void _h_bighdr(router_req *ctx) {
+static void _h_bighdr(router_req *ctx, void *arg) {
+    (void)arg;
     char val[BIGHDR_LEN];
     memset(val, 'a', sizeof(val));
     http_header_ctx extra[1];
@@ -204,7 +187,8 @@ static void _h_bighdr(router_req *ctx) {
 }
 // GET /hdrsum → 三条各 HDRSUM_LEN 字节的头, 累计 ~5.4KB 越过 HTTP_MAX_HEADLENS。
 // 组包侧不卡长度, 三条都该原样发出
-static void _h_hdrsum(router_req *ctx) {
+static void _h_hdrsum(router_req *ctx, void *arg) {
+    (void)arg;
     char val[HDRSUM_LEN];
     memset(val, 'b', sizeof(val));
     http_header_ctx extra[3];
@@ -221,7 +205,8 @@ static void _h_hdrsum(router_req *ctx) {
 // GET /framing → handler 故意从 extra 塞 Content-Length 与 Transfer-Encoding。
 // 两者归 http_pack_content 独占, 放行就成了两条 Content-Length(或 TE 叠 CL)——
 // 典型的请求走私形态, 严格对端会拒收。应整条丢弃, 线缆上仍只有一条 Content-Length
-static void _h_framing(router_req *ctx) {
+static void _h_framing(router_req *ctx, void *arg) {
+    (void)arg;
     http_header_ctx extra[3];
     // 大小写故意写乱: HTTP 头名大小写无关, 判定不能只认标准写法
     extra[0].key.data = (void *)"content-LENGTH";
@@ -241,7 +226,8 @@ static void _h_framing(router_req *ctx) {
 }
 // GET /nullhdr → extra 里塞一条值为 NULL 的头和一条正常头。router.h 的契约是
 // "头值为 NULL 整条丢弃", 而校验曾被 lens > 0 短路掉, {NULL, 0} 会照常发出 "X-Null: "
-static void _h_nullhdr(router_req *ctx) {
+static void _h_nullhdr(router_req *ctx, void *arg) {
+    (void)arg;
     http_header_ctx extra[2];
     extra[0].key.data = (void *)"X-Null";
     extra[0].key.lens = strlen("X-Null");
@@ -259,7 +245,8 @@ static void _h_nullhdr(router_req *ctx) {
 // 就是执行顺序本身: g0(7) → gmark(9) → g1mw(1) → g2mw(2)。
 // 验证: (a) 全局中间件先于路由级 (b) 全局按注册顺序 (c) 嵌套 group 按父→子
 // (d) ctx->user 跨中间件传值。用加法的话 1+10 与 10+1 都是 11, 顺序反了看不出来
-static void _h_deep(router_req *ctx) {
+static void _h_deep(router_req *ctx, void *arg) {
+    (void)arg;
     intptr_t accum = (intptr_t)ctx->user;
     char buf[32];
     int32_t k = SNPRINTF(buf, sizeof(buf), "deep=%ld", (long)accum);
@@ -278,7 +265,8 @@ static const char *_segpath(char *buf, size_t cap, int32_t nseg) {
     return buf;
 }
 // GET 64 段 "/s/.../s" → "s64"; 覆盖 URL_MAX_PATH_DEPTH 段精确路由,验证 >64 段请求不误命中
-static void _h_seg64(router_req *ctx) {
+static void _h_seg64(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, "s64", 3);
 }
 
@@ -286,7 +274,8 @@ static void _h_seg64(router_req *ctx) {
 
 // auth: 检查 X-Token: secret, 不匹配则直接写 401 并不调 router_next → 截断,
 // _h_needauth 不会被执行; 验证中间件截断语义
-static void _mw_auth(router_req *ctx) {
+static void _mw_auth(router_req *ctx, void *arg) {
+    (void)arg;
     size_t lens = 0;
     char *token = router_req_header(ctx, "X-Token", &lens);
     if (NULL == token || 6 != lens || 0 != memcmp(token, "secret", 6)) {
@@ -297,13 +286,15 @@ static void _mw_auth(router_req *ctx) {
 }
 // silent: 既不写响应也不调 router_next。挂在流式路由上用来压"准入被拒 + 漏写响应"
 // 那一格 —— 兜底 500 之后连接必须关掉
-static void _mw_silent(router_req *ctx) {
+static void _mw_silent(router_req *ctx, void *arg) {
+    (void)arg;
     (void)ctx;
 }
 // post-tag: 先 router_next 让 handler 跑完, 返回后再 ATOMIC_ADD 计数器
 // 验证 next 后置处理 (Express/Laravel 风格的洋葱模型); 单纯返回值无法证明这点,
 // 因为 handler 写完响应客户端已经收到, 所以借助跨请求的全局计数器观察
-static void _mw_post_tag(router_req *ctx) {
+static void _mw_post_tag(router_req *ctx, void *arg) {
+    (void)arg;
     router_next(ctx);
     ATOMIC_ADD(&_g_post_count, 1);
 }
@@ -313,22 +304,27 @@ static void _mw_accum(router_req *ctx, intptr_t n) {
     ctx->user = (void *)(intptr_t)(((intptr_t)ctx->user) * 10 + n);
     router_next(ctx);
 }
-static void _mw_g0(router_req *ctx) {
+static void _mw_g0(router_req *ctx, void *arg) {
+    (void)arg;
     _mw_accum(ctx, 7);
 }
-static void _mw_gmark(router_req *ctx) {
+static void _mw_gmark(router_req *ctx, void *arg) {
+    (void)arg;
     _mw_accum(ctx, 9);
 }
-static void _mw_g1(router_req *ctx) {
+static void _mw_g1(router_req *ctx, void *arg) {
+    (void)arg;
     _mw_accum(ctx, 1);
 }
-static void _mw_g2(router_req *ctx) {
+static void _mw_g2(router_req *ctx, void *arg) {
+    (void)arg;
     _mw_accum(ctx, 2);
 }
 
 // 流式路由: 首帧建缓冲, 中间帧追加, 末帧回显。ctx->user 跨帧留在 router 持有的 req 里,
 // 客户端据此核对分块是否按序到齐。slice == 0 是一次到齐的普通请求, 直接回显
-static void _h_st_echo(router_req *ctx, uint8_t slice, void *data, size_t lens) {
+static void _h_st_echo(router_req *ctx, uint8_t slice, void *data, size_t lens, void *arg) {
+    (void)arg;
     if (0 == slice) {
         router_req_text(ctx, 200, (const char *)data, lens);
         return;
@@ -382,6 +378,28 @@ static void _router_free(void *arg) {
 }
 // 启动时注册具名中间件 + 路由 + 嵌套 group + listen(router 已在 start 建好,存 task->arg)
 // 路由表覆盖: 字面量 / PARAM / OPT / WILD / query / 多方法 / 路由级中间件 / 嵌套 group
+// NoRoute / NoMethod 回退：请求带 X-Fb 头或 X-Token: fb 才自己回（自定义正文），否则不回应、
+// 由 router 补默认失败码，其余用例的 404 / 405 照旧
+static int32_t _fb_wanted(router_req *ctx) {
+    size_t n = 0;
+    if (NULL != router_req_header(ctx, "X-Fb", &n)) {
+        return 1;
+    }
+    const char *tok = router_req_header(ctx, "X-Token", &n);
+    return NULL != tok && 2 == n && 0 == memcmp(tok, "fb", 2);
+}
+static void _fb_route(router_req *ctx, void *arg) {
+    (void)arg;
+    if (_fb_wanted(ctx)) {
+        router_req_text(ctx, 404, "fb-route", sizeof("fb-route") - 1);
+    }
+}
+static void _fb_method(router_req *ctx, void *arg) {
+    (void)arg;
+    if (_fb_wanted(ctx)) {
+        router_req_text(ctx, 405, "fb-method", sizeof("fb-method") - 1);
+    }
+}
 static void _server_startup(task_ctx *task) {
     router_ctx *r = (router_ctx *)task->arg;
     task_recved(task, _server_net_recv);
@@ -390,16 +408,18 @@ static void _server_startup(task_ctx *task) {
     task_watch_closed(task, router_closed_watch, r);
 
     // 5 个具名中间件先注册, 后续 router_get/post 的 mws 数组按名引用
-    router_define(r, "auth",     _mw_auth);
-    router_define(r, "silent",   _mw_silent);
-    router_define(r, "post-tag", _mw_post_tag);
-    router_define(r, "g1mw",     _mw_g1);
-    router_define(r, "g2mw",     _mw_g2);
-    router_define(r, "gmark",    _mw_gmark);
+    router_define(r, "auth",     _mw_auth, NULL);
+    router_define(r, "silent",   _mw_silent, NULL);
+    router_define(r, "post-tag", _mw_post_tag, NULL);
+    router_define(r, "g1mw",     _mw_g1, NULL);
+    router_define(r, "g2mw",     _mw_g2, NULL);
+    router_define(r, "gmark",    _mw_gmark, NULL);
     // 全局中间件: 两种注册入口各一个, 顺序即 _h_deep 读出的数字顺序。
     // 只往 ctx->user 里累数字, 不改响应也不截断, 故其余各格用例不受影响
-    router_use_fn(r, _mw_g0);
+    router_use_fn(r, _mw_g0, NULL);
     router_use(r, "gmark");
+    router_set_no_route(r, _fb_route, NULL);
+    router_set_no_method(r, _fb_method, NULL);
 
     // 流式路由: /st 无中间件, /stauth 挂 auth 验证准入被截断时不建流
     REG(router_post_stream(r, NULL, "/st", _h_st_echo, NULL, 0));
@@ -423,10 +443,16 @@ static void _server_startup(task_ctx *task) {
     // 且 /litbe/xyz 与 /litqe/xyz 都不该命中参数 → 404
     REG(router_get(r, NULL, "/litbe/{}",  _h_root, NULL, 0));
     REG(router_get(r, NULL, "/litqe/{?}", _h_root, NULL, 0));
-    REG(router_get(r, NULL, "/a/{x?}/b",    _h_opt_mid,     NULL, 0));
-    // OPT 精确匹配: 可选段排在必填段之前 / 取值与后继字面量同名, 两种形态贪婪前瞻都会误判 404
-    REG(router_get(r, NULL, "/optlead/{x?}/{y}",  _h_opt_lead,  NULL, 0));
-    REG(router_get(r, NULL, "/files/{ver?}/list", _h_opt_ambig, NULL, 0));
+    // 可选段只能在末尾: 后面跟字面量 / 必填段的都该在注册期被拒, 没被拒才是回归(同 /optovf)
+    if (NULL != router_get(r, NULL, "/a/{x?}/b", _h_root, NULL, 0)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
+    if (NULL != router_get(r, NULL, "/optlead/{x?}/{y}", _h_root, NULL, 0)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
+    if (NULL != router_get(r, NULL, "/files/{ver?}/list", _h_root, NULL, 0)) {
+        ATOMIC_ADD(&_g_regfail_count, 1);
+    }
     // 自定义头值超 256 字节, 验证不被截断
     REG(router_get(r, NULL, "/bighdr",            _h_bighdr,    NULL, 0));
     // 三条头累计超 HTTP_MAX_HEADLENS, 验证组包侧不卡长度
@@ -514,7 +540,8 @@ void task_router_server_start(loader_ctx *loader, const char *name, uint16_t por
 static uint16_t _g_idx_port = 0;
 
 // POST /idx-plain → 普通路由, 用来验证同一 router 上非 index 条目收 chunked 仍是 411
-static void _h_idx_plain(router_req *ctx) {
+static void _h_idx_plain(router_req *ctx, void *arg) {
+    (void)arg;
     router_req_text(ctx, 200, "plain", 5);
 }
 // 故意不注册流式路由, 也因此不登记 router_closed_watch: 没有流就没有跨帧上下文要回收
@@ -525,6 +552,8 @@ static void _idx_startup(task_ctx *task) {
     // GET 路由连带接 HEAD: 给 HEAD + chunked 一条能命中的普通路由
     REG(router_get(r, NULL, "/idx-get", _h_idx_plain, NULL, 0));
     REGI(router_add_index(r, "POST", 4, "/idx-only", 9));
+    router_set_no_route(r, _fb_route, NULL);
+    router_set_no_method(r, _fb_method, NULL);
     uint64_t id;
     if (ERR_OK != task_listen(task, PACK_HTTP, NULL, "0.0.0.0", _g_idx_port, &id, 0)) {
         LOG_WARN("task_router_index_server task_listen %d error.", _g_idx_port);
@@ -1194,21 +1223,19 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
         return ERR_FAILED;
     }
 
-    // [21] OPT 中置+有值: /a/42/b → param x 消耗后 LIT /b 匹配
-    if (ERR_OK != _do_req(task, port, "GET", "/a/42/b", NULL, NULL, 200, "x=42")) {
+    // [21]~[23] /a/{x?}/b 注册被拒(可选段只能在末尾), 三种形态都落 404
+    if (ERR_OK != _do_req(task, port, "GET", "/a/42/b", NULL, NULL, 404, NULL)) {
         bad |= (1 << 21);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [22] OPT 中置+无值: /a/b → 唯一可行解是 OPT 不取值, 由 LIT /b 吞掉当前段
-    if (ERR_OK != _do_req(task, port, "GET", "/a/b",    NULL, NULL, 200, "x=none")) {
+    if (ERR_OK != _do_req(task, port, "GET", "/a/b",    NULL, NULL, 404, NULL)) {
         bad |= (1 << 22);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [23] OPT 中置多余段: /a/b/c → 路由段消耗完但请求段剩余 → 404
     if (ERR_OK != _do_req(task, port, "GET", "/a/b/c",  NULL, NULL, 404, NULL)) {
         bad |= (1 << 23);
     }
@@ -1251,40 +1278,36 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
-// OPT 精确匹配 + 头值不截断的补充断言; 与 _run_all 分开是因为后者的 bad 位已用到 28,
+// 可选段位置约束 + 头值不截断的补充断言; 与 _run_all 分开是因为后者的 bad 位已用到 28,
 // 这里 7 条塞进去要占到 bit 35, 越过 int32_t 的位宽, 故另起一个 bad 从 bit 0 重数
 static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
     int32_t bad = 0;
-    // [0] OPT 排在必填段之前: 唯一请求段须留给 {y}, {x?} 缺省
-    if (ERR_OK != _do_req(task, port, "GET", "/optlead/b", NULL, NULL, 200, "x=none,y=b")) {
+    // [0]~[4] 中间带可选段的三条路由注册被拒, 请求只能落 404
+    if (ERR_OK != _do_req(task, port, "GET", "/optlead/b", NULL, NULL, 404, NULL)) {
         bad |= (1 << 0);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [1] 两段都在: {x?} 与 {y} 各取一段
-    if (ERR_OK != _do_req(task, port, "GET", "/optlead/a/b", NULL, NULL, 200, "x=a,y=b")) {
+    if (ERR_OK != _do_req(task, port, "GET", "/optlead/a/b", NULL, NULL, 404, NULL)) {
         bad |= (1 << 1);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [2] OPT 取值与后继字面量同名: ver 取 "list", 末段 list 由字面量吃
-    if (ERR_OK != _do_req(task, port, "GET", "/files/list/list", NULL, NULL, 200, "ver=list")) {
+    if (ERR_OK != _do_req(task, port, "GET", "/files/list/list", NULL, NULL, 404, NULL)) {
         bad |= (1 << 2);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [3] 同一路由 OPT 缺省的常规形态仍命中
-    if (ERR_OK != _do_req(task, port, "GET", "/files/list", NULL, NULL, 200, "ver=none")) {
+    if (ERR_OK != _do_req(task, port, "GET", "/files/list", NULL, NULL, 404, NULL)) {
         bad |= (1 << 3);
     }
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [4] /a/{x?}/b 的歧义形态: 前瞻实现在此误判 404, 精确匹配应取 x=b
-    if (ERR_OK != _do_req(task, port, "GET", "/a/b/b", NULL, NULL, 200, "x=b")) {
+    if (ERR_OK != _do_req(task, port, "GET", "/a/b/b", NULL, NULL, 404, NULL)) {
         bad |= (1 << 4);
     }
     if (task_isclosing(task)) {
@@ -1716,6 +1739,14 @@ static int32_t _run_index(task_ctx *task, uint16_t port) {
         || ERR_OK != _do_chunked_411_raw(task, port, "GET", "/idx-get")) {
         bad |= (1 << 6);
     }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [7] 回退：chunked 首帧打到不存在的路径走 NoRoute 回退（_router_chunked_nostream），一次到齐的 405 走 NoMethod
+    if (ERR_OK != _do_chunked(task, port, "POST", "/idx-nope", one, 1, "fb", 404, "fb-route")
+        || ERR_OK != _do_req(task, port, "PUT", "/idx-plain", "X-Fb", "1", 405, "fb-method")) {
+        bad |= (1 << 7);
+    }
     if (0 != bad) {
         LOG_WARN("router test: nostream chunked assertions failed, bad=0x%x.", bad);
     }
@@ -1824,6 +1855,20 @@ static int32_t _run_http_extra(task_ctx *task, uint16_t port) {
                                 "Expect: 100-continue\r\n\r\n", NULL,
                                 0, "HTTP/1.1 401", "\r\n\r\nno")) {
         bad |= (1 << 9);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [10] 回退：自己回的照原样到客户端、不回的由 router 补默认码；回退回完要求关连接的照关；
+    // chunked 首帧打到不存在的路径也走回退（_router_st_begin）
+    const char *one[] = { "x" };
+    if (ERR_OK != _do_req(task, port, "GET", "/fb-none", "X-Fb", "1", 404, "fb-route")
+        || ERR_OK != _do_req(task, port, "GET", "/fb-none", NULL, NULL, 404, "Not Found\n")
+        || ERR_OK != _do_req(task, port, "GET", "/only-post", "X-Fb", "1", 405, "fb-method")
+        || ERR_OK != _do_conn_close(task, port, "fallback close",
+                                    "GET /fb-none HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Fb: 1\r\nConnection: close\r\n\r\n", 404, 1)
+        || ERR_OK != _do_chunked(task, port, "POST", "/fb-none", one, 1, "fb", 404, "fb-route")) {
+        bad |= (1 << 10);
     }
     if (0 != bad) {
         LOG_WARN("router test: http extra assertions failed, bad=0x%x.", bad);

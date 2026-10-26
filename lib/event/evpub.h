@@ -71,58 +71,58 @@
 
 // socket 状态标志位
 typedef enum sock_status {
-    STATUS_NONE = 0x00,         // 无状态
+    STATUS_NONE = 0,            // 无状态
     // 正在发送数据。IOCP 指 WSASend 在途(跨完成回调)，攒发链同步发送期间(含 s_cb)也置位；
     // uev 只覆盖 s_cb 执行期。同步发送期间置位都是为了挡回调里的同步重入
-    STATUS_SENDING = 0x01,
-    STATUS_ERROR = 0x02,        // 发生错误
+    STATUS_SENDING = 1 << 0,
+    STATUS_ERROR = 1 << 1,      // 发生错误
     // 待移除，关闭要等手上的事做完：IOCP 等在途的 WSASend(TCP) / WSASendTo(UDP) 完成，Unix 等 STATUS_INCB 的回调返回，
     // 或(UDP)等本轮 tick 全部跑完
-    STATUS_REMOVE = 0x04,
+    STATUS_REMOVE = 1 << 2,
     // 仅 Unix：本连接的某个回调(acp / conn / exch / r / s)正在执行。期间要关它(同线程发送失败、ev_close
     // 重注册失败)只记 REMOVE，回调返回再关——回调里还在用它的状态与收包缓冲，CLOSE 也得排在回调推出的消息之后。
     // UDP 同理：rf 回调里要关只记 STATUS_ERROR，回调返回后收包循环见到即关；tick 驱动期间(任一 tick 回调里)要关的
     // UDP 记 REMOVE 挂 watcher->tick_closes，本轮全部 tick 跑完再关，tick 里还在用它上面挂的协议状态。
     // IOCP 本就不在回调与 tick 里关：断连只置 STATUS_ERROR，真关在该 socket 下一个完成包回调里
-    STATUS_INCB = 0x08,
-    STATUS_CLIENT = 0x10,       // 作为客户端
+    STATUS_INCB = 1 << 3,
+    STATUS_CLIENT = 1 << 4,     // 作为客户端
     // 数据已入 buf_s 但故意没发，等本轮派发结束后一次合并发出；两个后端都用，IOCP 只用于明文。
     // 位与在 watcher->flushes 上一一对应：置清位在各自的 flush_link / flush_unlink，
     // 唯独 Unix 轮末冲刷(_uev_flush_pending)摘链时就地清，不经 flush_unlink
-    STATUS_FLUSHPEND = 0x20,
-    STATUS_ESTABLISHED = 0x40,     // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置，连接失败收尾时撤掉
+    STATUS_FLUSHPEND = 1 << 5,
+    STATUS_ESTABLISHED = 1 << 6,   // TCP 已连通：accept 出来即置，connect 在完成回调里确认成败后置，连接失败收尾时撤掉
     // 本端主动关闭已连通的连接时不关读：先关写发 FIN，之后读到的一律丢掉，等对端 FIN、到 CLOSE_LINGER_MS
     // 或丢满 CLOSE_LINGER_BYTES 才关 fd。关读或带着没读的数据关 fd 都会让内核回 RST，Windows 收到 RST
     // 会把已到但没读的响应一起丢掉。关闭回调、ud 清理都在进入延迟关闭前做完，对上层不可见
-    STATUS_LINGER = 0x80,          // 关闭时置位：关 fd 之前要延迟关闭
-    STATUS_LINGERING = 0x100,      // 延迟关闭中；与"在 watcher->lingers 上"一一对应
+    STATUS_LINGER = 1 << 7,        // 关闭时置位：关 fd 之前要延迟关闭
+    STATUS_LINGERING = 1 << 8,     // 延迟关闭中；与"在 watcher->lingers 上"一一对应
     // 下面三个记"连接是怎么断的"，只由收发失败路径置位（_evpub_mark_close）；
     // 都没置即本地主动关闭，故 ev_close / task 拆除等路径无需标记
-    STATUS_PEER_FIN = 0x200,       // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
-    STATUS_PEER_ABORT = 0x400,     // 收发失败：RST、读写错误、SSL 协议错
+    STATUS_PEER_FIN = 1 << 9,      // 对端有序结束发送方向：裸 TCP 收到 FIN，SSL 收到 close_notify
+    STATUS_PEER_ABORT = 1 << 10,   // 收发失败：RST、读写错误、SSL 协议错
     // 以下 SSL 专用；新增非 SSL 位加在 #if 上面，别插进来
 #if WITH_SSL
-    STATUS_PEER_TRUNCATED = 0x800, // TLS 没发 close_notify 就断了，收全与被截断分不出
-    STATUS_SSLEXCHANGE = 0x1000, // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
-    STATUS_AUTHSSL = 0x2000,    // SSL握手中
+    STATUS_PEER_TRUNCATED = 1 << 11,  // TLS 没发 close_notify 就断了，收全与被截断分不出
+    STATUS_SSLEXCHANGE = 1 << 12,     // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
+    STATUS_AUTHSSL = 1 << 13,         // SSL握手中
 #ifdef EV_IOCP
-    STATUS_NORECV = 0x4000,     // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
+    STATUS_NORECV = 1 << 14,          // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
 #endif
     // 下面三个是数据期 TLS1.3 的读写互卡。前两个的后缀表示"在等哪一边就绪"，
     // 第三个表示"我这边还有没发完的应用写"。后两个互斥，由 _usk_tcp_send /
     // _olp_tcp_send 单点保证；KEYUPDATE_WRITE 可与 KEYUPDATE_READ 共存，它与
     // WPEND_SSL 不共存在 Unix 上靠的是 _usk_tcp_send 入口那道 !KEYUPDATE_WRITE 守卫，别删
-    STATUS_KEYUPDATE_WRITE = 0x8000,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE 并摘 EVENT_READ，IOCP 投 0 字节 WSASend 探针并暂停收
-    STATUS_KEYUPDATE_READ = 0x10000, // 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
-                                     // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针。
-                                     // 置位来自对端把 post-handshake 消息(现实中是 NewSessionTicket)
-                                     // 拆到多条 TLS 记录、后一条未到；KeyUpdate 本身触发不了。
-                                     // 前提由 test_event.c 的 test_ssl_write_wants_read 钉着，别当死码删
-    STATUS_WPEND_SSL = 0x20000       // 发的时候撞上 socket 满(WANT_WRITE)：OpenSSL 把那条应用记录挂着，
-                                     // 此期间不得调 SSL_read——它处理对端 KeyUpdate 要回发的握手记录更短，
-                                     // 走同一个 ssl3_write_bytes，会撞上"重试长度不得小于挂起量"那道守卫，
-                                     // 整条连接被判死。置清位都只在 wpend_link/unlink：
-                                     // 发送排空、改挂 KEYUPDATE_READ、连接关闭、看门狗到期都会清
+    STATUS_KEYUPDATE_WRITE = 1 << 15, // 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE 并摘 EVENT_READ，IOCP 投 0 字节 WSASend 探针并暂停收
+    STATUS_KEYUPDATE_READ = 1 << 16,  // 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送：
+                                      // Unix 摘掉 EVENT_WRITE 只留 EVENT_READ，IOCP 交还 SENDING 不投探针。
+                                      // 置位来自对端把 post-handshake 消息(现实中是 NewSessionTicket)
+                                      // 拆到多条 TLS 记录、后一条未到；KeyUpdate 本身触发不了。
+                                      // 前提由 test_event.c 的 test_ssl_write_wants_read 钉着，别当死码删
+    STATUS_WPEND_SSL = 1 << 17        // 发的时候撞上 socket 满(WANT_WRITE)：OpenSSL 把那条应用记录挂着，
+                                      // 此期间不得调 SSL_read——它处理对端 KeyUpdate 要回发的握手记录更短，
+                                      // 走同一个 ssl3_write_bytes，会撞上"重试长度不得小于挂起量"那道守卫，
+                                      // 整条连接被判死。置清位都只在 wpend_link/unlink：
+                                      // 发送排空、改挂 KEYUPDATE_READ、连接关闭、看门狗到期都会清
 #endif
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写

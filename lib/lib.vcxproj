@@ -61,6 +61,7 @@
     <ClInclude Include="containers\slist.h" />
     <ClInclude Include="containers\rbtree.h" />
     <ClInclude Include="containers\rbtset.h" />
+    <ClInclude Include="containers\radix.h" />
     <ClInclude Include="crypt\aes.h" />
     <ClInclude Include="crypt\base64.h" />
     <ClInclude Include="crypt\cipher.h" />
@@ -123,6 +124,8 @@
     <ClInclude Include="protocol\smtp\mail.h" />
     <ClInclude Include="protocol\smtp\smtp.h" />
     <ClInclude Include="protocol\websock.h" />
+    <ClInclude Include="advance\router_pub.h" />
+    <ClInclude Include="advance\router_tree.h" />
     <ClInclude Include="advance\router.h" />
     <ClInclude Include="advance\harbor.h" />
     <ClInclude Include="advance\debug_console.h" />
@@ -130,6 +133,7 @@
     <ClInclude Include="coro\minicoro.h" />
     <ClInclude Include="srey\coro_task.h" />
     <ClInclude Include="srey\coro_utils.h" />
+    <ClInclude Include="srey\db_pool.h" />
     <ClInclude Include="srey\prots_wrap.h" />
     <ClInclude Include="srey\debug_request.h" />
     <ClInclude Include="srey\loader.h" />
@@ -237,11 +241,13 @@
     <ClCompile Include="protocol\smtp\smtp.c" />
     <ClCompile Include="protocol\websock.c" />
     <ClCompile Include="advance\router.c" />
+    <ClCompile Include="advance\router_tree.c" />
     <ClCompile Include="advance\harbor.c" />
     <ClCompile Include="advance\debug_console.c" />
     <ClCompile Include="coro\coro.c" />
     <ClCompile Include="srey\coro_task.c" />
     <ClCompile Include="srey\coro_utils.c" />
+    <ClCompile Include="srey\db_pool.c" />
     <ClCompile Include="srey\prots_wrap.c" />
     <ClCompile Include="srey\debug_request.c" />
     <ClCompile Include="srey\loader.c" />
