@@ -3141,8 +3141,7 @@ bool unsafe_yyjson_mut_equals(const yyjson_mut_val *lhs,
 bool yyjson_locate_pos(const char *str, size_t len, size_t pos,
                        size_t *line, size_t *col, size_t *chr) {
     usize line_sum = 0, line_pos = 0, chr_sum = 0;
-    const u8 *cur = (const u8 *)str;
-    const u8 *end = cur + pos;
+    const u8 *cur, *end;
 
     if (!str || pos > len) {
         if (line) *line = 0;
@@ -3150,6 +3149,9 @@ bool yyjson_locate_pos(const char *str, size_t len, size_t pos,
         if (chr) *chr = 0;
         return false;
     }
+
+    cur = (const u8 *)str;
+    end = cur + pos;
 
     if (pos >= 3 && is_utf8_bom(cur)) cur += 3; /* don't count BOM */
     while (cur < end) {
@@ -4954,8 +4956,12 @@ skip_utf8:
         }
 #endif
         if (unlikely(pos == src)) {
-            if (has_allow(INVALID_UNICODE)) ++src;
-            else return_err(src, "invalid UTF-8 encoding in string");
+            if (!has_allow(INVALID_UNICODE)) {
+                return_err(src, "invalid UTF-8 encoding in string");
+            }
+            /* invalid UTF-8 should not be marked as NOESC, copy it */
+            dst = src;
+            goto copy_utf8;
         }
         goto skip_ascii;
     }
@@ -11304,6 +11310,13 @@ yyjson_mut_val *yyjson_patch(yyjson_mut_doc *doc,
                 break;
             case PATCH_OP_MOVE: /* val = remove(from), add(path, val) */
                 if (unlikely(from_len == 0 && path_len == 0)) break;
+                /* `from` must not be a proper prefix of `path` (RFC 6902) */
+                if (unlikely(from_len < path_len &&
+                             path->uni.str[from_len] == '/' &&
+                             !memcmp(from->uni.str, path->uni.str, from_len))) {
+                    return_err(INVALID_MEMBER,
+                               "cannot move `from` into its child");
+                }
                 val = ptr_remove(from);
                 if (unlikely(!val)) {
                     return_err(POINTER, "failed to remove `from`");
@@ -11425,6 +11438,13 @@ yyjson_mut_val *yyjson_mut_patch(yyjson_mut_doc *doc,
                 break;
             case PATCH_OP_MOVE: /* val = remove(from), add(path, val) */
                 if (unlikely(from_len == 0 && path_len == 0)) break;
+                /* `from` must not be a proper prefix of `path` (RFC 6902) */
+                if (unlikely(from_len < path_len &&
+                             path->uni.str[from_len] == '/' &&
+                             !memcmp(from->uni.str, path->uni.str, from_len))) {
+                    return_err(INVALID_MEMBER,
+                               "cannot move `from` into its child");
+                }
                 val = ptr_remove(from);
                 if (unlikely(!val)) {
                     return_err(POINTER, "failed to remove `from`");
