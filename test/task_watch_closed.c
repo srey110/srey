@@ -125,7 +125,7 @@ static void _coro_startup(task_ctx *task) {
     if (task_isclosing(task)) {
         return;
     }
-    // http_sv 与本 task 一起起，它的监听可能还没落地：有界重试(同 task_debug 的 _http_get)
+    // http_sv 与本 task 一起起，它的 startup 可能还没跑：有界重试(同 task_debug 的 _http_get)
     for (int32_t i = 0; ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", ctx->httpport, 0, NULL, &sk); i++) {
         if (task_isclosing(task)) {
             return;// 收尾早退不算失败

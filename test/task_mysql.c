@@ -453,6 +453,21 @@ static int32_t _pool_query(task_ctx *task, task_mysql_args *arg) {
             return ERR_FAILED;
         }
     }
+    // 先把两条连接都借出来建好再还回去(同 Lua 侧 pool:warm)：首次借出才建连，两边建连快慢不一会让
+    // 并发窗口错开，峰值到不了 2
+    void *warm[2] = { NULL, NULL };
+    int32_t nwarm = 0;
+    while (nwarm < 2 && ERR_OK == db_pool_get(pool, 5000, &warm[nwarm])) {
+        nwarm++;
+    }
+    for (int32_t k = 0; k < nwarm; k++) {
+        db_pool_put(pool, warm[k]);
+    }
+    if (2 != nwarm) {
+        LOG_ERROR("mysql pool: warm error.");
+        db_pool_free(pool);
+        return ERR_FAILED;
+    }
     _pool_arg pa;
     ZERO(&pa, sizeof(pa));
     pa.pool = pool;

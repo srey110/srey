@@ -161,9 +161,9 @@ runner.run(function(t)
         end
     end
     t:check(insert_ok, "bulk insert 3 rows")
-    -- last_id / affectd_rows 是业务判"插了几行 / 自增主键是多少"的唯一入口,返错值不会让
+    -- last_id / affected_rows 是业务判"插了几行 / 自增主键是多少"的唯一入口,返错值不会让
     -- 任何断言变红。单行 INSERT 的影响行数恒为 1;表有自增主键,last_id 必 > 0
-    t:eq(1, mctx:affectd_rows(), "单行 INSERT 的 affectd_rows 是 1")
+    t:eq(1, mctx:affected_rows(), "单行 INSERT 的 affected_rows 是 1")
     t:check((mctx:last_id() or 0) > 0, "自增主键的 last_id > 0")
 
     -- 普通 SELECT：逐字段读回来比对，而不是只数行数。原来只有 _count_rows(reader) == 3，
@@ -215,6 +215,14 @@ runner.run(function(t)
             reader:next()
         end
         t:eq(3, n, "select all rows")
+        -- seek 1 基同 pgsql 的 reader.at：读到底后跳回第 2 行；[1, size] 外游标不动
+        reader:seek(2)
+        local oks, vs = reader:integer("t_int8")
+        t:check(oks and 2 == vs, "seek(2) 回到第二行: " .. tostring(vs))
+        reader:seek(0)
+        reader:seek(4)
+        oks, vs = reader:integer("t_int8")
+        t:check(oks and 2 == vs, "seek(0) / seek(4) 越界游标不动: " .. tostring(vs))
     else
         t:fail("select reader nil")
     end
@@ -276,7 +284,7 @@ runner.run(function(t)
     rai = mctx:query("INSERT INTO srey_ai VALUES (9223372036854775808)")
     t:check(rai and true == rai[1], "insert srey_ai 2^63")
     t:eq(false, mctx:last_id(), "last_id 超 int64 返回 false")
-    t:eq(1, mctx:affectd_rows(), "同一 OK 包的 affectd_rows 照常")
+    t:eq(1, mctx:affected_rows(), "同一 OK 包的 affected_rows 照常")
 
     -- 空串回绑：reader:string 给的空串指针原样交给 bind:string 仍是空串，不能变成 SQL NULL
     local rempty = mctx:query("SELECT '' AS e")
@@ -373,7 +381,7 @@ runner.run(function(t)
     t:check(rcafter and 1 == #rcafter and rcafter[1], "single query after CALL multi-result: no misalignment")
 
     -- 多语句逐条计数：每条 INSERT 的影响行数与自增 ID 随各自的包交付（C 绑定 pack_* 按包取），
-    -- query 返回后连接级 affectd_rows / last_id / erro 是最后一个 OK / ERR 包的。临时表只活在这条连接上，自增从 1 起
+    -- query 返回后连接级 affected_rows / last_id / erro 是最后一个 OK / ERR 包的。临时表只活在这条连接上，自增从 1 起
     mctx:query("DROP TEMPORARY TABLE IF EXISTS srey_counts")
     local rcnt = mctx:query("CREATE TEMPORARY TABLE srey_counts (id INT AUTO_INCREMENT PRIMARY KEY, v INT)")
     t:check(rcnt and true == rcnt[1], "create temp table srey_counts")
@@ -403,7 +411,7 @@ runner.run(function(t)
     end
     local rq = mctx:query(csql)
     t:check(rq and 2 == #rq and true == rq[1] and true == rq[2], "query 多语句 INSERT")
-    t:eq(1, mctx:affectd_rows(), "连接级 affectd_rows 是最后一条的")
+    t:eq(1, mctx:affected_rows(), "连接级 affected_rows 是最后一条的")
     t:eq(6, mctx:last_id(), "连接级 last_id 是最后一条的")
     local rdup = mctx:query("insert into srey_counts(v) values(7);insert into srey_counts(id, v) values(1, 8)")
     t:check(rdup and 2 == #rdup and true == rdup[1] and false == rdup[2], "多语句第 2 条主键冲突")
@@ -466,7 +474,8 @@ runner.run(function(t)
                 t:check(not eok and string.find(tostring(emsg), "owner mysql already freed", 1, true),
                         "宿主 __gc 后 stmt:" .. fn .. " 报错: " .. tostring(emsg))
             end
-            -- 等网络线程 udfree 交还它那份，stmt 的 __gc 就是最后放手的一方，C 块由它释放
+            -- 两种先后都合法：sleep 只让"网络线程先交还、stmt 的 __gc 最后放手"成为常见情形，
+            -- Lua 侧看不到 udfree 跑没跑；哪条路漏释放由退出时的内存检查兜底
             srey.sleep(200)
             t:eq(true, pcall(st2.stmt.__gc, st2.stmt), "宿主关完后 stmt __gc 不抛错")
             t:eq(true, pcall(st2.stmt.__gc, st2.stmt), "stmt __gc 幂等")

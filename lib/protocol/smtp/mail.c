@@ -22,6 +22,11 @@
 #define MIME_HDR_RAW_MAX 900
 #define MAIL_LIT(s) s, sizeof(s) - 1 // 字面量展开成 binary_set_binary 的 (数据, 长度) 两个实参
 
+// Date 头的月份缩写(RFC 5322 §3.3)。不用 strftime 的 %b：它跟着 locale 走
+static const char *const _mail_months[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+
 void mail_init(mail_ctx *mail) {
     ZERO(mail, sizeof(mail_ctx));
     mail->reply = 1;
@@ -237,11 +242,7 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
         }
     }
 }
-// 生成本封邮件专用的 MIME boundary。RFC 2046 §5.1.1 要求 boundary 不得出现在任何 body part 中，
-// 写死的字面量做不到这一点——它就在源码里摆着，正文放一行 "--<boundary>" 就能提前终结 text 段，
-// 后面再伪造出一个附件或 text/html 替代段，顶着发件人的地址与签名发出去。
-// 各 part 现在全是 base64（正文 / html / 附件），行首只可能是 base64 字符、出不了 '-'，
-// 所以撞不上；随机化是为了满足 RFC 的唯一性要求，也给将来真加了非 base64 的 part 留一层保险
+// 生成本封邮件专用的 MIME boundary：RFC 2046 §5.1.1 要求它不出现在任何 body part 里，每封随机生成
 static inline int32_t _mail_gen_boundary(char *out, size_t cap) {
     ASSERTAB(cap >= HEX_ENSIZE(MIME_BOUND_RAND) + 5, ERRSTR_INVPARAM);
     char rnd[MIME_BOUND_RAND];
@@ -392,12 +393,9 @@ static void _mail_set_msgid(binary_ctx *bw, const char *from) {
 static inline size_t _mail_b64_size(size_t lens) {
     return 0 == lens ? 0 : (lens + 2) / 3 * 4 + (lens - 1) / MIME_B64_RAW * CRLF_SIZE;
 }
-// 正文 / html / 附件按 base64 写出：57 字节原文正好编成 76 个 base64 字符（RFC 2045 §6.8 的行宽），
-// 故按 57 切块天然落在折行位置（末行不补 CRLF）。整段输出长度先算好一次预留，逐行直接编进 bw，
-// 每行编码器补的 NUL 被随后的 CRLF 盖掉，末行那个落在预留区外的结尾余量里。
-// 不能 8bit 原样写有两条硬理由：RFC 5321 §4.5.3.1.6 限单行含 CRLF 不超 1000 octet，长正文会被
-// 拒收或强行折行；纯文本单段分支不写 Content-Type，缺省即 us-ascii，UTF-8 正文必乱码。
-// 顺带 dot-stuffing（RFC 5321 §4.5.2）也不需要了：base64 行首出不了 '.'
+// 正文 / html / 附件按 base64 写出(理由见 mail.h 的 mail_pack)：57 字节原文正好编成 76 个 base64 字符
+// （RFC 2045 §6.8 的行宽），故按 57 切块天然落在折行位置（末行不补 CRLF）。整段输出长度先算好一次预留，
+// 逐行直接编进 bw，每行编码器补的 NUL 被随后的 CRLF 盖掉，末行那个落在预留区外的结尾余量里
 static void _mail_set_b64(binary_ctx *bw, const char *msg, size_t lens) {
     if (0 == lens) {
         return;
@@ -417,8 +415,8 @@ static void _mail_set_b64(binary_ctx *bw, const char *msg, size_t lens) {
         }
     }
 }
-// 把"段头 + 可选正文"写出来。text/plain 段在三条路径上出现（多段无 html、多段有 html 的
-// alternative 内层、单段），三份逐字相同
+// 写 text/plain 段的段头 + 可选正文，多段的两条路径共用（无 html、有 html 时的 alternative 内层）；
+// 单段的段头写在顶层 MIME 头里，不走这里
 static inline void _mail_set_text_part(binary_ctx *bw, const char *msg) {
     binary_set_binary(bw, MAIL_LIT("Content-Type: text/plain; charset=" MIME_CHARSET
         "\r\nContent-Transfer-Encoding: base64\r\n\r\n"));
@@ -469,9 +467,14 @@ char *mail_pack(mail_ctx *mail, size_t *size) {
             "\r\nContent-Transfer-Encoding: base64\r\n"));
     }
     char date[TIME_LENS] = { 0 };
-    // sectostr 失败时跳过 Date header（RFC 5322 §3.6.1 推荐但不强制），不写空行避免协议歧义
-    if (ERR_OK == sectostr(nowsec(), "Date: %d %b %Y %H:%M:%S %z", date)) {// RFC 5322 §3.3 年份 4 位
-        _mail_set_wrap(&bwriter, MAIL_LIT(""), date, MAIL_LIT("\r\n"));
+    // sectostr 失败时跳过 Date header（RFC 5322 §3.6.1 推荐但不强制），不写空行避免协议歧义。
+    // 月份取 %m 的两位数字查 _mail_months；RFC 5322 §3.3 年份 4 位
+    if (ERR_OK == sectostr(nowsec(), "%d %m %Y %H:%M:%S %z", date)) {
+        int32_t mon = (date[3] - '0') * 10 + (date[4] - '0');
+        binary_set_binary(&bwriter, MAIL_LIT("Date: "));
+        binary_set_binary(&bwriter, date, 3);// "dd "
+        binary_set_binary(&bwriter, _mail_months[mon - 1], 3);
+        _mail_set_wrap(&bwriter, MAIL_LIT(""), date + 5, MAIL_LIT("\r\n"));
     }
     _mail_set_msgid(&bwriter, mail->from.addr);
     binary_set_binary(&bwriter, MAIL_LIT("Subject: "));

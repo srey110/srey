@@ -19,8 +19,7 @@ void *mysql_pack_quit(size_t *size);
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="database">目标数据库名</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放；库名超过 MYSQL_DB_LENS(256 字节)时返回 NULL 且 size 置 0，
-/// 一律不组包——发了包服务端会切库成功而 client.database 无从跟踪，后续 get_db 与重连握手都会用错库名</returns>
+/// <returns>请求包数据，调用方负责释放；库名超过 MYSQL_DB_LENS(256 字节)时不截断、不组包，返回 NULL 且 size 置 0</returns>
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size);
 /// <summary>
 /// 构造 COM_PING 请求包（检测连接是否存活）

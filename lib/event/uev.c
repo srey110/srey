@@ -56,8 +56,7 @@ static void _uev_cmd_loop(watcher_ctx *watcher, evsock_ctx *evsk, int32_t ev) {
     }
 #endif
 }
-// 初始化命令回调函数表，_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
-// 如 在_ev_send里面直接发送数据。
+// 初始化命令回调函数表。回调尽量轻：ev_send 一般只入队，攒满一批(kqueue 另看水位)或 ev_close 冲刷时才同步发。
 // cmd_cbs 是进程全局、且事件线程在派发热路径上裸读它，所以只许写一次：ev_init 是公开接口，
 // 已有 ev_ctx 在跑时再建一个(见 test/task_acpstorm.c)就会与那些线程并发写同一批槽位。
 // 两个 ev_init 同时首次进来时，没抢到的要等表填完才能往下走
@@ -682,16 +681,15 @@ static void _uev_stop_watcher(ev_ctx *ctx) {
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
-        (void)_send_cmd(watcher, &cmd);
+        _send_cmd(watcher, &cmd);
     }
     for (i = 0; i < ctx->nthreads; i++) {// 等全部停止，防 accept push到释放后的队列
         thread_join(ctx->watcher[i].thevent);
     }
 }
 static void _uev_free_watcher(ev_ctx *ctx) {
-    uint32_t i;
     watcher_ctx *watcher;
-    for (i = 0; i < ctx->nthreads; i++) {
+    for (uint32_t i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         // 走管道那档时 _uev_init_cmd 会把 pip_ctx::skpip（嵌入 watcher->pipe，不由 element 持有）
         // 以 type=0 注册进 element，_uev_free_element 靠 type==0 跳过它；NO_CMD_PIPE 下它压根不进表
@@ -715,9 +713,8 @@ static void _uev_free_watcher(ev_ctx *ctx) {
 }
 static void _uev_free_alllsn(ev_ctx *ctx) {
     struct listener_ctx **lsn;
-    uint32_t i;
     uint32_t nlsn = lsn_arr_size(&ctx->arrlsn);
-    for (i = 0; i < nlsn; i++) {
+    for (uint32_t i = 0; i < nlsn; i++) {
         lsn = lsn_arr_at(&ctx->arrlsn, (int32_t)i);
         _uev_freelsn(*lsn);
     }

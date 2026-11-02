@@ -40,6 +40,8 @@
 #define SSL_KU_SHORT_PORT 15081
 // 明文切 TLS 时接收缓冲里还有残留的用例
 #define SSL_UPG_RESIDUE_PORT 15082
+// 多播 TTL / LOOP 回读用例的 UDP 端口
+#define UDP_MCAST_OPT_PORT 15083
 // 指定 watcher 的用例：TCP 监听端口与 UDP 端口
 #define LAUNCH_IDX_PORT 15022
 #define LAUNCH_UDP_PORT 15023
@@ -486,6 +488,29 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     CuAssertIntEquals(tc, (int32_t)sizeof(buf), sent);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 }
+// evssl_host：域名与 IP 收下、NULL 清除；不合规的主机名 OpenSSL 4 起当场拒收，之前的版本照收(到握手比对时才失败)
+static void test_evssl_host(CuTest *tc) {
+    evssl_ctx *cc = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
+    if (NULL == cc) {
+        CuFail(tc, "evssl_new failed");
+    }
+#if OPENSSL_VERSION_MAJOR >= 4
+    int32_t want = ERR_FAILED;
+#else
+    int32_t want = ERR_OK;
+#endif
+    int32_t dn = evssl_host(cc, "a.example.com");
+    int32_t v4 = evssl_host(cc, "127.0.0.1");
+    int32_t v6 = evssl_host(cc, "::1");
+    int32_t bad = evssl_host(cc, "srey_server@gmail.com");
+    int32_t clr = evssl_host(cc, NULL);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, dn);
+    CuAssertIntEquals(tc, ERR_OK, v4);
+    CuAssertIntEquals(tc, ERR_OK, v6);
+    CuAssertIntEquals(tc, want, bad);
+    CuAssertIntEquals(tc, ERR_OK, clr);
+}
 #endif
 #if WITH_SSL
 // STATUS_KEYUPDATE_READ 赖以存在的前提:SSL_write 真的会返回 WANT_READ。
@@ -631,7 +656,6 @@ static void test_ev_accept_opts(CuTest *tc) {
     ATOMIC_SET(&_g_acp_idle, -1);
     ev_init(&ev, 1, NULL);
     lrtn = ev_listen(&ev, NULL, "127.0.0.1", ACP_OPTS_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     if (ERR_OK == lrtn) {
         fd = _connect_local(ACP_OPTS_PORT, 0);
     }
@@ -700,6 +724,66 @@ static void test_ev_udp_close_in_recv(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, urtn);
     CuAssertIntEquals(tc, 2, (int32_t)ATOMIC_GET(&_g_udp_nrecv));
     CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_udp_nclose));
+}
+static atomic_t _g_mcast_done;
+static int32_t _g_mcast_ttl;
+static int32_t _g_mcast_loop;
+static void _mcast_on_recvfrom(ev_ctx *ev, sock_ctx *sk,
+                               char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)buf; (void)size; (void)addr; (void)ud;
+}
+// 在事件线程上回读 TTL / LOOP：同一连接的命令按序执行，排在 ev_udp_ttl / ev_udp_loop 之后。fd 经 number 传进来
+static int32_t _mcast_opt_read(struct watcher_ctx *watcher, struct evsock_ctx *evsk, void *data, uint64_t number) {
+    (void)watcher;
+    (void)evsk;
+    (void)data;
+    SOCKET fd = (SOCKET)number;
+    // optval 宽度同 cmds.c 的 _udp_opt_cb：Winsock 4 字节，其余 u_char
+#ifdef OS_WIN
+    int32_t ttl = 0, loop = 0;
+#else
+    uint8_t ttl = 0, loop = 0;
+#endif
+    socklen_t lens = (socklen_t)sizeof(ttl);
+    int32_t rtn = getsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, (char *)&ttl, &lens);
+    lens = (socklen_t)sizeof(loop);
+    if (0 == rtn) {
+        rtn = getsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, (char *)&loop, &lens);
+    }
+    _g_mcast_ttl = (int32_t)ttl;
+    _g_mcast_loop = (int32_t)loop;
+    ATOMIC_SET(&_g_mcast_done, 0 == rtn ? 1 : 2);
+    return 1;
+}
+// 多播 TTL / LOOP 真设上了：两侧 optval 宽度不同，写错了 ev_udp_ttl / ev_udp_loop 照样返回 ERR_OK，只落一条 ERROR
+static void test_ev_udp_mcast_opt(CuTest *tc) {
+    ev_ctx ev;
+    cbs_ctx cbs;
+    sock_ctx sk;
+    int32_t rtn[3] = { ERR_FAILED, ERR_FAILED, ERR_FAILED };
+    ZERO(&cbs, sizeof(cbs));
+    cbs.rf_cb = _mcast_on_recvfrom;
+    ATOMIC_SET(&_g_mcast_done, 0);
+    _g_mcast_ttl = -1;
+    _g_mcast_loop = -1;
+    ev_init(&ev, 1, NULL);
+    int32_t urtn = ev_udp(&ev, "127.0.0.1", UDP_MCAST_OPT_PORT, &cbs, NULL, INVALID_INDEX, &sk);
+    if (ERR_OK == urtn) {
+        rtn[0] = ev_udp_ttl(&ev, &sk, 7);
+        rtn[1] = ev_udp_loop(&ev, &sk, 0);
+        rtn[2] = ev_props(&ev, &sk, _mcast_opt_read, NULL, NULL, (uint64_t)sk.fd);
+        for (int32_t i = 0; i < 500 && 0 == (int32_t)ATOMIC_GET(&_g_mcast_done); i++) {
+            MSLEEP(1);
+        }
+    }
+    ev_free(&ev);
+    CuAssertIntEquals(tc, ERR_OK, urtn);
+    CuAssertIntEquals(tc, ERR_OK, rtn[0]);
+    CuAssertIntEquals(tc, ERR_OK, rtn[1]);
+    CuAssertIntEquals(tc, ERR_OK, rtn[2]);
+    CuAssertIntEquals(tc, 1, (int32_t)ATOMIC_GET(&_g_mcast_done));
+    CuAssertIntEquals(tc, 7, _g_mcast_ttl);
+    CuAssertIntEquals(tc, 0, _g_mcast_loop);
 }
 static void _udp_reuse_on_recvfrom(ev_ctx *ev, sock_ctx *sk,
                                    char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
@@ -787,7 +871,6 @@ static void test_ev_close_in_recv_deferred(CuTest *tc) {
     ATOMIC_SET(&_g_incb_state, 0);
     ev_init(&ev, 1, NULL);
     lrtn = ev_listen(&ev, NULL, "127.0.0.1", CLOSE_IN_CB_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     if (ERR_OK == lrtn) {
         fd = _connect_local(CLOSE_IN_CB_PORT, 0);
     }
@@ -824,7 +907,6 @@ static void test_ev_close_in_acp_conn_deferred(CuTest *tc) {
     ATOMIC_SET(&_g_incb_closed, 0);
     ATOMIC_SET(&_g_incb_state, 0);
     rtn[0] = ev_listen(&ev, NULL, "127.0.0.1", CLOSE_IN_ACP_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     if (ERR_OK == rtn[0]) {
         fd = _connect_local(CLOSE_IN_ACP_PORT, 0);
     }
@@ -893,7 +975,6 @@ static void test_ev_close_in_exch_deferred(CuTest *tc) {
     ev_init(&ev, 1, NULL);
     uint64_t id;
     int32_t lrtn = ev_listen(&ev, sc, "127.0.0.1", SSL_EXCH_CLOSE_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     SOCKET fd = INVALID_SOCK;
     if (ERR_OK == lrtn) {
         fd = _connect_local(SSL_EXCH_CLOSE_PORT, 0);
@@ -1083,7 +1164,6 @@ static void test_ev_conn_fail_send(CuTest *tc) {
     ATOMIC_SET(&_g_cfsend_linked, -1);
     ev_init(&ev, 1, NULL);
     lrtn = ev_listen(&ev, NULL, "127.0.0.1", CONN_FAIL_SEND_PORT, &lcbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     if (ERR_OK == lrtn) {
         // 先把 event 线程卡住：注入就位之前它处理不到这条连接的连通事件
         ev_defer_exec(&ev, 0, _cfsend_block, NULL, NULL);
@@ -1342,7 +1422,6 @@ static void test_ev_launch_index(CuTest *tc) {
     ATOMIC_SET(&_g_launch_conn[1], 0);
     ev_init(&ev, 2, NULL);
     rtn[0] = ev_listen(&ev, NULL, "127.0.0.1", LAUNCH_IDX_PORT, &lcbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     for (k = 0; k < 2; k++) {
         rtn[1 + k] = ev_connect(&ev, NULL, "127.0.0.1", LAUNCH_IDX_PORT, &ccbs, NULL, 0, k, &sk[k]);
     }
@@ -1425,7 +1504,6 @@ static void test_ev_listen_thrs(CuTest *tc) {
     ev_init(&ev, 3, NULL);
     // 1) 只给线程 1：8 条全落在 1 上
     rtn[0] = ev_listen(&ev, NULL, "127.0.0.1", LISTEN_THRS_PORT, &lcbs, NULL, only1, 1, &id[0]);
-    MSLEEP(50);// listen 落地是异步的
     _lthrs_connect(&ev, LISTEN_THRS_PORT, 8);
     on1 = (int32_t)ATOMIC_GET(&_g_lthrs_acp[1]);
     off1 = (int32_t)(ATOMIC_GET(&_g_lthrs_acp[0]) + ATOMIC_GET(&_g_lthrs_acp[2]));
@@ -1550,7 +1628,6 @@ static void test_ev_connect_inloop_pool(CuTest *tc) {
     ev_init(&ev, 2, NULL);
     _g_cpool_ev = &ev;
     rtn[0] = ev_listen(&ev, NULL, "127.0.0.1", CONN_POOL_PORT, &lcbs, NULL, only0, 1, &id);
-    MSLEEP(50);// listen 落地是异步的
     // 1) 主线程发起、落在线程 1：不在目标线程上，对象新建；回显收齐后客户端自己关，对象回线程 1 的池
     rtn[1] = ev_connect(&ev, NULL, "127.0.0.1", CONN_POOL_PORT, &ccbs, NULL, 0, 1, &sk);
     for (i = 0; i < 1000 && 0 == ATOMIC_GET(&_g_cpool_closed); i++) {
@@ -1734,7 +1811,6 @@ static int32_t _smulti_setup(ev_ctx *ev, uint16_t port, cbs_ctx *lcbs) {
     if (ERR_OK != ev_listen(ev, NULL, "127.0.0.1", port, lcbs, NULL, NULL, 0, &id)) {
         return 0;
     }
-    MSLEEP(50);// listen 落地是异步的
     for (i = 0; i < SMULTI_NCLI; i++) {
         ev_connect(ev, NULL, "127.0.0.1", port, &_g_smulti_ccbs, NULL, 0, i % 2, &_g_smulti_sk[i]);
     }
@@ -1865,7 +1941,6 @@ static void test_ev_send_multi_wide(CuTest *tc) {
     ATOMIC_SET(&_g_smulti_res[0], 0);
     ev_init(&ev, SMULTI_WIDE_NTHS, NULL);
     rtn[0] = ev_listen(&ev, NULL, "127.0.0.1", SMULTI_WIDE_PORT, &lcbs, NULL, only0, 1, &id);
-    MSLEEP(50);// listen 落地是异步的
     // 两个都在最后一条线程上：UDP 的注册命令排在广播之前，广播到时它已在表里
     rtn[1] = ev_udp(&ev, "127.0.0.1", SMULTI_WIDE_UDP_PORT, &ucbs, NULL, SMULTI_WIDE_NTHS - 1, &list[0]);
     rtn[2] = ev_connect(&ev, NULL, "127.0.0.1", SMULTI_WIDE_PORT, &ccbs, NULL, 0, SMULTI_WIDE_NTHS - 1, &list[1]);
@@ -2351,7 +2426,6 @@ static void test_ev_sendq_overflow(CuTest *tc) {
     ATOMIC_SET(&_g_sendq_erro, -1);
     ev_init(&ev, 1, NULL);
     lrtn = ev_listen(&ev, NULL, "127.0.0.1", SENDQ_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     if (ERR_OK == lrtn) {
         fd = _connect_local(SENDQ_PORT, 16 * 1024);// 接收缓冲调小，之后一直不读
     }
@@ -2461,7 +2535,6 @@ static int32_t _linger_server(ev_ctx *ev, uint16_t port, linger_mode mode) {
         ev_free(ev);
         return ERR_FAILED;
     }
-    MSLEEP(50);// listen 落地是异步的
     return ERR_OK;
 }
 // 阻塞 connect 后切非阻塞，便于有界轮询读
@@ -2685,12 +2758,19 @@ static void test_ev_linger_close_busy(CuTest *tc) {
     MSLEEP(100);// 服务端回大包，发送队列积压、写事件挂上
     (void)send(fd, "h", 1, 0);
     MSLEEP(50);// 服务端正卡在处理 "h" 的回调里
+    // fd 是非阻塞的：大包还没到时 recv 直接报"暂无数据"，先有界等到第一批再读，读空就停(慢 VM 上 150ms 不够)
+    int32_t waited = 0;
     while (got < 4 * sizeof(blk)) {
         n = (int32_t)recv(fd, blk, (int32_t)sizeof(blk), 0);
-        if (n <= 0) {
+        if (n > 0) {
+            got += (size_t)n;
+            continue;
+        }
+        if (0 != got || 0 == n || waited >= 2000) {
             break;
         }
-        got += (size_t)n;
+        MSLEEP(10);
+        waited += 10;
     }
     (void)send(fd, "c", 1, 0);// 服务端这时既可写(刚被读走一截)又可读
     closed = _linger_wait_closed(1000);
@@ -2835,7 +2915,6 @@ static void test_ev_ssl_merge_send(CuTest *tc) {
     _g_mrg_pushing = 0;
     ev_init(&ev, 1, NULL);
     rtn = ev_listen(&ev, sc, "127.0.0.1", SSL_MERGE_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     if (ERR_OK == rtn
         && ERR_OK == netaddr_set(&addr, "127.0.0.1", SSL_MERGE_PORT)) {
         fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 0);
@@ -2980,17 +3059,17 @@ static int32_t _tls_close_run(evssl_ctx *cc, tls_close_mode mode, int32_t *nclos
 // 明文客户端连 TLS 监听发垃圾 → 握手失败记 ABORT；数据期收到 close_notify → ORDERLY；
 // 数据期对端不发 close_notify 就关 → TRUNCATED；握手完成前 ev_send → 判握手期发送、本端断连记 LOCAL
 static void test_ev_ssl_close_type(CuTest *tc) {
-    ev_ctx ev;
-    cbs_ctx cbs;
     evssl_ctx *sc = NULL, *cc = NULL;
-    uint64_t id;
-    int32_t ok[TLS_CLOSE_NMODE], nclosed[TLS_CLOSE_NMODE], type[TLS_CLOSE_NMODE];
     int32_t rtn = _ssl_ctxs(&sc, &cc);
     if (0 == rtn) {
         PRINT("skip test_ev_ssl_close_type, run bin/keys/create.sh first.");
         return;
     }
     CuAssertIntEquals(tc, 1, rtn);
+    ev_ctx ev;
+    cbs_ctx cbs;
+    uint64_t id;
+    int32_t ok[TLS_CLOSE_NMODE], nclosed[TLS_CLOSE_NMODE], type[TLS_CLOSE_NMODE];
     ZERO(&cbs, sizeof(cbs));
     cbs.acp_cb = _tls_on_acp;
     cbs.exch_cb = _tls_on_exch;
@@ -2998,7 +3077,6 @@ static void test_ev_ssl_close_type(CuTest *tc) {
     cbs.c_cb = _tls_on_close;
     ev_init(&ev, 1, NULL);
     int32_t lrtn = ev_listen(&ev, sc, "127.0.0.1", SSL_CLOSE_TYPE_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     for (int32_t m = 0; m < TLS_CLOSE_NMODE; m++) {
         ok[m] = 0;
         nclosed[m] = 0;
@@ -3104,7 +3182,6 @@ static void test_ev_ssl_keyupdate_short(CuTest *tc) {
     ev_init(&ev, 1, NULL);
     uint64_t id;
     int32_t lrtn = ev_listen(&ev, sc, "127.0.0.1", SSL_KU_SHORT_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     SOCKET fd = INVALID_SOCK;
     if (ERR_OK == lrtn) {
         fd = _connect_local(SSL_KU_SHORT_PORT, 4096);// 接收缓冲也调小，服务端很快就写不动
@@ -3204,9 +3281,15 @@ static void _upg_on_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *b
 // 同一次 send 里，服务端只吃掉请求就用 ev_send_ssl 升级。契约(见 ev_ssl)：不切、关连接记 LOCAL，尾包照常送达，
 // 残留不会接在解密数据前面交给 r_cb。客户端照样去握手、握上了就再发一包，没守住时 r_cb 才真看得到拼接
 static void test_ev_ssl_upgrade_residue(CuTest *tc) {
+    evssl_ctx *sc = NULL, *cc = NULL;
+    int32_t rtn = _ssl_ctxs(&sc, &cc);
+    if (0 == rtn) {
+        PRINT("skip test_ev_ssl_upgrade_residue, run bin/keys/create.sh first.");
+        return;
+    }
+    CuAssertIntEquals(tc, 1, rtn);
     ev_ctx ev;
     cbs_ctx cbs;
-    evssl_ctx *sc = NULL, *cc = NULL;
     SSL *cli = NULL;
     SOCKET fd = INVALID_SOCK;
     char req[] = SSL_UPG_REQ SSL_UPG_EXTRA;
@@ -3215,12 +3298,6 @@ static void test_ev_ssl_upgrade_residue(CuTest *tc) {
     uint64_t id;
     size_t ngo = 0, n;
     int32_t i, sent = 0;
-    int32_t rtn = _ssl_ctxs(&sc, &cc);
-    if (0 == rtn) {
-        PRINT("skip test_ev_ssl_upgrade_residue, run bin/keys/create.sh first.");
-        return;
-    }
-    CuAssertIntEquals(tc, 1, rtn);
     ZERO(&cbs, sizeof(cbs));
     cbs.exch_cb = _tls_on_exch;
     cbs.r_cb = _upg_on_recv;
@@ -3231,7 +3308,6 @@ static void test_ev_ssl_upgrade_residue(CuTest *tc) {
     _g_upg_sc = sc;
     ev_init(&ev, 1, NULL);
     int32_t lrtn = ev_listen(&ev, NULL, "127.0.0.1", SSL_UPG_RESIDUE_PORT, &cbs, NULL, NULL, 0, &id);
-    MSLEEP(50);// listen 落地是异步的
     if (ERR_OK == lrtn) {
         fd = _connect_local(SSL_UPG_RESIDUE_PORT, 0);
     }
@@ -3284,6 +3360,7 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ev_accept_opts);
     SUITE_ADD_TEST(suite, test_ev_udp_close_in_recv);
     SUITE_ADD_TEST(suite, test_ev_udp_reuseaddr);
+    SUITE_ADD_TEST(suite, test_ev_udp_mcast_opt);
     SUITE_ADD_TEST(suite, test_ev_close_in_recv_deferred);
     SUITE_ADD_TEST(suite, test_ev_close_in_acp_conn_deferred);
 #if WITH_SSL
@@ -3331,6 +3408,7 @@ void test_event(CuSuite *suite) {
 #endif
 #if WITH_SSL
     SUITE_ADD_TEST(suite, test_evssl_read_close_notify);
+    SUITE_ADD_TEST(suite, test_evssl_host);
     SUITE_ADD_TEST(suite, test_ssl_write_wants_read);
     SUITE_ADD_TEST(suite, test_ev_ssl_merge_send);
     SUITE_ADD_TEST(suite, test_ev_ssl_close_type);

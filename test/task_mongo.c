@@ -1003,6 +1003,29 @@ static int32_t _pool_flow(task_ctx *task, task_mongo_args *arg) {
         }
         goto out;
     }
+    // 借用者 begin 后没收尾就归还：池的 reset 回滚解绑，再借到的连接上没有上一个人的事务。空事务回滚纯本地，不需要 replica set
+    mongo_session *sess = mongo_startsession(got);
+    if (NULL == sess
+        || ERR_OK != mongo_begin(sess)) {
+        LOG_ERROR("%s", "mongo pool: startsession / begin error.");
+        if (NULL != sess) {
+            mongo_freesession(sess);
+        }
+        db_pool_put(pool, got);
+        goto out;
+    }
+    db_pool_put(pool, got);
+    got = mongo_pool_get(pool, 2000, &grtn);
+    if (NULL == got
+        || NULL != got->session) {
+        LOG_ERROR("mongo pool: get %d after unfinished txn, binding left over.", grtn);
+        mongo_freesession(sess);
+        if (NULL != got) {
+            db_pool_put(pool, got);
+        }
+        goto out;
+    }
+    mongo_freesession(sess);
     db_pool_put(pool, got);
     rtn = ERR_OK;
 out:
@@ -1163,5 +1186,7 @@ void task_mongo_start(loader_ctx *loader, const char *name,
     safe_fill_str(arg->password, sizeof(arg->password), password);
     safe_fill_str(arg->db, sizeof(arg->db), db);
     safe_fill_str(arg->authdb, sizeof(arg->authdb), authdb);
-    coro_task_register(loader, name, 0, _startup, NULL, _free, arg);
+    if (NULL == coro_task_register(loader, name, 0, _startup, NULL, _free, arg)) {
+        LOG_ERROR("task %s register failed.", name);// arg 已由 _free 释放
+    }
 }

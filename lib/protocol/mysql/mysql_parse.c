@@ -340,13 +340,13 @@ static inline uint64_t _mpack_row_lenenc(binary_ctx *breader, const char *data, 
 }
 // 解析文本协议（COM_QUERY）结果集中的一行数据，字段值以 lenenc 字符串存储
 static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *breader) {
-    int32_t _rtn;
-    uint64_t vlens;
     const int32_t nf = reader->field_count;
     char *data = breader->data;
     const size_t size = breader->size;
     size_t off = breader->offset;
     mpack_row *row = _mpack_row_place(breader);
+    int32_t _rtn;
+    uint64_t vlens;
     for (int32_t i = 0; i < nf; i++) {
         if (off >= size) {
             return ERR_FAILED;

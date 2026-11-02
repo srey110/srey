@@ -1526,7 +1526,7 @@ static int32_t _auth_reply(ev_ctx *ev, ud_cxt *ud, double ok, int8_t done, const
     bson_append_int32(&b, "conversationId", 1);
     bson_append_bool(&b, "done", done);
     if (NULL != payload) {
-        bson_append_binary(&b, "payload", BSON_SUBTYPE_BINARY, (char *)payload, strlen(payload));
+        bson_append_binary(&b, "payload", BSON_SUBTYPE_BINARY, payload, strlen(payload));
     }
     bson_append_double(&b, "ok", ok);
     bson_append_end(&b);

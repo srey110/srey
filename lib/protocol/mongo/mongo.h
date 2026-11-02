@@ -4,9 +4,10 @@
 #include "event/evpub.h"
 #include "protocol/mongo/mongo_pack.h"
 #include "protocol/mongo/mongo_parse.h"
+#include "protocol/prots_pub.h"
 
 // 初始化模块：注册握手完成回调函数
-void _mongo_init(void *hspush);
+void _mongo_init(_handshaked_push hspush);
 // 释放 mgopack_ctx 及其 payload 缓冲区
 void _mongo_pkfree(void *pack);
 // 释放连接上挂的 scram、把 mongo->sk 标成已关、放手本连接持有的 mongo_ctx 引用
@@ -80,13 +81,13 @@ int32_t mongo_authmod(mongo_ctx *mongo, const char *authmod);
 /// <returns>requestid</returns>
 int32_t mongo_requestid(mongo_ctx *mongo);
 /// <summary>
-/// 置上消息标志位（目前仅实现 MORETOCOME，其余位收下即丢弃）。
+/// 置上消息标志位（目前仅实现 MORETOCOME，其余位收下即丢弃并打 WARN）。
 /// 置上就一直有效直到 mongo_clear_flag——不是只管下一条：此后每条写命令都只发不等，
 /// 服务端的失败(重复键、校验不过)没有响应可解析，一律报成功；要等回包的命令组包时恒不带（见 mongo_pack.h 文件头）。
 /// 标志挂在连接上，多协程共用时别人的写也跟着变 fire-and-forget，批量写完及时清掉
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="flag">mongo_flags 的按位或；MONGO_FLAGS_ALL 之外的位一律不收（整个调用无效），
+/// <param name="flag">mongo_flags 的按位或；MONGO_FLAGS_ALL 之外的位一律不收（整个调用无效，打 WARN），
 ///   0 等于什么都不置。还原惯用法 mongo_set_flag(mongo, mongo_clear_flag(mongo)) 直接传旧值整字</param>
 void mongo_set_flag(mongo_ctx *mongo, int32_t flag);
 /// <summary>

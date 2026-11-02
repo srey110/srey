@@ -1,6 +1,6 @@
 -- 通用有界连接池：管理 mysql / pgsql / mongo / smtp 这类 conn_pub 长连接，每个池最多 max 条。
 -- 多协程按 FIFO 借还；连接内部的命令串行仍由各 conn 自己的 serial 负责，池只管“借哪条”。
--- 连接对象带 reset_session 方法时（mysql / pgsql 有），归还时先清会话状态（回滚没结束的事务）再交给下一个人。
+-- 连接对象带 reset_session 方法时（mysql / pgsql / mongo 有），归还时先清会话状态（回滚没结束的事务）再交给下一个人。
 --
 -- 等待者用 srey._coro_wait 挂在池自己的 sess 上，put 用 srey._coro_wake 把连接直接交接给队头
 -- （不经过空闲栈），唤醒统一在 message_dispatch 末尾摊平。池状态只在不会挂起的语句里改：
@@ -20,9 +20,18 @@ local WAKE_RETRY <const> = {} -- 叫醒等待者回去重查的载荷（池关�
 
 local M = class("db_pool_ctx")
 
+-- 连接能不能直接用：带 ready 的问它（conn_pub 的还看对端断没断，同 C 侧 ops->ready），否则只看 established
+local function _ready(c)
+    if c.ready then
+        return c:ready()
+    end
+    return c.established
+end
+
 ---池管理的连接对象：mysql / pgsql / mongo / smtp 的 ctx 都满足
 ---@class DbPoolConn
 ---@field established boolean 当前是否连着
+---@field ready (fun(self:DbPoolConn):boolean)? 能否直接用（连着且对端没断开）；不带时只看 established
 ---@field connect fun(self:DbPoolConn):boolean 建连/重连；会挂起
 ---@field ping fun(self:DbPoolConn):boolean 探活；会挂起
 ---@field quit fun(self:DbPoolConn) 断开；会挂起
@@ -58,13 +67,21 @@ local M = class("db_pool_ctx")
 ---构造函数
 ---@param opts DbPoolOpts 配置
 function M:ctor(opts)
-    assert("table" == type(opts), "db_pool.new: opts must be a table")
-    assert("function" == type(opts.factory), "db_pool.new: factory required")
+    -- 参数错指回业务调用点：层级 3 = ctor → class() 生成的 new → 业务（同 conn_pub.ssl 的约定）
+    if "table" ~= type(opts) then
+        error("db_pool.new: opts must be a table", 3)
+    end
+    if "function" ~= type(opts.factory) then
+        error("db_pool.new: factory required", 3)
+    end
     local max = opts.max or 4
-    assert("number" == type(max) and max > 0 and max % 1 == 0, "db_pool.new: max must be a positive integer")
+    if "number" ~= type(max) or max <= 0 or max % 1 ~= 0 then
+        error("db_pool.new: max must be a positive integer", 3)
+    end
     local min = opts.min or 0
-    assert("number" == type(min) and min >= 0 and min % 1 == 0 and min <= max,
-        "db_pool.new: min out of range")
+    if "number" ~= type(min) or min < 0 or min % 1 ~= 0 or min > max then
+        error("db_pool.new: min out of range", 3)
+    end
     local get_timeout = opts.get_timeout or 0
     local ping_idle = opts.ping_idle or 0
     local backoff = opts.backoff or 0
@@ -72,8 +89,9 @@ function M:ctor(opts)
     local idle_timeout = opts.idle_timeout or 0
     local leak_warn = opts.leak_warn or 0
     local function _check_ms(name, v)
-        assert("number" == type(v) and v >= 0 and v % 1 == 0,
-            "db_pool.new: " .. name .. " must be a non-negative integer")
+        if "number" ~= type(v) or v < 0 or v % 1 ~= 0 then
+            error("db_pool.new: " .. name .. " must be a non-negative integer", 4)
+        end
     end
     _check_ms("get_timeout", get_timeout)
     _check_ms("ping_idle", ping_idle)
@@ -96,7 +114,7 @@ function M:ctor(opts)
     self.ticking = false
     self.idle = {} -- 空闲连接栈（LIFO，热连接优先）
     self.busy = {} -- conn -> true，借出/交接中
-    self.nbusy = 0 -- 借出数（含已交接、还没被 resume 的）
+    self.nbusy = 0 -- 借出数（含已交接、还没被 resume 的，以及池内部正在建的）
     self.total = 0 -- 已创建连接数（空闲+借出+正在建）
     self.waiters = 0 -- 挂在 _coro_wait 上的协程数
     self.closed = false
@@ -187,7 +205,7 @@ function M:_take_usable(now)
         local c = idle[i]
         local cool = self.cool_until[c]
         if not cool or cool <= now then
-            if c.established then
+            if _ready(c) then
                 pick = i
                 break
             end
@@ -210,7 +228,7 @@ function M:_take_cold()
     for i = #idle, 1, -1 do
         local c = idle[i]
         local cool = self.cool_until[c]
-        if not c.established and (not cool or cool <= now) then
+        if not _ready(c) and (not cool or cool <= now) then
             self:_idle_remove_at(i)
             return c
         end
@@ -223,7 +241,7 @@ end
 function M:_ready_idle()
     local n = 0
     for i = 1, #self.idle do
-        if self.idle[i].established then
+        if _ready(self.idle[i]) then
             n = n + 1
         end
     end
@@ -299,16 +317,17 @@ end
 ---@return string? err 失败原因
 function M:_checkout(c)
     local now = srey.timer_ms()
-    if c.established and not self.born[c] then
+    local ready = _ready(c)
+    if ready and not self.born[c] then
         self:_born(c, now)-- 工厂给的是已连着的，首次取到起算寿命
     end
-    if c.established and self:_expired(c, now) then
+    if ready and self:_expired(c, now) then
         self:_discard(c)
         return nil, "connection expired"
     end
     self.busy[c] = true
     self.nbusy = self.nbusy + 1
-    if not c.established then
+    if not ready then
         local cok, connected = srey.xpcall(c.connect, c)
         if not cok or not connected then
             self.stat.connfails = self.stat.connfails + 1
@@ -357,7 +376,7 @@ function M:_maybe_shrink()
     while i <= #self.idle and self:_ready_idle() > self.min do
         local c = self.idle[i]
         local idle_at = self.idle_at[c]
-        if c.established and idle_at and srey.timer_ms() - idle_at >= self.idle_timeout then
+        if _ready(c) and idle_at and srey.timer_ms() - idle_at >= self.idle_timeout then
             self:_idle_remove_at(i)
             self:_drop(c)
         else
@@ -370,15 +389,17 @@ end
 ---@return DbPoolConn? conn 连上的连接
 ---@return string? err 失败原因
 function M:_new_conn()
+    -- factory 给已连着的连接时会挂起：这段也算占用，不然并发的 get 看到 nbusy 为 0 会误判全在冷却（同 C 侧 busy）
     self.total = self.total + 1
+    self.nbusy = self.nbusy + 1
     local ok, c = srey.xpcall(self.factory)
     if not ok or not c then
         self.total = self.total - 1
+        self.nbusy = self.nbusy - 1
         return nil, "factory failed"
     end
     self.busy[c] = true
-    self.nbusy = self.nbusy + 1
-    if not c.established then
+    if not _ready(c) then
         local cok, connected = srey.xpcall(c.connect, c)
         if not cok or not connected then
             self.stat.connfails = self.stat.connfails + 1
@@ -422,6 +443,8 @@ function M:_fill_min()
             got = self:_checkout(c)
         elseif self.total < self.max then
             got = self:_new_conn()
+        else
+            return-- 没有可重连的、名额也满了：什么都没试，不叫醒等待者（同 C 侧）
         end
         if not got then
             self:_wake_on_fail()
@@ -526,7 +549,8 @@ function M:get(timeout)
             if got then
                 return self:_hand_out(got)
             end
-            if self.closed or self:_wake_on_fail() then
+            -- 到寿命丢掉的不算失败：名额已空出，回去重查会新建，不叫醒别人陪着失败
+            if self.closed or ("connection expired" ~= err and self:_wake_on_fail()) then
                 return nil, err
             end
         elseif self.total < self.max then
@@ -574,11 +598,11 @@ function M:_return(c)
         self:_discard(c)
         return
     end
-    if c.established and self:_expired(c, srey.timer_ms()) then
+    if _ready(c) and self:_expired(c, srey.timer_ms()) then
         self:_discard_wake(c)
         return
     end
-    if c.established and c.reset_session then
+    if _ready(c) and c.reset_session then
         local rok, clean = srey.xpcall(c.reset_session, c)
         if self.closed then
             self:_discard(c)
@@ -589,7 +613,7 @@ function M:_return(c)
             return
         end
     end
-    if not c.established then
+    if not _ready(c) then
         self:_push_idle(c, nil)
         -- 空闲栈多了一条待重连的：叫醒队头来重试；它再失败且没有借出时由 get 叫醒其余的
         if self.waiters > 0 then
@@ -621,6 +645,7 @@ end
 ---@return boolean ok
 ---@return string? err
 function M:warm(n)
+    srey._check_wait("db_pool_ctx:warm")
     if self.closed then
         return false, "pool closed"
     end

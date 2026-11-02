@@ -24,7 +24,7 @@ typedef enum task_netev {
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示匿名（仅有句柄，不进名表）</param>
-/// <param name="quecap">消息队列容量（条数，一条 message_ctx 按值入队）；0 用默认 TASK_QUEUE_CAP。
+/// <param name="quecap">消息队列容量（条数，一条 message_ctx 按值入队）；0 用默认容量(task.c 的 TASK_QUEUE_CAP)。
 /// 类型即底层 fsqu 的容量类型，
 /// 调用方若持有更宽的值须自行判上界，不要靠这里截断</param>
 /// <param name="_dispatch">消息分发函数, NULL默认分发函数</param>
@@ -105,7 +105,7 @@ void task_ungrab(task_ctx *task);
 /// 都在该线程本轮事件派发完之后跑，不再进 worker。任何时候可调，从下一次调度起生效。
 /// 要让 startup 也在 net 线程上跑须在 task_register 之前调；由注册函数代为注册的 task(如协程 task)
 /// 只能注册后再绑，startup 那一轮(连同绑定时已排进这一轮的消息)仍在 worker 上。已有连接不跟着迁：先绑再 connect / udp。
-/// 运行中改绑时，改绑前在 worker 上发出、还没被 net 线程执行的发送，可能被改绑后当场处理里发的越过(同一连接字节乱序)
+/// 运行中改绑时，改绑前在 worker 上发出、还没被 net 线程执行的发送，可能被改绑后当场处理里发的越过(同一连接字节乱序)；越过的若是关闭(ev_close)，那几条发送直接丢弃
 /// listen 不看绑定，accept 出的连接分到各 net 线程；要让新连接落在处理它的 task 所在线程，用 task_accept_group(只用这一个线程就只给它放组员)。
 /// 空闲时本线程上连接收到的完整包会在收包当场处理、不入队，回调里关连接推迟到收包回调返回后生效。
 /// 回调里禁止阻塞与长计算：会卡住该线程上所有连接的收发，含别的 task 的连接
@@ -136,7 +136,7 @@ int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n);
 /// <summary>
 /// 超时：ms 毫秒后触发。sess 与 _timeout 互斥,须恰好一个有效(违反将 ASSERTAB abort)：
 /// _timeout≠NULL 且 sess=0 → 到期回调 _timeout(task, 0)；
-/// _timeout=NULL 且 sess≠0 → 到期投递 TIMEOUT 消息,按 sess 唤醒等待协程(无等待者则无操作)
+/// _timeout=NULL 且 sess≠0 → 到期投递 TIMEOUT 消息,按 sess 唤醒等待协程(无等待者则丢弃，协程 task 上另打一条 WARN)
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sess">session；消息(唤醒)模式须非 0,回调模式须为 0</param>

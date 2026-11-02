@@ -4,7 +4,7 @@
 #include "protocol/pgsql/pgsql_pack.h"
 
 // 初始化握手完成推送回调（在协议注册时调用）
-void _pgsql_init(void *hspush);
+void _pgsql_init(_handshaked_push hspush);
 // 释放 pgpack_ctx 数据包
 void _pgsql_pkfree(void *pack);
 // 释放 ud_cxt 中绑定的 pgsql 上下文资源
@@ -39,7 +39,8 @@ void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 /// <param name="password">登录密码，按原样参与认证（SCRAM 前不做 SASLprep）：含需 NFKC 规范化字符的
 /// 非 ASCII 密码须由调用方先规范化，否则与服务端存的验证器对不上、认证失败</param>
 /// <param name="database">目标数据库名</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 参数过长</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 为 ip、user、password、database 之一超长(后三者最长 63 字节)。失败时 pg 里可能已填了
+/// 部分字段(含密码)，不得再用：堆上的按 SECURE_FREE 整块擦除释放</returns>
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database);
 /// <summary>

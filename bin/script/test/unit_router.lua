@@ -1313,21 +1313,29 @@ runner.run(function(t)
         t:eq("nm", resp.body, "NoMethod 正文")
         t:eq("/only-get", fseen and fseen.path, "NoMethod 拿得到请求路径")
         t:eq("GET, HEAD", fseen and fseen.allow, "NoMethod 拿得到 Allow")
-        -- 未知方法 C 侧返回 -3，与 -4 都映射成 405；只有 -4 才走 NoMethod
+        -- 不认识的方法：路径在同样走 NoMethod、带 Allow；路径不在 404(同 Laravel)
+        fseen = nil
         resp = dispatch(r2, "FROB", "/only-get") or {}
-        t:eq(405, resp.code, "未知方法仍 405")
-        t:eq("Method Not Allowed\n", resp.body, "未知方法不走 NoMethod")
+        t:eq(405, resp.code, "未知方法路径在 405")
+        t:eq("nm", resp.body, "未知方法路径在走 NoMethod")
+        t:eq("GET, HEAD", fseen and fseen.allow, "未知方法的 NoMethod 拿得到 Allow")
+        resp = dispatch(r2, "FROB", "/no-such") or {}
+        t:eq(404, resp.code, "未知方法路径不在 404")
     end
 
-    -- 回退不回应回默认码、抛错回 500、要求关连接时只关一次、chunked 首帧打到回退同样走回退
+    -- 回退不回应回默认码、抛错回 500、要求关连接时只关一次（含延迟回包与抛错）、chunked 首帧打到回退同样走回退
     do
         local r = Route.new()
-        local mode
+        local mode, pending
         r:no_route(function(ctx)
             if "silent" == mode then
                 return
             elseif "throw" == mode then
                 error("fallback boom")
+            elseif "async" == mode then
+                ctx.responded = true
+                pending = ctx
+                return
             end
             ctx:text(404, "nf")
         end)
@@ -1343,6 +1351,23 @@ runner.run(function(t)
         resp = dispatch(r, "GET", "/x", nil, { Connection = "close" }, "HTTP/1.1") or {}
         t:eq("nf", resp.body, "要求关连接时回退照常回")
         t:eq(1, #closed_log, "回退回完要求关连接：只关一次")
+        -- 延迟回包：回退返回后不替它关，它回完按 _close 自己关一次（同 C 侧）
+        mode, pending = "async", nil
+        closed_log = {}
+        dispatch(r, "GET", "/x", nil, { Connection = "close" }, "HTTP/1.1")
+        t:eq(0, #closed_log, "回退延迟回包：返回后不替它关")
+        if t:check(nil ~= pending, "回退拿到延迟回包的 ctx") then
+            last_resp = nil
+            pending:text(404, "late")
+            t:eq("late", (last_resp or {}).body, "延迟回包照常发出")
+            t:eq(1, #closed_log, "延迟回包回完关一次")
+        end
+        mode = "throw"
+        closed_log = {}
+        resp = dispatch(r, "GET", "/x", nil, { Connection = "close" }, "HTTP/1.1") or {}
+        t:eq(500, resp.code, "要求关连接时回退抛错回 500")
+        t:eq(1, #closed_log, "回退抛错要求关连接：只关一次")
+        mode = nil
         closed_log = {}
         last_resp = nil
         r:net_recv(nil, sk_a, 0, SLICE_TYPE.START, make_pack("POST", "/x"), nil)
@@ -1480,11 +1505,11 @@ runner.run(function(t)
         feed(r, SLICE_TYPE.START, make_pack("PUT", "/plain"))
         t:eq(405, (last_resp or {}).code, "chunked 方法不匹配 → 405")
         t:eq("POST", (last_resp or {}).headers and last_resp.headers.Allow, "chunked 方法不匹配带 Allow")
-        -- 方法名不认识同样 405，但不带 Allow
+        -- 方法名不认识：路径在同样 405 带 Allow
         last_resp = nil
         feed(r, SLICE_TYPE.START, make_pack("FROB", "/plain"))
         t:eq(405, (last_resp or {}).code, "chunked 未知方法 → 405")
-        t:eq(nil, (last_resp or {}).headers and last_resp.headers.Allow, "未知方法不带 Allow")
+        t:eq("POST", (last_resp or {}).headers and last_resp.headers.Allow, "chunked 未知方法带 Allow")
     end
 
     -- 9.3a 命名路由反查：Route:url 拿注册时的完整路径回填占位符
@@ -1584,6 +1609,13 @@ runner.run(function(t)
         t:eq(false, aok, "未知方法被拒")
         t:check(nil == asegs, "失败时第三个返回值是 nil")
         t:eq(3, select("#", rt:add("GET", "/arity")), "add 成功返 3 个值")
+        -- add_steps 把路径当 C 串交下游：内含 \0 直接报错，不静默截成另一条路由
+        t:eq(false, pcall(rt.add_steps, rt, "GET", "/cx\0y", 1, nil, false), "add_steps 路径内含 \\0 报错")
+        -- chain 的索引先判范围再收窄：高 32 位非零不能截成别的合法索引
+        local sok, sidx = rt:add_steps("GET", "/cx", 1, nil, false)
+        t:check(sok and nil ~= rt:chain(sidx), "chain 取合法索引")
+        t:eq(nil, rt:chain(sidx + (1 << 32)), "chain 索引超 INT32 返回 nil")
+        t:eq(nil, rt:chain(-1), "chain 负索引返回 nil")
     end
 
     -- 9.4 准入中间件截断 → 401 且不建流；带对 token 则放行收齐
@@ -1604,6 +1636,12 @@ runner.run(function(t)
         t:eq(401, (last_resp or {}).code, "准入截断 → 401")
         t:eq(1, #closed_log, "准入截断后关连接")
         t:eq(0, #log, "截断时 on_chunk 一次都没调到")
+        -- 请求要求关连接：中间件回包时不先关，准入截断后只关一次
+        last_resp = nil
+        closed_log = {}
+        feed(r, SLICE_TYPE.START, make_pack("POST", "/st", nil, { Connection = "close" }, "HTTP/1.1"))
+        t:eq(401, (last_resp or {}).code, "要求关连接时准入截断 → 401")
+        t:eq(1, #closed_log, "要求关连接时准入截断只关一次")
         last_resp = nil
         feed_stream(r, "/st", { "ok" }, { ["x-token"] = "secret" })
         t:eq(200, (last_resp or {}).code, "带对 token 收齐 → 200")
@@ -1779,7 +1817,7 @@ runner.run(function(t)
 
     -- ── 10. 真包走真实的 C match_pack ───────────────────────────────────────
     -- 前面全走模块头的 shim。这里起真监听收真包：C 的 match_pack 与 match 逐项比（命中 9 个返回值、
-    -- 404 / 405 8 个、400 与未知方法 6 个、空的查询 / 路径参数给 nil、chunked 后续包只给 1 个 nil），再让 dispatch 用真实现
+    -- 404 / 405 8 个、400 6 个、空的查询 / 路径参数给 nil、chunked 后续包只给 1 个 nil），再让 dispatch 用真实现
     -- 跑一遍，钉住 _match_ctx 按位置解构出来的 ctx 字段
     do
         local function same(a, b)
@@ -1837,7 +1875,7 @@ runner.run(function(t)
                 { "GET", "/q" }, { "GET", "/q?a=1&b=2" }, { "GET", "/q?x=%E4%B8%AD&y=a%20b" },
                 { "GET", "/u/42?z=9" }, { "GET", "/u/%41%42" }, { "GET", "/opt" }, { "GET", "/opt/v" },
                 { "GET", "/w/a/b/c" }, { "GET", "/m/1/x/2" },
-                { "GET", "/nope" }, { "POST", "/q" }, { "BREW", "/q" }, { "get", "/q" },
+                { "GET", "/nope" }, { "POST", "/q" }, { "BREW", "/q" }, { "get", "/q" }, { "BREW", "/nope" },
             }
             local raw, g, ok, code, purl, idx, params, label
             for i, rq in ipairs(reqs) do
@@ -1878,7 +1916,9 @@ runner.run(function(t)
             end
             t:eq(405, got[11] and got[11].code, "路径在方法不对 405")
             t:eq("GET, HEAD", got[11] and got[11].rtn[6], "405 的 Allow")
-            t:eq(405, got[12] and got[12].code, "未知方法 405")
+            t:eq(405, got[12] and got[12].code, "未知方法路径在 405")
+            t:eq("GET, HEAD", got[12] and got[12].rtn[6], "未知方法路径在带 Allow")
+            t:eq(404, got[14] and got[14].code, "未知方法路径不在 404")
             -- HTTP/1.0 没带 keep-alive：match_pack 第 5 个返回值为 true(真关连接走的是 mock 的 srey.close)
             local nreq = #got
             raw = "GET /q HTTP/1.0\r\nHost: x\r\n\r\n"

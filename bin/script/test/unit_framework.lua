@@ -56,15 +56,19 @@ runner.run(function(t)
         local dup = core.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
         t:eq(nil, dup, "重复 register 同 name 拒绝")
 
-        -- seclevel / verify 无返回值（OpenSSL 那两个函数本身就没有），只能钉"调完之后 ctx 还能用"：
-        -- 任何一个把 ctx 搞坏，紧接着的 ssl_free 或再注册就会露馅
-        core.ssl_seclevel(ssl, 1)
-        core.ssl_verify(ssl, 0)
+        -- seclevel / verify 无返回值（OpenSSL 那两个函数本身就没有）、也没有读回接口，这里只钉合法值不抛错；
+        -- 设进去有没有生效由 C 侧握手用例覆盖
+        t:eq(true, (pcall(core.ssl_seclevel, ssl, 1)), "ssl_seclevel 合法值不抛错")
+        t:eq(true, (pcall(core.ssl_verify, ssl, 0)), "ssl_verify 合法值不抛错")
         -- 0 是 OpenSSL 文档里的默认值（不设下限），绑定层不该把它挡在值域外；排在 TLS1_2 之前跑，
         -- 跑完这一段 ctx 的下限与不加这条时一致
         t:eq(true, core.ssl_min_proto(ssl, TLS_VERSION.AUTO), "ssl_min_proto 收 0(不设下限)")
         t:eq(true, core.ssl_min_proto(ssl, TLS_VERSION.TLS1_2), "ssl_min_proto 合法版本返 true")
-        t:eq(ssl, core.ssl_qury(NAME_PEM), "三个 setter 调完后 ctx 仍在注册表里")
+        t:eq(ssl, core.ssl_qury(NAME_PEM), "三个 setter 调完后同名仍查回同一 ctx")
+        -- 拼出来的证书路径超长会被截成别的路径，直接返回 nil 不去加载
+        local longf = string.rep("a", 4096)
+        t:eq(nil, core.cert_register("unit_pem_long", longf, "", ""), "cert_register 路径超长返回 nil")
+        t:eq(nil, core.p12_register("unit_p12_long", longf, "x"), "p12_register 路径超长返回 nil")
         -- 非法入参必须被绑定层拒（收窄前会被 lua_tointeger 静默转 0）
         t:eq(false, pcall(core.ssl_seclevel, ssl, "x"), "ssl_seclevel 拒非数字")
         t:eq(false, pcall(core.ssl_min_proto, ssl, {}), "ssl_min_proto 拒非数字")
@@ -439,6 +443,8 @@ runner.run(function(t)
         t:check(ok and false == ret, "dostring 语法错返回 false 而不抛")
         ok, ret = pcall(srey.dostring, "error('unit_framework: dostring throws on purpose')")
         t:check(ok and false == ret, "dostring 运行期抛错返回 false 而不抛")
+        ok, ret = pcall(srey.dostring, string.dump(function() _G.fw_dostring_probe = 1 end))
+        t:check(ok and false == ret and nil == _G.fw_dostring_probe, "dostring 不收预编译字节码")
     end
 
     -- ── printd：调用方文件名里的 % 不能当格式指令 ──────────────────────
@@ -446,6 +452,18 @@ runner.run(function(t)
     do
         local f = load("printd('unit_framework printd probe %d', 1)", "=unit%sframework")
         t:eq(true, (pcall(f)), "printd 在文件名含 % 的 chunk 里照常打印")
+    end
+
+    -- ── task.get_type / core.mem_stat ─────────────────────────────────
+    do
+        t:eq(TASK_TYPE.LUA, task.get_type(), "get_type() 取当前 task")
+        t:eq(TASK_TYPE.LUA, task.get_type(_curtask), "get_type 传 task 指针")
+        t:eq(TASK_TYPE.LUA, srey.get_type(), "srey.get_type 同 task.get_type")
+        local ms = core.mem_stat()
+        for _, k in ipairs({ "nalloc", "nfree", "live" }) do
+            t:check(math.type(ms[k]) == "integer" and ms[k] >= 0, "mem_stat." .. k .. " 是非负整数")
+        end
+        t:eq(ms.nalloc >= ms.nfree and ms.nalloc - ms.nfree or 0, ms.live, "mem_stat.live = nalloc - nfree")
     end
 
     -- ── srey.task: mem / memlimit (per-task lua_State 内存监控) ──

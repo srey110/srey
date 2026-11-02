@@ -26,7 +26,7 @@ M.PACK_TYPE = MYSQL_PACK_TYPE
 ---只判非 nil 的话，服务端以 ERR 应答（shutdown 期的 1053、连接被 KILL 之类）会被报成健康，
 ---于是永不重连，此后每一轮 ping + query 都重复失败。连接因前一次多结果集没收干净而错位时同理：
 ---读到的可能是上一条命令残留的包，判型能发现，只判非 nil 则会把它当自己的应答吃掉，错位无法自愈。
----收到的包先经 owner.mysql:record 落到连接级 erro / last_id / affectd_rows 上，同 mysql_ctx:_read_results
+---收到的包先经 owner.mysql:record 落到连接级 erro / last_id / affected_rows 上，同 mysql_ctx:_read_results
 ---@param owner any 持有连接的 mysql_ctx 实例（stmt 传它的宿主），调用方须已持 owner.serial
 ---@param pack lightuserdata 已组好的请求包，所有权随 syn_send 转移
 ---@param size integer 包字节数

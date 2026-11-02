@@ -81,9 +81,7 @@ void _on_cmd_defer_exec(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // ev_send_multi CMD_MULTI：本组连接逐个查表入发送队列
 void _on_cmd_multi(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // 释放一条未被消费的命令所持有的资源（ev_free 排空队列时逐条调用）。
-// "哪条命令持有什么"只在这一个 switch 里定义：两个平台各有各的排空函数
-// （_uev_free_pipe / _iocp_free_cmd），而每台机器只编译其中一个——各写一份的话，
-// 在自己平台上改对了，另一个平台会悄悄漏或双释，而这条路只在关闭时才走，没有测试盯着。
+// "哪条命令持有什么"只在这一个 switch 里定义，两个平台的排空函数(_uev_free_pipe / _iocp_free_cmd)都调它，别各写一份。
 // switch 不带 default：新增 CMD_* 时编译器会报 -Wswitch，强制表态"要不要清理"
 void _cmd_drain_free(cmd_ctx *cmd);
 

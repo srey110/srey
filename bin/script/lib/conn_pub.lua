@@ -50,6 +50,13 @@ function pub.init(self, handle)
     self.serial = srey.serial()
 end
 
+---能否直接用：连着且连接标识没失效，连接池借出前看它（DbPoolConn.ready）。
+---空闲期被对端断开时协议层已把连接标识置失效，established 要等下一次收发失败才清
+---@return boolean
+function pub:ready()
+    return self.established and self.conn:sock_id().valid
+end
+
 ---建立连接并完成协议握手
 ---@return boolean ok 握手成功 true，失败 false。多协程并发调用时按 FIFO 串行，
 ---排在后面那个若发现连接已被前一个重建好（代次已变且仍连着）直接返 true，不再白拆一次
@@ -72,7 +79,9 @@ function pub:_doconnect(gen)
     -- 它晚到的关闭会把新连接的 sk 置成失效。已关时 sync_close 直接返回，等不到确认本轮就不建
     local ok = srey.sync_close(self.conn:sock_id())
     if ok then
-        ok = self:_connect()
+        -- 钩子抛错按失败处理：不接住的话异常被 serial 吞掉，下面的关连接与落代次都跳过，established 留成陈旧的 true
+        local cok, connected = srey.xpcall(self._connect, self)
+        ok = cok and connected
         if not ok then
             -- 握手半途失败（含等握手超时）时网络线程可能还在认证、读账号字段，锁内关完再放
             srey.sync_close(self.conn:sock_id())

@@ -11,6 +11,11 @@
 #pragma warning(disable:4312)
 #endif
 
+// 同 pgsql.c 的 parse_status 与 PGSQL_STACK_MSG(都在 .c 里，用例看不见)，那边改要同步
+#define _PG_AUTH 1
+#define _PG_COMMAND 2
+#define _PG_STACK_MSG 1024
+
 // 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
 static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
 // 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
@@ -661,7 +666,7 @@ static int32_t _pg_text_date(const char *s, int32_t *err) {
 }
 
 // 文本时间戳/日期改走 _strptime 后的边界：逐字段量程由 _conv_num 校验，
-// 原来的 sscanf("%d-%d-%d ...") 什么都收，越界值会被 _pgsql_date_to_days 算成垃圾天数
+// 原来的 sscanf("%d-%d-%d ...") 什么都收，越界值会被算成垃圾天数
 static void test_pgsql_reader_temporal_text_range(CuTest *tc) {
     int32_t err;
 
@@ -691,16 +696,28 @@ static void test_pgsql_reader_temporal_text_range(CuTest *tc) {
     (void)_pg_text_ts("2000-01-01 00:60:00", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
 
-    // 5) 日期侧同样校验；BC 后缀不受影响，仍取补数年份（公元前 44 年 → 负天数）
+    // 5) 日期侧同样校验；BC 后缀不受影响，仍取补数年份（公元前 44 年即天文纪年 -43 年，值与 PG 的 date2j 算法对过）
     int32_t days = _pg_text_date("0044-03-15 BC", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
-    CuAssertTrue(tc, days < 0);
+    CuAssertIntEquals(tc, -746117, days);
     (void)_pg_text_date("2000-13-01", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
 
     // 6) 已知功能收窄：%Y 量程 0..9999，PG 支持到 5874897 AD 的年份现在被拒
     //    换来的是上面那组越界值不再被静默接受，取舍见 pgsql_reader.c 注释
     (void)_pg_text_date("10000-01-01", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 7) ±infinity：给二进制格式的同一个哨兵值；多一个字符就不是
+    CuAssertTrue(tc, INT64_MAX == _pg_text_ts("infinity", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, INT64_MIN == _pg_text_ts("-infinity", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, INT32_MAX, _pg_text_date("infinity", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, INT32_MIN, _pg_text_date("-infinity", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    (void)_pg_text_ts("infinityx", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
 }
 
@@ -1229,7 +1246,7 @@ static void test_pgsql_payload_framing(CuTest *tc) {
     int32_t status;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND，枚举定义在 pgsql.c 内不可见
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
 
     // 1) 空缓冲 → MOREDATA
@@ -1305,7 +1322,7 @@ static void test_pgsql_copy_out_framing(CuTest *tc) {
     char hbody[5] = { 0, 0, 1, 0, 0 };// format 0, 1 列, 列格式 0
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
     buffer_init(&buf);
     _pg_push_msg(&buf, 'H', hbody, sizeof(hbody));
@@ -1413,7 +1430,7 @@ static void test_pgsql_unpack_rows(CuTest *tc) {
     int32_t status, err, i;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
     tl = _pg_rowdesc(tbody, 2);
 
@@ -1487,7 +1504,7 @@ static void test_pgsql_fields_separate_alloc(CuTest *tc) {
     int32_t status, err, i;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
 
     // 常态：reader 由 T 新建，字段描述随它一块
@@ -1566,7 +1583,7 @@ static void test_pgsql_unpack_rows_spill(CuTest *tc) {
     const int32_t nrows = 40;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
     buffer_init(&buf);
     tl = _pg_rowdesc(tbody, 2);
@@ -1646,7 +1663,7 @@ static void test_pgsql_unpack_rows_batch(CuTest *tc) {
     size_t sum, size[2], tl, dl, lastlens, cut;
     int32_t status, m, calls, k;
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     // 1) 一次喂入：T、D×5、C、Z 只要 4 次调用(五条 DataRow 一次解完)
     ZERO(&pg, sizeof(pg));
     ud.context = &pg;
@@ -1751,7 +1768,7 @@ static void test_pgsql_unpack_rows_fast(CuTest *tc) {
     size_t tl, dl;
     int32_t status, err, lens, i, k;
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ZERO(&pg, sizeof(pg));
     ud.context = &pg;
     tl = _pg_rowdesc_oid(tbody, 2, TEXTOID);
@@ -1837,7 +1854,7 @@ static void test_pgsql_unpack_results_spill(CuTest *tc) {
     int32_t status, err, i;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
     buffer_init(&buf);
     tl = _pg_rowdesc(tbody, 2);
@@ -1898,7 +1915,7 @@ static void test_pgsql_unpack_notification(CuTest *tc) {
     int32_t status;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
     pack_integer(p, 4242, 4, 0); p += 4;
     memcpy(p, "chan", 5); p += 5;
@@ -1934,7 +1951,7 @@ static void test_pgsql_unpack_size(CuTest *tc) {
     int32_t status, i;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
     tl = _pg_rowdesc(tbody, 2);
     dl = _pg_datarow(dbody, 2, 0);
@@ -2162,10 +2179,10 @@ static void test_pgsql_ssl_downgrade_refused(CuTest *tc) {
 
     buffer_free(&buf);
 }
-// 命令阶段 DataRow / 通知以外的消息，整包(类型码 + 长度 + 正文)不超过 1024 字节放栈上解析：
-// ErrorResponse 整包 1024 放栈、1025 走堆，错误串都得完整。栈缓冲写穿由 ASan 构建抓，漏释放交给收尾的内存检查
+// 命令阶段 DataRow / 通知以外的消息，整包(类型码 + 长度 + 正文)不超过 _PG_STACK_MSG 字节放栈上解析：
+// ErrorResponse 整包恰好这么大放栈、多 1 字节走堆，错误串都得完整。栈缓冲写穿由 ASan 构建抓，漏释放交给收尾的内存检查
 static void test_pgsql_error_stack_edge(CuTest *tc) {
-    static const size_t totals[] = { 1024, 1025 };
+    static const size_t totals[] = { _PG_STACK_MSG, _PG_STACK_MSG + 1 };
     pgsql_ctx pg;
     ud_cxt ud;
     buffer_ctx buf;
@@ -2187,7 +2204,7 @@ static void test_pgsql_error_stack_edge(CuTest *tc) {
         SNPRINTF(want, sizeof(want), "S: ERROR\r\nC: XX000\r\nM: %s", mtext);
         ZERO(&pg, sizeof(pg));
         ZERO(&ud, sizeof(ud));
-        ud.status = 2;// COMMAND
+        ud.status = _PG_COMMAND;
         ud.context = &pg;
         buffer_init(&buf);
         _pg_push_msg(&buf, 'E', body, blens);
@@ -2220,7 +2237,7 @@ static void test_pgsql_unpack_zero_col(CuTest *tc) {
     const int32_t nrows = 10;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     ud.context = &pg;
     tl = _pg_rowdesc(tbody, 0);
     pack_integer(dbody, 0, 2, 0);
@@ -2365,7 +2382,7 @@ static void test_pgsql_error_after_commit(CuTest *tc) {
     size_t tl = _pg_rowdesc(tbody, 2);
     int32_t status;
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     for (size_t k = 0; k < ARRAY_SIZE(nstmts); k++) {
         ZERO(&pg, sizeof(pg));
         ud.context = &pg;
@@ -2404,7 +2421,7 @@ static void test_pgsql_pack_type_switch(CuTest *tc) {
     size_t tl = _pg_rowdesc(tbody, 2);
     int32_t status, err;
     ZERO(&ud, sizeof(ud));
-    ud.status = 2;// COMMAND
+    ud.status = _PG_COMMAND;
     for (int32_t k = 0; k < 2; k++) {
         ZERO(&pg, sizeof(pg));
         ud.context = &pg;
@@ -2482,7 +2499,7 @@ static void test_pgsql_auth_guards(CuTest *tc) {
     int32_t status;
     CuAssertIntEquals(tc, ERR_OK, pgsql_init(&pg, "127.0.0.1", 5432, NULL, "u1", "p1", "db1"));
     ZERO(&ud, sizeof(ud));
-    ud.status = 1;// AUTH，枚举定义在 pgsql.c 内不可见
+    ud.status = _PG_AUTH;
     ud.context = &pg;
 
     // 认证码不足 4 字节、不支持的认证码（7 = GSS）
@@ -2525,7 +2542,7 @@ static void test_pgsql_auth_guards(CuTest *tc) {
     CuAssertTrue(tc, !BIT_CHECK(_pg_auth_feed(&ud, 'R', body, 4), PROT_ERROR));
     CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'Z', "I", 1), PROT_ERROR));
     CuAssertPtrNotNull(tc, pg.scram);
-    CuAssertIntEquals(tc, 1, (int)ud.status);
+    CuAssertIntEquals(tc, _PG_AUTH, (int)ud.status);
 #if WITH_SSL
     // 有通道绑定材料：两个都给选 PLUS；只给非 PLUS 则报"有能力未用"（"y,,"）
     static const char *const plain[] = { "SCRAM-SHA-256" };

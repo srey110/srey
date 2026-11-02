@@ -19,7 +19,7 @@
 
 #define QUEUE_INIT_SIZE 32 // 默认初始容量
 
-// 入参写 T const * 而不是 const T *:T 是指针类型时,后者会被解析成指向 const 的指针。
+// 入参写 T const * 而不是 const T *:理由同 hashmap.h。
 // QUE_DECL(name, T)：name 生成的类型名，T 元素类型
 #define QUE_DECL(name, T)                                                      \
 typedef struct { uint32_t size; uint32_t maxsize; uint32_t mask; uint32_t offset; T *ptr; } name;\
@@ -71,17 +71,16 @@ static inline void name##_free(name *qu) {                                      
 }                                                                               \
 /* 调整容量 */                                                                  \
 static inline void name##_resize(name *qu, uint32_t maxsize) {                  \
-    T *pnew;                                                                    \
-    uint32_t first;                                                             \
     ASSERTAB(maxsize < UINT32_MAX, "queue maxsize overflow.");                  \
     maxsize = (0 == maxsize) ? QUEUE_INIT_SIZE : pow2_ceil(maxsize < 2 ? 2 : maxsize);\
     ASSERTAB(maxsize >= qu->size, "max size must big than element count.");     \
     ASSERTAB(sizeof(T) <= SIZE_MAX / (size_t)maxsize, "byte size overflow.");   \
+    T *pnew;                                                                    \
     MALLOC(pnew, sizeof(T) * (size_t)maxsize);                                  \
     /* 旧缓冲按 offset 环形排列，新缓冲从下标 0 起线性放置；环形最多跨两段，       \
        故两次拷贝足够。不逐元素拷:fsqu 的溢出层是在自旋锁内扩容的 */             \
     if (0 != qu->size) {                                                        \
-        first = qu->maxsize - qu->offset;                                       \
+        uint32_t first = qu->maxsize - qu->offset;                              \
         if (first > qu->size) {                                                 \
             first = qu->size;                                                   \
         }                                                                       \

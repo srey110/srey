@@ -34,7 +34,9 @@ void ev_free(ev_ctx *ctx);
 /// <param name="nthrs">thrs 个数，0 同 NULL</param>
 /// <param name="id">监听ID</param>
 /// <returns>ERR_OK 成功; cbs / r_cb 为空、ev_free 已开始、地址解析失败、建监听 socket 失败(如端口被占;
-///   IOCP 上含挂完成端口与投 AcceptEx 失败)都返 ERR_FAILED, 其中地址解析与建 socket 两档会落日志</returns>
+///   IOCP 上含挂完成端口与投 AcceptEx 失败)都返 ERR_FAILED, 其中地址解析与建 socket 两档会落日志。
+///   有 SO_REUSEPORT 的平台上监听一律带它：同一 ip:port 再 listen 一次(本进程或同用户的别的进程)不报端口被占，
+///   Linux 上新连接在几个监听间分摊，macOS / BSD 上全落到后建的那个</returns>
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, const int32_t *thrs, uint32_t nthrs, uint64_t *id);
 /// <summary>
@@ -49,7 +51,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 /// <param name="setsess">是否设置sess</param>
 /// <param name="index">连接落在哪个 event 线程：INVALID_INDEX 按 fd 分配，否则 [0, nthreads)，越界断言</param>
 /// <param name="sk">连接标识</param>
-/// <returns>ERR_OK 成功; 失败情形同 ev_listen</returns>
+/// <returns>ERR_OK 成功; 失败情形同 ev_listen。Unix 上 connect() 当场失败(如本机回环上对端没监听)也同步返 ERR_FAILED、
+///   不再有 conn_cb；IOCP 一律经 conn_cb 报</returns>
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     int32_t setsess, int32_t index, sock_ctx *sk);
 /// <summary>
@@ -61,7 +64,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 /// <param name="sk">连接标识</param>
 /// <param name="client">1 作为客户端, 0 作为服务端</param>
 /// <param name="evssl">evssl_ctx, 必须非 NULL (NULL 时返 ERR_FAILED)</param>
-/// <returns>ERR_OK 只表示命令已投递，执行结果不回传：事件线程上拒收(已是 SSL 连接、未连通、已在关等)只打 WARN；
+/// <returns>ERR_OK 只表示命令已投递，执行结果不回传：事件线程上拒收时，已是 SSL 连接、重复请求、未连通打 WARN，已在关的静默忽略；
 ///   evssl 为 NULL 或 fd 为 INVALID_SOCK 时 ERR_FAILED</returns>
 int32_t ev_ssl(ev_ctx *ctx, sock_ctx *sk, int32_t client, struct evssl_ctx *evssl);
 /// <summary>
@@ -91,7 +94,7 @@ int32_t ev_send_ssl(ev_ctx *ctx, sock_ctx *sk, void *data, size_t len,
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>
 /// <param name="updatetype">SSL_KEY_UPDATE_NOT_REQUESTED 单向 / SSL_KEY_UPDATE_REQUESTED 双向</param>
-/// <returns>ERR_OK 命令已投递；WITH_SSL 关闭时返 ERR_FAILED。命令在事件线程内的执行结果不回传</returns>
+/// <returns>ERR_OK 命令已投递；fd 为 INVALID_SOCK 或 WITH_SSL 关闭时返 ERR_FAILED。命令在事件线程内的执行结果不回传</returns>
 int32_t ev_keyupdate(ev_ctx *ctx, sock_ctx *sk, int32_t updatetype);
 /// <summary>
 /// UDP
@@ -169,7 +172,7 @@ int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, const netaddr_ctx *addr,
 /// <param name="sk">连接标识</param>
 /// <param name="group_ip">多播组地址,**必须与 socket 绑定地址同族**,不同族或不是合法 IP 直接返 ERR_FAILED
 ///   (IPv6 socket 强制 v6only 后收不到 IPv4 流量)。IPv4 须在 224.0.0.0/4 段(例 "239.0.0.1"); IPv6 须 ff00::/8 段(例 "ff02::1")</param>
-/// <param name="iface_str">接收网卡。IPv4 走网卡 IP 字符串(例 "192.168.1.100"); IPv6 走接口名(例 "en0"); NULL 走系统默认</param>
+/// <param name="iface_str">接收网卡。IPv4 走网卡 IP 字符串(例 "192.168.1.100"); IPv6 走接口名(例 "en0"，Windows 上不认、一律走系统默认); NULL 走系统默认</param>
 /// <returns>ERR_OK 只表示参数合法且命令已入队。调用方契约违反同步返 ERR_FAILED:fd 无效、group_ip 为
 ///   NULL / 过长 / 不是合法 IP / 与 socket 不同族 / 不是多播地址。setsockopt 本身在事件线程执行,成败不回传——
 ///   失败只有一条 LOG_ERROR。下面 leave / ttl / loop 同此契约</returns>
@@ -202,14 +205,15 @@ int32_t ev_udp_ttl(ev_ctx *ctx, sock_ctx *sk, uint8_t ttl);
 /// <returns>ERR_OK 只表示参数合法且命令已入队,契约同 ev_udp_join</returns>
 int32_t ev_udp_loop(ev_ctx *ctx, sock_ctx *sk, int32_t enable);
 /// <summary>
-/// 关闭链接。关闭前对 send queue 冲一次：能写进内核的送达，写不进去的未发数据连同连接一起丢弃
-/// 并落 WARN。没有"等发完再关"的模式——要保证大块数据送达，须自行确认对端已收齐再调用。
+/// 关闭链接。TCP 关闭前对 send queue 冲一次：能写进内核的送达，写不进去的未发数据连同连接一起丢弃
+/// 并落 WARN；UDP 不冲，积压的 datagram 直接丢弃、不落日志。没有"等发完再关"的模式——要保证大块数据送达，须自行确认对端已收齐再调用。
 /// 已连通的 TCP 连接此后只关写方向，对端再发来的数据由事件层读掉丢弃，等对端关闭、CLOSE_LINGER_MS
 /// 到期或丢满 CLOSE_LINGER_BYTES 才真正关 fd，免得对端收到 RST 丢掉最后的响应；关闭回调不等这一段
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 只表示命令已投递(在连接所在线程上调则已执行)，到事件线程时连接已不在就什么都不做；
+///   fd 为 INVALID_SOCK 时 ERR_FAILED</returns>
 int32_t ev_close(ev_ctx *ctx, sock_ctx *sk);
 /// <summary>
 /// 取消监听

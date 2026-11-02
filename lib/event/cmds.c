@@ -444,14 +444,13 @@ int32_t ev_send_ssl(ev_ctx *ctx, sock_ctx *sk, void *data, size_t len,
 static inline void _ev_send_multi(watcher_ctx *watcher, multi_grp *grp) {
     sock_ctx *sks = grp->sks;
     uint32_t n = grp->n;
-    uint32_t i;
     evsock_ctx *evsk;
     off_buf_ctx buf;
     off_buf_ctx tpl = { 0 };
     tpl.data = ((shared_data *)grp->sh.data)->data;
     tpl.lens = grp->len;
     tpl.shared = &grp->sh;
-    for (i = 0; i < n; i++) {
+    for (uint32_t i = 0; i < n; i++) {
         buf = tpl;// 拒收路径会把 buf 清空，每个 sk 重拷一份
         evsk = _evpub_sockel_get(watcher, sks[i].fd);
         if (NULL == evsk
@@ -482,14 +481,7 @@ int32_t ev_send_multi(ev_ctx *ctx, sock_ctx sks[], int32_t n,
     }
     uint32_t stk[64];// slot 的栈上存储，线程多于 64 才另行分配
     uint32_t *slot = stk;// 先记各线程分到的 sk 数，建组后改记该线程的组号
-    shared_data *pack;
-    multi_grp *grp;
-    multi_grp *ingrp = NULL;
-    sock_ctx *next;// 下一组的 sk 数组起点
-    watcher_ctx *watcher;
-    watcher_ctx *inw = NULL;
-    cmd_ctx cmd = { 0 };
-    uint32_t w, k, nw = 0, nsk = 0;
+    uint32_t w, nw = 0, nsk = 0;
     int32_t i;
     if (ctx->nthreads > ARRAY_SIZE(stk)) {
         MALLOC(slot, sizeof(uint32_t) * ctx->nthreads);
@@ -513,9 +505,11 @@ int32_t ev_send_multi(ev_ctx *ctx, sock_ctx sks[], int32_t n,
         return ERR_FAILED;
     }
     // 一次分配：父计数、有连接的那几组、各组的 sk 数组依次排开，整块常驻到最慢的接收者发完
+    shared_data *pack;
     MALLOC(pack, sizeof(shared_data) + (size_t)nw * MULTI_GRP_STRIDE + sizeof(sock_ctx) * nsk);
-    next = (sock_ctx *)_multi_grp_at(pack, nw);
-    k = 0;
+    sock_ctx *next = (sock_ctx *)_multi_grp_at(pack, nw);// 下一组的 sk 数组起点
+    multi_grp *grp;
+    uint32_t k = 0;
     for (w = 0; w < ctx->nthreads; w++) {
         if (0 == slot[w]) {
             continue;
@@ -541,6 +535,10 @@ int32_t ev_send_multi(ev_ctx *ctx, sock_ctx sks[], int32_t n,
     if (slot != stk) {
         FREE(slot);
     }
+    multi_grp *ingrp = NULL;
+    watcher_ctx *watcher;
+    watcher_ctx *inw = NULL;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_MULTI;
     for (k = 0; k < nw; k++) {
         grp = _multi_grp_at(pack, k);
@@ -672,7 +670,7 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
                 return 1;
             }
 #ifdef EV_IOCP
-            // Windows 不解析接口名,走默认 0;业务可用 IPV6_MULTICAST_IF 单独设
+            // Windows 不解析接口名,走默认 0(见 ev_udp_join 的 iface_str)
             mreq.ipv6mr_interface = 0;
 #else
             if ('\0' != arg->iface_str[0]) {

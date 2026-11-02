@@ -28,6 +28,15 @@
     } else {\
         FMT_TYPE(type);\
     }
+// 长度修饰(hh / h / ll / l / z)：跳过 skip 个修饰字节，后面必须是整数转换、按 conv 取值，否则整条拒
+#define FMT_LEN_MOD(skip, conv)\
+    f += (skip);\
+    if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {\
+        conv;\
+        f++;\
+    } else {\
+        fmterr = 1;\
+    }
 
 // 聚合层帧：一层未闭合的聚合类型
 typedef struct redis_frame {
@@ -75,13 +84,33 @@ void _redis_udfree(ud_cxt *ud) {
     FREE(rd);
     ud->context = NULL;
 }
+// 跳过回复开头的属性(可连着几个)，返回回复本身的首节点。属性不计入父层元素数，嵌在里面的属性只添它自己的 2n 个元素
+static redis_pack_ctx *_redis_skip_attr(redis_pack_ctx *pk) {
+    int64_t remain = 0;// 还要跳过的元素数
+    while (NULL != pk
+        && (remain > 0 || RESP_ATTR == pk->prot)) {
+        if (RESP_ATTR == pk->prot) {
+            remain += (pk->nelem > 0) ? pk->nelem * 2 : 0;
+        } else {
+            remain--;
+            if ((RESP_ARRAY == pk->prot || RESP_SET == pk->prot || RESP_PUSHE == pk->prot || RESP_MAP == pk->prot)
+                && pk->nelem > 0) {
+                remain += (RESP_MAP == pk->prot) ? pk->nelem * 2 : pk->nelem;
+            }
+        }
+        pk = pk->next;
+    }
+    return pk;
+}
 // RESP3 的带外推送(顶层 '>'：invalidate、message、pmessage、smessage 等)不是任何命令的回复，不能唤醒等待者；
-// 订阅类命令的确认例外，RESP3 下它们本身就走推送。RESP2 的 '*' 不判：普通命令的数组回复首元素也可能是这些串
+// 订阅类命令的确认例外，RESP3 下它们本身就走推送。RESP2 的 '*' 不判：普通命令的数组回复首元素也可能是这些串。
+// 推送前可以带属性，跳过再判
 int32_t _redis_may_resume(void *data) {
     static const char *const acks[] = { "subscribe", "psubscribe", "ssubscribe",
                                         "unsubscribe", "punsubscribe", "sunsubscribe" };
-    redis_pack_ctx *pk = (redis_pack_ctx *)data;
-    if (RESP_PUSHE != pk->prot) {
+    redis_pack_ctx *pk = _redis_skip_attr((redis_pack_ctx *)data);
+    if (NULL == pk
+        || RESP_PUSHE != pk->prot) {
         return ERR_OK;
     }
     redis_pack_ctx *kind = pk->next;// 推送的首元素是种类名
@@ -242,55 +271,21 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 f++;
                 break;
             }
-            if ('h' == *f && 'h' == f[1]) {
-                f += 2;
-                if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_TYPE(int);
-                    f++;
-                } else {// 长度修饰后面不是整数转换
-                    fmterr = 1;
-                }
-                break;
-            }
             if ('h' == *f) {
-                f++;
-                if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_TYPE(int);
-                    f++;
-                } else {// 长度修饰后面不是整数转换
-                    fmterr = 1;
-                }
+                FMT_LEN_MOD('h' == f[1] ? 2 : 1, FMT_TYPE(int));
                 break;
             }
             if ('l' == *f && 'l' == f[1]) {
-                f += 2;
-                if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_INT(long long, long long, unsigned long long);
-                    f++;
-                } else {// 长度修饰后面不是整数转换
-                    fmterr = 1;
-                }
+                FMT_LEN_MOD(2, FMT_INT(long long, long long, unsigned long long));
                 break;
             }
             if ('l' == *f) {
-                f++;
-                if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_INT(long, long, unsigned long);
-                    f++;
-                } else {// 长度修饰后面不是整数转换
-                    fmterr = 1;
-                }
+                FMT_LEN_MOD(1, FMT_INT(long, long, unsigned long));
                 break;
             }
             // size_t %zu 是调用方最自然的写法，单独认一下；不认的话它会掉进末尾那条整体拒绝
             if ('z' == *f) {
-                f++;
-                if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
-                    FMT_INT(size_t, ptrdiff_t, size_t);
-                    f++;
-                } else {// 长度修饰后面不是整数转换
-                    fmterr = 1;
-                }
+                FMT_LEN_MOD(1, FMT_INT(size_t, ptrdiff_t, size_t));
                 break;
             }
             fmterr = 1;

@@ -21,6 +21,7 @@ static int32_t _lkcp_new(lua_State *lua) {
 /// 停止并释放当前 kcp 会话(从会话表移除;之后需重新 start 才能再用),__gc 亦复用此清理
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
+/// <returns>无</returns>
 static int32_t _lkcp_stop(lua_State *lua) {
     kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     kcp_stop(kcp);
@@ -101,7 +102,7 @@ static int32_t _lkcp_handle(lua_State *lua) {
 /// <param name="data" type="string|lightuserdata">数据;字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
 /// <param name="copy" type="integer?">是否复制数据,只收 0/1,默认 1(复制)</param>
-/// <returns type="boolean">成功 true,失败 false</returns>
+/// <returns type="boolean">成功 true,失败 false(此时 copy=0 的 data 已释放)</returns>
 static int32_t _lkcp_send(lua_State *lua) {
     kcp_ctx *kcp = lpub_check_udata(lua, 1, MT_KCP);
     size_t size;

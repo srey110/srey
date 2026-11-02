@@ -45,9 +45,14 @@ runner.run(function(t)
         nresp = nresp + 1
         captured = data
     end
-    -- 每次重设都交齐全部注入项：响应捕获与 MSG_TYPE 固定，其余按用例给，ny 是注入的 nyield
+    -- 每次重设都交齐全部注入项：响应捕获与等待标记名表固定，其余按用例给，ny 是注入的 nyield。
+    -- 名表同 srey.lua 的 TAG_NAMES：MSG_TYPE 反转，外加池的等待标记
+    local names = { [srey.TAG_DB_POOL] = "DB_POOL" }
+    for k, v in pairs(srey.MSG_TYPE) do
+        names[v] = k
+    end
     local function init(cs, barriers, execs, ny, fallback)
-        dbg.init(cs, resp, srey.MSG_TYPE, barriers, execs, function() return ny end, fallback)
+        dbg.init(cs, resp, names, barriers, execs, function() return ny end, fallback)
     end
 
     -- ── coros：输入全可控，逐项对账 ────────────────────────────────
@@ -78,8 +83,8 @@ runner.run(function(t)
     local txt = send("coros")
     t:check(txt and txt:find("=== 4 suspended coros in 2 stacks ===", 1, true) ~= nil,
             "coros 头行：4 个挂起聚成 2 类")
-    t:check(txt and txt:find("[3x] mtype=3", 1, true) ~= nil, "coros 同栈三个聚成 [3x]")
-    t:check(txt and txt:find("[1x] mtype=5", 1, true) ~= nil, "coros 另一栈 [1x]")
+    t:check(txt and txt:find("[3x] mtype=TIMEOUT", 1, true) ~= nil, "coros 同栈三个聚成 [3x]，mtype 打名字")
+    t:check(txt and txt:find("[1x] mtype=CONNECT", 1, true) ~= nil, "coros 另一栈 [1x]")
     -- maxage 降序：9000ms 那个（[1x]）必须排在 [3x] 前面
     local p1 = txt and txt:find("[1x]", 1, true)
     local p2 = txt and txt:find("[3x]", 1, true)
@@ -97,6 +102,12 @@ runner.run(function(t)
     t:check(txt and txt:find("(no suspended coros)", 1, true) ~= nil, "coros 空表提示")
     t:check(txt and txt:find("0 suspended, 0 sessions, 0 fork_wait, 0 serial, 4 yield total.",
             1, true) ~= nil, "coros 空表也打印汇总行")
+
+    -- 只做等待标记的也打名字（同 C 侧 tagstr），名表里没有的退回数字
+    init({ [21] = { co1, srey.TAG_DB_POOL, 0, now - 10 }, [22] = { co3, -12345, 0, now - 20 } }, {}, {}, 2)
+    txt = send("coros")
+    t:check(txt and txt:find("mtype=DB_POOL", 1, true) ~= nil, "coros 池的等待标记打名字")
+    t:check(txt and txt:find("mtype=-12345", 1, true) ~= nil, "coros 不认识的标记打数字")
 
     -- ── coros 遍历真实 serial 队列：队头已走过 1 ──────────────────────
     -- H 先拿锁，W1~W4 依次排队（W3/W4 晚 30ms）；H 放锁后 W1 拿锁即放、W2 拿锁不放，

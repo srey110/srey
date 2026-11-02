@@ -198,13 +198,12 @@ static inline size_t _u64_digits10(char *out, uint64_t v) {
     uint64_t t = v;
     uint64_t q;
     size_t n = 1;
-    size_t i;
     while (t >= 100) {
         t /= 100;
         n += 2;
     }
     n += (t >= 10) ? 1 : 0;
-    i = n;
+    size_t i = n;
     while (v >= 100) {
         q = v / 100;
         i -= 2;
@@ -293,12 +292,13 @@ static int32_t _strtod_mul_pow10(uint64_t sig, int32_t exp10, uint64_t *raw) {
     int32_t exp2 = (exp10 * 217706 - 4128768) >> 16;
     int32_t lz = (int32_t)clz64(sig);
     uint64_t sig1 = sig << lz;
-    uint64_t hi, lo, hi2, add;
+    uint64_t hi;
     exp2 -= lz;
-    lo = mul64_128(sig1, p10[0], &hi);
+    uint64_t lo = mul64_128(sig1, p10[0], &hi);
     if ((hi & 0x1FF) - 1 >= 0x1FE) {
+        uint64_t hi2;
         mul64_128(sig1, p10[1], &hi2);
-        add = lo + hi2;
+        uint64_t add = lo + hi2;
         if (add + 1 <= 1) {
             return ERR_FAILED;
         }

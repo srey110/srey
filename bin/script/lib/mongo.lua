@@ -10,6 +10,7 @@ local mongo = require("srey.mongo")
 local mongo_session = require("srey.mongo.session")
 local utils = require("srey.utils")
 local pub = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
+local WEAK_V <const> = { __mode = "v" }-- 弱值表的元表，ctx._txn 用
 -- mongo_ctx：MongoDB 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
 local ctx = class("mongo_ctx", pub)
@@ -150,7 +151,18 @@ end
 ---让服务端当场中止、放锁（commit 返回 false；提交已交出过的 commit 除外，照常重发，见 commit）；要继续须重新 begin（同 C 侧 mongo_begin）
 ---@return boolean ok 成功 true（该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
-    return self.session:begin()
+    if not self.session:begin() then
+        return false
+    end
+    self.mgoctx._txn.sess = self
+    return true
+end
+
+-- 本会话的事务已收尾(或会话已释放)：连接上记的"当前开着事务的会话"跟着清掉
+local function _txn_untrack(self)
+    if self.mgoctx._txn.sess == self then
+        self.mgoctx._txn.sess = nil
+    end
 end
 
 -- 组包与发送整段在锁内，理由同 C 侧 mongo_commit：组包要读连接当前绑定的 session，
@@ -162,6 +174,7 @@ local function _txn_do(self, opts, optslens, packname, what)
     -- 空事务没发过命令：不发包，本地收尾按成功返回，作废与否都一样(同 C 侧 _mongo_txn_end)
     if sess:empty() then
         sess:done()
+        _txn_untrack(self)
         return true
     end
     -- 事务已随重连作废就不能提交：改发 abortTransaction 让服务端当场中止、放锁，本次按失败返回(同 C 侧 _mongo_commit)。
@@ -184,6 +197,7 @@ local function _txn_do(self, opts, optslens, packname, what)
     -- 等回包期间同一 session 又 begin 过就不 done：绑定与 options 已归新事务(同 C 侧 _mongo_txn_end)
     if txn == sess:txn() then
         sess:done()
+        _txn_untrack(self)
     end
     return mgo:check_error(mgopack) >= 0
 end
@@ -261,6 +275,7 @@ function sess_ctx:close()
     -- 服务端的会话记录不随连接消失,重连过也照发 endSessions,漏发就要挂到会话超时才回收
     self.mgoctx.serial(_close_do, self)
     self.session:free()
+    _txn_untrack(self)
 end
 
 ---构造函数
@@ -282,7 +297,7 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
     end
     self.user = user
     -- 同 password 那道自查：authmod 不在这里挡的话，非字符串要到第一次 _connect 的
-    -- pack_auth_first 才抛，那一抛连接没人关，还把 conn_pub 的 established 留成陈旧的 true
+    -- pack_auth_first 才抛，只落成一次建链失败，错误离调用点太远
     if nil ~= authmod
         and "string" ~= type(authmod) then
         error("mongo ctor: authmod must be a string", 3)
@@ -304,6 +319,8 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
     -- 串行化执行器由 conn_pub 建，锁点在 _wsend / _rsend 两个漏斗上。它只保证单条命令
     -- 原子，不保证事务原子——要事务隔离请给事务用独占连接（与 C 侧同一结论）
     pub.init(self, self.mongo)
+    -- 当前开着事务的会话(sess 字段)，归还连接池时 reset_session 看它。弱引用：业务丢掉的会话照常被回收，C 层随之解绑
+    self._txn = setmetatable({}, WEAK_V)
 end
 
 -- conn_pub 的建链钩子：TCP 连接（含可选 SSL 握手）→ 发 hello → 可选 SCRAM 身份验证。
@@ -368,7 +385,7 @@ function ctx:collection(name)
     return self.mongo:collection(name)
 end
 
----置上消息标志位（C 层当前仅实现 MORETOCOME；CHECKSUM/EXHAUSTALLOWED 未实现，设置无效果）。
+---置上消息标志位（C 层当前仅实现 MORETOCOME；CHECKSUM/EXHAUSTALLOWED 未实现，设置无效果，C 层打 WARN）。
 ---置上就一直有效，直到自己调 clear_flag——不是只管下一条命令：此后每条写命令都只发不等，
 ---服务端的失败（重复键、校验不过）因为没有响应可解析而一律报成功；要等回包的读命令组包时包头恒不带。
 ---标志挂在连接上而不是命令上，多协程共用一条连接时别人的写也会跟着变成 fire-and-forget，
@@ -380,9 +397,6 @@ function ctx:set_flag(flag)
     if 0 ~= (flag & ~known) then
         WARN("mongo set_flag: flag %s has bits outside mongo_flags, ignored.", tostring(flag))
         return
-    end
-    if 0 ~= (flag & ~ctx.FLAGS.MORETOCOME) then
-        WARN("mongo set_flag: only MORETOCOME is implemented by mongo_set_flag, other bits are dropped.")
     end
     self.mongo:set_flag(flag)
 end
@@ -622,6 +636,25 @@ function ctx:startsession()
         return nil
     end
     return sess_ctx.new(self, session_ud)
+end
+
+---连接池归还时调：连接上还绑着事务（借用者没 commit / rollback）就回滚，不让下一个人的写命令组进这个事务。
+---没等到应答也在本地解绑再返回 false，由连接池断开（同 C 侧 mongo_pool_ops）
+---@return boolean ok 本来就没绑事务或已解绑 true；false 时连接池会断开这条连接
+function ctx:reset_session()
+    local sess = self._txn.sess
+    if not sess then
+        -- 业务丢掉没收尾的会话时，GC 先清弱表项、会话的 __gc 之后才解 C 侧绑定，这段窗口里绑定还在
+        self.mongo:clear_session()
+        return true
+    end
+    sess:rollback()-- 收到应答就已解绑，服务端回错(如事务已随重连作废)也一样，只看绑定还在不在
+    if self._txn.sess ~= sess then
+        return true
+    end
+    self._txn.sess = nil
+    self.mongo:clear_session()
+    return false
 end
 
 -- conn_pub 的断开钩子：MongoDB 无专用断开命令，直接 close socket

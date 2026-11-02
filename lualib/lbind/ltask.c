@@ -165,8 +165,7 @@ static lua_State *_ltask_luainit(task_ctx *task, ltask_ctx *alloc_ud) {
 // 将脚本名称格式化为完整的 .lua 文件路径存入 path，并确认是普通文件；拼出来超过 PATH_LENS 返回 ERR_FAILED。
 // 带字节码缓存时顺手取 mtime，加载时不再 stat 第二次
 static int32_t _ltask_tryfile(const char *file, char *path, uint64_t *mt) {
-    int32_t n = SNPRINTF(path, PATH_LENS, "%s%s.lua", luapath, file);
-    if (n < 0 || n >= PATH_LENS) {
+    if (!snprintf_ok(SNPRINTF(path, PATH_LENS, "%s%s.lua", luapath, file), PATH_LENS)) {
         return ERR_FAILED;
     }
 #if ENABLE_LUA_BYTECACHE
@@ -282,8 +281,12 @@ int32_t ltask_startup(const char *script) {
 #else
     LOG_INFO("%s, bytecache false", LUA_RELEASE);
 #endif
-    SNPRINTF(luapath, sizeof(luapath), "%s%s%s%s",
-             procpath(), PATH_SEPARATORSTR, script, PATH_SEPARATORSTR);
+    int32_t n = SNPRINTF(luapath, sizeof(luapath), "%s%s%s%s",
+                         procpath(), PATH_SEPARATORSTR, script, PATH_SEPARATORSTR);
+    if (!snprintf_ok(n, sizeof(luapath))) {
+        LOG_ERROR("script path too long: %s", script);
+        return ERR_FAILED;
+    }
     timer_init(&_ltimer);
     lua_State *lua = _ltask_luainit(NULL, NULL);
     if (NULL == lua) {
@@ -563,22 +566,13 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file,
 /// </summary>
 /// <param name="file" type="string">脚本文件名（不含 .lua 后缀，支持 a.b 形式映射到目录）</param>
 /// <param name="name" type="string?">字符串 task 名；nil 或空串=匿名（仅有句柄）</param>
-/// <param name="quecap" type="integer">消息队列容量（条数）；0 用默认 TASK_QUEUE_CAP。
-/// 取值须在 [0, UINT32_MAX]，越界直接报错而不是截断——截断的话 0x100000000 会变成 0、
-/// 被 task_new 悄悄换成默认 TASK_QUEUE_CAP，调用方从返回值看不出自己要的容量根本没生效</param>
+/// <param name="quecap" type="integer">消息队列容量（条数）；0 用默认 TASK_QUEUE_CAP。取值 [0, UINT32_MAX]，越界报错</param>
 /// <param name="..." type="any">传给脚本的可变参数（nil/bool/number/string）</param>
 /// <returns type="lightuserdata?">task 指针，不持引用：task 关闭后即失效，之后还要用就按名字或句柄 task.grab；失败返回 nil</returns>
 static int32_t _ltask_register(lua_State *lua) {
     const char *file = lpub_check_cstr(lua, 1);
     const char *name = lua_isnoneornil(lua, 2) ? NULL : lpub_check_cstr(lua, 2);
-    lua_Integer cap_arg = luaL_checkinteger(lua, 3);
-    if (cap_arg < 0) {
-        return luaL_argerror(lua, 3, "quecap must be non-negative");
-    }
-    if (cap_arg > UINT32_MAX) {
-        return luaL_argerror(lua, 3, "quecap exceeds UINT32_MAX");
-    }
-    uint32_t quecap = (uint32_t)cap_arg;
+    uint32_t quecap = lpub_check_u32(lua, 3, "quecap out of range");
     int32_t arg_top = lua_gettop(lua);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
@@ -710,6 +704,7 @@ static int32_t _ltask_timer_ms(lua_State *lua) {
 /// <summary>
 /// 返回当前 task 按消息类型分桶的累计统计：每类消息条数与 dispatch 占用线程 CPU 纳秒。
 /// total 字段为各桶之和，by_type 字段仅包含至少处理过 1 条消息的 mtype，键为 mtype 整数。
+/// 只有编译期开 ENABLE_DISPATCH_STAT 才累加，默认构建下恒为 0、by_type 为空表
 /// </summary>
 /// <param>无</param>
 /// <returns type="TaskStat">分桶累计统计</returns>
@@ -783,7 +778,7 @@ static int32_t _ltask_opt_timeout(lua_State *lua, task_ctx *task, uint32_t *ms) 
 /// <summary>
 /// 设置当前 task 的请求超时时间
 /// </summary>
-/// <param name="ms" type="integer">超时毫秒数，须 大于 0；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
+/// <param name="ms" type="integer">超时毫秒数，超过 TASK_TIMEOUT_MAX 时 clamp 到该上界；≤0 时打 WARN 后忽略，原值不变</param>
 /// <returns>无</returns>
 static int32_t _ltask_set_request_timeout(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
@@ -807,7 +802,7 @@ static int32_t _ltask_get_request_timeout(lua_State *lua) {
 /// <summary>
 /// 设置当前 task 的连接超时时间
 /// </summary>
-/// <param name="ms" type="integer">超时毫秒数，须 大于 0；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
+/// <param name="ms" type="integer">超时毫秒数，超过 TASK_TIMEOUT_MAX 时 clamp 到该上界；≤0 时打 WARN 后忽略，原值不变</param>
 /// <returns>无</returns>
 static int32_t _ltask_set_connect_timeout(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
@@ -831,7 +826,7 @@ static int32_t _ltask_get_connect_timeout(lua_State *lua) {
 /// <summary>
 /// 设置当前 task 的网络读取超时时间
 /// </summary>
-/// <param name="ms" type="integer">超时毫秒数，须 大于 0；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
+/// <param name="ms" type="integer">超时毫秒数，超过 TASK_TIMEOUT_MAX 时 clamp 到该上界；≤0 时打 WARN 后忽略，原值不变</param>
 /// <returns>无</returns>
 static int32_t _ltask_set_netread_timeout(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);

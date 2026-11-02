@@ -65,7 +65,7 @@ pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_f
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名字符串</param>
 /// <param name="field">输出字段描述指针，可为 NULL</param>
-/// <returns>pgpack_row 指针，列名不存在时返回 NULL</returns>
+/// <returns>pgpack_row 指针，列名不存在或没有当前行时返回 NULL</returns>
 pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack_field **field);
 /// <summary>
 /// 按列名取列下标：同一列要连取几次时先取一次下标，之后走 pgsql_reader_index 或 *_at 系列，不再每次按名扫列
@@ -104,7 +104,7 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名字符串</param>
-/// <returns>1 为 NULL，0 为非 NULL 或列不存在</returns>
+/// <returns>1 为 NULL，0 为非 NULL、列不存在或没有当前行</returns>
 int32_t pgsql_reader_isnull(pgsql_reader_ctx *reader, const char *name);
 /// <summary>
 /// 按列名读取当前行中文本类型字段的值（支持 TEXT / VARCHAR / BPCHAR / NAME / UNKNOWN）
@@ -133,7 +133,8 @@ const char *pgsql_reader_bytea(pgsql_reader_ctx *reader, const char *name, int32
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名字符串</param>
 /// <param name="err">输出错误码：ERR_OK 成功，1 为 NULL 值，ERR_FAILED 失败</param>
-/// <returns>相对 PostgreSQL 纪元（2000-01-01 00:00:00）的微秒数，出错时返回 0</returns>
+/// <returns>相对 PostgreSQL 纪元（2000-01-01 00:00:00）的微秒数，出错时返回 0；±infinity 两种格式都返回
+/// INT64_MAX / INT64_MIN、err 为 ERR_OK</returns>
 int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32_t *err);
 /// <summary>
 /// 按列名读取当前行中 DATE 类型字段的值
@@ -142,7 +143,8 @@ int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名字符串</param>
 /// <param name="err">输出错误码：ERR_OK 成功，1 为 NULL 值，ERR_FAILED 失败</param>
-/// <returns>相对 PostgreSQL 纪元（2000-01-01）的天数，出错时返回 0</returns>
+/// <returns>相对 PostgreSQL 纪元（2000-01-01）的天数，出错时返回 0；±infinity 两种格式都返回
+/// INT32_MAX / INT32_MIN、err 为 ERR_OK</returns>
 int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *err);
 /// <summary>
 /// 按列名读取当前行中 UUID 类型字段的值，写入 16 字节缓冲区
@@ -152,7 +154,7 @@ int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *e
 /// <param name="name">列名字符串</param>
 /// <param name="uuid">输出缓冲区，至少 16 字节</param>
 /// <param name="err">输出错误码：ERR_OK 成功，1 为 NULL 值，ERR_FAILED 失败</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 失败（uuid 内容无效）</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 为列不存在、类型不是 UUID、值为 NULL(err 置 1)、没有当前行或内容无效</returns>
 int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[16], int32_t *err);
 /// <summary>
 /// 同 pgsql_reader_bool，按列下标取

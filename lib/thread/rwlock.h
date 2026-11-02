@@ -23,7 +23,7 @@ static inline void rwlock_init(rwlock_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_rwlock_init(&ctx->rwlock, NULL));
 #endif
-};
+}
 /// <summary>
 /// 读写锁释放
 /// </summary>
@@ -33,7 +33,7 @@ static inline void rwlock_free(rwlock_ctx *ctx) {
 #else
     (void)pthread_rwlock_destroy(&ctx->rwlock);
 #endif
-};
+}
 /// <summary>
 /// 读锁定
 /// </summary>
@@ -44,19 +44,19 @@ static inline void rwlock_rdlock(rwlock_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_rwlock_rdlock(&ctx->rwlock));
 #endif
-};
+}
 /// <summary>
 /// 尝试读锁定
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 锁被占用</returns>
 static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     return 0 != TryAcquireSRWLockShared(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
 #else
     return ERR_OK == pthread_rwlock_tryrdlock(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
 #endif
-};
+}
 /// <summary>
 /// 写锁定
 /// </summary>
@@ -68,12 +68,12 @@ static inline void rwlock_wrlock(rwlock_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_rwlock_wrlock(&ctx->rwlock));
 #endif
-};
+}
 /// <summary>
 /// 尝试写锁定
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；ERR_FAILED 锁被占用</returns>
 static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     if (0 != TryAcquireSRWLockExclusive(&ctx->rwlock)) {
@@ -84,7 +84,7 @@ static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
 #else
     return ERR_OK == pthread_rwlock_trywrlock(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
 #endif
-};
+}
 /// <summary>
 /// 解锁
 /// </summary>
@@ -103,6 +103,6 @@ static inline void rwlock_unlock(rwlock_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_rwlock_unlock(&ctx->rwlock));
 #endif
-};
+}
 
 #endif//RWLOCK_H_

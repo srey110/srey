@@ -25,18 +25,16 @@ void sighandle(void(*cb)(int32_t, void *), void *data);
 /// <summary>
 /// 整机在线的逻辑核数，Windows 上跨全部处理器组计。首次取到后缓存，运行期 CPU 热插拔不再反映；各线程同时首调只是各算一遍同一个值
 /// </summary>
-/// <returns>逻辑核数</returns>
+/// <returns>逻辑核数；取不到时为 1</returns>
 uint32_t procscnt(void);
 /// <summary>
 /// 本进程可用的 CPU 核数：Linux 取 CPU 亲和(taskset / cpuset)与 cgroup v2 cpu.max 配额(向上取整)的较小值，
-/// FreeBSD 取 CPU 亲和，其余平台同 procscnt(Windows 不看亲和掩码)。亲和取的是首次调用所在线程的，先把这个线程钉核再调会算少；
+/// FreeBSD 取 CPU 亲和，其余平台同 procscnt(Windows 不看亲和掩码)。Linux 的亲和取的是首次调用所在线程的，先把这个线程钉核再调会算少，
+/// FreeBSD 取的是整个进程各线程亲和的并集；
 /// 缓存口径同 procscnt，运行期改亲和或配额也不再反映
 /// </summary>
 /// <returns>可用核数，至少 1</returns>
 uint32_t procscnt_avail(void);
-// 把 cgroup v2 cpu.max 的内容("配额 周期"，如 "150000 100000"，'\0' 结尾)折成核数，向上取整；
-// "max"(不限)、配额或周期为 0、解析不了时返回 0 表示不限。procscnt_avail 内部用，放出来给测试
-uint32_t _cgroup_cpu_quota(const char *text);
 /// <summary>
 /// 当前可执行文件所在的目录。首次调用时取一次后缓存，取不到即 ASSERTAB 中止
 /// </summary>

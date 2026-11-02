@@ -371,6 +371,8 @@ runner.run(function(t)
     t:check(not srey_http.is_token(""), "is_token 拒空串")
     t:check(not srey_http.is_token(1), "is_token 拒非字符串(数字当不了头名)")
     t:eq(4096, srey_http.max_headlens, "max_headlens 取自 prots_pub.h 的 HTTP_MAX_HEADLENS")
+    t:eq(1, srey_http.auto_ct, "auto_ct 取自 http.h 的 HTTP_AUTO_CT")
+    t:eq(2, srey_http.auto_frame, "auto_frame 取自 http.h 的 HTTP_AUTO_FRAME")
     -- 组包侧不按它判(见上面 X-Big 那条)，这里只确认常量值没与 C 分叉
     -- 附加头名长度上限同 C 侧 router_req_respond(HTTP_HEAD_KEY_MAX = 128，不含)：127 字节放行、128 字节拒
     local _, hrc = srey_http.head_check(string.rep("k", 127), "v", 0)

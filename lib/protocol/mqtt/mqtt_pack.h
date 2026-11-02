@@ -18,7 +18,7 @@ int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val);
 /// <param name="props">属性 binary_ctx</param>
 /// <param name="flag">属性标识</param>
 /// <param name="val">数值</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
+/// <returns>ERR_OK 成功；flag 不是 SUBSCRIPTION_ID 或 val 超 268435455 返回 ERR_FAILED，props 不变</returns>
 int32_t mqtt_props_varnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val);
 /// <summary>
 /// 打包二进制/字符串属性(MQTT5.0)
@@ -27,7 +27,8 @@ int32_t mqtt_props_varnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val);
 /// <param name="flag">属性标识</param>
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
+/// <returns>ERR_OK 成功；flag 不是二进制 / 字符串属性、lens 超 UINT16_MAX，或字符串属性含 NUL(对端按协议错误断连)
+/// 返回 ERR_FAILED，props 不变</returns>
 int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, size_t lens);
 /// <summary>
 /// 打包 key-value 字符串对属性(MQTT5.0)
@@ -38,7 +39,7 @@ int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, si
 /// <param name="klens">键长度</param>
 /// <param name="val">值</param>
 /// <param name="vlens">值长度</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
+/// <returns>ERR_OK 成功；flag 不是 USER_PROPERTY、klens / vlens 超 UINT16_MAX，或键 / 值含 NUL 返回 ERR_FAILED，props 不变</returns>
 int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t klens, void *val, size_t vlens);
 /// <summary>
 /// 订阅 主题打包
@@ -73,11 +74,11 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// <param name="version">mqtt_protversion</param>
 /// <param name="cleanstart">新开始 表明此次连接是一个新的会话还是一个已存在的会话的延续；MQTT 3.1.1 下若 clientid 为零长度，此值必须为 1</param>
 /// <param name="keepalive">保持连接</param>
-/// <param name="clientid">唯一的客户标识符 UTF-8字符串；NULL 或空串均按零长度处理（服务端在 CONNACK 分配 ID）。MQTT 3.1.1 零长度时必须 cleanstart=1，否则返回 NULL</param>
+/// <param name="clientid">唯一的客户标识符 UTF-8字符串；NULL 或空串均按零长度处理（5.0 由服务端在 CONNACK 的 CLIENT_ID 属性里分配，3.1.1 没有分配机制）。MQTT 3.1.1 零长度时必须 cleanstart=1，否则返回 NULL</param>
 /// <param name="user">用户名  UTF-8字符串；NULL 不带，空串带零长用户名</param>
 /// <param name="password">密码 二进制数据；NULL 不带，非 NULL 时按 pwlens 带(可为 0)</param>
 /// <param name="pwlens">密码长度</param>
-/// <param name="willtopic">遗嘱主题 UTF-8字符串</param>
+/// <param name="willtopic">遗嘱主题 UTF-8字符串；NULL 或空串不带遗嘱，此时 willpayload / willqos / willretain / willprops 都忽略</param>
 /// <param name="willpayload">遗嘱载荷 二进制数据</param>
 /// <param name="wplens">遗嘱载荷长度</param>
 /// <param name="willqos">遗嘱 QoS(0 1 2)</param>
@@ -244,13 +245,13 @@ char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *rea
 /// PING
 /// </summary>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，条件同 mqtt_pack_connect</returns>
+/// <returns>char * 数据包，不会失败</returns>
 char *mqtt_pack_ping(size_t *lens);
 /// <summary>
 /// PONG
 /// </summary>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包；失败返回 NULL(*lens 置 0)，条件同 mqtt_pack_connect</returns>
+/// <returns>char * 数据包，不会失败</returns>
 char *mqtt_pack_pong(size_t *lens);
 /// <summary>
 /// 断开通知

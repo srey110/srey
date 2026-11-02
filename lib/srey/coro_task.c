@@ -29,6 +29,7 @@ static void _coro_task_run(void *owner, void *payload) {
 static void _coro_task_before_run(void *owner) {
     task_incref((task_ctx *)owner);
 }
+// 放 before_run 加的那份。各分发路径(worker / 绑定的 net 线程 / 当场处理)外层都另持一份引用，这里不会放掉最后一份
 static void _coro_task_after_run(void *owner) {
     task_ungrab((task_ctx *)owner);
 }
@@ -136,8 +137,9 @@ static void _coro_handle_startup(task_dispatch_arg *arg) {
 static void _coro_handle_closing(task_dispatch_arg *arg) {
     coro_ctx *co = _coro_co(arg->task);
     coro_spawn(co, arg->msg);
+    // closing 自己挂起等收尾(如 db_pool_free 断连)是常态，只打 DEBUG；真卡住停机由 loader 的 close timeout 告警
     if (coro_suspended(co) > 0) {
-        LOG_WARN("task %s yield %d.", _NAME_OR(arg->task->name), coro_suspended(co));
+        LOG_DEBUG("task %s yield %d.", _NAME_OR(arg->task->name), coro_suspended(co));
     }
 }
 static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
@@ -226,11 +228,18 @@ int32_t coro_sync(task_ctx *task, sock_ctx *sk) {
     return ev_ud_sess(&task->loader->netev, sk, sk->skid);
 }
 int32_t coro_bind_task(task_ctx *task, sock_ctx *sk, name_t handle) {
-    if (ERR_OK != ev_ud_handle(&task->loader->netev, sk, handle)) {
+    if (0 == task_exists(task->loader, handle)
+        || ERR_OK != ev_ud_handle(&task->loader->netev, sk, handle)) {
         return ERR_FAILED;
     }
     coro_unkeep(_coro_co(task), sk->skid);
     return ERR_OK;
+}
+// 收到这条连接的 CLOSE：调用方的 sk 还指着它就置失效。挂起期间 sk 可能已被同 task 别的协程换成新连接(不受管的 DB 上下文)，那就不动
+static inline void _coro_sk_closed(sock_ctx *sk, uint64_t skid) {
+    if (skid == sk->skid) {
+        sock_mark_closed(sk);
+    }
 }
 // 挂起当前协程并等待队头标记为 wtag 的消息；keep 由消息类型定(RECV_ANY 同 RECV)，只在新建 sess 条目时生效
 // 返回唤醒方给的消息指针（在唤醒方栈上），在本协程下次挂起前有效
@@ -276,7 +285,7 @@ void *coro_request(task_ctx *dst, task_ctx *src,
 static inline message_ctx *_coro_wait_msg(task_ctx *task, sock_ctx *sk,
                                    int32_t wtag, uint32_t ms, const char *tag) {
     // 连接已 teardown 就别挂上去:等不到唤醒,只会挂满超时再对 INVALID_SOCK 调一次 ev_close、
-    // 打一条假的 timeout 日志。各 coro_* 等待入口都经本函数,守卫收在这里一处
+    // 打一条假的 timeout 日志。连接上的各等待入口(ssl exchange / handshake / connect / recv)都经本函数,守卫收在这里一处
     if (sock_is_invalid(sk)) {
         return NULL;
     }
@@ -287,6 +296,7 @@ static inline message_ctx *_coro_wait_msg(task_ctx *task, sock_ctx *sk,
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
+        _coro_sk_closed(sk, msg->sess);// 之后 coro_close 当场返回、发送当场失败
         return NULL;
     }
     return msg;
@@ -351,6 +361,7 @@ int32_t coro_close(task_ctx *task, sock_ctx *sk) {
         LOG_WARN("task %s, close timeout, skid %"PRIu64".", _NAME_OR(task->name), sk->skid);
         return ERR_FAILED;
     }
+    _coro_sk_closed(sk, msg->sess);
     return ERR_OK;
 }
 // 等待指定连接的下一条接收消息，失败的处理与指针有效期见 _coro_wait_msg
@@ -412,6 +423,7 @@ void *coro_sendto(task_ctx *task, sock_ctx *sk,
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
+        _coro_sk_closed(sk, msg->sess);
         return NULL;
     }
     recvfrom_ctx *rfmsg = msg->data;

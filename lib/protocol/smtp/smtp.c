@@ -14,12 +14,12 @@ typedef enum parse_status {
     AUTH,      //已发送 AUTH 命令，等待服务端 334 挑战
     AUTH_CHECK,//已发送认证凭据，等待服务端 235 成功响应
     COMMAND,   //握手完成，正常命令交互阶段
-    AUTH_PSW,  //AUTH LOGIN 已回用户名，等第二个 334 挑战（放在末尾：测试里按数值写了前几个）
+    AUTH_PSW,  //AUTH LOGIN 已回用户名，等第二个 334 挑战（放在末尾：test_protocol.c 的 _SMTP_* 按数值抄了一份，改顺序要同步）
 }parse_status;
 static _handshaked_push _hs_push;
 
-void _smtp_init(void *hspush) {
-    _hs_push = (_handshaked_push)hspush;
+void _smtp_init(_handshaked_push hspush) {
+    _hs_push = hspush;
 }
 void _smtp_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
@@ -35,9 +35,7 @@ int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ct
     smtp->port = port;
     smtp->evssl = evssl;
     sock_set_invalid(&smtp->sk);
-    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED：psw 只有 64 字节，OAuth token 之类
-    // 轻松超过，截断后拿去认证只换回服务端一句 535，本地一点线索都没有。
-    // 失败时 smtp 已被 ZERO 且可能填了前几个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    // 字段装不下即返回 ERR_FAILED(不截断)，失败后的状态见 smtp.h
     if (ERR_OK != safe_fill_str(smtp->ip, sizeof(smtp->ip), ip)) {
         LOG_ERROR("smtp ip exceeds %zu bytes: %zu.", sizeof(smtp->ip) - 1, strlen(ip));
         return ERR_FAILED;
@@ -156,9 +154,10 @@ static int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
             return 0;
         }
         sep = line[SMTP_CODE_LENS];
-        //code 之后是 '-'(续行) / ' '(结束行) / CR(裸结束行 "<code>\r\n")，其余非法
+        //code 之后是 '-'(续行) / ' '(结束行) / CRLF(裸结束行 "<code>\r\n")，其余非法
         if (0 != memcmp(line, expect, SMTP_CODE_LENS)
-            || ('-' != sep && ' ' != sep && '\r' != sep)) {
+            || ('-' != sep && ' ' != sep && '\r' != sep)
+            || ('\r' == sep && crlf != pos + SMTP_CODE_LENS)) {
             return ERR_FAILED;
         }
         if ('-' != sep) {

@@ -139,12 +139,11 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
 // 返回之后的软上限，取不到上限时返回 want(错误已打过)
 static rlim_t _rlimit_raise(int32_t resource, rlim_t want) {
     struct rlimit rl;
-    rlim_t cur;
     if (ERR_OK != getrlimit(resource, &rl)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return want;
     }
-    cur = rl.rlim_cur;
+    rlim_t cur = rl.rlim_cur;
     if (want > rl.rlim_max) {
         want = rl.rlim_max;
     }
@@ -163,7 +162,7 @@ void unlimit(void) {
 #ifdef OS_WIN
     SetUnhandledExceptionFilter(_MiniDump);
 #else
-    rlim_t nofile, got;
+    rlim_t nofile;
 #ifdef HAVE_BACKTRACE
     void *frame;
     // glibc 首次调 backtrace 要加载 libgcc_s，会分配内存。先调一次，OOM 时 stack_print 才打得出栈
@@ -175,7 +174,7 @@ void unlimit(void) {
 #else
     nofile = 65535;
 #endif
-    got = _rlimit_raise(RLIMIT_NOFILE, nofile);
+    rlim_t got = _rlimit_raise(RLIMIT_NOFILE, nofile);
     if (got < nofile) {
         LOG_WARN("max open files is %" PRIu64 ", capped by the hard limit; raise it (ulimit -Hn / LimitNOFILE) for more connections.",
                  (uint64_t)got);
@@ -201,9 +200,12 @@ static BOOL WINAPI _sighandler(DWORD dsig) {
     return TRUE;
 }
 #else
-// POSIX 信号处理回调，将系统信号转发给用户注册的处理函数
+// POSIX 信号处理回调，将系统信号转发给用户注册的处理函数。进出时保存恢复 errno：
+// 信号可能打断任何线程里刚失败、还没读 errno 的调用，回调里的系统调用会改掉它
 static void _sighandler(int32_t isig) {
+    int32_t saved = errno;
     _sig_cb(isig, _ud);
+    errno = saved;
 }
 #endif
 void sighandle(void(*cb)(int32_t, void *), void *data) {
@@ -228,10 +230,13 @@ uint64_t threadid(void) {
 #if defined(OS_WIN)
     return (uint64_t)GetCurrentThreadId();
 #else
-    return (uint64_t)pthread_self();
+    return (uint64_t)(uintptr_t)pthread_self();// 部分 32 位平台上 pthread_t 是指针，先转 uintptr_t
 #endif
 }
-uint32_t _cgroup_cpu_quota(const char *text) {
+#if defined(OS_LINUX)
+// 把 cgroup v2 cpu.max 的内容("配额 周期"，如 "150000 100000"，'\0' 结尾)折成核数，向上取整；
+// "max"(不限)、配额或周期为 0、解析不了时返回 0 表示不限
+static uint32_t _cgroup_cpu_quota(const char *text) {
     uint64_t quota, period;
     if (2 != sscanf(text, "%" SCNu64 " %" SCNu64, &quota, &period)
         || 0 == period) {
@@ -240,7 +245,6 @@ uint32_t _cgroup_cpu_quota(const char *text) {
     quota = quota / period + (0 != quota % period);
     return quota > UINT32_MAX ? UINT32_MAX : (uint32_t)quota;
 }
-#if defined(OS_LINUX)
 // n 与 cgroup v2 的 CPU 配额(cpu.max 折成核数，向上取整)取小。从本进程所在组逐级往上读，取最紧的一级；
 // 只认挂在 /sys/fs/cgroup 的 v2，文件读不到、"max"(不限)或解析不了的那级一律当不限
 static uint32_t _cgroup_cpus(uint32_t n) {
@@ -294,8 +298,12 @@ uint32_t procscnt(void) {
 #if defined(OS_WIN)
     n = (uint32_t)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);// GetSystemInfo 只给当前处理器组的(至多 64)
 #else
-    n = (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
+    long v = sysconf(_SC_NPROCESSORS_ONLN);
+    n = v > 0 ? (uint32_t)v : 0;
 #endif
+    if (0 == n) {
+        n = 1;// 取不到(sysconf 返 -1、GetActiveProcessorCount 返 0)按 1 核算
+    }
     ATOMIC_SET_RELAXED(&cnt, n);
     return n;
 }

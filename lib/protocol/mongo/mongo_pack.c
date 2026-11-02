@@ -13,10 +13,8 @@
 #define MONGO_READ_FLAGS 0 // 要等回包的命令写进包头的 flags：恒不带 MORETOCOME，与连接级 flags 无关
 // 组包长度上限：只防 OP_MSG 头的 int32 长度字段装不下。收包上限 MONGO_MAX_PACK_LENS 不管组包，对端上限与本地无关
 #define MONGO_PACK_MAX INT32_MAX
-// 拼接 options：源文档超组包上限、或结构不合法(bson_cat 拒收)时整条命令作废——
-// 继续打包会发出缺 options 的命令，服务端照常执行并返回错误结果集。
-// *size 显式置 0：调用方按"返回非 NULL 才读 size"约定，早退路径不能留未初始化值
-// 两道拒绝分开报:一条是文档超上限,一条是 BSON 结构不合法(判据见 bson_cat),合成一条会互相误报
+// 拼接 options：源文档超组包上限、或结构不合法(bson_cat 拒收)时整条命令作废，不能丢掉 options 接着发。
+// *size 显式置 0，早退路径不能留未初始化值。两道拒绝各打各的日志(判据见 bson_cat)
 #define MONGO_PACK_CAT(doc, lens) do { \
         if (0 != _mongo_cap_toolong((size_t)(lens))) { \
             *size = 0; \
@@ -31,8 +29,7 @@
         } \
     } while (0)
 // 原样嵌入的子文档 / 数组先过 bson_check_doc，不是恰好占满 lens 的一篇完整 BSON 就拒整条命令，早退同 MONGO_PACK_CAT。
-// bson_append_document / array 不校验：空缓冲只写 type + key，长度对不上会混进垃圾元素，
-// 整篇 BSON 从这里起就解不开，而这种包发出去服务端多半照收不误，错位要到后面某个字段才暴露
+// bson_append_document / array 自己不校验，长度不对会把整篇 BSON 写错位
 #define MONGO_PACK_CHECK(name, doc, lens) do { \
         if (ERR_OK != bson_check_doc((doc), (lens))) { \
             LOG_ERROR("mongo %s rejected: malformed bson, %zu bytes.", (name), (size_t)(lens)); \
@@ -55,8 +52,7 @@
 
 // 声明并初始化局部 bson_ctx bson，要求函数有名为 size 的出参。
 // cap：BSON 预估容量，0=默认；大消息传 dlens + BSON_HEADROOM 消除 doubling 重分配。宏内只求值一次。
-// 超组包上限在这里就拒：cap 正是那几个大入参的长度，等到 _mongo_pack_msg 判总长时源数据
-// 已经被全量分配并拷贝过，内存不够时分配器直接终止进程而不是返 NULL。
+// 超组包上限在这里就拒(cap 就是大入参的长度)，要赶在它们被整份拷进缓冲之前。
 // 文档前预留 MONGO_MSG_HDR 字节，收尾时就地填 OP_MSG 头，正文不再另拷一份
 #define MONGO_PACK_BEGIN(cap) MONGO_PACK_BEGIN2(cap, 0)
 // 同 MONGO_PACK_BEGIN，extra 只加进首块容量、不进超限闸门(传 options 与事务 session options 的字节数，免得它们撑出一次整块搬迁)
@@ -285,7 +281,7 @@ void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char
     bson_append_utf8(&bson, "aggregate", mongo->collection);
     MONGO_PACK_ARR("pipeline", pipeline, pllens);
     const char *cursor = bson_empty(size);
-    bson_append_document(&bson, "cursor", (char *)cursor, *size);
+    bson_append_document(&bson, "cursor", cursor, *size);
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN_TXN(mongo->db, MONGO_READ_FLAGS);
@@ -295,9 +291,7 @@ void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size
     bson_append_int64(&bson, "getMore", cursorid);//事务外部创建的游标，无法在事务内部调用 getMore
     bson_append_utf8(&bson, "collection", mongo->collection);
     MONGO_PACK_CAT(options, optlens);
-    // 用不带 START 的那个：游标是别的命令建出来的，事务真要开也该由那条命令开。
-    // 挂 _START 的话，begin 后第一条就是 getMore 时会把 started 消耗在一条服务端必拒的命令上，
-    // 真正的首条 CRUD 从此不带 startTransaction，整段事务连环 NoSuchTransaction
+    // 用不带 START 的那个：游标是别的命令建出来的，事务要开也由那条命令开，getMore 不能占掉 startTransaction
     TRANSACTION_OPTIONS
     MONGO_PACK_RETURN(mongo->db, MONGO_READ_FLAGS);
 }
@@ -306,8 +300,7 @@ void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, c
     bson_append_utf8(&bson, "killCursors", mongo->collection);//不能将killCursors 命令指定为ACID 事务中的第一个操作.killCursors 命令，服务器会立即停止指定的游标。它不会等待ACID 事务提交
     MONGO_PACK_ARR("cursors", cursorids, cslens);
     MONGO_PACK_CAT(options, optlens);
-    // 同 getMore：上一行注释说的"不能作为事务第一个操作"，靠的就是这里不挂 _START——
-    // 否则它自己会去当那个第一操作，还顺手把 started 吃掉
+    // 同 getMore 不挂 _START：它不能当事务的第一个操作
     TRANSACTION_OPTIONS
     MONGO_PACK_RETURN(mongo->db, mongo->flags);
 }

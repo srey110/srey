@@ -9,7 +9,7 @@
 #define PATH_NAME "_propath" // Lua 全局变量名：程序根路径
 #define PORT_OUT_OF_RANGE "port out of range" // 端口越界文案，各 connect / listen 绑定共用
 #define REQTYPE_OUT_OF_RANGE "reqtype out of range" // 请求类型越界文案，core 与 harbor 绑定共用
-#define LENS_RANGE "length out of range" // 长度越界文案，lpub 的取 buf 一族与 mqtt 载荷共用
+#define LENS_RANGE "length out of range" // 长度越界文案，lpub 的取 buf 一族共用
 #define LUDATA_NONNULL "non-null light userdata expected" // 空指针文案，下面的宏与取 buf 一族共用
 
 // 校验栈上指定位置是 light userdata 且指针非 NULL，否则通过 luaL_argerror 抛 Lua 错误。
@@ -55,8 +55,7 @@
         (var) = lua_touserdata((lua), 1); \
     }
 // 声明 type *var 并从栈位 idx 取 lightuserdata：判据同 LUACHECK_LUDATA(非 light userdata 或
-// 空指针即 luaL_argerror)。这两行在各绑定里成对出现四十余次，分开写时新增入口漏掉校验那半
-// 不会有编译期信号——拿到的就是个没验过的裸指针
+// 空指针即 luaL_argerror)。取指针一律用它，别把校验与取值拆开写
 #define LPUB_LUD_ARG(lua, type, idx, var) \
     LUACHECK_LUDATA((lua), (idx)); \
     type *var = lua_touserdata((lua), (idx))
@@ -82,7 +81,8 @@ typedef void (*lyyjson_sink)(void *ud, const char *json, size_t lens);
 /// <summary>
 /// 建（或取已有的）名为 name 的元表压栈，同 luaL_newmetatable；另在注册表里以 name 的地址为键再存一份，
 /// 之后按地址取只是一次指针哈希，不再按名字查串。按名字的那份照留：lpub_get_mtable 按地址取不到时靠它回落。
-/// name 必须是静态存储的常量（MT_ 系列宏）：地址就是键，栈上或堆上的缓冲地址会被别的内容重用
+/// name 必须是静态存储的常量（MT_ 系列宏）：地址就是键，栈上或堆上的缓冲地址会被别的内容重用。
+/// 各元表名之间不得互为后缀：链接器可能把后缀串并到同一地址，撞了在这里 ASSERTAB
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="name">元表名</param>
@@ -171,8 +171,7 @@ uint8_t lpub_opt_u8(lua_State *lua, int32_t idx, uint8_t dft, const char *what);
 /// <returns>会话 id;为 0 走 luaL_argerror(longjmp,不返回)</returns>
 uint64_t lpub_check_sess(lua_State *lua, int32_t idx);
 /// <summary>
-/// 取 0/1 开关参数。这类参数在 mqtt 与 websock 绑定里有十几处，各写一遍 lpub_check_range
-/// 的 (0, 1, 文案) 时，把界写成 (0, 2) 照样编过、报错文案还照旧说"只许 0 或 1"
+/// 取 0/1 开关参数，界与报错文案只在这里定，别各写一遍 lpub_check_range(0, 1, ...)
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="idx">值在栈中的位置</param>
@@ -266,9 +265,8 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
 /// <returns>data 指针;入参为 nil 或无参时返回 NULL。类型不符走 luaL_argerror(longjmp,不返回)</returns>
 void *lpub_opt_buf(lua_State *lua, int32_t idx, size_t *size);
 /// <summary>
-/// 压一个布尔返回值。与 lpub_rtn_nil / lpub_rtn_lud 同族,把"成功/失败各压一次 lua_pushboolean"
-/// 的 if/else 收成一行——散着写时两种写法(先判成功 / 先判失败)并存,读的人每处都要重新确认
-/// 哪个分支是成功,写反了编译不报错、返回值直接取反
+/// 压一个布尔返回值。与 lpub_rtn_nil / lpub_rtn_lud 同族,"成功/失败各压一次 lua_pushboolean"
+/// 的 if/else 一律收成这一行
 /// </summary>
 /// <param name="lua">Lua 栈</param>
 /// <param name="cond">非 0 压 true,0 压 false</param>
@@ -423,7 +421,7 @@ void lpub_reg_sock(lua_State *lua);
 void lpub_push_sock(lua_State *lua, sock_ctx *sk);
 /// <summary>
 /// 同 lpub_push_sock，但按 skid 复用同一个 userdata（命中时刷新其值）。
-/// 只给消息分发用：别处调会把已关连接的 skid 写回缓存，而摘除只在 CLOSE 分发后发生一次
+/// 只给消息分发用（每条消息都要取 sk）；连接级创建一个连接只建一次，用 lpub_push_sock
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="sk">连接标识，按值拷贝</param>
@@ -466,7 +464,7 @@ void lpub_push_sock_mt(lua_State *lua);
 /// <returns>是返回 1，否返回 0</returns>
 int32_t lpub_is_sock_mt(lua_State *lua, int32_t idx, int32_t mtidx);
 /// <summary>
-/// 从缓存里摘掉一条连接标识。连接关闭时调，否则该 skid 的 userdata 随 lua_State 常驻
+/// 从缓存里摘掉一条连接标识。连接关闭时调，提前摘掉；不调的话缓存是弱值表，userdata 没人引用后条目随之回收
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>
 /// <param name="skid">连接 skid；0 视为无效标识，直接返回</param>

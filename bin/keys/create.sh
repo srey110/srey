@@ -1,4 +1,7 @@
 #!/bin/sh
+# 证书落在本脚本所在目录(bin/keys)，从哪里运行都一样；任一步失败即停，不拿残缺文件往下签
+cd "$(dirname "$0")" || exit 1
+set -e
 encry=sha256
 p12psw=srey
 list="server client"
@@ -18,10 +21,12 @@ echo "-----------------ca finished--------------------"
 
 for a in $list; do
     openssl genrsa -out "$a.key" 2048
-    openssl req -new -key "$a.key" -out "$a.csr" -subj "/C=CN/ST=SC/L=CD/O=Organization$a/OU=srey$a/CN=srey_$a@gmail.com"
+    # CN 用合法主机名：用例拿它测按 CN 比对主机名，OpenSSL 4 设主机名时拒收 @ 和 _
+    openssl req -new -key "$a.key" -out "$a.csr" -subj "/C=CN/ST=SC/L=CD/O=Organization$a/OU=srey$a/CN=srey-$a"
     openssl x509 -req -days 3650 -"$encry" -CA ca.crt -CAkey ca.key -CAserial serial.srl -CAcreateserial -in "$a.csr" -out "$a.crt"
     openssl verify -CAfile ca.crt "$a.crt"
-    openssl pkcs12 -export -inkey "$a.key" -in "$a.crt" -certfile ca.crt -password pass:"$p12psw" -out "$a.p12"
+    # 显式用 AES：LibreSSL 与 OpenSSL 1.1 默认是 RC2-40，OpenSSL 3 不加载 legacy 读不了
+    openssl pkcs12 -export -inkey "$a.key" -in "$a.crt" -certfile ca.crt -password pass:"$p12psw" -certpbe AES-256-CBC -keypbe AES-256-CBC -macalg sha256 -out "$a.p12"
     openssl pkcs12 -in "$a.p12" -password pass:"$p12psw" -noout -info
     echo "-----------------$a finished--------------------"
 done

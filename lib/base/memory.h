@@ -103,7 +103,7 @@ void mem_count_add(uint64_t nalloc, uint64_t nfree);
 /// 打印内存分配/释放统计信息（仅 MEMORY_CHECK 启用时有效）
 /// </summary>
 /// <returns>存活块数 = 累计分配 - 累计释放。0 为收支平衡，负数说明释放多于分配。
-/// MEMORY_CHECK 关闭时恒为 0，此时检测不到泄漏，调用方不可据此判定通过</returns>
+/// MEMORY_CHECK 关闭时恒为 0 并打一行提示，此时检测不到泄漏，调用方不可据此判定通过</returns>
 int64_t _memcheck(void);
 /// <summary>
 /// 汇总所有分条槽位，读取累计内存分配/释放次数。运行期拿到的是近似值：别的线程还在自增，

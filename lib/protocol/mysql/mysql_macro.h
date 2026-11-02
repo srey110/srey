@@ -1,57 +1,57 @@
 ﻿#ifndef MYSQL_MACRO_H_
 #define MYSQL_MACRO_H_
 
-#define INT3_MAX                  0xFFFFFF          // 3字节无符号整数最大值
-#define MYSQL_OK                  0x00              // MySQL 响应包类型：OK
-#define MYSQL_EOF                 0xfe              // MySQL 响应包类型：EOF
-#define MYSQL_ERR                 0xff              // MySQL 响应包类型：ERROR
-#define MYSQL_QUIT                0x01              // 命令：断开连接
-#define MYSQL_INIT_DB             0x02              // 命令：切换数据库
-#define MYSQL_QUERY               0x03              // 命令：执行 SQL 查询
-#define MYSQL_PING                0x0e              // 命令：PING 检测连接
+#define INT3_MAX 0xFFFFFF // 3字节无符号整数最大值
+#define MYSQL_OK 0x00 // MySQL 响应包类型：OK
+#define MYSQL_EOF 0xfe // MySQL 响应包类型：EOF
+#define MYSQL_ERR 0xff // MySQL 响应包类型：ERROR
+#define MYSQL_QUIT 0x01 // 命令：断开连接
+#define MYSQL_INIT_DB 0x02 // 命令：切换数据库
+#define MYSQL_QUERY 0x03 // 命令：执行 SQL 查询
+#define MYSQL_PING 0x0e // 命令：PING 检测连接
 //STMT
-#define MYSQL_PREPARE             0x16              // 命令：预处理语句准备
-#define MYSQL_EXECUTE             0x17              // 命令：预处理语句执行
-#define MYSQL_STMT_CLOSE          0x19              // 命令：关闭预处理语句
-#define MYSQL_STMT_RESET          0x1a              // 命令：重置预处理语句
+#define MYSQL_PREPARE 0x16 // 命令：预处理语句准备
+#define MYSQL_EXECUTE 0x17 // 命令：预处理语句执行
+#define MYSQL_STMT_CLOSE 0x19 // 命令：关闭预处理语句
+#define MYSQL_STMT_RESET 0x1a // 命令：重置预处理语句
 
-#define MYSQL_LOCAL_INFILE         0xfb             // 本地文件加载标志
-#define MYSQL_HEAD_LENS            4                // MySQL 数据包头部长度（字节）
-#define SERVER_STATUS_IN_TRANS     1                // 服务器状态标志：处在事务里（含 autocommit=0 下已执行过语句）
-#define SERVER_MORE_RESULTS_EXISTS 8                // 服务器状态标志：还有更多结果集
-#define SERVER_SESSION_STATE_CHANGED 16384          // 服务器状态标志：OK 包尾部带 session 状态变更信息
-#define SESSION_TRACK_SCHEMA       0x01             // session 状态变更类型：当前库已变更
-#define MYSQL_UNSIGNED_FLAG        0x20             // 列定义标志位：无符号数值列（协议里叫 UNSIGNED_FLAG）
-#define MYSQL_AUTH_SWITCH          0xfe             // 认证插件切换标志
-#define MYSQL_CACHING_SHA2         0x01             // caching_sha2_password 认证状态标志
-#define MYSQL_CACHING_SHA2_FAST    0x03             // caching_sha2 快速认证（密码已在缓存中）
-#define MYSQL_CACHING_SHA2_FULL    0x04             // caching_sha2 完整认证（本实现只在 TLS 上做）
-#define CACHING_SHA2_PASSWORD      "caching_sha2_password"  // caching_sha2_password 插件名
-#define MYSQL_NATIVE_PASSWORD      "mysql_native_password"  // mysql_native_password 插件名
+#define MYSQL_LOCAL_INFILE 0xfb // 本地文件加载标志
+#define MYSQL_HEAD_LENS 4 // MySQL 数据包头部长度（字节）
+#define SERVER_STATUS_IN_TRANS 1 // 服务器状态标志：处在事务里（含 autocommit=0 下已执行过语句）
+#define SERVER_MORE_RESULTS_EXISTS 8 // 服务器状态标志：还有更多结果集
+#define SERVER_SESSION_STATE_CHANGED 16384 // 服务器状态标志：OK 包尾部带 session 状态变更信息
+#define SESSION_TRACK_SCHEMA 0x01 // session 状态变更类型：当前库已变更
+#define MYSQL_UNSIGNED_FLAG 0x20 // 列定义标志位：无符号数值列（协议里叫 UNSIGNED_FLAG）
+#define MYSQL_AUTH_SWITCH 0xfe // 认证插件切换标志
+#define MYSQL_CACHING_SHA2 0x01 // caching_sha2_password 认证状态标志
+#define MYSQL_CACHING_SHA2_FAST 0x03 // caching_sha2 快速认证（密码已在缓存中）
+#define MYSQL_CACHING_SHA2_FULL 0x04 // caching_sha2 完整认证（本实现只在 TLS 上做）
+#define CACHING_SHA2_PASSWORD "caching_sha2_password" // caching_sha2_password 插件名
+#define MYSQL_NATIVE_PASSWORD "mysql_native_password" // mysql_native_password 插件名
 // 登录参数的字节上限（不含结尾 NUL），mysql_ctx 里的缓冲各多 1 字节
-#define MYSQL_USER_LENS            128              // 用户名：32 字符 × utf8mb4 每字符 4 字节
-#define MYSQL_DB_LENS              256              // 库名：64 字符 × 4 字节
-#define MYSQL_PASSWORD_LENS        256              // 密码：caching_sha2_password 明文上限
+#define MYSQL_USER_LENS 128 // 用户名：32 字符 × utf8mb4 每字符 4 字节
+#define MYSQL_DB_LENS 256 // 库名：64 字符 × 4 字节
+#define MYSQL_PASSWORD_LENS 256 // 密码：caching_sha2_password 明文上限
 
 //Capabilities Flags（客户端能力标志位）
-#define CLIENT_LONG_PASSWORD                  1           // 使用新密码插件
-#define CLIENT_LONG_FLAG                      4           // 获取全部列标志
-#define CLIENT_CONNECT_WITH_DB                8           // 连接时携带数据库名
-#define CLIENT_IGNORE_SPACE                   256         // 忽略括号前的空格
-#define CLIENT_PROTOCOL_41                    512         // 使用 4.1 新协议
-#define CLIENT_INTERACTIVE                    1024        // 交互式终端连接
-#define CLIENT_SSL                            2048        // 支持 SSL 加密连接
-#define CLIENT_RESERVED2                      32768       // 已废弃：4.1 安全连接标志
-#define CLIENT_MULTI_STATEMENTS               (1UL << 16) // 支持 COM_QUERY/COM_STMT_PREPARE 中多条语句
-#define CLIENT_MULTI_RESULTS                  (1UL << 17) // 支持多结果集
-#define CLIENT_PS_MULTI_RESULTS               (1UL << 18) // 预处理语句支持多结果集及 OUT 参数
-#define CLIENT_PLUGIN_AUTH                    (1UL << 19) // 支持可插拔认证插件
-#define CLIENT_CONNECT_ATTRS                  (1UL << 20) // 支持连接属性
+#define CLIENT_LONG_PASSWORD 1 // 使用新密码插件
+#define CLIENT_LONG_FLAG 4 // 获取全部列标志
+#define CLIENT_CONNECT_WITH_DB 8 // 连接时携带数据库名
+#define CLIENT_IGNORE_SPACE 256 // 忽略括号前的空格
+#define CLIENT_PROTOCOL_41 512 // 使用 4.1 新协议
+#define CLIENT_INTERACTIVE 1024 // 交互式终端连接
+#define CLIENT_SSL 2048 // 支持 SSL 加密连接
+#define CLIENT_RESERVED2 32768 // 已废弃：4.1 安全连接标志
+#define CLIENT_MULTI_STATEMENTS (1UL << 16) // 支持 COM_QUERY/COM_STMT_PREPARE 中多条语句
+#define CLIENT_MULTI_RESULTS (1UL << 17) // 支持多结果集
+#define CLIENT_PS_MULTI_RESULTS (1UL << 18) // 预处理语句支持多结果集及 OUT 参数
+#define CLIENT_PLUGIN_AUTH (1UL << 19) // 支持可插拔认证插件
+#define CLIENT_CONNECT_ATTRS (1UL << 20) // 支持连接属性
 #define CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA (1UL << 21) // 认证数据长度可超过 255 字节
-#define CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS   (1UL << 22) // 不因密码过期而断开连接
-#define CLIENT_SESSION_TRACK                  (1UL << 23) // 服务端可在 OK 包回带 session 状态变更(当前库等)
-#define CLIENT_DEPRECATE_EOF                  (1UL << 24) // 列定义后不发 EOF，结果集以 0xfe 头的 OK 包收尾
-#define CLIENT_QUERY_ATTRIBUTES               (1UL << 27) // 支持 COM_QUERY/COM_STMT_EXECUTE 可选参数
+#define CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS (1UL << 22) // 不因密码过期而断开连接
+#define CLIENT_SESSION_TRACK (1UL << 23) // 服务端可在 OK 包回带 session 状态变更(当前库等)
+#define CLIENT_DEPRECATE_EOF (1UL << 24) // 列定义后不发 EOF，结果集以 0xfe 头的 OK 包收尾
+#define CLIENT_QUERY_ATTRIBUTES (1UL << 27) // 支持 COM_QUERY/COM_STMT_EXECUTE 可选参数
 
 // MySQL 数据包类型枚举
 typedef enum mpack_type {

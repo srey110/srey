@@ -162,9 +162,7 @@ static int32_t _ws_resolve_addr(task_ctx *task, url_ctx *url, const char *host, 
         (void)copy_bounded(host, hlens, ip, IP_LENS, 1);
     }
     if (url->port.lens > 0) {
-        // url_parse 只按冒号切分不校验字符,strtoul 会把 "80abc" 当 80 接受;
-        // RFC 3986 §3.2.3 的 port 产生式只允许数字
-        // port 是切片不带 \0，须按 lens 解析：strtoul 会一路读到缓冲里的下一个非数字
+        // port 是不带 \0 的切片：按 lens 严格解析，只认纯数字(RFC 3986 §3.2.3)，url_parse 切分时不校验字符
         uint64_t p;
         if (ERR_OK != strtou64((const char *)url->port.data, url->port.lens, UINT16_MAX, &p)
             || 0 == p) {
@@ -198,7 +196,7 @@ static void _ws_reorg(url_ctx *url, int32_t iswss, uint16_t port,
         }
     }
 }
-// 打握手包并连接，发出后等服务端 Upgrade 响应；成功返回 fd 并回填 *skid / *spctx
+// 打握手包并连接，发出后等服务端 Upgrade 响应；成功返回 ERR_OK 并回填 *sk / *spctx
 static int32_t _ws_handshake(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
                              int32_t netev, const char *host, const char *uri, const char *secprot,
                              sock_ctx *sk, ws_secprots_ctx **spctx) {
@@ -424,7 +422,9 @@ static void _serial_quit(task_ctx *task, coro_serial_ctx **slot, sock_ctx *sk, i
         ev_close(&task->loader->netev, sk);
         return;
     }
-    if (ERR_OK != _serial_lock(task, held)) {
+    // 协程外先判掉,不经 coro_serial_enter,免得它再多打一条 WARN
+    if (0 == coro_incoro(task)
+        || ERR_OK != _serial_lock(task, held)) {
         // 析构里调 *_quit 走的就是这里,不补 ev_close 会把 fd 漏到整个 task 拆除。
         // 整块排在 _serial_discard 之前,理由见函数上方
         if (NULL != task
@@ -649,6 +649,7 @@ void mysql_stmt_close(mysql_stmt_ctx *stmt) {
     // 违反半双工,而组包还会清连接的包序号。held 为 NULL 即这条连接不由本套 API 串行化
     // (经 *_try_connect 自建),此时发包会与网络线程的握手撞在同一个 mysql->id 上
     if (NULL == held
+        || 0 == coro_incoro(mysql->task)// 协程外是预期的退路(见头文件)，不经 coro_serial_enter 多打一条 WARN
         || ERR_OK != coro_serial_enter(held)) {
         mysql_stmt_free(stmt);
         return;
@@ -824,10 +825,10 @@ int32_t pgsql_cancel(pgsql_ctx *pg) {
     return rtn;
 }
 // 断开连接但不动 serial：selectdb 靠断连重连来换库,那期间锁还在本协程手上,
-// 顺手把执行器销毁掉就把自己的锁毁了
-static void _pgsql_disconnect(pgsql_ctx *pg) {
+// 顺手把执行器销毁掉就把自己的锁毁了。返回 coro_close 的结果，等不到关闭确认 selectdb 就不建新连接
+static int32_t _pgsql_disconnect(pgsql_ctx *pg) {
     if (sock_is_invalid(&pg->sk)) {
-        return;
+        return ERR_OK;
     }
     size_t lens;
     void *quit = pgsql_pack_terminate(&lens);
@@ -835,7 +836,7 @@ static void _pgsql_disconnect(pgsql_ctx *pg) {
     // 代次不在这里前进:两个调用方都已覆盖——_pgsql_do_quit 经 _serial_quit,
     // pgsql_selectdb 重连后自己前进
     pg->established = 0;// selectdb 那条路径不经 _serial_quit,自己落
-    coro_close(pg->task, &pg->sk);
+    return coro_close(pg->task, &pg->sk);
 }
 // 断开动作与 selectdb 换库时用的是同一个,只是那边不动 serial,故 _pgsql_disconnect 保持强类型
 static void _pgsql_do_quit(void *ctx) {
@@ -864,10 +865,12 @@ int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
     if (ERR_OK == rtn) {
         // 用 _pgsql_do_connect 不用 pgsql_connect,理由同 _serial_ping;代次照那边无条件前进。
         // fd/skid 换掉之后排队者醒来拿到的自然是新连接
-        _pgsql_disconnect(pg);
-        rtn = _pgsql_do_connect(pg->task, pg);
-        if (ERR_OK != rtn) {
-            coro_close(pg->task, &pg->sk);// 同 _serial_connect
+        rtn = _pgsql_disconnect(pg);
+        if (ERR_OK == rtn) {
+            rtn = _pgsql_do_connect(pg->task, pg);
+            if (ERR_OK != rtn) {
+                coro_close(pg->task, &pg->sk);// 同 _serial_connect
+            }
         }
         pg->established = (ERR_OK == rtn) ? 1 : 0;
         pg->generation++;
@@ -913,7 +916,7 @@ int32_t pgsql_ping(pgsql_ctx *pg) {
 pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql) {
     SERIAL_CALL(pgpack_ctx *, pg->task, pg->serial, NULL, _pgsql_query(pg, sql));
 }
-static int32_t _pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids) {
+static int32_t _pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, uint16_t nparam, uint32_t *oids) {
     size_t lens;
     void *parse = pgsql_pack_stmt_prepare(name, sql, nparam, oids, &lens);
     if (NULL == parse) {// 同 _pgsql_query
@@ -929,7 +932,7 @@ static int32_t _pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *
     }
     return PGPACK_OK == pgpack->type ? ERR_OK : ERR_FAILED;
 }
-int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids) {
+int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, uint16_t nparam, uint32_t *oids) {
     if (EMPTYSTR(sql)) {
         return ERR_FAILED;
     }
@@ -1124,10 +1127,8 @@ int32_t mongo_ping(mongo_ctx *mongo) {
                         &mongo->established, &mongo->generation,
                         _mongo_ping, _mongo_do_connect, mongo);
 }
-// MongoDB 统一发送函数：设置了 MORETOCOME 标志时仅发送不等待响应，否则同步等待响应。
-// pack 为 NULL(组包被拒)在此一并吸收,语义同 _mongo_call；mark 同 _mongo_sendwait
-// MORETOCOME 变体:置位时只发不等。同样在锁内发——不等响应也不能乱序,
-// 后面那条 find 得看得见前面这批 insert。
+// MongoDB 统一发送：包置了 MORETOCOME 只发不等，否则同步等响应。两种都在锁内发：后面那条 find 得看得见前面这批 insert。
+// pack 为 NULL(组包被拒)在此一并吸收,语义同 _mongo_call；mark 同 _mongo_sendwait。
 // 判定问包不问 mongo->flags(加锁会挂起),理由见 mongo_pack_check_flag
 static int32_t _mongo_send(mongo_ctx *mongo, void *pack, size_t lens, uint64_t mark, mgopack_ctx **mgopack) {
     if (NULL == pack) {
@@ -1304,13 +1305,9 @@ void mongo_freesession(mongo_session *session) {
     FREE(session->options);
     FREE(session);
 }
-// 事务绑定规则:组包一律从 mongo->session 取事务上下文,调用方手上的 session 必须就是连接
-// 当前绑定的那个。begin 靠拒绝第二个 session 维持;commit/rollback 的判定在两个 packer 里
-// (_mongo_txn_bound),分叉时组包返 NULL,发送侧照常按失败走。
-// begin 记下连接当时的 skid:之后重连换了 skid 即本次事务作废(mongo_session_stale),绑定留到收尾才解。
-// 早退不释放 session->options 不算漏:重新 begin 与 mongo_freesession 都会释放。
-// commit/rollback 各套一层外锁,组包发送同在锁内;begin 不挂起,不套锁,
-// 它插进在途的收尾时由收尾那边按 txnNumber 认领(见 _mongo_txn_end)
+// 组包一律从 mongo->session 取事务上下文:begin 靠拒绝第二个 session 维持绑定,commit/rollback 的判定在 _mongo_txn_bound。
+// begin 记下当时的 skid,重连换了即本次事务作废(mongo_session_stale),绑定留到收尾才解;早退不释放 options,由重新 begin 与 freesession 释放。
+// begin 不挂起不套锁,插进在途的收尾时由 _mongo_txn_end 按 txnNumber 认领
 int32_t mongo_begin(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
     // 一条连接同时只能有一个活跃事务;放第二个 session 进来会让后续写静默改跟它走
@@ -1446,7 +1443,8 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
     return rfmsg->data;
 }
 int32_t kcp_bind_task(task_ctx *task, struct kcp_ctx *kcp, name_t handle) {
-    if (ERR_OK != kcp_handle(kcp, handle)) {
+    if (0 == task_exists(task->loader, handle)
+        || ERR_OK != kcp_handle(kcp, handle)) {
         return ERR_FAILED;
     }
     coro_unkeep(coro_task_co(task), kcp->sess);
@@ -1538,8 +1536,22 @@ static int32_t _mongo_pool_ping(void *conn) {
 static void _mongo_pool_quit(void *conn) {
     mongo_quit((mongo_ctx *)conn);
 }
+// 归还时连接上还绑着事务(借用者没 commit / rollback)：回滚掉，不让下一个人的写命令组进这个事务
+static int32_t _mongo_pool_reset(void *conn) {
+    mongo_ctx *mongo = (mongo_ctx *)conn;
+    mongo_session *bound = mongo->session;
+    if (NULL == bound) {
+        return ERR_OK;
+    }
+    (void)mongo_rollback(bound, NULL, 0);// 收到应答就已解绑，服务端回错(如事务已随重连作废)也一样，只看绑定还在不在
+    if (mongo->session != bound) {
+        return ERR_OK;
+    }
+    mongo_clear_session(mongo);// 没等到应答：连接随后被池断开，绑定不能留给下一个借用者
+    return ERR_FAILED;
+}
 static const db_pool_ops _mongo_pool_ops = {
-    _mongo_pool_ready, _mongo_pool_connect, _mongo_pool_ping, _mongo_pool_quit, NULL
+    _mongo_pool_ready, _mongo_pool_connect, _mongo_pool_ping, _mongo_pool_quit, _mongo_pool_reset
 };
 const db_pool_ops *mongo_pool_ops(void) {
     return &_mongo_pool_ops;

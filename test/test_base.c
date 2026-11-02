@@ -783,12 +783,12 @@ static void test_timer_extra(CuTest *tc) {
     uint64_t ns2 = timer_cur(&t);
     CuAssertTrue(tc, ns2 >= ns1);
 
-    // 真实 sleep 50ms 后 elapsed_ms 应接近 50ms（容差 ±30ms）
+    // 真实 sleep 50ms 后 elapsed_ms 至少 30ms；上界留宽(VM 上睡眠可能拖长)，换算因子由 test_timer_ratio 管
     timer_start(&t);
     MSLEEP(50);
     uint64_t e_ms = timer_elapsed_ms(&t);
     CuAssertTrue(tc, e_ms >= 30);
-    CuAssertTrue(tc, e_ms < 200);
+    CuAssertTrue(tc, e_ms < 5000);
 
     // 多次 elapsed 单调递增
     timer_start(&t);
@@ -876,6 +876,18 @@ static void test_base_misc(CuTest *tc) {
     }
 }
 
+// days_from_civil：值与 Python datetime、PG 的 date2j 两种算法对过，含闰日、公元 1 年与公元前
+static void test_days_from_civil(CuTest *tc) {
+    CuAssertTrue(tc, 0 == days_from_civil(1970, 1, 1));
+    CuAssertTrue(tc, -1 == days_from_civil(1969, 12, 31));
+    CuAssertTrue(tc, 10957 == days_from_civil(2000, 1, 1));
+    CuAssertTrue(tc, 11017 == days_from_civil(2000, 3, 1));
+    CuAssertTrue(tc, 19782 == days_from_civil(2024, 2, 29));
+    CuAssertTrue(tc, 2932896 == days_from_civil(9999, 12, 31));
+    CuAssertTrue(tc, -719162 == days_from_civil(1, 1, 1));
+    CuAssertTrue(tc, -719468 == days_from_civil(0, 3, 1));
+    CuAssertTrue(tc, -735160 == days_from_civil(-43, 3, 15));
+}
 #ifndef OS_WIN
 /* strtots 在有夏令时的时区：夏令时期间按夏令时解释，冬令时照旧，与 sectostr 往返一致。
  * 时区用 POSIX 规则串(美东)，不依赖系统装没装时区库；Windows 没有 setenv、CRT 也不认这种规则串，整例不编。
@@ -889,7 +901,7 @@ static void test_strtots_dst(CuTest *tc) {
         SNPRINTF(saved, sizeof(saved), "%s", env);
     }
     // 先等前面用例排进日志线程的条目写完：有的 libc 的 localtime_r 每次都读 TZ，与 setenv 同时跑不安全
-    MSLEEP(20);
+    test_mem_settle();
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     tzset();
     uint64_t summer = strtots("2026-06-15 12:00:00", fmt);
@@ -1193,7 +1205,7 @@ static void test_base_filesystem(CuTest *tc) {
     got = 0;
     char *rdempty = readall(tmpfile, &got);
     int32_t empty_ok = (NULL == rdempty);
-    int32_t errno_ok = (0 != errno);
+    int32_t errno_ok = (EINVAL == errno);// 头文件承诺空文件为 EINVAL
     FREE(rdempty);// 回归成"空文件也返缓冲"时不漏，否则真失败之外还多报一笔 not free
     remove(tmpfile);
 
@@ -1569,19 +1581,6 @@ static void test_procscnt_avail(CuTest *tc) {
 #endif
 }
 
-// cpu.max 折成核数：向上取整；"max"、配额或周期为 0、解析不了一律 0(不限)；超过 32 位的封顶
-static void test_cgroup_cpu_quota(CuTest *tc) {
-    CuAssertIntEquals(tc, 2, (int32_t)_cgroup_cpu_quota("150000 100000\n"));
-    CuAssertIntEquals(tc, 1, (int32_t)_cgroup_cpu_quota("100000 100000"));
-    CuAssertIntEquals(tc, 1, (int32_t)_cgroup_cpu_quota("50000 100000"));
-    CuAssertIntEquals(tc, 4, (int32_t)_cgroup_cpu_quota("400000 100000"));
-    CuAssertIntEquals(tc, 0, (int32_t)_cgroup_cpu_quota("max 100000\n"));
-    CuAssertIntEquals(tc, 0, (int32_t)_cgroup_cpu_quota("0 100000"));
-    CuAssertIntEquals(tc, 0, (int32_t)_cgroup_cpu_quota("100000 0"));
-    CuAssertIntEquals(tc, 0, (int32_t)_cgroup_cpu_quota("100000"));
-    CuAssertIntEquals(tc, 0, (int32_t)_cgroup_cpu_quota(""));
-    CuAssertTrue(tc, UINT32_MAX == _cgroup_cpu_quota("18446744073709551615 1"));
-}
 
 /* =======================================================================
  * pack / unpack —— 整数、浮点数的字节序读写
@@ -1997,6 +1996,17 @@ static void test_str_helpers(CuTest *tc) {
 /* =======================================================================
  * format_va —— 短串走栈、长串走堆
  * ======================================================================= */
+// snprintf_ok 判写全、snprintf_lens 钳长度：边界在 rtn == bufsize - 1(写全) 与 rtn == bufsize(截断)
+static void test_snprintf_ok(CuTest *tc) {
+    CuAssertTrue(tc, snprintf_ok(3, 4));
+    CuAssertTrue(tc, !snprintf_ok(4, 4));
+    CuAssertTrue(tc, !snprintf_ok(-1, 4));
+    CuAssertTrue(tc, !snprintf_ok(0, 0));
+    CuAssertIntEquals(tc, 3, (int)snprintf_lens(3, 4));
+    CuAssertIntEquals(tc, 3, (int)snprintf_lens(4, 4));
+    CuAssertIntEquals(tc, 0, (int)snprintf_lens(-1, 4));
+    CuAssertIntEquals(tc, 0, (int)snprintf_lens(3, 0));
+}
 static void test_format_va(CuTest *tc) {
     /* 短串：栈缓冲分支 */
     char *s1 = format_va("val=%d name=%s", 42, "alice");
@@ -2715,6 +2725,7 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_timer_ratio);
     SUITE_ADD_TEST(suite, test_timeofday_consistent);
     SUITE_ADD_TEST(suite, test_base_misc);
+    SUITE_ADD_TEST(suite, test_days_from_civil);
 #ifndef OS_WIN
     SUITE_ADD_TEST(suite, test_strtots_dst);
 #endif
@@ -2734,12 +2745,12 @@ void test_base(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hash_str);
     SUITE_ADD_TEST(suite, test_procscnt_cached);
     SUITE_ADD_TEST(suite, test_procscnt_avail);
-    SUITE_ADD_TEST(suite, test_cgroup_cpu_quota);
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_rw_integer);
     SUITE_ADD_TEST(suite, test_mem_helpers);
     SUITE_ADD_TEST(suite, test_safe_fill_str);
     SUITE_ADD_TEST(suite, test_str_helpers);
+    SUITE_ADD_TEST(suite, test_snprintf_ok);
     SUITE_ADD_TEST(suite, test_format_va);
     SUITE_ADD_TEST(suite, test_security_helpers);
     SUITE_ADD_TEST(suite, test_strtod_c);

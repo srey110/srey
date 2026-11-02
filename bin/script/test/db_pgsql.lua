@@ -10,7 +10,7 @@ local preader = require("srey.pgsql.reader")
 -- 数据库地址：在 VM 上跑时改成宿主机 IP，只改这一处
 local DB_HOST = "127.0.0.1"
 
--- reader:get 对拍用的列：{ 列名, 对应的单列取值方法 }；numeric 没有单列方法，get 对它必须抛错
+-- reader:get 对拍用的列：{ 列名, 对应的单列取值方法 }；numeric 没有单列方法，get 对它必须抛错(值为 NULL 时给 nil)
 local PG_COLS = {
     { "b", "bool" }, { "i2", "integer" }, { "i4", "integer" }, { "i8", "integer" },
     { "f4", "double" }, { "f8", "double" }, { "tx", "text" }, { "vc", "text" }, { "bc", "text" },
@@ -51,7 +51,11 @@ local function _pg_get_vs_single(t, rd, label)
             local col, m = c[1], c[2]
             local gok, gv = pcall(rd.get, rd, col)
             if nil == m then
-                t:eq(false, gok, tag .. col .. " 不支持的类型 get 抛错")
+                if rd:isnull(col) then
+                    t:check(gok and nil == gv, tag .. col .. " 不支持的类型值为 NULL 时 get 给 nil(先判 NULL，同 mysql)")
+                else
+                    t:eq(false, gok, tag .. col .. " 不支持的类型 get 抛错")
+                end
             else
                 local sok, sv = rd[m](rd, col, true)
                 if t:check(sok and gok, tag .. col .. " get 与 " .. m .. " 都读得出: " .. tostring(gv)) then
@@ -149,6 +153,13 @@ runner.run(function(t)
     if rs and "userdata" == type(rs[1]) then
         t:eq(1, #rs, "single statement yields 1 result")
         t:eq(2, _count_rows(rs[1]), "select 2 rows")
+        -- seek 1 基同 reader.at：读到底后跳回第 1 行；[1, size] 外游标不动
+        rs[1]:seek(1)
+        local sok, sid = rs[1]:integer("id")
+        t:check(sok and 1 == sid, "seek(1) 回到第一行: " .. tostring(sid))
+        rs[1]:seek(3)
+        sok, sid = rs[1]:integer("id")
+        t:check(sok and 1 == sid, "seek(3) 越界游标不动: " .. tostring(sid))
     else
         t:fail("pgsql select reader nil")
     end

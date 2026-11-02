@@ -3,7 +3,7 @@
 
 #include "base/base.h"
 
-#define SPIN_CNT        32 // spin_init 的自旋次数,仅 Windows 生效(临界区退回内核前先试这么多次);Linux/macOS 传了也不用
+#define SPIN_CNT 32 // spin_init 的自旋次数,仅 Windows 生效(临界区退回内核前先试这么多次);其余平台传了也不用
 #if defined(OS_WIN)
 typedef CRITICAL_SECTION spin_ctx;
 #elif defined(OS_DARWIN)
@@ -27,7 +27,7 @@ static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt) {
     (void)spcnt;
     ASSERTAB_CODE(pthread_spin_init(ctx, PTHREAD_PROCESS_PRIVATE));
 #endif
-};
+}
 /// <summary>
 /// 自旋锁释放
 /// </summary>
@@ -40,7 +40,7 @@ static inline void spin_free(spin_ctx *ctx) {
 #else
     (void)pthread_spin_destroy(ctx);
 #endif
-};
+}
 /// <summary>
 /// 锁定
 /// </summary>
@@ -53,7 +53,7 @@ static inline void spin_lock(spin_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_spin_lock(ctx));
 #endif
-};
+}
 /// <summary>
 /// 尝试锁定。可重入性同 mutex_trylock：Windows 上(CRITICAL_SECTION)已持锁的线程再 trylock 也成功，其余平台失败
 /// </summary>
@@ -67,7 +67,7 @@ static inline int32_t spin_trylock(spin_ctx *ctx) {
 #else
     return ERR_OK == pthread_spin_trylock(ctx) ? ERR_OK : ERR_FAILED;
 #endif
-};
+}
 /// <summary>
 /// 解锁
 /// </summary>
@@ -80,6 +80,6 @@ static inline void spin_unlock(spin_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_spin_unlock(ctx));
 #endif
-};
+}
 
 #endif//SPINLOCK_H_

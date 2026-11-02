@@ -397,7 +397,7 @@ static void test_cond(CuTest *tc) {
 typedef struct {
     atomic_t word;
     atomic_t woke;// 已醒的等待者数
-    atomic_t calls;// 一直等的那个等待者调了几次 futex_wait
+    atomic_t calls;// 等待者调了几次 futex_wait：叫醒前靠它等等待者报到，一直等那步靠它查空转
     atomic_t ntimeout;// 等待者被报超时的次数：叫醒都在 2s 内，报了就是把叫醒误报成超时
 } _futex_shared;
 
@@ -405,6 +405,7 @@ typedef struct {
 static void _futex_waiter(void *arg) {
     _futex_shared *s = (_futex_shared *)arg;
     while (0 == ATOMIC_GET(&s->word)) {
+        ATOMIC_ADD(&s->calls, 1);
         if (1 == futex_wait(&s->word, 0, 2000)) {
             ATOMIC_ADD(&s->ntimeout, 1);
         }
@@ -418,6 +419,14 @@ static void _futex_waiter_forever(void *arg) {
         ATOMIC_ADD(&s->calls, 1);
         (void)futex_wait(&s->word, 0, 0);
     }
+}
+// 等 n 个等待者都报到(进过 futex_wait)再多睡 20ms 让它们睡下。只靠固定睡眠的话，
+// 等待者没赶上就先改了值，它起来直接看到值已变退出，叫醒那段等于没测
+static void _futex_wait_enter(_futex_shared *s, int32_t n) {
+    for (int32_t i = 0; i < 2000 && (int32_t)ATOMIC_GET(&s->calls) < n; i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(20);
 }
 // 值已变立即返回、不报超时；值没变等到超时、报超时；另一线程改值后 futex_wake 能叫醒；futex_wake_all 叫醒全部等待者，
 // 被叫醒都不报超时；一直等(ms=0)不空转。一直等那步放最后：前面叫醒若失效已断言失败退出，不会挂在这里
@@ -443,8 +452,9 @@ static void test_futex(CuTest *tc) {
     CuAssertTrue(tc, cost >= 10 && cost < 1000);
     // 一个等待者：先改值再叫
     ATOMIC_SET(&s.word, 0);
+    ATOMIC_SET(&s.calls, 0);
     a = thread_creat(_futex_waiter, &s);
-    MSLEEP(20);
+    _futex_wait_enter(&s, 1);
     t0 = nowms();
     ATOMIC_SET(&s.word, 1);
     futex_wake(&s.word);
@@ -453,9 +463,10 @@ static void test_futex(CuTest *tc) {
     // 两个等待者：一次 wake_all 都要醒
     ATOMIC_SET(&s.word, 0);
     ATOMIC_SET(&s.woke, 0);
+    ATOMIC_SET(&s.calls, 0);
     a = thread_creat(_futex_waiter, &s);
     b = thread_creat(_futex_waiter, &s);
-    MSLEEP(20);
+    _futex_wait_enter(&s, 2);
     t0 = nowms();
     ATOMIC_SET(&s.word, 1);
     futex_wake_all(&s.word);
@@ -860,9 +871,9 @@ static void test_rwlock_distr_slot_reuse(CuTest *tc) {
         pthread_t th = thread_creat(_distr_reuse_worker, &ctx);
         thread_join(th);
     }
-    // 10 个串行线程都应注册成功(slot 反复复用)
-    CuAssertIntEquals(tc, 10, (int)ATOMIC_GET(&_distr_reuse_ok));
     rwlock_distr_free(&ctx);
+    // 10 个串行线程都应注册成功(slot 反复复用)；先收拾再断言，断言失败走 longjmp 也不漏 slots
+    CuAssertIntEquals(tc, 10, (int)ATOMIC_GET(&_distr_reuse_ok));
 }
 
 /* =======================================================================

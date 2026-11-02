@@ -193,7 +193,7 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得。空载荷报错：接收侧把零长包当协议错误断开</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数，须大于 0</param>
 /// <returns type="lightuserdata?">打包后的数据指针；载荷超出所选头部能表达的范围时返回 nil</returns>
-/// <returns type="integer">数据长度；返回 nil 时为 0</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_custz_pack(lua_State *lua) {
     // 只认三个 custz 子类型：custz_pack 的 default 是 ASSERTAB(0)，传别的进去当场 abort 整个进程
     pack_type pktype = lpub_check_pktype(lua, 1);
@@ -201,17 +201,12 @@ static int32_t _lprot_custz_pack(lua_State *lua) {
                   || PACK_CUSTZ_FLAG == pktype
                   || PACK_CUSTZ_VAR == pktype,
                   1, "expected a PACK_CUSTZ_* pack type");
-    void *data;
     size_t size;
-    data = lpub_check_buf(lua, 2, &size, NULL);
+    void *data = lpub_check_buf(lua, 2, &size, NULL);
     luaL_argcheck(lua, 0 != size, 2, "empty payload");
-    data = custz_pack(pktype, data, size, &size);
-    if (NULL == data) {
-        lua_pushnil(lua);
-        lua_pushinteger(lua, 0);
-        return 2;
-    }
-    return lpub_rtn_lud(lua, data, size);
+    size_t lens;
+    void *pack = custz_pack(pktype, data, size, &lens);
+    return lpub_rtn_lud(lua, pack, lens);
 }
 //srey.custz
 LUAMOD_API int luaopen_custz(lua_State *lua) {
@@ -294,7 +289,8 @@ static int32_t _lprot_websock_frame(lua_State *lua) {
 /// <param name="host" type="string?">Host 头字段；nil 表示省略</param>
 /// <param name="uri" type="string?">HTTP request-target（path?query）；nil 或空字符串时使用 "/"</param>
 /// <param name="secprot" type="string?">Sec-WebSocket-Protocol 字段；nil 表示省略</param>
-/// <returns type="lightuserdata?">握手包数据指针；secprot 超长、或 host/uri/secprot 任一含 CR/LF（会拆出额外的 HTTP 头）时返回 nil。
+/// <returns type="lightuserdata?">握手包数据指针；secprot 校验失败、host/uri/secprot 任一含 CR/LF（会拆出额外的 HTTP 头）、
+/// 或取不到 CSPRNG 熵生成 nonce 时返回 nil。
 /// 业务通过 srey.send copy=0 接管或 utils.ud_free 释放</returns>
 /// <returns type="integer?">数据长度</returns>
 /// <returns type="lightuserdata?">握手上下文 hsctx。传给 srey.connect 当 extra 的那一刻所有权才转交框架，此后业务不得 ud_free；
@@ -373,13 +369,12 @@ static int32_t _lprot_websock_pack_close(lua_State *lua) {
 /// <returns type="lightuserdata?">数据指针；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_text(lua_State *lua) {
-    void *data;
-    size_t dlens;
     int32_t mask = (int32_t)lpub_check_flag(lua, 1);
     int32_t fin = (int32_t)lpub_check_flag(lua, 2);
-    data = lpub_check_buf(lua, 3, &dlens, NULL);
-    void *pack = websock_pack_text(mask, fin, data, dlens, &dlens);
-    return lpub_rtn_lud(lua, pack, dlens);
+    size_t dlens, lens;
+    void *data = lpub_check_buf(lua, 3, &dlens, NULL);
+    void *pack = websock_pack_text(mask, fin, data, dlens, &lens);
+    return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
 /// 构造 WebSocket 二进制帧（首帧）
@@ -391,13 +386,12 @@ static int32_t _lprot_websock_pack_text(lua_State *lua) {
 /// <returns type="lightuserdata?">数据指针；返回 nil 的情形同 pack_text</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_binary(lua_State *lua) {
-    void *data;
-    size_t dlens;
     int32_t mask = (int32_t)lpub_check_flag(lua, 1);
     int32_t fin = (int32_t)lpub_check_flag(lua, 2);
-    data = lpub_check_buf(lua, 3, &dlens, NULL);
-    void *pack = websock_pack_binary(mask, fin, data, dlens, &dlens);
-    return lpub_rtn_lud(lua, pack, dlens);
+    size_t dlens, lens;
+    void *data = lpub_check_buf(lua, 3, &dlens, NULL);
+    void *pack = websock_pack_binary(mask, fin, data, dlens, &lens);
+    return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
 /// 构造 WebSocket Continuation 帧（分片消息的中间或最后帧）
@@ -409,25 +403,26 @@ static int32_t _lprot_websock_pack_binary(lua_State *lua) {
 /// <returns type="lightuserdata?">数据指针；返回 nil 的情形同 pack_text</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_websock_pack_continua(lua_State *lua) {
-    void *data;
-    size_t dlens;
     int32_t mask = (int32_t)lpub_check_flag(lua, 1);
     int32_t fin = (int32_t)lpub_check_flag(lua, 2);
-    data = lpub_check_buf(lua, 3, &dlens, NULL);
-    void *pack = websock_pack_continua(mask, fin, data, dlens, &dlens);
-    return lpub_rtn_lud(lua, pack, dlens);
+    size_t dlens, lens;
+    void *data = lpub_check_buf(lua, 3, &dlens, NULL);
+    void *pack = websock_pack_continua(mask, fin, data, dlens, &lens);
+    return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
 /// 解析 HANDSHAKED 交付的 ws_secprots_ctx，返回匹配到的子协议下标与全部子协议名列表
 /// </summary>
-/// <param name="spctx" type="lightuserdata">握手交付的 ws_secprots_ctx 指针；仅本协程下次挂起前有效，勿保留</param>
-/// <returns type="integer?">匹配到的子协议下标(0 起，-1 表示无)；spctx 为空返回 nil</returns>
+/// <param name="spctx" type="lightuserdata?">握手交付的 ws_secprots_ctx 指针；仅本协程下次挂起前有效，勿保留。
+/// 其余类型报错</param>
+/// <returns type="integer?">匹配到的子协议下标(0 起，-1 表示无)；spctx 为 nil 或空指针返回 nil</returns>
 /// <returns type="string[]?">全部子协议名列表（1 起）；spctx 为空时同为 nil，返回值个数恒为 2
 /// （wbsk.connect 明说了 spctx 可能为 nil，业务确实会走到这条）</returns>
 static int32_t _lprot_websock_secprots(lua_State *lua) {
-    if (!lua_islightuserdata(lua, 1)) {
+    if (lua_isnoneornil(lua, 1)) {
         return lpub_rtn_nil(lua, 2);
     }
+    LUACHECK_LUDATA_OPT(lua, 1);
     ws_secprots_ctx *spctx = lua_touserdata(lua, 1);
     if (NULL == spctx) {
         return lpub_rtn_nil(lua, 2);
@@ -614,7 +609,7 @@ static int32_t _lprot_head_fail(lua_State *lua, http_head_rc rc) {
 /// </summary>
 /// <param name="key" type="any">头名；非字符串按头名不合法算</param>
 /// <param name="val" type="any">头值</param>
-/// <param name="autoflags" type="integer">组包函数自己写的头：0x01 Content-Type，0x02 Content-Length 与 Transfer-Encoding</param>
+/// <param name="autoflags" type="integer">组包函数自己写的头：http.auto_ct 与 http.auto_frame 的按位或</param>
 /// <returns type="string?">可直接写进报文的头值；没通过时为 nil</returns>
 /// <returns type="integer">0 通过；1 头名不是 token 或过长；2 值不是 string/number；3 是组包函数自己生成的头；4 值含 NUL/CRLF</returns>
 static int32_t _lprot_http_head_check(lua_State *lua) {
@@ -945,6 +940,12 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
     /// 的 HTTP_MAX_HEADLENS；组包侧不按它判，要卡长度的调用方自己拿它比</field>
     lua_pushinteger(lua, (lua_Integer)HTTP_MAX_HEADLENS);
     lua_setfield(lua, -2, "max_headlens");
+    /// <field name="auto_ct" type="integer">head_check 的 autoflags 位：Content-Type 由组包函数自己写</field>
+    lua_pushinteger(lua, HTTP_AUTO_CT);
+    lua_setfield(lua, -2, "auto_ct");
+    /// <field name="auto_frame" type="integer">head_check 的 autoflags 位：Content-Length 与 Transfer-Encoding 由组包函数自己写</field>
+    lua_pushinteger(lua, HTTP_AUTO_FRAME);
+    lua_setfield(lua, -2, "auto_frame");
     return 1;
 }
 // 内部辅助：构造 Redis 聚合类型（array/set/map/push/attr）的空容器表。
@@ -1488,25 +1489,26 @@ static int32_t _lprot_smtp_try_connect(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == rtn);
 }
 /// <summary>
-/// 检查 SMTP 响应包的状态码是否匹配指定 code
+/// 检查 SMTP 响应包的状态码是否匹配指定 code，按前缀比较：传 "45" 命中 450~459
 /// </summary>
 /// <param name="self" type="userdata">SMTP 对象</param>
 /// <param name="pack" type="lightuserdata">SMTP 响应包指针</param>
-/// <param name="code" type="string">期望状态码（如 "220"、"250"）</param>
+/// <param name="code" type="string">期望状态码（如 "220"、"250"）；空串报错（对任何应答都会命中）</param>
 /// <returns type="boolean">匹配 true，否则 false</returns>
 static int32_t _lprot_smtp_check_code(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LPUB_LUD_ARG(lua, char, 2, pack);
     const char *code = lpub_check_cstr(lua, 3);
+    luaL_argcheck(lua, '\0' != code[0], 3, "empty code");
     return lpub_rtn_bool(lua, ERR_OK == smtp_check_code(pack, code));
 }
 /// <summary>
-/// 检查 SMTP 响应包的状态码是否命中 codes 里任意一个。用于一条命令有多个合法应答的场合，
+/// 检查 SMTP 响应包的状态码是否命中 codes 里任意一个，逐个按前缀比较同 check_code。用于一条命令有多个合法应答的场合，
 /// 如 RCPT TO 的 250(已接受) 与 251(已接受但将转发)。全不中才落一条告警
 /// </summary>
 /// <param name="self" type="userdata">SMTP 对象</param>
 /// <param name="pack" type="lightuserdata">SMTP 响应包指针</param>
-/// <param name="codes" type="string[]">期望状态码数组，如 { "250", "251" }；空表恒返 false</param>
+/// <param name="codes" type="string[]">期望状态码数组，如 { "250", "251" }；空表恒返 false，元素不是字符串或为空串报错</param>
 /// <returns type="boolean">命中其中之一 true，否则 false</returns>
 static int32_t _lprot_smtp_check_codes(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
@@ -1519,7 +1521,7 @@ static int32_t _lprot_smtp_check_codes(lua_State *lua) {
         lua_rawgeti(lua, 3, i + 1);
         // 必须已经是字符串:luaL_checkstring 会把数字就地转成串,而那种串只由栈槽锚定,
         // pop 之后可能被回收,codes[i] 就成了悬空指针。真字符串由表持有,pop 后仍有效
-        luaL_argcheck(lua, LUA_TSTRING == lua_type(lua, -1), 3, "codes must be strings");
+        luaL_argcheck(lua, LUA_TSTRING == lua_type(lua, -1) && 0 != lua_rawlen(lua, -1), 3, "codes must be non-empty strings");
         codes[i] = lua_tostring(lua, -1);
         lua_pop(lua, 1);
     }
@@ -1554,17 +1556,12 @@ static int32_t _lprot_smtp_pack_reset(lua_State *lua) {
 /// <param name="self" type="userdata">SMTP 对象</param>
 /// <param name="from" type="string">发件人邮箱地址</param>
 /// <returns type="lightuserdata?">命令数据指针；地址含 CRLF 时返回 nil</returns>
-/// <returns type="integer">数据长度；地址含 CRLF 时为 0</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_smtp_pack_from(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     const char *from = lpub_check_cstr(lua, 2);
     char *cmd = smtp_pack_from(from);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        lua_pushinteger(lua, 0);
-        return 2;
-    }
-    return lpub_rtn_lud(lua, cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, cmd, NULL != cmd ? strlen(cmd) : 0);
 }
 /// <summary>
 /// 构造 SMTP RCPT TO 命令；地址走 CRLF 注入防御
@@ -1572,17 +1569,12 @@ static int32_t _lprot_smtp_pack_from(lua_State *lua) {
 /// <param name="self" type="userdata">SMTP 对象</param>
 /// <param name="rcpt" type="string">收件人邮箱地址</param>
 /// <returns type="lightuserdata?">命令数据指针；地址含 CRLF 时返回 nil</returns>
-/// <returns type="integer">数据长度；地址含 CRLF 时为 0</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     const char *rcpt = lpub_check_cstr(lua, 2);
     char *cmd = smtp_pack_rcpt(rcpt);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        lua_pushinteger(lua, 0);
-        return 2;
-    }
-    return lpub_rtn_lud(lua, cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, cmd, NULL != cmd ? strlen(cmd) : 0);
 }
 /// <summary>
 /// 构造 SMTP DATA 命令（开始传输邮件内容）

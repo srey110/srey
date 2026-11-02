@@ -128,7 +128,8 @@
 //   普通 task (task_new + task_register): handler / 中间件在 _net_recv 调用栈中
 //   同步执行, 没有协程, coro_* 一律不能调。如需异步: 把 sk 与响应所需数据拷走,
 //   置 ctx->responded = 1 防止兜底 500, handler 返回; 之后在别的回调里自己
-//   binary_init_write + http_pack_resp + ev_send 回包 (要不要关连接按 http_want_close 自己判),
+//   binary_init_write + http_pack_resp + ev_send 回包 (要不要关连接看 ctx->wantclose, pack 返回后即失效,
+//   这个值要和 sk 一起在返回前拷走),
 //   或者改用协程 task。
 //   协程 task (coro_task_register): _net_recv 已在协程栈, router_dispatch 及栈上
 //   的 ctx 跨 yield 保留, handler 可直接 coro_request / coro_fork_wait, 返回前再用
@@ -137,8 +138,7 @@
 //   URL 解析失败      → 400 Bad Request (段数超 URL_MAX_PATH_DEPTH / URI 超长 /
 //                       请求目标既不以 '/' 开头也不是 http://host/... 这种绝对形式)
 //   未匹配路由        → 404 Not Found
-//   方法不识别        → 405 Method Not Allowed
-//   路径在而方法不对  → 405 带 Allow (该路径上注册过的方法); 请求是 OPTIONS 则自动回 200 带 Allow (同 Laravel)
+//   路径在而方法不对  → 405 带 Allow (该路径上注册过的方法; 方法名不认识也算); 请求是 OPTIONS 则自动回 200 带 Allow (同 Laravel)
 //   chunked 打到普通路由 → 411 Length Required (router_net_recv 路径, 回完即关连接)
 //   中间件 + handler 都没写响应  → 500 Internal Server Error (兜底)
 //   兜底仅救援"漏写响应"; 段错误等不可恢复异常仍会崩 (C 无 setjmp 救援)
@@ -217,7 +217,7 @@ struct router_req {
     int32_t responded;  // 响应已写出标志 (用于兜底 500)
     int32_t admitted;   // 流式路由准入标志, router 内部填写
     int32_t wantclose;  // 回完响应就关连接 (http_want_close), router 内部填写
-    router_method method;     // 当前请求方法位掩码
+    router_method method;     // 当前请求方法位掩码; 方法名不认识时为 0
     router_method allow;      // 路径在而方法不对时, 该路径上注册过的方法; router_match_index 填写
     task_ctx *task;       // 当前 task
     struct http_pack_ctx *pack;       // 原始 http 包, 供 http_data / http_header 访问;
@@ -520,7 +520,7 @@ int32_t router_seg_index(router_ctx *r, int32_t idx, int32_t k, router_seg_type 
 /// 且是**规范化后**的：空段一律剔除（"/a//b" 读出来是 "/a/b"），"/" 与 "//" 的 npath 与
 /// pathlens 均为 0（url_reorg_path 只吐得出空串，需要 "/" 由调用方补）</param>
 /// <returns>路由索引（≥0）；-1 无匹配路由；-2 URL 解析失败（含请求目标不以 '/' 开头且不是绝对形式）；
-/// -3 方法不在已知列表(对应 405)；-4 路径在而方法不对(对应 405)；-5 同 -4 但请求是 OPTIONS(对应自动 200)。
+/// -4 路径在而方法不对，方法名不认识也算(对应 405)；-5 同 -4 但请求是 OPTIONS(对应自动 200)。
 /// -4 / -5 时 ctx->allow 为该路径上注册过的方法，Allow 头的值用 router_allow_value 生成。
 /// 命中时 ctx->params 的值指向 ctx->url 段或 ctx->wildbuf，调用方不必另行拷贝</returns>
 int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
@@ -553,7 +553,7 @@ int32_t router_chain_at(const router_ctx *r, int32_t route_id, int32_t k, router
 /// 新增失败哨兵时只需改这一处，不同派发面不会对同一请求给出不同状态码
 /// </summary>
 /// <param name="idx">router_match_index 的返回值</param>
-/// <returns>200 命中，或 OPTIONS 自动应答(-5，此时没有可派发的路由)；405 方法未知或路径在而方法不对；
+/// <returns>200 命中，或 OPTIONS 自动应答(-5，此时没有可派发的路由)；405 路径在而方法不对(含方法名不认识)；
 /// 400 URL 解析失败；404 无匹配路由</returns>
 int32_t router_match_code(int32_t idx);
 /// <summary>

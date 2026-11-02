@@ -275,9 +275,9 @@ static int32_t _bcast_all(const char *body, size_t len, const char *want) {
     return nsec > 0;
 }
 // heads 为 {名, 值, ..., NULL}；match 0 查子串、1 比全串、2 广播正文每段是 want 或 (unavailable)(见 _bcast_all)；
-// state_hdr 非 0 时额外带 X-Srey-Debug: 1(改状态的入口要求)
-static int32_t _http_get_ex(task_ctx *task, uint16_t port, const char *url, const char *const *heads,
-                            int32_t code, const char *want, int32_t match, int32_t state_hdr) {
+// state_hdr 非 0 时额外带 X-Srey-Debug: 1(改状态的入口要求)；reqbody 为 NULL 不带报文体
+static int32_t _http_req_ex(task_ctx *task, uint16_t port, const char *method, const char *url, const char *reqbody,
+                            const char *const *heads, int32_t code, const char *want, int32_t match, int32_t state_hdr) {
     sock_ctx sk;
     int32_t i;
     // console 在 debug_console_start 里同步监听，有界重试只是兜底
@@ -290,14 +290,18 @@ static int32_t _http_get_ex(task_ctx *task, uint16_t port, const char *url, cons
     }
     binary_ctx bw;
     binary_init_write(&bw, 0, 0);
-    http_pack_req(&bw, "GET", url);
+    http_pack_req(&bw, method, url);
     for (i = 0; NULL != heads[i]; i += 2) {
         http_pack_head(&bw, heads[i], heads[i + 1]);
     }
     if (0 != state_hdr) {
         http_pack_head(&bw, "X-Srey-Debug", "1");
     }
-    http_pack_end(&bw);
+    if (NULL == reqbody) {
+        http_pack_end(&bw);
+    } else {
+        http_pack_content(&bw, (void *)reqbody, strlen(reqbody));
+    }
     size_t rsize = 0;// coro_send 的必填出参；HTTP 走的是 pack 语义，长度信息看 http_data
     // copy=0：缓冲所有权交给 ev_send，不再 binary_free
     struct http_pack_ctx *resp = coro_send(task, &sk, bw.data, bw.offset, &rsize, 0);
@@ -335,8 +339,12 @@ done:
     return rtn;
 }
 // 绝大多数请求都该带那个头；要验"没带就 403"时直接调 _http_get_ex 传 0
+#define _http_get_ex(task, port, url, heads, code, want, match, state_hdr) \
+    _http_req_ex(task, port, "GET", url, NULL, heads, code, want, match, state_hdr)
 #define _http_get(task, port, url, heads, code, want, match) \
     _http_get_ex(task, port, url, heads, code, want, match, 1)
+#define _http_post(task, port, url, body, code, want, match, state_hdr) \
+    _http_req_ex(task, port, "POST", url, body, _HOST_OK, code, want, match, state_hdr)
 static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     char url[64];
     // Lua VM 专属命令打到 C task：发起方就地挡下，请求根本不发出去。
@@ -396,6 +404,19 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
         LOG_ERROR("debug test: console loglv leaked level change.");
         return ERR_FAILED;
     }
+    // POST inject / hotfix：没带 X-Srey-Debug 403、空 body 400、打到 C task 503(不发请求)
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/inject", (uint64_t)arg->noreq);
+    if (ERR_OK != _http_post(task, arg->port, url, "return 1", 403, "X-Srey-Debug", 0, 0)
+        || ERR_OK != _http_post(task, arg->port, url, "", 400, "no code provided\n", 1, 1)
+        || ERR_OK != _http_post(task, arg->port, url, "return 1", 503, _NOTLUA, 1, 1)) {
+        return ERR_FAILED;
+    }
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/hotfix/a%%2Eb", (uint64_t)arg->noreq);
+    if (ERR_OK != _http_post(task, arg->port, url, "return 1", 403, "X-Srey-Debug", 0, 0)
+        || ERR_OK != _http_post(task, arg->port, url, "", 400, "no patch source\n", 1, 1)
+        || ERR_OK != _http_post(task, arg->port, url, "return 1", 503, _NOTLUA, 1, 1)) {
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 
@@ -415,6 +436,10 @@ static int32_t _test_console_guard(task_ctx *task, task_debug_args *arg) {
     const char *portless[] = { "Host", host, "Origin", "http://127.0.0.1", NULL };
     const char *sitex[] = { "Host", host, "Sec-Fetch-Site", "cross-site", NULL };
     const char *siteok[] = { "Host", host, "Sec-Fetch-Site", "same-origin", NULL };
+    const char *sitenone[] = { "Host", host, "Sec-Fetch-Site", "none", NULL };// 地址栏直接打开
+    char v6host[32];
+    SNPRINTF(v6host, sizeof(v6host), "[::1]:%d", (int32_t)arg->port);
+    const char *v6port[] = { "Host", v6host, NULL };
     // 改状态的入口要求自定义头：旧浏览器跨站表单不带 Origin 与 Sec-Fetch-Site，
     // 但表单也发不出自定义头，这条是那批浏览器上的最后一道
     char url[64];
@@ -430,7 +455,9 @@ static int32_t _test_console_guard(task_ctx *task, task_debug_args *arg) {
         || ERR_OK != _http_get(task, arg->port, "/__cmem", cross, 403, _FORBID, 1)
         || ERR_OK != _http_get(task, arg->port, "/__cmem", portless, 403, _FORBID, 1)
         || ERR_OK != _http_get(task, arg->port, "/__cmem", sitex, 403, _FORBID, 1)
-        || ERR_OK != _http_get(task, arg->port, "/__cmem", siteok, 200, "inuse:", 0)) {
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", siteok, 200, "inuse:", 0)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", sitenone, 200, "inuse:", 0)
+        || ERR_OK != _http_get(task, arg->port, "/__cmem", v6port, 200, "inuse:", 0)) {
         return ERR_FAILED;
     }
     return ERR_OK;

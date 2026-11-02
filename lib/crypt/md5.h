@@ -21,7 +21,7 @@ void md5_init(md5_ctx *md5);
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
 void md5_update(md5_ctx *md5, const void *data, size_t lens);
-/// <summary>完成 MD5 计算，输出摘要</summary>
+/// <summary>完成 MD5 计算，输出摘要。算完把整个 ctx 擦成全 0，再算下一条须先 md5_init</summary>
 /// <param name="md5">md5_ctx</param>
 /// <param name="hash">输出摘要，长度 MD5_BLOCK_SIZE</param>
 void md5_final(md5_ctx *md5, char hash[MD5_BLOCK_SIZE]);

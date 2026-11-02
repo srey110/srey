@@ -22,6 +22,12 @@ runner.run(function(t)
         local b = utils.id()
         t:check(type(a) == "number" and type(b) == "number", "id() returns number")
         t:check(b > a, "id() monotonic increasing")
+        -- 服务 id 在高 16 位：同一进程取出的都一样，且在 0..0x7FFF
+        local svid = utils.parse_svid(a)
+        t:check(svid >= 0 and svid <= 0x7FFF, "parse_svid 在 0..0x7FFF")
+        t:eq(svid, utils.parse_svid(b), "同进程两个 id 的 svid 相同")
+        t:eq(svid, srey.parse_svid(a), "srey.parse_svid 同 utils.parse_svid")
+        t:eq(5, utils.parse_svid((5 << 48) | 123), "parse_svid 取高 16 位")
     end
     do
         -- hex 编码字符串（tohex 输出大写）

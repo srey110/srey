@@ -32,7 +32,7 @@ typedef struct coro_hooks {
 /// <summary>
 /// 释放协程后端在本线程上占用的资源，须在跑过协程的线程退出前调用。
 /// 只有 Windows 上除 x64 外（32 位与 ARM64）走的 fibers 后端有东西可放（把线程转回非 fiber
-/// 态），其余后端是空操作——但 Win32 是 vcxproj 里配着的平台，不是假想配置。
+/// 态），其余后端是空操作。
 /// 新增会跑协程的线程类别时，记得在它的退出钩子里接上
 /// </summary>
 void coro_thread_cleanup(void);
@@ -89,7 +89,7 @@ void coro_spawn(coro_ctx *co, void *payload);
 /// <param name="co">调度器</param>
 /// <param name="sess">会话 ID</param>
 /// <param name="tag">期望的唤醒标签</param>
-/// <param name="keep">只在本次新建 sess 条目时生效：非 0 则等待者摘空后条目仍保留，之后只有 coro_wake_all 或超时能删它</param>
+/// <param name="keep">只在本次新建 sess 条目时生效：非 0 则等待者摘空后条目仍保留，之后只有 coro_wake_all、coro_unkeep 或超时能删它</param>
 /// <param name="ms">超时毫秒，0 不超时；精度取决于 owner 多久调一次 coro_expire</param>
 /// <returns>唤醒方给的数据(coro_wake / coro_wake_all 的 payload，或 coro_expire 里 mk 的返回值)，只保证在本协程下次挂起前有效</returns>
 void *coro_wait(coro_ctx *co, uint64_t sess, int32_t tag, int32_t keep, uint32_t ms);
@@ -106,8 +106,7 @@ int32_t coro_wake(coro_ctx *co, uint64_t sess, int32_t tag, void *payload);
 /// <summary>
 /// 广播(连接关闭、资源池关闭或整体失败时叫醒全部等待者)：条目的 keep 先清零(不可逆)，再按顺序唤醒 sess 上全部等待者(不看标签)，
 /// spawn 非 NULL 时随后起一个协程跑它，最后重新查一次条目，空了才删。
-/// 起协程必须排在重新查询之前：新协程若在同一 sess 上挂起，得追加进这个已经 keep=0 的条目，
-/// 否则会新建一个 keep 条目，而该 sess 的广播已经过去，再没有路径能删它
+/// 起协程必须排在重新查询之前：它在同一 sess 上挂起时要追加进这个 keep 已清零的条目
 /// </summary>
 /// <param name="co">调度器</param>
 /// <param name="sess">会话 ID</param>

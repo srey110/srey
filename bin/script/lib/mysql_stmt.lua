@@ -20,7 +20,7 @@ local ctx = class("mysql_stmt_ctx")
 function ctx:ctor(owner, mpack)
     self.stmt = stmt.new(owner.mysql, mpack)
     if not self.stmt then
-        error("mysql stmt.new failed", 2)
+        error("mysql stmt.new failed", 3)
     end
     self.owner = owner
     -- 记录创建时的连接代次；mysql ping 失败重连后 owner.generation +1，旧 statement_id 已失效
@@ -115,10 +115,10 @@ function ctx:last_id()
     return self.owner:last_id()
 end
 
----同 mysql_ctx:affectd_rows；读取时机见 conn_pub 文件头
+---同 mysql_ctx:affected_rows；读取时机见 conn_pub 文件头
 ---@return integer|false rows affected rows；超出 int64 时为 false 并打 WARN
-function ctx:affectd_rows()
-    return self.owner:affectd_rows()
+function ctx:affected_rows()
+    return self.owner:affected_rows()
 end
 
 return ctx

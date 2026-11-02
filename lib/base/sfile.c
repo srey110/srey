@@ -3,6 +3,13 @@
 #include "base/macro_util.h"
 #include "base/memory.h"
 
+// fopen 模式里"打开即不可继承"的字母：glibc / musl / FreeBSD 是 e，MSVC CRT 是 N；其余平台只靠打开后补标
+#if defined(OS_LINUX) || defined(OS_FBSD)
+#define _FOPEN_NOINHERIT "e"
+#elif defined(OS_WIN)
+#define _FOPEN_NOINHERIT "N"
+#endif
+
 int32_t isfile(const char *file) {
     struct FSTAT st;
     if (ERR_OK != FSTAT(file, &st)) {
@@ -46,6 +53,15 @@ uint64_t file_mtime(const char *file) {
     return (uint64_t)st.st_mtime;
 }
 FILE *fopen_cloexec(const char *file, const char *mode) {
+#ifdef _FOPEN_NOINHERIT
+    char m[16];
+    size_t n = strlen(mode);
+    if (n + sizeof(_FOPEN_NOINHERIT) <= sizeof(m)) {
+        memcpy(m, mode, n);
+        memcpy(m + n, _FOPEN_NOINHERIT, sizeof(_FOPEN_NOINHERIT));// 连同结尾的 '\0'
+        mode = m;
+    }
+#endif
     FILE *fp = fopen(file, mode);
     if (NULL == fp) {
         return NULL;

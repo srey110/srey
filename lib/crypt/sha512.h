@@ -20,7 +20,7 @@ void sha512_init(sha512_ctx *sha512);
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
 void sha512_update(sha512_ctx *sha512, const void *data, size_t lens);
-/// <summary>完成 SHA-512 计算，输出摘要</summary>
+/// <summary>完成 SHA-512 计算，输出摘要；ctx 的擦除同 md5_final</summary>
 /// <param name="sha512">sha512_ctx</param>
 /// <param name="hash">输出摘要，长度 SHA512_BLOCK_SIZE</param>
 void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]);

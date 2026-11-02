@@ -10,6 +10,7 @@ local srey   = require("lib.srey")
 local runner = require("test.runner")
 local smtp   = require("lib.smtp")
 local mail   = require("lib.mail")
+local db_pool = require("lib.db_pool")
 local utils  = require("srey.utils")
 
 local _PORT = ... or 12526
@@ -27,6 +28,7 @@ local ehlo_injected = false -- 客户端把问候里的裸 LF 原样拼进 EHLO 
 local hostile = false -- 逐连接轮换：一次发正常应答，一次发合法但刁钻的形态，两边都得走通
 local ehlo_hosts = {} -- 收到过的 EHLO 参数,用来确认正常问候下主机名是照着服务端给的填
 local noauth_next = false -- 置 true 后接受的连接 EHLO 不通告 AUTH
+local last_sk -- 最近一次 accept 的服务端连接标识，池用例拿它从服务端断开
 
 local function _reply(sk, resp)
     srey.send(sk, resp, #resp, 1)
@@ -107,6 +109,7 @@ end
 srey.startup(function()
     srey.on_accepted(function(pktype, sk)
         hostile = not hostile
+        last_sk = sk
         conns[sk.skid] = { buf = "", authstep = 0, indata = false, sender = -1, hostile = hostile, noauth = noauth_next }
         if hostile then
             -- 裸 LF 不是 CRLF，客户端的多行响应扫描认不出它，会一路活到 EHLO 参数里
@@ -315,6 +318,48 @@ runner.run(function(t)
     t:check(actx:send(am), "免认证: 通告了 AUTH 时投递成功")
     t:eq(amails + 1, mails, "免认证: 通告了 AUTH 时服务端收下了这封")
     actx:quit()
+
+    -- 经 db_pool 借还(同 C 侧 task_smtp.c 的 _fake_pool)：懒建连、借出能发、归还再借是同一条。
+    -- 空闲期被服务端断开的那条 established 仍为 true，池要按 ready() 看出来、就地重连后再交出
+    do
+        local pmails = mails
+        local pool = db_pool.new{ max = 1, factory = function()
+            return smtp.new("127.0.0.1", _PORT, SSL_NAME.NONE, "user", "psw")
+        end }
+        local function _pmail(i)
+            local m = mail.new()
+            m:from("srey", string.format("c%d@t", i))
+            m:addrs_add(string.format("r%d@t", i), MAIL_ADDR_TYPE.TO)
+            m:subject("pool")
+            m:msg("body")
+            return m
+        end
+        local c1 = pool:get()
+        t:check(c1 and c1:send(_pmail(14)), "池: 借出能发")
+        pool:put(c1)
+        local c2 = pool:get()
+        t:eq(c1, c2, "池: 归还再借是同一条")
+        t:check(c2 and c2:send(_pmail(15)), "池: 再借照常发")
+        pool:put(c2)
+        t:eq(1, pool:stat_get().connects, "池: 只建过一次连接")
+        t:eq(pmails + 2, mails, "池: 服务端收下 2 封")
+        srey.close(last_sk)
+        for _ = 1, 200 do-- 200 x 5ms 上限，等客户端那头收到关闭
+            if not c1.conn:sock_id().valid then
+                break
+            end
+            srey.sleep(5)
+        end
+        t:eq(true, c1.established, "池: 对端断开后 established 仍为 true")
+        t:eq(false, c1:ready(), "池: 对端断开后 ready 为 false")
+        local c3 = pool:get()
+        t:eq(c1, c3, "池: 断开的那条就地重连后借出")
+        t:eq(2, pool:stat_get().connects, "池: 重连计一次建连")
+        t:check(c3 and c3:send(_pmail(16)), "池: 重连后照常发")
+        t:eq(pmails + 3, mails, "池: 服务端收下第 3 封")
+        pool:put(c3)
+        pool:free()
+    end
 
     -- reply(0) 不写任何回复头，reply(1) 写 Reply-To（同 C 侧 mail_reply）
     do

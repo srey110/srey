@@ -63,8 +63,6 @@ int32_t json_val_string(yyjson_val *val, char *str, size_t lens) {
     if (NULL != memchr(sval, '\0', slens)) {
         return ERR_FAILED;
     }
-    // 用 yyjson 记的真实长度而不是 strlen：`"sc\u0000ript"` 是合法 JSON，strlen 只看到 2，
-    // 装不下的值会被误判成装得下
     return copy_bounded(sval, slens, str, lens, 1);
 }
 int32_t json_get_string(yyjson_val *json, const char *name, char *str, size_t lens) {

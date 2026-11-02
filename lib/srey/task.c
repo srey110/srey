@@ -285,12 +285,11 @@ name_t task_find_name(loader_ctx *loader, const char *name) {
     return handle;
 }
 int32_t task_exists(loader_ctx *loader, name_t handle) {
-    int32_t alive;
     if (INVALID_TNAME == handle) {
         return 0;
     }
     rwlock_distr_rdlock(&loader->lckmaptasks);
-    alive = (NULL != _task_map_get(loader->maptasks, handle));
+    int32_t alive = (NULL != _task_map_get(loader->maptasks, handle));
     rwlock_distr_runlock(&loader->lckmaptasks);
     return alive;
 }
@@ -518,7 +517,6 @@ int32_t task_multi_request2(loader_ctx *loader, const name_t *handles, int32_t n
                             int32_t strict) {
     task_ctx *stk[MULTI_REQUEST2_STACK];
     task_ctx **dsts = stk;
-    int32_t i;
     int32_t nfound = 0;
     int32_t nmiss = 0;
     int32_t rtn;
@@ -526,7 +524,7 @@ int32_t task_multi_request2(loader_ctx *loader, const name_t *handles, int32_t n
         MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
     }
     rwlock_distr_rdlock(&loader->lckmaptasks);
-    for (i = 0; i < n; i++) {
+    for (int32_t i = 0; i < n; i++) {
         dsts[i] = (INVALID_TNAME == handles[i]) ? NULL : _task_map_get(loader->maptasks, handles[i]);
         if (NULL != dsts[i]) {
             nfound++;
@@ -593,15 +591,14 @@ prot_emit *_task_net_emit(void) {
     return &g_task_emit;
 }
 int32_t task_accept_group(task_ctx *head, const name_t *handles, uint16_t n) {
-    task_ctx *member;
-    uint16_t i;
-    uint16_t nmember = 0;
-    int32_t bound;
     if (NULL != head->acp_group
         || n != head->loader->nnet) {
         return ERR_FAILED;
     }
-    for (i = 0; i < n; i++) {
+    uint16_t nmember = 0;
+    task_ctx *member;
+    int32_t bound;
+    for (uint16_t i = 0; i < n; i++) {
         if (INVALID_TNAME == handles[i]) {
             continue;// 空位：这个线程不收这一组的连接
         }
@@ -674,7 +671,6 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     ud_cxt ud = { 0 };
     int32_t *thrs = NULL;
     uint32_t nthrs = 0;
-    int32_t rtn;
     ud.pktype = pktype;
     ud.handle = task->handle;
     ud.loader = task->loader;
@@ -702,7 +698,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs.r_cb = prots_net_recv;
     cbs.c_cb = prots_net_close;
     cbs.ud_free = prots_udfree;
-    rtn = ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, thrs, nthrs, id);
+    int32_t rtn = ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, thrs, nthrs, id);
     FREE(thrs);
     return rtn;
 }

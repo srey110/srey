@@ -186,9 +186,8 @@ static inline int32_t _mqtt_data_lens(binary_ctx *br, int32_t *num) {
     return ERR_OK;
 }
 // 把长度已由 _mqtt_data_lens 取到(且已卡过剩余字节)的 num 字节拷进 dst 并补 NUL。
-// utf8 非 0 表示 UTF-8 字符串字段。MQTT-1.5.4-2：含 U+0000 即为非法报文，必须拒收(返 ERR_FAILED)——这些字段
-// 解析后只剩 char*、长度不再保留，放过去就会在第一个 NUL 处截断，"victim\0evil" 与 "victim"
-// 塌缩成同一个 clientid / topic。遗嘱载荷与密码是二进制字段，允许含 NUL，传 0
+// utf8 非 0 表示 UTF-8 字符串字段：含 U+0000 按非法报文拒收(MQTT-1.5.4-2，返 ERR_FAILED)，否则会被当 C 串截成另一个 clientid / topic。
+// 遗嘱载荷与密码是二进制字段，允许含 NUL，传 0
 static inline int32_t _mqtt_data_str_to(binary_ctx *br, char *dst, int32_t num, int32_t utf8) {
     memcpy(dst, br->data + br->offset, (size_t)num);
     dst[num] = '\0';
@@ -218,7 +217,7 @@ static mqtt_propertie *_mqtt_prop_mem(mqtt_prop_blk *blk, size_t lens) {
     MALLOC(propt, lens);
     return propt;
 }
-// 读一个属性并放进 blk。失败返回 NULL：越出读区、未知 id。
+// 读一个属性并放进 blk。失败返回 NULL：越出读区、未知 id、UTF-8 串属性含 U+0000(理由同 _mqtt_data_str_to)。
 // 字符串属性 fval 存值；用户属性 fval 存 key、sval 存 value(value 的长度前缀紧跟在 key 后面，先偷看它)，
 // 两段都在同一次分配里，长度都卡"不超过读区剩余字节"，口径同 _mqtt_data_lens
 static mqtt_propertie *_mqtt_prop_one(binary_ctx *br, mqtt_prop_blk *blk) {
@@ -270,6 +269,11 @@ static mqtt_propertie *_mqtt_prop_one(binary_ctx *br, mqtt_prop_blk *blk) {
         break;
     case CORRELATION_DATA://0x09 相关数据	二进制数据	PUBLISH, Will Properties
     case AUTH_DATA://0x16 认证数据	二进制数据	CONNECT, CONNACK, AUTH
+        if (ERR_OK != _mqtt_data_lens(br, &klen)) {
+            return NULL;
+        }
+        extra = (size_t)klen + 1;
+        break;
     case CONTENT_TYPE://0x03 内容类型	UTF-8编码字符串	PUBLISH, Will Properties
     case RESP_TOPIC://0x08 响应主题	UTF-8编码字符串	PUBLISH, Will Properties
     case CLIENT_ID://0x12 分配客户标识符	UTF-8编码字符串	CONNACK
@@ -277,7 +281,8 @@ static mqtt_propertie *_mqtt_prop_one(binary_ctx *br, mqtt_prop_blk *blk) {
     case RESP_INFO://0x1A 请求信息	UTF-8编码字符串	CONNACK
     case SERVER_REFERENCE://0x1C 服务端参考	UTF-8编码字符串	CONNACK, DISCONNECT
     case REASON_STR://0x1F 原因字符串	UTF-8编码字符串	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
-        if (ERR_OK != _mqtt_data_lens(br, &klen)) {
+        if (ERR_OK != _mqtt_data_lens(br, &klen)
+            || NULL != memchr(br->data + br->offset, '\0', (size_t)klen)) {
             return NULL;
         }
         extra = (size_t)klen + 1;
@@ -288,7 +293,9 @@ static mqtt_propertie *_mqtt_prop_one(binary_ctx *br, mqtt_prop_blk *blk) {
             return NULL;
         }
         vlen = (int32_t)read_be16(br->data + br->offset + klen);
-        if (!binary_have(br, (uint64_t)klen + 2 + (uint64_t)vlen)) {
+        if (!binary_have(br, (uint64_t)klen + 2 + (uint64_t)vlen)
+            || NULL != memchr(br->data + br->offset, '\0', (size_t)klen)
+            || NULL != memchr(br->data + br->offset + klen + 2, '\0', (size_t)vlen)) {
             return NULL;
         }
         extra = (size_t)klen + 1 + (size_t)vlen + 1;
@@ -579,7 +586,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br
 }
 // PUBLISH 那一整块的大小：pack / varhead / [v5 属性块 prelens] / topic / 载荷合在一起，偏移由 _mqtt_publish 边解析边定。
 // 容量按上界给——topic 与载荷之和不超过 remaining_lens，MQTT_PUB_SLACK 覆盖两个结尾 NUL 与对齐补白。
-// 分配点与块内越界断言共用这一处，两边各抄一份算式的话，改一边漏一边编译器看不出来
+// 分配点与块内越界断言共用这一处
 static inline size_t _mqtt_publish_blk(size_t remaining_lens, size_t prelens) {
     return MQTT_PUB_PREOFF + prelens + sizeof(mqtt_publish_payload) + remaining_lens + MQTT_PUB_SLACK;
 }
@@ -1035,9 +1042,8 @@ static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br, u
 static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br, buffer_ctx *spill,
                               mqtt_prop_blk *pre, ud_cxt *ud, int32_t *status) {
     int32_t rtn = ERR_FAILED;
-    // 版本在这里统一填，不由各 handler 自己抄：_mqtt_parse 分配时包头已清零，漏抄一处就静默得
-    // version==0、下游按 3.1.1 处理而不报错。connack 不走这里(它正是确立版本的那条)；
-    // auth 两条路都能到，它自己那份保留，两处赋的是同一个值
+    // 版本在这里统一填，各 handler 不再填。connack 不走这里(它正是确立版本的那条)；
+    // auth 两条路都能到，它自己也填一份，两处是同一个值
     pack->version = ((mqtt_ctx *)ud->context)->version;
     switch (pack->fixhead.prot) {
     case MQTT_PUBLISH:

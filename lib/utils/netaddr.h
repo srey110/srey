@@ -16,13 +16,13 @@ typedef union netaddr_ctx {
 /// <returns>ERR_OK ipv4 </returns>
 int32_t is_ipv4(const char *ip);
 /// <summary>
-/// 是否为ipv6 地址。带 "%网卡号" 的后缀先剥掉再判，两个平台一致
+/// 是否为ipv6 地址。带 "%网卡号" 的后缀先剥掉再判，两个平台一致；后缀只剥不验，有效与否以 netaddr_set 为准
 /// </summary>
 /// <param name="ip">IP</param>
 /// <returns>ERR_OK ipv6 </returns>
 int32_t is_ipv6(const char *ip);
 /// <summary>
-/// 是否为ip地址
+/// 是否为ip地址。IPv6 的 "%" 后缀同 is_ipv6，只剥不验
 /// </summary>
 /// <param name="ip">IP</param>
 /// <returns>ERR_OK ip地址 </returns>

@@ -1,5 +1,5 @@
 -- e2e 自动化 runner：用 srey.popen 起 python3 bin/py_assist/test_*.py 子进程，
--- 等 server_http/ws/mqtt task 就绪（startup.lua 已先于它们注册，但 listen 是异步）后串行跑，
+-- 等 server_http/ws/mqtt task 就绪（它们在 test.lua 里排在本 task 之后注册，listen 也是异步的）后串行跑，
 -- 把每个脚本的 exit code 转成 npass/nfail，向 reporter 上报为单一模块 "e2e"。
 
 local srey   = require("lib.srey")
@@ -36,8 +36,9 @@ srey.startup(function()
             if srey.isclosing() then
                 break
             end
-            local cmd = "python3 " .. _PY_DIR .. "test_" .. name .. ".py 2>&1"
-            -- 仿 C 层 main.c LOG_INFO("running %s", pycmd) + 后续 PRINT outbuf 的格式：
+            -- 路径加引号(同 test/main.c)：目录带空格时不加会被拆成两个参数；stderr 已由 popen 的 "r" 模式并进同一通道
+            local cmd = "python3 \"" .. _PY_DIR .. "test_" .. name .. ".py\""
+            -- 仿 C 层 main.c PRINT("running %s", pycmd) + 后续 printf outbuf 的格式：
             -- 直接 io.write 到 stdout，不走 log；python 输出原样打印
             printd("running %s", cmd)
             local ctx = popen.new(cmd, "r")
@@ -53,6 +54,9 @@ srey.startup(function()
             local exited = false
             local chunk
             while true do
+                if srey.isclosing() then
+                    break
+                end
                 if ctx:waitexit(0) then
                     exited = true
                     break
@@ -67,10 +71,14 @@ srey.startup(function()
                     srey.sleep(50)
                 end
             end
-            chunk = ctx:read(256 * 1024)
-            if chunk and #chunk > 0 then
-                chunks[#chunks + 1] = chunk
-            end
+            -- 剩下的读到流末尾或此刻没数据为止
+            local eof
+            repeat
+                chunk, eof = ctx:read(256 * 1024)
+                if chunk and #chunk > 0 then
+                    chunks[#chunks + 1] = chunk
+                end
+            until eof or not chunk or 0 == #chunk
             local output = table.concat(chunks)
             io.write(output)
             if "" ~= output and "\n" ~= output:sub(-1) then
@@ -81,6 +89,8 @@ srey.startup(function()
             if exited then
                 local code = ctx:exitcode()
                 t:check(0 == code, name .. ": python exit code " .. tostring(code))
+            elseif srey.isclosing() then
+                t:fail(name .. ": closing, python not finished")
             else
                 t:fail(name .. ": python timeout " .. _PY_TIMEOUT_MS .. "ms")
             end

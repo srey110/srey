@@ -67,7 +67,7 @@ static void _evssl_options(evssl_ctx *evssl) {
 void evssl_init(void) {
     OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
 }
-// 分配并初始化一个新的evssl_ctx（使用TLS_method，安全级别设0）
+// 分配并初始化一个新的evssl_ctx（使用TLS_method，安全级别用 OpenSSL 默认）
 static evssl_ctx *_evssl_new(void) {
     evssl_ctx *evssl;
     MALLOC(evssl, sizeof(evssl_ctx));
@@ -79,7 +79,6 @@ static evssl_ctx *_evssl_new(void) {
         SSLCTX_ERRO();
         return NULL;
     }
-    SSL_CTX_set_security_level(evssl->ssl, 0);//降到 0:有些 CA 证书的摘要算法(如 SHA1)在默认安全等级下会被拒
     return evssl;
 }
 evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type) {
@@ -177,9 +176,27 @@ void evssl_seclevel(evssl_ctx *evssl, int32_t level) {
 int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version) {
     return (1 == SSL_CTX_set_min_proto_version(evssl->ssl, version)) ? ERR_OK : ERR_FAILED;
 }
+// 设证书校验要比对的名字：先当 IP，不是再当主机名(即 SSL_set1_host 的实现，它在 OpenSSL 4.0 弃用了)
+static int32_t _evssl_param_host(X509_VERIFY_PARAM *param, const char *host) {
+    return (X509_VERIFY_PARAM_set1_ip_asc(param, host)
+            || X509_VERIFY_PARAM_set1_host(param, host, 0)) ? ERR_OK : ERR_FAILED;
+}
+// 设名字时按建连时的规则先试一次。OpenSSL 4 起主机名要合规，这里不挡的话每次连接都在 evssl_setfd 失败，
+// 且错误队列是空的、日志看不出原因
+static int32_t _evssl_host_ok(const char *host) {
+    X509_VERIFY_PARAM *param = X509_VERIFY_PARAM_new();
+    if (NULL == param) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _evssl_param_host(param, host);
+    X509_VERIFY_PARAM_free(param);
+    SSL_ERRQU_CLEAR();// 试 IP 不成可能留下错误
+    return rtn;
+}
 int32_t evssl_host(evssl_ctx *evssl, const char *host) {
     size_t lens = EMPTYSTR(host) ? 0 : strlen(host);
-    if (lens > TLSEXT_MAXLEN_host_name) {
+    if (lens > TLSEXT_MAXLEN_host_name
+        || (0 != lens && ERR_OK != _evssl_host_ok(host))) {
         return ERR_FAILED;
     }
     FREE(evssl->host);
@@ -292,7 +309,7 @@ static int32_t _evssl_set_host(SSL *ssl, const char *host) {
         && 1 != SSL_set_tlsext_host_name(ssl, host)) {
         return ERR_FAILED;
     }
-    return 1 == SSL_set1_host(ssl, host) ? ERR_OK : ERR_FAILED;
+    return _evssl_param_host(SSL_get0_param(ssl), host);
 }
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     if ((uint64_t)fd > (uint64_t)INT_MAX) {

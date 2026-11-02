@@ -140,7 +140,7 @@ void http_pack_content(binary_ctx *bwriter, void *data, size_t lens);
 /// <param name="data">数据</param>
 /// <param name="lens">长度，0 表示终止块</param>
 void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens);
-// 解析 HTTP 头部，返回解析后的 http_pack_ctx，transfer 输出传输方式（0/CONTENT/CHUNKED/TILLCLOSE）。
+// 解析 HTTP 头部，返回解析后的 http_pack_ctx；transfer 输出 0 表示没有 body，非 0 表示有(具体取值是 http.c 内部的)。
 // client 同 http_unpack；为 0 时跳过请求行前的空行。ud 提供 prot_offset 缓存：半包到达时记忆扫描位置，避免对未变化前缀重复线性扫描
 struct http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *transfer, int32_t *status);
 /* 检查已解析头部字段的键是否大小写不敏感匹配 key（长度 klen），
@@ -178,7 +178,7 @@ http_header_ctx *http_header_at(struct http_pack_ctx *pack, uint32_t pos);
 /// <returns>值；字段不存在或数据片返回 NULL（判据同 http_status）</returns>
 char *http_header(struct http_pack_ctx *pack, const char *header, size_t *lens);
 /// <summary>
-/// 包的分帧类别。流的起止以投递时的 slice 为准：连接关闭界定 body 的头包带 PROT_SLICE_START，这里却返回 0
+/// 包的分帧类别。流的起止以投递时的 slice 为准，不以它为准(连接关闭界定 body 的头包两者不一致，见 returns)
 /// </summary>
 /// <param name="pack">http_pack_ctx</param>
 /// <returns>0 非 chunked 的整包，或连接关闭界定 body 的头包；1 chunked 的头包；

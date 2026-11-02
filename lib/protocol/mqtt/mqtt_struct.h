@@ -9,7 +9,8 @@ typedef struct mqtt_fixhead {//固定头
     mqtt_prot prot;          //控制报文的类型
     size_t remaining_lens;   //剩余长度（不含固定头）
 }mqtt_fixhead;
-// 收到的属性只按 id 读出值，未校验：属性是否适用于这类报文、不该重复的属性是否重复了(规范里两者都算协议错误)。
+// 收到的属性只按 id 读出值，未校验：属性是否适用于这类报文、不该重复的属性是否重复了、取值范围(如订阅标识符 0、
+// 主题别名 0、接收最大数量 0)，规范里这些都算协议错误；UTF-8 串属性只拒 U+0000。
 // 同一 id 可能出现多个元素，业务在乎的话自行校验
 typedef struct mqtt_propertie {//属性
     mqtt_prop_flag flag;//标识符
@@ -22,7 +23,7 @@ typedef struct mqtt_propertie {//属性
 ARR_DECL(mprop_arr, mqtt_propertie *)
 #define MQTT_PROP_SLOTS 8 // 属性指针数组先用块内这么多槽
 // 单个属性段最多这么多个属性，超了按协议错误断连(接收侧)。规范里除用户属性与订阅标识符外每种属性至多一次(约 27 种)，
-// 256 给用户属性留足；不设上限的话 2 字节一个的属性能把 64KB 的段在内存里放大约 24 倍，CONNECT 在认证前就会解析它
+// 256 给用户属性留足；上限不能去掉：CONNECT 在认证前就解析属性，短属性在内存里占得比线上多得多
 #define MQTT_MAX_PROPS 256
 #define MQTT_PROP_ARENA 256 // 块内给属性条目切的小区最少这么多字节，属性段长了按段长放大(见 mqtt.c 的 _mqtt_prop_cap)
 // 解析出的属性数组一律是这个块的开头(见 mqtt.c 的 _mqtt_properties)，只读：不能再增删元素，
@@ -113,7 +114,7 @@ typedef struct mqtt_reason_varhead {//5.0
     mprop_arr *properties;//属性 5.0 元素 mqtt_propertie *
 }mqtt_reason_varhead;
 typedef struct mqtt_pack_ctx {
-    int8_t version;      //协议版本
+    int8_t version;      //报文格式的版本：一般同连接；5.0 连接上收到 3.1.1 格式的拒绝 CONNACK 时为 MQTT_311
     //固定报头
     mqtt_fixhead fixhead;
     //可变报头

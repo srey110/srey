@@ -248,6 +248,33 @@ static void test_bson_iter_error_flag(CuTest *tc) {
     CuAssertTrue(tc, 0 != bson_iter_error(&iter));
 }
 
+// BOOL 值字节只认 0 / 1，其余按畸形处理：next 返 0 且 err 置位，check_depth 也拒（同 libbson）
+static void test_bson_bool_value(CuTest *tc) {
+    // 长度 9 + 0x08 'b' \0 + 值 + EOD
+    char doc[] = { 0x09, 0x00, 0x00, 0x00, 0x08, 'b', 0x00, 0x01, 0x00 };
+    const uint8_t bad[] = { 0x02, 0xFF };
+    bson_ctx rd;
+    bson_iter iter;
+    int32_t err = ERR_FAILED;
+
+    bson_init(&rd, doc, sizeof(doc));
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 1, bson_iter_bool(&iter, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(doc, sizeof(doc)));
+
+    for (size_t i = 0; i < sizeof(bad); i++) {
+        doc[7] = (char)bad[i];
+        bson_init(&rd, doc, sizeof(doc));
+        bson_iter_init(&iter, &rd);
+        CuAssertTrue(tc, !bson_iter_next(&iter));
+        CuAssertIntEquals(tc, BSON_EOD, iter.type);
+        CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+        CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(doc, sizeof(doc)));
+    }
+}
+
 // binary 的 subtype 是 wire 上的无符号字节,读取时必须窄化为 (uint8_t)。
 // 直接把 binary_get_int8 的 int8_t 赋给枚举,0x80-0xFF 的用户自定义子类型会变成
 // 4294967168 之类的垃圾值(枚举底层类型无符号),既匹配不上 BSON_SUBTYPE_USER 也无法往返。
@@ -898,6 +925,7 @@ static void test_bson_tostring(CuTest *tc) {
     bson_append_bool(&bson, "ok", 1);
     bson_append_null(&bson, "nil");
     bson_append_double(&bson, "pi", 3.14);
+    bson_append_double(&bson, "tiny", 1e-9);/* %.14g：小值不能打成 0.000000 */
     /* 嵌套文档：触发递归路径 */
     bson_append_document_begain(&bson, "meta");
     bson_append_int32(&bson, "x", 1);
@@ -914,6 +942,8 @@ static void test_bson_tostring(CuTest *tc) {
     CuAssertPtrNotNull(tc, s);
     CuAssertTrue(tc, NULL != strstr(s, "2147483649 2147483648"));
     CuAssertTrue(tc, NULL == strstr(s, "-2147483"));
+    CuAssertTrue(tc, NULL != strstr(s, "pi(double): 3.14\r\n"));
+    CuAssertTrue(tc, NULL != strstr(s, "tiny(double): 1e-09\r\n"));
     CuAssertTrue(tc, NULL != strstr(s, "age"));
     CuAssertTrue(tc, NULL != strstr(s, "name"));
     CuAssertTrue(tc, NULL != strstr(s, "alice"));
@@ -2297,6 +2327,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_null_data_entry);
     SUITE_ADD_TEST(suite, test_bson_binary_zero_length);
     SUITE_ADD_TEST(suite, test_bson_iter_error_flag);
+    SUITE_ADD_TEST(suite, test_bson_bool_value);
     SUITE_ADD_TEST(suite, test_bson_tostring);
     SUITE_ADD_TEST(suite, test_bson_tostring_subtypes);
     SUITE_ADD_TEST(suite, test_bson_misc);

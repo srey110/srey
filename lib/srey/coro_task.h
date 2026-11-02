@@ -15,6 +15,7 @@
 // listen 带 NETEV_SESS 则 accept 时就设好;事后 coro_sync 是异步生效的,只适合服务端先发数据的协议(客户端先发的首包会落到回调上)。
 // coro_send / coro_recv / coro_slice 只收回复(要过各协议的 may_resume),对端主动发的包(如 MQTT 的 CONNECT)落到回调上,
 // 要挂起等这类包用 coro_recv_any。
+// 连接上的等待(coro_send / coro_recv / coro_sendto 等)被这条连接的 CLOSE 唤醒时，传进来的 sk 随之置失效(fd 置 INVALID_SOCK；挂起期间 sk 已换成别的连接则不动)。
 // UDP coro_sendto 同此约定:ud.sess 不会自动清零,须在首次调用 coro_sendto 前显式 coro_sync 一次,
 // 之后该 skid 上持续有效,可连续/并发多次调用 coro_sendto,无需每次重新同步。
 // 换线程约定:协程挂起后可能在另一个 worker 线程上恢复。协程代码里的线程局部变量一律经 TLS_DEFINE
@@ -31,7 +32,7 @@ void coro_task_stack(size_t stack_size);
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示匿名</param>
-/// <param name="quecap">消息队列容量（条数）；0 用默认 TASK_QUEUE_CAP</param>
+/// <param name="quecap">消息队列容量（条数）；0 用默认容量(task.c 的 TASK_QUEUE_CAP)</param>
 /// <param name="_startup">任务初始化回调函数</param>
 /// <param name="_closing">任务关闭回调函数,做业务相关收尾工作._closing执行后，不代表该任务已经无引用</param>
 /// <param name="_argfree">用户参数释放函数</param>
@@ -78,7 +79,7 @@ int32_t coro_sync(task_ctx *task, sock_ctx *sk);
 /// <param name="task">本 task，须是协程 task</param>
 /// <param name="sk">连接标识</param>
 /// <param name="handle">目标 task 句柄</param>
-/// <returns>同 ev_ud_handle；失败时会话条目不动</returns>
+/// <returns>同 ev_ud_handle；handle 那个 task 已不在也返回 ERR_FAILED(查完到转交生效之间它仍可能退出)；失败时会话条目不动</returns>
 int32_t coro_bind_task(task_ctx *task, sock_ctx *sk, name_t handle);
 /// <summary>
 /// 休眠
@@ -155,7 +156,7 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
-/// <returns>ERR_OK 已收到 CLOSE 或连接本已失效；ERR_FAILED 等满 netread 超时仍没收到 CLOSE（网络线程或本 task 队列积压，超时前没处理到这次关闭），
+/// <returns>ERR_OK 已收到 CLOSE 或连接本已失效，sk 已置失效；ERR_FAILED 等满 netread 超时仍没收到 CLOSE（网络线程或本 task 队列积压，超时前没处理到这次关闭），
 /// 此时旧连接的 close 回调还会晚到，与它共用 ctx 的新连接不能建</returns>
 int32_t coro_close(task_ctx *task, sock_ctx *sk);
 /// <summary>
@@ -227,6 +228,8 @@ void *coro_slice(task_ctx *task, sock_ctx *sk, size_t *size, int32_t *end);
 void *coro_sendto(task_ctx *task, sock_ctx *sk,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy);
+// 框架内部用(coro_utils.c)：挂起等 sess 上类型为 mtype 的消息。返回的消息在唤醒方栈上，只到本协程下次挂起前有效；
+// 可能是 TIMEOUT 或 CLOSE(连接类 sess 的广播不看类型)，超时不关连接，由调用方处置
 message_ctx *_coro_wait(task_ctx *task, uint64_t sess, msg_type mtype, uint32_t ms);
 
 #endif//CORO_TASK_H_

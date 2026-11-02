@@ -21,7 +21,7 @@ void sha256_init(sha256_ctx *sha256);
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
 void sha256_update(sha256_ctx *sha256, const void *data, size_t lens);
-/// <summary>完成 SHA-256 计算，输出摘要</summary>
+/// <summary>完成 SHA-256 计算，输出摘要；ctx 的擦除同 md5_final</summary>
 /// <param name="sha256">sha256_ctx</param>
 /// <param name="hash">输出摘要，长度 SHA256_BLOCK_SIZE</param>
 void sha256_final(sha256_ctx *sha256, char hash[SHA256_BLOCK_SIZE]);

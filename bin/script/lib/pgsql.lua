@@ -252,7 +252,7 @@ function ctx:_doquit()
 end
 
 ---切换数据库：关闭当前连接 → 更新库名 → 重连（重连后旧 prepare 语句失效；
----走的是 quit + connect，两边各让代次 +1，故一次切库代次共 +2）
+---走的是 quit + connect，两边各让代次 +1，故一次切库代次共 +2）。池里借出的连接换了库要在归还前换回去，reset_session 不管库名
 ---@param database string 目标数据库名
 ---@return boolean ok 切换并重连成功 true（库名超 63 字节时不断连直接返 false，
 ---原连接与原库名均保持不变）

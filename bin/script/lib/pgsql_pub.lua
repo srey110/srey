@@ -1,8 +1,8 @@
 -- pgsql 客户端（pgsql.lua）与预处理语句（pgsql_stmt.lua）共用的东西：失败原因常量、
 -- 错误文案、响应包类型判定。
 -- 单独成模块而不是挂在某个类表上：pgsql.lua 依赖 pgsql_stmt.lua，反过来 require 会成环；
--- 而挂 class 表又会被 class() 的 __index 带到每个实例上，冒出 inst.BUSY / inst:type_mismatch()
--- 这种伪方法——后者把实例当 pktype 传进去，返回 "unexpected pgsql response type: table: 0x..."，
+-- 而挂 class 表又会被 class() 的 __index 带到每个实例上，冒出 inst:type_mismatch()
+-- 这种伪方法——它把实例当 pktype 传进去，返回 "unexpected pgsql response type: table: 0x..."，
 -- 还跟真方法 inst:erro() 形似。放这里两边都 require，谁也不污染谁。
 --
 -- err 契约（两个文件共同遵守）：带 err 的操作入口一律先把 self.err 复位为 ""，

@@ -85,9 +85,9 @@ int32_t *_evpub_listen_thrs(ev_ctx *ctx, const int32_t *thrs, uint32_t nthrs) {
         return NULL;
     }
     int32_t *copy;
-    uint32_t i, j;
+    uint32_t j;
     MALLOC(copy, sizeof(int32_t) * nthrs);
-    for (i = 0; i < nthrs; i++) {
+    for (uint32_t i = 0; i < nthrs; i++) {
         ASSERTAB(thrs[i] >= 0 && thrs[i] < (int32_t)ctx->nthreads, "listen thread index out of range.");
         for (j = 0; j < i; j++) {
             ASSERTAB(thrs[i] != thrs[j], "listen thread index repeated.");
@@ -100,10 +100,10 @@ int32_t *_evpub_listen_thrs(ev_ctx *ctx, const int32_t *thrs, uint32_t nthrs) {
 // 免得互投饿死 IO。ev_free 已开始就不跑第二趟，留给它走 fcb
 uint32_t _evpub_defer_exec_drain(watcher_ctx *watcher) {
     const uint32_t npass = 2;
-    uint32_t n, i, pass;
+    uint32_t n, i;
     uint32_t total = 0;
     defer_exec_item it;
-    for (pass = 0; pass < npass; pass++) {
+    for (uint32_t pass = 0; pass < npass; pass++) {
         n = defer_exec_que_size(&watcher->defer_execs);// 只跑这一趟进来时已有的
         if (0 == n
             || (0 != pass && 0 != ATOMIC_GET(&watcher->ev->stopping))) {
@@ -753,9 +753,7 @@ int32_t _evpub_sock_send(SOCKET fd, obuf_que *buf_s, size_t *nsend, void *arg) {
 }
 void _evpub_add_bufs_sendto(watcher_ctx *watcher, evsock_ctx *evsk, sendto_ctx *buf, int32_t tried) {
 #ifdef EV_IOCP
-    // IOCP 侧 _iocp_add_bufs_trysendto 本身已是独立的 try-then-queue 实现，不需要外部传入的尝试状态；
-    // 代价是 tried=1 进来时 _olp_sendto_drain 会再同步发一次(必然复现同一失败)，那是慢路径,不值得为它加形参。
-    // watcher 要用：发送卡在资源紧张上时靠它挂重试 tick
+    // IOCP 侧 _iocp_add_bufs_trysendto 自己先试再排队，用不上 tried；watcher 要用：发送卡在资源紧张上时靠它挂重试 tick
     (void)tried;
     _iocp_add_bufs_trysendto(watcher, evsk, buf);
 #else

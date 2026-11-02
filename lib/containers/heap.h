@@ -106,13 +106,12 @@ static inline void name##_insert(name *h, T *elem) {                            
 /* 按引用删除任意元素,不校验元素是否在堆内 */                                   \
 static inline void name##_remove(name *h, T *elem) {                            \
     uint32_t pos = elem->IDXFIELD;                                              \
-    T *last;                                                                    \
     h->size--;                                                                  \
     if (pos == h->size) {                                                       \
         return;                                                                 \
     }                                                                           \
     /* 拿末位填坑,再按它与父的大小关系决定上浮还是下沉 */                       \
-    last = h->p[h->size];                                                       \
+    T *last = h->p[h->size];                                                    \
     h->p[pos] = last;                                                           \
     last->IDXFIELD = pos;                                                       \
     if (pos > 0 && LT(last, h->p[(pos - 1) / 2])) {                              \

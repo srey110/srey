@@ -60,7 +60,8 @@ int32_t redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, u
     const char *key, int32_t netev, sock_ctx *sk);
 /// <summary>
 /// mysql链接。多协程共用一个 ctx 时幂等：排队等锁期间已有人把连接建好，就不再建第二条。
-/// 旧连接还没关完（如命令超时后紧接着重连）时先关掉它、等到关闭确认再建新的
+/// 旧连接还没关完（如命令超时后紧接着重连）时先关掉它、等到关闭确认再建新的。
+/// 幂等只对排队的并发调用成立：对一条好好的已连连接再调，会拆掉重连，在途事务与会话状态全丢
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx, mysql_init</param>
@@ -68,7 +69,7 @@ int32_t redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, u
 /// 建链新建的，已就地回收，调用方直接返回即可，无须为了释放它补调 mysql_quit</returns>
 int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 /// <summary>
-/// 选择数据库
+/// 选择数据库。新库名记进 ctx，之后重连也连它；池里借出的连接换了库要在归还前换回去，池的 reset 不管库名
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="database">数据库</param>
@@ -136,6 +137,8 @@ void mysql_stmt_close(mysql_stmt_ctx *stmt);
 /// 先排在在途命令之后再退出，不把别人半途的等待打断。**须在协程内调用**（内部要等断连确认）。
 /// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方。
 /// 没有执行器的连接（未经 *_connect 建链）不排队直接断连——那种连接上的命令本就不串行。
+/// 返回后 ctx 里的连接标识若仍有效（sock_is_invalid 为假），说明等满 netread 超时也没等到关闭确认，
+/// 网络线程之后还会写这个 ctx：C 侧借用（ref=0）的 ctx 这时还不能释放。
 /// smtp_quit / pgsql_quit / mongo_quit 同此契约
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
@@ -200,7 +203,8 @@ int32_t pgsql_cancel(pgsql_ctx *pg);
 /// <param name="pg">pgsql_ctx</param>
 void pgsql_quit(pgsql_ctx *pg);
 /// <summary>
-/// 选择数据库（断开重连，库名在重连握手时生效）。pgsql_quit 之后调，同 pgsql_ping 照 pgsql_connect 重建、装回执行器
+/// 选择数据库（断开重连，库名在重连握手时生效）。pgsql_quit 之后调，同 pgsql_ping 照 pgsql_connect 重建、装回执行器。
+/// 等不到旧连接的关闭确认就不建新连接、返 ERR_FAILED。池里借出的连接换了库要在归还前换回去，池的 reset 不管库名
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="database">数据库</param>
@@ -231,7 +235,7 @@ pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql);
 /// <param name="nparam">参数数量</param>
 /// <param name="oids">参数OID(pgsql_macro.h)</param>
 /// <returns>ERR_OK 成功；组包失败（消息体超 INT32_MAX）时不发包、连接不动，返回 ERR_FAILED</returns>
-int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids);
+int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, uint16_t nparam, uint32_t *oids);
 /// <summary>
 /// 预处理执行
 /// </summary>
@@ -560,7 +564,7 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
 /// <param name="task">本协程 task,须是协程 task(取它的调度器放条目)</param>
 /// <param name="kcp">kcp_ctx</param>
 /// <param name="handle">新的目标 task 句柄</param>
-/// <returns>同 kcp_handle</returns>
+/// <returns>同 kcp_handle；handle 那个 task 已不在也返回 ERR_FAILED，条目不动</returns>
 int32_t kcp_bind_task(task_ctx *task, struct kcp_ctx *kcp, name_t handle);
 /// <summary>
 /// MySQL 连接池操作表，直接传给 db_pool_new。
@@ -575,7 +579,8 @@ const db_pool_ops *mysql_pool_ops(void);
 /// <returns>静态操作表</returns>
 const db_pool_ops *pgsql_pool_ops(void);
 /// <summary>
-/// MongoDB 连接池操作表，直接传给 db_pool_new
+/// MongoDB 连接池操作表，直接传给 db_pool_new。
+/// 归还时连接上还绑着事务（没 commit / rollback）就先 abort；没等到应答也在本地解绑，再断开
 /// </summary>
 /// <returns>静态操作表</returns>
 const db_pool_ops *mongo_pool_ops(void);

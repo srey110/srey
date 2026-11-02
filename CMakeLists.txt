@@ -12,6 +12,8 @@ foreach(_line ${_cfg_lines})
     string(REGEX MATCH "WITH_(SSL|LUA|MIMALLOC)[ \t]+([0-9]+)" _m "${_line}")
     set(SREY_WITH_${CMAKE_MATCH_1} ${CMAKE_MATCH_2})
 endforeach()
+# 改了 config.h 要重新配置，否则编译按新值、链接与源码清单还按旧值
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/lib/base/config.h)
 option(SREY_ASAN "ASan/UBSan(macOS ARM64 须配 Debug)" OFF)
 option(SREY_TSAN "ThreadSanitizer，与 SREY_ASAN 互斥" OFF)
 option(SREY_RDYNAMIC "Linux 链接加 -rdynamic，stack_print 的栈带函数名(理由见 mk.sh)" OFF)
@@ -55,6 +57,9 @@ if(CMAKE_SYSTEM_NAME MATCHES "Darwin|FreeBSD")
     add_compile_options(-Wno-unused-function)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "AIX")
     add_compile_options(-Wno-pointer-to-int-cast -Wno-int-to-pointer-cast)
+    add_compile_definitions(_THREAD_SAFE)# errno 每线程一份，理由见 mk.sh
+elseif(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+    add_compile_definitions(_REENTRANT)# 同上
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_compile_definitions(__const__=__unused__)# 协程换线程后 errno 地址不能复用，理由见 mk.sh，别删
@@ -98,7 +103,7 @@ endif()
 # ── 线程局部变量门禁(同 mk.sh) ──────────────────────────────────────────────
 # 只许经 TLS_DEFINE 定义(理由见 lib/base/macro_util.h)，确需裸写的行尾注明 TLS_RAW_OK。每次构建前查一遍
 add_custom_target(tls_gate
-    COMMAND sh -c "! find lib srey lualib/lbind test \\( -name '*.c' -o -name '*.h' \\) -exec grep -nE '(^|[^[:alnum:]_])(THREAD_LOCAL|_Thread_local|__thread|thread_local)([^[:alnum:]_]|$)|__declspec *\\( *thread *\\)' /dev/null {} + | grep -vE '^lib/(base/(macro_util|os_unix|os_win)\\.h|coro/minicoro\\.h|openssl/|mimalloc/|serial/yyjson/)' | grep -v TLS_RAW_OK"
+    COMMAND sh -c "! find lib srey lualib/lbind test \\( -name '*.c' -o -name '*.h' \\) -exec grep -nE '(^|[^[:alnum:]_])(THREAD_LOCAL|_Thread_local|__thread|thread_local)([^[:alnum:]_]|$)|__declspec *\\( *thread *\\)' /dev/null {} + | grep -vE '^lib/(base/(macro_util|os_unix|os_win)\\.h|coro/minicoro\\.h|openssl/|mimalloc/|serial/yyjson/yyjson\\.[ch])' | grep -v TLS_RAW_OK"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "检查裸写的线程局部变量：有输出即违规，改用 TLS_DEFINE"
     VERBATIM
@@ -159,7 +164,7 @@ endforeach()
 
 # ── Platform libraries ────────────────────────────────────────────────────────
 set(PLATFORM_LIBS pthread m)
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|OpenBSD)$")# OpenBSD 没有 librt(同 mk.sh)
     list(APPEND PLATFORM_LIBS rt)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

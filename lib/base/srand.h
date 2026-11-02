@@ -7,7 +7,7 @@
 /// 随机[min, max]
 /// </summary>
 /// <param name="min">最小</param>
-/// <param name="max">最大</param>
+/// <param name="max">最大；必须 >= min，否则 ASSERTAB 中止进程</param>
 /// <returns>值</returns>
 int32_t randrange(int32_t min, int32_t max);
 /// <summary>

@@ -39,11 +39,11 @@ static void *_lrouter_arg(lua_Integer idx) {
     return (void *)(intptr_t)idx;
 }
 /// <summary>
-/// 注册一条带 Lua 回调索引的路由；同 _lrouter_add，但 handler/mws 由 C 执行链保存。
+/// 注册一条带 Lua 回调索引的路由；同 add，但 handler/mws 由 C 执行链保存。
 /// </summary>
 /// <param name="self" type="userdata">router_ctx 对象</param>
 /// <param name="method" type="string">HTTP 方法，如 "GET"/"POST"/"ANY"</param>
-/// <param name="path" type="string">完整路由路径（调用方已拼好前缀）</param>
+/// <param name="path" type="string">完整路由路径（调用方已拼好前缀）；内含 '\0' 报错</param>
 /// <param name="handler_idx" type="integer">handler 在 Lua _fns 表里的下标（≥1）</param>
 /// <param name="mws" type="integer[]">路由级中间件在 _fns 表里的下标数组；空表或 nil 表示无中间件</param>
 /// <param name="stream" type="boolean">true=流式路由，false=普通路由</param>
@@ -54,21 +54,18 @@ static int32_t _lrouter_add_steps(lua_State *lua) {
     LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
     size_t mlen;
     const char *method = luaL_checklstring(lua, 2, &mlen);
-    size_t plen;
-    const char *path = luaL_checklstring(lua, 3, &plen);
+    const char *path = lpub_check_cstr(lua, 3);
     lua_Integer hidx = luaL_checkinteger(lua, 4);
-    int32_t mws_n = 0;
-    if (lua_istable(lua, 5)) {
-        mws_n = (int32_t)luaL_len(lua, 5);
-    }
+    lua_Unsigned mws_len = lua_istable(lua, 5) ? lua_rawlen(lua, 5) : 0;// 下面逐个 rawgeti，个数也按 raw 取
     int32_t stream = lua_toboolean(lua, 6);
     router_method mask = router_method_mask(method, mlen);
-    if (0 == mask || hidx <= 0 || mws_n < 0) {
+    if (0 == mask || hidx <= 0 || mws_len > INT32_MAX) {
         lua_pushboolean(lua, 0);
         lua_pushinteger(lua, -1);
         lua_pushnil(lua);
         return 3;
     }
+    int32_t mws_n = (int32_t)mws_len;
     router_step *mws = NULL;
     if (mws_n > 0) {
         MALLOC(mws, sizeof(router_step) * (size_t)mws_n);
@@ -90,16 +87,14 @@ static int32_t _lrouter_add_steps(lua_State *lua) {
         mws[i].cb = _lrouter_marker;
         mws[i].arg = _lrouter_arg(idx);
     }
-    char *pathz = dup_zero(path, plen);
     router_entry *e;
     if (stream) {
-        e = router_add_stream_steps(*pr, NULL, mask, pathz,
+        e = router_add_stream_steps(*pr, NULL, mask, path,
                                     _lrouter_stream_marker, _lrouter_arg(hidx), mws, mws_n);
     } else {
-        e = router_add_steps(*pr, NULL, mask, pathz,
+        e = router_add_steps(*pr, NULL, mask, path,
                              _lrouter_marker, _lrouter_arg(hidx), mws, mws_n);
     }
-    FREE(pathz);
     FREE(mws);
     if (NULL == e) {
         lua_pushboolean(lua, 0);
@@ -134,7 +129,11 @@ static int32_t _lrouter_use_step(lua_State *lua) {
 /// <returns type="integer[]?">函数下标数组；路由索引越界时为 nil</returns>
 static int32_t _lrouter_chain(lua_State *lua) {
     LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
-    int32_t idx = (int32_t)luaL_checkinteger(lua, 2);
+    lua_Integer arg = luaL_checkinteger(lua, 2);
+    if (arg < 0 || arg > INT32_MAX) {
+        return lpub_rtn_nil(lua, 1);
+    }
+    int32_t idx = (int32_t)arg;
     int32_t n = router_chain_count(*pr, idx);
     if (n < 0) {
         lua_pushnil(lua);
@@ -227,9 +226,9 @@ static void _lrouter_push_query(lua_State *lua, url_ctx *url) {
         lpub_push_url_param(lua, url);
     }
 }
-// router_match_index 未命中时 url 是否已解析：400 与未知方法没解析，404 / 405 / OPTIONS 自动应答已解析
+// router_match_index 未命中时 url 是否已解析：400 没解析，404 / 405 / OPTIONS 自动应答已解析
 static inline int32_t _lrouter_url_parsed(int32_t idx) {
-    return -2 != idx && -3 != idx;
+    return -2 != idx;
 }
 // match 的 url 表只压 path 与 param 两个字段
 static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
@@ -268,7 +267,7 @@ static void _lrouter_push_params(lua_State *lua, router_req *ctx) {
 /// <returns type="RouterMatchedURL|string?">命中时是规范化后的 path 与 query 表；未命中时是 Allow 头的值
 /// （405 与 OPTIONS 自动应答才有，其余为 nil）</returns>
 /// <returns type="integer|RouterMatchedURL?">命中时是路由索引（≥0）；404 / 405 / OPTIONS 自动应答时是 path 与 query 表，
-/// 400 与未知方法没有这一位、只返到 Allow 为止</returns>
+/// 400 没有这一位、只返到 Allow 为止</returns>
 /// <returns type="table&lt;string,string&gt;?">路径参数表；仅命中时返回</returns>
 static int32_t _lrouter_match(lua_State *lua) {
     LPUB_UD_ARG(lua, router_ctx, MT_ROUTER, pr, "router freed");
@@ -310,7 +309,7 @@ static int32_t _lrouter_match(lua_State *lua) {
 /// <returns type="string?">命中时是规范化后的 path；未命中时是 Allow 头的值（405 与 OPTIONS 自动应答才有，
 /// 其余为 nil）</returns>
 /// <returns type="string|table&lt;string,string&gt;?">命中时是查询参数表，没有查询参数时为 nil（不建空表）；
-/// 404 / 405 / OPTIONS 自动应答时是规范化后的 path，400 与未知方法只返到 Allow 为止</returns>
+/// 404 / 405 / OPTIONS 自动应答时是规范化后的 path，400 只返到 Allow 为止</returns>
 /// <returns type="integer|table&lt;string,string&gt;?">命中时是路由索引（≥0）；404 / 405 / OPTIONS 自动应答时是
 /// 查询参数表（没有时为 nil），且未命中只返到这里为止</returns>
 /// <returns type="table&lt;string,string&gt;?">路径参数表；仅命中时返回，没有路径参数时为 nil（不建空表）；
@@ -358,6 +357,7 @@ static int32_t _lrouter_match_pack(lua_State *lua) {
 /// </summary>
 /// <param name="sk" type="userdata">连接标识</param>
 /// <param name="pack" type="lightuserdata">首帧的 http_pack_ctx 指针</param>
+/// <returns>无</returns>
 static int32_t _lrouter_expect_continue(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
     LPUB_LUD_ARG(lua, struct http_pack_ctx, 2, pack);

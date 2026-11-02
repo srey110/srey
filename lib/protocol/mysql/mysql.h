@@ -3,9 +3,10 @@
 
 #include "event/evpub.h"
 #include "protocol/mysql/mysql_struct.h"
+#include "protocol/prots_pub.h"
 
 // 内部函数：初始化握手回调函数指针
-void _mysql_init(void *hspush);
+void _mysql_init(_handshaked_push hspush);
 // 内部函数：释放 mpack_ctx 数据包
 void _mysql_pkfree(void *pack);
 // 内部函数：释放用户数据上下文中的 MySQL 资源

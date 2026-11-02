@@ -76,7 +76,9 @@ static int32_t _test_connect_refused(task_ctx *task) {
     return ERR_OK;
 }
 
-// 先连上 http server，立即 ev_close 后再调 coro_send，验证 send 在断开 fd 上正确失败
+// 先连上 http server，立即 ev_close 后再调 coro_send：本地的 sk 没被谁置失效(关闭时没人在它上面等)，
+// coro_send 照常挂上去、等到读超时返回 NULL。读超时临时调短，免得整组白等 10 秒。
+// 等待被 CLOSE 唤醒、sk 跟着失效的那条见 _test_close_invalidates
 static int32_t _test_send_after_close(task_ctx *task, uint16_t httpport) {
     sock_ctx sk;
     if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &sk)) {
@@ -89,7 +91,10 @@ static int32_t _test_send_after_close(task_ctx *task, uint16_t httpport) {
     // 构造一个最小 HTTP GET 包发送，预期 coro_send 返回 NULL
     const char *req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
     size_t rsize = 0;
+    uint32_t nread = task_get_netread_timeout(task);
+    task_set_netread_timeout(task, 300);
     void *resp = coro_send(task, &sk, (void *)req, strlen(req), &rsize, 1);
+    task_set_netread_timeout(task, nread);
     if (NULL != resp) {
         LOG_ERROR("coro_send-after-close: expected NULL, got resp size=%zu.", rsize);
         return ERR_FAILED;
@@ -464,7 +469,9 @@ static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
     // 发一条 HTTP 请求让服务端回包，走正常摘空而不是超时
     const char *req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
     ev_send(&task->loader->netev, &sk, (void *)req, strlen(req), 1);
-    coro_sleep(task, 300);
+    for (int32_t i = 0; i < 150 && (msg_type)0 == a.woke; i++) {
+        coro_sleep(task, 20);// 最多约 3 秒，等到回包即停
+    }
     if (MSG_TYPE_RECV != a.woke) {
         LOG_ERROR("keep lifetime: waiter woke with mtype %d, expected RECV.", (int32_t)a.woke);
         ev_close(&task->loader->netev, &sk);
@@ -476,9 +483,45 @@ static int32_t _test_keep_lifetime(task_ctx *task, uint16_t httpport) {
         return ERR_FAILED;
     }
     ev_close(&task->loader->netev, &sk);
-    coro_sleep(task, 300);
+    for (int32_t i = 0; i < 100 && s0 != _sessions(task); i++) {
+        coro_sleep(task, 20);// 最多约 2 秒，CLOSE 到了条目删掉即停
+    }
     if (s0 != _sessions(task)) {
         LOG_ERROR("keep lifetime: entry survived CLOSE (s0=%d now=%d).", s0, _sessions(task));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// 等待被这条连接的 CLOSE 唤醒后，传进去的 sk 跟着失效：之后 coro_close 当场返回 ERR_OK，不再白等读超时
+static sock_ctx _ci_sk;// 父子协程共用，存储期理由同 _test_close_reregister
+static int32_t _ci_done;
+static void _ci_waiter(void *owner, void *arg) {
+    (void)arg;
+    _ci_done = (NULL == coro_recv((task_ctx *)owner, &_ci_sk, NULL)) ? 1 : 2;
+}
+static int32_t _test_close_invalidates(task_ctx *task, uint16_t httpport) {
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", httpport, 0, NULL, &_ci_sk)) {
+        LOG_ERROR("close invalidates: connect to http_sv failed.");
+        return ERR_FAILED;
+    }
+    _ci_done = 0;
+    coro_fork(coro_task_co(task), _ci_waiter, NULL);
+    coro_sleep(task, 30);// fork 的协程在本次分发之后才起，先让它挂上
+    sock_ctx copy = _ci_sk;// 用副本关：被测的是等待者手里那份
+    ev_close(&task->loader->netev, &copy);
+    for (int32_t i = 0; i < 100 && 0 == _ci_done; i++) {
+        coro_sleep(task, 20);
+    }
+    if (1 != _ci_done
+        || !sock_is_invalid(&_ci_sk)) {
+        LOG_ERROR("close invalidates: done=%d invalid=%d, want 1/1.", _ci_done, sock_is_invalid(&_ci_sk));
+        return ERR_FAILED;
+    }
+    uint64_t t0 = nowms();
+    if (ERR_OK != coro_close(task, &_ci_sk)
+        || nowms() - t0 > 200) {
+        LOG_ERROR("close invalidates: coro_close should return ERR_OK at once.");
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -723,6 +766,12 @@ static void _startup_run(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_keep_lifetime(task, arg->httpport)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_close_invalidates(task, arg->httpport)) {
         return;
     }
     if (task_isclosing(task)) {

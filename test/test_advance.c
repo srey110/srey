@@ -272,8 +272,6 @@ static void test_router_fallback(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, router_set_no_method(r, _fallback_handler, &tag));
     CuAssertIntEquals(tc, ERR_OK, router_exec(r, -4, &ctx));
     CuAssertIntEquals(tc, 23, _fallback_n);
-    // -3(未知方法) 不是 -4(路径在而方法不对)，不存在的 NoMethod 也不能兜它
-    CuAssertIntEquals(tc, ERR_FAILED, router_exec(r, -3, &ctx));
 
     CuAssertIntEquals(tc, ERR_OK, router_set_no_route(r, NULL, NULL));
     CuAssertIntEquals(tc, ERR_FAILED, router_exec(r, -1, &ctx));
@@ -386,10 +384,16 @@ static void test_router_allow(CuTest *tc) {
     ctx.allow = ROUTER_M_GET;
     ctx.params_n = 3;
     ctx.method = ROUTER_M_HEAD;
-    CuAssertIntEquals(tc, -3, router_match_index(r, "FROB", 4, "/u/7", 4, &ctx));
-    CuAssertTrue(tc, 0 == ctx.allow);
+    // 不认识的方法：路径在 -4 带 Allow，不在 -1(同 Laravel)
+    CuAssertIntEquals(tc, -4, router_match_index(r, "FROB", 4, "/u/7", 4, &ctx));
+    CuAssertTrue(tc, 0 != (ctx.allow & ROUTER_M_POST));
     CuAssertIntEquals(tc, 0, ctx.params_n);
     CuAssertIntEquals(tc, 0, (int32_t)ctx.method);
+    CuAssertIntEquals(tc, 405, router_match_code(-4));
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertIntEquals(tc, -1, router_match_index(r, "FROB", 4, "/none", 5, &ctx));
+    CuAssertTrue(tc, 0 == ctx.allow);
     ZERO(&ctx, sizeof(ctx));
     ctx.url = &url;
     CuAssertTrue(tc, router_match_index(r, "POST", 4, "/u/7", 4, &ctx) >= 0);

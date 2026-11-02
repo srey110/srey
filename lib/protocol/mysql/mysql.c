@@ -17,7 +17,7 @@
 #define MYSQL_CHARSET_UTF8MB4 45// utf8mb4_general_ci：5.7 与 MariaDB 的 utf8mb4 默认排序规则
 #define MYSQL_CHARSET_UTF8MB4_0900 255// utf8mb4_0900_ai_ci：MySQL 8.0 起的 utf8mb4 默认排序规则
 
-// 连接解析状态枚举
+// 连接解析状态枚举（test_mysql_parse.c 的 _MY_* 按数值抄了一份，改顺序要同步）
 typedef enum parse_status {
     INIT = 0,       // 初始状态，等待服务器握手包
     SSL_EXCHANGE,   // SSL 握手交换中
@@ -54,8 +54,8 @@ static const mysql_charset _mysql_charsets[] = {
     { 97, "eucjpms" }, { 248, "gb18030" }
 };
 
-void _mysql_init(void *hspush) {
-    _hs_push = (_handshaked_push)hspush;
+void _mysql_init(_handshaked_push hspush) {
+    _hs_push = hspush;
 }
 void _mysql_pkfree(void *pack) {
     if (NULL == pack) {

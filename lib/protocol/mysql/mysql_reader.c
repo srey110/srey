@@ -39,16 +39,10 @@ static int32_t _mysql_mktime(mysql_reader_ctx *reader, struct tm *dt, time_t *ts
     return ERR_OK;
 }
 #else
-// 公历日期时间按 UTC 算出的秒数(days_from_civil)，字段不查量程
+// 公历日期时间按 UTC 算出的秒数，字段不查量程
 static inline int64_t _mysql_civil_secs(const struct tm *t) {
-    int64_t y = (int64_t)t->tm_year + 1900;
-    int64_t m = (int64_t)t->tm_mon + 1;
-    y -= (m <= 2) ? 1 : 0;
-    int64_t era = (y >= 0 ? y : y - 399) / 400;
-    int64_t yoe = y - era * 400;
-    int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + t->tm_mday - 1;
-    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return (era * 146097 + doe - 719468) * 86400 + (int64_t)t->tm_hour * 3600 + (int64_t)t->tm_min * 60 + t->tm_sec;
+    return days_from_civil((int64_t)t->tm_year + 1900, (int64_t)t->tm_mon + 1, t->tm_mday) * 86400
+        + (int64_t)t->tm_hour * 3600 + (int64_t)t->tm_min * 60 + t->tm_sec;
 }
 // t 前后 26 小时的本地偏移都是 off 时返 1，探测时刻超出 time_t 的范围返 0。前提是任意两个本地偏移相差不超过 26 小时
 // (UTC-12 ~ UTC+14)、两次跳变相隔超过 2 天：此时 t 的本地时间只对应 t 一个瞬间
@@ -186,10 +180,23 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, int32_t col,
     }
     if (0 == (_mysql_type_cls[column->type] & cls)) {
         SET_PTR(err, ERR_FAILED);
-        LOG_WARN("does not match required data type.");
+        LOG_WARN("column %d does not match required data type.", col);
         return NULL;
     }
     return &row[col];
+}
+// 二进制协议的整数字段按有符号 / 无符号读出
+static inline int64_t _mysql_bin_i64(const mpack_row *row) {
+    if (sizeof(int8_t) == row->val.lens) {
+        return (int8_t)(((char *)row->val.data)[0]);// 无符号 char 平台须显式转 int8_t 才能保留 TINYINT 负值
+    }
+    return read_integer(row->val.data, row->val.lens, 1, 1);
+}
+static inline uint64_t _mysql_bin_u64(const mpack_row *row) {
+    if (sizeof(uint8_t) == row->val.lens) {
+        return (uint8_t)(((char *)row->val.data)[0]);
+    }
+    return (uint64_t)read_integer(row->val.data, row->val.lens, 1, 0);
 }
 int64_t mysql_reader_integer_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
@@ -207,14 +214,18 @@ int64_t mysql_reader_integer_at(mysql_reader_ctx *reader, int32_t col, int32_t *
             return 0;
         }
         return val;
-    } else {
-        // 二进制协议：字段值为原始二进制整数
-        if (sizeof(int8_t) == row->val.lens) {
-            return (int8_t)(((char *)row->val.data)[0]);// 无符号 char 平台须显式转 int8_t 才能保留 TINYINT 负值
-        } else {
-            return read_integer(row->val.data, row->val.lens, 1, 1);
-        }
     }
+    // 二进制协议：按列的 UNSIGNED 标志读，无符号值超 INT64_MAX 判失败，与文本协议一致
+    if (0 == (reader->fields[col].flags & MYSQL_UNSIGNED_FLAG)) {
+        return _mysql_bin_i64(row);
+    }
+    uint64_t uval = _mysql_bin_u64(row);
+    if (uval > INT64_MAX) {
+        SET_PTR(err, ERR_FAILED);
+        LOG_WARN("unsigned value exceeds INT64_MAX.");
+        return 0;
+    }
+    return (int64_t)uval;
 }
 uint64_t mysql_reader_uinteger_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
@@ -231,14 +242,18 @@ uint64_t mysql_reader_uinteger_at(mysql_reader_ctx *reader, int32_t col, int32_t
             return 0;
         }
         return val;
-    } else {
-        // 二进制协议：字段值为原始二进制无符号整数
-        if (sizeof(uint8_t) == row->val.lens) {
-            return (uint8_t)(((char *)row->val.data)[0]);
-        } else {
-            return read_integer(row->val.data, row->val.lens, 1, 0);
-        }
     }
+    // 二进制协议：按列的 UNSIGNED 标志读，有符号列的负值判失败，与文本协议一致
+    if (0 != (reader->fields[col].flags & MYSQL_UNSIGNED_FLAG)) {
+        return _mysql_bin_u64(row);
+    }
+    int64_t val = _mysql_bin_i64(row);
+    if (val < 0) {
+        SET_PTR(err, ERR_FAILED);
+        LOG_WARN("negative value read as unsigned.");
+        return 0;
+    }
+    return (uint64_t)val;
 }
 // 文本协议浮点解析公共逻辑：空串 / 有残留字符 / 上溢的判定全在 strtod_s 里，
 // 与 pgsql 侧共用同一份（见 base/strconv.h），这里只负责写 err 和打日志

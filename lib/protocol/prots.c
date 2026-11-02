@@ -278,7 +278,7 @@ int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
     g_emit.end(target);
     return rtn;
 }
-// 构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target。erro 取 close_type
+// 先 prots_closed 清掉协议状态，再构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target。erro 取 close_type
 static inline void _prots_emit_close(void *target, sock_ctx *sk, int32_t client,
                               int32_t erro, ud_cxt *ud) {
     message_ctx msg = { 0 };
@@ -349,7 +349,7 @@ void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, s
             v = _prots_vtbl(ud->pktype);
             msg.subtype = ud->pktype;
         }
-        size = buffer_size(buf);
+        size = buffer_size(buf);// 入参(本次读到的字节数)用不上，复用它记解包前的缓冲长度
         data = _prots_unpack_v(v, ev, sk, client, buf, ud, &msg.size, &status);
         while (NULL != data) {
             // 当场处理的上一个包可能经 ev_ud_handle 把连接转给了别的 task，之后的包投给新的。

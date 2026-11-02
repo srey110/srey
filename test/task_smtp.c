@@ -688,5 +688,7 @@ void task_smtp_fake_start(loader_ctx *loader, const char *name, uint16_t port, i
     CALLOC(ctx, 1, sizeof(fake_smtp_ctx));
     ctx->port = port;
     ctx->ok = ok;
-    coro_task_register(loader, name, 0, _fake_startup, NULL, _free, ctx);
+    if (NULL == coro_task_register(loader, name, 0, _fake_startup, NULL, _free, ctx)) {
+        LOG_ERROR("task %s register failed.", name);// ctx 已由 _free 释放
+    }
 }

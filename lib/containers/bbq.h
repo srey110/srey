@@ -38,7 +38,7 @@
 #define BBQ_VSN(c)    ((uint64_t)(c) >> BBQ_OFF_BITS)
 #define BBQ_CUR(v, o) ((((uint64_t)(v)) << BBQ_OFF_BITS) | (uint64_t)(o))
 
-// 入参写 T const * 而不是 const T *：T 是指针类型(如 void *)时，后者会被解析成指向 const 的指针，调用方传普通指针就告警。
+// 入参写 T const * 而不是 const T *：理由同 hashmap.h。
 // BBQ_DECL(name, T)：name 生成的类型名，T 元素类型
 #define BBQ_DECL(name, T)                                                       \
 /* 块头三条 cache line。allocated 与 committed 必须分开:生产者猛抽 allocated 的同时  \

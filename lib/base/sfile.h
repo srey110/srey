@@ -30,8 +30,8 @@ uint64_t file_mtime(const char *file);
 /// <summary>
 /// 打开文件并标记为子进程不可继承。参数与 fopen 相同。本项目自己的 fopen 都该走它:
 /// popen 起的子进程会连带继承进程里每一个可继承的句柄。
-/// 覆盖有两处已知缺口:第三方代码自带的 fopen 不走这里;打标与 fopen 不是一步,
-/// 两者之间那一小段窗口里 fork 出去的子进程仍会继承这个句柄
+/// 覆盖有两处已知缺口:第三方代码自带的 fopen 不走这里;Linux / FreeBSD / Windows 打开时就不可继承,
+/// 其余平台(如 macOS)打标与 fopen 不是一步,两者之间那一小段窗口里 fork 出去的子进程仍会继承这个句柄
 /// </summary>
 /// <param name="file">路径</param>
 /// <param name="mode">fopen 的模式串</param>

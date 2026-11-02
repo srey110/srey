@@ -19,8 +19,7 @@ local PG_FORMAT = ppub.FORMAT
 ---@field closed boolean close() 已发出 Close，此后 execute 一律拒绝（口径同 mysql_stmt）
 ---@field err string 最近一次错误信息
 local ctx = class("pgsql_stmt_ctx")
--- _fail / _reset 与 pgsql.lua 共用 ppub 的同一份实现（说明见那边）。
--- 这边只有 execute 一个带 err 契约的入口，故不设 _busy
+-- _fail / _reset 与 pgsql.lua 共用 ppub 的同一份实现（说明见那边）
 ctx._fail = ppub.fail
 ctx._reset = ppub.reset
 

@@ -56,13 +56,25 @@ runner.run(function(t)
         b:datetime("k_dt", os.time())
         -- datetime 收秒，上下界是 MySQL DATETIME 的 1000-01-01 ~ 9999-12-31 23:59:59(UTC)：
         -- 线格式年份只占 2 字节，把 reader:datetime 给的微秒原样回绑会截成另一个合法年份
-        -- 32 位 time_t 的平台(m32)上 2038 年后的秒数一律被拒，两条"合法"按平台判
+        -- 32 位 time_t 的平台(m32)上 2038 年后的秒数一律被拒，两条"合法"按平台判。
+        -- 按 UTC 卡界之外，C 层按本地时区换算后的年份也得在 1000~9999：东时区的上界、西时区的下界往里缩一个时区差
         local tt64 = pcall(b.datetime, b, "k_dt", 2147483648)
-        t:eq(tt64,  pcall(b.datetime, b, "k_dt", 253402300799),          "bind:datetime 上界 9999-12-31 23:59:59 合法")
+        local tzoff = os.time() - os.time(os.date("!*t"))
+        local hi = 253402300799 - math.max(tzoff, 0)
+        local lo = -30610224000 - math.min(tzoff, 0)
+        t:eq(tt64,  pcall(b.datetime, b, "k_dt", hi),                    "bind:datetime 上界合法")
         t:eq(false, pcall(b.datetime, b, "k_dt", 253402300800),          "bind:datetime 超上界被拒")
         t:eq(false, pcall(b.datetime, b, "k_dt", os.time() * 1000000),   "bind:datetime 误传微秒被拒")
-        t:eq(tt64,  pcall(b.datetime, b, "k_dt", -30610224000),          "bind:datetime 下界 1000-01-01 合法")
+        t:eq(tt64,  pcall(b.datetime, b, "k_dt", lo),                    "bind:datetime 下界合法")
         t:eq(false, pcall(b.datetime, b, "k_dt", -30610224001),          "bind:datetime 超下界被拒")
+        -- Windows 上 1970 年前、3000 年后本地换算本身就失败，按零日期发、不报错，这两条只在别的平台测
+        if "\\" ~= package.config:sub(1, 1) then
+            if tzoff > 0 then
+                t:eq(false, pcall(b.datetime, b, "k_dt", hi + 1), "bind:datetime 东时区上界之外换成本地超 9999 年被拒")
+            elseif tzoff < 0 then
+                t:eq(false, pcall(b.datetime, b, "k_dt", lo - 1), "bind:datetime 西时区下界之外换成本地不足 1000 年被拒")
+            end
+        end
         b:time("k_tm", 0, 0, 1, 30, 0)
         -- days 与后面三个字段同口径卡下界：线格式里它是 4 字节无符号，-1 写出去解成
         -- 4294967295 天，远超 MySQL TIME 的 ±838:59:59，服务端截成另一个合法时间且无从报错
@@ -122,17 +134,15 @@ runner.run(function(t)
         b2:null() -- 显式 NULL
         b2 = nil
 
-        -- nparam 越界报错而不是截断：Bind/Parse 报文里的参数个数是 Int16。
+        -- nparam 越界报错而不是截断：Bind/Parse 报文里的参数个数是 2 字节计数，服务端按无符号读、上限 65535。
         -- 65536 截成 0 会得到一个"绑什么都无视"的 bind，-1 截成 65535 反过来按最大参数数
         -- 建头部，两种情况调用方从返回值上都看不出来
         t:eq(false, pcall(pbind.new, -1),    "pgsql.bind.new 负 nparam 被拒")
-        -- 真实上界是 INT16_MAX(32767)，贴边各钉一条；只用 65536 的话把判据放宽到
-        -- UINT16_MAX 也照样通过
-        t:eq(true,  pcall(pbind.new, 32767), "pgsql.bind.new(INT16_MAX) 合法")
-        t:eq(false, pcall(pbind.new, 32768), "pgsql.bind.new 超 INT16_MAX 被拒")
-        t:eq(false, pcall(pbind.new, 65536), "pgsql.bind.new 超 UINT16 也被拒")
+        -- 上界 UINT16_MAX(65535)，贴边各钉一条
+        t:eq(true,  pcall(pbind.new, 65535), "pgsql.bind.new(UINT16_MAX) 合法")
+        t:eq(false, pcall(pbind.new, 65536), "pgsql.bind.new 超 UINT16_MAX 被拒")
         t:eq(true,  pcall(pbind.new, 0),     "pgsql.bind.new(0) 合法")
-        -- nparam=0 的 bind 上绑值当场报错：C 层对它绑什么都静默丢掉，组包照样成功，文档却承诺个数不符报错
+        -- nparam=0 的 bind 上绑值当场报错：C 层只记成多绑、到组包才拒，Lua 侧在绑值处就报
         local b0 = pbind.new(0)
         t:eq(false, pcall(b0.int32, b0, 1),   "nparam=0 时 int32 报错")
         t:eq(false, pcall(b0.null, b0),       "nparam=0 时 null 报错")
@@ -141,8 +151,8 @@ runner.run(function(t)
         t:eq(true,  pcall(b0.clear, b0),      "nparam=0 时 clear 照常")
         t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", -1),
              "pack_stmt_prepare 负 nparam 被拒")
-        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", 32768),
-             "pack_stmt_prepare 超 INT16_MAX 被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", 65536),
+             "pack_stmt_prepare 超 UINT16_MAX 被拒")
         -- oids 逐个校验：裸 lua_tointeger 会把非整数、字符串、缺的格子统统静默变成 0，
         -- 而 0 在 Parse 报文里是合法值（"该参数类型由服务端推断"），推断出来的类型与业务随后
         -- 按二进制格式绑的字节不符时，要到 execute 才以一句服务端类型错误浮出来
@@ -556,7 +566,7 @@ runner.run(function(t)
         t:eq(false, pcall(m.record, m, yyjson.null), "mysql:record NULL 指针被拒")
         -- 没记过任何包时连接级计数为 0
         t:eq(0, m:last_id(), "未记包时 last_id 为 0")
-        t:eq(0, m:affectd_rows(), "未记包时 affectd_rows 为 0")
+        t:eq(0, m:affected_rows(), "未记包时 affected_rows 为 0")
 
         local pack, size = m:pack_ping()
         t:check(pack ~= nil and size > 0, "mysql pack_ping non-empty")
@@ -756,6 +766,13 @@ runner.run(function(t)
         local f_ptr, f_sz = filter:data()
         pack, size = mg:pack_find("coll1", f_ptr, f_sz)
         t:check(pack ~= nil and size > 0, "mongo pack_find with filter non-empty")
+        utils.ud_free(pack)
+        -- filter 不是 lightuserdata 时其后的长度槽不读，只许 nil 或数字：opts 错放进去会被静默丢掉，报错
+        local fstr = srey.ud_str(f_ptr, f_sz)
+        t:eq(false, pcall(mg.pack_find, mg, "coll1", fstr, fstr), "pack_find filter 为 string 时长度槽放 opts 报错")
+        t:eq(false, pcall(mg.pack_find, mg, "coll1", nil, fstr), "pack_find filter 为 nil 时长度槽放 opts 报错")
+        pack, size = mg:pack_find("coll1", fstr, nil, fstr)
+        t:check(pack ~= nil and size > 0, "pack_find filter 为 string、opts 放在对的槽照常组包")
         utils.ud_free(pack)
 
         -- aggregate pipeline

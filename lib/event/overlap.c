@@ -205,7 +205,7 @@ void _iocp_disconnect(evsock_ctx *evsk) {
         }
         CancelIoEx((HANDLE)evsk->sk.fd, NULL);
     } else {
-        // UDP datagram 无连接,没有待发队列要冲
+        // UDP 不冲发送队列：积压的 datagram 随关闭直接丢弃
         overlap_udp_ctx *udp = UPCAST(evsk, overlap_udp_ctx, ol_r);
         if (BIT_CHECK(udp->status, STATUS_ERROR)) {
             return;
@@ -229,7 +229,7 @@ static inline int32_t _olp_call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int3
     return ERR_OK;
 }
 #if WITH_SSL
-// 调用SSL握手完成回调，口径同 usock.c 的 _usk_call_ssl_exchanged_cb
+// 调用SSL握手完成回调，回调返回值原样透传(IOCP 不在回调里推迟关闭)
 static inline int32_t _olp_call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.exch_cb) {
         return oltcp->cbs.exch_cb(ev, &oltcp->ol_r.sk, SOCK_IS_CLIENT(oltcp->status), &oltcp->ud, TCP_SSL(oltcp));
@@ -452,14 +452,16 @@ static uint32_t _olp_wpend_tick(void *ud, uint64_t now_ms) {
     watcher_ctx *watcher = ud;
     list_node *head;
     overlap_tcp_ctx *oltcp;
+    uint64_t waited;
     for (;;) {
         head = watcher->wpends.head;
         if (NULL == head) {
             break;
         }
         oltcp = UPCAST(head, overlap_tcp_ctx, wpend_node);
-        if (now_ms - oltcp->wpend_ms < SSL_WPEND_MAX_MS) {
-            return (uint32_t)(SSL_WPEND_MAX_MS - (now_ms - oltcp->wpend_ms));
+        waited = now_ms > oltcp->wpend_ms ? now_ms - oltcp->wpend_ms : 0;// 同 _usk_wpend_tick
+        if (waited < SSL_WPEND_MAX_MS) {
+            return (uint32_t)(SSL_WPEND_MAX_MS - waited);
         }
         LOG_WARN("ssl write pending %dms with no progress on fd %d, disconnect.",
                  SSL_WPEND_MAX_MS, (int32_t)oltcp->ol_r.sk.fd);
@@ -705,7 +707,6 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl
         int32_t sending;
         if (ERR_OK != _olp_ssl_exchange_trigger(watcher, oltcp, evssl, &sending)) {
             _iocp_disconnect(evsk);
-            LOG_ERROR("ssl exchange error.");
             return;
         }
         if (sending) {
@@ -717,8 +718,7 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl
 // 排空 buf_s；没排完就投 0 字节探针接力。
 // SSL 块是数据期 TLS1.3 的方向 B(SSL_write 说要先读)，与 usock.c 同条件同序：置 KEYUPDATE_READ
 // 并交还 SENDING,靠 _olp_on_recv_cb 收到数据后接力。
-// 顺序不能颠倒：SSL 块必须在 "0 == cnt" 之前,否则排空重试时走不到清位,残留的 KEYUPDATE_READ
-// 会让 _iocp_add_bufs_trypost 永久拦住后续发送。
+// 顺序不能颠倒：SSL 块必须在 "0 == cnt" 之前,否则残留的 KEYUPDATE_READ 会永久拦住后续发送。
 // 挂起态不变式：KEYUPDATE_READ=1 ⟹ ol_s 不在途 ∧ ol_r 在途 ∧ buf_s 非空
 static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nsend;
@@ -780,7 +780,6 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
             BIT_REMOVE(oltcp->status, STATUS_SSLEXCHANGE);
             int32_t sending;
             if (ERR_OK != _olp_ssl_exchange_trigger(watcher, oltcp, oltcp->evssl, &sending)) {
-                LOG_ERROR("ssl exchange error.");
                 return ERR_FAILED;
             }
             if (!sending) {
@@ -1576,9 +1575,8 @@ static uint32_t _olp_on_sendto_retry(void *ud, uint64_t now_ms) {
     oludp->retry_until = now_ms + oludp->retry_ms;
     return oludp->retry_ms;
 }
-// 队头因资源紧张发不出去时挂上周期重试。IOCP 没有"可写"事件可等,不自驱就只能等下一次
-// ev_sendto —— 队头堵住等于该 fd 整条发送路径停摆(后来的包全排在它后面),业务若就此不再
-// 发送就一直停到关连接。做法与 usock.c 的 accept EMFILE 退避同构:cb 非 NULL 表示已挂。
+// 队头因资源紧张发不出去时挂上周期重试：IOCP 没有"可写"事件可等，不自驱就要等到下一次 ev_sendto。
+// 做法与 usock.c 的 accept EMFILE 退避同构:cb 非 NULL 表示已挂。
 // 从 EVENT_TICK_MIN 起步、翻倍到 EVENT_WAIT_TIMEOUT 封顶,免得资源持续紧张时 10ms 空转
 static inline void _olp_sendto_retry(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     if (NULL != oludp->send_tick.cb) {

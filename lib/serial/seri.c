@@ -153,7 +153,6 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
     uint8_t tag = (uint8_t)*p;
     uint8_t type = tag & 0x7;
     uint8_t cookie = tag >> 3;
-    // 各 case 的取值变量提到 switch 前, case 后面不套花括号
     size_t slen;
     uint8_t ntag;
     int64_t n;

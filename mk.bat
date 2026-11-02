@@ -51,7 +51,7 @@ goto parse
 :parsed
 
 where msbuild >nul 2>&1
-if errorlevel 1 echo 找不到 msbuild，请在「x64 Native Tools Command Prompt for VS」里运行本脚本& exit /b 1
+if errorlevel 1 echo 找不到 msbuild，请在「x64 Native Tools Command Prompt for VS」里运行本脚本 & exit /b 1
 
 rem 读 config.h 的开关打印出来,与 mk.sh / deps.py 同一份真相(define 行有缩进)
 for /f "tokens=2,3" %%a in ('findstr /r /c:"^ *#define WITH_SSL " /c:"^ *#define WITH_LUA " /c:"^ *#define WITH_MIMALLOC " lib\base\config.h') do echo   %%a = %%b

@@ -68,10 +68,6 @@ typedef struct bson_iter {
 } bson_iter;
 
 /// <summary>
-/// 全局初始化：生成本进程的 OID 随机段（5 字节）与计数器起点，以及空 BSON 文档。进程启动时调一次
-/// </summary>
-void bson_globle_init(void);
-/// <summary>
 /// 生成一个新的 ObjectId
 /// </summary>
 /// <param name="oid">输出缓冲区，长度为 BSON_OID_LENS(12)</param>
@@ -121,8 +117,9 @@ const char *bson_subtype_tostring(bson_subtype type);
 /// </summary>
 /// <param name="data">BSON 原始数据；NULL 直接返回 ERR_FAILED</param>
 /// <param name="lens">数据长度</param>
-/// <returns>ERR_OK 深度未超过 BSON_MAX_DEPTH 且文档结构合法；ERR_FAILED 超限、非法或 data 为 NULL</returns>
-int32_t bson_check_depth(char *data, size_t lens);
+/// <returns>ERR_OK 深度未超过 BSON_MAX_DEPTH 且文档结构合法；ERR_FAILED 超限、非法或 data 为 NULL。
+/// 只查头 4 字节声明的长度以内，lens 多出的尾部字节不管；要整段恰好是一篇文档，先过 bson_check_doc</returns>
+int32_t bson_check_depth(const char *data, size_t lens);
 /// <summary>
 /// 将 bson_ctx 中的文档转换为可读字符串（需调用者 FREE）
 /// </summary>
@@ -135,7 +132,7 @@ char *bson_tostring(bson_ctx *bson);
 /// <param name="data">BSON 原始数据</param>
 /// <param name="lens">数据长度</param>
 /// <returns>格式化后的字符串，需 FREE；data 为 NULL 时返回 NULL</returns>
-char *bson_tostring2(char *data, size_t lens);
+char *bson_tostring2(const char *data, size_t lens);
 /// <summary>
 /// 只校验外层结构：doc 是否恰好是占满 lens 字节的一篇完整 BSON 文档，不逐个检查里面的元素。
 /// 来源不可信的文档交给 bson_append_document / bson_append_array 之前先过这一道
@@ -153,9 +150,9 @@ int32_t bson_check_doc(const char *doc, size_t lens);
 /// <param name="doc">源 BSON 文档数据;NULL 时 no-op</param>
 /// <param name="lens">doc 缓冲的实际字节数;0 时 no-op</param>
 /// <returns>ERR_OK 已拼接(含 NULL / 空文档的 no-op);ERR_FAILED 缓冲不足 5 字节、
-/// 末字节不是 EOD、或头声明长度超出缓冲,三种情况内容都整篇未拼入。
+/// 头声明长度小于 5 或超出缓冲、或声明长度处的末字节不是 EOD,这几种情况内容都整篇未拼入。
 /// 本函数只做结构性校验,不管字节数上限——那是取决于承载协议的决定,由调用方判</returns>
-int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens);
+int32_t bson_cat(bson_ctx *bson, const char *doc, size_t lens);
 /// <summary>
 /// 开始写入一个嵌套文档字段，须配对调用 bson_append_end 结束
 /// </summary>
@@ -252,7 +249,7 @@ void bson_append_jscode_n2(bson_ctx *bson, const char *key, size_t klens, const 
 /// <param name="key">字段名</param>
 /// <param name="doc">一篇完整的 BSON 文档：非 NULL，头 4 字节声明的长度等于 lens，末字节为 EOD</param>
 /// <param name="lens">doc 的字节数，不小于 5（空文档是 5 字节，取 bson_empty）</param>
-void bson_append_document(bson_ctx *bson, const char *key, char *doc, size_t lens);
+void bson_append_document(bson_ctx *bson, const char *key, const char *doc, size_t lens);
 /// <summary>
 /// 同 bson_append_document，key 的约定同 bson_append_document_begain2
 /// </summary>
@@ -261,7 +258,7 @@ void bson_append_document(bson_ctx *bson, const char *key, char *doc, size_t len
 /// <param name="klens">key 的字节数</param>
 /// <param name="doc">同 bson_append_document</param>
 /// <param name="lens">同 bson_append_document</param>
-void bson_append_document2(bson_ctx *bson, const char *key, size_t klens, char *doc, size_t lens);
+void bson_append_document2(bson_ctx *bson, const char *key, size_t klens, const char *doc, size_t lens);
 /// <summary>
 /// 追加已序列化的 BSON 数组类型字段。doc 的前提与不校验的后果同 bson_append_document
 /// </summary>
@@ -269,7 +266,7 @@ void bson_append_document2(bson_ctx *bson, const char *key, size_t klens, char *
 /// <param name="key">字段名</param>
 /// <param name="doc">按数组编码的一篇完整 BSON 文档，要求同 bson_append_document</param>
 /// <param name="lens">同 bson_append_document</param>
-void bson_append_array(bson_ctx *bson, const char *key, char *doc, size_t lens);
+void bson_append_array(bson_ctx *bson, const char *key, const char *doc, size_t lens);
 /// <summary>
 /// 同 bson_append_array，key 的约定同 bson_append_document_begain2
 /// </summary>
@@ -278,7 +275,7 @@ void bson_append_array(bson_ctx *bson, const char *key, char *doc, size_t lens);
 /// <param name="klens">key 的字节数</param>
 /// <param name="doc">同 bson_append_array</param>
 /// <param name="lens">同 bson_append_document</param>
-void bson_append_array2(bson_ctx *bson, const char *key, size_t klens, char *doc, size_t lens);
+void bson_append_array2(bson_ctx *bson, const char *key, size_t klens, const char *doc, size_t lens);
 /// <summary>
 /// 追加二进制数据类型字段
 /// </summary>
@@ -287,7 +284,7 @@ void bson_append_array2(bson_ctx *bson, const char *key, size_t klens, char *doc
 /// <param name="type">bson_subtype 子类型</param>
 /// <param name="val">二进制数据</param>
 /// <param name="lens">数据长度</param>
-void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char *val, size_t lens);
+void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, const char *val, size_t lens);
 /// <summary>
 /// 同 bson_append_binary，key 的约定同 bson_append_document_begain2
 /// </summary>
@@ -297,14 +294,14 @@ void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char
 /// <param name="type">bson_subtype 子类型</param>
 /// <param name="val">二进制数据</param>
 /// <param name="lens">数据长度</param>
-void bson_append_binary2(bson_ctx *bson, const char *key, size_t klens, bson_subtype type, char *val, size_t lens);
+void bson_append_binary2(bson_ctx *bson, const char *key, size_t klens, bson_subtype type, const char *val, size_t lens);
 /// <summary>
 /// 追加 ObjectId 类型字段
 /// </summary>
 /// <param name="bson">bson_ctx</param>
 /// <param name="key">字段名</param>
 /// <param name="oid">12 字节 ObjectId 数据</param>
-void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]);
+void bson_append_oid(bson_ctx *bson, const char *key, const char oid[BSON_OID_LENS]);
 /// <summary>
 /// 同 bson_append_oid，key 的约定同 bson_append_document_begain2
 /// </summary>
@@ -312,7 +309,7 @@ void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]);
 /// <param name="key">字段名</param>
 /// <param name="klens">key 的字节数</param>
 /// <param name="oid">12 字节 ObjectId 数据</param>
-void bson_append_oid2(bson_ctx *bson, const char *key, size_t klens, char oid[BSON_OID_LENS]);
+void bson_append_oid2(bson_ctx *bson, const char *key, size_t klens, const char oid[BSON_OID_LENS]);
 /// <summary>
 /// 追加布尔类型字段
 /// </summary>
@@ -463,9 +460,7 @@ void bson_append_maxkey2(bson_ctx *bson, const char *key, size_t klens);
 /// <param name="bson">bson_ctx</param>
 void bson_iter_init(bson_iter *iter, bson_ctx *bson);
 /// <summary>
-/// 将迭代器重置到文档起始位置，并清掉当前元素（与 bson_iter_init 一致）。
-/// 不清的话 type/key/val 仍描述重置前那个元素，而 bson_iter_error 已归零，
-/// 于是在下一次 bson_iter_next 之前调 getter 会拿到陈旧值且 err 为 ERR_OK
+/// 将迭代器重置到文档起始位置，并清掉当前元素（与 bson_iter_init 一致）：下一次 bson_iter_next 之前调取值函数都失败
 /// </summary>
 /// <param name="iter">bson_iter</param>
 void bson_iter_reset(bson_iter *iter);
@@ -510,14 +505,15 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result);
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_DOUBLE）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>double 值</returns>
+/// <returns>double 值。类型不符（含遍历已结束或出错后）返回 0、err 置 ERR_FAILED、出参都不写；成功时 err 置 ERR_OK。
+/// 以下各取值函数失败时同此，返回 0 或 NULL</returns>
 double bson_iter_double(bson_iter *iter, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取 UTF-8 字符串
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_UTF8）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>字符串指针（指向内部缓冲，无需释放）</returns>
+/// <returns>字符串指针（指向内部缓冲，无需释放）；失败同 bson_iter_double，返回 NULL</returns>
 const char *bson_iter_utf8(bson_iter *iter, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取嵌套文档数据
@@ -525,7 +521,7 @@ const char *bson_iter_utf8(bson_iter *iter, int32_t *err);
 /// <param name="iter">bson_iter（类型须为 BSON_DOCUMENT）</param>
 /// <param name="lens">输出文档数据长度。必须非 NULL，函数内裸解引用</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>BSON 文档数据指针</returns>
+/// <returns>BSON 文档数据指针；失败同 bson_iter_double，返回 NULL</returns>
 char *bson_iter_document(bson_iter *iter, size_t *lens, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取数组数据
@@ -533,7 +529,7 @@ char *bson_iter_document(bson_iter *iter, size_t *lens, int32_t *err);
 /// <param name="iter">bson_iter（类型须为 BSON_ARRAY）</param>
 /// <param name="lens">输出数组数据长度。必须非 NULL，函数内裸解引用</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>BSON 数组数据指针</returns>
+/// <returns>BSON 数组数据指针；失败同 bson_iter_double，返回 NULL</returns>
 char *bson_iter_array(bson_iter *iter, size_t *lens, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取二进制数据
@@ -542,28 +538,28 @@ char *bson_iter_array(bson_iter *iter, size_t *lens, int32_t *err);
 /// <param name="subtype">输出子类型，NULL 则忽略</param>
 /// <param name="lens">输出数据长度。必须非 NULL，函数内裸解引用</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>二进制数据指针</returns>
+/// <returns>二进制数据指针；失败同 bson_iter_double，返回 NULL</returns>
 char *bson_iter_binary(bson_iter *iter, bson_subtype *subtype, size_t *lens, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取 ObjectId
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_OID）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>12 字节 OID 数据指针</returns>
+/// <returns>12 字节 OID 数据指针；失败同 bson_iter_double，返回 NULL</returns>
 char *bson_iter_oid(bson_iter *iter, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取布尔值
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_BOOL）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>0 为 false，非零为 true</returns>
+/// <returns>0 为 false，1 为 true；失败同 bson_iter_double，返回 0</returns>
 int32_t bson_iter_bool(bson_iter *iter, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取 UTC 毫秒时间戳
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_DATE）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>UTC 毫秒时间戳</returns>
+/// <returns>UTC 毫秒时间戳；失败同 bson_iter_double，返回 0</returns>
 int64_t bson_iter_date(bson_iter *iter, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取正则表达式
@@ -571,21 +567,21 @@ int64_t bson_iter_date(bson_iter *iter, int32_t *err);
 /// <param name="iter">bson_iter（类型须为 BSON_REGEX）</param>
 /// <param name="options">输出正则选项字符串指针，NULL 则忽略</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>正则模式字符串指针</returns>
+/// <returns>正则模式字符串指针；失败同 bson_iter_double，返回 NULL</returns>
 const char *bson_iter_regex(bson_iter *iter, char **options, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取 JavaScript 代码字符串
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_JSCODE）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>JavaScript 代码字符串指针</returns>
+/// <returns>JavaScript 代码字符串指针；失败同 bson_iter_double，返回 NULL</returns>
 const char *bson_iter_jscode(bson_iter *iter, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取 int32 值
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_INT32）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>int32 值</returns>
+/// <returns>int32 值；失败同 bson_iter_double，返回 0</returns>
 int32_t bson_iter_int32(bson_iter *iter, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取时间戳（低4字节为自增量，高4字节为秒级时间戳）
@@ -593,14 +589,14 @@ int32_t bson_iter_int32(bson_iter *iter, int32_t *err);
 /// <param name="iter">bson_iter（类型须为 BSON_TIMESTAMP）</param>
 /// <param name="inc">输出自增量。必须非 NULL，函数内裸解引用</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>秒级时间戳</returns>
+/// <returns>秒级时间戳；失败同 bson_iter_double，返回 0</returns>
 uint32_t bson_iter_timestamp(bson_iter *iter, uint32_t *inc, int32_t *err);
 /// <summary>
 /// 从迭代器当前字段读取 int64 值
 /// </summary>
 /// <param name="iter">bson_iter（类型须为 BSON_INT64）</param>
 /// <param name="err">输出错误码，NULL 则忽略</param>
-/// <returns>int64 值</returns>
+/// <returns>int64 值；失败同 bson_iter_double，返回 0</returns>
 int64_t bson_iter_int64(bson_iter *iter, int32_t *err);
 
 #endif//BSON_H_

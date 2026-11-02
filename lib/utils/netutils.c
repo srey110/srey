@@ -343,7 +343,7 @@ static SOCKET _sockcnt(union netaddr_ctx *paddr) {
     }
     return fd;
 }
-int32_t sock_pair(SOCKET acSock[2], int32_t nonblock) {
+int32_t sock_pair(SOCKET sock[2], int32_t nonblock) {
     SOCKET fdlsn = _sock_listen();
     if (INVALID_SOCK == fdlsn) {
         return ERR_FAILED;
@@ -383,7 +383,7 @@ int32_t sock_pair(SOCKET acSock[2], int32_t nonblock) {
         // fdacp 已由 sock_accept_cloexec 一并设好，这里只补主动连的那端
         sock_nonblock(fdcn);
     }
-    acSock[0] = fdacp;
-    acSock[1] = fdcn;
+    sock[0] = fdacp;
+    sock[1] = fdcn;
     return ERR_OK;
 }

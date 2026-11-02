@@ -41,9 +41,9 @@ void prots_hsfree(pack_type pktype, void *data);
 void prots_udfree(void *arg);
 /// <summary>
 /// 询问已解包的封包能否唤醒等待该 session 的协程。
-/// 对端主动发来的包不属于任何命令的响应,返非 OK 就不唤醒等回复的等待者(coro_send / coro_recv),免得
+/// 对端主动发来的包不属于任何命令的响应,不能唤醒等回复的等待者(coro_send / coro_recv),免得
 /// 挤掉真正的回复:pgsql 的 PGPACK_NOTIFICATION、mqtt 的 PUBLISH/PUBREL/DISCONNECT 及只由客户端发起的
-/// CONNECT/SUBSCRIBE/UNSUBSCRIBE/PINGREQ 与 AUTH 重新认证(0x19)、redis 的 RESP3 推送(订阅类确认除外)。
+/// CONNECT/SUBSCRIBE/UNSUBSCRIBE/PINGREQ 与 AUTH 重新认证(0x19)、redis 的 RESP3 推送(订阅类确认除外，开头带属性的跳过属性再判)。
 /// 等任意消息的等待者(coro_recv_any)不看这个判定,照样收到。WS 承载子协议时按其子协议判定
 /// </summary>
 /// <param name="pktype">协议包类型</param>

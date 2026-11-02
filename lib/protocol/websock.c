@@ -14,8 +14,7 @@
 #define WS_UNMASK_NIOV 16 // 带掩码帧直接从节点解掩码时最多跨几个节点，再多退回拷出后原地解
 #define WS_KEYPOOL_LENS 256 // 每线程攒的掩码熵字节数，一次 csprng 顶 64 帧
 // 子协议载荷不超过它的帧：子协议缓冲为空时整包直接在帧上解(帧当链头，随消息留着)，解不完的拷进缓冲；
-// 超过它的整帧挂成外部节点。小帧也挂节点的话，对端拆成小帧发时每字节都背一个帧头和一个节点头。
-// 取 buffer_append 新开节点的最小块：不超过它的载荷拷进来不比单独挂一个节点贵，大帧与小帧交替发也放大不了几倍
+// 超过它的整帧挂成外部节点。取 buffer_append 新开节点的最小块：不超过它的载荷拷进来不比单独挂一个节点贵
 #define WS_SEC_COPY_LENS MAX_RECV_SIZE
 
 // WebSocket 帧解析状态
@@ -279,8 +278,7 @@ static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
 }
 // 拆分解析子协议。按 RFC 7230 §7 的 list 语义切:每段先 trim 再忽略空元素,
 // 所以 "mqtt,,," 只算一个。
-// trunc 只有服务端侧给 1:客户端的 offer 数超上限是我们自己配错了,截断会变成
-// "服务端选了第 9 个而我们不认它的回显",不如在组包时就失败
+// trunc 只有服务端侧给 1:客户端的 offer 数超上限是自己配错了,组包时就失败
 static inline int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx prots[WS_MAXCNT_SECPROT],
                                       int32_t trunc) {
     buf_ctx *psegs = prots;
@@ -293,18 +291,14 @@ static inline int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx pr
     return _websock_check_secprot(prots, n);
 }
 // 服务端子协议校验。一个都没匹配上内建协议时兜底选客户端提的第一个:这是透传设计,不是漏选——
-// sectype 保持 PACK_NONE(照原样按纯 WS 投递帧),协商到的名字经 spctx 交给应用层自己实现。
-// 去掉这个兜底会让服务端只能协商内建的那几个,应用自定义子协议直接用不了
-// (回显值取自客户端自己的 offer 列表,RFC 6455 §4.1 的客户端校验能过)
+// sectype 保持 PACK_NONE(照原样按纯 WS 投递帧),协商到的名字经 spctx 交给应用层自己实现自定义子协议
 static int32_t _websock_secprot_check_server(char *secprots, size_t lens, pack_type *sectype, ws_secprots_ctx **spctx) {
     ws_secprots_ctx *ctx;
     CALLOC(ctx, 1, sizeof(ws_secprots_ctx) + lens + 1);
     ctx->index = -1;
     ctx->dlens = lens;
     memcpy(ctx->data, secprots, lens);
-    // 超上限取前 WS_MAXCNT_SECPROT 个继续协商:RFC 6455 §4.1 对 offer 数量无上限,
-    // 且客户端的 offer 本就按优先级排,最想要的在前面。截掉的那些不过 token 校验,
-    // header 的合法性只保证到 cap 为止
+    // 超上限取前 WS_MAXCNT_SECPROT 个继续协商(offer 按优先级排)。截掉的那些不过 token 校验
     ctx->cnt = _websock_secprot_split(ctx->data, lens, ctx->prots, 1);
     if (ERR_FAILED == ctx->cnt) {
         FREE(ctx);
@@ -733,10 +727,6 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         dlens = read_be16(&pllens);
-        if (dlens > WS_MAX_PAYLOAD_LENS) {
-            BIT_SET(*status, PROT_ERROR);
-            return NULL;
-        }
     } else if (127 == payloadlen) {
         uint64_t pllens;
         atlest += sizeof(pllens);
@@ -746,12 +736,16 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         pllens = read_be64(&pllens);
-        if (pllens > WS_MAX_PAYLOAD_LENS) {
+        if (pllens > WS_MAX_PAYLOAD_LENS) {// 转 size_t 之前判，32 位上不截断
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         dlens = (size_t)pllens;
     } else {
+        BIT_SET(*status, PROT_ERROR);
+        return NULL;
+    }
+    if (dlens > WS_MAX_PAYLOAD_LENS) {// 三种长度都要过：上限可调到 125 以下
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
@@ -841,6 +835,7 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         pack = _websock_parse_data(buf, client, ud, status);
         break;
     default:
+        BIT_SET(*status, PROT_ERROR);
         break;
     }
     // 链节点只有结构体没有 data，绝不能借 dlens 记数；secpack 非空即链头(裸帧在 parse_head 置了 NULL)
@@ -1023,9 +1018,7 @@ char *websock_data(websock_pack_ctx *pack, size_t *lens) {
     *lens = pack->dlens;
     return pack->data;
 }
-// 生成握手签名。nonce 走 csprng_rand 而非 randstr：后者底层是 xorshift64,种子只有
-// 本线程状态槽地址 ^ 时间,不是密码学随机源；同文件的掩码 key 一直用的就是 csprng_rand。
-// 取不到熵就让整条握手失败（调用方已在判 NULL），既不 abort 也不退化到弱随机源
+// 生成握手签名。nonce 须用 csprng_rand(randstr 不是密码学随机源)；取不到熵就让整条握手失败，不退化到弱随机源
 static int32_t _websock_sign_keys(char bs64key[B64EN_SIZE(SIGN_KEY_LENS)], char bs64sha1key[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
     char key[SIGN_KEY_LENS];
     if (ERR_OK != csprng_rand(key, SIGN_KEY_LENS)) {
@@ -1050,16 +1043,11 @@ static ws_hs_ctx *_websock_hsctx_init(const char *secprot, size_t splens) {
     }
     return ctx;
 }
-// \0 结尾串里有没有 CR / LF
-static inline int32_t _websock_has_crlf(const char *s) {
-    size_t lens = strlen(s);
-    return lens != memcspn(s, lens, FLAG_CRLF, CRLF_SIZE);
-}
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx) {
     //拒绝 CRLF 注入：三个入参都原样进请求行与 HTTP 头，组包侧是 ASSERTAB，必须在这挡下
-    if ((NULL != host && _websock_has_crlf(host))
-        || (NULL != uri && _websock_has_crlf(uri))
-        || (NULL != secprot && _websock_has_crlf(secprot))) {
+    if ((NULL != host && !http_head_val_ok(host, strlen(host)))
+        || (NULL != uri && !http_head_val_ok(uri, strlen(uri)))
+        || (NULL != secprot && !http_head_val_ok(secprot, strlen(secprot)))) {
         return NULL;
     }
     size_t splens = (NULL == secprot ? 0 : strlen(secprot));
@@ -1091,6 +1079,6 @@ char *websock_pack_handshake(const char *host, const char *uri, const char *secp
     *hsctx = ctx;
     return bwriter.data;
 }
-void _websock_init(void *hspush) {
-    _hs_push = (_handshaked_push)hspush;
+void _websock_init(_handshaked_push hspush) {
+    _hs_push = hspush;
 }

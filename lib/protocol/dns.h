@@ -49,18 +49,18 @@ void *dns_unpack(struct ev_ctx *ev, sock_ctx *sk, int32_t client,
 /// （NOERROR/NODATA，只给转介与 glue 的应答也算）或名字不存在（NXDOMAIN），换传输方式重查也是同一结果，
 /// 调用方不必再试 TCP；0 表示响应缺失/事务 ID 不符/被截断/解析失败/其余 RCODE（SERVFAIL 等可能是暂时故障），
 /// 值得换 TCP 重试</param>
-/// <returns>dns_ip 需要FREE，返回非 NULL 时 cnt 恒 &gt;= 1；事务 ID 不匹配、响应被截断(TC 位置位)、
+/// <returns>dns_ip 需要FREE，返回非 NULL 时 cnt 恒 &gt;= 1；事务 ID 不匹配或不是应答(QR 位为 0)、响应被截断(TC 位置位)、
 /// 解析失败、RCODE 非 0，或报文合法但应答段里没有 A/AAAA 记录(NOERROR/NODATA)均返回 NULL 并置 cnt 为 0</returns>
 dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32_t *nodata);
 /// <summary>
-/// 设置dns服务器IP
+/// 设置dns服务器IP。不加锁，只在启动期、网络与 worker 线程起来之前调
 /// </summary>
 /// <param name="ip">ip</param>
 void dns_set_ip(const char *ip);
 /// <summary>
 /// 获取设置的dns服务器IP
 /// </summary>
-/// <returns>ip</returns>
+/// <returns>ip：指向内部静态区，之后的 dns_set_ip 会改写它</returns>
 const char *dns_get_ip(void);
 
 #endif//DNS_H_

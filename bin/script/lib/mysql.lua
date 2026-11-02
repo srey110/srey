@@ -54,7 +54,7 @@ function ctx:_connect()
     return ok
 end
 
----切换当前数据库（COM_INIT_DB）
+---切换当前数据库（COM_INIT_DB）。池里借出的连接换了库要在归还前换回去，reset_session 不管库名
 ---@param database string 目标数据库名
 ---@return boolean ok 切换成功 true（库名超 256 字节时不发包直接返 false）
 function ctx:selectdb(database)
@@ -82,7 +82,7 @@ function ctx:_read_results(sk, mpack)
     local results = {}
     local failed = false
     while true do
-        self.mysql:record(mpack)-- 连接级 erro / last_id / affectd_rows 只在锁内由收应答的一方落
+        self.mysql:record(mpack)-- 连接级 erro / last_id / affected_rows 只在锁内由收应答的一方落
         local pktype, more = mysql.pack_type(mpack)-- more 须在 reader.new 前读
         if MYSQL_PACK_TYPE.MPACK_OK == pktype then
             results[#results + 1] = true
@@ -209,8 +209,8 @@ end
 ---返回最近一个命令 OK 包带的影响行数（ERR 包与结果集不改它）；读取时机见 conn_pub 文件头。
 ---多语句时是最后一个 OK 包的
 ---@return integer|false rows affected rows；超出 int64 时为 false 并打 WARN
-function ctx:affectd_rows()
-    return self.mysql:affectd_rows()
+function ctx:affected_rows()
+    return self.mysql:affected_rows()
 end
 
 return ctx

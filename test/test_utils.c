@@ -1326,6 +1326,7 @@ static size_t _fake_rv_offer[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 总
 static uint32_t _fake_rv_niov[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 条数
 static int32_t _fake_rv_calls;
 static int32_t _fake_rv_fail_at;// 第几次调用返 ERR_FAILED(1 起算),0 为一路成功
+static int32_t _fake_rv_drained_at;// 第几次调用读完后回 BUFFER_READV_DRAINED(1 起算),0 为不回
 // 假 readv：无需真 socket 即可驱动 buffer_from_sock 的 ET 读循环
 static int32_t _fake_readv(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed) {
     (void)fd;
@@ -1360,7 +1361,7 @@ static int32_t _fake_readv(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, s
         remain -= n;
         *readed += n;
     }
-    return ERR_OK;
+    return _fake_rv_calls == _fake_rv_drained_at ? BUFFER_READV_DRAINED : ERR_OK;
 }
 static void _fake_rv_reset(void) {
     memset(_fake_rv_want, 0, sizeof(_fake_rv_want));
@@ -1368,6 +1369,23 @@ static void _fake_rv_reset(void) {
     memset(_fake_rv_niov, 0, sizeof(_fake_rv_niov));
     _fake_rv_calls = 0;
     _fake_rv_fail_at = 0;
+    _fake_rv_drained_at = 0;
+}
+// _readv 回 BUFFER_READV_DRAINED：本次读到的照记、不再接着读、按 ERR_OK 返回(不把 3 透传出去，否则调用方当失败关连接)。
+// 首轮就读满给出的空间，各档"读满再来一轮"都得让位给它
+static void test_buffer_from_sock_readv_drained(CuTest *tc) {
+    buffer_ctx buf;
+    size_t nread;
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = MAX_RECV_SIZE * 4;
+    _fake_rv_want[1] = 100;
+    _fake_rv_drained_at = 1;
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, 0, _fake_readv, NULL));
+    CuAssertIntEquals(tc, 1, _fake_rv_calls);
+    CuAssertTrue(tc, nread > 0 && nread == _fake_rv_offer[0]);
+    CuAssertTrue(tc, nread == buffer_size(&buf));
+    buffer_free(&buf);
 }
 static void test_buffer_from_sock_space(CuTest *tc) {
 #ifdef READV_EINVAL
@@ -2009,6 +2027,39 @@ static void test_chan_unbuffered(CuTest *tc) {
             && (NULL == rcv.got || (void *)(uintptr_t)7 == rcv.got);
     }
     CuAssertIntEquals(tc, 1, consistent);
+}
+// 缓冲 chan：写满后 send 阻塞、被 close 叫醒返 ERR_FAILED；空队列 recv 阻塞、被 close 叫醒返 NULL。
+// 阻塞方是否真睡下看不见，先睡 50ms 让它进 send / recv；close 漏了叫醒的话有界 join 报失败
+static void test_chan_buffered_block_close(CuTest *tc) {
+    _chan_ub_arg snd, rcv;
+    chan_ctx *ch = chan_init(2);
+    while (chan_can_send(ch)) {
+        CuAssertIntEquals(tc, ERR_OK, chan_send(ch, (void *)(uintptr_t)1, 0, 0));
+    }
+    snd.ch = ch;
+    snd.rtn = ERR_OK;
+    ATOMIC_SET(&snd.done, 0);
+    pthread_t tid = thread_creat(_chan_ub_send, &snd);
+    MSLEEP(50);
+    int32_t blocked = 0 == ATOMIC_GET(&snd.done);
+    chan_close(ch);
+    CuAssertIntEquals(tc, 1, _chan_ub_join(tid, &snd));
+    chan_free(ch);// 队列里剩的是 copy=0 的整数，不用排空
+    CuAssertIntEquals(tc, 1, blocked);
+    CuAssertIntEquals(tc, ERR_FAILED, snd.rtn);
+
+    ch = chan_init(2);
+    rcv.ch = ch;
+    rcv.got = (void *)(uintptr_t)1;
+    ATOMIC_SET(&rcv.done, 0);
+    tid = thread_creat(_chan_ub_recv, &rcv);
+    MSLEEP(50);
+    blocked = 0 == ATOMIC_GET(&rcv.done);
+    chan_close(ch);
+    CuAssertIntEquals(tc, 1, _chan_ub_join(tid, &rcv));
+    chan_free(ch);
+    CuAssertIntEquals(tc, 1, blocked);
+    CuAssertPtrEquals(tc, NULL, rcv.got);
 }
 
 /* =======================================================================
@@ -3180,7 +3231,8 @@ static void test_tw_latency(CuTest *tc) {
 static void test_tw_wakeup_after_idle(CuTest *tc) {
     tw_ctx tw;
     ud_cxt ud;
-    int32_t waited;
+    timer_ctx tm;
+    uint64_t waited;
 
     tw_init(&tw, 0, NULL);
     ZERO(&ud, sizeof(ud));
@@ -3191,11 +3243,12 @@ static void test_tw_wakeup_after_idle(CuTest *tc) {
     // signal 会打空，这一档最坏要拖到下一个 cascade 边界(≤256ms)才被拾起
     ATOMIC_SET(&_tw_fired, 0);
     tw_add(&tw, 2, _tw_cb, NULL, &ud);
-    waited = 0;
-    while (waited < 500 && ATOMIC_GET(&_tw_fired) < 1) {
-        MSLEEP(5);
-        waited += 5;
+    // 量真实时间：拿循环次数乘睡眠时长的话，机器一忙 MSLEEP 睡过头，真等了 256ms 也算成不到 100
+    timer_init(&tm);
+    while (timer_elapsed_ms(&tm) < 500 && ATOMIC_GET(&_tw_fired) < 1) {
+        MSLEEP(1);
     }
+    waited = timer_elapsed_ms(&tm);
     tw_free(&tw);
     CuAssertIntEquals(tc, 1, ATOMIC_GET(&_tw_fired));
     CuAssertTrue(tc, waited < 100);
@@ -4318,6 +4371,36 @@ static void test_mmap_anon(CuTest *tc) {
     CuAssertTrue(tc, a0 == mm.addr);
     mmap_close(&mm);
 }
+// 匿名映射 cap 内先缩到页中间再涨回：缩掉的那段(含与新长度同页的残留)再变长时都要读到 0
+static void test_mmap_anon_shrink_zero(CuTest *tc) {
+    mmap_ctx mm;
+    mmap_opts o;
+    size_t gran = mmap_granularity();
+    int32_t ok;
+    ZERO(&o, sizeof(o));
+    o.size = gran;
+    o.cap = 4 * gran;
+    CuAssertIntEquals(tc, ERR_OK, mmap_anon(&mm, &o));
+    // 跨页缩：同页残留 [10, 页尾) 与整页归还的部分
+    memset(mm.addr, 0x5a, gran);
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, 10, 0));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, gran, 0));
+    ok = 0x5a == mm.addr[9];
+    for (size_t i = 10; i < gran; i++) {
+        ok = ok && 0 == mm.addr[i];
+    }
+    CuAssertTrue(tc, ok);
+    // 不跨页的小幅缩涨：一页都不归还，全靠清零
+    memset(mm.addr, 0x5a, gran);
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, gran - 50, 0));
+    CuAssertIntEquals(tc, ERR_OK, mmap_resize(&mm, gran, 0));
+    ok = 0x5a == mm.addr[gran - 51];
+    for (size_t i = gran - 50; i < gran; i++) {
+        ok = ok && 0 == mm.addr[i];
+    }
+    CuAssertTrue(tc, ok);
+    mmap_close(&mm);
+}
 // 命名共享内存：创建、另一个视图看得见、EXCL 冲突、不支持 resize；生命周期按平台区分
 static void test_mmap_shm(CuTest *tc) {
     char name[32], bad[40];
@@ -5013,6 +5096,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_get_commit);
     SUITE_ADD_TEST(suite, test_buffer_space);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_space);
+    SUITE_ADD_TEST(suite, test_buffer_from_sock_readv_drained);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_readv_fail);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_hint);
     SUITE_ADD_TEST(suite, test_buffer_from_sock_want);
@@ -5040,6 +5124,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_chan);
     SUITE_ADD_TEST(suite, test_chan_capacity_round);
     SUITE_ADD_TEST(suite, test_chan_unbuffered);
+    SUITE_ADD_TEST(suite, test_chan_buffered_block_close);
     SUITE_ADD_TEST(suite, test_hug);
     SUITE_ADD_TEST(suite, test_hug_wakeup_flood);
     SUITE_ADD_TEST(suite, test_load_trend);
@@ -5087,6 +5172,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mmap_copy_protect);
     SUITE_ADD_TEST(suite, test_mmap_map_fd);
     SUITE_ADD_TEST(suite, test_mmap_anon);
+    SUITE_ADD_TEST(suite, test_mmap_anon_shrink_zero);
     SUITE_ADD_TEST(suite, test_mmap_shm);
     SUITE_ADD_TEST(suite, test_mmap_excl_rollback);
     SUITE_ADD_TEST(suite, test_mmap_advise_sync);

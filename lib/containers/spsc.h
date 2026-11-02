@@ -23,7 +23,7 @@
 
 #define SPSC_DEFAULT_CAP 1024 // 默认容量
 
-// 入参写 T const * 而不是 const T *:T 是指针类型时,后者会被解析成指向 const 的指针。
+// 入参写 T const * 而不是 const T *:理由同 hashmap.h。
 // SPSC_DECL(name, T)：name 生成的类型名，T 元素类型
 #define SPSC_DECL(name, T)                                                     \
 typedef struct {                                                                \
@@ -89,9 +89,8 @@ static inline int32_t name##_trypush(name *q, T const *data) {                 \
    ATOMIC_GET(enq) 是 acquire,取数据能看到生产者发布前写入的内容;                  \
    推进 deq 用 release,不许上面那次读下沉到它之后,否则槽可能已被覆盖 */            \
 static inline int32_t name##_pop(name *q, T *out) {                             \
-    uint32_t deq;                                                               \
     ASSERTAB(NULL != out, ERRSTR_NULLP);                                        \
-    deq = (uint32_t)ATOMIC_GET_RELAXED(&q->deq);                                        \
+    uint32_t deq = (uint32_t)ATOMIC_GET_RELAXED(&q->deq);                       \
     if (deq == q->enq_cache) {                                                  \
         q->enq_cache = (uint32_t)ATOMIC_GET(&q->enq);                           \
         if (deq == q->enq_cache) {                                              \

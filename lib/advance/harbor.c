@@ -54,10 +54,8 @@ static inline void _harbor_respond_text(router_req *ctx, int32_t code) {
 static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     size_t dn = 0;
     size_t tn = 0;
-    size_t blen = 0;
     const char *ds = router_req_query(ctx, "dst", &dn);
     const char *tp = router_req_query(ctx, "type", &tn);
-    void *body;
     uint64_t dv = 0;
     uint64_t tv = 0;
     // 必须按 lens 截断解析：url_parse(URL_DECODE) 就地解码只缩短 lens、不搬移后续字节，
@@ -78,7 +76,8 @@ static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
         _harbor_respond_text(ctx, 404);
         return;
     }
-    body = http_take_data(ctx->pack, &blen);
+    size_t blen = 0;
+    void *body = http_take_data(ctx->pack, &blen);
     if (is_call) {
         task_call(to, type, body, blen, 0);
         task_ungrab(to);
@@ -89,7 +88,7 @@ static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     size_t rlen = 0;
     void *rtn = coro_request(to, ctx->task, type, body, blen, 0, &err, &rlen);
     task_ungrab(to);
-    _harbor_respond(ctx, (ERR_OK != err) ? 400 : 200, &err, "application/octet-stream", rtn, rlen);
+    _harbor_respond(ctx, (ERR_OK != err) ? 400 : 200, &err, HARBOR_CTYPE, rtn, rlen);
 }
 // POST /call：单向投递（task_call），不等响应
 static void _harbor_call(router_req *ctx, void *arg) {

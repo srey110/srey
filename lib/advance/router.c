@@ -184,7 +184,6 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
     }
     for (int32_t k = 0; k < n; k++) {
         // WILD 段必须是最末段; 此时若上一段已是 WILD 却还有当前段, 说明 WILD 后还有内容, 拒绝
-        // (两条匹配路径命中 WILD 都立即返成功, 中间 WILD 会让后续段静默失效, 易掉坑)
         if (k > 0 && ROUTER_SEG_WILD == buf[k - 1].t) {
             LOG_WARN("router: wildcard '*' must be the last segment.");
             _router_segs_free_str(buf, k);
@@ -817,10 +816,8 @@ int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
     ctx->method = 0;
     ctx->allow = 0;
     ctx->params_n = 0;
+    // 不认识的方法 m 为 0：照样走树，不命中任何条目，路径在回 -4(带 Allow)、不在回 -1，同 Laravel
     router_method m = _router_method_str_to_mask(method, method_len);
-    if (0 == m) {
-        return -3;
-    }
     ctx->method = m;
     // url_parse 解码后段写入 ctx->url；params.val 指向该缓冲或 ctx->wildbuf。
     // url_parse 失败时 ctx->url 内容不可用，直接按 400 处理。
@@ -886,8 +883,7 @@ int32_t router_match_code(int32_t idx) {
         || -5 == idx) {
         return 200;
     }
-    if (-3 == idx
-        || -4 == idx) {
+    if (-4 == idx) {
         return 405;
     }
     if (-2 == idx) {
@@ -1350,12 +1346,12 @@ static void _router_st_reject(router_stream *st, task_ctx *task, int32_t code, c
 }
 // 流式首帧: 匹配路由 → 跑准入链 → 进表 → 回调 PROT_SLICE_START
 static void _router_st_begin(router_ctx *r, task_ctx *task, sock_ctx *sk, struct http_pack_ctx *pack) {
+    // 同连接已有记录说明上一条流式请求没收尾, 丢旧的重开; 排在验包之前, 新首帧不合法也不留旧的
+    _router_st_drop(r, sk);
     buf_ctx *status = _router_http_status(pack);
     if (NULL == status) {
         return;// 无效 HTTP, 静默丢, 同 router_dispatch
     }
-    // 同连接已有记录说明上一条流式请求没收尾, 丢旧的重开
-    _router_st_drop(r, sk);
     router_stream *st;
     MALLOC(st, sizeof(router_stream));
     // MALLOC 不清零, 靠逐字段写满: 往 router_stream 加字段必须同时进这里(同 _router_group_fill)。
@@ -1387,12 +1383,16 @@ static void _router_st_begin(router_ctx *r, task_ctx *task, sock_ctx *sk, struct
         _router_st_reject(st, task, 500, ROUTER_BODY_CHAIN);
         return;
     }
-    // 链尾是准入哨兵而非 handler; 中间件截断即拒绝, 它没写响应就兜底 500
+    // 链尾是准入哨兵而非 handler; 中间件截断即拒绝, 它没写响应就兜底 500。
+    // 准入期间先清 wantclose: 被拒由 _router_st_reject 统一关, 别让中间件回包时先关一次; 通过了再放回
+    int32_t wantclose = st->req.wantclose;
+    st->req.wantclose = 0;
     router_next(&st->req);
     if (!st->req.admitted) {
         _router_st_reject(st, task, st->req.responded ? 0 : 500, ROUTER_BODY_500);
         return;
     }
+    st->req.wantclose = wantclose;
     // 准入通过才让等 100 Continue 的客户端发请求体; 被拒的上面已回最终响应并关连接
     if (http_expect_continue(pack)) {
         ev_send(&task->loader->netev, sk, (void *)HTTP_CONTINUE_RESP, sizeof(HTTP_CONTINUE_RESP) - 1, 1);

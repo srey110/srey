@@ -40,7 +40,8 @@ static FILE *_handle = NULL;
 static atomic_t _log_lv = LOGLV_DEBUG;
 static atomic_t _running = 0; /* atomic 保证跨平台内存可见 */
 static atomic_t _aborting = LOG_ABORT_IDLE; /* 取值见 log_abort_state */
-static atomic_t _drained = 0; /* 完成一轮排空自增,log_abort 据此判断落盘 */
+static atomic_t _round = 0; /* 日志线程每轮开写前自增的轮号 */
+static atomic_t _drained = 0; /* 最近一轮排空完的轮号,log_abort 据此判断落盘 */
 static pthread_t _th;
 // 本线程是不是日志线程本身。断言若发生在它身上，log_abort 据此跳过排空
 TLS_DEFINE(int32_t, _in_logth, 1)
@@ -269,7 +270,9 @@ static void _log_loop(void *arg) {
     log_item *items[LOG_POP_BATCH];
     uint32_t spins = 0, nwrote;
     int32_t wrote = 0;
+    atomic_t round;
     while (ATOMIC_GET(&_running)) {
+        round = ATOMIC_ADD(&_round, 1) + 1;
         nwrote = _log_write_all(items);
         if (0 == nwrote
             && !logq_empty(&_que)) {
@@ -277,7 +280,7 @@ static void _log_loop(void *arg) {
             continue;
         }
         wrote |= (0 != nwrote);
-        ATOMIC_ADD(&_drained, 1);
+        ATOMIC_SET(&_drained, round);
         spins = 0;
         if (logq_empty(&_que)) {
             fflush(_log_out());
@@ -297,12 +300,14 @@ static void _log_loop(void *arg) {
 // 不看睡眠态直接叫：睡眠态可能已被别的生产者抢成 WAKING、叫醒却还没发出。
 // 只有在业务线程上调用才有意义：断言若发生在日志线程自己身上，唯一能推进队列的就是它，
 // 等下去必然空转满整个上限，故调用方须先判 _in_logth
+// 等的是推完之后才开始的那一轮排空完：读到轮号之前已开始的那轮可能早就弹空、没含刚推的行。
+// 日志线程那轮写完若去浅睡，下一轮要等叫醒，故每步都叫一次
 static void _log_drain_wait(void) {
-    atomic_t gen = ATOMIC_GET(&_drained);
-    waiter_trywake(&_waiter);
+    uint32_t gen = (uint32_t)ATOMIC_GET(&_round);
     int32_t nstep = LOG_FLUSH_WAIT / LOG_FLUSH_STEP;
-    while ((!logq_empty(&_que) || gen == ATOMIC_GET(&_drained))
+    while ((int32_t)((uint32_t)ATOMIC_GET(&_drained) - gen) <= 0
         && nstep-- > 0) {
+        waiter_trywake(&_waiter);
         MSLEEP(LOG_FLUSH_STEP);
     }
 }

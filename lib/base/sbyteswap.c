@@ -32,36 +32,30 @@ int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t 
 void pack_float(char *buf, float val, int32_t islittle) {
     uint32_t u;
     memcpy(&u, &val, sizeof(u));
-    if (islittle != IS_LITTLE) {
-        u = byteswap32(u);
+    if (islittle) {
+        write_le32(buf, u);
+    } else {
+        write_be32(buf, u);
     }
-    memcpy(buf, &u, sizeof(u));
 }
 float unpack_float(const char *buf, int32_t islittle) {
-    uint32_t u;
+    uint32_t u = islittle ? read_le32(buf) : read_be32(buf);
     float rtn;
-    memcpy(&u, buf, sizeof(u));
-    if (islittle != IS_LITTLE) {
-        u = byteswap32(u);
-    }
     memcpy(&rtn, &u, sizeof(rtn));
     return rtn;
 }
 void pack_double(char *buf, double val, int32_t islittle) {
     uint64_t u;
     memcpy(&u, &val, sizeof(u));
-    if (islittle != IS_LITTLE) {
-        u = byteswap64(u);
+    if (islittle) {
+        write_le64(buf, u);
+    } else {
+        write_be64(buf, u);
     }
-    memcpy(buf, &u, sizeof(u));
 }
 double unpack_double(const char *buf, int32_t islittle) {
-    uint64_t u;
+    uint64_t u = islittle ? read_le64(buf) : read_be64(buf);
     double rtn;
-    memcpy(&u, buf, sizeof(u));
-    if (islittle != IS_LITTLE) {
-        u = byteswap64(u);
-    }
     memcpy(&rtn, &u, sizeof(rtn));
     return rtn;
 }

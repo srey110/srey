@@ -29,12 +29,11 @@ struct rtree_ctx {
 };
 typedef struct rtree_add_walk {
     int32_t n;               // 原始段数
-    int32_t nopt;            // OPT 段数
     router_method mask;      // 路由方法掩码
     router_route_id route_id; // 调用方分配的路由 id
     int32_t inserted;        // 真正入叶子的变体数
     int32_t shadowed;        // 被已有叶子完全遮住的变体数
-    int32_t skipped;         // 参数超限跳过数
+    int32_t skipped;         // 参数超限或插叶子内部出错跳过数
     rtree_ctx *t;            // 目标树
     const router_seg *segs;  // 原始段序列，树只借用
     rtree_variant_arr variants; // 已生成的规范化变体
@@ -272,7 +271,6 @@ int32_t rtree_add(rtree_ctx *t, const router_seg *segs, int32_t n, router_method
     w.t = t;
     w.segs = segs;
     w.n = n;
-    w.nopt = nopt;
     w.mask = mask;
     w.route_id = route_id;
     rtree_variant_arr_init(&w.variants, 0);
@@ -396,9 +394,6 @@ int32_t rtree_match(rtree_ctx *t, const buf_ctx *segs, int32_t nseg, uint8_t *sc
     if (NULL == t || nseg < 0 || nseg > URL_MAX_PATH_DEPTH
         || (nseg > 0 && NULL == segs)) {
         return -1;
-    }
-    if (0 == method) {
-        return -3;
     }
     rtree_walk w;
     w.nseg = nseg;

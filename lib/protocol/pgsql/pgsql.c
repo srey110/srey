@@ -7,9 +7,9 @@
 //https://www.postgresql.org/docs/18/protocol-flow.html
 //https://pg.center/docs/18/protocol.html
 
-#define PGSQL_STACK_MSG 1024// 命令阶段不超过这么大的非 DataRow 消息放栈上解析
+#define PGSQL_STACK_MSG 1024// 命令阶段不超过这么大的非 DataRow 消息放栈上解析（test_pgsql_parse.c 的 _PG_STACK_MSG 抄了一份）
 
-// 连接状态枚举
+// 连接状态枚举（test_pgsql_parse.c 的 _PG_* 按数值抄了一份，改顺序要同步）
 typedef enum parse_status {
     INIT = 0,   // 初始状态，等待 SSL 协商响应
     AUTH,       // 认证阶段，等待认证消息
@@ -27,7 +27,7 @@ static const char *_pgsql_scram_mod[] = { "SCRAM-SHA-256" };
 #endif
 static _handshaked_push _hs_push; // 握手完成推送回调函数指针
 
-void _pgsql_init(void *hspush) {
+void _pgsql_init(_handshaked_push hspush) {
     _hs_push = hspush;
 }
 void _pgsql_pkfree(void *pack) {
@@ -258,7 +258,6 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     tohex(hash, MD5_BLOCK_SIZE, response + 3, 1);
     secure_zero(hash, sizeof(hash));
     secure_zero(inner_hex, sizeof(inner_hex));
-    secure_zero(&md5, sizeof(md5));
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p', 0);
     binary_set_string(&bwriter, response);
@@ -266,8 +265,13 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     pgsql_pack_end(&bwriter);
     return ev_send(ev, &pg->sk, bwriter.data, bwriter.offset, 0);
 }
-// SCRAM 第一步：发送 client-first-message（SCRAM-SHA-256 或 SCRAM-SHA-256-PLUS）
-static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *mod) {
+// SCRAM 第一步：从服务端的方法列表里选一个，发送 client-first-message（SCRAM-SHA-256 或 SCRAM-SHA-256-PLUS）
+static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
+    const char *mod = _pgsql_get_authmod(pg, breader);
+    if (NULL == mod) {
+        LOG_WARN("unsupported verification methods.");
+        return ERR_FAILED;
+    }
     // server 异常重发 0x0a（或 0x0a 后未走完 0x0b/0x0c 又来一次 0x0a）时，
     // 旧 scram_ctx 必须先释放再覆盖；scram_free 自守 NULL，首次进入安全
     scram_free(pg->scram);
@@ -336,6 +340,13 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
         return;
     }
     int32_t code = (int32_t)binary_get_integer(breader, 4, 0);
+    // SCRAM 已经开始又要明文 / MD5：正常服务端不会中途换方法，按降级拒掉，口令不发出去
+    if (NULL != pg->scram
+        && (0x03 == code || 0x05 == code)) {
+        BIT_SET(*status, PROT_ERROR);
+        LOG_WARN("auth method switched to %d during SCRAM.", code);
+        return;
+    }
     switch (code) {
     case 0x00: // AuthenticationOk：仅表示服务端认为认证结束，是否真的通过由 'Z' 分支统一判定
         break;
@@ -352,18 +363,11 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
             BIT_SET(*status, PROT_ERROR);
         }
         break;
-    case 0x0a: { // AuthenticationSASL：SASL 认证，选择方法并发送 client-first-message
-        const char *mod = _pgsql_get_authmod(pg, breader);
-        if (NULL == mod) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("unsupported verification methods.");
-            break;
-        }
-        if (ERR_OK != _pgsql_scram_client_first(pg, ev, mod)) {
+    case 0x0a: // AuthenticationSASL：SASL 认证，选择方法并发送 client-first-message
+        if (ERR_OK != _pgsql_scram_client_first(pg, ev, breader)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
-    }
     case 0x0b: // AuthenticationSASLContinue：收到 server-first-message，发送 client-final-message
         if (ERR_OK != _pgsql_scram_client_final(pg, ev, breader)) {
             BIT_SET(*status, PROT_ERROR);
@@ -397,13 +401,13 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     binary_ctx breader;
     binary_init_read(&breader, pack, total);
     binary_get_skip(&breader, 5); // 跳过类型码(1) + 长度(4)
+    char *err;
     switch (pack[0]) {
-    case 'E': { // ErrorResponse：认证失败，推送错误消息
-        char *err = _pgpack_error_notice(&breader);
+    case 'E': // ErrorResponse：认证失败，推送错误消息
+        err = _pgpack_error_notice(&breader);
         _hs_push(&pg->sk, 1, ud, ERR_FAILED, err, strlen(err));
         BIT_SET(*status, PROT_ERROR);
         break;
-    }
     case 'R': // Authentication：认证请求，分派处理
         _pgsql_auth_process(pg, ev, &breader, status);
         break;
@@ -514,6 +518,7 @@ void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
         pack = _pgsql_command_response(pg, buf, size, status);
         break;
     default:
+        BIT_SET(*status, PROT_ERROR);
         break;
     }
     return pack;
@@ -521,8 +526,7 @@ void *pgsql_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database) {
     ZERO(pg, sizeof(pgsql_ctx));
-    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED，超长字段在这里当场报出来。
-    // 失败时 pg 已被 ZERO 且可能填了前几个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    // 字段装不下即返回 ERR_FAILED(不截断)，失败后的状态见 pgsql.h
     if (ERR_OK != safe_fill_str(pg->ip, sizeof(pg->ip), ip)) {
         LOG_ERROR("pgsql ip exceeds %zu bytes: %zu.", sizeof(pg->ip) - 1, strlen(ip));
         return ERR_FAILED;

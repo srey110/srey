@@ -95,11 +95,11 @@ void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size) {
     *size = bwriter.offset;
     return bwriter.data;
 }
-void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size) {
+void *pgsql_pack_stmt_prepare(const char *name, const char *sql, uint16_t nparam, uint32_t *oids, size_t *size) {
     return pgsql_pack_stmt_prepare2(name, _pgpack_strsize(name) - 1, sql, _pgpack_strsize(sql) - 1, nparam, oids, size);
 }
 void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql, size_t sqllen,
-                                int16_t nparam, uint32_t *oids, size_t *size) {
+                                uint16_t nparam, uint32_t *oids, size_t *size) {
     binary_ctx bwriter;
     size_t namesize = namelen + 1;
     size_t sqlsize = sqllen + 1;
@@ -112,7 +112,7 @@ void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql
     _pgpack_set_string_n(&bwriter, sql, sqlsize); // 要解析的 SQL 查询字符串
     if (nparam > 0 && NULL != oids) {
         binary_set_integer(&bwriter, nparam, 2, 0); // 指定的参数数据类型数量
-        for (int16_t i = 0; i < nparam; i++) {
+        for (uint16_t i = 0; i < nparam; i++) {
             binary_set_integer(&bwriter, oids[i], 4, 0); // 各参数的类型 OID
         }
     } else {
@@ -129,7 +129,6 @@ void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql
 }
 void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat, size_t *size) {
     if (NULL != bind
-        && 0 != bind->nparam
         && bind->count != bind->nparam) {
         *size = 0;
         return NULL;

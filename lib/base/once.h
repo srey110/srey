@@ -4,8 +4,8 @@
 #include "base/os.h"
 #include "base/macro_atomic.h"
 
-#define SPIN_YIELD_CNT  64 // spin_backoff 等对方释放时自旋这么多次仍等不到就 THREAD_YIELD 让出 CPU。
-                           // 是次数不是周期预算,别按 CPU_PAUSE_CYCLES 去折算
+// spin_backoff 等对方释放时自旋这么多次仍等不到就 THREAD_YIELD 让出 CPU。是次数不是周期预算,别按 CPU_PAUSE_CYCLES 去折算
+#define SPIN_YIELD_CNT 64
 // 一次性初始化：多个线程同时到达时只有一个做初始化，其余等它做完再往下走。
 // 用法：if (once_begin(&flag)) { 初始化…; once_end(&flag); }，之后两条路径都能看到初始化的结果。
 // 抢到的那个必须 once_end，中途不能返回(失败就 abort)，否则别人永远等下去

@@ -20,7 +20,7 @@ void md4_init(md4_ctx *md4);
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
 void md4_update(md4_ctx *md4, const void *data, size_t lens);
-/// <summary>完成 MD4 计算，输出摘要</summary>
+/// <summary>完成 MD4 计算，输出摘要；ctx 的擦除同 md5_final</summary>
 /// <param name="md4">md4_ctx</param>
 /// <param name="hash">输出摘要，长度 MD4_BLOCK_SIZE</param>
 void md4_final(md4_ctx *md4, char hash[MD4_BLOCK_SIZE]);

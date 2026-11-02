@@ -53,8 +53,9 @@ int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
 int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 /// <summary>
 /// 字符串转时间戳，一律按本地时间 mktime，是否夏令时由 mktime 按本地规则判定。
-/// fmt 里的 %z / %Z 只吃掉时区文本，偏移量不生效；认出的时区写法可能改写夏令时标志（数字偏移与 Z / UT / GMT
-/// 定为标准时间，EDT 一类定为夏令时，EST 一类与单字母军用时区不改、仍由 mktime 判定）。
+/// fmt 里的 %z / %Z 只吃掉时区文本，偏移量不生效；时区写法可能改写夏令时标志：数字偏移、Z / UT / GMT 与没认出的名字
+/// （CEST、Asia/Shanghai 这类非 3 字母名都在内）定为标准时间，EDT 一类定为夏令时，与本地 tzname 同名的按它是
+/// 标准时名还是夏令时名定，EST 一类与单字母军用时区不改、仍由 mktime 判定。
 /// 带时区的串解析结果会差"串里的偏移 − 本地偏移"秒，要换算的调用方自己补回去
 /// </summary>
 /// <param name="time">时间字符串</param>
@@ -63,5 +64,20 @@ int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 ///     1970 年以前的时刻：mktime 收负值的平台返回负数按 uint64 回绕后的值(恰为 -1 那一秒算失败返回 0)，
 ///     Windows 的 mktime 不收，返回 0</returns>
 uint64_t strtots(const char *time, const char *fmt);
+/// <summary>
+/// 公历日期换成相对 1970-01-01 的天数，1582 年以前也按公历往前推；年份按天文纪年，公元前 1 年为 0、公元前 2 年为 -1
+/// </summary>
+/// <param name="y">年</param>
+/// <param name="m">月，1~12，不查量程</param>
+/// <param name="d">日，不查是否超过当月天数</param>
+/// <returns>天数，1970-01-01 为 0，更早为负</returns>
+static inline int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
+    y -= (m <= 2) ? 1 : 0;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
 
 #endif//STIME_H_

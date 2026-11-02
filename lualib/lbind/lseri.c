@@ -2,6 +2,7 @@
 
 #define SERI_PACK_MAX_DEPTH 32
 #define SERI_UNPACK_STACK_PAIRS 64 // 纯记录表先压栈数字段数，超过这么多对就建表转回逐个插
+#define SERI_UNPACK_NESTED_PREALLOC 1024 // 嵌套表的数组段最多预分配这么多格，再多的靠 rawseti 自己扩
 
 static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth);
 static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *item, int32_t depth);
@@ -185,22 +186,26 @@ static void _lseri_unpack_table(lua_State *lua, seri_iter *iter, uint32_t array_
         luaL_error(lua, "seri unpack: table nested too deep (>%d)", SERI_PACK_MAX_DEPTH);
     }
     luaL_checkstack(lua, LUA_MINSTACK, NULL);
-    // array_n 来自不可信流,预分配上限卡在剩余字节数(每元素 ≥1 字节 tag),防恶意流以极小数据撑爆预分配
-    size_t remain = iter->len - iter->offset;
-    uint32_t prealloc = ((size_t)array_n <= remain) ? array_n : (uint32_t)remain;
-    seri_item item;
-    int32_t rc;
     if (0 == array_n) {
         if (ERR_OK == _lseri_unpack_record(lua, iter, depth)) {
             return;
         }
     } else {
+        // array_n 来自不可信流：预分配卡在剩余字节数(每元素 ≥1 字节 tag)。嵌套层再卡一道，
+        // 否则每层都按同一份剩余字节预订，层层叠加
+        size_t cap = iter->len - iter->offset;
+        if (depth > 1 && cap > SERI_UNPACK_NESTED_PREALLOC) {
+            cap = SERI_UNPACK_NESTED_PREALLOC;
+        }
+        uint32_t prealloc = ((size_t)array_n <= cap) ? array_n : (uint32_t)cap;
         lua_createtable(lua, (int32_t)prealloc, 0);
     }
     for (uint32_t i = 1; i <= array_n; i++) {
         _lseri_unpack_one(lua, iter, depth);
         lua_rawseti(lua, -2, (lua_Integer)i);
     }
+    seri_item item;
+    int32_t rc;
     for (;;) {
         rc = seri_iter_next(iter, &item);
         if (1 != rc) {

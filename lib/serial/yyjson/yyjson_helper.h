@@ -32,7 +32,8 @@ int32_t json_get_number(yyjson_val *json, const char *name, double *val);
 int32_t json_val_number(yyjson_val *jval, double *val);
 /// <summary>
 /// 同 json_get_number，额外要求值落在 [min, max] 内。要把结果 cast 成整型时用这个，
-/// min / max 传目标类型的取值区间——超范围的浮点转整型是未定义行为
+/// min / max 传目标类型的取值区间——超范围的浮点转整型是未定义行为。
+/// 只卡区间、不拒收小数：读整数的调用方还得自己判是否整数（如 CFG_NUM），否则 0.5 会静默截成 0
 /// </summary>
 /// <param name="json">JSON 对象；非对象时按字段不存在处理</param>
 /// <param name="name">字段名</param>

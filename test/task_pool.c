@@ -1184,8 +1184,7 @@ static void _sus_put(void *owner, void *arg) {
 static void _sus_get(void *owner, void *arg) {
     (void)owner;
     suspend_arg *a = (suspend_arg *)arg;
-    void *conn = NULL;
-    a->rtn = db_pool_get(a->pool, 0, &conn);
+    a->rtn = db_pool_get(a->pool, 0, &a->conn);
 }
 static void _sus_free(void *owner, void *arg) {
     suspend_arg *a = (suspend_arg *)arg;
@@ -1298,6 +1297,42 @@ static int32_t _test_fill_wake(task_ctx *task) {
     coro_sleep(task, 1600);// 维护协程可能还挂在下一次建连上
     if (ERR_FAILED != got) {
         LOG_ERROR("pool fill wake: waiter rtn=%d, want -1.", got);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 维护协程收缩断开挂起期间来的 get(timeout 0)：quit 回来放回槽时要叫醒它，不能让它一直等。
+// 巡检在借出后 1~2 秒，quit 挂 1.5 秒，2.1 秒时排队必落在 quit 期间
+static int32_t _test_reap_wake(task_ctx *task) {
+    static fake_conn c1;// 维护协程可能比本函数活得久，连接放静态区
+    db_pool_ctx *pool;
+    db_pool_cfg cfg = { .cap = 1, .backoff_ms = 20, .idle_timeout_ms = 10 };
+    suspend_arg a;
+    ZERO(&a, sizeof(a));
+    if (ERR_OK != _sus_setup(task, &c1, &cfg, &pool)
+        || ERR_OK != db_pool_get(pool, 0, &a.conn)) {
+        return ERR_FAILED;
+    }
+    db_pool_put(pool, a.conn);
+    c1.op_ms = 1500;
+    a.pool = pool;
+    a.conn = NULL;
+    a.rtn = 99;
+    coro_sleep(task, 2100);
+    coro_fork(coro_task_co(task), _sus_get, &a);
+    coro_sleep(task, 1700);
+    int32_t got = a.rtn;
+    int32_t quits = c1.quits;// 先记下：下面 free 断开空闲连接还会再 quit 一次
+    int32_t connects = c1.connects;
+    c1.op_ms = 0;
+    if (ERR_OK == got) {
+        db_pool_put(pool, a.conn);
+    }
+    db_pool_free(pool);// 没叫醒的话 free 的广播才叫醒它，rtn 变 -1
+    if (ERR_OK != got
+        || 1 != quits
+        || 2 != connects) {
+        LOG_ERROR("pool reap wake: waiter rtn=%d quits=%d connects=%d, want 0/1/2.", got, quits, connects);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -1425,6 +1460,12 @@ static void _startup_run(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_fill_wake(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_reap_wake(task)) {
         return;
     }
     ATOMIC_SET((atomic_t *)arg->ok, 1);

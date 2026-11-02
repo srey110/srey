@@ -58,7 +58,7 @@
     #endif
 #endif
 
-// 入参写 T const * 而不是 const T *:T 是指针类型时,后者会被解析成指向 const 的指针。
+// 入参写 T const * 而不是 const T *:T 是指针类型(如 void *)时,后者会被解析成指向 const 的指针,调用方传普通指针就告警。
 // HASHMAP_DECL(name, T, HASHFN, CMPFN):name 生成的类型名,T 元素类型,
 // HASHFN(e) 返回哈希,CMPFN(a, b) 三路比较返回 0 表示相等;两者的形参都是 T const *
 #define HASHMAP_DECL(name, T, HASHFN, CMPFN)                                   \
@@ -108,7 +108,6 @@ static inline void name##_set_load_factor(name *m, double factor) {            \
 }                                                                              \
 static inline name *name##_new(size_t cap, void (*elfree)(void *item)) {       \
     size_t ncap = 16;                                                          \
-    name *m;                                                                   \
     /* 容量向上取 2 的幂(下标才能用掩码代替取模),翻倍或乘桶大小会溢出就放弃 */  \
     while (ncap < cap) {                                                       \
         if (ncap > SIZE_MAX / 2) {                                             \
@@ -120,6 +119,7 @@ static inline name *name##_new(size_t cap, void (*elfree)(void *item)) {       \
     if (sizeof(name##_bucket) > SIZE_MAX / cap) {                              \
         return NULL;                                                           \
     }                                                                          \
+    name *m;                                                                   \
     MALLOC(m, sizeof(name));                                                   \
     memset(m, 0, sizeof(name));                                                \
     m->elfree = elfree;                                                        \

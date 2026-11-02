@@ -483,9 +483,11 @@ int32_t debug_console_start(loader_ctx *loader, const char *name, const char *ip
     CALLOC(ctx, 1, sizeof(debug_console_ctx));
     // 读取调试 UI （html/debug_console.html）；失败仅警告，/ 端点回提示
     char path[PATH_LENS];
-    SNPRINTF(path, sizeof(path), "%s%shtml%sdebug_console.html",
+    int32_t plen = SNPRINTF(path, sizeof(path), "%s%shtml%sdebug_console.html",
         procpath(), PATH_SEPARATORSTR, PATH_SEPARATORSTR);
-    ctx->html = readall(path, &ctx->html_len);
+    if (snprintf_ok(plen, sizeof(path))) {
+        ctx->html = readall(path, &ctx->html_len);
+    }
     if (NULL == ctx->html) {
         LOG_WARN("debug_console cannot read %s, UI page disabled.", path);
     }

@@ -35,6 +35,16 @@ static inline size_t snprintf_lens(int32_t rtn, size_t bufsize) {
     return ((size_t)rtn < bufsize) ? (size_t)rtn : bufsize - 1;
 }
 /// <summary>
+/// SNPRINTF 有没有写全(没出错、没截断)。拼路径这类截断了就不能用的地方用它判：截断后的串是一条
+/// 指向别处的路径，建目录建到别处、读文件读到别处；截断了也照用的(如回包正文)用 snprintf_lens 取长度
+/// </summary>
+/// <param name="rtn">SNPRINTF 的原始返回值</param>
+/// <param name="bufsize">目标缓冲总字节数</param>
+/// <returns>写全返回 1；rtn 为负或不小于 bufsize(截断)返回 0</returns>
+static inline int32_t snprintf_ok(int32_t rtn, size_t bufsize) {
+    return rtn >= 0 && (size_t)rtn < bufsize;
+}
+/// <summary>
 /// 查找字符，不区分大小写。大小写只按 ASCII 折叠('A'..'Z')，0x80 以上的字节原样比，不随 locale 变
 /// </summary>
 /// <param name="ptr">源字符</param>
@@ -425,7 +435,8 @@ static inline uint64_t hash_u64(uint64_t x) {
 /// <returns>段数量;plens 为 0 时出一个空段(仍是"sep 出现次数 + 1")。
 ///   ERR_FAILED 表示参数非法(ptr/segs 为空、cap 为负、栈模式 *segs 为空),
 ///   栈模式超 cap 且未开 SPLIT_TRUNCATE(segs 内容未定义),
-///   或堆模式段数达 INT32_MAX(*segs 已分配,仍须 FREE)。
+///   或堆模式段数达 INT32_MAX。堆模式下不论哪种失败 *segs 都是 NULL 或已分配,一律 FREE 即可;
+///   栈模式超 cap 不打日志,由调用方决定。
 ///   cap 判定排在过滤之后,被 SPLIT_SKIPEMPTY 丢掉的段不占名额;
 ///   堆模式开 SPLIT_SKIPEMPTY 后可能返回 0,但 *segs 已分配,仍须 FREE。
 ///   空段记录原指针与 lens 为 0(不是 NULL)</returns>

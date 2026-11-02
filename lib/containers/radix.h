@@ -42,7 +42,7 @@
 #define RADIX_MAX_CHILD 256
 
 // RADIX_DECL(name, T)：name 生成的类型名，T 元素类型。
-// 入参写 T const * 而不是 const T *：T 是指针类型时，后者会被解析成指向 const 的指针。
+// 入参写 T const * 而不是 const T *：理由同 hashmap.h。
 #define RADIX_DECL(name, T)                                                   \
 typedef struct name name;                                                      \
 typedef struct name##_node name##_node;                                        \
@@ -77,8 +77,6 @@ struct name {                                                                  \
     size_t max_key_len;                                                        \
 };                                                                             \
 typedef int32_t (*name##_walk_cb)(const uint8_t *key, size_t klen, T *val, void *ud); \
-/* key 指向迭代器内部缓冲，下一次迭代操作后失效 */                             \
-static inline const uint8_t *name##_iter_key(name##_iter *it, size_t *klen);   \
 /* 子节点数；布局藏在 ARR 里，外部不直接碰 size */                             \
 static inline size_t name##_child_count(const name##_node *n) {                \
     return n->child.size;                                                      \
@@ -272,7 +270,8 @@ static inline T *name##_slot(name *r, const void *key, size_t klen,            \
     *created = 1;                                                              \
     return &hit->value;                                                        \
 }                                                                              \
-/* 插入或替换；1=新插入，0=替换；旧值副本写 old，不调 elfree */                \
+/* 插入或替换；1=新插入，0=替换；旧值副本写 old，不调 elfree。                 \
+   替换只改值不动结构，不算增删：不涨 version，进行中的迭代器照常可用 */       \
 static inline int32_t name##_set(name *r, const void *key, size_t klen,        \
                                  T const *val, T *old) {                       \
     int32_t created;                                                           \
@@ -282,7 +281,6 @@ static inline int32_t name##_set(name *r, const void *key, size_t klen,        \
             *old = *slot;                                                      \
         }                                                                      \
         *slot = *val;                                                          \
-        r->version++;                                                          \
     }                                                                          \
     return created;                                                            \
 }                                                                              \
@@ -861,21 +859,6 @@ static inline int32_t name##_iter_seek(name##_iter *it, const void *key,       \
         return name##_iter_up_next(it);                                        \
     }                                                                          \
 }                                                                              \
-/* seek 到 prefix 后检查首项是否真以 prefix 开头 */                            \
-static inline int32_t name##_iter_seek_prefix(name##_iter *it,                 \
-                                              const void *prefix, size_t plen) { \
-    if (!name##_iter_seek(it, prefix, plen)) {                                 \
-        return 0;                                                              \
-    }                                                                          \
-    size_t klen = 0;                                                           \
-    const uint8_t *k = name##_iter_key(it, &klen);                             \
-    if (NULL == k || klen < plen                                               \
-        || (plen > 0 && 0 != memcmp(k, prefix, plen))) {                       \
-        name##_iter_invalidate(it);                                            \
-        return 0;                                                              \
-    }                                                                          \
-    return 1;                                                                  \
-}                                                                              \
 /* 游标有值且表没改过 */                                                       \
 static inline int32_t name##_iter_valid(const name##_iter *it) {               \
     if (NULL == it->r || NULL == it->cur) {                                    \
@@ -887,6 +870,7 @@ static inline int32_t name##_iter_valid(const name##_iter *it) {               \
     }                                                                          \
     return 1;                                                                  \
 }                                                                              \
+/* key 指向迭代器内部缓冲，下一次迭代操作后失效 */                             \
 static inline const uint8_t *name##_iter_key(name##_iter *it, size_t *klen) {  \
     if (!name##_iter_valid(it)) {                                              \
         if (NULL != klen) {                                                    \
@@ -905,6 +889,21 @@ static inline T *name##_iter_val(name##_iter *it) {                            \
         return NULL;                                                           \
     }                                                                          \
     return &it->cur->value;                                                    \
+}                                                                              \
+/* seek 到 prefix 后检查首项是否真以 prefix 开头 */                            \
+static inline int32_t name##_iter_seek_prefix(name##_iter *it,                 \
+                                              const void *prefix, size_t plen) { \
+    if (!name##_iter_seek(it, prefix, plen)) {                                 \
+        return 0;                                                              \
+    }                                                                          \
+    size_t klen = 0;                                                           \
+    const uint8_t *k = name##_iter_key(it, &klen);                             \
+    if (NULL == k || klen < plen                                               \
+        || (plen > 0 && 0 != memcmp(k, prefix, plen))) {                       \
+        name##_iter_invalidate(it);                                            \
+        return 0;                                                              \
+    }                                                                          \
+    return 1;                                                                  \
 }                                                                              \
 /* 保存当前 key，删完重新 seek 到下一个 */                                     \
 static inline int32_t name##_iter_del(name *r, name##_iter *it, T *old) {      \

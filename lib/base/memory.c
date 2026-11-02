@@ -142,7 +142,7 @@ NOINLINE static int32_t _trk_capture(void **stack) {
     return n;
 #endif
 }
-// 记录一次分配（节点用系统 malloc，不计入 _nalloc/_nfree）。NOINLINE 理由见 _trk_capture
+// 记录一次分配（节点走 _MALLOC 原始分配，不进分配计数）。NOINLINE 理由见 _trk_capture
 NOINLINE static void _trk_add(void *ptr) {
     if (NULL == ptr) {
         return;
@@ -380,6 +380,7 @@ int64_t _memcheck(void) {
 #endif
     return leak;
 #else
+    PRINT("%s", "memory check => disabled (MEMORY_CHECK=0), leaks not checked.");
     return 0;
 #endif
 }

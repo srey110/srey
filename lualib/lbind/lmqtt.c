@@ -37,28 +37,6 @@ static binary_ctx *_lmqtt_get_props(lua_State *lua, int idx) {
     }
     return lpub_check_udata(lua, idx, MT_MQTT_PROPS);
 }
-// 从 Lua 栈 idx 读取 payload：string 自动取长度；lightuserdata 则取 idx+1 为长度，长度上界与空指针
-// 两道判定都与 lpub_check_buf 同口径——报文的剩余长度按 *lens 算，放空指针进去会发出一条声明了
-// N 字节载荷却只写了 0 字节的包，对端接着吃下一条报文的头 N 字节。
-// 其余类型(含 nil)一律当"无载荷"静默放过而不报错，故不能换成 lpub_opt_buf——那个是报错的。只给可空的载荷用。
-// 不返回"下一个参数 index"：各 packer 的 props 一律用声明中的固定槽位，
-// 随 payload 类型浮动会让按签名传参的调用方静默丢掉 props
-static void _lmqtt_get_payload(lua_State *lua, int idx, char **data, size_t *lens) {
-    *data = NULL;
-    *lens = 0;
-    int t = lua_type(lua, idx);
-    if (LUA_TSTRING == t) {
-        *data = (char *)luaL_checklstring(lua, idx, lens);
-        // 字符串长度不经 lpub_check_lens,只卡 lightuserdata 等于给它留后门
-        luaL_argcheck(lua, *lens <= INT32_MAX, idx, LENS_RANGE);
-        return;
-    }
-    if (LUA_TLIGHTUSERDATA == t) {
-        *data = lua_touserdata(lua, idx);
-        *lens = lpub_check_lens(lua, idx + 1, INT32_MAX);
-        luaL_argcheck(lua, NULL != *data || 0 == *lens, idx, LUDATA_NONNULL);
-    }
-}
 // ---- mqtt.props (binary_ctx 构建器：属性 / 主题列表) ----
 /// <summary>
 /// 创建 MQTT 属性/主题缓冲区（初始为空）
@@ -114,7 +92,7 @@ static int32_t _lmqtt_props_varnum(lua_State *lua) {
 /// <param name="flag" type="integer">属性标识 mqtt_prop_flag，取值 [0x01, 0x2A]，越界报错</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="boolean">true 成功；false flag 类型不匹配（非二进制属性）或数据超长</returns>
+/// <returns type="boolean">true 成功；false flag 类型不匹配（非二进制属性）、数据超长，或字符串类属性含 NUL</returns>
 static int32_t _lmqtt_props_binary(lua_State *lua) {
     binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
@@ -129,7 +107,7 @@ static int32_t _lmqtt_props_binary(lua_State *lua) {
 /// <param name="flag" type="integer">属性标识 mqtt_prop_flag，取值 [0x01, 0x2A]，越界报错</param>
 /// <param name="key" type="string">键</param>
 /// <param name="val" type="string">值</param>
-/// <returns type="boolean">true 成功；false flag 类型不匹配（非键值对属性）或数据超长</returns>
+/// <returns type="boolean">true 成功；false flag 类型不匹配（非键值对属性）、数据超长，或键 / 值含 NUL</returns>
 static int32_t _lmqtt_props_kv(lua_State *lua) {
     binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
@@ -200,8 +178,8 @@ static int32_t _lmqtt_props_reset(lua_State *lua) {
 }
 /// <summary>
 /// 发起异步 MQTT 连接。协议层取一份 mqtt_ctx(按版本的全局只读实例)作为 ud->context，
-/// 由框架 _mqtt_udfree 自动交还。调用方需用 srey.wait_connect(&sk, ssl)
-/// 同步等待 TCP（含 SSL 握手）就绪
+/// 由框架 _mqtt_udfree 自动交还。调用方需用 srey.wait_connect(sk, ssl)
+/// 同步等待 TCP（含 SSL 握手）就绪；lib/mqtt.lua 的 connect 已经代调，用它就别再等一次
 /// </summary>
 /// <param name="version" type="integer">协议版本 mqtt_protversion，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
 /// <param name="sslname" type="string?">已注册的 SSL 上下文 name；省略或 "" 表示明文</param>
@@ -261,7 +239,7 @@ static int32_t _lmqtt_ws_bind(lua_State *lua) {
 /// <param name="clientid" type="string">客户端 id</param>
 /// <param name="user" type="string?">用户名；nil 不携带</param>
 /// <param name="password" type="string?">密码；nil 不携带</param>
-/// <param name="willtopic" type="string?">遗嘱主题；nil 不携带遗嘱</param>
+/// <param name="willtopic" type="string?">遗嘱主题；nil 或空串不携带遗嘱，其余遗嘱参数随之忽略</param>
 /// <param name="willpayload" type="string?">遗嘱内容</param>
 /// <param name="willqos" type="integer?">遗嘱 QoS，默认 0</param>
 /// <param name="willretain" type="integer?">遗嘱 retain 标志，默认 0</param>
@@ -324,7 +302,7 @@ static int32_t _lmqtt_pack_connack(lua_State *lua) {
 /// <param name="dup" type="integer">DUP 标志（重发）；qos 为 0 时非 0 报错</param>
 /// <param name="topic" type="string">主题</param>
 /// <param name="packid" type="integer">报文 id（QoS 大于 0 时使用，此时为 0 报错）</param>
-/// <param name="payload" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
+/// <param name="payload" type="string|lightuserdata?">载荷数据；字符串时长度自动取得，nil 或省略为空载荷，其余类型报错</param>
 /// <param name="paysize" type="integer?">payload 为 lightuserdata 时必填；其余情形本槽不被读取，
 ///   但仍会校验它是数字——props 必须放在第 9 个参数，误放此处会被静默丢弃</param>
 /// <param name="props" type="userdata?">属性 props 对象（MQTT 5.0）</param>
@@ -339,11 +317,10 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
     uint16_t packid = lpub_check_u16(lua, 6, PACKID_OUT_OF_RANGE);
     luaL_argcheck(lua, 0 == qos || 0 != packid, 6, PACKID_ZERO);
     luaL_argcheck(lua, 0 != qos || 0 == dup, 4, DUP_QOS0);
-    char *payload = NULL;
-    size_t pllens = 0;
-    _lmqtt_get_payload(lua, 7, &payload, &pllens);
+    size_t pllens;
+    char *payload = lpub_opt_buf(lua, 7, &pllens);
     // 只在载荷是字符串时判的话，零长载荷（第 7 参传 nil）这条路会漏过去，props 被静默丢弃。
-    // 载荷是 lightuserdata 时第 8 参已被 _lmqtt_get_payload 当长度取过，必是数字，不会误伤
+    // 载荷是 lightuserdata 时第 8 参已被当长度取过，必是数字，不会误伤
     if (!lua_isnoneornil(lua, 8)
         && LUA_TNUMBER != lua_type(lua, 8)) {
         return luaL_error(lua, "pack_publish: props must be arg 9, arg 8 is paysize");
@@ -909,12 +886,11 @@ static int32_t _lmqtt_unsuback(lua_State *lua) {
 /// 解析 DISCONNECT 可变报头（MQTT 5.0）
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
-/// <returns type="integer">Reason Code；变报头为空或非 DISCONNECT 报文时返回 0</returns>
+/// <returns type="integer?">Reason Code；没有可变报头(3.1.1，或 5.0 剩余长度为 0)时按协议为 0；非 DISCONNECT 报文返回 nil</returns>
 static int32_t _lmqtt_disconnect(lua_State *lua) {
-    mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_DISCONNECT);
-    if (NULL == pack) {
-        lua_pushinteger(lua, 0);
-        return 1;
+    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
+    if (MQTT_DISCONNECT != pack->fixhead.prot) {
+        return lpub_rtn_nil(lua, 1);
     }
     lua_pushinteger(lua, ((mqtt_reason_varhead *)pack->varhead)->reason);
     return 1;

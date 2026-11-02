@@ -25,7 +25,7 @@ static inline void mutex_init(mutex_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_mutex_init(ctx, (const pthread_mutexattr_t*)NULL));
 #endif
-};
+}
 /// <summary>
 /// 互斥锁释放
 /// </summary>
@@ -36,7 +36,7 @@ static inline void mutex_free(mutex_ctx *ctx) {
 #else
     (void)pthread_mutex_destroy(ctx);
 #endif
-};
+}
 /// <summary>
 /// 锁定
 /// </summary>
@@ -47,7 +47,7 @@ static inline void mutex_lock(mutex_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_mutex_lock(ctx));
 #endif
-};
+}
 /// <summary>
 /// 尝试锁定。Windows 上(CRITICAL_SECTION)可重入：已持锁的线程再 trylock 也成功，须再配对 unlock 一次；POSIX 上失败
 /// </summary>
@@ -59,7 +59,7 @@ static inline int32_t mutex_trylock(mutex_ctx *ctx) {
 #else
     return ERR_OK == pthread_mutex_trylock(ctx) ? ERR_OK : ERR_FAILED;
 #endif
-};
+}
 /// <summary>
 /// 解锁
 /// </summary>
@@ -70,6 +70,6 @@ static inline void mutex_unlock(mutex_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_mutex_unlock(ctx));
 #endif
-};
+}
 
 #endif//MUTEX_H_

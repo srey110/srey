@@ -11,8 +11,7 @@
 #define REDIS_HDR_PEEK      (REDIS_NUM_CAP + 2) // 元素头本地副本：类型 1 + 长度最多 63 位 + CRLF 2
 //单次 RESP 解包最大节点数，纯内存兜底(嵌套深度另由 REDIS_MAX_DEPTH 卡，那道保的是帧栈不溢出)，
 //此值只决定为一个未完成回复最多垫多少内存，不应低到误伤合法的扁平大结果集。
-//1<<18 时最坏约 17MB（节点约 64B/个），仍是现有 7 万元素用例的 3.7 倍余量；
-//再往上抬只是让恶意 server 能用约 4MB 流量顶出几十 MB，业务侧的大结果集应分页取
+//1<<18 时最坏约 17MB（节点约 64B/个）；业务侧的大结果集应分页取
 #define REDIS_MAX_NODES     (1 << 18)
 
 // RESP2/RESP3 类型标识字节定义
@@ -54,7 +53,7 @@ typedef struct redis_pack_ctx {
 void _redis_pkfree(void *data);
 // 释放与 ud_cxt 关联的 Redis 解包上下文
 void _redis_udfree(ud_cxt *ud);
-// 判断当前回复能否唤醒等待者：RESP3 推送除订阅类确认外都不能(名单见实现)
+// 判断当前回复能否唤醒等待者：RESP3 推送除订阅类确认外都不能(名单见实现)，开头的属性跳过再判
 int32_t _redis_may_resume(void *data);
 /// <summary>
 /// 构造 Redis RESP 请求包

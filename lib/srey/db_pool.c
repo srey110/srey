@@ -22,7 +22,7 @@ typedef struct db_pool_slot {
 struct db_pool_ctx {
     int32_t nslot;             // 已 add 的连接对象个数（<= cfg.cap）
     int32_t nidle;             // 空闲栈里的槽数（含冷却中的、已断开的）
-    int32_t busy;              // 已借出的连接数（含正在交接的）
+    int32_t busy;              // 占用数：借出的、正在交接的，以及池内部正在建连/探活/断开/清会话的
     int32_t waiters;           // 当前挂在 coro_wait 上的协程数
     int32_t closed;            // 1=已调 db_pool_free
     int32_t free_pending;      // free 已走完；还有借出、等待者或维护协程时由最后一个离开的释放
@@ -188,7 +188,7 @@ static void _reap(db_pool_ctx *pool) {
     uint64_t now;
     int32_t j;
     db_pool_slot *slot;
-    for (int32_t i = 0; i < pool->nslot && _ready_idle(pool) > pool->cfg.min_idle; i++) {
+    for (int32_t i = 0; i < pool->nslot && 0 == pool->closed && _ready_idle(pool) > pool->cfg.min_idle; i++) {
         slot = &pool->slots[i];
         now = timer_cur_ms(&pool->timer);
         if (0 == slot->in_idle
@@ -215,6 +215,10 @@ static void _reap(db_pool_ctx *pool) {
         slot->born_at = 0;
         _put_idle(pool, i, 0);
         slot->idle_at = 0;// 已断开，下次借出重连
+        // quit 挂起期间来的 get 只能排队：放回后叫醒队头来重试，同 db_pool_put 断开放回那支
+        if (pool->waiters > 0) {
+            coro_wake(pool->co, pool->sess, CORO_TAG_DB_POOL, NULL);
+        }
     }
 }
 // 取出失败：冷却放回；已没有别的借出时叫醒等待者，让它们也快速失败。

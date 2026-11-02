@@ -155,7 +155,8 @@ static int32_t _lmysql_bind_double(lua_State *lua) {
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="name" type="string?">具名参数名；nil 表示按位置绑定，含 NUL 报错</param>
 /// <param name="ts" type="integer|nil">Unix 时间戳（秒，按本地时区换成日期时间；reader:datetime 给的是微秒，回绑先除以 1000000）。
-/// 取值为 MySQL DATETIME 范围 1000-01-01 00:00:00 ~ 9999-12-31 23:59:59（UTC）对应的秒数，越界或超出本平台 time_t 报错；
+/// 取值为 MySQL DATETIME 范围 1000-01-01 00:00:00 ~ 9999-12-31 23:59:59（UTC）对应的秒数，且按本地时区换算后年份也须在
+/// 1000~9999，越界或超出本平台 time_t 报错；
 /// Windows 上 1970 年前或 3000 年后本地时间换算失败，按零日期绑定。非 number 视为 NULL</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_datetime(lua_State *lua) {
@@ -168,7 +169,13 @@ static int32_t _lmysql_bind_datetime(lua_State *lua) {
     // 卡在 MySQL DATETIME 的范围内；time_t 为 32 位时再判一次，免得截成另一个时间
     int64_t sec = lpub_check_range(lua, 3, -30610224000, 253402300799, "datetime out of range");
     luaL_argcheck(lua, (int64_t)(time_t)sec == sec, 3, "datetime exceeds time_t");
-    mysql_bind_datetime(mbind, name, (time_t)sec);
+    time_t ts = (time_t)sec;
+    // 上面按 UTC 判，C 层按本地时区换算：边界附近本地年份出了 1000~9999 那边会静默写零日期，这里先拦。换算失败照旧交给 C 层
+    struct tm dt;
+    luaL_argcheck(lua, 0 != LOCALTIME(&ts, &dt)
+                  || (dt.tm_year + 1900 >= 1000 && dt.tm_year + 1900 <= 9999),
+                  3, "datetime out of range in local time");
+    mysql_bind_datetime(mbind, name, ts);
     return 0;
 }
 /// <summary>
@@ -253,15 +260,17 @@ static int32_t _lmysql_reader_size(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 定位到指定行位置
+/// 定位到指定行位置（从 1 开始）
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
-/// <param name="pos" type="integer">目标行下标（0 基），取值 [0, INT32_MAX]，超出报错；不小于行数时游标不动</param>
+/// <param name="pos" type="integer">目标行号，从 1 开始；不在 [1, size] 内时游标不动，非整数报错</param>
 /// <returns>无</returns>
 static int32_t _lmysql_reader_seek(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_reader_ctx, MT_MYSQL_READER, reader, "reader freed");
-    size_t pos = lpub_check_lens(lua, 2, INT32_MAX);
-    mysql_reader_seek(*reader, pos);
+    int64_t pos = lpub_check_index0(lua, 2, mysql_reader_size(*reader));
+    if (pos >= 0) {
+        mysql_reader_seek(*reader, (size_t)pos);
+    }
     return 0;
 }
 /// <summary>
@@ -836,7 +845,7 @@ static int32_t _lmysql_sock_id(lua_State *lua) {
     lpub_push_sock_slot(lua, 1, &mysql->client.sk);
     return 1;
 }
-// last_id / affectd_rows 的收尾：值超出 int64 时打 WARN（带 what）并返回 false，同 reader:integer
+// last_id / affected_rows 的收尾：值超出 int64 时打 WARN（带 what）并返回 false，同 reader:integer
 static int32_t _lmysql_rtn_count(lua_State *lua, uint64_t val, const char *what) {
     if (val > (uint64_t)INT64_MAX) {
         LOG_WARN("mysql %s exceeds int64.", what);
@@ -860,12 +869,12 @@ static int32_t _lmysql_last_id(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="integer|false">affected rows；超出 int64 时为 false</returns>
-static int32_t _lmysql_affectd_rows(lua_State *lua) {
+static int32_t _lmysql_affected_rows(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     return _lmysql_rtn_count(lua, mysql_affected_rows(*ud), "affected_rows");
 }
 /// <summary>
-/// 把 OK 包的影响行数与自增 id、或 ERR 包的错误记到本连接上，供 last_id / affectd_rows / erro 读；其余类型的包不改它们。
+/// 把 OK 包的影响行数与自增 id、或 ERR 包的错误记到本连接上，供 last_id / affected_rows / erro 读；其余类型的包不改它们。
 /// 只在持本连接串行化执行权、刚收到该包的协程里调
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
@@ -953,7 +962,7 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
         { "erro", _lmysql_erro },
         { "sock_id", _lmysql_sock_id },
         { "last_id", _lmysql_last_id },
-        { "affectd_rows", _lmysql_affectd_rows },
+        { "affected_rows", _lmysql_affected_rows },
         { "__gc", _lmysql_free },
         { NULL, NULL }
     };

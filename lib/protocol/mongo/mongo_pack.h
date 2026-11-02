@@ -7,9 +7,13 @@
 //https://www.mongodb.com/zh-cn/docs/manual/reference/command/
 // 包头 flags：drop insert update delete bulkWrite killCursors createIndexes dropIndexes 照抄连接级
 // flags（MORETOCOME 可用）；endSessions 恒带 MORETOCOME；其余命令都要等回包，恒不带。
+// 带事务上下文的只有 insert update delete bulkWrite find aggregate distinct findAndModify createIndexes
+// （事务的首条带 startTransaction）、getMore killCursors（不开事务）与 commitTransaction / abortTransaction，其余命令都不带。
 // 连接上绑着的事务已随重连作废（连接换过）时，带事务上下文的命令一律组包失败返回 NULL；
 // 例外是 abortTransaction（照发，让服务端当场中止放锁）与提交已交出过的 commitTransaction（可重发，
-// 见 mongo_session_stale）。hello 与 count 从不带事务上下文。
+// 见 mongo_session_stale）。
+// 组包失败一律返回 NULL 并置 *size 为 0，情形有：大入参超 INT32_MAX、必填数组为空或不是完整 BSON、
+// options / filter 等外部文档结构不合法、事务已作废（见上）、拼完的总长超 INT32_MAX。
 // 组包在锁外、发送在拿到锁之后，中间可能重连：带事务上下文的包发送前须经 mongo_txn_moved 复查
 
 /// <summary>
@@ -40,7 +44,7 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, struct
 /// <param name="client_final">客户端最终消息，按 flens 定界，不要求 NUL 结尾</param>
 /// <param name="flens">client_final 字节数</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *client_final, size_t flens, size_t *size);
 /// <summary>
 /// 构造 hello 握手命令请求包（用于建立连接后的能力协商）。恒不带事务上下文：重连握手也用它，
@@ -50,14 +54,14 @@ void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *clie
 /// <param name="options">附加的 BSON 选项数据，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_hello(mongo_ctx *mongo, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 ping 命令请求包（用于心跳检测）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；不会失败</returns>
 void *mongo_pack_ping(mongo_ctx *mongo, size_t *size);
 /// <summary>
 /// 构造 drop 命令请求包（删除当前集合）
@@ -66,7 +70,7 @@ void *mongo_pack_ping(mongo_ctx *mongo, size_t *size);
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 insert 命令请求包（插入文档）
@@ -77,7 +81,7 @@ void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t optlens, size_t *s
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 update 命令请求包（更新文档）
@@ -88,7 +92,7 @@ void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *option
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 delete 命令请求包（删除文档）
@@ -99,7 +103,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 bulkWrite 命令请求包（批量写操作，MongoDB 8.0+）
@@ -112,7 +116,7 @@ void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *opt
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 find 命令请求包（查询文档）
@@ -123,7 +127,7 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
 /// <param name="options">附加 BSON 选项（如 sort/projection/limit），NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 aggregate 命令请求包（聚合查询）
@@ -134,7 +138,7 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 getMore 命令请求包（获取游标后续批次）
@@ -144,7 +148,7 @@ void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 killCursors 命令请求包（关闭游标）
@@ -155,7 +159,7 @@ void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 distinct 命令请求包（获取字段唯一值列表）
@@ -167,7 +171,7 @@ void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, c
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 findAndModify 命令请求包（原子查找并修改/删除）
@@ -183,7 +187,7 @@ void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int32_t remove, int32_t pipeline, char *update, size_t ulens,
     char *options, size_t optlens, size_t *size);
 /// <summary>
@@ -196,7 +200,7 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 createIndexes 命令请求包（创建索引）
@@ -207,7 +211,7 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 dropIndexes 命令请求包（删除索引）
@@ -218,21 +222,21 @@ void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, ch
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；失败返回 NULL 并置 *size 为 0（情形见文件头）</returns>
 void *mongo_pack_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens, size_t *size);
 /// <summary>
 /// 构造 startSession 命令请求包（开启服务端会话）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；不会失败</returns>
 void *mongo_pack_startsession(mongo_ctx *mongo, size_t *size);
 /// <summary>
 /// 构造 refreshSessions 命令请求包（刷新会话以防超时）
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；不会失败</returns>
 void *mongo_pack_refreshsession(mongo_session *session, size_t *size);
 /// <summary>
 /// 构造 endSessions 命令请求包（结束会话）。包头 flags 恒为 MORETOCOME，只发不等回包；
@@ -240,7 +244,7 @@ void *mongo_pack_refreshsession(mongo_session *session, size_t *size);
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="size">输出数据包长度</param>
-/// <returns>数据包指针，需调用者释放</returns>
+/// <returns>数据包指针，需调用者释放；不会失败</returns>
 void *mongo_pack_endsession(mongo_session *session, size_t *size);
 /// <summary>
 /// 构建事务选项 BSON 数据（含 lsid/txnNumber/autocommit），用于事务中的每条命令

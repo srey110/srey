@@ -38,6 +38,10 @@ runner.run(function(t)
         -- binary 的数据是必填：nil / 数字不能当空属性静默写进去
         t:eq(false, pcall(function() p:binary(mqtt.PROP.AUTH_DATA, nil) end), "binary 属性数据为 nil 报错")
         t:eq(false, pcall(function() p:binary(mqtt.PROP.AUTH_DATA, 1) end), "binary 属性数据为数字报错")
+        -- 字符串类属性、用户属性的键与值含 NUL 拒收(对端按协议错误断连)，props 不变
+        t:eq(false, p:binary(mqtt.PROP.REASON_STR, "a\0b"), "REASON_STR 含 NUL 返回 false")
+        t:eq(false, p:kv(mqtt.PROP.USER_PROPERTY, "k\0", "v"), "用户属性的键含 NUL 返回 false")
+        t:eq(false, p:kv(mqtt.PROP.USER_PROPERTY, "k", "v\0"), "用户属性的值含 NUL 返回 false")
         -- 只量 AUTH_DATA 这一段的增量：binary 属性 = 标识(1) + 长度前缀(2) + 3 字节载荷 = 6。
         -- 只判 size > 0 的话，漏写载荷或漏写长度前缀都发现不了
         local _, before = p:data()
@@ -229,6 +233,9 @@ runner.run(function(t)
         t:check(srey.ud_str(p1, s1):find("pv", 1, true) ~= nil, "props 内容须出现在 PUBLISH 属性块")
         local slot8 = pcall(mqtt.pack_publish, mqtt.VERSION.V50, 0, 1, 0, "/t", 1, "hello", pp)
         t:eq(false, slot8, "字符串负载时 props 误放槽 8 须报错,而非静默丢弃属性块")
+        -- 载荷只收 nil / 字符串 / lightuserdata，数字、table 不再静默当空载荷
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 0, 0, "/t", 0, 42), "载荷传数字报错")
+        t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 0, 0, "/t", 0, {}), "载荷传 table 报错")
         utils.ud_free(p0)
         utils.ud_free(p1)
         local lud, ludsz = mqtt.pack_publish(mqtt.VERSION.V311, 0, 0, 0, "/x", 0, "payloadbytes")
@@ -355,10 +362,14 @@ runner.run(function(t)
     -- 随后再发两条 PUBLISH（带载荷 / 空载荷），比 mqtt.publish 的默认形态与 raw 形态
     do
         local PORT = 15051
-        local got
+        local got, disc
         local pubs = {}
         srey.on_recved(function(_, _, client, _, data, _)
             if 0 ~= client then
+                return
+            end
+            if mqtt.PROT.DISCONNECT == mqtt.prot(data) then
+                disc = mqtt.disconnect(data)
                 return
             end
             if mqtt.PROT.PUBLISH == mqtt.prot(data) then
@@ -366,6 +377,7 @@ runner.run(function(t)
                 local p = { str = table.pack(mqtt.publish(data)), raw = table.pack(mqtt.publish(data, 1)) }
                 p.rawtype = type(p.raw[6])
                 p.rawstr = p.raw[6] and srey.ud_str(p.raw[6], p.raw[7]) or nil
+                p.disc = mqtt.disconnect(data)
                 pubs[#pubs + 1] = p
                 return
             end
@@ -411,8 +423,11 @@ runner.run(function(t)
                 srey.send(sk, pack, size, 0)
                 pack, size = mqtt.pack_publish(mqtt.VERSION.V50, 0, 0, 0, "/empty", 0, "")
                 srey.send(sk, pack, size, 0)
+                -- 原因码 4(带遗嘱断开)，不用 0：0 分不出"取到了"与"没可变报头按 0 算"
+                pack, size = mqtt.pack_disconnect(mqtt.VERSION.V50, 4, nil)
+                srey.send(sk, pack, size, 0)
                 for _ = 1, 60 do
-                    if got and #pubs >= 2 then break end
+                    if got and #pubs >= 2 and disc then break end
                     srey.sleep(50)
                 end
                 srey.close(sk)
@@ -438,8 +453,10 @@ runner.run(function(t)
             t:eq("text/plain", got.w2 and got.w2[3], "遗嘱属性 2: 字符串值")
         end
         t:eq(2, #pubs, "服务端收到两条 PUBLISH")
+        t:eq(4, disc, "mqtt.disconnect 取到 DISCONNECT 的原因码")
         local p = pubs[1]
         if p then
+            t:eq(nil, p.disc, "mqtt.disconnect 对 PUBLISH 返回 nil")
             t:eq(7, p.str.n, "publish 返回 7 个值")
             t:eq(7, p.raw.n, "publish raw 同样返回 7 个值")
             t:eq("0,2,1,7,/pub", table.concat(p.str, ",", 1, 5), "publish dup/qos/retain/packid/topic")

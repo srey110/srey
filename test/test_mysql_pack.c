@@ -521,29 +521,34 @@ static void test_mysql_pack_payload_limit(CuTest *tc) {
     CALLOC(sql, 1, INT3_MAX);
     size_t size;
     void *pack;
+    /* 判定先攒进 fails(每项一位)，断言排在释放 16MB 缓冲之后：CuAssert 走 longjmp，夹在中间会漏释放、多报 not free */
+    uint32_t fails = 0;
 
     /* COM_QUERY：SQL 本身达到 INT3_MAX 走早退；SQL 少一字节时加上命令字节正好 INT3_MAX，在收尾处拒 */
     size = 1;
-    CuAssertTrue(tc, NULL == mysql_pack_query2(&mysql, sql, INT3_MAX, NULL, &size));
-    CuAssertTrue(tc, 0 == size);
+    pack = mysql_pack_query2(&mysql, sql, INT3_MAX, NULL, &size);
+    fails |= (NULL == pack && 0 == size) ? 0 : 1u << 0;
+    FREE(pack);
     size = 1;
-    CuAssertTrue(tc, NULL == mysql_pack_query2(&mysql, sql, INT3_MAX - 1, NULL, &size));
-    CuAssertTrue(tc, 0 == size);
+    pack = mysql_pack_query2(&mysql, sql, INT3_MAX - 1, NULL, &size);
+    fails |= (NULL == pack && 0 == size) ? 0 : 1u << 1;
+    FREE(pack);
     pack = mysql_pack_query2(&mysql, sql, INT3_MAX - 2, NULL, &size);
-    CuAssertPtrNotNull(tc, pack);
-    CuAssertTrue(tc, MYSQL_HEAD_LENS + INT3_MAX - 1 == size);
+    fails |= (NULL != pack && MYSQL_HEAD_LENS + INT3_MAX - 1 == size) ? 0 : 1u << 2;
     FREE(pack);
     /* 带查询属性段时 SQL 更短也会超：CLIENT_QUERY_ATTRIBUTES 多出 parameter_count / set_count 两字节 */
     BIT_SET(mysql.client.caps, CLIENT_QUERY_ATTRIBUTES);
     size = 1;
-    CuAssertTrue(tc, NULL == mysql_pack_query2(&mysql, sql, INT3_MAX - 2, NULL, &size));
-    CuAssertTrue(tc, 0 == size);
+    pack = mysql_pack_query2(&mysql, sql, INT3_MAX - 2, NULL, &size);
+    fails |= (NULL == pack && 0 == size) ? 0 : 1u << 3;
+    FREE(pack);
     mysql.client.caps = 0;
 
     /* COM_STMT_PREPARE */
     size = 1;
-    CuAssertTrue(tc, NULL == mysql_pack_stmt_prepare2(&mysql, sql, INT3_MAX - 1, &size));
-    CuAssertTrue(tc, 0 == size);
+    pack = mysql_pack_stmt_prepare2(&mysql, sql, INT3_MAX - 1, &size);
+    fails |= (NULL == pack && 0 == size) ? 0 : 1u << 4;
+    FREE(pack);
 
     /* COM_STMT_EXECUTE：一个 16MB 的字符串参数把载荷撑过门槛 */
     mysql_stmt_ctx stmt;
@@ -554,10 +559,12 @@ static void test_mysql_pack_payload_limit(CuTest *tc) {
     mysql_bind_init(&mb);
     mysql_bind_string(&mb, "a", sql, INT3_MAX);
     size = 1;
-    CuAssertTrue(tc, NULL == mysql_pack_stmt_execute(&stmt, &mb, &size));
-    CuAssertTrue(tc, 0 == size);
+    pack = mysql_pack_stmt_execute(&stmt, &mb, &size);
+    fails |= (NULL == pack && 0 == size) ? 0 : 1u << 5;
+    FREE(pack);
     mysql_bind_free(&mb);
     FREE(sql);
+    CuAssertIntEquals(tc, 0, (int)fails);
 }
 
 /* =======================================================================

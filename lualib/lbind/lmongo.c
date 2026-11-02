@@ -14,9 +14,13 @@
 // opts 与 filter / query / update 全走这里,免得相邻两个 BSON 参数各写一套取法、传错了还静默当没传。
 // lightuserdata 必须在 idx+1 附上字节数;这里只验长度本身合法,"是不是完整文档"交给组包侧判:
 // opts 走 bson_cat(声明长度可小于缓冲),filter / query / update 走 bson_check_doc(须恰好占满)。
-// 畸形文档不抛 Lua 错,整条命令组包失败返 nil
+// 畸形文档不抛 Lua 错,整条命令组包失败返 nil。
+// 不是 lightuserdata 时 idx+1 的长度槽不读,放了别的(多是错位的 opts)就会被静默丢掉,故只许 nil 或数字
 static char *_lmongo_get_opts(lua_State *lua, int32_t idx, size_t *lens) {
     *lens = 0;
+    luaL_argcheck(lua, lua_islightuserdata(lua, idx) || lua_isnoneornil(lua, idx + 1)
+                  || LUA_TNUMBER == lua_type(lua, idx + 1),
+                  idx + 1, "length slot must be nil or a number when the buffer is not light userdata");
     if (lua_isnoneornil(lua, idx)) {
         return NULL;
     }
@@ -86,7 +90,7 @@ static int32_t _lmongo_free(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 发起异步 TCP 连接。调用方需用 srey.wait_connect(&sk, ssl) 同步等待连接建立
+/// 发起异步 TCP 连接。调用方需用 srey.wait_connect(sk, ssl) 同步等待连接建立；lib/mongo.lua 的连接已经代调，用它就别再等一次
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <returns type="userdata">连接标识；失败时其 valid 字段为 false，返回值个数恒为 1</returns>
@@ -216,7 +220,7 @@ static int32_t _lmongo_arg_flag(lua_State *lua, int32_t idx) {
 /// <param name="flag" type="integer">mongo_flags 的按位或；含枚举外的位报错。
 /// 0 合法：还原惯用法 set_flag(clear_flag()) 传回的旧值可能就是 0。
 /// 要等回包的命令组包时包头恒不带 MORETOCOME，不受这里影响。
-/// C 层只实现了 MORETOCOME，其余位收下即丢弃</param>
+/// C 层只实现了 MORETOCOME，其余位收下即丢弃并打 WARN</param>
 /// <returns>无</returns>
 static int32_t _lmongo_set_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
@@ -469,7 +473,8 @@ static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
-/// <param name="filter" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
+/// <param name="filter" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部。string 自带长度，其后的长度槽须留 nil
+/// 或填数字(放别的报错)；lightuserdata 在其后必填字节数</param>
 /// <param name="flens" type="integer?">filter 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
@@ -570,7 +575,8 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
 /// <param name="key" type="string">去重字段名</param>
-/// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
+/// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部。string 自带长度，其后的长度槽须留 nil
+/// 或填数字(放别的报错)；lightuserdata 在其后必填字节数</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>
@@ -596,7 +602,8 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
-/// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
+/// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部。string 自带长度，其后的长度槽须留 nil
+/// 或填数字(放别的报错)；lightuserdata 在其后必填字节数</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="remove" type="integer">非零表示删除匹配文档</param>
 /// <param name="pipeline" type="integer">非零时 update 为聚合数组</param>
@@ -630,7 +637,8 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="col" type="string">集合名；非字符串或含 NUL 报错</param>
-/// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部，取值规则见 _lmongo_get_opts</param>
+/// <param name="query" type="string|lightuserdata|nil">BSON 过滤条件；nil 或空缓冲都表示全部。string 自带长度，其后的长度槽须留 nil
+/// 或填数字(放别的报错)；lightuserdata 在其后必填字节数</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>

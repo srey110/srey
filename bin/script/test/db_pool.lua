@@ -177,11 +177,46 @@ local function _run_txn(t, name, factory, in_trans)
     pool:free()
 end
 
+-- mongo 事务没收尾就归还：池回滚解绑，下一个人能开自己的事务(同 C 侧 task_mongo 的 _pool_flow)。空事务回滚纯本地，不需要 replica set
+local function _run_mongo_txn(t)
+    local pool = db_pool.new{
+        name = "mongo_pool_txn", max = 1, backoff = 1000,
+        factory = function()
+            return mongo.new(DB_HOST, 27017, SSL_NAME.NONE,
+                             "test", "admin", "12345678", "admin", "SCRAM-SHA-256")
+        end,
+    }
+    local c = pool:get(5000)
+    if not t:check(nil ~= c, "mongo_pool txn: 借到连接") then
+        pool:free()
+        return
+    end
+    local sess = c:startsession()
+    t:check(nil ~= sess and sess:begin(), "mongo_pool txn: begin 成功")
+    pool:put(c)
+    local c2 = pool:get(5000)
+    t:check(c == c2, "mongo_pool txn: 还是同一条")
+    local sess2 = c2 and c2:startsession()
+    t:check(nil ~= sess2 and sess2:begin(), "mongo_pool txn: 下一个人能开自己的事务")
+    if sess2 then
+        sess2:rollback()
+        sess2:close()
+    end
+    if sess then
+        sess:close()
+    end
+    if c2 then
+        pool:put(c2)
+    end
+    pool:free()
+end
+
 srey.startup(function()
 runner.run(function(t)
     _run_mysql(t)
     _run_pgsql(t)
     _run_mongo(t)
+    _run_mongo_txn(t)
     local ssl = _mysql_ssl()
     _run_txn(t, "mysql_pool", function()
         return mysql.new(DB_HOST, 3306, ssl, "admin", "12345678", "test", "utf8mb4", 0)

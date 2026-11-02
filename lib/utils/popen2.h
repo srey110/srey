@@ -60,8 +60,8 @@ void popen_free(popen_ctx *ctx);
 /// <returns>ERR_OK 已退出(退出码已记下，见 popen_exitcode)或本来就没有子进程；超时或 waitid 出错 ERR_FAILED</returns>
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms);
 /// <summary>
-/// 获取退出码。须在 popen_waitexit 返回 ERR_OK 或 popen_close 之后、popen_free 之前调用
-/// （free 后 Windows 已不持有进程句柄）
+/// 获取退出码。子进程还没退出时也可调（返回失败，要等它退出先 popen_waitexit）；
+/// 须在 popen_free 之前调用（free 后 Windows 已不持有进程句柄）
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 /// <returns>子进程的退出码；被信号终止、被 popen_close 结束、还没退出、没有子进程或出错时 ERR_FAILED</returns>

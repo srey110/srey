@@ -67,7 +67,7 @@ typedef enum parse_status{
 }parse_status;
 ARR_DECL(hdr_arr, http_header_ctx)
 typedef struct http_pack_ctx {
-    int32_t chunked;          // 0=非 chunked，1=chunked 起始包，2=chunked 数据包
+    int32_t chunked;          // 0=整包或连接关闭界定 body 的头包，1=chunked 头包，2=数据片(chunked 块 / 连接关闭界定的 body 片)
     int32_t chunked_last;     // 最近一次见到的 Transfer-Encoding 行，其末尾 token 是否为 chunked
     int32_t hflags;           // HTTP_HF_* 的组合，数据片恒为 0
     buf_ctx head;             // 原始头部数据（含第一行和所有字段）
@@ -744,7 +744,6 @@ NOINLINE static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_
     return pack;
 }
 // 由连接关闭界定 body(RFC 7230 §3.3.3 规则 7 / 规则 3)：缓冲里现有的字节全都是 body，原样切一片投出去。
-// 不在解析器里攒完整 body——那要无界累积并另配一个总长上限，而分片投递业务本来就在用(chunked)
 static inline http_pack_ctx *_http_tillclose(buffer_ctx *buf, int32_t *status) {
     size_t lens = buffer_size(buf);
     if (0 == lens) {

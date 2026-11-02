@@ -1055,6 +1055,31 @@ static void test_mqtt_props_reject(CuTest *tc) {
     // SUBSCRIPTION_ID 值 1 编成 81 00
     static char subid_long[] = { (char)0xF0, 0x05, 0x18, 0x03, 0x0B, (char)0x81, 0x00 };
     _mqtt_props_reject(tc, subid_long, sizeof(subid_long));
+    // UTF-8 串属性含 U+0000 拒收：REASON_STR "a\0b"、用户属性的 key / value 各带一个 NUL
+    static char rs_nul[] = { (char)0xF0, 0x08, 0x18, 0x06, 0x1F, 0x00, 0x03, 'a', 0x00, 'b' };
+    _mqtt_props_reject(tc, rs_nul, sizeof(rs_nul));
+    static char uk_nul[] = { (char)0xF0, 0x0A, 0x18, 0x08, 0x26, 0x00, 0x02, 'k', 0x00, 0x00, 0x01, 'v' };
+    _mqtt_props_reject(tc, uk_nul, sizeof(uk_nul));
+    static char uv_nul[] = { (char)0xF0, 0x0A, 0x18, 0x08, 0x26, 0x00, 0x01, 'k', 0x00, 0x02, 'v', 0x00 };
+    _mqtt_props_reject(tc, uv_nul, sizeof(uv_nul));
+    // 二进制属性 AUTH_DATA 允许含 NUL：照收，长度与内容不变
+    static char ad_nul[] = { (char)0xF0, 0x08, 0x18, 0x06, 0x16, 0x00, 0x03, 'a', 0x00, 'b' };
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, ad_nul, sizeof(ad_nul));
+    ud_cxt ud;
+    _mq_ud_init(&ud, MQTT_50, _MQ_INIT);
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = _t_mqtt_unpack(0, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, p);
+    mqtt_reason_varhead *vh = (mqtt_reason_varhead *)p->varhead;
+    CuAssertIntEquals(tc, 1, (int)mprop_arr_size(vh->properties));
+    mqtt_propertie *pr = *mprop_arr_at(vh->properties, 0);
+    CuAssertIntEquals(tc, 3, (int)pr->flens);
+    CuAssertTrue(tc, 0 == memcmp(pr->fval, "a\0b", 3));
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
 }
 
 // 单个属性段的属性个数上限：恰 MQTT_MAX_PROPS 个照收，多 1 个按协议错误拒(AUTH 包里放 N 个 2 字节的 PAYLOAD_FORMAT)
@@ -1156,6 +1181,10 @@ static void test_mqtt_props(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, mqtt_props_binary(&props, MAXIMUM_QOS, "x", 1));
     CuAssertIntEquals(tc, ERR_FAILED, mqtt_props_binary(&props, AUTH_DATA, "x", 65536));// 先判长度，不读 data
     CuAssertIntEquals(tc, ERR_FAILED, mqtt_props_kv(&props, REASON_STR, "k", 1, "v", 1));
+    // 字符串属性、用户属性的键与值含 NUL 拒收(对端按协议错误断连)
+    CuAssertIntEquals(tc, ERR_FAILED, mqtt_props_binary(&props, REASON_STR, "a\0b", 3));
+    CuAssertIntEquals(tc, ERR_FAILED, mqtt_props_kv(&props, USER_PROPERTY, "k\0", 2, "v", 1));
+    CuAssertIntEquals(tc, ERR_FAILED, mqtt_props_kv(&props, USER_PROPERTY, "k", 1, "v\0", 2));
     CuAssertIntEquals(tc, (int)okoff, (int)props.offset);
 
     /* 至少写入了几个字节 */

@@ -155,7 +155,6 @@ static int32_t _popen_spawn(pid_t *pid, const char *cmd, int32_t r, int32_t w, S
     if (0 == err && r) {
         err = posix_spawn_file_actions_adddup2(&acts, fd, STDERR_FILENO);
     }
-    // stdin 放最后：本进程 stdin 关着时 fd 可能正是 0，先接 /dev/null 会把它顶掉
     if (0 == err) {
         err = w ? posix_spawn_file_actions_adddup2(&acts, fd, STDIN_FILENO)
             : posix_spawn_file_actions_addopen(&acts, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
@@ -268,6 +267,18 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         if (ERR_FAILED == sprc) {
             LOG_ERROR("%s", ERRORSTR(ERRNO));
             return ERR_FAILED;
+        }
+        // 本进程 0~2 关着时 sock[0] 可能正是标准流号：同号 dup2 在 macOS 等平台不清 CLOEXEC，子进程那一路会被关，先挪到 3 以上
+        if (sock[0] <= STDERR_FILENO) {
+            SOCKET hi = fcntl(sock[0], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+            if (ERR_FAILED == hi) {
+                LOG_ERROR("%s", ERRORSTR(ERRNO));
+                CLOSE_SOCK(sock[0]);
+                CLOSE_SOCK(sock[1]);
+                return ERR_FAILED;
+            }
+            close(sock[0]);
+            sock[0] = hi;
         }
     }
     pid_t pid;

@@ -17,7 +17,7 @@ typedef struct evsock_ctx {
     OVERLAPPED overlapped; // IOCP重叠结构，必须位于首字段
     int32_t type;          // socket类型（SOCK_STREAM/SOCK_DGRAM）
     event_cb ev_cb;        // 事件触发时的回调函数
-    sock_ctx sk;           // 连接标识；listener/pipe 的 skid 恒为 0，createid() 最小返 1 故不与真连接碰撞
+    sock_ctx sk;           // 连接标识；listener / 命令通道的 skid 恒为 0，createid() 最小返 1 故不与真连接碰撞
 }evsock_ctx;
 HASHMAP_DECL(sockel_map, evsock_ctx *, SOCKEL_HASH, SOCKEL_CMP)
 // IOCP命令通道上下文（每个watcher一个；唤醒走 PQCS，ol_r 只是完成包回投的身份标记，不做真实 I/O）

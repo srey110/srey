@@ -53,7 +53,7 @@ static void _startup_run(task_ctx *task) {
             return;
         }
         // in-flight accept 仍存在时 unlisten：CMD_UNLSN 走每 watcher，末尾 CMD_LSN_UNREF
-        // 到 worker[0]，触发 ref 归 0 + 入 watcher->qtn 隔离队列延后释放
+        // 到 0 号事件线程，触发 ref 归 0 + 入 watcher->qtn 隔离队列延后释放
         ev_unlisten(&task->loader->netev, lsnid);
         if (task_isclosing(task)) {
             return;

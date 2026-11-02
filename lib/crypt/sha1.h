@@ -21,7 +21,7 @@ void sha1_init(sha1_ctx *sha1);
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
 void sha1_update(sha1_ctx *sha1, const void *data, size_t lens);
-/// <summary>完成 SHA-1 计算，输出摘要</summary>
+/// <summary>完成 SHA-1 计算，输出摘要；ctx 的擦除同 md5_final</summary>
 /// <param name="sha1">sha1_ctx</param>
 /// <param name="hash">输出摘要，长度 SHA1_BLOCK_SIZE</param>
 void sha1_final(sha1_ctx *sha1, char hash[SHA1_BLOCK_SIZE]);

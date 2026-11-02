@@ -784,7 +784,8 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
 /// <summary>
 /// 将 Lua table 编码为 BSON 文档，返回 bson_ctx userdata；顶层始终作为 DOCUMENT，嵌套纯序列 table 作为 ARRAY。
 /// nil 与 bson.null 都编成 BSON null。整数落在 int32 内编成 INT32，超出编成 INT64——后者 decode 回来是
-/// _bson_int64 包装对象而不是整数。整数 key 串成十进制字符串当字段名，故 [1] 与 "1" 会撞成同一个
+/// _bson_int64 包装对象而不是整数。顶层是纯序列时同嵌套数组，字段名按 BSON 数组的写法从 "0" 起；
+/// 其余整数 key 原值串成十进制字符串当字段名，故 [1] 与 "1" 会撞成同一个
 /// 字段名，本函数不查重（同 yyjson.encode），撞了就产出带重复字段的文档、回读只剩其一，调用方自己保证不撞。
 /// 嵌套连同顶层最多 BSON_MAX_DEPTH(18) 层，超了报错（循环引用的 table 也落在这条上）
 /// </summary>
@@ -1223,7 +1224,8 @@ static int32_t _lbson_iter_value(lua_State *lua) {
     lbson_oid_t *uoid;
     lbson_date_t *udate;
     lbson_int64_t *ui64;
-    // 取值规则同 _lbson_decode_field，但不与它共用 switch：那边是解码热循环，多一个调用点就不再内联进循环
+    // 取值规则同 _lbson_decode_field，改一边要同步改另一边。不共用 switch：抽成共用函数后它不再内联进解码循环，
+    // 实测 bson.decode 变慢
     switch (iter->type) {
     case BSON_DOUBLE:
         dval = bson_iter_double(iter, &err);

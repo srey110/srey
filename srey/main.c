@@ -22,6 +22,7 @@
     static _wsv_cb exitcbs[] = { service_exit, NULL };
     static SERVICE_STATUS_HANDLE psvstatus;
     static SERVICE_STATUS svstatus;
+    static atomic_t _wsv_req = 0;// SCM 发来的停止 / 关机控制码，回到服务线程再打日志
 #endif//OS_WIN
 static int32_t _log_use_file = 1; //是否将日志写文件
 static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准输出
@@ -50,11 +51,6 @@ static atomic_t _exit_code = 0; // 第一次请求的退出码，_exit_req 为 1
             PRINT("%s%s invalid, use default.", (prefix), (keystr)); \
         } \
     } while (0)
-// 拼路径后判有没有截断。SNPRINTF 截断时返回的是"本应写入的长度"而不是实际写入，
-// 不判就会拿到一条指向别处的路径 —— 建目录建到别处、删文件删到别处
-static int32_t _path_ok(int32_t rtn, size_t cap) {
-    return rtn >= 0 && (size_t)rtn < cap;
-}
 // 读取进程目录下 configs/config.json 的内容，返回堆分配字符串（调用方负责释放）。
 // lens 交出 readall 记的真实字节数：不能让调用方拿 strlen 重推——文件里出现 NUL 时
 // strlen 短于真实长度，截断后恰好合法的 JSON 前缀会被静默当成整份配置收下
@@ -62,7 +58,7 @@ static char *_config_read(size_t *lens) {
     char config[PATH_LENS];
     int32_t plen = SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
         procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
-    if (!_path_ok(plen, sizeof(config))) {
+    if (!snprintf_ok(plen, sizeof(config))) {
         PRINT("config path too long under %s, use default.", procpath());
         return NULL;
     }
@@ -133,7 +129,7 @@ static void _open_log(uint32_t capacity) {
     char logfile[PATH_LENS];
     int32_t plen = SNPRINTF(logfile, sizeof(logfile), "%s%s%s%s",
         procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
-    if (!_path_ok(plen, sizeof(logfile))) {
+    if (!snprintf_ok(plen, sizeof(logfile))) {
         // 装不下就退化成终端输出：截断后的路径指向别的目录，建出来的 logs 与写进去的文件都不在预期位置
         fprintf(stderr, "log dir path too long, log to terminal.\n");
         log_init(NULL, capacity);
@@ -153,7 +149,7 @@ static void _open_log(uint32_t capacity) {
         SNPRINTF(time, sizeof(time), "%d_%"PRIu64, (int32_t)GETPID(), nowms());
     }
     plen = SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens, "%s%s", time, ".log");
-    if (!_path_ok(plen, sizeof(logfile) - lens)) {
+    if (!snprintf_ok(plen, sizeof(logfile) - lens)) {
         fprintf(stderr, "log file path too long, log to terminal.\n");
         log_init(NULL, capacity);
         return;
@@ -190,7 +186,6 @@ static void _init_globle(void) {
 #endif
     locale_init();
     sock_init();
-    bson_globle_init();
 }
 // 与 _init_globle 成对
 static void _free_globle(void) {
@@ -260,7 +255,7 @@ static int32_t service_init(void) {
     _parse_config(&config);
     if (ERR_OK != serviceid(config.serviceid)) {
         PRINT("serviceid error.");
-        // 这条早退在 _open_log 之前,不能借 service_exit:它无条件 log_free,会去锁没初始化的 mutex
+        // 这条早退在 _open_log 之前,不能借 service_exit:它无条件 log_free,会去唤醒、join 从没建过的日志线程
         _free_globle();
         return ERR_FAILED;
     }
@@ -279,6 +274,7 @@ static int32_t service_init(void) {
     return ERR_OK;
 }
 // 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程。
+// sighandle 注册的信号除 SIGABRT 外都算退出信号(头一次收到就收尾)。
 // 已请求过退出(信号或 loader_exit)又来退出信号，说明收尾卡住了：直接 _exit(1)，不冲日志(同 test/main.c)。
 // abort()(如收尾期 ASSERTAB)也会进来：不当作第二次退出信号(不强退)，但照常唤醒主线程，最终由默认处理留 core
 static void _on_sigcb(int32_t sig, void *arg) {
@@ -436,12 +432,13 @@ static int32_t _wsv_runfuncs(_wsv_cb *funcs) {
     return ERR_OK;
 }
 // Windows 服务控制事件处理函数（停止/关机时唤醒主线程）
-// SCM 线程上下文不是真 signal handler, 直接走 hug_wakeup 即可
-DWORD WINAPI _wsv_event(DWORD req, DWORD event, LPVOID eventdata, LPVOID context) {
+// SCM 线程上下文不是真 signal handler, 直接走 hug_wakeup 即可。
+// 这里不打日志：SCM 线程不受 log_free 的 join 管，服务恰好自己退出时会撞上正在释放的日志队列
+static DWORD WINAPI _wsv_event(DWORD req, DWORD event, LPVOID eventdata, LPVOID context) {
     switch (req) {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN:
-        LOG_INFO("catch sign: %d", req);
+        ATOMIC_SET(&_wsv_req, (atomic_t)req);
         _wsv_pending(SERVICE_STOP_PENDING, WINSV_STOP_TIMEOUT);
         hug_wakeup(&_hug);
         break;
@@ -467,6 +464,9 @@ static void WINAPI _wsv_service(DWORD argc, LPTSTR *argv) {
     if (ERR_OK == _wsv_runfuncs(initcbs)) {
         _wsv_setstatus(SERVICE_RUNNING, NO_ERROR);
         hug_wait(&_hug);
+        if (0 != ATOMIC_GET(&_wsv_req)) {
+            LOG_INFO("catch sign: %d", (int32_t)ATOMIC_GET(&_wsv_req));
+        }
         // loader_exit 发起的退出 SCM 还不知道，先报停止中；SCM 发起的已在 _wsv_event 报过，重报无害
         _wsv_pending(SERVICE_STOP_PENDING, WINSV_STOP_TIMEOUT);
         int32_t code = _exit_rtn(_wsv_runfuncs(exitcbs));// exitcbs 只有 service_exit，结果即内存检查
@@ -522,7 +522,7 @@ static BOOL wsv_install(LPCTSTR name) {
         return FALSE;
     }
     int32_t tlen = SNPRINTF(tmp, sizeof(tmp), "\"%s\" \"-r\" \"%s\"", propath, name);
-    if (!_path_ok(tlen, sizeof(tmp))) {
+    if (!snprintf_ok(tlen, sizeof(tmp))) {
         PRINT("service image path too long, install aborted.");
         CloseServiceHandle(scm);
         return FALSE;
@@ -574,7 +574,7 @@ static BOOL wsv_unInstall(LPCTSTR name) {
 }
 // 打印 Windows 下的命令行使用说明
 static void _useage(void) {
-    PRINT("UseAge:srey or srey -d front-end mode;");
+    PRINT("Usage:srey or srey -d front-end mode;");
     PRINT("srey -i \"service name\" install service;");
     PRINT("srey -u \"service name\" uninstall service;");
     PRINT("srey -r \"service name\" run service.");
@@ -609,7 +609,7 @@ int main(int argc, char *argv[]) {
             return ERR_FAILED;
         }
         if (installed) {
-            PRINT("service %s exited!", argv[2]);
+            PRINT("service %s already installed!", argv[2]);
             return ERR_FAILED;
         }
         if (wsv_install(argv[2])) {
@@ -625,7 +625,7 @@ int main(int argc, char *argv[]) {
             return ERR_FAILED;
         }
         if (!installed) {
-            PRINT("uninstall service error.service %s not exited!", argv[2]);
+            PRINT("uninstall service error. service %s not installed!", argv[2]);
             return ERR_FAILED;
         }
         if (wsv_unInstall(argv[2])) {
@@ -651,7 +651,7 @@ int main(int argc, char *argv[]) {
         return service_hug(-1, -1, NULL);
     }
     if (argc > 1 && 0 != strcmp("-b", argv[1])) {
-        PRINT("UseAge:\"./srey\" or \"./srey -d\" or \"./srey -b\".");
+        PRINT("Usage:\"./srey\" or \"./srey -d\" or \"./srey -b\".");
         return ERR_FAILED;
     }
     int32_t is_daemon = (argc > 1);
@@ -695,8 +695,8 @@ int main(int argc, char *argv[]) {
         char sh[PATH_LENS];
         // 截断后 sh 指向别的路径：_stop_sh 会往那儿写，退出时 remove 又会删那儿。
         // 装不下就整个跳过——不给这个便利脚本，也好过写错地方再删错地方
-        int32_t has_sh = _path_ok(SNPRINTF(sh, sizeof(sh), "%s%s%s",
-                                           procpath(), PATH_SEPARATORSTR, "stop.sh"), sizeof(sh));
+        int32_t has_sh = snprintf_ok(SNPRINTF(sh, sizeof(sh), "%s%s%s",
+                                              procpath(), PATH_SEPARATORSTR, "stop.sh"), sizeof(sh));
         if (!has_sh) {
             PRINT("stop.sh path too long, skipped.");
         }

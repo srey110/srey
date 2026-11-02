@@ -3,6 +3,7 @@
 #include "test_base.h"
 #include "lib.h"
 #include "protocol/custz_head.h"
+#include <locale.h>
 #include "protocol/kcp/ikcp.h"
 
 // SMTP 状态机 ud->status 值（与 lib/protocol/smtp/smtp.c parse_status 对应）：
@@ -2640,6 +2641,12 @@ static void test_redis_may_resume(CuTest *tc) {
         { ">3\r\n+ssubscribe\r\n$2\r\nch\r\n:1\r\n", 1 },
         { "*3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$2\r\nhi\r\n", 1 },
         { "+OK\r\n", 1 },
+        // 前面带属性：跳过属性再判，推送照样拦、普通回复与订阅确认照样放
+        { "|1\r\n+k\r\n+v\r\n>3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$2\r\nhi\r\n", 0 },
+        { "|1\r\n+k\r\n+v\r\n+OK\r\n", 1 },
+        // 属性值里还嵌着带属性的数组：嵌套属性不计入父层元素数
+        { "|1\r\n+k\r\n*1\r\n|1\r\n+a\r\n+b\r\n:1\r\n>3\r\n+subscribe\r\n$2\r\nch\r\n:1\r\n", 1 },
+        { "|1\r\n+k\r\n%1\r\n+a\r\n+b\r\n|1\r\n+x\r\n+y\r\n>2\r\n$10\r\ninvalidate\r\n*1\r\n$1\r\nk\r\n", 0 },
     };
     buffer_ctx buf;
     ud_cxt ud;
@@ -3803,7 +3810,7 @@ static void _smtp_resp_check(CuTest *tc, const char *input, size_t inlen, int32_
     }
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.status = 4;// COMMAND
+    ud.status = _SMTP_COMMAND;
     int32_t status = PROT_INIT;
     size_t size = 0;
     char *pack = (char *)_t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -3834,7 +3841,7 @@ static void _smtp_auth_check(CuTest *tc, const char *input, int32_t expected) {
     safe_fill_str(smtp.user, sizeof(smtp.user), "alice");// 用户名为空时握手跳过 AUTH、不解析通告
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.status = 1;// EHLO
+    ud.status = _SMTP_EHLO;
     ud.context = &smtp;
     int32_t status = PROT_INIT;
     size_t size = 0;
@@ -3901,13 +3908,13 @@ static void test_smtp_full_response(CuTest *tc) {
         buffer_append(&b13, (void *)"500 Err\r\n", 9);
         ud_cxt ud13;
         ZERO(&ud13, sizeof(ud13));
-        ud13.status = 0;// INIT
+        ud13.status = _SMTP_INIT;
         int32_t st13 = PROT_INIT;
         size_t sz13 = 0;
         prots_init(&g_stub_emit);// 失败路径要把首行推给等待方，经 _hs_push
         CuAssertTrue(tc, NULL == _t_smtp_unpack(0, &b13, &ud13, &sz13, &st13));
         CuAssertTrue(tc, BIT_CHECK(st13, PROT_ERROR));
-        CuAssertIntEquals(tc, 0, (int)ud13.status);// 未推进,响应没被认下
+        CuAssertIntEquals(tc, _SMTP_INIT, (int)ud13.status);// 未推进,响应没被认下
         FREE(g_stub_last_msg.data);// 同 _smtp_auth_check：推给等待方的首行由用例自己收
         buffer_free(&b13);
     }
@@ -3941,6 +3948,17 @@ static void test_smtp_full_response(CuTest *tc) {
     }
     _smtp_resp_check(tc, flood, floodlen, ERR_FAILED);
     FREE(flood);
+    /* 20b. 恰好 SMTP_MAX_PACK_LENS 字节的完整应答照收，多 1 字节即拒 */
+    for (size_t extra = 0; extra < 2; extra++) {
+        size_t total = (size_t)SMTP_MAX_PACK_LENS + extra;
+        char *big;
+        MALLOC(big, total);
+        memcpy(big, "250-", 4);
+        memset(big + 4, 'X', total - 12);
+        memcpy(big + total - 8, "\r\n250 \r\n", 8);
+        _smtp_resp_check(tc, big, total, 0 == extra ? (int32_t)total : ERR_FAILED);
+        FREE(big);
+    }
     /* 21. 裸结束行 "<code>\r\n"（code 后直接 CRLF，无 sep/text） */
     _smtp_resp_check(tc, "220\r\n", 5, 5);
     /* 22. 非 220 的首行 code 同样认（COMMAND 响应 code 不固定） */
@@ -3951,6 +3969,8 @@ static void test_smtp_full_response(CuTest *tc) {
     _smtp_resp_check(tc, "421\r\n", 5, 5);
     /* 25. 续行 code 与首行不一致 → 拒绝 */
     _smtp_resp_check(tc, "250-A\r\n500 X\r\n", 14, ERR_FAILED);
+    /* 26. 码后是 CR 却不紧跟 LF：不是裸结束行 → 拒绝 */
+    _smtp_resp_check(tc, "250\rjunk\r\n", 10, ERR_FAILED);
 }
 
 // mail_clear 须把 reply 一并还原到 mail_init 后的状态：漏还原会让复用同一对象的下一封信
@@ -4435,6 +4455,10 @@ static void test_dns_parse_pack(CuTest *tc) {
     CuAssertTrue(tc, 1 == cnt);
     CuAssertStrEquals(tc, "1.2.3.4", ips[0].ip);
     FREE(ips);
+    /* QR 位清掉就是查询报文：ID 对上也不当应答 */
+    resp[2] = 0x01;
+    CuAssertTrue(tc, NULL == dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, NULL));
+    CuAssertTrue(tc, 0 == cnt);
 
     /* 恶意放大：仅 12 字节头 + 计数字段全 0xFFFF（total=196605），无 RR 体。
        修复后按报文剩余字节(0)限上界 → total=0 → 返回 NULL，不再 MALLOC ~12.6MB */
@@ -6704,7 +6728,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     /* COMMAND + 完整响应 → 返回字符串（不含 CRLF），size = 行长度 */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
-    ud.status = 4; /* COMMAND（parse_status 枚举：INIT/EHLO/AUTH/AUTH_CHECK/COMMAND = 0..4） */
+    ud.status = _SMTP_COMMAND;
     buffer_append(&buf, "250 OK Hello\r\n", 14);
     size = 0; status = PROT_INIT;
     pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -6717,7 +6741,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     /* COMMAND + 不足 SMTP_CODE_LENS+CRLF_SIZE = 5 字节 → PROT_MOREDATA */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
-    ud.status = 4;
+    ud.status = _SMTP_COMMAND;
     buffer_append(&buf, "25", 2);
     size = 0; status = PROT_INIT;
     pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -6728,7 +6752,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     /* COMMAND + 5+ 字节但缺 CRLF → PROT_MOREDATA */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
-    ud.status = 4;
+    ud.status = _SMTP_COMMAND;
     buffer_append(&buf, "250 OK", 6);
     size = 0; status = PROT_INIT;
     pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -6739,7 +6763,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     /* COMMAND + 多行响应：一次性消费整段，返回完整内容（含内嵌 CRLF、不含末尾 CRLF），buffer 清空 */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
-    ud.status = 4;
+    ud.status = _SMTP_COMMAND;
     buffer_append(&buf, "250-First\r\n250 End\r\n", 20);
     size = 0; status = PROT_INIT;
     pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -6753,7 +6777,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     /* COMMAND + 流水线：先一次性取完首段多行，剩余下一条响应保留待下次取出 */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
-    ud.status = 4;
+    ud.status = _SMTP_COMMAND;
     buffer_append(&buf, "250-A\r\n250 B\r\n221 Bye\r\n", 23);
     size = 0; status = PROT_INIT;
     pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -6770,7 +6794,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     /* COMMAND + 裸结束行 "<code>\r\n"（无 text）→ 返回纯 code */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
-    ud.status = 4;
+    ud.status = _SMTP_COMMAND;
     buffer_append(&buf, "250\r\n", 5);
     size = 0; status = PROT_INIT;
     pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -6784,7 +6808,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     /* COMMAND + 异于 250 的多行 code（如 DATA 的 354）→ 以首行 code 合并 */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
-    ud.status = 4;
+    ud.status = _SMTP_COMMAND;
     buffer_append(&buf, "354-go\r\n354 ahead\r\n", 19);
     size = 0; status = PROT_INIT;
     pack = _t_smtp_unpack(0, &buf, &ud, &size, &status);
@@ -9472,6 +9496,20 @@ static void test_mail_ew_line_width(CuTest *tc) {
 }
 // Date 用四位年份（RFC 5322 §3.3 不许生成两位的 obs-year）；Message-ID 为 <随机串@发件域>，
 // 每封不同，发件地址里取不到域时用 srey.local
+// Date 头 "Date: dd Mon ..." 的月份是不是 12 个英文缩写之一
+static int32_t _mail_month_ok(const char *pack) {
+    const char *d = (NULL != pack) ? strstr(pack, "Date: ") : NULL;
+    if (NULL == d) {
+        return 0;
+    }
+    const char *mons = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    for (int32_t i = 0; i < 12; i++) {
+        if (0 == memcmp(d + 9, mons + i * 3, 3) && ' ' == d[12]) {
+            return 1;
+        }
+    }
+    return 0;
+}
 static void test_mail_date_msgid(CuTest *tc) {
     mail_ctx mail;
     mail_init(&mail);
@@ -9481,9 +9519,28 @@ static void test_mail_date_msgid(CuTest *tc) {
     mail_msg(&mail, "body");
     char *p1 = mail_pack(&mail, NULL);
     char *p2 = mail_pack(&mail, NULL);
+    // 换成非 C 的 LC_TIME 再组一封：月份仍须是英文缩写(%b 会跟着 locale 走)。切不过去就只核 C locale 那封
+    char savedtime[64] = { 0 };
+    const char *saved = setlocale(LC_TIME, NULL);
+    if (NULL != saved) {
+        SNPRINTF(savedtime, sizeof(savedtime), "%s", saved);
+    }
+    const char *cands[] = { "zh_CN.UTF-8", "zh_CN.utf8", "fr_FR.UTF-8", "fr_FR.utf8", "ja_JP.UTF-8",
+                            "Chinese_China.936", "French_France.1252" };
+    char *p4 = NULL;
+    for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
+        if (NULL != setlocale(LC_TIME, cands[i])) {
+            p4 = mail_pack(&mail, NULL);
+            break;
+        }
+    }
+    setlocale(LC_TIME, ('\0' != savedtime[0]) ? savedtime : "C");// 先还原再断言，免得断言失败后污染后续用例
     mail_from(&mail, NULL, "nodomain");
     char *p3 = mail_pack(&mail, NULL);
     mail_free(&mail);
+    int32_t mon1 = _mail_month_ok(p1);
+    int32_t mon4 = (NULL == p4) || _mail_month_ok(p4);
+    FREE(p4);
     // "Date: 16 Oct 2026 12:00:00 +0800"：日、月之后那段是 4 位数字
     const char *d = (NULL != p1) ? strstr(p1, "Date: ") : NULL;
     d = (NULL != d) ? strchr(d + 6, ' ') : NULL;
@@ -9502,6 +9559,8 @@ static void test_mail_date_msgid(CuTest *tc) {
     CuAssertTrue(tc, year4);
     CuAssertTrue(tc, id_ok);
     CuAssertTrue(tc, nodomain);
+    CuAssertTrue(tc, mon1);
+    CuAssertTrue(tc, mon4);
 }
 // 显示名超 63 字节按 UTF-8 字符边界截断，不留半个字；地址超 255 字节整个不收——
 // 截断会变成另一个地址，RCPT TO 投给错的人

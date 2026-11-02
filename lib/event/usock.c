@@ -19,7 +19,7 @@ typedef struct lsnsock_ctx {
 typedef struct listener_ctx {
     int32_t nlsn;           // 监听socket数量（SO_REUSEPORT时收连接的每个线程一个，否则 1）
     atomic_t remove;        // 标记为待移除（ev_unlisten后设置）
-    atomic_t ref;           // 引用计数（等于nlsn，每个_uev_remove_lsn减1）
+    atomic_t ref;           // 引用计数：nlsn(每个 _uev_remove_lsn 减 1) + 在途 CMD_ADDACP 各 1 + ev_unlisten 期间占位 1，归零即释放
     uint32_t nthrs;         // thrs 个数
     lsnsock_ctx *lsnsock;   // 监听socket数组；第 i 个挂在 watcher[lsnsock[i].sock.sk.index] 上
     int32_t *thrs;          // 只在这几个 watcher 上收连接；NULL 为全部
@@ -213,14 +213,17 @@ static uint32_t _usk_wpend_tick(void *ud, uint64_t now_ms) {
     watcher_ctx *watcher = ud;
     list_node *head;
     tcp_ctx *tcp;
+    uint64_t waited;
     for (;;) {
         head = watcher->wpends.head;
         if (NULL == head) {
             break;
         }
         tcp = UPCAST(head, tcp_ctx, wpend_node);
-        if (now_ms - tcp->wpend_ms < SSL_WPEND_MAX_MS) {
-            return (uint32_t)(SSL_WPEND_MAX_MS - (now_ms - tcp->wpend_ms));
+        // tick 驱动期间新挂链的，wpend_ms 可能晚于 now_ms，按刚挂上算
+        waited = now_ms > tcp->wpend_ms ? now_ms - tcp->wpend_ms : 0;
+        if (waited < SSL_WPEND_MAX_MS) {
+            return (uint32_t)(SSL_WPEND_MAX_MS - waited);
         }
         LOG_WARN("ssl write pending %dms with no progress on fd %d, disconnect.",
                  SSL_WPEND_MAX_MS, (int32_t)tcp->sock.sk.fd);
@@ -577,7 +580,6 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl_
     } else {
         if (ERR_FAILED == _usk_ssl_exchange_trigger(watcher, tcp, evssl)) {
             _uev_disconnect(watcher, evsk);
-            LOG_ERROR("ssl exchange error.");
         }
     }
 #else
@@ -636,8 +638,7 @@ static inline int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
 }
 // 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件。
-// STATUS_KEYUPDATE_READ 的置与清都只在本函数：别处清位条件对不上置位处，残留期间
-// _uev_add_bufs_send 会早退，请求-响应型协议下就再等不到读事件、连接卡死。
+// STATUS_KEYUPDATE_READ 的置与清都只在本函数，别处不许动它：残留会让后续发送一直早退、连接卡死。
 // 本端已在关(含 s_cb 里同步 ev_close)就原样返回成功：关闭靠 _uev_disconnect 挂上的写事件驱动，
 // 这里再摘写事件会让关闭卡住。
 // 回调里已把连接关掉(不是只发起关闭)返回 1，调用方立即返回
@@ -702,7 +703,7 @@ static inline int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
             BIT_REMOVE(tcp->status, STATUS_SSLEXCHANGE);
             rtn = _usk_ssl_exchange_trigger(watcher, tcp, tcp->evssl);
             if (ERR_FAILED == rtn) {
-                LOG_ERROR("ssl exchange error.");
+                _uev_disconnect(watcher, &tcp->sock);// 同当场触发那条：半关后延迟关闭，调用方随后的 _usk_close_tcp 按 LINGER 走
             }
             return rtn;
         }
@@ -1229,12 +1230,6 @@ void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         _uev_disconnect(watcher, evsk);
     }
 }
-// 关闭全部监听socket（无 SO_REUSEPORT 时只有一个）
-static void _usk_close_lsnsock(listener_ctx *lsn) {
-    for (int32_t i = 0; i < lsn->nlsn; i++) {
-        CLOSE_SOCK(lsn->lsnsock[i].sock.sk.fd);
-    }
-}
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, const int32_t *thrs, uint32_t nthrs, uint64_t *id) {
     netaddr_ctx addr;
@@ -1315,7 +1310,9 @@ void _uev_add_lsn_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
     }
 }
 void _uev_freelsn(listener_ctx *lsn) {
-    _usk_close_lsnsock(lsn);
+    for (int32_t i = 0; i < lsn->nlsn; i++) {// 关闭全部监听 socket(无 SO_REUSEPORT 时只有一个)
+        CLOSE_SOCK(lsn->lsnsock[i].sock.sk.fd);
+    }
     UD_FREE(lsn->cbs.ud_free, &lsn->ud);
     FREE(lsn->lsnsock);
     FREE(lsn->thrs);
@@ -1416,8 +1413,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
 // 别的线程读了传进来的可能是已被新连接复用的旧号
 void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
     lsnsock_ctx *curlsn = NULL;
-    int32_t i;
-    for (i = 0; i < lsn->nlsn; i++) {// 有线程表时数组下标不等于线程下标，按 index 找挂在本线程上的那个
+    for (int32_t i = 0; i < lsn->nlsn; i++) {// 有线程表时数组下标不等于线程下标，按 index 找挂在本线程上的那个
         if (lsn->lsnsock[i].sock.sk.index == watcher->index) {
             curlsn = &lsn->lsnsock[i];
             break;
@@ -1438,7 +1434,7 @@ void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
     // 仅清本 watcher 持有的 lsnsock ev_cb,让本批次 events[] 残留事件跳过本 lsnsock;
     // 跨 watcher 不写(避免与其他 watcher _uev_loop_event 读 events[k].udata->ev_cb 产生 race)
     curlsn->sock.ev_cb = NULL;
-    // ref 归零入隔离队列: lsn 在 QTN_MS 隔离期内 lsnsock 数组内存仍活,
+    // ref 归零入隔离队列：隔离期内 lsnsock 数组还在，各线程本批 events[] 里残留的项还要读它的 ev_cb
     _uev_qtn_freelsn(watcher, lsn);
 }
 // 初始化msghdr结构体（用于recvmsg/sendmsg的地址和iov绑定）

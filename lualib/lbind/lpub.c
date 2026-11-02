@@ -17,6 +17,10 @@ static char _cur_task_key;
 
 void lpub_new_mtable(lua_State *lua, const char *name) {
     luaL_newmetatable(lua, name);
+    // 地址键上已有别的元表(两个名字互为后缀，被链接器并成同一地址)，按地址取会拿错，启动时就拦下
+    int32_t type = lua_rawgetp(lua, LUA_REGISTRYINDEX, name);
+    ASSERTAB(LUA_TNIL == type || lua_rawequal(lua, -1, -2), "metatable name address collides with another metatable.");
+    lua_pop(lua, 1);
     lua_pushvalue(lua, -1);
     lua_rawsetp(lua, LUA_REGISTRYINDEX, name);
 }
@@ -491,13 +495,15 @@ static int32_t _sock_index(lua_State *lua) {
     }
     return 1;
 }
-// 按值比较两个连接标识。两侧都要 testudata 而非 checkudata：两个 full userdata 相比时
-// Lua 不看元表是否相同,只要一侧挂了 __eq 就派发到这里,拿 sock 比别的 userdata 会抛参数错
+// 比较两个连接标识是不是同一条连接：只认 skid(全局唯一)，不比 fd——等待被 CLOSE 唤醒时那份已置失效，
+// 关闭回调里的那份还是原值，两者得认作同一条。两侧都要 testudata 而非 checkudata：两个 full userdata 相比时
+// Lua 不看元表是否相同,只要一侧挂了 __eq 就派发到这里,拿 sock 比别的 userdata 会抛参数错。
+// 活连接的 skid 都是事件层建连接时用 createid 发的，最小为 1，置失效也不动它；为 0 的只有失败占位与
+// 不带连接的消息，它们彼此相等。拿 sock 当表键不经过这里，表按对象本身比
 static int32_t _sock_eq(lua_State *lua) {
     sock_ctx *a = lpub_test_udata(lua, 1, MT_SOCK);
     sock_ctx *b = lpub_test_udata(lua, 2, MT_SOCK);
-    lua_pushboolean(lua, NULL != a && NULL != b
-                         && a->fd == b->fd && a->skid == b->skid);
+    lua_pushboolean(lua, NULL != a && NULL != b && a->skid == b->skid);
     return 1;
 }
 static int32_t _sock_tostring(lua_State *lua) {
@@ -538,8 +544,7 @@ void lpub_push_sock(lua_State *lua, sock_ctx *sk) {
     ASSOC_MTABLE(lua, MT_SOCK);
 }
 // 消息分发专用:按 skid 复用同一个 userdata,免得每条消息都造一个。命中也照这条消息刷新一次值。
-// 只给这条路用:别处(sock_id / connect / udp)不进这张表,否则连接关掉之后
-// 再取一次就会把死 skid 写回表里,而 uncache 只在 CLOSE 分发后触发一次,再没人摘得掉
+// 别处(sock_id / connect / udp)一个连接只建一次,不进这张表
 void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk) {
     if (0 == sk->skid) {
         lpub_push_sock(lua, sk);

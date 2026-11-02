@@ -9,12 +9,11 @@
 // 同线程禁止: 1)持 rdlock 后调 wrlock(扫 active 自死锁);2)递归 wrlock(pthread_rwlock 默认不可重入)
 // 递归 rdlock 仅对已注册线程可用: TLS 记嵌套层数,仅最外层 runlock 清 active,须等量配对;
 // 不配对的 runlock 由 runlock 入口的 ASSERTAB 拦下(否则层数会永久失衡,后续嵌套 rdlock 丢读保护)
-// 上面两条禁令只在已注册线程上由 ASSERTAB 拦得住;未注册线程走 fallback 无从记账,
-// 违反即挂死或断言,两个平台表现不一
+// 禁令 1 只在已注册线程上由 ASSERTAB 拦得住;未注册线程走 fallback 无从记账,违反即挂死或断言,各平台表现不一。
+// 禁令 2 与注册无关:glibc / macOS / FreeBSD 的 pthread 报 EDEADLK 由 ASSERTAB_CODE 中止,Windows 的 SRW 直接挂死
 
-// 同线程支持注册到至多 RWLOCK_DISTR_MAX_TLS 个不同 ctx;超出上限的 ctx
-// 该线程走 fallback rwlock。每次 rdlock/runlock 多一次 N 元素线性扫描。
-// 单线程可同时注册的 rwlock_distr_ctx 上限;扩大需评估线性扫描开销
+// 同线程至多注册到 RWLOCK_DISTR_MAX_TLS 个不同 ctx,超出的 ctx 该线程走 fallback rwlock;
+// 每次 rdlock/runlock 多一次 N 元素线性扫描,扩大上限需评估这笔开销
 #define RWLOCK_DISTR_MAX_TLS  4
 
 // 分布式读锁单 slot,独占一条 cache line 避免 false sharing

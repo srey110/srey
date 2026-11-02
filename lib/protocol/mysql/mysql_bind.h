@@ -25,9 +25,8 @@ void mysql_bind_clear(mysql_bind_ctx *mbind);
 /// <param name="name">名称</param>
 void mysql_bind_nil(mysql_bind_ctx *mbind, const char *name);
 /// <summary>
-/// MYSQL_TYPE_STRING MYSQL_TYPE_VARCHAR MYSQL_TYPE_VAR_STRING MYSQL_TYPE_ENUM MYSQL_TYPE_SET
-/// MYSQL_TYPE_LONG_BLOB MYSQL_TYPE_MEDIUM_BLOB MYSQL_TYPE_BLOB MYSQL_TYPE_TINY_BLOB
-/// MYSQL_TYPE_GEOMETRY MYSQL_TYPE_BIT MYSQL_TYPE_DECIMAL MYSQL_TYPE_NEWDECIMAL MYSQL_TYPE_JSON
+/// 绑定字符串 / 二进制参数，一律按 MYSQL_TYPE_STRING 发，由服务端按列类型转换（VARCHAR、BLOB、ENUM、SET、
+/// DECIMAL、JSON 等列都用它）。value 为 NULL 时同 mysql_bind_nil
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <param name="name">名称</param>
@@ -35,15 +34,14 @@ void mysql_bind_nil(mysql_bind_ctx *mbind, const char *name);
 /// <param name="lens">长度</param>
 void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, size_t lens);
 /// <summary>
-/// MYSQL_TYPE_TINY MYSQL_TYPE_SHORT MYSQL_TYPE_YEAR MYSQL_TYPE_LONG MYSQL_TYPE_LONGLONG
+/// 绑定有符号整数参数，按值的范围选 MYSQL_TYPE_TINY / SHORT / LONG / LONGLONG 中最小的
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <param name="name">名称</param>
 /// <param name="value">值</param>
 void mysql_bind_integer(mysql_bind_ctx *mbind, const char *name, int64_t value);
 /// <summary>
-/// 绑定无符号整数参数（自动选择 TINYINT/SMALLINT/INT/BIGINT）
-/// 对应类型：MYSQL_TYPE_TINY MYSQL_TYPE_SHORT MYSQL_TYPE_YEAR MYSQL_TYPE_LONG MYSQL_TYPE_LONGLONG
+/// 绑定无符号整数参数，按值的范围选 MYSQL_TYPE_TINY / SHORT / LONG / LONGLONG 中最小的
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <param name="name">参数名称</param>
@@ -65,7 +63,7 @@ void mysql_bind_float(mysql_bind_ctx *mbind, const char *name, float value);
 void mysql_bind_double(mysql_bind_ctx *mbind, const char *name, double value);
 /// <summary>
 /// MYSQL_TYPE_DATE MYSQL_TYPE_DATETIME MYSQL_TYPE_TIMESTAMP。按本地时区换成日期时间，本地时间正好 0 点整时
-/// 只发日期(4 字节)；本地时间换算失败(如 Windows 上 1970 年前或 3000 年后)按零日期发，不报错
+/// 只发日期(4 字节)；本地时间换算失败(如 Windows 上 1970 年前或 3000 年后)或年份不在 0~9999 时按零日期发，不报错
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <param name="name">名称</param>

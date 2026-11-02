@@ -24,7 +24,8 @@ typedef struct evssl_ctx evssl_ctx;
 void evssl_init(void);
 /// <summary>
 /// 加载ca cert key 创建 SSL 上下文。
-/// 默认 SSL_VERIFY_NONE（不验证对端）+ security_level=0；适合内网/自签证书场景。
+/// 默认 SSL_VERIFY_NONE（不验证对端），安全级别用 OpenSSL 默认(1)；适合内网/自签证书场景。
+/// CA 证书用 SHA1 这类弱摘要签的会被拒，要兼容就 evssl_seclevel(ssl, 0)。
 /// 公网客户端连 trusted CA 时务必显式：
 ///   evssl_verify(ssl, SSL_VERIFY_PEER, NULL)  启用对端证书验证(第三参为自定义校验回调,不用就传 NULL)
 ///   evssl_host(ssl, "api.example.com")   发 SNI 并校验证书是签给这个名字的；只开 verify 不设它只验证书链，
@@ -44,7 +45,7 @@ void evssl_init(void);
 evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type);
 /// <summary>
 /// 加载p12证书。
-/// 默认安全选项与 evssl_new 一致（SSL_VERIFY_NONE / security_level=0）；
+/// 默认安全选项与 evssl_new 一致（SSL_VERIFY_NONE / OpenSSL 默认安全级别）；
 /// 公网客户端务必配合 evssl_verify / evssl_host / evssl_seclevel / evssl_min_proto 显式加固。
 /// p12 里附带的 CA 证书只当自己要发出的证书链，不进信任库：建出的上下文信任库是空的，
 /// 开 SSL_VERIFY_PEER 验对端必然失败，要验对端用 evssl_new 带 ca。
@@ -75,10 +76,10 @@ void evssl_verify(evssl_ctx *evssl, int32_t mod, SSL_verify_cb vcb);
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="host">主机名，复制一份存下；NULL 或 "" 清除</param>
-/// <returns>ERR_OK 成功；超过 255 字节(SNI 上限)时 ERR_FAILED，原设置不变</returns>
+/// <returns>ERR_OK 成功；超过 255 字节(SNI 上限)，或 OpenSSL 不收这个名字(4.0 起主机名带 @、_ 等非法字符即拒)时 ERR_FAILED，原设置不变</returns>
 int32_t evssl_host(evssl_ctx *evssl, const char *host);
 /// <summary>
-/// 设置 SSL 安全级别（OpenSSL 安全级别 0-5，默认 0）
+/// 设置 SSL 安全级别（OpenSSL 安全级别 0-5，默认用 OpenSSL 的 1）
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="level">安全级别：0 无限制，1 禁用 MD5/DES 等，2 禁用 RSA<2048 等</param>

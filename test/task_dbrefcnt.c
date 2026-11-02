@@ -17,8 +17,9 @@ typedef struct dbrefcnt_args {
 // PROT_REF_ACQUIRE(+1)，与 ev_connect 同步失败路径 UD_FREE→udfree(-1) 配对，
 // 故每轮结束 ref 必须回到哨兵；漏 acquire 时它逐轮下降，当场断言失败。
 // 修复前 try_connect 仅在成功后 +1，失败路径 udfree 把持有者那份减掉，块被误 FREE。
-// 四个客户端只差类型 / 初始化实参 / try_connect 三处，其余逐字相同，故用宏展开
-#define DBREFCNT_CASE(name, type, initcall, tryfn) \
+// 每轮先确认 sk 已失效：否则 try_connect 被 _try_connect_check 当场拒掉，没走到 acquire / udfree，ref 照样回到哨兵。
+// 四个客户端只差类型 / 初始化实参 / try_connect / sk 字段四处，其余逐字相同，故用宏展开
+#define DBREFCNT_CASE(name, type, initcall, tryfn, skf) \
 static int32_t _refcnt_##name(task_ctx *task) { \
     type *ctx; \
     int32_t i; \
@@ -32,6 +33,11 @@ static int32_t _refcnt_##name(task_ctx *task) { \
     } \
     ATOMIC_SET(&ctx->ref, DBREFCNT_GUARD); \
     for (i = 0; i < DBREFCNT_ROUNDS; i++) { \
+        if (!sock_is_invalid(&ctx->skf)) { \
+            LOG_ERROR(#name " sk still valid at round %d, try_connect would be refused.", i); \
+            rtn = ERR_FAILED; \
+            break; \
+        } \
         tryfn(task, ctx, 1); \
         ref = ATOMIC_GET(&ctx->ref); \
         if ((atomic_t)DBREFCNT_GUARD != ref) { \
@@ -46,13 +52,13 @@ static int32_t _refcnt_##name(task_ctx *task) { \
 }
 
 DBREFCNT_CASE(mysql, mysql_ctx,
-    mysql_init(ctx, DBREFCNT_BADIP, 3306, NULL, "u", "p", "db", "utf8mb4", 0), mysql_try_connect)
+    mysql_init(ctx, DBREFCNT_BADIP, 3306, NULL, "u", "p", "db", "utf8mb4", 0), mysql_try_connect, client.sk)
 DBREFCNT_CASE(pgsql, pgsql_ctx,
-    pgsql_init(ctx, DBREFCNT_BADIP, 5432, NULL, "u", "p", "db"), pgsql_try_connect)
+    pgsql_init(ctx, DBREFCNT_BADIP, 5432, NULL, "u", "p", "db"), pgsql_try_connect, sk)
 DBREFCNT_CASE(mongo, mongo_ctx,
-    mongo_init(ctx, DBREFCNT_BADIP, 27017, NULL, "db"), mongo_try_connect)
+    mongo_init(ctx, DBREFCNT_BADIP, 27017, NULL, "db"), mongo_try_connect, sk)
 DBREFCNT_CASE(smtp, smtp_ctx,
-    smtp_init(ctx, DBREFCNT_BADIP, 25, NULL, "u", "p"), smtp_try_connect)
+    smtp_init(ctx, DBREFCNT_BADIP, 25, NULL, "u", "p"), smtp_try_connect, sk)
 
 static void _startup_run(task_ctx *task) {
     dbrefcnt_args *arg = (dbrefcnt_args *)coro_get_arg(task);

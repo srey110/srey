@@ -21,7 +21,7 @@ void md2_init(md2_ctx *md2);
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
 void md2_update(md2_ctx *md2, const void *data, size_t lens);
-/// <summary>完成 MD2 计算，输出摘要</summary>
+/// <summary>完成 MD2 计算，输出摘要；ctx 的擦除同 md5_final</summary>
 /// <param name="md2">md2_ctx</param>
 /// <param name="hash">输出摘要，长度 MD2_BLOCK_SIZE</param>
 void md2_final(md2_ctx *md2, char hash[MD2_BLOCK_SIZE]);

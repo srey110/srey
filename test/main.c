@@ -74,7 +74,7 @@ typedef struct test_reporter_arg {
 }test_reporter_arg;
 
 static hug_ctx _hug;// 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
-static atomic_t _exit_code = -1;// loader_exit 请求的退出码，只记第一次；-1 表示没人请求(信号退出)
+static atomic_t _exit_code = -1;// 只当标志用：-1 表示没人调过 loader_exit(信号退出)；最终退出码按结果槽算
 static atomic_t _forcexit = 0;// 已请求过退出(信号或 loader_exit)后又来退出信号时置 1，看门狗见到就强退
 static atomic_t _wdstate = 0;// 看门狗阶段：0 测试中，1 主线程已进 loader_free(开始计时)，2 loader_free 已返回
 static timer_ctx _mono;// 单调计时，main 开头 timer_init；测试里的各种期限一律按它算，改系统时间不影响
@@ -244,7 +244,6 @@ int main(int argc, char *argv[]) {
     serviceid(1);/* 取 srey 的内置默认值，让 createid 的高 16 位与生产一致 */
     log_init(NULL, 0);
     unlimit();/* 须在 log_init 之后：NOFILE 上限不够的告警才打得出来，同 srey/main.c */
-    bson_globle_init();
     coro_task_stack(0);
     dns_set_ip("8.8.8.8");
     const char *local = procpath();
@@ -620,25 +619,27 @@ int main(int argc, char *argv[]) {
             continue;
         }
         // 边读边等：先等退出再读的话，输出超过管道缓冲时子进程卡在写上退不了，白等满 60 秒。
-        // 必须看 eof 出参：返回 0 是"此刻没数据"，不是流末尾，按 EOF 处理会把输出截一半
+        // 必须看 eof 出参：返回 0 是"此刻没数据"，不是流末尾，按 EOF 处理会把输出截一半。
+        // 收到退出信号就不再等：脚本自成进程组收不到终端 SIGINT，下面 popen_free 连组一起结束
         pyeof = 0;
         pydl = _mono_ms() + 60000;
-        while (0 == pyeof && _mono_ms() < pydl) {
+        while (0 == pyeof && _mono_ms() < pydl && 0 == ATOMIC_GET(&_hug.exitflag)) {
             nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1, &pyeof);
             if (ERR_FAILED == nread) {
                 break;
             }
             if (nread > 0) {
                 outbuf[nread] = '\0';
-                printf("%s\n", outbuf);
+                printf("%s", outbuf);// 一行可能跨两次读，块尾不补换行
             } else if (0 == pyeof) {
                 MSLEEP(1);
             }
         }
-        // 输出读完再等退出，预算是读和等合起来的 60 秒。返回值不能丢: 脚本挂满 60 秒与正常跑完 3 秒, 日志里本来长得一模一样
-        pynow = _mono_ms();
+        printf("\n");
+        // 输出读完再等退出，预算是读和等合起来的 60 秒，已在关停就只探一次不等。返回值不能丢: 脚本挂满 60 秒与正常跑完 3 秒, 日志里本来长得一模一样
+        pynow = 0 == ATOMIC_GET(&_hug.exitflag) ? _mono_ms() : pydl;
         if (ERR_OK != popen_waitexit(&pctx, pynow < pydl ? (uint32_t)(pydl - pynow) : 0)) {
-            LOG_WARN("popen %s exceeded 60s budget.", pycmd);
+            LOG_WARN("popen %s not exited (60s budget used up or exit signaled).", pycmd);
         }
         pycode = popen_exitcode(&pctx);
         popen_free(&pctx);
@@ -722,7 +723,7 @@ int main(int argc, char *argv[]) {
                   : ((-2 == testlist[i].val) ? " (still connecting)" : "")));
         }
     }
-    // 归一成 0/1：退出码只取低 8 位，而失败数上限约 515，恰为 256 的倍数时会得 0；
+    // 归一成 0/1：退出码只取低 8 位，失败数恰为 256 的倍数时会得 0；
     // 具体条数看上面的逐条输出
     return unit_failed ? 1 : 0;
 }

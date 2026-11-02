@@ -7,9 +7,7 @@
 #define SCRAM_NONCE_LEN 18 // 随机 nonce 原始字节长度
 // 最小迭代轮数
 #define SCRAM_MIN_ITER  4096
-// 最大迭代轮数：仅用于挡住荒谬取值(解析器本身接受到 INT32_MAX，约 20 分钟 CPU)，不是安全阈值。
-// 取 256 倍下限即约 100 万轮，最坏约 1 秒 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
-// 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过。
+// 最大迭代轮数：只挡荒谬取值，不是安全阈值；256 倍下限约 100 万轮，加固过的服务端配置都在其内。
 // 这段计算在协议解包里，跑在 net 线程上，期间该线程上的连接都在等
 #define SCRAM_MAX_ITER  (256 * SCRAM_MIN_ITER)
 /* GS2 头三态（RFC 5802 §5.1）：本端不支持绑定发 "n"；支持但对端未通告 -PLUS 发 "y"，

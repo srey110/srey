@@ -321,8 +321,7 @@ static int32_t _lyyjson_push(lyyjson_ctx *ctx, yyjson_val *val, int32_t depth) {
 /// 产出带重复键的 JSON、decode 回来只剩其一，调用方自己保证不撞；
 /// nil 与 yyjson.null 编成 null；嵌套超过 LYYJSON_MAX_DEPTH 层（连同最外层）、出现
 /// table/number/string/boolean/nil/yyjson.null 之外的值、浮点为 NaN 或 ±Inf，都报错并带上原因。
-/// 非 UTF-8 字节原样写出不报错：Lua 字符串就是字节串，框架里 srey.ud_str 取出的
-/// 二进制载荷进 JSON 是常态，卡死会让这类请求一个字节都发不出去
+/// 非 UTF-8 字节原样写出不报错（Lua 字符串就是字节串，二进制载荷进 JSON 是常态）
 /// </summary>
 /// <param name="val" type="any">要编码的值</param>
 /// <returns type="string">JSON 文本</returns>
@@ -390,8 +389,7 @@ int32_t lyyjson_encode_sink(lua_State *lua, int32_t idx, lyyjson_sink sink, void
 /// <summary>
 /// 解析 JSON 文本。JSON null 解成 yyjson.null（NULL light userdata）；
 /// 超出 lua_Integer 范围的无符号整数退化成浮点；嵌套超过 LYYJSON_MAX_DEPTH 层报错。
-/// 字符串里的非 UTF-8 字节原样收下不报错，与 encode 对称——第三方服务回未转码的
-/// Latin-1 JSON 是常见情形，拒收等于把一条本可解析的业务响应整个丢掉
+/// 字符串里的非 UTF-8 字节原样收下不报错，与 encode 对称
 /// </summary>
 /// <param name="data" type="string|lightuserdata">JSON 文本</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，字节数</param>

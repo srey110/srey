@@ -3568,6 +3568,41 @@ static void test_hashmap_get_set(CuTest *tc) {
     kv_map_free(map);
 }
 
+/* 契约 2:count 到了扩容水位,set 覆盖已有键与 get_set 命中已有键也先扩容(桶数翻倍、count 不变) */
+static void test_hashmap_grow_on_hit(CuTest *tc) {
+    up_imap *m = up_imap_new(16, NULL);
+    int32_t k = 0;
+    int32_t found = 0;
+    size_t nb, cnt;
+    CuAssertPtrNotNull(tc, m);
+    while (m->count < m->growat) {
+        CuAssertTrue(tc, NULL == up_imap_set(m, &k));
+        k++;
+    }
+    nb = m->nbuckets;
+    cnt = m->count;
+    k = 0;
+    CuAssertPtrNotNull(tc, up_imap_set(m, &k));
+    CuAssertTrue(tc, m->nbuckets > nb);
+    CuAssertTrue(tc, cnt == m->count);
+    CuAssertIntEquals(tc, 0, *up_imap_get(m, &k));
+
+    /* 再填到新水位,换 get_set 命中 */
+    k = (int32_t)m->count;
+    while (m->count < m->growat) {
+        CuAssertTrue(tc, NULL == up_imap_set(m, &k));
+        k++;
+    }
+    nb = m->nbuckets;
+    cnt = m->count;
+    k = 1;
+    CuAssertPtrNotNull(tc, up_imap_get_set(m, &k, &found));
+    CuAssertIntEquals(tc, 1, found);
+    CuAssertTrue(tc, m->nbuckets > nb);
+    CuAssertTrue(tc, cnt == m->count);
+    up_imap_free(m);
+}
+
 /* get / delete 加了 robin-hood 提前终止(dib 小于当前步数即判不在表里)。
  * 回移删除必须仍维持那条不变式,否则存在的 key 会被静默报成不存在 */
 static void test_hashmap_miss_after_delete(CuTest *tc) {
@@ -5616,6 +5651,36 @@ static void test_radix_free_cb(CuTest *tc) {
     CuAssertIntEquals(tc, 4, _rx_freed);
 }
 
+// 内存账：空表只算结构体；1KB 单 key 的前缀、256 个单字节 key 的节点与子指针都得算进去；删光回到空表。
+// 只断言下界，不跟节点布局绑死
+static void test_radix_mem(CuTest *tc) {
+    rx_i32 m;
+    uint8_t key[1024];
+    int32_t v = 1;
+    int32_t i;
+
+    rx_i32_init(&m, NULL);
+    size_t empty = rx_i32_mem(&m);
+    CuAssertTrue(tc, sizeof(m) == empty);
+    memset(key, 'a', sizeof(key));
+    CuAssertIntEquals(tc, 1, rx_i32_set(&m, key, sizeof(key), &v, NULL));
+    CuAssertTrue(tc, rx_i32_mem(&m) >= empty + sizeof(rx_i32_node) + sizeof(key));
+    CuAssertIntEquals(tc, 1, rx_i32_del(&m, key, sizeof(key), NULL));
+    CuAssertTrue(tc, empty == rx_i32_mem(&m));
+
+    for (i = 0; i < 256; i++) {
+        key[0] = (uint8_t)i;
+        CuAssertIntEquals(tc, 1, rx_i32_set(&m, key, 1, &v, NULL));
+    }
+    CuAssertTrue(tc, rx_i32_mem(&m) >= empty + 256 * (sizeof(rx_i32_node) + sizeof(rx_i32_node *)));
+    for (i = 0; i < 256; i++) {
+        key[0] = (uint8_t)i;
+        CuAssertIntEquals(tc, 1, rx_i32_del(&m, key, 1, NULL));
+    }
+    CuAssertTrue(tc, empty == rx_i32_mem(&m));
+    rx_i32_free(&m);
+}
+
 // 长 key：1KB key 的分裂/合并/迭代
 static void test_radix_long(CuTest *tc) {
     enum { RX_LONG_N = 32, RX_LONG_LEN = 1024 };
@@ -5713,6 +5778,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_radix_random);
     SUITE_ADD_TEST(suite, test_radix_random_ops);
     SUITE_ADD_TEST(suite, test_radix_free_cb);
+    SUITE_ADD_TEST(suite, test_radix_mem);
     SUITE_ADD_TEST(suite, test_radix_long);
     SUITE_ADD_TEST(suite, test_hashmap);
     SUITE_ADD_TEST(suite, test_hashmap_scan_iter);
@@ -5766,6 +5832,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_queue_empty_apis);
     SUITE_ADD_TEST(suite, test_array_swap_large);
     SUITE_ADD_TEST(suite, test_hashmap_get_set);
+    SUITE_ADD_TEST(suite, test_hashmap_grow_on_hit);
     SUITE_ADD_TEST(suite, test_hashmap_miss_after_delete);
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_array_negpos);

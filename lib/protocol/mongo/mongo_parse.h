@@ -31,7 +31,7 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack);
 /// <param name="mgpack">服务端返回的消息包</param>
 /// <param name="uid">输出会话 UUID（UUID_LENS 字节）</param>
 /// <param name="timeout">输出会话超时分钟数</param>
-/// <returns>ok 字段值（非零表示成功）</returns>
+/// <returns>ok 字段值（非零表示成功）；ok 为真但缺 id 或 id 不是 16 字节 UUID 也返回 0</returns>
 int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32_t *timeout);
 /// <summary>
 /// 从 hello 响应取 logicalSessionTimeoutMinutes（服务端回收空闲会话的分钟数）

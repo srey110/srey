@@ -3,6 +3,7 @@
 
 #include "event/evpub.h"
 #include "protocol/smtp/mail.h"
+#include "protocol/prots_pub.h"
 
 struct coro_serial_ctx;
 
@@ -28,12 +29,11 @@ typedef struct smtp_ctx {
 }smtp_ctx;
 
 // 初始化模块：注册握手完成回调
-void _smtp_init(void *hspush);
+void _smtp_init(_handshaked_push hspush);
 // 连接断开时释放 ud_cxt 中的 smtp_ctx 引用并重置 fd
 void _smtp_udfree(ud_cxt *ud);
 /// <summary>
-/// 简单邮件传输协议smtp初始化。字段超长不做截断——
-/// 截断后的密码拿去认证只会换回服务端一句 535，调用方看不出是自己传长了。
+/// 简单邮件传输协议smtp初始化，字段超长不截断。
 /// 只支持隐式 TLS（如 465 端口，连上即握手），不支持 STARTTLS：要求先 STARTTLS 的端口（如 587）连不上；
 /// 明文连接上认证会把凭据明文发出
 /// </summary>
@@ -50,7 +50,7 @@ int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ct
 /// <summary>
 /// 检查返回码是否命中 codes 中任意一个。用于一条命令有多个合法应答的场合，
 /// 如 RCPT TO 的 250(已接受) 与 251(已接受但将转发)，见 RFC 5321 §4.3.2。
-/// 逐个按前缀比较，全不中才落一条 WARN（不会每个码刷一条）
+/// 逐个按前缀比较(传 "45" 命中 450~459，空串对任何应答都命中，调用方别传)，全不中才落一条 WARN（不会每个码刷一条）
 /// </summary>
 /// <param name="pack">smtp服务器返回的数据包</param>
 /// <param name="codes">状态码数组</param>

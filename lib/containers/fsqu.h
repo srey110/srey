@@ -21,6 +21,7 @@
 // 平台自适应队列:FSQU_FAST_MODEL 选快路径——0 = queue+spin(整条队列一把自旋锁),
 // 1 = mpq(无锁有界环),2 = bbq(无锁分块环);后两者满了降级到无界溢出层。
 // 三种后端的接口签名一致,调用方不必关心;例外是选 2 时容量上限 2^20,超了 init 就中止(见 bbq.h)。
+// 出队分两族:pop / pop_batch 多消费者,pop_sc / pop_sc_batch 单消费者;同一队列只能固定用一族(bbq 后端的要求,见 bbq.h)。
 //
 // 典型用法：
 //   FSQU_DECL(msg_fsqu, message_ctx)
@@ -35,7 +36,7 @@
 
 #define FSQU_DEFAULT_CAP 1024 // 默认容量;各后端共用一个默认值
 
-// 入参写 T const * 而不是 const T *：T 是指针类型(如 void *)时，后者会被解析成指向 const 的指针，调用方传普通指针就告警。
+// 入参写 T const * 而不是 const T *：理由同 hashmap.h。
 // FSQU_DECL(name, T)：name 生成的类型名，T 元素类型，按 FSQU_FAST_MODEL 展开成下面两种本体之一。
 // 产线只用 FSQU_DECL；要在同一个二进制里并排比几种后端时才直接用本体：
 // FSQU_RING_DECL 的 FASTDECL 传 MPQ_DECL 或 BBQ_DECL(头文件由调用方自己 include)，FSQU_SPIN_DECL 即 0 号后端
@@ -163,11 +164,11 @@ static inline int32_t name##_pop(name *fsqu, T *out) {                          
 static inline uint32_t name##_pop_batch(name *fsqu, T *out, uint32_t max) {     \
     return name##_pop_batch_impl(fsqu, out, max, 0);                            \
 }                                                                               \
-/* 单消费者版:仅允许单一消费者线程调用,不可与 pop 混用 */                          \
+/* 单消费者版:仅允许单一消费者线程调用,不可与 pop / pop_batch 混用 */              \
 static inline int32_t name##_pop_sc(name *fsqu, T *out) {                       \
     return name##_pop_impl(fsqu, out, 1);                                       \
 }                                                                               \
-/* 批量出队(单消费者),返回取到的个数 */                                         \
+/* 批量出队(单消费者),返回取到的个数;同 pop_sc 不可与 pop / pop_batch 混用 */   \
 static inline uint32_t name##_pop_sc_batch(name *fsqu, T *out, uint32_t max) {  \
     return name##_pop_batch_impl(fsqu, out, max, 1);                            \
 }                                                                               \

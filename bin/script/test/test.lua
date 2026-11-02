@@ -70,7 +70,12 @@ local function register()
     for i, e in ipairs(TESTS) do
         reports[i] = e[2]
     end
-    task.register("test.reporter", "reporter", 0, table.unpack(reports))
+    -- 起不来就直接请求退出：汇总与 600 秒兜底都在它里面，没有它进程会一直挂着(同 test/main.c)
+    if not task.register("test.reporter", "reporter", 0, table.unpack(reports)) then
+        printd("[runner] reporter register failed, shutting down")
+        task.exit(1)
+        return
+    end
 
     -- 先注册 3 个 subscriber,确保 multi_call 启动时它们的 on_requested 已挂上。
     -- 第 4 个实参是 publisher 的 task 名,即 TESTS 里 unit_multi_call 那行的第 2 列

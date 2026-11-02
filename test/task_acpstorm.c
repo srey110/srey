@@ -13,7 +13,7 @@ typedef struct task_acpstorm_args {
 #define STORM_CONNS 16
 // 每个 ev_ctx 的网络线程数。多于 1 才有 accept 分发跨 watcher 的路径
 #define STORM_NTH 2
-// listen 落地是异步的，灌连接前先让它就绪；短了整轮都连不上，测不到东西
+// listen() 在 ev_listen 返回前已同步做完，这里等的是监听注册进事件循环：灌进去的连接拆除时才正处 accept 路径上
 #define STORM_READY_MS 30
 
 // 三个回调都留空：本用例只关心拆除时序，不关心数据。r_cb 非空是 ev_listen 的硬要求

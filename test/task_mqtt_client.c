@@ -282,5 +282,7 @@ void task_mqtt_client_start(loader_ctx *loader, const char *name,
     char tail[7];
     randstr(tail, sizeof(tail) - 1);
     SNPRINTF(arg->clientid, sizeof(arg->clientid), "%s-%s", name, tail);
-    coro_task_register(loader, name, 0, _startup, NULL, _free, arg);
+    if (NULL == coro_task_register(loader, name, 0, _startup, NULL, _free, arg)) {
+        LOG_ERROR("task %s register failed.", name);// arg 已由 _free 释放
+    }
 }

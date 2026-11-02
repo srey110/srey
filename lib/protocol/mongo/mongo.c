@@ -12,7 +12,7 @@ typedef enum parse_status {
 
 static _handshaked_push _hs_push;
 
-void _mongo_init(void *hspush) {
+void _mongo_init(_handshaked_push hspush) {
     _hs_push = hspush;
 }
 void _mongo_pkfree(void *pack) {
@@ -38,7 +38,6 @@ static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK
     md5_update(&md5, ":mongo:", sizeof(":mongo:") - 1);
     md5_update(&md5, mongo->password, strlen(mongo->password));
     md5_final(&md5, hs);
-    secure_zero(&md5, sizeof(md5));
     tohex(hs, sizeof(hs), fmtpwd, 1);
     secure_zero(hs, sizeof(hs));
 }
@@ -193,8 +192,7 @@ static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int3
             LOG_WARN("OP_MSG multi-Section response not supported (kind=1).");
             return ERR_FAILED;
         }
-        // klens=5 + docid="\0" 是协议层合法但 BSON section 为空（dlens=0）；
-        // 不足 5 字节（最短的空文档）的 section 结构上就非法，在这里按协议错误提前拒收
+        // docid 之后至少要有一篇文档(下游按 BSON 读 doc)；规范允许的空序列这里不收，服务端回包不用 kind 1
         if (!binary_have(breader, 5)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("OP_MSG kind=1 BSON section too short.");
@@ -286,8 +284,7 @@ int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->reqid = 1;
     sock_set_invalid(&mongo->sk);
-    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED。失败时 mongo 已被 ZERO 且可能填了
-    // 前一个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    // 字段装不下即返回 ERR_FAILED，失败后的状态见 mongo.h
     if (ERR_OK != safe_fill_str(mongo->ip, sizeof(mongo->ip), ip)) {
         LOG_ERROR("mongo ip exceeds %zu bytes: %zu.", sizeof(mongo->ip) - 1, strlen(ip));
         return ERR_FAILED;
@@ -319,8 +316,6 @@ int32_t mongo_authdb(mongo_ctx *mongo, const char *db) {
     }
     return ERR_OK;
 }
-// 超长返 ERR_FAILED 且不改动字段：截断或沿用旧集合都会让后续 insert/find/update/delete 打到
-// 另一个集合上（写入还会自动建集合），调用方必须原地失败而不是继续发命令
 int32_t mongo_collection(mongo_ctx *mongo, const char *collection) {
     if (ERR_OK != safe_fill_str(mongo->collection, sizeof(mongo->collection), collection)) {
         LOG_ERROR("mongo collection name exceeds %zu bytes: %zu.",
@@ -363,10 +358,14 @@ int32_t mongo_requestid(mongo_ctx *mongo) {
 }
 void mongo_set_flag(mongo_ctx *mongo, int32_t flag) {
     if (0 != (flag & ~MONGO_FLAGS_ALL)) {
+        LOG_WARN("mongo set_flag: flag 0x%x has bits outside mongo_flags, ignored.", (uint32_t)flag);
         return;
     }
     // 只实现了 MORETOCOME：CHECKSUM / EXHAUSTALLOWED 收下即丢弃，
     // 组合值里的 MORETOCOME 仍然生效
+    if (0 != (flag & ~MORETOCOME)) {
+        LOG_WARN("mongo set_flag: only MORETOCOME is implemented, other bits are dropped.");
+    }
     BIT_SET(mongo->flags, flag & MORETOCOME);
 }
 int32_t mongo_check_flag(mongo_ctx *mongo, mongo_flags flag) {

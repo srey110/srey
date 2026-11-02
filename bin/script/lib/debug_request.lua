@@ -10,7 +10,7 @@ local M = {}
 -- 以下均由 init 注入，各项含义见 init 的参数说明
 local _coro_sess
 local _response
-local _mtype_names -- mtype 整数 → 名字字符串（MSG_TYPE 反转表）
+local _mtype_names -- 等待标记整数 → 名字（消息类型，外加 RECV_ANY / DB_POOL 等只做等待标记的）
 local _mtype_max = 0 -- 反转表里的最大 mtype，stat 按下标遍历到此为止
 local _fallback
 local _fork_barriers
@@ -89,7 +89,8 @@ local function _dump_coros()
             if c.count > #c.samples then
                 samples = samples .. ",..."
             end
-            lines[#lines + 1] = string.format("[%dx] mtype=%d maxage=%dms sess=%s", c.count, c.mtype, c.maxage, samples)
+            lines[#lines + 1] = string.format("[%dx] mtype=%s maxage=%dms sess=%s", c.count,
+                _mtype_names[c.mtype] or tostring(c.mtype), c.maxage, samples)
             lines[#lines + 1] = c.trace
         end
     end
@@ -171,19 +172,18 @@ end
 ---而 task 关闭时 _closing_dispatch 报的 nyield 恰恰把它们算在内，两个数对不上
 ---@param corosess table<integer, CoroSession> 由 lib/srey 持有的 coro_sess 表（只读）
 ---@param respfunc fun(dst:integer, reqtype:integer, sess:integer, erro:integer, data:string) 响应函数（通常是 srey.response）
----@param msgtype MSG_TYPE MSG_TYPE 枚举（name → int），内部反转为 int → name 供 stat 渲染
+---@param tagnames table<integer,string> 等待标记 → 名字（srey.lua 的 TAG_NAMES，同 C 侧 tagstr），stat 与 coros 渲染用
 ---@param barriers table<ForkBarrier,boolean> fork_wait 屏障集合（srey.lua 的 fork_barriers，只读）
 ---@param execs table<SerialState,boolean> serial 执行器状态集合（srey.lua 的 serial_execs，弱键，只读）
 ---@param nyieldfn fun():integer 取当前挂起协程总数
 ---@param fallback? fun(reqtype:integer, sess:integer, src:integer, data:lightuserdata, size:integer) 未知命令透传给业务
 ---on_requested 的函数；nil 时回 "unknown command"
-function M.init(corosess, respfunc, msgtype, barriers, execs, nyieldfn, fallback)
+function M.init(corosess, respfunc, tagnames, barriers, execs, nyieldfn, fallback)
     _coro_sess = corosess
     _response = respfunc
-    _mtype_names = {}
+    _mtype_names = tagnames
     _mtype_max = 0
-    for name, val in pairs(msgtype) do
-        _mtype_names[val] = name
+    for val in pairs(tagnames) do
         if val > _mtype_max then
             _mtype_max = val
         end

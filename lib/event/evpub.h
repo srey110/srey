@@ -54,7 +54,7 @@
 #endif// OS_WIN
 // 取 tcp 结构上的 SSL 对象；未编 SSL 时恒 NULL。收 ssl 的那几个函数形参都是 void *，
 // 本就不跟着 #if WITH_SSL 切（见 _evpub_sock_send / _evpub_close_flush_tcp 的说明），
-// 调用点也不该各套一层：unix 与 IOCP 两侧共 8 处，只差这一个实参
+// 调用点直接用它，别各套一层 #if
 #if WITH_SSL
 #define TCP_SSL(t) ((t)->ssl)
 #else
@@ -138,7 +138,7 @@ struct watcher_ctx;
 struct evsock_ctx;
 struct listener_ctx;
 struct timer_ctx;
-// ev_props 携带的 UDP 多播 setsockopt 参数：业务侧 MALLOC,事件线程内 setsockopt 后 FREE。
+// ev_props 携带的 UDP 多播 setsockopt 参数：ev_udp_join / leave / ttl / loop 分配,事件线程内 setsockopt 后 FREE。
 // 字段按 op 不同使用：JOIN/LEAVE 用 group_ip+iface_str；TTL 用 ttl；LOOP 用 loop
 typedef struct udp_opt_arg {
     uint8_t  ttl;               // op=UDP_OPT_TTL 时使用;1=仅本网段,255=跨广域

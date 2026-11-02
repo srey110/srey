@@ -3,6 +3,7 @@
 
 #define DNS_FLAG1_RD        0x01u // 期望递归（请求时设置）
 #define DNS_FLAG1_TC        0x02u // 响应被截断（响应时可能设置，见 RFC 1035 §4.1.1）
+#define DNS_FLAG1_QR        0x80u // 应答（响应时置位）
 #define DNS_FLAG2_RCODE(f)  ((f) & 0x0Fu) // 提取响应码
 #define DNS_RCODE_NXDOMAIN 3 // 名字不存在
 #define DNS_A    1 // IPv4 地址记录类型
@@ -245,7 +246,8 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
     }
     dns_head head;
     memcpy(&head, buf, sizeof(dns_head));
-    if (ntohs(head.id) != id) {
+    if (ntohs(head.id) != id
+        || !BIT_CHECK(head.flags1, DNS_FLAG1_QR)) {// QR 为 0 是查询，不是应答
         return NULL;
     }
     if (BIT_CHECK(head.flags1, DNS_FLAG1_TC)) {

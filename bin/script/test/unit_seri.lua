@@ -82,6 +82,17 @@ runner.run(function(t)
         t:eq(3, #n2.sub.list,     "nested list length")
         t:eq(8, n2.sub.list[2],   "nested list [2]")
         utils.ud_free(buf)
+        -- 嵌套层的数组段预分配有上限，更长的靠 rawseti 扩容，内容不能丢
+        local inner = {}
+        for i = 1, 3000 do
+            inner[i] = i
+        end
+        buf, size = seri.pack({ inner, { inner } })
+        local n3 = seri.unpack(buf, size)
+        t:eq(3000, #n3[1], "嵌套长数组超过预分配上限仍完整")
+        t:eq(3000, n3[1][3000], "嵌套长数组末元素")
+        t:eq(1500, n3[2][1][1500], "两层嵌套长数组中间元素")
+        utils.ud_free(buf)
     end
 
     -- 7. 长字符串（>=32 字节走 long string 路径）

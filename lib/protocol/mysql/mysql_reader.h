@@ -69,7 +69,7 @@ int32_t mysql_reader_unsigned(mysql_reader_ctx *reader, const char *name);
 /// <returns>1 为 NULL；0 为非 NULL、没有这一列或没有当前行</returns>
 int32_t mysql_reader_isnull(mysql_reader_ctx *reader, const char *name);
 /// <summary>
-/// 根据名称获取字段整数值
+/// 根据名称获取字段整数值。用在无符号列上、值超 INT64_MAX 判 ERR_FAILED，文本与二进制协议一致
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="name">字段</param>
@@ -77,7 +77,7 @@ int32_t mysql_reader_isnull(mysql_reader_ctx *reader, const char *name);
 /// <returns>值</returns>
 int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t *err);
 /// <summary>
-/// 根据名称获取字段无符号整数值
+/// 根据名称获取字段无符号整数值。用在有符号列上、值为负判 ERR_FAILED，文本与二进制协议一致
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="name">字段</param>

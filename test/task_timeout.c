@@ -472,6 +472,32 @@ static int32_t _timeout_ws(task_ctx *task) {
         return ERR_FAILED;
     }
     ev_close(&task->loader->netev, &sk);
+    // 握手完成前(websock 解析状态还是 0)登记 HEAD：http_set_method 须认出这不是 HTTP 连接、不动状态，否则握手响应解不出来
+    ws_hs_ctx *hsctx;
+    char *hsreq = websock_pack_handshake("127.0.0.1", NULL, NULL, &hsctx);
+    if (NULL == hsreq) {
+        LOG_WARN("ws pack handshake error.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != coro_connect(task, PACK_WEBSOCK, NULL, "127.0.0.1", wsport, 0, hsctx, &sk)) {
+        FREE(hsreq);
+        LOG_WARN("ws manual connect error.");
+        return ERR_FAILED;
+    }
+    http_set_method(&task->loader->netev, &sk, "HEAD");
+    if (ERR_OK != ev_send(&task->loader->netev, &sk, hsreq, strlen(hsreq), 0)) {
+        ev_close(&task->loader->netev, &sk);
+        LOG_WARN("ws manual handshake send error.");
+        return ERR_FAILED;
+    }
+    int32_t hserr;
+    (void)coro_handshaked(task, &sk, &hserr, NULL);
+    if (ERR_OK != hserr) {
+        LOG_WARN("http_set_method broke a websock handshake.");
+        ev_close(&task->loader->netev, &sk);
+        return ERR_FAILED;
+    }
+    ev_close(&task->loader->netev, &sk);
     if (ERR_OK != wbsock_connect(task, NULL, wsurl, NULL, 0, &sk, NULL)) {
         LOG_WARN("ws connect error.");
         return ERR_FAILED;

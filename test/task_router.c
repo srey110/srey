@@ -388,8 +388,30 @@ static int32_t _fb_wanted(router_req *ctx) {
     const char *tok = router_req_header(ctx, "X-Token", &n);
     return NULL != tok && 2 == n && 0 == memcmp(tok, "fb", 2);
 }
+// 回退异步回包：拷走连接与要不要关，20ms 后自己回、自己关(普通 task 的异步写法见 router.h)
+static sock_ctx _fb_async_sk;
+static int32_t _fb_async_close;
+static void _fb_async_timeout(task_ctx *task, uint64_t sess) {
+    (void)sess;
+    binary_ctx bw;
+    binary_init_write(&bw, 0, 0);
+    http_pack_resp(&bw, 404);
+    http_pack_content(&bw, "fb-async", sizeof("fb-async") - 1);
+    ev_send(&task->loader->netev, &_fb_async_sk, bw.data, bw.offset, 0);
+    if (_fb_async_close) {
+        ev_close(&task->loader->netev, &_fb_async_sk);
+    }
+}
 static void _fb_route(router_req *ctx, void *arg) {
     (void)arg;
+    size_t n = 0;
+    if (NULL != router_req_header(ctx, "X-Fb-Async", &n)) {
+        _fb_async_sk = ctx->sk;
+        _fb_async_close = ctx->wantclose;
+        ctx->responded = 1;
+        task_timeout(ctx->task, 0, 20, _fb_async_timeout);
+        return;
+    }
     if (_fb_wanted(ctx)) {
         router_req_text(ctx, 404, "fb-route", sizeof("fb-route") - 1);
     }
@@ -1720,8 +1742,9 @@ static int32_t _run_index(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [4] 方法名压根不认识 → 405, 与 [3] 同码但不带 Allow
-    if (ERR_OK != _do_chunked(task, port, "FROB", "/idx-plain", one, 1, NULL, 405, NULL)) {
+    // [4] 方法名不认识：路径在同 [3] 回 405, 路径不在回 404(同 Laravel)
+    if (ERR_OK != _do_chunked(task, port, "FROB", "/idx-plain", one, 1, NULL, 405, NULL)
+        || ERR_OK != _do_chunked(task, port, "FROB", "/idx-none", one, 1, NULL, 404, NULL)) {
         bad |= (1 << 4);
     }
     if (task_isclosing(task)) {
@@ -1859,14 +1882,16 @@ static int32_t _run_http_extra(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) {
         return ERR_FAILED;
     }
-    // [10] 回退：自己回的照原样到客户端、不回的由 router 补默认码；回退回完要求关连接的照关；
-    // chunked 首帧打到不存在的路径也走回退（_router_st_begin）
+    // [10] 回退：自己回的照原样到客户端、不回的由 router 补默认码；回退回完要求关连接的照关，
+    // 延迟回包的由它自己关、router 不抢先关；chunked 首帧打到不存在的路径也走回退（_router_st_begin）
     const char *one[] = { "x" };
     if (ERR_OK != _do_req(task, port, "GET", "/fb-none", "X-Fb", "1", 404, "fb-route")
         || ERR_OK != _do_req(task, port, "GET", "/fb-none", NULL, NULL, 404, "Not Found\n")
         || ERR_OK != _do_req(task, port, "GET", "/only-post", "X-Fb", "1", 405, "fb-method")
         || ERR_OK != _do_conn_close(task, port, "fallback close",
                                     "GET /fb-none HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Fb: 1\r\nConnection: close\r\n\r\n", 404, 1)
+        || ERR_OK != _do_conn_close(task, port, "fallback async close",
+                                    "GET /fb-none HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Fb-Async: 1\r\nConnection: close\r\n\r\n", 404, 1)
         || ERR_OK != _do_chunked(task, port, "POST", "/fb-none", one, 1, "fb", 404, "fb-route")) {
         bad |= (1 << 10);
     }
@@ -1876,10 +1901,28 @@ static int32_t _run_http_extra(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
+// server 的 listen 在它自己的 _startup 里：开测前有界重试连一次，连上即关
+static int32_t _wait_listen(task_ctx *task, uint16_t port) {
+    sock_ctx sk;
+    for (int32_t i = 0; ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &sk); i++) {
+        if (i >= 40 || task_isclosing(task)) {
+            LOG_WARN("router test: port %d not listening.", (int32_t)port);
+            return ERR_FAILED;
+        }
+        coro_sleep(task, 50);
+    }
+    ev_close(&task->loader->netev, &sk);
+    return ERR_OK;
+}
 // timeout 回调 (协程上下文中执行): 跑完一轮断言, 把 1 / 终态 -3 写入 result_slot
 static void _client_timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
     task_router_client_ctx *ctx = coro_get_arg(task);
+    if (ERR_OK != _wait_listen(task, ctx->port)
+        || ERR_OK != _wait_listen(task, ctx->idxport)) {
+        test_fail(ctx->result);
+        return;
+    }
     if (ERR_OK != _run_all(task, ctx->port)) {
         ctx->err = 1;
     }
@@ -1902,7 +1945,7 @@ static void _client_timeout(task_ctx *task, uint64_t sess) {
     }
 }
 
-// 启动后延后 100ms 再发请求, 等 server 那个 task 的 _startup 也被派发; 取值参考 task_timeout.c
+// 启动后延后 100ms 再开测, 等 server 那个 task 的 _startup 也被派发; 还没 listen 的由 _wait_listen 再等
 static void _client_startup(task_ctx *task) {
     task_timeout(task, 0, 100, _client_timeout);
 }

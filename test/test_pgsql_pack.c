@@ -265,13 +265,29 @@ static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
     pgsql_bind_int32(&bind, 3);
     many = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &many_size);/* 多绑一个 */
     pgsql_bind_free(&bind);
-    /* 守卫一旦回归，few/many 就是活缓冲，三块都得收；判定先攒进局部量，
+    /* 释放后再绑、声明 0 个却绑了：都按多绑拒；声明 0 个也没绑才照常组包 */
+    pgsql_bind_int32(&bind, 4);
+    size_t freed_size = 1;
+    char *freed = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &freed_size);
+    pgsql_bind_init(&bind, 0);
+    size_t none_size = 0;
+    char *none = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &none_size);
+    pgsql_bind_null(&bind);
+    size_t zero_size = 1;
+    char *zero = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &zero_size);
+    pgsql_bind_free(&bind);
+    /* 守卫一旦回归，few/many 就是活缓冲，几块都得收；判定先攒进局部量，
        FREE 会把指针置 NULL，收完再断言指针就永远成立了 */
     int32_t few_null = (NULL == few);
     int32_t many_null = (NULL == many);
+    int32_t freed_null = (NULL == freed);
+    int32_t zero_null = (NULL == zero);
     FREE(few);
     FREE(ok);
     FREE(many);
+    FREE(freed);
+    FREE(none);
+    FREE(zero);
 
     /* 断言排在收拾之后：CuAssert 走 longjmp，夹在 alloc/free 中间会漏释放并报出假泄漏 */
     CuAssertTrue(tc, 0 != few_null);
@@ -279,6 +295,11 @@ static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
     CuAssertTrue(tc, 0 != many_null);
     CuAssertTrue(tc, 0 == many_size);
     CuAssertTrue(tc, ok_size > 0);
+    CuAssertTrue(tc, 0 != freed_null);
+    CuAssertTrue(tc, 0 == freed_size);
+    CuAssertTrue(tc, none_size > 0);
+    CuAssertTrue(tc, 0 != zero_null);
+    CuAssertTrue(tc, 0 == zero_size);
 }
 
 /* =======================================================================
@@ -375,8 +396,8 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
 }
 
 /* =======================================================================
- * pgsql_bind_free —— 可重复调用；释放后 nparam 归零，后续绑定被本文件既有的
- * "0 == nparam 即早退"统一挡住，不会拿着旧 size/offset 往空指针上写
+ * pgsql_bind_free —— 可重复调用；释放后 nparam 归零，后续绑定按多绑处理(只顶 count、不写缓冲)，
+ * 不会拿着旧 size/offset 往空指针上写，组包时拒
  * ======================================================================= */
 static void test_pgsql_bind_free_reuse(CuTest *tc) {
     pgsql_bind_ctx bind;
@@ -393,18 +414,22 @@ static void test_pgsql_bind_free_reuse(CuTest *tc) {
     pgsql_bind_free(&bind);
     CuAssertPtrEquals(tc, NULL, bind.buf.data);
 
-    /* free 后再绑定全部静默无视，缓冲不会被重新写出来 */
+    /* free 后再绑定：缓冲不会被重新写出来，组包按多绑拒 */
     pgsql_bind_int32(&bind, 7);
     pgsql_bind_null(&bind);
     pgsql_bind_text(&bind, "x", 1);
     CuAssertPtrEquals(tc, NULL, bind.buf.data);
+    size_t size = 1;
+    char *pack = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &size);
+    CuAssertPtrEquals(tc, NULL, pack);
+    CuAssertTrue(tc, 0 == size);
 
-    /* 组包侧同样按 nparam 早退，不会发出半截 Bind 消息。
+    /* 重新声明 0 个参数、不绑：组包照常，不会发出半截 Bind 消息。
        Bind 布局：'B' Int32(len) String(portal="") String(stmt) Int16(格式码数)
        Int16(参数值数) Int16(结果格式码数=1) Int16(结果格式码)。
        只判 pack[0]=='B' 的话，两个零计数漏写、Describe/Execute/Sync 整段不发都看不出来 */
-    size_t size = 0;
-    char *pack = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &size);
+    pgsql_bind_init(&bind, 0);
+    pack = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &size);
     CuAssertPtrNotNull(tc, pack);
     CuAssertTrue(tc, 'B' == pack[0]);
     /* Bind 自报长度含自身、不含类型字节，且必须落在总包内 */

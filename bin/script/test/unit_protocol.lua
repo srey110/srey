@@ -537,8 +537,9 @@ runner.run(function(t)
         t:eq(false, pcall(websock.pack_handshake, nil, nil, "chat\0x"), "handshake secprot 内含 \\0 报错")
     end
     do
-        -- secprots：nil/非 lightuserdata 安全返回 nil（真实协商结果由 C 集成测试覆盖）
+        -- secprots：nil 返回 nil，其余非 lightuserdata 报错（真实协商结果由 C 集成测试覆盖）
         t:check(nil == websock.secprots(nil), "websock.secprots(nil) 返回 nil")
+        t:eq(false, pcall(websock.secprots, "x"), "websock.secprots 传字符串报错")
     end
     do
         -- 只判长度分不开这几个包：ping / pong / close 三种帧的差别全在首字节的 opcode 上，
@@ -640,8 +641,17 @@ runner.run(function(t)
         -- CRLF 注入防御
         pack, size = s:pack_from("evil@example.com\r\nINJECT")
         t:eq(nil, pack, "smtp pack_from CRLF injection rejected")
+        t:eq(nil, size, "smtp pack_from 失败时长度也是 nil(同组包类统一收尾)")
         pack, size = s:pack_rcpt("evil@example.com\nINJECT")
         t:eq(nil, pack, "smtp pack_rcpt LF injection rejected")
+        t:eq(nil, size, "smtp pack_rcpt 失败时长度也是 nil")
+
+        -- check_code 按前缀比，空串对任何应答都命中，绑定拒收。拿一个真包当应答，否则先在指针检查上报错
+        local rp = s:pack_reset()
+        t:eq(false, pcall(s.check_code, s, rp, ""), "check_code 空串报错")
+        t:eq(false, pcall(s.check_codes, s, rp, { "250", "" }), "check_codes 含空串报错")
+        t:eq(true, s:check_code(rp, "RS"), "check_code 按前缀比")
+        utils.ud_free(rp)
 
         -- 固定命令
         pack, size = s:pack_reset()

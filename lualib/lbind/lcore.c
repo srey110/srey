@@ -379,7 +379,7 @@ static int32_t _lcore_send(lua_State *lua) {
 /// <param name="data" type="string|lightuserdata">明文尾包，不可为空；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，只收 0/1，默认 1（复制）</param>
-/// <returns type="boolean">命令已投出 true，执行结果不回传；sk 无效、data 为空或 evssl 为 nil 时 false</returns>
+/// <returns type="boolean">命令已投出 true，执行结果不回传；sk 无效、data 为空或 evssl 为 nil 时 false，此时 copy=0 的 data 已释放</returns>
 static int32_t _lcore_send_ssl(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
     int32_t client = lpub_check_flag(lua, 2);
@@ -510,9 +510,7 @@ static int32_t _lcore_udp_leave(lua_State *lua) {
 /// 设置 UDP 多播 TTL(IPv4) / Hop Limit(IPv6)
 /// </summary>
 /// <param name="sk" type="userdata">连接标识，由 core.connect / core.udp / 各 accept 回调给出</param>
-/// <param name="ttl" type="integer">0-255；0 只到本机，1(默认) 只到本网段，逐跳递减。
-/// 越界即抛错——直接窄化到 uint8_t 的话 256 会静默变成 0，多播从此出不了本机，
-/// 是语义反转而不是"值不对"，排查起来比报错难得多</param>
+/// <param name="ttl" type="integer">0-255；0 只到本机，1(默认) 只到本网段，逐跳递减。越界报错</param>
 /// <returns type="boolean">true 只表示参数合法且命令已入队,setsockopt 成败不回传,契约见 ev_udp_join</returns>
 static int32_t _lcore_udp_ttl(lua_State *lua) {
     sock_ctx *sk = lpub_check_sock(lua, 1);
@@ -537,6 +535,17 @@ static int32_t _lcore_udp_loop(lua_State *lua) {
 /// <returns type="userdata">连接标识，其 valid 字段恒为 false</returns>
 static int32_t _lcore_sock_invalid(lua_State *lua) {
     return lpub_push_sock_invalid(lua);
+}
+/// <summary>
+/// 把连接标识置失效(只写 fd)：等待被这条连接的 CLOSE 唤醒、或 sync_close 收到 CLOSE 后调，
+/// 之后 sk.valid 为 false，sync_close 当场返回、发送当场失败。同 C 侧 coro_task.c 的 _coro_sk_closed；
+/// sk userdata 不会换成别的连接，不用像那边比 skid
+/// </summary>
+/// <param name="sk" type="userdata">连接标识</param>
+/// <returns>无</returns>
+static int32_t _lcore_sock_mark_closed(lua_State *lua) {
+    sock_mark_closed(lpub_check_sock(lua, 1));
+    return 0;
 }
 /// <summary>
 /// 挂起等待前取连接的会话键，一次调用顶 sk.valid 加 sk.skid 两次取字段，
@@ -766,12 +775,18 @@ static int32_t _lcore_with_ssl(lua_State *lua) {
     return lpub_rtn_bool(lua, WITH_SSL);
 }
 #if WITH_SSL
-// name 非空时把 cert 目录下的完整路径写进 out；为空则 out 保持调用方给的空串(表示不加载)
-static void _cert_path(const char *name, char *out, size_t outlen) {
-    if (0 != strlen(name)) {
-        SNPRINTF(out, outlen, "%s%s%s%s%s",
-            procpath(), PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, name);
+// name 非空时把 cert 目录下的完整路径写进 out；为空则 out 保持调用方给的空串(表示不加载)。拼出来被截断返回 ERR_FAILED
+static int32_t _cert_path(const char *name, char *out, size_t outlen) {
+    if ('\0' == name[0]) {
+        return ERR_OK;
     }
+    int32_t n = SNPRINTF(out, outlen, "%s%s%s%s%s",
+                         procpath(), PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, name);
+    if (!snprintf_ok(n, outlen)) {
+        LOG_WARN("cert path too long: %s", name);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 // 注册结果压栈:成功压 ssl 指针,ssl 没建出来或注册失败一律压 nil。
 // 注册失败不必在这里释放 ssl —— evssl_register 每条失败路径都已 evssl_free
@@ -804,9 +819,11 @@ static int32_t _lcore_cert_register(lua_State *lua) {
     char capath[PATH_LENS] = { 0 };
     char certpath[PATH_LENS] = { 0 };
     char keypath[PATH_LENS] = { 0 };
-    _cert_path(ca, capath, sizeof(capath));
-    _cert_path(cert, certpath, sizeof(certpath));
-    _cert_path(key, keypath, sizeof(keypath));
+    if (ERR_OK != _cert_path(ca, capath, sizeof(capath))
+        || ERR_OK != _cert_path(cert, certpath, sizeof(certpath))
+        || ERR_OK != _cert_path(key, keypath, sizeof(keypath))) {
+        return lpub_rtn_nil(lua, 1);
+    }
     return _push_registered_ssl(lua, name, evssl_new(capath, certpath, keypath, keytype));
 #else
     return lpub_rtn_nil(lua, 1);
@@ -826,7 +843,9 @@ static int32_t _lcore_p12_register(lua_State *lua) {
     const char *p12 = lpub_check_cstr(lua, 2);
     const char *pwd = lpub_check_cstr(lua, 3);
     char p12path[PATH_LENS] = { 0 };
-    _cert_path(p12, p12path, sizeof(p12path));
+    if (ERR_OK != _cert_path(p12, p12path, sizeof(p12path))) {
+        return lpub_rtn_nil(lua, 1);
+    }
     return _push_registered_ssl(lua, name, evssl_p12_new(p12path, pwd));
 #else
     return lpub_rtn_nil(lua, 1);
@@ -918,7 +937,7 @@ static int32_t _lcore_ssl_verify(lua_State *lua) {
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
 /// <param name="host" type="string?">域名或 IP；nil 或空串清除</param>
-/// <returns type="boolean">设置成功 true；超过 255 字节时 false，原设置不变。WITH_SSL 关闭时恒 false</returns>
+/// <returns type="boolean">设置成功 true；超过 255 字节或 OpenSSL 不收这个名字(同 evssl_host)时 false，原设置不变。WITH_SSL 关闭时恒 false</returns>
 static int32_t _lcore_ssl_host(lua_State *lua) {
 #if WITH_SSL
     LPUB_LUD_ARG(lua, struct evssl_ctx, 1, ssl);
@@ -954,6 +973,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "udp_loop", _lcore_udp_loop },
         { "close", _lcore_close },
         { "sock_invalid", _lcore_sock_invalid },
+        { "sock_mark_closed", _lcore_sock_mark_closed },
         { "wait_skid", _lcore_wait_skid },
         { "can_wait", _lcore_can_wait },
 

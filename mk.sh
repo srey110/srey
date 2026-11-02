@@ -21,6 +21,8 @@
 #             macOS ARM64 须与 debug 同用，否则协程切栈时 ASan 可能产生误报
 #     tsan    ThreadSanitizer 检测（-fsanitize=thread），与 asan 互斥
 #***********************************************
+# 一律在仓库根干活：后面的清理按相对路径删，在别的目录跑会删到当前目录下的同名文件
+cd "$(dirname "$0")" || exit 1
 # Linux 链接时加 -rdynamic：把可执行文件里的全局函数导出到动态符号表，stack_print 打出的栈才带函数名
 # (static 函数仍只有偏移，用 addr2line -e bin/srey 换)。代价是 LTO 不能再把这些函数收成内部函数，可能变慢，默认关，置 1 打开。
 # FreeBSD 不用加：它的 backtrace 自己读可执行文件的符号表，static 函数也有名字
@@ -111,7 +113,7 @@ if [ "$BUILD_TARGET" != "clean" ]
 then
     RAWTLS=`{ find lib srey lualib/lbind test \( -name '*.c' -o -name '*.h' \) -exec grep -nwE 'THREAD_LOCAL|_Thread_local|__thread|thread_local' /dev/null {} + ; \
         find lib srey lualib/lbind test \( -name '*.c' -o -name '*.h' \) -exec grep -nE '__declspec *\( *thread *\)' /dev/null {} + ; } \
-        | grep -vE '^lib/(base/(macro_util|os_unix|os_win)\.h|coro/minicoro\.h|openssl/|mimalloc/|serial/yyjson/)' | grep -v 'TLS_RAW_OK'`
+        | grep -vE '^lib/(base/(macro_util|os_unix|os_win)\.h|coro/minicoro\.h|openssl/|mimalloc/|serial/yyjson/yyjson\.[ch])' | grep -v 'TLS_RAW_OK'`
     if [ -n "$RAWTLS" ]
     then
         echo "$RAWTLS"
@@ -133,9 +135,16 @@ then
     fi
 else
     DEPS_MACHINE=`uname -m`
+    # 64 位内核上的 32 位用户态(如 i386 容器)uname 照报 x86_64，再按指针宽度判，同 CMakeLists.txt
     case "$DEPS_MACHINE" in
         arm64|aarch64) DEPS_ARCH="arm64" ;;
         i386|i686)     DEPS_ARCH="x86" ;;
+        x86_64|amd64)
+            if [ "`getconf LONG_BIT 2>/dev/null`" = "32" ]
+            then
+                DEPS_ARCH="x86"
+            fi
+            ;;
     esac
 fi
 DEPS_SFX="_$DEPS_ARCH"
@@ -154,7 +163,8 @@ then
 fi
 #包含库
 INCLUDELIB="-lpthread -lm"
-if [ "$OSNAME" != "Darwin" ]
+# OpenBSD 没有 librt，clock_gettime 在 libc 里
+if [ "$OSNAME" != "Darwin" ] && [ "$OSNAME" != "OpenBSD" ]
 then
     INCLUDELIB=$INCLUDELIB" -lrt"
 fi
@@ -256,8 +266,8 @@ then
         CFLAGS=$CFLAGS" -m32"
     fi
 else
-    MACHINE_ARCH=`uname -m`
-    if [ "$MACHINE_ARCH" = "x86_64" ] || [ "$MACHINE_ARCH" = "amd64" ]
+    # 跟上面 DEPS_ARCH 的探测走：32 位用户态不加 -m64
+    if [ "$DEPS_ARCH" = "x64" ] && { [ "$DEPS_MACHINE" = "x86_64" ] || [ "$DEPS_MACHINE" = "amd64" ]; }
     then
         CFLAGS=$CFLAGS" -m64"
     fi
@@ -281,6 +291,14 @@ fi
 if [ "$OSNAME" = "AIX" ]
 then
     CFLAGS=$CFLAGS" -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast"
+fi
+# errno 要每线程一份：AIX 须定义 _THREAD_SAFE、SunOS 须定义 _REENTRANT，gcc 不带 -pthread 时不替你定义
+if [ "$OSNAME" = "AIX" ]
+then
+    CFLAGS=$CFLAGS" -D_THREAD_SAFE"
+elif [ "$OSNAME" = "SunOS" ]
+then
+    CFLAGS=$CFLAGS" -D_REENTRANT"
 fi
 # glibc 给 __errno_location / pthread_self 标了 const,编译器在一个函数里只取一次地址,
 # 协程换线程恢复后读写的就是原线程的 errno。把这个属性换成无副作用的 unused(同 brpc),别删;
@@ -307,7 +325,7 @@ for EachSub in $SHARED_DIR $SREY_EXTRA_DIR $TEST_EXTRA_DIR
 do
     rm -rf $MAKEFILEPATH/$EachSub/*.o
 done
-cd $RSTPATH
+cd $RSTPATH || exit 1
 rm -rf lib$LIBNAME.a srey test
 cd $MAKEFILEPATH
 if [ "$BUILD_TARGET" = "clean" ]

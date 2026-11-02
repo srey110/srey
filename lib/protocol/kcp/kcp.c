@@ -18,7 +18,7 @@ enum {
 };
 
 typedef struct kcp_element {
-    uint8_t learn;       // KCP_LEARN_*;首个通过校验的包定下对端后归 NONE
+    uint8_t learn;       // KCP_LEARN_*;首个被 ikcp 收下的包定下对端后归 NONE
 #if KCP_TICK_HEAP
     uint8_t parked;      // 1=空闲停表,不在 heap_due 里;send / input 经 _kcp_unpark 挂回
     uint32_t hidx;       // 在 heap_due 中的下标,由堆维护
@@ -183,7 +183,8 @@ static void _kcp_drop_warn(kcp_ud_ctx *ctx, uint32_t conv, const char *why) {
     ctx->ndrop = 0;
     ctx->warn_ms = now;
 }
-// 源地址校验:只认建会话时的对端。学习模式下首个 conv 匹配的包来源定为对端(只学端口时 ip 照比),之后严格比
+// 源地址校验:只认建会话时的对端。学习模式下只比能比的部分(只学端口时比 ip)、不记地址,
+// 由 _kcp_unpack 在 ikcp 收下这个包之后再定下对端
 static inline int32_t _kcp_addr_check(kcp_element *kel, netaddr_ctx *addr) {
     if (KCP_LEARN_NONE == kel->learn) {
         return netaddr_compare(addr, &kel->addr);
@@ -195,12 +196,8 @@ static inline int32_t _kcp_addr_check(kcp_element *kel, netaddr_ctx *addr) {
         } else {
             noport.ipv6.sin6_port = 0;
         }
-        if (ERR_OK != netaddr_compare(&noport, &kel->addr)) {
-            return ERR_FAILED;
-        }
+        return netaddr_compare(&noport, &kel->addr);
     }
-    kel->addr = *addr;
-    kel->learn = KCP_LEARN_NONE;
     return ERR_OK;
 }
 void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
@@ -224,7 +221,15 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
 #if KCP_TICK_HEAP
     _kcp_unpark(ctx, kel);// 须在 ikcp_input 之前:input 拿 current 采 RTT;放在校验之后,丢掉的包不唤醒
 #endif
-    ikcp_input(kel->ikcp, buf, (long)size);
+    int32_t input = ikcp_input(kel->ikcp, buf, (long)size);
+    if (KCP_LEARN_NONE != kel->learn) {
+        // 学习态:ikcp 收下这个包才把来源定为对端,畸形包不学也不投递
+        if (input < 0) {
+            return;
+        }
+        kel->addr = *addr;
+        kel->learn = KCP_LEARN_NONE;
+    }
     // peek==0 是"队头存在一条 0 长度消息",必须 ikcp_recv 消费出队,不能与 peek<0(无消息)一样早退,
     // 否则空消息永久堵住 rcv_queue 队头,其后所有消息投递不出去
     int32_t peek = ikcp_peeksize(kel->ikcp);

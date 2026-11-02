@@ -22,7 +22,7 @@
 #define MPQ_BACKOFF_CAP ((MPQ_BACKOFF_CYCLES / CPU_PAUSE_CYCLES) < 1 \
                          ? 1 : (MPQ_BACKOFF_CYCLES / CPU_PAUSE_CYCLES))
 
-// 入参写 T const * 而不是 const T *：T 是指针类型(如 void *)时，后者会被解析成指向 const 的指针，调用方传普通指针就告警。
+// 入参写 T const * 而不是 const T *：理由同 hashmap.h。
 // MPQ_DECL(name, T)：name 生成的类型名，T 元素类型
 #define MPQ_DECL(name, T)                                                      \
 /* 槽位按 8 字节对齐,槽间距承重别改 */                                           \
@@ -87,10 +87,9 @@ static inline int32_t name##_empty(name *q) {                                   
    元素按指针传(同 ARR_DECL/QUE_DECL) */                                          \
 static inline int32_t name##_trypush(name *q, T const *data) {                  \
     name##_cell *cell;                                                          \
-    uint32_t pos;                                                               \
     uint32_t bo = 0;                                                            \
     int32_t diff;                                                               \
-    pos = (uint32_t)ATOMIC_GET(&q->enq);                                        \
+    uint32_t pos = (uint32_t)ATOMIC_GET(&q->enq);                               \
     for (;;) {                                                                  \
         cell = &q->cells[pos & q->mask];                                        \
         diff = (int32_t)((uint32_t)ATOMIC_GET(&cell->sequence) - pos);          \
@@ -112,12 +111,11 @@ static inline int32_t name##_trypush(name *q, T const *data) {                  
 }                                                                               \
 /* 出队(多消费者安全)。返回 1 表示"已抢槽未发布",调用方据此区分真空与在途 */       \
 static inline int32_t name##_pop(name *q, T *out) {                             \
+    ASSERTAB(NULL != out, ERRSTR_NULLP);                                        \
     name##_cell *cell;                                                          \
-    uint32_t pos;                                                               \
     uint32_t bo = 0;                                                            \
     int32_t diff;                                                               \
-    ASSERTAB(NULL != out, ERRSTR_NULLP);                                        \
-    pos = (uint32_t)ATOMIC_GET(&q->deq);                                        \
+    uint32_t pos = (uint32_t)ATOMIC_GET(&q->deq);                               \
     for (;;) {                                                                  \
         cell = &q->cells[pos & q->mask];                                        \
         diff = (int32_t)((uint32_t)ATOMIC_GET(&cell->sequence) - (pos + 1));    \
@@ -141,13 +139,10 @@ static inline int32_t name##_pop(name *q, T *out) {                             
    那一刻 size 会算出超过容量的数,靠 size 的钳顶兜住(pop_sc_batch 就是放槽在先),两种顺序   \
    都只多报不少报。读 deq 别换成 ATOMIC_GET_RELAXED */                            \
 static inline int32_t name##_pop_sc(name *q, T *out) {                          \
-    name##_cell *cell;                                                          \
-    uint32_t pos;                                                               \
-    int32_t diff;                                                               \
     ASSERTAB(NULL != out, ERRSTR_NULLP);                                        \
-    pos = (uint32_t)ATOMIC_GET(&q->deq);                                        \
-    cell = &q->cells[pos & q->mask];                                            \
-    diff = (int32_t)((uint32_t)ATOMIC_GET(&cell->sequence) - (pos + 1));        \
+    uint32_t pos = (uint32_t)ATOMIC_GET(&q->deq);                               \
+    name##_cell *cell = &q->cells[pos & q->mask];                               \
+    int32_t diff = (int32_t)((uint32_t)ATOMIC_GET(&cell->sequence) - (pos + 1)); \
     if (0 != diff) {                                                            \
         if (diff < 0 && (uint32_t)ATOMIC_GET(&q->enq) != pos) {                 \
             return 1;                                                           \

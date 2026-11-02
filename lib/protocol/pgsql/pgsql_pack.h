@@ -76,7 +76,7 @@ void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size);
 /// <param name="oids">各参数的类型 OID 数组，可为 NULL</param>
 /// <param name="size">输出消息字节数</param>
 /// <returns>同 pgsql_pack_query</returns>
-void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size);
+void *pgsql_pack_stmt_prepare(const char *name, const char *sql, uint16_t nparam, uint32_t *oids, size_t *size);
 /// <summary>
 /// 同 pgsql_pack_stmt_prepare，name / sql 的长度由调用方给出，不再 strlen；NUL 的约束同 pgsql_pack_query2
 /// </summary>
@@ -89,7 +89,7 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
 /// <param name="size">输出消息字节数</param>
 /// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql, size_t sqllen,
-                                int16_t nparam, uint32_t *oids, size_t *size);
+                                uint16_t nparam, uint32_t *oids, size_t *size);
 /// <summary>
 /// 打包 Bind + Describe + Execute + Sync 消息，用于执行预处理语句
 /// </summary>
@@ -98,10 +98,7 @@ void *pgsql_pack_stmt_prepare2(const char *name, size_t namelen, const char *sql
 /// <param name="resultformat">结果列的格式（文本或二进制）</param>
 /// <param name="size">输出消息字节数</param>
 /// <returns>消息数据指针，调用方负责释放；与 pgsql_bind_init 声明的 nparam 不符（含绑过超 INT32_MAX 的值）、
-/// 或 Bind 消息体超过 INT32_MAX 时返回 NULL 并把 size 置 0。
-/// 只查绑定上下文自身自洽：预处理语句声明了几个参数本地无从得知（Parse 无响应体，要另发 Describe 问服务端），
-/// 个数与语句不符由服务端回执行错误，包尾 Sync 保证连接随后恢复。这点与 mysql_pack_stmt_execute 不同，
-/// 那边的 params_count 是 COM_STMT_PREPARE 响应带回来的</returns>
+/// 或 Bind 消息体超过 INT32_MAX 时返回 NULL 并把 size 置 0。只查绑定上下文自身是否自洽，个数与语句不符由服务端回执行错误</returns>
 void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat, size_t *size);
 /// <summary>
 /// 打包 Close + Sync 消息，用于关闭预处理语句

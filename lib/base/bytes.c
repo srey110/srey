@@ -374,8 +374,7 @@ static int32_t _split_store(buf_ctx **segs, int32_t *n, size_t *total, int32_t h
             if (BIT_CHECK(flags, SPLIT_TRUNCATE)) {
                 return 1;
             }
-            LOG_WARN("split segments exceed cap.");
-            return ERR_FAILED;
+            return ERR_FAILED;// 不在这里打日志：调用方知道上下文，由它决定
         }
         *total *= 2;// 无符号翻倍;段数上限由下面的 INT32_MAX 判定负责,这里不会先回绕
         REALLOC(*segs, *segs, sizeof(buf_ctx) * (*total));
@@ -392,9 +391,14 @@ static int32_t _split_store(buf_ctx **segs, int32_t *n, size_t *total, int32_t h
 int32_t split(char *ptr, size_t plens, const char *sep, size_t seplens,
               buf_ctx **segs, int32_t cap, int32_t flags) {
     // plens 为 0 不算错:按"段数 = sep 出现次数 + 1"该出一个空段,url_parse 解 "/" 时正靠这个
+    if (NULL == segs
+        || cap < 0) {
+        return ERR_FAILED;
+    }
+    if (0 == cap) {
+        *segs = NULL;// 堆模式 *segs 是纯出参：先置空，任何失败调用方都能直接 FREE
+    }
     if (NULL == ptr
-        || NULL == segs
-        || cap < 0
         || (cap > 0 && NULL == *segs)) {
         return ERR_FAILED;
     }

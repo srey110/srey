@@ -158,11 +158,14 @@ typedef struct {
     stm_ctx *ctx;
     atomic_t reads;
     atomic_t mismatches;
+    atomic_t ready;// 已就位的 reader 数：都就位了 writer 才开始写
+    atomic_t done;// 已读完的 reader 数：writer 一直写到它们都读完
 } _stm_conc_shared;
 
+// ctx 由主线程在起线程前替它 grab 过(stm.h 的约定)，读完由它 ungrab
 static void _stm_conc_reader(void *arg) {
     _stm_conc_shared *s = (_stm_conc_shared *)arg;
-    stm_grab(s->ctx);
+    ATOMIC_ADD(&s->ready, 1);
     const char *p;
     int32_t bad;
     size_t k;
@@ -187,6 +190,7 @@ static void _stm_conc_reader(void *arg) {
         }
     }
     stm_ungrab(s->ctx);
+    ATOMIC_ADD(&s->done, 1);
 }
 
 static void test_stm_concurrent_read(CuTest *tc) {
@@ -196,15 +200,23 @@ static void test_stm_concurrent_read(CuTest *tc) {
     s.ctx = stm_new(data, sz, 0);
     s.reads = 0;
     s.mismatches = 0;
+    s.ready = 0;
+    s.done = 0;
     pthread_t ths[_STM_CONC_READERS];
     int i;
     for (i = 0; i < _STM_CONC_READERS; i++) {
+        stm_grab(s.ctx);
         ths[i] = thread_creat(_stm_conc_reader, &s);
     }
-    // 主线程作为 writer 持续 update
+    // 起跑闸门：reader 都就位再写，一直写到它们都读完(至少 _STM_CONC_UPDATES 次)，读写才真的交叠。
+    // 不等的话 200 次 update 几十微秒就做完，reader 多半只读到最终快照
+    for (i = 0; i < 2000 && ATOMIC_GET(&s.ready) < _STM_CONC_READERS; i++) {
+        MSLEEP(1);
+    }
     char buf[16];
     size_t bz;
-    for (i = 1; i <= _STM_CONC_UPDATES; i++) {
+    for (i = 1; i <= _STM_CONC_UPDATES
+        || (ATOMIC_GET(&s.done) < _STM_CONC_READERS && i < 1000000); i++) {
         SNPRINTF(buf, sizeof(buf), "v%d", i);
         void *bd = _stm_make(buf, &bz);
         stm_update(s.ctx, bd, bz, 0);

@@ -74,6 +74,11 @@ runner.run(function(t)
         t:eq("a+b", url.decode("a+b", 0), "url.decode 开关 0：'+' 保持字面")
         t:eq("x y", url.parse("/p?a=x%20y", big).param.a, "url.parse 超 32 位的非 0 decode 仍解码")
         t:eq("x%20y", url.parse("/p?a=x%20y", 0).param.a, "url.parse decode=0 不解码")
+        -- 字符串 data 后多传 size 会把开关顶到下一格：开关之后再有实参就报错，不静默用错开关
+        t:eq(false, pcall(url.encode, "a b", nil, 0), "url.encode 字符串多传 size 报错")
+        t:eq(false, pcall(url.decode, "a+b", 3, 0), "url.decode 字符串多传 size 报错")
+        t:eq(false, pcall(url.parse, "/p?a=x%20y", 10, false), "url.parse 字符串多传 size 报错")
+        t:eq("a%20b", url.encode("a b", 0, nil), "开关后跟 nil 照常")
     end
 
     -- ── base64 ─────────────────────────────────────────────────────────

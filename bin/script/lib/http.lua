@@ -18,8 +18,8 @@ local REQ_TAIL = " HTTP/" .. HTTP_VERSION .. "\r\n" -- 请求行 url 之后的�
 -- 头名 / 头值校验在 C 里一次判完（head_check，判据同 router.c 组头那份，含头名短于 HTTP_HEAD_KEY_MAX 即 128 字节）。
 -- 校验不过按 router.c 的做法整条丢弃 + 告警，不 abort。头部块总长不卡：HTTP_MAX_HEADLENS 只作用于接收侧
 local head_check = srey_http.head_check
-local AUTO_CT = 0x01 -- head_check 的 autoflags：Content-Type 由本模块自己写
-local AUTO_FRAME = 0x02 -- 同上：Content-Length / Transfer-Encoding 由本模块自己写
+local AUTO_CT = srey_http.auto_ct -- head_check 的 autoflags：Content-Type 由本模块自己写
+local AUTO_FRAME = srey_http.auto_frame -- 同上：Content-Length / Transfer-Encoding 由本模块自己写
 local http_respond = srey_http.respond
 local pack_req = srey_http.pack_req -- 客户端请求的 C 组包，不接的形状返回 nil，见 http.get
 -- 状态行按状态码缓存。只缓存 [100, 999] 的整数码：业务传的怪码不进表，表就撑不大
@@ -291,9 +291,16 @@ local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc
             return _http_send(rsp, sk, prefix, ckfunc)
         end
         -- 每块一次 .. 拼接，不再过表
-        local smsg, rtn
+        local smsg, rtn, ok
         while true do
-            rtn = info(...)
+            ok, rtn = pcall(info, ...)
+            if not ok then
+                -- 已发过字节的连接停在半截报文上，关掉再原样抛；一个字节都没发时连接还干净，交上层处理（如 router 回 500）
+                if "" == prefix then
+                    srey.close(sk)
+                end
+                error(rtn, 0)
+            end
             if nil == rtn then
                 break
             end
@@ -363,7 +370,9 @@ end
 ---
 ---与同一连接上的其他请求并发时，须用 srey.serial 把整个调用圈进临界区（理由同 srey.syn_send）；
 ---分片响应（chunked / 1xx / 既无 Content-Length 又无 Transfer-Encoding / TE 不以 chunked 结尾）不圈的话，后续分片还会被
----排在前面的协程拿走，双方各得半截
+---排在前面的协程拿走，双方各得半截。
+---带 Content-Length 的响应整包缓冲，超过 64KB（C 侧 HTTP_MAX_CONTENT_LENS）即判协议错误、断连返回 nil；
+---要取更大的定长内容就调大那个上限，或让对端用 chunked
 ---@param sk userdata 连接标识
 ---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,string|number>? 附加头部
@@ -429,7 +438,8 @@ end
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。
 ---       返回非 string 是违约：报文体已发出一部分时关连接、不补终止块（补了对端会把截断的报文体当完整的收），
----       一个字节都没发出时只返回 nil，连接可继续复用；分块发送失败一律关连接
+---       一个字节都没发出时只返回 nil，连接可继续复用；分块发送失败一律关连接。
+---       info 抛错时报文体已发出一部分就关连接，再把错误原样抛出
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；失败返回 nil（超时/分片中断时响应可能未收完，
 ---此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）。
@@ -490,7 +500,8 @@ http._response_lua = _response_lua
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
 ---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
 ---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。
----       违约处置同 http.post，只是一个字节都没发出时也关连接：不关的话对端一直等这条响应
+---       违约处置同 http.post，只是一个字节都没发出时也关连接：不关的话对端一直等这条响应。
+---       info 抛错同 http.post：一个字节都没发出时不关，错误原样抛给上层（router 据此回 500）
 ---@param ... any 传给 info 函数的额外参数
 function http.response(sk, code, headers, info, ...)
     -- 常见形状（string / nil 报文体、没有头表时的 table 报文体、合法头表）整条在 C 里组包直发，字节同 _response_lua 的原路；

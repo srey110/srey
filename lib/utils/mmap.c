@@ -173,10 +173,10 @@ static int32_t _mmap_setlen(mmap_ctx *ctx, uint64_t cur, uint64_t len) {
 #ifndef OS_WIN
 // 文件不短于 len，不够就扩。不超过 hw 时不必查：映射期间文件只增不减（契约 4）
 static int32_t _mmap_ensure(mmap_ctx *ctx, uint64_t len) {
-    uint64_t flen;
     if (len <= ctx->hw) {
         return ERR_OK;
     }
+    uint64_t flen;
     if (ERR_OK != _mmap_flen(ctx, &flen)) {
         return ERR_FAILED;
     }
@@ -251,10 +251,8 @@ static int32_t _mmap_prefetch(char *p, size_t lens) {
 }
 // 普通视图：只读、写时复制、不预留的读写；读写时文件不够长由建映射对象一并扩到 end
 static char *_mmap_win_view(mmap_ctx *ctx, uint64_t aoff, size_t len, uint64_t end) {
-    DWORD prot, access, err;
-    uint64_t maxsz = 0, flen;
-    HANDLE mh;
-    char *p;
+    DWORD prot, access;
+    uint64_t maxsz = 0;
     if (MMAP_RDONLY == ctx->mode) {
         prot = PAGE_READONLY;
         access = FILE_MAP_READ;
@@ -264,6 +262,7 @@ static char *_mmap_win_view(mmap_ctx *ctx, uint64_t aoff, size_t len, uint64_t e
     } else {
         prot = PAGE_READWRITE;
         access = FILE_MAP_WRITE;
+        uint64_t flen;
         if (ERR_OK != _mmap_flen(ctx, &flen)) {
             return NULL;
         }
@@ -272,15 +271,15 @@ static char *_mmap_win_view(mmap_ctx *ctx, uint64_t aoff, size_t len, uint64_t e
             _mmap_floor(ctx, flen);
         }
     }
-    mh = CreateFileMappingW(ctx->fd, NULL, prot, (DWORD)(maxsz >> 32), (DWORD)maxsz, NULL);
+    HANDLE mh = CreateFileMappingW(ctx->fd, NULL, prot, (DWORD)(maxsz >> 32), (DWORD)maxsz, NULL);
     if (NULL == mh) {
         return NULL;
     }
     if (maxsz > ctx->hw) {
         ctx->hw = maxsz;
     }
-    p = (char *)MapViewOfFile(mh, access, (DWORD)(aoff >> 32), (DWORD)aoff, len);
-    err = GetLastError();
+    char *p = (char *)MapViewOfFile(mh, access, (DWORD)(aoff >> 32), (DWORD)aoff, len);
+    DWORD err = GetLastError();
     CloseHandle(mh);
     SetLastError(err);
     return p;
@@ -336,20 +335,21 @@ static int32_t _mmap_win_pad(mmap_ctx *ctx, uint64_t end) {
 }
 // cap 内变长：把 [文件末尾, want) 对应的页提交掉，文件随之按页变长
 static int32_t _mmap_win_grow(mmap_ctx *ctx, uint64_t want) {
-    uint64_t flen, aoff = ctx->off - ctx->delta;
-    size_t ps = _mmap_pagesize(), from, to;
-    char *base = ctx->addr - ctx->delta;
     if (want <= ctx->hw) {
         return ERR_OK;
     }
+    uint64_t flen;
     if (ERR_OK != _mmap_flen(ctx, &flen)) {
         return ERR_FAILED;
     }
     if (want <= flen) {
         return ERR_OK;
     }
-    from = (size_t)_mmap_roundup64(flen - aoff, ps);
-    to = (size_t)_mmap_roundup64(want - aoff, ps);
+    uint64_t aoff = ctx->off - ctx->delta;
+    size_t ps = _mmap_pagesize();
+    size_t from = (size_t)_mmap_roundup64(flen - aoff, ps);
+    size_t to = (size_t)_mmap_roundup64(want - aoff, ps);
+    char *base = ctx->addr - ctx->delta;
     _mmap_floor(ctx, flen);
     if (NULL == VirtualAlloc(base + from, to - from, MEM_COMMIT, PAGE_READWRITE)) {
         return ERR_FAILED;
@@ -373,12 +373,11 @@ static int32_t _mmap_mflags(mmap_ctx *ctx) {
     return mf;
 }
 static char *_mmap_posix_map(mmap_ctx *ctx, uint64_t aoff, size_t len) {
-    void *p;
     if (!_mmap_off_ok(aoff)) {
         _mmap_inval();
         return NULL;
     }
-    p = mmap(NULL, len, _mmap_prot(ctx->mode), _mmap_mflags(ctx), ctx->fd, (off_t)aoff);
+    void *p = mmap(NULL, len, _mmap_prot(ctx->mode), _mmap_mflags(ctx), ctx->fd, (off_t)aoff);
     return MAP_FAILED == p ? NULL : (char *)p;
 }
 // 超出 cap 的增长：Linux 用 mremap；其他平台先在原映射尾部接着映射，
@@ -615,13 +614,12 @@ static char *_mmap_anon_alloc(size_t size, size_t cap, int32_t flags) {
 #endif
 }
 static int32_t _mmap_anon_map(mmap_ctx *ctx, size_t size, size_t cap) {
-    char *p;
     if (0 == size) {
         ctx->size = 0;
         ctx->cap = cap;
         return ERR_OK;
     }
-    p = _mmap_anon_alloc(size, cap, ctx->flags);
+    char *p = _mmap_anon_alloc(size, cap, ctx->flags);
     if (NULL == p) {
         return ERR_FAILED;
     }
@@ -646,6 +644,10 @@ int32_t mmap_anon(mmap_ctx *ctx, const mmap_opts *opts) {
 // cap 内提交或归还匿名内存：变长把新增页改成可读写，变短把多出的页换回不可访问的空页
 static int32_t _mmap_anon_resize(mmap_ctx *ctx, size_t size) {
     size_t ps = _mmap_pagesize(), from = ROUND_UP(ctx->size, ps), to = ROUND_UP(size, ps);
+    // 变短时末页里新长度之后的那段先清零：下面只按整页归还，同页的残留再变长时会被读到
+    if (size < ctx->size) {
+        memset(ctx->addr + size, 0, (to < ctx->size ? to : ctx->size) - size);
+    }
     if (from == to) {
         return ERR_OK;
     }
@@ -764,11 +766,10 @@ int32_t mmap_resize(mmap_ctx *ctx, size_t size, size_t cap) {
 }
 // 共享内存名字："/名字"，名字里不再有 '/'，总长不超过 MMAP_SHM_NAMEMAX
 static int32_t _mmap_shm_name_ok(const char *name) {
-    size_t lens;
     if (NULL == name || '/' != name[0]) {
         return 0;
     }
-    lens = strlen(name);
+    size_t lens = strlen(name);
     return lens >= 2 && lens <= MMAP_SHM_NAMEMAX && NULL == strchr(name + 1, '/');
 }
 int32_t mmap_shm(mmap_ctx *ctx, const char *name, const mmap_opts *opts) {
@@ -958,10 +959,10 @@ int32_t mmap_unlock(mmap_ctx *ctx, size_t off, size_t lens) {
     return _mmap_apply(ctx, off, lens, _mmap_op_lock, 0);
 }
 int64_t mmap_filesize(mmap_ctx *ctx) {
-    uint64_t flen;
     if (_MMAP_FILE != ctx->kind) {
         return _mmap_inval();
     }
+    uint64_t flen;
     if (ERR_OK != _mmap_flen(ctx, &flen)) {
         return ERR_FAILED;
     }

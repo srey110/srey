@@ -29,8 +29,7 @@ static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {
     binary_set_va(&bw, "%-14s %12s %18s %14s\n", "MTYPE", "NMSG", "DISPATCH_CPU_NS", "AVG_NS");
     uint64_t tnmsg = 0;
     uint64_t tcpu = 0;
-    int32_t i;
-    for (i = 0; i < MSG_TYPE_ALL; i++) {
+    for (int32_t i = 0; i < MSG_TYPE_ALL; i++) {
         if (0 == nmsg[i]) {
             continue;
         }

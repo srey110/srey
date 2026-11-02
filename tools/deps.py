@@ -322,6 +322,8 @@ def ensure_clone(name: str, spec: dict) -> Path:
         print(f"  已有 {src.relative_to(ROOT)} ({desc or '非 git 源码'}),按现状使用")
         print( "         要换版本:删掉该目录再跑,会拉远端最新正式版")
         return src
+    # 只有要去拉的时候才要 git:自己放进 deps/ 的源码(不必是 git 克隆)用不着
+    need_tools(["git"])
     DEPS_DIR.mkdir(parents=True, exist_ok=True)
     tag = latest_tag(spec)
     cmd = ["git", "clone", "--depth", "1"]
@@ -371,6 +373,9 @@ def ossl_config_prefix(arch: str, forced: bool) -> list:
 def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
     """no-shared 静态构建 + install_dev(只装头与库,跳过极慢的文档)。
     prefix 按架构分开:各架构的 libdir 不同(lib / lib64),共用会把旧架构的库当成本次产物"""
+    # 先清上一轮的构建残留:重新 Configure 后上游 Makefile 丢了头文件依赖,残留的目标文件会被当成新的,
+    # 编出混着上一个变体的库
+    clean_src("openssl", DEPS["openssl"], src)
     prefix = src / f"_prefix_{SFX_ARCH[arch]}"
     opts = [f"--prefix={prefix}", f"--openssldir={prefix / 'ssl'}",
             "no-shared", "no-tests", "no-docs"]
@@ -404,7 +409,7 @@ def build_openssl(src: Path, arch: str, forced: bool, dbg: bool) -> list:
     if dst_inc.is_dir():
         rmtree(dst_inc)
     shutil.copytree(str(inc), str(dst_inc))
-    # 库名各平台不同(Windows 上带 _x64 之类后缀),不猜,把 prefix 里实际产出的捞出来
+    # 库的扩展名与所在目录(lib / lib64)各平台不同,不猜,把 prefix 里实际产出的捞出来
     libs = []
     for pat in ("*crypto*.a", "*ssl*.a", "*crypto*.lib", "*ssl*.lib"):
         for d in ("lib", "lib64"):
@@ -580,8 +585,11 @@ def main() -> int:
     if IS_WIN and arch_forced and shell_arch and shell_arch != arch:
         sys.stderr.write(f"当前 VS 提示符的目标架构是 {shell_arch},与参数 {arch} 不符;换到 {arch} 的开发者提示符再跑\n")
         return 1
+    # POSIX 上不做交叉编译(同 mk.sh):不在 ARM64 主机上会编出本机架构的库还贴 _arm64
+    if not IS_WIN and "arm64" == arch and platform.machine().lower() not in ("arm64", "aarch64"):
+        sys.stderr.write(f"本机是 {platform.machine()},不是 ARM64;deps.py 不做交叉编译\n")
+        return 1
 
-    need_tools(["git"])
     flags = read_flags()
     todo = [n for n, sp in DEPS.items() if 0 != flags.get(sp["flag"], 0)]
     for n, sp in DEPS.items():

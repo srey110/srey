@@ -16,7 +16,7 @@ local _PORT = 15003
 -- WEBSOCK_PROT 常量（RFC 6455 §11.8 opcode）：lib/websock.lua 中通过全局赋值导出，
 -- 但 lib/websock.lua 顶层会 require lib.dns，引入 DNS 查询副作用；server 端不需要客户端封装，
 -- 直接在本文件 local 化常量值
-local WS_TEXT, WS_BINARY, WS_PING, WS_CLOSE = 0x01, 0x02, 0x09, 0x08
+local WS_TEXT, WS_BINARY, WS_PING = 0x01, 0x02, 0x09
 local MQTT_CONNECT = 0x01 -- 同上，避免为一个常量 require lib.mqtt
 
 srey.startup(function()
@@ -49,6 +49,7 @@ srey.startup(function()
             end
             return
         end
+        -- close 由协议层当场回应并关连接，这里不用管(同 task_ws_server.c)
         if WS_TEXT == pack.prot then
             local frame, fsize = websock.pack_text(0, 1, pack.data, pack.size)
             srey.send(sk, frame, fsize, 0)
@@ -58,8 +59,6 @@ srey.startup(function()
         elseif WS_PING == pack.prot then
             local frame, fsize = websock.pack_pong(0, pack.data, pack.size)-- pong 要原样带回 ping 的载荷
             srey.send(sk, frame, fsize, 0)
-        elseif WS_CLOSE == pack.prot then
-            srey.close(sk)
         end
     end)
     if ERR_FAILED == srey.listen(PACK_TYPE.WEBSOCK, SSL_NAME.NONE, "0.0.0.0", _PORT) then

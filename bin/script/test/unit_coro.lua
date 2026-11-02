@@ -816,7 +816,32 @@ runner.run(function(t)
         local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT)
         if t:check(sk.valid, "connect " .. PLAIN_PORT) then
             t:eq(true, srey.sync_close(sk), "sync_close 收到 CLOSE 返回 true")
+            t:eq(false, sk.valid, "sync_close 收到 CLOSE 后 sk 已置失效")
             t:eq(s0, _sessions(), "sync_close 之后条目已删")
+        end
+        -- 等待被这条连接的 CLOSE 唤醒后 sk 跟着失效：再 sync_close 当场返回 true，不再白等读超时(同 C 侧)
+        sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT)
+        if t:check(sk.valid, "connect " .. PLAIN_PORT) then
+            local wsk = sk
+            local woke = false
+            srey.fork(function()
+                srey.syn_recv(wsk)
+                woke = true
+            end)
+            srey.sleep(30)-- fork 的协程在本条消息分发完才起，先让它挂上
+            srey.close(wsk)
+            for _ = 1, 100 do
+                if woke then
+                    break
+                end
+                srey.sleep(20)
+            end
+            t:check(woke, "syn_recv 被 CLOSE 唤醒")
+            t:eq(false, wsk.valid, "被 CLOSE 唤醒后 sk 已置失效")
+            local t0 = srey.timer_ms()
+            t:eq(true, srey.sync_close(wsk), "之后 sync_close 当场返回 true")
+            t:check(srey.timer_ms() - t0 < 200, "不再等读超时")
+            t:eq(s0, _sessions(), "条目已删")
         end
         sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT)
         if t:check(sk.valid and srey.sock_bind_task(sk, "reporter"), "连上后转交给 reporter") then
@@ -862,6 +887,12 @@ runner.run(function(t)
                 t:eq(false, sk.valid, "主机名与证书对不上时握手失败")
                 sk = srey.connect(PACK_TYPE.NONE, SSL_VCHAIN, "127.0.0.1", TLS_PORT)
                 if t:check(sk.valid, "只验证书链时能连上") then
+                    srey.sync_close(sk)
+                end
+                -- 测试证书没有 SAN，主机名按 CN 比：设成服务端证书的 CN(见 bin/keys/create.sh)就该连得上
+                t:eq(true, core.ssl_host(vhost, "srey-server"), "ssl_host 改成服务端证书的 CN")
+                sk = srey.connect(PACK_TYPE.NONE, SSL_VHOST, "127.0.0.1", TLS_PORT)
+                if t:check(sk.valid, "主机名与证书对得上时能连上") then
                     srey.sync_close(sk)
                 end
             end

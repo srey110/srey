@@ -86,7 +86,11 @@ static void test_rt_static_param_wild(CuTest *tc) {
 
     CuAssertIntEquals(tc, -1, _rt_match(t, nope, 1, ROUTER_M_GET, scratch,
                                         sizeof(scratch), &m));
-    CuAssertIntEquals(tc, -3, _rt_match(t, user, 1, (router_method)0, scratch,
+    // 方法掩码 0(不认识的方法)：路径在照样 -4 带 allow
+    CuAssertIntEquals(tc, -4, _rt_match(t, user, 1, (router_method)0, scratch,
+                                        sizeof(scratch), &m));
+    CuAssertTrue(tc, 0 != (m.allow & ROUTER_M_GET));
+    CuAssertIntEquals(tc, -1, _rt_match(t, nope, 1, (router_method)0, scratch,
                                         sizeof(scratch), &m));
     CuAssertIntEquals(tc, -4, _rt_match(t, user, 1, ROUTER_M_POST, scratch,
                                         sizeof(scratch), &m));
@@ -464,7 +468,7 @@ static void test_rt_bad_input(CuTest *tc) {
     rtree_add_result_free(&res);
     CuAssertIntEquals(tc, ERR_OK, _rt_add(t, 7, ROUTER_M_GET, wild, 1, &res));
     rtree_add_result_free(&res);
-    CuAssertIntEquals(tc, -3, _rt_match(t, NULL, 0, (router_method)0,
+    CuAssertIntEquals(tc, -4, _rt_match(t, NULL, 0, (router_method)0,
                                         scratch, sizeof(scratch), &m));
     CuAssertIntEquals(tc, -1, rtree_match(t, NULL, -1, (uint8_t *)scratch,
                                           sizeof(scratch), ROUTER_M_GET, &m));

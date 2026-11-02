@@ -7,6 +7,10 @@ static inline void _mqtt_pack_lenstr(binary_ctx *bw, const void *buf, size_t len
     binary_set_uinteger(bw, lens, 2, 0);
     binary_set_binary(bw, (const char *)buf, lens);
 }
+// UTF-8 串字段不许含 U+0000，对端按协议错误断连
+static inline int32_t _mqtt_has_nul(const void *buf, size_t lens) {
+    return 0 != lens && NULL != memchr(buf, 0, lens);
+}
 int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val) {
     size_t saved_offset = props->offset;
     binary_set_uint8(props, (uint8_t)flag);
@@ -80,6 +84,8 @@ int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, si
     switch (flag) {
     case CORRELATION_DATA://0x09 相关数据	二进制数据	PUBLISH, Will Properties
     case AUTH_DATA://0x16 认证数据	二进制数据	CONNECT, CONNACK, AUTH
+        _mqtt_pack_lenstr(props, data, lens);
+        break;
     case CONTENT_TYPE://0x03 内容类型	UTF-8编码字符串	PUBLISH, Will Properties
     case RESP_TOPIC://0x08 响应主题	UTF-8编码字符串	PUBLISH, Will Properties
     case CLIENT_ID://0x12 分配客户标识符	UTF-8编码字符串	CONNACK
@@ -87,6 +93,10 @@ int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, si
     case RESP_INFO://0x1A 请求信息	UTF-8编码字符串	CONNACK
     case SERVER_REFERENCE://0x1C 服务端参考	UTF-8编码字符串	CONNACK, DISCONNECT
     case REASON_STR://0x1F 原因字符串	UTF-8编码字符串	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
+        if (_mqtt_has_nul(data, lens)) {
+            binary_offset(props, saved_offset);
+            return ERR_FAILED;
+        }
         _mqtt_pack_lenstr(props, data, lens);
         break;
     default:
@@ -96,7 +106,8 @@ int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, si
     return ERR_OK;
 }
 int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t klens, void *val, size_t vlens) {
-    if (klens > UINT16_MAX || vlens > UINT16_MAX) {
+    if (klens > UINT16_MAX || vlens > UINT16_MAX
+        || _mqtt_has_nul(key, klens) || _mqtt_has_nul(val, vlens)) {
         return ERR_FAILED;
     }
     size_t saved_offset = props->offset;
@@ -172,8 +183,7 @@ static inline void _mqtt_pack_props(binary_ctx *bw, const char vlens[4], int32_t
     }
 }
 // 所有 mqtt_pack_* 共用的前导：编码剩余长度、开缓冲、写固定报头与剩余长度。
-// 缓冲大小算式 1 + roccupy + total 只此一处，写错就是欠分配；写入量恰好是这么多、从不扩容，
-// 故 inc 取 16，容量只按 16 取整(默认的 256 会让确认包这类小包也占 256 字节)。
+// 缓冲大小 1 + roccupy + total 只在这里算；写入量恰好这么多、从不扩容，故 inc 取 16(容量只按 16 取整)。
 // 返回 ERR_FAILED 表示 total 超出剩余长度的 4 字节变长上限，此时 bw 未初始化
 static inline int32_t _mqtt_pack_begin(binary_ctx *bw, int8_t fixhead, uint32_t total) {
     char rmain[4];

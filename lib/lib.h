@@ -82,6 +82,6 @@
 #include "advance/harbor.h"
 #include "advance/debug_console.h"
 
-extern loader_ctx *g_loader; // 全局 loader 实例，由框架初始化后对所有模块可见
+extern loader_ctx *g_loader;// 全局 loader 单例，程序入口把 loader_init 的返回值存进来
 
 #endif //LIB_H_

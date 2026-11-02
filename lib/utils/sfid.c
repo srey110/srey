@@ -37,18 +37,19 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
 /* sfid_id 无锁设计：每个线程持有独立的 sfid_ctx，禁止多线程共享同一 ctx。
  * lasttimestamp/sequence 字段未加原子保护，属于有意为之——调用方保证单线程访问。*/
 // 时钟回拨时退避一格：首次打印告警，睡 1ms 等时钟追上来。
-// 超过 deadline 返 ERR_FAILED 让调用方放弃——回拨多少就阻塞多少的话，一次跳表能把线程卡住几十分钟。
-// deadline 按时刻算而不是数睡眠次数：MSLEEP(1) 的实际粒度各平台差着十几倍
-static int32_t _sfid_clockback_wait(sfid_ctx *ctx, uint64_t curms, uint64_t *deadline) {
+// 等满 clockback_wait 返 ERR_FAILED 让调用方放弃——回拨多少就阻塞多少的话，一次跳表能把线程卡住几十分钟。
+// 等待时长用单调计时量：不数睡眠次数(MSLEEP(1) 的实际粒度各平台差着十几倍)，也不用墙钟(等的正是墙钟回拨)
+static int32_t _sfid_clockback_wait(sfid_ctx *ctx, uint64_t curms, timer_ctx *tm, int32_t *waiting) {
     if (0 == ctx->clockback_warned) {
         LOG_ERROR("clock rollback detected: cur=%"PRIu64" last=%"PRIu64" diff=%"PRIu64"ms.",
                   curms, ctx->lasttimestamp, ctx->lasttimestamp - curms);
         ctx->clockback_warned = 1;
     }
-    if (0 == *deadline) {
-        *deadline = nowms() + (uint64_t)ctx->clockback_wait;
+    if (0 == *waiting) {
+        timer_init(tm);
+        *waiting = 1;
     }
-    if (nowms() >= *deadline) {
+    if (timer_elapsed_ms(tm) >= (uint64_t)ctx->clockback_wait) {
         LOG_ERROR("clock rollback exceeds %dms, give up.", ctx->clockback_wait);
         ctx->clockback_warned = 0;
         return ERR_FAILED;
@@ -57,7 +58,8 @@ static int32_t _sfid_clockback_wait(sfid_ctx *ctx, uint64_t curms, uint64_t *dea
     return ERR_OK;
 }
 uint64_t sfid_id(sfid_ctx *ctx) {
-    uint64_t deadline = 0;
+    timer_ctx tm;// 只在回拨等待时才初始化，正常路径不付这笔
+    int32_t waiting = 0;
     uint64_t now, curms;
     for (;;) {
         now = nowms();
@@ -65,7 +67,7 @@ uint64_t sfid_id(sfid_ctx *ctx) {
         // 钳到 0 即落进下面的回拨分支
         curms = (now >= ctx->customepoch) ? now - ctx->customepoch : 0;
         if (curms < ctx->lasttimestamp) {
-            if (ERR_OK != _sfid_clockback_wait(ctx, curms, &deadline)) {
+            if (ERR_OK != _sfid_clockback_wait(ctx, curms, &tm, &waiting)) {
                 return 0;
             }
             continue;

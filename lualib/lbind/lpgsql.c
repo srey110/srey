@@ -9,7 +9,7 @@
 // bind 各入口共用的开场白：取 bind 对象，取法只此一处
 #define LPGSQL_BIND_ARG(lua, var) \
     pgsql_bind_ctx *var = lpub_check_udata((lua), 1, MT_PGSQL_BIND)
-// 绑值入口的开场白：nparam 为 0（含已释放）的 bind 上绑值报错，C 层对它绑什么都静默丢掉
+// 绑值入口的开场白：nparam 为 0（含已释放）的 bind 上绑值报错，C 层对它只记成多绑、到组包才拒
 #define LPGSQL_BIND_VAL(lua, var) \
     LPGSQL_BIND_ARG((lua), var); \
     luaL_argcheck((lua), 0 != (var)->nparam, 1, "bind has 0 params (new(0) or freed)")
@@ -26,17 +26,17 @@
     int16_t cvar = _lpgsql_reader_col((lua), *rvar, 2, NULL); \
     int32_t evar
 
-// 参数个数（bind.new 与 pack_stmt_prepare 共用）：越界报错不截断，上界 INT16_MAX 是因为 Bind / Parse 报文里它是 Int16
-static int16_t _lpgsql_check_nparam(lua_State *lua, int32_t idx) {
-    return (int16_t)lpub_check_range(lua, idx, 0, INT16_MAX, "nparam out of range [0, INT16_MAX]");
+// 参数个数（bind.new 与 pack_stmt_prepare 共用）：越界报错不截断，上界是 Bind / Parse 报文里 2 字节计数的 65535
+static uint16_t _lpgsql_check_nparam(lua_State *lua, int32_t idx) {
+    return (uint16_t)lpub_check_range(lua, idx, 0, UINT16_MAX, "nparam out of range [0, UINT16_MAX]");
 }
 /// <summary>
 /// 创建 pgsql 参数绑定上下文
 /// </summary>
-/// <param name="nparam" type="integer">预期绑定参数数量，取值 [0, INT16_MAX]，越界报错；为 0 时不能再绑值，绑了报错</param>
+/// <param name="nparam" type="integer">预期绑定参数数量，取值 [0, UINT16_MAX]，越界报错；为 0 时不能再绑值，绑了报错</param>
 /// <returns type="_pgsql_bind_ctx">bind 对象</returns>
 static int32_t _lpgsql_bind_new(lua_State *lua) {
-    uint16_t nparam = (uint16_t)_lpgsql_check_nparam(lua, 1);
+    uint16_t nparam = _lpgsql_check_nparam(lua, 1);
     pgsql_bind_ctx *bind = lua_newuserdata(lua, sizeof(pgsql_bind_ctx));
     pgsql_bind_init(bind, nparam);
     ASSOC_MTABLE(lua, MT_PGSQL_BIND);
@@ -365,14 +365,17 @@ static int32_t _lpgsql_reader_size(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 将游标跳转到指定行位置（从 0 开始）
+/// 将游标跳转到指定行位置（从 1 开始，同 reader.at）
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
-/// <param name="pos" type="integer">目标行下标，取值 [0, INT32_MAX]，超出报错；不小于行数时游标不动</param>
+/// <param name="pos" type="integer">目标行号，从 1 开始；不在 [1, size] 内时游标不动，非整数报错</param>
 /// <returns>无</returns>
 static int32_t _lpgsql_reader_seek(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_reader_ctx, MT_PGSQL_READER, reader, "reader freed");
-    pgsql_reader_seek(*reader, lpub_check_lens(lua, 2, INT32_MAX));
+    int64_t pos = lpub_check_index0(lua, 2, pgsql_reader_size(*reader));
+    if (pos >= 0) {
+        pgsql_reader_seek(*reader, (size_t)pos);
+    }
     return 0;
 }
 /// <summary>
@@ -490,7 +493,7 @@ static int32_t _lpgsql_reader_bytea(lua_State *lua) {
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="integer?">微秒数；字段为 NULL 时不返回</returns>
+/// <returns type="integer?">微秒数，±infinity 为 math.maxinteger / math.mininteger；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_timestamp(lua_State *lua) {
     LPGSQL_READER_GET(lua, reader, col, err);
     int64_t val = pgsql_reader_timestamp_at(*reader, col, &err);
@@ -502,7 +505,7 @@ static int32_t _lpgsql_reader_timestamp(lua_State *lua) {
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="integer?">天数；字段为 NULL 时不返回</returns>
+/// <returns type="integer?">天数，±infinity 为 2147483647 / -2147483648；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_date(lua_State *lua) {
     LPGSQL_READER_GET(lua, reader, col, err);
     int32_t val = pgsql_reader_date_at(*reader, col, &err);
@@ -540,8 +543,8 @@ static int32_t _lpgsql_reader_isnull(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="..." type="string">字段名，至少一个</param>
-/// <returns type="any">每个字段名一个值，SQL NULL 为 nil；任一字段读取失败（无此列、类型不支持、
-/// 解析失败）直接抛错，错误信息带列名</returns>
+/// <returns type="any">每个字段名一个值，SQL NULL 为 nil（先判 NULL 再看类型，不在上述类型里的列值为 NULL 时也是 nil）；
+/// 任一字段读取失败（无此列、类型不支持、解析失败）直接抛错，错误信息带列名</returns>
 static int32_t _lpgsql_reader_get(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_reader_ctx, MT_PGSQL_READER, reader, "reader freed");
     int32_t n = lua_gettop(lua);
@@ -620,6 +623,9 @@ static int32_t _lpgsql_reader_get(lua_State *lua) {
             }
             break;
         default:
+            if (0 != pgsql_reader_isnull_at(*reader, col)) {
+                err = 1;
+            }
             break;
         }
         if (1 == err) {
@@ -821,7 +827,7 @@ static int32_t _lpgsql_pack_terminate(lua_State *lua) {
 /// </summary>
 /// <param name="name" type="string">语句名（""= 未命名）；不得含 NUL，同 pack_query 的 sql</param>
 /// <param name="sql" type="string">SQL 语句；不得含 NUL，同 pack_query</param>
-/// <param name="nparam" type="integer">参数数量，取值 [0, INT16_MAX]，越界报错</param>
+/// <param name="nparam" type="integer">参数数量，取值 [0, UINT16_MAX]，越界报错</param>
 /// <param name="oids" type="integer[]?">OID 整数数组（按参数顺序），元素数须不少于 nparam、取值 [0, UINT32_MAX]，非整数或越界报错（多余的忽略）；整个参数为 nil 表示全部由服务端推断，只想让某一个推断就把那格写 0；非 table 非 nil 报错</param>
 /// <returns type="lightuserdata?">命令数据指针；同 pack_query</returns>
 /// <returns type="integer?">数据长度</returns>
@@ -830,7 +836,7 @@ static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
     size_t sqllen;
     const char *name = luaL_checklstring(lua, 1, &namelen);
     const char *sql = luaL_checklstring(lua, 2, &sqllen);
-    int16_t nparam = _lpgsql_check_nparam(lua, 3);
+    uint16_t nparam = _lpgsql_check_nparam(lua, 3);
     luaL_argcheck(lua, lua_isnoneornil(lua, 4) || LUA_TTABLE == lua_type(lua, 4), 4, "oids must be a table");
     uint32_t stackoids[PG_STACK_OIDS];
     uint32_t *oids = NULL;
@@ -842,7 +848,7 @@ static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
         }
         int32_t isnum;
         lua_Integer oid;
-        for (int16_t i = 0; i < nparam; i++) {
+        for (uint16_t i = 0; i < nparam; i++) {
             lua_rawgeti(lua, 4, i + 1);
             oid = lua_tointegerx(lua, -1, &isnum);
             lua_pop(lua, 1);

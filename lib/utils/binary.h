@@ -13,7 +13,8 @@ typedef struct binary_ctx {
 }binary_ctx;
 
 /// <summary>
-/// 写模式初始化：自己 malloc 一块可扩容的缓冲，binary_set_* 与 binary_get_* 都能用。
+/// 写模式初始化：自己 malloc 一块可扩容的缓冲，组包用 binary_set_*。写模式的 size 是容量不是已写长度，
+/// binary_get_* 与 binary_have 越过已写数据也不拦，要读组好的数据先 binary_init_read(data, offset)。
 /// 用完须 binary_free。组包走这个，解包走 binary_init_read。
 /// </summary>
 /// <param name="ctx">binary_ctx</param>

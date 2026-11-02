@@ -23,7 +23,7 @@ ARR_DECL(pgres_arr, pgsql_result)
 typedef struct pgpack_ctx {
     pgpack_type type;               // 数据包类型（成功/错误/通知）
     uint32_t iter_cursor;           // pgsql_reader_iter 的扫描起点，只前进不回头（占 type 后的对齐空洞）
-    void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息或通知）
+    void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息、通知，或 COPY IN / COPY OUT 的上下文）
     void(*_free_pgpack)(void *);    // 释放 pack 的回调函数
     pgres_arr results;              // 已完成语句的结果数组；CALLOC 全零即合法空数组，首条提交时指向 res_inl，装满才搬到堆上
     char complete[64];              // 最后一条 CommandComplete 命令完成标签，格式示例：INSERT oid rows / UPDATE rows 等
@@ -71,7 +71,8 @@ typedef struct pgsql_reader_ctx {
 
 // pgsql 连接上下文
 typedef struct pgsql_ctx {
-    int8_t readyforquery;       // 服务端就绪状态：'I' 空闲，'T' 事务块中，'E' 失败的事务块中
+    int8_t readyforquery;       // 服务端就绪状态：'I' 空闲，'T' 事务块中，'E' 失败的事务块中，0 未连上或已断开。
+                                // 网络线程解析时写，收应答的一方在拿到应答之后读
     uint16_t port;              // 服务端端口号
     int32_t pid;                // 后端进程 ID
     uint32_t key;               // 后端取消密钥

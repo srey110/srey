@@ -30,7 +30,7 @@ typedef struct rtree_match_result {
     router_route_id route_id;   // 未命中为 ROUTER_ROUTE_NONE
     uint32_t variant_id;        // 命中变体在 rtree_add_result.variants 中的下标
     router_method allow;        // -4 / -5 时有效
-    int32_t params_n;           // 参数值个数
+    int32_t params_n;           // 参数值个数; 末尾通配零段命中时不含它, 比 variant->param_n 少 1
     int32_t path_hit;           // 内部诊断用：是否有路径但没有方法命中
     rtree_param params[ROUTER_MAX_PARAMS]; // 只填值，key 由 router 层回填
 } rtree_match_result;
@@ -41,7 +41,7 @@ typedef struct rtree_add_result {
     int32_t n;          // 规范化变体数
     int32_t inserted;   // 真正插入叶子的变体数
     int32_t shadowed;   // 被已有叶子完全遮住的变体数
-    int32_t skipped;    // 参数超限跳过的变体数
+    int32_t skipped;    // 参数超限或插叶子内部出错而跳过的变体数
 } rtree_add_result;
 
 /// <summary>
@@ -76,9 +76,9 @@ int32_t rtree_add(rtree_ctx *t, const router_seg *segs, int32_t n, router_method
 /// <param name="nseg">段数</param>
 /// <param name="scratch">通配值拼接缓冲，可为 NULL（此时只有不消耗请求段的末尾通配能命中）</param>
 /// <param name="scratch_cap">scratch 字节数</param>
-/// <param name="method">请求方法位掩码</param>
+/// <param name="method">请求方法位掩码；0 表示不认识的方法，不命中任何条目，只分出 -1 / -4</param>
 /// <param name="out">匹配结果；命中时 params 的值指向 segs 或 scratch</param>
-/// <returns>≥0=命中 route id；-1=out 为 NULL、参数非法或无路径；-3=方法掩码为 0；-4=路径在而方法不对；
+/// <returns>≥0=命中 route id；-1=out 为 NULL、参数非法或无路径；-4=路径在而方法不对；
 /// -5=路径在、请求是 OPTIONS 且没有 OPTIONS handler（自动应答）</returns>
 int32_t rtree_match(rtree_ctx *t, const buf_ctx *segs, int32_t nseg, uint8_t *scratch, size_t scratch_cap, router_method method,
                     rtree_match_result *out);

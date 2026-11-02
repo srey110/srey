@@ -20,6 +20,7 @@ static atomic_t _evt_timeouted;// 绑定 task 的 task_timeout 回调跑过
 static atomic_t _sw_switched;// 切协议用例：首包按 custz 收到并切成 PACK_NONE 的次数
 static atomic_t _sw_rest;// 切协议用例：同一次读到的后续字节按 PACK_NONE 收到的次数
 static atomic_t _sw_bad;// 切协议用例：收到意料之外的包的次数
+static atomic_t _started_n;// 用例里新起的 task 跑完 startup 的个数，_started_wait 用
 static atomic_t _member_accepted;// 组员收到的 ACCEPT 数
 static atomic_t _member_bad;// 组员收到不归自己线程的连接、或回调跑错线程的次数
 static atomic_t _part_accepted;// 部分组员用例：唯一的组员收到的 ACCEPT 数
@@ -120,6 +121,16 @@ static void _emit_target_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, ui
 }
 static void _emit_target_startup(task_ctx *task) {
     task_recved(task, _emit_target_recv);
+    ATOMIC_ADD(&_started_n, 1);
+}
+// 等 n 个新起的 task 跑完 startup(各自 startup 末尾计数，起之前清 0)；再留 20ms 让它们退出这次派发、闲下来
+static void _started_wait(task_ctx *task, uint32_t n) {
+    int32_t i;
+    for (i = 0; i < 300 && ATOMIC_GET(&_started_n) < (atomic_t)n; i++) {
+        coro_sleep(task, 10);
+    }
+    ASSERTAB(ATOMIC_GET(&_started_n) >= (atomic_t)n, "task startup never ran");
+    coro_sleep(task, 20);
 }
 // 消息汇窗口嵌套：外层已推过消息，内层对不存在的目标开窗失败，外层关窗时仍得激活目标 task。
 // event 线程解包时同线程关掉别的连接、而那条连接的 task 已退出，就是这个形状
@@ -134,11 +145,12 @@ static void _check_emit_nested(void *owner, void *arg) {
     (void)arg;
     dst = task_new(task->loader, "rpc_emit_target", 0, NULL, NULL, NULL);
     handle = dst->handle;
+    ATOMIC_SET(&_started_n, 0);
     if (ERR_OK != task_register(dst, _emit_target_startup, NULL)) {
         task_free(dst);
         ASSERTAB(0, "register emit target failed");
     }
-    coro_sleep(task, 100);// 等目标跑完 STARTUP 闲下来，之后只有关窗那次激活能让它再跑
+    _started_wait(task, 1);// 等目标跑完 STARTUP 闲下来，之后只有关窗那次激活能让它再跑
     target = emit->begin(task->loader, handle);
     ASSERTAB(NULL != target, "open emit window failed");
     ZERO(&msg, sizeof(msg));
@@ -280,6 +292,7 @@ static void _member_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t
 static void _member_startup(task_ctx *task) {
     task_accepted(task, _member_accept);
     task_recved(task, _member_recv);
+    ATOMIC_ADD(&_started_n, 1);
 }
 // 每个 net 线程建一个绑在本线程上的组员 task，句柄按线程下标写进 hs
 static void _group_new(task_ctx *task, const char *prefix, _task_startup_cb startup, name_t *hs) {
@@ -287,6 +300,7 @@ static void _group_new(task_ctx *task, const char *prefix, _task_startup_cb star
     uint32_t i;
     task_ctx *member;
     char name[64];
+    ATOMIC_SET(&_started_n, 0);
     for (i = 0; i < nnet; i++) {
         SNPRINTF(name, sizeof(name), "%s_%u", prefix, i);
         member = task_new(task->loader, name, 0, NULL, NULL, NULL);
@@ -312,7 +326,7 @@ static void _check_accept_group(task_ctx *task) {
     MALLOC(hs, sizeof(name_t) * (nnet + 1));
     _group_new(task, "rpc_member", _member_startup, hs);
     hs[nnet] = task->handle;
-    coro_sleep(task, 100);// 等各组员跑完 STARTUP
+    _started_wait(task, nnet);// 等各组员跑完 STARTUP
     head = task_grab(task->loader, hs[0]);
     ASSERTAB(NULL != head, "grab group head failed");
     ASSERTAB(ERR_FAILED == task_accept_group(head, hs, (uint16_t)(nnet + 1)), "member count must equal nnet");
@@ -323,7 +337,6 @@ static void _check_accept_group(task_ctx *task) {
              "group listen failed");
     task_ungrab(head);
     FREE(hs);
-    coro_sleep(task, 50);// listen 落地是异步的
     for (i = 0; i < 2 * nnet; i++) {
         ASSERTAB(ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", ACP_GROUP_PORT, 0, NULL, &sk),
                  "connect group listener failed");
@@ -350,6 +363,7 @@ static void _part_accept(task_ctx *task, sock_ctx *sk, subtype_t pktype, const n
 static void _part_startup(task_ctx *task) {
     task_accepted(task, _part_accept);
     task_recved(task, _member_recv);
+    ATOMIC_ADD(&_started_n, 1);
 }
 // 组员表留空位：只在最后一个 net 线程放组员(它自己当组头)，listen 只在那条线程上收，所有连接都交给它；
 // 全是空位、组员放错下标都拒绝
@@ -366,11 +380,12 @@ static void _check_group_partial(task_ctx *task) {
     member = task_new(task->loader, "rpc_part", 0, NULL, NULL, NULL);
     ASSERTAB(ERR_OK == task_bind_net(member, (int32_t)nnet - 1), "bind partial member failed");
     mh = member->handle;
+    ATOMIC_SET(&_started_n, 0);
     if (ERR_OK != task_register(member, _part_startup, NULL)) {
         task_free(member);
         ASSERTAB(0, "register partial member failed");
     }
-    coro_sleep(task, 100);// 等组员跑完 STARTUP
+    _started_wait(task, 1);// 等组员跑完 STARTUP
     member = task_grab(task->loader, mh);
     ASSERTAB(NULL != member, "grab partial member failed");
     CALLOC(hs, nnet, sizeof(name_t));// 全是 INVALID_TNAME
@@ -386,7 +401,6 @@ static void _check_group_partial(task_ctx *task) {
              "partial group listen failed");
     task_ungrab(member);
     FREE(hs);
-    coro_sleep(task, 50);// listen 落地是异步的
     for (i = 0; i < 2 * nnet; i++) {
         ASSERTAB(ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", ACP_PART_PORT, 0, NULL, &sk),
                  "connect partial group listener failed");
@@ -413,6 +427,7 @@ static void _sw_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cli
 }
 static void _sw_startup(task_ctx *task) {
     task_recved(task, _sw_recv);
+    ATOMIC_ADD(&_started_n, 1);
 }
 // 收包当场处理的包里切了协议：同一次读到的后续字节得按新协议解(用接收组保证连接落在绑定线程上)；
 // 之后组头退出，接收组的监听在 accept 时就拒收新连接
@@ -428,14 +443,13 @@ static void _check_group_switch(task_ctx *task) {
     int32_t i;
     MALLOC(hs, sizeof(name_t) * nnet);
     _group_new(task, "rpc_sw", _sw_startup, hs);
-    coro_sleep(task, 100);// 等各组员跑完 STARTUP 闲下来，首包才会在收包当场处理
+    _started_wait(task, nnet);// 等各组员跑完 STARTUP 闲下来，首包才会在收包当场处理
     head = task_grab(task->loader, hs[0]);
     ASSERTAB(NULL != head, "grab switch head failed");
     ASSERTAB(ERR_OK == task_accept_group(head, hs, (uint16_t)nnet), "set switch accept group failed");
     ASSERTAB(ERR_OK == task_listen(head, PACK_CUSTZ_FIXED, NULL, "127.0.0.1", EVTASK_SW_PORT, &id, 0),
              "switch listen failed");
     task_ungrab(head);
-    coro_sleep(task, 50);// listen 落地是异步的
     ASSERTAB(ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", EVTASK_SW_PORT, 0, NULL, &sk),
              "connect switch listener failed");
     pack = custz_pack(PACK_CUSTZ_FIXED, "a", 1, &plen);
@@ -489,6 +503,7 @@ static void _ws_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cli
 static void _ws_startup(task_ctx *task) {
     task_handshaked(task, _ws_hs);
     task_recved(task, _ws_recv);
+    ATOMIC_ADD(&_started_n, 1);
 }
 // 握手请求与首个数据帧同一次到达绑定 task：握手结果在嵌套窗口里入队，随后的数据帧
 // 不能抢在它前面在收包当场被处理(用接收组保证连接落在绑定线程上，才走得到当场处理)。
@@ -508,14 +523,13 @@ static void _check_inline_order(task_ctx *task) {
     int32_t i;
     MALLOC(hs, sizeof(name_t) * nnet);
     _group_new(task, "rpc_ws", _ws_startup, hs);
-    coro_sleep(task, 100);// 等各组员跑完 STARTUP 闲下来，数据帧才够得着当场处理那条路
+    _started_wait(task, nnet);// 等各组员跑完 STARTUP 闲下来，数据帧才够得着当场处理那条路
     head = task_grab(task->loader, hs[0]);
     ASSERTAB(NULL != head, "grab ws head failed");
     ASSERTAB(ERR_OK == task_accept_group(head, hs, (uint16_t)nnet), "set ws accept group failed");
     ASSERTAB(ERR_OK == task_listen(head, PACK_WEBSOCK, NULL, "127.0.0.1", EVTASK_WS_PORT, &id, 0), "ws listen failed");
     task_ungrab(head);
     FREE(hs);
-    coro_sleep(task, 50);// listen 落地是异步的
     ASSERTAB(ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", EVTASK_WS_PORT, 0, NULL, &sk),
              "connect ws task failed");
     frame = websock_pack_text(1, 1, (void *)"hi", 2, &flen);
@@ -562,6 +576,7 @@ static void _ho_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t cli
 }
 static void _ho_startup(task_ctx *task) {
     task_recved(task, _ho_recv);
+    ATOMIC_ADD(&_started_n, 1);
 }
 // 转交用例的新目标：只该收到首包之后的 "rest"
 static void _ho_other_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t client,
@@ -575,6 +590,7 @@ static void _ho_other_recv(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8
 }
 static void _ho_other_startup(task_ctx *task) {
     task_recved(task, _ho_other_recv);
+    ATOMIC_ADD(&_started_n, 1);
 }
 // 两个 custz 包拼成一次发送：首包载荷是要转去的句柄，次包是 "rest"
 static char *_ho_frames(name_t to, size_t *lens) {
@@ -611,7 +627,7 @@ static void _check_group_handoff(task_ctx *task) {
         task_free(other);
         ASSERTAB(0, "register handoff target failed");
     }
-    coro_sleep(task, 100);// 等各组员跑完 STARTUP 闲下来，首包才会在收包当场处理
+    _started_wait(task, nnet + 1);// 等各组员与转交目标跑完 STARTUP 闲下来，首包才会在收包当场处理
     head = task_grab(task->loader, hs[0]);
     ASSERTAB(NULL != head, "grab handoff head failed");
     ASSERTAB(ERR_OK == task_accept_group(head, hs, (uint16_t)nnet), "set handoff accept group failed");
@@ -619,7 +635,6 @@ static void _check_group_handoff(task_ctx *task) {
              "handoff listen failed");
     task_ungrab(head);
     FREE(hs);
-    coro_sleep(task, 50);// listen 落地是异步的
     // 转给普通 task：首包归组员，次包归新目标
     ASSERTAB(ERR_OK == coro_connect(task, PACK_NONE, NULL, "127.0.0.1", EVTASK_HO_PORT, 0, NULL, &sk),
              "connect handoff listener failed");

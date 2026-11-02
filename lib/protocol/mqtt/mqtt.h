@@ -12,7 +12,9 @@ void _mqtt_udfree(ud_cxt *ud);
 // 判断当前数据包能否唤醒等待者：对端主动发起、不是回复的包不能(名单见实现)
 int32_t _mqtt_may_resume(void *data);
 /// <summary>
-/// 从缓冲区中解析一个完整的 MQTT 数据包
+/// 从缓冲区中解析一个完整的 MQTT 数据包。
+/// 服务端方向收到协议级别不支持的 CONNECT 直接按协议错误断连，不回 CONNACK(0x01 / 0x84)。
+/// UTF-8 字段只拒 U+0000，不校验是否良构；原因码与属性取值不按规范的取值表校验(属性见 mqtt_propertie)
 /// </summary>
 /// <param name="client">1 表示当前端为客户端，0 表示服务端</param>
 /// <param name="buf">接收缓冲区</param>
@@ -23,7 +25,7 @@ int32_t _mqtt_may_resume(void *data);
 /// <returns>解析成功返回 mqtt_pack_ctx*，数据不足或出错返回 NULL</returns>
 void *mqtt_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
-// 同 mqtt_unpack，只是数据在一段连续内存上、data 开头就是包头。固定头读不全、超 MQTT_MAX_PACK_LENS 或本包不完整时
+// 同 mqtt_unpack，只是数据在一段连续内存上、data 开头就是包头。固定头读不全、剩余长度编码非法、超 MQTT_MAX_PACK_LENS 或本包不完整时
 // 返回 NULL、*used 为 0 且不动 status，这些情形交给 mqtt_unpack 判；解过包 *used 即非 0，是该从 data 前头排掉的字节数(成功时为报文总长)
 void *_mqtt_unpack_mem(int32_t client, char *data, size_t lens, ud_cxt *ud, size_t *used, int32_t *status);
 /// <summary>

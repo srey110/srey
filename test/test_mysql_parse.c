@@ -11,6 +11,12 @@
 #pragma warning(disable:4312)
 #endif
 
+// 同 mysql.c 的 parse_status(枚举在 .c 里，用例看不见)，那边改顺序要同步
+#define _MY_INIT 0
+#define _MY_SSL_EXCHANGE 1
+#define _MY_AUTH_PROCESS 2
+#define _MY_COMMAND 3
+
 // 解包桩共用的"无连接"标识: 取代旧的 (INVALID_SOCK, 0) 实参对
 static sock_ctx _t_nosk = { INVALID_SOCK, INVALID_INDEX, 0 };
 // 解包入口的 ev 与连接标识在测试里恒为空：只喂缓冲，不发包也不认连接。
@@ -76,7 +82,7 @@ static void *_mysql_feed(mysql_ctx *mysql, const void *payload, size_t plens, in
     _push_packet(&buf, payload, plens, 1);// 序号解析侧只存不校验
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.status = 3;// COMMAND
+    ud.status = _MY_COMMAND;
     ud.context = mysql;
     *status = PROT_INIT;
     void *out = _t_mysql_unpack(0, &buf, &ud, NULL, status);
@@ -358,10 +364,11 @@ static void test_mysql_reader_uinteger(CuTest *tc) {
     CuAssertTrue(tc, 18446744073709551610ULL == v);
     mysql_reader_free(r);
 
-    // 二进制 TINY：单字节 uint8 = 200
+    // 二进制 TINYINT UNSIGNED：单字节 uint8 = 200
     char tinames[1][64] = { "u" };
     uint8_t titypes[1] = { MYSQL_TYPE_TINY };
     mysql_reader_ctx *r2 = _reader_new(MPACK_STMT_EXECUTE, 1, tinames, titypes);
+    r2->fields[0].flags = MYSQL_UNSIGNED_FLAG;
     char *p2;
     MALLOC(p2, 1);
     p2[0] = (char)200;
@@ -445,6 +452,17 @@ static void _check_unsigned_null(CuTest *tc, mysql_reader_ctx *r) {
     CuAssertIntEquals(tc, 0, mysql_reader_unsigned(r, "si"));
     CuAssertTrue(tc, -5 == mysql_reader_integer(r, "si", &err));
     CuAssertIntEquals(tc, ERR_OK, err);
+    // 符号相反的取法：装得下照给，装不下判失败，文本与二进制同口径
+    CuAssertTrue(tc, 200 == mysql_reader_integer(r, "tiu", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 3000000000LL == mysql_reader_integer(r, "iu", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, INT64_MAX == mysql_reader_integer(r, "bmax", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    mysql_reader_integer(r, "bover", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_uinteger(r, "si", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
     CuAssertIntEquals(tc, 0, mysql_reader_unsigned(r, "nosuch"));
     // NULL 列不在任何取值分组，isnull 照样判出来；单列取值器也是 NULL 先于类型
     CuAssertIntEquals(tc, 0, mysql_reader_cls(r, "n"));
@@ -457,7 +475,7 @@ static void _check_unsigned_null(CuTest *tc, mysql_reader_ctx *r) {
     mysql_reader_next(r);
     CuAssertIntEquals(tc, 0, mysql_reader_isnull(r, "n"));
 }
-// 文本与二进制两条路各造一行同样的值，断言同一套结果。二进制路上有符号读会把 200 / 3000000000 读成负数
+// 文本与二进制两条路各造一行同样的值，断言同一套结果(含用符号相反的接口去读)
 static void test_mysql_reader_unsigned_null(CuTest *tc) {
     char names[6][64] = { "tiu", "iu", "bmax", "bover", "si", "n" };
     uint8_t types[6] = { MYSQL_TYPE_TINY, MYSQL_TYPE_LONG, MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG,
@@ -1167,8 +1185,8 @@ static void test_mysql_status_flag_values(CuTest *tc) {
     CuAssertIntEquals(tc, 16384, SERVER_SESSION_STATE_CHANGED);
 }
 
-// 解析 OK 包：两个计数随 mpack 交付、不写 mysql_ctx(连接级只由 mysql_record 落)，status_flags 的唯一后果是 more 与 cur_cmd。
-// 直接读回 status_flags 证明不了什么——它得真的影响到这两处才算解对了
+// 解析 OK 包：两个计数随 mpack 交付、不写 mysql_ctx(连接级只由 mysql_record 落)；status_flags 决定 more、cur_cmd 与 in_trans。
+// 直接读回 status_flags 证明不了什么——它得真的影响到这几处才算解对了
 static void test_mpack_ok_parse(CuTest *tc) {
     binary_ctx bw;
     mysql_ctx mysql;
@@ -1184,6 +1202,14 @@ static void test_mpack_ok_parse(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int)mysql_last_id(&mysql));
     CuAssertIntEquals(tc, 0, (int)mpack->more);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
+    CuAssertIntEquals(tc, 0, (int)mysql.in_trans);
+    _mysql_pkfree(mpack);
+    binary_free(&bw);
+
+    // 1b) 带 SERVER_STATUS_IN_TRANS：置 in_trans(db_pool 归还时据它决定要不要 ROLLBACK)
+    mpack = _ok_feed(&mysql, SERVER_STATUS_IN_TRANS, &bw, &status);
+    CuAssertTrue(tc, NULL != mpack);
+    CuAssertIntEquals(tc, 1, (int)mysql.in_trans);
     _mysql_pkfree(mpack);
     binary_free(&bw);
 
@@ -1206,8 +1232,10 @@ static void test_mpack_ok_parse(CuTest *tc) {
     binary_set_integer(&bw, 0, 2, 1);
     ZERO(&mysql, sizeof(mysql));
     mysql.cur_cmd = MYSQL_QUERY;
+    mysql.in_trans = 1;// status_flags 为 0：事务已结束，in_trans 要清掉
     mpack = (mpack_ctx *)_mysql_feed(&mysql, bw.data, bw.offset, &status);
     CuAssertTrue(tc, NULL != mpack);
+    CuAssertIntEquals(tc, 0, (int)mysql.in_trans);
     CuAssertTrue(tc, UINT64_MAX == mysql_pack_affected_rows(mpack));
     CuAssertTrue(tc, ((uint64_t)1 << 63) == mysql_pack_last_id(mpack));
     // 只有无符号返回值才过得了这两句：有符号时它们是 -1 / INT64_MIN
@@ -1846,7 +1874,7 @@ static void test_mpack_row_eof_more_results(CuTest *tc) {
     binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_EOF);
     binary_set_integer(&bw, 0, 2, 1);// warnings
-    binary_set_integer(&bw, SERVER_MORE_RESULTS_EXISTS, 2, 1);// status_flags
+    binary_set_integer(&bw, SERVER_MORE_RESULTS_EXISTS | SERVER_STATUS_IN_TRANS, 2, 1);// status_flags
     mysql_ctx mysql;
     _mysql_stage(&mysql, r, 2, MPACK_QUERY);
     int32_t status;
@@ -1855,6 +1883,7 @@ static void test_mpack_row_eof_more_results(CuTest *tc) {
     CuAssertPtrNotNull(tc, out);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 1, (int)out->more);
+    CuAssertIntEquals(tc, 1, (int)mysql.in_trans);// 结果集收尾的 EOF 也更新 in_trans
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_MOREDATA));
     CuAssertTrue(tc, NULL == mysql.mpack);
     CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
@@ -2368,6 +2397,7 @@ static void test_mysql_udfree_reset(CuTest *tc) {
     mysql.parse_status = 3;// 任意非 0:代表结果集读到一半
     mysql.cur_cmd = MYSQL_QUERY;
     mysql.recvlens = 1234;// 响应收到一半就断：残留字节不能记进重连后的第一个响应
+    mysql.in_trans = 1;// 断开时服务端已回滚，重连后不能还当在事务里
 
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -2380,6 +2410,7 @@ static void test_mysql_udfree_reset(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
     CuAssertTrue(tc, 0 == mysql.recvlens);
+    CuAssertIntEquals(tc, 0, (int)mysql.in_trans);
     // 重复调用安全(context 已置空直接返回)
     _mysql_udfree(&ud);
 }
@@ -2407,7 +2438,7 @@ static void test_mpack_row_eof_truncated(CuTest *tc) {
     buffer_append(&buf, raw, sizeof(raw));
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.status = 3;// COMMAND
+    ud.status = _MY_COMMAND;
     ud.context = &mysql;
     int32_t status = PROT_INIT;
     void *out = _t_mysql_unpack(0, &buf, &ud, NULL, &status);
@@ -2461,7 +2492,7 @@ static mpack_ctx *_resultset_feed(mysql_ctx *mysql, int32_t nrows, int32_t *stat
     ZERO(mysql, sizeof(*mysql));
     mysql->cur_cmd = MYSQL_QUERY;
     ZERO(&ud, sizeof(ud));
-    ud.status = 3;// COMMAND
+    ud.status = _MY_COMMAND;
     ud.context = mysql;
     *status = PROT_INIT;
     mpack_ctx *out = _t_mysql_unpack(0, &buf, &ud, NULL, status);
@@ -2528,7 +2559,7 @@ static void test_mysql_unpack_size(CuTest *tc) {
     ZERO(&mysql, sizeof(mysql));
     mysql.cur_cmd = MYSQL_QUERY;
     ZERO(&ud, sizeof(ud));
-    ud.status = 3;// COMMAND
+    ud.status = _MY_COMMAND;
     ud.context = &mysql;
     // 1) 行阶段还没等到 EOF：包全吃掉但不交出，size 不写
     status = PROT_INIT;
@@ -2807,7 +2838,7 @@ static int32_t _stub_mysql_hspush(sock_ctx *sk, int32_t client,
     FREE(data);
     return ERR_OK;
 }
-// 认证阶段喂一个包，st 为 0(INIT，等握手包)或 2(AUTH_PROCESS)。mysql 由 mysql_init 建、连接标识无效：
+// 认证阶段喂一个包，st 为 _MY_INIT(等握手包)或 _MY_AUTH_PROCESS。mysql 由 mysql_init 建、连接标识无效：
 // 放行后要发的包(认证响应、明文口令等)一律发送失败、置 PROT_ERROR，但 ud->status 与包序号照样推进，
 // 用例据此区分"被守卫拒收"与"放行后发包失败"
 static void _mysql_auth_feed(mysql_ctx *mysql, ud_cxt *ud, int32_t st,
@@ -2858,44 +2889,44 @@ static void test_mysql_auth_handshake(CuTest *tc) {
     // 1) 各段截断：版本串缺 NUL、能力位不足 20 字节、插件数据不足 24 字节、插件名缺 NUL
     const size_t cuts[] = { 1, 4, verend + 19, verend + 20 + 23, bw.offset - 1 };
     for (size_t i = 0; i < ARRAY_SIZE(cuts); i++) {
-        _mysql_auth_feed(&mysql, &ud, 0, bw.data, cuts[i], 0, &status);
+        _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, cuts[i], 0, &status);
         CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-        CuAssertIntEquals(tc, 0, ud.status);
+        CuAssertIntEquals(tc, _MY_INIT, ud.status);
     }
     // 2) 协议版本不是 10
     bw.data[0] = 9;
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 0, ud.status);
+    CuAssertIntEquals(tc, _MY_INIT, ud.status);
     binary_free(&bw);
     // 3) 版本串装不下 version[64]
     _hs_build(&bw, _t_astr(longver, sizeof(mysql.version)), caps, 21, CACHING_SHA2_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 0, ud.status);
+    CuAssertIntEquals(tc, _MY_INIT, ud.status);
     binary_free(&bw);
     // 4) 缺 CLIENT_PROTOCOL_41 或 CLIENT_PLUGIN_AUTH
     _hs_build(&bw, "8.4.0", CLIENT_PROTOCOL_41, 21, CACHING_SHA2_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 0, ud.status);
+    CuAssertIntEquals(tc, _MY_INIT, ud.status);
     binary_free(&bw);
     _hs_build(&bw, "8.4.0", CLIENT_PLUGIN_AUTH, 21, CACHING_SHA2_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 0, ud.status);
+    CuAssertIntEquals(tc, _MY_INIT, ud.status);
     binary_free(&bw);
     // 5) auth_plugin_data_len 不是 21
     _hs_build(&bw, "8.4.0", caps, 20, CACHING_SHA2_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 0, ud.status);
+    CuAssertIntEquals(tc, _MY_INIT, ud.status);
     binary_free(&bw);
     // 6) 默认插件不认识：不拒收，按 caching_sha2_password 作答(等服务端 AuthSwitch)，进 AUTH_PROCESS；
     //    认证响应因连接无效发送失败
     _hs_build(&bw, "8.4.0", caps, 21, "sha256_password");
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
-    CuAssertIntEquals(tc, 2, ud.status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
+    CuAssertIntEquals(tc, _MY_AUTH_PROCESS, ud.status);
     CuAssertStrEquals(tc, CACHING_SHA2_PASSWORD, mysql.server.plugin);
     CuAssertIntEquals(tc, 1, (int)mysql.id);
     binary_free(&bw);
@@ -2903,21 +2934,21 @@ static void test_mysql_auth_handshake(CuTest *tc) {
     //    发 SSLRequest 因连接无效先失败，不会走到 ev_ssl
     mysql.client.evssl = (struct evssl_ctx *)&mysql;
     _hs_build(&bw, "8.4.0", caps, 21, CACHING_SHA2_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 0, ud.status);
+    CuAssertIntEquals(tc, _MY_INIT, ud.status);
     binary_free(&bw);
     _hs_build(&bw, "8.4.0", caps | CLIENT_SSL, 21, CACHING_SHA2_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
-    CuAssertIntEquals(tc, 1, ud.status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
+    CuAssertIntEquals(tc, _MY_SSL_EXCHANGE, ud.status);
     CuAssertTrue(tc, BIT_CHECK(mysql.client.caps, CLIENT_SSL));
     binary_free(&bw);
     mysql.client.evssl = NULL;
     // 8) 合法握手：放行，进 AUTH_PROCESS(ud 为 2)；认证响应因连接无效发送失败。
     //    服务端报了 CLIENT_INTERACTIVE 本端也不带：带了服务端按 interactive_timeout 回收空闲连接
     _hs_build(&bw, "8.4.0", caps | CLIENT_INTERACTIVE, 21, MYSQL_NATIVE_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 0, bw.data, bw.offset, 0, &status);
-    CuAssertIntEquals(tc, 2, ud.status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, bw.data, bw.offset, 0, &status);
+    CuAssertIntEquals(tc, _MY_AUTH_PROCESS, ud.status);
     CuAssertTrue(tc, !BIT_CHECK(mysql.client.caps, CLIENT_INTERACTIVE));
     CuAssertTrue(tc, BIT_CHECK(mysql.client.caps, CLIENT_PROTOCOL_41));
     CuAssertStrEquals(tc, "8.4.0", mysql_version(&mysql));
@@ -2929,7 +2960,7 @@ static void test_mysql_auth_handshake(CuTest *tc) {
     //    网络线程不写连接级错误，建连方经 mysql_record_handshake 记下后才取得到错误号与文案
     const char hserr[] = { (char)MYSQL_ERR, 0x10, 0x04, 'b', 'u', 's', 'y' };
     g_my_hs_calls = 0;
-    _mysql_auth_feed(&mysql, &ud, 0, hserr, sizeof(hserr), 0, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_INIT, hserr, sizeof(hserr), 0, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 1, g_my_hs_calls);
     CuAssertIntEquals(tc, ERR_FAILED, g_my_hs_erro);
@@ -2982,50 +3013,50 @@ static void test_mysql_auth_process(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, mysql_init(&mysql, "127.0.0.1", 0, NULL, "u", "p", "", "utf8mb4", 0));
     safe_fill_str(mysql.server.plugin, sizeof(mysql.server.plugin), CACHING_SHA2_PASSWORD);
     // 1) 快速认证 01 03：只等随后的 OK，不发包不报错
-    _mysql_auth_feed(&mysql, &ud, 2, fast, sizeof(fast), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, fast, sizeof(fast), 2, &status);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 2, (int)mysql.id);
     // 2) 完整认证 01 04：明文连接不做 RSA 公钥交换，直接认证失败、不发包(序号不动)；
     //    走了 TLS(CLIENT_SSL)才明文发口令，序号 +1 后发包失败
-    _mysql_auth_feed(&mysql, &ud, 2, full, sizeof(full), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, full, sizeof(full), 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 2, (int)mysql.id);
     BIT_SET(mysql.client.caps, CLIENT_SSL);
-    _mysql_auth_feed(&mysql, &ud, 2, full, sizeof(full), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, full, sizeof(full), 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 3, (int)mysql.id);
     BIT_REMOVE(mysql.client.caps, CLIENT_SSL);
     // 3) 未知子状态、只有 0x01 一个字节、未知首字节：拒收
-    _mysql_auth_feed(&mysql, &ud, 2, unk, sizeof(unk), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, unk, sizeof(unk), 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 2, (int)mysql.id);
-    _mysql_auth_feed(&mysql, &ud, 2, bare, sizeof(bare), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, bare, sizeof(bare), 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 2, (int)mysql.id);
-    _mysql_auth_feed(&mysql, &ud, 2, badtype, sizeof(badtype), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, badtype, sizeof(badtype), 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 2, (int)mysql.id);
     // 4) 0x01 后带不止一个字节(原先的公钥应答)：本端从不索要公钥，拒收、不发包
-    _mysql_auth_feed(&mysql, &ud, 2, extra, sizeof(extra), 4, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, extra, sizeof(extra), 4, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 4, (int)mysql.id);
     // 5) AuthSwitch 拒收：插件名缺 NUL、插件名后没有数据、盐不足 20 字节、插件不在白名单；插件名保持不变
     binary_init_write(&bw, 0, 0);
     binary_set_uint8(&bw, MYSQL_AUTH_SWITCH);
     binary_set_binary(&bw, "my", 2);
-    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, bw.data, bw.offset, 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     binary_offset(&bw, 1);
     binary_set_string(&bw, MYSQL_NATIVE_PASSWORD);
-    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, bw.data, bw.offset, 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     binary_set_binary(&bw, salt, 19);
-    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, bw.data, bw.offset, 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     binary_offset(&bw, 1);
     binary_set_string(&bw, "sha256_password");
     binary_set_binary(&bw, salt, sizeof(salt));
-    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, bw.data, bw.offset, 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertStrEquals(tc, CACHING_SHA2_PASSWORD, mysql.server.plugin);
     CuAssertIntEquals(tc, 2, (int)mysql.id);
@@ -3033,7 +3064,7 @@ static void test_mysql_auth_process(CuTest *tc) {
     binary_offset(&bw, 1);
     binary_set_string(&bw, MYSQL_NATIVE_PASSWORD);
     binary_set_binary(&bw, salt, sizeof(salt));
-    _mysql_auth_feed(&mysql, &ud, 2, bw.data, bw.offset, 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, bw.data, bw.offset, 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertStrEquals(tc, MYSQL_NATIVE_PASSWORD, mysql.server.plugin);
     CuAssertTrue(tc, 0 == memcmp(mysql.server.salt, salt, 20));
@@ -3041,14 +3072,14 @@ static void test_mysql_auth_process(CuTest *tc) {
     binary_free(&bw);
     // 7) OK：交给握手回传，进命令阶段(ud 为 3)
     g_my_hs_calls = 0;
-    _mysql_auth_feed(&mysql, &ud, 2, ok, sizeof(ok), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, ok, sizeof(ok), 2, &status);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
-    CuAssertIntEquals(tc, 3, ud.status);
+    CuAssertIntEquals(tc, _MY_COMMAND, ud.status);
     CuAssertIntEquals(tc, 1, g_my_hs_calls);
     CuAssertIntEquals(tc, ERR_OK, g_my_hs_erro);
     // 8) ERR：ERR 包体原样交给握手回传，连接级错误不写；经 mysql_record_handshake 记下后跳过 sql_state 取到文案
     g_my_hs_calls = 0;
-    _mysql_auth_feed(&mysql, &ud, 2, deny, sizeof(deny), 2, &status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, deny, sizeof(deny), 2, &status);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 1, g_my_hs_calls);
     CuAssertIntEquals(tc, ERR_FAILED, g_my_hs_erro);

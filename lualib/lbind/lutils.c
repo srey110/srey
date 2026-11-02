@@ -63,7 +63,7 @@ static int32_t _lutils_log(lua_State *lua) {
 /// </summary>
 /// <param name="data" type="lightuserdata?">C 指针；为 nil 时函数返回 nil</param>
 /// <param name="size" type="integer">数据字节数，取值 [0, INT32_MAX]</param>
-/// <returns type="string?">转换后的字符串；data 为 nil 时返回 nil</returns>
+/// <returns type="string?">转换后的字符串；data 为 nil，或为空指针而 size 大于 0 时返回 nil</returns>
 static int32_t _lutils_ud_str(lua_State *lua) {
     int32_t type = lua_type(lua, 1);
     if (LUA_TNIL == type || LUA_TNONE == type) {
@@ -151,6 +151,7 @@ static int32_t _lutils_csprng_rand(lua_State *lua) {
     char *buf = luaL_buffinitsize(lua, &lbuf, n);
     int32_t bad = (ERR_OK != csprng_rand(buf, n));
     luaL_pushresultsize(&lbuf, bad ? 0 : n);
+    secure_zero(&lbuf, sizeof(lbuf));// 理由同 lcrypt.c 的 _lcrypt_bs64_decode
     if (bad) {
         lua_pop(lua, 1);
         return lpub_rtn_nil(lua, 1);
@@ -223,10 +224,10 @@ static int32_t _lhash_ring_free(lua_State *lua) {
 /// 向哈希环添加节点（含虚拟节点）
 /// </summary>
 /// <param name="self" type="userdata">哈希环对象</param>
-/// <param name="nreplicas" type="integer">虚拟节点数，须在 uint32 范围内（越界直接报错，不返回 false）</param>
+/// <param name="nreplicas" type="integer">虚拟节点数，须在 uint32 范围内（越界直接报错）；不在 [1, 65536] 内返回 false</param>
 /// <param name="name" type="string|lightuserdata">节点名称；为字符串时长度自动取得</param>
 /// <param name="lens" type="integer?">name 为 lightuserdata 时必填，表示名称字节数</param>
-/// <returns type="boolean">成功 true，失败 false</returns>
+/// <returns type="boolean">成功 true；nreplicas 越界、name 为空串或其他失败时 false</returns>
 static int32_t _lhash_ring_add(lua_State *lua) {
     hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
     uint32_t nreplicas = lpub_check_u32(lua, 2, "nreplicas out of range");
@@ -254,7 +255,7 @@ static int32_t _lhash_ring_remove(lua_State *lua) {
 /// <param name="self" type="userdata">哈希环对象</param>
 /// <param name="key" type="string|lightuserdata">查找 key；为字符串时长度自动取得</param>
 /// <param name="lens" type="integer?">key 为 lightuserdata 时必填，表示 key 字节数</param>
-/// <returns type="string?">命中节点名称；环为空时返回 nil</returns>
+/// <returns type="string?">命中节点名称；环为空或 key 为空串时返回 nil</returns>
 static int32_t _lhash_ring_find(lua_State *lua) {
     hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
     size_t lens;
@@ -268,7 +269,7 @@ static int32_t _lhash_ring_find(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 将哈希环所有节点信息打印到日志（调试用途）
+/// 将哈希环所有节点信息打印到 stdout（调试用途；daemon 模式下 stdout 接的是 /dev/null，看不到）
 /// </summary>
 /// <param name="self" type="userdata">哈希环对象</param>
 /// <returns>无</returns>
@@ -363,7 +364,7 @@ static int32_t _lpopen_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 阻塞等待子进程退出（最多 ms 毫秒）。POSIX 上只记退出码、不收尸，用完调 close，否则僵尸留到对象回收
+/// 阻塞等待子进程退出（最多 ms 毫秒）。阻塞的是整条 worker 线程而不只是当前协程，期间同一 worker 上的其他 task 都停着。POSIX 上只记退出码、不收尸，用完调 close，否则僵尸留到对象回收
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <param name="ms" type="integer">超时毫秒数</param>
@@ -374,7 +375,7 @@ static int32_t _lpopen_waitexit(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == popen_waitexit(ctx, ms));
 }
 /// <summary>
-/// 获取子进程退出码（须在 waitexit 返回 true 或 close 之后调用）
+/// 获取子进程退出码；还没退出时也可调（返回 -1，要等它退出先 waitexit）
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <returns type="integer">退出码；被信号终止、被 close 结束、还没退出或出错时 -1</returns>
@@ -386,7 +387,7 @@ static int32_t _lpopen_exitcode(lua_State *lua) {
 /// <summary>
 /// 非阻塞读取子进程 stdout 当前已缓冲的数据，最多 max_lens 字节；底层 popen_read 一旦探测到当前无数据即返回，
 /// 故本函数不等待、不保证读到 EOF：子进程尚未产出的输出读不到。输出可能超过管道缓冲时要边读边等：
-/// 循环 read 到第二个返回值为 true 再 waitexit，先 waitexit 再读子进程会卡在写上退不了
+/// 循环 read 到第二个返回值为 true 再 waitexit（每轮夹一次 srey.sleep，否则是在 worker 上忙等），先 waitexit 再读子进程会卡在写上退不了
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <param name="max_lens" type="integer?">最大读取字节数，取值 [0, INT32_MAX]，默认 65536</param>

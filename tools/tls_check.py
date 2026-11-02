@@ -250,7 +250,9 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
-    return max(check(p) for p in sys.argv[1:])
+    codes = [check(p) for p in sys.argv[1:]]
+    # 有违规优先，别让另一个产物的"无法检查"(2) 把它盖掉
+    return 1 if 1 in codes else max(codes)
 
 
 if __name__ == "__main__":

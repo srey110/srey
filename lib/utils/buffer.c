@@ -459,10 +459,10 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
     char *tmp = (char*)data;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     size_t remain = lens;
-    size_t i, off = 0;
+    size_t off = 0;
     size_t iovlens;// 这条路径按 iov 逐条搬,用不上总量
     uint32_t num = _buffer_expand(ctx, lens, iov, MAX_EXPAND_NIOV, &iovlens);
-    for (i = 0; i < num && remain > 0; i++) {
+    for (uint32_t i = 0; i < num && remain > 0; i++) {
         // 比较放在 size_t 域内做, 别把 remain 窄化成 IOV_LEN_TYPE(Windows 上是 32 位 ULONG)
         if (remain >= (size_t)iov[i].IOV_LEN_FIELD) {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, iov[i].IOV_LEN_FIELD);
@@ -765,8 +765,7 @@ static inline int32_t _buffer_search_eq(bufnode_ctx *node, cmp_func cmp, size_t 
         return _buffer_search_memcmp(node, cmp, off, what, wlen);
     }
     const char *pos = node->buffer + node->misalign + off;
-    size_t i;
-    for (i = 0; i < wlen; i++) {
+    for (size_t i = 0; i < wlen; i++) {
         if (pos[i] != what[i]) {
             return ERR_FAILED;
         }
@@ -923,17 +922,20 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
     ctx->freeze_read = 1;
     uint32_t index = 0;
     bufnode_ctx *node = ctx->head;
+    size_t len;
     while (NULL != node
         && index < cnt
         && atmost > 0) {
-        iov[index].IOV_PTR_FIELD = (void *)(node->buffer + node->misalign);
-        if (atmost >= node->off) {
-            iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)node->off;
-            atmost -= node->off;
-        } else {
-            iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)atmost;
-            atmost = 0;
+        len = atmost < node->off ? atmost : node->off;
+#if defined(OS_WIN)
+        // iov 长度是 32 位 ULONG：超大的外部节点只登记前 INT32_MAX 字节、本次到此为止，余下的下次再取
+        if (len > (size_t)INT32_MAX) {
+            len = INT32_MAX;
         }
+#endif
+        iov[index].IOV_PTR_FIELD = (void *)(node->buffer + node->misalign);
+        iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)len;
+        atmost = len < node->off ? 0 : atmost - len;
         node->used = 1;
         index++;
         node = node->next;
@@ -947,8 +949,7 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
 void buffer_commit_get(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(1 == ctx->freeze_read, "read unfreezed.");
     bufnode_ctx *node = ctx->head;
-    uint32_t i;
-    for (i = 0; i < ctx->pinned_n && NULL != node; i++) {
+    for (uint32_t i = 0; i < ctx->pinned_n && NULL != node; i++) {
         node->used = 0;
         node = node->next;
     }

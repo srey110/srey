@@ -10,8 +10,7 @@
 /// <param name="nparam">参数数量</param>
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam);
 /// <summary>
-/// 释放参数绑定上下文内部缓冲区。释放后 nparam 归零，本文件所有绑定接口都靠这个值早退，
-/// 故可重复调用、释放后再绑定只会静默无视
+/// 释放参数绑定上下文内部缓冲区。释放后 nparam 归零，可重复调用；释放后再绑定按多绑处理（见 pgsql_bind）
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx 指针</param>
 void pgsql_bind_free(pgsql_bind_ctx *bind);
@@ -21,7 +20,7 @@ void pgsql_bind_free(pgsql_bind_ctx *bind);
 /// <param name="bind">pgsql_bind_ctx 指针</param>
 void pgsql_bind_clear(pgsql_bind_ctx *bind);
 /// <summary>
-/// 绑定一个原始字节参数。本文件各 pgsql_bind_xxx 多绑或值超 INT32_MAX 时都不写入，
+/// 绑定一个原始字节参数。本文件各 pgsql_bind_xxx 多绑（含 nparam 为 0 或已释放）或值超 INT32_MAX 时都不写入，
 /// 并让随后的 pgsql_pack_stmt_execute 拒绝组包
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx 指针</param>

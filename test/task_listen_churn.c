@@ -19,7 +19,6 @@ static void _startup_run(task_ctx *task) {
     sock_ctx csk;
     int32_t r;
     int32_t i;
-    int32_t nconn = 0;
     for (i = 0; i < CHURN_ITERS; i++) {
         if (task_isclosing(task)) {
             return;
@@ -29,23 +28,18 @@ static void _startup_run(task_ctx *task) {
             return;
         }
         r = coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", arg->port, 0, NULL, &csk);
-        if (ERR_OK == r) {
-            nconn++;
-            ev_close(&task->loader->netev, &csk);
+        // listen() 在 task_listen 返回前已同步做完，内核 backlog 接得住：每轮都必须连上
+        if (ERR_OK != r) {
+            LOG_ERROR("listen_churn iter %d: connect %u failed.", i, arg->port);
+            return;
         }
+        ev_close(&task->loader->netev, &csk);
         // 立即 unlisten；accept 完成事件可能正落在 watcher 队列里，命中 _uev_qtn_freelsn 引用计数路径
         ev_unlisten(&task->loader->netev, lsnid);
         coro_sleep(task, CHURN_SETTLE_MS);
     }
-    // 连不上不当失败：task_listen 是异步落地的，本轮 connect 可能赶在监听真正就绪之前。
-    // 但一轮都连不上就不是时序问题了 —— 那说明 listen 整个没起来，而原来这种情况照样算通过。
-    // 逐轮强判会在慢机上抖，取过半
-    if (nconn * 2 < CHURN_ITERS) {
-        LOG_ERROR("listen_churn: only %d/%d iters connected.", nconn, CHURN_ITERS);
-        return;
-    }
     ATOMIC_SET((atomic_t *)arg->ok, 1);
-    LOG_INFO("listen_churn tested (%d iters, %d connected).", CHURN_ITERS, nconn);
+    LOG_INFO("listen_churn tested (%d iters).", CHURN_ITERS);
 }
 // 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时
 static void _startup(task_ctx *task) {

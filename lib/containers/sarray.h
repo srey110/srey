@@ -19,7 +19,7 @@
 
 #define ARRAY_INIT_SIZE 32 // 默认初始容量
 
-// 入参写 T const * 而不是 const T *:T 是指针类型时,后者会被解析成指向 const 的指针。
+// 入参写 T const * 而不是 const T *:理由同 hashmap.h。
 // ARR_DECL(name, T)：name 生成的类型名，T 元素类型
 #define ARR_DECL(name, T)                                                      \
 typedef struct { uint32_t size; uint32_t maxsize; T *ptr; } name;               \
@@ -65,11 +65,10 @@ static inline void name##_grow_if_full(name *arr) {                             
    归一后仍为负的 pos 转成无符号必 >= 2^31、不小于 lim,故一次无符号比较同时挡住 \
    负数与越界;前提同 (int32_t)arr->size:size 不超过 INT32_MAX */                \
 static inline uint32_t name##_norm_pos(const name *arr, int32_t pos, int32_t inclusive) {\
-    uint32_t lim;                                                               \
     if (pos < 0) {                                                              \
         pos += (int32_t)arr->size;                                              \
     }                                                                           \
-    lim = (0 != inclusive) ? arr->size + 1 : arr->size;                         \
+    uint32_t lim = (0 != inclusive) ? arr->size + 1 : arr->size;                \
     ASSERTAB((uint32_t)pos < lim, "array pos out of range.");                   \
     return (uint32_t)pos;                                                       \
 }                                                                               \

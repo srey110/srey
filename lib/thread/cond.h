@@ -8,21 +8,16 @@ typedef CONDITION_VARIABLE cond_ctx;
 #else
 typedef pthread_cond_t cond_ctx;
 #endif
-// 条件变量能否绑定 CLOCK_MONOTONIC:需要 pthread_condattr_setclock(macOS 没有)
-// 与 CLOCK_MONOTONIC 本身(HP-UX 11i v3 起有、11.23 及更早没有,故按宏存在性判而非按 OS 排除)
-// 两个能力同时具备。cond_init 与 cond_timedwait
-// 必须由同一个宏分流——两者对时钟的选择一旦不一致,截止时间就落在另一个时基上,
-// 每次调用立即 ETIMEDOUT,等待方变成静默忙等
+// 条件变量能否绑定 CLOCK_MONOTONIC:要同时有 pthread_condattr_setclock(macOS 没有)与 CLOCK_MONOTONIC
+// (老 HP-UX 没有,故按宏存在性判而非按 OS 排除)。cond_init 与 cond_timedwait 必须由这同一个宏分流:
+// 两边时钟不一致时每次调用都立即 ETIMEDOUT,等待方变成静默忙等
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && defined(CLOCK_MONOTONIC)
     #define COND_MONOTONIC
 #endif
 
 /// <summary>
-/// 条件变量初始化。具备 pthread_condattr_setclock 与 CLOCK_MONOTONIC 的 POSIX 平台强制
-/// 把条件变量绑定到 CLOCK_MONOTONIC，绑定失败直接 abort——半绑定会让 cond_timedwait
-/// 的截止时间两套时钟对不上、退化成静默忙等。
-/// 缺任一能力的平台（macOS / 老 HP-UX）保持默认 CLOCK_REALTIME：老 HP-UX 的 cond_timedwait
-/// 同样按 CLOCK_REALTIME 算截止时刻，macOS 的 cond_timedwait 按相对时长等，不涉及时钟
+/// 条件变量初始化。定义了 COND_MONOTONIC 的平台绑定 CLOCK_MONOTONIC，绑定失败直接 abort（理由见 COND_MONOTONIC）；
+/// 其余平台（macOS / 老 HP-UX）保持默认 CLOCK_REALTIME
 /// </summary>
 /// <param name="ctx">cond_ctx</param>
 static inline void cond_init(cond_ctx *ctx) {
@@ -39,7 +34,7 @@ static inline void cond_init(cond_ctx *ctx) {
     // 无 pthread_condattr_setclock(macOS) 或无 CLOCK_MONOTONIC(老 HP-UX)：保持默认 CLOCK_REALTIME
     ASSERTAB_CODE(pthread_cond_init(ctx, (const pthread_condattr_t*)NULL));
 #endif
-};
+}
 /// <summary>
 /// 条件变量释放
 /// </summary>
@@ -49,9 +44,9 @@ static inline void cond_free(cond_ctx *ctx) {
 #else
     (void)pthread_cond_destroy(ctx);
 #endif
-};
+}
 /// <summary>
-/// 等待信号
+/// 等待信号。可能虚假唤醒，返回后须重查条件
 /// </summary>
 /// <param name="ctx">cond_ctx</param>
 /// <param name="mu">mutex_ctx</param>
@@ -61,24 +56,21 @@ static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu) {
 #else
     ASSERTAB_CODE(pthread_cond_wait(ctx, mu));
 #endif
-};
-// cond_timedwait 的错误上报只能写 stderr，不能走 LOG_*：它是持调用方互斥量返回的，
-// 而当那个互斥量正是 log.c 里 _waiter 的那把锁时(waiter 用 mutex + cond 实现)，slog 在日志线程睡着期间会去锁同一个
-// 互斥量，同线程重锁即自死锁(glibc 与 macOS 永久阻塞并连带堵住所有写日志的线程，
-// FreeBSD 的自适应锁返 EDEADLK 触发 mutex_lock 的断言，Windows 因 CRITICAL_SECTION 可重入而无事)。
-// 与 log.c 自身队列满/格式化失败时改写 stderr 的兜底同一策略
+}
+// cond_timedwait 的错误只写 stderr、不走 LOG_*：它持着调用方的锁返回，那把锁可能正是日志线程 _waiter 的锁
+// (waiter 用 mutex + cond 实现时)，走 LOG_* 会同线程重锁而自死锁。同 log.c 队列满 / 格式化失败时改写 stderr 的兜底
 static inline void _cond_timedwait_erro(int32_t code) {
     fprintf(stderr, "[ERROR][cond.h cond_timedwait] code %d, %s\n", code, ERRORSTR(code));
     fflush(stderr);
 }
 /// <summary>
-/// 等待信号。出错时错误码写 stderr 而非日志系统（详见 _cond_timedwait_erro）。
+/// 等待信号，最多等 ms 毫秒。可能虚假唤醒，返回后须重查条件。出错时错误码写 stderr 而非日志系统（理由见 _cond_timedwait_erro）。
 /// macOS 直接按相对时长等，不先读时钟换算截止时刻
 /// </summary>
 /// <param name="ctx">cond_ctx</param>
 /// <param name="mu">mutex_ctx</param>
 /// <param name="ms">毫秒</param>
-/// <returns>ERR_OK成功 ERR_FAILED 错误 1 超时 </returns>
+/// <returns>ERR_OK 被叫醒或虚假唤醒；1 超时；ERR_FAILED 出错</returns>
 static inline int32_t cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t ms) {
 #if defined(OS_WIN)
     if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms)) {//如果函数成功，则返回值为非零 如果函数失败或超时间隔已过，则返回值为零
@@ -126,7 +118,7 @@ static inline int32_t cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_
     _cond_timedwait_erro(rtn);
     return ERR_FAILED;
 #endif
-};
+}
 /// <summary>
 /// 激活信号
 /// </summary>
@@ -137,7 +129,7 @@ static inline void cond_signal(cond_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_cond_signal(ctx));
 #endif
-};
+}
 /// <summary>
 /// 激活全部信号
 /// </summary>
@@ -148,6 +140,6 @@ static inline void cond_broadcast(cond_ctx *ctx) {
 #else
     ASSERTAB_CODE(pthread_cond_broadcast(ctx));
 #endif
-};
+}
 
 #endif//COND_H_

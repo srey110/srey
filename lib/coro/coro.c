@@ -54,7 +54,7 @@ typedef struct coro_info {
 HEAP_DECL(coro_heap, coro_info, hidx, _CORO_TIMEOUT_LT)
 // session 到挂起协程的映射节点
 typedef struct coro_sess {
-    int32_t keep;       // waiters 摘空后是否保留本条目（同一 sess 高频复用，免去反复删除+插入）；广播清零、超时无视，规则见 CLAUDE.md 的 coro_sess 不变式
+    int32_t keep;       // waiters 摘空后是否保留本条目（同一 sess 高频复用，免去反复删除+插入）；广播与 coro_unkeep 清零、超时无视，规则见 CLAUDE.md 的 coro_sess 不变式
     uint64_t sess;      // session ID
     list_ctx waiters;   // 挂起协程链表（元素 coro_info，FIFO）：唤醒只看队头，广播整批摘，超时从中间摘
 }coro_sess;
@@ -308,12 +308,8 @@ int32_t coro_running(coro_ctx *co) {
 int32_t coro_suspended(coro_ctx *co) {
     return co->nyield;
 }
-// 切到另一个协程跑,回来再把 curco 指回调用者。curco 是"当前在跑的协程"这一唯一标识:
-// 被唤醒者醒来后靠它进 cosess、调 mco_yield,调用者拿回控制权后同样靠它。
-// 漏还原会把 curco 留在已挂起(甚至已随池收缩销毁)的协程上——调用者下一次挂起
-// 对着它 mco_yield 撞 MCO_STACK_OVERFLOW abort(minicoro 先判栈范围后判状态,别照字面调栈大小);
-// 顶层漏清则 coro_fork / coro_fork_wait / coro_serial_enter 三处"不在协程里就拒绝"的守卫从第一条消息起永不成立。
-// 顶层调用的"原值"就是 NULL,同样由本函数还原,不必各写一份
+// 切到另一个协程跑,回来再把 curco 指回调用者(顶层还原成 NULL)。curco 是"当前在跑的协程"的唯一标识,双方挂起都靠它。
+// 漏还原的话调用者下次挂起会 abort,报的是 MCO_STACK_OVERFLOW,别去调栈大小
 static inline mco_result _coro_resume_switch(coro_ctx *co, mco_coro *c) {
     mco_coro *self = co->curco;
     co->curco = c;
@@ -321,8 +317,7 @@ static inline mco_result _coro_resume_switch(coro_ctx *co, mco_coro *c) {
     co->curco = self;
     return rtn;
 }
-// 唤醒尾部:切过去、断言、回收死协程。所有唤醒点共用,别再各写一份——
-// curco 漏还原是上面那个 abort,MCO_DEAD 漏回收是无声的协程栈泄漏(只在池满时发生)。
+// 唤醒尾部:切过去、断言、回收死协程。所有唤醒点共用,别再各写一份(漏回收死协程是无声的栈泄漏)。
 // c 必须是调用方先缓存好的指针:被唤醒者返回后它栈上的对象即失效,不能再从那些对象里取 c
 static inline void _coro_resume_reap(coro_ctx *co, mco_coro *c) {
     mco_result rtn = _coro_resume_switch(co, c);
@@ -560,8 +555,7 @@ int32_t coro_serial_enter(coro_serial_ctx *serial) {
         // 已关闭：连锁都不再发放，免得关闭流程等一个永远不会归还的持有者
         return ERR_FAILED;
     }
-    // 缓存 self 到局部变量：mco_yield 期间 co->curco 被 coro_serial_leave
-    // 改写为下一个被唤醒的协程；本协程被再次唤醒时 co->curco 会被还原指回 self,
+    // 本协程：排队时记进节点供 leave 唤醒，也拿来比对 current
     mco_coro *self = co->curco;
     if (NULL != serial->current && serial->current != self) {
         // ── 跨协程路径：锁被其他协程持有，需排队等待 ─────────────────────

@@ -101,9 +101,10 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 /// <param name="host">Host</param>
 /// <param name="uri">HTTP request-target（path?query）；NULL 或空字符串时使用 "/"</param>
 /// <param name="secprot">Sec-WebSocket-Protocol；NULL 或空表示不带子协议</param>
-/// <param name="hsctx">out 握手上下文(含签名与子协议)，作为 task_connect extra 参数传入交协议层管理</param>
-/// <returns>握手包；host / uri / secprot 任一含 CRLF、secprot 校验失败、或取不到 CSPRNG 熵生成 nonce 时
-/// 返回 NULL(此时 *hsctx 不写入)</returns>
+/// <param name="hsctx">out 握手上下文(含签名与子协议)。作为 task_connect / coro_connect 的 extra 传入后归框架(成败都由它释放)；
+/// 没传出去(打完包不连了、中途出错)就由调用方 FREE</param>
+/// <returns>握手包：MALLOC 出来的 '\0' 结尾串，用 strlen 取长，调用方 FREE 或交 ev_send(copy=0) 接管；
+/// host / uri / secprot 任一含 CRLF、secprot 校验失败、或取不到 CSPRNG 熵生成 nonce 时返回 NULL(此时 *hsctx 不写入)</returns>
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx);
 /// <summary>
 /// ping包。对端发来的 PING 不会唤醒等回复的协程，走收包回调(队头是 coro_recv_any 时交给它)，由业务回 PONG；
@@ -195,6 +196,6 @@ void *websock_secpack(struct websock_pack_ctx *pack);
 /// <param name="lens">输出：载荷长度，必须非 NULL</param>
 /// <returns>数据</returns>
 char *websock_data(struct websock_pack_ctx *pack, size_t *lens);
-void _websock_init(void *hspush);
+void _websock_init(_handshaked_push hspush);
 
 #endif//WEBSOCK_H_

@@ -76,7 +76,7 @@
 --   链内异常不在中间件内捕获，由 dispatch 的 srey.xpcall 统一兜底（自动 ERROR + traceback），响应 500。
 --   prefix/middleware/group 分组的中间件在注册阶段静态合并进路由条目，排在路由级中间件之前；
 --   分组与路由级里重复的中间件只留第一次出现的位置（同 Laravel）。各级前缀与路径之间自动补 '/'
--- 与 Laravel 对齐的几处应答：路径在而方法不对回 405 并带 Allow，OPTIONS 则自动回 200 带 Allow；
+-- 与 Laravel 对齐的几处应答：路径在而方法不对（方法名不认识也算）回 405 并带 Allow，OPTIONS 则自动回 200 带 Allow；
 -- 请求带 Connection: close 或是 HTTP/1.0 没带 keep-alive 的，经 ctx 回完响应即关连接（同 C 侧 router）
 
 local srey        = require("lib.srey")
@@ -803,7 +803,7 @@ end
 ---@return RouteEntry? route 命中的路由条目
 local function _match_ctx(self, sk, pack, client, close_on_fail)
     -- ok 为 nil 表示非 HTTP 包（如连接/断开事件），直接忽略。未命中时往后挪一位：
-    -- path 那一位是 Allow 的值，接着是 path 与 query（400 与未知方法没有这两位）
+    -- path 那一位是 Allow 的值，接着是 path 与 query（400 没有这两位）
     local ok, code, method, version, close, path, query, idx, params = self._c_router:match_pack(pack)
     if nil == ok then
         return nil
@@ -813,11 +813,12 @@ local function _match_ctx(self, sk, pack, client, close_on_fail)
         local step
         if 404 == code then
             step = self._no_route
-        elseif 405 == code and nil ~= query then
-            step = self._no_method-- 未知方法不带 path 那一位，只回 405，不走 NoMethod
+        elseif 405 == code then
+            step = self._no_method
         end
         if step then
-            -- 不带 _close：回退回完响应后由下面统一关，免得关两次
+            -- 带 _close：回退回过包（含延迟回包）由它自己按 _close 关，同 C 侧 router_dispatch；
+            -- close_on_fail 时不带，回退返回后由下面统一关
             local fctx = setmetatable({
                 sk      = sk,
                 client  = client,
@@ -827,16 +828,22 @@ local function _match_ctx(self, sk, pack, client, close_on_fail)
                 query   = idx,
                 allow   = allow,
                 _pack   = pack,
+                _close  = (close and not close_on_fail) or nil,
                 responded = false,
             }, CtxMeta)
             local fok = srey.xpcall(step, fctx, _nop)
             fctx._pack = nil
-            if not fctx.responded then
-                if fok then
-                    _send_fail(method, sk, code, allow)
-                else
-                    _fallback_500(fctx)-- 回退自己抛错同普通路由回 500
+            if fctx.responded then
+                if close_on_fail then
+                    srey.close(sk)
                 end
+                return nil
+            end
+            if fok then
+                _send_fail(method, sk, code, allow)
+            else
+                fctx._close = nil-- 由下面统一关
+                _fallback_500(fctx)-- 回退自己抛错同普通路由回 500
             end
         else
             _send_fail(method, sk, code, allow)
@@ -934,6 +941,7 @@ function Router:_st_call(rec, slice, data)
         return
     end
     local sk = ctx.sk
+    ctx._close = nil-- 由下面统一关
     _fallback_500(ctx)
     srey.close(sk)
     self:_st_drop(sk.skid)
@@ -957,6 +965,9 @@ function Router:_st_begin(sk, pack, client)
         return
     end
     local step = (route._chain_ver == self._mw_version) and route._step or _chain_of(self, route)
+    -- 准入期间先摘 _close：被拒由下面统一关，别让中间件回包时先关一次；通过了再放回（同 C 侧）
+    local close = rawget(ctx, "_close")
+    ctx._close = nil
     local run_ok = srey.xpcall(step, ctx, _nop)
     -- 链尾是准入哨兵而非 handler；中间件截断即拒绝，它没写响应就兜底 500
     if not run_ok or not ctx._admitted then
@@ -964,6 +975,7 @@ function Router:_st_begin(sk, pack, client)
         srey.close(sk)
         return
     end
+    ctx._close = close
     -- 准入通过才让等 100 Continue 的客户端发请求体；被拒的上面已回最终响应并关连接
     _router_expect_continue(sk, pack)
     -- 这条 ctx 要跨帧活到 END/ABORT，而 pack 只在首帧有效：把 headers/body 就地固化下来，

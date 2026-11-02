@@ -49,9 +49,6 @@ static inline int32_t _pgsql_bind_format(pgsql_bind_ctx *bind, pgpack_format for
 }
 // 同 pgsql_bind，本文件的各 pgsql_bind_xxx 都走它。值长度字段是 Int32，超 INT32_MAX 按多绑处理、组包时拒
 static inline void _pgsql_bind_put(pgsql_bind_ctx *bind, const char *value, size_t lens, pgpack_format format) {
-    if (0 == bind->nparam) {
-        return;
-    }
     if (lens > INT32_MAX) {
         LOG_ERROR("pgsql bind value exceeds INT32_MAX: %zu.", lens);
         bind->count = (uint32_t)bind->nparam + 1;
@@ -94,8 +91,7 @@ void pgsql_bind_double(pgsql_bind_ctx *bind, double value) {
 }
 void pgsql_bind_null(pgsql_bind_ctx *bind) {
     // NULL 值：格式码无实际意义，约定写 FORMAT_TEXT；长度字段写 -1（0xFFFFFFFF），无后续值字节
-    if (0 == bind->nparam
-        || ERR_OK != _pgsql_bind_format(bind, FORMAT_TEXT)) {
+    if (ERR_OK != _pgsql_bind_format(bind, FORMAT_TEXT)) {
         return;
     }
     binary_set_integer(&bind->buf, -1, 4, 0);

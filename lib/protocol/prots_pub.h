@@ -7,7 +7,7 @@
 // 以下 10 个上限是可调的:某个判定在当前取值下恒假(如 16 位长度比 65535)不等于死代码,
 // 上限调小它立刻生效,勿删
 #define HTTP_MAX_HEADLENS (ONEK * 4) // HTTP 头部块 / trailer 块的总长(含跳过的前导空行与结尾空行)，chunk 长度行的行长(不含行尾 CRLF)
-#define HTTP_MAX_CONTENT_LENS 65535 // HTTP Content-Length 声明的 body 总长，整包一次缓冲
+#define HTTP_MAX_CONTENT_LENS 65535 // HTTP Content-Length 声明的 body 总长，整包一次缓冲；客户端收响应同样受它管，超了即断连(大的定长响应要调大它或让对端用 chunked)
 #define HTTP_MAX_CHUNK_LENS 65535 // HTTP 单个 chunk 的声明长度，每块一次分配；不限 body 总长
 #define WS_MAX_PAYLOAD_LENS 65535 // WebSocket 单帧载荷
 #define MQTT_MAX_PACK_LENS 65535 // MQTT 单条报文，含固定头
@@ -30,8 +30,7 @@
         } \
     } while (0)
 // release：C 借用(ref=0)短路，持有者归零时释放；事件层 udfree 与上层 handle 析构共用(析构时 ref 必>0，GET 短路恒真)。
-// 密码/盐值的擦除必须落在这里(SECURE_FREE 整块)：析构侧逐字段擦不行——那时连接还活着，网络线程
-// 可能正读着同一份密码组认证串；挪进 *_udfree 也不行——ctx 要活过连接，断线重连还要用它的密码
+// 密码/盐值的擦除必须落在这里(SECURE_FREE 整块)：析构时网络线程可能还在读密码，udfree 之后重连也还要用它
 #define PROT_REF_RELEASE(ptr) \
     do { \
         if (0 != ATOMIC_GET(&(ptr)->ref) && 1 == ATOMIC_ADD(&(ptr)->ref, -1)) { \
@@ -90,7 +89,7 @@ typedef enum prot_status {
 struct ev_ctx;
 // 任务间传递的消息体
 typedef struct message_ctx {
-    uint8_t slice;  // 分片类型（slice_type）
+    uint8_t slice;  // 分片标志：0，或 prot_status 的 PROT_SLICE_START / PROT_SLICE / PROT_SLICE_END
     uint8_t client; // 1 表示客户端连接，0 表示服务端连接
     subtype_t subtype; // 数据包解包类型（pack_type）或 请求类型（request_type）
     msg_type mtype;  // 消息类型

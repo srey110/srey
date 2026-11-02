@@ -102,8 +102,10 @@ void mysql_bind_double(mysql_bind_ctx *mbind, const char *name, double value) {
 void mysql_bind_datetime(mysql_bind_ctx *mbind, const char *name, time_t ts) {
     _mysql_bind_type_name(mbind, MYSQL_TYPE_DATETIME, name, 0);
     struct tm dt;
-    // 转换失败(ts 超出可表示范围)时 dt 未必被写过,按协议写零长即"零日期",不能拿它继续组包
-    if (0 != LOCALTIME(&ts, &dt)) {
+    // 转换失败(ts 超出可表示范围)时 dt 未必被写过，年份出了 0~9999 也装不进 2 字节，都按协议写零长即"零日期"
+    if (0 != LOCALTIME(&ts, &dt)
+        || dt.tm_year + 1900 < 0
+        || dt.tm_year + 1900 > 9999) {
         binary_set_int8(&mbind->value, 0);
         return;
     }

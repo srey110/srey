@@ -3,6 +3,8 @@
 #include "protocol/pgsql/pgsql.h"// pgsql_result_count
 #include "utils/uuid.h"
 
+#define PG_EPOCH_DAYS 10957// PG 纪元 2000-01-01 距 1970-01-01 的天数
+
 // 文本 bool 多字节真值表的一项：字面量与它的长度
 typedef struct pgsql_bool_word {
     const char *s;
@@ -89,7 +91,7 @@ pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack
     return pgsql_reader_index(reader, pgsql_reader_col(reader, name, strlen(name)), field);
 }
 // 8 个取值函数开头那三段（取行 → 类型 OID 白名单 → NULL 判定）收在这一处。
-// 与 mysql_reader.c 的 _mysql_reader_row 同形，唯一差别是那边 NULL 判定排在类型判定之前。
+// 与 mysql_reader.c 的 _mysql_reader_row 同形，差别有两处：那边 NULL 判定排在类型判定之前，类型不符时那边打 WARN、这里不打。
 // row 非 NULL 时 *field 必已写好（fields 为 NULL 时 field_count 为 0，pgsql_reader_index 返回 NULL）。
 // 返回 NULL 时 err 已写好（ERR_FAILED=取不到/类型不符，1=字段是 NULL），调用方只管返自己的零值
 static pgpack_row *_pgsql_reader_row(pgsql_reader_ctx *reader, int16_t col,
@@ -231,18 +233,15 @@ const char *pgsql_reader_bytea_at(pgsql_reader_ctx *reader, int16_t col, int32_t
     SET_PTR(lens, row->lens);
     return row->val;
 }
-// JDN 计算（与 PostgreSQL date2j 逻辑一致）：返回相对 PG 纪元（2000-01-01）的天数
-static inline int32_t _pgsql_date_to_days(int32_t y, int32_t m, int32_t d) {
-    if (m > 2) { 
-        m++; y += 4800; 
-    } else {
-        m += 13; y += 4799;
+// 文本的 "infinity" 返回 1、"-infinity" 返回 -1，其余返回 0
+static inline int32_t _pgsql_inf_sign(const char *s, int32_t slen) {
+    if (8 == slen && 0 == memcmp(s, "infinity", 8)) {
+        return 1;
     }
-    int32_t century = y / 100;
-    int32_t julian = y * 365 - 32167;
-    julian += y / 4 - century + century / 4;
-    julian += 7834 * m / 256 + d;
-    return julian - 2451545;
+    if (9 == slen && 0 == memcmp(s, "-infinity", 9)) {
+        return -1;
+    }
+    return 0;
 }
 // s 里 pos 列出的下标全是十进制数字
 static inline int32_t _pgsql_all_digits(const char *s, const uint8_t *pos, int32_t n) {
@@ -301,6 +300,11 @@ static const char *_pgsql_ts_fixed(const char *s, struct tm *dt) {
 // 已知收窄：年份只支持到 9999，而 PG 支持到 294276 AD，5 位及以上的年份解析失败。
 // 由 test_pgsql_parse.c 的 test_pgsql_reader_temporal_text_range 钉住；_pgsql_days_from_text 同此
 static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) {
+    // ±infinity 给二进制格式的同一个哨兵值
+    int32_t inf = _pgsql_inf_sign(s, slen);
+    if (0 != inf) {
+        return inf > 0 ? INT64_MAX : INT64_MIN;
+    }
     char tmp[48];
     if (ERR_OK != copy_bounded(s, (size_t)slen, tmp, sizeof(tmp), 1)) {
         SET_PTR(err, ERR_FAILED);
@@ -322,7 +326,7 @@ static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) 
     if (NULL != strstr(end, " BC")) {
         y = 1 - y;
     }
-    int64_t days = _pgsql_date_to_days(y, dt.tm_mon + 1, dt.tm_mday);
+    int64_t days = days_from_civil(y, dt.tm_mon + 1, dt.tm_mday) - PG_EPOCH_DAYS;
     int64_t total = days * 86400000000LL
          + (int64_t)dt.tm_hour * 3600000000LL
          + (int64_t)dt.tm_min * 60000000LL
@@ -348,6 +352,10 @@ static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) 
 }
 // 将文本格式日期 "YYYY-MM-DD" 解析为相对 PG 纪元的天数；%Y 的年份上界见 _pgsql_usec_from_text
 static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) {
+    int32_t inf = _pgsql_inf_sign(s, slen);// 同 _pgsql_usec_from_text
+    if (0 != inf) {
+        return inf > 0 ? INT32_MAX : INT32_MIN;
+    }
     char tmp[16];
     if (ERR_OK != copy_bounded(s, (size_t)slen, tmp, sizeof(tmp), 1)) {
         SET_PTR(err, ERR_FAILED);
@@ -366,7 +374,7 @@ static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) 
     if (NULL != strstr(end, " BC")) {
         y = 1 - y;
     }
-    return _pgsql_date_to_days(y, dt.tm_mon + 1, dt.tm_mday);
+    return (int32_t)(days_from_civil(y, dt.tm_mon + 1, dt.tm_mday) - PG_EPOCH_DAYS);
 }
 int64_t pgsql_reader_timestamp_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);

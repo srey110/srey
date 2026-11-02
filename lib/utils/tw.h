@@ -56,7 +56,8 @@ void tw_free(tw_ctx *ctx);
 /// <param name="timeout">超时 毫秒；0 表示不入轮，直接在当前线程调 _cb</param>
 /// <param name="_cb">超时回调函数</param>
 /// <param name="_freecb">参数释放函数，tw退出未触发 _cb 的时候调用</param>
-/// <param name="ud">参数</param>
+/// <param name="ud">参数，按值拷进节点：_cb / _freecb 收到的是节点内副本的地址，回调返回即随节点释放，不能存下来；
+/// timeout 为 0 时收到的就是这里传入的 ud</param>
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud);
 
 #endif//TW_H_

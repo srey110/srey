@@ -36,6 +36,7 @@ local core_response = core.response
 local core_call = core.call
 local core_timeout = core.timeout
 local core_close = core.close
+local sock_mark_closed = core.sock_mark_closed
 local task_incref      = task.incref
 local task_ungrab      = task.ungrab
 local msg_release      = task.msg_release
@@ -164,6 +165,11 @@ for _, mtype in pairs(MSG_TYPE) do
     MAY_KEEP[mtype] = core.message_may_keep(mtype)
 end
 MAY_KEEP[TAG_RECV_ANY] = MAY_KEEP[MTYPE_RECV]
+-- 等待标记 → 名字：消息类型按 MSG_TYPE，外加三个只做等待标记的（同 C 侧 _coro_task_tagstr）。超时日志与 debug_request 的 coros 用
+local TAG_NAMES = { [TAG_RECV_ANY] = "RECV_ANY", [TAG_DB_POOL] = "DB_POOL", [TAG_DB_POOL_TICK] = "DB_POOL_TICK" }
+for name, mtype in pairs(MSG_TYPE) do
+    TAG_NAMES[mtype] = name
+end
 -- _timeout_wake 合成的超时消息是普通表，给它同样的 msg() 取法，只有 mtype、sess 两个字段
 local TIMEOUT_MSG_MT = { __call = function(m) return m.mtype, m.sess end }
 
@@ -196,11 +202,12 @@ function srey.xpcall(func, ...)
     return xpcall(func, _xpcall_error, ...)
 end
 
----将字符串编译为函数后执行；编译或运行失败时打印错误
+---将字符串编译为函数后执行；编译或运行失败时打印错误。只收源码，预编译字节码按编译失败处理（同 hotfix / inject）
 ---@param str string Lua 源码字符串
 ---@return boolean ok 是否执行成功
+---@return any ... 成功时为代码块的返回值
 function srey.dostring(str)
-    local func, err = load(str)
+    local func, err = load(str, nil, "t")
     if not func then
         ERROR("%s.\n%s.", err, debug.traceback())
         return false
@@ -739,13 +746,14 @@ local function _closing()
     srey.task_ungrab(cur_task)
 end
 
----CLOSING 消息分发：在协程中执行关闭逻辑，若此时仍有协程挂起则打印告警。
----告警前先排空延迟队列：closing 里 free 掉的连接池只是把等待者排进了队列，还没让它们退出
+---CLOSING 消息分发：在协程中执行关闭逻辑，若此时仍有协程挂起则打一条 DEBUG(closing 自己挂起等收尾是常态，
+---真卡住停机由 loader 的 close timeout 告警，同 C 侧)。
+---打之前先排空延迟队列：closing 里 free 掉的连接池只是把等待者排进了队列，还没让它们退出
 local function _closing_dispatch()
     _coro_run(_closing)
     _drain_all()
     if nyield > 0 then
-        WARN("coro yield %d.", nyield)
+        DEBUG("coro yield %d.", nyield)
     end
 end
 
@@ -1098,7 +1106,7 @@ local function _request_dispatch(msg)
         if not _debug_request then
             _debug_request = require("lib.debug_request")
             -- 末参：未知 debug 命令透传业务 on_requested；_dispatch 已在协程内,直接调 func 同协程跑
-            _debug_request.init(coro_sess, srey.response, MSG_TYPE, fork_barriers, serial_execs,
+            _debug_request.init(coro_sess, srey.response, TAG_NAMES, fork_barriers, serial_execs,
                 function() return nyield end,
                 function(reqtype, sess, src, data, size)
                     local func = func_cbs[MTYPE_REQUEST]
@@ -1271,6 +1279,7 @@ local function _wait_check(sk, tag, mtype, _, _, _, slice, erro, _, data, size)
         return nil
     end
     if MTYPE_CLOSE == mtype then
+        sock_mark_closed(sk)-- 连接已拆：sk 跟着失效，之后 sync_close 当场返回、发送当场失败(同 C 侧 _coro_wait_msg)
         WARN("%s connection closed, skid %s.", tag, tostring(sk.skid))
         return nil
     end
@@ -1720,9 +1729,9 @@ srey.close = core.close
 ---重连前用，避免旧连接异步 teardown 与新连接 try_connect 共享同一 ctx 时清掉新 fd。
 ---未发数据的丢弃契约同 srey.close：等的是"关完了"，不是"发完了"
 ---@param sk userdata 连接标识
----@return boolean ok 已收到 CLOSE 或连接本已失效 true；等满 netread 超时仍没关完 false，此时旧连接的
----关闭还会晚到，与它共用 ctx 的新连接不能建（同 C 侧 coro_close）。失效只看 sk.valid：srey.connect 返回的
----是快照，连接关掉后它仍为真，拿它对已关的连接再调一次也是等满超时返回 false
+---@return boolean ok 已收到 CLOSE 或连接本已失效 true，sk 已置失效；等满 netread 超时仍没关完 false，此时旧连接的
+---关闭还会晚到，与它共用 ctx 的新连接不能建（同 C 侧 coro_close）。失效只看 sk.valid：等待被这条连接的 CLOSE
+---唤醒时 sk 已置失效，再调当场返回 true；连接关掉时没人在它上面等的，sk.valid 仍为真，再调是等满超时返回 false
 function srey.sync_close(sk)
     _check_wait("srey.sync_close")
     local skid, ms = wait_skid(sk, WAIT_NETREAD)
@@ -1734,6 +1743,7 @@ function srey.sync_close(sk)
         WARN("close timeout, skid %s.", tostring(skid))
         return false
     end
+    sock_mark_closed(sk)
     return true
 end
 
@@ -1859,6 +1869,7 @@ function srey.syn_sendto(sk, ip, port, data, size, copy)
         return nil
     end
     if MTYPE_CLOSE == mtype then
+        sock_mark_closed(sk)
         return nil
     end
     return msg.udata, rsize
@@ -1909,9 +1920,9 @@ local function _timeout_wake(sess, now)
             tag = expired[i + 1]
             _coro_resume(expired[i], msg, sess)
             if TAG_DB_POOL == tag then
-                DEBUG("resume timeout session %s.", tostring(sess))
+                DEBUG("resume timeout message type %s session %s.", TAG_NAMES[tag], tostring(sess))
             elseif TAG_DB_POOL_TICK ~= tag then
-                INFO("resume timeout session %s.", tostring(sess))
+                INFO("resume timeout message type %s session %s.", TAG_NAMES[tag] or tostring(tag), tostring(sess))
             end
         end
     end
@@ -1999,8 +2010,8 @@ end
 ---@field subtype PACK_TYPE?     封包协议类型；上述网络消息及 REQUEST/RESPONSE 携带
 ---@field erro    integer?       错误码；CONNECT/HANDSHAKED/RESPONSE 携带。CLOSE 上是 CLOSE_TYPE.*，表示连接是怎么断的
 ---@field client  integer?       1=客户端 0=服务端（非地址）；RECV/SEND/CLOSE/SSLEXCHANGED/HANDSHAKED 携带
----@field data    lightuserdata? 数据指针；RECV/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带（仅数据非空）；
----ACCEPT 在 listen 订阅了 NET_EV.PEERADDR 时携带对端地址
+---@field data    lightuserdata? 数据指针；RECV/HANDSHAKED/REQUEST/RESPONSE 携带（仅数据非空）；
+---ACCEPT 在 listen 订阅了 NET_EV.PEERADDR 时携带对端地址；RECVFROM 上是内部结构，载荷取 udata、地址取 addr
 ---@field size    integer?       数据字节数；RECV/SEND/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带。
 ---RECV 上分两种：原样透传/custz/dns/smtp 是 data 处可读的字节数；HTTP/WebSocket/MQTT/redis/mysql/pgsql/mongo
 ---的 data 是协议的 pack 对象，size 是记账字节数，不能拿它直接读 data，取载荷走 http.data / websock.unpack 等；
