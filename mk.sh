@@ -21,8 +21,12 @@
 #             macOS ARM64 须与 debug 同用，否则协程切栈时 ASan 可能产生误报
 #     tsan    ThreadSanitizer 检测（-fsanitize=thread），与 asan 互斥
 #***********************************************
-# 一律在仓库根干活：后面的清理按相对路径删，在别的目录跑会删到当前目录下的同名文件
+# 一律在仓库根干活：后面的路径都以这里为根，在别的目录跑会删到当前目录下的同名文件
 cd "$(dirname "$0")" || exit 1
+# 路径带空白时后面不加引号的 rm -rf / mv 会被拆词，删到别的目录，直接拒绝
+case "`pwd`" in
+    *[[:space:]]*) echo "repository path must not contain whitespace: `pwd`"; exit 1 ;;
+esac
 # Linux 链接时加 -rdynamic：把可执行文件里的全局函数导出到动态符号表，stack_print 打出的栈才带函数名
 # (static 函数仍只有偏移，用 addr2line -e bin/srey 换)。代价是 LTO 不能再把这些函数收成内部函数，可能变慢，默认关，置 1 打开。
 # FreeBSD 不用加：它的 backtrace 自己读可执行文件的符号表，static 函数也有名字

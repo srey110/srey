@@ -115,7 +115,7 @@ static inline void _uev_check_changes(watcher_ctx *watcher) {
         REALLOC(watcher->changes, watcher->changes, sizeof(changes_t) * watcher->nsize);
 #elif defined(EV_DEVPOLL)
         if (ERR_FAILED == pwrite(watcher->evfd, watcher->changes, sizeof(changes_t) * watcher->nchanges, 0)) {
-            LOG_ERROR("%s", ERRORSTR(ERRNO));
+            LOG_ERROR("watcher %d: devpoll flush changes failed, %s", watcher->index, ERRORSTR(ERRNO));
         }
         watcher->nchanges = 0;
 #endif
@@ -464,7 +464,7 @@ static void _uev_loop_event(void *arg) {
 #elif defined(EV_DEVPOLL)
         if (0 != watcher->nchanges) {
             if (ERR_FAILED == pwrite(watcher->evfd, watcher->changes, sizeof(changes_t) * watcher->nchanges, 0)) {
-                LOG_ERROR("%s", ERRORSTR(ERRNO));
+                LOG_ERROR("watcher %d: devpoll commit changes failed, %s", watcher->index, ERRORSTR(ERRNO));
             }
             watcher->nchanges = 0;
         }

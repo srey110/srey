@@ -185,7 +185,8 @@ typedef struct ev_ctx {
 }ev_ctx;
 
 // 回调函数类型定义
-// accept_cb/connect_cb 返回失败则自动关闭链接，并触发close_cb回调
+// accept_cb/connect_cb 返回失败则自动关闭链接，并触发close_cb回调。
+// 连接失败(connect_cb 的 err 非 ERR_OK)时 connect_cb 只调这一次，返回值不看，之后也没有 close_cb
 // 启用 ssl 握手未完成前（ssl_exchanged_cb）不能调用发送，否则会关闭链接
 // ssl_exchanged_cb 返回失败则自动关闭链接
 typedef int32_t(*accept_cb)(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud);// 接受新连接回调

@@ -26,6 +26,11 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
 char *_mysql_payload_first(mysql_ctx *mysql, buffer_ctx *buf, char *stk, size_t cap,
                            size_t *payload_lens, int32_t *status);
 
+// 内部函数：读 OK 包体(首字节之后)。两个计数与 status_flags 经出参回带(不要的传 NULL)；长度字段非法或截断时
+// 一个都不写、返回 ERR_FAILED。成功时顺带按 status_flags 更新 in_trans 与 autocommit，带 session track 时还更新当前库。
+// 认证阶段与命令阶段共用，两处对畸形 OK 包的口径一致
+int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
+                        uint64_t *affected_rows, uint64_t *last_id, int16_t *status_flags);
 // 内部函数：解析 ERR 包体(首字节之后)，错误码记进 mpack->error_code，文案复制一份挂到 mpack->pack(随 mpack 释放，
 // 没有文案时留 NULL)。mpack 须是全零的新包；不写 mysql_ctx
 void _mpack_err(mpack_ctx *mpack, binary_ctx *breader);

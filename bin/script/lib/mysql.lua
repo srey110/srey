@@ -57,6 +57,21 @@ end
 ---切换当前数据库（COM_INIT_DB）。池里借出的连接换了库要在归还前换回去，reset_session 不管库名
 ---@param database string 目标数据库名
 ---@return boolean ok 切换成功 true（库名超 256 字节时不发包直接返 false）
+---设置服务端 RSA 公钥（PEM），明文连接上完整认证时用它加密口令，说明同 C 侧 mysql_set_pubkey。
+---与 connect 同在 self.serial 里排队：重连握手要读它
+---@param pem string? 公钥 PEM；nil 或空串清掉已设的公钥
+---@return boolean ok 成功 true；超长、不是 RSA 公钥或编译时没开 SSL 时 false
+function ctx:set_pubkey(pem)
+    return srey.serial_ret(false, self.serial(self.mysql.set_pubkey, self.mysql, pem))
+end
+
+---允许明文连接上向服务端要 RSA 公钥（默认不允许），说明同 C 侧 mysql_set_pubkey_request。排队理由同 set_pubkey
+---@param on boolean true 允许
+---@return boolean ok 成功 true；编译时没开 SSL 时 false
+function ctx:set_pubkey_request(on)
+    return srey.serial_ret(false, self.serial(self.mysql.set_pubkey_request, self.mysql, on))
+end
+
 function ctx:selectdb(database)
     return srey.serial_ret(false, self.serial(self._selectdb, self, database))
 end
@@ -116,7 +131,7 @@ end
 ---否则 ping 失败自动重连会按旧库名握手，之后未限定库名的语句全部打到原库上。
 ---接收侧不拼 16MB 续传包：单个包载荷达 16MB-1（如超大的行）即按协议错误断连，返回 nil
 ---@param sql string SQL 语句
----@param mbind any? mysql_bind_ctx 参数绑定上下文
+---@param mbind any? mysql_bind_ctx 查询属性绑定上下文；服务端不支持查询属性（MySQL 8.0.23 之前、MariaDB）时被忽略、不报错
 ---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败或多结果集中途断连返回 nil
 function ctx:query(sql, mbind)
     return srey.serial_ret(nil, self.serial(self._query, self, sql, mbind))
@@ -126,8 +141,7 @@ end
 function ctx:_query(sql, mbind)
     local pack, size = self.mysql:pack_query(sql, mbind)
     if not pack then
-        WARN("mysql query payload exceeds 16MB.")
-        return nil
+        return nil-- 只有载荷超 16MB 这一种，C 侧已带字节数打过 WARN
     end
     local mpack, sk = self:_send_wait(pack, size)
     if not mpack then
@@ -147,8 +161,7 @@ end
 function ctx:_prepare(sql)
     local pack, size = self.mysql:pack_stmt_prepare(sql)
     if not pack then
-        WARN("mysql stmt_prepare payload exceeds 16MB.")
-        return false
+        return false-- 同 _query
     end
     local mpack = self:_send_wait(pack, size)
     if not mpack then
@@ -174,14 +187,31 @@ function ctx:_doquit()
     srey.sync_close(sk)
 end
 
----连接池归还时调：服务端还处在事务里就回滚，不让下一个借到的人接着跑在里面
----@return boolean ok 本来就干净或回滚成功；false 时连接池会断开这条连接
+---连接池归还时调：服务端还处在事务里（见 in_trans）就回滚；autocommit 与连上时不同就还原，
+---不然下一个人不 COMMIT 的写会在它归还时被回滚掉。别的会话状态（selectdb 换的库、SET 的会话变量、
+---LOCK TABLES、临时表）这里不管，借用者要在归还前自己还原
+---@return boolean ok 本来就干净或都还原成功；false 时连接池会断开这条连接
 function ctx:reset_session()
-    if not self.mysql:in_trans() then
+    if self.mysql:in_trans() then
+        local rs = self:query("ROLLBACK")
+        if nil == rs or true ~= rs[1] or self.mysql:in_trans() then
+            return false
+        end
+    end
+    local cur, init = self.mysql:autocommit()
+    if cur == init then
         return true
     end
-    local rs = self:query("ROLLBACK")
-    return nil ~= rs and true == rs[1] and not self.mysql:in_trans()
+    local rs = self:query(init and "SET autocommit=1" or "SET autocommit=0")
+    cur = self.mysql:autocommit()
+    return nil ~= rs and true == rs[1] and cur == init
+end
+
+---服务端是否处在事务里：最近一个 OK / EOF 包带 SERVER_STATUS_IN_TRANS（含 autocommit=0 下已执行过语句），
+---或之后的命令回了 ERR（说不准，按在事务里算）；断开后为 false。读取时机同 erro
+---@return boolean
+function ctx:in_trans()
+    return self.mysql:in_trans()
 end
 
 ---返回服务端版本字符串（握手阶段获取）

@@ -7,7 +7,7 @@
 
 local srey = require("lib.srey")
 local http = require("lib.http")
-local core = require("srey.core")
+local sssl = require("srey.ssl")
 
 local _PORT = 15002
 local _SSL_PORT = 15443
@@ -52,7 +52,7 @@ srey.startup(function()
         return
     end
     printd("server_http listening on %d", _PORT)
-    if not core.with_ssl() then
+    if not sssl.with_ssl() then
         return
     end
     if ERR_FAILED == srey.listen(PACK_TYPE.HTTP, SSL_NAME.SERVER, "0.0.0.0", _SSL_PORT) then

@@ -10,7 +10,6 @@ local utils = require("srey.utils")
 local pub  = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 
 -- RCPT TO 的合法应答：250 已接受、251 已接受但将转发（RFC 5321 §4.3.2）。
--- 判 251 为失败会让 DATA 从不发出、整封信报错，而收件人其实已被服务端接受。
 -- 其余命令都是单码（MAIL FROM / 正文 / RSET / NOOP 判 250，DATA 判 354，QUIT 判 221），
 -- 直接走 check_ok / check_code。与 C 侧 coro_utils.c 的四张 SMTP_CODE_* 表同源
 local RCPT_CODES = { "250", "251" }
@@ -76,8 +75,7 @@ function ctx:_cmd_ok(packer)
     return self.smtp:check_ok(pack)
 end
 
--- RSET 清的是服务端会话状态，插进别人半途的信封里会把它的收件人清掉，
--- 之后那封信的 DATA 会被回 503 而不是 354，静默发不出去
+-- RSET 清的是服务端会话状态，不能插进别人半途的信封里
 function ctx:_reset()
     return self:_cmd_ok(self.smtp.pack_reset)
 end
@@ -114,17 +112,12 @@ function ctx:_envelope(sk, mail)
     pack = srey.syn_send(sk, cmd, csize, 0)
     return nil ~= pack and self.smtp:check_code(pack, "354")
 end
----内部邮件发送流程（不含 reset）：先组正文，再走信封与正文；任一步失败即返回
+---内部邮件发送流程（不含 reset）：走信封与正文；任一步失败即返回
 ---@param mail any mail_ctx 邮件对象
+---@param body lightuserdata mail:pack 组好的正文，所有权交给本函数
+---@param bsize integer 正文长度
 ---@return boolean ok 信封各步与正文的 250 都符合预期时 true
-function ctx:_send(mail)
-    srey._check_wait("srey.syn_send")-- 理由同 _cmd_ok
-    -- 先组正文再开信封(同 C 侧 smtp_send)：取不到熵生成 MIME boundary 时 pack 返 nil，此时还没进事务，
-    -- 不会出现进了 DATA 却无信可发、补发的 RSET 被当成正文空等到超时
-    local body, bsize = mail:pack()
-    if nil == body then
-        return false
-    end
+function ctx:_send(mail, body, bsize)
     local sk = self.smtp:sock_id()
     if not self:_envelope(sk, mail) then
         utils.ud_free(body)
@@ -146,7 +139,13 @@ end
 -- 锁覆盖 _send + 失败时的 reset：RSET 清的是本次投递留下的半截信封，与发送是同一笔事。
 -- 分开各包一次的话，别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉
 function ctx:_sendmail(mail)
-    local rtn = self:_send(mail)
+    srey._check_wait("srey.syn_send")-- 理由同 _cmd_ok
+    -- 先组正文再开信封(同 C 侧 smtp_send)：取不到熵时 pack 返 nil，此时还没进事务，连接不动、不发 RSET
+    local body, bsize = mail:pack()
+    if nil == body then
+        return false
+    end
+    local rtn = self:_send(mail, body, bsize)
     -- 走 _closereset 而不是自己 sync_close：代次与 established 由 conn_pub 统一维护，
     -- 漏掉后者会让排队中的 connect 对着这条已关的连接报成功
     if not rtn and not self:_reset() then
@@ -160,7 +159,10 @@ end
 function ctx:_quit(sk)
     srey._check_wait("srey.syn_send")-- 理由同 _cmd_ok
     local cmd, csize = self.smtp:pack_quit()
-    srey.syn_send(sk, cmd, csize, 0)
+    local pack = srey.syn_send(sk, cmd, csize, 0)
+    if nil ~= pack then
+        self.smtp:check_code(pack, "221")-- 只落告警，不对也照关，同 C 侧
+    end
 end
 
 -- conn_pub 的断开钩子：QUIT 要等服务端 221，等完再关 TCP

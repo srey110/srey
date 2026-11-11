@@ -11,7 +11,7 @@ local M = {}
 local _coro_sess
 local _response
 local _mtype_names -- 等待标记整数 → 名字（消息类型，外加 RECV_ANY / DB_POOL 等只做等待标记的）
-local _mtype_max = 0 -- 反转表里的最大 mtype，stat 按下标遍历到此为止
+local _mtype_max = 0 -- 等待标记表里的最大正值(即最大 mtype)，stat 按下标遍历到此为止
 local _fallback
 local _fork_barriers
 local _serial_execs
@@ -203,8 +203,13 @@ end
 function M._dispatch(reqtype, sess, src, data, size)
     local ok, cmd, a1, a2 = pcall(seri.unpack, data, size)
     if not ok then
+        -- 不是 seri(业务自定义格式)：同 C 端透传业务 on_requested。
         -- debug 响应一律 ERR_OK，结果(含错误说明)由文本承载；否则 srey.request 对 erro!=OK 吞 data
-        _response(src, reqtype, sess, ERR_OK, "invalid seri: " .. tostring(cmd))
+        if _fallback then
+            _fallback(reqtype, sess, src, data, size)
+        else
+            _response(src, reqtype, sess, ERR_OK, "invalid seri: " .. tostring(cmd))
+        end
         return
     end
     local hok, result = pcall(_debug_handle, cmd, a1, a2)

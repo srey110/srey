@@ -55,7 +55,7 @@ static int32_t _lkcp_cfgint(lua_State *lua, int32_t tidx, const char *key,
 /// <param name="sess" type="integer">本次会话的 sess,用 srey.id() 生成,每次 start 传新值(契约同 kcp.h 的 kcp_start);
 ///   会话级 RECVFROM / HANDSHAKED / CLOSE 都带它,on_closed 第 5 参据此认会话。0 仅为兼容,失去按 sess 认会话的保护</param>
 /// <param name="ip" type="string">对端 IP;port 为 0 且 ip 为通配地址时 ip 也从首包学</param>
-/// <param name="port" type="integer">对端端口;0 为学习模式,以首个 conv 匹配的数据报来源为对端(细则同 kcp_start)</param>
+/// <param name="port" type="integer">对端端口;0 为学习模式,以首个被 ikcp 收下的数据报来源为对端(细则同 kcp_start)</param>
 /// <param name="config" type="kcp_config?">KCP 可调参数,缺省用库默认,非 table 报错;
 ///   字段与取值域见 lib/kcp.lua 的 kcp_config</param>
 /// <returns type="boolean">成功 true,失败 false</returns>
@@ -81,7 +81,7 @@ static int32_t _lkcp_start(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == kcp_start(kcp, task->handle, sess, ip, port, pcfg));
 }
 /// <summary>
-/// 变更会话数据推送目标 task
+/// 变更会话数据推送目标 task。成功后原 task 仍要持有本句柄直到会话结束：句柄被回收(含原 task 退出)时会话随之拆除，目标 task 收到 CLOSE
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
 /// <param name="handle" type="string|integer">目标 task：字符串按名字查，整数按句柄直取</param>
@@ -96,7 +96,7 @@ static int32_t _lkcp_handle(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == kcp_handle(kcp, handle));
 }
 /// <summary>
-/// 发送数据:交 KCP 可靠传输,实际发包由 event 线程 tick 周期驱动
+/// 发送数据:交 KCP 可靠传输,实际发包由 event 线程 tick 周期驱动。未确认的段到 KCP_SENDQ_MAX 时会话被拆除并投 CLOSE
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
 /// <param name="data" type="string|lightuserdata">数据;字符串时长度自动取得</param>

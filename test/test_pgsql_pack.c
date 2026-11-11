@@ -113,11 +113,13 @@ static void test_pgsql_copy(CuTest *tc) {
 }
 
 /* =======================================================================
- * pgsql_pack_cancel —— 16 字节 CancelRequest（无类型码）
+ * pgsql_pack_cancel —— 协议 3.0 的 4 字节密钥：16 字节 CancelRequest（无类型码）
  * ======================================================================= */
 static void test_pgsql_cancel(CuTest *tc) {
-    char buf[16];
-    pgsql_pack_cancel(buf, 0x11223344, 0x55667788u);
+    char buf[PGSQL_CANCEL_MAX];
+    char key[4];
+    write_be32(key, 0x55667788u);
+    CuAssertIntEquals(tc, 16, (int)pgsql_pack_cancel(buf, 0x11223344, key, sizeof(key)));
     /* length = 16 */
     CuAssertTrue(tc, 16 == (int)read_be32(buf));
     /* protocol version (取消请求魔术值) = 80877102 = 1234<<16 | 5678 */
@@ -275,6 +277,10 @@ static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
     pgsql_bind_null(&bind);
     size_t zero_size = 1;
     char *zero = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &zero_size);
+    /* 多绑顶过的 count 由 clear 清掉：声明 0 个的 bind 清完照常组包 */
+    pgsql_bind_clear(&bind);
+    size_t cleared_size = 0;
+    char *cleared = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &cleared_size);
     pgsql_bind_free(&bind);
     /* 守卫一旦回归，few/many 就是活缓冲，几块都得收；判定先攒进局部量，
        FREE 会把指针置 NULL，收完再断言指针就永远成立了 */
@@ -288,6 +294,7 @@ static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
     FREE(freed);
     FREE(none);
     FREE(zero);
+    FREE(cleared);
 
     /* 断言排在收拾之后：CuAssert 走 longjmp，夹在 alloc/free 中间会漏释放并报出假泄漏 */
     CuAssertTrue(tc, 0 != few_null);
@@ -298,6 +305,7 @@ static void test_pgsql_stmt_execute_bind_mismatch(CuTest *tc) {
     CuAssertTrue(tc, 0 != freed_null);
     CuAssertTrue(tc, 0 == freed_size);
     CuAssertTrue(tc, none_size > 0);
+    CuAssertTrue(tc, cleared_size > 0);
     CuAssertTrue(tc, 0 != zero_null);
     CuAssertTrue(tc, 0 == zero_size);
 }
@@ -323,10 +331,10 @@ static void test_pgsql_bind_basic(CuTest *tc) {
 
     /* init 时已写入 2 字节 nparam 头，再 8 个 int16 格式码 = 2 + 16 = 18 字节 */
     CuAssertTrue(tc, 18 == (int)_bind_fmt_len(&bind));
-    /* values 缓冲含 nparam 头 + 各参数（长度 4 字节 + 数据）*/
+    /* 参数值段含 Int16 参数值数量 + 各参数（长度 4 字节 + 数据）*/
     CuAssertTrue(tc, _bind_val_len(&bind) > 2);
 
-    /* clear 回退到 nparam 头之后（offset=2）保留头部 */
+    /* clear 把写位置退回值区起点，两段头部的计数保留 */
     pgsql_bind_clear(&bind);
     CuAssertTrue(tc, 2 == _bind_fmt_len(&bind));
     CuAssertTrue(tc, 2 == _bind_val_len(&bind));
@@ -452,7 +460,7 @@ static void test_pgsql_bind_free_reuse(CuTest *tc) {
     pgsql_bind_free(&bind);
 }
 
-/* bind 两个缓冲的线格式逐字节验证。以前只断言过 format.offset == 18 与 values.offset > 2，
+/* bind 格式码段与参数值段的线格式逐字节验证。以前只断言过 format.offset == 18 与 values.offset > 2，
  * 于是 NULL 的 -1 长度、nparam 头与格式码的大端序、格式码本身全都没人钉；集成用例连不上库时整个跳过。
  * 最要紧的是 NULL 那条：PostgreSQL 里长度 -1 才是 NULL、0 是零长值，写成 0 会让
  * SQL NULL 静默变成空字符串写进库 */
@@ -520,7 +528,7 @@ static void test_pgsql_bind_wire(CuTest *tc) {
     CuAssertIntEquals(tc, 0x00, v[2]);
     CuAssertIntEquals(tc, 0x00, v[5]);
 
-    /* clear 只回退到 nparam 头之后，头部两字节必须留着 */
+    /* clear 只回退到值区起点，两段头部的计数必须留着 */
     pgsql_bind_clear(&b);
     CuAssertTrue(tc, 2 == _bind_fmt_len(&b));
     CuAssertTrue(tc, 2 == _bind_val_len(&b));
@@ -582,7 +590,11 @@ static void test_pgsql_startup(CuTest *tc) {
         "client_encoding", "UTF8", "DateStyle", "ISO", "application_name", "srey"
     };
     size_t size = 0;
-    char *pack = pgsql_pack_startup("u1", "db1", &size);
+    char *pack = pgsql_pack_startup("u1", "db1", 2, &size);/* 次版本按入参写，3.2 的启动消息其余部分与 3.0 相同 */
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertIntEquals(tc, 2, (int)read_be16(pack + 6));
+    FREE(pack);
+    pack = pgsql_pack_startup("u1", "db1", 0, &size);
     CuAssertPtrNotNull(tc, pack);
     CuAssertIntEquals(tc, (int)size, (int)read_be32(pack));
     CuAssertIntEquals(tc, 3, (int)read_be16(pack + 4));

@@ -10,7 +10,7 @@
 #define KCP_MTU_DEF 1400
 #define KCP_WND_RCV 128
 #define KCP_DROP_WARN_MS 1000 // 丢包告警间隔:期间的丢弃只计数(不分 conv 与原因),过了间隔的下一次丢包才合成一条
-// 对端地址学习(kcp_start 的 port 为 0 时进入):首个 conv 匹配的包定下对端后归 NONE,之后严格比
+// 对端地址学习(kcp_start 的 port 为 0 时进入):首个被 ikcp 收下的包定下对端后归 NONE,之后严格比
 enum {
     KCP_LEARN_NONE = 0, // 不学:按 kcp_start 给的 ip:port 严格比
     KCP_LEARN_PORT,     // 只学端口:ip 照比,端口取首包来源
@@ -223,7 +223,7 @@ void _kcp_unpack(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *
 #endif
     int32_t input = ikcp_input(kel->ikcp, buf, (long)size);
     if (KCP_LEARN_NONE != kel->learn) {
-        // 学习态:ikcp 收下这个包才把来源定为对端,畸形包不学也不投递
+        // 学习态:ikcp 整包收下才把来源定为对端。中途出错的包不学,但出错段之前的段已进接收队列
         if (input < 0) {
             return;
         }
@@ -547,7 +547,7 @@ void kcp_stop(kcp_ctx *kcp) {
     (void)ev_props(kcp->netev, &kcp->sk,
         _kcp_stop, NULL, (void *)(uintptr_t)kcp->conv, kcp->sess);
 }
-// number 校验 sess，防止 conv 被 stop 后以新 sess 重建期间，持旧 kcp_ctx 副本的 stale 调用改到新会话的推送目标（同 _kcp_stop）
+// number 是新的目标 handle；arg->sess 校验会话，防止持旧 kcp_ctx 副本的调用改到同 conv 新会话的推送目标
 static int32_t _kcp_handle(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     void *data, uint64_t number) {
     (void)watcher;
@@ -588,6 +588,12 @@ static int32_t _kcp_send(struct watcher_ctx *watcher, struct evsock_ctx *evsk,
     kcp_send_buf *buf = data;
     kcp_element *kel = _kcp_resolve(evsk, ud, buf->conv, number, 0);
     if (NULL != kel) {
+        // 业务线程看不到积压量，超上限按慢消费者处理，同 TCP 发送队列溢出
+        if (ikcp_waitsnd(kel->ikcp) >= KCP_SENDQ_MAX) {
+            LOG_WARN("kcp conv %u send queue overflow (>= %d), session closed.", kel->conv, KCP_SENDQ_MAX);
+            _kcp_teardown(ud, kel, CLOSE_TYPE_LOCAL);
+            return 1;
+        }
 #if KCP_TICK_HEAP
         _kcp_unpark((kcp_ud_ctx *)ud->context, kel);
 #endif

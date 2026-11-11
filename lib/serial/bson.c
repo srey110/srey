@@ -325,7 +325,9 @@ static inline void _bson_iter_poison(bson_iter *iter) {
     iter->type = BSON_EOD;
 }
 void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
-    iter->doc = &bson->doc;
+    // 拷一份文档视图自己推进，不动 bson 的 offset：同一 bson 上可同时开多个 iter
+    iter->nested_doc = bson->doc;
+    iter->doc = &iter->nested_doc;
     binary_offset(iter->doc, 0);
     size_t lens = 0;
     if (iter->doc->size >= 4) {
@@ -482,7 +484,8 @@ int32_t bson_iter_next(bson_iter *iter) {
     off++;
     switch (iter->type) {
     case BSON_EOD:
-        iter->doc->offset = off;
+        // 推到末尾：提前出现的 EOD 之后剩下的字节不再当元素解析，再调也只返回 0
+        iter->doc->offset = iter->doclens;
         _bson_iter_poison(iter);
         return 0;
     case BSON_DOUBLE://e_name double
@@ -641,8 +644,7 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         }
         return rtn;
     }
-    // 末层视图必须拷进 result 自持:点分路径下 cur.doc 指向本函数栈上的 sub,带出去就是死地址
-    cur.nested_doc = *cur.doc;
+    // result 按值拷走 cur,doc 要改指 result 自己那份视图
     *result = cur;
     result->doc = &result->nested_doc;
     return ERR_OK;
@@ -813,7 +815,9 @@ static int32_t _bson_check_depth(const char *data, size_t lens, int32_t depth) {
     bson_iter iter;
     bson_init(&sub, (char *)data, lens);// bson_ctx 读写共用 char *，这里只读
     bson_iter_init(&iter, &sub);
+    size_t eod = iter.doc->offset;// 正常结束时 EOD 就在最后一次成功推进停下的位置
     while (bson_iter_next(&iter)) {
+        eod = iter.doc->offset;
         // 直接用 iter.val / iter.lens: 类型已在条件里判过, bson_iter_document / _array
         // 只是"校验 type + 回填 lens + 返回 val", 那道校验必过
         if (BSON_DOCUMENT == iter.type
@@ -827,9 +831,8 @@ static int32_t _bson_check_depth(const char *data, size_t lens, int32_t depth) {
     if (0 != bson_iter_error(&iter)) {
         return ERR_FAILED;
     }
-    // EOD 提前出现时 err 不置位(读到的确实是合法的 EOD),但声明长度还剩字节没用掉。
-    // 读完 EOD 后 offset 恰好推过它,合法文档必然等于 doclens
-    if (iter.doc->offset != iter.doclens) {
+    // EOD 提前出现时 err 不置位(读到的确实是合法的 EOD),但声明长度还剩字节没用掉:合法文档的 EOD 恰在最后一字节
+    if (eod + 1 != iter.doclens) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -975,15 +978,12 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     }
 }
 char *bson_tostring(bson_ctx *bson) {
-    size_t offset = bson->doc.offset;
-    binary_offset(&bson->doc, 0);
     binary_ctx str;
     binary_init_write(&str, 0, 0);
     binary_set_binary(&str, "{\r\n", 3);
     _bson_dump(bson, 1, 1, &str);
     binary_set_binary(&str, "}", 1);
     binary_set_int8(&str, 0);
-    binary_offset(&bson->doc, offset);
     return str.data;
 }
 char *bson_tostring2(const char *data, size_t lens) {

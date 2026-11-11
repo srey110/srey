@@ -98,7 +98,7 @@ void *websock_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 /// <summary>
 /// 握手包
 /// </summary>
-/// <param name="host">Host</param>
+/// <param name="host">Host；NULL 或空字符串时省略 Host 头</param>
 /// <param name="uri">HTTP request-target（path?query）；NULL 或空字符串时使用 "/"</param>
 /// <param name="secprot">Sec-WebSocket-Protocol；NULL 或空表示不带子协议</param>
 /// <param name="hsctx">out 握手上下文(含签名与子协议)。作为 task_connect / coro_connect 的 extra 传入后归框架(成败都由它释放)；

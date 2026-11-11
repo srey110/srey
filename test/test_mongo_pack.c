@@ -115,18 +115,22 @@ static double _bson_find_number(char *doc, size_t lens, const char *key, int32_t
     return 0.0;
 }
 
-// 逐字段核 OP_MSG 前 21 字节(size / reqid / respto / opcode / flags / kind)，再核偏移 21 起的文档：
-// 长度字段正好到包尾、末字节是 EOD、能一路迭代到最后追加的 $db。
-// 最后原样喂给 mongo_unpack，它按同一套规则拆出的 doc/dlens 须正好是这一段。返回文档起点
+// 逐字段核 OP_MSG 前 21 字节(size / reqid / respto / opcode / flags / kind)，再核偏移 21 起的正文：
+// 长度不越过包尾、末字节是 EOD、能一路迭代到最后追加的 $db。
+// 正文正好到包尾时再原样喂给 mongo_unpack，它拆出的 doc/dlens 须正好是这一段；正文后面跟着文档序列的
+// 请求包不走这一步(收包侧只认服务端回的单段包)，序列由调用方用 _assert_seq 核。返回正文起点
 static char *_assert_msg_wire(CuTest *tc, void *pack, size_t size, int32_t reqid, int32_t flags) {
     char *p = (char *)pack;
     char *doc = _assert_msg_head(tc, pack, size);
-    size_t dlens = size - _MSG_HEAD_LENS;
+    size_t dlens = (size_t)_read_le32(doc, 0);
+    CuAssertTrue(tc, dlens >= 5 && _MSG_HEAD_LENS + dlens <= size);
     CuAssertIntEquals(tc, reqid, _read_le32(p, _MSG_OFF_REQID));
     CuAssertIntEquals(tc, flags, _read_le32(p, _MSG_OFF_FLAGS));
-    CuAssertIntEquals(tc, (int)dlens, _read_le32(doc, 0));
-    CuAssertIntEquals(tc, 0, (int)(uint8_t)p[size - 1]);
+    CuAssertIntEquals(tc, 0, (int)(uint8_t)doc[dlens - 1]);
     CuAssertStrEquals(tc, "testdb", _bson_find_utf8(doc, dlens, "$db"));
+    if (_MSG_HEAD_LENS + dlens < size) {
+        return doc;
+    }
 
     buffer_ctx buf;
     buffer_init(&buf);
@@ -207,30 +211,60 @@ static void test_mongo_pack_drop(CuTest *tc) {
     FREE(pack);
 }
 
-// mongo_pack_insert：含 "insert":"<collection>"，且 documents 是 BSON_ARRAY 类型
+// 从 off 起校验一个 kind 1 段：标识符为 name、恰好 ndocs 篇文档、段长与内容对得上；返回段尾偏移
+static size_t _assert_seq(CuTest *tc, const char *p, size_t off, size_t size, const char *name, int32_t ndocs) {
+    CuAssertTrue(tc, off + 5 <= size);
+    CuAssertIntEquals(tc, 1, p[off]);
+    size_t send = off + 1 + (size_t)_read_le32(p, off + 1);
+    CuAssertTrue(tc, send <= size);
+    const char *q = p + off + 5;
+    CuAssertStrEquals(tc, name, q);
+    q += strlen(name) + 1;
+    int32_t n = 0;
+    while (q < p + send) {
+        q += _read_le32(q, 0);
+        n++;
+    }
+    CuAssertIntEquals(tc, ndocs, n);
+    CuAssertTrue(tc, q == p + send);
+    return send;
+}
+// mongo_pack_insert：正文含 "insert":"<collection>"、不再嵌 documents；documents 作为 kind 1 段跟在正文后，
+// 整包恰好到段尾。数组里有不是文档的元素时整条命令作废
 static void test_mongo_pack_insert(CuTest *tc) {
     mongo_ctx mongo;
     _mongo_test_init(&mongo);
 
-    // 构造 1 个待插入文档：{ name: "tom", age: 18 }
+    // 构造 2 个待插入文档：{ name: "tom", age: 18 }、{ name: "amy" }
     bson_ctx doc;
     bson_init(&doc, NULL, 0);
     bson_append_document_begain(&doc, "0");
     bson_append_utf8(&doc, "name", "tom");
     bson_append_int32(&doc, "age", 18);
     bson_append_end(&doc);
+    bson_append_document_begain(&doc, "1");
+    bson_append_utf8(&doc, "name", "amy");
+    bson_append_end(&doc);
     bson_append_end(&doc);
 
     size_t size = 0;
     void *pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
-    size_t blens = size - _MSG_HEAD_LENS;
+    size_t blens = (size_t)_read_le32(bson, 0);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, blens, "insert"));
-
-    // documents 字段应为 BSON_ARRAY
-    CuAssertIntEquals(tc, BSON_ARRAY, _bson_find_type(bson, blens, "documents"));
+    CuAssertIntEquals(tc, -1, _bson_find_type(bson, blens, "documents"));
+    CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + blens, size, "documents", 2));
     FREE(pack);
     BSON_FREE(&doc);
+
+    bson_ctx bad;
+    bson_init(&bad, NULL, 0);
+    bson_append_int32(&bad, "0", 1);
+    bson_append_end(&bad);
+    size = 1;
+    CuAssertPtrEquals(tc, NULL, mongo_pack_insert(&mongo, bad.doc.data, bad.doc.offset, NULL, 0, &size));
+    CuAssertIntEquals(tc, 0, (int32_t)size);
+    BSON_FREE(&bad);
 }
 
 // mongo_pack_check_flag 读的是包里那份 flagBits，不是连接上的 mongo->flags。
@@ -400,22 +434,29 @@ static void test_mongo_pack_update_delete_bulk(CuTest *tc) {
     // update
     void *pack = mongo_pack_update(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
-    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "update"));
+    size_t blens = (size_t)_read_le32(bson, 0);// 正文之后跟着 kind 1 段，正文长度按包里的读
+    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, blens, "update"));
+    CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + blens, size, "updates", 1));
     FREE(pack);
 
     // delete
     pack = mongo_pack_delete(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
-    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "delete"));
+    blens = (size_t)_read_le32(bson, 0);
+    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, blens, "delete"));
+    CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + blens, size, "deletes", 1));
     FREE(pack);
 
     // bulkwrite：bulkWrite:1 而非 utf8
     pack = mongo_pack_bulkwrite(&mongo, arr.doc.data, arr.doc.offset,
                                 arr.doc.data, arr.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
+    blens = (size_t)_read_le32(bson, 0);
     int32_t err;
-    CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "bulkWrite", &err));
+    CuAssertTrue(tc, 1.0 == _bson_find_number(bson, blens, "bulkWrite", &err));
     CuAssertIntEquals(tc, 0, err);
+    size_t send = _assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + blens, size, "ops", 1);
+    CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, send, size, "nsInfo", 1));
     FREE(pack);
 
     BSON_FREE(&arr);
@@ -1334,9 +1375,8 @@ static void test_mongo_unpack_flags_whitelist(CuTest *tc) {
     }
 }
 
-// mongo_unpack 拒收 kind=1 + klens=5 + docid='\0' 的语义空 section 响应:
-// 协议层合法但 dlens=0,下游 mongo_parse_*/bson_iter_init 触发 ASSERTAB abort,
-// 修复后 mongo_unpack 直接 PROT_ERROR 拒收避免恶意 server 26 字节构造响应远程 DoS
+// mongo_unpack 拒收 kind=1 + klens=5 + docid='\0' 的空 section 响应(PROT_ERROR):
+// docid 之后至少要有一篇文档(下游按 BSON 读 doc)，规范允许的空序列这里不收
 static void test_mongo_unpack_kind1_empty_section(CuTest *tc) {
     char pkt[26];
     char *p = pkt;
@@ -2040,14 +2080,17 @@ static void test_mongo_pack_msg_wire(CuTest *tc) {
     size_t size = 0;
     void *pack = mongo_pack_insert(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     char *doc = _assert_msg_wire(tc, pack, size, 101, 0);
-    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(doc, size - _MSG_HEAD_LENS, "insert"));
-    // 文档数组原样嵌在正文里
-    CuAssertTrue(tc, NULL != memstr(0, doc, size - _MSG_HEAD_LENS, arr.doc.data, arr.doc.offset));
+    size_t dlens = (size_t)_read_le32(doc, 0);
+    CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(doc, dlens, "insert"));
+    // 文档数组拆成序列跟在正文后，正好到包尾
+    CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + dlens, size, "documents", 1));
     FREE(pack);
 
     mongo_set_flag(&mongo, MORETOCOME);
     pack = mongo_pack_update(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
-    _assert_msg_wire(tc, pack, size, 102, MORETOCOME);
+    doc = _assert_msg_wire(tc, pack, size, 102, MORETOCOME);
+    dlens = (size_t)_read_le32(doc, 0);
+    CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + dlens, size, "updates", 1));
     FREE(pack);
     mongo_clear_flag(&mongo);
 
@@ -2084,9 +2127,12 @@ static void test_mongo_pack_msg_large(CuTest *tc) {
     void *pack = mongo_pack_insert(&mongo, arr.doc.data, arr.doc.offset, opts.doc.data, opts.doc.offset, &size);
     CuAssertTrue(tc, size > arr.doc.offset + opts.doc.offset);
     char *doc = _assert_msg_wire(tc, pack, size, 1, 0);
-    CuAssertTrue(tc, NULL != memstr(0, doc, size - _MSG_HEAD_LENS, arr.doc.data, arr.doc.offset));
-    // options 经 bson_cat 去掉外层长度与 EOD 后并入，里面的元素原样在
-    CuAssertTrue(tc, NULL != memstr(0, doc, size - _MSG_HEAD_LENS, opts.doc.data + 4, opts.doc.offset - 5));
+    size_t dlens = (size_t)_read_le32(doc, 0);
+    // 大文档在正文后的序列里原样在
+    CuAssertIntEquals(tc, (int32_t)size, (int32_t)_assert_seq(tc, (char *)pack, _MSG_HEAD_LENS + dlens, size, "documents", 1));
+    CuAssertTrue(tc, NULL != memstr(0, doc + dlens, size - _MSG_HEAD_LENS - dlens, blob, blens));
+    // options 经 bson_cat 去掉外层长度与 EOD 后并入正文，里面的元素原样在
+    CuAssertTrue(tc, NULL != memstr(0, doc, dlens, opts.doc.data + 4, opts.doc.offset - 5));
     FREE(pack);
 
     pack = mongo_pack_find(&mongo, opts.doc.data, opts.doc.offset, NULL, 0, &size);

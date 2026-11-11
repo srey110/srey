@@ -124,7 +124,7 @@ runner.run(function(t)
         local sess = srey.id()
         -- 返回值必须断言：挂在裸 if 上的话，core.request 返 false 时下面 3 条一条都不跑，
         -- 模块仍报全绿
-        t:eq(task.get_request_timeout(), core.request(SUBS[1], 102, sess, MSG), "core.request 投递成功并带回请求超时")
+        t:eq(task.get_timeout("request"), core.request(SUBS[1], 102, sess, MSG), "core.request 投递成功并带回请求超时")
         local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 3000)
         t:eq(srey.MSG_TYPE.RESPONSE, msg.mtype, "拿到 RESPONSE 消息表")
         t:eq("msg", getmetatable(msg), "消息元表被 __metatable 挡住")

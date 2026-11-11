@@ -10,7 +10,7 @@
 
 services:
   mysql:
-    image: mysql:8.4
+    image: mysql:9.7
     container_name: srey-mysql
     restart: unless-stopped
     ports:
@@ -22,7 +22,7 @@ services:
       MYSQL_PASSWORD: "12345678"
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mysql_data_97:/var/lib/mysql
       - ./docker/mysql-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
@@ -30,7 +30,7 @@ services:
       retries: 20
 
   postgres:
-    image: postgres:16
+    image: postgres:18
     container_name: srey-pgsql
     restart: unless-stopped
     ports:
@@ -55,28 +55,28 @@ services:
         exec docker-entrypoint.sh postgres -c ssl=on \
             -c ssl_cert_file=/var/lib/postgresql/tls/server.crt -c ssl_key_file=/var/lib/postgresql/tls/server.key
     volumes:
-      - pgsql_data:/var/lib/postgresql/data
+      - pgsql_data_18:/var/lib/postgresql # 18 起镜像的数据目录在这下面按主版本分，挂载点不能再是 .../data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d test"]
       interval: 5s
       retries: 20
 
   redis:
-    image: redis:7-alpine
+    image: redis:8.8-alpine
     container_name: srey-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - redis_data:/data
+      - redis_data_88:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 20
 
   mongo:
-    image: mongo:7
+    image: mongo:8.3
     container_name: srey-mongo
     restart: unless-stopped
     ports:
@@ -133,7 +133,7 @@ services:
         fi
         exec docker-entrypoint.sh mongod --replSet "$${MONGO_REPLSET}" --keyFile /data/configdb/keyfile
     volumes:
-      - mongo_data:/data/db
+      - mongo_data_83:/data/db
     # 副本集分支里 rs.initiate() 幂等地留在健康检查内，覆盖 entrypoint 引导覆盖不到的那种情形：
     # dbpath 非空但原本是单机（本仓库既有 volume 即如此），此时引导被跳过，只能在这里补一次。
     # 放健康检查而非独立 init 服务，是因为后者的 healthy 会在 initiate 之前就成立，客户端连上来是非
@@ -169,10 +169,11 @@ services:
       interval: 5s
       retries: 20
 
+# 数据库卷名带主版本：跨大版本数据目录不能直接沿用，换版本时换卷
 volumes:
-  mysql_data:
-  pgsql_data:
-  redis_data:
-  mongo_data:
+  mysql_data_97:
+  pgsql_data_18:
+  redis_data_88:
+  mongo_data_83:
   emqx_data:
   emqx_log:

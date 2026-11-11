@@ -40,6 +40,8 @@
 #define SSL_KU_SHORT_PORT 15081
 // 明文切 TLS 时接收缓冲里还有残留的用例
 #define SSL_UPG_RESIDUE_PORT 15082
+// TLS 客户端在连接回调里同步 ev_close 的用例
+#define SSL_CONN_CLOSE_PORT 15084
 // 多播 TTL / LOOP 回读用例的 UDP 端口
 #define UDP_MCAST_OPT_PORT 15083
 // 指定 watcher 的用例：TCP 监听端口与 UDP 端口
@@ -488,7 +490,8 @@ static void test_evssl_read_close_notify(CuTest *tc) {
     CuAssertIntEquals(tc, (int32_t)sizeof(buf), sent);
     CuAssertIntEquals(tc, ERR_FAILED, rtn);
 }
-// evssl_host：域名与 IP 收下、NULL 清除；不合规的主机名 OpenSSL 4 起当场拒收，之前的版本照收(到握手比对时才失败)
+// evssl_host：域名与 IP 收下、NULL 清除；不合规的主机名 OpenSSL 4 起当场拒收，之前的版本照收(到握手比对时才失败)。
+// 超过 255 字节被拒且原设置不变：设好域名后再给 256 字节，之后建出的 SSL 上 SNI 仍是原域名
 static void test_evssl_host(CuTest *tc) {
     evssl_ctx *cc = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
     if (NULL == cc) {
@@ -504,7 +507,21 @@ static void test_evssl_host(CuTest *tc) {
     int32_t v6 = evssl_host(cc, "::1");
     int32_t bad = evssl_host(cc, "srey_server@gmail.com");
     int32_t clr = evssl_host(cc, NULL);
+    char lng[257];
+    memset(lng, 'a', sizeof(lng) - 1);
+    lng[sizeof(lng) - 1] = '\0';
+    int32_t keep = evssl_host(cc, "a.example.com");
+    int32_t over = evssl_host(cc, lng);
+    SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0, 0);
+    SSL *ssl = (INVALID_SOCK == fd) ? NULL : evssl_setfd(cc, fd);
+    const char *sni = (NULL == ssl) ? NULL : SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+    int32_t same = (NULL != sni && 0 == strcmp(sni, "a.example.com")) ? 1 : 0;
+    FREE_SSL(ssl);
+    CLOSE_SOCK(fd);
     evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, keep);
+    CuAssertIntEquals(tc, ERR_FAILED, over);
+    CuAssertIntEquals_Msg(tc, "host changed by rejected call", 1, same);
     CuAssertIntEquals(tc, ERR_OK, dn);
     CuAssertIntEquals(tc, ERR_OK, v4);
     CuAssertIntEquals(tc, ERR_OK, v6);
@@ -3333,6 +3350,9 @@ static void test_ev_ssl_upgrade_residue(CuTest *tc) {
         MSLEEP(1);
     }
     MSLEEP(50);// 关两次的话第二次会紧跟着来
+    // 切不成时服务端先半关再延迟关闭，客户端读到的是有序 EOF；直接关 fd 的话握手报文落在已关的 socket 上，读到 RST
+    char tail;
+    int32_t eof = (INVALID_SOCK == fd) ? -1 : (int32_t)recv(fd, &tail, 1, 0);
     int32_t closed = (int32_t)ATOMIC_GET(&_g_tls_closed);
     int32_t type = (int32_t)ATOMIC_GET(&_g_tls_type);
     int32_t exch = (int32_t)ATOMIC_GET(&_g_tls_exch);
@@ -3349,6 +3369,63 @@ static void test_ev_ssl_upgrade_residue(CuTest *tc) {
     CuAssertStrEquals(tc, SSL_UPG_GO, go);
     CuAssertIntEquals_Msg(tc, "switched to TLS with residue in buffer", 0, exch);
     CuAssertIntEquals_Msg(tc, "residue delivered after TLS switch", 0, late);
+    CuAssertIntEquals(tc, 1, closed);
+    CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, type);
+    CuAssertIntEquals_Msg(tc, "server reset instead of half close", 0, eof);
+}
+// TLS 客户端在连接回调里同步 ev_close：不再起握手，关闭类型照实记 LOCAL、只关一次。
+// 没守住时会往已半关的 socket 写 ClientHello，写失败把关闭类型改记成 ABORT。监听端是明文的，握手本来就到不了它
+static atomic_t _g_cc_closed;
+static atomic_t _g_cc_type;
+static int32_t _cc_on_conn(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud) {
+    (void)ud;
+    if (ERR_OK == err) {
+        ev_close(ev, sk);
+    }
+    return ERR_OK;
+}
+static void _cc_on_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)ud;
+    ATOMIC_SET(&_g_cc_type, (atomic_t)erro);
+    ATOMIC_ADD(&_g_cc_closed, 1);
+}
+static void _cc_on_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    (void)ev; (void)sk; (void)client; (void)size; (void)ud;
+    buffer_drain(buf, buffer_size(buf));
+}
+static void test_ev_ssl_conn_close_in_cb(CuTest *tc) {
+    evssl_ctx *cc = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
+    if (NULL == cc) {
+        CuFail(tc, "evssl_new failed");
+    }
+    ev_ctx ev;
+    cbs_ctx lcbs, ccbs;
+    sock_ctx sk;
+    uint64_t id;
+    int32_t i, crtn = ERR_FAILED;
+    ZERO(&lcbs, sizeof(lcbs));
+    lcbs.r_cb = _cc_on_recv;
+    ZERO(&ccbs, sizeof(ccbs));
+    ccbs.conn_cb = _cc_on_conn;
+    ccbs.r_cb = _cc_on_recv;
+    ccbs.c_cb = _cc_on_close;
+    ATOMIC_SET(&_g_cc_closed, 0);
+    ATOMIC_SET(&_g_cc_type, (atomic_t)-1);
+    ev_init(&ev, 1, NULL);
+    int32_t lrtn = ev_listen(&ev, NULL, "127.0.0.1", SSL_CONN_CLOSE_PORT, &lcbs, NULL, NULL, 0, &id);
+    if (ERR_OK == lrtn) {
+        crtn = ev_connect(&ev, cc, "127.0.0.1", SSL_CONN_CLOSE_PORT, &ccbs, NULL, 0, INVALID_INDEX, &sk);
+    }
+    for (i = 0; ERR_OK == crtn && i < 2000 && 0 == ATOMIC_GET(&_g_cc_closed); i++) {
+        MSLEEP(1);
+    }
+    MSLEEP(50);// 关两次的话第二次会紧跟着来
+    int32_t closed = (int32_t)ATOMIC_GET(&_g_cc_closed);
+    int32_t type = (int32_t)ATOMIC_GET(&_g_cc_type);
+    ev_free(&ev);
+    evssl_free(cc);
+    CuAssertIntEquals(tc, ERR_OK, lrtn);
+    CuAssertIntEquals(tc, ERR_OK, crtn);
     CuAssertIntEquals(tc, 1, closed);
     CuAssertIntEquals(tc, CLOSE_TYPE_LOCAL, type);
 }
@@ -3414,5 +3491,6 @@ void test_event(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_ev_ssl_close_type);
     SUITE_ADD_TEST(suite, test_ev_ssl_keyupdate_short);
     SUITE_ADD_TEST(suite, test_ev_ssl_upgrade_residue);
+    SUITE_ADD_TEST(suite, test_ev_ssl_conn_close_in_cb);
 #endif
 }

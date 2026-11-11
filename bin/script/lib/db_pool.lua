@@ -52,9 +52,9 @@ end
 
 ---stat_get 拷出的计数快照
 ---@class DbPoolStat
----@field total integer 已创建连接数（空闲+借出+正在建）
+---@field total integer 已创建连接数（空闲+借出+正在建+正在断开）
 ---@field idle integer 空闲栈里的连接数（含冷却中 / 断开的）
----@field busy integer 占用数（借出、交接中，以及池内部正在建连 / 探活 / 清会话的）
+---@field busy integer 占用数（借出、交接中，以及池内部正在建连 / 探活 / 断开 / 清会话的）
 ---@field waiters integer 挂起等连接的协程数
 ---@field connects integer 成功建连次数
 ---@field connfails integer 建连/探活失败次数
@@ -136,10 +136,14 @@ function M:ctor(opts)
     }
 end
 
----丢弃一条连接：释放计数与元数据，再断开。调用方保证它已不在空闲栈里
+---丢弃一条连接（借出中的，或已摘出空闲栈的）。断开会挂起，这段仍占着名额与占用、断完再放（同 C 侧断开期间槽算 busy），
+---不然断开期间来的 get 会多建一条、超过 max。叫不叫醒等待者由调用方定
 ---@param c DbPoolConn 连接对象
 function M:_drop(c)
-    self.total = self.total - 1
+    if not self.busy[c] then
+        self.busy[c] = true
+        self.nbusy = self.nbusy + 1
+    end
     self.cool_until[c] = nil
     self.fails[c] = nil
     self.idle_at[c] = nil
@@ -148,16 +152,9 @@ function M:_drop(c)
     self.out_at[c] = nil
     self.warned[c] = nil
     srey.xpcall(c.quit, c)-- 连接实现抛错不能把池的计数与关闭流程带停
-end
-
----丢弃一条借出中的连接
----@param c DbPoolConn 连接对象
-function M:_discard(c)
-    if self.busy[c] then
-        self.busy[c] = nil
-        self.nbusy = self.nbusy - 1
-    end
-    self:_drop(c)
+    self.busy[c] = nil
+    self.nbusy = self.nbusy - 1
+    self.total = self.total - 1
 end
 
 ---池已关闭：丢掉这条借出中的连接，报 pool closed
@@ -165,7 +162,7 @@ end
 ---@return nil
 ---@return string err
 function M:_closed_drop(c)
-    self:_discard(c)
+    self:_drop(c)
     return nil, "pool closed"
 end
 
@@ -322,7 +319,7 @@ function M:_checkout(c)
         self:_born(c, now)-- 工厂给的是已连着的，首次取到起算寿命
     end
     if ready and self:_expired(c, now) then
-        self:_discard(c)
+        self:_drop(c)
         return nil, "connection expired"
     end
     self.busy[c] = true
@@ -379,6 +376,10 @@ function M:_maybe_shrink()
         if _ready(c) and idle_at and srey.timer_ms() - idle_at >= self.idle_timeout then
             self:_idle_remove_at(i)
             self:_drop(c)
+            -- 断开期间来的 get 因名额满在排队：空出名额叫醒队头自己新建（同 C 侧 _reap）
+            if not self.closed and self.waiters > 0 then
+                srey._coro_wake(self.sess, TAG_DB_POOL, WAKE_RETRY)
+            end
         else
             i = i + 1
         end
@@ -404,7 +405,7 @@ function M:_new_conn()
         if not cok or not connected then
             self.stat.connfails = self.stat.connfails + 1
             if self.closed then
-                self:_discard(c)
+                self:_drop(c)
             else
                 self:_push_idle(c, self:_cool_after_fail(c))
             end
@@ -451,7 +452,7 @@ function M:_fill_min()
             return
         end
         if self.closed then
-            self:_discard(got)
+            self:_drop(got)
             return
         end
         self:_return(got)
@@ -508,7 +509,7 @@ function M:_wait_conn(deadline, now)
     self.waiters = self.waiters - 1
     if self.closed then
         if msg and msg.conn then
-            self:_discard(msg.conn)
+            self:_drop(msg.conn)
         end
         return nil, "pool closed"
     end
@@ -519,8 +520,8 @@ function M:_wait_conn(deadline, now)
     return nil, nil
 end
 
----借一条连接。没有空闲时挂起当前协程，直到有人归还、冷却到期、池关闭或超时；
----没有借出中的连接、空闲的又全在冷却时不等，立刻失败
+---借一条连接。没有空闲时先在名额内新建；名额满了挂起当前协程，直到有人归还、冷却到期、池关闭或超时。
+---名额满、没有借出中的连接、空闲的又全在冷却时不等，立刻失败。挂起期间池被关闭一律报 pool closed
 ---@param timeout integer? 等连接毫秒数；nil 用构造时的 get_timeout，0=一直等
 ---@return DbPoolConn? conn 借到的连接
 ---@return string? err 失败原因
@@ -549,8 +550,11 @@ function M:get(timeout)
             if got then
                 return self:_hand_out(got)
             end
+            if self.closed then
+                return nil, "pool closed"
+            end
             -- 到寿命丢掉的不算失败：名额已空出，回去重查会新建，不叫醒别人陪着失败
-            if self.closed or ("connection expired" ~= err and self:_wake_on_fail()) then
+            if "connection expired" ~= err and self:_wake_on_fail() then
                 return nil, err
             end
         elseif self.total < self.max then
@@ -562,9 +566,12 @@ function M:get(timeout)
                 end
                 return self:_hand_out(nconn)
             end
+            if self.closed then
+                return nil, "pool closed"
+            end
             -- 建连失败的已留在空闲栈里冷却。还有借出中的就回去重查（每次建连都会挂起，至多 max 次就到排队），
             -- 其余失败直接返回
-            if self.closed or "connect failed" ~= err or 0 == self.nbusy then
+            if "connect failed" ~= err or 0 == self.nbusy then
                 self:_wake_on_fail()
                 return nil, err
             end
@@ -582,8 +589,8 @@ end
 
 ---丢掉一条不能再交给别人的借出连接，空出名额叫醒队头自己新建，别让它等到别人归还或超时
 ---@param c DbPoolConn 连接对象
-function M:_discard_wake(c)
-    self:_discard(c)
+function M:_drop_wake(c)
+    self:_drop(c)
     if self.waiters > 0 then
         srey._coro_wake(self.sess, TAG_DB_POOL, WAKE_RETRY)
     end
@@ -595,21 +602,21 @@ function M:_return(c)
     self.out_at[c] = nil
     self.warned[c] = nil
     if self.closed then
-        self:_discard(c)
+        self:_drop(c)
         return
     end
     if _ready(c) and self:_expired(c, srey.timer_ms()) then
-        self:_discard_wake(c)
+        self:_drop_wake(c)
         return
     end
     if _ready(c) and c.reset_session then
         local rok, clean = srey.xpcall(c.reset_session, c)
         if self.closed then
-            self:_discard(c)
+            self:_drop(c)
             return
         end
         if not rok or not clean then
-            self:_discard_wake(c)-- 清不干净就不再交给别人
+            self:_drop_wake(c)-- 清不干净就不再交给别人
             return
         end
     end
@@ -630,7 +637,7 @@ end
 
 ---归还连接。借出期间断了也照常还，下一次借出会自动重连；池关闭后归还的连接会被断开。
 ---连接对象带 reset_session 时先清会话状态再交给下一个人，期间可能挂起
----@param c DbPoolConn db_pool_get 返回的连接
+---@param c DbPoolConn get 返回的连接
 function M:put(c)
     if not self.busy[c] then
         error("db_pool_ctx: put a connection not checked out", 2)
@@ -662,7 +669,7 @@ function M:warm(n)
             return false, err
         end
         if self.closed then
-            self:_discard(c)
+            self:_drop(c)
             return false, "pool closed"
         end
         self:_push_idle(c, nil)

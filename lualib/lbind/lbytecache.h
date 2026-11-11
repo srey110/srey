@@ -17,7 +17,7 @@ void lbc_init(rwlock_distr_ctx *lck);
 /// </summary>
 void lbc_free(void);
 /// <summary>
-/// 判断 file 是不是普通文件,顺手取缓存校验要用的 mtime;找文件时用它代替 isfile,加载时就不必再 stat 一次。
+/// 判断 file 是不是普通文件,顺手取缓存校验要用的版本戳;找文件时用它代替 isfile,加载时就不必再 stat 一次。
 /// </summary>
 /// <param name="file">文件路径</param>
 /// <param name="mt">出参:文件版本戳(修改时间与长度拼成,只用来比相等);LBC_CHECK_MTIME=0 时恒 0</param>
@@ -28,7 +28,7 @@ int32_t lbc_stat(const char *file, uint64_t *mt);
 /// </summary>
 /// <param name="lua">lua_State</param>
 /// <param name="path">脚本文件路径</param>
-/// <param name="mt">lbc_stat 对同一路径取得的 mtime</param>
+/// <param name="mt">lbc_stat 对同一路径取得的版本戳</param>
 /// <returns>LUA_OK 或 Lua 错误码</returns>
 int32_t lbc_loadfile(lua_State *lua, const char *path, uint64_t mt);
 /// <summary>

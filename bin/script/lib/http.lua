@@ -22,6 +22,7 @@ local AUTO_CT = srey_http.auto_ct -- head_check 的 autoflags：Content-Type 由
 local AUTO_FRAME = srey_http.auto_frame -- 同上：Content-Length / Transfer-Encoding 由本模块自己写
 local http_respond = srey_http.respond
 local pack_req = srey_http.pack_req -- 客户端请求的 C 组包，不接的形状返回 nil，见 http.get
+local code_nobody = srey_http.code_nobody
 -- 状态行按状态码缓存。只缓存 [100, 999] 的整数码：业务传的怪码不进表，表就撑不大
 local _status_lines = {}
 local http = {}
@@ -83,16 +84,6 @@ http.code_status = srey_http.code_status
 
 -- ── 内部发送/接收 ─────────────────────────────────────────────────────────
 
----取状态行，并判它是不是 1xx 中间响应。RFC 7231 §6.2：最终响应还在后面，客户端必须容忍任意条
----@param pack lightuserdata http_pack_ctx 指针
----@return string[]|nil st 状态行三元组，同 http.status
----@return boolean interim
-local function _http_interim(pack)
-    local st = srey_http.status(pack)
-    local code = st and tonumber(st[2])
-    return st, nil ~= code and code >= 100 and code < 200
-end
-
 ---请求发出后的收包：跳过 1xx 中间响应，按协议层的分片标记把后续分片收齐；
 ---分片响应时循环读取分片并通过 ckfunc(fin,data,size) 回调，直到 fin=true。后三个参数直接接 srey.syn_send 的返回值
 ---@param sk userdata 连接标识
@@ -104,10 +95,10 @@ end
 local function _http_reply(sk, ckfunc, pack, _, slice)
     -- 1xx 是中间响应，C 侧当独立完整消息投出(slice=0)：不跳过就会把它当结果返回，
     -- 真正的响应留在连接上被下一次请求取走。HEAD 的 INIT_NOBODY 登记 C 侧跨 1xx 保留
-    local st, interim
+    local st
     while pack do
-        st, interim = _http_interim(pack)
-        if not interim then
+        st = srey_http.status(pack)
+        if not srey_http.interim(pack) then
             break
         end
         pack, _, slice = srey.syn_recv(sk)
@@ -133,7 +124,7 @@ local function _http_reply(sk, ckfunc, pack, _, slice)
             end
             if ckfunc then
                 hdata, hsize = http.data(data)
-                if hsize and hsize > 0 then
+                if hsize > 0 then
                     cksize = cksize + hsize
                     ckfunc(fin, hdata, hsize)
                 else
@@ -203,8 +194,8 @@ end
 ---构造并发送 HTTP 消息的核心函数。info 支持 string（带 Content-Length）、
 ---table（自动 JSON 编码）、function（chunked 流式分块发送，返回 nil 或空串终止流）三种类型
 ---@param rsp boolean 是否为响应（true=单向，false=同步请求）
----@param nocl boolean 该消息禁止携带 Content-Length（1xx/204/304 响应）；http.response 已在
----       入口把这三类的 info 清掉，故本函数只需在无 body 分支跳过 Content-Length: 0
+---@param nocl boolean 该消息禁止携带 Content-Length（1xx/204/304 响应）；_response_lua 已把
+---       这三类的 info 清掉，故本函数只需在无 body 分支跳过 Content-Length: 0
 ---@param headonly boolean 回 HEAD 请求：头与同一资源的 GET 逐字节一致（RFC 7231 §4.3.2），
 ---       只是不写报文体。故只在各 body 分支跳过写 body 那一步，帧长头照原样算——Content-Length
 ---       写真实长度（写 0 等于谎报资源为空），多发的字节则会被对端当成下一条响应的开头。
@@ -220,9 +211,7 @@ end
 ---       值只收 string 与 number（整数值的浮点按整数写），其余类型同样整条丢弃并告警
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片接收回调，约束见 http.get
 ---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
----       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
----       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
----       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。违约处置见 http.post
+---       function 形态的约束与违约处置见 http.post
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；rsp=true 或失败时返回 nil
 local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc, info, ...)
@@ -338,7 +327,7 @@ local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc
             -- C 侧 http_pack_content 对空 body 也是统一写 Content-Length: 0
             tail = "Content-Length: 0\r\n\r\n"
         else
-            -- 请求无 body 不带 CL/TE 即可（同规则 6）；1xx/204/304 响应则是禁止带（见 http.response）
+            -- 请求无 body 不带 CL/TE 即可（同规则 6）；1xx/204/304 响应则是禁止带（见 _response_lua）
             tail = "\r\n"
         end
         if nil == msg then
@@ -350,11 +339,8 @@ local function _http_msg(rsp, nocl, headonly, sk, status, block, headers, ckfunc
     end
 end
 
--- 拼请求行前校验 url。不校验就是 HTTP 请求拆分：url 里塞一段 CRLF 能在同一条连接上
--- 再拼出一个完整请求，多出来的那条响应会被下一次请求的等待者取走，此后整条连接错开一位。
--- 头名头值那边是丢弃单条继续发，请求目标坏了整条请求都不能发，故返回 nil 让调用方失败返回。
--- lib/protocol 的 http_pack_req 把这视为硬契约违约直接 ASSERTAB；客户端 C 组包 srey.http.pack_req
--- 原样写请求行、不校验，故 url 只在这里挡
+-- 拼请求行前校验 url，防 HTTP 请求拆分：含 NUL / CRLF 时整条请求不发，返回 nil。
+-- srey.http.pack_req 原样写请求行、不校验，故 url 只在这里挡
 local function _req_status(method, url)
     url = url or "/"
     if string.find(url, "[\0\r\n]") then
@@ -435,8 +421,8 @@ end
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? 分片接收回调，约束同 http.get
 ---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
----       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
----       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。
+---       让出控制权，别的协程往同一连接上发的数据就插进本次报文体中间，对端解析必错。
+---       这里没有连接级锁可加——只拿到 sk，不像 pgsql copy_in 那样手里有 ctx 的 serial。
 ---       返回非 string 是违约：报文体已发出一部分时关连接、不补终止块（补了对端会把截断的报文体当完整的收），
 ---       一个字节都没发出时只返回 nil，连接可继续复用；分块发送失败一律关连接。
 ---       info 抛错时报文体已发出一部分就关连接，再把错误原样抛出
@@ -466,7 +452,7 @@ local function _status_line_new(code)
 end
 ---http.response 与 http.response_head 在 C 组包不接时走的 Lua 组包原路，也以 http._response_lua 导出给
 ---router（router 先自己调 http._respond，返回 false 才调它，省一层转发）。
----业务不直接调本函数;fd 之后各参数的完整约束见 http.response
+---业务不直接调本函数;sk 之后各参数的完整约束见 http.response
 ---@param headonly boolean 回 HEAD 请求：头与同一资源的 GET 逐字节一致，但不发报文体
 ---@param sk userdata 连接标识
 ---@param code integer 状态码（如 200、404）
@@ -483,7 +469,7 @@ local function _response_lua(headonly, sk, code, block, headers, info, ...)
     -- RFC 7230 §3.3.2：1xx 与 204 一律禁止带 Content-Length；304 允许带，但那个值应当反映
     -- 实体的真实长度，这里根本没有实体，补 Content-Length: 0 等于谎报资源为空，故一并跳过。
     -- 严格代理会因此丢弃或重置这类响应，所以不能对所有无 body 响应无差别补 CL
-    local nocl = code < 200 or 204 == code or 304 == code
+    local nocl = code_nobody(code)
     if nocl then
         info = nil-- 这三类响应同样禁带报文体：给了也丢，与 C 侧 _router_send_core 同口径
     end
@@ -497,9 +483,7 @@ http._response_lua = _response_lua
 ---@param code integer 状态码（如 200、404）
 ---@param headers table<string,string|number>? 附加头部
 ---@param info string|table<any,any>|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
----       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
----       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
----       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial。
+---       function 形态下**不得在回调内挂起**，理由见 http.post。
 ---       违约处置同 http.post，只是一个字节都没发出时也关连接：不关的话对端一直等这条响应。
 ---       info 抛错同 http.post：一个字节都没发出时不关，错误原样抛给上层（router 据此回 500）
 ---@param ... any 传给 info 函数的额外参数

@@ -655,7 +655,7 @@ static void _check_group_handoff(task_ctx *task) {
     t0 = timer_cur_ms(&task->loader->timer) - t0;
     ev_close(&task->loader->netev, &sk);
     ev_unlisten(&task->loader->netev, id);
-    ASSERTAB(NULL == rt && t0 < task_get_netread_timeout(task), "handoff to a gone handler must close the connection");
+    ASSERTAB(NULL == rt && t0 < task_get_timeout(task, TMO_NETREAD), "handoff to a gone handler must close the connection");
     ASSERTAB(2 == ATOMIC_GET(&_ho_switched) && 1 == ATOMIC_GET(&_ho_rest) && 0 == ATOMIC_GET(&_ho_bad),
              "nothing may be delivered after a handoff to a gone handler");
 }

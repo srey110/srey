@@ -37,7 +37,7 @@ typedef struct config_ctx {
 
 /// <summary>
 /// 依次初始化字节码缓存（WITH_LUA 且 ENABLE_LUA_BYTECACHE）、启动 debug_console、Lua 任务（WITH_LUA）与 harbor；
-/// 顺序不能换，理由见 startup.c
+/// 字节码缓存须在 Lua 任务之前、harbor 须在其后，理由见 startup.c
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="config">服务配置</param>

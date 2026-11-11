@@ -327,41 +327,19 @@ void task_set_priority(task_ctx *task, int32_t priority);
 /// <returns>当前 priority (0..TASK_PRIORITY_MAX)</returns>
 int32_t task_get_priority(task_ctx *task);
 /// <summary>
-/// 设置task_request超时时间
+/// 设置 task 级的某类超时，本 task 所有协程的等待默认都用它；只想改某几次等待用 coro_timeout_set
 /// </summary>
 /// <param name="task">task_ctx</param>
+/// <param name="kind">超时种类</param>
 /// <param name="ms">毫秒，须 大于 0（0 忽略本次设置）；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
-void task_set_request_timeout(task_ctx *task, uint32_t ms);
+void task_set_timeout(task_ctx *task, tmo_kind kind, uint32_t ms);
 /// <summary>
-/// 获取task_request超时时间
+/// 获取 task 级的某类超时；默认 request 3 秒、connect 5 秒、netread 10 秒
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <returns>毫秒</returns>
-uint32_t task_get_request_timeout(task_ctx *task);
-/// <summary>
-/// 设置task_connect超时时间
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <param name="ms">毫秒，须 大于 0（0 忽略本次设置）；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
-void task_set_connect_timeout(task_ctx *task, uint32_t ms);
-/// <summary>
-/// 获取task_connect超时时间
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <returns>毫秒</returns>
-uint32_t task_get_connect_timeout(task_ctx *task);
-/// <summary>
-/// 设置网络读取超时时间
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <param name="ms">毫秒，须 大于 0（0 忽略本次设置）；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
-void task_set_netread_timeout(task_ctx *task, uint32_t ms);
-/// <summary>
-/// 获取网络读取超时时间
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <returns>毫秒</returns>
-uint32_t task_get_netread_timeout(task_ctx *task);
+/// <param name="kind">超时种类</param>
+/// <returns>毫秒，恒大于 0</returns>
+uint32_t task_get_timeout(task_ctx *task, tmo_kind kind);
 /// <summary>
 /// 获取任务自启动以来按消息类型分桶的累计消息条数与 dispatch 占用的线程 CPU 时间。
 /// 用于排查"哪类消息消耗 CPU"：IO 等待 / coro_sleep / 被抢占的时间不计入；

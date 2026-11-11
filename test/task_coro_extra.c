@@ -91,10 +91,10 @@ static int32_t _test_send_after_close(task_ctx *task, uint16_t httpport) {
     // 构造一个最小 HTTP GET 包发送，预期 coro_send 返回 NULL
     const char *req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
     size_t rsize = 0;
-    uint32_t nread = task_get_netread_timeout(task);
-    task_set_netread_timeout(task, 300);
+    uint32_t nread = task_get_timeout(task, TMO_NETREAD);
+    task_set_timeout(task, TMO_NETREAD, 300);
     void *resp = coro_send(task, &sk, (void *)req, strlen(req), &rsize, 1);
-    task_set_netread_timeout(task, nread);
+    task_set_timeout(task, TMO_NETREAD, nread);
     if (NULL != resp) {
         LOG_ERROR("coro_send-after-close: expected NULL, got resp size=%zu.", rsize);
         return ERR_FAILED;
@@ -125,16 +125,86 @@ static int32_t _test_request_timeout(task_ctx *task, const char *rpcname) {
         LOG_ERROR("coro_request timeout: rpc task %s not found.", rpcname);
         return ERR_FAILED;
     }
-    // 默认 timeout_request=3000ms，缩短到 300ms 让用例快速结束
-    uint32_t old_to = task_get_request_timeout(task);
-    task_set_request_timeout(task, 300);
+    // task 级 request 超时默认 3000ms，缩短到 300ms 让用例快速结束
+    uint32_t old_to = task_get_timeout(task, TMO_REQUEST);
+    task_set_timeout(task, TMO_REQUEST, 300);
     int32_t erro = ERR_OK;
     size_t lens = 0;
     (void)coro_request(dst, task, 99, "x", 1, 1, &erro, &lens);
-    task_set_request_timeout(task, old_to);
+    task_set_timeout(task, TMO_REQUEST, old_to);
     task_ungrab(dst);
     if (ERR_FAILED != erro) {
         LOG_ERROR("coro_request timeout: expected ERR_FAILED, got erro=%d.", erro);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// 按协程覆盖超时：取值、嵌套恢复、上界、fork 不继承；读超时与 request 实际按覆盖值到期(task 级默认 10s / 3s)
+static uint32_t _tmo_fork_seen;
+static void _tmo_fork_peek(void *owner, void *arg) {
+    (void)arg;
+    _tmo_fork_seen = coro_timeout_get((task_ctx *)owner, TMO_NETREAD);
+}
+static int32_t _test_timeout_override(task_ctx *task, uint16_t httpport, const char *rpcname) {
+    uint32_t base = task_get_timeout(task, TMO_NETREAD);
+    if (base != coro_timeout_get(task, TMO_NETREAD)
+        || 0 != coro_timeout_set(task, TMO_NETREAD, 1500)
+        || 1500 != coro_timeout_get(task, TMO_NETREAD)
+        || 1500 != coro_timeout_set(task, TMO_NETREAD, 700)
+        || 700 != coro_timeout_get(task, TMO_NETREAD)
+        || 700 != coro_timeout_set(task, TMO_NETREAD, 1500)
+        || base != task_get_timeout(task, TMO_NETREAD)) {
+        LOG_ERROR("timeout override: set / get / nesting mismatch.");
+        return ERR_FAILED;
+    }
+    uint32_t old = coro_timeout_set(task, TMO_CONNECT, UINT32_MAX);
+    uint32_t clamped = coro_timeout_get(task, TMO_CONNECT);
+    coro_timeout_set(task, TMO_CONNECT, old);
+    if (TASK_TIMEOUT_MAX != clamped
+        || task_get_timeout(task, TMO_CONNECT) != coro_timeout_get(task, TMO_CONNECT)) {
+        LOG_ERROR("timeout override: clamp or restore failed, got %u.", clamped);
+        return ERR_FAILED;
+    }
+    // fork 出的子协程从干净的局部区开跑
+    _tmo_fork_seen = 0;
+    coro_fork(coro_task_co(task), _tmo_fork_peek, NULL);
+    coro_sleep(task, 10);
+    if (base != _tmo_fork_seen) {
+        LOG_ERROR("timeout override: forked coroutine saw %u, expected %u.", _tmo_fork_seen, base);
+        return ERR_FAILED;
+    }
+    // 读超时按覆盖值(1.5s)到期：HTTP 服务端收到半截请求头会一直等，不回
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", httpport, 0, NULL, &sk)) {
+        LOG_ERROR("timeout override: connect to http_sv failed.");
+        return ERR_FAILED;
+    }
+    static const char half[] = "GET / HTTP/1.1\r\nHost: x\r\n";
+    uint64_t t0 = nowms();
+    void *resp = coro_send(task, &sk, (void *)half, sizeof(half) - 1, NULL, 1);
+    uint64_t nread_ms = nowms() - t0;
+    coro_timeout_set(task, TMO_NETREAD, 0);
+    if (NULL != resp || nread_ms < 1400 || nread_ms >= 1500 + TIMEOUT_SETTLE_MS) {
+        LOG_ERROR("timeout override: netread took %"PRIu64"ms, expected about 1500.", nread_ms);
+        return ERR_FAILED;
+    }
+    // request 按覆盖值(300ms)到期：rpc 的 default 分支不回包
+    task_ctx *dst = task_grab(task->loader, task_find_name(task->loader, rpcname));
+    if (NULL == dst) {
+        LOG_ERROR("timeout override: rpc task %s not found.", rpcname);
+        return ERR_FAILED;
+    }
+    coro_timeout_set(task, TMO_REQUEST, 300);
+    int32_t erro = ERR_OK;
+    size_t lens = 0;
+    t0 = nowms();
+    (void)coro_request(dst, task, 99, "x", 1, 1, &erro, &lens);
+    uint64_t req_ms = nowms() - t0;
+    coro_timeout_set(task, TMO_REQUEST, 0);
+    task_ungrab(dst);
+    if (ERR_FAILED != erro || req_ms >= 300 + TIMEOUT_SETTLE_MS) {
+        LOG_ERROR("timeout override: request took %"PRIu64"ms erro %d, expected timeout about 300.", req_ms, erro);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -232,7 +302,8 @@ static int32_t _test_recv_any(task_ctx *task) {
 }
 
 // coro_bind_task：连上后留下一条 keep 条目，转给别的 task 时当场放掉
-// (转交后 CLOSE 投给新 task，本 task 再没有路径能删它)
+// (转交后 CLOSE 投给新 task，本 task 再没有路径能删它)。
+// 目标 task 不在时返回失败、条目不动，连接仍归本 task：判据挪到改目标之后的话，下面那次 coro_send 收不到回包
 static int32_t _test_bind_task(task_ctx *task, uint16_t httpport, const char *rpcname) {
     coro_ctx *co = coro_task_co(task);
     int32_t s0 = _co_sessions(co);
@@ -242,6 +313,14 @@ static int32_t _test_bind_task(task_ctx *task, uint16_t httpport, const char *rp
         return ERR_FAILED;
     }
     int32_t s1 = _co_sessions(co);
+    const char *req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    if (ERR_OK == coro_bind_task(task, &sk, INVALID_TNAME)
+        || s1 != _co_sessions(co)
+        || NULL == coro_send(task, &sk, (void *)req, strlen(req), NULL, 1)) {
+        ev_close(&task->loader->netev, &sk);
+        LOG_ERROR("bind_task: bind to a missing task should fail and keep the connection.");
+        return ERR_FAILED;
+    }
     task_ctx *dst = task_grab(task->loader, task_find_name(task->loader, rpcname));
     if (NULL == dst) {
         ev_close(&task->loader->netev, &sk);
@@ -674,34 +753,34 @@ static int32_t _test_close_before_register(task_ctx *task) {
     }
     return ERR_OK;
 }
-// 三个超时 setter：传 0 忽略(超时恒大于 0，挂起的协程才一定等得到头)，超上界钳到 TASK_TIMEOUT_MAX。
+// task_set_timeout 的三个种类：传 0 忽略(超时恒大于 0，挂起的协程才一定等得到头)，超上界钳到 TASK_TIMEOUT_MAX。
 // 不挂起，测完原样设回
 static int32_t _test_timeout_setters(task_ctx *task) {
-    uint32_t req = task_get_request_timeout(task);
-    uint32_t conn = task_get_connect_timeout(task);
-    uint32_t nread = task_get_netread_timeout(task);
+    uint32_t req = task_get_timeout(task, TMO_REQUEST);
+    uint32_t conn = task_get_timeout(task, TMO_CONNECT);
+    uint32_t nread = task_get_timeout(task, TMO_NETREAD);
     int32_t rtn = ERR_OK;
-    task_set_request_timeout(task, 0);
-    task_set_connect_timeout(task, 0);
-    task_set_netread_timeout(task, 0);
-    if (req != task_get_request_timeout(task)
-        || conn != task_get_connect_timeout(task)
-        || nread != task_get_netread_timeout(task)) {
+    task_set_timeout(task, TMO_REQUEST, 0);
+    task_set_timeout(task, TMO_CONNECT, 0);
+    task_set_timeout(task, TMO_NETREAD, 0);
+    if (req != task_get_timeout(task, TMO_REQUEST)
+        || conn != task_get_timeout(task, TMO_CONNECT)
+        || nread != task_get_timeout(task, TMO_NETREAD)) {
         LOG_ERROR("timeout setters: 0 must be ignored.");
         rtn = ERR_FAILED;
     }
-    task_set_request_timeout(task, UINT32_MAX);
-    task_set_connect_timeout(task, UINT32_MAX);
-    task_set_netread_timeout(task, UINT32_MAX);
-    if (TASK_TIMEOUT_MAX != task_get_request_timeout(task)
-        || TASK_TIMEOUT_MAX != task_get_connect_timeout(task)
-        || TASK_TIMEOUT_MAX != task_get_netread_timeout(task)) {
+    task_set_timeout(task, TMO_REQUEST, UINT32_MAX);
+    task_set_timeout(task, TMO_CONNECT, UINT32_MAX);
+    task_set_timeout(task, TMO_NETREAD, UINT32_MAX);
+    if (TASK_TIMEOUT_MAX != task_get_timeout(task, TMO_REQUEST)
+        || TASK_TIMEOUT_MAX != task_get_timeout(task, TMO_CONNECT)
+        || TASK_TIMEOUT_MAX != task_get_timeout(task, TMO_NETREAD)) {
         LOG_ERROR("timeout setters: values over TASK_TIMEOUT_MAX must be clamped.");
         rtn = ERR_FAILED;
     }
-    task_set_request_timeout(task, req);
-    task_set_connect_timeout(task, conn);
-    task_set_netread_timeout(task, nread);
+    task_set_timeout(task, TMO_REQUEST, req);
+    task_set_timeout(task, TMO_CONNECT, conn);
+    task_set_timeout(task, TMO_NETREAD, nread);
     return rtn;
 }
 
@@ -736,6 +815,12 @@ static void _startup_run(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_request_timeout(task, arg->rpcname)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_timeout_override(task, arg->httpport, arg->rpcname)) {
         return;
     }
     if (task_isclosing(task)) {

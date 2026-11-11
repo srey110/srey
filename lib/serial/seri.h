@@ -86,6 +86,7 @@ void seri_append_array_start(binary_ctx *bw, uint32_t array_n);
 void seri_append_array_end(binary_ctx *bw);
 /// <summary>
 /// 初始化 iter 视图（零拷贝）；buf 生命周期需 ≥ iter 使用期间（item 中字符串指针依赖此）。
+/// 流里的裸指针（SERI_ITEM_USERDATA）按原地址还原，只能解本进程打的包，不能拿来解外来数据。
 /// </summary>
 /// <param name="it">seri_iter</param>
 /// <param name="buf">序列化数据起点</param>

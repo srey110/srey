@@ -358,9 +358,9 @@ int32_t sock_pair(SOCKET sock[2], int32_t nonblock) {
         CLOSE_SOCK(fdlsn);
         return ERR_FAILED;
     }
-    netaddr_ctx listen_addr;
+    netaddr_ctx peer;
     socklen_t addrlen = (socklen_t)sizeof(netaddr_ctx);
-    SOCKET fdacp = sock_accept_cloexec(fdlsn, netaddr_addr(&listen_addr), &addrlen, nonblock);
+    SOCKET fdacp = sock_accept_cloexec(fdlsn, netaddr_addr(&peer), &addrlen, nonblock);
     if (INVALID_SOCK == fdacp) {
         CLOSE_SOCK(fdlsn);
         CLOSE_SOCK(fdcn);
@@ -372,16 +372,19 @@ int32_t sock_pair(SOCKET sock[2], int32_t nonblock) {
         CLOSE_SOCK(fdcn);
         return ERR_FAILED;
     }
-    if (ERR_OK != netaddr_compare(&listen_addr, &addr)) {
+    if (ERR_OK != netaddr_compare(&peer, &addr)) {
         CLOSE_SOCK(fdacp);
         CLOSE_SOCK(fdcn);
         return ERR_FAILED;
     }
     sock_nodelay(fdacp);
     sock_nodelay(fdcn);
-    if (nonblock) {
-        // fdacp 已由 sock_accept_cloexec 一并设好，这里只补主动连的那端
-        sock_nonblock(fdcn);
+    // fdacp 已由 sock_accept_cloexec 一并设好，这里只补主动连的那端；设不上同 sock_create_cloexec 按失败处理
+    if (nonblock
+        && ERR_OK != sock_nonblock(fdcn)) {
+        CLOSE_SOCK(fdacp);
+        CLOSE_SOCK(fdcn);
+        return ERR_FAILED;
     }
     sock[0] = fdacp;
     sock[1] = fdcn;

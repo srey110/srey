@@ -64,7 +64,7 @@ typedef struct bson_iter {
     char *val;//值1
     char *val2;//值2
     binary_ctx *doc;//bson_ctx中的doc
-    binary_ctx nested_doc;//查找时持有文档 binary_ctx 副本（避免指向栈变量）；不可调 binary_free，为父 buffer 的视图别名
+    binary_ctx nested_doc;//doc 指向的文档视图（源 binary_ctx 的副本，iter 自己推进）；不可调 binary_free，为父 buffer 的视图别名
 } bson_iter;
 
 /// <summary>
@@ -451,10 +451,9 @@ void bson_append_maxkey(bson_ctx *bson, const char *key);
 /// <param name="klens">key 的字节数</param>
 void bson_append_maxkey2(bson_ctx *bson, const char *key, size_t klens);
 /// <summary>
-/// 初始化迭代器，绑定到指定 bson_ctx。
-/// 会就地改写 bson->doc.offset（先归零再推过 4 字节长度前缀），而 BSON_DOC_LENS 取的就是 offset——
-/// 写入模式的 bson 一旦建过 iter，它就不再是文档长度了。需要两者兼得的先把 data/lens 取走，
-/// 或像 bson_tostring 那样自行存取 offset
+/// 初始化迭代器，绑定到指定 bson_ctx。iter 拷一份文档视图自己推进，不改 bson 的 offset，
+/// 同一 bson 上可同时开多个 iter。建好 iter 后别再往这个 bson 里写：扩容后 iter 看不到新缓冲；
+/// 按值拷贝 iter 后要把副本的 doc 改指它自己的 nested_doc
 /// </summary>
 /// <param name="iter">bson_iter</param>
 /// <param name="bson">bson_ctx</param>

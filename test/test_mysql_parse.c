@@ -72,7 +72,7 @@ static void _mysql_stage(mysql_ctx *mysql, mysql_reader_ctx *reader, int32_t rst
     mpack->_free_mpack = _mpack_reader_free;
     mysql->mpack = mpack;
 }
-// _mpack_ok_parse / _mpack_parse_field / _mpack_parse_binary_row 都是库内 static，改从公开入口
+// _mpack_parse_field / _mpack_parse_binary_row 是库内 static，OK 包也照样从公开入口
 // mysql_unpack 喂整包间接测：这里补 4 字节包头(3 字节小端长度 + 序号)并把 ud 摆到 COMMAND 阶段。
 // 结果集的字段/行阶段还要调用方先摆好 mysql->mpack 与 parse_status。
 // payload 由 _mysql_payload 拷进独立块，故返回值不依赖这里的临时 buffer
@@ -951,6 +951,70 @@ static void test_mysql_reader_datetime_binary_range(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, _my_bin_dt(leap400, 7, &err) > 0);
     CuAssertIntEquals(tc, ERR_OK, err);
+    // 11 字节带微秒：上界 999999 合法，再大判失败(不能把整数秒往后推)
+    uint8_t us[11];
+    memcpy(us, edge, 7);
+    pack_integer((char *)us + 7, (uint64_t)999999, 4, 1);
+    int64_t base = _my_bin_dt(edge, 7, &err);// 返回的已是微秒
+    CuAssertTrue(tc, base + 999999 == _my_bin_dt(us, 11, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    pack_integer((char *)us + 7, (uint64_t)1000000, 4, 1);
+    (void)_my_bin_dt(us, 11, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+}
+
+// 造一条二进制 TIME 行：is_negative(1) days(4) h m s [usec(4)]
+static int32_t _my_bin_time(uint32_t days, uint8_t h, uint8_t m, uint8_t s, int64_t usec,
+                            struct tm *t, uint32_t *us, int32_t *err) {
+    char names[1][64] = { "t" };
+    uint8_t types[1] = { MYSQL_TYPE_TIME };
+    mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+    size_t lens = usec < 0 ? 8 : 12;
+    char *p;
+    MALLOC(p, lens);
+    p[0] = 0;
+    pack_integer(p + 1, (uint64_t)days, 4, 1);
+    p[5] = (char)h;
+    p[6] = (char)m;
+    p[7] = (char)s;
+    if (usec >= 0) {
+        pack_integer(p + 8, (uint64_t)usec, 4, 1);
+    }
+    buf_ctx c[1] = { { .data = p, .lens = lens } };
+    _reader_push_row(r, &p, c, NULL);
+    int32_t neg = mysql_reader_time(r, "t", t, us, err);
+    mysql_reader_free(r);
+    return neg;
+}
+// 二进制 TIME 卡量程同文本路径(±838:59:59、微秒 0~999999)：时分秒按无符号读，>= 0x80 的字节不会变负数混过去
+static void test_mysql_reader_time_binary_range(CuTest *tc) {
+    struct tm t;
+    uint32_t us;
+    int32_t err;
+    // 34 天 22:59:59.999999 = 838:59:59，合法
+    (void)_my_bin_time(34, 22, 59, 59, 999999, &t, &us, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, 34, t.tm_mday);
+    CuAssertIntEquals(tc, 22, t.tm_hour);
+    CuAssertIntEquals(tc, 999999, (int32_t)us);
+    static const int64_t bad[][5] = {// 天 时 分 秒 微秒(-1=不带)
+        { 34, 23, 0, 0, -1 },// 839 小时
+        { 35, 0, 0, 0, -1 },// 天数超
+        { 0, 24, 0, 0, -1 },// 时 24
+        { 0, 0, 60, 0, -1 },// 分 60
+        { 0, 0, 0, 60, -1 },// 秒 60
+        { 0, 200, 0, 0, -1 },// 字节 >= 0x80
+        { 0, 1, 2, 3, 1000000 },// 微秒超
+        { 0xFFFFFFFF, 0, 0, 0, -1 },// 天数乘 24 会回绕
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+        err = ERR_OK;
+        (void)_my_bin_time((uint32_t)bad[i][0], (uint8_t)bad[i][1], (uint8_t)bad[i][2], (uint8_t)bad[i][3], bad[i][4],
+                           &t, &us, &err);
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+        CuAssertIntEquals(tc, 0, t.tm_hour);// 失败时出参保持清零
+        CuAssertIntEquals(tc, 0, (int32_t)us);
+    }
 }
 
 // mysql_reader_time 文本协议：正/负 "HH:MM:SS" 格式 + 二进制协议 8 字节
@@ -1181,6 +1245,8 @@ static mpack_ctx *_ok_feed(mysql_ctx *mysql, int16_t status_flags, binary_ctx *b
 // （比如 MORE_RESULTS 从 8 写成 2）这边编出来什么、那边就解成什么，测试照样全绿。
 // 值取自 MySQL 协议手册 SERVER_STATUS_flags_enum
 static void test_mysql_status_flag_values(CuTest *tc) {
+    CuAssertIntEquals(tc, 1, SERVER_STATUS_IN_TRANS);
+    CuAssertIntEquals(tc, 2, SERVER_STATUS_AUTOCOMMIT);
     CuAssertIntEquals(tc, 8, SERVER_MORE_RESULTS_EXISTS);
     CuAssertIntEquals(tc, 16384, SERVER_SESSION_STATE_CHANGED);
 }
@@ -1203,13 +1269,16 @@ static void test_mpack_ok_parse(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int)mpack->more);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
     CuAssertIntEquals(tc, 0, (int)mysql.in_trans);
+    CuAssertIntEquals(tc, 1, (int)mysql.autocommit);
     _mysql_pkfree(mpack);
     binary_free(&bw);
 
-    // 1b) 带 SERVER_STATUS_IN_TRANS：置 in_trans(db_pool 归还时据它决定要不要 ROLLBACK)
+    // 1b) 带 SERVER_STATUS_IN_TRANS：置 in_trans(db_pool 归还时据它决定要不要 ROLLBACK)；
+    // 不带 AUTOCOMMIT 位即 autocommit 关着(db_pool 归还时据它决定要不要还原)
     mpack = _ok_feed(&mysql, SERVER_STATUS_IN_TRANS, &bw, &status);
     CuAssertTrue(tc, NULL != mpack);
     CuAssertIntEquals(tc, 1, (int)mysql.in_trans);
+    CuAssertIntEquals(tc, 0, (int)mysql.autocommit);
     _mysql_pkfree(mpack);
     binary_free(&bw);
 
@@ -1822,6 +1891,27 @@ static void test_mpack_prepare_response(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int)mysql.error_code);
     CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
     _mysql_pkfree(out);
+
+    // 首字节既不是 OK 也不是 ERR(报文错位，如收到的是结果集首包)：报协议错，不按 stmt_id / 列数硬读
+    binary_init_write(&bw, 0, 0);
+    binary_set_uint8(&bw, 0x03);// 列数包
+    binary_set_fill(&bw, 0, 8);
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_PREPARE;
+    CuAssertTrue(tc, NULL == _mysql_feed(&mysql, bw.data, bw.offset, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, NULL == mysql.mpack);
+    binary_free(&bw);
+
+    // 简单命令(COM_PING)的应答同样只认 OK / ERR，别的不当 ERR 解
+    binary_init_write(&bw, 0, 0);
+    binary_set_uint8(&bw, MYSQL_EOF);
+    binary_set_fill(&bw, 0, 4);
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_PING;
+    CuAssertTrue(tc, NULL == _mysql_feed(&mysql, bw.data, bw.offset, &status));
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    binary_free(&bw);
 }
 
 // 结果集行阶段收到 ERR(0xff)：MySQL 允许 ERR 提前终止结果集（KILL QUERY / max_execution_time），
@@ -3088,6 +3178,23 @@ static void test_mysql_auth_process(CuTest *tc) {
     CuAssertStrEquals(tc, "no", mysql_record_handshake(&mysql, g_my_hs_msg, g_my_hs_lens));
     (void)mysql_erro(&mysql, &dcode);
     CuAssertIntEquals(tc, 1045, dcode);
+    // 9) 畸形 OK：截断(缺 status_flags / warnings)与长度字段非法(0xfb)都判协议错误，不报握手成功、留在认证阶段
+    const char cut[] = { MYSQL_OK, 0, 0, 2 };
+    const char badlen[] = { MYSQL_OK, (char)0xfb, 0, 2, 0, 0, 0 };
+    g_my_hs_calls = 0;
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, cut, sizeof(cut), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, _MY_AUTH_PROCESS, ud.status);
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, badlen, sizeof(badlen), 2, &status);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, _MY_AUTH_PROCESS, ud.status);
+    CuAssertIntEquals(tc, 0, g_my_hs_calls);
+    // 10) OK 的 status_flags 没带 AUTOCOMMIT：autocommit 与连上时的初值都记 0
+    const char ok_noac[7] = { MYSQL_OK, 0, 0, 0, 0, 0, 0 };
+    _mysql_auth_feed(&mysql, &ud, _MY_AUTH_PROCESS, ok_noac, sizeof(ok_noac), 2, &status);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, 0, (int)mysql.autocommit);
+    CuAssertIntEquals(tc, 0, (int)mysql.autocommit_init);
 }
 void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
@@ -3107,6 +3214,7 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_zero_date);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_binary_range);
     SUITE_ADD_TEST(suite, test_mysql_reader_time);
+    SUITE_ADD_TEST(suite, test_mysql_reader_time_binary_range);
     SUITE_ADD_TEST(suite, test_mysql_reader_binary_lens);
     SUITE_ADD_TEST(suite, test_mpack_ok_parse);
     SUITE_ADD_TEST(suite, test_mysql_lenenc_truncated);

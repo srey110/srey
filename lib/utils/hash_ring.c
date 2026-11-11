@@ -1,4 +1,4 @@
-﻿#include "hash_ring.h"
+﻿#include "utils/hash_ring.h"
 #include "crypt/xxhash.h"
 
 /* 栈上分配的最大名称长度，避免堆分配。
@@ -59,8 +59,6 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     char name_stack[NAME_STACK_LEN];
     const size_t sufmax = 12;// 后缀最长：'-' 加 uint32 最多 10 位，再加 u64tostr 补的 '\0'
     char *name;
-    size_t nlen;
-    hash_ring_item *item;
     // 节点名加最长的后缀放不进栈缓冲才上堆，整个节点只分配这一次
     int32_t heap = node->lens + sufmax > NAME_STACK_LEN;
     // items 一次扩够本节点全部副本，循环里只往尾部填
@@ -72,6 +70,8 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     }
     memcpy(name, node->name, node->lens);// 节点名与 '-' 只写一次，每轮只改后面的序号
     name[node->lens] = '-';
+    size_t nlen;
+    hash_ring_item *item;
     for (uint32_t i = 0; i < node->nreplicas; i++) {
         // 序号位数会变，digest 按本轮实际长度算
         nlen = 1 + u64tostr(name + node->lens + 1, i, 10);

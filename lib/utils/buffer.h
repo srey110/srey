@@ -79,9 +79,7 @@ size_t buffer_size(buffer_ctx *ctx);
 /// 0 表示链上已无空闲空间</returns>
 size_t buffer_space(buffer_ctx *ctx, const uint32_t cnt);
 /// <summary>
-/// 将外部缓存data添加到buffer,不做一次拷贝,供零拷贝的读取用。
-/// lens 为 0 时不挂节点, 直接以 ext_free 归还 data —— 零长节点既不携带数据也不提供可写空间,
-/// 挂上链只会让写入端的 iov 记录与提交校验错位, 并让按 off 游走的读取定位提前终止
+/// 将外部缓存data添加到buffer,不做一次拷贝,供零拷贝的读取用。lens 为 0 时不挂节点, 直接以 ext_free 归还 data
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="data">数据</param>
@@ -175,7 +173,9 @@ void buffer_commit_expand(buffer_ctx *ctx, size_t lens ,IOV_TYPE *iov, const uin
 /// 获取指定长度的数据，供 writev 等分散读零拷贝取用。
 /// 取到数据即进入读暂存态：iov 直接指向节点内部数据区，在 buffer_commit_get 之前
 /// 不得再调用本模块任何读写接口（写入可能搬动节点让 iov 悬空，断言拦截），
-/// 且与 buffer_expand 的暂存态互斥
+/// 且与 buffer_expand 的暂存态互斥。
+/// Windows 上单条 iov 最长 INT32_MAX：超大的外部节点只取前 INT32_MAX 字节就返回，
+/// iov 总长可能少于 atmost 与现有数据量，按 iov 实际长度处理
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 /// <param name="atmost">最多取出的字节数</param>

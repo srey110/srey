@@ -159,14 +159,14 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
                 return ERR_FAILED;
             }
             if (0 == jumped) {
-                (*count)++; // 计入指针第二字节
+                (*count)++;// 计入指针第二字节
             }
             reader = buffer + offset;
             jumped = 1;
             continue;
         }
         if (*reader > 63) {
-            return ERR_FAILED; // 高两位 01/10 为 RFC 1035 保留标签类型
+            return ERR_FAILED;// 高两位 01/10 为 RFC 1035 保留标签类型
         }
         len = *reader;
         if (p + len >= namelen - 1
@@ -191,9 +191,8 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
     name[o] = '\0';
     return ERR_OK;
 }
-// 解析应答段的 n 条资源记录，A/AAAA 的地址依次写进 dnsips，*cnt 输出写了几个(只在成功时写)。
-// 返回应答段之后的 reader 位置，出错返回 NULL
-static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n, dns_ip *dnsips, size_t *cnt) {
+// 解析应答段的 n 条资源记录，A/AAAA 的地址依次写进 dnsips，*cnt 输出写了几个(只在成功时写)
+static int32_t _dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n, dns_ip *dnsips, size_t *cnt) {
     char *buf_end = buf + buflen;
     uint32_t jump_budget = (uint32_t)buflen;// 全报文共享，见 _dns_decode_domain
     size_t index = 0;
@@ -203,25 +202,25 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
     for (uint16_t i = 0; i < n; i++) {
         if (ERR_OK != _dns_decode_domain((unsigned char *)domain, sizeof(domain),
                                      (unsigned char *)reader, (unsigned char *)buf, buflen, &used, &jump_budget)) {
-            return NULL;
+            return ERR_FAILED;
         }
         reader += used;
         // 严格校验：reader 必须在 [buf, buf_end] 内（允许 one-past-end），再用 buf_end-reader
         // 计算剩余字节，避免 reader + N 超越 one-past-end 的指针算术 UB（C11 §6.5.6）
         if (reader < buf || reader > buf_end) {
-            return NULL;
+            return ERR_FAILED;
         }
         // 校验固定字段（type + class + ttl + rdlength = 10 字节）是否在 buffer 内
         if ((size_t)(buf_end - reader) < 2 * sizeof(uint16_t) + sizeof(uint32_t) + sizeof(uint16_t)) {
-            return NULL;
+            return ERR_FAILED;
         }
         rtype = read_be16(reader);
-        reader += 2 * sizeof(uint16_t) + sizeof(uint32_t); // 跳过 type/class/ttl
+        reader += 2 * sizeof(uint16_t) + sizeof(uint32_t);// 跳过 type/class/ttl
         rlens = read_be16(reader);
         reader += sizeof(uint16_t);
         // reader 已推进 10 字节，由前面 buf_end-reader >= 10 保证 reader <= buf_end，减法安全
         if ((size_t)(buf_end - reader) < rlens) {
-            return NULL;
+            return ERR_FAILED;
         }
         //地址转文本按地址族固定读 4 字节（IPv4）/ 16 字节（IPv6），
         //rlens 不严格相等会读到相邻记录或越界栈内存，恶意 DNS 响应可借此泄漏信息或返回伪造 IP
@@ -233,7 +232,7 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
         reader += rlens;
     }
     *cnt = index;
-    return reader;
+    return ERR_OK;
 }
 dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32_t *nodata) {
     // 入口统一归零：往下所有失败路径都不再单独写 cnt(写了也是无操作),
@@ -294,7 +293,7 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
                 break;
             }
             if (llen >= 64) {
-                return NULL; // RFC 1035 保留标签类型
+                return NULL;// RFC 1035 保留标签类型
             }
             if ((size_t)(end - p) < (size_t)1 + llen) {
                 return NULL;
@@ -321,13 +320,13 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32
     MALLOC(dnsips, sizeof(dns_ip) * total);
     size_t nip = 0;
     // CNAME 链目标的 A/AAAA 属主名与查询名不同，故不按属主名过滤
-    reader = _dns_parse_data(buf, buflen, reader, nans, dnsips, &nip);
+    int32_t rtn = _dns_parse_data(buf, buflen, reader, nans, dnsips, &nip);
     // nip==0 是报文合法但一条 A/AAAA 都没解出来。dnsips 是 MALLOC 的、一个字节都没写过，
     // 连同解析失败一起返 NULL，免得调用方按"非 NULL 即成功"读到未初始化内存。
     // 两者意义不同，用 nodata 区分：那是服务端的完整答复，换传输方式重查还是同一结果
-    if (NULL == reader
+    if (ERR_OK != rtn
         || 0 == nip) {
-        if (NULL != reader) {
+        if (ERR_OK == rtn) {
             SET_PTR(nodata, 1);
         }
         FREE(dnsips);

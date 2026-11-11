@@ -360,10 +360,12 @@ static void test_hmac(CuTest *tc) {
     CuAssertTrue(tc, 0 == memcmp(hash, hash2, hlen));
 
     /* 不同 key → 不同结果 */
+    hmac_free(&hm);
     hmac_init(&hm, DG_SHA256, "other", 5);
     hmac_update(&hm, "The quick brown fox jumps over the lazy dog", 43);
     hmac_final(&hm, hash2);
     CuAssertTrue(tc, 0 != memcmp(hash, hash2, hlen));
+    hmac_free(&hm);
 }
 
 /* =======================================================================
@@ -1435,6 +1437,8 @@ static void test_cipher(CuTest *tc) {
     CuAssertTrue(tc, (int)strlen(plain2) == (int)dec_len);
     CuAssertTrue(tc, 0 == memcmp(plain2, dec_buf, dec_len));
 
+    cipher_free(&enc);
+    cipher_free(&dec);
     /* ── AES-128 CBC + PKCS7 往返 ── */
     cipher_init(&enc, AES, CBC, key16, 16, 128, 1);
     cipher_padding(&enc, PKCS57);
@@ -1450,10 +1454,12 @@ static void test_cipher(CuTest *tc) {
 
     /* ECB 与 CBC 密文不同（CBC 受 IV 影响） */
     char ecb_enc[64], cbc_enc[64];
+    cipher_free(&enc);
     cipher_init(&enc, AES, ECB, key16, 16, 128, 1);
     cipher_padding(&enc, PKCS57);
     CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, ecb_enc, &enc_len));
 
+    cipher_free(&enc);
     cipher_init(&enc, AES, CBC, key16, 16, 128, 1);
     cipher_padding(&enc, PKCS57);
     cipher_iv(&enc, iv16, 16);
@@ -1462,6 +1468,8 @@ static void test_cipher(CuTest *tc) {
 
     /* ── DES ECB + PKCS7 往返（DES 密钥 8 字节，分组 8 字节）── */
     const char *des_key = "8bytekey";
+    cipher_free(&enc);
+    cipher_free(&dec);
     cipher_init(&enc, DES, ECB, des_key, 8, 0, 1);
     cipher_padding(&enc, PKCS57);
     cipher_init(&dec, DES, ECB, des_key, 8, 0, 0);
@@ -1563,6 +1571,7 @@ static void test_hmac_variants(CuTest *tc) {
      * Key  = 0x0b × 20，Data = "Hi There"
      * HMAC = 87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde
      *        daa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854 */
+    hmac_free(&hm);
     hmac_init(&hm, DG_SHA512, key20, sizeof(key20));
     hmac_update(&hm, "Hi There", 8);
     hlen = hmac_final(&hm, hash);
@@ -1579,6 +1588,7 @@ static void test_hmac_variants(CuTest *tc) {
     char hash2[DG_BLOCK_SIZE];
     hmac_final(&hm, hash2);
     CuAssertTrue(tc, 0 == memcmp(hash, hash2, hlen));
+    hmac_free(&hm);
 }
 
 /* =======================================================================
@@ -2686,7 +2696,7 @@ static void test_cipher_stream_decrypt(CuTest *tc) {
 
 /* =======================================================================
  * cipher_init IV 初始化 —— 未调 cipher_iv 时 iv/cur_iv 必须为全零
- * cipher_ctx 常落在未清零内存上（lcrypt.c 的 cipher.new 用 lua_newuserdata）；
+ * cipher_ctx 常落在未清零内存上（lcipher.c 的 cipher.new 用 lua_newuserdata）；
  * 若 cipher_init 不清零 iv/cur_iv，非 ECB 模式会拿堆残留当 IV：
  * 同一 key+明文在不同残留上得到不同密文，加解密对象也互不匹配。
  * cipher_block 这一路不经 cipher_dofinal 的 cipher_reset，是 cur_iv 读先于写的路径
@@ -2846,7 +2856,7 @@ static void test_cipher_stream_segments(CuTest *tc) {
                         if (n > total - off) {
                             n = total - off;
                         }
-                        p = cipher_block(&c, data + off, n, &olen);
+                        p = cipher_block(&c, 0 == n ? NULL : data + off, n, &olen);// 零长段传 NULL 也得成功
                         CuAssertPtrNotNull(tc, p);
                         CuAssertTrue(tc, n == olen);
                         memcpy(seg + off, p, n);

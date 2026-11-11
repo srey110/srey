@@ -67,11 +67,13 @@
 // 命令里除大文档外还会拼进去的两段：调用方 options，与事务内的 session options
 #define MONGO_OPT_EXTRA(optlens) \
     ((NULL != options ? (optlens) : 0) + ((NULL != mongo->session && NULL != mongo->session->options) ? mongo->session->optionslens : 0))
-// 两个 RETURN 与 saslStart 组包共用的通用收尾：$db + 闭合 + 填 OP_MSG 头，bson 的缓冲就是结果，留在 _data（失败时已释放）
-#define _MONGO_PACK_TAIL(db, flags) \
+// 两个 RETURN 与 saslStart 组包共用的通用收尾：$db + 闭合 + 填 OP_MSG 头，bson 的缓冲就是结果，留在 _data（失败时已释放）。
+// seqs / nseq 是正文之后追加的文档序列(见 mongo_seq)，没有就传 NULL / 0
+#define _MONGO_PACK_TAIL_SEQ(db, flags, seqs, nseq) \
         bson_append_utf8(&bson, "$db", (db)); \
         bson_append_end(&bson); \
-        void *_data = _mongo_pack_msg(mongo, &bson, (flags), size)
+        void *_data = _mongo_pack_msg(mongo, &bson, (flags), (seqs), (nseq), size)
+#define _MONGO_PACK_TAIL(db, flags) _MONGO_PACK_TAIL_SEQ(db, flags, NULL, 0)
 // 函数收尾。db 形参为 mongo->db / mongo->authdb 等
 #define MONGO_PACK_RETURN(db, flags) do { \
         _MONGO_PACK_TAIL(db, flags); \
@@ -101,8 +103,10 @@
     }
 // 同 MONGO_PACK_RETURN，另在组包成功后落 started。_txnstart 由上面那个宏声明，
 // 故配错在编译期就报：少了它是未声明标识符，多了它是设了没读
-#define MONGO_PACK_RETURN_TXN(db, flags) do { \
-        _MONGO_PACK_TAIL(db, flags); \
+#define MONGO_PACK_RETURN_TXN(db, flags) MONGO_PACK_RETURN_TXN_SEQ(db, flags, NULL, 0)
+// 同 MONGO_PACK_RETURN_TXN，正文之后追加文档序列
+#define MONGO_PACK_RETURN_TXN_SEQ(db, flags, seqs, nseq) do { \
+        _MONGO_PACK_TAIL_SEQ(db, flags, seqs, nseq); \
         if (NULL != _data \
             && 0 != _txnstart) { \
             mongo->session->started = 1; \
@@ -115,13 +119,21 @@
         return _data; \
     } while (0)
 // 只带事务上下文(lsid/txnNumber/autocommit)，不带 startTransaction。getMore / killCursors 用，理由见各自组包处。
-// commit 与 abort 不用它，作废判据各不相同，见各自组包处；hello 与 count 不带事务上下文。
+// commit 与 abort 不用它，作废判据各不相同，见各自组包处；哪些命令带事务上下文见 mongo_pack.h 文件头。
 // 取连接当前绑定的 mongo->session
 #define TRANSACTION_OPTIONS \
     if (NULL != mongo->session) {\
         MONGO_PACK_TXN_LIVE;\
         MONGO_PACK_CAT(mongo->session->options, mongo->session->optionslens);\
     }
+
+// 不嵌进正文、单独按文档序列(OP_MSG Section kind 1)发的数组字段。正文受单文档 16MB 上限约束，
+// 序列里只卡每篇文档，整包上限是服务端的 maxMessageSizeBytes(48MB)
+typedef struct mongo_seq {
+    const char *name;   // 标识符，即命令里这个数组字段的名字
+    const char *arr;    // BSON 数组，已过 bson_check_doc
+    size_t lens;        // arr 的字节数
+}mongo_seq;
 
 // 连接上绑着的事务已随重连作废：CRUD 只看连接换没换，提交交出过也不放行(那只许重发提交，见 mongo_session_stale)
 static inline int32_t _mongo_txn_stale(mongo_ctx *mongo) {
@@ -135,8 +147,50 @@ static inline int32_t _mongo_cap_toolong(size_t cap) {
     LOG_ERROR("mongo document exceeds %d bytes: %zu.", MONGO_PACK_MAX, cap);
     return 1;
 }
-// 在 bson 预留的 MONGO_MSG_HDR 字节里就地填 OP_MSG 头（Section kind 0），交出 bson 的缓冲；失败时释放 bson
-static void *_mongo_pack_msg(mongo_ctx *mongo, bson_ctx *bson, int32_t flags, size_t *size) {
+// 在已闭合的正文后追加一个 kind 1 段：kind + 段长 + 标识符 + 数组各元素(须都是文档)依次排开。
+// 数组只过了外层校验，逐个元素卡长度；有元素不是文档返回 ERR_FAILED
+static int32_t _mongo_seq_append(binary_ctx *doc, const mongo_seq *seq) {
+    binary_set_int8(doc, 1);
+    size_t start = doc->offset;
+    binary_set_skip(doc, 4);// 段长，末尾回填
+    binary_set_string(doc, seq->name);
+    const char *p = seq->arr + 4;
+    const char *end = seq->arr + seq->lens - 1;// 末字节是数组的结束符
+    const char *nul;
+    uint32_t dlens;
+    while (p < end) {
+        if (BSON_DOCUMENT != (uint8_t)*p) {
+            return ERR_FAILED;
+        }
+        nul = memchr(p + 1, '\0', (size_t)(end - p - 1));// 元素名，数组里是 "0" "1" ...
+        if (NULL == nul
+            || end - (nul + 1) < 5) {
+            return ERR_FAILED;
+        }
+        p = nul + 1;
+        dlens = read_le32(p);
+        if (dlens < 5
+            || dlens > (size_t)(end - p)) {
+            return ERR_FAILED;
+        }
+        binary_set_binary(doc, p, dlens);
+        p += dlens;
+    }
+    write_le32(doc->data + start, (uint32_t)(doc->offset - start));
+    return ERR_OK;
+}
+// 在 bson 预留的 MONGO_MSG_HDR 字节里就地填 OP_MSG 头（正文是 Section kind 0），seqs 依次追加成 kind 1 段；
+// 交出 bson 的缓冲，失败时释放 bson
+static void *_mongo_pack_msg(mongo_ctx *mongo, bson_ctx *bson, int32_t flags, const mongo_seq *seqs, int32_t nseq,
+                             size_t *size) {
+    for (int32_t i = 0; i < nseq; i++) {
+        if (ERR_OK != _mongo_seq_append(&bson->doc, &seqs[i])) {
+            LOG_ERROR("mongo %s rejected: every element must be a document.", seqs[i].name);
+            BSON_FREE(bson);
+            *size = 0;
+            return NULL;
+        }
+    }
     char *p = bson->doc.data;
     *size = bson->doc.offset;
     // 总长在此判:MONGO_PACK_CAT 只管每一片,拼完仍可能超出 int32 长度字段。拒法同 MONGO_PACK_CAT:
@@ -235,35 +289,39 @@ void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t optlens, size_t *s
 void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN2(dlens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "insert", mongo->collection);
-    MONGO_PACK_ARR("documents", docs, dlens);
+    MONGO_PACK_CHECK("documents", docs, dlens);
+    const mongo_seq seq = { "documents", docs, dlens };
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN_TXN(mongo->db, mongo->flags);
+    MONGO_PACK_RETURN_TXN_SEQ(mongo->db, mongo->flags, &seq, 1);
 }
 void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN2(ulens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "update", mongo->collection);
-    MONGO_PACK_ARR("updates", updates, ulens);
+    MONGO_PACK_CHECK("updates", updates, ulens);
+    const mongo_seq seq = { "updates", updates, ulens };
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN_TXN(mongo->db, mongo->flags);
+    MONGO_PACK_RETURN_TXN_SEQ(mongo->db, mongo->flags, &seq, 1);
 }
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN2(dlens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_utf8(&bson, "delete", mongo->collection);
-    MONGO_PACK_ARR("deletes", deletes, dlens);
+    MONGO_PACK_CHECK("deletes", deletes, dlens);
+    const mongo_seq seq = { "deletes", deletes, dlens };
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN_TXN(mongo->db, mongo->flags);
+    MONGO_PACK_RETURN_TXN_SEQ(mongo->db, mongo->flags, &seq, 1);
 }
 void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN2(olens + nlens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));
     bson_append_int32(&bson, "bulkWrite", 1);
-    MONGO_PACK_ARR("ops", ops, olens);
-    MONGO_PACK_ARR("nsInfo", nsinfo, nlens);
+    MONGO_PACK_CHECK("ops", ops, olens);
+    MONGO_PACK_CHECK("nsInfo", nsinfo, nlens);
+    const mongo_seq seqs[2] = { { "ops", ops, olens }, { "nsInfo", nsinfo, nlens } };
     MONGO_PACK_CAT(options, optlens);
     TRANSACTION_OPTIONS_START
-    MONGO_PACK_RETURN_TXN(mongo->db, mongo->flags);
+    MONGO_PACK_RETURN_TXN_SEQ(mongo->db, mongo->flags, seqs, 2);
 }
 void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens, size_t *size) {
     MONGO_PACK_BEGIN2(flens + BSON_HEADROOM, MONGO_OPT_EXTRA(optlens));

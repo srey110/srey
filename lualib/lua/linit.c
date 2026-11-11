@@ -47,6 +47,7 @@ static const luaL_Reg stdlibs[] = {
 static const luaL_Reg extlibs[] = {
   {LUA_SREY_TASK, luaopen_task},
   {LUA_SREY_CORE, luaopen_core},
+  {LUA_SREY_SSL, luaopen_ssl},
   {LUA_SREY_HARBOR, luaopen_harbor},
   {LUA_SREY_DNS, luaopen_dns},
   {LUA_SREY_CUSTZ, luaopen_custz},
@@ -56,6 +57,7 @@ static const luaL_Reg extlibs[] = {
   {LUA_SREY_SMTP, luaopen_smtp},
   {LUA_SREY_SMTP_MAIL, luaopen_mail},
   {LUA_SREY_UTILS, luaopen_utils},
+  {LUA_SREY_LOG, luaopen_log},
   {LUA_SREY_HASHRING, luaopen_hashring},
   {LUA_SREY_TREND, luaopen_trend},
   {LUA_SREY_POPEN, luaopen_popen},

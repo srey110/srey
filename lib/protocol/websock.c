@@ -68,26 +68,22 @@ static inline void _websock_mask_xor(char *dst, const char *src, size_t lens, co
     size_t i = 0;
 #if defined(SIMD_SSE2)
     uint32_t key32;
-    __m128i vkey, v;// __m128i：装 16 字节的向量类型
-    memcpy(&key32, key, 4);// key 未必 4 字节对齐，memcpy 读最稳，编译器会编成一条普通读
-    // set1_epi32 把 4 字节 key 重复 4 次铺满 16 字节，正好对上载荷每 4 字节轮一次 key
+    __m128i vkey, v;
+    memcpy(&key32, key, 4);// key 未必 4 字节对齐
+    // key 重复铺满 16 字节，正好对上载荷每 4 字节轮一次 key
     vkey = _mm_set1_epi32((int32_t)key32);
     for (; i + 16 <= lens; i += 16) {
-        // loadu / storeu：读写 16 字节，不要求地址对齐；xor_si128：16 字节逐位异或
         v = _mm_loadu_si128((const __m128i *)(src + i));
         v = _mm_xor_si128(v, vkey);
         _mm_storeu_si128((__m128i *)(dst + i), v);
     }
 #elif defined(SIMD_NEON)
-    // 用 u8 load/store + reinterpret 确保 ISO 严格别名合规（字节类型可访问任意内存）；
-    // vreinterpretq 是位级类型重解释，零运行时开销
+    // 用 u8 load/store + reinterpret，保证严格别名合规
     uint32_t key32;
-    uint8x16_t vkey, v;// uint8x16_t：16 个字节组成的向量类型
+    uint8x16_t vkey, v;
     memcpy(&key32, key, 4);
-    // vdupq_n_u32 把 4 字节 key 重复 4 次铺满 16 字节；vreinterpretq_u8_u32 把这 4 个 u32 原样看成 16 个字节
     vkey = vreinterpretq_u8_u32(vdupq_n_u32(key32));
     for (; i + 16 <= lens; i += 16) {
-        // vld1q_u8 / vst1q_u8：读写 16 字节，不要求对齐；veorq_u8：16 字节逐位异或
         v = vld1q_u8((const uint8_t *)(src + i));
         v = veorq_u8(v, vkey);
         vst1q_u8((uint8_t *)(dst + i), v);
@@ -100,7 +96,7 @@ static inline void _websock_mask_xor(char *dst, const char *src, size_t lens, co
     memcpy(&key32s, key, 4);
     key64 = (uint64_t)key32s | ((uint64_t)key32s << 32);// 4 字节 key 连拼两遍凑成 8 字节
     for (; i + 8 <= lens; i += 8) {
-        // src / dst 未必 8 字节对齐，用 memcpy 读写，编译器会编成普通的 8 字节读写
+        // src / dst 未必 8 字节对齐
         memcpy(&block, src + i, 8);
         block ^= key64;
         memcpy(dst + i, &block, 8);
@@ -130,9 +126,8 @@ void *_websock_pack_next(void *pack) {
     p->next = NULL;
     return next;
 }
-// PING 不会是响应:放过去的话对端一个保活 PING 就能唤醒正等响应的协程,请求-响应从此错开一格;
-// PONG 照旧可唤醒,发 PING 等的就是它。承载子协议时只有真带出子协议包的帧才可能是响应——控制帧
-// 与零长数据帧的 secpack 为 NULL,放过去会撞上 prots_may_resume 入口的 NULL 短路变成"恒可唤醒"
+// PING 不唤醒等响应的协程,PONG 可以。承载子协议时只有带出子协议包的帧才算响应:
+// secpack 为 NULL 的不能放过去,prots_may_resume 入口的 NULL 短路会让它恒可唤醒
 int32_t _websock_may_resume(void *data) {
     websock_pack_ctx *pack = (websock_pack_ctx *)data;
     if (WS_PING == pack->prot) {
@@ -171,7 +166,7 @@ static int32_t _websock_set_secextra_cb(struct watcher_ctx *watcher, struct evso
     ud_cxt *ud = _evpub_get_ud(evsk);
     const char *why = NULL;
     websock_ctx *ws = (websock_ctx *)ud->context;
-    // 收的是裸 fd, 必须自己认协议与握手阶段, 判据同 _websock_udfree。口径同 _http_set_nobody_cb
+    // 调用方可能传任意连接, 必须自己认协议与握手阶段, 判据同 _websock_udfree。口径同 _http_set_nobody_cb
     if (PACK_WEBSOCK != ud->pktype) {
         why = "not a websock connection";
     } else if (INIT == ud->status) {
@@ -214,14 +209,9 @@ static http_header_ctx *_websock_hscheck(struct http_pack_ctx *hpack, const ws_h
                 continue;
             }
             hit |= (1u << j);// 记下第 j 项已命中
-            if (0 == tbl[j].sign) {
-                continue;
+            if (0 != tbl[j].sign) {
+                sign = head;
             }
-            if (NULL != sign) {
-                LOG_WARN("websock handshake table: more than one sign entry, key %s.", tbl[j].key);
-                return NULL;
-            }
-            sign = head;
         }
     }
     return hit == all ? sign : NULL;
@@ -266,16 +256,6 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
     }
     return ERR_FAILED;
 }
-// 校验每段都是合法 token(非法整体拒绝)。去 OWS 与跳空段已由 split 的 SPLIT_TRIM |
-// SPLIT_SKIPEMPTY 完成,这里拿到的段必然非空
-static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
-    for (int32_t i = 0; i < cnt; i++) {
-        if (!is_token(segs[i].data, segs[i].lens)) {
-            return ERR_FAILED;
-        }
-    }
-    return cnt;
-}
 // 拆分解析子协议。按 RFC 7230 §7 的 list 语义切:每段先 trim 再忽略空元素,
 // 所以 "mqtt,,," 只算一个。
 // trunc 只有服务端侧给 1:客户端的 offer 数超上限是自己配错了,组包时就失败
@@ -288,16 +268,46 @@ static inline int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx pr
     if (ERR_FAILED == n) {
         return ERR_FAILED;
     }
-    return _websock_check_secprot(prots, n);
+    for (int32_t i = 0; i < n; i++) {// 每段都得是合法 token,非法整体拒绝
+        if (!is_token(prots[i].data, prots[i].lens)) {
+            return ERR_FAILED;
+        }
+    }
+    return n;
 }
 // 服务端子协议校验。一个都没匹配上内建协议时兜底选客户端提的第一个:这是透传设计,不是漏选——
-// sectype 保持 PACK_NONE(照原样按纯 WS 投递帧),协商到的名字经 spctx 交给应用层自己实现自定义子协议
-static int32_t _websock_secprot_check_server(char *secprots, size_t lens, pack_type *sectype, ws_secprots_ctx **spctx) {
+// sectype 保持 PACK_NONE(照原样按纯 WS 投递帧),协商到的名字经 spctx 交给应用层自己实现自定义子协议。
+// 子协议头可分多行给(RFC 6455 §11.3.4,等同合并成一行),这里用逗号接成一份再切;没有非空的头时 *spctx 不动
+static int32_t _websock_secprot_check_server(struct http_pack_ctx *hpack, pack_type *sectype, ws_secprots_ctx **spctx) {
+    static const char key[] = "sec-websocket-protocol";
+    uint32_t nhead = http_nheader(hpack);
+    http_header_ctx *head;
+    size_t lens = 0;
+    for (uint32_t i = 0; i < nhead; i++) {
+        head = http_header_at(hpack, i);
+        if (ERR_OK == _http_check_keyval(head, key, sizeof(key) - 1, NULL, 0) && head->value.lens > 0) {
+            lens += head->value.lens + 1;// 多的一字节:行间逗号,末行时当结尾的 NUL
+        }
+    }
+    if (0 == lens) {
+        return ERR_OK;
+    }
     ws_secprots_ctx *ctx;
-    CALLOC(ctx, 1, sizeof(ws_secprots_ctx) + lens + 1);
+    CALLOC(ctx, 1, sizeof(ws_secprots_ctx) + lens);
     ctx->index = -1;
+    lens = 0;
+    for (uint32_t i = 0; i < nhead; i++) {
+        head = http_header_at(hpack, i);
+        if (ERR_OK != _http_check_keyval(head, key, sizeof(key) - 1, NULL, 0) || 0 == head->value.lens) {
+            continue;
+        }
+        if (0 != lens) {
+            ctx->data[lens++] = ',';
+        }
+        memcpy(ctx->data + lens, head->value.data, head->value.lens);
+        lens += head->value.lens;
+    }
     ctx->dlens = lens;
-    memcpy(ctx->data, secprots, lens);
     // 超上限取前 WS_MAXCNT_SECPROT 个继续协商(offer 按优先级排)。截掉的那些不过 token 校验
     ctx->cnt = _websock_secprot_split(ctx->data, lens, ctx->prots, 1);
     if (ERR_FAILED == ctx->cnt) {
@@ -353,14 +363,10 @@ static int32_t _websock_handshake_server(ev_ctx *ev, sock_ctx *sk, int32_t clien
     }
     //子协议校验
     ws_secprots_ctx *spctx = NULL;
-    size_t lens = 0;
-    char *sechead = http_header(hpack, "Sec-WebSocket-Protocol", &lens);
-    if (lens > 0) {
-        if (ERR_OK != _websock_secprot_check_server(sechead, lens, sectype, &spctx)) {
-            BIT_SET(*status, PROT_ERROR);
-            _hs_push(sk, client, ud, ERR_FAILED, NULL, 0);
-            return ERR_FAILED;
-        }
+    if (ERR_OK != _websock_secprot_check_server(hpack, sectype, &spctx)) {
+        BIT_SET(*status, PROT_ERROR);
+        _hs_push(sk, client, ud, ERR_FAILED, NULL, 0);
+        return ERR_FAILED;
     }
     //返回握手消息
     if (ERR_OK != _websock_handshake_respond(ev, sk, signstr, spctx)) {
@@ -378,23 +384,16 @@ static int32_t _websock_handshake_server(ev_ctx *ev, sock_ctx *sk, int32_t clien
         return ERR_OK;
     }
 }
-// 客户端侧握手状态行校验：确认响应状态码为 101
-static inline int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
-    buf_ctx *status = http_status(hpack);
-    if (NULL == status
-        || !buf_compare(&status[1], "101", strlen("101"))) {
-        return ERR_FAILED;
-    }
-    return ERR_OK;
-}
-// 客户端侧握手头部校验：验证 Connection/Upgrade/Sec-WebSocket-Accept 字段
+// 客户端侧握手校验：状态码须为 101，再验证 Connection/Upgrade/Sec-WebSocket-Accept 字段
 static inline http_header_ctx *_websock_client_checkhs(struct http_pack_ctx *hpack) {
     static const ws_hscheck _cltbl[] = {
         { 0, "connection", sizeof("connection") - 1, "upgrade", sizeof("upgrade") - 1 },
         { 0, "upgrade", sizeof("upgrade") - 1, "websocket", sizeof("websocket") - 1 },
         { 1, "sec-websocket-accept", sizeof("sec-websocket-accept") - 1, NULL, 0 }
     };
-    if (ERR_OK != _websock_handshake_clientckstatus(hpack)) {
+    buf_ctx *status = http_status(hpack);
+    if (NULL == status
+        || !buf_compare(&status[1], "101", strlen("101"))) {
         return NULL;
     }
     return _websock_hscheck(hpack, _cltbl, (uint32_t)ARRAY_SIZE(_cltbl));
@@ -858,24 +857,16 @@ static inline size_t _websock_pllens_size(size_t dlens) {
     }
     return (dlens <= 0xffff) ? sizeof(uint16_t) : sizeof(uint64_t);
 }
-// 计算 WebSocket 帧总长度（头部 + 可选扩展长度字段 + 可选掩码 + 数据体）
-static inline size_t _websock_create_callens(char *key, size_t dlens) {
-    size_t size = HEAD_LESN + dlens + _websock_pllens_size(dlens);
-    if (NULL != key) {
-        size += MASK_KEY_LENS;
-    }
-    return size;
-}
 // 构造 WebSocket 帧：写入头部（含扩展长度和掩码），有掩码时对数据进行 XOR 加密
 static void *_websock_create_pack(uint8_t fin, uint8_t prot, char *key, void *data, size_t dlens, size_t *size) {
-    // 只挡 _websock_create_callens 的加法回绕:回绕后按小尺寸分配却按大尺寸写。
+    // 只挡下面帧长加法的回绕:回绕后按小尺寸分配却按大尺寸写。
     // 不拿 WS_MAX_PAYLOAD_LENS 卡——那是本地接收策略,对端多是浏览器之类,收几 MB 的帧没问题
     if (dlens > SIZE_MAX - FRAME_HEAD_MAX) {
         LOG_ERROR("websock payload %zu overflows the frame length.", dlens);
         *size = 0;
         return NULL;
     }
-    *size = _websock_create_callens(key, dlens);
+    *size = HEAD_LESN + dlens + _websock_pllens_size(dlens) + (NULL != key ? MASK_KEY_LENS : 0);
     char *frame;
     MALLOC(frame, *size);
     frame[0] = 0;
@@ -953,7 +944,6 @@ void *websock_pack_pong(int32_t mask, void *data, size_t dlens, size_t *size) {
     return _websock_pack_ctrl(mask, WS_PONG, data, dlens, size);
 }
 void *websock_pack_close(int32_t mask, uint16_t code, const char *reason, size_t rlens, size_t *size) {
-    char body[WS_CTRL_MAX_LENS];
     if (0 == code) {
         if (0 != rlens) {
             *size = 0;
@@ -965,6 +955,7 @@ void *websock_pack_close(int32_t mask, uint16_t code, const char *reason, size_t
         *size = 0;
         return NULL;
     }
+    char body[WS_CTRL_MAX_LENS];
     write_be16(body, code);
     if (0 != rlens) {
         memcpy(body + sizeof(uint16_t), reason, rlens);

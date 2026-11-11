@@ -39,7 +39,7 @@ local function nslookup_udp(domain, ipv6, ip, port)
         srey.close(sk)
         return nil
     end
-    local msg = srey._coro_wait(sk.skid, MSG_RECVFROM, srey.get_netread_timeout())
+    local msg = srey._coro_wait(sk.skid, MSG_RECVFROM, srey.coro_timeout_get("netread"))
     srey.close(sk)
     -- 超时、断开、来源不是 ip:port 都按失败回退 TCP(同 TC 位)。来源按串比，配置的 IPv6 不是规范写法时一律走 TCP
     if MSG_RECVFROM ~= msg.mtype then

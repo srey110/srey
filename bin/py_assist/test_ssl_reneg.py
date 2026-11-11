@@ -47,6 +47,11 @@ SSL_KEY_UPDATE_REQUESTED = 1
 SSL_ERROR_WANT_READ = 2
 SSL_ERROR_WANT_WRITE = 3
 SSL_ERROR_ZERO_RETURN = 6
+SSL3_RT_HANDSHAKE = 22
+SSL3_MT_KEY_UPDATE = 24
+# void (*cb)(int write_p, int version, int content_type, const void *buf, size_t len, SSL *ssl, void *arg)
+MSG_CB = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                          ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p)
 
 
 class SkipError(Exception):
@@ -142,6 +147,7 @@ def _setup(f):
     f.SSL_get_version = sig("SSL_get_version", ctypes.c_char_p, [v])
     f.SSL_shutdown = sig("SSL_shutdown", i, [v])
     f.SSL_key_update = sig("SSL_key_update", i, [v, i], required=False)
+    f.SSL_set_msg_callback = sig("SSL_set_msg_callback", None, [v, MSG_CB], required=False)
     f.ERR_get_error = sig("ERR_get_error", ctypes.c_ulong, [], src=f._crypto)
     f.ERR_error_string_n = sig("ERR_error_string_n", None,
                                [ctypes.c_ulong, v, ctypes.c_size_t], src=f._crypto)
@@ -181,6 +187,8 @@ class TLSClient:
         self.sock = None
         self.ctx = None
         self.ssl = None
+        self.ku_seen = None  # 收到的 KeyUpdate 条数；libssl 没有 SSL_set_msg_callback 时为 None，不判
+        self._msg_cb = None
 
     def connect(self):
         f = lib()
@@ -203,7 +211,17 @@ class TLSClient:
         if not self.ssl:
             raise TLSError("SSL_new: " + _err_stack())
         f.SSL_set_fd(self.ssl, self.sock.fileno())  # BIO_NOCLOSE，fd 由 Python sock 关
+        if f.SSL_set_msg_callback:
+            self.ku_seen = 0
+            self._msg_cb = MSG_CB(self._on_msg)  # 留着引用，回调对象被回收后 OpenSSL 再调就崩
+            f.SSL_set_msg_callback(self.ssl, self._msg_cb)
         self._op(lambda: f.SSL_connect(self.ssl), "SSL_connect")
+
+    def _on_msg(self, write_p, version, content_type, buf, length, ssl, arg):
+        # 只数收到的 KeyUpdate：srey 回了，才说明它真把响应写上了线路
+        if 0 == write_p and SSL3_RT_HANDSHAKE == content_type and length > 0 \
+                and SSL3_MT_KEY_UPDATE == ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))[0]:
+            self.ku_seen += 1
 
     def _wait(self, deadline, want_read, want_write):
         remain = deadline - time.monotonic()
@@ -354,6 +372,9 @@ def case_tls13_key_update():
         _assert200(_http_get(c)[0])
         c.key_update()
         _assert200(_http_get(c)[0])
+        # 要求了对端更新而 srey 不回，旧密钥照样收得到数据，只看收发正常测不出来
+        if c.ku_seen is not None and c.ku_seen < 1:
+            raise TLSError("KeyUpdate(REQUESTED) 之后没收到 srey 回的 KeyUpdate")
         big = b"y" * (16 * 1024)
         h, b = _http_post(c, big)
         _assert200(h)

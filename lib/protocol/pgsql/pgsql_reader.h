@@ -84,7 +84,7 @@ int16_t pgsql_reader_col(pgsql_reader_ctx *reader, const char *name, size_t nlen
 /// <returns>布尔值（0 或 1），出错时返回 0</returns>
 int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *err);
 /// <summary>
-/// 按列名读取当前行中整数类型字段的值（支持 int2/int4/int8）
+/// 按列名读取当前行中整数类型字段的值（支持 int2/int4/int8/oid8；oid8 超出 int64 的值读取失败）
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx 指针</param>
 /// <param name="name">列名字符串</param>

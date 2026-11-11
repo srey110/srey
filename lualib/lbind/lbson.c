@@ -176,7 +176,7 @@ static int32_t _lbson_double(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">bson 对象</param>
 /// <param name="key" type="string">字段名；不得含内嵌 NUL（BSON 的 e_name 是 cstring）</param>
-/// <param name="val" type="string">UTF-8 字符串值</param>
+/// <param name="val" type="string">UTF-8 字符串值；超过 INT32_MAX - 1 字节报错</param>
 /// <returns>无</returns>
 static int32_t _lbson_utf8(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
@@ -184,6 +184,7 @@ static int32_t _lbson_utf8(lua_State *lua) {
     const char *key = lpub_check_cstr_lens(lua, 2, &klens);
     size_t vlen;
     const char *val = luaL_checklstring(lua, 3, &vlen);
+    luaL_argcheck(lua, vlen <= INT32_MAX - 1, 3, "string too long");
     bson_append_utf8_n2(bson, key, klens, val, vlen);
     return 0;
 }
@@ -326,7 +327,7 @@ static int32_t _lbson_regex(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">bson 对象</param>
 /// <param name="key" type="string">字段名；不得含内嵌 NUL（BSON 的 e_name 是 cstring）</param>
-/// <param name="code" type="string">JavaScript 代码</param>
+/// <param name="code" type="string">JavaScript 代码；超过 INT32_MAX - 1 字节报错</param>
 /// <returns>无</returns>
 static int32_t _lbson_jscode(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
@@ -334,6 +335,7 @@ static int32_t _lbson_jscode(lua_State *lua) {
     const char *key = lpub_check_cstr_lens(lua, 2, &klens);
     size_t clen;
     const char *code = luaL_checklstring(lua, 3, &clen);
+    luaL_argcheck(lua, clen <= INT32_MAX - 1, 3, "string too long");
     bson_append_jscode_n2(bson, key, klens, code, clen);
     return 0;
 }
@@ -416,8 +418,8 @@ static int32_t _lbson_maxkey(lua_State *lua) {
 /// <param name="self" type="userdata">bson 对象</param>
 /// <param name="doc" type="string|lightuserdata">已完成 BSON 文档</param>
 /// <param name="size" type="integer?">doc 为 lightuserdata 时必填，buffer 字节数，取值 [0, INT32_MAX]，越界报错</param>
-/// <returns>无；doc 不是落在缓冲内的完整文档时报错（缓冲不足 5 字节、末字节不是 EOD、
-/// 头声明长度超出缓冲，三种情形内容都整篇丢弃，不静默）。本层不设字节数上限——
+/// <returns>无；doc 不是落在缓冲内的完整文档时报错（缓冲不足 5 字节、头声明长度小于 5 或超出缓冲、
+/// 声明长度处的末字节不是 EOD，这几种情形内容都整篇丢弃，不静默）。本层不设字节数上限——
 /// 那取决于承载协议，由上层判（如 mongo 组包侧的 INT32_MAX）</returns>
 static int32_t _lbson_cat(lua_State *lua) {
     bson_ctx *bson = _lbson_check_writable(lua);
@@ -729,6 +731,9 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
         break;
     case LUA_TSTRING:
         str = lua_tolstring(lua, val_idx, &lens);
+        if (lens > INT32_MAX - 1) {
+            luaL_error(lua, "bson encode: string too long, key '%s'", key);
+        }
         bson_append_utf8_n2(bson, key, klens, str, lens);
         break;
     case LUA_TTABLE:
@@ -947,6 +952,7 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
     int32_t cnt = 0;
     bson_init(&sub, data, lens);
     bson_iter_init(&iter, &sub);
+    // 先数字段个数再按个数建表，省掉建表过程中的反复扩容，比少走一遍划算
     if (!is_array) {
         while (bson_iter_next(&iter)) {
             cnt++;
@@ -1112,7 +1118,7 @@ LUAMOD_API int luaopen_bson(lua_State *lua) {
 }
 // ---- bson.iter ----
 // 全部 iter 方法的取值口:类型校验 + 源 bson 是否已 :free()。注意不能改判 iter->doc->data ——
-// bson_iter_find 会把 doc 指向 nested_doc,那是源缓冲的别名视图,源缓冲释放后
+// doc 指向 iter 自带的 nested_doc,那是源缓冲的别名视图,源缓冲释放后
 // 它仍是个非 NULL 的悬垂指针,只有源对象自己的 doc.data 会被 binary_free 置空
 static bson_iter *_lbson_iter_check(lua_State *lua) {
     lbson_iter_t *wrap = lpub_check_udata(lua, 1, MT_BSON_ITER);
@@ -1123,11 +1129,7 @@ static bson_iter *_lbson_iter_check(lua_State *lua) {
 }
 /// <summary>
 /// 从 bson 上下文创建迭代器（以 uservalue 持有 bson 引用，防止 GC）。
-/// 一次性消费契约：iter 会推进底层 bson_ctx 的 doc.offset，且 new 时强制把 offset
-/// 重置到 0 以让 iter_init 正确读 doclens（encode 后 offset 在末尾，直接 init 读到 garbage）。
-/// 因此对同一个**可写**对象调用 iter.new 后，它的 :data() / :complete() 与 bson.decode(该对象) 都不再可靠——
-/// 需要保留原始数据或转 Lua table 时，请先调 :data() / bson.decode() 再创建 iter。
-/// 只读对象（bson.new(data, size)）不受此影响：它的 :data() 取长走 doc.size，与 offset 无关。
+/// iter 自带游标、不动源对象：同一对象上可同时开多个 iter，互不影响，源对象的 :data() / :complete() / bson.decode 照常可用。
 /// 要求 bson 已闭合（depth==0，即写入模式下全部 doc_begin 均已配对 end）；否则报错。
 /// iter 持有的是源缓冲的裸指针，源对象一旦 :free()，本 iter 的全部方法都改为报错
 /// （可被 pcall 捕获），不会去读已释放的内存
@@ -1136,7 +1138,6 @@ static bson_iter *_lbson_iter_check(lua_State *lua) {
 /// <returns type="_bson_iter_ctx">iter 对象</returns>
 static int32_t _lbson_iter_new(lua_State *lua) {
     bson_ctx *bson = _lbson_check_complete(lua);
-    // 归零 doc.offset 已收进 bson_iter_init，这里不再重复
     lbson_iter_t *wrap = lua_newuserdata(lua, sizeof(lbson_iter_t));
     wrap->owner = bson;
     bson_iter_init(&wrap->iter, bson);

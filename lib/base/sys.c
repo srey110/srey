@@ -3,6 +3,7 @@
 #include "base/macro_util.h"
 #include "base/macro_atomic.h"
 #include "base/macro_log.h"
+#include "base/bytes.h"
 #include "base/sfile.h"
 #include "base/stime.h"
 #include "base/once.h"
@@ -270,7 +271,7 @@ static uint32_t _cgroup_cpus(uint32_t n) {
     char *slash;
     uint32_t quota;
     do {
-        if (SNPRINTF(file, sizeof(file), "/sys/fs/cgroup%s/cpu.max", path) < (int)sizeof(file)
+        if (snprintf_ok(SNPRINTF(file, sizeof(file), "/sys/fs/cgroup%s/cpu.max", path), sizeof(file))
             && NULL != (fp = fopen_cloexec(file, "r"))) {
             if (NULL != fgets(val, sizeof(val), fp)) {
                 quota = _cgroup_cpu_quota(val);
@@ -362,7 +363,7 @@ static int32_t _path_search(const char *name, char path[PATH_LENS]) {
     for (const char *dir = getenv("PATH"); NULL != dir; dir = (NULL == end) ? NULL : end + 1) {
         end = strchr(dir, ':');
         lens = (int32_t)(NULL == end ? strlen(dir) : (size_t)(end - dir));
-        if (SNPRINTF(file, sizeof(file), "%.*s%s%s", lens, dir, 0 == lens ? "" : "/", name) < (int)sizeof(file)
+        if (snprintf_ok(SNPRINTF(file, sizeof(file), "%.*s%s%s", lens, dir, 0 == lens ? "" : "/", name), sizeof(file))
             && ERR_OK == isfile(file)
             && 0 == access(file, X_OK)
             && NULL != realpath(file, path)) {
@@ -430,8 +431,11 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     }
     path[rlen] = '\0';
 #elif defined(OS_DARWIN)
-    uint32_t umaclens = len;
-    if (0 != _NSGetExecutablePath(path, &umaclens)) {
+    // 解开 ./ 与符号链接，同 Linux / FreeBSD 拿到的真实路径
+    char exe[PATH_LENS];
+    uint32_t umaclens = (uint32_t)len;
+    if (0 != _NSGetExecutablePath(exe, &umaclens)
+        || NULL == realpath(exe, path)) {
         return ERR_FAILED;
     }
 #elif defined(OS_FBSD)
@@ -460,28 +464,6 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
         return ERR_FAILED;
     }
     *cur = 0;
-#if defined(OS_DARWIN)
-    cur = (0 == strncmp(path, "./", 2)) ? path : NULL;
-    if (NULL != cur) {
-        len = strlen(cur + 2);
-        memmove(path + (cur - path), cur + 2, len);
-        len = cur - path + len;
-        path[len] = 0;
-    } else {
-        len = strlen(path);
-        if (len >= 2
-            && '.' == path[len - 1]
-            && PATH_SEPARATOR == path[len - 2]) {
-            path[len - 2] = 0;
-        }
-    }
-    if (PATH_SEPARATOR == path[0]
-        && PATH_SEPARATOR == path[1]) {
-        len = strlen(path);
-        memmove(path, path + 1, len - 1);
-        path[len - 1] = 0;
-    }
-#endif
     return ERR_OK;
 }
 const char *procpath(void) {

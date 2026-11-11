@@ -12,6 +12,7 @@ local ppub   = require("lib.pgsql_pub")-- 失败原因与 err 契约，见该模
 local pub    = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 local PGPACK_TYPE = ppub.PACK_TYPE
 local PG_IDLE <const> = 73-- 就绪状态 'I'：空闲、不在事务里
+local COPY_BATCH <const> = 64 * 1024-- copy_in 把字符串小块攒到这么多字节再发一条 CopyData
 
 -- pgsql_ctx：PostgreSQL 连接上下文，每实例对应一条持久连接。
 -- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
@@ -102,7 +103,7 @@ end
 ---（含 ping、query），要多次 execute 或中间可能有别的命令时用具名语句
 ---@param sql string SQL 文本
 ---@param nparam integer? 参数数量，默认 0
----@param oids integer[]? 各参数类型 OID 数组
+---@param oids integer[]? 各参数类型 OID 数组；nil 表示不声明类型，全部由服务端推断
 ---@param format PG_FORMAT? execute 时结果列格式，默认 BINARY
 ---@return any|false stmt pgsql_stmt_ctx 实例；失败返回 false
 function ctx:prepare(name, sql, nparam, oids, format)
@@ -123,7 +124,9 @@ end
 ---就只认 CopyData/CopyFail，三步拆成公开方法的话锁得跨用户调用，忘了收尾连接就永久卡死。
 ---producer 抛错或某块发送失败时，本函数会替你发 CopyFail 把服务端拉出 COPY IN 模式，连接仍可继续使用。
 ---producer 内不要再碰这条连接（锁对同协程可重入，那条命令会真的发出去），也不得挂起：
----挂起期间服务端的中途报错没人接，之后要空等满读超时再断连，服务端的错误原文也丢了
+---挂起期间服务端的中途报错没人接，之后要空等满读超时再断连，服务端的错误原文也丢了。
+---字符串块攒到 64KB 合成一条 CopyData 发出，按行返回也不会很快顶满发送队列；lightuserdata 块不合并，一块占一格。
+---这里没有背压：在途块数超过发送队列上限（config.h 的 MAX_SENDQ_CNT）时连接被断开，COPY 整体失败
 ---@param sql string COPY ... FROM STDIN 语句
 ---@param producer fun(format:integer, ncol:integer):(string|lightuserdata|boolean|nil), (integer|string|nil)
 ---       数据块生成器，反复调用，每次都带上服务端 CopyInResponse 里的格式与列数（不关心可忽略）：
@@ -134,9 +137,7 @@ end
 function ctx:copy_in(sql, producer)
     return ppub.call(self, self._copy_in, sql, producer)
 end
--- producer 抛出或返回的值由业务代码决定，可能是个带 __tostring 的对象，而那个元方法自己
--- 也会抛（返回非字符串同样抛）。_copy_fail 与它的调用方是把服务端拉出 COPY IN 模式的唯一
--- 路径，转字符串在那里失手就等于谁也拉不出来了，故一律走这里兜住
+-- producer 抛出或返回的值可能是带 __tostring 的对象，那个元方法自己也会抛；_copy_fail 里转字符串不能失手
 local function _safe_str(v)
     if nil == v then
         return ""
@@ -146,8 +147,7 @@ local function _safe_str(v)
 end
 -- 发 CopyFail 并等服务端确认。中止本身成功时返回 (true, 服务端文本)——CopyFail 的正常
 -- 应答就是 ErrorResponse，所以"中止成功"也走 ERR 包，且成功路径不写 err（写了会让
--- erro() 把正常中止报成失败）。msg 一律转字符串再交出去：本函数是把服务端拉出 COPY IN
--- 模式的唯一手段，在这里抛就等于谁也拉不出来了
+-- erro() 把正常中止报成失败）。本函数是把服务端拉出 COPY IN 模式的唯一手段，里面不能抛，故 msg 先过 _safe_str
 function ctx:_copy_fail(msg)
     local pack, size = pgsql.pack_copy_fail(_safe_str(msg))
     -- 这里期望的类型就是 ERR：CopyFail 的正常应答即 ErrorResponse，收到 OK 说明服务端不在 COPY IN
@@ -158,27 +158,44 @@ function ctx:_copy_fail(msg)
     end
     return true, pgsql.erro(pgpack)
 end
+-- 发一条 CopyData，失败靠 error 抛给 _copy_in 的 pcall
+local function _copy_send(sk, data, size)
+    local pack, psize = pgsql.pack_copy_data(data, size)
+    if not pack then
+        error(ppub.PACK, 0)
+    end
+    if not srey.send(sk, pack, psize, 0) then
+        error(ppub.SEND, 0)
+    end
+end
 -- 逐块写完 producer 给的数据。返回 true=写完可以收尾，(false, reason)=producer 要求中止；
 -- 任何异常都靠 error 抛给调用方那个 pcall，由它统一发 CopyFail
 ---@return boolean more
 ---@return string? reason
 function ctx:_copy_stream(sk, producer, format, ncol)
-    local pack, psize
-    local data, extra
+    local held, nheld, bytes = {}, 0, 0
+    local data, extra, isstr
     while true do
         data, extra = producer(format, ncol)
-        if nil == data then
-            return true
-        end
         if false == data then
             return false, extra
         end
-        pack, psize = pgsql.pack_copy_data(data, extra)
-        if not pack then
-            error(ppub.PACK, 0)
+        isstr = "string" == type(data)
+        if isstr then
+            nheld = nheld + 1
+            held[nheld] = data
+            bytes = bytes + #data
         end
-        if not srey.send(sk, pack, psize, 0) then
-            error(ppub.SEND, 0)
+        -- 收尾、攒够、或来了不能合并的块，都先把攒的发掉，保持先后顺序
+        if nheld > 0 and (not isstr or bytes >= COPY_BATCH) then
+            _copy_send(sk, table.concat(held, "", 1, nheld))
+            nheld, bytes = 0, 0
+        end
+        if nil == data then
+            return true
+        end
+        if not isstr then
+            _copy_send(sk, data, extra)
         end
     end
 end
@@ -196,9 +213,7 @@ function ctx:_copy_in(sql, producer)
     local sk = self.pg:sock_id()
     -- 服务端期望的格式与列数透给 producer：折叠成一个方法之后，调用方再没有别的途径拿到它
     local cfmt, cncol = pgsql.copy_in_info(pgpack)
-    -- 自此服务端已进 COPY IN 模式，任何一条失败路径都必须先把它拉出来再返回。
-    -- 整段串流收进一个 pcall 而不是只包 producer：会抛的不止它，漏了就把服务端
-    -- 留在 copy-in 模式上攥着开放事务和表锁，而 err 还是空的
+    -- 自此服务端已进 COPY IN 模式，任何失败路径都先经 _copy_fail 拉出来再返回，故整段串流都在 pcall 里
     local ok, more, reason = pcall(self._copy_stream, self, sk, producer, cfmt, cncol)
     if not ok then
         self:_copy_fail(more)
@@ -279,7 +294,8 @@ function ctx:_selectdb(database)
 end
 
 ---取消当前正在执行的查询：在独立连接上发送 CancelRequest，服务端处理后主动断开、无响应
----@return boolean ok 发送成功 true；未连接、或握手还没拿到 BackendKeyData（pid 未就绪）返回 false
+---@return boolean ok 发送成功 true；未连接、握手还没拿到 BackendKeyData（pid 未就绪）、建连期间主连接已断开或重连过（不发，
+---免得误取消新连接上的查询）返回 false
 function ctx:cancel()
     local sk = self.pg:sock_id()
     if not sk.valid then
@@ -289,15 +305,18 @@ function ctx:cancel()
         -- 与 C 侧 pgsql_cancel 同级别：正式运行按取消频率刷 WARN 太吵，降成 DEBUG
         DEBUG("pgsql cancel: CancelRequest sent in plaintext (BackendKeyData pid+key exposed); SSL cancel not supported")
     end
+    -- 进来就按此刻的 pid/key 组包(同 C 侧 pgsql_cancel)：connect 会挂起，期间主连接若断了又重连，
+    -- pid/key 会换成新后端的，那时再组包会误取消新连接上别的查询。握手未完成时 pid 为 0，绑定层返回 nil
+    local pack = self.pg:pack_cancel()
+    if not pack then
+        return false
+    end
     local csk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, self.ip, self.port)
     if not csk.valid then
         return false
     end
-    -- 组包必须排在 connect 之后：connect 会挂起，先组包发出去的可能是已被重连换掉的
-    -- 旧 pid/key。组包与 send 之间没有挂起点，快照到发出是原子的；
-    -- 撞上"重连中、握手未完成"那档由 pid 为 0 被绑定层拒掉
-    local pack = self.pg:pack_cancel()
-    if not pack then
+    -- 重组一次与快照不同，说明主连接已断开或重连：要取消的查询已随旧连接失败，不再发
+    if pack ~= self.pg:pack_cancel() then
         srey.close(csk)
         return false
     end
@@ -322,6 +341,13 @@ function ctx:set_db(database)
     return srey.serial_ret(false, self.serial(self.pg.set_db, self.pg, database))
 end
 
+---设置启动时请求的协议次版本（下次连接生效），说明同 C 侧 pgsql_set_protocol。排队理由同 set_userpwd
+---@param minor integer 0 为 3.0（默认），2 为 3.2
+---@return boolean ok 成功 true；不是 0 / 2 时 false，原值不变
+function ctx:set_protocol(minor)
+    return srey.serial_ret(false, self.serial(self.pg.set_protocol, self.pg, minor))
+end
+
 ---获取当前配置的数据库名
 ---@return string database 数据库名
 function ctx:get_db()
@@ -341,7 +367,7 @@ function ctx:reset_session()
 end
 
 ---返回服务端就绪状态字符（ASCII 整数）
----@return integer status 73('I') 空闲 / 84('T') 事务中 / 69('E') 失败事务中 / 0 尚未收到 ReadyForQuery（新建或刚重连）
+---@return integer status 73('I') 空闲 / 84('T') 事务中 / 69('E') 失败事务中 / 0 未连上或已断开（含新建、刚重连还没收到 ReadyForQuery）
 function ctx:readyforquery()
     return self.pg:readyforquery()
 end

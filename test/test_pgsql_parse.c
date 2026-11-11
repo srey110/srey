@@ -31,10 +31,10 @@ static void *_t_pgsql_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud,
 static pgsql_reader_ctx *_pg_reader_new(uint16_t field_count, const int32_t *type_oids,
                                         const char (*names)[64]) {
     pgsql_reader_ctx *r;
-    CALLOC(r, 1, sizeof(*r));
+    CALLOC(r, 1, sizeof(*r) + sizeof(pgpack_field) * field_count);
     r->field_count = field_count;
     if (field_count > 0) {
-        CALLOC(r->fields, 1, sizeof(pgpack_field) * field_count);
+        r->fields = (pgpack_field *)(r + 1);
         for (uint16_t i = 0; i < field_count; i++) {
             r->fields[i].type_oid = type_oids[i];
             safe_fill_str(r->fields[i].name, sizeof(r->fields[i].name), names[i]);
@@ -337,6 +337,35 @@ static void test_pgsql_reader_integer(CuTest *tc) {
     pgsql_reader_integer(r3, "n", &err);
     CuAssertIntEquals(tc, 1, err);
     pgsql_reader_free(r3);
+}
+
+// oid8：二进制按 8 字节读；无符号，超出 int64 的值读取失败(同 mysql 无符号列)；文本格式走同一个整数解析
+static void test_pgsql_reader_oid8(CuTest *tc) {
+    int32_t oids[1] = { OID8OID };
+    char names[1][64] = { "n" };
+    const uint64_t vals[2] = { 0x0102030405060708ULL, 0x8000000000000000ULL };
+    int32_t err;
+    for (int32_t i = 0; i < 2; i++) {
+        pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
+        r->format = FORMAT_BINARY;
+        char *p;
+        MALLOC(p, 8);
+        pack_integer(p, vals[i], 8, 0);// 大端
+        pgpack_row cols[1] = { { 8, p } };
+        _pg_reader_push_row(r, &p, cols);
+        int64_t v = pgsql_reader_integer(r, "n", &err);
+        if (0 == i) {
+            CuAssertTrue(tc, (int64_t)vals[0] == v);
+            CuAssertIntEquals(tc, ERR_OK, err);
+        } else {
+            CuAssertIntEquals(tc, ERR_FAILED, err);
+        }
+        pgsql_reader_free(r);
+    }
+    pgsql_reader_ctx *r2 = _pg_reader_one(oids, names, FORMAT_TEXT, "42", 2);
+    CuAssertTrue(tc, 42 == pgsql_reader_integer(r2, "n", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    pgsql_reader_free(r2);
 }
 
 // 文本协议下取一个 int8 字段，val/lens 由用例给；返回值经 out 带出，err 直接返回
@@ -1489,25 +1518,21 @@ static void test_pgsql_unpack_rows(CuTest *tc) {
     buffer_free(&buf);
     _pgpack_free(pg.pack);
 }
-// 回归：字段描述数组的归属记在 fields_inl 上。常态 T 与 reader 同一次分配(fields_inl=1)；
-// 0 列 T 之后不经 C 又来 2 列 T(违规流)时第二个 T 的数组单独分配(fields_inl=0)。以前拿 fields == reader + 1 判，
-// 分配器恰好把单独分配的那块紧挨着 reader 放时就当成内嵌、漏释放，收尾的内存检查会报 not free；
-// 已落了零列行之后再来 T 则拒收
-static void test_pgsql_fields_separate_alloc(CuTest *tc) {
+// 字段描述数组与 reader 同一次分配；两个 T 之间没有 C 是违规流，一律拒收(否则零列行按 2 列取值会越界)
+static void test_pgsql_second_rowdesc_rejected(CuTest *tc) {
     pgsql_ctx pg;
     ud_cxt ud;
     buffer_ctx buf;
     pgsql_reader_ctx *reader;
-    void *pack = NULL;
     char tbody[128], dbody[64];
     size_t tl, dl;
-    int32_t status, err, i;
+    int32_t status, i;
     ZERO(&pg, sizeof(pg));
     ZERO(&ud, sizeof(ud));
     ud.status = _PG_COMMAND;
     ud.context = &pg;
 
-    // 常态：reader 由 T 新建，字段描述随它一块
+    // 常态：reader 由 T 新建，字段描述紧跟在它后面
     buffer_init(&buf);
     tl = _pg_rowdesc(tbody, 2);
     _pg_push_msg(&buf, 'T', tbody, tl);
@@ -1515,11 +1540,11 @@ static void test_pgsql_fields_separate_alloc(CuTest *tc) {
     CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     reader = pg.pack->pack;
-    CuAssertIntEquals(tc, 1, (int)reader->fields_inl);
+    CuAssertTrue(tc, reader->fields == (pgpack_field *)(reader + 1));
     _pgpack_free(pg.pack);
     pg.pack = NULL;
 
-    // 违规流：0 列 T 建出没有字段描述的 reader，再来的 2 列 T 只能单独分配
+    // 0 列 T 之后不经 C 又来 2 列 T：拒收
     tl = _pg_rowdesc(tbody, 0);
     _pg_push_msg(&buf, 'T', tbody, tl);
     status = PROT_INIT;
@@ -1529,30 +1554,12 @@ static void test_pgsql_fields_separate_alloc(CuTest *tc) {
     _pg_push_msg(&buf, 'T', tbody, tl);
     status = PROT_INIT;
     CuAssertTrue(tc, NULL == _t_pgsql_unpack(0, &buf, &ud, NULL, &status));
-    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
-    reader = pg.pack->pack;
-    CuAssertPtrNotNull(tc, reader->fields);
-    CuAssertIntEquals(tc, 0, (int)reader->fields_inl);
-    // 之后照常落行、取值，释放走单独分配那条路
-    dl = _pg_datarow(dbody, 2, 7);
-    _pg_push_msg(&buf, 'D', dbody, dl);
-    _pg_push_msg(&buf, 'C', "SELECT 1", 9);
-    _pg_push_msg(&buf, 'Z', "I", 1);
-    for (i = 0; i < 4 && NULL == pack; i++) {
-        status = PROT_INIT;
-        pack = _t_pgsql_unpack(0, &buf, &ud, NULL, &status);
-        CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
-    }
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
     buffer_free(&buf);
-    CuAssertPtrNotNull(tc, pack);
-    reader = pgsql_reader_iter((pgpack_ctx *)pack);
-    CuAssertPtrNotNull(tc, reader);
-    CuAssertTrue(tc, 71 == pgsql_reader_integer(reader, "c1", &err));
-    CuAssertIntEquals(tc, ERR_OK, err);
-    pgsql_reader_free(reader);
-    _pgpack_free((pgpack_ctx *)pack);
+    _pgpack_free(pg.pack);
+    pg.pack = NULL;
 
-    // 0 列 T 后已落了零列行再来 2 列 T：零列行按 2 列取值会越界，拒收
+    // 0 列 T 后已落了零列行再来 2 列 T：同样拒收
     buffer_init(&buf);
     tl = _pg_rowdesc(tbody, 0);
     _pg_push_msg(&buf, 'T', tbody, tl);
@@ -2486,6 +2493,52 @@ static size_t _pg_sasl_body(char *body, const char *const *mods, size_t n) {
     *p++ = '\0';
     return (size_t)(p - body);
 }
+// 协议 3.2：NegotiateProtocolVersion 只认降到更低的已知版本；3.2 下密钥 4~256 字节，降回 3.0 后又只认 4 字节
+static void test_pgsql_proto32(CuTest *tc) {
+    pgsql_ctx pg;
+    ud_cxt ud;
+    char body[300];
+    CuAssertIntEquals(tc, ERR_OK, pgsql_init(&pg, "127.0.0.1", 5432, NULL, "u1", "p1", "db1"));
+    CuAssertIntEquals(tc, ERR_FAILED, pgsql_set_protocol(&pg, 1));
+    CuAssertIntEquals(tc, ERR_OK, pgsql_set_protocol(&pg, 2));
+    CuAssertIntEquals(tc, 2, (int)pg.protoreq);
+    ZERO(&ud, sizeof(ud));
+    ud.status = _PG_AUTH;
+    ud.context = &pg;
+    pg.protover = 2;// 启动消息由 _pgsql_startup 发出时就这样记，这里直接摆好
+    memset(body, 0x5a, sizeof(body));
+    pack_integer(body, 7, 4, 0);// pid
+    CuAssertTrue(tc, !BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 4 + 32), PROT_ERROR));
+    CuAssertIntEquals(tc, 32, (int)pg.keylens);
+    CuAssertTrue(tc, !BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 4 + PGSQL_CANCEL_KEY_MAX), PROT_ERROR));
+    CuAssertIntEquals(tc, PGSQL_CANCEL_KEY_MAX, (int)pg.keylens);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 4 + PGSQL_CANCEL_KEY_MAX + 1), PROT_ERROR));
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 4 + 3), PROT_ERROR));
+    // CancelRequest 跟着密钥变长
+    char cancel[PGSQL_CANCEL_MAX];
+    CuAssertIntEquals(tc, 12 + PGSQL_CANCEL_KEY_MAX, (int)pgsql_pack_cancel(cancel, pg.pid, pg.key, pg.keylens));
+    CuAssertIntEquals(tc, 12 + PGSQL_CANCEL_KEY_MAX, (int)read_be32(cancel));
+    CuAssertIntEquals(tc, 7, (int)read_be32(cancel + 8));
+    CuAssertTrue(tc, 0 == memcmp(cancel + 12, pg.key, PGSQL_CANCEL_KEY_MAX));
+    // NegotiateProtocolVersion：太短、不比请求低、未知的次版本都拒；降到 3.0 收下
+    pack_integer(body, 0, 4, 0);
+    pack_integer(body + 4, 0, 4, 0);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'v', body, 6), PROT_ERROR));
+    pack_integer(body, 2, 4, 0);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'v', body, 8), PROT_ERROR));
+    pack_integer(body, 1, 4, 0);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'v', body, 8), PROT_ERROR));
+    CuAssertIntEquals(tc, 2, (int)pg.protover);
+    pack_integer(body, 0, 4, 0);
+    CuAssertTrue(tc, !BIT_CHECK(_pg_auth_feed(&ud, 'v', body, 8), PROT_ERROR));
+    CuAssertIntEquals(tc, 0, (int)pg.protover);
+    // 降回 3.0 后密钥又只认 4 字节
+    pack_integer(body, 9, 4, 0);
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 4 + 32), PROT_ERROR));
+    CuAssertTrue(tc, !BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 4 + 4), PROT_ERROR));
+    CuAssertIntEquals(tc, 4, (int)pg.keylens);
+    CuAssertIntEquals(tc, 16, (int)pgsql_pack_cancel(cancel, pg.pid, pg.key, pg.keylens));
+}
 // 认证阶段（AUTH）的守卫。pg 由 pgsql_init 建、连接标识无效：要发包的分支发送失败置 PROT_ERROR，
 // 但发送之前的状态（选了哪个机制、scram 建没建、通道绑定姿态）照样看得到
 static void test_pgsql_auth_guards(CuTest *tc) {
@@ -2517,14 +2570,16 @@ static void test_pgsql_auth_guards(CuTest *tc) {
     memcpy(body + 4, "v=eA==", 6);
     CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'R', body, 10), PROT_ERROR));
     CuAssertPtrEquals(tc, NULL, pg.scram);
-    // BackendKeyData：不足 8 字节报错，够了才记下 pid / key
+    // BackendKeyData：协议 3.0 下密钥必须正好 4 字节，短了长了都报错，对了才记下 pid / key
     pack_integer(body, 0x01020304, 4, 0);
     pack_integer(body + 4, 0x05060708, 4, 0);
     CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 6), PROT_ERROR));
+    CuAssertTrue(tc, BIT_CHECK(_pg_auth_feed(&ud, 'K', body, 12), PROT_ERROR));
     status = _pg_auth_feed(&ud, 'K', body, 8);
     CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
     CuAssertIntEquals(tc, 0x01020304, pg.pid);
-    CuAssertTrue(tc, 0x05060708u == pg.key);
+    CuAssertIntEquals(tc, 4, (int)pg.keylens);
+    CuAssertTrue(tc, 0 == memcmp(pg.key, body + 4, 4));
 
     // SASL 方法一个都不支持；没有通道绑定材料时不选 PLUS，只给 PLUS 也是一个都不支持
     bl = _pg_sasl_body(body, only_sha1, ARRAY_SIZE(only_sha1));
@@ -2565,6 +2620,8 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_cursor);
     SUITE_ADD_TEST(suite, test_pgsql_reader_bool);
     SUITE_ADD_TEST(suite, test_pgsql_reader_integer);
+    SUITE_ADD_TEST(suite, test_pgsql_proto32);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_oid8);
     SUITE_ADD_TEST(suite, test_pgsql_reader_integer_bounds);
     SUITE_ADD_TEST(suite, test_pgsql_reader_double);
     SUITE_ADD_TEST(suite, test_pgsql_reader_double_bounds);
@@ -2588,7 +2645,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_payload_framing);
     SUITE_ADD_TEST(suite, test_pgsql_copy_out_framing);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows);
-    SUITE_ADD_TEST(suite, test_pgsql_fields_separate_alloc);
+    SUITE_ADD_TEST(suite, test_pgsql_second_rowdesc_rejected);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_spill);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_batch);
     SUITE_ADD_TEST(suite, test_pgsql_unpack_rows_fast);

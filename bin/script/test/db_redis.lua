@@ -46,6 +46,19 @@ runner.run(function(t)
     t:eq(1, _exec(sk, "INCR", "srey:counter"), "INCR first")
     t:eq(2, _exec(sk, "INCR", "srey:counter"), "INCR second")
 
+    -- 错误应答：顶层 (false, 文本)，分得清同内容的字符串值；EXEC 数组里的错误是 { err = 文本 }
+    local ev, emsg = _exec(sk, "GET", "srey:hash")
+    t:eq(false, ev, "错误应答顶层返回 false")
+    t:check("string" == type(emsg) and emsg:find("^WRONGTYPE"), "错误文本走第二返回值: " .. tostring(emsg))
+    t:eq("OK", _exec(sk, "MULTI"), "MULTI")
+    t:eq("QUEUED", _exec(sk, "GET", "srey:hash"), "事务里入队会失败的 GET")
+    t:eq("QUEUED", _exec(sk, "INCR", "srey:counter"), "事务里入队 INCR")
+    local ex = _exec(sk, "EXEC")
+    if t:check("table" == type(ex) and "table" == type(ex[1]), "EXEC 里的错误元素是表") then
+        t:check(ex[1].err and ex[1].err:find("^WRONGTYPE"), "错误元素的 err 带服务端文本: " .. tostring(ex[1].err))
+        t:eq(3, ex[2], "EXEC 里其余元素不受影响")
+    end
+
     -- TYPE 命令（验证 simple string）
     local typeval = _exec(sk, "TYPE", "srey:hash")
     t:eq("hash", typeval, "TYPE hash")
@@ -124,6 +137,58 @@ runner.run(function(t)
             t:eq("2", h2.b, "同 map 内其余字段不受影响")
         end
         _exec(sk, "DEL", "srey:sentinel")
+    end
+
+    do
+        -- RESP3 推送：订阅确认算回复；message 推送不唤醒等回复的协程，syn_recv_any 能收到。
+        -- 发布走另一条连接、发出去不等回复；挂着 BLPOP 时发布，推送一定落在它等满 0.2 秒的空回复之前
+        local CH = "srey:chan"
+        local pub = redis.connect(DB_HOST, 6379, SSL_NAME.NONE, nil, 0)
+        if t:check(pub.valid, "发布连接") then
+            local function _publish(text)
+                local cmd, size = redis.pack_ud("PUBLISH", CH, text)
+                srey.send(pub, cmd, size, 0)
+            end
+            local sub = _exec(sk, "SUBSCRIBE", CH)
+            t:check("table" == type(sub) and "subscribe" == sub[1], "SUBSCRIBE 确认唤醒等待者")
+            _publish("first")
+            t:eq(nil, (_exec(sk, "BLPOP", "srey:nolist", "0.2")), "推送不唤醒等回复的协程，等来的是 BLPOP 的空回复")
+            _publish("second")
+            local msg = redis.unpack((srey.syn_recv_any(sk)))
+            if t:check("table" == type(msg), "syn_recv_any 收到 message 推送") then
+                t:eq("message", msg[1], "推送类型")
+                t:eq(CH, msg[2], "推送频道")
+                t:eq("second", msg[3], "推送内容")
+            end
+            local unsub = _exec(sk, "UNSUBSCRIBE", CH)
+            t:check("table" == type(unsub) and "unsubscribe" == unsub[1], "UNSUBSCRIBE 确认唤醒等待者")
+            t:eq("PONG", _exec(sk, "PING"), "退订后命令照常")
+            srey.close(pub)
+        end
+    end
+
+    do
+        -- Redis 8.8 新命令：组包走通用格式化、回复是已有的 RESP 类型，框架不用改。低版本跳过
+        local hv = _exec(sk, "HELLO", "3")
+        local ver = "table" == type(hv) and hv.version or ""
+        local major, minor = tostring(ver):match("^(%d+)%.(%d+)")
+        if (tonumber(major) or 0) * 100 + (tonumber(minor) or 0) < 808 then
+            printd("[db_redis] Redis 8.8 commands need 8.8+, case skipped (version %s)", tostring(ver))
+        else
+            _exec(sk, "DEL", "srey:increx", "srey:arr", "srey:xs")
+            local r = _exec(sk, "INCREX", "srey:increx", "BYINT", 5, "UBOUND", 8)
+            t:check("table" == type(r) and 5 == r[1] and 5 == r[2], "INCREX 回 [新值, 实际增量]")
+            r = _exec(sk, "INCREX", "srey:increx", "BYINT", 5, "UBOUND", 8)
+            t:check("table" == type(r) and 5 == r[1] and 0 == r[2], "INCREX 超上界不加，实际增量为 0")
+            t:eq(2, _exec(sk, "ARSET", "srey:arr", 0, "a", "b"), "ARSET 回写入个数")
+            t:eq("b", _exec(sk, "ARGET", "srey:arr", 1), "ARGET 取值")
+            t:eq(nil, _exec(sk, "ARGET", "srey:arr", 5), "ARGET 未设的下标为 nil")
+            local id = _exec(sk, "XADD", "srey:xs", "*", "f", "v")
+            t:eq("OK", _exec(sk, "XGROUP", "CREATE", "srey:xs", "g", "0"), "XGROUP CREATE")
+            t:check(nil ~= _exec(sk, "XREADGROUP", "GROUP", "g", "c1", "STREAMS", "srey:xs", ">"), "XREADGROUP 读到消息")
+            t:eq(1, _exec(sk, "XNACK", "srey:xs", "g", "FAIL", "IDS", 1, id), "XNACK 回释放条数")
+            _exec(sk, "DEL", "srey:increx", "srey:arr", "srey:xs")
+        end
     end
 
     -- 清理

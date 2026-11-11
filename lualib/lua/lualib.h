@@ -68,6 +68,8 @@ LUAMOD_API int (luaopen_yyjson)(lua_State *L);
 LUAMOD_API int (luaopen_task)(lua_State *L);
 #define LUA_SREY_CORE "srey.core"
 LUAMOD_API int (luaopen_core)(lua_State *L);
+#define LUA_SREY_SSL "srey.ssl"
+LUAMOD_API int (luaopen_ssl)(lua_State *L);
 #define LUA_SREY_HARBOR "srey.harbor"
 LUAMOD_API int (luaopen_harbor)(lua_State *L);
 #define LUA_SREY_DNS "srey.dns"
@@ -86,6 +88,8 @@ LUAMOD_API int (luaopen_smtp)(lua_State *L);
 LUAMOD_API int (luaopen_mail)(lua_State *L);
 #define LUA_SREY_UTILS "srey.utils"
 LUAMOD_API int (luaopen_utils)(lua_State *L);
+#define LUA_SREY_LOG "srey.log"
+LUAMOD_API int (luaopen_log)(lua_State *L);
 #define LUA_SREY_HASHRING "srey.hashring"
 LUAMOD_API int (luaopen_hashring)(lua_State *L);
 #define LUA_SREY_TREND "srey.trend"

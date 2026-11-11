@@ -224,7 +224,8 @@ static inline size_t binary_remain(binary_ctx *ctx) {
 }
 /// <summary>
 /// 还够不够读 lens 字节。lens 收 uint64_t 不收 size_t：报文里的长度字段常是 64 位，
-/// 调用方若先转窄再比，32 位构建上 0x1_0000_0001 会截成 1 蒙混过关
+/// 调用方若先转窄再比，32 位构建上 0x1_0000_0001 会截成 1 蒙混过关。
+/// 先减后比：size - offset 不会回绕，offset + lens 在极大 lens 时会
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="lens">打算读的字节数</param>
@@ -272,7 +273,6 @@ static inline uint8_t binary_get_uint8(binary_ctx *ctx) {
 /// <param name="islittle">1 小端序列 0大端序列</param>
 /// <returns>int64_t</returns>
 static inline int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle) {
-    //先减后比，避免攻击者构造极大 lens 让 offset+lens size_t 溢出绕过断言
     ASSERTAB(binary_have(ctx, lens), ERRSTR_BINARY_OOB);
     int64_t val = read_integer(ctx->data + ctx->offset, lens, islittle, 1);
     ctx->offset += lens;

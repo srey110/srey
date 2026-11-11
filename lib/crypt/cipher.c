@@ -251,6 +251,9 @@ static inline void _cipher_full_blocks(cipher_ctx *cipher, const uint8_t *data, 
     }
 }
 void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *size) {
+    if (0 == lens) {
+        data = cipher->xor_data;// 空段不读 data，换成非空指针，免得传进来的 NULL 被当成失败
+    }
     const void *input = _cipher_process_data(cipher, data, lens, &lens);
     if (NULL == input) {
         return NULL;

@@ -92,7 +92,7 @@ int32_t mysql_ping(mysql_ctx *mysql);
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL语句</param>
-/// <param name="mbind">mysql_bind_ctx</param>
+/// <param name="mbind">查询属性绑定，NULL 表示没有；服务端不支持查询属性时被忽略，同 mysql_pack_query</param>
 /// <param name="cb">结果集回调；NULL 表示只把结果集读完不回调（INSERT/UPDATE 这类）</param>
 /// <param name="udata">透传给 cb</param>
 /// <returns>ERR_OK 全部结果集读完且回调都成功；ERR_FAILED 组包失败、网络失败、
@@ -101,11 +101,13 @@ int32_t mysql_ping(mysql_ctx *mysql);
 int32_t mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
                     mysql_result_cb cb, void *udata);
 /// <summary>
-/// 预处理
+/// 预处理（COM_STMT_PREPARE）
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL语句</param>
-/// <returns>mysql_stmt_ctx NULL 失败</returns>
+/// <returns>预处理语句，调用方用完 mysql_stmt_close 释放（不关则本地内存与服务端句柄都留着）；
+/// 连接之后重连过的，它的 execute / reset 一律失败，要重新 prepare。
+/// NULL 失败：组包失败（载荷超 16MB）、不在协程内或连接正在销毁、网络失败、服务端回 ERR（原因经 mysql_erro 取）</returns>
 mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql);
 /// <summary>
 /// 预处理执行。接收侧 16MB 续传包的限制同 mysql_query
@@ -195,7 +197,7 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 /// 这条连接一律明文：原连接走 TLS 时，BackendKeyData 的 pid 与 key 会以明文上线路(打一行 DEBUG)
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针，须已成功连接（pid/key 已初始化）</param>
-/// <returns>ERR_OK 发送成功，ERR_FAILED 连接未建立或网络失败</returns>
+/// <returns>ERR_OK 发送成功，ERR_FAILED 连接未建立、建连期间主连接已断开或重连过(不发，免得误取消新连接上的查询)或网络失败</returns>
 int32_t pgsql_cancel(pgsql_ctx *pg);
 /// <summary>
 /// 发送 Terminate 并关闭链接；排队、协程、无执行器的契约同 mysql_quit
@@ -232,8 +234,8 @@ pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql);
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="name">名称</param>
 /// <param name="sql">sql语句</param>
-/// <param name="nparam">参数数量</param>
-/// <param name="oids">参数OID(pgsql_macro.h)</param>
+/// <param name="nparam">参数数量；oids 为 NULL 时不上线</param>
+/// <param name="oids">参数OID(pgsql_macro.h)；NULL 表示不声明类型，全部由服务端推断</param>
 /// <returns>ERR_OK 成功；组包失败（消息体超 INT32_MAX）时不发包、连接不动，返回 ERR_FAILED</returns>
 int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, uint16_t nparam, uint32_t *oids);
 /// <summary>
@@ -261,7 +263,8 @@ void pgsql_stmt_close(pgsql_ctx *pg, const char *name);
 /// <param name="sql">包含 FROM STDIN 的 COPY SQL 语句</param>
 /// <param name="data">要写入的原始数据</param>
 /// <param name="lens">数据字节数</param>
-/// <returns>NULL 失败（组包失败时不发包、连接不动，同 pgsql_query），pgpack_ctx（PGPACK_OK / PGPACK_ERR），
+/// <returns>NULL 失败（组包失败时不发包、连接不动，同 pgsql_query；语句不是 COPY FROM STDIN 时连接照常可用；
+/// 一条 SQL 里有第二条 COPY FROM STDIN 时发 CopyFail 中止），pgpack_ctx（PGPACK_OK / PGPACK_ERR），
 /// 所有权与有效期同 pgsql_query</returns>
 pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens);
 /// <summary>
@@ -269,8 +272,8 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="sql">包含 TO STDOUT 的 COPY SQL 语句</param>
-/// <returns>NULL 失败，pgpack_ctx（PGPACK_COPY_OUT / PGPACK_ERR），pack 字段为 pgpack_copy_out_ctx*；
-/// 所有权与有效期同 pgsql_query</returns>
+/// <returns>NULL 失败（语句不是 COPY TO STDOUT 时连接照常可用），pgpack_ctx（PGPACK_COPY_OUT / PGPACK_ERR），
+/// PGPACK_COPY_OUT 时 pack 字段为 pgpack_copy_out_ctx*；所有权与有效期同 pgsql_query</returns>
 pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
 // 以下 mongo 命令接口全部经连接内的串行化执行器串行发出（含 MORETOCOME 的只发不等——
 // 不等响应也不能乱序，后面那条 find 得看得见前面这批 insert）。因此每个命令都多一种失败：
@@ -532,7 +535,8 @@ int32_t mongo_rollback(mongo_session *session, char *options, size_t optlens);
 /// kcp 同步建立会话:kcp_start 后挂起当前协程,等 event 线程实际建会话完成(或 conv 冲突、fd 不是 UDP_KCP 而失败)后返回;须在协程内调用。
 /// 唤醒 sess 由本函数内部生成(每次新会话一个,故 stop 后重启不会被上一会话的 CLOSE 击穿)。
 /// 数据到达时推送的目标固定为调用方所在 task(即 task->handle);不等待也可用 kcp_start 异步发起并自定目标 handle,
-/// 结果同样会以 MSG_TYPE_HANDSHAKED 推给 task_handshaked 注册的回调(msg.subtype 为 PACK_UDP_KCP)
+/// 结果同样会以 MSG_TYPE_HANDSHAKED 推给 task_handshaked 注册的回调(msg.subtype 为 PACK_UDP_KCP)。
+/// 句柄上还有存活会话时同 kcp_start 先隐式 kcp_stop 旧会话再起新的,等在旧会话上的协程被 CLOSE 唤醒并失败
 /// </summary>
 /// <param name="task">task_ctx,同时也是会话数据的推送目标</param>
 /// <param name="kcp">已 kcp_init 的 kcp_ctx</param>
@@ -568,7 +572,9 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
 int32_t kcp_bind_task(task_ctx *task, struct kcp_ctx *kcp, name_t handle);
 /// <summary>
 /// MySQL 连接池操作表，直接传给 db_pool_new。
-/// 归还时服务端还处在事务里（最近一个 OK / EOF 包带 SERVER_STATUS_IN_TRANS）就先发 ROLLBACK，回滚不成则断开
+/// 归还时服务端还处在事务里（最近一个 OK / EOF 包带 SERVER_STATUS_IN_TRANS，或之后的命令回了 ERR）就先发 ROLLBACK；
+/// autocommit 与认证成功时不同就发 SET autocommit 还原。两步任一不成则断开。
+/// 别的会话状态（mysql_selectdb 换的库、SET 的会话变量、LOCK TABLES、临时表）池不管，借用者要在归还前自己还原
 /// </summary>
 /// <returns>静态操作表</returns>
 const db_pool_ops *mysql_pool_ops(void);

@@ -39,6 +39,7 @@ typedef struct ltask_ctx {
 static char luapath[PATH_LENS] = { 0 };
 // task.timer_ms 读的单调时钟，进程内只要一份；ltask_startup 里初始化，之后只读
 static timer_ctx _ltimer;
+static const char *const _ltask_tmo_kinds[] = { "request", "connect", "netread", NULL };// 超时种类的 Lua 名，下标即 tmo_kind
 
 // 自定义 Lua 分配器：累计内存到 ltask_ctx，mem 越过 tda 告警阈值时 LOG_WARN 并翻倍阈值。
 // 同一 task 的 lua_State 操作天然串行（loader 一次只允许一个 worker 处理同一 task），
@@ -767,7 +768,7 @@ static int32_t _ltask_memlimit(lua_State *lua) {
     return 0;
 }
 static int32_t _ltask_opt_timeout(lua_State *lua, task_ctx *task, uint32_t *ms) {
-    lua_Integer val = luaL_checkinteger(lua, 1);
+    lua_Integer val = luaL_checkinteger(lua, 2);
     if (val <= 0) {
         LOG_WARN("task %s, invalid timeout %"PRId64", ignored.", _NAME_OR(task->name), (int64_t)val);
         return ERR_FAILED;
@@ -776,75 +777,30 @@ static int32_t _ltask_opt_timeout(lua_State *lua, task_ctx *task, uint32_t *ms) 
     return ERR_OK;
 }
 /// <summary>
-/// 设置当前 task 的请求超时时间
+/// 设置当前 task 级的某类超时，本 task 所有协程的等待默认都用它；只想改某几次等待用 srey.coro_timeout_set
 /// </summary>
+/// <param name="kind" type="string">超时种类："request" / "connect" / "netread"，其余报错</param>
 /// <param name="ms" type="integer">超时毫秒数，超过 TASK_TIMEOUT_MAX 时 clamp 到该上界；≤0 时打 WARN 后忽略，原值不变</param>
 /// <returns>无</returns>
-static int32_t _ltask_set_request_timeout(lua_State *lua) {
+static int32_t _ltask_set_timeout(lua_State *lua) {
+    tmo_kind kind = (tmo_kind)luaL_checkoption(lua, 1, NULL, _ltask_tmo_kinds);
     LPUB_CUR_TASK(lua, task);
     uint32_t ms;
     if (ERR_OK != _ltask_opt_timeout(lua, task, &ms)) {
         return 0;
     }
-    task_set_request_timeout(task, ms);
+    task_set_timeout(task, kind, ms);
     return 0;
 }
 /// <summary>
-/// 获取当前 task 的请求超时时间
+/// 获取当前 task 级的某类超时；默认 request 3 秒、connect 5 秒、netread 10 秒
 /// </summary>
-/// <param>无</param>
+/// <param name="kind" type="string">超时种类："request" / "connect" / "netread"，其余报错</param>
 /// <returns type="integer">超时毫秒数</returns>
-static int32_t _ltask_get_request_timeout(lua_State *lua) {
+static int32_t _ltask_get_timeout(lua_State *lua) {
+    tmo_kind kind = (tmo_kind)luaL_checkoption(lua, 1, NULL, _ltask_tmo_kinds);
     LPUB_CUR_TASK(lua, task);
-    lua_pushinteger(lua, task_get_request_timeout(task));
-    return 1;
-}
-/// <summary>
-/// 设置当前 task 的连接超时时间
-/// </summary>
-/// <param name="ms" type="integer">超时毫秒数，超过 TASK_TIMEOUT_MAX 时 clamp 到该上界；≤0 时打 WARN 后忽略，原值不变</param>
-/// <returns>无</returns>
-static int32_t _ltask_set_connect_timeout(lua_State *lua) {
-    LPUB_CUR_TASK(lua, task);
-    uint32_t ms;
-    if (ERR_OK != _ltask_opt_timeout(lua, task, &ms)) {
-        return 0;
-    }
-    task_set_connect_timeout(task, ms);
-    return 0;
-}
-/// <summary>
-/// 获取当前 task 的连接超时时间
-/// </summary>
-/// <param>无</param>
-/// <returns type="integer">超时毫秒数</returns>
-static int32_t _ltask_get_connect_timeout(lua_State *lua) {
-    LPUB_CUR_TASK(lua, task);
-    lua_pushinteger(lua, task_get_connect_timeout(task));
-    return 1;
-}
-/// <summary>
-/// 设置当前 task 的网络读取超时时间
-/// </summary>
-/// <param name="ms" type="integer">超时毫秒数，超过 TASK_TIMEOUT_MAX 时 clamp 到该上界；≤0 时打 WARN 后忽略，原值不变</param>
-/// <returns>无</returns>
-static int32_t _ltask_set_netread_timeout(lua_State *lua) {
-    LPUB_CUR_TASK(lua, task);
-    uint32_t ms;
-    if (ERR_OK != _ltask_opt_timeout(lua, task, &ms)) {
-        return 0;
-    }
-    task_set_netread_timeout(task, ms);
-    return 0;
-}
-/// <summary>
-/// 获取当前 task 的网络读取超时时间
-/// </summary>
-/// <param>无</param>
-/// <returns type="integer">超时毫秒数</returns>
-static int32_t _ltask_get_netread_timeout(lua_State *lua) {
-    LPUB_CUR_TASK(lua, task);
-    lua_pushinteger(lua, task_get_netread_timeout(task));
+    lua_pushinteger(lua, task_get_timeout(task, kind));
     return 1;
 }
 /// <summary>
@@ -1002,12 +958,8 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { "mem", _ltask_mem },
         { "memlimit", _ltask_memlimit },
 
-        { "set_request_timeout", _ltask_set_request_timeout },
-        { "get_request_timeout", _ltask_get_request_timeout },
-        { "set_connect_timeout", _ltask_set_connect_timeout },
-        { "get_connect_timeout", _ltask_get_connect_timeout },
-        { "set_netread_timeout", _ltask_set_netread_timeout },
-        { "get_netread_timeout", _ltask_get_netread_timeout },
+        { "set_timeout", _ltask_set_timeout },
+        { "get_timeout", _ltask_get_timeout },
         { "set_priority", _ltask_set_priority },
         { "get_priority", _ltask_get_priority },
         { "bind_net", _ltask_bind_net },
@@ -1019,5 +971,8 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
+    /// <field name="timeout_max" type="integer">超时设置的上界(毫秒)，同 C 侧 TASK_TIMEOUT_MAX</field>
+    lua_pushinteger(lua, (lua_Integer)TASK_TIMEOUT_MAX);
+    lua_setfield(lua, -2, "timeout_max");
     return 1;
 }

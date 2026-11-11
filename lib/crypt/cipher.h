@@ -66,7 +66,8 @@ size_t cipher_size(cipher_ctx *cipher);
 /// <summary>
 /// 设置填充模式。ECB / CBC 输入不是分组整数倍时需要，CFB OFB CTR 可选。
 /// 注意 ZeroPadding 不对称：加密侧按块补零，解密侧不剥离——尾部真实的 0 与填充的 0 无从区分，
-/// cipher_dofinal 于是返回含补零的完整长度。要能还原原始长度请用 PKCS57 / ANSIX923 / ISO10126
+/// cipher_dofinal 于是返回含补零的完整长度。要能还原原始长度请用 PKCS57 / ANSIX923 / ISO10126。
+/// padding 越界时 ASSERTAB 终止进程
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
 /// <param name="padding">填充模式</param>
@@ -87,10 +88,12 @@ void cipher_reset(cipher_ctx *cipher);
 /// <summary>
 /// 加解密分组数据。CFB / OFB / CTR 按字节续用密钥流：未设填充时可按任意长度切段逐次调用，
 /// 结果与整段一次处理逐字节相同，零长输入不消耗密钥流；设了填充时加密侧不足一组的段会补成整组，
-/// 只能放在最后。续用位置由 cipher_reset / cipher_iv / cipher_dofinal 清零
+/// 只能放在最后。PKCS57 / ISO10126 / ANSIX923 下总长恰为整组时不会追加整块填充，要与 cipher_dofinal
+/// 的结果一致须最后再送一个空段；解密侧不校验也不剥离填充，带填充的整条消息用 cipher_dofinal。
+/// 续用位置由 cipher_reset / cipher_iv / cipher_dofinal 清零
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
-/// <param name="data">要加解密的数据</param>
+/// <param name="data">要加解密的数据；lens 为 0 时可为 NULL</param>
 /// <param name="lens">数据长度,小于等于分组长度</param>
 /// <param name="size">加解密后的长度</param>
 /// <returns>指向 cipher_ctx 内部缓冲的结果,不是 malloc 来的,调用方不得释放,有效期到下次

@@ -138,7 +138,7 @@ var snips=[
   'for k,v in pairs(_G) do print(k, type(v)) end'
 ];
 function setSnip(i){document.getElementById('cd').value=snips[i]}
-var NTH={};  // name → handle 映射，由 /__alive 填充
+var NTH=Object.create(null);  // name → handle 映射，由 /__alive 填充；无原型，任务名撞不上 constructor 之类
 var tk=function(){
   var v=document.getElementById('tk').value.trim();
   if(!v){log(false,'','请选择任务');return null;}
@@ -211,7 +211,7 @@ var sel=document.getElementById('tksel');
 var allOpt=document.createElement('option');allOpt.value='All';allOpt.textContent='All';sel.appendChild(allOpt);
 // 页面加载与点 Alive 都走这里重建：下拉只留 "▾" 与 All 两项再填
 function fill(txt){
-  NTH={All:'0'};
+  NTH=Object.create(null);NTH.All='0';
   sel.length=2;
   txt.split('\n').forEach(function(line){
     var i=line.indexOf('\t');if(i<0)return;

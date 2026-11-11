@@ -160,8 +160,7 @@ static int32_t _url_param(url_param *param, char *cur, size_t lens, int32_t *npa
     return ERR_OK;
 }
 int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_t flags) {
-    // 只清头部标量与各 buf_ctx 字段（128 字节）。param / segs / buf 三个大数组共约 4KB，
-    // 有效范围由 nparam / npath / lens 划定，越界部分谁都不读——整体清是每个 HTTP 请求白付一次
+    // 只清到 param 之前，后面三个大数组不清，理由见 url_ctx
     ZERO(ctx, offsetof(url_ctx, param));
     ctx->sep = sep;
     int32_t decode = BIT_CHECK(flags, URL_DECODE) ? 1 : 0;
@@ -263,10 +262,9 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
         if (dparam) {
             p->key.lens = url_decode(p->key.data, p->key.lens, 1);
         }
-        if (!buf_empty(&p->val)) {
-            if (dparam && p->val.lens > 0) {
-                p->val.lens = url_decode(p->val.data, p->val.lens, 1);
-            }
+        if (dparam
+            && !buf_empty(&p->val)) {
+            p->val.lens = url_decode(p->val.data, p->val.lens, 1);
         }
         ctx->paramlens += _url_param_need(p, ctx->paramlens);
     }

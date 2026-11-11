@@ -4,7 +4,7 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
-local core   = require("srey.core")
+local sssl   = require("srey.ssl")
 local popen  = require("srey.popen")
 
 local _PY_TIMEOUT_MS = 60 * 1000
@@ -20,7 +20,7 @@ local _SCRIPTS = {
     "mixed",
 }
 -- ssl_reneg 连 15443，没编 SSL 时 server_http 起不了那个监听
-if core.with_ssl() then
+if sssl.with_ssl() then
     _SCRIPTS[#_SCRIPTS + 1] = "ssl_reneg"
 end
 

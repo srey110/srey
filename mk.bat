@@ -24,6 +24,8 @@ rem   项目自己的 lib.lib / lualib.lib / exe 按 bin\<平台>\<配置>\ 分�
 rem   链完把 srey.exe / test.exe(连同 pdb)拷回 bin\，运行目录不变；clean 时一并删掉这份拷贝。
 rem ***********************************************
 setlocal enabledelayedexpansion
+rem 一律在仓库根干活:srey.sln、config.h、mk_build.log 都按相对路径,同 mk.sh
+cd /d "%~dp0" || exit /b 1
 
 set "TARGET=srey"
 set "CONFIG=Release"
@@ -80,10 +82,13 @@ rem 没点名 debug/m32/arm64 就把六组全清掉:msbuild 的 /t:Clean 只作�
 rem 而 mk.sh clean 是无条件删产物,不对齐的话"清过了"是假的
 if defined CFGSET goto cleanone
 if defined PLATSET goto cleanone
+set "CRC=0"
 for %%c in (Debug Release) do for %%p in (x64 x86 ARM64) do (
     echo ====================== Clean %%c %%p ======================
     msbuild srey.sln /t:Clean /p:Configuration=%%c /p:Platform=%%p /v:minimal /nologo
+    if errorlevel 1 set "CRC=1"
 )
+if not "!CRC!"=="0" echo   有配置清理失败,见上面的输出 & exit /b 1
 echo   六组配置均已清理。第三方依赖不在此列,用 python3 tools\deps.py clean
 exit /b 0
 

@@ -8,18 +8,18 @@ local mysql     = require("lib.mysql")
 local pgsql     = require("lib.pgsql")
 local mongo     = require("lib.mongo")
 local bson      = require("lib.bson")
-local core      = require("srey.core")
+local sssl      = require("srey.ssl")
 
 local DB_HOST = "127.0.0.1"
 
 -- MySQL 用不带客户端证书的 TLS 上下文（同 db_mysql.lua）：明文下 caching_sha2 完整认证可能失败
 local SSL_NOCERT = "db_pool_nocert"
 local function _mysql_ssl()
-    if not core.with_ssl() then
+    if not sssl.with_ssl() then
         return SSL_NAME.NONE
     end
-    if not srey.ssl_qury(SSL_NOCERT) then
-        core.cert_register(SSL_NOCERT, "", "", "")
+    if not srey.ssl_query(SSL_NOCERT) then
+        sssl.cert_register(SSL_NOCERT, "", "", "")
     end
     return SSL_NOCERT
 end
@@ -174,6 +174,51 @@ local function _run_txn(t, name, factory, in_trans)
     if c2 then
         pool:put(c2)
     end
+    -- 空闲期间连接被关掉：established 还是 true，借出前要看出连接标识已失效、就地重连，不借出死连接
+    srey.close(c.conn:sock_id())
+    for _ = 1, 50 do-- 等 CLOSE 处理完(最多约 1 秒)
+        if not c.conn:sock_id().valid then
+            break
+        end
+        srey.sleep(20)
+    end
+    local c3 = pool:get(5000)
+    t:eq(2, pool:stat_get().connects, name .. " txn: 空闲期被关掉的借出前重连")
+    t:check(c3 and c3:query("select 1"), name .. " txn: 重连后查询照常")
+    if c3 then
+        pool:put(c3)
+    end
+    pool:free()
+end
+
+-- mysql 的会话状态（同 C 侧 task_mysql 的 _pool_txn）：autocommit=0 下语句回 ERR 按在事务里算、归还回滚不重连；
+-- 只 set autocommit=0 就归还的，归还时把 autocommit 还原
+local function _run_mysql_session(t, factory)
+    local pool = db_pool.new{ name = "mysql_pool_sess", max = 1, backoff = 1000, factory = factory }
+    local c = pool:get(5000)
+    if not t:check(nil ~= c, "mysql_pool sess: 借到连接") then
+        pool:free()
+        return
+    end
+    t:check(c:query("set autocommit=0"), "mysql_pool sess: set autocommit=0")
+    c:query("select * from srey_pool_no_such_table")
+    t:check(c:in_trans(), "mysql_pool sess: 语句回 ERR 后按在事务里算")
+    pool:put(c)
+    local c2 = pool:get(5000)
+    t:check(c == c2, "mysql_pool sess: 还是同一条")
+    t:eq(1, pool:stat_get().connects, "mysql_pool sess: 回滚不重连")
+    t:check(c2 and not c2:in_trans() and (c2.mysql:autocommit()), "mysql_pool sess: 交出来时已回滚、autocommit 已还原")
+    if c2 then
+        t:check(c2:query("set autocommit=0") and not c2:in_trans() and not (c2.mysql:autocommit()),
+                "mysql_pool sess: 只关 autocommit、不执行语句")
+        pool:put(c2)
+    end
+    local c3 = pool:get(5000)
+    t:eq(1, pool:stat_get().connects, "mysql_pool sess: 还原 autocommit 不重连")
+    t:check(c3 and (c3.mysql:autocommit()), "mysql_pool sess: 只关 autocommit 就归还的也还原了")
+    if c3 then
+        pool:put(c3)
+    end
     pool:free()
 end
 
@@ -208,6 +253,34 @@ local function _run_mongo_txn(t)
     if c2 then
         pool:put(c2)
     end
+    -- 事务里写过一条再归还：reset 真发 abortTransaction，连接保留，那条写不可见。需要副本集(同 db_mongo 事务段)
+    local c3 = pool:get(5000)
+    if t:check(c == c3, "mongo_pool txn: 再借还是同一条") then
+        local TCOL = "srey_test_pool_txn_lua"
+        c3:drop(TCOL)-- 集合本就可能不存在，返回值不判
+        local sess3 = c3:startsession()
+        t:check(nil ~= sess3 and sess3:begin(), "mongo_pool txn: 写之前 begin 成功")
+        local doc = bson.encode({ { id = 500, name = "pool-txn" } })
+        local dptr, dsz = doc:data()
+        t:check(c3:insert(TCOL, dptr, dsz), "mongo_pool txn: 事务内 insert ok")
+        pool:put(c3)
+        local c4 = pool:get(5000)
+        t:check(c == c4, "mongo_pool txn: reset 发 abort 后连接保留")
+        if c4 then
+            local empty = bson.encode({})
+            local eptr, esz = empty:data()
+            t:eq(0, c4:count(TCOL, eptr, esz), "mongo_pool txn: 事务里那条不可见")
+            c4:drop(TCOL)-- 用完删掉，别留在库里
+        end
+        if sess3 then
+            sess3:close()
+        end
+        if c4 then
+            pool:put(c4)
+        end
+    elseif c3 then
+        pool:put(c3)
+    end
     pool:free()
 end
 
@@ -218,11 +291,13 @@ runner.run(function(t)
     _run_mongo(t)
     _run_mongo_txn(t)
     local ssl = _mysql_ssl()
-    _run_txn(t, "mysql_pool", function()
+    local function mysql_factory()
         return mysql.new(DB_HOST, 3306, ssl, "admin", "12345678", "test", "utf8mb4", 0)
-    end, function(c)
-        return c.mysql:in_trans()
+    end
+    _run_txn(t, "mysql_pool", mysql_factory, function(c)
+        return c:in_trans()
     end)
+    _run_mysql_session(t, mysql_factory)
     _run_txn(t, "pgsql_pool", function()
         return pgsql.new(DB_HOST, 5432, SSL_NAME.NONE, "admin", "12345678", "test")
     end, function(c)

@@ -187,8 +187,8 @@ runner.run(function(t)
             if started then
                 local dsess = dead_kcp.sess
                 local dskid = dead_sk.skid
-                local saved_net = srey.get_netread_timeout()
-                srey.set_netread_timeout(500)-- 仅为下面的 send 收窄:CLOSE 万一未到达也不卡满默认超时
+                local saved_net = srey.get_timeout("netread")
+                srey.set_timeout("netread", 500)-- 仅为下面的 send 收窄:CLOSE 万一未到达也不卡满默认超时
                 srey.fork(function()
                     srey.sleep(30)
                     srey.close(dead_sk)-- fork 协程在本条消息 dispatch 末尾才起,故必晚于下面的 send 挂起
@@ -207,7 +207,7 @@ runner.run(function(t)
                 t:check(rawequal(closed_sk[dsess], closed_sk[dskid]),
                         "会话 CLOSE 未摘 UDP socket 的 sk 缓存(两条消息是同一 userdata)")
                 t:eq(false, dead_kcp:handle(srey.task_handle()), "CLOSE 后 handle 被 stopped 守卫拒绝")
-                srey.set_netread_timeout(saved_net)
+                srey.set_timeout("netread", saved_net)
             else
                 srey.close(dead_sk)-- start 失败:后续断言前提不成立,直接收尾免 socket 泄漏
             end
@@ -226,8 +226,8 @@ runner.run(function(t)
             t:eq(true, started, "race kcp start")
             if started then
                 local old_sess = race_kcp.sess
-                local saved_net = srey.get_netread_timeout()
-                srey.set_netread_timeout(500)
+                local saved_net = srey.get_timeout("netread")
+                srey.set_timeout("netread", 500)
                 local restarted
                 srey.fork(function()
                     -- fork 协程在本条消息 dispatch 末尾才起，故必晚于下面 send 的挂起。
@@ -248,7 +248,7 @@ runner.run(function(t)
                 end
                 t:eq(true, restarted, "另一协程的重启成功")
                 race_kcp:stop()
-                srey.set_netread_timeout(saved_net)
+                srey.set_timeout("netread", saved_net)
             end
             srey.close(race_sk)
         end
@@ -287,10 +287,10 @@ runner.run(function(t)
             t:eq(LEARN_MSG, ld and srey.ud_str(ld, ls), "首包学到临时端口后双向通信正常")
             local intr = kcp.new(intr_sk, CONV + 3, true)
             t:eq(true, intr:start("127.0.0.1", SV_PORT), "冒充者 start")
-            local saved_net = srey.get_netread_timeout()
-            srey.set_netread_timeout(500)
+            local saved_net = srey.get_timeout("netread")
+            srey.set_timeout("netread", 500)
             t:eq(nil, (intr:send(LEARN_MSG, #LEARN_MSG, 1)), "绑定后换来源的包被丢")
-            srey.set_netread_timeout(saved_net)
+            srey.set_timeout("netread", saved_net)
             ld, ls = lcli:send(LEARN_MSG, #LEARN_MSG, 1)
             t:eq(LEARN_MSG, ld and srey.ud_str(ld, ls), "冒充者没顶掉已学到的对端")
             t:eq(2, learn_hits, "server 只收到真对端的两条")

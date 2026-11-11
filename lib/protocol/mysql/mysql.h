@@ -59,6 +59,23 @@ int32_t mysql_more(mpack_ctx *mpack);
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk);
 /// <summary>
+/// 设置服务端 RSA 公钥（PEM），同官方客户端 --server-public-key-path。明文连接上 caching_sha2_password 要完整认证时
+/// 用它加密口令，设了它就不向服务端要公钥；TLS 连接上用不到。下次认证生效，须在发起连接之前设
+/// </summary>
+/// <param name="mysql">mysql_ctx</param>
+/// <param name="pem">公钥 PEM，按 lens 拷进 mysql；NULL 或 lens 为 0 表示清掉已设的公钥</param>
+/// <param name="lens">pem 字节数，不超过 MYSQL_PUBKEY_LENS</param>
+/// <returns>ERR_OK 成功；ERR_FAILED 超长、不是 RSA 公钥，或编译时没开 WITH_SSL，原值不变</returns>
+int32_t mysql_set_pubkey(mysql_ctx *mysql, const char *pem, size_t lens);
+/// <summary>
+/// 允许明文连接上向服务端要 RSA 公钥（默认不允许），同官方客户端 --get-server-public-key。
+/// 要来的公钥无从核实，中间人换掉它就能拿到口令，只在可信网络里开；设了本地公钥时以本地为准。须在发起连接之前设
+/// </summary>
+/// <param name="mysql">mysql_ctx</param>
+/// <param name="on">非 0 允许，0 不允许</param>
+/// <returns>ERR_OK 成功；ERR_FAILED 编译时没开 WITH_SSL</returns>
+int32_t mysql_set_pubkey_request(mysql_ctx *mysql, int32_t on);
+/// <summary>
 /// 获取服务器版本信息
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>

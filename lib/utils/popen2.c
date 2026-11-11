@@ -253,7 +253,8 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
 #else
     SOCKET sock[2] = { INVALID_SOCK, INVALID_SOCK };
     if (r || w) {
-        // AF_UNIX socketpair：进程私有、不耗端口，close 带未读数据是干净 EOF（TCP 环回会发 RST 破坏 popen_read 的 eof 语义）。
+        // AF_UNIX socketpair：进程私有、不耗端口。带未读数据关闭时 TCP 环回发 RST，Linux 的 AF_UNIX 也先报一次 ECONNRESET，
+        // popen_read 把后者按 EOF 处理。
         // 建好后由下面那句 sock_nonblock 转为非阻塞——阻塞的话子进程不读就会把派发线程挂住
 #if defined(SOCK_CLOEXEC)
         int32_t sprc = socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sock);
@@ -551,6 +552,9 @@ int32_t popen_exitcode(popen_ctx *ctx) {
 }
 int32_t popen_read(popen_ctx *ctx, char *output, size_t lens, int32_t *eof) {
     SET_PTR(eof, 0);
+    if (lens > INT32_MAX) {
+        lens = INT32_MAX;// 返回值是 int32_t，单次最多读这么多
+    }
 #ifdef OS_WIN
     if (NULL == ctx->pipe[0]) {
         return ERR_FAILED;
@@ -577,11 +581,19 @@ int32_t popen_read(popen_ctx *ctx, char *output, size_t lens, int32_t *eof) {
         || !ctx->ropen) {
         return ERR_FAILED;
     }
+    if (0 == lens) {
+        return 0;// 读 0 字节也返回 0，不能当成 EOF
+    }
     ssize_t rn;
     do {
         rn = read(ctx->sock, output, lens);
     } while (-1 == rn && EINTR == errno);
     if (-1 == rn) {
+        // 对端带着没读完的数据关闭(Linux)：输出已读空才报这一次，按 EOF 处理
+        if (ECONNRESET == errno) {
+            SET_PTR(eof, 1);
+            return 0;
+        }
         return ERR_RW_RETRIABLE(errno) ? 0 : ERR_FAILED;
     }
     if (0 == rn) {

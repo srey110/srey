@@ -809,26 +809,25 @@ runner.run(function(t)
         t:eq("h",    order[2], "named route mw: handler after")
     end
 
-    -- 4.11 未定义的具名中间件 → assert 错误
+    -- 4.11 未定义的具名中间件 → 同 C 侧打 ERROR、use 返回 false，全局中间件不变
     do
         local r = Route.new()
-        local ok, err = pcall(function() r:use("nonexistent") end)
-        t:eq(false, ok, "unknown mw name → error raised")
-        t:check(err ~= nil and err:find("nonexistent") ~= nil,
-                "error message mentions unknown name")
+        local ok, ret = pcall(function() return r:use("nonexistent") end)
+        t:eq(true, ok, "unknown mw name → 不抛错")
+        t:eq(false, ret, "unknown mw name → use 返回 false")
+        t:eq(0, r._mw_version, "unknown mw name → 全局中间件不变")
     end
 
-    -- 4.12(回归):路由级具名中间件未定义 → 注册在提交 C 路由前抛错,不留幽灵路由
-    -- 修复前 c_router:add 先提交、_resolve 后 assert 抛错 → _routes[idx] 空,该路径 dispatch 索引 nil route 崩溃且无响应
+    -- 4.12(回归):路由级具名中间件未定义 → 在提交 C 路由前拒掉,不留幽灵路由
+    -- 提交后再拒 → _routes[idx] 空,该路径 dispatch 索引 nil route 崩溃且无响应
     do
         local r = Route.new()
-        local ok = pcall(function()
-            r:get("/ghost", function(ctx) ctx:text(200, "ok") end, { "undefined_mw" })
-        end)
-        t:eq(false, ok, "未定义路由级具名中间件 → 注册抛错")
+        local e = r:get("/ghost", function(ctx) ctx:text(200, "ok") end, { "undefined_mw" })
+        t:eq(nil, e.raw, "未定义路由级具名中间件 → 返回哑条目")
+        t:eq(e, e:name("ghost"), "哑条目照样能链式 :name()")
         local dok, dcode = pcall(function() return (dispatch(r, "GET", "/ghost") or {}).code end)
-        t:eq(true, dok,  "注册抛错后 dispatch 不崩溃(无幽灵路由 nil-deref)")
-        t:eq(404, dcode, "注册抛错后 /ghost 干净 404")
+        t:eq(true, dok,  "注册被拒后 dispatch 不崩溃(无幽灵路由 nil-deref)")
+        t:eq(404, dcode, "注册被拒后 /ghost 干净 404")
         -- 注册原子:后补 define 同名中间件也不复活未注册路径,须显式重注册
         r:define("undefined_mw", function(ctx, next) next() end)
         t:eq(404, (dispatch(r, "GET", "/ghost") or {}).code, "后补 define 不复活未注册路径")
@@ -850,27 +849,33 @@ runner.run(function(t)
         t:eq("hi", (dispatch(r, "GET", "/ok") or {}).body, "带 body 时照常传字符串")
     end
 
-    -- 4.13(回归):非函数中间件必须当场抛错,不能静默丢弃
-    -- 修复前 _resolve 把 nil 原样返回,use() 的 mws[#mws+1] = nil 是一次 no-op,
-    -- 一个拼错的变量名就足以让全局鉴权中间件彻底消失,且日志/返回值/启动检查全都不报
+    -- 4.13(回归):非函数中间件不能静默丢弃:打 ERROR、use 返回 false
+    -- 一个拼错的变量名就足以让全局鉴权中间件消失,日志与返回值至少要有一处报出来
     do
         local r = Route.new()
-        local ok, err = pcall(function() r:use(nil) end)
-        t:eq(false, ok, "use(nil) → 抛错")
-        t:check(err ~= nil and err:find("middleware") ~= nil, "错误信息点明是中间件问题")
-        t:eq(false, pcall(function() r:use(42) end), "use(非函数) → 抛错")
-        t:eq(0, #r._fns, "抛错后全局中间件表未被写入")
+        t:eq(false, r:use(nil), "use(nil) → 返回 false")
+        t:eq(false, r:use(42), "use(非函数) → 返回 false")
+        t:eq(0, #r._fns, "被拒后全局中间件表未被写入")
+        t:eq(true, r:use(function(ctx, nxt) nxt() end), "合法中间件 use 返回 true")
     end
 
-    -- 4.14(回归):变长中间件参数中间夹 nil,须抛错而不是连后续中间件一起丢掉
-    -- #args 遇到中间的 nil 可能只数到它之前,后面的中间件静默消失
+    -- 4.14(回归):变长中间件参数中间夹 nil 或名字没 define,组内路由全部作废,
+    -- 不能把那个中间件丢掉后照常注册(鉴权会无声消失)
     do
         local r = Route.new()
         local mw = function(ctx, next) next() end
-        t:eq(false, pcall(function() r:middleware(mw, nil, mw) end),
-             "Router:middleware(mw, nil, mw) → 抛错")
-        t:eq(false, pcall(function() r:prefix("/g"):middleware(mw, nil, mw) end),
-             "GroupBuilder:middleware(mw, nil, mw) → 抛错")
+        local h = function(ctx) ctx:text(200, "ok") end
+        r:middleware(mw, nil, mw):group(function() r:get("/g1", h) end)
+        t:eq(404, (dispatch(r, "GET", "/g1") or {}).code, "Router:middleware(mw, nil, mw) → 组内路由作废")
+        r:prefix("/g"):middleware(mw, nil, mw):group(function() r:get("/g2", h) end)
+        t:eq(404, (dispatch(r, "GET", "/g/g2") or {}).code, "GroupBuilder:middleware(mw, nil, mw) → 组内路由作废")
+        -- 坏标记随派生传下去，嵌套分组也作废；同级的正常分组不受影响
+        r:middleware("nodef"):prefix("/n"):group(function()
+            r:prefix("/in"):group(function() r:get("/g3", h) end)
+        end)
+        t:eq(404, (dispatch(r, "GET", "/n/in/g3") or {}).code, "未定义名字 → 嵌套分组路由也作废")
+        r:middleware(mw):group(function() r:get("/g4", h) end)
+        t:eq(200, (dispatch(r, "GET", "/g4") or {}).code, "正常分组不受影响")
     end
 
     -- 4.15(回归):路由级 mws 表里夹 nil,须抛错而不是把后面的中间件一起丢掉
@@ -879,10 +884,10 @@ runner.run(function(t)
         local r = Route.new()
         local mw = function(ctx, next) next() end
         local h = function(ctx) ctx:text(200, "ok") end
-        t:eq(false, pcall(function() r:get("/h", h, { mw, nil, mw }) end),
-             "get(path, h, {mw, nil, mw}) → 抛错")
-        t:eq(false, pcall(function() r:post("/h2", h, { mw, 42 }) end),
-             "表里混入非可调用值 → 抛错")
+        r:get("/h", h, { mw, nil, mw })
+        t:eq(404, (dispatch(r, "GET", "/h") or {}).code, "get(path, h, {mw, nil, mw}) → 路由作废")
+        r:post("/h2", h, { mw, 42 })
+        t:eq(404, (dispatch(r, "POST", "/h2") or {}).code, "表里混入非可调用值 → 路由作废")
         -- 正常表照旧可用
         local hit = 0
         r:get("/ok2", h, { function(ctx, nxt) hit = hit + 1 nxt() end })
@@ -894,8 +899,13 @@ runner.run(function(t)
     -- 带 __call 的表是合法中间件,而设了 __metatable 的对象不得让校验本身崩掉
     do
         local r = Route.new()
-        t:eq(false, pcall(function() r:define("bad", {}) end), "define(普通表) → 注册期抛错")
-        t:eq(false, pcall(function() r:define("bad2", 42) end), "define(数字) → 注册期抛错")
+        t:eq(false, r:define("bad", {}), "define(普通表) → 返回 false")
+        t:eq(false, r:define("bad2", 42), "define(数字) → 返回 false")
+        t:eq(false, r:use("bad"), "define 被拒的名字没登记")
+        local keep = function(ctx, nxt) nxt() end
+        r:define("keep", keep)
+        t:eq(false, r:define("keep", 42), "同名再 define 非法值 → 返回 false")
+        t:eq(keep, r._mw_reg.keep, "原有同名定义保留")
         local callable = setmetatable({}, { __call = function(_, ctx, nxt) nxt() end })
         r:define("ok", callable)
         r:use("ok")
@@ -1537,7 +1547,7 @@ runner.run(function(t)
              "多个剩余键按整串排序，同一组参数每次给出同一个 URL")
         -- Lua 的 / 恒出浮点,tostring(84/2) 是 "42.0"：生成出 /user/42.0 再打回来,
         -- ctx.params.id 就是字符串 "42.0",业务 tonumber 后查库查不到。口径同 utils.lua 的 num_str
-        -- (redis.pack 与 http 头值在 C 侧 lprot.c 的 _lprot_redis_pack / _lprot_http_head_check 同样处理)
+        -- (redis.pack 与 http 头值在 C 侧 lredis.c 的 _lredis_pack 与 lhttp.c 的 _lhttp_head_check 同样处理)
         t:eq("/user/42", r:url("user.show", { id = 84 / 2 }), "整数值浮点按整数回填")
         t:eq("/user/42?page=2", r:url("user.show", { id = 42, page = 10 / 5 }),
              "查询串同样按整数编码")

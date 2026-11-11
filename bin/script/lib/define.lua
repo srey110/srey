@@ -30,7 +30,7 @@ SSL_NAME = {
     SERVER = "server",
     CLIENT = "client"
 }
--- TLS 协议版本；用于 core.ssl_min_proto() 设置最低允许版本
+-- TLS 协议版本；用于 srey.ssl 的 min_proto() 设置最低允许版本
 ---@enum TLS_VERSION
 TLS_VERSION = {
     AUTO   = 0x0000,-- 不设下限，用库支持的最低版本（OpenSSL 的默认状态）
@@ -75,7 +75,8 @@ PACK_TYPE = {
 
     UDP_KCP = 0x40   -- KCP 可靠 UDP
 }
--- 数据分片标志（对应 C 层 slice_type）
+-- 数据分片标志（对应 C 层 prot_status 的 PROT_SLICE_*）
+---@enum SLICE_TYPE
 SLICE_TYPE = {
     START = 0x01,   -- 分片开始
     SLICE = 0x02,   -- 中间分片

@@ -403,6 +403,10 @@ static int32_t _olp_ssl_do_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltc
 #endif
 // 从socket读取数据到接收缓冲区并触发recv回调，成功后重新提交WSARecv
 static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    // 握手完成回调里同步 ev_close 了就不再读、不再交数据，按失败交给调用方收尾(此刻 ol_r 不在途)
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        return ERR_FAILED;
+    }
     size_t nread;
 #if WITH_SSL
     // 有挂起的应用写就不能进 SSL_read(理由见 evpub.h 的 STATUS_WPEND_SSL)。
@@ -725,6 +729,9 @@ static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp
     int32_t rtn = _evpub_sock_send(oltcp->ol_s.sk.fd, &oltcp->buf_s, &nsend, TCP_SSL(oltcp));
     oltcp->wb_size -= nsend;
     _olp_call_send_cb(watcher->ev, oltcp, nsend);
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {// s_cb 里同步 ev_close 了：交给调用方按已在关收尾，别再往下发或切 SSL
+        return ERR_FAILED;
+    }
     if (ERR_OK != rtn) {
         _evpub_mark_close(&oltcp->status, rtn);
         return ERR_FAILED;
@@ -955,7 +962,7 @@ static int32_t _olp_trybind(SOCKET fd, int32_t family) {
     netaddr_empty(&addr);
     addr.addr.sa_family = (ADDRESS_FAMILY)family;
     if (ERR_OK != bind(fd, netaddr_addr(&addr), netaddr_size(&addr))) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("fd %d: bind to any address failed, %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -997,7 +1004,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD byt
     }
     BIT_SET(oltcp->status, STATUS_ESTABLISHED);
     if (ERR_OK != _evpub_tcp_keepalive(oltcp->ol_r.sk.fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("fd %d: set keepalive failed, %s", (int32_t)oltcp->ol_r.sk.fd, ERRORSTR(ERRNO));
         _olp_on_connect_cb_err(watcher, oltcp);
         return;
     }
@@ -1021,7 +1028,9 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, DWORD byt
         return;
     }
 #if WITH_SSL
-    if (NULL != oltcp->ssl) {// 开始握手
+    // 连接回调里同步 ev_close 了就不再起握手，理由同 usock.c 的 _usk_on_connect_cb
+    if (NULL != oltcp->ssl
+        && !BIT_CHECK(oltcp->status, STATUS_ERROR)) {// 开始握手
         switch (evssl_tryconn(oltcp->ssl)) {
         case ERR_OK://握手完成
             BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
@@ -1054,12 +1063,12 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     }
     sk->fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 1);
     if (sock_is_invalid(sk)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("connect %s:%u: create socket failed, %s", ip, (uint32_t)port, ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
     if (ERR_OK != sock_nodelay(sk->fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("connect %s:%u: set nodelay failed, %s", ip, (uint32_t)port, ERRORSTR(ERRNO));
         CLOSE_SOCK((sk->fd));
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
@@ -1095,7 +1104,7 @@ void _iocp_add_conn_inloop(watcher_ctx *watcher, struct evsock_ctx *evsk, netadd
     // 停机后到的按失败处理：停机时的取消已经发过，这时投出的 IO 没人取消
     if (0 != ATOMIC_GET(&watcher->stop)
         || ERR_OK != _iocp_join(watcher, evsk->sk.fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("watcher %d: fd %d join iocp failed or stopping, %s", watcher->index, (int32_t)evsk->sk.fd, ERRORSTR(ERRNO));
         _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
         pool_push(&watcher->pool, &oltcp->ol_r, 0);
         return;
@@ -1123,7 +1132,7 @@ static inline int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
     // 这里就得设非阻塞:accept 完成回调只设 nodelay 与 keepalive,不再兜这一步
     SOCKET fd = sock_create_cloexec(olacp->lsn->family, SOCK_STREAM, 0, 1);
     if (INVALID_SOCK == fd) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("AcceptEx: create socket failed, %s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     ZERO(&olacp->overlap.overlapped, sizeof(olacp->overlap.overlapped));
@@ -1140,7 +1149,7 @@ static inline int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
         int32_t erro = ERRNO;
         if (ERROR_IO_PENDING != erro) {
             _olp_take_close(&olacp->overlap.sk.fd);
-            LOG_ERROR("%s", ERRORSTR(erro));
+            LOG_ERROR("AcceptEx post failed on listener fd %d, %s", (int32_t)olacp->lsn->fd, ERRORSTR(erro));
             return ERR_FAILED;
         }
     }
@@ -1257,7 +1266,7 @@ static void _iocp_add_acpfd_inloop_err(watcher_ctx *watcher, overlap_tcp_ctx *ol
 }
 void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     if (ERR_OK != _iocp_join(watcher, fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("watcher %d: accepted fd %d join iocp failed, %s", watcher->index, (int32_t)fd, ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return;
     }
@@ -1302,7 +1311,7 @@ static int32_t _olp_acceptex(ev_ctx *ev, listener_ctx *lsn) {
     // ev_listen 失败路径统一减占位释放；同时保证 cb 任何路径减 ref 不会下溢
     ATOMIC_SET_RELAXED(&lsn->ref, 1);
     if (NULL == CreateIoCompletionPort((HANDLE)lsn->fd, ev->acpex[0].iocp, 0, ev->nacpex)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("listener fd %d: join AcceptEx iocp failed, %s", (int32_t)lsn->fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     overlap_acpt_ctx *olacp;
@@ -1788,7 +1797,7 @@ void _iocp_add_fd_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
     // 停机后到的按失败处理，理由同 _iocp_add_conn_inloop
     if (0 != ATOMIC_GET(&watcher->stop)
         || ERR_OK != _iocp_join(watcher, evsk->sk.fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("watcher %d: fd %d join iocp failed or stopping, %s", watcher->index, (int32_t)evsk->sk.fd, ERRORSTR(ERRNO));
         if (SOCK_STREAM == evsk->type) {
             pool_push(&watcher->pool, evsk, 0);
         } else {

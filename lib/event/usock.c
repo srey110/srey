@@ -592,6 +592,10 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, evsock_ctx *evsk, struct evssl_
 // 从socket读取数据到接收缓冲区并触发recv回调，MANUAL_ADD时需重新注册读事件。
 // 回调里把连接关掉了返回 1，调用方立即返回
 static inline int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
+    // 握手完成回调里同步 ev_close 了就不再读、不再交数据，原样返回成功，理由同 _usk_tcp_send 入口
+    if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
+        return ERR_OK;
+    }
     size_t nread;
     int32_t evrtn = ERR_OK;
 #if defined(EV_KQUEUE)
@@ -1005,7 +1009,9 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, evsock_ctx *evsk, int32_t e
         return;
     }
 #if WITH_SSL
-    if (NULL != tcp->ssl) {
+    // 连接回调里同步 ev_close 了就不再起握手：往已半关的 socket 写 ClientHello 只会失败，还把关闭类型改记成 ABORT
+    if (NULL != tcp->ssl
+        && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
         switch (evssl_tryconn(tcp->ssl)) {
         case ERR_OK://完成
             BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
@@ -1037,13 +1043,13 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     }
     sk->fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0, 1);
     if (sock_is_invalid(sk)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("connect %s:%u: create socket failed, %s", ip, (uint32_t)port, ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
     if (ERR_OK != sock_nodelay(sk->fd)
         || ERR_OK != _evpub_tcp_keepalive(sk->fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("connect %s:%u: set nodelay / keepalive failed, %s", ip, (uint32_t)port, ERRORSTR(ERRNO));
         CLOSE_SOCK((sk->fd));
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
@@ -1304,7 +1310,7 @@ void _uev_add_lsn_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
     }
     _evpub_sockel_add(watcher, evsk);
     if (ERR_OK != _uev_add_event(watcher, evsk->sk.fd, &evsk->events, EVENT_READ, evsk)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("watcher %d: listener fd %d add READ failed, no longer accepts, %s", watcher->index, (int32_t)evsk->sk.fd, ERRORSTR(ERRNO));
         _evpub_sockel_remove(watcher, evsk->sk.fd);
         CLOSE_SOCK(evsk->sk.fd);
     }
@@ -1767,7 +1773,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
 void _uev_add_fd_inloop(watcher_ctx *watcher, evsock_ctx *evsk) {
     _evpub_sockel_add(watcher, evsk);
     if (ERR_OK != _uev_add_event(watcher, evsk->sk.fd, &evsk->events, EVENT_READ, evsk)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("watcher %d: fd %d add READ failed, %s", watcher->index, (int32_t)evsk->sk.fd, ERRORSTR(ERRNO));
         _evpub_sockel_remove(watcher, evsk->sk.fd);
         if (SOCK_STREAM == evsk->type) {
             pool_push(&watcher->pool, evsk, 0);

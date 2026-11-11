@@ -1305,7 +1305,10 @@ static void test_mqtt_may_resume(CuTest *tc) {
     const mqtt_prot res[] = { MQTT_CONNACK, MQTT_PUBACK, MQTT_PUBREC, MQTT_PUBCOMP,
                               MQTT_SUBACK, MQTT_UNSUBACK, MQTT_PINGRESP, MQTT_AUTH };
     mqtt_pack_ctx pack;
+    mqtt_reason_varhead rv;
     ZERO(&pack, sizeof(pack));
+    ZERO(&rv, sizeof(rv));
+    pack.varhead = &rv;// 解析器投递出来的 AUTH 可变头恒在，紧凑形式 reason 为 0
     for (size_t i = 0; i < ARRAY_SIZE(nores); i++) {
         pack.fixhead.prot = nores[i];
         CuAssertIntEquals(tc, ERR_FAILED, _mqtt_may_resume(&pack));
@@ -1314,11 +1317,8 @@ static void test_mqtt_may_resume(CuTest *tc) {
         pack.fixhead.prot = res[i];
         CuAssertIntEquals(tc, ERR_OK, _mqtt_may_resume(&pack));
     }
-    // AUTH 只有重新认证(0x19)由客户端发起、不算回复；上面 varhead 为 NULL(紧凑形式)已按回复判过
-    mqtt_reason_varhead rv;
-    ZERO(&rv, sizeof(rv));
+    // AUTH 只有重新认证(0x19)由客户端发起、不算回复；上面 reason 为 0(紧凑形式)已按回复判过
     pack.fixhead.prot = MQTT_AUTH;
-    pack.varhead = &rv;
     rv.reason = 0x18;
     CuAssertIntEquals(tc, ERR_OK, _mqtt_may_resume(&pack));
     rv.reason = 0x19;
@@ -1759,6 +1759,135 @@ static void test_mqtt_malformed_reject(CuTest *tc) {
     };
     _mq_assert_reject(tc, _MQ_INIT, MQTT_311, conn_rsv, sizeof(conn_rsv));
 }
+// 按指定方向与阶段解一段字节：解出包返回 1(当场释放)，判协议错返回 0，其余(缺数据)返回 -1。hasctx 为 0 时不挂连接上下文
+static int32_t _mq_try(int32_t client, int32_t init_status, int32_t hasctx, mqtt_protversion ver,
+                       const uint8_t *data, size_t lens) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    buffer_init(&buf);
+    buffer_append(&buf, (void *)data, lens);
+    _mq_ud_init(&ud, ver, init_status);
+    if (!hasctx) {
+        ud.context = NULL;
+    }
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = _t_mqtt_unpack(client, &buf, &ud, NULL, &status);
+    int32_t rtn = BIT_CHECK(status, PROT_ERROR) ? 0 : -1;
+    if (NULL != p) {
+        _mqtt_pkfree(p);
+        rtn = 1;
+    }
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+    return rtn;
+}
+// 合法的 3.1.1 CONNECT：可变头 10 字节 + clientid(2+3)。下标 8 协议级别、9 连接标志
+static const uint8_t _mq_connect_311[] = {
+    0x10, 0x0F, 0x00, 0x04, 'M','Q','T','T', 0x04, 0x02, 0x00, 0x3C, 0x00, 0x03, 'c','i','d'
+};
+// 方向与连接上下文的守卫：同一份字节换到对的方向能解出包，说明被拒的原因确实是方向
+static void test_mqtt_dir_ctx_guard(CuTest *tc) {
+    const uint8_t *conn = _mq_connect_311;
+    size_t clen = sizeof(_mq_connect_311);
+    CuAssertIntEquals(tc, 1, _mq_try(0, _MQ_INIT, 0, MQTT_311, conn, clen));
+    CuAssertIntEquals(tc, 0, _mq_try(1, _MQ_INIT, 0, MQTT_311, conn, clen));// 客户端收到 CONNECT
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_INIT, 1, MQTT_311, conn, clen));// 连接上已有上下文
+
+    static const uint8_t connack[] = { 0x20, 0x02, 0x00, 0x00 };
+    CuAssertIntEquals(tc, 1, _mq_try(1, _MQ_INIT, 1, MQTT_311, connack, sizeof(connack)));
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_INIT, 1, MQTT_311, connack, sizeof(connack)));// 服务端收到 CONNACK
+    CuAssertIntEquals(tc, 0, _mq_try(1, _MQ_INIT, 0, MQTT_311, connack, sizeof(connack)));// 没有上下文
+
+    static const uint8_t auth[] = { 0xF0, 0x00 };// 紧凑形式
+    CuAssertIntEquals(tc, 1, _mq_try(1, _MQ_INIT, 1, MQTT_50, auth, sizeof(auth)));
+    CuAssertIntEquals(tc, 0, _mq_try(1, _MQ_INIT, 0, MQTT_50, auth, sizeof(auth)));// 没有上下文
+    CuAssertIntEquals(tc, 0, _mq_try(1, _MQ_INIT, 1, MQTT_311, auth, sizeof(auth)));// 3.1.1 没有 AUTH
+
+    static const uint8_t sub[] = { 0x82, 0x07, 0x00, 0x01, 0x00, 0x02, 'a','b', 0x00 };
+    static const uint8_t suback[] = { 0x90, 0x03, 0x00, 0x01, 0x00 };
+    static const uint8_t unsub[] = { 0xA2, 0x06, 0x00, 0x01, 0x00, 0x02, 'a','b' };
+    static const uint8_t unsuback[] = { 0xB0, 0x02, 0x00, 0x01 };
+    static const uint8_t pingreq[] = { 0xC0, 0x00 };
+    static const uint8_t pingresp[] = { 0xD0, 0x00 };
+    const struct { const uint8_t *data; size_t lens; int32_t client; } dirs[] = {// client 为能收它的那一方
+        { sub, sizeof(sub), 0 }, { suback, sizeof(suback), 1 }, { unsub, sizeof(unsub), 0 },
+        { unsuback, sizeof(unsuback), 1 }, { pingreq, sizeof(pingreq), 0 }, { pingresp, sizeof(pingresp), 1 },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(dirs); i++) {
+        CuAssertIntEquals(tc, 1, _mq_try(dirs[i].client, _MQ_COMMAND, 1, MQTT_311, dirs[i].data, dirs[i].lens));
+        CuAssertIntEquals(tc, 0, _mq_try(!dirs[i].client, _MQ_COMMAND, 1, MQTT_311, dirs[i].data, dirs[i].lens));
+    }
+}
+// 固定头 flags 与 CONNECT、SUBSCRIBE 保留位：每条只差被测的那一位，基准形态都先验过能解出包
+static void test_mqtt_flags_reject(CuTest *tc) {
+    uint8_t ack[] = { 0x40, 0x02, 0x00, 0x01 };
+    const struct { uint8_t ok; uint8_t bad; } acks[] = { { 0x40, 0x41 }, { 0x50, 0x51 }, { 0x62, 0x60 }, { 0x70, 0x71 } };
+    for (size_t i = 0; i < ARRAY_SIZE(acks); i++) {
+        ack[0] = acks[i].ok;
+        CuAssertIntEquals(tc, 1, _mq_try(0, _MQ_COMMAND, 1, MQTT_311, ack, sizeof(ack)));
+        ack[0] = acks[i].bad;
+        CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_COMMAND, 1, MQTT_311, ack, sizeof(ack)));
+    }
+    static const uint8_t sub_flags[] = { 0x80, 0x07, 0x00, 0x01, 0x00, 0x02, 'a','b', 0x00 };
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_COMMAND, 1, MQTT_311, sub_flags, sizeof(sub_flags)));
+    static const uint8_t unsub_flags[] = { 0xA0, 0x06, 0x00, 0x01, 0x00, 0x02, 'a','b' };
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_COMMAND, 1, MQTT_311, unsub_flags, sizeof(unsub_flags)));
+    static const uint8_t connack_flags[] = { 0x21, 0x02, 0x00, 0x00 };
+    CuAssertIntEquals(tc, 0, _mq_try(1, _MQ_INIT, 1, MQTT_311, connack_flags, sizeof(connack_flags)));
+    static const uint8_t disc_ok[] = { 0xE0, 0x00 };
+    static const uint8_t disc_flags[] = { 0xE1, 0x00 };
+    CuAssertIntEquals(tc, 1, _mq_try(0, _MQ_COMMAND, 1, MQTT_311, disc_ok, sizeof(disc_ok)));
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_COMMAND, 1, MQTT_311, disc_flags, sizeof(disc_flags)));
+    static const uint8_t auth_flags[] = { 0xF1, 0x00 };
+    CuAssertIntEquals(tc, 0, _mq_try(1, _MQ_COMMAND, 1, MQTT_50, auth_flags, sizeof(auth_flags)));
+    static const uint8_t pingreq_flags[] = { 0xC1, 0x00 };
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_COMMAND, 1, MQTT_311, pingreq_flags, sizeof(pingreq_flags)));
+    static const uint8_t pingresp_flags[] = { 0xD1, 0x00 };
+    CuAssertIntEquals(tc, 0, _mq_try(1, _MQ_COMMAND, 1, MQTT_311, pingresp_flags, sizeof(pingresp_flags)));
+
+    // CONNECT 按下标改一个字节：固定头 flags、无遗嘱却带 willqos / willretain、3.1.1 有密码无用户名、不支持的协议级别
+    const struct { size_t at; uint8_t val; } muts[] = { { 0, 0x11 }, { 9, 0x0A }, { 9, 0x22 }, { 9, 0x42 }, { 8, 0x03 } };
+    uint8_t conn[sizeof(_mq_connect_311)];
+    for (size_t i = 0; i < ARRAY_SIZE(muts); i++) {
+        memcpy(conn, _mq_connect_311, sizeof(conn));
+        conn[muts[i].at] = muts[i].val;
+        CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_INIT, 0, MQTT_311, conn, sizeof(conn)));
+    }
+    // 协议名长度不是 4：剩余 14 = 名(2+3) + 级别 1 + 标志 1 + 保活 2 + clientid(2+3)
+    static const uint8_t conn_name3[] = { 0x10, 0x0E, 0x00, 0x03, 'M','Q','T', 0x04, 0x02, 0x00, 0x3C, 0x00, 0x03, 'c','i','d' };
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_INIT, 0, MQTT_311, conn_name3, sizeof(conn_name3)));
+
+    // 5.0 订阅选项：retain handling 取 3、bit6~7 保留位。剩余 8 = 报文标识符 2 + 属性长度 1 + 主题(2+2) + 选项 1
+    uint8_t sub50[] = { 0x82, 0x08, 0x00, 0x01, 0x00, 0x00, 0x02, 'a','b', 0x00 };
+    CuAssertIntEquals(tc, 1, _mq_try(0, _MQ_COMMAND, 1, MQTT_50, sub50, sizeof(sub50)));
+    sub50[9] = 0x30;
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_COMMAND, 1, MQTT_50, sub50, sizeof(sub50)));
+    sub50[9] = 0x40;
+    CuAssertIntEquals(tc, 0, _mq_try(0, _MQ_COMMAND, 1, MQTT_50, sub50, sizeof(sub50)));
+}
+// 5.0 连接收到剩余长度 2 的拒绝 CONNACK：1~5 是对方按 3.1.1 回的，version 记 3.1.1；其余码版本不动，按 5.0 的表翻译
+static void test_mqtt_connack_short_reject(CuTest *tc) {
+    const struct { uint8_t reason; mqtt_protversion ver; const char *text; } cases[] = {
+        { 0x05, MQTT_311, "Not authorized" },
+        { 0x87, MQTT_50, "Not authorized" },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        uint8_t wire[] = { 0x20, 0x02, 0x00, cases[i].reason };
+        buffer_ctx buf;
+        ud_cxt ud;
+        buffer_init(&buf);
+        buffer_append(&buf, wire, sizeof(wire));
+        _mq_ud_init(&ud, MQTT_50, _MQ_INIT);
+        int32_t status = PROT_INIT;
+        mqtt_pack_ctx *p = _t_mqtt_unpack(1, &buf, &ud, NULL, &status);
+        CuAssertPtrNotNull(tc, p);
+        CuAssertIntEquals(tc, cases[i].ver, p->version);
+        CuAssertStrEquals(tc, cases[i].text, mqtt_reason((mqtt_protversion)p->version, p->fixhead.prot, cases[i].reason));
+        _mqtt_pkfree(p);
+        _mqtt_udfree(&ud);
+        buffer_free(&buf);
+    }
+}
 // 剩余长度：非最短编码(单节点、跨节点、首节点够 5 字节三条路)与 4 字节仍带延续位判协议错，不能当缺数据挂着；
 // 只来了 4 字节且都带延续位是缺数据。整包上限含固定头，恰等于照收、多 1 字节拒收
 static void test_mqtt_remaining_reject(CuTest *tc) {
@@ -2137,6 +2266,9 @@ void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_pack_bad_args);
     SUITE_ADD_TEST(suite, test_mqtt_subscribe);
     SUITE_ADD_TEST(suite, test_mqtt_malformed_reject);
+    SUITE_ADD_TEST(suite, test_mqtt_dir_ctx_guard);
+    SUITE_ADD_TEST(suite, test_mqtt_flags_reject);
+    SUITE_ADD_TEST(suite, test_mqtt_connack_short_reject);
     SUITE_ADD_TEST(suite, test_mqtt_subscribe_many);
     SUITE_ADD_TEST(suite, test_mqtt_ping_pong);
     SUITE_ADD_TEST(suite, test_mqtt_disconnect);

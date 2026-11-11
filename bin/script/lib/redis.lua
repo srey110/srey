@@ -1,6 +1,7 @@
 -- Redis 客户端工具库。
 -- 提供：连接（含 AUTH）、RESP 协议序列化（pack / pack_ud）、
 -- 以及完整的 RESP3 多节点响应解包（unpack，整段在 C 绑定层做）。
+-- 错误应答（-ERR / !）与字符串值分得开：顶层是 (false, 错误文本)，聚合里的错误元素是 { err = 错误文本 }。
 
 local srey       = require("lib.srey")
 local srey_redis = require("srey.redis")
@@ -43,16 +44,17 @@ redis.pack = srey_redis.pack
 ---@type fun(...:any):lightuserdata, integer
 redis.pack_ud = srey_redis.pack_ud
 
----读取当前响应节点的值
----@type fun(pk:lightuserdata?):string|integer|number|boolean|nil|RedisAggValue
+---读取当前响应节点的值；错误应答返回 (false, 错误文本)
+---@type fun(pk:lightuserdata?):string|integer|number|boolean|nil|RedisAggValue, string?
 redis.value = srey_redis.value
 
 ---获取响应链表中下一个节点指针
 ---@type fun(pk:lightuserdata?):lightuserdata|nil
 redis.next = srey_redis.next
 
----将 C 层 RESP3 响应链表整段解包为 Lua 值（各类型怎么转见 lprot.c 的 _lprot_redis_unpack）
----@type fun(pk:lightuserdata?):any
+---将 C 层 RESP3 响应链表整段解包为 Lua 值（各类型怎么转见 lredis.c 的 _lredis_unpack）；
+---错误应答返回 (false, 错误文本)，聚合里的错误元素是 { err = 错误文本 }
+---@type fun(pk:lightuserdata?):any, string?
 redis.unpack = srey_redis.unpack
 
 return redis

@@ -63,7 +63,8 @@ void hmac_reset(hmac_ctx *hmac) {
     memcpy(&hmac->outside.eng_ctx, &hmac->outside_init.eng_ctx, hmac->outside_init.attr->eng_lens);
 }
 // 定长消息"整块 + hs 字节"的末块：前 hs 字节留给每轮的 U，其余填充只写一次。
-// 长度只写末 8 字节，sha512 的 16 字节长度字段高半恒为 0，由 memset 顺带清掉
+// 长度只写末 8 字节，sha512 的 16 字节长度字段高半恒为 0，由 memset 顺带清掉。
+// 前提：分组长度 >= 输出长度 + 9（0x80 与 8 字节长度要和 U 放进同一块），现有带 _state 的算法都满足
 static void _hmac_pad_tail(const dg_attr *attr, char *blk) {
     size_t hs = attr->block_lens, kb = attr->key_block;
     char *tail = blk + kb - sizeof(uint64_t);

@@ -397,15 +397,16 @@ static void test_cond(CuTest *tc) {
 typedef struct {
     atomic_t word;
     atomic_t woke;// 已醒的等待者数
-    atomic_t calls;// 等待者调了几次 futex_wait：叫醒前靠它等等待者报到，一直等那步靠它查空转
+    atomic_t entered;// 已起来的等待者数(每个只加一次)：叫醒前靠它等等待者报到
+    atomic_t calls;// 一直等的等待者调了几次 futex_wait：靠它查空转
     atomic_t ntimeout;// 等待者被报超时的次数：叫醒都在 2s 内，报了就是把叫醒误报成超时
 } _futex_shared;
 
 // 等 word 离开 0：每次最多睡 2s，醒来重读。靠超时才醒的话总耗时会超过 1s，由主线程卡住
 static void _futex_waiter(void *arg) {
     _futex_shared *s = (_futex_shared *)arg;
+    ATOMIC_ADD(&s->entered, 1);
     while (0 == ATOMIC_GET(&s->word)) {
-        ATOMIC_ADD(&s->calls, 1);
         if (1 == futex_wait(&s->word, 0, 2000)) {
             ATOMIC_ADD(&s->ntimeout, 1);
         }
@@ -415,15 +416,16 @@ static void _futex_waiter(void *arg) {
 // 同 _futex_waiter，但一直等(ms=0)并数调用次数：一直等若退化成立即返回，会转出成千上万次
 static void _futex_waiter_forever(void *arg) {
     _futex_shared *s = (_futex_shared *)arg;
+    ATOMIC_ADD(&s->entered, 1);
     while (0 == ATOMIC_GET(&s->word)) {
         ATOMIC_ADD(&s->calls, 1);
         (void)futex_wait(&s->word, 0, 0);
     }
 }
-// 等 n 个等待者都报到(进过 futex_wait)再多睡 20ms 让它们睡下。只靠固定睡眠的话，
-// 等待者没赶上就先改了值，它起来直接看到值已变退出，叫醒那段等于没测
+// 等 n 个等待者都起来再多睡 20ms 让它们睡下。只靠固定睡眠的话，等待者没赶上就先改了值，
+// 它起来直接看到值已变退出，叫醒那段等于没测。按线程计数：虚假唤醒多转一圈不会让它提前放行
 static void _futex_wait_enter(_futex_shared *s, int32_t n) {
-    for (int32_t i = 0; i < 2000 && (int32_t)ATOMIC_GET(&s->calls) < n; i++) {
+    for (int32_t i = 0; i < 2000 && (int32_t)ATOMIC_GET(&s->entered) < n; i++) {
         MSLEEP(1);
     }
     MSLEEP(20);
@@ -452,7 +454,7 @@ static void test_futex(CuTest *tc) {
     CuAssertTrue(tc, cost >= 10 && cost < 1000);
     // 一个等待者：先改值再叫
     ATOMIC_SET(&s.word, 0);
-    ATOMIC_SET(&s.calls, 0);
+    ATOMIC_SET(&s.entered, 0);
     a = thread_creat(_futex_waiter, &s);
     _futex_wait_enter(&s, 1);
     t0 = nowms();
@@ -463,7 +465,7 @@ static void test_futex(CuTest *tc) {
     // 两个等待者：一次 wake_all 都要醒
     ATOMIC_SET(&s.word, 0);
     ATOMIC_SET(&s.woke, 0);
-    ATOMIC_SET(&s.calls, 0);
+    ATOMIC_SET(&s.entered, 0);
     a = thread_creat(_futex_waiter, &s);
     b = thread_creat(_futex_waiter, &s);
     _futex_wait_enter(&s, 2);
@@ -474,10 +476,12 @@ static void test_futex(CuTest *tc) {
     thread_join(b);
     CuAssertTrue(tc, nowms() - t0 < 1000 && 2 == ATOMIC_GET(&s.woke));
     CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&s.ntimeout));
+    // 一直等(ms=0)：等它起来睡下再叫，没起来就改值的话 calls 为 0，下面的断言恒真
     ATOMIC_SET(&s.word, 0);
+    ATOMIC_SET(&s.entered, 0);
     ATOMIC_SET(&s.calls, 0);
     a = thread_creat(_futex_waiter_forever, &s);
-    MSLEEP(50);
+    _futex_wait_enter(&s, 1);
     ATOMIC_SET(&s.word, 1);
     futex_wake(&s.word);
     thread_join(a);

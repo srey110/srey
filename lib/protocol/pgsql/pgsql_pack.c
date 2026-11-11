@@ -50,7 +50,7 @@ static inline void _pgpack_set_string_n(binary_ctx *bwriter, const char *str, si
     }
     binary_set_int8(bwriter, 0);
 }
-void *pgsql_pack_startup(const char *user, const char *database, size_t *size) {
+void *pgsql_pack_startup(const char *user, const char *database, int32_t minor, size_t *size) {
     // StartupMessage 无类型码：Int32(总长) Int16(主版本 3) Int16(次版本 0) 若干 String 键值对，一个 NUL 收尾
     static const char *const _params[] = {
         "client_encoding", "UTF8",
@@ -61,7 +61,7 @@ void *pgsql_pack_startup(const char *user, const char *database, size_t *size) {
     binary_init_write(&bwriter, 0, 0);
     binary_set_skip(&bwriter, 4); // 预留长度字段
     binary_set_integer(&bwriter, 3, 2, 0); // 协议主版本号 3
-    binary_set_integer(&bwriter, 0, 2, 0); // 协议次版本号 0
+    binary_set_integer(&bwriter, minor, 2, 0); // 协议次版本号
     binary_set_string(&bwriter, "user");
     _pgpack_set_string(&bwriter, user);
     binary_set_string(&bwriter, "database");
@@ -233,10 +233,12 @@ void *pgsql_pack_copy_in(const char *sql, const void *data, size_t lens, size_t 
     *size = bwriter.offset;
     return bwriter.data;
 }
-void pgsql_pack_cancel(char buf[16], int32_t pid, uint32_t key) {
-    // CancelRequest 无消息类型码：Int32(16) Int32(80877102) Int32(pid) Int32(key)
-    write_be32(buf, 16); // 消息总长度
+size_t pgsql_pack_cancel(char buf[PGSQL_CANCEL_MAX], int32_t pid, const char *key, size_t keylens) {
+    // CancelRequest 无消息类型码：Int32(总长) Int32(80877102) Int32(pid) 密钥
+    size_t lens = 12 + keylens;
+    write_be32(buf, (uint32_t)lens);
     write_be32(buf + 4, 80877102); // CancelRequest 魔数
     write_be32(buf + 8, (uint32_t)pid); // 后端进程 ID
-    write_be32(buf + 12, key); // 取消密钥
+    memcpy(buf + 12, key, keylens);
+    return lens;
 }

@@ -316,11 +316,6 @@ static void _loader_task_run(loader_ctx *loader, int32_t weight, int32_t onworke
 int32_t _loader_task_try_run(task_ctx *task, message_ctx *msg) {
     loader_ctx *loader = task->loader;
     int32_t idx = ev_cur_index(&loader->netev);
-    worker_version *version;
-    task_dispatch_arg runarg;
-#if 0 != EVTASK_SLOW_MS
-    uint64_t t0;
-#endif
     // 它在本线程上还有没跑完的消息(含同一连接先推的)就得排在后面。判空只需看见本线程自己推的，
     // 别的线程推的与这条谁先谁后本来就不保证，故用不拿锁的 empty_fast
     if (idx < 0
@@ -329,12 +324,13 @@ int32_t _loader_task_try_run(task_ctx *task, message_ctx *msg) {
         || !ATOMIC_CAS(&task->global, 0, 1)) {
         return ERR_FAILED;
     }
-    version = &loader->monitor.version[loader->nworker + idx];
+    worker_version *version = &loader->monitor.version[loader->nworker + idx];
     ATOMIC64_SET_RELAXED(&version->handle, task->handle);
+    task_dispatch_arg runarg;
     runarg.task = task;
     runarg.msg = msg;
 #if 0 != EVTASK_SLOW_MS
-    t0 = timer_cur_ms(&loader->timer);
+    uint64_t t0 = timer_cur_ms(&loader->timer);
 #endif
     (void)_loader_dispatch_one(task, version, &runarg, _loader_stat_now());
     _loader_task_release(loader, task, version);

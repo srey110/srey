@@ -149,6 +149,7 @@ end
 ---一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false。
 ---事务进行中连接重连过即作废：之后带事务上下文的命令一律失败，commit/rollback 都发 abortTransaction
 ---让服务端当场中止、放锁（commit 返回 false；提交已交出过的 commit 除外，照常重发，见 commit）；要继续须重新 begin（同 C 侧 mongo_begin）
+---事务里把会话丢掉不收尾（没 commit / rollback / close）的话，服务端事务要到 transactionLifetimeLimitSeconds（默认 60 秒）才中止，期间持锁
 ---@return boolean ok 成功 true（该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
     if not self.session:begin() then
@@ -360,7 +361,7 @@ function ctx:_connect()
     return true
 end
 
----内部 ping（isMaster / ping 命令），不自动重连
+---内部 ping（发 ping 命令），不自动重连
 ---@return boolean ok 服务端响应成功 true（仅供 ping() 内部调用，不要直接调用；调用方须已持锁）
 function ctx:_ping()
     local pack, size = self.mongo:pack_ping()
@@ -639,7 +640,7 @@ function ctx:startsession()
 end
 
 ---连接池归还时调：连接上还绑着事务（借用者没 commit / rollback）就回滚，不让下一个人的写命令组进这个事务。
----没等到应答也在本地解绑再返回 false，由连接池断开（同 C 侧 mongo_pool_ops）
+---没等到应答也在本地解绑再返回 false，由连接池断开（同 C 侧 mongo_pool_ops）。会话已被业务丢掉时只能本地解绑，见 sess_ctx:begin
 ---@return boolean ok 本来就没绑事务或已解绑 true；false 时连接池会断开这条连接
 function ctx:reset_session()
     local sess = self._txn.sess

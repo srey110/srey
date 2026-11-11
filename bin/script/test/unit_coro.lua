@@ -11,12 +11,15 @@
 -- 留到回调结束由 _coro_exec 交还（分发返回时补挂带 __gc 的元表兜底）；等待者拿到的 msg 只到本协程下次挂起前有效。
 -- 池满之后接着测协程池收缩（要等一个收缩周期，本模块因此多跑十来秒）。
 -- 再往后是连接类的其余路径：sync_close 的返回值、客户端 TLS 与明文升级、没有协程在等时落到 on_connected /
--- on_sended / on_handshaked。最后一段测 NEVERCONN 的合成 CLOSE 不触发 on_closed 与观察者（假消息与真实连接失败各一）。
+-- on_sended / on_handshaked。倒数第二段测 NEVERCONN 的合成 CLOSE 不触发 on_closed 与观察者（假消息与真实连接失败各一），
+-- 最后一段测服务端 accept 来的 sk 被 CLOSE 唤醒置失效后，同一次分发取 msg.sk 不会把它刷回有效。
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local seri   = require("srey.seri")
 local core = require("srey.core")
+local task = require("srey.task")
+local sssl = require("srey.ssl")
 local utils = require("srey.utils")
 local mqtt = require("lib.mqtt")
 local websock = require("lib.websock")
@@ -35,6 +38,7 @@ local WS_PORT = 15133
 -- listen 带 NET_EV.SESS 那段：客户端连上就发
 local SESS_PORT = 15134
 local SESS_ANY_PORT = 15135 -- 同上，MQTT 服务端用 syn_recv_any 收客户端的 CONNECT
+local SESS_CLOSE_PORT = 15137 -- 服务端 accept 来的 sk 被 CLOSE 唤醒置失效那段
 -- 客户端校验主机名那小段：OpenSSL 的 SSL_VERIFY_PEER，与两个只带 CA、开了它的客户端上下文名
 local SSL_VERIFY_PEER = 1
 local SSL_VHOST = "unit_coro_vhost"
@@ -170,8 +174,8 @@ runner.run(function(t)
         t:check(sk and sk.valid, "udp 建 socket")
         if sk and sk.valid then
             -- 默认 netread 超时 10s，失败时会把用例拖满；缩短后还原
-            local old = srey.get_netread_timeout()
-            srey.set_netread_timeout(500)
+            local old = srey.get_timeout("netread")
+            srey.set_timeout("netread", 500)
 
             local done, got = 0, {}
             for i = 1, NSEND do
@@ -185,7 +189,7 @@ runner.run(function(t)
                 end)
             end
             srey.sleep(500 + SETTLE)
-            srey.set_netread_timeout(old)
+            srey.set_timeout("netread", old)
 
             t:eq(NSEND, done, "并发 sendto 的 N 个协程全部返回（没有等待者被丢在表里）")
             local n = 0
@@ -518,15 +522,83 @@ runner.run(function(t)
 
         -- srey.request 的超时分支：收到请求不回
         srey.on_requested(function() end)
-        local old = srey.get_request_timeout()
-        srey.set_request_timeout(100)
+        local old = srey.get_timeout("request")
+        srey.set_timeout("request", 100)
         local t0 = srey.timer_ms()
         local rok, rdata, rsize = pcall(srey.request, srey.task_handle(), 0x100, "x")
-        srey.set_request_timeout(old)
+        srey.set_timeout("request", old)
         t:eq(true, rok, "request 超时分支不抛错（实际 " .. tostring(rdata) .. "）")
         t:eq(nil, rdata, "request 超时 rdata 为 nil")
         t:eq(nil, rsize, "request 超时 rsize 为 nil")
         t:check(srey.timer_ms() - t0 >= 100, "等满请求超时才返回")
+    end
+
+    -- ── 按协程覆盖超时：srey.coro_timeout_set / get / with_timeout ───────────
+    -- 与 C 侧 task_coro_extra 的 _test_timeout_override 对应；on_requested 仍是上一段那个不回包的
+    do
+        local base = srey.get_timeout("netread")
+        t:eq(base, srey.coro_timeout_get("netread"), "没覆盖时取 task 级的值")
+        t:eq(0, srey.coro_timeout_set("netread", 1500), "首次覆盖返回 0")
+        t:eq(1500, srey.coro_timeout_get("netread"), "覆盖后取覆盖值")
+        t:eq(1500, srey.coro_timeout_set("netread", 700), "嵌套覆盖返回外层值")
+        t:eq(700, srey.coro_timeout_get("netread"), "内层值生效")
+        srey.coro_timeout_set("netread", 1500)
+        t:eq(base, srey.get_timeout("netread"), "task 级的值不受影响")
+        local old = srey.coro_timeout_set("connect", 1 << 40)
+        t:eq(task.timeout_max, srey.coro_timeout_get("connect"), "超上界 clamp 到 timeout_max")
+        srey.coro_timeout_set("connect", old)
+        t:eq(srey.get_timeout("connect"), srey.coro_timeout_get("connect"), "恢复后回到 task 级的值")
+        t:eq(false, pcall(srey.coro_timeout_set, "bogus", 1), "非法种类报错")
+        t:eq(false, pcall(srey.coro_timeout_set, "netread", -1), "负数报错")
+        local seen
+        srey.fork(function() seen = srey.coro_timeout_get("netread") end)
+        srey.sleep(10)
+        t:eq(base, seen, "fork 子协程不继承覆盖值")
+        srey.coro_timeout_set("netread", 0)
+        t:eq(base, srey.coro_timeout_get("netread"), "传 0 撤销覆盖")
+        -- 协程跑完这条活就清：上一条 fork 设了覆盖，回池后被下一条复用时看不到
+        srey.fork(function() srey.coro_timeout_set("netread", 1234) end)
+        srey.sleep(10)
+        local seen2
+        srey.fork(function() seen2 = srey.coro_timeout_get("netread") end)
+        srey.sleep(10)
+        t:eq(base, seen2, "协程回池复用后覆盖值已清")
+
+        -- with_timeout：request 按覆盖值(300ms)到期，结束后恢复
+        local t0 = srey.timer_ms()
+        local r = srey.with_timeout({ request = 300 }, srey.request, srey.task_handle(), 0x100, "x")
+        local el = srey.timer_ms() - t0
+        t:eq(nil, r, "with_timeout 里 request 超时返回 nil")
+        t:check(el >= 300 and el < 300 + SETTLE, "request 按覆盖值到期（实际 " .. el .. "ms）")
+        t:eq(srey.get_timeout("request"), srey.coro_timeout_get("request"), "with_timeout 结束后恢复")
+        local ok, err = pcall(srey.with_timeout, { netread = 900 }, function() error("boom", 0) end)
+        t:eq(false, ok, "with_timeout 里的错误往上抛")
+        t:eq("boom", err, "错误原样抛出")
+        t:eq(base, srey.coro_timeout_get("netread"), "抛错后已恢复")
+        local a, b = srey.with_timeout({ netread = 800 }, function(x)
+            local inner = srey.with_timeout({ netread = 600 }, srey.coro_timeout_get, "netread")
+            return inner, srey.coro_timeout_get("netread") + x
+        end, 1)
+        t:eq(600, a, "内层 with_timeout 生效")
+        t:eq(801, b, "出内层恢复成外层值，返回值与实参透传")
+        t:eq(false, pcall(srey.with_timeout, { bogus = 1 }, function() end), "非法选项报错")
+
+        -- 读超时按覆盖值(1.5s)到期：连自己的监听口，服务端这段不回显(收尾换回 _echo)
+        srey.on_recved(function() end)
+        local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT_TMO, NET_EV.ACCEPT)
+        t:check(ERR_FAILED ~= lid, "listen " .. TCP_PORT_TMO)
+        local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", TCP_PORT_TMO)
+        t:check(sk and sk.valid, "connect 回自己的监听口")
+        if sk and sk.valid then
+            t0 = srey.timer_ms()
+            local d = srey.with_timeout({ netread = 1500 }, srey.syn_send, sk, "x")
+            el = srey.timer_ms() - t0
+            t:eq(nil, d, "对端不回，syn_send 超时返回 nil")
+            t:check(el >= 1400 and el < 1500 + SETTLE,
+                    "读超时按覆盖值到期（实际 " .. el .. "ms，task 级 " .. base .. "ms）")
+        end
+        srey.unlisten(lid)
+        srey.on_recved(_echo)
     end
 
     -- ── 回调载荷活到回调结束：挂起之后再读 data ──────────────────────────
@@ -845,11 +917,11 @@ runner.run(function(t)
         end
         sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PLAIN_PORT)
         if t:check(sk.valid and srey.sock_bind_task(sk, "reporter"), "连上后转交给 reporter") then
-            local old = srey.get_netread_timeout()
-            srey.set_netread_timeout(200)
+            local old = srey.get_timeout("netread")
+            srey.set_timeout("netread", 200)
             local t0 = srey.timer_ms()
             local ok = srey.sync_close(sk)
-            srey.set_netread_timeout(old)
+            srey.set_timeout("netread", old)
             t:eq(false, ok, "sync_close 等满读超时没等到 CLOSE 返回 false")
             t:check(srey.timer_ms() - t0 >= 200, "等满读超时才返回")
             t:eq(s0, _sessions(), "超时摘掉等待者后条目已删")
@@ -866,7 +938,7 @@ runner.run(function(t)
         -- 本段连接一律 sync_close：connect 留下的 keep 条目要等 CLOSE 才删，异步关会让后面按条目数取基线的用例偶发对不上
         -- 客户端 TLS：带 SSL_NAME.CLIENT 连 TLS 监听，srey.connect 连同握手一起等完；
         -- 再测明文连上后 syn_ssl_exchange 升级。证书没生成或没编 SSL 时这两小段跳过
-        if srey.ssl_qury(SSL_NAME.SERVER) and srey.ssl_qury(SSL_NAME.CLIENT) then
+        if srey.ssl_query(SSL_NAME.SERVER) and srey.ssl_query(SSL_NAME.CLIENT) then
             local tlid = srey.listen(PACK_TYPE.NONE, SSL_NAME.SERVER, "127.0.0.1", TLS_PORT)
             t:check(ERR_FAILED ~= tlid, "listen " .. TLS_PORT)
             sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.CLIENT, "127.0.0.1", TLS_PORT)
@@ -877,12 +949,12 @@ runner.run(function(t)
             end
             -- 开 SSL_VERIFY_PEER：设了主机名而服务端证书不是签给它的，握手必须失败；
             -- 同样的 CA 与校验、不设主机名的能连上，说明挡下的是主机名而不是证书链
-            local vhost = core.cert_register(SSL_VHOST, "ca.crt", "", "")
-            local vchain = core.cert_register(SSL_VCHAIN, "ca.crt", "", "")
+            local vhost = sssl.cert_register(SSL_VHOST, "ca.crt", "", "")
+            local vchain = sssl.cert_register(SSL_VCHAIN, "ca.crt", "", "")
             if t:check(vhost and vchain, "注册两个只带 CA 的客户端上下文") then
-                core.ssl_verify(vhost, SSL_VERIFY_PEER)
-                core.ssl_verify(vchain, SSL_VERIFY_PEER)
-                t:eq(true, core.ssl_host(vhost, "wrong.example.com"), "ssl_host 设主机名")
+                sssl.verify(vhost, SSL_VERIFY_PEER)
+                sssl.verify(vchain, SSL_VERIFY_PEER)
+                t:eq(true, sssl.host(vhost, "wrong.example.com"), "ssl_host 设主机名")
                 sk = srey.connect(PACK_TYPE.NONE, SSL_VHOST, "127.0.0.1", TLS_PORT)
                 t:eq(false, sk.valid, "主机名与证书对不上时握手失败")
                 sk = srey.connect(PACK_TYPE.NONE, SSL_VCHAIN, "127.0.0.1", TLS_PORT)
@@ -890,7 +962,7 @@ runner.run(function(t)
                     srey.sync_close(sk)
                 end
                 -- 测试证书没有 SAN，主机名按 CN 比：设成服务端证书的 CN(见 bin/keys/create.sh)就该连得上
-                t:eq(true, core.ssl_host(vhost, "srey-server"), "ssl_host 改成服务端证书的 CN")
+                t:eq(true, sssl.host(vhost, "srey-server"), "ssl_host 改成服务端证书的 CN")
                 sk = srey.connect(PACK_TYPE.NONE, SSL_VHOST, "127.0.0.1", TLS_PORT)
                 if t:check(sk.valid, "主机名与证书对得上时能连上") then
                     srey.sync_close(sk)
@@ -1118,6 +1190,39 @@ runner.run(function(t)
             else
                 printd("[%s] connect 127.0.0.1:1 failed without a NEVERCONN close, real path skipped", t.name)
             end
+        end
+    end
+
+    -- ── 服务端 accept 来的 sk 被 CLOSE 唤醒置失效后，同一次 CLOSE 分发取 msg.sk 不会把它刷回有效 ──────
+    -- 这个 sk 与 CLOSE 消息的 msg.sk 是按 skid 缓存的同一个对象；注册了 on_closed 分发才取 msg.sk。
+    -- 等待者醒来先再挂起一次，让分发跑完取 msg.sk 那步，回来再看 sk
+    do
+        local ask, woke
+        srey.on_closed(function() end)
+        srey.on_accepted(function(_, sk)
+            ask = sk
+            srey.syn_recv(sk)
+            srey.sleep(30)
+            woke = true
+        end)
+        local lid = srey.listen(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", SESS_CLOSE_PORT, NET_EV.ACCEPT | NET_EV.SESS)
+        if t:check(ERR_FAILED ~= lid, "listen " .. SESS_CLOSE_PORT) then
+            local sk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", SESS_CLOSE_PORT)
+            if t:check(sk.valid, "connect " .. SESS_CLOSE_PORT) then
+                srey.sleep(30)-- 等服务端 syn_recv 挂上
+                srey.close(sk)
+                local deadline = srey.timer_ms() + 2000
+                while not woke and srey.timer_ms() < deadline do
+                    srey.sleep(10)
+                end
+                if t:check(woke, "服务端 syn_recv 被 CLOSE 唤醒") then
+                    t:eq(false, ask.valid, "CLOSE 分发取过 msg.sk 之后 accept 来的 sk 仍是失效的")
+                    local t0 = srey.timer_ms()
+                    t:eq(true, srey.sync_close(ask), "之后 sync_close 当场返回 true")
+                    t:check(srey.timer_ms() - t0 < 200, "不再等读超时")
+                end
+            end
+            srey.unlisten(lid)
         end
     end
 end)

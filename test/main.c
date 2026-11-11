@@ -336,7 +336,7 @@ int main(int argc, char *argv[]) {
     CuSuite *suite = CuSuiteNew();
 
     test_base(suite);/* 内存宏、原子操作、字节序 pack/unpack、bytes / strconv、文件 / 时间 / strptime / 随机 / 进程、timer、once */
-    test_containers(suite);/* mpq、bbq、spsc、fsqu、chan、hashmap、heap、queue、sarray、slist、rbtree */
+    test_containers(suite);/* mpq、bbq、spsc、fsqu、chan、hashmap、heap、queue、sarray、slist、rbtree、rbtset、radix */
     test_hashset(suite);/* hashset(hashmap 包装) */
     test_crypt(suite);/* base64、crc、digest、hmac、urlraw、xor、xxhash、crypt_memcmp */
     test_utils(suite);/* binary、buffer、sfid、uuid、hash_ring、netaddr、log、popen、tw */
@@ -345,7 +345,7 @@ int main(int argc, char *argv[]) {
     test_stm(suite);/* stm 共享只读快照: new/update/grab_data/ungrab_data/free/ungrab 引用计数 */
     test_event(suite);/* event 层：关闭前冲刷、FIN 检出、close_type 三档 */
     test_minicoro(suite);/* minicoro 本地补丁：栈底守卫字拦截越过栈底的写 */
-    test_coro(suite);/* 通用协程调度器：sess 五条规则、fork、serial、dump */
+    test_coro(suite);/* 通用协程调度器：sess 六条规则、fork、serial、dump */
     test_protocol(suite);/* HTTP、Redis RESP、URL 解析、custz、DNS、WebSocket */
     test_bson(suite);/* BSON 构建器、迭代器、find */
     test_mqtt_pack(suite);/* MQTT 组包/解包往返 */
@@ -354,7 +354,7 @@ int main(int argc, char *argv[]) {
     test_mongo_pack(suite);/* MongoDB wire 组包 + parse */
     test_mysql_parse(suite); /* MySQL 解包 + reader 全接口 */
     test_pgsql_parse(suite); /* PostgreSQL 解包 + reader 全接口 */
-    test_advance(suite);/* advance 层：router 路径规范化 */
+    test_advance(suite);/* advance 层：router 注册 / 匹配 / 中间件链 / 回退 / Allow，harbor 组包 */
 
     CuSuiteRun(suite);
     // 套件留着不删，等槽位套件跑完在 test result 里合成一份总计。
@@ -443,17 +443,17 @@ int main(int argc, char *argv[]) {
     task_mqtt_server_start(g_loader, "task_mqtt_server", 1883, 0);
     // mqtt_test1/2：连接 docker EMQX（端口 1884）
     task_mqtt_client_start(g_loader, "mqtt_test1", MQTT_311, TEST_EXT_IP, 1884,
-        0, 0, _get_name_val(testlist, "mqtt_test1"));
+        0, 0, 1, _get_name_val(testlist, "mqtt_test1"));
     task_mqtt_client_start(g_loader, "mqtt_test2", MQTT_50, TEST_EXT_IP, 1884,
-        0, 0, _get_name_val(testlist, "mqtt_test2"));
+        0, 0, 1, _get_name_val(testlist, "mqtt_test2"));
     // mqtt_test3/4 连的是上面这个进程内 broker，故各自在协程里先等一会再连（见头文件说明）；
     // 1884 的 test1/test2 连的是外部 EMQX，不受本进程 task 启动顺序影响，故不等
     task_mqtt_client_start(g_loader, "mqtt_test3", MQTT_311, "127.0.0.1", 1883,
-        500, 0, _get_name_val(testlist, "mqtt_test3"));
+        500, 0, 0, _get_name_val(testlist, "mqtt_test3"));
     task_mqtt_client_start(g_loader, "mqtt_test4", MQTT_50, "127.0.0.1", 1883,
-        500, 0, _get_name_val(testlist, "mqtt_test4"));
+        500, 0, 0, _get_name_val(testlist, "mqtt_test4"));
     //habor
-    int32_t rtn = harbor_start(g_loader, "harbor", ssl_harbor, "0.0.0.0", (uint16_t)*(_get_name_val(portlist, "harbor")));
+    int32_t rtn = harbor_start(g_loader, "harbor", ssl_harbor, "127.0.0.1", (uint16_t)*(_get_name_val(portlist, "harbor")));
     if (ERR_OK != rtn) {
         LOG_WARN("harbor start error.");
     }

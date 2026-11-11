@@ -385,31 +385,31 @@ int32_t _evpub_sock_launch_check(ev_ctx *ctx, const char *ip, uint16_t port, cbs
 SOCKET _evpub_listen(netaddr_ctx *addr) {
     SOCKET fd = sock_create_cloexec(netaddr_family(addr), SOCK_STREAM, 0, 1);
     if (INVALID_SOCK == fd) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("listen port %u: create socket failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
     if (ERR_OK != sock_reuseaddr(fd, 1)
         || ERR_OK != sock_reuseport(fd)
         || ERR_OK != sock_v6only(fd, netaddr_family(addr))) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("listen port %u: set reuseaddr / reuseport / v6only failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("listen port %u: bind failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
 #if ACCEPT_INHERIT_OPTS
     if (ERR_OK != sock_nodelay(fd)
         || ERR_OK != _evpub_tcp_keepalive(fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("listen port %u: set nodelay / keepalive failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
 #endif
     if (ERR_OK != listen(fd, SOMAXCONN)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("listen port %u: listen failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
@@ -418,7 +418,7 @@ SOCKET _evpub_listen(netaddr_ctx *addr) {
 SOCKET _evpub_udp(netaddr_ctx *addr, ud_cxt *ud) {
     SOCKET fd = sock_create_cloexec(netaddr_family(addr), SOCK_DGRAM, 0, 1);
     if (INVALID_SOCK == fd) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("udp port %u: create socket failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
 #ifdef EV_IOCP
@@ -444,12 +444,12 @@ SOCKET _evpub_udp(netaddr_ctx *addr, ud_cxt *ud) {
     int32_t share = NULL != ud && BIT_CHECK(ud->flags, UD_REUSEADDR);
     if (ERR_OK != (share ? sock_reuseaddr(fd, 0) : sock_exclusiveaddr(fd))
         || ERR_OK != sock_v6only(fd, netaddr_family(addr))) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("udp port %u: set reuseaddr / v6only failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("udp port %u: bind failed, %s", (uint32_t)netaddr_port(addr), ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }

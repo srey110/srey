@@ -4,7 +4,7 @@
 #include "base/base.h"
 
 /// <summary>
-/// crc 16 IBM
+/// CRC-16/ARC（又称 IBM：反射、多项式 0x8005、初值 0、无输出异或）
 /// </summary>
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>

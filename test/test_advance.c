@@ -347,7 +347,7 @@ static void test_router_next_twice(CuTest *tc) {
 }
 
 /* 路径在而方法不对回 405 并带 Allow，OPTIONS 自动 200(同 Laravel)；路径不在照旧 404，
- * 方法名不认识照旧 405 不带 Allow。Allow 的方法先后按方法表，不按注册顺序 */
+ * 方法名不认识同样按路径分：在回 405 带 Allow，不在回 404。Allow 的方法先后按方法表，不按注册顺序 */
 static void test_router_allow(CuTest *tc) {
     router_ctx *r = router_new();
     url_ctx url;

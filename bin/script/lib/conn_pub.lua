@@ -26,9 +26,9 @@ local pub = class("conn_pub")
 ---@param sslname string SSL 名；SSL_NAME.NONE 表示明文
 ---@return any ssl SSL 上下文，明文时为 nil
 function pub.ssl(sslname)
-    local ok, ssl = srey.ssl_qury(sslname)
+    local ok, ssl = srey.ssl_query(sslname)
     if not ok then
-        error(string.format("ssl_qury not find ssl name %s", sslname), 4)
+        error(string.format("ssl_query not find ssl name %s", sslname), 4)
     end
     return ssl
 end

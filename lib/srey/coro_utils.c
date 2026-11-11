@@ -67,7 +67,7 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
         return NULL;
     }
     // 不走 coro_sendto：它只交出载荷，这里要核对应答来源。不是 dnsip:53 发来的按失败处理，回退 TCP(同 TC 位)
-    message_ctx *msg = _coro_wait(task, sk.skid, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, sk.skid, MSG_TYPE_RECVFROM, coro_timeout_get(task, TMO_NETREAD));
     ev_close(&task->loader->netev, &sk);
     if (MSG_TYPE_RECVFROM != msg->mtype) {
         return NULL;
@@ -813,14 +813,24 @@ int32_t pgsql_cancel(pgsql_ctx *pg) {
     if (NULL != pg->evssl) {
         LOG_DEBUG("%s", "pgsql cancel: CancelRequest sent in plaintext (BackendKeyData pid+key exposed); SSL cancel not supported");
     }
+    // 进来就按此刻的 pid/key 组包：建连要挂起，期间主连接若断了又重连，pid/key 会换成新后端的，
+    // 那时再组包会误取消新连接上别的查询
+    char buf[PGSQL_CANCEL_MAX];
+    size_t lens = pgsql_pack_cancel(buf, pg->pid, pg->key, pg->keylens);
     sock_ctx sk;
     // CancelRequest 须在独立 TCP 连接上发送，服务端处理后主动关闭连接，无任何响应
     if (ERR_OK != coro_connect(pg->task, PACK_NONE, NULL, pg->ip, pg->port, 0, NULL, &sk)) {
         return ERR_FAILED;
     }
-    char buf[16];
-    pgsql_pack_cancel(buf, pg->pid, pg->key);
-    int32_t rtn = ev_send(&pg->task->loader->netev, &sk, buf, sizeof(buf), 1);
+    // 重组一次与快照不同，说明主连接已断开或重连：要取消的查询已随旧连接失败，不再发
+    char cur[PGSQL_CANCEL_MAX];
+    if (0 == pg->pid
+        || lens != pgsql_pack_cancel(cur, pg->pid, pg->key, pg->keylens)
+        || 0 != memcmp(buf, cur, lens)) {
+        ev_close(&pg->task->loader->netev, &sk);
+        return ERR_FAILED;
+    }
+    int32_t rtn = ev_send(&pg->task->loader->netev, &sk, buf, lens, 1);
     ev_close(&pg->task->loader->netev, &sk);
     return rtn;
 }
@@ -878,10 +888,20 @@ int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
     _serial_unlock(held);
     return rtn;
 }
+// 服务端停在 COPY IN 态：发 CopyFail 拉出来再按失败返回，否则它攥着事务与表锁、下一条命令必失败
+static pgpack_ctx *_pgsql_copy_abort(pgsql_ctx *pg) {
+    size_t lens;
+    LOG_WARN("unexpected COPY FROM STDIN, aborted.");
+    void *fail = pgsql_pack_copy_fail("unexpected COPY FROM STDIN", &lens);
+    if (NULL == fail) {
+        return _serial_reply(pg->task, &pg->sk, &pg->established, &pg->generation, NULL);
+    }
+    (void)SERIAL_SEND(pg, &pg->sk, fail, lens);
+    return NULL;
+}
 // 一条 simple query：发出去等到 ReadyForQuery 才算一次完整往返。
 // 组包失败(消息体超 INT32_MAX)就不发：拿 NULL 去 coro_send 会被当成没等到应答，把好连接关掉。
-// 收到 COPY_IN 是把 COPY FROM STDIN 交给了普通查询：发 CopyFail 拉出 COPY IN 态再按失败返回，
-// 否则服务端攥着事务与表锁、下一条命令必失败
+// 收到 COPY_IN 是把 COPY FROM STDIN 交给了普通查询，走 _pgsql_copy_abort
 static pgpack_ctx *_pgsql_query(pgsql_ctx *pg, const char *sql) {
     size_t lens;
     void *query = pgsql_pack_query(sql, &lens);
@@ -893,13 +913,7 @@ static pgpack_ctx *_pgsql_query(pgsql_ctx *pg, const char *sql) {
         || PGPACK_COPY_IN != pgpack->type) {
         return pgpack;
     }
-    LOG_WARN("COPY FROM STDIN must go through pgsql_copy_in, aborted.");
-    void *fail = pgsql_pack_copy_fail("unexpected COPY FROM STDIN", &lens);
-    if (NULL == fail) {
-        return _serial_reply(pg->task, &pg->sk, &pg->established, &pg->generation, NULL);
-    }
-    (void)SERIAL_SEND(pg, &pg->sk, fail, lens);
-    return NULL;
+    return _pgsql_copy_abort(pg);
 }
 // 必须正判 PGPACK_OK 而不是只判"收到了包":错位时读到的是上一条命令残留的包,当成自己的 pong
 // 吃掉后,ping 这个唯一的重连判据就永远报健康。";" 回 EmptyQueryResponse,也归 PGPACK_OK
@@ -933,9 +947,6 @@ static int32_t _pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *
     return PGPACK_OK == pgpack->type ? ERR_OK : ERR_FAILED;
 }
 int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, uint16_t nparam, uint32_t *oids) {
-    if (EMPTYSTR(sql)) {
-        return ERR_FAILED;
-    }
     SERIAL_CALL(int32_t, pg->task, pg->serial, ERR_FAILED, _pgsql_stmt_prepare(pg, name, sql, nparam, oids));
 }
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat) {
@@ -979,12 +990,21 @@ static pgpack_ctx *_pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *da
         return NULL;
     }
     pgpack_ctx *pgpack = SERIAL_SEND(pg, &pg->sk, pack, size);
-    // 不是 COPY_IN 就是服务端没进 COPY IN(通常为 PGPACK_ERR)，后面两条被它忽略、不会有应答。
+    // 不是 COPY_IN 就是服务端没进 COPY IN，后面两条被它忽略、不会有应答。
     // LISTEN 通知不会混进来:_pgsql_may_resume 对它返 ERR_FAILED，框架改走 recv 回调不唤醒等待者
-    if (NULL == pgpack || PGPACK_COPY_IN != pgpack->type) {
+    if (NULL == pgpack || PGPACK_ERR == pgpack->type) {
         return pgpack;
     }
-    return SERIAL_RECV(pg, &pg->sk);
+    if (PGPACK_COPY_IN != pgpack->type) {
+        LOG_WARN("pgsql_copy_in: not a COPY FROM STDIN statement.");
+        return NULL;
+    }
+    pgpack = SERIAL_RECV(pg, &pg->sk);
+    // 串里还有一条 COPY FROM STDIN：数据已被前一条用掉，只能中止
+    if (NULL != pgpack && PGPACK_COPY_IN == pgpack->type) {
+        return _pgsql_copy_abort(pg);
+    }
+    return pgpack;
 }
 pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {
     // 一次发出、两次接收:锁必须盖住整段。在两次接收之间放开的话,别人的等待会排到
@@ -992,8 +1012,18 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
     SERIAL_CALL(pgpack_ctx *, pg->task, pg->serial, NULL, _pgsql_copy_in(pg, sql, data, lens));
 }
 // COPY 走普通查询：解析器收齐 CopyData + CopyDone、到 ReadyForQuery 时才返回累积结果
+static pgpack_ctx *_pgsql_copy_out(pgsql_ctx *pg, const char *sql) {
+    pgpack_ctx *pgpack = _pgsql_query(pg, sql);
+    if (NULL != pgpack
+        && PGPACK_COPY_OUT != pgpack->type
+        && PGPACK_ERR != pgpack->type) {
+        LOG_WARN("pgsql_copy_out: not a COPY TO STDOUT statement.");
+        return NULL;
+    }
+    return pgpack;
+}
 pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql) {
-    SERIAL_CALL(pgpack_ctx *, pg->task, pg->serial, NULL, _pgsql_query(pg, sql));
+    SERIAL_CALL(pgpack_ctx *, pg->task, pg->serial, NULL, _pgsql_copy_out(pg, sql));
 }
 // mongo 没有 QUIT 命令，断连就是退出;不判 INVALID_SOCK 是因为 coro_close 对已关连接是空操作
 static void _mongo_do_quit(void *ctx) {
@@ -1386,7 +1416,7 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
     if (ERR_OK != kcp_start(kcp, task->handle, sess, ip, port, cfg)) {
         return ERR_FAILED;
     }
-    message_ctx *msg = _coro_wait(task, sess, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, sess, MSG_TYPE_HANDSHAKED, coro_timeout_get(task, TMO_NETREAD));
     // 失败分支动 kcp 之前先认一次 sess,理由同 kcp_synsend:换掉之后那三个字段属于新会话,
     // 抹了它既发不出也停不掉。prevmaxpack 同理只对自己这次调用有意义
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
@@ -1420,7 +1450,7 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
     if (ERR_OK != kcp_send(kcp, data, lens, copy)) {
         return NULL;
     }
-    message_ctx *msg = _coro_wait(task, sess, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, sess, MSG_TYPE_RECVFROM, coro_timeout_get(task, TMO_NETREAD));
     // 两个失败分支都先认一次 sess:CLOSE 是按 sess 广播给该 sess 下全部等待者的(不分 mtype),
     // 而醒来时 kcp->sess 可能已被同 task 另一协程 stop + 重启换成新会话,那时动 kcp 就是打在新会话上
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
@@ -1432,7 +1462,7 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
         // 会话已在 event 线程拆除(socket 关闭或对端死链),句柄置 stopped,不用再发 stop:下次 kcp_send
-        // 首行即快速失败,之后 kcp_start 也不会被当成重启存活会话;sess 留着,关闭回调按它认会话(同 kcp.lua)
+        // 首行即快速失败,之后 kcp_start 也不会被当成重启存活会话;sess 留着,关闭回调按它认会话
         if (sess == kcp->sess) {
             kcp->stopped = 1;
         }
@@ -1469,16 +1499,21 @@ static int32_t _mysql_pool_ping(void *conn) {
 static void _mysql_pool_quit(void *conn) {
     mysql_quit((mysql_ctx *)conn);
 }
-// 归还时还在事务里（没提交 / 回滚，或 autocommit=0 下执行过语句）：回滚掉，不让下一个人接着跑在里面
+// 归还时还在事务里就回滚；autocommit 与连上时不同就还原，不然下一个人不 COMMIT 的写会在它归还时被回滚掉
 static int32_t _mysql_pool_reset(void *conn) {
     mysql_ctx *mysql = (mysql_ctx *)conn;
-    if (0 == mysql->in_trans) {
-        return ERR_OK;
-    }
-    if (ERR_OK != mysql_query(mysql, "ROLLBACK", NULL, NULL, NULL)) {
+    if (0 != mysql->in_trans
+        && (ERR_OK != mysql_query(mysql, "ROLLBACK", NULL, NULL, NULL) || 0 != mysql->in_trans)) {
         return ERR_FAILED;
     }
-    return 0 == mysql->in_trans ? ERR_OK : ERR_FAILED;
+    if (mysql->autocommit == mysql->autocommit_init) {
+        return ERR_OK;
+    }
+    const char *sql = 0 != mysql->autocommit_init ? "SET autocommit=1" : "SET autocommit=0";
+    if (ERR_OK != mysql_query(mysql, sql, NULL, NULL, NULL)) {
+        return ERR_FAILED;
+    }
+    return mysql->autocommit == mysql->autocommit_init ? ERR_OK : ERR_FAILED;
 }
 static const db_pool_ops _mysql_pool_ops = {
     _mysql_pool_ready, _mysql_pool_connect, _mysql_pool_ping, _mysql_pool_quit, _mysql_pool_reset

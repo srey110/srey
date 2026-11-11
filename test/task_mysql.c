@@ -1,6 +1,12 @@
 ﻿#include "task_mysql.h"
+#if WITH_SSL
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#endif
 
 #define _CONC_N 4
+#define _RSA_USER "srey_rsa"// RSA 口令交换用例的专用账号
+#define _RSA_PSW "srey-rsa-pass"
 
 typedef struct task_mysql_args {
     uint16_t port;
@@ -15,6 +21,8 @@ typedef struct task_mysql_args {
     mysql_ctx mysql_bad;// 错口令建链用
     mysql_ctx mysql_pool[2];// 连接池两条真实连接
     mysql_ctx mysql_txn;// 连接池归还回滚用例的那条连接
+    mysql_ctx mysql_root;// RSA 用例里经 TLS 建账号、改密码的 root 连接
+    mysql_ctx mysql_rsa;// RSA 用例里明文连专用账号的那条连接
 }task_mysql_args;
 // 多语句逐条计数用例的记录：各包按包取的计数，以及回调里连接级 getter 与本包一致的次数
 typedef struct {
@@ -111,6 +119,60 @@ static int32_t _insert_rows(mysql_ctx *mysql) {
     return rtn;
 }
 
+// VECTOR(MySQL 9.0 起)：取维度、按维度读值；cap 不够与列类型不符都失败。低版本跳过
+static int32_t _vector_read(mysql_ctx *mysql) {
+    mysql_reader_ctx *reader = NULL;
+    if (ERR_OK != mysql_query(mysql, "select version() as v", NULL, _cb_take_reader, &reader)) {
+        LOG_ERROR("mysql select version error.");
+        if (NULL != reader) {
+            mysql_reader_free(reader);
+        }
+        return ERR_FAILED;
+    }
+    int32_t err;
+    size_t lens = 0;
+    char *ver = mysql_reader_string(reader, "v", &lens, &err);
+    int32_t major = 0;
+    for (size_t i = 0; ERR_OK == err && i < lens && ver[i] >= '0' && ver[i] <= '9'; i++) {
+        major = major * 10 + (ver[i] - '0');
+    }
+    mysql_reader_free(reader);
+    if (major < 9) {
+        LOG_INFO("mysql VECTOR needs 9.0+, case skipped (major %d).", major);
+        return ERR_OK;
+    }
+    reader = NULL;
+    if (ERR_OK != mysql_query(mysql, "select STRING_TO_VECTOR('[1.5,2,-3]') as v, 7 as i", NULL,
+                              _cb_take_reader, &reader)) {
+        LOG_ERROR("mysql select vector error.");
+        if (NULL != reader) {
+            mysql_reader_free(reader);
+        }
+        return ERR_FAILED;
+    }
+    float vals[3] = { 0 };
+    float tiny[2];// 别叫 small：Windows 头文件把它定义成了 char
+    int32_t rtn = ERR_OK;
+    size_t dims = mysql_reader_vector(reader, "v", NULL, 0, &err);
+    if (3 != dims || ERR_OK != err
+        || 3 != mysql_reader_vector(reader, "v", vals, ARRAY_SIZE(vals), &err) || ERR_OK != err
+        || 1.5f != vals[0] || 2.0f != vals[1] || -3.0f != vals[2]) {
+        LOG_ERROR("mysql vector read wrong, dims %zu.", dims);
+        rtn = ERR_FAILED;
+    }
+    (void)mysql_reader_vector(reader, "v", tiny, ARRAY_SIZE(tiny), &err);
+    if (ERR_FAILED != err) {
+        LOG_ERROR("%s", "mysql vector: cap too small must fail.");
+        rtn = ERR_FAILED;
+    }
+    (void)mysql_reader_vector(reader, "i", NULL, 0, &err);
+    if (ERR_FAILED != err) {
+        LOG_ERROR("%s", "mysql vector: non-vector column must fail.");
+        rtn = ERR_FAILED;
+    }
+    mysql_reader_free(reader);
+    return rtn;
+}
 // 简单查询全表后用 reader 迭代，校验列读取接口
 static int32_t _select_iterate(mysql_ctx *mysql, int32_t expect_rows) {
     mysql_reader_ctx *reader = NULL;
@@ -499,7 +561,8 @@ static int32_t _pool_query(task_ctx *task, task_mysql_args *arg) {
     db_pool_free(pool);
     return rtn;
 }
-// 连接池：事务没结束就归还，池先回滚再交给下一个人；同一条连接、不重连
+// 连接池：事务没结束就归还，池先回滚再交给下一个人；同一条连接、不重连。autocommit 改过的归还时还原；
+// 空闲期被关掉的连接借出前就地重连
 static int32_t _pool_txn(task_ctx *task, task_mysql_args *arg) {
     if (ERR_OK != mysql_init(&arg->mysql_txn, arg->host, arg->port, NULL,
                              arg->user, arg->password, arg->database, "utf8mb4", 0)) {
@@ -566,9 +629,51 @@ static int32_t _pool_txn(task_ctx *task, task_mysql_args *arg) {
     }
     db_pool_stat_get(pool, &st);
     if (1 != st.connects
-        || 0 != my->in_trans) {
-        LOG_ERROR("mysql pool txn: connects=%u in_trans=%d after failed stmt, want 1/0.",
-                  st.connects, (int32_t)my->in_trans);
+        || 0 != my->in_trans
+        || 0 == my->autocommit) {
+        LOG_ERROR("mysql pool txn: connects=%u in_trans=%d autocommit=%d after failed stmt, want 1/0/1.",
+                  st.connects, (int32_t)my->in_trans, (int32_t)my->autocommit);
+        db_pool_put(pool, my);
+        goto out;
+    }
+    // 只 set autocommit=0、不执行语句就归还：不在事务里，但 autocommit 也得还原，
+    // 不然下一个人不 COMMIT 的写会在它归还时被回滚掉
+    if (ERR_OK != mysql_query(my, "set autocommit=0", NULL, NULL, NULL)
+        || 0 != my->in_trans
+        || 0 != my->autocommit) {
+        LOG_ERROR("%s", "mysql pool txn: second set autocommit error.");
+        db_pool_put(pool, my);
+        goto out;
+    }
+    db_pool_put(pool, my);
+    my = mysql_pool_get(pool, 2000, &grtn);
+    if (NULL == my) {
+        LOG_ERROR("mysql pool txn: fourth get error %d.", grtn);
+        goto out;
+    }
+    db_pool_stat_get(pool, &st);
+    if (1 != st.connects
+        || 0 == my->autocommit) {
+        LOG_ERROR("mysql pool txn: connects=%u autocommit=%d after set autocommit=0, want 1/1.",
+                  st.connects, (int32_t)my->autocommit);
+        db_pool_put(pool, my);
+        goto out;
+    }
+    // 空闲期间连接被关掉：established 还是 1，借出前要看出连接标识已失效、就地重连，不借出死连接
+    db_pool_put(pool, my);
+    ev_close(&task->loader->netev, &arg->mysql_txn.client.sk);
+    for (int32_t i = 0; i < 50 && !sock_is_invalid(&arg->mysql_txn.client.sk); i++) {// 等 CLOSE 处理完(最多约 1 秒)
+        coro_sleep(task, 20);
+    }
+    my = mysql_pool_get(pool, 2000, &grtn);
+    if (NULL == my) {
+        LOG_ERROR("mysql pool txn: get after idle close error %d.", grtn);
+        goto out;
+    }
+    db_pool_stat_get(pool, &st);
+    if (2 != st.connects
+        || ERR_OK != mysql_query(my, "select 1", NULL, NULL, NULL)) {
+        LOG_ERROR("mysql pool txn: connects=%u after idle close, want 2 and a working query.", st.connects);
         db_pool_put(pool, my);
         goto out;
     }
@@ -586,7 +691,7 @@ static int32_t _ssl_query(task_ctx *task, task_mysql_args *arg) {
     mysql_reader_ctx *reader = NULL;
     int32_t err = ERR_FAILED;
     int64_t v = 0;
-    evssl_ctx *evssl = evssl_qury("clientnull");
+    evssl_ctx *evssl = evssl_query("clientnull");
     if (NULL == evssl) {
         LOG_WARN("mysql ssl: no client ssl context, skipped.");
         return ERR_OK;
@@ -619,6 +724,96 @@ static int32_t _ssl_query(task_ctx *task, task_mysql_args *arg) {
         return ERR_FAILED;
     }
     return ERR_OK;
+}
+#endif
+#if WITH_SSL
+// 另生成一把 RSA 公钥(PEM)，冒充"公钥不对"
+static char *_rsa_other_pem(size_t *lens) {
+    EVP_PKEY *k = EVP_RSA_gen(2048);
+    BIO *b = BIO_new(BIO_s_mem());
+    char *out = NULL;
+    if (NULL != k && NULL != b && 1 == PEM_write_bio_PUBKEY(b, k)) {
+        char *p;
+        long n = BIO_get_mem_data(b, &p);
+        MALLOC(out, (size_t)n);
+        memcpy(out, p, (size_t)n);
+        *lens = (size_t)n;
+    }
+    BIO_free(b);
+    EVP_PKEY_free(k);
+    return out;
+}
+// 明文连专用账号：先改一次密码清掉它在服务端的缓存，这条连接必走完整认证。pem / request 是公钥来源。
+// 返回建连结果；用例自身准备失败返回 2
+static int32_t _rsa_try(task_ctx *task, task_mysql_args *arg, const char *pem, size_t plens, int32_t request) {
+    if (ERR_OK != mysql_query(&arg->mysql_root, "ALTER USER '" _RSA_USER "'@'%' IDENTIFIED BY '" _RSA_PSW "'",
+                              NULL, _cb_expect_ok, NULL)
+        || ERR_OK != mysql_init(&arg->mysql_rsa, arg->host, arg->port, NULL, _RSA_USER, _RSA_PSW, "test", "utf8mb4", 0)
+        || (NULL != pem && ERR_OK != mysql_set_pubkey(&arg->mysql_rsa, pem, plens))
+        || ERR_OK != mysql_set_pubkey_request(&arg->mysql_rsa, request)) {
+        LOG_ERROR("%s", "mysql rsa: case setup error.");
+        return 2;
+    }
+    int32_t rtn = mysql_connect(task, &arg->mysql_rsa);
+    mysql_quit(&arg->mysql_rsa);
+    return rtn;
+}
+// RSA 口令交换：明文连接、服务端缓存冷时，用本地公钥或向服务端要来的公钥加密口令；都没有、公钥不对都失败。
+// 专用账号由 root 经 TLS 建，改它的密码只清它自己的缓存，不碰别的用例在用的账号
+static int32_t _rsa_auth(task_ctx *task, task_mysql_args *arg) {
+    evssl_ctx *evssl = evssl_query("clientnull");
+    if (NULL == evssl) {
+        LOG_WARN("mysql rsa: no client ssl context, skipped.");
+        return ERR_OK;
+    }
+    if (ERR_OK != mysql_init(&arg->mysql_root, arg->host, arg->port, evssl, "root", "root", "test", "utf8mb4", 0)
+        || ERR_OK != mysql_connect(task, &arg->mysql_root)) {
+        LOG_ERROR("%s", "mysql rsa: root connect error.");
+        mysql_quit(&arg->mysql_root);
+        return ERR_FAILED;
+    }
+    mysql_reader_ctx *reader = NULL;
+    char *pem = NULL;
+    size_t plens = 0;
+    int32_t err = ERR_FAILED;
+    if (ERR_OK == mysql_query(&arg->mysql_root, "CREATE USER IF NOT EXISTS '" _RSA_USER "'@'%' IDENTIFIED BY '" _RSA_PSW "'",
+                              NULL, _cb_expect_ok, NULL)
+        && ERR_OK == mysql_query(&arg->mysql_root, "GRANT SELECT ON test.* TO '" _RSA_USER "'@'%'", NULL, _cb_expect_ok, NULL)
+        && ERR_OK == mysql_query(&arg->mysql_root, "SHOW STATUS LIKE 'Caching_sha2_password_rsa_public_key'", NULL,
+                                 _cb_take_reader, &reader)
+        && !mysql_reader_eof(reader)) {
+        char *val = mysql_reader_string(reader, "Value", &plens, &err);
+        if (ERR_OK == err && plens > 0) {
+            MALLOC(pem, plens);
+            memcpy(pem, val, plens);
+        }
+    }
+    if (NULL != reader) {
+        mysql_reader_free(reader);
+    }
+    size_t olens = 0;
+    char *other = _rsa_other_pem(&olens);
+    int32_t rtn = ERR_FAILED;
+    if (NULL == pem || NULL == other) {
+        LOG_ERROR("%s", "mysql rsa: public key unavailable.");
+    } else if (ERR_FAILED != mysql_set_pubkey(&arg->mysql_rsa, "not a pem", 9)) {
+        LOG_ERROR("%s", "mysql rsa: an invalid PEM must be rejected.");
+    } else if (ERR_FAILED != _rsa_try(task, arg, NULL, 0, 0)) {
+        LOG_ERROR("%s", "mysql rsa: plaintext full auth without a public key must fail.");
+    } else if (ERR_OK != _rsa_try(task, arg, pem, plens, 0)) {
+        LOG_ERROR("%s", "mysql rsa: local public key failed.");
+    } else if (ERR_OK != _rsa_try(task, arg, NULL, 0, 1)) {
+        LOG_ERROR("%s", "mysql rsa: requesting the public key from the server failed.");
+    } else if (ERR_FAILED != _rsa_try(task, arg, other, olens, 1)) {
+        LOG_ERROR("%s", "mysql rsa: a wrong local public key must fail, and win over the request.");
+    } else {
+        rtn = ERR_OK;
+    }
+    FREE(pem);
+    FREE(other);
+    (void)mysql_query(&arg->mysql_root, "DROP USER IF EXISTS '" _RSA_USER "'@'%'", NULL, _cb_expect_ok, NULL);
+    mysql_quit(&arg->mysql_root);
+    return rtn;
 }
 #endif
 // 没有等待者的 SSLEXCHANGED 会落到这里，只计数
@@ -684,7 +879,7 @@ static int32_t _quit_ping(mysql_ctx *mysql) {
 static int32_t _auth_fail(task_ctx *task, task_mysql_args *arg) {
     struct evssl_ctx *evssl = NULL;
 #if WITH_SSL
-    evssl = evssl_qury("clientnull");
+    evssl = evssl_query("clientnull");
 #endif
     if (ERR_OK != mysql_init(&arg->mysql_bad, arg->host, arg->port, evssl,
                              arg->user, "srey-wrong-password", arg->database, "utf8mb4", 0)) {
@@ -835,6 +1030,18 @@ static void _startup_run(task_ctx *task) {
         mysql_quit(&arg->mysql);
         return;
     }
+    if (task_isclosing(task)
+        || ERR_OK != _vector_read(&arg->mysql)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+#if WITH_SSL
+    if (task_isclosing(task)
+        || ERR_OK != _rsa_auth(task, arg)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+#endif
     mysql_quit(&arg->mysql);
     ATOMIC_SET((atomic_t *)arg->ok, 1);
     LOG_INFO("mysql tested.");

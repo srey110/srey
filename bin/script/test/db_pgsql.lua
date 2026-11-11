@@ -6,11 +6,14 @@ local pgsql  = require("lib.pgsql")
 local pbind  = require("srey.pgsql.bind")
 local cpg    = require("srey.pgsql")
 local preader = require("srey.pgsql.reader")
+local ppub   = require("lib.pgsql_pub")
+local utils  = require("srey.utils")
+local rds    = require("srey.redis")-- 只用 pack_ud 造一块 C 内存
 
 -- 数据库地址：在 VM 上跑时改成宿主机 IP，只改这一处
 local DB_HOST = "127.0.0.1"
 
--- reader:get 对拍用的列：{ 列名, 对应的单列取值方法 }；numeric 没有单列方法，get 对它必须抛错(值为 NULL 时给 nil)
+-- reader:get 对拍用的列：{ 列名, 对应的单列取值方法 }；numeric 没有单列方法，get 对它文本格式给服务端文本、二进制格式抛错(值为 NULL 时都给 nil)
 local PG_COLS = {
     { "b", "bool" }, { "i2", "integer" }, { "i4", "integer" }, { "i8", "integer" },
     { "f4", "double" }, { "f8", "double" }, { "tx", "text" }, { "vc", "text" }, { "bc", "text" },
@@ -53,8 +56,11 @@ local function _pg_get_vs_single(t, rd, label)
             if nil == m then
                 if rd:isnull(col) then
                     t:check(gok and nil == gv, tag .. col .. " 不支持的类型值为 NULL 时 get 给 nil(先判 NULL，同 mysql)")
+                elseif "text" == label then
+                    t:check(gok and "string" == type(gv), tag .. col .. " 文本格式下 get 给服务端文本: " .. tostring(gv))
+                    row[col] = gv
                 else
-                    t:eq(false, gok, tag .. col .. " 不支持的类型 get 抛错")
+                    t:eq(false, gok, tag .. col .. " 二进制格式下不支持的类型 get 抛错")
                 end
             else
                 local sok, sv = rd[m](rd, col, true)
@@ -89,7 +95,7 @@ local function _pg_tls_case(t, pg)
         printd("[%s] server ssl is off, pgsql tls case skipped", t.name)
         return
     end
-    if not srey.ssl_qury(SSL_NAME.CLIENT) then
+    if not srey.ssl_query(SSL_NAME.CLIENT) then
         printd("[%s] ssl context not registered, pgsql tls case skipped", t.name)
         return
     end
@@ -292,6 +298,7 @@ runner.run(function(t)
         t:eq(math.mininteger, trows[2].i8, "int8 下界原样")
         t:eq("h\195\169llo", trows[1].tx, "text 原样（含多字节）")
         t:eq("ab   ", trows[1].bc, "char(5) 带补齐空格")
+        t:eq("1234567.125", trows[1].nu, "numeric 文本格式给服务端文本")
         t:eq(nil, next(trows[3]), "全 NULL 行 get 全为 nil")
         -- 两种格式除 float4 精度与 bytea 编码外必须相同
         for r = 1, 3 do
@@ -377,6 +384,37 @@ runner.run(function(t)
     t:check(bok, "reason 为 boolean 时中止照常完成")
     t:check(pg:query("select 1"), "boolean reason 中止后连接仍可用")
 
+    -- 字符串小块库内攒批：按行返回的 5000 行一行不丢；lightuserdata 块不合并，但先后顺序不能乱
+    t:check(pg:query("create temp table srey_copy_many (id serial, v text)"), "create temp srey_copy_many")
+    local nrow = 0
+    t:check(pg:copy_in("copy srey_copy_many (v) from stdin", function()
+        nrow = nrow + 1
+        if nrow > 5000 then
+            return nil
+        end
+        return "row" .. nrow .. "\n"
+    end), "copy_in 按行返回 5000 行: " .. tostring(pg:erro()))
+    t:eq(5000, pg:affected_rows(), "5000 行全部入库")
+    t:check(pg:query("truncate srey_copy_many restart identity"), "清空 srey_copy_many")
+    local udata, udlen = rds.pack_ud("X")-- 内容是 *1\r\n$1\r\nX\r\n，按 \r\n 分行就是三行
+    local blocks = { { "a\r\n" }, { udata, udlen }, { "b\r\n" } }
+    local bidx = 0
+    t:check(pg:copy_in("copy srey_copy_many (v) from stdin", function()
+        bidx = bidx + 1
+        local b = blocks[bidx]
+        if not b then
+            return nil
+        end
+        return b[1], b[2]
+    end), "copy_in 字符串与 lightuserdata 混用: " .. tostring(pg:erro()))
+    utils.ud_free(udata)
+    local mixrs = pg:query("select string_agg(v, ',' order by id) as s from srey_copy_many")
+    if t:check(mixrs and "userdata" == type(mixrs[1]), "读回混用结果") then
+        local mok, mval = mixrs[1]:text("s", true)
+        t:check(mok, "string_agg 读得出")
+        t:eq("a,*1,$1,X,b", mval, "攒的字符串先发、lightuserdata 块在中间、后面的字符串在最后")
+    end
+
     -- COPY FROM STDIN 误交给 query / copy_out：库须发 CopyFail 把服务端拉出 COPY IN 模式，
     -- 否则服务端攥着事务与表锁，下一条无关命令必失败
     t:check(not pg:query("copy srey_test (id, name, score) from stdin"), "query 收到 COPY_IN 返 false")
@@ -404,7 +442,38 @@ runner.run(function(t)
 
     -- cancel：空闲连接上发 CancelRequest 为无害 no-op，验证独立连接发送路径打通
     t:check(pg:cancel(), "cancel smoke")
+    -- 建连挂起期间主连接换了后端(第二次组包返回别的串模拟重连)：不发、返回 false。同 C 侧 _cancel_swapped
+    do
+        local real = pg.pg
+        local n = 0
+        pg.pg = setmetatable({
+            pack_cancel = function()
+                n = n + 1
+                return 1 == n and real:pack_cancel() or "swapped"
+            end,
+        }, { __index = function(_, k) return function(_, ...) return real[k](real, ...) end end })
+        local ok = pg:cancel()
+        pg.pg = real
+        t:eq(false, ok, "cancel 建连期间连接换了后端就不发")
+        t:eq(2, n, "建连回来重组过一次")
+    end
     t:check(pg:ping(), "ping after cancel")
+
+    -- LISTEN / NOTIFY：通知不唤醒等回复的协程，syn_recv_any 能收到。同一条连接自发自收，通知排在 ReadyForQuery 之前
+    t:check(pg:query("listen srey_chan"), "listen")
+    t:check(pg:query("notify srey_chan, 'first'"), "通知不唤醒等回复的协程，等来的是这条命令自己的结果")
+    local npack, nsize = cpg.pack_query("notify srey_chan, 'second'")
+    local nsk = pg:sock_id()
+    srey.send(nsk, npack, nsize, 0)
+    local ndata = srey.syn_recv_any(nsk)
+    t:eq(ppub.PACK_TYPE.NOTIFICATION, cpg.pack_type(ndata), "syn_recv_any 收到通知")
+    local npid, nchan, ntext = cpg.notification(ndata)
+    t:check(math.type(npid) == "integer" and npid > 0, "通知带发送方 pid")
+    t:eq("srey_chan", nchan, "通知频道")
+    t:eq("second", ntext, "通知内容")
+    local zdata = srey.syn_recv_any(nsk)
+    t:eq(ppub.PACK_TYPE.OK, cpg.pack_type(zdata), "通知之后收到命令结果")
+    t:check(pg:query("unlisten srey_chan"), "unlisten")
 
     -- selectdb：quit + 切库 + 重连（此处切回同库 test），重连后连接仍可用
     t:check(pg:selectdb("test"), "selectdb reconnect")
@@ -429,11 +498,11 @@ runner.run(function(t)
 
     -- 命令没等到应答：锁内就地关连接（established 清零、代次前进），之后 ping 能重连。
     -- 读超时有 1s 粒度（最坏多等 1s），pg_sleep 给足 2 秒
-    local oldnr = srey.get_netread_timeout()
-    srey.set_netread_timeout(300)
+    local oldnr = srey.get_timeout("netread")
+    srey.set_timeout("netread", 300)
     local g = pg.generation
     local rsl = pg:query("select pg_sleep(2)")
-    srey.set_netread_timeout(oldnr)
+    srey.set_timeout("netread", oldnr)
     t:eq(false, rsl, "没等到应答 query 返 false")
     t:check(string.find(pg:erro(), "send failed", 1, true), "没等到应答 erro 为发送失败: " .. pg:erro())
     t:eq(false, pg.established, "没等到应答即锁内关连接")
@@ -487,6 +556,29 @@ runner.run(function(t)
     t:check(pg:ping(), "别的连接在活着时被回收后，本连接照常可用")
 
     _pg_tls_case(t, pg)
+
+    -- 协议 3.2：PostgreSQL 18 起协商成 3.2、取消密钥变长；更老的服务端降回 3.0、密钥 4 字节
+    do
+        local p32 = pgsql.new(DB_HOST, 5432, SSL_NAME.NONE, "admin", "12345678", "test")
+        t:eq(false, p32:set_protocol(1), "set_protocol 只收 0 / 2")
+        t:check(p32:set_protocol(2), "set_protocol(2)")
+        if t:check(p32:connect(), "请求 3.2 建链") then
+            local vrs = p32:query("select current_setting('server_version_num')::int as v")
+            local vnum = 0
+            if vrs and "userdata" == type(vrs[1]) then
+                vnum = select(2, vrs[1]:integer("v")) or 0
+            end
+            local cp = p32.pg:pack_cancel()
+            if vnum >= 180000 then
+                t:check(cp and #cp > 16, "3.2 下取消请求随密钥变长: " .. tostring(cp and #cp))
+            else
+                t:eq(16, cp and #cp, "老服务端降回 3.0，取消请求 16 字节")
+            end
+            t:check(p32:cancel(), "3.2 下 cancel smoke")
+            t:check(p32:ping(), "3.2 下 cancel 后连接可用")
+            p32:quit()
+        end
+    end
 
     pg:quit()
 end)

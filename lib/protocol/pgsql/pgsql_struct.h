@@ -21,7 +21,7 @@ ARR_DECL(pgres_arr, pgsql_result)
 
 // pgsql 数据包上下文
 typedef struct pgpack_ctx {
-    pgpack_type type;               // 数据包类型（成功/错误/通知）
+    pgpack_type type;               // 数据包类型（成功/错误/通知/COPY IN/COPY OUT）
     uint32_t iter_cursor;           // pgsql_reader_iter 的扫描起点，只前进不回头（占 type 后的对齐空洞）
     void *pack;                     // 具体数据包内容（累积中的行读取器、错误信息、通知，或 COPY IN / COPY OUT 的上下文）
     void(*_free_pgpack)(void *);    // 释放 pack 的回调函数
@@ -59,7 +59,6 @@ ARR_DECL(pgrow_arr, pgpack_row *)
 
 // 查询结果读取器上下文
 typedef struct pgsql_reader_ctx {
-    int8_t fields_inl;          // fields 与 reader 同一次分配(随 reader 释放)；0 为单独分配
     uint16_t field_count;       // 字段（列）数量
     pgpack_format format;       // 结果格式（文本或二进制），解析 RowDescription 时取自服务端的格式码
     int32_t index;              // 当前读取行的游标位置
@@ -73,9 +72,11 @@ typedef struct pgsql_reader_ctx {
 typedef struct pgsql_ctx {
     int8_t readyforquery;       // 服务端就绪状态：'I' 空闲，'T' 事务块中，'E' 失败的事务块中，0 未连上或已断开。
                                 // 网络线程解析时写，收应答的一方在拿到应答之后读
+    int8_t protoreq;            // 启动时请求的协议次版本：0 为 3.0(默认)，2 为 3.2，见 pgsql_set_protocol
+    int8_t protover;            // 本次连接协商下来的次版本，服务端回 NegotiateProtocolVersion 时改小
     uint16_t port;              // 服务端端口号
+    uint16_t keylens;           // 取消密钥字节数，0 表示还没收到 BackendKeyData
     int32_t pid;                // 后端进程 ID
-    uint32_t key;               // 后端取消密钥
     atomic_t ref;               // 上层 handle 引用计数：0=C 借用(事件层不 free 块)，>0=持有者数
     int32_t established;     // 当前是否连着（建连失败 / quit / 就地关连接都清零）
     uint32_t generation;     // 连接身份代次，建连成功 / 断开各前进一次；判短路见 _serial_connect
@@ -91,6 +92,7 @@ typedef struct pgsql_ctx {
     char user[64];              // 登录用户名
     char password[64];          // 登录密码
     char database[64];          // 目标数据库名
+    char key[PGSQL_CANCEL_KEY_MAX];// 后端取消密钥，长度见 keylens
 #if WITH_SSL
     char    tls_cbind[EVP_MAX_MD_SIZE];// tls-server-end-point：服务端证书按其签名摘要算法取的哈希
     int32_t tls_cbind_len;      // 0=无 TLS、取不到证书或签名摘要（不做通道绑定），>0 可用

@@ -23,6 +23,13 @@ typedef enum task_type {
 typedef enum request_type {
     REQ_DEBUG             = 0x01, // 调试命令
 }request_type;
+// 超时种类：task 级的值(task_set_timeout)与按协程覆盖(coro_timeout_set)都按它取
+typedef enum tmo_kind {
+    TMO_REQUEST = 0, // task_request / coro_request 等响应
+    TMO_CONNECT,     // 连接建立
+    TMO_NETREAD,     // 连接与 UDP / kcp 上的其余等待(收包、握手、SSL 交换、关闭)
+    TMO_CNT
+}tmo_kind;
 
 typedef struct loader_ctx loader_ctx;
 typedef struct task_ctx task_ctx;
@@ -137,9 +144,7 @@ struct task_ctx {
     int32_t registered;        // 已注册：task_register 在发布前置位，之后只读
     atomic_t ref;              // 引用计数
     atomic_t priority;         // 调度优先级：值越大单轮消费消息越多，0=默认；详见 task_set_priority
-    atomic_t timeout_request;  // task_request 超时时间（毫秒）
-    atomic_t timeout_connect;  // task_connect 超时时间（毫秒）
-    atomic_t timeout_netread;  // 网络读取超时时间（毫秒）
+    atomic_t timeout[TMO_CNT]; // 各类超时（毫秒），按 tmo_kind 取，恒大于 0
     atomic_t evbind;           // 绑定的 net 线程：0 不绑(交给 worker)，i+1 绑第 i 个；见 task_bind_net
     name_t handle;             // 任务唯一句柄（createid 生成的数字 ID）
     char *name;             // 注册时的字符串名；匿名 task 为 NULL，task 持有，task_free 时释放

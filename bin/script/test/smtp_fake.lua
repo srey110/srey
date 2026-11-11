@@ -59,6 +59,12 @@ local function _cmd(sk, fc, line)
         fc.authstep = 2
         _reply(sk, "334 UGFzc3dvcmQ6\r\n")-- base64("Password:")
     elseif 2 == fc.authstep then
+        -- 密码行必须是 base64("psw")，错误凭据用例靠它
+        if "cHN3" ~= line then
+            fc.authstep = 0
+            _reply(sk, "535 5.7.8 bad password line\r\n")
+            return
+        end
         fc.authstep = 3
         -- 多行 235 是合法形式，客户端只消费首行的话剩下那行会错开后续配对；
         -- 单行才是常见形态，两种轮换着发，谁都不能少了覆盖
@@ -69,6 +75,10 @@ local function _cmd(sk, fc, line)
         end
     elseif up:find("^MAIL FROM:") then
         local tag = _tag(line, "c")
+        if -1 == tag then-- 失败值与"无事务"哨兵同值，不拦的话下面两条交错检测都空转
+            interleave = interleave + 1
+            ERROR("fake smtp: MAIL FROM tag unparsable: %s", line)
+        end
         if -1 ~= fc.sender then-- 上一笔还没收尾就又来一个发件人：交错
             interleave = interleave + 1
             ERROR("fake smtp: MAIL FROM c%d while c%d still open.", tag, fc.sender)
@@ -77,6 +87,10 @@ local function _cmd(sk, fc, line)
         _reply(sk, "250 OK\r\n")
     elseif up:find("^RCPT TO:") then
         local tag = _tag(line, "r")
+        if -1 == tag then-- 理由同上
+            interleave = interleave + 1
+            ERROR("fake smtp: RCPT tag unparsable: %s", line)
+        end
         if tag ~= fc.sender then-- 收件人编号与本事务发件人对不上：交错
             interleave = interleave + 1
             ERROR("fake smtp: RCPT r%d under sender c%d.", tag, fc.sender)
@@ -165,9 +179,9 @@ runner.run(function(t)
     local ctx = smtp.new("127.0.0.1", _PORT, SSL_NAME.NONE, "user", "psw")
     if not ctx:connect() then
         t:fail("fake smtp connect")
+        srey.unlisten(lid)
         return
     end
-    t:check(true, "fake smtp connected")
 
     -- 并发：每个协程发自己编号的邮件，服务端按事务状态机校验没有交错
     -- 用 srey.fork_wait 而不是手写 done 计数 + 有界轮询:srey.fork 的错被 _coro_exec 的 xpcall
@@ -279,6 +293,20 @@ runner.run(function(t)
         ctx:quit()
     end
 
+    -- _connect 抛错同样按失败处理：不接住的话异常被 serial 吞掉，established 留成陈旧的 true、代次不前进
+    do
+        t:check(ctx:ping(), "抛错段之前先连上")
+        local saved = rawget(ctx, "_connect")
+        local fgen = ctx.generation
+        ctx._connect = function() error("boom from _connect") end
+        t:eq(false, ctx:_doconnect(fgen), "_connect 抛错时 _doconnect 返 false")
+        ctx._connect = saved
+        t:check(fgen < ctx.generation, "抛错同样让代次前进")
+        t:eq(false, ctx.established, "抛错后 established 为 false")
+        t:check(ctx:ping(), "抛错之后照常能重连")
+        ctx:quit()
+    end
+
     -- 取值全部回读 C 侧（lib.mail 不再留副本），故被拒的调用不可能改到状态：
     -- smtp:send 发 RCPT TO 用的就是 MIME 头里那份，两者再没有分叉的余地
     do
@@ -384,8 +412,10 @@ runner.run(function(t)
     t:check(ehlo_hosts["normal.smtp.local"], "正常问候下 EHLO 用服务端给的主机名")
     t:check(ehlo_hosts["localhost"], "裸 LF 问候下 EHLO 退回 localhost")
 
-    -- 收尾:把端口还回去。不还的话进程要等 SIGINT 才收，紧接着再起一次 srey 就撞
-    -- EADDRINUSE，上面那道 listen 守卫直接判失败
-    srey.unlisten(lid)
+    -- 认证被拒：服务端回 535，建连失败。放在最后，不打乱逐连接轮换的问候
+    local bad = smtp.new("127.0.0.1", _PORT, SSL_NAME.NONE, "user", "wrong")
+    t:check(not bad:connect(), "错误密码建连失败")
+
+    srey.unlisten(lid)-- 收尾:把端口还回去
 end)
 end)

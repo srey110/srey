@@ -3,7 +3,8 @@
 """按 lib/base/config.h 的开关拉取并编译第三方依赖,产物就位到树内。
 
 版本策略:deps/<name>/ 在就用它,不在才去拉远端最新的正式版。所以想固定版本就自己把
-源码放进 deps/<name>/(不必是 git 克隆),想升级就删掉该目录再跑一次。
+源码放进 deps/<name>/(不必是 git 克隆)。想升级:删掉 deps/<name>/,再 clean,然后把要用的变体
+逐个重编——只删目录时旧产物还在、会被跳过;只 clean 时源码还是旧的;只重编一部分变体会让新头配旧库。
 
 依赖源码克隆到 deps/<name>(不入版本控制),编译产物按仓库既有约定摆放:
     头文件 -> lib/<name>/     (与 -Ilib、MSVC 的 ../lib 对齐,#include <openssl/ssl.h> 直接命中)
@@ -22,7 +23,9 @@
 libmimalloc_arm64.a。各变体在 bin/ 里互不覆盖,一个平台每种变体各编一次就够,
 换架构或换 debug/release 不用先 clean。链接侧按同一规则拼名字:POSIX 由 mk.sh / CMakeLists.txt 拼,
 Windows 由 os.h 的 DEPS_LIB_SUFFIX 拼进 #pragma comment(lib)（openssl 在 lib/event/evssl.c，mimalloc 在 lib/base/memory.c）。
-头不带后缀,各变体共用一份(装的是公开头,最后一次构建装上去的那份)。
+头不带后缀,各变体共用一份(装的是公开头,最后一次构建装上去的那份)。例外是 openssl 的
+configuration.h 按架构生成(BN_ULONG 宽度、OPENSSL_SYS_*):最后一次构建的架构说了算。srey 目前只用
+SSL / EVP 这类不透明接口,不受影响;以后要用 BN 或按 OPENSSL_SYS_* 分支,先把头改成按架构分目录。
 
 Windows ARM64 的 OpenSSL 一律降到 /O1(见文件前部的 WIN_ARM64_OSSL_CFLAGS):
 MSVC 在 /O2 下会把它编坏,TLS 握手必崩,与 OpenSSL 版本无关。
@@ -86,9 +89,9 @@ IS_WIN = os.name == "nt"
 # openssl 的 Windows 构建没有 ./config 自动探测,必须显式给 target;POSIX 上显式指定时两个依赖都附加 cflag。
 # Windows 上 mimalloc 的目标由所在 shell 的 cl.exe 决定,不传架构
 ARCH_SPECS = {
-    "m32": {"vc": "VC-WIN32", "cflag": "-m32"},
-    "m64": {"vc": "VC-WIN64A", "cflag": "-m64"},
-    "arm64": {"vc": "VC-WIN64-ARM", "cflag": None},
+    "m32": {"vc": "VC-WIN32", "cflag": "-m32", "vsplat": "Win32"},
+    "m64": {"vc": "VC-WIN64A", "cflag": "-m64", "vsplat": "x64"},
+    "arm64": {"vc": "VC-WIN64-ARM", "cflag": None, "vsplat": "ARM64"},
 }
 # 库名后缀里用的架构词。与 ARCH_SPECS 的键分开:那边是 mk 脚本风格的入参(m32/m64),
 # 这边是文件名上看得懂的架构名(x86/x64),两套不混用
@@ -144,12 +147,15 @@ TOOL_HINTS = {
 
 def detect_arch() -> str:
     """必须跟当前 cl.exe 的目标一致,而不是跟 CPU 一致——VS 开发者提示符会设 VSCMD_ARG_TGT_ARCH。
-    退回 platform.machine() 只是兜底:它给的是本进程架构,32 位 python 跑在 x64 上会误报 x86"""
-    for v in (os.environ.get("VSCMD_ARG_TGT_ARCH"), os.environ.get("Platform"),
-              platform.machine()):
+    退回 platform.machine() 只是兜底:POSIX 上它是内核的 uname -m,64 位内核上的 32 位用户态照报 x86_64,
+    再按 getconf LONG_BIT 判,同 mk.sh"""
+    for v in (os.environ.get("VSCMD_ARG_TGT_ARCH"), os.environ.get("Platform")):
         if v and v.strip().lower() in ARCH_ALIAS:
             return ARCH_ALIAS[v.strip().lower()]
-    return "m64"
+    arch = ARCH_ALIAS.get(platform.machine().strip().lower(), "m64")
+    if "m64" == arch and not IS_WIN and "32" == out(["getconf", "LONG_BIT"]):
+        return "m32"
+    return arch
 
 
 def plat_key() -> str:
@@ -207,6 +213,17 @@ def out(cmd, cwd=None) -> str:
         return b.decode("utf-8", "replace").strip()
     except Exception:
         return ""
+
+
+def cmake_generator() -> str:
+    """cmake 实际会用的生成器:CMAKE_GENERATOR 优先,否则 cmake --help 里打星号的那行是默认的"""
+    gen = os.environ.get("CMAKE_GENERATOR", "")
+    if gen:
+        return gen
+    for line in out(["cmake", "--help"]).splitlines():
+        if line.startswith("* "):
+            return line[2:].split("=", 1)[0].strip()
+    return ""
 
 
 def need_tools(names: list) -> None:
@@ -315,12 +332,12 @@ def latest_tag(spec: dict) -> str:
 
 def ensure_clone(name: str, spec: dict) -> Path:
     """目录在就原样用,不在才去拉远端最新的正式版。
-    这条就是版本策略:想固定版本把源码放进 deps/<name>/,想升级先 clean 再跑"""
+    这条就是版本策略:想固定版本把源码放进 deps/<name>/,升级步骤见文件头"""
     src = DEPS_DIR / name
     if src.is_dir():
         desc = out(["git", "describe", "--tags", "--always"], cwd=src)
         print(f"  已有 {src.relative_to(ROOT)} ({desc or '非 git 源码'}),按现状使用")
-        print( "         要换版本:删掉该目录再跑,会拉远端最新正式版")
+        print( "         要换版本:删掉该目录,再 clean,然后把要用的变体逐个重编")
         return src
     # 只有要去拉的时候才要 git:自己放进 deps/ 的源码(不必是 git 克隆)用不着
     need_tools(["git"])
@@ -432,11 +449,13 @@ def build_mimalloc(src: Path, arch: str, forced: bool, dbg: bool) -> list:
                 f"当前 cl {ver // 100}.{ver % 100:02d} 太老,mimalloc 编不过"
                 f"(上游只自带 VS2022 的工程);Windows 上请把 lib/base/config.h 的 "
                 f"WITH_MIMALLOC 改回 0(openssl 不受影响)")
-    # 不传 -A:那是 VS 生成器专用的,Ninja(Windows 上 cmake 常见的默认)会直接报错。
-    # Windows 上目标架构由所在 shell 的 cl.exe 决定,与 srey 自身的构建同一来源
     cmd = ["cmake", "-S", ".", "-B", bdir, f"-DCMAKE_BUILD_TYPE={cfgtype}",
            "-DMI_OVERRIDE=OFF", "-DMI_BUILD_SHARED=OFF",
            "-DMI_BUILD_OBJECT=OFF", "-DMI_BUILD_TESTS=OFF"]
+    # Windows 上默认生成器随 cmake 来源而异(Strawberry 带的默认 Ninja,VS 自带的默认 VS 生成器)。
+    # VS 生成器不看所在 shell 的 cl.exe、平台缺省取主机架构,要按目标架构传 -A;Ninja 等用 shell 的 cl.exe,传 -A 反而报错
+    if IS_WIN and cmake_generator().startswith("Visual Studio"):
+        cmd += ["-A", ARCH_SPECS[arch]["vsplat"]]
     # POSIX 上显式指定架构时附加位宽参数,口径同 build_openssl 与 mk.sh
     cflag = ARCH_SPECS[arch]["cflag"] if forced and not IS_WIN else None
     if cflag:
@@ -476,17 +495,18 @@ def build_tools(name: str, arch: str) -> list:
     return ["perl", "cl", make_cmd()] + ([] if "arm64" == arch else ["nasm"])
 
 
-# 每个依赖的产物特征:头文件锚点 + bin/ 下库名的通配。跳过判定与 clean 共用这一份
+# 每个依赖的产物特征:头文件锚点 + bin/ 下库名的通配。libs 按组列,一组是同一个库在各平台上的名字,
+# 每组都命中才算做过。跳过判定与 clean 共用这一份
 ARTIFACTS = {
     "openssl": {
         "inc": INC_DIR / "openssl",
         "anchor": INC_DIR / "openssl" / "ssl.h",
-        "libs": ("libssl{sfx}.a", "libcrypto{sfx}.a", "*ssl{sfx}.lib", "*crypto{sfx}.lib"),
+        "libs": (("libssl{sfx}.a", "*ssl{sfx}.lib"), ("libcrypto{sfx}.a", "*crypto{sfx}.lib")),
     },
     "mimalloc": {
         "inc": INC_DIR / "mimalloc",
         "anchor": INC_DIR / "mimalloc" / "mimalloc.h",
-        "libs": ("libmimalloc{sfx}.a", "mimalloc{sfx}.lib"),
+        "libs": (("libmimalloc{sfx}.a", "mimalloc{sfx}.lib"),),
     },
 }
 
@@ -499,15 +519,19 @@ STALE_VARIANT_FILE = LIB_DIR / ".deps_variant"
 def found_libs(name: str, sfx: str = "*") -> list:
     """sfx 给具体后缀就是查某个变体,默认 * 是全部变体(clean 用)"""
     got = []
-    for pat in ARTIFACTS[name]["libs"]:
-        got += sorted(LIB_DIR.glob(pat.format(sfx=sfx)))
+    for grp in ARTIFACTS[name]["libs"]:
+        for pat in grp:
+            got += sorted(LIB_DIR.glob(pat.format(sfx=sfx)))
     return got
 
 
 def already_done(name: str, sfx: str) -> bool:
-    """头和库都在才算做过。只认头会在 bin/*.a 被清掉后误判成已完成。
-    查的是本次这个变体的库名,所以先编 release 再编 debug 不会被判成已完成"""
-    return ARTIFACTS[name]["anchor"].exists() and 0 != len(found_libs(name, sfx))
+    """头和每一组库都在才算做过。只认头会在 bin/*.a 被清掉后误判成已完成,任一个库在就算则漏掉
+    只剩 libcrypto 的 openssl。查的是本次这个变体的库名,所以先编 release 再编 debug 不会被判成已完成"""
+    if not ARTIFACTS[name]["anchor"].exists():
+        return False
+    # glob 返回生成器，生成器本身恒为真，得取一个出来看有没有命中
+    return all(any(next(LIB_DIR.glob(p.format(sfx=sfx)), None) for p in grp) for grp in ARTIFACTS[name]["libs"])
 
 
 def clean_src(name: str, spec: dict, src: Path) -> None:
@@ -577,6 +601,8 @@ def main() -> int:
             return 1
     arch_forced = 0 != len(archs)
     arch = archs[0] if arch_forced else detect_arch()
+    # 64 位内核上探测出 32 位用户态时按指定 m32 编:./config 与 cmake 都按 uname 选目标,不带 setarch / -m32 会编成 64 位
+    forced = arch_forced or (not IS_WIN and "m32" == arch and platform.machine().lower() in ("x86_64", "amd64"))
 
     if do_clean:
         return clean()
@@ -623,7 +649,7 @@ def main() -> int:
             need_perl_mods(OPENSSL_PERL_MODS)
         src = ensure_clone(name, spec)
         desc = out(["git", "describe", "--tags", "--always"], cwd=src) or "未知版本"
-        produced = BUILDERS[name](src, arch, arch_forced, dbg)
+        produced = BUILDERS[name](src, arch, forced, dbg)
         report.append((name, desc, produced))
 
     print("\n===== 依赖清单 =====")

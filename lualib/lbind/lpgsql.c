@@ -417,7 +417,7 @@ static int32_t _lpgsql_reader_bool(lua_State *lua) {
     LPUB_READER_RTN(lua, err, lua_pushboolean, val);
 }
 /// <summary>
-/// 读取当前行指定字段的整数值（支持 int2/int4/int8）
+/// 读取当前行指定字段的整数值（支持 int2/int4/int8/oid8；oid8 超出 int64 的值读取失败）
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
@@ -539,12 +539,13 @@ static int32_t _lpgsql_reader_isnull(lua_State *lua) {
 /// <summary>
 /// 按列名一次取多个字段，按列类型自动选取值方式：bool 给 boolean，int2/4/8 给 integer，float4/8 给 number，
 /// 文本类与 bytea 给 Lua 字符串（拷贝），timestamp / timestamptz 给微秒数，date 给天数，uuid 给 16 字节串；
-/// 换算口径与同名的单列取值方法一致
+/// 换算口径与同名的单列取值方法一致。其余类型（numeric、json、inet 等）文本格式下给服务端的文本原样，
+/// 二进制格式下抛错（prepare 时把结果格式设成文本，或 SQL 里转 ::text）
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="..." type="string">字段名，至少一个</param>
 /// <returns type="any">每个字段名一个值，SQL NULL 为 nil（先判 NULL 再看类型，不在上述类型里的列值为 NULL 时也是 nil）；
-/// 任一字段读取失败（无此列、类型不支持、解析失败）直接抛错，错误信息带列名</returns>
+/// 任一字段读取失败（无此列、二进制格式下类型不支持、解析失败）直接抛错，错误信息带列名</returns>
 static int32_t _lpgsql_reader_get(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_reader_ctx, MT_PGSQL_READER, reader, "reader freed");
     int32_t n = lua_gettop(lua);
@@ -559,10 +560,12 @@ static int32_t _lpgsql_reader_get(lua_State *lua) {
     int32_t lens;
     const char *sval;
     char uuid[16];
+    pgpack_row *row;
     for (int32_t i = 2; i <= n; i++) {
         col = _lpgsql_reader_col(lua, *reader, i, &name);
         err = ERR_FAILED;
-        if (NULL == pgsql_reader_index(*reader, col, &field)) {
+        row = pgsql_reader_index(*reader, col, &field);
+        if (NULL == row) {
             return luaL_error(lua, "reader:get column '%s' read failed", name);
         }
         switch (field->type_oid) {
@@ -575,6 +578,7 @@ static int32_t _lpgsql_reader_get(lua_State *lua) {
         case INT2OID:
         case INT4OID:
         case INT8OID:
+        case OID8OID:
             ival = pgsql_reader_integer_at(*reader, col, &err);
             if (ERR_OK == err) {
                 lua_pushinteger(lua, ival);
@@ -623,8 +627,11 @@ static int32_t _lpgsql_reader_get(lua_State *lua) {
             }
             break;
         default:
-            if (0 != pgsql_reader_isnull_at(*reader, col)) {
+            if (-1 == row->lens) {
                 err = 1;
+            } else if (FORMAT_TEXT == (*reader)->format) {
+                lua_pushlstring(lua, row->val, (size_t)row->lens);
+                err = ERR_OK;
             }
             break;
         }
@@ -882,10 +889,7 @@ static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
 static int32_t _lpgsql_pack_stmt_execute(lua_State *lua) {
     const char *name = lpub_check_cstr(lua, 1);
     pgsql_bind_ctx *bind = lua_isnoneornil(lua, 2) ? NULL : lpub_check_udata(lua, 2, MT_PGSQL_BIND);
-    pgpack_format fmt = FORMAT_TEXT;
-    if (LUA_TNUMBER == lua_type(lua, 3)) {
-        fmt = (pgpack_format)lpub_check_range(lua, 3, FORMAT_TEXT, FORMAT_BINARY, FORMAT_OUT_OF_RANGE);
-    }
+    pgpack_format fmt = (pgpack_format)lpub_opt_range(lua, 3, FORMAT_TEXT, FORMAT_TEXT, FORMAT_BINARY, FORMAT_OUT_OF_RANGE);
     size_t size;
     void *pack = pgsql_pack_stmt_execute(name, bind, fmt, &size);
     if (NULL == pack) {
@@ -1035,6 +1039,18 @@ static int32_t _lpgsql_set_db(lua_State *lua) {
     return lpub_rtn_bool(lua, ERR_OK == pgsql_set_db(*ud, database));
 }
 /// <summary>
+/// 设置启动时请求的协议次版本（下次连接生效）：0 为 3.0（默认），2 为 3.2（取消密钥变长，PostgreSQL 18 起）。
+/// 服务端不支持 3.2 时自动降到 3.0；不认版本协商的老代理会直接拒连，确认链路支持再开
+/// </summary>
+/// <param name="self" type="userdata">pgsql 对象</param>
+/// <param name="minor" type="integer">0 或 2</param>
+/// <returns type="boolean">成功 true；不是 0 / 2 时 false，原值不变</returns>
+static int32_t _lpgsql_set_protocol(lua_State *lua) {
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
+    int32_t minor = lpub_check_i32(lua, 2, "minor out of range");
+    return lpub_rtn_bool(lua, ERR_OK == pgsql_set_protocol(*ud, minor));
+}
+/// <summary>
 /// 获取当前配置的数据库名
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
@@ -1059,7 +1075,7 @@ static int32_t _lpgsql_sock_id(lua_State *lua) {
 /// 构造 CancelRequest 消息（使用连接的 pid 和 key）
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
-/// <returns type="string|nil">16 字节 CancelRequest 二进制串；pid 尚未就绪（没收到 BackendKeyData）时为 nil</returns>
+/// <returns type="string|nil">CancelRequest 二进制串（协议 3.0 为 16 字节，3.2 随密钥变长）；pid 尚未就绪（没收到 BackendKeyData）时为 nil</returns>
 static int32_t _lpgsql_pack_cancel(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     pgsql_ctx *pg = *ud;
@@ -1068,16 +1084,16 @@ static int32_t _lpgsql_pack_cancel(lua_State *lua) {
     if (0 == pg->pid) {
         return lpub_rtn_nil(lua, 1);
     }
-    char buf[16];
-    pgsql_pack_cancel(buf, pg->pid, pg->key);
-    lua_pushlstring(lua, buf, 16);
+    char buf[PGSQL_CANCEL_MAX];
+    size_t lens = pgsql_pack_cancel(buf, pg->pid, pg->key, pg->keylens);
+    lua_pushlstring(lua, buf, lens);
     return 1;
 }
 /// <summary>
 /// 返回服务端就绪状态字符
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
-/// <returns type="integer">字符码（'I'=空闲，'T'=事务中，'E'=事务失败）；0 表示尚未收到 ReadyForQuery（新建或刚重连）</returns>
+/// <returns type="integer">字符码（'I'=空闲，'T'=事务中，'E'=事务失败）；0 表示未连上或已断开（含新建、刚重连还没收到 ReadyForQuery）</returns>
 static int32_t _lpgsql_readyforquery(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     pgsql_ctx *pg = *ud;
@@ -1111,6 +1127,7 @@ LUAMOD_API int luaopen_pgsql(lua_State *lua) {
         { "try_connect",    _lpgsql_try_connect },
         { "set_userpwd",    _lpgsql_set_userpwd },
         { "set_db",         _lpgsql_set_db },
+        { "set_protocol",   _lpgsql_set_protocol },
         { "get_db",         _lpgsql_get_db },
         { "sock_id",        _lpgsql_sock_id },
         { "pack_cancel",    _lpgsql_pack_cancel },

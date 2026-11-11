@@ -824,27 +824,21 @@ int32_t ev_ud_context(ev_ctx *ctx, sock_ctx *sk, void *extra, free_cb fcb) {
     return ev_props(ctx, sk, _cmd_ud_context, fcb, extra, 0);
 }
 void _cmd_drain_free(cmd_ctx *cmd) {
-    evsock_ctx *evsk;
-    multi_grp *grp;
-    void *data;
     switch ((ev_cmds)cmd->cmd) {
     case CMD_SENDTO:
-        data = cmd->args.sendto.data;
-        FREE(data);
+        FREE(cmd->args.sendto.data);
         break;
     case CMD_CONN:
-        evsk = cmd->args.conn.evsk;
-        _evpub_sk_free(evsk);
+        _evpub_sk_free(cmd->args.conn.evsk);
         break;
     case CMD_ADD:
-        evsk = cmd->args.evsk;
-        if (SOCK_STREAM == evsk->type) {
-            _evpub_sk_free(evsk);
+        if (SOCK_STREAM == cmd->args.evsk->type) {
+            _evpub_sk_free(cmd->args.evsk);
         } else {
 #ifdef EV_IOCP
-            _iocp_free_udp(evsk);
+            _iocp_free_udp(cmd->args.evsk);
 #else
-            _uev_free_udp(evsk);
+            _uev_free_udp(cmd->args.evsk);
 #endif
         }
         break;
@@ -866,8 +860,7 @@ void _cmd_drain_free(cmd_ctx *cmd) {
         break;
     case CMD_MULTI:
         // 这组一份组内计数都没交出：替它减一份父计数(sk 数组在块里，随块释放)
-        grp = cmd->args.multi;
-        shared_data_free(grp->sh.data, _free);
+        shared_data_free(cmd->args.multi->sh.data, _free);
         break;
 #ifndef EV_IOCP
     case CMD_UNLSN:

@@ -16,8 +16,7 @@
 // PUBACK / PUBREC / PUBREL / PUBCOMP 四个组包函数签名相同，绑定共用 _lmqtt_pack_ack
 typedef char *(*_lmqtt_ack_fn)(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 
-// 取协议版本：只认 3.1.1 与 5.0。不卡的话组包侧按未截断值分支(260 走 MQTT5 写属性长度字段)、
-// 写线时又按 int8_t 截断成 0x04，发出去就是"协议级别 3.1.1、报文体多一个字节"的畸形包
+// 取协议版本：只认 3.1.1 与 5.0，其余报错(组包写线时按 int8_t 截断，260 会变成 0x04)
 static mqtt_protversion _lmqtt_check_version(lua_State *lua, int32_t idx) {
     lua_Integer val = luaL_checkinteger(lua, idx);
     luaL_argcheck(lua, MQTT_311 == val || MQTT_50 == val, idx, MQTTVER_UNKNOWN);
@@ -78,7 +77,7 @@ static int32_t _lmqtt_props_fixnum(lua_State *lua) {
 /// <param name="self" type="userdata">props 对象</param>
 /// <param name="flag" type="integer">属性标识 mqtt_prop_flag，取值 [0x01, 0x2A]，越界报错</param>
 /// <param name="val" type="integer">属性数值</param>
-/// <returns type="boolean">true 成功；false flag 类型不匹配（非可变长度数字属性）</returns>
+/// <returns type="boolean">true 成功；false flag 类型不匹配（非可变长度数字属性）或 val 超 268435455</returns>
 static int32_t _lmqtt_props_varnum(lua_State *lua) {
     binary_ctx *props = lpub_check_udata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)lpub_check_range(lua, 2, PAYLOAD_FORMAT, SHARED_SUBSCRIPTION, PROPFLAG_OUT_OF_RANGE);
@@ -196,7 +195,7 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
     struct evssl_ctx *evssl = NULL;
     if (!EMPTYSTR(sslname)) {
 #if WITH_SSL
-        evssl = evssl_qury(sslname);
+        evssl = evssl_query(sslname);
 #endif
         if (NULL == evssl) {
             // 失败也推一个连接标识,个数与成功路径一致;调用方只判 sk.valid
@@ -245,7 +244,7 @@ static int32_t _lmqtt_ws_bind(lua_State *lua) {
 /// <param name="willretain" type="integer?">遗嘱 retain 标志，默认 0</param>
 /// <param name="connprops" type="userdata?">CONNECT 属性 props 对象（MQTT 5.0）</param>
 /// <param name="willprops" type="userdata?">遗嘱属性 props 对象（MQTT 5.0）</param>
-/// <returns type="lightuserdata?">数据指针；失败返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针，归调用方：srey.send(copy=0) 交出或 ud_free；失败返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_connect(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -282,7 +281,7 @@ static int32_t _lmqtt_pack_connect(lua_State *lua) {
 /// <param name="sesspresent" type="integer">Session Present 标志</param>
 /// <param name="reason" type="integer">Reason Code（MQTT 5.0），3.1.1 时为 return code</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_connack(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -306,7 +305,7 @@ static int32_t _lmqtt_pack_connack(lua_State *lua) {
 /// <param name="paysize" type="integer?">payload 为 lightuserdata 时必填；其余情形本槽不被读取，
 ///   但仍会校验它是数字——props 必须放在第 9 个参数，误放此处会被静默丢弃</param>
 /// <param name="props" type="userdata?">属性 props 对象（MQTT 5.0）</param>
-/// <returns type="lightuserdata?">数据指针；失败返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；失败返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_publish(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -319,8 +318,7 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
     luaL_argcheck(lua, 0 != qos || 0 == dup, 4, DUP_QOS0);
     size_t pllens;
     char *payload = lpub_opt_buf(lua, 7, &pllens);
-    // 只在载荷是字符串时判的话，零长载荷（第 7 参传 nil）这条路会漏过去，props 被静默丢弃。
-    // 载荷是 lightuserdata 时第 8 参已被当长度取过，必是数字，不会误伤
+    // props 误放第 8 参时报错，否则被静默丢弃。载荷是 lightuserdata 时第 8 参必是长度，不会误伤
     if (!lua_isnoneornil(lua, 8)
         && LUA_TNUMBER != lua_type(lua, 8)) {
         return luaL_error(lua, "pack_publish: props must be arg 9, arg 8 is paysize");
@@ -348,19 +346,19 @@ static int32_t _lmqtt_pack_ack(lua_State *lua, _lmqtt_ack_fn fn) {
 /// <param name="packid" type="integer">报文 id（照收到的请求回填，不卡 0）</param>
 /// <param name="reason" type="integer?">Reason Code（MQTT 5.0），默认 0</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_puback(lua_State *lua) {
     return _lmqtt_pack_ack(lua, mqtt_pack_puback);
 }
 /// <summary>
-/// 构造 PUBREC 包（QoS 2 第一步）
+/// 构造 PUBREC 包（QoS 2 第一步）。对端随后的 PUBREL 不唤醒 syn_send 这类同步等待者，走收包回调
 /// </summary>
 /// <param name="version" type="integer">协议版本，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
 /// <param name="packid" type="integer">报文 id（照收到的请求回填，不卡 0）</param>
 /// <param name="reason" type="integer?">Reason Code，默认 0</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
     return _lmqtt_pack_ack(lua, mqtt_pack_pubrec);
@@ -372,7 +370,7 @@ static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
 /// <param name="packid" type="integer">报文 id（照收到的请求回填，不卡 0）</param>
 /// <param name="reason" type="integer?">Reason Code，默认 0</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
     return _lmqtt_pack_ack(lua, mqtt_pack_pubrel);
@@ -384,7 +382,7 @@ static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
 /// <param name="packid" type="integer">报文 id（照收到的请求回填，不卡 0）</param>
 /// <param name="reason" type="integer?">Reason Code，默认 0</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
     return _lmqtt_pack_ack(lua, mqtt_pack_pubcomp);
@@ -396,7 +394,7 @@ static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
 /// <param name="packid" type="integer">报文 id，为 0 报错</param>
 /// <param name="topics" type="userdata">订阅主题缓冲区（由 props:subscribe 填充）</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块或主题列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块或主题列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -414,7 +412,7 @@ static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
 /// <param name="packid" type="integer">报文 id（照收到的请求回填，不卡 0）</param>
 /// <param name="reasons" type="string">原因码字节序列（每字节对应一个订阅主题的 QoS 或失败码）</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块或原因码列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块或原因码列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_suback(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -434,7 +432,7 @@ static int32_t _lmqtt_pack_suback(lua_State *lua) {
 /// <param name="packid" type="integer">报文 id，为 0 报错</param>
 /// <param name="topics" type="userdata">取消订阅主题缓冲区（由 props:unsubscribe 填充）</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块或主题列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块或主题列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -452,7 +450,7 @@ static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
 /// <param name="packid" type="integer">报文 id（照收到的请求回填，不卡 0）</param>
 /// <param name="reasons" type="string">原因码字节序列（MQTT 5.0 有效，3.1.1 传 ""）</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块或原因码列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块或原因码列表过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_unsuback(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -469,7 +467,7 @@ static int32_t _lmqtt_pack_unsuback(lua_State *lua) {
 /// 构造 PINGREQ 包（客户端心跳）
 /// </summary>
 /// <param>无</param>
-/// <returns type="lightuserdata">数据指针</returns>
+/// <returns type="lightuserdata">数据指针(释放同 pack_connect)</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_ping(lua_State *lua) {
     size_t lens;
@@ -480,7 +478,7 @@ static int32_t _lmqtt_pack_ping(lua_State *lua) {
 /// 构造 PINGRESP 包（服务端心跳响应）
 /// </summary>
 /// <param>无</param>
-/// <returns type="lightuserdata">数据指针</returns>
+/// <returns type="lightuserdata">数据指针(释放同 pack_connect)</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_pong(lua_State *lua) {
     size_t lens;
@@ -493,7 +491,7 @@ static int32_t _lmqtt_pack_pong(lua_State *lua) {
 /// <param name="version" type="integer">协议版本，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
 /// <param name="reason" type="integer?">Reason Code（MQTT 5.0），3.1.1 时忽略，默认 0</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；属性块过长导致剩余长度编不进 4 字节 varint 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_disconnect(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -509,7 +507,7 @@ static int32_t _lmqtt_pack_disconnect(lua_State *lua) {
 /// <param name="version" type="integer">协议版本，只收 MQTT_311(4) / MQTT_50(5)，其余报错</param>
 /// <param name="reason" type="integer?">Reason Code，默认 0</param>
 /// <param name="props" type="userdata?">属性 props 对象</param>
-/// <returns type="lightuserdata?">数据指针；AUTH 是 5.0 专有报文，version 低于 5.0 直接返回 nil；属性块过长同样返回 nil</returns>
+/// <returns type="lightuserdata?">数据指针(释放同 pack_connect)；AUTH 是 5.0 专有报文，version 低于 5.0 直接返回 nil；属性块过长同样返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_auth(lua_State *lua) {
     mqtt_protversion version = _lmqtt_check_version(lua, 1);
@@ -520,13 +518,8 @@ static int32_t _lmqtt_pack_auth(lua_State *lua) {
     return lpub_rtn_lud(lua, pack, lens);
 }
 // ---- 模块级属性读取 ----
-// 从 pack->varhead 中取 properties 指针（按 prot 分派）；无属性时返回 NULL。
-// varhead 为 NULL 是合法状态（PUBLISH 没走到 _mqtt_publish 就是这样，见 _mqtt_pkfree），
-// 判据同兄弟 _lmqtt_pack_of
+// 从 pack->varhead 中取 properties 指针（按 prot 分派）；无属性或没有可变头(PINGREQ / PINGRESP)时返回 NULL
 static mprop_arr *_lmqtt_varhead_props(mqtt_pack_ctx *pack) {
-    if (NULL == pack->varhead) {
-        return NULL;
-    }
     switch (pack->fixhead.prot) {
     case MQTT_CONNECT: return ((mqtt_connect_varhead *)pack->varhead)->properties;
     case MQTT_CONNACK: return ((mqtt_connack_varhead *)pack->varhead)->properties;
@@ -544,14 +537,10 @@ static mprop_arr *_lmqtt_varhead_props(mqtt_pack_ctx *pack) {
     default: return NULL;
     }
 }
-// 按 fixhead.prot 判别式取报文；报文类型不符或可变头未解析返回 NULL(调用方回 nil)
+// 按 fixhead.prot 判别式取报文；报文类型不符返回 NULL(调用方回 nil)
 static mqtt_pack_ctx *_lmqtt_pack_of(lua_State *lua, mqtt_prot prot) {
     LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
-    if (prot != pack->fixhead.prot
-        || NULL == pack->varhead) {
-        return NULL;
-    }
-    return pack;
+    return prot == pack->fixhead.prot ? pack : NULL;
 }
 /// <summary>
 /// 返回报文可变头的属性数组
@@ -585,7 +574,7 @@ static int32_t _lmqtt_connect_will_props(lua_State *lua) {
         return 2;
     }
     mqtt_connect_payload *pl = (mqtt_connect_payload *)pack->payload;
-    if (NULL == pl || EMPTYPTR(pl->properties, mprop_arr_size(pl->properties))) {
+    if (EMPTYPTR(pl->properties, mprop_arr_size(pl->properties))) {
         lua_pushnil(lua);
         lua_pushinteger(lua, 0);
         return 2;
@@ -634,7 +623,7 @@ static int32_t _lmqtt_prot(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回报文协议版本
+/// 返回报文的格式版本：一般同连接；5.0 连接上收到 3.1.1 格式的拒绝 CONNACK 时是 MQTT_311，别拿它当连接版本组后续的包
 /// </summary>
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
 /// <returns type="integer">mqtt_protversion 枚举值</returns>
@@ -650,15 +639,12 @@ static int32_t _lmqtt_pack_version(lua_State *lua) {
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
 /// <returns type="MqttConnectInfo?">CONNECT 报文各字段；非 CONNECT 报文返回 nil</returns>
 static int32_t _lmqtt_connect_info(lua_State *lua) {
-    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
-    if (MQTT_CONNECT != pack->fixhead.prot) {
+    mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_CONNECT);
+    if (NULL == pack) {
         return lpub_rtn_nil(lua, 1);
     }
     mqtt_connect_varhead *vh = (mqtt_connect_varhead *)pack->varhead;
     mqtt_connect_payload *pl = (mqtt_connect_payload *)pack->payload;
-    if (NULL == vh || NULL == pl) {
-        return lpub_rtn_nil(lua, 1);
-    }
     lua_createtable(lua, 0, 11);
     lua_pushinteger(lua, vh->version); lua_setfield(lua, -2, "version");
     lua_pushinteger(lua, vh->cleanstart); lua_setfield(lua, -2, "cleanstart");
@@ -666,27 +652,21 @@ static int32_t _lmqtt_connect_info(lua_State *lua) {
     lua_pushinteger(lua, vh->willflag); lua_setfield(lua, -2, "willflag");
     lua_pushinteger(lua, vh->willqos); lua_setfield(lua, -2, "willqos");
     lua_pushinteger(lua, vh->willretain); lua_setfield(lua, -2, "willretain");
-    if (NULL != pl->clientid) {
-        lua_pushstring(lua, pl->clientid);
-        lua_setfield(lua, -2, "clientid");
-    }
-    if (vh->userflag && NULL != pl->user) {
+    lua_pushstring(lua, pl->clientid);
+    lua_setfield(lua, -2, "clientid");
+    if (vh->userflag) {
         lua_pushstring(lua, pl->user);
         lua_setfield(lua, -2, "user");
     }
-    if (vh->passwordflag && NULL != pl->password) {
+    if (vh->passwordflag) {
         lua_pushlstring(lua, pl->password, pl->pslens);
         lua_setfield(lua, -2, "password");
     }
     if (vh->willflag) {
-        if (NULL != pl->willtopic) {
-            lua_pushstring(lua, pl->willtopic);
-            lua_setfield(lua, -2, "willtopic");
-        }
-        if (NULL != pl->willpayload) {
-            lua_pushlstring(lua, pl->willpayload, pl->wplens);
-            lua_setfield(lua, -2, "willpayload");
-        }
+        lua_pushstring(lua, pl->willtopic);
+        lua_setfield(lua, -2, "willtopic");
+        lua_pushlstring(lua, pl->willpayload, pl->wplens);
+        lua_setfield(lua, -2, "willpayload");
     }
     return 1;
 }
@@ -806,16 +786,14 @@ static int32_t _lmqtt_subscribe(lua_State *lua) {
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
     mqtt_subscribe_payload *pl = (mqtt_subscribe_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
-    uint32_t cnt = (NULL == pl) ? 0 : msubop_arr_size(&pl->subop);
+    uint32_t cnt = msubop_arr_size(&pl->subop);
     lua_createtable(lua, (int32_t)cnt, 0);
     subscribe_option *op;
     for (uint32_t i = 0; i < cnt; i++) {
         op = *msubop_arr_at(&pl->subop, (int32_t)i);
         lua_createtable(lua, 0, 5);
-        if (NULL != op->topic) {
-            lua_pushstring(lua, op->topic);
-            lua_setfield(lua, -2, "topic");
-        }
+        lua_pushstring(lua, op->topic);
+        lua_setfield(lua, -2, "topic");
         lua_pushinteger(lua, op->qos); lua_setfield(lua, -2, "qos");
         lua_pushinteger(lua, op->nl); lua_setfield(lua, -2, "nl");
         lua_pushinteger(lua, op->rap); lua_setfield(lua, -2, "rap");
@@ -838,12 +816,12 @@ static int32_t _lmqtt_unsubscribe(lua_State *lua) {
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
     mqtt_unsubscribe_payload *pl = (mqtt_unsubscribe_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
-    uint32_t cnt = (NULL == pl) ? 0 : mtopic_arr_size(&pl->topics);
+    uint32_t cnt = mtopic_arr_size(&pl->topics);
     lua_createtable(lua, (int32_t)cnt, 0);
     char *topic;
     for (uint32_t i = 0; i < cnt; i++) {
         topic = *mtopic_arr_at(&pl->topics, (int32_t)i);
-        lua_pushstring(lua, (NULL != topic) ? topic : "");
+        lua_pushstring(lua, topic);
         lua_rawseti(lua, -2, (lua_Integer)i + 1);
     }
     return 2;
@@ -888,8 +866,8 @@ static int32_t _lmqtt_unsuback(lua_State *lua) {
 /// <param name="pack" type="lightuserdata">mqtt_pack_ctx 指针</param>
 /// <returns type="integer?">Reason Code；没有可变报头(3.1.1，或 5.0 剩余长度为 0)时按协议为 0；非 DISCONNECT 报文返回 nil</returns>
 static int32_t _lmqtt_disconnect(lua_State *lua) {
-    LPUB_LUD_ARG(lua, mqtt_pack_ctx, 1, pack);
-    if (MQTT_DISCONNECT != pack->fixhead.prot) {
+    mqtt_pack_ctx *pack = _lmqtt_pack_of(lua, MQTT_DISCONNECT);
+    if (NULL == pack) {
         return lpub_rtn_nil(lua, 1);
     }
     lua_pushinteger(lua, ((mqtt_reason_varhead *)pack->varhead)->reason);

@@ -3,6 +3,7 @@
 local srey   = require("lib.srey")
 local runner = require("test.runner")
 local core   = require("srey.core")
+local sssl   = require("srey.ssl")
 local task   = require("srey.task")
 
 -- bind_task 用例的 UDP 端口。端口必须全仓唯一（测试模块并发跑，UDP 建链只设
@@ -36,60 +37,60 @@ runner.run(function(t)
     local NAME_PEM = "unit_pem"
     local NAME_P12 = "unit_p12"
     -- 没编 SSL 时这些绑定按契约恒返 nil/false，整段无从断言，跳过
-    if core.with_ssl() then
+    if sssl.with_ssl() then
         -- 注册 PEM 服务端证书；返回 ssl ctx lightuserdata，未注册时返回 nil
-        local ssl = core.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
+        local ssl = sssl.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
         t:check(ssl ~= nil, "cert_register PEM 返回 ssl ctx")
-        -- ssl_qury 用同 name 查回同一指针
-        local q = core.ssl_qury(NAME_PEM)
-        t:check(q ~= nil, "ssl_qury PEM 返回 ssl ctx")
-        t:eq(ssl, q, "ssl_qury 返回与 register 同一指针")
+        -- ssl_query 用同 name 查回同一指针
+        local q = sssl.query(NAME_PEM)
+        t:check(q ~= nil, "ssl_query PEM 返回 ssl ctx")
+        t:eq(ssl, q, "ssl_query 返回与 register 同一指针")
         -- 未注册的 name 返回 nil
-        t:eq(nil, core.ssl_qury("unregistered"), "ssl_qury 未注册 name 返回 nil")
+        t:eq(nil, sssl.query("unregistered"), "ssl_query 未注册 name 返回 nil")
         -- 名字内含 '\0'：查询按查不到算(不截成前半段的 unit_pem、也不抛)，注册直接报错
-        t:eq(nil, core.ssl_qury(NAME_PEM .. "\0x"), "ssl_qury 名字内含 \\0 返回 nil")
-        local qok, qret = pcall(srey.ssl_qury, NAME_PEM .. "\0x")
-        t:check(qok and false == qret, "srey.ssl_qury 名字内含 \\0 返回 false 而不抛")
-        t:eq(false, pcall(core.cert_register, "unit_pem_z\0x", "ca.crt", "server.crt", "server.key"),
+        t:eq(nil, sssl.query(NAME_PEM .. "\0x"), "ssl_query 名字内含 \\0 返回 nil")
+        local qok, qret = pcall(srey.ssl_query, NAME_PEM .. "\0x")
+        t:check(qok and false == qret, "srey.ssl_query 名字内含 \\0 返回 false 而不抛")
+        t:eq(false, pcall(sssl.cert_register, "unit_pem_z\0x", "ca.crt", "server.crt", "server.key"),
              "cert_register 名字内含 \\0 报错")
         -- 重复 register 同一 name 返回 nil（evssl_register 已占用）
-        local dup = core.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
+        local dup = sssl.cert_register(NAME_PEM, "ca.crt", "server.crt", "server.key")
         t:eq(nil, dup, "重复 register 同 name 拒绝")
 
         -- seclevel / verify 无返回值（OpenSSL 那两个函数本身就没有）、也没有读回接口，这里只钉合法值不抛错；
         -- 设进去有没有生效由 C 侧握手用例覆盖
-        t:eq(true, (pcall(core.ssl_seclevel, ssl, 1)), "ssl_seclevel 合法值不抛错")
-        t:eq(true, (pcall(core.ssl_verify, ssl, 0)), "ssl_verify 合法值不抛错")
+        t:eq(true, (pcall(sssl.seclevel, ssl, 1)), "ssl_seclevel 合法值不抛错")
+        t:eq(true, (pcall(sssl.verify, ssl, 0)), "ssl_verify 合法值不抛错")
         -- 0 是 OpenSSL 文档里的默认值（不设下限），绑定层不该把它挡在值域外；排在 TLS1_2 之前跑，
         -- 跑完这一段 ctx 的下限与不加这条时一致
-        t:eq(true, core.ssl_min_proto(ssl, TLS_VERSION.AUTO), "ssl_min_proto 收 0(不设下限)")
-        t:eq(true, core.ssl_min_proto(ssl, TLS_VERSION.TLS1_2), "ssl_min_proto 合法版本返 true")
-        t:eq(ssl, core.ssl_qury(NAME_PEM), "三个 setter 调完后同名仍查回同一 ctx")
+        t:eq(true, sssl.min_proto(ssl, TLS_VERSION.AUTO), "ssl_min_proto 收 0(不设下限)")
+        t:eq(true, sssl.min_proto(ssl, TLS_VERSION.TLS1_2), "ssl_min_proto 合法版本返 true")
+        t:eq(ssl, sssl.query(NAME_PEM), "三个 setter 调完后同名仍查回同一 ctx")
         -- 拼出来的证书路径超长会被截成别的路径，直接返回 nil 不去加载
         local longf = string.rep("a", 4096)
-        t:eq(nil, core.cert_register("unit_pem_long", longf, "", ""), "cert_register 路径超长返回 nil")
-        t:eq(nil, core.p12_register("unit_p12_long", longf, "x"), "p12_register 路径超长返回 nil")
+        t:eq(nil, sssl.cert_register("unit_pem_long", longf, "", ""), "cert_register 路径超长返回 nil")
+        t:eq(nil, sssl.p12_register("unit_p12_long", longf, "x"), "p12_register 路径超长返回 nil")
         -- 非法入参必须被绑定层拒（收窄前会被 lua_tointeger 静默转 0）
-        t:eq(false, pcall(core.ssl_seclevel, ssl, "x"), "ssl_seclevel 拒非数字")
-        t:eq(false, pcall(core.ssl_min_proto, ssl, {}), "ssl_min_proto 拒非数字")
+        t:eq(false, pcall(sssl.seclevel, ssl, "x"), "ssl_seclevel 拒非数字")
+        t:eq(false, pcall(sssl.min_proto, ssl, {}), "ssl_min_proto 拒非数字")
         -- 值域同样得拒：打错一个字节的版本号（0x0399）落在 TLS1_0..TLS1_3 之外，放过去的话
         -- OpenSSL 返 0、最低版本原样保持无下限，而业务以为自己已经把下限抬上去了
-        t:eq(false, pcall(core.ssl_min_proto, ssl, 0x0399), "ssl_min_proto 拒表外版本号")
-        t:eq(false, pcall(core.ssl_seclevel, ssl, 99), "ssl_seclevel 拒超上界")
-        t:eq(false, pcall(core.ssl_seclevel, ssl, -1), "ssl_seclevel 拒负数")
+        t:eq(false, pcall(sssl.min_proto, ssl, 0x0399), "ssl_min_proto 拒表外版本号")
+        t:eq(false, pcall(sssl.seclevel, ssl, 99), "ssl_seclevel 拒超上界")
+        t:eq(false, pcall(sssl.seclevel, ssl, -1), "ssl_seclevel 拒负数")
 
         -- ssl_host：未注册的名字查回 nil，传进来与 ssl_verify 一样报错；注册过的客户端上下文收主机名。
         -- 另注册一个只带 CA 的上下文来设，设了主机名的上下文不能拿去监听
-        local miss = core.ssl_qury("unregistered")
-        t:eq(false, pcall(core.ssl_verify, miss, 0), "ssl_verify 未注册(nil)报错")
-        t:eq(false, pcall(core.ssl_host, miss, "a.example.com"), "ssl_host 未注册(nil)同样报错")
-        local cli = core.cert_register("unit_host_cli", "ca.crt", "", "")
+        local miss = sssl.query("unregistered")
+        t:eq(false, pcall(sssl.verify, miss, 0), "ssl_verify 未注册(nil)报错")
+        t:eq(false, pcall(sssl.host, miss, "a.example.com"), "ssl_host 未注册(nil)同样报错")
+        local cli = sssl.cert_register("unit_host_cli", "ca.crt", "", "")
         if t:check(cli ~= nil, "cert_register 只带 CA 的客户端上下文") then
-            t:eq(true, core.ssl_host(cli, "a.example.com"), "ssl_host 收域名")
-            t:eq(true, core.ssl_host(cli, "127.0.0.1"), "ssl_host 收 IP")
-            t:eq(false, core.ssl_host(cli, string.rep("a", 256)), "ssl_host 超 255 字节返 false")
-            t:eq(false, pcall(core.ssl_host, cli, "a\0b"), "ssl_host 主机名内含 \\0 报错")
-            t:eq(true, core.ssl_host(cli, nil), "ssl_host 传 nil 清除")
+            t:eq(true, sssl.host(cli, "a.example.com"), "ssl_host 收域名")
+            t:eq(true, sssl.host(cli, "127.0.0.1"), "ssl_host 收 IP")
+            t:eq(false, sssl.host(cli, string.rep("a", 256)), "ssl_host 超 255 字节返 false")
+            t:eq(false, pcall(sssl.host, cli, "a\0b"), "ssl_host 主机名内含 \\0 报错")
+            t:eq(true, sssl.host(cli, nil), "ssl_host 传 nil 清除")
         end
     end
 
@@ -166,13 +167,13 @@ runner.run(function(t)
         t:eq(LONG, long_item and long_item.name, "80 字节名字原样交出，不截断不丢弃")
         t:eq(SHORT, short_item and short_item.name, "短名字照常带 name")
     end
-    if core.with_ssl() then
+    if sssl.with_ssl() then
         -- p12_register
-        local ssl = core.p12_register(NAME_P12, "client.p12", "srey")
+        local ssl = sssl.p12_register(NAME_P12, "client.p12", "srey")
         t:check(ssl ~= nil, "p12_register 返回 ssl ctx")
-        t:eq(ssl, core.ssl_qury(NAME_P12), "ssl_qury 查回 p12 ssl ctx")
+        t:eq(ssl, sssl.query(NAME_P12), "ssl_query 查回 p12 ssl ctx")
         -- 错误密码注册失败
-        local bad = core.p12_register("unit_p12_bad", "client.p12", "wrong-password")
+        local bad = sssl.p12_register("unit_p12_bad", "client.p12", "wrong-password")
         t:eq(nil, bad, "p12_register 错误密码失败")
     end
 
@@ -186,28 +187,32 @@ runner.run(function(t)
         t:check(b - a >= 15 and b - a < 5000, "timer_ms 随真实时间前进 (" .. (b - a) .. "ms)")
     end
 
-    -- ── srey.task: set/get *_timeout round-trip ───────────────────────
+    -- ── srey.task: set_timeout / get_timeout round-trip ───────────────
     do
         -- 保存原值后还原（避免污染本 task 后续协程）
-        local saved_req = task.get_request_timeout()
-        local saved_con = task.get_connect_timeout()
-        local saved_net = task.get_netread_timeout()
+        local saved_req = task.get_timeout("request")
+        local saved_con = task.get_timeout("connect")
+        local saved_net = task.get_timeout("netread")
 
-        task.set_request_timeout(7777)
-        t:eq(7777, task.get_request_timeout(), "set/get_request_timeout")
+        task.set_timeout("request", 7777)
+        t:eq(7777, task.get_timeout("request"), "set/get_timeout request")
 
-        task.set_connect_timeout(8888)
-        t:eq(8888, task.get_connect_timeout(), "set/get_connect_timeout")
+        task.set_timeout("connect", 8888)
+        t:eq(8888, task.get_timeout("connect"), "set/get_timeout connect")
 
-        task.set_netread_timeout(9999)
-        t:eq(9999, task.get_netread_timeout(), "set/get_netread_timeout")
+        task.set_timeout("netread", 9999)
+        t:eq(9999, task.get_timeout("netread"), "set/get_timeout netread")
 
-        task.set_request_timeout(saved_req)
-        task.set_connect_timeout(saved_con)
-        task.set_netread_timeout(saved_net)
-        t:eq(saved_req, task.get_request_timeout(), "request_timeout restored")
-        t:eq(saved_con, task.get_connect_timeout(), "connect_timeout restored")
-        t:eq(saved_net, task.get_netread_timeout(), "netread_timeout restored")
+        task.set_timeout("request", saved_req)
+        task.set_timeout("connect", saved_con)
+        task.set_timeout("netread", saved_net)
+        t:eq(saved_req, task.get_timeout("request"), "request_timeout restored")
+        t:eq(saved_con, task.get_timeout("connect"), "connect_timeout restored")
+        t:eq(saved_net, task.get_timeout("netread"), "netread_timeout restored")
+        t:eq(false, pcall(task.set_timeout, "bogus", 1), "set_timeout 不认识的种类报错")
+        t:eq(false, pcall(task.get_timeout, "bogus"), "get_timeout 不认识的种类报错")
+        task.set_timeout("netread", 0)
+        t:eq(saved_net, task.get_timeout("netread"), "set_timeout 传 0 忽略")
     end
 
     -- ── core.bind_task: 目标不存在须返回 false ────────────────────────
@@ -329,15 +334,15 @@ runner.run(function(t)
             srey.close(sk)
         end
         -- 同一条规矩也管 Lua 包装层：srey.connect 成功返 sk，失败返无效 sk，个数一致。
-        -- 走 ssl_qury 那条失败路径，它在任何挂起之前就返回，不依赖网络
+        -- 走 ssl_query 那条失败路径，它在任何挂起之前就返回，不依赖网络
         t:eq(1, select("#", srey.connect(PACK_TYPE.NONE, "no-such-ssl-name", "127.0.0.1", 1)),
             "srey.connect 失败也返 1 个值")
-        -- ssl_qury 的契约只有 (true,nil)/(true,ssl)/(false,nil) 三档,没有"抛出"这一档：
-        -- core.ssl_qury 是 luaL_checkstring,漏传 sslname 会抛,而 srey.connect 的 extra
+        -- ssl_query 的契约只有 (true,nil)/(true,ssl)/(false,nil) 三档,没有"抛出"这一档：
+        -- sssl.query 是 luaL_checkstring,漏传 sslname 会抛,而 srey.connect 的 extra
         -- 释放排在它之后——websock 的 hsctx 就那样漏掉一份(lightuserdata,没有 __gc)
-        t:eq(false, srey.ssl_qury(nil), "ssl_qury 漏传返 false 而不抛")
-        t:eq(false, srey.ssl_qury(42), "ssl_qury 收非字符串返 false")
-        t:eq(true, srey.ssl_qury(SSL_NAME.NONE), "SSL_NAME.NONE 仍是明文放行")
+        t:eq(false, srey.ssl_query(nil), "ssl_query 漏传返 false 而不抛")
+        t:eq(false, srey.ssl_query(42), "ssl_query 收非字符串返 false")
+        t:eq(true, srey.ssl_query(SSL_NAME.NONE), "SSL_NAME.NONE 仍是明文放行")
         t:eq(1, select("#", srey.connect(PACK_TYPE.NONE, nil, "127.0.0.1", 1)),
             "sslname 漏传时 srey.connect 仍返 1 个值")
     end

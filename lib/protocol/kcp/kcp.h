@@ -8,6 +8,7 @@
 // tick 调度方式:1=最小堆早退(会话多且同时到期少时占优;空闲会话摘出堆停表,send / input 时挂回;死链会话拆掉投 CLOSE);
 // 0=kcp_map_scan 全量扫描(同时到期会话占多数时占优;不停表、不判死链,仅作对照)
 #define KCP_TICK_HEAP 1
+#define KCP_SENDQ_MAX 65536 // 单会话发送积压上限(段数,约 90MB),到了就拆会话,见 kcp_send
 #define KCP_MTU_MAX 65507 // mtu 上限:UDP 单报最大载荷(按 IPv4 算,IPv6 也能用),再大满段发不出去
 // kcp 会话句柄(值类型,业务持有):仅标识一个会话,不持有会话对象本身。
 // 会话对象(含 ikcpcb)在调用 kcp_start 的线程上建好后交给 event 线程入表,此后查/释放都在 event 线程,
@@ -77,7 +78,7 @@ void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv);
 /// 本会话的 RECVFROM / HANDSHAKED / CLOSE 都带本次 sess。会话关闭(kcp_stop、死链、UDP socket 关闭时逐会话补发)
 /// 进 task_closed 回调:sess 参数即本会话的 sess,sk 是承载它的 UDP socket;sess 等于 sk->skid 的才是 socket 本身关闭。
 /// 对端失联(某段重传到 dead_link 次,库默认 20;仅 KCP_TICK_HEAP 为 1)时会话被拆除并推 MSG_TYPE_CLOSE
-/// (erro 为 CLOSE_TYPE_ABORT),重启前须先 kcp_stop;被它唤醒的 kcp_synsend 已把句柄置停。
+/// (erro 为 CLOSE_TYPE_ABORT),之后可直接 kcp_start 重启;被它唤醒的 kcp_synsend 已把句柄置停。
 /// 约束:同一 socket 上 conv 须唯一(由上层协商保证)。
 /// </summary>
 /// <param name="kcp">已 kcp_init 的句柄</param>
@@ -87,9 +88,9 @@ void kcp_init(kcp_ctx *kcp, ev_ctx *netev, sock_ctx *sk, uint32_t conv);
 ///   挡住持旧句柄副本的调用落到同 conv 的新会话上。0 仅为兼容:不唤醒等待者,失去上面那层保护
 ///   (sess 都为 0 的会话互相匹配),会话关闭时也认不出是哪个会话</param>
 /// <param name="ip">对端 IP;port 为 0 且 ip 为通配地址(0.0.0.0 / ::)时 ip 也从首包学</param>
-/// <param name="port">对端端口;0 为学习模式:首个 conv 匹配(ip 非通配时还须 ip 相符)的数据报来源定为对端,
+/// <param name="port">对端端口;0 为学习模式:首个被 ikcp 整包收下(ip 非通配时还须 ip 相符)的数据报来源定为对端,
 ///   之后严格校验。学到之前本端发出的段被丢掉(学到后靠重传补上,故应让对端先发),这期间猜中 conv 的任何来源
-///   都能抢先占住;只在拿不到对端实际地址(如对端在 NAT 后)时用</param>
+///   都能抢先占住;中途出错的数据报不学,但出错段之前的段仍会投递。只在拿不到对端实际地址(如对端在 NAT 后)时用</param>
 /// <param name="cfg">KCP 可调参数;NULL 用库默认(见 kcp_config)</param>
 /// <returns>ERR_OK 请求已发起,不代表会话已建好;ERR_FAILED 本地校验失败或未能发起,sess / maxpack 不变。
 ///   句柄 stopped 为 0 时先隐式 kcp_stop 旧会话再起新的,失败时 stopped 保持被它置的 1</returns>
@@ -113,6 +114,7 @@ int32_t kcp_handle(kcp_ctx *kcp, name_t handle);
 /// <summary>
 /// 发送数据:交 KCP 可靠传输,实际发包由 event 线程 tick 周期驱动。
 /// 对端响应到达后以 kcp_start 时传入的 sess 唤醒等待协程(供 kcp_synsend 用)。
+/// 未确认的段到 KCP_SENDQ_MAX 时会话被拆除并推 MSG_TYPE_CLOSE(erro 为 CLOSE_TYPE_LOCAL,sess 同 kcp_start)。
 /// </summary>
 /// <param name="kcp">kcp_ctx</param>
 /// <param name="data">数据</param>

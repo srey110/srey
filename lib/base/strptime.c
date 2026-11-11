@@ -142,7 +142,8 @@ static const unsigned char *_find_string(const unsigned char *bp, int *tgt, cons
     for (; n1 != NULL; n1 = n2, n2 = NULL) {
         for (i = 0; i < c; i++, n1++) {
             len = strlen(*n1);
-            if (memcasecmp(*n1, bp, len) == 0) {// bp 不足 len 时在它的 '\0' 处先对不上就停
+            if (0 != len// tzname 在没有夏令时的时区可能是空串，不能当成匹配
+                && memcasecmp(*n1, bp, len) == 0) {// bp 不足 len 时在它的 '\0' 处先对不上就停
                 *tgt = i;
                 return bp + len;
             }
@@ -696,7 +697,7 @@ static char *_strptime_st(const char *buf, const char *fmt, struct tm *tm, int *
             tm->tm_yday = (7 -
                 _first_wday_of(tm->tm_year + TM_YEAR_BASE) +
                 day_offset) % 7 + (week_offset - 1) * 7 +
-                tm->tm_wday - day_offset;
+                (tm->tm_wday - day_offset + 7) % 7;// %W 的周日是一周最后一天，不能按周首算
             state |= S_YDAY;
         }
     }

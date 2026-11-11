@@ -1347,14 +1347,23 @@ static void test_strptime_week_neg_yday(CuTest *tc) {
     CuAssertTrue(tc, 11 == tm.tm_mon);
     CuAssertTrue(tc, 25 == tm.tm_mday);
 
-    // 2024-01-01 是周一(fwd=1)，%W 第 0 周 + wday=0 → tm_yday = -8 → 2023-12-24
+    // 2024-01-01 是周一(fwd=1)，%W 的周日是一周最后一天：第 0 周 + wday=0 → tm_yday = -1 → 2023-12-31(同 glibc)
     ZERO(&tm, sizeof(tm));
     end = _strptime("2024 0 0", "%Y %W %w", &tm);
     CuAssertPtrNotNull(tc, end);
     CuAssertTrue(tc, '\0' == *end);
     CuAssertTrue(tc, 123 == tm.tm_year);
     CuAssertTrue(tc, 11 == tm.tm_mon);
-    CuAssertTrue(tc, 24 == tm.tm_mday);
+    CuAssertTrue(tc, 31 == tm.tm_mday);
+
+    // 同上，%W 第 1 周的周日 = 2024-01-07
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 1 0", "%Y %W %w", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    CuAssertTrue(tc, 124 == tm.tm_year);
+    CuAssertTrue(tc, 0 == tm.tm_mon);
+    CuAssertTrue(tc, 7 == tm.tm_mday);
 
     // 常规路径（week>0）不受影响：%U 第 1 周 + 周三 = 2024-01-10
     ZERO(&tm, sizeof(tm));
@@ -1887,8 +1896,9 @@ static void test_str_helpers(CuTest *tc) {
     CuAssertTrue(tc, 1 == mbsegs[0].lens && 0 == memcmp(mbsegs[0].data, "a", 1));
     CuAssertTrue(tc, 1 == mbsegs[2].lens && 0 == memcmp(mbsegs[2].data, "c", 1));
 
-    /* 参数非法一律 ERR_FAILED，且不碰 segs */
-    parts = NULL;
+    /* 参数非法一律 ERR_FAILED；堆模式下 *segs 先置空，调用方可直接 FREE。parts 先放个非 NULL 的旧值 */
+    buf_ctx stale;
+    parts = &stale;
     CuAssertIntEquals(tc, ERR_FAILED, split(NULL, 5, ",", 1, &parts, 0, 0));
     CuAssertPtrEquals(tc, NULL, parts);
     /* plens 为 0 不是错:出一个空段(url_parse 解 "/" 依赖这条) */

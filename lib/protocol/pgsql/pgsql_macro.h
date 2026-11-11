@@ -16,6 +16,8 @@ typedef enum pgpack_format {
     FORMAT_BINARY               // 二进制格式
 }pgpack_format;
 
+#define PGSQL_CANCEL_KEY_MAX 256 // 取消密钥上限：协议 3.0 恒 4 字节，3.2 为 4~256 字节
+#define PGSQL_CANCEL_MAX (12 + PGSQL_CANCEL_KEY_MAX) // CancelRequest 最长：长度 + 魔数 + pid + 密钥
 // PostgreSQL 内置类型 OID 常量
 #define BOOLOID 16 // bool
 #define BYTEAOID 17 // bytea
@@ -40,6 +42,7 @@ typedef enum pgpack_format {
 #define PG_MCV_LISTOID 5017 // pg_mcv_list
 #define PG_DDL_COMMANDOID 32 // pg_ddl_command
 #define XID8OID 5069 // xid8
+#define OID8OID 6437 // oid8（PG 19 起，8 字节无符号）
 #define POINTOID 600 // point
 #define LSEGOID 601 // lseg
 #define PATHOID 602 // path
@@ -149,6 +152,7 @@ typedef enum pgpack_format {
 #define JSONARRAYOID 199
 #define XMLARRAYOID 143
 #define XID8ARRAYOID 271
+#define OID8ARRAYOID 6442
 #define POINTARRAYOID 1017
 #define LSEGARRAYOID 1018
 #define PATHARRAYOID 1019

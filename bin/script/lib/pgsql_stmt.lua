@@ -14,6 +14,7 @@ local PG_FORMAT = ppub.FORMAT
 ---@class pgsql_stmt_ctx
 ---@field name string 服务端语句名称（Parse 时传入）
 ---@field owner any pgsql_ctx Lua 包装实例，守卫读其实时 generation；收发借它的连接（每次现取连接标识以感知重连）
+---@field gen integer prepare 时宿主连接的代次，与 owner.generation 不等即语句已失效
 ---@field format PG_FORMAT execute 时向服务端请求的结果列格式（二进制 / 文本），prepare 时确定
 ---@field affected integer 最近一次执行影响的行数
 ---@field closed boolean close() 已发出 Close，此后 execute 一律拒绝（口径同 mysql_stmt）

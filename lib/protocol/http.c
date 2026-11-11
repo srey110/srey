@@ -260,6 +260,9 @@ static inline int32_t _http_interim_resp(http_pack_ctx *pack, int32_t client) {
     }
     return code < 200;
 }
+int32_t http_is_interim(http_pack_ctx *pack) {
+    return _http_interim_resp(pack, 1);
+}
 // 收到的这个包是否 RFC 7230 §3.3.3 规则 1 里"一律无报文体"的响应。
 // client 为 0 时收到的是请求，一律返 0：本端解析不出方向——_http_parse_status 只要求首段或末段
 // 是 HTTP-version，"HTTP/1.1 204 z" 这种伪请求行照样能过，在服务端按响应处理就是一次请求走私
@@ -310,16 +313,21 @@ static inline char *_http_parse_status(http_pack_ctx *pack) {
     if (NULL == sp[0]) {
         return NULL;
     }
-    sp[1] = memchr(sp[0] + 1, ' ', (size_t)(pcrlf - sp[0] - 1));
-    if (NULL == sp[1]) {
-        return NULL;
-    }
     pack->status[0].data = head;
     pack->status[0].lens = (size_t)(sp[0] - head);
+    sp[1] = memchr(sp[0] + 1, ' ', (size_t)(pcrlf - sp[0] - 1));
+    if (NULL == sp[1]) {
+        // 状态行省略 reason 时常连空格一起省：只放行首段是 HTTP-version 的，reason 按空
+        if (!_http_is_version(&pack->status[0])) {
+            return NULL;
+        }
+        sp[1] = pcrlf;
+    }
+    char *reason = pcrlf == sp[1] ? pcrlf : sp[1] + 1;
     pack->status[1].data = sp[0] + 1;
     pack->status[1].lens = (size_t)(sp[1] - sp[0] - 1);
-    pack->status[2].data = sp[1] + 1;
-    pack->status[2].lens = (size_t)(pcrlf - sp[1] - 1);
+    pack->status[2].data = reason;
+    pack->status[2].lens = (size_t)(pcrlf - reason);
     if (0 == pack->status[0].lens
         || 0 == pack->status[1].lens) {
         return NULL;
@@ -441,12 +449,11 @@ static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t 
 static inline int32_t _http_crlf2_pos(buffer_ctx *buf, size_t start) {
     IOV_TYPE iov;
     size_t bsize = buffer_size(buf);
-    const char *data, *hit;
     if (start < bsize
         && 0 != buffer_get(buf, bsize, &iov, 1)) {
         if ((size_t)iov.IOV_LEN_FIELD == bsize) {
-            data = (const char *)iov.IOV_PTR_FIELD;
-            hit = (const char *)memstr(0, data + start, bsize - start, CONCAT2(FLAG_CRLF,FLAG_CRLF), CRLF_SIZE * 2);
+            const char *data = (const char *)iov.IOV_PTR_FIELD;
+            const char *hit = (const char *)memstr(0, data + start, bsize - start, CONCAT2(FLAG_CRLF,FLAG_CRLF), CRLF_SIZE * 2);
             buffer_commit_get(buf, 0);
             return (NULL == hit || (size_t)(hit - data) > (size_t)INT32_MAX) ? ERR_FAILED : (int32_t)(hit - data);
         }

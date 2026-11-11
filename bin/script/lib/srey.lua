@@ -10,6 +10,7 @@ require("lib.log")
 local task   = require("srey.task")
 local utils  = require("srey.utils")
 local core   = require("srey.core")
+local sssl   = require("srey.ssl")
 local http   = require("srey.http")
 local harbor = require("srey.harbor")
 local trend  = require("srey.trend")
@@ -42,7 +43,8 @@ local task_ungrab      = task.ungrab
 local msg_release      = task.msg_release
 local timer_ms         = task.timer_ms
 local new_id           = utils.id
-local get_netread_timeout = task.get_netread_timeout
+local get_timeout = task.get_timeout
+local TASK_TIMEOUT_MAX = task.timeout_max
 local cur_task  = _curtask -- 当前 task 的 C 层指针，由 loader 注入
 local SSL_NAME  = SSL_NAME
 -- 热路径上每次都要比的枚举值写成 <const> 字面量，是 define.lua 同名全局或 core 导出值（都是 C 枚举的镜像）的副本，
@@ -74,6 +76,11 @@ local coro_sess      = {} -- 会话表：sess/skid → corosess，保存挂起�
 local func_cbs       = {} -- 消息类型 → 用户注册回调函数
 local timer_cbs      = {} -- srey.timeout 的回调：sess → func(不带实参时)或 table.pack(func, ...)，不进 coro_sess
 local close_watchers = {}-- 库级 CLOSE 观察者；业务的 on_closed 仍是单槽，互不影响
+-- 按协程覆盖的超时：协程 → { request = ms, connect = ms, netread = ms }，没有的项走 task 级的值。
+-- 协程跑完一条活由 _coro_exec 清掉(同 C 侧 coro_local 每条活清零)；弱键只防协程被丢弃时漏清
+local coro_tmo       = setmetatable({}, { __mode = "k" })
+-- 超时种类的合法名单，同 C 侧 tmo_kind
+local TMO_KINDS      = { request = true, connect = true, netread = true }
 local _debug_request -- lib.debug_request 懒加载缓存，首个 REQ_DEBUG 请求时加载
 local srey  = {}
 local nyield = 0 -- 当前挂起等待的协程总数（closing 时用于告警）
@@ -224,6 +231,7 @@ local function _coro_exec(coro, tag, func, msg, ...)
         task_incref(cur_task)
         local gen = resume_gen
         srey.xpcall(func, ...)
+        coro_tmo[coro] = nil
         if msg and gen ~= resume_gen then
             msg_release(msg)
         end
@@ -347,6 +355,11 @@ local function _check_wait(api, own)
         end
         error(api .. " cannot yield here (e.g. inside require or a table.sort/gsub callback)", 3)
     end
+end
+-- 当前协程某类超时的覆盖值，没覆盖返回 nil；不在框架协程里时 coro_running 为 nil，同样返回 nil
+local function _tmo_override(kind)
+    local t = coro_tmo[coro_running]
+    return t and t[kind]
 end
 ---库在调挂起接口之前自己先查守卫用，免得组好的包在挂起接口的守卫里抛错时没人释放；参数同 _check_wait。
 ---要在库的对外入口里直接调，错误才指向业务调用点
@@ -627,7 +640,8 @@ srey.hex = utils.hex
 ---@type fun(addr:lightuserdata?):string?, integer?
 srey.remote_addr = utils.remote_addr
 
----注册新 task；变参作为脚本 chunk 的 `...` 传入，脚本顶层 `local a,b,...= ...` 接收
+---注册新 task；变参作为脚本 chunk 的 `...` 传入，脚本顶层 `local a,b,...= ...` 接收。
+---变参只收 nil / boolean / number / string，别的类型到新 task 里是 nil
 ---@type fun(file:string, name:string?, quecap:integer, ...:any):lightuserdata?
 srey.task_register = task.register
 
@@ -667,29 +681,85 @@ srey.task_handle = task.handle
 ---@type fun():integer
 srey.timer_ms = task.timer_ms
 
----设置跨 task request/response 等待超时；ms 须 大于 0（非法值告警并忽略），超上界 clamp
----@type fun(ms:integer)
-srey.set_request_timeout = task.set_request_timeout
+---设置 task 级的某类超时，本 task 所有协程的等待默认都用它；只想改某几次等待用 srey.coro_timeout_set。
+---ms 须 大于 0（非法值告警并忽略），超上界 clamp；kind 不认识时报错
+---@type fun(kind:TmoKind, ms:integer)
+srey.set_timeout = task.set_timeout
 
----获取跨 task request/response 等待超时
----@type fun():integer
-srey.get_request_timeout = task.get_request_timeout
+---获取 task 级的某类超时；默认 request 3 秒、connect 5 秒、netread 10 秒
+---@type fun(kind:TmoKind):integer
+srey.get_timeout = task.get_timeout
 
----设置 TCP/TLS 连接建立超时；ms 须 大于 0（非法值告警并忽略），超上界 clamp
----@type fun(ms:integer)
-srey.set_connect_timeout = task.set_connect_timeout
+---@alias TmoKind "request"|"connect"|"netread"
 
----获取 TCP/TLS 连接建立超时
----@type fun():integer
-srey.get_connect_timeout = task.get_connect_timeout
+---覆盖当前协程的某类超时，只影响本协程此后的等待，同 task 的其他协程照旧用 task 级的值（同 C 侧 coro_timeout_set）。
+---协程跑完这条活自动撤销；srey.fork 出的子协程不继承。超时后的处理不变（读超时照旧关连接）。
+---等待的超时每秒扫一次，短于 1 秒的值最多晚 1 秒触发。只能在框架协程里调，成对恢复用 srey.with_timeout 更省事
+---@param kind TmoKind 超时种类：request 对应 srey.request，connect 对应连接建立，netread 对应其余连接与 UDP / kcp 上的等待
+---@param ms integer 毫秒；0 撤销覆盖，超过 task.timeout_max 时 clamp 到该上界
+---@return integer old 原来的覆盖值，0 表示原来没覆盖；原样传回本函数即恢复
+function srey.coro_timeout_set(kind, ms)
+    if 1 == can_wait(coro_running) then
+        error("srey.coro_timeout_set must be called from within a srey coroutine", 2)
+    end
+    if not TMO_KINDS[kind] then
+        error("srey.coro_timeout_set: invalid timeout kind " .. tostring(kind), 2)
+    end
+    if "integer" ~= math.type(ms) or ms < 0 then
+        error("srey.coro_timeout_set: ms must be a non-negative integer, got " .. tostring(ms), 2)
+    end
+    local t = coro_tmo[coro_running]
+    local old = t and t[kind] or 0
+    if 0 == ms then
+        if t then
+            t[kind] = nil
+        end
+        return old
+    end
+    if not t then
+        t = {}
+        coro_tmo[coro_running] = t
+    end
+    t[kind] = ms > TASK_TIMEOUT_MAX and TASK_TIMEOUT_MAX or ms
+    return old
+end
 
----设置网络读（recv/handshake/ssl exchange）超时；ms 须 大于 0（非法值告警并忽略），超上界 clamp
----@type fun(ms:integer)
-srey.set_netread_timeout = task.set_netread_timeout
+---当前协程某类超时的实际值：有覆盖用覆盖，否则用 task 级的值（同 C 侧 coro_timeout_get）
+---@param kind TmoKind 超时种类
+---@return integer ms 毫秒，恒大于 0
+function srey.coro_timeout_get(kind)
+    if not TMO_KINDS[kind] then
+        error("srey.coro_timeout_get: invalid timeout kind " .. tostring(kind), 2)
+    end
+    return _tmo_override(kind) or get_timeout(kind)
+end
 
----获取网络读超时
----@type fun():integer
-srey.get_netread_timeout = task.get_netread_timeout
+---在 fn 执行期间覆盖当前协程的超时，fn 返回或抛错后都恢复原值，错误原样往上抛。
+---opts 里没写的种类不动；嵌套时内层覆盖外层，出内层恢复成外层的值。规矩同 srey.coro_timeout_set
+---@param opts {request?:integer, connect?:integer, netread?:integer} 各类超时毫秒数
+---@param fn function 要执行的函数
+---@param ... any 传给 fn 的参数
+---@return any ... fn 的返回值
+function srey.with_timeout(opts, fn, ...)
+    -- 先全部校验再动手：中途报错就会留下半套覆盖没人恢复
+    for kind, ms in pairs(opts) do
+        if not TMO_KINDS[kind] or "integer" ~= math.type(ms) or ms < 0 then
+            error("srey.with_timeout: invalid option " .. tostring(kind) .. "=" .. tostring(ms), 2)
+        end
+    end
+    local olds = {}
+    for kind, ms in pairs(opts) do
+        olds[kind] = srey.coro_timeout_set(kind, ms)
+    end
+    local r = tpack(pcall(fn, ...))
+    for kind, old in pairs(olds) do
+        srey.coro_timeout_set(kind, old)
+    end
+    if not r[1] then
+        error(r[2], 0)
+    end
+    return tunpack(r, 2, r.n)
+end
 
 ---设置当前 task 调度优先级。priority 越大单轮消费消息越多;每 +8 翻倍,每 +1 +12.5%;0..16,超界自动 clamp
 ---@type fun(priority:integer)
@@ -762,7 +832,8 @@ end
 ---（timer_ms 单位，0 表示永不超时）、挂起起始时刻。4 格都不会是 nil，所以 # 恒可靠；
 ---严格按 FIFO 等待/唤醒（[1..4] 为队头，队头 mtype 匹配才摘除）
 ---@field keep    true?       等待者摘空后是否保留本条目：nil 立即删除；true 保留（TCP/UDP 同一
----                            skid 高频复用，免去反复 table 删除+插入），仅 _net_close_dispatch 会强制清掉。
+---                            skid 高频复用，免去反复 table 删除+插入）。_net_close_dispatch 与连接转交
+---                            (_coro_sess_unkeep)会清掉它，超时路径不看它、摘空就删。
 ---                            不保留时不写这个键，条目只有数组部
 ---@field [integer] thread|integer
 
@@ -947,7 +1018,8 @@ function srey._coro_wake(sess, mtype, payload)
     return true
 end
 
----从队头起把连续同标记的等待者全部摘下（遇到标记不同的队头即停），统一带 payload 排队唤醒；关闭/整体失败广播用
+---从队头起把连续同标记的等待者全部摘下（遇到标记不同的队头即停），统一带 payload 排队唤醒；关闭/整体失败广播用。
+---与 C 侧 coro_wake_all 不同：不清 keep、只摘同标记的
 ---@param sess integer 会话 id
 ---@param mtype integer 等待标记
 ---@param payload any 唤醒数据
@@ -1035,6 +1107,7 @@ function srey.request(dst, reqtype, data, size, copy)
         WARN("target task not found: %s.", tostring(dst))
         return nil
     end
+    ms = _tmo_override("request") or ms
     local msg = srey._coro_wait_nocheck(sess, MTYPE_RESPONSE, ms)
     local mtype, _, _, _, _, erro, _, rdata, rsize = msg()
     if MTYPE_TIMEOUT == mtype then
@@ -1202,19 +1275,19 @@ function srey.sock_bind_task(sk, tname)
 end
 
 ---查 SSL 上下文:NONE→(true,nil) 明文;查到→(true,ssl);name 未注册或非字符串→(false,nil);error/WARN 由调用处按需处理。
----三种结局之外不抛:core.ssl_qury 是 luaL_checkstring,漏传或传错类型会抛,而 srey.connect 的
+---三种结局之外不抛:sssl.query 是 luaL_checkstring,漏传或传错类型会抛,而 srey.connect 的
 ---extra 释放排在本函数之后,抛出去就把它漏掉了
 ---@param sslname SSL_NAME
 ---@return boolean ok  name 已注册(或 NONE)为 true;未注册或非字符串 false
 ---@return lightuserdata? ssl  NONE 时 nil
-function srey.ssl_qury(sslname)
+function srey.ssl_query(sslname)
     if SSL_NAME.NONE == sslname then
         return true
     end
     if "string" ~= type(sslname) then
         return false
     end
-    local ssl = core.ssl_qury(sslname)
+    local ssl = sssl.query(sslname)
     if not ssl then
         return false
     end
@@ -1240,9 +1313,9 @@ end
 ---@param netev NET_EV? 事件订阅掩码
 ---@return integer lsnid 监听 id；失败返回 ERR_FAILED(-1)
 function srey.listen(pktype, sslname, ip, port, netev)
-    local ok, ssl = srey.ssl_qury(sslname)
+    local ok, ssl = srey.ssl_query(sslname)
     if not ok then
-        WARN("ssl_qury not find ssl name %s.", sslname)
+        WARN("ssl_query not find ssl name %s.", sslname)
         return ERR_FAILED
     end
     return core.listen(pktype, ssl, ip, port, netev)
@@ -1300,12 +1373,13 @@ end
 ---@return integer? size 消息的 size
 ---@return integer? slice 消息的 slice
 local function _wait_msg(sk, mtype, kind, tag)
-    -- 连接已 teardown 就别挂上去,理由同 C 侧 _coro_wait_msg;各 wait_* / syn_* 入口都经本函数,
-    -- 且都已在入口调过 _check_wait
+    -- 连接已 teardown 就别挂上去,理由同 C 侧 _coro_wait_msg;连接上的各等待入口(connect / ssl exchange /
+    -- handshake / recv / recv_any)都经本函数,且都已在入口调过 _check_wait。syn_sendto、sync_close 各自处理
     local skid, ms = wait_skid(sk, kind)
     if not skid then
         return nil
     end
+    ms = _tmo_override(WAIT_CONNECT == kind and "connect" or "netread") or ms
     return _wait_check(sk, tag, srey._coro_wait_nocheck(skid, mtype, ms)())
 end
 
@@ -1338,7 +1412,8 @@ end
 ---同步等待异步 connect 完成（由 task_connect / core.connect 异步发起后调用）；ssl 非 nil 时同时等待 SSL 握手
 ---@param sk userdata 连接标识
 ---@param ssl any? 非 nil 时表示需要等待 SSL 握手
----@return boolean ok 成功 true；超时/失败时已关闭 fd 并返回 false
+---@return boolean ok 成功 true；超时/失败时已关闭 fd 并返回 false。失败时 sk.valid 仍为真：这条连接的 CLOSE 随后才到，
+---重连前紧接着 srey.sync_close 等它、中间别挂起（见 sync_close 的返回值），同 C 侧 coro_wait_connect
 function srey.wait_connect(sk, ssl)
     _check_wait("srey.wait_connect")
     return srey._wait_connect_nocheck(sk, ssl)
@@ -1356,9 +1431,9 @@ end
 ---@return userdata sk 连接标识；失败时 sk.valid 为 false（失败与成功都只返 1 个值）
 function srey.connect(pktype, sslname, ip, port, netev, extra)
     _check_wait("srey.connect", extra)
-    local ok, ssl = srey.ssl_qury(sslname)
+    local ok, ssl = srey.ssl_query(sslname)
     if not ok then
-        WARN("ssl_qury not find ssl name %s.", sslname)
+        WARN("ssl_query not find ssl name %s.", sslname)
         -- extra 尚未传给 C 层，由本函数释放
         if extra then
             utils.ud_free(extra)
@@ -1408,9 +1483,9 @@ end
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 时返回 false
 ---@return boolean ok 发起成功 true
 function srey.ssl_exchange(sk, client, sslname)
-    local ok, ssl = srey.ssl_qury(sslname)
+    local ok, ssl = srey.ssl_query(sslname)
     if not ok then
-        WARN("ssl_qury not find ssl name %s.", sslname)
+        WARN("ssl_query not find ssl name %s.", sslname)
         return false
     end
     if not ssl then -- SSL_NAME.NONE:无 SSL 可交换
@@ -1429,9 +1504,9 @@ end
 ---@param copy integer? 是否复制数据，默认 1；0 时所有权同 srey.request 的 copy
 ---@return boolean ok 命令已投出 true
 function srey.send_ssl(sk, client, sslname, data, size, copy)
-    local ok, ssl = srey.ssl_qury(sslname)
+    local ok, ssl = srey.ssl_query(sslname)
     if not ok then
-        WARN("ssl_qury not find ssl name %s.", sslname)
+        WARN("ssl_query not find ssl name %s.", sslname)
         _ud_free_copy(data, copy)
         return false
     end
@@ -1543,7 +1618,8 @@ end
 ---@param data string|lightuserdata 数据
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer 1=复制；0=零拷贝，所有权同 srey.request
----@return lightuserdata|nil rdata 响应数据指针；失败/超时返回 nil。挂起类接口带回的载荷都在唤醒本协程的那次
+---@return lightuserdata|nil rdata 响应数据指针；失败/超时返回 nil，等满读超时时框架已先关掉这条连接
+---（syn_recv / syn_slice / wait_handshaked 同）。挂起类接口带回的载荷都在唤醒本协程的那次
 ---message_dispatch 返回时（即本协程下次挂起或结束时）由框架当场释放，要留须在那之前自行拷贝
 ---@return integer? rsize 响应的 size，口径见 Message.size；结构化协议别拿它直接读 rdata，载荷走 http.data / websock.unpack
 ---@return integer? rslice 分片类型（SLICE_TYPE.*，0 为非分片）；为 SLICE_TYPE.START 时本条只是首片，
@@ -1573,7 +1649,8 @@ end
 ---同一连接上多协程并发的约束、会话键的设置同 srey.syn_send
 ---@param sk userdata 连接标识
 ---@return lightuserdata|nil data 消息数据指针，有效期同 srey.syn_send 的 rdata；
----超时/断开返回 nil；连接已失效(sk.valid 为 false)时不挂起直接返回 nil
+---超时/断开返回 nil；等满读超时会关掉连接再返回 nil，对端空闲可能超过读超时的服务端要先调大(srey.set_timeout("netread", ms))；
+---连接已失效(sk.valid 为 false)时不挂起直接返回 nil
 ---@return integer? size 消息的 size，同 syn_send
 ---@return integer? slice 分片标记，取值同 SLICE_TYPE；0 为非分片完整消息，分片时调用方循环到 SLICE_TYPE.END
 function srey.syn_recv_any(sk)
@@ -1731,13 +1808,14 @@ srey.close = core.close
 ---@param sk userdata 连接标识
 ---@return boolean ok 已收到 CLOSE 或连接本已失效 true，sk 已置失效；等满 netread 超时仍没关完 false，此时旧连接的
 ---关闭还会晚到，与它共用 ctx 的新连接不能建（同 C 侧 coro_close）。失效只看 sk.valid：等待被这条连接的 CLOSE
----唤醒时 sk 已置失效，再调当场返回 true；连接关掉时没人在它上面等的，sk.valid 仍为真，再调是等满超时返回 false
+---唤醒时 sk 已置失效，再调当场返回 true；连接关掉时没人在它上面等的，sk.valid 仍为真，再调是等满超时返回 false（这时关闭早已做完）
 function srey.sync_close(sk)
     _check_wait("srey.sync_close")
     local skid, ms = wait_skid(sk, WAIT_NETREAD)
     if not skid then
         return true
     end
+    ms = _tmo_override("netread") or ms
     core_close(sk)
     if MTYPE_CLOSE ~= srey._coro_wait_nocheck(skid, MTYPE_CLOSE, ms)() then
         WARN("close timeout, skid %s.", tostring(skid))
@@ -1862,7 +1940,7 @@ function srey.syn_sendto(sk, ip, port, data, size, copy)
         WARN("sendto error, skid %s.", tostring(sk.skid))
         return nil
     end
-    local msg = srey._coro_wait_nocheck(sk.skid, MTYPE_RECVFROM, get_netread_timeout())
+    local msg = srey._coro_wait_nocheck(sk.skid, MTYPE_RECVFROM, _tmo_override("netread") or get_timeout("netread"))
     local mtype, _, _, _, _, _, _, _, rsize = msg()
     if MTYPE_TIMEOUT == mtype then
         WARN("sendto timeout, skid %s.", tostring(sk.skid))

@@ -58,10 +58,23 @@ runner.run(function(t)
         -- 线格式年份只占 2 字节，把 reader:datetime 给的微秒原样回绑会截成另一个合法年份
         -- 32 位 time_t 的平台(m32)上 2038 年后的秒数一律被拒，两条"合法"按平台判。
         -- 按 UTC 卡界之外，C 层按本地时区换算后的年份也得在 1000~9999：东时区的上界、西时区的下界往里缩一个时区差
+        -- 缩多少按边界那一刻的本地时间算，不用此刻的偏移(历史上的 LMT、南半球夏令时都会不一样)；
+        -- 换算不了的(Windows 1970 年前 / 3000 年后、32 位 time_t)退回 UTC 界
         local tt64 = pcall(b.datetime, b, "k_dt", 2147483648)
-        local tzoff = os.time() - os.time(os.date("!*t"))
-        local hi = 253402300799 - math.max(tzoff, 0)
-        local lo = -30610224000 - math.min(tzoff, 0)
+        local HI, LO = 253402300799, -30610224000
+        local function local_tm(ts)
+            local ok, tm = pcall(os.date, "*t", ts)
+            return ok and tm or nil
+        end
+        local hi, lo = HI, LO
+        local thi = local_tm(HI)
+        if thi and thi.year > 9999 then
+            hi = HI - (thi.hour * 3600 + thi.min * 60 + thi.sec) - 1-- 退到当地 9999-12-31 23:59:59
+        end
+        local tlo = local_tm(LO)
+        if tlo and tlo.year < 1000 then
+            lo = LO + (86400 - (tlo.hour * 3600 + tlo.min * 60 + tlo.sec))-- 进到当地 1000-01-01 00:00:00
+        end
         t:eq(tt64,  pcall(b.datetime, b, "k_dt", hi),                    "bind:datetime 上界合法")
         t:eq(false, pcall(b.datetime, b, "k_dt", 253402300800),          "bind:datetime 超上界被拒")
         t:eq(false, pcall(b.datetime, b, "k_dt", os.time() * 1000000),   "bind:datetime 误传微秒被拒")
@@ -69,9 +82,10 @@ runner.run(function(t)
         t:eq(false, pcall(b.datetime, b, "k_dt", -30610224001),          "bind:datetime 超下界被拒")
         -- Windows 上 1970 年前、3000 年后本地换算本身就失败，按零日期发、不报错，这两条只在别的平台测
         if "\\" ~= package.config:sub(1, 1) then
-            if tzoff > 0 then
+            if hi < HI then
                 t:eq(false, pcall(b.datetime, b, "k_dt", hi + 1), "bind:datetime 东时区上界之外换成本地超 9999 年被拒")
-            elseif tzoff < 0 then
+            end
+            if lo > LO then
                 t:eq(false, pcall(b.datetime, b, "k_dt", lo - 1), "bind:datetime 西时区下界之外换成本地不足 1000 年被拒")
             end
         end
@@ -132,6 +146,10 @@ runner.run(function(t)
         b2:double(nil) -- 转 NULL
         b2:text(nil) -- 转 NULL
         b2:null() -- 显式 NULL
+        local pnul, snul = pgsql.pack_stmt_execute("st_nul", b2)
+        t:check(srey.ud_str(pnul, snul):find(string.rep("\xff", 20), 1, true) ~= nil,
+                "非 number / boolean / string 的 5 个参数全绑成 NULL（长度 -1）")
+        utils.ud_free(pnul)
         b2 = nil
 
         -- nparam 越界报错而不是截断：Bind/Parse 报文里的参数个数是 2 字节计数，服务端按无符号读、上限 65535。
@@ -366,14 +384,13 @@ runner.run(function(t)
         t:eq(0, mg2:clear_flag(), "set_flag(0) 之后仍是 0")
         mg2:set_flag(mg2.FLAGS.MORETOCOME)
         t:eq(mg2.FLAGS.MORETOCOME, mg2:clear_flag(), "包装层 set_flag(MORETOCOME) 落到 C 层")
-        -- 组合值：C 层形参是 mongo_flags 枚举、按单个枚举值判定，包装层必须先归一，
-        -- 原样传 0x10002 会被整个丢掉（回读为 0）
+        -- 组合值：包装层只挡掩码外的位、原样交给 C，C 层只取其中的 MORETOCOME 位
         mg2:set_flag(mg2.FLAGS.MORETOCOME | mg2.FLAGS.EXHAUSTALLOWED)
         t:eq(mg2.FLAGS.MORETOCOME, mg2:clear_flag(), "组合值里的 MORETOCOME 仍然生效")
         -- 只给未实现的位：什么都不该置上
         mg2:set_flag(mg2.FLAGS.CHECKSUM)
         t:eq(0, mg2:clear_flag(), "只给 CHECKSUM 时不置任何位")
-        -- 范围判定在 C 绑定里，得直接打它：Lua 侧的 ctx:set_flag 自己先按 MORETOCOME 过滤，
+        -- 范围判定在 C 绑定里，得直接打它：Lua 侧的 ctx:set_flag 先按已知三位的掩码过滤，
         -- 越界值到不了 C；而 ctx 上根本没有 check_flag，走包装层只会 pcall 一个 nil 而"通过"。
         -- 先收窄再判的话 2^32+2 会截成 MORETOCOME,把整条连接的写命令变成只发不等
         local raw = mg2.mongo

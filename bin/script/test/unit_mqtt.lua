@@ -175,8 +175,7 @@ runner.run(function(t)
         -- 对端地址按 C 串交给连接层，内含 \0 会截成另一个地址；报错在发起连接之前
         t:eq(false, pcall(mqtt.try_connect, mqtt.VERSION.V311, "", "127.0.0.1\0x", 1),
              "try_connect ip 内含 \\0 报错")
-        -- payload 走 _lmqtt_get_payload 自己那套 (指针, 长度) 读法，不经 lpub_check_buf，
-        -- 空指针判定要单独加：剩余长度按 8 算却只写 0 字节，对端会吃掉下一条报文的头 8 字节
+        -- payload 按 (指针, 长度) 传时空指针要拒：剩余长度按 8 算却只写 0 字节，对端会吃掉下一条报文的头 8 字节
         t:eq(false, pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 1, yyjson.null, 8),
              "pack_publish payload 空指针被拒")
         local okempty, epack = pcall(mqtt.pack_publish, mqtt.VERSION.V311, 0, 1, 0, "/t", 1, yyjson.null, 0)
@@ -343,7 +342,7 @@ runner.run(function(t)
     do
         t:eq(false, pcall(mqtt.pack_connect, 260, 1, 60, "cid"), "pack_connect: version 260 被拒")
         t:eq(false, pcall(mqtt.pack_connect, 3, 1, 60, "cid"), "pack_connect: version 3 被拒")
-        -- 挑 pack_disconnect 再验一遍：同一道 _lmqtt_check_version 卡在十个入口上，
+        -- 挑 pack_disconnect 再验一遍：同一道 _lmqtt_check_version 卡在各个入口上，
         -- 挑一个非 connect 的确认它不是只在 pack_connect 里做了校验
         t:eq(false, pcall(mqtt.pack_disconnect, 0), "pack_disconnect: version 0 被拒")
         t:eq(false, pcall(mqtt.pack_disconnect, 260), "pack_disconnect: version 260 被拒")
@@ -472,6 +471,122 @@ runner.run(function(t)
             t:check(nil == p.str[6] and 0 == p.str[7], "空载荷：nil, 0")
             t:check(nil == p.raw[6] and 0 == p.raw[7], "空载荷 raw 形态同样 nil, 0")
         end
+    end
+
+    -- ── 解包访问器取值：服务端、客户端两个方向的报文各验一遍 ────────────
+    -- 连回本机走一整套 5.0 报文，回调里当场把访问器的结果收下来(报文指针只在回调期间有效)。
+    -- 各字段取值互不相同，返回值写反能看出来
+    do
+        local PORT = 15091
+        local V50 = mqtt.VERSION.V50
+        local PROT = mqtt.PROT
+        local srv, cli = {}, {}
+        local function _send(sk, pack, size)
+            srey.send(sk, pack, size, 0)
+        end
+        srey.on_recved(function(_, sk, client, _, data, _)
+            local prot = mqtt.prot(data)
+            if 0 ~= client then
+                if PROT.CONNACK == prot then
+                    cli.connack = { mqtt.connack(data) }
+                elseif PROT.PUBACK == prot then
+                    cli.puback = { mqtt.puback(data) }
+                elseif PROT.PUBREC == prot then
+                    cli.pubrec = { mqtt.pubrec(data) }
+                elseif PROT.PUBCOMP == prot then
+                    cli.pubcomp = { mqtt.pubcomp(data) }
+                elseif PROT.SUBACK == prot then
+                    cli.suback = { mqtt.suback(data) }
+                elseif PROT.UNSUBACK == prot then
+                    cli.unsuback = { mqtt.unsuback(data) }
+                end
+                return
+            end
+            if PROT.CONNECT == prot then
+                srv.info = mqtt.connect_info(data)
+                _send(sk, mqtt.pack_connack(V50, 1, 0, nil))
+            elseif PROT.PUBLISH == prot then
+                local _, qos, _, packid = mqtt.publish(data)
+                if 1 == qos then
+                    _send(sk, mqtt.pack_puback(V50, packid, 0x10, nil))
+                else
+                    _send(sk, mqtt.pack_pubrec(V50, packid, 0x91, nil))
+                end
+            elseif PROT.PUBREL == prot then
+                srv.pubrel = { mqtt.pubrel(data) }
+                _send(sk, mqtt.pack_pubcomp(V50, srv.pubrel[1], 0x92, nil))
+            elseif PROT.SUBSCRIBE == prot then
+                srv.sub = { mqtt.subscribe(data) }
+                _send(sk, mqtt.pack_suback(V50, srv.sub[1], string.char(1, 2), nil))
+            elseif PROT.UNSUBSCRIBE == prot then
+                srv.unsub = { mqtt.unsubscribe(data) }
+                _send(sk, mqtt.pack_unsuback(V50, srv.unsub[1], string.char(0x11), nil))
+            end
+        end)
+        local function _wait(fn)
+            for _ = 1, 60 do
+                if fn() then return end
+                srey.sleep(50)
+            end
+        end
+        local lid = srey.listen(PACK_TYPE.MQTT, SSL_NAME.NONE, "0.0.0.0", PORT)
+        t:check(ERR_FAILED ~= lid, "listen mqtt " .. PORT)
+        if ERR_FAILED ~= lid then
+            local sk = mqtt.connect(V50, SSL_NAME.NONE, "127.0.0.1", PORT)
+            t:check(sk.valid, "connect mqtt " .. PORT)
+            if sk.valid then
+                _send(sk, mqtt.pack_connect(V50, 1, 60, "acc-cid", "u", "p\0w", "/will", "w\0p", 1, 1, nil, nil))
+                _wait(function() return cli.connack end)
+                _send(sk, mqtt.pack_publish(V50, 0, 1, 0, "/q1", 11, "x"))
+                _send(sk, mqtt.pack_publish(V50, 0, 2, 0, "/q2", 12, "x"))
+                _send(sk, mqtt.pack_pubrel(V50, 21, 0x92, nil))
+                local topics = mqtt.props()
+                topics:subscribe(V50, "/a", 1, 1, 0, 2)
+                topics:subscribe(V50, "/b", 2, 0, 1, 0)
+                _send(sk, mqtt.pack_subscribe(V50, 31, topics, nil))
+                topics:reset()
+                topics:unsubscribe("/a")
+                topics:unsubscribe("/b")
+                _send(sk, mqtt.pack_unsubscribe(V50, 32, topics, nil))
+                topics:free()
+                _wait(function()
+                    return cli.puback and cli.pubrec and cli.pubcomp and cli.suback and cli.unsuback
+                end)
+                srey.close(sk)
+            end
+            srey.unlisten(lid)
+        end
+        local function _two(tab, a, b, name)
+            t:eq(a, tab and tab[1], name .. " 第一个返回值")
+            t:eq(b, tab and tab[2], name .. " 第二个返回值")
+        end
+        local info = srv.info or {}
+        t:eq(V50, info.version, "connect_info version")
+        t:eq(1, info.cleanstart, "connect_info cleanstart")
+        t:eq(60, info.keepalive, "connect_info keepalive")
+        t:eq("acc-cid", info.clientid, "connect_info clientid")
+        t:eq("u", info.user, "connect_info user")
+        t:eq("p\0w", info.password, "connect_info password 按长度取，内嵌 NUL 不截断")
+        t:eq(1, info.willflag, "connect_info willflag")
+        t:eq(1, info.willqos, "connect_info willqos")
+        t:eq(1, info.willretain, "connect_info willretain")
+        t:eq("/will", info.willtopic, "connect_info willtopic")
+        t:eq("w\0p", info.willpayload, "connect_info willpayload 按长度取")
+        _two(cli.connack, 1, 0, "connack")
+        _two(cli.puback, 11, 0x10, "puback")
+        _two(cli.pubrec, 12, 0x91, "pubrec")
+        _two(srv.pubrel, 21, 0x92, "pubrel")
+        _two(cli.pubcomp, 21, 0x92, "pubcomp")
+        _two(cli.suback, 31, string.char(1, 2), "suback")
+        _two(cli.unsuback, 32, string.char(0x11), "unsuback")
+        t:eq(31, srv.sub and srv.sub[1], "subscribe packid")
+        local items = srv.sub and srv.sub[2] or {}
+        t:eq(2, #items, "subscribe 条数")
+        local a, b = items[1] or {}, items[2] or {}
+        t:eq("/a,1,1,0,2", table.concat({ tostring(a.topic), tostring(a.qos), tostring(a.nl), tostring(a.rap), tostring(a.retain) }, ","), "subscribe 第 1 项")
+        t:eq("/b,2,0,1,0", table.concat({ tostring(b.topic), tostring(b.qos), tostring(b.nl), tostring(b.rap), tostring(b.retain) }, ","), "subscribe 第 2 项")
+        t:eq(32, srv.unsub and srv.unsub[1], "unsubscribe packid")
+        t:eq("/a,/b", table.concat(srv.unsub and srv.unsub[2] or {}, ","), "unsubscribe 主题")
     end
 end)
 end)

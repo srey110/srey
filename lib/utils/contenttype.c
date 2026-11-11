@@ -289,6 +289,7 @@ typedef struct contenttype_ctx {
 } contenttype_ctx;
 
 static const ct_types _ct_types = { CT_TYPE_LIST(CT_INIT) };
+// 按扩展名升序（不分大小写）排好，contenttype 用 bsearch 查：新增条目必须插到正确位置，顺序乱掉查找就会漏
 static const contenttype_ctx _typegreg[] = {
     { ".323", CT(text_h323) },
     { ".3g2", CT(video_3gpp2) },

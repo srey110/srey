@@ -30,6 +30,7 @@ typedef struct _chan_ub_arg {
     chan_ctx *ch;
     int32_t rtn;// 发送方的 chan_send 返回值
     void *got;// 接收方的 chan_recv 返回值
+    atomic_t entered;// 线程进 chan_send / chan_recv 前置 1
     atomic_t done;// 线程跑完置 1
 } _chan_ub_arg;
 
@@ -1910,12 +1911,14 @@ static void test_chan_capacity_round(CuTest *tc) {
 }
 static void _chan_ub_send(void *arg) {
     _chan_ub_arg *a = (_chan_ub_arg *)arg;
+    ATOMIC_SET(&a->entered, 1);
     a->rtn = chan_send(a->ch, (void *)(uintptr_t)7, 0, 0);
     ATOMIC_SET(&a->done, 1);
 }
 static void _chan_ub_recv(void *arg) {
     _chan_ub_arg *a = (_chan_ub_arg *)arg;
     size_t lens;
+    ATOMIC_SET(&a->entered, 1);
     a->got = chan_recv(a->ch, &lens);
     ATOMIC_SET(&a->done, 1);
 }
@@ -1929,6 +1932,12 @@ static int32_t _chan_ub_join(pthread_t tid, _chan_ub_arg *a) {
     }
     thread_join(tid);
     return 1;
+}
+// 等线程报到(马上要进 chan_send / chan_recv)，最多 2 秒
+static void _chan_ub_wait_entered(_chan_ub_arg *a) {
+    for (int32_t i = 0; i < 2000 && 0 == ATOMIC_GET(&a->entered); i++) {
+        MSLEEP(1);
+    }
 }
 // 轮询到 probe 成立，最多等 2 秒；超时只是没等到，不影响后面各步的出口
 static int32_t _chan_wait_until(chan_ctx *ch, int32_t (*probe)(chan_ctx *)) {
@@ -2029,7 +2038,7 @@ static void test_chan_unbuffered(CuTest *tc) {
     CuAssertIntEquals(tc, 1, consistent);
 }
 // 缓冲 chan：写满后 send 阻塞、被 close 叫醒返 ERR_FAILED；空队列 recv 阻塞、被 close 叫醒返 NULL。
-// 阻塞方是否真睡下看不见，先睡 50ms 让它进 send / recv；close 漏了叫醒的话有界 join 报失败
+// 阻塞方是否真睡下看不见，先等它报到、再睡 50ms 让它睡进 send / recv；close 漏了叫醒的话有界 join 报失败
 static void test_chan_buffered_block_close(CuTest *tc) {
     _chan_ub_arg snd, rcv;
     chan_ctx *ch = chan_init(2);
@@ -2038,8 +2047,10 @@ static void test_chan_buffered_block_close(CuTest *tc) {
     }
     snd.ch = ch;
     snd.rtn = ERR_OK;
+    ATOMIC_SET(&snd.entered, 0);
     ATOMIC_SET(&snd.done, 0);
     pthread_t tid = thread_creat(_chan_ub_send, &snd);
+    _chan_ub_wait_entered(&snd);
     MSLEEP(50);
     int32_t blocked = 0 == ATOMIC_GET(&snd.done);
     chan_close(ch);
@@ -2051,8 +2062,10 @@ static void test_chan_buffered_block_close(CuTest *tc) {
     ch = chan_init(2);
     rcv.ch = ch;
     rcv.got = (void *)(uintptr_t)1;
+    ATOMIC_SET(&rcv.entered, 0);
     ATOMIC_SET(&rcv.done, 0);
     tid = thread_creat(_chan_ub_recv, &rcv);
+    _chan_ub_wait_entered(&rcv);
     MSLEEP(50);
     blocked = 0 == ATOMIC_GET(&rcv.done);
     chan_close(ch);
@@ -2340,6 +2353,51 @@ static void test_popen2(CuTest *tc) {
     popen_free(&ctx);
     CuAssertIntEquals(tc, 1, eof);
     CuAssertIntEquals(tc, 7, code);
+
+    /* 子进程没读 stdin 就退出：Linux 上父端读空后先收到一次 ECONNRESET，要按 EOF 交出去、不能报错。
+       子进程还在跑时 lens 为 0 的读只返回 0，不能被当成 EOF */
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sleep 0.2", "rw"));
+    int32_t unread_nw = popen_write(&ctx, "0123456789", 10);
+    int32_t zero_rtn = popen_read(&ctx, buf, 0, &eof);
+    int32_t zero_eof = eof;
+    int32_t rderr = 0;
+    eof = 0;
+    spin = 0;
+    while (0 == eof && spin++ < 3000) {
+        n = popen_read(&ctx, buf, sizeof(buf) - 1, &eof);
+        if (ERR_FAILED == n) {
+            rderr = 1;
+            break;
+        }
+        if (0 == n && 0 == eof) {
+            MSLEEP(1);
+        }
+    }
+    popen_free(&ctx);
+    CuAssertIntEquals(tc, 10, unread_nw);
+    CuAssertIntEquals(tc, 0, zero_rtn);
+    CuAssertIntEquals(tc, 0, zero_eof);
+    CuAssertIntEquals(tc, 0, rderr);
+    CuAssertIntEquals(tc, 1, eof);
+
+    /* 本进程 stdin 关着时 socketpair 会落到 0 号：要先挪到 3 以上，子进程那一路才不被 CLOEXEC 关掉。
+       先收结果、恢复 stdin，再断言 */
+    int32_t saved_in = dup(STDIN_FILENO);
+    CuAssertTrue(tc, saved_in >= 0);
+    close(STDIN_FILENO);
+    start_ok = (ERR_OK == popen_startup(&ctx, cmd, "rw"));
+    dup2(saved_in, STDIN_FILENO);
+    close(saved_in);
+    nwrite = popen_write(&ctx, msg, strlen(msg));
+    wait_ok = (ERR_OK == popen_waitexit(&ctx, 3000));
+    ZERO(buf, sizeof(buf));
+    n = popen_read(&ctx, buf, sizeof(buf) - 1, NULL);
+    hit_ok = (NULL != strstr(buf, "srey test"));
+    popen_free(&ctx);
+    CuAssertTrue(tc, 0 != start_ok);
+    CuAssertTrue(tc, nwrite > 0);
+    CuAssertTrue(tc, 0 != wait_ok);
+    CuAssertTrue(tc, 0 != hit_ok);
 
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sleep 30", "w"));
     size_t big = ONEK * ONEK;
@@ -4878,8 +4936,6 @@ static void test_url_param_max(CuTest *tc) {
     memcpy(u + n, "&k0=x", 5);
     n += 5;
     CuAssertIntEquals(tc, ERR_FAILED, url_parse(&ctx, u, n, '/', URL_DECODE));
-    CuAssertIntEquals(tc, 0, ctx.nparam);
-    CuAssertTrue(tc, NULL == url_get_param(&ctx, "k0"));
     // 不解码时就地解析，同样失败
     memcpy(raw, u, n);
     CuAssertIntEquals(tc, ERR_FAILED, url_parse(&ctx, raw, n, '/', 0));

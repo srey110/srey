@@ -14,7 +14,8 @@
 /// <param name="hooks">网络线程的 init/exit 钩子,NULL 表示不挂钩子</param>
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks);
 /// <summary>
-/// 网络释放
+/// 网络释放。到这时还没关的连接两平台收尾不同：IOCP 上逐条走完整关闭、各调一次 c_cb；
+/// Unix 上不调 c_cb，只经 ud_free 释放 ud。要在 c_cb 里收尾的，ev_free 前自己先把连接关掉
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 void ev_free(ev_ctx *ctx);
@@ -34,7 +35,9 @@ void ev_free(ev_ctx *ctx);
 /// <param name="nthrs">thrs 个数，0 同 NULL</param>
 /// <param name="id">监听ID</param>
 /// <returns>ERR_OK 成功; cbs / r_cb 为空、ev_free 已开始、地址解析失败、建监听 socket 失败(如端口被占;
-///   IOCP 上含挂完成端口与投 AcceptEx 失败)都返 ERR_FAILED, 其中地址解析与建 socket 两档会落日志。
+///   IOCP 上含挂完成端口与第 0 个 AcceptEx 投不出去)都返 ERR_FAILED, 其中地址解析与建 socket 两档会落日志。
+///   IOCP 上其余 AcceptEx 投不出去只落 WARN、照返 ERR_OK，之后补投；Unix 上监听要到各 event 线程上注册，
+///   某个线程注册失败只落一条 ERROR，该线程从此不收连接，id 照旧有效。
 ///   有 SO_REUSEPORT 的平台上监听一律带它：同一 ip:port 再 listen 一次(本进程或同用户的别的进程)不报端口被占，
 ///   Linux 上新连接在几个监听间分摊，macOS / BSD 上全落到后建的那个</returns>
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
@@ -108,7 +111,8 @@ int32_t ev_keyupdate(ev_ctx *ctx, sock_ctx *sk, int32_t updatetype);
 ///   addr:port(多播要)，否则独占(见 sock_exclusiveaddr)；NULL 按独占</param>
 /// <param name="index">socket 落在哪个 event 线程，口径同 ev_connect</param>
 /// <param name="sk">连接标识</param>
-/// <returns>ERR_OK 成功; 失败情形同 ev_listen</returns>
+/// <returns>ERR_OK 只表示 socket 已建好、交给了 event 线程; 失败情形同 ev_listen。
+///   event 线程上注册失败时落一条 ERROR，经 c_cb(CLOSE_TYPE_LOCAL) 报一次后释放，sk 随即失效</returns>
 int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     int32_t index, sock_ctx *sk);
 /// <summary>
@@ -174,7 +178,7 @@ int32_t ev_sendto_addr(ev_ctx *ctx, sock_ctx *sk, const netaddr_ctx *addr,
 ///   (IPv6 socket 强制 v6only 后收不到 IPv4 流量)。IPv4 须在 224.0.0.0/4 段(例 "239.0.0.1"); IPv6 须 ff00::/8 段(例 "ff02::1")</param>
 /// <param name="iface_str">接收网卡。IPv4 走网卡 IP 字符串(例 "192.168.1.100"); IPv6 走接口名(例 "en0"，Windows 上不认、一律走系统默认); NULL 走系统默认</param>
 /// <returns>ERR_OK 只表示参数合法且命令已入队。调用方契约违反同步返 ERR_FAILED:fd 无效、group_ip 为
-///   NULL / 过长 / 不是合法 IP / 与 socket 不同族 / 不是多播地址。setsockopt 本身在事件线程执行,成败不回传——
+///   NULL / 过长 / 不是合法 IP / 与 socket 不同族 / 不是多播地址，iface_str 过长。setsockopt 本身在事件线程执行,成败不回传——
 ///   失败只有一条 LOG_ERROR。下面 leave / ttl / loop 同此契约</returns>
 int32_t ev_udp_join(ev_ctx *ctx, sock_ctx *sk, const char *group_ip, const char *iface_str);
 /// <summary>

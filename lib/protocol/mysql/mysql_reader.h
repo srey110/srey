@@ -37,10 +37,10 @@ size_t mysql_reader_size(mysql_reader_ctx *reader);
 /// <param name="pos">条数，从 0 起；不小于总条数时游标不动</param>
 void mysql_reader_seek(mysql_reader_ctx *reader, size_t pos);
 /// <summary>
-/// 是否有数据
+/// 游标是否已越过最后一行（空结果集一开始就是）；seek 回前面后又变回 0
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
-/// <returns>1 无数据 0 有数据</returns>
+/// <returns>1 已越过最后一行，0 游标还指着一行</returns>
 int32_t mysql_reader_eof(mysql_reader_ctx *reader);
 /// <summary>
 /// 下一条数据
@@ -110,6 +110,16 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
 /// <returns>值，不以 '\0' 结尾，指向 reader 内部、随 mysql_reader_free 失效；空串返回 NULL 且 err 为 ERR_OK，
 /// 是否为 SQL NULL 以 err 为准</returns>
 char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err);
+/// <summary>
+/// 根据名称读取 VECTOR 字段（MySQL 9.0 起）：值是 4 字节小端 float 依次排开，按维度拷进 out
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="name">字段</param>
+/// <param name="out">输出数组；NULL 时只回维度数，不拷值</param>
+/// <param name="cap">out 能放的个数；小于维度数时不拷值、err 置 ERR_FAILED</param>
+/// <param name="err">ERR_OK 成功  ERR_FAILED 失败(含列不是 VECTOR、cap 不够) 1 nil</param>
+/// <returns>维度数；取不到值或字段为 NULL 时为 0</returns>
+size_t mysql_reader_vector(mysql_reader_ctx *reader, const char *name, float *out, size_t cap, int32_t *err);
 /// <summary>
 /// 根据名称获取字段时间戳值，按本地时区换算。取值范围受平台 mktime 限制：Windows 上 1970 年前与 3000 年后、
 /// macOS 上 1900 年前的值读取失败(err 为 ERR_FAILED)
@@ -199,6 +209,16 @@ double mysql_reader_double_at(mysql_reader_ctx *reader, int32_t col, int32_t *er
 /// <param name="err">同 mysql_reader_string</param>
 /// <returns>同 mysql_reader_string</returns>
 char *mysql_reader_string_at(mysql_reader_ctx *reader, int32_t col, size_t *lens, int32_t *err);
+/// <summary>
+/// 同 mysql_reader_vector，按列下标取
+/// </summary>
+/// <param name="reader">mysql_reader_ctx</param>
+/// <param name="col">同 mysql_reader_cls_at</param>
+/// <param name="out">同 mysql_reader_vector</param>
+/// <param name="cap">同 mysql_reader_vector</param>
+/// <param name="err">同 mysql_reader_vector</param>
+/// <returns>同 mysql_reader_vector</returns>
+size_t mysql_reader_vector_at(mysql_reader_ctx *reader, int32_t col, float *out, size_t cap, int32_t *err);
 /// <summary>
 /// 同 mysql_reader_datetime，按列下标取
 /// </summary>

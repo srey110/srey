@@ -170,13 +170,36 @@ static void test_mysql_bind_temporal(CuTest *tc) {
     CuAssertIntEquals(tc, (int32_t)off + 1, (int32_t)mb.value.offset);
     CuAssertIntEquals(tc, 0, ((const uint8_t *)mb.value.data)[off]);
 
+    // 按本机时区算一份期望逐字节比：年(2 字节小端) 月 日 [时 分 秒]，时分秒全 0 时只写 4 字节
     off = mb.value.offset;
-    mysql_bind_datetime(&mb, "dt", 1716000000);/* 2024-05-18 UTC；本机时区决定是 4 还是 7 字节 */
+    time_t ts = 1716000000;// 2024-05-18 UTC
+    struct tm lt;
+    CuAssertIntEquals(tc, 0, LOCALTIME(&ts, &lt));
+    mysql_bind_datetime(&mb, "dt", ts);
     v = (const uint8_t *)mb.value.data + off;
-    CuAssertTrue(tc, 4 == v[0] || 7 == v[0]);
-    CuAssertIntEquals(tc, (int32_t)off + 1 + v[0], (int32_t)mb.value.offset);
+    int32_t dlens = (0 == lt.tm_hour && 0 == lt.tm_min && 0 == lt.tm_sec) ? 4 : 7;
+    CuAssertIntEquals(tc, dlens, v[0]);
+    CuAssertIntEquals(tc, (int32_t)off + 1 + dlens, (int32_t)mb.value.offset);
+    CuAssertIntEquals(tc, lt.tm_year + 1900, v[1] | (v[2] << 8));
+    CuAssertIntEquals(tc, lt.tm_mon + 1, v[3]);
+    CuAssertIntEquals(tc, lt.tm_mday, v[4]);
+    if (7 == dlens) {
+        CuAssertIntEquals(tc, lt.tm_hour, v[5]);
+        CuAssertIntEquals(tc, lt.tm_min, v[6]);
+        CuAssertIntEquals(tc, lt.tm_sec, v[7]);
+    }
+    int32_t nbind = 4;
+    // 本地年份超 9999 装不进 2 字节：写零长即零日期，不回绕成别的年份(Windows 3000 年后换算失败，同样零长)。
+    // 32 位 time_t 放不下这个值，不测
+    if (sizeof(time_t) >= 8) {
+        off = mb.value.offset;
+        mysql_bind_datetime(&mb, "dt", (time_t)(253402300800LL + 2 * 86400));
+        CuAssertIntEquals(tc, (int32_t)off + 1, (int32_t)mb.value.offset);
+        CuAssertIntEquals(tc, 0, ((const uint8_t *)mb.value.data)[off]);
+        nbind++;
+    }
 
-    CuAssertIntEquals(tc, 4, mb.count);
+    CuAssertIntEquals(tc, nbind, mb.count);
     CuAssertTrue(tc, mb.type.offset > 0);
 
     mysql_bind_free(&mb);
@@ -521,7 +544,7 @@ static void test_mysql_pack_payload_limit(CuTest *tc) {
     CALLOC(sql, 1, INT3_MAX);
     size_t size;
     void *pack;
-    /* 判定先攒进 fails(每项一位)，断言排在释放 16MB 缓冲之后：CuAssert 走 longjmp，夹在中间会漏释放、多报 not free */
+    // 判定先攒进 fails(每项一位)，断言排在释放 16MB 缓冲之后：CuAssert 走 longjmp，夹在中间会漏释放、多报 not free
     uint32_t fails = 0;
 
     /* COM_QUERY：SQL 本身达到 INT3_MAX 走早退；SQL 少一字节时加上命令字节正好 INT3_MAX，在收尾处拒 */

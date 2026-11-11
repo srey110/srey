@@ -11,9 +11,11 @@
 #define ROUTER_CT_JSON "Content-Type: application/json" FLAG_CRLF
 #define ROUTER_CT_HTML "Content-Type: text/html; charset=utf-8" FLAG_CRLF
 #define ROUTER_CT_LINE(lit) (lit), (sizeof(lit) - 1)
-// 非 200 的错误正文。两个派发入口的正文必须一模一样, 只是发送方式不同
+// 注册被拒的日志一律打 ERROR：router_get / router_post 这类包装的返回值调用方普遍不看,
+// 路由会就此静默消失成 404
+// 非 200 的错误正文。三个派发入口的正文必须一模一样, 只是发送方式不同
 // (dispatch 只回响应, 流式那边还要关连接 + 丢记录), 故正文在这里定死。
-// 匹配失败的码由 _router_code_body 按状态码生成; 下面两条是它生成不出来的
+// 匹配失败的码由 _router_code_body 按状态码生成; 下面三条是匹配之外的失败用的
 #define ROUTER_CODE_BODY_LENS 64
 #define ROUTER_BODY_500 "Internal Server Error\n"
 #define ROUTER_BODY_CHAIN "Chain too long\n"
@@ -179,13 +181,13 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
     // split 只读不写, 去 const 只为合它的形参
     int32_t n = split((char *)path, path_len, "/", 1, &pparts, URL_MAX_PATH_DEPTH, SPLIT_SKIPEMPTY);
     if (ERR_FAILED == n) {
-        LOG_WARN("router: path segments exceed %d, rejected.", URL_MAX_PATH_DEPTH);
+        LOG_ERROR("router: path segments exceed %d, rejected.", URL_MAX_PATH_DEPTH);
         return ERR_FAILED;
     }
     for (int32_t k = 0; k < n; k++) {
         // WILD 段必须是最末段; 此时若上一段已是 WILD 却还有当前段, 说明 WILD 后还有内容, 拒绝
         if (k > 0 && ROUTER_SEG_WILD == buf[k - 1].t) {
-            LOG_WARN("router: wildcard '*' must be the last segment.");
+            LOG_ERROR("router: wildcard '*' must be the last segment.");
             _router_segs_free_str(buf, k);
             return ERR_FAILED;
         }
@@ -210,8 +212,6 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
             nparam++;
         }
     }
-    // 注册失败只能靠返回值反映, 而 router_get/post 这类包装的返回值调用方普遍不看,
-    // 路由会就此静默消失成 404, 故下面两条都用 ERROR 而非 WARN
     if (nopt > ROUTER_MAX_OPT) {
         LOG_ERROR("router: optional segments %d exceed %d, route rejected.", nopt, ROUTER_MAX_OPT);
         _router_segs_free_str(buf, n);
@@ -257,7 +257,7 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
     *out_n = n;
     return ERR_OK;
 }
-// HTTP 方法字符串 → 位掩码; 未识别返回 0, dispatch 处响应 405
+// HTTP 方法字符串 → 位掩码; 未识别返回 0(匹配时照样走树, 见 router_match_index)
 static router_method _router_method_str_to_mask(const char *m, size_t n) {
     if (3 == n && 0 == memcmp(m, "GET", 3)) {
         return ROUTER_M_GET;
@@ -378,7 +378,7 @@ void router_free(router_ctx *r) {
     rnamed_arr_free(&r->named);
     FREE(r);
 }
-// 按名查具名中间件; 数量小, 线性扫描即可。未注册即引用方注册失败, 返回值常没人看, 故打 ERROR
+// 按名查具名中间件; 数量小, 线性扫描即可。未注册即引用方注册失败
 static int32_t _router_resolve_mw(router_ctx *r, const char *name, router_step *out) {
     named_mw *nms = _R_NAMED(r);
     for (int32_t i = 0; i < _R_NAMED_N(r); i++) {
@@ -617,14 +617,14 @@ static router_entry *_router_add_common(router_ctx *r, const router_group *g,
     char full_buf[ONEK];
     if (NULL != g) {
         if (ERR_OK != _router_group_build_prefix(g, full_buf, sizeof(full_buf), &prefix_len)) {
-            LOG_WARN("router: group prefix too long.");
+            LOG_ERROR("router: group prefix too long.");
             return NULL;
         }
     }
     size_t path_len = strlen(path);
     size_t full_len = prefix_len + path_len;
     if (full_len >= sizeof(full_buf)) {
-        LOG_WARN("router: full path too long (%zu).", full_len);
+        LOG_ERROR("router: full path too long (%zu).", full_len);
         return NULL;
     }
     memcpy(full_buf + prefix_len, path, path_len);
@@ -662,8 +662,8 @@ static router_entry *_router_add_common(router_ctx *r, const router_group *g,
                              (router_route_id)route_id, &ar);
     if (ERR_OK != trtn) {
         if (-2 == trtn) {
-            LOG_WARN("router: route '%.*s' shadowed by existing routes, registration ignored.",
-                     (int)full_len, full_buf);
+            LOG_ERROR("router: route '%.*s' shadowed by existing routes, registration ignored.",
+                      (int)full_len, full_buf);
         } else {
             LOG_ERROR("router: route '%.*s' rejected by route tree (method mask 0x%x).",
                       (int)full_len, full_buf, (unsigned)method);
@@ -682,7 +682,7 @@ router_entry *router_add(router_ctx *r, const router_group *g,
                          router_cb h, void *arg,
                          const char *const *mws, int32_t mws_n) {
     if (NULL == h) {
-        LOG_WARN("router: router_add needs a handler.");
+        LOG_ERROR("router: router_add needs a handler.");
         return NULL;
     }
     return _router_add_common(r, g, method, path, h, arg, NULL, NULL,
@@ -693,7 +693,7 @@ router_entry *router_add_steps(router_ctx *r, const router_group *g,
                                router_cb h, void *arg,
                                const router_step *mws, int32_t mws_n) {
     if (NULL == h) {
-        LOG_WARN("router: router_add_steps needs a handler.");
+        LOG_ERROR("router: router_add_steps needs a handler.");
         return NULL;
     }
     return _router_add_common(r, g, method, path, h, arg, NULL, NULL,
@@ -704,7 +704,7 @@ router_entry *router_add_stream(router_ctx *r, const router_group *g,
                                 router_stream_cb sh, void *arg,
                                 const char *const *mws, int32_t mws_n) {
     if (NULL == sh) {
-        LOG_WARN("router: router_add_stream needs a stream callback.");
+        LOG_ERROR("router: router_add_stream needs a stream callback.");
         return NULL;
     }
     router_entry *e = _router_add_common(r, g, method, path, NULL, NULL, sh, arg,
@@ -719,7 +719,7 @@ router_entry *router_add_stream_steps(router_ctx *r, const router_group *g,
                                       router_stream_cb sh, void *arg,
                                       const router_step *mws, int32_t mws_n) {
     if (NULL == sh) {
-        LOG_WARN("router: router_add_stream_steps needs a stream callback.");
+        LOG_ERROR("router: router_add_stream_steps needs a stream callback.");
         return NULL;
     }
     router_entry *e = _router_add_common(r, g, method, path, NULL, NULL, sh, arg,
@@ -749,8 +749,7 @@ router_method router_method_mask(const char *m, size_t n) {
     router_method mask = 0;
     router_method one;
     size_t start = 0;
-    size_t i;
-    for (i = 0; i <= n; i++) {
+    for (size_t i = 0; i <= n; i++) {
         if (i != n
             && '|' != m[i]) {
             continue;
@@ -1194,7 +1193,7 @@ int32_t router_chain_at(const router_ctx *r, int32_t route_id, int32_t k, router
     }
     return ERR_FAILED;
 }
-// 按 code 生成错误正文; 为什么两个入口必须共用见 ROUTER_CODE_BODY_LENS 处的说明
+// 按 code 生成错误正文; 为什么三个入口必须共用见 ROUTER_CODE_BODY_LENS 处的说明
 static void _router_code_body(int32_t code, char body[ROUTER_CODE_BODY_LENS]) {
     const char *txt = http_code_status(code);
     size_t n = strlen(txt);
@@ -1211,13 +1210,13 @@ static void _router_send_fail(router_req *ctx, int32_t idx) {
     int32_t code = router_match_code(idx);
     int32_t head_only = ROUTER_M_HEAD == ctx->method;
     char body[ROUTER_CODE_BODY_LENS];
-    char allow[ROUTER_ALLOW_LENS];
-    http_header_ctx hd;
     if (0 == ctx->allow) {
         _router_code_body(code, body);
         _router_send_simple(ctx->task, &ctx->sk, code, head_only, body);
         return;
     }
+    char allow[ROUTER_ALLOW_LENS];
+    http_header_ctx hd;
     hd.key.data = "Allow";
     hd.key.lens = sizeof("Allow") - 1;
     hd.value.data = allow;

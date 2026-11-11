@@ -62,9 +62,7 @@ local function _parse_url(ws, sslname)
     -- RFC 3986 §3.1:scheme 大小写无关。url_parse 原样切出不归一化,C 侧 coro_utils 是 buf_icompare 比的,
     -- 故此处先转小写——下游 _resolve_addr / _reorg 拿的是同一个表,默认端口那两处比较随之对齐
     url.scheme = url.scheme and url.scheme:lower()
-    -- host 判空要用 str_nullorempty：绑定层对空字段整个不 setfield，"ws://:8080/x" 切出来的
-    -- host 是 nil 而不是空串。漏判的话 _resolve_addr 会按 hostname 给空名字跑一趟 DNS，
-    -- 白等一个连接超时才失败
+    -- 绑定层对空字段整个不 setfield，"ws://:8080/x" 的 host 是 nil，判空要用 str_nullorempty
     if ("ws" ~= url.scheme and "wss" ~= url.scheme) or str_nullorempty(url.host) then
         return nil
     end
@@ -258,9 +256,7 @@ end
 
 ---内部流式发送：首帧 text_fin/binary_fin(fin=0)，之后每块一帧 continua，func 返回 nil 或空块时发 fin=1 空延续帧收尾。
 ---失败处置见 text_continua
--- websock_pack_* 返 nil 有两种原因（C 侧已打日志，这里不复述）：客户端帧取不到掩码 key 的熵；
--- 载荷长度大到使帧长回绕。不判空的话 nil 一路走到 srey.send 里的 lpub_check_buf，撞
--- "string or light userdata expected" 把整条协程打断
+-- websock_pack_* 可能返 nil（取不到掩码 key 的熵、帧长回绕，C 侧已打日志），必须判空
 ---@param sk userdata 连接标识
 ---@param prot WEBSOCK_PROT.TEXT | WEBSOCK_PROT.BINARY
 ---@param client integer 1=客户端，0=服务端
@@ -280,10 +276,8 @@ local function _continua(sk, prot, client, func, ...)
     end
     if WEBSOCK_PROT.TEXT == prot then
         data, size = wbsk.text_fin(client, 0, data, size)
-    elseif WEBSOCK_PROT.BINARY == prot then
-        data, size = wbsk.binary_fin(client, 0, data, size)
     else
-        return false
+        data, size = wbsk.binary_fin(client, 0, data, size)
     end
     if nil == data then
         -- 首帧都没组出来，一帧未发，对端没有 continuation 状态要清
@@ -293,8 +287,13 @@ local function _continua(sk, prot, client, func, ...)
     if not srey.send(sk, data, size, 0) then
         return false -- 首帧失败 socket 已坏，不发终止帧
     end
+    local ok
     while true do
-        data, size = func(...)
+        ok, data, size = pcall(func, ...)
+        if not ok then
+            srey.close(sk)-- 首帧已发出，连接停在半截消息上
+            error(data, 0)
+        end
         state = _blk_state(data, size)
         if "bad" == state then
             ERROR("websock continua func must return string or (lightuserdata, size), got %s.", type(data))
@@ -327,12 +326,13 @@ end
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
 ---lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回。
----首帧发出后再失败（违约、组帧或发送失败）连接随即被关闭，对端收不到 fin=1，不会把截断的消息当完整的收
+---首帧发出后再失败（违约、组帧或发送失败）连接随即被关闭，对端收不到 fin=1，不会把截断的消息当完整的收；
+---func 抛错时错误原样抛出，首帧已发出的同样先关连接
 ---**func 内不得挂起**（不要 syn_send / sleep / 等任何消息）：分片是一整条消息，两帧之间让出
----控制权，别的协程往同一 fd 上发的帧就插进这条消息中间，对端按 RFC 6455 §5.4 会直接断连。
----这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
+---控制权，别的协程往同一连接上发的帧就插进这条消息中间，对端按 RFC 6455 §5.4 会直接断连。
+---这里没有连接级锁可加——本函数只拿到 sk，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 func 的额外参数
----@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约或首帧之后失败时为 false
+---@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 一开始就没数据（一帧未发，连接正常）、违约或首帧之后失败时为 false
 function wbsk.text_continua(sk, client, func, ...)
     return _continua(sk, WEBSOCK_PROT.TEXT, client, func, ...)
 end
@@ -341,12 +341,9 @@ end
 ---@param sk userdata 连接标识
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
----lightuserdata 必须同时给出 size；违约与失败的处置同 text_continua
----**func 内不得挂起**（不要 syn_send / sleep / 等任何消息）：分片是一整条消息，两帧之间让出
----控制权，别的协程往同一 fd 上发的帧就插进这条消息中间，对端按 RFC 6455 §5.4 会直接断连。
----这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
+---lightuserdata 必须同时给出 size；违约与失败的处置、func 内不得挂起的约束都同 text_continua
 ---@param ... any 传给 func 的额外参数
----@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约或首帧之后失败时为 false
+---@return boolean ok 同 text_continua
 function wbsk.binary_continua(sk, client, func, ...)
     return _continua(sk, WEBSOCK_PROT.BINARY, client, func, ...)
 end

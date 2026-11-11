@@ -17,7 +17,7 @@ int32_t task_startup(loader_ctx *loader, config_ctx *config) {
     }
 #endif
     // 必须排在 ltask_startup 之后:harbor.ssl 那个名字要往 evssl 注册表里查,而 startup.lua 顶层调的
-    // core.cert_register / p12_register 是入口之一,ltask_startup 跑完才存在;装配层直接调
+    // srey.ssl 的 cert_register / p12_register 是入口之一,ltask_startup 跑完才存在;装配层直接调
     // evssl_register 也算,同样得排在这一句之前
     return harbor_start(loader, config->harbor.name, config->harbor.ssl,
         config->harbor.ip, config->harbor.port);

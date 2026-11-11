@@ -32,7 +32,7 @@ typedef struct {
     int32_t lv;
     uint64_t ms;// 入队时刻；格式化推迟到日志线程，不占业务线程
     char *msg;// 指向 inline_buf 或独立 heap 分配
-    char inline_buf[LOG_INLINE_SIZE]; // 短消息内嵌，避免 _format_va 第二次 malloc
+    char inline_buf[LOG_INLINE_SIZE]; // 短消息内嵌，免去第二次 malloc
 } log_item;
 FSQU_DECL(logq, log_item *)
 
@@ -274,17 +274,19 @@ static void _log_loop(void *arg) {
     while (ATOMIC_GET(&_running)) {
         round = ATOMIC_ADD(&_round, 1) + 1;
         nwrote = _log_write_all(items);
-        if (0 == nwrote
-            && !logq_empty(&_que)) {
-            spin_backoff(&spins);
+        wrote |= (0 != nwrote);
+        // 弹到空才算本轮排空：停在别人抢了槽还没写完的位置时，排在它后面的行还没写出
+        if (!logq_empty(&_que)) {
+            if (0 == nwrote) {
+                spin_backoff(&spins);
+            } else {
+                spins = 0;
+            }
             continue;
         }
-        wrote |= (0 != nwrote);
         ATOMIC_SET(&_drained, round);
         spins = 0;
-        if (logq_empty(&_que)) {
-            fflush(_log_out());
-        }
+        fflush(_log_out());
         // 单次带守卫等待，外层循环负责重试；新日志或退出会提前叫醒。握手见 waiter.h
         waiter_prepare(&_waiter, wrote ? WAITER_LINGER : WAITER_SLEEP);
         if (!logq_empty(&_que)
@@ -423,8 +425,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     if (NULL == item) {
         return;
     }
-    //先尝试写入 inline_buf，短消息（典型场景）至此完成单次 malloc；
-    //超长消息再单独 heap 分配，行为与原 _format_va 等价。
+    //先尝试写入 inline_buf，短消息（典型场景）至此只有一次 malloc；超长消息再单独分配
     va_list args, args2;
     va_start(args, fmt);
     va_copy(args2, args);

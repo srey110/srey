@@ -92,7 +92,7 @@ static inline size_t name##_shrink_to(const name *m) {                         \
    nbuckets / 2 每小一级,水位再减半:缩完的负载与倍数 2 时相同,扩完紧接着删不会缩回去 */ \
 static inline void name##_set_thresholds(name *m) {                            \
     m->growat = (m->nbuckets * m->loadfactor) / 100;                           \
-    m->shrinkat = (m->growat * (size_t)(HASHMAP_SHRINK_AT * 100)) / (size_t)(HASHMAP_GROW_AT * 100); \
+    m->shrinkat = (m->growat * (size_t)(HASHMAP_SHRINK_AT * 100 + 0.5)) / (size_t)(HASHMAP_GROW_AT * 100 + 0.5); \
     size_t to = name##_shrink_to(m);                                           \
     for (size_t half = m->nbuckets >> 1; half > to; half >>= 1) {              \
         m->shrinkat >>= 1;                                                     \
@@ -231,10 +231,6 @@ static inline T *name##_insert_impl(name *m, T const *item, uint64_t hash,     \
             return NULL;                                                       \
         }                                                                      \
         size_t new_cap = m->nbuckets << m->growpower;                          \
-        if (new_cap <= m->nbuckets) {                                          \
-            m->oom = 1;                                                        \
-            return NULL;                                                       \
-        }                                                                      \
         if (!name##_resize(m, new_cap)) {                                      \
             m->oom = 1;                                                        \
             return NULL;                                                       \

@@ -62,6 +62,15 @@ local function _bad_producer(state)
     return 42
 end
 
+-- 第 1 块正常,第 2 次调用抛错
+local function _throw_producer(state)
+    state.n = state.n + 1
+    if 1 == state.n then
+        return "aa"
+    end
+    error("producer boom", 0)
+end
+
 -- 依次交出 state.blks 里的块，取完返回 nil 结束流
 local function _blk_producer(state)
     state.n = state.n + 1
@@ -145,6 +154,20 @@ runner.run(function(t)
         srv_got, cli_got = {}, {}
     end
 
+    -- 首帧发出后生产者抛错：连接由 text_continua 关掉，错误原样抛出
+    local esk = wbsk.connect("ws://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE)
+    if t:check(esk and esk.valid, "生产者抛错用例连上") then
+        echo = true
+        local close0 = nsrv_close
+        local ok, err = pcall(wbsk.text_continua, esk, 1, _throw_producer, { n = 0 })
+        t:check(not ok and "producer boom" == err, "生产者抛错：错误原样抛出")
+        wait(1, 0, close0 + 1)
+        echo = false
+        t:eq(close0 + 1, nsrv_close, "抛错后连接被断")
+        t:eq(SLICE_TYPE.START, srv_got[1] and srv_got[1].slice, "抛错后服务端只有 START、没有 END")
+        srv_got, cli_got = {}, {}
+    end
+
     -- 协商结果要落到名字上，不能只判 spctx 非 nil：回显成另一个子协议，
     -- 应用层照着它选编解码就全错。secprots 返回 (匹配下标 0 起, 全部名字 1 起)，
     -- 两者一起断言顺带钉住那个 0→1 的下标换算
@@ -154,6 +177,18 @@ runner.run(function(t)
          "服务端支持的子协议(mqtt)须协商成功并原样回显")
     if sky and sky.valid then
         srey.close(sky)
+    end
+
+    -- 子协议分两行给(RFC 6455 §11.3.4，等同合并成一行)：第二行的 mqtt 是内建协议，应被选中
+    local msk = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, "127.0.0.1", PORT)
+    if t:check(msk and msk.valid, "多行子协议用例连上") then
+        local req = "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+            .. "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            .. "Sec-WebSocket-Protocol: chat\r\nSec-WebSocket-Protocol: mqtt\r\n\r\n"
+        local rsp, rlen = srey.syn_send(msk, req, #req, 1)
+        local txt = rsp and srey.ud_str(rsp, rlen) or ""
+        t:check(nil ~= txt:find("Sec-WebSocket-Protocol: mqtt", 1, true), "多行子协议合并后协商到 mqtt")
+        srey.close(msk)
     end
 
     -- 非内建子协议走透传：服务端回显客户端提的第一个，sectype 保持 PACK_NONE，

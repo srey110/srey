@@ -43,7 +43,7 @@ pgsql_reader_ctx *pgsql_reader_at(pgpack_ctx *pgpack, uint32_t idx) {
     return _pgsql_reader_take(pgpack, idx);
 }
 void pgsql_reader_free(pgsql_reader_ctx *reader) {
-    _pgpack_reader_free(reader); // 释放行数组与字段数组
+    _pgpack_reader_free(reader); // 释放行数组
     FREE(reader);
 }
 size_t pgsql_reader_size(pgsql_reader_ctx *reader) {
@@ -150,7 +150,7 @@ int32_t pgsql_reader_bool_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err
 }
 int64_t pgsql_reader_integer_at(pgsql_reader_ctx *reader, int16_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
-    static const int32_t _oids[] = { INT2OID, INT4OID, INT8OID };
+    static const int32_t _oids[] = { INT2OID, INT4OID, INT8OID, OID8OID };
     pgpack_field *field;
     pgpack_row *row = _pgsql_reader_row(reader, col, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
@@ -161,7 +161,7 @@ int64_t pgsql_reader_integer_at(pgsql_reader_ctx *reader, int16_t col, int32_t *
         int64_t val;
         if (ERR_OK != strtoi64(row->val, (size_t)row->lens, &val)) {
             SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
+            LOG_WARN("column %d parse failed.", (int32_t)col);
             return 0;
         }
         return val;
@@ -170,6 +170,13 @@ int64_t pgsql_reader_integer_at(pgsql_reader_ctx *reader, int16_t col, int32_t *
     int32_t expect = (INT2OID == field->type_oid) ? 2 : ((INT4OID == field->type_oid) ? 4 : 8);
     if (expect != row->lens) {
         SET_PTR(err, ERR_FAILED);
+        return 0;
+    }
+    // oid8 是无符号的，超出 int64 的值取不出来(同 mysql 无符号列)；文本格式由 strtoi64 拒
+    if (OID8OID == field->type_oid
+        && 0 != ((uint8_t)row->val[0] & 0x80)) {
+        SET_PTR(err, ERR_FAILED);
+        LOG_WARN("column %d oid8 exceeds int64.", (int32_t)col);
         return 0;
     }
     return read_integer(row->val, (size_t)row->lens, 0, 1);
@@ -187,7 +194,7 @@ double pgsql_reader_double_at(pgsql_reader_ctx *reader, int16_t col, int32_t *er
         double val;
         if (ERR_OK != strtod_s(row->val, (size_t)row->lens, &val)) {
             SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
+            LOG_WARN("column %d parse failed.", (int32_t)col);
             return 0.0;
         }
         return val;

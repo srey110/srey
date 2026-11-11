@@ -60,8 +60,7 @@ char *tohex(const void *buf, size_t len, char *out, int32_t lower);
 int32_t fromhex(char c);
 /// <summary>
 /// 初始化用于 locale 无关数值解析的 C locale 句柄，须在启动期单线程调用一次（strtod_c 依赖）。
-/// 创建失败直接 abort：句柄留空会让 strtod_l 在 glibc 上解引用空句柄崩在 DB 解包路径里，
-/// 而 Darwin 会静默回落到当前 locale，恰好抹掉 strtod_c 存在的意义
+/// 创建失败直接 abort（空句柄下 strtod_l 会崩，或按当前 locale 解析）
 /// </summary>
 void locale_init(void);
 /// <summary>

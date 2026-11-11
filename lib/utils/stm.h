@@ -21,11 +21,11 @@ typedef struct stm_ctx {
 } stm_ctx;
 
 /// <summary>
-/// 创建 stm_ctx, 持有 data 的首份快照. data 必须由 MALLOC 宏分配 (或 copy=1 内部 MALLOC 拷贝).
+/// 创建 stm_ctx, 持有 data 的首份快照.
 /// </summary>
 /// <param name="data">初始数据指针</param>
 /// <param name="sz">数据字节数</param>
-/// <param name="copy">1=内部 MALLOC 拷贝, 调用方仍持有 data; 0=转移所有权, stm 内部 FREE</param>
+/// <param name="copy">1=内部 MALLOC 拷贝, 调用方仍持有 data; 0=转移所有权: data 须由 MALLOC 宏分配, 之后由 stm 内部 FREE, 调用方不得再释放</param>
 /// <returns>stm_ctx 堆指针; MALLOC 失败 ASSERTAB</returns>
 stm_ctx *stm_new(void *data, size_t sz, int32_t copy);
 /// <summary>
@@ -40,7 +40,7 @@ void stm_free(stm_ctx *ctx);
 /// <param name="ctx">stm_ctx</param>
 /// <param name="data">新数据指针</param>
 /// <param name="sz">新数据字节数</param>
-/// <param name="copy">1=内部拷贝; 0=转移所有权</param>
+/// <param name="copy">同 stm_new</param>
 void stm_update(stm_ctx *ctx, void *data, size_t sz, int32_t copy);
 /// <summary>
 /// reader 增加对 stm_ctx 的引用, 用于把 ctx 传给另一个 task 之前先 grab 一次.

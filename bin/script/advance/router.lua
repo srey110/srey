@@ -76,6 +76,8 @@
 --   链内异常不在中间件内捕获，由 dispatch 的 srey.xpcall 统一兜底（自动 ERROR + traceback），响应 500。
 --   prefix/middleware/group 分组的中间件在注册阶段静态合并进路由条目，排在路由级中间件之前；
 --   分组与路由级里重复的中间件只留第一次出现的位置（同 Laravel）。各级前缀与路径之间自动补 '/'
+-- 注册期的错误（handler 不是函数、中间件名没 define、中间件不可调用、列表夹 nil、路径被拒）同 C 侧：
+--   打 ERROR、这次注册作废、后续照常；define / use 返回 false，路由返回哑条目，分组中间件解析不了则组内路由全部作废
 -- 与 Laravel 对齐的几处应答：路径在而方法不对（方法名不认识也算）回 405 并带 Allow，OPTIONS 则自动回 200 带 Allow；
 -- 请求带 Connection: close 或是 HTTP/1.0 没带 keep-alive 的，经 ctx 回完响应即关连接（同 C 侧 router）
 
@@ -132,13 +134,15 @@ end
 
 -- 中间件得能被 chain[i](ctx, nxt) 调起来：函数，或带 __call 的表/userdata。
 -- 元表被 __metatable 藏起来时查不出真相，放行交给调用点——把真能调的东西拒掉更糟
-local function _assert_callable(v, what)
+local function _callable(v)
     if "function" == type(v) then
-        return v
+        return true
     end
     local mt = getmetatable(v)
-    assert(nil ~= mt and ("table" ~= type(mt) or nil ~= rawget(mt, "__call")),
-           what .. " must be callable, got " .. type(v))
+    return nil ~= mt and ("table" ~= type(mt) or nil ~= rawget(mt, "__call"))
+end
+local function _assert_callable(v, what)
+    assert(_callable(v), what .. " must be callable, got " .. type(v))
     return v
 end
 
@@ -148,15 +152,16 @@ end
 local GroupBuilder = {}
 GroupBuilder.__index = GroupBuilder
 
-local function _gb_new(router, prefix, mws)
-    return setmetatable({ _router = router, _prefix = prefix, _mws = mws }, GroupBuilder)
+-- bad 为真表示链上有解析不了的中间件，用它分组注册的路由全部作废
+local function _gb_new(router, prefix, mws, bad)
+    return setmetatable({ _router = router, _prefix = prefix, _mws = mws, _bad = bad }, GroupBuilder)
 end
 
 ---在当前分组基础上追加路径前缀，返回新 GroupBuilder（不修改原对象）
 ---@param p string 追加的路径前缀，如 "/api"
 ---@return GroupBuilder
 function GroupBuilder:prefix(p)
-    return _gb_new(self._router, _join(self._prefix, p), self._mws)
+    return _gb_new(self._router, _join(self._prefix, p), self._mws, self._bad)
 end
 
 ---在当前分组基础上追加中间件，返回新 GroupBuilder（不修改原对象）
@@ -164,22 +169,18 @@ end
 ---@return GroupBuilder
 function GroupBuilder:middleware(...)
     local mws = {}
-    local args = { ... }
     for _, mw in ipairs(self._mws) do
         mws[#mws + 1] = mw
     end
-    -- 用 select("#") 而不是 #args：中间夹一个 nil 时 #args 可能只到 nil 之前，后面的中间件被一并丢掉
-    for i = 1, select("#", ...) do
-        mws[#mws + 1] = self._router:_resolve(args[i])
-    end
-    return _gb_new(self._router, self._prefix, mws)
+    local bad = self._router:_resolve_all(mws, ...)
+    return _gb_new(self._router, self._prefix, mws, self._bad or bad)
 end
 
 ---在当前前缀和中间件上下文中执行路由注册闭包
 ---@param fn fun() 路由注册闭包
 function GroupBuilder:group(fn)
     local stack = self._router._stack
-    stack[#stack + 1] = { prefix = self._prefix, mws = self._mws }
+    stack[#stack + 1] = { prefix = self._prefix, mws = self._mws, bad = self._bad }
     local ok, err = pcall(fn)
     stack[#stack] = nil
     if not ok then error(err, 0) end
@@ -190,7 +191,7 @@ end
 -- 本模块所有响应的唯一出口。HEAD 只发头：头与同一资源的 GET 一致（含真实
 -- Content-Length）但不发报文体，多发的字节会被对端当成下一条响应的开头。
 -- 匹配失败的 4xx、兜底 500 一样要过这里 —— 那两条路径同样可能是 HEAD 请求打进来的。
--- block 与 headers 二选一：模块常量走 block，业务给的走 headers。
+-- 模块常量走 block，业务给的走 headers；两者可同时给（405 带 Allow）。
 -- 先试 C 组包直发，不接的形状再走 lib.http 的 Lua 原路，两条字节相同
 local function _send(method, sk, code, block, headers, body)
     local headonly = "HEAD" == method
@@ -432,22 +433,51 @@ function Router:_watch_closed_once()
     end)
 end
 
----注册具名中间件，后续可通过名称字符串在 use / middleware / 路由 mws 中引用
+---注册具名中间件，后续可通过名称字符串在 use / middleware / 路由 mws 中引用；同名再 define 覆盖，
+---已注册的路由与全局中间件不受影响
 ---@param name string 中间件名称
 ---@param fn fun(ctx:Ctx, next:fun()) 中间件函数
+---@return boolean ok fn 不可调用时打 ERROR 返回 false，原有同名定义保留
 function Router:define(name, fn)
-    self._mw_reg[name] = _assert_callable(fn, "middleware '" .. tostring(name) .. "'")
+    if not _callable(fn) then
+        ERROR("router: define '%s' needs a callable, got %s.", tostring(name), type(fn))
+        return false
+    end
+    self._mw_reg[name] = fn
+    return true
 end
 
--- 解析中间件：字符串 → 注册表查找，其余 → 原样透传。两条路都得过 _assert_callable，
--- 具名的那条尤其不能漏：注册时不校验，就要拖到每个请求才炸成 500
+-- 解析中间件：字符串 → 注册表查找，其余 → 原样透传；解析不了打 ERROR 返回 nil。
+-- 注册表里只有 define 校验过的值，具名那条不用再查可调用
 function Router:_resolve(mw)
-    if type(mw) == "string" then
+    if "string" == type(mw) then
         local fn = self._mw_reg[mw]
-        assert(fn, "middleware not defined: " .. mw)
-        return _assert_callable(fn, "middleware '" .. mw .. "'")
+        if nil == fn then
+            ERROR("router: middleware '%s' not defined, registration rejected.", mw)
+        end
+        return fn
     end
-    return _assert_callable(mw, "middleware")
+    if not _callable(mw) then
+        ERROR("router: middleware must be callable, got %s, registration rejected.", type(mw))
+        return nil
+    end
+    return mw
+end
+
+-- 变长中间件参数逐个解析后追加进 mws，返回有没有解析失败的。
+-- 用 select("#") 而不是 #args：中间夹一个 nil 时 #args 可能只到 nil 之前，后面的中间件被一并丢掉
+function Router:_resolve_all(mws, ...)
+    local args = { ... }
+    local bad = false
+    for i = 1, select("#", ...) do
+        local fn = self:_resolve(args[i])
+        if nil == fn then
+            bad = true
+        else
+            mws[#mws + 1] = fn
+        end
+    end
+    return bad
 end
 
 -- 中间件追加进 mws；seen 里已有的跳过，同一个只留第一次出现的位置（同 Laravel）
@@ -458,18 +488,21 @@ local function _mw_add(mws, seen, mw)
     end
 end
 
--- 合并当前 group 栈的前缀与中间件（去重）；seen 交给调用方接着追加路由级中间件
+-- 合并当前 group 栈的前缀与中间件（去重）；seen 交给调用方接着追加路由级中间件。
+-- 末个返回值为真表示所在分组有解析不了的中间件
 function Router:_ctx()
     local prefix = ""
     local mws = {}
     local seen = {}
+    local bad = false
     for _, frame in ipairs(self._stack) do
         prefix = _join(prefix, frame.prefix)
+        bad = bad or frame.bad
         for _, mw in ipairs(frame.mws) do
             _mw_add(mws, seen, mw)
         end
     end
-    return prefix, mws, seen
+    return prefix, mws, seen, bad
 end
 
 ---@class RouterSeg
@@ -503,22 +536,34 @@ end
 -- 路由注册的共同实现；handler 与 on_chunk 恰有一个非 nil，决定这条是普通派发还是流式接收。
 -- 返回 entry，支持 :name() 链式调用
 function Router:_add_common(method, path, handler, on_chunk, extra_mws)
-    local prefix, mws, seen = self:_ctx()
+    local prefix, mws, seen, bad = self:_ctx()
     local full = _join(prefix, path)
+    -- 全部判完才交 C：C 侧提交后再拒会留下 _routes 里没有的幽灵路由
+    if bad then
+        ERROR("router: %s '%s' group middleware unresolved, route rejected.", method, full)
+        return _bad_entry
+    end
     -- handler 漏传（一个笔误就够了）在 dispatch 时表现为：chain 里少一项 → 中间件跑完没人响应
-    -- → 兜底 500，日志里也没有线索。C 侧同款情形是打日志拒掉的，这里对齐
+    -- → 兜底 500，日志里也没有线索
     local cb = handler or on_chunk
     if "function" ~= type(cb) then
-        WARN("router: %s '%s' handler must be a function, got %s.", method, full, type(cb))
+        ERROR("router: %s '%s' handler must be a function, got %s.", method, full, type(cb))
         return _bad_entry
     end
     if extra_mws then
         -- 不能用 ipairs：撞上中间的 nil 就停，后面的中间件一起丢掉且 _resolve 压根不被调用。
-        -- 表表示不了"中间有个 nil"，所以拿 pairs 的计数与 # 比一次，对不上就当场报错
+        -- 表表示不了"中间有个 nil"，所以拿 pairs 的计数与 # 比一次
         local n = #extra_mws
-        assert(table_size(extra_mws) == n, "middleware list must not contain nil")
+        if table_size(extra_mws) ~= n then
+            ERROR("router: %s '%s' middleware list must not contain nil, route rejected.", method, full)
+            return _bad_entry
+        end
         for i = 1, n do
-            _mw_add(mws, seen, self:_resolve(extra_mws[i]))
+            local fn = self:_resolve(extra_mws[i])
+            if nil == fn then
+                return _bad_entry
+            end
+            _mw_add(mws, seen, fn)
         end
     end
     -- 路由级中间件和 handler 都交给 C；C 负责链顺序与匹配，Lua 只保留函数表
@@ -529,7 +574,7 @@ function Router:_add_common(method, path, handler, on_chunk, extra_mws)
     local hidx = self:_fn_index(cb)
     local ok, code, csegs = self._c_router:add_steps(method, full, hidx, mw_idxs, nil ~= on_chunk)
     if not ok then
-        WARN("router: path '%s' rejected.", full)
+        ERROR("router: path '%s' rejected.", full)
         return _bad_entry
     end
     local idx = code
@@ -588,11 +633,16 @@ end
 
 ---注册全局中间件，对所有路由生效
 ---@param mw string|fun(ctx:Ctx, next:fun()) 中间件名称或函数
+---@return boolean ok 名字没 define 或不可调用时打 ERROR 返回 false，全局中间件不变
 function Router:use(mw)
     local fn = self:_resolve(mw)
+    if nil == fn then
+        return false
+    end
     local idx = self:_fn_index(fn)
     assert(self._c_router:use_step(idx), "router use failed")
     self._mw_version = self._mw_version + 1
+    return true
 end
 
 ---设置 404 回退 handler；fn 为 nil 时清除。只跑这一个函数，不经全局 / 路由级中间件；ctx 带 path / query，没有 params
@@ -717,12 +767,8 @@ end
 ---@return GroupBuilder
 function Router:middleware(...)
     local mws = {}
-    local args = { ... }
-    -- #args 的问题同 GroupBuilder:middleware
-    for i = 1, select("#", ...) do
-        mws[#mws + 1] = self:_resolve(args[i])
-    end
-    return _gb_new(self, "", mws)
+    local bad = self:_resolve_all(mws, ...)
+    return _gb_new(self, "", mws, bad)
 end
 
 -- 通配段是路径余部，里面的 '/' 是真分隔符不能编码，只编码段内内容，空段与首尾斜杠原样留着——

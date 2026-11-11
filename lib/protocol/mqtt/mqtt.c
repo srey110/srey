@@ -4,7 +4,7 @@
 //https://mqtt.p2hp.com/mqtt311
 //https://mqtt.p2hp.com/mqtt-5-0
 typedef enum parse_status {
-    INIT = 0,
+    INIT = 0,// 用例按数值抄了一份(test_mqtt_pack.c / test_protocol.c 的 _MQ_*)，改顺序要同步
     COMMAND
 }parse_status;
 // PUBLISH 单块分配的富余量：topic 与载荷各一个结尾 NUL，加载荷头最多 3 字节对齐补白
@@ -99,6 +99,8 @@ void _mqtt_udfree(ud_cxt *ud) {
     mqtt_ctx_free(ud->context);
     ud->context = NULL;
 }
+// PUBREL 虽是对 PUBREC 的回复也不放行：同连接上可能有协程正等自己 PUBLISH 的 PUBACK，放行会错唤醒它。
+// QoS 2 接收方发 PUBREC 后，PUBREL 走收包回调
 int32_t _mqtt_may_resume(void *data) {
     if (NULL == data) {
         return ERR_OK;
@@ -109,7 +111,7 @@ int32_t _mqtt_may_resume(void *data) {
     mqtt_pack_ctx *pack = data;
     switch (pack->fixhead.prot) {
     case MQTT_AUTH:
-        return (NULL != pack->varhead && 0x19 == ((mqtt_reason_varhead *)pack->varhead)->reason) ? ERR_FAILED : ERR_OK;
+        return 0x19 == ((mqtt_reason_varhead *)pack->varhead)->reason ? ERR_FAILED : ERR_OK;
     case MQTT_CONNECT:
     case MQTT_PUBLISH:
     case MQTT_PUBREL:
@@ -176,8 +178,7 @@ static inline int32_t _mqtt_data_varnum(binary_ctx *br, int32_t *num) {
     return ERR_FAILED;
 }
 // 读 2 字节长度前缀，并卡住"声明长度不得超过读区剩余字节"。
-// 读完就按这个长度分配的字段都走它，必须先卡再分配；有更紧判定的(协议名定长 4、PUBLISH 主题名
-// 不超 remaining_lens)自己判
+// 读完就按这个长度分配的字段都走它，必须先卡再分配；协议名定长 4，自己判
 static inline int32_t _mqtt_data_lens(binary_ctx *br, int32_t *num) {
     if (ERR_OK != _mqtt_data_fixnum(br, 2, num)
         || !binary_have(br, (uint64_t)(*num))) {
@@ -231,63 +232,63 @@ static mqtt_propertie *_mqtt_prop_one(binary_ctx *br, mqtt_prop_blk *blk) {
     int64_t nval = 0;
     size_t extra = 0;
     switch (flag) {
-    case PAYLOAD_FORMAT://0x01 载荷格式说明	字节	PUBLISH, Will Properties
-    case REQPROBLEM_INFO://0x17 请求问题信息	字节	CONNECT
-    case REQRESP_INFO://0x19 请求响应信息	字节	CONNECT
-    case MAXIMUM_QOS://0x24 最大QoS	字节	CONNACK
-    case RETAIN_AVAILABLE://0x25 保留属性可用性	字节	CONNACK
-    case WILDCARD_SUBSCRIPTION://0x28 通配符订阅可用性	字节	CONNACK
-    case SUBSCRIPTIONID_AVAILABLE://0x29 订阅标识符可用性	字节	CONNACK
-    case SHARED_SUBSCRIPTION://0x2A 共享订阅可用性	字节	CONNACK
+    case PAYLOAD_FORMAT:
+    case REQPROBLEM_INFO:
+    case REQRESP_INFO:
+    case MAXIMUM_QOS:
+    case RETAIN_AVAILABLE:
+    case WILDCARD_SUBSCRIPTION:
+    case SUBSCRIPTIONID_AVAILABLE:
+    case SHARED_SUBSCRIPTION:
         if (ERR_OK != _mqtt_data_fixnum(br, 1, &num)) {
             return NULL;
         }
         nval = num;
         break;
-    case SERVER_KEEPALIVE://0x13 服务端保活时间	双字节整数	CONNACK
-    case RECEIVE_MAXIMUM://0x21 接收最大数量	双字节整数	CONNECT, CONNACK
-    case TOPICALIAS_MAXIMUM://0x22 主题别名最大长度	双字节整数	CONNECT, CONNACK
-    case TOPIC_ALIAS://0x23 主题别名	双字节整数	PUBLISH
+    case SERVER_KEEPALIVE:
+    case RECEIVE_MAXIMUM:
+    case TOPICALIAS_MAXIMUM:
+    case TOPIC_ALIAS:
         if (ERR_OK != _mqtt_data_fixnum(br, 2, &num)) {
             return NULL;
         }
         nval = num;
         break;
-    case MSG_EXPIRY://0x02 消息过期时间	四字节整数	PUBLISH, Will Properties
-    case SESSION_EXPIRY://0x11 会话过期间隔	四字节整数	CONNECT, CONNACK, DISCONNECT
-    case WILLDELAY_INTERVAL://0x18 遗嘱延时间隔	四字节整数	Will Properties
-    case MAXIMUM_PACKETSIZE://0x27 最大报文长度	四字节整数	CONNECT, CONNACK
+    case MSG_EXPIRY:
+    case SESSION_EXPIRY:
+    case WILLDELAY_INTERVAL:
+    case MAXIMUM_PACKETSIZE:
         if (ERR_OK != _mqtt_data_u32(br, &nval)) {
             return NULL;
         }
         break;
-    case SUBSCRIPTION_ID://0x0B 定义标识符	变长字节整数	PUBLISH, SUBSCRIBE
+    case SUBSCRIPTION_ID:
         if (ERR_FAILED == _mqtt_data_varnum(br, &num)) {
             return NULL;
         }
         nval = num;
         break;
-    case CORRELATION_DATA://0x09 相关数据	二进制数据	PUBLISH, Will Properties
-    case AUTH_DATA://0x16 认证数据	二进制数据	CONNECT, CONNACK, AUTH
+    case CORRELATION_DATA:
+    case AUTH_DATA:
         if (ERR_OK != _mqtt_data_lens(br, &klen)) {
             return NULL;
         }
         extra = (size_t)klen + 1;
         break;
-    case CONTENT_TYPE://0x03 内容类型	UTF-8编码字符串	PUBLISH, Will Properties
-    case RESP_TOPIC://0x08 响应主题	UTF-8编码字符串	PUBLISH, Will Properties
-    case CLIENT_ID://0x12 分配客户标识符	UTF-8编码字符串	CONNACK
-    case AUTH_METHOD://0x15 认证方法	UTF-8编码字符串	CONNECT, CONNACK, AUTH
-    case RESP_INFO://0x1A 请求信息	UTF-8编码字符串	CONNACK
-    case SERVER_REFERENCE://0x1C 服务端参考	UTF-8编码字符串	CONNACK, DISCONNECT
-    case REASON_STR://0x1F 原因字符串	UTF-8编码字符串	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
+    case CONTENT_TYPE:
+    case RESP_TOPIC:
+    case CLIENT_ID:
+    case AUTH_METHOD:
+    case RESP_INFO:
+    case SERVER_REFERENCE:
+    case REASON_STR:
         if (ERR_OK != _mqtt_data_lens(br, &klen)
             || NULL != memchr(br->data + br->offset, '\0', (size_t)klen)) {
             return NULL;
         }
         extra = (size_t)klen + 1;
         break;
-    case USER_PROPERTY://0x26 用户属性	UTF-8字符串对	CONNECT, CONNACK, PUBLISH, Will Properties, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK, DISCONNECT, AUTH
+    case USER_PROPERTY:
         if (ERR_OK != _mqtt_data_lens(br, &klen)
             || !binary_have(br, (uint64_t)klen + 2)) {
             return NULL;
@@ -332,17 +333,15 @@ static void _mqtt_prop_blk_drop(mqtt_prop_blk *blk, mqtt_prop_blk *pre) {
         _mqtt_prop_blk_free(&blk->arr);
     }
 }
-// 属性解析。maxlens 传本报文的 fixhead.remaining_lens——属性段是报文的一部分,界要按本报文取,
-// 不能按整个接收缓冲。只按 id 决定读几个字节,没做的校验见 mqtt_struct.h 的 mqtt_propertie。
+// 属性解析。只按 id 决定读几个字节,没做的校验见 mqtt_struct.h 的 mqtt_propertie。
 // pre 非 NULL 是调用方预留好的属性块(cap 已填)，装得下就用它，否则照常另开。
 // 成功返回 ERR_OK，*out 为属性数组(属性段为空则 NULL)；失败已置 PROT_ERROR、*out 为 NULL
-static int32_t _mqtt_properties(binary_ctx *br, int32_t *status, int32_t *total, size_t maxlens,
+static int32_t _mqtt_properties(binary_ctx *br, int32_t *status, int32_t *total,
                                 mqtt_prop_blk *pre, mprop_arr **out) {
     *out = NULL;
     int32_t plens;
     int32_t occupy = _mqtt_data_varnum(br, &plens);//属性长度
     if (ERR_FAILED == occupy
-        || (size_t)plens > maxlens
         || !binary_have(br, (uint64_t)plens)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -352,9 +351,7 @@ static int32_t _mqtt_properties(binary_ctx *br, int32_t *status, int32_t *total,
         return ERR_OK;
     }
     size_t end = br->offset + (size_t)plens;
-    mqtt_propertie *propt;
     mqtt_prop_blk *blk;
-    mqtt_propertie **p;
     uint32_t cap = _mqtt_prop_cap(plens);
     if (NULL != pre
         && cap <= pre->cap) {
@@ -367,6 +364,8 @@ static int32_t _mqtt_properties(binary_ctx *br, int32_t *status, int32_t *total,
     blk->arr.maxsize = MQTT_PROP_SLOTS;
     blk->arr.ptr = blk->slots;
     blk->used = 0;
+    mqtt_propertie *propt;
+    mqtt_propertie **p;
     while (br->offset < end) {
         propt = MQTT_MAX_PROPS > blk->arr.size ? _mqtt_prop_one(br, blk) : NULL;
         if (NULL == propt) {
@@ -481,7 +480,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br
     }
     vh->keepalive = (uint16_t)num;
     if (vh->version >= MQTT_50) {
-        if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &vh->properties)) {//属性
+        if (ERR_OK != _mqtt_properties(br, status, NULL, NULL, &vh->properties)) {//属性
             return ERR_FAILED;
         }
     }
@@ -499,7 +498,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br
     }
     if (vh->willflag) {
         if (vh->version >= MQTT_50) {
-            if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &pl->properties)) {//属性
+            if (ERR_OK != _mqtt_properties(br, status, NULL, NULL, &pl->properties)) {//属性
                 return ERR_FAILED;
             }
         }
@@ -570,12 +569,14 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br
     }
     vh->reason = (uint8_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
-    // 剩余长度为 2 且是拒绝码，是对方不认 5.0、按 3.1.1 格式回的拒绝：按无属性交出返回码，version 记 3.1.1 让 mqtt_reason 查对表；
-    // 5.0 没有省掉属性的 CONNACK，成功码配剩余长度 2 照旧按缺属性拒收
+    // 剩余长度为 2 的拒绝没有属性可读，按无属性交出返回码。1~5 是对方不认 5.0、按 3.1.1 回的，version 记 3.1.1 让 mqtt_reason 查对表，
+    // 其余是省了属性长度的 5.0 拒绝。成功码配剩余长度 2 照旧按缺属性拒收
     if (pack->version >= MQTT_50) {
         if (2 == pack->fixhead.remaining_lens && 0x00 != vh->reason) {
-            pack->version = MQTT_311;
-        } else if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &vh->properties)) {//属性
+            if (vh->reason <= 0x05) {
+                pack->version = MQTT_311;
+            }
+        } else if (ERR_OK != _mqtt_properties(br, status, NULL, NULL, &vh->properties)) {//属性
             return ERR_FAILED;
         }
     }
@@ -626,9 +627,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, binary_ctx *br, buffer_ctx *sp
     char *slot = (char *)pack + MQTT_PUB_PREOFF + prelens;
     //可变报头 主题名（Topic Name），报文标识符（Packet Identifier），属性（Properties MQTT_50）
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(br, 2, &num)//主题名长度
-        || num < 0
-        || num > (int32_t)pack->fixhead.remaining_lens) {
+    if (ERR_OK != _mqtt_data_fixnum(br, 2, &num)) {//主题名长度
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -667,7 +666,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, binary_ctx *br, buffer_ctx *sp
         vh->packid = (uint16_t)num;
     }
     if (pack->version >= MQTT_50) {
-        if (ERR_OK != _mqtt_properties(br, status, &num, pack->fixhead.remaining_lens, pre, &vh->properties)) {//属性
+        if (ERR_OK != _mqtt_properties(br, status, &num, pre, &vh->properties)) {//属性
             return ERR_FAILED;
         }
         off += num;
@@ -735,7 +734,7 @@ static int32_t _mqtt_pubackrel_common(mqtt_pack_ctx *pack, binary_ctx *br,
     }
     vh->reason = (uint8_t)num;
     if (pack->fixhead.remaining_lens >= 4) {
-        if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &vh->properties)) {//属性
+        if (ERR_OK != _mqtt_properties(br, status, NULL, NULL, &vh->properties)) {//属性
             return ERR_FAILED;
         }
     }
@@ -764,7 +763,7 @@ static int32_t _mqtt_subunsub_varhead(mqtt_pack_ctx *pack, int32_t client, int32
     vh->packid = (uint16_t)num;
     num = 0;
     if (pack->version >= MQTT_50) {
-        if (ERR_OK != _mqtt_properties(br, status, &num, pack->fixhead.remaining_lens, NULL, &vh->properties)) {//属性
+        if (ERR_OK != _mqtt_properties(br, status, &num, NULL, &vh->properties)) {//属性
             return ERR_FAILED;
         }
     }
@@ -977,7 +976,7 @@ static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, binary_ctx *br, int32_t *st
     }
     vh->reason = (uint8_t)num;
     if (pack->fixhead.remaining_lens > 1) {
-        if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &vh->properties)) {//属性
+        if (ERR_OK != _mqtt_properties(br, status, NULL, NULL, &vh->properties)) {//属性
             return ERR_FAILED;
         }
     }
@@ -990,7 +989,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, binary_ctx *br, ud_cxt *ud, int32
         return ERR_FAILED;
     }
     if (NULL == ud->context) {
-        // 客户端在 CONNACK 之前收到 AUTH（如服务端先发挑战），mqtt_ctx 尚未挂上
+        // 服务端在 CONNECT 之前收到 AUTH，或 WS 客户端没调 mqtt_ws_bind
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -1013,7 +1012,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, binary_ctx *br, ud_cxt *ud, int32
     }
     vh->reason = (uint8_t)num;
     if (pack->fixhead.remaining_lens > 1) {
-        if (ERR_OK != _mqtt_properties(br, status, NULL, pack->fixhead.remaining_lens, NULL, &vh->properties)) {
+        if (ERR_OK != _mqtt_properties(br, status, NULL, NULL, &vh->properties)) {
             return ERR_FAILED;
         }
     }
@@ -1042,7 +1041,7 @@ static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br, u
 static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, binary_ctx *br, buffer_ctx *spill,
                               mqtt_prop_blk *pre, ud_cxt *ud, int32_t *status) {
     int32_t rtn = ERR_FAILED;
-    // 版本在这里统一填，各 handler 不再填。connack 不走这里(它正是确立版本的那条)；
+    // 版本在这里统一填，各 handler 不再填。connack 不走这里(只在 INIT 阶段收，自己从 ud->context 取)；
     // auth 两条路都能到，它自己也填一份，两处是同一个值
     pack->version = ((mqtt_ctx *)ud->context)->version;
     switch (pack->fixhead.prot) {

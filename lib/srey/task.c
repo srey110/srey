@@ -186,9 +186,9 @@ task_ctx *task_new(loader_ctx *loader, const char *name, uint32_t quecap,
         task->name = dup_zero(name, strlen(name));
     }
     task->ref = 1;
-    task->timeout_request = 3 * 1000;
-    task->timeout_connect = 5 * 1000;
-    task->timeout_netread = 10 * 1000;
+    task->timeout[TMO_REQUEST] = 3 * 1000;
+    task->timeout[TMO_CONNECT] = 5 * 1000;
+    task->timeout[TMO_NETREAD] = 10 * 1000;
     if (NULL == _dispatch) {
         task->_task_dispatch = _task_message_dispatch;
     } else {
@@ -379,7 +379,7 @@ static int32_t _task_post_to(loader_ctx *loader, name_t handle, message_ctx *msg
     return ERR_FAILED;
 }
 // 时间轮超时回调：将超时消息推入对应任务队列。走 _task_post_to 不持引用，task 的最后一次释放就不会落在
-// 时间轮线程上——Lua task 会在那里 lua_close，期间全进程的定时器都停
+// 时间轮线程上——_arg_free 析构上层句柄可能很慢，期间全进程的定时器都停
 static void _task_message_timeout_push(ud_cxt *ud) {
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_TIMEOUT;
@@ -468,9 +468,8 @@ int32_t task_call_to(loader_ctx *loader, name_t handle, subtype_t reqtype, void 
 int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t reqtype,
                            uint64_t sess, void *data, size_t size, int32_t copy) {
     ASSERTAB((NULL != src && 0 != sess) || (NULL == src && 0 == sess), "parameter error");
-    int32_t i;
     int32_t valid = 0;
-    for (i = 0; i < n; i++) {
+    for (int32_t i = 0; i < n; i++) {
         if (NULL != dsts[i]) {
             valid++;
         }
@@ -504,7 +503,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
     msg.data = shared->data;
     msg.size = size;
     msg.shared = shared;
-    for (i = 0; i < n; i++) {
+    for (int32_t i = 0; i < n; i++) {
         if (NULL != dsts[i]) {
             _task_message_post(dsts[i], &msg);
         }
@@ -635,7 +634,6 @@ static int32_t _task_acp_pick(sock_ctx *sk, ud_cxt *ud) {
 static int32_t *_task_acp_thrs(task_ctx *head, uint32_t *nthrs) {
     uint16_t nnet = head->loader->nnet;
     uint16_t i;
-    int32_t *thrs;
     *nthrs = 0;
     for (i = 0; i < nnet; i++) {
         if (INVALID_TNAME != head->acp_group[i]) {
@@ -646,6 +644,7 @@ static int32_t *_task_acp_thrs(task_ctx *head, uint32_t *nthrs) {
         *nthrs = 0;
         return NULL;
     }
+    int32_t *thrs;
     MALLOC(thrs, sizeof(int32_t) * (*nthrs));
     *nthrs = 0;
     for (i = 0; i < nnet; i++) {
@@ -751,32 +750,14 @@ void task_set_priority(task_ctx *task, int32_t priority) {
 int32_t task_get_priority(task_ctx *task) {
     return (int32_t)ATOMIC_GET(&task->priority);
 }
-void task_set_request_timeout(task_ctx *task, uint32_t ms) {
+void task_set_timeout(task_ctx *task, tmo_kind kind, uint32_t ms) {
     if (0 == ms) {
         return;
     }
-    ATOMIC_SET_RELAXED(&task->timeout_request, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
+    ATOMIC_SET_RELAXED(&task->timeout[kind], ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
 }
-uint32_t task_get_request_timeout(task_ctx *task) {
-    return (uint32_t)ATOMIC_GET(&task->timeout_request);
-}
-void task_set_connect_timeout(task_ctx *task, uint32_t ms) {
-    if (0 == ms) {
-        return;
-    }
-    ATOMIC_SET_RELAXED(&task->timeout_connect, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
-}
-uint32_t task_get_connect_timeout(task_ctx *task) {
-    return (uint32_t)ATOMIC_GET(&task->timeout_connect);
-}
-void task_set_netread_timeout(task_ctx *task, uint32_t ms) {
-    if (0 == ms) {
-        return;
-    }
-    ATOMIC_SET_RELAXED(&task->timeout_netread, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
-}
-uint32_t task_get_netread_timeout(task_ctx *task) {
-    return (uint32_t)ATOMIC_GET(&task->timeout_netread);
+uint32_t task_get_timeout(task_ctx *task, tmo_kind kind) {
+    return (uint32_t)ATOMIC_GET(&task->timeout[kind]);
 }
 void task_stat(task_ctx *task, uint64_t nmsg[MSG_TYPE_ALL], uint64_t dispatch_cpu_ns[MSG_TYPE_ALL]) {
 #if ENABLE_DISPATCH_STAT

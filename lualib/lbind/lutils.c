@@ -1,63 +1,5 @@
 ﻿#include "lbind/lpub.h"
 
-#define MT_HASH_RING "_hash_ring_ctx"
-#define MT_LOAD_TREND "_load_trend_ctx"
-#define MT_POPEN      "_popen_ctx"
-#define LOGLV_OUT_OF_RANGE "log level out of range (0-4)"
-
-/// <summary>
-/// 设置全局日志输出等级
-/// </summary>
-/// <param name="lv" type="integer">日志等级，取值 [0, 4]（LOGLV_FATAL..LOGLV_DEBUG），越界报错</param>
-/// <returns>无</returns>
-static int32_t _lutils_log_setlv(lua_State *lua) {
-    log_level lv = (log_level)lpub_check_range(lua, 1, LOGLV_FATAL, LOGLV_DEBUG, LOGLV_OUT_OF_RANGE);
-    log_setlv(lv);
-    return 0;
-}
-/// <summary>
-/// 获取当前全局日志输出等级
-/// </summary>
-/// <param>无</param>
-/// <returns type="integer">当前日志等级，参考 log_level</returns>
-static int32_t _lutils_log_getlv(lua_State *lua) {
-    lua_pushinteger(lua, (lua_Integer)log_getlv());
-    return 1;
-}
-/// <summary>
-/// 输出一条日志，自动附带调用位置（文件名、行号）、task 名称（若存在）。
-/// 调用位置由本函数按栈层号自己取，不经 debug.getinfo 建表
-/// </summary>
-/// <param name="lv" type="integer">日志等级，取值 [0, 4]（LOGLV_FATAL..LOGLV_DEBUG），越界报错</param>
-/// <param name="level" type="integer">调用位置所在的栈层，含义同 debug.getinfo 的层号（0 为 utils.log 自身）；该层不存在时不输出，超出 int32 范围报错</param>
-/// <param name="log" type="string">日志正文</param>
-/// <returns>无</returns>
-static int32_t _lutils_log(lua_State *lua) {
-    log_level lv = (log_level)lpub_check_range(lua, 1, LOGLV_FATAL, LOGLV_DEBUG, LOGLV_OUT_OF_RANGE);
-    int32_t level = lpub_check_i32(lua, 2, "level out of range");
-    size_t mlen, nlen;
-    const char *log = luaL_checklstring(lua, 3, &mlen);
-    lua_Debug ar;
-    if (0 == lua_getstack(lua, level, &ar)
-        || 0 == lua_getinfo(lua, "Sl", &ar)) {
-        return 0;
-    }
-    task_ctx *task = lpub_cur_task(lua);
-    const char *fname = _filename(ar.short_src);
-    char num[24];
-    const char *nstr = lpub_int_str(num, sizeof(num), ar.currentline, &nlen);
-    if (NULL == task) {
-        const char *parts[] = { "[", fname, " ", nstr, "] ", log };
-        size_t lens[] = { 1, strlen(fname), 1, nlen, 2, mlen };
-        slog_parts(lv, parts, lens, 6);
-    } else {
-        const char *tname = _NAME_OR(task->name);
-        const char *parts[] = { "[", fname, " ", nstr, "][", tname, "] ", log };
-        size_t lens[] = { 1, strlen(fname), 1, nlen, 2, strlen(tname), 2, mlen };
-        slog_parts(lv, parts, lens, 8);
-    }
-    return 0;
-}
 /// <summary>
 /// 将 C userdata 指针按指定长度转换为 Lua 字符串
 /// </summary>
@@ -101,12 +43,11 @@ static int32_t _lutils_ud_free(lua_State *lua) {
 /// <param name="lower" type="boolean?">true 输出小写；缺省或 false 输出大写</param>
 /// <returns type="string">十六进制字符串</returns>
 static int32_t _lutils_hex(lua_State *lua) {
-    void *data;
     size_t size;
     int32_t idx = 1;
     // data 为字符串时只占 1 个栈位,为 lightuserdata 时占 2 个(data+size);
     // lower 是可变位置的下一个参数,须用 _idx 版本取推进后的准确栈位,不能固定写死
-    data = lpub_check_buf_idx(lua, &idx, &size, NULL);
+    void *data = lpub_check_buf_idx(lua, &idx, &size, NULL);
     // 卡死类型:字符串多传一个 size 就把它顶到 lower 位上,而 Lua 里任何数字都为真,
     // 结果是"缺省该大写"的调用悄悄输出小写
     luaL_argcheck(lua, lua_isnoneornil(lua, idx) || lua_isboolean(lua, idx), idx, "boolean expected");
@@ -137,7 +78,7 @@ static int32_t _lutils_parse_svid(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 生成 N 字节密码学安全随机数据（Linux getrandom / BSD arc4random / Windows BCryptGenRandom / Solaris /dev/urandom）
+/// 生成 N 字节密码学安全随机数据（Windows BCryptGenRandom / macOS 与 BSD arc4random / Linux getrandom，被拦或内核不支持时读 /dev/urandom / 其余 Unix /dev/urandom）
 /// </summary>
 /// <param name="lens" type="integer">随机字节数，取值 [0, INT32_MAX]</param>
 /// <returns type="string?">随机字节字符串；失败返回 nil</returns>
@@ -151,7 +92,7 @@ static int32_t _lutils_csprng_rand(lua_State *lua) {
     char *buf = luaL_buffinitsize(lua, &lbuf, n);
     int32_t bad = (ERR_OK != csprng_rand(buf, n));
     luaL_pushresultsize(&lbuf, bad ? 0 : n);
-    secure_zero(&lbuf, sizeof(lbuf));// 理由同 lcrypt.c 的 _lcrypt_bs64_decode
+    secure_zero(&lbuf, sizeof(lbuf));// 理由同 lbase64.c 的 _lbase64_decode
     if (bad) {
         lua_pop(lua, 1);
         return lpub_rtn_nil(lua, 1);
@@ -184,9 +125,6 @@ static int32_t _lutils_remote_addr(lua_State *lua) {
 //srey.utils
 LUAMOD_API int luaopen_utils(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "log_setlv", _lutils_log_setlv },
-        { "log_getlv", _lutils_log_getlv },
-        { "log", _lutils_log },
         { "ud_free", _lutils_ud_free },
         { "ud_str", _lutils_ud_str },
         { "hex", _lutils_hex },
@@ -197,288 +135,5 @@ LUAMOD_API int luaopen_utils(lua_State *lua) {
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
-    return 1;
-}
-/// <summary>
-/// 创建一致性哈希环上下文（hashring.new）
-/// </summary>
-/// <param>无</param>
-/// <returns type="_hash_ring_ctx">哈希环对象</returns>
-static int32_t _lhash_ring_new(lua_State *lua) {
-    hash_ring_ctx *ring = lua_newuserdata(lua, sizeof(hash_ring_ctx));
-    hash_ring_init(ring);
-    ASSOC_MTABLE(lua, MT_HASH_RING);
-    return 1;
-}
-/// <summary>
-/// 释放哈希环内部资源（绑定为 __gc，由 Lua GC 自动调用）
-/// </summary>
-/// <param name="self" type="userdata">哈希环对象</param>
-/// <returns>无</returns>
-static int32_t _lhash_ring_free(lua_State *lua) {
-    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
-    hash_ring_free(ring);
-    return 0;
-}
-/// <summary>
-/// 向哈希环添加节点（含虚拟节点）
-/// </summary>
-/// <param name="self" type="userdata">哈希环对象</param>
-/// <param name="nreplicas" type="integer">虚拟节点数，须在 uint32 范围内（越界直接报错）；不在 [1, 65536] 内返回 false</param>
-/// <param name="name" type="string|lightuserdata">节点名称；为字符串时长度自动取得</param>
-/// <param name="lens" type="integer?">name 为 lightuserdata 时必填，表示名称字节数</param>
-/// <returns type="boolean">成功 true；nreplicas 越界、name 为空串或其他失败时 false</returns>
-static int32_t _lhash_ring_add(lua_State *lua) {
-    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
-    uint32_t nreplicas = lpub_check_u32(lua, 2, "nreplicas out of range");
-    size_t lens;
-    void *name = lpub_check_buf(lua, 3, &lens, NULL);
-    return lpub_rtn_bool(lua, ERR_OK == hash_ring_add(ring, name, lens, nreplicas));
-}
-/// <summary>
-/// 从哈希环中移除指定节点（含其全部虚拟节点）
-/// </summary>
-/// <param name="self" type="userdata">哈希环对象</param>
-/// <param name="name" type="string|lightuserdata">节点名称；为字符串时长度自动取得</param>
-/// <param name="lens" type="integer?">name 为 lightuserdata 时必填，表示名称字节数</param>
-/// <returns>无</returns>
-static int32_t _lhash_ring_remove(lua_State *lua) {
-    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
-    size_t lens;
-    void *name = lpub_check_buf(lua, 2, &lens, NULL);
-    hash_ring_remove(ring, name, lens);
-    return 0;
-}
-/// <summary>
-/// 按 key 在哈希环上查找最近节点
-/// </summary>
-/// <param name="self" type="userdata">哈希环对象</param>
-/// <param name="key" type="string|lightuserdata">查找 key；为字符串时长度自动取得</param>
-/// <param name="lens" type="integer?">key 为 lightuserdata 时必填，表示 key 字节数</param>
-/// <returns type="string?">命中节点名称；环为空或 key 为空串时返回 nil</returns>
-static int32_t _lhash_ring_find(lua_State *lua) {
-    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
-    size_t lens;
-    void *key = lpub_check_buf(lua, 2, &lens, NULL);
-    hash_ring_node *node = hash_ring_find(ring, key, lens);
-    if (NULL == node) {
-        lua_pushnil(lua);
-    } else {
-        lua_pushlstring(lua, node->name, node->lens);
-    }
-    return 1;
-}
-/// <summary>
-/// 将哈希环所有节点信息打印到 stdout（调试用途；daemon 模式下 stdout 接的是 /dev/null，看不到）
-/// </summary>
-/// <param name="self" type="userdata">哈希环对象</param>
-/// <returns>无</returns>
-static int32_t _lhash_ring_print(lua_State *lua) {
-    hash_ring_ctx *ring = lpub_check_udata(lua, 1, MT_HASH_RING);
-    hash_ring_print(ring);
-    return 0;
-}
-//srey.hashring
-LUAMOD_API int luaopen_hashring(lua_State *lua) {
-    luaL_Reg reg_new[] = {
-        { "new", _lhash_ring_new },
-        { NULL, NULL }
-    };
-    luaL_Reg reg_func[] = {
-        { "add", _lhash_ring_add },
-        { "remove", _lhash_ring_remove },
-        { "find", _lhash_ring_find },
-        { "print", _lhash_ring_print },
-        { "__gc", _lhash_ring_free },
-        { NULL, NULL }
-    };
-    REG_MTABLE(lua, MT_HASH_RING, reg_new, reg_func);
-    return 1;
-}
-/// <summary>
-/// 创建负载趋势检测器（trend.new）
-/// </summary>
-/// <returns type="_load_trend_ctx">负载趋势对象</returns>
-static int32_t _ltrend_new(lua_State *lua) {
-    load_trend_ctx *trend = lua_newuserdata(lua, sizeof(load_trend_ctx));
-    load_trend_init(trend);
-    ASSOC_MTABLE(lua, MT_LOAD_TREND);
-    return 1;
-}
-/// <summary>
-/// 采样当前值并基于趋势判断负载是否繁忙。阈值缺省取 utils/pool.h 的 SHRINK_BUSY，
-/// 与 C 侧各池的收缩判据同源——调用方不必也不该再抄一份字面量
-/// </summary>
-/// <param name="self" type="userdata">负载趋势对象</param>
-/// <param name="cur" type="integer">当前采样值，取值 [0, UINT32_MAX]</param>
-/// <param name="busy_num" type="integer?">繁忙阈值分子；缺省与 busy_den 一并取 SHRINK_BUSY</param>
-/// <param name="busy_den" type="integer?">繁忙阈值分母</param>
-/// <returns type="boolean">繁忙 true；不忙 false</returns>
-static int32_t _ltrend_busy(lua_State *lua) {
-    load_trend_ctx *trend = lpub_check_udata(lua, 1, MT_LOAD_TREND);
-    // 采样值不是长度，不走 lpub_check_lens（那句报的是 "length out of range"）；
-    // 负数与超 uint32 都会让忙闲判定给出垃圾结论，两头都挡
-    size_t cur = (size_t)lpub_check_range(lua, 2, 0, UINT32_MAX, "sample out of range");
-    if (lua_isnoneornil(lua, 3)) {
-        return lpub_rtn_bool(lua, load_trend_busy(trend, cur, SHRINK_BUSY));
-    }
-    uint32_t busy_num = lpub_check_u32(lua, 3, "busy_num out of range");
-    uint32_t busy_den = lpub_check_u32(lua, 4, "busy_den out of range");
-    return lpub_rtn_bool(lua, load_trend_busy(trend, cur, busy_num, busy_den));
-}
-//srey.trend
-LUAMOD_API int luaopen_trend(lua_State *lua) {
-    luaL_Reg reg_new[] = {
-        { "new", _ltrend_new },
-        { NULL, NULL }
-    };
-    luaL_Reg reg_func[] = {
-        { "busy", _ltrend_busy },
-        { NULL, NULL }
-    };
-    REG_MTABLE(lua, MT_LOAD_TREND, reg_new, reg_func);
-    /// <field name="shrink_time" type="integer">池收缩检测周期（毫秒），即 utils/pool.h 的 SHRINK_TIME</field>
-    lua_pushinteger(lua, (lua_Integer)SHRINK_TIME);
-    lua_setfield(lua, -2, "shrink_time");
-    return 1;
-}
-/// <summary>
-/// 启动子进程；mode 含 "r" 读子进程 stdout（stderr 并入同一通道），含 "w" 写子进程 stdin，"rw" 两者都要。
-/// POSIX 经 /bin/sh -c 执行，Windows 直接起可执行文件、不经 cmd.exe；POSIX 上子进程的 SIGPIPE 为默认处置，
-/// 不接管的 stdin 是 /dev/null。Windows 上别和 io.popen / os.execute 并发用：它们起的进程会带走这里在建的管道端，
-/// 拖迟读到 EOF（见 popen_startup）
-/// </summary>
-/// <param name="cmd" type="string">命令行字符串</param>
-/// <param name="mode" type="string">"r"、"w" 或 "rw"</param>
-/// <returns type="_popen_ctx?">popen 对象；启动失败返回 nil</returns>
-static int32_t _lpopen_new(lua_State *lua) {
-    const char *cmd = lpub_check_cstr(lua, 1);
-    const char *mode = lpub_check_cstr(lua, 2);
-    popen_ctx *ctx = lua_newuserdata(lua, sizeof(popen_ctx));
-    // 提前绑 metatable,失败时 lua_pop 弹引用后 GC 走 _lpopen_gc → popen_free 兜底
-    ASSOC_MTABLE(lua, MT_POPEN);
-    if (ERR_OK != popen_startup(ctx, cmd, mode)) {
-        lua_pop(lua, 1);
-        return lpub_rtn_nil(lua, 1);
-    }
-    return 1;
-}
-/// <summary>
-/// 阻塞等待子进程退出（最多 ms 毫秒）。阻塞的是整条 worker 线程而不只是当前协程，期间同一 worker 上的其他 task 都停着。POSIX 上只记退出码、不收尸，用完调 close，否则僵尸留到对象回收
-/// </summary>
-/// <param name="self" type="userdata">popen 对象</param>
-/// <param name="ms" type="integer">超时毫秒数</param>
-/// <returns type="boolean">true 表示已退出，false 表示超时仍在运行</returns>
-static int32_t _lpopen_waitexit(lua_State *lua) {
-    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
-    uint32_t ms = lpub_check_u32(lua, 2, "ms out of range");
-    return lpub_rtn_bool(lua, ERR_OK == popen_waitexit(ctx, ms));
-}
-/// <summary>
-/// 获取子进程退出码；还没退出时也可调（返回 -1，要等它退出先 waitexit）
-/// </summary>
-/// <param name="self" type="userdata">popen 对象</param>
-/// <returns type="integer">退出码；被信号终止、被 close 结束、还没退出或出错时 -1</returns>
-static int32_t _lpopen_exitcode(lua_State *lua) {
-    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
-    lua_pushinteger(lua, popen_exitcode(ctx));
-    return 1;
-}
-/// <summary>
-/// 非阻塞读取子进程 stdout 当前已缓冲的数据，最多 max_lens 字节；底层 popen_read 一旦探测到当前无数据即返回，
-/// 故本函数不等待、不保证读到 EOF：子进程尚未产出的输出读不到。输出可能超过管道缓冲时要边读边等：
-/// 循环 read 到第二个返回值为 true 再 waitexit（每轮夹一次 srey.sleep，否则是在 worker 上忙等），先 waitexit 再读子进程会卡在写上退不了
-/// </summary>
-/// <param name="self" type="userdata">popen 对象</param>
-/// <param name="max_lens" type="integer?">最大读取字节数，取值 [0, INT32_MAX]，默认 65536</param>
-/// <returns type="string">读到的内容（可为空字符串；当前无数据即返回，不阻塞等待）</returns>
-/// <returns type="boolean">是否已读到流末尾：true=写端全关、输出已完整；false=读满 max_lens/暂无数据/出错即停，可能不完整</returns>
-static int32_t _lpopen_read(lua_State *lua) {
-    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
-    // 可选参数，lpub_check_lens 没有 opt 形态，故缺省分支单列；给了就按它校验上下界
-    size_t cap = lua_isnoneornil(lua, 2) ? 65536 : lpub_check_lens(lua, 2, INT32_MAX);
-    const size_t chunk = 4096;
-    luaL_Buffer lbuf;
-    luaL_buffinit(lua, &lbuf);
-    size_t total = 0;
-    size_t want;
-    int32_t nread;
-    int32_t eof = 0;
-    while (total < cap) {
-        want = chunk;
-        if (want > cap - total) {
-            want = cap - total;
-        }
-        nread = popen_read(ctx, luaL_prepbuffsize(&lbuf, want), want, &eof);
-        if (nread <= 0) {
-            break;
-        }
-        luaL_addsize(&lbuf, (size_t)nread);
-        total += (size_t)nread;
-    }
-    luaL_pushresult(&lbuf);
-    lua_pushboolean(lua, eof);
-    return 2;
-}
-/// <summary>
-/// 向子进程 stdin 写入数据，当场写进管道；子进程按行读的话换行要自己带
-/// </summary>
-/// <param name="self" type="userdata">popen 对象</param>
-/// <param name="data" type="string">待写入数据</param>
-/// <returns type="integer">实际写入的字节数，**可能少于 data 长度**——写端非阻塞，
-/// 对端缓冲写满即返回，单次最多写 INT32_MAX 字节，剩余部分由调用方决定重试还是放弃；
-/// mode 不含 "w"、已 close_stdin，或一个字节都没写进去且出错时返回 -1</returns>
-static int32_t _lpopen_write(lua_State *lua) {
-    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
-    size_t lens;
-    const char *data = luaL_checklstring(lua, 2, &lens);
-    lua_pushinteger(lua, popen_write(ctx, data, lens));
-    return 1;
-}
-/// <summary>
-/// 只关子进程的 stdin、让它读到 EOF，子进程照常运行、输出照常可读；
-/// sort、wc 这类读 stdin 到 EOF 才出结果的程序靠它收尾。之后 write 返回 -1
-/// </summary>
-/// <param name="self" type="userdata">popen 对象</param>
-/// <returns type="boolean">true 已送出 EOF；mode 不含 "w"、已调过一次或出错时 false</returns>
-static int32_t _lpopen_close_stdin(lua_State *lua) {
-    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
-    return lpub_rtn_bool(lua, ERR_OK == popen_close_stdin(ctx));
-}
-/// <summary>
-/// 主动终止子进程连同它派生的孙进程并收尸；子进程已自行退出时也照样清理剩下的孙进程
-/// （Windows 只发起终止不等它结束，取 exitcode 前先 waitexit）。
-/// 读写句柄要到对象回收时才关：close 之后仍可 read 剩下的输出、可取 exitcode
-/// </summary>
-/// <param name="self" type="userdata">popen 对象</param>
-/// <returns>无</returns>
-static int32_t _lpopen_close(lua_State *lua) {
-    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
-    popen_close(ctx);
-    return 0;
-}
-// __gc：popen_free 内部对没 close 过的 ctx 会自己收尾，这里不必再显式 close
-static int32_t _lpopen_gc(lua_State *lua) {
-    popen_ctx *ctx = lpub_check_udata(lua, 1, MT_POPEN);
-    popen_free(ctx);
-    return 0;
-}
-//srey.popen
-LUAMOD_API int luaopen_popen(lua_State *lua) {
-    luaL_Reg reg_new[] = {
-        { "new", _lpopen_new },
-        { NULL, NULL }
-    };
-    luaL_Reg reg_func[] = {
-        { "waitexit", _lpopen_waitexit },
-        { "exitcode", _lpopen_exitcode },
-        { "read",     _lpopen_read },
-        { "write",    _lpopen_write },
-        { "close_stdin", _lpopen_close_stdin },
-        { "close",    _lpopen_close },
-        { "__gc",     _lpopen_gc },
-        { NULL, NULL }
-    };
-    REG_MTABLE(lua, MT_POPEN, reg_new, reg_func);
     return 1;
 }

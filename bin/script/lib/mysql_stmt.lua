@@ -11,7 +11,7 @@ local mpub   = require("lib.mysql_pub")-- 与 mysql.lua 共用的判型，见该
 -- mysql_stmt_ctx：预处理语句执行上下文。
 -- self.stmt      ：C 层 stmt 对象，持有服务端 statement_id；动态调用 sock_id() 感知重连。
 -- self.owner     ：mysql_ctx Lua 包装实例，守卫读其实时 generation，多结果集收包复用其 _read_results。
--- self.closed    ：close() 已发出 COM_STMT_CLOSE，此后 execute / reset 一律拒绝。
+-- self.closed    ：已调过 close()，此后 execute / reset 一律拒绝；COM_STMT_CLOSE 不一定发出去了（见 close 的返回值）。
 local ctx = class("mysql_stmt_ctx")
 
 ---构造函数
@@ -48,8 +48,7 @@ function ctx:_execute(mbind)
     end
     local pack, size = self.stmt:pack_stmt_execute(mbind)
     if not pack then
-        WARN("mysql stmt_execute payload exceeds 16MB.")
-        return nil
+        return nil-- 只有载荷超 16MB 这一种，C 侧已带字节数打过 WARN
     end
     local mpack, sk = self.owner:_send_wait(pack, size)
     if not mpack then

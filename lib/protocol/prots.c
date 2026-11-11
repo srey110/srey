@@ -255,7 +255,7 @@ int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud) {
     if (NULL == target) {
         return ERR_FAILED;
     }
-    // 被 prots_accepted 拒收时不投 ACCEPT 消息：上层不该看到一条随即被关掉的连接
+    // 被 prots_accepted 拒收时不投 ACCEPT：事件层随即关连接，上层只收到它的 CLOSE
     int32_t rtn = prots_accepted(ev, sk, ud);
     if (ERR_OK == rtn) {
         message_ctx msg = { 0 };

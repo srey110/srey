@@ -172,6 +172,9 @@ local function _ref_unpack(pk)
     local val, kind, nelem, nxt = rnode(pk)
     -- 单一节点：无嵌套，直接返回
     if not nxt then
+        if "error" == kind then
+            return false, val
+        end
         return _single_node(val, kind, nelem)
     end
     -- 多节点：第一个节点必须是 aggregate data
@@ -185,6 +188,13 @@ local function _ref_unpack(pk)
     while pk do
         parent = mark[#mark]
         val, kind, nelem, pk = rnode(pk)
+        -- 错误节点：当值写成 { err = 文本 }，当 map 键就是文本本身
+        if "error" == kind then
+            kind = nil
+            if not (parent and parent.ismap and 0 == parent.status) then
+                val = { err = val }
+            end
+        end
         -- kind 非 nil 即聚合（C 侧只给聚合节点回带类型名），等价于 _is_agg(kind)。
         -- 追加一律 t[#t + 1]：与 table.insert 落点相同，少一次 C 调用
         if not parent then
@@ -785,7 +795,9 @@ runner.run(function(t)
         srey.on_recved(function(pktype, _, client, _, data)
             if PACK_TYPE.REDIS == pktype and 0 == client then
                 -- 两边都不挂起，回调里转完时载荷还有效
-                got[#got + 1] = { c = _canon(redis.unpack(data)), r = _canon(_ref_unpack(data)) }
+                got[#got + 1] = { c = _canon(redis.unpack(data)), r = _canon(_ref_unpack(data)),
+                                  e = select(2, redis.unpack(data)), ve = select(2, redis.value(data)),
+                                  k = select(2, rnode(data)) }
             end
         end)
         -- 固定边角：{ 线上字节, 期望值, 名字 }
@@ -799,6 +811,12 @@ runner.run(function(t)
         end
         local fixed = {
             { "+OK\r\n", "OK", "单节点标量" },
+            -- 错误应答：第 4 项是错误文本，unpack / value 走第二返回值，node 的 kind 为 "error"
+            { "-ERR boom\r\n", false, "单节点错误应答", "ERR boom" },
+            { "!4\r\nboom\r\n", false, "单节点批量错误", "boom" },
+            { "*2\r\n-ERR x\r\n:1\r\n", { { err = "ERR x" }, 1 }, "数组里的错误元素写成 err 表" },
+            { "%1\r\n-ERR k\r\n-ERR v\r\n", { ["ERR k"] = { err = "ERR v" } }, "map 的错误键是文本、错误值写成 err 表" },
+            { "|1\r\n+a\r\n+b\r\n-ERR x\r\n", { { a = "b" }, { err = "ERR x" } }, "顶层多值里的错误元素" },
             { "$-1\r\n", nil, "单节点 null bulk" },
             { "_\r\n", nil, "单节点 RESP3 nil" },
             { ",2\r\n", 2.0, "单节点浮点保持 float" },
@@ -869,6 +887,11 @@ runner.run(function(t)
                 if got[i] then
                     t:eq(_canon(f[2]), got[i].c, "redis.unpack " .. f[3])
                     t:eq(got[i].r, got[i].c, "redis.unpack 与参照一致：" .. f[3])
+                    if f[4] then
+                        t:eq(f[4], got[i].e, "unpack 第二返回值是错误文本：" .. f[3])
+                        t:eq(f[4], got[i].ve, "value 第二返回值是错误文本：" .. f[3])
+                        t:eq("error", got[i].k, "node 的 kind 是 error：" .. f[3])
+                    end
                 end
             end
             local nbad = 0

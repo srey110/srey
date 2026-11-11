@@ -543,7 +543,8 @@ void lpub_push_sock(lua_State *lua, sock_ctx *sk) {
     *ud = *sk;
     ASSOC_MTABLE(lua, MT_SOCK);
 }
-// 消息分发专用:按 skid 复用同一个 userdata,免得每条消息都造一个。命中也照这条消息刷新一次值。
+// 消息分发专用:按 skid 复用同一个 userdata,免得每条消息都造一个。命中直接用、不按消息刷新:同一 skid 的值不会变,
+// 而等待被 CLOSE 唤醒时置的失效不能被同一次分发取 msg.sk 刷回有效。
 // 别处(sock_id / connect / udp)一个连接只建一次,不进这张表
 void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk) {
     if (0 == sk->skid) {
@@ -552,7 +553,6 @@ void lpub_push_sock_msg(lua_State *lua, sock_ctx *sk) {
     }
     _sk_cache_push(lua);
     if (LUA_TUSERDATA == lua_rawgeti(lua, -1, (lua_Integer)sk->skid)) {
-        *(sock_ctx *)lua_touserdata(lua, -1) = *sk;
         lua_remove(lua, -2);
         return;
     }

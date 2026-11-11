@@ -14,7 +14,8 @@ int32_t _mqtt_may_resume(void *data);
 /// <summary>
 /// 从缓冲区中解析一个完整的 MQTT 数据包。
 /// 服务端方向收到协议级别不支持的 CONNECT 直接按协议错误断连，不回 CONNACK(0x01 / 0x84)。
-/// UTF-8 字段只拒 U+0000，不校验是否良构；原因码与属性取值不按规范的取值表校验(属性见 mqtt_propertie)
+/// UTF-8 字段只拒 U+0000，不校验是否良构；原因码与属性取值不按规范的取值表校验(属性见 mqtt_propertie)。
+/// 服务端的语义检查也留给业务：3.1.1 空 clientid 配 CleanSession=0(要回 CONNACK 0x02)、PUBLISH 主题名含通配符都照常交出
 /// </summary>
 /// <param name="client">1 表示当前端为客户端，0 表示服务端</param>
 /// <param name="buf">接收缓冲区</param>

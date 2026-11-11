@@ -6,10 +6,12 @@ local mysql  = require("lib.mysql")
 local mbind  = require("srey.mysql.bind")
 local cmysql = require("srey.mysql")-- C 绑定，按包取计数与错误
 local cstmt  = require("srey.mysql.stmt")
-local core   = require("srey.core")
+local sssl   = require("srey.ssl")
 
 -- 数据库地址：在 VM 上跑时改成宿主机 IP，只改这一处
 local DB_HOST = "127.0.0.1"
+-- RSA 口令交换用例的专用账号（与 C 用例的账号分开）
+local RSA_USER, RSA_PSW = "srey_rsa_lua", "srey-rsa-pass"
 -- 不带客户端证书、不校验服务端的 TLS 上下文(同 C 侧 clientnull)：MySQL 会向客户端要证书，
 -- 带上 SSL_NAME.CLIENT 那张项目自签证书会被容器以 unknown ca 拒掉
 local SSL_NOCERT = "db_mysql_nocert"
@@ -66,12 +68,12 @@ end
 -- 先走 TLS 连一次并查一条：caching_sha2_password 账号在服务端缓存未命中（如容器刚起）时只在 TLS 上做完整认证，
 -- 明文连接直接认证失败；TLS 上认证成功后服务端缓存住，随后的明文连接才能走快速认证。不带 SSL 的构建跳过
 local function _tls_case(t)
-    if not core.with_ssl() then
+    if not sssl.with_ssl() then
         printd("[%s] built without SSL, mysql tls case skipped", t.name)
         return
     end
-    if not srey.ssl_qury(SSL_NOCERT)
-        and nil == core.cert_register(SSL_NOCERT, "", "", "") then
+    if not srey.ssl_query(SSL_NOCERT)
+        and nil == sssl.cert_register(SSL_NOCERT, "", "", "") then
         t:fail("注册不带证书的客户端 TLS 上下文")
         return
     end
@@ -99,9 +101,53 @@ local function _tls_case(t)
     t:eq(0, nexch, "mysql TLS 不上推 SSLEXCHANGED")
 end
 
+-- RSA 口令交换：明文连接、服务端缓存冷时，用本地公钥或向服务端要来的公钥加密口令；两样都没有就失败。
+-- 专用账号由 root 经 TLS 建，改它的密码只清它自己的缓存，不碰别的用例在用的 admin
+local function _rsa_case(t)
+    if not sssl.with_ssl() then
+        printd("[%s] built without SSL, mysql rsa case skipped", t.name)
+        return
+    end
+    local root = mysql.new(DB_HOST, 3306, SSL_NOCERT, "root", "root", "test", "utf8mb4", 0)
+    if not t:check(root:connect(), "root 经 TLS 连接") then
+        return
+    end
+    local function _exec(sql)
+        local rs = root:query(sql)
+        return rs and true == rs[1]
+    end
+    local acct = "'" .. RSA_USER .. "'@'%'"
+    t:check(_exec("CREATE USER IF NOT EXISTS " .. acct .. " IDENTIFIED BY '" .. RSA_PSW .. "'"), "建 RSA 用例账号")
+    t:check(_exec("GRANT SELECT ON test.* TO " .. acct), "给 RSA 用例账号授权")
+    local pem
+    local srs = root:query("SHOW STATUS LIKE 'Caching_sha2_password_rsa_public_key'")
+    if srs and "userdata" == type(srs[1]) then
+        pem = select(2, srs[1]:string("Value", true))
+    end
+    if t:check("string" == type(pem) and #pem > 0, "取到服务端 RSA 公钥") then
+        local function _try(label, setup)
+            t:check(_exec("ALTER USER " .. acct .. " IDENTIFIED BY '" .. RSA_PSW .. "'"), label .. "：改密码清缓存")
+            local m = mysql.new(DB_HOST, 3306, SSL_NAME.NONE, RSA_USER, RSA_PSW, "test", "utf8mb4", 0)
+            setup(m)
+            local ok = m:connect()
+            m:quit()
+            return ok
+        end
+        t:check(not _try("都不设", function() end), "明文、缓存冷、没有公钥：认证失败")
+        t:check(_try("本地公钥", function(m) t:check(m:set_pubkey(pem), "set_pubkey") end), "本地公钥：认证成功")
+        t:check(_try("向服务端要", function(m) t:check(m:set_pubkey_request(true), "set_pubkey_request") end),
+                "向服务端要公钥：认证成功")
+        local probe = mysql.new(DB_HOST, 3306, SSL_NAME.NONE, RSA_USER, RSA_PSW, "test", "utf8mb4", 0)
+        t:eq(false, probe:set_pubkey("not a pem"), "不是公钥的 PEM 被拒")
+    end
+    _exec("DROP USER IF EXISTS " .. acct)
+    root:quit()
+end
+
 srey.startup(function()
 runner.run(function(t)
     _tls_case(t)
+    _rsa_case(t)
     local mctx = mysql.new(DB_HOST, 3306, SSL_NAME.NONE,
                            "admin", "12345678", "test", "utf8mb4", 0)
     if not mctx:connect() then
@@ -323,6 +369,33 @@ runner.run(function(t)
         t:check(rok and 1003 == v, "reset 后换参数 execute: " .. tostring(v))
     end
 
+    -- VECTOR（MySQL 9.0 起）：query 与 stmt 各读一遍，非 VECTOR 列读取失败。低版本跳过
+    local vrs = mctx:query("select version() as v")
+    local ver
+    if vrs and vrs[1] then
+        ver = select(2, vrs[1]:string("v", true))
+    end
+    if (tonumber(tostring(ver):match("^(%d+)%.")) or 0) < 9 then
+        printd("[db_mysql] VECTOR needs MySQL 9.0+, case skipped (version %s)", tostring(ver))
+    else
+        local function _check_vector(label, rs)
+            local vrd = rs and rs[1]
+            if t:check(vrd, label .. " VECTOR 有结果集") then
+                local ok, vec = vrd:vector("v")
+                t:check(ok and "table" == type(vec) and 3 == #vec and 1.5 == vec[1] and 2 == vec[2] and -3 == vec[3],
+                        label .. " reader:vector 取到 [1.5, 2, -3]")
+                t:eq(false, (vrd:vector("i")), label .. " 非 VECTOR 列读取失败")
+            end
+        end
+        local vsql = "select STRING_TO_VECTOR('[1.5,2,-3]') as v, 7 as i"
+        _check_vector("query", mctx:query(vsql))
+        local vst = mctx:prepare(vsql)
+        if t:check(vst, "prepare VECTOR select") then
+            _check_vector("stmt", vst:execute())
+            vst:close()
+        end
+    end
+
     -- ping 自动重连：quit 关闭连接后 ping 应检测到死连接并重连
     mctx:quit()
     t:check(mctx:ping(), "mysql ping auto-reconnect after quit")
@@ -338,11 +411,11 @@ runner.run(function(t)
     -- 命令没等到应答：锁内就地关连接（established 清零、代次前进），之后 ping 能重连。
     -- 首包与多结果集续读两条路各走一遍；读超时有 1s 粒度（最坏多等 1s），SLEEP 给足 2 秒
     for _, c in ipairs({ { "首包", "select sleep(2)" }, { "续读", "select 1 as a; select sleep(2) as b" } }) do
-        local oldnr = srey.get_netread_timeout()
-        srey.set_netread_timeout(300)
+        local oldnr = srey.get_timeout("netread")
+        srey.set_timeout("netread", 300)
         local g = mctx.generation
         local rsl = mctx:query(c[2])
-        srey.set_netread_timeout(oldnr)
+        srey.set_timeout("netread", oldnr)
         t:eq(nil, rsl, c[1] .. "没等到应答 query 返回 nil")
         t:eq(false, mctx.established, c[1] .. "没等到应答即锁内关连接")
         t:check(mctx.generation ~= g, c[1] .. "没等到应答代次前进")

@@ -5276,6 +5276,15 @@ static void test_radix_iter(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int32_t)n);
     CuAssertTrue(tc, !rx_i32_iter_seek(&it, "zzz", 3));
 
+    // 替换已有键只改值、不算增删：迭代器照常往下走
+    CuAssertTrue(tc, rx_i32_iter_first(&it));
+    v = 66;
+    CuAssertIntEquals(tc, 0, rx_i32_set(&m, "abc", 3, &v, NULL));
+    CuAssertTrue(tc, rx_i32_iter_next(&it));
+    k = rx_i32_iter_key(&it, &n);
+    CuAssertIntEquals(tc, 1, (int32_t)n);
+    CuAssertTrue(tc, 0 == memcmp(k, "a", 1));
+
     // 遍历中改表：下一次 next 检出并失效
     // version 不一致后，迭代器必须停下；first 重新定位可恢复
     CuAssertTrue(tc, rx_i32_iter_first(&it));
@@ -5335,6 +5344,14 @@ static void test_radix_prefix_walk(CuTest *tc) {
     CuAssertIntEquals(tc, 3, (int32_t)match_len);
     CuAssertTrue(tc, 0 == memcmp(keybuf, "abc", 3));
     CuAssertIntEquals(tc, 2, *val);
+
+    // keybuf 为 NULL 只回长度与值；keybuf 放不下就整体返回 0，即便已有更短的匹配("ab")
+    CuAssertTrue(tc, rx_i32_prefix_match(&m, "abcd", 4, NULL, 0, &match_len, &val));
+    CuAssertIntEquals(tc, 3, (int32_t)match_len);
+    CuAssertIntEquals(tc, 2, *val);
+    CuAssertTrue(tc, !rx_i32_prefix_match(&m, "abcd", 4, keybuf, 2, &match_len, &val));
+    CuAssertIntEquals(tc, 0, (int32_t)match_len);
+    CuAssertPtrEquals(tc, NULL, val);
 
     CuAssertTrue(tc, rx_i32_prefix_match(&m, "abx", 3, keybuf, sizeof(keybuf), &match_len, &val));
     CuAssertIntEquals(tc, 2, (int32_t)match_len);

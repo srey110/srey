@@ -32,7 +32,7 @@ static void _startup(task_ctx *task) {
     task_closed(task, _net_close);
 #if WITH_SSL
     if (!EMPTYSTR(ctx->sslname)) {
-        ssl = evssl_qury(ctx->sslname);
+        ssl = evssl_query(ctx->sslname);
     }
 #endif
     // 域名需先 DNS 解析，IP 直连
@@ -190,6 +190,7 @@ typedef struct fake_smtp_ctx {
     smtp_ctx smtp3;         // 第三条连接，验用户名为空时免认证投递
     smtp_ctx smtp5;         // 第五条连接，经连接池借还
     smtp_ctx smtp4;         // 第四条连接，验服务端通告了 AUTH 时用户名为空也不认证
+    smtp_ctx smtp6;         // 第六条连接，验密码错时握手失败
     fake_conn conns[FAKE_MAXCONN];
 }fake_smtp_ctx;
 
@@ -672,6 +673,14 @@ static void _fake_startup_run(task_ctx *task) {
     if (ERR_OK != _fake_pool(task, ctx)) {
         return;
     }
+    // 密码不对：假服务端回 535，建连必须失败
+    if (ERR_OK != smtp_init(&ctx->smtp6, "127.0.0.1", ctx->port, NULL, "user", "wrong")
+        || ERR_OK == smtp_connect(task, &ctx->smtp6)) {
+        LOG_ERROR("%s", "fake smtp: wrong password must fail the handshake.");
+        smtp_quit(&ctx->smtp6);
+        return;
+    }
+    smtp_quit(&ctx->smtp6);
     LOG_INFO("smtp fake tested: %d mails, no interleaving.", ctx->mails);
     ATOMIC_SET((atomic_t *)ctx->ok, 1);
 }

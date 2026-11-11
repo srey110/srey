@@ -889,7 +889,7 @@ static int32_t _auth_fail_flow(task_ctx *task, task_mongo_args *arg) {
         return ERR_FAILED;
     }
     // 当场被拒才对：等满读超时才失败说明错误没映射出来(只是超时)
-    if (timer_elapsed_ms(&tm) >= task_get_netread_timeout(task) / 2) {
+    if (timer_elapsed_ms(&tm) >= task_get_timeout(task, TMO_NETREAD) / 2) {
         LOG_ERROR("mongo auth fail: took %"PRIu64"ms, a timeout rather than a rejection.", timer_elapsed_ms(&tm));
         return ERR_FAILED;
     }
@@ -1026,6 +1026,40 @@ static int32_t _pool_flow(task_ctx *task, task_mongo_args *arg) {
         goto out;
     }
     mongo_freesession(sess);
+    // 事务里写过一条再归还：reset 真发 abortTransaction，连接保留、绑定已清、那条写不可见。需要副本集(同 _txn_flow)
+    sess = mongo_startsession(got);
+    mongo_collection(got, "srey_test_pool_txn");
+    mongo_drop(got, NULL, 0);// 集合本就可能不存在，返回值不判
+    if (NULL == sess
+        || ERR_OK != mongo_begin(sess)
+        || 1 != _insert_id(got, 500, "pool-txn")) {
+        LOG_ERROR("%s", "mongo pool: begin / insert in txn error.");
+        if (NULL != sess) {
+            mongo_freesession(sess);
+        }
+        db_pool_put(pool, got);
+        goto out;
+    }
+    db_pool_put(pool, got);
+    got = mongo_pool_get(pool, 2000, &grtn);
+    db_pool_stat_get(pool, &st);
+    if (NULL == got
+        || NULL != got->session
+        || 1 != st.connects) {
+        LOG_ERROR("mongo pool: get %d after txn with a write, connects=%u, binding or connection lost.", grtn, st.connects);
+        mongo_freesession(sess);
+        if (NULL != got) {
+            db_pool_put(pool, got);
+        }
+        goto out;
+    }
+    mongo_freesession(sess);
+    mongo_collection(got, "srey_test_pool_txn");
+    if (0 != _count_id(got, 500)) {
+        LOG_ERROR("%s", "mongo pool: write in the aborted txn is visible.");
+        db_pool_put(pool, got);
+        goto out;
+    }
     db_pool_put(pool, got);
     rtn = ERR_OK;
 out:

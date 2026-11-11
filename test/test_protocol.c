@@ -16,6 +16,9 @@
 #define _SMTP_AUTH_CHECK 3
 #define _SMTP_COMMAND    4
 #define _SMTP_AUTH_PSW   5
+// mqtt.c 的 parse_status，同样按数值抄一份
+#define _MQ_INIT     0
+#define _MQ_COMMAND  1
 // authtype 直接取 smtp.h 的枚举，别再抄一份数值
 #define _SMTP_LOGIN      LOGIN
 #define _SMTP_PLAIN      PLAIN
@@ -350,6 +353,44 @@ static void test_http_pack_bytes(CuTest *tc) {
     binary_free(&bw);
 }
 // 附加头名判据：router 与脚本绑定共用这一份，上限、token、自动头三条都要卡住
+// 判据：不得含 NUL / CR / LF；长度 0 放行，长度非 0 的 NULL 拒绝
+static void test_http_head_val_ok(CuTest *tc) {
+    CuAssertTrue(tc, 0 != http_head_val_ok("v 1", 3));
+    CuAssertTrue(tc, 0 != http_head_val_ok(NULL, 0));
+    CuAssertTrue(tc, 0 != http_head_val_ok("", 0));
+    CuAssertTrue(tc, 0 == http_head_val_ok(NULL, 1));
+    CuAssertTrue(tc, 0 == http_head_val_ok("a\0b", 3));
+    CuAssertTrue(tc, 0 == http_head_val_ok("a\rb", 3));
+    CuAssertTrue(tc, 0 == http_head_val_ok("a\nb", 3));
+    CuAssertTrue(tc, 0 == http_head_val_ok("a\r\n", 3));
+}
+// 客户端方向解一条响应，核对状态码、reason 长度与 http_is_interim
+static void _http_status_case(CuTest *tc, const char *raw, const char *code, size_t rlens, int32_t interim) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status = PROT_INIT;
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud_cxt));
+    _bput(&buf, raw);
+    struct http_pack_ctx *pack = _t_http_unpack(1, &buf, &ud, NULL, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, buf_compare(&http_status(pack)[1], code, strlen(code)));
+    CuAssertTrue(tc, rlens == http_status(pack)[2].lens);
+    CuAssertIntEquals(tc, interim, 0 != http_is_interim(pack));
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+// 省略 reason 时连空格也省要放行；1xx 只认三位十进制且小于 200
+static void test_http_status_forms(CuTest *tc) {
+    _http_status_case(tc, "HTTP/1.1 200\r\nContent-Length: 0\r\n\r\n", "200", 0, 0);
+    _http_status_case(tc, "HTTP/1.1 200 \r\nContent-Length: 0\r\n\r\n", "200", 0, 0);
+    _http_status_case(tc, "HTTP/1.1 103\r\n\r\n", "103", 0, 1);
+    _http_status_case(tc, "HTTP/1.1 103 Early Hints\r\n\r\n", "103", 11, 1);
+    _http_status_case(tc, "HTTP/1.1 099 x\r\n\r\n", "099", 1, 1);
+    _http_status_case(tc, "HTTP/1.1 1e2 x\r\nContent-Length: 0\r\n\r\n", "1e2", 1, 0);
+    _http_status_case(tc, "HTTP/1.1 0150 x\r\nContent-Length: 0\r\n\r\n", "0150", 1, 0);
+}
 static void test_http_head_key_check(CuTest *tc) {
     char key[HTTP_HEAD_KEY_MAX + 1];
     memset(key, 'k', sizeof(key));
@@ -708,9 +749,14 @@ static void test_http_status_line(CuTest *tc) {
         "Host: a\r\n"
         "\r\n",
         1);
-    // 2. 状态行无 reason-phrase 且无尾随空格（RFC 7230 §3.1.2 status-code 后必须有 SP）→ 拒绝
+    // 2. 状态行省略 reason 连空格也省 → 放行（常见服务端这样发）；连状态码都没有 → 拒绝
     _http_smuggle_check(tc,
         "HTTP/1.1 200\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        0);
+    _http_smuggle_check(tc,
+        "HTTP/1.1 \r\n"
         "Content-Length: 0\r\n"
         "\r\n",
         1);
@@ -5984,6 +6030,7 @@ static void test_prots_free_null(CuTest *tc) {
     // （fail-fast 就是目的），故不在此验证，只验幂等
     prots_free();
     prots_free();
+    prots_init(&g_stub_emit);// 装回共用桩：后面的用例照旧走它(见 g_stub_emit 处说明)
 }
 
 // prots_pkfree default 分支：未识别 pktype 直接 FREE，ASan 验证无 leak
@@ -6443,7 +6490,7 @@ static void test_prots_may_resume_websock_mqtt(CuTest *tc) {
     ud_cxt subud;
     ZERO(&subud, sizeof(subud));
     subud.pktype = PACK_MQTT;
-    subud.status = 1; // mqtt 内部 COMMAND 状态
+    subud.status = _MQ_COMMAND;
     subud.context = &mctx;
     buffer_ctx subbuf;
     buffer_init(&subbuf);
@@ -7049,7 +7096,7 @@ static void test_websock_mqtt_multipack(CuTest *tc) {
     mqtt_ctx mctx = { MQTT_311 };
     ud_cxt mqtt_ud;
     ZERO(&mqtt_ud, sizeof(mqtt_ud));
-    mqtt_ud.status = 1; /* mqtt 内部 COMMAND 状态,跳过 CONNECT 前置直接测命令阶段 */
+    mqtt_ud.status = _MQ_COMMAND; /* mqtt 内部 COMMAND 状态,跳过 CONNECT 前置直接测命令阶段 */
     mqtt_ud.context = &mctx;
 
     buffer_ctx subbuf;
@@ -7115,7 +7162,7 @@ static void test_websock_mqtt_ws_fragment_slice_clear(CuTest *tc) {
     mqtt_ctx mctx = { MQTT_311 };
     ud_cxt mqtt_ud;
     ZERO(&mqtt_ud, sizeof(mqtt_ud));
-    mqtt_ud.status = 1;
+    mqtt_ud.status = _MQ_COMMAND;
     mqtt_ud.context = &mctx;
 
     buffer_ctx subbuf;
@@ -8250,7 +8297,7 @@ static void test_mqtt_auth_version_gate(CuTest *tc) {
     mqtt_ctx mctx = { MQTT_311 };
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.status = 1; // COMMAND
+    ud.status = _MQ_COMMAND;
     ud.context = &mctx;
     buffer_ctx buf;
     buffer_init(&buf);
@@ -8288,7 +8335,7 @@ static void test_mqtt_packid_zero(CuTest *tc) {
         for (int32_t id = 0; id < 2; id++) {
             cases[i].pk[cases[i].idoff + 1] = (char)id;
             ZERO(&ud, sizeof(ud));
-            ud.status = 1;// COMMAND
+            ud.status = _MQ_COMMAND;
             ud.context = &mctx;
             buffer_init(&buf);
             buffer_append(&buf, cases[i].pk, cases[i].lens);
@@ -8316,7 +8363,7 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
     mqtt_ctx mctx = { MQTT_311 };
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.status = 0;// INIT：CONNECT 只在这个状态被受理，COMMAND 态一律落 default 返 NULL
+    ud.status = _MQ_INIT;// INIT：CONNECT 只在这个状态被受理，COMMAND 态一律落 default 返 NULL
     // context 留 NULL：INIT 态 CONNECT 要求 context 为空
     buffer_ctx buf;
     buffer_init(&buf);
@@ -8332,7 +8379,7 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
         0x00, 0x0A, 'v', 'i', 'c', 't', 'i', 'm', 'e', 'v', 'i', 'l'
     };
     ZERO(&ud, sizeof(ud));
-    ud.status = 0;
+    ud.status = _MQ_INIT;
     buffer_init(&buf);
     buffer_append(&buf, okid, sizeof(okid));
     status = PROT_INIT;
@@ -8351,7 +8398,7 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
         (char)0x30, 0x0A, 0x00, 0x08, 'a', '/', 'b', 0x00, 'e', 'v', 'i', 'l'
     };
     ZERO(&ud, sizeof(ud));
-    ud.status = 1;// COMMAND：PUBLISH 只在握手完成后受理，INIT 态会落 default
+    ud.status = _MQ_COMMAND;// COMMAND：PUBLISH 只在握手完成后受理，INIT 态会落 default
     ud.context = &mctx;
     buffer_init(&buf);
     buffer_append(&buf, nultopic, sizeof(nultopic));
@@ -8365,7 +8412,7 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
         (char)0x30, 0x09, 0x00, 0x07, 'a', '/', 'b', 'e', 'v', 'i', 'l'
     };
     ZERO(&ud, sizeof(ud));
-    ud.status = 1;
+    ud.status = _MQ_COMMAND;
     ud.context = &mctx;
     buffer_init(&buf);
     buffer_append(&buf, oktopic, sizeof(oktopic));
@@ -8388,7 +8435,7 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
         (char)0x30, 0x0C, 0x00, 0x07, 'a', '/', 'b', 'e', 'v', 'i', 'l', 'x', 'y', 'z'
     };
     ZERO(&ud, sizeof(ud));
-    ud.status = 1;
+    ud.status = _MQ_COMMAND;
     ud.context = &mctx;
     buffer_init(&buf);
     buffer_append(&buf, okpayload, sizeof(okpayload));
@@ -8407,7 +8454,7 @@ static void test_mqtt_utf8_embedded_nul(CuTest *tc) {
         (char)0x30, 0x0D, 0x00, 0x01, 't', 0x08, 0x26, 0x00, 0x01, 'k', 0x00, 0x02, 'v', 'v', 'p'
     };
     ZERO(&ud, sizeof(ud));
-    ud.status = 1;
+    ud.status = _MQ_COMMAND;
     ud.context = &mctx5;
     buffer_init(&buf);
     buffer_append(&buf, userprop, sizeof(userprop));
@@ -9335,6 +9382,18 @@ static void test_smtp_login_reject(CuTest *tc) {
     _login_reject(tc, _SMTP_AUTH, "334\r\n", "334");
     _login_reject(tc, _SMTP_AUTH_PSW, "334 !!!!\r\n", "334 !!!!");
     _login_reject(tc, _SMTP_AUTH, "334-VXNlcm5hbWU6\r\n", "334-VXNlcm5hbWU6");
+    // 码后既不是空格也不是行尾
+    _login_reject(tc, _SMTP_AUTH, "334XdXNlcm5hbWU6\r\n", "334XdXNlcm5hbWU6");
+    _login_reject(tc, _SMTP_AUTH, "334\rjunk\r\n", "334\rjunk");
+    // PLAIN 过同一道检查，畸形挑战换不到凭据
+    smtp_ctx smtp;
+    ud_cxt ud;
+    buffer_ctx buf;
+    _unpack_setup(&smtp, &ud, &buf, _SMTP_AUTH, PLAIN);
+    int32_t status = _unpack_feed(&ud, &buf, "334X\r\n");
+    buffer_free(&buf);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, _SMTP_AUTH, (int)ud.status);
 }
 // AUTH_CHECK：235 切 COMMAND 并把成功交给等待方；别的码把整段多行诊断原样交出去，不能只留首行
 static void test_smtp_auth_check_result(CuTest *tc) {
@@ -9602,6 +9661,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_tillclose_request_only);
     SUITE_ADD_TEST(suite, test_http_response);
     SUITE_ADD_TEST(suite, test_http_pack_req);
+    SUITE_ADD_TEST(suite, test_http_head_val_ok);
+    SUITE_ADD_TEST(suite, test_http_status_forms);
     SUITE_ADD_TEST(suite, test_http_head_key_check);
     SUITE_ADD_TEST(suite, test_http_pack_bytes);
     SUITE_ADD_TEST(suite, test_http_smuggling);

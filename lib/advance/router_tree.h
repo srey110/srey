@@ -65,7 +65,7 @@ void rtree_free(rtree_ctx *t);
 /// <param name="res">变体/遮蔽/跳过统计；variants 由调用方释放</param>
 /// <returns>ERR_OK=至少一个变体入树；-1=res 为 NULL、t / segs 非法、段数超上限、mask 为 0、route_id 越界、
 /// WILD 不在末段、OPT 不在末尾或超 ROUTER_MAX_OPT、全部变体参数超限；
-/// -2=全部变体被已有路由完全遮住。失败时 res 里仍可能有 variants，调用方照常释放</returns>
+/// -2=没有变体入树且至少一个被已有路由完全遮住(其余因参数超限跳过)。失败时 res 里仍可能有 variants，调用方照常释放</returns>
 int32_t rtree_add(rtree_ctx *t, const router_seg *segs, int32_t n, router_method mask, router_route_id route_id,
                   rtree_add_result *res);
 /// <summary>

@@ -476,7 +476,7 @@ static void _syn_startup_run(task_ctx *task) {
             _syn_dead_netev = &task->loader->netev;
             _syn_dead_sk = dsk;
             // 收窄放在 synstart 成功之后:否则安装步骤自身可能超时,后续断言会以错误理由通过
-            task_set_netread_timeout(task, 3000);
+            task_set_timeout(task, TMO_NETREAD, 3000);
             coro_fork(coro_task_co(task), _syn_close_fork, NULL);
             uint64_t b6 = nowms();
             // 该会话对端是 kcp server,但本次不等 echo——先被 fork 协程关 socket 触发的 CLOSE 唤醒
@@ -658,7 +658,7 @@ static int32_t _peer_cases(task_ctx *task) {
     ATOMIC_SET(&_peer_sink, 0);
     _peer_bsk = sks[PEER_B];
     task_recvedfrom(task, _peer_recvfrom);
-    task_set_netread_timeout(task, 10000);
+    task_set_timeout(task, TMO_NETREAD, 10000);
     // 1) 两端都关流控、10ms 一轮,127 片几轮就走完
     kcp_config fast = { 1, 10, -1, 1, 0, 0, 0 };
     kcp_ctx ka;
@@ -787,7 +787,7 @@ static void _idle_startup_run(task_ctx *task) {
         ev_close(&task->loader->netev, &usk);
         return;
     }
-    task_set_netread_timeout(task, 3000);// 漏唤醒会等满它(监控 1 秒粒度,实际 3~4 秒),与正常的几百毫秒分得开
+    task_set_timeout(task, TMO_NETREAD, 3000);// 漏唤醒会等满它(监控 1 秒粒度,实际 3~4 秒),与正常的几百毫秒分得开
     coro_sleep(task, 500);// 默认 interval 100:两端会话都已闲过一个 interval,停了表
     // A 收包唤醒:server 只收不回,只能靠它收包挂回后 flush 出 ACK;收不到 ACK 时 client 拥塞窗口停在 1,
     // 紧跟的 idle_a 搬不进在途队列,等满超时
@@ -853,10 +853,17 @@ static int32_t _learn_one(task_ctx *task, sock_ctx *sks, uint16_t aport, uint32_
     if (ERR_OK == kcp_start(&_learn_ka, task->handle, createid(), ip, 0, NULL)
         && ERR_OK == kcp_synstart(task, &kb, "127.0.0.1", aport, NULL)
         && ERR_OK == kcp_synstart(task, &ke, "127.0.0.1", aport, NULL)) {
+        // conv 对、cmd 非法的包：ikcp 不收，不能把 e 学成对端，否则下面 b 的回显收不到
+        char bad[24] = { 0 };
+        write_le32(bad, conv);
+        bad[4] = 0x7f;
+        coro_sleep(task, 50);// 等 a 上的会话落地
+        ev_sendto(netev, &sks[LEARN_E], "127.0.0.1", aport, bad, sizeof(bad), 1);
+        coro_sleep(task, 50);
         ok = (UINT64_MAX != _idle_echo(task, &kb, "learn_1"));
-        task_set_netread_timeout(task, 500);
+        task_set_timeout(task, TMO_NETREAD, 500);
         ok = ok && NULL == kcp_synsend(task, &ke, "learn_x", 7, 1, &esize);
-        task_set_netread_timeout(task, 10000);
+        task_set_timeout(task, TMO_NETREAD, 10000);
         ok = ok && UINT64_MAX != _idle_echo(task, &kb, "learn_2") && 2 == (int32_t)ATOMIC_GET(&_learn_hits);
     }
     kcp_stop(&_learn_ka);
@@ -899,6 +906,8 @@ static uint64_t _dead_sess;// conv 1 会话的 sess,synstart 内部生成,建好
 static sock_ctx _dead_bsk;// 对端 socket b:只在它上面回显
 static kcp_ctx _dead_peer;// conv 1 的对端会话:收到即原样回,只用于热身
 static kcp_ctx _dead_peer2;// conv 2 的对端会话:conv 1 拆掉后才建,回显 KCP_DL2 开头的消息
+static int32_t _sendq_closed;// 积压超限的会话收到过 CLOSE(erro 为 CLOSE_TYPE_LOCAL,sess 为 _sendq_sess)
+static uint64_t _sendq_sess;
 
 // 只在 b 上回显:a 上没人等的回显(conv 2 的第二条)也会落到这里,弹回去就来回打乒乓
 static void _dead_recvfrom(task_ctx *task, sock_ctx *sk, subtype_t pktype, const netaddr_ctx *addr, void *data, size_t size) {
@@ -922,6 +931,28 @@ static void _dead_closed(task_ctx *task, sock_ctx *sk, subtype_t pktype, uint8_t
         && sess == _dead_sess && sess != sk->skid) {
         _dead_abort = 1;
     }
+    if (PACK_UDP_KCP == pktype && CLOSE_TYPE_LOCAL == erro && sess == _sendq_sess) {
+        _sendq_closed = 1;
+    }
+}
+// 发送积压到上限:b 上没有这个 conv、不回 ACK,灌满后会话被拆并投 CLOSE(LOCAL)。
+// 库默认配置判死链要几分钟,10 秒内收到的只能是积压超限
+static int32_t _sendq_case(task_ctx *task, sock_ctx *ask, uint16_t bport) {
+    kcp_ctx kcp;
+    kcp_init(&kcp, &task->loader->netev, ask, 9);
+    if (ERR_OK != kcp_synstart(task, &kcp, "127.0.0.1", bport, NULL)) {
+        return 0;
+    }
+    _sendq_sess = kcp.sess;
+    _sendq_closed = 0;
+    for (int32_t i = 0; i < KCP_SENDQ_MAX + 8; i++) {
+        kcp_send(&kcp, "x", 1, 1);
+    }
+    for (int32_t i = 0; i < 500 && 0 == _sendq_closed; i++) {
+        coro_sleep(task, 20);
+    }
+    kcp_stop(&kcp);
+    return _sendq_closed;
 }
 // 本 task 内两个 UDP socket 互为对端:先热身一次 echo 让 rx_rto 落到 30ms 附近,再停掉对端会话,
 // 之后的 synsend 只能等某段重传到 dead_link(默认 20)次后的 CLOSE 唤醒。
@@ -970,7 +1001,7 @@ static void _dead_startup_run(task_ctx *task) {
             && ERR_OK == kcp_send(&kcp2, KCP_DL2 "pre", sizeof(KCP_DL2 "pre") - 1, 1));
         kcp_stop(&_dead_peer);// 之后发过去的包在对端查不到 conv,被丢,不回 ACK
         coro_sleep(task, 200);// 等 stop 在对端 event 线程上落地
-        task_set_netread_timeout(task, 120000);// 判死链约 3 秒;rx_rto 跟着热身那次往返走,ASan / 重负载下要 40 秒往上
+        task_set_timeout(task, TMO_NETREAD, 120000);// 判死链约 3 秒;rx_rto 跟着热身那次往返走,ASan / 重负载下要 40 秒往上
         bgts = nowms();
         dead = kcp_synsend(task, &kcp, "dl_x", 4, 1, &esize);
         elapse = nowms() - bgts;
@@ -985,6 +1016,7 @@ static void _dead_startup_run(task_ctx *task) {
         survived = (NULL != alive && esize >= sizeof(KCP_DL2) - 1
             && 0 == memcmp(alive, KCP_DL2, sizeof(KCP_DL2) - 1));
     }
+    int32_t sendq = _sendq_case(task, &ask, bport);
     kcp_stop(&kcp);
     kcp_stop(&kcp2);
     kcp_stop(&_dead_peer);
@@ -992,13 +1024,13 @@ static void _dead_startup_run(task_ctx *task) {
     ev_close(&task->loader->netev, &ask);
     ev_close(&task->loader->netev, &bsk);
     // 下界:rx_rto 不低于 30,20 次发送至少隔 19 段线性增长的 rto,约 3.1 秒,取 2000 证明是重传超限而非别的原因
-    if (closed && _dead_abort && elapse >= 2000 && survived) {
+    if (closed && _dead_abort && elapse >= 2000 && survived && sendq) {
         ATOMIC_SET((atomic_t *)_dead_ok, 1);
         LOG_INFO("kcp dead link tested: session closed with abort after %"PRIu64"ms of retransmits,"
-                 " the other session on the same socket still driven.", elapse);
+                 " the other session on the same socket still driven, send backlog limit closes the session.", elapse);
     } else {
         LOG_ERROR("kcp dead link test failed: warm %p pre %d dead %p closed %d abort %d elapse %"PRIu64"ms"
-                  " survived %d.", warm, pre, dead, closed, _dead_abort, elapse, survived);
+                  " survived %d sendq %d.", warm, pre, dead, closed, _dead_abort, elapse, survived, sendq);
     }
 }
 // 失败出口直接 return、槽停在初值：跑完没置 1 的记成已失败，汇总不必等满超时

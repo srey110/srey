@@ -170,7 +170,8 @@ static int32_t _lmysql_bind_datetime(lua_State *lua) {
     int64_t sec = lpub_check_range(lua, 3, -30610224000, 253402300799, "datetime out of range");
     luaL_argcheck(lua, (int64_t)(time_t)sec == sec, 3, "datetime exceeds time_t");
     time_t ts = (time_t)sec;
-    // 上面按 UTC 判，C 层按本地时区换算：边界附近本地年份出了 1000~9999 那边会静默写零日期，这里先拦。换算失败照旧交给 C 层
+    // 上面按 UTC 判，C 层按本地时区换算：边界附近本地年份会出 1000~9999（C 层只在 0~9999 之外写零日期，
+    // 1000 以下照样发出去），这里先拦。换算失败照旧交给 C 层
     struct tm dt;
     luaL_argcheck(lua, 0 != LOCALTIME(&ts, &dt)
                   || (dt.tm_year + 1900 >= 1000 && dt.tm_year + 1900 <= 9999),
@@ -382,6 +383,33 @@ static int32_t _lmysql_reader_string(lua_State *lua) {
     return lpub_rtn_bool(lua, 1 == err);
 }
 /// <summary>
+/// 读取当前行指定字段的 VECTOR 值（MySQL 9.0 起），按维度转成浮点数组
+/// </summary>
+/// <param name="self" type="userdata">reader 对象</param>
+/// <param name="name" type="string">字段名</param>
+/// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败（含列不是 VECTOR）</returns>
+/// <returns type="number[]?">各维的值；字段为 NULL 时不返回此值</returns>
+static int32_t _lmysql_reader_vector(lua_State *lua) {
+    LMYSQL_READER_GET(lua, reader, name, col, err);
+    size_t dims = mysql_reader_vector_at(*reader, col, NULL, 0, &err);// 只校验类型、取维度
+    if (ERR_OK != err) {
+        return lpub_rtn_bool(lua, 1 == err);
+    }
+    size_t lens;
+    const char *raw = mysql_reader_string_at(*reader, col, &lens, &err);
+    lua_pushboolean(lua, 1);
+    lua_createtable(lua, (int32_t)dims, 0);
+    uint32_t bits;
+    float val;
+    for (size_t i = 0; i < dims; i++) {
+        bits = read_le32(raw + i * sizeof(float));// 转换同 mysql_reader_vector_at
+        memcpy(&val, &bits, sizeof(val));
+        lua_pushnumber(lua, val);
+        lua_rawseti(lua, -2, (lua_Integer)i + 1);
+    }
+    return 2;
+}
+/// <summary>
 /// 读取当前行指定字段的 DATETIME 值（微秒精度），按本地时区换算；Windows 上 1970 年前与 3000 年后、
 /// macOS 上 1900 年前的值读取失败
 /// </summary>
@@ -508,6 +536,7 @@ LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
         { "float", _lmysql_reader_float },
         { "double", _lmysql_reader_double },
         { "string", _lmysql_reader_string },
+        { "vector", _lmysql_reader_vector },
         { "datetime", _lmysql_reader_datetime },
         { "time", _lmysql_reader_time },
         { "get", _lmysql_reader_get },
@@ -647,6 +676,30 @@ static int32_t _lmysql_pack_selectdb(lua_State *lua) {
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
+/// 设置服务端 RSA 公钥（PEM），同官方客户端 --server-public-key-path：明文连接上要完整认证时用它加密口令，
+/// 设了就不向服务端要公钥；TLS 连接上用不到。须在 connect 之前设
+/// </summary>
+/// <param name="self" type="userdata">mysql 对象</param>
+/// <param name="pem" type="string?">公钥 PEM；nil 或空串清掉已设的公钥</param>
+/// <returns type="boolean">成功 true；超长、不是 RSA 公钥或编译时没开 SSL 时 false，原值不变</returns>
+static int32_t _lmysql_set_pubkey(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    size_t lens = 0;
+    const char *pem = luaL_optlstring(lua, 2, NULL, &lens);
+    return lpub_rtn_bool(lua, ERR_OK == mysql_set_pubkey(*ud, pem, lens));
+}
+/// <summary>
+/// 允许明文连接上向服务端要 RSA 公钥（默认不允许），同官方客户端 --get-server-public-key。要来的公钥无从核实，
+/// 中间人换掉它就能拿到口令，只在可信网络里开；设了本地公钥时以本地为准。须在 connect 之前设
+/// </summary>
+/// <param name="self" type="userdata">mysql 对象</param>
+/// <param name="on" type="boolean">true 允许</param>
+/// <returns type="boolean">成功 true；编译时没开 SSL 时 false</returns>
+static int32_t _lmysql_set_pubkey_request(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    return lpub_rtn_bool(lua, ERR_OK == mysql_set_pubkey_request(*ud, lua_toboolean(lua, 2)));
+}
+/// <summary>
 /// 打包 COM_PING 心跳命令
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
@@ -663,7 +716,8 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="sql" type="string">SQL 语句</param>
-/// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数，其余类型报错</param>
+/// <param name="bind" type="userdata?">查询属性绑定上下文；nil 表示无参数，其余类型报错。
+/// 服务端不支持查询属性（MySQL 8.0.23 之前、MariaDB）时不发，绑定被忽略、不报错</param>
 /// <returns type="lightuserdata?">命令数据指针；载荷超 16MB 时返回 nil</returns>
 /// <returns type="integer?">数据长度；命令数据指针为 nil 时一并为 nil</returns>
 static int32_t _lmysql_pack_query(lua_State *lua) {
@@ -818,6 +872,19 @@ static int32_t _lmysql_in_trans(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// autocommit 状态：最近一个 OK / EOF 包里的，与认证成功那一刻的；命令回 ERR 时前者不变。
+/// 读取时机同 in_trans
+/// </summary>
+/// <param name="self" type="userdata">mysql 对象</param>
+/// <returns type="boolean">当前是否开着</returns>
+/// <returns type="boolean">认证成功时是否开着</returns>
+static int32_t _lmysql_autocommit(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    lua_pushboolean(lua, 0 != (*ud)->autocommit);
+    lua_pushboolean(lua, 0 != (*ud)->autocommit_init);
+    return 2;
+}
+/// <summary>
 /// 返回最近一个经 record / record_handshake 记下的 ERR 包错误并清除错误状态；成功的命令不清它。
 /// 多协程共用连接时须在命令返回后、本协程下次挂起之前读
 /// </summary>
@@ -959,7 +1026,10 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
         { "try_connect", _lmysql_try_connect },
         { "version", _lmysql_version },
         { "in_trans", _lmysql_in_trans },
+        { "autocommit", _lmysql_autocommit },
         { "erro", _lmysql_erro },
+        { "set_pubkey", _lmysql_set_pubkey },
+        { "set_pubkey_request", _lmysql_set_pubkey_request },
         { "sock_id", _lmysql_sock_id },
         { "last_id", _lmysql_last_id },
         { "affected_rows", _lmysql_affected_rows },

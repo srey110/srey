@@ -75,21 +75,27 @@ void *prots_unpack(ev_ctx *ev, sock_ctx *sk, int32_t client,
 // 签名与 cbs_ctx 对应回调（accept_cb/connect_cb/recv_cb/...）一致。
 /// <summary>接受新连接：完成协议初始化并推送 MSG_TYPE_ACCEPT。listen 订了对端地址(UD_PEERADDR)时，
 /// 消息的 data 是 MALLOC 的 netaddr_ctx(取不到地址则为 NULL)，由 message_clean 释放</summary>
+/// <returns>ERR_OK 接受；目标 task 已不在时 ERR_FAILED，协议拒收时为它的返回值，这两种事件层都随即关连接。
+///   协议拒收时不推 ACCEPT，上层只会收到这条连接的 CLOSE</returns>
 int32_t prots_net_accept(ev_ctx *ev, sock_ctx *sk, ud_cxt *ud);
-/// <summary>主动连接建立：完成协议初始化并推送 MSG_TYPE_CONNECT</summary>
+/// <summary>主动连接建立：完成协议初始化并推送 MSG_TYPE_CONNECT（erro 为连接或协议初始化的结果）。
+/// TCP 本身就没连上时(err 非 ERR_OK)事件层不会再有关闭回调，这里接着补推一条 erro 为 CLOSE_TYPE_NEVERCONN 的 CLOSE</summary>
+/// <returns>连接与协议初始化都成功为 ERR_OK；目标 task 已不在时 ERR_FAILED。TCP 已连上而返回非 ERR_OK 时事件层关连接</returns>
 int32_t prots_net_connect(ev_ctx *ev, sock_ctx *sk, int32_t err, ud_cxt *ud);
-/// <summary>数据接收：循环解包并推送 MSG_TYPE_RECV（按 slice 标记分片）</summary>
+/// <summary>数据接收：循环解包并推送 MSG_TYPE_RECV（按 slice 标记分片）。目标 task 已不在、解包出错或协议要求关闭时
+/// 自己 ev_close</summary>
 void prots_net_recv(ev_ctx *ev, sock_ctx *sk, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);
-/// <summary>发送完成：推送 MSG_TYPE_SEND</summary>
+/// <summary>发送完成：推送 MSG_TYPE_SEND。目标 task 已不在时自己 ev_close</summary>
 void prots_net_send(ev_ctx *ev, sock_ctx *sk, int32_t client, size_t size, ud_cxt *ud);
 /// <summary>SSL 握手完成：完成协议 SSL 初始化并推送 MSG_TYPE_SSLEXCHANGED。
 /// 协议自己发起的升级(钩子返 PROT_SSL_OWNED，即 mysql / pgsql)不推送，等待方改等 HANDSHAKED</summary>
+/// <returns>ERR_OK 继续；目标 task 已不在或协议的 SSL 初始化失败时非 ERR_OK，事件层随即关连接</returns>
 int32_t prots_net_ssl_exchanged(ev_ctx *ev, sock_ctx *sk, int32_t client, ud_cxt *ud, void *ssl);
 /// <summary>连接关闭：通知协议层并推送 MSG_TYPE_CLOSE</summary>
 /// <param name="erro">close_type，连接是怎么断的。CLOSE_TYPE_ORDERLY 与 CLOSE_TYPE_TRUNCATED 才认为
 /// "body 由连接关闭界定"的那类消息收完了，其余一律不补末片；后者的末片是否可信由收到 CLOSE 的一方判</param>
 void prots_net_close(ev_ctx *ev, sock_ctx *sk, int32_t client, int32_t erro, ud_cxt *ud);
-/// <summary>UDP 接收：打包地址+数据并推送 MSG_TYPE_RECVFROM</summary>
+/// <summary>UDP 接收：打包地址+数据并推送 MSG_TYPE_RECVFROM。目标 task 已不在时自己 ev_close</summary>
 void prots_net_recvfrom(ev_ctx *ev, sock_ctx *sk, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 /// <summary>
 /// 消息是否持有要释放的数据：广播共享的(shared 非 NULL)一律算；独占的看消息类型与 data 是否为空

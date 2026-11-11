@@ -178,25 +178,33 @@ int32_t evssl_min_proto(evssl_ctx *evssl, int32_t version) {
 }
 // 设证书校验要比对的名字：先当 IP，不是再当主机名(即 SSL_set1_host 的实现，它在 OpenSSL 4.0 弃用了)
 static int32_t _evssl_param_host(X509_VERIFY_PARAM *param, const char *host) {
-    return (X509_VERIFY_PARAM_set1_ip_asc(param, host)
-            || X509_VERIFY_PARAM_set1_host(param, host, 0)) ? ERR_OK : ERR_FAILED;
+    if (X509_VERIFY_PARAM_set1_ip_asc(param, host)) {
+        return ERR_OK;
+    }
+    SSL_ERRQU_CLEAR();// 试 IP 不成可能留下错误，不清的话主机名再失败时日志打的是这条
+    return X509_VERIFY_PARAM_set1_host(param, host, 0) ? ERR_OK : ERR_FAILED;
 }
-// 设名字时按建连时的规则先试一次。OpenSSL 4 起主机名要合规，这里不挡的话每次连接都在 evssl_setfd 失败，
-// 且错误队列是空的、日志看不出原因
-static int32_t _evssl_host_ok(const char *host) {
-    X509_VERIFY_PARAM *param = X509_VERIFY_PARAM_new();
-    if (NULL == param) {
+// SNI 只发域名(规范不许填 IP)；证书校验 IP 与域名都认
+static int32_t _evssl_set_host(SSL *ssl, const char *host) {
+    if (ERR_OK != is_ipaddr(host)
+        && 1 != SSL_set_tlsext_host_name(ssl, host)) {
         return ERR_FAILED;
     }
-    int32_t rtn = _evssl_param_host(param, host);
-    X509_VERIFY_PARAM_free(param);
-    SSL_ERRQU_CLEAR();// 试 IP 不成可能留下错误
+    return _evssl_param_host(SSL_get0_param(ssl), host);
+}
+// 设名字时拿一个临时 SSL 照建连时的做法先试一次。OpenSSL 4 起主机名要合规，这里不挡的话每次连接都在
+// evssl_setfd 失败，且错误队列是空的、日志看不出原因
+static int32_t _evssl_host_ok(evssl_ctx *evssl, const char *host) {
+    SSL *ssl = SSL_new(evssl->ssl);
+    int32_t rtn = (NULL == ssl) ? ERR_FAILED : _evssl_set_host(ssl, host);
+    SSL_free(ssl);
+    SSL_ERRQU_CLEAR();
     return rtn;
 }
 int32_t evssl_host(evssl_ctx *evssl, const char *host) {
     size_t lens = EMPTYSTR(host) ? 0 : strlen(host);
     if (lens > TLSEXT_MAXLEN_host_name
-        || (0 != lens && ERR_OK != _evssl_host_ok(host))) {
+        || (0 != lens && ERR_OK != _evssl_host_ok(evssl, host))) {
         return ERR_FAILED;
     }
     FREE(evssl->host);
@@ -288,7 +296,7 @@ int32_t evssl_register(const char *name, evssl_ctx *evssl) {
     }
     return rtn;
 }
-evssl_ctx *evssl_qury(const char *name) {
+evssl_ctx *evssl_query(const char *name) {
     //与 evssl_register 对称：池未 init 时返回 NULL 而非解引用 NULL 锁
     if (EMPTYSTR(name)
         || NULL == _arr_certs
@@ -302,14 +310,6 @@ evssl_ctx *evssl_qury(const char *name) {
     ssl = NULL == cert ? NULL : cert->ssl;
     rwlock_unlock(_rwlck_certs);
     return ssl;
-}
-// SNI 只发域名(规范不许填 IP)；证书校验 IP 与域名都认
-static int32_t _evssl_set_host(SSL *ssl, const char *host) {
-    if (ERR_OK != is_ipaddr(host)
-        && 1 != SSL_set_tlsext_host_name(ssl, host)) {
-        return ERR_FAILED;
-    }
-    return _evssl_param_host(SSL_get0_param(ssl), host);
 }
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     if ((uint64_t)fd > (uint64_t)INT_MAX) {
@@ -478,7 +478,6 @@ int32_t evssl_keyupdate(SSL *ssl, int32_t updatetype) {
         return ERR_FAILED;
     }
     if (1 != SSL_key_update(ssl, updatetype)) {
-        SSLCTX_ERRO();
         return ERR_FAILED;
     }
     return ERR_OK;

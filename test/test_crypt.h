@@ -3,7 +3,7 @@
 
 #include "CuTest.h"
 
-// 注册加密测试套件：base64、crc、digest、hmac、urlraw、xor、scram、crypt_memcmp
+// 注册 lib/crypt 的全部测试
 void test_crypt(CuSuite *suite);
 
 #endif//TEST_CRYPT_H_

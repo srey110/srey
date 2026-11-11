@@ -36,7 +36,7 @@ void hash_ring_free(hash_ring_ctx *ring);
 /// <param name="name">节点名</param>
 /// <param name="lens">name长度</param>
 /// <param name="nreplicas">虚拟副本数，取值 [1, 65536]</param>
-/// <returns>ERR_OK 成功；nreplicas 为 0 或超上限、名字已存在、副本总数装不下均返回 ERR_FAILED</returns>
+/// <returns>ERR_OK 成功；name 为 NULL 或 lens 为 0、nreplicas 为 0 或超上限、名字已存在、副本总数装不下均返回 ERR_FAILED</returns>
 int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas);
 /// <summary>
 /// 添加节点，不排序(调用hash_ring_sort)，在批量添加时排除排序
@@ -45,7 +45,7 @@ int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nre
 /// <param name="name">节点名</param>
 /// <param name="lens">name长度</param>
 /// <param name="nreplicas">虚拟副本数，取值 [1, 65536]</param>
-/// <returns>ERR_OK 成功；nreplicas 为 0 或超上限、名字已存在、副本总数装不下均返回 ERR_FAILED</returns>
+/// <returns>ERR_OK 成功；name 为 NULL 或 lens 为 0、nreplicas 为 0 或超上限、名字已存在、副本总数装不下均返回 ERR_FAILED</returns>
 int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas);
 /// <summary>
 /// 排序hash ring，配合hash_ring_add_nosort在末尾统一排一次

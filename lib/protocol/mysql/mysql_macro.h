@@ -18,6 +18,7 @@
 #define MYSQL_LOCAL_INFILE 0xfb // 本地文件加载标志
 #define MYSQL_HEAD_LENS 4 // MySQL 数据包头部长度（字节）
 #define SERVER_STATUS_IN_TRANS 1 // 服务器状态标志：处在事务里（含 autocommit=0 下已执行过语句）
+#define SERVER_STATUS_AUTOCOMMIT 2 // 服务器状态标志：autocommit 开着
 #define SERVER_MORE_RESULTS_EXISTS 8 // 服务器状态标志：还有更多结果集
 #define SERVER_SESSION_STATE_CHANGED 16384 // 服务器状态标志：OK 包尾部带 session 状态变更信息
 #define SESSION_TRACK_SCHEMA 0x01 // session 状态变更类型：当前库已变更
@@ -32,6 +33,7 @@
 #define MYSQL_USER_LENS 128 // 用户名：32 字符 × utf8mb4 每字符 4 字节
 #define MYSQL_DB_LENS 256 // 库名：64 字符 × 4 字节
 #define MYSQL_PASSWORD_LENS 256 // 密码：caching_sha2_password 明文上限
+#define MYSQL_PUBKEY_LENS 2048 // 服务端 RSA 公钥 PEM 的上限：4096 位约 800 字节
 
 //Capabilities Flags（客户端能力标志位）
 #define CLIENT_LONG_PASSWORD 1 // 使用新密码插件

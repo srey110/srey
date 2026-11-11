@@ -377,11 +377,10 @@ size_t buffer_size(buffer_ctx *ctx) {
 // 按 _buffer_node_avail 逐节点累加(与 _buffer_expand 同源, 差别只在这里不改节点状态),
 // 同样受 cnt 条 iov 的上限约束, 故 lens 不超过返回值时 expand 必不新建节点(expand 另有残包前移, 可能腾出更多)
 size_t buffer_space(buffer_ctx *ctx, const uint32_t cnt) {
-    bufnode_ctx *node;
     size_t avail = 0;
     uint32_t slot;
     uint32_t used = 0;
-    for (node = *ctx->tail_with_data; NULL != node && used < cnt; node = node->next) {
+    for (bufnode_ctx *node = *ctx->tail_with_data; NULL != node && used < cnt; node = node->next) {
         avail += _buffer_node_avail(node, &slot);
         used += slot;
     }
@@ -390,6 +389,7 @@ size_t buffer_space(buffer_ctx *ctx, const uint32_t cnt) {
 void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb ext_free) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    // 零长节点既不带数据也没有可写空间，挂上链会让写入端的 iov 记录与提交校验错位、按 off 游走的读取提前停
     if (0 == lens) {
         if (NULL != ext_free) {
             ext_free(data);

@@ -167,11 +167,9 @@ static int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
     }
     return 0;
 }
-// 把缓冲区开头到 crlf 之间的那行原文当失败原因回给等待者（问候被拒与认证被拒共用）。
-// 载荷所有权交给 _hs_push，成功失败它都会释放，调用方不必也不能再碰；
-// 从哪儿开始找 CRLF、事后要不要 drain，两个调用点各不相同，留在各自那边
-// 长度由调用方定:整段多行响应都要交出去的场合用它(见 _smtp_auth 末尾)。
-// 只交首行的常见场合走 _smtp_push_firstline
+// 把缓冲区开头到 crlf 之间的内容当失败原因回给等待者。只交首行的常见场合走 _smtp_push_firstline，
+// 整段多行响应都要交的(EHLO 没有可用 AUTH、认证被拒)直接调它。
+// 载荷所有权交给 _hs_push，成功失败它都会释放，调用方不必也不能再碰；事后要不要 drain 由调用方定
 static void _smtp_push_errline(sock_ctx *sk, ud_cxt *ud, buffer_ctx *buf, int32_t crlf) {
     char *line;
     CALLOC(line, 1, (size_t)crlf + 1);
@@ -207,7 +205,7 @@ static void _smtp_connected(ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *u
     // 从 220 首行提取服务器主机名：跳过 "220 " 或 "220-"（4字节），
     // 取到下一个空格或 CRLF 之前的内容作为 EHLO 参数。
     char svhost[HOST_LENS] = { 0 };
-    int32_t host_start = SMTP_CODE_LENS + 1; // 跳过 "220 " 或 "220-"
+    int32_t host_start = SMTP_CODE_LENS + 1;// 跳过 "220 " 或 "220-"
     //首行 CRLF 位置作为主机名搜索上界，避免越界扫描到后续行；须从 0 起找，host_start 可能已越过短行(如裸"220")的 CRLF
     int32_t first_crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     int32_t host_end = buffer_search(buf, 1, (size_t)host_start, 0, " ", 1);
@@ -261,11 +259,6 @@ static int32_t _smtp_has_mech(buffer_ctx *buf, int32_t pos, int32_t end, const c
 // RFC 5321 §4.2.1：多行响应中间行用 '-' 分隔，末行/单行用空格分隔；
 // 带尾随空格的字面量避免 "250-AUTHENTICATION" 等其他扩展误匹配
 static int32_t _smtp_get_authtype(buffer_ctx *buf, int32_t total) {
-    // 挡到 1：total - 1 在 0 处下溢成 SIZE_MAX，在 1 处算出 0，
-    // 而 buffer_search 的 end 为 0 表示"搜到缓冲末尾"，边界会整个失效
-    if (total <= 1) {
-        return ERR_FAILED;
-    }
     const char *authmid = "250-AUTH ";
     const char *authend = "250 AUTH ";
     size_t mlen = strlen(authmid);
@@ -328,18 +321,7 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
         return;
     }
     buffer_drain(buf, (size_t)total);
-    char *cmd = NULL;
-    switch (smtp->authtype) {
-    case LOGIN:
-        cmd = SMTP_CMD_LIT("AUTH LOGIN");
-        break;
-    case PLAIN:
-        cmd = SMTP_CMD_LIT("AUTH PLAIN");
-        break;
-    default:// authtype 是 int32_t, -Wswitch 盯不住; 漏一档就是 strlen(NULL)。口径同 _smtp_auth
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
+    char *cmd = LOGIN == smtp->authtype ? SMTP_CMD_LIT("AUTH LOGIN") : SMTP_CMD_LIT("AUTH PLAIN");
     ud->status = AUTH;
     if (ERR_OK != ev_send(ev, sk, cmd, strlen(cmd), 0)) {
         BIT_SET(*status, PROT_ERROR);
@@ -362,9 +344,7 @@ static int32_t _smtp_challenge_ok(buffer_ctx *buf, int32_t crlf) {
 }
 // AUTH LOGIN 认证阶段：第一个 334 回用户名、第二个回密码，按顺序配对，不认提示文本——
 // 各家提示不一（"Username:" 之外还有 "User Name" 与本地化文本）。挑战不合法即断开，原文交给等待方
-static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    // _smtp_auth 已确认首个 CRLF 在缓冲里，只取这一行，不和后面的响应混
-    int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+static void _smtp_login(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status, int32_t crlf) {
     if (!_smtp_challenge_ok(buf, crlf)) {
         BIT_SET(*status, PROT_ERROR);
         _smtp_push_firstline(sk, ud, buf);
@@ -384,13 +364,7 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
     }
 }
 // AUTH PLAIN 认证阶段：构造 "\0user\0password" 格式并 Base64 编码后发送，切换到 AUTH_CHECK 状态
-static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    //找首个 CRLF 确定单条响应边界，仅消费当前响应
-    int32_t crlf = buffer_search(buf, 0, SMTP_CODE_LENS, 0, FLAG_CRLF, CRLF_SIZE);
-    if (ERR_FAILED == crlf) {
-        BIT_SET(*status, PROT_ERROR);
-        return;
-    }
+static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf, ud_cxt *ud, int32_t *status, int32_t crlf) {
     buffer_drain(buf, (size_t)crlf + CRLF_SIZE);
     size_t ulens = strlen(smtp->user);
     size_t plens = strlen(smtp->psw);
@@ -414,7 +388,8 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
         return;
     }
     //找首个 CRLF 而非末尾 CRLF，支持流水线场景下首条已完整即可消费
-    if (ERR_FAILED == buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE)) {
+    int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+    if (ERR_FAILED == crlf) {
         if (blens > SMTP_MAX_PACK_LENS) {
             BIT_SET(*status, PROT_ERROR);
             return;
@@ -422,29 +397,23 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, sock_ctx *sk, buffer_ctx *buf
         BIT_SET(*status, PROT_MOREDATA);
         return;
     }
-    // 两种机制的挑战行同一形状：码必须是 334，且只能是单行——续行形式（"334-"）下面接不住，
+    // 两种机制的挑战行同一形状：码必须是 334，码后是空格或恰好行尾；续行形式（"334-"）下面接不住，
     // 残留那行会错开后续配对。上面已保证至少 code + CRLF 五字节，第 4 字节必然可读
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     char sep;
     ASSERTAB(1 == buffer_copyout(buf, SMTP_CODE_LENS, &sep, 1), "copy buffer failed.");
     if (0 != strcmp(code, "334")
-        || '-' == sep) {
+        || (' ' != sep && SMTP_CODE_LENS != crlf)) {
         BIT_SET(*status, PROT_ERROR);
         // 同 _smtp_connected: AUTH 被 504/538/530/454 明文拒是生产上最常见的一档, 原因在这一行
         _smtp_push_firstline(sk, ud, buf);
         return;
     }
-    switch (smtp->authtype) {
-    case LOGIN:
-        _smtp_loin(smtp, ev, sk, buf, ud, status);
-        break;
-    case PLAIN:
-        _smtp_plain(smtp, ev, sk, buf, ud, status);
-        break;
-    default:
-        BIT_SET(*status, PROT_ERROR);
-        break;
+    if (LOGIN == smtp->authtype) {
+        _smtp_login(smtp, ev, sk, buf, ud, status, crlf);
+    } else {
+        _smtp_plain(smtp, ev, sk, buf, ud, status, crlf);
     }
 }
 // AUTH_CHECK 阶段：等待服务端 235 认证成功响应，成功后切换到 COMMAND 状态并触发握手完成回调

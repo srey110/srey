@@ -108,10 +108,28 @@
     <ClCompile Include="lbind\lcore.c">
       <Filter>lbind</Filter>
     </ClCompile>
+    <ClCompile Include="lbind\lssl.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
     <ClCompile Include="lbind\lkcp.c">
       <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="lbind\lcrypt.c">
+    <ClCompile Include="lbind\lurl.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lbase64.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lcrc.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\ldigest.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lhmac.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lcipher.c">
       <Filter>lbind</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lmysql.c">
@@ -129,7 +147,25 @@
     <ClCompile Include="lbind\lmongo.c">
       <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="lbind\lprot.c">
+    <ClCompile Include="lbind\lharbor.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\ldns.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lcustz.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lwebsock.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lhttp.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lredis.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lsmtp.c">
       <Filter>lbind</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lpub.c">
@@ -148,6 +184,18 @@
       <Filter>lbind</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lutils.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\llog.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lhash_ring.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\ltrend.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lpopen.c">
       <Filter>lbind</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lrouter.c">

@@ -42,9 +42,10 @@ int32_t pgsql_pack_append_end(binary_ctx *bwriter, size_t offset);
 /// </summary>
 /// <param name="user">登录用户名</param>
 /// <param name="database">目标数据库名</param>
+/// <param name="minor">请求的协议次版本，0 或 2，见 pgsql_set_protocol</param>
 /// <param name="size">输出消息字节数</param>
 /// <returns>消息数据指针，调用方负责释放</returns>
-void *pgsql_pack_startup(const char *user, const char *database, size_t *size);
+void *pgsql_pack_startup(const char *user, const char *database, int32_t minor, size_t *size);
 /// <summary>
 /// 打包 Terminate 消息（通知服务端关闭连接）
 /// </summary>
@@ -54,7 +55,7 @@ void *pgsql_pack_terminate(size_t *size);
 /// <summary>
 /// 打包简单查询消息（Query）
 /// </summary>
-/// <param name="sql">SQL 语句字符串</param>
+/// <param name="sql">SQL 语句字符串；按 strlen 取长度，NULL 按空串</param>
 /// <param name="size">输出消息字节数</param>
 /// <returns>消息数据指针，调用方负责释放；消息体超过 INT32_MAX 时返回 NULL 并把 size 置 0</returns>
 void *pgsql_pack_query(const char *sql, size_t *size);
@@ -72,8 +73,8 @@ void *pgsql_pack_query2(const char *sql, size_t sqllen, size_t *size);
 /// </summary>
 /// <param name="name">预处理语句名称，空字符串表示匿名语句</param>
 /// <param name="sql">SQL 语句字符串</param>
-/// <param name="nparam">参数数量</param>
-/// <param name="oids">各参数的类型 OID 数组，可为 NULL</param>
+/// <param name="nparam">参数数量；oids 为 NULL 时不上线</param>
+/// <param name="oids">各参数的类型 OID 数组；NULL 表示不声明类型，全部由服务端推断</param>
 /// <param name="size">输出消息字节数</param>
 /// <returns>同 pgsql_pack_query</returns>
 void *pgsql_pack_stmt_prepare(const char *name, const char *sql, uint16_t nparam, uint32_t *oids, size_t *size);
@@ -139,12 +140,14 @@ void *pgsql_pack_copy_fail(const char *msg, size_t *size);
 /// <returns>消息数据指针，调用方负责释放；Query 或 CopyData 的消息体超过 INT32_MAX 时返回 NULL 并把 size 置 0</returns>
 void *pgsql_pack_copy_in(const char *sql, const void *data, size_t lens, size_t *size);
 /// <summary>
-/// 填充 CancelRequest 消息到调用方提供的 16 字节缓冲区
-/// CancelRequest 不含消息类型码，格式：Int32(16) Int32(80877102) Int32(pid) Int32(key)
+/// 填充 CancelRequest 消息到调用方提供的缓冲区。
+/// CancelRequest 不含消息类型码，格式：Int32(总长) Int32(80877102) Int32(pid) 密钥
 /// </summary>
-/// <param name="buf">输出缓冲区，须至少 16 字节</param>
+/// <param name="buf">输出缓冲区，须至少 PGSQL_CANCEL_MAX 字节</param>
 /// <param name="pid">后端进程 ID（BackendKeyData 中获取）</param>
 /// <param name="key">后端取消密钥（BackendKeyData 中获取）</param>
-void pgsql_pack_cancel(char buf[16], int32_t pid, uint32_t key);
+/// <param name="keylens">密钥字节数，不超过 PGSQL_CANCEL_KEY_MAX</param>
+/// <returns>消息字节数：协议 3.0 恒为 16，3.2 随密钥变长</returns>
+size_t pgsql_pack_cancel(char buf[PGSQL_CANCEL_MAX], int32_t pid, const char *key, size_t keylens);
 
 #endif//PGSQL_PACK_H_

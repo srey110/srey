@@ -33,7 +33,8 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL 语句字符串</param>
-/// <param name="mbind">查询属性参数绑定，NULL 表示无参数</param>
+/// <param name="mbind">查询属性参数绑定，NULL 表示无参数。服务端没协商 CLIENT_QUERY_ATTRIBUTES
+/// （MySQL 8.0.23 之前、MariaDB）时不发这一段，绑定被忽略、不报错</param>
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放；整个载荷(命令字节 + 查询属性段 + SQL)达到 INT3_MAX 时
 /// 返回 NULL 且 size 置 0，一律不组包。SQL 略短于 16MB 也可能因查询属性段超限</returns>

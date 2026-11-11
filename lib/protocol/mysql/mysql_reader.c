@@ -210,7 +210,7 @@ int64_t mysql_reader_integer_at(mysql_reader_ctx *reader, int32_t col, int32_t *
         int64_t val;
         if (ERR_OK != strtoi64(row->val.data, row->val.lens, &val)) {
             SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
+            LOG_WARN("column %d parse failed.", col);
             return 0;
         }
         return val;
@@ -222,7 +222,7 @@ int64_t mysql_reader_integer_at(mysql_reader_ctx *reader, int32_t col, int32_t *
     uint64_t uval = _mysql_bin_u64(row);
     if (uval > INT64_MAX) {
         SET_PTR(err, ERR_FAILED);
-        LOG_WARN("unsigned value exceeds INT64_MAX.");
+        LOG_WARN("column %d unsigned value exceeds INT64_MAX.", col);
         return 0;
     }
     return (int64_t)uval;
@@ -238,7 +238,7 @@ uint64_t mysql_reader_uinteger_at(mysql_reader_ctx *reader, int32_t col, int32_t
         uint64_t val;
         if (ERR_OK != strtou64((const char *)row->val.data, row->val.lens, UINT64_MAX, &val)) {
             SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
+            LOG_WARN("column %d parse failed.", col);
             return 0;
         }
         return val;
@@ -250,18 +250,18 @@ uint64_t mysql_reader_uinteger_at(mysql_reader_ctx *reader, int32_t col, int32_t
     int64_t val = _mysql_bin_i64(row);
     if (val < 0) {
         SET_PTR(err, ERR_FAILED);
-        LOG_WARN("negative value read as unsigned.");
+        LOG_WARN("column %d negative value read as unsigned.", col);
         return 0;
     }
     return (uint64_t)val;
 }
 // 文本协议浮点解析公共逻辑：空串 / 有残留字符 / 上溢的判定全在 strtod_s 里，
 // 与 pgsql 侧共用同一份（见 base/strconv.h），这里只负责写 err 和打日志
-static inline double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
+static inline double _mysql_reader_parse_text_float(mpack_row *row, int32_t col, int32_t *err) {
     double val;
     if (ERR_OK != strtod_s(row->val.data, row->val.lens, &val)) {
         SET_PTR(err, ERR_FAILED);
-        LOG_WARN("parse failed.");
+        LOG_WARN("column %d parse failed.", col);
         return 0.0;
     }
     return val;
@@ -273,7 +273,7 @@ float mysql_reader_float_at(mysql_reader_ctx *reader, int32_t col, int32_t *err)
         return 0.0f;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        return (float)_mysql_reader_parse_text_float(row, err);
+        return (float)_mysql_reader_parse_text_float(row, col, err);
     } else {
         if (sizeof(float) != row->val.lens) {
             SET_PTR(err, ERR_FAILED);
@@ -289,7 +289,7 @@ double mysql_reader_double_at(mysql_reader_ctx *reader, int32_t col, int32_t *er
         return 0.0;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        return _mysql_reader_parse_text_float(row, err);
+        return _mysql_reader_parse_text_float(row, col, err);
     } else {
         if (sizeof(double) != row->val.lens) {
             SET_PTR(err, ERR_FAILED);
@@ -306,6 +306,33 @@ char *mysql_reader_string_at(mysql_reader_ctx *reader, int32_t col, size_t *lens
     }
     *lens = row->val.lens;
     return row->val.data;
+}
+size_t mysql_reader_vector_at(mysql_reader_ctx *reader, int32_t col, float *out, size_t cap, int32_t *err) {
+    SET_PTR(err, ERR_OK);
+    mpack_row *row = _mysql_reader_row(reader, col, MYSQL_CLS_STRING, err);
+    if (NULL == row) {
+        return 0;
+    }
+    if (MYSQL_TYPE_VECTOR != reader->fields[col].type
+        || 0 != row->val.lens % sizeof(float)) {
+        SET_PTR(err, ERR_FAILED);
+        LOG_WARN("column %d is not a vector.", col);
+        return 0;
+    }
+    size_t dims = row->val.lens / sizeof(float);
+    if (NULL == out) {
+        return dims;
+    }
+    if (dims > cap) {
+        SET_PTR(err, ERR_FAILED);
+        return dims;
+    }
+    uint32_t bits;
+    for (size_t i = 0; i < dims; i++) {
+        bits = read_le32((const char *)row->val.data + i * sizeof(float));// 值不保证 4 字节对齐
+        memcpy(&out[i], &bits, sizeof(float));
+    }
+    return dims;
 }
 int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t *err) {
     SET_PTR(err, ERR_OK);
@@ -388,7 +415,11 @@ int64_t mysql_reader_datetime_at(mysql_reader_ctx *reader, int32_t col, int32_t 
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        uint32_t usec = (11 == row->val.lens) ? (uint32_t)binary_get_integer(&breader, 4, 1) : 0;
+        uint32_t usec = (11 == row->val.lens) ? (uint32_t)binary_get_uinteger(&breader, 4, 1) : 0;
+        if (usec > 999999) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
+        }
         return (int64_t)ts * 1000000LL + usec;
     }
 }
@@ -438,13 +469,22 @@ int32_t mysql_reader_time_at(mysql_reader_ctx *reader, int32_t col, struct tm *t
         binary_ctx breader;
         binary_init_read(&breader, row->val.data, row->val.lens);
         is_negative = (int32_t)binary_get_int8(&breader);
-        time->tm_mday = (int32_t)binary_get_integer(&breader, 4, 1);
-        time->tm_hour = (int32_t)binary_get_int8(&breader);
-        time->tm_min = (int32_t)binary_get_int8(&breader);
-        time->tm_sec = (int32_t)binary_get_int8(&breader);
-        if (12 == row->val.lens) {
-            *usec = (uint32_t)binary_get_integer(&breader, 4, 1);
+        uint32_t days = (uint32_t)binary_get_uinteger(&breader, 4, 1);
+        uint8_t hour = binary_get_uint8(&breader);
+        uint8_t minute = binary_get_uint8(&breader);
+        uint8_t second = binary_get_uint8(&breader);
+        uint32_t us = (12 == row->val.lens) ? (uint32_t)binary_get_uinteger(&breader, 4, 1) : 0;
+        // 同文本路径卡 ±838:59:59，越界值原样交出去就成了另一个时间
+        if (days > 34 || hour > 23 || minute > 59 || second > 59 || us > 999999
+            || days * 24 + hour > 838) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
         }
+        time->tm_mday = (int32_t)days;
+        time->tm_hour = hour;
+        time->tm_min = minute;
+        time->tm_sec = second;
+        *usec = us;
     }
     return is_negative;
 }
@@ -472,6 +512,9 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
 }
 char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err) {
     return mysql_reader_string_at(reader, mysql_reader_col(reader, name, strlen(name)), lens, err);
+}
+size_t mysql_reader_vector(mysql_reader_ctx *reader, const char *name, float *out, size_t cap, int32_t *err) {
+    return mysql_reader_vector_at(reader, mysql_reader_col(reader, name, strlen(name)), out, cap, err);
 }
 int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     return mysql_reader_datetime_at(reader, mysql_reader_col(reader, name, strlen(name)), err);

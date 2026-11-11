@@ -17,6 +17,8 @@ void unlimit(void);
 /// 信号处理。cb 在信号处理上下文中被调用，内部只能用 async-signal-safe 函数
 /// （LOG_INFO / mutex_lock / malloc 都不行）；安全做法是 cb 里只置
 /// volatile sig_atomic_t 标志，主循环轮询后再处理。
+/// POSIX 上转发 SIGHUP / INT / QUIT / ABRT / TSTP / TERM / USR1 / USR2(含 ASSERTAB 的 abort 与 Ctrl-Z)，SIGPIPE 忽略；
+/// Windows 上转发控制台事件，sig 是 CTRL_C_EVENT 等事件号(0/1/2/5/6)，与 POSIX 信号号同值不同义，按平台分别判。
 /// Windows 上关窗 / 注销 / 关机时 cb 返回后处理线程不再返回，进程须由主线程收尾后自己退出(系统超时到了照样强杀)
 /// </summary>
 /// <param name="cb">处理函数（必须 async-signal-safe）</param>

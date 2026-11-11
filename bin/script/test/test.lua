@@ -2,7 +2,9 @@
 -- 由 startup.lua 在公共初始化(lib.define/utils/log + SSL 证书)后调用 register()。
 -- 不依赖集成环境的 unit 测试 + 依赖 docker 的 db 测试 + reporter 汇总。
 
+local srey = require("lib.srey")
 local task = require("srey.task")
+local json = require("yyjson")
 
 -- 上报 reporter 的测试 task 列表，注册顺序即此顺序。每项 { 脚本, 名字 [, 额外注册参数...] }。
 -- 第 2 列同时是 task 名与上报名：注册用它，reporter 的期望列表用它，runner 也从 task 名反读它
@@ -43,6 +45,8 @@ local TESTS = {
     -- 同一 task 内起假 SMTP 服务端再用 4 个协程并发投递,验证 smtp.lua 的命令串行化
     -- (镜像 C 层 task_smtp.c 的同名用例);不依赖外网账号,末参为监听端口
     { "test.smtp_fake",           "smtp_fake", 12526 },
+    -- 同一 task 内起假 PostgreSQL 服务端,验证 SCRAM 进行中换明文 / MD5 时口令不发出去;末参为监听端口
+    { "test.pgsql_fake",          "pgsql_fake", 12527 },
     -- 同一 task 内起假 DNS 服务端(UDP 与 TCP 同端口)再跑 nslookup 各分支,不依赖公网;末参为监听端口
     { "test.dns_fake",            "dns_fake", 12553 },
     { "test.e2e_runner",          "e2e" },-- 用 srey.popen 跑 bin/py_assist/test_*.py 自动收集 exit code
@@ -83,8 +87,12 @@ local function register()
     task.register("test.multi_call_sub", "multi_call_sub_b", 0, "multi_call", 2)
     task.register("test.multi_call_sub", "multi_call_sub_c", 0, "multi_call", 3)
 
+    -- 注册失败(脚本语法错、顶层抛错、重名)时替它向 reporter 报一条失败，免得整轮等满 600 秒才出汇总
     for _, e in ipairs(TESTS) do
-        task.register(e[1], e[2], 0, table.unpack(e, 3))
+        if not task.register(e[1], e[2], 0, table.unpack(e, 3)) then
+            WARN("[runner] %s register failed", e[2])
+            srey.call("reporter", 0, json.encode({ module = e[2], npass = 0, nfail = 1 }))
+        end
     end
 
     -- 长驻 e2e 服务端 task:bin/py_assist/test_*.py 直连测试用,不上报 reporter

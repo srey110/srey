@@ -94,6 +94,11 @@ struct coro_serial_ctx {
     mco_coro *current;     // 当前持锁协程；NULL 表示无锁
     list_ctx waiters;      // 挂起 waiter 的 FIFO（元素 serial_node，UPCAST 复原）
 };
+// 每个协程一份，挂在它的 user_data 上，随协程对象建、毁
+typedef struct coro_slot {
+    coro_ctx *co;                  // 所属调度器
+    uint64_t local[CORO_LOCAL_N];  // 局部槽，每跑一条活前清零，见 coro_local_get
+}coro_slot;
 // mapco 的哈希单点:表里的 bucket->hash 由它产生,三处 *_with_hash 的调用点也必须用它算。
 // 调用点不得绕过它直接调 hash_u64,否则写进去的与查的对不上,条目静默查不到(不崩、不报错)
 #define _CORO_SESS_HASH_OF(sess) hash_u64(sess)
@@ -119,7 +124,7 @@ struct coro_ctx {
     pool_ctx serial_node_pool;   // 空闲 serial_node 节点池，容量 NODEPOOL_QUE_CAP，不参与周期性收缩
     timer_ctx timer;             // 用于获取当前毫秒时间戳
     coro_heap timeout_heap;      // 按到期时间排序的最小堆,O(1) 检查最早超时
-    mco_desc desc;               // 本调度器的协程描述：入口、栈大小；user_data 指回本调度器
+    mco_desc desc;               // 本调度器的协程描述：入口、栈大小；user_data 由 _coro_new 逐个协程设成 coro_slot
 };
 // 交给新协程的一条活，放在调用方栈上：fork 非 NULL 跑 fork，否则跑 hooks.run(owner, payload)。
 // 协程只拿到它的指针，开跑第一件事就是整份拷走——调用方栈在协程第一次挂起后即失效
@@ -196,7 +201,8 @@ static inline mco_coro *_coro_take_mco(coro_ctx *co, coro_info *coinfo) {
 // 协程主循环：每次被 resume 弹出一条活，跑完先回池再 after_run。
 // after_run 里不得让本调度器被释放：本协程返回后，唤醒方还要还原 curco、回收死协程
 static void _coro_mco_cb(mco_coro *coro) {
-    coro_ctx *co = (coro_ctx *)mco_get_user_data(coro);// 一个协程只属于一个调度器，循环外取一次
+    coro_slot *slot = (coro_slot *)mco_get_user_data(coro);
+    coro_ctx *co = slot->co;// 一个协程只属于一个调度器，循环外取一次
     mco_result rtn;
     coro_entry *ep;
     coro_entry e;
@@ -206,6 +212,7 @@ static void _coro_mco_cb(mco_coro *coro) {
         rtn = mco_pop(coro, &ep, sizeof(ep));
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
         e = *ep;
+        ZERO(slot->local, sizeof(slot->local));
         co->hooks.before_run(co->owner);
         if (NULL != e.fork) {
             _coro_fork_run(co, e.fork);
@@ -236,16 +243,23 @@ static void *_coro_new(void *args) {
     mco_coro *c;
     mco_result rtn = mco_create(&c, &((coro_ctx *)args)->desc);
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    coro_slot *slot;
+    MALLOC(slot, sizeof(coro_slot));
+    slot->co = (coro_ctx *)args;
+    c->user_data = slot;// 须在首次 resume 前设好：_coro_mco_cb 一开跑就要取它
     rtn = mco_resume(c);
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     return c;
 }
-// 对象池 _elfree：销毁协程对象
+// 对象池 _elfree：销毁协程对象。销毁失败时协程还在，slot 跟着留下
 static void _coro_free(void *c) {
+    coro_slot *slot = (coro_slot *)mco_get_user_data((mco_coro *)c);
     mco_result rtn = mco_destroy((mco_coro *)c);
     if (MCO_SUCCESS != rtn) {
         LOG_WARN("%s", mco_result_description(rtn));
+        return;
     }
+    FREE(slot);
 }
 coro_ctx *coro_new(const coro_hooks *hooks, void *owner, size_t stack_size) {
     ASSERTAB(NULL != hooks && NULL != hooks->run, ERRSTR_NULLP);
@@ -261,7 +275,6 @@ coro_ctx *coro_new(const coro_hooks *hooks, void *owner, size_t stack_size) {
         co->hooks.after_run = _coro_hook_nop;
     }
     co->desc = mco_desc_init(_coro_mco_cb, coro_stack_fit(stack_size));
-    co->desc.user_data = co;// 协程经 mco_get_user_data 找回所属调度器
     pool_init(&co->copool, 0, COROPOOL_CAP, COROPOOL_MIN_KEEP, 0, &cbs);
     pool_init(&co->coinfo_pool, sizeof(coro_info), NODEPOOL_CAP, 0, 0, NULL);
     pool_init(&co->fork_item_pool, sizeof(fork_item), NODEPOOL_QUE_CAP, 0, 0, NULL);
@@ -304,6 +317,17 @@ void *coro_owner(coro_ctx *co) {
 }
 int32_t coro_running(coro_ctx *co) {
     return NULL != co->curco;
+}
+// coro_local_get / coro_local_set 共用：取当前在跑协程的 slot，顺带卡协程外调用与下标越界
+static inline coro_slot *_coro_local_slot(coro_ctx *co, uint32_t idx) {
+    ASSERTAB(NULL != co->curco && idx < CORO_LOCAL_N, "coro_local outside coroutine or index out of range.");
+    return (coro_slot *)mco_get_user_data(co->curco);
+}
+uint64_t coro_local_get(coro_ctx *co, uint32_t idx) {
+    return _coro_local_slot(co, idx)->local[idx];
+}
+void coro_local_set(coro_ctx *co, uint32_t idx, uint64_t val) {
+    _coro_local_slot(co, idx)->local[idx] = val;
 }
 int32_t coro_suspended(coro_ctx *co) {
     return co->nyield;

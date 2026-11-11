@@ -43,6 +43,25 @@ runner.run(function(t)
     t:check(ok, "mongo insert ok")
     t:eq(3, n, "mongo insert n=3")
 
+    -- 批量写超过 16MB：数组按文档序列(OP_MSG kind 1)发，整包上限是 48MB 而不是单文档的 16MB
+    do
+        local BCOL = "srey_big"
+        mg:drop(BCOL)-- 集合本就可能不存在，返回值不判
+        local pad = string.rep("x", 1024 * 1024)
+        local big = {}
+        for i = 1, 20 do
+            big[i] = { id = i, pad = pad }
+        end
+        local bdoc = bson.encode(big)
+        local bptr, bsz = bdoc:data()
+        t:check(bsz > 16 * 1024 * 1024, "批量文档总量超过 16MB: " .. tostring(bsz))
+        local bok, bn = mg:insert(BCOL, bptr, bsz)
+        t:check(bok, "超 16MB 的批量 insert 成功")
+        t:eq(20, bn, "超 16MB 的批量 insert n=20")
+        t:eq(20, mg:count(BCOL, eptr, esz), "超 16MB 的批量 insert 后条数")
+        t:check(mg:drop(BCOL), "drop " .. BCOL)
+    end
+
     -- count
     local cnt = mg:count("srey_test", eptr, esz)
     t:eq(3, cnt, "mongo count 3")
@@ -365,13 +384,13 @@ runner.run(function(t)
 
     -- 命令没等到应答（_rdo）：锁内就地关连接（established 清零、代次前进），之后 ping 能重连。
     -- 集合里只有一条，$where 只睡一次；读超时有 1s 粒度（最坏多等 1s），睡足 2 秒
-    local oldnr = srey.get_netread_timeout()
-    srey.set_netread_timeout(300)
+    local oldnr = srey.get_timeout("netread")
+    srey.set_timeout("netread", 300)
     local g = mg.generation
     local wq = bson.encode({ ["$where"] = "sleep(2000) || true" })
     local wqptr, wqsz = wq:data()
     local slow = mg:find(CCOL, wqptr, wqsz)
-    srey.set_netread_timeout(oldnr)
+    srey.set_timeout("netread", oldnr)
     t:eq(nil, slow, "没等到应答 find 返回 nil")
     t:eq(false, mg.established, "没等到应答即锁内关连接")
     t:check(mg.generation ~= g, "没等到应答代次前进")

@@ -6,6 +6,11 @@
 #include "mysql_bind.h"
 #include "crypt/digest.h"
 #include "event/event.h"
+#if WITH_SSL
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#endif
 
 //https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html
 // 客户端能力标志位组合：涵盖协议 4.1、多结果集、插件认证、连接属性等必要能力。
@@ -82,6 +87,7 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql->cur_cmd = 0;
     mysql->in_trans = 0;
     mysql->recvlens = 0;
+    mysql->pubkeywait = 0;
     sock_mark_closed(&mysql->client.sk);// 网络线程上写，理由见 sock_mark_closed
     ud->context = NULL;
     PROT_REF_RELEASE(mysql);
@@ -257,8 +263,15 @@ static void _mysql_auth_err(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, i
     char *body = 0 == lens ? NULL : dup_zero(binary_at(breader, breader->offset), lens);
     _hs_push(&mysql->client.sk, 1, ud, ERR_FAILED, body, lens);
 }
-// 认证成功：通知上层握手完成，切换到命令阶段
-static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
+// 认证成功：记下此刻的 autocommit（连接池归还时按它还原），通知上层握手完成，切换到命令阶段。
+// OK 包畸形按协议错误处理、不报握手成功，同命令阶段
+static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, binary_ctx *breader, int32_t *status) {
+    if (ERR_OK != _mpack_ok_parse(mysql, breader, NULL, NULL, NULL)) {
+        BIT_SET(*status, PROT_ERROR);
+        LOG_ERROR("mysql auth OK packet malformed.");
+        return;
+    }
+    mysql->autocommit_init = mysql->autocommit;
     if (ERR_OK != _hs_push(&mysql->client.sk, 1, ud, ERR_OK, NULL, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return;
@@ -365,6 +378,82 @@ static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     binary_set_string(&bwriter, mysql->client.password);
     return _mysql_send_pack(mysql, ev, &bwriter);
 }
+#if WITH_SSL
+// 解析 PEM 格式的 RSA 公钥；不是合法的 RSA 公钥返回 NULL。用完 EVP_PKEY_free
+static EVP_PKEY *_mysql_pem_key(const char *pem, size_t lens) {
+    if (NULL == pem
+        || 0 == lens
+        || lens > INT32_MAX) {
+        return NULL;
+    }
+    BIO *bio = BIO_new_mem_buf(pem, (int)lens);
+    if (NULL == bio) {
+        return NULL;
+    }
+    EVP_PKEY *pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (NULL != pkey
+        && !EVP_PKEY_is_a(pkey, "RSA")) {
+        EVP_PKEY_free(pkey);
+        return NULL;
+    }
+    return pkey;
+}
+// 明文连接上的完整认证：口令连同结尾 '\0' 与盐循环异或，再用服务端 RSA 公钥按 OAEP 加密发出
+static int32_t _mysql_rsa_send(mysql_ctx *mysql, ev_ctx *ev, const char *pem, size_t lens) {
+    EVP_PKEY *pkey = _mysql_pem_key(pem, lens);
+    if (NULL == pkey) {
+        LOG_ERROR("%s", "mysql server RSA public key is not a valid PEM.");
+        return ERR_FAILED;
+    }
+    char plain[MYSQL_PASSWORD_LENS + 1];
+    size_t plens = strlen(mysql->client.password) + 1;
+    for (size_t i = 0; i < plens; i++) {
+        plain[i] = (char)(mysql->client.password[i] ^ mysql->server.salt[i % sizeof(mysql->server.salt)]);
+    }
+    unsigned char cipher[1024];// 8192 位密钥的密文长度
+    size_t clens = sizeof(cipher);
+    int32_t rtn = ERR_FAILED;
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pkey, NULL);
+    if (NULL != ctx
+        && EVP_PKEY_encrypt_init(ctx) > 0
+        && EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) > 0
+        && EVP_PKEY_encrypt(ctx, cipher, &clens, (const unsigned char *)plain, plens) > 0) {
+        binary_ctx bwriter;
+        _mysql_pack_begin(mysql, &bwriter, 0, 0);
+        binary_set_binary(&bwriter, (const char *)cipher, clens);
+        rtn = _mysql_send_pack(mysql, ev, &bwriter);
+    } else {
+        LOG_ERROR("%s", "mysql RSA encryption of the password failed.");
+    }
+    secure_zero(plain, sizeof(plain));
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    return rtn;
+}
+#endif
+// caching_sha2_password 的完整认证：TLS 上直接发口令；明文连接上用服务端 RSA 公钥加密口令，
+// 公钥先用本地预置的，没有再看是否允许向服务端要(要来的无从核实，中间人换掉它就能拿到口令)，都没有判失败
+static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev) {
+    if (BIT_CHECK(mysql->client.caps, CLIENT_SSL)) {
+        return _mysql_password_send(mysql, ev);
+    }
+#if WITH_SSL
+    if (0 != mysql->client.pubkeylens) {
+        return _mysql_rsa_send(mysql, ev, mysql->client.pubkey, mysql->client.pubkeylens);
+    }
+    if (0 != mysql->client.pubkeyreq) {
+        binary_ctx bwriter;
+        _mysql_pack_begin(mysql, &bwriter, 0, 0);
+        binary_set_uint8(&bwriter, 0x02);// 向服务端要 RSA 公钥
+        mysql->pubkeywait = 1;
+        return _mysql_send_pack(mysql, ev, &bwriter);
+    }
+#endif
+    LOG_ERROR("%s", "mysql caching_sha2_password full authentication over plaintext needs the server RSA public key: "
+              "enable SSL, set the public key, or allow requesting it from the server.");
+    return ERR_FAILED;
+}
 // 处理服务器发起的认证插件切换请求，重新计算签名并发送响应
 static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_auth_switch *auswitch) {
     if (auswitch->provided.lens < sizeof(mysql->server.salt)
@@ -412,9 +501,18 @@ static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader
         LOG_ERROR("mysql auth switch to %s failed.", auswitch.plugin);
     }
 }
-// 处理 caching_sha2_password 认证的中间响应：01 03 快速认证通过，01 04 要完整认证。
-// 完整认证只在 TLS 上明文发口令；明文连接不做 RSA 公钥交换(公钥无从核实，中间人换掉它就能拿到明文口令)，直接判失败
+// 处理 caching_sha2_password 认证的中间响应：01 03 快速认证通过，01 04 要完整认证(见 _mysql_full_auth)；
+// 向服务端要过公钥时，下一个 01 包后面整段就是公钥 PEM
 static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
+#if WITH_SSL
+    if (0 != mysql->pubkeywait) {
+        mysql->pubkeywait = 0;
+        if (ERR_OK != _mysql_rsa_send(mysql, ev, breader->data + breader->offset, binary_remain(breader))) {
+            BIT_SET(*status, PROT_ERROR);
+        }
+        return;
+    }
+#endif
     if (2 != breader->size) {
         BIT_SET(*status, PROT_ERROR);
         LOG_ERROR("mysql caching_sha2 response size %zu, want 2.", breader->size);
@@ -425,13 +523,7 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
     case MYSQL_CACHING_SHA2_FAST://fast auth
         break;
     case MYSQL_CACHING_SHA2_FULL://full auth
-        if (!BIT_CHECK(mysql->client.caps, CLIENT_SSL)) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_ERROR("mysql caching_sha2_password full authentication needs SSL: enable SSL, log in once "
-                      "over SSL so the server caches the password, or use a mysql_native_password account.");
-            break;
-        }
-        if (ERR_OK != _mysql_password_send(mysql, ev)) {
+        if (ERR_OK != _mysql_full_auth(mysql, ev)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
@@ -454,7 +546,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     uint8_t first = binary_get_uint8(&breader);
     switch (first) {
     case MYSQL_OK:
-        _mysql_auth_ok(mysql, ud, status);
+        _mysql_auth_ok(mysql, ud, &breader, status);
         break;
     case MYSQL_ERR:
         _mysql_auth_err(mysql, ud, &breader, status);
@@ -558,6 +650,43 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     mysql->client.maxpack = 0 == maxpk ? ONEK * ONEK : maxpk;
     sock_set_invalid(&mysql->client.sk);
     return ERR_OK;
+}
+int32_t mysql_set_pubkey(mysql_ctx *mysql, const char *pem, size_t lens) {
+#if WITH_SSL
+    if (NULL == pem
+        || 0 == lens) {
+        mysql->client.pubkeylens = 0;
+        return ERR_OK;
+    }
+    if (lens > sizeof(mysql->client.pubkey)) {
+        LOG_ERROR("mysql RSA public key exceeds %zu bytes: %zu.", sizeof(mysql->client.pubkey), lens);
+        return ERR_FAILED;
+    }
+    EVP_PKEY *pkey = _mysql_pem_key(pem, lens);
+    if (NULL == pkey) {
+        LOG_ERROR("%s", "mysql RSA public key is not a valid PEM.");
+        return ERR_FAILED;
+    }
+    EVP_PKEY_free(pkey);
+    memcpy(mysql->client.pubkey, pem, lens);
+    mysql->client.pubkeylens = (uint16_t)lens;
+    return ERR_OK;
+#else
+    (void)mysql;
+    (void)pem;
+    (void)lens;
+    return ERR_FAILED;
+#endif
+}
+int32_t mysql_set_pubkey_request(mysql_ctx *mysql, int32_t on) {
+#if WITH_SSL
+    mysql->client.pubkeyreq = (0 != on) ? 1 : 0;
+    return ERR_OK;
+#else
+    (void)mysql;
+    (void)on;
+    return ERR_FAILED;
+#endif
 }
 const char *mysql_version(mysql_ctx *mysql) {
     return mysql->version;

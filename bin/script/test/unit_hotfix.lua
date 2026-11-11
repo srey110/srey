@@ -664,9 +664,9 @@ runner.run(function(t)
         package.loaded.hotfix_rex_b = nil
     end
 
-    -- ── 子段 28:从文件 require 来的模块按路径尾巴认出自家 chunk ──────────────
+    -- ── 子段 28:从文件 require 来的模块按 package.searchpath 找到的文件认出自家 chunk ──
     -- 前面的模块都是 load(src, "=名字") 造的,走的是全等那支。这里往脚本目录写临时模块再 require 两次:
-    -- 第一次从文件加载,第二次(开了字节码缓存时)命中缓存,两种 source 都得认出。认不出时 apply 报
+    -- 第一次从文件加载,第二次(开了字节码缓存时)命中缓存,两次都得认出。认不出时 apply 报
     -- cannot locate module chunk。做法同 unit_bytecache,收尾排在断言之前
     do
         local name = "test.unit_hotfix_tmp"
@@ -715,6 +715,37 @@ runner.run(function(t)
         t:eq(true, ok, "apply ok")
         t:eq(7, mod.handle(), "补丁运行期读到补丁里定义的 M.K")
         t:eq(nil, mod.K, "补丁的常量不进模块")
+    end
+
+    -- ── 子段 30:路径尾巴相同的别的文件不算自家 chunk ─────────────────────────
+    -- 模块 unit_hotfix_tail 转挂了 test/unit_hotfix_tail.lua 里的函数:源路径恰好以 "/unit_hotfix_tail.lua"
+    -- 结尾,但不是 searchpath 为这个模块名找到的文件,它的 upvalue 不能进本模块的 map
+    do
+        local fname = "test.unit_hotfix_tail"
+        local tmpl = package.path:match("^[^;]+")
+        local path = tmpl and tmpl:gsub("%?", (fname:gsub("%.", _pathsep)))
+        local f = path and io.open(path, "wb")
+        if f then
+            f:write('local secret = "file-secret" local M = {} function M.peek() return secret end return M')
+            f:close()
+            package.loaded[fname] = nil
+            local lok, fmod = pcall(require, fname)
+            os.remove(path)
+            package.loaded[fname] = nil
+            local name = "unit_hotfix_tail"
+            local mod = assert(load("local own = 1 local M = {} function M.own() return own end return M",
+                                    "=" .. name))()
+            package.loaded[name] = mod
+            mod.peek = lok and fmod.peek or nil
+            local ok, msg = hotfix.apply(name, "function M.own() return secret end")
+            local v = mod.own()
+            package.loaded[name] = nil
+            t:eq(true, lok, "临时文件模块 require 成功")
+            t:eq(true, ok, "补丁照常应用 (" .. tostring(msg) .. ")")
+            t:eq(nil, v, "同尾巴文件的 upvalue 没被当成本模块的")
+        else
+            printd("[%s] script dir not writable, tail case skipped", t.name)
+        end
     end
 end)
 end)

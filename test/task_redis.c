@@ -4,6 +4,8 @@
 #define KEY_STR  "srey:ctest:test"
 #define KEY_HASH "srey:ctest:hash"
 #define KEY_CNT  "srey:ctest:counter"
+#define KEY_CHAN "srey:ctest:chan"
+#define KEY_NOLIST "srey:ctest:nolist"
 
 typedef struct task_redis_args {
     uint16_t port;
@@ -69,6 +71,78 @@ static int32_t _wrong_type_error(task_ctx *task, sock_ctx *sk) {
     return ERR_OK;
 }
 
+// 在另一条连接上发布，发出去不等回复：回复没人等，落到回调
+static int32_t _publish(task_ctx *task, sock_ctx *pub, const char *text) {
+    size_t size;
+    char *pack = redis_pack(&size, "PUBLISH %s %s", KEY_CHAN, text);
+    if (NULL == pack) {
+        return ERR_FAILED;
+    }
+    return ev_send(&task->loader->netev, pub, pack, size, 0);
+}
+// RESP3 推送：订阅确认算回复；message 推送不唤醒等回复的协程，coro_recv_any 能收到。
+// 挂着 BLPOP 时发布：推送一定落在它等满 0.2 秒的空回复之前，不依赖服务端的写入顺序
+static int32_t _resp3_push_cases(task_ctx *task, sock_ctx *sk, sock_ctx *pub) {
+    size_t size;
+    char *pack = redis_pack(&size, "HELLO 3");
+    if (ERR_OK != _exec(task, sk, pack, size, RESP_MAP, NULL, NULL)) {
+        LOG_ERROR("redis push: HELLO 3 error.");
+        return ERR_FAILED;
+    }
+    pack = redis_pack(&size, "SUBSCRIBE %s", KEY_CHAN);
+    if (ERR_OK != _exec(task, sk, pack, size, RESP_PUSHE, NULL, NULL)) {
+        LOG_ERROR("redis push: SUBSCRIBE confirm must wake the waiter.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _publish(task, pub, "first")) {
+        LOG_ERROR("redis push: publish error.");
+        return ERR_FAILED;
+    }
+    pack = redis_pack(&size, "BLPOP %s 0.2", KEY_NOLIST);
+    if (ERR_OK != _exec(task, sk, pack, size, RESP_NIL, NULL, NULL)) {
+        LOG_ERROR("redis push: command waiter must get its own reply.");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _publish(task, pub, "second")) {
+        LOG_ERROR("redis push: publish error.");
+        return ERR_FAILED;
+    }
+    redis_pack_ctx *rsp = coro_recv_any(task, sk, NULL, NULL);
+    if (NULL == rsp || RESP_PUSHE != rsp->prot || 3 != rsp->nelem) {
+        LOG_ERROR("redis push: expected a message push.");
+        return ERR_FAILED;
+    }
+    // 链表：push 头 → "message" → 频道 → 内容
+    redis_pack_ctx *msg = (NULL != rsp->next && NULL != rsp->next->next) ? rsp->next->next->next : NULL;
+    if (NULL == msg
+        || 6 != msg->len
+        || 0 != memcmp(msg->data, "second", 6)) {
+        LOG_ERROR("redis push: wrong message payload.");
+        return ERR_FAILED;
+    }
+    pack = redis_pack(&size, "UNSUBSCRIBE %s", KEY_CHAN);
+    if (ERR_OK != _exec(task, sk, pack, size, RESP_PUSHE, NULL, NULL)) {
+        LOG_ERROR("redis push: UNSUBSCRIBE confirm must wake the waiter.");
+        return ERR_FAILED;
+    }
+    pack = redis_pack(&size, "PING");
+    if (ERR_OK != _exec(task, sk, pack, size, RESP_STRING, "PONG", NULL)) {
+        LOG_ERROR("redis push: PING after UNSUBSCRIBE error.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+static int32_t _resp3_push(task_ctx *task, task_redis_args *arg) {
+    sock_ctx pub;
+    if (ERR_OK != redis_connect(task, NULL, arg->host, arg->port, EMPTYSTR(arg->key) ? NULL : arg->key, 0, &pub)) {
+        LOG_ERROR("redis push: connect publisher error.");
+        return ERR_FAILED;
+    }
+    int32_t rtn = _resp3_push_cases(task, &arg->sk, &pub);
+    ev_close(&task->loader->netev, &pub);
+    return rtn;
+}
+
 // 带错口令建链：测试库没设口令(或口令不是这个)，AUTH 回错误，redis_connect 须返回失败并自己关掉连接
 static int32_t _auth_fail(task_ctx *task, task_redis_args *arg) {
     sock_ctx sk;
@@ -81,7 +155,7 @@ static int32_t _auth_fail(task_ctx *task, task_redis_args *arg) {
         return ERR_FAILED;
     }
     // 当场被拒才对：等满读超时才失败说明错误没映射出来(只是超时)
-    if (timer_elapsed_ms(&tm) >= task_get_netread_timeout(task) / 2) {
+    if (timer_elapsed_ms(&tm) >= task_get_timeout(task, TMO_NETREAD) / 2) {
         LOG_ERROR("redis auth fail: took %"PRIu64"ms, a timeout rather than a rejection.", timer_elapsed_ms(&tm));
         return ERR_FAILED;
     }
@@ -160,6 +234,13 @@ static void _startup_run(task_ctx *task) {
     // 清理测试键
     pack = redis_pack(&size, "DEL %s %s", KEY_HASH, KEY_CNT);
     _exec(task, &arg->sk, pack, size, RESP_INTEGER, NULL, NULL);
+    if (task_isclosing(task)
+        || ERR_OK != _resp3_push(task, arg)) {
+        if (!task_isclosing(task)) {// 收尾早退不算失败
+            LOG_ERROR("redis RESP3 push error.");
+        }
+        goto END;
+    }
     // 主连接刚连通过，这里建链失败即视为 AUTH 被拒
     if (task_isclosing(task)
         || ERR_OK != _auth_fail(task, arg)) {

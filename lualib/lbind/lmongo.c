@@ -607,7 +607,8 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="remove" type="integer">非零表示删除匹配文档</param>
 /// <param name="pipeline" type="integer">非零时 update 为聚合数组</param>
-/// <param name="update" type="string|lightuserdata|nil">BSON 更新文档或聚合数组；remove 非零时可省，为零时必填——nil 与空缓冲一律报错</param>
+/// <param name="update" type="string|lightuserdata|nil">BSON 更新文档或聚合数组；remove 非零时可省，为零时必填——nil 与空缓冲一律报错。
+/// string 自带长度，其后的长度槽须留 nil 或填数字(放别的报错)；lightuserdata 在其后必填字节数</param>
 /// <param name="ulens" type="integer?">update 字节数</param>
 /// <param name="opts" type="string|lightuserdata|nil">附加 BSON 选项；须是一篇完整 BSON 文档</param>
 /// <param name="optslens" type="integer?">opts 为 lightuserdata 时必填，缓冲字节数，取值 [0, INT32_MAX]</param>

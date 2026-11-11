@@ -69,26 +69,27 @@ static char *_config_read(size_t *lens) {
     }
     return info;
 }
-// 解析配置文件，将各字段填充到 config_ctx（解析失败时使用默认值）
-static void _parse_config(config_ctx *cnf) {
+// 解析配置文件，将各字段填充到 config_ctx（解析失败时使用默认值）。
+// 唯一例外是 harbor.ssl 在但非法：它的默认空串就是明文，回落即降级，返回 ERR_FAILED 让进程起不来
+static int32_t _parse_config(config_ctx *cnf) {
     size_t lens;
     char *config = _config_read(&lens);
     if (NULL == config) {
-        return;
+        return ERR_OK;
     }
     yyjson_read_err erro;
     yyjson_doc *doc = yyjson_read_opts(config, lens, YYJSON_READ_ALLOW_BOM, NULL, &erro);
     FREE(config);
     if (NULL == doc) {
         PRINT("parse config error at byte %zu: %s", erro.pos, erro.msg);
-        return;
+        return ERR_OK;
     }
     yyjson_obj_iter it;
     yyjson_obj_iter sub;
     if (!yyjson_obj_iter_init(yyjson_doc_get_root(doc), &it)) {
         PRINT("config root is not an object, use default.");
         yyjson_doc_free(doc);
-        return;
+        return ERR_OK;
     }
     CFG_NUM(&it, "", "serviceid", SERVICEID_MAX, cnf->serviceid, uint16_t);
     CFG_NUM(&it, "", "nnet", UINT16_MAX, cnf->nnet, uint16_t);
@@ -108,16 +109,23 @@ static void _parse_config(config_ctx *cnf) {
     } else if (NULL != jv) {
         PRINT("debug invalid, use default.");
     }
+    int32_t rtn = ERR_OK;
     jv = yyjson_obj_iter_get(&it, "harbor");
     if (yyjson_obj_iter_init(jv, &sub)) {
         CFG_STR(&sub, "harbor.", "name", cnf->harbor.name);
-        CFG_STR(&sub, "harbor.", "ssl", cnf->harbor.ssl);
+        jv = yyjson_obj_iter_get(&sub, "ssl");
+        if (NULL != jv
+            && ERR_OK != json_val_string(jv, cnf->harbor.ssl, sizeof(cnf->harbor.ssl))) {
+            PRINT("harbor.ssl invalid, refuse to start.");
+            rtn = ERR_FAILED;
+        }
         CFG_STR(&sub, "harbor.", "ip", cnf->harbor.ip);
         CFG_NUM(&sub, "harbor.", "port", UINT16_MAX, cnf->harbor.port, uint16_t);
     } else if (NULL != jv) {
         PRINT("harbor invalid, use default.");
     }
     yyjson_doc_free(doc);
+    return rtn;
 }
 // 在进程目录下创建 logs 目录并打开以当前时间命名的日志文件。
 // 文件缓冲开到 64KB(须在首次读写前设)；glibc 在 buf 为 NULL 时不认 size，按文件系统块大小分配
@@ -177,7 +185,7 @@ static void _thread_exit_hook(void *udata, void *assist) {
     OPENSSL_thread_stop();
 #endif
 }
-// 初始化全局基础设施（线程全局钩子、socket、BSON 库）。线程钩子须早于任何线程创建
+// 初始化全局基础设施（线程全局钩子、定时器精度、locale、socket）。线程钩子须早于任何线程创建
 static void _init_globle(void) {
     thread_global_hooks(NULL, _thread_exit_hook);
 #if defined(OS_WIN)
@@ -252,10 +260,13 @@ static int32_t service_init(void) {
     _init_globle();
     config_ctx config;
     _config_init(&config);
-    _parse_config(&config);
+    // 这两条早退在 _open_log 之前,不能借 service_exit:它无条件 log_free,会去唤醒、join 从没建过的日志线程
+    if (ERR_OK != _parse_config(&config)) {
+        _free_globle();
+        return ERR_FAILED;
+    }
     if (ERR_OK != serviceid(config.serviceid)) {
         PRINT("serviceid error.");
-        // 这条早退在 _open_log 之前,不能借 service_exit:它无条件 log_free,会去唤醒、join 从没建过的日志线程
         _free_globle();
         return ERR_FAILED;
     }
@@ -512,8 +523,7 @@ static BOOL wsv_install(LPCTSTR name) {
     char tmp[PATH_LENS + 512];
     char propath[PATH_LENS] = { 0 };
     // 两个返回值都必须查：GetModuleFileName 装不下时返回缓冲大小(XP 还不补 NUL)，
-    // snprintf 截断时返回"本应写入的长度"。任一漏查都会把残缺 ImagePath 交给 CreateService，
-    // 而它并不校验，注册照样成功、这里照打"install successfully"，SCM 之后永远起不来该服务
+    // snprintf 截断时返回"本应写入的长度"；CreateService 不校验 ImagePath，残缺的也照样注册成功
     DWORD plen = GetModuleFileName(NULL, propath, (DWORD)sizeof(propath));
     if (0 == plen
         || plen >= sizeof(propath)) {
@@ -657,8 +667,7 @@ int main(int argc, char *argv[]) {
     int32_t is_daemon = (argc > 1);
     _hold_std_fds();
     // 无参与 -b 都要 fork，两条都用 pipe 同步：子进程 service_init 成功写 'R'，失败 close
-    // 让父端读 EOF。少了它父进程只能恒返 ERR_OK，配置错、端口占用一律报成功，
-    // `./srey && echo ok` 在服务根本没起来时照样打 ok
+    // 让父端读 EOF，父进程的退出码才能反映服务起没起来
     int32_t sync_pipe[2] = { -1, -1 };
     if (-1 == pipe(sync_pipe)) {
         PRINT("pipe error: %s", ERRORSTR(errno));

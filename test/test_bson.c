@@ -1104,7 +1104,7 @@ static void test_bson_check_depth_malformed(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(trunc, sizeof(trunc) - 1));
 
     // EOD 提前出现、声明长度还剩字节：err 不置位（读到的确实是合法 EOD），
-    // 只能靠"读完 EOD 后 offset 必等于 doclens"这条判据拦下
+    // 只能靠"EOD 恰在最后一字节"这条判据拦下
     char early_eod[] = { 0x06, 0x00, 0x00, 0x00, 0x00, (char)0xFF };
     CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(early_eod, sizeof(early_eod)));
     // 同样构造但声明长度正好到 EOD：合法
@@ -1231,6 +1231,45 @@ static void test_bson_iter_init_offset_reset(CuTest *tc) {
     CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
     CuAssertTrue(tc, !bson_iter_next(&iter));
     CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+}
+
+// 同一 bson 上的两个 iter 各走各的，也不动源对象的 offset（BSON_DOC_LENS 遍历前后不变）
+static void test_bson_iter_shared_src(CuTest *tc) {
+    bson_ctx bson;
+    bson_iter it1, it2;
+    bson_init(&bson, NULL, 0);
+    bson_append_int32(&bson, "a", 1);
+    bson_append_int32(&bson, "b", 2);
+    bson_append_end(&bson);
+    size_t lens = BSON_DOC_LENS(&bson);
+    bson_iter_init(&it1, &bson);
+    CuAssertTrue(tc, bson_iter_next(&it1) && 0 == strcmp("a", it1.key));
+    bson_iter_init(&it2, &bson);
+    CuAssertTrue(tc, bson_iter_next(&it2) && 0 == strcmp("a", it2.key));
+    CuAssertTrue(tc, bson_iter_next(&it1) && 0 == strcmp("b", it1.key));
+    CuAssertTrue(tc, bson_iter_next(&it2) && 0 == strcmp("b", it2.key));
+    CuAssertTrue(tc, !bson_iter_next(&it1));
+    CuAssertTrue(tc, lens == BSON_DOC_LENS(&bson));
+    BSON_FREE(&bson);
+}
+
+// 提前出现的 EOD 之后还有一个构造好的元素 x：迭代器读到 EOD 后再 next / find 都不能把 x 吐出来，
+// 与 decode 看到的一致；bson_check_depth 照旧拒
+static void test_bson_iter_early_eod_stop(CuTest *tc) {
+    char raw[] = { 0x14, 0x00, 0x00, 0x00, 0x10, 'a', 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                   0x10, 'x', 0x00, 0x02, 0x00, 0x00, 0x00, 0x00 };
+    bson_ctx rd;
+    bson_iter iter, res;
+    bson_init(&rd, raw, sizeof(raw));
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, bson_iter_next(&iter) && 0 == strcmp("a", iter.key));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    CuAssertIntEquals(tc, ERR_FAILED, bson_iter_find(&iter, "x", &res));
+    bson_iter_init(&iter, &rd);
+    CuAssertIntEquals(tc, ERR_FAILED, bson_iter_find(&iter, "x", &res));
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(raw, sizeof(raw)));
 }
 
 // 两个原始数据入口传 NULL 时必须直接失败：bson_init 把 data==NULL 重载为"新建可写文档"，
@@ -2324,6 +2363,8 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_truncated_and_reset);
     SUITE_ADD_TEST(suite, test_bson_iter_reset_short_buffer);
     SUITE_ADD_TEST(suite, test_bson_iter_init_offset_reset);
+    SUITE_ADD_TEST(suite, test_bson_iter_shared_src);
+    SUITE_ADD_TEST(suite, test_bson_iter_early_eod_stop);
     SUITE_ADD_TEST(suite, test_bson_null_data_entry);
     SUITE_ADD_TEST(suite, test_bson_binary_zero_length);
     SUITE_ADD_TEST(suite, test_bson_iter_error_flag);

@@ -76,7 +76,7 @@ void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t optlens, size_t *s
 /// 构造 insert 命令请求包（插入文档）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="docs">BSON 数组格式的待插入文档列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废</param>
+/// <param name="docs">BSON 数组格式的待插入文档列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废；按文档序列(OP_MSG kind 1)跟在正文后发，元素须都是文档，否则整条命令作废</param>
 /// <param name="dlens">docs 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -87,7 +87,7 @@ void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *option
 /// 构造 update 命令请求包（更新文档）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="updates">BSON 数组格式的更新操作列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废</param>
+/// <param name="updates">BSON 数组格式的更新操作列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废；按文档序列(OP_MSG kind 1)跟在正文后发，元素须都是文档，否则整条命令作废</param>
 /// <param name="ulens">updates 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -98,7 +98,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
 /// 构造 delete 命令请求包（删除文档）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="deletes">BSON 数组格式的删除操作列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废</param>
+/// <param name="deletes">BSON 数组格式的删除操作列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废；按文档序列(OP_MSG kind 1)跟在正文后发，元素须都是文档，否则整条命令作废</param>
 /// <param name="dlens">deletes 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
@@ -109,9 +109,9 @@ void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *opt
 /// 构造 bulkWrite 命令请求包（批量写操作，MongoDB 8.0+）
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
-/// <param name="ops">BSON 数组格式的操作列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废</param>
+/// <param name="ops">BSON 数组格式的操作列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废；按文档序列(OP_MSG kind 1)跟在正文后发，元素须都是文档，否则整条命令作废</param>
 /// <param name="olens">ops 数据长度</param>
-/// <param name="nsinfo">BSON 数组格式的命名空间信息列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废</param>
+/// <param name="nsinfo">BSON 数组格式的命名空间信息列表；必填，不是一篇完整 BSON（判据见 bson_check_doc，NULL 与长度 0 都算）时整条命令作废；按文档序列(OP_MSG kind 1)跟在正文后发，元素须都是文档，否则整条命令作废</param>
 /// <param name="nlens">nsinfo 数据长度</param>
 /// <param name="options">附加 BSON 选项，NULL 表示无</param>
 /// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>

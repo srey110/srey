@@ -34,7 +34,6 @@ runner.run(function(t)
         t:fail("smtp connect")
         return
     end
-    t:check(true, "smtp connected")
 
     -- 第一封：纯文本，TO 收件人，无附件，无 Reply-To
     local mailctx = mail.new()

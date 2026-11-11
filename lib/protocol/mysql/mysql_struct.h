@@ -12,7 +12,13 @@ struct coro_serial_ctx;
 // 客户端连接参数
 typedef struct mysql_client_param {
     uint8_t charset;        // 字符集编码 ID
+#if WITH_SSL
+    uint8_t pubkeyreq;      // 明文连接要完整认证时可否向服务端要 RSA 公钥，见 mysql_set_pubkey_request
+#endif
     uint16_t port;          // 服务器端口号
+#if WITH_SSL
+    uint16_t pubkeylens;    // 本地预置的服务端 RSA 公钥字节数，0 为没设
+#endif
     uint32_t maxpack;       // 最大数据包大小（字节）
     uint32_t caps;          // 客户端能力标志位
     struct evssl_ctx *evssl; // SSL 上下文，NULL 表示不启用 SSL
@@ -21,6 +27,9 @@ typedef struct mysql_client_param {
     char user[MYSQL_USER_LENS + 1];         // 登录用户名
     char database[MYSQL_DB_LENS + 1];       // 握手用库名；重连据此重建握手，故须与服务端当前库一致
     char password[MYSQL_PASSWORD_LENS + 1]; // 登录密码
+#if WITH_SSL
+    char pubkey[MYSQL_PUBKEY_LENS];         // 本地预置的服务端 RSA 公钥(PEM)，见 mysql_set_pubkey
+#endif
 }mysql_client_param;
 
 // 服务器握手参数（从握手包中解析）
@@ -39,6 +48,9 @@ typedef struct mysql_ctx {
     uint8_t cur_cmd;        // 当前正在处理的命令类型
     uint8_t in_trans;       // 最近一个 OK / EOF 包说服务端处在事务里（SERVER_STATUS_IN_TRANS）；命令回 ERR 后置 1（说不准按在事务里算）；断开清零。
                             // 网络线程解析时写，收应答的一方在拿到应答之后读
+    uint8_t autocommit;     // 最近一个 OK / EOF 包的 SERVER_STATUS_AUTOCOMMIT，ERR 不动它；读写时机同 in_trans
+    uint8_t autocommit_init; // 认证成功那一刻的 autocommit，连接池归还时按它还原
+    uint8_t pubkeywait;      // 已向服务端要 RSA 公钥，下一个 01 包带的是公钥 PEM
     uint16_t error_code;    // 最近一个经 mysql_record 记下的 ERR 包错误码；这三个与 error_msg 只在收应答的一方写
                             // (mysql_record / mysql_erro_clear)，网络线程不碰
     uint64_t last_id;       // 最近一个经 mysql_record 记下的 OK 包自增 ID

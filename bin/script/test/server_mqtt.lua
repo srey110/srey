@@ -7,9 +7,6 @@ local mqtt = require("lib.mqtt")
 
 local _PORT = 1883
 
--- QoS1/2 PUBLISH 计数器，循环覆盖三种 PUBACK reason code 分支
-local _publish = 0
-
 local function _send(sk, pack, size)
     if pack then srey.send(sk, pack, size, 0) end
 end
@@ -42,31 +39,17 @@ local function _handle(_, sk, _, _, data, _)
             return
         end
         if 0 == qos then return end
-        _publish = _publish + 1
+        -- 响应只看本包的 qos，不带跨连接状态，理由见 task_mqtt_server.c
         local pk, sz
         if 1 == qos then
-            if 1 == _publish then
-                local props = mqtt.props()
-                props:kv(mqtt.PROP.USER_PROPERTY, "key1", "val1")
-                pk, sz = mqtt.pack_puback(ver, packid, 0, props)
-                props:free()
-            elseif 2 == _publish then
-                pk, sz = mqtt.pack_puback(ver, packid, 0x10, nil)
-            else
-                pk, sz = mqtt.pack_puback(ver, packid, 0, nil)
-            end
-        elseif 2 == qos then
-            if 1 == _publish then
-                local props = mqtt.props()
-                props:kv(mqtt.PROP.USER_PROPERTY, "key1", "val1")
-                pk, sz = mqtt.pack_pubrec(ver, packid, 0, props)
-                props:free()
-            else
-                pk, sz = mqtt.pack_pubrec(ver, packid, 0, nil)
-            end
+            local props = mqtt.props()
+            props:kv(mqtt.PROP.USER_PROPERTY, "key1", "val1")
+            pk, sz = mqtt.pack_puback(ver, packid, 0, props)
+            props:free()
+        else
+            pk, sz = mqtt.pack_pubrec(ver, packid, 0, nil)
         end
         _send(sk, pk, sz)
-        if 3 == _publish then _publish = 0 end
     elseif mqtt.PROT.PUBREL == prot then
         local packid = mqtt.pubrel(data)
         local pk, sz = mqtt.pack_pubcomp(ver, packid, 0, nil)

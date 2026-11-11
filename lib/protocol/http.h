@@ -72,12 +72,18 @@ const char *http_code_status(int32_t code);
 /// <returns>非 0 表示禁止携带</returns>
 int32_t http_code_nobody(int32_t code);
 /// <summary>
+/// 客户端收到的这个包是否 1xx 中间响应，最终响应还在后面。状态行须是 HTTP-version 加三位十进制码
+/// </summary>
+/// <param name="pack">http_pack_ctx</param>
+/// <returns>非 0 表示是</returns>
+int32_t http_is_interim(struct http_pack_ctx *pack);
+/// <summary>
 /// http请求包
 /// </summary>
 /// <param name="bwriter">binary_ctx</param>
 /// <param name="method">方法 GET POST...；客户端侧须先把同一个 method 传给 http_set_method
 /// 登记到连接上再组包，否则 HEAD 的响应会被当成有报文体</param>
-/// <param name="url">url</param>
+/// <param name="url">url；method 或 url 含 CR / LF 时断言退进程，外部输入要先过滤</param>
 void http_pack_req(binary_ctx *bwriter, const char *method, const char *url);
 /// <summary>
 /// 把本次要发的请求方法登记到连接上：解包侧要靠它才能判定响应有无报文体
@@ -106,7 +112,7 @@ void http_pack_resp(binary_ctx *bwriter, int32_t code);
 /// </summary>
 /// <param name="bwriter">binary_ctx</param>
 /// <param name="key">键</param>
-/// <param name="val">值</param>
+/// <param name="val">值；key 或 val 含 CR / LF 时断言退进程，外部输入要先过滤</param>
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val);
 /// <summary>
 /// http头（值按长度取，不要求 \0 结尾，可含 NUL 等非文本字节）；键仍须 \0 结尾。
@@ -140,7 +146,7 @@ void http_pack_content(binary_ctx *bwriter, void *data, size_t lens);
 /// <param name="data">数据</param>
 /// <param name="lens">长度，0 表示终止块</param>
 void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens);
-// 解析 HTTP 头部，返回解析后的 http_pack_ctx；transfer 输出 0 表示没有 body，非 0 表示有(具体取值是 http.c 内部的)。
+// 解析 HTTP 头部，返回解析后的 http_pack_ctx；transfer 输出 0 表示没有帧长头，非 0 表示有(具体取值是 http.c 内部的，Content-Length: 0 也算有)。
 // client 同 http_unpack；为 0 时跳过请求行前的空行。ud 提供 prot_offset 缓存：半包到达时记忆扫描位置，避免对未变化前缀重复线性扫描
 struct http_pack_ctx *_http_parsehead(buffer_ctx *buf, ud_cxt *ud, int32_t client, int32_t *transfer, int32_t *status);
 /* 检查已解析头部字段的键是否大小写不敏感匹配 key（长度 klen），

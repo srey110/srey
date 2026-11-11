@@ -65,6 +65,14 @@ int32_t pgsql_set_db(pgsql_ctx *pg, const char *database);
 /// <returns>数据库名字符串</returns>
 const char *pgsql_get_db(pgsql_ctx *pg);
 /// <summary>
+/// 设置启动时请求的协议次版本，下次连接生效。0 为 3.0（默认，同 libpq）；2 为 3.2，取消密钥变长（PostgreSQL 18 起）。
+/// 服务端不支持 3.2 时经 NegotiateProtocolVersion 自动降到 3.0；不认版本协商的老代理会直接拒连，确认链路支持再开
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
+/// <param name="minor">0 或 2</param>
+/// <returns>ERR_OK 成功；ERR_FAILED minor 不是 0 / 2，原值不变</returns>
+int32_t pgsql_set_protocol(pgsql_ctx *pg, int32_t minor);
+/// <summary>
 /// 结果个数，按 CommandComplete 计，多语句 simple query 每条语句一个；全部结果攒到 ReadyForQuery 才一起交出。
 /// 任一条出错整包即 PGPACK_ERR、结果全丢；串里含 COMMIT 等事务控制时出错前已提交的不回滚，
 /// 故 PGPACK_ERR 不等于全部回滚。COPY TO STDOUT 别和别的语句拼在一条 query 里，会丢掉前面的结果

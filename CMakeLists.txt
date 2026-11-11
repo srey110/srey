@@ -133,7 +133,7 @@ add_dependencies(srey tls_gate)
 
 # ── Third-party libs (tools/deps.py) ──────────────────────────────────────────
 # 库名带变体后缀「[d]_<x86|x64|arm64>」，规则同 mk.sh；对不上就报错，不静默链别的变体。
-# 架构同 mk.sh / deps.py 按 uname -m 判：arm64/aarch64 算 arm64，i386/i686 或 x86_64 上编 32 位(同 mk.sh m32)算 x86，其余都是 x64
+# 架构判法同 mk.sh / deps.py：arm64/aarch64 算 arm64，i386/i686 或 x86_64 上指针 4 字节(32 位用户态或 m32)算 x86，其余都是 x64
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
     set(_deps_arch arm64)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(i386|i686)$" OR

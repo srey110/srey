@@ -188,7 +188,7 @@ void _uev_disconnect(watcher_ctx *watcher, evsock_ctx *evsk);
 // 事件注册失败时断开：TCP 先按传输错记一笔(关闭类型报 ABORT、不进延迟关闭，读事件可能永远不来)，
 // 已在关的不改记；其余同 _uev_disconnect
 void _uev_disconnect_failed(watcher_ctx *watcher, evsock_ctx *evsk);
-// 释放listener_ctx（立即释放，用于主线程兜底 / 事件线程退出后 cleanup 路径）
+// 释放listener_ctx：不看引用计数立即释放，调用方须保证已没有 event 线程还会碰它
 void _uev_freelsn(struct listener_ctx *lsn);
 // 递减 listener_ctx 引用计数，归零后立即释放
 // 主线程 / drain 残留路径用 (无 _uev_loop_event 在迭代，立即 FREE 安全)

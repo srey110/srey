@@ -240,7 +240,7 @@ typedef struct router_group {
     uint32_t prefix_len;
     const struct router_group *parent;
     const char *prefix;
-    const char *const *mw_names; // 中间件名数组, 由 _resolve 在 dispatch 前查表
+    const char *const *mw_names; // 中间件名数组, 注册时按名解析并快照
 } router_group;
 
 /// <summary>

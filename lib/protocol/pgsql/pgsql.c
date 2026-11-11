@@ -46,7 +46,7 @@ void _pgsql_udfree(ud_cxt *ud) {
     sock_mark_closed(&pg->sk);// 网络线程上写，理由见 sock_mark_closed
     pg->readyforquery = 0;
     pg->pid = 0;
-    pg->key = 0;
+    pg->keylens = 0;
 #if WITH_SSL
     pg->tls_cbind_len = 0;
 #endif
@@ -68,7 +68,8 @@ int32_t _pgsql_may_resume(void *data) {
 static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     size_t size;
-    void *startup = pgsql_pack_startup(pg->user, pg->database, &size);
+    pg->protover = pg->protoreq;// 服务端回 NegotiateProtocolVersion 时再改小
+    void *startup = pgsql_pack_startup(pg->user, pg->database, pg->protoreq, &size);
     ud->status = AUTH;
     return ev_send(ev, &pg->sk, startup, size, 0);
 }
@@ -402,6 +403,8 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     binary_init_read(&breader, pack, total);
     binary_get_skip(&breader, 5); // 跳过类型码(1) + 长度(4)
     char *err;
+    int32_t minor;
+    size_t klens;
     switch (pack[0]) {
     case 'E': // ErrorResponse：认证失败，推送错误消息
         err = _pgpack_error_notice(&breader);
@@ -414,14 +417,33 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     case 'S': // ParameterStatus：运行时参数状态报告，忽略
     case 'N': // NoticeResponse：服务端通知消息，忽略
         break;
-    case 'K': // BackendKeyData：记录后端进程 ID 和取消密钥
-        if (!binary_have(&breader, 8)) {// pid(4) + key(4)
+    case 'v': // NegotiateProtocolVersion：服务端不认请求的次版本，回它支持的最高值。只认比请求低的已知版本
+        if (!binary_have(&breader, 8)) {
             BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("%s", "BackendKeyData message too short.");
+            LOG_WARN("%s", "NegotiateProtocolVersion message too short.");
+            break;
+        }
+        minor = (int32_t)binary_get_integer(&breader, 4, 0);
+        if (minor >= pg->protover
+            || (0 != minor && 2 != minor)) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("pgsql server negotiated protocol 3.%d, requested 3.%d.", minor, (int32_t)pg->protover);
+            break;
+        }
+        pg->protover = (int8_t)minor;
+        break;
+    case 'K': // BackendKeyData：后端进程 ID + 取消密钥。协议 3.0 下密钥恒 4 字节，3.2 下 4~256 字节
+        klens = binary_remain(&breader) < 4 ? 0 : binary_remain(&breader) - 4;
+        if (klens < 4
+            || klens > PGSQL_CANCEL_KEY_MAX
+            || (0 == pg->protover && 4 != klens)) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("BackendKeyData key length %zu under protocol 3.%d.", klens, (int32_t)pg->protover);
             break;
         }
         pg->pid = (int32_t)binary_get_integer(&breader, 4, 0);
-        pg->key = (uint32_t)binary_get_integer(&breader, 4, 0);
+        memcpy(pg->key, breader.data + breader.offset, klens);
+        pg->keylens = (uint16_t)klens;
         break;
     case 'Z': // ReadyForQuery：服务端就绪，校验 SCRAM 已完成后推送成功通知
         // 长度判在动 scram 状态之前，畸形消息不该把状态改一半再报错
@@ -578,6 +600,14 @@ int32_t pgsql_set_db(pgsql_ctx *pg, const char *database) {
 }
 const char *pgsql_get_db(pgsql_ctx *pg) {
     return pg->database;
+}
+int32_t pgsql_set_protocol(pgsql_ctx *pg, int32_t minor) {
+    if (0 != minor
+        && 2 != minor) {
+        return ERR_FAILED;
+    }
+    pg->protoreq = (int8_t)minor;
+    return ERR_OK;
 }
 uint32_t pgsql_result_count(pgpack_ctx *pgpack) {
     return (PGPACK_OK == pgpack->type) ? pgres_arr_size(&pgpack->results) : 0;

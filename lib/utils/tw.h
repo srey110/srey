@@ -7,10 +7,10 @@
 #include "containers/fsqu.h"
 #include "containers/slist.h"
 
-#define TVN_BITS (6) //高精度轮（tv2~tv5）每级位数
-#define TVR_BITS (8) //最低精度轮（tv1）位数
-#define TVN_SIZE (1 << TVN_BITS) //高精度轮每级槽数（64）
-#define TVR_SIZE (1 << TVR_BITS) //最低精度轮槽数（256）
+#define TVN_BITS (6) //上级轮（tv2~tv5）每级位数，越往上每槽越粗
+#define TVR_BITS (8) //最细的一级轮（tv1）位数
+#define TVN_SIZE (1 << TVN_BITS) //上级轮每级槽数（64）
+#define TVR_SIZE (1 << TVR_BITS) //tv1 槽数（256）
 
 typedef void(*tw_cb)(ud_cxt *ud); //超时回调函数类型
 typedef struct tw_node_ctx {
@@ -28,7 +28,7 @@ typedef struct tw_ctx {
     timer_ctx timer;        //高精度计时器
     waiter_ctx waiter;      //轮线程睡到下一个到期，tw_add / tw_free 提前叫醒
     twq reqadd;          //外部新增请求暂存队列（平台自适应 fsqu，容量 capacity）
-    list_ctx tv1[TVR_SIZE];   //最低精度轮（精度 1ms，范围 256ms），槽即 slist（元素 tw_node_ctx）
+    list_ctx tv1[TVR_SIZE];   //最细的一级轮（精度 1ms，范围 256ms），槽即 slist（元素 tw_node_ctx）
     list_ctx tv2[TVN_SIZE];   //第 2 级精度轮
     list_ctx tv3[TVN_SIZE];   //第 3 级精度轮
     list_ctx tv4[TVN_SIZE];   //第 4 级精度轮
@@ -43,7 +43,7 @@ typedef struct tw_ctx {
 /// <param name="hooks">时间轮线程的 init/exit 钩子,NULL 表示不挂钩子</param>
 void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks);
 /// <summary>
-/// 时间轮释放
+/// 时间轮释放。必须在所有可能调 tw_add 的线程都停下(join)之后调用，否则会碰到已释放的队列
 /// </summary>
 /// <param name="ctx">tw_ctx</param>
 void tw_free(tw_ctx *ctx);

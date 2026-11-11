@@ -6,7 +6,7 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
-local utils  = require("srey.utils")
+local slog   = require("srey.log")
 local core   = require("srey.core")
 local task   = require("srey.task")
 
@@ -186,7 +186,7 @@ runner.run(function(t)
 
     -- ── lib/log.lua: 级别读取与 log_setlv 同步 ──────────────────────
     do
-        local saved = utils.log_getlv()
+        local saved = slog.getlv()
         -- Lua 侧短路必须现问 C 层，不能缓存：级别是进程级一份，而每个 task 一个 lua_State，
         -- 缓存就成了每 VM 一份，调试台调高只对收到命令的那个 task 生效。
         -- 这里绕过 log_setlv 直接改 C 层（模拟"命令打给了别的 task / C task"），
@@ -194,21 +194,21 @@ runner.run(function(t)
         -- 被短路则 format 根本不执行、不抛；放行则抛
         -- 只降到 WARN 不降到 FATAL：级别是进程级一份，而 runner/reporter 的 FAIL 走 WARN 输出，
         -- 压到 FATAL 会把这几行之间其他 task 的失败明细一起吞掉。WARN 已低于 DEBUG，短路照样验得了
-        utils.log_setlv(2)-- WARN
+        slog.setlv(2)-- WARN
         t:eq(true, pcall(DEBUG, "%d", {}), "低级别下 DEBUG 被短路(未走到 string.format)")
-        utils.log_setlv(4)-- 绕过 log_setlv 调到 DEBUG
+        slog.setlv(4)-- 绕过 log_setlv 调到 DEBUG
         t:eq(false, pcall(DEBUG, "%d", {}), "绕过 log_setlv 调高级别后 Lua 侧立刻生效")
-        utils.log_setlv(saved)
+        slog.setlv(saved)
         -- 调 log_setlv（lib/log.lua 中函数）应同步更新 C 层
         log_setlv(2)
-        t:eq(2, utils.log_getlv(), "log_setlv sync to C 层")
+        t:eq(2, slog.getlv(), "log_setlv sync to C 层")
         log_setlv(saved)
-        t:eq(saved, utils.log_getlv(), "log_setlv restore")
+        t:eq(saved, slog.getlv(), "log_setlv restore")
         -- 非法级别（非整数 / 越界）返回 false 且不改变当前级别
         t:eq(false, log_setlv("abc"), "log_setlv reject non-integer")
         t:eq(false, log_setlv(99),    "log_setlv reject out-of-range")
         t:eq(false, log_setlv(-1),    "log_setlv reject negative")
-        t:eq(saved, utils.log_getlv(), "log_setlv invalid keeps level")
+        t:eq(saved, slog.getlv(), "log_setlv invalid keeps level")
         t:eq(true,  log_setlv(saved),  "log_setlv valid returns true")
         -- FATAL/ERROR/WARN/INFO/DEBUG 五个全局函数都存在
         t:eq("function", type(FATAL), "FATAL exists")

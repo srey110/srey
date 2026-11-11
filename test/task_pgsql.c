@@ -472,7 +472,7 @@ static int32_t _concurrent_query(pgsql_ctx *pg) {
 // md5 / trust 就根本没走通道绑定），两条都成立才说明按证书签名摘要算的绑定数据对得上。
 // 服务端没开 TLS（show ssl 为 off，SSLRequest 会回 'N'）或取不到客户端 TLS 上下文就跳过；探测用主连接
 static int32_t _ssl_query(task_ctx *task, task_pgsql_args *arg) {
-    evssl_ctx *evssl = evssl_qury("clientnull");
+    evssl_ctx *evssl = evssl_query("clientnull");
     if (NULL == evssl) {
         LOG_WARN("pgsql ssl: no client ssl context, skipped.");
         return ERR_OK;
@@ -585,6 +585,26 @@ static int32_t _copy_in_misuse(pgsql_ctx *pg) {
         LOG_ERROR("pgsql copy misuse: connection must stay usable after CopyFail.");
         return ERR_FAILED;
     }
+    // 语句根本不是 COPY：copy_in / copy_out 都按失败返回，连接不动
+    if (NULL != pgsql_copy_in(pg, "select 1", "x", 1)
+        || NULL != pgsql_copy_out(pg, "select 1")) {
+        LOG_ERROR("pgsql copy misuse: copy_in / copy_out must fail on a non-COPY statement.");
+        return ERR_FAILED;
+    }
+    // 一条 SQL 里两个 COPY FROM STDIN：数据被第一个用掉，第二个要被 CopyFail 中止，否则下一条命令必失败
+    char two[128];
+    SNPRINTF(two, sizeof(two), "%s; %s", sql, sql);
+    if (NULL != pgsql_copy_in(pg, two, "", 0)) {
+        LOG_ERROR("pgsql copy misuse: second COPY FROM STDIN must be aborted.");
+        return ERR_FAILED;
+    }
+    p = pgsql_query(pg, "select 1");
+    if (NULL == p
+        || PGPACK_OK != p->type
+        || skid != pg->sk.skid) {
+        LOG_ERROR("pgsql copy misuse: connection must stay usable after aborting the second COPY.");
+        return ERR_FAILED;
+    }
     if (ERR_OK != pgsql_stmt_prepare(pg, "stmt_copy", sql, 0, NULL)) {
         LOG_ERROR("pgsql copy misuse: prepare COPY FROM STDIN error.");
         return ERR_FAILED;
@@ -600,6 +620,142 @@ static int32_t _copy_in_misuse(pgsql_ctx *pg) {
         return ERR_FAILED;
     }
     return ERR_OK;
+}
+// cancel 的两个协程：一个跑长查询，一个等它上线后发 CancelRequest
+static void _cancel_long_query(void *owner, void *arg) {
+    (void)owner;
+    _conc_arg *a = (_conc_arg *)arg;
+    pgpack_ctx *p = pgsql_query(a->pg, "select pg_sleep(10)");
+    a->done = (NULL != p && PGPACK_ERR == p->type && NULL != strstr((const char *)p->pack, "cancel")) ? 1 : -1;
+}
+static void _cancel_fire(void *owner, void *arg) {
+    (void)owner;
+    _conc_arg *a = (_conc_arg *)arg;
+    coro_sleep(a->pg->task, 300);
+    a->got = pgsql_cancel(a->pg);
+}
+// pgsql_cancel 不排队等锁：长查询很快被打断、收到服务端的取消错误，连接照常可用
+static int32_t _cancel_query(pgsql_ctx *pg) {
+    _conc_arg arg;
+    ZERO(&arg, sizeof(arg));
+    arg.got = ERR_FAILED;
+    arg.pg = pg;
+    coro_fn funcs[2] = { _cancel_long_query, _cancel_fire };
+    void *argp[2] = { &arg, &arg };
+    timer_ctx tm;
+    timer_init(&tm);
+    timer_start(&tm);
+    if (ERR_OK != coro_fork_wait(coro_task_co(pg->task), funcs, argp, 2)
+        || ERR_OK != arg.got
+        || 1 != arg.done
+        || timer_elapsed_ms(&tm) >= 5000) {
+        LOG_ERROR("pgsql cancel: rtn %d, done %d, took %"PRIu64"ms.", arg.got, arg.done, timer_elapsed_ms(&tm));
+        return ERR_FAILED;
+    }
+    if (ERR_OK != pgsql_ping(pg)) {
+        LOG_ERROR("pgsql cancel: connection must stay usable.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 建连挂起期间主连接换了后端(fork 出的协程直接改 pid 模拟重连)：不发、返回失败；pid 改回后连接照常可用
+static void _cancel_swap_pid(void *owner, void *arg) {
+    (void)owner;
+    ((pgsql_ctx *)arg)->pid ^= 0x5a5a;
+}
+static int32_t _cancel_swapped(pgsql_ctx *pg) {
+    coro_fork(coro_task_co(pg->task), _cancel_swap_pid, pg);// 只排队，等 pgsql_cancel 建连挂起时才跑
+    int32_t rtn = pgsql_cancel(pg);
+    pg->pid ^= 0x5a5a;
+    if (ERR_FAILED != rtn
+        || ERR_OK != pgsql_ping(pg)) {
+        LOG_ERROR("pgsql cancel: backend swapped while connecting, expected skip, got %d.", rtn);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 协议 3.2：quit 后改请求 3.2、ping 重连。PostgreSQL 18 起协商成 3.2、取消密钥变长，更老的服务端降回 3.0、
+// 密钥 4 字节；两种都要能照常取消长查询。跑完改回请求 3.0，下次重连生效
+static int32_t _proto32(pgsql_ctx *pg) {
+    pgsql_quit(pg);
+    if (ERR_OK != pgsql_set_protocol(pg, 2)
+        || ERR_OK != pgsql_ping(pg)) {
+        LOG_ERROR("%s", "pgsql proto 3.2: reconnect failed.");
+        return ERR_FAILED;
+    }
+    pgpack_ctx *p = pgsql_query(pg, "select current_setting('server_version_num')::int as v");
+    pgsql_reader_ctx *rd = (NULL != p && PGPACK_OK == p->type) ? pgsql_reader_iter(p) : NULL;
+    int32_t err = ERR_FAILED;
+    int64_t vnum = 0;
+    if (NULL != rd) {
+        vnum = pgsql_reader_integer(rd, "v", &err);
+        pgsql_reader_free(rd);
+    }
+    int32_t want = vnum >= 180000 ? 2 : 0;
+    if (ERR_OK != err
+        || want != pg->protover
+        || (2 == want ? pg->keylens <= 4 : 4 != pg->keylens)) {
+        LOG_ERROR("pgsql proto 3.2: server %"PRId64", negotiated 3.%d, key %u bytes.",
+                  vnum, (int32_t)pg->protover, (uint32_t)pg->keylens);
+        return ERR_FAILED;
+    }
+    int32_t rtn = _cancel_query(pg);
+    (void)pgsql_set_protocol(pg, 0);
+    return rtn;
+}
+// LISTEN / NOTIFY：通知不唤醒等回复的协程，coro_recv_any 能收到。同一条连接自发自收，通知排在 ReadyForQuery 之前
+static int32_t _listen_notify(task_ctx *task, pgsql_ctx *pg) {
+    pgpack_ctx *p = pgsql_query(pg, "listen srey_chan");
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql listen error.");
+        return ERR_FAILED;
+    }
+    // 通知先到，等回复的协程等来的仍是这条命令自己的结果
+    p = pgsql_query(pg, "notify srey_chan, 'first'");
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql notify: command waiter must get its own result.");
+        return ERR_FAILED;
+    }
+    size_t lens;
+    void *pack = pgsql_pack_query("notify srey_chan, 'second'", &lens);
+    if (NULL == pack
+        || ERR_OK != ev_send(&task->loader->netev, &pg->sk, pack, lens, 0)) {
+        LOG_ERROR("pgsql notify: send error.");
+        return ERR_FAILED;
+    }
+    p = coro_recv_any(task, &pg->sk, NULL, NULL);
+    if (NULL == p || PGPACK_NOTIFICATION != p->type) {
+        LOG_ERROR("pgsql notify: expected a notification.");
+        return ERR_FAILED;
+    }
+    pgpack_notification *n = (pgpack_notification *)p->pack;
+    if (0 != strcmp("srey_chan", n->channel)
+        || 0 != strcmp("second", n->notification)
+        || pg->pid != n->pid) {
+        LOG_ERROR("pgsql notify: wrong notification fields.");
+        return ERR_FAILED;
+    }
+    p = coro_recv_any(task, &pg->sk, NULL, NULL);
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql notify: expected the command result after the notification.");
+        return ERR_FAILED;
+    }
+    p = pgsql_query(pg, "unlisten srey_chan");
+    if (NULL == p || PGPACK_OK != p->type) {
+        LOG_ERROR("pgsql unlisten error.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+// 活连接上 selectdb：断开重连、代次前进，排队的命令走新连接
+static int32_t _live_selectdb(pgsql_ctx *pg, const char *database) {
+    uint32_t gen = pg->generation;
+    if (ERR_OK != pgsql_selectdb(pg, database)
+        || gen == pg->generation) {
+        LOG_ERROR("pgsql live selectdb error.");
+        return ERR_FAILED;
+    }
+    return _concurrent_query(pg);
 }
 // quit 拆掉执行器后 selectdb：经 pgsql_connect 建的连接照 connect 重建并装回执行器，多协程的命令照常排队
 static int32_t _quit_selectdb(pgsql_ctx *pg, const char *database) {
@@ -631,7 +787,7 @@ static int32_t _auth_fail(task_ctx *task, task_pgsql_args *arg) {
         return ERR_FAILED;
     }
     // 当场被拒才对：等满读超时才失败说明错误没映射出来(只是超时)
-    if (timer_elapsed_ms(&tm) >= task_get_netread_timeout(task) / 2) {
+    if (timer_elapsed_ms(&tm) >= task_get_timeout(task, TMO_NETREAD) / 2) {
         LOG_ERROR("pgsql auth fail: took %"PRIu64"ms, a timeout rather than a rejection.", timer_elapsed_ms(&tm));
         return ERR_FAILED;
     }
@@ -840,6 +996,15 @@ static void _startup_run(task_ctx *task) {
     }
     if (task_isclosing(task)
         || ERR_OK != _quit_selectdb(&arg->pg, arg->database)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (task_isclosing(task)
+        || ERR_OK != _cancel_query(&arg->pg)
+        || ERR_OK != _cancel_swapped(&arg->pg)
+        || ERR_OK != _listen_notify(task, &arg->pg)
+        || ERR_OK != _live_selectdb(&arg->pg, arg->database)
+        || ERR_OK != _proto32(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }

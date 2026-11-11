@@ -286,9 +286,8 @@ static char *_mmap_win_view(mmap_ctx *ctx, uint64_t aoff, size_t len, uint64_t e
 }
 // ntdll 的三个函数只取一次：抢到的一方取址，其余等它取完
 static void _mmap_nt_load(void) {
-    HMODULE nt;
     if (once_begin(&_mmap_nt_once)) {
-        nt = GetModuleHandleW(L"ntdll.dll");
+        HMODULE nt = GetModuleHandleW(L"ntdll.dll");
         _mmap_nt_create = (_nt_create_section)GetProcAddress(nt, "NtCreateSection");
         _mmap_nt_map = (_nt_map_view)GetProcAddress(nt, "NtMapViewOfSection");
         _mmap_nt_todos = (_nt_status2dos)GetProcAddress(nt, "RtlNtStatusToDosError");
@@ -297,22 +296,21 @@ static void _mmap_nt_load(void) {
 }
 // 可扩展视图：预留 len 字节地址，之后提交页时文件跟着变长。区段必须按 PAGE_READWRITE 建
 static char *_mmap_win_xview(mmap_ctx *ctx, uint64_t aoff, size_t len) {
-    HANDLE sec = NULL;
-    LARGE_INTEGER off;
-    SIZE_T vs = len;
-    PVOID p = NULL;
-    LONG st;
     _mmap_nt_load();
     if (NULL == _mmap_nt_create || NULL == _mmap_nt_map || NULL == _mmap_nt_todos) {
         SetLastError(ERROR_PROC_NOT_FOUND);
         return NULL;
     }
-    st = _mmap_nt_create(&sec, SECTION_MAP_READ | SECTION_MAP_WRITE, NULL, NULL, PAGE_READWRITE, SEC_RESERVE, ctx->fd);
+    HANDLE sec = NULL;
+    LONG st = _mmap_nt_create(&sec, SECTION_MAP_READ | SECTION_MAP_WRITE, NULL, NULL, PAGE_READWRITE, SEC_RESERVE, ctx->fd);
     if (0 != st) {
         SetLastError(_mmap_nt_todos(st));
         return NULL;
     }
+    LARGE_INTEGER off;
     off.QuadPart = (LONGLONG)aoff;
+    SIZE_T vs = len;
+    PVOID p = NULL;
     st = _mmap_nt_map(sec, GetCurrentProcess(), &p, 0, 0, &off, &vs, MMAP_NT_VIEWUNMAP, MEM_RESERVE, PAGE_READWRITE);
     CloseHandle(sec);
     if (0 != st) {
@@ -323,11 +321,11 @@ static char *_mmap_win_xview(mmap_ctx *ctx, uint64_t aoff, size_t len) {
 }
 // 建可扩展视图前把文件长度补到整页且不短于 end：此后增长都从页边界提交，末页里写的数据才落得进文件
 static int32_t _mmap_win_pad(mmap_ctx *ctx, uint64_t end) {
-    uint64_t flen, want;
+    uint64_t flen;
     if (ERR_OK != _mmap_flen(ctx, &flen)) {
         return ERR_FAILED;
     }
-    want = _mmap_roundup64(flen > end ? flen : end, _mmap_pagesize());
+    uint64_t want = _mmap_roundup64(flen > end ? flen : end, _mmap_pagesize());
     if (want == flen) {
         return ERR_OK;
     }
@@ -434,14 +432,14 @@ static void _mmap_willneed(char *p, size_t lens) {
 #endif
 // 从 addr 为 NULL 的状态建文件映射：[off - delta, off + cap)
 static int32_t _mmap_file_map(mmap_ctx *ctx, size_t size, size_t cap) {
-    uint64_t aoff = ctx->off - ctx->delta, end = ctx->off + size;
-    size_t len = ctx->delta + cap;
-    char *p;
     if (0 == size) {
         ctx->size = 0;
         ctx->cap = cap;
         return ERR_OK;
     }
+    uint64_t aoff = ctx->off - ctx->delta, end = ctx->off + size;
+    size_t len = ctx->delta + cap;
+    char *p;
 #ifdef OS_WIN
     if (MMAP_RDWR == ctx->mode && cap > size) {
         if (ERR_OK != _mmap_win_pad(ctx, end)) {
@@ -577,12 +575,11 @@ int32_t mmap_map_fd(mmap_ctx *ctx, mmap_fd fd, const mmap_opts *opts) {
 static char *_mmap_anon_alloc(size_t size, size_t cap, int32_t flags) {
     size_t csz = ROUND_UP(size, _mmap_pagesize());
 #ifdef OS_WIN
-    char *p;
     (void)flags;
     if (csz >= cap) {
         return (char *)VirtualAlloc(NULL, cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     }
-    p = (char *)VirtualAlloc(NULL, cap, MEM_RESERVE, PAGE_NOACCESS);
+    char *p = (char *)VirtualAlloc(NULL, cap, MEM_RESERVE, PAGE_NOACCESS);
     if (NULL != p && 0 != csz && NULL == VirtualAlloc(p, csz, MEM_COMMIT, PAGE_READWRITE)) {
         VirtualFree(p, 0, MEM_RELEASE);
         return NULL;
@@ -680,12 +677,11 @@ static int32_t _mmap_anon_regrow(mmap_ctx *ctx, size_t size, size_t newcap) {
 // POSIX 尽量接在尾部
 static int32_t _mmap_file_regrow(mmap_ctx *ctx, size_t size, size_t newcap) {
 #ifdef OS_WIN
-    char *p;
     if (MMAP_COPY != ctx->mode) {
         _mmap_unmap(ctx);
         return _mmap_file_map(ctx, size, newcap);
     }
-    p = _mmap_win_view(ctx, ctx->off - ctx->delta, ctx->delta + newcap, ctx->off + size);
+    char *p = _mmap_win_view(ctx, ctx->off - ctx->delta, ctx->delta + newcap, ctx->off + size);
     if (NULL == p) {
         return ERR_FAILED;
     }
@@ -696,11 +692,10 @@ static int32_t _mmap_file_regrow(mmap_ctx *ctx, size_t size, size_t newcap) {
     ctx->cap = newcap;
     return ERR_OK;
 #else
-    char *p;
     if (MMAP_RDWR == ctx->mode && ERR_OK != _mmap_ensure(ctx, ctx->off + size)) {
         return ERR_FAILED;
     }
-    p = _mmap_posix_regrow(ctx, ctx->delta + newcap);
+    char *p = _mmap_posix_regrow(ctx, ctx->delta + newcap);
     if (NULL == p) {
         return ERR_FAILED;
     }
@@ -788,10 +783,7 @@ int32_t mmap_shm(mmap_ctx *ctx, const char *name, const mmap_opts *opts) {
     ctx->flags = opts->flags;
 #ifdef OS_WIN
     char aname[MMAP_SHM_NAMEMAX + 8];
-    DWORD access = MMAP_RDONLY == opts->mode ? FILE_MAP_READ : FILE_MAP_WRITE;
     HANDLE mh;
-    char *p;
-    MEMORY_BASIC_INFORMATION mi;
     SNPRINTF(aname, sizeof(aname), "Local\\%s", name + 1);
     if (create) {
         SetLastError(ERROR_SUCCESS);
@@ -808,11 +800,13 @@ int32_t mmap_shm(mmap_ctx *ctx, const char *name, const mmap_opts *opts) {
         return _mmap_fail(ctx);
     }
     ctx->fd = mh;
-    p = (char *)MapViewOfFile(mh, access, 0, 0, size);
+    DWORD access = MMAP_RDONLY == opts->mode ? FILE_MAP_READ : FILE_MAP_WRITE;
+    char *p = (char *)MapViewOfFile(mh, access, 0, 0, size);
     if (NULL == p) {
         return _mmap_fail(ctx);
     }
     ctx->addr = p;
+    MEMORY_BASIC_INFORMATION mi;
     VirtualQuery(p, &mi, sizeof(mi));
     if (0 == size) {
         size = mi.RegionSize;

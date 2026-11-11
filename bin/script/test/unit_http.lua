@@ -45,6 +45,11 @@ local INTERIM_RSP = "HTTP/1.1 103 Early Hints\r\nLink: </s.css>; rel=preload\r\n
 local TILLCLOSE_URI = "/tillclose"
 local TILLCLOSE_BODY = "body-till-close"
 local TILLCLOSE_RSP = "HTTP/1.1 200 OK\r\nX-Till: 1\r\n\r\n" .. TILLCLOSE_BODY
+-- 同样走裸监听：状态码 1e2 不是三位十进制，不算 1xx；状态行省略 reason 连空格也省，要放行
+local FAKE1XX_URI = "/fake1xx"
+local FAKE1XX_RSP = "HTTP/1.1 1e2 x\r\nContent-Length: 5\r\n\r\nhello"
+local NOREASON_URI = "/noreason"
+local NOREASON_RSP = "HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello"
 local N204 = "want204"-- 触发 server 回 204+body，验证 body 与 Content-Length 都被丢弃
 local BADBODY = "wantbadbody"-- 触发 server 回一个类型不受支持的 body（数字），验证告警确实打出来
 -- 触发 server 回真 chunked 响应(生产者吐两块)。lib.http 的接收段原先零覆盖:现有 /chunked
@@ -53,6 +58,8 @@ local CKBODY = "wantckbody"
 local CK1 = "chunk-one"
 local CK2 = "chunk-two-longer"
 local BADCK = "wantbadck"-- 触发 server 回 chunked 响应时生产者违约
+local THROW_FIRST = "wantthrowfirst"-- 响应生产者第一次调用就抛错：一个字节都没发
+local THROW_LATE = "wantthrowlate"-- 响应生产者首块发出后抛错
 
 -- WARN 打桩，用来断言"响应带了不支持的 body 类型时确实告警"。
 -- 每个 unit 模块是独立 task（各有各的 lua_State），改全局波及不到别的模块。
@@ -97,6 +104,15 @@ local function _bad_producer(state)
     return 42
 end
 
+-- 第 at 次调用抛错，之前每次吐一块；请求、响应两侧共用
+local function _throw_producer(state)
+    state.n = state.n + 1
+    if state.n >= state.at then
+        error("producer boom", 0)
+    end
+    return "aa"
+end
+
 -- 裸连接（PACK_TYPE.NONE 不分帧）上发一条请求并累积到出现 term 为止。
 -- 一次 RECV 未必是整条响应，只取第一段的话会把"没收全"误报成"服务端过滤掉了"
 ---@param sk userdata 连接标识
@@ -120,6 +136,7 @@ srey.startup(function()
 runner.run(function(t)
     -- 服务端收到的分片请求末片数、服务端这头断开的连接数，违约用例靠它们断言
     local nsrv_end, nsrv_close = 0, 0
+    local rsp_throw_err-- 响应侧首块抛错时 http.response 抛出的错误
     srey.on_closed(function(_, _, client)
         if 0 == client then
             nsrv_close = nsrv_close + 1
@@ -137,6 +154,10 @@ runner.run(function(t)
             local req = srey.ud_str(data, size)
             if nil ~= string.find(req, INTERIM_URI, 1, true) then
                 srey.send(sk, INTERIM_RSP, #INTERIM_RSP, 1)
+            elseif nil ~= string.find(req, FAKE1XX_URI, 1, true) then
+                srey.send(sk, FAKE1XX_RSP, #FAKE1XX_RSP, 1)
+            elseif nil ~= string.find(req, NOREASON_URI, 1, true) then
+                srey.send(sk, NOREASON_RSP, #NOREASON_RSP, 1)
             elseif nil ~= string.find(req, TILLCLOSE_URI, 1, true) then
                 srey.send(sk, TILLCLOSE_RSP, #TILLCLOSE_RSP, 1)
                 srey.close(sk)-- body 的结尾只由关闭界定
@@ -191,6 +212,17 @@ runner.run(function(t)
             http.response(sk, 200, nil, _ck_producer, { n = 0 })
             return
         end
+        if THROW_FIRST == body then
+            -- 一个字节都没发：错误抛给上层，连接还干净，照 router 的做法回 500
+            local ok, err = pcall(http.response, sk, 200, nil, _throw_producer, { n = 0, at = 1 })
+            rsp_throw_err = (not ok) and err or nil
+            http.response(sk, 500, nil, "thrown")
+            return
+        end
+        if THROW_LATE == body then
+            pcall(http.response, sk, 200, nil, _throw_producer, { n = 0, at = 2 })
+            return
+        end
         if BADCK == body then
             http.response(sk, 200, nil, _bad_producer, { n = 0 })
             return
@@ -235,6 +267,31 @@ runner.run(function(t)
     if t:check(rsk and rsk.valid, "响应侧违约用例 connect") then
         t:eq(nil, http.post(rsk, "/", nil, nil, BADCK), "响应侧生产者违约：客户端拿不到截断的响应")
         srey.close(rsk)
+    end
+    -- 生产者抛错：错误都原样抛出；已发过字节就关连接，一个字节都没发时连接还能用
+    local tsk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", PORT)
+    if t:check(tsk and tsk.valid, "生产者抛错用例 connect") then
+        local ok, err = pcall(http.post, tsk, "/", nil, nil, _throw_producer, { n = 0, at = 1 })
+        t:check(not ok and "producer boom" == err, "请求侧首块抛错：错误原样抛出")
+        local r500 = http.post(tsk, "/", nil, nil, THROW_FIRST)
+        t:eq("500", r500 and r500.status[2], "请求侧首块抛错后连接可用；响应侧首块抛错后服务端还能回 500")
+        t:eq("producer boom", rsp_throw_err, "响应侧首块抛错：错误原样抛给上层")
+        local close0, end0 = nsrv_close, nsrv_end
+        ok, err = pcall(http.post, tsk, "/", nil, nil, _throw_producer, { n = 0, at = 2 })
+        t:check(not ok and "producer boom" == err, "请求侧后续块抛错：错误原样抛出")
+        for _ = 1, 150 do
+            if nsrv_close > close0 then
+                break
+            end
+            srey.sleep(20)
+        end
+        t:eq(close0 + 1, nsrv_close, "请求侧后续块抛错后连接被断")
+        t:eq(end0, nsrv_end, "服务端没收到末片")
+    end
+    local lsk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", PORT)
+    if t:check(lsk and lsk.valid, "响应侧抛错用例 connect") then
+        t:eq(nil, http.post(lsk, "/", nil, nil, THROW_LATE), "响应侧后续块抛错：客户端拿不到截断的响应")
+        srey.close(lsk)
     end
 
     -- url 里塞 CRLF 就是请求拆分：放行的话对端会看到两条完整请求、回两条响应，
@@ -541,15 +598,15 @@ runner.run(function(t)
         t:eq(nil, srey_http.pack_req(SOCK, L, nil, { f = print }), "编不成 JSON 的 table 体 C 不接")
         t:eq(nil, srey_http.pack_req(SOCK, L, nil, function() return nil end), "生产者函数体 C 不接")
         t:eq(nil, srey_http.pack_req(SOCK, L, nil, 5), "数字体 C 不接")
-        -- 所有权：C 组好的缓冲交给真 syn_send(copy=0) 后，发送失败、挂不起抛错两条路都由框架释放
-        -- （漏了退出时 _memcheck 报 not free，srey -d 退出码非 0）
+        -- 所有权：C 组好的缓冲交给真 syn_send(copy=0) 后，发送失败由框架释放
+        -- （漏了退出时 _memcheck 报 not free，srey -d 退出码非 0）。挂不起时 http.get 在组包前就抛错
         t:eq(nil, http.get(SOCK, "/"), "无效连接：缓冲由 ev_send 失败路径释放")
         local ok = true
         table.sort({ 2, 1 }, function(a, b)
             ok = pcall(http.get, SOCK, "/")
             return a < b
         end)
-        t:eq(false, ok, "挂不起时 syn_send 先释放缓冲再抛")
+        t:eq(false, ok, "挂不起时 http.get 在组包前抛错")
     end
 
     -- 请求侧带头表：有 body 时帧长头由本模块写、调用方给的丢掉；无 body 时放行调用方给的，
@@ -625,6 +682,17 @@ runner.run(function(t)
                 t:eq("hello", ip.data, "最终响应的 body 完整")
             end
             srey.close(itm_sk)
+        end
+
+        for _, c in ipairs({ { FAKE1XX_URI, "1e2", "状态码 1e2 不算 1xx" },
+                             { NOREASON_URI, "200", "状态行省略 reason 放行" } }) do
+            local csk = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", HEAD_PORT)
+            if t:check(csk and csk.valid, c[3] .. " connect") then
+                local r = http.get(csk, c[1])
+                t:eq(c[2], r and r.status[2], c[3])
+                t:eq("hello", r and r.data, c[3] .. "：body 完整")
+                srey.close(csk)
+            end
         end
 
         -- 既无 Content-Length 又无 Transfer-Encoding 的响应(RFC 7230 §3.3.3 规则 7)：C 侧按分片投，

@@ -88,7 +88,7 @@ static inline void *mmap_ptr(const mmap_ctx *ctx, size_t off, size_t lens) {
 /// 可访问长度
 /// </summary>
 /// <param name="ctx">mmap_ctx</param>
-/// <returns>size</returns>
+/// <returns>size；resize 失败致 addr 为 NULL 时仍是旧值，此时不可访问</returns>
 static inline size_t mmap_size(const mmap_ctx *ctx) {
     return ctx->size;
 }
@@ -145,7 +145,8 @@ void mmap_close(mmap_ctx *ctx);
 /// 读写文件映射文件不够长就扩（契约 4）；只读 / 写时复制映射变长到超出原映射时重映射，用来跟上别人写长的文件，
 /// 写时复制映射原有的私有改动保留；这种重映射（POSIX 接不上原映射尾部时、Windows 每次）把旧映射整段拷过去，
 /// 拷完整段都成了私有页，内存占用涨一个 size，之后也看不到别人写进文件的内容（契约 7 不再成立）。
-/// 匿名映射变短时把多出的内存还给系统，再变长时那部分重新为 0。命名共享内存不支持
+/// 匿名映射变短时把多出的内存还给系统，再变长时那部分重新为 0；变短要清末页剩余部分，
+/// 用 mmap_protect 改过只读的匿名映射须先改回 MMAP_RDWR 再 resize，否则写只读页崩溃。命名共享内存不支持
 /// </summary>
 /// <param name="ctx">mmap_ctx</param>
 /// <param name="size">新长度</param>
@@ -176,7 +177,8 @@ int32_t mmap_sync(mmap_ctx *ctx, size_t off, size_t lens, int32_t async);
 /// ERR_FAILED advice 非法、写时复制或匿名映射给了 MMAP_DONTNEED、越界、ctx 未映射或系统调用失败</returns>
 int32_t mmap_advise(mmap_ctx *ctx, size_t off, size_t lens, int32_t advice);
 /// <summary>
-/// 改保护属性，不能超出建映射时的权限；写时复制映射改回可写后改动仍只在本进程
+/// 改保护属性，不能超出建映射时的权限；写时复制映射改回可写后改动仍只在本进程。
+/// 匿名映射改成只读后要 resize，先改回 MMAP_RDWR（见 mmap_resize）
 /// </summary>
 /// <param name="ctx">mmap_ctx</param>
 /// <param name="off">相对 addr 的起点</param>

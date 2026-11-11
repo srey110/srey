@@ -3,9 +3,12 @@
 
 typedef struct mqtt_client_args {
     uint16_t port;
+    uint16_t packid;  // 最近发出的 PUBLISH 的报文标识符，QoS>0 的同一时刻只有一条在途
     mqtt_protversion version;
     uint32_t delay;   // 连接前先 coro_sleep 的毫秒数, 0 表示不等
     int32_t prt;
+    int32_t pushed;   // 收到了进程内 broker 的推送，内容对得上才置位
+    int32_t optional; // 依赖 docker 的外部 broker：连不上算没起服务，不算失败
     int32_t *ok;
     char host[64];
     char clientid[24];// <task名>-<随机6字节>。同一 broker 上必须互异:MQTT 规定重名会让服务端踢掉旧会话,
@@ -13,13 +16,21 @@ typedef struct mqtt_client_args {
                       // 3.1.1 只要求服务端至少接受 23 字节, 故上限取 23+NUL
 }mqtt_client_args;
 
+// 连不上：可选项写 0 由汇总放过；非可选项是真失败，写终态 -3，免得汇总等满超时
+static void _conn_fail(mqtt_client_args *arg) {
+    if (arg->optional) {
+        ATOMIC_SET((atomic_t *)arg->ok, 0);
+    } else {
+        test_fail(arg->ok);
+    }
+}
 // TCP 连接建立后发送 CONNECT 包，MQTT 5.0 时携带扩展连接属性和遗嘱属性
 static void _net_connect(task_ctx *task, sock_ctx *sk, subtype_t pktype, int32_t erro) {
     (void)pktype;
     mqtt_client_args *arg = coro_get_arg(task);
     if (ERR_OK != erro) {
         LOG_ERROR("mqtt connect %s:%u error, clientid %s.", arg->host, arg->port, arg->clientid);
-        ATOMIC_SET((atomic_t *)arg->ok, 0);
+        _conn_fail(arg);
         return;
     }
     // 连上了：此后任何失败都是真失败，不能再被 optional 白名单吞成 network error
@@ -66,7 +77,8 @@ static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, sock_ctx *sk, int
     binary_init_write(&props, 0, 0);
     mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
     size_t lens;
-    char *pk = mqtt_pack_publish(pack->version, 1, qos, 0, "srey/will", (uint16_t)randrange(100, 20000), "publish payload", strlen("publish payload"), &props, &lens);
+    arg->packid = (uint16_t)randrange(100, 20000);
+    char *pk = mqtt_pack_publish(pack->version, 1, qos, 0, "srey/will", arg->packid, "publish payload", strlen("publish payload"), &props, &lens);
     binary_free(&props);
     if (NULL != pk) {
         ev_send(&task->loader->netev, sk, pk, lens, 0);
@@ -74,6 +86,15 @@ static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, sock_ctx *sk, int
             LOG_INFO("C->PUBLISH QoS %d", qos);
         }
     }
+}
+// 确认包的报文标识符必须是刚发出的那条；对不上判失败，调用方不再推进状态机
+static int32_t _packid_ok(task_ctx *task, mqtt_client_args *arg, mqtt_pubackrel_varhead *vh) {
+    if (arg->packid == vh->packid) {
+        return 1;
+    }
+    LOG_ERROR("mqtt client %s: ack packid %u, sent %u.", task->name, (uint32_t)vh->packid, (uint32_t)arg->packid);
+    test_fail(arg->ok);
+    return 0;
 }
 // 收到服务端数据包，驱动完整的 MQTT 消息流程状态机
 static void _net_recv(task_ctx *task, sock_ctx *sk,
@@ -105,6 +126,14 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         if (arg->prt) {
             LOG_INFO("PUBLISH<-S from server, topic=%s content=%s", vh->topic, pl->content);
         }
+        // 只有进程内 broker 会推(delay 非 0 的用例连它)，内容见 task_mqtt_server.c；对不上就不置位，PINGRESP 那步判失败
+        if (0 != arg->delay
+            && 0 == strcmp(vh->topic, "/test/topic1")
+            && NULL != pl
+            && strlen("server push") == (size_t)pl->lens
+            && 0 == memcmp(pl->content, "server push", (size_t)pl->lens)) {
+            arg->pushed = 1;
+        }
         // QoS0 无需回复；若服务端推 QoS1/2 此处需扩展
         break;
     }
@@ -119,6 +148,9 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         if (arg->prt) {
             LOG_INFO("PUBACK<-S %d (%s)", (int32_t)vh->reason, mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, vh->reason));
         }
+        if (!_packid_ok(task, arg, vh)) {
+            break;
+        }
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             _send_publish(pack, task, sk, 2);
         }
@@ -129,6 +161,9 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         mqtt_pubackrel_varhead *vh = pack->varhead;
         if (arg->prt) {
             LOG_INFO("PUBREC<-S %d (%s)", (int32_t)vh->reason, mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, vh->reason));
+        }
+        if (!_packid_ok(task, arg, vh)) {
+            break;
         }
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             size_t lens;
@@ -147,6 +182,9 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         mqtt_pubackrel_varhead *vh = pack->varhead;
         if (arg->prt) {
             LOG_INFO("PUBCOMP<-S %d (%s)", (int32_t)vh->reason, mqtt_reason((mqtt_protversion)pack->version, pack->fixhead.prot, vh->reason));
+        }
+        if (!_packid_ok(task, arg, vh)) {
+            break;
         }
         binary_ctx topics;
         binary_init_write(&topics, 0, 0);
@@ -215,6 +253,11 @@ static void _net_recv(task_ctx *task, sock_ctx *sk,
         if (arg->prt) {
             LOG_INFO("PONG<-S");
         }
+        if (0 != arg->delay && !arg->pushed) {
+            LOG_ERROR("mqtt client %s: no valid server push before PINGRESP.", task->name);
+            test_fail(arg->ok);
+            break;
+        }
         size_t lens;
         char *pk = mqtt_pack_disconnect(pack->version, 0, NULL, &lens);
         if (NULL != pk) {
@@ -245,14 +288,14 @@ static void _startup(task_ctx *task) {
     if (0 != arg->delay) {
         coro_sleep(task, arg->delay);// 等进程内 broker 的 _startup 被派发, 见头文件
     }
-    ATOMIC_SET((atomic_t *)arg->ok, -2);// 正在连：汇总 task 不把它当终态，连不上(含 _net_connect 报错)再回 0
+    ATOMIC_SET((atomic_t *)arg->ok, -2);// 正在连：汇总 task 不把它当终态，连不上见 _conn_fail
     // 域名需先 DNS 解析，IP 直连
     if (ERR_OK != is_ipaddr(arg->host)) {
         size_t n;
         dns_ip *ips = dns_lookup(task, arg->host, 0, 1, &n);
         if (NULL == ips) {
             LOG_ERROR("dns_lookup error.");
-            ATOMIC_SET((atomic_t *)arg->ok, 0);
+            _conn_fail(arg);
             return;
         }
         rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, 1, &sk);
@@ -262,12 +305,12 @@ static void _startup(task_ctx *task) {
     }
     if (ERR_OK != rtn) {
         LOG_WARN("task_connect %s error.", arg->host);
-        ATOMIC_SET((atomic_t *)arg->ok, 0);
+        _conn_fail(arg);
     }
 }
 void task_mqtt_client_start(loader_ctx *loader, const char *name,
      mqtt_protversion version, const char *host, uint16_t port, uint32_t delay,
-     int32_t pt, int32_t *ok) {
+     int32_t pt, int32_t optional, int32_t *ok) {
     if (NULL == ok) {
         return;
     }
@@ -277,6 +320,9 @@ void task_mqtt_client_start(loader_ctx *loader, const char *name,
     arg->version = version;
     arg->delay = delay;
     arg->prt = pt;
+    arg->pushed = 0;
+    arg->optional = optional;
+    arg->packid = 0;
     arg->ok = ok;
     SNPRINTF(arg->host, sizeof(arg->host), "%s", host);
     char tail[7];

@@ -171,7 +171,7 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
         // 而 /call、/request 能往任意 handle 的 task 投递消息，运维只会以为链路是加密的
 #if WITH_SSL
         // 名字来自 evssl 注册表, 调用方必须排在注册之后(装配顺序见 srey/startup.c)
-        evssl = evssl_qury(ssl);
+        evssl = evssl_query(ssl);
         if (NULL == evssl) {
             LOG_ERROR("harbor: evssl '%s' not registered before harbor starts, "
                       "refuse to listen in plaintext.", ssl);

@@ -11,10 +11,12 @@
 #include "base/structs.h"
 
 #define FREE_SSL(ssl)\
-    if (NULL != ssl){\
-        SSL_free(ssl); \
-        ssl = NULL; \
-    }
+    do {\
+        if (NULL != ssl) {\
+            SSL_free(ssl);\
+            ssl = NULL;\
+        }\
+    } while (0)
 
 typedef struct evssl_ctx evssl_ctx;
 
@@ -61,7 +63,8 @@ evssl_ctx *evssl_p12_new(const char *p12, const char *pwd);
 /// <returns>SSL_CTX</returns>
 SSL_CTX *evssl_sslctx(evssl_ctx *evssl);
 /// <summary>
-/// 设置是否验证对端证书（需先加载 CA 证书）。只验证书链，不比对主机名，客户端要比对见 evssl_host
+/// 设置是否验证对端证书（需先加载 CA 证书）。只验证书链，不比对主机名，客户端要比对见 evssl_host。
+/// 须在该上下文投入使用(listen / connect / 注册进证书池)前设好：建连时 SSL_new 不加锁读上下文
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="mod">SSL_VERIFY_* </param>
@@ -79,13 +82,13 @@ void evssl_verify(evssl_ctx *evssl, int32_t mod, SSL_verify_cb vcb);
 /// <returns>ERR_OK 成功；超过 255 字节(SNI 上限)，或 OpenSSL 不收这个名字(4.0 起主机名带 @、_ 等非法字符即拒)时 ERR_FAILED，原设置不变</returns>
 int32_t evssl_host(evssl_ctx *evssl, const char *host);
 /// <summary>
-/// 设置 SSL 安全级别（OpenSSL 安全级别 0-5，默认用 OpenSSL 的 1）
+/// 设置 SSL 安全级别（OpenSSL 安全级别 0-5，默认用 OpenSSL 的 1）。设的时机同 evssl_verify
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="level">安全级别：0 无限制，1 禁用 MD5/DES 等，2 禁用 RSA<2048 等</param>
 void evssl_seclevel(evssl_ctx *evssl, int32_t level);
 /// <summary>
-/// 设置最低 TLS 协议版本（RFC 8996 建议 ≥ TLS 1.2）
+/// 设置最低 TLS 协议版本（RFC 8996 建议 ≥ TLS 1.2）。设的时机同 evssl_verify
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="version">
@@ -117,14 +120,15 @@ void evssl_pool_free(void);
 /// </summary>
 /// <param name="name">名称, NULL 或 "" 表示无（注册失败）</param>
 /// <param name="evssl">evssl_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；name 为空或不短于 EVSSL_NAME_LEN、没调 evssl_pool_init、同名已注册时 ERR_FAILED，evssl 已在函数内释放；
+///   evssl 为 NULL 时 ERR_FAILED，没有可释放的</returns>
 int32_t evssl_register(const char *name, evssl_ctx *evssl);
 /// <summary>
 /// 根据名称获取evssl_ctx
 /// </summary>
 /// <param name="name">名称, NULL 或 "" 表示无（返回 NULL）</param>
 /// <returns>evssl_ctx  NULL失败</returns>
-evssl_ctx *evssl_qury(const char *name);
+evssl_ctx *evssl_query(const char *name);
 /// <summary>
 /// 设置socket为SSL链接；上下文设了主机名(evssl_host)时一并设上
 /// </summary>
@@ -196,7 +200,9 @@ int32_t evssl_version(SSL *ssl);
 /// <param name="ssl">SSL</param>
 /// <param name="updatetype">SSL_KEY_UPDATE_NOT_REQUESTED(单向更新) SSL_KEY_UPDATE_REQUESTED(双向更新)</param>
 /// <returns>ERR_OK 仅表示已排程，KeyUpdate 消息要等下一次 SSL_write / SSL_do_handshake
-///   才真正上线路；空闲连接上调它不会有任何报文发出</returns>
+///   才真正上线路；空闲连接上调它不会有任何报文发出。
+///   非 TLS1.3，或 OpenSSL 拒绝排程(上一次 SSL_write 还挂着、上一次排程的 KeyUpdate 还没写出)时 ERR_FAILED，
+///   本函数不落日志，由调用方记</returns>
 int32_t evssl_keyupdate(SSL *ssl, int32_t updatetype);
 
 #endif//WITH_SSL

@@ -196,7 +196,6 @@ static inline size_t _u64_digits(char *out, uint64_t v, uint32_t base) {
 // 十进制专用的 _u64_digits：按 100 一组数位，从末位往前每次从 _dec_pairs 查两位写，最高位剩一位时单写
 static inline size_t _u64_digits10(char *out, uint64_t v) {
     uint64_t t = v;
-    uint64_t q;
     size_t n = 1;
     while (t >= 100) {
         t /= 100;
@@ -204,6 +203,7 @@ static inline size_t _u64_digits10(char *out, uint64_t v) {
     }
     n += (t >= 10) ? 1 : 0;
     size_t i = n;
+    uint64_t q;
     while (v >= 100) {
         q = v / 100;
         i -= 2;

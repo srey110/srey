@@ -13,7 +13,7 @@ typedef enum mqtt_prop_flag {
     CONTENT_TYPE = 0x03,//内容类型	UTF-8编码字符串	PUBLISH, Will Properties
     RESP_TOPIC = 0x08,//响应主题	UTF-8编码字符串	PUBLISH, Will Properties
     CORRELATION_DATA = 0x09,//相关数据	二进制数据	PUBLISH, Will Properties
-    SUBSCRIPTION_ID = 0x0B,//定义标识符	变长字节整数	PUBLISH, SUBSCRIBE
+    SUBSCRIPTION_ID = 0x0B,//订阅标识符	变长字节整数	PUBLISH, SUBSCRIBE
     SESSION_EXPIRY = 0x11,//会话过期间隔	四字节整数	CONNECT, CONNACK, DISCONNECT
     CLIENT_ID = 0x12,//分配客户标识符	UTF-8编码字符串	CONNACK
     SERVER_KEEPALIVE = 0x13,//服务端保活时间	双字节整数	CONNACK
@@ -22,11 +22,11 @@ typedef enum mqtt_prop_flag {
     REQPROBLEM_INFO = 0x17,//请求问题信息	字节	CONNECT
     WILLDELAY_INTERVAL = 0x18,//遗嘱延时间隔	四字节整数	Will Properties
     REQRESP_INFO = 0x19,//请求响应信息	字节	CONNECT
-    RESP_INFO = 0x1A,//请求信息	UTF-8编码字符串	CONNACK
+    RESP_INFO = 0x1A,//响应信息	UTF-8编码字符串	CONNACK
     SERVER_REFERENCE = 0x1C,//服务端参考	UTF-8编码字符串	CONNACK, DISCONNECT
     REASON_STR = 0x1F,//原因字符串	UTF-8编码字符串	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
     RECEIVE_MAXIMUM = 0x21,//接收最大数量	双字节整数	CONNECT, CONNACK
-    TOPICALIAS_MAXIMUM = 0x22,//主题别名最大长度	双字节整数	CONNECT, CONNACK
+    TOPICALIAS_MAXIMUM = 0x22,//主题别名最大值	双字节整数	CONNECT, CONNACK
     TOPIC_ALIAS = 0x23,//主题别名	双字节整数	PUBLISH
     MAXIMUM_QOS = 0x24,//最大QoS	字节	CONNACK
     RETAIN_AVAILABLE = 0x25,//保留属性可用性	字节	CONNACK

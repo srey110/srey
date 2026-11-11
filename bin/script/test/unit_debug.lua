@@ -9,6 +9,7 @@ local runner = require("test.runner")
 local seri   = require("srey.seri")
 local task   = require("srey.task")
 local utils  = require("srey.utils")
+local slog   = require("srey.log")
 local dbg    = require("lib.debug_request")
 
 -- 造两个挂在同一行 yield 的协程（traceback 相同 → 聚成一类）和一个挂在别处的
@@ -34,6 +35,15 @@ local function _upvalue(f, name)
         if name == n then
             return v
         end
+    end
+end
+-- 轮询到 pred() 为真，最多约 10 秒：等协程拿锁 / 放锁不用固定 sleep，机器一忙固定时长就不够
+local function _poll(pred)
+    for _ = 1, 2000 do
+        if pred() then
+            return
+        end
+        srey.sleep(5)
     end
 end
 
@@ -133,19 +143,21 @@ runner.run(function(t)
                 done = done + 1
             end)
         end
+        local ok_st = "table" == type(st)
         _waiter(0)
-        srey.sleep(10)-- H 拿到锁
+        _poll(function() return not ok_st or (nil ~= cos[0] and cos[0] == st.current) end)-- H 拿到锁
         _waiter(1)
         _waiter(2)
-        srey.sleep(30)-- W1/W2 已排队，与 W3/W4 的入队时刻拉开 30ms
+        _poll(function() return not ok_st or 4 == st.tail end)-- W1/W2 已排队
+        srey.sleep(30)-- 与 W3/W4 的入队时刻拉开 30ms
         _waiter(3)
         _waiter(4)
-        srey.sleep(10)
+        _poll(function() return not ok_st or 8 == st.tail end)
         if t:check(type(st) == "table" and cos[0] == st.current and 1 == st.head and 8 == st.tail,
                    "H 持锁、4 个排队者占 [1, 8]") then
             local t1 = st.waiters[2]-- W1 的入队时刻，出队后格子被清掉，先留下
             hold[0] = nil
-            srey.sleep(30)-- H 放锁 → W1 拿锁即放 → W2 拿锁不放
+            _poll(function() return 2 == done and cos[2] == st.current end)-- H 放锁 → W1 拿锁即放 → W2 拿锁不放
             t:eq(2, done, "H 与 W1 已走完")
             t:eq(5, st.head, "两次出队后 head 走到 5")
             t:eq(8, st.tail, "tail 不动")
@@ -172,7 +184,7 @@ runner.run(function(t)
                     1, true) ~= nil, "汇总行 serial 只计 2 个")
         end
         hold[0], hold[2] = nil, nil
-        srey.sleep(30)-- W2 放锁 → W3、W4 依次拿锁即放
+        _poll(function() return 5 == done end)-- W2 放锁 → W3、W4 依次拿锁即放
         t:eq(5, done, "五个协程全部走完 serial")
     end
 
@@ -198,14 +210,14 @@ runner.run(function(t)
             .. " want_detail=" .. tostring(want_detail) .. ")")
 
     -- ── loglv：合法设回当前级别，非法不改状态 ──────────────────────
-    local lv0 = utils.log_getlv()
+    local lv0 = slog.getlv()
     t:eq("log level => " .. lv0, send("loglv", lv0), "loglv 合法回显")
     -- 上界是 DEBUG=4；log.lua 的 LOG_LV 是模块局部, 这里直接写字面量
     txt = send("loglv", 5)
     t:check(txt and txt:find("invalid log level", 1, true) ~= nil, "loglv 越界拒绝")
     txt = send("loglv", "3")
     t:check(txt and txt:find("invalid log level", 1, true) ~= nil, "loglv 非整数拒绝")
-    t:eq(lv0, utils.log_getlv(), "loglv 非法时级别不变")
+    t:eq(lv0, slog.getlv(), "loglv 非法时级别不变")
 
     -- ── inject / hotfix ────────────────────────────────────────────
     t:eq("[OK]\nfrom-inject", send("inject", "print('from-inject')"), "inject 捕获输出")

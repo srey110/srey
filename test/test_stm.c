@@ -159,6 +159,7 @@ typedef struct {
     atomic_t reads;
     atomic_t mismatches;
     atomic_t ready;// 已就位的 reader 数：都就位了 writer 才开始写
+    atomic_t go;// writer 开写前置 1，reader 等到它才开读，读写才真的交叠
     atomic_t done;// 已读完的 reader 数：writer 一直写到它们都读完
 } _stm_conc_shared;
 
@@ -170,6 +171,9 @@ static void _stm_conc_reader(void *arg) {
     int32_t bad;
     size_t k;
     int i;
+    for (i = 0; i < 2000 && 0 == ATOMIC_GET(&s->go); i++) {
+        MSLEEP(1);
+    }
     for (i = 0; i < _STM_CONC_ITERS; i++) {
         stm_data *snap = stm_grab_data(s->ctx);
         if (NULL != snap) {
@@ -201,6 +205,7 @@ static void test_stm_concurrent_read(CuTest *tc) {
     s.reads = 0;
     s.mismatches = 0;
     s.ready = 0;
+    s.go = 0;
     s.done = 0;
     pthread_t ths[_STM_CONC_READERS];
     int i;
@@ -208,11 +213,12 @@ static void test_stm_concurrent_read(CuTest *tc) {
         stm_grab(s.ctx);
         ths[i] = thread_creat(_stm_conc_reader, &s);
     }
-    // 起跑闸门：reader 都就位再写，一直写到它们都读完(至少 _STM_CONC_UPDATES 次)，读写才真的交叠。
-    // 不等的话 200 次 update 几十微秒就做完，reader 多半只读到最终快照
+    // 起跑闸门：reader 都就位、放行后再写，一直写到它们都读完(至少 _STM_CONC_UPDATES 次)，读写才真的交叠。
+    // 不等的话 200 次 update 几十微秒就做完，reader 多半只读到最终快照；reader 不等放行的话又会在开写前读完
     for (i = 0; i < 2000 && ATOMIC_GET(&s.ready) < _STM_CONC_READERS; i++) {
         MSLEEP(1);
     }
+    ATOMIC_SET(&s.go, 1);
     char buf[16];
     size_t bz;
     for (i = 1; i <= _STM_CONC_UPDATES

@@ -173,11 +173,10 @@ runner.run(function(t)
     t:eq("foo", tb.outer.list[1].name, "deep nested [1].name")
     t:eq("bar", tb.outer.list[2].name, "deep nested [2].name")
 
-    -- 12. iter 一次性消费契约：iter.new 内部强制 reset doc.offset=0 让 init 能正确读 doclens
-    -- 但 iter:next 会推进底层 offset，用完后原 bson 的 :data() 失效——所以要么先 :data() 后 iter，
-    -- 要么干脆用 bson.decode 转 table
+    -- 12. iter 自带游标、不动源对象：遍历前后 :data() 不变，同一对象上嵌套开 iter 互不影响
     do
         local b1 = bson.encode({ k1 = "v1", k2 = 42 })
+        local sz_before = select(2, b1:data())
         local iter = bson.iter.new(b1)
         local nkeys = 0
         local seen_keys, seen_types, seen_vals = {}, {}, {}
@@ -200,6 +199,18 @@ runner.run(function(t)
         t:eq(true, seen_types[bson.TYPE.INT32], "iter type INT32 visited")
         t:eq("v1", seen_vals.k1, "iter utf8 value")
         t:eq(42,   seen_vals.k2, "iter int32 value")
+        t:eq(sz_before, select(2, b1:data()), "iter 遍历后源对象 :data() 长度不变")
+        -- 同一对象上嵌套遍历：内层 iter 不能把外层拉回开头(改前这里死循环，rounds 封顶防挂死)
+        local outer, rounds = bson.iter.new(b1), 0
+        while outer:next() and rounds < 10 do
+            rounds = rounds + 1
+            local inner, nin = bson.iter.new(b1), 0
+            while inner:next() do
+                nin = nin + 1
+            end
+            t:eq(2, nin, "内层 iter 走完 2 个字段")
+        end
+        t:eq(2, rounds, "外层 iter 走完 2 轮，没被内层拉回开头")
     end
     do
         -- 无当前元素时 key() 必须是 nil 而不是空串：空串本身是合法的 BSON 键名，
@@ -1124,7 +1135,6 @@ runner.run(function(t)
         t:eq(7, itb:value(), "内层残缺：下一个键的值")
 
         -- 嵌套深度上限两边一致：decode 整篇与 iter:value 取外层那个键，成败相同。
-        -- decode 要排在建 iter 之前：iter 会推进底层 offset（见 12）
         local raw, body, wrap, itw, okd
         for lv = 15, 20 do
             raw = "\5\0\0\0\0"

@@ -11,7 +11,7 @@
 #define REDIS_HDR_PEEK      (REDIS_NUM_CAP + 2) // 元素头本地副本：类型 1 + 长度最多 63 位 + CRLF 2
 //单次 RESP 解包最大节点数，纯内存兜底(嵌套深度另由 REDIS_MAX_DEPTH 卡，那道保的是帧栈不溢出)，
 //此值只决定为一个未完成回复最多垫多少内存，不应低到误伤合法的扁平大结果集。
-//1<<18 时最坏约 17MB（节点约 64B/个）；业务侧的大结果集应分页取
+//1<<18 时节点头最坏约 17MB（约 64B/个），bulk 数据另算(单个上限见 REDIS_MAX_BULK_LENS)；业务侧的大结果集应分页取
 #define REDIS_MAX_NODES     (1 << 18)
 
 // RESP2/RESP3 类型标识字节定义
@@ -60,8 +60,9 @@ int32_t _redis_may_resume(void *data);
 /// </summary>
 /// <param name="size">输出：请求包长度</param>
 /// <param name="fmt">格式字符串，参数以空格分隔；%b 表示二进制（需跟 size_t 长度参数），%% 表示 %。
-/// 其余支持 %s、%c、%p、diouxX（含 hh/h/l/ll/z 长度修饰）、eEfFgGaA，语义同 C printf。
-/// 不在此列的转换（如 %j、%t、%L，以及只有标志没有转换符的末尾 %）不支持，单个转换说明超过 63 字节也不支持</param>
+/// 其余支持 %s、%c、%p（只能紧跟 %，不带标志、宽度、精度）、diouxX（可带标志、宽度、精度与 hh/h/l/ll/z 长度修饰）、
+/// eEfFgGaA（可带标志、宽度、精度，不带长度修饰），语义同 C printf。
+/// 不在此列的写法（如 %5s、%.3s、%lf、%j、%t、%L，以及只有标志没有转换符的末尾 %）不支持，单个转换说明超过 63 字节也不支持</param>
 /// <param name="...">可变参数</param>
 /// <returns>请求包数据（调用方负责释放）；格式串含不支持的转换时整条拒绝，返回 NULL 且 *size 置 0</returns>
 char *redis_pack(size_t *size, const char *fmt, ...);

@@ -151,7 +151,7 @@ char *_custz_encode_variable(size_t dlens, size_t *hlens, size_t *size) {
         return NULL;
     }
     char *pack;
-    MALLOC(pack, 4 + dlens); // 头部最多 4 字节（与解码器对齐）
+    MALLOC(pack, 4 + dlens);// 头部最多 4 字节（与解码器对齐）
     int32_t n = varint_encode_mqtt((uint32_t)dlens, pack);
     *hlens = (size_t)n;
     *size = dlens + *hlens;

@@ -5,7 +5,8 @@
 -- 会话关闭(stop、死链、UDP socket 关闭时逐会话补发)投到 srey.on_closed:第 5 参 sess 等于 k.sess,
 -- sk 是承载它的 UDP socket;sess 等于 sk.skid 的才是 socket 本身关闭。
 -- 对端失联(某段重传到 dead_link 次,库默认 20)时 C 层拆掉会话并推 MSG_TYPE.CLOSE(erro 为 CLOSE_TYPE.ABORT):被它唤醒的
--- sync send 已经 stop,可直接重新 start;其余情形(异步模式,或当时没有 send 在等)须先 stop 再 start。
+-- sync send 已经 stop,可直接重新 start;sync 模式当时没有 send 在等的须先 stop 再 start;异步模式可直接 start。
+-- 未确认的段到 C 层 KCP_SENDQ_MAX 时会话同样被拆除,MSG_TYPE.CLOSE 的 erro 为 CLOSE_TYPE.LOCAL。
 -- socket 用 srey.udp(PACK_TYPE.UDP_KCP) 创建,数据接收复用 srey.on_recvedfrom。
 -- 使用方:local kcp = require("lib.kcp"); local k = kcp.new(sk, conv); k:start(ip, port)
 --        kcp.new 的第 3 参数是 sync(boolean),传 true 则 start/send 同步等响应;缺省只走异步。
@@ -39,13 +40,11 @@ function ctx:ctor(sk, conv, sync)
     self.kcp = ckcp.new(sk, conv)
 end
 
----建立会话:数据到达以当前 task 为推送目标;ctor 未传 sync 时异步发起(不等结果),
----sync 时同步等待 event 线程实际建会话完成(或因 conv 冲突失败)后返回。
+---建立会话:数据到达以当前 task 为推送目标;异步模式发起后立即返回,sync 时等 event 线程建好(或因 conv 冲突失败)。
 ---每次调用都生成新 sess 记进 k.sess,故 stop 后重启不会被上一会话在途的 CLOSE 击穿。
----sync 模式下会话存活期间重复调用直接返回 false,须先 stop;
----异步模式重复调用由 C 侧先停旧会话(投出旧 sess 的 CLOSE)再起新的,返回值只是本地发起结果。
----port 为 0 时进学习模式:以首个 conv 匹配的数据报来源为对端,ip 为 "0.0.0.0" / "::" 时 ip 也学,之后严格校验;
----学到之前本端发出的段被丢掉(靠重传补上,应让对端先发),这期间猜中 conv 的任何来源都能抢先占住
+---sync 模式存活期间重复调用直接返回 false,须先 stop;异步模式重复调用由 C 侧先停旧会话(投出旧 sess 的 CLOSE)再起新的。
+---port 为 0 时进学习模式:首个被 ikcp 整包收下的数据报来源定为对端,ip 为 "0.0.0.0" / "::" 时 ip 也学,之后严格校验;
+---学到之前本端发出的段被丢掉(靠重传补上,应让对端先发),这期间猜中 conv 的任何来源都能抢先占住,细则见 C 层 kcp_start
 ---@param ip string 对端 IP
 ---@param port integer 对端端口;0 为学习模式
 ---@param config kcp_config? KCP 可调参数,缺省用库默认
@@ -71,22 +70,20 @@ function ctx:start(ip, port, config)
     end
     self.sess = sess
     self.live = true
-    local msg = srey._coro_wait(sess, MTYPE_HANDSHAKED, srey.get_netread_timeout())
+    local msg = srey._coro_wait(sess, MTYPE_HANDSHAKED, srey.coro_timeout_get("netread"))
     local mtype, _, _, _, _, erro = msg()
-    -- 失败分支 stop 之前先认一次 sess:挂起期间别的协程可能 stop + 重启换上新会话(它那次 stop
-    -- 正好放开上面那道守卫),认不上就说明现在这条是别人的,停它就是误伤。
-    -- 自己那条旧会话此时已无法再定位,只能等 socket 关闭时回收——总好过抹掉别人刚建好的
+    -- 失败分支 stop 之前先认一次 sess:挂起期间别的协程可能 stop + 重启换上新会话,认不上就不能停
     if MTYPE_TIMEOUT == mtype then
         if sess == self.sess then
             self:stop()
         end
+        WARN("kcp start timeout, sess %s.", tostring(sess))
         return false
     end
     if MTYPE_CLOSE == mtype
         or ERR_OK ~= erro then
-        -- 走 stop 而不是只清 live:C 侧 kcp_start 已把 stopped 置 0,留在 0 则 handle/send 绕过守卫
-        -- 投到不存在的会话,被静默丢弃却返成功。占位条目由 _kcp_start 补发的那条合成 CLOSE 清
-        -- (NEVERCONN,不触发 on_closed 观察者),kcp_stop 解析不到会话不会再补一条
+        -- 走 stop 而不是只清 live:C 句柄的 stopped 留在 0 会让 handle/send 绕过守卫。
+        -- 占位条目由 _kcp_start 补发的合成 CLOSE 清(NEVERCONN,不触发 on_closed 观察者)
         if sess == self.sess then
             self:stop()
         end
@@ -105,7 +102,8 @@ end
 ---@param handle integer|string 目标 task：字符串按名字查，整数按句柄直取(srey.task_handle 取)
 ---@return boolean ok 目标不存在(名字未注册 / 数字句柄对应 task 已退出)或会话已 stop 时 false。
 --- 仅保证调用时目标存在:目标若在此之后退出,该会话收到的消息会被丢弃(限频打告警)。探测口径同 srey.sock_bind_task
---- 成功后放掉本 task 在该会话 sess 上的等待条目：之后 RECVFROM 与 CLOSE 都投给新 task，本 task 的条目再没有路径能删
+--- 成功后放掉本 task 在该会话 sess 上的等待条目：之后 RECVFROM 与 CLOSE 都投给新 task，本 task 的条目再没有路径能删。
+--- 成功后本 task 仍要持有本对象直到会话结束：对象被回收(含本 task 退出)时会话随之拆除，目标 task 收到 CLOSE
 function ctx:handle(handle)
     if not self.kcp:handle(handle) then
         return false
@@ -136,18 +134,18 @@ function ctx:send(data, size, copy)
     if not self.kcp:send(data, size, copy) then
         return nil
     end
-    local msg = srey._coro_wait(sess, MTYPE_RECVFROM, srey.get_netread_timeout())
+    local msg = srey._coro_wait(sess, MTYPE_RECVFROM, srey.coro_timeout_get("netread"))
     -- TIMEOUT 合成消息的 msg() 只给 mtype、sess,rsize 为 nil,但那条分支先返回
     local mtype, _, _, _, _, _, _, _, rsize = msg()
     if MTYPE_TIMEOUT == mtype then
         if sess == self.sess then
             self:stop()
         end
+        WARN("kcp send timeout, sess %s.", tostring(sess))
         return nil
     end
     if MTYPE_CLOSE == mtype then
-        -- 会话已在 C 层拆除,走 stop 把 C 句柄也置 stopped(会话已不在,stop 只是静默空操作);
-        -- 留着 live 则下次 send 通过守卫、投到已消失的会话被静默丢弃,再空等满一个 netread 超时
+        -- 会话已在 C 层拆除,走 stop 把 C 句柄也置 stopped;留着 live 则下次 send 空等满一个超时
         if sess == self.sess then
             self:stop()
         end

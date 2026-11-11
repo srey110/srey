@@ -15,11 +15,11 @@ static int32_t _debug_cmd_eq(const seri_item *item, const char *name, size_t nle
     return nlen == item->v.s.len && 0 == memcmp(item->v.s.p, name, nlen);
 }
 // 回复纯文本响应给请求方；debug 响应一律 ERR_OK，结果(含错误说明)由文本承载，
-// 否则 srey.request 对 erro!=ERR_OK 吞 data，文本到不了调用方。copy=1 内部拷贝。
+// 否则请求方会按失败处理、丢掉文本。copy=1 内部拷贝。
 static void _debug_resp(task_ctx *task, name_t src, uint64_t sess, const char *text, size_t len) {
     (void)task_response_to(task->loader, src, REQ_DEBUG, sess, ERR_OK, (void *)text, len, 1);
 }
-// stat：拼各 mtype 的 nmsg / dispatch_cpu_ns / avg，格式与 Lua 端 stat 命令一致
+// stat：拼各 mtype 的 nmsg / dispatch_cpu_ns / avg
 static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {
     uint64_t nmsg[MSG_TYPE_ALL];
     uint64_t cpu[MSG_TYPE_ALL];
@@ -45,7 +45,7 @@ static void _debug_stat(task_ctx *task, name_t src, uint64_t sess) {
 }
 // C task 的 REQ_DEBUG 处理：seri 位置化解码（首元素 cmd 字符串）。
 // 公共命令 stat/coros/loglv 处理并接管返回 ERR_OK；其余(业务自定义)返回 ERR_FAILED 透传
-// 业务 on_requested。Lua VM 专属命令由发起方按目标 task 类型挡掉,不会到这里
+// 业务的 _request 回调。Lua VM 专属命令由发起方按目标 task 类型挡掉,不会到这里
 int32_t _debug_request(task_ctx *task, message_ctx *msg) {
     seri_iter it;
     seri_iter_init(&it, msg->data, msg->size);

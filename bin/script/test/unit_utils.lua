@@ -1,9 +1,10 @@
--- utils 绑定层单元测试：hashring / trend / srey.utils (id/hex/ud_str/csprng_rand)
+-- utils 绑定层单元测试：hashring / trend / srey.utils (id/hex/ud_str/csprng_rand) / srey.popen
 -- 外加一组跨模块的 (指针,长度) 入口负长度回归
 
 local srey    = require("lib.srey")
 local runner  = require("test.runner")
 local utils   = require("srey.utils")
+local slog    = require("srey.log")
 local hashring = require("srey.hashring")
 local trend   = require("srey.trend")
 local yyjson  = require("yyjson")
@@ -48,17 +49,17 @@ runner.run(function(t)
         t:check(r ~= r2, "csprng_rand random")
     end
     do
-        -- log_getlv / log_setlv 一致
-        local lv = utils.log_getlv()
-        t:check(type(lv) == "number", "log_getlv returns number")
-        utils.log_setlv(lv) -- 写回原值确保不破坏其他模块
-        t:eq(lv, utils.log_getlv(), "log_setlv round-trip")
-        -- 越界等级必须报错。log_setlv(-1) 会让 slog 的 lv > _log_lv 判定短路掉全进程日志
-        t:eq(false, pcall(function() utils.log_setlv(-1) end), "log_setlv(-1) 报错")
-        t:eq(false, pcall(function() utils.log_setlv(5) end), "log_setlv(5) 报错")
-        t:eq(lv, utils.log_getlv(), "越界调用后等级不变")
-        -- 栈层号截成 int32 的话 2^32 变 0，打出来的是 utils.log 自己的位置
-        t:eq(false, pcall(utils.log, lv, 1 << 32, "x"), "log 栈层号超 int32 报错")
+        -- getlv / setlv 一致
+        local lv = slog.getlv()
+        t:check(type(lv) == "number", "getlv returns number")
+        slog.setlv(lv) -- 写回原值确保不破坏其他模块
+        t:eq(lv, slog.getlv(), "setlv round-trip")
+        -- 越界等级必须报错。setlv(-1) 会让 slog 的 lv > _log_lv 判定短路掉全进程日志
+        t:eq(false, pcall(function() slog.setlv(-1) end), "setlv(-1) 报错")
+        t:eq(false, pcall(function() slog.setlv(5) end), "setlv(5) 报错")
+        t:eq(lv, slog.getlv(), "越界调用后等级不变")
+        -- 栈层号截成 int32 的话 2^32 变 0，打出来的是 slog.log 自己的位置
+        t:eq(false, pcall(slog.log, lv, 1 << 32, "x"), "log 栈层号超 int32 报错")
     end
     do
         -- 命令行按 C 串交给子进程，内含 \0 会截成另一条命令执行；报错在起子进程之前
@@ -79,7 +80,7 @@ runner.run(function(t)
             t:eq(true, p:waitexit(3000), "popen r 子进程退出")
             t:eq(0, p:exitcode(), "popen r 退出码 0")
             local out = p:read()
-            t:check(nil ~= out:find("hello popen", 1, true), "popen:read 读到子进程输出")
+            t:check(nil ~= out and nil ~= out:find("hello popen", 1, true), "popen:read 读到子进程输出")
         end
         local msg = "srey test\n"
         p = popen.new(cmd("rw"), "rw")
@@ -87,7 +88,7 @@ runner.run(function(t)
             t:eq(#msg, p:write(msg), "popen:write 整行写入")
             t:eq(true, p:waitexit(3000), "popen rw 子进程退出")
             local out = p:read()
-            t:check(nil ~= out:find("srey test", 1, true), "popen:read 读到回显")
+            t:check(nil ~= out and nil ~= out:find("srey test", 1, true), "popen:read 读到回显")
         end
         -- 不喂 stdin 的话子进程一直等着，close 把它杀掉收尸：退出码按被终止算 -1
         p = popen.new(cmd("rw"), "rw")
@@ -130,6 +131,16 @@ runner.run(function(t)
         if t:check(nil ~= p, "popen.new r(close_stdin) 启动") then
             t:eq(false, p:close_stdin(), "r 模式 close_stdin 返回 false")
             t:eq(-1, p:write("x"), "r 模式 write 返回 -1")
+            p:close()
+        end
+        -- 'w' 模式读出错：第一个返回值为 nil，与暂无数据的空串分开
+        p = popen.new("sort", "w")
+        if t:check(nil ~= p, "popen.new sort w 启动") then
+            local chunk, eof = p:read()
+            t:eq(nil, chunk, "w 模式 read 返回 nil")
+            t:eq(false, eof, "w 模式 read 的 eof 为 false")
+            t:eq(true, p:close_stdin(), "w 模式 close_stdin 送出 EOF")
+            t:eq(true, p:waitexit(3000), "sort w 自己退出")
             p:close()
         end
     end

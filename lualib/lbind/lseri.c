@@ -43,7 +43,7 @@ static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, in
     lua_pushnil(lua);
     while (0 != lua_next(lua, idx)) {
         if (nexti <= alen) {
-            if (LUA_TNUMBER == lua_type(lua, -2) && lua_isinteger(lua, -2)
+            if (lua_isinteger(lua, -2)
                 && lua_tointeger(lua, -2) == nexti) {
                 if (ERR_OK != _lseri_pack_one(lua, bw, -1, depth)) {
                     return ERR_FAILED;
@@ -56,7 +56,7 @@ static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, in
                 return ERR_FAILED;
             }
         }
-        if (LUA_TNUMBER == lua_type(lua, -2) && lua_isinteger(lua, -2)) {
+        if (lua_isinteger(lua, -2)) {
             ik = lua_tointeger(lua, -2);
             if (ik > 0 && ik <= alen) {
                 lua_pop(lua, 1);
@@ -249,6 +249,7 @@ static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *i
 /// <summary>
 /// 反序列化 seri.pack 输出的二进制 buffer 为多个 Lua 值。
 /// 支持 lightuserdata+size 或 string 单参形式；返回顺序与 pack 输入相同。
+/// 流里的 lightuserdata 按原地址还原，只能解本进程 seri.pack 打的包，不能拿来解外来数据。
 /// </summary>
 /// <param name="data" type="string|lightuserdata">序列化数据</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>

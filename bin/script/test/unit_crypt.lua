@@ -321,16 +321,15 @@ runner.run(function(t)
         local forged = string.char(empty_ct:byte(1) ~ 0xFF) .. empty_ct:sub(2)
         t:eq(nil, empty_dec:dofinal(forged), "填充校验失败返 nil")
 
-        -- padding 取值必须落在枚举内。越界值会让 C 侧 _padding_data 的 switch 一个分支都不命中，
-        -- 填充区一个字节都不写，pd_data 里上一块的明文尾巴就被当成填充加密发出去
+        -- padding 取值必须落在枚举内，在绑定层挡住：越界值打到 C 侧 cipher_padding 的 ASSERTAB 就是整进程 abort
         local pad = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 1)
         t:eq(false, (pcall(pad.padding, pad, 99)), "越界 padding 报错")
         t:eq(false, (pcall(pad.padding, pad, -1)), "负 padding 报错")
         t:eq(true, (pcall(pad.padding, pad, PADDING_MODEL.NoPadding)), "NoPadding 合法")
         t:eq(true, (pcall(pad.padding, pad, PADDING_MODEL.ANSIX923)), "ANSIX923 合法")
 
-        -- cipher.new 的三个枚举实参必须在绑定层挡住：越界 keybits 会一路走到 aes_init 的
-        -- default ASSERTAB，那是 abort 整个进程而不是抛 Lua 错，脚本里写错一个常量就宕服
+        -- cipher.new 的三个枚举实参必须在绑定层挡住：越界 keybits 会打到 aes_init 入口的
+        -- ASSERTAB，那是 abort 整个进程而不是抛 Lua 错，脚本里写错一个常量就宕服
         t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 1234, 1)),
              "越界 keybits 报错而非 abort")
         t:eq(false, (pcall(cipher.new, CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 0, 1)),

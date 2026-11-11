@@ -11,7 +11,7 @@ int32_t _custz_decode_fixed(buffer_ctx *buf, size_t *hlens, size_t *size, int32_
 // 固定 4 字节长度头编码：分配头部+数据体内存并写入长度字段；dlens 超 UINT32_MAX 返回 NULL
 char *_custz_encode_fixed(size_t dlens, size_t *hlens, size_t *size);
 
-// 标志位变长头解码：首字节决定后续长度字段宽度（0xfc/0xfd/0xfe/0xff）
+// 标志位变长头解码：首字节 <=0xfc 时长度即为该值，0xfd/0xfe/0xff 分别后跟 2/4/8 字节长度
 int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t *status);
 // 标志位变长头编码：按数据长度自动选择 1/3/5/9 字节头部；头长加 dlens 溢出 size_t 返回 NULL
 char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size);

@@ -51,7 +51,7 @@ typedef struct digest_ctx {
 }digest_ctx;
 
 /// <summary>
-/// 初始化
+/// 初始化。dtype 越界时 ASSERTAB 终止进程
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 /// <param name="dtype">摘要算法</param>

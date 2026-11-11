@@ -8,7 +8,7 @@
 // 缓存条目:path 作 key(strdup),code 为编译后字节码(MALLOC);进程级常驻
 typedef struct bc_entry {
     size_t size;      // 字节码字节数
-    uint64_t mtime;   // 文件修改时间;LBC_CHECK_MTIME=0 时恒 0
+    uint64_t mtime;   // 文件版本戳(见 lbc_stat);LBC_CHECK_MTIME=0 时恒 0
     char *path;       // 脚本路径(调用方原串),hashmap key
     char *code;       // 字节码 buffer
 }bc_entry;

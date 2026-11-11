@@ -171,9 +171,7 @@ static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
         binary_offset(breader, next);
     }
 }
-// 读 OK 包体：两个计数与 status_flags 经出参回带(不要的传 NULL)，截断时一个都不写；顺带按 status_flags 更新 in_trans，
-// 带 session track 时还更新当前库
-static int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
+int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
     uint64_t *affected_rows, uint64_t *last_id, int16_t *status_flags) {
     int32_t _rtn;
     uint64_t affected = _mysql_get_lenenc(breader, &_rtn);
@@ -190,6 +188,7 @@ static int32_t _mpack_ok_parse(mysql_ctx *mysql, binary_ctx *breader,
     int16_t flags = (int16_t)binary_get_integer(breader, 2, 1);
     binary_get_skip(breader, 2);// warnings：本库不用，只推进读位置
     mysql->in_trans = BIT_CHECK(flags, SERVER_STATUS_IN_TRANS) ? 1 : 0;
+    mysql->autocommit = BIT_CHECK(flags, SERVER_STATUS_AUTOCOMMIT) ? 1 : 0;
     if (BIT_CHECK(flags, SERVER_SESSION_STATE_CHANGED)) {
         _mpack_ok_track(mysql, breader);
     }
@@ -241,8 +240,15 @@ static inline mpack_ctx *_mpack_new(void) {
 }
 // 解析简单命令响应（COM_INIT_DB / COM_PING / COM_STMT_RESET）：首字节区分 OK / ERR
 static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
+    uint8_t first = binary_get_uint8(breader);
+    if (MYSQL_OK != first
+        && MYSQL_ERR != first) {
+        LOG_ERROR("mysql unexpected response packet type %d.", (int32_t)first);
+        BIT_SET(*status, PROT_ERROR);
+        return NULL;
+    }
     mpack_ctx *mpack = _mpack_new();
-    if (MYSQL_OK == binary_get_uint8(breader)) {
+    if (MYSQL_OK == first) {
         mpack->pack_type = MPACK_OK;
         // COM_INIT_DB / COM_PING / COM_STMT_RESET 不会有后续结果集，status_flags 不用回带（in_trans 已在里面更新）
         if (ERR_OK != _mpack_ok_parse(mysql, breader, &mpack->affected_rows, &mpack->last_id, NULL)) {
@@ -314,6 +320,7 @@ static inline eof_final _mpack_check_final(mysql_ctx *mysql, binary_ctx *breader
         return EOF_FINAL_BROKEN;
     }
     mysql->in_trans = BIT_CHECK(status_flags, SERVER_STATUS_IN_TRANS) ? 1 : 0;
+    mysql->autocommit = BIT_CHECK(status_flags, SERVER_STATUS_AUTOCOMMIT) ? 1 : 0;
     if (BIT_CHECK(status_flags, SERVER_MORE_RESULTS_EXISTS)) {
         BIT_SET(*status, PROT_MOREDATA);
         return EOF_FINAL_MORE;
@@ -864,7 +871,11 @@ static mpack_ctx *_mpack_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, bin
             mysql->cur_cmd = 0;
             return mpack;
         }
-        binary_get_skip(breader, 1);
+        if (MYSQL_OK != binary_get_uint8(breader)) {
+            LOG_ERROR("%s", "mysql stmt prepare response is neither OK nor ERR.");
+            BIT_SET(*status, PROT_ERROR);
+            return NULL;
+        }
         int32_t rtn = _mpack_stmt_new(mysql, breader);
         if (ERR_OK != rtn) {
             LOG_ERROR("mysql stmt prepare response too short.");

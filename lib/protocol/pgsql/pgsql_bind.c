@@ -30,11 +30,11 @@ void pgsql_bind_free(pgsql_bind_ctx *bind) {
     bind->count = 0;
 }
 void pgsql_bind_clear(pgsql_bind_ctx *bind) {
+    bind->count = 0;
     if (0 == bind->nparam) {
         return;
     }
     // 回退到值区起点，保留两个参数数量；格式码槽下次按下标重写
-    bind->count = 0;
     binary_offset(&bind->buf, _pgsql_bind_values_at(bind));
 }
 // 占下一个参数的格式码槽。多绑时把 count 顶到 nparam + 1 让组包拒，本次不写
@@ -47,7 +47,7 @@ static inline int32_t _pgsql_bind_format(pgsql_bind_ctx *bind, pgpack_format for
     bind->count++;
     return ERR_OK;
 }
-// 同 pgsql_bind，本文件的各 pgsql_bind_xxx 都走它。值长度字段是 Int32，超 INT32_MAX 按多绑处理、组包时拒
+// 同 pgsql_bind，本文件除 pgsql_bind_null 外的 pgsql_bind_xxx 都走它。值长度字段是 Int32，超 INT32_MAX 按多绑处理、组包时拒
 static inline void _pgsql_bind_put(pgsql_bind_ctx *bind, const char *value, size_t lens, pgpack_format format) {
     if (lens > INT32_MAX) {
         LOG_ERROR("pgsql bind value exceeds INT32_MAX: %zu.", lens);

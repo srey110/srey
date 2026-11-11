@@ -34,8 +34,6 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
     ctx->lasttimestamp = last;
     return ctx;
 }
-/* sfid_id 无锁设计：每个线程持有独立的 sfid_ctx，禁止多线程共享同一 ctx。
- * lasttimestamp/sequence 字段未加原子保护，属于有意为之——调用方保证单线程访问。*/
 // 时钟回拨时退避一格：首次打印告警，睡 1ms 等时钟追上来。
 // 等满 clockback_wait 返 ERR_FAILED 让调用方放弃——回拨多少就阻塞多少的话，一次跳表能把线程卡住几十分钟。
 // 等待时长用单调计时量：不数睡眠次数(MSLEEP(1) 的实际粒度各平台差着十几倍)，也不用墙钟(等的正是墙钟回拨)

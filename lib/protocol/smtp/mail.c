@@ -50,10 +50,9 @@ void mail_free(mail_ctx *mail) {
 void mail_reply(mail_ctx *mail, int32_t reply) {
     mail->reply = reply;
 }
-/* 将 src 复制到 dst（最多 maxlen-1 字节），跳过所有 \r 和 \n 字符，末尾补 '\0'。
- * 用于邮件头字段的注入过滤：任何包含 CRLF 的用户输入均被净化，
- * 防止攻击者通过 Subject/From/To 等字段注入任意 MIME 头部（如 Bcc 注入）。
- * 装不下被截断时退到 UTF-8 字符边界，不留半个字。*/
+// 将 src 复制到 dst（最多 maxlen-1 字节），跳过所有 \r 和 \n 字符，末尾补 '\0'。
+// 用于邮件头字段的注入过滤，防止通过 Subject/From/To 等字段注入 MIME 头部。
+// 装不下被截断时退到 UTF-8 字符边界，不留半个字
 static void _mail_strip_crlf(char *dst, const char *src, size_t maxlen) {
     size_t j = 0;
     size_t i = 0;
@@ -216,10 +215,10 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
     }
     switch (type) {
     case TO:
-        binary_set_binary(bwriter, "To: ", strlen("To: "));
+        binary_set_binary(bwriter, MAIL_LIT("To: "));
         break;
     case CC:
-        binary_set_binary(bwriter, "Cc: ", strlen("Cc: "));
+        binary_set_binary(bwriter, MAIL_LIT("Cc: "));
         break;
     default:
         return;
@@ -233,7 +232,7 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
         }
         index++;
         if (index < count) {
-            _mail_set_wrap(bwriter, MAIL_LIT(""), addr->addr, MAIL_LIT(",\r\n "));// 逗号后需要加空格
+            _mail_set_wrap(bwriter, MAIL_LIT(""), addr->addr, MAIL_LIT(",\r\n "));// 折行：下一个地址另起一行，行首空格表示续行
         } else {
             _mail_set_wrap(bwriter, MAIL_LIT(""), addr->addr, MAIL_LIT("\r\n"));
         }
@@ -273,10 +272,8 @@ static int32_t _mail_has_nonascii(const char *s, size_t lens) {
     return 0;
 }
 // 头字段文本：短的纯 ASCII 原样写，含非 ASCII 或过长时按 RFC 2047 编成 encoded-word。
-// RFC 5322 §2.2 规定 header field body 只能是 US-ASCII，而本实现从不协商 SMTPUTF8
-// （EHLO 响应只解析 AUTH 类型），裸 UTF-8 主题在严格服务端上会被改写甚至拒收。
-// 超过一个 word 时按 RFC 5322 §2.2.3 折行（CRLF + 一个空格）；切段必须落在 UTF-8 字符边界上，
-// 从中间劈开会让对端解出半个字。
+// 头字段只能是 US-ASCII（RFC 5322 §2.2），本实现不协商 SMTPUTF8。
+// 超过一个 word 时按 RFC 5322 §2.2.3 折行（CRLF + 一个空格）；切段必须落在 UTF-8 字符边界上
 // col 是当前行已有的字符数（字段名等），首个 word 按 76 字符的剩余宽度切；返回写完后当前行的字符数
 static size_t _mail_set_header_text(binary_ctx *bw, const char *s, size_t col) {
     size_t lens = strlen(s);
@@ -341,8 +338,7 @@ static void _mail_set_header_param(binary_ctx *bw, const char *key, const char *
     }
 }
 // 纯 ASCII 的发件人显示名。RFC 5322 §3.4 的 display-name 是 phrase：只由 atom 组成时可以裸写，
-// 一旦含 specials（RFC 5322 §3.2.3 的 ()<>[]:;@\,." 这几个）就必须整体加引号——
-// 否则 "Doe, John <a@b>" 会被解析成 "Doe" 与 "John <a@b>" 两个地址
+// 一旦含 specials（RFC 5322 §3.2.3 的 ()<>[]:;@\,." 这几个）就必须整体加引号
 static void _mail_set_display_name(binary_ctx *bw, const char *name, size_t lens) {
     if (lens == memcspn(name, lens, MAIL_LIT("()<>[]:;@\\,.\""))) {
         binary_set_binary(bw, name, lens);
@@ -457,8 +453,7 @@ char *mail_pack(mail_ctx *mail, size_t *size) {
     _mail_pack_addr(mail, &bwriter, TO);
     _mail_pack_addr(mail, &bwriter, CC);
     // BCC 收件人已由 smtp_send 的 RCPT TO 逐个投递(信封层)；密送要求不出现在正文头部，故此处不写 Bcc 头，否则名单对全体收件人可见
-    // MIME 头无论单段多段都要写：只有多段时才写的话，最常见的"纯文本一封信"整封没有
-    // Content-Type，按 RFC 2045 缺省成 us-ascii，UTF-8 正文到严格客户端上就是乱码
+    // MIME 头无论单段多段都要写：缺 Content-Type 按 RFC 2045 算 us-ascii，UTF-8 正文会乱码
     if (multipart) {
         _mail_set_wrap(&bwriter, MAIL_LIT("MIME-Version: 1.0\r\nContent-Type: multipart/mixed;\r\n\tboundary=\""),
                        boundary, MAIL_LIT("\"\r\n"));

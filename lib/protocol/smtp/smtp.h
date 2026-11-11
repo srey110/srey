@@ -22,7 +22,7 @@ typedef struct smtp_ctx {
     struct evssl_ctx *evssl; //TLS 上下文，NULL 表示不加密
     struct task_ctx *task;   //所属任务上下文
     struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
-    sock_ctx sk;                //连接标识 fd+skid
+    sock_ctx sk;                //连接标识
     char user[64];           //SMTP 用户名
     char psw[64];            //SMTP 密码
     char ip[IP_LENS];        //SMTP 服务器 IP 地址
@@ -73,34 +73,34 @@ int32_t smtp_check_ok(char *pack);
 /// <summary>
 /// RSET命令数据包
 /// </summary>
-/// <returns>数据包</returns>
+/// <returns>堆上的 '\0' 结尾串，调用方 FREE 或 ev_send(copy=0) 交出</returns>
 char *smtp_pack_reset(void);
 /// <summary>
 /// QUIT命令数据包
 /// </summary>
-/// <returns>数据包</returns>
+/// <returns>堆上的数据包(释放同 smtp_pack_reset)</returns>
 char *smtp_pack_quit(void);
 /// <summary>
 /// NOOP命令数据包
 /// </summary>
-/// <returns>数据包</returns>
+/// <returns>堆上的数据包(释放同 smtp_pack_reset)</returns>
 char *smtp_pack_ping(void);
 /// <summary>
 /// MAIL FROM 命令数据包
 /// </summary>
 /// <param name="from">发件人地址 test@163.com，不可包含 \r 或 \n（防 CRLF 注入）</param>
-/// <returns>数据包；from 为 NULL 或含 CR/LF 时返回 NULL</returns>
+/// <returns>堆上的数据包(释放同 smtp_pack_reset)；from 为 NULL 或含 CR/LF 时返回 NULL</returns>
 char *smtp_pack_from(const char *from);
 /// <summary>
 /// RCPT TO 命令数据包
 /// </summary>
 /// <param name="rcpt">收件人地址 test@163.com，不可包含 \r 或 \n（防 CRLF 注入）</param>
-/// <returns>数据包；rcpt 为 NULL 或含 CR/LF 时返回 NULL</returns>
+/// <returns>堆上的数据包(释放同 smtp_pack_reset)；rcpt 为 NULL 或含 CR/LF 时返回 NULL</returns>
 char *smtp_pack_rcpt(const char *rcpt);
 /// <summary>
 /// DATA 命令数据包
 /// </summary>
-/// <returns>数据包</returns>
+/// <returns>堆上的数据包(释放同 smtp_pack_reset)</returns>
 char *smtp_pack_data(void);
 /// <summary>
 /// SMTP 协议解包入口：根据当前握手状态（INIT/EHLO/AUTH/AUTH_CHECK/COMMAND，AUTH LOGIN 另有等第二个挑战的

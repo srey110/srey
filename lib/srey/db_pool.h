@@ -23,7 +23,7 @@ typedef struct db_pool_cfg {
     uint32_t backoff_ms;    // 建连/探活失败后该连接的冷却时长，连续失败按它翻倍、最多 32 倍，连上清零；0=默认 1000ms
     uint32_t max_lifetime_ms; // 连接寿命，每条随机少最多 1/8，免得同批连接同时到期；借出时到期先断开再重连，
                               // 归还时到期断开不交接；0=不限制
-    int32_t min_idle;       // 至少保持的连着的空闲连接数：收缩时不低于它，维护协程每秒补足；0=不保留
+    int32_t min_idle;       // 至少保持的连着的空闲连接数：收缩时不低于它，维护协程每秒补足；0=不保留；越界钳到 [0, cap]
     uint32_t idle_timeout_ms; // 空闲超过这么久断开，槽留着下次借出重连；维护协程每秒查一次；0=不收缩
     uint32_t leak_warn_ms;  // 借出超过这么久还没还，维护协程打一次 WARN；0=不查
 } db_pool_cfg;
@@ -55,7 +55,8 @@ db_pool_ctx *db_pool_new(task_ctx *task, const db_pool_ops *ops, const db_pool_c
 /// </summary>
 /// <param name="pool">池</param>
 /// <param name="conn">连接对象；所有权仍在调用方，池只借指针</param>
-/// <returns>ERR_OK 成功；池已关闭/有借出或等待者/已满/指针重复返回 ERR_FAILED</returns>
+/// <returns>ERR_OK 成功；pool 或 conn 为 NULL、池已关闭、有占用（借出的，或维护协程正在建连 / 断开的，见 db_pool_stat.busy）
+/// 或等待者、已满、指针重复返回 ERR_FAILED</returns>
 int32_t db_pool_add(db_pool_ctx *pool, void *conn);
 /// <summary>
 /// 借一条连接。没有空闲时挂起当前协程，直到有人归还、冷却到期、池关闭或超时；

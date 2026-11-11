@@ -16,6 +16,8 @@
 // coro_send / coro_recv / coro_slice 只收回复(要过各协议的 may_resume),对端主动发的包(如 MQTT 的 CONNECT)落到回调上,
 // 要挂起等这类包用 coro_recv_any。
 // 连接上的等待(coro_send / coro_recv / coro_sendto 等)被这条连接的 CLOSE 唤醒时，传进来的 sk 随之置失效(fd 置 INVALID_SOCK；挂起期间 sk 已换成别的连接则不动)。
+// TCP 连接上的等待等满超时(连接超时或读超时)会先关掉这条连接再返回失败(UDP 的 coro_sendto 不关)；
+// 对端空闲可能超过读超时的服务端要先把读超时调大(task_set_timeout 的 TMO_NETREAD)，只影响某几次等待的用 coro_timeout_set。
 // UDP coro_sendto 同此约定:ud.sess 不会自动清零,须在首次调用 coro_sendto 前显式 coro_sync 一次,
 // 之后该 skid 上持续有效,可连续/并发多次调用 coro_sendto,无需每次重新同步。
 // 换线程约定:协程挂起后可能在另一个 worker 线程上恢复。协程代码里的线程局部变量一律经 TLS_DEFINE
@@ -88,6 +90,24 @@ int32_t coro_bind_task(task_ctx *task, sock_ctx *sk, name_t handle);
 /// <param name="ms">毫秒；0 直接返回、不挂起，也就不会让出给本 task 的其他协程</param>
 void coro_sleep(task_ctx *task, uint32_t ms);
 /// <summary>
+/// 覆盖当前协程的某类超时，只影响本协程此后的等待，同 task 的其他协程照旧用 task 级的值。
+/// 协程跑完这条活自动撤销；fork 出的子协程不继承。超时后的处理不变(读超时照旧关连接)。
+/// 用法：old = coro_timeout_set(task, kind, ms); ...; coro_timeout_set(task, kind, old);
+/// 等待的超时每秒扫一次，短于 1 秒的值最多晚 1 秒触发。只能在本 task 的协程里调
+/// </summary>
+/// <param name="task">task_ctx，须是协程 task</param>
+/// <param name="kind">超时种类</param>
+/// <param name="ms">毫秒；0 撤销覆盖，超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
+/// <returns>原来的覆盖值，0 表示原来没覆盖；原样传回本函数即恢复</returns>
+uint32_t coro_timeout_set(task_ctx *task, tmo_kind kind, uint32_t ms);
+/// <summary>
+/// 当前协程某类超时的实际值：有覆盖用覆盖，否则用 task 级的值(task_get_timeout)。只能在本 task 的协程里调
+/// </summary>
+/// <param name="task">task_ctx，须是协程 task</param>
+/// <param name="kind">超时种类</param>
+/// <returns>毫秒，恒大于 0</returns>
+uint32_t coro_timeout_get(task_ctx *task, tmo_kind kind);
+/// <summary>
 /// 任务间通信 请求
 /// </summary>
 /// <param name="dst">目标任务</param>
@@ -131,7 +151,8 @@ void *coro_handshaked(task_ctx *task, sock_ctx *sk, int32_t *err, size_t *size);
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
 /// <param name="evssl">非 NULL 时额外等待 SSL 握手；须是 connect 时已同步触发握手的 evssl，协议层后续才发起握手的场景不适用</param>
-/// <returns>ERR_OK 成功；fd 为 INVALID_SOCK 时不挂起,直接按失败返回(同 coro_recv)</returns>
+/// <returns>ERR_OK 成功；fd 为 INVALID_SOCK 时不挂起,直接按失败返回(同 coro_recv)。
+///   失败时 sk 不置失效：这条连接的 CLOSE 随后才到，重连前紧接着 coro_close 等它、中间别挂起(见 coro_close 的返回值)</returns>
 int32_t coro_wait_connect(task_ctx *task, sock_ctx *sk, struct evssl_ctx *evssl);
 /// <summary>
 /// 链接
@@ -157,7 +178,8 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
 /// <param name="task">task_ctx</param>
 /// <param name="sk">连接标识</param>
 /// <returns>ERR_OK 已收到 CLOSE 或连接本已失效，sk 已置失效；ERR_FAILED 等满 netread 超时仍没收到 CLOSE（网络线程或本 task 队列积压，超时前没处理到这次关闭），
-/// 此时旧连接的 close 回调还会晚到，与它共用 ctx 的新连接不能建</returns>
+/// 此时旧连接的 close 回调还会晚到，与它共用 ctx 的新连接不能建。失效只看 sk：等待被这条连接的 CLOSE 唤醒时 sk 已置失效，
+/// 再调当场返回 ERR_OK；连接关掉时没人在它上面等的，sk 仍有效，再调是等满超时返回 ERR_FAILED（这时关闭早已做完）</returns>
 int32_t coro_close(task_ctx *task, sock_ctx *sk);
 /// <summary>
 /// TCP发送并等待响应。同一连接上多个协程并发收发时，须用 coro_serial 把整个"发请求→收完响应"圈住：
@@ -193,7 +215,7 @@ void *coro_recv(task_ctx *task, sock_ctx *sk, size_t *size);
 /// <param name="size">输出:消息的 size，同 coro_send；可传 NULL</param>
 /// <param name="slice">输出:分片标记(slice_type),0 为非分片完整消息,分片时调用方循环到 PROT_SLICE_END;
 ///   可传 NULL,返回 NULL 时写 0</param>
-/// <returns>消息数据指针,有效期同 coro_send;断开返回 NULL;等满读超时(task_set_netread_timeout)会关掉连接再返回 NULL,
+/// <returns>消息数据指针,有效期同 coro_send;断开返回 NULL;等满读超时(TMO_NETREAD)会关掉连接再返回 NULL,
 ///   对端空闲时间可能超过读超时的服务端要先把它调大。fd 为 INVALID_SOCK 时不挂起,直接返回 NULL</returns>
 void *coro_recv_any(task_ctx *task, sock_ctx *sk, size_t *size, uint8_t *slice);
 /// <summary>

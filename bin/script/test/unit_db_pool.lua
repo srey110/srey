@@ -1,5 +1,6 @@
 -- db_pool 单元测试：懒建连、并发上界、FIFO 交接、断连重连、冷却（排队 / 翻倍）、等连接超时、
--- 关闭唤醒等待者、空闲探活、寿命抖动、reset、维护协程、with 的自动归还。全部用假连接，不碰网络。
+-- 关闭唤醒等待者、空闲探活、寿命抖动、reset、维护协程、with 的自动归还、ready 钩子、工厂与断开期间的占用。
+-- 全部用假连接，不碰网络。
 
 local srey      = require("lib.srey")
 local runner    = require("test.runner")
@@ -603,6 +604,153 @@ runner.run(function(t)
         pool:put(h)
         srey.sleep(1300)
         pool:free()
+    end
+
+    -- ── 带 ready 的连接：established 还是 true、ready 说不能用（空闲期被对端关掉），借出前就地重连 ──
+    do
+        local factory, made = new_factory()
+        local pool = db_pool.new{ max = 1, backoff = 20, factory = factory }
+        local c = pool:get()
+        pool:put(c)
+        c.dead = true
+        function c:ready()
+            return self.established and not self.dead
+        end
+        local connect0 = c.connect
+        function c:connect()
+            self.dead = false
+            return connect0(self)
+        end
+        local c2 = pool:get()
+        t:eq(c, c2, "ready 为假: 还是同一条")
+        t:eq(2, made[1].connects, "ready 为假: 借出前重连")
+        if c2 then
+            pool:put(c2)
+        end
+        pool:free()
+    end
+
+    -- ── 工厂挂起期间也算占用：并发的 get 要排队等它，不能当成"全在冷却"快速失败 ──
+    do
+        local factory = new_factory()
+        local function slow_factory()
+            srey.sleep(50)
+            local c = factory()
+            c.established = true-- 工厂给已连着的
+            return c
+        end
+        local pool = db_pool.new{ max = 1, backoff = 20, factory = slow_factory }
+        local first
+        srey.fork(function()
+            first = pool:get()
+            if first then
+                srey.sleep(20)
+                pool:put(first)
+            end
+        end)
+        srey.sleep(10)
+        local c2, err = pool:get(1000)
+        t:check(nil ~= first, "工厂挂起: 建连者借到")
+        t:check(nil ~= c2, "工厂挂起: 并发的 get 排队等到归还 " .. tostring(err))
+        if c2 then
+            pool:put(c2)
+        end
+        pool:free()
+    end
+
+    -- ── 借出时到寿命：丢掉后自己回去新建，不算失败、不叫醒别人陪着失败 ──
+    -- 有人在等又没有借出的状态造不出来，换掉 _wake_on_fail 记次数：叫醒过就返回 true，get 会跟着失败
+    do
+        local factory, made = new_factory()
+        local pool = db_pool.new{ max = 1, max_lifetime = 40, backoff = 20, factory = factory }
+        local c = pool:get()
+        pool:put(c)
+        srey.sleep(60)
+        local woke = 0
+        pool._wake_on_fail = function()
+            woke = woke + 1
+            return true
+        end
+        local c2, err = pool:get()
+        pool._wake_on_fail = nil
+        t:check(nil ~= c2, "到寿命: 借出时丢掉后新建一条 " .. tostring(err))
+        t:eq(0, woke, "到寿命: 不叫醒别人")
+        t:eq(2, #made, "到寿命: 新建了第二条")
+        if c2 then
+            pool:put(c2)
+        end
+        pool:free()
+    end
+
+    -- ── 补 min 时名额已满、没有可重连的：什么都没试，不叫醒等待者（同上换掉 _wake_on_fail） ──
+    do
+        local factory = new_factory()
+        local pool = db_pool.new{ max = 1, min = 1, backoff = 20, factory = factory }
+        local c = pool:get()-- 名额用满且借着，空闲栈为空
+        local woke = 0
+        pool._wake_on_fail = function()
+            woke = woke + 1
+            return true
+        end
+        pool:_fill_min()
+        pool._wake_on_fail = nil
+        t:eq(0, woke, "补 min 名额满: 不叫醒等待者")
+        pool:put(c)
+        pool:free()
+    end
+
+    -- ── 收缩断开会挂起：这段仍占着名额，期间来的 get 排队、不多建；断完叫醒它自己新建（同 C 侧 _reap） ──
+    -- 巡检在 1~2 秒后，轮询到它进了断开再排队
+    do
+        local factory, made = new_factory()
+        local pool = db_pool.new{ max = 1, idle_timeout = 10, backoff = 20, factory = factory }
+        local c = pool:get()
+        pool:put(c)
+        local quit0 = c.quit
+        function c:quit()
+            srey.sleep(300)
+            quit0(self)
+        end
+        local deadline = srey.timer_ms() + 3000
+        while 0 == pool:stat_get().busy and srey.timer_ms() < deadline do
+            srey.sleep(10)
+        end
+        t:eq(1, pool:stat_get().busy, "收缩断开: 断开期间算占用")
+        local got, gerr
+        srey.fork(function()
+            got, gerr = pool:get()
+        end)
+        srey.sleep(50)
+        t:eq(1, #made, "收缩断开: 断开期间不多建")
+        t:eq(1, pool:stat_get().total, "收缩断开: 名额还占着")
+        srey.sleep(400)
+        t:check(nil ~= got, "收缩断开: 断完叫醒排队的新建 " .. tostring(gerr))
+        t:eq(2, #made, "收缩断开: 断完才新建")
+        if got then
+            pool:put(got)
+        end
+        pool:free()
+    end
+
+    -- ── get 挂在建连上时池被 free：报 pool closed，不报建连本身的结果 ──
+    do
+        local factory = new_factory()
+        local function slow_failing()
+            local c = factory()
+            c.connect_ms = 50
+            c.fail_connect = 1
+            return c
+        end
+        local pool = db_pool.new{ max = 1, backoff = 20, factory = slow_failing }
+        local gerr
+        srey.fork(function()
+            local c, err = pool:get()
+            gerr = c and "got" or err
+        end)
+        srey.sleep(10)
+        pool:free()
+        srey.sleep(80)
+        t:eq("pool closed", gerr, "建连途中关闭: 报池关闭")
     end
 
     -- ── srey._coro_wake / _coro_wake_all：只摘队头同标记的，延迟到本次分发末尾才 resume ──

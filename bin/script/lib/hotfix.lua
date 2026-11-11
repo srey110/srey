@@ -26,9 +26,7 @@
 
 local M = {}
 
--- 同名遮蔽(同名不同 cell)时按名嫁接找不准目标,只在 patch 真的碰到那个名字时才拒绝。
--- 曾是"整个模块有一处遮蔽就整体拒收",而模块级工厂被调两次(local a, b = mk(), mk())
--- 就足以造出两个同名 cell,补丁明明只改别的名字也被挡在 load 之前
+-- 同名遮蔽(同名不同 cell)时按名嫁接找不准目标,只在 patch 真的碰到那个名字时才拒绝
 local _AMBIGUOUS = "patch touches shadowed upvalue: "
 -- 补丁 chunk 的 chunkname 前缀，load 时给它；_is_self_chunk 也认这个形态——
 -- 上一轮 apply 换上去的函数正是从补丁 chunk 编译出来的，反复热修同一模块时它就是"自家的"
@@ -137,15 +135,14 @@ local function _scan_upvalues(fn, map, seen, src)
 end
 -- 判定 src 是不是 module_name 自己那个 chunk。mod 表里混得进别人编译的函数(re-export、
 -- class() 塞的 cls.new),认不准就会把别的模块整棵闭包树收进本模块的 map。
--- 只比路径尾巴不要求 "@" 前缀:同一模块的 source 有两种形态(bytecache 命不命中,见
--- lbytecache.c),要求前缀会让走缓存的模块认不出自己。load(src,"=名字") 另走全等
-local function _is_self_chunk(src, module_name)
+-- file 是按 package.path 找到的模块文件(同 require),缓存命中与否 source 都是 "@" .. file;
+-- 只比尾巴会把 a/b.lua 认成模块 b 的。load(src,"=名字") 另走全等
+local function _is_self_chunk(src, module_name, file)
     if "=" .. module_name == src
         or _PATCH_CHUNK .. module_name == src then
         return true
     end
-    local tail = "/" .. module_name:gsub("%.", "/") .. ".lua"
-    return tail == src:gsub("\\", "/"):sub(-#tail)
+    return nil ~= file and "@" .. file == src
 end
 -- 收集 name → {fn, idx, id}(_ENV 排除)
 -- upvalueid 辨 cell 身份:同名不同 cell(chunk 内 local 遮蔽)按名无法判定嫁接目标,标记 ambiguous;
@@ -156,11 +153,12 @@ local function _collect_upvalues(mod, module_name)
     local seen = {}
     local nfn = 0
     local nself = 0
+    local file = package.searchpath(module_name, package.path)
     for _, fn in pairs(mod) do
         if "function" == type(fn) then
             nfn = nfn + 1
             local src = debug.getinfo(fn, "S").source
-            if _is_self_chunk(src, module_name) then
+            if _is_self_chunk(src, module_name, file) then
                 nself = nself + 1
                 _scan_upvalues(fn, map, seen, src)
             end

@@ -420,7 +420,7 @@ void lpub_reg_sock(lua_State *lua);
 /// <param name="sk">连接标识，按值拷贝，压栈后与原对象无关</param>
 void lpub_push_sock(lua_State *lua, sock_ctx *sk);
 /// <summary>
-/// 同 lpub_push_sock，但按 skid 复用同一个 userdata（命中时刷新其值）。
+/// 同 lpub_push_sock，但按 skid 复用同一个 userdata（命中直接用、不按消息刷新：置失效后保持失效）。
 /// 只给消息分发用（每条消息都要取 sk）；连接级创建一个连接只建一次，用 lpub_push_sock
 /// </summary>
 /// <param name="lua">Lua 虚拟机状态</param>

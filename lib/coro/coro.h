@@ -14,6 +14,7 @@
 
 #define MAPCO_INIT_CAP 32 // mapco 建表容量,同时是缩容地板,见 coro_new
 #define COROPOOL_CAP 128 // 每个调度器的空闲协程池容量，须是 2 的幂(池容量按 2 的幂取整)；池满时回池的协程跑完即销毁
+#define CORO_LOCAL_N 4 // 每个协程的局部槽个数，见 coro_local_get
 
 typedef struct coro_ctx coro_ctx;
 typedef struct coro_serial_ctx coro_serial_ctx;
@@ -69,6 +70,23 @@ void *coro_owner(coro_ctx *co);
 /// <param name="co">调度器</param>
 /// <returns>1 在协程里；0 不在</returns>
 int32_t coro_running(coro_ctx *co);
+/// <summary>
+/// 读当前在跑协程的第 idx 个局部槽。每个协程有 CORO_LOCAL_N 个 uint64_t 槽，下标的用途由 owner 定，
+/// 存指针经 uintptr_t 转；
+/// 每跑一条活(coro_spawn / fork)前清零，所以池里复用它的下一条活、fork 出的子协程都读不到上一条活写的。
+/// 只能在本调度器的协程里调，协程外调或 idx 越界撞断言
+/// </summary>
+/// <param name="co">调度器</param>
+/// <param name="idx">槽下标，小于 CORO_LOCAL_N</param>
+/// <returns>槽里的值，没写过为 0</returns>
+uint64_t coro_local_get(coro_ctx *co, uint32_t idx);
+/// <summary>
+/// 写当前在跑协程的第 idx 个局部槽，约束同 coro_local_get
+/// </summary>
+/// <param name="co">调度器</param>
+/// <param name="idx">槽下标，小于 CORO_LOCAL_N</param>
+/// <param name="val">要写的值</param>
+void coro_local_set(coro_ctx *co, uint32_t idx, uint64_t val);
 /// <summary>
 /// 挂起中的协程数，含 coro_wait、coro_fork_wait、serial 排队三类
 /// </summary>

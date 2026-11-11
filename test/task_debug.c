@@ -345,6 +345,26 @@ done:
     _http_get_ex(task, port, url, heads, code, want, match, 1)
 #define _http_post(task, port, url, body, code, want, match, state_hdr) \
     _http_req_ex(task, port, "POST", url, body, _HOST_OK, code, want, match, state_hdr)
+// 裸 TCP 发 HEAD，只核状态行开头：C 的 HTTP 客户端不知道请求是 HEAD，收 405 会照 Content-Length 等正文
+static int32_t _head_status(task_ctx *task, uint16_t port, const char *url, const char *want) {
+    sock_ctx sk;
+    if (ERR_OK != coro_connect(task, PACK_NONE, NULL, "127.0.0.1", port, 0, NULL, &sk)) {
+        LOG_ERROR("debug test: connect console %d failed for HEAD %s.", (int32_t)port, url);
+        return ERR_FAILED;
+    }
+    char req[256];
+    int32_t n = SNPRINTF(req, sizeof(req), "HEAD %s HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Srey-Debug: 1\r\n\r\n", url);
+    (void)ev_send(&task->loader->netev, &sk, req, (size_t)n, 1);
+    size_t rsize = 0;
+    char *resp = coro_recv(task, &sk, &rsize);
+    size_t wlen = strlen(want);
+    int32_t rtn = (NULL != resp && rsize >= wlen && 0 == memcmp(resp, want, wlen)) ? ERR_OK : ERR_FAILED;
+    if (ERR_OK != rtn) {
+        LOG_ERROR("debug test: HEAD %s expected '%s'.", url, want);
+    }
+    ev_close(&task->loader->netev, &sk);
+    return rtn;
+}
 static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     char url[64];
     // Lua VM 专属命令打到 C task：发起方就地挡下，请求根本不发出去。
@@ -402,6 +422,20 @@ static int32_t _test_console(task_ctx *task, task_debug_args *arg) {
     }
     if (lv0 != log_getlv()) {
         LOG_ERROR("debug test: console loglv leaked level change.");
+        return ERR_FAILED;
+    }
+    // gc / loglv 只注册了 GET：HEAD 回 405 且不执行（级别不变）
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/loglv/%d", (uint64_t)arg->noreq,
+             (int32_t)(LOGLV_DEBUG == lv0 ? LOGLV_INFO : LOGLV_DEBUG));
+    if (ERR_OK != _head_status(task, arg->port, url, "HTTP/1.1 405 ")) {
+        return ERR_FAILED;
+    }
+    if (lv0 != log_getlv()) {
+        LOG_ERROR("debug test: HEAD loglv changed level.");
+        return ERR_FAILED;
+    }
+    SNPRINTF(url, sizeof(url), "/%"PRIu64"/gc", (uint64_t)arg->noreq);
+    if (ERR_OK != _head_status(task, arg->port, url, "HTTP/1.1 405 ")) {
         return ERR_FAILED;
     }
     // POST inject / hotfix：没带 X-Srey-Debug 403、空 body 400、打到 C task 503(不发请求)

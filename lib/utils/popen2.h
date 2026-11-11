@@ -60,11 +60,11 @@ void popen_free(popen_ctx *ctx);
 /// <returns>ERR_OK 已退出(退出码已记下，见 popen_exitcode)或本来就没有子进程；超时或 waitid 出错 ERR_FAILED</returns>
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms);
 /// <summary>
-/// 获取退出码。子进程还没退出时也可调（返回失败，要等它退出先 popen_waitexit）；
-/// 须在 popen_free 之前调用（free 后 Windows 已不持有进程句柄）
+/// 获取退出码，要等它退出先 popen_waitexit；须在 popen_free 之前调用（free 后 Windows 已不持有进程句柄）
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
-/// <returns>子进程的退出码；被信号终止、被 popen_close 结束、还没退出、没有子进程或出错时 ERR_FAILED</returns>
+/// <returns>子进程的退出码；被信号终止、被 popen_close 结束、还没退出、没有子进程或出错时 ERR_FAILED。
+/// Windows 上没有信号，异常结束的子进程给的是异常码（如 0xC0000005，转成 int32_t 为负数）</returns>
 int32_t popen_exitcode(popen_ctx *ctx);
 /// <summary>
 /// 非阻塞单次探测读取子进程输出：有数据则读当前可读的一批（最多 lens 字节）并返回；无数据则立即返回不阻塞。
@@ -73,7 +73,7 @@ int32_t popen_exitcode(popen_ctx *ctx);
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 /// <param name="output">输出</param>
-/// <param name="lens">长度</param>
+/// <param name="lens">长度；超过 INT32_MAX 时本次最多读 INT32_MAX 字节，0 直接返回 0</param>
 /// <param name="eof">出参，可为 NULL：置 1=已到流末尾（写端全关、不再有输出），置 0=未到（读到数据/暂无数据/出错）</param>
 /// <returns>读到的字节数；0 表示当前无数据（配合 eof 区分暂无输出与 EOF）；mode 不含 'r'、已 popen_free 或读出错时 ERR_FAILED</returns>
 int32_t popen_read(popen_ctx *ctx, char *output, size_t lens, int32_t *eof);

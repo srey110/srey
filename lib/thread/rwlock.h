@@ -91,12 +91,10 @@ static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_unlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
-    /* wlock 无需原子操作：写锁排他，读写均发生在同一线程持锁期间，无并发修改。
-     * SRW release/acquire 语义保证写锁释放前的 wlock=0 对后续锁持有者可见；
-     * SRW API 为不透明外部调用，编译器不会跨调用缓存 wlock 的值。*/
+    // wlock 只在持写锁的线程里读写，不用原子
     if (0 != ctx->wlock) {
         ctx->wlock = 0;
-        ReleaseSRWLockExclusive(&ctx->rwlock); /* 释放屏障，wlock=0 对后续 acquire 可见 */
+        ReleaseSRWLockExclusive(&ctx->rwlock);
     } else {
         ReleaseSRWLockShared(&ctx->rwlock);
     }

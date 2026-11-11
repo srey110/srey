@@ -1,9 +1,9 @@
 ﻿#include "utils/tw.h"
 
 #define TW_REQADD_BATCH     128 // reqadd 单次批量出队上限
-#define TVN_MASK (TVN_SIZE - 1) //高精度轮索引掩码
-#define TVR_MASK (TVR_SIZE - 1) //最低精度轮索引掩码
-#define INDEX(N) ((ctx->jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK) //第 N 级高精度轮的当前槽索引，取所在函数的 ctx
+#define TVN_MASK (TVN_SIZE - 1) //上级轮索引掩码
+#define TVR_MASK (TVR_SIZE - 1) //tv1 索引掩码
+#define INDEX(N) ((ctx->jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK) //上级轮里第 N 层（0 为 tv2）的当前槽索引，取所在函数的 ctx
 
 // 释放时间轮槽位数组中所有节点，并调用各节点的 _freecb 释放用户数据
 static void _tw_free_slot(list_ctx *slot, const size_t len) {
@@ -42,7 +42,7 @@ void tw_free(tw_ctx *ctx) {
     twq_free(&ctx->reqadd);
     waiter_free(&ctx->waiter);
 }
-/*  注意：reqadd 容量 4096，常规负载下不会触底 —— 排空是信号驱动而非 tick 驱动：
+/*  注意：reqadd 容量由 tw_init 定（默认 4096），常规负载下不会触底 —— 排空是信号驱动而非 tick 驱动：
  *  轮线程睡着时 push 当场叫醒它，队列不会随轮线程睡得久而积压。
  *  极端突发或时间轮主线程被严重抢占时触底，twq_push 降级到无界溢出层，不阻塞调用方。*/
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud) {
@@ -92,7 +92,7 @@ static inline list_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     }
     return slot;
 }
-// 将高精度槽位中的节点重新分配到低精度槽位（时间轮进位）：源槽整条摘下再逐个改投，不逐个摘除
+// 将上级轮槽位中的节点重新分配到更细的下级轮（时间轮进位）：源槽整条摘下再逐个改投，不逐个摘除
 static uint32_t _tw_cascade(tw_ctx *ctx, list_ctx *slot, const uint32_t index) {
     tw_node_ctx *pnode;
     list_ctx moving = slot[index];

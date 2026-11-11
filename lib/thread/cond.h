@@ -73,7 +73,7 @@ static inline void _cond_timedwait_erro(int32_t code) {
 /// <returns>ERR_OK 被叫醒或虚假唤醒；1 超时；ERR_FAILED 出错</returns>
 static inline int32_t cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t ms) {
 #if defined(OS_WIN)
-    if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms)) {//如果函数成功，则返回值为非零 如果函数失败或超时间隔已过，则返回值为零
+    if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms)) {
         int32_t err = ERRNO;
         if (ERROR_TIMEOUT == err) {
             return 1;

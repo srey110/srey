@@ -1181,6 +1181,28 @@ static void _sus_put(void *owner, void *arg) {
     suspend_arg *a = (suspend_arg *)arg;
     db_pool_put(a->pool, a->conn);
 }
+// 轮询到池里有占用(维护协程已进建连 / 断开)，最多等 3 秒。巡检在 1~2 秒后才来，固定睡一段赌不准：
+// 晚醒的话后面的操作落在窗口之后，用例照过却没测到要测的分支
+static int32_t _wait_busy(task_ctx *task, db_pool_ctx *pool) {
+    db_pool_stat st;
+    for (int32_t i = 0; i < 300; i++) {
+        db_pool_stat_get(pool, &st);
+        if (st.busy > 0) {
+            return ERR_OK;
+        }
+        coro_sleep(task, 10);
+    }
+    LOG_ERROR("%s", "pool: maintenance never became busy.");
+    return ERR_FAILED;
+}
+// fork 出去的 get 挂起后池里的等待者数，用来确认它真排进了窗口
+static int32_t _waiters_after(task_ctx *task, db_pool_ctx *pool) {
+    coro_sleep(task, 50);
+    db_pool_stat st;
+    ZERO(&st, sizeof(st));// db_pool_stat_get 遇空指针不写出参，gcc 内联后会报可能未初始化
+    db_pool_stat_get(pool, &st);
+    return st.waiters;
+}
 static void _sus_get(void *owner, void *arg) {
     (void)owner;
     suspend_arg *a = (suspend_arg *)arg;
@@ -1251,7 +1273,7 @@ static int32_t _test_closed_suspend(task_ctx *task) {
         return ERR_FAILED;
     }
     // 3. 维护协程收缩断开时挂起，期间被 free：不重复断开，维护协程回来后收尾释放池。
-    // 第一次巡检在借出后 1~2 秒，quit 挂 1.5 秒，2.1 秒时 free 必落在 quit 期间
+    // quit 挂 1.5 秒，等维护协程进了 quit 再 free
     db_pool_cfg cfg3 = { .cap = 1, .backoff_ms = 20, .idle_timeout_ms = 10 };
     if (ERR_OK != _sus_setup(task, &c1, &cfg3, &pool)
         || ERR_OK != db_pool_get(pool, 0, &a.conn)) {
@@ -1259,7 +1281,10 @@ static int32_t _test_closed_suspend(task_ctx *task) {
     }
     db_pool_put(pool, a.conn);
     c1.op_ms = 1500;
-    coro_sleep(task, 2100);
+    if (ERR_OK != _wait_busy(task, pool)) {
+        db_pool_free(pool);
+        return ERR_FAILED;
+    }
     db_pool_free(pool);
     coro_sleep(task, 1600);
     if (1 != c1.quits) {
@@ -1269,7 +1294,7 @@ static int32_t _test_closed_suspend(task_ctx *task) {
     return ERR_OK;
 }
 // 维护协程补 min_idle 时建连失败、已无借出：要叫醒只因它占着 busy 而排队的 get，让它快速失败。
-// 巡检在首次 get 后 1~2 秒，建连挂 1.5 秒，2.1 秒时排队必落在建连期间
+// 建连挂 1.5 秒，等维护协程进了建连再排队
 static int32_t _test_fill_wake(task_ctx *task) {
     static fake_conn c1;
     db_pool_ctx *pool;
@@ -1289,20 +1314,25 @@ static int32_t _test_fill_wake(task_ctx *task) {
     ZERO(&a, sizeof(a));
     a.pool = pool;
     a.rtn = 99;
-    coro_sleep(task, 2100);
+    if (ERR_OK != _wait_busy(task, pool)) {
+        db_pool_free(pool);
+        return ERR_FAILED;
+    }
     coro_fork(coro_task_co(task), _sus_get, &a);
-    coro_sleep(task, 1700);
+    int32_t queued = _waiters_after(task, pool);
+    coro_sleep(task, 1650);
     int32_t got = a.rtn;
     db_pool_free(pool);
     coro_sleep(task, 1600);// 维护协程可能还挂在下一次建连上
-    if (ERR_FAILED != got) {
-        LOG_ERROR("pool fill wake: waiter rtn=%d, want -1.", got);
+    if (1 != queued
+        || ERR_FAILED != got) {
+        LOG_ERROR("pool fill wake: queued=%d waiter rtn=%d, want 1/-1.", queued, got);
         return ERR_FAILED;
     }
     return ERR_OK;
 }
 // 维护协程收缩断开挂起期间来的 get(timeout 0)：quit 回来放回槽时要叫醒它，不能让它一直等。
-// 巡检在借出后 1~2 秒，quit 挂 1.5 秒，2.1 秒时排队必落在 quit 期间
+// quit 挂 1.5 秒，等维护协程进了 quit 再排队
 static int32_t _test_reap_wake(task_ctx *task) {
     static fake_conn c1;// 维护协程可能比本函数活得久，连接放静态区
     db_pool_ctx *pool;
@@ -1318,9 +1348,13 @@ static int32_t _test_reap_wake(task_ctx *task) {
     a.pool = pool;
     a.conn = NULL;
     a.rtn = 99;
-    coro_sleep(task, 2100);
+    if (ERR_OK != _wait_busy(task, pool)) {
+        db_pool_free(pool);
+        return ERR_FAILED;
+    }
     coro_fork(coro_task_co(task), _sus_get, &a);
-    coro_sleep(task, 1700);
+    int32_t queued = _waiters_after(task, pool);
+    coro_sleep(task, 1650);
     int32_t got = a.rtn;
     int32_t quits = c1.quits;// 先记下：下面 free 断开空闲连接还会再 quit 一次
     int32_t connects = c1.connects;
@@ -1329,10 +1363,12 @@ static int32_t _test_reap_wake(task_ctx *task) {
         db_pool_put(pool, a.conn);
     }
     db_pool_free(pool);// 没叫醒的话 free 的广播才叫醒它，rtn 变 -1
-    if (ERR_OK != got
+    if (1 != queued
+        || ERR_OK != got
         || 1 != quits
         || 2 != connects) {
-        LOG_ERROR("pool reap wake: waiter rtn=%d quits=%d connects=%d, want 0/1/2.", got, quits, connects);
+        LOG_ERROR("pool reap wake: queued=%d waiter rtn=%d quits=%d connects=%d, want 1/0/1/2.",
+                  queued, got, quits, connects);
         return ERR_FAILED;
     }
     return ERR_OK;

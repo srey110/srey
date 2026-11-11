@@ -4,7 +4,7 @@
 #include "base/base.h"
 
 // 非密码学哈希，不能用作 MAC 或口令派生。
-// canonical 字节 = pack_integer(out, h, N, 0)（大端）；xxh128_t 先写 high 再写 low
+// canonical 字节 = write_be32 / write_be64（大端）；xxh128_t 先写 high 再写 low
 #define XXH32_BLOCK_SIZE 4 // XXH32 canonical 输出字节数
 #define XXH64_BLOCK_SIZE 8 // XXH64 canonical 输出字节数
 #define XXH128_BLOCK_SIZE 16 // XXH3_128 canonical 输出字节数

@@ -79,6 +79,14 @@ typedef struct co_grow {
     co_waiter again;           // 它醒来后在同一 sess 上再挂一次
     co_waiter many[CO_GROW_N]; // 它醒来后在别的 sess 上挂一大批
 }co_grow;
+// 协程局部槽用例的参数
+typedef struct co_local {
+    int32_t self;      // 1 号槽存的指针挂起醒来后仍指向本结构
+    uint64_t mark;     // 本协程写进 0 号槽的值
+    uint64_t start;    // 开跑时 0 号槽的值，应为 0
+    uint64_t after;    // 挂起醒来后 0 号槽的值，应仍是 mark
+    uint64_t sess;     // 挂起用的 sess
+}co_local;
 
 static int32_t _seq;// 醒来次序
 
@@ -412,6 +420,48 @@ static void test_coro_fork(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, r0);
     CuAssertIntEquals(tc, ERR_FAILED, ro);
 }
+// 写 0 号槽后挂起，醒来再读：中间别的协程写了自己的槽，读到的仍须是自己的
+static void _step_local(coro_ctx *co, void *arg) {
+    co_local *x = arg;
+    x->start = coro_local_get(co, 0);
+    coro_local_set(co, 0, x->mark);
+    coro_local_set(co, 1, (uint64_t)(uintptr_t)x);
+    coro_wait(co, x->sess, 1, 0, 0);
+    x->after = coro_local_get(co, 0);
+    x->self = x == (co_local *)(uintptr_t)coro_local_get(co, 1);
+}
+static void _fn_local_peek(void *owner, void *arg) {
+    *(uint64_t *)arg = coro_local_get(((co_owner *)owner)->co, CORO_LOCAL_N - 1);
+}
+// 写末个槽再 fork：子协程看到的末个槽应为 0(连同整块清零一起验)
+static void _step_local_fork(coro_ctx *co, void *arg) {
+    coro_local_set(co, CORO_LOCAL_N - 1, 0x77);
+    coro_fork(co, _fn_local_peek, arg);
+}
+// 局部槽：每条活开跑时为零，挂起醒来仍是自己的，回池复用与 fork 子协程都拿不到上一条活写的
+static void test_coro_local(CuTest *tc) {
+    co_owner o;
+    coro_ctx *co = _co_new(&o, 0);
+    co_local a = { 0, 0x11, 0x99, 0, 1 };
+    co_local b = { 0, 0x22, 0x99, 0, 2 };
+    co_local c = { 0, 0x33, 0x99, 0, 3 };
+    _co_spawn(co, _step_local, &a);
+    _co_spawn(co, _step_local, &b);
+    coro_wake(co, 2, 1, NULL);// b 先醒
+    coro_wake(co, 1, 1, NULL);
+    _co_spawn(co, _step_local, &c);// 从池里复用 a 或 b 跑过、首格写过值的协程
+    coro_wake(co, 3, 1, NULL);
+    uint64_t peek = 0x99;
+    _co_spawn(co, _step_local_fork, &peek);
+    coro_fork_drain(co);
+    coro_free(co);
+    CuAssertTrue(tc, 0 == a.start && 0 == b.start && 0 == c.start);
+    CuAssertTrue(tc, 0x11 == a.after);
+    CuAssertTrue(tc, 0x22 == b.after);
+    CuAssertTrue(tc, 0x33 == c.after);
+    CuAssertTrue(tc, a.self && b.self && c.self);
+    CuAssertTrue(tc, 0 == peek);
+}
 // 持锁后挂起；同协程再进一层验证可重入
 static void _step_hold(coro_ctx *co, void *arg) {
     co_serial *x = arg;
@@ -735,6 +785,7 @@ void test_coro(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_coro_unkeep);
     SUITE_ADD_TEST(suite, test_coro_expire);
     SUITE_ADD_TEST(suite, test_coro_fork);
+    SUITE_ADD_TEST(suite, test_coro_local);
     SUITE_ADD_TEST(suite, test_coro_serial);
     SUITE_ADD_TEST(suite, test_coro_serial_free_drain);
     SUITE_ADD_TEST(suite, test_coro_nested_spawn);

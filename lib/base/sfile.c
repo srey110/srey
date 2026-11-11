@@ -3,8 +3,9 @@
 #include "base/macro_util.h"
 #include "base/memory.h"
 
-// fopen 模式里"打开即不可继承"的字母：glibc / musl / FreeBSD 是 e，MSVC CRT 是 N；其余平台只靠打开后补标
-#if defined(OS_LINUX) || defined(OS_FBSD)
+// fopen 模式里"打开即不可继承"的字母：glibc / musl / FreeBSD / macOS 是 e，MSVC CRT 是 N；其余平台只靠打开后补标。
+// 不认 e 的旧版 libc 把它当未知字母忽略，打开后照样补标
+#if defined(OS_LINUX) || defined(OS_FBSD) || defined(OS_DARWIN)
 #define _FOPEN_NOINHERIT "e"
 #elif defined(OS_WIN)
 #define _FOPEN_NOINHERIT "N"
