@@ -96,6 +96,7 @@ int32_t ev_send_ssl(ev_ctx *ctx, sock_ctx *sk, void *data, size_t len,
 /// 非 TLS1.3，或上一次 SSL_write 还挂着没写完、上一次排程的 KeyUpdate 还没写出去(OpenSSL 此时都拒绝排程)时不排程，只落一条 WARN。
 /// 排程不等于发出：报文要等该连接下一次 SSL_write 才上线路（口径见 evssl_keyupdate），
 /// 故空闲连接上调它不会有任何报文，调用方须自己再发点数据把它带出去。
+/// 双方同时请求、且双向发送缓冲都满时两端会互相停读卡住，框架不兜底：调它的一方要有空闲超时，到期自己关掉
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="sk">连接标识</param>

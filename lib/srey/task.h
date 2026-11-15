@@ -273,7 +273,9 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
 /// <summary>
 /// 监听。task 设过 task_accept_group 的，只在有组员的 net 线程上收，新连接交给所在线程的组员。
 /// 带 evssl 时 ACCEPT 早于 TLS 握手完成投来，握手完成前发送会被判断连；握手结果恒投 SSLEXCHANGED(不用另订 NETEV_AUTHSSL)，
-/// 要先发数据(如欢迎语)就在它的回调里发。NETEV_AUTHSSL 只给明文监听、之后再升级的连接用
+/// 要先发数据(如欢迎语)就在它的回调里发。NETEV_AUTHSSL 只给明文监听、之后再升级的连接用。
+/// 框架不限 TLS 握手与连接空闲的时长：要限就订 NETEV_ACCEPT，在 ACCEPT 里按 skid 记下时刻，
+/// 握手完成或收包时清掉 / 刷新，定时扫一遍把超时的关掉
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pktype">包类型</param>

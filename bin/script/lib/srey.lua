@@ -1324,7 +1324,9 @@ end
 
 ---开始监听指定地址。带 SSL 时 on_accepted 早于 TLS 握手完成触发，握手完成前发送会被判断连；
 ---握手结果恒投 SSLEXCHANGED(不用另带 NET_EV.AUTHSSL)，要先发数据(如欢迎语)就在 srey.on_ssl_exchanged 里发。
----NET_EV.AUTHSSL 只给明文监听、之后再升级的连接用
+---NET_EV.AUTHSSL 只给明文监听、之后再升级的连接用。
+---框架不限 TLS 握手与连接空闲的时长：要限就带 NET_EV.ACCEPT，在 on_accepted 里按 sk.skid 记下时刻，
+---握手完成或收包时清掉 / 刷新，srey.timeout 定时扫一遍把超时的 srey.close 掉
 ---@param pktype PACK_TYPE 应用层协议类型
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
 ---@param ip string 监听 IP。"::" 只收 IPv6(强制 IPV6_V6ONLY)，要同时收两种就 "0.0.0.0" 与 "::" 各监听一次
